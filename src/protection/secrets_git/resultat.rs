@@ -193,6 +193,15 @@ mod tests {
         r.plafond = true;
         assert_eq!(resultat(&r, debut()).verdict(), "non-verifie");
         r.plafond = false;
+        r.sans_vanguard.push("~/projet".into());
+        assert_eq!(resultat(&r, debut()).verdict(), "non-verifie");
+        r.sans_vanguard.clear();
+        r.sans_gitleaks.push("~/projet".into());
+        assert_eq!(resultat(&r, debut()).verdict(), "non-verifie");
+        r.sans_gitleaks.clear();
+        r.hors_temps = 4;
+        assert_eq!(resultat(&r, debut()).verdict(), "non-verifie");
+        r.hors_temps = 0;
         r.illisibles.push("~/autre".into());
         assert_eq!(resultat(&r, debut()).verdict(), "non-verifie");
         assert_eq!(resultat(&Recherche::default(), debut()).verdict(), "non-verifie");

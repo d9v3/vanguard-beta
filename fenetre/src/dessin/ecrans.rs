@@ -406,15 +406,31 @@ fn reseau_entier(ui: &mut Ui, v: &scan::Vue) {
             .into(),
             p.bon,
         )),
-        Upnp::Actif { redirections, .. } => {
+        Upnp::Actif {
+            redirections,
+            lues,
+            tronquees,
+            illisibles,
+            ..
+        } => {
             let actives: Vec<&scan::Redirection> = redirections.iter().filter(|r| r.active).collect();
+            // Une liste que la box n'a pas rendue en entier : son compte n'est qu'un minimum, jamais un fait.
+            let entiere = *lues && !*tronquees && *illisibles == 0;
             lignes.push((
-                crate::trf!(
-                    "UPnP de la box : actif, {} port(s) ouvert(s) vers Internet.",
-                    "Router UPnP: on, {} port(s) open to the Internet.",
-                    actives.len()
-                ),
-                if actives.is_empty() { p.encre } else { p.moyen },
+                if entiere {
+                    crate::trf!(
+                        "UPnP de la box : actif, {} port(s) ouvert(s) vers Internet.",
+                        "Router UPnP: on, {} port(s) open to the Internet.",
+                        actives.len()
+                    )
+                } else {
+                    crate::trf!(
+                        "UPnP de la box : actif, au moins {} port(s) ouvert(s) vers Internet ; la liste n'a pas pu être lue en entier (non vérifié).",
+                        "Router UPnP: on, at least {} port(s) open to the Internet; the list could not be read in full (not checked).",
+                        actives.len()
+                    )
+                },
+                if actives.is_empty() && entiere { p.encre } else { p.moyen },
             ));
             for r in actives.into_iter().take(APPAREILS_MAX) {
                 let port = |n: Option<u16>| n.map_or_else(|| "?".to_string(), |n| n.to_string());

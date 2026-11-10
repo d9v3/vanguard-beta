@@ -36,6 +36,11 @@ pub(crate) const DEPOTS_MAX: usize = 200;
 /// et c'est dit (jamais compté sain).
 pub(crate) const COMMITS_MAX: usize = 2000;
 
+/// Le temps de la recherche au plus, en secondes : passé ce temps, aucun dépôt de plus n'est commencé, et ceux qui
+/// restent sont dits non relus. Un dépôt commencé peut encore prendre 420 s (git 120 s, gitleaks 300 s) : la fenêtre
+/// attend 1800 s, assez pour rendre un résultat partiel plutôt qu'un délai dépassé.
+pub(crate) const BUDGET_S: u64 = 1200;
+
 /// Les dépôts git sous `racine`. Les dossiers cachés (réglages, caches) et les liens sont sautés ; un dépôt n'est pas
 /// fouillé plus loin, ses sous-modules étant d'autres dépôts. La racine elle-même peut être un dépôt (fichiers de
 /// configuration suivis par git) sans cacher ceux qui sont dessous.
@@ -476,6 +481,23 @@ struct Complement {
     rapports: PathBuf,
 }
 
+/// Le dossier des rapports nomme les auteurs des commits : il est effacé quoi qu'il arrive, même si la recherche
+/// s'interrompt.
+impl Drop for Complement {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.rapports);
+    }
+}
+
+/// Un dépôt relu par une seule des deux recherches : ce que l'autre aurait vu n'est pas conclu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Partiel {
+    /// git n'a pas pu relire l'historique : les règles de Vanguard n'ont rien vu de ce dépôt.
+    SansVanguard,
+    /// gitleaks a échoué sur ce dépôt.
+    SansGitleaks,
+}
+
 fn par_gitleaks(c: &Complement, depot: &Path, rapport: &Path) -> Option<Vec<Fuite>> {
     let lance = crate::commande::lancer(Command::new(&c.gitleaks).args(arguments(&c.aide, depot, rapport)), 300);
     let lu = std::fs::read_to_string(rapport).ok().and_then(|t| lire_rapport(&t));
@@ -485,14 +507,26 @@ fn par_gitleaks(c: &Complement, depot: &Path, rapport: &Path) -> Option<Vec<Fuit
 
 /// Les deux recherches réunies : ce que gitleaks trouve en plus s'ajoute (même commit, fichier et ligne : un seul).
 /// Illisible seulement si aucune des deux n'a pu lire le dépôt. Le booléen : les règles de Vanguard n'ont relu que
-/// les `COMMITS_MAX` derniers commits.
-fn examiner(git: &Path, complement: Option<&Complement>, depot: &Path, rapport: &Path) -> (Issue, bool) {
+/// les `COMMITS_MAX` derniers commits ; le `Partiel` : une seule des deux recherches l'a lu.
+fn examiner(
+    git: &Path,
+    complement: Option<&Complement>,
+    depot: &Path,
+    rapport: &Path,
+) -> (Issue, bool, Option<Partiel>) {
     let natif = historique(git, depot);
     let tronque = natif.as_ref().is_some_and(|(_, t)| *t);
     let autre = complement.and_then(|c| par_gitleaks(c, depot, rapport));
     if natif.is_none() && autre.is_none() {
-        return (Issue::Illisible, false);
+        return (Issue::Illisible, false, None);
     }
+    let partiel = if natif.is_none() {
+        Some(Partiel::SansVanguard)
+    } else if complement.is_some() && autre.is_none() {
+        Some(Partiel::SansGitleaks)
+    } else {
+        None
+    };
     let mut fuites = natif.map(|(f, _)| f).unwrap_or_default();
     for f in autre.unwrap_or_default() {
         if !fuites
@@ -503,9 +537,9 @@ fn examiner(git: &Path, complement: Option<&Complement>, depot: &Path, rapport: 
         }
     }
     if fuites.is_empty() {
-        (Issue::Sain, tronque)
+        (Issue::Sain, tronque, partiel)
     } else {
-        (Issue::Fuites(fuites), tronque)
+        (Issue::Fuites(fuites), tronque, partiel)
     }
 }
 
@@ -525,18 +559,29 @@ pub(crate) struct Recherche {
     pub avec: Vec<(String, Vec<Fuite>)>,
     /// Les dépôts dont seuls les `COMMITS_MAX` derniers commits ont été relus par les règles de Vanguard.
     pub tronques: Vec<String>,
+    /// Les dépôts que git n'a pas pu relire, lus par gitleaks seul.
+    pub sans_vanguard: Vec<String>,
+    /// Les dépôts sur lesquels gitleaks a échoué, lus par les règles de Vanguard seules.
+    pub sans_gitleaks: Vec<String>,
+    /// Les dépôts pas commencés, `BUDGET_S` passé.
+    pub hors_temps: usize,
 }
 
 impl Recherche {
     /// Ce qui n'a pas pu être relu : rien n'est alors conclu pour le reste.
     fn incomplete(&self) -> bool {
-        self.plafond || !self.illisibles.is_empty() || !self.tronques.is_empty()
+        self.plafond
+            || !self.illisibles.is_empty()
+            || !self.tronques.is_empty()
+            || !self.sans_vanguard.is_empty()
+            || !self.sans_gitleaks.is_empty()
+            || self.hors_temps > 0
     }
 }
 
 /// La recherche dans les dépôts `trouves` (`depots`) de `maison`, sans rien afficher (sinon le compteur, si
 /// `compteur`) ni rien changer : les rapports de gitleaks, qui nomment les auteurs des commits, vont dans un dossier
-/// réservé au compte, effacé après.
+/// réservé au compte, effacé après (même interrompu : `Drop`). Passé `BUDGET_S`, plus aucun dépôt n'est commencé.
 pub(crate) fn chercher(git: &Path, maison: &Path, trouves: &[PathBuf], compteur: bool) -> Recherche {
     use std::io::Write;
     let mut r = Recherche {
@@ -559,7 +604,12 @@ pub(crate) fn chercher(git: &Path, maison: &Path, trouves: &[PathBuf], compteur:
         })
     });
     r.gitleaks = complement.is_some();
+    let debut = std::time::Instant::now();
     for (i, depot) in trouves.iter().enumerate() {
+        if debut.elapsed().as_secs() >= BUDGET_S {
+            r.hors_temps = trouves.len().saturating_sub(i);
+            break;
+        }
         if compteur {
             print!("\r  {}/{}", i.saturating_add(1), trouves.len());
             let _ = std::io::stdout().flush();
@@ -568,9 +618,14 @@ pub(crate) fn chercher(git: &Path, maison: &Path, trouves: &[PathBuf], compteur:
             .as_ref()
             .map_or_else(PathBuf::new, |c| c.rapports.join(format!("{i}.json")));
         let nom = outil::chemin_affiche(depot, maison);
-        let (issue, tronque) = examiner(git, complement.as_ref(), depot, &rapport);
+        let (issue, tronque, partiel) = examiner(git, complement.as_ref(), depot, &rapport);
         if tronque {
             r.tronques.push(nom.clone());
+        }
+        match partiel {
+            Some(Partiel::SansVanguard) => r.sans_vanguard.push(nom.clone()),
+            Some(Partiel::SansGitleaks) => r.sans_gitleaks.push(nom.clone()),
+            None => {}
         }
         match issue {
             Issue::Sain => r.sains = r.sains.saturating_add(1),
@@ -578,9 +633,7 @@ pub(crate) fn chercher(git: &Path, maison: &Path, trouves: &[PathBuf], compteur:
             Issue::Illisible => r.illisibles.push(nom),
         }
     }
-    if let Some(c) = &complement {
-        let _ = std::fs::remove_dir_all(&c.rapports);
-    }
+    drop(complement);
     if compteur {
         print!("\r{}\r", " ".repeat(20));
     }
@@ -696,6 +749,25 @@ pub(crate) fn bornes(r: &Recherche) -> Vec<String> {
             )
         })
         .collect();
+    b.extend(r.sans_vanguard.iter().map(|d| {
+        trf!(
+            "{d} : git n'a pas pu relire son historique ; seules les règles de gitleaks l'ont lu, celles de Vanguard non.",
+            "{d}: git could not read its history; only gitleaks's rules read it, not Vanguard's."
+        )
+    }));
+    b.extend(r.sans_gitleaks.iter().map(|d| {
+        trf!(
+            "{d} : gitleaks a échoué ; seules les règles de Vanguard l'ont relu.",
+            "{d}: gitleaks failed; only Vanguard's rules read it."
+        )
+    }));
+    if r.hors_temps > 0 {
+        let n = r.hors_temps;
+        b.push(trf!(
+            "{n} projet(s) pas relu(s) : la recherche s'arrête après {BUDGET_S} s.",
+            "{n} project(s) not read: the search stops after {BUDGET_S} s."
+        ));
+    }
     if r.plafond {
         b.push(trf!(
             "La recherche s'arrête à {DEPOTS_MAX} projets : d'autres, dans le dossier personnel, peuvent ne pas avoir été relus.",

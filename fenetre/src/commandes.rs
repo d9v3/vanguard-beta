@@ -330,9 +330,9 @@ impl Commande {
     pub fn delai(self) -> Duration {
         Duration::from_secs(match self {
             // trivy lit chaque image, et télécharge sa base la première fois.
-            Commande::Antivirus | Commande::Yara | Commande::Memoire | Commande::Conteneurs => 1800,
-            // L'historique de chaque projet git du dossier personnel.
-            Commande::Secrets => 600,
+            // L'historique de chaque projet git du dossier personnel : secrets s'arrête de lui-même après 1200 s
+            // (BUDGET_S) et un dépôt commencé peut prendre 420 s de plus, d'où 1800 s.
+            Commande::Antivirus | Commande::Yara | Commande::Memoire | Commande::Conteneurs | Commande::Secrets => 1800,
             Commande::Bilan
             | Commande::LogicielsEspions
             | Commande::LogicielsPerimes
@@ -542,8 +542,8 @@ impl Commande {
                 "Each fix run on this computer, its date and its result."
             ),
             Commande::VerifierMoi => crate::tr!(
-                "Ce programme est-il bien celui publié ? Son empreinte comparée à celle de la version.",
-                "Is this program the one published? Its fingerprint compared with the release's."
+                "Ce programme est-il bien celui publié ? Son empreinte et le manifeste de la clé ; l'historique signé se compare dans le menu.",
+                "Is this program the one published? Its fingerprint and the key's manifest; the signed history is compared in the menu."
             ),
             Commande::Regles => crate::tr!(
                 "Les règles du bilan pour ce système : identifiant, sujet, références.",

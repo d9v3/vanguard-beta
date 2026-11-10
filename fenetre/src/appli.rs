@@ -477,6 +477,15 @@ fn ton(contenu: &Contenu) -> Ton {
                 Ton::Bon
             }
         }
+        // Le relevé des corrections (`changements --json`) effacé, changé hors de Vanguard ou illisible : jamais lu
+        // comme un historique ordinaire. Seuls « intact » et « absent » (rien encore) restent neutres.
+        Contenu::Libre(v)
+            if v.lignes
+                .iter()
+                .any(|l| l.retrait == 0 && l.cle == "releve" && !matches!(l.valeur.as_str(), "intact" | "absent")) =>
+        {
+            Ton::Attention
+        }
         Contenu::Libre(_) => Ton::Normal,
     }
 }
@@ -537,6 +546,13 @@ mod tests {
         assert_eq!(b(r#"{"constats": []}"#), Ton::Normal);
 
         assert_eq!(ton(&Contenu::Libre(libre::Vue::default())), Ton::Normal);
+        let releve = |etat: &str| {
+            Contenu::Libre(libre::lire(format!(r#"{{"schema":1,"releve":"{etat}","total":0}}"#).as_bytes()).unwrap())
+        };
+        assert_eq!(ton(&releve("intact")), Ton::Normal);
+        assert_eq!(ton(&releve("absent")), Ton::Normal);
+        assert_eq!(ton(&releve("efface")), Ton::Attention);
+        assert_eq!(ton(&releve("change-hors-de-vanguard")), Ton::Attention);
 
         let a = |json: &str| ton(&Contenu::Appareils(appareils::lire(json.as_bytes()).unwrap()));
         let teste = r#""upnp": "Absent", "empoisonnement": {"Teste": []}"#;
