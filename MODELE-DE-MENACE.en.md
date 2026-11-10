@@ -191,6 +191,22 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
 - **No connection, no file.** The window opens no network port, no server, no web page, and runs no JavaScript (no
   HTTP library among its dependencies); it writes no file (theme and language are not kept). The commands it runs
   reach the Internet as they do in the terminal (for example `test-connexion`, `logiciels-perimes`).
+- **A sandbox (Linux).** At startup, before anything else, the window splits in two: a relay (`vanguard-relais`)
+  keeps your account's rights and alone starts `vanguard`; the window locks itself in (Landlock and no_new_privs,
+  `fenetre/src/bac_a_sable.rs`) and from then on only asks the relay for a command of the closed list, by its number
+  (`fenetre/src/relais.rs`). Locked in, it can read files and talk to the display (Wayland or X11) and to the graphics
+  card, nothing else: it can neither write a file (not even the shader cache, which a trapped program could poison),
+  nor start a program, nor (Landlock 4, Linux 6.7) open a connection, nor (Landlock 6, Linux 6.12) send a signal
+  outside itself or, under Wayland, reach an abstract socket, nor (Landlock 9) reach a Unix socket other than the
+  display's (the D-Bus bus, for example). The relay only understands “run command n of the list, in this language”
+  and “stop”; a request outside this protocol stops it; it finds the neighbouring `vanguard` itself and replays its
+  guard; it cannot be observed (PR_SET_DUMPABLE set to 0); when the window closes, it stops what is running and
+  leaves. Why not `vanguard` too: locked in, it would see less (no_new_privs alone makes the sudo check of the
+  report disappear; Landlock hides other processes and the system bus from it), and a report that sees less without
+  saying so would be worse. On opening, the window's console says whether the sandbox is active, with which Landlock
+  version and what this kernel cannot take away; without Landlock (kernel before 5.13, or Landlock turned off), or if
+  the relay does not start, it says so in orange and keeps the account's rights: never a `vanguard` started from the
+  sandbox.
 - **The menu stays the safe choice.** The window does not open without a terminal (a script writing the choices),
   over SSH or Remote Desktop, as administrator (root, sudo, administrator console), without a graphical screen, when
   it is not placed next to `vanguard`, when (on Linux) it is not a regular file owned by this account or root that
@@ -207,7 +223,10 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   also replace `vanguard`. On Windows, the window and `vanguard` only check that the other one is a regular file:
   neither its owner nor the permissions (ACLs) of the file and its folders, which Windows does not let you read as
   simply; a folder where other accounts can write is therefore not refused on Windows. On Windows, Stop stops the
-  command it ran, not yet what that command started itself. On Linux, no screen reader nor copy and paste yet.
+  command it ran, not yet what that command started itself. On Linux, no screen reader nor copy and paste yet. The
+  window's sandbox protects less before Landlock 9 (it can still reach the account's Unix sockets, including the
+  session bus, from which `systemd-run` would start a program) and under X11, where any program on the screen can type
+  into other windows and abstract sockets stay reachable (X11 needs them).
 
 ## Lowered by choice
 

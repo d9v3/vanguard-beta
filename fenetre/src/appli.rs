@@ -104,6 +104,11 @@ impl Appli {
             dernier_sondage: Instant::now(),
             reveil,
         };
+        #[cfg(target_os = "linux")]
+        if let Some((phrase, souligner)) = crate::relais::etat() {
+            let ton = if *souligner { Ton::Attention } else { Ton::Discret };
+            a.dire("fenêtre", phrase, ton);
+        }
         match &a.programme {
             Ok(_) => {
                 a.dire(

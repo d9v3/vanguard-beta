@@ -9,6 +9,8 @@
 mod appli;
 #[cfg(test)]
 mod attaques;
+#[cfg(target_os = "linux")]
+mod bac_a_sable;
 #[cfg(windows)]
 mod chargement;
 mod commandes;
@@ -17,6 +19,8 @@ mod donnees;
 mod lanceur;
 mod langue;
 mod nettoyage;
+#[cfg(target_os = "linux")]
+mod relais;
 mod sortie;
 mod temps;
 
@@ -71,6 +75,10 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     langue::choisir(o.langue);
+    // Avant le premier fil et la première bibliothèque d'affichage : le relais part à côté avec les droits du compte,
+    // la fenêtre entre dans son bac à sable (`relais`, `bac_a_sable`).
+    #[cfg(target_os = "linux")]
+    relais::separer();
     match dessin::ouvrir(lanceur::Programme::voisin(), o.depuis_vanguard) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {

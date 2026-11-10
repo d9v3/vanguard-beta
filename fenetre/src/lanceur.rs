@@ -54,7 +54,7 @@ impl Programme {
     }
 
     /// `proprietaire` : le compte à qui est la fenêtre elle-même (Linux) ; `vanguard` doit être à lui ou à root.
-    fn dans(dossier: &Path, proprietaire: u32) -> Result<Programme, String> {
+    pub(crate) fn dans(dossier: &Path, proprietaire: u32) -> Result<Programme, String> {
         let nom = if cfg!(windows) { "vanguard.exe" } else { "vanguard" };
         let p = Programme {
             chemin: dossier.join(nom),
@@ -214,27 +214,45 @@ pub struct Tache {
     pub debut: Instant,
     arret: Arc<AtomicBool>,
     recu: mpsc::Receiver<Message>,
+    /// Sous Linux, son numéro auprès du relais (`relais`), qui la lance hors du bac à sable de la fenêtre.
+    #[cfg(target_os = "linux")]
+    relayee: Option<u32>,
 }
 
 /// Réveille la fenêtre quand un message arrive (elle ne redessine pas sans cela).
 pub type Reveil = Arc<dyn Fn() + Send + Sync>;
 
+/// Où une tâche rend ses messages, de n'importe quel fil : la fenêtre (une file et son réveil) ou le relais (le
+/// tuyau vers la fenêtre).
+pub type Rendre = Arc<dyn Fn(Message) + Send + Sync>;
+
 impl Tache {
-    /// Lance `commande` en fond. Le résultat arrive par `recevoir`, toujours terminé par un `Message::Fin`.
+    /// Lance `commande` en fond. Le résultat arrive par `recevoir`, toujours terminé par un `Message::Fin`. Sous
+    /// Linux, c'est le relais qui lance, quand la fenêtre en a un (`relais::separer`) : la fenêtre est alors dans son
+    /// bac à sable, et `vanguard` lancé d'elle en hériterait.
     pub fn lancer(programme: &Programme, commande: Commande, anglais: bool, reveil: &Reveil) -> Tache {
+        #[cfg(target_os = "linux")]
+        if let Some(r) = crate::relais::client() {
+            return r.lancer(commande, anglais, reveil);
+        }
         let arret = Arc::new(AtomicBool::new(false));
         let (envoi, recu) = mpsc::channel();
         let programme = programme.clone();
         let a = Arc::clone(&arret);
-        let lance = std::thread::Builder::new().name("vanguard-tache".into()).spawn({
+        let rendre: Rendre = {
             let envoi = envoi.clone();
             let reveil = Arc::clone(reveil);
-            move || {
-                let fin = surveiller(&programme, commande, anglais, &a, &envoi, &reveil);
-                let _ = envoi.send(Message::Fin(fin));
+            Arc::new(move |m| {
+                let _ = envoi.send(m);
                 reveil();
-            }
-        });
+            })
+        };
+        let lance = std::thread::Builder::new()
+            .name("vanguard-tache".into())
+            .spawn(move || {
+                let fin = surveiller(&programme, commande, anglais, &a, &rendre);
+                rendre(Message::Fin(fin));
+            });
         if let Err(e) = lance {
             let _ = envoi.send(Message::Fin(Fin {
                 commande,
@@ -250,12 +268,30 @@ impl Tache {
             debut: Instant::now(),
             arret,
             recu,
+            #[cfg(target_os = "linux")]
+            relayee: None,
+        }
+    }
+
+    /// Une tâche lancée par le relais : ses messages arrivent par `recu`, son arrêt est demandé au relais.
+    #[cfg(target_os = "linux")]
+    pub fn relayee(commande: Commande, id: u32, recu: mpsc::Receiver<Message>) -> Tache {
+        Tache {
+            commande,
+            debut: Instant::now(),
+            arret: Arc::new(AtomicBool::new(false)),
+            recu,
+            relayee: Some(id),
         }
     }
 
     /// Demande l'arrêt : le groupe de l'enfant reçoit SIGTERM, puis SIGKILL après un court délai.
     pub fn arreter(&self) {
         self.arret.store(true, Ordering::Relaxed);
+        #[cfg(target_os = "linux")]
+        if let (Some(id), Some(r)) = (self.relayee, crate::relais::client()) {
+            r.arreter(id);
+        }
     }
 
     pub fn arret_demande(&self) -> bool {
@@ -296,13 +332,14 @@ fn preparer(chemin: &Path, commande: Commande, anglais: bool) -> Command {
     c
 }
 
-fn surveiller(
+/// Lance `commande`, la surveille jusqu'à sa fin et la rend ; ses lignes d'erreur passent par `rendre` en chemin
+/// (pas la fin : l'appelant la rend lui-même).
+pub fn surveiller(
     programme: &Programme,
     commande: Commande,
     anglais: bool,
     arret: &AtomicBool,
-    envoi: &mpsc::Sender<Message>,
-    reveil: &Reveil,
+    rendre: &Rendre,
 ) -> Fin {
     let debut = Instant::now();
     let fin = |code, sortie, issue| Fin {
@@ -350,15 +387,13 @@ fn surveiller(
             source: e,
             abandon: Arc::clone(&abandon),
         };
-        let envoi = envoi.clone();
-        let reveil = Arc::clone(reveil);
+        let rendre = Arc::clone(rendre);
         std::thread::Builder::new()
             .name("vanguard-erreurs".into())
             .spawn(move || {
                 lire_lignes(e, LIGNE_ERREUR_MAX, LIGNES_ERREUR_MAX, |l| {
                     if !l.is_empty() {
-                        let _ = envoi.send(Message::Ligne(l));
-                        reveil();
+                        rendre(Message::Ligne(l));
                     }
                 });
             })

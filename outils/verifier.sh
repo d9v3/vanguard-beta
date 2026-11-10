@@ -284,7 +284,8 @@ fenetre() {
     CARGO_TARGET_DIR=$cible cargo clippy -q --locked --all-targets --manifest-path "$m" --target "$t" -- -D warnings ||
       return 1
   done
-  CARGO_TARGET_DIR=$cible cargo test -q --locked --manifest-path "$m" --target x86_64-unknown-linux-gnu || return 1
+  VANGUARD_TESTS_SAUTES=$(sautes fenetre) CARGO_TARGET_DIR=$cible cargo test -q --locked --manifest-path "$m" \
+    --target x86_64-unknown-linux-gnu || return 1
   for t in x86_64-unknown-linux-gnu x86_64-pc-windows-gnu; do
     CARGO_TARGET_DIR=$cible cargo build -q --locked --manifest-path "$m" --target "$t" || return 1
   done
@@ -689,6 +690,7 @@ if [[ $MODE != --rapide ]]; then
   ligne masque "mots d'attaque masqués"
   ligne extensions "extensions (sdk, exemple Rust)"
   ligne fenetre "fenêtre (clippy ×2, tests Linux : $(passes fenetre), protections ×2)"
+  raisons_des_sautes fenetre
   ligne python "scripts Python"
   ligne relais "relais des lots ($(grep -m1 -oE '^ℹ pass [0-9]+' "$TRAVAIL/relais.log" 2>/dev/null | cut -d' ' -f3) essais)"
   ligne relais-schema "relais : schéma et détecteur"

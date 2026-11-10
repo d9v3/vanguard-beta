@@ -160,6 +160,7 @@ Une faille de sécurité ? Pas de ticket ni de demande de fusion publics : signa
 | `fuzz/` | banc de fuzzing, hors de la compilation du programme : une cible par lecteur, qui inclut son module de `src/` par son chemin (`fuzz/cale/` pour le reste), graines aux valeurs inventées (`outils/fuzz.sh`) |
 | `fenetre/` | la fenêtre de Vanguard (`vanguard-fenetre`, egui), crate à part avec son Cargo.lock et `fenetre/deny.toml` ; Linux en glibc, Windows ; polices embarquées (`fenetre/polices/`, OFL) |
 | `fenetre/src/commandes.rs`, `fenetre/src/lanceur.rs`, `fenetre/src/nettoyage.rs` | la liste fermée des commandes lancées (arguments fixés, délais) ; le lancement de `vanguard` posé à côté (entrée fermée, groupe tué à l'arrêt, sorties bornées) ; le texte nettoyé avant l'affichage |
+| `fenetre/src/relais.rs`, `fenetre/src/bac_a_sable.rs` | Linux : le relais, parti au démarrage avec les droits du compte, seul à lancer `vanguard` (protocole à numéros, demande hors protocole = arrêt) ; le bac à sable de la fenêtre (Landlock selon la version du noyau, no_new_privs ; lecture, affichage et carte graphique seulement) |
 | `fenetre/src/appli.rs`, `fenetre/src/donnees/`, `fenetre/src/dessin/` | l'état de la fenêtre (écran, commande en cours, console) ; les réponses JSON relues sans jamais planter (bilan, protection, journal, résultat commun) ; le dessin, seul à parler à egui (cadre, écrans, bilan, icônes tracées) |
 
 ### Extensions (plugins et laboratoire)

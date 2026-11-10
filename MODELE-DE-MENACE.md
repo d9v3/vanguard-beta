@@ -201,6 +201,22 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   n'exécute aucun JavaScript (aucune bibliothèque HTTP parmi ses dépendances) ; elle n'écrit aucun fichier (thème et
   langue ne sont pas gardés). Les commandes qu'elle lance joignent Internet comme dans le terminal (par exemple
   `test-connexion`, `logiciels-perimes`).
+- **Un bac à sable (Linux).** Au démarrage, avant tout le reste, la fenêtre se dédouble : un relais
+  (`vanguard-relais`) garde les droits de votre compte et lance seul `vanguard` ; la fenêtre s'enferme (Landlock et
+  no_new_privs, `fenetre/src/bac_a_sable.rs`) et ne fait plus que lui demander une commande de la liste fermée, par
+  son numéro (`fenetre/src/relais.rs`). Enfermée, elle peut lire des fichiers et parler à l'affichage (Wayland ou
+  X11) et à la carte graphique, rien d'autre : ni écrire un fichier (pas même le cache des shaders, qu'un programme
+  piégé pourrait empoisonner), ni lancer un programme, ni (Landlock 4, Linux 6.7) ouvrir une connexion, ni (Landlock 6,
+  Linux 6.12) envoyer un signal hors d'elle ou, sous Wayland, joindre une socket abstraite, ni (Landlock 9) joindre
+  une autre socket Unix que celle de l'affichage (le bus D-Bus, par exemple). Le relais ne comprend que « lancer la
+  commande n de la liste, en telle langue » et « arrêter » ; une demande hors de ce protocole l'arrête ; il retrouve
+  lui-même le `vanguard` voisin et rejoue sa garde ; il ne se laisse pas observer (PR_SET_DUMPABLE à 0) ; quand la
+  fenêtre se ferme, il arrête ce qui tourne et s'en va. Pourquoi pas `vanguard` aussi : enfermé, il verrait moins
+  (no_new_privs seul fait disparaître la vérification de sudo du bilan ; Landlock lui cache les autres processus et le
+  bus système), et un bilan qui voit moins sans le dire serait pire. À l'ouverture, la console de la fenêtre dit si
+  le bac est actif, avec quelle version de Landlock et ce que ce noyau ne sait pas retirer ; sans Landlock (noyau
+  d'avant 5.13, ou Landlock coupé), ou si le relais ne démarre pas, elle le dit en orange et garde les droits du
+  compte : jamais un `vanguard` lancé depuis le bac.
 - **Le menu reste le choix sûr.** La fenêtre ne s'ouvre pas sans terminal (un script qui écrit les choix), en SSH ou
   au Bureau à distance, en administrateur (root, sudo, console administrateur), sans écran graphique, quand elle n'est
   pas posée à côté, quand (sous Linux) elle n'est pas un fichier ordinaire à ce compte ou à root que ni le groupe ni
@@ -219,7 +235,10 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   que l'autre soit un fichier ordinaire : ni son propriétaire, ni les droits (ACL) du fichier et de ses dossiers, que
   Windows ne laisse pas lire aussi simplement ; un dossier où d'autres comptes peuvent écrire n'est donc pas refusé
   sous Windows. Sous Windows, Arrêter arrête la commande lancée, pas encore ce qu'elle aurait lancé elle-même. Sous
-  Linux, pas encore de lecteur d'écran ni de copier-coller.
+  Linux, pas encore de lecteur d'écran ni de copier-coller. Le bac à sable de la fenêtre protège moins avant Landlock 9
+  (elle peut encore joindre les sockets Unix du compte, dont le bus de session, d'où `systemd-run` lancerait un
+  programme) et sous X11, où tout programme de l'écran peut taper dans les autres fenêtres et où les sockets
+  abstraites restent joignables (X11 en a besoin).
 
 ## Baisses par choix
 
