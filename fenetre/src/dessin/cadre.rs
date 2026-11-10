@@ -34,7 +34,8 @@ pub fn tout(appli: &mut Appli, ui: &mut Ui) {
         .show_separator_line(false)
         .frame(Frame::new().fill(p.fond).inner_margin(Margin::symmetric(8, 0)))
         .show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| rail(appli, ui));
+            let aise = aisance_du_rail(ui.available_height());
+            egui::ScrollArea::vertical().show(ui, |ui| rail(appli, ui, aise));
         })
         .response
         .rect;
@@ -114,23 +115,48 @@ fn rubrique_de(e: Ecran) -> Rubrique {
     }
 }
 
-fn rail(appli: &mut Appli, ui: &mut Ui) {
+/// Le rail à l'aise (1) et serré (0) : à l'aise, le pas d'une rubrique laisse de l'air autour de l'icône ; serré,
+/// les onze tiennent en moins de 690 pt. Entre les deux, le pas suit la hauteur de la fenêtre, pour que rien ne soit coupé
+/// à 800 px ; plus bas encore, le rail défile.
+const RAIL_AISE: [f32; 4] = [76.0, 18.0, 32.0, 12.0];
+const RAIL_SERRE: [f32; 4] = [48.0, 13.0, 26.0, 2.0];
+
+/// La hauteur du rail selon son aisance : l'en-tête du V, puis chaque rubrique (icône, nom, écart).
+fn hauteur_du_rail(aise: f32) -> f32 {
+    let [tete, _, nom, ecart] = pas_du_rail(aise);
+    let lignes: usize = Rubrique::TOUTES.iter().map(|r| r.nom_court().lines().count()).sum();
+    tete + n_f32(Rubrique::TOUTES.len()) * (nom + 2.0 + ecart) + 14.0 * n_f32(lignes)
+}
+
+fn pas_du_rail(aise: f32) -> [f32; 4] {
+    std::array::from_fn(|i| RAIL_SERRE[i] + (RAIL_AISE[i] - RAIL_SERRE[i]) * aise)
+}
+
+/// L'aisance qui fait tenir le rail dans `haut` (8 pt gardés en bas), entre serré et à l'aise.
+fn aisance_du_rail(haut: f32) -> f32 {
+    let (serre, aise) = (hauteur_du_rail(0.0), hauteur_du_rail(1.0));
+    ((haut - 8.0 - serre) / (aise - serre)).clamp(0.0, 1.0)
+}
+
+fn rail(appli: &mut Appli, ui: &mut Ui, aise: f32) {
     let p = pal();
-    ui.add_space(16.0);
-    let (r, _) = ui.allocate_exact_size(vec2(72.0, 40.0), Sense::hover());
+    let [tete, icone, nom_y, ecart] = pas_du_rail(aise);
+    // Les écarts sont posés à la main : celui des éléments d'egui s'y ajouterait.
+    ui.spacing_mut().item_spacing.y = 0.0;
+    // L'en-tête : le V au milieu de sa bande, un peu d'air au-dessus.
+    let (r, _) = ui.allocate_exact_size(vec2(72.0, tete), Sense::hover());
     ui.painter().text(
-        r.center(),
+        pos2(r.center().x, r.top() + tete * 0.5 - 2.0),
         Align2::CENTER_CENTER,
         "V",
         moyenne(26.0),
         p.encre.gamma_multiply(super::ouverture::v_du_rail(ui.ctx())),
     );
-    ui.add_space(12.0);
     let allumee = rubrique_de(appli.ecran);
     for rub in Rubrique::TOUTES {
         let nom = rub.nom_court();
         let lignes = n_f32(nom.lines().count());
-        let (r, rep) = ui.allocate_exact_size(vec2(72.0, 34.0 + 14.0 * lignes), Sense::click());
+        let (r, rep) = ui.allocate_exact_size(vec2(72.0, nom_y + 2.0 + 14.0 * lignes), Sense::click());
         let actif = allumee == rub;
         // La rubrique allumée l'est en plein ; une autre s'allume en fondu sous la souris.
         let vif = if actif { 1.0 } else { survol(ui, rep.id, rep.hovered()) };
@@ -140,7 +166,7 @@ fn rail(appli: &mut Appli, ui: &mut Ui) {
         }
         icones::rubrique(
             peintre,
-            pos2(r.center().x, r.top() + 18.0),
+            pos2(r.center().x, r.top() + icone),
             rub,
             p.doux.lerp_to_gamma(p.accent, vif),
         );
@@ -149,7 +175,7 @@ fn rail(appli: &mut Appli, ui: &mut Ui) {
         let mut job = egui::text::LayoutJob::simple(nom.to_owned(), police(11.0), encre, f32::INFINITY);
         job.halign = egui::Align::Center;
         let bloc = peintre.layout_job(job);
-        peintre.galley(pos2(r.center().x, r.top() + 32.0), bloc, encre);
+        peintre.galley(pos2(r.center().x, r.top() + nom_y), bloc, encre);
         super::clavier::anneau(ui, &rep, 10.0);
         if rep.clicked() {
             appli.aller(match rub {
@@ -160,7 +186,7 @@ fn rail(appli: &mut Appli, ui: &mut Ui) {
         }
         rep.on_hover_cursor(egui::CursorIcon::PointingHand)
             .on_hover_ui(|ui| bulle_rubrique(ui, rub));
-        ui.add_space(4.0);
+        ui.add_space(ecart);
     }
 }
 
@@ -597,6 +623,7 @@ fn rangee(l: &LigneConsole) -> Rangee<'_> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use eframe::egui;
 
     use crate::appli::Appli;
@@ -669,5 +696,17 @@ mod tests {
             bulle = bulle.or(image(&ctx, &mut appli, 1.2 + 0.05 * f64::from(k), souris, nom));
         }
         assert!(bulle.is_some(), "pas de bulle en une demi-seconde");
+    }
+
+    /// À 800 px de haut, les onze rubriques tiennent sans défiler ; à 1080, le rail est à l'aise ; plus bas que le
+    /// rail serré, il défile (l'aisance ne descend pas sous zéro).
+    #[test]
+    fn le_rail_tient_a_800_de_haut() {
+        let aise = aisance_du_rail(800.0);
+        assert!(aise > 0.0 && aise < 1.0);
+        assert!(hauteur_du_rail(aise) <= 792.0 + 0.01);
+        assert!((aisance_du_rail(1080.0) - 1.0).abs() < f32::EPSILON);
+        assert!(aisance_du_rail(640.0).abs() < f32::EPSILON);
+        assert!(hauteur_du_rail(0.0) < 690.0);
     }
 }
