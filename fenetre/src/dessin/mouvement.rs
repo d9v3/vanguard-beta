@@ -1,12 +1,12 @@
 //! Le mouvement de la fenêtre, en un seul endroit : le fondu d'arrivée d'un écran, les lignes de liste qui
-//! s'éclairent au survol. Toutes les durées viennent d'une
+//! s'éclairent au survol, le point qui pulse pendant qu'une commande tourne. Toutes les durées viennent d'une
 //! seule réglette, `ALLURE` : à 0, plus rien ne bouge (chaque fondu saute à sa fin), le reste de la fenêtre ne change
 //! pas. Aucun réglage « réduire les animations » n'est lu du système pour l'instant : la fenêtre, dans son bac à
 //! sable, ne lit ni les réglages du bureau ni ceux de Windows ; le jour où elle le pourra, il se branchera ici.
 
 use std::time::Duration;
 
-use eframe::egui::{Context, Id, Rect, Sense, Shape, Ui, Vec2, emath::TSTransform, vec2};
+use eframe::egui::{Color32, Context, Id, Painter, Pos2, Rect, Sense, Shape, Ui, Vec2, emath::TSTransform, vec2};
 
 use crate::appli::Ecran;
 
@@ -26,6 +26,14 @@ const ARRIVEE: f32 = duree(0.15);
 const GLISSEMENT: f32 = 6.0;
 /// L'intervalle des images tant que quelque chose bouge (environ 60 par seconde).
 const IMAGE: Duration = Duration::from_millis(16);
+
+/// L'intervalle des images pendant qu'une commande tourne : le point qui pulse et les secondes qui passent n'ont pas
+/// besoin de plus (environ 30 par seconde).
+const TOURNE: Duration = Duration::from_millis(33);
+/// Un tour de pouls d'une commande qui tourne, en secondes.
+pub const POULS_TACHE: f32 = 1.2;
+/// Une respiration du point « En veille », plus lente : rien ne presse.
+pub const POULS_VEILLE: f32 = 2.4;
 
 /// L'avancement de 0 à 1 d'un mouvement de `d` secondes parti à `debut` (l'heure d'egui) ; une durée nulle est finie.
 fn avancement(maintenant: f64, debut: f64, d: f32) -> f32 {
@@ -112,6 +120,28 @@ pub fn ligne<R>(ui: &mut Ui, marge: Vec2, rayon: f32, contenu: impl FnOnce(&mut 
             .set(fond, Shape::rect_filled(zone, rayon, super::pal().s2.gamma_multiply(s)));
     }
     r.inner
+}
+
+/// Un point qui pulse : un halo de sa couleur s'élargit jusqu'à 2,5 fois son rayon et s'efface, toutes les `periode`
+/// secondes (passées par la réglette : à 0, le point reste seul, immobile). Ne demande aucune image : un point qui
+/// pulse au repos (la veille) vit des images de la fenêtre, un point de travail appelle `tourne`.
+pub fn pouls(peintre: &Painter, temps: f64, centre: Pos2, rayon: f32, couleur: Color32, periode: f32) {
+    let periode = f64::from(duree(periode));
+    if periode > 0.0 {
+        let phase = super::cadre::phase_f32((temps % periode) / periode);
+        peintre.circle_filled(
+            centre,
+            rayon * (1.0 + 1.5 * phase),
+            couleur.gamma_multiply(0.45 * (1.0 - phase)),
+        );
+    }
+    peintre.circle_filled(centre, rayon, couleur);
+}
+
+/// Quelque chose tourne et se montre en train de tourner : les images suivent, à 30 par seconde, et seulement tant
+/// qu'on l'appelle (au repos, aucune).
+pub fn tourne(ctx: &Context) {
+    ctx.request_repaint_after(TOURNE);
 }
 
 #[cfg(test)]
@@ -215,6 +245,65 @@ mod tests {
         // La souris dans la marge, entre deux lignes, éclaire encore : pas de trou qui clignote entre les lignes.
         let (_, eclairee) = voir(2.0, egui::pos2(avant.left() + 2.0, avant.top() - 2.0));
         assert!(eclairee, "la marge de la ligne ne compte pas comme survolée");
+    }
+
+    /// Le délai avant l'image suivante qu'egui a noté.
+    fn delai(sortie: &egui::FullOutput) -> std::time::Duration {
+        sortie.viewport_output[&egui::ViewportId::ROOT].repaint_delay
+    }
+
+    /// Au repos (rien ne tourne, aucun fondu), la fenêtre entière ne demande aucune image : pas de boucle cachée.
+    /// Pendant qu'une commande tourne, l'en-tête de la console en demande 30 par seconde, et son point pulse.
+    #[test]
+    fn les_images_suivent_seulement_ce_qui_tourne() {
+        let ctx = egui::Context::default();
+        super::super::polices(&ctx);
+        let mut appli = Appli::pour_captures();
+        let ecran = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0));
+        let mut derniere = std::time::Duration::ZERO;
+        for k in 0..40 {
+            let entree = egui::RawInput {
+                screen_rect: Some(ecran),
+                time: Some(1.0 + 0.1 * f64::from(k)),
+                ..Default::default()
+            };
+            let mut sortie = ctx.run_ui(entree, |ui| super::super::cadre::tout(&mut appli, ui));
+            sortie.textures_delta.clear();
+            derniere = delai(&sortie);
+        }
+        assert!(
+            derniere >= std::time::Duration::from_secs(1),
+            "au repos, une image est demandée dans {derniere:?}"
+        );
+        // Une commande tourne depuis 3 s : des images à 30 par seconde, et un halo d'accent plus grand que le point.
+        let accent = super::super::pal().accent;
+        let mut halo = false;
+        let mut derniere = std::time::Duration::MAX;
+        for k in 0..12 {
+            let entree = egui::RawInput {
+                screen_rect: Some(ecran),
+                time: Some(10.0 + 0.1 * f64::from(k)),
+                ..Default::default()
+            };
+            let mut sortie = ctx.run_ui(entree, |ui| {
+                let tete = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 36.0));
+                let peintre = ui.painter().clone();
+                super::super::cadre::tache_en_tete(
+                    ui,
+                    &peintre,
+                    tete,
+                    Some((crate::commandes::Commande::Bilan, std::time::Duration::from_secs(3))),
+                    1,
+                );
+            });
+            sortie.textures_delta.clear();
+            halo |= sortie.shapes.iter().any(|c| {
+                matches!(&c.shape, egui::Shape::Circle(r) if r.radius > 3.5 && r.fill != accent && r.fill.a() > 0)
+            });
+            derniere = derniere.min(delai(&sortie));
+        }
+        assert!(derniere <= super::TOURNE, "pendant une commande : une image dans {derniere:?}");
+        assert!(halo, "le point de la commande ne pulse pas");
     }
 
     /// Pendant l'arrivée, un clic sur le centre ne touche pas l'écran qui arrive ; une fois arrivé, si.

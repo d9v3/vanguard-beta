@@ -191,6 +191,29 @@ fn etat_commande(appli: &Appli, c: Commande) -> String {
     }
 }
 
+/// La commande `c` est-elle celle qui tourne ?
+fn tourne(appli: &Appli, c: Commande) -> bool {
+    appli.en_cours().is_some_and(|(e, _)| e == c)
+}
+
+/// L'état d'une commande (`etat_commande`), en une ligne : pendant qu'elle tourne, un point d'accent qui pulse devant, et l'état en
+/// couleur d'accent (les images suivent, seulement tant qu'elle tourne).
+fn ligne_etat(ui: &mut Ui, etat: String, tourne: bool) {
+    let p = pal();
+    if !tourne {
+        ui.label(RichText::new(etat).font(mono(12.0)).color(p.discret));
+        return;
+    }
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        let (z, _) = ui.allocate_exact_size(vec2(10.0, 14.0), Sense::hover());
+        let temps = ui.ctx().input(|i| i.time);
+        super::mouvement::pouls(ui.painter(), temps, z.center(), 3.0, p.accent, super::mouvement::POULS_TACHE);
+        super::mouvement::tourne(ui.ctx());
+        ui.label(RichText::new(etat).font(mono(12.0)).color(p.accent));
+    });
+}
+
 /// Lancer, ou Arrêter si c'est elle qui tourne.
 fn lancer_arreter(appli: &mut Appli, ui: &mut Ui, c: Commande) {
     let tourne = appli.en_cours().is_some_and(|(e, _)| e == c);
@@ -237,7 +260,7 @@ fn rubrique(appli: &mut Appli, ui: &mut Ui, r: Rubrique) {
 fn cartes_commandes(appli: &mut Appli, ui: &mut Ui, commandes: Vec<Commande>) {
     let p = pal();
     for c in commandes {
-        let etat = etat_commande(appli, c);
+        let (etat, tourne) = (etat_commande(appli, c), tourne(appli, c));
         carte(ui, 20, 16, |ui| {
             ui.set_width(ui.available_width());
             super::mouvement::ligne(ui, vec2(19.0, 19.0), 15.0, |ui| texte_et_boutons(
@@ -246,7 +269,7 @@ fn cartes_commandes(appli: &mut Appli, ui: &mut Ui, commandes: Vec<Commande>) {
                 |ui| {
                     ui.label(RichText::new(c.titre()).font(moyenne(16.0)).color(p.encre));
                     ui.label(texte(c.description(), 13.0, p.doux));
-                    ui.label(RichText::new(etat).font(mono(12.0)).color(p.discret));
+                    ligne_etat(ui, etat, tourne);
                 },
                 |ui| {
                     ui.push_id(c.nom(), |ui| {
@@ -270,7 +293,7 @@ fn commande(appli: &mut Appli, ui: &mut Ui, c: Commande) {
         |ui| entete(ui, c.titre(), c.description()),
         |ui| lancer_arreter(appli, ui, c),
     );
-    ui.label(RichText::new(etat_commande(appli, c)).font(mono(12.0)).color(p.discret));
+    ligne_etat(ui, etat_commande(appli, c), tourne(appli, c));
     ui.add_space(24.0);
     let Some(r) = appli.resultat(c).cloned() else {
         ui.label(texte(
@@ -305,7 +328,7 @@ fn appareils(appli: &mut Appli, ui: &mut Ui) {
         |ui| entete(ui, c.titre(), c.description()),
         |ui| lancer_arreter(appli, ui, c),
     );
-    ui.label(RichText::new(etat_commande(appli, c)).font(mono(12.0)).color(p.discret));
+    ligne_etat(ui, etat_commande(appli, c), tourne(appli, c));
     ui.add_space(24.0);
     match appli.resultat(c).map(|r| r.contenu.clone()) {
         Some(Contenu::Appareils(v)) => appareils_liste(ui, &v),
@@ -681,7 +704,7 @@ fn alertes(appli: &mut Appli, ui: &mut Ui) {
         |ui| entete(ui, c.titre(), c.description()),
         |ui| lancer_arreter(appli, ui, c),
     );
-    ui.label(RichText::new(etat_commande(appli, c)).font(mono(12.0)).color(p.discret));
+    ligne_etat(ui, etat_commande(appli, c), tourne(appli, c));
     ui.label(texte(
         &crate::trf!(
             "Relu toutes les {} s quand rien d'autre ne tourne ; une alerte nouvelle se dit dans la console.",

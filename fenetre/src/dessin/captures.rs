@@ -565,7 +565,18 @@ fn mouvement(dossier: &Path) -> usize {
     rendu.souris = Some(egui::pos2(700.0, 480.0));
     let toile = rendu.rendre(taille, &[0.0, 0.5, 2.0], |ui| image(&mut appli, None, ui));
     toile.ecrire_png(&dossier.join("survol-ligne.png")).unwrap();
-    faites + 1
+    // L'en-tête de la console pendant qu'une commande tourne (aucune vraie commande ne tourne dans une capture :
+    // l'en-tête seul, à mi-pouls).
+    let mut rendu = Rendu::nouveau();
+    super::appliquer_theme(&rendu.ctx, true);
+    let toile = rendu.rendre([640, 36], &[0.0, 0.5], |ui| {
+        let tete = ui.max_rect();
+        let peintre = ui.painter().clone();
+        let en_cours = Some((Commande::Bilan, std::time::Duration::from_secs(3)));
+        super::cadre::tache_en_tete(ui, &peintre, tete, en_cours, 2);
+    });
+    toile.ecrire_png(&dossier.join("commande-en-cours.png")).unwrap();
+    faites + 2
 }
 
 /// Le rendu logiciel peint pour de vrai : un fond, un rectangle plein, un texte (la texture des polices), une forme

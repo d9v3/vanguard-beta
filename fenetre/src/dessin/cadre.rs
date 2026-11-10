@@ -1,5 +1,7 @@
 //! Le cadre : le rail des rubriques à gauche, la barre en haut, la console dessous, l'écran au centre.
 
+use std::time::Duration;
+
 use eframe::egui::{
     self, Align2, Frame, Key, Margin, Rect, RichText, Sense, Stroke, StrokeKind, TextEdit, Ui, pos2, vec2,
 };
@@ -265,13 +267,9 @@ fn barre(appli: &mut Appli, ui: &mut Ui) {
     }
     let (mot, respire, couleur) = veille(appli);
     let point = pos2(bouton.left() - 32.0 - 120.0, r.center().y);
-    if respire {
-        let temps = ui.ctx().input(|i| i.time);
-        let phase = phase_f32((temps % 2.4) / 2.4);
-        ui.painter()
-            .circle_filled(point, 4.0 + 6.0 * phase, couleur.gamma_multiply(0.45 * (1.0 - phase)));
-    }
-    ui.painter().circle_filled(point, 4.0, couleur);
+    let temps = ui.ctx().input(|i| i.time);
+    let periode = if respire { super::mouvement::POULS_VEILLE } else { 0.0 };
+    super::mouvement::pouls(ui.painter(), temps, point, 4.0, couleur, periode);
     ui.painter()
         .text(point + vec2(12.0, 0.0), Align2::LEFT_CENTER, mot, police(13.0), p.doux);
 }
@@ -283,26 +281,19 @@ pub fn phase_f32(x: f64) -> f32 {
     x.clamp(0.0, 1.0) as f32
 }
 
-fn console(appli: &mut Appli, ui: &mut Ui, montrees: usize) {
+/// L'état de la file, dans l'en-tête de la console : « aucune tâche en cours », ou la commande qui tourne, depuis
+/// combien de secondes, avec un point d'accent qui pulse (et les images qu'il faut, seulement tant qu'elle tourne).
+pub(super) fn tache_en_tete(ui: &Ui, peintre: &egui::Painter, tete: Rect, en_cours: Option<(Commande, Duration)>, taches: usize) {
     let p = pal();
-    let r = ui.max_rect();
-    let peintre = ui.painter().clone();
-    let tete = Rect::from_min_size(r.min, vec2(r.width(), 36.0));
-    peintre.line_segment([tete.left_bottom(), tete.right_bottom()], Stroke::new(1.0, p.trait_));
-    peintre.text(
-        pos2(tete.left() + 32.0, tete.center().y),
-        Align2::LEFT_CENTER,
-        "Console",
-        moyenne(12.0),
-        p.encre,
-    );
-    let en_cours = appli.en_cours();
-    peintre.circle_filled(
-        pos2(tete.left() + 98.0, tete.center().y),
-        3.0,
-        if en_cours.is_some() { p.accent } else { p.gris },
-    );
-    let etat = match (en_cours, appli.taches()) {
+    let point = pos2(tete.left() + 98.0, tete.center().y);
+    if en_cours.is_some() {
+        let temps = ui.ctx().input(|i| i.time);
+        super::mouvement::pouls(peintre, temps, point, 3.0, p.accent, super::mouvement::POULS_TACHE);
+        super::mouvement::tourne(ui.ctx());
+    } else {
+        peintre.circle_filled(point, 3.0, p.gris);
+    }
+    let etat = match (en_cours, taches) {
         (Some((c, d)), n) if n > 1 => crate::trf!(
             "{} en cours depuis {} s · {} en attente",
             "{} running for {} s · {} queued",
@@ -325,8 +316,25 @@ fn console(appli: &mut Appli, ui: &mut Ui, montrees: usize) {
         Align2::LEFT_CENTER,
         etat,
         police(12.0),
-        p.discret,
+        if en_cours.is_some() { p.doux } else { p.discret },
     );
+}
+
+fn console(appli: &mut Appli, ui: &mut Ui, montrees: usize) {
+    let p = pal();
+    let r = ui.max_rect();
+    let peintre = ui.painter().clone();
+    let tete = Rect::from_min_size(r.min, vec2(r.width(), 36.0));
+    peintre.line_segment([tete.left_bottom(), tete.right_bottom()], Stroke::new(1.0, p.trait_));
+    peintre.text(
+        pos2(tete.left() + 32.0, tete.center().y),
+        Align2::LEFT_CENTER,
+        "Console",
+        moyenne(12.0),
+        p.encre,
+    );
+    let en_cours = appli.en_cours();
+    tache_en_tete(ui, &peintre, tete, en_cours, appli.taches());
     // Déplier ou replier la console.
     let depliee = montrees == LIGNES_DEPLIEE;
     let zone = Rect::from_min_size(pos2(tete.right() - 32.0 - 90.0, tete.top()), vec2(90.0, tete.height()));
