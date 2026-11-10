@@ -2320,6 +2320,13 @@ fn second_avis(portee: &Portee, ecran: bool) -> SecondAvis {
     } else {
         None
     };
+    // Sans aucun chemin, clamscan analyserait le dossier courant : rien n'y est lancé.
+    if cibles.is_empty() && liste_tmp.is_none() {
+        return SecondAvis::NonLance(tr!(
+            "rien à analyser (aucun endroit à risque, aucun fichier récent dans /tmp)",
+            "nothing to scan (no risky place, no recent file in /tmp)"
+        ));
+    }
     // Jeux, caches et préfixes Wine sont énormes et produisent des faux positifs (cracks, outils anti-triche).
     // Un dossier choisi est analysé en entier : seules les quarantaines restent à l'écart.
     let tout = [
