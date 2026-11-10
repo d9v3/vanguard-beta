@@ -40,22 +40,65 @@ impl Programme {
         let dossier = soi
             .parent()
             .ok_or_else(|| crate::tr!("dossier introuvable", "folder not found").to_string())?;
-        Programme::dans(dossier)
+        #[cfg(unix)]
+        let proprietaire = {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::metadata(&soi).map_err(|e| e.to_string())?.uid()
+        };
+        #[cfg(not(unix))]
+        let proprietaire = 0;
+        Programme::dans(dossier, proprietaire)
     }
 
-    fn dans(dossier: &Path) -> Result<Programme, String> {
+    /// `proprietaire` : le compte à qui est la fenêtre elle-même (Linux) ; `vanguard` doit être à lui ou à root.
+    fn dans(dossier: &Path, proprietaire: u32) -> Result<Programme, String> {
         let nom = if cfg!(windows) { "vanguard.exe" } else { "vanguard" };
         let chemin = dossier.join(nom);
-        if chemin.is_file() {
-            Ok(Programme(chemin))
-        } else {
-            Err(crate::trf!(
+        // symlink_metadata : un lien n'est pas suivi, il est refusé (pas un fichier ordinaire).
+        let Ok(m) = std::fs::symlink_metadata(&chemin) else {
+            return Err(crate::trf!(
                 "« {} » est introuvable à côté de la fenêtre",
                 "“{}” was not found next to the window",
                 nom
-            ))
+            ));
+        };
+        match refus(&m, proprietaire) {
+            None => Ok(Programme(chemin)),
+            Some(raison) => Err(crate::trf!(
+                "« {} » à côté de la fenêtre n'est pas lancé : {}",
+                "“{}” next to the window is not started: {}",
+                nom,
+                raison
+            )),
         }
     }
+}
+
+/// Pourquoi le `vanguard` voisin n'est pas lancé, s'il y a une raison : la même règle que Vanguard pour la fenêtre
+/// (src/demarrage/lancer_fenetre.rs). Sous Linux, un vrai fichier (pas un lien), au compte de la fenêtre ou à root, que
+/// ni le groupe ni les autres ne peuvent modifier : sinon un autre compte pourrait y mettre un faux `vanguard` dont
+/// la fenêtre afficherait les « tout va bien ».
+#[cfg(unix)]
+fn refus(m: &std::fs::Metadata, proprietaire: u32) -> Option<&'static str> {
+    use std::os::unix::fs::MetadataExt;
+    if !m.file_type().is_file() {
+        return Some(crate::tr!("pas un fichier ordinaire", "not a regular file"));
+    }
+    if m.uid() != proprietaire && m.uid() != 0 {
+        return Some(crate::tr!("à un autre compte", "owned by another account"));
+    }
+    if m.mode() & 0o022 != 0 {
+        return Some(crate::tr!(
+            "modifiable par d'autres comptes",
+            "writable by other accounts"
+        ));
+    }
+    None
+}
+
+#[cfg(not(unix))]
+fn refus(m: &std::fs::Metadata, _proprietaire: u32) -> Option<&'static str> {
+    (!m.file_type().is_file()).then(|| crate::tr!("pas un fichier ordinaire", "not a regular file"))
 }
 
 /// Comment une tâche a fini.
@@ -393,7 +436,39 @@ mod tests {
     fn seul_le_voisin_est_lance() {
         let d = std::env::temp_dir().join(format!("vanguard-fenetre-essai-{}", std::process::id()));
         // Un dossier qui n'existe pas : rien, jamais le PATH.
-        assert!(Programme::dans(&d).is_err());
+        assert!(Programme::dans(&d, 0).is_err());
+    }
+
+    /// Un `vanguard` que d'autres comptes pourraient remplacer n'est pas lancé, ni un lien, ni celui d'un autre compte.
+    #[cfg(unix)]
+    #[test]
+    fn un_vanguard_modifiable_par_d_autres_est_refuse() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let d = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("target")
+            .join("essais-fenetre")
+            .join(format!("droits-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("vanguard");
+        std::fs::write(&f, b"#!/bin/sh\n").unwrap();
+        let moi = std::fs::metadata(&f).unwrap().uid();
+        let droits = |mode| std::fs::set_permissions(&f, std::fs::Permissions::from_mode(mode)).unwrap();
+        droits(0o755);
+        assert!(Programme::dans(&d, moi).is_ok());
+        droits(0o775);
+        assert!(Programme::dans(&d, moi).is_err());
+        droits(0o757);
+        assert!(Programme::dans(&d, moi).is_err());
+        droits(0o755);
+        if moi != 0 {
+            assert!(Programme::dans(&d, moi.wrapping_add(1)).is_err());
+        }
+        std::fs::rename(&f, d.join("vrai")).unwrap();
+        std::os::unix::fs::symlink(d.join("vrai"), &f).unwrap();
+        assert!(Programme::dans(&d, moi).is_err());
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// Un faux `vanguard` (un script) : la vraie suite lancée, attendue, arrêtée, sans rien toucher hors de target/.
@@ -438,7 +513,7 @@ esac
     #[cfg(unix)]
     #[test]
     fn lance_attend_arrete_et_borne() {
-        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
         let d = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("target")
@@ -448,7 +523,8 @@ esac
         let script = d.join("vanguard");
         std::fs::write(&script, FAUX).unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let p = Programme::dans(&d).unwrap();
+        let moi = std::fs::metadata(&d).unwrap().uid();
+        let p = Programme::dans(&d, moi).unwrap();
         let rien: Reveil = Arc::new(|| {});
 
         // Terminée : la sortie entière, la ligne d'erreur à part, la langue passée.
