@@ -355,13 +355,13 @@ fn surveiller(
             });
     }
     let delai = commande.delai();
-    let (code, issue) = loop {
-        match enfant.try_wait() {
-            Ok(Some(s)) => break (s.code(), Issue::Terminee),
-            Ok(None) => {}
+    let issue = loop {
+        match fini(&mut enfant) {
+            Ok(true) => break Issue::Terminee,
+            Ok(false) => {}
             Err(e) => {
-                tuer(&mut enfant);
-                break (None, Issue::Impossible(crate::nettoyage::nom(&e.to_string(), 200)));
+                arreter(&mut enfant);
+                break Issue::Impossible(crate::nettoyage::nom(&e.to_string(), 200));
             }
         }
         let issue = if arret.load(Ordering::Relaxed) {
@@ -374,18 +374,28 @@ fn surveiller(
             None
         };
         if let Some(i) = issue {
-            tuer(&mut enfant);
-            break (None, i);
+            arreter(&mut enfant);
+            break i;
         }
         std::thread::sleep(PAS);
     };
-    // La sortie : ce que le lecteur a lu. Un petit-enfant qui la garderait ouverte est tué avec le groupe.
+    // Jusqu'ici, `vanguard` n'est jamais récolté (Linux : waitid avec WNOWAIT) : son numéro, qui est aussi celui de
+    // son groupe, reste pris, et chaque killpg ci-dessous ne peut viser que ce groupe-là, jamais un autre processus
+    // qui aurait reçu ce numéro après lui. Seul le `wait` de la fin le récolte, après le dernier killpg.
+    // La sortie : ce que le lecteur a lu. Un petit-enfant qui la garderait ouverte est tué avec le groupe. Un
+    // processus sorti du groupe de lui-même (setsid) échapperait à killpg : le lecteur resterait alors en attente
+    // jusqu'à ce qu'il ferme la sortie, sans rien retenir de plus que SORTIE_MAX, et la tâche finit quand même
+    // (« sortie jamais fermée »). Aucune commande de la liste ne lance un tel processus (seuls le bilan complet,
+    // `vanguard plugins` et la surveillance lancent des plugins par setsid).
     let sortie = if let Ok(s) = sortie_recu.recv_timeout(FIN_LECTURE) {
         Some(s)
     } else {
         tuer_groupe(&enfant, true);
         sortie_recu.recv_timeout(FIN_LECTURE).ok()
     };
+    // Rien du groupe ne survit à la commande, même un petit-enfant qui a fermé ses sorties ; puis la récolte.
+    tuer_groupe(&enfant, true);
+    let code = enfant.wait().ok().and_then(|s| s.code());
     let issue = if issue == Issue::Terminee && trop.load(Ordering::Relaxed) {
         Issue::TropLongue
     } else {
@@ -398,26 +408,37 @@ fn surveiller(
             Vec::new(),
             Issue::Impossible(crate::tr!("sortie jamais fermée", "output never closed").into()),
         ),
-        (i, _) => fin(code, Vec::new(), i),
+        (i, _) => fin(None, Vec::new(), i),
     }
 }
 
-/// Arrête l'enfant et attend sa fin : SIGTERM au groupe, puis SIGKILL après `GRACE` (Linux) ; sous Windows,
-/// `TerminateProcess` sur `vanguard` seul (ses enfants éventuels ne sont pas tués : limite connue).
-fn tuer(enfant: &mut Child) {
+/// Arrête l'enfant : SIGTERM au groupe, puis SIGKILL après `GRACE` (Linux) ; sous Windows, `TerminateProcess` sur
+/// `vanguard` seul (ses enfants éventuels ne sont pas tués : limite connue). Ne le récolte pas : `surveiller` tue
+/// encore ce qui reste du groupe, puis le récolte.
+fn arreter(enfant: &mut Child) {
     tuer_groupe(enfant, false);
     let debut = Instant::now();
     while debut.elapsed() < GRACE {
-        if matches!(enfant.try_wait(), Ok(Some(_))) {
-            // Le meneur est parti ; ce qui reste du groupe part aussi.
-            tuer_groupe(enfant, true);
+        if matches!(fini(enfant), Ok(true)) {
             return;
         }
         std::thread::sleep(PAS);
     }
     tuer_groupe(enfant, true);
     let _ = enfant.kill();
-    let _ = enfant.wait();
+}
+
+/// L'enfant est-il fini ? Sous Linux, sans le récolter (waitid, WNOWAIT) : tant qu'il ne l'est pas, son numéro reste
+/// pris et killpg ne peut pas tomber sur un autre groupe. Jamais `try_wait` ici, qui le récolterait.
+#[cfg(unix)]
+fn fini(enfant: &mut Child) -> std::io::Result<bool> {
+    signal::fini_sans_recolter(enfant.id())
+}
+
+/// Sous Windows, `Child` garde le handle du processus : le récolter ne libère pas son numéro pour un autre.
+#[cfg(not(unix))]
+fn fini(enfant: &mut Child) -> std::io::Result<bool> {
+    enfant.try_wait().map(|s| s.is_some())
 }
 
 #[cfg(unix)]
@@ -443,6 +464,29 @@ mod signal {
         // SAFETY: killpg ne reçoit que deux entiers et ne touche aucune mémoire de ce programme ; le groupe est celui
         // de l'enfant (process_group(0) le crée avec son numéro), toujours > 1 (vérifié par l'appelant).
         let _ = unsafe { libc::killpg(groupe, sig) };
+    }
+
+    // raison : FFI de waitid (libc), pour savoir l'enfant fini sans le récolter, ce que std ne sait pas faire.
+    #[allow(unsafe_code)]
+    pub fn fini_sans_recolter(pid: u32) -> std::io::Result<bool> {
+        let id: libc::id_t = pid;
+        // SAFETY: siginfo_t est une structure C sans pointeur, valide remplie de zéros ; waitid l'écrit (taille connue)
+        // et ne garde rien. P_PID vise ce seul enfant, WNOHANG ne bloque pas, WNOWAIT le laisse à récolter par wait.
+        let (r, info) = unsafe {
+            let mut info: libc::siginfo_t = std::mem::zeroed();
+            let r = libc::waitid(
+                libc::P_PID,
+                id,
+                &raw mut info,
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            );
+            (r, info)
+        };
+        if r != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: si_pid lit un champ de l'union que waitid vient de remplir (0 tant que l'enfant n'a pas fini).
+        Ok(unsafe { info.si_pid() } != 0)
     }
 }
 
@@ -581,6 +625,7 @@ case "$1 $2" in
 "protection --json") sleep 30 & echo $! > petit-enfant; sleep 30 ;;
 "evenements --json") yes ;;
 "diagnostic --json") sleep 30 & printf '{}' ;;
+"test-connexion --json") sleep 30 >/dev/null 2>&1 & echo $! > reste; printf '{}' ;;
 *) exit 7 ;;
 esac
 "#;
@@ -661,6 +706,20 @@ esac
         let (_, f) = attendre(&Tache::lancer(&p, Commande::Diagnostic, false, &rien));
         assert_eq!(f.issue, Issue::Terminee);
         assert_eq!(f.sortie, b"{}");
+
+        // Un petit-enfant laissé en fond, sorties fermées : la commande finit normalement, il ne lui survit pas.
+        let (_, f) = attendre(&Tache::lancer(&p, Commande::TestConnexion, false, &rien));
+        assert_eq!(
+            (f.issue, f.code, f.sortie.as_slice()),
+            (Issue::Terminee, Some(0), &b"{}"[..])
+        );
+        let pid = std::fs::read_to_string(d.join("reste")).unwrap();
+        let pid = pid.trim();
+        let debut = Instant::now();
+        while vivant(pid) && debut.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(PAS);
+        }
+        assert!(!vivant(pid), "le petit-enfant {pid} vit encore");
 
         // Une commande que le script ne connaît pas : son code de sortie est rendu tel quel.
         let (_, f) = attendre(&Tache::lancer(&p, Commande::Lenteur, false, &rien));
