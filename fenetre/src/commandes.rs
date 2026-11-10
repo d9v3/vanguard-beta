@@ -305,6 +305,29 @@ impl Commande {
     }
 }
 
+/// Comment une tâche a fini.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Issue {
+    Terminee,
+    /// Arrêtée à la demande (bouton Arrêter).
+    Arretee,
+    DelaiDepasse,
+    /// La sortie dépassait `SORTIE_MAX` : arrêtée, rien de montré.
+    TropLongue,
+    /// Le programme n'a pas pu être lancé.
+    Impossible(String),
+}
+
+/// La fin d'une tâche.
+#[derive(Clone, Debug)]
+pub struct Fin {
+    pub commande: Commande,
+    pub code: Option<i32>,
+    pub sortie: Vec<u8>,
+    pub issue: Issue,
+    pub duree: Duration,
+}
+
 /// Ce qu'une saisie de la console demande.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Saisie {

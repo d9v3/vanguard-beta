@@ -14,6 +14,8 @@ use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use crate::commandes::Commande;
+// Ici d'abord, puis dans `commandes`, que le banc de fuzzing peut lire (pas d'unsafe) avec `protocole`.
+pub use crate::commandes::{Fin, Issue};
 
 /// La sortie (JSON) relue au plus : 16 Mio. Au-delà, l'enfant est arrêté et rien n'est montré.
 pub const SORTIE_MAX: usize = 16 * 1024 * 1024;
@@ -175,29 +177,6 @@ fn refus_dossier(m: &std::fs::Metadata, proprietaire: u32) -> Option<&'static st
         ));
     }
     None
-}
-
-/// Comment une tâche a fini.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Issue {
-    Terminee,
-    /// Arrêtée à la demande (bouton Arrêter).
-    Arretee,
-    DelaiDepasse,
-    /// La sortie dépassait `SORTIE_MAX` : arrêtée, rien de montré.
-    TropLongue,
-    /// Le programme n'a pas pu être lancé.
-    Impossible(String),
-}
-
-/// La fin d'une tâche.
-#[derive(Clone, Debug)]
-pub struct Fin {
-    pub commande: Commande,
-    pub code: Option<i32>,
-    pub sortie: Vec<u8>,
-    pub issue: Issue,
-    pub duree: Duration,
 }
 
 /// Ce qu'une tâche envoie à la fenêtre.

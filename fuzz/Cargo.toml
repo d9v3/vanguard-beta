@@ -26,7 +26,8 @@ sha2 = { version = "=0.11.1", default-features = false }
 md-5 = { version = "=0.11.0", default-features = false }
 sha1 = { version = "=0.11.0", default-features = false }
 # Les états et le journal de l'Agent Vanguard (src/agent/) : la même version que Cargo.lock de Vanguard.
-serde_json = "=1.0.154"
+# raw_value : les lecteurs de la fenêtre (fenetre/src/donnees/) lisent chaque élément d'une liste à part.
+serde_json = { version = "=1.0.154", features = ["raw_value"] }
 
 # `fuzzing` : posé par cargo-fuzz ; src/sqlite.rs s'en sert pour ouvrir sa lecture des colonnes ici. `kani` : les
 # preuves de outils/preuves/, déclarées dans des modules inclus ici aussi.
@@ -319,6 +320,27 @@ bench = false
 [[bin]]
 name = "fanotify"
 path = "fuzz_targets/fanotify.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fenetre_donnees"
+path = "fuzz_targets/fenetre_donnees.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fenetre_relais"
+path = "fuzz_targets/fenetre_relais.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fenetre_saisie"
+path = "fuzz_targets/fenetre_saisie.rs"
 test = false
 doc = false
 bench = false

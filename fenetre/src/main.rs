@@ -20,6 +20,8 @@ mod lanceur;
 mod langue;
 mod nettoyage;
 #[cfg(target_os = "linux")]
+mod protocole;
+#[cfg(target_os = "linux")]
 mod relais;
 mod sortie;
 mod temps;

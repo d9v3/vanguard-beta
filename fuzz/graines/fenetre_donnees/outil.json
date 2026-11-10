@@ -1,0 +1,1 @@
+{"outil": "test-connexion", "couverture": {"verifies": 3, "non_verifies": ["DNS", "IPv6"]}, "constats": [{"categorie": "Connexion", "niveau": "Moyen", "message": "Lent", "regle": "NET-1"}]}
