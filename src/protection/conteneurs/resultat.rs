@@ -90,8 +90,8 @@ fn juger(r: &Releve, maintenant: DateTime<Utc>) -> (Vec<Constat>, Couverture) {
         )),
         Releve::ListeIllisible => {
             let raison = tr!(
-                "liste des images illisible : Docker est peut-être réservé à root (sudo vanguard conteneurs), ou arrêté",
-                "image list unreadable: Docker may be reserved to root (sudo vanguard containers), or stopped"
+                "liste des images illisible : Docker est peut-être réservé à root et au groupe docker, ou arrêté",
+                "image list unreadable: Docker may be reserved to root and the docker group, or stopped"
             );
             let c = impossible_par(
                 CAT,

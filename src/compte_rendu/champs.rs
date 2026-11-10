@@ -360,6 +360,8 @@ pub(crate) const CONTEXTES_ECHEC: &[&str] = &[
     "blocage/pare-feu",
     "blocage/preparer",
     "blocage/regler",
+    "cameras/cible",
+    "cameras/reseau",
     "canaux/lire",
     "certificats/retirer",
     "compte-rendu/lire",
