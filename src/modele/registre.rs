@@ -94,4 +94,8 @@ pub(crate) const OUTILS: &[Outil] = &[
     Outil { id: "PRO-LNO-001", module: "reseau::listes_noires", sujet: ("adresse Internet publique sur une liste noire", "public Internet address on a blocklist") },
     Outil { id: "PRO-EVT-001", module: "journaux_windows::regles", sujet: ("traces d'attaque dans les journaux d'événements de Windows", "attack traces in Windows event logs") },
     Outil { id: "PRO-OBJ-001", module: "reseau::objets", sujet: ("routeur et objets connectés du dernier scan", "router and connected devices from the last scan") },
+    Outil { id: "PRO-INT-001", module: "protection::integrite", sujet: ("intégrité des fichiers critiques", "critical file integrity") },
+    Outil { id: "PRO-KEV-001", module: "protection::kev", sujet: ("dernières failles exploitées (CISA)", "latest exploited flaws (CISA)") },
+    Outil { id: "PRO-MAJ-001", module: "maj", sujet: ("mises à jour en attente", "pending updates") },
+    Outil { id: "PRO-DEM-001", module: "optimiser::demarrage", sujet: ("programmes au démarrage", "startup programs") },
 ];

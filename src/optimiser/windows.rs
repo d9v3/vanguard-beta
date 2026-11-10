@@ -732,6 +732,13 @@ impl Changement {
 /// bits) et dossiers Démarrage (du compte et de toute la machine), avec leur état dans StartupApproved. Lus dans le
 /// registre et le dossier, sans PowerShell.
 pub fn au_demarrage() -> Vec<Programme> {
+    releve_demarrage().0
+}
+
+/// `au_demarrage`, avec ce qui n'a pas pu être lu : une clé Run qui existe mais ne s'ouvre pas, un dossier Démarrage
+/// qui ne se liste pas, une variable d'environnement absente (dossier introuvable). La liste à cocher n'en a pas
+/// besoin ; `demarrage --json`, lui, ne compte pas une liste incomplète comme lue.
+pub fn releve_demarrage() -> (Vec<Programme>, Vec<String>) {
     const RUN: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
     const RUN32: &str = r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run";
     // Une seule heure pour tout l'écran : la valeur écrite pour désactiver, comme le Gestionnaire des tâches.
@@ -749,9 +756,21 @@ pub fn au_demarrage() -> Vec<Programme> {
             .unwrap_or_default()
     };
     let mut l = Vec::new();
+    let mut manques = Vec::new();
     for (machine, chemin, liste) in [(false, RUN, "Run"), (true, RUN, "Run"), (true, RUN32, "Run32")] {
-        let Ok(cle) = ruche(machine).open_subkey_with_flags(chemin, KEY_READ) else {
-            continue;
+        let cle = match ruche(machine).open_subkey_with_flags(chemin, KEY_READ) {
+            Ok(cle) => cle,
+            // Une clé absente n'a simplement rien à lancer.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                manques.push(trf!(
+                    "clé du registre illisible ({}) : {}",
+                    "registry key unreadable ({}): {}",
+                    e,
+                    chemin
+                ));
+                continue;
+            }
         };
         let notes = etats(machine, liste);
         for (nom, valeur) in cle.enum_values().flatten() {
@@ -775,14 +794,29 @@ pub fn au_demarrage() -> Vec<Programme> {
         (true, "ProgramData", r"Microsoft\Windows\Start Menu\Programs\StartUp"),
     ] {
         let Some(base) = std::env::var_os(variable) else {
+            manques.push(trf!(
+                "dossier Démarrage introuvable (variable {} absente)",
+                "Startup folder not found ({} variable missing)",
+                variable
+            ));
             continue;
         };
         let notes = etats(machine, "StartupFolder");
-        for f in std::fs::read_dir(std::path::PathBuf::from(base).join(dossier))
-            .into_iter()
-            .flatten()
-            .flatten()
-        {
+        let chemin = std::path::PathBuf::from(base).join(dossier);
+        let entrees = match std::fs::read_dir(&chemin) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                manques.push(trf!(
+                    "dossier Démarrage illisible ({}) : {}",
+                    "Startup folder unreadable ({}): {}",
+                    e,
+                    chemin.display()
+                ));
+                continue;
+            }
+        };
+        for f in entrees.flatten() {
             let fichier = f.file_name().to_string_lossy().into_owned();
             if fichier.eq_ignore_ascii_case("desktop.ini") || !f.path().is_file() {
                 continue;
@@ -802,7 +836,7 @@ pub fn au_demarrage() -> Vec<Programme> {
             });
         }
     }
-    l
+    (l, manques)
 }
 
 /// Applique des lots de changements (un lot par réglage) et dit lesquels ont réussi, puis chaque groupe de `en_plus`

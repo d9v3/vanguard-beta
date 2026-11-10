@@ -10,7 +10,12 @@ use std::time::Duration;
 
 use chrono::NaiveDate;
 
+use crate::modele::raison::Echec;
 use crate::{tr, trf};
+
+mod resultat;
+#[cfg(test)]
+pub(crate) use resultat::corpus;
 
 const ADRESSE: &str = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json";
 const FRAICHE: Duration = Duration::from_hours(24);
@@ -46,36 +51,114 @@ pub(crate) fn catalogue() -> Result<Vec<Exploitee>, String> {
 /// `catalogue`, ou, quand `coupure` dit pourquoi rien ne doit partir (réglage, travail sans Internet, tests), la
 /// copie gardée seule, sans rien demander.
 pub(crate) fn catalogue_selon(coupure: Option<&str>) -> Result<Vec<Exploitee>, String> {
-    use crate::protection::abuse_ch::Echec;
+    catalogue_et_age(coupure).map(|(c, _)| c).map_err(String::from)
+}
+
+/// Le contexte des échecs de lecture du catalogue (`modele::raison::Echec`).
+const LECTURE: &str = "dernieres-failles/catalogue";
+
+/// `catalogue_selon`, avec l'âge de la copie lue : `--json` dit qu'une copie de plus d'un jour (hors ligne, la CISA
+/// injoignable) peut manquer les derniers ajouts, au lieu de la croire complète. L'échec se montre par sa phrase
+/// seule (`Raison::Echoue`), comme avant le canal d'erreur commun.
+fn catalogue_et_age(coupure: Option<&str>) -> Result<(Vec<Exploitee>, Duration), Echec> {
+    use crate::protection::abuse_ch::Echec as Liste;
     let (octets, age) = match coupure {
         None => crate::socle::cache::liste(demande(), LIEU, FRAICHE, |o| analyser(o).is_some())
             .resultat(false)
-            .map_err(|e| match e {
-                Echec::Reponse(code) => trf!("la CISA a répondu {code}", "CISA answered {code}"),
-                Echec::SansReponse => tr!("pas d'Internet ?", "no Internet?").to_string(),
-                autre => autre.raison(),
+            .map_err(|e| {
+                Echec::echoue(
+                    LECTURE,
+                    match e {
+                        Liste::Reponse(code) => trf!("la CISA a répondu {code}", "CISA answered {code}"),
+                        Liste::SansReponse => tr!("pas d'Internet ?", "no Internet?").to_string(),
+                        autre => autre.raison(),
+                    },
+                )
             })?,
         // L'âge vient du sceau de la copie, pas de la date du fichier (`socle::cache::gardee`).
         Some(pourquoi) => match crate::socle::cache::gardee(LIEU, crate::socle::cache::LISTE_MAX) {
             Ok(Some(copie)) => copie,
-            Ok(None) => return Err(pourquoi.to_string()),
-            Err(refus) => return Err(trf!("{pourquoi} ; {}", "{pourquoi}; {}", refus.texte())),
+            Ok(None) => return Err(Echec::echoue(LECTURE, pourquoi)),
+            Err(refus) => {
+                return Err(Echec::echoue(
+                    LECTURE,
+                    trf!("{pourquoi} ; {}", "{pourquoi}; {}", refus.texte()),
+                ));
+            }
         },
     };
     if age > TROP_VIEILLE {
-        return Err(tr!(
-            "copie de plus d'un mois, rafraîchissement impossible",
-            "copy more than a month old, could not refresh it"
-        )
-        .to_string());
+        return Err(Echec::echoue(
+            LECTURE,
+            tr!(
+                "copie de plus d'un mois, rafraîchissement impossible",
+                "copy more than a month old, could not refresh it"
+            ),
+        ));
     }
-    analyser(&octets).ok_or_else(|| {
-        tr!(
-            "catalogue illisible (page d'un portail Wi-Fi ?)",
-            "catalog unreadable (a Wi-Fi portal page?)"
+    analyser(&octets).map(|c| (c, age)).ok_or_else(|| {
+        Echec::echoue(
+            LECTURE,
+            tr!(
+                "catalogue illisible (page d'un portail Wi-Fi ?)",
+                "catalog unreadable (a Wi-Fi portal page?)"
+            ),
         )
-        .to_string()
     })
+}
+
+/// Le contexte des échecs de lecture des CVE d'ici (`modele::raison::Echec`).
+const PAQUETS: &str = "dernieres-failles/paquets";
+
+/// Les CVE des paquets de cet ordinateur : sous Arch, le suivi de sécurité les donne (arch-audit). `Err` : pourquoi
+/// on ne les connaît pas, et rien n'est alors dit « ne touche pas cet ordinateur ». Sans Internet demandé, arch-audit
+/// n'est pas lancé : il télécharge le suivi de sécurité d'Arch.
+fn cves_ici() -> Result<std::collections::HashSet<String>, Echec> {
+    if crate::parametres::hors_ligne() {
+        return Err(Echec::echoue(PAQUETS, crate::parametres::raison_hors_ligne()));
+    }
+    cves_du_systeme()
+}
+
+#[cfg(target_os = "linux")]
+fn cves_du_systeme() -> Result<std::collections::HashSet<String>, Echec> {
+    crate::machine::linux::cves_installees().ok_or_else(|| {
+        Echec::echoue(
+            PAQUETS,
+            tr!(
+                "suivi de sécurité des paquets pas lu (seulement sous Arch, avec arch-audit)",
+                "package security tracker not read (only on Arch, with arch-audit)"
+            ),
+        )
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn cves_du_systeme() -> Result<std::collections::HashSet<String>, Echec> {
+    Err(Echec::echoue(
+        PAQUETS,
+        tr!(
+            "pas de suivi de sécurité des paquets sous Windows : le bilan (Failles connues) juge les logiciels",
+            "no package security tracker on Windows: the check-up (Known flaws) judges the software"
+        ),
+    ))
+}
+
+/// Le premier jour de la période : `jours` avant `aujourd_hui`.
+fn depuis(aujourd_hui: NaiveDate, jours: u32) -> NaiveDate {
+    aujourd_hui
+        .checked_sub_signed(chrono::Duration::days(i64::from(jours)))
+        .unwrap_or(NaiveDate::MIN)
+}
+
+/// `vanguard dernieres-failles --json` : les mêmes failles que l'écran, jugées en résultat et versées au rapport. Rien
+/// n'est demandé ni changé ; sans Internet ni copie gardée, le résultat dit pourquoi il ne conclut pas.
+pub fn json(jours: u32) {
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
+    let aujourd_hui = chrono::Local::now().date_naive();
+    let r = resultat::resultat(catalogue_et_age(None), jours, aujourd_hui, cves_ici, debut);
+    crate::modele::resultat::verser(&r);
+    println!("{}", crate::modele::resultat::json(&r));
 }
 
 /// La demande du catalogue : la même pour le programme et pour les canaris de la veille de nuit (`canaris`).
@@ -145,15 +228,8 @@ pub fn ecran(jours: u32) {
             return;
         }
     };
-    let depuis = chrono::Local::now()
-        .date_naive()
-        .checked_sub_signed(chrono::Duration::days(i64::from(jours)))
-        .unwrap_or(chrono::NaiveDate::MIN);
-    // Les CVE des paquets de cet ordinateur : sous Arch, le suivi de sécurité les donne.
-    #[cfg(target_os = "linux")]
-    let ici = crate::machine::linux::cves_installees();
-    #[cfg(not(target_os = "linux"))]
-    let ici: Option<std::collections::HashSet<String>> = None;
+    let depuis = depuis(chrono::Local::now().date_naive(), jours);
+    let ici = cves_ici().ok();
     let vide = std::collections::HashSet::new();
     let liste = recentes(&catalogue, depuis, ici.as_ref().unwrap_or(&vide));
     println!();

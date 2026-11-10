@@ -209,6 +209,8 @@ pub(crate) const AIDES_EN: &[(&str, &str)] = &[
 #[rustfmt::skip]
 pub(crate) const OPTIONS_EN: &[(&str, &str, &str)] = &[
     ("dernieres-failles", "jours", "How many days back (7 by default)"),
+    ("dernieres-failles", "json", "The result as JSON, for a script: offline, the saved copy of the catalog and \
+                                   nothing matched against this computer's packages (said not checked)"),
     ("nettoyer", "liste", "Show what could be cleaned up and the space to gain, deleting nothing"),
     ("desinstaller", "liste", "Show what would be removed, without removing anything"),
     ("logiciels", "liste", "Show each program offered and its state, without installing anything"),
@@ -237,6 +239,8 @@ pub(crate) const OPTIONS_EN: &[(&str, &str, &str)] = &[
     ("yara", "dossier", "A USB drive, external disk or folder to scan entirely"),
     ("integrite", "accepter", "Take the current state as the new reference (after a system update)"),
     ("integrite", "temps_reel", "Watch the critical files live until Ctrl-C"),
+    ("integrite", "json", "The result as JSON, for a script: nothing is written; without a reference, none is \
+                           set (said not checked)"),
     ("exporter", "fichier", "File to write (default: vanguard-sauvegarde-YYYY-MM-DD.json in the home or Documents \
                                 folder)"),
     ("nommer", "appareil", "IP (on the current network) or MAC address of the device"),
@@ -291,6 +295,8 @@ pub(crate) const OPTIONS_EN: &[(&str, &str, &str)] = &[
     ("protection", "json", "The switches' state as JSON, for a script: nothing is changed"),
     ("diagnostic", "json", "The result as JSON, for a script: nothing changes"),
     ("lenteur", "json", "The result as JSON, for a script: nothing changes"),
+    ("mises-a-jour", "json", "The result as JSON, for a script: nothing is installed, no question"),
+    ("demarrage", "json", "The result as JSON, for a script: nothing is removed, no question"),
     ("connexions-sortantes", "json", "The result as JSON, for a script"),
     ("acces-a-distance", "json", "The result as JSON, for a script: nothing is removed, no question"),
     ("bilan-confidentialite", "json", "The result as JSON, for a script"),

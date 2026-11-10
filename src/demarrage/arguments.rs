@@ -143,6 +143,9 @@ pub(crate) enum Commande {
         /// Combien de jours en arrière (7 par défaut).
         #[arg(long, visible_alias = "days", default_value_t = 7)]
         jours: u32,
+        /// Le résultat en JSON, pour un script : rien ne change.
+        #[arg(long)]
+        json: bool,
     },
     /// Sites dangereux bloqués par le fichier hosts : ceux d'URLhaus et les serveurs de commande de ThreatFox (clé
     /// abuse.ch), après accord et avec les droits d'administrateur ; « off » les retire exactement. Sans argument :
@@ -197,7 +200,11 @@ pub(crate) enum Commande {
     },
     /// Mises à jour : système, programmes, pilotes et firmware vérifiés d'un coup, puis installés après accord.
     #[command(name = "mises-a-jour", visible_alias = "updates")]
-    Maj,
+    Maj {
+        /// Les mises à jour en attente en JSON, pour un script : rien n'est installé ni demandé.
+        #[arg(long)]
+        json: bool,
+    },
     /// Réparations courantes : réseau, navigation détournée, pare-feu, antivirus, fichiers système, disque, place, mises à jour, heure.
     #[command(visible_alias = "repair")]
     Reparer,
@@ -305,6 +312,9 @@ pub(crate) enum Commande {
         /// Surveiller les fichiers critiques en direct jusqu'à Ctrl-C.
         #[arg(long, visible_alias = "live")]
         temps_reel: bool,
+        /// La comparaison en JSON, pour un script : rien n'est demandé ni écrit, et sans référence aucune n'est posée.
+        #[arg(long, conflicts_with_all = ["accepter", "temps_reel"])]
+        json: bool,
     },
     /// Fichiers-pièges contre les rançongiciels : les poser (après accord), voir s'ils sont intacts, ou les retirer.
     #[command(visible_alias = "decoys")]
@@ -569,7 +579,11 @@ pub(crate) enum Commande {
     /// Programmes au démarrage : ceux qui se lancent à l'ouverture de session, à retirer ou à remettre après accord.
     /// Chaque retrait s'annule exactement (Optimiser › Tout remettre comme avant).
     #[command(visible_alias = "startup")]
-    Demarrage,
+    Demarrage {
+        /// La liste jugée en JSON, pour un script : rien n'est retiré ni demandé.
+        #[arg(long)]
+        json: bool,
+    },
     /// Fiche de l'ordinateur : modèle, carte mère, processeur, mémoire, carte graphique, disques, système. Les numéros
     /// de série s'affichent à l'écran seulement.
     #[command(name = "fiche-ordinateur", visible_alias = "specs")]

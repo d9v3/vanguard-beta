@@ -237,6 +237,7 @@ fn categorie_en(nom: &str) -> Option<&'static str> {
         "Pilotes" => "Drivers",
         "Pilotes DKMS" => "DKMS drivers",
         "Privilèges" => "Privileges",
+        "Programmes au démarrage" => "Startup programs",
         "Ports en écoute" => "Listening ports",
         "Post-quantique" => "Post-quantum",
         "Processeur" => "Processor",

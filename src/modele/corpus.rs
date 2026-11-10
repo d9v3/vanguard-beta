@@ -152,6 +152,8 @@ const CAS_DES_OUTILS: &[(&str, Juge)] = &[
     ("PRO-GIT-001", crate::protection::secrets_git::corpus),
     ("SUR-BOT-001", crate::protection::sortantes::corpus_botnets),
     ("SUR-FIC-001", crate::protection::integrite::corpus_signaler),
+    ("PRO-INT-001", crate::protection::integrite::corpus_examen),
+    ("PRO-KEV-001", crate::protection::kev::corpus),
     ("SUR-PAS-001", crate::reseau::surveillance::corpus_passerelle),
     ("SUR-WIF-001", crate::reseau::surveillance::corpus_audit),
     ("SUR-APP-001", crate::reseau::surveillance::corpus),
@@ -182,6 +184,10 @@ const NE_DETECTENT_PAS: &[(&str, &str)] = &[
         "reprend les constats du bilan, que les cas de leurs règles gardent",
     ),
     ("AUT-VAN-001", "autodiagnostic de Vanguard lui-même"),
+    (
+        "PRO-DEM-001",
+        "inventaire des programmes au démarrage, montrés comme l'écran à cocher",
+    ),
 ];
 
 /// Les règles de détection qu'aucun cas n'exerce, pour de bon, avec leur raison.
@@ -198,6 +204,10 @@ const EXEMPTEES: &[(&str, &str)] = &[
     (
         "PRO-PER-001",
         "les failles exploitées viennent du catalogue KEV, lu en ligne",
+    ),
+    (
+        "PRO-MAJ-001",
+        "le jugement est celui des gestionnaires de paquets (pacman, Flatpak, fwupd, Windows Update, winget), des programmes externes ; le résultat ne fait que reprendre leurs constats",
     ),
     (
         "VEI-RAN-001",
@@ -647,6 +657,24 @@ const FILS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("protection/integrite.rs", "changements_a_signaler"),
             ("protection/integrite.rs", "a_notifier"),
+        ],
+    ),
+    (
+        "PRO-INT-001",
+        &[
+            ("protection/integrite.rs", "json"),
+            ("protection/integrite.rs", "examiner_dans"),
+            ("protection/integrite/resultat.rs", "resultat"),
+            ("protection/integrite/resultat.rs", "juger"),
+        ],
+    ),
+    (
+        "PRO-KEV-001",
+        &[
+            ("protection/kev.rs", "json"),
+            ("protection/kev/resultat.rs", "resultat"),
+            ("protection/kev/resultat.rs", "juger"),
+            ("protection/kev/resultat.rs", "constat"),
         ],
     ),
     (

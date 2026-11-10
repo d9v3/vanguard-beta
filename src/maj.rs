@@ -4,6 +4,28 @@
 use crate::machine::{self, Constat};
 use crate::ui::*;
 
+mod resultat;
+
+/// Sans Internet demandé, seules les catégories qui se lisent sur place : les pilotes DKMS sous Linux (le noyau
+/// chargé et, sous Windows, les lectures locales sont toujours faites). Les dépôts, Flatpak, Snap, l'AUR, le firmware,
+/// Windows Update et winget interrogent des serveurs.
+const SUR_PLACE: &[&str] = &["Pilotes DKMS"];
+
+/// `vanguard mises-a-jour --json` : la même recherche que l'écran, jugée en résultat et versée au rapport. Rien n'est
+/// installé ni demandé : chaque mise à jour en attente dit seulement qu'une correction existe (`corrigeable`).
+pub fn json() {
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
+    let hors_ligne = crate::parametres::hors_ligne().then(crate::parametres::raison_hors_ligne);
+    let constats = machine::mises_a_jour_completes(hors_ligne.map(|_| SUR_PLACE));
+    #[cfg(target_os = "linux")]
+    let aur_sans_accord = hors_ligne.is_none() && crate::machine::linux::aur_sans_accord();
+    #[cfg(not(target_os = "linux"))]
+    let aur_sans_accord = false;
+    let r = resultat::resultat(&constats, hors_ligne, aur_sans_accord, debut);
+    crate::modele::resultat::verser(&r);
+    println!("{}", crate::modele::resultat::json(&r));
+}
+
 /// `seulement` : après une installation, les catégories installées, pour ne pas refaire toutes les recherches.
 fn verifier(seulement: Option<&[&str]>) -> Vec<Constat> {
     trp!(

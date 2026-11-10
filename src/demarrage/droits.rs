@@ -109,7 +109,7 @@ pub(crate) fn commande_d_optimiser(c: &Commande) -> bool {
         Commande::Logiciels { .. }
         | Commande::Nettoyer { .. }
         | Commande::Lenteur { .. }
-        | Commande::Demarrage
+        | Commande::Demarrage { .. }
         | Commande::Gaming
         | Commande::DnsRapide
         | Commande::Connexion { .. }

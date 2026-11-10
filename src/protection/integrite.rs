@@ -15,6 +15,10 @@ use crate::machine::Constat;
 use crate::risk::Niveau;
 use crate::ui::*;
 
+mod resultat;
+#[cfg(test)]
+pub(crate) use resultat::corpus as corpus_examen;
+
 /// Fichiers et dossiers suivis (un dossier : les fichiers qu'il contient directement).
 fn cibles() -> Vec<PathBuf> {
     let maison = crate::socle::maison();
@@ -450,6 +454,45 @@ pub fn verifier(accepter: bool) {
             }
         }
     }
+}
+
+/// Les dossiers suivis qui existent mais ne se listent pas (/etc/sudoers.d sans droits root) : `fichiers` les saute,
+/// leurs fichiers ne sont donc pas comparés, et `--json` le dit au lieu de les compter sains.
+fn dossiers_illisibles(cibles: &[PathBuf]) -> Vec<String> {
+    cibles
+        .iter()
+        .filter(|c| c.is_dir() && std::fs::read_dir(c).is_err())
+        .map(|c| c.display().to_string())
+        .collect()
+}
+
+/// La comparaison de `--json` dans `dossier` : la référence lue sans rien écrire (`sceau::lire_sans_ecrire`), jamais
+/// posée ni refaite ; l'état actuel n'est lu que s'il y a une référence.
+fn examiner_dans(
+    dossier: &Path,
+    lire: impl FnOnce() -> resultat::Lecture,
+    debut: (chrono::DateTime<chrono::Utc>, std::time::Instant),
+) -> crate::modele::resultat::Resultat {
+    let reference = reference_lue(crate::sceau::lire_sans_ecrire(dossier, crate::sceau::INTEGRITE), || {
+        crate::sceau::repris_dans(dossier, crate::sceau::INTEGRITE)
+    });
+    resultat::resultat(reference, lire, debut)
+}
+
+/// `vanguard integrite --json` : la comparaison avec la référence, jugée en résultat et versée au rapport. Rien n'est
+/// demandé ; sans référence, aucune n'est créée (elle se pose depuis le menu, où c'est montré).
+pub fn json() {
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
+    let r = examiner_dans(
+        &crate::socle::dossier_local(),
+        || {
+            let cibles = cibles();
+            (etat_actuel(), dossiers_illisibles(&cibles))
+        },
+        debut,
+    );
+    crate::modele::resultat::verser(&r);
+    println!("{}", crate::modele::resultat::json(&r));
 }
 
 /// « vanguard integrite --temps-reel » : surveille les fichiers critiques en direct jusqu'à Ctrl-C.

@@ -16,6 +16,7 @@ mod windows;
 pub(crate) use annulables::Geste;
 #[cfg(windows)]
 pub(crate) use demarrage::a_garder;
+pub use demarrage::json as demarrage_json;
 pub use demarrage::menu as programmes_au_demarrage;
 pub use demarrage::{
     remettre as remettre_au_demarrage, retirables as demarrage_retirables, retirer as retirer_du_demarrage,
@@ -227,6 +228,21 @@ pub(crate) fn reglages_poses() -> Vec<String> {
         }
         _ => Vec::new(),
     }
+}
+
+/// L'historique lu sans rien écrire ni rien dire, pour `demarrage --json` : ni sceau posé (`sceau::lire_sans_ecrire`),
+/// ni jeux.json repris, ni copie mise de côté (ce que fait `charger`). Le même jugement que `lire_dans` : absent, rien
+/// de retiré ; adopté, seulement s'il a été repris d'une version d'avant. `None` : il ne vaut rien (falsifié,
+/// illisible, adopté sans reprise), et ce que Vanguard a retiré du démarrage n'est pas connu.
+fn historique_sans_ecrire(dossier: &std::path::Path) -> Option<Historique> {
+    use crate::sceau::Lecture;
+    let octets = match crate::sceau::lire_sans_ecrire(dossier, crate::sceau::REGLAGES) {
+        Lecture::Absent | Lecture::Inconnu => return Some(Historique::default()),
+        Lecture::Intact(o) => o,
+        Lecture::Adopte(o) if crate::sceau::repris_dans(dossier, crate::sceau::REGLAGES) => o,
+        Lecture::Adopte(_) | Lecture::Falsifie(_) | Lecture::Illisible(_) => return None,
+    };
+    serde_json::from_str(String::from_utf8_lossy(&octets).trim_start_matches('\u{feff}')).ok()
 }
 
 /// Retient que Vanguard a posé cette protection de Defender (une correction du bilan, `machine::windows::defender`) :

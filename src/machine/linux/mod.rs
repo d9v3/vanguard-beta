@@ -70,6 +70,12 @@ pub use maj::mises_a_jour_completes;
 pub(crate) fn cves_installees() -> Option<std::collections::HashSet<String>> {
     maj::cves_des_paquets()
 }
+
+/// Un assistant AUR (yay, paru) est là, mais l'accord d'envoyer les noms des paquets à l'AUR n'est pas donné
+/// (Paramètres) : leurs mises à jour ne sont pas cherchées, et `mises-a-jour --json` le dit non vérifié.
+pub(crate) fn aur_sans_accord() -> bool {
+    ["yay", "paru"].into_iter().any(natif::present) && !crate::parametres::paquets_aur()
+}
 use maj::*;
 use persistance::*;
 use privileges::*;

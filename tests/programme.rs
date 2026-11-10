@@ -3099,6 +3099,25 @@ fn diagnostic_en_json() {
     examen_en_json("diagnostic", "PRO-DIA-001");
 }
 
+/// `integrite --json` : dans une maison jetable, pas de référence ; aucune n'est posée en silence, et le résultat
+/// n'est jamais sain.
+#[test]
+fn integrite_en_json() {
+    let v = examen_en_json("integrite", "PRO-INT-001");
+    assert_eq!(v["couverture"]["verifies"], 0, "{v}");
+    assert_eq!(v["constats"][0]["etat"], "non-verifie", "{v}");
+    assert_eq!(v["constats"][0]["raison"], "introuvable", "{v}");
+}
+
+/// `dernieres-failles --json` sans Internet ni copie gardée : rien n'est conclu, et la raison est dite.
+#[test]
+fn dernieres_failles_en_json() {
+    let v = examen_en_json("dernieres-failles", "PRO-KEV-001");
+    assert_eq!(v["couverture"]["verifies"], 0, "{v}");
+    assert!(v["couverture"]["non_verifies"][0].is_string(), "{v}");
+    assert_eq!(v["constats"][0]["etat"], "non-verifie", "{v}");
+}
+
 /// `lenteur --json` : la mesure de deux secondes jugée, sans le menu des outils.
 #[test]
 fn lenteur_en_json() {

@@ -6,6 +6,8 @@
 
 #![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
 
+mod resultat;
+
 use std::borrow::Cow;
 
 use super::{Categorie, Etat, Historique, Reglage, charger, confirmer_et_executer, etat, executer, systeme};
@@ -527,6 +529,42 @@ pub fn remettre(id: &str) -> Option<bool> {
     let r = notes(&h).into_iter().find(|r| r.id == id)?;
     let (_, remis) = executer(&[], &[&r], &mut h);
     Some(remis == [true])
+}
+
+/// `vanguard demarrage --json` : la liste de l'écran à cocher, jugée sans rien retirer ni rien écrire (pas même
+/// l'historique, lu par `historique_sans_ecrire`), versée au rapport et au journal, puis imprimée.
+pub fn json() {
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
+    let (programmes, mut manques) = systeme::releve_demarrage();
+    let h = super::historique_sans_ecrire(&crate::reseau::dossier_local()).unwrap_or_else(|| {
+        manques.push(
+            tr!(
+                "notes de Vanguard illisibles ou changées hors de Vanguard : les programmes qu'il a retirés ne sont pas listés",
+                "Vanguard's notes unreadable or changed outside Vanguard: the programs it removed are not listed"
+            )
+            .to_string(),
+        );
+        Historique::default()
+    });
+    let l = lignes(programmes, &h);
+    let entrees: Vec<resultat::Entree> = l
+        .iter()
+        .map(|x| resultat::Entree {
+            nom: &x.nom,
+            commande: &x.commande,
+            identite: x.reglage.id.strip_prefix(PREFIXE).unwrap_or(&x.reglage.id),
+            machine: x.machine,
+            statut: match (x.garder(), x.actif) {
+                (Some(raison), true) => resultat::Statut::Garder(raison),
+                (None, true) if x.pare_feu() => resultat::Statut::PareFeu,
+                (_, true) => resultat::Statut::SeLance,
+                (_, false) => resultat::Statut::Retire,
+            },
+        })
+        .collect();
+    let r = resultat::resultat(&entrees, manques, debut);
+    crate::modele::resultat::verser(&r);
+    println!("{}", crate::modele::resultat::json(&r));
 }
 
 /// La liste à cocher : coché = se lance à l'ouverture de session. Décocher retire, recocher remet exactement comme

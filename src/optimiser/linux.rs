@@ -1151,10 +1151,31 @@ pub fn ecrire_avec(lots: &[Vec<(&Changement, Valeur)>], en_plus: &[Vec<String>])
 /// du système qu'il ne remplace pas et qui se lancent sur ce bureau) et services de systemd --user installés par la
 /// personne.
 pub fn au_demarrage() -> Vec<Programme> {
+    releve_demarrage().0
+}
+
+/// `au_demarrage`, avec ce qui n'a pas pu être lu : un dossier d'autostart qui existe mais ne se liste pas, les
+/// services du compte quand systemctl --user ne répond pas (pas de session systemd). La liste à cocher n'en a pas
+/// besoin (une entrée absente n'y est simplement pas) ; `demarrage --json`, lui, ne compte pas une liste incomplète
+/// comme lue.
+pub fn releve_demarrage() -> (Vec<Programme>, Vec<String>) {
     let maison = crate::socle::maison();
     let config = std::env::var_os("XDG_CONFIG_HOME").map_or_else(|| maison.join(".config"), PathBuf::from);
     let systeme = dossiers_systeme();
     let bureau = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
+    let mut manques = Vec::new();
+    for d in std::iter::once(config.join("autostart")).chain(systeme.iter().cloned()) {
+        if let Err(e) = std::fs::read_dir(&d)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            manques.push(trf!(
+                "dossier de démarrage illisible ({}) : {}",
+                "startup folder unreadable ({}): {}",
+                e,
+                d.display()
+            ));
+        }
+    }
     let mut l = autostart(&config.join("autostart"), &systeme, &bureau);
     let dossier = config.join("systemd/user");
     let activees = sortie(
@@ -1168,7 +1189,16 @@ pub fn au_demarrage() -> Vec<Programme> {
             "--no-pager",
         ],
     )
-    .unwrap_or_default();
+    .unwrap_or_else(|| {
+        manques.push(
+            tr!(
+                "services du compte (systemctl --user) pas lus",
+                "account services (systemctl --user) not read"
+            )
+            .to_string(),
+        );
+        String::new()
+    });
     for unite in activees.lines().filter_map(|l| l.split_whitespace().next()) {
         if unite_valide(unite) && fichier_ordinaire(&dossier.join(unite)) {
             let texte = std::fs::read_to_string(dossier.join(unite)).unwrap_or_default();
@@ -1189,7 +1219,7 @@ pub fn au_demarrage() -> Vec<Programme> {
             });
         }
     }
-    l
+    (l, manques)
 }
 
 /// Un vrai fichier, pas un lien. Une entrée d'autostart ou une unité de systemd du compte qui est un lien vient d'un

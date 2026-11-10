@@ -516,7 +516,13 @@ async fn main() {
         }) => veilleur(sans_etat(etat.as_deref()), sans_etat(sous_etat.as_deref()), servir),
         Some(Commande::Garde { action, argument }) => garde(action.as_deref(), argument.as_deref()),
         Some(Commande::SitesDangereux { etat }) => protection::sites_bloques::commande(sans_etat(etat.as_deref())),
-        Some(Commande::DernieresFailles { jours }) => protection::kev::ecran(jours),
+        Some(Commande::DernieresFailles { jours, json }) => {
+            if json {
+                protection::kev::json(jours);
+            } else {
+                protection::kev::ecran(jours);
+            }
+        }
         Some(Commande::Surveiller) => reseau::surveillance::surveiller().await,
         Some(Commande::Entretien { etat }) => match sans_etat(etat.as_deref()) {
             Some(e) => entretien::activer(e == "on"),
@@ -525,7 +531,13 @@ async fn main() {
         Some(Commande::Entretenir) => entretien::entretenir(),
         // Traité au tout début de main, avant tout le reste : jamais ici.
         Some(Commande::AppliquerEleve { .. } | Commande::GardeServir) => machine::quitter(2),
-        Some(Commande::Maj) => maj::executer(),
+        Some(Commande::Maj { json }) => {
+            if json {
+                maj::json();
+            } else {
+                maj::executer();
+            }
+        }
         Some(Commande::Reparer) => reparer::menu(),
         Some(Commande::Gaming) => gaming::menu(),
         Some(Commande::Nettoyer { liste }) => {
@@ -738,8 +750,14 @@ async fn main() {
         Some(Commande::Optimiser { quoi }) => optimiser_en_ligne_de_commande(quoi.as_deref()).await,
         Some(Commande::WifiPublic { etat }) => reseau::wifi_public::commande(sans_etat(etat.as_deref())),
         Some(Commande::Appris) => apprentissage::menu(),
-        Some(Commande::Integrite { accepter, temps_reel }) => {
-            if temps_reel {
+        Some(Commande::Integrite {
+            accepter,
+            temps_reel,
+            json,
+        }) => {
+            if json {
+                protection::integrite::json();
+            } else if temps_reel {
                 protection::integrite::temps_reel();
             } else {
                 protection::integrite::verifier(accepter);
@@ -751,7 +769,13 @@ async fn main() {
         Some(Commande::Guide { quoi, sommaire }) => guide::executer(&quoi.join(" "), sommaire),
         Some(Commande::Lenteur { json: false }) => lenteur::commande(),
         Some(Commande::Lenteur { json: true }) => lenteur::json(),
-        Some(Commande::Demarrage) => optimiser::programmes_au_demarrage(),
+        Some(Commande::Demarrage { json }) => {
+            if json {
+                optimiser::demarrage_json();
+            } else {
+                optimiser::programmes_au_demarrage();
+            }
+        }
         Some(Commande::Fiche { json }) => fiche::fiche(json),
         Some(Commande::CopierFichiers { destination }) => copier::commande(destination.as_deref()),
         Some(Commande::VerifierCopie { dossier }) => copier::verifier_copie(dossier.as_deref()),
