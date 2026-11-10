@@ -502,17 +502,26 @@ Vanguard tourne déjà en administrateur, ou si le contrôle de compte (UAC) est
 pilote est lui-même administrateur : il a déjà gagné (voir plus haut). Il en va de même, sous Linux, d'un programme
 qui tourne déjà en root.
 
-**Les alertes déclarées normales.** « C'est normal chez moi » tait une alerte 90 jours (elle revient plus tôt si
-elle devient plus grave), dans une liste scellée comme le reste de l'état de Vanguard. Une alerte à corriger soi-même
-ne se déclare normale que si sa règle relève ce que le choix lierait : aujourd'hui, les programmes lancés au démarrage
-et les préchargements sous Linux. Vanguard montre alors, avant le choix, chaque ligne signalée sans exception
-(fichier:ligne, empreinte du fichier, programme ou bibliothèque désignés et leur empreinte), et une alerte élevée ou
-critique demande de taper « normal ». Le choix est lié à cet état exact : une ligne ajoutée ou changée, une autre
-source dans la même alerte, le fichier ou le programme lancé changé, remplacé par un lien ou effacé font revenir
-l'alerte. Ce qui ne se relève pas sans ambiguïté (une variable, un tube, un script passé en argument, un fichier
-illisible, plus de 12 lignes) ne peut pas être déclaré normal. Limites : un programme cherché dans le PATH, un fichier
-lu par le programme lancé (EnvironmentFile, script sourcé) et le programme d'un service ajouté ne sont pas liés ; sous
-Windows, les clés Run et les tâches se déclarent encore par leur seule ligne de commande.
+**Les alertes déclarées normales.** « C'est normal chez moi » tait une alerte 90 jours (elle revient plus tôt si elle
+devient plus grave), dans une liste scellée comme le reste de l'état de Vanguard ; une date à venir ne prolonge rien.
+Une alerte à corriger soi-même ne se déclare normale que si sa règle relève ce que le choix lierait : aujourd'hui, les
+programmes lancés au démarrage et les préchargements sous Linux ; une alerte critique à corriger soi-même ne se
+déclare pas, une ligne en forme de porte dérobée (shell vers le réseau) non plus. Vanguard montre, avant le choix,
+chaque ligne signalée sans exception (fichier:ligne, empreinte du fichier, programme, script ou bibliothèque désignés
+et leur empreinte) ; le choix se confirme toujours (taper « normal » dès le niveau élevé), seulement au clavier dans
+un terminal (entrée et sortie : un choix venu d'un tube est refusé), et l'état est relevé de nouveau à la confirmation
+: un fichier changé pendant la lecture fait tout refuser. Chaque choix est noté au journal. Le choix est lié à cet
+état exact : une ligne ajoutée ou changée, une autre source dans la même alerte, le fichier, un ajout de systemd
+(dossiers .d, y compris ceux de la session et de priorité), le programme lancé ou le script passé à un interpréteur
+changé, remplacé par un lien ou effacé font revenir l'alerte, qui dit alors pourquoi et où. Ce qui ne se relève pas
+sans ambiguïté (une variable, un tube, du code dans la ligne, un module, un lanceur comme env ou sudo, un ajout qui
+redirige le programme ou son environnement, un fichier illisible, plus de 12 lignes) ne peut pas être déclaré normal ;
+une liste reprise ou gardée telle quelle après une falsification perd les états qu'elle disait. Limites : un programme
+cherché dans le PATH et ce que le script ou le programme lancé lit à son tour (fichier sourcé, import, bibliothèque)
+ne sont pas liés ; les dossiers ajoutés par XDG_CONFIG_DIRS ou XDG_DATA_DIRS ne sont pas suivis ; l'état n'est comparé
+qu'à chaque bilan, si bien qu'un programme qui remet le contenu d'origine avant chaque passage ne se voit pas ; un
+programme hostile qui ouvre lui-même un pseudo-terminal peut répondre à la place de la personne, mais le choix reste
+alors noté au journal ; sous Windows, les clés Run et les tâches se déclarent encore par leur seule ligne de commande.
 
 ## Ce qui sort de l'ordinateur
 

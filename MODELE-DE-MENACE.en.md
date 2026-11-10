@@ -445,16 +445,24 @@ as administrator, or if User Account Control (UAC) is off, a hostile program dri
 it has already won (see above). The same goes, on Linux, for a program already running as root.
 
 **Alerts declared normal.** "This is normal for me" silences an alert for 90 days (it comes back sooner if it gets
-more serious), in a list sealed like the rest of Vanguard's state. An alert to fix yourself can only be declared
-normal if its rule records what the choice would be bound to: today, programs started at boot and preloads on Linux.
-Before the choice, Vanguard then shows every reported line without exception (file:line, the file's fingerprint, the
-program or library it names and their fingerprints), and a high or critical alert asks you to type "normal". The
-choice is bound to that exact state: a line added or changed, another source in the same alert, the file or the
-launched program changed, replaced by a link or deleted bring the alert back. What cannot be recorded without
-ambiguity (a variable, a pipe, a script passed as an argument, an unreadable file, more than 12 lines) cannot be
-declared normal. Limits: a program looked up in PATH, a file read by the launched program (EnvironmentFile, a sourced
-script) and the program of an added service are not bound; on Windows, Run keys and tasks are still declared by their
-command line alone.
+more serious), in a list sealed like the rest of Vanguard's state; a date in the future extends nothing. An alert to
+fix yourself can only be declared normal if its rule records what the choice would be bound to: today, programs
+started at boot and preloads on Linux; a critical alert to fix yourself cannot be declared, nor can a line shaped like
+a backdoor (a shell to the network). Before the choice, Vanguard shows every reported line without exception
+(file:line, the file's fingerprint, the program, script or library it names and their fingerprints); the choice is
+always confirmed (typing "normal" from the high level up), only at the keyboard in a terminal (input and output: a
+choice coming from a pipe is refused), and the state is recorded again at confirmation: a file changed while you read
+makes it refuse everything. Each choice is written to the log. The choice is bound to that exact state: a line added
+or changed, another source in the same alert, the file, a systemd addition (.d folders, including the session's and
+the priority ones), the launched program or the script passed to an interpreter changed, replaced by a link or deleted
+bring the alert back, which then says why and where. What cannot be recorded without ambiguity (a variable, a pipe,
+code in the line, a module, a launcher such as env or sudo, an addition that redirects the program or its environment,
+an unreadable file, more than 12 lines) cannot be declared normal; a list restored or kept as is after tampering loses
+the states it held. Limits: a program looked up in PATH and what the script or launched program reads in turn (sourced
+file, import, library) are not bound; folders added through XDG_CONFIG_DIRS or XDG_DATA_DIRS are not followed; the
+state is only compared at each scan, so a program that puts the original content back before each pass is not seen; a
+hostile program that opens a pseudo-terminal itself can answer in the person's place, but the choice is still written
+to the log; on Windows, Run keys and tasks are still declared by their command line alone.
 
 ## What leaves the computer
 
