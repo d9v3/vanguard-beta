@@ -260,7 +260,21 @@ pub fn appliquer_theme(ctx: &egui::Context, sombre: bool) {
         s.visuals.selection.bg_fill = p.accent.gamma_multiply(0.35);
         s.visuals.text_cursor.stroke = Stroke::new(2.0, p.accent);
         s.spacing.item_spacing = vec2(8.0, 8.0);
+        meme_contour_au_survol(&mut s.visuals);
     });
+}
+
+/// Un bouton garde sa taille sous la souris. egui retire de la marge intérieure l'épaisseur du contour de l'état
+/// (aucun au repos, 1 point survolé ou pressé), pour qu'un contour qui apparaît ne déplace rien ; mais nos
+/// boutons imposent leur propre contour de 1 point dans tous les états, si bien que seule la marge bougeait :
+/// 2 points de moins en largeur au survol. Le même contour pour chaque état garde la même marge ; au repos, il
+/// reste transparent, donc invisible.
+fn meme_contour_au_survol(v: &mut egui::Visuals) {
+    let w = &mut v.widgets;
+    for e in [&mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
+        e.bg_stroke.width = 1.0;
+        e.expansion = 0.0;
+    }
 }
 
 struct Fenetre {
@@ -344,6 +358,56 @@ pub fn ouvrir(programme: Result<Programme, String>, depuis_vanguard: bool) -> Re
 
 #[cfg(test)]
 mod tests {
+    use eframe::egui;
+
+    /// Mesure pour de vrai, image par image sans fenêtre, un bouton au repos puis sous la souris.
+    fn mesurer(regle: bool) -> (egui::Vec2, egui::Vec2) {
+        let ctx = egui::Context::default();
+        super::polices(&ctx);
+        if regle {
+            ctx.global_style_mut(|s| super::meme_contour_au_survol(&mut s.visuals));
+        }
+        let image = |souris: Option<egui::Pos2>| {
+            let mut entree = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 200.0))),
+                ..Default::default()
+            };
+            if let Some(p) = souris {
+                entree.events.push(egui::Event::PointerMoved(p));
+            }
+            let mut vu = None;
+            // Pas de carte graphique ici : les textures (polices) préparées sont jetées, comme egui le demande.
+            ctx.run_ui(entree, |ui| {
+                let r = super::petit(ui, "← Retour", true);
+                vu = Some((r.rect, r.hovered()));
+            })
+            .textures_delta
+            .clear();
+            vu.unwrap()
+        };
+        let (repos, _) = image(None);
+        let _ = image(Some(repos.center()));
+        let (survole, sous_la_souris) = image(Some(repos.center()));
+        assert!(
+            sous_la_souris,
+            "la souris n'est pas sur le bouton : l'essai ne mesure rien"
+        );
+        (repos.size(), survole.size())
+    }
+
+    #[test]
+    fn un_bouton_garde_sa_taille_sous_la_souris() {
+        let (repos, survole) = mesurer(true);
+        assert_eq!(repos, survole);
+    }
+
+    /// Le témoin : sans le réglage, la même mesure voit le bouton rétrécir (sinon l'essai d'au-dessus ne prouve rien).
+    #[test]
+    fn sans_le_reglage_le_bouton_retrecit() {
+        let (repos, survole) = mesurer(false);
+        assert!(survole.x < repos.x, "{repos:?} → {survole:?}");
+    }
+
     /// egui et eframe ne sont nommés que dans `dessin/` : le reste ne dépend pas de la toile.
     #[test]
     fn la_toile_reste_dans_dessin() {
