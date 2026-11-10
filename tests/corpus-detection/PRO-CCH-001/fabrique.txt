@@ -1,0 +1,2 @@
+appareil|192.0.2.10|rtsp=554:ouvert
+appareil|192.0.2.20

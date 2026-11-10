@@ -10,6 +10,8 @@
 use crate::machine::wifi::{self, Bande, Borne};
 use crate::ui::*;
 
+mod resultat;
+
 const CANAUX_24: [u16; 3] = [1, 6, 11];
 
 /// Un bloc de 80 MHz en 5 GHz : (premier canal, dernier canal, sans radar).
@@ -176,6 +178,95 @@ fn lire() -> Result<Lecture, crate::modele::raison::Echec> {
     }
 }
 
+/// Le conseil de 2,4 GHz : le même pour l'écran et pour `--json`.
+#[derive(Debug, PartialEq)]
+enum Conseil24 {
+    /// La liste des voisins n'est pas sûre : aucun canal n'est désigné.
+    NonVerifie,
+    /// Le routeur est sur un canal qui chevauche ses voisins (ni 1, ni 6, ni 11) : (son canal, le plus libre).
+    Chevauche(u16, u16),
+    DejaLibre,
+    PlusLibre(u16),
+    /// Le canal du routeur n'est pas connu dans cette bande : le plus libre, pour information.
+    SansRouteur(u16),
+}
+
+/// Le conseil de 5 GHz : le même pour l'écran et pour `--json`.
+#[derive(Debug, PartialEq)]
+enum Conseil5 {
+    NonVerifie,
+    DejaLibre,
+    /// Le bloc sans radar le plus libre, à régler : (premier canal, dernier canal).
+    Bloc(u16, u16),
+}
+
+/// Ce que dit une lecture, sans l'écran.
+struct Analyse<'a> {
+    active: Option<&'a Borne>,
+    voisines: Vec<&'a Borne>,
+    canal_24: Option<u16>,
+    canal_5: Option<u16>,
+    conseil_24: Conseil24,
+    /// Si une borne émet en 5 GHz : le conseil, et un bloc à radar libre à dire en plus.
+    conseil_5: Option<(Conseil5, Option<Bloc>)>,
+}
+
+/// Les bornes de son propre réseau (les deux bandes, les répéteurs) ne gênent pas : elles sont la box.
+fn du_reseau(active: Option<&Borne>, b: &Borne) -> bool {
+    active.is_some_and(|a| !a.ssid.is_empty() && b.ssid == a.ssid)
+}
+
+fn analyse(lecture: &Lecture) -> Analyse<'_> {
+    let bornes = &lecture.bornes;
+    let active = bornes.iter().find(|b| b.actif);
+    let voisines: Vec<&Borne> = bornes.iter().filter(|b| !du_reseau(active, b)).collect();
+    // Le canal de ta box par bande : celui de la connexion, sinon celui de la borne la plus forte du même réseau.
+    let canal_de_ta_box = |bande: Bande| {
+        let siennes = bornes
+            .iter()
+            .filter(|b| b.bande == bande && (b.actif || du_reseau(active, b)));
+        siennes.max_by_key(|b| (b.actif, b.signal)).map(|b| b.canal)
+    };
+    let (canal_24, canal_5) = (canal_de_ta_box(Bande::G24), canal_de_ta_box(Bande::G5));
+    // Une liste de voisins douteuse ne désigne aucun canal : un canal « libre » n'y serait peut-être qu'oublié.
+    let sure = lecture.reserve.is_none();
+    let meilleur = meilleur_24(&voisines);
+    let conseil_24 = match canal_24 {
+        _ if !sure => Conseil24::NonVerifie,
+        Some(c) if !CANAUX_24.contains(&c) => Conseil24::Chevauche(c, meilleur),
+        Some(c) if gene_24(&voisines, c) <= gene_24(&voisines, meilleur) + 0.1 => Conseil24::DejaLibre,
+        Some(_) => Conseil24::PlusLibre(meilleur),
+        None => Conseil24::SansRouteur(meilleur),
+    };
+    let conseil_5 = bornes.iter().any(|b| b.bande == Bande::G5).then(|| {
+        let ((debut, fin, _), libre) = meilleur_5(&voisines);
+        let conseil = match canal_5 {
+            _ if !sure => Conseil5::NonVerifie,
+            Some(c) if (debut..=fin).contains(&c) => Conseil5::DejaLibre,
+            _ => Conseil5::Bloc(debut, fin),
+        };
+        (conseil, libre.filter(|_| sure))
+    });
+    Analyse {
+        active,
+        voisines,
+        canal_24,
+        canal_5,
+        conseil_24,
+        conseil_5,
+    }
+}
+
+/// `vanguard canaux-wifi --json` : la même lecture que l'écran, sans recherche lancée ni rien de changé. Le nom des
+/// réseaux n'est pas écrit dans le résultat.
+pub fn json() {
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
+    let lecture = lire();
+    let r = resultat::resultat(lecture.as_ref().map_err(ToString::to_string), debut);
+    crate::modele::resultat::verser(&r);
+    println!("{}", crate::modele::resultat::json(&r));
+}
+
 /// Menu Réseau et Internet › Wi-Fi encombré, ou `vanguard canaux-wifi`.
 pub fn analyser() {
     titre(tr!("Wi-Fi encombré ?", "Crowded Wi-Fi?"));
@@ -196,11 +287,14 @@ pub fn analyser() {
 }
 
 fn afficher(lecture: &Lecture) {
-    let bornes = &lecture.bornes;
-    let active = bornes.iter().find(|b| b.actif);
-    // Les bornes de son propre réseau (les deux bandes, les répéteurs) ne gênent pas : elles sont la box.
-    let du_reseau = |b: &Borne| active.is_some_and(|a| !a.ssid.is_empty() && b.ssid == a.ssid);
-    let voisines: Vec<&Borne> = bornes.iter().filter(|b| !du_reseau(b)).collect();
+    let Analyse {
+        active,
+        voisines,
+        canal_24,
+        canal_5,
+        conseil_24,
+        conseil_5,
+    } = analyse(lecture);
     println!();
     if let Some(a) = active {
         let nom = match a.ssid.as_str() {
@@ -234,7 +328,6 @@ fn afficher(lecture: &Lecture) {
         );
         afficher_aligne("  ", &ligne, 2, DISCRET);
     }
-    // Une liste de voisins douteuse ne désigne aucun canal : un canal « libre » n'y serait peut-être qu'oublié.
     let non_verifie = tr!(
         "Canal le plus libre : non vérifié, la liste des voisins n'est pas sûre.",
         "Freest channel: not verified, the list of neighbors is not reliable."
@@ -248,14 +341,8 @@ fn afficher(lecture: &Lecture) {
         ),
     };
     afficher_aligne("  ", &autres, 2, GRIS);
-    // Le canal de ta box par bande : celui de la connexion, sinon celui de la borne la plus forte du même réseau.
-    let canal_de_ta_box = |bande: Bande| {
-        let siennes = bornes.iter().filter(|b| b.bande == bande && (b.actif || du_reseau(b)));
-        siennes.max_by_key(|b| (b.actif, b.signal)).map(|b| b.canal)
-    };
     let ta_box = tr!(" ← votre routeur", " ← your router");
     section(tr!("2,4 GHz", "2.4 GHz"));
-    let canal_24 = canal_de_ta_box(Bande::G24);
     let genes = CANAUX_24.map(|c| gene_24(&voisines, c));
     let maximum = genes.into_iter().fold(0.0, f64::max);
     for (c, g) in CANAUX_24.into_iter().zip(genes) {
@@ -263,31 +350,9 @@ fn afficher(lecture: &Lecture) {
         let (barre, reseaux) = (barre_gene(g, maximum), accord_reseaux(recouvrent_24(&voisines, c)));
         println!("  {} {c:>2}  {barre}  {reseaux}{tien}", tr!("Canal", "Channel"));
     }
-    let meilleur = meilleur_24(&voisines);
-    let conseil_24 = match canal_24 {
-        _ if lecture.reserve.is_some() => non_verifie.to_string(),
-        Some(c) if !CANAUX_24.contains(&c) => trf!(
-            "Votre routeur est sur le canal {}, qui chevauche ses voisins des deux côtés : réglez-le sur le canal {meilleur}.",
-            "Your router is on channel {}, which overlaps its neighbors on both sides: set it to channel {meilleur}.",
-            c
-        ),
-        Some(c) if gene_24(&voisines, c) <= gene_24(&voisines, meilleur) + 0.1 => String::from(tr!(
-            "Votre canal est déjà le plus libre : rien à changer.",
-            "Your channel is already the freest: nothing to change."
-        )),
-        Some(_) => trf!(
-            "Le canal {meilleur} est plus libre : à régler dans l'administration du routeur (Wi-Fi 2,4 GHz, canal), au lieu de « automatique » s'il reste sur un canal chargé.",
-            "Channel {meilleur} is freer: set it in the router's admin page (2.4 GHz Wi-Fi, channel), instead of “automatic” if it stays on a busy channel."
-        ),
-        None => trf!(
-            "Le plus libre ici : le canal {meilleur}.",
-            "The freest here: channel {meilleur}."
-        ),
-    };
-    afficher_aligne("  → ", &conseil_24, 4, "");
-    if bornes.iter().any(|b| b.bande == Bande::G5) {
+    afficher_aligne("  → ", &texte_24(&conseil_24, non_verifie), 4, "");
+    if let Some((conseil_5, libre)) = conseil_5 {
         section("5 GHz");
-        let canal_5 = canal_de_ta_box(Bande::G5);
         let occupation = BLOCS_5.map(|b| bloc_5(&voisines, b));
         let maximum = occupation.iter().map(|o| o.1).fold(0.0, f64::max);
         for ((debut, fin, sans_radar), (n, g)) in BLOCS_5.into_iter().zip(occupation) {
@@ -297,26 +362,60 @@ fn afficher(lecture: &Lecture) {
             let barre = barre_gene(g, maximum);
             println!("  {canaux:<17}{barre}  {}{GRIS}{radar}{RESET}{tien}", accord_reseaux(n));
         }
-        let ((debut, fin, _), libre) = meilleur_5(&voisines);
-        let mut conseil = match canal_5 {
-            _ if lecture.reserve.is_some() => non_verifie.to_string(),
-            Some(c) if (debut..=fin).contains(&c) => String::from(tr!(
-                "Votre routeur est déjà dans le bloc le plus libre sans radar.",
-                "Your router is already in the freest block without radar."
-            )),
-            _ => trf!(
-                "Le bloc le plus libre sans radar : canaux {debut} à {fin} (canal {debut} dans l'administration du routeur).",
-                "The freest block without radar: channels {debut} to {fin} (channel {debut} in the router's admin page)."
-            ),
-        };
-        if let Some((d, f, _)) = libre.filter(|_| lecture.reserve.is_none()) {
-            conseil += &trf!(
-                " Les canaux {d} à {f} sont libres, mais le routeur doit y céder la place aux radars (coupures de quelques secondes).",
-                " Channels {d} to {f} are free, but the router must give way to radars there (drops of a few seconds)."
-            );
-        }
-        afficher_aligne("  → ", &conseil, 4, "");
+        afficher_aligne("  → ", &texte_5(&conseil_5, libre, non_verifie), 4, "");
     }
+    afficher_fin(lecture, active, &voisines);
+}
+
+/// Le conseil de 2,4 GHz en phrase ; `non_verifie` : la phrase d'une liste de voisins douteuse.
+fn texte_24(conseil: &Conseil24, non_verifie: &str) -> String {
+    match *conseil {
+        Conseil24::NonVerifie => non_verifie.to_string(),
+        Conseil24::Chevauche(c, meilleur) => trf!(
+            "Votre routeur est sur le canal {}, qui chevauche ses voisins des deux côtés : réglez-le sur le canal {meilleur}.",
+            "Your router is on channel {}, which overlaps its neighbors on both sides: set it to channel {meilleur}.",
+            c
+        ),
+        Conseil24::DejaLibre => String::from(tr!(
+            "Votre canal est déjà le plus libre : rien à changer.",
+            "Your channel is already the freest: nothing to change."
+        )),
+        Conseil24::PlusLibre(meilleur) => trf!(
+            "Le canal {meilleur} est plus libre : à régler dans l'administration du routeur (Wi-Fi 2,4 GHz, canal), au lieu de « automatique » s'il reste sur un canal chargé.",
+            "Channel {meilleur} is freer: set it in the router's admin page (2.4 GHz Wi-Fi, channel), instead of “automatic” if it stays on a busy channel."
+        ),
+        Conseil24::SansRouteur(meilleur) => trf!(
+            "Le plus libre ici : le canal {meilleur}.",
+            "The freest here: channel {meilleur}."
+        ),
+    }
+}
+
+/// Le conseil de 5 GHz en phrase, et le bloc à radar libre s'il y en a un.
+fn texte_5(conseil: &Conseil5, libre: Option<Bloc>, non_verifie: &str) -> String {
+    let mut texte = match *conseil {
+        Conseil5::NonVerifie => non_verifie.to_string(),
+        Conseil5::DejaLibre => String::from(tr!(
+            "Votre routeur est déjà dans le bloc le plus libre sans radar.",
+            "Your router is already in the freest block without radar."
+        )),
+        Conseil5::Bloc(debut, fin) => trf!(
+            "Le bloc le plus libre sans radar : canaux {debut} à {fin} (canal {debut} dans l'administration du routeur).",
+            "The freest block without radar: channels {debut} to {fin} (channel {debut} in the router's admin page)."
+        ),
+    };
+    if let Some((d, f, _)) = libre {
+        texte += &trf!(
+            " Les canaux {d} à {f} sont libres, mais le routeur doit y céder la place aux radars (coupures de quelques secondes).",
+            " Channels {d} to {f} are free, but the router must give way to radars there (drops of a few seconds)."
+        );
+    }
+    texte
+}
+
+/// La fin de l'écran : le 6 GHz, et l'astuce du 5 GHz.
+fn afficher_fin(lecture: &Lecture, active: Option<&Borne>, voisines: &[&Borne]) {
+    let bornes = &lecture.bornes;
     if bornes.iter().any(|b| b.bande == Bande::G6) {
         section("6 GHz");
         let six = trf!(
@@ -327,7 +426,9 @@ fn afficher(lecture: &Lecture) {
         afficher_aligne("  ", &six, 2, GRIS);
     }
     // Connecté en 2,4 GHz alors que la box émet aussi en 5 GHz : plus rapide et moins encombré, de près.
-    if active.is_some_and(|a| a.bande == Bande::G24) && bornes.iter().any(|b| b.bande != Bande::G24 && du_reseau(b)) {
+    if active.is_some_and(|a| a.bande == Bande::G24)
+        && bornes.iter().any(|b| b.bande != Bande::G24 && du_reseau(active, b))
+    {
         println!();
         let astuce = tr!(
             "Votre routeur émet aussi en 5 GHz sous le même nom : près de lui, c'est plus rapide et moins encombré. Si l'appareil reste en 2,4 GHz, donnez un nom différent à chaque bande dans le routeur.",

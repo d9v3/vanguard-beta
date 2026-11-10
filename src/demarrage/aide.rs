@@ -356,6 +356,11 @@ pub(crate) const OPTIONS_EN: &[(&str, &str, &str)] = &[
     ("verifier-moi", "json", "The result as JSON, for a script: with no question, so without the signed history (which \
                               asks for consent), said not compared; what could not be checked is said, nothing \
                               changes"),
+    ("cameras-cachees", "json", "The result as JSON, for a script: nothing is asked, turned off or changed"),
+    ("nat", "json", "The result as JSON, for a script: nothing changes; offline, nothing is sent"),
+    ("canaux-wifi", "json", "The result as JSON, for a script: no search is started, nothing changes"),
+    ("conteneurs", "json", "The result as JSON, for a script: nothing is installed or downloaded; at most 30 images \
+                            and 10 minutes"),
 ];
 
 /// La ligne de commande, avec son aide en anglais si l'interface est en anglais (l'aide écrite plus haut, en

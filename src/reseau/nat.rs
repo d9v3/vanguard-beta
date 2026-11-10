@@ -15,6 +15,8 @@ use crate::reseau::upnp::Etat;
 use crate::risk::Niveau;
 use crate::ui::*;
 
+mod resultat;
+
 /// Valeur fixe des messages STUN (« magic cookie »), qui masque aussi les adresses rendues.
 const MAGIC: u32 = 0x2112_A442;
 const MAGIC_HAUT: u16 = 0x2112;
@@ -302,8 +304,21 @@ pub(crate) fn adresse_partagee(box_internet: Option<Ipv4Addr>, publique: IpAddr)
     }
 }
 
-/// L'IPv6 : absente, directe (pas de NAT : ce que les consoles préfèrent), ou injoignable.
-fn afficher_ipv6() {
+/// L'IPv6 de cet ordinateur, vue d'Internet.
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum Ipv6 {
+    /// Aucune adresse publique : rien à mesurer.
+    Absente,
+    /// Internet voit l'adresse de l'ordinateur : pas de NAT, ce que les consoles préfèrent.
+    Directe,
+    /// Internet voit une autre adresse : traduite elle aussi (rare).
+    Traduite,
+    /// Une adresse, mais aucun serveur ne répond par là.
+    Injoignable,
+}
+
+/// L'IPv6 : absente, directe, traduite ou injoignable.
+fn ipv6() -> Ipv6 {
     // Adresses IPv6 publiques (2000::/3) de cet ordinateur.
     let locales: Vec<IpAddr> = if_addrs::get_if_addrs()
         .unwrap_or_default()
@@ -312,28 +327,98 @@ fn afficher_ipv6() {
         .filter(|ip| matches!(ip, IpAddr::V6(v6) if v6.segments()[0] & 0xe000 == 0x2000))
         .collect();
     // Sans adresse, rien à mesurer.
-    let vue = (!locales.is_empty()).then(|| mesurer(true).and_then(|m| m.vues.first().map(|v| v.1.ip())));
+    if locales.is_empty() {
+        return Ipv6::Absente;
+    }
+    match mesurer(true).and_then(|m| m.vues.first().map(|v| v.1.ip())) {
+        Some(ip) if locales.contains(&ip) => Ipv6::Directe,
+        Some(_) => Ipv6::Traduite,
+        None => Ipv6::Injoignable,
+    }
+}
+
+/// L'IPv6 à l'écran.
+fn afficher_ipv6() {
+    let vue = ipv6();
     println!();
     let directe = |t| afficher_aligne(&format!("  {VERT}✔{RESET} "), t, 4, "");
     let info = |t| afficher_aligne(&format!("  {}ℹ{RESET} ", couleur(Niveau::Info)), t, 4, "");
     match vue {
-        None => info(tr!(
+        Ipv6::Absente => info(tr!(
             "IPv6 : absente sur ce réseau. Les jeux passent par l'IPv4, et donc par le NAT ci-dessus.",
             "IPv6: absent on this network. Games go through IPv4, hence through the NAT above."
         )),
-        Some(Some(ip)) if locales.contains(&ip) => directe(tr!(
+        Ipv6::Directe => directe(tr!(
             "IPv6 : directe, sans NAT. Les jeux et les consoles qui s'en servent sont joignables, si le pare-feu du routeur les laisse passer.",
             "IPv6: direct, without NAT. Games and consoles that use it are reachable, if the router's firewall lets them through."
         )),
-        Some(Some(_)) => info(tr!(
+        Ipv6::Traduite => info(tr!(
             "IPv6 : présente, mais traduite elle aussi (rare) : comme pour l'IPv4.",
             "IPv6: present, but translated as well (rare): same as IPv4."
         )),
-        Some(None) => info(tr!(
+        Ipv6::Injoignable => info(tr!(
             "IPv6 : une adresse, mais Internet ne répond pas par là (bloquée par le routeur ou le fournisseur).",
             "IPv6: an address, but the Internet does not answer that way (blocked by the router or the provider)."
         )),
     }
+}
+
+/// L'UPnP de la box : actif, coupé (`Some(false)`), ou inconnu (`None`), et son nom à l'écran.
+fn upnp_lu(upnp: &Etat) -> (Option<bool>, &'static str) {
+    match upnp {
+        Etat::Actif(_) => (Some(true), tr!("actif", "on")),
+        Etat::Absent => (Some(false), tr!("coupé ou absent", "off or absent")),
+        Etat::OutilAbsent | Etat::OutilEnEchec => (
+            None,
+            tr!("inconnu (routeur non interrogé)", "unknown (router not queried)"),
+        ),
+        Etat::Usurpee(_) => (
+            None,
+            tr!(
+                "inconnu (un autre appareil se dit routeur)",
+                "unknown (another device claims to be the router)"
+            ),
+        ),
+    }
+}
+
+/// Ce qu'a mesuré un test, pour `--json` : les mêmes mesures que l'écran, dans le même ordre.
+struct Releve {
+    /// `None` : aucun serveur n'a répondu (pas d'Internet, UDP sortant bloqué).
+    mesure: Option<Mesure>,
+    /// L'UPnP de la box et ce qu'on en dit (`upnp_lu`) ; l'adresse que la box dit avoir sur Internet.
+    upnp: (Option<bool>, &'static str),
+    box_internet: Option<Ipv4Addr>,
+    ipv6: Ipv6,
+}
+
+fn relever() -> Releve {
+    let Some(mesure) = mesurer(false).filter(|m| !m.vues.is_empty()) else {
+        return Releve {
+            mesure: None,
+            upnp: (None, ""),
+            box_internet: None,
+            ipv6: Ipv6::Absente,
+        };
+    };
+    let (upnp, box_internet) = crate::reseau::upnp::etat_et_adresse();
+    Releve {
+        mesure: Some(mesure),
+        upnp: upnp_lu(&upnp),
+        box_internet,
+        ipv6: ipv6(),
+    }
+}
+
+/// `vanguard nat --json` : les mêmes mesures que l'écran, sans rien demander ni afficher d'autre que le JSON. Hors
+/// ligne (VANGUARD_HORS_LIGNE, Paramètres), rien ne part vers les serveurs : tout est dit non vérifié. L'adresse
+/// publique n'est pas écrite dans le résultat : il est gardé dans le rapport, qui n'en a pas besoin.
+pub fn json() {
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
+    let releve = (!crate::parametres::hors_ligne()).then(relever);
+    let r = resultat::resultat(releve.as_ref(), debut);
+    crate::modele::resultat::verser(&r);
+    println!("{}", crate::modele::resultat::json(&r));
 }
 
 /// Menu Réseau et Internet › Type de NAT, ou `vanguard nat`.
@@ -362,21 +447,7 @@ pub fn tester() {
         return;
     };
     let (upnp, box_internet) = crate::reseau::upnp::etat_et_adresse();
-    let (upnp_actif, etat_upnp) = match upnp {
-        Etat::Actif(_) => (Some(true), tr!("actif", "on")),
-        Etat::Absent => (Some(false), tr!("coupé ou absent", "off or absent")),
-        Etat::OutilAbsent | Etat::OutilEnEchec => (
-            None,
-            tr!("inconnu (routeur non interrogé)", "unknown (router not queried)"),
-        ),
-        Etat::Usurpee(_) => (
-            None,
-            tr!(
-                "inconnu (un autre appareil se dit routeur)",
-                "unknown (another device claims to be the router)"
-            ),
-        ),
-    };
+    let (upnp_actif, etat_upnp) = upnp_lu(&upnp);
     println!();
     let champ = |nom, valeur: &str| afficher_aligne(&format!("  {GRIS}{}{RESET}", ajuster(nom, 18)), valeur, 20, "");
     champ(tr!("Adresse publique", "Public address"), &publique.ip().to_string());

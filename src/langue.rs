@@ -257,6 +257,9 @@ fn categorie_en(nom: &str) -> Option<&'static str> {
         "Exposition" => "Exposure",
         "Appareils" => "Connected devices",
         "Postes" => "Computers",
+        "Caméras cachées" => "Hidden cameras",
+        "Canaux Wi-Fi" => "Wi-Fi channels",
+        "Conteneurs" => "Containers",
         _ => return None,
     })
 }
@@ -275,6 +278,7 @@ const MEMES_EN: &[&str] = &[
     "Firmware",
     "Flatpak",
     "Homebrew",
+    "NAT",
     "SMBv1",
     "SSH",
     "Secure Boot",

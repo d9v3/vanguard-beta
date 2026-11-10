@@ -12,6 +12,13 @@ use std::process::Command;
 use crate::protection::outil::{self, Externe, Linux};
 use crate::ui::*;
 
+mod resultat;
+
+/// Bornes de `--json` : un examen lancé par la fenêtre ou un script ne tourne pas une heure.
+const IMAGES_MAX: usize = 30;
+const BUDGET_S: u64 = 600;
+const PAR_IMAGE_S: u64 = 300;
+
 const TRIVY: Externe = Externe {
     nom: "trivy",
     presentation: (
@@ -94,9 +101,30 @@ fn moteur() -> Option<(&'static str, PathBuf)> {
         .find_map(|nom| outil::trouver(nom).map(|chemin| (nom, chemin)))
 }
 
-fn analyser_image(trivy: &Path, source: &str, image: &str) -> Option<Vec<Faille>> {
+/// Les images de Docker ou de Podman, une par ligne ; `None` : liste illisible.
+fn lister(source: &str, moteur: &Path) -> Option<String> {
+    // Docker : son API locale d'abord (lecture seule), la CLI quand un autre hôte ou un contexte est réglé.
+    images_par_l_api(source).or_else(|| {
+        crate::commande::lancer(
+            Command::new(moteur).args(["image", "ls", "--format", "{{.Repository}}:{{.Tag}}"]),
+            30,
+        )
+        .filter(|r| r.code == Some(0))
+        .map(|r| r.sortie)
+    })
+}
+
+/// `hors_ligne` (pour `--json`) : rien ne se télécharge (ni la base Java, ni les dépendances en ligne), rien ne
+/// s'écrit dans le cache de trivy, et trivy ne cherche pas sa propre mise à jour.
+fn analyser_image(trivy: &Path, source: &str, image: &str, hors_ligne: bool, secondes: u64) -> Option<Vec<Faille>> {
+    let mut commande = Command::new(trivy);
+    if hors_ligne {
+        commande
+            .args(["--skip-java-db-update", "--offline-scan", "--cache-backend", "memory"])
+            .env("TRIVY_SKIP_VERSION_CHECK", "true");
+    }
     let r = crate::commande::lancer(
-        Command::new(trivy).args([
+        commande.args([
             "image",
             "--quiet",
             "--skip-db-update",
@@ -110,12 +138,72 @@ fn analyser_image(trivy: &Path, source: &str, image: &str) -> Option<Vec<Faille>
             source,
             image,
         ]),
-        600,
+        secondes,
     )?;
     if r.code != Some(0) {
         return None;
     }
     lire_rapport(&r.sortie)
+}
+
+/// La date de la base des failles de trivy, sans rien télécharger ; `None` : pas de base, ou illisible.
+fn base_de(trivy: &Path) -> Option<chrono::DateTime<chrono::Utc>> {
+    let r = crate::commande::lancer(
+        Command::new(trivy)
+            .args(["version", "--format", "json"])
+            .env("TRIVY_SKIP_VERSION_CHECK", "true"),
+        30,
+    )?;
+    (r.code == Some(0))
+        .then(|| resultat::date_de_la_base(&r.sortie))
+        .flatten()
+}
+
+/// Ce que voit l'examen de `--json`, sans rien proposer, installer ni télécharger.
+fn relever() -> resultat::Releve {
+    use resultat::Releve;
+    let Some((source, moteur)) = moteur() else {
+        return Releve::SansMoteur;
+    };
+    let Some(sortie) = lister(source, &moteur) else {
+        return Releve::ListeIllisible;
+    };
+    let images = images(&sortie);
+    if images.is_empty() {
+        return Releve::SansImage;
+    }
+    let total = images.len();
+    let Some(trivy) = outil::trouver("trivy") else {
+        return Releve::SansTrivy { images: total };
+    };
+    let Some(base) = base_de(&trivy) else {
+        return Releve::SansBase { images: total };
+    };
+    let depart = std::time::Instant::now();
+    let mut analysees = Vec::new();
+    for image in images.iter().take(IMAGES_MAX) {
+        // Moins de 10 s de reste : l'image ne serait pas analysée à temps ; elle est comptée non analysée.
+        let reste = BUDGET_S.saturating_sub(depart.elapsed().as_secs());
+        if reste < 10 {
+            break;
+        }
+        let failles = analyser_image(&trivy, source, image, true, reste.min(PAR_IMAGE_S));
+        analysees.push((affichable(image), failles));
+    }
+    Releve::Analyse {
+        images: total,
+        base,
+        analysees,
+    }
+}
+
+/// `vanguard conteneurs --json` : les images analysées par trivy, s'il est là avec sa base des failles. Rien n'est
+/// proposé, installé ni téléchargé ; borné à 30 images et 10 minutes.
+pub fn json() {
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
+    let r = resultat::resultat(&relever(), debut);
+    crate::modele::resultat::verser(&r);
+    println!("{}", crate::modele::resultat::json(&r));
 }
 
 /// Menu Antivirus et protection › Failles des images Docker, et « vanguard conteneurs ».
@@ -128,17 +216,7 @@ pub fn analyser() {
         );
         return;
     };
-    // Docker : son API locale d'abord (lecture seule), la CLI quand un autre hôte ou un contexte est réglé.
-    let par_l_api = images_par_l_api(source);
-    let liste = if par_l_api.is_some() {
-        None
-    } else {
-        crate::commande::lancer(
-            Command::new(&moteur).args(["image", "ls", "--format", "{{.Repository}}:{{.Tag}}"]),
-            30,
-        )
-    };
-    let Some(sortie) = par_l_api.or_else(|| liste.filter(|r| r.code == Some(0)).map(|r| r.sortie)) else {
+    let Some(sortie) = lister(source, &moteur) else {
         // Le plus souvent, le démon de Docker réservé à root et au groupe docker (qui vaut root : le bilan le dit).
         trp!(
             "  ✖ Liste des images illisible : Docker est peut-être réservé à root (sudo vanguard conteneurs), ou arrêté.",
@@ -173,7 +251,7 @@ pub fn analyser() {
     let mut a_mettre_a_jour = 0usize;
     for image in &images {
         let nom = affichable(image);
-        let Some(failles) = analyser_image(&trivy, source, image) else {
+        let Some(failles) = analyser_image(&trivy, source, image, false, 600) else {
             println!(
                 "  ⚠ {}",
                 trf!(

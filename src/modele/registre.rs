@@ -99,4 +99,7 @@ pub(crate) const OUTILS: &[Outil] = &[
     Outil { id: "PRO-MAJ-001", module: "maj", sujet: ("mises à jour en attente", "pending updates") },
     Outil { id: "PRO-DEM-001", module: "optimiser::demarrage", sujet: ("programmes au démarrage", "startup programs") },
     Outil { id: "PRO-MOI-001", module: "protection::manifeste", sujet: ("Vanguard vérifié lui-même : empreinte, manifeste de la clé", "Vanguard checking itself: checksum, key manifest") },
+    Outil { id: "PRO-CCH-001", module: "reseau::cameras", sujet: ("caméras cachées sur le réseau local", "hidden cameras on the local network") },
+    Outil { id: "PRO-NAT-001", module: "reseau::nat", sujet: ("type de NAT pour le jeu", "NAT type for gaming") },
+    Outil { id: "PRO-CAN-001", module: "reseau::canaux", sujet: ("canaux Wi-Fi encombrés", "crowded Wi-Fi channels") },
 ];

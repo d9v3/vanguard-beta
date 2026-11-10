@@ -113,8 +113,8 @@ pub(crate) fn commande_d_optimiser(c: &Commande) -> bool {
         | Commande::Gaming
         | Commande::DnsRapide
         | Commande::Connexion { .. }
-        | Commande::Nat
-        | Commande::Canaux => true,
+        | Commande::Nat { .. }
+        | Commande::Canaux { .. } => true,
         _ => false,
     }
 }

@@ -3771,3 +3771,20 @@ exec /proc/self/fd/3 "$@""#;
     );
     let _ = std::fs::remove_dir_all(&maison);
 }
+
+/// `nat --json` hors ligne : rien ne part vers les serveurs STUN, rien n'est conclu, et la raison est dite.
+#[test]
+fn nat_en_json_hors_ligne() {
+    let v = examen_en_json("nat", "PRO-NAT-001");
+    assert_eq!(v["couverture"]["verifies"], 0, "{v}");
+    assert_eq!(v["constats"][0]["etat"], "non-verifie", "{v}");
+    assert_eq!(v["constats"][0]["raison"], "refuse", "{v}");
+}
+
+/// `canaux-wifi --json` : la lecture du système seulement (aucune recherche lancée), sans question. Ce qu'elle
+/// trouve dépend de la machine : seule la forme est vérifiée. `cameras-cachees` (qui sonderait le réseau local de la
+/// machine d'essai) et `conteneurs` (qui lancerait trivy sur ses images) n'ont pas d'essai ici.
+#[test]
+fn canaux_wifi_en_json() {
+    examen_en_json("canaux-wifi", "PRO-CAN-001");
+}

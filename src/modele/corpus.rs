@@ -159,6 +159,7 @@ const CAS_DES_OUTILS: &[(&str, Juge)] = &[
     ("SUR-APP-001", crate::reseau::surveillance::corpus),
     ("SUR-PRT-001", crate::reseau::surveillance::corpus),
     ("SUR-EMP-001", crate::reseau::surveillance::corpus),
+    ("PRO-CCH-001", crate::reseau::cameras::corpus),
 ];
 
 // ───────────────────────────── La liste fermée ─────────────────────────────
@@ -188,6 +189,8 @@ const NE_DETECTENT_PAS: &[(&str, &str)] = &[
         "PRO-DEM-001",
         "inventaire des programmes au démarrage, montrés comme l'écran à cocher",
     ),
+    ("PRO-NAT-001", "type de NAT pour le jeu"),
+    ("PRO-CAN-001", "conseil de canal Wi-Fi"),
 ];
 
 /// Les règles de détection qu'aucun cas n'exerce, pour de bon, avec leur raison.
@@ -714,6 +717,15 @@ const FILS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("reseau/surveillance.rs", "passe"),
             ("reseau/surveillance.rs", "alertes_du_scan"),
+        ],
+    ),
+    (
+        "PRO-CCH-001",
+        &[
+            ("reseau/cameras.rs", "json"),
+            ("reseau/cameras/resultat.rs", "resultat"),
+            ("reseau/cameras/resultat.rs", "juger"),
+            ("reseau/cameras/resultat.rs", "constat"),
         ],
     ),
 ];

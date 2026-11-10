@@ -281,13 +281,25 @@ pub(crate) enum Commande {
     /// Wi-Fi encombré : les réseaux voisins par canal, et le canal le plus libre à régler sur le routeur. Lecture
     /// seule.
     #[command(name = "canaux-wifi", visible_alias = "wifi-channels")]
-    Canaux,
+    Canaux {
+        /// Le résultat en JSON, pour un script : rien n'est demandé ni changé.
+        #[arg(long)]
+        json: bool,
+    },
     /// Type de NAT pour le jeu (ouvert, modéré ou strict), d'après deux serveurs publics (STUN). Lecture seule.
-    Nat,
+    Nat {
+        /// Le résultat en JSON, pour un script : rien n'est demandé ni changé.
+        #[arg(long)]
+        json: bool,
+    },
     /// Caméras cachées : sur le réseau d'une location ou de quelqu'un, les appareils qui ressemblent à des caméras.
     /// Lecture seule.
     #[command(name = "cameras-cachees", visible_alias = "hidden-cameras")]
-    Cameras,
+    Cameras {
+        /// Le résultat en JSON, pour un script : rien n'est demandé ni changé.
+        #[arg(long)]
+        json: bool,
+    },
     /// Routeur et objets connectés d'après le dernier scan gardé : ce que le routeur annonce (modèle, logiciel), son
     /// administration en HTTP seul, les caméras, imprimantes, NAS… et leur mot de passe d'origine. Rien n'est sondé.
     #[command(name = "objets-connectes", visible_alias = "smart-devices")]
@@ -524,7 +536,11 @@ pub(crate) enum Commande {
     },
     /// Failles connues des images Docker ou Podman de cet ordinateur, par trivy s'il est installé. Lecture seule.
     #[command(visible_alias = "containers")]
-    Conteneurs,
+    Conteneurs {
+        /// Le résultat en JSON, pour un script : rien n'est demandé ni changé.
+        #[arg(long)]
+        json: bool,
+    },
     /// Paramètres : tous les réglages de Vanguard (langue, emojis, travail sans Internet, protection en temps réel,
     /// surveillance, entretien, alertes apprises, blocage, restrictions des extensions, clé abuse.ch, second avis de
     /// ClamAV, programmes indésirables (PUA), versions des logiciels, autodiagnostic de la semaine, paquets de l'AUR, Agent Vanguard, partage avec l'auteur). Sans

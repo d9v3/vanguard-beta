@@ -100,6 +100,10 @@ pub(crate) const INVENTAIRE: &[FichierEtat] = &[
     scelle(crate::modele::resultat::FICHIERS[21], "modele::resultat"),
     scelle(crate::modele::resultat::FICHIERS[22], "modele::resultat"),
     scelle(crate::modele::resultat::FICHIERS[23], "modele::resultat"),
+    scelle(crate::modele::resultat::FICHIERS[24], "modele::resultat"),
+    scelle(crate::modele::resultat::FICHIERS[25], "modele::resultat"),
+    scelle(crate::modele::resultat::FICHIERS[26], "modele::resultat"),
+    scelle(crate::modele::resultat::FICHIERS[27], "modele::resultat"),
     // L'autotest : la date du dernier (scellée, sinon un programme du compte repousserait l'hebdomadaire à jamais) et
     // ses lectures contredites.
     scelle(crate::autotest::DERNIER, "autotest"),

@@ -15,9 +15,14 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
+use crate::modele::raison::Echec;
 use crate::reseau::{nat, scan};
 use crate::risk::Niveau;
 use crate::ui::*;
+
+mod resultat;
+#[cfg(test)]
+pub(crate) use resultat::corpus;
 
 /// Fabricants de caméras tels que les nomme le registre des adresses MAC (en minuscules), et le nom à montrer.
 /// Les marques qui font aussi des box, des prises ou des téléphones (TP-Link, Xiaomi, Tuya) n'y sont pas : leur
@@ -179,12 +184,11 @@ fn uuid() -> String {
 }
 
 /// Recherche ONVIF (WS-Discovery) : une question envoyée à tout le réseau local (239.255.255.250, port 3702), à
-/// laquelle seules les caméras répondent. Deux envois, une réponse UDP pouvant se perdre.
-fn chercher_onvif() -> BTreeMap<Ipv4Addr, String> {
+/// laquelle seules les caméras répondent. Deux envois, une réponse UDP pouvant se perdre. `None` : la question n'a
+/// pas pu partir (pas de socket, envoi refusé) ; une caméra qui ne répond qu'à ONVIF n'a alors pas été cherchée.
+fn chercher_onvif() -> Option<BTreeMap<Ipv4Addr, String>> {
     let mut trouvees = BTreeMap::new();
-    let Ok(socket) = UdpSocket::bind("0.0.0.0:0") else {
-        return trouvees;
-    };
+    let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
     // Une seule traversée de routeur : la question reste sur le réseau local.
     let _ = socket.set_multicast_ttl_v4(1);
     let question = format!(
@@ -202,8 +206,11 @@ fn chercher_onvif() -> BTreeMap<Ipv4Addr, String> {
     );
     let groupe = SocketAddr::from(([239, 255, 255, 250], 3702));
     let mut tampon = vec![0u8; 16 * 1024];
-    for _ in 0..2 {
+    for essai in 0..2 {
         if socket.send_to(question.as_bytes(), groupe).is_err() {
+            if essai == 0 {
+                return None;
+            }
             break;
         }
         // Toutes les caméras répondent à la même question : elles sont lues jusqu'à la fin du délai.
@@ -220,22 +227,46 @@ fn chercher_onvif() -> BTreeMap<Ipv4Addr, String> {
             None::<()>
         });
     }
-    trouvees
+    Some(trouvees)
+}
+
+/// Ce qu'une recherche a vu, et ce qu'elle n'a pas pu voir (`--json` le dit non vérifié).
+#[derive(Default, Debug)]
+pub(crate) struct Recherche {
+    /// Les appareils qui ont répondu sur le réseau, cet ordinateur et le routeur compris.
+    pub(crate) appareils: usize,
+    pub(crate) indices: BTreeMap<Ipv4Addr, Indices>,
+    /// La recherche ONVIF est partie.
+    pub(crate) onvif: bool,
+    /// Les autres appareils qui n'ont ouvert aucun des ports sondés, sans autre indice : rien ne les désigne, mais
+    /// une caméra derrière un pare-feu leur ressemblerait.
+    pub(crate) sans_reponse: usize,
 }
 
 /// Les indices de chaque appareil du réseau local ; l'audit du réseau (domaine Appareils) les réutilise.
 pub(crate) async fn chercher(cible: &str, moi: Ipv4Addr) -> Result<(usize, BTreeMap<Ipv4Addr, Indices>), String> {
-    let ips = scan::parse_cible(cible)?;
+    chercher_tout(cible, moi)
+        .await
+        .map(|r| (r.appareils, r.indices))
+        .map_err(String::from)
+}
+
+/// La recherche entière : les indices, et ce qui n'a pas pu se voir.
+pub(crate) async fn chercher_tout(cible: &str, moi: Ipv4Addr) -> Result<Recherche, Echec> {
+    let ips = scan::parse_cible(cible).map_err(|e| Echec::refuse("cameras/cible", e))?;
     let parallele = scan::limite_connexions(512);
     let onvif = tokio::task::spawn_blocking(chercher_onvif);
     let vivantes = scan::decouvrir(&ips, Duration::from_millis(400), parallele).await;
     let ports = [&RTSP[..], &PORTS_CAMERA, &PORTS_POSSIBLES, &PORTS_WEB].concat();
     let ouverts = scan::scanner_ports(&vivantes, &ports, Duration::from_millis(700), parallele).await;
     let arp = scan::table_arp();
-    let onvif = onvif.await.unwrap_or_default();
+    let onvif = onvif.await.ok().flatten();
+    let onvif_parti = onvif.is_some();
+    let onvif = onvif.unwrap_or_default();
     let passerelle = scan::passerelle();
     let autre = |ip: &Ipv4Addr| *ip != moi && Some(*ip) != passerelle;
     let mut indices: BTreeMap<Ipv4Addr, Indices> = BTreeMap::new();
+    let mut sans_reponse = 0usize;
     for (&ip, liste) in ouverts.iter().filter(|(ip, _)| autre(ip)) {
         let mut i = Indices {
             fabricant: arp.get(&ip).and_then(|mac| fabricant_camera(&scan::fabricant(mac)?)),
@@ -254,13 +285,20 @@ pub(crate) async fn chercher(cible: &str, moi: Ipv4Addr) -> Result<(usize, BTree
         }
         if i.force().is_some() {
             indices.insert(ip, i);
+        } else if liste.is_empty() && !onvif.contains_key(&ip) {
+            sans_reponse = sans_reponse.saturating_add(1);
         }
     }
     // Une caméra qui a répondu à ONVIF sans qu'aucun de ses ports ne réponde (pare-feu) compte aussi.
     for (ip, c) in onvif.into_iter().filter(|(ip, _)| autre(ip)) {
         indices.entry(ip).or_default().onvif.get_or_insert(c);
     }
-    Ok((vivantes.len(), indices))
+    Ok(Recherche {
+        appareils: vivantes.len(),
+        indices,
+        onvif: onvif_parti,
+        sans_reponse,
+    })
 }
 
 pub(crate) fn lignes_indices(i: &Indices) -> Vec<(String, Option<Niveau>)> {
@@ -377,6 +415,26 @@ pub async fn chercher_cameras() {
     };
     println!();
     afficher_aligne(&format!("  {} ", ampoule()), conseil, 5, "");
+}
+
+/// `vanguard cameras-cachees --json` : la même recherche que l'écran, sur le réseau local seulement (rien ne part sur
+/// Internet), sans rien afficher d'autre que le JSON. Ce qui n'a pas pu se voir est dit non vérifié.
+pub async fn json() {
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
+    let recherche = match scan::reseau_local() {
+        Some((cible, moi)) => chercher_tout(&cible, moi).await,
+        None => Err(Echec::echoue(
+            "cameras/reseau",
+            tr!(
+                "pas de réseau local détecté : connectez-vous d'abord au Wi-Fi du lieu",
+                "no local network detected: connect to the place's Wi-Fi first"
+            ),
+        )),
+    }
+    .map_err(|e| e.to_string());
+    let r = resultat::resultat(recherche.as_ref().map_err(String::as_str), debut);
+    crate::modele::resultat::verser(&r);
+    println!("{}", crate::modele::resultat::json(&r));
 }
 
 #[allow(

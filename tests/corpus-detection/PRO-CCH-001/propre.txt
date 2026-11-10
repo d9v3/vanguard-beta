@@ -1,0 +1,2 @@
+appareil|192.0.2.20
+appareil|192.0.2.21
