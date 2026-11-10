@@ -1,0 +1,50 @@
+# Ce que les dépendances de la fenêtre (vanguard-fenetre, crate à part avec son Cargo.lock) ont le droit d'être,
+# vérifié par cargo deny (outils/verifier.sh), comme deny.toml pour Vanguard. À part de deny.toml : ses failles
+# admises (venues de YARA-X) n'ont rien à faire ici, et les bibliothèques d'affichage de la fenêtre n'y sont pas.
+
+# Les cibles de la fenêtre : Linux avec la libc du système (ses bibliothèques d'affichage sont chargées à
+# l'exécution) et Windows. verifier.sh passe chacune à part (--target) : sur les deux d'un coup, cargo deny unit les
+# options des deux, et compterait sous Linux l'accessibilité de Windows (accesskit_unix, voir Cargo.toml).
+[graph]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-gnu",
+]
+
+# Failles connues, bibliothèques abandonnées ou au code défaillant : refusées, dans tout l'arbre, sans exception.
+[advisories]
+unmaintained = "all"
+unsound = "all"
+ignore = []
+
+# Les licences permises de deny.toml, rien de plus ; la fenêtre elle-même (GPL-3.0-or-later) est nommée.
+[licenses]
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.8
+exceptions = [
+    { crate = "vanguard-fenetre", allow = ["GPL-3.0-or-later"] },
+]
+unused-license-exception = "deny"
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+# crates.io seulement : ni autre registre, ni dépôt git.
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

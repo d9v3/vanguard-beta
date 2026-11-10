@@ -1,0 +1,17 @@
+Polices embarquées dans vanguard-fenetre (include_bytes!, src/dessin/mod.rs). Toutes deux sous SIL Open Font
+License 1.1 (OFL-Inter.txt, OFL-JetBrainsMono.txt) ; recopiées dans LICENCES-TIERCES.txt.
+
+Inter 4.001 (git-9221beed3), The Inter Project Authors, https://github.com/rsms/inter
+  Inter-Regular.ttf  sha256 40d692fce188e4471e2b3cba937be967878f631ad3ebbbdcd587687c7ebe0c82
+  Inter-Medium.ttf   sha256 97ad806f526e41546d46365bb3a393145f75b7b1568913db74549ad8b8dba872
+
+JetBrains Mono 2.211, The JetBrains Mono Project Authors, https://github.com/JetBrains/JetBrainsMono
+  JetBrainsMono-Regular.ttf  sha256 b6b1ff4ddefe36d7f2a6174e1d001cab374e594519ee9049af028d577b64c5f5
+
+Provenance à confirmer avant la première publication : ces fichiers viennent de copies locales (la maquette, un
+paquet d'outils), pas encore comparées aux archives des deux projets. Les remplacer par celles des pages de version
+officielles (Inter-4.001.zip, JetBrainsMono-2.211.zip) si les empreintes diffèrent.
+
+Chaque signe écrit dans src/ existe dans au moins une des trois (vérifié par fontTools le 9 nov. 2026) ; chaque
+famille se replie sur les autres. Un texte reçu de vanguard dans une autre écriture (chinois, émoji) s'affiche en
+carrés : rien n'est perdu, il n'est pas dessiné.

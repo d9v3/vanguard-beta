@@ -1,0 +1,5 @@
+# La fenêtre se compile pour Linux avec la libc du système (glibc), pas musl comme `vanguard` (../.cargo/config.toml,
+# que ce fichier remplace ici) : ses bibliothèques d'affichage (Wayland, X11, OpenGL) se chargent à l'exécution, ce
+# qu'un programme musl statique ne sait pas faire. Windows : --target x86_64-pc-windows-gnu, comme Vanguard.
+[build]
+target = "x86_64-unknown-linux-gnu"

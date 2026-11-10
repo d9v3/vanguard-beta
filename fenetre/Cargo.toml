@@ -1,0 +1,79 @@
+# La fenêtre de Vanguard : un programme à part (vanguard-fenetre), posé à côté de `vanguard`. Il dessine et lance
+# `vanguard` avec une commande d'une liste fermée, rien d'autre (MODELE-DE-MENACE.md, « La fenêtre »). À part du
+# moteur : `vanguard` reste un fichier musl statique (clé USB, SSH, vieux Linux), sans bibliothèque graphique, et sa
+# liste de dépendances ne bouge pas. Cibles : x86_64-unknown-linux-gnu (une fenêtre demande la libc du système, pour
+# ses bibliothèques d'affichage chargées à l'exécution) et x86_64-pc-windows-gnu.
+[package]
+name = "vanguard-fenetre"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "La fenêtre de Vanguard : lance des commandes de Vanguard d'une liste fermée et montre leurs résultats."
+publish = false
+
+[[bin]]
+name = "vanguard-fenetre"
+path = "src/main.rs"
+
+[dependencies]
+# glow (OpenGL) plutôt que wgpu : 24 Mo et 362 caisses avec wgpu, 14 Mo et environ 270 avec glow (essai du 9 nov.).
+# Sans les polices par défaut d'egui : les nôtres sont embarquées (polices/, OFL).
+# Sans « clipboard » : arboard amène clipboard-win et error-code (BSL-1.0), une licence hors de deny.toml ; la console
+# ne prend que des noms de commande, tapés.
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "wayland", "x11"] }
+serde = { version = "1.0.229", features = ["derive"] }
+# preserve_order : les valeurs d'un JSON montré tel quel gardent l'ordre de Vanguard (indexmap, déjà là pour egui).
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
+# L'heure locale des lignes de la console et l'âge des événements (écrits en temps universel), comme Vanguard.
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Les bibliothèques de Wayland chargées à l'exécution (dlopen), comme celles d'X11 et d'OpenGL : le programme
+# démarre sur un bureau sans Wayland, et se compile sans leurs fichiers de développement. Quand le bureau ne dessine
+# pas le cadre (GNOME), celui, simple, de smithay-client-toolkit : celui d'Adwaita amène arrayref (BSD-2-Clause), une
+# licence hors de deny.toml.
+winit = { version = "0.30.13", default-features = false, features = ["wayland-dlopen"] }
+
+[target.'cfg(windows)'.dependencies]
+# Les lecteurs d'écran (UI Automation) sous Windows. Pas sous Linux pour l'instant : accesskit_unix y amène zvariant,
+# zbus_names et zvariant_derive, dits abandonnés (RUSTSEC-2026-0370, 0371, 0372 : fondus dans zbus 6, qu'accesskit
+# n'utilise pas encore) ; deny.toml les refuse sans exception. À rouvrir quand accesskit passera à zbus 6.
+eframe = { version = "0.37.0", default-features = false, features = ["accesskit"] }
+
+[target.'cfg(unix)'.dependencies]
+# Arrêter : tuer tout le groupe de l'enfant (killpg), pas seulement `vanguard` : ses propres enfants partiraient sinon
+# sans lui, jusqu'à leur délai.
+libc = "0.2.191"
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+doc_markdown = "allow"
+too_many_lines = "allow"
+# Le dessin nomme p (la palette), r (un rectangle), s (l'échelle) comme la maquette ; ailleurs, des noms entiers.
+many_single_char_names = "allow"
+# Comme Vanguard : aucune panique sur une sortie de `vanguard` ou un JSON abîmé (Cargo.toml de la racine).
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+indexing_slicing = "warn"
+todo = "warn"
+unimplemented = "warn"
+undocumented_unsafe_blocks = "warn"
+unnecessary_safety_comment = "warn"
+mem_forget = "warn"
+
+# Le profil de Vanguard (Cargo.toml de la racine : overflow-checks expliqué là).
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+overflow-checks = true
+
+[profile.dev.package."*"]
+debug = "line-tables-only"
+
+# Son propre espace de travail : jamais membre de celui de Vanguard.
+[workspace]
