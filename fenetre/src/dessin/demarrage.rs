@@ -31,46 +31,48 @@ pub fn liste(appli: &mut Appli, ui: &mut Ui, v: &Vue) {
             ));
         }
         for (i, c) in v.constats.iter().enumerate() {
-            super::mouvement::ligne(ui, vec2(8.0, 3.0), 6.0, |ui| texte_et_boutons(
-                ui,
-                &format!("demarrage-{i}"),
-                |ui| {
-                    ui.horizontal_top(|ui| {
-                        ui.spacing_mut().item_spacing.x = 8.0;
-                        let (r, _) = ui.allocate_exact_size(vec2(14.0, 16.0), Sense::hover());
-                        match c.rang {
-                            Rang::Sain => icones::coche(ui.painter(), r, p.bon),
-                            Rang::NonVerifie => {
-                                ui.painter()
-                                    .circle_filled(pos2(r.left() + 5.0, r.center().y), 4.0, p.moyen);
+            super::mouvement::ligne(ui, vec2(8.0, 3.0), 6.0, |ui| {
+                texte_et_boutons(
+                    ui,
+                    &format!("demarrage-{i}"),
+                    |ui| {
+                        ui.horizontal_top(|ui| {
+                            ui.spacing_mut().item_spacing.x = 8.0;
+                            let (r, _) = ui.allocate_exact_size(vec2(14.0, 16.0), Sense::hover());
+                            match c.rang {
+                                Rang::Sain => icones::coche(ui.painter(), r, p.bon),
+                                Rang::NonVerifie => {
+                                    ui.painter()
+                                        .circle_filled(pos2(r.left() + 5.0, r.center().y), 4.0, p.moyen);
+                                }
+                                _ => {
+                                    ui.painter()
+                                        .circle_filled(pos2(r.left() + 5.0, r.center().y), 4.0, p.jaune);
+                                }
                             }
-                            _ => {
-                                ui.painter()
-                                    .circle_filled(pos2(r.left() + 5.0, r.center().y), 4.0, p.jaune);
-                            }
-                        }
-                        ui.label(texte(&c.message, 13.0, p.encre));
-                    });
-                },
-                |ui| {
-                    let Some(g) = &c.geste else {
-                        return;
-                    };
-                    ui.push_id(("geste", i), |ui| {
-                        let t = match g.changement.sorte {
-                            Sorte::Retirer => crate::tr!("Retirer du démarrage", "Remove from startup"),
-                            Sorte::Remettre => crate::tr!("Remettre", "Put back"),
+                            ui.label(texte(&c.message, 13.0, p.encre));
+                        });
+                    },
+                    |ui| {
+                        let Some(g) = &c.geste else {
+                            return;
                         };
-                        let rep = petit(ui, t, possible).on_disabled_hover_text(crate::tr!(
-                            "Une commande tourne ou une confirmation est ouverte : un changement à la fois.",
-                            "A command is running or a confirmation is open: one change at a time."
-                        ));
-                        if rep.clicked() {
-                            appli.proposer(g);
-                        }
-                    });
-                },
-            ));
+                        ui.push_id(("geste", i), |ui| {
+                            let t = match g.changement.sorte {
+                                Sorte::Retirer => crate::tr!("Retirer du démarrage", "Remove from startup"),
+                                Sorte::Remettre => crate::tr!("Remettre", "Put back"),
+                            };
+                            let rep = petit(ui, t, possible).on_disabled_hover_text(crate::tr!(
+                                "Une commande tourne ou une confirmation est ouverte : un changement à la fois.",
+                                "A command is running or a confirmation is open: one change at a time."
+                            ));
+                            if rep.clicked() {
+                                appli.proposer(g);
+                            }
+                        });
+                    },
+                );
+            });
             ui.add_space(6.0);
         }
     });

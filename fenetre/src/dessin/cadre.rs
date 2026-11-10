@@ -283,7 +283,13 @@ pub fn phase_f32(x: f64) -> f32 {
 
 /// L'état de la file, dans l'en-tête de la console : « aucune tâche en cours », ou la commande qui tourne, depuis
 /// combien de secondes, avec un point d'accent qui pulse (et les images qu'il faut, seulement tant qu'elle tourne).
-pub(super) fn tache_en_tete(ui: &Ui, peintre: &egui::Painter, tete: Rect, en_cours: Option<(Commande, Duration)>, taches: usize) {
+pub(super) fn tache_en_tete(
+    ui: &Ui,
+    peintre: &egui::Painter,
+    tete: Rect,
+    en_cours: Option<(Commande, Duration)>,
+    taches: usize,
+) {
     let p = pal();
     let point = pos2(tete.left() + 98.0, tete.center().y);
     if en_cours.is_some() {
