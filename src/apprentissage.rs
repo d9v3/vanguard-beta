@@ -605,16 +605,17 @@ fn revenue(choix: &Acceptee, temoins: &crate::machine::temoins::Temoins) -> Opti
                     (m != Marque::DejaAcceptee || choix.traces.is_empty()).then(|| format!("{} {}", t.ou, m.libelle()))
                 })
                 .collect();
-            let mut dit = tr!("changé", "changed").to_string();
-            if !choix.traces.is_empty() && !changees.is_empty() {
-                dit.push_str(" : ");
-                dit.push_str(&changees.iter().take(3).cloned().collect::<Vec<_>>().join(", "));
+            // Chaque ligne dit déjà ce qui lui est arrivé (« programme changé », « nouvelle ») ; sans traces, un mot.
+            if choix.traces.is_empty() || changees.is_empty() {
+                Some(tr!("changé", "changed").to_string())
+            } else {
+                let mut dit = changees.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
                 let reste = changees.len().saturating_sub(3);
                 if reste > 0 {
                     dit.push_str(&trf!(" et {reste} autre(s)", " and {reste} more"));
                 }
+                Some(dit)
             }
-            Some(dit)
         }
     }
 }
