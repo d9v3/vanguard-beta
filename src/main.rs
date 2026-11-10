@@ -82,6 +82,7 @@ mod pe;
 mod plugins;
 mod prediction;
 mod programmes_poses;
+mod progression;
 mod protection;
 mod raccourci;
 mod rapport;
@@ -173,6 +174,7 @@ impl Session {
                 silencieux: true,
                 ..Options::defaut(None, "courants")
             };
+            crate::progression::etape(0, 1, tr!("Scan du réseau local", "Local network scan"));
             match reseau::executer(options).await {
                 Ok(r) => {
                     self.reseau = Some(r);

@@ -537,7 +537,7 @@ pub(crate) fn regles_lancees(
             )
         })
         .unzip();
-    let (mut groupes, durees) = en_parallele_groupes(verifications, depart);
+    let (mut groupes, durees) = en_parallele_groupes(verifications, depart, true);
     second_essai(&lancees, &mut groupes, debut.elapsed(), longs, relances);
     let mut constats = groupes.into_iter().flatten().collect();
     apres_les_regles(&mut constats, bilan);
@@ -582,7 +582,7 @@ fn second_essai(
     }
     let (places, verifications): (Vec<usize>, Vec<Verification<'_>>) = a_refaire.into_iter().unzip();
     let n = verifications.len();
-    let (seconds, _) = en_parallele_groupes(verifications, (0..n).collect());
+    let (seconds, _) = en_parallele_groupes(verifications, (0..n).collect(), false);
     for (i, second) in places.into_iter().zip(seconds) {
         let conclut = !second.is_empty()
             && second
@@ -605,17 +605,19 @@ fn en_parallele_dans(
     depart: Vec<usize>,
 ) -> (Vec<Constat>, Vec<(&'static str, std::time::Duration)>) {
     let bilan = bilan_en_cours();
-    let (groupes, durees) = en_parallele_groupes(verifications, depart);
+    let (groupes, durees) = en_parallele_groupes(verifications, depart, false);
     let mut constats = groupes.into_iter().flatten().collect();
     apres_les_regles(&mut constats, bilan);
     (constats, durees)
 }
 
 /// `en_parallele_dans`, les constats rendus par vérification, sans ce qu'en fait le bilan ensuite
-/// (`apres_les_regles`).
+/// (`apres_les_regles`). `progression` : chaque vérification finie le dit à la fenêtre qui l'a demandé
+/// (`crate::progression`, sortie des erreurs seulement) ; pas pour le second essai, qui ferait reculer le compte.
 fn en_parallele_groupes(
     verifications: Vec<Verification<'_>>,
     depart: Vec<usize>,
+    progression: bool,
 ) -> (Vec<Vec<Constat>>, Vec<(&'static str, std::time::Duration)>) {
     // VANGUARD_CHRONO : chaque vérification dit son temps sur la sortie d'erreur, pour trouver ce qui ralentit le bilan.
     let chrono = std::env::var_os("VANGUARD_CHRONO").is_some();
@@ -623,13 +625,22 @@ fn en_parallele_groupes(
     let depart = crate::autotest::reglage::permutation_ou_rangs(depart, n);
     let mut a_lancer: Vec<Option<Verification<'_>>> = verifications.into_iter().map(Some).collect();
     let mut durees = Vec::new();
+    let finies = std::sync::atomic::AtomicUsize::new(0);
     let groupes: Vec<Vec<Constat>> = std::thread::scope(|s| {
         let mut fils: Vec<Option<_>> = std::iter::repeat_with(|| None).take(n).collect();
         for i in depart {
             if let (Some(v), Some(place)) = (a_lancer.get_mut(i).and_then(Option::take), fils.get_mut(i)) {
+                let finies = &finies;
                 *place = Some(s.spawn(move || {
                     let debut = std::time::Instant::now();
                     let constats = v();
+                    if progression {
+                        // `fetch_add` rend le compte d'avant : celle-ci est la suivante (jamais plus que `n`).
+                        let fait = finies
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                            .saturating_add(1);
+                        crate::progression::etape(fait, n, constats.first().map_or("", |c| c.categorie));
+                    }
                     (constats, debut.elapsed())
                 }));
             }
