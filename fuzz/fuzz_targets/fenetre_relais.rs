@@ -24,11 +24,11 @@ mod commandes;
 mod protocole;
 
 use commandes::{Commande, Fin, Issue};
-use nettoyage::{LIGNE_MAX, piege};
+use nettoyage::{LIGNE_MAX, rendu};
 use protocole::{DEMANDE_MAX, Demande, Reponse};
 
 fn sans_piege(s: &str) {
-    assert!(!s.chars().any(piege), "caractère piégé dans {s:?}");
+    assert!(s.chars().all(|c| rendu(c) == Some(c)), "caractère piégé dans {s:?}");
 }
 
 /// Les demandes, comme le relais les lit : trame après trame, jusqu'à la première hors protocole.

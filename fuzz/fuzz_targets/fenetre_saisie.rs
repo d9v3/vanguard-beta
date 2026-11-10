@@ -19,12 +19,12 @@ mod nettoyage;
 mod commandes;
 
 use commandes::{Commande, Saisie};
-use nettoyage::{LIGNE_MAX, TEXTE_MAX, piege};
+use nettoyage::{LIGNE_MAX, TEXTE_MAX, rendu};
 
 fn sans_piege(s: &str, sauts: bool) {
     for c in s.chars() {
         assert!(
-            (sauts && c == '\n') || !piege(c),
+            (sauts && c == '\n') || rendu(c) == Some(c),
             "caractère piégé U+{:04X} dans {s:?}",
             u32::from(c)
         );

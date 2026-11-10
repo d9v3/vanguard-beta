@@ -189,7 +189,10 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   unreadable answer is said to be so, never counted as healthy. As in the terminal (`ui::affichable`), a character that
   reverses or hides text (writing direction, invisibles, blanks that are not spaces) becomes “�”, and a space of another
   width (no-break, thin, hair, em, ideographic) an ordinary space: it no longer glues two parts of a name together, and
-  a number written the French way stays readable. Accepted: a letter from another script that looks like a Latin one
+  a number written the French way stays readable. A variation selector (U+FE00 to U+FE0E, U+E0100 to U+E01EF,
+  Mongolian ones) is removed: legitimate in Japanese, Chinese and Mongolian, it no longer hides anything between two
+  letters and the name stays readable; the emoji one (U+FE0F) stays. Rare invisibles (U+206A to U+206F, U+FFF9 to
+  U+FFFB, U+17B4, U+17B5) become “�”. Accepted: a letter from another script that looks like a Latin one
   (Cyrillic “а” in “Sаlon”) stays as it is, so as not to damage names written in those languages; and a state is judged
   after its trailing spaces are removed, which changes nothing as long as it is a fixed word of `vanguard`, never a name
   from outside. The check's grade is shown only when Vanguard says it is reliable (`fiable` in `audit --json`); when

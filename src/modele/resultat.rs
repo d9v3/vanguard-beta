@@ -94,21 +94,18 @@ pub(crate) struct ConstatEcrit {
 }
 
 /// Un texte venu de l'extérieur (nom de pièce jointe, de réseau, de programme), prêt à écrire dans un résultat :
-/// chaque caractère piégé (`ui::piege` : contrôles, sens d'écriture, invisibles) devient « � », et une espace d'une
-/// autre largeur (`ui::espace_trompeur`) une espace ordinaire, comme à l'écran. `lignes` : le saut de ligne et la
-/// tabulation restent (mise en forme d'un message de Vanguard).
+/// chaque caractère piégé (`ui::piege` : contrôles, sens d'écriture, invisibles) ou invisible rare devient « � », une
+/// espace d'une autre largeur (`ui::espace_trompeur`) une espace ordinaire, et un sélecteur de variante est retiré,
+/// comme à l'écran (`ui::rendu`). `lignes` : le saut de ligne et la tabulation restent (mise en forme d'un message de
+/// Vanguard).
 pub(crate) fn sans_piege(texte: &str, lignes: bool) -> String {
     texte
         .chars()
-        .map(|x| {
+        .filter_map(|x| {
             if lignes && (x == '\n' || x == '\t') {
-                x
-            } else if crate::ui::espace_trompeur(x) {
-                ' '
-            } else if crate::ui::piege(x) {
-                '\u{fffd}'
+                Some(x)
             } else {
-                x
+                crate::ui::rendu(x)
             }
         })
         .collect()
@@ -360,6 +357,16 @@ mod tests {
         );
         assert_eq!(sans_piege("a\u{a0}b\u{200b}c\nd", true), "a b\u{fffd}c\nd");
         assert_eq!(nom_sans_piege("Sa\u{2009}lon", 40), "Sa lon");
+    }
+
+    /// Comme à l'écran : un sélecteur de variante est retiré (un nom japonais reste lisible), un invisible rare devient
+    /// « � ».
+    #[test]
+    fn selecteur_retire_invisible_rare_visible() {
+        assert_eq!(sans_piege("葛\u{e0100}飾区.pdf", false), "葛飾区.pdf");
+        assert_eq!(sans_piege("fac\u{206b}ture.pdf", false), "fac\u{fffd}ture.pdf");
+        assert_eq!(sans_piege("a\u{fe0e}\u{fff9}\nb\u{fe0f}", true), "a\u{fffd}\nb\u{fe0f}");
+        assert_eq!(nom_sans_piege("ᠮ\u{180b}ᠣ\u{17b5}", 40), "ᠮᠣ\u{fffd}");
     }
 
     /// Un message qui reprend un nom piégé ne passe jamais tel quel dans ce qui est écrit (rapport, `--json`).

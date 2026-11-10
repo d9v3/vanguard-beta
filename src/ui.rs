@@ -149,10 +149,10 @@ pub fn largeur_car(c: char) -> usize {
 /// U+2029), trait d'union conditionnel (U+00AD), séparateur mongol (U+180E), étiquettes invisibles (U+E0000 à
 /// U+E007F), et les blancs qui ne sont pas des espaces mais en ont l'air ou ne se voient pas : remplissages coréens
 /// (U+115F, U+1160, U+3164, U+FFA0), Braille vide (U+2800), joint de graphèmes (U+034F). Le sélecteur de variante des
-/// émojis (U+FE0F) reste. Les espaces trompeuses n'en sont pas (`espace_trompeur`) : `piege` sert aussi à juger (nom de
-/// fichier ou d'expéditeur piégé, `protection::telechargement`, `courriel_suspect`), et une insécable dans un nom
-/// normal n'est pas une ruse ; seul l'affichage les change (`rendu`). La fenêtre (fenetre/src/nettoyage.rs) garde la
-/// même liste.
+/// émojis (U+FE0F) reste. Les espaces trompeuses (`espace_trompeur`), les autres sélecteurs de variante (`selecteur`)
+/// et les invisibles rares (`invisible_rare`) n'en sont pas : `piege` sert aussi à juger (nom de fichier ou
+/// d'expéditeur piégé, `protection::telechargement`, `courriel_suspect`), et une insécable dans un nom normal n'est pas
+/// une ruse ; seul l'affichage les change (`rendu`). La fenêtre (fenetre/src/nettoyage.rs) garde les mêmes listes.
 pub(crate) fn piege(c: char) -> bool {
     matches!(
         u32::from(c),
@@ -186,13 +186,31 @@ pub(crate) fn espace_trompeur(c: char) -> bool {
     matches!(u32::from(c), 0xA0 | 0x1680 | 0x2000..=0x200A | 0x202F | 0x205F | 0x3000)
 }
 
+/// Les sélecteurs de variante : ils choisissent le dessin du caractère d'avant et ne se voient pas seuls (U+FE00 à
+/// U+FE0E, U+E0100 à U+E01EF pour les idéogrammes, U+180B à U+180D et U+180F pour le mongol). Ils sont légitimes
+/// (japonais, chinois, mongol, émoji dessiné en texte) : retirés à l'affichage, un nom reste lisible tel qu'il se
+/// dessine et ne cache plus rien entre deux lettres. Le sélecteur des émojis (U+FE0F) reste. Ce ne sont pas des pièges
+/// (`piege`) : seul l'affichage les change (`rendu`) ; `protection::telechargement` les juge à part dans un nom.
+pub(crate) fn selecteur(c: char) -> bool {
+    matches!(u32::from(c), 0x180B..=0x180D | 0x180F | 0xFE00..=0xFE0E | 0xE0100..=0xE01EF)
+}
+
+/// Les invisibles rares, sans usage dans un nom ni dans une sortie : commandes de mise en forme désuètes (U+206A à
+/// U+206F : échange symétrique, formes arabes, formes des chiffres), annotations interlinéaires (U+FFF9 à U+FFFB),
+/// voyelles inhérentes khmères que l'Unicode déconseille (U+17B4, U+17B5). Montrés « � » à l'affichage (`rendu`),
+/// comme un piège ; `piege` ne les compte pas, pour juger comme avant (`protection::telechargement` les juge à part).
+pub(crate) fn invisible_rare(c: char) -> bool {
+    matches!(u32::from(c), 0x17B4..=0x17B5 | 0x206A..=0x206F | 0xFFF9..=0xFFFB)
+}
+
 /// Un texte venu de l'extérieur (nom d'un réseau ou d'un appareil, réponse du réseau, nom de fichier, sortie d'un
 /// autre programme), prêt à montrer. Sans cela, un nom piégé pilote le terminal : une séquence OSC 52 écrit dans le
 /// presse-papier, ESC [2K et un retour chariot effacent une alerte de Vanguard et la réécrivent, un caractère bidi
 /// retourne la fin d'un nom. Chacun de ces caractères devient « � », pour que la manipulation se voie, sauf les espaces
-/// trompeuses, qui deviennent une espace ordinaire ; le reste ne change pas (accents, emojis, autres écritures).
+/// trompeuses, qui deviennent une espace ordinaire, et les sélecteurs de variante, retirés ; le reste ne change pas
+/// (accents, emojis, autres écritures).
 pub fn affichable(texte: &str) -> String {
-    texte.chars().map(rendu).collect()
+    texte.chars().filter_map(rendu).collect()
 }
 
 /// Un chemin de fichier ou de dossier prêt à montrer : un nom de fichier vient de n'importe qui (téléchargement, clé
@@ -233,20 +251,23 @@ pub fn commande_affichable(commande: &str) -> String {
         .map(|c| match c {
             '\n' => " ⏎ ".to_string(),
             '\t' => c.to_string(),
-            _ => rendu(c).to_string(),
+            _ => rendu(c).map(String::from).unwrap_or_default(),
         })
         .collect()
 }
 
-/// Ce qui est montré à la place d'un caractère : une espace ordinaire pour une espace trompeuse, « � » pour un autre
-/// piège, le caractère lui-même sinon.
-fn rendu(c: char) -> char {
+/// Ce qui est montré à la place d'un caractère : une espace ordinaire pour une espace trompeuse, rien pour un
+/// sélecteur de variante, « � » pour un piège ou un invisible rare, le caractère lui-même sinon. Un caractère montré
+/// se montre lui-même : `rendu` appliqué à ce qu'il rend ne change plus rien.
+pub(crate) fn rendu(c: char) -> Option<char> {
     if espace_trompeur(c) {
-        ' '
-    } else if piege(c) {
-        '\u{fffd}'
+        Some(' ')
+    } else if selecteur(c) {
+        None
+    } else if piege(c) || invisible_rare(c) {
+        Some('\u{fffd}')
     } else {
-        c
+        Some(c)
     }
 }
 
@@ -1103,6 +1124,50 @@ mod tests {
         );
         for c in [' ', '\t', '\u{200b}', '\u{3164}'] {
             assert!(!espace_trompeur(c), "U+{:04X}", u32::from(c));
+        }
+    }
+
+    /// Les sélecteurs de variante sont retirés à l'affichage : un nom japonais (U+E0100), mongol (U+180B) ou un symbole
+    /// dessiné en texte (U+FE0E) reste lisible, et rien ne se cache plus entre deux lettres ; le sélecteur des émojis
+    /// (U+FE0F) reste. Les invisibles rares (U+206B, U+FFF9, U+17B4) deviennent « � ». Ni les uns ni les autres ne
+    /// sont des pièges : ce qui juge un nom (`piege`) ne change pas.
+    #[test]
+    fn selecteurs_retires_et_invisibles_rares_visibles() {
+        assert_eq!(affichable("葛\u{e0100}飾区.pdf"), "葛飾区.pdf");
+        assert_eq!(affichable("ᠮ\u{180b}ᠣ\u{180f}"), "ᠮᠣ");
+        assert_eq!(affichable("☺\u{fe0e} ≩\u{fe00}"), "☺ ≩");
+        assert_eq!(affichable("⚠\u{fe0f} Salon"), "⚠\u{fe0f} Salon");
+        assert_eq!(affichable("pay\u{fe00}pal"), "paypal");
+        assert_eq!(affichable("fac\u{206b}ture.pdf"), "fac\u{fffd}ture.pdf");
+        assert_eq!(affichable("a\u{fff9}b\u{17b4}c"), "a\u{fffd}b\u{fffd}c");
+        assert_eq!(commande_affichable("rm 葛\u{e0100}飾\u{206f}"), "rm 葛飾\u{fffd}");
+        // Une colonne par « � », aucune pour un sélecteur retiré.
+        assert_eq!(largeur_affichee(&affichable("a\u{fe00}b")), 2);
+        assert_eq!(largeur_affichee(&affichable("a\u{206b}b")), 3);
+        let rares = (0x206A..=0x206F).chain(0xFFF9..=0xFFFB).chain(0x17B4..=0x17B5);
+        let selecteurs = (0xFE00..=0xFE0E)
+            .chain(0xE0100..=0xE01EF)
+            .chain(0x180B..=0x180D)
+            .chain([0x180F]);
+        for (n, rare) in rares.map(|n| (n, true)).chain(selecteurs.map(|n| (n, false))) {
+            let c = char::from_u32(n).unwrap();
+            assert!(!piege(c) && !espace_trompeur(c), "U+{n:04X}");
+            assert_eq!(invisible_rare(c), rare, "U+{n:04X}");
+            assert_eq!(selecteur(c), !rare, "U+{n:04X}");
+            let attendu = if rare { "a\u{fffd}b" } else { "ab" };
+            assert_eq!(affichable(&format!("a{c}b")), attendu, "U+{n:04X}");
+        }
+        assert!(!selecteur('\u{fe0f}') && !invisible_rare('\u{fe0f}'));
+    }
+
+    /// Ce qui est montré se montre tel quel : `rendu` d'un caractère rendu ne change plus rien, pour tout l'Unicode.
+    /// Un texte déjà montré ne se dégrade donc pas s'il repasse par l'affichage.
+    #[test]
+    fn rendu_stable() {
+        for c in (0..=u32::from(char::MAX)).filter_map(char::from_u32) {
+            if let Some(r) = rendu(c) {
+                assert_eq!(rendu(r), Some(r), "U+{:04X}", u32::from(c));
+            }
         }
     }
 

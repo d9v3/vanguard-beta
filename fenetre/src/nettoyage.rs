@@ -1,9 +1,9 @@
 //! Ce que `vanguard` écrit, prêt à montrer. Ses sorties reprennent des noms venus de l'extérieur (réseau, programme,
 //! fichier, appareil) : un nom piégé ne doit ni cacher une alerte, ni retourner un texte (caractères de sens
 //! d'écriture), ni glisser une ligne de plus. Les séquences d'échappement (couleurs, déplacements, OSC) sont retirées ;
-//! chaque autre caractère piégé devient « � », pour que la manipulation se voie, et une espace d'une autre largeur
-//! devient une espace ordinaire, comme dans le terminal
-//! (`ui::piege` de Vanguard, même liste). Chaque texte est aussi borné : une ligne immense ne gèle pas la fenêtre.
+//! chaque autre caractère piégé ou invisible rare devient « � », pour que la manipulation se voie, une espace d'une
+//! autre largeur devient une espace ordinaire et un sélecteur de variante est retiré, comme dans le terminal
+//! (`ui::rendu` de Vanguard, mêmes listes). Chaque texte est aussi borné : une ligne immense ne gèle pas la fenêtre.
 
 /// La longueur maximale d'un texte montré, en caractères (« … » compris).
 pub const TEXTE_MAX: usize = 4000;
@@ -14,7 +14,8 @@ pub const LIGNE_MAX: usize = 400;
 /// Les caractères qui pilotent un affichage ou trompent la lecture : contrôles C0 et C1, trait d'union conditionnel,
 /// marques et forçages du sens d'écriture, séparateurs de ligne Unicode, invisibles, étiquettes, et les blancs qui
 /// n'en sont pas (remplissages coréens, Braille vide, joint de graphèmes). La liste de `ui::piege` de Vanguard ; les
-/// espaces trompeuses (`espace_trompeur`) n'y sont pas et deviennent une espace ordinaire à l'affichage (`rendu`).
+/// espaces trompeuses (`espace_trompeur`), les sélecteurs de variante (`selecteur`) et les invisibles rares
+/// (`invisible_rare`) n'y sont pas : l'affichage les change à part (`rendu`).
 pub fn piege(c: char) -> bool {
     matches!(
         u32::from(c),
@@ -48,15 +49,31 @@ pub fn espace_trompeur(c: char) -> bool {
     matches!(u32::from(c), 0xA0 | 0x1680 | 0x2000..=0x200A | 0x202F | 0x205F | 0x3000)
 }
 
-/// Ce qui est montré à la place d'un caractère : une espace ordinaire pour une espace trompeuse, « � » pour un autre
-/// piège, le caractère lui-même sinon (`ui::affichable` de Vanguard).
-fn rendu(c: char) -> char {
+/// Les sélecteurs de variante (U+FE00 à U+FE0E, U+E0100 à U+E01EF, U+180B à U+180D, U+180F) : légitimes (japonais,
+/// chinois, mongol, émoji dessiné en texte) et invisibles seuls, ils sont retirés à l'affichage. Le sélecteur des
+/// émojis (U+FE0F) reste. La liste de `ui::selecteur` de Vanguard.
+pub fn selecteur(c: char) -> bool {
+    matches!(u32::from(c), 0x180B..=0x180D | 0x180F | 0xFE00..=0xFE0E | 0xE0100..=0xE01EF)
+}
+
+/// Les invisibles rares, sans usage dans un nom (U+206A à U+206F, U+FFF9 à U+FFFB, U+17B4, U+17B5) : montrés « � ».
+/// La liste de `ui::invisible_rare` de Vanguard.
+pub fn invisible_rare(c: char) -> bool {
+    matches!(u32::from(c), 0x17B4..=0x17B5 | 0x206A..=0x206F | 0xFFF9..=0xFFFB)
+}
+
+/// Ce qui est montré à la place d'un caractère : une espace ordinaire pour une espace trompeuse, rien pour un
+/// sélecteur de variante, « � » pour un piège ou un invisible rare, le caractère lui-même sinon (`ui::rendu` de
+/// Vanguard). Un caractère montré se montre lui-même.
+pub fn rendu(c: char) -> Option<char> {
     if espace_trompeur(c) {
-        ' '
-    } else if piege(c) {
-        '\u{fffd}'
+        Some(' ')
+    } else if selecteur(c) {
+        None
+    } else if piege(c) || invisible_rare(c) {
+        Some('\u{fffd}')
     } else {
-        c
+        Some(c)
     }
 }
 
@@ -123,8 +140,8 @@ pub fn couper(texte: &str, max: usize) -> String {
 pub fn ligne(texte: &str) -> String {
     let propre: String = sans_sequences(texte)
         .chars()
-        .map(|c| match c {
-            '\t' => ' ',
+        .filter_map(|c| match c {
+            '\t' => Some(' '),
             c => rendu(c),
         })
         .collect();
@@ -136,9 +153,9 @@ pub fn ligne(texte: &str) -> String {
 pub fn texte(texte: &str) -> String {
     let propre: String = sans_sequences(texte)
         .chars()
-        .map(|c| match c {
-            '\n' => '\n',
-            '\t' => ' ',
+        .filter_map(|c| match c {
+            '\n' => Some('\n'),
+            '\t' => Some(' '),
             c => rendu(c),
         })
         .collect();
@@ -221,13 +238,39 @@ mod tests {
         &source[debut..debut + fin]
     }
 
-    /// La liste reste celle du terminal (`ui::piege`, `ui::espace_trompeur` de Vanguard), caractère pour caractère.
+    /// Les listes restent celles du terminal (`ui::piege`, `ui::espace_trompeur`, `ui::selecteur`,
+    /// `ui::invisible_rare` de Vanguard), caractère pour caractère, et `rendu` les applique dans le même ordre.
     #[test]
     fn meme_liste_que_le_terminal() {
         let ici = include_str!("nettoyage.rs");
         let terminal = include_str!("../../src/ui.rs");
-        for nom in ["piege", "espace_trompeur"] {
+        for nom in ["piege", "espace_trompeur", "selecteur", "invisible_rare"] {
             assert_eq!(corps(ici, nom), corps(terminal, nom), "{nom}");
+        }
+        let rendu = |source: &'static str| {
+            let debut = source.find("fn rendu(c: char) -> Option<char> {").unwrap();
+            let fin = source[debut..].find("\n}").unwrap();
+            &source[debut..debut + fin]
+        };
+        assert_eq!(rendu(ici), rendu(terminal));
+    }
+
+    /// Comme dans le terminal : un sélecteur de variante retiré (un nom japonais reste lisible, sans colonne de plus),
+    /// un invisible rare en « � » ; le sélecteur des émojis reste ; ce qui est montré se montre tel quel.
+    #[test]
+    fn selecteurs_retires_et_invisibles_rares_visibles() {
+        assert_eq!(ligne("葛\u{e0100}飾区.pdf"), "葛飾区.pdf");
+        assert_eq!(nom("fac\u{206b}ture.pdf", 80), "fac\u{fffd}ture.pdf");
+        assert_eq!(texte("a\u{fe0e}\u{fff9}\nb\u{fe0f}"), "a\u{fffd}\nb\u{fe0f}");
+        assert_eq!(ligne("ᠮ\u{180b}ᠣ\u{17b4}"), "ᠮᠣ\u{fffd}");
+        // Les sélecteurs ne comptent pas dans la borne : ils sont retirés avant de couper.
+        let long = "x\u{fe00}".repeat(LIGNE_MAX);
+        assert_eq!(ligne(&long), "x".repeat(LIGNE_MAX));
+        for c in (0..=u32::from(char::MAX)).filter_map(char::from_u32) {
+            assert!(!(selecteur(c) || invisible_rare(c)) || !(piege(c) || espace_trompeur(c)));
+            if let Some(r) = rendu(c) {
+                assert_eq!(rendu(r), Some(r), "U+{:04X}", u32::from(c));
+            }
         }
     }
 

@@ -21,16 +21,17 @@ mod nettoyage;
 mod donnees;
 
 use donnees::{ELEMENTS_MAX, bilan, evenements, libre, protection};
-use nettoyage::{TEXTE_MAX, piege};
+use nettoyage::{TEXTE_MAX, rendu};
 
-/// Un texte prêt à montrer : borné, sans caractère piégé ; un saut de ligne seulement s'il est permis.
+/// Un texte prêt à montrer : borné, chaque caractère montré tel quel (aucun piège, espace trompeuse, sélecteur de
+/// variante ni invisible rare) ; un saut de ligne seulement s'il est permis.
 fn propre(s: &str, sauts: bool) {
     assert!(s.chars().count() <= TEXTE_MAX, "{} caractères", s.chars().count());
     for c in s.chars() {
         if c == '\n' {
             assert!(sauts, "saut de ligne dans {s:?}");
         } else {
-            assert!(!piege(c), "caractère piégé U+{:04X} dans {s:?}", u32::from(c));
+            assert_eq!(rendu(c), Some(c), "caractère piégé U+{:04X} dans {s:?}", u32::from(c));
         }
     }
 }
