@@ -36,8 +36,9 @@ pub fn couleur_gravite(g: Option<Gravite>) -> Color32 {
 }
 
 /// La bande : un trait par vérification, rangés par sujet. Pendant un bilan, un balayage passe sur les traits du
-/// dernier (aucun compte inventé : on ne sait pas encore combien sont faites).
-fn bande(ui: &mut Ui, vue: Option<&Vue>, en_cours: Option<f32>) {
+/// dernier (aucun compte inventé : on ne sait pas encore combien sont faites). `hauteur` : celle des traits (60 au
+/// moins), pour que la bande remplisse la carte à côté de la note.
+fn bande(ui: &mut Ui, vue: Option<&Vue>, en_cours: Option<f32>, hauteur: f32) {
     let p = pal();
     let largeur = ui.available_width();
     let groupes: Vec<(String, Vec<Rang>)> = match vue {
@@ -53,8 +54,8 @@ fn bande(ui: &mut Ui, vue: Option<&Vue>, en_cours: Option<f32>) {
     // ou trop de sujets), les traits se serrent pour que la bande tienne toujours dans sa largeur.
     let fente = largeur / g;
     let noms = reel && fente >= 64.0;
-    let (r, _) = ui.allocate_exact_size(vec2(largeur, if noms { 82.0 } else { 60.0 }), Sense::hover());
-    let barres = Rect::from_min_size(r.min, vec2(largeur, 60.0));
+    let (r, _) = ui.allocate_exact_size(vec2(largeur, hauteur + if noms { 22.0 } else { 0.0 }), Sense::hover());
+    let barres = Rect::from_min_size(r.min, vec2(largeur, hauteur));
     let (w, pas, ecart) = if noms {
         let plus = groupes.iter().map(|g| g.1.len()).max().unwrap_or(1);
         let w = ((fente - 16.0) / (n_f32(plus) * 1.5)).clamp(4.0, 10.0);
@@ -77,7 +78,13 @@ fn bande(ui: &mut Ui, vue: Option<&Vue>, en_cours: Option<f32>) {
                 break;
             }
             let fini = en_cours.is_none() && reel;
-            let haut = if e == Rang::Corriger && fini { 56.0 } else { 44.0 };
+            // À 60 : 56 pour ce qui est à corriger, 44 pour le reste ; plus haut, les mêmes proportions.
+            let haut = hauteur
+                * if e == Rang::Corriger && fini {
+                    56.0 / 60.0
+                } else {
+                    44.0 / 60.0
+                };
             let trait_ = Rect::from_min_max(pos2(x, barres.bottom() - haut), pos2(x + w, barres.bottom()));
             let mut col = if fini { couleur_rang(e) } else { p.s3 };
             if let Some(t) = en_cours {
@@ -197,8 +204,6 @@ pub fn ecran(appli: &mut Appli, ui: &mut Ui) {
             {
                 appli.demander(Commande::Bilan);
             }
-            bouton(ui, crate::tr!("Rapport à laisser", "Report to leave"), false, false)
-                .on_disabled_hover_text(crate::tr!("Arrive dans un prochain lot.", "Coming in a later batch."));
         } else if bouton(ui, crate::tr!("Arrêter", "Stop"), false, true).clicked() {
             appli.arreter();
         }
@@ -232,7 +237,8 @@ pub fn ecran(appli: &mut Appli, ui: &mut Ui) {
     carte(ui, 32, |ui| {
         ui.set_width(ui.available_width());
         let etroit = ui.available_width() < 760.0;
-        let note = |ui: &mut Ui| {
+        // La note rend sa hauteur : la bande des traits, à côté, s'y ajuste.
+        let note = |ui: &mut Ui| -> f32 {
             ui.vertical(|ui| {
                 if !etroit {
                     ui.set_width(260.0);
@@ -302,9 +308,12 @@ pub fn ecran(appli: &mut Appli, ui: &mut Ui) {
                         ));
                     }
                 }
-            });
+            })
+            .response
+            .rect
+            .height()
         };
-        let traits = |ui: &mut Ui| {
+        let traits = |ui: &mut Ui, hauteur: f32| {
             ui.vertical(|ui| {
                 let n = finie.map_or(0, |v| v.constats.len());
                 ui.horizontal(|ui| {
@@ -333,7 +342,12 @@ pub fn ecran(appli: &mut Appli, ui: &mut Ui) {
                     }
                 });
                 ui.add_space(12.0);
-                bande(ui, if en_cours.is_some() { vue.as_ref() } else { finie }, en_cours);
+                bande(
+                    ui,
+                    if en_cours.is_some() { vue.as_ref() } else { finie },
+                    en_cours,
+                    hauteur,
+                );
                 ui.add_space(12.0);
                 if let Some(v) = finie {
                     legende(ui, v, part);
@@ -352,12 +366,14 @@ pub fn ecran(appli: &mut Appli, ui: &mut Ui) {
         if etroit {
             note(ui);
             ui.add_space(24.0);
-            traits(ui);
+            traits(ui, 60.0);
         } else {
             ui.horizontal_top(|ui| {
-                note(ui);
+                // Le titre, les espaces et la légende prennent environ 80 : le reste de la hauteur de la note va
+                // aux traits, entre 60 et 140.
+                let h = note(ui);
                 ui.add_space(40.0);
-                traits(ui);
+                traits(ui, (h - 80.0).clamp(60.0, 140.0));
             });
         }
     });
