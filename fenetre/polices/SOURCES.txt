@@ -1,17 +1,24 @@
 Polices embarquées dans vanguard-fenetre (include_bytes!, src/dessin/mod.rs). Toutes deux sous SIL Open Font
 License 1.1 (OFL-Inter.txt, OFL-JetBrainsMono.txt) ; recopiées dans LICENCES-TIERCES.txt.
 
-Inter 4.001 (git-9221beed3), The Inter Project Authors, https://github.com/rsms/inter
-  Inter-Regular.ttf  sha256 40d692fce188e4471e2b3cba937be967878f631ad3ebbbdcd587687c7ebe0c82
-  Inter-Medium.ttf   sha256 97ad806f526e41546d46365bb3a393145f75b7b1568913db74549ad8b8dba872
+Chaque fichier est celui de la page de version officielle du projet, comparé octet pour octet le 9 nov. 2026
+(empreintes de l'archive et du fichier ci-dessous). Pour en changer : télécharger l'archive de la page de version,
+vérifier son empreinte, en sortir le fichier, et noter ici les nouvelles.
 
-JetBrains Mono 2.211, The JetBrains Mono Project Authors, https://github.com/JetBrains/JetBrainsMono
-  JetBrainsMono-Regular.ttf  sha256 b6b1ff4ddefe36d7f2a6174e1d001cab374e594519ee9049af028d577b64c5f5
+Inter 4.1 (police en version 4.001), The Inter Project Authors, https://github.com/rsms/inter
+  archive  https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip
+           sha256 9883fdd4a49d4fb66bd8177ba6625ef9a64aa45899767dde3d36aa425756b11e
+  extras/ttf/Inter-Regular.ttf  sha256 40d692fce188e4471e2b3cba937be967878f631ad3ebbbdcd587687c7ebe0c82
+  extras/ttf/Inter-Medium.ttf   sha256 97ad806f526e41546d46365bb3a393145f75b7b1568913db74549ad8b8dba872
+  LICENSE.txt (OFL-Inter.txt)   sha256 262481e844521b326f5ecd053e59b98c8b2da78c8ee1bdbb6e8174305e54935a
 
-Provenance à confirmer avant la première publication : ces fichiers viennent de copies locales (la maquette, un
-paquet d'outils), pas encore comparées aux archives des deux projets. Les remplacer par celles des pages de version
-officielles (Inter-4.001.zip, JetBrainsMono-2.211.zip) si les empreintes diffèrent.
+JetBrains Mono 2.304, The JetBrains Mono Project Authors, https://github.com/JetBrains/JetBrainsMono
+  archive  https://github.com/JetBrains/JetBrainsMono/releases/download/v2.304/JetBrainsMono-2.304.zip
+           sha256 6f6376c6ed2960ea8a963cd7387ec9d76e3f629125bc33d1fdcd7eb7012f7bbf
+  fonts/ttf/JetBrainsMono-Regular.ttf  sha256 a0bf60ef0f83c5ed4d7a75d45838548b1f6873372dfac88f71804491898d138f
+  OFL.txt (OFL-JetBrainsMono.txt)      sha256 30f0c136e3c88e422d0791acd97238870f9054a9729bc34cf2ff0d4ed8cac4ad
+  (La copie d'avant, une version 2.211 qu'aucune page de version ne publie, a été remplacée par celle-ci.)
 
-Chaque signe écrit dans src/ existe dans au moins une des trois (vérifié par fontTools le 9 nov. 2026) ; chaque
-famille se replie sur les autres. Un texte reçu de vanguard dans une autre écriture (chinois, émoji) s'affiche en
-carrés : rien n'est perdu, il n'est pas dessiné.
+Chaque signe écrit dans src/ hors des essais existe dans au moins une des trois (vérifié par fontTools le 9 nov.
+2026) ; chaque famille se replie sur les autres. Un texte reçu de vanguard dans une autre écriture (chinois, émoji)
+s'affiche en carrés : rien n'est perdu, il n'est pas dessiné.
