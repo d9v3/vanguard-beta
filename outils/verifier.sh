@@ -272,15 +272,33 @@ extensions() {
 # La fenêtre de Vanguard (fenetre/, programme vanguard-fenetre) : crate à part, avec son Cargo.lock, hors du programme
 # vanguard. Linux en glibc (ses bibliothèques d'affichage se chargent à l'exécution, ce que musl ne sait pas faire) et
 # Windows. --target toujours dit : lancé d'ici, cargo lit le .cargo/config.toml de la racine (musl), pas celui de
-# fenetre/. Ses tests ne tournent que sous Linux : sous Wine, pas encore (dit au résumé).
+# fenetre/. Ses tests ne tournent que sous Linux : sous Wine, pas encore (dit au résumé). Puis les protections de ses
+# deux programmes, lues comme celles de vanguard (étape durcissement) : Linux avec --glibc (l'interpréteur de la glibc,
+# lui seul), Windows comme vanguard.exe (DLL de System32 seulement, manifeste, ASLR, DEP). Ses dépendances passent à
+# cargo deny (étape dépendances, fenetre/deny.toml) et à cargo audit (failles connues) ; cargo vet, pas encore : prévu
+# au lot 1b (dit au résumé).
 fenetre() {
-  local cible=${CARGO_TARGET_DIR:-$PWD/target}/fenetre m=fenetre/Cargo.toml t
+  local cible=${CARGO_TARGET_DIR:-$PWD/target}/fenetre m=fenetre/Cargo.toml t code=0
   cargo fmt --check --manifest-path "$m" || return 1
   for t in x86_64-unknown-linux-gnu x86_64-pc-windows-gnu; do
     CARGO_TARGET_DIR=$cible cargo clippy -q --locked --all-targets --manifest-path "$m" --target "$t" -- -D warnings ||
       return 1
   done
-  CARGO_TARGET_DIR=$cible cargo test -q --locked --manifest-path "$m" --target x86_64-unknown-linux-gnu
+  CARGO_TARGET_DIR=$cible cargo test -q --locked --manifest-path "$m" --target x86_64-unknown-linux-gnu || return 1
+  for t in x86_64-unknown-linux-gnu x86_64-pc-windows-gnu; do
+    CARGO_TARGET_DIR=$cible cargo build -q --locked --manifest-path "$m" --target "$t" || return 1
+  done
+  cargo build -q --locked --target x86_64-unknown-linux-musl || return 1
+  local isole=$TRAVAIL/durcissement-fenetre
+  mkdir -p "$isole"
+  fenetre_juge() { # options…
+    env -i PATH="$PATH" HOME="$isole" XDG_DATA_HOME="$isole/data" XDG_CONFIG_HOME="$isole/config" \
+      XDG_CACHE_HOME="$isole/cache" XDG_STATE_HOME="$isole/state" LANG="${LANG:-C.UTF-8}" \
+      "${CARGO_TARGET_DIR:-target}/x86_64-unknown-linux-musl/debug/vanguard" deploiement verifier-binaire "$@"
+  }
+  fenetre_juge --glibc --attendu linux "$cible/x86_64-unknown-linux-gnu/debug/vanguard-fenetre" || code=1
+  fenetre_juge --attendu windows "$cible/x86_64-pc-windows-gnu/debug/vanguard-fenetre.exe" || code=1
+  return "$code"
 }
 
 scripts_shell() { find outils extensions -name '*.sh' -print0 | xargs -0 -n1 bash -n; }
@@ -416,14 +434,15 @@ relectures() {
   cargo vet --store-path "$copie"
 }
 
-# Les nomenclatures (SBOM) des programmes publiés (outils/sbom.sh), faites deux fois : elles doivent sortir, sans
+# Les nomenclatures (SBOM) des programmes publiés et de la fenêtre (outils/sbom.sh), faites deux fois : elles doivent sortir, sans
 # chemin de cette machine, et identiques d'une fois à l'autre (le Linux de GitHub fait les mêmes octets, que
 # outils/publier-version.sh compare). Sautée sans cargo-cyclonedx 0.5.9, celui qu'épingle ci.yml.
 nomenclatures() {
   [[ $(cargo cyclonedx --version 2>/dev/null) == *" 0.5.9" ]] ||
     { echo "cargo-cyclonedx 0.5.9 absent (cargo install --locked cargo-cyclonedx@0.5.9)"; return "$SAUTEE"; }
   bash outils/sbom.sh "$TRAVAIL/sbom-1" >/dev/null && bash outils/sbom.sh "$TRAVAIL/sbom-2" >/dev/null &&
-    diff -r "$TRAVAIL/sbom-1" "$TRAVAIL/sbom-2"
+    bash outils/sbom.sh --fenetre "$TRAVAIL/sbom-1" >/dev/null &&
+    bash outils/sbom.sh --fenetre "$TRAVAIL/sbom-2" >/dev/null && diff -r "$TRAVAIL/sbom-1" "$TRAVAIL/sbom-2"
 }
 
 # Les protections des programmes, lues dans leurs en-têtes par vanguard deploiement verifier-binaire
@@ -662,7 +681,7 @@ if [[ $MODE != --rapide ]]; then
   ligne essais-verifier "essais de verifier.sh (--seulement)"
   ligne masque "mots d'attaque masqués"
   ligne extensions "extensions (sdk, exemple Rust)"
-  ligne fenetre "fenêtre (clippy ×2, tests Linux : $(passes fenetre))"
+  ligne fenetre "fenêtre (clippy ×2, tests Linux : $(passes fenetre), protections ×2 ; cargo vet : lot 1b)"
   ligne python "scripts Python"
   ligne relais "relais des lots ($(grep -m1 -oE '^ℹ pass [0-9]+' "$TRAVAIL/relais.log" 2>/dev/null | cut -d' ' -f3) essais)"
   ligne relais-schema "relais : schéma et détecteur"

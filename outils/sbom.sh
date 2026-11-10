@@ -9,11 +9,26 @@
 # là-bas) ramené à « . ».
 #   outils/sbom.sh <dossier de sortie>
 #   outils/sbom.sh --noms        les noms des fichiers, un par ligne, sans rien faire (liens.py --version)
+#   outils/sbom.sh --fenetre <dossier de sortie>
+#                                celles de la fenêtre (fenetre/, vanguard-fenetre), à part : outils/verifier.sh les
+#                                fait, mais elle n'est pas encore publiée, donc ni dans --noms ni sur la page
+#                                (celle de Linux nomme en trop accesskit_unix et ce qu'il amène, zvariant compris,
+#                                que Linux ne compile pas : cargo cyclonedx ne sépare pas les fonctions par cible ;
+#                                une ligne de trop, jamais une de moins)
 set -euo pipefail
 VERSION=0.5.9
 CIBLES='linux-x86_64 x86_64-unknown-linux-musl
 windows-x86_64 x86_64-pc-windows-gnu'
-[[ $# -eq 1 ]] || { echo "usage : outils/sbom.sh <dossier de sortie> | --noms" >&2; exit 2; }
+PROGRAMME=vanguard
+CRATE=.
+if [[ $# -eq 2 && $1 == --fenetre ]]; then
+  CIBLES='linux-x86_64 x86_64-unknown-linux-gnu
+windows-x86_64 x86_64-pc-windows-gnu'
+  PROGRAMME=vanguard-fenetre
+  CRATE=fenetre
+  shift
+fi
+[[ $# -eq 1 ]] || { echo "usage : outils/sbom.sh [--fenetre] <dossier de sortie> | --noms" >&2; exit 2; }
 if [[ $1 == --noms ]]; then
   while read -r nom _; do echo "vanguard-$nom.cdx.json"; done <<<"$CIBLES"
   exit 0
@@ -31,9 +46,10 @@ if [[ $(cargo cyclonedx --version 2>/dev/null) != *" $VERSION" ]]; then
 fi
 # cargo cyclonedx n'a pas de --locked : un Cargo.lock en retard serait refait en silence, et la nomenclature dirait
 # d'autres versions que celles compilées.
-cargo metadata --locked --format-version 1 >/dev/null
+cargo metadata --locked --format-version 1 --manifest-path "$CRATE/Cargo.toml" >/dev/null
 SOURCE_DATE_EPOCH=$(bash outils/date-du-code.sh)
 export SOURCE_DATE_EPOCH
+cd "$CRATE"
 
 # cargo cyclonedx écrit à côté de Cargo.toml : rien n'y reste, même interrompu.
 trap 'rm -f sbom-*.json' EXIT
@@ -42,11 +58,11 @@ while read -r nom cible; do
   # cargo abrège l'identifiant du paquet en « #0.89.0 » quand le dossier du dépôt s'appelle comme lui (vanguard ici),
   # et écrit « #vanguard@0.89.0 » sinon (vanguard-beta sur GitHub) : toujours la forme longue.
   sed -e "s#path+file://$RACINE#path+file://.#g" -e 's|path+file://\.#\([0-9]\)|path+file://.#vanguard@\1|g' \
-    "sbom-$nom.json" >"$SORTIE/vanguard-$nom.cdx.json"
+    "sbom-$nom.json" >"$SORTIE/$PROGRAMME-$nom.cdx.json"
   rm -f "sbom-$nom.json"
-  if grep -q 'file:///' "$SORTIE/vanguard-$nom.cdx.json"; then
-    echo "sbom.sh : un chemin de cette machine reste dans vanguard-$nom.cdx.json" >&2
+  if grep -q 'file:///' "$SORTIE/$PROGRAMME-$nom.cdx.json"; then
+    echo "sbom.sh : un chemin de cette machine reste dans $PROGRAMME-$nom.cdx.json" >&2
     exit 1
   fi
 done <<<"$CIBLES"
-ls "$SORTIE"/vanguard-*.cdx.json
+ls "$SORTIE"/"$PROGRAMME"-*.cdx.json

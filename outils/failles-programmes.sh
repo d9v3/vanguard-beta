@@ -12,7 +12,7 @@
 # celui de la CI (.github/workflows/ci.yml) : le même jugement ici et là-bas.
 #   outils/failles-programmes.sh <programme>...
 #   outils/failles-programmes.sh --outil   cargo-audit seulement (présent, version de la CI), avant une compilation
-#   outils/failles-programmes.sh --depot   Cargo.lock du dépôt, jugé de même (étape « failles connues » de
+#   outils/failles-programmes.sh --depot   Cargo.lock du dépôt et celui de la fenêtre, jugés de même (étape « failles connues » de
 #                                          outils/verifier.sh, que la CI lance aussi chaque nuit) : code 77 sans
 #                                          cargo-audit ou sans Internet, où une base pas à jour dirait vert à tort
 # Lancé par outils/deployer.sh (après chaque compilation), par outils/publier-version.sh sur les deux programmes qu'il
@@ -51,6 +51,13 @@ if [[ $1 == --outil ]]; then
 fi
 
 OPTIONS=(--color never --deny unmaintained --deny unsound)
+# La fenêtre (fenetre/Cargo.lock) n'a aucune exception dans fenetre/deny.toml (ignore = []) : celles de Vanguard,
+# venues de YARA-X, ne la couvrent pas. Mais cargo audit lit Cargo.lock sans cible, et il y trouve des bibliothèques
+# que ni Linux ni Windows ne compilent (zvariant, zbus_names, zvariant_derive, abandonnées : sous accesskit_unix,
+# que la fenêtre ne prend pas sous Linux, fenetre/Cargo.toml). Leur avis n'est écarté ici que si `cargo tree` dit,
+# pour chacune des deux cibles, que la bibliothèque n'y est pas ; cargo deny, cible par cible, les refuse sinon.
+OPTIONS_FENETRE=("${OPTIONS[@]}")
+HORS_CIBLES=(RUSTSEC-2026-0370:zvariant RUSTSEC-2026-0371:zbus_names RUSTSEC-2026-0372:zvariant_derive)
 # Les exceptions de deny.toml, par leur identifiant RustSec (outils/exceptions-rustsec.py, qui les donne aussi à
 # outils/verifier.sh) ; une exception d'une autre forme y est refusée plutôt que perdue en route.
 EXCEPTIONS=$(python3 -I "$RACINE/outils/exceptions-rustsec.py")
@@ -74,6 +81,22 @@ echo "# outils/failles-programmes.sh : aucune exception ici, seulement celles de
 if [[ $1 == --depot ]]; then
   CODE=0
   SORTIE=$(cd "$TRAVAIL" && cargo-audit audit "${OPTIONS[@]}" --file "$RACINE/Cargo.lock" 2>&1) || CODE=$?
+  for exception in "${HORS_CIBLES[@]}"; do
+    for cible in x86_64-unknown-linux-gnu x86_64-pc-windows-gnu; do
+      # Un cargo tree qui échoue (sources pas encore téléchargées…) ne dit rien : refusé, jamais lu comme absente.
+      if ! arbre=$(cargo tree -q --locked --manifest-path "$RACINE/fenetre/Cargo.toml" --target "$cible" \
+        -e normal,build -i "${exception#*:}" 2>/dev/null); then
+        echo "✖ fenêtre : cargo tree a échoué pour $cible, ${exception%%:*} pas écartée"
+        CODE=1
+      elif [[ -n $arbre ]]; then
+        echo "✖ fenêtre : ${exception#*:} compilée pour $cible, ${exception%%:*} ne s'écarte plus"
+        CODE=1
+      fi
+    done
+    OPTIONS_FENETRE+=(--ignore "${exception%%:*}")
+  done
+  SORTIE+=$'\n'"fenetre/Cargo.lock :"$'\n'$(cd "$TRAVAIL" && cargo-audit audit "${OPTIONS_FENETRE[@]}" \
+    --file "$RACINE/fenetre/Cargo.lock" 2>&1) || CODE=1
   printf '%s\n' "$SORTIE"
   # cargo audit n'a pas d'option pour refuser une « notice » : comptée ici (une version retirée de crates.io reste un
   # simple avertissement).
@@ -82,6 +105,7 @@ if [[ $1 == --depot ]]; then
     CODE=1
   fi
   [[ -z $EXCEPTIONS ]] || echo "exceptions de deny.toml : $(printf '%s\n' "$EXCEPTIONS" | paste -sd, - | sed 's/,/, /g')"
+  echo "fenêtre : écartées car compilées par aucune de ses deux cibles : ${HORS_CIBLES[*]%%:*}"
   exit "$CODE"
 fi
 
