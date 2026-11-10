@@ -22,1529 +22,1529 @@ url = "https://raw.githubusercontent.com/zcash/rust-ecosystem/main/supply-chain/
 [[exemptions.accesskit]]
 version = "0.25.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille egui (Rerun) : la toile de la fenêtre et ses lecteurs d'écran (accesskit, Windows). Elle ne dessine que ce que la fenêtre lui donne (les réponses de `vanguard`, lues par fenetre/src/donnees, fuzzées), dans le bac à sable sous Linux. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.accesskit_atspi_common]]
 version = "0.21.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.accesskit_consumer]]
 version = "0.39.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille egui (Rerun) : la toile de la fenêtre et ses lecteurs d'écran (accesskit, Windows). Elle ne dessine que ce que la fenêtre lui donne (les réponses de `vanguard`, lues par fenetre/src/donnees, fuzzées), dans le bac à sable sous Linux. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.accesskit_ios]]
 version = "0.2.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.accesskit_macos]]
 version = "0.27.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.accesskit_unix]]
 version = "0.24.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.accesskit_windows]]
 version = "0.35.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille egui (Rerun) : la toile de la fenêtre et ses lecteurs d'écran (accesskit, Windows). Elle ne dessine que ce que la fenêtre lui donne (les réponses de `vanguard`, lues par fenetre/src/donnees, fuzzées), dans le bac à sable sous Linux. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.accesskit_winit]]
 version = "0.34.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille egui (Rerun) : la toile de la fenêtre et ses lecteurs d'écran (accesskit, Windows). Elle ne dessine que ce que la fenêtre lui donne (les réponses de `vanguard`, lues par fenetre/src/donnees, fuzzées), dans le bac à sable sous Linux. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.ahash]]
 version = "0.8.12"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Caisse de base de l'écosystème Rust (structures, journal, macros d'erreur), sans accès au système de son côté. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.android-activity]]
 version = "0.6.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.android-properties]]
 version = "0.2.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.android_system_properties]]
 version = "0.1.6"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.arboard]]
 version = "3.7.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.arrayvec]]
 version = "0.7.8"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Caisse de base de l'écosystème Rust (structures, journal, macros d'erreur), sans accès au système de son côté. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.as-raw-xcb-connection]]
 version = "1.0.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille winit (Rust Windowing, Smithay) : le lien au bureau (Wayland, X11, clavier, curseurs). Elle ne parle qu'au compositeur et charge les bibliothèques du système ; sous Linux, dans le bac à sable (ni fichier du compte, ni réseau, ni programme). Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.async-broadcast]]
 version = "0.7.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.async-channel]]
 version = "2.5.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.async-executor]]
 version = "1.14.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.async-io]]
 version = "2.6.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.async-lock]]
 version = "3.5.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.async-process]]
 version = "2.5.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.async-recursion]]
 version = "1.2.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.async-signal]]
 version = "0.2.14"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.async-trait]]
 version = "0.1.92"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.atspi]]
 version = "0.29.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.atspi-common]]
 version = "0.13.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.atspi-proxies]]
 version = "0.13.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.autocfg]]
 version = "1.5.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Outil de compilation (macro, build.rs, lecture des XML des protocoles) : tourne quand la fenêtre se compile, sur la machine de l'auteur, et n'entre pas tel quel dans le programme. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.bitflags]]
 version = "2.13.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Caisse de base de l'écosystème Rust (structures, journal, macros d'erreur), sans accès au système de son côté. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.block2]]
 version = "0.5.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.blocking]]
 version = "1.7.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.bytemuck]]
 version = "1.25.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Caisse de base de l'écosystème Rust (structures, journal, macros d'erreur), sans accès au système de son côté. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.bytemuck_derive]]
 version = "1.12.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Outil de compilation (macro, build.rs, lecture des XML des protocoles) : tourne quand la fenêtre se compile, sur la machine de l'auteur, et n'entre pas tel quel dans le programme. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.byteorder-lite]]
 version = "0.1.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille images et texte (image, png, Linebender) : ne décode que les polices et l'icône embarquées dans le programme, et dessine leurs lettres ; jamais un fichier venu d'ailleurs. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.bytes]]
 version = "1.12.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.calloop]]
 version = "0.13.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille winit (Rust Windowing, Smithay) : le lien au bureau (Wayland, X11, clavier, curseurs). Elle ne parle qu'au compositeur et charge les bibliothèques du système ; sous Linux, dans le bac à sable (ni fichier du compte, ni réseau, ni programme). Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.calloop-wayland-source]]
 version = "0.3.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille winit (Rust Windowing, Smithay) : le lien au bureau (Wayland, X11, clavier, curseurs). Elle ne parle qu'au compositeur et charge les bibliothèques du système ; sous Linux, dans le bac à sable (ni fichier du compte, ni réseau, ni programme). Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.cc]]
 version = "1.11.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Outil de compilation (macro, build.rs, lecture des XML des protocoles) : tourne quand la fenêtre se compile, sur la machine de l'auteur, et n'entre pas tel quel dans le programme. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.cfg-if]]
 version = "1.0.5"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Caisse de base de l'écosystème Rust (structures, journal, macros d'erreur), sans accès au système de son côté. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.cfg_aliases]]
 version = "0.2.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Outil de compilation (macro, build.rs, lecture des XML des protocoles) : tourne quand la fenêtre se compile, sur la machine de l'auteur, et n'entre pas tel quel dans le programme. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.chrono]]
 version = "0.4.45"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Accès au système (appels, verrous, heure, hasard, chargement des bibliothèques), des caisses de base de l'écosystème Rust ; sous Linux, chaque appel reste dans le bac à sable. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.clipboard-win]]
 version = "5.4.3"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.color]]
 version = "0.3.3"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille images et texte (image, png, Linebender) : ne décode que les polices et l'icône embarquées dans le programme, et dessine leurs lettres ; jamais un fichier venu d'ailleurs. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.combine]]
 version = "4.6.9"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.concurrent-queue]]
 version = "2.5.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.core-graphics]]
 version = "0.23.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.crc32fast]]
 version = "1.5.4"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille images et texte (image, png, Linebender) : ne décode que les polices et l'icône embarquées dans le programme, et dessine leurs lettres ; jamais un fichier venu d'ailleurs. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.crossbeam-utils]]
 version = "0.8.23"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.cursor-icon]]
 version = "1.2.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille winit (Rust Windowing, Smithay) : le lien au bureau (Wayland, X11, clavier, curseurs). Elle ne parle qu'au compositeur et charge les bibliothèques du système ; sous Linux, dans le bac à sable (ni fichier du compte, ni réseau, ni programme). Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.dispatch]]
 version = "0.2.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.dispatch2]]
 version = "0.3.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.dlib]]
 version = "0.5.3"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille winit (Rust Windowing, Smithay) : le lien au bureau (Wayland, X11, clavier, curseurs). Elle ne parle qu'au compositeur et charge les bibliothèques du système ; sous Linux, dans le bac à sable (ni fichier du compte, ni réseau, ni programme). Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.downcast-rs]]
 version = "1.2.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille winit (Rust Windowing, Smithay) : le lien au bureau (Wayland, X11, clavier, curseurs). Elle ne parle qu'au compositeur et charge les bibliothèques du système ; sous Linux, dans le bac à sable (ni fichier du compte, ni réseau, ni programme). Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.dpi]]
 version = "0.1.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille winit (Rust Windowing, Smithay) : le lien au bureau (Wayland, X11, clavier, curseurs). Elle ne parle qu'au compositeur et charge les bibliothèques du système ; sous Linux, dans le bac à sable (ni fichier du compte, ni réseau, ni programme). Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.ecolor]]
 version = "0.37.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille egui (Rerun) : la toile de la fenêtre et ses lecteurs d'écran (accesskit, Windows). Elle ne dessine que ce que la fenêtre lui donne (les réponses de `vanguard`, lues par fenetre/src/donnees, fuzzées), dans le bac à sable sous Linux. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.eframe]]
 version = "0.37.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille egui (Rerun) : la toile de la fenêtre et ses lecteurs d'écran (accesskit, Windows). Elle ne dessine que ce que la fenêtre lui donne (les réponses de `vanguard`, lues par fenetre/src/donnees, fuzzées), dans le bac à sable sous Linux. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.egui]]
 version = "0.37.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille egui (Rerun) : la toile de la fenêtre et ses lecteurs d'écran (accesskit, Windows). Elle ne dessine que ce que la fenêtre lui donne (les réponses de `vanguard`, lues par fenetre/src/donnees, fuzzées), dans le bac à sable sous Linux. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.egui-wgpu]]
 version = "0.37.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.egui-winit]]
 version = "0.37.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille egui (Rerun) : la toile de la fenêtre et ses lecteurs d'écran (accesskit, Windows). Elle ne dessine que ce que la fenêtre lui donne (les réponses de `vanguard`, lues par fenetre/src/donnees, fuzzées), dans le bac à sable sous Linux. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.egui_glow]]
 version = "0.37.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille egui (Rerun) : la toile de la fenêtre et ses lecteurs d'écran (accesskit, Windows). Elle ne dessine que ce que la fenêtre lui donne (les réponses de `vanguard`, lues par fenetre/src/donnees, fuzzées), dans le bac à sable sous Linux. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.either]]
 version = "1.19.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Caisse de base de l'écosystème Rust (structures, journal, macros d'erreur), sans accès au système de son côté. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.emath]]
 version = "0.37.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille egui (Rerun) : la toile de la fenêtre et ses lecteurs d'écran (accesskit, Windows). Elle ne dessine que ce que la fenêtre lui donne (les réponses de `vanguard`, lues par fenetre/src/donnees, fuzzées), dans le bac à sable sous Linux. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.endi]]
 version = "1.1.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.enumflags2]]
 version = "0.7.12"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.enumflags2_derive]]
 version = "0.7.12"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.epaint]]
 version = "0.37.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille egui (Rerun) : la toile de la fenêtre et ses lecteurs d'écran (accesskit, Windows). Elle ne dessine que ce que la fenêtre lui donne (les réponses de `vanguard`, lues par fenetre/src/donnees, fuzzées), dans le bac à sable sous Linux. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.equivalent]]
 version = "1.0.3"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Caisse de base de l'écosystème Rust (structures, journal, macros d'erreur), sans accès au système de son côté. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.error-code]]
 version = "3.4.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.event-listener]]
 version = "5.4.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.event-listener-strategy]]
 version = "0.5.4"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.fastrand]]
 version = "2.5.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.fax]]
 version = "0.2.7"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.fearless_simd]]
 version = "0.4.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille images et texte (image, png, Linebender) : ne décode que les polices et l'icône embarquées dans le programme, et dessine leurs lettres ; jamais un fichier venu d'ailleurs. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.find-msvc-tools]]
 version = "0.1.15"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Outil de compilation (macro, build.rs, lecture des XML des protocoles) : tourne quand la fenêtre se compile, sur la machine de l'auteur, et n'entre pas tel quel dans le programme. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.fixedbitset]]
 version = "0.5.9"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.flate2]]
 version = "1.1.11"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille images et texte (image, png, Linebender) : ne décode que les polices et l'icône embarquées dans le programme, et dessine leurs lettres ; jamais un fichier venu d'ailleurs. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.font-types]]
 version = "0.12.7"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille images et texte (image, png, Linebender) : ne décode que les polices et l'icône embarquées dans le programme, et dessine leurs lettres ; jamais un fichier venu d'ailleurs. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.foreign-types-macros]]
 version = "0.2.4"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.futures-lite]]
 version = "2.6.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.futures-task]]
 version = "0.3.34"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.futures-util]]
 version = "0.3.34"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.gethostname]]
 version = "1.1.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille winit (Rust Windowing, Smithay) : le lien au bureau (Wayland, X11, clavier, curseurs). Elle ne parle qu'au compositeur et charge les bibliothèques du système ; sous Linux, dans le bac à sable (ni fichier du compte, ni réseau, ni programme). Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.getrandom]]
 version = "0.3.4"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Accès au système (appels, verrous, heure, hasard, chargement des bibliothèques), des caisses de base de l'écosystème Rust ; sous Linux, chaque appel reste dans le bac à sable. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.gl_generator]]
 version = "0.14.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille glow et glutin : les appels d'OpenGL, d'EGL, de GLX et de WGL vers le pilote du système, générés à la compilation depuis les fichiers de Khronos ; sous Linux, dans le bac à sable. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.glifo]]
 version = "0.3.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.glow]]
 version = "0.17.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille glow et glutin : les appels d'OpenGL, d'EGL, de GLX et de WGL vers le pilote du système, générés à la compilation depuis les fichiers de Khronos ; sous Linux, dans le bac à sable. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.glutin]]
 version = "0.32.3"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille glow et glutin : les appels d'OpenGL, d'EGL, de GLX et de WGL vers le pilote du système, générés à la compilation depuis les fichiers de Khronos ; sous Linux, dans le bac à sable. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.glutin-winit]]
 version = "0.5.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille glow et glutin : les appels d'OpenGL, d'EGL, de GLX et de WGL vers le pilote du système, générés à la compilation depuis les fichiers de Khronos ; sous Linux, dans le bac à sable. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.glutin_egl_sys]]
 version = "0.7.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille glow et glutin : les appels d'OpenGL, d'EGL, de GLX et de WGL vers le pilote du système, générés à la compilation depuis les fichiers de Khronos ; sous Linux, dans le bac à sable. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.glutin_glx_sys]]
 version = "0.6.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille glow et glutin : les appels d'OpenGL, d'EGL, de GLX et de WGL vers le pilote du système, générés à la compilation depuis les fichiers de Khronos ; sous Linux, dans le bac à sable. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.glutin_wgl_sys]]
 version = "0.6.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille glow et glutin : les appels d'OpenGL, d'EGL, de GLX et de WGL vers le pilote du système, générés à la compilation depuis les fichiers de Khronos ; sous Linux, dans le bac à sable. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.guillotiere]]
 version = "0.7.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille images et texte (image, png, Linebender) : ne décode que les polices et l'icône embarquées dans le programme, et dessine leurs lettres ; jamais un fichier venu d'ailleurs. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.half]]
 version = "2.7.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.harfrust]]
 version = "0.12.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille images et texte (image, png, Linebender) : ne décode que les polices et l'icône embarquées dans le programme, et dessine leurs lettres ; jamais un fichier venu d'ailleurs. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.hashbrown]]
 version = "0.15.5"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.hermit-abi]]
 version = "0.5.3"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.iana-time-zone]]
 version = "0.1.65"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Accès au système (appels, verrous, heure, hasard, chargement des bibliothèques), des caisses de base de l'écosystème Rust ; sous Linux, chaque appel reste dans le bac à sable. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.image]]
 version = "0.25.10"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille images et texte (image, png, Linebender) : ne décode que les polices et l'icône embarquées dans le programme, et dessine leurs lettres ; jamais un fichier venu d'ailleurs. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.indexmap]]
 version = "2.14.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Caisse de base de l'écosystème Rust (structures, journal, macros d'erreur), sans accès au système de son côté. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.itertools]]
 version = "0.15.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Caisse de base de l'écosystème Rust (structures, journal, macros d'erreur), sans accès au système de son côté. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.itoa]]
 version = "1.0.19"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille serde (dtolnay) : lit les réponses JSON de `vanguard` ; ces lecteurs sont fuzzés (fenetre_donnees) et n'acceptent qu'une taille bornée. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.jni]]
 version = "0.22.4"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.jni-macros]]
 version = "0.22.4"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.jni-sys]]
 version = "0.3.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.jni-sys]]
 version = "0.4.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.jni-sys-macros]]
 version = "0.4.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.jobserver]]
 version = "0.1.35"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.js-sys]]
 version = "0.3.107"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.khronos_api]]
 version = "3.1.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille glow et glutin : les appels d'OpenGL, d'EGL, de GLX et de WGL vers le pilote du système, générés à la compilation depuis les fichiers de Khronos ; sous Linux, dans le bac à sable. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.kurbo]]
 version = "0.13.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille images et texte (image, png, Linebender) : ne décode que les polices et l'icône embarquées dans le programme, et dessine leurs lettres ; jamais un fichier venu d'ailleurs. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.libc]]
 version = "0.2.191"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Accès au système (appels, verrous, heure, hasard, chargement des bibliothèques), des caisses de base de l'écosystème Rust ; sous Linux, chaque appel reste dans le bac à sable. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.libloading]]
 version = "0.8.9"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Accès au système (appels, verrous, heure, hasard, chargement des bibliothèques), des caisses de base de l'écosystème Rust ; sous Linux, chaque appel reste dans le bac à sable. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.libm]]
 version = "0.2.16"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.libredox]]
 version = "0.1.25"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.linebender_resource_handle]]
 version = "0.1.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille images et texte (image, png, Linebender) : ne décode que les polices et l'icône embarquées dans le programme, et dessine leurs lettres ; jamais un fichier venu d'ailleurs. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.linux-raw-sys]]
 version = "0.4.15"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Accès au système (appels, verrous, heure, hasard, chargement des bibliothèques), des caisses de base de l'écosystème Rust ; sous Linux, chaque appel reste dans le bac à sable. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.linux-raw-sys]]
 version = "0.12.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Accès au système (appels, verrous, heure, hasard, chargement des bibliothèques), des caisses de base de l'écosystème Rust ; sous Linux, chaque appel reste dans le bac à sable. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.litrs]]
 version = "1.0.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Outil de compilation (macro, build.rs, lecture des XML des protocoles) : tourne quand la fenêtre se compile, sur la machine de l'auteur, et n'entre pas tel quel dans le programme. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.lock_api]]
 version = "0.4.14"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Accès au système (appels, verrous, heure, hasard, chargement des bibliothèques), des caisses de base de l'écosystème Rust ; sous Linux, chaque appel reste dans le bac à sable. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.log]]
 version = "0.4.35"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Caisse de base de l'écosystème Rust (structures, journal, macros d'erreur), sans accès au système de son côté. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.memchr]]
 version = "2.8.3"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Caisse de base de l'écosystème Rust (structures, journal, macros d'erreur), sans accès au système de son côté. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.memmap2]]
 version = "0.9.12"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille winit (Rust Windowing, Smithay) : le lien au bureau (Wayland, X11, clavier, curseurs). Elle ne parle qu'au compositeur et charge les bibliothèques du système ; sous Linux, dans le bac à sable (ni fichier du compte, ni réseau, ni programme). Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.memoffset]]
 version = "0.9.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.miniz_oxide]]
 version = "0.9.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille images et texte (image, png, Linebender) : ne décode que les polices et l'icône embarquées dans le programme, et dessine leurs lettres ; jamais un fichier venu d'ailleurs. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.moxcms]]
 version = "0.8.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille images et texte (image, png, Linebender) : ne décode que les polices et l'icône embarquées dans le programme, et dessine leurs lettres ; jamais un fichier venu d'ailleurs. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.naga]]
 version = "30.0.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.naga-types]]
 version = "30.0.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.ndk]]
 version = "0.9.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.ndk-context]]
 version = "0.1.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.ndk-sys]]
 version = "0.6.0+11769913"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.nohash-hasher]]
 version = "0.2.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Caisse de base de l'écosystème Rust (structures, journal, macros d'erreur), sans accès au système de son côté. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.nom]]
 version = "8.0.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.num_enum]]
 version = "0.7.6"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.num_enum_derive]]
 version = "0.7.6"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.objc-sys]]
 version = "0.3.5"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.objc2]]
 version = "0.5.3"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.objc2-app-kit]]
 version = "0.2.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.objc2-app-kit]]
 version = "0.3.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.objc2-cloud-kit]]
 version = "0.2.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.objc2-contacts]]
 version = "0.2.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.objc2-core-data]]
 version = "0.2.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.objc2-core-image]]
 version = "0.2.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.objc2-core-location]]
 version = "0.2.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.objc2-foundation]]
 version = "0.2.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.objc2-link-presentation]]
 version = "0.2.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.objc2-metal]]
 version = "0.2.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.objc2-quartz-core]]
 version = "0.2.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.objc2-symbols]]
 version = "0.2.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.objc2-ui-kit]]
 version = "0.2.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.objc2-ui-kit]]
 version = "0.3.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.objc2-uniform-type-identifiers]]
 version = "0.2.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.objc2-user-notifications]]
 version = "0.2.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.once_cell]]
 version = "1.21.4"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Accès au système (appels, verrous, heure, hasard, chargement des bibliothèques), des caisses de base de l'écosystème Rust ; sous Linux, chaque appel reste dans le bac à sable. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.orbclient]]
 version = "0.3.55"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.ordered-stream]]
 version = "0.2.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.os_pipe]]
 version = "1.2.3"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.parking_lot]]
 version = "0.12.5"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Accès au système (appels, verrous, heure, hasard, chargement des bibliothèques), des caisses de base de l'écosystème Rust ; sous Linux, chaque appel reste dans le bac à sable. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.parking_lot_core]]
 version = "0.9.12"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Accès au système (appels, verrous, heure, hasard, chargement des bibliothèques), des caisses de base de l'écosystème Rust ; sous Linux, chaque appel reste dans le bac à sable. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.peniko]]
 version = "0.6.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille images et texte (image, png, Linebender) : ne décode que les polices et l'icône embarquées dans le programme, et dessine leurs lettres ; jamais un fichier venu d'ailleurs. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.petgraph]]
 version = "0.8.3"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.phf]]
 version = "0.14.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.phf_generator]]
 version = "0.14.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.phf_macros]]
 version = "0.14.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.phf_shared]]
 version = "0.14.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.pin-project]]
 version = "1.1.13"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.pin-project-internal]]
 version = "1.1.13"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.pin-project-lite]]
 version = "0.2.17"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Caisse de base de l'écosystème Rust (structures, journal, macros d'erreur), sans accès au système de son côté. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.piper]]
 version = "0.2.5"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.plain]]
 version = "0.2.3"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.png]]
 version = "0.18.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille images et texte (image, png, Linebender) : ne décode que les polices et l'icône embarquées dans le programme, et dessine leurs lettres ; jamais un fichier venu d'ailleurs. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.polling]]
 version = "3.11.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille winit (Rust Windowing, Smithay) : le lien au bureau (Wayland, X11, clavier, curseurs). Elle ne parle qu'au compositeur et charge les bibliothèques du système ; sous Linux, dans le bac à sable (ni fichier du compte, ni réseau, ni programme). Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.polycool]]
 version = "0.4.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille images et texte (image, png, Linebender) : ne décode que les polices et l'icône embarquées dans le programme, et dessine leurs lettres ; jamais un fichier venu d'ailleurs. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.portable-atomic]]
 version = "1.15.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.portable-atomic-util]]
 version = "0.2.8"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.proc-macro-crate]]
 version = "3.5.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.proc-macro2]]
 version = "1.0.107"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Outil de compilation (macro, build.rs, lecture des XML des protocoles) : tourne quand la fenêtre se compile, sur la machine de l'auteur, et n'entre pas tel quel dans le programme. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.profiling]]
 version = "1.0.18"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Caisse de base de l'écosystème Rust (structures, journal, macros d'erreur), sans accès au système de son côté. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.pxfm]]
 version = "0.1.30"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille images et texte (image, png, Linebender) : ne décode que les polices et l'icône embarquées dans le programme, et dessine leurs lettres ; jamais un fichier venu d'ailleurs. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.quick-error]]
 version = "2.0.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.quick-xml]]
 version = "0.41.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Outil de compilation (macro, build.rs, lecture des XML des protocoles) : tourne quand la fenêtre se compile, sur la machine de l'auteur, et n'entre pas tel quel dans le programme. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.r-efi]]
 version = "5.3.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.r-efi]]
 version = "6.0.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.redox_syscall]]
 version = "0.4.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.redox_syscall]]
 version = "0.5.18"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.redox_syscall]]
 version = "0.9.5"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.renderdoc-sys]]
 version = "1.1.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.rustc-hash]]
 version = "2.1.3"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.rustix]]
 version = "0.38.44"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Accès au système (appels, verrous, heure, hasard, chargement des bibliothèques), des caisses de base de l'écosystème Rust ; sous Linux, chaque appel reste dans le bac à sable. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.rustix]]
 version = "1.1.6"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Accès au système (appels, verrous, heure, hasard, chargement des bibliothèques), des caisses de base de l'écosystème Rust ; sous Linux, chaque appel reste dans le bac à sable. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.rustversion]]
 version = "1.0.23"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.same-file]]
 version = "1.0.6"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.scoped-tls]]
 version = "1.0.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille winit (Rust Windowing, Smithay) : le lien au bureau (Wayland, X11, clavier, curseurs). Elle ne parle qu'au compositeur et charge les bibliothèques du système ; sous Linux, dans le bac à sable (ni fichier du compte, ni réseau, ni programme). Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.scopeguard]]
 version = "1.2.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Accès au système (appels, verrous, heure, hasard, chargement des bibliothèques), des caisses de base de l'écosystème Rust ; sous Linux, chaque appel reste dans le bac à sable. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.self_cell]]
 version = "1.3.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille images et texte (image, png, Linebender) : ne décode que les polices et l'icône embarquées dans le programme, et dessine leurs lettres ; jamais un fichier venu d'ailleurs. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.send_wrapper]]
 version = "0.6.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.serde]]
 version = "1.0.229"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille serde (dtolnay) : lit les réponses JSON de `vanguard` ; ces lecteurs sont fuzzés (fenetre_donnees) et n'acceptent qu'une taille bornée. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.serde_core]]
 version = "1.0.229"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille serde (dtolnay) : lit les réponses JSON de `vanguard` ; ces lecteurs sont fuzzés (fenetre_donnees) et n'acceptent qu'une taille bornée. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.serde_derive]]
 version = "1.0.229"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille serde (dtolnay) : lit les réponses JSON de `vanguard` ; ces lecteurs sont fuzzés (fenetre_donnees) et n'acceptent qu'une taille bornée. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.serde_json]]
 version = "1.0.154"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille serde (dtolnay) : lit les réponses JSON de `vanguard` ; ces lecteurs sont fuzzés (fenetre_donnees) et n'acceptent qu'une taille bornée. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.serde_repr]]
 version = "0.1.21"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.signal-hook-registry]]
 version = "1.4.8"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.simd-adler32]]
 version = "0.3.10"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille images et texte (image, png, Linebender) : ne décode que les polices et l'icône embarquées dans le programme, et dessine leurs lettres ; jamais un fichier venu d'ailleurs. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.simd_cesu8]]
 version = "1.2.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.siphasher]]
 version = "1.0.4"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.slab]]
 version = "0.4.12"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Caisse de base de l'écosystème Rust (structures, journal, macros d'erreur), sans accès au système de son côté. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.slotmap]]
 version = "1.1.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.smallvec]]
 version = "1.16.5"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Caisse de base de l'écosystème Rust (structures, journal, macros d'erreur), sans accès au système de son côté. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.smithay-client-toolkit]]
 version = "0.19.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille winit (Rust Windowing, Smithay) : le lien au bureau (Wayland, X11, clavier, curseurs). Elle ne parle qu'au compositeur et charge les bibliothèques du système ; sous Linux, dans le bac à sable (ni fichier du compte, ni réseau, ni programme). Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.smol_str]]
 version = "0.2.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille winit (Rust Windowing, Smithay) : le lien au bureau (Wayland, X11, clavier, curseurs). Elle ne parle qu'au compositeur et charge les bibliothèques du système ; sous Linux, dans le bac à sable (ni fichier du compte, ni réseau, ni programme). Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.syn]]
 version = "2.0.119"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Outil de compilation (macro, build.rs, lecture des XML des protocoles) : tourne quand la fenêtre se compile, sur la machine de l'auteur, et n'entre pas tel quel dans le programme. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.syn]]
 version = "3.0.10"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Outil de compilation (macro, build.rs, lecture des XML des protocoles) : tourne quand la fenêtre se compile, sur la machine de l'auteur, et n'entre pas tel quel dans le programme. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.tempfile]]
 version = "3.27.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.thiserror]]
 version = "1.0.69"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Caisse de base de l'écosystème Rust (structures, journal, macros d'erreur), sans accès au système de son côté. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.thiserror]]
 version = "2.0.21"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Caisse de base de l'écosystème Rust (structures, journal, macros d'erreur), sans accès au système de son côté. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.thiserror-impl]]
 version = "1.0.69"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Outil de compilation (macro, build.rs, lecture des XML des protocoles) : tourne quand la fenêtre se compile, sur la machine de l'auteur, et n'entre pas tel quel dans le programme. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.thiserror-impl]]
 version = "2.0.21"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Outil de compilation (macro, build.rs, lecture des XML des protocoles) : tourne quand la fenêtre se compile, sur la machine de l'auteur, et n'entre pas tel quel dans le programme. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.tiff]]
 version = "0.11.3"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.tokio]]
 version = "1.54.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.toml_datetime]]
 version = "1.1.3+spec-1.1.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.toml_edit]]
 version = "0.25.19+spec-1.1.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.toml_parser]]
 version = "1.1.5+spec-1.1.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.tracing]]
 version = "0.1.44"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Caisse de base de l'écosystème Rust (structures, journal, macros d'erreur), sans accès au système de son côté. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.tracing-attributes]]
 version = "0.1.31"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.tree_magic_mini]]
 version = "3.2.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.type-map]]
 version = "0.5.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.uds_windows]]
 version = "1.2.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.unicode-general-category]]
 version = "1.1.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille images et texte (image, png, Linebender) : ne décode que les polices et l'icône embarquées dans le programme, et dessine leurs lettres ; jamais un fichier venu d'ailleurs. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.unicode-ident]]
 version = "1.0.27"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Outil de compilation (macro, build.rs, lecture des XML des protocoles) : tourne quand la fenêtre se compile, sur la machine de l'auteur, et n'entre pas tel quel dans le programme. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.unicode-properties]]
 version = "0.1.5"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille images et texte (image, png, Linebender) : ne décode que les polices et l'icône embarquées dans le programme, et dessine leurs lettres ; jamais un fichier venu d'ailleurs. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.unicode-width]]
 version = "0.2.3"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.uuid]]
 version = "1.29.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Accès au système (appels, verrous, heure, hasard, chargement des bibliothèques), des caisses de base de l'écosystème Rust ; sous Linux, chaque appel reste dans le bac à sable. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.vello_common]]
 version = "0.2.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille images et texte (image, png, Linebender) : ne décode que les polices et l'icône embarquées dans le programme, et dessine leurs lettres ; jamais un fichier venu d'ailleurs. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.vello_cpu]]
 version = "0.2.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille images et texte (image, png, Linebender) : ne décode que les polices et l'icône embarquées dans le programme, et dessine leurs lettres ; jamais un fichier venu d'ailleurs. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.version_check]]
 version = "0.9.5"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Outil de compilation (macro, build.rs, lecture des XML des protocoles) : tourne quand la fenêtre se compile, sur la machine de l'auteur, et n'entre pas tel quel dans le programme. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.walkdir]]
 version = "2.5.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.wasm-bindgen]]
 version = "0.2.130"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.wasm-bindgen-futures]]
 version = "0.4.80"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.wasm-bindgen-macro]]
 version = "0.2.130"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.wasm-bindgen-macro-support]]
 version = "0.2.130"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.wasm-bindgen-shared]]
 version = "0.2.130"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.wayland-backend]]
 version = "0.3.17"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille winit (Rust Windowing, Smithay) : le lien au bureau (Wayland, X11, clavier, curseurs). Elle ne parle qu'au compositeur et charge les bibliothèques du système ; sous Linux, dans le bac à sable (ni fichier du compte, ni réseau, ni programme). Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.wayland-client]]
 version = "0.31.15"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille winit (Rust Windowing, Smithay) : le lien au bureau (Wayland, X11, clavier, curseurs). Elle ne parle qu'au compositeur et charge les bibliothèques du système ; sous Linux, dans le bac à sable (ni fichier du compte, ni réseau, ni programme). Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.wayland-csd-frame]]
 version = "0.3.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille winit (Rust Windowing, Smithay) : le lien au bureau (Wayland, X11, clavier, curseurs). Elle ne parle qu'au compositeur et charge les bibliothèques du système ; sous Linux, dans le bac à sable (ni fichier du compte, ni réseau, ni programme). Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.wayland-cursor]]
 version = "0.31.14"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille winit (Rust Windowing, Smithay) : le lien au bureau (Wayland, X11, clavier, curseurs). Elle ne parle qu'au compositeur et charge les bibliothèques du système ; sous Linux, dans le bac à sable (ni fichier du compte, ni réseau, ni programme). Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.wayland-protocols]]
 version = "0.32.13"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille winit (Rust Windowing, Smithay) : le lien au bureau (Wayland, X11, clavier, curseurs). Elle ne parle qu'au compositeur et charge les bibliothèques du système ; sous Linux, dans le bac à sable (ni fichier du compte, ni réseau, ni programme). Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.wayland-protocols-plasma]]
 version = "0.3.12"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille winit (Rust Windowing, Smithay) : le lien au bureau (Wayland, X11, clavier, curseurs). Elle ne parle qu'au compositeur et charge les bibliothèques du système ; sous Linux, dans le bac à sable (ni fichier du compte, ni réseau, ni programme). Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.wayland-protocols-wlr]]
 version = "0.3.12"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille winit (Rust Windowing, Smithay) : le lien au bureau (Wayland, X11, clavier, curseurs). Elle ne parle qu'au compositeur et charge les bibliothèques du système ; sous Linux, dans le bac à sable (ni fichier du compte, ni réseau, ni programme). Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.wayland-scanner]]
 version = "0.31.11"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille winit (Rust Windowing, Smithay) : le lien au bureau (Wayland, X11, clavier, curseurs). Elle ne parle qu'au compositeur et charge les bibliothèques du système ; sous Linux, dans le bac à sable (ni fichier du compte, ni réseau, ni programme). Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.wayland-sys]]
 version = "0.31.11"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille winit (Rust Windowing, Smithay) : le lien au bureau (Wayland, X11, clavier, curseurs). Elle ne parle qu'au compositeur et charge les bibliothèques du système ; sous Linux, dans le bac à sable (ni fichier du compte, ni réseau, ni programme). Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.web-sys]]
 version = "0.3.107"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.weezl]]
 version = "0.1.12"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.wgpu]]
 version = "30.0.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.wgpu-core]]
 version = "30.0.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.wgpu-core-deps-windows-linux-android]]
 version = "30.0.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.wgpu-hal]]
 version = "30.0.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.wgpu-naga-bridge]]
 version = "30.0.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.wgpu-types]]
 version = "30.0.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.winapi-util]]
 version = "0.1.11"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.windows]]
 version = "0.62.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille windows (Microsoft) : les liaisons vers les API de Windows, générées depuis les métadonnées de Microsoft ; seulement dans vanguard-fenetre.exe. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.windows-collections]]
 version = "0.3.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille windows (Microsoft) : les liaisons vers les API de Windows, générées depuis les métadonnées de Microsoft ; seulement dans vanguard-fenetre.exe. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.windows-core]]
 version = "0.62.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille windows (Microsoft) : les liaisons vers les API de Windows, générées depuis les métadonnées de Microsoft ; seulement dans vanguard-fenetre.exe. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.windows-future]]
 version = "0.3.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille windows (Microsoft) : les liaisons vers les API de Windows, générées depuis les métadonnées de Microsoft ; seulement dans vanguard-fenetre.exe. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.windows-implement]]
 version = "0.60.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille windows (Microsoft) : les liaisons vers les API de Windows, générées depuis les métadonnées de Microsoft ; seulement dans vanguard-fenetre.exe. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.windows-interface]]
 version = "0.59.3"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille windows (Microsoft) : les liaisons vers les API de Windows, générées depuis les métadonnées de Microsoft ; seulement dans vanguard-fenetre.exe. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.windows-numerics]]
 version = "0.3.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille windows (Microsoft) : les liaisons vers les API de Windows, générées depuis les métadonnées de Microsoft ; seulement dans vanguard-fenetre.exe. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.windows-result]]
 version = "0.4.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille windows (Microsoft) : les liaisons vers les API de Windows, générées depuis les métadonnées de Microsoft ; seulement dans vanguard-fenetre.exe. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.windows-strings]]
 version = "0.5.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille windows (Microsoft) : les liaisons vers les API de Windows, générées depuis les métadonnées de Microsoft ; seulement dans vanguard-fenetre.exe. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.windows-sys]]
 version = "0.52.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille windows (Microsoft) : les liaisons vers les API de Windows, générées depuis les métadonnées de Microsoft ; seulement dans vanguard-fenetre.exe. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.windows-sys]]
 version = "0.59.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.windows-sys]]
 version = "0.61.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille windows (Microsoft) : les liaisons vers les API de Windows, générées depuis les métadonnées de Microsoft ; seulement dans vanguard-fenetre.exe. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.windows-targets]]
 version = "0.52.6"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille windows (Microsoft) : les liaisons vers les API de Windows, générées depuis les métadonnées de Microsoft ; seulement dans vanguard-fenetre.exe. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.windows-threading]]
 version = "0.2.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille windows (Microsoft) : les liaisons vers les API de Windows, générées depuis les métadonnées de Microsoft ; seulement dans vanguard-fenetre.exe. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.windows_aarch64_gnullvm]]
 version = "0.52.6"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.windows_aarch64_msvc]]
 version = "0.52.6"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.windows_i686_gnu]]
 version = "0.52.6"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.windows_i686_gnullvm]]
 version = "0.52.6"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.windows_i686_msvc]]
 version = "0.52.6"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.windows_x86_64_gnu]]
 version = "0.52.6"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille windows (Microsoft) : les liaisons vers les API de Windows, générées depuis les métadonnées de Microsoft ; seulement dans vanguard-fenetre.exe. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.windows_x86_64_gnullvm]]
 version = "0.52.6"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.windows_x86_64_msvc]]
 version = "0.52.6"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.winit]]
 version = "0.30.13"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille winit (Rust Windowing, Smithay) : le lien au bureau (Wayland, X11, clavier, curseurs). Elle ne parle qu'au compositeur et charge les bibliothèques du système ; sous Linux, dans le bac à sable (ni fichier du compte, ni réseau, ni programme). Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.winnow]]
 version = "1.0.5"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.wl-clipboard-rs]]
 version = "0.9.5"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.x11-dl]]
 version = "2.21.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille winit (Rust Windowing, Smithay) : le lien au bureau (Wayland, X11, clavier, curseurs). Elle ne parle qu'au compositeur et charge les bibliothèques du système ; sous Linux, dans le bac à sable (ni fichier du compte, ni réseau, ni programme). Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.x11rb]]
 version = "0.13.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille winit (Rust Windowing, Smithay) : le lien au bureau (Wayland, X11, clavier, curseurs). Elle ne parle qu'au compositeur et charge les bibliothèques du système ; sous Linux, dans le bac à sable (ni fichier du compte, ni réseau, ni programme). Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.x11rb-protocol]]
 version = "0.13.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille winit (Rust Windowing, Smithay) : le lien au bureau (Wayland, X11, clavier, curseurs). Elle ne parle qu'au compositeur et charge les bibliothèques du système ; sous Linux, dans le bac à sable (ni fichier du compte, ni réseau, ni programme). Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.xcursor]]
 version = "0.3.11"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille winit (Rust Windowing, Smithay) : le lien au bureau (Wayland, X11, clavier, curseurs). Elle ne parle qu'au compositeur et charge les bibliothèques du système ; sous Linux, dans le bac à sable (ni fichier du compte, ni réseau, ni programme). Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.xkbcommon-dl]]
 version = "0.4.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille winit (Rust Windowing, Smithay) : le lien au bureau (Wayland, X11, clavier, curseurs). Elle ne parle qu'au compositeur et charge les bibliothèques du système ; sous Linux, dans le bac à sable (ni fichier du compte, ni réseau, ni programme). Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.xkeysym]]
 version = "0.2.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille winit (Rust Windowing, Smithay) : le lien au bureau (Wayland, X11, clavier, curseurs). Elle ne parle qu'au compositeur et charge les bibliothèques du système ; sous Linux, dans le bac à sable (ni fichier du compte, ni réseau, ni programme). Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.xml-rs]]
 version = "0.8.29"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Outil de compilation (macro, build.rs, lecture des XML des protocoles) : tourne quand la fenêtre se compile, sur la machine de l'auteur, et n'entre pas tel quel dans le programme. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.zbus]]
 version = "5.19.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.zbus-lockstep]]
 version = "0.5.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.zbus-lockstep-macros]]
 version = "0.5.2"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.zbus_macros]]
 version = "5.19.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.zbus_names]]
 version = "4.3.5"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.zbus_xml]]
 version = "5.2.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.zcheapstr]]
 version = "1.2.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.zerocopy]]
 version = "0.8.63"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Caisse de base de l'écosystème Rust (structures, journal, macros d'erreur), sans accès au système de son côté. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.zerocopy-derive]]
 version = "0.8.63"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.zlib-rs]]
 version = "0.6.8"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.zmij]]
 version = "1.0.23"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Famille serde (dtolnay) : lit les réponses JSON de `vanguard` ; ces lecteurs sont fuzzés (fenetre_donnees) et n'acceptent qu'une taille bornée. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
 [[exemptions.zune-core]]
 version = "0.5.3"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.zune-jpeg]]
 version = "0.5.15"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.zvariant]]
 version = "5.15.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.zvariant_derive]]
 version = "5.15.1"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
 [[exemptions.zvariant_utils]]
 version = "4.2.0"
 criteria = "safe-to-deploy"
-notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
