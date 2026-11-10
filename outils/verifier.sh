@@ -275,8 +275,8 @@ extensions() {
 # fenetre/. Ses tests ne tournent que sous Linux : sous Wine, pas encore (dit au résumé). Puis les protections de ses
 # deux programmes, lues comme celles de vanguard (étape durcissement) : Linux avec --glibc (l'interpréteur de la glibc,
 # lui seul), Windows comme vanguard.exe (DLL de System32 seulement, manifeste, ASLR, DEP). Ses dépendances passent à
-# cargo deny (étape dépendances, fenetre/deny.toml) et à cargo audit (failles connues) ; cargo vet, pas encore : prévu
-# au lot 1b (dit au résumé).
+# cargo deny (étape dépendances, fenetre/deny.toml), à cargo audit (failles connues) et à cargo vet
+# (fenetre/supply-chain/, étape relectures).
 fenetre() {
   local cible=${CARGO_TARGET_DIR:-$PWD/target}/fenetre m=fenetre/Cargo.toml t code=0
   cargo fmt --check --manifest-path "$m" || return 1
@@ -398,10 +398,10 @@ workflows() {
   env -u GH_TOKEN -u GITHUB_TOKEN -u ZIZMOR_GITHUB_TOKEN zizmor --offline --no-progress --format plain .github/workflows
 }
 
-# Les dépendances relues selon cargo vet (supply-chain/) : chaque version de chaque bibliothèque, celles des essais
-# et des trois systèmes comprises, a une relecture importée (Google, Mozilla, Bytecode Alliance, Zcash, ISRG :
-# imports.lock), la nôtre (audits.toml) ou une exemption à son numéro exact (config.toml). Une version nouvelle sans
-# aucune des trois fait échouer : la changer est une décision écrite, pas un `cargo update` passé inaperçu.
+# Les dépendances relues selon cargo vet (supply-chain/, et fenetre/supply-chain/ pour la fenêtre) : chaque version
+# de chaque bibliothèque, celles des essais et des trois systèmes comprises, a une relecture importée (Google,
+# Mozilla, Bytecode Alliance, Zcash, ISRG : imports.lock), la nôtre (audits.toml) ou une exemption à son numéro exact
+# (config.toml). Une version nouvelle sans aucune des trois fait échouer : la changer est une décision écrite, pas un `cargo update` passé inaperçu.
 # --frozen : jamais de réseau, le verdict ne bouge pas avec les registres ; `cargo vet` sans option les relit, à la
 # main, quand une dépendance change. Il lit les sources de crates.io (cargo metadata) : `cargo fetch` les pose avant,
 # sans quoi une CI neuve échouerait faute de les avoir. Sautée sans cargo-vet 0.10.3, sauf en CI (install-action,
@@ -424,14 +424,21 @@ relectures() {
   fi
   cargo vet --version
   cargo fetch --locked -q && cargo vet --locked --frozen || return 1
+  # La fenêtre (fenetre/supply-chain/) : ses caisses, toutes cibles, sous les mêmes règles.
+  echo "fenêtre :"
+  cargo fetch --locked -q --manifest-path fenetre/Cargo.toml &&
+    cargo vet --locked --frozen --manifest-path fenetre/Cargo.toml || return 1
   if [[ -n $hors_ligne ]]; then
     [[ $MODE == --ci ]] && return 1
     return "$SAUTEE"
   fi
   local copie=$TRAVAIL/supply-chain-relu
-  rm -rf "$copie" && cp -r supply-chain "$copie" || return 1
+  rm -rf "$copie" "$copie-fenetre" && cp -r supply-chain "$copie" && cp -r fenetre/supply-chain "$copie-fenetre" ||
+    return 1
   echo "relectures importées retéléchargées de leurs registres :"
-  cargo vet --store-path "$copie"
+  cargo vet --store-path "$copie" || return 1
+  echo "fenêtre, relectures importées retéléchargées :"
+  cargo vet --store-path "$copie-fenetre" --manifest-path fenetre/Cargo.toml
 }
 
 # Les nomenclatures (SBOM) des programmes publiés et de la fenêtre (outils/sbom.sh), faites deux fois : elles doivent sortir, sans
@@ -681,7 +688,7 @@ if [[ $MODE != --rapide ]]; then
   ligne essais-verifier "essais de verifier.sh (--seulement)"
   ligne masque "mots d'attaque masqués"
   ligne extensions "extensions (sdk, exemple Rust)"
-  ligne fenetre "fenêtre (clippy ×2, tests Linux : $(passes fenetre), protections ×2 ; cargo vet : lot 1b)"
+  ligne fenetre "fenêtre (clippy ×2, tests Linux : $(passes fenetre), protections ×2)"
   ligne python "scripts Python"
   ligne relais "relais des lots ($(grep -m1 -oE '^ℹ pass [0-9]+' "$TRAVAIL/relais.log" 2>/dev/null | cut -d' ' -f3) essais)"
   ligne relais-schema "relais : schéma et détecteur"
@@ -697,7 +704,8 @@ if [[ $MODE != --rapide ]]; then
   remarques_dependances
   ligne failles-connues "failles connues (cargo audit)"
   ligne relectures "dépendances tracées (cargo vet)"
-  [[ -f $TRAVAIL/relectures.log ]] && grep -m1 -oE '[0-9]+ fully audited.*exempted' "$TRAVAIL/relectures.log" | sed 's/^/      /'
+  [[ -f $TRAVAIL/relectures.log ]] && grep -m2 -oE '[0-9]+ fully audited.*exempted' "$TRAVAIL/relectures.log" |
+    sed '1s/^/      vanguard : /; 2s/^/      fenêtre : /'
   ligne fuzzing "banc de fuzzing ($(awk '/^  ✔/ { n++ } END { print n + 0 }' "$TRAVAIL/fuzzing.log" 2>/dev/null) cibles)"
   ligne preuves-compilees "preuves de Kani compilées"
 fi

@@ -1,0 +1,1550 @@
+
+# cargo-vet config file
+
+[cargo-vet]
+version = "0.10"
+
+[imports.bytecode-alliance]
+url = "https://raw.githubusercontent.com/bytecodealliance/wasmtime/main/supply-chain/audits.toml"
+
+[imports.google]
+url = "https://raw.githubusercontent.com/google/supply-chain/main/audits.toml"
+
+[imports.isrg]
+url = "https://raw.githubusercontent.com/divviup/libprio-rs/main/supply-chain/audits.toml"
+
+[imports.mozilla]
+url = "https://raw.githubusercontent.com/mozilla/supply-chain/main/audits.toml"
+
+[imports.zcash]
+url = "https://raw.githubusercontent.com/zcash/rust-ecosystem/main/supply-chain/audits.toml"
+
+[[exemptions.accesskit]]
+version = "0.25.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.accesskit_atspi_common]]
+version = "0.21.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.accesskit_consumer]]
+version = "0.39.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.accesskit_ios]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.accesskit_macos]]
+version = "0.27.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.accesskit_unix]]
+version = "0.24.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.accesskit_windows]]
+version = "0.35.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.accesskit_winit]]
+version = "0.34.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.ahash]]
+version = "0.8.12"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.android-activity]]
+version = "0.6.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.android-properties]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.android_system_properties]]
+version = "0.1.6"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.arboard]]
+version = "3.7.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.arrayvec]]
+version = "0.7.8"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.as-raw-xcb-connection]]
+version = "1.0.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.async-broadcast]]
+version = "0.7.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.async-channel]]
+version = "2.5.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.async-executor]]
+version = "1.14.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.async-io]]
+version = "2.6.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.async-lock]]
+version = "3.5.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.async-process]]
+version = "2.5.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.async-recursion]]
+version = "1.2.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.async-signal]]
+version = "0.2.14"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.async-trait]]
+version = "0.1.92"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.atspi]]
+version = "0.29.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.atspi-common]]
+version = "0.13.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.atspi-proxies]]
+version = "0.13.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.autocfg]]
+version = "1.5.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.bitflags]]
+version = "2.13.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.block2]]
+version = "0.5.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.blocking]]
+version = "1.7.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.bytemuck]]
+version = "1.25.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.bytemuck_derive]]
+version = "1.12.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.byteorder-lite]]
+version = "0.1.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.bytes]]
+version = "1.12.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.calloop]]
+version = "0.13.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.calloop-wayland-source]]
+version = "0.3.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.cc]]
+version = "1.11.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.cfg-if]]
+version = "1.0.5"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.cfg_aliases]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.chrono]]
+version = "0.4.45"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.clipboard-win]]
+version = "5.4.3"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.color]]
+version = "0.3.3"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.combine]]
+version = "4.6.9"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.concurrent-queue]]
+version = "2.5.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.core-graphics]]
+version = "0.23.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.crc32fast]]
+version = "1.5.4"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.crossbeam-utils]]
+version = "0.8.23"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.cursor-icon]]
+version = "1.2.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.dispatch]]
+version = "0.2.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.dispatch2]]
+version = "0.3.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.dlib]]
+version = "0.5.3"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.downcast-rs]]
+version = "1.2.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.dpi]]
+version = "0.1.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.ecolor]]
+version = "0.37.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.eframe]]
+version = "0.37.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.egui]]
+version = "0.37.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.egui-wgpu]]
+version = "0.37.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.egui-winit]]
+version = "0.37.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.egui_glow]]
+version = "0.37.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.either]]
+version = "1.19.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.emath]]
+version = "0.37.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.endi]]
+version = "1.1.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.enumflags2]]
+version = "0.7.12"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.enumflags2_derive]]
+version = "0.7.12"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.epaint]]
+version = "0.37.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.equivalent]]
+version = "1.0.3"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.error-code]]
+version = "3.4.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.event-listener]]
+version = "5.4.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.event-listener-strategy]]
+version = "0.5.4"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.fastrand]]
+version = "2.5.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.fax]]
+version = "0.2.7"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.fearless_simd]]
+version = "0.4.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.find-msvc-tools]]
+version = "0.1.15"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.fixedbitset]]
+version = "0.5.9"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.flate2]]
+version = "1.1.11"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.font-types]]
+version = "0.12.7"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.foreign-types-macros]]
+version = "0.2.4"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.futures-lite]]
+version = "2.6.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.futures-task]]
+version = "0.3.34"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.futures-util]]
+version = "0.3.34"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.gethostname]]
+version = "1.1.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.getrandom]]
+version = "0.3.4"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.gl_generator]]
+version = "0.14.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.glifo]]
+version = "0.3.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.glow]]
+version = "0.17.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.glutin]]
+version = "0.32.3"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.glutin-winit]]
+version = "0.5.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.glutin_egl_sys]]
+version = "0.7.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.glutin_glx_sys]]
+version = "0.6.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.glutin_wgl_sys]]
+version = "0.6.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.guillotiere]]
+version = "0.7.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.half]]
+version = "2.7.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.harfrust]]
+version = "0.12.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.hashbrown]]
+version = "0.15.5"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.hermit-abi]]
+version = "0.5.3"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.iana-time-zone]]
+version = "0.1.65"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.image]]
+version = "0.25.10"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.indexmap]]
+version = "2.14.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.itertools]]
+version = "0.15.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.itoa]]
+version = "1.0.19"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.jni]]
+version = "0.22.4"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.jni-macros]]
+version = "0.22.4"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.jni-sys]]
+version = "0.3.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.jni-sys]]
+version = "0.4.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.jni-sys-macros]]
+version = "0.4.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.jobserver]]
+version = "0.1.35"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.js-sys]]
+version = "0.3.107"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.khronos_api]]
+version = "3.1.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.kurbo]]
+version = "0.13.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.libc]]
+version = "0.2.191"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.libloading]]
+version = "0.8.9"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.libm]]
+version = "0.2.16"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.libredox]]
+version = "0.1.25"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.linebender_resource_handle]]
+version = "0.1.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.linux-raw-sys]]
+version = "0.4.15"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.linux-raw-sys]]
+version = "0.12.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.litrs]]
+version = "1.0.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.lock_api]]
+version = "0.4.14"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.log]]
+version = "0.4.35"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.memchr]]
+version = "2.8.3"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.memmap2]]
+version = "0.9.12"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.memoffset]]
+version = "0.9.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.miniz_oxide]]
+version = "0.9.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.moxcms]]
+version = "0.8.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.naga]]
+version = "30.0.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.naga-types]]
+version = "30.0.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.ndk]]
+version = "0.9.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.ndk-context]]
+version = "0.1.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.ndk-sys]]
+version = "0.6.0+11769913"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.nohash-hasher]]
+version = "0.2.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.nom]]
+version = "8.0.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.num_enum]]
+version = "0.7.6"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.num_enum_derive]]
+version = "0.7.6"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.objc-sys]]
+version = "0.3.5"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.objc2]]
+version = "0.5.3"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.objc2-app-kit]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.objc2-app-kit]]
+version = "0.3.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.objc2-cloud-kit]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.objc2-contacts]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.objc2-core-data]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.objc2-core-image]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.objc2-core-location]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.objc2-foundation]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.objc2-link-presentation]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.objc2-metal]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.objc2-quartz-core]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.objc2-symbols]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.objc2-ui-kit]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.objc2-ui-kit]]
+version = "0.3.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.objc2-uniform-type-identifiers]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.objc2-user-notifications]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.once_cell]]
+version = "1.21.4"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.orbclient]]
+version = "0.3.55"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.ordered-stream]]
+version = "0.2.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.os_pipe]]
+version = "1.2.3"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.parking_lot]]
+version = "0.12.5"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.parking_lot_core]]
+version = "0.9.12"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.peniko]]
+version = "0.6.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.petgraph]]
+version = "0.8.3"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.phf]]
+version = "0.14.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.phf_generator]]
+version = "0.14.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.phf_macros]]
+version = "0.14.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.phf_shared]]
+version = "0.14.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.pin-project]]
+version = "1.1.13"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.pin-project-internal]]
+version = "1.1.13"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.pin-project-lite]]
+version = "0.2.17"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.piper]]
+version = "0.2.5"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.plain]]
+version = "0.2.3"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.png]]
+version = "0.18.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.polling]]
+version = "3.11.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.polycool]]
+version = "0.4.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.portable-atomic]]
+version = "1.15.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.portable-atomic-util]]
+version = "0.2.8"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.proc-macro-crate]]
+version = "3.5.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.proc-macro2]]
+version = "1.0.107"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.profiling]]
+version = "1.0.18"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.pxfm]]
+version = "0.1.30"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.quick-error]]
+version = "2.0.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.quick-xml]]
+version = "0.41.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.r-efi]]
+version = "5.3.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.r-efi]]
+version = "6.0.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.redox_syscall]]
+version = "0.4.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.redox_syscall]]
+version = "0.5.18"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.redox_syscall]]
+version = "0.9.5"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.renderdoc-sys]]
+version = "1.1.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.rustc-hash]]
+version = "2.1.3"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.rustix]]
+version = "0.38.44"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.rustix]]
+version = "1.1.6"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.rustversion]]
+version = "1.0.23"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.same-file]]
+version = "1.0.6"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.scoped-tls]]
+version = "1.0.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.scopeguard]]
+version = "1.2.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.self_cell]]
+version = "1.3.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.send_wrapper]]
+version = "0.6.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.serde]]
+version = "1.0.229"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.serde_core]]
+version = "1.0.229"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.serde_derive]]
+version = "1.0.229"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.serde_json]]
+version = "1.0.154"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.serde_repr]]
+version = "0.1.21"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.signal-hook-registry]]
+version = "1.4.8"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.simd-adler32]]
+version = "0.3.10"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.simd_cesu8]]
+version = "1.2.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.siphasher]]
+version = "1.0.4"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.slab]]
+version = "0.4.12"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.slotmap]]
+version = "1.1.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.smallvec]]
+version = "1.16.5"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.smithay-client-toolkit]]
+version = "0.19.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.smol_str]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.syn]]
+version = "2.0.119"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.syn]]
+version = "3.0.10"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.tempfile]]
+version = "3.27.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.thiserror]]
+version = "1.0.69"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.thiserror]]
+version = "2.0.21"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.thiserror-impl]]
+version = "1.0.69"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.thiserror-impl]]
+version = "2.0.21"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.tiff]]
+version = "0.11.3"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.tokio]]
+version = "1.54.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.toml_datetime]]
+version = "1.1.3+spec-1.1.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.toml_edit]]
+version = "0.25.19+spec-1.1.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.toml_parser]]
+version = "1.1.5+spec-1.1.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.tracing]]
+version = "0.1.44"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.tracing-attributes]]
+version = "0.1.31"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.tree_magic_mini]]
+version = "3.2.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.type-map]]
+version = "0.5.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.uds_windows]]
+version = "1.2.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.unicode-general-category]]
+version = "1.1.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.unicode-ident]]
+version = "1.0.27"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.unicode-properties]]
+version = "0.1.5"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.unicode-width]]
+version = "0.2.3"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.uuid]]
+version = "1.29.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.vello_common]]
+version = "0.2.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.vello_cpu]]
+version = "0.2.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.version_check]]
+version = "0.9.5"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.walkdir]]
+version = "2.5.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.wasm-bindgen]]
+version = "0.2.130"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.wasm-bindgen-futures]]
+version = "0.4.80"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.wasm-bindgen-macro]]
+version = "0.2.130"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.wasm-bindgen-macro-support]]
+version = "0.2.130"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.wasm-bindgen-shared]]
+version = "0.2.130"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.wayland-backend]]
+version = "0.3.17"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.wayland-client]]
+version = "0.31.15"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.wayland-csd-frame]]
+version = "0.3.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.wayland-cursor]]
+version = "0.31.14"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.wayland-protocols]]
+version = "0.32.13"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.wayland-protocols-plasma]]
+version = "0.3.12"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.wayland-protocols-wlr]]
+version = "0.3.12"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.wayland-scanner]]
+version = "0.31.11"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.wayland-sys]]
+version = "0.31.11"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.web-sys]]
+version = "0.3.107"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.weezl]]
+version = "0.1.12"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.wgpu]]
+version = "30.0.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.wgpu-core]]
+version = "30.0.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.wgpu-core-deps-windows-linux-android]]
+version = "30.0.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.wgpu-hal]]
+version = "30.0.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.wgpu-naga-bridge]]
+version = "30.0.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.wgpu-types]]
+version = "30.0.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.winapi-util]]
+version = "0.1.11"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.windows]]
+version = "0.62.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.windows-collections]]
+version = "0.3.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.windows-core]]
+version = "0.62.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.windows-future]]
+version = "0.3.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.windows-implement]]
+version = "0.60.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.windows-interface]]
+version = "0.59.3"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.windows-numerics]]
+version = "0.3.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.windows-result]]
+version = "0.4.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.windows-strings]]
+version = "0.5.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.windows-sys]]
+version = "0.52.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.windows-sys]]
+version = "0.59.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.windows-sys]]
+version = "0.61.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.windows-targets]]
+version = "0.52.6"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.windows-threading]]
+version = "0.2.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.windows_aarch64_gnullvm]]
+version = "0.52.6"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.windows_aarch64_msvc]]
+version = "0.52.6"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.windows_i686_gnu]]
+version = "0.52.6"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.windows_i686_gnullvm]]
+version = "0.52.6"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.windows_i686_msvc]]
+version = "0.52.6"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.windows_x86_64_gnu]]
+version = "0.52.6"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.windows_x86_64_gnullvm]]
+version = "0.52.6"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.windows_x86_64_msvc]]
+version = "0.52.6"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.winit]]
+version = "0.30.13"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.winnow]]
+version = "1.0.5"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.wl-clipboard-rs]]
+version = "0.9.5"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.x11-dl]]
+version = "2.21.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.x11rb]]
+version = "0.13.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.x11rb-protocol]]
+version = "0.13.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.xcursor]]
+version = "0.3.11"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.xkbcommon-dl]]
+version = "0.4.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.xkeysym]]
+version = "0.2.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.xml-rs]]
+version = "0.8.29"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.zbus]]
+version = "5.19.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.zbus-lockstep]]
+version = "0.5.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.zbus-lockstep-macros]]
+version = "0.5.2"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.zbus_macros]]
+version = "5.19.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.zbus_names]]
+version = "4.3.5"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.zbus_xml]]
+version = "5.2.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.zcheapstr]]
+version = "1.2.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.zerocopy]]
+version = "0.8.63"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.zerocopy-derive]]
+version = "0.8.63"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.zlib-rs]]
+version = "0.6.8"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.zmij]]
+version = "1.0.23"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.zune-core]]
+version = "0.5.3"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.zune-jpeg]]
+version = "0.5.15"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.zvariant]]
+version = "5.15.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.zvariant_derive]]
+version = "5.15.1"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
+
+[[exemptions.zvariant_utils]]
+version = "4.2.0"
+criteria = "safe-to-deploy"
+notes = "Dans le Cargo.lock de vanguard-fenetre (eframe 0.37, glow, winit ; toutes cibles), sans relecture importée : exemptée à ce numéro au lot 1b."
