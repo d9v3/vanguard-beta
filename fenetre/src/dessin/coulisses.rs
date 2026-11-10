@@ -163,6 +163,17 @@ fn contenu(c: &Coulisses, ui: &mut Ui, panneau: bool) {
     );
     let flux = Rect::from_min_max(pos2(r.left(), titre.bottom()), r.max);
     let notes = c.notes();
+    if notes.is_empty() {
+        super::vide::phrase_peinte(
+            ui,
+            pos2(flux.left() + 20.0, flux.top() + 4.0),
+            crate::tr!(
+                "Ce que la console écrit s'ajoute ici, en mémoire seulement.",
+                "What the console writes is added here, in memory only."
+            ),
+            p.discret,
+        );
+    }
     ui.scope_builder(egui::UiBuilder::new().max_rect(flux), |ui| {
         defile::journal(
             ui,

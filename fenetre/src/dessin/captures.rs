@@ -407,8 +407,38 @@ fn appli_remplie(anglais: bool, sombre: bool) -> Appli {
     a
 }
 
-/// Les écrans montrés, avec le nom de leur fichier.
-fn ecrans() -> Vec<(String, Ecran)> {
+/// Une fenêtre sans rien de lancé, ou dont les lectures n'ont rien trouvé (aucune alerte, aucun appareil) : pour les
+/// écrans vides.
+fn appli_vide(rien: bool, sombre: bool) -> Appli {
+    let mut a = Appli::pour_captures();
+    a.sombre = sombre;
+    if rien {
+        let journal = serde_json::json!({
+            "etat": "intact", "raison": null, "illisibles": 0,
+            "evenements": [
+                {"v": 1, "id": "a1", "quand": "2026-11-09T13:00:00Z", "source": "vanguard", "quoi": {"sorte": "version", "vers": "0.90.0"}, "precedent": ""}
+            ]
+        });
+        let scan = serde_json::json!({
+            "reseau": "192.168.1.0/24", "nom_reseau": "Salon", "duree_s": 9.5, "score_global": 100, "note": "bon",
+            "absents": [], "hotes": [], "upnp": "Absent", "empoisonnement": {"Teste": []}
+        });
+        a.poser(Commande::Evenements, journal.to_string().as_bytes());
+        a.poser(Commande::Appareils, scan.to_string().as_bytes());
+    }
+    a
+}
+
+/// Ce que montre une capture : la fenêtre remplie, rien de lancé, ou des lectures qui n'ont rien trouvé.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Donnees {
+    Remplies,
+    Aucune,
+    Rien,
+}
+
+/// Les écrans montrés, avec le nom de leur fichier ; les écrans vides ensuite (« vide-… », « rien-… »).
+fn ecrans() -> Vec<(String, Ecran, Donnees)> {
     let mut v = vec![
         ("accueil".to_string(), Ecran::Accueil),
         ("bilan".to_string(), Ecran::Bilan),
@@ -431,6 +461,23 @@ fn ecrans() -> Vec<(String, Ecran)> {
     v.push(("guide".to_string(), Ecran::Guide));
     // Les coulisses, ouvertes par-dessus l'accueil (voir `captures`).
     v.push(("coulisses".to_string(), Ecran::Accueil));
+    let mut v: Vec<(String, Ecran, Donnees)> = v.into_iter().map(|(n, e)| (n, e, Donnees::Remplies)).collect();
+    for (nom, e) in [
+        ("accueil", Ecran::Accueil),
+        ("bilan", Ecran::Bilan),
+        ("alertes", Ecran::Alertes),
+        ("appareils", Ecran::Appareils),
+        (
+            "commande-connexions-sortantes",
+            Ecran::Commande(Commande::ConnexionsSortantes),
+        ),
+        ("coulisses", Ecran::Accueil),
+    ] {
+        v.push((format!("vide-{nom}"), e, Donnees::Aucune));
+    }
+    for (nom, e) in [("alertes", Ecran::Alertes), ("appareils", Ecran::Appareils)] {
+        v.push((format!("rien-{nom}"), e, Donnees::Rien));
+    }
     v
 }
 
@@ -483,12 +530,16 @@ fn captures() {
             crate::langue::choisir(Some(anglais));
             for sombre in [true, false] {
                 super::appliquer_theme(&rendu.ctx, sombre);
-                for (nom, ecran) in ecrans() {
-                    let mut appli = appli_remplie(anglais, sombre);
+                for (nom, ecran, donnees) in ecrans() {
+                    let mut appli = match donnees {
+                        Donnees::Remplies => appli_remplie(anglais, sombre),
+                        Donnees::Aucune => appli_vide(false, sombre),
+                        Donnees::Rien => appli_vide(true, sombre),
+                    };
                     appli.aller(ecran);
                     // Une seule toile ici : les coulisses en panneau, comme sur un système sans seconde fenêtre.
                     rendu.ctx.set_embed_viewports(true);
-                    let coulisses = nom == "coulisses";
+                    let coulisses = nom.ends_with("coulisses");
                     if coulisses {
                         super::coulisses::basculer(&rendu.ctx);
                     }
@@ -700,7 +751,7 @@ fn noms_de_fichier() {
         nom_de_fichier("Virus et\nlogiciels\nespions"),
         "virus-et-logiciels-espions"
     );
-    let noms: Vec<String> = ecrans().into_iter().map(|(n, _)| n).collect();
+    let noms: Vec<String> = ecrans().into_iter().map(|(n, _, _)| n).collect();
     let mut uniques = noms.clone();
     uniques.sort();
     uniques.dedup();

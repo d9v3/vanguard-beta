@@ -4,6 +4,7 @@
 use eframe::egui::{Align, Color32, Frame, Layout, Margin, RichText, Sense, Stroke, Ui, pos2, vec2};
 
 use super::bilan::{self, couleur_gravite};
+use super::vide;
 use super::{bouton, carte, entete, mono, moyenne, pal, petit, texte, texte_et_boutons, titre_section};
 use crate::appli::{Appli, Contenu, Ecran, ecran_de};
 use crate::commandes::{Commande, Rubrique};
@@ -108,10 +109,26 @@ fn accueil(appli: &mut Appli, ui: &mut Ui) {
                 p.encre
             },
         ),
-        (None, _) => (crate::tr!("Pas encore", "Not yet").to_string(), String::new(), p.gris),
+        (None, _) => (
+            crate::tr!("Pas encore", "Not yet").to_string(),
+            crate::tr!(
+                "Une note sur 100, en quelques secondes.",
+                "A score out of 100, in a few seconds."
+            )
+            .to_string(),
+            p.gris,
+        ),
     };
     let (prot_v, prot_p, prot_c) = match appli.protection() {
-        None => (crate::tr!("Pas lue", "Not read").to_string(), String::new(), p.gris),
+        None => (
+            crate::tr!("Pas lue", "Not read").to_string(),
+            crate::tr!(
+                "Pare-feu, antivirus et gardes du système.",
+                "Firewall, antivirus and system guards."
+            )
+            .to_string(),
+            p.gris,
+        ),
         Some(v) => (
             crate::trn!(v.compte(Allure::Allume), "allumé", "allumés", "on", "on"),
             format!(
@@ -129,7 +146,15 @@ fn accueil(appli: &mut Appli, ui: &mut Ui) {
         ),
     };
     let (jour_v, jour_p, jour_c) = match appli.journal() {
-        None => (crate::tr!("Pas lu", "Not read").to_string(), String::new(), p.gris),
+        None => (
+            crate::tr!("Pas lu", "Not read").to_string(),
+            crate::tr!(
+                "Les alertes et les gestes de Vanguard.",
+                "Vanguard's alerts and actions."
+            )
+            .to_string(),
+            p.gris,
+        ),
         Some(j) => (
             crate::trn!(j.alertes().count(), "alerte", "alertes", "alert", "alerts"),
             j.etat.phrase().to_string(),
@@ -238,6 +263,25 @@ fn ligne_etat(ui: &mut Ui, etat: String, tourne: bool) {
     });
 }
 
+/// Le titre d'une commande, son bouton et son état. Jamais lancée et pas en route : ni bouton ni état ici, la carte
+/// vide en dessous les porte (un seul « Lancer » à l'écran).
+fn entete_commande(appli: &mut Appli, ui: &mut Ui, c: Commande) {
+    let vierge = appli.resultat(c).is_none() && !tourne(appli, c) && !appli.en_attente(c);
+    texte_et_boutons(
+        ui,
+        c.nom(),
+        |ui| entete(ui, c.titre(), c.description()),
+        |ui| {
+            if !vierge {
+                lancer_arreter(appli, ui, c);
+            }
+        },
+    );
+    if !vierge {
+        ligne_etat(ui, etat_commande(appli, c), tourne(appli, c));
+    }
+}
+
 /// Lancer, ou Arrêter si c'est elle qui tourne.
 fn lancer_arreter(appli: &mut Appli, ui: &mut Ui, c: Commande) {
     let tourne = appli.en_cours().is_some_and(|(e, _)| e == c);
@@ -313,20 +357,19 @@ fn cartes_commandes(appli: &mut Appli, ui: &mut Ui, commandes: Vec<Commande>) {
 
 fn commande(appli: &mut Appli, ui: &mut Ui, c: Commande) {
     let p = pal();
-    texte_et_boutons(
-        ui,
-        c.nom(),
-        |ui| entete(ui, c.titre(), c.description()),
-        |ui| lancer_arreter(appli, ui, c),
-    );
-    ligne_etat(ui, etat_commande(appli, c), tourne(appli, c));
+    entete_commande(appli, ui, c);
     ui.add_space(24.0);
     let Some(r) = appli.resultat(c).cloned() else {
-        ui.label(texte(
-            crate::tr!("Lancez-la pour voir ce qu'elle trouve.", "Run it to see what it finds."),
-            14.0,
-            p.doux,
-        ));
+        vide::carte_vide(
+            ui,
+            c.rubrique(),
+            crate::tr!("Rien de lu pour l'instant", "Nothing read yet"),
+            crate::tr!(
+                "Une lecture seule : rien n'est changé sur cet ordinateur. Ce qu'elle trouve s'affiche ici et dans la console.",
+                "Read only: nothing on this computer is changed. What it finds shows here and in the console."
+            ),
+            |ui| lancer_arreter(appli, ui, c),
+        );
         return;
     };
     match &r.contenu {
@@ -346,30 +389,23 @@ fn commande(appli: &mut Appli, ui: &mut Ui, c: Commande) {
 
 /// L'écran des appareils : le dernier scan du réseau local, appareil par appareil.
 fn appareils(appli: &mut Appli, ui: &mut Ui) {
-    let p = pal();
     let c = Commande::Appareils;
-    texte_et_boutons(
-        ui,
-        c.nom(),
-        |ui| entete(ui, c.titre(), c.description()),
-        |ui| lancer_arreter(appli, ui, c),
-    );
-    ligne_etat(ui, etat_commande(appli, c), tourne(appli, c));
+    entete_commande(appli, ui, c);
     ui.add_space(24.0);
     match appli.resultat(c).map(|r| r.contenu.clone()) {
         Some(Contenu::Appareils(v)) => appareils_liste(ui, &v),
         Some(Contenu::Erreur(e)) => erreur(ui, &e),
         // Une autre forme ne vient pas d'`appareils` : rien à en montrer ici.
-        Some(_) | None => {
-            ui.label(texte(
-                crate::tr!(
-                    "Lancez le scan pour voir les appareils de votre réseau (une dizaine de secondes).",
-                    "Run the scan to see the devices on your network (about ten seconds)."
-                ),
-                14.0,
-                p.doux,
-            ));
-        }
+        Some(_) | None => vide::carte_vide(
+            ui,
+            c.rubrique(),
+            crate::tr!("Pas encore de scan", "No scan yet"),
+            crate::tr!(
+                "Le scan liste les appareils de votre réseau local et leurs ports ouverts, en une dizaine de secondes. Rien n'est changé.",
+                "The scan lists the devices on your local network and their open ports, in about ten seconds. Nothing is changed."
+            ),
+            |ui| lancer_arreter(appli, ui, c),
+        ),
     }
 }
 
@@ -398,11 +434,16 @@ fn appareils_liste(ui: &mut Ui, v: &scan::Vue) {
     reseau_entier(ui, v);
     titre_section(ui, crate::tr!("Appareils", "Devices"), Some(v.appareils.len()));
     if v.appareils.is_empty() {
-        ui.label(texte(
-            crate::tr!("Aucun appareil trouvé.", "No device found."),
-            14.0,
-            p.doux,
-        ));
+        vide::carte_vide(
+            ui,
+            Rubrique::Reseau,
+            crate::tr!("Aucun appareil trouvé", "No device found"),
+            crate::tr!(
+                "Rien d'autre n'a répondu sur ce réseau. Un appareil éteint ou en veille ne répond pas : relancez quand il est allumé.",
+                "Nothing else answered on this network. A device that is off or asleep does not answer: run again once it is on."
+            ),
+            |_| {},
+        );
     } else {
         carte(ui, 20, |ui| {
             ui.set_width(ui.available_width());
@@ -716,7 +757,14 @@ fn libre_liste(ui: &mut Ui, v: &libre::Vue) {
             });
         }
         if v.lignes.is_empty() {
-            ui.label(texte(crate::tr!("Rien à montrer.", "Nothing to show."), 14.0, p.doux));
+            ui.label(texte(
+                crate::tr!(
+                    "La commande n'a rien renvoyé à montrer.",
+                    "The command returned nothing to show."
+                ),
+                14.0,
+                p.doux,
+            ));
         }
         if v.coupe {
             ui.label(texte(
@@ -734,13 +782,7 @@ fn libre_liste(ui: &mut Ui, v: &libre::Vue) {
 fn alertes(appli: &mut Appli, ui: &mut Ui) {
     let p = pal();
     let c = Commande::Evenements;
-    texte_et_boutons(
-        ui,
-        c.nom(),
-        |ui| entete(ui, c.titre(), c.description()),
-        |ui| lancer_arreter(appli, ui, c),
-    );
-    ligne_etat(ui, etat_commande(appli, c), tourne(appli, c));
+    entete_commande(appli, ui, c);
     ui.label(texte(
         &crate::trf!(
             "Relu toutes les {} s quand rien d'autre ne tourne ; une alerte nouvelle se dit dans la console.",
@@ -757,13 +799,16 @@ fn alertes(appli: &mut Appli, ui: &mut Ui) {
     }
     match appli.journal().cloned() {
         Some(j) => journal(ui, &j),
-        None => {
-            ui.label(texte(
-                crate::tr!("Journal pas encore lu.", "Journal not read yet."),
-                14.0,
-                p.doux,
-            ));
-        }
+        None => vide::carte_vide(
+            ui,
+            c.rubrique(),
+            crate::tr!("Journal pas encore lu", "Journal not read yet"),
+            crate::tr!(
+                "Vanguard y note ses alertes et ce qu'il a fait, dans un journal scellé ; la lecture vérifie aussi qu'il est intact.",
+                "Vanguard records its alerts and what it did there, in a sealed journal; reading it also checks it is intact."
+            ),
+            |ui| lancer_arreter(appli, ui, c),
+        ),
     }
 }
 
@@ -795,11 +840,13 @@ fn journal(ui: &mut Ui, j: &evenements::Vue) {
     let alertes: Vec<&evenements::Evenement> = j.alertes().collect();
     titre_section(ui, crate::tr!("Alertes", "Alerts"), Some(alertes.len()));
     if alertes.is_empty() {
-        ui.label(texte(
-            crate::tr!("Aucune alerte notée.", "No alert recorded."),
-            14.0,
-            p.doux,
-        ));
+        vide::rien_a_signaler(
+            ui,
+            crate::tr!(
+                "Aucune alerte notée : Vanguard n'a rien vu d'inquiétant.",
+                "No alert recorded: Vanguard has seen nothing worrying."
+            ),
+        );
     }
     for e in alertes.iter().take(EVENEMENTS_MAX) {
         evenement(ui, e, maintenant);

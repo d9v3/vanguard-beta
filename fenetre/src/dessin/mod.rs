@@ -15,6 +15,7 @@ mod ecrans;
 mod icones;
 mod mouvement;
 mod ouverture;
+mod vide;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

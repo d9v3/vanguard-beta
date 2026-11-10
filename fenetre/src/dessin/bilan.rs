@@ -179,11 +179,27 @@ pub fn ecran(appli: &mut Appli, ui: &mut Ui) {
             ),
             r.duree.as_secs_f32()
         ),
-        (None, None) => crate::tr!("Aucun bilan encore", "No check yet").into(),
+        (None, None) => crate::tr!(
+            "Pas encore lancé · tout se lit sur cet ordinateur, rien n'est changé ni envoyé",
+            "Not run yet · everything is read on this computer, nothing is changed or sent"
+        )
+        .into(),
     };
     let actions = |appli: &mut Appli, ui: &mut Ui| {
         if en_cours.is_none() {
-            if bouton(ui, crate::tr!("Refaire le bilan", "Run the check again"), true, true).clicked() {
+            let t = if appli.bilan().is_some() {
+                crate::tr!("Refaire le bilan", "Run the check again")
+            } else {
+                crate::tr!("Lancer le bilan", "Run the check")
+            };
+            if bouton(
+                ui,
+                t,
+                true,
+                appli.programme_trouve() && !appli.en_attente(Commande::Bilan),
+            )
+            .clicked()
+            {
                 appli.demander(Commande::Bilan);
             }
             bouton(ui, crate::tr!("Rapport à laisser", "Report to leave"), false, false)
