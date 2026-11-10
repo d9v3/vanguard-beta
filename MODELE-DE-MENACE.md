@@ -234,7 +234,7 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   avant », retrait sur des notes douteuses, changements simultanés, lien, verrou tenu, notes forgées ou rejouées,
   refus répétés).
 - **Ses réponses sont lues avec méfiance.** Taille bornée, lignes coupées, séquences de terminal et caractères de
-  contrôle retirés, JSON lu sans jamais planter (lecteurs et console fuzzés : `fenetre_donnees`, `fenetre_saisie`) ; une
+  contrôle retirés, JSON lu sans jamais planter (lecteurs, console et progression fuzzés : `fenetre_donnees`, `fenetre_saisie`, `fenetre_progression`) ; une
   réponse illisible est dite telle, jamais comptée saine. Comme dans le terminal (`ui::affichable`), un caractère qui
   retourne ou cache un texte (sens d'écriture, invisibles, blancs qui n'en sont pas) y devient « � », et une espace
   d'une autre largeur (insécable, fine, ultrafine, cadratin, idéographique) une espace ordinaire : elle ne colle plus

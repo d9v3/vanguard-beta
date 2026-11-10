@@ -586,6 +586,7 @@ fn captures() {
         }
     }
     faites += mouvement(&dossier);
+    faites += console(&dossier);
     println!("CAPTURES {faites} dans {}", dossier.display());
 }
 
@@ -681,6 +682,86 @@ fn mouvement(dossier: &Path) -> usize {
     });
     toile.ecrire_png(&dossier.join("commande-en-cours.png")).unwrap();
     faites + 1
+}
+
+/// La console (console/), en français, sombre et clair, en 1280×800 : vide, dépliée avec ses blocs, une commande en
+/// cours avec son étape et une file, un filtre, une recherche, une faute dans la saisie et sa suggestion. Le bloc « en
+/// cours » est posé dans le modèle (aucune commande ne tourne dans une capture) : l'en-tête reste au repos.
+fn console(dossier: &Path) -> usize {
+    use crate::console::Filtre;
+    let dossier = dossier.join("console");
+    std::fs::create_dir_all(&dossier).unwrap();
+    crate::langue::choisir(Some(false));
+    let taille = TAILLES[0];
+    let mut faites = 0;
+    for sombre in [true, false] {
+        let theme = if sombre { "sombre" } else { "clair" };
+        let cas: [(&str, usize, Filtre, Option<&str>); 6] = [
+            ("vide", 0, Filtre::Tout, None),
+            ("blocs", super::console::LIGNES_DEPLIEE, Filtre::Tout, None),
+            ("en-cours-et-file", super::console::LIGNES_DEPLIEE, Filtre::Tout, None),
+            (
+                "filtre-problemes",
+                super::console::LIGNES_DEPLIEE,
+                Filtre::Problemes,
+                None,
+            ),
+            ("filtre-reseau", 0, Filtre::Reseau, None),
+            ("recherche-ssh", 0, Filtre::Tout, Some("ssh")),
+        ];
+        for (nom, lignes, filtre, cherche) in cas {
+            let mut rendu = Rendu::nouveau();
+            super::appliquer_theme(&rendu.ctx, sombre);
+            let mut appli = if nom == "vide" {
+                appli_vide(false, sombre)
+            } else {
+                appli_remplie(false, sombre)
+            };
+            if nom == "en-cours-et-file" {
+                appli.console.commencer(Commande::Diagnostic.into());
+                appli.console.recevoir("Lecture des disques…");
+                appli.console.recevoir("@etape 4/9 Comptes");
+                appli.console.attendre(Commande::Lenteur.into());
+                appli.console.attendre(Commande::MisesAJour.into());
+            }
+            super::console::regler(&rendu.ctx, lignes, filtre, cherche);
+            let toile = rendu.rendre(taille, &[0.0, 0.5, 2.0], |ui| image(&mut appli, None, ui));
+            toile.ecrire_png(&dossier.join(format!("{nom}-{theme}.png"))).unwrap();
+            faites += 1;
+        }
+        // Une faute dans la saisie : un clic dans le champ, « bilna » tapé, la suggestion sous le champ.
+        let mut rendu = Rendu::nouveau();
+        super::appliquer_theme(&rendu.ctx, sombre);
+        let mut appli = appli_remplie(false, sombre);
+        rendu.rendre(taille, &[0.0, 0.5], |ui| image(&mut appli, None, ui));
+        let champ = egui::pos2(400.0, 254.0);
+        for e in [
+            egui::Event::PointerMoved(champ),
+            egui::Event::PointerButton {
+                pos: champ,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::PointerButton {
+                pos: champ,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::Text("bilna".into()),
+        ] {
+            rendu.touches.push(e);
+            rendu.rendre(taille, &[0.0], |ui| image(&mut appli, None, ui));
+        }
+        assert_eq!(appli.saisie, "bilna", "le clic n'a pas mis le curseur dans la saisie");
+        let toile = rendu.rendre(taille, &[0.0, 0.5], |ui| image(&mut appli, None, ui));
+        toile
+            .ecrire_png(&dossier.join(format!("suggestion-{theme}.png")))
+            .unwrap();
+        faites += 1;
+    }
+    faites
 }
 
 /// Le rendu logiciel peint pour de vrai : un fond, un rectangle plein, un texte (la texture des polices), une forme

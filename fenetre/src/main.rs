@@ -17,6 +17,7 @@ mod bac_a_sable;
 #[cfg(windows)]
 mod chargement;
 mod commandes;
+mod console;
 mod coulisses;
 mod dessin;
 mod donnees;
@@ -25,6 +26,7 @@ mod essais;
 mod lanceur;
 mod langue;
 mod nettoyage;
+mod progression;
 #[cfg(target_os = "linux")]
 mod protocole;
 #[cfg(target_os = "linux")]

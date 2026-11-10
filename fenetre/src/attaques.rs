@@ -388,7 +388,7 @@ fn la_console_ne_lance_aucun_changement() {
                     "{saisie:?}"
                 );
             }
-            Saisie::Refusee(_) | Saisie::Rien | Saisie::Aide | Saisie::Effacer => {}
+            Saisie::Refusee(_) | Saisie::Rien | Saisie::Aide | Saisie::AideSur(_) | Saisie::Effacer => {}
         }
     }
 }

@@ -224,7 +224,7 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   (`tests/programme.rs`: putting back over a program that starts, from the window and through “Put everything back”,
   removal on doubtful notes, simultaneous changes, link, lock held, forged or replayed notes, repeated refusals).
 - **Its answers are read with suspicion.** Bounded size, long lines cut, terminal sequences and control characters
-  removed, JSON read without ever crashing (readers and console fuzzed: `fenetre_donnees`, `fenetre_saisie`); an
+  removed, JSON read without ever crashing (readers, console and progress fuzzed: `fenetre_donnees`, `fenetre_saisie`, `fenetre_progression`); an
   unreadable answer is said to be so, never counted as healthy. As in the terminal (`ui::affichable`), a character that
   reverses or hides text (writing direction, invisibles, blanks that are not spaces) becomes “�”, and a space of another
   width (no-break, thin, hair, em, ideographic) an ordinary space: it no longer glues two parts of a name together, and

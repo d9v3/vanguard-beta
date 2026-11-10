@@ -10,12 +10,11 @@ use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 use crate::commandes::{self, Changement, Commande, Forme, Lancement, Rubrique, Saisie, Sorte};
+use crate::console::{self, Console};
 use crate::coulisses::{Chemin, Coulisses};
 use crate::donnees::{appareils, bilan, evenements, libre, protection};
 use crate::lanceur::{Fin, Issue, Message, Programme, Reveil, Tache};
 
-/// Lignes gardées dans la console.
-const CONSOLE_MAX: usize = 2000;
 /// Saisies gardées pour ↑.
 const HISTORIQUE_MAX: usize = 50;
 /// Commandes en attente au plus.
@@ -79,6 +78,8 @@ pub struct Resultat {
     /// L'heure locale de la fin.
     pub heure: String,
     pub duree: Duration,
+    /// L'instant de la fin (la ligne d'état de la console dit depuis combien de temps).
+    pub fin: Instant,
 }
 
 pub struct Appli {
@@ -89,9 +90,8 @@ pub struct Appli {
     programme: Result<Programme, String>,
     tache: Option<Tache>,
     file: VecDeque<Commande>,
-    pub console: VecDeque<LigneConsole>,
-    /// Le numéro de la prochaine ligne de la console.
-    suivante: u64,
+    /// Les lignes et les blocs de la console (bornée).
+    pub console: Console,
     /// Ce que fait la fenêtre, pour la fenêtre « Coulisses » (en mémoire seulement).
     pub coulisses: Coulisses,
     pub saisie: String,
@@ -144,8 +144,7 @@ impl Appli {
             programme,
             tache: None,
             file: VecDeque::new(),
-            console: VecDeque::new(),
-            suivante: 1,
+            console: Console::nouvelle(),
             coulisses: Coulisses::nouvelles(etat_du_bac()),
             saisie: String::new(),
             historique: Vec::new(),
@@ -190,7 +189,7 @@ impl Appli {
     pub fn pour_captures() -> Appli {
         let mut a = Appli::nouvelle(Err(String::new()), std::sync::Arc::new(|| {}));
         a.programme = Ok(Programme::factice());
-        a.console.clear();
+        a.console.effacer();
         // L'état du bac de cette machine-ci n'a rien à faire dans une capture : une phrase inventée, fixe.
         a.coulisses = Coulisses::nouvelles((
             crate::tr!(
@@ -220,27 +219,17 @@ impl Appli {
         self.finir(&fin);
     }
 
-    /// Ajoute une ligne à la console (nettoyée).
+    /// Ajoute une ligne simple à la console (nettoyée).
     pub fn dire(&mut self, source: &str, texte: &str, ton: Ton) {
-        if self.console.len() >= CONSOLE_MAX {
-            self.console.pop_front();
-        }
-        let numero = self.suivante;
-        self.suivante = self.suivante.saturating_add(1);
-        self.console.push_back(LigneConsole {
-            numero,
-            heure: crate::temps::heure_locale(),
-            source: crate::nettoyage::nom(source, 12),
-            texte: crate::nettoyage::ligne(texte),
-            ton,
-        });
+        self.console.dire(source, texte, ton);
     }
 
     pub fn programme_trouve(&self) -> bool {
         self.programme.is_ok()
     }
 
-    /// Demande une commande : lancée tout de suite si rien ne tourne, sinon mise en file (une seule fois).
+    /// Demande une commande : lancée tout de suite si rien ne tourne, sinon mise en file, avec son bloc « en
+    /// attente ». Déjà en cours ou déjà en attente : dit, pas ajoutée une seconde fois.
     pub fn demander(&mut self, c: Commande) {
         if self.programme.is_err() {
             let e = self.programme.as_ref().err().cloned().unwrap_or_default();
@@ -251,8 +240,20 @@ impl Appli {
             .tache
             .as_ref()
             .is_some_and(|t| t.lancement == Lancement::Commande(c))
-            || self.file.contains(&c)
         {
+            self.dire(
+                "fenêtre",
+                &crate::trf!("{} : déjà en cours.", "{}: already running.", c.nom_affiche()),
+                Ton::Discret,
+            );
+            return;
+        }
+        if self.file.contains(&c) {
+            self.dire(
+                "fenêtre",
+                &crate::trf!("{} : déjà en attente.", "{}: already queued.", c.nom_affiche()),
+                Ton::Discret,
+            );
             return;
         }
         if self.tache.is_some() {
@@ -265,14 +266,18 @@ impl Appli {
                 return;
             }
             self.file.push_back(c);
-            self.dire(
-                "fenêtre",
-                &crate::trf!("{} : en attente", "{}: queued", c.nom_affiche()),
-                Ton::Discret,
-            );
+            self.console.attendre(c.into());
             return;
         }
         self.lancer(c.into());
+    }
+
+    /// Retire une commande de la file (le ✕ de son bloc) ; rien si elle n'y est pas.
+    pub fn retirer(&mut self, c: Commande) {
+        if self.file.contains(&c) {
+            self.file.retain(|x| *x != c);
+            self.console.retirer(c.into());
+        }
     }
 
     fn lancer(&mut self, l: Lancement) {
@@ -287,18 +292,16 @@ impl Appli {
         };
         self.coulisses.lancee(l, chemin);
         self.tache = Some(tache);
-        self.dire(
-            "vanguard",
-            &format!("vanguard {}", l.arguments().join(" ")),
-            Ton::Commande,
-        );
+        self.console.commencer(l);
     }
 
     /// Arrête la commande en cours et vide la file. Un changement en cours ne s'interrompt pas : tué au milieu, il
     /// pourrait laisser le programme retiré sans la note qui permet de le remettre. Il finit seul (la fenêtre
     /// administrateur refusée ou fermée suffit), borné par son délai.
     pub fn arreter(&mut self) {
-        self.file.clear();
+        for c in std::mem::take(&mut self.file) {
+            self.console.retirer(c.into());
+        }
         if let Some(t) = &self.tache
             && !t.arret_demande()
         {
@@ -448,12 +451,18 @@ impl Appli {
         for m in messages {
             match m {
                 Message::Ligne(l) => {
-                    let source = self
-                        .tache
-                        .as_ref()
-                        .map_or("vanguard", |t| t.lancement.commande().nom_affiche());
-                    self.coulisses.erreur(&l);
-                    self.dire(source, &l, Ton::Discret);
+                    // Une étape (`@etape n/N libellé`, forme exacte) fait avancer le bloc sans rien de plus ; toute
+                    // autre ligne est gardée dans le bloc, et notée dans les coulisses comme avant.
+                    if crate::progression::lire(&l).is_none() {
+                        self.coulisses.erreur(&l);
+                    }
+                    if !self.console.recevoir(&l) {
+                        let source = self
+                            .tache
+                            .as_ref()
+                            .map_or("vanguard", |t| t.lancement.commande().nom_affiche());
+                        self.dire(source, &l, Ton::Discret);
+                    }
                 }
                 Message::Lance(pid) => self.coulisses.processus(pid),
                 Message::Fin(f) => {
@@ -480,7 +489,6 @@ impl Appli {
             Lancement::Commande(c) => c,
             Lancement::Changement(ch) => return self.finir_changement(ch, f),
         };
-        let secondes = f.duree.as_secs_f32();
         let contenu = match &f.issue {
             Issue::Terminee => match lire(c, &f.sortie) {
                 Ok(contenu) => contenu,
@@ -519,10 +527,15 @@ impl Appli {
             Contenu::Appareils(v) => v.resume(),
             Contenu::Libre(v) => crate::trn!(v.lignes.len(), "valeur", "valeurs", "value", "values"),
         };
-        self.dire(
-            c.nom_affiche(),
-            &format!("{texte} ({})", crate::langue::secondes(secondes)),
-            ton(&contenu),
+        self.console.finir(
+            f.lancement,
+            console::Fini {
+                resume: texte,
+                ton: ton(&contenu),
+                points: console::points(&contenu),
+                duree: f.duree,
+                echec: matches!(contenu, Contenu::Erreur(_)),
+            },
         );
         if let Contenu::Evenements(v) = &contenu {
             self.dernier_sondage = Instant::now();
@@ -554,6 +567,7 @@ impl Appli {
                 contenu,
                 heure: crate::temps::heure_minute(),
                 duree: f.duree,
+                fin: Instant::now(),
             },
         );
         if c == Commande::Demarrage {
@@ -564,7 +578,9 @@ impl Appli {
     /// La fin d'un changement : une ligne de la console (fait, refusé ou échec, avec la raison), puis la liste du
     /// démarrage relue, qui montre l'état réel.
     fn finir_changement(&mut self, ch: Changement, f: &Fin) {
-        let (texte, ton) = match issue_du_changement(ch, f) {
+        let issue = issue_du_changement(ch, f);
+        let echec = !matches!(issue, IssueChangement::Fait);
+        let (texte, ton) = match issue {
             IssueChangement::Fait => (
                 match ch.sorte {
                     Sorte::Retirer => crate::tr!(
@@ -585,7 +601,16 @@ impl Appli {
             ),
             IssueChangement::Echec(r) => (crate::trf!("Échec : {}", "Failed: {}", r), Ton::Attention),
         };
-        self.dire(Commande::Demarrage.nom_affiche(), &texte, ton);
+        self.console.finir(
+            f.lancement,
+            console::Fini {
+                resume: texte,
+                ton,
+                points: Vec::new(),
+                duree: f.duree,
+                echec,
+            },
+        );
         self.demander(Commande::Demarrage);
     }
 
@@ -602,7 +627,7 @@ impl Appli {
         }
         match commandes::comprendre(&texte) {
             Saisie::Rien => {}
-            Saisie::Effacer => self.console.clear(),
+            Saisie::Effacer => self.console.effacer(),
             Saisie::Aide => {
                 self.dire(
                     "aide",
@@ -621,9 +646,18 @@ impl Appli {
                     ),
                     Ton::Discret,
                 );
+                self.dire(
+                    "aide",
+                    crate::tr!(
+                        "« aide <commande> » la décrit sans la lancer · Ctrl+R cherche dans vos saisies · Ctrl+F cherche dans la console · Échap arrête la commande en cours.",
+                        "“help <command>” describes it without running it · Ctrl+R searches your entries · Ctrl+F searches the console · Esc stops the running command."
+                    ),
+                    Ton::Discret,
+                );
             }
+            Saisie::AideSur(c) => self.aide_sur(c),
+            // Le bloc de la commande dit ce qui est lancé, avec ses arguments exacts : pas de ligne « vous » en plus.
             Saisie::Lancer(c) => {
-                self.dire("vous", &propre, Ton::Commande);
                 self.aller(ecran_de(c));
                 self.demander(c);
             }
@@ -638,8 +672,47 @@ impl Appli {
                     ),
                     Ton::Attention,
                 );
+                // Une faute de frappe : la commande proche est proposée, jamais lancée à la place.
+                if let Some(c) = commandes::suggestions(&texte).first() {
+                    self.dire(
+                        "fenêtre",
+                        &crate::trf!(
+                            "Vouliez-vous dire « {} » ? Retapez-la, ou choisissez-la dans la liste (↓ puis Entrée).",
+                            "Did you mean “{}”? Type it again, or pick it in the list (↓ then Enter).",
+                            c.nom_affiche()
+                        ),
+                        Ton::Discret,
+                    );
+                }
             }
         }
+    }
+
+    /// `aide <commande>` : ce qu'elle fait, où elle se range, ce qui est lancé exactement. Rien n'est lancé.
+    fn aide_sur(&mut self, c: Commande) {
+        self.dire("aide", &format!("{} — {}", c.nom_affiche(), c.titre()), Ton::Normal);
+        self.dire("aide", c.description(), Ton::Discret);
+        self.dire(
+            "aide",
+            &crate::trf!(
+                "Rubrique : {} · lance exactement : vanguard {} · tapez « {} » pour la lancer.",
+                "Section: {} · runs exactly: vanguard {} · type “{}” to run it.",
+                c.rubrique().nom(),
+                c.arguments().join(" "),
+                c.nom_affiche()
+            ),
+            Ton::Discret,
+        );
+    }
+
+    /// Les saisies d'avant, la plus récente à la fin (Ctrl+R y cherche).
+    pub fn historique(&self) -> &[String] {
+        &self.historique
+    }
+
+    /// ↑ / ↓ rappellent-ils l'historique en ce moment (plutôt que de choisir une suggestion) ?
+    pub fn en_rappel(&self) -> bool {
+        self.rappel.is_some()
     }
 
     /// ↑ (plus ancien) ou ↓ (plus récent) dans l'historique des saisies.
@@ -935,23 +1008,23 @@ mod tests {
         a.saisir();
         assert!(a.en_cours().is_none());
         assert_eq!(a.taches(), 0);
-        assert!(a.console.iter().any(|l| l.texte.contains("rien n'a été lancé")));
+        assert!(a.console.dit("rien n'a été lancé"));
         assert_eq!(a.saisie, "");
     }
 
     #[test]
     fn la_console_est_bornee() {
         let mut a = appli();
-        for i in 0..(CONSOLE_MAX + 20) {
+        for i in 0..(console::ENTREES_MAX + 20) {
             a.dire("x", &format!("{i}"), Ton::Normal);
         }
-        assert_eq!((CONSOLE_MAX, a.console.len()), (2000, CONSOLE_MAX));
-        // Les numéros suivent, même quand les plus anciennes partent : la console y retrouve ses mesures.
+        assert_eq!(a.console.len(), console::ENTREES_MAX);
+        // Les numéros suivent, même quand les plus anciennes partent : la console y retrouve ses places.
+        let e = a.console.entrees();
         assert!(
-            a.console
-                .iter()
-                .zip(a.console.iter().skip(1))
-                .all(|(x, y)| y.numero == x.numero + 1)
+            e.iter()
+                .zip(e.iter().skip(1))
+                .all(|(x, y)| y.numero() == x.numero() + 1)
         );
     }
 
@@ -1228,18 +1301,13 @@ esac
         assert_eq!(changements(), format!("demarrage --retirer {e1} --json\n"));
         assert!(
             a.console
-                .iter()
-                .any(|l| l.ton == Ton::Bon && l.texte.contains("retiré du démarrage"))
+                .blocs()
+                .any(|b| b.ton == Ton::Bon && b.resume.contains("retiré du démarrage"))
         );
         // La liste a été relue après le changement.
-        let lancees: Vec<&str> = a
-            .console
-            .iter()
-            .filter(|l| l.ton == Ton::Commande)
-            .map(|l| l.texte.as_str())
-            .collect();
+        let lancees: Vec<String> = a.console.blocs().map(console::Bloc::ligne_de_commande).collect();
         assert_eq!(
-            lancees.iter().rev().take(2).copied().collect::<Vec<_>>(),
+            lancees.iter().rev().take(2).map(String::as_str).collect::<Vec<_>>(),
             [
                 "vanguard demarrage --json",
                 &*format!("vanguard demarrage --retirer {e1} --json")
@@ -1290,7 +1358,7 @@ esac
             a.demander(Commande::Demarrage);
             finir_tout(a);
         };
-        let dit = |a: &Appli, mot: &str| a.console.iter().any(|l| l.texte.contains(mot));
+        let dit = |a: &Appli, mot: &str| a.console.dit(mot);
         lire_la_liste(&mut a);
 
         // Le sondage repart pendant une confirmation ouverte ; « Accepter » attend sa fin, la confirmation reste.
@@ -1302,7 +1370,7 @@ esac
         a.accepter();
         assert_eq!(a.confirmation(), Some(&g1));
         // Une autre proposition dit la vraie raison.
-        a.console.clear();
+        a.console.effacer();
         finir_tout(&mut a);
         a.proposer(&g1);
         assert!(dit(&a, "déjà ouverte") || dit(&a, "already open"));
@@ -1327,7 +1395,7 @@ esac
         a.proposer(&g1);
         assert_eq!(a.confirmation(), Some(&g1));
         a.resultats.remove(&Commande::Demarrage);
-        a.console.clear();
+        a.console.effacer();
         a.accepter();
         assert!(a.confirmation().is_none());
         assert!(a.en_cours().is_none());
@@ -1340,7 +1408,7 @@ esac
     fn une_nouvelle_alerte_est_dite() {
         let mut a = appli();
         // La ligne « programme absent » d'appli() est grave : seules celles d'après comptent ici.
-        a.console.clear();
+        a.console.effacer();
         let fin = |sortie: &[u8]| Fin {
             lancement: Commande::Evenements.into(),
             code: Some(0),
@@ -1349,13 +1417,13 @@ esac
             duree: Duration::ZERO,
         };
         a.finir(&fin(br#"{"etat": "intact", "evenements": []}"#));
-        assert!(!a.console.iter().any(|l| l.ton == Ton::Grave));
+        assert!(!a.console.lignes().any(|l| l.ton == Ton::Grave));
         a.finir(&fin(
             br#"{"etat": "intact", "evenements": [{"id": "b1", "quoi": {"sorte": "alerte", "titre": "Connexion suspecte"}}]}"#,
         ));
         assert!(
             a.console
-                .iter()
+                .lignes()
                 .any(|l| l.ton == Ton::Grave && l.texte.contains("Connexion suspecte"))
         );
     }

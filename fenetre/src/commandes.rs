@@ -778,6 +778,8 @@ pub enum Saisie {
     Lancer(Commande),
     /// La liste des commandes permises, sans rien lancer.
     Aide,
+    /// `aide <commande>` : ce que fait une commande de la liste, sans la lancer.
+    AideSur(Commande),
     /// Vider la console.
     Effacer,
     /// Tout le reste : rien n'est lancé. Le texte tapé, nettoyé et coupé, pour le redire.
@@ -801,6 +803,9 @@ pub fn comprendre(saisie: &str) -> Saisie {
     let mot = match mots.as_slice() {
         [m] => *m,
         [v, m] if v.eq_ignore_ascii_case("vanguard") => *m,
+        [a, m] if AIDE.contains(&a.to_ascii_lowercase().as_str()) => {
+            return de_nom(m).map_or_else(refus, Saisie::AideSur);
+        }
         _ => return refus(),
     };
     let m = mot.to_ascii_lowercase();
@@ -810,9 +815,86 @@ pub fn comprendre(saisie: &str) -> Saisie {
     if EFFACER.contains(&m.as_str()) {
         return Saisie::Effacer;
     }
-    Commande::ici()
-        .find(|c| c.nom() == m || c.nom_anglais() == m)
-        .map_or_else(refus, Saisie::Lancer)
+    de_nom(&m).map_or_else(refus, Saisie::Lancer)
+}
+
+/// La commande de ce système qui porte ce nom, français ou anglais (casse ASCII ignorée).
+fn de_nom(mot: &str) -> Option<Commande> {
+    let m = mot.to_ascii_lowercase();
+    Commande::ici().find(|c| c.nom() == m || c.nom_anglais() == m)
+}
+
+/// Suggestions montrées au plus sous la saisie.
+pub const SUGGESTIONS_MAX: usize = 6;
+/// Un mot plus long n'est pas comparé (la distance coûte le produit des longueurs).
+const MOT_MAX: usize = 40;
+
+/// Les commandes que la saisie peut vouloir dire, pour la liste sous la console : celles dont un nom commence par
+/// le mot tapé, puis celles qui le contiennent, puis celles à une ou deux fautes près (« bilna » → bilan), la plus
+/// proche d'abord. Seulement une proposition : rien ne se lance sans qu'elle soit choisie (Entrée sur elle, ou un
+/// clic). Le mot est le seul de la saisie, ou celui après « vanguard » ou « aide ».
+pub fn suggestions(saisie: &str) -> Vec<Commande> {
+    let mots: Vec<String> = saisie.split_whitespace().map(str::to_lowercase).collect();
+    let mot = match mots.as_slice() {
+        [m] => m.as_str(),
+        [v, m] if v == "vanguard" || AIDE.contains(&v.as_str()) => m.as_str(),
+        _ => return Vec::new(),
+    };
+    if mot.chars().count() > MOT_MAX || AIDE.contains(&mot) || EFFACER.contains(&mot) {
+        return Vec::new();
+    }
+    let noms = |c: Commande| [c.nom(), c.nom_anglais()];
+    let mut v: Vec<Commande> = Commande::ici()
+        .filter(|c| noms(*c).iter().any(|n| n.starts_with(mot)))
+        .collect();
+    for c in Commande::ici() {
+        if !v.contains(&c) && mot.chars().count() >= 3 && noms(c).iter().any(|n| n.contains(mot)) {
+            v.push(c);
+        }
+    }
+    // Les fautes : une seule pour un mot court, deux à partir de six lettres.
+    let seuil = if mot.chars().count() >= 6 { 2 } else { 1 };
+    let mut proches: Vec<(usize, Commande)> = Commande::ici()
+        .filter(|c| !v.contains(c) && mot.chars().count() >= 3)
+        .filter_map(|c| {
+            let d = noms(c).iter().map(|n| distance(mot, n)).min().unwrap_or(usize::MAX);
+            (d <= seuil).then_some((d, c))
+        })
+        .collect();
+    proches.sort_by_key(|(d, _)| *d);
+    v.extend(proches.into_iter().map(|(_, c)| c));
+    v.truncate(SUGGESTIONS_MAX);
+    v
+}
+
+/// La distance entre deux mots, en fautes de frappe : une lettre de plus, de moins, changée, ou deux voisines
+/// inversées (distance de Damerau-Levenshtein restreinte). Bornée par l'appelant (`MOT_MAX` lettres).
+fn distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    // Une case hors des rangées vaut « très loin » (jamais atteint : les indices restent dans les rangées).
+    let lire = |v: &[usize], k: usize| v.get(k).copied().unwrap_or(usize::MAX / 2);
+    // Trois rangées : l'avant-dernière (pour l'inversion), la dernière, la courante.
+    let mut avant: Vec<usize> = Vec::new();
+    let mut prec: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.iter().enumerate() {
+        let mut cour: Vec<usize> = Vec::with_capacity(b.len().saturating_add(1));
+        cour.push(i.saturating_add(1));
+        for (j, cb) in b.iter().enumerate() {
+            let change = usize::from(ca != cb);
+            let mut d = lire(&prec, j + 1)
+                .saturating_add(1)
+                .min(lire(&cour, j).saturating_add(1))
+                .min(lire(&prec, j).saturating_add(change));
+            let inverses = i > 0 && j > 0 && a.get(i - 1) == Some(cb) && b.get(j - 1) == Some(ca) && ca != cb;
+            if inverses {
+                d = d.min(lire(&avant, j - 1).saturating_add(1));
+            }
+            cour.push(d);
+        }
+        avant = std::mem::replace(&mut prec, cour);
+    }
+    lire(&prec, b.len())
 }
 
 /// Complète un début de nom (touche Tab) quand un seul nom de la liste commence ainsi.
@@ -1012,6 +1094,57 @@ mod tests {
         assert_eq!(completer("zzz"), None);
         assert_eq!(completer("appa"), Some("appareils"));
         assert_eq!(completer("ver"), Some("verifier-moi"));
+    }
+
+    /// Les suggestions : les noms qui commencent par le mot, puis ceux qui le contiennent, puis les fautes de frappe
+    /// (« bilna » → bilan) ; jamais un mot qui n'est pas un nom de la liste, jamais plus de six.
+    #[test]
+    fn les_suggestions_tolerent_les_fautes() {
+        assert_eq!(suggestions("bilna").first(), Some(&Commande::Bilan));
+        assert_eq!(suggestions("bialn").first(), Some(&Commande::Bilan));
+        assert_eq!(suggestions("vanguard bilna").first(), Some(&Commande::Bilan));
+        assert_eq!(suggestions("aide bilna").first(), Some(&Commande::Bilan));
+        assert_eq!(suggestions("Bil").first(), Some(&Commande::Bilan));
+        assert!(suggestions("bil").contains(&Commande::BilanConfidentialite));
+        assert_eq!(suggestions("chek").first(), Some(&Commande::Bilan));
+        assert_eq!(suggestions("appareil").first(), Some(&Commande::Appareils));
+        for rien in [
+            "",
+            "   ",
+            "zzzz",
+            "bilan corriger",
+            "aide",
+            "effacer",
+            "x",
+            &"a".repeat(41),
+        ] {
+            assert_eq!(suggestions(rien), Vec::<Commande>::new(), "{rien:?}");
+        }
+        assert!(suggestions("e").len() <= SUGGESTIONS_MAX);
+        // Une suggestion n'est qu'une proposition : la saisie fautive reste refusée.
+        assert!(matches!(comprendre("bilna"), Saisie::Refusee(_)));
+        assert_eq!(distance("bilna", "bilan"), 1);
+        assert_eq!(distance("", "abc"), 3);
+        assert_eq!(distance("abc", ""), 3);
+        assert_eq!(distance("abc", "abc"), 0);
+        assert_eq!(distance("kitten", "sitting"), 3);
+    }
+
+    /// `aide <commande>` : seulement un nom de la liste, sans rien lancer ; tout le reste est refusé.
+    #[test]
+    fn aide_sur_une_commande() {
+        assert_eq!(comprendre("aide bilan"), Saisie::AideSur(Commande::Bilan));
+        assert_eq!(comprendre("HELP check"), Saisie::AideSur(Commande::Bilan));
+        assert_eq!(comprendre("? appareils"), Saisie::AideSur(Commande::Appareils));
+        for refus in [
+            "aide bilna",
+            "aide bilan --json",
+            "aide aide",
+            "aide corriger",
+            "aide demarrage --retirer",
+        ] {
+            assert!(matches!(comprendre(refus), Saisie::Refusee(_)), "{refus:?}");
+        }
     }
 
     #[test]

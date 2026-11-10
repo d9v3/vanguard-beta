@@ -233,7 +233,9 @@ pub fn journal<'a>(
         suivi.vu = derniere;
     }
     let nouvelles = n - m.hauteurs.partition_point(|(k, _)| *k <= suivi.vu);
-    pastille(ui, id, zone, col, nouvelles, &mut suivi);
+    if pastille(ui, id, zone, col.dessous, nouvelles, &mut suivi.montre) {
+        suivi.descendre = true;
+    }
     ui.ctx().data_mut(|d| {
         d.insert_temp(cle_mesures, m);
         d.insert_temp(cle_suivi, suivi);
@@ -242,39 +244,40 @@ pub fn journal<'a>(
     Vu { en_bas, nouvelles }
 }
 
-/// La pastille « ↓ N nouvelles lignes », en fondu, en bas au centre du journal.
-fn pastille(ui: &mut Ui, id: Id, zone: Rect, col: Colonnes, nouvelles: usize, suivi: &mut Suivi) {
+/// La pastille « ↓ N nouvelles lignes », en fondu, en bas au centre du journal (`dessous` : le vide sous la dernière
+/// ligne). `montre` garde le dernier compte, pour le fondu de sortie. Rend vrai quand elle est cliquée : redescendre.
+pub(super) fn pastille(ui: &mut Ui, id: Id, zone: Rect, dessous: f32, nouvelles: usize, montre: &mut usize) -> bool {
     let p = pal();
     if nouvelles > 0 {
-        suivi.montre = nouvelles;
+        *montre = nouvelles;
     }
     let t = ui
         .ctx()
         .animate_bool_with_time(id.with("pastille-fondu"), nouvelles > 0, super::mouvement::SURVOL);
-    if t <= 0.0 || suivi.montre == 0 {
-        return;
+    if t <= 0.0 || *montre == 0 {
+        return false;
     }
-    let mot = if suivi.montre == 1 {
+    let mot = if *montre == 1 {
         crate::tr!("↓ 1 nouvelle ligne", "↓ 1 new line").to_owned()
     } else {
-        crate::trf!("↓ {} nouvelles lignes", "↓ {} new lines", suivi.montre)
+        crate::trf!("↓ {} nouvelles lignes", "↓ {} new lines", *montre)
     };
     let g = ui.painter().layout_no_wrap(mot, police(12.0), p.sur_vif);
     let taille = vec2(g.size().x + 28.0, 26.0);
     let rect = Rect::from_min_size(
         pos2(
             zone.center().x - taille.x / 2.0,
-            zone.bottom() - col.dessous - taille.y - 4.0,
+            zone.bottom() - dessous - taille.y - 4.0,
         ),
         taille,
     );
     // Cliquable seulement quand elle a quelque chose à dire : en sortant, elle ne fait que s'effacer.
     let rep = (nouvelles > 0).then(|| ui.interact(rect, id.with("pastille"), Sense::click()));
+    let clic = rep.as_ref().is_some_and(egui::Response::clicked);
+    if clic {
+        ui.ctx().request_repaint();
+    }
     let s = if let Some(rep) = &rep {
-        if rep.clicked() {
-            suivi.descendre = true;
-            ui.ctx().request_repaint();
-        }
         let s = survol(ui, rep.id, rep.hovered());
         rep.clone().on_hover_cursor(egui::CursorIcon::PointingHand);
         s
@@ -288,6 +291,7 @@ fn pastille(ui: &mut Ui, id: Id, zone: Rect, col: Colonnes, nouvelles: usize, su
     if let Some(rep) = &rep {
         super::clavier::anneau(ui, rep, 13.0);
     }
+    clic
 }
 
 /// La hauteur d'une ligne : une seule ligne de texte si elle est pliée, sinon tout son texte replié à `largeur`.

@@ -8,6 +8,7 @@ mod cadre;
 #[cfg(test)]
 mod captures;
 mod clavier;
+mod console;
 mod coulisses;
 mod defile;
 mod demarrage;

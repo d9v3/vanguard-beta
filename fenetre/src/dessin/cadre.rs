@@ -2,28 +2,12 @@
 
 use std::time::Duration;
 
-use eframe::egui::{
-    self, Align2, Frame, Key, Margin, Rect, RichText, Sense, Stroke, StrokeKind, TextEdit, Ui, pos2, vec2,
-};
+use eframe::egui::{self, Align2, Frame, Margin, Rect, RichText, Sense, Stroke, Ui, pos2, vec2};
 
-use super::defile::{self, Colonnes, HAUTEUR_LIGNE, Rangee};
-use super::{icones, melange, mono, moyenne, n_f32, pal, police, survol};
-use crate::appli::{Appli, Ecran, LigneConsole, Ton};
+use super::{icones, melange, moyenne, n_f32, pal, police, survol};
+use crate::appli::{Appli, Ecran};
 use crate::commandes::{Commande, Rubrique};
 use crate::donnees::protection::Allure;
-
-/// Lignes de la console montrées, repliée et dépliée.
-const LIGNES_REPLIEE: usize = 6;
-const LIGNES_DEPLIEE: usize = 16;
-/// Les colonnes de la console : l'heure, la source, le texte.
-const COLONNES: Colonnes = Colonnes {
-    heure: 32.0,
-    source: 116.0,
-    texte: 220.0,
-    droite: 32.0,
-    dessous: 12.0,
-    tronquer: false,
-};
 
 pub fn tout(appli: &mut Appli, ui: &mut Ui) {
     let p = pal();
@@ -46,17 +30,13 @@ pub fn tout(appli: &mut Appli, ui: &mut Ui) {
         .show_separator_line(false)
         .frame(Frame::new().fill(p.fond))
         .show(ui, |ui| barre(appli, ui));
-    let lignes = if console_depliee(ui) {
-        LIGNES_DEPLIEE
-    } else {
-        LIGNES_REPLIEE
-    };
+    let lignes = super::console::lignes(ui.ctx());
     egui::Panel::top("console")
-        .exact_size(36.0 + 12.0 + HAUTEUR_LIGNE * n_f32(lignes) + 44.0)
+        .exact_size(super::console::hauteur(lignes))
         .resizable(false)
         .show_separator_line(false)
         .frame(Frame::new().fill(p.surface))
-        .show(ui, |ui| console(appli, ui, lignes));
+        .show(ui, |ui| super::console::bande(appli, ui, lignes));
     // Les coulisses : une fenêtre à part, ou un panneau à droite (avant le panneau central, qui prend le reste).
     super::coulisses::montrer(appli, ui);
     // L'écran arrive en fondu ; un écran nouveau part du haut (sinon il s'ouvrait à la hauteur où était l'autre).
@@ -93,14 +73,6 @@ pub fn tout(appli: &mut Appli, ui: &mut Ui) {
     let pixel = 1.0 / peintre.pixels_per_point();
     let x = peintre.round_to_pixel_center(rail_rect.right() - pixel);
     peintre.vline(x, rail_rect.y_range(), Stroke::new(pixel, p.trait_));
-}
-
-fn id_depliee() -> egui::Id {
-    egui::Id::unique("console-depliee")
-}
-
-fn console_depliee(ui: &Ui) -> bool {
-    ui.ctx().data(|d| d.get_temp::<bool>(id_depliee())).unwrap_or(false)
 }
 
 /// La rubrique allumée dans le rail pour l'écran montré.
@@ -258,7 +230,7 @@ fn onglets() -> [(&'static str, Ecran); 6] {
 }
 
 /// Ce que la barre dit de la protection : seulement ce que `protection --json` a lu, jamais supposé.
-fn veille(appli: &Appli) -> (&'static str, bool, egui::Color32) {
+pub(super) fn veille(appli: &Appli) -> (&'static str, bool, egui::Color32) {
     let p = pal();
     match appli.protection() {
         None => (crate::tr!("Protection pas lue", "Protection not read"), false, p.gris),
@@ -369,13 +341,14 @@ pub fn phase_f32(x: f64) -> f32 {
 
 /// L'état de la file, dans l'en-tête de la console : « aucune tâche en cours », ou la commande qui tourne, depuis
 /// combien de secondes, avec un point d'accent qui pulse (et les images qu'il faut, seulement tant qu'elle tourne).
+/// Rend la place du texte écrit.
 pub(super) fn tache_en_tete(
     ui: &Ui,
     peintre: &egui::Painter,
     tete: Rect,
     en_cours: Option<(Commande, Duration)>,
     taches: usize,
-) {
+) -> Rect {
     let p = pal();
     let point = pos2(tete.left() + 98.0, tete.center().y);
     if en_cours.is_some() {
@@ -409,221 +382,7 @@ pub(super) fn tache_en_tete(
         etat,
         police(12.0),
         if en_cours.is_some() { p.doux } else { p.discret },
-    );
-}
-
-fn console(appli: &mut Appli, ui: &mut Ui, montrees: usize) {
-    let p = pal();
-    let r = ui.max_rect();
-    let peintre = ui.painter().clone();
-    let tete = Rect::from_min_size(r.min, vec2(r.width(), 36.0));
-    peintre.line_segment([tete.left_bottom(), tete.right_bottom()], Stroke::new(1.0, p.trait_));
-    peintre.text(
-        pos2(tete.left() + 32.0, tete.center().y),
-        Align2::LEFT_CENTER,
-        "Console",
-        moyenne(12.0),
-        p.encre,
-    );
-    let en_cours = appli.en_cours();
-    tache_en_tete(ui, &peintre, tete, en_cours, appli.taches());
-    // Déplier ou replier la console.
-    let depliee = montrees == LIGNES_DEPLIEE;
-    let zone = Rect::from_min_size(pos2(tete.right() - 32.0 - 90.0, tete.top()), vec2(90.0, tete.height()));
-    let rep = ui.interact(zone, ui.scope_id().with("deplier"), Sense::click());
-    let mot = peintre.text(
-        pos2(zone.right(), zone.center().y),
-        Align2::RIGHT_CENTER,
-        if depliee {
-            crate::tr!("Replier", "Collapse")
-        } else {
-            crate::tr!("Déplier", "Expand")
-        },
-        police(12.0),
-        p.doux.lerp_to_gamma(p.encre, survol(ui, rep.id, rep.hovered())),
-    );
-    super::clavier::anneau_zone(ui, &rep, mot.expand2(vec2(6.0, 4.0)), 6.0);
-    if rep.clicked() {
-        ui.ctx().data_mut(|d| d.insert_temp(id_depliee(), !depliee));
-    }
-    rep.on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text(if depliee {
-            crate::trf!(
-                "Montrer {} lignes de la console",
-                "Show {} console lines",
-                LIGNES_REPLIEE
-            )
-        } else {
-            crate::trf!(
-                "Montrer {} lignes de la console",
-                "Show {} console lines",
-                LIGNES_DEPLIEE
-            )
-        });
-    // Les coulisses, à gauche : allumées tant qu'elles sont ouvertes.
-    let ouvertes = super::coulisses::ouvertes(ui.ctx());
-    let mot = crate::tr!("Coulisses", "Behind the scenes");
-    let largeur = peintre.layout_no_wrap(mot.into(), police(12.0), p.doux).size().x;
-    let zone = Rect::from_min_size(
-        pos2(zone.left() - 24.0 - largeur, tete.top()),
-        vec2(largeur, tete.height()),
-    );
-    let rep = ui.interact(zone, ui.scope_id().with("coulisses"), Sense::click());
-    let vif = if ouvertes {
-        1.0
-    } else {
-        survol(ui, rep.id, rep.hovered())
-    };
-    peintre.text(
-        pos2(zone.right(), zone.center().y),
-        Align2::RIGHT_CENTER,
-        mot,
-        police(12.0),
-        p.doux.lerp_to_gamma(if ouvertes { p.accent } else { p.encre }, vif),
-    );
-    super::clavier::anneau_zone(ui, &rep, zone.shrink2(vec2(0.0, 10.0)).expand2(vec2(6.0, 0.0)), 6.0);
-    if rep.clicked() {
-        super::coulisses::basculer(ui.ctx());
-    }
-    rep.on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text(crate::tr!(
-            "Ce que fait la fenêtre, en direct et en lecture seule : chaque commande lancée, ses arguments exacts, son bac à sable, sa durée.",
-            "What the window does, live and read-only: each command run, its exact arguments, its sandbox, its duration."
-        ));
-    let flux = Rect::from_min_max(
-        pos2(r.left(), tete.bottom()),
-        pos2(r.right(), tete.bottom() + 12.0 + HAUTEUR_LIGNE * n_f32(montrees)),
-    );
-    let clignote = en_cours.is_some() && (ui.ctx().input(|i| i.time) % 1.0) < 0.5;
-    let lignes = &appli.console;
-    ui.scope_builder(egui::UiBuilder::new().max_rect(flux), |ui| {
-        defile::journal(
-            ui,
-            egui::Id::unique("console-flux"),
-            lignes.len(),
-            |i| lignes.get(i).map(rangee),
-            COLONNES,
-            clignote,
-        )
-    });
-    // La saisie : un nom de la liste fermée, rien d'autre ne part (commandes::comprendre).
-    let saisie = Rect::from_min_max(pos2(r.left(), flux.bottom()), pos2(r.right(), flux.bottom() + 44.0));
-    peintre.line_segment([saisie.left_top(), saisie.right_top()], Stroke::new(1.0, p.trait_));
-    peintre.line_segment(
-        [saisie.left_bottom(), saisie.right_bottom()],
-        Stroke::new(1.0, p.trait_),
-    );
-    peintre.text(
-        pos2(saisie.left() + 32.0, saisie.center().y),
-        Align2::LEFT_CENTER,
-        "vanguard ›",
-        mono(13.0),
-        p.accent,
-    );
-    let mut x = saisie.right() - 32.0;
-    let touches = [
-        (
-            crate::tr!("Entrée", "Enter"),
-            crate::tr!(
-                "Lance la commande tapée, si elle est dans la liste fermée",
-                "Runs the typed command, if it is on the closed list"
-            ),
-        ),
-        (
-            "↑",
-            crate::tr!(
-                "Rappelle la saisie d'avant (↓ revient)",
-                "Recalls the previous entry (↓ goes back)"
-            ),
-        ),
-        (
-            "Tab",
-            crate::tr!(
-                "Complète le nom quand une seule commande convient",
-                "Completes the name when only one command fits"
-            ),
-        ),
-    ];
-    for (i, (k, aide)) in touches.into_iter().enumerate() {
-        let g = peintre.layout_no_wrap(k.into(), police(11.0), p.doux);
-        let w = g.size().x + 12.0;
-        let cap = Rect::from_min_size(pos2(x - w, saisie.center().y - 10.0), vec2(w, 20.0));
-        peintre.rect_stroke(cap, 4, Stroke::new(1.0, p.trait_), StrokeKind::Inside);
-        peintre.galley(cap.center() - g.size() / 2.0, g, p.doux);
-        ui.interact(cap, ui.scope_id().with(("touche", i)), Sense::hover())
-            .on_hover_text(aide);
-        x -= w + 8.0;
-    }
-    let champ = Rect::from_min_max(
-        pos2(saisie.left() + 128.0, saisie.top() + 8.0),
-        pos2(x - 16.0, saisie.bottom() - 8.0),
-    );
-    // Tab et ↑ ↓ sont pris avant le champ : Tab ne doit pas sortir du champ, ↑ ne doit pas bouger le curseur.
-    let id_saisie = ui.make_persistent_id("saisie");
-    let a_le_focus = ui.ctx().memory(egui::Memory::focused) == Some(id_saisie);
-    if a_le_focus {
-        let (tab, haut, bas) = ui.input_mut(|i| {
-            (
-                i.consume_key(egui::Modifiers::NONE, Key::Tab),
-                i.consume_key(egui::Modifiers::NONE, Key::ArrowUp),
-                i.consume_key(egui::Modifiers::NONE, Key::ArrowDown),
-            )
-        });
-        if tab {
-            appli.completer();
-        }
-        if haut {
-            appli.rappeler(true);
-        }
-        if bas {
-            appli.rappeler(false);
-        }
-    }
-    let rep = ui
-        .scope_builder(egui::UiBuilder::new().max_rect(champ), |ui| {
-            ui.add(
-                TextEdit::singleline(&mut appli.saisie)
-                    .id(id_saisie)
-                    .frame(Frame::NONE)
-                    .font(mono(13.0))
-                    .text_color(p.encre)
-                    .char_limit(200)
-                    .hint_text(
-                        RichText::new(crate::tr!(
-                            "Tapez une commande de Vanguard (bilan, aide…)",
-                            "Type a Vanguard command (check, help…)"
-                        ))
-                        .font(mono(13.0))
-                        .color(p.discret),
-                    )
-                    .desired_width(champ.width()),
-            )
-        })
-        .inner;
-    if rep.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
-        appli.saisir();
-        rep.request_focus();
-    }
-}
-
-/// Une ligne de la console pour le journal.
-fn rangee(l: &LigneConsole) -> Rangee<'_> {
-    let p = pal();
-    Rangee {
-        numero: l.numero,
-        heure: &l.heure,
-        source: &l.source,
-        couleur_source: if l.ton == Ton::Commande { p.accent } else { p.doux },
-        texte: &l.texte,
-        couleur: match l.ton {
-            Ton::Normal => p.encre,
-            Ton::Commande => p.accent,
-            Ton::Bon => p.bon,
-            Ton::Attention => p.moyen,
-            Ton::Grave => p.grave,
-            Ton::Discret => p.doux,
-        },
-    }
+    )
 }
 
 #[cfg(test)]

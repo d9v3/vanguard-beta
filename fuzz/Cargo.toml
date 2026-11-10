@@ -344,3 +344,10 @@ path = "fuzz_targets/fenetre_saisie.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fenetre_progression"
+path = "fuzz_targets/fenetre_progression.rs"
+test = false
+doc = false
+bench = false

@@ -314,7 +314,10 @@ fn preparer(chemin: &Path, lancement: Lancement, anglais: bool) -> Command {
         // Du texte simple : pas de couleurs ni de séquences de terminal (nettoyées de toute façon).
         .env("NO_COLOR", "1")
         .env("TERM", "dumb")
-        .env("VANGUARD_LANG", if anglais { "en" } else { "fr" });
+        .env("VANGUARD_LANG", if anglais { "en" } else { "fr" })
+        // La progression sur la sortie des erreurs (`@etape 3/9 …`), lue strictement par `progression::lire` ; la
+        // sortie, elle, reste le JSON seul.
+        .env(crate::progression::VARIABLE, "1");
     if let Some(d) = chemin.parent() {
         c.current_dir(d);
     }
