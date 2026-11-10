@@ -16,6 +16,8 @@ mod chargement;
 mod commandes;
 mod dessin;
 mod donnees;
+#[cfg(all(test, target_os = "linux"))]
+mod essais;
 mod lanceur;
 mod langue;
 mod nettoyage;

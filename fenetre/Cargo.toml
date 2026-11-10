@@ -34,6 +34,11 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 # licence hors de deny.toml.
 winit = { version = "0.30.13", default-features = false, features = ["wayland-dlopen"] }
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# L'essai du bac à sable sur le vrai bureau (dessin/mod.rs) : OpenGL ouvert comme eframe l'ouvre, sans fenêtre. La
+# version et les options qu'eframe tire déjà : rien de nouveau dans Cargo.lock.
+glutin = { version = "0.32.3", default-features = false, features = ["egl", "wayland", "x11"] }
+
 [target.'cfg(windows)'.dependencies]
 # Les lecteurs d'écran (UI Automation) sous Windows. Pas sous Linux pour l'instant : accesskit_unix y amène zvariant,
 # zbus_names et zvariant_derive, dits abandonnés (RUSTSEC-2026-0370, 0371, 0372 : fondus dans zbus 6, qu'accesskit

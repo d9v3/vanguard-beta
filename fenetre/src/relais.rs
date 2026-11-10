@@ -424,12 +424,15 @@ mod tests {
 
     /// Le dossier de l'essai du bac à sable, passé au processus d'essai relancé.
     const ESSAI_BAC: &str = "VANGUARD_FENETRE_ESSAI_BAC";
+    /// La socket d'essai dans /tmp/.X11-unix, si elle a pu y être créée.
+    const ESSAI_X11: &str = "VANGUARD_FENETRE_ESSAI_X11";
 
     /// Pour de vrai : le fil d'essai (la fenêtre) entre dans le bac à sable ; le relais, parti avant lui (comme le
     /// relais part avant que la fenêtre se restreigne), lance un faux `vanguard` qui écrit un fichier et lance un
-    /// programme. La fenêtre, elle, ne peut ni écrire, ni lancer, ni se connecter. Dans un processus d'essai à part
-    /// (ce même programme de tests, relancé sur ce seul test) : le bac ne se retire pas, il ne doit pas suivre les
-    /// autres tests.
+    /// programme. La fenêtre, elle, ne peut ni écrire, ni lancer, ni se connecter, ni lire le dossier personnel (une
+    /// fausse clé SSH dans un HOME jetable), ni joindre X11 sous Wayland (une socket d'essai dans /tmp/.X11-unix,
+    /// comme celle de Xwayland). Dans un processus d'essai à part (ce même programme de tests, relancé sur ce seul
+    /// test) : le bac ne se retire pas, il ne doit pas suivre les autres tests.
     #[test]
     fn le_bac_retient_la_fenetre_et_pas_ce_que_le_relais_lance() {
         use std::os::unix::fs::PermissionsExt;
@@ -443,6 +446,8 @@ mod tests {
             .join(format!("bac-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
+        // Sans « .. » : le bac ne suit pas un chemin de curseurs qui en a un (`Milieu::curseurs`).
+        let d = std::fs::canonicalize(&d).unwrap();
         std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
         let f = d.join("vanguard");
         // Le faux `vanguard` : un fichier écrit, un programme lancé, une sortie JSON.
@@ -452,33 +457,56 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Un HOME jetable : une fausse clé (valeur inventée), et un thème de curseurs, lui permis.
+        let maison = d.join("maison");
+        std::fs::create_dir_all(maison.join(".ssh")).unwrap();
+        std::fs::write(maison.join(".ssh").join("id_rsa"), "cle-inventee-pour-l-essai\n").unwrap();
+        std::fs::create_dir_all(maison.join(".icons").join("essai")).unwrap();
+        std::fs::write(
+            maison.join(".icons").join("essai").join("index.theme"),
+            "[Icon Theme]\n",
+        )
+        .unwrap();
+        // Une socket d'essai où X11 et Xwayland mettent les leurs (le dossier est ouvert à tous, collant).
+        let x11 = std::path::Path::new("/tmp/.X11-unix").join(format!("vanguard-essai-{}", std::process::id()));
+        let _ = std::fs::remove_file(&x11);
+        let ecoute = std::os::unix::net::UnixListener::bind(&x11);
         let nom = "relais::tests::le_bac_retient_la_fenetre_et_pas_ce_que_le_relais_lance";
-        let sortie = std::process::Command::new(std::env::current_exe().unwrap())
+        let mut essai = std::process::Command::new(std::env::current_exe().unwrap());
+        essai
             .args([nom, "--exact", "--nocapture", "--test-threads=1"])
             .env(ESSAI_BAC, &d)
-            .stdin(std::process::Stdio::null())
-            .output()
-            .unwrap();
+            .env("HOME", &maison)
+            .env("WAYLAND_DISPLAY", "vanguard-essai-absent")
+            .env("DISPLAY", ":99")
+            .stdin(std::process::Stdio::null());
+        for v in [
+            "WAYLAND_SOCKET",
+            "XAUTHORITY",
+            "XCURSOR_PATH",
+            "XDG_DATA_HOME",
+            "XDG_DATA_DIRS",
+            "XCOMPOSEFILE",
+        ] {
+            essai.env_remove(v);
+        }
+        if ecoute.is_ok() {
+            essai.env(ESSAI_X11, &x11);
+        }
+        let sortie = essai.output().unwrap();
         let texte = String::from_utf8_lossy(&sortie.stdout).into_owned() + &String::from_utf8_lossy(&sortie.stderr);
+        drop(ecoute);
+        let _ = std::fs::remove_file(&x11);
+        let ecrit = std::fs::read(d.join("ecrit"));
         let _ = std::fs::remove_dir_all(&d);
-        if let Some(raison) = texte.lines().find_map(|l| l.strip_prefix("BAC-SAUTÉ ")) {
-            return sauter(raison);
+        if let Some(raison) = texte.lines().find_map(|l| l.split_once("BAC-SAUTÉ ").map(|(_, r)| r)) {
+            return crate::essais::sauter(raison);
         }
         assert!(sortie.status.success() && texte.contains("BAC-OK"), "{texte}");
-    }
-
-    /// Un essai qui n'a rien vérifié le dit, et verifier.sh le compte (`VANGUARD_TESTS_SAUTES`, comme `essais::saute`
-    /// du programme).
-    #[track_caller]
-    fn sauter(raison: &str) {
-        let ou = std::panic::Location::caller();
-        let nom = std::thread::current().name().unwrap_or("?").to_string();
-        eprintln!("essai SAUTÉ ({nom}) : {raison}");
-        if let Some(fichier) = std::env::var_os("VANGUARD_TESTS_SAUTES")
-            && let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(fichier)
-        {
-            use std::io::Write;
-            let _ = writeln!(f, "{nom}\t{raison}\t{}:{}", ou.file(), ou.line());
+        // Ce que le relais a lancé a écrit, lui (relu d'ici : la fenêtre, restreinte, ne lit pas ce dossier).
+        assert_eq!(ecrit.unwrap(), b"ecrit\n");
+        if let Some(raison) = texte.lines().find_map(|l| l.split_once("X11-SAUTÉ ").map(|(_, r)| r)) {
+            crate::essais::sauter(raison);
         }
     }
 
@@ -490,7 +518,10 @@ mod tests {
         let serveur = std::thread::spawn(move || servir(relais, move || Programme::dans(&dossier, moi)));
         assert!(crate::bac_a_sable::sans_nouveaux_droits());
         let abi = match crate::bac_a_sable::poser() {
-            Ok((abi, _)) => abi,
+            Ok((abi, _, maison)) => {
+                assert!(!maison);
+                abi
+            }
             Err(e) => {
                 println!("BAC-SAUTÉ Landlock absent ({e})");
                 return;
@@ -504,6 +535,28 @@ mod tests {
             let tcp = std::net::TcpStream::connect_timeout(&([127, 0, 0, 1], 9).into(), Duration::from_secs(2));
             assert_eq!(tcp.unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
         }
+        // Ni le dossier personnel (la fausse clé), ni le dossier de l'essai (sous le vrai dossier personnel) ; le
+        // système et les curseurs du compte, oui.
+        let maison = std::path::PathBuf::from(std::env::var_os("HOME").unwrap());
+        let cle = std::fs::read(maison.join(".ssh").join("id_rsa"));
+        assert_eq!(cle.unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            std::fs::read_dir(&maison).unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        let faux = std::fs::read(d.join("vanguard"));
+        assert_eq!(faux.unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(std::fs::read(maison.join(".icons").join("essai").join("index.theme")).is_ok());
+        assert!(std::fs::read_dir("/usr").is_ok());
+        // Sous Wayland (WAYLAND_DISPLAY posé par l'essai), pas d'X11, même avec DISPLAY : Landlock 9 et plus.
+        match std::env::var_os(ESSAI_X11) {
+            Some(x11) if abi >= 9 => {
+                let x = std::os::unix::net::UnixStream::connect(&x11);
+                assert_eq!(x.unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
+            }
+            Some(_) => println!("X11-SAUTÉ Landlock {abi} : les sockets nommées restent joignables"),
+            None => println!("X11-SAUTÉ /tmp/.X11-unix absent ou fermé"),
+        }
         // Ce que le relais lance, lui, a tous les droits du compte.
         let c = Client::demarrer(fenetre, None);
         let rien: Reveil = Arc::new(|| {});
@@ -515,7 +568,6 @@ mod tests {
             f.issue
         );
         assert_eq!(f.sortie, b"{}\n");
-        assert_eq!(std::fs::read(d.join("ecrit")).unwrap(), b"ecrit\n");
         c.fermer();
         serveur.join().unwrap();
         println!("BAC-OK");

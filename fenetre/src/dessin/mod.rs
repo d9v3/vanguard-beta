@@ -329,4 +329,95 @@ mod tests {
         }
         assert!(vus >= 8, "{vus} fichiers seulement");
     }
+
+    /// Pour de vrai, sans rien montrer : dans le bac à sable, la fenêtre joint son bureau (Wayland ou X11), en reçoit
+    /// les premiers événements (le clavier et son plan de touches) et ouvre OpenGL comme eframe (EGL : la bibliothèque
+    /// du pilote, ses fichiers de glvnd, /dev/dri ou /dev/nvidia*), sans créer de fenêtre ni de surface. Un fichier
+    /// du système que le bac refuserait et dont le dessin a besoin ferait échouer ici. Dans un processus d'essai à part,
+    /// comme celui du relais : le bac ne se retire pas. Sauté sans bureau (la CI) ou sans Landlock.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn le_bureau_et_opengl_s_ouvrent_dans_le_bac() {
+        const ESSAI: &str = "VANGUARD_FENETRE_ESSAI_BUREAU";
+        if std::env::var_os(ESSAI).is_some() {
+            return dans_le_bac();
+        }
+        let nom = "dessin::tests::le_bureau_et_opengl_s_ouvrent_dans_le_bac";
+        let sortie = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([nom, "--exact", "--nocapture", "--test-threads=1"])
+            .env(ESSAI, "1")
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        let texte = String::from_utf8_lossy(&sortie.stdout).into_owned() + &String::from_utf8_lossy(&sortie.stderr);
+        if let Some(raison) = texte
+            .lines()
+            .find_map(|l| l.split_once("BUREAU-SAUTÉ ").map(|(_, r)| r))
+        {
+            return crate::essais::sauter(raison);
+        }
+        assert!(sortie.status.success() && texte.contains("BUREAU-OK"), "{texte}");
+    }
+
+    #[cfg(target_os = "linux")]
+    // raison : glutin (EGL) et glow n'ont que des appels unsafe ; ils ne servent ici qu'à l'essai.
+    #[allow(unsafe_code)]
+    fn dans_le_bac() {
+        use eframe::glow::{self, HasContext};
+        use glutin::config::ConfigTemplateBuilder;
+        use glutin::context::ContextAttributesBuilder;
+        use glutin::display::GlDisplay;
+        use winit::platform::pump_events::EventLoopExtPumpEvents;
+        use winit::raw_window_handle::HasDisplayHandle;
+
+        struct Rien;
+        impl winit::application::ApplicationHandler for Rien {
+            fn resumed(&mut self, _: &winit::event_loop::ActiveEventLoop) {}
+            fn window_event(
+                &mut self,
+                _: &winit::event_loop::ActiveEventLoop,
+                _: winit::window::WindowId,
+                _: winit::event::WindowEvent,
+            ) {
+            }
+        }
+
+        if crate::bac_a_sable::bureau() == crate::bac_a_sable::Bureau::Aucun {
+            println!("BUREAU-SAUTÉ pas de bureau (ni WAYLAND_DISPLAY ni DISPLAY)");
+            return;
+        }
+        assert!(crate::bac_a_sable::sans_nouveaux_droits());
+        if let Err(e) = crate::bac_a_sable::poser() {
+            println!("BUREAU-SAUTÉ Landlock absent ({e})");
+            return;
+        }
+        let mut constructeur = winit::event_loop::EventLoop::builder();
+        // Le même réglage pour les deux bureaux : l'essai ne tourne pas sur le fil principal.
+        winit::platform::wayland::EventLoopBuilderExtWayland::with_any_thread(&mut constructeur, true);
+        let mut boucle = constructeur.build().expect("le bureau ne s'ouvre pas dans le bac");
+        for _ in 0..3 {
+            let _ = boucle.pump_app_events(Some(std::time::Duration::from_millis(100)), &mut Rien);
+        }
+        let brut = boucle.display_handle().unwrap().as_raw();
+        // SAFETY: l'affichage vient de la boucle de winit, vivante jusqu'à la fin de l'essai, après tout ce qu'EGL crée.
+        let affichage =
+            unsafe { glutin::api::egl::display::Display::new(brut) }.expect("EGL ne s'ouvre pas dans le bac");
+        // SAFETY: un modèle de configuration par défaut, sans pointeur ; l'affichage est vivant.
+        let config = unsafe { affichage.find_configs(ConfigTemplateBuilder::new().build()) }
+            .expect("configurations d'EGL")
+            .next()
+            .expect("aucune configuration d'EGL");
+        // SAFETY: des attributs par défaut, sans fenêtre ; la configuration vient de cet affichage.
+        let contexte = unsafe { affichage.create_context(&config, &ContextAttributesBuilder::new().build(None)) }
+            .expect("contexte d'OpenGL");
+        let contexte = contexte.make_current_surfaceless().expect("contexte courant");
+        // SAFETY: les fonctions viennent du contexte courant sur ce fil, qui vit jusqu'après leur dernier appel.
+        let gl = unsafe { glow::Context::from_loader_function_cstr(|s| affichage.get_proc_address(s)) };
+        // SAFETY: glGetString(GL_VERSION) sur le contexte courant ; la valeur n'est pas montrée (elle nomme la carte).
+        let version = unsafe { gl.get_parameter_string(glow::VERSION) };
+        assert_ne!(version, "");
+        drop(gl);
+        drop(contexte);
+        println!("BUREAU-OK");
+    }
 }
