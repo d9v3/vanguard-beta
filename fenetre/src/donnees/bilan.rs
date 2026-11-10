@@ -220,6 +220,14 @@ impl Vue {
         }
     }
 
+    /// Une note montrée alors que des vérifications n'ont pas pu se faire : leur nombre. La note de Vanguard ne les
+    /// compte pas ; la fenêtre le dit à côté du chiffre, en couleur d'alerte, pour qu'un 100/100 ne passe pas pour
+    /// « tout est sain ».
+    pub fn note_incomplete(&self) -> Option<usize> {
+        let n = self.compte(Rang::NonVerifie);
+        (self.note.is_some() && n > 0).then_some(n)
+    }
+
     /// Les constats d'un rang ; à corriger, les plus graves d'abord (l'ordre de Vanguard gardé à gravité égale).
     pub fn de_rang(&self, rang: Rang) -> Vec<&Constat> {
         let mut v: Vec<&Constat> = self.constats.iter().filter(|c| c.rang == rang).collect();
@@ -270,6 +278,23 @@ impl Vue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn une_note_avec_des_points_non_verifies_le_dit() {
+        let mut v = lire(AUDIT.as_bytes()).unwrap();
+        assert_eq!(v.note, Some(82));
+        // Le constat « non-verifie » et ceux qui ne se lisent pas.
+        assert_eq!(v.note_incomplete(), Some(v.compte(Rang::NonVerifie)));
+        assert!(v.note_incomplete().is_some_and(|n| n > 0));
+        v.constats.retain(|c| c.rang != Rang::NonVerifie);
+        v.illisibles = 0;
+        v.manques.clear();
+        assert_eq!(v.note_incomplete(), None);
+        v.manques.push("pare-feu".into());
+        assert_eq!(v.note_incomplete(), Some(1));
+        v.note = None;
+        assert_eq!(v.note_incomplete(), None);
+    }
 
     const AUDIT: &str = r#"{
         "systeme": "Linux · essai",

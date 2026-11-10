@@ -87,7 +87,12 @@ fn accueil(appli: &mut Appli, ui: &mut Ui) {
                 |n| format!("{n}/100"),
             ),
             v.resume(),
-            p.encre,
+            // Des points non vérifiés : la note en couleur d'alerte, comme dans le bilan.
+            if v.note_incomplete().is_some() {
+                p.moyen
+            } else {
+                p.encre
+            },
         ),
         (None, _) => (crate::tr!("Pas encore", "Not yet").to_string(), String::new(), p.gris),
     };

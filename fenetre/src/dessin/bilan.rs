@@ -202,11 +202,22 @@ pub fn ecran(appli: &mut Appli, ui: &mut Ui) {
                         ));
                     }
                     (Some(v), None) => {
+                        let incomplete = v.note_incomplete();
                         ui.horizontal(|ui| {
                             let n = v.note.map_or_else(|| "—".to_string(), |s| s.to_string());
-                            ui.label(RichText::new(n).font(moyenne(72.0)).color(p.encre));
+                            // Des points non vérifiés : la note en couleur d'alerte, et leur nombre à côté, aussi
+                            // visible qu'elle. Ils ne comptent pas comme sains.
+                            let couleur = if incomplete.is_some() { p.moyen } else { p.encre };
+                            ui.label(RichText::new(n).font(moyenne(72.0)).color(couleur));
                             ui.label(texte("/100", 20.0, p.discret));
                         });
+                        if let Some(k) = incomplete {
+                            ui.label(
+                                RichText::new(crate::trf!("{} pas pu vérifier", "{} could not check", k))
+                                    .font(moyenne(28.0))
+                                    .color(p.moyen),
+                            );
+                        }
                         ui.add_space(8.0);
                         if v.note.is_none() {
                             ui.label(texte(
