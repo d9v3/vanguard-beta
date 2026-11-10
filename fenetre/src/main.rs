@@ -7,6 +7,8 @@
 #![cfg_attr(not(test), windows_subsystem = "windows")]
 
 mod appli;
+#[cfg(test)]
+mod attaques;
 #[cfg(windows)]
 mod chargement;
 mod commandes;
