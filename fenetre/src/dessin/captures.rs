@@ -557,6 +557,18 @@ fn mouvement(dossier: &Path) -> usize {
         toile.ecrire_png(&dossier.join(fichier)).unwrap();
         faites += 1;
     }
+    // Les chiffres du Bilan qui montent, la première fois que ce bilan est montré.
+    for t in [0.0, 0.15, 0.3, 0.6] {
+        let mut rendu = Rendu::nouveau();
+        super::appliquer_theme(&rendu.ctx, true);
+        let mut appli = appli_remplie(false, true);
+        appli.aller(Ecran::Bilan);
+        let instants: &[f64] = if t > 0.0 { &[0.0, t] } else { &[0.0] };
+        let toile = rendu.rendre(taille, instants, |ui| image(&mut appli, None, ui));
+        let fichier = format!("montee-{:03}ms.png", (t * 1000.0).round() as u32);
+        toile.ecrire_png(&dossier.join(fichier)).unwrap();
+        faites += 1;
+    }
     // Une carte de commande sous la souris : son fond s'éclaire, rien ne bouge.
     let mut rendu = Rendu::nouveau();
     super::appliquer_theme(&rendu.ctx, true);

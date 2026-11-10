@@ -177,6 +177,11 @@ pub fn ecran(appli: &mut Appli, ui: &mut Ui) {
         ui.add_space(16.0);
     }
     let finie = if en_cours.is_some() { None } else { vue.as_ref() };
+    // Les chiffres d'un bilan montent de 0 la première fois qu'il est montré (un bilan : son heure et sa durée).
+    let part = match (finie, &resultat) {
+        (Some(_), Some(r)) => super::mouvement::montee(ui.ctx(), egui::Id::unique(("bilan", &r.heure, r.duree))),
+        _ => 1.0,
+    };
     carte(ui, 32, 20, |ui| {
         ui.set_width(ui.available_width());
         let etroit = ui.available_width() < 760.0;
@@ -203,19 +208,22 @@ pub fn ecran(appli: &mut Appli, ui: &mut Ui) {
                     (Some(v), None) => {
                         let incomplete = v.note_incomplete();
                         ui.horizontal(|ui| {
-                            let n = v.note.map_or_else(|| "—".to_string(), |s| s.to_string());
                             // Des points non vérifiés : la note en couleur d'alerte, et leur nombre à côté, aussi
                             // visible qu'elle. Ils ne comptent pas comme sains.
                             let couleur = if incomplete.is_some() { p.moyen } else { p.encre };
-                            ui.label(RichText::new(n).font(moyenne(72.0)).color(couleur));
+                            match v.note.and_then(|n| usize::try_from(n).ok()) {
+                                Some(n) => {
+                                    super::mouvement::nombre(ui, part, n, |k| k.to_string(), &moyenne(72.0), couleur);
+                                }
+                                None => {
+                                    ui.label(RichText::new("—").font(moyenne(72.0)).color(couleur));
+                                }
+                            }
                             ui.label(texte("/100", 20.0, p.discret));
                         });
                         if let Some(k) = incomplete {
-                            ui.label(
-                                RichText::new(crate::trf!("{} pas pu vérifier", "{} could not check", k))
-                                    .font(moyenne(28.0))
-                                    .color(p.moyen),
-                            );
+                            let ecrire = |k| crate::trf!("{} pas pu vérifier", "{} could not check", k);
+                            super::mouvement::nombre(ui, part, k, ecrire, &moyenne(28.0), p.moyen);
                         }
                         ui.add_space(8.0);
                         if v.note.is_none() {
@@ -281,7 +289,7 @@ pub fn ecran(appli: &mut Appli, ui: &mut Ui) {
                 bande(ui, if en_cours.is_some() { vue.as_ref() } else { finie }, en_cours);
                 ui.add_space(12.0);
                 if let Some(v) = finie {
-                    legende(ui, v);
+                    legende(ui, v, part);
                 } else if en_cours.is_some() {
                     ui.label(texte(
                         crate::tr!(
@@ -312,7 +320,7 @@ pub fn ecran(appli: &mut Appli, ui: &mut Ui) {
     }
 }
 
-fn legende(ui: &mut Ui, v: &Vue) {
+fn legende(ui: &mut Ui, v: &Vue, part: f32) {
     let p = pal();
     ui.horizontal_wrapped(|ui| {
         for r in Rang::TOUS {
@@ -327,7 +335,7 @@ fn legende(ui: &mut Ui, v: &Vue) {
             } else {
                 ui.painter().rect_filled(z, 3, couleur_rang(r));
             }
-            ui.label(RichText::new(k.to_string()).font(moyenne(13.0)).color(p.encre));
+            super::mouvement::nombre(ui, part, k, |k| k.to_string(), &moyenne(13.0), p.encre);
             ui.label(texte(r.nom(), 13.0, p.doux));
             ui.add_space(16.0);
         }
@@ -449,51 +457,53 @@ fn carte_constat(ui: &mut Ui, c: &Constat, i: usize) {
     carte(ui, 22, 16, |ui| {
         ui.set_width(ui.available_width());
         // Toute la carte s'éclaire : jusqu'à son trait, sous un point de bord.
-        super::mouvement::ligne(ui, vec2(21.0, 21.0), 15.0, |ui| ui.horizontal_top(|ui| {
-            let (r, _) = ui.allocate_exact_size(vec2(12.0, 16.0), Sense::hover());
-            ui.painter()
-                .circle_filled(pos2(r.left() + 4.0, r.center().y), 4.0, couleur_gravite(c.gravite));
-            ui.add_space(8.0);
-            ui.vertical(|ui| {
-                ui.horizontal(|ui| {
-                    ui.label(texte(&c.categorie, 12.0, p.discret));
-                    if let Some(g) = c.gravite {
-                        ui.label(texte(g.nom(), 12.0, couleur_gravite(Some(g))));
+        super::mouvement::ligne(ui, vec2(21.0, 21.0), 15.0, |ui| {
+            ui.horizontal_top(|ui| {
+                let (r, _) = ui.allocate_exact_size(vec2(12.0, 16.0), Sense::hover());
+                ui.painter()
+                    .circle_filled(pos2(r.left() + 4.0, r.center().y), 4.0, couleur_gravite(c.gravite));
+                ui.add_space(8.0);
+                ui.vertical(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(texte(&c.categorie, 12.0, p.discret));
+                        if let Some(g) = c.gravite {
+                            ui.label(texte(g.nom(), 12.0, couleur_gravite(Some(g))));
+                        }
+                        ui.label(RichText::new(&c.regle).font(mono(12.0)).color(p.discret));
+                    });
+                    ui.add_space(4.0);
+                    ui.label(texte(&c.message, 15.0, p.encre));
+                    if !c.objet.is_empty() {
+                        ui.label(RichText::new(&c.objet).font(mono(12.0)).color(p.doux));
                     }
-                    ui.label(RichText::new(&c.regle).font(mono(12.0)).color(p.discret));
+                    if !c.action.is_empty() {
+                        ui.add_space(8.0);
+                        let rep = Frame::new()
+                            .inner_margin(Margin {
+                                left: 12,
+                                right: 0,
+                                top: 2,
+                                bottom: 2,
+                            })
+                            .show(ui, |ui| {
+                                ui.label(texte(&c.action, 13.0, p.doux));
+                            });
+                        let r = rep.response.rect;
+                        ui.painter()
+                            .line_segment([r.left_top(), r.left_bottom()], Stroke::new(2.0, p.trait_));
+                    }
+                    ui.add_space(14.0);
+                    ui.push_id(i, |ui| {
+                        petit(ui, crate::tr!("Voir la correction", "See the fix"), false).on_disabled_hover_text(
+                            crate::tr!(
+                                "Les corrections arrivent dans un prochain lot : montrées, puis acceptées.",
+                                "Fixes come in a later batch: shown, then accepted."
+                            ),
+                        );
+                    });
                 });
-                ui.add_space(4.0);
-                ui.label(texte(&c.message, 15.0, p.encre));
-                if !c.objet.is_empty() {
-                    ui.label(RichText::new(&c.objet).font(mono(12.0)).color(p.doux));
-                }
-                if !c.action.is_empty() {
-                    ui.add_space(8.0);
-                    let rep = Frame::new()
-                        .inner_margin(Margin {
-                            left: 12,
-                            right: 0,
-                            top: 2,
-                            bottom: 2,
-                        })
-                        .show(ui, |ui| {
-                            ui.label(texte(&c.action, 13.0, p.doux));
-                        });
-                    let r = rep.response.rect;
-                    ui.painter()
-                        .line_segment([r.left_top(), r.left_bottom()], Stroke::new(2.0, p.trait_));
-                }
-                ui.add_space(14.0);
-                ui.push_id(i, |ui| {
-                    petit(ui, crate::tr!("Voir la correction", "See the fix"), false).on_disabled_hover_text(
-                        crate::tr!(
-                            "Les corrections arrivent dans un prochain lot : montrées, puis acceptées.",
-                            "Fixes come in a later batch: shown, then accepted."
-                        ),
-                    );
-                });
-            });
-        }));
+            })
+        });
     });
 }
 
@@ -556,14 +566,16 @@ fn liste_cote(ui: &mut Ui, titre: &str, lignes: &[(String, String)], col: Color3
                     .line_segment([pos2(r.left(), y), pos2(r.right(), y)], Stroke::new(1.0, p.trait_));
             }
             ui.add_space(8.0);
-            super::mouvement::ligne(ui, vec2(8.0, 4.0), 6.0, |ui| ui.horizontal_top(|ui| {
-                let (r, _) = ui.allocate_exact_size(vec2(12.0, 16.0), Sense::hover());
-                ui.painter().circle_filled(pos2(r.left() + 3.0, r.center().y), 3.0, col);
-                ui.vertical(|ui| {
-                    ui.label(RichText::new(cat).font(moyenne(13.0)).color(p.encre));
-                    ui.label(texte(message, 13.0, p.doux));
-                });
-            }));
+            super::mouvement::ligne(ui, vec2(8.0, 4.0), 6.0, |ui| {
+                ui.horizontal_top(|ui| {
+                    let (r, _) = ui.allocate_exact_size(vec2(12.0, 16.0), Sense::hover());
+                    ui.painter().circle_filled(pos2(r.left() + 3.0, r.center().y), 3.0, col);
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new(cat).font(moyenne(13.0)).color(p.encre));
+                        ui.label(texte(message, 13.0, p.doux));
+                    });
+                })
+            });
             ui.add_space(4.0);
         }
         if lignes.len() > COTE_MAX {

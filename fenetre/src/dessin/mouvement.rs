@@ -1,12 +1,16 @@
 //! Le mouvement de la fenêtre, en un seul endroit : le fondu d'arrivée d'un écran, les lignes de liste qui
-//! s'éclairent au survol, le point qui pulse pendant qu'une commande tourne. Toutes les durées viennent d'une
+//! s'éclairent au survol, le point qui pulse pendant qu'une commande tourne, les chiffres du Bilan qui montent.
+//! Toutes les durées viennent d'une
 //! seule réglette, `ALLURE` : à 0, plus rien ne bouge (chaque fondu saute à sa fin), le reste de la fenêtre ne change
 //! pas. Aucun réglage « réduire les animations » n'est lu du système pour l'instant : la fenêtre, dans son bac à
 //! sable, ne lit ni les réglages du bureau ni ceux de Windows ; le jour où elle le pourra, il se branchera ici.
 
 use std::time::Duration;
 
-use eframe::egui::{Color32, Context, Id, Painter, Pos2, Rect, Sense, Shape, Ui, Vec2, emath::TSTransform, vec2};
+use eframe::egui::{
+    Color32, Context, FontId, Id, Painter, Pos2, Rect, Response, Role, Sense, Shape, Ui, Vec2, WidgetInfo,
+    emath::TSTransform, pos2, vec2,
+};
 
 use crate::appli::Ecran;
 
@@ -27,6 +31,8 @@ const GLISSEMENT: f32 = 6.0;
 /// L'intervalle des images tant que quelque chose bouge (environ 60 par seconde).
 const IMAGE: Duration = Duration::from_millis(16);
 
+/// La montée des chiffres d'un résultat, de 0 à leur valeur.
+const MONTEE: f32 = duree(0.6);
 /// L'intervalle des images pendant qu'une commande tourne : le point qui pulse et les secondes qui passent n'ont pas
 /// besoin de plus (environ 30 par seconde).
 const TOURNE: Duration = Duration::from_millis(33);
@@ -144,6 +150,50 @@ pub fn tourne(ctx: &Context) {
     ctx.request_repaint_after(TOURNE);
 }
 
+/// Où en est la montée des chiffres du résultat `cle` (de 0 à 1, ralentie à la fin) : elle part la première fois
+/// que ce résultat est montré, et une fois finie le reste (revenir sur l'écran ne la relance pas ; un nouveau
+/// résultat, autre clé, la relance).
+pub fn montee(ctx: &Context, cle: Id) -> f32 {
+    let maintenant = ctx.input(|i| i.time);
+    let debut = ctx.data_mut(|d| *d.get_temp_mut_or_insert_with(cle.with("montee"), || maintenant));
+    let part = avancement(maintenant, debut, MONTEE);
+    if part < 1.0 {
+        ctx.request_repaint_after(IMAGE);
+    }
+    sortie(part)
+}
+
+/// Un nombre qui monte : `valeur` multipliée par `part` (de `montee`), écrit par `ecrire`. La place est celle du
+/// texte final, prise dès la première image (rien ne bouge autour), le nombre calé à sa droite ; un lecteur d'écran
+/// lit tout de suite le texte final, jamais un chiffre de passage.
+pub fn nombre(
+    ui: &mut Ui,
+    part: f32,
+    valeur: usize,
+    ecrire: impl Fn(usize) -> String,
+    police: &FontId,
+    couleur: Color32,
+) -> Response {
+    let fin = ecrire(valeur);
+    let montre = if part >= 1.0 {
+        valeur
+    } else {
+        super::f32_n((super::n_f32(valeur) * part).round())
+    };
+    let peintre = ui.painter();
+    let place = peintre.layout_no_wrap(fin.clone(), police.clone(), couleur);
+    let (zone, rep) = ui.allocate_exact_size(place.size(), Sense::hover());
+    let texte = if montre == valeur {
+        place
+    } else {
+        ui.painter().layout_no_wrap(ecrire(montre), police.clone(), couleur)
+    };
+    let coin = pos2(zone.right() - texte.size().x, zone.top());
+    ui.painter().galley(coin, texte, couleur);
+    rep.widget_info(|| WidgetInfo::labeled(Role::Label, true, &fin));
+    rep
+}
+
 #[cfg(test)]
 mod tests {
     use eframe::egui;
@@ -228,9 +278,10 @@ mod tests {
                 place = super::ligne(ui, egui::vec2(8.0, 3.0), 6.0, |ui| ui.label("Lecteur · alice")).rect;
             });
             sortie.textures_delta.clear();
-            let eclairee = sortie.shapes.iter().any(|c| {
-                matches!(&c.shape, egui::Shape::Rect(r) if r.fill == fond && r.rect.width() > 700.0)
-            });
+            let eclairee = sortie
+                .shapes
+                .iter()
+                .any(|c| matches!(&c.shape, egui::Shape::Rect(r) if r.fill == fond && r.rect.width() > 700.0));
             (place, eclairee)
         };
         let (avant, eclairee) = voir(1.0, egui::pos2(400.0, 500.0));
@@ -245,6 +296,69 @@ mod tests {
         // La souris dans la marge, entre deux lignes, éclaire encore : pas de trou qui clignote entre les lignes.
         let (_, eclairee) = voir(2.0, egui::pos2(avant.left() + 2.0, avant.top() - 2.0));
         assert!(eclairee, "la marge de la ligne ne compte pas comme survolée");
+    }
+
+    /// Une image d'un nombre qui monte (82, clé du résultat `cle`), à l'instant `temps` : le texte peint, la place
+    /// prise, et ce qu'un lecteur d'écran en lit.
+    fn image_nombre(ctx: &egui::Context, cle: egui::Id, temps: f64) -> (Vec<String>, egui::Rect, Vec<String>) {
+        let mut place = egui::Rect::NOTHING;
+        let mut sortie = ctx.run_ui(
+            egui::RawInput {
+                time: Some(temps),
+                ..Default::default()
+            },
+            |ui| {
+                let part = super::montee(ui.ctx(), cle);
+                let police = egui::FontId::proportional(72.0);
+                place = super::nombre(ui, part, 82, |k| k.to_string(), &police, egui::Color32::WHITE).rect;
+            },
+        );
+        sortie.textures_delta.clear();
+        let peints = sortie
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Text(t) => Some(t.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect();
+        let lus = sortie
+            .platform_output
+            .accesskit_update
+            .map(|u| {
+                u.nodes
+                    .iter()
+                    .filter_map(|(_, n)| n.value().or(n.label()).map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        (peints, place, lus)
+    }
+
+    /// Le score monte de 0 à 82 en `MONTEE`, à la place du texte final dès la première image ; un lecteur d'écran lit
+    /// 82 tout de suite ; revenir sur le même résultat ne relance rien, un nouveau résultat si.
+    #[test]
+    fn les_chiffres_montent_une_fois_par_resultat() {
+        let ctx = egui::Context::default();
+        super::super::polices(&ctx);
+        ctx.enable_accesskit();
+        let premier = egui::Id::unique(("essai", 1));
+        let (peints, debut, lus) = image_nombre(&ctx, premier, 1.0);
+        assert_eq!(peints, ["0"], "la montée ne part pas de 0");
+        assert!(
+            lus.iter().any(|l| l == "82"),
+            "le lecteur d'écran ne lit pas 82 : {lus:?}"
+        );
+        let (peints, milieu, _) = image_nombre(&ctx, premier, 1.0 + f64::from(super::MONTEE) / 2.0);
+        let n: u32 = peints[0].parse().unwrap();
+        assert!(n > 41 && n < 82, "à mi-chemin (ease-out) : {n}");
+        let (peints, fin, _) = image_nombre(&ctx, premier, 1.0 + f64::from(super::MONTEE));
+        assert_eq!(peints, ["82"]);
+        assert_eq!(debut, milieu, "la place a changé pendant la montée");
+        assert_eq!(debut, fin, "la place a changé pendant la montée");
+        // Plus tard, le même résultat : tout de suite 82. Un autre résultat : de nouveau 0.
+        assert_eq!(image_nombre(&ctx, premier, 30.0).0, ["82"]);
+        assert_eq!(image_nombre(&ctx, egui::Id::unique(("essai", 2)), 31.0).0, ["0"]);
     }
 
     /// Le délai avant l'image suivante qu'egui a noté.
@@ -297,12 +411,15 @@ mod tests {
                 );
             });
             sortie.textures_delta.clear();
-            halo |= sortie.shapes.iter().any(|c| {
-                matches!(&c.shape, egui::Shape::Circle(r) if r.radius > 3.5 && r.fill != accent && r.fill.a() > 0)
-            });
+            halo |= sortie.shapes.iter().any(
+                |c| matches!(&c.shape, egui::Shape::Circle(r) if r.radius > 3.5 && r.fill != accent && r.fill.a() > 0),
+            );
             derniere = derniere.min(delai(&sortie));
         }
-        assert!(derniere <= super::TOURNE, "pendant une commande : une image dans {derniere:?}");
+        assert!(
+            derniere <= super::TOURNE,
+            "pendant une commande : une image dans {derniere:?}"
+        );
         assert!(halo, "le point de la commande ne pulse pas");
     }
 
