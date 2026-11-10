@@ -209,7 +209,8 @@ pub(crate) const AIDES_EN: &[(&str, &str)] = &[
 #[rustfmt::skip]
 pub(crate) const OPTIONS_EN: &[(&str, &str, &str)] = &[
     ("dernieres-failles", "jours", "How many days back (7 by default)"),
-    ("dernieres-failles", "json", "The result as JSON, for a script: offline, the saved copy of the catalog and \
+    ("dernieres-failles", "json", "The result as JSON, for a script: nothing changes on the computer; the catalog is \
+                                   fetched again online if it is more than a day old. Offline, the saved copy only, \
                                    nothing matched against this computer's packages (said not checked)"),
     ("nettoyer", "liste", "Show what could be cleaned up and the space to gain, deleting nothing"),
     ("desinstaller", "liste", "Show what would be removed, without removing anything"),

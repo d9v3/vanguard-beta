@@ -147,7 +147,9 @@ pub(crate) enum Commande {
         /// Combien de jours en arrière (7 par défaut).
         #[arg(long, visible_alias = "days", default_value_t = 7)]
         jours: u32,
-        /// Le résultat en JSON, pour un script : rien ne change.
+        /// Le résultat en JSON, pour un script : rien ne change sur l'ordinateur ; le catalogue est relu en ligne
+        /// s'il a plus d'un jour. Hors ligne, la copie gardée seule, sans rien croiser avec les paquets d'ici (dit non
+        /// vérifié).
         #[arg(long)]
         json: bool,
     },

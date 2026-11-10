@@ -257,10 +257,19 @@ fn bases(r: &Releve, maintenant: chrono::DateTime<chrono::Local>) -> Vec<(bool, 
         }
     });
     match &r.clamav {
-        Ok(a) => bases.push((
-            !a.bases.is_empty() && a.bases.iter().all(|(_, e)| e.is_some()),
-            base_clamav(a),
-        )),
+        Ok(a) => {
+            let lisible = !a.bases.is_empty() && a.bases.iter().all(|(_, e)| e.is_some());
+            let recente = daily_recente(a, maintenant);
+            let mut ligne = base_clamav(a);
+            if lisible && !recente {
+                ligne.push(' ');
+                ligne.push_str(tr!(
+                    "Sa partie daily a plus d'une semaine, ou pas de date lisible : freshclam ne la met plus à jour.",
+                    "Its daily part is more than a week old, or has no readable date: freshclam no longer updates it."
+                ));
+            }
+            bases.push((lisible && recente, ligne));
+        }
         Err(raison) => bases.push((
             false,
             trf!(
@@ -369,6 +378,22 @@ fn lignes(r: &Releve, maintenant: chrono::DateTime<chrono::Local>) -> Vec<(&'sta
 }
 
 /// La base ClamAV installée, d'après ses en-têtes : chaque .cvd et .cld, sa version et sa date ; les fichiers à part.
+/// La partie daily (daily.cvd ou daily.cld) a moins d'une semaine : freshclam la refait plusieurs fois par jour, et
+/// une base qu'il ne met plus à jour lit ses en-têtes sans reconnaître ce qui est sorti depuis. Sa date est celle de
+/// l'en-tête (« 07 Nov 2026 06-24 +0000 ») ; une date illisible ou dans le futur n'est pas « récente ».
+fn daily_recente(a: &Apercu, maintenant: chrono::DateTime<chrono::Local>) -> bool {
+    a.bases.iter().any(|(nom, e)| {
+        (nom == "daily.cvd" || nom == "daily.cld")
+            && e.as_ref().is_some_and(|e| {
+                chrono::DateTime::parse_from_str(e.date.trim(), "%d %b %Y %H-%M %z").is_ok_and(|d| {
+                    let age = maintenant.signed_duration_since(d);
+                    age >= chrono::Duration::zero()
+                        && chrono::Duration::from_std(SEMAINE).is_ok_and(|semaine| age <= semaine)
+                })
+            })
+    })
+}
+
 fn base_clamav(a: &Apercu) -> String {
     let bases: Vec<String> = a
         .bases
@@ -664,6 +689,37 @@ mod tests {
         r.complete = None;
         assert!(!a_jour(&r)[0]);
         assert!(!a_jour(&releve(Err("aucune base".into())))[1]);
+    }
+
+    /// Une base ClamAV lisible mais que freshclam ne met plus à jour n'est pas à jour : sa partie daily compte, pas
+    /// main.cvd (qui ne change que rarement) ; une date illisible ou dans le futur non plus.
+    #[test]
+    fn base_clamav_vieillie_pas_a_jour() {
+        let avec_daily = |date: &str| {
+            let mut daily = en_tete(27_812, 2_100_000);
+            daily.date = date.into();
+            releve(Ok(Apercu {
+                dossier: "/var/lib/clamav".into(),
+                bases: vec![
+                    ("main.cvd".into(), Some(en_tete(62, 3_300_000))),
+                    ("daily.cld".into(), Some(daily)),
+                ],
+                a_part: Vec::new(),
+            }))
+        };
+        let clamav = |r: &Releve| bases(r, maintenant()).get(1).cloned().unwrap();
+        assert!(clamav(&avec_daily("07 Nov 2026 06-24 +0000")).0);
+        let (a_jour, ligne) = clamav(&avec_daily("01 Jul 2026 06-24 +0000"));
+        assert!(!a_jour);
+        assert!(ligne.contains("plus d'une semaine"), "{ligne}");
+        assert!(!clamav(&avec_daily("pas une date")).0);
+        assert!(!clamav(&avec_daily("01 Jan 2030 06-24 +0000")).0);
+        let sans_daily = releve(Ok(Apercu {
+            dossier: "/var/lib/clamav".into(),
+            bases: vec![("main.cvd".into(), Some(en_tete(62, 3_300_000)))],
+            a_part: Vec::new(),
+        }));
+        assert!(!clamav(&sans_daily).0);
     }
 
     #[test]
