@@ -18,9 +18,10 @@ path = "src/main.rs"
 [dependencies]
 # glow (OpenGL) plutôt que wgpu : 24 Mo et 362 caisses avec wgpu, 14 Mo et environ 270 avec glow (essai du 9 nov.).
 # Sans les polices par défaut d'egui : les nôtres sont embarquées (polices/, OFL).
-# Sans « clipboard » : arboard amène clipboard-win et error-code (BSL-1.0), une licence hors de deny.toml ; la console
-# ne prend que des noms de commande, tapés.
-eframe = { version = "0.37.0", default-features = false, features = ["glow", "wayland", "x11"] }
+# « clipboard » : copier une ligne de la console ou des coulisses vers une autre application. arboard y amène, sous
+# Windows, clipboard-win et error-code (BSL-1.0, admise pour elles seules dans deny.toml). Coller dans la console n'y
+# change rien : la saisie passe toujours par la liste fermée (`commandes::comprendre`).
+eframe = { version = "0.37.0", default-features = false, features = ["clipboard", "glow", "wayland", "x11"] }
 serde = { version = "1.0.229", features = ["derive"] }
 # preserve_order : les valeurs d'un JSON montré tel quel gardent l'ordre de Vanguard (indexmap, déjà là pour egui).
 serde_json = { version = "1.0.154", features = ["preserve_order", "raw_value"] }

@@ -82,7 +82,7 @@ notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre systè
 [[exemptions.arboard]]
 version = "3.7.0"
 criteria = "safe-to-deploy"
-notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
+notes = "Entrée dans le programme au lot « finition de la fenêtre » (10 nov. 2026), par la fonction « clipboard » d'eframe (copier une ligne vers une autre application, accord de l'auteur) : le presse-papiers (X11, Wayland, Windows). Relue en surface par le coordonnateur : ni réseau, ni programme lancé, ni fichier écrit; sous Windows, un fichier ouvert sans droits pour lire son vrai chemin (copie de fichiers, inutilisée). Exemptée à ce numéro ; aucune relecture publiée dans les imports."
 
 [[exemptions.arrayvec]]
 version = "0.7.8"
@@ -227,7 +227,7 @@ notes = "Accès au système (appels, verrous, heure, hasard, chargement des bibl
 [[exemptions.clipboard-win]]
 version = "5.4.3"
 criteria = "safe-to-deploy"
-notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
+notes = "Entrée dans le programme au lot « finition de la fenêtre » (10 nov. 2026), par la fonction « clipboard » d'eframe (copier une ligne vers une autre application, accord de l'auteur) : le presse-papiers de Windows, sous arboard. Licence BSL-1.0, admise dans fenetre/deny.toml. Relue en surface par le coordonnateur : ni réseau, ni programme lancé, ni fichier écrit. Exemptée à ce numéro ; aucune relecture publiée dans les imports."
 
 [[exemptions.color]]
 version = "0.3.3"
@@ -357,7 +357,7 @@ notes = "Caisse de base de l'écosystème Rust (structures, journal, macros d'er
 [[exemptions.error-code]]
 version = "3.4.0"
 criteria = "safe-to-deploy"
-notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
+notes = "Entrée dans le programme au lot « finition de la fenêtre » (10 nov. 2026), par la fonction « clipboard » d'eframe (copier une ligne vers une autre application, accord de l'auteur) : les codes d'erreur du système, sous clipboard-win. Licence BSL-1.0, admise dans fenetre/deny.toml. Relue en surface par le coordonnateur : ni réseau, ni programme lancé, ni fichier écrit. Exemptée à ce numéro ; aucune relecture publiée dans les imports."
 
 [[exemptions.event-listener]]
 version = "5.4.2"
@@ -392,7 +392,7 @@ notes = "Outil de compilation (macro, build.rs, lecture des XML des protocoles) 
 [[exemptions.fixedbitset]]
 version = "0.5.9"
 criteria = "safe-to-deploy"
-notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
+notes = "Entrée dans le programme au lot « finition de la fenêtre » (10 nov. 2026), par la fonction « clipboard » d'eframe (copier une ligne vers une autre application, accord de l'auteur) : des ensembles de bits, pour petgraph. Relue en surface par le coordonnateur : ni réseau, ni programme lancé, ni fichier écrit. Exemptée à ce numéro ; aucune relecture publiée dans les imports."
 
 [[exemptions.flate2]]
 version = "1.1.11"
@@ -492,7 +492,7 @@ notes = "Famille images et texte (image, png, Linebender) : ne décode que les p
 [[exemptions.hashbrown]]
 version = "0.15.5"
 criteria = "safe-to-deploy"
-notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
+notes = "Entrée dans le programme au lot « finition de la fenêtre » (10 nov. 2026), par la fonction « clipboard » d'eframe : des tables de hachage, pour petgraph (sous wl-clipboard-rs). Caisse de rust-lang, très répandue ; ni réseau, ni programme lancé, ni fichier. Exemptée à ce numéro ; aucune relecture publiée pour lui dans les imports."
 
 [[exemptions.hermit-abi]]
 version = "0.5.3"
@@ -677,7 +677,7 @@ notes = "Caisse de base de l'écosystème Rust (structures, journal, macros d'er
 [[exemptions.nom]]
 version = "8.0.0"
 criteria = "safe-to-deploy"
-notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
+notes = "Entrée dans le programme au lot « finition de la fenêtre » (10 nov. 2026), par la fonction « clipboard » d'eframe (copier une ligne vers une autre application, accord de l'auteur) : un lecteur de formats, pour tree_magic_mini. Relue en surface par le coordonnateur : ni réseau, ni programme lancé, ni fichier écrit. Exemptée à ce numéro ; aucune relecture publiée dans les imports."
 
 [[exemptions.num_enum]]
 version = "0.7.6"
@@ -797,7 +797,7 @@ notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre systè
 [[exemptions.os_pipe]]
 version = "1.2.3"
 criteria = "safe-to-deploy"
-notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
+notes = "Entrée dans le programme au lot « finition de la fenêtre » (10 nov. 2026), par la fonction « clipboard » d'eframe (copier une ligne vers une autre application, accord de l'auteur) : des tuyaux pour wl-clipboard-rs. Relue en surface par le coordonnateur : ni réseau, ni programme lancé, ni fichier écrit (Command seulement dans son exemple et ses essais). Exemptée à ce numéro ; aucune relecture publiée dans les imports."
 
 [[exemptions.parking_lot]]
 version = "0.12.5"
@@ -817,7 +817,7 @@ notes = "Famille images et texte (image, png, Linebender) : ne décode que les p
 [[exemptions.petgraph]]
 version = "0.8.3"
 criteria = "safe-to-deploy"
-notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
+notes = "Entrée dans le programme au lot « finition de la fenêtre » (10 nov. 2026), par la fonction « clipboard » d'eframe (copier une ligne vers une autre application, accord de l'auteur) : des graphes, pour tree_magic_mini. Relue en surface par le coordonnateur : ni réseau, ni programme lancé, ni fichier écrit. Exemptée à ce numéro ; aucune relecture publiée dans les imports."
 
 [[exemptions.phf]]
 version = "0.14.0"
@@ -1059,6 +1059,11 @@ version = "0.19.2"
 criteria = "safe-to-deploy"
 notes = "Famille winit (Rust Windowing, Smithay) : le lien au bureau (Wayland, X11, clavier, curseurs). Elle ne parle qu'au compositeur et charge les bibliothèques du système ; sous Linux, dans le bac à sable (ni fichier du compte, ni réseau, ni programme). Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
+[[exemptions.smithay-clipboard]]
+version = "0.7.2"
+criteria = "safe-to-deploy"
+notes = "Entrée dans le programme au lot « finition de la fenêtre » (10 nov. 2026), par la fonction « clipboard » d'eframe (copier une ligne vers une autre application, accord de l'auteur) : le presse-papiers de Wayland qu'egui-winit prend en premier ; 0.7.2 plutôt que 0.7.3 : la même smithay-client-toolkit que winit, sans doublon. Relue en surface par le coordonnateur : ni réseau, ni programme lancé, ni fichier écrit. Exemptée à ce numéro ; aucune relecture publiée dans les imports."
+
 [[exemptions.smol_str]]
 version = "0.2.2"
 criteria = "safe-to-deploy"
@@ -1137,7 +1142,7 @@ notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre systè
 [[exemptions.tree_magic_mini]]
 version = "3.2.2"
 criteria = "safe-to-deploy"
-notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
+notes = "Entrée dans le programme au lot « finition de la fenêtre » (10 nov. 2026), par la fonction « clipboard » d'eframe (copier une ligne vers une autre application, accord de l'auteur) : le type d'un contenu, pour wl-clipboard-rs. Relue en surface par le coordonnateur : ni réseau, ni programme lancé, ni fichier écrit ; lit seulement la base des types (/usr/share/mime), pour une copie au type deviné, que la fenêtre ne fait pas. Exemptée à ce numéro ; aucune relecture publiée dans les imports."
 
 [[exemptions.type-map]]
 version = "0.5.1"
@@ -1432,7 +1437,7 @@ notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre systè
 [[exemptions.wl-clipboard-rs]]
 version = "0.9.5"
 criteria = "safe-to-deploy"
-notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
+notes = "Entrée dans le programme au lot « finition de la fenêtre » (10 nov. 2026), par la fonction « clipboard » d'eframe (copier une ligne vers une autre application, accord de l'auteur) : le presse-papiers de Wayland par data-control, sous arboard. Relue en surface par le coordonnateur : ni réseau, ni programme lancé, ni fichier écrit (aucun fork). Exemptée à ce numéro ; aucune relecture publiée dans les imports."
 
 [[exemptions.x11-dl]]
 version = "2.21.0"

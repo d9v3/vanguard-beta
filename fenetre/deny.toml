@@ -20,13 +20,16 @@ unused-ignored-advisory = "deny"
 ignore = []
 
 # Les licences permises de deny.toml qu'une des deux cibles rencontre, rien de plus ; la fenêtre elle-même
-# (GPL-3.0-or-later) est nommée. Une licence que l'autre cible seule rencontre n'est pas une remarque.
+# (GPL-3.0-or-later) est nommée. Une licence que l'autre cible seule rencontre n'est pas une remarque. En plus, pour
+# la fenêtre seule : BSL-1.0 (Boost, courte et permissive comme MIT), celle de clipboard-win et error-code, que le
+# presse-papiers de Windows amène (arboard) ; acceptée par l'auteur le 10 nov. 2026.
 [licenses]
 allow = [
     "0BSD",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "BSD-3-Clause",
+    "BSL-1.0",
     "ISC",
     "MIT",
     "Unicode-3.0",
