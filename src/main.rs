@@ -690,6 +690,19 @@ async fn main() {
         Some(Commande::Conteneurs { json: true }) => protection::conteneurs::json(),
         Some(Commande::Blocage { quoi }) => protection::blocage::commande(&quoi),
         Some(Commande::Parametres { quoi }) => parametres::commande(&quoi),
+        Some(Commande::Couleurs {
+            json,
+            theme,
+            base,
+            vifs,
+            defaut,
+        }) => {
+            let code = parametres::couleurs::commande(json, theme.as_deref(), base.as_deref(), vifs.as_deref(), defaut);
+            if code != 0 {
+                chiffrement::oublier_session();
+                std::process::exit(code);
+            }
+        }
         Some(Commande::Chercher { mots, premier, json }) => {
             if !chercher(&mots.join(" "), premier, json).await {
                 machine::quitter(1);

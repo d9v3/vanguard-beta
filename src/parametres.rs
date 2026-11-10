@@ -20,6 +20,7 @@
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 pub(crate) mod agent;
+pub(crate) mod couleurs;
 pub(crate) mod partage;
 
 use std::path::{Path, PathBuf};
@@ -78,6 +79,9 @@ struct Fichier {
     /// comme clamscan. Jamais en continu (veilleur, garde) : une PUA n'est pas mise en quarantaine toute seule.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pua: bool,
+    /// Les couleurs de la fenêtre (`couleurs`), par thème ; absentes : celles de Vanguard.
+    #[serde(default, skip_serializing_if = "couleurs::Reglees::est_vide")]
+    couleurs: couleurs::Reglees,
 }
 
 /// Au-delà, ce n'est pas le fichier de Vanguard : il n'est pas lu (le processus élevé de Windows le lit aussi).
@@ -107,6 +111,25 @@ fn charger_de(chemin: &Path) -> Result<Fichier, crate::modele::Echec> {
 /// La langue se lit dans ce fichier : pendant sa lecture au lancement, `tr!` répond en français sans la demander
 /// (`en_lecture`) ; les raisons gardées se traduisent à l'affichage (`Douteux::texte`).
 fn charger_juge(chemin: &Path) -> Result<(Fichier, Option<Douteux>), crate::modele::Echec> {
+    juger(chemin).map(|(f, j)| (f, j.douteux.filter(|_| j.coupait)))
+}
+
+/// Ce que la lecture du fichier a écarté, et pourquoi.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Juge {
+    /// Pas tel que Vanguard l'a écrit : pourquoi.
+    douteux: Option<Douteux>,
+    /// Des réglages qui coupaient une défense, ou un accord, y étaient : ignorés.
+    coupait: bool,
+    /// Des couleurs de la fenêtre y étaient : ignorées (`couleurs`).
+    couleurs: bool,
+    /// Effacé hors de Vanguard.
+    efface: bool,
+}
+
+/// `charger_juge`, avec tout ce qui a été écarté : les couleurs de la fenêtre (`couleurs`) aussi, qui ne coupent
+/// rien mais ne se gardent pas plus d'un fichier que Vanguard n'a pas écrit.
+fn juger(chemin: &Path) -> Result<(Fichier, Juge), crate::modele::Echec> {
     use crate::modele::{Echec, Raison};
     use crate::sceau::Lecture;
     const OU: &str = "parametres/lire";
@@ -114,7 +137,14 @@ fn charger_juge(chemin: &Path) -> Result<(Fichier, Option<Douteux>), crate::mode
     let dossier = chemin.parent().unwrap_or_else(|| Path::new("."));
     let nom = chemin.file_name().and_then(|n| n.to_str()).unwrap_or(PARAMETRES);
     let (octets, douteux) = match crate::sceau::lire_sans_ecrire(dossier, nom) {
-        Lecture::Absent | Lecture::Inconnu | Lecture::Falsifie(None) => return Ok((Fichier::default(), None)),
+        Lecture::Absent | Lecture::Inconnu => return Ok((Fichier::default(), Juge::default())),
+        Lecture::Falsifie(None) => {
+            let efface = Juge {
+                efface: true,
+                ..Juge::default()
+            };
+            return Ok((Fichier::default(), efface));
+        }
         Lecture::Illisible(e) => return Err(illisible(e)),
         Lecture::Intact(o) => (o, None),
         // Accepté tel quel lors de la mise à jour d'une version d'avant le sceau : les réglages de la personne,
@@ -129,9 +159,9 @@ fn charger_juge(chemin: &Path) -> Result<(Fichier, Option<Douteux>), crate::mode
     let texte = String::from_utf8(octets).map_err(|e| illisible(e.to_string()))?;
     let mut f: Fichier =
         serde_json::from_str(texte.trim_start_matches('\u{feff}')).map_err(|e| illisible(e.to_string()))?;
-    let Some(raison) = douteux else {
-        return Ok((f, None));
-    };
+    if douteux.is_none() {
+        return Ok((f, Juge::default()));
+    }
     let oui_au_partage = f.partage == Some(partage::Choix::Oui) || f.avis_partage.is_some();
     let coupait =
         f.hors_ligne || f.sans_autotest || f.sans_versions || f.sans_second_avis || f.paquets_aur || oui_au_partage;
@@ -149,7 +179,18 @@ fn charger_juge(chemin: &Path) -> Result<(Fichier, Option<Douteux>), crate::mode
         f.partage_phase = None;
     }
     f.avis_partage = None;
-    Ok((f, coupait.then_some(raison)))
+    // Les couleurs de la fenêtre : celles de Vanguard, et la fenêtre le dit dans ses coulisses.
+    let couleurs = !f.couleurs.est_vide();
+    f.couleurs = couleurs::Reglees::default();
+    Ok((
+        f,
+        Juge {
+            douteux,
+            coupait,
+            couleurs,
+            efface: false,
+        },
+    ))
 }
 
 /// parametres.json d'une version d'avant, accepté tel quel à la mise à jour : rescellé (`sceau::resceller_si`).
@@ -1311,6 +1352,7 @@ mod tests {
             coulisses: true,
             sans_second_avis: true,
             pua: true,
+            couleurs: couleurs::Reglees::default(),
         };
         enregistrer_dans(&voulu, &f).unwrap();
         assert_eq!(charger_de(&f).unwrap(), voulu);
