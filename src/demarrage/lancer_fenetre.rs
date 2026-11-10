@@ -280,6 +280,25 @@ mod tests {
         if moi != 0 {
             assert!(refus(&std::fs::symlink_metadata(&f).unwrap(), moi.wrapping_add(1)).is_some());
         }
+        let lien = dossier.join("lien");
+        std::os::unix::fs::symlink(&f, &lien).unwrap();
+        assert!(refus(&std::fs::symlink_metadata(&lien).unwrap(), moi).is_some());
+        std::fs::remove_file(&lien).unwrap();
+        // Sous `unshare -r` (les tests sans Internet), les dossiers de root y paraissent à « nobody » : la chaîne y est
+        // refusée, à raison, et l'essai des dossiers ne peut pas y tourner.
+        if dossier
+            .ancestors()
+            .skip(1)
+            .filter(|d| !d.as_os_str().is_empty())
+            .any(|d| {
+                std::fs::symlink_metadata(d)
+                    .ok()
+                    .is_none_or(|m| refus_dossier(&m, moi).is_some())
+            })
+        {
+            let _ = std::fs::remove_dir_all(&dossier);
+            return crate::essais::saute("un dossier au-dessus du dossier jetable n'est ni à ce compte ni à root");
+        }
         // Le dossier : modifiable par d'autres, refusé ; collant (sticky, comme /tmp), permis.
         let meta = std::fs::symlink_metadata(&f).unwrap();
         assert_eq!(refus_chemin(&f, &meta, moi), None);
@@ -288,9 +307,6 @@ mod tests {
         std::fs::set_permissions(&dossier, std::fs::Permissions::from_mode(0o1777)).unwrap();
         assert_eq!(refus_chemin(&f, &meta, moi), None);
         std::fs::set_permissions(&dossier, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let lien = dossier.join("lien");
-        std::os::unix::fs::symlink(&f, &lien).unwrap();
-        assert!(refus(&std::fs::symlink_metadata(&lien).unwrap(), moi).is_some());
         let _ = std::fs::remove_dir_all(&dossier);
     }
 }

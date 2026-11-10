@@ -291,13 +291,13 @@ fenetre() {
   cargo build -q --locked --target x86_64-unknown-linux-musl || return 1
   local isole=$TRAVAIL/durcissement-fenetre
   mkdir -p "$isole"
-  fenetre_juge() { # options…
+  fenetre_juge() { # système attendu, puis options et fichier
     env -i PATH="$PATH" HOME="$isole" XDG_DATA_HOME="$isole/data" XDG_CONFIG_HOME="$isole/config" \
       XDG_CACHE_HOME="$isole/cache" XDG_STATE_HOME="$isole/state" LANG="${LANG:-C.UTF-8}" \
-      "${CARGO_TARGET_DIR:-target}/x86_64-unknown-linux-musl/debug/vanguard" deploiement verifier-binaire "$@"
+      "${CARGO_TARGET_DIR:-target}/x86_64-unknown-linux-musl/debug/vanguard" deploiement verifier-binaire --attendu "$1" "${@:2}"
   }
-  fenetre_juge --glibc --attendu linux "$cible/x86_64-unknown-linux-gnu/debug/vanguard-fenetre" || code=1
-  fenetre_juge --attendu windows "$cible/x86_64-pc-windows-gnu/debug/vanguard-fenetre.exe" || code=1
+  fenetre_juge linux --glibc "$cible/x86_64-unknown-linux-gnu/debug/vanguard-fenetre" || code=1
+  fenetre_juge windows "$cible/x86_64-pc-windows-gnu/debug/vanguard-fenetre.exe" || code=1
   return "$code"
 }
 
