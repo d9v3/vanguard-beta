@@ -1,0 +1,1 @@
+/usr/bin/java -jar /opt/a.jar -javaagent:/x.jar

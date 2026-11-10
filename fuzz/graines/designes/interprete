@@ -1,0 +1,1 @@
+/usr/bin/python3 -m serveur /opt/a.jar:/opt/b.jar --plugins=/a.so,/b.so

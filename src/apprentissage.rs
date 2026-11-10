@@ -224,8 +224,12 @@ pub fn declarer_normale(c: &Constat) -> bool {
             if let Some(e) = &t.contenant {
                 afficher_aligne("       ", &trf!("fichier : {e}", "file: {e}"), 7, GRIS);
             }
-            for (chemin, etat) in &t.cibles {
-                afficher_aligne("       → ", &format!("{chemin} : {etat}"), 9, GRIS);
+            for c in &t.cibles {
+                afficher_aligne("       → ", &format!("{} : {}", c.chemin, c.etat), 9, GRIS);
+                // Le contenu d'un petit script se lit avant de le déclarer normal : c'est lui qui est accepté.
+                for l in c.apercu.iter().flatten() {
+                    afficher_aligne("         | ", l, 11, GRIS);
+                }
             }
         }
         afficher_aligne(
