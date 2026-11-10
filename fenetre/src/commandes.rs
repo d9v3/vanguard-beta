@@ -360,7 +360,12 @@ impl Commande {
             Commande::Evenements => Forme::Evenements,
             Commande::Appareils => Forme::Appareils,
             Commande::AuditReseau => Forme::AuditReseau,
-            Commande::FicheOrdinateur | Commande::OptionsDefense | Commande::Autotest => Forme::Libre,
+            // Un historique (changements) et une liste (regles) n'ont pas de verdict : JSON simple, montré tel quel.
+            Commande::FicheOrdinateur
+            | Commande::OptionsDefense
+            | Commande::Autotest
+            | Commande::Changements
+            | Commande::Regles => Forme::Libre,
             _ => Forme::Resultat,
         }
     }
