@@ -20,6 +20,19 @@ const EVENEMENTS_MAX: usize = 200;
 const APPAREILS_MAX: usize = 300;
 
 pub fn montrer(appli: &mut Appli, ui: &mut Ui) {
+    if appli.retour().is_some() {
+        let rep = petit(ui, crate::tr!("← Retour", "← Back"), true)
+            .on_hover_text(crate::tr!(
+                "L'écran d'avant (Alt+←, Échap, ou le bouton Précédent de la souris)",
+                "The previous screen (Alt+←, Esc, or the mouse Back button)"
+            ))
+            .on_hover_cursor(eframe::egui::CursorIcon::PointingHand);
+        if rep.clicked() {
+            appli.revenir();
+            return;
+        }
+        ui.add_space(12.0);
+    }
     match appli.ecran {
         Ecran::Accueil => accueil(appli, ui),
         Ecran::Bilan | Ecran::Commande(Commande::Bilan) => bilan::ecran(appli, ui),
@@ -53,7 +66,7 @@ fn tuile(appli: &mut Appli, ui: &mut Ui, titre: &str, valeur: &str, phrase: &str
         .interact(Sense::click())
         .on_hover_cursor(eframe::egui::CursorIcon::PointingHand);
     if rep.clicked() {
-        appli.ecran = vers;
+        appli.aller(vers);
     }
 }
 
@@ -141,7 +154,7 @@ fn accueil(appli: &mut Appli, ui: &mut Ui) {
         ] {
             if bouton(ui, c.titre(), false, appli.programme_trouve()).clicked() {
                 appli.demander(c);
-                appli.ecran = ecran_de(c);
+                appli.aller(ecran_de(c));
             }
         }
     });
@@ -238,7 +251,7 @@ fn cartes_commandes(appli: &mut Appli, ui: &mut Ui, commandes: Vec<Commande>) {
                 |ui| {
                     ui.push_id(c.nom(), |ui| {
                         if petit(ui, crate::tr!("Voir", "Open"), true).clicked() {
-                            appli.ecran = ecran_de(c);
+                            appli.aller(ecran_de(c));
                         }
                         lancer_arreter(appli, ui, c);
                     });
@@ -855,7 +868,7 @@ fn guide(appli: &mut Appli, ui: &mut Ui) {
                         .sense(Sense::click()),
                 );
                 if rep.on_hover_cursor(eframe::egui::CursorIcon::PointingHand).clicked() {
-                    appli.ecran = ecran_de(c);
+                    appli.aller(ecran_de(c));
                 }
                 ui.label(
                     RichText::new(format!("{} · {}", c.nom(), c.nom_anglais()))

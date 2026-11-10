@@ -18,6 +18,9 @@ const FILE_MAX: usize = 8;
 /// Le journal est relu à ce rythme, quand rien ne tourne, pour dire une alerte nouvelle dans la console.
 pub const SONDAGE: Duration = Duration::from_secs(60);
 
+/// Écrans retenus au plus pour « Retour » : assez pour tout parcours, borné pour une fenêtre ouverte des jours.
+const RETOURS_MAX: usize = 50;
+
 /// L'écran montré.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Ecran {
@@ -72,6 +75,8 @@ pub struct Resultat {
 
 pub struct Appli {
     pub ecran: Ecran,
+    /// Les écrans d'avant, le plus récent à la fin (« Retour », Alt+←, le bouton Précédent de la souris, Échap).
+    retours: Vec<Ecran>,
     pub sombre: bool,
     programme: Result<Programme, String>,
     tache: Option<Tache>,
@@ -89,9 +94,35 @@ pub struct Appli {
 }
 
 impl Appli {
+    /// Va à un écran en retenant celui-ci pour « Retour ». Seul chemin pour changer d'écran (un essai le garde) :
+    /// une affectation directe ferait sauter un pas au retour.
+    pub fn aller(&mut self, vers: Ecran) {
+        if vers == self.ecran {
+            return;
+        }
+        if self.retours.len() >= RETOURS_MAX {
+            self.retours.remove(0);
+        }
+        self.retours.push(self.ecran);
+        self.ecran = vers;
+    }
+
+    /// L'écran où « Retour » mènerait.
+    pub fn retour(&self) -> Option<Ecran> {
+        self.retours.last().copied()
+    }
+
+    /// Revient à l'écran d'avant ; sans écran d'avant, rien.
+    pub fn revenir(&mut self) {
+        if let Some(e) = self.retours.pop() {
+            self.ecran = e;
+        }
+    }
+
     pub fn nouvelle(programme: Result<Programme, String>, reveil: Reveil) -> Appli {
         let mut a = Appli {
             ecran: Ecran::Accueil,
+            retours: Vec::new(),
             sombre: true,
             programme,
             tache: None,
@@ -371,7 +402,7 @@ impl Appli {
             }
             Saisie::Lancer(c) => {
                 self.dire("vous", &propre, Ton::Commande);
-                self.ecran = ecran_de(c);
+                self.aller(ecran_de(c));
                 self.demander(c);
             }
             Saisie::Refusee(t) => {
@@ -600,6 +631,53 @@ mod tests {
             a.dire("x", &format!("{i}"), Ton::Normal);
         }
         assert_eq!(a.console.len(), CONSOLE_MAX);
+    }
+
+    /// « Retour » revient pas à pas, sans pas doublé pour un même écran, et la pile reste bornée.
+    #[test]
+    fn retour_pas_a_pas() {
+        let mut a = appli();
+        assert_eq!(a.retour(), None);
+        a.revenir();
+        assert_eq!(a.ecran, Ecran::Accueil);
+        a.aller(Ecran::Rubrique(Rubrique::Optimiser));
+        a.aller(Ecran::Rubrique(Rubrique::Optimiser));
+        a.aller(Ecran::Commande(Commande::Demarrage));
+        assert_eq!(a.retour(), Some(Ecran::Rubrique(Rubrique::Optimiser)));
+        a.revenir();
+        assert_eq!(a.ecran, Ecran::Rubrique(Rubrique::Optimiser));
+        a.revenir();
+        assert_eq!(a.ecran, Ecran::Accueil);
+        assert_eq!(a.retour(), None);
+        for i in 0..RETOURS_MAX * 2 {
+            a.aller(if i % 2 == 0 { Ecran::Guide } else { Ecran::Bilan });
+        }
+        assert_eq!(a.retours.len(), RETOURS_MAX);
+    }
+
+    /// Aucun écran n'est changé sans `aller` (ou `revenir`) : sinon « Retour » sauterait un pas.
+    #[test]
+    fn un_seul_chemin_pour_changer_d_ecran() {
+        let aiguille = concat!(".ecran", " = ");
+        let mut vus = 0;
+        let mut pile = vec![std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/src"))];
+        while let Some(d) = pile.pop() {
+            for e in std::fs::read_dir(&d).unwrap() {
+                let chemin = e.unwrap().path();
+                if chemin.is_dir() {
+                    pile.push(chemin);
+                } else if chemin.extension().is_some_and(|x| x == "rs") {
+                    let code = std::fs::read_to_string(&chemin).unwrap();
+                    let n = code.matches(aiguille).count();
+                    if chemin.ends_with("appli.rs") {
+                        vus += n;
+                    } else {
+                        assert_eq!(n, 0, "{} change d'écran sans aller()", chemin.display());
+                    }
+                }
+            }
+        }
+        assert_eq!(vus, 2, "seuls aller() et revenir() changent d'écran");
     }
 
     #[test]

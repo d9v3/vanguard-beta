@@ -13,6 +13,8 @@ use crate::donnees::bilan::{Constat, Gravite, Rang, Vue};
 const COTE_MAX: usize = 6;
 /// Constats à corriger montrés au plus (une carte chacun).
 const CORRIGER_MAX: usize = 60;
+/// Lignes d'un inventaire sain montrées d'emblée ; le reste se déplie.
+const LISTE_MAX: usize = 40;
 
 fn couleur_rang(r: Rang) -> Color32 {
     let p = pal();
@@ -371,6 +373,10 @@ pub fn constats(ui: &mut Ui, v: &Vue) {
                     p.doux,
                 ));
             }
+            if let Some(liste) = v.sains_en_liste() {
+                liste_saine(ui, &liste);
+                return;
+            }
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
                 for (cat, k) in &sains {
@@ -487,6 +493,37 @@ fn carte_constat(ui: &mut Ui, c: &Constat, i: usize) {
                 });
             });
         });
+    });
+}
+
+/// Un inventaire sain, une ligne par élément (`Vue::sains_en_liste`) ; au-delà de `LISTE_MAX`, le reste se déplie.
+fn liste_saine(ui: &mut Ui, liste: &[&Constat]) {
+    let p = pal();
+    let ligne = |ui: &mut Ui, c: &Constat| {
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            let (r, _) = ui.allocate_exact_size(vec2(14.0, 16.0), Sense::hover());
+            icones::coche(ui.painter(), r, p.bon);
+            ui.label(texte(&c.message, 13.0, p.doux));
+        });
+    };
+    carte(ui, 20, 16, |ui| {
+        ui.set_width(ui.available_width());
+        for c in liste.iter().take(LISTE_MAX) {
+            ligne(ui, c);
+            ui.add_space(6.0);
+        }
+        if liste.len() > LISTE_MAX {
+            let reste = liste.len() - LISTE_MAX;
+            egui::CollapsingHeader::new(texte(&crate::trf!("{} autre(s)", "{} more", reste), 13.0, p.discret))
+                .id_salt("liste-saine")
+                .show(ui, |ui| {
+                    for c in liste.iter().skip(LISTE_MAX) {
+                        ligne(ui, c);
+                        ui.add_space(6.0);
+                    }
+                });
+        }
     });
 }
 

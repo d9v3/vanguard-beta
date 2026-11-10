@@ -125,11 +125,11 @@ fn rail(appli: &mut Appli, ui: &mut Ui) {
         let bloc = peintre.layout_job(job);
         peintre.galley(pos2(r.center().x, r.top() + 32.0), bloc, encre);
         if rep.clicked() {
-            appli.ecran = match rub {
+            appli.aller(match rub {
                 Rubrique::Accueil => Ecran::Accueil,
                 Rubrique::Guide => Ecran::Guide,
                 r => Ecran::Rubrique(r),
-            };
+            });
         }
         rep.on_hover_cursor(egui::CursorIcon::PointingHand);
         ui.add_space(4.0);
@@ -211,7 +211,7 @@ fn barre(appli: &mut Appli, ui: &mut Ui) {
             );
         }
         if rep.clicked() {
-            appli.ecran = ecran;
+            appli.aller(ecran);
         }
         rep.on_hover_cursor(egui::CursorIcon::PointingHand);
         x += w;
@@ -232,7 +232,7 @@ fn barre(appli: &mut Appli, ui: &mut Ui) {
         p.sur_vif,
     );
     if rep.clicked() {
-        appli.ecran = Ecran::Alertes;
+        appli.aller(Ecran::Alertes);
     }
     rep.on_hover_cursor(egui::CursorIcon::PointingHand);
     if !large {

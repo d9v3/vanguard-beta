@@ -323,6 +323,15 @@ impl Vue {
         v
     }
 
+    /// Les constats sains un par un quand ils sont tous d'une même catégorie : c'est un inventaire (programmes au
+    /// démarrage, conteneurs), et une pastille « Programmes au démarrage 11 » en cacherait la liste. `None` avec
+    /// plusieurs catégories (le bilan), qui restent une pastille chacune, ou avec un seul constat sain.
+    pub fn sains_en_liste(&self) -> Option<Vec<&Constat>> {
+        let sains = self.de_rang(Rang::Sain);
+        let premier: &Constat = sains.first().copied()?;
+        (sains.len() > 1 && sains.iter().all(|c| c.categorie == premier.categorie)).then_some(sains)
+    }
+
     /// La bande : par catégorie, dans l'ordre du bilan, le rang de chaque vérification.
     pub fn groupes(&self) -> Vec<(String, Vec<Rang>)> {
         let mut v: Vec<(String, Vec<Rang>)> = Vec::new();
@@ -397,6 +406,26 @@ mod tests {
         ]
     }"#;
 
+    /// Un inventaire (une seule catégorie) se montre ligne par ligne ; plusieurs catégories ou un seul sain restent
+    /// des pastilles.
+    #[test]
+    fn inventaire_en_liste() {
+        let un = |cat: &str, m: &str| format!(r#"{{"categorie": "{cat}", "etat": "sain", "message": "{m}"}}"#);
+        let vue = |c: &[String]| lire(format!(r#"{{"constats": [{}]}}"#, c.join(",")).as_bytes()).unwrap();
+        let liste = vue(&[
+            un("Démarrage", "Alpha"),
+            un("Démarrage", "Bravo"),
+            un("Démarrage", "Charlie"),
+        ]);
+        let messages: Option<Vec<&str>> = liste
+            .sains_en_liste()
+            .map(|l| l.iter().map(|c| c.message.as_str()).collect());
+        assert_eq!(messages, Some(vec!["Alpha", "Bravo", "Charlie"]));
+        assert!(vue(&[un("Pare-feu", "A"), un("SSH", "B")]).sains_en_liste().is_none());
+        assert!(vue(&[un("Démarrage", "Alpha")]).sains_en_liste().is_none());
+        assert!(vue(&[]).sains_en_liste().is_none());
+    }
+
     #[test]
     fn range_un_audit() {
         let v = lire(AUDIT.as_bytes()).unwrap();
@@ -422,6 +451,8 @@ mod tests {
             Some("Refuser root.")
         );
         assert_eq!(v.sains_par_categorie(), [("Pare-feu".to_string(), 2)]);
+        // Deux sains de la même catégorie : la liste, ligne par ligne.
+        assert_eq!(v.sains_en_liste().map(|l| l.len()), Some(2));
         let tous = v.groupes();
         let groupes: Vec<&str> = tous.iter().map(|g| g.0.as_str()).collect();
         assert_eq!(

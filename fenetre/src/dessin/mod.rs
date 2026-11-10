@@ -273,6 +273,9 @@ struct Fenetre {
 impl eframe::App for Fenetre {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         self.appli.avancer();
+        if veut_revenir(ui.ctx()) {
+            self.appli.revenir();
+        }
         if self.sombre_applique != self.appli.sombre {
             appliquer_theme(ui.ctx(), self.appli.sombre);
             self.sombre_applique = self.appli.sombre;
@@ -285,6 +288,17 @@ impl eframe::App for Fenetre {
         let delai = if self.appli.en_cours().is_some() { 33 } else { 100 };
         ui.ctx().request_repaint_after(Duration::from_millis(delai));
     }
+}
+
+/// Alt+←, le bouton Précédent de la souris, ou Échap quand rien n'a le curseur (Échap dans la console la quitte
+/// d'abord) : comme Échap dans les menus du terminal.
+fn veut_revenir(ctx: &egui::Context) -> bool {
+    let libre = ctx.memory(|m| m.focused().is_none());
+    ctx.input_mut(|i| {
+        i.consume_key(egui::Modifiers::ALT, egui::Key::ArrowLeft)
+            || i.pointer.button_pressed(egui::PointerButton::Extra1)
+            || (libre && i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+    })
 }
 
 /// Dit à `vanguard`, qui attend sur notre sortie, que la fenêtre s'est ouverte : il ne montre pas son menu. Rien
