@@ -102,12 +102,17 @@ fn accueil(appli: &mut Appli, ui: &mut Ui) {
     let (prot_v, prot_p, prot_c) = match appli.protection() {
         None => (crate::tr!("Pas lue", "Not read").to_string(), String::new(), p.gris),
         Some(v) => (
-            crate::trf!("{} allumé(s)", "{} on", v.compte(Allure::Allume)),
-            crate::trf!(
-                "{} éteint(s), {} autre(s) état(s)",
-                "{} off, {} other state(s)",
-                v.compte(Allure::Eteint),
-                v.compte(Allure::Nuance)
+            crate::trn!(v.compte(Allure::Allume), "allumé", "allumés", "on", "on"),
+            format!(
+                "{}, {}",
+                crate::trn!(v.compte(Allure::Eteint), "éteint", "éteints", "off", "off"),
+                crate::trn!(
+                    v.compte(Allure::Nuance),
+                    "autre état",
+                    "autres états",
+                    "other state",
+                    "other states"
+                )
             ),
             if v.compte(Allure::Eteint) > 0 { p.moyen } else { p.encre },
         ),
@@ -115,7 +120,7 @@ fn accueil(appli: &mut Appli, ui: &mut Ui) {
     let (jour_v, jour_p, jour_c) = match appli.journal() {
         None => (crate::tr!("Pas lu", "Not read").to_string(), String::new(), p.gris),
         Some(j) => (
-            crate::trf!("{} alerte(s)", "{} alert(s)", j.alertes().count()),
+            crate::trn!(j.alertes().count(), "alerte", "alertes", "alert", "alerts"),
             j.etat.phrase().to_string(),
             j.etat.gravite().map_or(p.encre, |g| couleur_gravite(Some(g))),
         ),
@@ -468,15 +473,17 @@ fn reseau_entier(ui: &mut Ui, v: &scan::Vue) {
             lignes.push((
                 if entiere {
                     crate::trf!(
-                        "UPnP de la box : actif, {} port(s) ouvert(s) vers Internet.",
-                        "Router UPnP: on, {} port(s) open to the Internet.",
-                        actives.len()
+                        "UPnP de la box : actif, {} {} vers Internet.",
+                        "Router UPnP: on, {} {} to the Internet.",
+                        crate::trn!(actives.len(), "port", "ports", "port", "ports"),
+                        crate::tra!(actives.len(), "ouvert", "ouverts", "open", "open")
                     )
                 } else {
                     crate::trf!(
-                        "UPnP de la box : actif, au moins {} port(s) ouvert(s) vers Internet ; la liste n'a pas pu être lue en entier (non vérifié).",
-                        "Router UPnP: on, at least {} port(s) open to the Internet; the list could not be read in full (not checked).",
-                        actives.len()
+                        "UPnP de la box : actif, au moins {} {} vers Internet ; la liste n'a pas pu être lue en entier (non vérifié).",
+                        "Router UPnP: on, at least {} {} to the Internet; the list could not be read in full (not checked).",
+                        crate::trn!(actives.len(), "port", "ports", "port", "ports"),
+                        crate::tra!(actives.len(), "ouvert", "ouverts", "open", "open")
                     )
                 },
                 if actives.is_empty() && entiere { p.encre } else { p.moyen },
@@ -597,10 +604,12 @@ fn appareil(ui: &mut Ui, a: &scan::Appareil) {
             }
             if a.illisibles > 0 {
                 ui.label(texte(
-                    &crate::trf!(
-                        "{} détail(s) illisible(s) : non vérifiés.",
-                        "{} unreadable detail(s): not verified.",
-                        a.illisibles
+                    &crate::trn!(
+                        a.illisibles,
+                        "détail illisible : non vérifié.",
+                        "détails illisibles : non vérifiés.",
+                        "unreadable detail: not verified.",
+                        "unreadable details: not verified."
                     ),
                     13.0,
                     p.moyen,
@@ -655,10 +664,12 @@ fn protection_liste(ui: &mut Ui, v: &protection::Vue) {
         }
         if v.illisibles > 0 {
             ui.label(texte(
-                &crate::trf!(
-                    "{} interrupteur(s) que cette fenêtre n'a pas su lire : non vérifiés.",
-                    "{} switch(es) this window could not read: not verified.",
-                    v.illisibles
+                &crate::trn!(
+                    v.illisibles,
+                    "interrupteur que cette fenêtre n'a pas su lire : non vérifié.",
+                    "interrupteurs que cette fenêtre n'a pas su lire : non vérifiés.",
+                    "switch this window could not read: not verified.",
+                    "switches this window could not read: not verified."
                 ),
                 13.0,
                 p.moyen,
@@ -756,10 +767,12 @@ fn journal(ui: &mut Ui, j: &evenements::Vue) {
         }
         if j.illisibles > 0 {
             ui.label(texte(
-                &crate::trf!(
-                    "{} ligne(s) illisible(s) : non vérifiées.",
-                    "{} unreadable line(s): not verified.",
-                    j.illisibles
+                &crate::trn!(
+                    j.illisibles,
+                    "ligne illisible : non vérifiée.",
+                    "lignes illisibles : non vérifiées.",
+                    "unreadable line: not verified.",
+                    "unreadable lines: not verified."
                 ),
                 13.0,
                 p.moyen,

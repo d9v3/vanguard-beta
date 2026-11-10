@@ -192,17 +192,16 @@ impl Coulisses {
             .map_or_else(|| crate::tr!("sans code", "no code").to_string(), |c| c.to_string());
         self.noter(
             Sorte::Fin,
-            &crate::trf!(
-                "{} · {:.1} s · code {} · {} octet(s)",
-                "{} · {:.1} s · code {} · {} byte(s)",
+            &format!(
+                "{} · {:.1} s · code {} · {}",
                 issue,
                 f.duree.as_secs_f32(),
                 code,
-                f.sortie.len()
+                crate::trn!(f.sortie.len(), "octet", "octets", "byte", "bytes")
             ),
         );
         let mut lignes = f.sortie.split(|o| *o == b'\n');
-        let mut gardees = 0;
+        let mut gardees: usize = 0;
         for l in lignes.by_ref().take(SORTIE_LIGNES_MAX) {
             if !l.is_empty() {
                 self.noter(Sorte::Sortie, &String::from_utf8_lossy(l));
@@ -213,11 +212,16 @@ impl Coulisses {
         if reste > 0 {
             self.noter(
                 Sorte::Sortie,
-                &crate::trf!(
-                    "… {} ligne(s) de plus, non gardées ici ({} montrées)",
-                    "… {} more line(s), not kept here ({} shown)",
-                    reste,
-                    gardees
+                &format!(
+                    "… {} ({})",
+                    crate::trn!(
+                        reste,
+                        "ligne de plus, non gardée ici",
+                        "lignes de plus, non gardées ici",
+                        "more line, not kept here",
+                        "more lines, not kept here"
+                    ),
+                    crate::trn!(gardees, "montrée", "montrées", "shown", "shown")
                 ),
             );
         }

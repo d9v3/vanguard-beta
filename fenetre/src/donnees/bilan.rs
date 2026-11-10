@@ -392,9 +392,9 @@ impl Vue {
         let corriger = self.compte(Rang::Corriger);
         let nv = self.compte(Rang::NonVerifie);
         crate::trf!(
-            "{} vérification(s), {} à corriger, {} pas pu vérifier",
-            "{} check(s), {} to fix, {} could not check",
-            self.constats.len(),
+            "{}, {} à corriger, {} pas pu vérifier",
+            "{}, {} to fix, {} could not check",
+            crate::trn!(self.constats.len(), "vérification", "vérifications", "check", "checks"),
             corriger,
             nv
         )

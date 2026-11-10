@@ -164,10 +164,10 @@ impl From<EvenementBrut> for Evenement {
             "examen" => (
                 crate::trf!("Examen : {}", "Check: {}", nom(&q.outil, 40)),
                 crate::trf!(
-                    "{} · {} problème(s), {} pas pu vérifier",
-                    "{} · {} problem(s), {} could not check",
+                    "{} · {}, {} pas pu vérifier",
+                    "{} · {}, {} could not check",
                     nom(&q.verdict, 20),
-                    q.problemes.unwrap_or(0),
+                    crate::trn!(q.problemes.unwrap_or(0), "problème", "problèmes", "problem", "problems"),
                     q.non_verifies.unwrap_or(0)
                 ),
             ),

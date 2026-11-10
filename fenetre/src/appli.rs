@@ -504,15 +504,20 @@ impl Appli {
             Contenu::Erreur(e) => e.clone(),
             Contenu::Constats(v) => v.resume(),
             Contenu::Protection(v) => {
-                crate::trf!("{} interrupteur(s) lus", "{} switch(es) read", v.interrupteurs.len())
+                let n = v.interrupteurs.len();
+                format!(
+                    "{} {}",
+                    crate::trn!(n, "interrupteur", "interrupteurs", "switch", "switches"),
+                    crate::tra!(n, "lu", "lus", "read", "read")
+                )
             }
             Contenu::Evenements(v) => format!(
                 "{} · {}",
                 v.etat.phrase(),
-                crate::trf!("{} alerte(s)", "{} alert(s)", v.alertes().count())
+                crate::trn!(v.alertes().count(), "alerte", "alertes", "alert", "alerts")
             ),
             Contenu::Appareils(v) => v.resume(),
-            Contenu::Libre(v) => crate::trf!("{} valeur(s)", "{} value(s)", v.lignes.len()),
+            Contenu::Libre(v) => crate::trn!(v.lignes.len(), "valeur", "valeurs", "value", "values"),
         };
         self.dire(c.nom_affiche(), &format!("{texte} ({secondes:.1} s)"), ton(&contenu));
         if let Contenu::Evenements(v) = &contenu {

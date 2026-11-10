@@ -78,10 +78,12 @@ pub fn liste(appli: &mut Appli, ui: &mut Ui, v: &Vue) {
     });
     let mut manques: Vec<String> = v.manques.clone();
     if v.illisibles > 0 {
-        manques.push(crate::trf!(
-            "{} ligne(s) que cette fenêtre n'a pas su lire",
-            "{} line(s) this window could not read",
-            v.illisibles
+        manques.push(crate::trn!(
+            v.illisibles,
+            "ligne que cette fenêtre n'a pas su lire",
+            "lignes que cette fenêtre n'a pas su lire",
+            "line this window could not read",
+            "lines this window could not read"
         ));
     }
     if !manques.is_empty() {

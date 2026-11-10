@@ -461,10 +461,12 @@ impl Vue {
             .map(|a| a.illisibles)
             .fold(self.illisibles, usize::saturating_add);
         if illisibles > 0 {
-            m.push(crate::trf!(
-                "{} élément(s) du scan illisible(s)",
-                "{} unreadable scan item(s)",
-                illisibles
+            m.push(crate::trn!(
+                illisibles,
+                "élément du scan illisible",
+                "éléments du scan illisibles",
+                "unreadable scan item",
+                "unreadable scan items"
             ));
         }
         m
@@ -472,11 +474,13 @@ impl Vue {
 
     /// Le résumé d'une ligne, pour la console et l'accueil.
     pub fn resume(&self) -> String {
+        let nouveaux = self.nouveaux();
         crate::trf!(
-            "{} appareil(s), {} nouveau(x), {} à risque, {} pas pu vérifier",
-            "{} device(s), {} new, {} at risk, {} could not check",
-            self.appareils.len(),
-            self.nouveaux(),
+            "{}, {} {}, {} à risque, {} pas pu vérifier",
+            "{}, {} {}, {} at risk, {} could not check",
+            crate::trn!(self.appareils.len(), "appareil", "appareils", "device", "devices"),
+            nouveaux,
+            crate::tra!(nouveaux, "nouveau", "nouveaux", "new", "new"),
             self.a_risque(),
             self.manques().len()
         )

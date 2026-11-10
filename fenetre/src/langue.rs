@@ -50,6 +50,56 @@ macro_rules! trf {
     };
 }
 
+/// Un compte, pour l'accord : les comptes de la fenêtre sont des `usize`, ceux lus dans un JSON des `u64`.
+pub trait Compte: Copy + std::fmt::Display {
+    fn valeur(self) -> u64;
+}
+
+impl Compte for usize {
+    fn valeur(self) -> u64 {
+        u64::try_from(self).unwrap_or(u64::MAX)
+    }
+}
+
+impl Compte for u64 {
+    fn valeur(self) -> u64 {
+        self
+    }
+}
+
+/// Le mot accordé à `n`, dans la langue de l'interface : le français met 0 et 1 au singulier (« 0 alerte »), l'anglais
+/// 1 seulement (« 0 alerts »).
+pub fn accord(n: impl Compte, fr: [&'static str; 2], en: [&'static str; 2]) -> &'static str {
+    accord_en(anglais(), n.valeur(), fr, en)
+}
+
+fn accord_en(anglais: bool, n: u64, fr: [&'static str; 2], en: [&'static str; 2]) -> &'static str {
+    if anglais {
+        if n == 1 { en[0] } else { en[1] }
+    } else if n <= 1 {
+        fr[0]
+    } else {
+        fr[1]
+    }
+}
+
+/// Un mot accordé à un nombre, sans le nombre : `tra!(n, "vérifié", "vérifiés", "checked", "checked")`.
+#[macro_export]
+macro_rules! tra {
+    ($n:expr, $fr:literal, $frs:literal, $en:literal, $ens:literal $(,)?) => {
+        $crate::langue::accord($n, [$fr, $frs], [$en, $ens])
+    };
+}
+
+/// Un nombre et son nom accordé : `trn!(n, "ligne", "lignes", "line", "lines")` donne « 3 lignes », « 1 line ».
+#[macro_export]
+macro_rules! trn {
+    ($n:expr, $fr:literal, $frs:literal, $en:literal, $ens:literal $(,)?) => {{
+        let n = $n;
+        format!("{} {}", n, $crate::langue::accord(n, [$fr, $frs], [$en, $ens]))
+    }};
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -63,5 +113,17 @@ mod tests {
         assert!(!est_anglais("e"));
         assert!(!est_anglais(""));
         assert!(!est_anglais("é"));
+    }
+
+    /// 0 et 1 au singulier en français, 1 seulement en anglais. Sans changer la langue de tout le programme d'essai :
+    /// d'autres essais, en même temps, lisent des textes français.
+    #[test]
+    fn accorde_au_nombre() {
+        let fr = ["alerte", "alertes"];
+        let en = ["alert", "alerts"];
+        let mots: Vec<_> = [0, 1, 2].iter().map(|&n| accord_en(false, n, fr, en)).collect();
+        assert_eq!(mots, ["alerte", "alerte", "alertes"]);
+        let mots: Vec<_> = [0, 1, 2].iter().map(|&n| accord_en(true, n, fr, en)).collect();
+        assert_eq!(mots, ["alerts", "alert", "alerts"]);
     }
 }

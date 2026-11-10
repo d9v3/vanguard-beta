@@ -138,11 +138,16 @@ fn contenu(c: &Coulisses, ui: &mut Ui, panneau: bool) {
     peintre.text(
         pos2(titre.right() - 20.0, titre.center().y),
         Align2::RIGHT_CENTER,
-        crate::trf!(
-            "{} ligne(s) · {} saisie(s) refusée(s)",
-            "{} line(s) · {} refused input(s)",
-            c.notes().len(),
-            c.refus()
+        format!(
+            "{} · {}",
+            crate::trn!(c.notes().len(), "ligne", "lignes", "line", "lines"),
+            crate::trn!(
+                c.refus(),
+                "saisie refusée",
+                "saisies refusées",
+                "refused input",
+                "refused inputs"
+            )
         ),
         mono(12.0),
         p.discret,
@@ -235,12 +240,11 @@ fn details(passage: &Passage) -> String {
                 || crate::tr!("sans code", "no code").to_owned(),
                 |c| format!("code {c}"),
             );
-            crate::trf!(
-                "{:.1} s · {} · {} octet(s) · {}",
-                "{:.1} s · {} · {} byte(s) · {}",
+            format!(
+                "{:.1} s · {} · {} · {}",
                 f.duree.as_secs_f32(),
                 code,
-                f.taille,
+                crate::trn!(f.taille, "octet", "octets", "byte", "bytes"),
                 f.issue
             )
         },

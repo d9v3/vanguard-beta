@@ -101,14 +101,18 @@ fn bande(ui: &mut Ui, vue: Option<&Vue>, en_cours: Option<f32>) {
             let corriger = rangs.iter().filter(|&&e| e == Rang::Corriger).count();
             let detail = if corriger > 0 {
                 crate::trf!(
-                    "{} — {} vérification(s), {} à corriger",
-                    "{} — {} check(s), {} to fix",
+                    "{} — {}, {} à corriger",
+                    "{} — {}, {} to fix",
                     cat,
-                    rangs.len(),
+                    crate::trn!(rangs.len(), "vérification", "vérifications", "check", "checks"),
                     corriger
                 )
             } else {
-                crate::trf!("{} — {} vérification(s)", "{} — {} check(s)", cat, rangs.len())
+                format!(
+                    "{} — {}",
+                    cat,
+                    crate::trn!(rangs.len(), "vérification", "vérifications", "check", "checks")
+                )
             };
             ui.interact(zone, ui.scope_id().with(("groupe", gi)), Sense::hover())
                 .on_hover_text(detail);
@@ -137,10 +141,16 @@ pub fn ecran(appli: &mut Appli, ui: &mut Ui) {
             t
         ),
         (Some(r), None) => crate::trf!(
-            "Fini à {} · {} vérification(s) en {:.0} s · rien n'est envoyé, tout se lit sur cet ordinateur",
-            "Finished at {} · {} check(s) in {:.0} s · nothing is sent, everything is read on this computer",
+            "Fini à {} · {} en {:.0} s · rien n'est envoyé, tout se lit sur cet ordinateur",
+            "Finished at {} · {} in {:.0} s · nothing is sent, everything is read on this computer",
             r.heure,
-            vue.as_ref().map_or(0, |v| v.constats.len()),
+            crate::trn!(
+                vue.as_ref().map_or(0, |v| v.constats.len()),
+                "vérification",
+                "vérifications",
+                "check",
+                "checks"
+            ),
             r.duree.as_secs_f32()
         ),
         (None, None) => crate::tr!("Aucun bilan encore", "No check yet").into(),
@@ -241,12 +251,7 @@ pub fn ecran(appli: &mut Appli, ui: &mut Ui) {
                             ));
                         }
                         ui.label(texte(
-                            &crate::trf!(
-                                "{} point(s) à corriger. {} vérification(s) n'ont pas pu se faire : elles ne comptent pas comme saines.",
-                                "{} point(s) to fix. {} check(s) could not be done: they do not count as healthy.",
-                                v.compte(Rang::Corriger),
-                                v.compte(Rang::NonVerifie)
-                            ),
+                            &phrase_note(v.compte(Rang::Corriger), v.compte(Rang::NonVerifie)),
                             13.0,
                             p.doux,
                         ));
@@ -320,6 +325,29 @@ pub fn ecran(appli: &mut Appli, ui: &mut Ui) {
     }
 }
 
+/// Sous la note : ce qui est à corriger, et ce qui n'a pas pu se faire (seulement s'il y en a).
+fn phrase_note(corriger: usize, non_verifies: usize) -> String {
+    let corriger = crate::trf!(
+        "{} à corriger.",
+        "{} to fix.",
+        crate::trn!(corriger, "point", "points", "point", "points")
+    );
+    match non_verifies {
+        0 => corriger,
+        1 => crate::trf!(
+            "{} Une vérification n'a pas pu se faire : elle ne compte pas comme saine.",
+            "{} One check could not be done: it does not count as healthy.",
+            corriger
+        ),
+        n => crate::trf!(
+            "{} {} vérifications n'ont pas pu se faire : elles ne comptent pas comme saines.",
+            "{} {} checks could not be done: they do not count as healthy.",
+            corriger,
+            n
+        ),
+    }
+}
+
 fn legende(ui: &mut Ui, v: &Vue, part: f32) {
     let p = pal();
     ui.horizontal_wrapped(|ui| {
@@ -359,7 +387,11 @@ pub fn constats(ui: &mut Ui, v: &Vue) {
             }
             if a_corriger.len() > CORRIGER_MAX {
                 ui.label(texte(
-                    &crate::trf!("et {} autre(s)", "and {} more", a_corriger.len() - CORRIGER_MAX),
+                    &format!(
+                        "{} {}",
+                        crate::tr!("et", "and"),
+                        autres(a_corriger.len() - CORRIGER_MAX)
+                    ),
                     13.0,
                     p.discret,
                 ));
@@ -423,9 +455,9 @@ pub fn constats(ui: &mut Ui, v: &Vue) {
                 lignes.push((
                     crate::tr!("Illisible", "Unreadable").into(),
                     crate::trf!(
-                        "{} constat(s) que cette fenêtre n'a pas su lire",
-                        "{} finding(s) this window could not read",
-                        v.illisibles
+                        "{} que cette fenêtre n'a pas su lire",
+                        "{} this window could not read",
+                        crate::trn!(v.illisibles, "constat", "constats", "finding", "findings")
                     ),
                 ));
             }
@@ -528,7 +560,7 @@ fn liste_saine(ui: &mut Ui, liste: &[&Constat]) {
         }
         if liste.len() > LISTE_MAX {
             let reste = liste.len() - LISTE_MAX;
-            egui::CollapsingHeader::new(texte(&crate::trf!("{} autre(s)", "{} more", reste), 13.0, p.discret))
+            egui::CollapsingHeader::new(texte(&autres(reste), 13.0, p.discret))
                 .id_salt("liste-saine")
                 .show(ui, |ui| {
                     for c in liste.iter().skip(LISTE_MAX) {
@@ -538,6 +570,11 @@ fn liste_saine(ui: &mut Ui, liste: &[&Constat]) {
                 });
         }
     });
+}
+
+/// « 3 autres », « 3 more ».
+fn autres(n: usize) -> String {
+    crate::trn!(n, "autre", "autres", "more", "more")
 }
 
 fn liste_cote(ui: &mut Ui, titre: &str, lignes: &[(String, String)], col: Color32) {
@@ -580,7 +617,7 @@ fn liste_cote(ui: &mut Ui, titre: &str, lignes: &[(String, String)], col: Color3
         }
         if lignes.len() > COTE_MAX {
             let reste = lignes.len() - COTE_MAX;
-            egui::CollapsingHeader::new(texte(&crate::trf!("{} autre(s)", "{} more", reste), 13.0, p.discret))
+            egui::CollapsingHeader::new(texte(&autres(reste), 13.0, p.discret))
                 .id_salt(titre)
                 .show(ui, |ui| {
                     for (cat, message) in lignes.iter().skip(COTE_MAX) {
