@@ -16,19 +16,18 @@ const HAUTEUR_LIGNE: f32 = 20.0;
 
 pub fn tout(appli: &mut Appli, ui: &mut Ui) {
     let p = pal();
-    egui::Panel::left("rail")
+    // Sans contour : celui d'un cadre fait les quatre côtés, et il se voyait en haut, en bas et à gauche, sur le bord
+    // de la fenêtre. Seul le bord droit garde un trait, tracé à la fin.
+    let rail_rect = egui::Panel::left("rail")
         .exact_size(88.0)
         .resizable(false)
         .show_separator_line(false)
-        .frame(
-            Frame::new()
-                .fill(p.fond)
-                .stroke(Stroke::new(1.0, p.trait_))
-                .inner_margin(Margin::symmetric(8, 0)),
-        )
+        .frame(Frame::new().fill(p.fond).inner_margin(Margin::symmetric(8, 0)))
         .show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| rail(appli, ui));
-        });
+        })
+        .response
+        .rect;
     egui::Panel::top("barre")
         .exact_size(64.0)
         .resizable(false)
@@ -63,6 +62,13 @@ pub fn tout(appli: &mut Appli, ui: &mut Ui) {
                     });
             });
         });
+    // Le trait du bord droit du rail, après les autres panneaux (leur fond ne le recouvre pas) : un pixel de l'écran,
+    // posé sur un pixel entier. À 88 points et une échelle de 1,6, le bord tombe à 140,8 pixels : un trait non calé
+    // se partageait entre deux pixels et ne se voyait presque plus.
+    let peintre = ui.painter();
+    let pixel = 1.0 / peintre.pixels_per_point();
+    let x = peintre.round_to_pixel_center(rail_rect.right() - pixel);
+    peintre.vline(x, rail_rect.y_range(), Stroke::new(pixel, p.trait_));
 }
 
 fn id_depliee() -> egui::Id {

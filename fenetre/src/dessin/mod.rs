@@ -194,6 +194,35 @@ pub fn entete(ui: &mut Ui, titre: &str, sous: &str) {
     }
 }
 
+/// Largeur supposée des boutons tant qu'aucune image ne l'a mesurée.
+const BOUTONS_AU_DEPART: f32 = 240.0;
+
+/// Un texte à gauche, des boutons à droite sur la même rangée. Les boutons gardent leur largeur (mesurée à l'image
+/// d'avant) et le texte va à la ligne dans le reste : placé d'abord sans borne, une longue phrase prenait toute la
+/// rangée et poussait les boutons hors de la carte. `cle` : propre à la rangée, pour garder sa mesure.
+pub fn texte_et_boutons(ui: &mut Ui, cle: &str, gauche: impl FnOnce(&mut Ui), droite: impl FnOnce(&mut Ui)) {
+    let id = ui.scope_id().with(("largeur-boutons", cle));
+    let boutons = ui.ctx().data(|d| d.get_temp::<f32>(id)).unwrap_or(BOUTONS_AU_DEPART);
+    ui.horizontal(|ui| {
+        let ecart = ui.spacing().item_spacing.x;
+        let reste = (ui.available_width() - boutons - 2.0 * ecart).max(160.0);
+        ui.vertical(|ui| {
+            ui.set_max_width(reste);
+            gauche(ui);
+        });
+        let mesure = ui
+            .with_layout(egui::Layout::right_to_left(egui::Align::Center), droite)
+            .response
+            .rect
+            .width();
+        if (mesure - boutons).abs() > 0.5 {
+            ui.ctx().data_mut(|d| d.insert_temp(id, mesure));
+            // Les boutons ont changé de largeur (Lancer → Arrêter) : cette image est refaite, sans saut visible.
+            ui.ctx().request_discard("largeur des boutons");
+        }
+    });
+}
+
 fn polices(ctx: &egui::Context) {
     let mut f = FontDefinitions::empty();
     for (nom, octets) in [

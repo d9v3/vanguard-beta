@@ -156,10 +156,7 @@ pub fn ecran(appli: &mut Appli, ui: &mut Ui) {
     };
     let titre = Commande::Bilan.titre();
     if ui.available_width() >= 900.0 {
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| entete(ui, titre, &sous));
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| actions(appli, ui));
-        });
+        super::texte_et_boutons(ui, "bilan", |ui| entete(ui, titre, &sous), |ui| actions(appli, ui));
     } else {
         entete(ui, titre, &sous);
         ui.add_space(12.0);

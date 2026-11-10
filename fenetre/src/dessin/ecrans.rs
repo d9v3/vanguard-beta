@@ -4,7 +4,7 @@
 use eframe::egui::{Align, Color32, Frame, Layout, Margin, RichText, Sense, Stroke, Ui, pos2, vec2};
 
 use super::bilan::{self, couleur_gravite};
-use super::{bouton, carte, entete, mono, moyenne, pal, petit, texte, titre_section};
+use super::{bouton, carte, entete, mono, moyenne, pal, petit, texte, texte_et_boutons, titre_section};
 use crate::appli::{Appli, Contenu, Ecran, ecran_de};
 use crate::commandes::{Commande, Rubrique};
 use crate::donnees::evenements;
@@ -229,23 +229,26 @@ fn rubrique(appli: &mut Appli, ui: &mut Ui, r: Rubrique) {
         return;
     }
     for c in commandes {
+        let etat = etat_commande(appli, c);
         carte(ui, 20, 16, |ui| {
             ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
+            texte_et_boutons(
+                ui,
+                c.nom(),
+                |ui| {
                     ui.label(RichText::new(c.titre()).font(moyenne(16.0)).color(p.encre));
                     ui.label(texte(c.description(), 13.0, p.doux));
-                    ui.label(RichText::new(etat_commande(appli, c)).font(mono(12.0)).color(p.discret));
-                });
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(RichText::new(etat).font(mono(12.0)).color(p.discret));
+                },
+                |ui| {
                     ui.push_id(c.nom(), |ui| {
                         if petit(ui, crate::tr!("Voir", "Open"), true).clicked() {
                             appli.ecran = ecran_de(c);
                         }
                         lancer_arreter(appli, ui, c);
                     });
-                });
-            });
+                },
+            );
         });
         ui.add_space(12.0);
     }
@@ -253,10 +256,12 @@ fn rubrique(appli: &mut Appli, ui: &mut Ui, r: Rubrique) {
 
 fn commande(appli: &mut Appli, ui: &mut Ui, c: Commande) {
     let p = pal();
-    ui.horizontal(|ui| {
-        ui.vertical(|ui| entete(ui, c.titre(), c.description()));
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| lancer_arreter(appli, ui, c));
-    });
+    texte_et_boutons(
+        ui,
+        c.nom(),
+        |ui| entete(ui, c.titre(), c.description()),
+        |ui| lancer_arreter(appli, ui, c),
+    );
     ui.label(RichText::new(etat_commande(appli, c)).font(mono(12.0)).color(p.discret));
     ui.add_space(24.0);
     let Some(r) = appli.resultat(c).cloned() else {
@@ -380,10 +385,12 @@ fn libre_liste(ui: &mut Ui, v: &libre::Vue) {
 fn alertes(appli: &mut Appli, ui: &mut Ui) {
     let p = pal();
     let c = Commande::Evenements;
-    ui.horizontal(|ui| {
-        ui.vertical(|ui| entete(ui, c.titre(), c.description()));
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| lancer_arreter(appli, ui, c));
-    });
+    texte_et_boutons(
+        ui,
+        c.nom(),
+        |ui| entete(ui, c.titre(), c.description()),
+        |ui| lancer_arreter(appli, ui, c),
+    );
     ui.label(RichText::new(etat_commande(appli, c)).font(mono(12.0)).color(p.discret));
     ui.label(texte(
         &crate::trf!(
