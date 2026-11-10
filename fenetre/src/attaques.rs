@@ -102,10 +102,11 @@ fn aucune_saisie_ne_fabrique_un_argument() {
         if let Saisie::Lancer(c) = commandes::comprendre(e) {
             assert!(Commande::TOUTES.contains(&c), "{e:?}");
             let a = c.arguments();
-            assert_eq!(a.len(), 2, "{e:?} -> {a:?}");
-            assert_eq!(a[1], "--json", "{e:?}");
+            // La sous-commande et --json, ou la seule option qui lit (antivirus --etat) : jamais un mot tapé.
+            assert!(a.len() == 2 || a == ["antivirus", "--etat", "--json"], "{e:?} -> {a:?}");
+            assert_eq!(a.last(), Some(&"--json"), "{e:?}");
             assert!(
-                a[0].bytes().all(|o| o.is_ascii_lowercase() || o == b'-'),
+                a.iter().all(|m| m.bytes().all(|o| o.is_ascii_lowercase() || o == b'-')),
                 "{e:?} -> {a:?}"
             );
             // Le seul mot gardé (après un « vanguard » permis) est un nom de cette commande, à la casse ASCII près.

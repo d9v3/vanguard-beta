@@ -107,10 +107,21 @@ pub enum Commande {
     Lenteur,
     FicheOrdinateur,
     OptionsDefense,
+    Antivirus,
+    EtatAntivirus,
+    Yara,
+    Memoire,
+    Integrite,
+    DernieresFailles,
+    MisesAJour,
+    Demarrage,
+    ObjetsConnectes,
 }
 
 impl Commande {
-    pub const TOUTES: [Commande; 13] = [
+    /// L'ordre compte : le relais reçoit le rang d'une commande dans cette liste (`protocole`). Une commande
+    /// nouvelle s'ajoute à la fin.
+    pub const TOUTES: [Commande; 22] = [
         Commande::Bilan,
         Commande::Protection,
         Commande::Evenements,
@@ -124,6 +135,15 @@ impl Commande {
         Commande::Lenteur,
         Commande::FicheOrdinateur,
         Commande::OptionsDefense,
+        Commande::Antivirus,
+        Commande::EtatAntivirus,
+        Commande::Yara,
+        Commande::Memoire,
+        Commande::Integrite,
+        Commande::DernieresFailles,
+        Commande::MisesAJour,
+        Commande::Demarrage,
+        Commande::ObjetsConnectes,
     ];
 
     /// Le nom tapé dans la console (français).
@@ -142,6 +162,15 @@ impl Commande {
             Commande::Lenteur => "lenteur",
             Commande::FicheOrdinateur => "fiche-ordinateur",
             Commande::OptionsDefense => "options-defense",
+            Commande::Antivirus => "antivirus",
+            Commande::EtatAntivirus => "etat-antivirus",
+            Commande::Yara => "yara",
+            Commande::Memoire => "memoire",
+            Commande::Integrite => "integrite",
+            Commande::DernieresFailles => "dernieres-failles",
+            Commande::MisesAJour => "mises-a-jour",
+            Commande::Demarrage => "demarrage",
+            Commande::ObjetsConnectes => "objets-connectes",
         }
     }
 
@@ -161,6 +190,15 @@ impl Commande {
             Commande::Lenteur => "slow",
             Commande::FicheOrdinateur => "specs",
             Commande::OptionsDefense => "defense-options",
+            Commande::Antivirus => "antivirus",
+            Commande::EtatAntivirus => "antivirus-status",
+            Commande::Yara => "yara",
+            Commande::Memoire => "memory",
+            Commande::Integrite => "integrity",
+            Commande::DernieresFailles => "latest-flaws",
+            Commande::MisesAJour => "updates",
+            Commande::Demarrage => "startup",
+            Commande::ObjetsConnectes => "smart-devices",
         }
     }
 
@@ -190,6 +228,19 @@ impl Commande {
             Commande::Lenteur => &["lenteur", "--json"],
             Commande::FicheOrdinateur => &["fiche-ordinateur", "--json"],
             Commande::OptionsDefense => &["options-defense", "--json"],
+            // L'analyse rapide (les endroits à risque) : jamais un dossier choisi ni le dossier personnel entier.
+            Commande::Antivirus => &["antivirus", "--json"],
+            Commande::EtatAntivirus => &["antivirus", "--etat", "--json"],
+            Commande::Yara => &["yara", "--json"],
+            Commande::Memoire => &["memoire", "--json"],
+            // Vérifier seulement : jamais --accepter (une nouvelle référence), jamais le temps réel.
+            Commande::Integrite => &["integrite", "--json"],
+            Commande::DernieresFailles => &["dernieres-failles", "--json"],
+            // La liste de ce qui attend, rien d'installé.
+            Commande::MisesAJour => &["mises-a-jour", "--json"],
+            // La liste, rien de retiré.
+            Commande::Demarrage => &["demarrage", "--json"],
+            Commande::ObjetsConnectes => &["objets-connectes", "--json"],
         }
     }
 
@@ -197,8 +248,16 @@ impl Commande {
     /// outils qui lisent une liste en ligne jusqu'à quelques minutes sur une connexion lente.
     pub fn delai(self) -> Duration {
         Duration::from_secs(match self {
-            Commande::Bilan | Commande::LogicielsEspions | Commande::LogicielsPerimes => 300,
-            Commande::TestConnexion | Commande::ConnexionsSortantes | Commande::Lenteur => 180,
+            Commande::Antivirus | Commande::Yara | Commande::Memoire => 1800,
+            Commande::Bilan
+            | Commande::LogicielsEspions
+            | Commande::LogicielsPerimes
+            | Commande::MisesAJour
+            | Commande::Integrite => 300,
+            Commande::TestConnexion
+            | Commande::ConnexionsSortantes
+            | Commande::Lenteur
+            | Commande::DernieresFailles => 180,
             _ => 120,
         })
     }
@@ -229,6 +288,15 @@ impl Commande {
             Commande::Lenteur => crate::tr!("Pourquoi c'est lent", "Why it is slow"),
             Commande::FicheOrdinateur => crate::tr!("Fiche de l'ordinateur", "Computer specs"),
             Commande::OptionsDefense => crate::tr!("Options de défense", "Defense options"),
+            Commande::Antivirus => crate::tr!("Antivirus, analyse rapide", "Antivirus, quick scan"),
+            Commande::EtatAntivirus => crate::tr!("État de l'antivirus", "Antivirus status"),
+            Commande::Yara => crate::tr!("Analyse YARA", "YARA scan"),
+            Commande::Memoire => crate::tr!("Mémoire des programmes", "Program memory"),
+            Commande::Integrite => crate::tr!("Fichiers critiques", "Critical files"),
+            Commande::DernieresFailles => crate::tr!("Dernières failles exploitées", "Latest exploited flaws"),
+            Commande::MisesAJour => crate::tr!("Mises à jour en attente", "Pending updates"),
+            Commande::Demarrage => crate::tr!("Programmes au démarrage", "Startup programs"),
+            Commande::ObjetsConnectes => crate::tr!("Routeur et objets connectés", "Router and smart devices"),
         }
     }
 
@@ -287,20 +355,66 @@ impl Commande {
                 "Les baisses de protection choisies, et ce qui peut se rallumer.",
                 "The protection decreases you chose, and what can be turned back on."
             ),
+            Commande::Antivirus => crate::tr!(
+                "Téléchargements, bureau, démarrage : les endroits à risque, analysés. Rien n'est isolé d'ici.",
+                "Downloads, desktop, startup: the risky places, scanned. Nothing is isolated from here."
+            ),
+            Commande::EtatAntivirus => crate::tr!(
+                "Le moteur, ses bases et leur date, et ce qu'il ne lit pas. Rien n'est analysé.",
+                "The engine, its databases and their date, and what it does not read. Nothing is scanned."
+            ),
+            Commande::Yara => crate::tr!(
+                "Les règles de familles de logiciels malveillants, passées aux endroits à risque.",
+                "Malware family rules, run over the risky places."
+            ),
+            Commande::Memoire => crate::tr!(
+                "Les programmes en marche : un logiciel malveillant sans fichier ne vit que là.",
+                "Running programs: fileless malware only lives there."
+            ),
+            Commande::Integrite => crate::tr!(
+                "Ce qui a changé dans les fichiers critiques depuis la référence. La référence ne se pose pas d'ici.",
+                "What changed in critical files since the reference. The reference is not set from here."
+            ),
+            Commande::DernieresFailles => crate::tr!(
+                "Les failles attaquées ces derniers jours (CISA), celles de cet ordinateur en tête.",
+                "Flaws attacked in recent days (CISA), those of this computer first."
+            ),
+            Commande::MisesAJour => crate::tr!(
+                "Système, programmes, pilotes : ce qui attend. Rien n'est installé d'ici.",
+                "System, programs, drivers: what is waiting. Nothing is installed from here."
+            ),
+            Commande::Demarrage => crate::tr!(
+                "Ce qui se lance avec l'ordinateur, jugé. Rien n'est retiré d'ici.",
+                "What starts with the computer, judged. Nothing is removed from here."
+            ),
+            Commande::ObjetsConnectes => crate::tr!(
+                "Le routeur et les objets du dernier scan du réseau, et leurs risques.",
+                "The router and devices from the last network scan, and their risks."
+            ),
         }
     }
 
     pub fn rubrique(self) -> Rubrique {
         match self {
-            Commande::Bilan | Commande::FicheOrdinateur | Commande::Lenteur => Rubrique::Ordinateur,
+            Commande::Bilan
+            | Commande::FicheOrdinateur
+            | Commande::Lenteur
+            | Commande::Integrite
+            | Commande::DernieresFailles
+            | Commande::MisesAJour => Rubrique::Ordinateur,
             Commande::Diagnostic
             | Commande::TestConnexion
             | Commande::ConnexionsSortantes
-            | Commande::AccesADistance => Rubrique::Reseau,
-            Commande::LogicielsEspions => Rubrique::Virus,
+            | Commande::AccesADistance
+            | Commande::ObjetsConnectes => Rubrique::Reseau,
+            Commande::LogicielsEspions
+            | Commande::Antivirus
+            | Commande::EtatAntivirus
+            | Commande::Yara
+            | Commande::Memoire => Rubrique::Virus,
             Commande::BilanConfidentialite => Rubrique::Arnaques,
             Commande::Protection | Commande::Evenements | Commande::OptionsDefense => Rubrique::Bloquer,
-            Commande::LogicielsPerimes => Rubrique::Optimiser,
+            Commande::LogicielsPerimes | Commande::Demarrage => Rubrique::Optimiser,
         }
     }
 }
@@ -401,12 +515,12 @@ mod tests {
     #[test]
     fn chaque_commande_a_des_noms_uniques_et_du_json() {
         let mut noms: Vec<&str> = Commande::TOUTES.iter().map(|c| c.nom()).collect();
-        // « protection » est le même mot dans les deux langues.
+        // Le même mot dans les deux langues : compté une fois.
         noms.extend(
             Commande::TOUTES
                 .iter()
-                .map(|c| c.nom_anglais())
-                .filter(|n| *n != "protection"),
+                .filter(|c| c.nom() != c.nom_anglais())
+                .map(|c| c.nom_anglais()),
         );
         let avant = noms.len();
         noms.sort_unstable();
@@ -414,12 +528,12 @@ mod tests {
         assert_eq!(noms.len(), avant, "un nom sert deux fois");
         for c in Commande::TOUTES {
             let a = c.arguments();
-            // Toujours deux arguments : la sous-commande et --json, rien d'autre (aucun mot qui agit : « oui »,
-            // « non », --choisir, --rallumer…).
-            assert_eq!(a.len(), 2, "{c:?}");
-            assert_eq!(a.get(1), Some(&"--json"), "{c:?}");
+            // La sous-commande, --json à la fin, et entre les deux seulement une option qui lit (--etat) : aucun mot
+            // qui agit (« oui », « non », --choisir, --rallumer, --accepter, --complet…), aucun chemin.
+            assert!(a.len() == 2 || a == ["antivirus", "--etat", "--json"], "{c:?}");
+            assert_eq!(a.last(), Some(&"--json"), "{c:?}");
             assert!(!AIDE.contains(&c.nom()) && !EFFACER.contains(&c.nom()));
-            assert!(c.delai().as_secs() >= 60 && c.delai().as_secs() <= 300, "{c:?}");
+            assert!(c.delai().as_secs() >= 60 && c.delai().as_secs() <= 1800, "{c:?}");
         }
     }
 

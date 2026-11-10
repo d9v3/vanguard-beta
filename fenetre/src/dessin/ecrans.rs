@@ -591,8 +591,8 @@ fn guide(appli: &mut Appli, ui: &mut Ui) {
     ui.add_space(16.0);
     ui.label(texte(
         crate::tr!(
-            "Le reste de Vanguard (corrections, réglages, antivirus, clé USB) est dans son menu, en attendant d'arriver ici.",
-            "The rest of Vanguard (fixes, settings, antivirus, USB key) is in its menu, until it comes here."
+            "Le reste de Vanguard (corrections, réglages, scan du réseau, clé USB) est dans son menu, en attendant d'arriver ici.",
+            "The rest of Vanguard (fixes, settings, network scan, USB key) is in its menu, until it comes here."
         ),
         13.0,
         p.discret,
