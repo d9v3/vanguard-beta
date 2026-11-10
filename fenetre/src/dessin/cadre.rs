@@ -57,7 +57,9 @@ pub fn tout(appli: &mut Appli, ui: &mut Ui) {
                         bottom: 64,
                     })
                     .show(ui, |ui| {
-                        ui.set_max_width(1520.0);
+                        // Une borne, jamais un élargissement : `set_max_width` pose la largeur telle quelle, et 1 520
+                        // dans une fenêtre plus étroite poussait les cartes et leurs boutons hors de l'écran.
+                        ui.set_max_width(ui.available_width().min(1520.0));
                         super::ecrans::montrer(appli, ui);
                     });
             });
@@ -116,13 +118,12 @@ fn rail(appli: &mut Appli, ui: &mut Ui) {
             rub,
             if vif { p.accent } else { p.doux },
         );
-        peintre.text(
-            pos2(r.center().x, r.top() + 32.0),
-            Align2::CENTER_TOP,
-            nom,
-            police(11.0),
-            if vif { p.encre } else { p.doux },
-        );
+        // Chaque ligne centrée sous l'icône : `text` centre le bloc, mais aligne ses lignes à gauche.
+        let encre = if vif { p.encre } else { p.doux };
+        let mut job = egui::text::LayoutJob::simple(nom.to_owned(), police(11.0), encre, f32::INFINITY);
+        job.halign = egui::Align::Center;
+        let bloc = peintre.layout_job(job);
+        peintre.galley(pos2(r.center().x, r.top() + 32.0), bloc, encre);
         if rep.clicked() {
             appli.ecran = match rub {
                 Rubrique::Accueil => Ecran::Accueil,
