@@ -1,4 +1,5 @@
-//! Lancer `vanguard` avec une commande de la liste fermée (`commandes`), et rien d'autre : le programme voisin (le
+//! Lancer `vanguard` avec une commande de la liste fermée (`commandes`) ou un changement au démarrage de forme fermée
+//! (`demarrage --retirer|--remettre <empreinte> --json`), et rien d'autre : le programme voisin (le
 //! fichier `vanguard` posé dans le même dossier que la fenêtre, jamais cherché dans le PATH ni désigné par une
 //! variable), sans shell, avec ses arguments fixés dans le code, l'entrée fermée (il ne peut rien demander), ses
 //! sorties lues en fond et bornées, un délai, et un arrêt qui tue tout son groupe (Linux).
@@ -13,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use crate::commandes::Commande;
+use crate::commandes::Lancement;
 // Ici d'abord, puis dans `commandes`, que le banc de fuzzing peut lire (pas d'unsafe) avec `protocole`.
 pub use crate::commandes::{Fin, Issue};
 
@@ -187,9 +188,9 @@ pub enum Message {
     Fin(Fin),
 }
 
-/// Une commande en cours.
+/// Une commande (ou un changement) en cours.
 pub struct Tache {
-    pub commande: Commande,
+    pub lancement: Lancement,
     pub debut: Instant,
     arret: Arc<AtomicBool>,
     recu: mpsc::Receiver<Message>,
@@ -206,13 +207,13 @@ pub type Reveil = Arc<dyn Fn() + Send + Sync>;
 pub type Rendre = Arc<dyn Fn(Message) + Send + Sync>;
 
 impl Tache {
-    /// Lance `commande` en fond. Le résultat arrive par `recevoir`, toujours terminé par un `Message::Fin`. Sous
+    /// Lance `lancement` en fond. Le résultat arrive par `recevoir`, toujours terminé par un `Message::Fin`. Sous
     /// Linux, c'est le relais qui lance, quand la fenêtre en a un (`relais::separer`) : la fenêtre est alors dans son
     /// bac à sable, et `vanguard` lancé d'elle en hériterait.
-    pub fn lancer(programme: &Programme, commande: Commande, anglais: bool, reveil: &Reveil) -> Tache {
+    pub fn lancer(programme: &Programme, lancement: Lancement, anglais: bool, reveil: &Reveil) -> Tache {
         #[cfg(target_os = "linux")]
         if let Some(r) = crate::relais::client() {
-            return r.lancer(commande, anglais, reveil);
+            return r.lancer(lancement, anglais, reveil);
         }
         let arret = Arc::new(AtomicBool::new(false));
         let (envoi, recu) = mpsc::channel();
@@ -229,12 +230,12 @@ impl Tache {
         let lance = std::thread::Builder::new()
             .name("vanguard-tache".into())
             .spawn(move || {
-                let fin = surveiller(&programme, commande, anglais, &a, &rendre);
+                let fin = surveiller(&programme, lancement, anglais, &a, &rendre);
                 rendre(Message::Fin(fin));
             });
         if let Err(e) = lance {
             let _ = envoi.send(Message::Fin(Fin {
-                commande,
+                lancement,
                 code: None,
                 sortie: Vec::new(),
                 issue: Issue::Impossible(e.to_string()),
@@ -243,7 +244,7 @@ impl Tache {
             reveil();
         }
         Tache {
-            commande,
+            lancement,
             debut: Instant::now(),
             arret,
             recu,
@@ -254,9 +255,9 @@ impl Tache {
 
     /// Une tâche lancée par le relais : ses messages arrivent par `recu`, son arrêt est demandé au relais.
     #[cfg(target_os = "linux")]
-    pub fn relayee(commande: Commande, id: u32, recu: mpsc::Receiver<Message>) -> Tache {
+    pub fn relayee(lancement: Lancement, id: u32, recu: mpsc::Receiver<Message>) -> Tache {
         Tache {
-            commande,
+            lancement,
             debut: Instant::now(),
             arret: Arc::new(AtomicBool::new(false)),
             recu,
@@ -283,9 +284,9 @@ impl Tache {
     }
 }
 
-fn preparer(chemin: &Path, commande: Commande, anglais: bool) -> Command {
+fn preparer(chemin: &Path, lancement: Lancement, anglais: bool) -> Command {
     let mut c = Command::new(chemin);
-    c.args(commande.arguments())
+    c.args(lancement.arguments())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -311,18 +312,18 @@ fn preparer(chemin: &Path, commande: Commande, anglais: bool) -> Command {
     c
 }
 
-/// Lance `commande`, la surveille jusqu'à sa fin et la rend ; ses lignes d'erreur passent par `rendre` en chemin
+/// Lance `lancement`, la surveille jusqu'à sa fin et la rend ; ses lignes d'erreur passent par `rendre` en chemin
 /// (pas la fin : l'appelant la rend lui-même).
 pub fn surveiller(
     programme: &Programme,
-    commande: Commande,
+    lancement: Lancement,
     anglais: bool,
     arret: &AtomicBool,
     rendre: &Rendre,
 ) -> Fin {
     let debut = Instant::now();
     let fin = |code, sortie, issue| Fin {
-        commande,
+        lancement,
         code,
         sortie,
         issue,
@@ -330,7 +331,7 @@ pub fn surveiller(
     };
     // Une commande d'un autre système n'est jamais lancée, même demandée par son rang (le relais lit la fenêtre comme
     // un inconnu) : la fenêtre ne la montre pas, ceci tient même si elle la demandait.
-    if !commande.sur_ce_systeme() {
+    if !lancement.sur_ce_systeme() {
         return fin(
             None,
             Vec::new(),
@@ -341,7 +342,7 @@ pub fn surveiller(
     if let Err(e) = programme.verifier() {
         return fin(None, Vec::new(), Issue::Impossible(e));
     }
-    let mut enfant = match preparer(&programme.chemin, commande, anglais).spawn() {
+    let mut enfant = match preparer(&programme.chemin, lancement, anglais).spawn() {
         Ok(e) => e,
         Err(e) => {
             return fin(
@@ -388,7 +389,7 @@ pub fn surveiller(
             })
             .ok()
     });
-    let delai = commande.delai();
+    let delai = lancement.delai();
     let issue = loop {
         match fini(&mut enfant) {
             Ok(true) => break Issue::Terminee,
@@ -652,6 +653,8 @@ pub fn lire_lignes(mut r: impl Read, max_octets: usize, max_lignes: usize, mut f
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use crate::commandes::{Changement, Commande, Empreinte, Sorte};
 
     #[test]
     fn la_sortie_est_bornee() {
@@ -707,7 +710,7 @@ mod tests {
         droits(0o775);
         assert!(p.verifier().is_err());
         let rien: Reveil = Arc::new(|| {});
-        let t = Tache::lancer(&p, Commande::Bilan, false, &rien);
+        let t = Tache::lancer(&p, Commande::Bilan.into(), false, &rien);
         let debut = Instant::now();
         let fin = loop {
             if let Some(Message::Fin(f)) = t.recevoir().into_iter().find(|m| matches!(m, Message::Fin(_))) {
@@ -742,6 +745,8 @@ case "$1 $2" in
 "diagnostic --json") sleep 30 & printf '{}' ;;
 "test-connexion --json") sleep 30 >/dev/null 2>&1 & echo $! > reste; printf '{}' ;;
 "acces-a-distance --json") setsid sleep 30 & echo $! > evade; printf '{}' ;;
+"demarrage --retirer"|"demarrage --remettre") [ "$#" = 4 ] && [ "$4" = "--json" ] || exit 8
+  printf '{"geste": "%s %s", "issue": "refuse"}' "$2" "$3"; exit 1 ;;
 *) exit 7 ;;
 esac
 "#;
@@ -802,14 +807,14 @@ esac
         let rien: Reveil = Arc::new(|| {});
 
         // Terminée : la sortie entière, la ligne d'erreur à part, la langue passée.
-        let (lignes, f) = attendre(&Tache::lancer(&p, Commande::Bilan, true, &rien));
+        let (lignes, f) = attendre(&Tache::lancer(&p, Commande::Bilan.into(), true, &rien));
         assert_eq!(f.issue, Issue::Terminee);
         assert_eq!(f.code, Some(0));
         assert!(String::from_utf8_lossy(&f.sortie).contains(r#""langue": "en""#));
         assert_eq!(lignes, ["une ligne d'erreur"]);
 
         // Arrêtée : le groupe entier part, le petit-enfant aussi.
-        let t = Tache::lancer(&p, Commande::Protection, false, &rien);
+        let t = Tache::lancer(&p, Commande::Protection.into(), false, &rien);
         let debut = Instant::now();
         while !d.join("petit-enfant").exists() && debut.elapsed() < Duration::from_secs(5) {
             std::thread::sleep(PAS);
@@ -827,17 +832,17 @@ esac
         assert!(!vivant(pid), "le petit-enfant {pid} vit encore");
 
         // Trop longue : arrêtée à SORTIE_MAX, rien de gardé.
-        let (_, f) = attendre(&Tache::lancer(&p, Commande::Evenements, false, &rien));
+        let (_, f) = attendre(&Tache::lancer(&p, Commande::Evenements.into(), false, &rien));
         assert_eq!(f.issue, Issue::TropLongue);
         assert_eq!(f.sortie, b"");
 
         // Un petit-enfant garde la sortie ouverte après la fin : il est tué, la sortie lue est rendue.
-        let (_, f) = attendre(&Tache::lancer(&p, Commande::Diagnostic, false, &rien));
+        let (_, f) = attendre(&Tache::lancer(&p, Commande::Diagnostic.into(), false, &rien));
         assert_eq!(f.issue, Issue::Terminee);
         assert_eq!(f.sortie, b"{}");
 
         // Un petit-enfant laissé en fond, sorties fermées : la commande finit normalement, il ne lui survit pas.
-        let (_, f) = attendre(&Tache::lancer(&p, Commande::TestConnexion, false, &rien));
+        let (_, f) = attendre(&Tache::lancer(&p, Commande::TestConnexion.into(), false, &rien));
         assert_eq!(
             (f.issue, f.code, f.sortie.as_slice()),
             (Issue::Terminee, Some(0), &b"{}"[..])
@@ -852,7 +857,7 @@ esac
 
         // Un processus sorti du groupe (setsid) garde les sorties ouvertes : la tâche finit, et les lecteurs lâchent
         // le tuyau au lieu de rester bloqués.
-        let (_, f) = attendre(&Tache::lancer(&p, Commande::AccesADistance, false, &rien));
+        let (_, f) = attendre(&Tache::lancer(&p, Commande::AccesADistance.into(), false, &rien));
         assert!(matches!(f.issue, Issue::Impossible(_)), "{:?}", f.issue);
         let debut = Instant::now();
         while lecteurs() > 0 && debut.elapsed() < Duration::from_secs(2) {
@@ -863,11 +868,24 @@ esac
         let _ = std::process::Command::new("kill").arg(evade.trim()).status();
 
         // Une commande que le script ne connaît pas : son code de sortie est rendu tel quel.
-        let (_, f) = attendre(&Tache::lancer(&p, Commande::Lenteur, false, &rien));
+        let (_, f) = attendre(&Tache::lancer(&p, Commande::Lenteur.into(), false, &rien));
         assert_eq!(f.code, Some(7));
 
+        // Un changement : exactement `demarrage --retirer|--remettre <32 hex> --json`, rien de plus.
+        for (sorte, mot) in [(Sorte::Retirer, "--retirer"), (Sorte::Remettre, "--remettre")] {
+            let empreinte = Empreinte::depuis_octets([0xab; 16]);
+            let ch = Lancement::Changement(Changement { sorte, empreinte });
+            let (_, f) = attendre(&Tache::lancer(&p, ch, false, &rien));
+            assert_eq!(f.code, Some(1), "{mot}");
+            assert_eq!(
+                String::from_utf8_lossy(&f.sortie),
+                format!(r#"{{"geste": "{mot} {}", "issue": "refuse"}}"#, "ab".repeat(16))
+            );
+            assert_eq!(f.lancement, ch);
+        }
+
         // Une commande d'un autre système : rien n'est lancé (le script aurait rendu 7).
-        let (_, f) = attendre(&Tache::lancer(&p, Commande::JournauxWindows, false, &rien));
+        let (_, f) = attendre(&Tache::lancer(&p, Commande::JournauxWindows.into(), false, &rien));
         assert!(matches!(f.issue, Issue::Impossible(_)), "{:?}", f.issue);
         assert_eq!(f.code, None);
         let _ = std::fs::remove_dir_all(&d);

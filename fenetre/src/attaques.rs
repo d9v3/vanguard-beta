@@ -3,8 +3,12 @@
 //! espaces Unicode d'une autre largeur (A4) sont maintenant montrées comme une espace ordinaire (`nettoyage`) ; les
 //! homoglyphes gardés (A5) et les espaces de queue retirées avant de juger un état (A6b) sont assumés, dits dans
 //! MODELE-DE-MENACE.md, et ne sont pas figés ici.
+//!
+//! Lot 2a (B1 à B3) : le premier geste qui change l'ordinateur, un programme retiré du démarrage ou remis. Une
+//! fenêtre prise (par ce qu'elle dessine) ou une sortie piégée ne doit pouvoir en faire qu'un changement de forme
+//! fermée, `demarrage --retirer|--remettre <32 chiffres> --json`, dont Vanguard seul juge l'empreinte.
 
-use crate::commandes::{self, Commande, Saisie};
+use crate::commandes::{self, Commande, Empreinte, Lancement, Saisie};
 use crate::donnees::{appareils, bilan, evenements, libre, protection};
 
 /// Un générateur fixe (même suite à chaque passage) : un échec se rejoue tel quel.
@@ -264,4 +268,127 @@ fn aucun_lecteur_ne_panique_sur_un_json_hostile() {
     let v = libre::lire(serde_json::json!({ "x": large }).to_string().as_bytes()).unwrap();
     assert_eq!(v.lignes.len(), libre::LIGNES_MAX);
     assert!(v.coupe);
+}
+
+/// La forme fermée d'un changement : quatre arguments, une option connue, 32 chiffres minuscules, --json.
+fn forme_fermee(a: &[String]) -> bool {
+    a.len() == 4
+        && a[0] == "demarrage"
+        && (a[1] == "--retirer" || a[1] == "--remettre")
+        && a[2].len() == 32
+        && a[2].bytes().all(|o| matches!(o, b'0'..=b'9' | b'a'..=b'f'))
+        && a[3] == "--json"
+}
+
+/// B1 : une fenêtre prise peut demander n'importe quelle empreinte (le relais la lit comme un inconnu) ; elle n'en
+/// fait jamais autre chose que la forme fermée. C'est Vanguard qui refuse une empreinte inconnue, à garder ou d'un
+/// pare-feu (essais de `optimiser::demarrage` et de tests/programme.rs).
+#[test]
+fn une_fenetre_prise_ne_forme_qu_un_changement_ferme() {
+    let mut suite = Suite(0x5eed_2a2a_0001);
+    for _ in 0..5000 {
+        let mut o = [0u8; 16];
+        for x in &mut o {
+            *x = u8::try_from(suite.suivant() & 0xff).unwrap();
+        }
+        let sorte = *suite.parmi(&[commandes::Sorte::Retirer, commandes::Sorte::Remettre]);
+        let l = Lancement::Changement(commandes::Changement {
+            sorte,
+            empreinte: Empreinte::depuis_octets(o),
+        });
+        assert!(forme_fermee(&l.arguments()), "{:?}", l.arguments());
+        assert_eq!(l.commande(), Commande::Demarrage);
+    }
+}
+
+/// B2 : un nom ou une commande piégés dans la liste (séquence de terminal, sens d'écriture, option, chemin, fin de
+/// ligne) n'atteignent jamais les arguments : seule l'empreinte part ; montrés, ils arrivent propres. Une empreinte
+/// piégée (option, chemin, majuscules, chiffres d'une autre écriture, longueur voisine) ne donne pas de bouton.
+#[test]
+fn un_nom_piege_n_atteint_jamais_les_arguments() {
+    let e = "0123456789abcdef0123456789abcdef";
+    let pieges = [
+        "Lecteur\\u001b]0;titre\\u0007",
+        "Lecteur\\u202egpj.exe",
+        "--remettre ffffffffffffffffffffffffffffffff",
+        "Lecteur\\n--json",
+        "/home/alice/.config/autostart/Lecteur.desktop; rm -rf ~",
+    ];
+    for nom in pieges {
+        let json = format!(
+            r#"{{"constats": [{{"etat": "sain", "message": "{nom}", "geste": {{"sorte": "retirer", "empreinte": "{e}", "nom": "{nom}", "commande": "{nom}"}}}}]}}"#
+        );
+        let v = bilan::lire(json.as_bytes()).unwrap();
+        let g = v.constats[0].geste.clone().unwrap();
+        let a = Lancement::Changement(g.changement).arguments();
+        assert!(forme_fermee(&a), "{a:?}");
+        assert_eq!(a[2], e);
+        // Le nom et la commande tiennent sur une ligne ; le message peut en avoir plusieurs, rien d'autre.
+        for t in [&g.nom, &g.commande] {
+            assert!(
+                t.chars().all(|c| c != '\n' && crate::nettoyage::rendu(c) == Some(c)),
+                "{t:?} piégé"
+            );
+        }
+        let m = &v.constats[0].message;
+        assert!(
+            m.chars().all(|c| c == '\n' || crate::nettoyage::rendu(c) == Some(c)),
+            "{m:?} piégé"
+        );
+    }
+    for faux in [
+        "--retirer",
+        "0123456789abcdef0123456789abcde",
+        "0123456789abcdef0123456789abcdef0",
+        "0123456789ABCDEF0123456789ABCDEF",
+        "0123456789abcdef0123456789abcde\u{0660}",
+        "０123456789abcdef0123456789abcde",
+        "0123456789abcdef 123456789abcdef",
+        "../../../../../etc/autostart/x.d",
+        "0123456789abcdef0123456789abcde\n",
+        "",
+    ] {
+        assert_eq!(Empreinte::lire(faux), None, "{faux:?}");
+    }
+}
+
+/// B3 : la console ne lance aucun changement, sous aucune forme tapée (le changement n'existe que par un clic,
+/// confirmé dans la fenêtre).
+#[test]
+fn la_console_ne_lance_aucun_changement() {
+    let e = "0123456789abcdef0123456789abcdef";
+    let mut suite = Suite(0x5eed_2a2a_0003);
+    let morceaux = [
+        "demarrage",
+        "startup",
+        "--retirer",
+        "--remove",
+        "--remettre",
+        "--put-back",
+        e,
+        "--json",
+        "retirer",
+        "remettre",
+        ";",
+        "&&",
+        "\u{a0}",
+        "=",
+    ];
+    for _ in 0..5000 {
+        let n = 1 + usize::try_from(suite.suivant() % 4).unwrap();
+        let mots: Vec<&str> = (0..n).map(|_| *suite.parmi(&morceaux)).collect();
+        let saisie = mots.join(" ");
+        match commandes::comprendre(&saisie) {
+            Saisie::Lancer(c) => {
+                // Une commande de la liste, jamais une option de changement ni une empreinte.
+                assert!(
+                    c.arguments()
+                        .iter()
+                        .all(|x| !matches!(*x, "--retirer" | "--remettre") && *x != e),
+                    "{saisie:?}"
+                );
+            }
+            Saisie::Refusee(_) | Saisie::Rien | Saisie::Aide | Saisie::Effacer => {}
+        }
+    }
 }

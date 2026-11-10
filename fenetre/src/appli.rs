@@ -1,11 +1,15 @@
 //! L'état de la fenêtre, sans rien dessiner : l'écran montré, la tâche en cours et sa file d'attente, la console,
 //! les derniers résultats. Les écrans (`dessin`) lisent cet état et ne demandent que des gestes d'ici (`demander`,
-//! `arreter`, `saisir`) ; aucun ne lance un programme lui-même. Une seule commande tourne à la fois.
+//! `arreter`, `saisir`, `proposer`) ; aucun ne lance un programme lui-même. Une seule commande tourne à la fois.
+//!
+//! Le seul geste qui change l'ordinateur (lot 2a : retirer un programme du démarrage, remettre ce que Vanguard en a
+//! retiré) passe par deux temps : `proposer` ouvre la confirmation (le nom, la commande, ce qui va se passer), et
+//! seul `accepter` le lance, un à la fois, quand rien d'autre ne tourne. La console n'en lance jamais.
 
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
-use crate::commandes::{self, Commande, Forme, Rubrique, Saisie};
+use crate::commandes::{self, Changement, Commande, Forme, Lancement, Rubrique, Saisie, Sorte};
 use crate::donnees::{appareils, bilan, evenements, libre, protection};
 use crate::lanceur::{Fin, Issue, Message, Programme, Reveil, Tache};
 
@@ -91,6 +95,8 @@ pub struct Appli {
     journal: Option<evenements::Vue>,
     dernier_sondage: Instant,
     reveil: Reveil,
+    /// Le changement proposé, en attente d'« Accepter » ou d'« Annuler ».
+    confirmation: Option<bilan::Geste>,
 }
 
 impl Appli {
@@ -135,6 +141,7 @@ impl Appli {
             journal: None,
             dernier_sondage: Instant::now(),
             reveil,
+            confirmation: None,
         };
         #[cfg(target_os = "linux")]
         if let Some((phrase, souligner)) = crate::relais::etat() {
@@ -188,7 +195,12 @@ impl Appli {
             self.dire("fenêtre", &e, Ton::Grave);
             return;
         }
-        if self.tache.as_ref().is_some_and(|t| t.commande == c) || self.file.contains(&c) {
+        if self
+            .tache
+            .as_ref()
+            .is_some_and(|t| t.lancement == Lancement::Commande(c))
+            || self.file.contains(&c)
+        {
             return;
         }
         if self.tache.is_some() {
@@ -208,36 +220,113 @@ impl Appli {
             );
             return;
         }
-        self.lancer(c);
+        self.lancer(c.into());
     }
 
-    fn lancer(&mut self, c: Commande) {
+    fn lancer(&mut self, l: Lancement) {
         let Ok(p) = &self.programme else {
             return;
         };
-        let tache = Tache::lancer(p, c, crate::langue::anglais(), &self.reveil);
+        let tache = Tache::lancer(p, l, crate::langue::anglais(), &self.reveil);
         self.tache = Some(tache);
         self.dire(
             "vanguard",
-            &format!("vanguard {}", c.arguments().join(" ")),
+            &format!("vanguard {}", l.arguments().join(" ")),
             Ton::Commande,
         );
     }
 
-    /// Arrête la commande en cours et vide la file.
+    /// Arrête la commande en cours et vide la file. Un changement en cours ne s'interrompt pas : tué au milieu, il
+    /// pourrait laisser le programme retiré sans la note qui permet de le remettre. Il finit seul (la fenêtre
+    /// administrateur refusée ou fermée suffit), borné par son délai.
     pub fn arreter(&mut self) {
         self.file.clear();
         if let Some(t) = &self.tache
             && !t.arret_demande()
         {
+            if matches!(t.lancement, Lancement::Changement(_)) {
+                self.dire(
+                    "fenêtre",
+                    crate::tr!(
+                        "Un changement ne s'interrompt pas : il finit seul (refusez la fenêtre administrateur pour l'abandonner).",
+                        "A change is not interrupted: it finishes on its own (decline the administrator window to abandon it)."
+                    ),
+                    Ton::Attention,
+                );
+                return;
+            }
             t.arreter();
             self.dire("fenêtre", crate::tr!("Arrêt demandé…", "Stopping…"), Ton::Attention);
         }
     }
 
-    /// La commande en cours et depuis quand.
+    /// La commande en cours et depuis quand (un changement au démarrage compte pour l'écran du démarrage).
     pub fn en_cours(&self) -> Option<(Commande, Duration)> {
-        self.tache.as_ref().map(|t| (t.commande, t.debut.elapsed()))
+        self.tache.as_ref().map(|t| (t.lancement.commande(), t.debut.elapsed()))
+    }
+
+    /// Un changement peut-il être proposé maintenant ? Seulement quand rien ne tourne ni n'attend, et qu'aucune
+    /// confirmation n'est ouverte : un à la fois, jamais en même temps qu'une lecture.
+    pub fn changement_possible(&self) -> bool {
+        self.programme.is_ok() && self.tache.is_none() && self.file.is_empty() && self.confirmation.is_none()
+    }
+
+    /// Le changement proposé, en attente de la réponse de la personne.
+    pub fn confirmation(&self) -> Option<&bilan::Geste> {
+        self.confirmation.as_ref()
+    }
+
+    /// Ouvre la confirmation d'un changement. Seulement un geste de la dernière liste du démarrage (pas un autre,
+    /// même si l'écran le demandait) et quand un changement est possible ; rien n'est lancé ici.
+    pub fn proposer(&mut self, geste: &bilan::Geste) {
+        if !self.changement_possible() {
+            self.dire(
+                "fenêtre",
+                crate::tr!(
+                    "Une commande tourne encore : rien n'a changé. Réessayez à sa fin.",
+                    "A command is still running: nothing changed. Try again when it ends."
+                ),
+                Ton::Attention,
+            );
+            return;
+        }
+        let dans_la_liste = matches!(
+            self.resultats.get(&Commande::Demarrage).map(|r| &r.contenu),
+            Some(Contenu::Constats(v)) if v.constats.iter().any(|c| c.geste.as_ref() == Some(geste))
+        );
+        if dans_la_liste {
+            self.confirmation = Some(geste.clone());
+        }
+    }
+
+    /// « Accepter » : lance le changement confirmé, s'il y en a un et que rien ne tourne. Seul chemin qui lance un
+    /// changement.
+    pub fn accepter(&mut self) {
+        if self.tache.is_some() || !self.file.is_empty() {
+            self.dire(
+                "fenêtre",
+                crate::tr!(
+                    "Une commande tourne encore : rien n'a changé. Acceptez à sa fin.",
+                    "A command is still running: nothing changed. Accept when it ends."
+                ),
+                Ton::Attention,
+            );
+            return;
+        }
+        if let Some(g) = self.confirmation.take() {
+            self.lancer(Lancement::Changement(g.changement));
+        }
+    }
+
+    /// « Annuler » : ferme la confirmation, rien n'est lancé.
+    pub fn annuler(&mut self) {
+        if self.confirmation.take().is_some() {
+            self.dire(
+                "fenêtre",
+                crate::tr!("Annulé : rien n'a changé.", "Cancelled: nothing changed."),
+                Ton::Discret,
+            );
+        }
     }
 
     /// La commande attend-elle son tour ?
@@ -277,7 +366,10 @@ impl Appli {
         for m in messages {
             match m {
                 Message::Ligne(l) => {
-                    let source = self.tache.as_ref().map_or("vanguard", |t| t.commande.nom_affiche());
+                    let source = self
+                        .tache
+                        .as_ref()
+                        .map_or("vanguard", |t| t.lancement.commande().nom_affiche());
                     self.dire(source, &l, Ton::Discret);
                 }
                 Message::Fin(f) => {
@@ -288,16 +380,21 @@ impl Appli {
         }
         if self.tache.is_none() {
             if let Some(c) = self.file.pop_front() {
-                self.lancer(c);
-            } else if self.programme.is_ok() && self.dernier_sondage.elapsed() >= SONDAGE {
+                self.lancer(c.into());
+            } else if self.programme.is_ok() && self.confirmation.is_none() && self.dernier_sondage.elapsed() >= SONDAGE
+            {
+                // Pas pendant une confirmation ouverte : « Accepter » trouverait une lecture en cours.
                 self.dernier_sondage = Instant::now();
-                self.lancer(Commande::Evenements);
+                self.lancer(Commande::Evenements.into());
             }
         }
     }
 
     fn finir(&mut self, f: &Fin) {
-        let c = f.commande;
+        let c = match f.lancement {
+            Lancement::Commande(c) => c,
+            Lancement::Changement(ch) => return self.finir_changement(ch, f),
+        };
         let secondes = f.duree.as_secs_f32();
         let contenu = match &f.issue {
             Issue::Terminee => match lire(c, &f.sortie) {
@@ -367,6 +464,34 @@ impl Appli {
         );
     }
 
+    /// La fin d'un changement : une ligne de la console (fait, refusé ou échec, avec la raison), puis la liste du
+    /// démarrage relue, qui montre l'état réel.
+    fn finir_changement(&mut self, ch: Changement, f: &Fin) {
+        let (texte, ton) = match issue_du_changement(ch, f) {
+            IssueChangement::Fait => (
+                match ch.sorte {
+                    Sorte::Retirer => crate::tr!(
+                        "Fait : retiré du démarrage ; il reste installé.",
+                        "Done: removed from startup; it stays installed."
+                    ),
+                    Sorte::Remettre => crate::tr!(
+                        "Fait : remis au démarrage, exactement comme avant.",
+                        "Done: put back at startup, exactly as before."
+                    ),
+                }
+                .to_string(),
+                Ton::Bon,
+            ),
+            IssueChangement::Refuse(r) => (
+                crate::trf!("Refusé, rien n'a changé : {}", "Refused, nothing changed: {}", r),
+                Ton::Attention,
+            ),
+            IssueChangement::Echec(r) => (crate::trf!("Échec : {}", "Failed: {}", r), Ton::Attention),
+        };
+        self.dire(Commande::Demarrage.nom_affiche(), &texte, ton);
+        self.demander(Commande::Demarrage);
+    }
+
     /// La saisie de la console validée par Entrée.
     pub fn saisir(&mut self) {
         let texte = std::mem::take(&mut self.saisie);
@@ -394,8 +519,8 @@ impl Appli {
                 self.dire(
                     "aide",
                     crate::tr!(
-                        "Rien d'autre ne se lance d'ici : ni option, ni argument, ni commande qui change l'ordinateur.",
-                        "Nothing else runs from here: no option, no argument, no command that changes the computer."
+                        "Rien d'autre ne se lance d'ici : ni option, ni argument, ni commande qui change l'ordinateur (un changement se fait d'un clic, après confirmation).",
+                        "Nothing else runs from here: no option, no argument, no command that changes the computer (a change is one click, after confirmation)."
                     ),
                     Ton::Discret,
                 );
@@ -444,6 +569,78 @@ impl Appli {
             self.saisie = n.to_string();
         }
     }
+}
+
+/// Ce qu'est devenu un changement, d'après Vanguard.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum IssueChangement {
+    Fait,
+    Refuse(String),
+    Echec(String),
+}
+
+/// La dernière ligne de `vanguard demarrage --retirer|--remettre … --json` : `{"geste", "issue", "raison"}`.
+#[derive(serde::Deserialize, Default)]
+#[serde(default)]
+struct IssueBrute {
+    geste: crate::donnees::Texte,
+    issue: crate::donnees::Texte,
+    raison: crate::donnees::Texte,
+}
+
+/// Lit l'issue d'un changement, strictement : « fait » seulement si Vanguard le dit, pour ce geste-là, avec le code
+/// 0 ; une réponse illisible, d'un autre geste ou qui se contredit est un échec (la liste relue dira l'état réel).
+fn issue_du_changement(ch: Changement, f: &Fin) -> IssueChangement {
+    let illisible = || {
+        IssueChangement::Echec(
+            crate::tr!(
+                "réponse de Vanguard illisible ; la liste relue montre l'état réel",
+                "unreadable answer from Vanguard; the reloaded list shows the real state"
+            )
+            .to_string(),
+        )
+    };
+    match &f.issue {
+        Issue::Terminee => {}
+        Issue::Arretee => return IssueChangement::Echec(crate::tr!("arrêté", "stopped").to_string()),
+        Issue::DelaiDepasse => {
+            return IssueChangement::Echec(crate::trf!(
+                "arrêté : plus de {} s sans finir",
+                "stopped: more than {} s without finishing",
+                ch_delai(ch)
+            ));
+        }
+        Issue::TropLongue => return illisible(),
+        Issue::Impossible(e) => {
+            return IssueChangement::Echec(crate::trf!("pas pu lancer : {}", "could not start: {}", e));
+        }
+    }
+    // La dernière ligne non vide : Vanguard peut avoir écrit avant elle (un point de restauration, un avertissement).
+    let Some(ligne) = f
+        .sortie
+        .split(|o| *o == b'\n')
+        .rev()
+        .find(|l| !l.iter().all(u8::is_ascii_whitespace))
+    else {
+        return illisible();
+    };
+    let Ok(b) = crate::donnees::lire::<IssueBrute>(ligne) else {
+        return illisible();
+    };
+    if b.geste.as_str() != ch.sorte.mot() {
+        return illisible();
+    }
+    let raison = crate::nettoyage::nom(b.raison.as_str(), 200);
+    match (b.issue.as_str(), f.code) {
+        ("fait", Some(0)) => IssueChangement::Fait,
+        ("refuse", Some(c)) if c != 0 => IssueChangement::Refuse(raison),
+        ("echec", Some(c)) if c != 0 => IssueChangement::Echec(raison),
+        _ => illisible(),
+    }
+}
+
+fn ch_delai(ch: Changement) -> u64 {
+    Lancement::Changement(ch).delai().as_secs()
 }
 
 /// L'écran où le résultat d'une commande se montre.
@@ -700,7 +897,7 @@ mod tests {
     fn une_erreur_garde_le_resultat_d_avant() {
         let mut a = appli();
         let fin = |sortie: &[u8], issue| Fin {
-            commande: Commande::Bilan,
+            lancement: Commande::Bilan.into(),
             code: Some(0),
             sortie: sortie.to_vec(),
             issue,
@@ -716,13 +913,223 @@ mod tests {
         assert!(a.bilan().is_some());
     }
 
+    /// L'issue d'un changement n'est « fait » que dite ainsi par Vanguard, pour ce geste, avec le code 0 ; des lignes
+    /// avant la dernière ne gênent pas ; tout le reste est un échec, jamais un succès.
+    #[test]
+    fn l_issue_d_un_changement_est_lue_strictement() {
+        use crate::commandes::Empreinte;
+        let ch = Changement {
+            sorte: Sorte::Retirer,
+            empreinte: Empreinte::lire("0123456789abcdef0123456789abcdef").unwrap(),
+        };
+        let fin = |sortie: &str, code, issue| Fin {
+            lancement: Lancement::Changement(ch),
+            code,
+            sortie: sortie.as_bytes().to_vec(),
+            issue,
+            duree: Duration::ZERO,
+        };
+        let lire = |sortie: &str, code| issue_du_changement(ch, &fin(sortie, code, Issue::Terminee));
+        assert_eq!(
+            lire(
+                "Point de restauration…\n{\"geste\":\"retirer\",\"issue\":\"fait\",\"raison\":\"\"}\n\n",
+                Some(0)
+            ),
+            IssueChangement::Fait
+        );
+        assert_eq!(
+            lire(
+                "{\"geste\":\"retirer\",\"issue\":\"refuse\",\"raison\":\"inconnu\\u001b[2K\\u202e\"}",
+                Some(1)
+            ),
+            IssueChangement::Refuse("inconnu\u{fffd}".into())
+        );
+        assert!(matches!(
+            lire("{\"geste\":\"retirer\",\"issue\":\"echec\",\"raison\":\"refusé\"}", Some(1)),
+            IssueChangement::Echec(r) if r == "refusé"
+        ));
+        // Ce qui se contredit ou ne se lit pas : un échec.
+        for (sortie, code) in [
+            ("{\"geste\":\"retirer\",\"issue\":\"fait\"}", Some(1)),
+            ("{\"geste\":\"retirer\",\"issue\":\"fait\"}", None),
+            ("{\"geste\":\"remettre\",\"issue\":\"fait\"}", Some(0)),
+            ("{\"geste\":\"retirer\",\"issue\":\"refuse\"}", Some(0)),
+            ("{\"geste\":\"retirer\",\"issue\":\"Fait\"}", Some(0)),
+            ("{\"geste\":\"retirer\",\"issue\":\"fait\"}\nfin", Some(0)),
+            ("{\"geste\":\"retirer\",\"issue\":\"fait\"", Some(0)),
+            ("[\"fait\"]", Some(0)),
+            ("", Some(0)),
+            ("\n  \n", Some(0)),
+        ] {
+            assert!(
+                matches!(lire(sortie, code), IssueChangement::Echec(_)),
+                "{sortie:?} {code:?}"
+            );
+        }
+        for issue in [
+            Issue::Arretee,
+            Issue::DelaiDepasse,
+            Issue::TropLongue,
+            Issue::Impossible("x".into()),
+        ] {
+            let f = fin("{\"geste\":\"retirer\",\"issue\":\"fait\"}", Some(0), issue);
+            assert!(matches!(issue_du_changement(ch, &f), IssueChangement::Echec(_)));
+        }
+    }
+
+    /// Un faux `vanguard` (un script dans target/, jamais le vrai) : la liste du démarrage, et chaque changement noté
+    /// dans un fichier au lieu d'être fait.
+    #[cfg(unix)]
+    const FAUX_DEMARRAGE: &str = r#"#!/bin/sh
+case "$1 $2" in
+"demarrage --json") cat liste.json ;;
+"demarrage --retirer"|"demarrage --remettre") echo "$@" >> changements
+  printf 'une ligne avant\n{"geste": "%s", "issue": "fait", "raison": ""}\n' "${2#--}" ;;
+*) exit 7 ;;
+esac
+"#;
+
+    #[cfg(unix)]
+    fn finir_tout(a: &mut Appli) {
+        let debut = Instant::now();
+        while a.taches() > 0 {
+            assert!(debut.elapsed() < Duration::from_secs(20), "jamais fini");
+            a.avancer();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// La confirmation est obligatoire et un changement passe seul : sans proposition, « Accepter » ne fait rien ; un
+    /// geste absent de la liste n'ouvre rien ; une proposition ouverte bloque les autres ; « Annuler » ne lance rien ;
+    /// pendant qu'une commande tourne, « Accepter » attend ; un changement lancé ne s'arrête pas d'un clic, sa fin est
+    /// dite puis la liste relue.
+    #[cfg(unix)]
+    #[test]
+    fn un_changement_demande_la_confirmation_et_passe_seul() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let d = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("target")
+            .join("essais-fenetre")
+            .join(format!("demarrage-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let e1 = "0123456789abcdef0123456789abcdef";
+        std::fs::write(
+            d.join("liste.json"),
+            format!(
+                r#"{{"outil": "PRO-DEM-001", "constats": [
+                {{"categorie": "Démarrage", "etat": "sain", "message": "Lecteur — se lance · /usr/bin/lecteur",
+                  "objet": "demarrage:Lecteur",
+                  "geste": {{"sorte": "retirer", "empreinte": "{e1}", "nom": "Lecteur", "commande": "/usr/bin/lecteur"}}}},
+                {{"categorie": "Démarrage", "etat": "sain",
+                  "message": "Murdefeu — pare-feu : le retirer baisserait la protection · /usr/bin/murdefeu",
+                  "objet": "demarrage:Murdefeu"}}]}}"#
+            ),
+        )
+        .unwrap();
+        let script = d.join("vanguard");
+        std::fs::write(&script, FAUX_DEMARRAGE).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let moi = std::fs::metadata(&d).unwrap().uid();
+        let p = Programme::dans(&d, moi).unwrap();
+        let mut a = Appli::nouvelle(Ok(p), std::sync::Arc::new(|| {}));
+        finir_tout(&mut a);
+        let changements = || std::fs::read_to_string(d.join("changements")).unwrap_or_default();
+
+        let g1 = bilan::Geste {
+            changement: Changement {
+                sorte: Sorte::Retirer,
+                empreinte: crate::commandes::Empreinte::lire(e1).unwrap(),
+            },
+            nom: "Lecteur".into(),
+            commande: "/usr/bin/lecteur".into(),
+            machine: false,
+        };
+        // Avant la liste : rien à proposer.
+        a.proposer(&g1);
+        assert!(a.confirmation().is_none());
+        a.demander(Commande::Demarrage);
+        finir_tout(&mut a);
+        let Some(Contenu::Constats(v)) = a.resultat(Commande::Demarrage).map(|r| &r.contenu) else {
+            panic!("pas de liste");
+        };
+        assert_eq!(v.constats.first().and_then(|c| c.geste.clone()), Some(g1.clone()));
+        // Le pare-feu n'a pas de bouton : pas de geste.
+        assert_eq!(v.constats.get(1).map(|c| c.geste.is_none()), Some(true));
+
+        // Sans proposition, « Accepter » ne lance rien.
+        a.accepter();
+        assert!(a.en_cours().is_none());
+        // Un geste absent de la liste (une empreinte que la fenêtre aurait inventée) n'ouvre rien.
+        let mut faux = g1.clone();
+        faux.changement.empreinte = crate::commandes::Empreinte::lire("ffffffffffffffffffffffffffffffff").unwrap();
+        a.proposer(&faux);
+        assert!(a.confirmation().is_none());
+        // Remettre ce qui n'est pas proposé à remettre : rien non plus.
+        let mut autre = g1.clone();
+        autre.changement.sorte = Sorte::Remettre;
+        a.proposer(&autre);
+        assert!(a.confirmation().is_none());
+
+        // Ouverte : une seule, et le reste attend.
+        a.proposer(&g1);
+        assert_eq!(a.confirmation(), Some(&g1));
+        assert!(!a.changement_possible());
+        a.proposer(&g1);
+        assert_eq!(a.confirmation(), Some(&g1));
+        // Annuler : rien de lancé.
+        a.annuler();
+        assert!(a.confirmation().is_none());
+        assert!(a.en_cours().is_none());
+        assert_eq!(changements(), "");
+
+        // Une commande tourne : « Accepter » attend, la confirmation reste ouverte.
+        a.proposer(&g1);
+        a.demander(Commande::Bilan);
+        a.accepter();
+        assert_eq!(a.confirmation(), Some(&g1));
+        finir_tout(&mut a);
+        assert_eq!(changements(), "");
+
+        // Accepté : un seul changement, de forme fermée ; Arrêter ne l'interrompt pas ; la fin dite, la liste relue.
+        a.accepter();
+        assert!(a.confirmation().is_none());
+        assert_eq!(a.en_cours().map(|(c, _)| c), Some(Commande::Demarrage));
+        assert!(!a.changement_possible());
+        a.arreter();
+        assert!(a.tache.as_ref().is_some_and(|t| !t.arret_demande()));
+        finir_tout(&mut a);
+        assert_eq!(changements(), format!("demarrage --retirer {e1} --json\n"));
+        assert!(
+            a.console
+                .iter()
+                .any(|l| l.ton == Ton::Bon && l.texte.contains("retiré du démarrage"))
+        );
+        // La liste a été relue après le changement.
+        let lancees: Vec<&str> = a
+            .console
+            .iter()
+            .filter(|l| l.ton == Ton::Commande)
+            .map(|l| l.texte.as_str())
+            .collect();
+        assert_eq!(
+            lancees.iter().rev().take(2).copied().collect::<Vec<_>>(),
+            [
+                "vanguard demarrage --json",
+                &*format!("vanguard demarrage --retirer {e1} --json")
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     #[test]
     fn une_nouvelle_alerte_est_dite() {
         let mut a = appli();
         // La ligne « programme absent » d'appli() est grave : seules celles d'après comptent ici.
         a.console.clear();
         let fin = |sortie: &[u8]| Fin {
-            commande: Commande::Evenements,
+            lancement: Commande::Evenements.into(),
             code: Some(0),
             sortie: sortie.to_vec(),
             issue: Issue::Terminee,

@@ -16,6 +16,11 @@ mod langue;
 #[path = "../../fenetre/src/nettoyage.rs"]
 mod nettoyage;
 
+// Le geste d'un programme du démarrage (lot 2a) se lit avec la sorte et l'empreinte de la fenêtre.
+#[allow(dead_code)]
+#[path = "../../fenetre/src/commandes.rs"]
+mod commandes;
+
 #[allow(dead_code)]
 #[path = "../../fenetre/src/donnees/mod.rs"]
 mod donnees;
@@ -56,6 +61,18 @@ fn essayer(sortie: &[u8]) {
                 }
                 propre(&c.message, true);
                 propre(&c.action, true);
+                // Un geste lu ne garde qu'une empreinte de 32 chiffres minuscules, un nom et une commande d'une ligne.
+                if let Some(g) = &c.geste {
+                    propre(&g.nom, false);
+                    propre(&g.commande, false);
+                    let a = commandes::Lancement::Changement(g.changement).arguments();
+                    assert!(
+                        a.len() == 4
+                            && a[2].len() == 32
+                            && a[2].bytes().all(|o| matches!(o, b'0'..=b'9' | b'a'..=b'f')),
+                        "{a:?}"
+                    );
+                }
             }
             for m in &v.manques {
                 propre(m, true);

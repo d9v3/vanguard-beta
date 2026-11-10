@@ -3,31 +3,54 @@
 //! et le relais, qui a les droits du compte. Le relais lit ce que la fenêtre lui envoie comme venant d'un inconnu.
 //!
 //! Des trames : la longueur sur 4 octets, petit-boutiste, puis le contenu. Fenêtre → relais : `1 id commande langue`
-//! (lancer) ou `2 id` (arrêter). Relais → fenêtre : `1 id texte` (une ligne d'erreur) ou `2 id issue code durée
+//! (lancer une commande de la liste), `3 id sorte empreinte(16) langue` (un changement au démarrage : sorte 1
+//! retirer, 2 remettre) ou `2 id` (arrêter). Relais → fenêtre : `1 id texte` (une ligne d'erreur) ou `2 id issue code durée
 //! texte sortie` (la fin).
 
 use std::io::{Read, Write};
 use std::time::Duration;
 
-use crate::commandes::{Commande, Fin, Issue};
+use crate::commandes::{Changement, Commande, Empreinte, Fin, Issue, Lancement, Sorte};
 
-/// Une demande de la fenêtre fait au plus 7 octets : plus long, c'est hors du protocole.
-pub const DEMANDE_MAX: usize = 16;
+/// Une demande de la fenêtre fait au plus 23 octets (un changement) : plus long, c'est hors du protocole.
+pub const DEMANDE_MAX: usize = 32;
 
 /// Une demande de la fenêtre.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Demande {
-    Lancer { id: u32, commande: Commande, anglais: bool },
-    Arreter { id: u32 },
+    Lancer {
+        id: u32,
+        lancement: Lancement,
+        anglais: bool,
+    },
+    Arreter {
+        id: u32,
+    },
 }
 
 impl Demande {
     pub fn coder(self) -> Vec<u8> {
         match self {
-            Demande::Lancer { id, commande, anglais } => {
+            Demande::Lancer {
+                id,
+                lancement: Lancement::Commande(commande),
+                anglais,
+            } => {
                 let mut v = vec![1];
                 v.extend(id.to_le_bytes());
                 v.push(rang(commande));
+                v.push(u8::from(anglais));
+                v
+            }
+            Demande::Lancer {
+                id,
+                lancement: Lancement::Changement(ch),
+                anglais,
+            } => {
+                let mut v = vec![3];
+                v.extend(id.to_le_bytes());
+                v.push(ch.sorte.octet());
+                v.extend(ch.empreinte.octets());
                 v.push(u8::from(anglais));
                 v
             }
@@ -39,18 +62,28 @@ impl Demande {
         }
     }
 
-    /// Une demande, lue strictement : le bon type, la bonne longueur, un rang de la liste, une langue 0 ou 1.
+    /// Une demande, lue strictement : le bon type, la bonne longueur, un rang de la liste ou une sorte connue, une
+    /// langue 0 ou 1. L'empreinte, elle, n'est que 16 octets : Vanguard seul sait à quoi elle répond.
     pub fn lire(o: &[u8]) -> Option<Demande> {
         let id = u32::from_le_bytes(o.get(1..5)?.try_into().ok()?);
+        let langue = |i: usize| match o.get(i)? {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        };
         match (o.first()?, o.len()) {
             (1, 7) => Some(Demande::Lancer {
                 id,
-                commande: *Commande::TOUTES.get(usize::from(*o.get(5)?))?,
-                anglais: match o.get(6)? {
-                    0 => false,
-                    1 => true,
-                    _ => return None,
-                },
+                lancement: Lancement::Commande(*Commande::TOUTES.get(usize::from(*o.get(5)?))?),
+                anglais: langue(6)?,
+            }),
+            (3, 23) => Some(Demande::Lancer {
+                id,
+                lancement: Lancement::Changement(Changement {
+                    sorte: Sorte::depuis_octet(*o.get(5)?)?,
+                    empreinte: Empreinte::depuis_octets(o.get(6..22)?.try_into().ok()?),
+                }),
+                anglais: langue(22)?,
             }),
             (2, 5) => Some(Demande::Arreter { id }),
             _ => None,
@@ -185,7 +218,7 @@ mod tests {
             for anglais in [false, true] {
                 let d = Demande::Lancer {
                     id: 0xdead_beef,
-                    commande: c,
+                    lancement: Lancement::Commande(c),
                     anglais,
                 };
                 assert_eq!(Demande::lire(&d.coder()), Some(d));
@@ -209,6 +242,59 @@ mod tests {
         }
     }
 
+    /// Un changement : aller-retour pour chaque sorte, langue et empreinte ; une autre longueur, une sorte inconnue,
+    /// une langue hors de 0 et 1 : hors du protocole.
+    #[test]
+    fn les_changements_aller_retour_et_le_reste_refuse() {
+        for sorte in [Sorte::Retirer, Sorte::Remettre] {
+            for anglais in [false, true] {
+                for octets in [[0u8; 16], [0xff; 16], *b"Lecteur\0alice\0\0\0"] {
+                    let d = Demande::Lancer {
+                        id: 42,
+                        lancement: Lancement::Changement(Changement {
+                            sorte,
+                            empreinte: Empreinte::depuis_octets(octets),
+                        }),
+                        anglais,
+                    };
+                    let v = d.coder();
+                    assert_eq!(v.len(), 23);
+                    assert!(v.len() <= DEMANDE_MAX);
+                    assert_eq!(Demande::lire(&v), Some(d));
+                }
+            }
+        }
+        let bonne = Demande::Lancer {
+            id: 1,
+            lancement: Lancement::Changement(Changement {
+                sorte: Sorte::Retirer,
+                empreinte: Empreinte::depuis_octets([7; 16]),
+            }),
+            anglais: false,
+        }
+        .coder();
+        // Plus court, plus long (un octet de plus, un chemin au bout) : refusé.
+        for n in 0..bonne.len() {
+            assert_eq!(Demande::lire(&bonne[..n]), None, "{n}");
+        }
+        let mut longue = bonne.clone();
+        longue.push(0);
+        assert_eq!(Demande::lire(&longue), None);
+        let mut chemin = bonne.clone();
+        chemin.extend(b"/home/alice/.config/autostart/Lecteur.desktop");
+        assert_eq!(Demande::lire(&chemin), None);
+        for (i, faux) in [(5, 0u8), (5, 3), (5, 0xff), (22, 2), (22, 0xff)] {
+            let mut v = bonne.clone();
+            v[i] = faux;
+            assert_eq!(Demande::lire(&v), None, "{i} {faux}");
+        }
+        // Le type 1 (une commande) à la longueur d'un changement, et l'inverse : refusés.
+        let mut v = bonne.clone();
+        v[0] = 1;
+        assert_eq!(Demande::lire(&v), None);
+        assert_eq!(Demande::lire(&[3, 0, 0, 0, 0, 1, 0]), None);
+    }
+
     #[test]
     fn les_reponses_aller_retour() {
         assert_eq!(
@@ -223,7 +309,7 @@ mod tests {
             (Issue::Impossible("raison".into()), None),
         ] {
             let f = Fin {
-                commande: Commande::Bilan,
+                lancement: Lancement::Commande(Commande::Bilan),
                 code,
                 sortie: b"{\"a\": 1}".to_vec(),
                 issue: issue.clone(),
@@ -243,7 +329,7 @@ mod tests {
         let mut f = coder_fin(
             1,
             &Fin {
-                commande: Commande::Bilan,
+                lancement: Lancement::Commande(Commande::Bilan),
                 code: None,
                 sortie: Vec::new(),
                 issue: Issue::Terminee,

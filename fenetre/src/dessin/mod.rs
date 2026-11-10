@@ -1,9 +1,11 @@
 //! Le dessin : le seul endroit qui connaît egui et eframe. Le reste de la fenêtre (l'état dans `appli`, les commandes,
 //! le lanceur, la lecture des sorties) n'en dépend pas : changer de toile ne toucherait qu'ici (un essai le garde).
-//! Rien d'ici ne lance un programme : chaque geste passe par `Appli` (`demander`, `arreter`, `saisir`).
+//! Rien d'ici ne lance un programme : chaque geste passe par `Appli` (`demander`, `arreter`, `saisir`, et pour un
+//! changement `proposer` puis `accepter`).
 
 mod bilan;
 mod cadre;
+mod demarrage;
 mod ecrans;
 mod icones;
 

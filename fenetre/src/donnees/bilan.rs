@@ -12,6 +12,7 @@
 use serde::Deserialize;
 
 use super::{Liste, Texte};
+use crate::commandes::{Changement, Empreinte, Sorte};
 
 /// Où un constat se range.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -81,6 +82,44 @@ struct CorrectifBrut {
     action: Texte,
 }
 
+/// Un changement proposé par un constat (`demarrage --json` : retirer un programme ordinaire, remettre ce que
+/// Vanguard a retiré).
+#[derive(Deserialize, Default, Debug)]
+#[serde(default)]
+struct GesteBrut {
+    sorte: Texte,
+    empreinte: Texte,
+    nom: Texte,
+    commande: Texte,
+    machine: Option<bool>,
+}
+
+/// Un changement qu'un constat propose, lu strictement : une sorte connue, une empreinte de 32 chiffres
+/// hexadécimaux minuscules ; sinon, pas de bouton. Le nom et la commande ne servent qu'à la confirmation, nettoyés ;
+/// seule l'empreinte part vers Vanguard, qui retrouve lui-même ce qui y répond.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Geste {
+    pub changement: Changement,
+    pub nom: String,
+    pub commande: String,
+    /// De tout l'ordinateur : la fenêtre administrateur s'ouvrira.
+    pub machine: bool,
+}
+
+impl GesteBrut {
+    fn lire(self) -> Option<Geste> {
+        Some(Geste {
+            changement: Changement {
+                sorte: Sorte::lire(self.sorte.as_str())?,
+                empreinte: Empreinte::lire(self.empreinte.as_str())?,
+            },
+            nom: crate::nettoyage::nom(self.nom.as_str(), 80),
+            commande: crate::nettoyage::nom(self.commande.as_str(), 160),
+            machine: self.machine == Some(true),
+        })
+    }
+}
+
 /// Un constat tel que Vanguard l'écrit : les champs de l'audit (`probleme`, `correctif`, `verifie`) et ceux du
 /// résultat commun (`niveau`, `corrigeable`), tous facultatifs.
 #[derive(Deserialize, Default, Debug)]
@@ -95,6 +134,7 @@ struct ConstatBrut {
     regle: Texte,
     etat: Texte,
     objet: Texte,
+    geste: Option<GesteBrut>,
 }
 
 /// Un constat prêt à montrer.
@@ -108,6 +148,8 @@ pub struct Constat {
     pub action: String,
     pub gravite: Option<Gravite>,
     pub rang: Rang,
+    /// Le changement que ce constat propose (un programme au démarrage), s'il est bien formé.
+    pub geste: Option<Geste>,
 }
 
 impl From<ConstatBrut> for Constat {
@@ -147,6 +189,7 @@ impl From<ConstatBrut> for Constat {
             action: b.correctif.map(|c| c.action.0).unwrap_or_default(),
             gravite,
             rang,
+            geste: b.geste.and_then(GesteBrut::lire),
         }
     }
 }
@@ -534,6 +577,50 @@ mod tests {
         // Un manque de la couverture compte comme non vérifié ; un manque vide est ignoré.
         assert_eq!(v.manques, ["Disque : illisible"]);
         assert_eq!(v.compte(Rang::NonVerifie), 1);
+    }
+
+    /// Le changement proposé n'est lu que bien formé : une sorte inconnue, une empreinte en majuscules, trop
+    /// courte ou avec un chemin, et il n'y a pas de bouton ; un nom piégé arrive propre.
+    #[test]
+    fn un_geste_n_est_lu_que_bien_forme() {
+        let constat = |geste: &str| {
+            let v = lire(
+                format!(r#"{{"outil": "PRO-DEM-001", "constats": [{{"etat": "probleme", "niveau": "Info", "message": "Lecteur", "geste": {geste}}}]}}"#)
+                    .as_bytes(),
+            )
+            .unwrap();
+            // Un geste qui n'est pas un objet rend le constat illisible (compté « pas pu vérifier ») : pas de bouton non plus.
+            v.constats.into_iter().next().and_then(|c| c.geste)
+        };
+        let e = "0123456789abcdef0123456789abcdef";
+        let g = constat(&format!(
+            r#"{{"sorte": "retirer", "empreinte": "{e}", "nom": "Lecteur\u202e\u001b[2K", "commande": "/usr/bin/lecteur --cache", "machine": true}}"#
+        ))
+        .unwrap();
+        assert_eq!(g.changement.sorte, Sorte::Retirer);
+        assert_eq!(g.changement.empreinte.hex(), e);
+        assert_eq!(g.nom, "Lecteur\u{fffd}");
+        assert_eq!(g.commande, "/usr/bin/lecteur --cache");
+        assert!(g.machine);
+        let g = constat(&format!(
+            r#"{{"sorte": "remettre", "empreinte": "{e}", "nom": "Lecteur"}}"#
+        ))
+        .unwrap();
+        assert_eq!((g.changement.sorte, g.machine), (Sorte::Remettre, false));
+        for faux in [
+            format!(r#"{{"sorte": "effacer", "empreinte": "{e}"}}"#),
+            format!(r#"{{"sorte": "Retirer", "empreinte": "{e}"}}"#),
+            format!(r#"{{"sorte": "retirer", "empreinte": "{}"}}"#, e.to_uppercase()),
+            format!(r#"{{"sorte": "retirer", "empreinte": "{}"}}"#, &e[..31]),
+            format!(r#"{{"sorte": "retirer", "empreinte": "{e}0"}}"#),
+            format!(r#"{{"sorte": "retirer", "empreinte": "{e} /home/alice"}}"#),
+            r#"{"sorte": "retirer", "empreinte": 12}"#.to_string(),
+            r#"{"sorte": "retirer"}"#.to_string(),
+            r#""retirer""#.to_string(),
+            "null".to_string(),
+        ] {
+            assert_eq!(constat(&faux), None, "{faux}");
+        }
     }
 
     #[test]

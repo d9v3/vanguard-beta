@@ -1,7 +1,9 @@
 //! La liste fermée : les seules commandes de `vanguard` que la fenêtre sait lancer, chacune avec ses arguments
 //! fixés ici, dans le code. Un clic ou une saisie choisit une entrée de cette liste, jamais un texte : aucun argument
 //! libre ne part vers `vanguard`, et une saisie qui n'est pas un nom de la liste ne lance rien. Lot 1 : des commandes
-//! qui ne changent rien à l'ordinateur (elles lisent, et notent leur résultat dans les données de Vanguard).
+//! qui ne changent rien à l'ordinateur (elles lisent, et notent leur résultat dans les données de Vanguard). Lot 2a :
+//! un seul changement, retirer ou remettre un programme au démarrage (`Changement`), désigné par son empreinte et
+//! demandé par un clic confirmé, jamais par la console.
 
 use std::time::Duration;
 
@@ -494,8 +496,8 @@ impl Commande {
                 "System, programs, drivers: what is waiting. Nothing is installed from here."
             ),
             Commande::Demarrage => crate::tr!(
-                "Ce qui se lance avec l'ordinateur, jugé. Rien n'est retiré d'ici.",
-                "What starts with the computer, judged. Nothing is removed from here."
+                "Ce qui se lance avec l'ordinateur, jugé. Un programme ordinaire se retire d'un clic, après confirmation ; il reste installé.",
+                "What starts with the computer, judged. An ordinary program is removed with one click, after confirmation; it stays installed."
             ),
             Commande::ObjetsConnectes => crate::tr!(
                 "Le routeur et les objets du dernier scan du réseau, et leurs risques.",
@@ -589,6 +591,160 @@ impl Commande {
     }
 }
 
+/// Ce qu'un changement fait d'un programme au démarrage (lot 2a) : le seul que la fenêtre sait demander.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Sorte {
+    /// Le retirer du démarrage : il reste installé.
+    Retirer,
+    /// Remettre exactement comme avant ce que Vanguard en a retiré.
+    Remettre,
+}
+
+impl Sorte {
+    /// Le mot de `vanguard demarrage --json` (« geste ») et de son issue.
+    pub fn mot(self) -> &'static str {
+        match self {
+            Sorte::Retirer => "retirer",
+            Sorte::Remettre => "remettre",
+        }
+    }
+
+    /// Lit le mot écrit par Vanguard ; tout autre : rien.
+    pub fn lire(mot: &str) -> Option<Sorte> {
+        [Sorte::Retirer, Sorte::Remettre].into_iter().find(|s| s.mot() == mot)
+    }
+
+    // Le protocole du relais n'existe que sous Linux (les essais le lisent partout).
+    #[cfg(any(target_os = "linux", test))]
+    /// L'octet du protocole du relais : 1 ou 2.
+    pub fn octet(self) -> u8 {
+        match self {
+            Sorte::Retirer => 1,
+            Sorte::Remettre => 2,
+        }
+    }
+
+    // Le protocole du relais n'existe que sous Linux (les essais le lisent partout).
+    #[cfg(any(target_os = "linux", test))]
+    pub fn depuis_octet(o: u8) -> Option<Sorte> {
+        [Sorte::Retirer, Sorte::Remettre].into_iter().find(|s| s.octet() == o)
+    }
+}
+
+/// Ce qui désigne un programme au démarrage : les 16 octets que `vanguard demarrage --json` donne à chacun (BLAKE3
+/// de son objet). Jamais un nom ni un chemin : Vanguard retrouve lui-même le programme, et refuse le reste.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Empreinte([u8; 16]);
+
+impl Empreinte {
+    // Le protocole du relais n'existe que sous Linux (les essais le lisent partout).
+    #[cfg(any(target_os = "linux", test))]
+    pub fn depuis_octets(o: [u8; 16]) -> Empreinte {
+        Empreinte(o)
+    }
+
+    // Le protocole du relais n'existe que sous Linux (les essais le lisent partout).
+    #[cfg(any(target_os = "linux", test))]
+    pub fn octets(self) -> [u8; 16] {
+        self.0
+    }
+
+    /// Exactement 32 chiffres hexadécimaux minuscules ; tout autre texte (majuscule, espace, longueur voisine) :
+    /// rien.
+    pub fn lire(texte: &str) -> Option<Empreinte> {
+        let o = texte.as_bytes();
+        if o.len() != 32 {
+            return None;
+        }
+        let (paires, []) = o.as_chunks::<2>() else {
+            return None;
+        };
+        let chiffre = |c: u8| match c {
+            b'0'..=b'9' => Some(c - b'0'),
+            b'a'..=b'f' => Some(c - b'a' + 10),
+            _ => None,
+        };
+        let mut e = [0u8; 16];
+        for (case, &[h, b]) in e.iter_mut().zip(paires) {
+            *case = (chiffre(h)? << 4) | chiffre(b)?;
+        }
+        Some(Empreinte(e))
+    }
+
+    /// Les 32 chiffres hexadécimaux minuscules, tels que Vanguard les attend.
+    pub fn hex(self) -> String {
+        use std::fmt::Write as _;
+        self.0.iter().fold(String::with_capacity(32), |mut s, o| {
+            let _ = write!(s, "{o:02x}");
+            s
+        })
+    }
+}
+
+/// Un changement demandé après confirmation : un seul programme, par son empreinte.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Changement {
+    pub sorte: Sorte,
+    pub empreinte: Empreinte,
+}
+
+/// Ce qu'une tâche lance : une commande de la liste (elle lit), ou un changement (seulement par un clic confirmé,
+/// jamais par la console).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Lancement {
+    Commande(Commande),
+    Changement(Changement),
+}
+
+impl From<Commande> for Lancement {
+    fn from(c: Commande) -> Lancement {
+        Lancement::Commande(c)
+    }
+}
+
+impl Lancement {
+    /// Les arguments donnés à `vanguard`. Un changement n'a qu'une forme : `demarrage --retirer|--remettre
+    /// <32 chiffres> --json`, sans question (stdin fermé ; la fenêtre administrateur du système, s'il en faut une,
+    /// est la seule).
+    pub fn arguments(self) -> Vec<String> {
+        match self {
+            Lancement::Commande(c) => c.arguments().iter().map(|a| (*a).to_string()).collect(),
+            Lancement::Changement(ch) => {
+                let option = match ch.sorte {
+                    Sorte::Retirer => "--retirer",
+                    Sorte::Remettre => "--remettre",
+                };
+                vec![
+                    "demarrage".to_string(),
+                    option.to_string(),
+                    ch.empreinte.hex(),
+                    "--json".to_string(),
+                ]
+            }
+        }
+    }
+
+    /// Un changement attend peut-être le mot de passe dans la fenêtre administrateur : dix minutes.
+    pub fn delai(self) -> Duration {
+        match self {
+            Lancement::Commande(c) => c.delai(),
+            Lancement::Changement(_) => Duration::from_secs(600),
+        }
+    }
+
+    pub fn sur_ce_systeme(self) -> bool {
+        self.commande().sur_ce_systeme()
+    }
+
+    /// La commande de la liste dont il relève : celle dont l'écran montre le résultat.
+    pub fn commande(self) -> Commande {
+        match self {
+            Lancement::Commande(c) => c,
+            Lancement::Changement(_) => Commande::Demarrage,
+        }
+    }
+}
+
 /// Comment une tâche a fini.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Issue {
@@ -605,7 +761,7 @@ pub enum Issue {
 /// La fin d'une tâche.
 #[derive(Clone, Debug)]
 pub struct Fin {
-    pub commande: Commande,
+    pub lancement: Lancement,
     pub code: Option<i32>,
     pub sortie: Vec<u8>,
     pub issue: Issue,
@@ -740,6 +896,66 @@ mod tests {
         ] {
             assert!(matches!(comprendre(refus), Saisie::Refusee(_)), "{refus:?} accepté");
         }
+    }
+
+    /// La console ne demande jamais un changement : ni la forme de Vanguard, ni un nom, ni une empreinte.
+    #[test]
+    fn la_console_refuse_tout_changement() {
+        let e = "0123456789abcdef0123456789abcdef";
+        for refus in [
+            format!("demarrage --retirer {e}"),
+            format!("demarrage --remettre {e} --json"),
+            format!("vanguard demarrage --retirer {e}"),
+            format!("startup --remove {e}"),
+            "retirer".to_string(),
+            "remettre".to_string(),
+            "retirer-du-demarrage".to_string(),
+            e.to_string(),
+        ] {
+            assert!(matches!(comprendre(&refus), Saisie::Refusee(_)), "{refus:?} accepté");
+        }
+        // « demarrage » seul : la liste, qui ne change rien.
+        assert_eq!(comprendre("demarrage"), Saisie::Lancer(Commande::Demarrage));
+        assert_eq!(
+            Lancement::from(Commande::Demarrage).arguments(),
+            ["demarrage", "--json"]
+        );
+    }
+
+    /// Une empreinte : exactement 32 chiffres hexadécimaux minuscules, relus à l'identique ; le changement n'a qu'une
+    /// forme d'arguments.
+    #[test]
+    fn l_empreinte_et_la_forme_du_changement() {
+        let texte = "00ff10a0b1c2d3e4f5a6b7c8d9e0f1ab";
+        let e = Empreinte::lire(texte).unwrap();
+        assert_eq!(e.hex(), texte);
+        assert_eq!(Empreinte::depuis_octets(e.octets()), e);
+        for faux in [
+            String::new(),
+            "0".repeat(31),
+            "0".repeat(33),
+            "0A".repeat(16),
+            format!(" {}", "0".repeat(31)),
+            format!("{}\n", "0".repeat(31)),
+            "g".repeat(32),
+            "+0".repeat(16),
+            "\u{ff10}".repeat(16),
+            "../../etc/passwd/../../etc/pass".to_string(),
+        ] {
+            assert_eq!(Empreinte::lire(&faux), None, "{faux:?}");
+        }
+        for (sorte, option) in [(Sorte::Retirer, "--retirer"), (Sorte::Remettre, "--remettre")] {
+            let l = Lancement::Changement(Changement { sorte, empreinte: e });
+            assert_eq!(l.arguments(), ["demarrage", option, texte, "--json"]);
+            assert_eq!(l.commande(), Commande::Demarrage);
+            assert!(l.sur_ce_systeme());
+            assert!(l.delai().as_secs() >= 300);
+            assert_eq!(Sorte::lire(sorte.mot()), Some(sorte));
+            assert_eq!(Sorte::depuis_octet(sorte.octet()), Some(sorte));
+        }
+        assert_eq!(Sorte::lire("tout-retirer"), None);
+        assert_eq!(Sorte::depuis_octet(0), None);
+        assert_eq!(Sorte::depuis_octet(3), None);
     }
 
     #[test]

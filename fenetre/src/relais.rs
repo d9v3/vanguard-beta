@@ -1,11 +1,13 @@
 //! Le relais (Linux) : la séparation des droits de la fenêtre. Au démarrage, avant tout fil et toute bibliothèque
 //! d'affichage, la fenêtre se dédouble (fork) : l'enfant, le relais, garde les droits du compte et lance `vanguard` ;
 //! la fenêtre se met dans son bac à sable (`bac_a_sable`) et ne fait plus que lui demander, par une socket, une
-//! commande de la liste fermée, par son numéro. `vanguard` part ainsi du relais et n'hérite pas du bac : il voit tout
+//! commande de la liste fermée, par son numéro, ou un changement au démarrage, par sa sorte et l'empreinte du
+//! programme (16 octets : le relais n'en fait que `demarrage --retirer|--remettre <hex> --json`, et c'est
+//! `vanguard` qui la cherche parmi ce qu'il voit, puis demande les droits). `vanguard` part ainsi du relais et n'hérite pas du bac : il voit tout
 //! ce qu'il doit voir (les programmes en cours, le bus système, sudo).
 //!
 //! Le relais ne fait confiance à rien de ce que dit la fenêtre (c'est elle qu'on protège de ce qu'elle dessine) : une
-//! demande est un numéro de la liste fermée, la langue, ou un arrêt ; rien d'autre n'est compris, et une demande
+//! demande est un numéro de la liste fermée, un changement de forme fermée, la langue, ou un arrêt ; rien d'autre n'est compris, et une demande
 //! hors de ce protocole l'arrête. Il retrouve lui-même le `vanguard` voisin et rejoue sa garde (`lanceur`). Il ne
 //! se laisse pas observer (PR_SET_DUMPABLE à 0 : ni ptrace ni /proc/<pid>/mem du même compte), et Landlock empêche
 //! de toute façon la fenêtre d'observer ce qui est hors de son bac. Quand la fenêtre se ferme ou meurt, la socket se
@@ -17,7 +19,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
 use std::time::Duration;
 
-use crate::commandes::Commande;
+use crate::commandes::Lancement;
 use crate::lanceur::{Fin, Issue, Message, Programme, Rendre, Reveil, SORTIE_MAX, Tache};
 use crate::protocole::{DEMANDE_MAX, Demande, Reponse, coder_fin, coder_ligne, ecrire_trame, lire_reponse, lire_trame};
 
@@ -123,7 +125,7 @@ fn servir(flux: UnixStream, trouver: impl Fn() -> Result<Programme, String> + Se
                     a.store(true, Ordering::Relaxed);
                 }
             }
-            Demande::Lancer { id, commande, anglais } => {
+            Demande::Lancer { id, lancement, anglais } => {
                 let arret = Arc::new(AtomicBool::new(false));
                 let refus = {
                     let mut t = verrou(&taches);
@@ -135,7 +137,7 @@ fn servir(flux: UnixStream, trouver: impl Fn() -> Result<Programme, String> + Se
                     }
                 };
                 let impossible = |texte: String| Fin {
-                    commande,
+                    lancement,
                     code: None,
                     sortie: Vec::new(),
                     issue: Issue::Impossible(texte),
@@ -161,9 +163,9 @@ fn servir(flux: UnixStream, trouver: impl Fn() -> Result<Programme, String> + Se
                     .name("vanguard-relais".into())
                     .spawn(move || {
                         let fin = match trouver2() {
-                            Ok(p) => crate::lanceur::surveiller(&p, commande, anglais, &arret, &rendre),
+                            Ok(p) => crate::lanceur::surveiller(&p, lancement, anglais, &arret, &rendre),
                             Err(e) => Fin {
-                                commande,
+                                lancement,
                                 code: None,
                                 sortie: Vec::new(),
                                 issue: Issue::Impossible(e),
@@ -195,7 +197,7 @@ fn servir(flux: UnixStream, trouver: impl Fn() -> Result<Programme, String> + Se
 
 /// Une tâche de la fenêtre qui attend sa fin du relais.
 struct Attente {
-    commande: Commande,
+    lancement: Lancement,
     envoi: mpsc::Sender<Message>,
     reveil: Reveil,
 }
@@ -246,11 +248,11 @@ impl Client {
         }
     }
 
-    pub fn lancer(&self, commande: Commande, anglais: bool, reveil: &Reveil) -> Tache {
+    pub fn lancer(&self, lancement: Lancement, anglais: bool, reveil: &Reveil) -> Tache {
         let (envoi, recu) = mpsc::channel();
         let id = self.suivant.fetch_add(1, Ordering::Relaxed);
         let a = Attente {
-            commande,
+            lancement,
             envoi,
             reveil: Arc::clone(reveil),
         };
@@ -264,7 +266,7 @@ impl Client {
             }
         };
         let refus = refus.or_else(|| {
-            let d = Demande::Lancer { id, commande, anglais };
+            let d = Demande::Lancer { id, lancement, anglais };
             ecrire_trame(&mut *verrou(&self.sortie), &d.coder())
                 .err()
                 .and_then(|_| verrou(&self.attente).remove(&id))
@@ -272,7 +274,7 @@ impl Client {
         if let Some(a) = refus {
             rendre_fin(&a, None, Issue::Impossible(relais_parti()), Duration::ZERO, Vec::new());
         }
-        Tache::relayee(commande, id, recu)
+        Tache::relayee(lancement, id, recu)
     }
 
     /// Pour les tests : ferme la socket (le relais l'apprend et s'en va, le lecteur aussi).
@@ -296,7 +298,7 @@ fn relais_parti() -> String {
 
 fn rendre_fin(a: &Attente, code: Option<i32>, issue: Issue, duree: Duration, sortie: Vec<u8>) {
     let _ = a.envoi.send(Message::Fin(Fin {
-        commande: a.commande,
+        lancement: a.lancement,
         code,
         sortie,
         issue,
@@ -386,6 +388,7 @@ use systeme::dedoubler;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commandes::{Changement, Commande, Empreinte, Sorte};
     use std::time::Instant;
 
     /// Le relais en fil, et une fenêtre qui lui parle : une commande inconnue de lui (pas de `vanguard` voisin) finit
@@ -398,15 +401,15 @@ mod tests {
         let c = Client::demarrer(fenetre.try_clone().unwrap(), None);
         let rien: Reveil = Arc::new(|| {});
         let attendre = attendre_fin;
-        let f = attendre(&c.lancer(Commande::Protection, false, &rien));
+        let f = attendre(&c.lancer(Commande::Protection.into(), false, &rien));
         assert_eq!(
-            (f.commande, f.issue),
-            (Commande::Protection, Issue::Impossible("introuvable".into()))
+            (f.lancement, f.issue),
+            (Commande::Protection.into(), Issue::Impossible("introuvable".into()))
         );
         c.arreter(12345);
         ecrire_trame(&mut &fenetre, &[9, 9, 9]).unwrap();
         serveur.join().unwrap();
-        let f = attendre(&c.lancer(Commande::Bilan, false, &rien));
+        let f = attendre(&c.lancer(Commande::Bilan.into(), false, &rien));
         assert!(matches!(f.issue, Issue::Impossible(_)), "{:?}", f.issue);
         // L'envoi peut échouer (socket fermée) avant que le lecteur, en fond, ait vu la fin et posé `mort` : on
         // l'attend, borné.
@@ -415,6 +418,45 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(c.mort.load(Ordering::Relaxed));
+    }
+
+    /// Un changement bien formé passe (ici, sans `vanguard` voisin, il finit « impossible ») ; un changement à la
+    /// mauvaise longueur, d'une sorte inconnue ou suivi d'un chemin ferme le relais, sans rien lancer.
+    #[test]
+    fn le_relais_ne_comprend_que_le_changement_de_forme_fermee() {
+        let ch = Lancement::Changement(Changement {
+            sorte: Sorte::Retirer,
+            empreinte: Empreinte::depuis_octets([0x5a; 16]),
+        });
+        let bonne = Demande::Lancer {
+            id: 7,
+            lancement: ch,
+            anglais: false,
+        }
+        .coder();
+        let mut longue = bonne.clone();
+        longue.extend(b"/home/alice/.config/autostart/Lecteur.desktop");
+        let mut sorte = bonne.clone();
+        sorte[5] = 9;
+        for fausse in [bonne[..22].to_vec(), longue, sorte] {
+            let (fenetre, relais) = UnixStream::pair().unwrap();
+            let lances = Arc::new(AtomicU32::new(0));
+            let l = Arc::clone(&lances);
+            let serveur = std::thread::spawn(move || {
+                servir(relais, move || {
+                    l.fetch_add(1, Ordering::Relaxed);
+                    Err("introuvable".into())
+                });
+            });
+            let c = Client::demarrer(fenetre.try_clone().unwrap(), None);
+            let rien: Reveil = Arc::new(|| {});
+            let f = attendre_fin(&c.lancer(ch, false, &rien));
+            assert_eq!((f.lancement, f.issue), (ch, Issue::Impossible("introuvable".into())));
+            ecrire_trame(&mut &fenetre, &fausse).unwrap();
+            serveur.join().unwrap();
+            assert_eq!(lances.load(Ordering::Relaxed), 1, "{fausse:?}");
+            c.fermer();
+        }
     }
 
     fn attendre_fin(t: &Tache) -> Fin {
@@ -566,10 +608,10 @@ mod tests {
         // Ce que le relais lance, lui, a tous les droits du compte.
         let c = Client::demarrer(fenetre, None);
         let rien: Reveil = Arc::new(|| {});
-        let f = attendre_fin(&c.lancer(Commande::Bilan, false, &rien));
+        let f = attendre_fin(&c.lancer(Commande::Bilan.into(), false, &rien));
         assert_eq!(
-            (f.commande, &f.issue, f.code),
-            (Commande::Bilan, &Issue::Terminee, Some(0)),
+            (f.lancement, &f.issue, f.code),
+            (Commande::Bilan.into(), &Issue::Terminee, Some(0)),
             "{:?}",
             f.issue
         );

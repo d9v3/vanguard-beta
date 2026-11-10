@@ -281,6 +281,7 @@ fn commande(appli: &mut Appli, ui: &mut Ui, c: Commande) {
         return;
     };
     match &r.contenu {
+        Contenu::Constats(v) if c == Commande::Demarrage => super::demarrage::liste(appli, ui, v),
         Contenu::Constats(v) => {
             ui.label(texte(&v.resume(), 14.0, p.doux));
             ui.add_space(16.0);

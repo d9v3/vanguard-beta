@@ -175,7 +175,7 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
 `vanguard`) when someone is in front of a graphical screen; otherwise, the terminal menu, as before. Its safeguards:
 
 - **It does nothing by itself.** It runs the `vanguard` program placed next to it (absolute path, never looked up in
-  the PATH) with a command from a closed list, which changes nothing on the computer in this version (`audit`,
+  the PATH) with a command from a closed list, which changes nothing on the computer (`audit`,
   `protection`, `evenements`, `diagnostic`, `test-connexion`…), always with `--json`, no free argument, no shell,
   input closed, one at a time, with a time limit and a Stop button (on Linux, the whole process group is stopped,
   and whatever is left of it when the command ends too; `vanguard` is only reaped afterwards, so that group number
@@ -184,6 +184,22 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   by the window's account or by root, that neither the group nor others can modify, in folders (up to `/`) that
   neither the group nor others can modify either (except a folder with the sticky bit, like `/tmp`), or it is not
   started: the same rule as for the window, below, checked again before each command, not only at opening.
+- **A single change, in two steps: a startup program.** The startup screen shows the state of each program that
+  starts at login. An ordinary program has “Remove from startup”, a program removed by Vanguard has “Put back”; a
+  program to keep or a firewall has no button, its reason is shown. A click only opens a confirmation inside the window
+  (name, command, what will happen, administrator window if the program belongs to the whole computer); only
+  “Accept” starts the change, one at a time, buttons greyed out while a command runs, with no “remove all”. The window
+  only offers the actions that `vanguard demarrage --json` has just written, and only sends the kind (remove or put
+  back) and the program's fingerprint (32 hexadecimal digits, computed by `vanguard`): never a name, a command or a
+  path. The form started is closed, `vanguard demarrage --retirer|--remettre <fingerprint> --json`, and `vanguard`
+  judges everything again: malformed, unknown or ambiguous fingerprint, program to keep, firewall, Vanguard's notes
+  unreadable or changed outside Vanguard, all are refused without changing anything; what changes goes through the
+  same correction as in the terminal (restore point, previous value noted, a single administrator window, never sudo).
+  The console starts no change, in any typed form. A change once started cannot be interrupted by a click (cutting it
+  in the middle would leave a half-done state): it is stopped by declining the administrator window. Its end is told
+  (done, refused, failure, with the reason), then the list is read again; only the last line of the output, a JSON of
+  the same action, with exit code 0, means “done”: anything else is a failure, never a success
+  (`fenetre/src/attaques.rs`, tests B1 to B3).
 - **Its answers are read with suspicion.** Bounded size, long lines cut, terminal sequences and control characters
   removed, JSON read without ever crashing (readers and console fuzzed: `fenetre_donnees`, `fenetre_saisie`); an
   unreadable answer is said to be so, never counted as healthy. As in the terminal (`ui::affichable`), a character that
@@ -213,7 +229,8 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   write a file (not even the shader cache, which a trapped program could poison), nor start a program, nor (Landlock 4,
   Linux 6.7) open a connection, nor (Landlock 6, Linux 6.12) send a signal outside itself or, under Wayland, reach an
   abstract socket, nor (Landlock 9) reach a Unix socket other than the display's (the D-Bus bus, for example). The relay
-  only understands “run command n of the list, in this language” and “stop”; a request outside this protocol stops it
+  only understands “run command n of the list, in this language”, “remove or put back the program with this
+  fingerprint, in this language” and “stop”; a request outside this protocol (length, unknown kind or language) stops it
   (protocol fuzzed, `fenetre_relais`); it finds the neighbouring `vanguard` itself and replays its guard; it cannot be
   observed (PR_SET_DUMPABLE set to 0); when the window closes, it stops what is running and leaves. Why not `vanguard`
   too: locked in, it would see less (no_new_privs alone makes the sudo check of the report disappear; Landlock hides

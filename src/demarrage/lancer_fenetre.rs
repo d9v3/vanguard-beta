@@ -1,6 +1,7 @@
 //! `vanguard` sans argument : la fenêtre de Vanguard (`vanguard-fenetre`, posée à côté du programme) quand la
 //! personne est devant un écran graphique, sinon le menu du terminal, comme avant. La fenêtre ne fait rien d'elle-même :
-//! elle relance ce programme-ci avec des commandes en lecture (voir `fenetre/` et MODELE-DE-MENACE.md, « La fenêtre »).
+//! elle relance ce programme-ci avec des commandes en lecture, et un seul changement, un programme retiré du démarrage
+//! ou remis, après sa confirmation (voir `fenetre/` et MODELE-DE-MENACE.md, « La fenêtre »).
 //!
 //! Le menu reste le choix sûr : sans terminal des deux côtés (un script qui écrit les choix, une sortie redirigée),
 //! en SSH ou au Bureau à distance, en administrateur, sans écran graphique, sans fenêtre posée à côté, avec une fenêtre que d'autres

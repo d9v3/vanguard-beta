@@ -1,7 +1,8 @@
 //! vanguard-fenetre : la fenêtre de Vanguard. Elle lance `vanguard` (le programme posé à côté d'elle) avec une
 //! commande d'une liste fermée et montre ce qu'il répond ; elle ne change rien elle-même, n'ouvre aucune connexion et
-//! n'écrit aucun fichier. Options : `--langue fr|en`, `--depuis-vanguard` (dire à `vanguard` qu'elle s'est ouverte),
-//! `--version`.
+//! n'écrit aucun fichier. Le seul changement qu'elle peut demander, un programme retiré du démarrage ou remis, passe
+//! par une confirmation dans la fenêtre puis par `vanguard`, qui le rejuge (`appli.rs`). Options : `--langue fr|en`,
+//! `--depuis-vanguard` (dire à `vanguard` qu'elle s'est ouverte), `--version`.
 
 // Sous Windows, pas de console noire derrière la fenêtre.
 #![cfg_attr(not(test), windows_subsystem = "windows")]

@@ -184,7 +184,7 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
 `vanguard`) quand la personne est devant un écran graphique ; sinon, le menu du terminal, comme avant. Ses gardes :
 
 - **Elle ne fait rien d'elle-même.** Elle relance le programme `vanguard` posé à côté d'elle (chemin absolu, jamais
-  cherché dans le PATH) avec une commande d'une liste fermée, qui ne change rien à l'ordinateur dans cette version
+  cherché dans le PATH) avec une commande d'une liste fermée, qui ne change rien à l'ordinateur
   (`audit`, `protection`, `evenements`, `diagnostic`, `test-connexion`…), toujours en `--json`, sans argument libre,
   sans shell, entrée fermée, une à la fois, avec un délai et un bouton Arrêter (sous Linux, tout le groupe de
   processus est arrêté, et ce qui en reste à la fin de la commande aussi ; `vanguard` n'est récolté qu'après, pour
@@ -193,6 +193,22 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   modifier, dans des dossiers (jusqu'à `/`) que ni le groupe ni les autres ne peuvent modifier non plus (sauf un
   dossier à « sticky bit », comme `/tmp`), sinon il n'est pas lancé : la même règle que pour la fenêtre, plus bas,
   revérifiée avant chaque commande, et pas seulement à l'ouverture.
+- **Un seul changement, en deux temps : un programme du démarrage.** L'écran du démarrage montre l'état de chaque
+  programme qui se lance à l'ouverture de session. Un programme ordinaire a « Retirer du démarrage », un programme
+  retiré par Vanguard a « Remettre » ; un programme à garder ou un pare-feu n'a aucun bouton, sa raison est dite. Un
+  clic n'ouvre qu'une confirmation dans la fenêtre (nom, commande, ce qui va se passer, fenêtre administrateur si le
+  programme est de tout l'ordinateur) ; seul « Accepter » lance le changement, un à la fois, boutons grisés pendant
+  qu'une commande tourne, sans « tout retirer ». La fenêtre ne propose que les gestes que `vanguard demarrage --json`
+  vient d'écrire, et n'envoie que la sorte (retirer ou remettre) et l'empreinte du programme (32 chiffres
+  hexadécimaux, calculée par `vanguard`) : jamais un nom, une commande ou un chemin. La forme lancée est fermée,
+  `vanguard demarrage --retirer|--remettre <empreinte> --json`, et `vanguard` rejuge tout : empreinte mal formée,
+  inconnue, ambiguë, programme à garder, pare-feu, notes de Vanguard illisibles ou changées hors de Vanguard, tout est
+  refusé sans rien changer ; ce qui change passe par la même correction que le terminal (point de restauration,
+  valeur d'avant notée, une seule fenêtre administrateur, jamais sudo). La console ne lance aucun changement, sous
+  aucune forme tapée. Un changement lancé ne s'interrompt pas d'un clic (le couper au milieu laisserait un état à
+  moitié fait) : on l'arrête en refusant la fenêtre administrateur. Sa fin est dite (fait, refusé, échec, avec la
+  raison), puis la liste est relue ; seule la dernière ligne de la sortie, un JSON du même geste, avec le code 0, dit
+  « fait » : tout le reste est un échec, jamais un succès (`fenetre/src/attaques.rs`, essais B1 à B3).
 - **Ses réponses sont lues avec méfiance.** Taille bornée, lignes coupées, séquences de terminal et caractères de
   contrôle retirés, JSON lu sans jamais planter (lecteurs et console fuzzés : `fenetre_donnees`, `fenetre_saisie`) ; une
   réponse illisible est dite telle, jamais comptée saine. Comme dans le terminal (`ui::affichable`), un caractère qui
@@ -225,7 +241,8 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   empoisonner), ni lancer un programme, ni (Landlock 4, Linux 6.7) ouvrir une connexion, ni (Landlock 6, Linux 6.12)
   envoyer un signal hors d'elle ou, sous Wayland, joindre une socket abstraite, ni (Landlock 9) joindre une autre socket
   Unix que celle de l'affichage (le bus D-Bus, par exemple). Le relais ne comprend que « lancer la commande n de la
-  liste, en telle langue » et « arrêter » ; une demande hors de ce protocole l'arrête (protocole fuzzé,
+  liste, en telle langue », « retirer ou remettre le programme de telle empreinte, en telle langue » et
+  « arrêter » ; une demande hors de ce protocole (longueur, sorte ou langue inconnue) l'arrête (protocole fuzzé,
   `fenetre_relais`) ; il retrouve lui-même le `vanguard` voisin et rejoue sa garde ; il ne se laisse pas observer
   (PR_SET_DUMPABLE à 0) ; quand la fenêtre se ferme, il arrête ce qui tourne et s'en va. Pourquoi pas `vanguard` aussi :
   enfermé, il verrait moins (no_new_privs seul fait disparaître la vérification de sudo du bilan ; Landlock lui cache
