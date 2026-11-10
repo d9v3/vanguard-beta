@@ -624,11 +624,11 @@ fn table_appareils(appareils: &[&FicheAppareil]) -> String {
 /// dans les deux thèmes : le reste de la feuille ne connaît qu'eux.
 const SOMBRE: &str = "--fond:#000;--surface:#0a0c0f;--surface-2:#12161b;--surface-3:#1a2027;--encre:#e8eef4;\
 --doux:#93a1af;--discret:#5f6b77;--trait:rgba(220,235,255,.08);--accent:#38c6f4;--accent-doux:rgba(56,198,244,.12);\
---vif:#38c6f4;--sur-vif:#021018;--grave:#f0555a;--moyen:#f08c2e;--jaune:#d9c94a;--bon:#3fb950;--gris:#5f6b77;\
+--vif:#38c6f4;--sur-vif:#021018;--lueur:rgba(56,198,244,.55);--aire-haut:.55;--grave:#f0555a;--moyen:#f08c2e;--jaune:#d9c94a;--bon:#3fb950;--gris:#5f6b77;\
 color-scheme:dark";
 const CLAIR: &str = "--fond:#f3f5f7;--surface:#fff;--surface-2:#eef1f4;--surface-3:#e3e8ed;--encre:#0b1520;\
 --doux:#4a5868;--discret:#6b7785;--trait:rgba(10,25,40,.10);--accent:#0a7fb6;--accent-doux:rgba(10,127,182,.10);\
---vif:#0a7fb6;--sur-vif:#fff;--grave:#c62828;--moyen:#c2410c;--jaune:#a16207;--bon:#15803d;--gris:#94a3b8;\
+--vif:#0a7fb6;--sur-vif:#fff;--lueur:rgba(10,127,182,.28);--aire-haut:.32;--grave:#c62828;--moyen:#c2410c;--jaune:#a16207;--bon:#15803d;--gris:#94a3b8;\
 color-scheme:light";
 
 /// La feuille de style du tableau. Sans script (la CSP l'interdit, et c'est voulu) : le bouton clair/sombre est une
@@ -644,6 +644,8 @@ fn feuille() -> String {
 /// La mise en page : une colonne d'icônes à gauche (les rubriques du menu), une barre d'onglets en haut (les sections
 /// de la page), puis la vue d'ensemble en rangées : la courbe et l'anneau, les alertes récentes et les chiffres, les
 /// trois cartes d'état. Tout tombe sur une grille de 4 px ; les surfaces restent neutres, la couleur va aux données.
+/// La lueur de la courbe vaut 24 px parce que le dessin (2900 × 1000) est écrasé à l'écran : un flou de 5 px n'y
+/// laissait qu'un pixel.
 const CSS_TABLEAU: &str = "
 *{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:80px}
 body{margin:0;background:var(--fond);color:var(--encre);font:14px/1.5 system-ui,'Segoe UI',sans-serif;font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}
@@ -707,7 +709,9 @@ h2{font-size:18px;margin:48px 0 16px;font-weight:600}.sous{color:var(--doux);mar
 .echelle{display:flex;flex-direction:column;justify-content:space-between;color:var(--discret);font-size:11px;text-align:right;padding:0 8px 0 0;margin:-8px 0}
 .courbe svg{width:100%;height:212px;display:block;overflow:visible}
 .ligne-g{stroke:var(--trait);stroke-width:1;vector-effect:non-scaling-stroke}
-.aire{fill:url(#degrade)}.trace{fill:none;stroke:var(--accent);stroke-width:2;stroke-linejoin:round;vector-effect:non-scaling-stroke}
+.aire{fill:url(#degrade)}.trace{fill:none;stroke:var(--accent);stroke-width:2;stroke-linejoin:round;vector-effect:non-scaling-stroke;filter:drop-shadow(0 0 24px var(--lueur))}
+.aujourdhui{position:absolute;right:0;width:8px;height:8px;margin:-4px -4px 0 0;border-radius:50%;background:var(--accent);box-shadow:0 0 0 3px var(--surface),0 0 14px 3px var(--lueur);animation:fondu .3s 3s reverse both}
+.aujourdhui::after{content:'';position:absolute;inset:0;border-radius:50%;border:1px solid var(--accent);opacity:0;animation:halo 2.4s cubic-bezier(.2,.8,.2,1) 3.2s infinite}
 .trace-grave{fill:none;stroke:var(--grave);stroke-width:1.5;stroke-dasharray:4 4;vector-effect:non-scaling-stroke}
 .col rect{fill:transparent;transition:fill .15s}.col:hover rect{fill:var(--accent-doux)}
 .calme{position:absolute;inset:0 0 0 32px;display:grid;place-content:center;justify-items:center;gap:4px;color:var(--doux);font-size:13px;pointer-events:none}
@@ -763,6 +767,9 @@ const CSS_OUVERTURE: &str = "
 .intro b{font-weight:600;font-size:20px;letter-spacing:.32em;margin-right:-.32em}
 .intro span{color:var(--doux);font-size:14px;text-align:center;max-width:300px}
 .intro .mono{color:var(--discret);font-size:11px}
+.echo{position:absolute;width:6px;height:6px;margin:-3px 0 0 -3px;border-radius:50%;background:var(--accent);box-shadow:0 0 8px 1px var(--lueur);opacity:.12;animation:eclat 1.6s linear infinite}
+.balayage{position:fixed;z-index:19;top:0;bottom:0;left:0;width:2px;pointer-events:none;background:var(--accent);box-shadow:0 0 12px 2px var(--lueur),0 0 48px 8px var(--accent-doux);opacity:0;animation:passe 1.2s cubic-bezier(.45,0,.25,1) 1.3s both}
+.balayage::before{content:'';position:absolute;top:0;bottom:0;right:2px;width:min(240px,30vw);background:linear-gradient(to left,var(--accent-doux),transparent)}
 .charge{margin-top:8px;width:160px;height:2px;border-radius:1px;background:var(--surface-3);overflow:hidden}
 .charge::before{content:'';display:block;height:100%;background:var(--accent);transform-origin:left;animation:remplit 1.2s cubic-bezier(.2,.8,.2,1) both}
 .envol{position:fixed;z-index:21;left:calc(min(420px,100vw)/2 - 64px);top:calc(50vh - 124px);width:128px;height:128px;transform-origin:0 0;pointer-events:none;
@@ -780,6 +787,9 @@ animation:envol .7s cubic-bezier(.65,0,.35,1) 1.3s forwards,fondu .2s 2s forward
 @keyframes envol{to{transform:translate(calc(92px - min(420px,100vw)/2),calc(148px - 50vh)) scale(.25)}}
 @keyframes fondu{to{opacity:0;visibility:hidden}}
 @keyframes balaye{to{transform:rotate(1turn)}}
+@keyframes eclat{0%{opacity:1;transform:scale(1.6)}70%,100%{opacity:.12;transform:scale(1)}}
+@keyframes passe{from{opacity:1;transform:translateX(min(420px,100vw))}85%{opacity:1}to{opacity:0;transform:translateX(100vw)}}
+@keyframes halo{from{opacity:.9}to{transform:scale(3.2);opacity:0}}
 @keyframes remplit{from{transform:scaleX(0)}}
 @keyframes monte{from{opacity:0;transform:translateY(12px)}}
 @keyframes devoile{from{clip-path:inset(-12px 100% -12px -12px)}to{clip-path:inset(-12px -12px -12px -12px)}}
@@ -1306,7 +1316,7 @@ fn graphique(d: &Donnees) -> String {
     let mut h = format!(
         "<div class=carte><h3>{}</h3><div class=courbe><div class=echelle><span>{plus}</span><span>{}</span><span>0</span></div>\
          <svg viewBox=\"0 0 {largeur} 1000\" preserveAspectRatio=none aria-hidden=true><defs><linearGradient id=degrade x1=0 y1=0 x2=0 y2=1>\
-         <stop offset=0 style=\"stop-color:var(--accent);stop-opacity:.45\"/><stop offset=1 style=\"stop-color:var(--accent);stop-opacity:0\"/></linearGradient></defs>",
+         <stop offset=0 style=\"stop-color:var(--accent);stop-opacity:var(--aire-haut)\"/><stop offset=.55 style=\"stop-color:var(--accent);stop-opacity:.1\"/><stop offset=1 style=\"stop-color:var(--accent);stop-opacity:0\"/></linearGradient></defs>",
         tr!("Alertes des 30 derniers jours", "Alerts of the last 30 days"),
         plus.div_ceil(2)
     );
@@ -1329,6 +1339,16 @@ fn graphique(d: &Donnees) -> String {
         );
     }
     h += "</svg>";
+    // Aujourd'hui, au bout de la courbe : un point qui bat, posé en HTML (le dessin, étiré, l'aplatirait en ovale).
+    if let Some(dernier) = totaux.last().filter(|_| totaux.iter().any(|t| *t > 0)) {
+        let haut = y(*dernier);
+        let _ = write!(
+            h,
+            "<i class=aujourdhui style=\"top:{}.{}%\" aria-hidden=true></i>",
+            haut / 10,
+            haut % 10
+        );
+    }
     if totaux.iter().all(|t| *t == 0) {
         let _ = write!(
             h,
@@ -1561,6 +1581,34 @@ fn barre(d: &Donnees, complete: bool) -> String {
 /// pourrait toujours pas faire tourner un script ni appeler Internet.
 const CSP: &str = "default-src 'none'; style-src 'unsafe-inline'; img-src data:";
 
+/// Les échos du radar d'ouverture : un par appareil connu (12 au plus), chacun s'allume quand le balayage passe sur
+/// lui. Places fixes, réparties par l'angle d'or : `left` et `top` en pixels dans le radar de 240, puis le moment du
+/// passage en ms (l'angle, sur les 1,6 s d'un tour).
+fn echos_du_radar(appareils: usize) -> String {
+    const PLACES: [(u16, u16, u16); 12] = [
+        (132, 86, 89),
+        (149, 191, 700),
+        (76, 99, 1311),
+        (206, 93, 322),
+        (89, 174, 933),
+        (98, 19, 1545),
+        (181, 163, 556),
+        (73, 126, 1167),
+        (177, 53, 178),
+        (123, 180, 789),
+        (49, 48, 1400),
+        (193, 123, 412),
+    ];
+    let mut h = String::new();
+    for (x, y, ms) in PLACES.iter().take(appareils) {
+        let _ = write!(
+            h,
+            "<i class=echo style=\"left:{x}px;top:{y}px;animation-delay:{ms}ms\"></i>"
+        );
+    }
+    h
+}
+
 /// La page entière, à partir des données réunies.
 pub(crate) fn html(d: &Donnees) -> String {
     let mut h = String::new();
@@ -1569,21 +1617,22 @@ pub(crate) fn html(d: &Donnees) -> String {
     let grand = base64(include_bytes!("../../assets/icones/vanguard-128.png"));
     let feuille = feuille();
     let vide = page_vide(d);
+    let echos = echos_du_radar(d.appareils.len());
     let _ = trw!(
         h,
         "<!doctype html><html lang=fr><head><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\">\
          <meta http-equiv=\"Content-Security-Policy\" content=\"{CSP}\">\
          <title>Tableau de bord Vanguard</title><link rel=icon href=\"data:image/png;base64,{logo}\"><style>{feuille}</style></head><body>\
          <input type=checkbox id=bascule class=bascule aria-label=\"Thème clair ou sombre\">\
-         <div class=intro aria-hidden=true><div class=radar></div><div class=texte><b>VANGUARD</b><span>Cyberdéfense portable des postes et des réseaux</span><span class=mono>{date}</span><i class=charge></i></div></div>\
-         <span class=envol aria-hidden=true style=\"background-image:url(data:image/png;base64,{grand})\"></span><div class=cadre>{}<div class=page>{}<main>\
+         <div class=intro aria-hidden=true><div class=radar>{echos}</div><div class=texte><b>VANGUARD</b><span>Cyberdéfense portable des postes et des réseaux</span><span class=mono>{date}</span><i class=charge></i></div></div>\
+         <span class=envol aria-hidden=true style=\"background-image:url(data:image/png;base64,{grand})\"></span><i class=balayage aria-hidden=true></i><div class=cadre>{}<div class=page>{}<main>\
          <div class=haut id=apercu><h1>Vue d'ensemble</h1><p class=sous>Cet ordinateur et son réseau, le {date}. Rien n'est envoyé : cette page est écrite sur cet ordinateur.</p></div>",
         "<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\">\
          <meta http-equiv=\"Content-Security-Policy\" content=\"{CSP}\">\
          <title>Vanguard dashboard</title><link rel=icon href=\"data:image/png;base64,{logo}\"><style>{feuille}</style></head><body>\
          <input type=checkbox id=bascule class=bascule aria-label=\"Light or dark theme\">\
-         <div class=intro aria-hidden=true><div class=radar></div><div class=texte><b>VANGUARD</b><span>Portable cyber defense for endpoints and networks</span><span class=mono>{date}</span><i class=charge></i></div></div>\
-         <span class=envol aria-hidden=true style=\"background-image:url(data:image/png;base64,{grand})\"></span><div class=cadre>{}<div class=page>{}<main>\
+         <div class=intro aria-hidden=true><div class=radar>{echos}</div><div class=texte><b>VANGUARD</b><span>Portable cyber defense for endpoints and networks</span><span class=mono>{date}</span><i class=charge></i></div></div>\
+         <span class=envol aria-hidden=true style=\"background-image:url(data:image/png;base64,{grand})\"></span><i class=balayage aria-hidden=true></i><div class=cadre>{}<div class=page>{}<main>\
          <div class=haut id=apercu><h1>Overview</h1><p class=sous>This computer and its network, on {date}. Nothing is sent: this page is written on this computer.</p></div>",
         rail(&d.fonctions, &logo),
         barre(d, !vide)
