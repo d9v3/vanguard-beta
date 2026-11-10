@@ -217,14 +217,14 @@ fn pastille(ui: &mut Ui, id: Id, zone: Rect, col: Colonnes, nouvelles: usize, su
         taille,
     );
     // Cliquable seulement quand elle a quelque chose à dire : en sortant, elle ne fait que s'effacer.
-    let s = if nouvelles > 0 {
-        let rep = ui.interact(rect, id.with("pastille"), Sense::click());
+    let rep = (nouvelles > 0).then(|| ui.interact(rect, id.with("pastille"), Sense::click()));
+    let s = if let Some(rep) = &rep {
         if rep.clicked() {
             suivi.descendre = true;
             ui.ctx().request_repaint();
         }
         let s = survol(ui, rep.id, rep.hovered());
-        rep.on_hover_cursor(egui::CursorIcon::PointingHand);
+        rep.clone().on_hover_cursor(egui::CursorIcon::PointingHand);
         s
     } else {
         0.0
@@ -233,6 +233,9 @@ fn pastille(ui: &mut Ui, id: Id, zone: Rect, col: Colonnes, nouvelles: usize, su
     ui.painter().rect_filled(rect, 13, fond.gamma_multiply(t));
     ui.painter()
         .galley(rect.center() - g.size() / 2.0, g, p.sur_vif.gamma_multiply(t));
+    if let Some(rep) = &rep {
+        super::clavier::anneau(ui, rep, 13.0);
+    }
 }
 
 /// Le texte d'une ligne, replié à `largeur`, une ligne de texte tous les `HAUTEUR_LIGNE` points.

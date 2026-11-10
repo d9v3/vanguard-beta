@@ -65,6 +65,7 @@ fn tuile(appli: &mut Appli, ui: &mut Ui, titre: &str, valeur: &str, phrase: &str
         .response
         .interact(Sense::click())
         .on_hover_cursor(eframe::egui::CursorIcon::PointingHand);
+    super::clavier::anneau(ui, &rep, 16.0);
     if rep.clicked() {
         appli.aller(vers);
     }
@@ -907,6 +908,7 @@ fn guide(appli: &mut Appli, ui: &mut Ui) {
                         eframe::egui::Label::new(RichText::new(c.titre()).font(moyenne(14.0)).color(p.encre))
                             .sense(Sense::click()),
                     );
+                    super::clavier::anneau_zone(ui, &rep, rep.rect.expand2(vec2(4.0, 2.0)), 6.0);
                     if rep.on_hover_cursor(eframe::egui::CursorIcon::PointingHand).clicked() {
                         appli.aller(ecran_de(c));
                     }

@@ -105,13 +105,14 @@ fn contenu(c: &Coulisses, ui: &mut Ui, panneau: bool) {
     if panneau {
         let zone = Rect::from_min_size(pos2(tete.right() - 20.0 - 60.0, tete.top()), vec2(60.0, 44.0));
         let rep = ui.interact(zone, ui.scope_id().with("fermer"), Sense::click());
-        peintre.text(
+        let mot = peintre.text(
             pos2(zone.right(), tete.top() + 22.0),
             Align2::RIGHT_CENTER,
             crate::tr!("Fermer", "Close"),
             police(12.0),
             p.doux.lerp_to_gamma(p.encre, survol(ui, rep.id, rep.hovered())),
         );
+        super::clavier::anneau_zone(ui, &rep, mot.expand2(egui::vec2(6.0, 4.0)), 6.0);
         if rep.clicked() {
             fermer(ui.ctx());
         }

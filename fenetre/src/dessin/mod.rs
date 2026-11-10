@@ -5,6 +5,7 @@
 
 mod bilan;
 mod cadre;
+mod clavier;
 #[cfg(test)]
 mod captures;
 mod coulisses;
@@ -195,6 +196,7 @@ pub fn bouton(ui: &mut Ui, t: &str, plein: bool, actif: bool) -> egui::Response 
             .corner_radius(10)
             .min_size(vec2(0.0, 36.0)),
     );
+    clavier::anneau(ui, &r, 10.0);
     if actif {
         r.on_hover_cursor(egui::CursorIcon::PointingHand)
     } else {
@@ -213,14 +215,16 @@ pub fn petit(ui: &mut Ui, t: &str, actif: bool) -> egui::Response {
     } else {
         p.s2.lerp_to_gamma(p.s3, s)
     };
-    ui.add_enabled(
+    let r = ui.add_enabled(
         actif,
         egui::Button::new(texte(t, 13.0, if actif { p.encre } else { p.doux }))
             .fill(fond)
             .stroke(Stroke::new(1.0, if actif { bord_survole(p, s) } else { p.trait_ }))
             .corner_radius(8)
             .min_size(vec2(0.0, 32.0)),
-    )
+    );
+    clavier::anneau(ui, &r, 8.0);
+    r
 }
 
 pub fn titre_section(ui: &mut Ui, t: &str, n: Option<usize>) {

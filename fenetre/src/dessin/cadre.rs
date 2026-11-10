@@ -150,6 +150,7 @@ fn rail(appli: &mut Appli, ui: &mut Ui) {
         job.halign = egui::Align::Center;
         let bloc = peintre.layout_job(job);
         peintre.galley(pos2(r.center().x, r.top() + 32.0), bloc, encre);
+        super::clavier::anneau(ui, &rep, 10.0);
         if rep.clicked() {
             appli.aller(match rub {
                 Rubrique::Accueil => Ecran::Accueil,
@@ -237,6 +238,7 @@ fn barre(appli: &mut Appli, ui: &mut Ui) {
                 p.accent,
             );
         }
+        super::clavier::anneau_zone(ui, &rep, zone.shrink2(vec2(4.0, 14.0)), 8.0);
         if rep.clicked() {
             appli.aller(ecran);
         }
@@ -258,6 +260,7 @@ fn barre(appli: &mut Appli, ui: &mut Ui) {
         moyenne(13.0),
         p.sur_vif,
     );
+    super::clavier::anneau(ui, &rep, 10.0);
     if rep.clicked() {
         appli.aller(Ecran::Alertes);
     }
@@ -345,7 +348,7 @@ fn console(appli: &mut Appli, ui: &mut Ui, montrees: usize) {
     let depliee = montrees == LIGNES_DEPLIEE;
     let zone = Rect::from_min_size(pos2(tete.right() - 32.0 - 90.0, tete.top()), vec2(90.0, tete.height()));
     let rep = ui.interact(zone, ui.scope_id().with("deplier"), Sense::click());
-    peintre.text(
+    let mot = peintre.text(
         pos2(zone.right(), zone.center().y),
         Align2::RIGHT_CENTER,
         if depliee {
@@ -356,6 +359,7 @@ fn console(appli: &mut Appli, ui: &mut Ui, montrees: usize) {
         police(12.0),
         p.doux.lerp_to_gamma(p.encre, survol(ui, rep.id, rep.hovered())),
     );
+    super::clavier::anneau_zone(ui, &rep, mot.expand2(vec2(6.0, 4.0)), 6.0);
     if rep.clicked() {
         ui.ctx().data_mut(|d| d.insert_temp(id_depliee(), !depliee));
     }
@@ -381,6 +385,7 @@ fn console(appli: &mut Appli, ui: &mut Ui, montrees: usize) {
         police(12.0),
         p.doux.lerp_to_gamma(if ouvertes { p.accent } else { p.encre }, vif),
     );
+    super::clavier::anneau_zone(ui, &rep, zone.shrink2(vec2(0.0, 10.0)).expand2(vec2(6.0, 0.0)), 6.0);
     if rep.clicked() {
         super::coulisses::basculer(ui.ctx());
     }
