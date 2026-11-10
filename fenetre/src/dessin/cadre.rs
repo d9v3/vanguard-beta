@@ -11,6 +11,7 @@ use crate::donnees::protection::Allure;
 
 pub fn tout(appli: &mut Appli, ui: &mut Ui) {
     let p = pal();
+    super::mouvement::regler(ui.ctx(), appli.animations_reduites);
     // Sans contour : celui d'un cadre fait les quatre côtés, et il se voyait en haut, en bas et à gauche, sur le bord
     // de la fenêtre. Seul le bord droit garde un trait, tracé à la fin.
     let rail_rect = egui::Panel::left("rail")

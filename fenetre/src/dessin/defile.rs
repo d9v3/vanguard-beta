@@ -256,9 +256,11 @@ pub(super) fn pastille(ui: &mut Ui, id: Id, zone: Rect, dessous: f32, nouvelles:
     if nouvelles > 0 {
         *montre = nouvelles;
     }
-    let t = ui
-        .ctx()
-        .animate_bool_with_time(id.with("pastille-fondu"), nouvelles > 0, super::mouvement::SURVOL);
+    let t = ui.ctx().animate_bool_with_time(
+        id.with("pastille-fondu"),
+        nouvelles > 0,
+        super::mouvement::duree(super::mouvement::SURVOL),
+    );
     if t <= 0.0 || *montre == 0 {
         return false;
     }

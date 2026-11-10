@@ -207,7 +207,7 @@ pub fn carte<R>(ui: &mut Ui, marge: i8, f: impl FnOnce(&mut Ui) -> R) -> R {
 /// jamais (un bouton qui bouge sous la souris fait brouillon).
 pub fn survol(ui: &Ui, id: egui::Id, survole: bool) -> f32 {
     ui.ctx()
-        .animate_bool_with_time(id.with("survol"), survole, mouvement::SURVOL)
+        .animate_bool_with_time(id.with("survol"), survole, mouvement::duree(mouvement::SURVOL))
 }
 
 /// La part de survol d'un bouton d'egui, dessiné avant qu'on sache s'il est survolé : son état à l'image d'avant
@@ -407,6 +407,7 @@ struct Fenetre {
 
 impl eframe::App for Fenetre {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        mouvement::regler(ui.ctx(), self.appli.animations_reduites);
         // Avant tout : une touche qui saute l'ouverture ne va pas aux écrans.
         let ouverture = self.ouverture.avancer(ui.ctx());
         self.appli.avancer();

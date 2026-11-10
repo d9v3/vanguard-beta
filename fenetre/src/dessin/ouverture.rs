@@ -46,6 +46,12 @@ impl Ouverture {
         if self.finie {
             return None;
         }
+        // Animations réduites : pas d'ouverture, le menu est là à la première image (et aucune touche n'est retenue).
+        if super::mouvement::reduit() {
+            self.finie = true;
+            ctx.data_mut(|d| d.remove::<f32>(id_v_du_rail()));
+            return None;
+        }
         let maintenant = ctx.input(|i| i.time);
         let debut = *self.debut.get_or_insert(maintenant);
         // Bornée à 0..=1 : l'ouverture finit à FIN, avant.

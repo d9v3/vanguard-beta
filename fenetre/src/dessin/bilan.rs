@@ -89,7 +89,8 @@ fn bande(ui: &mut Ui, vue: Option<&Vue>, en_cours: Option<f32>, hauteur: f32) {
                 };
             let trait_ = Rect::from_min_max(pos2(x, barres.bottom() - haut), pos2(x + w, barres.bottom()));
             let mut col = if fini { couleur_rang(e) } else { p.s3 };
-            if let Some(t) = en_cours {
+            // Le balayage : un mouvement, pas une information (animations réduites : les traits attendent, immobiles).
+            if let Some(t) = en_cours.filter(|_| !super::mouvement::reduit()) {
                 let pos = (t * 0.45) % 1.3 - 0.15;
                 let d = ((x - r.left()) / r.width() - pos).abs();
                 if d < 0.04 {

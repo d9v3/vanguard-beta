@@ -1,9 +1,11 @@
 //! Le mouvement de la fenêtre, en un seul endroit : le fondu d'arrivée d'un écran, les lignes de liste qui
 //! s'éclairent au survol, le point qui pulse pendant qu'une commande tourne, les chiffres du Bilan qui montent.
-//! Toutes les durées viennent d'une
-//! seule réglette, `ALLURE` : à 0, plus rien ne bouge (chaque fondu saute à sa fin), le reste de la fenêtre ne change
-//! pas. Aucun réglage « réduire les animations » n'est lu du système pour l'instant : la fenêtre, dans son bac à
-//! sable, ne lit ni les réglages du bureau ni ceux de Windows ; le jour où elle le pourra, il se branchera ici.
+//! Toutes les durées passent par une seule porte, `duree` : avec « Réduire les animations » (un réglage de l'écran
+//! Vanguard, `Appli::animations_reduites`, posé ici à chaque image par `regler`), elle rend 0 et plus rien ne bouge :
+//! chaque fondu saute à sa fin, les chiffres sont là tout de suite, les points ne pulsent plus, l'ouverture ne joue
+//! pas ; le reste de la fenêtre ne change pas. Le réglage du système (Windows, GNOME, Omarchy) n'est pas lu : la
+//! fenêtre, dans son bac à sable, ne lit ni les réglages du bureau ni ceux de Windows ; le jour où `vanguard` le lira
+//! pour elle, il se branchera sur `Appli::animations_reduites`.
 
 use std::time::Duration;
 
@@ -14,25 +16,54 @@ use eframe::egui::{
 
 use crate::appli::Ecran;
 
-/// La réglette de tout le mouvement : 1, les durées prévues ; 0, aucun mouvement.
-pub const ALLURE: f32 = 1.0;
+thread_local! {
+    /// « Réduire les animations » est-il allumé ? Un par fil, comme la palette : la fenêtre dessine dans un seul,
+    /// chaque essai dans le sien.
+    static REDUIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
-/// Une durée de la fenêtre, en secondes, passée par la réglette.
-pub const fn duree(secondes: f32) -> f32 {
-    secondes * ALLURE
+/// Pose le réglage « Réduire les animations » pour cette image et les suivantes, et règle de même les mouvements
+/// qu'egui fait seul (ses fondus, son défilement animé).
+pub fn regler(ctx: &Context, reduit: bool) {
+    REDUIT.with(|r| r.set(reduit));
+    let voulu = if reduit {
+        0.0
+    } else {
+        eframe::egui::Style::default().animation_time
+    };
+    if (ctx.global_style().animation_time - voulu).abs() > f32::EPSILON {
+        ctx.global_style_mut(|s| {
+            s.animation_time = voulu;
+            s.scroll_animation = if reduit {
+                eframe::egui::style::ScrollAnimation::none()
+            } else {
+                eframe::egui::style::ScrollAnimation::default()
+            };
+        });
+    }
+}
+
+/// Les animations sont-elles réduites ?
+pub fn reduit() -> bool {
+    REDUIT.with(std::cell::Cell::get)
+}
+
+/// Une durée de la fenêtre, en secondes : nulle quand les animations sont réduites.
+pub fn duree(secondes: f32) -> f32 {
+    if reduit() { 0.0 } else { secondes }
 }
 
 /// Le survol d'un bouton ou d'une ligne : assez court pour suivre la souris, assez long pour que l'œil voie un fondu.
-pub const SURVOL: f32 = duree(0.12);
+pub const SURVOL: f32 = 0.12;
 /// L'arrivée d'un écran : un fondu court, à peine un glissement.
-const ARRIVEE: f32 = duree(0.15);
+const ARRIVEE: f32 = 0.15;
 /// Le glissement de l'arrivée, en points, du bas vers sa place.
 const GLISSEMENT: f32 = 6.0;
 /// L'intervalle des images tant que quelque chose bouge (environ 60 par seconde).
 const IMAGE: Duration = Duration::from_millis(16);
 
 /// La montée des chiffres d'un résultat, de 0 à leur valeur.
-const MONTEE: f32 = duree(0.6);
+const MONTEE: f32 = 0.6;
 /// L'intervalle des images pendant qu'une commande tourne : le point qui pulse et les secondes qui passent n'ont pas
 /// besoin de plus (environ 30 par seconde).
 const TOURNE: Duration = Duration::from_millis(33);
@@ -82,7 +113,7 @@ pub fn arrivee(ctx: &Context, ecran: Ecran) -> Arrivee {
         ctx.data_mut(|d| d.insert_temp(id_arrivee(), (ecran, debut)));
     }
     Arrivee {
-        part: avancement(maintenant, debut, ARRIVEE),
+        part: avancement(maintenant, debut, duree(ARRIVEE)),
         nouvel_ecran,
     }
 }
@@ -156,7 +187,7 @@ pub fn tourne(ctx: &Context) {
 pub fn montee(ctx: &Context, cle: Id) -> f32 {
     let maintenant = ctx.input(|i| i.time);
     let debut = ctx.data_mut(|d| *d.get_temp_mut_or_insert_with(cle.with("montee"), || maintenant));
-    let part = avancement(maintenant, debut, MONTEE);
+    let part = avancement(maintenant, debut, duree(MONTEE));
     if part < 1.0 {
         ctx.request_repaint_after(IMAGE);
     }
@@ -443,5 +474,66 @@ mod tests {
         image(&ctx, &mut appli, 2.0, tuile, false);
         image(&ctx, &mut appli, 2.1, tuile, true);
         assert_eq!(appli.ecran, Ecran::Bilan, "la tuile n'était pas sous la souris");
+    }
+
+    /// Animations réduites : tout est à son état final dès la première image. L'écran qui arrive est entier (aucun
+    /// voile), le chiffre est le bon, le point ne pulse pas, l'ouverture ne se joue pas, et les fondus de la toile
+    /// (survol, défilement) durent zéro ; le réglage remis, tout revient.
+    #[test]
+    fn animations_reduites_l_etat_final_des_la_premiere_image() {
+        let ctx = egui::Context::default();
+        super::super::polices(&ctx);
+        let mut appli = Appli::pour_captures();
+        appli.animations_reduites = true;
+        // Toute la fenêtre une fois : le réglage passe à la toile.
+        image(&ctx, &mut appli, 1.0, egui::Pos2::ZERO, false);
+        assert!(super::reduit());
+        assert!(ctx.global_style().animation_time.abs() < f32::EPSILON);
+        assert!(super::duree(super::SURVOL).abs() < f32::EPSILON);
+        // Un nouvel écran : entier à l'instant même du changement, et le clic n'attend pas.
+        let mut arrivee = None;
+        let mut ouverture = Some(0.0);
+        let mut sortie = ctx.run_ui(
+            egui::RawInput {
+                time: Some(2.0),
+                ..Default::default()
+            },
+            |ui| {
+                super::arrivee(ui.ctx(), Ecran::Accueil);
+                arrivee = Some(super::arrivee(ui.ctx(), Ecran::Bilan));
+                ouverture = super::super::ouverture::Ouverture::nouvelle().avancer(ui.ctx());
+                super::pouls(
+                    ui.painter(),
+                    2.0,
+                    egui::pos2(50.0, 50.0),
+                    4.0,
+                    egui::Color32::WHITE,
+                    1.6,
+                );
+            },
+        );
+        sortie.textures_delta.clear();
+        let a = arrivee.unwrap();
+        assert!(
+            (a.part - 1.0).abs() < f32::EPSILON,
+            "l'écran arrive en fondu : {}",
+            a.part
+        );
+        assert!(ouverture.is_none(), "l'ouverture se joue");
+        let cercles = sortie
+            .shapes
+            .iter()
+            .filter(|c| matches!(&c.shape, egui::Shape::Circle(_)))
+            .count();
+        assert_eq!(cercles, 1, "le point pulse (un halo en plus du point)");
+        // Le chiffre : 82 à la première image, sans passer par 0.
+        let (peints, _, _) = image_nombre(&ctx, egui::Id::unique(("essai", "reduit")), 3.0);
+        assert_eq!(peints, ["82"]);
+        // Le réglage remis : les durées reviennent, un nouveau chiffre repart de 0.
+        appli.animations_reduites = false;
+        image(&ctx, &mut appli, 4.0, egui::Pos2::ZERO, false);
+        assert!(!super::reduit());
+        assert!(ctx.global_style().animation_time > 0.0);
+        assert_eq!(image_nombre(&ctx, egui::Id::unique(("essai", "entier")), 5.0).0, ["0"]);
     }
 }

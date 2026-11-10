@@ -101,6 +101,9 @@ pub struct Appli {
     /// Les écrans d'avant, le plus récent à la fin (« Retour », Alt+←, le bouton Précédent de la souris, Échap).
     retours: Vec<Ecran>,
     pub sombre: bool,
+    /// « Réduire les animations » : plus de fondu d'écran, de chiffres qui montent, de pouls ni d'ouverture ; l'état
+    /// final s'affiche tout de suite. Pour cette fois, comme le thème et la langue (rien n'est enregistré).
+    pub animations_reduites: bool,
     programme: Result<Programme, String>,
     tache: Option<Tache>,
     file: VecDeque<Commande>,
@@ -163,6 +166,7 @@ impl Appli {
             ecran: Ecran::Accueil,
             retours: Vec::new(),
             sombre: true,
+            animations_reduites: false,
             programme,
             tache: None,
             file: VecDeque::new(),
