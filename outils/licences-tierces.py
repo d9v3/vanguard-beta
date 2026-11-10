@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Avis de licence des bibliothèques compilées dans Vanguard (Linux et Windows).
+"""Avis de licence des bibliothèques compilées dans Vanguard et dans sa fenêtre (vanguard-fenetre), Linux et Windows.
 
 Les licences MIT, Apache-2.0, BSD et ISC des dépendances demandent de joindre leur texte à l'exécutable distribué :
 ce script rassemble ces textes dans LICENCES-TIERCES.txt, copié sur la clé par deployer.sh.
@@ -14,7 +14,11 @@ import re
 import subprocess
 from pathlib import Path
 
-CIBLES = ["x86_64-unknown-linux-musl", "x86_64-pc-windows-gnu"]
+# Chaque programme livré, avec ses cibles : Vanguard (Cargo.toml de la racine) et la fenêtre, crate à part.
+PROGRAMMES = [
+    (Path("Cargo.toml"), ["x86_64-unknown-linux-musl", "x86_64-pc-windows-gnu"]),
+    (Path("fenetre/Cargo.toml"), ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-gnu"]),
+]
 SORTIE = Path("LICENCES-TIERCES.txt")
 FICHIERS_LICENCE = re.compile(r"^(LICEN[CS]E|COPYING|NOTICE|UNLICENSE)", re.IGNORECASE)
 # Textes types : ceux du dépôt d'abord (le paquet licenses d'Arch n'a ni MIT, ni BSD-3-Clause, ni LLVM-exception,
@@ -27,6 +31,18 @@ DONNEES = [
         "MIT",
         "https://github.com/reversinglabs/reversinglabs-yara-rules",
         Path("assets/yara/LICENSE-reversinglabs.txt"),
+    ),
+    (
+        "Police Inter / Inter typeface (fenetre/polices/, dans la fenêtre / in the window)",
+        "OFL-1.1",
+        "https://github.com/rsms/inter",
+        Path("fenetre/polices/OFL-Inter.txt"),
+    ),
+    (
+        "Police JetBrains Mono / JetBrains Mono typeface (fenetre/polices/, dans la fenêtre / in the window)",
+        "OFL-1.1",
+        "https://github.com/JetBrains/JetBrainsMono",
+        Path("fenetre/polices/OFL-JetBrainsMono.txt"),
     ),
 ]
 
@@ -68,25 +84,49 @@ LISTES_TELECHARGEES = [
 ]
 
 
-def paquets_embarques(cible):
-    """Paquets atteignables depuis Vanguard par des dépendances normales, pour une cible donnée."""
+def paquets_embarques(manifeste, cible):
+    """Paquets atteignables depuis le programme par des dépendances normales, pour une cible donnée.
+
+    `cargo tree` plutôt que le graphe de `cargo metadata` : seul le premier applique le vrai choix des fonctions
+    (features) par cible ; le second compte des dépendances optionnelles jamais compilées (un presse-papiers retiré,
+    par exemple)."""
     meta = json.loads(
         subprocess.check_output(
-            ["cargo", "metadata", "--format-version", "1", "--locked", "--filter-platform", cible]
+            ["cargo", "metadata", "--format-version", "1", "--locked", "--manifest-path", str(manifeste)]
         )
     )
-    paquets = {p["id"]: p for p in meta["packages"]}
-    noeuds = {n["id"]: n for n in meta["resolve"]["nodes"]}
+    par_nom = {(p["name"], p["version"]): p for p in meta["packages"]}
+    arbre = subprocess.check_output(
+        [
+            "cargo",
+            "tree",
+            "--locked",
+            "--manifest-path",
+            str(manifeste),
+            "--target",
+            cible,
+            "-e",
+            "normal",
+            "--prefix",
+            "none",
+            "--format",
+            "{p}",
+        ],
+        text=True,
+    )
     racine = meta["resolve"]["root"]
-    vus, a_voir = set(), [racine]
-    while a_voir:
-        noeud = noeuds[a_voir.pop()]
-        for dep in noeud["deps"]:
-            normale = any(k["kind"] is None for k in dep["dep_kinds"])
-            if normale and dep["pkg"] not in vus:
-                vus.add(dep["pkg"])
-                a_voir.append(dep["pkg"])
-    return [paquets[i] for i in vus]
+    vus = {}
+    for ligne in arbre.splitlines():
+        champs = ligne.split()
+        if len(champs) < 2 or not champs[1].startswith("v"):
+            continue
+        cle = (champs[0], champs[1][1:])
+        paquet = par_nom.get(cle)
+        if paquet is None:
+            raise SystemExit(f"cargo tree nomme un paquet absent de cargo metadata : {ligne}")
+        if paquet["id"] != racine:
+            vus[cle] = paquet
+    return list(vus.values())
 
 
 def textes_licence(paquet):
@@ -106,13 +146,16 @@ def textes_licence(paquet):
 
 def main():
     embarques = {}
-    for cible in CIBLES:
-        for p in paquets_embarques(cible):
-            embarques[(p["name"], p["version"])] = p
+    for manifeste, cibles in PROGRAMMES:
+        for cible in cibles:
+            for p in paquets_embarques(manifeste, cible):
+                embarques[(p["name"], p["version"])] = p
 
     blocs = [
-        "Vanguard inclut les bibliothèques libres suivantes. Voici leurs avis de droit d'auteur et de licence.\n"
-        "Vanguard includes the following open source libraries. Their copyright and license notices follow.\n"
+        "Vanguard et sa fenêtre incluent les bibliothèques libres suivantes. Voici leurs avis de droit d'auteur et de "
+        "licence.\n"
+        "Vanguard and its window include the following open source libraries. Their copyright and license notices "
+        "follow.\n"
         f"\n{len(embarques)} bibliothèques / libraries, et à la fin {len(DONNEES)} jeu(x) de données / then "
         f"{len(DONNEES)} data set(s)."
         "\n\nListes téléchargées à l'usage, non intégrées / Lists downloaded when used, not embedded :\n"
