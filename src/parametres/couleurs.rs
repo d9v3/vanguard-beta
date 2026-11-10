@@ -92,6 +92,8 @@ enum Doute {
     Illisible,
     /// Scellé, mais des couleurs que `vanguard couleurs` n'écrit pas.
     Invalides,
+    /// Absent, les sceaux refaits : peut-être effacé par un autre programme.
+    Inconnu,
 }
 
 impl Doute {
@@ -103,7 +105,43 @@ impl Doute {
             Doute::Efface => "efface",
             Doute::Illisible => "illisible",
             Doute::Invalides => "invalides",
+            Doute::Inconnu => "inconnu",
         }
+    }
+
+    /// Un changement de couleurs n'écrit pas par-dessus ce fichier-là (`parametres::modifier_si_sur`) : ni
+    /// illisible (ses autres réglages seraient perdus), ni effacé ou changé hors de Vanguard (le rescellement
+    /// effacerait la trace).
+    fn de_bloque(b: super::Bloque) -> Doute {
+        match b {
+            super::Bloque::Illisible => Doute::Illisible,
+            super::Bloque::Efface => Doute::Efface,
+            super::Bloque::Douteux(super::Douteux::Adopte) => Doute::Adopte,
+            super::Bloque::Douteux(super::Douteux::HorsVanguard) => Doute::HorsVanguard,
+        }
+    }
+
+    /// Pourquoi un changement est refusé sur ce fichier, et quoi faire.
+    fn refus(self) -> String {
+        trf!(
+            "{} ; rien n'est enregistré par-dessus. « vanguard parametres » dit ce qu'il a ignoré, et un réglage changé là le réécrit ; les couleurs s'enregistrent ensuite.",
+            "{}; nothing is saved over it. “vanguard settings” says what it ignored, and a setting changed there rewrites it; colors can be saved after that.",
+            match self {
+                Doute::Illisible => tr!("parametres.json est illisible", "parametres.json is unreadable"),
+                Doute::Efface => tr!(
+                    "parametres.json a été effacé hors de Vanguard",
+                    "parametres.json was deleted outside Vanguard"
+                ),
+                Doute::Adopte => tr!(
+                    "parametres.json a été accepté tel quel après des sceaux refaits",
+                    "parametres.json was accepted as it was after seals were remade"
+                ),
+                _ => tr!(
+                    "parametres.json a été changé hors de Vanguard",
+                    "parametres.json was changed outside Vanguard"
+                ),
+            }
+        )
     }
 
     fn texte(self) -> &'static str {
@@ -127,6 +165,10 @@ impl Doute {
             Doute::Invalides => tr!(
                 "couleurs gardées invalides : celles de Vanguard servent",
                 "invalid saved colors: Vanguard's are used"
+            ),
+            Doute::Inconnu => tr!(
+                "parametres.json absent alors que les sceaux ont été refaits (peut-être effacé) : les couleurs de Vanguard servent",
+                "parametres.json missing while the seals were remade (maybe deleted): Vanguard's colors are used"
             ),
         }
     }
@@ -155,15 +197,17 @@ fn lire_dans(chemin: &Path) -> Lues {
             doute: Some(Doute::Illisible),
         };
     };
+    // Dit même sans couleurs dans le fichier : un changement de couleurs ne s'y écrira pas (`changer_dans`), et la
+    // fenêtre doit pouvoir dire pourquoi avant qu'on essaie.
     let mut doute = if j.efface {
         Some(Doute::Efface)
-    } else if j.couleurs {
+    } else if j.inconnu {
+        Some(Doute::Inconnu)
+    } else {
         j.douteux.map(|d| match d {
             super::Douteux::Adopte => Doute::Adopte,
             super::Douteux::HorsVanguard => Doute::HorsVanguard,
         })
-    } else {
-        None
     };
     let choix = Theme::TOUS.map(|t| {
         let g = f.couleurs.de(t)?;
@@ -200,7 +244,8 @@ impl Refus {
                 "{} se verrait à peine sur le fond (contraste {}:1, il faut au moins {}:1)",
                 "{} would barely show on the background (contrast {}:1, at least {}:1 is needed)",
                 nom_du_vif(r.vif),
-                nombre(r.ratio, 2),
+                // Arrondi vers le bas : 1,497 ne s'écrit pas « 1,50 », qui passerait le seuil qu'il manque.
+                nombre((r.ratio * 100.0).floor() / 100.0, 2),
                 nombre(modele::CONTRASTE_MIN, 1)
             ),
         }
@@ -308,16 +353,20 @@ fn comprendre(
     Ok((theme, Voulu::Choix(choix)))
 }
 
-/// Le changement fait dans le fichier (relu sous son sceau, réécrit scellé) : la valeur d'avant et celle d'après.
-/// Un fichier changé hors de Vanguard n'est jamais rescellé tel quel : ses couleurs, comme ses réglages qui coupaient
-/// une défense, valent leur défaut avant le changement (`super::juger`).
-fn changer_dans(chemin: &Path, theme: Theme, voulu: Voulu) -> std::io::Result<(Option<Choix>, Option<Choix>)> {
-    let avant = lire_dans(chemin).de(theme);
+/// La valeur d'un thème avant un changement, et après (`None` : les couleurs de Vanguard).
+type AvantApres = (Option<Choix>, Option<Choix>);
+
+/// Le changement fait dans le fichier (relu sous son sceau et son verrou, réécrit scellé) : la valeur d'avant, lue
+/// dans la même relecture, et celle d'après. Un fichier illisible, effacé ou changé hors de Vanguard n'est jamais
+/// réécrit par des couleurs (`super::modifier_si_sur`) : `Err`, la raison, et rien d'écrit.
+fn changer_dans(chemin: &Path, theme: Theme, voulu: Voulu) -> std::io::Result<Result<AvantApres, Doute>> {
     let apres = match voulu {
         Voulu::Choix(c) => Some(c),
         Voulu::Defaut => None,
     };
-    super::modifier_dans(chemin, |f| {
+    let mut avant = None;
+    let fait = super::modifier_si_sur(chemin, |f| {
+        avant = f.couleurs.de(theme).and_then(|g| choix_de(g, theme));
         let nouvelle = apres.as_ref().map(garde_de);
         if f.couleurs.de(theme) == nouvelle.as_ref() {
             return false;
@@ -325,7 +374,22 @@ fn changer_dans(chemin: &Path, theme: Theme, voulu: Voulu) -> std::io::Result<(O
         f.couleurs.poser(theme, nouvelle);
         true
     })?;
-    Ok((avant, apres))
+    Ok(fait.map(|()| (avant, apres)).map_err(Doute::de_bloque))
+}
+
+/// Un changement fait, au journal des événements : le thème et les deux préréglages, sans rien de la personne.
+fn noter_au_journal(theme: Theme, avant: Option<&Choix>, apres: Option<&Choix>) {
+    use crate::modele::evenement::{Evenement, Source};
+    let quoi = trf!(
+        "Couleurs de la fenêtre, thème {} : avant {}, maintenant {}",
+        "Window colors, {} theme: before {}, now {}",
+        theme.mot(),
+        dit(avant),
+        dit(apres)
+    );
+    crate::modele::journal::noter(
+        Evenement::action(Source::Utilisateur, &quoi, true, &[]).cle(Some(&format!("couleurs|{}", theme.mot()))),
+    );
 }
 
 /// `vanguard couleurs` : sans option, les couleurs réglées et celles du système ; avec `--theme`, un changement.
@@ -351,13 +415,23 @@ pub fn commande(json: bool, theme: Option<&str>, base: Option<&str>, vifs: Optio
         |t| lire_dans(&chemin).de(t),
         || du_systeme().map(|s| s.vifs),
     );
+    let mut douteux = None;
     let (code, issue, raison, theme, avant, apres) = match demande {
         Err(r) => {
             let code = if matches!(r, Refus::MalFormee(_)) { 2 } else { 1 };
             (code, "refuse", r.raison(), None, None, None)
         }
         Ok((t, voulu)) => match changer_dans(&chemin, t, voulu) {
-            Ok((avant, apres)) => (0, "fait", String::new(), Some(t), avant, apres),
+            Ok(Ok((avant, apres))) => {
+                if avant != apres {
+                    noter_au_journal(t, avant.as_ref(), apres.as_ref());
+                }
+                (0, "fait", String::new(), Some(t), avant, apres)
+            }
+            Ok(Err(d)) => {
+                douteux = Some(d);
+                (1, "refuse", d.refus(), Some(t), None, None)
+            }
             Err(e) => (
                 1,
                 "echec",
@@ -378,6 +452,7 @@ pub fn commande(json: bool, theme: Option<&str>, base: Option<&str>, vifs: Optio
                 "theme": theme.map(Theme::mot),
                 "avant": avant.as_ref().map(json_choix),
                 "apres": apres.as_ref().map(json_choix),
+                "douteux": douteux.map(Doute::mot),
             })
         );
     } else if issue == "fait" {
@@ -502,9 +577,11 @@ fn du_systeme() -> Option<Systeme> {
         ".config/omarchy/current/theme/colors.toml",
     ]
     .into_iter()
-    .find_map(|c| crate::socle::lire_ordinaire(&maison.join(c), TOML_MAX).ok())
-    .and_then(|o| String::from_utf8(o).ok())
-    .and_then(|t| lire_omarchy(&t))
+    // Le premier qui donne des couleurs : un fichier là mais vide ou abîmé ne cache pas l'autre.
+    .find_map(|c| {
+        let octets = crate::socle::lire_ordinaire(&maison.join(c), TOML_MAX).ok()?;
+        lire_omarchy(&String::from_utf8(octets).ok()?)
+    })
     .map(|vifs| Systeme {
         source: "omarchy",
         vifs,
@@ -589,7 +666,9 @@ mod tests {
         })
         .unwrap();
         let depart = lu(&f);
-        let (avant, apres) = changer_dans(&f, Theme::Sombre, Voulu::Choix(braise())).unwrap();
+        let (avant, apres) = changer_dans(&f, Theme::Sombre, Voulu::Choix(braise()))
+            .unwrap()
+            .unwrap();
         assert_eq!((avant, apres), (None, Some(braise())));
         assert_ne!(lu(&f), depart);
         assert_eq!(lire_dans(&f).de(Theme::Sombre), Some(braise()));
@@ -597,10 +676,12 @@ mod tests {
         // Un second changement rend le premier comme valeur d'avant.
         let mut autre = braise();
         autre.poser(Vif::Accent, [0x12, 0x80, 0xff]);
-        let (avant, _) = changer_dans(&f, Theme::Sombre, Voulu::Choix(autre)).unwrap();
+        let (avant, _) = changer_dans(&f, Theme::Sombre, Voulu::Choix(autre)).unwrap().unwrap();
         assert_eq!(avant, Some(braise()));
-        changer_dans(&f, Theme::Sombre, Voulu::Choix(braise())).unwrap();
-        let (avant, apres) = changer_dans(&f, Theme::Sombre, Voulu::Defaut).unwrap();
+        changer_dans(&f, Theme::Sombre, Voulu::Choix(braise()))
+            .unwrap()
+            .unwrap();
+        let (avant, apres) = changer_dans(&f, Theme::Sombre, Voulu::Defaut).unwrap().unwrap();
         assert_eq!((avant, apres), (Some(braise()), None));
         assert_eq!(lu(&f), depart, "le fichier redevient octet pour octet celui d'avant");
         assert_eq!(super::super::charger_de(&f).unwrap().langue.as_deref(), Some("fr"));
@@ -687,13 +768,15 @@ mod tests {
         );
     }
 
-    /// Changé hors de Vanguard : les couleurs ne valent pas, la raison est dite, et le prochain changement n'en
-    /// rescelle aucune.
+    /// Changé hors de Vanguard : les couleurs ne valent pas, la raison est dite, et aucun changement de couleurs ne
+    /// rescelle le fichier (la trace resterait effacée) : refusé, le fichier laissé octet pour octet.
     #[test]
     fn un_fichier_change_hors_de_vanguard_rend_les_couleurs_de_vanguard() {
         let d = dossier("forge");
         let f = d.join(super::super::PARAMETRES);
-        changer_dans(&f, Theme::Sombre, Voulu::Choix(braise())).unwrap();
+        changer_dans(&f, Theme::Sombre, Voulu::Choix(braise()))
+            .unwrap()
+            .unwrap();
         // Un programme du compte réécrit le fichier (le sceau ne correspond plus).
         let mut glacier = Choix::du_prereglage(Base::Glacier, Theme::Clair);
         glacier.poser(Vif::Grave, [0xee, 0x00, 0x00]);
@@ -710,31 +793,53 @@ mod tests {
         assert_eq!(l.choix, [None, None]);
         assert_eq!(l.doute, Some(Doute::HorsVanguard));
         assert_eq!(json_lu(&l, None)["douteux"], "hors_vanguard");
-        // Rien à changer (le clair vaut déjà celles de Vanguard) : rien d'écrit, le doute reste dit.
-        changer_dans(&f, Theme::Clair, Voulu::Defaut).unwrap();
+        let forge = lu(&f);
+        for voulu in [
+            Voulu::Defaut,
+            Voulu::Choix(Choix::du_prereglage(Base::Glacier, Theme::Clair)),
+        ] {
+            let r = changer_dans(&f, Theme::Clair, voulu).unwrap();
+            assert_eq!(r, Err(Doute::HorsVanguard));
+            assert_eq!(lu(&f), forge, "rien n'est écrit par-dessus");
+            assert_eq!(lire_dans(&f).doute, Some(Doute::HorsVanguard), "le doute reste dit");
+        }
+        // Sans couleurs dans le fichier forgé, le doute est dit quand même : la fenêtre sait pourquoi on refusera.
+        std::fs::write(&f, r#"{"hors_ligne":true}"#).unwrap();
         assert_eq!(lire_dans(&f).doute, Some(Doute::HorsVanguard));
-        // Un changement du thème clair : le thème sombre forgé n'est pas rescellé avec lui.
-        let g = Choix::du_prereglage(Base::Glacier, Theme::Clair);
-        let (avant, _) = changer_dans(&f, Theme::Clair, Voulu::Choix(g)).unwrap();
-        assert_eq!(avant, None, "la valeur d'avant est celle montrée, pas la forgée");
-        let l = lire_dans(&f);
-        assert_eq!((l.choix, l.doute), ([None, Some(g)], None));
-        // Effacé hors de Vanguard : dit aussi.
-        changer_dans(&f, Theme::Sombre, Voulu::Choix(braise())).unwrap();
+        assert!(
+            changer_dans(&f, Theme::Sombre, Voulu::Choix(braise()))
+                .unwrap()
+                .is_err()
+        );
+        assert_eq!(lu(&f), br#"{"hors_ligne":true}"#);
+        // Effacé hors de Vanguard : dit aussi, et refusé (le rescellement effacerait la trace).
         std::fs::remove_file(&f).unwrap();
         assert_eq!(lire_dans(&f).doute, Some(Doute::Efface));
+        let r = changer_dans(&f, Theme::Sombre, Voulu::Choix(braise())).unwrap();
+        assert_eq!(r, Err(Doute::Efface));
+        assert!(!f.exists());
     }
 
-    /// Illisible (pas du JSON, ou un dossier à sa place) : les couleurs de Vanguard, dit.
+    /// Illisible (pas du JSON, ou un dossier à sa place) : les couleurs de Vanguard, dit ; un changement de couleurs
+    /// refusé, sans quoi les autres réglages du fichier (une défense coupée par choix, la langue) seraient perdus.
     #[test]
     fn un_fichier_illisible_rend_les_couleurs_de_vanguard() {
         let d = dossier("illisible");
         let f = d.join(super::super::PARAMETRES);
-        changer_dans(&f, Theme::Sombre, Voulu::Choix(braise())).unwrap();
+        changer_dans(&f, Theme::Sombre, Voulu::Choix(braise()))
+            .unwrap()
+            .unwrap();
         std::fs::remove_file(&f).unwrap();
         std::fs::create_dir(&f).unwrap();
         let l = lire_dans(&f);
         assert_eq!((l.choix, l.doute), ([None, None], Some(Doute::Illisible)));
+        std::fs::remove_dir(&f).unwrap();
+        std::fs::write(&f, b"{ pas du json").unwrap();
+        assert_eq!(lire_dans(&f).doute, Some(Doute::Illisible));
+        for voulu in [Voulu::Defaut, Voulu::Choix(braise())] {
+            assert_eq!(changer_dans(&f, Theme::Sombre, voulu).unwrap(), Err(Doute::Illisible));
+            assert_eq!(lu(&f), b"{ pas du json", "rien n'est écrit par-dessus");
+        }
     }
 
     /// Scellé mais pas tel que `vanguard couleurs` l'écrit (une version future, un bogue) : ignoré, dit.

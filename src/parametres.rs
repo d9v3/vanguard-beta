@@ -121,14 +121,14 @@ struct Juge {
     douteux: Option<Douteux>,
     /// Des réglages qui coupaient une défense, ou un accord, y étaient : ignorés.
     coupait: bool,
-    /// Des couleurs de la fenêtre y étaient : ignorées (`couleurs`).
-    couleurs: bool,
     /// Effacé hors de Vanguard.
     efface: bool,
+    /// Absent, les sceaux refaits : peut-être effacé (`sceau::Lecture::Inconnu`).
+    inconnu: bool,
 }
 
-/// `charger_juge`, avec tout ce qui a été écarté : les couleurs de la fenêtre (`couleurs`) aussi, qui ne coupent
-/// rien mais ne se gardent pas plus d'un fichier que Vanguard n'a pas écrit.
+/// `charger_juge`, avec tout ce qui a été écarté. Les couleurs de la fenêtre aussi, qui ne coupent rien mais ne se
+/// gardent pas plus d'un fichier que Vanguard n'a pas écrit : `couleurs` le dit dès qu'il est douteux.
 fn juger(chemin: &Path) -> Result<(Fichier, Juge), crate::modele::Echec> {
     use crate::modele::{Echec, Raison};
     use crate::sceau::Lecture;
@@ -137,7 +137,15 @@ fn juger(chemin: &Path) -> Result<(Fichier, Juge), crate::modele::Echec> {
     let dossier = chemin.parent().unwrap_or_else(|| Path::new("."));
     let nom = chemin.file_name().and_then(|n| n.to_str()).unwrap_or(PARAMETRES);
     let (octets, douteux) = match crate::sceau::lire_sans_ecrire(dossier, nom) {
-        Lecture::Absent | Lecture::Inconnu => return Ok((Fichier::default(), Juge::default())),
+        Lecture::Absent => return Ok((Fichier::default(), Juge::default())),
+        // Les défauts aussi, mais dit là où un réglage en dépend (les couleurs) : peut-être effacé.
+        Lecture::Inconnu => {
+            let inconnu = Juge {
+                inconnu: true,
+                ..Juge::default()
+            };
+            return Ok((Fichier::default(), inconnu));
+        }
         Lecture::Falsifie(None) => {
             let efface = Juge {
                 efface: true,
@@ -180,15 +188,14 @@ fn juger(chemin: &Path) -> Result<(Fichier, Juge), crate::modele::Echec> {
     }
     f.avis_partage = None;
     // Les couleurs de la fenêtre : celles de Vanguard, et la fenêtre le dit dans ses coulisses.
-    let couleurs = !f.couleurs.est_vide();
     f.couleurs = couleurs::Reglees::default();
     Ok((
         f,
         Juge {
             douteux,
             coupait,
-            couleurs,
             efface: false,
+            inconnu: false,
         },
     ))
 }
@@ -219,9 +226,64 @@ impl Douteux {
     }
 }
 
-/// Relit le fichier, le change par `change` (`false` : rien à écrire) et l'enregistre, scellé. Un fichier qu'on ne sait
-/// plus lire n'est jamais écrasé en silence : il est gardé à côté, puis remplacé par les défauts changés.
+/// Le verrou des changements de parametres.json, à côté de lui : tenu de la relecture jusqu'à l'écriture, deux Vanguard
+/// qui le changent en même temps (la fenêtre qui enregistre des couleurs, le terminal qui remet une défense) ne
+/// s'effacent plus l'un l'autre. À part du verrou des sceaux, qu'`ecrire_dans` prend lui-même (un `flock` ne se
+/// reprend pas dans le même processus).
+pub(crate) const VERROU_PARAMETRES: &str = "parametres.lock";
+
+fn tenir(chemin: &Path) -> std::io::Result<crate::socle::Verrou> {
+    let dossier = chemin.parent().unwrap_or_else(|| Path::new("."));
+    // Comme les sceaux : en administrateur dans le dossier d'un compte, rien n'y est créé.
+    if !crate::socle::ecriture_sure(dossier) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            tr!(
+                "en administrateur, le dossier de données d'un autre compte n'est pas écrit",
+                "as administrator, another account's data folder is not written"
+            ),
+        ));
+    }
+    std::fs::create_dir_all(dossier)?;
+    crate::socle::Verrou::prendre(dossier, VERROU_PARAMETRES, false, crate::socle::ATTENTE_ECRITURE)
+        .map_err(|e| e.erreur(VERROU_PARAMETRES))
+}
+
+/// Pourquoi un geste qui ne doit pas resceller un fichier douteux (`modifier_si_sur`) n'a rien écrit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Bloque {
+    /// Là, mais il ne se lit pas : ses autres réglages seraient perdus.
+    Illisible,
+    /// Effacé hors de Vanguard.
+    Efface,
+    /// Changé hors de Vanguard, ou accepté tel quel après des sceaux refaits.
+    Douteux(Douteux),
+}
+
+/// `modifier_dans` pour un geste cosmétique (les couleurs) : il n'écrit que par-dessus un fichier tel que Vanguard
+/// l'a écrit (ou absent). Illisible, effacé ou changé hors de Vanguard : rien n'est écrit, et la raison est rendue.
+/// Un tel geste ne doit ni remettre en silence les autres réglages à leur défaut (un fichier illisible), ni effacer
+/// la trace d'un fichier falsifié en le rescellant : c'est aux Paramètres, qui le disent, de le faire. Lu une seule
+/// fois, sous le verrou : `change` voit le fichier même qui a été jugé.
+fn modifier_si_sur(chemin: &Path, change: impl FnOnce(&mut Fichier) -> bool) -> std::io::Result<Result<(), Bloque>> {
+    let _tenu = tenir(chemin)?;
+    let mut f = match juger(chemin) {
+        Err(_) => return Ok(Err(Bloque::Illisible)),
+        Ok((_, j)) if j.efface => return Ok(Err(Bloque::Efface)),
+        Ok((_, Juge { douteux: Some(d), .. })) => return Ok(Err(Bloque::Douteux(d))),
+        Ok((f, _)) => f,
+    };
+    if change(&mut f) {
+        enregistrer_dans(&f, chemin)?;
+    }
+    Ok(Ok(()))
+}
+
+/// Relit le fichier, le change par `change` (`false` : rien à écrire) et l'enregistre, scellé, sous son verrou
+/// (`tenir`). Un fichier qu'on ne sait plus lire n'est jamais écrasé en silence : il est gardé à côté, puis remplacé
+/// par les défauts changés.
 fn modifier_dans(chemin: &Path, change: impl FnOnce(&mut Fichier) -> bool) -> std::io::Result<()> {
+    let _tenu = tenir(chemin)?;
     let lu = charger_de(chemin);
     let mut f = lu.clone().unwrap_or_default();
     if !change(&mut f) {
