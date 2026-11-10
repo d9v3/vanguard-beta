@@ -111,6 +111,28 @@ pub(crate) fn sans_piege(texte: &str, lignes: bool) -> String {
         .collect()
 }
 
+/// Un nom venu de l'extérieur, prêt à servir dans une clé d'apprentissage (`Objet`) : lisible et sans piège comme
+/// `sans_piege`, mais sans rien perdre. Chaque caractère qui ne se montre pas lui-même (piège, espace trompeuse,
+/// sélecteur de variante, invisible rare) et une espace en bout de nom (qu'`Objet::de` retirerait) s'écrivent
+/// `\u{…}`. Un choix accepté pour « Firefox » ne couvre donc jamais « Firefox » suivi d'un sélecteur, qui s'affiche
+/// pareil. La barre oblique inverse reste telle quelle : un chemin Windows (`C:\Users\…`) garde la clé des choix déjà
+/// faits. Seul un nom qui contiendrait lui-même le texte `\u{…}` pourrait en rejoindre un autre, et c'est le nom
+/// accepté, pas celui de l'attaquant, qui devrait le contenir.
+pub(crate) fn nom_pour_cle(nom: &str) -> String {
+    use std::fmt::Write as _;
+    let dernier = nom.chars().count().checked_sub(1);
+    let mut sortie = String::with_capacity(nom.len());
+    for (i, c) in nom.chars().enumerate() {
+        let au_bout = i == 0 || Some(i) == dernier;
+        if crate::ui::rendu(c) != Some(c) || (au_bout && c.is_whitespace()) {
+            let _ = write!(sortie, "\\u{{{:x}}}", u32::from(c));
+        } else {
+            sortie.push(c);
+        }
+    }
+    sortie
+}
+
 /// Un nom venu de l'extérieur, sans piège et sur une ligne, coupé à `n` caractères (« … » compris).
 pub(crate) fn nom_sans_piege(nom: &str, n: usize) -> String {
     let sur = sans_piege(nom, false);
@@ -367,6 +389,38 @@ mod tests {
         assert_eq!(sans_piege("fac\u{206b}ture.pdf", false), "fac\u{fffd}ture.pdf");
         assert_eq!(sans_piege("a\u{fe0e}\u{fff9}\nb\u{fe0f}", true), "a\u{fffd}\nb\u{fe0f}");
         assert_eq!(nom_sans_piege("ᠮ\u{180b}ᠣ\u{17b5}", 40), "ᠮᠣ\u{fffd}");
+    }
+
+    /// La clé d'un nom ne perd rien : deux noms qui s'affichent pareil restent deux clés, et rien de piégé n'y passe.
+    #[test]
+    fn cle_distincte_pour_deux_noms_qui_se_montrent_pareil() {
+        assert_eq!(nom_pour_cle("Firefox"), "Firefox");
+        assert_eq!(nom_pour_cle("葛飾区"), "葛飾区");
+        assert_eq!(nom_pour_cle("Firefox\u{e0100}"), "Firefox\\u{e0100}");
+        assert_eq!(nom_pour_cle("Fire\u{a0}fox "), "Fire\\u{a0}fox\\u{20}");
+        assert_eq!(
+            nom_pour_cle("C:\\Users\\alice\\outil.exe"),
+            "C:\\Users\\alice\\outil.exe"
+        );
+        let noms = [
+            "Firefox",
+            "Firefox\u{fe00}",
+            "Firefox\u{e0100}",
+            "Firefox ",
+            " Firefox",
+            "Fire\u{a0}fox",
+            "Fire fox",
+            "Firefox\u{202e}",
+            "Firefox\u{fffd}",
+        ];
+        for (i, a) in noms.iter().enumerate() {
+            let cle = nom_pour_cle(a);
+            assert!(cle.chars().all(|c| crate::ui::rendu(c) == Some(c)), "{cle:?}");
+            assert!(!cle.starts_with(char::is_whitespace) && !cle.ends_with(char::is_whitespace));
+            for b in &noms[i + 1..] {
+                assert_ne!(cle, nom_pour_cle(b), "{a:?} et {b:?}");
+            }
+        }
     }
 
     /// Un message qui reprend un nom piégé ne passe jamais tel quel dans ce qui est écrit (rapport, `--json`).

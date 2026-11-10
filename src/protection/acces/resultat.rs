@@ -4,7 +4,7 @@
 
 use super::{Acces, Bilan, PERMISSIONS, Permission, Remarque};
 use crate::machine::{Constat, alerte, impossible_par, ok};
-use crate::modele::resultat::{Couverture, Resultat, sans_piege};
+use crate::modele::resultat::{Couverture, Resultat, nom_pour_cle};
 use crate::modele::{Objet, Raison};
 use crate::risk::Niveau;
 
@@ -46,11 +46,12 @@ fn acces_a(p: Permission) -> &'static str {
 }
 
 /// L'objet d'un accès : la permission et l'application, telle que le système la nomme. Le nom vient du registre, de
-/// Flatpak, de Snap ou de TCC : ses caractères piégés deviennent « � », comme dans le message.
+/// Flatpak, de Snap ou de TCC : ses caractères piégés y sont écrits `\u{…}` (`nom_pour_cle`), pas en « � » ni retirés
+/// comme à l'écran, pour que deux noms qui s'affichent pareil ne partagent jamais un choix accepté.
 fn objet(a: &Acces) -> Objet {
     Objet::de(
         "acces",
-        &format!("{}:{}", code(a.permission), sans_piege(&a.application, false)),
+        &format!("{}:{}", code(a.permission), nom_pour_cle(&a.application)),
     )
 }
 
@@ -333,5 +334,32 @@ mod tests {
         let r = resultat(&b, debut);
         let o = r.constats[0].objet.as_deref().unwrap();
         assert!(!crate::ui::contient_un_piege(o), "{o:?}");
+    }
+
+    /// Un choix accepté pour « Firefox » ne couvre pas un nom qui s'affiche pareil (sélecteur de variante, espace
+    /// d'une autre largeur) : leurs objets, donc leurs clés d'apprentissage, diffèrent.
+    #[test]
+    fn objet_distinct_pour_un_nom_qui_se_montre_pareil() {
+        let debut = (chrono::Utc::now(), std::time::Instant::now());
+        let objets: Vec<String> = [
+            "Firefox",
+            "Firefox\u{e0100}",
+            "Firefox\u{fe00}",
+            "Fire\u{a0}fox",
+            "Fire fox",
+        ]
+        .iter()
+        .map(|nom| {
+            let mut b = Bilan::default();
+            b.acces.push(acces(Permission::Camera, nom));
+            resultat(&b, debut).constats[0].objet.clone().unwrap()
+        })
+        .collect();
+        assert_eq!(objets[0], "acces:camera:Firefox");
+        for (i, a) in objets.iter().enumerate() {
+            for b in &objets[i + 1..] {
+                assert_ne!(a, b);
+            }
+        }
     }
 }

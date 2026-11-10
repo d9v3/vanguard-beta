@@ -201,7 +201,9 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   deux morceaux d'un nom, et un nombre écrit à la française reste lisible. Un sélecteur de variante (U+FE00 à U+FE0E,
   U+E0100 à U+E01EF, mongols) est retiré : légitime en japonais, en chinois, en mongol, il ne cache plus rien entre
   deux lettres et le nom reste lisible ; celui des émojis (U+FE0F) reste. Les invisibles rares (U+206A à U+206F,
-  U+FFF9 à U+FFFB, U+17B4, U+17B5) deviennent « � ». Assumé : une lettre d'une autre écriture qui
+  U+FFF9 à U+FFFB, U+17B4, U+17B5) deviennent « � ». Assumé : deux noms qui ne diffèrent que par un sélecteur se
+  montrent pareil (le jugement, lui, voit le sélecteur, et la clé d'un choix accepté l'écrit `\u{…}` : un choix ne
+  couvre jamais l'autre nom). Assumé aussi : une lettre d'une autre écriture qui
   ressemble à une latine (« а » cyrillique dans « Sаlon ») reste telle quelle, pour ne pas abîmer les noms écrits dans
   ces langues ; et un état est jugé après le retrait de ses espaces de fin, ce qui ne change rien tant qu'il est un mot
   fixe de `vanguard`, jamais un nom venu de l'extérieur. La note du bilan n'est montrée que si Vanguard la dit fiable
