@@ -10,6 +10,8 @@
 mod appli;
 #[cfg(test)]
 mod attaques;
+#[cfg(any(windows, test))]
+mod avis;
 #[cfg(target_os = "linux")]
 mod bac_a_sable;
 #[cfg(windows)]
@@ -68,7 +70,11 @@ fn main() -> ExitCode {
     // Avant tout le reste : une DLL posée à côté du programme (clé USB, Téléchargements) n'est jamais chargée.
     #[cfg(windows)]
     if !chargement::system32_seulement() {
-        eprintln!("vanguard-fenetre : SetDefaultDllDirectories refusé, la fenêtre ne s'ouvre pas");
+        let e = "SetDefaultDllDirectories refusé";
+        eprintln!("vanguard-fenetre : {e}, la fenêtre ne s'ouvre pas");
+        if !std::env::args().any(|a| a == "--depuis-vanguard") {
+            avis::montrer(e);
+        }
         return ExitCode::FAILURE;
     }
     let o = match options(std::env::args().skip(1)) {
@@ -91,6 +97,10 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("vanguard-fenetre : {e}");
+            #[cfg(windows)]
+            if !o.depuis_vanguard {
+                avis::montrer(&e);
+            }
             ExitCode::FAILURE
         }
     }
