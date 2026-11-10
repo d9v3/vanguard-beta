@@ -1,0 +1,1 @@
+LD_PRELOAD=/opt/a.so:$HOME/b.so DEFAULT=/c.so

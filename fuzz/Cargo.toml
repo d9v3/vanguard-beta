@@ -351,3 +351,10 @@ path = "fuzz_targets/fenetre_progression.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "designes"
+path = "fuzz_targets/designes.rs"
+test = false
+doc = false
+bench = false
