@@ -114,7 +114,7 @@ pub fn liste(appli: &mut Appli, ui: &mut Ui, v: &Vue) {
         carte(ui, 20, |ui| {
             ui.set_width(ui.available_width());
             for m in &manques {
-                ui.label(texte(m, 13.0, p.moyen));
+                super::signale(ui, p.moyen, m, 13.0);
             }
         });
     }
@@ -162,14 +162,15 @@ fn confirmation(appli: &mut Appli, ui: &mut Ui, g: &Geste) {
             ui.label(texte(ce_qui_se_passe, 14.0, p.doux));
             if g.machine {
                 ui.add_space(4.0);
-                ui.label(texte(
+                super::signale(
+                    ui,
+                    p.jaune,
                     crate::tr!(
                         "Il est de tout l'ordinateur : la fenêtre administrateur du système s'ouvrira.",
                         "It belongs to the whole computer: the system's administrator window will open."
                     ),
                     14.0,
-                    p.jaune,
-                ));
+                );
             }
             ui.add_space(14.0);
             ui.horizontal(|ui| {

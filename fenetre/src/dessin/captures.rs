@@ -829,3 +829,142 @@ fn noms_de_fichier() {
     uniques.dedup();
     assert_eq!(noms.len(), uniques.len(), "{noms:?}");
 }
+
+/// Aucun mot n'est écrit dans une couleur de gravité : un mot d'état se lit à l'encre, la couleur réglable ne marque
+/// que son point, sa barre ou sa bande. Sans quoi une gravité choisie près du fond effacerait le mot qui la dit
+/// (MODELE-DE-MENACE.md, « Les couleurs »). Chaque écran, sombre et clair, données remplies et vides, la section des
+/// couleurs avec un brouillon peu lisible et sa confirmation, les coulisses ouvertes.
+#[test]
+fn aucun_mot_n_est_ecrit_dans_une_couleur_de_gravite() {
+    use crate::commandes::ChangementCouleurs;
+    use crate::couleurs::{Base, Choix, Theme, Vif, verifier, vifs_hex};
+    crate::langue::choisir(Some(false));
+    // Des couleurs distinctes de toutes les autres (neutres, accent) : un mot qui en porte une se reconnaît.
+    let vifs = |sombre: bool| -> [crate::couleurs::Rgb; 5] {
+        if sombre {
+            [
+                [0x4d, 0xa6, 0xff],
+                [0xff, 0x4f, 0x8b],
+                [0xff, 0x9a, 0x3c],
+                [0xe8, 0xd8, 0x4a],
+                [0x3c, 0xcf, 0x7e],
+            ]
+        } else {
+            [
+                [0x0b, 0x5c, 0xad],
+                [0xb0, 0x12, 0x4a],
+                [0xa8, 0x5a, 0x00],
+                [0x7a, 0x6a, 0x00],
+                [0x0f, 0x7a, 0x3e],
+            ]
+        }
+    };
+    let mut vus = 0usize;
+    for sombre in [true, false] {
+        let theme = Theme::depuis_sombre(sombre);
+        let mut choix = Choix::du_prereglage(Base::Vanguard, theme);
+        for (v, c) in Vif::TOUS.into_iter().zip(vifs(sombre)) {
+            choix.poser(v, c);
+        }
+        assert!(verifier(theme, &choix).is_ok(), "des couleurs d'essai lisibles");
+        let interdites: Vec<Color32> = [Vif::Grave, Vif::Moyen, Vif::Jaune, Vif::Bon]
+            .map(|v| {
+                let c = choix.vif(v);
+                Color32::from_rgb(c[0], c[1], c[2])
+            })
+            .to_vec();
+        let poser = |a: &mut Appli| {
+            let mut lu = serde_json::json!({});
+            lu[theme.mot()] = serde_json::json!({ "base": choix.base.mot(), "vifs": vifs_hex(&choix.vifs) });
+            a.poser(Commande::Couleurs, lu.to_string().as_bytes());
+        };
+        let mut cas: Vec<(String, Appli, bool)> = Vec::new();
+        for (nom, ecran, donnees) in ecrans() {
+            let mut a = match donnees {
+                Donnees::Remplies => appli_remplie(false, sombre),
+                Donnees::Aucune => appli_vide(false, sombre),
+                Donnees::Rien => appli_vide(true, sombre),
+            };
+            poser(&mut a);
+            a.aller(ecran);
+            let coulisses = nom.ends_with("coulisses");
+            cas.push((nom, a, coulisses));
+        }
+        // La section des couleurs : un brouillon qui appelle des remarques et un refus, puis sa confirmation.
+        let mut peu_lisible = choix;
+        peu_lisible.poser(Vif::Moyen, peu_lisible.vif(Vif::Grave));
+        peu_lisible.poser(Vif::Jaune, if sombre { [0x20, 0x20, 0x20] } else { [0xf0, 0xf0, 0xf0] });
+        for confirmer in [false, true] {
+            let mut a = appli_remplie(false, sombre);
+            poser(&mut a);
+            a.aller(Ecran::Rubrique(Rubrique::Vanguard));
+            a.brouillon = Some((theme, if confirmer { choix } else { peu_lisible }));
+            if confirmer {
+                a.proposer_couleurs(ChangementCouleurs {
+                    theme,
+                    choix: Some(peu_lisible),
+                });
+            }
+            cas.push((format!("couleurs-{confirmer}"), a, false));
+        }
+        for (nom, mut appli, coulisses) in cas {
+            let ctx = Context::default();
+            super::polices(&ctx);
+            super::appliquer_theme(&ctx, sombre);
+            ctx.set_embed_viewports(true);
+            if coulisses {
+                super::coulisses::basculer(&ctx);
+            }
+            let mut formes = Vec::new();
+            for t in [1.0, 1.5, 3.0] {
+                let entree = egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1920.0, 1700.0))),
+                    time: Some(t),
+                    ..Default::default()
+                };
+                let mut sortie = ctx.run_ui(entree, |ui| image(&mut appli, None, ui));
+                // Rien n'est peint ici : les textures sont dites appliquées, comme epaint le veut.
+                sortie.textures_delta.clear();
+                formes = sortie.shapes;
+            }
+            let mut pile: Vec<epaint::Shape> = formes.into_iter().map(|c| c.shape).collect();
+            while let Some(f) = pile.pop() {
+                match f {
+                    epaint::Shape::Vec(v) => pile.extend(v),
+                    epaint::Shape::Text(t) => {
+                        for s in &t.galley.job.sections {
+                            let couleur = t
+                                .override_text_color
+                                .unwrap_or(if s.format.color == Color32::PLACEHOLDER {
+                                    t.fallback_color
+                                } else {
+                                    s.format.color
+                                });
+                            let [r, g, b, a] = couleur.to_srgba_unmultiplied();
+                            let mot = t
+                                .galley
+                                .job
+                                .text
+                                .get(s.byte_range.start.0..s.byte_range.end.0)
+                                .unwrap_or_default();
+                            vus += 1;
+                            if a < 40 || mot.trim().is_empty() {
+                                continue;
+                            }
+                            for i in &interdites {
+                                let proche = (i.r().abs_diff(r)).max(i.g().abs_diff(g)).max(i.b().abs_diff(b)) <= 2;
+                                assert!(
+                                    !proche,
+                                    "{nom} ({}) : « {mot} » écrit en #{r:02x}{g:02x}{b:02x}",
+                                    theme.mot()
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    assert!(vus > 1000, "{vus} morceaux de texte vus");
+}

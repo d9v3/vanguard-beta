@@ -243,8 +243,10 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   des fonds du thème (contraste sous 1,5:1) est refusée trois fois, par la fenêtre, par le relais et par `vanguard`,
   et une couleur gardée qui le serait ne vaut pas (couleurs de Vanguard) ; sous 3:1 ou deux gravités trop proches,
   ce n'est qu'une remarque (prévenir, pas interdire). Une fenêtre prise en main ne peut donc que poser des couleurs
-  laides ou trompeuses (un « sain » rouge), jamais rendre une alerte invisible ; et une gravité n'est jamais dite par
-  la couleur seule, toujours aussi en mots. Assumé : cosmétique, ce changement n'est pas noté au journal des
+  laides ou trompeuses (un « sain » rouge), jamais rendre une alerte illisible : chaque mot d'état, d'alerte, de
+  gravité ou de remarque s'écrit à l'encre du thème, qui n'est pas réglable, et la couleur réglable ne marque que son
+  point, sa barre ou sa bande (essai `aucun_mot_n_est_ecrit_dans_une_couleur_de_gravite`,
+  `fenetre/src/dessin/captures.rs`) ; une gravité n'est donc jamais dite par la couleur seule, toujours aussi en mots. Assumé : cosmétique, ce changement n'est pas noté au journal des
   événements et n'a pas de limite de fréquence. Les couleurs du système sont lues par `vanguard` seul (le bac à
   sable de la fenêtre ne voit pas le dossier personnel) : le colors.toml du thème d'Omarchy, fichier ordinaire lu
   sans suivre de lien et borné à 64 Kio, ou la couleur d'accentuation de Windows (l'accent seul) ; un instantané,

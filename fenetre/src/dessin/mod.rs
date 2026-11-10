@@ -154,6 +154,29 @@ pub fn texte(t: &str, taille: f32, couleur: Color32) -> RichText {
     RichText::new(t).size(taille).color(couleur)
 }
 
+/// Un texte qui dit un état ou une gravité : un point de `couleur` devant, le texte toujours à l'encre. Les couleurs
+/// vives se règlent (une gravité peut se confondre avec le fond) : elles ne servent qu'à repérer, jamais à écrire un
+/// mot ; il se lit quelles que soient les couleurs choisies.
+pub fn signale(ui: &mut Ui, couleur: Color32, t: &str, taille: f32) {
+    let encre = pal().encre;
+    signale_avec(ui, couleur, taille, |ui| {
+        ui.label(texte(t, taille, encre));
+    });
+}
+
+/// `signale` pour un contenu quelconque (d'autres tailles, des polices) : le point se centre sur sa première ligne,
+/// haute d'environ `taille` × 1,3.
+pub fn signale_avec(ui: &mut Ui, couleur: Color32, taille: f32, contenu: impl FnOnce(&mut Ui)) {
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        let rayon = (taille * 0.27).clamp(3.0, 6.0);
+        let (z, _) = ui.allocate_exact_size(vec2(2.0 * rayon, taille * 1.3), egui::Sense::hover());
+        ui.painter()
+            .circle_filled(egui::pos2(z.left() + rayon, z.center().y), rayon, couleur);
+        ui.vertical(contenu);
+    });
+}
+
 /// Le rayon des cartes, le même partout.
 pub const RAYON_CARTE: u8 = 16;
 

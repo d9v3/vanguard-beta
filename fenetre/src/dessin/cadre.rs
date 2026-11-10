@@ -479,7 +479,7 @@ fn console(appli: &mut Appli, ui: &mut Ui, montrees: usize) {
         Align2::RIGHT_CENTER,
         mot,
         police(12.0),
-        p.doux.lerp_to_gamma(if ouvertes { p.accent } else { p.encre }, vif),
+        p.doux.lerp_to_gamma(p.encre, vif),
     );
     super::clavier::anneau_zone(ui, &rep, zone.shrink2(vec2(0.0, 10.0)).expand2(vec2(6.0, 0.0)), 6.0);
     if rep.clicked() {
@@ -615,13 +615,18 @@ fn rangee(l: &LigneConsole) -> Rangee<'_> {
         source: &l.source,
         couleur_source: if l.ton == Ton::Commande { p.accent } else { p.doux },
         texte: &l.texte,
+        // Un ton d'état (bon, attention, grave) : un point de sa couleur dans la marge, le texte à l'encre. Les
+        // couleurs vives se règlent : elles repèrent, elles ne portent jamais seules un mot.
         couleur: match l.ton {
-            Ton::Normal => p.encre,
+            Ton::Normal | Ton::Bon | Ton::Attention | Ton::Grave => p.encre,
             Ton::Commande => p.accent,
-            Ton::Bon => p.bon,
-            Ton::Attention => p.moyen,
-            Ton::Grave => p.grave,
             Ton::Discret => p.doux,
+        },
+        marque: match l.ton {
+            Ton::Bon => Some(p.bon),
+            Ton::Attention => Some(p.moyen),
+            Ton::Grave => Some(p.grave),
+            Ton::Normal | Ton::Commande | Ton::Discret => None,
         },
     }
 }

@@ -108,7 +108,7 @@ pub fn section(appli: &mut Appli, ui: &mut Ui) {
         ));
         if let Some(d) = appli.couleurs().doute {
             ui.add_space(4.0);
-            ui.label(texte(d.texte(), 13.0, p.moyen));
+            super::signale(ui, p.encre, d.texte(), 13.0);
         }
         ui.add_space(12.0);
         prereglages(appli, ui, theme, &mut nouveau);
@@ -218,8 +218,10 @@ fn ligne_vif(ui: &mut Ui, theme: Theme, choix: &mut Choix, v: Vif) {
                     c = defaut;
                 }
                 let ratio = contraste_sur_fonds(&neutres, c);
+                // L'encre, jamais une couleur réglable : la remarque doit se lire même si la couleur jugée ne se
+                // voit pas.
                 let couleur = if ratio < CONTRASTE_CONSEILLE {
-                    p.moyen
+                    p.encre
                 } else {
                     p.discret
                 };
@@ -243,8 +245,12 @@ fn ligne_vif(ui: &mut Ui, theme: Theme, choix: &mut Choix, v: Vif) {
 fn lisibilite(ui: &mut Ui, theme: Theme, choix: &Choix) {
     let p = pal();
     let refus = verifier(theme, choix).err();
+    // Tout ce qui juge la lisibilité s'écrit à l'encre, avec une marque à l'encre : jamais dans une couleur réglable,
+    // qui pourrait être justement celle qui ne se voit pas.
     if let Some(r) = refus {
-        ui.label(texte(
+        super::signale(
+            ui,
+            p.encre,
             &crate::trf!(
                 "{} se verrait à peine sur le fond (contraste {}:1) : Vanguard refuserait de l'enregistrer, et la fenêtre ne la montre pas.",
                 "{} would barely show on the background (contrast {}:1): Vanguard would refuse to save it, and the window does not show it.",
@@ -252,8 +258,7 @@ fn lisibilite(ui: &mut Ui, theme: Theme, choix: &Choix) {
                 crate::langue::nombre(r.ratio, 1)
             ),
             13.0,
-            p.grave,
-        ));
+        );
     }
     // La couleur refusée l'est déjà ci-dessus : pas une deuxième fois en remarque.
     let r: Vec<Remarque> = remarques(theme, choix)
@@ -285,7 +290,7 @@ fn lisibilite(ui: &mut Ui, theme: Theme, choix: &Choix) {
                 nom_vif(b)
             ),
         };
-        ui.label(texte(&phrase, 13.0, p.moyen));
+        super::signale(ui, p.encre, &phrase, 13.0);
     }
 }
 
