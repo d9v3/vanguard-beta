@@ -7,6 +7,7 @@ use super::bilan::{self, couleur_gravite};
 use super::{bouton, carte, entete, mono, moyenne, pal, petit, texte, texte_et_boutons, titre_section};
 use crate::appli::{Appli, Contenu, Ecran, ecran_de};
 use crate::commandes::{Commande, Rubrique};
+use crate::donnees::appareils::{self as scan, Empoisonnement, Upnp};
 use crate::donnees::evenements;
 use crate::donnees::libre;
 use crate::donnees::protection::{self, Allure};
@@ -14,33 +15,21 @@ use crate::donnees::protection::{self, Allure};
 /// Événements du journal montrés au plus (les plus récents).
 const EVENEMENTS_MAX: usize = 200;
 
+/// Appareils et redirections montrés au plus : un réseau de maison en a bien moins ; au-delà, l'écran resterait
+/// lisible mais lent à dessiner à chaque image.
+const APPAREILS_MAX: usize = 300;
+
 pub fn montrer(appli: &mut Appli, ui: &mut Ui) {
     match appli.ecran {
         Ecran::Accueil => accueil(appli, ui),
         Ecran::Bilan | Ecran::Commande(Commande::Bilan) => bilan::ecran(appli, ui),
         Ecran::Alertes | Ecran::Commande(Commande::Evenements) => alertes(appli, ui),
-        Ecran::Appareils => bientot(
-            ui,
-            crate::tr!("Appareils", "Devices"),
-            crate::tr!(
-                "Les appareils de votre réseau (le scan) arrivent dans un prochain lot. Pour l'instant : le menu de Vanguard, « Réseau et Internet ».",
-                "The devices on your network (the scan) come in a later batch. For now: Vanguard's menu, “Network and Internet”."
-            ),
-        ),
+        Ecran::Appareils | Ecran::Commande(Commande::Appareils) => appareils(appli, ui),
         Ecran::Rubrique(Rubrique::Vanguard) => reglages(appli, ui),
         Ecran::Rubrique(r) => rubrique(appli, ui, r),
         Ecran::Commande(c) => commande(appli, ui, c),
         Ecran::Guide => guide(appli, ui),
     }
-}
-
-fn bientot(ui: &mut Ui, titre: &str, phrase: &str) {
-    entete(ui, titre, "");
-    ui.add_space(24.0);
-    carte(ui, 24, 16, |ui| {
-        ui.set_width(ui.available_width());
-        ui.label(texte(phrase, 14.0, pal().doux));
-    });
 }
 
 /// Une carte qu'on clique pour ouvrir un écran.
@@ -159,8 +148,8 @@ fn accueil(appli: &mut Appli, ui: &mut Ui) {
     ui.add_space(16.0);
     ui.label(texte(
         crate::tr!(
-            "Les corrections, les réglages et l'antivirus restent dans le menu de Vanguard pour l'instant : ils arrivent ici lot par lot, toujours montrés puis acceptés.",
-            "Fixes, settings and the antivirus stay in Vanguard's menu for now: they come here batch by batch, always shown then accepted."
+            "Ce qui change l'ordinateur (corrections, réglages, quarantaine) reste dans le menu de Vanguard pour l'instant : il arrive ici lot par lot, toujours montré puis accepté.",
+            "What changes the computer (fixes, settings, quarantine) stays in Vanguard's menu for now: it comes here batch by batch, always shown then accepted."
         ),
         13.0,
         p.discret,
@@ -228,6 +217,12 @@ fn rubrique(appli: &mut Appli, ui: &mut Ui, r: Rubrique) {
         });
         return;
     }
+    cartes_commandes(appli, ui, commandes);
+}
+
+/// Une carte par commande : son titre, ce qu'elle fait, son état, Voir et Lancer.
+fn cartes_commandes(appli: &mut Appli, ui: &mut Ui, commandes: Vec<Commande>) {
+    let p = pal();
     for c in commandes {
         let etat = etat_commande(appli, c);
         carte(ui, 20, 16, |ui| {
@@ -281,8 +276,273 @@ fn commande(appli: &mut Appli, ui: &mut Ui, c: Commande) {
         Contenu::Protection(v) => protection_liste(ui, v),
         Contenu::Libre(v) => libre_liste(ui, v),
         Contenu::Evenements(v) => journal(ui, v),
+        Contenu::Appareils(v) => appareils_liste(ui, v),
         Contenu::Erreur(e) => erreur(ui, e),
     }
+}
+
+/// L'écran des appareils : le dernier scan du réseau local, appareil par appareil.
+fn appareils(appli: &mut Appli, ui: &mut Ui) {
+    let p = pal();
+    let c = Commande::Appareils;
+    texte_et_boutons(
+        ui,
+        c.nom(),
+        |ui| entete(ui, c.titre(), c.description()),
+        |ui| lancer_arreter(appli, ui, c),
+    );
+    ui.label(RichText::new(etat_commande(appli, c)).font(mono(12.0)).color(p.discret));
+    ui.add_space(24.0);
+    match appli.resultat(c).map(|r| r.contenu.clone()) {
+        Some(Contenu::Appareils(v)) => appareils_liste(ui, &v),
+        Some(Contenu::Erreur(e)) => erreur(ui, &e),
+        // Une autre forme ne vient pas d'`appareils` : rien à en montrer ici.
+        Some(_) | None => {
+            ui.label(texte(
+                crate::tr!(
+                    "Lancez le scan pour voir les appareils de votre réseau (une dizaine de secondes).",
+                    "Run the scan to see the devices on your network (about ten seconds)."
+                ),
+                14.0,
+                p.doux,
+            ));
+        }
+    }
+}
+
+fn appareils_liste(ui: &mut Ui, v: &scan::Vue) {
+    let p = pal();
+    ui.label(texte(&v.resume(), 14.0, p.doux));
+    if !v.reseau.is_empty() {
+        ui.label(RichText::new(&v.reseau).font(mono(12.0)).color(p.discret));
+    }
+    ui.add_space(16.0);
+    let manques = v.manques();
+    if !manques.is_empty() {
+        carte(ui, 20, 16, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(
+                RichText::new(crate::tr!("Pas pu vérifier", "Could not check"))
+                    .font(moyenne(15.0))
+                    .color(p.moyen),
+            );
+            for m in &manques {
+                ui.label(texte(m, 13.0, p.doux));
+            }
+        });
+        ui.add_space(16.0);
+    }
+    reseau_entier(ui, v);
+    titre_section(ui, crate::tr!("Appareils", "Devices"), Some(v.appareils.len()));
+    if v.appareils.is_empty() {
+        ui.label(texte(
+            crate::tr!("Aucun appareil trouvé.", "No device found."),
+            14.0,
+            p.doux,
+        ));
+    } else {
+        carte(ui, 20, 16, |ui| {
+            ui.set_width(ui.available_width());
+            for (k, a) in v.appareils.iter().take(APPAREILS_MAX).enumerate() {
+                if k > 0 {
+                    ui.separator();
+                }
+                ui.push_id(k, |ui| appareil(ui, a));
+            }
+        });
+    }
+    if v.appareils.len() > APPAREILS_MAX {
+        ui.label(texte(
+            &crate::trf!(
+                "Les {} premiers seulement : le reste, dans le menu de Vanguard.",
+                "The first {} only: the rest, in Vanguard's menu.",
+                APPAREILS_MAX
+            ),
+            13.0,
+            p.discret,
+        ));
+    }
+    if !v.absents.is_empty() {
+        ui.add_space(24.0);
+        titre_section(
+            ui,
+            crate::tr!("Absents de ce scan", "Missing from this scan"),
+            Some(v.absents.len()),
+        );
+        for a in v.absents.iter().take(APPAREILS_MAX) {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(&a.titre).font(moyenne(14.0)).color(p.encre));
+                let vu = if a.dernier_vu.is_empty() {
+                    a.ip.clone()
+                } else {
+                    crate::trf!("{} · vu le {}", "{} · seen {}", a.ip, a.dernier_vu)
+                };
+                ui.label(RichText::new(vu).font(mono(12.0)).color(p.discret));
+            });
+        }
+    }
+    ui.add_space(12.0);
+    ui.label(texte(
+        crate::tr!(
+            "Lecture seule : nommer un appareil, le déclarer connu ou fermer un port se fait dans le menu de Vanguard.",
+            "Read-only: naming a device, marking it known or closing a port is done in Vanguard's menu."
+        ),
+        13.0,
+        p.discret,
+    ));
+}
+
+/// Les deux contrôles du réseau entier : les redirections UPnP de la box et les faux noms. Ce qui n'a pas pu être
+/// vu est déjà dans la carte « Pas pu vérifier » : ici, seulement ce qui a été vu.
+fn reseau_entier(ui: &mut Ui, v: &scan::Vue) {
+    let p = pal();
+    let mut lignes: Vec<(String, Color32)> = Vec::new();
+    match &v.upnp {
+        Upnp::Absent => lignes.push((
+            crate::tr!(
+                "UPnP de la box : coupé ou absent (le mieux).",
+                "Router UPnP: off or absent (best)."
+            )
+            .into(),
+            p.bon,
+        )),
+        Upnp::Actif { redirections, .. } => {
+            let actives: Vec<&scan::Redirection> = redirections.iter().filter(|r| r.active).collect();
+            lignes.push((
+                crate::trf!(
+                    "UPnP de la box : actif, {} port(s) ouvert(s) vers Internet.",
+                    "Router UPnP: on, {} port(s) open to the Internet.",
+                    actives.len()
+                ),
+                if actives.is_empty() { p.encre } else { p.moyen },
+            ));
+            for r in actives.into_iter().take(APPAREILS_MAX) {
+                let port = |n: Option<u16>| n.map_or_else(|| "?".to_string(), |n| n.to_string());
+                let depuis = if r.hote_distant.is_empty() {
+                    crate::tr!("tout Internet", "the whole Internet").to_string()
+                } else {
+                    r.hote_distant.clone()
+                };
+                lignes.push((
+                    format!(
+                        "  {} {} → {}:{} · {} · {}",
+                        r.protocole,
+                        port(r.port_public),
+                        r.appareil,
+                        port(r.port_appareil),
+                        r.description,
+                        depuis
+                    ),
+                    p.doux,
+                ));
+            }
+        }
+        // Dit dans « Pas pu vérifier ».
+        Upnp::OutilAbsent | Upnp::OutilEnEchec | Upnp::Usurpee(_) | Upnp::NonLu => {}
+    }
+    if let Empoisonnement::Teste { empoisonneurs, .. } = &v.empoisonnement {
+        if empoisonneurs.is_empty() {
+            lignes.push((
+                crate::tr!(
+                    "Faux noms : aucun appareil ne répond à un nom inventé.",
+                    "Fake names: no device answers an invented name."
+                )
+                .into(),
+                p.bon,
+            ));
+        }
+        for (ip, protocoles) in empoisonneurs.iter().take(APPAREILS_MAX) {
+            lignes.push((
+                crate::trf!(
+                    "Faux noms : {} répond à un nom inventé ({}) et peut détourner des connexions.",
+                    "Fake names: {} answers an invented name ({}) and can divert connections.",
+                    ip,
+                    protocoles
+                ),
+                p.grave,
+            ));
+        }
+    }
+    if lignes.is_empty() {
+        return;
+    }
+    carte(ui, 20, 16, |ui| {
+        ui.set_width(ui.available_width());
+        for (l, couleur) in lignes {
+            ui.label(texte(&l, 13.0, couleur));
+        }
+    });
+    ui.add_space(16.0);
+}
+
+/// Une ligne par appareil : son nom, son adresse, ses ports ; ce qui est nouveau ou risqué en couleur.
+fn appareil(ui: &mut Ui, a: &scan::Appareil) {
+    let p = pal();
+    ui.horizontal_top(|ui| {
+        let (z, _) = ui.allocate_exact_size(vec2(12.0, 18.0), Sense::hover());
+        let couleur = match a.gravite() {
+            Some(g) if g >= crate::donnees::bilan::Gravite::Moyenne => couleur_gravite(Some(g)),
+            _ if a.nouveau => p.accent,
+            _ => p.bon,
+        };
+        ui.painter()
+            .circle_filled(pos2(z.left() + 4.0, z.center().y), 4.0, couleur);
+        ui.vertical(|ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(&a.titre).font(moyenne(14.0)).color(p.encre));
+                if a.nouveau {
+                    ui.label(texte(crate::tr!("nouveau", "new"), 12.0, p.accent));
+                }
+                if a.passerelle() {
+                    ui.label(texte(crate::tr!("la box", "the router"), 12.0, p.doux));
+                } else if a.role == "cette machine" {
+                    ui.label(texte(crate::tr!("cet ordinateur", "this computer"), 12.0, p.doux));
+                }
+                let mut ici = a.ip.clone();
+                if !a.mac.is_empty() {
+                    ici = format!("{ici} · {}", a.mac);
+                }
+                ui.label(RichText::new(ici).font(mono(12.0)).color(p.discret));
+            });
+            if !a.ports.is_empty() {
+                let ports: Vec<String> = a
+                    .ports
+                    .iter()
+                    .take(APPAREILS_MAX)
+                    .map(|o| {
+                        let n = o.numero.map_or_else(|| "?".to_string(), |n| n.to_string());
+                        let mut t = format!("{n}{}", if o.udp { "/udp" } else { "" });
+                        if !o.service.is_empty() {
+                            t = format!("{t} {}", o.service);
+                        }
+                        if o.nouveau {
+                            t = crate::trf!("{} (nouveau)", "{} (new)", t);
+                        }
+                        t
+                    })
+                    .collect();
+                ui.label(texte(
+                    &crate::trf!("Ports ouverts : {}", "Open ports: {}", ports.join(", ")),
+                    13.0,
+                    p.doux,
+                ));
+            }
+            for (g, t) in a.alertes.iter().take(APPAREILS_MAX) {
+                ui.label(texte(t, 13.0, couleur_gravite(*g)));
+            }
+            if a.illisibles > 0 {
+                ui.label(texte(
+                    &crate::trf!(
+                        "{} détail(s) illisible(s) : non vérifiés.",
+                        "{} unreadable detail(s): not verified.",
+                        a.illisibles
+                    ),
+                    13.0,
+                    p.moyen,
+                ));
+            }
+        });
+    });
 }
 
 fn erreur(ui: &mut Ui, e: &str) {
@@ -554,6 +814,9 @@ fn reglages(appli: &mut Appli, ui: &mut Ui) {
         13.0,
         p.discret,
     ));
+    ui.add_space(24.0);
+    titre_section(ui, crate::tr!("Vérifier Vanguard", "Check Vanguard"), None);
+    cartes_commandes(appli, ui, Rubrique::Vanguard.commandes().collect());
 }
 
 fn guide(appli: &mut Appli, ui: &mut Ui) {
@@ -567,7 +830,7 @@ fn guide(appli: &mut Appli, ui: &mut Ui) {
         ),
     );
     ui.add_space(24.0);
-    for c in Commande::TOUTES {
+    for c in Commande::ici() {
         ui.horizontal(|ui| {
             ui.push_id(c.nom(), |ui| {
                 ui.set_width(ui.available_width());
@@ -591,8 +854,8 @@ fn guide(appli: &mut Appli, ui: &mut Ui) {
     ui.add_space(16.0);
     ui.label(texte(
         crate::tr!(
-            "Le reste de Vanguard (corrections, réglages, scan du réseau, clé USB) est dans son menu, en attendant d'arriver ici.",
-            "The rest of Vanguard (fixes, settings, network scan, USB key) is in its menu, until it comes here."
+            "Le reste de Vanguard (corrections, réglages, quarantaine, clé USB) est dans son menu, en attendant d'arriver ici.",
+            "The rest of Vanguard (fixes, settings, quarantine, USB key) is in its menu, until it comes here."
         ),
         13.0,
         p.discret,

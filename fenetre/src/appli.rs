@@ -6,7 +6,7 @@ use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 use crate::commandes::{self, Commande, Forme, Rubrique, Saisie};
-use crate::donnees::{bilan, evenements, libre, protection};
+use crate::donnees::{appareils, bilan, evenements, libre, protection};
 use crate::lanceur::{Fin, Issue, Message, Programme, Reveil, Tache};
 
 /// Lignes gardées dans la console.
@@ -24,7 +24,7 @@ pub enum Ecran {
     Accueil,
     Bilan,
     Alertes,
-    /// Pas encore dans la fenêtre (le scan du réseau) : un écran le dit.
+    /// Le scan du réseau local (`appareils --json`).
     Appareils,
     Rubrique(Rubrique),
     Commande(Commande),
@@ -56,6 +56,7 @@ pub enum Contenu {
     Constats(bilan::Vue),
     Protection(protection::Vue),
     Evenements(evenements::Vue),
+    Appareils(appareils::Vue),
     Libre(libre::Vue),
     /// La commande n'a rien rendu de lisible : pourquoi, en une phrase.
     Erreur(String),
@@ -297,6 +298,7 @@ impl Appli {
                 v.etat.phrase(),
                 crate::trf!("{} alerte(s)", "{} alert(s)", v.alertes().count())
             ),
+            Contenu::Appareils(v) => v.resume(),
             Contenu::Libre(v) => crate::trf!("{} valeur(s)", "{} value(s)", v.lignes.len()),
         };
         self.dire(c.nom_affiche(), &format!("{texte} ({secondes:.1} s)"), ton(&contenu));
@@ -354,7 +356,7 @@ impl Appli {
                     crate::tr!("Commandes permises ici :", "Commands allowed here:"),
                     Ton::Normal,
                 );
-                for c in Commande::TOUTES {
+                for c in Commande::ici() {
                     let l = format!("{:<22} {}", c.nom_affiche(), c.titre());
                     self.dire("aide", &l, Ton::Discret);
                 }
@@ -418,6 +420,7 @@ pub fn ecran_de(c: Commande) -> Ecran {
     match c {
         Commande::Bilan => Ecran::Bilan,
         Commande::Evenements => Ecran::Alertes,
+        Commande::Appareils => Ecran::Appareils,
         _ => Ecran::Commande(c),
     }
 }
@@ -425,6 +428,8 @@ pub fn ecran_de(c: Commande) -> Ecran {
 fn lire(c: Commande, sortie: &[u8]) -> Result<Contenu, String> {
     Ok(match c.forme() {
         Forme::Audit | Forme::Resultat => Contenu::Constats(bilan::lire(sortie)?),
+        Forme::AuditReseau => Contenu::Constats(bilan::lire_audit_reseau(sortie)?),
+        Forme::Appareils => Contenu::Appareils(appareils::lire(sortie)?),
         Forme::Protection => Contenu::Protection(protection::lire(sortie)?),
         Forme::Evenements => Contenu::Evenements(evenements::lire(sortie)?),
         Forme::Libre => Contenu::Libre(libre::lire(sortie)?),
@@ -461,6 +466,17 @@ fn ton(contenu: &Contenu) -> Ton {
             None if v.alertes().next().is_some() || v.illisibles > 0 => Ton::Attention,
             None => Ton::Bon,
         },
+        // Un appareil nouveau, un risque, ce qui n'a pas pu être vu : jamais sain. Vert seulement pour un scan qui a
+        // trouvé des appareils et tout pu vérifier, sans rien à signaler.
+        Contenu::Appareils(v) => {
+            if v.a_signaler() || !v.manques().is_empty() {
+                Ton::Attention
+            } else if v.appareils.is_empty() {
+                Ton::Normal
+            } else {
+                Ton::Bon
+            }
+        }
         Contenu::Libre(_) => Ton::Normal,
     }
 }
@@ -521,6 +537,28 @@ mod tests {
         assert_eq!(b(r#"{"constats": []}"#), Ton::Normal);
 
         assert_eq!(ton(&Contenu::Libre(libre::Vue::default())), Ton::Normal);
+
+        let a = |json: &str| ton(&Contenu::Appareils(appareils::lire(json.as_bytes()).unwrap()));
+        let teste = r#""upnp": "Absent", "empoisonnement": {"Teste": []}"#;
+        let un = r#"{"ip": "192.168.1.20", "ports": [], "alertes": [], "nouvelle": false}"#;
+        assert_eq!(a(&format!(r#"{{"hotes": [{un}], {teste}}}"#)), Ton::Bon);
+        assert_eq!(a(&format!(r#"{{"hotes": [], {teste}}}"#)), Ton::Normal);
+        // UPnP pas interrogé, sonde des faux noms pas lancée : non vérifié, jamais vert.
+        assert_eq!(
+            a(&format!(
+                r#"{{"hotes": [{un}], "upnp": "OutilAbsent", "empoisonnement": {{"Teste": []}}}}"#
+            )),
+            Ton::Attention
+        );
+        assert_eq!(
+            a(&format!(
+                r#"{{"hotes": [{un}], "upnp": "Absent", "empoisonnement": "SansReseauLocal"}}"#
+            )),
+            Ton::Attention
+        );
+        let nouveau = r#"{"ip": "192.168.1.21", "nouvelle": true}"#;
+        assert_eq!(a(&format!(r#"{{"hotes": [{nouveau}], {teste}}}"#)), Ton::Attention);
+        assert_eq!(a(&format!(r#"{{"hotes": [{un}, 7], {teste}}}"#)), Ton::Attention);
     }
 
     fn appli() -> Appli {

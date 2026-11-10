@@ -70,9 +70,9 @@ impl Rubrique {
         }
     }
 
-    /// Les commandes de la liste rangées dans cette rubrique.
+    /// Les commandes de la liste rangées dans cette rubrique, celles de ce système seulement.
     pub fn commandes(self) -> impl Iterator<Item = Commande> {
-        Commande::TOUTES.into_iter().filter(move |c| c.rubrique() == self)
+        Commande::ici().filter(move |c| c.rubrique() == self)
     }
 }
 
@@ -87,6 +87,10 @@ pub enum Forme {
     Protection,
     /// `evenements --json` : le journal.
     Evenements,
+    /// `appareils --json` : le scan du réseau local (`donnees::appareils`).
+    Appareils,
+    /// `audit-reseau --json` : six domaines, chacun ses constats, sa note retenue quand il est incomplet.
+    AuditReseau,
     /// Un autre JSON, montré tel quel (clés et valeurs), borné.
     Libre,
 }
@@ -116,12 +120,24 @@ pub enum Commande {
     MisesAJour,
     Demarrage,
     ObjetsConnectes,
+    Appareils,
+    AuditReseau,
+    JournauxWindows,
+    Autotest,
+    CamerasCachees,
+    Nat,
+    CanauxWifi,
+    Conteneurs,
+    Secrets,
+    Changements,
+    VerifierMoi,
+    Regles,
 }
 
 impl Commande {
     /// L'ordre compte : le relais reçoit le rang d'une commande dans cette liste (`protocole`). Une commande
     /// nouvelle s'ajoute à la fin.
-    pub const TOUTES: [Commande; 22] = [
+    pub const TOUTES: [Commande; 34] = [
         Commande::Bilan,
         Commande::Protection,
         Commande::Evenements,
@@ -144,7 +160,31 @@ impl Commande {
         Commande::MisesAJour,
         Commande::Demarrage,
         Commande::ObjetsConnectes,
+        Commande::Appareils,
+        Commande::AuditReseau,
+        Commande::JournauxWindows,
+        Commande::Autotest,
+        Commande::CamerasCachees,
+        Commande::Nat,
+        Commande::CanauxWifi,
+        Commande::Conteneurs,
+        Commande::Secrets,
+        Commande::Changements,
+        Commande::VerifierMoi,
+        Commande::Regles,
     ];
+
+    /// Les commandes de la liste que ce système sait lancer, dans l'ordre de la liste. Une commande propre à un autre
+    /// système reste dans `TOUTES` (le rang du relais ne bouge pas), mais n'est ni montrée, ni comprise, ni lancée.
+    pub fn ici() -> impl Iterator<Item = Commande> {
+        Commande::TOUTES.into_iter().filter(|c| c.sur_ce_systeme())
+    }
+
+    /// Faux pour une commande d'un autre système : les journaux de Windows ne se lisent que sous Windows (lire un
+    /// dossier de .evtx demanderait un chemin, jamais donné d'ici).
+    pub fn sur_ce_systeme(self) -> bool {
+        !matches!(self, Commande::JournauxWindows) || cfg!(windows)
+    }
 
     /// Le nom tapé dans la console (français).
     pub fn nom(self) -> &'static str {
@@ -171,6 +211,18 @@ impl Commande {
             Commande::MisesAJour => "mises-a-jour",
             Commande::Demarrage => "demarrage",
             Commande::ObjetsConnectes => "objets-connectes",
+            Commande::Appareils => "appareils",
+            Commande::AuditReseau => "audit-reseau",
+            Commande::JournauxWindows => "journaux-windows",
+            Commande::Autotest => "autotest",
+            Commande::CamerasCachees => "cameras-cachees",
+            Commande::Nat => "nat",
+            Commande::CanauxWifi => "canaux-wifi",
+            Commande::Conteneurs => "conteneurs",
+            Commande::Secrets => "secrets",
+            Commande::Changements => "changements",
+            Commande::VerifierMoi => "verifier-moi",
+            Commande::Regles => "regles",
         }
     }
 
@@ -199,6 +251,18 @@ impl Commande {
             Commande::MisesAJour => "updates",
             Commande::Demarrage => "startup",
             Commande::ObjetsConnectes => "smart-devices",
+            Commande::Appareils => "devices",
+            Commande::AuditReseau => "network-audit",
+            Commande::JournauxWindows => "windows-logs",
+            Commande::Autotest => "self-test",
+            Commande::CamerasCachees => "hidden-cameras",
+            Commande::Nat => "nat",
+            Commande::CanauxWifi => "wifi-channels",
+            Commande::Conteneurs => "containers",
+            Commande::Secrets => "secrets",
+            Commande::Changements => "changes",
+            Commande::VerifierMoi => "self-check",
+            Commande::Regles => "rules",
         }
     }
 
@@ -241,6 +305,23 @@ impl Commande {
             // La liste, rien de retiré.
             Commande::Demarrage => &["demarrage", "--json"],
             Commande::ObjetsConnectes => &["objets-connectes", "--json"],
+            // Le scan du réseau local, ports courants : jamais une cible ni une liste de ports choisie d'ici.
+            Commande::Appareils => &["appareils", "--json"],
+            // Jamais --invite (une affirmation de la personne) ni --html (un navigateur ouvert).
+            Commande::AuditReseau => &["audit-reseau", "--json"],
+            // Les journaux de ce Windows, sur la semaine : jamais un dossier choisi d'ici.
+            Commande::JournauxWindows => &["journaux-windows", "--json"],
+            // Hors ligne (jamais --internet), sans valeur lue (jamais --detail).
+            Commande::Autotest => &["autotest", "--json"],
+            Commande::CamerasCachees => &["cameras-cachees", "--json"],
+            Commande::Nat => &["nat", "--json"],
+            Commande::CanauxWifi => &["canaux-wifi", "--json"],
+            Commande::Conteneurs => &["conteneurs", "--json"],
+            Commande::Secrets => &["secrets", "--json"],
+            Commande::Changements => &["changements", "--json"],
+            // Cette copie seulement : jamais le chemin d'un autre programme.
+            Commande::VerifierMoi => &["verifier-moi", "--json"],
+            Commande::Regles => &["regles", "--json"],
         }
     }
 
@@ -248,16 +329,26 @@ impl Commande {
     /// outils qui lisent une liste en ligne jusqu'à quelques minutes sur une connexion lente.
     pub fn delai(self) -> Duration {
         Duration::from_secs(match self {
-            Commande::Antivirus | Commande::Yara | Commande::Memoire => 1800,
+            // trivy lit chaque image, et télécharge sa base la première fois.
+            Commande::Antivirus | Commande::Yara | Commande::Memoire | Commande::Conteneurs => 1800,
+            // L'historique de chaque projet git du dossier personnel.
+            Commande::Secrets => 600,
             Commande::Bilan
             | Commande::LogicielsEspions
             | Commande::LogicielsPerimes
             | Commande::MisesAJour
-            | Commande::Integrite => 300,
+            | Commande::Integrite
+            | Commande::JournauxWindows
+            | Commande::Autotest => 300,
+            // Le scan du réseau local : une douzaine de secondes sur un /24, plus sur une plage large ou lente.
             Commande::TestConnexion
             | Commande::ConnexionsSortantes
             | Commande::Lenteur
-            | Commande::DernieresFailles => 180,
+            | Commande::DernieresFailles
+            | Commande::Appareils
+            | Commande::AuditReseau
+            | Commande::CamerasCachees
+            | Commande::VerifierMoi => 180,
             _ => 120,
         })
     }
@@ -267,7 +358,9 @@ impl Commande {
             Commande::Bilan => Forme::Audit,
             Commande::Protection => Forme::Protection,
             Commande::Evenements => Forme::Evenements,
-            Commande::FicheOrdinateur | Commande::OptionsDefense => Forme::Libre,
+            Commande::Appareils => Forme::Appareils,
+            Commande::AuditReseau => Forme::AuditReseau,
+            Commande::FicheOrdinateur | Commande::OptionsDefense | Commande::Autotest => Forme::Libre,
             _ => Forme::Resultat,
         }
     }
@@ -297,6 +390,18 @@ impl Commande {
             Commande::MisesAJour => crate::tr!("Mises à jour en attente", "Pending updates"),
             Commande::Demarrage => crate::tr!("Programmes au démarrage", "Startup programs"),
             Commande::ObjetsConnectes => crate::tr!("Routeur et objets connectés", "Router and smart devices"),
+            Commande::Appareils => crate::tr!("Appareils du réseau", "Network devices"),
+            Commande::AuditReseau => crate::tr!("Audit du réseau", "Network audit"),
+            Commande::JournauxWindows => crate::tr!("Journaux de Windows", "Windows logs"),
+            Commande::Autotest => crate::tr!("Autodiagnostic de Vanguard", "Vanguard self-test"),
+            Commande::CamerasCachees => crate::tr!("Caméras cachées", "Hidden cameras"),
+            Commande::Nat => crate::tr!("Type de NAT", "NAT type"),
+            Commande::CanauxWifi => crate::tr!("Canaux Wi-Fi", "Wi-Fi channels"),
+            Commande::Conteneurs => crate::tr!("Images de conteneurs", "Container images"),
+            Commande::Secrets => crate::tr!("Secrets dans git", "Secrets in git"),
+            Commande::Changements => crate::tr!("Ce que Vanguard a changé", "What Vanguard changed"),
+            Commande::VerifierMoi => crate::tr!("Vérifier cette copie de Vanguard", "Verify this copy of Vanguard"),
+            Commande::Regles => crate::tr!("Règles du bilan", "Check rules"),
         }
     }
 
@@ -391,6 +496,54 @@ impl Commande {
                 "Le routeur et les objets du dernier scan du réseau, et leurs risques.",
                 "The router and devices from the last network scan, and their risks."
             ),
+            Commande::Appareils => crate::tr!(
+                "Les appareils du réseau local, leurs ports ouverts et leurs risques, et ce qui est nouveau depuis le dernier scan.",
+                "Devices on the local network, their open ports and risks, and what is new since the last scan."
+            ),
+            Commande::AuditReseau => crate::tr!(
+                "Exposition à Internet, Wi-Fi, séparation, DNS et TLS, appareils, ordinateurs : six domaines notés, sans rien attaquer.",
+                "Internet exposure, Wi-Fi, separation, DNS and TLS, devices, computers: six graded areas, without attacking anything."
+            ),
+            Commande::JournauxWindows => crate::tr!(
+                "Les traces d'attaque de la semaine dans les journaux de ce Windows : effacements, comptes, mots de passe devinés.",
+                "Attack traces from the past week in this Windows' logs: wiped logs, accounts, guessed passwords."
+            ),
+            Commande::Autotest => crate::tr!(
+                "Vanguard vérifie ses propres lectures, hors ligne, sans rien changer.",
+                "Vanguard checks its own readings, offline, without changing anything."
+            ),
+            Commande::CamerasCachees => crate::tr!(
+                "Sur le réseau d'une location, les appareils qui ressemblent à des caméras. Aucune image n'est lue.",
+                "On a rental's network, the devices that look like cameras. No image is read."
+            ),
+            Commande::Nat => crate::tr!(
+                "Ouvert, modéré ou strict pour le jeu, d'après deux serveurs publics.",
+                "Open, moderate or strict for gaming, from two public servers."
+            ),
+            Commande::CanauxWifi => crate::tr!(
+                "Les réseaux voisins par canal, et le plus libre à régler sur le routeur. Rien n'est réglé d'ici.",
+                "Nearby networks by channel, and the freest one to set on the router. Nothing is set from here."
+            ),
+            Commande::Conteneurs => crate::tr!(
+                "Les failles connues des images Docker ou Podman, par trivy s'il est installé.",
+                "Known flaws in Docker or Podman images, by trivy if installed."
+            ),
+            Commande::Secrets => crate::tr!(
+                "Mots de passe et clés oubliés dans l'historique des projets git. Aucun secret n'est montré.",
+                "Passwords and keys left in git project history. No secret is shown."
+            ),
+            Commande::Changements => crate::tr!(
+                "Chaque correction lancée sur cet ordinateur, sa date et son résultat.",
+                "Each fix run on this computer, its date and its result."
+            ),
+            Commande::VerifierMoi => crate::tr!(
+                "Ce programme est-il bien celui publié ? Son empreinte comparée à celle de la version.",
+                "Is this program the one published? Its fingerprint compared with the release's."
+            ),
+            Commande::Regles => crate::tr!(
+                "Les règles du bilan pour ce système : identifiant, sujet, références.",
+                "The check rules for this system: identifier, subject, references."
+            ),
         }
     }
 
@@ -401,20 +554,32 @@ impl Commande {
             | Commande::Lenteur
             | Commande::Integrite
             | Commande::DernieresFailles
-            | Commande::MisesAJour => Rubrique::Ordinateur,
+            | Commande::MisesAJour
+            | Commande::Conteneurs
+            | Commande::Secrets => Rubrique::Ordinateur,
             Commande::Diagnostic
             | Commande::TestConnexion
             | Commande::ConnexionsSortantes
             | Commande::AccesADistance
-            | Commande::ObjetsConnectes => Rubrique::Reseau,
+            | Commande::ObjetsConnectes
+            | Commande::Appareils
+            | Commande::AuditReseau
+            | Commande::CamerasCachees => Rubrique::Reseau,
             Commande::LogicielsEspions
             | Commande::Antivirus
             | Commande::EtatAntivirus
             | Commande::Yara
             | Commande::Memoire => Rubrique::Virus,
             Commande::BilanConfidentialite => Rubrique::Arnaques,
-            Commande::Protection | Commande::Evenements | Commande::OptionsDefense => Rubrique::Bloquer,
-            Commande::LogicielsPerimes | Commande::Demarrage => Rubrique::Optimiser,
+            Commande::Protection
+            | Commande::Evenements
+            | Commande::OptionsDefense
+            | Commande::JournauxWindows
+            | Commande::Changements => Rubrique::Bloquer,
+            Commande::LogicielsPerimes | Commande::Demarrage | Commande::Nat | Commande::CanauxWifi => {
+                Rubrique::Optimiser
+            }
+            Commande::Autotest | Commande::VerifierMoi | Commande::Regles => Rubrique::Vanguard,
         }
     }
 }
@@ -483,8 +648,7 @@ pub fn comprendre(saisie: &str) -> Saisie {
     if EFFACER.contains(&m.as_str()) {
         return Saisie::Effacer;
     }
-    Commande::TOUTES
-        .into_iter()
+    Commande::ici()
         .find(|c| c.nom() == m || c.nom_anglais() == m)
         .map_or_else(refus, Saisie::Lancer)
 }
@@ -495,9 +659,8 @@ pub fn completer(debut: &str) -> Option<&'static str> {
     if d.is_empty() {
         return None;
     }
-    let mut noms: Vec<&'static str> = Commande::TOUTES
-        .iter()
-        .map(|c| c.nom_affiche())
+    let mut noms: Vec<&'static str> = Commande::ici()
+        .map(Commande::nom_affiche)
         .chain([crate::tr!("aide", "help"), crate::tr!("effacer", "clear")])
         .filter(|n| n.starts_with(&d))
         .collect();
@@ -584,6 +747,39 @@ mod tests {
     }
 
     #[test]
+    fn une_commande_d_un_autre_systeme_n_est_ni_montree_ni_comprise() {
+        let windows = cfg!(windows);
+        assert_eq!(Commande::JournauxWindows.sur_ce_systeme(), windows);
+        assert_eq!(Commande::ici().any(|c| c == Commande::JournauxWindows), windows);
+        assert_eq!(
+            Rubrique::Bloquer.commandes().any(|c| c == Commande::JournauxWindows),
+            windows
+        );
+        for saisie in ["journaux-windows", "windows-logs", "vanguard journaux-windows"] {
+            assert_eq!(
+                matches!(comprendre(saisie), Saisie::Lancer(Commande::JournauxWindows)),
+                windows,
+                "{saisie}"
+            );
+        }
+        assert_eq!(completer("journaux-w").is_some(), windows);
+        // Toujours dans la liste, à son rang : le relais et la fenêtre gardent le même ordre sur les deux systèmes.
+        assert_eq!(
+            Commande::TOUTES.iter().position(|c| *c == Commande::JournauxWindows),
+            Some(24)
+        );
+    }
+
+    #[test]
+    fn les_commandes_nouvelles_sont_a_la_fin() {
+        // Le relais reçoit le rang : les 22 premières gardent le leur.
+        assert_eq!(Commande::TOUTES[0], Commande::Bilan);
+        assert_eq!(Commande::TOUTES[21], Commande::ObjetsConnectes);
+        assert_eq!(Commande::TOUTES[22], Commande::Appareils);
+        assert_eq!(Commande::TOUTES[33], Commande::Regles);
+    }
+
+    #[test]
     fn tab_complete_un_seul_nom() {
         assert_eq!(completer("bil"), None, "bilan et bilan-confidentialite");
         assert_eq!(completer("bilan-"), Some("bilan-confidentialite"));
@@ -592,13 +788,16 @@ mod tests {
         assert_eq!(completer("eff"), Some("effacer"));
         assert_eq!(completer(""), None);
         assert_eq!(completer("zzz"), None);
+        assert_eq!(completer("appa"), Some("appareils"));
+        assert_eq!(completer("ver"), Some("verifier-moi"));
     }
 
     #[test]
     fn chaque_rubrique_garde_ses_commandes() {
         let total: usize = Rubrique::TOUTES.iter().map(|r| r.commandes().count()).sum();
-        assert_eq!(total, Commande::TOUTES.len());
+        assert_eq!(total, Commande::ici().count());
         assert_eq!(Rubrique::Accueil.commandes().count(), 0);
+        assert_eq!(Rubrique::Vanguard.commandes().count(), 3);
         for r in Rubrique::TOUTES {
             assert!(r.nom_court().lines().all(|l| l.chars().count() <= 12), "{r:?}");
         }

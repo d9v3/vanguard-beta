@@ -328,6 +328,15 @@ pub fn surveiller(
         issue,
         duree: debut.elapsed(),
     };
+    // Une commande d'un autre système n'est jamais lancée, même demandée par son rang (le relais lit la fenêtre comme
+    // un inconnu) : la fenêtre ne la montre pas, ceci tient même si elle la demandait.
+    if !commande.sur_ce_systeme() {
+        return fin(
+            None,
+            Vec::new(),
+            Issue::Impossible(crate::tr!("pas sur ce système", "not on this system").into()),
+        );
+    }
     // La garde rejouée juste avant le lancement (voir `Programme::verifier`).
     if let Err(e) = programme.verifier() {
         return fin(None, Vec::new(), Issue::Impossible(e));
@@ -856,6 +865,11 @@ esac
         // Une commande que le script ne connaît pas : son code de sortie est rendu tel quel.
         let (_, f) = attendre(&Tache::lancer(&p, Commande::Lenteur, false, &rien));
         assert_eq!(f.code, Some(7));
+
+        // Une commande d'un autre système : rien n'est lancé (le script aurait rendu 7).
+        let (_, f) = attendre(&Tache::lancer(&p, Commande::JournauxWindows, false, &rien));
+        assert!(matches!(f.issue, Issue::Impossible(_)), "{:?}", f.issue);
+        assert_eq!(f.code, None);
         let _ = std::fs::remove_dir_all(&d);
     }
 }

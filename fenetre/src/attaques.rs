@@ -5,7 +5,7 @@
 //! MODELE-DE-MENACE.md, et ne sont pas figés ici.
 
 use crate::commandes::{self, Commande, Saisie};
-use crate::donnees::{bilan, evenements, libre, protection};
+use crate::donnees::{appareils, bilan, evenements, libre, protection};
 
 /// Un générateur fixe (même suite à chaque passage) : un échec se rejoue tel quel.
 struct Suite(u64);
@@ -101,6 +101,8 @@ fn aucune_saisie_ne_fabrique_un_argument() {
     for e in &essais {
         if let Saisie::Lancer(c) = commandes::comprendre(e) {
             assert!(Commande::TOUTES.contains(&c), "{e:?}");
+            // Une commande d'un autre système (les journaux de Windows sous Linux) ne se comprend pas ici.
+            assert!(c.sur_ce_systeme(), "{e:?} -> {c:?}");
             let a = c.arguments();
             // La sous-commande et --json, ou la seule option qui lit (antivirus --etat) : jamais un mot tapé.
             assert!(a.len() == 2 || a == ["antivirus", "--etat", "--json"], "{e:?} -> {a:?}");
@@ -224,11 +226,30 @@ fn aucun_lecteur_ne_panique_sur_un_json_hostile() {
         format!("{{\"constats\": [{}]}}", vec![el.as_str(); 4000].join(",")).into_bytes(),
         format!("{{\"evenements\": [{}]}}", vec![el.as_str(); 4000].join(",")).into_bytes(),
         format!("{{\"x\": \"{}\"}}", "é".repeat(1_000_000)).into_bytes(),
+        // Les formes du scan et de l'audit du réseau : variantes inconnues, imbriquées, hors bornes.
+        br#"{"upnp": {"Actif": {"redirections": [{"port_public": 1e400}], "ailleurs": 5}}}"#.to_vec(),
+        br#"{"upnp": {"Actif": 1, "Absent": 2}, "empoisonnement": {"Teste": {"x": 1}}}"#.to_vec(),
+        br#"{"hotes": [{"alertes": [[1e400, {"a": 1}, 3]], "ports": [{"port": -1}]}]}"#.to_vec(),
+        format!(
+            "{{\"upnp\": {}1{}}}",
+            "{\"Actif\":".repeat(100_000),
+            "}".repeat(100_000)
+        )
+        .into_bytes(),
+        format!("{{\"hotes\": [{}]}}", vec![el.as_str(); 4000].join(",")).into_bytes(),
+        format!(
+            "{{\"domaines\": [{}]}}",
+            vec!["{\"constats\": [0,0,0]}"; 100_000].join(",")
+        )
+        .into_bytes(),
+        "{\"domaines\":[{\"constats\":".repeat(5000).into_bytes(),
     ];
     for s in &corpus {
         let apercu = String::from_utf8_lossy(&s[..s.len().min(40)]).into_owned();
-        let lecteurs: [Lecteur; 4] = [
+        let lecteurs: [Lecteur; 6] = [
             ("bilan", |s| drop(bilan::lire(s))),
+            ("audit-reseau", |s| drop(bilan::lire_audit_reseau(s))),
+            ("appareils", |s| drop(appareils::lire(s))),
             ("protection", |s| drop(protection::lire(s))),
             ("evenements", |s| drop(evenements::lire(s))),
             ("libre", |s| drop(libre::lire(s))),

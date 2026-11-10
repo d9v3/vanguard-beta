@@ -5,6 +5,9 @@
 //! inconnu (écrit par une version plus récente), un constat illisible ou un constat sans état ni preuve de
 //! vérification vont dans « pas pu vérifier ». La note n'est montrée que si Vanguard la dit fiable (`fiable`, posé
 //! par `audit --json`) : sinon une machine peu vérifiée aurait une note rassurante.
+//!
+//! L'audit du réseau (`audit-reseau --json`) a sa propre forme, six domaines qui portent chacun des constats de
+//! l'audit : `lire_audit_reseau` les met à la suite, et la même vue les montre.
 
 use serde::Deserialize;
 
@@ -52,7 +55,7 @@ pub enum Gravite {
 impl Gravite {
     /// « Info », « Moyen », « Eleve », « Critique » (`risk::Niveau` de Vanguard) ; un autre mot : moyenne, pour ne
     /// pas taire un problème dont on ne connaît pas le niveau.
-    fn lire(mot: &str) -> Option<Gravite> {
+    pub(super) fn lire(mot: &str) -> Option<Gravite> {
         match mot {
             "" => None,
             "Info" => Some(Gravite::Info),
@@ -206,6 +209,77 @@ pub fn lire(sortie: &[u8]) -> Result<Vue, String> {
         note_retenue: note.is_some() && !fiable,
         illisibles: b.constats.illisibles,
         constats: b.constats.elements.into_iter().map(Constat::from).collect(),
+        manques,
+    })
+}
+
+/// Un domaine de `audit-reseau --json` : son nom et ses constats (de la forme de l'audit).
+#[derive(Deserialize, Default, Debug)]
+#[serde(default)]
+struct DomaineBrut {
+    domaine: Texte,
+    constats: Liste<ConstatBrut>,
+}
+
+#[derive(Deserialize, Default, Debug)]
+#[serde(default)]
+struct BrutReseau {
+    reseau: Texte,
+    nom_reseau: Texte,
+    score: Option<u64>,
+    domaines: Liste<DomaineBrut>,
+}
+
+/// Lit `audit-reseau --json` : les constats des domaines à la suite, rangés sous leur domaine quand ils n'ont pas
+/// de catégorie. Vanguard n'écrit aucune note dès qu'un domaine est trop peu vérifié (il n'y a pas de `fiable` ici) :
+/// la note est prise telle quelle, et `note_incomplete` dit à côté ce qui reste non vérifié.
+pub fn lire_audit_reseau(sortie: &[u8]) -> Result<Vue, String> {
+    let b: BrutReseau = super::lire(sortie)?;
+    let mut illisibles = b.domaines.illisibles;
+    let mut constats = Vec::new();
+    for d in b.domaines.elements {
+        illisibles = illisibles.saturating_add(d.constats.illisibles);
+        for mut c in d.constats.elements {
+            // Chaque liste est bornée, leur somme ne l'est pas : la même borne pour le tout.
+            if constats.len() >= super::ELEMENTS_MAX {
+                illisibles = illisibles.saturating_add(1);
+                continue;
+            }
+            if c.categorie.is_empty() {
+                c.categorie = d.domaine.clone();
+            }
+            constats.push(Constat::from(c));
+        }
+    }
+    let mut manques = Vec::new();
+    if b.reseau.is_empty() {
+        manques.push(
+            crate::tr!(
+                "Aucun réseau local : rien n'a pu être audité",
+                "No local network: nothing could be audited"
+            )
+            .to_string(),
+        );
+    } else if constats.is_empty() && illisibles == 0 {
+        manques.push(crate::tr!("Aucun domaine lu", "No area read").to_string());
+    }
+    let nom = if b.nom_reseau.is_empty() {
+        &b.reseau
+    } else {
+        &b.nom_reseau
+    };
+    // Une note sans aucun constat n'a rien jugé : pas montrée.
+    let note = b
+        .score
+        .and_then(|s| u32::try_from(s).ok())
+        .filter(|s| *s <= 100 && !constats.is_empty());
+    Ok(Vue {
+        systeme: crate::nettoyage::nom(nom.as_str(), 80),
+        outil: "audit-reseau".into(),
+        note,
+        note_retenue: false,
+        illisibles,
+        constats,
         manques,
     })
 }
@@ -442,6 +516,53 @@ mod tests {
         let c = v.constats.first().unwrap();
         assert_eq!(c.categorie, "Réseau\u{fffd}");
         assert_eq!(c.message, "Salon\u{fffd}tout va bien");
+    }
+
+    #[test]
+    fn range_un_audit_du_reseau() {
+        let v = lire_audit_reseau(
+            br#"{"reseau": "192.168.1.0/24", "nom_reseau": "Salon", "score": 70, "domaines": [
+                {"domaine": "Wi-Fi", "constats": [
+                    {"categorie": "Wi-Fi", "etat": "probleme", "probleme": "Eleve", "message": "WPA2 seul."},
+                    {"etat": "sain", "message": "Rien d'ouvert."}]},
+                {"domaine": "Postes", "constats": [{"etat": "non-verifie", "message": "Pas lu."}, 3]},
+                "pas un domaine"
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(v.systeme, "Salon");
+        assert_eq!(v.note, Some(70));
+        assert_eq!(v.constats.len(), 3);
+        // Sans catégorie : rangé sous son domaine.
+        assert_eq!(v.constats[1].categorie, "Wi-Fi");
+        assert_eq!(v.constats[2].categorie, "Postes");
+        assert_eq!(v.compte(Rang::Corriger), 1);
+        // Le constat non vérifié, le constat illisible et le domaine illisible : jamais sains.
+        assert_eq!(v.illisibles, 2);
+        assert_eq!(v.compte(Rang::NonVerifie), 3);
+        assert_eq!(v.note_incomplete(), Some(3));
+
+        // Aucun réseau local : pas de note, et c'est dit.
+        let v = lire_audit_reseau(br#"{"reseau": null, "score": null, "domaines": []}"#).unwrap();
+        assert_eq!(v.note, None);
+        assert_eq!(v.manques.len(), 1);
+        assert!(v.compte(Rang::NonVerifie) > 0);
+        // Une note sans aucun constat ne se montre pas, et le vide est dit.
+        let v = lire_audit_reseau(br#"{"reseau": "10.0.0.0/24", "score": 100, "domaines": []}"#).unwrap();
+        assert_eq!(v.note, None);
+        assert_eq!(v.manques.len(), 1);
+    }
+
+    #[test]
+    fn l_audit_du_reseau_est_borne_dans_son_ensemble() {
+        let domaine = format!(
+            r#"{{"domaine": "Postes", "constats": [{}]}}"#,
+            vec!["{}"; 3000].join(",")
+        );
+        let json = format!(r#"{{"reseau": "10.0.0.0/24", "domaines": [{domaine}, {domaine}]}}"#);
+        let v = lire_audit_reseau(json.as_bytes()).unwrap();
+        assert_eq!(v.constats.len(), crate::donnees::ELEMENTS_MAX);
+        assert_eq!(v.illisibles, 6000 - crate::donnees::ELEMENTS_MAX);
     }
 
     #[test]

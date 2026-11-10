@@ -8,6 +8,7 @@
 //! texte est lu au fil de l'eau, ce qu'il ne prend pas est sauté sans être gardé (`IgnoredAny`) ; un élément de liste
 //! est gardé tel qu'écrit (`RawValue`, au plus sa taille dans la sortie) le temps d'être lu à part.
 
+pub mod appareils;
 pub mod bilan;
 pub mod evenements;
 pub mod libre;
