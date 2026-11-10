@@ -4,7 +4,7 @@ use eframe::egui::{
     self, Align2, Frame, Key, Margin, Rect, RichText, Sense, Stroke, StrokeKind, TextEdit, Ui, pos2, vec2,
 };
 
-use super::{f32_n, icones, melange, mono, moyenne, n_f32, pal, police};
+use super::{f32_n, icones, melange, mono, moyenne, n_f32, pal, police, survol};
 use crate::appli::{Appli, Ecran, Ton};
 use crate::commandes::{Commande, Rubrique};
 use crate::donnees::protection::Allure;
@@ -107,19 +107,20 @@ fn rail(appli: &mut Appli, ui: &mut Ui) {
         let lignes = n_f32(nom.lines().count());
         let (r, rep) = ui.allocate_exact_size(vec2(72.0, 34.0 + 14.0 * lignes), Sense::click());
         let actif = allumee == rub;
-        let vif = actif || rep.hovered();
+        // La rubrique allumée l'est en plein ; une autre s'allume en fondu sous la souris.
+        let vif = if actif { 1.0 } else { survol(ui, rep.id, rep.hovered()) };
         let peintre = ui.painter();
-        if vif {
-            peintre.rect_filled(r, 10, p.s2);
+        if vif > 0.0 {
+            peintre.rect_filled(r, 10, p.s2.gamma_multiply(vif));
         }
         icones::rubrique(
             peintre,
             pos2(r.center().x, r.top() + 18.0),
             rub,
-            if vif { p.accent } else { p.doux },
+            p.doux.lerp_to_gamma(p.accent, vif),
         );
         // Chaque ligne centrée sous l'icône : `text` centre le bloc, mais aligne ses lignes à gauche.
-        let encre = if vif { p.encre } else { p.doux };
+        let encre = p.doux.lerp_to_gamma(p.encre, vif);
         let mut job = egui::text::LayoutJob::simple(nom.to_owned(), police(11.0), encre, f32::INFINITY);
         job.halign = egui::Align::Center;
         let bloc = peintre.layout_job(job);
@@ -200,7 +201,8 @@ fn barre(appli: &mut Appli, ui: &mut Ui) {
         }
         let zone = Rect::from_min_size(pos2(x, r.top()), vec2(w, r.height()));
         let rep = ui.interact(zone, ui.scope_id().with(("onglet", i)), Sense::click());
-        let col = if actif || rep.hovered() { p.encre } else { p.doux };
+        let vif = if actif { 1.0 } else { survol(ui, rep.id, rep.hovered()) };
+        let col = p.doux.lerp_to_gamma(p.encre, vif);
         ui.painter()
             .text(zone.center(), Align2::CENTER_CENTER, nom, police(14.0), col);
         if actif {
@@ -218,10 +220,10 @@ fn barre(appli: &mut Appli, ui: &mut Ui) {
     }
     let bouton = Rect::from_min_size(pos2(r.right() - 32.0 - 124.0, r.center().y - 18.0), vec2(124.0, 36.0));
     let rep = ui.interact(bouton, ui.scope_id().with("voir-alertes"), Sense::click());
-    let fond = if rep.hovered() {
-        melange(p.accent, p.encre, 0.85)
+    let fond = if rep.is_pointer_button_down_on() {
+        melange(p.accent, p.fond, 0.85)
     } else {
-        p.accent
+        melange(p.accent, p.encre, 1.0 - 0.16 * survol(ui, rep.id, rep.hovered()))
     };
     ui.painter().rect_filled(bouton, 10, fond);
     ui.painter().text(
@@ -315,7 +317,7 @@ fn console(appli: &mut Appli, ui: &mut Ui, montrees: usize) {
             crate::tr!("Déplier", "Expand")
         },
         police(12.0),
-        if rep.hovered() { p.encre } else { p.doux },
+        p.doux.lerp_to_gamma(p.encre, survol(ui, rep.id, rep.hovered())),
     );
     if rep.clicked() {
         ui.ctx().data_mut(|d| d.insert_temp(id_depliee(), !depliee));

@@ -141,13 +141,46 @@ pub fn carte<R>(ui: &mut Ui, marge: i8, rayon: u8, f: impl FnOnce(&mut Ui) -> R)
         .inner
 }
 
-/// Un bouton ; `actif` faux : grisé, sans effet (un geste qui n'existe pas encore).
+/// La durée du survol : assez courte pour suivre la souris, assez longue pour que l'œil voie un fondu.
+const DUREE_SURVOL: f32 = 0.12;
+
+/// La part de survol d'un élément, de 0 à 1, qui glisse en `DUREE_SURVOL` : la couleur change en douceur, la taille
+/// jamais (un bouton qui bouge sous la souris fait brouillon).
+pub fn survol(ui: &Ui, id: egui::Id, survole: bool) -> f32 {
+    ui.ctx()
+        .animate_bool_with_time(id.with("survol"), survole, DUREE_SURVOL)
+}
+
+/// La part de survol d'un bouton d'egui, dessiné avant qu'on sache s'il est survolé : son état à l'image d'avant
+/// (même identifiant), et s'il est pressé. Le fondu demande lui-même les images qui suivent.
+fn survol_bouton(ui: &Ui, actif: bool) -> (f32, bool) {
+    let id = ui.next_auto_id();
+    let avant = ui.ctx().read_response(id);
+    let survole = actif && avant.as_ref().is_some_and(egui::Response::hovered);
+    let presse = actif && avant.as_ref().is_some_and(egui::Response::is_pointer_button_down_on);
+    (survol(ui, id, survole), presse)
+}
+
+/// Le contour d'un bouton survolé : le trait fin du repos qui glisse vers l'accent, adouci.
+fn bord_survole(p: &Palette, t: f32) -> Color32 {
+    p.trait_.lerp_to_gamma(p.accent.gamma_multiply(0.7), t)
+}
+
+/// Un bouton ; `actif` faux : grisé, sans effet (un geste qui n'existe pas encore). Au survol, le fond s'éclaire
+/// et le contour prend l'accent, en fondu ; pressé, il fonce un peu.
 pub fn bouton(ui: &mut Ui, t: &str, plein: bool, actif: bool) -> egui::Response {
     let p = pal();
+    let (s, presse) = survol_bouton(ui, actif);
     let (fond, encre, bord) = if plein {
-        (p.accent, p.sur_vif, p.accent)
+        let fond = if presse {
+            melange(p.accent, p.fond, 0.85)
+        } else {
+            melange(p.accent, p.encre, 1.0 - 0.16 * s)
+        };
+        (fond, p.sur_vif, fond)
     } else {
-        (Color32::TRANSPARENT, p.encre, p.trait_)
+        let fond = if presse { p.s3 } else { p.s2.gamma_multiply(s) };
+        (fond, p.encre, bord_survole(p, s))
     };
     let r = ui.add_enabled(
         actif,
@@ -164,13 +197,22 @@ pub fn bouton(ui: &mut Ui, t: &str, plein: bool, actif: bool) -> egui::Response 
     }
 }
 
+/// Un petit bouton (Retour, Voir la correction…) : même survol en fondu que `bouton`.
 pub fn petit(ui: &mut Ui, t: &str, actif: bool) -> egui::Response {
     let p = pal();
+    let (s, presse) = survol_bouton(ui, actif);
+    let fond = if !actif {
+        Color32::TRANSPARENT
+    } else if presse {
+        melange(p.s3, p.fond, 0.7)
+    } else {
+        p.s2.lerp_to_gamma(p.s3, s)
+    };
     ui.add_enabled(
         actif,
         egui::Button::new(texte(t, 13.0, if actif { p.encre } else { p.doux }))
-            .fill(if actif { p.s2 } else { Color32::TRANSPARENT })
-            .stroke(Stroke::new(1.0, p.trait_))
+            .fill(fond)
+            .stroke(Stroke::new(1.0, if actif { bord_survole(p, s) } else { p.trait_ }))
             .corner_radius(8)
             .min_size(vec2(0.0, 32.0)),
     )
@@ -399,6 +441,46 @@ mod tests {
     fn un_bouton_garde_sa_taille_sous_la_souris() {
         let (repos, survole) = mesurer(true);
         assert_eq!(repos, survole);
+    }
+
+    /// Le fondu lit l'état du bouton à l'image d'avant par l'identifiant qu'egui lui donnera : s'il en changeait,
+    /// le survol ne s'allumerait plus, sans rien casser d'autre. Puis le fondu monte bien de 0 à 1 sous la souris.
+    #[test]
+    fn le_fondu_suit_le_bouton_survole() {
+        let ctx = egui::Context::default();
+        super::polices(&ctx);
+        let mut temps = 0.0;
+        let mut image = |souris: Option<egui::Pos2>| {
+            temps += 0.05;
+            let mut entree = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 200.0))),
+                time: Some(temps),
+                ..Default::default()
+            };
+            if let Some(p) = souris {
+                entree.events.push(egui::Event::PointerMoved(p));
+            }
+            let mut vu = None;
+            ctx.run_ui(entree, |ui| {
+                let prevu = ui.next_auto_id();
+                let (part, _) = super::survol_bouton(ui, true);
+                let r = super::petit(ui, "← Retour", true);
+                assert_eq!(prevu, r.id, "egui ne nomme plus le bouton comme prévu");
+                vu = Some((r.rect, part));
+            })
+            .textures_delta
+            .clear();
+            vu.unwrap()
+        };
+        let (zone, part) = image(None);
+        assert!(part < f32::EPSILON);
+        let mut parts = Vec::new();
+        for _ in 0..8 {
+            parts.push(image(Some(zone.center())).1);
+        }
+        assert!(parts.windows(2).all(|w| w[1] >= w[0]), "{parts:?}");
+        assert!(parts[1] > 0.0 && parts[1] < 1.0, "pas de fondu : {parts:?}");
+        assert!((parts[7] - 1.0).abs() < f32::EPSILON, "{parts:?}");
     }
 
     /// Le témoin : sans le réglage, la même mesure voit le bouton rétrécir (sinon l'essai d'au-dessus ne prouve rien).
