@@ -7,6 +7,8 @@
 #![cfg_attr(not(test), windows_subsystem = "windows")]
 
 mod appli;
+#[cfg(windows)]
+mod chargement;
 mod commandes;
 mod dessin;
 mod donnees;
@@ -48,6 +50,12 @@ fn options(args: impl Iterator<Item = String>) -> Result<Options, String> {
 }
 
 fn main() -> ExitCode {
+    // Avant tout le reste : une DLL posée à côté du programme (clé USB, Téléchargements) n'est jamais chargée.
+    #[cfg(windows)]
+    if !chargement::system32_seulement() {
+        eprintln!("vanguard-fenetre : SetDefaultDllDirectories refusé, la fenêtre ne s'ouvre pas");
+        return ExitCode::FAILURE;
+    }
     let o = match options(std::env::args().skip(1)) {
         Ok(o) => o,
         Err(e) => {
