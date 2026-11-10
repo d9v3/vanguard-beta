@@ -1407,11 +1407,7 @@ esac
     #[test]
     fn un_changement_demande_la_confirmation_et_passe_seul() {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        let d = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("target")
-            .join("essais-fenetre")
-            .join(format!("demarrage-{}", std::process::id()));
+        let d = crate::essais::banc("demarrage");
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let e1 = "0123456789abcdef0123456789abcdef";
@@ -1524,11 +1520,7 @@ esac
     #[test]
     fn une_confirmation_ne_bloque_rien_et_suit_la_liste() {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        let d = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("target")
-            .join("essais-fenetre")
-            .join(format!("confirmation-{}", std::process::id()));
+        let d = crate::essais::banc("confirmation");
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let e1 = "0123456789abcdef0123456789abcdef";

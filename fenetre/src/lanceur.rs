@@ -712,11 +712,7 @@ mod tests {
     #[test]
     fn un_vanguard_modifiable_par_d_autres_est_refuse() {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        let d = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("target")
-            .join("essais-fenetre")
-            .join(format!("droits-{}", std::process::id()));
+        let d = crate::essais::banc("droits");
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let f = d.join("vanguard");
@@ -820,11 +816,7 @@ esac
     #[test]
     fn lance_attend_arrete_et_borne() {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        let d = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("target")
-            .join("essais-fenetre")
-            .join(std::process::id().to_string());
+        let d = crate::essais::banc("lanceur");
         std::fs::create_dir_all(&d).unwrap();
         let script = d.join("vanguard");
         std::fs::write(&script, FAUX).unwrap();

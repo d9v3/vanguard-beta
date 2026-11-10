@@ -741,11 +741,7 @@ esac
     #[test]
     fn un_changement_vu_passe_seul_et_ne_se_coupe_pas() {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        let d = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("target")
-            .join("essais-fenetre")
-            .join(format!("relais-{}", std::process::id()));
+        let d = crate::essais::banc("relais");
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let (e1, e2) = ("0123456789abcdef0123456789abcdef", "f".repeat(32));
@@ -850,11 +846,7 @@ esac
     /// la fenêtre et le fil du relais.
     fn banc_du_relais(nom: &str, liste: &str) -> (std::path::PathBuf, Client, std::thread::JoinHandle<()>) {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        let d = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("target")
-            .join("essais-fenetre")
-            .join(format!("{nom}-{}", std::process::id()));
+        let d = crate::essais::banc(nom);
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -1018,11 +1010,7 @@ esac
         if let Some(d) = std::env::var_os(ESSAI_BAC) {
             return essai_dans_le_bac(std::path::Path::new(&d));
         }
-        let d = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("target")
-            .join("essais-fenetre")
-            .join(format!("bac-{}", std::process::id()));
+        let d = crate::essais::banc("bac");
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         // Sans « .. » : le bac ne suit pas un chemin de curseurs qui en a un (`Milieu::curseurs`).
