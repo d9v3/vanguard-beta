@@ -193,9 +193,9 @@ impl Coulisses {
         self.noter(
             Sorte::Fin,
             &format!(
-                "{} · {:.1} s · code {} · {}",
+                "{} · {} · code {} · {}",
                 issue,
-                f.duree.as_secs_f32(),
+                crate::langue::secondes(f.duree.as_secs_f32()),
                 code,
                 crate::trn!(f.sortie.len(), "octet", "octets", "byte", "bytes")
             ),

@@ -519,7 +519,11 @@ impl Appli {
             Contenu::Appareils(v) => v.resume(),
             Contenu::Libre(v) => crate::trn!(v.lignes.len(), "valeur", "valeurs", "value", "values"),
         };
-        self.dire(c.nom_affiche(), &format!("{texte} ({secondes:.1} s)"), ton(&contenu));
+        self.dire(
+            c.nom_affiche(),
+            &format!("{texte} ({})", crate::langue::secondes(secondes)),
+            ton(&contenu),
+        );
         if let Contenu::Evenements(v) = &contenu {
             self.dernier_sondage = Instant::now();
             let nouvelles: Vec<String> = match &self.journal {

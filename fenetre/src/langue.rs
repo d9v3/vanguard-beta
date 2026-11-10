@@ -29,6 +29,13 @@ pub fn basculer() {
     ANGLAIS.store(!anglais(), Ordering::Relaxed);
 }
 
+/// Une durée en secondes, à une décimale, avec la virgule en français : « 2,1 s », « 2.1 s ». Une seule forme
+/// partout (console, écrans, Coulisses), au lieu de « 2 s » ici et « 2.1 s » là.
+pub fn secondes(s: f32) -> String {
+    let t = format!("{s:.1} s");
+    if anglais() { t } else { t.replace('.', ",") }
+}
+
 /// « en », « en_CA.UTF-8 », « english » : de l'anglais ; le reste, du français.
 pub fn est_anglais(valeur: &str) -> bool {
     valeur.get(..2).is_some_and(|d| d.eq_ignore_ascii_case("en"))

@@ -173,16 +173,20 @@ fn accueil(appli: &mut Appli, ui: &mut Ui) {
         (crate::tr!("Journal", "Journal"), jour_v, jour_p, jour_c, Ecran::Alertes),
     ];
     let large = ui.available_width() >= 900.0;
+    // Entre deux tuiles, le même écart que sous elles (16) : à 8, les trois cartes se touchaient presque.
     if large {
-        ui.columns(3, |cols| {
-            for (col, (t, v, ph, c, e)) in cols.iter_mut().zip(tuiles) {
-                tuile(appli, col, t, &v, &ph, c, e);
-            }
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.x = 16.0;
+            ui.columns(3, |cols| {
+                for (col, (t, v, ph, c, e)) in cols.iter_mut().zip(tuiles) {
+                    tuile(appli, col, t, &v, &ph, c, e);
+                }
+            });
         });
     } else {
         for (t, v, ph, c, e) in tuiles {
             tuile(appli, ui, t, &v, &ph, c, e);
-            ui.add_space(12.0);
+            ui.add_space(16.0);
         }
     }
     ui.add_space(32.0);
@@ -224,10 +228,10 @@ fn etat_commande(appli: &Appli, c: Commande) -> String {
     }
     match appli.resultat(c) {
         Some(r) => crate::trf!(
-            "Fini à {} en {:.1} s",
-            "Finished at {} in {:.1} s",
+            "Fini à {} en {}",
+            "Finished at {} in {}",
             r.heure,
-            r.duree.as_secs_f32()
+            crate::langue::secondes(r.duree.as_secs_f32())
         ),
         None => crate::tr!("Pas encore lancée", "Not run yet").into(),
     }
@@ -593,7 +597,19 @@ fn reseau_entier(ui: &mut Ui, v: &scan::Vue) {
     carte(ui, 20, |ui| {
         ui.set_width(ui.available_width());
         for (l, couleur) in lignes {
-            ui.label(texte(&l, 13.0, couleur));
+            // Une redirection (« TCP 3074 → … ») se range sous sa ligne UPnP, en retrait de 16 : deux espaces
+            // dans le texte ne tombaient sur aucune colonne.
+            match l.strip_prefix("  ") {
+                Some(reste) => {
+                    ui.horizontal(|ui| {
+                        ui.add_space(16.0 - ui.spacing().item_spacing.x);
+                        ui.label(texte(reste, 13.0, couleur));
+                    });
+                }
+                None => {
+                    ui.label(texte(&l, 13.0, couleur));
+                }
+            }
         }
     });
     ui.add_space(16.0);

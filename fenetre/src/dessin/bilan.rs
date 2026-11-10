@@ -87,11 +87,6 @@ fn bande(ui: &mut Ui, vue: Option<&Vue>, en_cours: Option<f32>) {
                     col = p.accent.gamma_multiply(1.0 - d / 0.04 * 0.6);
                 }
             }
-            if e == Rang::Corriger && fini {
-                for k in 1..=3u8 {
-                    peintre.rect_filled(trait_.expand(f32::from(k) * 2.0), 6, p.accent.gamma_multiply(0.08));
-                }
-            }
             if e == Rang::NonVerifie && fini {
                 peintre.rect_filled(trait_, 3, p.fond);
                 peintre.rect_stroke(trait_, 3, Stroke::new(1.0, p.gris), StrokeKind::Inside);
@@ -167,8 +162,8 @@ pub fn ecran(appli: &mut Appli, ui: &mut Ui) {
             t
         ),
         (Some(r), None) => crate::trf!(
-            "Fini à {} · {} en {:.0} s · rien n'est envoyé, tout se lit sur cet ordinateur",
-            "Finished at {} · {} in {:.0} s · nothing is sent, everything is read on this computer",
+            "Fini à {} · {} en {} · rien n'est envoyé, tout se lit sur cet ordinateur",
+            "Finished at {} · {} in {} · nothing is sent, everything is read on this computer",
             r.heure,
             crate::trn!(
                 vue.as_ref().map_or(0, |v| v.constats.len()),
@@ -177,7 +172,7 @@ pub fn ecran(appli: &mut Appli, ui: &mut Ui) {
                 "check",
                 "checks"
             ),
-            r.duree.as_secs_f32()
+            crate::langue::secondes(r.duree.as_secs_f32())
         ),
         (None, None) => crate::tr!(
             "Pas encore lancé · tout se lit sur cet ordinateur, rien n'est changé ni envoyé",
@@ -423,11 +418,14 @@ pub fn constats(ui: &mut Ui, v: &Vue) {
     let p = pal();
     let total = ui.available_width();
     let droite = 360.0_f32.min(total * 0.32);
+    // Le haut de la première carte à corriger : la colonne de droite s'y aligne, pas sur le titre de la section.
+    let premiere_carte = std::cell::Cell::new(None::<f32>);
     let gauche = |ui: &mut Ui, largeur: f32| {
         ui.vertical(|ui| {
             ui.set_width(largeur);
             let a_corriger = v.de_rang(Rang::Corriger);
             titre_section(ui, crate::tr!("À corriger", "To fix"), Some(a_corriger.len()));
+            premiere_carte.set(Some(ui.cursor().top()));
             for c in a_corriger.iter().take(CORRIGER_MAX) {
                 carte_constat(ui, c);
                 ui.add_space(12.0);
@@ -525,7 +523,12 @@ pub fn constats(ui: &mut Ui, v: &Vue) {
             let ecart = ui.spacing().item_spacing.x;
             gauche(ui, total - droite - 24.0 - ecart);
             ui.add_space(24.0);
-            cote(ui, droite);
+            ui.vertical(|ui| {
+                if let Some(y) = premiere_carte.get() {
+                    ui.add_space((y - ui.cursor().top()).max(0.0));
+                }
+                cote(ui, droite);
+            });
         });
     } else {
         gauche(ui, total);

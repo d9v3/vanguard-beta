@@ -286,9 +286,9 @@ fn details(passage: &Passage) -> String {
                 |c| format!("code {c}"),
             );
             format!(
-                "{} · {:.1} s · {} · {}",
+                "{} · {} · {} · {}",
                 f.issue,
-                f.duree.as_secs_f32(),
+                crate::langue::secondes(f.duree.as_secs_f32()),
                 code,
                 crate::trn!(f.taille, "octet", "octets", "byte", "bytes")
             )
