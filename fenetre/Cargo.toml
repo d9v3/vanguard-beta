@@ -19,7 +19,7 @@ path = "src/main.rs"
 # glow (OpenGL) plutôt que wgpu : 24 Mo et 362 caisses avec wgpu, 14 Mo et environ 270 avec glow (essai du 9 nov.).
 # Sans les polices par défaut d'egui : les nôtres sont embarquées (polices/, OFL).
 # « clipboard » : copier une ligne de la console ou des coulisses vers une autre application. arboard y amène, sous
-# Windows, clipboard-win et error-code (BSL-1.0, admise pour elles seules dans deny.toml). Coller dans la console n'y
+# Windows, clipboard-win et error-code (BSL-1.0, permise pour la fenêtre seule dans son deny.toml). Coller dans la console n'y
 # change rien : la saisie passe toujours par la liste fermée (`commandes::comprendre`).
 eframe = { version = "0.37.0", default-features = false, features = ["clipboard", "glow", "wayland", "x11"] }
 serde = { version = "1.0.229", features = ["derive"] }
