@@ -85,6 +85,51 @@ fn refus(m: &std::fs::Metadata, moi: u32) -> Option<&'static str> {
     None
 }
 
+/// Un dossier du chemin de la fenêtre : un vrai dossier, à ce compte ou à root, que ni le groupe ni les autres ne
+/// peuvent modifier, sauf s'il est « collant » (sticky, comme /tmp : les autres comptes n'y renomment ni n'y
+/// effacent ce qui n'est pas à eux). Sinon un autre compte pourrait renommer la fenêtre ou son dossier et en poser
+/// une fausse entre la vérification et le lancement.
+#[cfg(unix)]
+fn refus_dossier(m: &std::fs::Metadata, moi: u32) -> Option<&'static str> {
+    use std::os::unix::fs::MetadataExt;
+    if !m.file_type().is_dir() {
+        return Some(tr!(
+            "un dossier du chemin est un lien",
+            "a folder on the path is a link"
+        ));
+    }
+    if m.uid() != moi && m.uid() != 0 {
+        return Some(tr!(
+            "un dossier du chemin est à un autre compte",
+            "a folder on the path is owned by another account"
+        ));
+    }
+    if m.mode() & 0o022 != 0 && m.mode() & 0o1000 == 0 {
+        return Some(tr!(
+            "un dossier du chemin est modifiable par d'autres comptes",
+            "a folder on the path is writable by other accounts"
+        ));
+    }
+    None
+}
+
+/// La fenêtre (`refus`), puis chacun des dossiers qui la contiennent jusqu'à la racine (`refus_dossier`), sans
+/// suivre aucun lien. Le chemin vient de `current_exe`, déjà résolu sous Linux.
+#[cfg(unix)]
+fn refus_chemin(chemin: &Path, m: &std::fs::Metadata, moi: u32) -> Option<&'static str> {
+    if let Some(r) = refus(m, moi) {
+        return Some(r);
+    }
+    chemin
+        .ancestors()
+        .skip(1)
+        .filter(|d| !d.as_os_str().is_empty())
+        .find_map(|d| match std::fs::symlink_metadata(d) {
+            Ok(m) => refus_dossier(&m, moi),
+            Err(_) => Some(tr!("un dossier illisible", "an unreadable folder")),
+        })
+}
+
 #[cfg(windows)]
 fn refus(m: &std::fs::Metadata) -> Option<&'static str> {
     (!m.file_type().is_file()).then(|| tr!("pas un fichier ordinaire", "not a regular file"))
@@ -104,7 +149,7 @@ pub(crate) fn ouvrir() -> bool {
         return false;
     };
     #[cfg(unix)]
-    let raison = refus(&m, crate::socle::uid());
+    let raison = refus_chemin(&chemin, &m, crate::socle::uid());
     #[cfg(windows)]
     let raison = refus(&m);
     if let Some(r) = raison {
@@ -235,6 +280,14 @@ mod tests {
         if moi != 0 {
             assert!(refus(&std::fs::symlink_metadata(&f).unwrap(), moi.wrapping_add(1)).is_some());
         }
+        // Le dossier : modifiable par d'autres, refusé ; collant (sticky, comme /tmp), permis.
+        let meta = std::fs::symlink_metadata(&f).unwrap();
+        assert_eq!(refus_chemin(&f, &meta, moi), None);
+        std::fs::set_permissions(&dossier, std::fs::Permissions::from_mode(0o775)).unwrap();
+        assert!(refus_chemin(&f, &meta, moi).is_some());
+        std::fs::set_permissions(&dossier, std::fs::Permissions::from_mode(0o1777)).unwrap();
+        assert_eq!(refus_chemin(&f, &meta, moi), None);
+        std::fs::set_permissions(&dossier, std::fs::Permissions::from_mode(0o755)).unwrap();
         let lien = dossier.join("lien");
         std::os::unix::fs::symlink(&f, &lien).unwrap();
         assert!(refus(&std::fs::symlink_metadata(&lien).unwrap(), moi).is_some());

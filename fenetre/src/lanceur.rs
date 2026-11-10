@@ -28,9 +28,12 @@ const GRACE: Duration = Duration::from_millis(1500);
 /// Le pas de la surveillance de l'enfant.
 const PAS: Duration = Duration::from_millis(50);
 
-/// Le programme `vanguard` voisin de la fenêtre.
+/// Le programme `vanguard` voisin de la fenêtre, et le compte à qui il doit être (celui de la fenêtre, ou root).
 #[derive(Clone, Debug)]
-pub struct Programme(PathBuf);
+pub struct Programme {
+    chemin: PathBuf,
+    proprietaire: u32,
+}
 
 impl Programme {
     /// `vanguard` (`vanguard.exe` sous Windows) dans le dossier de la fenêtre. Jamais le PATH, jamais une variable
@@ -53,18 +56,30 @@ impl Programme {
     /// `proprietaire` : le compte à qui est la fenêtre elle-même (Linux) ; `vanguard` doit être à lui ou à root.
     fn dans(dossier: &Path, proprietaire: u32) -> Result<Programme, String> {
         let nom = if cfg!(windows) { "vanguard.exe" } else { "vanguard" };
-        let chemin = dossier.join(nom);
-        // symlink_metadata : un lien n'est pas suivi, il est refusé (pas un fichier ordinaire).
-        let Ok(m) = std::fs::symlink_metadata(&chemin) else {
-            return Err(crate::trf!(
+        let p = Programme {
+            chemin: dossier.join(nom),
+            proprietaire,
+        };
+        p.verifier()?;
+        Ok(p)
+    }
+
+    /// La garde (`refus_chemin`), rejouée juste avant chaque lancement : la fenêtre reste ouverte des heures et relit
+    /// les événements toutes les minutes, le fichier vérifié à l'ouverture a pu changer depuis.
+    pub fn verifier(&self) -> Result<(), String> {
+        let nom = self
+            .chemin
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        match refus_chemin(&self.chemin, self.proprietaire) {
+            None => Ok(()),
+            Some(Refus::Absent) => Err(crate::trf!(
                 "« {} » est introuvable à côté de la fenêtre",
                 "“{}” was not found next to the window",
                 nom
-            ));
-        };
-        match refus(&m, proprietaire) {
-            None => Ok(Programme(chemin)),
-            Some(raison) => Err(crate::trf!(
+            )),
+            Some(Refus::Raison(raison)) => Err(crate::trf!(
                 "« {} » à côté de la fenêtre n'est pas lancé : {}",
                 "“{}” next to the window is not started: {}",
                 nom,
@@ -72,6 +87,45 @@ impl Programme {
             )),
         }
     }
+}
+
+/// Pourquoi le `vanguard` voisin n'est pas lancé.
+#[derive(Debug, PartialEq, Eq)]
+enum Refus {
+    Absent,
+    Raison(&'static str),
+}
+
+/// Le fichier, puis chacun des dossiers qui le contiennent jusqu'à la racine. Un lien n'est jamais suivi
+/// (`symlink_metadata`) : il est refusé. Le chemin vient de `current_exe`, déjà résolu sous Linux.
+#[cfg(unix)]
+fn refus_chemin(chemin: &Path, proprietaire: u32) -> Option<Refus> {
+    let Ok(m) = std::fs::symlink_metadata(chemin) else {
+        return Some(Refus::Absent);
+    };
+    if let Some(r) = refus(&m, proprietaire) {
+        return Some(Refus::Raison(r));
+    }
+    for d in chemin.ancestors().skip(1).filter(|d| !d.as_os_str().is_empty()) {
+        let Ok(m) = std::fs::symlink_metadata(d) else {
+            return Some(Refus::Raison(crate::tr!(
+                "un dossier illisible",
+                "an unreadable folder"
+            )));
+        };
+        if let Some(r) = refus_dossier(&m, proprietaire) {
+            return Some(Refus::Raison(r));
+        }
+    }
+    None
+}
+
+#[cfg(not(unix))]
+fn refus_chemin(chemin: &Path, _proprietaire: u32) -> Option<Refus> {
+    let Ok(m) = std::fs::symlink_metadata(chemin) else {
+        return Some(Refus::Absent);
+    };
+    (!m.file_type().is_file()).then(|| Refus::Raison(crate::tr!("pas un fichier ordinaire", "not a regular file")))
 }
 
 /// Pourquoi le `vanguard` voisin n'est pas lancé, s'il y a une raison : la même règle que Vanguard pour la fenêtre
@@ -96,9 +150,31 @@ fn refus(m: &std::fs::Metadata, proprietaire: u32) -> Option<&'static str> {
     None
 }
 
-#[cfg(not(unix))]
-fn refus(m: &std::fs::Metadata, _proprietaire: u32) -> Option<&'static str> {
-    (!m.file_type().is_file()).then(|| crate::tr!("pas un fichier ordinaire", "not a regular file"))
+/// Un dossier du chemin : un vrai dossier, au même compte ou à root, que ni le groupe ni les autres ne peuvent
+/// modifier, sauf s'il est « collant » (sticky, comme /tmp : les autres comptes n'y renomment ni n'y effacent ce
+/// qui n'est pas à eux). Sinon un autre compte pourrait renommer le fichier ou le dossier et en poser un faux.
+#[cfg(unix)]
+fn refus_dossier(m: &std::fs::Metadata, proprietaire: u32) -> Option<&'static str> {
+    use std::os::unix::fs::MetadataExt;
+    if !m.file_type().is_dir() {
+        return Some(crate::tr!(
+            "un dossier du chemin est un lien",
+            "a folder on the path is a link"
+        ));
+    }
+    if m.uid() != proprietaire && m.uid() != 0 {
+        return Some(crate::tr!(
+            "un dossier du chemin est à un autre compte",
+            "a folder on the path is owned by another account"
+        ));
+    }
+    if m.mode() & 0o022 != 0 && m.mode() & 0o1000 == 0 {
+        return Some(crate::tr!(
+            "un dossier du chemin est modifiable par d'autres comptes",
+            "a folder on the path is writable by other accounts"
+        ));
+    }
+    None
 }
 
 /// Comment une tâche a fini.
@@ -148,13 +224,13 @@ impl Tache {
     pub fn lancer(programme: &Programme, commande: Commande, anglais: bool, reveil: &Reveil) -> Tache {
         let arret = Arc::new(AtomicBool::new(false));
         let (envoi, recu) = mpsc::channel();
-        let chemin = programme.0.clone();
+        let programme = programme.clone();
         let a = Arc::clone(&arret);
         let lance = std::thread::Builder::new().name("vanguard-tache".into()).spawn({
             let envoi = envoi.clone();
             let reveil = Arc::clone(reveil);
             move || {
-                let fin = surveiller(&chemin, commande, anglais, &a, &envoi, &reveil);
+                let fin = surveiller(&programme, commande, anglais, &a, &envoi, &reveil);
                 let _ = envoi.send(Message::Fin(fin));
                 reveil();
             }
@@ -221,7 +297,7 @@ fn preparer(chemin: &Path, commande: Commande, anglais: bool) -> Command {
 }
 
 fn surveiller(
-    chemin: &Path,
+    programme: &Programme,
     commande: Commande,
     anglais: bool,
     arret: &AtomicBool,
@@ -236,7 +312,11 @@ fn surveiller(
         issue,
         duree: debut.elapsed(),
     };
-    let mut enfant = match preparer(chemin, commande, anglais).spawn() {
+    // La garde rejouée juste avant le lancement (voir `Programme::verifier`).
+    if let Err(e) = programme.verifier() {
+        return fin(None, Vec::new(), Issue::Impossible(e));
+    }
+    let mut enfant = match preparer(&programme.chemin, commande, anglais).spawn() {
         Ok(e) => e,
         Err(e) => {
             return fin(
@@ -456,8 +536,28 @@ mod tests {
         let moi = std::fs::metadata(&f).unwrap().uid();
         let droits = |mode| std::fs::set_permissions(&f, std::fs::Permissions::from_mode(mode)).unwrap();
         droits(0o755);
+        let p = Programme::dans(&d, moi).unwrap();
+        // Le dossier : modifiable par d'autres, refusé ; collant (sticky, comme /tmp), permis.
+        let dossier = |mode| std::fs::set_permissions(&d, std::fs::Permissions::from_mode(mode)).unwrap();
+        dossier(0o775);
+        assert!(Programme::dans(&d, moi).is_err());
+        dossier(0o1777);
         assert!(Programme::dans(&d, moi).is_ok());
+        dossier(0o755);
+        // Changé après l'ouverture : la garde rejouée avant le lancement le voit, et rien n'est lancé.
         droits(0o775);
+        assert!(p.verifier().is_err());
+        let rien: Reveil = Arc::new(|| {});
+        let t = Tache::lancer(&p, Commande::Bilan, false, &rien);
+        let debut = Instant::now();
+        let fin = loop {
+            if let Some(Message::Fin(f)) = t.recevoir().into_iter().find(|m| matches!(m, Message::Fin(_))) {
+                break f;
+            }
+            assert!(debut.elapsed() < Duration::from_secs(10), "jamais fini");
+            std::thread::sleep(PAS);
+        };
+        assert!(matches!(fin.issue, Issue::Impossible(_)), "{:?}", fin.issue);
         assert!(Programme::dans(&d, moi).is_err());
         droits(0o757);
         assert!(Programme::dans(&d, moi).is_err());
