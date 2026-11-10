@@ -40,12 +40,15 @@ pub(crate) const AVEC_RESULTAT: &[&str] = &[
     "PRO-KEV-001",
     "PRO-MAJ-001",
     "PRO-DEM-001",
+    "PRO-ANV-001",
+    "PRO-YAR-001",
+    "PRO-MEM-001",
 ];
 
 /// Le fichier de chaque outil de `AVEC_RESULTAT`, scellé (`sceau`) : un « rien trouvé » réécrit par un programme du
 /// compte s'affichait en vert dans le rapport. Inventoriés (`modele::inventaire`) ; un outil qui s'ajoute à
 /// `AVEC_RESULTAT` s'ajoute ici aussi (`fichiers_scelles`).
-pub(crate) const FICHIERS: [&str; 19] = [
+pub(crate) const FICHIERS: [&str; 22] = [
     "examens/PRO-ESP-001.json",
     "examens/PRO-PER-001.json",
     "examens/PRO-COU-001.json",
@@ -65,6 +68,9 @@ pub(crate) const FICHIERS: [&str; 19] = [
     "examens/PRO-KEV-001.json",
     "examens/PRO-MAJ-001.json",
     "examens/PRO-DEM-001.json",
+    "examens/PRO-ANV-001.json",
+    "examens/PRO-YAR-001.json",
+    "examens/PRO-MEM-001.json",
 ];
 
 /// Le fichier scellé d'un outil, s'il en a un.
@@ -609,7 +615,7 @@ mod tests {
     /// chaque identifiant y est un outil connu.
     #[test]
     fn outils_sans_resultat() {
-        const OUTILS_SANS_RESULTAT: usize = 6;
+        const OUTILS_SANS_RESULTAT: usize = 3;
         let outils: Vec<&str> = super::super::registre::OUTILS
             .iter()
             .map(|o| o.id)
@@ -638,6 +644,10 @@ mod tests {
             "protection/lien/resultat.rs",
             "protection/sortantes/resultat.rs",
             "protection/distance/resultat.rs",
+            "protection/antivirus/resultat.rs",
+            "protection/etat_antivirus/resultat.rs",
+            "protection/yara/resultat.rs",
+            "protection/memoire/resultat.rs",
             "diagnostic/resultat.rs",
             "lenteur/resultat.rs",
             "reseau/objets/resultat.rs",

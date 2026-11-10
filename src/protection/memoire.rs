@@ -22,6 +22,8 @@ use crate::protection::moteur_yara::Regles;
 use crate::protection::yara;
 use crate::ui::*;
 
+pub(crate) mod resultat;
+
 /// Une région plus grosse n'est pas lue (tas de navigateurs et de jeux) : les charges malveillantes sont petites, et
 /// la région est comptée comme non lue. C'est aussi la taille du tampon de lecture, fixée une fois pour toutes.
 const TAILLE_REGION_MAX: usize = 64 << 20;
@@ -1081,8 +1083,9 @@ fn verdict(bilan: &Bilan) -> Verdict {
 }
 
 /// Tous les processus, un seul fil : la lecture de la mémoire d'autrui ne se parallélise pas (pression sur le
-/// système, ordre lisible). Après un arrêt sur une borne, les processus restants sont comptés non lus.
-fn parcourir(regles: &Regles) -> Bilan {
+/// système, ordre lisible). Après un arrêt sur une borne, les processus restants sont comptés non lus. `bavard` :
+/// le nombre de processus et la borne de temps sont annoncés (l'écran ; pas `--json`).
+fn parcourir(regles: &Regles, bavard: bool) -> Bilan {
     let moi = std::process::id();
     let debut = Instant::now();
     let mut bilan = Bilan {
@@ -1093,12 +1096,14 @@ fn parcourir(regles: &Regles) -> Bilan {
     let mut tampon = Tampon::nouveau(TAILLE_REGION_MAX);
     let mut vues = std::collections::HashSet::new();
     let liste = plateforme::processus();
-    trp!(
-        "  {} processus en marche ; lecture seule, au plus {} minutes…",
-        "  {} running processes; read-only, at most {} minutes…",
-        liste.len(),
-        DUREE_MAX.as_secs() / 60
-    );
+    if bavard {
+        trp!(
+            "  {} processus en marche ; lecture seule, au plus {} minutes…",
+            "  {} running processes; read-only, at most {} minutes…",
+            liste.len(),
+            DUREE_MAX.as_secs() / 60
+        );
+    }
     let mut restants = liste.iter();
     for p in restants.by_ref() {
         #[cfg(windows)]
@@ -1177,16 +1182,32 @@ fn avertir(texte: &str) {
     }
 }
 
-fn afficher(bilan: &Bilan, regles: &Regles) {
-    println!();
-    if let Some(texte) = yara::non_verifiees(regles) {
-        avertir(&trf!(
+/// Ce que l'analyse dit en plus des correspondances : un manque (rien n'est conclu pour ce qui n'a pas été lu) ou une
+/// simple note (ce qui est laissé par choix). Partagé par l'écran (⚠ ou en gris) et `--json` (non vérifié ou
+/// information).
+#[derive(Debug, PartialEq)]
+enum Remarque {
+    Manque(String),
+    Note(String),
+}
+
+fn remarques(bilan: &Bilan, regles: &Regles) -> Vec<Remarque> {
+    let mut t = Vec::new();
+    if bilan.regles_refusees > 0 {
+        let texte = yara::non_verifiees(regles).unwrap_or_else(|| {
+            trf!(
+                "{} règle(s) YARA non vérifiée(s), refusée(s) par le moteur",
+                "{} YARA rule(s) not checked, refused by the engine",
+                bilan.regles_refusees
+            )
+        });
+        t.push(Remarque::Manque(trf!(
             "{texte}. Rien n'est conclu pour elles.",
             "{texte}. Nothing is concluded for them."
-        ));
+        )));
     }
     if bilan.exclus > 0 {
-        let texte = if cfg!(windows) {
+        t.push(Remarque::Note(if cfg!(windows) {
             trf!(
                 "{} processus jamais lus, par choix : LSASS et les processus critiques de Windows (leur programme de System32), les processus protégés, Vanguard lui-même.",
                 "{} processes never read, by design: LSASS and critical Windows processes (their System32 program), protected processes, Vanguard itself.",
@@ -1198,15 +1219,12 @@ fn afficher(bilan: &Bilan, regles: &Regles) {
                 "{} process never read, by design: Vanguard itself.",
                 bilan.exclus
             )
-        };
-        for ligne in envelopper(&texte, LARGEUR - 2) {
-            println!("  {GRIS}{ligne}{RESET}");
-        }
+        }));
     }
     if bilan.non_lus > 0 {
         // Déjà en administrateur, conseiller de relancer en administrateur serait faux : sous Windows, les processus des
         // services restent fermés sans le privilège de débogage, que Vanguard refuse exprès de prendre.
-        let texte = if crate::traces::privilegie() {
+        t.push(Remarque::Manque(if crate::traces::privilegie() {
             trf!(
                 "{} processus n'ont pas pu être lus, même en administrateur : le système les ferme à qui n'a pas le privilège de débogage, que Vanguard ne prend pas exprès. Rien n'est conclu pour eux.",
                 "{} processes could not be read, even as administrator: the system closes them to anyone without the debug privilege, which Vanguard deliberately does not take. Nothing is concluded for them.",
@@ -1218,63 +1236,77 @@ fn afficher(bilan: &Bilan, regles: &Regles) {
                 "{} processes could not be read (insufficient rights: run again as administrator or root): nothing is concluded for them.",
                 bilan.non_lus
             )
-        };
-        avertir(&texte);
+        }));
     }
-    let mut noms = bilan.noms_incomplets.join(", ");
+    let mut noms = bilan
+        .noms_incomplets
+        .iter()
+        .map(|n| affichable(n))
+        .collect::<Vec<_>>()
+        .join(", ");
     if bilan.noms_incomplets.len() >= NOMS_MAX {
         noms.push('…');
     }
     if bilan.incomplets > 0 {
-        avertir(&trf!(
+        t.push(Remarque::Manque(trf!(
             "{} processus lus en partie ({noms}) : régions de plus de {} Mio, au-delà de {} Mio par processus, ou disparues entre-temps, en tout ou en partie.",
             "{} processes partly read ({noms}): regions over {} MiB, beyond {} MiB per process, or gone in the meantime, wholly or in part.",
             bilan.incomplets,
             TAILLE_REGION_MAX >> 20,
             PAR_PROCESSUS_MAX >> 20
-        ));
+        )));
     }
     if bilan.trop_grosses > 0 {
-        avertir(&trf!(
+        t.push(Remarque::Manque(trf!(
             "Régions de plus de {1} Mio jamais lues : {0}. Ce qui serait caché dans l'une d'elles n'est pas vu.",
             "Regions over {1} MiB never read: {0}. Whatever might be hidden in one of them is not seen.",
             bilan.trop_grosses,
             TAILLE_REGION_MAX >> 20
-        ));
+        )));
     }
     if bilan.images_non_verifiees > 0 {
-        avertir(&trf!(
+        t.push(Remarque::Manque(trf!(
             "Images chargées (programmes, bibliothèques) qu'on n'a pas pu juger : {}. Rien ne dit si elles ont été modifiées en mémoire ; rien n'est conclu pour elles.",
             "Loaded images (programs, libraries) that could not be judged: {}. Nothing tells whether they were modified in memory; nothing is concluded for them.",
             bilan.images_non_verifiees
-        ));
+        )));
     }
     if bilan.images_morcelees > 0 {
-        avertir(&trf!(
+        t.push(Remarque::Manque(trf!(
             "Images chargées lues hors de leur disposition : {} (code loin de l'en-tête dans le fichier, ou image trop grosse). Les règles y voient l'en-tête avec le code, mais une règle qui vise le point d'entrée peut s'y tromper : rien n'est conclu pour elles.",
             "Loaded images read out of their layout: {} (code far from the header in the file, or image too large). Rules see the header with the code, but a rule aimed at the entry point may be misled: nothing is concluded for them.",
             bilan.images_morcelees
-        ));
+        )));
     }
     if bilan.images_laissees > 0 {
-        for ligne in envelopper(
-            &trf!(
-                "Images chargées du système non lues : {} (leur fichier est dans un dossier du système, que seul l'administrateur change, et rien n'y a été modifié en mémoire ; ce fichier n'est pas analysé ici).",
-                "System loaded images not read: {} (their file is in a system folder, which only the administrator changes, and nothing in them was modified in memory; that file is not analysed here).",
-                bilan.images_laissees
-            ),
-            LARGEUR - 2,
-        ) {
-            println!("  {GRIS}{ligne}{RESET}");
-        }
+        t.push(Remarque::Note(trf!(
+            "Images chargées du système non lues : {} (leur fichier est dans un dossier du système, que seul l'administrateur change, et rien n'y a été modifié en mémoire ; ce fichier n'est pas analysé ici).",
+            "System loaded images not read: {} (their file is in a system folder, which only the administrator changes, and nothing in them was modified in memory; that file is not analysed here).",
+            bilan.images_laissees
+        )));
     }
     if bilan.arrete {
-        avertir(&trf!(
+        t.push(Remarque::Manque(trf!(
             "Arrêt sur une borne ({} minutes ou {} Gio lus) : le reste n'a pas été lu.",
             "Stopped at a limit ({} minutes or {} GiB read): the rest was not read.",
             DUREE_MAX.as_secs() / 60,
             TOTAL_MAX >> 30
-        ));
+        )));
+    }
+    t
+}
+
+fn afficher(bilan: &Bilan, regles: &Regles) {
+    println!();
+    for r in remarques(bilan, regles) {
+        match r {
+            Remarque::Manque(texte) => avertir(&texte),
+            Remarque::Note(texte) => {
+                for ligne in envelopper(&texte, LARGEUR - 2) {
+                    println!("  {GRIS}{ligne}{RESET}");
+                }
+            }
+        }
     }
     match verdict(bilan) {
         Verdict::Sain => trp!(
@@ -1356,7 +1388,61 @@ pub fn analyser() {
             return;
         }
     };
-    afficher(&parcourir(regles), regles);
+    afficher(&parcourir(regles, true), regles);
+}
+
+/// Le relevé de `--json`, d'après un bilan : chaque masquage et correspondance (élevés), les manques et les notes.
+fn releve(bilan: &Bilan, regles: &Regles) -> resultat::Releve {
+    let mut r = resultat::Releve {
+        lus: bilan.lus,
+        ..resultat::Releve::default()
+    };
+    for m in &bilan.masques {
+        r.trouves.push(trf!(
+            "{} (PID {}) : nom d'un processus de Windows, porté par un programme hors de System32 (masquage, T1036.005) : {}",
+            "{} (PID {}): a Windows process name, carried by a program outside System32 (masquerading, T1036.005): {}",
+            affichable(&m.programme),
+            m.pid,
+            affichable(&m.chemin)
+        ));
+    }
+    for t in &bilan.trouves {
+        r.trouves.push(trf!(
+            "{} (PID {}) : {} ({}), région 0x{:x}, {} Kio. Rien n'a été arrêté : une alerte à juger.",
+            "{} (PID {}): {} ({}), region 0x{:x}, {} KiB. Nothing was stopped: an alert to judge.",
+            affichable(&t.programme),
+            t.pid,
+            yara::famille(&t.regle),
+            affichable(&t.regle),
+            t.region.debut,
+            t.region.taille >> 10
+        ));
+    }
+    for rem in remarques(bilan, regles) {
+        match rem {
+            Remarque::Manque(texte) => r.manques.push(texte),
+            Remarque::Note(texte) => r.notes.push(texte),
+        }
+    }
+    r
+}
+
+/// `vanguard memoire --json` : la même lecture seule de la mémoire (au plus `DUREE_MAX`), sans rien afficher d'autre
+/// que le JSON, versée au rapport. Rien n'est arrêté ni gardé de ce qui est lu.
+pub(crate) fn json() {
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
+    let r = match yara::regles() {
+        Ok(regles) => resultat::resultat(&releve(&parcourir(regles, false), regles), debut),
+        Err(e) => resultat::refuse(
+            &trf!(
+                "Règles YARA impossibles à compiler : {e}",
+                "YARA rules could not be compiled: {e}"
+            ),
+            debut,
+        ),
+    };
+    crate::modele::resultat::verser(&r);
+    println!("{}", crate::modele::resultat::json(&r));
 }
 
 #[allow(
@@ -2298,6 +2384,70 @@ mod tests {
         let mut impair = vec![0xA5u8; 64 * 3 + 7];
         crate::socle::effacer(&mut impair);
         assert!(impair.iter().all(|&o| o == 0));
+    }
+
+    /// L'invariant de `--json` : un bilan incomplet à l'écran (pas de ✔) n'est jamais « sain » dans le résultat, une
+    /// correspondance ou un masquage y est un problème élevé, et un bilan complet y est sain ; les exclus par choix
+    /// restent une note. Valeurs inventées.
+    #[test]
+    fn json_partiel_jamais_sain() {
+        let regles = yara::regles().unwrap();
+        let debut = || (chrono::Utc::now(), Instant::now());
+        let juge = |b: &Bilan| resultat::resultat(&releve(b, regles), debut());
+        let complet = Bilan {
+            lus: 3,
+            exclus: 1,
+            images_laissees: 2,
+            ..Bilan::default()
+        };
+        assert_eq!(verdict(&complet), Verdict::Sain);
+        let r = juge(&complet);
+        assert_eq!(r.verdict(), "sain", "{r:?}");
+        assert_eq!(r.couverture.verifies, 3);
+        let incomplets: [fn(&mut Bilan); 7] = [
+            |b| b.non_lus = 1,
+            |b| b.incomplets = 1,
+            |b| b.images_non_verifiees = 1,
+            |b| b.images_morcelees = 1,
+            |b| b.arrete = true,
+            |b| b.regles_refusees = 1,
+            |b| b.lus = 0,
+        ];
+        for (i, changer) in incomplets.iter().enumerate() {
+            let mut b = Bilan {
+                lus: 3,
+                ..Bilan::default()
+            };
+            changer(&mut b);
+            assert_eq!(verdict(&b), Verdict::Incomplet, "cas {i}");
+            assert_eq!(juge(&b).verdict(), "non-verifie", "cas {i}");
+        }
+        let mut b = Bilan {
+            lus: 3,
+            non_lus: 2,
+            ..Bilan::default()
+        };
+        b.trouves.push(Trouve {
+            regle: "Win32_Ransomware_Essai".into(),
+            pid: 4242,
+            programme: "essai\u{202e}".into(),
+            region: Region::default(),
+        });
+        b.masques.push(Masque {
+            pid: 7,
+            programme: "lsass".into(),
+            chemin: r"C:\Users\alice\lsass.exe".into(),
+        });
+        let r = juge(&b);
+        assert_eq!(r.verdict(), "probleme");
+        assert_eq!(r.pire(), Some(crate::risk::Niveau::Eleve));
+        assert!(
+            r.constats
+                .iter()
+                .any(|c| c.message.contains("PID 4242") && c.message.contains("rançongiciel"))
+        );
+        assert_ne!(r.couverture.non_verifies.len(), 0);
+        assert!(!crate::modele::resultat::json(&r).contains('\u{202e}'));
     }
 
     #[test]

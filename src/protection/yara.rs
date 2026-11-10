@@ -22,6 +22,8 @@ use crate::protection::moteur_yara::Regles;
 use crate::protection::regles_yara::Raison;
 use crate::ui::*;
 
+pub(crate) mod resultat;
+
 const REGLES: &str = include_str!(concat!(env!("OUT_DIR"), "/reversinglabs.yara"));
 
 /// Les fichiers plus gros ne sont pas lus (images disque, vidéos), mais dits : aucun des programmes que visent les
@@ -392,6 +394,76 @@ fn niveau(t: &Trouve) -> crate::risk::Niveau {
     }
 }
 
+/// Les endroits d'une portée.
+fn cibles(portee: &Portee) -> Vec<PathBuf> {
+    match portee {
+        Portee::Dossier(d) => vec![d.clone()],
+        Portee::Complete => vec![crate::socle::maison()],
+        Portee::Rapide => endroits_a_risque(),
+    }
+}
+
+/// L'analyse rapide des endroits à risque sans l'écran, pour `--json` : rien ne s'affiche ni ne se télécharge, rien
+/// n'est isolé ; une correspondance qu'une source de signatures reconnaît le dit (« à isoler depuis le menu »). Ce
+/// qui manquait aux sources (réserves comprises : base ClamAV absente, empreintes pas rafraîchies) est un manque :
+/// jamais « sain » sans réserve quand une source manquait.
+pub(crate) fn releve_rapide() -> resultat::Releve {
+    let cibles = cibles(&Portee::Rapide);
+    let mut r = resultat::Releve {
+        endroits: u32::try_from(cibles.len()).unwrap_or(u32::MAX),
+        ..resultat::Releve::default()
+    };
+    if cibles.is_empty() {
+        return r;
+    }
+    let sources = moteur::sources_sans_telecharger();
+    let (trouves, erreurs, listes) = appliquer(&sources, &cibles, false);
+    r.fichiers = listes;
+    r.manques.extend(sources.reserves.iter().cloned());
+    r.manques.extend(erreurs);
+    let mut vus = std::collections::HashSet::new();
+    r.trouves = trouves
+        .iter()
+        .map(|t| {
+            let texte = if t.source == Source::Heuristique {
+                trf!(
+                    "{} : suspect : {}",
+                    "{}: suspicious: {}",
+                    t.fichier,
+                    affichable(&t.regle)
+                )
+            } else if vus.insert(t.chemin.clone()) {
+                trf!(
+                    "{} : {} ({}). Ne l'ouvrez pas ; à isoler depuis le menu Antivirus et protection.",
+                    "{}: {} ({}). Do not open it; quarantine it from the Antivirus and protection menu.",
+                    t.fichier,
+                    famille(&t.regle),
+                    affichable(&t.regle)
+                )
+            } else {
+                trf!(
+                    "{} : {} ({})",
+                    "{}: {} ({})",
+                    t.fichier,
+                    famille(&t.regle),
+                    affichable(&t.regle)
+                )
+            };
+            (niveau(t), texte)
+        })
+        .collect();
+    r
+}
+
+/// `vanguard yara --json` : l'analyse rapide des endroits à risque, versée au rapport et écrite en JSON. Aucune
+/// question, rien de changé ni de téléchargé.
+pub(crate) fn json() {
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
+    let r = resultat::resultat(&releve_rapide(), debut);
+    crate::modele::resultat::verser(&r);
+    println!("{}", crate::modele::resultat::json(&r));
+}
+
 pub fn analyser(portee: &Portee) {
     titre(tr!("Analyse YARA", "YARA scan"));
     analyser_sans_titre(portee, true);
@@ -401,11 +473,7 @@ pub fn analyser(portee: &Portee) {
 /// pour elle-même (menu Analyse YARA), et le conseil renvoie à l'antivirus ; dans l'analyse antivirus, qui la suit
 /// d'un second avis, il ne le fait pas.
 pub(crate) fn analyser_sans_titre(portee: &Portee, seule: bool) {
-    let cibles = match portee {
-        Portee::Dossier(d) => vec![d.clone()],
-        Portee::Complete => vec![crate::socle::maison()],
-        Portee::Rapide => endroits_a_risque(),
-    };
+    let cibles = cibles(portee);
     if cibles.is_empty() {
         trp!("  Rien à analyser ici.", "  Nothing to scan here.");
         return;

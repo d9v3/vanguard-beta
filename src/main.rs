@@ -489,6 +489,10 @@ async fn main() {
         Some(Commande::AuditReseau { json, html, invite }) => {
             Session::default().audit_reseau(json, html, invite).await;
         }
+        Some(Commande::Antivirus {
+            etat: true, json: true, ..
+        }) => protection::etat_antivirus::json(),
+        Some(Commande::Antivirus { json: true, .. }) => protection::antivirus::json(),
         Some(Commande::Antivirus { etat: true, detail, .. }) => {
             protection::etat_antivirus::montrer(if detail {
                 protection::etat_antivirus::Detail::Oui
@@ -737,8 +741,10 @@ async fn main() {
         Some(Commande::Isoler { fichier }) => protection::isoler::isoler(&fichier),
         Some(Commande::Pieges { retirer }) => protection::pieges::commande(retirer),
         // La portée vient des options ; le menu la demande (`yara::menu`), puis lance la même analyse.
-        Some(Commande::Yara { complet, dossier }) => protection::yara::analyser(&portee(dossier, complet)),
-        Some(Commande::Memoire) => protection::memoire::analyser(),
+        Some(Commande::Yara { json: true, .. }) => protection::yara::json(),
+        Some(Commande::Yara { complet, dossier, .. }) => protection::yara::analyser(&portee(dossier, complet)),
+        Some(Commande::Memoire { json: false }) => protection::memoire::analyser(),
+        Some(Commande::Memoire { json: true }) => protection::memoire::json(),
         Some(Commande::ListesNoires { json: false, .. }) => reseau::listes_noires::verifier(),
         Some(Commande::ListesNoires { json: true, internet }) => reseau::listes_noires::json(internet),
         Some(Commande::Canaux) => reseau::canaux::analyser(),

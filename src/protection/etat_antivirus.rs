@@ -12,6 +12,13 @@ use crate::protection::clamav::base::{self, Apercu, Base};
 use crate::protection::clamav::commun::NonLu;
 use crate::ui::*;
 
+mod resultat;
+
+/// Les copies de MalwareBazaar se rafraîchissent chaque semaine (liste complète) et chaque jour (récentes) : plus
+/// vieilles, les logiciels malveillants des derniers jours n'y sont pas reconnus.
+const SEMAINE: Duration = Duration::from_hours(7 * 24);
+const JOUR: Duration = Duration::from_hours(24);
+
 /// Le détail de la base ClamAV (ce qu'elle ne lit pas, par raison) : le charger demande quelques secondes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Detail {
@@ -44,6 +51,8 @@ enum SecondAvis {
 /// Ce que l'écran a relevé, lu une fois puis mis en mots par `lignes` (pure, essayée).
 struct Releve {
     moteur: String,
+    /// Windows : Defender coupé sans choix noté, ou son état illisible (`PlaceDuMoteur::NonVerifie`).
+    manque_du_moteur: Option<String>,
     /// L'âge des copies gardées de MalwareBazaar : liste complète, récentes (48 heures).
     complete: Option<Duration>,
     recentes: Option<Duration>,
@@ -102,6 +111,27 @@ pub(crate) fn montrer(detail: Detail) {
     }
 }
 
+/// `vanguard antivirus --etat --json` : l'état en résultat commun, sans rien charger ni lancer (comme l'écran sans
+/// `--detail`). Pas versé au rapport : `examens/PRO-ANV-001.json` garde la dernière analyse, et l'état l'écraserait :
+/// un logiciel malveillant trouvé disparaîtrait du rapport.
+pub(crate) fn json() {
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
+    let r = relever();
+    let maintenant = chrono::Local::now();
+    let section_des_bases = tr!("Bases et leur date", "Databases and their date");
+    let notes = lignes(&r, maintenant)
+        .into_iter()
+        .filter(|(nom, _)| *nom != section_des_bases)
+        .flat_map(|(nom, l)| l.into_iter().map(move |l| trf!("{nom} : {l}", "{nom}: {l}")))
+        .collect();
+    let etat = resultat::Etat {
+        bases: bases(&r, maintenant),
+        notes,
+        manques: r.manque_du_moteur.into_iter().collect(),
+    };
+    println!("{}", crate::modele::resultat::json(&resultat::resultat(&etat, debut)));
+}
+
 fn relever() -> Releve {
     let cache = crate::socle::cache::age;
     let yara = crate::protection::yara::regles()
@@ -117,8 +147,17 @@ fn relever() -> Releve {
     };
     #[cfg(windows)]
     let second_avis = SecondAvis::Defender;
+    #[cfg(unix)]
+    let manque_du_moteur = None;
+    #[cfg(windows)]
+    let manque_du_moteur = {
+        use crate::protection::antivirus::PlaceDuMoteur;
+        let place = crate::protection::antivirus::place_actuelle();
+        (place == PlaceDuMoteur::NonVerifie).then(|| place.ce_qui_manque().to_string())
+    };
     Releve {
         moteur: moteur(),
+        manque_du_moteur,
         complete: cache(("malwarebazaar", "complete.zip")),
         recentes: cache(("malwarebazaar", "recentes.txt")),
         clamav: base::en_tetes().map_err(|r| r.to_string()),
@@ -185,15 +224,19 @@ fn date_d_age(age: Duration, maintenant: chrono::DateTime<chrono::Local>) -> Str
         .map_or_else(|| "?".to_string(), |d| d.format("%d/%m/%Y").to_string())
 }
 
-/// Les sections de l'écran et leurs lignes (à envelopper), d'après `r`, à la date `maintenant`.
-fn lignes(r: &Releve, maintenant: chrono::DateTime<chrono::Local>) -> Vec<(&'static str, Vec<String>)> {
+/// Les lignes des bases, chacune avec son jugement : `true` quand la source est là, lisible, entière et à jour ;
+/// `false` : le moteur analyse sans elle, ou sans sa part récente (non vérifié pour `--json`).
+fn bases(r: &Releve, maintenant: chrono::DateTime<chrono::Local>) -> Vec<(bool, String)> {
     let mut bases = Vec::new();
     bases.push(match (r.complete, r.recentes) {
-        (None, None) => tr!(
-            "MalwareBazaar : aucune copie gardée ; ses empreintes ne sont pas vérifiées. La clé abuse.ch (vanguard parametres abuse.ch) les fait télécharger.",
-            "MalwareBazaar: no copy kept; its fingerprints are not checked. The abuse.ch key (vanguard settings abuse.ch) has them downloaded."
-        )
-        .to_string(),
+        (None, None) => (
+            false,
+            tr!(
+                "MalwareBazaar : aucune copie gardée ; ses empreintes ne sont pas vérifiées. La clé abuse.ch (vanguard parametres abuse.ch) les fait télécharger.",
+                "MalwareBazaar: no copy kept; its fingerprints are not checked. The abuse.ch key (vanguard settings abuse.ch) has them downloaded."
+            )
+            .to_string(),
+        ),
         (c, rec) => {
             let date = |a: Option<Duration>| {
                 a.map_or_else(
@@ -201,14 +244,66 @@ fn lignes(r: &Releve, maintenant: chrono::DateTime<chrono::Local>) -> Vec<(&'sta
                     |a| date_d_age(a, maintenant),
                 )
             };
-            trf!(
-                "MalwareBazaar : liste complète du {}, récentes (48 heures) du {}.",
-                "MalwareBazaar: full list from {}, recent ones (48 hours) from {}.",
-                date(c),
-                date(rec)
+            let a_jour = c.is_some_and(|a| a <= SEMAINE) && rec.is_some_and(|a| a <= JOUR);
+            (
+                a_jour,
+                trf!(
+                    "MalwareBazaar : liste complète du {}, récentes (48 heures) du {}.",
+                    "MalwareBazaar: full list from {}, recent ones (48 hours) from {}.",
+                    date(c),
+                    date(rec)
+                ),
             )
         }
     });
+    match &r.clamav {
+        Ok(a) => bases.push((
+            !a.bases.is_empty() && a.bases.iter().all(|(_, e)| e.is_some()),
+            base_clamav(a),
+        )),
+        Err(raison) => bases.push((
+            false,
+            trf!(
+                "Base ClamAV : non lue ({raison}) ; le moteur analyse avec les empreintes, YARA et les heuristiques seulement.",
+                "ClamAV database: not read ({raison}); the engine scans with fingerprints, YARA and heuristics only."
+            ),
+        )),
+    }
+    let commit = r
+        .commit_yara
+        .map(|c| trf!(", commit {c}", ", commit {c}"))
+        .unwrap_or_default();
+    bases.push(match r.yara {
+        Ok((n, 0)) => (
+            true,
+            trf!(
+                "Règles YARA : {n} de ReversingLabs{commit}, intégrées à Vanguard {} ; toutes appliquées.",
+                "YARA rules: {n} from ReversingLabs{commit}, built into Vanguard {}; all applied.",
+                env!("CARGO_PKG_VERSION")
+            ),
+        ),
+        Ok((n, refus)) => (
+            false,
+            trf!(
+                "Règles YARA : {n} de ReversingLabs{commit}, intégrées à Vanguard {} ; {refus} refusée(s) par le moteur, non vérifiée(s).",
+                "YARA rules: {n} from ReversingLabs{commit}, built into Vanguard {}; {refus} refused by the engine, not checked.",
+                env!("CARGO_PKG_VERSION")
+            ),
+        ),
+        Err(ref e) => (
+            false,
+            trf!(
+                "Règles YARA : inutilisables ({e}), non vérifiées.",
+                "YARA rules: unusable ({e}), not checked."
+            ),
+        ),
+    });
+    bases
+}
+
+/// Les sections de l'écran et leurs lignes (à envelopper), d'après `r`, à la date `maintenant`.
+fn lignes(r: &Releve, maintenant: chrono::DateTime<chrono::Local>) -> Vec<(&'static str, Vec<String>)> {
+    let bases: Vec<String> = bases(r, maintenant).into_iter().map(|(_, l)| l).collect();
     let mut non_lus = vec![
         tr!(
             "Formats reconnus mais pas ouverts (7z, RAR, CAB, ISO, PDF, xz, zstd…) : le fichier est dit « non vérifié », jamais sain. clamscan, en second avis, ouvre 7z et RAR.",
@@ -222,36 +317,9 @@ fn lignes(r: &Releve, maintenant: chrono::DateTime<chrono::Local>) -> Vec<(&'sta
         )
         .to_string(),
     ];
-    match &r.clamav {
-        Ok(a) => {
-            bases.push(base_clamav(a));
-            non_lus.extend(non_lus_de_l_apercu(a));
-        }
-        Err(raison) => bases.push(trf!(
-            "Base ClamAV : non lue ({raison}) ; le moteur analyse avec les empreintes, YARA et les heuristiques seulement.",
-            "ClamAV database: not read ({raison}); the engine scans with fingerprints, YARA and heuristics only."
-        )),
+    if let Ok(a) = &r.clamav {
+        non_lus.extend(non_lus_de_l_apercu(a));
     }
-    let commit = r
-        .commit_yara
-        .map(|c| trf!(", commit {c}", ", commit {c}"))
-        .unwrap_or_default();
-    bases.push(match r.yara {
-        Ok((n, 0)) => trf!(
-            "Règles YARA : {n} de ReversingLabs{commit}, intégrées à Vanguard {} ; toutes appliquées.",
-            "YARA rules: {n} from ReversingLabs{commit}, built into Vanguard {}; all applied.",
-            env!("CARGO_PKG_VERSION")
-        ),
-        Ok((n, refus)) => trf!(
-            "Règles YARA : {n} de ReversingLabs{commit}, intégrées à Vanguard {} ; {refus} refusée(s) par le moteur, non vérifiée(s).",
-            "YARA rules: {n} from ReversingLabs{commit}, built into Vanguard {}; {refus} refused by the engine, not checked.",
-            env!("CARGO_PKG_VERSION")
-        ),
-        Err(ref e) => trf!(
-            "Règles YARA : inutilisables ({e}), non vérifiées.",
-            "YARA rules: unusable ({e}), not checked."
-        ),
-    });
     let second = match r.second_avis {
         SecondAvis::Pret => tr!(
             "Second avis ClamAV (clamscan) : oui, lancé après le moteur de Vanguard à chaque analyse.",
@@ -479,6 +547,7 @@ mod tests {
     fn releve(clamav: Result<Apercu, String>) -> Releve {
         Releve {
             moteur: "moteur".into(),
+            manque_du_moteur: None,
             complete: Some(Duration::from_hours(48)),
             recentes: None,
             clamav,
@@ -557,6 +626,44 @@ mod tests {
         assert!(t.contains("non, votre choix"), "{t}");
         assert!(t.contains("signalés aux analyses à la demande"), "{t}");
         assert!(!t.contains("bytecode.cvd"), "{t}");
+    }
+
+    /// Une base n'est vérifiée (`--json`) que là, lisible, entière et à jour : MalwareBazaar trop vieille (liste
+    /// complète de plus d'une semaine, récentes de plus d'un jour), un en-tête ClamAV illisible, des règles refusées ou
+    /// une base absente ne le sont jamais.
+    #[test]
+    fn bases_selon_leur_age() {
+        let a_jour = |r: &Releve| bases(r, maintenant()).iter().map(|(v, _)| *v).collect::<Vec<_>>();
+        let apercu = |lisible: bool| Apercu {
+            dossier: "/var/lib/clamav".into(),
+            bases: vec![
+                ("main.cvd".into(), Some(en_tete(62, 3_300_000))),
+                ("daily.cld".into(), lisible.then(|| en_tete(27_812, 2_100_000))),
+            ],
+            a_part: Vec::new(),
+        };
+        let mut r = releve(Ok(apercu(true)));
+        r.recentes = Some(Duration::from_hours(2));
+        assert_eq!(a_jour(&r), [true, true, true]);
+        r.complete = Some(Duration::from_hours(24 * 8));
+        assert!(!a_jour(&r)[0]);
+        r.complete = Some(Duration::from_hours(48));
+        r.recentes = Some(Duration::from_hours(30));
+        assert!(!a_jour(&r)[0]);
+        r.recentes = None;
+        assert!(!a_jour(&r)[0]);
+        let mut r = releve(Ok(apercu(false)));
+        r.yara = Ok((308, 1));
+        assert_eq!(a_jour(&r)[1..], [false, false]);
+        let mut r = releve(Ok(Apercu {
+            bases: Vec::new(),
+            ..apercu(true)
+        }));
+        r.yara = Err("essai".into());
+        assert_eq!(a_jour(&r)[1..], [false, false]);
+        r.complete = None;
+        assert!(!a_jour(&r)[0]);
+        assert!(!a_jour(&releve(Err("aucune base".into())))[1]);
     }
 
     #[test]

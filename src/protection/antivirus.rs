@@ -11,6 +11,8 @@ use std::process::Command;
 use crate::risk::Niveau;
 use crate::ui::*;
 
+pub(crate) mod resultat;
+
 #[cfg(unix)]
 fn home() -> PathBuf {
     crate::socle::maison()
@@ -156,6 +158,81 @@ pub fn analyser(portee: Portee) {
         // Une clé n'a pas de programmes de démarrage : on regarde plutôt les pièges des vers de clé USB.
         Portee::Dossier(d) => revue_cle(d),
         _ => demarrage(),
+    }
+}
+
+/// `vanguard antivirus --json` : l'analyse rapide sans aucune question et sans rien changer (ni quarantaine, ni
+/// téléchargement de signatures, ni Defender, qui retire de lui-même ce qu'il trouve) ; le résultat commun sur la
+/// sortie, versé au rapport. Ce qui est trouvé est à isoler depuis le menu.
+pub(crate) fn json() {
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
+    let mut r = crate::protection::yara::releve_rapide();
+    #[cfg(unix)]
+    ajouter_second_avis(&mut r, second_avis(&Portee::Rapide, false));
+    #[cfg(windows)]
+    {
+        let place = place_actuelle();
+        match place {
+            PlaceDuMoteur::SecondAvis => {}
+            PlaceDuMoteur::Principal => r.infos.push(place.ce_qui_manque().to_string()),
+            PlaceDuMoteur::NonVerifie => r.manques.push(place.ce_qui_manque().to_string()),
+        }
+        r.manques.push(resultat::defender_pas_lance().to_string());
+    }
+    let (entrees, non_lus) = entrees_demarrage();
+    resultat::ajouter_demarrage(&mut r, &entrees, &non_lus);
+    let res = resultat::resultat(&r, debut);
+    crate::modele::resultat::verser(&res);
+    println!("{}", crate::modele::resultat::json(&res));
+}
+
+/// Le second avis de ClamAV dans le relevé : chaque fichier infecté (critique, à isoler depuis le menu) ; un avis
+/// coupé ou clamscan absent est dit (il est facultatif) ; sans signatures, en échec ou avec des éléments illisibles,
+/// il est non vérifié.
+#[cfg(unix)]
+fn ajouter_second_avis(r: &mut crate::protection::yara::resultat::Releve, avis: SecondAvis) {
+    match avis {
+        SecondAvis::NonLance(raison) if raison == raison_sans_signatures() => r.manques.push(tr!(
+            "Second avis ClamAV non lancé : ses signatures manquent (à télécharger depuis le menu Antivirus et protection ; rien n'est téléchargé avec --json).",
+            "ClamAV second opinion not run: its signatures are missing (download them from the Antivirus and protection menu; nothing is downloaded with --json)."
+        ).to_string()),
+        SecondAvis::NonLance(raison) => r.infos.push(trf!(
+            "Second avis ClamAV non lancé : {raison}.",
+            "ClamAV second opinion not run: {raison}."
+        )),
+        SecondAvis::PasDemarre => r.manques.push(tr!(
+            "Second avis ClamAV : clamscan ne s'est pas lancé.",
+            "ClamAV second opinion: clamscan did not start."
+        ).to_string()),
+        SecondAvis::Echoue(erreurs) => r.manques.push(trf!(
+            "Second avis ClamAV : l'analyse a échoué, son résultat n'est pas fiable. {}",
+            "ClamAV second opinion: the scan failed, its result is not reliable. {}",
+            erreurs.join(" ; ")
+        ).trim_end().to_string()),
+        SecondAvis::Fait(bilan) => {
+            if bilan.illisibles > 0 {
+                r.manques.push(trf!(
+                    "Second avis ClamAV : {} élément(s) illisible(s) sans droits root, non analysé(s).",
+                    "ClamAV second opinion: {} item(s) unreadable without root rights, not scanned.",
+                    bilan.illisibles
+                ));
+            }
+            r.infos.push(trf!(
+                "Second avis ClamAV : {} fichier(s) analysé(s).",
+                "ClamAV second opinion: {} file(s) scanned.",
+                bilan.analyses
+            ));
+            r.trouves.extend(bilan.infectes.iter().map(|(f, menace)| {
+                (
+                    Niveau::Critique,
+                    trf!(
+                        "{} : {menace} (ClamAV). Ne l'ouvrez pas ; à isoler depuis le menu Antivirus et protection.",
+                        "{}: {menace} (ClamAV). Do not open it; quarantine it from the Antivirus and protection menu.",
+                        affichable(f)
+                    ),
+                )
+            }));
+        }
     }
 }
 
@@ -2103,6 +2180,13 @@ pub(crate) fn clamscan_present() -> bool {
 /// de Vanguard).
 #[cfg(unix)]
 fn preparer() -> Result<(), &'static str> {
+    preparer_selon(true)
+}
+
+/// `questions` faux (`--json`) : rien n'est demandé, montré ni téléchargé ; sans signatures, le second avis n'est
+/// simplement pas lancé, et c'est dit.
+#[cfg(unix)]
+fn preparer_selon(questions: bool) -> Result<(), &'static str> {
     if !crate::parametres::second_avis_clamav() {
         return Err(raison_coupe());
     }
@@ -2110,6 +2194,9 @@ fn preparer() -> Result<(), &'static str> {
         return Err(raison_absent());
     }
     if !base_presente() {
+        if !questions {
+            return Err(raison_sans_signatures());
+        }
         trp!(
             "  Les signatures de virus de ClamAV manquent (~300 Mo, une seule fois).",
             "  ClamAV's virus signatures are missing (~300 MB, only once)."
@@ -2174,19 +2261,26 @@ pub(crate) const ENDROITS_A_RISQUE: [&str; 6] = [
     ".config/autostart",
 ];
 
+/// Ce que le second avis de ClamAV a donné, sans l'écran : l'analyse antivirus le montre et propose la quarantaine,
+/// `vanguard antivirus --json` le rend tel quel.
 #[cfg(unix)]
-fn clamav(portee: &Portee) {
-    if let Err(raison) = preparer() {
-        afficher_aligne(
-            "  ",
-            &trf!(
-                "Second avis non lancé : {raison}. Le moteur de Vanguard a fait l'analyse ci-dessus ; « vanguard parametres second-avis » le règle.",
-                "Second opinion not run: {raison}. The Vanguard engine did the scan above; “vanguard settings second-opinion” sets it."
-            ),
-            2,
-            GRIS,
-        );
-        return;
+enum SecondAvis {
+    /// Pas lancé : coupé dans les Paramètres, clamscan absent, ou ses signatures absentes.
+    NonLance(&'static str),
+    /// clamscan ne s'est pas lancé.
+    PasDemarre,
+    /// L'analyse a échoué (résultat pas fiable) : ses lignes d'erreur, rendues affichables (au plus 5).
+    Echoue(Vec<String>),
+    /// L'analyse a eu lieu ; chaque fichier infecté n'y figure qu'une fois.
+    Fait(Bilan),
+}
+
+/// Lance le second avis de ClamAV. `ecran` faux (`--json`) : aucune question, rien de montré, rien de téléchargé.
+/// Seul reste le fichier de liste de /tmp, créé de façon exclusive puis effacé (clamscan y lit les fichiers récents).
+#[cfg(unix)]
+fn second_avis(portee: &Portee, ecran: bool) -> SecondAvis {
+    if let Err(raison) = preparer_selon(ecran) {
+        return SecondAvis::NonLance(raison);
     }
     let h = home();
     // Analyse rapide : là où arrivent les menaces (téléchargements, bureau, démarrage automatique, programmes de
@@ -2271,36 +2365,75 @@ fn clamav(portee: &Portee) {
             "/tmp ({n} file(s) under 7 days old)"
         ));
     }
-    trp!(
-        "  {GRIS}Moteur : ClamAV. Analyse de : {}{RESET}",
-        "  {GRIS}Engine: ClamAV. Scanning: {}{RESET}",
-        decrites.join(", ")
-    );
-    trp!(
-        "  {GRIS}Cela peut prendre de quelques secondes à plusieurs minutes…{RESET}",
-        "  {GRIS}This can take from a few seconds to several minutes…{RESET}"
-    );
+    if ecran {
+        trp!(
+            "  {GRIS}Moteur : ClamAV. Analyse de : {}{RESET}",
+            "  {GRIS}Engine: ClamAV. Scanning: {}{RESET}",
+            decrites.join(", ")
+        );
+        trp!(
+            "  {GRIS}Cela peut prendre de quelques secondes à plusieurs minutes…{RESET}",
+            "  {GRIS}This can take from a few seconds to several minutes…{RESET}"
+        );
+    }
 
     let sortie = crate::coulisses::Suivie::output_suivi(&mut cmd);
     if let Some((chemin, _)) = &liste_tmp {
         let _ = std::fs::remove_file(chemin);
     }
     let Ok(sortie) = sortie else {
-        trp!("  Impossible de lancer clamscan.", "  Could not start clamscan.");
-        return;
+        return SecondAvis::PasDemarre;
     };
-    let Some(bilan) = lire_resultat(sortie.status.code(), &String::from_utf8_lossy(&sortie.stdout)) else {
-        let erreur = String::from_utf8_lossy(&sortie.stderr);
-        trp!(
-            "  {}✖ L'analyse a échoué : le résultat n'est pas fiable.{RESET}",
-            "  {}✖ The scan failed: the result is not reliable.{RESET}",
-            couleur(Niveau::Eleve)
-        );
+    let Some(mut bilan) = lire_resultat(sortie.status.code(), &String::from_utf8_lossy(&sortie.stdout)) else {
         // Les erreurs de ClamAV citent souvent un fichier, au nom choisi par n'importe qui.
-        for l in erreur.lines().filter(|l| l.contains("ERROR")).take(5) {
-            println!("    {GRIS}{}{RESET}", affichable(l));
+        let erreur = String::from_utf8_lossy(&sortie.stderr);
+        return SecondAvis::Echoue(
+            erreur
+                .lines()
+                .filter(|l| l.contains("ERROR"))
+                .take(5)
+                .map(affichable)
+                .collect(),
+        );
+    };
+    // Ceinture et bretelles : un même fichier n'est proposé qu'une fois (sinon la 2e mise en quarantaine échoue).
+    let mut vus = std::collections::HashSet::new();
+    bilan.infectes.retain(|(f, _)| vus.insert(f.clone()));
+    SecondAvis::Fait(bilan)
+}
+
+/// Le second avis de ClamAV à l'écran, puis la quarantaine proposée pour ce qu'il a trouvé.
+#[cfg(unix)]
+fn clamav(portee: &Portee) {
+    let bilan = match second_avis(portee, true) {
+        SecondAvis::NonLance(raison) => {
+            afficher_aligne(
+                "  ",
+                &trf!(
+                    "Second avis non lancé : {raison}. Le moteur de Vanguard a fait l'analyse ci-dessus ; « vanguard parametres second-avis » le règle.",
+                    "Second opinion not run: {raison}. The Vanguard engine did the scan above; “vanguard settings second-opinion” sets it."
+                ),
+                2,
+                GRIS,
+            );
+            return;
         }
-        return;
+        SecondAvis::PasDemarre => {
+            trp!("  Impossible de lancer clamscan.", "  Could not start clamscan.");
+            return;
+        }
+        SecondAvis::Echoue(erreurs) => {
+            trp!(
+                "  {}✖ L'analyse a échoué : le résultat n'est pas fiable.{RESET}",
+                "  {}✖ The scan failed: the result is not reliable.{RESET}",
+                couleur(Niveau::Eleve)
+            );
+            for l in erreurs {
+                println!("    {GRIS}{l}{RESET}");
+            }
+            return;
+        }
+        SecondAvis::Fait(bilan) => bilan,
     };
 
     let illisibles = if bilan.illisibles > 0 {
@@ -2317,10 +2450,7 @@ fn clamav(portee: &Portee) {
         "  {GRIS}{} file(s) scanned{illisibles}.{RESET}",
         bilan.analyses
     );
-    // Ceinture et bretelles : un même fichier n'est proposé qu'une fois (sinon la 2e mise en quarantaine échoue).
-    let mut infectes = bilan.infectes;
-    let mut vus = std::collections::HashSet::new();
-    infectes.retain(|(f, _)| vus.insert(f.clone()));
+    let infectes = bilan.infectes;
     if infectes.is_empty() {
         trp!(
             "  {VERT}✔ Aucun malware trouvé.{RESET}",
@@ -2480,6 +2610,47 @@ fn demarrage() {
         "Programmes lancés au démarrage (à vérifier)",
         "Programs started at boot (to check)"
     ));
+    let (entrees, non_lus) = entrees_demarrage();
+    if !non_lus.is_empty() {
+        let liste = non_lus.join(", ");
+        afficher_aligne(
+            "  ",
+            &trf!(
+                "Non vérifié : {liste} (illisible d'ici) ; la liste ci-dessous peut être incomplète.",
+                "Not verified: {liste} (unreadable from here); the list below may be incomplete."
+            ),
+            2,
+            GRIS,
+        );
+    }
+    // « Rien de particulier » seulement quand tout a été lu : une source illisible ne passe pas pour vide.
+    if entrees.is_empty() && non_lus.is_empty() {
+        trp!(
+            "  {VERT}✔{RESET} Rien de particulier.",
+            "  {VERT}✔{RESET} Nothing special."
+        );
+    }
+    for e in entrees {
+        println!("  • {e}");
+    }
+    trp!(
+        "  {GRIS}Si vous ne reconnaissez pas une entrée, renseignez-vous avant de la supprimer.{RESET}",
+        "  {GRIS}If you do not recognize an entry, look it up before deleting it.{RESET}"
+    );
+    afficher_aligne(
+        "  ",
+        tr!(
+            "Pour qu'un programme ne se lance plus à l'ouverture de session, sans le désinstaller et de façon annulable : vanguard demarrage (ou Optimiser et installer › Programmes au démarrage).",
+            "To stop a program from starting at login, without uninstalling it and in an undoable way: vanguard startup (or Optimize and install › Startup programs)."
+        ),
+        2,
+        GRIS,
+    );
+}
+
+/// Ce qui se lance au démarrage, sans l'écran : (entrées rendues affichables, sources non lues). L'analyse antivirus
+/// le montre, `vanguard antivirus --json` le rend.
+fn entrees_demarrage() -> (Vec<String>, Vec<String>) {
     // Chaque entrée est écrite par qui l'a posée (le programme qui veut se faire relancer) : montrée rendue inoffensive.
     let mut entrees: Vec<String> = Vec::new();
 
@@ -2525,42 +2696,7 @@ fn demarrage() {
     };
     #[cfg(not(windows))]
     let non_lus: Vec<String> = Vec::new();
-
-    if !non_lus.is_empty() {
-        let liste = non_lus.join(", ");
-        afficher_aligne(
-            "  ",
-            &trf!(
-                "Non vérifié : {liste} (illisible d'ici) ; la liste ci-dessous peut être incomplète.",
-                "Not verified: {liste} (unreadable from here); the list below may be incomplete."
-            ),
-            2,
-            GRIS,
-        );
-    }
-    // « Rien de particulier » seulement quand tout a été lu : une source illisible ne passe pas pour vide.
-    if entrees.is_empty() && non_lus.is_empty() {
-        trp!(
-            "  {VERT}✔{RESET} Rien de particulier.",
-            "  {VERT}✔{RESET} Nothing special."
-        );
-    }
-    for e in entrees {
-        println!("  • {e}");
-    }
-    trp!(
-        "  {GRIS}Si vous ne reconnaissez pas une entrée, renseignez-vous avant de la supprimer.{RESET}",
-        "  {GRIS}If you do not recognize an entry, look it up before deleting it.{RESET}"
-    );
-    afficher_aligne(
-        "  ",
-        tr!(
-            "Pour qu'un programme ne se lance plus à l'ouverture de session, sans le désinstaller et de façon annulable : vanguard demarrage (ou Optimiser et installer › Programmes au démarrage).",
-            "To stop a program from starting at login, without uninstalling it and in an undoable way: vanguard startup (or Optimize and install › Startup programs)."
-        ),
-        2,
-        GRIS,
-    );
+    (entrees, non_lus)
 }
 
 /// Ce qui se lance à l'ouverture de session sous Windows, lu sans PowerShell : (lignes à montrer, sources non lues).
@@ -4079,5 +4215,81 @@ mod proprietes {
             // Ni amovible ni branchée à chaud : pas une clé.
             prop_assert!(lire_lsblk(&ligne.replace("=\"1\"", "=\"0\"")).is_empty());
         }
+    }
+}
+
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
+#[cfg(all(test, unix))]
+mod tests_json {
+    use super::*;
+    use crate::protection::yara::resultat::Releve;
+
+    fn lu() -> Releve {
+        Releve {
+            endroits: 3,
+            fichiers: 40,
+            ..Releve::default()
+        }
+    }
+
+    fn verdict(r: &Releve) -> &'static str {
+        resultat::resultat(r, (chrono::Utc::now(), std::time::Instant::now())).verdict()
+    }
+
+    /// Le second avis de ClamAV dans `--json` : trouvé → critique, à isoler depuis le menu ; rien trouvé en entier →
+    /// sain ; coupé ou absent (facultatif) → dit, sans changer le verdict ; sans signatures, pas lancé, en échec ou
+    /// avec des éléments illisibles → jamais sain.
+    #[test]
+    fn second_avis_trouve_rien_et_partiel() {
+        let fait = |infectes: Vec<(String, String)>, illisibles| {
+            SecondAvis::Fait(Bilan {
+                infectes,
+                analyses: 40,
+                illisibles,
+            })
+        };
+        let mut r = lu();
+        ajouter_second_avis(&mut r, fait(Vec::new(), 0));
+        assert_eq!(verdict(&r), "sain");
+        for raison in [raison_coupe(), raison_absent()] {
+            let mut r = lu();
+            ajouter_second_avis(&mut r, SecondAvis::NonLance(raison));
+            assert_eq!(verdict(&r), "sain", "{raison}");
+            assert!(r.infos[0].contains(raison));
+        }
+        for avis in [
+            SecondAvis::NonLance(raison_sans_signatures()),
+            SecondAvis::PasDemarre,
+            SecondAvis::Echoue(vec!["ERROR: essai".into()]),
+            SecondAvis::Echoue(Vec::new()),
+            fait(Vec::new(), 2),
+        ] {
+            let mut r = lu();
+            ajouter_second_avis(&mut r, avis);
+            assert_eq!(verdict(&r), "non-verifie", "{:?}", r.manques);
+        }
+        let mut r = lu();
+        ajouter_second_avis(
+            &mut r,
+            fait(
+                vec![(
+                    "/maison/essai/eicar\u{202e}moc.txt".into(),
+                    "Eicar-Test-Signature".into(),
+                )],
+                0,
+            ),
+        );
+        let res = resultat::resultat(&r, (chrono::Utc::now(), std::time::Instant::now()));
+        assert_eq!(res.verdict(), "probleme");
+        assert_eq!(res.pire(), Some(Niveau::Critique));
+        let json = crate::modele::resultat::json(&res);
+        assert!(
+            json.contains("à isoler depuis le menu") && !json.contains('\u{202e}'),
+            "{json}"
+        );
     }
 }

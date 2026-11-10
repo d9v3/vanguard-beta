@@ -121,6 +121,10 @@ pub(crate) enum Commande {
         detail: bool,
         /// Une clé USB, un disque externe ou un dossier à analyser en entier.
         dossier: Option<std::path::PathBuf>,
+        /// Le résultat en JSON, pour un script : l'analyse rapide (ou, avec --etat, l'état), sans question ; rien
+        /// n'est mis en quarantaine, rien ne change, rien n'est téléchargé.
+        #[arg(long, conflicts_with_all = ["complet", "dossier", "detail"])]
+        json: bool,
     },
     /// Active ou désactive la surveillance horaire du réseau (notification si appareil inconnu).
     #[command(visible_alias = "monitor")]
@@ -331,12 +335,20 @@ pub(crate) enum Commande {
         complet: bool,
         /// Une clé USB, un disque externe ou un dossier à analyser en entier.
         dossier: Option<std::path::PathBuf>,
+        /// Le résultat en JSON, pour un script : les endroits à risque, sans question ; rien n'est mis en
+        /// quarantaine, rien ne change, rien n'est téléchargé.
+        #[arg(long, conflicts_with_all = ["complet", "dossier"])]
+        json: bool,
     },
     /// Mémoire des processus en marche passée aux 308 règles YARA : un logiciel malveillant sans fichier ne vit que
     /// là. Lecture seule, à la demande ; LSASS et processus protégés : leur mémoire n'est jamais lue ; rien n'est
     /// gardé.
     #[command(visible_alias = "memory")]
-    Memoire,
+    Memoire {
+        /// Le résultat en JSON, pour un script : rien ne change.
+        #[arg(long)]
+        json: bool,
+    },
     /// Lance un programme inconnu dans un bac à sable : pas de réseau, dossier personnel invisible.
     #[command(visible_alias = "sandbox")]
     Isoler {

@@ -376,13 +376,26 @@ pub(crate) fn base_a_la_demande() -> Result<&'static Base, &'static str> {
 /// Les sources de Vanguard pour un usage : ce qui manque est rangé, attendu (règles YARA) ou en réserve (base ClamAV,
 /// empreintes de MalwareBazaar, qui demandent une installation ou une clé).
 pub(crate) fn sources(usage: Usage) -> Sources<'static> {
-    let mut manquantes = Vec::new();
-    let mut reserves = Vec::new();
-    let yara = regles_yara(&mut manquantes);
     let chargees = match usage {
         Usage::ALaDemande => empreintes::connues(),
         Usage::EnContinu => empreintes::gardees(),
     };
+    sources_de(usage, chargees)
+}
+
+/// Les sources des analyses à la demande sans rien télécharger, pour `--json` : rien n'y change sur l'ordinateur, et
+/// la fenêtre qui le lance n'attend pas 43 Mo. Une copie de MalwareBazaar qui aurait dû être rafraîchie est dite en
+/// réserve : les logiciels malveillants des derniers jours n'y sont pas reconnus.
+pub(crate) fn sources_sans_telecharger() -> Sources<'static> {
+    let mut s = sources_de(Usage::ALaDemande, empreintes::gardees());
+    s.reserves.extend(empreintes::pas_rafraichies());
+    s
+}
+
+fn sources_de(usage: Usage, chargees: empreintes::Chargees) -> Sources<'static> {
+    let mut manquantes = Vec::new();
+    let mut reserves = Vec::new();
+    let yara = regles_yara(&mut manquantes);
     let malwarebazaar = match chargees {
         Ok(e) => {
             reserves.extend(e.avertissement.clone());

@@ -232,11 +232,16 @@ pub(crate) const OPTIONS_EN: &[(&str, &str, &str)] = &[
     ("antivirus", "etat", "The antivirus status, scanning nothing: engine, databases and their date, what is not read, \
                            second opinion and PUA choices, real-time file scanning"),
     ("antivirus", "detail", "With --status: read the whole ClamAV database to count what it skipped (about 10 seconds)"),
+    ("antivirus", "json", "The result as JSON, for a script: the quick scan (or, with --status, the status), with no \
+                           question; nothing is quarantined, nothing changes, nothing is downloaded"),
     ("isoler", "fichier", "Program or script to run"),
     ("pieges", "retirer", "Remove the decoy files placed"),
     ("veilleur", "sous_etat", "For “ransomware”: on or off"),
     ("yara", "complet", "The whole home folder instead of the risky places"),
     ("yara", "dossier", "A USB drive, external disk or folder to scan entirely"),
+    ("yara", "json", "The result as JSON, for a script: the risky places, with no question; nothing is quarantined, \
+                      nothing changes, nothing is downloaded"),
+    ("memoire", "json", "The result as JSON, for a script: nothing changes"),
     ("integrite", "accepter", "Take the current state as the new reference (after a system update)"),
     ("integrite", "temps_reel", "Watch the critical files live until Ctrl-C"),
     ("integrite", "json", "The result as JSON, for a script: nothing is written; without a reference, none is \

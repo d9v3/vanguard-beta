@@ -3313,6 +3313,70 @@ fn acces_a_distance_en_json() {
     );
 }
 
+/// `yara --json` dans un dossier personnel jetable : aucun endroit à risque → rien d'analysé, jamais « sain » ; un
+/// téléchargement inventé → lu, le résultat versé ; rien trouvé n'est « sain » que sans aucun manque. Le « o » tapé
+/// d'avance n'est jamais lu (aucune question). `antivirus --etat --json` : l'état des bases, sans rien verser.
+#[cfg(unix)]
+#[test]
+fn analyses_de_fichiers_en_json() {
+    let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
+    let hors_ligne = [("VANGUARD_HORS_LIGNE", "1")];
+    let lire = |s: &Sortie| -> serde_json::Value {
+        assert_eq!(s.code, Some(0), "{}", s.erreurs);
+        serde_json::from_str(&s.texte).unwrap_or_else(|e| panic!("JSON illisible ({e}) : {}", s.texte))
+    };
+    let vide = maison_jetable();
+    let v = lire(&vanguard_dans_env(
+        programme,
+        &vide,
+        "fr",
+        &["yara", "--json"],
+        "o\no\n",
+        300,
+        &hors_ligne,
+    ));
+    assert_eq!(v["outil"], "PRO-YAR-001", "{v}");
+    assert_eq!(v["couverture"]["verifies"], 0, "{v}");
+    assert_eq!(v["constats"][0]["etat"], "sans-objet", "{v}");
+
+    let maison = maison_jetable();
+    std::fs::create_dir_all(maison.join("Downloads")).unwrap();
+    std::fs::write(maison.join("Downloads/note-essai.txt"), "bonjour, ceci est un essai\n").unwrap();
+    let v = lire(&vanguard_dans_env(
+        programme,
+        &maison,
+        "fr",
+        &["yara", "--json"],
+        "o\no\n",
+        300,
+        &hors_ligne,
+    ));
+    assert_eq!(v["outil"], "PRO-YAR-001", "{v}");
+    assert!(v["couverture"]["verifies"].as_u64().is_some_and(|n| n >= 1), "{v}");
+    let manques = v["couverture"]["non_verifies"].as_array().map_or(0, Vec::len);
+    let premier = v["constats"][0]["etat"].as_str().unwrap_or_default();
+    assert!(
+        (manques == 0 && premier == "sain") || (manques > 0 && premier == "non-verifie"),
+        "{v}"
+    );
+    assert!(dossier_vanguard(&maison).join("examens/PRO-YAR-001.json").is_file());
+
+    let s = vanguard_dans_env(
+        programme,
+        &maison,
+        "fr",
+        &["antivirus", "--etat", "--json"],
+        "o\n",
+        120,
+        &hors_ligne,
+    );
+    let v = lire(&s);
+    assert_eq!(v["outil"], "PRO-ANV-001", "{v}");
+    assert!(!dossier_vanguard(&maison).join("examens/PRO-ANV-001.json").exists());
+    let _ = std::fs::remove_dir_all(&vide);
+    let _ = std::fs::remove_dir_all(&maison);
+}
+
 /// Sans --internet, rien ne part (ni la demande de l'adresse publique, ni les listes) malgré le « o » tapé d'avance :
 /// non vérifié, la raison dite, sans l'attente d'une demande en ligne. Avec --internet mais hors ligne, rien non plus.
 #[test]

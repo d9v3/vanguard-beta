@@ -227,6 +227,24 @@ pub(crate) fn recentes_gardees() -> Option<Empreintes> {
     })
 }
 
+/// Une copie gardée plus vieille que son rafraîchissement (liste complète : une semaine ; récentes : un jour), quand
+/// rien ne l'a rafraîchie (`gardees`, pour `--json`) : une phrase, sinon `None`. Sans clé ou sans aucune copie,
+/// `charger` le dit déjà.
+pub(crate) fn pas_rafraichies() -> Option<String> {
+    if abuse_ch::cle().is_none() || gardees().is_err() {
+        return None;
+    }
+    let vieille =
+        |nom: &str, apres: Duration| crate::socle::cache::age(("malwarebazaar", nom)).is_none_or(|a| a > apres);
+    (vieille("complete.zip", SEMAINE) || vieille("recentes.txt", JOUR)).then(|| {
+        tr!(
+            "empreintes de MalwareBazaar : copie gardée plus vieille que son rafraîchissement, pas retéléchargée ici (rien n'est téléchargé avec --json) ; les plus récentes ne sont pas reconnues",
+            "MalwareBazaar fingerprints: saved copy older than its refresh, not downloaded again here (nothing is downloaded with --json); the most recent ones are not recognized"
+        )
+        .to_string()
+    })
+}
+
 fn charger(telecharger: bool) -> Result<Empreintes, String> {
     let d = dossier();
     // Sans clé, rien ne se rafraîchit, même quand on ne voulait rien télécharger : la copie vieillit, c'est dit.
