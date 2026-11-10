@@ -176,7 +176,7 @@ pub fn ecran(appli: &mut Appli, ui: &mut Ui) {
     }
     ui.add_space(24.0);
     if let Some(e) = &erreur {
-        carte(ui, 20, 16, |ui| {
+        carte(ui, 20, |ui| {
             ui.set_width(ui.available_width());
             ui.label(texte(
                 &crate::trf!("Le bilan n'a pas abouti : {}", "The check did not finish: {}", e),
@@ -192,7 +192,7 @@ pub fn ecran(appli: &mut Appli, ui: &mut Ui) {
         (Some(_), Some(r)) => super::mouvement::montee(ui.ctx(), egui::Id::unique(("bilan", &r.heure, r.duree))),
         _ => 1.0,
     };
-    carte(ui, 32, 20, |ui| {
+    carte(ui, 32, |ui| {
         ui.set_width(ui.available_width());
         let etroit = ui.available_width() < 760.0;
         let note = |ui: &mut Ui| {
@@ -486,7 +486,7 @@ pub fn constats(ui: &mut Ui, v: &Vue) {
 
 fn carte_constat(ui: &mut Ui, c: &Constat, i: usize) {
     let p = pal();
-    carte(ui, 22, 16, |ui| {
+    carte(ui, 22, |ui| {
         ui.set_width(ui.available_width());
         // Toute la carte s'éclaire : jusqu'à son trait, sous un point de bord.
         super::mouvement::ligne(ui, vec2(21.0, 21.0), 15.0, |ui| {
@@ -552,7 +552,7 @@ fn liste_saine(ui: &mut Ui, liste: &[&Constat]) {
             });
         });
     };
-    carte(ui, 20, 16, |ui| {
+    carte(ui, 20, |ui| {
         ui.set_width(ui.available_width());
         for c in liste.iter().take(LISTE_MAX) {
             ligne(ui, c);
@@ -579,7 +579,7 @@ fn autres(n: usize) -> String {
 
 fn liste_cote(ui: &mut Ui, titre: &str, lignes: &[(String, String)], col: Color32) {
     let p = pal();
-    carte(ui, 20, 16, |ui| {
+    carte(ui, 20, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
             ui.label(RichText::new(titre).font(moyenne(14.0)).color(p.encre));

@@ -21,7 +21,7 @@ pub fn liste(appli: &mut Appli, ui: &mut Ui, v: &Vue) {
     ui.label(texte(&v.resume(), 14.0, p.doux));
     ui.add_space(16.0);
     let possible = appli.changement_possible();
-    carte(ui, 20, 16, |ui| {
+    carte(ui, 20, |ui| {
         ui.set_width(ui.available_width());
         if v.constats.is_empty() {
             ui.label(texte(
@@ -93,7 +93,7 @@ pub fn liste(appli: &mut Appli, ui: &mut Ui, v: &Vue) {
             crate::tr!("Pas pu vérifier", "Could not check"),
             Some(manques.len()),
         );
-        carte(ui, 20, 16, |ui| {
+        carte(ui, 20, |ui| {
             ui.set_width(ui.available_width());
             for m in &manques {
                 ui.label(texte(m, 13.0, p.moyen));
@@ -108,7 +108,8 @@ fn confirmation(appli: &mut Appli, ui: &mut Ui, g: &Geste) {
     eframe::egui::Frame::new()
         .fill(p.surface)
         .stroke(Stroke::new(2.0, p.accent))
-        .corner_radius(16)
+        .shadow(super::ombre())
+        .corner_radius(super::RAYON_CARTE)
         .inner_margin(Margin::same(22))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());

@@ -44,6 +44,8 @@ pub struct Palette {
     pub jaune: Color32,
     pub bon: Color32,
     pub gris: Color32,
+    /// L'ombre des cartes : douce en clair ; en sombre, du noir sur du noir, le liseré (`trait_`) fait le bord.
+    pub ombre: Color32,
 }
 
 const fn c(r: u8, g: u8, b: u8) -> Color32 {
@@ -67,6 +69,7 @@ const SOMBRE: Palette = Palette {
     jaune: c(0xd9, 0xc9, 0x4a),
     bon: c(0x3f, 0xb9, 0x50),
     gris: c(0x5f, 0x6b, 0x77),
+    ombre: Color32::from_rgba_premultiplied(0, 0, 0, 140),
 };
 
 const CLAIR: Palette = Palette {
@@ -86,6 +89,8 @@ const CLAIR: Palette = Palette {
     jaune: c(0xa1, 0x62, 0x07),
     bon: c(0x15, 0x80, 0x3d),
     gris: c(0x94, 0xa3, 0xb8),
+    // rgba(10, 25, 40, 0.08), prémultiplié.
+    ombre: Color32::from_rgba_premultiplied(1, 2, 3, 20),
 };
 
 static THEME_CLAIR: AtomicBool = AtomicBool::new(false);
@@ -139,12 +144,26 @@ pub fn texte(t: &str, taille: f32, couleur: Color32) -> RichText {
     RichText::new(t).size(taille).color(couleur)
 }
 
-/// Une carte : surface, bord fin, coins ronds.
-pub fn carte<R>(ui: &mut Ui, marge: i8, rayon: u8, f: impl FnOnce(&mut Ui) -> R) -> R {
+/// Le rayon des cartes, le même partout.
+pub const RAYON_CARTE: u8 = 16;
+
+/// L'ombre de toutes les cartes : portée vers le bas, large et pâle, comme une lumière venue d'en haut.
+pub fn ombre() -> egui::Shadow {
+    egui::Shadow {
+        offset: [0, 4],
+        blur: 18,
+        spread: 0,
+        color: pal().ombre,
+    }
+}
+
+/// Une carte : surface, bord fin, coins ronds, ombre douce.
+pub fn carte<R>(ui: &mut Ui, marge: i8, f: impl FnOnce(&mut Ui) -> R) -> R {
     Frame::new()
         .fill(pal().surface)
         .stroke(Stroke::new(1.0, pal().trait_))
-        .corner_radius(rayon)
+        .shadow(ombre())
+        .corner_radius(RAYON_CARTE)
         .inner_margin(Margin::same(marge))
         .show(ui, f)
         .inner

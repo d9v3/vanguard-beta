@@ -51,7 +51,8 @@ fn tuile(appli: &mut Appli, ui: &mut Ui, titre: &str, valeur: &str, phrase: &str
     let rep = Frame::new()
         .fill(p.surface)
         .stroke(Stroke::new(1.0, p.trait_))
-        .corner_radius(16)
+        .shadow(super::ombre())
+        .corner_radius(super::RAYON_CARTE)
         .inner_margin(Margin::same(20))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -253,7 +254,7 @@ fn rubrique(appli: &mut Appli, ui: &mut Ui, r: Rubrique) {
     ui.add_space(24.0);
     let commandes: Vec<Commande> = r.commandes().collect();
     if commandes.is_empty() {
-        carte(ui, 24, 16, |ui| {
+        carte(ui, 24, |ui| {
             ui.set_width(ui.available_width());
             ui.label(texte(
                 crate::tr!(
@@ -274,7 +275,7 @@ fn cartes_commandes(appli: &mut Appli, ui: &mut Ui, commandes: Vec<Commande>) {
     let p = pal();
     for c in commandes {
         let (etat, tourne) = (etat_commande(appli, c), tourne(appli, c));
-        carte(ui, 20, 16, |ui| {
+        carte(ui, 20, |ui| {
             ui.set_width(ui.available_width());
             super::mouvement::ligne(ui, vec2(19.0, 19.0), 15.0, |ui| {
                 texte_et_boutons(
@@ -371,7 +372,7 @@ fn appareils_liste(ui: &mut Ui, v: &scan::Vue) {
     ui.add_space(16.0);
     let manques = v.manques();
     if !manques.is_empty() {
-        carte(ui, 20, 16, |ui| {
+        carte(ui, 20, |ui| {
             ui.set_width(ui.available_width());
             ui.label(
                 RichText::new(crate::tr!("Pas pu vérifier", "Could not check"))
@@ -393,7 +394,7 @@ fn appareils_liste(ui: &mut Ui, v: &scan::Vue) {
             p.doux,
         ));
     } else {
-        carte(ui, 20, 16, |ui| {
+        carte(ui, 20, |ui| {
             ui.set_width(ui.available_width());
             for (k, a) in v.appareils.iter().take(APPAREILS_MAX).enumerate() {
                 if k > 0 {
@@ -538,7 +539,7 @@ fn reseau_entier(ui: &mut Ui, v: &scan::Vue) {
     if lignes.is_empty() {
         return;
     }
-    carte(ui, 20, 16, |ui| {
+    carte(ui, 20, |ui| {
         ui.set_width(ui.available_width());
         for (l, couleur) in lignes {
             ui.label(texte(&l, 13.0, couleur));
@@ -620,7 +621,7 @@ fn appareil(ui: &mut Ui, a: &scan::Appareil) {
 }
 
 fn erreur(ui: &mut Ui, e: &str) {
-    carte(ui, 20, 16, |ui| {
+    carte(ui, 20, |ui| {
         ui.set_width(ui.available_width());
         ui.label(texte(
             &crate::trf!("Pas de résultat lisible : {}", "No readable result: {}", e),
@@ -632,7 +633,7 @@ fn erreur(ui: &mut Ui, e: &str) {
 
 fn protection_liste(ui: &mut Ui, v: &protection::Vue) {
     let p = pal();
-    carte(ui, 20, 16, |ui| {
+    carte(ui, 20, |ui| {
         ui.set_width(ui.available_width());
         for (k, i) in v.interrupteurs.iter().enumerate() {
             if k > 0 {
@@ -689,7 +690,7 @@ fn protection_liste(ui: &mut Ui, v: &protection::Vue) {
 
 fn libre_liste(ui: &mut Ui, v: &libre::Vue) {
     let p = pal();
-    carte(ui, 20, 16, |ui| {
+    carte(ui, 20, |ui| {
         ui.set_width(ui.available_width());
         for l in &v.lignes {
             ui.horizontal(|ui| {
@@ -758,7 +759,7 @@ fn alertes(appli: &mut Appli, ui: &mut Ui) {
 
 fn journal(ui: &mut Ui, j: &evenements::Vue) {
     let p = pal();
-    carte(ui, 20, 16, |ui| {
+    carte(ui, 20, |ui| {
         ui.set_width(ui.available_width());
         let couleur = j.etat.gravite().map_or(p.bon, |g| couleur_gravite(Some(g)));
         ui.label(RichText::new(j.etat.phrase()).font(moyenne(15.0)).color(couleur));
@@ -853,7 +854,7 @@ fn reglages(appli: &mut Appli, ui: &mut Ui) {
         ),
     );
     ui.add_space(24.0);
-    carte(ui, 20, 16, |ui| {
+    carte(ui, 20, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
             ui.label(
