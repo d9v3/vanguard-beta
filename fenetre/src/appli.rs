@@ -10,11 +10,12 @@ use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 use crate::commandes::{self, Changement, Commande, Forme, Lancement, Rubrique, Saisie, Sorte};
+use crate::coulisses::{Chemin, Coulisses};
 use crate::donnees::{appareils, bilan, evenements, libre, protection};
 use crate::lanceur::{Fin, Issue, Message, Programme, Reveil, Tache};
 
 /// Lignes gardées dans la console.
-const CONSOLE_MAX: usize = 500;
+const CONSOLE_MAX: usize = 2000;
 /// Saisies gardées pour ↑.
 const HISTORIQUE_MAX: usize = 50;
 /// Commandes en attente au plus.
@@ -51,6 +52,9 @@ pub enum Ton {
 
 #[derive(Clone, Debug)]
 pub struct LigneConsole {
+    /// Croissant, jamais réutilisé (même après « effacer ») : la console y retrouve ses mesures et compte les
+    /// lignes nouvelles.
+    pub numero: u64,
     pub heure: String,
     pub source: String,
     pub texte: String,
@@ -86,6 +90,10 @@ pub struct Appli {
     tache: Option<Tache>,
     file: VecDeque<Commande>,
     pub console: VecDeque<LigneConsole>,
+    /// Le numéro de la prochaine ligne de la console.
+    suivante: u64,
+    /// Ce que fait la fenêtre, pour la fenêtre « Coulisses » (en mémoire seulement).
+    pub coulisses: Coulisses,
     pub saisie: String,
     historique: Vec<String>,
     /// Position dans l'historique pendant ↑ / ↓ (None : la saisie en cours).
@@ -137,6 +145,8 @@ impl Appli {
             tache: None,
             file: VecDeque::new(),
             console: VecDeque::new(),
+            suivante: 1,
+            coulisses: Coulisses::nouvelles(etat_du_bac()),
             saisie: String::new(),
             historique: Vec::new(),
             rappel: None,
@@ -179,7 +189,10 @@ impl Appli {
         if self.console.len() >= CONSOLE_MAX {
             self.console.pop_front();
         }
+        let numero = self.suivante;
+        self.suivante = self.suivante.saturating_add(1);
         self.console.push_back(LigneConsole {
+            numero,
             heure: crate::temps::heure_locale(),
             source: crate::nettoyage::nom(source, 12),
             texte: crate::nettoyage::ligne(texte),
@@ -231,6 +244,12 @@ impl Appli {
             return;
         };
         let tache = Tache::lancer(p, l, crate::langue::anglais(), &self.reveil);
+        let chemin = if tache.par_le_relais() {
+            Chemin::Relais
+        } else {
+            Chemin::Direct
+        };
+        self.coulisses.lancee(l, chemin);
         self.tache = Some(tache);
         self.dire(
             "vanguard",
@@ -397,8 +416,10 @@ impl Appli {
                         .tache
                         .as_ref()
                         .map_or("vanguard", |t| t.lancement.commande().nom_affiche());
+                    self.coulisses.erreur(&l);
                     self.dire(source, &l, Ton::Discret);
                 }
+                Message::Lance(pid) => self.coulisses.processus(pid),
                 Message::Fin(f) => {
                     self.tache = None;
                     self.finir(&f);
@@ -418,6 +439,7 @@ impl Appli {
     }
 
     fn finir(&mut self, f: &Fin) {
+        self.coulisses.finie(f);
         let c = match f.lancement {
             Lancement::Commande(c) => c,
             Lancement::Changement(ch) => return self.finir_changement(ch, f),
@@ -561,6 +583,7 @@ impl Appli {
                 self.demander(c);
             }
             Saisie::Refusee(t) => {
+                self.coulisses.refusee(&texte);
                 self.dire("vous", &t, Ton::Commande);
                 self.dire(
                     "fenêtre",
@@ -671,6 +694,26 @@ fn issue_du_changement(ch: Changement, f: &Fin) -> IssueChangement {
 
 fn ch_delai(ch: Changement) -> u64 {
     Lancement::Changement(ch).delai().as_secs()
+}
+
+/// L'état du bac à sable pour les coulisses, tel que dit au démarrage.
+fn etat_du_bac() -> (String, bool) {
+    #[cfg(target_os = "linux")]
+    if let Some(e) = crate::relais::etat() {
+        return e.clone();
+    }
+    (
+        if cfg!(windows) {
+            crate::tr!(
+                "Pas de bac à sable sous Windows : la fenêtre lance `vanguard` elle-même, chaque commande dans son objet de travail.",
+                "No sandbox on Windows: the window starts `vanguard` itself, each command in its own job object."
+            )
+        } else {
+            crate::tr!("Bac à sable pas posé.", "Sandbox not set up.")
+        }
+        .into(),
+        false,
+    )
 }
 
 /// L'écran où le résultat d'une commande se montre.
@@ -857,7 +900,14 @@ mod tests {
         for i in 0..(CONSOLE_MAX + 20) {
             a.dire("x", &format!("{i}"), Ton::Normal);
         }
-        assert_eq!(a.console.len(), CONSOLE_MAX);
+        assert_eq!((CONSOLE_MAX, a.console.len()), (2000, CONSOLE_MAX));
+        // Les numéros suivent, même quand les plus anciennes partent : la console y retrouve ses mesures.
+        assert!(
+            a.console
+                .iter()
+                .zip(a.console.iter().skip(1))
+                .all(|(x, y)| y.numero == x.numero + 1)
+        );
     }
 
     /// « Retour » revient pas à pas, sans pas doublé pour un même écran, et la pile reste bornée.

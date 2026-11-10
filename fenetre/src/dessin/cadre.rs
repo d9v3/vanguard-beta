@@ -4,15 +4,23 @@ use eframe::egui::{
     self, Align2, Frame, Key, Margin, Rect, RichText, Sense, Stroke, StrokeKind, TextEdit, Ui, pos2, vec2,
 };
 
-use super::{f32_n, icones, melange, mono, moyenne, n_f32, pal, police, survol};
-use crate::appli::{Appli, Ecran, Ton};
+use super::defile::{self, Colonnes, HAUTEUR_LIGNE, Rangee};
+use super::{icones, melange, mono, moyenne, n_f32, pal, police, survol};
+use crate::appli::{Appli, Ecran, LigneConsole, Ton};
 use crate::commandes::{Commande, Rubrique};
 use crate::donnees::protection::Allure;
 
 /// Lignes de la console montrées, repliée et dépliée.
 const LIGNES_REPLIEE: usize = 6;
 const LIGNES_DEPLIEE: usize = 16;
-const HAUTEUR_LIGNE: f32 = 20.0;
+/// Les colonnes de la console : l'heure, la source, le texte.
+const COLONNES: Colonnes = Colonnes {
+    heure: 32.0,
+    source: 116.0,
+    texte: 220.0,
+    droite: 32.0,
+    dessous: 12.0,
+};
 
 pub fn tout(appli: &mut Appli, ui: &mut Ui) {
     let p = pal();
@@ -45,6 +53,8 @@ pub fn tout(appli: &mut Appli, ui: &mut Ui) {
         .show_separator_line(false)
         .frame(Frame::new().fill(p.surface))
         .show(ui, |ui| console(appli, ui, lignes));
+    // Les coulisses : une fenêtre à part, ou un panneau à droite (avant le panneau central, qui prend le reste).
+    super::coulisses::montrer(appli, ui);
     egui::CentralPanel::default()
         .frame(Frame::new().fill(p.fond))
         .show(ui, |ui| {
@@ -323,63 +333,47 @@ fn console(appli: &mut Appli, ui: &mut Ui, montrees: usize) {
         ui.ctx().data_mut(|d| d.insert_temp(id_depliee(), !depliee));
     }
     rep.on_hover_cursor(egui::CursorIcon::PointingHand);
+    // Les coulisses, à gauche : allumées tant qu'elles sont ouvertes.
+    let ouvertes = super::coulisses::ouvertes(ui.ctx());
+    let mot = crate::tr!("Coulisses", "Behind the scenes");
+    let largeur = peintre.layout_no_wrap(mot.into(), police(12.0), p.doux).size().x;
+    let zone = Rect::from_min_size(
+        pos2(zone.left() - 24.0 - largeur, tete.top()),
+        vec2(largeur, tete.height()),
+    );
+    let rep = ui.interact(zone, ui.scope_id().with("coulisses"), Sense::click());
+    let vif = if ouvertes {
+        1.0
+    } else {
+        survol(ui, rep.id, rep.hovered())
+    };
+    peintre.text(
+        pos2(zone.right(), zone.center().y),
+        Align2::RIGHT_CENTER,
+        mot,
+        police(12.0),
+        p.doux.lerp_to_gamma(if ouvertes { p.accent } else { p.encre }, vif),
+    );
+    if rep.clicked() {
+        super::coulisses::basculer(ui.ctx());
+    }
+    rep.on_hover_cursor(egui::CursorIcon::PointingHand);
     let flux = Rect::from_min_max(
         pos2(r.left(), tete.bottom()),
         pos2(r.right(), tete.bottom() + 12.0 + HAUTEUR_LIGNE * n_f32(montrees)),
     );
-    let total = appli.console.len();
-    let debut = total.saturating_sub(montrees);
-    let largeur_max = f32_n((flux.width() - 260.0) / 7.9).max(10);
-    for (k, l) in appli.console.iter().skip(debut).enumerate() {
-        // 1 : la plus récente ; les plus anciennes s'effacent vers le haut.
-        let rang = total - debut - k;
-        let alpha = if rang >= montrees {
-            0.35
-        } else if rang + 1 == montrees {
-            0.6
-        } else {
-            1.0
-        };
-        let y = flux.bottom() - 12.0 - HAUTEUR_LIGNE * (n_f32(rang) - 0.5);
-        let col = match l.ton {
-            Ton::Normal => p.encre,
-            Ton::Commande => p.accent,
-            Ton::Bon => p.bon,
-            Ton::Attention => p.moyen,
-            Ton::Grave => p.grave,
-            Ton::Discret => p.doux,
-        };
-        let col_source = if l.ton == Ton::Commande { p.accent } else { p.doux };
-        peintre.text(
-            pos2(flux.left() + 32.0, y),
-            Align2::LEFT_CENTER,
-            &l.heure,
-            mono(13.0),
-            p.discret.gamma_multiply(alpha),
-        );
-        peintre.text(
-            pos2(flux.left() + 116.0, y),
-            Align2::LEFT_CENTER,
-            &l.source,
-            mono(13.0),
-            col_source.gamma_multiply(alpha),
-        );
-        let t = crate::nettoyage::couper(&l.texte, largeur_max);
-        let g = peintre.text(
-            pos2(flux.left() + 220.0, y),
-            Align2::LEFT_CENTER,
-            &t,
-            mono(13.0),
-            col.gamma_multiply(alpha),
-        );
-        if rang == 1 && en_cours.is_some() && (ui.ctx().input(|i| i.time) % 1.0) < 0.5 {
-            peintre.rect_filled(
-                Rect::from_min_size(pos2(g.right() + 3.0, y - 7.0), vec2(7.0, 14.0)),
-                0,
-                p.accent,
-            );
-        }
-    }
+    let clignote = en_cours.is_some() && (ui.ctx().input(|i| i.time) % 1.0) < 0.5;
+    let lignes = &appli.console;
+    ui.scope_builder(egui::UiBuilder::new().max_rect(flux), |ui| {
+        defile::journal(
+            ui,
+            egui::Id::unique("console-flux"),
+            lignes.len(),
+            |i| lignes.get(i).map(rangee),
+            COLONNES,
+            clignote,
+        )
+    });
     // La saisie : un nom de la liste fermée, rien d'autre ne part (commandes::comprendre).
     let saisie = Rect::from_min_max(pos2(r.left(), flux.bottom()), pos2(r.right(), flux.bottom() + 44.0));
     peintre.line_segment([saisie.left_top(), saisie.right_top()], Stroke::new(1.0, p.trait_));
@@ -452,5 +446,25 @@ fn console(appli: &mut Appli, ui: &mut Ui, montrees: usize) {
     if rep.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
         appli.saisir();
         rep.request_focus();
+    }
+}
+
+/// Une ligne de la console pour le journal.
+fn rangee(l: &LigneConsole) -> Rangee<'_> {
+    let p = pal();
+    Rangee {
+        numero: l.numero,
+        heure: &l.heure,
+        source: &l.source,
+        couleur_source: if l.ton == Ton::Commande { p.accent } else { p.doux },
+        texte: &l.texte,
+        couleur: match l.ton {
+            Ton::Normal => p.encre,
+            Ton::Commande => p.accent,
+            Ton::Bon => p.bon,
+            Ton::Attention => p.moyen,
+            Ton::Grave => p.grave,
+            Ton::Discret => p.doux,
+        },
     }
 }

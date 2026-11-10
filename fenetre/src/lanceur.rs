@@ -185,6 +185,8 @@ fn refus_dossier(m: &std::fs::Metadata, proprietaire: u32) -> Option<&'static st
 pub enum Message {
     /// Une ligne écrite sur la sortie des erreurs (progression, avertissement), nettoyée.
     Ligne(String),
+    /// `vanguard` est lancé, sous ce numéro de processus : noté dans les coulisses, rien d'autre.
+    Lance(u32),
     Fin(Fin),
 }
 
@@ -274,6 +276,16 @@ impl Tache {
         }
     }
 
+    /// Lancée par le relais (Linux, fenêtre dans son bac à sable), ou par la fenêtre elle-même.
+    // raison : hors de Linux, il n'y a pas de relais ; la même signature partout garde un seul appel.
+    #[cfg_attr(not(target_os = "linux"), allow(clippy::unused_self))]
+    pub fn par_le_relais(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        return self.relayee.is_some();
+        #[cfg(not(target_os = "linux"))]
+        false
+    }
+
     pub fn arret_demande(&self) -> bool {
         self.arret.load(Ordering::Relaxed)
     }
@@ -353,6 +365,8 @@ pub fn surveiller(
         }
     };
     let groupe = Groupe::de(&enfant);
+    // Après l'objet de travail (Windows) : rien ne doit allonger l'instant où `vanguard` n'y est pas encore.
+    rendre(Message::Lance(enfant.id()));
     let trop = Arc::new(AtomicBool::new(false));
     let abandon = Arc::new(AtomicBool::new(false));
     let (sortie_envoi, sortie_recu) = mpsc::channel();
@@ -759,6 +773,7 @@ esac
             for m in t.recevoir() {
                 match m {
                     Message::Ligne(l) => lignes.push(l),
+                    Message::Lance(pid) => assert_ne!(pid, 0),
                     Message::Fin(f) => return (lignes, f),
                 }
             }
@@ -888,6 +903,37 @@ esac
         let (_, f) = attendre(&Tache::lancer(&p, Commande::JournauxWindows.into(), false, &rien));
         assert!(matches!(f.issue, Issue::Impossible(_)), "{:?}", f.issue);
         assert_eq!(f.code, None);
+
+        // Les coulisses de la fenêtre, par le même chemin que l'écran : la commande exacte, le chemin, le pid, la fin,
+        // la ligne d'erreur et la sortie. Les commandes du lancement sont arrêtées d'abord (le faux protection dort).
+        let mut a = crate::appli::Appli::nouvelle(Ok(p.clone()), Arc::clone(&rien));
+        a.arreter();
+        let debut = Instant::now();
+        while a.taches() > 0 && debut.elapsed() < Duration::from_secs(10) {
+            a.avancer();
+            std::thread::sleep(PAS);
+        }
+        a.demander(Commande::Bilan);
+        let debut = Instant::now();
+        while a.taches() > 0 && debut.elapsed() < Duration::from_secs(20) {
+            a.avancer();
+            std::thread::sleep(PAS);
+        }
+        let c = &a.coulisses;
+        let b = c.passages().back().unwrap();
+        assert_eq!(b.ligne, "vanguard audit --json");
+        assert_eq!(b.chemin, crate::coulisses::Chemin::Direct);
+        assert!(b.pid.is_some_and(|n| n > 0), "{:?}", b.pid);
+        let fin = b.fin.as_ref().unwrap();
+        assert_eq!(fin.code, Some(0));
+        assert!(fin.taille > 0);
+        let textes: Vec<&str> = c.notes().iter().map(|n| n.texte.as_str()).collect();
+        assert!(textes.contains(&"une ligne d'erreur"), "{textes:?}");
+        assert!(textes.iter().any(|t| t.contains(r#""score": 90"#)), "{textes:?}");
+        // La première, arrêtée, a aussi son pid et sa fin.
+        let premiere = c.passages().front().unwrap();
+        assert_eq!(premiere.ligne, "vanguard protection --json");
+        assert!(premiere.pid.is_some() && premiere.fin.is_some(), "{premiere:?}");
         let _ = std::fs::remove_dir_all(&d);
     }
 }

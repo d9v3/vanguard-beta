@@ -267,7 +267,11 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   other processes and the system bus from it), and a report that sees less without saying so would be worse. On opening,
   the window's console says whether the sandbox is active, with which Landlock version and what this kernel cannot take
   away; without Landlock (kernel before 5.13, or Landlock turned off), or if the relay does not start, it says so in
-  orange and keeps the account's rights: never a `vanguard` started from the sandbox.
+  orange and keeps the account's rights: never a `vanguard` started from the sandbox. Behind the scenes ("Vanguard —
+  Behind the scenes", opened from the console header) shows what the window does: each command and its arguments,
+  which way it goes (relay or window), its pid (sent back by the relay in a frame of exactly 9 bytes), its end, its
+  lines, and refused inputs with the reason; in memory only, bounded, cleaned like the rest, read-only (the view only
+  gets a state it cannot change: nothing starts from it, nothing is written from it).
 - **The menu stays the safe choice.** The window does not open without a terminal (a script writing the choices),
   over SSH or Remote Desktop, as administrator (root, sudo, administrator console), without a graphical screen, when
   it is not placed next to `vanguard`, when (on Linux) it is not a regular file owned by this account or root that

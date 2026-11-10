@@ -280,7 +280,11 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   les autres processus et le bus système), et un bilan qui voit moins sans le dire serait pire. À l'ouverture, la
   console de la fenêtre dit si le bac est actif, avec quelle version de Landlock et ce que ce noyau ne sait pas
   retirer ; sans Landlock (noyau d'avant 5.13, ou Landlock coupé), ou si le relais ne démarre pas, elle le dit en orange
-  et garde les droits du compte : jamais un `vanguard` lancé depuis le bac.
+  et garde les droits du compte : jamais un `vanguard` lancé depuis le bac. Les coulisses (« Vanguard — Coulisses »,
+  ouvertes de l'en-tête de la console) montrent ce que fait la fenêtre : chaque commande et ses arguments, par où elle
+  part (relais ou fenêtre), son pid (rendu par le relais dans une trame de 9 octets exacts), sa fin, ses lignes, et les
+  saisies refusées avec la raison ; en mémoire seulement, bornées, nettoyées comme le reste, en lecture seule (la vue
+  ne reçoit qu'un état qu'elle ne peut pas changer : rien ne s'y lance, rien n'en est écrit).
 - **Le menu reste le choix sûr.** La fenêtre ne s'ouvre pas sans terminal (un script qui écrit les choix), en SSH ou
   au Bureau à distance, en administrateur (root, sudo, console administrateur), sans écran graphique, quand elle n'est
   pas posée à côté, quand (sous Linux) elle n'est pas un fichier ordinaire à ce compte ou à root que ni le groupe ni

@@ -63,6 +63,10 @@ fn fenetre(t: &[u8]) {
             assert!(l.chars().count() <= LIGNE_MAX);
             assert_eq!(protocole::lire_reponse(&protocole::coder_ligne(id, &l)), Some(Reponse::Ligne(id, l)));
         }
+        Some(Reponse::Lance(id, pid)) => {
+            assert_eq!(t.len(), 9);
+            assert_eq!(protocole::lire_reponse(&protocole::coder_lance(id, pid)), Some(Reponse::Lance(id, pid)));
+        }
         Some(Reponse::Fin { id, code, issue, duree, sortie }) => {
             if let Issue::Impossible(e) = &issue {
                 sans_piege(e);

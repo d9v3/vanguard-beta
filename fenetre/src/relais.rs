@@ -29,7 +29,9 @@ use std::time::Duration;
 
 use crate::commandes::{Commande, Empreinte, Lancement, Sorte};
 use crate::lanceur::{Fin, Issue, Message, Programme, Rendre, Reveil, SORTIE_MAX, Tache};
-use crate::protocole::{DEMANDE_MAX, Demande, Reponse, coder_fin, coder_ligne, ecrire_trame, lire_reponse, lire_trame};
+use crate::protocole::{
+    DEMANDE_MAX, Demande, Reponse, coder_fin, coder_lance, coder_ligne, ecrire_trame, lire_reponse, lire_trame,
+};
 
 /// Une réponse du relais : la sortie bornée, son texte d'erreur et l'en-tête.
 const REPONSE_MAX: usize = SORTIE_MAX + 64 * 1024;
@@ -270,10 +272,11 @@ fn servir(flux: UnixStream, trouver: impl Fn() -> Result<Programme, String> + Se
                 }
                 let rendre: Rendre = {
                     let envoyer = Arc::clone(&envoyer);
-                    Arc::new(move |m| {
-                        if let Message::Ligne(l) = m {
-                            envoyer(&coder_ligne(id, &l));
-                        }
+                    Arc::new(move |m| match m {
+                        Message::Ligne(l) => envoyer(&coder_ligne(id, &l)),
+                        Message::Lance(pid) => envoyer(&coder_lance(id, pid)),
+                        // La fin part après `surveiller`, ci-dessous.
+                        Message::Fin(_) => {}
                     })
                 };
                 let (envoyer2, etat2, trouver2) = (Arc::clone(&envoyer), Arc::clone(&etat), Arc::clone(&trouver));
@@ -443,6 +446,12 @@ fn lire_reponses(entree: &mut UnixStream, attente: &Mutex<HashMap<u32, Attente>>
             Some(Reponse::Ligne(id, l)) => {
                 if let Some(a) = verrou(attente).get(&id) {
                     let _ = a.envoi.send(Message::Ligne(l));
+                    (a.reveil)();
+                }
+            }
+            Some(Reponse::Lance(id, pid)) => {
+                if let Some(a) = verrou(attente).get(&id) {
+                    let _ = a.envoi.send(Message::Lance(pid));
                     (a.reveil)();
                 }
             }

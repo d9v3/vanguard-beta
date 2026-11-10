@@ -15,6 +15,7 @@ mod bac_a_sable;
 #[cfg(windows)]
 mod chargement;
 mod commandes;
+mod coulisses;
 mod dessin;
 mod donnees;
 #[cfg(all(test, target_os = "linux"))]

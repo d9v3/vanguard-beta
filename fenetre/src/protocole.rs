@@ -4,8 +4,8 @@
 //!
 //! Des trames : la longueur sur 4 octets, petit-boutiste, puis le contenu. Fenêtre → relais : `1 id commande langue`
 //! (lancer une commande de la liste), `3 id sorte empreinte(16) langue` (un changement au démarrage : sorte 1
-//! retirer, 2 remettre) ou `2 id` (arrêter). Relais → fenêtre : `1 id texte` (une ligne d'erreur) ou `2 id issue code durée
-//! texte sortie` (la fin).
+//! retirer, 2 remettre) ou `2 id` (arrêter). Relais → fenêtre : `1 id texte` (une ligne d'erreur), `3 id pid`
+//! (`vanguard` est lancé, sous ce numéro : pour les coulisses) ou `2 id issue code durée texte sortie` (la fin).
 
 use std::io::{Read, Write};
 use std::time::Duration;
@@ -103,6 +103,8 @@ fn rang(c: Commande) -> u8 {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Reponse {
     Ligne(u32, String),
+    /// `vanguard` est lancé : le numéro de son processus (montré dans les coulisses, rien d'autre).
+    Lance(u32, u32),
     Fin {
         id: u32,
         code: Option<i32>,
@@ -116,6 +118,13 @@ pub fn coder_ligne(id: u32, l: &str) -> Vec<u8> {
     let mut v = vec![1];
     v.extend(id.to_le_bytes());
     v.extend(l.as_bytes());
+    v
+}
+
+pub fn coder_lance(id: u32, pid: u32) -> Vec<u8> {
+    let mut v = vec![3];
+    v.extend(id.to_le_bytes());
+    v.extend(pid.to_le_bytes());
     v
 }
 
@@ -148,6 +157,8 @@ pub fn lire_reponse(o: &[u8]) -> Option<Reponse> {
             id,
             crate::nettoyage::ligne(&String::from_utf8_lossy(o.get(5..)?)),
         )),
+        // Exactement 9 octets : rien d'autre ne passe avec le numéro.
+        3 if o.len() == 9 => Some(Reponse::Lance(id, u32::from_le_bytes(o.get(5..9)?.try_into().ok()?))),
         2 => {
             let code = i32::from_le_bytes(o.get(7..11)?.try_into().ok()?);
             let duree = u64::from_le_bytes(o.get(11..19)?.try_into().ok()?);
@@ -340,6 +351,11 @@ mod tests {
         f[5] = 9;
         assert!(lire_reponse(&f).is_none());
         assert!(lire_reponse(&[3, 0, 0, 0, 0]).is_none());
+        assert_eq!(lire_reponse(&coder_lance(4, 4242)), Some(Reponse::Lance(4, 4242)));
+        let mut l = coder_lance(4, 4242);
+        assert!(lire_reponse(&l[..8]).is_none());
+        l.push(0);
+        assert!(lire_reponse(&l).is_none());
     }
 
     #[test]

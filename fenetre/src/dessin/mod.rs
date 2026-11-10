@@ -5,6 +5,8 @@
 
 mod bilan;
 mod cadre;
+mod coulisses;
+mod defile;
 mod demarrage;
 mod ecrans;
 mod icones;
