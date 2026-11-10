@@ -10,8 +10,8 @@ use super::{bouton, carte, mono, moyenne, pal, petit, texte};
 use crate::appli::Appli;
 use crate::commandes::ChangementCouleurs;
 use crate::couleurs::{
-    Base, CONTRASTE_CONSEILLE, Choix, Jeu, Remarque, Rgb, Theme, Vif, contraste_sur_fonds, depuis_le_systeme, hex,
-    remarques, verifier,
+    Base, CONTRASTE_CONSEILLE, CONTRASTE_MIN, Choix, Jeu, Remarque, Rgb, Theme, Vif, contraste_sur_fonds,
+    depuis_le_systeme, hex, remarques, verifier,
 };
 use crate::donnees::couleurs::Source;
 
@@ -118,7 +118,7 @@ pub fn section(appli: &mut Appli, ui: &mut Ui) {
             ligne_vif(ui, theme, &mut nouveau, v);
         }
         ui.separator();
-        lisibilite(ui, theme, &nouveau);
+        lisibilite(ui, theme, &nouveau, true);
         ui.add_space(12.0);
         gestes(appli, ui, theme, reglee, &nouveau);
     });
@@ -226,7 +226,7 @@ fn ligne_vif(ui: &mut Ui, theme: Theme, choix: &mut Choix, v: Vif) {
                     p.discret
                 };
                 ui.label(
-                    RichText::new(format!("{}:1", crate::langue::nombre(ratio, 1)))
+                    RichText::new(format!("{}:1", ratio_sous(ratio, CONTRASTE_CONSEILLE)))
                         .font(mono(12.0))
                         .color(couleur),
                 )
@@ -241,56 +241,98 @@ fn ligne_vif(ui: &mut Ui, theme: Theme, choix: &mut Choix, v: Vif) {
     choix.poser(v, c);
 }
 
-/// Ce qui se lit mal, dit sans interdire ; ce qui se verrait à peine, refusé (Vanguard le refuserait aussi).
-fn lisibilite(ui: &mut Ui, theme: Theme, choix: &Choix) {
-    let p = pal();
+/// Ce que la lisibilité d'un choix fait dire : le refus s'il y en a un, puis chaque remarque, avec vrai pour la plus
+/// lourde (« grave » pris pour « sain »), montrée en gras. La section et la confirmation disent les mêmes.
+fn avis_lisibilite(theme: Theme, choix: &Choix) -> (Option<String>, Vec<(String, bool)>) {
     let refus = verifier(theme, choix).err();
-    // Tout ce qui juge la lisibilité s'écrit à l'encre, avec une marque à l'encre : jamais dans une couleur réglable,
-    // qui pourrait être justement celle qui ne se voit pas.
-    if let Some(r) = refus {
-        super::signale(
-            ui,
-            p.encre,
-            &crate::trf!(
-                "{} se verrait à peine sur le fond (contraste {}:1) : Vanguard refuserait de l'enregistrer, et la fenêtre ne la montre pas.",
-                "{} would barely show on the background (contrast {}:1): Vanguard would refuse to save it, and the window does not show it.",
-                nom_vif(r.vif),
-                crate::langue::nombre(r.ratio, 1)
-            ),
-            13.0,
-        );
-    }
-    // La couleur refusée l'est déjà ci-dessus : pas une deuxième fois en remarque.
-    let r: Vec<Remarque> = remarques(theme, choix)
+    let dit = refus.map(|r| {
+        crate::trf!(
+            "{} se verrait à peine sur le fond (contraste {}:1, il faut au moins {}:1) : Vanguard refuserait de l'enregistrer, et la fenêtre ne la montre pas.",
+            "{} would barely show on the background (contrast {}:1, at least {}:1 is needed): Vanguard would refuse to save it, and the window does not show it.",
+            nom_vif(r.vif),
+            ratio_sous(r.ratio, CONTRASTE_MIN),
+            crate::langue::nombre(CONTRASTE_MIN, 1)
+        )
+    });
+    // La couleur refusée l'est déjà : pas une deuxième fois en remarque.
+    let remarques = remarques(theme, choix)
         .into_iter()
         .filter(|m| !matches!((m, refus), (Remarque::Contraste { vif, .. }, Some(f)) if *vif == f.vif))
+        .map(|m| {
+            let phrase = match m {
+                Remarque::Contraste { vif, ratio } => crate::trf!(
+                    "{} : peu de contraste avec le fond ({}:1, {}:1 conseillé).",
+                    "{}: little contrast with the background ({}:1, {}:1 advised).",
+                    nom_vif(vif),
+                    ratio_sous(ratio, CONTRASTE_CONSEILLE),
+                    crate::langue::nombre(CONTRASTE_CONSEILLE, 0)
+                ),
+                Remarque::Proches {
+                    a: Vif::Grave,
+                    b: Vif::Bon,
+                    ..
+                } => crate::trf!(
+                    "{} et {} se ressemblent : une alerte risque de passer pour ce qui va bien.",
+                    "{} and {} look alike: an alert may pass for what is fine.",
+                    nom_vif(Vif::Grave),
+                    nom_vif(Vif::Bon)
+                ),
+                Remarque::Proches { a: Vif::Accent, b, .. } => crate::trf!(
+                    "{} et {} se ressemblent : un bouton ou « à corriger » risque de passer pour une gravité.",
+                    "{} and {} look alike: a button or “to fix” may pass for a severity.",
+                    nom_vif(Vif::Accent),
+                    nom_vif(b)
+                ),
+                Remarque::Proches { a, b, .. } => crate::trf!(
+                    "{} et {} se ressemblent : deux gravités risquent de se confondre.",
+                    "{} and {} look alike: two severities may be confused.",
+                    nom_vif(a),
+                    nom_vif(b)
+                ),
+            };
+            (phrase, m.grave_comme_sain())
+        })
         .collect();
-    if r.is_empty() && refus.is_none() {
-        ui.label(texte(
-            crate::tr!(
-                "Lisible : chaque couleur contraste avec le fond, et les gravités se distinguent.",
-                "Readable: each color contrasts with the background, and severities stand apart."
-            ),
-            13.0,
-            p.discret,
-        ));
+    (dit, remarques)
+}
+
+/// Un contraste à une décimale, jamais arrondi jusqu'au seuil qu'il manque : 1,496 se dit « 1,4 » sous 1,5, pas
+/// « 1,5 » (qui contredirait « il faut au moins 1,5 »).
+fn ratio_sous(ratio: f64, seuil: f64) -> String {
+    let dixiemes = (ratio * 10.0).floor() / 10.0;
+    let montre = if ratio < seuil { dixiemes } else { ratio };
+    crate::langue::nombre(montre, 1)
+}
+
+/// Le refus et les remarques, à l'encre avec une marque à l'encre : jamais dans une couleur réglable, qui pourrait
+/// être justement celle qui ne se voit pas. Rien à dire : « Lisible », si `lisible_dit`.
+fn lisibilite(ui: &mut Ui, theme: Theme, choix: &Choix, lisible_dit: bool) {
+    let p = pal();
+    let (refus, remarques) = avis_lisibilite(theme, choix);
+    if refus.is_none() && remarques.is_empty() {
+        if lisible_dit {
+            ui.label(texte(
+                crate::tr!(
+                    "Lisible : chaque couleur contraste avec le fond, et les gravités se distinguent.",
+                    "Readable: each color contrasts with the background, and severities stand apart."
+                ),
+                13.0,
+                p.discret,
+            ));
+        }
+        return;
     }
-    for m in r {
-        let phrase = match m {
-            Remarque::Contraste { vif, ratio } => crate::trf!(
-                "{} : peu de contraste avec le fond ({}:1, 3:1 conseillé).",
-                "{}: little contrast with the background ({}:1, 3:1 advised).",
-                nom_vif(vif),
-                crate::langue::nombre(ratio, 1)
-            ),
-            Remarque::Proches { a, b, .. } => crate::trf!(
-                "{} et {} se ressemblent : deux gravités risquent de se confondre.",
-                "{} and {} look alike: two severities may be confused.",
-                nom_vif(a),
-                nom_vif(b)
-            ),
-        };
-        super::signale(ui, p.encre, &phrase, 13.0);
+    if let Some(r) = refus {
+        super::signale(ui, p.encre, &r, 13.0);
+    }
+    for (phrase, lourde) in remarques {
+        if lourde {
+            super::signale_avec(ui, p.encre, 13.0, |ui| {
+                ui.label(RichText::new(phrase).font(moyenne(13.0)).color(p.encre));
+            });
+        } else {
+            super::signale(ui, p.encre, &phrase, 13.0);
+        }
     }
 }
 
@@ -389,6 +431,11 @@ fn confirmation(appli: &mut Appli, ui: &mut Ui, cc: ChangementCouleurs, avant: O
             ui.add_space(10.0);
             rangee(ui, crate::tr!("Avant", "Before"), cc.theme, avant.as_ref());
             rangee(ui, crate::tr!("Après", "After"), cc.theme, cc.choix.as_ref());
+            // Ce qui se lirait mal se redit ici, au moment d'accepter : prévenu, pas seulement plus haut.
+            if let Some(apres) = cc.choix {
+                ui.add_space(6.0);
+                lisibilite(ui, cc.theme, &apres, false);
+            }
             ui.add_space(8.0);
             ui.label(texte(
                 crate::tr!(

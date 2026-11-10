@@ -233,26 +233,27 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   (`tests/programme.rs` : remise par-dessus un programme qui se lance, par la fenêtre et par « Tout remettre comme
   avant », retrait sur des notes douteuses, changements simultanés, lien, verrou tenu, notes forgées ou rejouées,
   refus répétés).
-- **Les couleurs : enregistrées par `vanguard`, jamais par la fenêtre.** L'écran Vanguard règle, pour chaque thème,
-  un des six préréglages ou les couleurs du système, et les cinq couleurs vives (accent, grave, moyen, à surveiller,
+- **Les couleurs : enregistrées par `vanguard`, jamais par la fenêtre.** L'écran Vanguard règle, pour chaque thème, un
+  des six préréglages ou les couleurs du système, et les cinq couleurs vives (accent, grave, moyen, à surveiller,
   sain). La fenêtre les montre tout de suite, sans rien écrire ; « Enregistrer… » ouvre une confirmation (avant,
-  après) et seul « Accepter » lance la forme fermée `vanguard couleurs --theme <sombre|clair> --base <mot>
-  --vifs <5 × 6 chiffres hexadécimaux> --json` (ou `--defaut`), que le relais rebâtit d'une trame de 24 octets exacts.
-  `vanguard` rejuge tout (mots fermés, couleurs strictes) et écrit dans parametres.json, scellé ; « Revenir à celles
-  d'avant » remet exactement la valeur d'avant rendue par ce changement. Une couleur qui se verrait à peine sur un
-  des fonds du thème (contraste sous 1,5:1) est refusée trois fois, par la fenêtre, par le relais et par `vanguard`,
-  et une couleur gardée qui le serait ne vaut pas (couleurs de Vanguard) ; sous 3:1 ou deux gravités trop proches,
-  ce n'est qu'une remarque (prévenir, pas interdire). Une fenêtre prise en main ne peut donc que poser des couleurs
-  laides ou trompeuses (un « sain » rouge), jamais rendre une alerte illisible : chaque mot d'état, d'alerte, de
-  gravité ou de remarque s'écrit à l'encre du thème, qui n'est pas réglable, et la couleur réglable ne marque que son
-  point, sa barre ou sa bande (essai `aucun_mot_n_est_ecrit_dans_une_couleur_de_gravite`,
-  `fenetre/src/dessin/captures.rs`) ; une gravité n'est donc jamais dite par la couleur seule, toujours aussi en mots. Assumé : cosmétique, ce changement n'est pas noté au journal des
-  événements et n'a pas de limite de fréquence. Les couleurs du système sont lues par `vanguard` seul (le bac à
-  sable de la fenêtre ne voit pas le dossier personnel) : le colors.toml du thème d'Omarchy, fichier ordinaire lu
-  sans suivre de lien et borné à 64 Kio, ou la couleur d'accentuation de Windows (l'accent seul) ; un instantané,
-  relu à chaque ouverture. Un parametres.json changé hors de Vanguard, effacé ou illisible rend les couleurs de
-  Vanguard, et la raison est dite dans les coulisses de la fenêtre. Essais :
-  `les_couleurs_se_proposent_s_enregistrent_par_vanguard_et_s_annulent` (`fenetre/src/appli.rs`),
+  après) et seul « Accepter » lance la forme fermée `vanguard couleurs --theme <sombre|clair> --base <mot> --vifs <5 ×
+  6 chiffres hexadécimaux> --json` (ou `--defaut`), que le relais rebâtit d'une trame de 24 octets exacts. `vanguard`
+  rejuge tout (mots fermés, couleurs strictes) et écrit dans parametres.json, scellé ; « Revenir à celles d'avant »
+  remet exactement la valeur d'avant rendue par ce changement. Une couleur qui se verrait à peine sur un des fonds du
+  thème (contraste sous 1,5:1) est refusée trois fois, par la fenêtre, par le relais et par `vanguard`, et une couleur
+  gardée qui le serait ne vaut pas (couleurs de Vanguard) ; sous 3:1, deux gravités trop proches ou l'accent (qui dit
+  aussi « à corriger ») trop près d'une gravité, ce n'est qu'une remarque (prévenir, pas interdire), redite dans la
+  confirmation, « grave » pris pour « sain » en premier et en gras. Une fenêtre prise en main ne peut donc que poser
+  des couleurs laides ou trompeuses (un « sain » rouge), jamais rendre une alerte illisible : chaque mot d'état,
+  d'alerte, de gravité ou de remarque s'écrit à l'encre du thème, qui n'est pas réglable, et la couleur réglable ne
+  marque que son point, sa barre ou sa bande (essai `aucun_mot_n_est_ecrit_dans_une_couleur_de_gravite`,
+  `fenetre/src/dessin/captures.rs`) ; une gravité n'est donc jamais dite par la couleur seule, toujours aussi en mots.
+  Assumé : cosmétique, ce changement n'est pas noté au journal des événements et n'a pas de limite de fréquence. Les
+  couleurs du système sont lues par `vanguard` seul (le bac à sable de la fenêtre ne voit pas le dossier personnel) :
+  le colors.toml du thème d'Omarchy, fichier ordinaire lu sans suivre de lien et borné à 64 Kio, ou la couleur
+  d'accentuation de Windows (l'accent seul) ; un instantané, relu à chaque ouverture. Un parametres.json changé hors
+  de Vanguard, effacé ou illisible rend les couleurs de Vanguard, et la raison est dite dans les coulisses de la
+  fenêtre. Essais : `les_couleurs_se_proposent_s_enregistrent_par_vanguard_et_s_annulent` (`fenetre/src/appli.rs`),
   `des_couleurs_passent_seules_et_lisibles` (`fenetre/src/relais.rs`), ceux de `fenetre/src/couleurs.rs`,
   `fenetre/src/donnees/couleurs.rs` et `src/parametres/couleurs.rs` (`un_changement_s_annule_exactement`,
   `une_demande_invalide_est_refusee`, `un_fichier_change_hors_de_vanguard_rend_les_couleurs_de_vanguard`,

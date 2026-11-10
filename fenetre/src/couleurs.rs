@@ -153,8 +153,6 @@ pub enum Vif {
 impl Vif {
     /// Dans l'ordre des couleurs d'un `Choix`.
     pub const TOUS: [Vif; VIFS] = [Vif::Accent, Vif::Grave, Vif::Moyen, Vif::Jaune, Vif::Bon];
-    /// Les couleurs de gravité : deux trop proches se confondent dans une liste d'alertes.
-    pub const GRAVITES: [Vif; 4] = [Vif::Grave, Vif::Moyen, Vif::Jaune, Vif::Bon];
 
     pub fn rang(self) -> usize {
         match self {
@@ -447,11 +445,13 @@ pub fn contraste_sur_fonds(n: &Neutres, c: Rgb) -> f64 {
 pub enum Remarque {
     /// Peu de contraste avec le fond.
     Contraste { vif: Vif, ratio: f64 },
-    /// Deux couleurs de gravité trop proches.
+    /// Deux couleurs trop proches : deux gravités, ou l'accent (boutons, « à corriger ») et une gravité.
     Proches { a: Vif, b: Vif, ecart: f64 },
 }
 
-/// Les remarques de lisibilité d'un choix, dans l'ordre des couleurs.
+/// Les remarques de lisibilité d'un choix : « grave » et « sain » trop proches d'abord (une alerte prise pour ce qui
+/// va bien), puis les contrastes et les autres paires dans l'ordre des couleurs. L'accent compte : il dit aussi
+/// « à corriger » dans le bilan.
 pub fn remarques(theme: Theme, choix: &Choix) -> Vec<Remarque> {
     let n = choix.base.prereglage(theme).neutres;
     let mut r: Vec<Remarque> = Vif::TOUS
@@ -460,15 +460,31 @@ pub fn remarques(theme: Theme, choix: &Choix) -> Vec<Remarque> {
         .filter(|(_, ratio)| *ratio < CONTRASTE_CONSEILLE)
         .map(|(vif, ratio)| Remarque::Contraste { vif, ratio })
         .collect();
-    for (i, a) in Vif::GRAVITES.into_iter().enumerate() {
-        for b in Vif::GRAVITES.into_iter().skip(i.saturating_add(1)) {
+    for (i, a) in Vif::TOUS.into_iter().enumerate() {
+        for b in Vif::TOUS.into_iter().skip(i.saturating_add(1)) {
             let e = ecart(choix.vif(a), choix.vif(b));
             if e < ECART_CONSEILLE {
                 r.push(Remarque::Proches { a, b, ecart: e });
             }
         }
     }
+    // Stable : le reste garde son ordre.
+    r.sort_by_key(|m| !m.grave_comme_sain());
     r
+}
+
+impl Remarque {
+    /// « Grave » et « sain » se confondent : la remarque la plus lourde, montrée en premier et en gras.
+    pub fn grave_comme_sain(&self) -> bool {
+        matches!(
+            self,
+            Remarque::Proches {
+                a: Vif::Grave,
+                b: Vif::Bon,
+                ..
+            }
+        )
+    }
 }
 
 /// Pourquoi un choix est refusé : une couleur presque invisible sur le fond du thème.
@@ -627,15 +643,35 @@ mod tests {
         c.poser(Vif::Jaune, [0x50, 0x50, 0x50]);
         c.poser(Vif::Bon, c.vif(Vif::Grave));
         let r = remarques(Theme::Sombre, &c);
+        // « Grave » pris pour « sain » d'abord, puis le reste dans l'ordre des couleurs.
         assert!(
-            matches!(r[0], Remarque::Contraste { vif: Vif::Jaune, ratio } if ratio < 3.0),
+            matches!(r[0], Remarque::Proches { a: Vif::Grave, b: Vif::Bon, ecart } if ecart < 1e-9),
             "{r:?}"
         );
+        assert!(r[0].grave_comme_sain());
         assert!(
-            r.iter()
-                .any(|x| matches!(x, Remarque::Proches { a: Vif::Grave, b: Vif::Bon, ecart } if *ecart < 1e-9))
+            matches!(r[1], Remarque::Contraste { vif: Vif::Jaune, ratio } if ratio < 3.0),
+            "{r:?}"
         );
         assert_eq!(verifier(Theme::Sombre, &c), Ok(()));
+        // L'accent dit aussi « à corriger » : trop près d'une gravité, une remarque (l'accent d'un système rouge
+        // contre le rouge de « grave »).
+        let mut c = Choix::du_prereglage(Base::Vanguard, Theme::Sombre);
+        c.poser(Vif::Accent, [0xff, 0x0a, 0x1e]);
+        c.poser(Vif::Grave, [0xff, 0x4d, 0x4d]);
+        let r = remarques(Theme::Sombre, &c);
+        assert!(
+            r.iter().any(|x| matches!(
+                x,
+                Remarque::Proches {
+                    a: Vif::Accent,
+                    b: Vif::Grave,
+                    ..
+                }
+            )),
+            "{r:?}"
+        );
+        assert!(!r.iter().any(Remarque::grave_comme_sain));
         c.poser(Vif::Grave, [0, 0, 0]);
         assert!(matches!(
             verifier(Theme::Sombre, &c),
