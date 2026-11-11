@@ -127,6 +127,18 @@ fn apercu(ui: &mut Ui, a: &Apercu) {
             13.0,
         );
     }
+    if a.coupe {
+        ui.add_space(6.0);
+        signale(
+            ui,
+            p.jaune,
+            crate::tr!(
+                "Un texte trop long a été coupé : la suite n'est pas montrée.",
+                "A text that was too long was cut: the rest is not shown."
+            ),
+            13.0,
+        );
+    }
 
     fort(ui, crate::tr!("Ce que Vanguard va faire", "What Vanguard will do"));
     ui.label(texte(&a.action, 14.0, p.doux));
@@ -210,17 +222,40 @@ fn apercu(ui: &mut Ui, a: &Apercu) {
     }
     if !a.commandes.is_empty() {
         fort(ui, crate::tr!("Commandes", "Commands"));
+        // Chaque commande dans son propre cadre : une longue commande repliée sur deux lignes ne peut pas passer pour
+        // deux commandes.
         for c in &a.commandes {
-            ui.label(RichText::new(c).font(mono(12.0)).color(p.doux));
+            Frame::new()
+                .fill(p.fond)
+                .stroke(Stroke::new(1.0, p.discret.gamma_multiply(0.5)))
+                .corner_radius(4)
+                .inner_margin(Margin::symmetric(8, 4))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new(c).font(mono(12.0)).color(p.doux));
+                });
+            ui.add_space(4.0);
         }
     }
     if !a.avant.is_empty() {
         fort(ui, crate::tr!("Valeurs d'avant, notées", "Values before, noted"));
+        // Une valeur entre « » ; une valeur absente en italique, sans guillemets : le texte « (absente) » écrit dans
+        // un fichier ne peut pas passer pour une absence.
         for v in &a.avant {
-            let valeur = v.valeur.as_deref().unwrap_or(crate::tr!("(absente)", "(absent)"));
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new(&v.geste).font(mono(12.0)).color(p.discret));
-                ui.label(RichText::new(valeur).font(mono(12.0)).color(p.encre));
+                ui.label(RichText::new("=").font(mono(12.0)).color(p.discret));
+                match v.valeur.as_deref() {
+                    Some(valeur) => ui.label(RichText::new(format!("«{valeur}»")).font(mono(12.0)).color(p.encre)),
+                    None => ui.label(
+                        texte(
+                            crate::tr!("absente, rien de noté", "absent, nothing noted"),
+                            12.0,
+                            p.discret,
+                        )
+                        .italics(),
+                    ),
+                };
             });
         }
     }

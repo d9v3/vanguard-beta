@@ -157,6 +157,11 @@ pub fn couper(texte: &str, max: usize) -> String {
 
 /// Une ligne de la console : séquences retirées, tabulations en espaces, le reste des pièges en « � », bornée.
 pub fn ligne(texte: &str) -> String {
+    couper(&ligne_entiere(texte), LIGNE_MAX)
+}
+
+/// `ligne` sans la borne : à couper par l'appelant, qui saura ainsi s'il a coupé (l'aperçu d'une correction le dit).
+pub fn ligne_entiere(texte: &str) -> String {
     let propre: String = sans_sequences(texte)
         .chars()
         .filter_map(|c| match c {
@@ -164,21 +169,25 @@ pub fn ligne(texte: &str) -> String {
             c => rendu(c),
         })
         .collect();
-    couper(propre.trim_end(), LIGNE_MAX)
+    propre.trim_end().to_string()
 }
 
 /// Un texte lu dans un JSON de `vanguard` : séquences retirées ; les sauts de ligne de Vanguard gardés (ses messages
 /// en ont), les autres pièges en « � » ; borné à `TEXTE_MAX`.
 pub fn texte(texte: &str) -> String {
-    let propre: String = sans_sequences(texte)
+    couper(&texte_entier(texte), TEXTE_MAX)
+}
+
+/// `texte` sans la borne (voir `ligne_entiere`).
+pub fn texte_entier(texte: &str) -> String {
+    sans_sequences(texte)
         .chars()
         .filter_map(|c| match c {
             '\n' => Some('\n'),
             '\t' => Some(' '),
             c => rendu(c),
         })
-        .collect();
-    couper(&propre, TEXTE_MAX)
+        .collect()
 }
 
 /// Un nom sur une ligne (catégorie, règle, interrupteur) : comme `texte`, sans saut de ligne, plus court.
