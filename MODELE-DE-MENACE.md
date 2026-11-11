@@ -504,8 +504,7 @@ qui tourne déjà en root.
 
 **Les alertes déclarées normales.** « C'est normal chez moi » tait une alerte 90 jours (elle revient plus tôt si elle
 devient plus grave), dans une liste scellée comme le reste de l'état de Vanguard ; une date à venir ne prolonge rien.
-Une alerte à corriger soi-même ne se déclare normale que si sa règle relève ce que le choix lierait : aujourd'hui, les
-programmes lancés au démarrage et les préchargements sous Linux ; une alerte critique à corriger soi-même ne se
+Une alerte à corriger soi-même ne se déclare normale que si sa règle relève ce que le choix lierait : aujourd'hui, sous Linux, seulement une ligne d'une unité systemd de l'utilisateur ou une ligne de lancement (exec-once, exec_on_start…) d'un fichier de ~/.config/hypr (décision de l'auteur, 10 nov. 2026) : une ligne d'un profil de shell, d'environment.d ou des réglages de systemd, une ligne de Hyprland qui pose une variable ou vient d'un fichier inclus hors de ~/.config/hypr, un lanceur .desktop, une ligne de cron, de préchargement ou d'une unité du système, et une variable de la session restent levés jusqu'au retrait de la ligne (l'information des services du système ajoutés à la main, que seul root écrit, garde son choix lié) (le refus nomme le fichier et la ligne, et dit pourquoi), et un choix d'avant hors de ce périmètre revient une fois, avec cette raison ; une alerte critique à corriger soi-même ne se
 déclare pas, une ligne en forme de porte dérobée (shell vers le réseau) non plus. Vanguard montre, avant le choix,
 chaque ligne signalée sans exception (fichier:ligne, empreinte du fichier, programme, script ou bibliothèque désignés
 et leur empreinte) ; le choix se confirme toujours (taper « normal » dès le niveau élevé), seulement au clavier dans
@@ -524,11 +523,10 @@ sûre, des dépendances vers des cibles « .target », les lignes Exec) : toute 
 LoadCredential, PAMName, OnFailure, OnSuccess, UnsetEnvironment, une section [Socket]…), un ExecStart= vide, une
 dépendance vers un service ou une variable dont la valeur est un chemin la fait refuser ; chaque ligne Exec de l'unité
 et de ses ajouts est montrée et liée avec ce qu'elle lance, comme la ligne signalée. Un fichier des variables qui
-nomme une variable qui fait charger du code (LD_*, BASH_ENV, ENV, PYTHON*, NODE_OPTIONS, GTK_MODULES…, même échappée
-ou coupée par des guillemets) fait tout refuser, et le refus nomme le fichier et la ligne. Les « source » se suivent à
+nomme une variable qui fait charger du code (LD_*, BASH_ENV, ENV, PYTHON*, NODE_OPTIONS, GTK_MODULES…, même échappée, coupée par des guillemets ou par « \ » en fin de ligne : la ligne se lit jointe, comme le shell et environment.d la lisent ; AWKLIBPATH et VSSCRIPT_PATH aussi, hors d'un fichier que seul root peut changer, ce qui ne se croit jamais dans un espace de noms d'utilisateurs) fait tout refuser, et le refus nomme le fichier et la ligne. Les « source » se suivent à
 tous les niveaux : ceux de Hyprland, aussi hors de ~/.config/hypr et par un joker dans le dernier nom ; ceux d'un
 profil en position de commande, aussi derrière « && » ou dans un « if … fi », par un chemin absolu ou sous ~ ou
-$HOME ; ceux qui ne se suivent pas (chemin relatif ou calculé) sont listés dans le détail. Le détail montre une ligne
+$HOME ; aussi coupés par « \ » ; ceux qui ne se suivent pas (chemin relatif ou calculé) sont listés dans le détail. Un lancement d'un fichier que Hyprland lit par « source = » hors de ~/.config/hypr est signalé, sans se déclarer. Le détail montre une ligne
 pour les fichiers des variables liés, puis en clair chaque ligne qui pose une variable hors de la liste sûre. Les
 dossiers du chemin réel d'un fichier lié, derrière un lien de dossier, sont comparés aussi. ~/.xsessionrc,
 ~/.bash_logout et les fichiers de zsh sous ZDOTDIR sont lus. Ce qui ne se relève pas sans ambiguïté (une variable, un tube, du code dans la
@@ -551,11 +549,10 @@ pas peut lire un fichier nommé par une option collée (« -fMakefile ») : rien
 programme : ses variables au nom calculé et les fichiers qu'il lit par un chemin calculé (« . "$DOSSIER/x" ») ne sont
 pas suivis (ils sont listés dans le détail), mais son propre contenu est lié ; les variables qui disent où chercher
 (PATH, HOME, XDG_*, ZDOTDIR) ou qui choisissent un pilote par son nom (__GLX_VENDOR_LIBRARY_NAME, LIBVA_DRIVER_NAME)
-ou qu'un seul programme lit (AWKLIBPATH, posé par un paquet de base d'Arch, VSSCRIPT_PATH) ne sont liées que par le contenu entier de leur fichier, pas par ce qu'elles désignent, et une variable posée par
+ou qu'un fichier de root pose pour un seul programme (AWKLIBPATH de /etc/profile.d/gawk.sh, d'un paquet de base d'Arch) ne sont liées que par le contenu entier de leur fichier, pas par ce qu'elles désignent, et une variable posée par
 « eval » ou par un export au nom calculé ne se voit pas ; la liste fermée des directives et le refus des variables
 qui font charger du code font que des unités durcies (ProtectSystem…) ou un compte qui pose LD_PRELOAD ne se déclarent
-plus normaux, du côté sûr ; un « exec-once » de Hyprland dans un fichier inclus hors de ~/.config/hypr n'est pas
-encore signalé ; une variable posée pendant la session (systemctl --user
+plus normaux, du côté sûr  ; une variable posée pendant la session (systemctl --user
 set-environment) et l'environnement de Vanguard lui-même ne sont pas liés ; un fichier à en-tête ELF mais malformé, à la
 place du programme, est lié par son empreinte sans être vérifié comme un texte, alors qu'un shell pourrait le lire ; un fichier lancé de plus de 32 Mio (node, deno)
 ou un fichier non ELF de plus de 1 Mio ne se lie pas, donc ne se déclare pas ; les dossiers ajoutés par

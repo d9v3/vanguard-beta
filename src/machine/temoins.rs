@@ -93,6 +93,10 @@ pub struct Trace {
     /// Les variables des sessions liées (`[env]`), à part aussi.
     #[serde(default)]
     pub environnement: String,
+    /// Ce que lancent les autres lignes Exec de son unité (« ExecStartPre=… → … »), à part : quand seule la cible
+    /// d'une autre ligne change, celle-ci ne se dit pas « programme changé » (troisième vérification de la campagne E).
+    #[serde(default)]
+    pub autres: String,
 }
 
 /// Une ligne qui revient, comparée aux traces du choix.
@@ -102,6 +106,7 @@ pub enum Marque {
     Nouvelle,
     FichierChange,
     ProgrammeChange,
+    AutreLigneChangee,
     AjoutChange,
     EnvironnementChange,
 }
@@ -113,6 +118,10 @@ impl Marque {
             Marque::Nouvelle => tr!("ligne nouvelle ou changée", "new or changed line"),
             Marque::FichierChange => tr!("fichier changé", "file changed"),
             Marque::ProgrammeChange => tr!("programme changé", "program changed"),
+            Marque::AutreLigneChangee => tr!(
+                "ce que lance une autre ligne Exec de l'unité a changé",
+                "what another Exec line of the unit starts changed"
+            ),
             Marque::AjoutChange => tr!("ajout de l'unité changé", "unit drop-in changed"),
             Marque::EnvironnementChange => tr!("variable des sessions changée", "session variable changed"),
         }
@@ -152,6 +161,8 @@ impl Temoin {
             Marque::FichierChange
         } else if t.cibles != self.trace.cibles {
             Marque::ProgrammeChange
+        } else if t.autres != self.trace.autres {
+            Marque::AutreLigneChangee
         } else if t.ajouts != self.trace.ajouts {
             Marque::AjoutChange
         } else if t.environnement != self.trace.environnement {
@@ -423,7 +434,9 @@ impl Etat {
         }
     }
 
-    /// Un état du contenu `octets` (déjà lu) : son SHA-256.
+    /// Un état du contenu `octets` (déjà lu) : son SHA-256. Pour les essais : la crontab du compte, qui s'en servait,
+    /// ne se déclare plus normale.
+    #[cfg(test)]
     pub(crate) fn du_contenu(octets: &[u8]) -> Etat {
         Etat::Fichier {
             empreinte: sha2::Sha256::digest(octets).into(),
@@ -476,6 +489,10 @@ fn sorte_de_cible(chemin: &str) -> u8 {
     let extension = |s: &str, e: &str| std::path::Path::new(s).extension().is_some_and(|x| x == e);
     if chemin.starts_with("[env]") {
         2
+    } else if chemin.starts_with("Exec") {
+        // « ExecStartPre=… → chemin » : ce que lance une autre ligne de l'unité (`persistance::unite`) ; un chemin
+        // lu commence par « / » ou « ~/ ».
+        3
     } else {
         u8::from(
             chemin
@@ -554,6 +571,12 @@ pub(crate) fn temoin(
         }),
         environnement: trace_de("vanguard 2026-11 trace de l'environnement", |h| {
             for (chemin, etat) in cibles.iter().filter(|(c, _)| sorte_de_cible(c) == 2) {
+                champ(h, chemin);
+                etat.ecrire(h);
+            }
+        }),
+        autres: trace_de("vanguard 2026-11 trace des autres lignes", |h| {
+            for (chemin, etat) in cibles.iter().filter(|(c, _)| sorte_de_cible(c) == 3) {
                 champ(h, chemin);
                 etat.ecrire(h);
             }
@@ -1082,6 +1105,17 @@ mod tests {
             lie(b"Nice=1", b"BASH_ENV=/x").marque(&avant),
             Marque::EnvironnementChange
         );
+        // Troisième vérification : seule la cible d'une autre ligne Exec change ; celle-ci le dit, sans se dire
+        // « programme changé ».
+        let pre = |t: &[u8]| ("ExecStartPre=%h/.x/avant.sh → ~/.x/avant.sh".to_string(), fichier(t));
+        let avec = |t: &[u8]| un(ligne, &c, &[cible.clone(), pre(t)]);
+        let avant = Temoins::Releves(vec![avec(b"a")]).traces();
+        assert_eq!(avec(b"a").marque(&avant), Marque::DejaAcceptee);
+        assert_eq!(avec(b"b").marque(&avant), Marque::AutreLigneChangee);
+        assert_eq!(
+            un(ligne, &c, &[(cible.0.clone(), fichier(b"ko")), pre(b"a")]).marque(&avant),
+            Marque::ProgrammeChange
+        );
     }
 
     #[test]
@@ -1202,6 +1236,19 @@ mod tests {
     /// Campagne E, F3 : un fichier échangé contre un autre au même contenu (ou réécrit) garde son empreinte, pas ce
     /// qui en est vu (appareil, inode, dates) : la confirmation d'un choix compare aussi les deux.
     #[cfg(unix)]
+    /// Deux relevés de suite égaux, rendus ; les dossiers au-dessus (le dossier temporaire commun) changent quand un
+    /// autre essai y écrit en même temps : on relève jusqu'à deux relevés égaux (20 essais au plus).
+    fn stable(releve: &dyn Fn() -> Temoins) -> Temoins {
+        for _ in 0..20 {
+            let a = releve();
+            if a.vus() == releve().vus() {
+                return a;
+            }
+        }
+        panic!("les dossiers au-dessus ne cessent de changer");
+    }
+
+    #[cfg(unix)]
     #[test]
     fn vus_d_un_fichier_echange() {
         let d = crate::essais::temporaire().join(format!("vanguard-temoins-vus-{}", std::process::id()));
@@ -1220,8 +1267,7 @@ mod tests {
                 &[("/x".into(), e)],
             ))])
         };
-        let avant = releve();
-        assert_eq!(avant.vus(), releve().vus());
+        let avant = stable(&releve);
         std::fs::remove_file(&p).unwrap();
         std::fs::write(&p, b"#!/bin/sh\necho ok\n").unwrap();
         let apres = releve();
@@ -1301,8 +1347,7 @@ mod tests {
                 &[("/x".into(), e)],
             ))])
         };
-        let avant = releve();
-        assert_eq!(avant.vus(), releve().vus());
+        let avant = stable(&releve);
         std::fs::rename(d.join("outils"), d.join("ailleurs")).unwrap();
         std::fs::rename(d.join("ailleurs"), d.join("outils")).unwrap();
         let apres = releve();
@@ -1333,8 +1378,7 @@ mod tests {
                 &[("/x".into(), e)],
             ))])
         };
-        let avant = releve();
-        assert_eq!(avant.vus(), releve().vus());
+        let avant = stable(&releve);
         std::fs::rename(d.join(".d/1"), d.join(".d/2")).unwrap();
         std::fs::rename(d.join(".d/2"), d.join(".d/1")).unwrap();
         let apres = releve();

