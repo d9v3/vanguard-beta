@@ -19,6 +19,7 @@ use crate::ui::*;
 
 mod administrateurs;
 pub(crate) mod agents_ia;
+pub(crate) mod apercu;
 mod bluetooth;
 pub(crate) mod certificats;
 pub(crate) mod chasse;
@@ -113,6 +114,9 @@ pub struct Correctif {
     /// Port bloqué en entrée par cette correction (« 8080/tcp »), retenu une fois appliquée.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bloque: Option<String>,
+    /// Avec quels droits elle se fait : posé là où la correction est écrite (`du_compte`, `au_terminal`), jamais
+    /// déduit de ses commandes. Par défaut : administrateur, le plus prudent (la fenêtre ne l'applique jamais d'ici).
+    pub droits: Droits,
     /// Ce qui permet de l'annuler (`optimiser::annulables`) : dit avant de l'appliquer.
     #[serde(skip)]
     pub defaire: Defaire,
@@ -120,6 +124,32 @@ pub struct Correctif {
     /// que tant que tout est pareil. Porté ici plutôt que par le constat : seule une alerte à corriger se déclare.
     #[serde(skip)]
     pub temoins: temoins::Temoins,
+}
+
+/// Les droits qu'une correction demande. Un champ typé, posé à la main là où la correction est écrite : un texte
+/// de commande ne le décide jamais (un essai relit le code pour qu'une correction « du compte » ne nomme aucun
+/// élévateur, et `apercu` le refuse aussi à l'exécution).
+#[derive(Serialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Droits {
+    /// Avec les droits du compte, sans question : un `chmod` dans le dossier personnel.
+    Compte,
+    /// Avec les droits d'administrateur (sudo, pkexec, UAC) : ce qui n'est pas dit autrement.
+    #[default]
+    Admin,
+    /// Pose une question (une phrase de passe à taper) : elle se fait dans le terminal.
+    Terminal,
+}
+
+impl Droits {
+    /// Le mot du JSON (`audit --json`, `correction --voir`).
+    pub(crate) fn mot(self) -> &'static str {
+        match self {
+            Droits::Compte => "compte",
+            Droits::Admin => "admin",
+            Droits::Terminal => "terminal",
+        }
+    }
 }
 
 /// Comment une correction se défait.
@@ -340,9 +370,29 @@ impl Constat {
             commandes: commandes.iter().map(ToString::to_string).collect(),
             automatique: true,
             bloque: None,
+            droits: Droits::Admin,
             defaire: Defaire::Inconnu,
             temoins,
         });
+        self
+    }
+
+    /// La correction se fait avec les droits du compte, sans question (un `chmod` dans le dossier personnel). À ne
+    /// poser que sur une correction dont aucune commande ne demande d'élévation : un essai le vérifie.
+    #[cfg_attr(windows, allow(dead_code))]
+    pub(crate) fn du_compte(mut self) -> Self {
+        if let Some(k) = &mut self.correctif {
+            k.droits = Droits::Compte;
+        }
+        self
+    }
+
+    /// La correction pose une question (une phrase de passe) : elle se fait dans le terminal, jamais d'une fenêtre.
+    #[cfg_attr(windows, allow(dead_code))]
+    pub(crate) fn au_terminal(mut self) -> Self {
+        if let Some(k) = &mut self.correctif {
+            k.droits = Droits::Terminal;
+        }
         self
     }
 
@@ -921,7 +971,8 @@ fn cles_ssh() -> Vec<Constat> {
                 tr!("Restreindre ~/.ssh à vous seul", "Restrict ~/.ssh to you only"),
                 &["chmod 700 ~/.ssh"],
             )
-            .annulable(vec![crate::optimiser::Geste::droits(&dossier)]),
+            .annulable(vec![crate::optimiser::Geste::droits(&dossier)])
+            .du_compte(),
         );
     }
     for f in std::fs::read_dir(&dossier).into_iter().flatten().flatten() {
@@ -942,7 +993,8 @@ fn cles_ssh() -> Vec<Constat> {
                 .corriger(
                     trf!("Ajouter une phrase de passe à {nom} (la clé publique ne change pas, rien à refaire sur les serveurs)", "Add a passphrase to {nom} (the public key does not change, nothing to redo on the servers)"),
                     &[&format!("ssh-keygen -p -f {chemin}")],
-                ),
+                )
+                .au_terminal(),
             );
         }
         // Même règle que ci-dessus : une clé « github » ou « serveur » compte autant qu'« id_ed25519 ».
@@ -968,7 +1020,8 @@ fn cles_ssh() -> Vec<Constat> {
                     trf!("Protéger la clé {nom}", "Protect the key {nom}"),
                     &[&format!("chmod 600 {chemin}")],
                 )
-                .annulable(vec![crate::optimiser::Geste::droits(&f.path())]),
+                .annulable(vec![crate::optimiser::Geste::droits(&f.path())])
+                .du_compte(),
             );
         }
     }
@@ -2111,7 +2164,17 @@ struct AuditJson<'a> {
     systeme: &'static str,
     score: u32,
     fiable: bool,
-    constats: &'a [Constat],
+    constats: Vec<ConstatJson<'a>>,
+}
+
+/// Un constat de `audit --json` : ses champs, puis le geste qu'il offre à la fenêtre (« Voir la correction » et son
+/// jeton, `apercu`), absent sinon. Les lecteurs d'avant ignorent ce champ.
+#[derive(Serialize)]
+struct ConstatJson<'a> {
+    #[serde(flatten)]
+    constat: &'a Constat,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    geste: Option<apercu::GesteOffert>,
 }
 
 impl<'a> AuditJson<'a> {
@@ -2120,7 +2183,12 @@ impl<'a> AuditJson<'a> {
             systeme: a.systeme,
             score: a.score,
             fiable: a.fiable(),
-            constats: &a.constats,
+            constats: a
+                .constats
+                .iter()
+                .zip(apercu::gestes_offerts(&a.constats))
+                .map(|(constat, geste)| ConstatJson { constat, geste })
+                .collect(),
         }
     }
 }

@@ -96,7 +96,8 @@ pub(super) fn fichiers_secrets(maison: &Path, dossier_ouvert: &str) -> Vec<Const
                 tr!("Réserver ces fichiers à vous seul", "Restrict these files to you only"),
                 &cmds,
             )
-            .annulable(gestes),
+            .annulable(gestes)
+            .du_compte(),
         );
     }
     // Le dossier personnel lui-même : ouvert en lecture, il laisse voir tous tes fichiers aux autres comptes.
@@ -110,7 +111,8 @@ pub(super) fn fichiers_secrets(maison: &Path, dossier_ouvert: &str) -> Vec<Const
                     ),
                     &["chmod 750 ~"],
                 )
-                .annulable(vec![crate::optimiser::Geste::droits(maison)]),
+                .annulable(vec![crate::optimiser::Geste::droits(maison)])
+                .du_compte(),
         );
     }
     if constats.is_empty() {

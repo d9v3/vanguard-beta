@@ -658,6 +658,18 @@ pub(crate) enum Commande {
         #[arg(long, visible_alias = "put-back", value_name = "EMPREINTE")]
         remettre: Option<String>,
     },
+    /// Une correction du bilan, désignée par son jeton (donné par `audit --json`) : --voir montre tout ce qu'elle
+    /// ferait (commandes, droits, valeurs d'avant, annulation) et l'accord qui le résume. Rien ne change. Lancée
+    /// par la fenêtre, qui ne désigne la correction que par ce jeton ; tout est relu ici.
+    #[command(hide = true)]
+    Correction {
+        /// Montrer la correction de ce jeton (32 chiffres hexadécimaux minuscules) : lecture seule.
+        #[arg(long, visible_alias = "show", value_name = "JETON", required = true)]
+        voir: String,
+        /// L'issue en une ligne JSON, la dernière : l'aperçu et son accord, ou la raison du refus.
+        #[arg(long)]
+        json: bool,
+    },
     /// Fiche de l'ordinateur : modèle, carte mère, processeur, mémoire, carte graphique, disques, système. Les numéros
     /// de série s'affichent à l'écran seulement.
     #[command(name = "fiche-ordinateur", visible_alias = "specs")]

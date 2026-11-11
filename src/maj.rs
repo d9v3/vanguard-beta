@@ -106,6 +106,7 @@ mod tests {
                 commandes: vec![],
                 automatique: true,
                 bloque: None,
+                droits: crate::machine::Droits::Admin,
                 defaire: crate::machine::Defaire::Inconnu,
                 temoins: crate::machine::temoins::Temoins::Aucun,
             }),

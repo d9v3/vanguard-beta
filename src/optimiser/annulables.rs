@@ -271,6 +271,16 @@ pub(crate) fn regrouper(mut releves: Vec<Option<Releve>>) -> (Vec<Option<Releve>
 }
 
 impl Releve {
+    /// Chaque geste et sa valeur d'avant relevée (`None` : absente), dans l'ordre : ce qu'un aperçu montre (`machine::
+    /// apercu`). L'heure du relevé n'y est pas : elle changerait à chaque minute ce qui est montré.
+    pub(crate) fn valeurs(&self) -> impl Iterator<Item = (&str, Option<&str>)> {
+        self.avant
+            .gestes
+            .iter()
+            .map(String::as_str)
+            .zip(self.avant.valeurs.iter().map(Option::as_deref))
+    }
+
     /// Un geste en commun : les deux défont la même chose.
     fn touche_le_meme(&self, autre: &Releve) -> bool {
         self.avant.gestes.iter().any(|g| autre.avant.gestes.contains(g))
@@ -983,6 +993,7 @@ mod tests {
             commandes: vec!["true".into()],
             automatique: true,
             bloque: None,
+            droits: crate::machine::Droits::Admin,
             defaire,
             temoins: crate::machine::temoins::Temoins::Aucun,
         };

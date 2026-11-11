@@ -1,0 +1,830 @@
+//! L'aperçu d'une correction, sans rien changer : `vanguard correction --voir <jeton> [--json]`.
+//!
+//! La fenêtre ne désigne jamais un constat par son nom, son chemin ou sa commande : `audit --json` donne à chaque
+//! constat corrigeable un **jeton** (16 octets, 32 chiffres hexadécimaux minuscules), et c'est lui seul qu'elle
+//! renvoie. Vanguard relance la seule règle qu'il désigne, retrouve le constat d'aujourd'hui qui y répond, puis dit
+//! tout ce qu'il ferait (phrase, commandes, droits, valeurs d'avant, annulation) et l'**accord** : l'empreinte de
+//! tout ce qui est montré. Le lot suivant applique une correction seulement si l'accord recalculé est le même ; ici,
+//! rien n'est appliqué, noté ni écrit (ni appris.json, ni les notes d'annulation, ni le journal des mesures).
+//!
+//! Le jeton n'est pas un secret : il dit seulement « ce constat-là ». Ses 4 premiers octets viennent de la règle, les
+//! 12 suivants de la clé du constat (« règle|objet ») : Vanguard retrouve la règle sans rien garder entre la liste et
+//! l'aperçu, et ne relance qu'elle (une à deux secondes au lieu du bilan entier).
+
+use serde::Serialize;
+
+use super::{Constat, Correctif, Defaire, Droits, regles};
+use crate::risk::Niveau;
+use crate::{tr, trp};
+
+/// Le contexte BLAKE3 de la part « règle » du jeton.
+const CONTEXTE_REGLE: &str = "vanguard jeton v1 regle";
+/// Le contexte BLAKE3 de la part « clé » du jeton.
+const CONTEXTE_CLE: &str = "vanguard jeton v1 cle";
+/// Le contexte BLAKE3 de l'accord d'une correction : `vanguard accord v1 <sorte>`, la sorte du geste qui changera.
+const CONTEXTE_ACCORD: &str = "vanguard accord v1 correction";
+/// La sorte du geste, dans `audit --json` et la dernière ligne de `--voir`.
+pub(crate) const SORTE: &str = "voir-correction";
+/// Les octets du jeton tirés de la règle.
+const OCTETS_REGLE: usize = 4;
+
+/// Les élévateurs qu'une correction « du compte » ne doit jamais nommer. La garde du code (essai
+/// `chaque_correction_du_compte_est_sans_elevateur`) les refuse déjà là où la correction est écrite ; celle-ci tient
+/// à l'exécution, pour une commande composée d'un nom lu sur l'ordinateur.
+const ELEVATEURS: [&str; 6] = ["sudo", "sudo-rs", "doas", "pkexec", "run0", "su"];
+
+/// Le jeton d'un constat : 16 octets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct Jeton([u8; 16]);
+
+impl Jeton {
+    /// Le jeton du constat de la règle `regle` et de clé `cle` (« règle|objet »).
+    pub(crate) fn de(regle: &str, cle: &str) -> Jeton {
+        let r = blake3::derive_key(CONTEXTE_REGLE, regle.as_bytes());
+        let c = blake3::derive_key(CONTEXTE_CLE, cle.as_bytes());
+        let mut o = [0u8; 16];
+        o[..OCTETS_REGLE].copy_from_slice(&r[..OCTETS_REGLE]);
+        o[OCTETS_REGLE..].copy_from_slice(&c[..16 - OCTETS_REGLE]);
+        Jeton(o)
+    }
+
+    /// Lu strictement : 32 chiffres hexadécimaux minuscules, rien d'autre (ni espace, ni majuscule, ni préfixe).
+    pub(crate) fn lire(texte: &str) -> Option<Jeton> {
+        let (paires, reste) = texte.as_bytes().as_chunks::<2>();
+        if paires.len() != 16 || !reste.is_empty() {
+            return None;
+        }
+        let mut j = [0u8; 16];
+        for (octet, [haut, bas]) in j.iter_mut().zip(paires) {
+            *octet = (chiffre(*haut)? << 4) | chiffre(*bas)?;
+        }
+        Some(Jeton(j))
+    }
+
+    pub(crate) fn hex(&self) -> String {
+        use std::fmt::Write;
+        self.0.iter().fold(String::with_capacity(32), |mut t, b| {
+            let _ = write!(t, "{b:02x}");
+            t
+        })
+    }
+
+    /// Ce jeton peut-il venir de la règle `id` ? (Ses 4 premiers octets.)
+    fn de_la_regle(&self, id: &str) -> bool {
+        let r = blake3::derive_key(CONTEXTE_REGLE, id.as_bytes());
+        self.0[..OCTETS_REGLE] == r[..OCTETS_REGLE]
+    }
+}
+
+/// Un chiffre hexadécimal minuscule ; une majuscule ou autre chose : `None` (une seule écriture d'un même jeton).
+fn chiffre(b: u8) -> Option<u8> {
+    if !matches!(b, b'0'..=b'9' | b'a'..=b'f') {
+        return None;
+    }
+    char::from(b).to_digit(16).and_then(|n| u8::try_from(n).ok())
+}
+
+/// Le geste qu'un constat de `audit --json` offre à la fenêtre.
+#[derive(Serialize, Debug, PartialEq, Eq)]
+pub(crate) struct GesteOffert {
+    sorte: &'static str,
+    jeton: String,
+}
+
+/// Le jeton d'un constat qui offre « Voir la correction » : un problème, une correction, une clé, d'une règle
+/// connue du registre. Sinon rien (la carte dit « depuis le terminal pour l'instant »).
+fn jeton_du(c: &Constat, connues: &[&'static str]) -> Option<Jeton> {
+    c.probleme?;
+    c.correctif.as_ref()?;
+    if !connues.contains(&c.regle) {
+        return None;
+    }
+    let cle = c.cle()?;
+    Some(Jeton::de(c.regle, &cle.to_string()))
+}
+
+/// Le geste de chaque constat d'un bilan, dans l'ordre : un jeton porté par deux constats n'est offert à aucun des
+/// deux (`--voir` le refuserait, autant ne pas montrer un bouton qui ne mène à rien).
+pub(crate) fn gestes_offerts(constats: &[Constat]) -> Vec<Option<GesteOffert>> {
+    let connues: Vec<&'static str> = regles::regles(regles::Os::actuel()).iter().map(|r| r.id).collect();
+    let jetons: Vec<Option<Jeton>> = constats.iter().map(|c| jeton_du(c, &connues)).collect();
+    jetons
+        .iter()
+        .map(|j| {
+            let j = (*j)?;
+            (jetons.iter().filter(|k| **k == Some(j)).count() == 1).then(|| GesteOffert {
+                sorte: SORTE,
+                jeton: j.hex(),
+            })
+        })
+        .collect()
+}
+
+/// Une valeur d'avant relevée : le geste (« droits:/home/alice/.ssh ») et sa valeur (absente : `None`).
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ValeurAvant {
+    pub geste: String,
+    pub valeur: Option<String>,
+}
+
+/// Tout ce que l'aperçu donne à montrer. Chaque champ est dans l'accord (`champs`, tenu par un essai qui relit les
+/// clés du JSON) : rien de montré n'échappe à l'engagement « voilà ce qui a été vu ».
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Apercu {
+    pub version: String,
+    /// « fr » ou « en » : la langue des textes montrés.
+    pub langue: String,
+    pub jeton: String,
+    pub cle: String,
+    pub regle: String,
+    pub categorie: String,
+    /// « Info », « Moyen », « Eleve » ou « Critique », comme `audit --json`.
+    pub niveau: String,
+    pub message: String,
+    pub action: String,
+    pub commandes: Vec<String>,
+    /// `false` : à faire soi-même, seulement la marche à suivre.
+    pub automatique: bool,
+    /// « compte », « admin » ou « terminal » : jugé ici, jamais repris de la liste.
+    pub droits: String,
+    pub annulable: bool,
+    /// Pourquoi elle ne s'annulerait pas ; vide si elle s'annule.
+    pub pourquoi_pas: String,
+    pub avant: Vec<ValeurAvant>,
+    /// Toujours faux dans ce lot : snapper et timeshift demandent les droits d'administrateur.
+    pub point_de_restauration: bool,
+}
+
+/// Un bloc de l'accord : sa longueur (8 octets, petit-boutiste) puis ses octets. Une longueur préfixée ne laisse
+/// pas deux suites de champs différentes donner les mêmes octets (« ab » + « c » contre « a » + « bc »).
+fn bloc(sortie: &mut Vec<u8>, octets: &[u8]) {
+    sortie.extend_from_slice(&longueur(octets.len()));
+    sortie.extend_from_slice(octets);
+}
+
+/// Une longueur en 8 octets petit-boutistes (un `usize` tient toujours dans un `u64` sur les cibles de Vanguard).
+fn longueur(n: usize) -> [u8; 8] {
+    u64::try_from(n).unwrap_or(u64::MAX).to_le_bytes()
+}
+
+/// Une liste de blocs : leur nombre, puis chacun.
+fn liste<'a>(blocs: impl ExactSizeIterator<Item = &'a [u8]>) -> Vec<u8> {
+    let mut o = Vec::new();
+    o.extend_from_slice(&longueur(blocs.len()));
+    for b in blocs {
+        bloc(&mut o, b);
+    }
+    o
+}
+
+fn booleen(b: bool) -> Vec<u8> {
+    vec![u8::from(b)]
+}
+
+impl Apercu {
+    /// Chaque champ montré, nommé comme dans le JSON, en octets. Écrit à la main plutôt que tiré du JSON : la forme
+    /// de serde_json (espaces, échappements) ne décide pas de l'accord ; un champ ajouté à `Apercu` sans être ajouté
+    /// ici fait échouer l'essai `chaque_champ_montre_est_dans_l_accord`.
+    fn champs(&self) -> Vec<(&'static str, Vec<u8>)> {
+        let avant = liste(
+            self.avant
+                .iter()
+                .map(|v| {
+                    let mut o = Vec::new();
+                    bloc(&mut o, v.geste.as_bytes());
+                    match &v.valeur {
+                        Some(t) => {
+                            o.push(1);
+                            bloc(&mut o, t.as_bytes());
+                        }
+                        None => o.push(0),
+                    }
+                    o
+                })
+                .collect::<Vec<_>>()
+                .iter()
+                .map(Vec::as_slice),
+        );
+        vec![
+            ("version", self.version.clone().into_bytes()),
+            ("langue", self.langue.clone().into_bytes()),
+            ("jeton", self.jeton.clone().into_bytes()),
+            ("cle", self.cle.clone().into_bytes()),
+            ("regle", self.regle.clone().into_bytes()),
+            ("categorie", self.categorie.clone().into_bytes()),
+            ("niveau", self.niveau.clone().into_bytes()),
+            ("message", self.message.clone().into_bytes()),
+            ("action", self.action.clone().into_bytes()),
+            ("commandes", liste(self.commandes.iter().map(String::as_bytes))),
+            ("automatique", booleen(self.automatique)),
+            ("droits", self.droits.clone().into_bytes()),
+            ("annulable", booleen(self.annulable)),
+            ("pourquoi_pas", self.pourquoi_pas.clone().into_bytes()),
+            ("avant", avant),
+            ("point_de_restauration", booleen(self.point_de_restauration)),
+        ]
+    }
+
+    /// L'accord : BLAKE3 à contexte de chaque champ, nom puis valeur, à longueur préfixée. 32 octets, 64 chiffres.
+    pub(crate) fn accord(&self) -> String {
+        let mut o = Vec::new();
+        for (nom, valeur) in self.champs() {
+            bloc(&mut o, nom.as_bytes());
+            bloc(&mut o, &valeur);
+        }
+        let mut h = blake3::Hasher::new_derive_key(CONTEXTE_ACCORD);
+        h.update(&o);
+        h.finalize().to_hex().to_string()
+    }
+}
+
+/// Un nom de programme lancé par la ligne, à peu près : chaque mot coupé aux séparateurs du shell, sans son chemin.
+/// Large exprès : un faux positif fait seulement passer la correction en « admin » (pas d'accord d'ici).
+fn nomme_un_elevateur(ligne: &str) -> bool {
+    ligne
+        .split(|c: char| {
+            c.is_whitespace() || matches!(c, ';' | '|' | '&' | '(' | ')' | '`' | '$' | '"' | '\'' | '{' | '}')
+        })
+        .filter(|m| !m.is_empty())
+        .any(|m| {
+            let nom = m.rsplit(['/', '\\']).next().unwrap_or(m);
+            ELEVATEURS.contains(&nom)
+        })
+}
+
+/// Les droits que la correction demande vraiment : ceux posés là où elle est écrite, sauf qu'une correction « du
+/// compte » qui nomme un élévateur, ou sous Windows (une seule fenêtre administrateur), devient « admin ». Jamais
+/// l'inverse : rien ne fait descendre une correction vers moins de droits.
+fn droits_effectifs(k: &Correctif) -> Droits {
+    match k.droits {
+        Droits::Compte if cfg!(windows) || k.commandes.iter().any(|l| nomme_un_elevateur(l)) => Droits::Admin,
+        d => d,
+    }
+}
+
+fn niveau_mot(n: Niveau) -> &'static str {
+    match n {
+        Niveau::Info => "Info",
+        Niveau::Moyen => "Moyen",
+        Niveau::Eleve => "Eleve",
+        Niveau::Critique => "Critique",
+    }
+}
+
+/// Pourquoi l'aperçu n'est pas donné.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Refus {
+    /// Le jeton n'a pas la forme : code 2, avant toute lecture du système.
+    MalForme,
+    /// Aucune règle, ou aucun constat d'aujourd'hui, n'y répond.
+    Disparu,
+    /// Deux constats (ou deux règles) y répondent : aucun n'est choisi.
+    EnDouble,
+    /// Le constat n'a plus de correction (déclaré normal, ou corrigé entre-temps).
+    SansCorrection,
+}
+
+impl Refus {
+    fn raison(&self) -> String {
+        match self {
+            Refus::MalForme => tr!(
+                "jeton mal formé : 32 chiffres hexadécimaux minuscules attendus",
+                "malformed token: 32 lowercase hexadecimal digits expected"
+            ),
+            Refus::Disparu => tr!(
+                "ce problème a disparu ou a déjà été corrigé : refaites le bilan",
+                "this problem is gone or already fixed: run the check again"
+            ),
+            Refus::EnDouble => tr!(
+                "deux constats répondent à ce jeton : aucun n'est choisi",
+                "two findings match this token: none is chosen"
+            ),
+            Refus::SansCorrection => tr!(
+                "ce constat n'a plus de correction à proposer",
+                "this finding no longer has a fix to offer"
+            ),
+        }
+        .to_string()
+    }
+}
+
+/// Le seul constat d'aujourd'hui qui répond au jeton.
+fn retrouver<'a>(constats: &'a [Constat], jeton: &Jeton, connues: &[&'static str]) -> Result<&'a Constat, Refus> {
+    let mut trouves = constats
+        .iter()
+        .filter(|c| !c.regle.is_empty() && c.cle().is_some_and(|k| Jeton::de(c.regle, &k.to_string()) == *jeton));
+    let c = trouves.next().ok_or(Refus::Disparu)?;
+    if trouves.next().is_some() {
+        return Err(Refus::EnDouble);
+    }
+    // Même retrouvé, il faut qu'il offre encore le geste (problème, correction, règle connue).
+    if jeton_du(c, connues).is_none() {
+        return Err(Refus::SansCorrection);
+    }
+    Ok(c)
+}
+
+/// L'aperçu d'un constat retrouvé : une seule lecture des valeurs d'avant (`annulables::relever`, lecture seule),
+/// qui sert à ce qui est montré et à l'accord.
+fn apercu_de(c: &Constat, jeton: &Jeton) -> Option<Apercu> {
+    let k = c.correctif.as_ref()?;
+    let cle = c.cle()?.to_string();
+    let releve = match k.comment_defaire() {
+        // L'id ne sert qu'à la note, qui n'est pas écrite ici : fixe, pour ne rien tirer au hasard.
+        Defaire::Gestes(g) => crate::optimiser::annulables::relever("apercu".to_string(), &k.action, &g),
+        _ => Err(k
+            .pourquoi_pas()
+            .unwrap_or(crate::optimiser::annulables::PourquoiPas::NonReleve)),
+    };
+    let (annulable, pourquoi_pas, avant) = match &releve {
+        Ok(r) => (
+            true,
+            String::new(),
+            r.valeurs()
+                .map(|(g, v)| ValeurAvant {
+                    geste: g.to_string(),
+                    valeur: v.map(str::to_string),
+                })
+                .collect(),
+        ),
+        Err(p) => (false, p.texte(), Vec::new()),
+    };
+    Some(Apercu {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        langue: if crate::langue::anglais() { "en" } else { "fr" }.to_string(),
+        jeton: jeton.hex(),
+        cle,
+        regle: c.regle.to_string(),
+        categorie: c.categorie.to_string(),
+        niveau: niveau_mot(c.probleme?).to_string(),
+        message: c.message.clone(),
+        action: k.action.clone(),
+        commandes: k.commandes.clone(),
+        automatique: k.automatique,
+        droits: droits_effectifs(k).mot().to_string(),
+        annulable,
+        pourquoi_pas,
+        avant,
+        point_de_restauration: false,
+    })
+}
+
+/// Relit la seule règle du jeton, sans rien noter : ni mesure de durée, ni relevé d'amélioration, ni tic de l'Agent,
+/// ni appris.json (les alertes déclarées normales rabaissées comme au bilan, sans compléter leurs clés).
+fn relire(jeton: &Jeton) -> Result<Vec<Constat>, Refus> {
+    let choisies: Vec<&'static regles::Regle> = regles::regles(regles::Os::actuel())
+        .into_iter()
+        .filter(|r| jeton.de_la_regle(r.id))
+        .collect();
+    match choisies.len() {
+        0 => return Err(Refus::Disparu),
+        1 => {}
+        // 4 octets pour quelques centaines de règles : un essai tient qu'aucune paire ne se croise ; si cela
+        // arrivait quand même, rien n'est choisi au hasard.
+        _ => return Err(Refus::EnDouble),
+    }
+    // Un nouveau bilan relit ce que ses règles partagent (`ParBilan`).
+    super::BILAN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let (mut constats, _durees) = super::regles_en_parallele(choisies);
+    crate::apprentissage::appliquer_sans_ecrire(&mut constats);
+    Ok(constats)
+}
+
+/// `vanguard correction --voir <jeton> [--json]` : l'aperçu, rien de changé. Avec `json`, l'issue est la dernière
+/// ligne : `{"geste":"voir-correction","issue":"fait"|"refuse","raison","apercu","accord"}`. Rend le code de
+/// sortie : 0 aperçu donné, 1 refusé, 2 jeton mal formé (avant toute lecture).
+pub(crate) fn voir(jeton: &str, json: bool) -> i32 {
+    let issue = Jeton::lire(jeton).ok_or(Refus::MalForme).and_then(|j| {
+        let constats = relire(&j)?;
+        let connues: Vec<&'static str> = regles::regles(regles::Os::actuel()).iter().map(|r| r.id).collect();
+        let c = retrouver(&constats, &j, &connues)?;
+        apercu_de(c, &j).ok_or(Refus::SansCorrection)
+    });
+    let code = match &issue {
+        Ok(_) => 0,
+        Err(Refus::MalForme) => 2,
+        Err(_) => 1,
+    };
+    if json {
+        let ligne = match &issue {
+            Ok(a) => serde_json::json!({
+                "geste": SORTE, "issue": "fait", "raison": "", "apercu": a, "accord": a.accord()
+            }),
+            Err(r) => serde_json::json!({ "geste": SORTE, "issue": "refuse", "raison": r.raison() }),
+        };
+        println!("{ligne}");
+    } else {
+        match &issue {
+            Ok(a) => afficher(a),
+            Err(r) => trp!("  ✖ Pas d'aperçu : {}", "  ✖ No preview: {}", r.raison()),
+        }
+    }
+    code
+}
+
+/// L'aperçu au terminal, pour qui le lance à la main.
+fn afficher(a: &Apercu) {
+    use crate::ui::{GRAS, GRIS, RESET};
+    trp!(
+        "{GRAS}Aperçu de la correction{RESET} (rien n'a changé)",
+        "{GRAS}Fix preview{RESET} (nothing changed)"
+    );
+    trp!("  [{}] {} : {}", "  [{}] {}: {}", a.niveau, a.categorie, a.message);
+    trp!(
+        "  Ce que Vanguard ferait : {}",
+        "  What Vanguard would do: {}",
+        a.action
+    );
+    for l in &a.commandes {
+        trp!("    {GRIS}{}{RESET}", "    {GRIS}{}{RESET}", l);
+    }
+    for v in &a.avant {
+        let valeur = v.valeur.as_deref().unwrap_or(tr!("(absente)", "(absent)"));
+        trp!("  Avant : {} = {}", "  Before: {} = {}", v.geste, valeur);
+    }
+    if a.annulable {
+        trp!("  S'annule exactement : oui", "  Undone exactly: yes");
+    } else {
+        trp!("  Ne s'annule pas : {}", "  Cannot be undone: {}", a.pourquoi_pas);
+    }
+    match a.droits.as_str() {
+        "compte" => trp!("  Droits : ceux de votre compte", "  Rights: those of your account"),
+        "terminal" => trp!(
+            "  Elle pose une question : elle se fait dans le terminal (vanguard corriger)",
+            "  It asks a question: it is done in the terminal (vanguard corriger)"
+        ),
+        _ => trp!("  Droits : administrateur", "  Rights: administrator"),
+    }
+    trp!("  Accord : {}", "  Consent: {}", a.accord());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::modele::Objet;
+
+    fn constat(regle: &'static str, objet: &str, correctif: Option<Correctif>) -> Constat {
+        let mut c = super::super::alerte("SSH", Niveau::Moyen, "Un problème inventé");
+        c.regle = regle;
+        c.objet = Objet::de("chemin", objet);
+        c.correctif = correctif;
+        c
+    }
+
+    fn correctif(droits: Droits, commandes: &[&str]) -> Correctif {
+        Correctif {
+            action: "Réserver ce dossier à vous seul".into(),
+            commandes: commandes.iter().map(|s| (*s).to_string()).collect(),
+            automatique: true,
+            bloque: None,
+            droits,
+            defaire: Defaire::Inconnu,
+            temoins: crate::machine::temoins::Temoins::default(),
+        }
+    }
+
+    fn apercu() -> Apercu {
+        Apercu {
+            version: "0.0.0".into(),
+            langue: "fr".into(),
+            jeton: "00112233445566778899aabbccddeeff".into(),
+            cle: "LNX-ESS-001|/home/alice/.ssh".into(),
+            regle: "LNX-ESS-001".into(),
+            categorie: "SSH".into(),
+            niveau: "Moyen".into(),
+            message: "Dossier .ssh lisible par les autres".into(),
+            action: "Réserver ~/.ssh à vous seul".into(),
+            commandes: vec!["chmod 700 /home/alice/.ssh".into()],
+            automatique: true,
+            droits: "compte".into(),
+            annulable: true,
+            pourquoi_pas: String::new(),
+            avant: vec![ValeurAvant {
+                geste: "droits:/home/alice/.ssh".into(),
+                valeur: Some("755".into()),
+            }],
+            point_de_restauration: false,
+        }
+    }
+
+    #[test]
+    fn le_jeton_se_lit_strictement() {
+        let j = Jeton::de("LNX-ESS-001", "LNX-ESS-001|/home/alice/.ssh");
+        assert_eq!(Jeton::lire(&j.hex()), Some(j));
+        assert!(j.de_la_regle("LNX-ESS-001"));
+        assert!(!j.de_la_regle("LNX-ESS-002"));
+        for faux in [
+            "",
+            "0123456789abcdef0123456789abcde",
+            "0123456789abcdef0123456789abcdef0",
+            "0123456789ABCDEF0123456789ABCDEF",
+            " 0123456789abcdef0123456789abcde",
+            "0123456789abcdef0123456789abcdeg",
+            "+123456789abcdef0123456789abcdef",
+            "../../etc/passwd",
+            "0123456789abcdef0123456789abcdé",
+        ] {
+            assert_eq!(Jeton::lire(faux), None, "{faux:?}");
+        }
+    }
+
+    /// 4 octets de règle : aucune paire de règles d'un même système ne doit les partager, sinon `--voir` refuserait
+    /// leurs jetons (en double) sans que personne le sache.
+    #[test]
+    fn deux_regles_ne_partagent_pas_le_debut_du_jeton() {
+        for os in [regles::Os::Linux, regles::Os::Windows] {
+            let mut vus = std::collections::HashMap::new();
+            for r in regles::regles(os) {
+                let j = Jeton::de(r.id, "");
+                let debut: [u8; 4] = j.0[..4].try_into().unwrap();
+                if let Some(autre) = vus.insert(debut, r.id) {
+                    panic!("{} et {autre} partagent le début du jeton", r.id);
+                }
+            }
+            assert!(vus.len() > 10, "{os:?} : trop peu de règles lues");
+        }
+    }
+
+    #[test]
+    fn un_jeton_inconnu_ou_en_double_ne_choisit_rien() {
+        let connues = ["LNX-ESS-001"];
+        let k = || Some(correctif(Droits::Compte, &["chmod 700 /home/alice/.ssh"]));
+        let un = constat("LNX-ESS-001", "/home/alice/.ssh", k());
+        let jeton = Jeton::de("LNX-ESS-001", &un.cle().unwrap().to_string());
+        assert_eq!(
+            retrouver(std::slice::from_ref(&un), &jeton, &connues).map(|c| c.message.clone()),
+            Ok(un.message.clone())
+        );
+        // Inconnu : aucun constat, ou un autre objet.
+        let autre = Jeton::de("LNX-ESS-001", "LNX-ESS-001|/home/alice/.gnupg");
+        assert_eq!(
+            retrouver(std::slice::from_ref(&un), &autre, &connues).err(),
+            Some(Refus::Disparu)
+        );
+        assert_eq!(retrouver(&[], &jeton, &connues).err(), Some(Refus::Disparu));
+        // En double : deux constats de même clé.
+        let deux = [un.clone(), un.clone()];
+        assert_eq!(retrouver(&deux, &jeton, &connues).err(), Some(Refus::EnDouble));
+        assert_eq!(gestes_offerts_avec(&deux, &connues), vec![None, None]);
+        // Retrouvé, mais plus de correction (déclaré normal entre la liste et l'aperçu) ou règle hors registre.
+        let sans = constat("LNX-ESS-001", "/home/alice/.ssh", None);
+        assert_eq!(
+            retrouver(std::slice::from_ref(&sans), &jeton, &connues).err(),
+            Some(Refus::SansCorrection)
+        );
+        assert_eq!(
+            retrouver(std::slice::from_ref(&un), &jeton, &[]).err(),
+            Some(Refus::SansCorrection)
+        );
+    }
+
+    /// `gestes_offerts` avec une liste de règles connues donnée (le registre réel n'a pas « LNX-ESS-001 »).
+    fn gestes_offerts_avec(constats: &[Constat], connues: &[&'static str]) -> Vec<Option<String>> {
+        let jetons: Vec<Option<Jeton>> = constats.iter().map(|c| jeton_du(c, connues)).collect();
+        jetons
+            .iter()
+            .map(|j| {
+                let j = (*j)?;
+                (jetons.iter().filter(|k| **k == Some(j)).count() == 1).then(|| j.hex())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn seul_un_probleme_corrigeable_d_une_regle_connue_offre_le_geste() {
+        let connues = ["LNX-ESS-001"];
+        let k = || Some(correctif(Droits::Admin, &["x"]));
+        let mut sain = constat("LNX-ESS-001", "a", k());
+        sain.probleme = None;
+        let sans_cle = {
+            let mut c = constat("LNX-ESS-001", "b", k());
+            c.objet = Objet::NonMigre;
+            c
+        };
+        let constats = [
+            constat("LNX-ESS-001", "a", k()),
+            sain,
+            sans_cle,
+            constat("LNX-ESS-001", "c", None),
+            constat("LNX-AUT-009", "d", k()),
+            constat("", "e", k()),
+        ];
+        let offerts = gestes_offerts_avec(&constats, &connues);
+        assert!(offerts[0].is_some());
+        assert_eq!(&offerts[1..], &[None, None, None, None, None]);
+        // Le geste réel n'offre que des règles du registre : un constat inventé n'a rien.
+        assert!(gestes_offerts(&constats).iter().all(Option::is_none));
+    }
+
+    /// Les mêmes champs donnent le même accord, et chaque champ changé en donne un autre : un essai par champ.
+    #[test]
+    fn l_accord_change_avec_chaque_champ() {
+        type Changer = fn(&mut Apercu);
+        let a = apercu();
+        assert_eq!(a.accord(), apercu().accord());
+        assert_eq!(a.accord().len(), 64);
+        let cas: &[(&str, Changer)] = &[
+            ("version", |a| a.version.push('1')),
+            ("langue", |a| a.langue = "en".into()),
+            ("jeton", |a| a.jeton = "f".repeat(32)),
+            ("cle", |a| a.cle.push('x')),
+            ("regle", |a| a.regle = "LNX-ESS-002".into()),
+            ("categorie", |a| a.categorie = "Réseau".into()),
+            ("niveau", |a| a.niveau = "Eleve".into()),
+            ("message", |a| a.message.push(' ')),
+            ("action", |a| a.action.push('.')),
+            ("commandes", |a| a.commandes[0] = "chmod 700 /home/alice/.sshx".into()),
+            ("automatique", |a| a.automatique = false),
+            ("droits", |a| a.droits = "admin".into()),
+            ("annulable", |a| a.annulable = false),
+            ("pourquoi_pas", |a| a.pourquoi_pas = "non".into()),
+            ("avant", |a| a.avant[0].valeur = Some("700".into())),
+            ("point_de_restauration", |a| a.point_de_restauration = true),
+        ];
+        let base = a.accord();
+        for (nom, changer) in cas {
+            let mut b = apercu();
+            changer(&mut b);
+            assert_ne!(b.accord(), base, "le champ {nom} ne change pas l'accord");
+        }
+        // Chaque champ du JSON a son cas ici.
+        let mut noms: Vec<&str> = cas.iter().map(|(n, _)| *n).collect();
+        noms.sort_unstable();
+        assert_eq!(noms, cles_du_json(&a));
+        // Les listes : une ligne en plus, une valeur absente plutôt que vide, deux lignes recollées.
+        let mut b = apercu();
+        b.commandes.push(String::new());
+        assert_ne!(b.accord(), base);
+        let mut b = apercu();
+        b.avant[0].valeur = None;
+        let mut c = apercu();
+        c.avant[0].valeur = Some(String::new());
+        assert_ne!(b.accord(), c.accord());
+        let mut b = apercu();
+        b.commandes = vec!["ab".into(), "c".into()];
+        let mut c = apercu();
+        c.commandes = vec!["a".into(), "bc".into()];
+        assert_ne!(b.accord(), c.accord());
+    }
+
+    fn cles_du_json(a: &Apercu) -> Vec<String> {
+        // Triées : l'ordre des clés dépend des options de serde_json, l'ensemble non.
+        let v = serde_json::to_value(a).unwrap();
+        let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+        k.sort();
+        k
+    }
+
+    /// Tout champ que l'aperçu donne à montrer est dans l'accord : les clés du JSON sont exactement les noms de
+    /// `champs`. Un champ ajouté à `Apercu` sans son entrée dans `champs` échoue ici.
+    #[test]
+    fn chaque_champ_montre_est_dans_l_accord() {
+        let a = apercu();
+        let mut noms: Vec<String> = a.champs().iter().map(|(n, _)| (*n).to_string()).collect();
+        noms.sort();
+        assert_eq!(noms, cles_du_json(&a));
+    }
+
+    #[test]
+    fn une_correction_du_compte_qui_nomme_un_elevateur_devient_admin() {
+        for l in [
+            "sudo chmod 700 /home/alice/.ssh",
+            "chmod 700 x; /usr/bin/pkexec y",
+            "a && doas b",
+            "x | run0 y",
+            "$(su -c z)",
+            "env sudo-rs x",
+        ] {
+            assert!(nomme_un_elevateur(l), "{l}");
+            assert_eq!(droits_effectifs(&correctif(Droits::Compte, &[l])), Droits::Admin, "{l}");
+        }
+        for l in [
+            "chmod 700 /home/alice/.ssh",
+            "chmod 600 /home/alice/.ssh/id_ed25519",
+            "pseudo sudoers",
+        ] {
+            assert!(!nomme_un_elevateur(l), "{l}");
+        }
+        let attendu = if cfg!(windows) { Droits::Admin } else { Droits::Compte };
+        assert_eq!(
+            droits_effectifs(&correctif(Droits::Compte, &["chmod 700 /home/alice/.ssh"])),
+            attendu
+        );
+        // Jamais vers moins de droits.
+        assert_eq!(
+            droits_effectifs(&correctif(Droits::Admin, &["chmod 700 x"])),
+            Droits::Admin
+        );
+        assert_eq!(
+            droits_effectifs(&correctif(Droits::Terminal, &["ssh-keygen -p -f x"])),
+            Droits::Terminal
+        );
+    }
+
+    /// Garde du code : chaque correction marquée « du compte » (`.du_compte()` en bout de chaîne) est dans une
+    /// fonction qui ne nomme aucun élévateur jusque-là (`compte_sudo`, la garde du lot Unix). Le champ est posé à la
+    /// main ; cet essai tient qu'on ne le pose pas sur une correction qui passerait par sudo.
+    #[cfg(unix)]
+    #[test]
+    fn chaque_correction_du_compte_est_sans_elevateur() {
+        use crate::commande::tests_sh_chaine::compte_sudo;
+        fn fichiers(d: &std::path::Path, sortie: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(d).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    fichiers(&p, sortie);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    sortie.push(p);
+                }
+            }
+        }
+        let mut tous = Vec::new();
+        fichiers(
+            std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src")),
+            &mut tous,
+        );
+        let mut vus = 0;
+        let mut fautes = Vec::new();
+        for f in &tous {
+            let texte = std::fs::read_to_string(f).unwrap();
+            let lignes: Vec<&str> = texte.lines().collect();
+            for (i, l) in lignes.iter().enumerate() {
+                if !l.trim_start().starts_with(".du_compte()") {
+                    continue;
+                }
+                vus += 1;
+                // Le début de la fonction qui l'entoure : la dernière ligne `fn …` moins indentée que l'appel.
+                let debut = (0..i)
+                    .rev()
+                    .find(|&j| {
+                        let t = lignes[j].trim_start();
+                        t.starts_with("fn ")
+                            || t.starts_with("pub fn ")
+                            || t.starts_with("pub(crate) fn ")
+                            || t.starts_with("pub(super) fn ")
+                    })
+                    .unwrap_or_else(|| panic!("{}:{} : fonction introuvable", f.display(), i + 1));
+                let morceau = lignes[debut..=i].join("\n");
+                if compte_sudo(&morceau) != 0 {
+                    fautes.push(format!("{}:{}", f.display(), i + 1));
+                }
+            }
+        }
+        assert!(
+            fautes.is_empty(),
+            "corrections « du compte » qui nomment un élévateur : {fautes:?}"
+        );
+        // Celles posées par ce lot (~/.ssh, clés, fichiers secrets, dossier personnel) : la garde lit bien quelque chose.
+        assert!(vus >= 4, "{vus} corrections « du compte » lues");
+        assert_eq!(
+            compte_sudo("fn f() {\n    let c = \"sudo chmod 700 x\";\n    .du_compte()"),
+            1
+        );
+    }
+
+    /// L'aperçu d'un constat dont l'état d'avant se relève (un fichier jetable) : les valeurs relevées, montrées et
+    /// liées à l'accord ; rien n'est écrit (aucune note d'annulation).
+    #[cfg(unix)]
+    #[test]
+    fn l_apercu_montre_les_valeurs_d_avant_sans_rien_ecrire() {
+        use std::os::unix::fs::PermissionsExt;
+        let dossier = crate::socle::dossier_local();
+        std::fs::create_dir_all(&dossier).unwrap();
+        let fichier = dossier.join(format!("apercu-essai-{}", std::process::id()));
+        std::fs::write(&fichier, "x").unwrap();
+        std::fs::set_permissions(&fichier, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let mut k = correctif(Droits::Compte, &["chmod 600 x"]);
+        k.defaire = Defaire::Gestes(vec![crate::optimiser::Geste::droits(&fichier)]);
+        let c = constat("LNX-ESS-001", "x", Some(k));
+        let j = Jeton::de("LNX-ESS-001", &c.cle().unwrap().to_string());
+        let avant = std::fs::read_dir(&dossier).unwrap().count();
+        let a = apercu_de(&c, &j).unwrap();
+        assert!(a.annulable, "{}", a.pourquoi_pas);
+        assert_eq!(a.avant.len(), 1);
+        assert!(
+            a.avant[0].valeur.as_deref().is_some_and(|v| v.contains("644")),
+            "{:?}",
+            a.avant
+        );
+        assert_eq!(a.droits, "compte");
+        assert_eq!(a.niveau, "Moyen");
+        assert_eq!(std::fs::read_dir(&dossier).unwrap().count(), avant, "l'aperçu a écrit");
+        // Le même état relu donne le même accord ; le fichier changé en donne un autre.
+        assert_eq!(apercu_de(&c, &j).unwrap().accord(), a.accord());
+        std::fs::set_permissions(&fichier, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_ne!(apercu_de(&c, &j).unwrap().accord(), a.accord());
+        let _ = std::fs::remove_file(&fichier);
+    }
+
+    /// Sans gestes : non annulable, la raison dite et liée à l'accord.
+    #[test]
+    fn une_correction_sans_releve_dit_pourquoi_elle_ne_s_annule_pas() {
+        let c = constat("LNX-ESS-001", "x", Some(correctif(Droits::Admin, &["x"])));
+        let j = Jeton::de("LNX-ESS-001", &c.cle().unwrap().to_string());
+        let a = apercu_de(&c, &j).unwrap();
+        assert!(!a.annulable);
+        assert_ne!(a.pourquoi_pas, "");
+        assert_eq!(a.avant, Vec::new());
+        assert_eq!(a.droits, "admin");
+    }
+}

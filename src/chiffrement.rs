@@ -783,6 +783,7 @@ fn constat_de(donnees: &Path) -> Option<crate::machine::Constat> {
             commandes: Vec::new(),
             automatique: false,
             bloque: None,
+            droits: crate::machine::Droits::Admin,
             defaire: crate::machine::Defaire::Inconnu,
             temoins: crate::machine::temoins::Temoins::Aucun,
         }),

@@ -515,6 +515,19 @@ pub fn appliquer(constats: &mut [Constat]) -> usize {
     n
 }
 
+/// `appliquer` sans rien écrire : les alertes déclarées normales rabaissées de même, mais les clés d'un choix
+/// d'avant ne sont pas complétées dans appris.json. Pour un aperçu (`machine::apercu`), qui ne laisse aucune trace.
+pub(crate) fn appliquer_sans_ecrire(constats: &mut [Constat]) -> usize {
+    let Ok(mut appris) = charger() else {
+        return 0;
+    };
+    if crate::sceau::adopte(crate::sceau::APPRIS) {
+        retirer_etats(&mut appris);
+    }
+    let mut cles = Vec::new();
+    appliquer_avec(&appris, constats, aujourd_hui(), &mut cles)
+}
+
 /// Pour les essais d'autres modules : un choix « normal » fait sur `declare` (s'il se déclare) tait-il `plus_tard` ?
 #[cfg(all(test, target_os = "linux"))]
 pub(crate) fn essai_tait(declare: &Constat, plus_tard: &Constat) -> bool {
@@ -1024,6 +1037,7 @@ mod tests {
                 commandes: vec!["sudo x".into()],
                 automatique: true,
                 bloque: None,
+                droits: crate::machine::Droits::Admin,
                 defaire: crate::machine::Defaire::Inconnu,
                 temoins: crate::machine::temoins::Temoins::Aucun,
             }),

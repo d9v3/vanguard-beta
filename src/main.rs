@@ -830,6 +830,13 @@ async fn main() {
                 optimiser::programmes_au_demarrage();
             }
         }
+        Some(Commande::Correction { voir, json }) => {
+            let code = machine::apercu::voir(&voir, json);
+            if code != 0 {
+                chiffrement::oublier_session();
+                std::process::exit(code);
+            }
+        }
         Some(Commande::Fiche { json }) => fiche::fiche(json),
         Some(Commande::CopierFichiers { destination }) => copier::commande(destination.as_deref()),
         Some(Commande::VerifierCopie { dossier }) => copier::verifier_copie(dossier.as_deref()),
