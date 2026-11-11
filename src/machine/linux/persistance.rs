@@ -931,16 +931,16 @@ fn hors_du_perimetre(
         Sorte::Ajoutee(ajout) => Some(refus_ajoute(ajout, &ou, numero)),
         Sorte::Unite { utilisateur: true } if r.du_compte(fichier) || de_root_seul(fichier) => None,
         Sorte::Unite { utilisateur: true } => Some(temoins::Refus(trf!(
-            "{ou}:{numero} : une unité de /etc/systemd/user que le compte peut changer (le fichier ou un dossier de son chemin n'est pas à root seul) ne peut pas être déclarée normale : rends-la à root ou retire la ligne",
+            "{ou}:{numero} : une unité de /etc/systemd/user que le compte peut changer (le fichier ou un dossier de son chemin n'est pas à root seul) ne peut pas être déclarée normale : rendez-la à root ou retirez la ligne",
             "{ou}:{numero}: a unit in /etc/systemd/user that the account can change (the file or a folder of its path is not root-only) cannot be declared normal: give it back to root or remove the line"
         ))),
         Sorte::Shell if commande && hypr && r.dans_hypr_reel(fichier) => None,
         Sorte::Shell if commande && hypr => Some(temoins::Refus(trf!(
-            "{ou}:{numero} : ce fichier de Hyprland est lu par un lien qui mène hors de ~/.config/hypr (le fichier, le dossier ou un sous-dossier) : il ne peut pas être déclaré normal ; remplace le lien par le fichier lui-même",
+            "{ou}:{numero} : ce fichier de Hyprland est lu par un lien qui mène hors de ~/.config/hypr (le fichier, le dossier ou un sous-dossier) : il ne peut pas être déclaré normal ; remplacez le lien par le fichier lui-même",
             "{ou}:{numero}: this Hyprland file is read through a link that leads outside ~/.config/hypr (the file, the folder or a subfolder): it cannot be declared normal; replace the link with the file itself"
         ))),
         Sorte::Shell if hypr || r.hypr_inclus.iter().any(|h| h == fichier) => Some(temoins::Refus(trf!(
-            "{ou}:{numero} : une ligne de Hyprland qui pose une variable, ou d'un fichier inclus hors de ~/.config/hypr, ne peut pas être déclarée normale : retire ou déplace la ligne",
+            "{ou}:{numero} : une ligne de Hyprland qui pose une variable, ou d'un fichier inclus hors de ~/.config/hypr, ne peut pas être déclarée normale : retirez ou déplacez la ligne",
             "{ou}:{numero}: a Hyprland line that sets a variable, or from a file included outside ~/.config/hypr, cannot be declared normal: remove or move the line"
         ))),
         Sorte::Shell
@@ -949,7 +949,7 @@ fn hors_du_perimetre(
                 && fichier != r.sous(Path::new("/etc/ld.so.preload")) =>
         {
             Some(temoins::Refus(trf!(
-                "{ou}:{numero} : une ligne d'un profil de shell ou d'un fichier de variables de démarrage (environment.d, réglages de systemd) ne peut pas être déclarée normale : retire ou déplace la ligne",
+                "{ou}:{numero} : une ligne d'un profil de shell ou d'un fichier de variables de démarrage (environment.d, réglages de systemd) ne peut pas être déclarée normale : retirez ou déplacez la ligne",
                 "{ou}:{numero}: a line of a shell profile or of a startup variable file (environment.d, systemd settings) cannot be declared normal: remove or move the line"
             )))
         }
@@ -987,7 +987,7 @@ fn refus_ajoute(ajout: Ajout, ou: &str, numero: usize) -> temoins::Refus {
 /// Le refus d'une ligne qui n'est ni d'une unité de l'utilisateur ni un lancement de ~/.config/hypr (`ou` affichable).
 fn hors_des_deux(ou: &str) -> temoins::Refus {
     temoins::Refus(trf!(
-        "{ou} : seules une unité systemd de l'utilisateur et une ligne de lancement de ~/.config/hypr peuvent être déclarées normales : retire ou déplace cette ligne",
+        "{ou} : seules une unité systemd de l'utilisateur et une ligne de lancement de ~/.config/hypr peuvent être déclarées normales : retirez ou déplacez cette ligne",
         "{ou}: only a systemd user unit and a launch line of ~/.config/hypr can be declared normal: remove or move this line"
     ))
 }
