@@ -199,8 +199,15 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
 
 ## La fenêtre
 
-`vanguard` sans argument ouvre la fenêtre de Vanguard (`vanguard-fenetre`, un programme à part posé à côté de
-`vanguard`) quand la personne est devant un écran graphique ; sinon, le menu du terminal, comme avant. Ses gardes :
+**Cette version ne livre pas la fenêtre.** `vanguard` sans argument ouvre toujours le menu du terminal et ne lance
+aucun `vanguard-fenetre`, même posé à côté de lui : un fichier de ce nom, exécutable, aurait été lancé sur la foi de
+son nom et de son emplacement, pas de son contenu, et aurait pu dire « ouverte » à sa place. La fenêtre reviendra
+en 0.95, lancée seulement si son empreinte est celle d'une liste signée, et ce sont les octets vérifiés qui seront
+lancés, pas le chemin. Ce qui suit décrit la fenêtre telle qu'elle sera livrée.
+
+`vanguard` sans argument ouvrira alors la fenêtre de Vanguard (`vanguard-fenetre`, un programme à part posé à côté
+de `vanguard`) quand la personne est devant un écran graphique ; sinon, le menu du terminal, comme avant. Ses
+gardes :
 
 - **Elle ne fait rien d'elle-même.** Elle relance le programme `vanguard` posé à côté d'elle (chemin absolu, jamais
   cherché dans le PATH) avec une commande d'une liste fermée, qui ne change rien à l'ordinateur

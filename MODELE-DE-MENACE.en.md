@@ -191,8 +191,15 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
 
 ## The window
 
-`vanguard` with no argument opens the Vanguard window (`vanguard-fenetre`, a separate program placed next to
-`vanguard`) when someone is in front of a graphical screen; otherwise, the terminal menu, as before. Its safeguards:
+**This version does not ship the window.** `vanguard` with no argument always opens the terminal menu and starts no
+`vanguard-fenetre`, even one placed next to it: an executable file with that name would have been started on the
+strength of its name and location, not its content, and could have said "open" in its place. The window will come
+back in 0.95, started only if its fingerprint is the one in a signed list, and the verified bytes will be started,
+not the path. What follows describes the window as it will be shipped.
+
+`vanguard` with no argument will then open the Vanguard window (`vanguard-fenetre`, a separate program placed next
+to `vanguard`) when someone is in front of a graphical screen; otherwise, the terminal menu, as before. Its
+safeguards:
 
 - **It does nothing by itself.** It runs the `vanguard` program placed next to it (absolute path, never looked up in
   the PATH) with a command from a closed list, which changes nothing on the computer (`audit`,

@@ -1,5 +1,6 @@
 //! `vanguard` sans argument : la fenêtre de Vanguard (`vanguard-fenetre`, posée à côté du programme) quand la
-//! personne est devant un écran graphique, sinon le menu du terminal, comme avant. La fenêtre ne fait rien d'elle-même :
+//! personne est devant un écran graphique, sinon le menu du terminal, comme avant. Tant que la fenêtre n'est pas
+//! livrée (`FENETRE_LIVREE`, faux en 0.94), toujours le menu : aucun `vanguard-fenetre` n'est lancé. La fenêtre ne fait rien d'elle-même :
 //! elle relance ce programme-ci avec des commandes en lecture, et un seul changement, un programme retiré du démarrage
 //! ou remis, après sa confirmation (voir `fenetre/` et MODELE-DE-MENACE.md, « La fenêtre »).
 //!
@@ -18,6 +19,12 @@ use crate::{tr, trf};
 
 /// La ligne que la fenêtre écrit sur sa sortie quand elle s'est ouverte (fenetre/src/dessin/mod.rs).
 const OUVERTE: &str = "vanguard-fenetre:ouverte";
+
+/// La fenêtre n'est pas livrée avec cette version : `vanguard` ne lance alors aucun `vanguard-fenetre`, même posé à
+/// côté. Avant, la confiance allait au nom et à l'emplacement du fichier, pas à son contenu : n'importe quel
+/// programme de ce nom, exécutable, était lancé et pouvait dire « ouverte » à sa place (LIV-1). La fenêtre revient
+/// quand son lancement vérifie une empreinte signée (0.95, MODELE-DE-MENACE.md, « La fenêtre »).
+pub(crate) const FENETRE_LIVREE: bool = false;
 
 /// Le temps laissé à la fenêtre pour s'ouvrir (premier lancement sur un vieil ordinateur, pilote graphique lent).
 const ATTENTE: Duration = Duration::from_secs(20);
@@ -138,12 +145,31 @@ fn refus(m: &std::fs::Metadata) -> Option<&'static str> {
 
 /// Ouvre la fenêtre si c'est le bon choix et qu'elle dit s'être ouverte ; `false` : le menu du terminal.
 pub(crate) fn ouvrir() -> bool {
-    if !choisir(contexte()) {
-        return false;
-    }
     let Some(chemin) = std::env::current_exe().ok().as_deref().and_then(voisine) else {
         return false;
     };
+    ouvrir_depuis(contexte(), &chemin)
+}
+
+/// `ouvrir`, pour un contexte et un chemin de fenêtre donnés (les essais).
+fn ouvrir_depuis(c: Contexte, chemin: &Path) -> bool {
+    if !choisir(c) {
+        return false;
+    }
+    if !FENETRE_LIVREE {
+        // Quelqu'un attendait la fenêtre (un fichier à son nom est posé à côté) : le dire, sans rien lancer.
+        if std::fs::symlink_metadata(chemin).is_ok() {
+            eprintln!(
+                "{}",
+                tr!(
+                    "La fenêtre de Vanguard n'est pas livrée avec cette version : le fichier « vanguard-fenetre » posé à côté n'est pas lancé. Le menu du terminal.",
+                    "The Vanguard window is not shipped with this version: the \"vanguard-fenetre\" file next to it is not started. The terminal menu."
+                )
+            );
+        }
+        return false;
+    }
+    let chemin = chemin.to_path_buf();
     // symlink_metadata : un lien n'est pas suivi, il est refusé (pas un fichier ordinaire).
     let Ok(m) = std::fs::symlink_metadata(&chemin) else {
         // Pas de fenêtre posée à côté (un Vanguard sans elle) : le menu, sans un mot.
@@ -182,6 +208,10 @@ pub(crate) fn ouvrir() -> bool {
 /// Pas par `commande::lancer`, qui attend la fin du programme : la fenêtre vit après nous ; lancée par les coulisses
 /// quand même (`spawn_suivi`), elle s'y voit.
 fn lancer(chemin: &Path) -> bool {
+    // Seconde garde, au seul endroit qui construit la commande : rien ne lance la fenêtre tant qu'elle n'est pas livrée.
+    if !FENETRE_LIVREE {
+        return false;
+    }
     let mut c = Command::new(chemin);
     c.arg("--depuis-vanguard")
         .arg("--langue")
@@ -246,6 +276,31 @@ mod tests {
         // En administrateur : le menu, jamais une fenêtre avec tous les droits.
         assert!(!choisir(Contexte { eleve: true, ..devant }));
         assert!(!choisir(Contexte::default()));
+    }
+
+    /// LIV-1 : un faux `vanguard-fenetre` posé à côté, exécutable (755), qui dirait « ouverte », n'est jamais lancé
+    /// tant que la fenêtre n'est pas livrée : ni par `ouvrir`, ni par `lancer` lui-même.
+    #[cfg(unix)]
+    #[test]
+    fn une_fausse_fenetre_posee_a_cote_n_est_jamais_lancee() {
+        use std::os::unix::fs::PermissionsExt;
+        let dossier = crate::socle::dossier_local().join("essai-fausse-fenetre");
+        let _ = std::fs::remove_dir_all(&dossier);
+        std::fs::create_dir_all(&dossier).unwrap();
+        let temoin = dossier.join("lancee");
+        let f = dossier.join("vanguard-fenetre");
+        std::fs::write(&f, format!("#!/bin/sh\n: > '{}'\necho {OUVERTE}\n", temoin.display())).unwrap();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let devant = Contexte {
+            terminal: true,
+            graphique: true,
+            a_distance: false,
+            eleve: false,
+        };
+        assert!(!ouvrir_depuis(devant, &f), "la fenêtre n'est pas livrée : le menu");
+        assert!(!lancer(&f), "jamais lancée, même appelée directement");
+        assert!(!temoin.exists(), "le faux voisin a tourné");
+        let _ = std::fs::remove_dir_all(&dossier);
     }
 
     #[test]
