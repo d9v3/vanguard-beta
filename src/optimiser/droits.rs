@@ -22,7 +22,13 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
+use crate::modele::raison::Echec;
 use crate::trf;
+
+/// Un refus des gardes, sa phrase déjà dans la langue de l'interface.
+fn non(phrase: String) -> Echec {
+    Echec::refuse("droits/poser", phrase)
+}
 
 /// Les drapeaux d'un dossier traversé : O_PATH (rien n'est demandé au système de fichiers pour l'ouvrir), un lien
 /// n'est pas un dossier.
@@ -36,55 +42,65 @@ const BOUT: i32 = libc::O_RDONLY | libc::O_NONBLOCK | libc::O_NOCTTY | libc::O_N
 const MODE_MAX: u32 = 0o1777;
 
 /// Les droits de `chemin` (fichier ou dossier du dossier personnel), lus sur le descripteur ouvert sans suivre de
-/// lien, avec les mêmes gardes que pour les poser. L'erreur est une phrase dans la langue de l'interface.
-pub(crate) fn lire(chemin: &Path) -> Result<u32, String> {
+/// lien, avec les mêmes gardes que pour les poser. L'erreur porte une phrase dans la langue de l'interface.
+pub(crate) fn lire(chemin: &Path) -> Result<u32, Echec> {
     let bout = ouvrir(chemin)?;
     Ok(bout.mode)
 }
 
 /// Pose `mode` sur `chemin` et rend les droits d'avant, lus sur le même descripteur juste avant. Rien n'est changé si
 /// une garde refuse, ni si `mode` porte setuid, setgid ou plus que des droits.
-pub(crate) fn poser(chemin: &Path, mode: u32) -> Result<u32, String> {
+pub(crate) fn poser(chemin: &Path, mode: u32) -> Result<u32, Echec> {
     poser_si(chemin, None, mode)
 }
 
 /// `poser`, seulement si les droits lus sur le descripteur sont encore `attendu` (ceux qui ont été montrés et notés) :
 /// sinon rien n'est changé. Un geste accepté sur un état ne s'applique pas à un autre, même changé entre la dernière
 /// lecture et l'ouverture du fichier.
-pub(crate) fn poser_si(chemin: &Path, attendu: Option<u32>, mode: u32) -> Result<u32, String> {
+pub(crate) fn poser_si(chemin: &Path, attendu: Option<u32>, mode: u32) -> Result<u32, Echec> {
     if mode & !MODE_MAX != 0 {
-        return Err(trf!(
+        return Err(non(trf!(
             "droits refusés : {:04o} (ni setuid ni setgid)",
             "permissions refused: {:04o} (no setuid nor setgid)",
             mode
-        ));
+        )));
     }
     let bout = ouvrir(chemin)?;
     if let Some(a) = attendu
         && bout.mode != a
     {
-        return Err(trf!(
+        return Err(non(trf!(
             "{} : {:04o} lus au lieu des {:04o} montrés : changé depuis, rien n'est posé",
             "{}: {:04o} read instead of the {:04o} shown: changed since, nothing is set",
             bout.ou,
             bout.mode,
             a
-        ));
+        )));
     }
     if bout.mode != mode {
-        fchmod(bout.fichier.as_fd(), mode)
-            .map_err(|e| trf!("{} : droits non posés ({e})", "{}: permissions not set ({e})", bout.ou))?;
+        fchmod(bout.fichier.as_fd(), mode).map_err(|e| {
+            non(trf!(
+                "{} : droits non posés ({e})",
+                "{}: permissions not set ({e})",
+                bout.ou
+            ))
+        })?;
         // Relu sur le descripteur : ce qui compte est ce que le noyau a gardé.
-        let pose = mode_de(&bout.fichier)
-            .map_err(|e| trf!("{} : relecture impossible ({e})", "{}: cannot read back ({e})", bout.ou))?;
+        let pose = mode_de(&bout.fichier).map_err(|e| {
+            non(trf!(
+                "{} : relecture impossible ({e})",
+                "{}: cannot read back ({e})",
+                bout.ou
+            ))
+        })?;
         if pose != mode {
-            return Err(trf!(
+            return Err(non(trf!(
                 "{} : {:04o} demandés, {:04o} relus",
                 "{}: {:04o} requested, {:04o} read back",
                 bout.ou,
                 mode,
                 pose
-            ));
+            )));
         }
     }
     Ok(bout.mode)
@@ -99,23 +115,23 @@ struct Bout {
 
 /// Le dossier de départ de `chemin` et le chemin sous lui : le dossier personnel, ou, dans les essais, leur dossier
 /// jetable (`essais::temporaire`), comme `annulables::dans_la_maison`.
-fn depart(chemin: &Path) -> Result<(PathBuf, PathBuf), String> {
+fn depart(chemin: &Path) -> Result<(PathBuf, PathBuf), Echec> {
     let hors = || {
-        trf!(
+        non(trf!(
             "{} n'est pas dans le dossier personnel",
             "{} is not in the home folder",
             crate::modele::resultat::nom_sans_piege(&chemin.to_string_lossy(), 120)
-        )
+        ))
     };
     // Les essais d'abord : leur dossier jetable peut être sous le vrai dossier personnel, derrière un lien.
     #[cfg(test)]
     {
-        let essais = crate::machine::unix::maison_simple(&crate::essais::temporaire()).map_err(String::from)?;
+        let essais = crate::machine::unix::maison_simple(&crate::essais::temporaire())?;
         if let Ok(r) = chemin.strip_prefix(&essais) {
             return Ok((essais, r.to_path_buf()));
         }
     }
-    let maison = crate::machine::unix::maison_simple(&crate::socle::maison()).map_err(String::from)?;
+    let maison = crate::machine::unix::maison_simple(&crate::socle::maison())?;
     if let Ok(r) = chemin.strip_prefix(&maison) {
         return Ok((maison, r.to_path_buf()));
     }
@@ -123,38 +139,38 @@ fn depart(chemin: &Path) -> Result<(PathBuf, PathBuf), String> {
 }
 
 /// Ouvre `chemin` élément par élément depuis son dossier de départ, sans suivre de lien, en jugeant chacun.
-fn ouvrir(chemin: &Path) -> Result<Bout, String> {
+fn ouvrir(chemin: &Path) -> Result<Bout, Echec> {
     let (base, relatif) = depart(chemin)?;
     ouvrir_sous(&base, &relatif)
 }
 
-fn ouvrir_sous(base: &Path, relatif: &Path) -> Result<Bout, String> {
+fn ouvrir_sous(base: &Path, relatif: &Path) -> Result<Bout, Echec> {
     let compte = crate::socle::euid();
     let mut ou = String::from("~");
     let noms: Vec<&OsStr> = relatif
         .components()
         .map(|c| match c {
             Component::Normal(n) => Ok(n),
-            _ => Err(trf!("{ou} : chemin inattendu", "{ou}: unexpected path")),
+            _ => Err(non(trf!("{ou} : chemin inattendu", "{ou}: unexpected path"))),
         })
         .collect::<Result<_, _>>()?;
-    let juger = |f: &File, ou: &str, dossier: bool| -> Result<std::fs::Metadata, String> {
+    let juger = |f: &File, ou: &str, dossier: bool| -> Result<std::fs::Metadata, Echec> {
         let m = f
             .metadata()
-            .map_err(|e| trf!("{ou} : illisible ({e})", "{ou}: unreadable ({e})"))?;
+            .map_err(|e| non(trf!("{ou} : illisible ({e})", "{ou}: unreadable ({e})")))?;
         if m.uid() != compte {
-            return Err(trf!(
+            return Err(non(trf!(
                 "{ou} appartient à un autre compte",
                 "{ou} belongs to another account"
-            ));
+            )));
         }
         if dossier && !m.is_dir() {
-            return Err(trf!("{ou} n'est pas un dossier", "{ou} is not a folder"));
+            return Err(non(trf!("{ou} n'est pas un dossier", "{ou} is not a folder")));
         }
         Ok(m)
     };
-    let lien = |e: &io::Error, ou: &str| -> String {
-        match e.raw_os_error() {
+    let lien = |e: &io::Error, ou: &str| -> Echec {
+        non(match e.raw_os_error() {
             Some(libc::ELOOP | libc::ENOTDIR) => trf!(
                 "{ou} est un lien ou n'est pas un dossier : rien n'est suivi",
                 "{ou} is a link or not a folder: nothing is followed"
@@ -165,7 +181,7 @@ fn ouvrir_sous(base: &Path, relatif: &Path) -> Result<Bout, String> {
                 "{ou} is not readable by the account: its permissions are not touched"
             ),
             _ => trf!("{ou} : ouverture impossible ({e})", "{ou}: cannot open ({e})"),
-        }
+        })
     };
     let Some((dernier, milieu)) = noms.split_last() else {
         // Le dossier personnel lui-même.
@@ -189,13 +205,16 @@ fn ouvrir_sous(base: &Path, relatif: &Path) -> Result<Bout, String> {
     let m = juger(&f, &ou, false)?;
     if m.is_file() {
         if m.nlink() > 1 {
-            return Err(trf!(
+            return Err(non(trf!(
                 "{ou} a un autre nom ailleurs (lien physique), dont les droits changeraient aussi",
                 "{ou} has another name elsewhere (hard link), whose permissions would change too"
-            ));
+            )));
         }
     } else if !m.is_dir() {
-        return Err(trf!("{ou} n'est pas un simple fichier", "{ou} is not a plain file"));
+        return Err(non(trf!(
+            "{ou} n'est pas un simple fichier",
+            "{ou} is not a plain file"
+        )));
     }
     Ok(Bout {
         mode: m.mode() & 0o7777,
@@ -205,14 +224,14 @@ fn ouvrir_sous(base: &Path, relatif: &Path) -> Result<Bout, String> {
 }
 
 /// « ~/a » suivi de `nom`, refusé s'il n'est pas lisible tel quel (UTF-8) : le geste l'écrit en texte.
-fn suivant(ou: &str, nom: &OsStr) -> Result<String, String> {
+fn suivant(ou: &str, nom: &OsStr) -> Result<String, Echec> {
     let montre = crate::ui::affichable(&nom.to_string_lossy());
     let ou = format!("{ou}/{montre}");
     if nom.to_str().is_none() {
-        return Err(trf!(
+        return Err(non(trf!(
             "le nom de {ou} n'est pas lisible tel quel (pas en UTF-8)",
             "the name of {ou} cannot be read as is (not UTF-8)"
-        ));
+        )));
     }
     Ok(ou)
 }
@@ -351,7 +370,7 @@ mod tests {
         let d = dossier("sortes");
         std::fs::write(d.join("a/f"), b"x").unwrap();
         std::fs::hard_link(d.join("a/f"), d.join("a/g")).unwrap();
-        let e = lire(&d.join("a/f")).unwrap_err();
+        let e = lire(&d.join("a/f")).unwrap_err().to_string();
         assert!(e.contains("lien physique") || e.contains("hard link"), "{e}");
         // Ni un tube au bout (ouvert sans attendre : O_NONBLOCK).
         crate::essais::tube_nomme(&d.join("a/t")).unwrap();

@@ -381,7 +381,7 @@ fn agir(jeton: &str, accord: &str) -> Issue {
 /// encore les droits relus (`poser_si`) : un fichier changé entre la relecture et le geste n'est pas touché. Arrêté à
 /// la première erreur.
 #[cfg(unix)]
-fn remettre_les(lignes: &[(std::path::PathBuf, u32, u32)]) -> Result<(), String> {
+fn remettre_les(lignes: &[(std::path::PathBuf, u32, u32)]) -> Result<(), crate::modele::raison::Echec> {
     for (chemin, actuel, avant) in lignes {
         crate::optimiser::droits::poser_si(chemin, Some(*actuel), *avant)?;
     }

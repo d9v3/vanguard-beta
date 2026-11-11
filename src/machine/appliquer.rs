@@ -168,7 +168,7 @@ fn agir(j: &Jeton, accord: &str) -> (Option<String>, Issue) {
     // 4. La politique, sur ce qui vient d'être relu (jamais sur ce que la liste ou l'aperçu disaient).
     let lignes = match politique(&a, &releve) {
         Ok(l) => l,
-        Err(r) => return (regle, Issue::Refuse(Refus::Politique(r))),
+        Err(r) => return (regle, Issue::Refuse(r)),
     };
     let Ok(releve) = releve else {
         return (regle, Issue::Refuse(Refus::Politique(non_annulable())));
@@ -214,24 +214,25 @@ fn non_annulable() -> String {
 
 /// Ce qui sera posé, ligne par ligne, avec les droits d'avant montrés : seulement si l'aperçu relu est applicable
 /// (`apercu::applicable`) et que chaque ligne est un `chmod` permis au compte dont la note d'annulation garde la
-/// valeur d'avant. Sinon, la raison.
+/// valeur d'avant. Sinon, le refus et sa raison.
 #[cfg(unix)]
-fn politique(a: &apercu::Apercu, releve: &apercu::Releve) -> Result<Vec<(std::path::PathBuf, u32, u32)>, String> {
+fn politique(a: &apercu::Apercu, releve: &apercu::Releve) -> Result<Vec<(std::path::PathBuf, u32, u32)>, Refus> {
     if a.droits != super::Droits::Compte.mot() {
-        return Err(admin_ou_terminal(&a.droits));
+        return Err(Refus::Politique(admin_ou_terminal(&a.droits)));
     }
     let Ok(r) = releve else {
-        return Err(non_annulable());
+        return Err(Refus::Politique(non_annulable()));
     };
     if !apercu::applicable(a) {
-        return Err(non_annulable());
+        return Err(Refus::Politique(non_annulable()));
     }
     let valeurs: Vec<(&str, Option<&str>)> = r.valeurs().collect();
     a.commandes
         .iter()
         .map(|l| {
-            let (chemin, mode) = apercu::chmod_du_compte(l).ok_or_else(|| admin_ou_terminal("admin"))?;
-            let geste = crate::optimiser::Geste::droits(&chemin).ok_or_else(non_annulable)?;
+            let (chemin, mode) =
+                apercu::chmod_du_compte(l).ok_or_else(|| Refus::Politique(admin_ou_terminal("admin")))?;
+            let geste = crate::optimiser::Geste::droits(&chemin).ok_or_else(|| Refus::Politique(non_annulable()))?;
             // La valeur d'avant de ce chemin, notée par cette correction : sans elle, la ligne ne s'annulerait pas.
             let avant = valeurs
                 .iter()
@@ -239,7 +240,7 @@ fn politique(a: &apercu::Apercu, releve: &apercu::Releve) -> Result<Vec<(std::pa
                 .and_then(|(_, v)| *v)
                 .filter(|v| crate::optimiser::annulables::droits_admis(v))
                 .and_then(|v| u32::from_str_radix(v, 8).ok())
-                .ok_or_else(non_annulable)?;
+                .ok_or_else(|| Refus::Politique(non_annulable()))?;
             Ok((chemin, avant, mode))
         })
         .collect()
@@ -247,8 +248,8 @@ fn politique(a: &apercu::Apercu, releve: &apercu::Releve) -> Result<Vec<(std::pa
 
 /// Sous Windows, rien ne s'applique d'ici dans ce lot : toute correction y demande la fenêtre administrateur.
 #[cfg(windows)]
-fn politique(a: &apercu::Apercu, _releve: &apercu::Releve) -> Result<Vec<(std::path::PathBuf, u32, u32)>, String> {
-    Err(admin_ou_terminal(&a.droits))
+fn politique(a: &apercu::Apercu, _releve: &apercu::Releve) -> Result<Vec<(std::path::PathBuf, u32, u32)>, Refus> {
+    Err(Refus::Politique(admin_ou_terminal(&a.droits)))
 }
 
 fn admin_ou_terminal(droits: &str) -> String {
@@ -272,7 +273,7 @@ fn admin_ou_terminal(droits: &str) -> String {
 fn poser(lignes: &[(std::path::PathBuf, u32, u32)]) -> Vec<String> {
     for (chemin, avant, mode) in lignes {
         if let Err(e) = crate::optimiser::droits::poser_si(chemin, Some(*avant), *mode) {
-            return vec![e];
+            return vec![e.to_string()];
         }
     }
     Vec::new()
