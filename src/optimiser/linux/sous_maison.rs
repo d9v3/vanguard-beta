@@ -18,6 +18,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
+use crate::modele::raison::Echec;
 use crate::trf;
 
 /// Un dossier traversé : sans le lire, sans suivre de lien.
@@ -37,14 +38,25 @@ struct Dossier {
     ou: String,
 }
 
+/// Un refus de la garde (lien, autre compte, hors du dossier personnel), sa phrase déjà dans la langue de
+/// l'interface.
+fn refus(phrase: String) -> Echec {
+    Echec::refuse("demarrage/ecrire", phrase)
+}
+
+/// Un échec du système (lire, créer, écrire, retirer), sa phrase déjà dans la langue de l'interface.
+fn echec(phrase: String) -> Echec {
+    Echec::echoue("demarrage/ecrire", phrase)
+}
+
 /// Le dossier de départ (le dossier personnel, ou dans les essais leur dossier jetable) et les noms sous lui.
-fn depart(chemin: &Path) -> Result<(PathBuf, Vec<&OsStr>), String> {
+fn depart(chemin: &Path) -> Result<(PathBuf, Vec<&OsStr>), Echec> {
     let hors = || {
-        trf!(
+        refus(trf!(
             "{} n'est pas dans le dossier personnel : Vanguard n'y touche pas",
             "{} is not in the home folder: Vanguard does not touch it",
             crate::modele::resultat::nom_sans_piege(&chemin.to_string_lossy(), 120)
-        )
+        ))
     };
     // Les essais d'abord : leur dossier jetable peut être sous le vrai dossier personnel, derrière un lien.
     #[cfg(test)]
@@ -92,31 +104,31 @@ fn suivant(ou: &str, nom: &OsStr) -> String {
 }
 
 /// La phrase d'un dossier ou d'un fichier qui ne s'ouvre pas sans suivre de lien.
-fn phrase(e: &io::Error, ou: &str) -> String {
+fn phrase(e: &io::Error, ou: &str) -> Echec {
     match e.raw_os_error() {
-        Some(libc::ELOOP | libc::ENOTDIR) => trf!(
+        Some(libc::ELOOP | libc::ENOTDIR) => refus(trf!(
             "{ou} est un lien ou n'est pas un dossier : Vanguard ne le suit pas (géré ailleurs, par des dotfiles par \
              exemple) et n'y touche pas",
             "{ou} is a link or not a folder: Vanguard does not follow it (managed elsewhere, by dotfiles for \
              instance) and does not touch it"
-        ),
-        _ => trf!("{ou} : ouverture impossible ({e})", "{ou}: cannot open ({e})"),
+        )),
+        _ => echec(trf!("{ou} : ouverture impossible ({e})", "{ou}: cannot open ({e})")),
     }
 }
 
 /// Un dossier ouvert est-il un dossier du compte qui agit ?
-fn juger_dossier(f: &File, ou: &str) -> Result<(), String> {
+fn juger_dossier(f: &File, ou: &str) -> Result<(), Echec> {
     let m = f
         .metadata()
-        .map_err(|e| trf!("{ou} : illisible ({e})", "{ou}: unreadable ({e})"))?;
+        .map_err(|e| echec(trf!("{ou} : illisible ({e})", "{ou}: unreadable ({e})")))?;
     if m.uid() != crate::socle::euid() {
-        return Err(trf!(
+        return Err(refus(trf!(
             "{ou} appartient à un autre compte : Vanguard n'y touche pas",
             "{ou} belongs to another account: Vanguard does not touch it"
-        ));
+        )));
     }
     if !m.is_dir() {
-        return Err(trf!("{ou} n'est pas un dossier", "{ou} is not a folder"));
+        return Err(refus(trf!("{ou} n'est pas un dossier", "{ou} is not a folder")));
     }
     Ok(())
 }
@@ -124,10 +136,10 @@ fn juger_dossier(f: &File, ou: &str) -> Result<(), String> {
 /// Ouvre les dossiers du chemin, du dossier personnel jusqu'à celui du fichier. `creer` : un dossier manquant est
 /// créé (droits par défaut du compte, comme `create_dir_all`) ; sinon, `None` dit qu'il manque (le fichier n'existe
 /// donc pas).
-fn parcourir(chemin: &Path, creer: bool) -> Result<Option<Dossier>, String> {
+fn parcourir(chemin: &Path, creer: bool) -> Result<Option<Dossier>, Echec> {
     let (base, noms) = depart(chemin)?;
     let Some((dernier, milieu)) = noms.split_last() else {
-        return Err(trf!("chemin vide", "empty path"));
+        return Err(refus(trf!("chemin vide", "empty path")));
     };
     let mut ou = String::from("~");
     let mut courant = {
@@ -149,7 +161,12 @@ fn parcourir(chemin: &Path, creer: bool) -> Result<Option<Dossier>, String> {
                 match creer_dossier(courant.as_fd(), &c) {
                     Ok(()) => {}
                     Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
-                    Err(e) => return Err(trf!("{ou} : création impossible ({e})", "{ou}: cannot create ({e})")),
+                    Err(e) => {
+                        return Err(echec(trf!(
+                            "{ou} : création impossible ({e})",
+                            "{ou}: cannot create ({e})"
+                        )));
+                    }
                 }
                 ouvrir_a(courant.as_fd(), &c, TRAVERSE, 0).map_err(|e| phrase(&e, &ou))?
             }
@@ -164,7 +181,7 @@ fn parcourir(chemin: &Path, creer: bool) -> Result<Option<Dossier>, String> {
 
 /// Le fichier visé, regardé sans le suivre : `None` s'il n'existe pas ; refusé s'il est un lien, autre chose qu'un
 /// simple fichier ou à un autre compte.
-fn regarder(d: &Dossier) -> Result<Option<()>, String> {
+fn regarder(d: &Dossier) -> Result<Option<()>, Echec> {
     let ou = &d.ou;
     let f = match ouvrir_a(d.fd.as_fd(), &d.nom, REGARD, 0) {
         Ok(f) => f,
@@ -173,22 +190,25 @@ fn regarder(d: &Dossier) -> Result<Option<()>, String> {
     };
     let m = f
         .metadata()
-        .map_err(|e| trf!("{ou} : illisible ({e})", "{ou}: unreadable ({e})"))?;
+        .map_err(|e| echec(trf!("{ou} : illisible ({e})", "{ou}: unreadable ({e})")))?;
     if m.file_type().is_symlink() {
-        return Err(trf!(
+        return Err(refus(trf!(
             "{ou} est un lien : Vanguard ne le suit pas (géré ailleurs, par des dotfiles par exemple) et n'y touche pas",
             "{ou} is a link: Vanguard does not follow it (managed elsewhere, by dotfiles for instance) and does not \
              touch it"
-        ));
+        )));
     }
     if !m.is_file() {
-        return Err(trf!("{ou} n'est pas un simple fichier", "{ou} is not a plain file"));
+        return Err(refus(trf!(
+            "{ou} n'est pas un simple fichier",
+            "{ou} is not a plain file"
+        )));
     }
     if m.uid() != crate::socle::euid() {
-        return Err(trf!(
+        return Err(refus(trf!(
             "{ou} appartient à un autre compte : Vanguard n'y touche pas",
             "{ou} belongs to another account: Vanguard does not touch it"
-        ));
+        )));
     }
     Ok(Some(()))
 }
@@ -196,7 +216,7 @@ fn regarder(d: &Dossier) -> Result<Option<()>, String> {
 /// Vanguard peut-il écrire ou retirer `chemin` ? Chaque dossier qui existe est un vrai dossier du compte (pas un lien),
 /// le fichier, s'il existe, un simple fichier du compte ; ce qui manque se créera. Une entrée qui ne passe pas n'est
 /// pas proposée : rien ne s'écrirait ailleurs que dans le dossier personnel, ni à travers un lien.
-pub(super) fn juger(chemin: &Path) -> Result<(), String> {
+pub(super) fn juger(chemin: &Path) -> Result<(), Echec> {
     if let Some(d) = parcourir(chemin, false)? {
         regarder(&d)?;
     }
@@ -228,38 +248,41 @@ pub(super) fn lire(chemin: &Path, max: u64) -> io::Result<String> {
 
 /// Écrit `contenu` à la place de `chemin` : temporaire neuf dans le dossier ouvert, forcé sur le disque, puis
 /// renommé à sa place dans ce même dossier. Les dossiers manquants sont créés sous le dossier personnel.
-pub(super) fn ecrire(chemin: &Path, contenu: &[u8]) -> Result<(), String> {
+pub(super) fn ecrire(chemin: &Path, contenu: &[u8]) -> Result<(), Echec> {
     if crate::autotest::lecture_seule::refuse_fichier(chemin) {
-        return Err(crate::autotest::lecture_seule::refus().to_string());
+        return Err(refus(crate::autotest::lecture_seule::refus().to_string()));
     }
-    let d = parcourir(chemin, true)?.ok_or_else(|| trf!("chemin vide", "empty path"))?;
+    let d = parcourir(chemin, true)?.ok_or_else(|| refus(trf!("chemin vide", "empty path")))?;
     regarder(&d)?;
     let ou = &d.ou;
     let mut sel = [0u8; 8];
-    getrandom::fill(&mut sel).map_err(|e| trf!("{ou} : {e}", "{ou}: {e}"))?;
+    getrandom::fill(&mut sel).map_err(|e| echec(trf!("{ou} : {e}", "{ou}: {e}")))?;
     let temporaire = CString::new(format!(
         ".vanguard-demarrage-{}-{:016x}.tmp",
         std::process::id(),
         u64::from_le_bytes(sel)
     ))
-    .map_err(|e| trf!("{ou} : {e}", "{ou}: {e}"))?;
+    .map_err(|e| echec(trf!("{ou} : {e}", "{ou}: {e}")))?;
     let mut f = ouvrir_a(d.fd.as_fd(), &temporaire, TEMPORAIRE, 0o666)
-        .map_err(|e| trf!("{ou} : écriture impossible ({e})", "{ou}: cannot write ({e})"))?;
+        .map_err(|e| echec(trf!("{ou} : écriture impossible ({e})", "{ou}: cannot write ({e})")))?;
     let r = f
         .write_all(contenu)
         .and_then(|()| f.sync_all())
         .and_then(|()| renommer(d.fd.as_fd(), &temporaire, &d.nom));
     if let Err(e) = r {
         let _ = effacer(d.fd.as_fd(), &temporaire);
-        return Err(trf!("{ou} : écriture impossible ({e})", "{ou}: cannot write ({e})"));
+        return Err(echec(trf!(
+            "{ou} : écriture impossible ({e})",
+            "{ou}: cannot write ({e})"
+        )));
     }
     Ok(())
 }
 
 /// Retire `chemin` s'il existe (un simple fichier du compte) ; absent, rien à faire.
-pub(super) fn retirer(chemin: &Path) -> Result<(), String> {
+pub(super) fn retirer(chemin: &Path) -> Result<(), Echec> {
     if crate::autotest::lecture_seule::refuse_fichier(chemin) {
-        return Err(crate::autotest::lecture_seule::refus().to_string());
+        return Err(refus(crate::autotest::lecture_seule::refus().to_string()));
     }
     let Some(d) = parcourir(chemin, false)? else {
         return Ok(());
@@ -272,7 +295,10 @@ pub(super) fn retirer(chemin: &Path) -> Result<(), String> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(e) => {
             let ou = &d.ou;
-            Err(trf!("{ou} : retrait impossible ({e})", "{ou}: cannot remove ({e})"))
+            Err(echec(trf!(
+                "{ou} : retrait impossible ({e})",
+                "{ou}: cannot remove ({e})"
+            )))
         }
     }
 }
@@ -372,7 +398,7 @@ mod tests {
         // ~/.config/autostart lien vers un autre dossier ; puis ~/.config lui-même.
         std::os::unix::fs::symlink(&*ailleurs, d.join(".config/autostart")).unwrap();
         let f = d.join(".config/autostart/note.desktop");
-        let e = juger(&f).unwrap_err();
+        let e = juger(&f).unwrap_err().to_string();
         assert!(
             e.starts_with("~/") && e.contains("/.config/autostart est un lien") && !e.contains(&*d.to_string_lossy()),
             "{e}"

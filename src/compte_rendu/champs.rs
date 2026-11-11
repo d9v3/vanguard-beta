@@ -370,6 +370,7 @@ pub(crate) const CONTEXTES_ECHEC: &[&str] = &[
     "dbus/actions",
     "dbus/etat_d_activite",
     "dbus/systeme",
+    "demarrage/ecrire",
     "dns/resolved",
     "docker",
     "droits/poser",
