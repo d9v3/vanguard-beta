@@ -952,29 +952,32 @@ pub(crate) fn sortie(cmd: &str, args: &[&str]) -> Option<String> {
 /// Permissions de ~/.ssh.
 #[cfg(unix)]
 fn cles_ssh() -> Vec<Constat> {
-    let dossier = crate::socle::maison().join(".ssh");
+    let maison = crate::socle::maison();
+    let dossier = maison.join(".ssh");
+    // Les droits se jugent sur ce qui est visé, lien suivi ; la correction (chmod) ne passe jamais par un lien :
+    // `unix::hors_correction` dit pourquoi elle n'est pas proposée.
     let Ok(meta) = std::fs::metadata(&dossier) else {
         return vec![ok("Clés SSH", tr!("Pas de dossier ~/.ssh.", "No ~/.ssh folder."))];
     };
+    let lien_du_dossier = unix::hors_correction(&maison, std::path::Path::new(".ssh"));
     let mut constats = Vec::new();
     if std::os::unix::fs::PermissionsExt::mode(&meta.permissions()) & 0o077 != 0 {
-        constats.push(
-            alerte(
-                "Clés SSH",
-                Niveau::Eleve,
-                tr!(
-                    "~/.ssh est lisible par d'autres utilisateurs.",
-                    "~/.ssh is readable by other users."
-                ),
-            )
-            .corriger(
-                tr!("Restreindre ~/.ssh à vous seul", "Restrict ~/.ssh to you only"),
-                &["chmod 700 ~/.ssh"],
-            )
-            .annulable(vec![crate::optimiser::Geste::droits(&dossier)])
-            .du_compte()
-            .avec_objet(Objet::de("chemin", "~/.ssh")),
+        let message = tr!(
+            "~/.ssh est lisible par d'autres utilisateurs.",
+            "~/.ssh is readable by other users."
         );
+        constats.push(match &lien_du_dossier {
+            None => alerte("Clés SSH", Niveau::Eleve, message)
+                .corriger(
+                    tr!("Restreindre ~/.ssh à vous seul", "Restrict ~/.ssh to you only"),
+                    &["chmod 700 ~/.ssh"],
+                )
+                .annulable(vec![crate::optimiser::Geste::droits(&dossier)])
+                .du_compte()
+                .avec_objet(Objet::de("chemin", "~/.ssh")),
+            Some(r) => alerte("Clés SSH", Niveau::Eleve, sans_correction_du_compte(message, r))
+                .avec_objet(Objet::de("lien", "~/.ssh")),
+        });
     }
     for f in std::fs::read_dir(&dossier).into_iter().flatten().flatten() {
         let brut = f.file_name().to_string_lossy().into_owned();
@@ -1004,32 +1007,34 @@ fn cles_ssh() -> Vec<Constat> {
                 && !std::path::Path::new(&brut)
                     .extension()
                     .is_some_and(|e| e.eq_ignore_ascii_case("pub")));
+        // Les droits de ce qui est visé (`fs::metadata` suit le lien ; ceux de `DirEntry::metadata`, non : un lien
+        // a toujours 777, et toute clé liée passait pour lisible par tous).
         if privee
-            && f.metadata()
+            && std::fs::metadata(f.path())
                 .is_ok_and(|m| std::os::unix::fs::PermissionsExt::mode(&m.permissions()) & 0o077 != 0)
         {
-            constats.push(
-                alerte(
-                    "Clés SSH",
-                    Niveau::Critique,
-                    trf!(
-                        "Clé privée ~/.ssh/{nom} lisible par d'autres.",
-                        "Private key ~/.ssh/{nom} is readable by others."
-                    ),
-                )
-                .corriger(
-                    trf!("Protéger la clé {nom}", "Protect the key {nom}"),
-                    &[&format!("chmod 600 {chemin}")],
-                )
-                .annulable(vec![crate::optimiser::Geste::droits(&f.path())])
-                .du_compte()
-                // Le vrai nom, ses pièges écrits en clair (`nom_pour_cle`) : une clé « id_x » suivie d'un invisible
-                // n'hérite pas du choix fait pour « id_x ».
-                .avec_objet(Objet::de(
-                    "chemin",
-                    &crate::modele::resultat::nom_pour_cle(&format!("~/.ssh/{brut}")),
-                )),
+            let message = trf!(
+                "Clé privée ~/.ssh/{nom} lisible par d'autres.",
+                "Private key ~/.ssh/{nom} is readable by others."
             );
+            // Le vrai nom, ses pièges écrits en clair (`nom_pour_cle`) : une clé « id_x » suivie d'un invisible
+            // n'hérite pas du choix fait pour « id_x ».
+            let objet = crate::modele::resultat::nom_pour_cle(&format!("~/.ssh/{brut}"));
+            let relatif = std::path::Path::new(".ssh").join(f.file_name());
+            constats.push(match unix::hors_correction(&maison, &relatif) {
+                None => alerte("Clés SSH", Niveau::Critique, message)
+                    .corriger(
+                        trf!("Protéger la clé {nom}", "Protect the key {nom}"),
+                        &[&format!("chmod 600 {chemin}")],
+                    )
+                    .annulable(vec![crate::optimiser::Geste::droits(&f.path())])
+                    .du_compte()
+                    .avec_objet(Objet::de("chemin", &objet)),
+                // Un autre objet que la clé ordinaire : un choix accepté pour elle ne tait pas la même clé devenue
+                // un lien.
+                Some(r) => alerte("Clés SSH", Niveau::Critique, sans_correction_du_compte(&message, &r))
+                    .avec_objet(Objet::de("lien", &objet)),
+            });
         }
     }
     if let Ok(config) = std::fs::read_to_string(dossier.join("config")) {
@@ -1050,6 +1055,16 @@ fn cles_ssh() -> Vec<Constat> {
         ));
     }
     constats
+}
+
+/// Le message d'un constat du compte qu'un lien (ou un fichier spécial) empêche de corriger : ce qui est vu, pourquoi
+/// rien n'est proposé, et quoi faire.
+#[cfg(unix)]
+fn sans_correction_du_compte(message: &str, raison: &str) -> String {
+    trf!(
+        "{message} Pas de correction proposée : {raison}. Un chmod changerait ce qui est visé, pas ce qui est montré ; vérifiez-le et réservez-le à vous seul.",
+        "{message} No fix offered: {raison}. A chmod would change the target, not what is shown; check it and restrict it to you only."
+    )
 }
 
 /// La configuration de SSH avec ses fichiers inclus (« Include ») dépliés à leur place, comme SSH les lit : (fichier

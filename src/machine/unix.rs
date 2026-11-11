@@ -60,23 +60,80 @@ pub(super) fn secret_expose(mode: u32) -> bool {
     mode & 0o077 != 0
 }
 
+/// Pourquoi une correction du compte (un `chmod` sans mot de passe) ne viserait pas sûrement `relatif`, chemin sous
+/// `maison` : `None` seulement si chaque élément, du dossier personnel lui-même jusqu'au bout, est lu sans suivre de
+/// lien (`symlink_metadata`) et que le bout est un fichier ou un dossier ordinaire. Un lien n'importe où sur le chemin
+/// (posé par stow, chezmoi, ou par un programme du compte) ferait changer par `chmod` le fichier visé, pas celui que
+/// la personne a lu : le constat le dit (où est le lien, vers quoi, nettoyé) et ne propose pas de correction du
+/// compte. Un chemin qui disparaît pendant la lecture n'est pas corrigé non plus. Le lot qui appliquera ces
+/// corrections relira de même au moment d'agir (sans shell : ouverture sans suivre de lien, puis fchmod).
+pub(crate) fn hors_correction(maison: &Path, relatif: &Path) -> Option<String> {
+    let montre = |n: &OsStr| crate::ui::affichable(&n.to_string_lossy());
+    let mut chemin = maison.to_path_buf();
+    let mut ou = String::from("~");
+    let mut elements = relatif.components().peekable();
+    loop {
+        let Ok(meta) = std::fs::symlink_metadata(&chemin) else {
+            return Some(trf!(
+                "{ou} a changé pendant la lecture",
+                "{ou} changed while being read"
+            ));
+        };
+        if meta.file_type().is_symlink() {
+            let vers = std::fs::read_link(&chemin).map_or_else(
+                |_| tr!("illisible", "unreadable").to_string(),
+                |c| crate::modele::resultat::nom_sans_piege(&c.to_string_lossy(), 120),
+            );
+            return Some(trf!("{ou} est un lien vers {vers}", "{ou} is a link to {vers}"));
+        }
+        let Some(suivant) = elements.next() else {
+            return (!meta.is_file() && !meta.is_dir()).then(|| {
+                trf!(
+                    "{ou} n'est ni un fichier ni un dossier",
+                    "{ou} is neither a file nor a folder"
+                )
+            });
+        };
+        let std::path::Component::Normal(nom) = suivant else {
+            return Some(trf!("{ou} : chemin inattendu", "{ou}: unexpected path"));
+        };
+        if !meta.is_dir() {
+            return Some(trf!("{ou} n'est pas un dossier", "{ou} is not a folder"));
+        }
+        chemin.push(nom);
+        ou = format!("{ou}/{}", montre(nom));
+    }
+}
+
 /// Les fichiers secrets de `maison`, et le dossier personnel lui-même. `dossier_ouvert` : le texte de l'alerte quand
 /// les autres comptes peuvent lire le dossier personnel (il nomme la machine).
 pub(super) fn fichiers_secrets(maison: &Path, dossier_ouvert: &str) -> Vec<Constat> {
     let mut exposes = Vec::new();
     let mut commandes = Vec::new();
     let mut gestes = Vec::new();
+    // Exposés, mais à travers un lien (ou ni fichier ni dossier) : dits, jamais corrigés par le compte.
+    let mut a_travers = Vec::new();
+    let mut raisons = Vec::new();
     for nom in SECRETS {
         let chemin = maison.join(nom);
-        // Droits du fichier lui-même, pas du lien : un lien symbolique (stow, chezmoi…) a toujours 777,
-        // ce qui donnait une fausse alerte, jamais corrigée par le chmod.
+        // L'exposition se juge sur ce qui est visé, lien suivi : un lien symbolique (stow, chezmoi…) a toujours 777,
+        // ce qui donnait une fausse alerte. La correction, elle, ne passe jamais par un lien (`hors_correction`).
         let Ok(meta) = std::fs::metadata(&chemin) else {
             continue;
         };
-        if secret_expose(meta.permissions().mode()) {
-            exposes.push(format!("~/{nom}"));
-            commandes.push(format!("chmod {} ~/{nom}", if meta.is_dir() { "700" } else { "600" }));
-            gestes.push(crate::optimiser::Geste::droits(&chemin));
+        if !secret_expose(meta.permissions().mode()) {
+            continue;
+        }
+        match hors_correction(maison, Path::new(nom)) {
+            None => {
+                exposes.push(format!("~/{nom}"));
+                commandes.push(format!("chmod {} ~/{nom}", if meta.is_dir() { "700" } else { "600" }));
+                gestes.push(crate::optimiser::Geste::droits(&chemin));
+            }
+            Some(r) => {
+                a_travers.push(format!("~/{nom}"));
+                raisons.push(r);
+            }
         }
     }
     let mut constats = Vec::new();
@@ -103,10 +160,27 @@ pub(super) fn fichiers_secrets(maison: &Path, dossier_ouvert: &str) -> Vec<Const
             .avec_objet(crate::modele::Objet::de("chemins", &exposes.join(","))),
         );
     }
+    if !a_travers.is_empty() {
+        let message = trf!(
+            "Lisible(s) par d'autres comptes : {} (mots de passe ou jetons d'accès).",
+            "Readable by other accounts: {} (passwords or access tokens).",
+            a_travers.join(", ")
+        );
+        constats.push(
+            alerte(
+                "Fichiers secrets",
+                Niveau::Eleve,
+                super::sans_correction_du_compte(&message, &raisons.join(" ; ")),
+            )
+            // Pas l'objet des fichiers corrigeables : un choix accepté pour ~/.netrc ordinaire ne tait pas ~/.netrc
+            // devenu un lien.
+            .avec_objet(crate::modele::Objet::de("liens", &a_travers.join(","))),
+        );
+    }
     // Le dossier personnel lui-même : ouvert en lecture, il laisse voir tous tes fichiers aux autres comptes.
     if std::fs::metadata(maison).is_ok_and(|m| m.permissions().mode() & 0o007 != 0) {
-        constats.push(
-            alerte("Fichiers secrets", Niveau::Info, dossier_ouvert)
+        constats.push(match hors_correction(maison, Path::new("")) {
+            None => alerte("Fichiers secrets", Niveau::Info, dossier_ouvert)
                 .corriger(
                     tr!(
                         "Fermer votre dossier personnel aux autres comptes",
@@ -117,7 +191,13 @@ pub(super) fn fichiers_secrets(maison: &Path, dossier_ouvert: &str) -> Vec<Const
                 .annulable(vec![crate::optimiser::Geste::droits(maison)])
                 .du_compte()
                 .avec_objet(crate::modele::Objet::de("chemin", "~")),
-        );
+            Some(r) => alerte(
+                "Fichiers secrets",
+                Niveau::Info,
+                super::sans_correction_du_compte(dossier_ouvert, &r),
+            )
+            .avec_objet(crate::modele::Objet::de("lien", "~")),
+        });
     }
     if constats.is_empty() {
         constats.push(ok(
@@ -624,5 +704,84 @@ mod tests_durcir_sudo {
         let sain = "User alice may run the following commands on salon:\n    (ALL : ALL) ALL\n";
         let c = durcir_sudo(juger_sudo(sain, "tout"), sain, Some("alice"));
         assert!(c.iter().all(|c| c.correctif.is_none()));
+    }
+}
+
+/// Vérification de Fable, V1 : à travers un lien, ce qui est montré (« ~/.netrc ») n'est pas ce qu'un chmod
+/// changerait (la cible). Un chemin qui passe par un lien, ou qui n'est ni un fichier ni un dossier, est dit sans
+/// correction du compte.
+#[cfg(test)]
+mod tests_liens {
+    use super::*;
+
+    fn mode(chemin: &Path, mode: u32) {
+        std::fs::set_permissions(chemin, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    #[test]
+    fn un_chemin_ordinaire_seulement_se_corrige_par_le_compte() {
+        let maison = crate::essais::Jetable::nouveau("liens-maison");
+        let ailleurs = crate::essais::Jetable::nouveau("liens-ailleurs");
+        std::fs::create_dir_all(maison.join(".ssh")).unwrap();
+        std::fs::write(maison.join(".ssh/id_essai"), "clé inventée\n").unwrap();
+        std::fs::write(ailleurs.join("cible"), "x\n").unwrap();
+        std::os::unix::fs::symlink(ailleurs.join("cible"), maison.join(".ssh/id_lien")).unwrap();
+        std::os::unix::fs::symlink(&*ailleurs, maison.join("d")).unwrap();
+        crate::essais::tube_nomme(&maison.join("tube")).unwrap();
+        assert_eq!(hors_correction(&maison, Path::new("")), None);
+        assert_eq!(hors_correction(&maison, Path::new(".ssh")), None);
+        assert_eq!(hors_correction(&maison, Path::new(".ssh/id_essai")), None);
+        let lien = hors_correction(&maison, Path::new(".ssh/id_lien")).unwrap();
+        assert!(lien.contains("~/.ssh/id_lien") && lien.contains("cible"), "{lien}");
+        // Un dossier du chemin qui est un lien : la fin, ordinaire, n'y change rien.
+        let milieu = hors_correction(&maison, Path::new("d/cible")).unwrap();
+        assert!(milieu.starts_with("~/d "), "{milieu}");
+        for faux in ["tube", ".ssh/id_essai/x", "absent", "../x", "/etc/passwd"] {
+            assert!(hors_correction(&maison, Path::new(faux)).is_some(), "{faux}");
+        }
+        // Le dossier personnel lui-même, un lien.
+        let maison_lien = crate::essais::Jetable::nouveau("liens-maison-lien");
+        let m = maison_lien.join("maison");
+        std::os::unix::fs::symlink(&*maison, &m).unwrap();
+        assert!(hors_correction(&m, Path::new(".ssh")).is_some());
+    }
+
+    #[test]
+    fn un_secret_a_travers_un_lien_est_dit_sans_correction() {
+        let maison = crate::essais::Jetable::nouveau("liens-secrets");
+        let ailleurs = crate::essais::Jetable::nouveau("liens-secrets-cible");
+        mode(&maison, 0o700);
+        std::fs::write(maison.join(".netrc"), "machine exemple.invalid login alice\n").unwrap();
+        mode(&maison.join(".netrc"), 0o644);
+        std::fs::write(ailleurs.join("jetons"), "inventé\n").unwrap();
+        mode(&ailleurs.join("jetons"), 0o644);
+        std::os::unix::fs::symlink(ailleurs.join("jetons"), maison.join(".git-credentials")).unwrap();
+        let constats = fichiers_secrets(&maison, "ouvert");
+        let corrigeables: Vec<&Constat> = constats.iter().filter(|c| c.correctif.is_some()).collect();
+        let messages: Vec<&str> = constats.iter().map(|c| c.message.as_str()).collect();
+        assert_eq!(corrigeables.len(), 1, "{messages:?}");
+        let c = corrigeables[0];
+        assert!(c.message.contains("~/.netrc") && !c.message.contains(".git-credentials"));
+        assert_eq!(c.correctif.as_ref().unwrap().commandes, ["chmod 600 ~/.netrc"]);
+        let lie = constats
+            .iter()
+            .find(|c| c.message.contains("~/.git-credentials"))
+            .expect("le lien n'est pas dit");
+        assert!(lie.correctif.is_none() && lie.probleme == Some(Niveau::Eleve));
+        assert!(lie.message.contains("jetons"), "{}", lie.message);
+        assert_ne!(lie.objet, c.objet);
+        assert!(
+            [&lie.objet, &c.objet]
+                .iter()
+                .all(|o| **o != crate::modele::Objet::NonMigre)
+        );
+        // Le dossier personnel ouvert, mais à travers un lien : dit, sans correction.
+        mode(&maison, 0o755);
+        let parent = crate::essais::Jetable::nouveau("liens-secrets-parent");
+        let m = parent.join("maison");
+        std::os::unix::fs::symlink(&*maison, &m).unwrap();
+        let ouvert = fichiers_secrets(&m, "ouvert");
+        assert!(!ouvert.is_empty());
+        assert!(ouvert.iter().all(|c| c.correctif.is_none()));
     }
 }

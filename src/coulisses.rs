@@ -9,7 +9,7 @@
 use std::collections::VecDeque;
 use std::process::{Child, Command, ExitStatus, Output};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::ui::{GRIS, RESET};
@@ -23,6 +23,9 @@ const COLONNES: usize = 56;
 
 static ALLUME: AtomicBool = AtomicBool::new(false);
 static TRACES: Mutex<VecDeque<Trace>> = Mutex::new(VecDeque::new());
+/// Les programmes que ce processus a voulu lancer, coulisses allumées ou non (l'aperçu d'une correction vérifie que
+/// la règle relue n'en a lancé aucun).
+static LANCEMENTS: AtomicUsize = AtomicUsize::new(0);
 
 /// Allumées ou éteintes pour ce processus : au lancement d'après parametres.json, puis à chaque changement du réglage.
 pub(crate) fn allumer(oui: bool) {
@@ -138,8 +141,9 @@ pub(crate) struct Suivi {
 }
 
 impl Suivi {
-    /// Rien n'est préparé quand les coulisses sont éteintes : le coût reste celui d'une lecture atomique.
+    /// Rien n'est préparé quand les coulisses sont éteintes : le coût reste celui de deux opérations atomiques.
     pub(crate) fn de(commande: &Command) -> Self {
+        LANCEMENTS.fetch_add(1, Ordering::Relaxed);
         Suivi {
             commande: allumees().then(|| decrire(commande)),
             debut: Instant::now(),
@@ -184,6 +188,11 @@ fn montrer(trace: &Trace) {
     let _ = erreur
         .lock()
         .write_all(format!("  {GRIS}{}{RESET}\n", trace.ligne()).as_bytes());
+}
+
+/// Combien de programmes ce processus a voulu lancer jusqu'ici (lancés ou non : un programme absent compte aussi).
+pub(crate) fn lancements() -> usize {
+    LANCEMENTS.load(Ordering::SeqCst)
 }
 
 /// Les dernières commandes, de la plus ancienne à la plus récente.

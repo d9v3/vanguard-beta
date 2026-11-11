@@ -716,42 +716,88 @@ fn nettoyer_mesure_puis_refus() {
     assert!(t.contains("Annulé") || t.contains("Rien à nettoyer"), "{t}");
 }
 
-/// Ce qu'il y a dans un dossier, fichier par fichier (chemin relatif : sorte, taille, date, contenu), sans suivre
-/// les liens. Assez pour voir un fichier créé, effacé, réécrit ou seulement retouché.
+/// Une entrée d'un instantané : sorte et droits (le mode entier), taille, date, puis le contenu d'un fichier
+/// (BLAKE3) ou la cible d'un lien.
 #[cfg(unix)]
-fn instantane(racine: &Path) -> std::collections::BTreeMap<String, (bool, u64, Option<std::time::SystemTime>, String)> {
+type Entree = (u32, u64, Option<std::time::SystemTime>, String);
+
+/// Ce qu'il y a dans un dossier, lui compris, entrée par entrée (chemin relatif), sans suivre les liens. Assez pour
+/// voir une entrée créée, effacée, réécrite ou seulement retouchée, un droit changé ou un lien redirigé.
+#[cfg(unix)]
+fn instantane(racine: &Path) -> std::collections::BTreeMap<String, Entree> {
+    use std::os::unix::fs::MetadataExt;
     let mut vus = std::collections::BTreeMap::new();
     let mut a_voir = vec![racine.to_path_buf()];
-    while let Some(d) = a_voir.pop() {
-        let Ok(entrees) = std::fs::read_dir(&d) else {
+    while let Some(p) = a_voir.pop() {
+        let Ok(m) = std::fs::symlink_metadata(&p) else {
             continue;
         };
-        for e in entrees.flatten() {
-            let p = e.path();
-            let Ok(m) = std::fs::symlink_metadata(&p) else {
-                continue;
-            };
-            let contenu = if m.is_file() {
-                blake3::hash(&std::fs::read(&p).unwrap_or_default())
-                    .to_hex()
-                    .to_string()
-            } else {
-                String::new()
-            };
-            let nom = p.strip_prefix(racine).unwrap().to_string_lossy().into_owned();
-            vus.insert(nom, (m.is_dir(), m.len(), m.modified().ok(), contenu));
-            if m.is_dir() {
-                a_voir.push(p);
-            }
+        let contenu = if m.is_file() {
+            blake3::hash(&std::fs::read(&p).unwrap_or_default())
+                .to_hex()
+                .to_string()
+        } else if m.file_type().is_symlink() {
+            format!(
+                "-> {}",
+                std::fs::read_link(&p)
+                    .map(|c| c.display().to_string())
+                    .unwrap_or_default()
+            )
+        } else {
+            String::new()
+        };
+        let nom = p.strip_prefix(racine).unwrap().to_string_lossy().into_owned();
+        vus.insert(nom, (m.mode(), m.len(), m.modified().ok(), contenu));
+        if m.is_dir() {
+            a_voir.extend(std::fs::read_dir(&p).into_iter().flatten().flatten().map(|e| e.path()));
         }
     }
     vus
 }
 
+/// Ce qui diffère d'un instantané à l'autre : entrées effacées, changées, créées.
+#[cfg(unix)]
+fn ecarts(
+    avant: &std::collections::BTreeMap<String, Entree>,
+    apres: &std::collections::BTreeMap<String, Entree>,
+) -> Vec<String> {
+    let mut ecarts = Vec::new();
+    for (nom, a) in avant {
+        match apres.get(nom) {
+            None => ecarts.push(format!("effacé « {nom} »")),
+            Some(b) if b != a => ecarts.push(format!("changé « {nom} » : {a:?} -> {b:?}")),
+            Some(_) => {}
+        }
+    }
+    ecarts.extend(
+        apres
+            .keys()
+            .filter(|n| !avant.contains_key(*n))
+            .map(|n| format!("créé « {n} »")),
+    );
+    ecarts
+}
+
+/// Les règles que l'aperçu relance (`RELUES_SANS_PROGRAMME` de `machine::apercu`), recopiées : une règle ajoutée là
+/// sans l'être ici fait échouer `voir_une_correction_n_ecrit_rien`, qui la relance alors dans un dossier vide.
+#[cfg(unix)]
+const RELANCEES: &[&str] = &[
+    "LNX-SSH-003",
+    "LNX-PRV-001",
+    "LNX-NOY-003",
+    "LNX-NOY-007",
+    "LNX-RES-003",
+    "LNX-NOY-004",
+    "LNX-MAT-001",
+    "LNX-PRV-004",
+];
+
 /// `correction --voir` ne change rien, quelle que soit la règle que désigne le jeton : chaque règle du bilan relancée
-/// par un jeton à son nom (les 4 premiers octets ; la clé, inventée, ne répond à aucun constat), dans un dossier
-/// personnel déjà passé par un premier lancement (qui pose les sceaux, comme tout `vanguard`), comparé fichier par
-/// fichier avant et après. Les règles qui tiennent leur « déjà vu » (administrateurs, logiciels installés) l'écrivaient.
+/// par un jeton à son nom (les 4 premiers octets ; la clé, inventée, ne répond à aucun constat), chacune dans un
+/// dossier personnel VIDE, sans premier lancement ni sceaux (vérification de Fable, R1 et E1 : un premier lancement
+/// cachait les sceaux écrits avant l'interrupteur de lecture seule), comparé entrée par entrée, droits et liens
+/// compris. Une règle de la liste permise est relancée, puis dite disparue ; les autres sont refusées sans être
+/// lancées (elles lancent d'autres programmes, qui écrivent leurs propres fichiers).
 #[cfg(unix)]
 #[test]
 fn voir_une_correction_n_ecrit_rien() {
@@ -767,6 +813,9 @@ fn voir_une_correction_n_ecrit_rien() {
             .collect()
     };
     assert!(ids.len() > 30, "{} règles seulement", ids.len());
+    for r in RELANCEES {
+        assert!(ids.iter().any(|i| i == r), "{r} n'est plus une règle du bilan");
+    }
     let jeton = |id: &str| {
         let r = blake3::derive_key("vanguard jeton v1 regle", id.as_bytes());
         format!("{}{}", &blake3::Hash::from(r).to_hex()[..8], "5a".repeat(12))
@@ -780,14 +829,11 @@ fn voir_une_correction_n_ecrit_rien() {
                 loop {
                     let i = suivant.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let Some(id) = ids.get(i) else { break };
+                    // Le dossier personnel et son dossier temporaire, rien d'autre.
                     let maison = maison_jetable();
                     let tmp = maison.join("tmp");
                     std::fs::create_dir_all(&tmp).unwrap();
                     let env = &[("TMPDIR", tmp.to_str().unwrap())];
-                    // Le premier lancement pose les sceaux (jeton mal formé : rien d'autre n'est lu).
-                    let premier =
-                        vanguard_dans_env(programme, &maison, "fr", &["correction", "--voir", "x"], "", 60, env);
-                    assert_eq!(premier.code, Some(2), "{id} : {}", premier.erreurs);
                     let avant = instantane(&maison);
                     let j = jeton(id);
                     let sortie = vanguard_dans_env(
@@ -799,48 +845,42 @@ fn voir_une_correction_n_ecrit_rien() {
                         300,
                         env,
                     );
-                    let apres = instantane(&maison);
-                    let mut ecarts = Vec::new();
-                    for (nom, a) in &avant {
-                        match apres.get(nom) {
-                            None => ecarts.push(format!("effacé {nom}")),
-                            Some(b) if b != a => ecarts.push(format!("changé {nom}")),
-                            Some(_) => {}
-                        }
-                    }
-                    ecarts.extend(
-                        apres
-                            .keys()
-                            .filter(|n| !avant.contains_key(*n))
-                            .map(|n| format!("créé {n}")),
-                    );
+                    let changes = ecarts(&avant, &instantane(&maison));
                     let derniere: serde_json::Value =
                         serde_json::from_str(sortie.texte.lines().last().unwrap_or_default()).unwrap_or_default();
                     let mut f = fautes.lock().unwrap();
-                    if !matches!(sortie.code, Some(0 | 1)) || derniere["geste"] != "voir-correction" {
-                        f.push(format!("{id} : code {:?}, {}", sortie.code, sortie.texte));
-                    }
-                    // Les mises à jour lancent des outils qui écrivent leurs propres fichiers : refusées, et dit.
-                    if id.get(4..7) == Some("MAJ")
-                        && !(derniere["issue"] == "refuse"
-                            && derniere["raison"].as_str().is_some_and(|r| r.contains("mise à jour")))
+                    if sortie.code != Some(1) || derniere["geste"] != "voir-correction" || derniere["issue"] != "refuse"
                     {
-                        f.push(format!("{id} : pas refusée ({derniere})"));
+                        f.push(format!(
+                            "{id} : code {:?}, {} {}",
+                            sortie.code, sortie.texte, sortie.erreurs
+                        ));
                     }
-                    if !ecarts.is_empty() {
-                        f.push(format!("{id} : {ecarts:?}"));
+                    let raison = derniere["raison"].as_str().unwrap_or_default();
+                    let attendue = if RELANCEES.contains(&id.as_str()) {
+                        raison.starts_with("ce problème a disparu")
+                    } else {
+                        raison.contains("lance d'autres programmes")
+                    };
+                    if !attendue {
+                        f.push(format!("{id} : raison inattendue « {raison} »"));
+                    }
+                    if !changes.is_empty() {
+                        f.push(format!("{id} : {changes:?}"));
                     }
                 }
             });
         }
     });
     let fautes = fautes.into_inner().unwrap();
-    assert!(fautes.is_empty(), "correction --voir a écrit :\n{}", fautes.join("\n"));
+    assert!(fautes.is_empty(), "correction --voir :\n{}", fautes.join("\n"));
 }
 
 /// Les corrections du compte (droits de ~/.ssh, d'une clé, du dossier personnel, des fichiers secrets) offrent
-/// « Voir la correction » dans le bilan, et leur aperçu se fait sans mot de passe d'administrateur. Rien n'est changé :
-/// les droits relevés après sont ceux d'avant.
+/// « Voir la correction » dans le bilan, et leur aperçu se fait sans mot de passe d'administrateur. Rien n'est changé
+/// par les vrais jetons du bilan (vérification de Fable, E1) : le dossier personnel, comparé entrée par entrée après
+/// le bilan puis après les aperçus, droits et liens compris ; puis de même, les fichiers JSON de Vanguard abîmés
+/// (R2 : une erreur de lecture notée au journal l'écrivait).
 #[cfg(unix)]
 #[test]
 fn les_corrections_du_compte_offrent_l_apercu() {
@@ -863,46 +903,142 @@ fn les_corrections_du_compte_offrent_l_apercu() {
     let bilan = vanguard_dans(programme, &maison, "fr", &["audit", "--json"], "", 300);
     assert!(matches!(bilan.code, Some(0 | 1)), "{}", bilan.erreurs);
     let v: serde_json::Value = serde_json::from_str(&bilan.texte).expect("audit --json : JSON illisible");
+    let jetons: Vec<String> = v["constats"]
+        .as_array()
+        .expect("pas de constats")
+        .iter()
+        .filter_map(|c| c["geste"]["jeton"].as_str().map(str::to_string))
+        .collect();
     let attendus = [
         "chmod 700 ~/.ssh",
         "chmod 600 ~/.ssh/",
         "chmod 750 ~",
         "chmod 600 ~/.netrc",
     ];
-    let mut vus = Vec::new();
-    for c in v["constats"].as_array().expect("pas de constats") {
-        let Some(j) = c["geste"]["jeton"].as_str() else {
-            continue;
-        };
-        let s = vanguard_dans(
-            programme,
-            &maison,
-            "fr",
-            &["correction", "--voir", j, "--json"],
-            "",
-            300,
-        );
-        let r: serde_json::Value = serde_json::from_str(s.texte.lines().last().unwrap_or_default()).unwrap_or_default();
-        if r["issue"] != "fait" || r["apercu"]["droits"] != "compte" {
-            continue;
+    let voir_tout = || {
+        let mut vus = Vec::new();
+        for j in &jetons {
+            let s = vanguard_dans(
+                programme,
+                &maison,
+                "fr",
+                &["correction", "--voir", j, "--json"],
+                "",
+                300,
+            );
+            let r: serde_json::Value =
+                serde_json::from_str(s.texte.lines().last().unwrap_or_default()).unwrap_or_default();
+            assert!(
+                matches!(s.code, Some(0 | 1)) && r["geste"] == "voir-correction",
+                "{j} : code {:?}, {} {}",
+                s.code,
+                s.texte,
+                s.erreurs
+            );
+            if r["issue"] != "fait" || r["apercu"]["droits"] != "compte" {
+                continue;
+            }
+            vus.extend(
+                r["apercu"]["commandes"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|x| x.as_str())
+                    .map(str::to_string),
+            );
         }
-        let commandes: Vec<&str> = r["apercu"]["commandes"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|x| x.as_str())
-            .collect();
-        vus.extend(commandes.iter().map(|x| (*x).to_string()));
-    }
+        vus
+    };
+    let avant = instantane(&maison);
+    let vus = voir_tout();
+    let changes = ecarts(&avant, &instantane(&maison));
+    assert!(changes.is_empty(), "les aperçus ont écrit : {changes:?}");
     for a in attendus {
         assert!(
             vus.iter().any(|x| x.starts_with(a)),
             "{a} sans aperçu du compte : {vus:?}"
         );
     }
+    // Les fichiers JSON de Vanguard abîmés : les aperçus ne les réparent pas, n'en notent rien, et répondent.
+    let mut abimes = 0;
+    for (nom, entree) in &avant {
+        let chemin = maison.join(nom);
+        if std::path::Path::new(nom).extension().is_some_and(|e| e == "json")
+            && std::fs::symlink_metadata(&chemin).is_ok_and(|m| m.is_file())
+            && entree.1 > 0
+        {
+            std::fs::write(&chemin, "{abîmé").unwrap();
+            abimes += 1;
+        }
+    }
+    assert!(abimes > 0, "aucun fichier JSON de Vanguard dans {:?}", avant.keys());
+    let avant = instantane(&maison);
+    let _ = voir_tout();
+    let changes = ecarts(&avant, &instantane(&maison));
+    assert!(
+        changes.is_empty(),
+        "les aperçus ont écrit, fichiers abîmés : {changes:?}"
+    );
     for (chemin, mode) in &modes {
         let m = std::fs::metadata(chemin).unwrap().permissions().mode() & 0o777;
         assert_eq!(m, *mode, "{} changé", chemin.display());
+    }
+}
+
+/// Vérification de Fable, V1 : une clé, ~/.ssh ou un fichier secret qui sont des liens symboliques ne donnent ni
+/// correction ni jeton (un chmod changerait la cible, pas ce qui est montré) ; l'alerte reste, et nomme la cible.
+#[cfg(unix)]
+#[test]
+fn un_lien_n_offre_pas_de_correction() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
+    let mode = |c: &Path, m: u32| std::fs::set_permissions(c, std::fs::Permissions::from_mode(m)).unwrap();
+    for ssh_lie in [false, true] {
+        let maison = maison_jetable();
+        let ailleurs = maison_jetable();
+        mode(&maison, 0o700);
+        let cible_ssh = ailleurs.join("ssh");
+        std::fs::create_dir_all(&cible_ssh).unwrap();
+        std::fs::write(cible_ssh.join("id_cible"), "clé inventée\n").unwrap();
+        std::fs::write(ailleurs.join("netrc"), "machine exemple.invalid login alice\n").unwrap();
+        mode(&cible_ssh, 0o755);
+        mode(&cible_ssh.join("id_cible"), 0o644);
+        mode(&ailleurs.join("netrc"), 0o644);
+        let ssh = maison.join(".ssh");
+        let cle = if ssh_lie {
+            symlink(&cible_ssh, &ssh).unwrap();
+            "id_cible"
+        } else {
+            std::fs::create_dir_all(&ssh).unwrap();
+            mode(&ssh, 0o700);
+            symlink(cible_ssh.join("id_cible"), ssh.join("id_lien")).unwrap();
+            "id_lien"
+        };
+        symlink(ailleurs.join("netrc"), maison.join(".netrc")).unwrap();
+        let bilan = vanguard_dans(programme, &maison, "fr", &["audit", "--json"], "", 300);
+        assert!(matches!(bilan.code, Some(0 | 1)), "{}", bilan.erreurs);
+        let v: serde_json::Value = serde_json::from_str(&bilan.texte).expect("audit --json : JSON illisible");
+        let mut attendus = vec![format!("~/.ssh/{cle}"), "~/.netrc".to_string()];
+        if ssh_lie {
+            attendus.push("~/.ssh est lisible".to_string());
+        }
+        for a in &attendus {
+            let lies: Vec<&serde_json::Value> = v["constats"]
+                .as_array()
+                .expect("pas de constats")
+                .iter()
+                .filter(|c| c["message"].as_str().is_some_and(|m| m.contains(a.as_str())))
+                .collect();
+            assert!(!lies.is_empty(), "{a} n'est pas dit (lien de ~/.ssh : {ssh_lie})");
+            for c in lies {
+                let m = c["message"].as_str().unwrap_or_default();
+                assert!(
+                    c["geste"].is_null() && c["correctif"].is_null(),
+                    "{a} corrigeable à travers un lien : {c}"
+                );
+                assert!(m.contains("est un lien vers"), "{m}");
+            }
+        }
     }
 }
 

@@ -501,18 +501,45 @@ pub fn appliquer(constats: &mut [Constat]) -> usize {
     // Les clés s'ajoutent à la liste relue sous le verrou, pas à celle lue au début du bilan : un choix oublié
     // entre-temps dans un autre Vanguard ne revient pas.
     if !cles.is_empty() && !crate::sceau::adopte(crate::sceau::APPRIS) {
-        let _ = sous_verrou(|lue| match lue {
+        let mut completes = Vec::new();
+        let ecrite = sous_verrou(|lue| match lue {
             Ok(mut a) if !crate::sceau::adopte(crate::sceau::APPRIS) => {
-                if completer(&mut a, cles) {
-                    Nouvelle::Ecrire(a)
-                } else {
+                completes = completer(&mut a, cles);
+                if completes.is_empty() {
                     Nouvelle::Inchangee
+                } else {
+                    Nouvelle::Ecrire(a)
                 }
             }
             _ => Nouvelle::Inchangee,
         });
+        // Jamais en silence : chaque choix rattaché à une clé va au journal des événements (appris.json vient d'être
+        // réécrit sans geste de la personne).
+        if ecrite.is_ok_and(|e| e) {
+            for (categorie, cle) in completes {
+                noter_completion(&categorie, &cle);
+            }
+        }
     }
     n
+}
+
+/// Un choix d'avant les clés, rattaché à la clé de son alerte : au journal des événements, sa catégorie et sa clé
+/// (comme le choix lui-même, `noter_au_journal`), jamais le texte de l'alerte.
+fn noter_completion(categorie: &str, cle: &str) {
+    use crate::modele::evenement::{Evenement, Genre, Source};
+    crate::modele::journal::noter(
+        Evenement::nouveau(
+            Source::Vanguard,
+            Genre::Normale {
+                titre: trf!(
+                    "{categorie} : choix d'avant les clés rattaché à son alerte",
+                    "{categorie}: choice from before keys tied to its alert"
+                ),
+            },
+        )
+        .cle(Some(cle)),
+    );
 }
 
 /// `appliquer` sans rien écrire : les alertes déclarées normales rabaissées de même, mais les clés d'un choix
@@ -596,18 +623,42 @@ fn choix_du_noyau_groupe<'a>(appris: &'a Appris, c: &Constat) -> Option<&'a Acce
     })
 }
 
-/// Complète les choix retrouvés par leur texte de la clé de leur alerte ; `true` s'il y a lieu de réécrire la liste.
-fn completer(appris: &mut Appris, cles: Vec<(String, String)>) -> bool {
-    let mut change = false;
+/// Complète les choix retrouvés par leur texte de la clé de leur alerte ; rend (catégorie, clé) de chaque choix
+/// complété (vide : rien à réécrire).
+fn completer(appris: &mut Appris, cles: Vec<(String, String)>) -> Vec<(String, String)> {
+    let mut completes = Vec::new();
     for (signature, cle) in cles {
         if let Some(a) = appris.acceptees.get_mut(&signature)
             && a.cle.is_none()
         {
-            a.cle = Some(cle);
-            change = true;
+            a.cle = Some(cle.clone());
+            completes.push((a.categorie.clone(), cle));
         }
     }
-    change
+    completes
+}
+
+/// Les clés à compléter d'une passe : (constat, signature du choix sans clé, clé du constat). Une signature retrouvée
+/// par plusieurs constats de clés différentes n'est pas complétée : deux fichiers dont les noms ne diffèrent que par un
+/// invisible ont le même message (`affichable`), et la clé irait au premier lu, peut-être le sosie. Le choix reste
+/// sans clé (il vaut pour les deux, comme avant les clés) et chacun de ces constats le dit. Rend celles qui restent.
+fn sans_ambigues(constats: &mut [Constat], trouvees: &[(usize, String, String)]) -> Vec<(String, String)> {
+    let mut gardees = Vec::new();
+    for (i, signature, cle) in trouvees {
+        let memes: Vec<&(usize, String, String)> = trouvees.iter().filter(|t| t.1 == *signature).collect();
+        if memes.iter().all(|t| t.2 == *cle) {
+            if !gardees.iter().any(|(s, _): &(String, String)| s == signature) {
+                gardees.push((signature.clone(), cle.clone()));
+            }
+        } else if let Some(c) = constats.get_mut(*i) {
+            let n = memes.len();
+            c.message += &trf!(
+                " (ce choix d'avant, sans objet précis, vaut pour {n} alertes au même texte)",
+                " (this earlier choice, with no precise object, covers {n} alerts with the same text)"
+            );
+        }
+    }
+    gardees
 }
 
 fn appliquer_avec(
@@ -617,7 +668,8 @@ fn appliquer_avec(
     a_completer: &mut Vec<(String, String)>,
 ) -> usize {
     let mut n = 0usize;
-    for c in constats.iter_mut() {
+    let mut trouvees = Vec::new();
+    for (i, c) in constats.iter_mut().enumerate() {
         let Some(niveau) = c.probleme else {
             continue;
         };
@@ -647,7 +699,7 @@ fn appliquer_avec(
             );
             continue;
         }
-        a_completer.extend(completer);
+        trouvees.extend(completer.map(|(signature, cle)| (i, signature, cle)));
         c.probleme = Some(Niveau::Info);
         c.correctif = None;
         c.message += &trf!(
@@ -656,6 +708,7 @@ fn appliquer_avec(
         );
         n = n.saturating_add(1);
     }
+    a_completer.extend(sans_ambigues(constats, &trouvees));
     n
 }
 
@@ -1234,6 +1287,46 @@ mod tests {
 
     const FR: &str = "8080/tcp (HTTP) ouvert sur le réseau par « python3 ». Un service web de développement.";
 
+    /// Vérification de Fable, A1 : un choix sans clé retrouvé par son texte n'est rattaché à une clé que si un seul
+    /// constat de la passe y répond. Deux clés au même message (un nom suivi d'un invisible, rendu pareil par
+    /// `affichable`) : le choix reste sans clé, les deux le disent ; une seule : la clé est complétée.
+    #[test]
+    fn un_choix_sans_cle_ne_migre_pas_vers_un_sosie() {
+        let message = "Clé privée ~/.ssh/id_x lisible par d'autres.";
+        let a = appris("Clés SSH", message, Niveau::Critique, "2026-10-18");
+        let cle = |nom: &str| {
+            let mut c =
+                constat("Clés SSH", Niveau::Critique, message).avec_objet(crate::modele::Objet::de("chemin", nom));
+            c.regle = "LNX-SSH-003";
+            c
+        };
+        let jour = jour("2026-10-20");
+        let mut cles = Vec::new();
+        let mut deux = [cle("~/.ssh/id_x"), cle("~/.ssh/id_x\\u{200b}")];
+        assert_eq!(
+            appliquer_avec(&a, &mut deux, jour, &mut cles),
+            2,
+            "tus tous deux, comme avant les clés"
+        );
+        assert!(cles.is_empty(), "aucune clé complétée : {cles:?}");
+        assert!(
+            deux.iter()
+                .all(|c| c.message.contains("vaut pour 2 alertes au même texte"))
+        );
+        // La même clé deux fois (deux lectures du même fichier) n'est pas une ambiguïté.
+        let mut cles = Vec::new();
+        let mut memes = [cle("~/.ssh/id_x"), cle("~/.ssh/id_x")];
+        assert_eq!(appliquer_avec(&a, &mut memes, jour, &mut cles), 2);
+        let attendue = cle("~/.ssh/id_x").cle().unwrap().to_string();
+        assert_eq!(cles, vec![(signature("Clés SSH", message), attendue)]);
+        // Seule : complétée, et dite au journal par `appliquer` (`noter_completion`).
+        let mut cles = Vec::new();
+        let mut seule = [cle("~/.ssh/id_x")];
+        assert_eq!(appliquer_avec(&a, &mut seule, jour, &mut cles), 1);
+        assert_eq!(cles.len(), 1);
+        assert!(!seule[0].message.contains("alertes au même texte"));
+    }
+
     /// La liste de la 0.85 (sans clés) se relit ; un choix y est retrouvé par son texte, puis complété de la clé de
     /// son alerte : il vaut ensuite dans l'autre langue.
     #[test]
@@ -1246,8 +1339,14 @@ mod tests {
         let mut c = [port(FR, "python3")];
         assert_eq!(appliquer_avec(&a, &mut c, jour, &mut cles), 1);
         assert_eq!(cles.len(), 1);
-        assert!(completer(&mut a, cles));
-        assert!(!completer(&mut a, vec![]), "rien à réécrire");
+        assert_eq!(
+            completer(&mut a, cles),
+            vec![(
+                "Ports en écoute".to_string(),
+                "LNX-RES-001|port:8080/tcp:python3".to_string()
+            )]
+        );
+        assert!(completer(&mut a, vec![]).is_empty(), "rien à réécrire");
         let ecrit = serde_json::to_string(&a).unwrap();
         assert!(ecrit.contains("\"cle\":\"LNX-RES-001|port:8080/tcp:python3\""));
         // Dans l'autre langue, même clé : toujours accepté, sans rien de plus à compléter.

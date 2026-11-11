@@ -881,6 +881,11 @@ pub fn erreur(contexte: Contexte, detail: &str) {
 /// de champs vient après le détail : la signature des tickets (`outils/journal-vers-github.py`) prend le libellé et la
 /// première ligne du détail, et ne change pas.
 pub(crate) fn noter(champs: &Champs, detail: &str) {
+    // Sous la lecture seule (l'essai de l'autotest, l'aperçu d'une correction, qui promet que rien n'a changé) :
+    // rien n'est noté. Le fichier est ouvert en ajout, hors de `socle::ecrire_atomique`, que l'interrupteur retient.
+    if crate::autotest::lecture_seule::active() {
+        return;
+    }
     // Le fils élevé d'Unix (root) n'écrit rien, ni journal ni relevé : tout part au parent, qui le note chez lui.
     if relaye(champs.contexte.libelle(), detail) {
         return;

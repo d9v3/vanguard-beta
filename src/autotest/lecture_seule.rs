@@ -139,9 +139,9 @@ const FICHIERS_MAX: usize = 50_000;
 const OCTETS_MAX: u64 = 1 << 30;
 
 /// Ce qui ne compte pas dans la comparaison (liste fermée) : les listes téléchargées (elles se renouvellent seules),
-/// les fichiers de l'autotest, et le journal des erreurs (ouvert en ajout hors de `ecrire_atomique` : une règle qui
-/// note une erreur pendant l'essai le change, ce n'est pas un défaut). Les verrous et les temporaires d'une écriture
-/// en cours ne sont pas de l'état.
+/// les fichiers de l'autotest, et le journal des erreurs (ouvert en ajout hors de `ecrire_atomique` ; `journal::noter`
+/// se tait sous l'interrupteur, mais une erreur notée par un autre fil juste avant qu'il soit posé le change encore,
+/// ce n'est pas un défaut). Les verrous et les temporaires d'une écriture en cours ne sont pas de l'état.
 const HORS_COMPARAISON: &[&str] = &[
     "autotest",
     "examens/AUT-VAN-001.json",

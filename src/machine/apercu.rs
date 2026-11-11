@@ -5,10 +5,11 @@
 //! renvoie. Vanguard relance la seule règle qu'il désigne, retrouve le constat d'aujourd'hui qui y répond, puis dit
 //! tout ce qu'il ferait (phrase, commandes, droits, valeurs d'avant, annulation) et l'**accord** : l'empreinte de
 //! tout ce qui est montré. Le lot suivant applique une correction seulement si l'accord recalculé est le même ; ici,
-//! rien n'est appliqué, noté ni écrit : l'interrupteur de lecture seule de l'autodiagnostic est posé avant de
-//! relancer la règle (ni « déjà vu », ni sceau, ni journal, ni verrou), et les règles qui feraient écrire un autre
-//! programme ne sont pas relancées (`hors_apercu`). L'essai `voir_une_correction_n_ecrit_rien` (tests/programme.rs)
-//! relance chaque règle du bilan dans un dossier personnel jetable et compare les fichiers avant et après.
+//! rien n'est appliqué, noté ni écrit : l'interrupteur de lecture seule de l'autodiagnostic est posé dès l'entrée
+//! de `main`, avant tout le reste (ni passage, ni « déjà vu », ni sceau, ni journal, ni verrou, ni dossier créé), et
+//! seules les règles relues pour cela, qui ne lancent aucun programme, sont relancées (`RELUES_SANS_PROGRAMME`).
+//! L'essai `voir_une_correction_n_ecrit_rien` (tests/programme.rs) part d'un dossier personnel vide, relance chaque
+//! règle du bilan et compare les fichiers avant et après (contenu, droits, cibles des liens).
 //!
 //! Le jeton n'est pas un secret : il dit seulement « ce constat-là ». Ses 4 premiers octets viennent de la règle, les
 //! 12 suivants de la clé du constat (« règle|objet ») : Vanguard retrouve la règle sans rien garder entre la liste et
@@ -89,21 +90,53 @@ pub(crate) struct GesteOffert {
     jeton: String,
 }
 
-/// Une règle que l'aperçu ne relance pas : celles des mises à jour (domaine « MAJ », comme l'autodiagnostic sans
-/// Internet). Elles lancent pacman, checkupdates, flatpak ou winget, qui écrivent leurs propres fichiers (base
-/// temporaire de checkupdates, dépôt de Flatpak créé au premier appel) : l'interrupteur de lecture seule de Vanguard ne
-/// les retient pas, et l'aperçu promet de ne rien écrire.
+/// Les règles que l'aperçu relance : chacune relue pour cela, elle ne lit que des fichiers (le dossier personnel,
+/// /proc, /sys, les dossiers du PATH) et ne lance AUCUN programme. Liste permise plutôt que liste d'exclus : beaucoup
+/// d'outils du système écrivent en lisant (pacman, checkupdates et flatpak leur base ou leur dépôt, gsettings et
+/// dconf `$XDG_RUNTIME_DIR/dconf/user`, docker sa configuration…), et l'interrupteur de lecture seule de Vanguard ne
+/// les retient pas ; une règle oubliée dans une liste d'exclus romprait la promesse « rien n'a changé », une règle
+/// oubliée ici ne coûte qu'un aperçu (la carte dit « depuis le terminal pour l'instant »). Une règle s'ajoute après
+/// relecture de tout ce qu'elle appelle ; `relire` refuse quand même l'aperçu si un programme a été lancé pendant la
+/// relecture (`coulisses::lancements`), et l'essai `voir_une_correction_n_ecrit_rien` relance chaque règle permise
+/// dans un dossier personnel jetable. Les règles de Windows n'y sont pas encore : rien n'y a été relu.
+const RELUES_SANS_PROGRAMME: &[&str] = &[
+    // Clés SSH du compte : ~/.ssh, ses fichiers, sa configuration et ses fichiers inclus.
+    "LNX-SSH-003",
+    // Fichiers secrets et dossier personnel : leurs droits.
+    "LNX-PRV-001",
+    // Durcissement du noyau (mémoire, fichiers partagés, réseau) : /proc/sys.
+    "LNX-NOY-003",
+    "LNX-NOY-007",
+    "LNX-RES-003",
+    // Module de sécurité : /sys/kernel/security, /sys/fs/selinux, os-release.
+    "LNX-NOY-004",
+    // Failles du processeur : /sys/devices/system/cpu/vulnerabilities, os-release.
+    "LNX-MAT-001",
+    // Dossiers de commandes modifiables par d'autres : les droits des dossiers du PATH.
+    "LNX-PRV-004",
+];
+
+/// Une règle que l'aperçu ne relance pas : toute règle hors de `RELUES_SANS_PROGRAMME`.
 fn hors_apercu(id: &str) -> bool {
-    crate::autotest::va_sur_internet(id)
+    !RELUES_SANS_PROGRAMME.contains(&id)
 }
 
-/// Le jeton d'un constat qui offre « Voir la correction » : un problème, une correction, une clé, d'une règle
-/// connue du registre que l'aperçu peut relancer sans rien écrire. Sinon rien (la carte dit « depuis le terminal pour
-/// l'instant »).
+/// Les règles du registre de ce système que l'aperçu relance.
+fn relancables() -> Vec<&'static str> {
+    regles::regles(regles::Os::actuel())
+        .iter()
+        .map(|r| r.id)
+        .filter(|id| !hors_apercu(id))
+        .collect()
+}
+
+/// Le jeton d'un constat qui offre « Voir la correction » : un problème, une correction, une clé, d'une règle de
+/// `connues` (en vrai : `relancables`, celles que l'aperçu peut relancer sans rien écrire). Sinon rien (la carte dit
+/// « depuis le terminal pour l'instant »).
 fn jeton_du(c: &Constat, connues: &[&'static str]) -> Option<Jeton> {
     c.probleme?;
     c.correctif.as_ref()?;
-    if !connues.contains(&c.regle) || hors_apercu(c.regle) {
+    if !connues.contains(&c.regle) {
         return None;
     }
     let cle = c.cle()?;
@@ -113,7 +146,7 @@ fn jeton_du(c: &Constat, connues: &[&'static str]) -> Option<Jeton> {
 /// Le geste de chaque constat d'un bilan, dans l'ordre : un jeton porté par deux constats n'est offert à aucun des
 /// deux (`--voir` le refuserait, autant ne pas montrer un bouton qui ne mène à rien).
 pub(crate) fn gestes_offerts(constats: &[Constat]) -> Vec<Option<GesteOffert>> {
-    let connues: Vec<&'static str> = regles::regles(regles::Os::actuel()).iter().map(|r| r.id).collect();
+    let connues = relancables();
     let jetons: Vec<Option<Jeton>> = constats.iter().map(|c| jeton_du(c, &connues)).collect();
     jetons
         .iter()
@@ -249,7 +282,10 @@ impl Apercu {
 /// chemin du dossier personnel, rien d'autre. Liste PERMISE plutôt que liste d'élévateurs refusés : une liste de noms
 /// se contourne (sudoedit, s\udo, systemd-run --uid=0, ssh root@localhost, `vanguard:geste`, fait par l'assistant
 /// élevé…), une forme permise non. Tout ce qui n'y entre pas devient « admin » : un faux refus coûte un mot de passe,
-/// jamais un geste fait en douce.
+/// jamais un geste fait en douce. Ce n'est qu'une porte sur le TEXTE : elle ne peut pas savoir si `~/.ssh` ou la clé
+/// est un lien, que `chmod` suivrait jusqu'à un autre fichier. Ce sont les règles qui ne proposent jamais de
+/// correction du compte à travers un lien (`unix::hors_correction`), et le lot qui appliquera relira sans suivre de
+/// lien au moment d'agir.
 fn permise_au_compte(ligne: &str) -> bool {
     let Some(reste) = ligne.strip_prefix("chmod ") else {
         return false;
@@ -327,7 +363,8 @@ pub(crate) enum Refus {
     EnDouble,
     /// Le constat n'a plus de correction (déclaré normal, ou corrigé entre-temps).
     SansCorrection,
-    /// La règle ferait écrire un autre programme (`hors_apercu`) : pas relancée.
+    /// La règle n'est pas de celles que l'aperçu relance (`hors_apercu`), ou elle a lancé un programme pendant la
+    /// relecture : un autre programme a pu écrire.
     EcritAilleurs,
 }
 
@@ -351,8 +388,8 @@ impl Refus {
                 "this finding no longer has a fix to offer"
             ),
             Refus::EcritAilleurs => tr!(
-                "cette vérification lance les outils de mise à jour, qui écrivent leurs propres fichiers : pas d'aperçu, la correction se fait depuis le terminal (vanguard corriger)",
-                "this check runs the update tools, which write their own files: no preview, the fix is done from the terminal (vanguard corriger)"
+                "cette vérification lance d'autres programmes, qui peuvent écrire leurs propres fichiers : pas d'aperçu pour l'instant, la correction se fait depuis le terminal (vanguard corriger)",
+                "this check runs other programs, which may write their own files: no preview for now, the fix is done from the terminal (vanguard corriger)"
             ),
         }
         .to_string()
@@ -443,7 +480,13 @@ fn relire(jeton: &Jeton) -> Result<Vec<Constat>, Refus> {
     crate::autotest::lecture_seule::poser();
     // Un nouveau bilan relit ce que ses règles partagent (`ParBilan`).
     super::BILAN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let lances = crate::coulisses::lancements();
     let (mut constats, _durees) = super::regles_en_parallele(choisies);
+    // Une règle permise qui lancerait quand même un programme (une relecture manquée, un ajout plus tard) : l'aperçu
+    // ne promet pas « rien n'a changé » sur ce qu'un autre programme a pu écrire.
+    if crate::coulisses::lancements() != lances {
+        return Err(Refus::EcritAilleurs);
+    }
     crate::apprentissage::appliquer_sans_ecrire(&mut constats);
     Ok(constats)
 }
@@ -454,8 +497,7 @@ fn relire(jeton: &Jeton) -> Result<Vec<Constat>, Refus> {
 pub(crate) fn voir(jeton: &str, json: bool) -> i32 {
     let issue = Jeton::lire(jeton).ok_or(Refus::MalForme).and_then(|j| {
         let constats = relire(&j)?;
-        let connues: Vec<&'static str> = regles::regles(regles::Os::actuel()).iter().map(|r| r.id).collect();
-        let c = retrouver(&constats, &j, &connues)?;
+        let c = retrouver(&constats, &j, &relancables())?;
         apercu_de(c, &j).ok_or(Refus::SansCorrection)
     });
     let code = match &issue {
@@ -513,7 +555,9 @@ fn lignes(a: &Apercu) -> Vec<String> {
     l.extend(
         a.commandes
             .iter()
-            .map(|c| format!("    {GRIS}{}{RESET}", commande_affichable(c))),
+            // La tabulation, que `commande_affichable` laisse passer, s'écrit « \t » : au terminal, elle sauterait
+            // de colonne et pourrait cacher ce qui la suit derrière des blancs.
+            .map(|c| format!("    {GRIS}{}{RESET}", commande_affichable(c).replace('\t', "\\t"))),
     );
     for v in &a.avant {
         // Une valeur absente se distingue d'un texte « (absente) » : entre guillemets quand elle existe.
@@ -708,15 +752,36 @@ mod tests {
         assert_eq!(&offerts[1..], &[None, None, None, None, None]);
         // Le geste réel n'offre que des règles du registre : un constat inventé n'a rien.
         assert!(gestes_offerts(&constats).iter().all(Option::is_none));
-        // Une règle des mises à jour, même connue, n'est jamais relancée par l'aperçu.
-        let maj = ["LNX-MAJ-001"];
-        assert_eq!(
-            gestes_offerts_avec(&[constat("LNX-MAJ-001", "a", k())], &maj),
-            vec![None]
-        );
+        // Une règle qui n'a pas été relue pour l'aperçu (ici celle des mises à jour, qui lance pacman), même du
+        // registre, n'offre rien et n'est jamais relancée.
+        assert_eq!(gestes_offerts(&[constat("LNX-MAJ-001", "a", k())]), vec![None]);
         let j = Jeton::de("LNX-MAJ-001", "LNX-MAJ-001|a");
         assert_eq!(relire(&j).err(), Some(Refus::EcritAilleurs));
-        assert!(hors_apercu("WIN-MAJ-002") && !hors_apercu("LNX-SSH-002"));
+        assert!(hors_apercu("WIN-MAJ-002") && hors_apercu("LNX-SSH-002") && hors_apercu("COM-NAV-001"));
+        // Une règle permise offre son geste dans le vrai registre.
+        let permise = constat("LNX-SSH-003", "~/.ssh", k());
+        assert_eq!(
+            gestes_offerts(std::slice::from_ref(&permise)).len(),
+            1,
+            "une entrée par constat"
+        );
+        #[cfg(target_os = "linux")]
+        assert!(gestes_offerts(&[permise])[0].is_some());
+    }
+
+    /// Chaque règle permise existe au registre de Linux (une faute de frappe la rendrait muette sans le dire), et le
+    /// vrai registre ne relance qu'elles.
+    #[test]
+    fn la_liste_permise_ne_nomme_que_des_regles_du_registre() {
+        let linux: Vec<&str> = regles::regles(regles::Os::Linux).iter().map(|r| r.id).collect();
+        for id in RELUES_SANS_PROGRAMME {
+            assert!(linux.contains(id), "{id} n'est pas une règle de Linux");
+            assert!(
+                !crate::autotest::va_sur_internet(id),
+                "{id} : les mises à jour lancent des outils"
+            );
+        }
+        assert!(relancables().iter().all(|id| RELUES_SANS_PROGRAMME.contains(id)));
     }
 
     /// Les mêmes champs donnent le même accord, et chaque champ changé en donne un autre : un essai par champ.
@@ -963,7 +1028,17 @@ mod tests {
         k.defaire = Defaire::Gestes(vec![crate::optimiser::Geste::droits(&fichier)]);
         let c = constat("LNX-ESS-001", "x", Some(k));
         let j = Jeton::de("LNX-ESS-001", &c.cle().unwrap().to_string());
-        let avant = std::fs::read_dir(&dossier).unwrap().count();
+        // Les noms du dossier, sans les verrous : les essais voisins, qui tournent en même temps dans ce même dossier,
+        // en prennent et en lâchent (`sceaux.verrou`). Le programme entier, lui, est relevé sans exception dans un
+        // dossier personnel à lui (`voir_une_correction_n_ecrit_rien`, tests/programme.rs).
+        let noms = || -> std::collections::BTreeSet<std::ffi::OsString> {
+            std::fs::read_dir(&dossier)
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .filter(|n| !n.to_string_lossy().ends_with(".verrou"))
+                .collect()
+        };
+        let avant = noms();
         let a = apercu_de(&c, &j).unwrap();
         assert!(a.annulable, "{}", a.pourquoi_pas);
         assert_eq!(a.avant.len(), 1);
@@ -974,7 +1049,12 @@ mod tests {
         );
         assert_eq!(a.droits, "compte");
         assert_eq!(a.niveau, "Moyen");
-        assert_eq!(std::fs::read_dir(&dossier).unwrap().count(), avant, "l'aperçu a écrit");
+        let apres = noms();
+        assert!(
+            apres.is_subset(&avant),
+            "l'aperçu a écrit : {:?}",
+            apres.difference(&avant)
+        );
         // Le même état relu donne le même accord ; le fichier changé en donne un autre.
         assert_eq!(apercu_de(&c, &j).unwrap().accord(), a.accord());
         std::fs::set_permissions(&fichier, std::fs::Permissions::from_mode(0o600)).unwrap();
@@ -993,6 +1073,8 @@ mod tests {
             "d\u{202e}txt.exe",
             "\x1b]52;c;ZWNobyBwd24=\x07e",
             "f\u{9b}2Kg",
+            // Vérification de Fable, T1 : une tabulation dans une commande.
+            "h\t\t\t\tcache",
         ];
         for p in pieges {
             let mut a = apercu();

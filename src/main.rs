@@ -381,6 +381,23 @@ async fn main() {
         };
         std::process::exit(code);
     }
+    // L'aperçu d'une correction promet que rien n'a changé : la lecture seule se pose avant tout le reste (ni
+    // journal, ni passage, ni sceaux, ni dossier de données créé ou protégé, ni envoi en fond), puis seuls les réglages
+    // sont lus (la langue). La ligne est lue d'abord sans rien écrire : une autre commande suit le chemin ordinaire.
+    if std::env::args_os().nth(1).is_some_and(|a| a == "correction")
+        && let Ok(Args {
+            commande: Some(Commande::Correction { voir, json }),
+            ..
+        }) = ligne_de_commande()
+            .try_get_matches()
+            .and_then(|m| Args::from_arg_matches(&m))
+    {
+        autotest::lecture_seule::poser();
+        parametres::au_lancement();
+        let code = machine::apercu::voir(&voir, json);
+        chiffrement::oublier_session();
+        std::process::exit(code);
+    }
     // Les réglages du lancement (langue, emojis, travail sans Internet), avant tout affichage.
     parametres::au_lancement();
     journal::installer();
