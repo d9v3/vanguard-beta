@@ -847,7 +847,12 @@ fn fichiers_sous(
         parcours.trop_profonds.push(dossier.to_path_buf());
         return;
     }
-    for e in std::fs::read_dir(dossier).into_iter().flatten().flatten() {
+    // Dans l'ordre des noms, pas dans celui que rend le système de fichiers (l'ordre de création sur btrfs, celui
+    // d'un hachage sur ext4) : le premier refus d'une alerte l'emporte (`Temoins::de`), et le verdict d'une même
+    // maison changeait selon le disque où elle était (vérification 4, D1).
+    let mut entrees: Vec<std::fs::DirEntry> = std::fs::read_dir(dossier).into_iter().flatten().flatten().collect();
+    entrees.sort_by_key(std::fs::DirEntry::file_name);
+    for e in entrees {
         let p = e.path();
         let Ok(t) = e.file_type() else { continue };
         // Un lien vers un fichier ordinaire se lit comme lui : sinon, une unité acceptée remplacée par un lien vers
@@ -3668,6 +3673,8 @@ fn alias_de(
             ));
         }
     }
+    // L'ordre des noms, pas celui du système de fichiers : un même refus quel que soit le disque.
+    liens.sort();
     let mut noms = vec![nom.to_string()];
     // Jusqu'au point fixe : chaque tour ajoute au moins un nom, ou s'arrête ; au plus un tour par lien.
     loop {
@@ -3989,15 +3996,16 @@ fn fichiers_de_configuration(r: &Releveur) -> Vec<std::path::PathBuf> {
     configuration.push(h.join(".config/systemd/user.conf"));
     configuration.extend(fichiers_de(&h.join(".config/systemd/user.conf.d"), &["conf"]));
     configuration.extend(fichiers_de(&h.join(".config/uwsm"), &["sh", "conf"]));
-    for f in std::fs::read_dir(h.join(".config/uwsm"))
+    let mut env: Vec<std::path::PathBuf> = std::fs::read_dir(h.join(".config/uwsm"))
         .into_iter()
         .flatten()
         .flatten()
-    {
-        if f.file_name().to_string_lossy().starts_with("env") && f.path().is_file() {
-            configuration.push(f.path());
-        }
-    }
+        .filter(|f| f.file_name().to_string_lossy().starts_with("env") && f.path().is_file())
+        .map(|f| f.path())
+        .collect();
+    // Dans l'ordre des noms, comme `fichiers_sous` : le verdict ne dépend pas du système de fichiers.
+    env.sort();
+    configuration.extend(env);
     configuration
 }
 
@@ -8221,6 +8229,47 @@ mod tests {
             .next()
             .unwrap();
         assert!(refus(&c).contains("XDG_RUNTIME_DIR"));
+    }
+
+    /// Vérification 4, D1 : le parcours d'un dossier d'unités suit l'ordre des noms, pas celui du système de fichiers
+    /// (l'ordre de création sur btrfs, un hachage sur ext4). Les fichiers sont créés dans un ordre mêlé ; sans le tri,
+    /// ils revenaient tels que le disque les rend, et le premier refus d'une alerte changeait d'un disque à l'autre.
+    #[test]
+    fn parcours_dans_l_ordre_des_noms() {
+        let m = Maison::nouvelle("ordre-des-noms");
+        let dossier = m.chemin(".config/systemd/user");
+        // 7 et 32 sont premiers entre eux : chaque numéro une fois, dans un ordre ni croissant ni décroissant.
+        for i in 0..32_u32 {
+            let n = i.wrapping_mul(7) % 32;
+            m.ecrire(&format!(".config/systemd/user/u{n:02}.service"), UNITE);
+            m.ecrire(&format!(".config/systemd/user/u{n:02}.service.d/x.conf"), "[Unit]\n");
+        }
+        let lus = fichiers_de(&dossier, &["service", "conf"]);
+        let mut attendus = lus.clone();
+        attendus.sort();
+        assert_eq!(lus.len(), 64);
+        assert_eq!(lus, attendus);
+        assert!(lus[0].ends_with("u00.service") && lus[1].ends_with("u00.service.d/x.conf"));
+    }
+
+    /// Vérification 4, D1 : le verdict d'une maison ne dépend pas de l'ordre où ses fichiers ont été écrits (donc du
+    /// disque où elle est) : le même refus, que l'unité soit écrite avant ou après l'ajout qui la redirige.
+    #[test]
+    fn refus_independant_de_l_ordre_d_ecriture() {
+        let ajout = ("service.d/x.conf", "[Service]\nEnvironment=PYTHONPATH=/tmp\n");
+        let avant = Maison::nouvelle("ordre-avant");
+        avant.ecrire(".config/systemd/user/rappel.service", UNITE);
+        avant.ecrire(&format!(".config/systemd/user/{}", ajout.0), ajout.1);
+        let apres = Maison::nouvelle("ordre-apres");
+        apres.ecrire(&format!(".config/systemd/user/{}", ajout.0), ajout.1);
+        apres.ecrire(".config/systemd/user/rappel.service", UNITE);
+        for m in [&avant, &apres] {
+            m.ecrire(".cache-x/rappel.sh", "#!/bin/sh\necho rappel\n");
+        }
+        let (a, b) = (avant.lancements(), apres.lancements());
+        assert_eq!(refus(&a), refus(&b));
+        assert_eq!(a.message, b.message);
+        assert!(refus(&a).contains("PYTHONPATH"), "{}", refus(&a));
     }
 
     /// Relecture E, C7 : un shell inversé se lit sans ambiguïté, mais ne se déclare jamais normal.
