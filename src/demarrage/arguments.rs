@@ -657,8 +657,8 @@ pub(crate) enum Commande {
         /// Remettre exactement comme avant le programme de cette empreinte que Vanguard a retiré (d'après sa note).
         #[arg(long, visible_alias = "put-back", value_name = "EMPREINTE")]
         remettre: Option<String>,
-        /// Avec --retirer ou --remettre : l'accord du geste donné par --json (64 chiffres hexadécimaux). Le programme
-        /// relu doit donner le même (nom, commande, portée) : sinon rien n'est fait.
+        /// Obligatoire avec --retirer ou --remettre : l'accord du geste donné par --json (64 chiffres hexadécimaux).
+        /// Le programme relu doit donner le même (nom, commande, portée) : sinon, ou sans accord, rien n'est fait.
         #[arg(
             long,
             visible_alias = "agreement",

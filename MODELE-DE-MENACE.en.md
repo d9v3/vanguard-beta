@@ -223,7 +223,10 @@ safeguards:
   only offers the actions that `vanguard demarrage --json` has just written, and only sends the kind (remove or put
   back) and the program's fingerprint (32 hexadecimal digits, computed by `vanguard`): never a name, a command or a
   path. The form started is closed, `vanguard demarrage --retirer|--remettre <fingerprint> --json`, and `vanguard`
-  judges everything again: malformed, unknown or ambiguous fingerprint, program to keep, firewall, Vanguard's notes
+  judges everything again: without the action's consent (`--accord`, the one `demarrage --json` gives, which binds
+  the name, the whole command and the scope), nothing is done, the fingerprint alone no longer designating anything
+  (the window does not send it yet: its startup actions are refused, “missing agreement”, until its relay does);
+  malformed, unknown or ambiguous fingerprint, program to keep, firewall, Vanguard's notes
   unreadable or changed outside Vanguard (neither removal nor putting back while they are), “put back” for a program
   that already starts (put back or rewritten outside Vanguard, perhaps now a program to keep: the old note does not
   overwrite it, neither through undoing a block nor through “Put everything back”), all are refused without changing

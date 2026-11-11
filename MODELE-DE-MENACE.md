@@ -238,8 +238,10 @@ gardes :
   qu'une commande tourne, sans « tout retirer ». La fenêtre ne propose que les gestes que `vanguard demarrage --json`
   vient d'écrire, et n'envoie que la sorte (retirer ou remettre) et l'empreinte du programme (32 chiffres
   hexadécimaux, calculée par `vanguard`) : jamais un nom, une commande ou un chemin. La forme lancée est fermée,
-  `vanguard demarrage --retirer|--remettre <empreinte> --json`, et `vanguard` rejuge tout : empreinte mal formée,
-  inconnue, ambiguë, programme à garder, pare-feu, notes de Vanguard illisibles ou changées hors de Vanguard (ni
+  `vanguard demarrage --retirer|--remettre <empreinte> --json`, et `vanguard` rejuge tout : sans l'accord du geste
+  (`--accord`, celui que `demarrage --json` donne et qui lie le nom, la commande entière et la portée), rien n'est
+  fait, l'empreinte seule ne désignant plus rien (la fenêtre ne le rend pas encore : ses gestes du démarrage sont
+  refusés, « accord manquant », jusqu'à ce que son relais le fasse) ; empreinte mal formée, inconnue, ambiguë, programme à garder, pare-feu, notes de Vanguard illisibles ou changées hors de Vanguard (ni
   retrait ni remise tant qu'elles le sont), « remettre » un programme qui se lance déjà (remis ou réécrit hors de
   Vanguard, peut-être devenu un programme à garder : la vieille note ne l'écrase pas, ni par l'annulation d'un blocage
   ni par « Tout remettre comme avant »), tout est refusé sans rien changer ; ce qui change passe par la même correction que le terminal (point de restauration,

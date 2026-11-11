@@ -799,6 +799,8 @@ enum Refus {
     NotesDouteuses,
     /// Un autre Vanguard tient les notes (il change des réglages) : rien n'est changé, à refaire à sa fin.
     NotesOccupees,
+    /// Aucun accord rendu : l'empreinte seule ne désigne plus rien (campagne B, M-2).
+    AccordManquant,
     /// L'accord rendu n'a pas 64 chiffres hexadécimaux minuscules.
     AccordMalForme,
     /// L'accord rendu n'est plus celui du geste montré : le nom, la commande ou la portée ont changé depuis la liste.
@@ -858,6 +860,11 @@ impl Refus {
             Refus::NotesOccupees => tr!(
                 "un autre Vanguard change des réglages en ce moment : réessayez à sa fin",
                 "another Vanguard is changing settings right now: try again when it ends"
+            )
+            .to_string(),
+            Refus::AccordManquant => tr!(
+                "accord manquant : --accord <ACCORD> (donné par « vanguard demarrage --json ») est obligatoire",
+                "missing agreement: --agreement <AGREEMENT> (given by “vanguard startup --json”) is required"
             )
             .to_string(),
             Refus::AccordMalForme => tr!(
@@ -931,21 +938,24 @@ enum Issue {
 /// dans la fenêtre, après la confirmation qui montre le nom et la commande). L'empreinte est vérifiée avant toute
 /// lecture du système ; rien n'est changé pour une empreinte inconnue, en double, d'un programme à garder ou d'un
 /// pare-feu. Le verrou des notes est tenu de leur lecture à leur dernière écriture (un autre Vanguard qui le tient :
-/// refusé). Avec un `accord` (celui du geste de `demarrage --json`), le programme relu, le verrou tenu, doit donner le
-/// même : sinon rien n'est fait (constat en passant P1 : ce qui a été montré n'a pas changé avant le clic). Sans
-/// accord, l'empreinte seule désigne le programme, comme avant. Chaque demande, faite, refusée ou en échec, va au
-/// journal des événements. Avec `json`, l'issue est la dernière ligne. Rend le code de sortie : 0 fait, 1 refusé ou
-/// non fait, 2 empreinte ou accord mal formés.
+/// refusé). L'`accord` (celui du geste de `demarrage --json`) est obligatoire : le programme relu, le verrou tenu, doit
+/// donner le même, sinon rien n'est fait (constat en passant P1 : ce qui a été montré n'a pas changé avant le clic).
+/// Sans accord, rien n'est fait non plus : l'empreinte seule ne lie ni la commande entière ni la portée (campagne B,
+/// M-2). Chaque demande, faite, refusée ou en échec, va au journal des événements. Avec `json`, l'issue est la
+/// dernière ligne. Rend le code de sortie : 0 fait, 1 refusé ou non fait, 2 empreinte ou accord manquant ou mal formés.
 pub fn changer(sorte: SorteDeChangement, empreinte: &str, accord: Option<&str>, json: bool) -> i32 {
     // Une raison restée d'avant ne passe pas pour celle de cette demande.
     let _ = systeme::dernier_refus();
     // Vérifiés avant toute lecture du système.
-    let (nom, issue) = if !empreinte_bien_formee(empreinte) {
-        (None, Issue::Refuse(Refus::MalFormee))
-    } else if accord.is_some_and(|a| !accord_bien_forme(a)) {
-        (None, Issue::Refuse(Refus::AccordMalForme))
-    } else {
-        match super::tenir_les_notes(&crate::reseau::dossier_local()) {
+    let accord = match accord {
+        _ if !empreinte_bien_formee(empreinte) => Err(Refus::MalFormee),
+        None => Err(Refus::AccordManquant),
+        Some(a) if !accord_bien_forme(a) => Err(Refus::AccordMalForme),
+        Some(a) => Ok(a),
+    };
+    let (nom, issue) = match accord {
+        Err(refus) => (None, Issue::Refuse(refus)),
+        Ok(accord) => match super::tenir_les_notes(&crate::reseau::dossier_local()) {
             // UNE lecture du système et des notes sert à juger l'accord ET à choisir ce qui change (P1).
             Some(_notes) => match decider(
                 systeme::au_demarrage(),
@@ -959,11 +969,13 @@ pub fn changer(sorte: SorteDeChangement, empreinte: &str, accord: Option<&str>, 
                 (nom, Err(refus)) => (nom, Issue::Refuse(refus)),
             },
             None => (None, Issue::Refuse(Refus::NotesOccupees)),
-        }
+        },
     };
     let (code, mot, raison) = match &issue {
         Issue::Fait => (0, "fait", String::new()),
-        Issue::Refuse(r @ (Refus::MalFormee | Refus::AccordMalForme)) => (2, "refuse", r.clone().raison()),
+        Issue::Refuse(r @ (Refus::MalFormee | Refus::AccordManquant | Refus::AccordMalForme)) => {
+            (2, "refuse", r.clone().raison())
+        }
         Issue::Refuse(r) => (1, "refuse", r.clone().raison()),
         Issue::Echec => (1, "echec", raison_d_echec(systeme::dernier_refus())),
     };
@@ -1020,7 +1032,7 @@ fn decider(
     h1: Option<Historique>,
     sorte: SorteDeChangement,
     empreinte: &str,
-    accord: Option<&str>,
+    accord: &str,
     classer: impl Fn(&Programme) -> Garde,
 ) -> (Option<String>, Result<Decision, Refus>) {
     // Des notes douteuses seraient remplacées par des neuves à la première écriture : ce que Vanguard avait retiré ne
@@ -1053,19 +1065,36 @@ fn decider(
         .into_iter()
         .filter(|x| a_l_empreinte(&x.reglage))
         .collect();
-    // Le geste tel que `json` le montrerait d'après cette lecture : un seul, et le même accord.
-    if let Some(a) = accord {
-        let mut gestes = l
-            .iter()
-            .filter(|x| montree(x))
-            .filter_map(|x| resultat::geste(&entree(x)))
-            .filter(|g| g.sorte == sorte.code() && g.empreinte == empreinte);
-        match (gestes.next(), gestes.next()) {
-            (Some(g), None) if g.accord == a => {}
-            (Some(g), None) => return (Some(g.nom), Err(Refus::Change)),
-            _ => return (None, Err(Refus::Change)),
-        }
+    // Le geste tel que `json` le montrerait d'après cette lecture : un seul, et le même accord. Jugé ici, sur la
+    // lecture, mais dit seulement si la décision passerait : un refus plus précis (à garder, se lance déjà…) se dit
+    // tel quel. Toute décision qui changerait quelque chose exige l'accord (M-2).
+    let mut gestes = l
+        .iter()
+        .filter(|x| montree(x))
+        .filter_map(|x| resultat::geste(&entree(x)))
+        .filter(|g| g.sorte == sorte.code() && g.empreinte == empreinte);
+    let accord_tient = match (gestes.next(), gestes.next()) {
+        (Some(g), None) if g.accord == accord => Ok(()),
+        (Some(g), None) => Err(Some(g.nom)),
+        _ => Err(None),
+    };
+    let (nom, decision) = decider_sans_accord(l, &actifs, h1, sorte, empreinte);
+    match (decision, accord_tient) {
+        (Ok(d), Ok(())) => (nom, Ok(d)),
+        (Ok(_), Err(nom_montre)) => (nom_montre.or(nom), Err(Refus::Change)),
+        (Err(refus), _) => (nom, Err(refus)),
     }
+}
+
+/// La décision de `decider` d'après la lecture `l` (les lignes à cette empreinte), les identités qui se lancent dans
+/// cette même lecture (`actifs`) et les notes `h1`, l'accord jugé à part : ne doit jamais être suivie sans lui.
+fn decider_sans_accord(
+    l: Vec<Ligne>,
+    actifs: &[String],
+    h1: Historique,
+    sorte: SorteDeChangement,
+    empreinte: &str,
+) -> (Option<String>, Result<Decision, Refus>) {
     match sorte {
         SorteDeChangement::Retirer => {
             let (nom, r) = a_retirer_de(l, empreinte);
@@ -1973,6 +2002,9 @@ mod essais_changer {
         // Mal formée : refusée avant toute lecture du système, code 2.
         assert_eq!(changer(SorteDeChangement::Retirer, "NOPE", None, true), 2);
         assert_eq!(changer(SorteDeChangement::Remettre, &"0".repeat(31), None, false), 2);
+        // Sans accord, même avec une empreinte bien formée : refusé avant toute lecture, code 2 (M-2).
+        assert_eq!(changer(SorteDeChangement::Retirer, &"0".repeat(32), None, true), 2);
+        assert_eq!(changer(SorteDeChangement::Remettre, &"0".repeat(32), None, false), 2);
         // Un accord mal formé aussi, même avec une empreinte bien formée.
         for a in [
             "",
@@ -1988,12 +2020,10 @@ mod essais_changer {
         }
     }
 
-    /// Remettre une empreinte sans note (le dossier de Vanguard des essais est jetable et vide) : refusé, code 1,
-    /// rien de lu sur le système.
+    /// Remettre une empreinte sans note (le dossier de Vanguard des essais est jetable et vide) : refusé, code 1.
     #[test]
     fn remettre_sans_note_refuse() {
-        assert_eq!(changer(SorteDeChangement::Remettre, &"0".repeat(32), None, true), 1);
-        // Avec un accord bien formé : aucun geste montré n'y répond, refusé aussi.
+        // Un accord bien formé : aucun geste montré n'y répond, refusé.
         assert_eq!(
             changer(
                 SorteDeChangement::Remettre,
@@ -2304,7 +2334,7 @@ mod essais_changer {
             Some(Historique::default()),
             SorteDeChangement::Retirer,
             &emp,
-            Some(&g.accord),
+            &g.accord,
             ordinaire,
         );
         assert_eq!(nom.as_deref(), Some("Salon"));
@@ -2319,7 +2349,7 @@ mod essais_changer {
             Some(Historique::default()),
             SorteDeChangement::Retirer,
             &emp,
-            Some(&g.accord),
+            &g.accord,
             ordinaire,
         );
         assert_eq!(d.err(), Some(Refus::Change));
@@ -2329,7 +2359,7 @@ mod essais_changer {
             None,
             SorteDeChangement::Retirer,
             &emp,
-            Some(&g.accord),
+            &g.accord,
             ordinaire,
         );
         assert_eq!(d.err(), Some(Refus::NotesDouteuses));

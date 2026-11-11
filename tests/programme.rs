@@ -3829,28 +3829,59 @@ fn demarrage_sans_rien_changer() {
     );
 }
 
-/// Retirer ou remettre au démarrage d'après une empreinte inventée ou mal formée : refusé, dit en une ligne JSON (la
-/// dernière), code non nul, rien de changé. Une empreinte inventée ne répond à aucun programme réel.
+/// Retirer ou remettre au démarrage d'après une empreinte inventée ou mal formée, ou sans accord : refusé, dit en une
+/// ligne JSON (la dernière), code non nul, rien de changé. Une empreinte inventée ne répond à aucun programme réel.
 #[test]
 fn demarrage_refuse_une_empreinte_inconnue_ou_mal_formee() {
     if optimiser_refuse_ici() {
         return essais::saute(REFUS_OPTIMISER);
     }
     let inventee = "0123456789abcdef0123456789abcdef";
-    let cas: [(&[&str], &str, i32); 5] = [
-        (&["demarrage", "--retirer", inventee, "--json"], "retirer", 1),
-        (&["demarrage", "--remettre", inventee, "--json"], "remettre", 1),
+    let accord = "0123456789abcdef".repeat(4);
+    let accord = accord.as_str();
+    let cas: [(&[&str], &str, i32); 7] = [
         (
-            &["demarrage", "--retirer", "0123456789ABCDEF0123456789ABCDEF", "--json"],
+            &["demarrage", "--retirer", inventee, "--accord", accord, "--json"],
+            "retirer",
+            1,
+        ),
+        (
+            &["demarrage", "--remettre", inventee, "--accord", accord, "--json"],
+            "remettre",
+            1,
+        ),
+        (
+            &[
+                "demarrage",
+                "--retirer",
+                "0123456789ABCDEF0123456789ABCDEF",
+                "--accord",
+                accord,
+                "--json",
+            ],
             "retirer",
             2,
         ),
         (
-            &["demarrage", "--remettre", "../../etc/passwd", "--json"],
+            &[
+                "demarrage",
+                "--remettre",
+                "../../etc/passwd",
+                "--accord",
+                accord,
+                "--json",
+            ],
             "remettre",
             2,
         ),
-        (&["startup", "--remove", "Lecteur", "--json"], "retirer", 2),
+        (
+            &["startup", "--remove", "Lecteur", "--agreement", accord, "--json"],
+            "retirer",
+            2,
+        ),
+        // M-2 : sans accord, l'empreinte seule ne désigne plus rien, même bien formée.
+        (&["demarrage", "--retirer", inventee, "--json"], "retirer", 2),
+        (&["demarrage", "--remettre", inventee, "--json"], "remettre", 2),
     ];
     for (args, geste, code) in cas {
         let s = vanguard("fr", args, "", 60);
@@ -3865,9 +3896,17 @@ fn demarrage_refuse_une_empreinte_inconnue_ou_mal_formee() {
         assert!(v["raison"].as_str().is_some_and(|r| !r.is_empty()), "{v}");
     }
     // Sans --json : le refus se dit en clair, en anglais aussi.
-    let s = vanguard("en", &["startup", "--put-back", inventee], "", 60);
+    let s = vanguard(
+        "en",
+        &["startup", "--put-back", inventee, "--agreement", accord],
+        "",
+        60,
+    );
     assert_eq!(s.code, Some(1), "{}", s.erreurs);
     assert!(sans_couleurs(&s.texte).contains("Nothing changed"), "{}", s.texte);
+    let s = vanguard("en", &["startup", "--remove", inventee], "", 60);
+    assert_eq!(s.code, Some(2), "{}", s.erreurs);
+    assert!(sans_couleurs(&s.texte).contains("missing agreement"), "{}", s.texte);
     // Les deux à la fois : refusé par les arguments.
     let s = vanguard(
         "fr",
@@ -3916,8 +3955,8 @@ fn demarrage_retire_puis_remet_a_l_octet_pres() {
             ],
         )
     };
-    // L'empreinte que `demarrage --json` donne au geste attendu (« retirer » ou « remettre ») du Lecteur.
-    let empreinte = |sorte: &str| {
+    // L'empreinte et l'accord que `demarrage --json` donne au geste attendu (« retirer » ou « remettre ») du Lecteur.
+    let geste = |sorte: &str| {
         let s = lancer(&["demarrage", "--json"]);
         assert_eq!(s.code, Some(0), "{} {}", s.texte, s.erreurs);
         let v: serde_json::Value = serde_json::from_str(&s.texte).unwrap_or_else(|e| panic!("{e} : {}", s.texte));
@@ -3930,15 +3969,22 @@ fn demarrage_retire_puis_remet_a_l_octet_pres() {
             .collect();
         assert_eq!(gestes.len(), 1, "{v}");
         assert_eq!(gestes[0]["sorte"].as_str(), Some(sorte), "{v}");
-        gestes[0]["empreinte"].as_str().unwrap().to_string()
+        (
+            gestes[0]["empreinte"].as_str().unwrap().to_string(),
+            gestes[0]["accord"].as_str().unwrap().to_string(),
+        )
     };
-    let changer = |option: &str, e: &str, geste: &str| {
-        let s = lancer(&["demarrage", option, e, "--json"]);
+    let empreinte = |sorte: &str| geste(sorte).0;
+    // Comme la fenêtre : la liste relue juste avant, son accord rendu.
+    let changer = |option: &str, e: &str, geste_attendu: &str| {
+        let (e_liste, accord) = geste(&option[2..]);
+        assert_eq!(e_liste, e);
+        let s = lancer(&["demarrage", option, e, "--accord", &accord, "--json"]);
         let derniere = s.texte.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or_default();
         let v: serde_json::Value = serde_json::from_str(derniere).unwrap_or_else(|e| panic!("{e} : {}", s.texte));
         assert_eq!(
             (s.code, v["geste"].as_str(), v["issue"].as_str()),
-            (Some(0), Some(geste), Some("fait")),
+            (Some(0), Some(geste_attendu), Some("fait")),
             "{option} : {} {}",
             s.texte,
             s.erreurs
@@ -4050,6 +4096,11 @@ fn demarrage_l_accord_tient_ce_qui_a_ete_montre() {
     assert_eq!((code, issue.as_str()), (Some(1), "refuse"), "{raison}");
     assert!(raison.contains("a changé depuis la liste"), "{raison}");
     assert_eq!(lu(), v2, "rien d'écrit");
+    // M-2 : sans accord, l'empreinte seule d'un vrai programme ne suffit plus : code 2, rien d'écrit.
+    let s = lancer(&["demarrage", "--retirer", &e, "--json"]);
+    assert_eq!(s.code, Some(2), "{} {}", s.texte, s.erreurs);
+    assert!(s.texte.contains("accord manquant"), "{}", s.texte);
+    assert_eq!(lu(), v2, "rien d'écrit sans accord");
     // La liste relue donne un autre accord, pour la même empreinte : il passe.
     let (e2, relu) = geste("retirer");
     assert_eq!(e2, e);
@@ -4141,9 +4192,24 @@ mod demarrage_sous_attaque {
             self.liste().0["couverture"].to_string()
         }
 
-        /// `demarrage <option> <empreinte> --json` : (code, issue, raison).
+        /// L'accord que la liste relue donne au geste `option` (« --retirer », « --remettre ») de l'empreinte `e`,
+        /// comme la fenêtre le rend ; aucun geste montré : un accord bien formé qui ne répond à rien.
+        fn accord(&self, option: &str, e: &str) -> String {
+            let (v, _) = self.liste();
+            v["constats"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|c| c.get("geste"))
+                .find(|g| g["empreinte"] == e && Some(g["sorte"].as_str().unwrap_or_default()) == option.get(2..))
+                .and_then(|g| g["accord"].as_str())
+                .map_or_else(|| "0".repeat(64), str::to_string)
+        }
+
+        /// `demarrage <option> <empreinte> --accord <accord de la liste relue> --json` : (code, issue, raison).
         fn changer(&self, option: &str, e: &str) -> (Option<i32>, String, String) {
-            let s = self.lancer(&["demarrage", option, e, "--json"]);
+            let accord = self.accord(option, e);
+            let s = self.lancer(&["demarrage", option, e, "--accord", &accord, "--json"]);
             let derniere = s.texte.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or_default();
             let v: serde_json::Value =
                 serde_json::from_str(derniere).unwrap_or_else(|e| panic!("{e} : {} {}", s.texte, s.erreurs));
@@ -4628,7 +4694,11 @@ mod demarrage_sous_attaque {
         let r = b.changer("--retirer", &e);
         assert_eq!(r.1, "fait", "{r:?}");
         let (_, em) = b.geste("Musique").unwrap();
-        b.tuer_a(&["demarrage", "--retirer", &em, "--json"], "sceau:reglages.json");
+        let accord = b.accord("--retirer", &em);
+        b.tuer_a(
+            &["demarrage", "--retirer", &em, "--accord", &accord, "--json"],
+            "sceau:reglages.json",
+        );
         let (_, brut) = b.liste();
         let mis_de_cote: Vec<String> = std::fs::read_dir(b.donnees())
             .unwrap()
