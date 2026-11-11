@@ -46,10 +46,13 @@ pub(super) enum Statut {
 }
 
 /// Un programme de la liste, tel que l'écran le montre. `identite` : ce qui le désigne dans les notes de Vanguard
-/// (« demarrage:… » sans le préfixe).
+/// (« demarrage:… » sans le préfixe). `nom_entier` et `commande_entiere` : les valeurs lues, entières, que l'accord
+/// lie (le nom et la commande montrés sont coupés).
 pub(super) struct Entree<'a> {
     pub nom: &'a str,
     pub commande: &'a str,
+    pub nom_entier: &'a str,
+    pub commande_entiere: &'a str,
     pub identite: &'a str,
     pub machine: bool,
     pub statut: Statut,
@@ -182,9 +185,10 @@ pub(super) fn sans_maison(texte: &str) -> String {
     sortie
 }
 
-/// L'empreinte d'un programme : les 16 premiers octets du BLAKE3 de son objet tel que le constat l'écrit
-/// (« demarrage:<identité échappée> »), en 32 chiffres hexadécimaux minuscules. C'est tout ce que la fenêtre renvoie
-/// pour le désigner : ni nom ni chemin, qu'elle aurait pu se faire glisser. `None` : une identité vide, sans objet.
+/// L'empreinte d'un programme : les 16 premiers octets du BLAKE3 de son objet entier (« demarrage:<identité
+/// échappée> », le chemin absolu, pas celui montré « ~/… » : l'empreinte ne change pas d'une version à l'autre), en
+/// 32 chiffres hexadécimaux minuscules. C'est tout ce que la fenêtre renvoie pour le désigner : ni nom ni chemin,
+/// qu'elle aurait pu se faire glisser. `None` : une identité vide, sans objet.
 pub(super) fn empreinte(identite: &str) -> Option<String> {
     let objet = Objet::de("demarrage", &nom_pour_cle(identite));
     let texte = objet.texte().filter(|t| !t.is_empty())?;
@@ -209,13 +213,15 @@ pub(super) fn geste(e: &Entree) -> Option<GesteEcrit> {
         machine: e.machine,
         accord: String::new(),
     };
-    g.accord = accord(&g);
+    g.accord = accord(&g, e.nom_entier, e.commande_entiere);
     Some(g)
 }
 
 /// L'accord d'un geste : BLAKE3 à contexte (« vanguard accord v1 demarrage » : jamais celui d'un autre geste) de
-/// chaque champ montré, nom puis valeur, à longueur préfixée. 64 chiffres hexadécimaux minuscules.
-pub(super) fn accord(g: &GesteEcrit) -> String {
+/// chaque champ montré, nom puis valeur, à longueur préfixée, et des valeurs entières lues (`nom_entier`,
+/// `commande_entiere`) : le nom et la commande montrés sont coupés, et deux programmes qui ne diffèrent qu'au-delà de
+/// la coupe n'ont pas le même accord. 64 chiffres hexadécimaux minuscules.
+pub(super) fn accord(g: &GesteEcrit, nom_entier: &str, commande_entiere: &str) -> String {
     let mut o = Vec::new();
     let mut bloc = |octets: &[u8]| {
         o.extend_from_slice(&u64::try_from(octets.len()).unwrap_or(u64::MAX).to_le_bytes());
@@ -227,6 +233,8 @@ pub(super) fn accord(g: &GesteEcrit) -> String {
         ("nom", g.nom.as_bytes()),
         ("commande", g.commande.as_bytes()),
         ("machine", if g.machine { b"1" } else { b"0" }),
+        ("nom-entier", blake3::hash(nom_entier.as_bytes()).as_bytes()),
+        ("commande-entiere", blake3::hash(commande_entiere.as_bytes()).as_bytes()),
     ] {
         bloc(nom.as_bytes());
         bloc(valeur);
@@ -283,6 +291,8 @@ mod tests {
         Entree {
             nom,
             commande: "/opt/exemple/lanceur --discret",
+            nom_entier: nom,
+            commande_entiere: "/opt/exemple/lanceur --discret",
             identite: nom,
             machine: false,
             statut,
@@ -359,6 +369,8 @@ mod tests {
         let e = Entree {
             nom: &nom,
             commande: &commande,
+            nom_entier: &nom,
+            commande_entiere: &commande,
             identite: "Lecteur",
             machine: false,
             statut: Statut::SeLance,
@@ -417,6 +429,8 @@ mod tests {
             .map(|n| Entree {
                 nom: n,
                 commande: "lecteur",
+                nom_entier: n,
+                commande_entiere: "lecteur",
                 identite: n,
                 machine: false,
                 statut: Statut::SeLance,
@@ -437,7 +451,8 @@ mod tests {
         let g = geste(&entree("Lecteur", Statut::SeLance)).unwrap();
         assert_eq!(g.accord.len(), 64);
         assert!(g.accord.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')));
-        assert_eq!(g.accord, accord(&g));
+        let e = entree("Lecteur", Statut::SeLance);
+        assert_eq!(g.accord, accord(&g, e.nom_entier, e.commande_entiere));
         let variantes: [fn(&mut GesteEcrit); 6] = [
             |g| g.sorte = "remettre".into(),
             |g| g.empreinte = "0".repeat(32),
@@ -452,7 +467,11 @@ mod tests {
         for (i, v) in variantes.iter().enumerate() {
             let mut autre = g.clone();
             v(&mut autre);
-            assert_ne!(accord(&autre), g.accord, "variante {i}");
+            assert_ne!(
+                accord(&autre, e.nom_entier, e.commande_entiere),
+                g.accord,
+                "variante {i}"
+            );
         }
         let mut glisse = g.clone();
         glisse.nom = "ab".into();
@@ -460,7 +479,26 @@ mod tests {
         let mut glisse2 = g.clone();
         glisse2.nom = "a".into();
         glisse2.commande = "bc".into();
-        assert_ne!(accord(&glisse), accord(&glisse2));
+        assert_ne!(
+            accord(&glisse, e.nom_entier, e.commande_entiere),
+            accord(&glisse2, e.nom_entier, e.commande_entiere)
+        );
+        // Les valeurs entières comptent, même au-delà de ce qui est montré (P1 : le texte coupé n'est que l'affichage).
+        let long = format!("/opt/exemple/lanceur {}", "x".repeat(400));
+        let (mut a, mut b) = (entree("Lecteur", Statut::SeLance), entree("Lecteur", Statut::SeLance));
+        let long_autre = format!("{long}y");
+        (a.commande, a.commande_entiere) = (&long, &long);
+        (b.commande, b.commande_entiere) = (&long_autre, &long_autre);
+        let (ga, gb) = (geste(&a).unwrap(), geste(&b).unwrap());
+        assert_eq!(ga.commande, gb.commande, "la commande montrée est coupée");
+        assert_ne!(ga.accord, gb.accord, "l'accord lie la commande entière");
+        let nom_long = "N".repeat(200);
+        let nom_autre = format!("{nom_long}z");
+        (a.nom, a.nom_entier) = (&nom_long, &nom_long);
+        (b.nom, b.nom_entier, b.commande, b.commande_entiere) = (&nom_autre, &nom_autre, &long, &long);
+        let (ga, gb) = (geste(&a).unwrap(), geste(&b).unwrap());
+        assert_eq!(ga.nom, gb.nom, "le nom montré est coupé");
+        assert_ne!(ga.accord, gb.accord, "l'accord lie le nom entier");
         // Rien pour un programme à garder : aucun accord à rendre.
         assert!(geste(&entree("Pilote", Statut::Garder("pilote"))).is_none());
     }
@@ -490,6 +528,8 @@ mod tests {
             .map(|n| Entree {
                 nom: n,
                 commande: "x\u{1b}[2Ky",
+                nom_entier: n,
+                commande_entiere: "x\u{1b}[2Ky",
                 identite: n,
                 machine: true,
                 statut: Statut::SeLance,

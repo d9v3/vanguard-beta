@@ -568,13 +568,22 @@ pub(super) fn valeur_desactivee(quand: std::time::SystemTime) -> String {
 }
 
 /// Un programme de la liste : ce qui l'affiche et le réglage qui le retire.
+#[allow(clippy::struct_excessive_bools)] // des constats, chacun pour lui-même
 struct Ligne {
     nom: String,
     commande: String,
+    /// Le nom et la commande lus, entiers et tels quels : ce que l'accord d'un geste lie (`resultat::accord`).
+    nom_entier: String,
+    commande_entiere: String,
     actif: bool,
     machine: bool,
     garde: Garde,
     par_vanguard: bool,
+    /// Lue sur le système (pas rebâtie d'après une note).
+    du_systeme: bool,
+    /// Lue sur le système sous un dossier refusé pour écrire : la phrase de la garde (relecture 0.95, H-1 suite),
+    /// que `--retirer` rend telle quelle.
+    ecriture_refusee: Option<String>,
     reglage: Reglage,
     /// La note du dossier où Vanguard n'écrit plus, pour une ligne rebâtie d'après sa note (J-3) ; celles des
     /// entrées listées viennent de `avis_d_ecriture`.
@@ -599,6 +608,22 @@ impl Ligne {
 /// Ce qui se montre : les programmes qui se lancent, et ceux que Vanguard a retirés (pour pouvoir les remettre). Un
 /// programme retiré ailleurs (Gestionnaire des tâches, Réglages) reste comme il est, sans être montré.
 fn lignes(programmes: Vec<Programme>, h: &Historique) -> Vec<Ligne> {
+    let mut l: Vec<Ligne> = lignes_avec(programmes, h, &classer)
+        .into_iter()
+        .filter(montree)
+        .collect();
+    l.sort_by_key(|x| x.nom.to_lowercase());
+    l
+}
+
+/// Une ligne que l'écran montre : un programme qui se lance, ou que Vanguard a retiré.
+fn montree(x: &Ligne) -> bool {
+    x.actif || x.par_vanguard
+}
+
+/// Chaque programme lu (même retiré ailleurs, que l'écran ne montre pas), classé par `classer` s'il se lance, puis
+/// ceux que Vanguard a retirés et qui ne se listent plus, rebâtis d'après leur note.
+fn lignes_avec(programmes: Vec<Programme>, h: &Historique, classer: &dyn Fn(&Programme) -> Garde) -> Vec<Ligne> {
     let mut l: Vec<Ligne> = Vec::new();
     for p in programmes {
         let garde = match p.actif {
@@ -614,18 +639,23 @@ fn lignes(programmes: Vec<Programme>, h: &Historique) -> Vec<Ligne> {
             continue;
         };
         let par_vanguard = h.reglages.contains_key(r.id.as_ref());
-        if p.actif || par_vanguard {
-            l.push(Ligne {
-                garde,
-                nom: affichable(&p.nom),
-                commande: affichable(&p.commande),
-                actif: p.actif,
-                machine: p.machine,
-                par_vanguard,
-                reglage: r,
-                refus: None,
-            });
-        }
+        l.push(Ligne {
+            garde,
+            nom: affichable(&p.nom),
+            commande: affichable(&p.commande),
+            nom_entier: p.nom,
+            commande_entiere: p.commande,
+            actif: p.actif,
+            machine: p.machine,
+            par_vanguard,
+            du_systeme: true,
+            ecriture_refusee: match p.ecriture {
+                Ecriture::Refusee(raison) => Some(raison),
+                Ecriture::Permise | Ecriture::MasquageInconnu => None,
+            },
+            reglage: r,
+            refus: None,
+        });
     }
     // Retirés par Vanguard mais introuvables ici (un service désactivé ne se liste plus) : rebâtis d'après la note.
     // Pas celui dont l'entrée ne se lit pas (la liste la dit pas lue) : recocher l'écraserait (D-1).
@@ -637,9 +667,12 @@ fn lignes(programmes: Vec<Programme>, h: &Historique) -> Vec<Ligne> {
                 Ecriture::Refusee(raison) => Some(raison),
                 Ecriture::Permise | Ecriture::MasquageInconnu => None,
             });
+            let nom = systeme::Changement::nom_demarrage(identite);
             l.push(Ligne {
-                nom: affichable(&systeme::Changement::nom_demarrage(identite)),
+                nom: affichable(&nom),
                 commande: affichable(identite),
+                nom_entier: nom,
+                commande_entiere: identite.to_string(),
                 actif: false,
                 machine: false,
                 garde: if refus.is_some() {
@@ -649,11 +682,12 @@ fn lignes(programmes: Vec<Programme>, h: &Historique) -> Vec<Ligne> {
                 },
                 refus,
                 par_vanguard: true,
+                du_systeme: false,
+                ecriture_refusee: None,
                 reglage: r,
             });
         }
     }
-    l.sort_by_key(|x| x.nom.to_lowercase());
     l
 }
 
@@ -860,52 +894,16 @@ fn empreinte_du(r: &Reglage) -> Option<String> {
     resultat::empreinte(r.id.strip_prefix(PREFIXE)?)
 }
 
-/// Le programme à retirer qui a cette empreinte, parmi ceux du système : il doit se lancer et être ordinaire. Tous
-/// les programmes comptent pour reconnaître une empreinte en double ; seul le programme trouvé est classé (son
-/// paquet lu), `classer` passé pour les essais. Rend aussi son nom, rendu inoffensif, s'il est seul à l'avoir.
-fn a_retirer_nomme(
-    programmes: Vec<Programme>,
-    empreinte: &str,
-    classer: impl Fn(&Programme) -> Garde,
-) -> (Option<String>, Result<Reglage, Refus>) {
-    if !empreinte_bien_formee(empreinte) {
-        return (None, Err(Refus::MalFormee));
-    }
-    // Comme `empreinte_du` sur son réglage, sans le bâtir.
-    let trouves: Vec<Programme> = programmes
-        .into_iter()
-        .filter(|p| {
-            p.changement
-                .identite_demarrage()
-                .and_then(|i| resultat::empreinte(&i))
-                .as_deref()
-                == Some(empreinte)
-        })
-        .collect();
-    let p = match le_seul(trouves) {
-        Ok(p) => p,
-        Err(refus) => return (None, Err(refus)),
-    };
-    let nom = Some(affichable(&p.nom));
-    let garde = if p.actif { classer(&p) } else { Garde::Ordinaire };
-    let issue = match (p.actif, garde, &p.ecriture) {
-        (false, _, _) => Err(Refus::NeSeLancePas),
-        (true, Garde::Garder(_), Ecriture::Refusee(raison)) => Err(Refus::Ecriture(raison.clone())),
-        (true, Garde::Garder(raison), _) => Err(Refus::AGarder(raison)),
-        (true, Garde::PareFeu, _) => Err(Refus::PareFeu),
-        (true, Garde::Ordinaire, _) if !p.changement.cible_relisible() => Err(Refus::TropGrosse),
-        (true, Garde::Ordinaire, _) => reglage(&p.nom, p.changement).ok_or(Refus::Inconnue),
-    };
-    (nom, issue)
-}
-
 #[cfg(test)]
 fn a_retirer(
     programmes: Vec<Programme>,
     empreinte: &str,
     classer: impl Fn(&Programme) -> Garde,
 ) -> Result<Reglage, Refus> {
-    a_retirer_nomme(programmes, empreinte, classer).1
+    if !empreinte_bien_formee(empreinte) {
+        return Err(Refus::MalFormee);
+    }
+    a_retirer_de(lignes_avec(programmes, &Historique::default(), &classer), empreinte).1
 }
 
 /// Le programme retiré par Vanguard qui a cette empreinte, d'après ses notes.
@@ -948,9 +946,17 @@ pub fn changer(sorte: SorteDeChangement, empreinte: &str, accord: Option<&str>, 
         (None, Issue::Refuse(Refus::AccordMalForme))
     } else {
         match super::tenir_les_notes(&crate::reseau::dossier_local()) {
-            Some(_notes) => match accord.map(|a| accord_tenu(sorte, empreinte, a)) {
-                Some((nom, Err(refus))) => (nom, Issue::Refuse(refus)),
-                Some((_, Ok(()))) | None => changer_tenu(sorte, empreinte),
+            // UNE lecture du système et des notes sert à juger l'accord ET à choisir ce qui change (P1).
+            Some(_notes) => match decider(
+                systeme::au_demarrage(),
+                super::historique_sans_ecrire(&crate::reseau::dossier_local()),
+                sorte,
+                empreinte,
+                accord,
+                classer,
+            ) {
+                (nom, Ok(d)) => (nom.clone(), executer_decision(d)),
+                (nom, Err(refus)) => (nom, Issue::Refuse(refus)),
             },
             None => (None, Issue::Refuse(Refus::NotesOccupees)),
         }
@@ -998,47 +1004,145 @@ fn raison_d_echec(refus: Option<String>) -> String {
     }
 }
 
-/// `changer`, le verrou des notes tenu : le nom du programme visé (s'il est connu) et l'issue.
-fn changer_tenu(sorte: SorteDeChangement, empreinte: &str) -> (Option<String>, Issue) {
-    match sorte {
-        // Des notes douteuses seraient remplacées par des neuves à la première écriture : ce que Vanguard avait
-        // retiré ne se remettrait plus, et l'avertissement de la liste disparaîtrait. Rien n'est donc retiré.
-        SorteDeChangement::Retirer if super::historique_sans_ecrire(&crate::reseau::dossier_local()).is_none() => {
-            (None, Issue::Refuse(Refus::NotesDouteuses))
+/// Ce que `changer` fera, décidé sur une seule lecture.
+enum Decision {
+    Retirer(Reglage),
+    /// Le réglage choisi et les notes qui l'ont choisi (relues pour de bon avant d'écrire : `relu_pareil`).
+    Remettre(Reglage, Historique),
+}
+
+/// `changer`, le verrou des notes tenu, sur UNE lecture : `programmes` (le système) et `h1` (les notes lues sans rien
+/// écrire, `None` si douteuses) servent à juger l'accord (`accord` : celui du geste montré, qui lie le nom et la
+/// commande entiers) ET à choisir le réglage changé. Rien n'est relu entre les deux : ce qui a été jugé est ce qui est
+/// changé. Rend le nom du programme visé (s'il est connu) et la décision, ou le refus.
+fn decider(
+    programmes: Vec<Programme>,
+    h1: Option<Historique>,
+    sorte: SorteDeChangement,
+    empreinte: &str,
+    accord: Option<&str>,
+    classer: impl Fn(&Programme) -> Garde,
+) -> (Option<String>, Result<Decision, Refus>) {
+    // Des notes douteuses seraient remplacées par des neuves à la première écriture : ce que Vanguard avait retiré ne
+    // se remettrait plus, et l'avertissement de la liste disparaîtrait. Rien n'est donc changé.
+    let Some(h1) = h1 else {
+        return (None, Err(Refus::NotesDouteuses));
+    };
+    if !empreinte_bien_formee(empreinte) {
+        return (None, Err(Refus::MalFormee));
+    }
+    // Seuls les programmes à cette empreinte comptent : seul celui visé est classé (son paquet lu).
+    let a_l_empreinte = |r: &Reglage| empreinte_du(r).as_deref() == Some(empreinte);
+    let programmes: Vec<Programme> = programmes
+        .into_iter()
+        .filter(|p| {
+            p.changement
+                .identite_demarrage()
+                .and_then(|i| resultat::empreinte(&i))
+                .as_deref()
+                == Some(empreinte)
+        })
+        .collect();
+    // Ce qui se lance dans cette même lecture : « remettre » le juge sans relire le système (D-1, P1).
+    let actifs: Vec<String> = programmes
+        .iter()
+        .filter(|p| p.actif)
+        .filter_map(|p| p.changement.identite_demarrage())
+        .collect();
+    let l: Vec<Ligne> = lignes_avec(programmes, &h1, &classer)
+        .into_iter()
+        .filter(|x| a_l_empreinte(&x.reglage))
+        .collect();
+    // Le geste tel que `json` le montrerait d'après cette lecture : un seul, et le même accord.
+    if let Some(a) = accord {
+        let mut gestes = l
+            .iter()
+            .filter(|x| montree(x))
+            .filter_map(|x| resultat::geste(&entree(x)))
+            .filter(|g| g.sorte == sorte.code() && g.empreinte == empreinte);
+        match (gestes.next(), gestes.next()) {
+            (Some(g), None) if g.accord == a => {}
+            (Some(g), None) => return (Some(g.nom), Err(Refus::Change)),
+            _ => return (None, Err(Refus::Change)),
         }
-        SorteDeChangement::Retirer => match a_retirer_nomme(systeme::au_demarrage(), empreinte, classer) {
-            (nom, Ok(r)) if retirer_le(&r) => (nom, Issue::Fait),
-            (nom, Ok(_)) => (nom, Issue::Echec),
-            (nom, Err(refus)) => (nom, Issue::Refuse(refus)),
-        },
+    }
+    match sorte {
+        SorteDeChangement::Retirer => {
+            let (nom, r) = a_retirer_de(l, empreinte);
+            (nom, r.map(Decision::Retirer))
+        }
         SorteDeChangement::Remettre => {
             // Choisi d'après les notes lues sans rien écrire : un refus ne laisse aucune trace.
-            let dossier = crate::reseau::dossier_local();
-            let choisi = super::historique_sans_ecrire(&dossier)
-                .ok_or(Refus::NotesDouteuses)
-                .and_then(|h1| a_remettre(&h1, empreinte).map(|r| (h1, r)));
-            let (h1, r) = match choisi {
-                Ok(t) => t,
-                Err(refus) => return (None, Issue::Refuse(refus)),
+            let r = match a_remettre(&h1, empreinte) {
+                Ok(r) => r,
+                Err(refus) => return (None, Err(refus)),
             };
             let nom =
                 r.id.strip_prefix(PREFIXE)
                     .map(|i| affichable(&systeme::Changement::nom_demarrage(i)));
             // La liste n'offre « remettre » que pour un programme qui ne se lance plus : une entrée qui se lance
             // (remise ou réécrite hors de Vanguard, peut-être devenue un programme à garder), ou qui ne se lit pas
-            // (D-1), n'est jamais écrasée.
-            if let Some(refus) = remise_refusee(&r, &systeme::au_demarrage()) {
-                return (nom, Issue::Refuse(refus));
+            // (D-1), n'est jamais écrasée ; jugé sur la lecture qui a jugé l'accord.
+            let lance =
+                r.id.strip_prefix(PREFIXE)
+                    .is_some_and(|i| actifs.iter().any(|a| a == i));
+            if let Some(refus) = refus_de_remise(&r, lance) {
+                return (nom, Err(refus));
             }
+            (nom, Ok(Decision::Remettre(r, h1)))
+        }
+    }
+}
+
+/// Le programme à retirer qui a cette empreinte, parmi les programmes d'une lecture (pas ceux rebâtis d'une note) :
+/// il doit être seul (tous comptent pour reconnaître une empreinte en double, même retirés ailleurs), se lancer et
+/// être ordinaire. Rend aussi son nom, rendu inoffensif, s'il est seul à l'avoir.
+fn a_retirer_de(l: Vec<Ligne>, empreinte: &str) -> (Option<String>, Result<Reglage, Refus>) {
+    let trouves: Vec<Ligne> = l
+        .into_iter()
+        .filter(|x| x.du_systeme && empreinte_du(&x.reglage).as_deref() == Some(empreinte))
+        .collect();
+    let x = match le_seul(trouves) {
+        Ok(x) => x,
+        Err(refus) => return (None, Err(refus)),
+    };
+    let nom = Some(x.nom.clone());
+    let issue = match (x.actif, x.garde, x.ecriture_refusee) {
+        (false, _, _) => Err(Refus::NeSeLancePas),
+        // Sous un dossier refusé pour écrire : la phrase de la garde, qui nomme le dossier et le remède (H-1 suite).
+        (true, _, Some(raison)) => Err(Refus::Ecriture(raison)),
+        // Masquée, elle ne se relirait plus (D-2).
+        (true, Garde::Garder(raison), None) if raison == trop_grosse() => Err(Refus::TropGrosse),
+        (true, Garde::Garder(raison), None) => Err(Refus::AGarder(raison)),
+        (true, Garde::PareFeu, None) => Err(Refus::PareFeu),
+        (true, Garde::Ordinaire, None) => Ok(x.reglage),
+    };
+    (nom, issue)
+}
+
+/// Fait ce qui a été décidé.
+fn executer_decision(d: Decision) -> Issue {
+    match d {
+        Decision::Retirer(r) => {
+            if retirer_le(&r) {
+                Issue::Fait
+            } else {
+                Issue::Echec
+            }
+        }
+        Decision::Remettre(r, h1) => {
             // Les notes relues pour de bon (`charger`) doivent dire la même chose que celles qui ont choisi : sinon,
             // rien n'est remis (ni écrit) d'après des notes qui ont changé entre les deux lectures.
             let mut h = charger();
-            let r2 = match relu_pareil(&h1, &r, &h, empreinte) {
+            let Some(empreinte) = empreinte_du(&r) else {
+                return Issue::Refuse(Refus::Inconnue);
+            };
+            let r2 = match relu_pareil(&h1, &r, &h, &empreinte) {
                 Ok(r2) => r2,
-                Err(refus) => return (nom, Issue::Refuse(refus)),
+                Err(refus) => return Issue::Refuse(refus),
             };
             let (_, remis) = executer(&[], &[&r2], &mut h);
-            (nom, if remis == [true] { Issue::Fait } else { Issue::Echec })
+            if remis == [true] { Issue::Fait } else { Issue::Echec }
         }
     }
 }
@@ -1063,7 +1167,12 @@ fn raison_selon(r: &Reglage, liste: &ListeDuJour, lire: impl FnOnce() -> Vec<Pro
 /// entrée pas lue n'est pas dans `programmes` (`au_demarrage` ne la propose pas) : sans ce second regard, elle
 /// passerait pour absente et serait écrasée (correction n° 2 de la 0.94, D-1).
 fn remise_refusee(r: &Reglage, programmes: &[Programme]) -> Option<Refus> {
-    if se_lance(programmes, r) {
+    refus_de_remise(r, se_lance(programmes, r))
+}
+
+/// `remise_refusee`, ce qui se lance déjà étant su (`lance`, d'une lecture faite par l'appelant).
+fn refus_de_remise(r: &Reglage, lance: bool) -> Option<Refus> {
+    if lance {
         Some(Refus::SeLanceDeja)
     } else if !r.changements.iter().all(systeme::Changement::entree_lisible) {
         Some(Refus::PasLue)
@@ -1161,6 +1270,8 @@ fn entree(x: &Ligne) -> resultat::Entree<'_> {
     resultat::Entree {
         nom: &x.nom,
         commande: &x.commande,
+        nom_entier: &x.nom_entier,
+        commande_entiere: &x.commande_entiere,
         identite: x.reglage.id.strip_prefix(PREFIXE).unwrap_or(&x.reglage.id),
         machine: x.machine,
         statut: match (x.garder(), x.actif) {
@@ -1170,35 +1281,6 @@ fn entree(x: &Ligne) -> resultat::Entree<'_> {
             (_, true) => resultat::Statut::SeLance,
             (_, false) => resultat::Statut::Retire,
         },
-    }
-}
-
-/// Le geste de cette sorte et de cette empreinte tel que `json` le montrerait d'après `programmes` et les notes `h`
-/// (lues sans rien écrire, vides si douteuses, comme `json`) : `None` s'il n'y en a aucun ou plusieurs.
-fn geste_montre(
-    programmes: Vec<Programme>,
-    h: &Historique,
-    sorte: SorteDeChangement,
-    empreinte: &str,
-) -> Option<crate::modele::resultat::GesteEcrit> {
-    let l = lignes(programmes, h);
-    let mut gestes = l
-        .iter()
-        .filter_map(|x| resultat::geste(&entree(x)))
-        .filter(|g| g.sorte == sorte.code() && g.empreinte == empreinte);
-    let g = gestes.next()?;
-    gestes.next().is_none().then_some(g)
-}
-
-/// Un accord rendu avec la demande est bien celui du geste montré aujourd'hui (constat en passant P1) : le nom, la
-/// commande, la portée (machine) et la sorte relus maintenant donnent le même. Rend le nom montré (rendu inoffensif)
-/// s'il est connu, et `Change` sinon.
-fn accord_tenu(sorte: SorteDeChangement, empreinte: &str, accord: &str) -> (Option<String>, Result<(), Refus>) {
-    let h = super::historique_sans_ecrire(&crate::reseau::dossier_local()).unwrap_or_default();
-    match geste_montre(systeme::au_demarrage(), &h, sorte, empreinte) {
-        Some(g) if g.accord == accord => (Some(g.nom), Ok(())),
-        Some(g) => (Some(g.nom), Err(Refus::Change)),
-        None => (None, Err(Refus::Change)),
     }
 }
 
@@ -2192,5 +2274,64 @@ mod essais_changer {
         ] {
             assert_ne!(r.raison(), "");
         }
+    }
+
+    /// P1 : UNE lecture sert à juger l'accord et à choisir ce qui est retiré. Le programme jugé est celui retiré
+    /// (mutation : relire le système pour agir, où ce programme inventé n'existe pas, rend `Inconnue`) ; un accord
+    /// rendu pour une commande qui ne diffère qu'au-delà de la coupe montrée est refusé (mutation : accord sur les
+    /// seules valeurs coupées).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn une_seule_lecture_juge_l_accord_et_choisit() {
+        let ordinaire = |_: &Programme| Garde::Ordinaire;
+        let longue = |fin: &str| {
+            let mut p = service("Salon", true);
+            p.commande = format!("/usr/bin/salon {}{fin}", "x".repeat(300));
+            p
+        };
+        let h = Historique::default();
+        let geste = |p: Programme| {
+            lignes_avec(vec![p], &h, &ordinaire)
+                .iter()
+                .find_map(|x| resultat::geste(&entree(x)))
+                .unwrap()
+        };
+        let (g, g_autre) = (geste(longue("a")), geste(longue("b")));
+        assert_eq!(g.commande, g_autre.commande, "la commande montrée est coupée");
+        let emp = empreinte_de("Salon");
+        let (nom, d) = decider(
+            vec![longue("a")],
+            Some(Historique::default()),
+            SorteDeChangement::Retirer,
+            &emp,
+            Some(&g.accord),
+            ordinaire,
+        );
+        assert_eq!(nom.as_deref(), Some("Salon"));
+        match d {
+            Ok(Decision::Retirer(r)) => assert_eq!(r.id, "demarrage:systemd|Salon.service"),
+            Ok(Decision::Remettre(..)) => panic!("remettre"),
+            Err(e) => panic!("{e:?}"),
+        }
+        // La même lecture, mais la commande entière a changé au-delà de la coupe : changé depuis l'aperçu.
+        let (_, d) = decider(
+            vec![longue("b")],
+            Some(Historique::default()),
+            SorteDeChangement::Retirer,
+            &emp,
+            Some(&g.accord),
+            ordinaire,
+        );
+        assert_eq!(d.err(), Some(Refus::Change));
+        // Des notes douteuses : rien n'est décidé.
+        let (_, d) = decider(
+            vec![longue("a")],
+            None,
+            SorteDeChangement::Retirer,
+            &emp,
+            Some(&g.accord),
+            ordinaire,
+        );
+        assert_eq!(d.err(), Some(Refus::NotesDouteuses));
     }
 }
