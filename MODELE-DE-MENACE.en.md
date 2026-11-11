@@ -225,7 +225,8 @@ safeguards:
   path. The form started is closed, `vanguard demarrage --retirer|--remettre <fingerprint> --json`, and `vanguard`
   judges everything again: without the action's consent (`--accord`, the one `demarrage --json` gives, which binds
   the name, the whole command and the scope), nothing is done, the fingerprint alone no longer designating anything
-  (the window does not send it yet: its startup actions are refused, “missing agreement”, until its relay does);
+  (the window gives back, as is, the consent the list gave, without computing it; under Linux, its relay adds it to
+  the closed form);
   malformed, unknown or ambiguous fingerprint, program to keep, firewall, Vanguard's notes
   unreadable or changed outside Vanguard (neither removal nor putting back while they are), “put back” for a program
   that already starts (put back or rewritten outside Vanguard, perhaps now a program to keep: the old note does not
@@ -271,14 +272,13 @@ safeguards:
   the programs only once under the notes lock, and that same reading judges the consent and decides the action (remove
   or put back): it requires the same consent: a program whose command, name or scope changed between the list and the
   click is refused (“changed since the list”), nothing is written, and the consent of a “remove” does not work for
-  “put back”. Without `--agreement`, the fingerprint alone designates the program, as before: the consent stays
-  optional until step 5 (the window that sends it), where it will become mandatory; the window does not send it yet
-  (its change frame only carries the kind and the fingerprint); it already reads it strictly. A window taken over can
+  “put back”. Without `--agreement`, nothing is removed or put back (“missing agreement”); the window reads it
+  strictly and gives it back in its change frame, with the kind and the fingerprint. A window taken over can
   still read the list again and give back the current consent: it does not prove that a person clicked, only that what
   is changed is what was shown. Tests: `accord_de_chaque_champ_montre` (`src/optimiser/demarrage/resultat.rs`),
   `une_seule_lecture_juge_l_accord_et_choisit` (`src/optimiser/demarrage.rs`),
   `demarrage_l_accord_tient_ce_qui_a_ete_montre` (`tests/programme.rs`).
-- **One account fix, shown then applied, then put back as before (commands; the window will follow).** The audit
+- **One account fix, shown then applied, then put back as before (commands and window).** The audit
   (`audit --json`) gives each fixable finding a token (32 hexadecimal digits); `vanguard correction --show <token>
   [--json]` runs only the token's rule again and shows everything the fix would do (commands, rights, values before,
   undo) with a consent, the BLAKE3 fingerprint of everything shown (and, for each file, its kind, device and inode
@@ -338,6 +338,34 @@ safeguards:
   `refuse_un_lien_a_chaque_element`, `un_autre_fichier_sous_le_meme_nom_n_est_pas_touche` (`src/optimiser/droits.rs`),
   `une_ligne_refusee_fait_remettre_les_lignes_deja_posees`, `en_lecture_seule_rien_ne_s_applique`
   (`src/machine/appliquer.rs`), `seul_le_revenu_est_un_succes` (`src/machine/annuler.rs`).
+  From the window: “See the fix” on an audit finding, or “Restore as before” on a line of “What Vanguard changed”,
+  opens a sheet showing the preview read strictly (`fenetre/src/donnees/correction.rs`,
+  `fenetre/src/donnees/changements.rs`: texts bounded, cleaned and shown sign by sign, bidirectional and zero-width
+  characters made visible). A preview that is contradictory, cut, wider than the sheet, would need the administrator or
+  cannot be undone has no button that changes anything: the reason is said (and, for a fix that needs other rights, the
+  command can be copied for the terminal). The button that changes (“Apply this fix”, “Restore as before”) stays greyed for 2 seconds after the
+  preview is shown; one action at a time, no “apply all”. The window only gives back the preview's token and consent,
+  as is: its frame carries the kind, 16 bytes of token and 32 of consent (all zero for a “show”, never for an action
+  that changes, otherwise the frame is rejected), and the relay builds the closed form itself, `vanguard correction
+  --appliquer|changements --annuler <token> --accord <consent> --json`. Under Linux, the relay, which has the
+  account's rights, judges again on its side: an action that changes is admitted only if it carries the token and
+  consent of the last preview the relay itself relayed for that family (read from `vanguard`'s output, not from what
+  the window says), 2 seconds to 10 minutes after it, with nothing else running; admitting it consumes that preview
+  and the list that offered it (a second send is refused: a new preview is needed). An action that changes is not
+  interrupted (neither Stop nor closing the window). Its outcome is read only in `vanguard`'s exact forms (“done” with
+  code 0; for an undo, “revenu” with 0 or “pas-revenu” with 1, said as such); a refusal makes a fresh preview be read;
+  everything else is a failure or an unknown outcome, never a success. After a fix is done, “Undo this fix” is offered
+  only if the reread list of “What Vanguard changed” offers its token. These bounds of the window and the relay add to
+  those of `vanguard`, which judges everything again (log, delay, consent, lock), without replacing them: a window
+  taken over can still chain list, preview and consent with nobody there, within the same limits (one account
+  hardening at a time, at least 2 s each, written to the log); “Restore as before” is a security decrease with the
+  same bounds. Under Windows, there is no relay: the bounds are those of the window and of `vanguard`. Tests:
+  `rien_ne_s_accepte_avant_deux_secondes`, `appliquer_puis_remettre_de_bout_en_bout` (`fenetre/src/appli.rs`, a fake
+  `vanguard`), `un_geste_qui_change_ne_part_qu_apres_son_apercu`, `seul_l_accord_d_un_apercu_montre_est_retenu`,
+  `le_relais_ne_laisse_partir_que_l_accord_montre_apres_deux_secondes` (`fenetre/src/relais.rs`),
+  `un_texte_plus_large_que_la_feuille_empeche_d_appliquer_d_ici` (`fenetre/src/dessin/bilan/correction.rs`),
+  `le_bouton_qui_change_attend_deux_secondes` (`fenetre/src/dessin/captures.rs`), and the fuzz targets
+  `fenetre_relais` and `fenetre_donnees`.
 - **Colors: saved by `vanguard`, never by the window.** The Vanguard screen sets, for each theme, one of the six
   presets or the system colors, and the five bright colors (accent, serious, medium, to watch, healthy). The window
   shows them right away, writing nothing; “Save…” opens a confirmation (before, after) and only “Accept” runs the

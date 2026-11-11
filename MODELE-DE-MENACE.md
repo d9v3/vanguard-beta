@@ -240,8 +240,8 @@ gardes :
   hexadécimaux, calculée par `vanguard`) : jamais un nom, une commande ou un chemin. La forme lancée est fermée,
   `vanguard demarrage --retirer|--remettre <empreinte> --json`, et `vanguard` rejuge tout : sans l'accord du geste
   (`--accord`, celui que `demarrage --json` donne et qui lie le nom, la commande entière et la portée), rien n'est
-  fait, l'empreinte seule ne désignant plus rien (la fenêtre ne le rend pas encore : ses gestes du démarrage sont
-  refusés, « accord manquant », jusqu'à ce que son relais le fasse) ; empreinte mal formée, inconnue, ambiguë, programme à garder, pare-feu, notes de Vanguard illisibles ou changées hors de Vanguard (ni
+  fait, l'empreinte seule ne désignant plus rien (la fenêtre rend tel quel l'accord que la liste a donné, sans le
+  recalculer ; sous Linux, son relais l'ajoute à la forme fermée) ; empreinte mal formée, inconnue, ambiguë, programme à garder, pare-feu, notes de Vanguard illisibles ou changées hors de Vanguard (ni
   retrait ni remise tant qu'elles le sont), « remettre » un programme qui se lance déjà (remis ou réécrit hors de
   Vanguard, peut-être devenu un programme à garder : la vieille note ne l'écrase pas, ni par l'annulation d'un blocage
   ni par « Tout remettre comme avant »), tout est refusé sans rien changer ; ce qui change passe par la même correction que le terminal (point de restauration,
@@ -286,15 +286,14 @@ gardes :
   <accord>`, `vanguard` relit les programmes une seule fois sous le verrou des notes, et cette même lecture juge
   l'accord et décide du geste (retirer ou remettre) : il exige le même accord : un programme dont la commande, le nom
   ou la portée ont changé entre la liste et le clic est refusé (« a changé depuis la liste »), rien n'est écrit, et
-  l'accord d'un « retirer » ne vaut pas pour « remettre ». Sans `--accord`, l'empreinte seule désigne le programme,
-  comme avant : l'accord reste facultatif jusqu'à l'étape 5 (la fenêtre qui le rend), où il deviendra obligatoire ; la
-  fenêtre ne le rend pas encore (sa trame de changement ne porte que la sorte et l'empreinte) ; elle le lit déjà
-  strictement. Une fenêtre prise en main peut toujours relire la liste et rendre l'accord du moment : il ne prouve pas
+  l'accord d'un « retirer » ne vaut pas pour « remettre ». Sans `--accord`, rien n'est retiré ni remis (« accord
+  manquant ») ; la fenêtre le lit strictement et le rend dans sa trame de changement, avec la sorte et l'empreinte.
+  Une fenêtre prise en main peut toujours relire la liste et rendre l'accord du moment : il ne prouve pas
   qu'une personne a cliqué, seulement que ce qui est changé est ce qui a été montré. Essais :
   `accord_de_chaque_champ_montre` (`src/optimiser/demarrage/resultat.rs`),
   `une_seule_lecture_juge_l_accord_et_choisit` (`src/optimiser/demarrage.rs`),
   `demarrage_l_accord_tient_ce_qui_a_ete_montre` (`tests/programme.rs`).
-- **Une correction du compte, montrée puis appliquée, puis remise comme avant (commandes ; la fenêtre suivra).** Le
+- **Une correction du compte, montrée puis appliquée, puis remise comme avant (commandes et fenêtre).** Le
   bilan (`audit --json`) donne à chaque constat corrigeable un jeton (32 chiffres hexadécimaux) ; `vanguard correction
   --voir <jeton> [--json]` relance la seule règle du jeton et montre tout ce que la correction ferait (commandes,
   droits, valeurs d'avant, annulation) avec un accord, l'empreinte BLAKE3 de tout ce qui est montré (et, pour chaque
@@ -356,6 +355,35 @@ gardes :
   `refuse_un_lien_a_chaque_element`, `un_autre_fichier_sous_le_meme_nom_n_est_pas_touche` (`src/optimiser/droits.rs`),
   `une_ligne_refusee_fait_remettre_les_lignes_deja_posees`, `en_lecture_seule_rien_ne_s_applique`
   (`src/machine/appliquer.rs`), `seul_le_revenu_est_un_succes` (`src/machine/annuler.rs`).
+  Depuis la fenêtre : « Voir la correction » sur un constat du bilan, ou « Remettre comme avant » sur une ligne de
+  « Ce que Vanguard a changé », ouvre une feuille qui montre l'aperçu lu strictement (`fenetre/src/donnees/correction.rs`,
+  `fenetre/src/donnees/changements.rs` : textes bornés, nettoyés et montrés signe par signe, caractères
+  bidirectionnels et de largeur nulle rendus visibles). Un aperçu contradictoire, coupé, plus large que la feuille,
+  qui demanderait l'administrateur ou ne s'annule pas n'a pas de bouton qui change : la raison est dite (et, pour une
+  correction qui demande d'autres droits, la commande se copie pour le terminal). Le bouton qui change (« Appliquer cette correction », « Remettre comme avant ») reste
+  grisé 2 secondes après que l'aperçu est montré ; un geste à la fois, sans « tout appliquer ». La fenêtre ne renvoie
+  que le jeton et l'accord de l'aperçu, tels quels : sa trame porte la sorte, 16 octets de jeton et 32 d'accord (tout
+  à zéro pour un « voir », jamais pour un geste qui change, sinon la trame est rejetée), et le relais bâtit lui-même la
+  forme fermée `vanguard correction --appliquer|changements --annuler <jeton> --accord <accord> --json`. Sous Linux, le
+  relais, qui a les droits du compte, rejuge de son côté : un geste qui change n'est admis que s'il porte le jeton et
+  l'accord du dernier aperçu que le relais a lui-même relayé pour cette famille (lus dans la sortie de `vanguard`, pas
+  dans ce que dit la fenêtre), 2 secondes à 10 minutes après lui, rien d'autre ne tournant ; l'admettre consomme cet
+  aperçu et la liste qui l'offrait (un second envoi est refusé : il faut un nouvel aperçu). Un geste qui change ne
+  s'interrompt pas (ni Arrêter, ni la fermeture de la fenêtre). Son issue n'est lue qu'aux formes exactes de
+  `vanguard` (« fait » avec le code 0 ; pour une annulation, « revenu » avec 0 ou « pas-revenu » avec 1, dit tel quel)
+  ; un refus fait relire un aperçu neuf ; tout le reste est un échec ou une issue inconnue, jamais un succès. Après
+  une correction faite, « Annuler cette correction » n'est offert que si la liste relue de « Ce que Vanguard a
+  changé » offre son jeton. Ces bornes de la fenêtre et du relais s'ajoutent à celles de `vanguard`, qui rejuge tout
+  (carnet, délai, accord, verrou), sans les remplacer : une fenêtre prise peut toujours enchaîner liste, aperçu et
+  accord sans personne, dans les mêmes limites (un durcissement du compte à la fois, 2 s au moins chacun, noté au
+  journal) ; « Remettre comme avant » est une baisse de sécurité aux mêmes bornes. Sous Windows, il n'y a pas de
+  relais : les bornes sont celles de la fenêtre et de `vanguard`. Essais : `rien_ne_s_accepte_avant_deux_secondes`,
+  `appliquer_puis_remettre_de_bout_en_bout` (`fenetre/src/appli.rs`, un faux `vanguard`),
+  `un_geste_qui_change_ne_part_qu_apres_son_apercu`, `seul_l_accord_d_un_apercu_montre_est_retenu`,
+  `le_relais_ne_laisse_partir_que_l_accord_montre_apres_deux_secondes` (`fenetre/src/relais.rs`),
+  `un_texte_plus_large_que_la_feuille_empeche_d_appliquer_d_ici` (`fenetre/src/dessin/bilan/correction.rs`),
+  `le_bouton_qui_change_attend_deux_secondes` (`fenetre/src/dessin/captures.rs`), et les cibles de fuzz
+  `fenetre_relais` et `fenetre_donnees`.
 - **Les couleurs : enregistrées par `vanguard`, jamais par la fenêtre.** L'écran Vanguard règle, pour chaque thème, un
   des six préréglages ou les couleurs du système, et les cinq couleurs vives (accent, grave, moyen, à surveiller,
   sain). La fenêtre les montre tout de suite, sans rien écrire ; « Enregistrer… » ouvre une confirmation (avant,
