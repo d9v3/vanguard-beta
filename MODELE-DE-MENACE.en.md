@@ -310,7 +310,16 @@ safeguards:
   to the screen and the window. What goes to the window names files “~/…”, never by the home folder path. What the
   consent does not prove: that a person clicked. A window taken over, or another program of the account, can ask for
   the preview then apply it; all it gets is a hardening of the account's file permissions, one fix at a time, written
-  to the log and put back exactly in one action; nothing that raises rights. These commands are hidden from the online
+  to the log and put back exactly in one action; nothing that raises rights. The preview log and the notes are
+  sealed, but the seal is a barrier, not a safe: a program of the account that can seal again can backdate the log
+  (the 2 s delay no longer holds), put an old log back (the same action replayed without a new preview) or forge a
+  note (permissions such as 0666, 1777, 0000 or 0200 are accepted, 4755 refused; a note without a file identity
+  targets the file that bears the name today; a note redirected to another file: the preview shows the real target,
+  but the line in “What Vanguard changed” keeps the old name). Everything stays inside the home folder (outside it,
+  `..`, relative path, link: refused), and that program could already change those permissions itself. The JSON of
+  these commands (`commandes`, `avant.geste`, `valeurs.chemin`) carries the exact names, bidirectional and zero-width
+  characters included (the messages and the text screen make them harmless): the window must clean them before
+  showing them. These commands are hidden from the online
   help (they serve the window) and described here and in the command table. All or nothing: if a file is refused,
   those already set are put back as before; if that fails, it is said file by file, and a file never touched is never
   said “changed since”. A brutal stop (Vanguard killed midway) leaves the trace written before acting: the line shows
@@ -455,7 +464,9 @@ safeguards:
   `vanguard` judges everything again and never removes a program to keep or a firewall; what is removed is put back
   exactly (previous value noted); each action is in the event log, where it shows. The relay puts no pause between two
   changes: a hijacked window can chain list and change and remove, one after the other, every ordinary program
-  (`le_relais_n_impose_aucun_intervalle_entre_deux_changements`), each in the log and each can be put back. Vanguard's
+  (`le_relais_n_impose_aucun_intervalle_entre_deux_changements`), each in the log and each can be put back (through the
+  startup list or “Put everything back”: these removals are not in “What Vanguard changed”, `changements
+  --json`). Vanguard's
   notes and their seals (`src/sceau.rs`) are a barrier against a file placed by another program, not a safe: a program
   of your account that keeps a copy of the notes with their seals can put it back later; “Put back” would then bring
   back an old noted value of a program that no longer starts (over a program that starts, it is refused:

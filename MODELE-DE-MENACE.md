@@ -329,7 +329,15 @@ gardes :
   chemin du dossier personnel. Ce que l'accord ne prouve pas : qu'une personne a cliqué. Une fenêtre prise, ou un
   autre programme du compte, peut demander l'aperçu puis l'appliquer ; elle n'obtient ainsi qu'un durcissement des
   droits de fichiers du compte, une correction à la fois, noté au journal et remis exactement d'un geste ; rien qui
-  monte en droits. Ces commandes sont cachées de l'aide en ligne (elles servent à la fenêtre) et décrites ici et dans
+  monte en droits. Le carnet des aperçus et les notes sont scellés, mais le sceau est une barrière, pas un coffre : un
+  programme du compte qui sait resceller peut antidater le carnet (le délai de 2 s ne tient plus), y remettre un vieux
+  carnet (le même geste rejoué sans nouvel aperçu) ou forger une note (des droits comme 0666, 1777, 0000 ou 0200 sont
+  acceptés, 4755 refusé ; une note sans identité de fichier vise le fichier qui porte le nom aujourd'hui ; une note
+  redirigée vers un autre fichier : l'aperçu montre la vraie cible, mais la ligne de « Ce que Vanguard a changé »
+  garde l'ancien nom). Tout reste dans le dossier personnel (hors de lui, `..`, chemin relatif, lien : refusé), et ce
+  programme pourrait déjà changer ces droits lui-même. Le JSON de ces commandes (`commandes`, `avant.geste`,
+  `valeurs.chemin`) porte les noms exacts, caractères bidirectionnels et de largeur nulle compris (les messages et
+  l'écran texte les rendent inoffensifs) : la fenêtre doit les nettoyer avant de les montrer. Ces commandes sont cachées de l'aide en ligne (elles servent à la fenêtre) et décrites ici et dans
   le tableau des commandes. Tout ou rien : si un fichier est refusé, ceux déjà posés sont remis comme avant ; si cette
   remise échoue, c'est dit fichier par fichier, et un fichier jamais touché n'est jamais dit « changé depuis ». Un
   arrêt brutal (Vanguard tué au milieu) laisse la trace écrite avant d'agir : la ligne se montre « interrompue » dans
@@ -480,7 +488,8 @@ gardes :
   retiré se remet exactement (valeur d'avant notée) ; chaque geste est au journal des événements, où il se voit. Le
   relais ne met aucune pause entre deux changements : une fenêtre prise en main peut enchaîner liste et changement et
   retirer, l'un après l'autre, tous les programmes ordinaires (`le_relais_n_impose_aucun_intervalle_entre_deux_changements`),
-  chacun au journal et chacun se remet. Les notes de Vanguard et leurs sceaux (`src/sceau.rs`) sont une barrière
+  chacun au journal et chacun se remet (par la liste du démarrage ou « Tout remettre comme avant » : ces
+  retraits ne sont pas dans « Ce que Vanguard a changé », `changements --json`). Les notes de Vanguard et leurs sceaux (`src/sceau.rs`) sont une barrière
   contre un fichier posé par un autre programme, pas un coffre : un programme de votre compte qui garde une copie des
   notes avec leurs sceaux peut la reposer plus tard ; « Remettre » ramènerait alors une ancienne valeur notée d'un
   programme qui ne se lance plus (par-dessus un programme qui se lance, c'est refusé : `notes_forgees_ou_rejouees`).
