@@ -68,6 +68,13 @@ fn relais(mut flux: &[u8]) {
                         assert_eq!(a[3], "--defaut");
                     }
                 }
+                // Les animations : `couleurs --animations <toutes|reduites> --json`, rien d'autre.
+                Lancement::Animations(_) => {
+                    let a = lancement.arguments();
+                    assert_eq!(a.len(), 4, "{a:?}");
+                    assert_eq!((a[0].as_str(), a[1].as_str(), a[3].as_str()), ("couleurs", "--animations", "--json"));
+                    assert!(a[2] == "toutes" || a[2] == "reduites", "{a:?}");
+                }
             }
         }
         assert_eq!(d.coder(), t, "{d:?}");

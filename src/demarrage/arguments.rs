@@ -556,8 +556,9 @@ pub(crate) enum Commande {
     },
     /// Les couleurs de la fenêtre, par thème (un préréglage ou celles du système, et les cinq couleurs vives),
     /// gardées dans parametres.json : sans option, celles réglées et celles du système ; « --theme sombre --base
-    /// braise [--vifs …] » les change, « --theme sombre --defaut » remet celles de Vanguard. Lancée par la fenêtre,
-    /// qui n'écrit jamais rien elle-même ; tout est revérifié ici.
+    /// braise [--vifs …] » les change, « --theme sombre --defaut » remet celles de Vanguard ; « --animations
+    /// reduites » (ou toutes) garde le réglage des animations de la fenêtre. Lancée par la fenêtre, qui n'écrit jamais
+    /// rien elle-même ; tout est revérifié ici.
     #[command(alias = "colors", hide = true)]
     Couleurs {
         /// La réponse en JSON, sur sa dernière ligne (pour la fenêtre).
@@ -575,6 +576,9 @@ pub(crate) enum Commande {
         /// Remettre les couleurs de Vanguard pour ce thème.
         #[arg(long)]
         defaut: bool,
+        /// Les animations de la fenêtre, gardées pour les prochaines ouvertures : toutes ou reduites (seul).
+        #[arg(long)]
+        animations: Option<String>,
     },
     /// Blocage des menaces : chaque menace trouvée propose « Bloquer » (le geste montré, accepté, noté, annulable) ;
     /// la protection active, après un accord donné une fois, bloque toute seule le certain (empreinte de

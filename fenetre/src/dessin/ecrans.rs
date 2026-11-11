@@ -1005,20 +1005,20 @@ fn reglages(appli: &mut Appli, ui: &mut Ui) {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let reduites = appli.animations_reduites;
                 let bulle = crate::tr!(
-                    "Réduites : plus de fondu entre les écrans, de chiffres qui montent, de points qui pulsent ni d'ouverture animée. Tout s'affiche tout de suite, rien d'autre ne change.",
-                    "Reduced: no more fade between screens, numbers counting up, pulsing dots or animated opening. Everything shows at once, nothing else changes."
+                    "Réduites : plus de fondu entre les écrans, de chiffres qui montent, de points qui pulsent ni d'ouverture animée. Tout s'affiche tout de suite, rien d'autre ne change. Vanguard garde ce choix pour les prochaines ouvertures.",
+                    "Reduced: no more fade between screens, numbers counting up, pulsing dots or animated opening. Everything shows at once, nothing else changes. Vanguard keeps this choice for the next openings."
                 );
                 if petit(ui, crate::tr!("Réduites", "Reduced"), !reduites)
                     .on_hover_text(bulle)
                     .clicked()
                 {
-                    appli.animations_reduites = true;
+                    appli.regler_animations(true);
                 }
                 if petit(ui, crate::tr!("Toutes", "All"), reduites)
                     .on_hover_text(bulle)
                     .clicked()
                 {
-                    appli.animations_reduites = false;
+                    appli.regler_animations(false);
                 }
             });
         });
@@ -1026,8 +1026,8 @@ fn reglages(appli: &mut Appli, ui: &mut Ui) {
     ui.add_space(12.0);
     ui.label(texte(
         crate::tr!(
-            "Le thème, la langue et les animations valent pour cette fois : à la prochaine ouverture, la fenêtre reprend le thème du système, la langue de Vanguard et toutes ses animations. Les résultats déjà lus gardent leur langue jusqu'à la prochaine lecture.",
-            "Theme, language and animations are for this time: next time, the window takes the system theme, Vanguard's language and all its animations again. Results already read keep their language until read again."
+            "Le thème et la langue valent pour cette fois : à la prochaine ouverture, la fenêtre reprend le thème du système et la langue de Vanguard. Les animations, elles, sont gardées par Vanguard. Les résultats déjà lus gardent leur langue jusqu'à la prochaine lecture.",
+            "Theme and language are for this time: next time, the window takes the system theme and Vanguard's language again. Animations are kept by Vanguard. Results already read keep their language until read again."
         ),
         13.0,
         p.discret,

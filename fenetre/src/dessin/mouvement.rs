@@ -1,7 +1,8 @@
 //! Le mouvement de la fenêtre, en un seul endroit : le fondu d'arrivée d'un écran, les lignes de liste qui
 //! s'éclairent au survol, le point qui pulse pendant qu'une commande tourne, les chiffres du Bilan qui montent.
 //! Toutes les durées passent par une seule porte, `duree` : avec « Réduire les animations » (un réglage de l'écran
-//! Vanguard, `Appli::animations_reduites`, posé ici à chaque image par `regler`), elle rend 0 et plus rien ne bouge :
+//! Vanguard, `Appli::animations_reduites`, gardé par `vanguard` et relu au lancement, posé ici à chaque image par
+//! `regler`), elle rend 0 et plus rien ne bouge :
 //! chaque fondu saute à sa fin, les chiffres sont là tout de suite, les points ne pulsent plus, l'ouverture ne joue
 //! pas ; le reste de la fenêtre ne change pas. Le réglage du système (Windows, GNOME, Omarchy) n'est pas lu : la
 //! fenêtre, dans son bac à sable, ne lit ni les réglages du bureau ni ceux de Windows ; le jour où `vanguard` le lira

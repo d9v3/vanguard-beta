@@ -12,6 +12,11 @@
 //! personnel) : le thème d'Omarchy sous Linux (colors.toml : accent, red, orange, yellow, green), la couleur
 //! d'accentuation sous Windows (l'accent seul). Un parametres.json changé hors de Vanguard, effacé ou illisible :
 //! les couleurs de Vanguard, et la raison est dite (la fenêtre la montre dans ses coulisses).
+//!
+//! Le réglage « Animations réduites » de la fenêtre se garde ici aussi, du même geste : `--animations
+//! toutes|reduites` l'enregistre, et `--json` le rend avec les couleurs. La fenêtre le lit donc dans la réponse
+//! qu'elle demande déjà au lancement, sans une commande de plus dans sa liste fermée ; il ne vaut, lui aussi, que
+//! d'un fichier tel que Vanguard l'a écrit (sinon : toutes les animations).
 
 #[path = "../../fenetre/src/couleurs.rs"]
 // Le modèle est partagé : la fenêtre en dessine davantage (les neutres, l'encre sur l'accent, les remarques).
@@ -25,13 +30,16 @@ use serde::{Deserialize, Serialize};
 use crate::ui::*;
 use modele::{Base, Choix, Rgb, Theme, VIFS, Vif};
 
-/// Ce que parametres.json garde des couleurs : par thème, rien (celles de Vanguard) ou un choix.
+/// Ce que parametres.json garde de l'apparence de la fenêtre : par thème, rien (celles de Vanguard) ou un choix, et
+/// les animations réduites (absent : toutes).
 #[derive(Serialize, Deserialize, Default, Clone, PartialEq, Eq, Debug)]
 pub(crate) struct Reglees {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sombre: Option<Garde>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     clair: Option<Garde>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    animations_reduites: bool,
 }
 
 /// Un choix tel qu'il est gardé : le mot de la base et les cinq couleurs (« 3fbef7,f24f4d,… »). Relu par
@@ -44,7 +52,7 @@ struct Garde {
 
 impl Reglees {
     pub(crate) fn est_vide(&self) -> bool {
-        self.sombre.is_none() && self.clair.is_none()
+        self.sombre.is_none() && self.clair.is_none() && !self.animations_reduites
     }
 
     fn de(&self, t: Theme) -> Option<&Garde> {
@@ -124,8 +132,8 @@ impl Doute {
     /// Pourquoi un changement est refusé sur ce fichier, et quoi faire.
     fn refus(self) -> String {
         trf!(
-            "{} ; rien n'est enregistré par-dessus. « vanguard parametres » dit ce qu'il a ignoré, et un réglage changé là le réécrit ; les couleurs s'enregistrent ensuite.",
-            "{}; nothing is saved over it. “vanguard settings” says what it ignored, and a setting changed there rewrites it; colors can be saved after that.",
+            "{} ; rien n'est enregistré par-dessus. « vanguard parametres » dit ce qu'il a ignoré, et un réglage changé là le réécrit ; couleurs et animations s'enregistrent ensuite.",
+            "{}; nothing is saved over it. “vanguard settings” says what it ignored, and a setting changed there rewrites it; colors and animations can be saved after that.",
             match self {
                 Doute::Illisible => tr!("parametres.json est illisible", "parametres.json is unreadable"),
                 Doute::Efface => tr!(
@@ -147,37 +155,39 @@ impl Doute {
     fn texte(self) -> &'static str {
         match self {
             Doute::HorsVanguard => tr!(
-                "parametres.json changé hors de Vanguard : les couleurs de Vanguard servent",
-                "parametres.json changed outside Vanguard: Vanguard's colors are used"
+                "parametres.json changé hors de Vanguard : les couleurs et les animations de Vanguard servent",
+                "parametres.json changed outside Vanguard: Vanguard's colors and animations are used"
             ),
             Doute::Adopte => tr!(
-                "parametres.json accepté tel quel après des sceaux refaits : les couleurs de Vanguard servent",
-                "parametres.json accepted as it was after seals were remade: Vanguard's colors are used"
+                "parametres.json accepté tel quel après des sceaux refaits : les couleurs et les animations de Vanguard servent",
+                "parametres.json accepted as it was after seals were remade: Vanguard's colors and animations are used"
             ),
             Doute::Efface => tr!(
-                "parametres.json effacé hors de Vanguard : les couleurs de Vanguard servent",
-                "parametres.json deleted outside Vanguard: Vanguard's colors are used"
+                "parametres.json effacé hors de Vanguard : les couleurs et les animations de Vanguard servent",
+                "parametres.json deleted outside Vanguard: Vanguard's colors and animations are used"
             ),
             Doute::Illisible => tr!(
-                "parametres.json illisible : les couleurs de Vanguard servent",
-                "parametres.json unreadable: Vanguard's colors are used"
+                "parametres.json illisible : les couleurs et les animations de Vanguard servent",
+                "parametres.json unreadable: Vanguard's colors and animations are used"
             ),
             Doute::Invalides => tr!(
                 "couleurs gardées invalides : celles de Vanguard servent",
                 "invalid saved colors: Vanguard's are used"
             ),
             Doute::Inconnu => tr!(
-                "parametres.json absent alors que les sceaux ont été refaits (peut-être effacé) : les couleurs de Vanguard servent",
-                "parametres.json missing while the seals were remade (maybe deleted): Vanguard's colors are used"
+                "parametres.json absent alors que les sceaux ont été refaits (peut-être effacé) : les couleurs et les animations de Vanguard servent",
+                "parametres.json missing while the seals were remade (maybe deleted): Vanguard's colors and animations are used"
             ),
         }
     }
 }
 
-/// Les couleurs réglées, relues : par thème (dans l'ordre de `Theme::TOUS`), et pourquoi certaines ne valent pas.
+/// Les couleurs réglées, relues : par thème (dans l'ordre de `Theme::TOUS`), les animations, et pourquoi certaines
+/// ne valent pas.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct Lues {
     choix: [Option<Choix>; 2],
+    animations_reduites: bool,
     doute: Option<Doute>,
 }
 
@@ -194,6 +204,7 @@ fn lire_dans(chemin: &Path) -> Lues {
     let Ok((f, j)) = super::juger(chemin) else {
         return Lues {
             choix: [None; 2],
+            animations_reduites: false,
             doute: Some(Doute::Illisible),
         };
     };
@@ -217,7 +228,12 @@ fn lire_dans(chemin: &Path) -> Lues {
         }
         c
     });
-    Lues { choix, doute }
+    // Remis à « toutes » par `juger` si le fichier est douteux : comme les couleurs.
+    Lues {
+        choix,
+        animations_reduites: f.couleurs.animations_reduites,
+        doute,
+    }
 }
 
 /// Ce que demande un changement : un choix pour un thème, ou ses couleurs remises à celles de Vanguard.
@@ -392,12 +408,127 @@ fn noter_au_journal(theme: Theme, avant: Option<&Choix>, apres: Option<&Choix>) 
     );
 }
 
-/// `vanguard couleurs` : sans option, les couleurs réglées et celles du système ; avec `--theme`, un changement.
-/// Rend le code de sortie : 0 fait (ou lu), 1 refusé ou non fait, 2 demande mal formée. Avec `json`, la dernière
-/// ligne dit tout, pour la fenêtre.
-pub fn commande(json: bool, theme: Option<&str>, base: Option<&str>, vifs: Option<&str>, defaut: bool) -> i32 {
+/// Le mot des animations, en JSON et en option : « reduites » ou « toutes ».
+fn mot_animations(reduites: bool) -> &'static str {
+    if reduites { "reduites" } else { "toutes" }
+}
+
+fn dit_animations(reduites: bool) -> &'static str {
+    if reduites {
+        tr!("réduites", "reduced")
+    } else {
+        tr!("toutes", "all")
+    }
+}
+
+/// Les animations changées dans le fichier, comme les couleurs (`changer_dans`) : sous le verrou, jamais par-dessus
+/// un fichier illisible, effacé ou changé hors de Vanguard. Rend la valeur d'avant, lue dans la même relecture.
+fn changer_animations_dans(chemin: &Path, reduites: bool) -> std::io::Result<Result<bool, Doute>> {
+    let mut avant = false;
+    let fait = super::modifier_si_sur(chemin, |f| {
+        avant = f.couleurs.animations_reduites;
+        if avant == reduites {
+            return false;
+        }
+        f.couleurs.animations_reduites = reduites;
+        true
+    })?;
+    Ok(fait.map(|()| avant).map_err(Doute::de_bloque))
+}
+
+/// `vanguard couleurs --animations toutes|reduites` : le réglage de la fenêtre, gardé pour les prochaines ouvertures.
+/// Mêmes codes que `commande` ; le JSON dit le geste « animations », la valeur d'avant et celle d'après.
+fn commande_animations(chemin: &Path, json: bool, mot: &str, seul: bool) -> i32 {
+    let voulu = match mot {
+        _ if !seul => Err(tr!(
+            "--animations se donne seul (sans --theme, --base, --vifs ni --defaut)",
+            "--animations is given alone (without --theme, --base, --vifs or --defaut)"
+        )),
+        "toutes" => Ok(false),
+        "reduites" => Ok(true),
+        _ => Err(tr!("animations : toutes ou reduites", "animations: toutes or reduites")),
+    };
+    let mut douteux = None;
+    let (code, issue, raison, avant, apres) = match voulu {
+        Err(r) => (2, "refuse", r.to_string(), None, None),
+        Ok(reduites) => match changer_animations_dans(chemin, reduites) {
+            Ok(Ok(avant)) => {
+                if avant != reduites {
+                    noter_animations(avant, reduites);
+                }
+                (0, "fait", String::new(), Some(avant), Some(reduites))
+            }
+            Ok(Err(d)) => {
+                douteux = Some(d);
+                (1, "refuse", d.refus(), None, None)
+            }
+            Err(e) => (1, "echec", trf!("non enregistré ({})", "not saved ({})", e), None, None),
+        },
+    };
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "geste": "animations",
+                "issue": issue,
+                "raison": raison,
+                "avant": avant.map(mot_animations),
+                "apres": apres.map(mot_animations),
+                "douteux": douteux.map(Doute::mot),
+            })
+        );
+    } else if let (Some(avant), Some(apres)) = (avant, apres) {
+        trp!(
+            "  {VERT}✔{RESET} Animations de la fenêtre : avant {}, maintenant {}.",
+            "  {VERT}✔{RESET} Window animations: before {}, now {}.",
+            dit_animations(avant),
+            dit_animations(apres)
+        );
+        afficher_aligne(
+            "  ",
+            &trf!(
+                "Pour annuler : vanguard couleurs --animations {}",
+                "To undo: vanguard colors --animations {}",
+                mot_animations(avant)
+            ),
+            2,
+            GRIS,
+        );
+    } else {
+        trp!("  ✖ Rien n'a changé : {raison}", "  ✖ Nothing changed: {raison}");
+    }
+    code
+}
+
+/// Un changement des animations, au journal des événements.
+fn noter_animations(avant: bool, apres: bool) {
+    use crate::modele::evenement::{Evenement, Source};
+    let quoi = trf!(
+        "Animations de la fenêtre : avant {}, maintenant {}",
+        "Window animations: before {}, now {}",
+        dit_animations(avant),
+        dit_animations(apres)
+    );
+    crate::modele::journal::noter(Evenement::action(Source::Utilisateur, &quoi, true, &[]).cle(Some("animations")));
+}
+
+/// `vanguard couleurs` : sans option, les couleurs réglées et celles du système ; avec `--theme`, un changement ; avec
+/// `--animations`, celui des animations. Rend le code de sortie : 0 fait (ou lu), 1 refusé ou non fait, 2 demande mal
+/// formée. Avec `json`, la dernière ligne dit tout, pour la fenêtre.
+pub fn commande(
+    json: bool,
+    theme: Option<&str>,
+    base: Option<&str>,
+    vifs: Option<&str>,
+    defaut: bool,
+    animations: Option<&str>,
+) -> i32 {
     let chemin = super::fichier();
-    if theme.is_none() && base.is_none() && vifs.is_none() && !defaut {
+    let couleurs_demandees = theme.is_some() || base.is_some() || vifs.is_some() || defaut;
+    if let Some(mot) = animations {
+        return commande_animations(&chemin, json, mot, !couleurs_demandees);
+    }
+    if !couleurs_demandees {
         let lues = lire_dans(&chemin);
         let systeme = du_systeme();
         if json {
@@ -489,6 +620,7 @@ fn json_lu(lues: &Lues, systeme: Option<&Systeme>) -> serde_json::Value {
     serde_json::json!({
         "sombre": lues.de(Theme::Sombre).as_ref().map(json_choix),
         "clair": lues.de(Theme::Clair).as_ref().map(json_choix),
+        "animations": mot_animations(lues.animations_reduites),
         "douteux": lues.doute.map(Doute::mot),
         "systeme": systeme.map(|s| serde_json::json!({
             "source": s.source,
@@ -526,6 +658,7 @@ fn afficher(lues: &Lues, systeme: Option<&Systeme>) {
     for t in Theme::TOUS {
         println!("  {GRAS}{:<8}{RESET} {}", t.mot(), dit(lues.de(t).as_ref()));
     }
+    println!("  {GRAS}animations{RESET} {}", dit_animations(lues.animations_reduites));
     match systeme {
         Some(s) => println!(
             "  {GRIS}{}{RESET}",
@@ -549,8 +682,8 @@ fn afficher(lues: &Lues, systeme: Option<&Systeme>) {
     afficher_aligne(
         "  ",
         tr!(
-            "Changer : vanguard couleurs --theme sombre|clair --base <préréglage> [--vifs accent,grave,moyen,faible,bon] ; --defaut remet celles de Vanguard. La fenêtre les règle dans Réglages.",
-            "Change: vanguard colors --theme sombre|clair --base <preset> [--vifs accent,severe,medium,low,good]; --defaut puts Vanguard's back. The window sets them in Settings."
+            "Changer : vanguard couleurs --theme sombre|clair --base <préréglage> [--vifs accent,grave,moyen,faible,bon] ; --defaut remet celles de Vanguard ; --animations toutes|reduites. La fenêtre les règle dans Réglages.",
+            "Change: vanguard colors --theme sombre|clair --base <preset> [--vifs accent,severe,medium,low,good]; --defaut puts Vanguard's back; --animations toutes|reduites. The window sets them in Settings."
         ),
         2,
         GRIS,
@@ -840,6 +973,62 @@ mod tests {
             assert_eq!(changer_dans(&f, Theme::Sombre, voulu).unwrap(), Err(Doute::Illisible));
             assert_eq!(lu(&f), b"{ pas du json", "rien n'est écrit par-dessus");
         }
+    }
+
+    /// Les animations réduites se gardent d'une ouverture à l'autre : écrites sous le verrou, relues (et rendues en
+    /// JSON) à la lecture suivante, les couleurs et les autres réglages gardés ; remises à « toutes », le fichier
+    /// redevient octet pour octet celui d'avant.
+    #[test]
+    fn les_animations_se_gardent_et_s_annulent_exactement() {
+        let d = dossier("animations");
+        let f = d.join(super::super::PARAMETRES);
+        assert!(!lire_dans(&f).animations_reduites, "absent : toutes");
+        changer_dans(&f, Theme::Sombre, Voulu::Choix(braise()))
+            .unwrap()
+            .unwrap();
+        let depart = lu(&f);
+        assert_eq!(changer_animations_dans(&f, true).unwrap(), Ok(false));
+        let l = lire_dans(&f);
+        assert!(l.animations_reduites);
+        assert_eq!((l.de(Theme::Sombre), l.doute), (Some(braise()), None));
+        assert_eq!(json_lu(&l, None)["animations"], "reduites");
+        // Déjà réduites : rien d'écrit, la valeur d'avant le dit.
+        let reduit = lu(&f);
+        assert_eq!(changer_animations_dans(&f, true).unwrap(), Ok(true));
+        assert_eq!(lu(&f), reduit);
+        assert_eq!(changer_animations_dans(&f, false).unwrap(), Ok(true));
+        assert_eq!(lu(&f), depart, "le fichier redevient octet pour octet celui d'avant");
+        assert_eq!(json_lu(&lire_dans(&f), None)["animations"], "toutes");
+        // Seul, et en mots fermés : sinon code 2, rien d'écrit.
+        for (mot, seul) in [("reduites", false), ("Reduites", true), ("oui", true), ("", true)] {
+            assert_eq!(commande_animations(&f, true, mot, seul), 2, "{mot:?} {seul}");
+            assert_eq!(lu(&f), depart, "{mot:?}");
+        }
+    }
+
+    /// Un parametres.json douteux (changé hors de Vanguard, illisible, effacé) : les animations ne s'y écrivent pas,
+    /// la raison est rendue et le fichier laissé octet pour octet ; des « réduites » forgées ne valent pas.
+    #[test]
+    fn les_animations_ne_s_ecrivent_pas_sur_un_fichier_douteux() {
+        let d = dossier("animations-douteux");
+        let f = d.join(super::super::PARAMETRES);
+        changer_animations_dans(&f, true).unwrap().unwrap();
+        std::fs::write(&f, r#"{"couleurs":{"animations_reduites":true}}"#).unwrap();
+        let l = lire_dans(&f);
+        assert_eq!((l.animations_reduites, l.doute), (false, Some(Doute::HorsVanguard)));
+        let forge = lu(&f);
+        for voulu in [true, false] {
+            assert_eq!(changer_animations_dans(&f, voulu).unwrap(), Err(Doute::HorsVanguard));
+            assert_eq!(lu(&f), forge, "rien n'est écrit par-dessus");
+        }
+        assert_eq!(commande_animations(&f, true, "toutes", true), 1);
+        assert_eq!(lu(&f), forge);
+        std::fs::write(&f, b"{ pas du json").unwrap();
+        assert_eq!(changer_animations_dans(&f, true).unwrap(), Err(Doute::Illisible));
+        assert_eq!(lu(&f), b"{ pas du json");
+        std::fs::remove_file(&f).unwrap();
+        assert_eq!(changer_animations_dans(&f, true).unwrap(), Err(Doute::Efface));
+        assert!(!f.exists());
     }
 
     /// Scellé mais pas tel que `vanguard couleurs` l'écrit (une version future, un bogue) : ignoré, dit.

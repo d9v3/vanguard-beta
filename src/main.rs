@@ -698,8 +698,16 @@ async fn main() {
             base,
             vifs,
             defaut,
+            animations,
         }) => {
-            let code = parametres::couleurs::commande(json, theme.as_deref(), base.as_deref(), vifs.as_deref(), defaut);
+            let code = parametres::couleurs::commande(
+                json,
+                theme.as_deref(),
+                base.as_deref(),
+                vifs.as_deref(),
+                defaut,
+                animations.as_deref(),
+            );
             if code != 0 {
                 chiffrement::oublier_session();
                 std::process::exit(code);

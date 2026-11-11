@@ -263,6 +263,13 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   seraient remis en silence à leur défaut) ni effacé ou changé hors de Vanguard (le rescellement effacerait la trace)
   : refusé, rien d'écrit, et la fenêtre ne propose rien d'enregistrer ; c'est aux Paramètres, qui disent ce qu'ils ont
   ignoré, de le réécrire. Une confirmation ouverte fige le brouillon : ce qu'elle montre est ce qui s'enregistre.
+  Le réglage « Animations réduites » suit le même chemin, sans confirmation (cosmétique, un clic l'annule) : la forme
+  fermée `vanguard couleurs --animations <toutes|reduites> --json`, rebâtie d'une trame de 7 octets exacts, gardée
+  dans `couleurs` (donc remise à son défaut avec elles sur un fichier douteux), mêmes refus, même verrou, chaque
+  changement noté (avant, après) ; la fenêtre le relit à l'ouverture dans la même réponse que les couleurs, et un
+  refus ou un échec le laisse valoir pour cette fois seulement, dit dans les coulisses (essais
+  `les_animations_ne_s_ecrivent_pas_sur_un_fichier_douteux`, `src/parametres/couleurs.rs`,
+  `les_animations_de_la_fenetre_se_gardent_d_une_ouverture_a_l_autre`, `tests/programme.rs`).
   Essais : `les_couleurs_se_proposent_s_enregistrent_par_vanguard_et_s_annulent` (`fenetre/src/appli.rs`),
   `des_couleurs_passent_seules_et_lisibles` (`fenetre/src/relais.rs`), ceux de `fenetre/src/couleurs.rs`,
   `fenetre/src/donnees/couleurs.rs` et `src/parametres/couleurs.rs` (`un_changement_s_annule_exactement`,

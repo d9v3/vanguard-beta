@@ -2,6 +2,7 @@
 //! ne lit aucun fichier : ni parametres.json, ni le thème d'Omarchy, ni le registre de Windows ; `vanguard` lit,
 //! juge et écrit, la fenêtre relit sa réponse ici. Elle la relit strictement : une couleur qui ne se lit pas, ou
 //! qui se verrait à peine (`couleurs::verifier`), ne vaut pas ; celles de Vanguard servent, et la raison est dite.
+//! Le réglage des animations, gardé par `vanguard` (`couleurs --animations`), vient dans la même réponse.
 
 use serde::Deserialize;
 
@@ -44,24 +45,24 @@ impl Doute {
     pub fn texte(self) -> &'static str {
         match self {
             Doute::HorsVanguard => crate::tr!(
-                "parametres.json a été changé hors de Vanguard : les couleurs de Vanguard servent.",
-                "parametres.json was changed outside Vanguard: Vanguard's colors are used."
+                "parametres.json a été changé hors de Vanguard : les couleurs et les animations de Vanguard servent.",
+                "parametres.json was changed outside Vanguard: Vanguard's colors and animations are used."
             ),
             Doute::Adopte => crate::tr!(
-                "parametres.json a été accepté tel quel après des sceaux refaits : les couleurs de Vanguard servent.",
-                "parametres.json was accepted as it was after seals were remade: Vanguard's colors are used."
+                "parametres.json a été accepté tel quel après des sceaux refaits : les couleurs et les animations de Vanguard servent.",
+                "parametres.json was accepted as it was after seals were remade: Vanguard's colors and animations are used."
             ),
             Doute::Efface => crate::tr!(
-                "parametres.json a été effacé hors de Vanguard : les couleurs de Vanguard servent.",
-                "parametres.json was deleted outside Vanguard: Vanguard's colors are used."
+                "parametres.json a été effacé hors de Vanguard : les couleurs et les animations de Vanguard servent.",
+                "parametres.json was deleted outside Vanguard: Vanguard's colors and animations are used."
             ),
             Doute::Illisible => crate::tr!(
-                "parametres.json est illisible : les couleurs de Vanguard servent.",
-                "parametres.json is unreadable: Vanguard's colors are used."
+                "parametres.json est illisible : les couleurs et les animations de Vanguard servent.",
+                "parametres.json is unreadable: Vanguard's colors and animations are used."
             ),
             Doute::Inconnu => crate::tr!(
-                "parametres.json est absent alors que les sceaux ont été refaits (peut-être effacé) : les couleurs de Vanguard servent.",
-                "parametres.json is missing while the seals were remade (maybe deleted): Vanguard's colors are used."
+                "parametres.json est absent alors que les sceaux ont été refaits (peut-être effacé) : les couleurs et les animations de Vanguard servent.",
+                "parametres.json is missing while the seals were remade (maybe deleted): Vanguard's colors and animations are used."
             ),
             Doute::Invalides => crate::tr!(
                 "Des couleurs gardées sont invalides : celles de Vanguard servent.",
@@ -108,6 +109,9 @@ pub struct Systeme {
 pub struct Lues {
     /// Par thème, dans l'ordre de `Theme::TOUS` ; rien : celles de Vanguard.
     pub choix: [Option<Choix>; 2],
+    /// Les animations gardées (`true` : réduites) ; rien : pas dit (un `vanguard` d'avant ce réglage), ou un mot
+    /// inconnu, et la fenêtre garde les siennes.
+    pub animations_reduites: Option<bool>,
     pub doute: Option<Doute>,
     pub systeme: Option<Systeme>,
 }
@@ -140,8 +144,18 @@ struct SystemeBrut {
 struct Brut {
     sombre: Option<ChoixBrut>,
     clair: Option<ChoixBrut>,
+    animations: Texte,
     douteux: Texte,
     systeme: Option<SystemeBrut>,
+}
+
+/// Le mot des animations, strictement : « reduites » ou « toutes », rien d'autre.
+fn animations_de(mot: &str) -> Option<bool> {
+    match mot {
+        "reduites" => Some(true),
+        "toutes" => Some(false),
+        _ => None,
+    }
 }
 
 /// Un choix écrit par `vanguard` : une base connue, cinq couleurs strictes, lisibles sur le thème.
@@ -181,6 +195,7 @@ pub fn lire(sortie: &[u8]) -> Result<Lues, String> {
     }
     Ok(Lues {
         choix,
+        animations_reduites: animations_de(b.animations.as_str()),
         doute,
         systeme: b.systeme.as_ref().and_then(systeme_de),
     })
@@ -209,6 +224,52 @@ struct IssueBrute {
     apres: Option<ChoixBrut>,
 }
 
+/// La dernière ligne d'un changement qui a fini, lue en JSON ; sinon la raison de l'échec à montrer (`None` : une
+/// réponse illisible).
+fn reponse<T: serde::de::DeserializeOwned>(f: &Fin) -> Result<T, Option<String>> {
+    match &f.issue {
+        Issue::Terminee => {}
+        Issue::Arretee => return Err(Some(crate::tr!("arrêté", "stopped").to_string())),
+        Issue::DelaiDepasse => {
+            return Err(Some(
+                crate::tr!("arrêté : trop long sans finir", "stopped: too long without finishing").to_string(),
+            ));
+        }
+        Issue::TropLongue => return Err(None),
+        Issue::Impossible(e) => return Err(Some(crate::trf!("pas pu lancer : {}", "could not start: {}", e))),
+    }
+    let ligne = f
+        .sortie
+        .split(|o| *o == b'\n')
+        .rev()
+        .find(|l| !l.iter().all(u8::is_ascii_whitespace))
+        .ok_or(None)?;
+    super::lire::<T>(ligne).map_err(|_| None)
+}
+
+/// L'issue dite par Vanguard.
+enum Dite {
+    Fait,
+    Refuse(String),
+    Echec(String),
+    Illisible,
+}
+
+/// L'issue dite par Vanguard pour ce geste-là, avec son code : « fait » seulement avec le code 0, un refus ou un
+/// échec avec un code non nul (et sa raison, nettoyée) ; tout le reste est illisible.
+fn issue_dite(geste: &Texte, attendu: &str, issue: &Texte, raison: &Texte, code: Option<i32>) -> Dite {
+    if geste.as_str() != attendu {
+        return Dite::Illisible;
+    }
+    let raison = crate::nettoyage::nom(raison.as_str(), 200);
+    match (issue.as_str(), code) {
+        ("fait", Some(0)) => Dite::Fait,
+        ("refuse", Some(c)) if c != 0 => Dite::Refuse(raison),
+        ("echec", Some(c)) if c != 0 => Dite::Echec(raison),
+        _ => Dite::Illisible,
+    }
+}
+
 /// Lit l'issue d'un changement des couleurs, strictement : « fait » seulement si Vanguard le dit, pour ce geste-là,
 /// ce thème-là et exactement les couleurs demandées, avec le code 0 et une valeur d'avant lisible. Toute autre
 /// réponse est un échec : les couleurs relues ensuite montrent l'état réel.
@@ -222,39 +283,16 @@ pub fn lire_issue(cc: ChangementCouleurs, f: &Fin) -> IssueCouleurs {
             .to_string(),
         )
     };
-    match &f.issue {
-        Issue::Terminee => {}
-        Issue::Arretee => return IssueCouleurs::Echec(crate::tr!("arrêté", "stopped").to_string()),
-        Issue::DelaiDepasse => {
-            return IssueCouleurs::Echec(
-                crate::tr!("arrêté : trop long sans finir", "stopped: too long without finishing").to_string(),
-            );
-        }
-        Issue::TropLongue => return illisible(),
-        Issue::Impossible(e) => {
-            return IssueCouleurs::Echec(crate::trf!("pas pu lancer : {}", "could not start: {}", e));
-        }
-    }
-    let Some(ligne) = f
-        .sortie
-        .split(|o| *o == b'\n')
-        .rev()
-        .find(|l| !l.iter().all(u8::is_ascii_whitespace))
-    else {
-        return illisible();
+    let b: IssueBrute = match reponse(f) {
+        Ok(b) => b,
+        Err(Some(r)) => return IssueCouleurs::Echec(r),
+        Err(None) => return illisible(),
     };
-    let Ok(b) = super::lire::<IssueBrute>(ligne) else {
-        return illisible();
-    };
-    if b.geste.as_str() != "couleurs" {
-        return illisible();
-    }
-    let raison = crate::nettoyage::nom(b.raison.as_str(), 200);
-    match (b.issue.as_str(), f.code) {
-        ("fait", Some(0)) => {}
-        ("refuse", Some(c)) if c != 0 => return IssueCouleurs::Refuse(raison),
-        ("echec", Some(c)) if c != 0 => return IssueCouleurs::Echec(raison),
-        _ => return illisible(),
+    match issue_dite(&b.geste, "couleurs", &b.issue, &b.raison, f.code) {
+        Dite::Fait => {}
+        Dite::Refuse(r) => return IssueCouleurs::Refuse(r),
+        Dite::Echec(r) => return IssueCouleurs::Echec(r),
+        Dite::Illisible => return illisible(),
     }
     let lu = |c: &Option<ChoixBrut>| match c {
         None => Some(None),
@@ -264,6 +302,52 @@ pub fn lire_issue(cc: ChangementCouleurs, f: &Fin) -> IssueCouleurs {
         (Some(t), Some(avant), Some(apres)) if t == cc.theme && apres == cc.choix => {
             IssueCouleurs::Fait { avant, apres }
         }
+        _ => illisible(),
+    }
+}
+
+/// Ce qu'est devenu un changement des animations, d'après Vanguard.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IssueAnimations {
+    /// Gardées : la valeur d'avant (`true` : réduites).
+    Fait {
+        avant: bool,
+    },
+    Refuse(String),
+    Echec(String),
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct IssueAnimationsBrute {
+    geste: Texte,
+    issue: Texte,
+    raison: Texte,
+    avant: Texte,
+    apres: Texte,
+}
+
+/// Lit l'issue d'un changement des animations, aussi strictement que celle des couleurs : « fait » seulement pour
+/// le geste « animations », le code 0, une valeur d'avant lisible et exactement celle demandée après.
+pub fn lire_issue_animations(reduites: bool, f: &Fin) -> IssueAnimations {
+    let illisible = || {
+        IssueAnimations::Echec(
+            crate::tr!("réponse de Vanguard illisible", "unreadable answer from Vanguard").to_string(),
+        )
+    };
+    let b: IssueAnimationsBrute = match reponse(f) {
+        Ok(b) => b,
+        Err(Some(r)) => return IssueAnimations::Echec(r),
+        Err(None) => return illisible(),
+    };
+    match issue_dite(&b.geste, "animations", &b.issue, &b.raison, f.code) {
+        Dite::Fait => {}
+        Dite::Refuse(r) => return IssueAnimations::Refuse(r),
+        Dite::Echec(r) => return IssueAnimations::Echec(r),
+        Dite::Illisible => return illisible(),
+    }
+    match (animations_de(b.avant.as_str()), animations_de(b.apres.as_str())) {
+        (Some(avant), Some(apres)) if apres == reduites => IssueAnimations::Fait { avant },
         _ => illisible(),
     }
 }
@@ -350,6 +434,50 @@ mod tests {
             issue: Issue::Terminee,
             duree: Duration::from_millis(10),
         }
+    }
+
+    /// Les animations gardées se relisent strictement : deux mots, sinon rien (la fenêtre garde les siennes) ; leur
+    /// issue n'est « faite » que pour ce geste, le code 0 et exactement la valeur demandée.
+    #[test]
+    fn les_animations_se_relisent_strictement() {
+        for (json, attendu) in [
+            (r#"{"animations":"reduites"}"#, Some(true)),
+            (r#"{"animations":"toutes"}"#, Some(false)),
+            ("{}", None),
+            (r#"{"animations":"Reduites"}"#, None),
+            (r#"{"animations":true}"#, None),
+        ] {
+            assert_eq!(lire(json.as_bytes()).unwrap().animations_reduites, attendu, "{json}");
+        }
+        let fin = |sortie: &str, code| Fin {
+            lancement: crate::commandes::Lancement::Animations(true),
+            ..fin(sortie, code)
+        };
+        let fait =
+            r#"{"geste":"animations","issue":"fait","raison":"","avant":"toutes","apres":"reduites","douteux":null}"#;
+        assert_eq!(
+            lire_issue_animations(true, &fin(fait, 0)),
+            IssueAnimations::Fait { avant: false }
+        );
+        for (sortie, code, voulu) in [
+            (fait, 1, true),
+            (fait, 0, false),
+            (&fait.replace("\"animations\",\"issue", "\"couleurs\",\"issue"), 0, true),
+            (&fait.replace("\"toutes\"", "\"rien\""), 0, true),
+        ] {
+            assert!(
+                matches!(
+                    lire_issue_animations(voulu, &fin(sortie, code)),
+                    IssueAnimations::Echec(_)
+                ),
+                "{sortie} {code} {voulu}"
+            );
+        }
+        let refus = r#"{"geste":"animations","issue":"refuse","raison":"parametres.json a été changé hors de Vanguard","avant":null,"apres":null,"douteux":"hors_vanguard"}"#;
+        assert!(matches!(
+            lire_issue_animations(true, &fin(refus, 1)),
+            IssueAnimations::Refuse(r) if r.contains("hors de Vanguard")
+        ));
     }
 
     /// « Fait » seulement pour ce geste, ce thème et exactement ce qui était demandé ; la valeur d'avant revient

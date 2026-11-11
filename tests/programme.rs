@@ -233,6 +233,101 @@ fn parametres_changes_hors_de_vanguard_dits_sans_rien_couper() {
     let _ = std::fs::remove_dir_all(&maison);
 }
 
+/// Les animations de la fenêtre, gardées par le vrai programme : `couleurs --animations reduites` les écrit (journal
+/// noté), un lancement suivant les relit dans `couleurs --json` ; parametres.json changé hors de Vanguard ensuite :
+/// rien d'écrit par-dessus (code 1, la raison dite), et les animations relues sont « toutes ».
+#[cfg(unix)]
+#[test]
+fn les_animations_de_la_fenetre_se_gardent_d_une_ouverture_a_l_autre() {
+    let maison = maison_jetable();
+    let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
+    let derniere = |s: &Sortie| -> serde_json::Value {
+        serde_json::from_str(s.texte.lines().last().unwrap_or_default()).unwrap_or_default()
+    };
+    let lu = vanguard_dans(programme, &maison, "fr", &["couleurs", "--json"], "", 30);
+    assert_eq!(
+        (lu.code, derniere(&lu)["animations"].as_str()),
+        (Some(0), Some("toutes")),
+        "{}",
+        lu.erreurs
+    );
+    let fait = vanguard_dans(
+        programme,
+        &maison,
+        "fr",
+        &["couleurs", "--animations", "reduites", "--json"],
+        "",
+        30,
+    );
+    let j = derniere(&fait);
+    assert_eq!(fait.code, Some(0), "{} {}", fait.texte, fait.erreurs);
+    assert_eq!(
+        (j["geste"].as_str(), j["issue"].as_str()),
+        (Some("animations"), Some("fait"))
+    );
+    assert_eq!(
+        (j["avant"].as_str(), j["apres"].as_str()),
+        (Some("toutes"), Some("reduites"))
+    );
+    let relu = vanguard_dans(programme, &maison, "fr", &["couleurs", "--json"], "", 30);
+    assert_eq!(
+        derniere(&relu)["animations"].as_str(),
+        Some("reduites"),
+        "{}",
+        relu.texte
+    );
+    // Mal formé : code 2, rien d'écrit.
+    let fichier = dossier_vanguard(&maison).join("parametres.json");
+    let avant = std::fs::read(&fichier).unwrap();
+    let mal = vanguard_dans(
+        programme,
+        &maison,
+        "fr",
+        &["couleurs", "--animations", "aucune"],
+        "",
+        30,
+    );
+    assert_eq!(mal.code, Some(2), "{}", mal.texte);
+    assert_eq!(std::fs::read(&fichier).unwrap(), avant);
+    // Un programme du compte réécrit le fichier : il n'est pas écrasé, et ses « réduites » ne valent pas.
+    std::fs::write(&fichier, r#"{"couleurs":{"animations_reduites":true},"langue":"fr"}"#).unwrap();
+    let refus = vanguard_dans(
+        programme,
+        &maison,
+        "fr",
+        &["couleurs", "--animations", "toutes"],
+        "",
+        30,
+    );
+    assert_eq!(refus.code, Some(1), "{}", refus.texte);
+    assert!(
+        sans_couleurs(&refus.texte)
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .contains("rien n'est enregistré par-dessus"),
+        "{}",
+        refus.texte
+    );
+    assert_eq!(
+        std::fs::read(&fichier).unwrap(),
+        br#"{"couleurs":{"animations_reduites":true},"langue":"fr"}"#
+    );
+    let douteux = derniere(&vanguard_dans(
+        programme,
+        &maison,
+        "fr",
+        &["couleurs", "--json"],
+        "",
+        30,
+    ));
+    assert_eq!(
+        (douteux["animations"].as_str(), douteux["douteux"].as_str()),
+        (Some("toutes"), Some("hors_vanguard"))
+    );
+    let _ = std::fs::remove_dir_all(&maison);
+}
+
 /// F4 (E-M1) : sceaux.json ramené à une forme d'avant (`format` absent) et parametres.json retiré de ses `vus`, sans
 /// la tête du journal qui prouverait une vraie mise à jour : rien n'est repris d'une « mise à jour », le
 /// parametres.json forgé est dit accepté tel quel après des sceaux refaits, et rien de ce qu'il dit n'est appliqué.

@@ -716,12 +716,14 @@ pub struct ChangementCouleurs {
 }
 
 /// Ce qu'une tâche lance : une commande de la liste (elle lit), ou un changement (seulement par un clic confirmé,
-/// jamais par la console) : au démarrage, ou des couleurs de la fenêtre.
+/// jamais par la console) : au démarrage, des couleurs de la fenêtre, ou ses animations (`true` : réduites), gardées
+/// par `vanguard` pour les prochaines ouvertures.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Lancement {
     Commande(Commande),
     Changement(Changement),
     Couleurs(ChangementCouleurs),
+    Animations(bool),
 }
 
 impl From<Commande> for Lancement {
@@ -768,10 +770,15 @@ impl Lancement {
                 a.push("--json".to_string());
                 a
             }
+            // Deux mots fermés, rien d'autre.
+            Lancement::Animations(reduites) => {
+                let mot = if reduites { "reduites" } else { "toutes" };
+                ["couleurs", "--animations", mot, "--json"].map(str::to_string).to_vec()
+            }
         }
     }
 
-    /// Un changement (au démarrage ou des couleurs) : il passe seul, et ne s'interrompt pas.
+    /// Un changement (au démarrage, des couleurs ou des animations) : il passe seul, et ne s'interrompt pas.
     pub fn change(self) -> bool {
         !matches!(self, Lancement::Commande(_))
     }
@@ -783,7 +790,7 @@ impl Lancement {
             Lancement::Commande(c) => c.delai(),
             Lancement::Changement(_) => Duration::from_mins(15),
             // Écrire un petit fichier, scellé.
-            Lancement::Couleurs(_) => Duration::from_mins(1),
+            Lancement::Couleurs(_) | Lancement::Animations(_) => Duration::from_mins(1),
         }
     }
 
@@ -796,7 +803,7 @@ impl Lancement {
         match self {
             Lancement::Commande(c) => c,
             Lancement::Changement(_) => Commande::Demarrage,
-            Lancement::Couleurs(_) => Commande::Couleurs,
+            Lancement::Couleurs(_) | Lancement::Animations(_) => Commande::Couleurs,
         }
     }
 }
@@ -1173,6 +1180,13 @@ mod tests {
             ["couleurs", "--theme", "clair", "--defaut", "--json"]
         );
         assert!(!Lancement::from(Commande::Couleurs).change());
+        // Les animations : deux mots fermés, un changement qui passe seul.
+        for (reduites, mot) in [(true, "reduites"), (false, "toutes")] {
+            let a = Lancement::Animations(reduites);
+            assert_eq!(a.arguments(), ["couleurs", "--animations", mot, "--json"]);
+            assert!(a.change());
+            assert_eq!(a.commande(), Commande::Couleurs);
+        }
         assert!(Commande::ici().all(|c| c != Commande::Couleurs));
         for saisie in ["couleurs", "colors", "vanguard couleurs"] {
             assert!(matches!(comprendre(saisie), Saisie::Refusee(_)), "{saisie}");

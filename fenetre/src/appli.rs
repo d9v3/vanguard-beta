@@ -9,6 +9,11 @@
 //! Les couleurs de la fenêtre suivent le même chemin (`proposer_couleurs`, puis `accepter`) : la fenêtre ne les écrit
 //! jamais, `vanguard couleurs` les revérifie et les enregistre ; elle les relit ensuite de sa réponse, comme au
 //! lancement. La valeur d'avant reste offerte pour revenir en arrière (`revenir_couleurs`).
+//!
+//! Les animations aussi sont gardées par `vanguard` (`couleurs --animations`), relues dans la même réponse au
+//! lancement. Un clic sur « Réduites » ou « Toutes » est tout le geste : il vaut tout de suite pour la fenêtre, et
+//! son enregistrement part dès que rien ne tourne (`regler_animations`), sans confirmation, car il ne touche que
+//! l'apparence de la fenêtre et se défait d'un clic.
 
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
@@ -17,7 +22,7 @@ use crate::commandes::{self, Changement, ChangementCouleurs, Commande, Forme, La
 use crate::console::{self, Console};
 use crate::couleurs::{Choix, Jeu, Theme};
 use crate::coulisses::{Chemin, Coulisses};
-use crate::donnees::couleurs::{IssueCouleurs, Lues};
+use crate::donnees::couleurs::{IssueAnimations, IssueCouleurs, Lues};
 use crate::donnees::{appareils, bilan, evenements, libre, protection};
 use crate::lanceur::{Fin, Issue, Message, Programme, Reveil, Tache};
 
@@ -102,8 +107,13 @@ pub struct Appli {
     retours: Vec<Ecran>,
     pub sombre: bool,
     /// « Réduire les animations » : plus de fondu d'écran, de chiffres qui montent, de pouls ni d'ouverture ; l'état
-    /// final s'affiche tout de suite. Pour cette fois, comme le thème et la langue (rien n'est enregistré).
+    /// final s'affiche tout de suite. Gardé par `vanguard` (`regler_animations`), relu au lancement.
     pub animations_reduites: bool,
+    /// Les animations ont été choisies dans cette fenêtre : une relecture ne les change plus (un enregistrement
+    /// refusé ne doit pas défaire le choix montré).
+    animations_choisies: bool,
+    /// Les animations à enregistrer, dès que rien ne tourne (le dernier clic seul).
+    animations_a_garder: Option<bool>,
     programme: Result<Programme, String>,
     tache: Option<Tache>,
     file: VecDeque<Commande>,
@@ -167,6 +177,8 @@ impl Appli {
             retours: Vec::new(),
             sombre: true,
             animations_reduites: false,
+            animations_choisies: false,
+            animations_a_garder: None,
             programme,
             tache: None,
             file: VecDeque::new(),
@@ -617,7 +629,9 @@ impl Appli {
             }
         }
         if self.tache.is_none() {
-            if let Some(c) = self.file.pop_front() {
+            if let Some(reduites) = self.animations_a_garder.take() {
+                self.lancer(Lancement::Animations(reduites));
+            } else if let Some(c) = self.file.pop_front() {
                 self.lancer(c.into());
             } else if self.programme.is_ok() && self.dernier_sondage.elapsed() >= SONDAGE {
                 // Même pendant une confirmation ouverte : la veille des alertes ne s'arrête jamais pour elle
@@ -635,6 +649,7 @@ impl Appli {
             Lancement::Commande(c) => c,
             Lancement::Changement(ch) => return self.finir_changement(ch, f),
             Lancement::Couleurs(cc) => return self.finir_couleurs(cc, f),
+            Lancement::Animations(reduites) => return self.finir_animations(reduites, f),
         };
         let contenu = match &f.issue {
             Issue::Terminee => match lire(c, &f.sortie) {
@@ -776,6 +791,12 @@ impl Appli {
                     self.coulisses.avis(d.texte());
                     self.dire("couleurs", d.texte(), Ton::Attention);
                 }
+                // Les animations gardées valent dès qu'elles sont lues, sauf choisies ici entre-temps.
+                if !self.animations_choisies
+                    && let Some(reduites) = l.animations_reduites
+                {
+                    self.animations_reduites = reduites;
+                }
                 self.couleurs = l;
                 self.fermer_si_couleurs_changees();
             }
@@ -818,6 +839,69 @@ impl Appli {
         };
         self.dire("couleurs", &texte, ton);
         self.demander(Commande::Couleurs);
+    }
+
+    /// « Réduites » ou « Toutes » cliqué : vaut tout de suite, et `vanguard` l'enregistre dès que rien ne tourne
+    /// (le dernier clic seul part). Sans programme, rien ne peut l'être : dit.
+    pub fn regler_animations(&mut self, reduites: bool) {
+        if self.animations_reduites == reduites {
+            return;
+        }
+        self.animations_reduites = reduites;
+        self.animations_choisies = true;
+        if let Err(e) = &self.programme {
+            let texte = crate::trf!(
+                "Animations changées pour cette fois seulement : {}",
+                "Animations changed for this time only: {}",
+                e
+            );
+            self.dire("fenêtre", &texte, Ton::Attention);
+            return;
+        }
+        self.animations_a_garder = Some(reduites);
+    }
+
+    /// Un enregistrement des animations a fini : dit dans la console. Refusé ou en échec, le choix vaut pour cette
+    /// fois seulement, et c'est dit.
+    fn finir_animations(&mut self, reduites: bool, f: &Fin) {
+        let issue = crate::donnees::couleurs::lire_issue_animations(reduites, f);
+        let echec = !matches!(issue, IssueAnimations::Fait { .. });
+        let (texte, ton) = match issue {
+            IssueAnimations::Fait { .. } => (
+                crate::tr!(
+                    "Fait : animations gardées pour les prochaines ouvertures.",
+                    "Done: animations kept for the next openings."
+                )
+                .to_string(),
+                Ton::Bon,
+            ),
+            IssueAnimations::Refuse(r) => (
+                crate::trf!(
+                    "Refusé, pour cette fois seulement : {}",
+                    "Refused, for this time only: {}",
+                    r
+                ),
+                Ton::Attention,
+            ),
+            IssueAnimations::Echec(r) => (
+                crate::trf!(
+                    "Échec, pour cette fois seulement : {}",
+                    "Failed, for this time only: {}",
+                    r
+                ),
+                Ton::Attention,
+            ),
+        };
+        self.console.finir(
+            f.lancement,
+            console::Fini {
+                resume: texte,
+                ton,
+                points: Vec::new(),
+                duree: f.duree,
+                echec,
+            },
+        );
     }
 
     /// La saisie de la console validée par Entrée.
@@ -1634,6 +1718,62 @@ esac
             std::thread::sleep(Duration::from_millis(5));
         }
         assert_eq!(a.taches(), 0);
+    }
+
+    /// Les animations gardées par `vanguard` : relues à l'ouverture (dans la réponse des couleurs), puis un clic les
+    /// change tout de suite et lance leur enregistrement, en mots fermés, dès que rien ne tourne ; un refus ou un
+    /// échec le dit (pour cette fois seulement) sans défaire le choix, qu'une relecture ne défait pas non plus.
+    #[test]
+    fn les_animations_se_relisent_a_l_ouverture_et_s_enregistrent_par_vanguard() {
+        let mut a = Appli::pour_captures();
+        a.poser(Commande::Couleurs, br#"{"animations":"reduites"}"#);
+        assert!(a.animations_reduites, "relues à l'ouverture");
+        // Un `vanguard` d'avant ce réglage n'en dit rien : la fenêtre garde ce qu'elle a.
+        a.poser(Commande::Couleurs, b"{}");
+        assert!(a.animations_reduites);
+        a.poser(Commande::Couleurs, br#"{"animations":"toutes"}"#);
+        assert!(!a.animations_reduites);
+
+        a.regler_animations(true);
+        assert!(a.animations_reduites, "vaut tout de suite");
+        // Même valeur : rien de plus à enregistrer.
+        a.regler_animations(true);
+        a.avancer();
+        let lignes: Vec<_> = a.coulisses.passages().iter().map(|p| p.ligne.clone()).collect();
+        assert_eq!(
+            lignes.iter().filter(|l| l.contains("--animations")).collect::<Vec<_>>(),
+            ["vanguard couleurs --animations reduites --json"]
+        );
+        vider(&mut a);
+        let fin = |sortie: &[u8], code| Fin {
+            lancement: Lancement::Animations(true),
+            code: Some(code),
+            sortie: sortie.to_vec(),
+            issue: Issue::Terminee,
+            duree: Duration::from_millis(5),
+        };
+        let refus = br#"{"geste":"animations","issue":"refuse","raison":"parametres.json a ete change hors de Vanguard","avant":null,"apres":null,"douteux":"hors_vanguard"}"#;
+        a.finir(&fin(refus, 1));
+        assert!(a.animations_reduites, "un refus ne défait pas le choix montré");
+        // Relues ensuite (« toutes » : le fichier douteux) : le choix fait ici reste.
+        a.poser(
+            Commande::Couleurs,
+            br#"{"animations":"toutes","douteux":"hors_vanguard"}"#,
+        );
+        assert!(a.animations_reduites);
+        let fait =
+            br#"{"geste":"animations","issue":"fait","raison":"","avant":"toutes","apres":"reduites","douteux":null}"#;
+        a.finir(&fin(fait, 0));
+        let console = format!("{:?}", a.console.entrees());
+        assert!(console.contains("Refusé, pour cette fois seulement"), "{console}");
+        assert!(console.contains("gardées pour les prochaines ouvertures"), "{console}");
+
+        // Sans programme : rien ne peut s'enregistrer, et c'est dit.
+        let mut sans = Appli::nouvelle(Err("vanguard introuvable".into()), std::sync::Arc::new(|| {}));
+        sans.regler_animations(true);
+        assert!(sans.animations_reduites);
+        assert_eq!(sans.animations_a_garder, None);
+        assert_eq!(sans.taches(), 0);
     }
 
     /// Les couleurs : l'aperçu en direct sans rien écrire, jamais une couleur presque invisible, la confirmation

@@ -6,7 +6,8 @@
 //! (lancer une commande de la liste), `3 id sorte empreinte(16) langue` (un changement au démarrage : sorte 1
 //! retirer, 2 remettre), `4 id theme action base rvb(15) langue` (un changement des couleurs de la fenêtre : thème 1
 //! sombre, 2 clair ; action 1 un choix, sa base et ses cinq couleurs, ou 0 celles de Vanguard, base et couleurs
-//! alors toutes à zéro) ou `2 id` (arrêter). Relais → fenêtre : `1 id texte` (une ligne d'erreur), `3 id pid`
+//! alors toutes à zéro), `5 id reduites langue` (les animations de la fenêtre, gardées : 1 réduites, 0 toutes) ou
+//! `2 id` (arrêter). Relais → fenêtre : `1 id texte` (une ligne d'erreur), `3 id pid`
 //! (`vanguard` est lancé, sous ce numéro : pour les coulisses) ou `2 id issue code durée texte sortie` (la fin).
 
 use std::io::{Read, Write};
@@ -76,6 +77,17 @@ impl Demande {
                 v.push(u8::from(anglais));
                 v
             }
+            Demande::Lancer {
+                id,
+                lancement: Lancement::Animations(reduites),
+                anglais,
+            } => {
+                let mut v = vec![5];
+                v.extend(id.to_le_bytes());
+                v.push(u8::from(reduites));
+                v.push(u8::from(anglais));
+                v
+            }
             Demande::Arreter { id } => {
                 let mut v = vec![2];
                 v.extend(id.to_le_bytes());
@@ -111,6 +123,11 @@ impl Demande {
                 id,
                 lancement: Lancement::Couleurs(couleurs(o.get(5..23)?)?),
                 anglais: langue(23)?,
+            }),
+            (5, 7) => Some(Demande::Lancer {
+                id,
+                lancement: Lancement::Animations(langue(5)?),
+                anglais: langue(6)?,
             }),
             (2, 5) => Some(Demande::Arreter { id }),
             _ => None,
@@ -354,6 +371,41 @@ mod tests {
         v[0] = 1;
         assert_eq!(Demande::lire(&v), None);
         assert_eq!(Demande::lire(&[3, 0, 0, 0, 0, 1, 0]), None);
+    }
+
+    /// Les animations : aller-retour pour chaque valeur et langue ; une autre longueur ou une valeur autre que 0 ou 1 :
+    /// hors du protocole.
+    #[test]
+    fn les_animations_aller_retour_et_le_reste_refuse() {
+        for reduites in [false, true] {
+            for anglais in [false, true] {
+                let d = Demande::Lancer {
+                    id: 9,
+                    lancement: Lancement::Animations(reduites),
+                    anglais,
+                };
+                let v = d.coder();
+                assert_eq!(v.len(), 7);
+                assert_eq!(Demande::lire(&v), Some(d));
+            }
+        }
+        let bonne = Demande::Lancer {
+            id: 9,
+            lancement: Lancement::Animations(true),
+            anglais: false,
+        }
+        .coder();
+        for n in 0..bonne.len() {
+            assert_eq!(Demande::lire(&bonne[..n]), None, "{n}");
+        }
+        let mut longue = bonne.clone();
+        longue.push(0);
+        assert_eq!(Demande::lire(&longue), None);
+        for (i, faux) in [(5, 2u8), (5, 0xff), (6, 2)] {
+            let mut v = bonne.clone();
+            v[i] = faux;
+            assert_eq!(Demande::lire(&v), None, "{i} {faux}");
+        }
     }
 
     /// Des couleurs : aller-retour pour chaque thème, base, langue, et pour « celles de Vanguard » ; une autre
