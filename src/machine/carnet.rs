@@ -10,7 +10,9 @@
 //! Le carnet n'est pas une preuve qu'une personne a vu l'aperçu : un programme du compte peut lancer `--voir` puis
 //! `--appliquer` lui-même (il n'y gagne qu'un durcissement qu'il pouvait faire à la main, noté et annulable ; modèle
 //! de menace, 4.2). Il est scellé (`sceau::APERCUS`) : changé hors de Vanguard, aucun geste ne passe, et le prochain
-//! aperçu repart d'un carnet neuf. Huit entrées au plus : les plus vieilles partent.
+//! aperçu repart d'un carnet neuf, et le dit : « carnet des aperçus altéré : remplacé » au `--voir` même, puis au
+//! journal des événements (alerte « carnet-altere ») au premier geste qui l'écrit (`--appliquer` ou `--annuler` :
+//! sous la lecture seule de l'aperçu, le journal ne s'écrit pas). Huit entrées au plus : les plus vieilles partent.
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -44,6 +46,29 @@ struct Entree {
 #[serde(deny_unknown_fields)]
 struct Carnet {
     entrees: Vec<Entree>,
+    /// Le carnet d'avant était altéré (changé hors de Vanguard, illisible) et celui-ci l'a remplacé à cette heure :
+    /// pas encore dit au journal (`altere_a_dire`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    altere_ms: Option<i64>,
+}
+
+/// Ce qu'a donné la note d'un aperçu.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub(crate) enum Notee {
+    /// L'entrée est notée.
+    Oui,
+    /// Notée dans un carnet neuf : celui d'avant était altéré, et il est remplacé. À dire.
+    Remplace,
+    /// Pas notée : le geste qui suivrait sera refusé (« aucun aperçu »), rien d'autre.
+    Non,
+}
+
+/// Ce qui se dit quand un carnet altéré est remplacé.
+pub(crate) fn dit_remplace() -> &'static str {
+    tr!(
+        "carnet des aperçus altéré : remplacé (changé hors de Vanguard, ou illisible ; les aperçus d'avant ne valent plus)",
+        "preview log tampered with: replaced (changed outside Vanguard, or unreadable; earlier previews no longer count)"
+    )
 }
 
 /// Pourquoi le carnet refuse le geste.
@@ -62,6 +87,17 @@ pub(crate) enum Refus {
 }
 
 impl Refus {
+    /// Le mot du refus au journal des événements : fixe, sans rien de ce que le compte nomme.
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Refus::Absent => "apercu-absent",
+            Refus::TropJeune => "apercu-trop-jeune",
+            Refus::TropVieux => "apercu-trop-vieux",
+            Refus::Douteux => "carnet-douteux",
+            Refus::NonEcrit => "carnet-non-ecrit",
+        }
+    }
+
     pub(crate) fn raison(self) -> String {
         match self {
             Refus::Absent => tr!(
@@ -121,9 +157,8 @@ fn ecrire(dossier: &Path, c: &Carnet) -> bool {
 }
 
 /// Note ce que l'aperçu vient de montrer. Sous la lecture seule de l'aperçu, seul ce fil écrit, et seulement le
-/// carnet et ses sceaux (`lecture_seule::ecrire_carnet`). Rend `false` si l'entrée n'a pas pu être notée : le geste
-/// qui suivrait sera refusé (« aucun aperçu »), rien d'autre.
-pub(crate) fn noter(sorte: &str, jeton: &str, accord: &str) -> bool {
+/// carnet et ses sceaux (`lecture_seule::ecrire_carnet`).
+pub(crate) fn noter(sorte: &str, jeton: &str, accord: &str) -> Notee {
     let dossier = crate::reseau::dossier_local();
     crate::autotest::lecture_seule::ecrire_carnet(|| {
         // Le dossier de données naît réservé au compte (0700), comme au chemin ordinaire.
@@ -133,13 +168,22 @@ pub(crate) fn noter(sorte: &str, jeton: &str, accord: &str) -> bool {
     })
 }
 
-fn noter_dans(dossier: &Path, sorte: &str, jeton: &str, accord: &str, maintenant: i64) -> bool {
+fn noter_dans(dossier: &Path, sorte: &str, jeton: &str, accord: &str, maintenant: i64) -> Notee {
     let Some(_verrou) = prendre(dossier) else {
-        return false;
+        return Notee::Non;
     };
     // Un carnet changé hors de Vanguard ne refuse que les gestes qu'il porte : l'aperçu suivant repart d'un neuf
-    // (à trancher par l'auteur : le garder tel quel bloquerait tout geste jusqu'à ce qu'on l'efface à la main).
-    let mut c = lire(dossier).unwrap_or_default();
+    // (le garder tel quel bloquerait tout geste jusqu'à ce qu'on l'efface à la main), jamais en silence.
+    let (mut c, remplace) = match lire(dossier) {
+        Some(c) => (c, false),
+        None => (
+            Carnet {
+                altere_ms: Some(maintenant),
+                ..Carnet::default()
+            },
+            true,
+        ),
+    };
     c.entrees.retain(|e| {
         let age = maintenant.saturating_sub(e.heure_ms);
         (0..=AGE_MAX_MS).contains(&age) && !(e.sorte == sorte && e.jeton == jeton)
@@ -152,7 +196,58 @@ fn noter_dans(dossier: &Path, sorte: &str, jeton: &str, accord: &str, maintenant
     });
     let trop = c.entrees.len().saturating_sub(PLACES);
     c.entrees.drain(..trop);
-    ecrire(dossier, &c)
+    match (ecrire(dossier, &c), remplace) {
+        (false, _) => Notee::Non,
+        (true, false) => Notee::Oui,
+        (true, true) => Notee::Remplace,
+    }
+}
+
+/// Au `--voir` : un carnet altéré remplacé se dit, jamais en silence (sur la sortie d'erreur en JSON, dont la
+/// dernière ligne reste celle du geste).
+pub(crate) fn dire_si_remplace(n: Notee, json: bool) {
+    use std::io::Write;
+    // Une sortie fermée ou pleine n'est pas un plantage (`apercu::ecrire_sortie`).
+    if n == Notee::Remplace {
+        let _ = if json {
+            writeln!(std::io::stderr(), "{}", dit_remplace())
+        } else {
+            writeln!(std::io::stdout(), "  ⚠ {}", dit_remplace())
+        };
+    }
+}
+
+/// Le carnet altéré remplacé, au journal des événements : l'alerte typée « carnet-altere », écrite par le premier
+/// geste qui écrit le journal après le `--voir` qui l'a remplacé.
+pub(crate) fn noter_altere_au_journal() {
+    if crate::autotest::lecture_seule::active() {
+        return;
+    }
+    if let Some(heure) = altere_a_dire() {
+        let quand = chrono::DateTime::from_timestamp_millis(heure)
+            .map(|d| d.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
+            .unwrap_or_default();
+        crate::modele::journal::noter(crate::modele::evenement::Evenement::alerte(
+            crate::modele::evenement::Source::Vanguard,
+            "carnet-altere",
+            tr!("Carnet des aperçus altéré", "Preview log tampered with"),
+            &format!("{} ({quand})", dit_remplace()),
+        ));
+    }
+}
+
+/// Un carnet altéré remplacé et pas encore dit au journal : son heure, retirée du carnet (rescellé) avant d'être
+/// rendue, pour que le journal le dise une seule fois. `None` : rien à dire, ou le carnet ne s'est pas réécrit (il le
+/// sera au geste suivant).
+pub(crate) fn altere_a_dire() -> Option<i64> {
+    altere_a_dire_dans(&crate::reseau::dossier_local())
+}
+
+fn altere_a_dire_dans(dossier: &Path) -> Option<i64> {
+    let _verrou = prendre(dossier)?;
+    let mut c = lire(dossier)?;
+    let heure = c.altere_ms.take()?;
+    ecrire(dossier, &c).then_some(heure)
 }
 
 /// Consomme l'entrée exacte (sorte, jeton, accord), âgée de 2 s à 10 min : retirée et le carnet rescellé AVANT que
@@ -210,7 +305,7 @@ mod tests {
     fn une_entree_se_consomme_une_fois_entre_2_s_et_10_min() {
         let d = dossier("une-fois");
         assert_eq!(consommer_dans(&d, "s", J, A, T), Err(Refus::Absent));
-        assert!(noter_dans(&d, "s", J, A, T));
+        assert_eq!(noter_dans(&d, "s", J, A, T), Notee::Oui);
         // Trop jeune : refusée, gardée.
         assert_eq!(consommer_dans(&d, "s", J, A, T + 1_999), Err(Refus::TropJeune));
         // Un autre accord, une autre sorte : absents.
@@ -225,10 +320,10 @@ mod tests {
     #[test]
     fn trop_vieille_ou_dans_le_futur_elle_part_sans_rien_permettre() {
         let d = dossier("vieille");
-        assert!(noter_dans(&d, "s", J, A, T));
+        assert_eq!(noter_dans(&d, "s", J, A, T), Notee::Oui);
         assert_eq!(consommer_dans(&d, "s", J, A, T + AGE_MAX_MS + 1), Err(Refus::TropVieux));
         assert_eq!(consommer_dans(&d, "s", J, A, T + 3_000), Err(Refus::Absent));
-        assert!(noter_dans(&d, "s", J, A, T + 10_000));
+        assert_eq!(noter_dans(&d, "s", J, A, T + 10_000), Notee::Oui);
         assert_eq!(consommer_dans(&d, "s", J, A, T), Err(Refus::Douteux));
         assert_eq!(consommer_dans(&d, "s", J, A, T + 20_000), Err(Refus::Absent));
         let _ = std::fs::remove_dir_all(&d);
@@ -237,13 +332,13 @@ mod tests {
     #[test]
     fn un_nouvel_apercu_remplace_l_ancien_et_le_carnet_reste_petit() {
         let d = dossier("remplace");
-        assert!(noter_dans(&d, "s", J, A, T));
-        assert!(noter_dans(&d, "s", J, "bb", T + 1));
+        assert_eq!(noter_dans(&d, "s", J, A, T), Notee::Oui);
+        assert_eq!(noter_dans(&d, "s", J, "bb", T + 1), Notee::Oui);
         // L'état montré en dernier seul compte.
         assert_eq!(consommer_dans(&d, "s", J, A, T + 5_000), Err(Refus::Absent));
         for i in 0..20u8 {
             let j = format!("{i:032x}");
-            assert!(noter_dans(&d, "s", &j, A, T + i64::from(i)));
+            assert_eq!(noter_dans(&d, "s", &j, A, T + i64::from(i)), Notee::Oui);
         }
         assert_eq!(lire(&d).unwrap().entrees.len(), PLACES);
         // Les plus vieilles sont parties, la plus récente reste.
@@ -258,15 +353,21 @@ mod tests {
     #[test]
     fn un_carnet_falsifie_ne_permet_rien() {
         let d = dossier("falsifie");
-        assert!(noter_dans(&d, "s", J, A, T));
+        assert_eq!(noter_dans(&d, "s", J, A, T), Notee::Oui);
         // Réécrit hors de Vanguard, avec une entrée « montrée » qu'il n'a jamais vue.
         let forge = serde_json::json!({"entrees":[{"sorte":"s","jeton":J,"accord":"cc","heure_ms":T}]});
         std::fs::write(d.join(crate::sceau::APERCUS), forge.to_string()).unwrap();
         assert_eq!(consommer_dans(&d, "s", J, "cc", T + 5_000), Err(Refus::Douteux));
         assert_eq!(consommer_dans(&d, "s", J, A, T + 5_000), Err(Refus::Douteux));
-        // Le prochain aperçu repart d'un carnet neuf : seule son entrée vaut.
-        assert!(noter_dans(&d, "s", J, A, T + 6_000));
+        // Le prochain aperçu repart d'un carnet neuf, et le dit : seule son entrée vaut.
+        assert_eq!(noter_dans(&d, "s", J, A, T + 6_000), Notee::Remplace);
+        assert_eq!(noter_dans(&d, "s", J, A, T + 7_000), Notee::Oui);
         assert_eq!(consommer_dans(&d, "s", J, A, T + 9_000), Ok(()));
+        // Le remplacement reste à dire au journal, une seule fois, même après un geste qui a consommé une entrée.
+        assert_eq!(altere_a_dire_dans(&d), Some(T + 6_000));
+        assert_eq!(altere_a_dire_dans(&d), None);
+        assert_eq!(noter_dans(&d, "s", J, A, T + 10_000), Notee::Oui);
+        assert_eq!(altere_a_dire_dans(&d), None);
         let _ = std::fs::remove_dir_all(&d);
     }
 }

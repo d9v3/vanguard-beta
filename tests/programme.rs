@@ -1287,6 +1287,74 @@ impl Compte {
         v["changements"].as_array().expect("pas de changements").clone()
     }
 
+    /// `correction --appliquer` lancé avec l'arrêt d'essai `etape` (`VANGUARD_ESSAI_ARRET`, binaire de débogage
+    /// seulement) et rendu une fois figé là : à tuer, ou à faire reprendre en fermant son entrée. Avec sa sortie, lue
+    /// en fond.
+    fn appliquer_jusqu_a(
+        &self,
+        jeton: &str,
+        accord: &str,
+        etape: &str,
+    ) -> (std::process::Child, std::thread::JoinHandle<String>) {
+        use std::io::BufRead as _;
+        let mut commande = Command::new(env!("CARGO_BIN_EXE_vanguard"));
+        commande
+            .args(["correction", "--appliquer", jeton, "--accord", accord, "--json"])
+            .env("VANGUARD_ESSAI_ARRET", etape)
+            .env("VANGUARD_LANG", "fr")
+            .env("USER", "essai")
+            .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
+            .env("XDG_RUNTIME_DIR", self.maison.join("run"))
+            .env("HOME", &*self.maison)
+            .env("XDG_DATA_HOME", self.maison.join("donnees"))
+            .env("XDG_CONFIG_HOME", self.maison.join("config"))
+            .env("XDG_CACHE_HOME", self.maison.join("cache"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut enfant = commande.spawn().unwrap();
+        let sortie = lire_en_fond(enfant.stdout.take().unwrap());
+        let mut erreurs = std::io::BufReader::new(enfant.stderr.take().unwrap());
+        let mut ligne = String::new();
+        loop {
+            ligne.clear();
+            if erreurs.read_line(&mut ligne).unwrap_or(0) == 0 {
+                let _ = enfant.kill();
+                let _ = enfant.wait();
+                panic!("jamais arrêté à « {etape} » : {}", sortie.join().unwrap_or_default());
+            }
+            if ligne.trim_end() == format!("essai : arrêt {etape}") {
+                break;
+            }
+        }
+        // Le reste de la sortie d'erreur, lu jusqu'au bout : le programme qui reprend n'écrit pas dans un tube fermé.
+        std::thread::spawn(move || std::io::copy(&mut erreurs, &mut std::io::sink()));
+        (enfant, sortie)
+    }
+
+    /// Les événements de `source` (« correction », « vanguard ») au journal de cette maison, tous les mois
+    /// (`AAAA-MM.jsonl`) mis bout à bout.
+    fn journal_de(&self, source: &str) -> String {
+        fn lire(d: &Path, marque: &str, o: &mut String) {
+            for e in std::fs::read_dir(d).into_iter().flatten().flatten() {
+                let (chemin, nom) = (e.path(), e.file_name().to_string_lossy().into_owned());
+                if e.file_type().is_ok_and(|t| t.is_dir()) {
+                    lire(&chemin, marque, o);
+                } else if nom.len() == 13 && nom.get(7..) == Some(".jsonl") && nom.as_bytes()[4] == b'-' {
+                    for l in std::fs::read_to_string(&chemin).unwrap_or_default().lines() {
+                        if l.contains(marque) {
+                            o.push_str(l);
+                            o.push('\n');
+                        }
+                    }
+                }
+            }
+        }
+        let mut o = String::new();
+        lire(&self.donnees(), &format!("\"source\":\"{source}\""), &mut o);
+        o
+    }
+
     /// Le nombre de changements notés (`changements --json`).
     fn changements(&self) -> u64 {
         let (s, _) = self.lancer(&["changements", "--json"]);
@@ -1412,11 +1480,149 @@ fn remettre_dans_l_ordre_et_sur_l_etat_montre() {
     let (code, r) = c.annuler(&seconde, &accord);
     assert!(code == Some(0) && r["relu"] == "revenu", "{code:?} {r}");
     assert_eq!(c.mode(".netrc"), 0o644);
-    // La plus ancienne se remet maintenant : déjà à sa valeur d'avant, montrée « changé depuis ».
+    // La plus ancienne se remet maintenant : déjà à sa valeur d'avant, rien n'y serait écrit par-dessus, donc pas
+    // « changé depuis » (correction n° 1, point 4 : jamais dit d'une ligne qui est encore comme avant).
     let (code, r) = c.voir_annulation(&premiere);
     assert!(code == Some(0), "{r}");
     assert_eq!(r["apercu"]["valeurs"][0]["actuel"], "0644", "{r}");
-    assert_eq!(r["apercu"]["valeurs"][0]["change_depuis"], true, "{r}");
+    assert_eq!(r["apercu"]["valeurs"][0]["change_depuis"], false, "{r}");
+}
+
+/// Correction n° 1 du sous-lot B, point 1 : tué après la pose, la ligne se montre « interrompue » tout de suite, se
+/// remet depuis l'écran, et une ligne plus ancienne sur le même fichier n'attend qu'elle (montrée, donc remettable).
+#[cfg(unix)]
+#[test]
+fn tue_apres_la_pose_la_ligne_est_interrompue_et_se_remet() {
+    if !cfg!(debug_assertions) {
+        return essais::saute("arrêt d'essai : binaire de débogage seulement");
+    }
+    let c = Compte::nouveau();
+    let premiere = c.appliquer_ok("~/.netrc");
+    c.poser(".netrc", 0o644);
+    let j = c.jeton("~/.netrc");
+    let accord = c.voir(&j);
+    laisser_lire();
+    let (mut enfant, _) = c.appliquer_jusqu_a(&j, &accord, "apres-pose");
+    let _ = enfant.kill();
+    let _ = enfant.wait();
+    assert_eq!(c.mode(".netrc"), 0o600);
+    let lignes = c.lignes_de_changements();
+    assert_eq!(lignes[0]["etat"], "interrompue", "{lignes:?}");
+    assert_eq!(lignes[0]["geste"]["sorte"], "voir-annulation", "{lignes:?}");
+    let seconde = lignes[0]["geste"]["jeton"].as_str().expect("pas de jeton").to_string();
+    // La plus ancienne attend la plus récente, qui est montrée.
+    refuse(&c.voir_annulation(&premiere), "plus récent");
+    let (code, r) = c.voir_annulation(&seconde);
+    assert_eq!(code, Some(0), "{r}");
+    let valeur = &r["apercu"]["valeurs"][0];
+    assert_eq!(
+        (&valeur["actuel"], &valeur["avant"], &valeur["change_depuis"]),
+        (&"0600".into(), &"0644".into(), &false.into()),
+        "{r}"
+    );
+    laisser_lire();
+    let (code, r) = c.annuler(&seconde, r["accord"].as_str().unwrap_or_default());
+    assert!(code == Some(0) && r["relu"] == "revenu", "{code:?} {r}");
+    assert_eq!(c.mode(".netrc"), 0o644);
+    // Puis la plus ancienne.
+    let (code, r) = c.voir_annulation(&premiere);
+    assert_eq!(code, Some(0), "{r}");
+    laisser_lire();
+    let (code, r) = c.annuler(&premiere, r["accord"].as_str().unwrap_or_default());
+    assert!(code == Some(0) && r["relu"] == "revenu", "{code:?} {r}");
+    assert_eq!(c.mode(".netrc"), 0o644);
+}
+
+/// Correction n° 1 du sous-lot B, points 1 et 4 : tué avant la pose, rien n'est posé ; la ligne se montre
+/// « interrompue » (annulable si la note est écrite, « rien à défaire » sinon), et sa valeur, jamais touchée, n'est
+/// jamais dite « changé depuis ».
+#[cfg(unix)]
+#[test]
+fn tue_avant_la_pose_rien_n_est_dit_change() {
+    if !cfg!(debug_assertions) {
+        return essais::saute("arrêt d'essai : binaire de débogage seulement");
+    }
+    let c = Compte::nouveau();
+    let j = c.jeton("~/.netrc");
+    // Avant la note : la trace seule.
+    let accord = c.voir(&j);
+    laisser_lire();
+    let (mut enfant, _) = c.appliquer_jusqu_a(&j, &accord, "avant-note");
+    let _ = enfant.kill();
+    let _ = enfant.wait();
+    assert_eq!(c.mode(".netrc"), 0o644);
+    let lignes = c.lignes_de_changements();
+    assert_eq!(lignes[0]["etat"], "interrompue", "{lignes:?}");
+    assert!(lignes[0]["geste"].is_null(), "{lignes:?}");
+    // Après la note, avant la pose : annulable, rien de « changé depuis ».
+    let accord = c.voir(&j);
+    laisser_lire();
+    let (mut enfant, _) = c.appliquer_jusqu_a(&j, &accord, "avant-pose");
+    let _ = enfant.kill();
+    let _ = enfant.wait();
+    assert_eq!(c.mode(".netrc"), 0o644);
+    let lignes = c.lignes_de_changements();
+    assert_eq!(lignes[0]["etat"], "interrompue", "{lignes:?}");
+    let note = lignes[0]["geste"]["jeton"].as_str().expect("pas de jeton").to_string();
+    let (code, r) = c.voir_annulation(&note);
+    assert_eq!(code, Some(0), "{r}");
+    assert_eq!(r["apercu"]["valeurs"][0]["change_depuis"], false, "{r}");
+    laisser_lire();
+    let (code, r) = c.annuler(&note, r["accord"].as_str().unwrap_or_default());
+    assert!(code == Some(0) && r["relu"] == "revenu", "{code:?} {r}");
+    assert_eq!(c.mode(".netrc"), 0o644);
+    // Et la correction se fait ensuite comme d'habitude.
+    c.appliquer_ok("~/.netrc");
+    assert_eq!(c.mode(".netrc"), 0o600);
+}
+
+/// Correction n° 1 du sous-lot B, points 2, 5 et 8 : le journal ne reçoit ni nom de fichier ni commande, pour une
+/// correction faite, sa remise, un refus et un échec (le fichier changé entre la relecture et la pose : rien posé,
+/// et la raison, à l'écran, le nomme en « ~/… ») ; ce qui part vers l'écran ne porte pas le chemin du dossier
+/// personnel.
+#[cfg(unix)]
+#[test]
+fn le_journal_ne_nomme_ni_fichier_ni_commande() {
+    let c = Compte::nouveau();
+    let note = c.appliquer_ok("~/.netrc");
+    let (code, r) = c.voir_annulation(&note);
+    assert_eq!(code, Some(0), "{r}");
+    let maison = c.chemin("").to_string_lossy().into_owned();
+    assert!(!r.to_string().contains(&maison), "{r}");
+    assert_eq!(r["apercu"]["valeurs"][0]["chemin"], "~/.netrc", "{r}");
+    laisser_lire();
+    let accord = r["accord"].as_str().unwrap_or_default().to_string();
+    let (code, r) = c.annuler(&note, &accord);
+    assert!(code == Some(0) && r["relu"] == "revenu", "{code:?} {r}");
+    refuse(&c.annuler(&note, &accord), "plus rien à remettre");
+    let lignes = c.lignes_de_changements();
+    assert!(!format!("{lignes:?}").contains(&maison), "{lignes:?}");
+    if cfg!(debug_assertions) {
+        let j = c.jeton("~/.netrc");
+        let accord = c.voir(&j);
+        laisser_lire();
+        let (mut enfant, sortie) = c.appliquer_jusqu_a(&j, &accord, "avant-pose");
+        // Un autre fichier sous le même nom, aux mêmes droits : autre inode, rien n'y est posé.
+        let neuf = c.chemin(".netrc-neuf");
+        std::fs::write(&neuf, "machine exemple.invalid login alice\n").unwrap();
+        std::fs::set_permissions(&neuf, std::os::unix::fs::PermissionsExt::from_mode(0o644)).unwrap();
+        std::fs::rename(&neuf, c.chemin(".netrc")).unwrap();
+        drop(enfant.stdin.take());
+        let statut = enfant.wait().unwrap();
+        let texte = sortie.join().unwrap_or_default();
+        let r: serde_json::Value = serde_json::from_str(texte.lines().last().unwrap_or_default()).unwrap_or_default();
+        assert!(statut.code() == Some(1) && r["issue"] == "echec", "{statut:?} {texte}");
+        let raison = r["raison"].as_str().unwrap_or_default();
+        assert!(raison.contains("~/.netrc") && raison.contains("autre inode"), "{r}");
+        assert_eq!(c.mode(".netrc"), 0o644);
+    } else {
+        essais::saute("échec par arrêt d'essai : binaire de débogage seulement");
+    }
+    let journal = c.journal_de("correction");
+    assert!(journal.lines().count() >= 3, "{journal}");
+    for interdit in [".netrc", "chmod", "~/", maison.as_str()] {
+        assert!(!journal.contains(interdit), "« {interdit} » au journal : {journal}");
+    }
 }
 
 /// Sous-lot B : un lien posé à la place du fichier, avant l'aperçu ou entre l'aperçu et l'accord, est refusé ; la cible
@@ -1661,22 +1867,36 @@ fn carnet_falsifie_ou_note_impossible_rien_n_est_applique() {
     let carnet = c.donnees().join("apercus.json");
     let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&carnet).unwrap()).unwrap();
     for e in v["entrees"].as_array_mut().unwrap() {
-        let h = e["heure_ms"].as_i64().unwrap();
-        e["heure_ms"] = serde_json::Value::from(h - 5_000);
+        let heure = e["heure_ms"].as_i64().unwrap();
+        e["heure_ms"] = serde_json::Value::from(heure - 5_000);
     }
     std::fs::write(&carnet, v.to_string()).unwrap();
     refuse(&c.appliquer(&j, &accord), "changé hors de Vanguard");
     laisser_lire();
     refuse(&c.appliquer(&j, &accord), "changé hors de Vanguard");
     assert_eq!(c.mode(".netrc"), 0o644);
-    // Un nouvel aperçu repart d'un carnet neuf ; les notes ne s'écrivent plus.
-    let accord = c.voir(&j);
+    // Un nouvel aperçu repart d'un carnet neuf, et le dit (correction n° 1, point 6) ; les notes ne s'écrivent plus.
+    let (sortie, rendu) = c.lancer(&["correction", "--voir", &j, "--json"]);
+    assert!(
+        sortie.erreurs.contains("carnet des aperçus altéré : remplacé"),
+        "{}",
+        sortie.erreurs
+    );
+    let accord = rendu["accord"].as_str().expect("pas d'accord").to_string();
+    assert!(!c.journal_de("vanguard").contains("carnet-altere"));
     let notes = c.donnees().join("reglages.json");
     let _ = std::fs::remove_file(&notes);
     std::fs::create_dir_all(notes.join("bouchon")).unwrap();
     laisser_lire();
     refuse(&c.appliquer(&j, &accord), "valeurs d'avant non enregistrées");
     assert_eq!(c.mode(".netrc"), 0o644);
+    // Puis au journal, une seule fois, par le geste qui l'écrit.
+    let journal = c.journal_de("vanguard");
+    assert_eq!(journal.matches("carnet-altere").count(), 1, "{journal}");
+    let accord = c.voir(&j);
+    laisser_lire();
+    refuse(&c.appliquer(&j, &accord), "valeurs d'avant non enregistrées");
+    assert_eq!(c.journal_de("vanguard").matches("carnet-altere").count(), 1);
 }
 
 /// Sous-lot B : `vanguard` tué au milieu de l'application, à divers moments : les droits sont ceux d'avant ou ceux

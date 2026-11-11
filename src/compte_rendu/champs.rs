@@ -350,6 +350,8 @@ liste!(
 /// y est (essai-garde `contextes_d_echec_connus`). Un contexte hors liste s'écrit « echec/autre ».
 pub(crate) const CONTEXTES_ECHEC: &[&str] = &[
     "annulation/remettre",
+    "annuler/remettre",
+    "appliquer/poser",
     "audit/pq-box",
     "audit/tls-pq",
     "autotest/cache",
@@ -373,6 +375,7 @@ pub(crate) const CONTEXTES_ECHEC: &[&str] = &[
     "demarrage/ecrire",
     "dns/resolved",
     "docker",
+    "droits/lire",
     "droits/poser",
     "eleve/hosts",
     "eleve/montrer",

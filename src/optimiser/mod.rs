@@ -159,6 +159,11 @@ struct Avant {
     /// redémarrage. Absent des notes du catalogue, que le code rebâtit seul.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     gestes: Vec<String>,
+    /// Les droits d'un fichier du compte (unix) : pour chaque geste « droits|… », ce qu'était la cible relevée
+    /// (`droits::Identite` : sorte, périphérique, inode). Un autre fichier mis ensuite sous le même nom n'est pas
+    /// remis comme s'il était celui-là. Absent des notes d'avant ce champ.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    identites: std::collections::BTreeMap<String, String>,
 }
 
 fn charger() -> Historique {

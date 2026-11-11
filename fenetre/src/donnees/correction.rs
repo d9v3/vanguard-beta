@@ -289,7 +289,9 @@ fn avant_lisible(v: &AvantBrut) -> bool {
     match geste.split_once('|') {
         None => matches!(geste, "ntp" | "alimentation"),
         Some((_, cible)) if cible.is_empty() || cible.contains('|') => false,
-        Some(("droits" | "fichier", chemin)) => chemin.starts_with('/'),
+        // Absolu, ou « ~ » / « ~/… » : sous le dossier personnel, Vanguard ne montre plus son chemin absolu (qui dit
+        // le nom du compte).
+        Some(("droits" | "fichier", chemin)) => chemin.starts_with('/') || chemin == "~" || chemin.starts_with("~/"),
         Some(("defense", id)) => id.len() == 16 && id.bytes().all(|o| matches!(o, b'0'..=b'9' | b'a'..=b'f')),
         Some(("unite" | "sysctl" | "module" | "service" | "defender", nom)) => nom
             .bytes()
@@ -842,6 +844,8 @@ mod tests {
             "defender|np",
             "droits|/home/alice/a \u{27e8}x\u{27e9}",
             "droits|/home/alice/a <<x>>",
+            "droits|~/.netrc",
+            "droits|~",
         ] {
             let mut a = apercu_json();
             a["avant"] = serde_json::json!([{"geste": geste, "valeur": "0644"}]);
@@ -891,6 +895,7 @@ mod tests {
             "droits|",
             "droits|/home/alice|/x",
             "droits|home/alice/.ssh",
+            "droits|~alice/.ssh",
             "ntp|x",
             "alimentation|",
             "unite|",

@@ -13,9 +13,14 @@
 //!
 //! `--annuler` rejuge tout, dans l'ordre de la conception (2.3) : la forme (code 2), le verrou des notes, la note et
 //! les fichiers relus, l'accord recalculé sur cette lecture, le carnet (2 s à 10 min, consommé avant de rien changer),
-//! puis chaque valeur remise seulement si le fichier a encore les droits montrés. Tout remis et relu : la note part et
-//! la ligne de « Ce que Vanguard a changé » est dite défaite. Une valeur refusée en route arrête la suite ; la note
-//! reste, si bien que le reste se remet plus tard (une valeur déjà remise se remet sans rien changer).
+//! puis chaque valeur remise seulement si le fichier est encore celui que Vanguard a corrigé (même sorte, même inode)
+//! et a encore les droits montrés. Tout remis et relu : la note part et la ligne de « Ce que Vanguard a changé » est
+//! dite défaite. Tout ou rien : une valeur refusée en route arrête la suite et fait reposer celles déjà remises (ce qui
+//! ne se repose pas est dit ligne par ligne) ; la note reste. Remis mais pas relu partout : code 1.
+//!
+//! Le chemin montré (et lié par l'accord) est « ~/… » : le chemin absolu du dossier personnel, qui dit le nom du
+//! compte, ne part pas vers la fenêtre. Au journal : le jeton et l'issue typée, jamais un nom de fichier. En mode
+//! lecture seule, `--annuler` est refusé net (code 2).
 
 use super::appliquer::accord_bien_forme;
 use super::carnet;
@@ -37,7 +42,7 @@ fn jeton_bien_forme(jeton: &str) -> bool {
 /// Une valeur à remettre.
 #[derive(serde::Serialize, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Valeur {
-    /// Le chemin, absolu, tel qu'il est remis.
+    /// Le chemin remis, montré « ~/… » sous le dossier personnel (`annulables::chemin_montre`).
     pub chemin: String,
     /// Les droits d'aujourd'hui (« 0600 »), lus sur le fichier ouvert sans suivre de lien.
     pub actuel: String,
@@ -120,6 +125,10 @@ pub(crate) enum Refus {
     Windows,
     /// L'aperçu sans la lecture seule posée par main avant tout : code 2.
     SansLectureSeule,
+    /// Un fichier n'est plus celui que Vanguard a corrigé (autre sorte ou autre inode).
+    AutreFichier,
+    /// Remettre comme avant, en lecture seule : code 2.
+    LectureSeule,
 }
 
 impl Refus {
@@ -162,6 +171,12 @@ impl Refus {
             .to_string(),
             Refus::Carnet(r) => r.raison(),
             Refus::SansLectureSeule => super::apercu::Refus::SansLectureSeule.raison(),
+            Refus::AutreFichier => tr!(
+                "un fichier n'est plus celui que Vanguard a corrigé (autre sorte ou autre inode) : changé depuis, rien n'a changé",
+                "a file is no longer the one Vanguard fixed (other kind or other inode): changed since, nothing changed"
+            )
+            .to_string(),
+            Refus::LectureSeule => super::appliquer::lecture_seule(),
             Refus::Windows => tr!(
                 "sous Windows, rien ne se remet d'ici pour l'instant : vanguard changements dans un terminal",
                 "on Windows, nothing is restored from here for now: vanguard changements in a terminal"
@@ -169,17 +184,53 @@ impl Refus {
             .to_string(),
         }
     }
+
+    /// Le mot du refus au journal des événements : fixe, sans rien de ce que le compte nomme (pas le titre d'une note
+    /// plus récente, par exemple).
+    fn code(&self) -> &'static str {
+        match self {
+            Refus::MalForme => "mal-forme",
+            Refus::Occupe => "occupe",
+            Refus::Aucune => "aucune-note",
+            Refus::Autre => "pas-d-ici",
+            Refus::PlusRecente(_) => "plus-recente",
+            Refus::Illisible => "illisible",
+            Refus::Change => "change-depuis",
+            Refus::Carnet(r) => r.code(),
+            Refus::Windows => "windows",
+            Refus::SansLectureSeule => "sans-lecture-seule",
+            Refus::AutreFichier => "autre-fichier",
+            Refus::LectureSeule => "lecture-seule",
+        }
+    }
 }
 
-/// Ce qui sera remis : chaque chemin, ses droits d'aujourd'hui (montrés, exigés au moment de remettre) et d'avant.
-type Remise = Vec<(std::path::PathBuf, u32, u32)>;
+/// Une valeur à remettre : le chemin, ses droits d'aujourd'hui (montrés, exigés au moment de remettre), ceux d'avant,
+/// et la cible relue aujourd'hui (la même que celle notée, exigée aussi).
+#[cfg(unix)]
+#[derive(Debug, Clone)]
+struct Ligne {
+    chemin: std::path::PathBuf,
+    actuel: u32,
+    avant: u32,
+    identite: crate::optimiser::droits::Identite,
+}
+#[cfg(windows)]
+type Ligne = ();
+
+/// Ce qui sera remis, ligne par ligne.
+type Remise = Vec<Ligne>;
 
 /// L'aperçu de la note au jeton `jeton`, relu maintenant, et les valeurs à remettre (chemin, droits d'aujourd'hui,
 /// droits d'avant) ; ou pourquoi il n'est pas donné.
 #[cfg(unix)]
 fn relire(jeton: &str) -> Result<(Apercu, String, Remise), Refus> {
-    use crate::optimiser::annulables::{PasDeNote, note_de_droits};
-    let note = note_de_droits(jeton).map_err(|p| match p {
+    use crate::optimiser::annulables::{BILAN, PasDeNote, note_de_droits};
+    // Une note plus récente sur la même chose ne bloque que si l'écran la montre : on pourrait alors la remettre
+    // d'abord. Les notes d'ailleurs (jeux…) se montrent sur leur propre écran : elles comptent toujours.
+    let montrees = crate::changements::notes_montrees();
+    let montree = |id: &str| !id.starts_with(BILAN) || montrees.contains(id);
+    let note = note_de_droits(jeton, &montree).map_err(|p| match p {
         PasDeNote::Aucune => Refus::Aucune,
         PasDeNote::Autre => Refus::Autre,
         PasDeNote::PlusRecente(t) => Refus::PlusRecente(t),
@@ -192,17 +243,27 @@ fn relire(jeton: &str) -> Result<(Apercu, String, Remise), Refus> {
         .collect();
     let mut valeurs = Vec::new();
     let mut lignes = Vec::new();
-    for (chemin, avant) in &note.droits {
-        let actuel = crate::optimiser::droits::lire(chemin).map_err(|_| Refus::Illisible)?;
+    for (chemin, avant, notee) in &note.droits {
+        let (actuel, identite) = crate::optimiser::droits::lire_identifie(chemin).map_err(|_| Refus::Illisible)?;
+        // Un autre fichier mis sous le même nom n'est pas celui que Vanguard a corrigé : rien ne s'y remet.
+        if notee.is_some_and(|n| n != identite) {
+            return Err(Refus::AutreFichier);
+        }
         let pose = poses.iter().rev().find(|(c, _)| c == chemin).map(|(_, m)| *m);
         valeurs.push(Valeur {
-            chemin: chemin.to_string_lossy().into_owned(),
+            chemin: crate::optimiser::annulables::chemin_montre(&chemin.to_string_lossy()),
             actuel: format!("{actuel:04o}"),
             avant: format!("{avant:04o}"),
             pose: pose.map(|m| format!("{m:04o}")).unwrap_or_default(),
-            change_depuis: pose != Some(actuel),
+            // Encore à sa valeur d'avant : jamais touchée (une ligne interrompue avant d'être posée), pas « changée ».
+            change_depuis: actuel != *avant && pose != Some(actuel),
         });
-        lignes.push((chemin.clone(), actuel, *avant));
+        lignes.push(Ligne {
+            chemin: chemin.clone(),
+            actuel,
+            avant: *avant,
+            identite,
+        });
     }
     let a = Apercu {
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -235,7 +296,7 @@ pub(crate) fn voir(jeton: &str, json: bool) -> i32 {
         Err(Refus::MalForme)
     };
     if let Ok(a) = &issue {
-        carnet::noter(SORTE, &a.jeton, &a.accord());
+        carnet::dire_si_remplace(carnet::noter(SORTE, &a.jeton, &a.accord()), json);
     }
     let code = match &issue {
         Ok(_) => 0,
@@ -299,7 +360,10 @@ enum Issue {
 /// refusée (avant toute lecture). Avec `json`, la dernière ligne : `{"geste":"annuler-correction","issue":
 /// "fait|refuse|echec","raison","relu":"revenu|pas-revenu|"}`.
 pub(crate) fn annuler(jeton: &str, accord: &str, json: bool) -> i32 {
-    let issue = if !jeton_bien_forme(jeton) || !accord_bien_forme(accord) {
+    // Avant tout : en lecture seule, ni verrou, ni relecture, ni carnet.
+    let issue = if crate::autotest::lecture_seule::active() {
+        Issue::Refuse(Refus::LectureSeule)
+    } else if !jeton_bien_forme(jeton) || !accord_bien_forme(accord) {
         Issue::Refuse(Refus::MalForme)
     } else if cfg!(windows) {
         Issue::Refuse(Refus::Windows)
@@ -309,18 +373,14 @@ pub(crate) fn annuler(jeton: &str, accord: &str, json: bool) -> i32 {
             Some(_notes) => agir(jeton, accord),
         }
     };
-    let (code, mot, raison) = match &issue {
-        Issue::Fait(_) => (0, "fait", String::new()),
-        Issue::Refuse(r @ Refus::MalForme) => (2, "refuse", r.raison()),
-        Issue::Refuse(r) => (1, "refuse", r.raison()),
-        Issue::Echec(e) => (1, "echec", e.clone()),
-    };
+    let (code, mot, raison) = sortie(&issue);
     let relu = match &issue {
         Issue::Fait(true) => "revenu",
         Issue::Fait(false) => "pas-revenu",
         _ => "",
     };
-    noter_au_journal(jeton, &issue, &raison);
+    noter_au_journal(jeton, &issue);
+    carnet::noter_altere_au_journal();
     if json {
         println!(
             "{}",
@@ -341,6 +401,18 @@ pub(crate) fn annuler(jeton: &str, accord: &str, json: bool) -> i32 {
         }
     }
     code
+}
+
+/// Le code de sortie, le mot de l'issue et sa raison : seul « fait et relu revenu » est un succès (0).
+fn sortie(issue: &Issue) -> (i32, &'static str, String) {
+    match issue {
+        Issue::Fait(true) => (0, "fait", String::new()),
+        // Remis, mais pas relu à la valeur d'avant partout : l'appelant ne doit pas le prendre pour un succès.
+        Issue::Fait(false) => (1, "fait", String::new()),
+        Issue::Refuse(r @ (Refus::MalForme | Refus::LectureSeule)) => (2, "refuse", r.raison()),
+        Issue::Refuse(r) => (1, "refuse", r.raison()),
+        Issue::Echec(e) => (1, "echec", e.clone()),
+    }
 }
 
 /// Le verrou des notes tenu : relire, comparer l'accord, consommer le carnet, remettre, relire.
@@ -368,7 +440,7 @@ fn agir(jeton: &str, accord: &str) -> Issue {
     }
     let revenu = lignes
         .iter()
-        .all(|(chemin, _, avant)| crate::optimiser::droits::lire(chemin).ok() == Some(*avant));
+        .all(|l| crate::optimiser::droits::lire_identifie(&l.chemin).ok() == Some((l.avant, l.identite)));
     if revenu {
         crate::optimiser::annulables::oublier(std::slice::from_ref(&id));
         crate::changements::marquer_defaite(&id);
@@ -377,13 +449,47 @@ fn agir(jeton: &str, accord: &str) -> Issue {
     Issue::Fait(revenu)
 }
 
-/// Chaque ligne (chemin, droits relus au moment d'agir, droits d'avant) remise dans l'ordre, seulement si le fichier a
-/// encore les droits relus (`poser_si`) : un fichier changé entre la relecture et le geste n'est pas touché. Arrêté à
-/// la première erreur.
+/// Chaque ligne remise dans l'ordre, seulement si c'est encore la cible relue avec les droits relus (`poser_si`) : un
+/// fichier changé entre la relecture et le geste n'est pas touché. Tout ou rien : à la première erreur, les lignes
+/// déjà remises reprennent, de la plus récente à la plus ancienne, les droits relus avant (seulement si elles ont
+/// encore ce que Vanguard vient d'y remettre) ; l'erreur le dit ligne par ligne.
 #[cfg(unix)]
-fn remettre_les(lignes: &[(std::path::PathBuf, u32, u32)]) -> Result<(), crate::modele::raison::Echec> {
-    for (chemin, actuel, avant) in lignes {
-        crate::optimiser::droits::poser_si(chemin, Some(*actuel), *avant)?;
+fn remettre_les(lignes: &[Ligne]) -> Result<(), crate::modele::raison::Echec> {
+    use crate::optimiser::droits::poser_si;
+    let n = lignes.len();
+    let rang = |k: usize| k.saturating_add(1);
+    for (k, l) in lignes.iter().enumerate() {
+        let Err(e) = poser_si(&l.chemin, Some(l.actuel), Some(l.identite), l.avant) else {
+            continue;
+        };
+        let mut dit = vec![trf!(
+            "ligne {} sur {} refusée : {}",
+            "line {} of {} refused: {}",
+            rang(k),
+            n,
+            e
+        )];
+        for (j, p) in lignes.iter().enumerate().take(k).rev() {
+            dit.push(match poser_si(&p.chemin, Some(p.avant), Some(p.identite), p.actuel) {
+                Ok(_) => trf!(
+                    "ligne {} sur {} reposée comme avant l'annulation",
+                    "line {} of {} set back as before the undo",
+                    rang(j),
+                    n
+                ),
+                Err(e) => trf!(
+                    "ligne {} sur {} laissée remise ({})",
+                    "line {} of {} left restored ({})",
+                    rang(j),
+                    n,
+                    e
+                ),
+            });
+        }
+        return Err(crate::modele::raison::Echec::echoue(
+            "annuler/remettre",
+            dit.join(" ; "),
+        ));
     }
     Ok(())
 }
@@ -393,9 +499,9 @@ fn agir(_jeton: &str, _accord: &str) -> Issue {
     Issue::Refuse(Refus::Windows)
 }
 
-/// La demande au journal des événements, faite ou pas : le jeton seulement (jamais un nom de fichier), l'issue et sa
-/// raison. Un refus identique au dernier pour ce jeton, il y a moins de 10 minutes, ne se réécrit pas.
-fn noter_au_journal(jeton: &str, issue: &Issue, raison: &str) {
+/// La demande au journal des événements, faite ou pas : le jeton et l'issue typée (`Refus::code`), jamais sa raison
+/// ni un nom de fichier. Un refus identique au dernier pour ce jeton, il y a moins de 10 minutes, ne se réécrit pas.
+fn noter_au_journal(jeton: &str, issue: &Issue) {
     use crate::modele::evenement::{Evenement, Source};
     let bien_forme = jeton_bien_forme(jeton);
     let qui = if bien_forme {
@@ -404,26 +510,30 @@ fn noter_au_journal(jeton: &str, issue: &Issue, raison: &str) {
         tr!("jeton mal formé", "malformed token").to_string()
     };
     let texte = match issue {
-        Issue::Fait(_) => trf!(
+        Issue::Fait(true) => trf!(
             "Remise comme avant demandée par un geste : {} : faite",
             "Restore requested by a gesture: {}: done",
             qui
         ),
-        Issue::Refuse(_) => trf!(
+        Issue::Fait(false) => trf!(
+            "Remise comme avant demandée par un geste : {} : faite, pas relue partout (pas-revenu)",
+            "Restore requested by a gesture: {}: done, not read back everywhere (pas-revenu)",
+            qui
+        ),
+        Issue::Refuse(r) => trf!(
             "Remise comme avant demandée par un geste : {} : refusée ({})",
             "Restore requested by a gesture: {}: refused ({})",
             qui,
-            raison
+            r.code()
         ),
         Issue::Echec(_) => trf!(
-            "Remise comme avant demandée par un geste : {} : {}",
-            "Restore requested by a gesture: {}: {}",
-            qui,
-            raison
+            "Remise comme avant demandée par un geste : {} : en échec (echec)",
+            "Restore requested by a gesture: {}: failed (echec)",
+            qui
         ),
     };
     let cle = format!("{SORTE}|{}", if bien_forme { jeton } else { "mal-forme" });
-    let ev = Evenement::action(Source::Correction, &texte, matches!(issue, Issue::Fait(_)), &[]).cle(Some(&cle));
+    let ev = Evenement::action(Source::Correction, &texte, matches!(issue, Issue::Fait(true)), &[]).cle(Some(&cle));
     if matches!(issue, Issue::Refuse(_))
         && crate::modele::journal::dernier_evenement(
             |e| e.cle.as_deref() == Some(cle.as_str()),
@@ -440,6 +550,24 @@ fn noter_au_journal(jeton: &str, issue: &Issue, raison: &str) {
 mod tests {
     use super::*;
 
+    /// Seul « fait et relu revenu » sort avec 0 : « pas-revenu » sort avec 1, comme un refus (mutation : 0).
+    #[test]
+    fn seul_le_revenu_est_un_succes() {
+        assert_eq!(sortie(&Issue::Fait(true)).0, 0);
+        assert_eq!(sortie(&Issue::Fait(false)).0, 1);
+        assert_eq!(sortie(&Issue::Refuse(Refus::Change)).0, 1);
+        assert_eq!(sortie(&Issue::Echec("x".into())).0, 1);
+    }
+
+    /// En lecture seule, la remise est refusée net, code 2, avant toute lecture (ni verrou, ni note, ni carnet).
+    #[test]
+    fn en_lecture_seule_rien_ne_se_remet() {
+        crate::autotest::lecture_seule::poser();
+        let code = annuler(&"0a".repeat(16), &"0a".repeat(32), true);
+        crate::autotest::lecture_seule::relever_pour_le_test();
+        assert_eq!(code, 2);
+    }
+
     fn apercu() -> Apercu {
         Apercu {
             version: "0".into(),
@@ -449,7 +577,7 @@ mod tests {
             date: "d".into(),
             droits: "compte".into(),
             valeurs: vec![Valeur {
-                chemin: "/home/alice/.netrc".into(),
+                chemin: "~/.netrc".into(),
                 actuel: "0600".into(),
                 avant: "0644".into(),
                 pose: "0600".into(),
@@ -510,26 +638,55 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    fn ligne(f: &std::path::Path, actuel: u32, avant: u32) -> Ligne {
+        Ligne {
+            chemin: f.to_path_buf(),
+            actuel,
+            avant,
+            identite: crate::optimiser::droits::lire_identifie(f).unwrap().1,
+        }
+    }
+
     /// La remise ne touche pas un fichier changé entre la relecture et le geste (mutation : `poser_si(.., None, ..)`),
-    /// et s'arrête à la première ligne refusée.
+    /// ni un autre fichier mis sous le même nom (mutation : identité `None`) ; tout ou rien : à la ligne refusée, celles
+    /// déjà remises reprennent les droits relus (mutation : pas de reprise).
     #[cfg(unix)]
     #[test]
     fn rien_n_est_remis_sur_un_fichier_change_depuis_la_relecture() {
         use std::os::unix::fs::PermissionsExt;
-        let d = crate::essais::temporaire().join(format!("vanguard-annuler-remise-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        let (f, g) = (d.join("cle"), d.join("autre"));
-        for x in [&f, &g] {
+        let dossier = crate::essais::temporaire().join(format!("vanguard-annuler-remise-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dossier);
+        std::fs::create_dir_all(&dossier).unwrap();
+        let (cle, autre) = (dossier.join("cle"), dossier.join("autre"));
+        for x in [&cle, &autre] {
             std::fs::write(x, b"x").unwrap();
             std::fs::set_permissions(x, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
         let mode = |x: &std::path::Path| std::fs::symlink_metadata(x).unwrap().permissions().mode() & 0o7777;
         // Relu 0640, mais le fichier est à 0600 : rien n'est remis, ni lui ni la ligne d'après.
-        assert!(remettre_les(&[(f.clone(), 0o640, 0o644), (g.clone(), 0o600, 0o644)]).is_err());
-        assert_eq!((mode(&f), mode(&g)), (0o600, 0o600));
-        assert!(remettre_les(&[(f.clone(), 0o600, 0o644), (g.clone(), 0o600, 0o644)]).is_ok());
-        assert_eq!((mode(&f), mode(&g)), (0o644, 0o644));
-        let _ = std::fs::remove_dir_all(&d);
+        assert!(remettre_les(&[ligne(&cle, 0o640, 0o644), ligne(&autre, 0o600, 0o644)]).is_err());
+        assert_eq!((mode(&cle), mode(&autre)), (0o600, 0o600));
+        // La deuxième refusée : la première, déjà remise, reprend 0600.
+        let erreur = remettre_les(&[ligne(&cle, 0o600, 0o644), ligne(&autre, 0o640, 0o644)])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            erreur.contains("ligne 2 sur 2 refusée") && erreur.contains("ligne 1 sur 2 reposée"),
+            "{erreur}"
+        );
+        assert_eq!((mode(&cle), mode(&autre)), (0o600, 0o600));
+        // Un autre fichier sous le nom de la deuxième, aux mêmes droits : rien n'y est remis.
+        let lignes = [ligne(&cle, 0o600, 0o644), ligne(&autre, 0o600, 0o644)];
+        let neuf = dossier.join("neuf");
+        std::fs::write(&neuf, b"y").unwrap();
+        std::fs::set_permissions(&neuf, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::rename(&neuf, &autre).unwrap();
+        assert!(remettre_les(&lignes).is_err());
+        assert_eq!((mode(&cle), mode(&autre)), (0o600, 0o600));
+        let lignes = [ligne(&cle, 0o600, 0o644), ligne(&autre, 0o600, 0o644)];
+        assert!(remettre_les(&lignes).is_ok());
+        assert_eq!((mode(&cle), mode(&autre)), (0o644, 0o644));
+        let _ = std::fs::remove_dir_all(&dossier);
     }
 }

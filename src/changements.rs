@@ -49,6 +49,10 @@ struct Changement {
     /// `None` : écrite par Vanguard et relue sous son sceau.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     origine: Option<Origine>,
+    /// Notée avant de poser (`noter_en_cours`), pas encore finie (`finir`) : restée ainsi, Vanguard a été arrêté en
+    /// route, et la ligne se montre « interrompue ».
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    en_cours: bool,
 }
 
 /// Un blocage noté : de quoi le montrer, le reconnaître et l'annuler exactement.
@@ -183,22 +187,78 @@ fn noter_dans(chemin: &std::path::Path, correctifs: &[Vec<String>], resultats: &
             defaite: None,
             evenement: crate::modele::journal::noter(ev),
             origine: None,
+            en_cours: false,
         });
     }
     ecrire(chemin, &tous);
 }
 
-/// Les commandes que Vanguard a lancées pour la note `id` : la dernière ligne réussie qui la porte, écrite par
-/// Vanguard (ni reprise d'avant le sceau, ni changée hors de lui), pas encore défaite. `None` : aucune telle ligne
-/// (élaguée, ou relevé douteux) ; ce qui a été posé n'est alors pas connu.
+/// Les commandes que Vanguard a lancées (ou commençait de lancer) pour la note `id` : la dernière ligne qui la porte,
+/// écrite par Vanguard (ni reprise d'avant le sceau, ni changée hors de lui), pas encore défaite. Une ligne en échec
+/// ou interrompue compte aussi : ce qu'elle dit est ce que Vanguard visait, et une valeur jamais touchée se reconnaît
+/// à ce qu'elle est encore celle d'avant (`machine::annuler`). `None` : aucune telle ligne (élaguée, ou relevé
+/// douteux) ; ce qui a été posé n'est alors pas connu.
 #[cfg(unix)]
 pub(crate) fn commandes_de_la_note(id: &str) -> Option<Vec<String>> {
     lire()
         .into_iter()
         .rev()
         .find(|c| c.annulable.as_deref() == Some(id))
-        .filter(|c| c.reussi && c.origine.is_none() && c.defaite.is_none())
+        .filter(|c| c.origine.is_none() && c.defaite.is_none())
         .map(|c| c.commandes)
+}
+
+/// Note, AVANT de rien poser, la correction que `machine::appliquer` va faire : sa ligne « en cours » au relevé, avec
+/// l'id de sa note (`annulable`), et `ev`, son événement au journal (règle, jeton : jamais un nom de fichier ni une
+/// commande), relié à la note. Un arrêt brutal ensuite laisse une ligne visible, « interrompue », qui se remet depuis
+/// l'écran. Rend `false` si la ligne n'a pas pu s'écrire : rien ne doit alors être posé.
+pub(crate) fn noter_en_cours(commandes: &[String], id: &str, ev: crate::modele::evenement::Evenement) -> bool {
+    noter_en_cours_dans(&fichier(), commandes, id, ev)
+}
+
+fn noter_en_cours_dans(
+    chemin: &std::path::Path,
+    commandes: &[String],
+    id: &str,
+    mut ev: crate::modele::evenement::Evenement,
+) -> bool {
+    use crate::modele::evenement::Genre;
+    if let Genre::Action { annulable, .. } = &mut ev.quoi {
+        *annulable = Some(id.to_string());
+    }
+    let mut tous = lire_de(chemin);
+    tous.push(Changement {
+        date: maintenant(),
+        commandes: commandes.to_vec(),
+        reussi: false,
+        blocage: None,
+        annulable: Some(id.to_string()),
+        defaite: None,
+        evenement: crate::modele::journal::noter(ev),
+        origine: None,
+        en_cours: true,
+    });
+    ecrire(chemin, &tous)
+}
+
+/// Finit la ligne « en cours » de la note `id` : réussie ou non. Rend `false` si elle n'a pas pu s'écrire (elle reste
+/// alors « interrompue », ce qui se remet aussi).
+pub(crate) fn finir(id: &str, reussi: bool) -> bool {
+    finir_dans(&fichier(), id, reussi)
+}
+
+fn finir_dans(chemin: &std::path::Path, id: &str, reussi: bool) -> bool {
+    let mut tous = lire_de(chemin);
+    let Some(c) = tous
+        .iter_mut()
+        .rev()
+        .find(|c| c.en_cours && c.annulable.as_deref() == Some(id))
+    else {
+        return false;
+    };
+    c.en_cours = false;
+    c.reussi = reussi;
+    ecrire(chemin, &tous)
 }
 
 /// Note que la correction liée à cette note (`annulable`) est défaite.
@@ -235,8 +295,8 @@ fn en_place(c: &Changement) -> bool {
 /// borne, même avec les seuls blocages en place, les preuves des plus anciens partent (leur annulation reste) : un
 /// relevé qui ne se relirait plus perdrait toutes les notes d'annulation. Un relevé là mais illisible (un tube, trop
 /// gros) est mis de côté, jamais écrasé ; une note qui ne s'écrit pas (en administrateur dans le dossier d'un
-/// compte) se dit : le geste ne se défera pas tout seul.
-fn ecrire(chemin: &std::path::Path, tous: &[Changement]) {
+/// compte) se dit : le geste ne se défera pas tout seul. Rend `true` si le relevé est écrit.
+fn ecrire(chemin: &std::path::Path, tous: &[Changement]) -> bool {
     let (dossier, nom) = lieu(chemin);
     let mut gardes: Vec<Changement> = tous.to_vec();
     let mut en_trop = gardes.len().saturating_sub(GARDES);
@@ -276,17 +336,19 @@ fn ecrire(chemin: &std::path::Path, tous: &[Changement]) {
         ));
         // Renommé, pas copié : un lien reste un lien, rien n'est suivi ni relu.
         if crate::socle::ecriture_sure(dossier) && std::fs::rename(chemin, &copie).is_err() {
-            return dire_non_note(tr!(
+            dire_non_note(tr!(
                 "relevé illisible, pas mis de côté",
                 "record unreadable, not set aside"
             ));
+            return false;
         }
     }
     let ecrit = crate::sceau::ecrire_dans(dossier, nom, texte.as_bytes())
         .and_then(|()| crate::sceau::ecrire_dans(dossier, LIGNES, empreintes.as_bytes()));
-    if let Err(e) = ecrit {
+    if let Err(e) = &ecrit {
         dire_non_note(&e.to_string());
     }
+    ecrit.is_ok()
 }
 
 /// Une note du relevé qui n'a pas pu s'écrire : dit, et gardé au journal des erreurs.
@@ -389,6 +451,7 @@ fn ecrire_blocage(chemin: &std::path::Path, commandes: Vec<String>, reussi: bool
         defaite: None,
         evenement: None,
         origine: None,
+        en_cours: false,
     });
     ecrire(chemin, &tous);
 }
@@ -785,6 +848,12 @@ fn ligne(c: &Changement, a_sa_note: &dyn Fn(&String) -> bool) -> Ligne {
     };
     let (etat, code) = match (&c.defaite, &c.annulable) {
         (Some(le), _) => (trf!(" (défaite le {le})", " (undone on {le})"), "defaite"),
+        // Notée avant de poser, jamais finie : Vanguard a été arrêté en route.
+        (None, Some(id)) if c.en_cours && a_sa_note(id) => (interrompue_annulable().to_string(), "interrompue"),
+        (None, _) if c.en_cours => (
+            tr!(" (interrompue ; rien à défaire)", " (interrupted; nothing to undo)").to_string(),
+            "interrompue",
+        ),
         (None, Some(id)) if a_sa_note(id) => (tr!(" (annulable)", " (undoable)").to_string(), "annulable"),
         _ if c.reussi => (se_remet(premiere).unwrap_or_default().to_string(), "fait"),
         _ => (String::new(), "echoue"),
@@ -796,6 +865,10 @@ fn ligne(c: &Changement, a_sa_note: &dyn Fn(&String) -> bool) -> Ligne {
         douteuse,
         preuve: None,
     }
+}
+
+fn interrompue_annulable() -> &'static str {
+    tr!(" (interrompue, annulable)", " (interrupted, undoable)")
 }
 
 /// `vanguard changements --json` : les `MONTRES` changements les plus récents, en JSON simple et borné (un historique
@@ -810,7 +883,53 @@ pub(crate) fn json() {
     #[cfg(not(unix))]
     let droits: Vec<String> = Vec::new();
     let se_remet_d_ici = |id: &String| droits.contains(id);
-    println!("{}", en_json(&tous, releve, &a_sa_note, &se_remet_d_ici));
+    let orphelines = orphelines(&tous, &notes);
+    println!("{}", en_json(&tous, &orphelines, releve, &a_sa_note, &se_remet_d_ici));
+}
+
+/// Une note du bilan qu'aucune ligne du relevé ne porte : Vanguard arrêté entre sa note et sa ligne (version d'avant
+/// la ligne « en cours »), ou sa ligne élaguée. Elle se montre en tête, « interrompue », et se remet comme une autre :
+/// jamais une note qu'on ne voit pas.
+struct Orpheline {
+    id: String,
+    date: String,
+    titre: String,
+}
+
+/// Les notes du bilan sans ligne, la plus récente d'abord.
+fn orphelines(tous: &[Changement], notes: &[crate::optimiser::annulables::Note]) -> Vec<Orpheline> {
+    let mut l: Vec<Orpheline> = notes
+        .iter()
+        .filter(|n| n.origine == crate::optimiser::annulables::Origine::Bilan)
+        .filter(|n| !tous.iter().any(|c| c.annulable.as_deref() == Some(n.id.as_str())))
+        .map(|n| Orpheline {
+            id: n.id.clone(),
+            date: n.date.clone(),
+            titre: n.titre.clone(),
+        })
+        .collect();
+    l.sort_by(|a, b| (&b.date, &b.id).cmp(&(&a.date, &a.id)));
+    l
+}
+
+/// Les notes que « Ce que Vanguard a changé » montre (à l'écran comme en JSON) : celles des `MONTRES` lignes les plus
+/// récentes, et les orphelines, toujours montrées. Une note plus récente qui n'y est pas ne bloque jamais la remise
+/// d'une ligne visible (`machine::annuler`) : on ne pourrait pas la remettre d'abord.
+#[cfg_attr(windows, allow(dead_code))]
+pub(crate) fn notes_montrees() -> std::collections::HashSet<String> {
+    let tous = lire();
+    let notes = crate::optimiser::annulables::notes(None);
+    montrees_de(&tous, &orphelines(&tous, &notes))
+}
+
+#[cfg_attr(windows, allow(dead_code))]
+fn montrees_de(tous: &[Changement], orphelines: &[Orpheline]) -> std::collections::HashSet<String> {
+    tous.iter()
+        .rev()
+        .take(MONTRES)
+        .filter_map(|c| c.annulable.clone())
+        .chain(orphelines.iter().map(|o| o.id.clone()))
+        .collect()
 }
 
 /// `se_remet_d_ici` : la note ne remet que des droits du compte (`annulables::notes_de_droits`). Sa ligne, encore
@@ -818,16 +937,30 @@ pub(crate) fn json() {
 /// "jeton"}`, le jeton de la note (`jeton_de_note`), jamais son id ni ses chemins.
 fn en_json(
     tous: &[Changement],
+    orphelines: &[Orpheline],
     releve: &'static str,
     a_sa_note: &dyn Fn(&String) -> bool,
     se_remet_d_ici: &dyn Fn(&String) -> bool,
 ) -> String {
     use crate::modele::resultat::sans_piege;
-    let changements: Vec<serde_json::Value> = tous
+    let geste =
+        |id: &String| serde_json::json!({ "sorte": crate::machine::annuler::SORTE_VOIR, "jeton": jeton_de_note(id) });
+    let changements: Vec<serde_json::Value> = orphelines
         .iter()
-        .rev()
-        .take(MONTRES)
-        .map(|c| {
+        .map(|o| {
+            serde_json::json!({
+                "date": sans_piege(&o.date, false),
+                "reussi": false,
+                "genre": "correction",
+                "texte": sans_piege(&format!("{}{}", affichable(&o.titre), interrompue_annulable()), false),
+                "commandes": 0,
+                "etat": "interrompue",
+                "origine": None::<&str>,
+                "preuve": None::<String>,
+                "geste": Some(&o.id).filter(|id| se_remet_d_ici(id)).map(geste),
+            })
+        })
+        .chain(tous.iter().rev().take(MONTRES).map(|c| {
             let l = ligne(c, a_sa_note);
             serde_json::json!({
                 "date": sans_piege(&c.date, false),
@@ -845,15 +978,20 @@ fn en_json(
                 "geste": c
                     .annulable
                     .as_ref()
-                    .filter(|id| l.code == "annulable" && c.origine.is_none() && se_remet_d_ici(id))
-                    .map(|id| serde_json::json!({ "sorte": crate::machine::annuler::SORTE_VOIR, "jeton": jeton_de_note(id) })),
+                    .filter(|id| {
+                        matches!(l.code, "annulable" | "interrompue")
+                            && c.origine.is_none()
+                            && a_sa_note(id)
+                            && se_remet_d_ici(id)
+                    })
+                    .map(geste),
             })
-        })
+        }))
         .collect();
     serde_json::to_string_pretty(&serde_json::json!({
         "schema": 1,
         "releve": releve,
-        "total": tous.len(),
+        "total": tous.len().saturating_add(orphelines.len()),
         "montres": changements.len(),
         "plus_anciens": tous.len().saturating_sub(MONTRES),
         "changements": changements,
@@ -866,15 +1004,24 @@ fn en_json(
 pub fn afficher() {
     titre(tr!("Ce que Vanguard a changé", "What Vanguard changed"));
     let tous = lire();
-    if tous.is_empty() {
+    let notes = crate::optimiser::annulables::notes(None);
+    let orphelines = orphelines(&tous, &notes);
+    if tous.is_empty() && orphelines.is_empty() {
         trp!(
             "  Rien encore : aucune correction n'a été lancée sur cet ordinateur.",
             "  Nothing yet: no fix has been run on this computer."
         );
         return;
     }
-    let notes = crate::optimiser::annulables::notes(None);
     let a_sa_note = |id: &String| notes.iter().any(|n| &n.id == id);
+    for o in &orphelines {
+        afficher_aligne(
+            &format!("  ⚠ {GRIS}{}{RESET}  ", o.date),
+            &format!("{}{}", affichable(&o.titre), interrompue_annulable()),
+            21,
+            "",
+        );
+    }
     for c in tous.iter().rev().take(MONTRES) {
         let marque = if c.reussi {
             format!("{VERT}✔{RESET}")
@@ -1103,7 +1250,7 @@ mod tests {
         let jamais = |_: &String| false;
         let (tous, releve) = lire_et_juger(&f);
         assert_eq!(releve, "intact");
-        let v: serde_json::Value = serde_json::from_str(&en_json(&tous, releve, &jamais, &jamais)).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&en_json(&tous, &[], releve, &jamais, &jamais)).unwrap();
         assert_eq!(
             (v["total"].as_u64(), v["montres"].as_u64()),
             (Some(34), Some(30)),
@@ -1259,6 +1406,7 @@ mod tests {
             defaite: None,
             evenement: None,
             origine: None,
+            en_cours: false,
         };
         let mut texte = std::fs::read_to_string(&f).unwrap();
         texte += &(serde_json::to_string(&forge).unwrap() + "\n");
@@ -1353,6 +1501,7 @@ mod tests {
             defaite: None,
             evenement: None,
             origine: None,
+            en_cours: false,
         })
         .collect();
         let texte: String = lignes

@@ -198,15 +198,19 @@ pub(crate) fn relever(id: String, titre: &str, gestes: &[Geste]) -> Result<Relev
         return Err(PourquoiPas::NonReleve);
     }
     let mut valeurs = Vec::with_capacity(gestes.len());
+    let mut identites = std::collections::BTreeMap::new();
     for g in gestes {
         let Some(c) = systeme::Changement::depuis_geste(&g.0) else {
             return Err(PourquoiPas::HorsListe(g.0.clone()));
         };
-        let Some(v) = c.relever() else {
+        let Some((v, identite)) = relever_un(&c, g) else {
             return Err(PourquoiPas::Illisible(g.0.clone()));
         };
         if !c.valeur_admise(v.as_deref()) {
             return Err(PourquoiPas::Forme(g.0.clone()));
+        }
+        if let Some(i) = identite {
+            identites.insert(g.0.clone(), i);
         }
         valeurs.push(v);
     }
@@ -217,8 +221,47 @@ pub(crate) fn relever(id: String, titre: &str, gestes: &[Geste]) -> Result<Relev
             valeurs,
             titre: Some(titre.to_string()),
             gestes: gestes.iter().map(|g| g.0.clone()).collect(),
+            identites,
         },
     })
+}
+
+/// La valeur d'avant d'un geste et, pour les droits d'un fichier du compte, l'identité de la cible (sorte,
+/// périphérique, inode), lues sur le même descripteur : une seule ouverture, jamais deux lectures qui pourraient
+/// viser deux fichiers.
+fn relever_un(c: &systeme::Changement, g: &Geste) -> Option<(Valeur, Option<String>)> {
+    #[cfg(unix)]
+    if let Some(chemin) = g.0.strip_prefix("droits|") {
+        let (mode, identite) = super::droits::lire_identifie(Path::new(chemin)).ok()?;
+        return Some((Some(format!("{mode:04o}")), Some(identite.to_string())));
+    }
+    #[cfg(not(unix))]
+    let _ = g;
+    c.relever().map(|v| (v, None))
+}
+
+/// Le chemin tel qu'il part vers la fenêtre ou se montre : « ~ » ou « ~/… » sous le dossier personnel, jamais son
+/// chemin absolu (qui dit le nom du compte) ; tel quel ailleurs.
+pub(crate) fn chemin_montre(chemin: &str) -> String {
+    let maison = crate::socle::maison();
+    if !maison.is_absolute() || maison.parent().is_none() {
+        return chemin.to_string();
+    }
+    match Path::new(chemin).strip_prefix(&maison).map(|r| r.to_str()) {
+        Ok(Some("")) => "~".to_string(),
+        Ok(Some(r)) => format!("~/{r}"),
+        _ => chemin.to_string(),
+    }
+}
+
+/// Un geste tel qu'il se montre : le chemin d'un geste « droits|… » ou « fichier|… » passé par `chemin_montre`.
+pub(crate) fn geste_montre(geste: &str) -> String {
+    for prefixe in ["droits|", "fichier|"] {
+        if let Some(chemin) = geste.strip_prefix(prefixe) {
+            return format!("{prefixe}{}", chemin_montre(chemin));
+        }
+    }
+    geste.to_string()
 }
 
 /// Regroupe les relevés d'un lot (« `[t]out` appliquer ») qui touchent la même chose : tous pris avant d'appliquer,
@@ -282,6 +325,11 @@ impl Releve {
             .zip(self.avant.valeurs.iter().map(Option::as_deref))
     }
 
+    /// L'identité relevée de la cible de ce geste (« fichier:<dev>:<ino> »), pour les droits d'un fichier du compte.
+    pub(crate) fn identite(&self, geste: &str) -> Option<&str> {
+        self.avant.identites.get(geste).map(String::as_str)
+    }
+
     /// Un geste en commun : les deux défont la même chose.
     fn touche_le_meme(&self, autre: &Releve) -> bool {
         self.avant.gestes.iter().any(|g| autre.avant.gestes.contains(g))
@@ -292,6 +340,9 @@ impl Releve {
     fn absorber(&mut self, autre: Releve) {
         for (g, v) in autre.avant.gestes.into_iter().zip(autre.avant.valeurs) {
             if !self.avant.gestes.contains(&g) {
+                if let Some(i) = autre.avant.identites.get(&g) {
+                    self.avant.identites.insert(g.clone(), i.clone());
+                }
                 self.avant.gestes.push(g);
                 self.avant.valeurs.push(v);
             }
@@ -516,8 +567,9 @@ pub(crate) struct NoteDeDroits {
     pub(crate) id: String,
     pub(crate) date: String,
     pub(crate) titre: String,
-    /// Chaque chemin (absolu, dans le dossier personnel) et ses droits d'avant, admis (`droits_admis`).
-    pub(crate) droits: Vec<(std::path::PathBuf, u32)>,
+    /// Chaque chemin (absolu, dans le dossier personnel), ses droits d'avant, admis (`droits_admis`), et ce qu'était
+    /// la cible relevée (`None` : note d'avant ce relevé).
+    pub(crate) droits: Vec<(std::path::PathBuf, u32, Option<super::droits::Identite>)>,
 }
 
 /// Pourquoi une note ne se remet pas d'ici.
@@ -533,10 +585,11 @@ pub(crate) enum PasDeNote {
 }
 
 /// La note du bilan dont le jeton (`changements::jeton_de_note`) est `jeton`, si elle ne remet que des droits du
-/// compte et qu'aucune note plus récente ne touche la même chose.
+/// compte et qu'aucune note plus récente ne touche la même chose parmi celles que l'écran montre (`montree` : une note
+/// qu'on ne voit pas, qu'on ne pourrait donc pas remettre d'abord, ne bloque jamais une ligne visible).
 #[cfg(unix)]
-pub(crate) fn note_de_droits(jeton: &str) -> Result<NoteDeDroits, PasDeNote> {
-    note_de_droits_de(&charger(), jeton)
+pub(crate) fn note_de_droits(jeton: &str, montree: &dyn Fn(&str) -> bool) -> Result<NoteDeDroits, PasDeNote> {
+    note_de_droits_de(&charger(), jeton, montree)
 }
 
 /// Les notes du bilan qui ne remettent que des droits du compte : celles que la fenêtre peut proposer de défaire.
@@ -551,7 +604,7 @@ pub(crate) fn notes_de_droits() -> Vec<String> {
 }
 
 #[cfg(unix)]
-fn note_de_droits_de(h: &Historique, jeton: &str) -> Result<NoteDeDroits, PasDeNote> {
+fn note_de_droits_de(h: &Historique, jeton: &str, montree: &dyn Fn(&str) -> bool) -> Result<NoteDeDroits, PasDeNote> {
     let mut trouvees = h
         .reglages
         .keys()
@@ -562,7 +615,7 @@ fn note_de_droits_de(h: &Historique, jeton: &str) -> Result<NoteDeDroits, PasDeN
         return Err(PasDeNote::Aucune);
     }
     let droits = droits_seulement(h, id).ok_or(PasDeNote::Autre)?;
-    if let Some(titre) = plus_recente_sur_le_meme(h, id) {
+    if let Some(titre) = plus_recente_sur_le_meme(h, id, montree) {
         return Err(PasDeNote::PlusRecente(titre));
     }
     let a = h.reglages.get(id).ok_or(PasDeNote::Aucune)?;
@@ -577,7 +630,11 @@ fn note_de_droits_de(h: &Historique, jeton: &str) -> Result<NoteDeDroits, PasDeN
 /// Les droits d'avant d'une note du bilan, si chacun de ses gestes est `droits|<chemin du dossier personnel>` avec
 /// une valeur admise ; `None` sinon (rien de la note n'est alors remis d'ici).
 #[cfg(unix)]
-fn droits_seulement(h: &Historique, id: &str) -> Option<Vec<(std::path::PathBuf, u32)>> {
+#[allow(clippy::type_complexity, reason = "chemin, droits d'avant, identité : lus ensemble")]
+fn droits_seulement(
+    h: &Historique,
+    id: &str,
+) -> Option<Vec<(std::path::PathBuf, u32, Option<super::droits::Identite>)>> {
     let a = h.reglages.get(id)?;
     if Origine::de(id) != Origine::Bilan || a.gestes.is_empty() || a.gestes.len() != a.valeurs.len() {
         return None;
@@ -588,8 +645,16 @@ fn droits_seulement(h: &Historique, id: &str) -> Option<Vec<(std::path::PathBuf,
         .map(|(g, v)| {
             let chemin = std::path::PathBuf::from(g.strip_prefix("droits|")?);
             let v = v.as_deref().filter(|v| droits_admis(v))?;
-            (dans_la_maison(&chemin) && Geste::droits(&chemin).is_some_and(|d| d.0 == *g))
-                .then_some((chemin, u32::from_str_radix(v, 8).ok()?))
+            // Une identité notée doit se relire : mal formée, la note n'est pas d'une forme que Vanguard écrit.
+            let identite = match a.identites.get(g) {
+                Some(t) => Some(super::droits::Identite::lue(t)?),
+                None => None,
+            };
+            (dans_la_maison(&chemin) && Geste::droits(&chemin).is_some_and(|d| d.0 == *g)).then_some((
+                chemin,
+                u32::from_str_radix(v, 8).ok()?,
+                identite,
+            ))
         })
         .collect()
 }
@@ -607,12 +672,13 @@ pub(crate) enum Issue {
     Absent,
 }
 
-/// Une note plus récente qui touche la même chose que `id` : défaite après elle, elle ramènerait l'état d'entre
-/// les deux. Rend son titre.
-fn plus_recente_sur_le_meme(h: &Historique, id: &str) -> Option<String> {
+/// Une note plus récente qui touche la même chose que `id`, parmi celles que `montree` retient : défaite après elle,
+/// elle ramènerait l'état d'entre les deux. Rend son titre.
+fn plus_recente_sur_le_meme(h: &Historique, id: &str, montree: &dyn Fn(&str) -> bool) -> Option<String> {
     let a = h.reglages.get(id)?;
     h.reglages
         .iter()
+        .filter(|(autre, _)| montree(autre))
         .filter(|(autre, b)| *autre != id && (&b.date, *autre) > (&a.date, &id.to_string()))
         .find(|(_, b)| b.gestes.iter().any(|g| a.gestes.contains(g)))
         .map(|(autre, b)| b.titre.clone().unwrap_or_else(|| autre.clone()))
@@ -743,7 +809,7 @@ pub(crate) fn a_remettre(ids: &[String]) -> Vec<String> {
 /// la même chose (à défaire d'abord). Rend l'issue, relue ; `None` si on n'a rien fait.
 pub(crate) fn annuler_une(id: &str) -> Option<Issue> {
     let h = charger();
-    if let Some(titre) = plus_recente_sur_le_meme(&h, id) {
+    if let Some(titre) = plus_recente_sur_le_meme(&h, id, &|_| true) {
         afficher_aligne(
             "  ✖ ",
             &trf!(
@@ -954,6 +1020,7 @@ pub(super) fn reprendre_jeux(h: &mut Historique, dossier: &Path) {
                     valeurs: l.iter().map(|(_, v)| v.clone()).collect(),
                     titre: Some(crate::ui::affichable(&a.titre)),
                     gestes: l.into_iter().map(|(g, _)| g.0).collect(),
+                    identites: std::collections::BTreeMap::default(),
                 });
             }
             None => {
@@ -996,6 +1063,7 @@ mod tests {
                 valeurs: valeurs.iter().map(|v| v.map(str::to_string)).collect(),
                 titre: Some(format!("Essai {id}")),
                 gestes: gestes.iter().map(|g| (*g).to_string()).collect(),
+                identites: std::collections::BTreeMap::default(),
             },
         )
     }
@@ -1043,37 +1111,93 @@ mod tests {
                 &[Some("0644"), Some("x")],
             ),
         ]);
-        let n = note_de_droits_de(&h, &jeton_de_note("bilan:1"))
+        let tout = |_: &str| true;
+        let n = note_de_droits_de(&h, &jeton_de_note("bilan:1"), &tout)
             .map_err(|e| format!("{e:?}"))
             .unwrap();
         assert_eq!(n.id, "bilan:1");
         assert_eq!(
             n.droits,
-            vec![(d.join(".netrc"), 0o644), (d.join(".ssh/id_essai"), 0o644)]
+            vec![(d.join(".netrc"), 0o644, None), (d.join(".ssh/id_essai"), 0o644, None)]
         );
         for id in [
             "bilan:2", "bilan:3", "bilan:4", "bilan:5", "bilan:6", "bilan:8", "bilan:9",
         ] {
             assert_eq!(
-                note_de_droits_de(&h, &jeton_de_note(id)).err(),
+                note_de_droits_de(&h, &jeton_de_note(id), &tout).err(),
                 Some(PasDeNote::Autre),
                 "{id}"
             );
         }
         // Une note des réglages pour jouer n'est jamais choisie par ce jeton.
         assert_eq!(
-            note_de_droits_de(&h, &jeton_de_note("jeux:7")).err(),
+            note_de_droits_de(&h, &jeton_de_note("jeux:7"), &tout).err(),
             Some(PasDeNote::Aucune)
         );
-        assert_eq!(note_de_droits_de(&h, &"0".repeat(32)).err(), Some(PasDeNote::Aucune));
+        assert_eq!(
+            note_de_droits_de(&h, &"0".repeat(32), &tout).err(),
+            Some(PasDeNote::Aucune)
+        );
         // Une note plus récente sur la clé bloque bilan:1.
         let mut plus = h.reglages.clone();
         plus.extend([note("bilan:z", "2026-01-02 10:00", &[&cle], &[Some("0600")])]);
         let h2 = Historique { reglages: plus, ..h };
         assert_eq!(
-            note_de_droits_de(&h2, &jeton_de_note("bilan:1")).err(),
+            note_de_droits_de(&h2, &jeton_de_note("bilan:1"), &tout).err(),
             Some(PasDeNote::PlusRecente("Essai bilan:z".into()))
         );
+        // Sauf si l'écran ne la montre pas : on ne pourrait pas la remettre d'abord, elle ne bloque pas la ligne
+        // visible (mutation : ignorer `montree`).
+        let sans_z = |id: &str| id != "bilan:z";
+        assert_eq!(
+            note_de_droits_de(&h2, &jeton_de_note("bilan:1"), &sans_z).map(|n| n.id),
+            Ok("bilan:1".to_string())
+        );
+        // L'identité notée se relit ; mal formée, la note n'est pas d'une forme que Vanguard écrit.
+        let mut avec = h2.reglages.clone();
+        if let Some(a) = avec.get_mut("bilan:1") {
+            a.identites.insert(netrc.clone(), "fichier:12:34".into());
+        }
+        let h3 = Historique {
+            reglages: avec.clone(),
+            ..h2
+        };
+        let n = note_de_droits_de(&h3, &jeton_de_note("bilan:1"), &sans_z).unwrap();
+        assert_eq!(n.droits[0].2.map(|i| i.to_string()), Some("fichier:12:34".into()));
+        assert_eq!(n.droits[1].2, None);
+        if let Some(a) = avec.get_mut("bilan:1") {
+            a.identites.insert(netrc.clone(), "lien:12:34".into());
+        }
+        let h4 = Historique { reglages: avec, ..h3 };
+        assert_eq!(
+            note_de_droits_de(&h4, &jeton_de_note("bilan:1"), &sans_z).err(),
+            Some(PasDeNote::Autre)
+        );
+    }
+
+    /// Le relevé des droits d'un fichier du compte note aussi ce qu'était la cible (sorte, inode), lu sur le même
+    /// descripteur ; deux relevés regroupés gardent chacun la sienne.
+    #[cfg(unix)]
+    #[test]
+    fn le_releve_note_l_identite_de_la_cible() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let dossier = dossier("identite");
+        let (f, g) = (dossier.join("f"), dossier.join("g"));
+        for x in [&f, &g] {
+            std::fs::write(x, b"x").unwrap();
+            std::fs::set_permissions(x, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        let (gf, gg) = (Geste::droits(&f).unwrap(), Geste::droits(&g).unwrap());
+        let mut a = relever("bilan:a".into(), "a", std::slice::from_ref(&gf)).unwrap();
+        let b = relever("bilan:b".into(), "b", &[gf.clone(), gg.clone()]).unwrap();
+        let meta = std::fs::metadata(&f).unwrap();
+        assert_eq!(
+            a.identite(&gf.0),
+            Some(format!("fichier:{}:{}", meta.dev(), meta.ino()).as_str())
+        );
+        a.absorber(b);
+        assert!(a.identite(&gg.0).is_some_and(|i| i.starts_with("fichier:")));
+        let _ = std::fs::remove_dir_all(&dossier);
     }
 
     /// Une note oubliée (geste dit non annulable par l'enfant) quitte l'historique scellé ; les autres restent.
@@ -1456,9 +1580,14 @@ mod tests {
         let ids: Vec<String> = notes_de(&h, None).into_iter().map(|n| n.id).collect();
         assert_eq!(ids, ["bilan:c", "bilan:b", "bilan:a", "jeux:hags"]);
         assert_eq!(notes_de(&h, Some(Origine::Jeux)).len(), 1);
-        assert_eq!(plus_recente_sur_le_meme(&h, "bilan:a"), Some("Essai bilan:b".into()));
-        assert_eq!(plus_recente_sur_le_meme(&h, "bilan:b"), None);
-        assert_eq!(plus_recente_sur_le_meme(&h, "bilan:c"), None);
+        let tout = |_: &str| true;
+        assert_eq!(
+            plus_recente_sur_le_meme(&h, "bilan:a", &tout),
+            Some("Essai bilan:b".into())
+        );
+        assert_eq!(plus_recente_sur_le_meme(&h, "bilan:b", &tout), None);
+        assert_eq!(plus_recente_sur_le_meme(&h, "bilan:c", &tout), None);
+        assert_eq!(plus_recente_sur_le_meme(&h, "bilan:a", &|id| id != "bilan:b"), None);
     }
 
     /// Aller-retour de chaque genre de correction de Linux : la note relue rebâtit le geste, et la commande qui la

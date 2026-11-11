@@ -868,9 +868,11 @@ mod tests_liens {
             None
         );
         let lien = hors_correction(&maison, Path::new(".ssh/id_lien"), Attendu::Fichier).unwrap();
-        // La cible est dite, coupée à 120 signes : dans un dépôt au chemin long, son nom peut tomber après.
+        // Le lien est nommé et refusé comme lien. Sa cible, coupée à 120 signes, n'est pas exigée : son nom tombe
+        // après la coupe quand le dossier d'essais a un long chemin (il dépend de la machine).
         assert!(
-            lien.contains("~/.ssh/id_lien") && lien.contains("liens-ailleu"),
+            lien.starts_with("~/.ssh/id_lien ")
+                && (lien.contains(" est un lien vers ") || lien.contains(" is a link to ")),
             "{lien}"
         );
         // Un dossier du chemin qui est un lien : la fin, ordinaire, n'y change rien.

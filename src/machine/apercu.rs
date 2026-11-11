@@ -160,11 +160,17 @@ pub(crate) fn gestes_offerts(constats: &[Constat]) -> Vec<Option<GesteOffert>> {
         .collect()
 }
 
-/// Une valeur d'avant relevée : le geste (« droits:/home/alice/.ssh ») et sa valeur (absente : `None`).
+/// Une valeur d'avant relevée : le geste (« droits|~/.ssh », le dossier personnel dit « ~ », jamais son chemin
+/// absolu) et sa valeur (absente : `None`).
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ValeurAvant {
     pub geste: String,
     pub valeur: Option<String>,
+    /// Ce qu'était la cible au relevé, pour les droits d'un fichier du compte (« fichier:<périphérique>:<inode> ») :
+    /// pas montré (la fenêtre n'en a que faire), mais dans l'accord. Un fichier remplacé entre l'aperçu et le geste,
+    /// même aux mêmes droits, change l'accord : « changé depuis l'aperçu », rien n'est posé.
+    #[serde(skip)]
+    pub identite: Option<String>,
 }
 
 /// Tout ce que l'aperçu donne à montrer. Chaque champ est dans l'accord (`champs`, tenu par un essai qui relit les
@@ -232,12 +238,14 @@ impl Apercu {
                 .map(|v| {
                     let mut o = Vec::new();
                     bloc(&mut o, v.geste.as_bytes());
-                    match &v.valeur {
-                        Some(t) => {
-                            o.push(1);
-                            bloc(&mut o, t.as_bytes());
+                    for champ in [&v.valeur, &v.identite] {
+                        match champ {
+                            Some(t) => {
+                                o.push(1);
+                                bloc(&mut o, t.as_bytes());
+                            }
+                            None => o.push(0),
                         }
-                        None => o.push(0),
                     }
                     o
                 })
@@ -397,6 +405,18 @@ pub(crate) enum Refus {
 }
 
 impl Refus {
+    /// Le mot du refus au journal des événements : fixe, sans rien de ce que le compte nomme.
+    pub(crate) fn code(&self) -> &'static str {
+        match self {
+            Refus::MalForme => "mal-forme",
+            Refus::Disparu => "disparu",
+            Refus::EnDouble => "en-double",
+            Refus::SansCorrection => "sans-correction",
+            Refus::EcritAilleurs => "ecrit-ailleurs",
+            Refus::SansLectureSeule => "sans-lecture-seule",
+        }
+    }
+
     pub(crate) fn raison(&self) -> String {
         match self {
             Refus::MalForme => tr!(
@@ -471,8 +491,9 @@ pub(crate) fn apercu_et_releve(c: &Constat, jeton: &Jeton, id: String) -> Option
             String::new(),
             r.valeurs()
                 .map(|(g, v)| ValeurAvant {
-                    geste: g.to_string(),
+                    geste: crate::optimiser::annulables::geste_montre(g),
                     valeur: v.map(str::to_string),
+                    identite: r.identite(g).map(str::to_string),
                 })
                 .collect(),
         ),
@@ -594,7 +615,10 @@ pub(crate) fn voir(jeton: &str, json: bool) -> i32 {
     if let Ok(a) = &issue
         && applicable(a)
     {
-        super::carnet::noter(super::appliquer::SORTE, &a.jeton, &a.accord());
+        super::carnet::dire_si_remplace(
+            super::carnet::noter(super::appliquer::SORTE, &a.jeton, &a.accord()),
+            json,
+        );
     }
     let code = match &issue {
         Ok(_) => 0,
@@ -846,6 +870,7 @@ mod tests {
             avant: vec![ValeurAvant {
                 geste: "droits:/home/alice/.ssh".into(),
                 valeur: Some("755".into()),
+                identite: None,
             }],
             point_de_restauration: false,
         }
@@ -1136,6 +1161,13 @@ mod tests {
         let mut c = apercu();
         c.avant[0].valeur = Some(String::new());
         assert_ne!(b.accord(), c.accord());
+        // L'identité de la cible, pas montrée, est dans l'accord : un autre fichier au même chemin en donne un autre.
+        let mut b = apercu();
+        b.avant[0].identite = Some("fichier:1:2".into());
+        let mut c = apercu();
+        c.avant[0].identite = Some("fichier:1:3".into());
+        assert_ne!(b.accord(), base);
+        assert_ne!(b.accord(), c.accord());
         let mut b = apercu();
         b.commandes = vec!["ab".into(), "c".into()];
         let mut c = apercu();
@@ -1393,6 +1425,17 @@ mod tests {
         assert_eq!(apercu_de(&c, &j).unwrap().accord(), a.accord());
         std::fs::set_permissions(&fichier, std::fs::Permissions::from_mode(0o600)).unwrap();
         assert_ne!(apercu_de(&c, &j).unwrap().accord(), a.accord());
+        std::fs::set_permissions(&fichier, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(apercu_de(&c, &j).unwrap().accord(), a.accord());
+        // Un autre fichier au même chemin, aux mêmes droits : autre inode, autre accord (mutation : identité hors de
+        // l'accord).
+        let neuf = fichier.with_extension("neuf");
+        std::fs::write(&neuf, "x").unwrap();
+        std::fs::set_permissions(&neuf, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::rename(&neuf, &fichier).unwrap();
+        let relu = apercu_de(&c, &j).unwrap();
+        assert_eq!(relu.avant[0].valeur, a.avant[0].valeur);
+        assert_ne!(relu.accord(), a.accord());
         let _ = std::fs::remove_file(&fichier);
     }
 
@@ -1420,6 +1463,7 @@ mod tests {
             a.avant = vec![ValeurAvant {
                 geste: format!("droits:/home/alice/{p}"),
                 valeur: Some(p.into()),
+                identite: None,
             }];
             a.annulable = false;
             a.pourquoi_pas = p.into();
@@ -1588,6 +1632,7 @@ mod tests {
             a.avant = vec![ValeurAvant {
                 geste: format!("droits:/home/alice/.ssh/{nom}"),
                 valeur: Some("644".into()),
+                identite: None,
             }];
             lignes(&a)
         };
@@ -1658,6 +1703,7 @@ mod tests {
             a.avant = vec![ValeurAvant {
                 geste: geste.into(),
                 valeur: valeur.map(Into::into),
+                identite: None,
             }];
             lignes(&a).into_iter().find(|l| l.contains("Avant")).unwrap_or_default()
         };
