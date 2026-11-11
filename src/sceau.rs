@@ -1002,6 +1002,28 @@ fn arret_d_essai(nom: &str) {
     let _ = nom;
 }
 
+// Essais unitaires : l'étape où `ecrire_dans` ou `effacer_dans` s'arrête net, comme tuée là (rien n'est enregistré
+// ensuite), sur ce fil seulement.
+#[cfg(test)]
+thread_local! {
+    static COUPE_A: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+}
+
+/// Vrai si l'essai en cours coupe l'écriture à `etape` (`COUPE_A`) ; toujours faux hors des essais.
+fn coupe(etape: &'static str) -> bool {
+    #[cfg(test)]
+    if COUPE_A.with(std::cell::Cell::get) == Some(etape) {
+        return true;
+    }
+    let _ = etape;
+    false
+}
+
+/// L'erreur d'une écriture coupée par un essai (`coupe`).
+fn coupee() -> std::io::Error {
+    std::io::Error::other("essai : écriture coupée")
+}
+
 /// `lire_dans` sans rien écrire ni créer : ce que lisent les réglages du lancement, avant que le passage d'une version
 /// d'avant ait repris son dossier (des sceaux posés là d'abord feraient passer les fichiers repris pour falsifiés), et
 /// le processus élevé. Le même jugement : un premier usage ou un fichier protégé tard s'y lit `Adopte`, sans être noté.
@@ -1046,17 +1068,22 @@ pub(crate) fn ecrire_dans(dossier: &Path, nom: &str, octets: &[u8]) -> std::io::
             ..Registre::default()
         },
     };
-    sceaux.inconnus.remove(nom);
     // En deux temps : l'empreinte du nouveau contenu est notée « en attente » avant que le fichier change, puis
     // devient son sceau. Tué entre les deux, le fichier ancien ou nouveau est reconnu (`juger`), jamais dit falsifié :
     // un carnet mis de côté à tort perdait l'annulation d'un changement déjà fini.
     let nouvelle = empreinte(nom, octets);
     sceaux.en_attente.insert(nom.to_string(), nouvelle.clone());
     enregistrer_registre(dossier, &sceaux)?;
+    if coupe("ecrire:avant-fichier") {
+        return Err(coupee());
+    }
     let ecrit = crate::socle::ecrire_atomique(&dossier.join(nom), octets);
     arret_d_essai(nom);
     sceaux.en_attente.remove(nom);
     if ecrit.is_ok() {
+        // « Inconnu » ne s'oublie qu'ici, le fichier écrit : noté dès le premier enregistrement, un arrêt ou un échec
+        // avant le fichier le laissait absent et connu, lu « premier passage » au lieu de « tout est redit ».
+        sceaux.inconnus.remove(nom);
         sceaux.fichiers.insert(nom.to_string(), nouvelle);
         sceaux.adoptes.remove(nom);
         sceaux.repris.remove(nom);
@@ -1083,18 +1110,36 @@ pub(crate) fn effacer_dans(dossier: &Path, nom: &str) -> std::io::Result<()> {
     let deja = deja_scelle(dossier);
     let _verrou = verrou_ecriture(dossier, nom)?;
     // Le retrait noté « en attente » d'abord, comme une écriture (`ecrire_dans`) : tué juste après le retrait, le
-    // fichier absent n'est pas dit effacé hors de Vanguard.
+    // fichier absent n'est pas dit effacé hors de Vanguard. Une attente restée d'un arrêt d'avant est remplacée
+    // aussi : gardée, elle ferait accepter le contenu retiré s'il revenait.
+    let mut posee = None;
     if let Ok(Some(mut r)) = registre(dossier)
-        && r.fichiers.contains_key(nom)
+        && (r.fichiers.contains_key(nom) || r.en_attente.contains_key(nom))
     {
-        r.en_attente.insert(nom.to_string(), String::new());
+        posee = Some(r.en_attente.insert(nom.to_string(), String::new()));
         enregistrer_registre(dossier, &r)?;
     }
     match std::fs::remove_file(dossier.join(nom)) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            // Pas retiré : l'attente du retrait ne doit pas survivre (celle d'avant revient), sinon une suppression
+            // faite plus tard par un autre programme se lirait « absent » au lieu d'« effacé hors de Vanguard ».
+            if let Some(avant) = posee
+                && let Ok(Some(mut r)) = registre(dossier)
+            {
+                match avant {
+                    Some(a) => r.en_attente.insert(nom.to_string(), a),
+                    None => r.en_attente.remove(nom),
+                };
+                let _ = enregistrer_registre(dossier, &r);
+            }
+            return Err(e);
+        }
         _ => {}
     }
     arret_d_essai(nom);
+    if coupe("effacer:apres-fichier") {
+        return Err(coupee());
+    }
     match registre(dossier) {
         Ok(Some(mut r)) => {
             if r.fichiers.remove(nom).is_some()
@@ -1730,6 +1775,74 @@ mod tests {
         ecrire_dans(&d, nom, b"fin").unwrap();
         effacer_dans(&d, nom).unwrap();
         assert!(registre(&d).unwrap().unwrap().en_attente.is_empty());
+    }
+
+    /// `f`, coupé net à l'étape `etape` d'une écriture des sceaux (`coupe`), comme si Vanguard y était tué.
+    fn coupe_a<R>(etape: &'static str, f: impl FnOnce() -> R) -> R {
+        COUPE_A.with(|c| c.set(Some(etape)));
+        let r = f();
+        COUPE_A.with(|c| c.set(None));
+        r
+    }
+
+    /// Vérification 0.94, A1 : après des sceaux refaits, un fichier absent reste « inconnu » (tout est redit) tant
+    /// que Vanguard ne l'a pas vraiment écrit. Tué entre le registre et le fichier, ou l'écriture refusée : jamais
+    /// « absent », qui se lit « premier passage » et fait taire les lecteurs.
+    #[test]
+    fn inconnu_jusqu_a_ce_que_le_fichier_soit_ecrit() {
+        let d = jetable("inconnu-garde");
+        ecrire_dans(&d, APPRIS, b"{}").unwrap();
+        // Des sceaux illisibles : refaits à la prochaine écriture, les fichiers absents y sont inconnus.
+        std::fs::write(d.join(REGISTRE), b"x").unwrap();
+        assert_eq!(lire_dans(&d, MACHINE), Lecture::Inconnu);
+        // Tué après le registre, avant le fichier.
+        assert!(coupe_a("ecrire:avant-fichier", || ecrire_dans(&d, MACHINE, b"{}")).is_err());
+        assert!(std::fs::symlink_metadata(d.join(MACHINE)).is_err());
+        assert_eq!(lire_sans_ecrire(&d, MACHINE), Lecture::Inconnu);
+        assert_eq!(lire_dans(&d, MACHINE), Lecture::Inconnu);
+        assert!(registre(&d).unwrap().unwrap().inconnus.contains(MACHINE));
+        // L'écriture refusée (un dossier occupe le nom), puis le dossier retiré : toujours inconnu.
+        std::fs::create_dir_all(d.join(MACHINE).join("x")).unwrap();
+        assert!(ecrire_dans(&d, MACHINE, b"{}").is_err());
+        std::fs::remove_dir_all(d.join(MACHINE)).unwrap();
+        assert_eq!(lire_dans(&d, MACHINE), Lecture::Inconnu);
+        // Écrit pour de bon : connu.
+        ecrire_dans(&d, MACHINE, b"{}").unwrap();
+        assert_eq!(lire_dans(&d, MACHINE), Lecture::Intact(b"{}".to_vec()));
+        assert!(!registre(&d).unwrap().unwrap().inconnus.contains(MACHINE));
+    }
+
+    /// Vérification 0.94, m1 : un retrait qui échoue (un dossier a pris la place du fichier) ne laisse pas son
+    /// attente : supprimé ensuite hors de Vanguard, le fichier reste dit effacé hors de Vanguard, pas « absent ».
+    #[test]
+    fn retrait_refuse_ne_laisse_pas_son_attente() {
+        let d = jetable("retrait-refuse");
+        let nom = "reglages.json";
+        ecrire_dans(&d, nom, b"ancien").unwrap();
+        std::fs::remove_file(d.join(nom)).unwrap();
+        std::fs::create_dir_all(d.join(nom).join("x")).unwrap();
+        assert!(effacer_dans(&d, nom).is_err());
+        assert!(registre(&d).unwrap().unwrap().en_attente.is_empty());
+        std::fs::remove_dir_all(d.join(nom)).unwrap();
+        assert_eq!(lire_dans(&d, nom), Lecture::Falsifie(None));
+    }
+
+    /// Vérification 0.94, m2 : une première écriture tuée avant son sceau (attente restée), puis un retrait tué
+    /// juste après la suppression. Le retrait remplace l'attente : le contenu retiré, remis par un autre programme,
+    /// est dit falsifié, pas accepté comme celui que Vanguard allait poser.
+    #[test]
+    fn retrait_remplace_une_attente_restee() {
+        let d = jetable("deux-arrets");
+        let nom = "reglages.json";
+        ecrire_dans(&d, APPRIS, b"{}").unwrap();
+        let mut r = registre(&d).unwrap().unwrap();
+        r.en_attente.insert(nom.to_string(), empreinte(nom, b"pose"));
+        enregistrer_registre(&d, &r).unwrap();
+        std::fs::write(d.join(nom), "pose").unwrap();
+        assert!(coupe_a("effacer:apres-fichier", || effacer_dans(&d, nom)).is_err());
+        assert_eq!(lire_sans_ecrire(&d, nom), Lecture::Absent);
+        std::fs::write(d.join(nom), "pose").unwrap();
+        assert_eq!(lire_dans(&d, nom), Lecture::Falsifie(Some(b"pose".to_vec())));
     }
 
     /// E5-M1 (campagne 5) : un dossier à la place de `sceaux.verrou`. Rien ne s'écrit, et le bilan le dit (élevé) en
