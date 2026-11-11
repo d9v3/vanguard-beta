@@ -975,8 +975,12 @@ fn cles_ssh() -> Vec<Constat> {
                     .annulable(vec![geste])
                     .du_compte()
                     .avec_objet(Objet::de("chemin", "~/.ssh")),
-                Err(r) => alerte("Clés SSH", Niveau::Eleve, sans_correction_du_compte(message, &r))
-                    .avec_objet(Objet::de("lien", "~/.ssh")),
+                Err(r) => alerte(
+                    "Clés SSH",
+                    Niveau::Eleve,
+                    sans_correction_du_compte(message, &r.to_string()),
+                )
+                .avec_objet(Objet::de("lien", "~/.ssh")),
             },
         );
     }
@@ -1051,8 +1055,12 @@ fn cles_ssh() -> Vec<Constat> {
                     .avec_objet(Objet::de("chemin", &objet)),
                 // Un autre objet que la clé ordinaire : un choix accepté pour elle ne tait pas la même clé devenue
                 // un lien.
-                Err(r) => alerte("Clés SSH", Niveau::Critique, sans_correction_du_compte(&message, &r))
-                    .avec_objet(Objet::de("lien", &objet)),
+                Err(r) => alerte(
+                    "Clés SSH",
+                    Niveau::Critique,
+                    sans_correction_du_compte(&message, &r.to_string()),
+                )
+                .avec_objet(Objet::de("lien", &objet)),
             });
         }
     }

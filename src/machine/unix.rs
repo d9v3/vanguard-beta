@@ -83,7 +83,7 @@ pub(crate) fn hors_correction(maison: &Path, relatif: &Path, attendu: Attendu) -
     let montre = |n: &OsStr| crate::ui::affichable(&n.to_string_lossy());
     let mut chemin = match maison_simple(maison) {
         Ok(m) => m,
-        Err(r) => return Some(r),
+        Err(r) => return Some(r.to_string()),
     };
     let compte = crate::socle::euid();
     let mut ou = String::from("~");
@@ -141,13 +141,16 @@ pub(crate) fn hors_correction(maison: &Path, relatif: &Path, attendu: Attendu) -
 /// « /. » suit le lien du dernier élément, donc un HOME écrit ainsi cachait que le dossier personnel est un lien.
 /// Les « . » et les « / » en trop sont retirés ; un chemin relatif, un « .. » ou un nom qui n'est pas UTF-8 sont
 /// refusés (le geste écrit le chemin en texte).
-fn maison_simple(maison: &Path) -> Result<PathBuf, String> {
+fn maison_simple(maison: &Path) -> Result<PathBuf, crate::modele::raison::Echec> {
     use std::path::Component;
     let refus = || {
-        trf!(
-            "le dossier personnel ({}) n'est pas un chemin simple",
-            "the home folder ({}) is not a plain path",
-            crate::modele::resultat::nom_sans_piege(&maison.to_string_lossy(), 120)
+        crate::modele::raison::Echec::refuse(
+            "droits/poser",
+            trf!(
+                "le dossier personnel ({}) n'est pas un chemin simple",
+                "the home folder ({}) is not a plain path",
+                crate::modele::resultat::nom_sans_piege(&maison.to_string_lossy(), 120)
+            ),
         )
     };
     if !maison.is_absolute() {
@@ -166,14 +169,14 @@ fn maison_simple(maison: &Path) -> Result<PathBuf, String> {
 
 /// Le geste d'une correction du compte sur `relatif` (le chemin qu'elle vise, pour relever et remettre ses droits),
 /// ou pourquoi elle n'est pas proposée (`hors_correction`). Le geste n'existe que si la garde passe : rien d'autre ne
-/// le fabrique pour un constat.
+/// le fabrique pour un constat. L'erreur est un refus dont la phrase dit pourquoi (`Echec::refuse`).
 pub(crate) fn geste_du_compte(
     maison: &Path,
     relatif: &Path,
     attendu: Attendu,
-) -> Result<crate::optimiser::Geste, String> {
+) -> Result<crate::optimiser::Geste, crate::modele::raison::Echec> {
     if let Some(r) = hors_correction(maison, relatif, attendu) {
-        return Err(r);
+        return Err(crate::modele::raison::Echec::refuse("droits/poser", r));
     }
     let chemin = maison_simple(maison)?;
     let chemin = if relatif.as_os_str().is_empty() {
@@ -182,11 +185,13 @@ pub(crate) fn geste_du_compte(
         chemin.join(relatif)
     };
     crate::optimiser::Geste::droits(&chemin).ok_or_else(|| {
-        tr!(
-            "son nom n'est pas lisible tel quel (pas en UTF-8)",
-            "its name cannot be read as is (not UTF-8)"
+        crate::modele::raison::Echec::refuse(
+            "droits/poser",
+            tr!(
+                "son nom n'est pas lisible tel quel (pas en UTF-8)",
+                "its name cannot be read as is (not UTF-8)"
+            ),
         )
-        .to_string()
     })
 }
 
@@ -226,7 +231,7 @@ pub(super) fn fichiers_secrets(maison: &Path, dossier_ouvert: &str) -> Vec<Const
             }
             Err(r) => {
                 a_travers.push(format!("~/{nom}"));
-                raisons.push(r);
+                raisons.push(r.to_string());
             }
         }
     }
@@ -288,7 +293,7 @@ pub(super) fn fichiers_secrets(maison: &Path, dossier_ouvert: &str) -> Vec<Const
             Err(r) => alerte(
                 "Fichiers secrets",
                 Niveau::Info,
-                super::sans_correction_du_compte(dossier_ouvert, &r),
+                super::sans_correction_du_compte(dossier_ouvert, &r.to_string()),
             )
             .avec_objet(crate::modele::Objet::de("lien", "~")),
         });

@@ -1389,9 +1389,10 @@ fn les_essais_n_ecrivent_pas_dans_le_dossier_temporaire() {
         ("src/verifier_cle.rs", 1),
         ("src/protection/distance.rs", 1),
         ("src/essais.rs", 1),
-        // Et un essai qui donne au programme un TMPDIR dans son dossier personnel jetable, pour y voir ce qu'il
-        // écrirait (l'aperçu d'une correction ne doit rien écrire, même là).
-        ("tests/programme.rs", 2),
+        // Et des essais qui donnent au programme un TMPDIR jetable, dans son dossier personnel ou à côté, pour y voir
+        // ce qu'il écrirait (l'aperçu d'une correction ne doit rien écrire, même là ; vérification de Fable n° 2,
+        // L5 : environnement vidé, XDG et TMPDIR hors du dossier personnel), puis un essai qui juge ce dossier-là.
+        ("tests/programme.rs", 4),
     ]
     .into_iter()
     .collect();
