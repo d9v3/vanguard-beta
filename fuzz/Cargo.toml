@@ -28,6 +28,9 @@ sha1 = { version = "=0.11.0", default-features = false }
 # Les états et le journal de l'Agent Vanguard (src/agent/) : la même version que Cargo.lock de Vanguard.
 # raw_value : les lecteurs de la fenêtre (fenetre/src/donnees/) lisent chaque élément d'une liste à part.
 serde_json = { version = "=1.0.154", features = ["raw_value"] }
+# La catégorie Unicode, pour l'oracle de fenetre_donnees (jugé sans les listes de fenetre/src/nettoyage.rs) : la même
+# version que fenetre/Cargo.lock.
+unicode-general-category = "=1.1.0"
 
 # `fuzzing` : posé par cargo-fuzz ; src/sqlite.rs s'en sert pour ouvrir sa lecture des colonnes ici. `kani` : les
 # preuves de outils/preuves/, déclarées dans des modules inclus ici aussi.

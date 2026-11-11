@@ -2,13 +2,39 @@
 //! système (LC_ALL, LC_MESSAGES, LANG), sinon le français. Changeable dans la fenêtre (rubrique Vanguard) : les
 //! commandes lancées ensuite reçoivent la même (VANGUARD_LANG), pour que leurs textes suivent.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(not(test))]
+static ANGLAIS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-static ANGLAIS: AtomicBool = AtomicBool::new(false);
+#[cfg(not(test))]
+fn lire() -> bool {
+    ANGLAIS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(not(test))]
+fn poser(anglais: bool) {
+    ANGLAIS.store(anglais, std::sync::atomic::Ordering::Relaxed);
+}
+
+// En essai, la langue est propre à chaque fil : `cargo test` lance chaque essai dans le sien, en même temps. Une
+// langue commune faisait lire à un essai l'anglais qu'un autre venait de poser (« Enregistrer… » introuvable).
+#[cfg(test)]
+thread_local! {
+    static ANGLAIS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn lire() -> bool {
+    ANGLAIS.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+fn poser(anglais: bool) {
+    ANGLAIS.with(|c| c.set(anglais));
+}
 
 /// L'interface est-elle en anglais ?
 pub fn anglais() -> bool {
-    ANGLAIS.load(Ordering::Relaxed)
+    lire()
 }
 
 /// Pose la langue : celle demandée, sinon celle de l'environnement.
@@ -21,12 +47,12 @@ pub fn choisir(demandee: Option<bool>) {
             .or_else(|| lue("LANG"))
             .is_some_and(|v| est_anglais(&v))
     });
-    ANGLAIS.store(anglais, Ordering::Relaxed);
+    poser(anglais);
 }
 
 /// Passe à l'autre langue.
 pub fn basculer() {
-    ANGLAIS.store(!anglais(), Ordering::Relaxed);
+    poser(!lire());
 }
 
 /// Une durée en secondes, à une décimale, avec la virgule en français : « 2,1 s », « 2.1 s ». Une seule forme

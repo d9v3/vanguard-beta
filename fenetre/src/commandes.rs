@@ -746,6 +746,25 @@ impl SorteGeste {
     }
 }
 
+/// Un geste offert par un constat du bilan, tel que Vanguard l'écrit (`machine::apercu::GesteOffert`) : ses deux
+/// champs, en texte brut (ni nettoyés ni tolérés : un sélecteur ou une séquence d'échappement collés au jeton le
+/// rendent faux, pas propre), présents, jamais `null`, et seulement eux. La fenêtre (`donnees::bilan`, le bouton
+/// « Voir la correction ») et le relais (`relais::gestes_offerts`, les gestes qu'il admet) lisent avec cette même
+/// structure : la fenêtre ne montre pas de bouton que le relais refuserait.
+#[derive(serde::Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct GesteOffert {
+    sorte: String,
+    jeton: String,
+}
+
+impl GesteOffert {
+    /// Le jeton et la sorte, exacts : 32 chiffres hexadécimaux minuscules, une sorte de la liste ; sinon, rien.
+    pub fn lire(&self) -> Option<(Empreinte, SorteGeste)> {
+        Some((Empreinte::lire(&self.jeton)?, SorteGeste::lire(&self.sorte)?))
+    }
+}
+
 /// L'accord d'un aperçu : les 32 octets (64 chiffres) que Vanguard calcule sur tout ce qu'il a montré. La fenêtre le
 /// garde tel quel ; elle ne le calcule pas et n'en déduit rien. Tout à zéro pour un « voir ».
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]

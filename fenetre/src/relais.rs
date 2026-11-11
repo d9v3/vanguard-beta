@@ -38,7 +38,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
 use std::time::Duration;
 
-use crate::commandes::{Commande, Empreinte, Lancement, Sorte, SorteGeste};
+use crate::commandes::{Commande, Empreinte, GesteOffert, Lancement, Sorte, SorteGeste};
 use crate::lanceur::{Fin, Issue, Message, Programme, Rendre, Reveil, SORTIE_MAX, Tache};
 use crate::protocole::{
     DEMANDE_MAX, Demande, Reponse, coder_fin, coder_lance, coder_ligne, ecrire_trame, lire_reponse, lire_trame,
@@ -204,19 +204,12 @@ struct BilanVu {
     constats: crate::donnees::Liste<ConstatOffert>,
 }
 
+/// Le geste d'un constat, lu avec la structure de la fenêtre (`commandes::GesteOffert`) : un geste qui porte un autre
+/// champ, un champ `null` ou un jeton mal formé n'est pas offert, ni ici ni par un bouton de la fenêtre.
 #[derive(serde::Deserialize)]
 struct ConstatOffert {
     #[serde(default)]
     geste: Option<GesteOffert>,
-}
-
-/// Les deux champs que Vanguard écrit (`machine::apercu::GesteOffert`), et seulement eux, comme la fenêtre les lit
-/// (`donnees::bilan`) : un geste qui en porte d'autres n'est pas offert.
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct GesteOffert {
-    sorte: String,
-    jeton: String,
 }
 
 /// Les gestes d'une sortie d'`audit --json` : pour chaque constat, le jeton et la sorte lus dans le même objet
@@ -232,7 +225,7 @@ fn gestes_offerts(texte: &[u8]) -> HashSet<(Empreinte, SorteGeste)> {
         if jetons.len() >= EMPREINTES_MAX {
             break;
         }
-        let (Some(sorte), Some(jeton)) = (SorteGeste::lire(&g.sorte), Empreinte::lire(&g.jeton)) else {
+        let Some((jeton, sorte)) = g.lire() else {
             continue;
         };
         if jetons.insert(jeton) {
@@ -1113,6 +1106,49 @@ esac
         }
         beaucoup.push_str("{}]}");
         assert_eq!(gestes_offerts(beaucoup.as_bytes()).len(), EMPREINTES_MAX);
+    }
+
+    /// Vérification n° 2 de Fable, P3 : la fenêtre et le relais lisent le geste d'un constat avec la même structure.
+    /// Un jeton suivi d'un sélecteur ou entouré d'une séquence d'échappement (que le nettoyage de la fenêtre retirait),
+    /// un champ `null`, une empreinte vide à côté du jeton : ni bouton dans la fenêtre, ni geste admis par le relais.
+    /// Le bon geste : les deux.
+    #[test]
+    fn la_fenetre_n_offre_que_ce_que_le_relais_admet() {
+        let j = "0123456789abcdef0123456789abcdef";
+        let bilan = |geste: &str| {
+            format!(
+                r#"{{"systeme": "Linux", "constats": [{{"etat": "probleme", "probleme": "Moyen", "message": "SSH", "geste": {geste}}}]}}"#
+            )
+        };
+        let vus = |geste: &str| {
+            let texte = bilan(geste);
+            let fenetre: Vec<Empreinte> = crate::donnees::bilan::lire(texte.as_bytes())
+                .unwrap()
+                .constats
+                .into_iter()
+                .filter_map(|c| c.correction)
+                .collect();
+            let relais: Vec<Empreinte> = gestes_offerts(texte.as_bytes()).into_iter().map(|(e, _)| e).collect();
+            (fenetre, relais)
+        };
+        let bon = Empreinte::lire(j).unwrap();
+        assert_eq!(
+            vus(&format!(r#"{{"sorte": "voir-correction", "jeton": "{j}"}}"#)),
+            (vec![bon], vec![bon])
+        );
+        for faux in [
+            format!(r#"{{"sorte": "voir-correction", "jeton": "{j}\ufe0f"}}"#),
+            format!(r#"{{"sorte": "voir-correction", "jeton": "\u001b[0m{j}"}}"#),
+            format!(r#"{{"sorte": "voir-correction", "jeton": "{j}\u001b]0;x\u0007"}}"#),
+            format!(r#"{{"sorte": "voir-correction\u200b", "jeton": "{j}"}}"#),
+            format!(r#"{{"sorte": "voir-correction", "jeton": "{j}", "nom": null}}"#),
+            format!(r#"{{"sorte": "voir-correction", "jeton": "{j}", "empreinte": ""}}"#),
+            format!(r#"{{"sorte": "voir-correction", "jeton": "{j}", "machine": null}}"#),
+            r#"{"sorte": "voir-correction", "jeton": null}"#.to_string(),
+            format!(r#"{{"sorte": null, "jeton": "{j}"}}"#),
+        ] {
+            assert_eq!(vus(&faux), (vec![], vec![]), "{faux}");
+        }
     }
 
     /// Un geste n'est admis que pour un jeton offert par le dernier bilan, avec sa sorte ; un « voir » n'use pas la

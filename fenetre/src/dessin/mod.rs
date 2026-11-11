@@ -14,6 +14,8 @@ mod coulisses;
 mod defile;
 mod demarrage;
 mod ecrans;
+#[cfg(test)]
+mod encre;
 mod ensemble;
 mod icones;
 mod mouvement;

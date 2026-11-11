@@ -121,8 +121,8 @@ fn apercu(ui: &mut Ui, a: &Apercu) {
             ui,
             p.jaune,
             crate::tr!(
-                "Ce texte a été retouché avant de l'afficher (caractères invisibles ou de contrôle retirés, sauts de ligne ou longues suites d'espaces resserrés) : il n'est pas exactement celui de Vanguard.",
-                "This text was altered before showing it (invisible or control characters removed, line breaks or long runs of spaces tightened): it is not exactly Vanguard's."
+                "Ce texte a été retouché avant de l'afficher (caractères invisibles, de contrôle ou que la fenêtre ne sait pas dessiner remplacés par « \u{fffd} » ou retirés, sauts de ligne ou longues suites d'espaces resserrés) : il n'est pas exactement celui de Vanguard.",
+                "This text was altered before showing it (invisible or control characters, or ones this window cannot draw, replaced by “\u{fffd}” or removed; line breaks or long runs of spaces tightened): it is not exactly Vanguard's."
             ),
             13.0,
         );

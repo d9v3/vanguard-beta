@@ -1231,7 +1231,8 @@ fn tour_a(
 }
 
 /// La réponse inventée de `vanguard correction --voir` : longue exprès (64 commandes, des valeurs d'avant), pour
-/// que le corps doive défiler.
+/// que le corps doive défiler. Annulable, comme Vanguard l'écrit quand il a relevé les valeurs d'avant (sans elles,
+/// il n'écrit pas d'aperçu annulable, ni de valeur d'avant pour un aperçu qui ne l'est pas).
 fn apercu_capture(anglais: bool, droits: &str) -> Vec<u8> {
     let t = |fr: &'static str, en: &'static str| if anglais { en } else { fr };
     let commandes: Vec<String> = (0..crate::donnees::correction::COMMANDES_MAX)
@@ -1244,8 +1245,7 @@ fn apercu_capture(anglais: bool, droits: &str) -> Vec<u8> {
             "regle": "LNX-SSH-002", "categorie": "SSH", "niveau": "Eleve",
             "message": t("Connexion root permise.", "Root login allowed."),
             "action": t("Refuser root.", "Refuse root."), "commandes": commandes, "automatique": true,
-            "droits": droits, "annulable": false,
-            "pourquoi_pas": t("le fichier est réécrit en entier.", "the file is rewritten whole."),
+            "droits": droits, "annulable": true, "pourquoi_pas": "",
             "avant": [{"geste": "fichier|/etc/ssh/sshd_config", "valeur": "PermitRootLogin yes"},
                       {"geste": "fichier|/etc/ssh/sshd_config.d/99.conf", "valeur": null}],
             "point_de_restauration": false

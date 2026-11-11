@@ -82,12 +82,23 @@ struct CorrectifBrut {
     action: Texte,
 }
 
+/// Le geste d'un constat, sous l'une des deux formes que Vanguard écrit. Un geste du bilan (`audit --json` : voir la
+/// correction, par le jeton du constat) est lu d'abord, avec la structure du relais (`commandes::GesteOffert` : deux
+/// champs bruts, ni `null` ni autre champ), pour que la fenêtre n'offre jamais un bouton que le relais refuserait ;
+/// sinon, un changement au démarrage (`GesteBrut`). Ni l'un ni l'autre : le constat est illisible.
+#[derive(Deserialize, Debug)]
+#[serde(untagged)]
+enum GesteLu {
+    Offert(crate::commandes::GesteOffert),
+    Demarrage(GesteBrut),
+}
+
 /// Un changement proposé par un constat (`demarrage --json` : retirer un programme ordinaire, remettre ce que
-/// Vanguard a retiré), ou un geste du bilan (`audit --json` : voir la correction, par le jeton du constat). Lu
-/// strictement : ses champs sont ceux que Vanguard écrit (`GesteEcrit`, `GesteOffert`), un champ inconnu rend le
-/// constat illisible (compté « pas pu vérifier », sans bouton) ; chaque sorte n'a que les siens (`lire`,
-/// `jeton_de_correction`). Le constat lui-même (`ConstatBrut`) reste lu en partie : il porte des champs que la
-/// fenêtre ne montre pas (clé, objet du résultat commun, champs propres à un outil), et aucun ne part vers Vanguard.
+/// Vanguard a retiré). Lu strictement : ses champs sont ceux que Vanguard écrit (`GesteEcrit`), un champ inconnu rend
+/// le constat illisible (compté « pas pu vérifier », sans bouton) ; un jeton (celui d'un geste du bilan, mal formé
+/// puisque `GesteOffert` ne l'a pas lu) aussi. Le constat lui-même (`ConstatBrut`) reste lu en partie : il porte des
+/// champs que la fenêtre ne montre pas (clé, objet du résultat commun, champs propres à un outil), et aucun ne part
+/// vers Vanguard.
 #[derive(Deserialize, Default, Debug)]
 #[serde(default, deny_unknown_fields)]
 struct GesteBrut {
@@ -127,16 +138,6 @@ impl GesteBrut {
             machine: self.machine == Some(true),
         })
     }
-
-    /// Le jeton d'un « voir la correction », strictement : cette sorte-là, 32 chiffres hexadécimaux minuscules, et
-    /// aucun champ d'un changement au démarrage.
-    fn jeton_de_correction(&self) -> Option<Empreinte> {
-        let seul =
-            self.empreinte.is_empty() && self.nom.is_empty() && self.commande.is_empty() && self.machine.is_none();
-        (seul && SorteGeste::lire(self.sorte.as_str())? == SorteGeste::VoirCorrection)
-            .then(|| Empreinte::lire(self.jeton.as_str()))
-            .flatten()
-    }
 }
 
 /// Un constat tel que Vanguard l'écrit : les champs de l'audit (`probleme`, `correctif`, `verifie`) et ceux du
@@ -153,7 +154,7 @@ struct ConstatBrut {
     regle: Texte,
     etat: Texte,
     objet: Texte,
-    geste: Option<GesteBrut>,
+    geste: Option<GesteLu>,
 }
 
 /// Un constat prêt à montrer.
@@ -198,6 +199,16 @@ impl From<ConstatBrut> for Constat {
             // « non-verifie », ou un état qu'on ne connaît pas : jamais sain.
             _ => Rang::NonVerifie,
         };
+        // Un jeton n'appartient qu'à « voir la correction » ; un changement au démarrage, qu'à sa forme.
+        let (geste, correction) = match b.geste {
+            Some(GesteLu::Offert(g)) => (
+                None,
+                g.lire()
+                    .and_then(|(jeton, sorte)| (sorte == SorteGeste::VoirCorrection).then_some(jeton)),
+            ),
+            Some(GesteLu::Demarrage(g)) => (g.lire(), None),
+            None => (None, None),
+        };
         let categorie = if b.categorie.is_empty() {
             crate::tr!("Autre", "Other").to_string()
         } else {
@@ -211,8 +222,8 @@ impl From<ConstatBrut> for Constat {
             action: b.correctif.map(|c| c.action.0).unwrap_or_default(),
             gravite,
             rang,
-            correction: b.geste.as_ref().and_then(GesteBrut::jeton_de_correction),
-            geste: b.geste.and_then(GesteBrut::lire),
+            correction,
+            geste,
         }
     }
 }

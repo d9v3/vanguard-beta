@@ -2852,6 +2852,7 @@ dependencies = [
  "png",
  "serde",
  "serde_json",
+ "unicode-general-category",
  "winit",
 ]
 

@@ -39,6 +39,10 @@ winit = { version = "0.30.13", default-features = false, features = ["wayland-dl
 # Les captures de la fenêtre en PNG (dessin/captures.rs, outils/captures-fenetre.sh), seulement dans les essais. La
 # version qu'eframe tire déjà (par image) : rien de nouveau dans Cargo.lock, rien dans le programme livré.
 png = { version = "0.18.1", default-features = false }
+# La catégorie Unicode de chaque caractère, pour refaire la liste des signes que les polices dessinent
+# (dessin/encre.rs, nettoyage::ENCRE) et tenir la liste des guillemets (donnees/correction.rs). La version qu'epaint
+# tire déjà : aucun crate nouveau dans Cargo.lock.
+unicode-general-category = "1.1.0"
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # L'essai du bac à sable sur le vrai bureau (dessin/mod.rs) : OpenGL ouvert comme eframe l'ouvre, sans fenêtre. La
@@ -58,6 +62,9 @@ libc = "0.2.191"
 
 [lints.rust]
 unsafe_code = "deny"
+# `fuzzing` : posé par cargo-fuzz pour le banc de fuzz/, qui inclut des modules d'ici par leur chemin
+# (`nettoyage::rendu` n'existe que pour les essais et lui).
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
