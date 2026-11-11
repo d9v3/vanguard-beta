@@ -501,8 +501,8 @@ pub(crate) fn rubriques_des_commandes() -> Vec<(Option<Groupe>, Vec<&'static str
 pub(crate) fn aide_longue() -> String {
     use std::fmt::Write;
     let mut t = trf!(
-        "Vanguard {} : cyberdéfense portable des postes et des réseaux.\nSans argument : la fenêtre de Vanguard, ou le menu (--menu : le menu).\n\nUsage : vanguard [commande] [options]\n\n",
-        "Vanguard {}: portable cyber defense for endpoints and networks.\nNo argument: the Vanguard window, or the menu (--menu: the menu).\n\nUsage: vanguard [command] [options]\n\n",
+        "Vanguard {} : cyberdéfense portable des postes et des réseaux.\nSans argument : le menu, ou la fenêtre de Vanguard si elle est installée à côté (--menu : toujours le menu).\n\nUsage : vanguard [commande] [options]\n\n",
+        "Vanguard {}: portable cyber defense for endpoints and networks.\nNo argument: the menu, or the Vanguard window if it is installed alongside (--menu: always the menu).\n\nUsage: vanguard [command] [options]\n\n",
         env!("CARGO_PKG_VERSION")
     );
     let rubriques = rubriques_de_l_aide();
@@ -526,8 +526,8 @@ pub(crate) fn aide_longue() -> String {
 pub(crate) fn aide_courte() -> String {
     use std::fmt::Write;
     let mut t = trf!(
-        "Vanguard {} : cyberdéfense portable des postes et des réseaux.\nSans argument : la fenêtre de Vanguard ; --menu : le menu (↑ ↓, ou un mot).\n\n",
-        "Vanguard {}: portable cyber defense for endpoints and networks.\nNo argument: the Vanguard window; --menu: the menu (↑ ↓, or a word).\n\n",
+        "Vanguard {} : cyberdéfense portable des postes et des réseaux.\nSans argument : le menu (↑ ↓, ou un mot), ou la fenêtre si elle est installée à côté ; --menu : toujours le menu.\n\n",
+        "Vanguard {}: portable cyber defense for endpoints and networks.\nNo argument: the menu (↑ ↓, or a word), or the window if it is installed alongside; --menu: always the menu.\n\n",
         env!("CARGO_PKG_VERSION")
     );
     let clap = Args::command();

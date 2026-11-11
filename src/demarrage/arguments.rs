@@ -7,8 +7,8 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(
     version,
-    about = "Cyberdéfense portable des postes et des réseaux : bilan, correctifs, réglages. Sans argument : la fenêtre \
-             de Vanguard, ou le menu.",
+    about = "Cyberdéfense portable des postes et des réseaux : bilan, correctifs, réglages. Sans argument : le menu \
+             (ou la fenêtre de Vanguard, si elle est installée à côté).",
     args_conflicts_with_subcommands = true
 )]
 pub(crate) struct Args {
