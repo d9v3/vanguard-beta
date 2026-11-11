@@ -137,6 +137,11 @@ pub(crate) struct GesteEcrit {
     /// De tout l'ordinateur : la fenêtre administrateur s'ouvrira.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub machine: bool,
+    /// L'accord de ce qui est montré (sorte, empreinte, nom, commande, machine), 64 chiffres hexadécimaux : rendu avec
+    /// `demarrage --accord`, il doit être celui du programme relu au moment d'agir (constat en passant P1). Vide :
+    /// aucun (lu d'une version d'avant).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub accord: String,
 }
 
 /// Un texte venu de l'extérieur (nom de pièce jointe, de réseau, de programme), prêt à écrire dans un résultat :

@@ -765,6 +765,10 @@ enum Refus {
     NotesDouteuses,
     /// Un autre Vanguard tient les notes (il change des réglages) : rien n'est changé, à refaire à sa fin.
     NotesOccupees,
+    /// L'accord rendu n'a pas 64 chiffres hexadécimaux minuscules.
+    AccordMalForme,
+    /// L'accord rendu n'est plus celui du geste montré : le nom, la commande ou la portée ont changé depuis la liste.
+    Change,
 }
 
 impl Refus {
@@ -820,6 +824,16 @@ impl Refus {
             Refus::NotesOccupees => tr!(
                 "un autre Vanguard change des réglages en ce moment : réessayez à sa fin",
                 "another Vanguard is changing settings right now: try again when it ends"
+            )
+            .to_string(),
+            Refus::AccordMalForme => tr!(
+                "accord mal formé (64 chiffres hexadécimaux minuscules attendus)",
+                "malformed agreement (64 lowercase hexadecimal digits expected)"
+            )
+            .to_string(),
+            Refus::Change => tr!(
+                "ce programme a changé depuis la liste (nom, commande ou portée) : rien n'est fait, rouvrez la liste",
+                "this program changed since the list (name, command or scope): nothing is done, reopen the list"
             )
             .to_string(),
         }
@@ -919,23 +933,31 @@ enum Issue {
 /// dans la fenêtre, après la confirmation qui montre le nom et la commande). L'empreinte est vérifiée avant toute
 /// lecture du système ; rien n'est changé pour une empreinte inconnue, en double, d'un programme à garder ou d'un
 /// pare-feu. Le verrou des notes est tenu de leur lecture à leur dernière écriture (un autre Vanguard qui le tient :
-/// refusé). Chaque demande, faite, refusée ou en échec, va au journal des événements. Avec `json`, l'issue est la
-/// dernière ligne. Rend le code de sortie : 0 fait, 1 refusé ou non fait, 2 empreinte mal formée.
-pub fn changer(sorte: SorteDeChangement, empreinte: &str, json: bool) -> i32 {
+/// refusé). Avec un `accord` (celui du geste de `demarrage --json`), le programme relu, le verrou tenu, doit donner le
+/// même : sinon rien n'est fait (constat en passant P1 : ce qui a été montré n'a pas changé avant le clic). Sans
+/// accord, l'empreinte seule désigne le programme, comme avant. Chaque demande, faite, refusée ou en échec, va au
+/// journal des événements. Avec `json`, l'issue est la dernière ligne. Rend le code de sortie : 0 fait, 1 refusé ou
+/// non fait, 2 empreinte ou accord mal formés.
+pub fn changer(sorte: SorteDeChangement, empreinte: &str, accord: Option<&str>, json: bool) -> i32 {
     // Une raison restée d'avant ne passe pas pour celle de cette demande.
     let _ = systeme::dernier_refus();
-    // Vérifiée avant toute lecture du système.
-    let (nom, issue) = if empreinte_bien_formee(empreinte) {
+    // Vérifiés avant toute lecture du système.
+    let (nom, issue) = if !empreinte_bien_formee(empreinte) {
+        (None, Issue::Refuse(Refus::MalFormee))
+    } else if accord.is_some_and(|a| !accord_bien_forme(a)) {
+        (None, Issue::Refuse(Refus::AccordMalForme))
+    } else {
         match super::tenir_les_notes(&crate::reseau::dossier_local()) {
-            Some(_notes) => changer_tenu(sorte, empreinte),
+            Some(_notes) => match accord.map(|a| accord_tenu(sorte, empreinte, a)) {
+                Some((nom, Err(refus))) => (nom, Issue::Refuse(refus)),
+                Some((_, Ok(()))) | None => changer_tenu(sorte, empreinte),
+            },
             None => (None, Issue::Refuse(Refus::NotesOccupees)),
         }
-    } else {
-        (None, Issue::Refuse(Refus::MalFormee))
     };
     let (code, mot, raison) = match &issue {
         Issue::Fait => (0, "fait", String::new()),
-        Issue::Refuse(Refus::MalFormee) => (2, "refuse", Refus::MalFormee.raison()),
+        Issue::Refuse(r @ (Refus::MalFormee | Refus::AccordMalForme)) => (2, "refuse", r.clone().raison()),
         Issue::Refuse(r) => (1, "refuse", r.clone().raison()),
         Issue::Echec => (1, "echec", raison_d_echec(systeme::dernier_refus())),
     };
@@ -1134,6 +1156,57 @@ pub fn remettre(id: &str) -> Option<bool> {
     Some(remis == [true])
 }
 
+/// Une ligne telle que `json` la montre (et que l'accord d'un geste la décrit).
+fn entree(x: &Ligne) -> resultat::Entree<'_> {
+    resultat::Entree {
+        nom: &x.nom,
+        commande: &x.commande,
+        identite: x.reglage.id.strip_prefix(PREFIXE).unwrap_or(&x.reglage.id),
+        machine: x.machine,
+        statut: match (x.garder(), x.actif) {
+            (Some(raison), true) => resultat::Statut::Garder(raison),
+            (Some(raison), false) => resultat::Statut::RetireBloque(raison),
+            (None, true) if x.pare_feu() => resultat::Statut::PareFeu,
+            (_, true) => resultat::Statut::SeLance,
+            (_, false) => resultat::Statut::Retire,
+        },
+    }
+}
+
+/// Le geste de cette sorte et de cette empreinte tel que `json` le montrerait d'après `programmes` et les notes `h`
+/// (lues sans rien écrire, vides si douteuses, comme `json`) : `None` s'il n'y en a aucun ou plusieurs.
+fn geste_montre(
+    programmes: Vec<Programme>,
+    h: &Historique,
+    sorte: SorteDeChangement,
+    empreinte: &str,
+) -> Option<crate::modele::resultat::GesteEcrit> {
+    let l = lignes(programmes, h);
+    let mut gestes = l
+        .iter()
+        .filter_map(|x| resultat::geste(&entree(x)))
+        .filter(|g| g.sorte == sorte.code() && g.empreinte == empreinte);
+    let g = gestes.next()?;
+    gestes.next().is_none().then_some(g)
+}
+
+/// Un accord rendu avec la demande est bien celui du geste montré aujourd'hui (constat en passant P1) : le nom, la
+/// commande, la portée (machine) et la sorte relus maintenant donnent le même. Rend le nom montré (rendu inoffensif)
+/// s'il est connu, et `Change` sinon.
+fn accord_tenu(sorte: SorteDeChangement, empreinte: &str, accord: &str) -> (Option<String>, Result<(), Refus>) {
+    let h = super::historique_sans_ecrire(&crate::reseau::dossier_local()).unwrap_or_default();
+    match geste_montre(systeme::au_demarrage(), &h, sorte, empreinte) {
+        Some(g) if g.accord == accord => (Some(g.nom), Ok(())),
+        Some(g) => (Some(g.nom), Err(Refus::Change)),
+        None => (None, Err(Refus::Change)),
+    }
+}
+
+/// 64 chiffres hexadécimaux minuscules, rien d'autre.
+fn accord_bien_forme(a: &str) -> bool {
+    a.len() == 64 && a.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
 /// `vanguard demarrage --json` : la liste de l'écran à cocher, jugée sans rien retirer ni rien écrire (pas même
 /// l'historique, lu par `historique_sans_ecrire`), versée au rapport et au journal, puis imprimée.
 pub fn json() {
@@ -1153,22 +1226,7 @@ pub fn json() {
     let mut avis = avis_d_ecriture(&programmes);
     let l = lignes(programmes, &h);
     avis_des_notes(&mut avis, &l);
-    let entrees: Vec<resultat::Entree> = l
-        .iter()
-        .map(|x| resultat::Entree {
-            nom: &x.nom,
-            commande: &x.commande,
-            identite: x.reglage.id.strip_prefix(PREFIXE).unwrap_or(&x.reglage.id),
-            machine: x.machine,
-            statut: match (x.garder(), x.actif) {
-                (Some(raison), true) => resultat::Statut::Garder(raison),
-                (Some(raison), false) => resultat::Statut::RetireBloque(raison),
-                (None, true) if x.pare_feu() => resultat::Statut::PareFeu,
-                (_, true) => resultat::Statut::SeLance,
-                (_, false) => resultat::Statut::Retire,
-            },
-        })
-        .collect();
+    let entrees: Vec<resultat::Entree> = l.iter().map(entree).collect();
     let mut r = resultat::resultat(&entrees, manques, lu, debut);
     resultat::ajouter_avis(&mut r, &avis);
     crate::modele::resultat::verser(&r);
@@ -1831,15 +1889,38 @@ mod essais_changer {
             assert_eq!(a_remettre(&Historique::default(), &e).err(), Some(Refus::MalFormee));
         }
         // Mal formée : refusée avant toute lecture du système, code 2.
-        assert_eq!(changer(SorteDeChangement::Retirer, "NOPE", true), 2);
-        assert_eq!(changer(SorteDeChangement::Remettre, &"0".repeat(31), false), 2);
+        assert_eq!(changer(SorteDeChangement::Retirer, "NOPE", None, true), 2);
+        assert_eq!(changer(SorteDeChangement::Remettre, &"0".repeat(31), None, false), 2);
+        // Un accord mal formé aussi, même avec une empreinte bien formée.
+        for a in [
+            "",
+            "A".repeat(64).as_str(),
+            "0".repeat(63).as_str(),
+            &format!("{}\n", "0".repeat(63)),
+        ] {
+            assert_eq!(
+                changer(SorteDeChangement::Retirer, &"0".repeat(32), Some(a), true),
+                2,
+                "{a:?}"
+            );
+        }
     }
 
     /// Remettre une empreinte sans note (le dossier de Vanguard des essais est jetable et vide) : refusé, code 1,
     /// rien de lu sur le système.
     #[test]
     fn remettre_sans_note_refuse() {
-        assert_eq!(changer(SorteDeChangement::Remettre, &"0".repeat(32), true), 1);
+        assert_eq!(changer(SorteDeChangement::Remettre, &"0".repeat(32), None, true), 1);
+        // Avec un accord bien formé : aucun geste montré n'y répond, refusé aussi.
+        assert_eq!(
+            changer(
+                SorteDeChangement::Remettre,
+                &"0".repeat(32),
+                Some(&"0".repeat(64)),
+                true
+            ),
+            1
+        );
     }
 
     #[cfg(target_os = "linux")]

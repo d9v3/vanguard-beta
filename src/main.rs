@@ -860,6 +860,7 @@ async fn main() {
             json,
             retirer,
             remettre,
+            accord,
         }) => {
             let geste = match (retirer, remettre) {
                 (Some(e), _) => Some((optimiser::SorteDeChangement::Retirer, e)),
@@ -867,7 +868,7 @@ async fn main() {
                 (None, None) => None,
             };
             if let Some((sorte, empreinte)) = geste {
-                let code = optimiser::changer_au_demarrage(sorte, &empreinte, json);
+                let code = optimiser::changer_au_demarrage(sorte, &empreinte, accord.as_deref(), json);
                 if code != 0 {
                     chiffrement::oublier_session();
                     std::process::exit(code);

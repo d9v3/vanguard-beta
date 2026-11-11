@@ -639,6 +639,7 @@ pub(crate) enum Commande {
     /// Programmes au démarrage : ceux qui se lancent à l'ouverture de session, à retirer ou à remettre après accord.
     /// Chaque retrait s'annule exactement (Optimiser › Tout remettre comme avant).
     #[command(visible_alias = "startup")]
+    #[command(group = clap::ArgGroup::new("geste_demarrage").args(["retirer", "remettre"]))]
     Demarrage {
         /// La liste jugée en JSON, pour un script : rien n'est retiré ni demandé. Avec --retirer ou --remettre :
         /// l'issue en une ligne JSON, la dernière.
@@ -656,6 +657,15 @@ pub(crate) enum Commande {
         /// Remettre exactement comme avant le programme de cette empreinte que Vanguard a retiré (d'après sa note).
         #[arg(long, visible_alias = "put-back", value_name = "EMPREINTE")]
         remettre: Option<String>,
+        /// Avec --retirer ou --remettre : l'accord du geste donné par --json (64 chiffres hexadécimaux). Le programme
+        /// relu doit donner le même (nom, commande, portée) : sinon rien n'est fait.
+        #[arg(
+            long,
+            visible_alias = "agreement",
+            value_name = "ACCORD",
+            requires = "geste_demarrage"
+        )]
+        accord: Option<String>,
     },
     /// Une correction du bilan, désignée par son jeton (donné par `audit --json`) : --voir montre tout ce qu'elle
     /// ferait (commandes, droits, valeurs d'avant, annulation) et l'accord qui le résume, sans rien changer d'autre

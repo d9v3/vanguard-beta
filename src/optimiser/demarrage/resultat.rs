@@ -195,19 +195,45 @@ pub(super) fn empreinte(identite: &str) -> Option<String> {
 /// Ce qu'un clic peut demander pour ce programme : le retirer s'il est ordinaire et se lance, le remettre si Vanguard
 /// l'a retiré ; rien pour un programme à garder ni pour un pare-feu (le retirer serait une baisse, qui ne se choisit
 /// pas d'un clic).
-fn geste(e: &Entree) -> Option<GesteEcrit> {
+pub(super) fn geste(e: &Entree) -> Option<GesteEcrit> {
     let sorte = match e.statut {
         Statut::SeLance => "retirer",
         Statut::Retire => "remettre",
         Statut::Garder(_) | Statut::PareFeu | Statut::RetireBloque(_) => return None,
     };
-    Some(GesteEcrit {
+    let mut g = GesteEcrit {
         sorte: sorte.to_string(),
         empreinte: empreinte(e.identite)?,
         nom: nom_sans_piege(&sans_maison(e.nom), 80),
         commande: nom_sans_piege(&sans_maison(e.commande), 160),
         machine: e.machine,
-    })
+        accord: String::new(),
+    };
+    g.accord = accord(&g);
+    Some(g)
+}
+
+/// L'accord d'un geste : BLAKE3 à contexte (« vanguard accord v1 demarrage » : jamais celui d'un autre geste) de
+/// chaque champ montré, nom puis valeur, à longueur préfixée. 64 chiffres hexadécimaux minuscules.
+pub(super) fn accord(g: &GesteEcrit) -> String {
+    let mut o = Vec::new();
+    let mut bloc = |octets: &[u8]| {
+        o.extend_from_slice(&u64::try_from(octets.len()).unwrap_or(u64::MAX).to_le_bytes());
+        o.extend_from_slice(octets);
+    };
+    for (nom, valeur) in [
+        ("sorte", g.sorte.as_bytes()),
+        ("empreinte", g.empreinte.as_bytes()),
+        ("nom", g.nom.as_bytes()),
+        ("commande", g.commande.as_bytes()),
+        ("machine", if g.machine { b"1" } else { b"0" }),
+    ] {
+        bloc(nom.as_bytes());
+        bloc(valeur);
+    }
+    let mut h = blake3::Hasher::new_derive_key("vanguard accord v1 demarrage");
+    h.update(&o);
+    h.finalize().to_hex().to_string()
 }
 
 /// Le constat d'un programme : sain, avec ce que l'écran en dit. Le nom et la commande viennent de qui a posé
@@ -401,6 +427,42 @@ mod tests {
             r.constats.iter().filter(|c| c.geste.is_some()).count(),
             PROGRAMMES_MONTRES
         );
+    }
+
+    /// L'accord d'un geste (P1) : 64 chiffres hexadécimaux minuscules, posé dans le geste écrit, et changé par chaque
+    /// champ montré (sorte, empreinte, nom, commande, portée) ; deux champs qui s'échangent un octet ne donnent pas le
+    /// même (longueurs préfixées).
+    #[test]
+    fn accord_de_chaque_champ_montre() {
+        let g = geste(&entree("Lecteur", Statut::SeLance)).unwrap();
+        assert_eq!(g.accord.len(), 64);
+        assert!(g.accord.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')));
+        assert_eq!(g.accord, accord(&g));
+        let variantes: [fn(&mut GesteEcrit); 6] = [
+            |g| g.sorte = "remettre".into(),
+            |g| g.empreinte = "0".repeat(32),
+            |g| g.nom.push('x'),
+            |g| g.commande.push(' '),
+            |g| g.machine = true,
+            |g| {
+                g.nom.push('/');
+                g.commande.remove(0);
+            },
+        ];
+        for (i, v) in variantes.iter().enumerate() {
+            let mut autre = g.clone();
+            v(&mut autre);
+            assert_ne!(accord(&autre), g.accord, "variante {i}");
+        }
+        let mut glisse = g.clone();
+        glisse.nom = "ab".into();
+        glisse.commande = "c".into();
+        let mut glisse2 = g.clone();
+        glisse2.nom = "a".into();
+        glisse2.commande = "bc".into();
+        assert_ne!(accord(&glisse), accord(&glisse2));
+        // Rien pour un programme à garder : aucun accord à rendre.
+        assert!(geste(&entree("Pilote", Statut::Garder("pilote"))).is_none());
     }
 
     /// Aucun programme : une ligne saine qui le dit.

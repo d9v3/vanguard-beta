@@ -108,6 +108,9 @@ struct GesteBrut {
     nom: Texte,
     commande: Texte,
     machine: Option<bool>,
+    /// L'accord du geste montré (64 chiffres hexadécimaux minuscules), que Vanguard relit avant d'agir (P1). Lu
+    /// strictement, mais pas encore rendu : la trame du changement ne porte que la sorte et l'empreinte.
+    accord: Texte,
 }
 
 /// Un changement qu'un constat propose, lu strictement : une sorte connue, une empreinte de 32 chiffres
@@ -126,6 +129,12 @@ impl GesteBrut {
     fn lire(self) -> Option<Geste> {
         // Un jeton n'appartient qu'à « voir la correction ».
         if !self.jeton.is_empty() {
+            return None;
+        }
+        // Un accord présent mais mal formé : le geste est illisible, comme un champ inconnu.
+        let accord = self.accord.as_str();
+        let bien_forme = accord.len() == 64 && accord.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+        if !accord.is_empty() && !bien_forme {
             return None;
         }
         Some(Geste {
@@ -641,6 +650,14 @@ mod tests {
         ))
         .unwrap();
         assert_eq!((g.changement.sorte, g.machine), (Sorte::Remettre, false));
+        // L'accord du geste (P1), bien formé : le geste reste lu.
+        let a = "0123456789abcdef".repeat(4);
+        assert!(
+            constat(&format!(
+                r#"{{"sorte": "retirer", "empreinte": "{e}", "accord": "{a}"}}"#
+            ))
+            .is_some()
+        );
         for faux in [
             format!(r#"{{"sorte": "effacer", "empreinte": "{e}"}}"#),
             format!(r#"{{"sorte": "Retirer", "empreinte": "{e}"}}"#),
@@ -655,6 +672,17 @@ mod tests {
             // Vérification de Fable, F3 : un jeton ou un champ inconnu dans un changement.
             format!(r#"{{"sorte": "retirer", "empreinte": "{e}", "jeton": "{e}"}}"#),
             format!(r#"{{"sorte": "retirer", "empreinte": "{e}", "cache": "x"}}"#),
+            // Un accord mal formé : en majuscules, trop court, suivi d'un mot, pas un texte.
+            format!(
+                r#"{{"sorte": "retirer", "empreinte": "{e}", "accord": "{}"}}"#,
+                a.to_uppercase()
+            ),
+            format!(
+                r#"{{"sorte": "retirer", "empreinte": "{e}", "accord": "{}"}}"#,
+                &a[..63]
+            ),
+            format!(r#"{{"sorte": "retirer", "empreinte": "{e}", "accord": "{a} x"}}"#),
+            format!(r#"{{"sorte": "retirer", "empreinte": "{e}", "accord": 12}}"#),
         ] {
             assert_eq!(constat(&faux), None, "{faux}");
         }

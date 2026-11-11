@@ -3617,6 +3617,96 @@ fn demarrage_retire_puis_remet_a_l_octet_pres() {
     assert!(notes.iter().all(|l| l.contains("Lecteur")), "{journal}");
 }
 
+/// L'accord du geste du démarrage (P1) : rendu avec --retirer ou --remettre, il doit être celui que la liste relue
+/// donne au moment d'agir. Le programme montré a changé de commande entre la liste et le clic : refusé, rien n'est
+/// écrit ; l'accord d'un « retirer » ne sert pas à « remettre » ; l'accord de la liste relue passe ; --accord seul
+/// est une erreur d'usage.
+#[test]
+fn demarrage_l_accord_tient_ce_qui_a_ete_montre() {
+    if !cfg!(target_os = "linux") {
+        return essais::saute("Linux seulement");
+    }
+    if optimiser_refuse_ici() {
+        return essais::saute(REFUS_OPTIMISER);
+    }
+    let maison = maison_jetable();
+    let systeme = maison.join("xdg");
+    let autostart = maison.join("config/autostart");
+    std::fs::create_dir_all(&systeme).unwrap();
+    std::fs::create_dir_all(&autostart).unwrap();
+    let fichier = autostart.join("lecteur.desktop");
+    let v1 = "[Desktop Entry]\nType=Application\nName=Lecteur\nExec=/home/alice/bin/lecteur\n";
+    std::fs::write(&fichier, v1).unwrap();
+    let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
+    let systeme_txt = systeme.to_string_lossy().into_owned();
+    let lancer = |args: &[&str]| {
+        vanguard_dans_env(
+            programme,
+            &maison,
+            "fr",
+            args,
+            "",
+            60,
+            &[("XDG_CONFIG_DIRS", systeme_txt.as_str())],
+        )
+    };
+    // L'empreinte et l'accord du geste du Lecteur, de la sorte attendue.
+    let geste = |sorte: &str| {
+        let s = lancer(&["demarrage", "--json"]);
+        assert_eq!(s.code, Some(0), "{} {}", s.texte, s.erreurs);
+        let v: serde_json::Value = serde_json::from_str(&s.texte).unwrap_or_else(|e| panic!("{e} : {}", s.texte));
+        let g = v["constats"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|c| c.get("geste"))
+            .find(|g| g["nom"] == "Lecteur")
+            .unwrap_or_else(|| panic!("{v}"))
+            .clone();
+        assert_eq!(g["sorte"].as_str(), Some(sorte), "{v}");
+        let accord = g["accord"].as_str().unwrap_or_default().to_string();
+        assert_eq!(accord.len(), 64, "{g}");
+        (g["empreinte"].as_str().unwrap().to_string(), accord)
+    };
+    // Le code et l'issue de la dernière ligne JSON.
+    let changer = |option: &str, e: &str, accord: &str| {
+        let s = lancer(&["demarrage", option, e, "--accord", accord, "--json"]);
+        let derniere = s.texte.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or_default();
+        let v: serde_json::Value = serde_json::from_str(derniere).unwrap_or_else(|e| panic!("{e} : {}", s.texte));
+        (
+            s.code,
+            v["issue"].as_str().unwrap_or_default().to_string(),
+            v["raison"].as_str().unwrap_or_default().to_string(),
+        )
+    };
+    let lu = || std::fs::read_to_string(&fichier).unwrap();
+
+    let (e, montre) = geste("retirer");
+    // Entre la liste et le clic, la commande change (même fichier, même empreinte) : rien n'est fait.
+    let v2 = "[Desktop Entry]\nType=Application\nName=Lecteur\nExec=/home/alice/bin/autre --cache\n";
+    std::fs::write(&fichier, v2).unwrap();
+    let (code, issue, raison) = changer("--retirer", &e, &montre);
+    assert_eq!((code, issue.as_str()), (Some(1), "refuse"), "{raison}");
+    assert!(raison.contains("a changé depuis la liste"), "{raison}");
+    assert_eq!(lu(), v2, "rien d'écrit");
+    // La liste relue donne un autre accord, pour la même empreinte : il passe.
+    let (e2, relu) = geste("retirer");
+    assert_eq!(e2, e);
+    assert_ne!(relu, montre);
+    assert_eq!(changer("--retirer", &e, &relu).0, Some(0));
+    assert!(lu().lines().any(|l| l == "Hidden=true"), "{}", lu());
+    // L'accord d'un « retirer » ne vaut pas pour « remettre » ; celui du « remettre » montré, si.
+    assert_eq!(changer("--remettre", &e, &relu).1, "refuse");
+    assert!(lu().lines().any(|l| l == "Hidden=true"), "{}", lu());
+    let (_, remettre) = geste("remettre");
+    assert_eq!(changer("--remettre", &e, &remettre).0, Some(0));
+    assert_eq!(lu(), v2, "remis à l'octet près");
+    // --accord sans geste : erreur d'usage, rien de lancé.
+    let s = lancer(&["demarrage", "--accord", &remettre]);
+    assert_eq!(s.code, Some(2), "{}", s.erreurs);
+    assert_eq!(lu(), v2);
+}
+
 /// Le démarrage changé comme une fenêtre prise en main (ou un autre programme du compte) le demanderait, après la
 /// campagne d'attaque du lot 2a : chaque essai dit le comportement sûr attendu. Tout se passe dans un dossier
 /// personnel jetable, sans bus de session, avec des programmes inventés ; seules des entrées d'autostart du dossier
