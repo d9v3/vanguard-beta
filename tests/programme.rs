@@ -92,6 +92,11 @@ fn vanguard_dans_env(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    attendre(commande, args, entree, secondes)
+}
+
+/// Lance `commande` (ses sorties en tubes), lui tape `entree`, et l'attend au plus `secondes`.
+fn attendre(mut commande: Command, args: &[&str], entree: &str, secondes: u64) -> Sortie {
     // Un programme copié à l'instant (mise_a_jour_depuis_la_cle) peut être refusé « Text file busy » : un autre test
     // qui lance un processus au même moment a hérité, le temps de son exec, du fichier encore ouvert en écriture.
     // Quelques essais espacés suffisent ; toute autre erreur arrête le test.
@@ -716,10 +721,11 @@ fn nettoyer_mesure_puis_refus() {
     assert!(t.contains("Annulé") || t.contains("Rien à nettoyer"), "{t}");
 }
 
-/// Une entrée d'un instantané : sorte et droits (le mode entier), taille, date, puis le contenu d'un fichier
+/// Une entrée d'un instantané : sorte et droits (le mode entier), taille, date, date du dernier changement d'inode
+/// (ctime, en secondes et nanosecondes : un chmod ou un chown au même mode s'y voit), puis le contenu d'un fichier
 /// (BLAKE3) ou la cible d'un lien.
 #[cfg(unix)]
-type Entree = (u32, u64, Option<std::time::SystemTime>, String);
+type Entree = (u32, u64, Option<std::time::SystemTime>, (i64, i64), String);
 
 /// Ce qu'il y a dans un dossier, lui compris, entrée par entrée (chemin relatif), sans suivre les liens. Assez pour
 /// voir une entrée créée, effacée, réécrite ou seulement retouchée, un droit changé ou un lien redirigé.
@@ -747,7 +753,16 @@ fn instantane(racine: &Path) -> std::collections::BTreeMap<String, Entree> {
             String::new()
         };
         let nom = p.strip_prefix(racine).unwrap().to_string_lossy().into_owned();
-        vus.insert(nom, (m.mode(), m.len(), m.modified().ok(), contenu));
+        vus.insert(
+            nom,
+            (
+                m.mode(),
+                m.len(),
+                m.modified().ok(),
+                (m.ctime(), m.ctime_nsec()),
+                contenu,
+            ),
+        );
         if m.is_dir() {
             a_voir.extend(std::fs::read_dir(&p).into_iter().flatten().flatten().map(|e| e.path()));
         }
@@ -776,6 +791,31 @@ fn ecarts(
             .map(|n| format!("créé « {n} »")),
     );
     ecarts
+}
+
+/// `vanguard <args>` sous un environnement VIDÉ (`env_clear`), comme le lancerait un autre programme : le dossier
+/// personnel `maison`, et les dossiers XDG et temporaire HORS de lui, dans `dehors` (vérification de Fable n° 2, L5).
+#[cfg(unix)]
+fn vanguard_a_vide(programme: &Path, maison: &Path, dehors: &Path, args: &[&str]) -> Sortie {
+    let mut commande = Command::new(programme);
+    commande
+        .env_clear()
+        .args(args)
+        .env("PATH", "/usr/bin:/bin")
+        .env("VANGUARD_LANG", "fr")
+        .env("USER", "essai")
+        .env("HOME", maison)
+        .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
+        .env("XDG_RUNTIME_DIR", dehors.join("run"))
+        .env("XDG_DATA_HOME", dehors.join("donnees"))
+        .env("XDG_CONFIG_HOME", dehors.join("config"))
+        .env("XDG_CACHE_HOME", dehors.join("cache"))
+        .env("XDG_STATE_HOME", dehors.join("etat"))
+        .env("TMPDIR", dehors.join("tmp"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    attendre(commande, args, "", 300)
 }
 
 /// Les règles que l'aperçu relance (`RELUES_SANS_PROGRAMME` de `machine::apercu`), recopiées : une règle ajoutée là
@@ -829,44 +869,53 @@ fn voir_une_correction_n_ecrit_rien() {
                 loop {
                     let i = suivant.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let Some(id) = ids.get(i) else { break };
-                    // Le dossier personnel et son dossier temporaire, rien d'autre.
-                    let maison = maison_jetable();
-                    let tmp = maison.join("tmp");
-                    std::fs::create_dir_all(&tmp).unwrap();
-                    let env = &[("TMPDIR", tmp.to_str().unwrap())];
-                    let avant = instantane(&maison);
                     let j = jeton(id);
-                    let sortie = vanguard_dans_env(
-                        programme,
-                        &maison,
-                        "fr",
-                        &["correction", "--voir", &j, "--json"],
-                        "",
-                        300,
-                        env,
-                    );
-                    let changes = ecarts(&avant, &instantane(&maison));
-                    let derniere: serde_json::Value =
-                        serde_json::from_str(sortie.texte.lines().last().unwrap_or_default()).unwrap_or_default();
-                    let mut f = fautes.lock().unwrap();
-                    if sortie.code != Some(1) || derniere["geste"] != "voir-correction" || derniere["issue"] != "refuse"
-                    {
-                        f.push(format!(
-                            "{id} : code {:?}, {} {}",
-                            sortie.code, sortie.texte, sortie.erreurs
-                        ));
-                    }
-                    let raison = derniere["raison"].as_str().unwrap_or_default();
-                    let attendue = if RELANCEES.contains(&id.as_str()) {
-                        raison.starts_with("ce problème a disparu")
-                    } else {
-                        raison.contains("lance d'autres programmes")
-                    };
-                    if !attendue {
-                        f.push(format!("{id} : raison inattendue « {raison} »"));
-                    }
-                    if !changes.is_empty() {
-                        f.push(format!("{id} : {changes:?}"));
+                    let args = ["correction", "--voir", &j, "--json"];
+                    // Chaque règle sous un environnement vidé, XDG et dossier temporaire hors du dossier personnel,
+                    // les deux arbres comparés ; les règles relancées aussi avec XDG et dossier temporaire dedans.
+                    let relancee = RELANCEES.contains(&id.as_str());
+                    for dedans in [false, true] {
+                        if dedans && !relancee {
+                            continue;
+                        }
+                        let maison = maison_jetable();
+                        let dehors = maison_jetable();
+                        let tmp = if dedans { maison.join("tmp") } else { dehors.join("tmp") };
+                        std::fs::create_dir_all(&tmp).unwrap();
+                        let avant = (instantane(&maison), instantane(&dehors));
+                        let sortie = if dedans {
+                            let env = &[("TMPDIR", tmp.to_str().unwrap())];
+                            vanguard_dans_env(programme, &maison, "fr", &args, "", 300, env)
+                        } else {
+                            vanguard_a_vide(programme, &maison, &dehors, &args)
+                        };
+                        let mut changes = ecarts(&avant.0, &instantane(&maison));
+                        changes.extend(ecarts(&avant.1, &instantane(&dehors)));
+                        let derniere: serde_json::Value =
+                            serde_json::from_str(sortie.texte.lines().last().unwrap_or_default()).unwrap_or_default();
+                        let ou = if dedans { "XDG dedans" } else { "env vidé, XDG dehors" };
+                        let mut f = fautes.lock().unwrap();
+                        if sortie.code != Some(1)
+                            || derniere["geste"] != "voir-correction"
+                            || derniere["issue"] != "refuse"
+                        {
+                            f.push(format!(
+                                "{id} ({ou}) : code {:?}, {} {}",
+                                sortie.code, sortie.texte, sortie.erreurs
+                            ));
+                        }
+                        let raison = derniere["raison"].as_str().unwrap_or_default();
+                        let attendue = if relancee {
+                            raison.starts_with("ce problème a disparu")
+                        } else {
+                            raison.contains("lance d'autres programmes")
+                        };
+                        if !attendue {
+                            f.push(format!("{id} ({ou}) : raison inattendue « {raison} »"));
+                        }
+                        if !changes.is_empty() {
+                            f.push(format!("{id} ({ou}) : {changes:?}"));
+                        }
                     }
                 }
             });
@@ -959,6 +1008,18 @@ fn les_corrections_du_compte_offrent_l_apercu() {
             "{a} sans aperçu du compte : {vus:?}"
         );
     }
+    // Vérification de Fable n° 2, L1 : des sceaux présents, leur verrou retiré. La ligne de commande, lue avant
+    // l'interrupteur, le recréait (ses textes traduits lisent les réglages scellés).
+    let verrous: Vec<&String> = avant.keys().filter(|n| n.ends_with("sceaux.verrou")).collect();
+    assert!(!verrous.is_empty(), "pas de verrou des sceaux dans {:?}", avant.keys());
+    assert!(avant.keys().any(|n| n.ends_with("sceaux.json")), "pas de sceaux");
+    for v in verrous {
+        std::fs::remove_file(maison.join(v)).unwrap();
+    }
+    let avant = instantane(&maison);
+    let _ = voir_tout();
+    let changes = ecarts(&avant, &instantane(&maison));
+    assert!(changes.is_empty(), "les aperçus ont écrit, verrou absent : {changes:?}");
     // Les fichiers JSON de Vanguard abîmés : les aperçus ne les réparent pas, n'en notent rien, et répondent.
     let mut abimes = 0;
     for (nom, entree) in &avant {
@@ -982,6 +1043,46 @@ fn les_corrections_du_compte_offrent_l_apercu() {
     for (chemin, mode) in &modes {
         let m = std::fs::metadata(chemin).unwrap().permissions().mode() & 0o777;
         assert_eq!(m, *mode, "{} changé", chemin.display());
+    }
+}
+
+/// Vérification de Fable n° 2, L6 : l'aperçu écrit dans une sortie fermée (tube sans lecteur) ou pleine (/dev/full)
+/// sort proprement, code 141 comme les autres commandes, sans panique (code 101) ; rien n'est écrit.
+#[cfg(unix)]
+#[test]
+fn l_apercu_dans_une_sortie_coupee_rend_141() {
+    let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
+    let jeton = format!("{}{}", "00".repeat(4), "5a".repeat(12));
+    for pleine in [false, true] {
+        let maison = maison_jetable();
+        let dehors = maison_jetable();
+        let avant = (instantane(&maison), instantane(&dehors));
+        let mut c = Command::new(programme);
+        c.env_clear()
+            .args(["correction", "--voir", &jeton, "--json"])
+            .env("PATH", "/usr/bin:/bin")
+            .env("VANGUARD_LANG", "fr")
+            .env("HOME", &*maison)
+            .env("XDG_DATA_HOME", dehors.join("donnees"))
+            .env("XDG_CONFIG_HOME", dehors.join("config"))
+            .env("XDG_CACHE_HOME", dehors.join("cache"))
+            .env("TMPDIR", &*dehors)
+            .stdin(Stdio::null())
+            .stderr(Stdio::piped());
+        if pleine {
+            c.stdout(std::fs::OpenOptions::new().write(true).open("/dev/full").unwrap());
+        } else {
+            let (lecteur, ecrivain) = std::io::pipe().unwrap();
+            drop(lecteur);
+            c.stdout(ecrivain);
+        }
+        let s = c.output().unwrap();
+        let erreurs = String::from_utf8_lossy(&s.stderr);
+        assert_eq!(s.status.code(), Some(141), "pleine {pleine} : {erreurs}");
+        assert!(!erreurs.contains("panicked"), "{erreurs}");
+        let mut changes = ecarts(&avant.0, &instantane(&maison));
+        changes.extend(ecarts(&avant.1, &instantane(&dehors)));
+        assert!(changes.is_empty(), "pleine {pleine} : {changes:?}");
     }
 }
 
@@ -1039,6 +1140,110 @@ fn un_lien_n_offre_pas_de_correction() {
                 assert!(m.contains("est un lien vers"), "{m}");
             }
         }
+    }
+}
+
+/// Les constats « Clés SSH » d'un `audit --json` lancé avec ce HOME : il doit rendre la main (un tube nommé dans ~/.ssh
+/// le figeait), et aucun ne porte de correction ni de geste.
+#[cfg(unix)]
+fn constats_ssh_sans_correction(programme: &Path, maison: &Path) -> Vec<serde_json::Value> {
+    let debut = std::time::Instant::now();
+    let bilan = vanguard_dans(programme, maison, "fr", &["audit", "--json"], "", 120);
+    assert!(
+        matches!(bilan.code, Some(0 | 1)),
+        "{:?} : {}",
+        bilan.code,
+        bilan.erreurs
+    );
+    assert!(debut.elapsed() < std::time::Duration::from_secs(100), "bilan trop long");
+    let v: serde_json::Value = serde_json::from_str(&bilan.texte).expect("audit --json : JSON illisible");
+    let ssh: Vec<serde_json::Value> = v["constats"]
+        .as_array()
+        .expect("pas de constats")
+        .iter()
+        .filter(|c| c["categorie"] == "Clés SSH")
+        .cloned()
+        .collect();
+    for c in &ssh {
+        assert!(c["geste"].is_null() && c["correctif"].is_null(), "corrigeable : {c}");
+    }
+    ssh
+}
+
+/// Vérification de Fable n° 2, liens L1, L2, L3, L4, L6 : dans ~/.ssh, un nom qui n'est pas UTF-8 (et son sosie au
+/// caractère de remplacement, un lien), un dossier nommé comme une clé, une clé à deux noms, un tube nommé (à la place
+/// d'une clé et de la configuration), un lien vers un périphérique sans fin ; puis un HOME lien écrit avec « / » ou
+/// « /. » à la fin. Le bilan rend la main, chaque cas est dit, aucun ne reçoit de correction ni de jeton.
+#[cfg(unix)]
+#[test]
+fn les_cas_limites_de_ssh_ne_donnent_ni_correction_ni_blocage() {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
+    let mode = |c: &Path, m: u32| std::fs::set_permissions(c, std::fs::Permissions::from_mode(m)).unwrap();
+    let tube = |c: &Path| {
+        let s = Command::new("mkfifo").arg(c).status().unwrap();
+        assert!(s.success(), "mkfifo {}", c.display());
+    };
+    let maison = maison_jetable();
+    let ailleurs = maison_jetable();
+    mode(&maison, 0o700);
+    let ssh = maison.join(".ssh");
+    std::fs::create_dir_all(&ssh).unwrap();
+    mode(&ssh, 0o700);
+    // L1 : le nom invalide, et le sosie que la commande écrite avec perte viserait (un lien vers un dossier 0700).
+    let invalide = ssh.join(std::ffi::OsStr::from_bytes(b"id_\xff"));
+    std::fs::write(&invalide, "clé inventée\n").unwrap();
+    mode(&invalide, 0o644);
+    std::fs::create_dir_all(ailleurs.join("cible")).unwrap();
+    mode(&ailleurs.join("cible"), 0o700);
+    symlink(ailleurs.join("cible"), ssh.join("id_\u{FFFD}")).unwrap();
+    // L2 : un dossier nommé comme une clé.
+    std::fs::create_dir_all(ssh.join("id_dossier")).unwrap();
+    mode(&ssh.join("id_dossier"), 0o755);
+    // L6 : une clé à deux noms.
+    std::fs::write(ssh.join("id_double"), "clé inventée\n").unwrap();
+    mode(&ssh.join("id_double"), 0o644);
+    std::fs::hard_link(ssh.join("id_double"), ailleurs.join("double")).unwrap();
+    // L3 : des tubes nommés et un lien vers un périphérique sans fin.
+    tube(&ssh.join("id_tube"));
+    mode(&ssh.join("id_tube"), 0o644);
+    tube(&ssh.join("config"));
+    symlink("/dev/zero", ssh.join("id_zero")).unwrap();
+    let ssh_constats = constats_ssh_sans_correction(programme, &maison);
+    let dit = |bout: &str, raison: &str| {
+        assert!(
+            ssh_constats.iter().any(|c| {
+                let m = c["message"].as_str().unwrap_or_default();
+                m.contains(bout) && m.contains(raison)
+            }),
+            "{bout} ({raison}) n'est pas dit : {ssh_constats:?}"
+        );
+    };
+    dit("lisible par d'autres", "UTF-8");
+    dit("~/.ssh/id_dossier", "n'est pas un simple fichier");
+    dit("~/.ssh/id_double", "lien physique");
+    dit("~/.ssh/id_tube", "n'est pas un simple fichier");
+    dit("~/.ssh/id_zero", "est un lien vers /dev/zero");
+    dit("~/.ssh/config non lu", "Impossible de vérifier");
+    // L4 : le dossier personnel est un lien ; écrit avec « / » ou « /. » à la fin, il reste vu comme tel.
+    let vrai = maison_jetable();
+    mode(&vrai, 0o755);
+    std::fs::create_dir_all(vrai.join(".ssh")).unwrap();
+    mode(&vrai.join(".ssh"), 0o755);
+    std::fs::write(vrai.join(".ssh/id_cle"), "clé inventée\n").unwrap();
+    mode(&vrai.join(".ssh/id_cle"), 0o644);
+    let parent = maison_jetable();
+    let lien = parent.join("maison");
+    symlink(&*vrai, &lien).unwrap();
+    for fin in ["/", "/."] {
+        let home = std::path::PathBuf::from(format!("{}{fin}", lien.display()));
+        let c = constats_ssh_sans_correction(programme, &home);
+        assert!(
+            c.iter()
+                .any(|c| c["message"].as_str().is_some_and(|m| m.contains("~ est un lien vers"))),
+            "HOME {fin} : {c:?}"
+        );
     }
 }
 

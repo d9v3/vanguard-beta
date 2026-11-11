@@ -73,13 +73,39 @@ pub(crate) fn ecrire_atomique_date(
 /// suivre de lien et sans attendre, puis jugé sur ce qui a été ouvert (fstat), pas sur le chemin : un échange entre
 /// le regard et l'ouverture ne passe pas. `NotFound` s'il n'existe pas ; `InvalidData` s'il n'est pas lu pour ça.
 pub(crate) fn lire_ordinaire(chemin: &std::path::Path, max: u64) -> std::io::Result<Vec<u8>> {
+    lire_simple(chemin, max, false)
+}
+
+/// `lire_ordinaire`, mais un lien est suivi : pour lire ce que la personne a posé elle-même (une clé ou la
+/// configuration de SSH liées par stow ou chezmoi), jamais un fichier d'état de Vanguard. Ce qui est au bout doit
+/// être un simple fichier, regardé avant d'ouvrir (ouvrir un périphérique peut déjà agir) puis jugé sur ce qui a été
+/// ouvert : un tube nommé ne fige pas la lecture, un lien vers un périphérique sans fin ne remplit pas la mémoire.
+#[cfg(unix)]
+pub(crate) fn lire_ordinaire_au_bout(chemin: &std::path::Path, max: u64) -> std::io::Result<Vec<u8>> {
+    if !std::fs::metadata(chemin)?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            tr!("pas un simple fichier", "not a plain file"),
+        ));
+    }
+    lire_simple(chemin, max, true)
+}
+
+fn lire_simple(chemin: &std::path::Path, max: u64, suivre: bool) -> std::io::Result<Vec<u8>> {
     use std::io::Read;
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    std::os::unix::fs::OpenOptionsExt::custom_flags(
+        &mut options,
+        if suivre {
+            libc::O_NONBLOCK
+        } else {
+            libc::O_NOFOLLOW | libc::O_NONBLOCK
+        },
+    );
     #[cfg(windows)]
-    {
+    if !suivre {
         // FILE_FLAG_OPEN_REPARSE_POINT : un lien symbolique ou une jonction s'ouvre lui-même, sans être suivi.
         std::os::windows::fs::OpenOptionsExt::custom_flags(&mut options, 0x0020_0000);
     }
@@ -305,6 +331,7 @@ impl Verrou {
         partage: bool,
         attente: std::time::Duration,
     ) -> Result<Verrou, SansVerrou> {
+        let attente = attente_permise(attente);
         let debut = std::time::Instant::now();
         let systeme = nom_systeme(nom);
         // Le fichier en cause est nommé : l'appelant ne connaît que `nom` (`SansVerrou::erreur`).
@@ -372,6 +399,7 @@ impl Verrou {
         partage: bool,
         attente: std::time::Duration,
     ) -> Result<Verrou, SansVerrou> {
+        let attente = attente_permise(attente);
         let creer = !partage || ecriture_sure(dossier);
         if creer {
             let _ = std::fs::create_dir_all(dossier);
@@ -414,6 +442,16 @@ impl Verrou {
             fichier: f,
             ancien: None,
         })
+    }
+}
+
+/// L'attente d'un verrou tenu ailleurs : aucune pour l'aperçu d'une correction (un seul essai), qui lit sans verrou
+/// plutôt que de faire attendre la fenêtre une dizaine de secondes ; `attente` sinon.
+fn attente_permise(attente: std::time::Duration) -> std::time::Duration {
+    if crate::autotest::lecture_seule::sans_attente() {
+        std::time::Duration::ZERO
+    } else {
+        attente
     }
 }
 
@@ -547,6 +585,34 @@ mod tests {
         std::fs::remove_dir_all(&dossier).unwrap();
     }
 
+    /// Vérification de Fable n° 2, lecture L1 et L8 : sous l'interrupteur de l'aperçu d'une correction, un verrou
+    /// absent n'est pas créé (ni son dossier), et un verrou tenu ailleurs est laissé au premier essai, sans attendre.
+    #[test]
+    fn l_apercu_ne_cree_ni_n_attend_un_verrou() {
+        let dossier = crate::essais::Jetable::nouveau("verrou-apercu");
+        let absent = dossier.join("absent");
+        let tenu = Verrou::prendre(&dossier, "sceaux.verrou", false, std::time::Duration::ZERO).unwrap();
+        crate::autotest::lecture_seule::poser_pour_un_apercu();
+        let longue = std::time::Duration::from_secs(5);
+        let debut = std::time::Instant::now();
+        let occupe = Verrou::prendre(&dossier, "sceaux.verrou", true, longue).err();
+        let attendu = debut.elapsed();
+        let cree = Verrou::prendre(&absent, "sceaux.verrou", true, longue).is_ok();
+        crate::autotest::lecture_seule::relever_pour_le_test();
+        assert_eq!(occupe, Some(SansVerrou::Occupe));
+        assert!(attendu < std::time::Duration::from_secs(1), "attendu {attendu:?}");
+        assert!(
+            !cree && std::fs::symlink_metadata(&absent).is_err(),
+            "verrou ou dossier créé"
+        );
+        // Relevé, le même lecteur attend comme avant.
+        let debut = std::time::Instant::now();
+        let occupe = Verrou::prendre(&dossier, "sceaux.verrou", true, std::time::Duration::from_millis(300)).err();
+        assert_eq!(occupe, Some(SansVerrou::Occupe));
+        assert!(debut.elapsed() >= std::time::Duration::from_millis(300));
+        drop(tenu);
+    }
+
     /// Un lien posé d'avance sous un nom de temporaire n'est jamais suivi : la cible reste intacte, et le nom tiré
     /// au hasard ne se devine plus d'après le numéro du processus.
     #[cfg(unix)]
@@ -603,6 +669,49 @@ mod tests {
             std::io::ErrorKind::NotFound
         );
         std::fs::remove_dir_all(&dossier).unwrap();
+    }
+
+    /// Vérification de Fable n° 2, liens L3 : ce que la personne pose dans ~/.ssh se lit lien suivi, mais seulement
+    /// s'il mène à un simple fichier, et borné : un tube nommé (direct ou lié) ne fige rien, un lien vers un
+    /// périphérique sans fin ne charge rien.
+    #[cfg(unix)]
+    #[test]
+    fn lecture_au_bout_d_un_lien_bornee_a_un_simple_fichier() {
+        let dossier = crate::essais::Jetable::nouveau("lecture-au-bout");
+        let tube = dossier.join("tube");
+        crate::essais::tube_nomme(&tube).unwrap();
+        let vrai = dossier.join("vrai");
+        std::fs::write(&vrai, b"cle").unwrap();
+        for (nom, cible) in [
+            ("lien-tube", tube.as_path()),
+            ("lien-zero", std::path::Path::new("/dev/zero")),
+            ("lien-vrai", vrai.as_path()),
+        ] {
+            std::os::unix::fs::symlink(cible, dossier.join(nom)).unwrap();
+        }
+        let debut = std::time::Instant::now();
+        for refuse in ["tube", "lien-tube", "lien-zero"] {
+            let e = lire_ordinaire_au_bout(&dossier.join(refuse), 1024).unwrap_err();
+            assert_eq!(e.kind(), std::io::ErrorKind::InvalidData, "{refuse}");
+        }
+        assert!(debut.elapsed() < std::time::Duration::from_secs(2));
+        assert_eq!(
+            lire_ordinaire_au_bout(&dossier.join("lien-vrai"), 1024).unwrap(),
+            b"cle"
+        );
+        assert_eq!(lire_ordinaire_au_bout(&vrai, 3).unwrap(), b"cle");
+        assert_eq!(
+            lire_ordinaire_au_bout(&vrai, 2).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+        assert_eq!(
+            lire_ordinaire_au_bout(&dossier.join("absent"), 1024)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::NotFound
+        );
+        // Le lien n'est suivi que par cette lecture-ci : celle des fichiers d'état le refuse toujours.
+        assert!(lire_ordinaire(&dossier.join("lien-vrai"), 1024).is_err());
     }
 
     /// En root, le dossier d'un compte (le nôtre ici, qui n'est pas root) n'est pas sûr ; hors de root, tout l'est.

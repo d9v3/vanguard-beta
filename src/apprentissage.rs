@@ -641,21 +641,35 @@ fn completer(appris: &mut Appris, cles: Vec<(String, String)>) -> Vec<(String, S
 /// Les clés à compléter d'une passe : (constat, signature du choix sans clé, clé du constat). Une signature retrouvée
 /// par plusieurs constats de clés différentes n'est pas complétée : deux fichiers dont les noms ne diffèrent que par un
 /// invisible ont le même message (`affichable`), et la clé irait au premier lu, peut-être le sosie. Le choix reste
-/// sans clé (il vaut pour les deux, comme avant les clés) et chacun de ces constats le dit. Rend celles qui restent.
+/// sans clé (il vaut pour les deux, comme avant les clés) et chacun de ces constats le dit. Une clé dont l'objet porte
+/// un caractère écrit `\u{…}` (`nom_pour_cle` : un invisible, un piège) n'est jamais complétée, même seule : le
+/// message montre ce nom sans ce caractère, donc le choix fait sur ce texte ne visait peut-être pas lui ; vu seul
+/// une fois (la vraie clé fermée un instant), il prenait la clé et laissait revenir la vraie alerte (vérification de
+/// Fable n° 2, liens L7). Le choix reste sans clé, et ce constat le dit. Rend celles qui restent.
 fn sans_ambigues(constats: &mut [Constat], trouvees: &[(usize, String, String)]) -> Vec<(String, String)> {
     let mut gardees = Vec::new();
     for (i, signature, cle) in trouvees {
         let memes: Vec<&(usize, String, String)> = trouvees.iter().filter(|t| t.1 == *signature).collect();
-        if memes.iter().all(|t| t.2 == *cle) {
+        let n = memes.len();
+        let note = if !memes.iter().all(|t| t.2 == *cle) {
+            trf!(
+                " (ce choix d'avant, sans objet précis, vaut pour {n} alertes au même texte)",
+                " (this earlier choice, with no precise object, covers {n} alerts with the same text)"
+            )
+        } else if cle.contains("\\u{") {
+            tr!(
+                " (ce choix d'avant, sans objet précis, n'est pas rattaché à ce nom, qui contient un caractère caché)",
+                " (this earlier choice, with no precise object, is not tied to this name, which contains a hidden character)"
+            )
+            .to_string()
+        } else {
             if !gardees.iter().any(|(s, _): &(String, String)| s == signature) {
                 gardees.push((signature.clone(), cle.clone()));
             }
-        } else if let Some(c) = constats.get_mut(*i) {
-            let n = memes.len();
-            c.message += &trf!(
-                " (ce choix d'avant, sans objet précis, vaut pour {n} alertes au même texte)",
-                " (this earlier choice, with no precise object, covers {n} alerts with the same text)"
-            );
+            continue;
+        };
+        if let Some(c) = constats.get_mut(*i) {
+            c.message += &note;
         }
     }
     gardees
@@ -1319,6 +1333,13 @@ mod tests {
         assert_eq!(appliquer_avec(&a, &mut memes, jour, &mut cles), 2);
         let attendue = cle("~/.ssh/id_x").cle().unwrap().to_string();
         assert_eq!(cles, vec![(signature("Clés SSH", message), attendue)]);
+        // Vérification de Fable n° 2, liens L7 : le sosie vu seul (la vraie clé fermée un instant) ne prend pas la
+        // clé ; à la passe suivante, les deux restent tus comme avant les clés, et la vraie alerte ne revient pas seule.
+        let mut cles = Vec::new();
+        let mut sosie = [cle("~/.ssh/id_x\\u{200b}")];
+        assert_eq!(appliquer_avec(&a, &mut sosie, jour, &mut cles), 1);
+        assert!(cles.is_empty(), "le sosie a pris la clé : {cles:?}");
+        assert!(sosie[0].message.contains("caractère caché"), "{}", sosie[0].message);
         // Seule : complétée, et dite au journal par `appliquer` (`noter_completion`).
         let mut cles = Vec::new();
         let mut seule = [cle("~/.ssh/id_x")];

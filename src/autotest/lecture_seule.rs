@@ -7,8 +7,10 @@
 //! points d'entrée (`socle::ecrire_atomique`, `socle::ecriture_sure`, `modele::journal::noter`) au lieu des règles
 //! une à une ; les empreintes attrapent ce qui passerait à côté.
 //!
-//! L'interrupteur n'est jamais relevé : une règle hors délai reste vivante dans son fil (rien ne peut l'arrêter) et
-//! écrirait son « déjà vu » après coup. Les fichiers de l'autotest lui-même s'écrivent par un chemin exempté nommé
+//! L'interrupteur n'est jamais relevé une fois une règle lancée : une règle hors délai reste vivante dans son fil (rien
+//! ne peut l'arrêter) et écrirait son « déjà vu » après coup. Seule exception, avant tout fil : l'aperçu d'une
+//! correction le pose avant de lire la ligne de commande, et le relève si elle n'est pas un aperçu
+//! (`relever_avant_tout`). Les fichiers de l'autotest lui-même s'écrivent par un chemin exempté nommé
 //! (`ecrire_resultat`), dans le seul fil qui l'ouvre, et pour une liste fermée de fichiers.
 
 // Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
@@ -27,6 +29,18 @@ thread_local! {
     /// Sous `cargo test`, les tests tournent en fils parallèles du même processus : un interrupteur commun ferait
     /// échouer les écritures des autres tests. Il vaut donc pour le fil, et passe aux fils des règles (`Heritage`).
     static POSE_ICI: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Posé avec l'interrupteur par l'aperçu d'une correction (`poser_pour_un_apercu`) : un verrou tenu ailleurs n'est pas
+/// attendu (`socle::Verrou::prendre` : un seul essai). L'autotest, lui, attend : ses règles relisent l'état scellé qu'un
+/// autre Vanguard est peut-être en train d'écrire.
+#[cfg(not(test))]
+static SANS_ATTENTE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(test)]
+thread_local! {
+    /// `SANS_ATTENTE`, par fil sous `cargo test` (comme `POSE_ICI`).
+    static SANS_ATTENTE_ICI: Cell<bool> = const { Cell::new(false) };
 }
 
 thread_local! {
@@ -65,10 +79,45 @@ pub(crate) fn active() -> bool {
     }
 }
 
-/// Retire l'interrupteur du fil (tests seulement : le programme ne le relève jamais).
+/// Pose l'interrupteur pour l'aperçu d'une correction, avant même la lecture de la ligne de commande (ses textes
+/// traduits lisent déjà les réglages, donc leurs sceaux et leur verrou) : rien n'est écrit, et un verrou tenu ailleurs
+/// n'est pas attendu.
+pub(crate) fn poser_pour_un_apercu() {
+    poser();
+    #[cfg(test)]
+    SANS_ATTENTE_ICI.set(true);
+    #[cfg(not(test))]
+    SANS_ATTENTE.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Un verrou tenu ailleurs doit-il être laissé tout de suite (l'aperçu d'une correction) ?
+pub(crate) fn sans_attente() -> bool {
+    #[cfg(test)]
+    let sans = SANS_ATTENTE_ICI.get();
+    #[cfg(not(test))]
+    let sans = SANS_ATTENTE.load(std::sync::atomic::Ordering::SeqCst);
+    sans && active()
+}
+
+/// Relève l'interrupteur posé par `poser_pour_un_apercu` quand la ligne de commande, lue sous lui, n'est pas un
+/// aperçu : le seul relevé du programme, permis parce qu'aucun fil n'existe encore et qu'aucune règle n'a tourné
+/// (main, juste après la lecture de la ligne).
+#[cfg_attr(test, allow(dead_code))] // appelé par main seulement
+pub(crate) fn relever_avant_tout() {
+    #[cfg(test)]
+    relever_pour_le_test();
+    #[cfg(not(test))]
+    {
+        SANS_ATTENTE.store(false, std::sync::atomic::Ordering::SeqCst);
+        POSE.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Retire l'interrupteur du fil (tests seulement).
 #[cfg(test)]
 pub(crate) fn relever_pour_le_test() {
     POSE_ICI.set(false);
+    SANS_ATTENTE_ICI.set(false);
 }
 
 /// L'état de l'interrupteur, à reprendre dans un fil lancé pour une règle. Sans effet hors des tests, où

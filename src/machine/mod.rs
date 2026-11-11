@@ -955,51 +955,69 @@ fn cles_ssh() -> Vec<Constat> {
     let maison = crate::socle::maison();
     let dossier = maison.join(".ssh");
     // Les droits se jugent sur ce qui est visé, lien suivi ; la correction (chmod) ne passe jamais par un lien :
-    // `unix::hors_correction` dit pourquoi elle n'est pas proposée.
+    // `unix::geste_du_compte` dit pourquoi elle n'est pas proposée.
     let Ok(meta) = std::fs::metadata(&dossier) else {
         return vec![ok("Clés SSH", tr!("Pas de dossier ~/.ssh.", "No ~/.ssh folder."))];
     };
-    let lien_du_dossier = unix::hors_correction(&maison, std::path::Path::new(".ssh"));
     let mut constats = Vec::new();
     if std::os::unix::fs::PermissionsExt::mode(&meta.permissions()) & 0o077 != 0 {
         let message = tr!(
             "~/.ssh est lisible par d'autres utilisateurs.",
             "~/.ssh is readable by other users."
         );
-        constats.push(match &lien_du_dossier {
-            None => alerte("Clés SSH", Niveau::Eleve, message)
-                .corriger(
-                    tr!("Restreindre ~/.ssh à vous seul", "Restrict ~/.ssh to you only"),
-                    &["chmod 700 ~/.ssh"],
-                )
-                .annulable(vec![crate::optimiser::Geste::droits(&dossier)])
-                .du_compte()
-                .avec_objet(Objet::de("chemin", "~/.ssh")),
-            Some(r) => alerte("Clés SSH", Niveau::Eleve, sans_correction_du_compte(message, r))
-                .avec_objet(Objet::de("lien", "~/.ssh")),
-        });
+        constats.push(
+            match unix::geste_du_compte(&maison, std::path::Path::new(".ssh"), unix::Attendu::Dossier) {
+                Ok(geste) => alerte("Clés SSH", Niveau::Eleve, message)
+                    .corriger(
+                        tr!("Restreindre ~/.ssh à vous seul", "Restrict ~/.ssh to you only"),
+                        &["chmod 700 ~/.ssh"],
+                    )
+                    .annulable(vec![geste])
+                    .du_compte()
+                    .avec_objet(Objet::de("chemin", "~/.ssh")),
+                Err(r) => alerte("Clés SSH", Niveau::Eleve, sans_correction_du_compte(message, &r))
+                    .avec_objet(Objet::de("lien", "~/.ssh")),
+            },
+        );
     }
     for f in std::fs::read_dir(&dossier).into_iter().flatten().flatten() {
         let brut = f.file_name().to_string_lossy().into_owned();
-        // Toute clé privée, quel que soit son nom (pas seulement id_*).
-        let protegee = std::fs::read_to_string(f.path()).ok().and_then(|t| cle_protegee(&t));
+        // Un nom qui n'est pas UTF-8 s'écrit ici avec un caractère de remplacement : une commande bâtie dessus viserait
+        // un autre nom (peut-être un lien posé exprès). Il est dit, jamais corrigé d'ici.
+        let nom_lisible = f.file_name().to_str().is_some();
+        // Toute clé privée, quel que soit son nom (pas seulement id_*). Lue lien suivi (stow, chezmoi), mais seulement
+        // un simple fichier, et bornée : un tube nommé figeait le bilan et l'aperçu, un lien vers un périphérique
+        // sans fin remplissait la mémoire.
+        let protegee = crate::socle::lire_ordinaire_au_bout(&f.path(), SSH_LU_MAX)
+            .ok()
+            .and_then(|o| String::from_utf8(o).ok())
+            .and_then(|t| cle_protegee(&t));
         // Nom entre apostrophes dans les commandes : une clé « ma cle » ne casse pas la commande. Les commandes visent
         // le vrai nom ; les messages montrent un nom rendu inoffensif.
         let chemin = format!("~/.ssh/{}", crate::commande::sh_chaine(&brut));
         let nom = affichable(&brut);
         if protegee == Some(false) {
-            constats.push(
+            let message = trf!(
+                "Clé privée ~/.ssh/{nom} sans phrase de passe : volée, elle ouvre tous les serveurs où elle est autorisée.",
+                "Private key ~/.ssh/{nom} has no passphrase: if stolen, it opens every server where it is authorized."
+            );
+            constats.push(if nom_lisible {
+                alerte("Clés SSH", Niveau::Moyen, message)
+                    .corriger(
+                        trf!("Ajouter une phrase de passe à {nom} (la clé publique ne change pas, rien à refaire sur les serveurs)", "Add a passphrase to {nom} (the public key does not change, nothing to redo on the servers)"),
+                        &[&format!("ssh-keygen -p -f {chemin}")],
+                    )
+                    .au_terminal()
+            } else {
                 alerte(
                     "Clés SSH",
                     Niveau::Moyen,
-                    trf!("Clé privée ~/.ssh/{nom} sans phrase de passe : volée, elle ouvre tous les serveurs où elle est autorisée.", "Private key ~/.ssh/{nom} has no passphrase: if stolen, it opens every server where it is authorized."),
+                    trf!(
+                        "{message} Pas de correction proposée : son nom n'est pas lisible tel quel (pas en UTF-8), une commande viserait un autre nom ; renommez-la d'abord.",
+                        "{message} No fix offered: its name cannot be read as is (not UTF-8), a command would target another name; rename it first."
+                    ),
                 )
-                .corriger(
-                    trf!("Ajouter une phrase de passe à {nom} (la clé publique ne change pas, rien à refaire sur les serveurs)", "Add a passphrase to {nom} (the public key does not change, nothing to redo on the servers)"),
-                    &[&format!("ssh-keygen -p -f {chemin}")],
-                )
-                .au_terminal(),
-            );
+            });
         }
         // Même règle que ci-dessus : une clé « github » ou « serveur » compte autant qu'« id_ed25519 ».
         let privee = protegee.is_some()
@@ -1021,32 +1039,42 @@ fn cles_ssh() -> Vec<Constat> {
             // n'hérite pas du choix fait pour « id_x ».
             let objet = crate::modele::resultat::nom_pour_cle(&format!("~/.ssh/{brut}"));
             let relatif = std::path::Path::new(".ssh").join(f.file_name());
-            constats.push(match unix::hors_correction(&maison, &relatif) {
-                None => alerte("Clés SSH", Niveau::Critique, message)
+            // Une clé est un simple fichier : un dossier nommé « id_… » ne reçoit pas de chmod 600.
+            constats.push(match unix::geste_du_compte(&maison, &relatif, unix::Attendu::Fichier) {
+                Ok(geste) => alerte("Clés SSH", Niveau::Critique, message)
                     .corriger(
                         trf!("Protéger la clé {nom}", "Protect the key {nom}"),
                         &[&format!("chmod 600 {chemin}")],
                     )
-                    .annulable(vec![crate::optimiser::Geste::droits(&f.path())])
+                    .annulable(vec![geste])
                     .du_compte()
                     .avec_objet(Objet::de("chemin", &objet)),
                 // Un autre objet que la clé ordinaire : un choix accepté pour elle ne tait pas la même clé devenue
                 // un lien.
-                Some(r) => alerte("Clés SSH", Niveau::Critique, sans_correction_du_compte(&message, &r))
+                Err(r) => alerte("Clés SSH", Niveau::Critique, sans_correction_du_compte(&message, &r))
                     .avec_objet(Objet::de("lien", &objet)),
             });
         }
     }
-    if let Ok(config) = std::fs::read_to_string(dossier.join("config")) {
-        let mut lignes = Vec::new();
-        deplier_config_ssh(
-            "~/.ssh/config",
-            &config,
-            &|motif| fichiers_inclus_ssh(&dossier, motif),
-            8,
-            &mut lignes,
-        );
-        constats.extend(constats_config_ssh(&lignes));
+    match lire_texte_ssh(&dossier.join("config")) {
+        Ok(config) => {
+            let mut lignes = Vec::new();
+            deplier_config_ssh(
+                "~/.ssh/config",
+                &config,
+                &|motif| fichiers_inclus_ssh(&dossier, motif),
+                8,
+                &mut lignes,
+            );
+            constats.extend(constats_config_ssh(&lignes));
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        // Là, mais pas un simple fichier lisible (tube nommé, périphérique, trop gros, pas du texte) : dit, jamais
+        // compté comme sain.
+        Err(e) => constats.push(impossible(
+            "Clés SSH",
+            &trf!("~/.ssh/config non lu : {e}", "~/.ssh/config not read: {e}"),
+        )),
     }
     if constats.is_empty() {
         constats.push(ok(
@@ -1057,13 +1085,28 @@ fn cles_ssh() -> Vec<Constat> {
     constats
 }
 
-/// Le message d'un constat du compte qu'un lien (ou un fichier spécial) empêche de corriger : ce qui est vu, pourquoi
-/// rien n'est proposé, et quoi faire.
+/// Ce qui se lit au plus d'un fichier de ~/.ssh (clé, configuration, fichier inclus) : une clé privée tient en
+/// quelques Kio, une configuration en quelques dizaines.
+#[cfg(unix)]
+const SSH_LU_MAX: u64 = 1 << 20;
+
+/// Un fichier de configuration de SSH (~/.ssh/config, ses inclus, celui du système), lu comme `cles_ssh` lit les clés :
+/// lien suivi, simple fichier seulement, borné, en UTF-8. Toutes les règles qui le lisent passent par ici : une seule
+/// qui l'ouvrait encore à l'ancienne (`post_quantique`) figeait tout le bilan sur un tube nommé.
+#[cfg(unix)]
+pub(super) fn lire_texte_ssh(chemin: &std::path::Path) -> std::io::Result<String> {
+    String::from_utf8(crate::socle::lire_ordinaire_au_bout(chemin, SSH_LU_MAX)?)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
+/// Le message d'un constat du compte qu'un lien, un fichier d'une autre sorte, un autre propriétaire ou un nom
+/// illisible empêchent de corriger (`unix::hors_correction`) : ce qui est vu, pourquoi rien n'est proposé, et quoi
+/// faire.
 #[cfg(unix)]
 fn sans_correction_du_compte(message: &str, raison: &str) -> String {
     trf!(
-        "{message} Pas de correction proposée : {raison}. Un chmod changerait ce qui est visé, pas ce qui est montré ; vérifiez-le et réservez-le à vous seul.",
-        "{message} No fix offered: {raison}. A chmod would change the target, not what is shown; check it and restrict it to you only."
+        "{message} Pas de correction proposée : {raison}. Corrigé d'ici, un chmod pourrait viser autre chose que ce qui est montré ; vérifiez ce chemin vous-même et réservez-le à vous seul.",
+        "{message} No fix offered: {raison}. Fixed from here, a chmod could hit something other than what is shown; check this path yourself and restrict it to you only."
     )
 }
 
@@ -1130,8 +1173,8 @@ fn fichiers_inclus_ssh(dossier_ssh: &std::path::Path, motif: &str) -> Vec<(Strin
     trouves.sort();
     trouves
         .into_iter()
-        .filter(|p| p.is_file())
-        .filter_map(|p| Some((montrer(&p), std::fs::read_to_string(&p).ok()?)))
+        // Comme la configuration elle-même : un simple fichier, lu borné (un tube nommé figeait le bilan).
+        .filter_map(|p| Some((montrer(&p), lire_texte_ssh(&p).ok()?)))
         .collect()
 }
 

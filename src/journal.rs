@@ -32,6 +32,24 @@ const TAILLE_MAX: u64 = 4 * 1024 * 1024;
 /// Longueur maximale d'un détail (sortie d'erreur de PowerShell…).
 const DETAIL_MAX: usize = 3000;
 
+#[cfg(test)]
+thread_local! {
+    /// Le dossier du journal d'un essai, pour son fil seulement (`dossier()` ne rend rien sous les tests).
+    static DOSSIER_ESSAI: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Le dossier du journal donné par l'essai de ce fil ; jamais hors des tests.
+fn dossier_d_essai() -> Option<PathBuf> {
+    #[cfg(test)]
+    {
+        DOSSIER_ESSAI.with_borrow(Clone::clone)
+    }
+    #[cfg(not(test))]
+    {
+        None
+    }
+}
+
 /// Où écrire : la partition VANGUARDLOG de la clé si elle est branchée, sinon le dossier de Vanguard.
 fn dossier() -> Option<&'static PathBuf> {
     static DOSSIER: OnceLock<Option<PathBuf>> = OnceLock::new();
@@ -886,13 +904,15 @@ pub(crate) fn noter(champs: &Champs, detail: &str) {
     if crate::autotest::lecture_seule::active() {
         return;
     }
-    // Le fils élevé d'Unix (root) n'écrit rien, ni journal ni relevé : tout part au parent, qui le note chez lui.
-    if relaye(champs.contexte.libelle(), detail) {
+    let essai = dossier_d_essai();
+    // Le fils élevé d'Unix (root) n'écrit rien, ni journal ni relevé : tout part au parent, qui le note chez lui. (Un
+    // essai qui a son propre dossier n'y passe pas : le relais est commun aux tests du processus.)
+    if essai.is_none() && relaye(champs.contexte.libelle(), detail) {
         return;
     }
     // Le relevé local compte la cause même sans clé branchée : ses champs fermés et le gabarit du détail.
     crate::amelioration::noter_cause(champs, detail);
-    let Some(dossier) = dossier() else {
+    let Some(dossier) = essai.as_ref().or_else(|| dossier()) else {
         return;
     };
     let chemin = dossier.join(FICHIER);
@@ -1065,6 +1085,26 @@ mod tests {
         // Refermé : la suivante n'est plus gardée, et une seconde lecture est vide de celle-là.
         erreur(Contexte::Autotest, "après la fermeture");
         assert!(!relayees().iter().any(|g| g.contains("après la fermeture")));
+    }
+
+    /// Vérification de Fable n° 2, lecture L3 : sous l'interrupteur de lecture seule, `noter` n'écrit rien ; relevé,
+    /// la même erreur est écrite dans le même dossier.
+    #[test]
+    fn rien_n_est_note_sous_la_lecture_seule() {
+        let dossier = crate::essais::Jetable::nouveau("journal-lecture-seule");
+        DOSSIER_ESSAI.set(Some(dossier.to_path_buf()));
+        crate::autotest::lecture_seule::poser();
+        erreur(Contexte::Autotest, "notée sous la lecture seule");
+        let sous = std::fs::symlink_metadata(dossier.join(FICHIER)).is_ok();
+        crate::autotest::lecture_seule::relever_pour_le_test();
+        erreur(Contexte::Autotest, "notée après");
+        let apres = std::fs::read_to_string(dossier.join(FICHIER)).unwrap_or_default();
+        DOSSIER_ESSAI.set(None);
+        assert!(!sous, "journal écrit sous la lecture seule");
+        assert!(
+            apres.contains("notée après") && !apres.contains("sous la lecture seule"),
+            "{apres}"
+        );
     }
 
     #[test]

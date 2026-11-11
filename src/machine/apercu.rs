@@ -19,7 +19,7 @@ use serde::Serialize;
 
 use super::{Constat, Correctif, Defaire, Droits, regles};
 use crate::risk::Niveau;
-use crate::{tr, trp};
+use crate::tr;
 
 /// Le contexte BLAKE3 de la part « règle » du jeton.
 const CONTEXTE_REGLE: &str = "vanguard jeton v1 regle";
@@ -325,7 +325,10 @@ fn chemin_du_compte(texte: &str) -> Option<String> {
             _ => return None,
         }
     }
-    let sain = !lu.chars().any(char::is_control) && !lu.split('/').any(|p| p == "..");
+    // Le caractère de remplacement : la trace d'un nom qui n'était pas UTF-8, écrit avec perte ; le chemin lu n'est
+    // alors pas celui du fichier jugé (vérification de Fable n° 2, liens L1).
+    let sain =
+        !lu.chars().any(|x| x.is_control() || x == char::REPLACEMENT_CHARACTER) && !lu.split('/').any(|p| p == "..");
     sain.then_some(lu)
 }
 
@@ -461,10 +464,12 @@ fn apercu_de(c: &Constat, jeton: &Jeton) -> Option<Apercu> {
 /// l'Agent, ni appris.json (les alertes déclarées normales rabaissées comme au bilan, sans compléter leurs clés), ni
 /// le « déjà vu » que certaines règles tiennent elles-mêmes.
 fn relire(jeton: &Jeton) -> Result<Vec<Constat>, Refus> {
-    let choisies: Vec<&'static regles::Regle> = regles::regles(regles::Os::actuel())
-        .into_iter()
-        .filter(|r| jeton.de_la_regle(r.id))
-        .collect();
+    relire_parmi(jeton, regles::regles(regles::Os::actuel()), RELUES_SANS_PROGRAMME)
+}
+
+/// `relire` parmi `toutes` les règles, `permises` étant celles que l'aperçu relance (les essais y mettent les leurs).
+fn relire_parmi(jeton: &Jeton, toutes: Vec<&'static regles::Regle>, permises: &[&str]) -> Result<Vec<Constat>, Refus> {
+    let choisies: Vec<&'static regles::Regle> = toutes.into_iter().filter(|r| jeton.de_la_regle(r.id)).collect();
     match choisies.len() {
         0 => return Err(Refus::Disparu),
         1 => {}
@@ -472,7 +477,7 @@ fn relire(jeton: &Jeton) -> Result<Vec<Constat>, Refus> {
         // arrivait quand même, rien n'est choisi au hasard.
         _ => return Err(Refus::EnDouble),
     }
-    if choisies.iter().any(|r| hors_apercu(r.id)) {
+    if choisies.iter().any(|r| !permises.contains(&r.id)) {
         return Err(Refus::EcritAilleurs);
     }
     // L'interrupteur de lecture seule de l'autodiagnostic, pour tout le processus : les règles qui tiennent leur
@@ -483,7 +488,11 @@ fn relire(jeton: &Jeton) -> Result<Vec<Constat>, Refus> {
     let lances = crate::coulisses::lancements();
     let (mut constats, _durees) = super::regles_en_parallele(choisies);
     // Une règle permise qui lancerait quand même un programme (une relecture manquée, un ajout plus tard) : l'aperçu
-    // ne promet pas « rien n'a changé » sur ce qu'un autre programme a pu écrire.
+    // ne promet pas « rien n'a changé » sur ce qu'un autre programme a pu écrire. Un filet, pas une preuve : le
+    // compteur ne voit que les lancements passés par `coulisses::Suivi` (ni D-Bus, ni socket, ni fork ou exec bruts),
+    // et une règle hors délai continue dans son fil après ce contrôle. La vraie garde reste la liste relue
+    // (`RELUES_SANS_PROGRAMME`), tenue par l'essai `voir_une_correction_n_ecrit_rien` (tests/programme.rs), qui attend
+    // « ce problème a disparu » de chacune : une règle permise qui lance un programme y est refusée et le fait échouer.
     if crate::coulisses::lancements() != lances {
         return Err(Refus::EcritAilleurs);
     }
@@ -505,35 +514,43 @@ pub(crate) fn voir(jeton: &str, json: bool) -> i32 {
         Err(Refus::MalForme) => 2,
         Err(_) => 1,
     };
-    if json {
+    let texte = if json {
         let ligne = match &issue {
             Ok(a) => serde_json::json!({
                 "geste": SORTE, "issue": "fait", "raison": "", "apercu": a, "accord": a.accord()
             }),
             Err(r) => serde_json::json!({ "geste": SORTE, "issue": "refuse", "raison": r.raison() }),
         };
-        println!("{ligne}");
+        format!("{ligne}\n")
     } else {
         match &issue {
-            Ok(a) => afficher(a),
-            Err(r) => trp!("  ✖ Pas d'aperçu : {}", "  ✖ No preview: {}", r.raison()),
+            Ok(a) => format!("{}\n", lignes(a).join("\n")),
+            Err(r) => format!(
+                "{}\n",
+                crate::ui::mettre_en_lignes(&crate::trf!("  ✖ Pas d'aperçu : {}", "  ✖ No preview: {}", r.raison()))
+            ),
         }
-    }
-    code
+    };
+    ecrire_sortie(std::io::stdout().lock(), &texte).map_or(SORTIE_COUPEE, |()| code)
 }
 
-/// L'aperçu au terminal, pour qui le lance à la main.
-fn afficher(a: &Apercu) {
-    for l in lignes(a) {
-        println!("{l}");
-    }
+/// Le code d'une sortie qui n'a pas pu être écrite : celui d'un tube fermé (128 + SIGPIPE), comme le chemin ordinaire
+/// (`journal::installer`).
+const SORTIE_COUPEE: i32 = 141;
+
+/// Écrit l'aperçu d'un coup. Une sortie fermée (`| head`) ou pleine (/dev/full) n'est pas un plantage : `println!` y
+/// paniquait (code 101) ; ici l'erreur est rendue, et rien n'est écrit ailleurs (vérification de Fable n° 2, L6).
+fn ecrire_sortie(mut sortie: impl std::io::Write, texte: &str) -> std::io::Result<()> {
+    sortie.write_all(texte.as_bytes())?;
+    sortie.flush()
 }
 
-/// Les lignes de l'aperçu au terminal. Tout texte lu sur l'ordinateur passe par `ui::affichable`, chaque commande par
-/// `ui::commande_affichable` : un nom de fichier piégé (ESC [2K, retour chariot, OSC 52, U+202E, saut de ligne suivi
-/// d'un faux « ✔ ») ne pilote pas le terminal et ne réécrit pas l'aperçu. L'accord, lui, porte sur les vrais octets.
+/// Les lignes de l'aperçu au terminal. Tout texte de l'aperçu passe par `montre_strict` : un nom de fichier piégé
+/// (ESC [2K, retour chariot, OSC 52, U+202E, saut de ligne suivi d'un faux « ✔ », caractère qui ne dessine rien) ne
+/// pilote pas le terminal, ne réécrit pas l'aperçu et ne se confond pas avec un autre nom. L'accord, lui, porte sur
+/// les vrais octets.
 fn lignes(a: &Apercu) -> Vec<String> {
-    use crate::ui::{GRAS, GRIS, RESET, affichable, commande_affichable};
+    use crate::ui::{GRAS, GRIS, RESET};
     let mut l = vec![
         crate::trf!(
             "{GRAS}Aperçu de la correction{RESET} (rien n'a changé)",
@@ -542,33 +559,31 @@ fn lignes(a: &Apercu) -> Vec<String> {
         crate::trf!(
             "  [{}] {} : {}",
             "  [{}] {}: {}",
-            affichable(&a.niveau),
-            affichable(&a.categorie),
-            affichable(&a.message)
+            montre_strict(&a.niveau),
+            montre_strict(&a.categorie),
+            montre_strict(&a.message)
         ),
         crate::trf!(
             "  Ce que Vanguard ferait : {}",
             "  What Vanguard would do: {}",
-            affichable(&a.action)
+            montre_strict(&a.action)
         ),
     ];
     l.extend(
         a.commandes
             .iter()
-            // La tabulation, que `commande_affichable` laisse passer, s'écrit « \t » : au terminal, elle sauterait
-            // de colonne et pourrait cacher ce qui la suit derrière des blancs.
-            .map(|c| format!("    {GRIS}{}{RESET}", commande_affichable(c).replace('\t', "\\t"))),
+            .map(|c| format!("    {GRIS}{}{RESET}", commande_montree(c))),
     );
     for v in &a.avant {
         // Une valeur absente se distingue d'un texte « (absente) » : entre guillemets quand elle existe.
         let valeur = v.valeur.as_deref().map_or_else(
             || tr!("(absente)", "(absent)").to_string(),
-            |t| format!("« {} »", affichable(t)),
+            |t| format!("« {} »", montre_strict(t)),
         );
         l.push(crate::trf!(
             "  Avant : {} = {}",
             "  Before: {} = {}",
-            affichable(&v.geste),
+            montre_strict(&v.geste),
             valeur
         ));
     }
@@ -578,7 +593,7 @@ fn lignes(a: &Apercu) -> Vec<String> {
         crate::trf!(
             "  Ne s'annule pas : {}",
             "  Cannot be undone: {}",
-            affichable(&a.pourquoi_pas)
+            montre_strict(&a.pourquoi_pas)
         )
     });
     l.push(
@@ -594,6 +609,79 @@ fn lignes(a: &Apercu) -> Vec<String> {
     );
     l.push(crate::trf!("  Accord : {}", "  Consent: {}", a.accord()));
     l
+}
+
+/// Une commande au terminal. Un geste de Vanguard (`vanguard:…`) que `ui::commande_affichable` sait dire se montre par
+/// sa phrase, faite de textes fixes et de noms déjà validés ; toute autre commande, et une ligne `vanguard:` qui ne se
+/// relit pas, se montrent telles qu'elles seraient lancées. Les deux passent par `montre_strict`.
+fn commande_montree(commande: &str) -> String {
+    const GESTE: &str = "vanguard:";
+    let phrase = crate::ui::commande_affichable(commande);
+    if commande.starts_with(GESTE) && !phrase.starts_with(GESTE) {
+        montre_strict(&phrase)
+    } else {
+        montre_strict(commande)
+    }
+}
+
+/// Un texte de l'aperçu, montré sans perte et sans ambiguïté au terminal (vérification de Fable n° 2, P1 et P4).
+/// `ui::affichable` refuse une liste de pièges et laisse passer le reste : un caractère hors liste qui ne dessine rien
+/// (sélecteur, marque combinante, caractère de format) passait sans se voir, et une vraie tabulation se montrait comme
+/// les deux caractères « \ » et « t ». Ici, c'est l'inverse : seuls les caractères d'une courte liste (`se_montre`) se
+/// montrent eux-mêmes ; tout autre s'écrit `\u{…}`, la tabulation `\t`, le saut de ligne `\n`, et la barre oblique
+/// inverse elle-même `\\`, si bien que chaque marque se relit d'une seule façon. Une espace en bout de texte, et
+/// celles d'une suite au-delà de la troisième, s'écrivent `\u{20}` : une longue suite de blancs ne repousse rien hors
+/// de la vue. Le prix : un nom écrit dans une autre écriture que le latin se montre en `\u{…}` dans l'aperçu ; il
+/// reste juste, seulement moins lisible. `ui::affichable` ne change pas pour le reste de Vanguard.
+fn montre_strict(texte: &str) -> String {
+    use std::fmt::Write as _;
+    let mut sortie = String::with_capacity(texte.len());
+    let dernier = texte.chars().count().checked_sub(1);
+    let mut espaces = 0usize;
+    for (i, c) in texte.chars().enumerate() {
+        espaces = if c == ' ' { espaces.saturating_add(1) } else { 0 };
+        match c {
+            ' ' if i == 0 || Some(i) == dernier || espaces > 3 => sortie.push_str("\\u{20}"),
+            ' ' => sortie.push(' '),
+            '\\' => sortie.push_str("\\\\"),
+            '\t' => sortie.push_str("\\t"),
+            '\n' => sortie.push_str("\\n"),
+            c if se_montre(c) => sortie.push(c),
+            c => {
+                let _ = write!(sortie, "\\u{{{:x}}}", u32::from(c));
+            }
+        }
+    }
+    sortie
+}
+
+/// Les caractères qui se montrent eux-mêmes dans l'aperçu au terminal : ceux de l'ASCII visibles, ceux du latin
+/// (français et langues voisines, sans le trait d'union conditionnel U+00AD, qui ne se dessine pas), et les quelques
+/// signes des textes de Vanguard. Chacun dessine un caractère d'une colonne, distinct des autres de la liste.
+fn se_montre(c: char) -> bool {
+    matches!(
+        u32::from(c),
+        0x21..=0x7E
+            | 0xA1..=0xAC
+            | 0xAE..=0x17F
+            | 0x2013 // –
+            | 0x2014 // —
+            | 0x2018 // ‘
+            | 0x2019 // ’
+            | 0x201C // “
+            | 0x201D // ”
+            | 0x2022 // •
+            | 0x2026 // …
+            | 0x20AC // €
+            | 0x2190..=0x2193 // ← ↑ → ↓
+            | 0x2260 // ≠
+            | 0x2264..=0x2265 // ≤ ≥
+            | 0x23CE // ⏎
+            | 0x26A0 // ⚠
+            | 0x2714 // ✔
+            | 0x2716 // ✖
+            | 0xFFFD // �
+    )
 }
 
 #[cfg(test)]
@@ -769,6 +857,83 @@ mod tests {
         assert!(gestes_offerts(&[permise])[0].is_some());
     }
 
+    /// Une règle d'essai, permise, qui lance un programme comme le ferait une règle mal relue.
+    #[cfg(unix)]
+    static LANCE_UN_PROGRAMME: regles::Regle = regles::Regle {
+        id: "ESS-APE-001",
+        systeme: regles::Os::Tous,
+        rang: 0,
+        sujet: ("Essai", "Test"),
+        references: &[],
+        verifier: lance_un_programme,
+        partage: regles::Partage::Sorte,
+    };
+
+    #[cfg(unix)]
+    fn lance_un_programme() -> Vec<Constat> {
+        let _ = crate::machine::sortie("true", &[]);
+        Vec::new()
+    }
+
+    /// Une règle d'essai, permise, qui ne lance rien.
+    #[cfg(unix)]
+    static NE_LANCE_RIEN: regles::Regle = regles::Regle {
+        id: "ESS-APE-002",
+        systeme: regles::Os::Tous,
+        rang: 0,
+        sujet: ("Essai", "Test"),
+        references: &[],
+        verifier: Vec::new,
+        partage: regles::Partage::Sorte,
+    };
+
+    /// Vérification de Fable n° 2, lecture L2 : une règle permise qui lance quand même un programme fait refuser
+    /// l'aperçu (« lance d'autres programmes »), même dite permise ; une qui ne lance rien est relue.
+    #[cfg(unix)]
+    #[test]
+    fn une_regle_permise_qui_lance_un_programme_est_refusee() {
+        let lance = Jeton::de("ESS-APE-001", "ESS-APE-001|a");
+        let rien = Jeton::de("ESS-APE-002", "ESS-APE-002|a");
+        let toutes = || vec![&LANCE_UN_PROGRAMME, &NE_LANCE_RIEN];
+        let permises = &["ESS-APE-001", "ESS-APE-002"];
+        let refus = relire_parmi(&lance, toutes(), permises).err();
+        let relue = relire_parmi(&rien, toutes(), permises);
+        crate::autotest::lecture_seule::relever_pour_le_test();
+        assert_eq!(refus, Some(Refus::EcritAilleurs));
+        // Le compteur est commun au processus : un autre essai qui lance un programme au même moment ferait refuser
+        // celle-ci aussi. Seul le refus de la première est donc exigé ; la seconde, quand elle passe, ne rend que son
+        // « non vérifié » (une règle qui ne rend rien est dite, pas comptée saine).
+        if let Ok(c) = relue {
+            assert!(c.iter().all(|x| x.regle == "ESS-APE-002" && !x.verifie));
+        }
+        // Hors de la liste permise, refusée avant d'être lancée (l'interrupteur n'est même pas posé).
+        assert_eq!(
+            relire_parmi(&lance, toutes(), &["ESS-APE-002"]).err(),
+            Some(Refus::EcritAilleurs)
+        );
+        assert!(!crate::autotest::lecture_seule::active());
+    }
+
+    /// Vérification de Fable n° 2, lecture L6 : une sortie fermée ou pleine rend une erreur (code 141 dans `voir`), pas
+    /// une panique.
+    #[test]
+    fn une_sortie_coupee_n_est_pas_un_plantage() {
+        struct Fermee;
+        impl std::io::Write for Fermee {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        assert!(ecrire_sortie(Fermee, "x\n").is_err());
+        let mut v = Vec::new();
+        assert!(ecrire_sortie(&mut v, "x\n").is_ok());
+        assert_eq!(v, b"x\n");
+        assert_eq!(SORTIE_COUPEE, 141);
+    }
+
     /// Chaque règle permise existe au registre de Linux (une faute de frappe la rendrait muette sans le dire), et le
     /// vrai registre ne relance qu'elles.
     #[test]
@@ -935,6 +1100,10 @@ mod tests {
             chemin_du_compte(&format!("~/.ssh/{}", crate::commande::sh_chaine("a b'c"))).as_deref(),
             Some("~/.ssh/a b'c")
         );
+        // Vérification de Fable n° 2, liens L1 : un nom écrit avec un caractère de remplacement (la trace d'un nom
+        // qui n'était pas UTF-8) ne vise pas le fichier jugé : admin.
+        assert_eq!(chemin_du_compte("~/.ssh/'id_\u{FFFD}'"), None);
+        assert_eq!(compte("chmod 600 ~/.ssh/'id_\u{FFFD}'"), Droits::Admin);
         // Une ligne permise suivie d'une autre qui ne l'est pas : admin. Aucune ligne : admin aussi.
         assert_eq!(
             droits_effectifs(&correctif(Droits::Compte, &["chmod 700 ~/.ssh", "id"])),
@@ -1025,7 +1194,7 @@ mod tests {
         std::fs::write(&fichier, "x").unwrap();
         std::fs::set_permissions(&fichier, std::fs::Permissions::from_mode(0o644)).unwrap();
         let mut k = correctif(Droits::Compte, &["chmod 600 ~/x"]);
-        k.defaire = Defaire::Gestes(vec![crate::optimiser::Geste::droits(&fichier)]);
+        k.defaire = Defaire::Gestes(vec![crate::optimiser::Geste::droits(&fichier).unwrap()]);
         let c = constat("LNX-ESS-001", "x", Some(k));
         let j = Jeton::de("LNX-ESS-001", &c.cle().unwrap().to_string());
         // Les noms du dossier, sans les verrous : les essais voisins, qui tournent en même temps dans ce même dossier,
@@ -1115,6 +1284,163 @@ mod tests {
         let mut b = apercu();
         b.avant[0].valeur = Some("(absente)".into());
         assert_ne!(lignes(&a), lignes(&b));
+    }
+
+    /// Relit un texte de `montre_strict` : chaque marque n'a qu'un sens. Rend `None` pour une marque inconnue.
+    fn relire_strict(montre: &str) -> Option<String> {
+        let mut sortie = String::new();
+        let mut it = montre.chars();
+        while let Some(c) = it.next() {
+            if c != '\\' {
+                sortie.push(c);
+                continue;
+            }
+            match it.next()? {
+                '\\' => sortie.push('\\'),
+                't' => sortie.push('\t'),
+                'n' => sortie.push('\n'),
+                'u' => {
+                    if it.next()? != '{' {
+                        return None;
+                    }
+                    let hex: String = it.by_ref().take_while(|&c| c != '}').collect();
+                    sortie.push(char::from_u32(u32::from_str_radix(&hex, 16).ok()?)?);
+                }
+                _ => return None,
+            }
+        }
+        Some(sortie)
+    }
+
+    /// Vérification de Fable n° 2, P4 et P1 : une vraie tabulation et les deux caractères « \ » et « t » ne se montrent
+    /// plus pareil ; un caractère qui ne dessine rien (sélecteur, marque combinante, caractère de format, caractère
+    /// musical sans glyphe), une longue suite d'espaces ou une espace en bout de nom se voient ; le latin, les
+    /// guillemets et les signes de Vanguard restent tels quels.
+    #[test]
+    fn le_terminal_montre_chaque_caractere_d_une_seule_facon() {
+        assert_eq!(montre_strict("a\tb"), "a\\tb");
+        assert_eq!(montre_strict("a\\tb"), "a\\\\tb");
+        assert_ne!(montre_strict("a\tb"), montre_strict("a\\tb"));
+        assert_eq!(montre_strict("a\nb"), "a\\nb");
+        assert_eq!(montre_strict("id\u{fe0f}"), "id\\u{fe0f}");
+        assert_eq!(montre_strict("e\u{301}"), "e\\u{301}");
+        assert_eq!(montre_strict("x\u{1d173}y"), "x\\u{1d173}y");
+        assert_eq!(montre_strict("x\u{200b}y"), "x\\u{200b}y");
+        assert_eq!(montre_strict("\x1b[2K"), "\\u{1b}[2K");
+        assert_eq!(montre_strict("soft\u{ad}"), "soft\\u{ad}");
+        // Un « а » cyrillique ne passe pas pour un « a » latin.
+        assert_eq!(montre_strict("id_rs\u{430}"), "id_rs\\u{430}");
+        assert_eq!(
+            montre_strict("a          b"),
+            "a   \\u{20}\\u{20}\\u{20}\\u{20}\\u{20}\\u{20}\\u{20}b"
+        );
+        assert_eq!(montre_strict(" id "), "\\u{20}id\\u{20}");
+        assert_eq!(montre_strict(" "), "\\u{20}");
+        assert_eq!(montre_strict("a b  c   d"), "a b  c   d");
+        let francais = "Été « clé » – œuvre … ✔ ⏎ ’ → ≤ ⚠ ✖ €";
+        assert_eq!(montre_strict(francais), francais);
+        assert_eq!(montre_strict(""), "");
+    }
+
+    /// Tout Unicode, caractère par caractère : ce qui se montre tel quel est un caractère qui se dessine sur une
+    /// colonne, sans piège ni blanc caché ; tout le reste est une marque qui se relit d'une seule façon. Puis des
+    /// textes faits de ces caractères : la relecture rend chaque fois le texte de départ, donc deux textes différents ne
+    /// se montrent jamais pareil.
+    #[test]
+    fn le_terminal_ne_montre_que_des_caracteres_visibles_et_se_relit() {
+        let mut gardes = 0usize;
+        for c in (0..=0x0010_FFFF_u32).filter_map(char::from_u32) {
+            let montre = montre_strict(&format!("a{c}a"));
+            assert_eq!(
+                relire_strict(&montre).as_deref(),
+                Some(format!("a{c}a").as_str()),
+                "{c:?}"
+            );
+            for m in montre.chars() {
+                assert!(
+                    m == ' '
+                        || (crate::ui::rendu(m) == Some(m)
+                            && !m.is_control()
+                            && !m.is_whitespace()
+                            && crate::ui::largeur_car(m) == 1),
+                    "{c:?} montre {m:?}"
+                );
+            }
+            if montre == format!("a{c}a") {
+                gardes += 1;
+            }
+        }
+        // La liste reste courte : 93 de l'ASCII visible (sans « \ »), 222 du latin, 21 signes, et l'espace.
+        assert_eq!(gardes, 93 + 222 + 21 + 1);
+        let briques = [
+            " ",
+            "  ",
+            "\t",
+            "\n",
+            "\\",
+            "\\t",
+            "\\n",
+            "\\u{20}",
+            "\\u{",
+            "}",
+            "a",
+            "é",
+            "\u{fe0f}",
+            "\u{301}",
+            "\u{0}",
+            "\u{7f}",
+            "\u{ad}",
+            "\u{a0}",
+            "\u{3000}",
+            "\u{202e}",
+            "\u{10ffff}",
+            "�",
+            "«",
+            "'",
+        ];
+        for x in briques {
+            for y in briques {
+                for z in briques {
+                    let texte = format!("{x}{y}{z}");
+                    assert_eq!(relire_strict(&montre_strict(&texte)), Some(texte.clone()), "{texte:?}");
+                }
+            }
+        }
+        for n in 0..12 {
+            let texte = format!("{}x{}", " ".repeat(n), " ".repeat(n));
+            assert_eq!(relire_strict(&montre_strict(&texte)), Some(texte.clone()), "{n}");
+            assert!(!montre_strict(&texte).contains("    "), "{n}");
+        }
+    }
+
+    /// De bout en bout dans l'aperçu : deux noms qui ne diffèrent que par un caractère invisible ou par « \t » contre
+    /// une tabulation donnent des lignes différentes, dans la commande comme dans le relevé.
+    #[test]
+    fn deux_noms_differents_ne_se_montrent_jamais_pareil_au_terminal() {
+        let avec = |nom: &str| {
+            let mut a = apercu();
+            a.commandes = vec![format!("chmod 600 '/home/alice/.ssh/{nom}'")];
+            a.avant = vec![ValeurAvant {
+                geste: format!("droits:/home/alice/.ssh/{nom}"),
+                valeur: Some("644".into()),
+            }];
+            lignes(&a)
+        };
+        let paires = [
+            ("id\tx", "id\\tx"),
+            ("id_rsa", "id_rsa\u{fe0f}"),
+            ("id_rsa", "id_r\u{200d}sa"),
+            ("id_rsa", "id_rs\u{430}"),
+            ("a b", "a     b"),
+            ("id", "id "),
+        ];
+        for (x, y) in paires {
+            let (lx, ly) = (avec(x), avec(y));
+            assert_ne!(lx, ly, "{x:?} / {y:?}");
+            let differentes = lx.iter().zip(&ly).filter(|(a, b)| a != b).count();
+            // Au moins la commande et le relevé.
+            assert!(differentes >= 2, "{x:?} / {y:?} : {differentes}");
+        }
     }
 
     fn apercu_non_annulable() -> Apercu {

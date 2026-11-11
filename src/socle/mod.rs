@@ -22,6 +22,8 @@ pub use fichiers::dossier_local;
 #[cfg(all(unix, test))]
 pub(crate) use fichiers::ecriture_sure_pour;
 #[cfg(unix)]
+pub(crate) use fichiers::lire_ordinaire_au_bout;
+#[cfg(unix)]
 pub use fichiers::proteger_dossier_local;
 pub(crate) use fichiers::{
     ATTENTE_ECRITURE, ATTENTE_LECTURE, SansVerrou, Verrou, ecrire_atomique, ecrire_atomique_date, ecriture_sure,

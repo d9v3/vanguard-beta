@@ -60,16 +60,32 @@ pub(super) fn secret_expose(mode: u32) -> bool {
     mode & 0o077 != 0
 }
 
+/// Ce qu'une correction du compte attend au bout de son chemin : un `chmod 600` vise un fichier, un `chmod 700` ou
+/// `750` un dossier. Un dossier nommé comme une clé (« id_… ») ou un ~/.ssh devenu fichier ne reçoit pas l'autre.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Attendu {
+    Fichier,
+    Dossier,
+}
+
 /// Pourquoi une correction du compte (un `chmod` sans mot de passe) ne viserait pas sûrement `relatif`, chemin sous
 /// `maison` : `None` seulement si chaque élément, du dossier personnel lui-même jusqu'au bout, est lu sans suivre de
-/// lien (`symlink_metadata`) et que le bout est un fichier ou un dossier ordinaire. Un lien n'importe où sur le chemin
-/// (posé par stow, chezmoi, ou par un programme du compte) ferait changer par `chmod` le fichier visé, pas celui que
-/// la personne a lu : le constat le dit (où est le lien, vers quoi, nettoyé) et ne propose pas de correction du
-/// compte. Un chemin qui disparaît pendant la lecture n'est pas corrigé non plus. Le lot qui appliquera ces
-/// corrections relira de même au moment d'agir (sans shell : ouverture sans suivre de lien, puis fchmod).
-pub(crate) fn hors_correction(maison: &Path, relatif: &Path) -> Option<String> {
+/// lien (`symlink_metadata`), appartient au compte qui fait le bilan, porte un nom lisible tel quel (UTF-8), et que
+/// le bout est de la sorte `attendu` (un fichier sans second nom ailleurs, ou un dossier). Un lien n'importe où sur
+/// le chemin (posé par stow, chezmoi, ou par un programme du compte) ferait changer par `chmod` le fichier visé, pas
+/// celui que la personne a lu ; un nom qui n'est pas UTF-8 s'écrit, dans la commande et le geste, avec un caractère
+/// de remplacement, donc vise un autre nom ; un lien physique changerait les droits de l'autre nom aussi. Le constat
+/// le dit (où, pourquoi, nettoyé) et ne propose pas de correction du compte. Un chemin qui disparaît pendant la
+/// lecture n'est pas corrigé non plus. Le lot qui appliquera ces corrections relira de même au moment d'agir (sans
+/// shell : ouverture sans suivre de lien, puis fchmod).
+pub(crate) fn hors_correction(maison: &Path, relatif: &Path, attendu: Attendu) -> Option<String> {
+    use std::os::unix::fs::MetadataExt;
     let montre = |n: &OsStr| crate::ui::affichable(&n.to_string_lossy());
-    let mut chemin = maison.to_path_buf();
+    let mut chemin = match maison_simple(maison) {
+        Ok(m) => m,
+        Err(r) => return Some(r),
+    };
+    let compte = crate::socle::euid();
     let mut ou = String::from("~");
     let mut elements = relatif.components().peekable();
     loop {
@@ -86,13 +102,23 @@ pub(crate) fn hors_correction(maison: &Path, relatif: &Path) -> Option<String> {
             );
             return Some(trf!("{ou} est un lien vers {vers}", "{ou} is a link to {vers}"));
         }
+        if meta.uid() != compte {
+            return Some(trf!(
+                "{ou} appartient à un autre compte",
+                "{ou} belongs to another account"
+            ));
+        }
         let Some(suivant) = elements.next() else {
-            return (!meta.is_file() && !meta.is_dir()).then(|| {
-                trf!(
-                    "{ou} n'est ni un fichier ni un dossier",
-                    "{ou} is neither a file nor a folder"
-                )
-            });
+            return match attendu {
+                Attendu::Dossier if meta.is_dir() => None,
+                Attendu::Fichier if meta.is_file() && meta.nlink() <= 1 => None,
+                Attendu::Fichier if meta.is_file() => Some(trf!(
+                    "{ou} a un autre nom ailleurs (lien physique), dont les droits changeraient aussi",
+                    "{ou} has another name elsewhere (hard link), whose permissions would change too"
+                )),
+                Attendu::Fichier => Some(trf!("{ou} n'est pas un simple fichier", "{ou} is not a plain file")),
+                Attendu::Dossier => Some(trf!("{ou} n'est pas un dossier", "{ou} is not a folder")),
+            };
         };
         let std::path::Component::Normal(nom) = suivant else {
             return Some(trf!("{ou} : chemin inattendu", "{ou}: unexpected path"));
@@ -102,7 +128,66 @@ pub(crate) fn hors_correction(maison: &Path, relatif: &Path) -> Option<String> {
         }
         chemin.push(nom);
         ou = format!("{ou}/{}", montre(nom));
+        if nom.to_str().is_none() {
+            return Some(trf!(
+                "le nom de {ou} n'est pas lisible tel quel (pas en UTF-8) : une commande viserait un autre nom",
+                "the name of {ou} cannot be read as is (not UTF-8): a command would target another name"
+            ));
+        }
     }
+}
+
+/// Le dossier personnel tel que le noyau le lit, élément par élément : `lstat` d'un chemin qui finit par « / » ou
+/// « /. » suit le lien du dernier élément, donc un HOME écrit ainsi cachait que le dossier personnel est un lien.
+/// Les « . » et les « / » en trop sont retirés ; un chemin relatif, un « .. » ou un nom qui n'est pas UTF-8 sont
+/// refusés (le geste écrit le chemin en texte).
+fn maison_simple(maison: &Path) -> Result<PathBuf, String> {
+    use std::path::Component;
+    let refus = || {
+        trf!(
+            "le dossier personnel ({}) n'est pas un chemin simple",
+            "the home folder ({}) is not a plain path",
+            crate::modele::resultat::nom_sans_piege(&maison.to_string_lossy(), 120)
+        )
+    };
+    if !maison.is_absolute() {
+        return Err(refus());
+    }
+    let mut simple = PathBuf::new();
+    for c in maison.components() {
+        match c {
+            Component::RootDir => simple.push(c),
+            Component::Normal(n) if n.to_str().is_some() => simple.push(n),
+            _ => return Err(refus()),
+        }
+    }
+    Ok(simple)
+}
+
+/// Le geste d'une correction du compte sur `relatif` (le chemin qu'elle vise, pour relever et remettre ses droits),
+/// ou pourquoi elle n'est pas proposée (`hors_correction`). Le geste n'existe que si la garde passe : rien d'autre ne
+/// le fabrique pour un constat.
+pub(crate) fn geste_du_compte(
+    maison: &Path,
+    relatif: &Path,
+    attendu: Attendu,
+) -> Result<crate::optimiser::Geste, String> {
+    if let Some(r) = hors_correction(maison, relatif, attendu) {
+        return Err(r);
+    }
+    let chemin = maison_simple(maison)?;
+    let chemin = if relatif.as_os_str().is_empty() {
+        chemin
+    } else {
+        chemin.join(relatif)
+    };
+    crate::optimiser::Geste::droits(&chemin).ok_or_else(|| {
+        tr!(
+            "son nom n'est pas lisible tel quel (pas en UTF-8)",
+            "its name cannot be read as is (not UTF-8)"
+        )
+        .to_string()
+    })
 }
 
 /// Les fichiers secrets de `maison`, et le dossier personnel lui-même. `dossier_ouvert` : le texte de l'alerte quand
@@ -124,13 +209,22 @@ pub(super) fn fichiers_secrets(maison: &Path, dossier_ouvert: &str) -> Vec<Const
         if !secret_expose(meta.permissions().mode()) {
             continue;
         }
-        match hors_correction(maison, Path::new(nom)) {
-            None => {
+        // .gnupg est un dossier ; les autres, des fichiers. Ce qui n'est pas de la sorte attendue est dit, pas corrigé.
+        let attendu = if *nom == ".gnupg" {
+            Attendu::Dossier
+        } else {
+            Attendu::Fichier
+        };
+        match geste_du_compte(maison, Path::new(nom), attendu) {
+            Ok(geste) => {
                 exposes.push(format!("~/{nom}"));
-                commandes.push(format!("chmod {} ~/{nom}", if meta.is_dir() { "700" } else { "600" }));
-                gestes.push(crate::optimiser::Geste::droits(&chemin));
+                commandes.push(format!(
+                    "chmod {} ~/{nom}",
+                    if attendu == Attendu::Dossier { "700" } else { "600" }
+                ));
+                gestes.push(geste);
             }
-            Some(r) => {
+            Err(r) => {
                 a_travers.push(format!("~/{nom}"));
                 raisons.push(r);
             }
@@ -179,8 +273,8 @@ pub(super) fn fichiers_secrets(maison: &Path, dossier_ouvert: &str) -> Vec<Const
     }
     // Le dossier personnel lui-même : ouvert en lecture, il laisse voir tous tes fichiers aux autres comptes.
     if std::fs::metadata(maison).is_ok_and(|m| m.permissions().mode() & 0o007 != 0) {
-        constats.push(match hors_correction(maison, Path::new("")) {
-            None => alerte("Fichiers secrets", Niveau::Info, dossier_ouvert)
+        constats.push(match geste_du_compte(maison, Path::new(""), Attendu::Dossier) {
+            Ok(geste) => alerte("Fichiers secrets", Niveau::Info, dossier_ouvert)
                 .corriger(
                     tr!(
                         "Fermer votre dossier personnel aux autres comptes",
@@ -188,10 +282,10 @@ pub(super) fn fichiers_secrets(maison: &Path, dossier_ouvert: &str) -> Vec<Const
                     ),
                     &["chmod 750 ~"],
                 )
-                .annulable(vec![crate::optimiser::Geste::droits(maison)])
+                .annulable(vec![geste])
                 .du_compte()
                 .avec_objet(crate::modele::Objet::de("chemin", "~")),
-            Some(r) => alerte(
+            Err(r) => alerte(
                 "Fichiers secrets",
                 Niveau::Info,
                 super::sans_correction_du_compte(dossier_ouvert, &r),
@@ -728,22 +822,111 @@ mod tests_liens {
         std::os::unix::fs::symlink(ailleurs.join("cible"), maison.join(".ssh/id_lien")).unwrap();
         std::os::unix::fs::symlink(&*ailleurs, maison.join("d")).unwrap();
         crate::essais::tube_nomme(&maison.join("tube")).unwrap();
-        assert_eq!(hors_correction(&maison, Path::new("")), None);
-        assert_eq!(hors_correction(&maison, Path::new(".ssh")), None);
-        assert_eq!(hors_correction(&maison, Path::new(".ssh/id_essai")), None);
-        let lien = hors_correction(&maison, Path::new(".ssh/id_lien")).unwrap();
+        assert_eq!(hors_correction(&maison, Path::new(""), Attendu::Dossier), None);
+        assert_eq!(hors_correction(&maison, Path::new(".ssh"), Attendu::Dossier), None);
+        assert_eq!(
+            hors_correction(&maison, Path::new(".ssh/id_essai"), Attendu::Fichier),
+            None
+        );
+        let lien = hors_correction(&maison, Path::new(".ssh/id_lien"), Attendu::Fichier).unwrap();
         assert!(lien.contains("~/.ssh/id_lien") && lien.contains("cible"), "{lien}");
         // Un dossier du chemin qui est un lien : la fin, ordinaire, n'y change rien.
-        let milieu = hors_correction(&maison, Path::new("d/cible")).unwrap();
+        let milieu = hors_correction(&maison, Path::new("d/cible"), Attendu::Fichier).unwrap();
         assert!(milieu.starts_with("~/d "), "{milieu}");
         for faux in ["tube", ".ssh/id_essai/x", "absent", "../x", "/etc/passwd"] {
-            assert!(hors_correction(&maison, Path::new(faux)).is_some(), "{faux}");
+            assert!(
+                hors_correction(&maison, Path::new(faux), Attendu::Fichier).is_some(),
+                "{faux}"
+            );
         }
         // Le dossier personnel lui-même, un lien.
         let maison_lien = crate::essais::Jetable::nouveau("liens-maison-lien");
         let m = maison_lien.join("maison");
         std::os::unix::fs::symlink(&*maison, &m).unwrap();
-        assert!(hors_correction(&m, Path::new(".ssh")).is_some());
+        assert!(hors_correction(&m, Path::new(".ssh"), Attendu::Dossier).is_some());
+    }
+
+    /// Vérification de Fable n° 2, liens L1, L2, L4, L6 : la sorte attendue au bout (un dossier « id_… » ne reçoit pas
+    /// de chmod 600, un ~/.ssh devenu fichier pas de chmod 700), un nom qui n'est pas UTF-8, un lien physique, un
+    /// autre propriétaire, un HOME écrit avec « / » ou « /. » à la fin.
+    #[test]
+    fn la_correction_du_compte_vise_la_bonne_sorte_et_un_nom_lisible() {
+        use std::os::unix::ffi::OsStrExt;
+        let maison = crate::essais::Jetable::nouveau("liens-sorte");
+        let ailleurs = crate::essais::Jetable::nouveau("liens-sorte-ailleurs");
+        std::fs::create_dir_all(maison.join(".ssh/id_dossier")).unwrap();
+        std::fs::write(maison.join(".ssh/id_essai"), "clé inventée\n").unwrap();
+        std::fs::write(maison.join(".netrc"), "machine exemple.invalid login alice\n").unwrap();
+        // L2, L6 : la sorte attendue.
+        let dossier = hors_correction(&maison, Path::new(".ssh/id_dossier"), Attendu::Fichier).unwrap();
+        assert!(dossier.contains("~/.ssh/id_dossier"), "{dossier}");
+        assert!(hors_correction(&maison, Path::new(".ssh/id_essai"), Attendu::Dossier).is_some());
+        assert!(hors_correction(&maison, Path::new(".netrc"), Attendu::Dossier).is_some());
+        assert_eq!(
+            hors_correction(&maison, Path::new(".ssh/id_dossier"), Attendu::Dossier),
+            None
+        );
+        // L1 : un nom qui n'est pas UTF-8, et son sosie au caractère de remplacement (un lien) ; ni l'un ni l'autre ne
+        // donne de geste, et celui du nom invalide n'est jamais écrit avec perte.
+        let invalide = std::ffi::OsStr::from_bytes(b"id_\xff");
+        std::fs::write(maison.join(".ssh").join(invalide), "clé inventée\n").unwrap();
+        std::os::unix::fs::symlink(&*ailleurs, maison.join(".ssh/id_\u{FFFD}")).unwrap();
+        let relatif = Path::new(".ssh").join(invalide);
+        let r = hors_correction(&maison, &relatif, Attendu::Fichier).unwrap();
+        assert!(r.contains("UTF-8"), "{r}");
+        assert!(geste_du_compte(&maison, &relatif, Attendu::Fichier).is_err());
+        assert!(crate::optimiser::Geste::droits(&maison.join(&relatif)).is_none());
+        assert!(geste_du_compte(&maison, Path::new(".ssh/id_\u{FFFD}"), Attendu::Fichier).is_err());
+        // L6 : une clé qui a un second nom ailleurs.
+        std::fs::hard_link(maison.join(".ssh/id_essai"), ailleurs.join("double")).unwrap();
+        let double = hors_correction(&maison, Path::new(".ssh/id_essai"), Attendu::Fichier).unwrap();
+        assert!(double.contains("lien physique"), "{double}");
+        std::fs::remove_file(ailleurs.join("double")).unwrap();
+        assert_eq!(
+            hors_correction(&maison, Path::new(".ssh/id_essai"), Attendu::Fichier),
+            None
+        );
+        // Un autre propriétaire : la racine n'est à personne d'ici (root, ou personne sous un espace de noms).
+        let autre = hors_correction(Path::new("/"), Path::new(""), Attendu::Dossier).unwrap();
+        assert!(autre.contains("autre compte"), "{autre}");
+        // L4 : le dossier personnel lien, écrit avec « / » ou « /. » à la fin, reste vu comme un lien ; « .. » et un
+        // chemin relatif sont refusés.
+        let parent = crate::essais::Jetable::nouveau("liens-sorte-parent");
+        let m = parent.join("maison");
+        std::os::unix::fs::symlink(&*maison, &m).unwrap();
+        let texte = m.to_str().unwrap();
+        for forme in [
+            texte.to_string(),
+            format!("{texte}/"),
+            format!("{texte}/."),
+            format!("{texte}/./"),
+        ] {
+            let r = hors_correction(Path::new(&forme), Path::new(".ssh"), Attendu::Dossier);
+            assert!(r.as_deref().is_some_and(|r| r.starts_with("~ ")), "{forme} : {r:?}");
+            assert!(
+                geste_du_compte(Path::new(&forme), Path::new(""), Attendu::Dossier).is_err(),
+                "{forme}"
+            );
+        }
+        let vrai = maison.to_str().unwrap();
+        for forme in [format!("{vrai}/"), format!("{vrai}/.")] {
+            assert_eq!(
+                hors_correction(Path::new(&forme), Path::new(".ssh"), Attendu::Dossier),
+                None,
+                "{forme}"
+            );
+        }
+        for faux in [format!("{vrai}/.ssh/.."), "maison".to_string()] {
+            assert!(
+                hors_correction(Path::new(&faux), Path::new(""), Attendu::Dossier).is_some(),
+                "{faux}"
+            );
+        }
+        // Le geste suit le chemin simple : celui d'un HOME écrit avec « /. » est celui du HOME simple.
+        assert_eq!(
+            geste_du_compte(Path::new(&format!("{vrai}/.")), Path::new(".netrc"), Attendu::Fichier),
+            Ok(crate::optimiser::Geste::droits(&maison.join(".netrc")).unwrap())
+        );
     }
 
     #[test]

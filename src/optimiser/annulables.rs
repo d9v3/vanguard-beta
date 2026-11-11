@@ -63,9 +63,10 @@ impl Geste {
 
 #[cfg(unix)]
 impl Geste {
-    /// Les droits d'un fichier du dossier personnel.
-    pub(crate) fn droits(chemin: &Path) -> Geste {
-        Geste(format!("droits|{}", chemin.display()))
+    /// Les droits d'un fichier du dossier personnel ; `None` si son chemin n'est pas UTF-8 : écrit avec un caractère
+    /// de remplacement (`display`), le geste viserait un autre nom, peut-être un lien.
+    pub(crate) fn droits(chemin: &Path) -> Option<Geste> {
+        Some(Geste(format!("droits|{}", chemin.to_str()?)))
     }
 }
 
@@ -1023,7 +1024,12 @@ mod tests {
         let f = d.join("netrc-alice");
         std::fs::write(&f, "machine example.com login alice\n").unwrap();
         std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644)).unwrap();
-        let r = relever(id_bilan(), "Réserver ces fichiers à toi seul", &[Geste::droits(&f)]).unwrap();
+        let r = relever(
+            id_bilan(),
+            "Réserver ces fichiers à toi seul",
+            &[Geste::droits(&f).unwrap()],
+        )
+        .unwrap();
         assert_eq!(r.avant.valeurs, [Some("0644".to_string())]);
         assert!(noter_dans(&[&r], &d));
         // La correction elle-même.
@@ -1135,7 +1141,7 @@ mod tests {
         let d = dossier("pas-revenu");
         let f = d.join("secret-bob");
         std::fs::write(&f, "x").unwrap();
-        let r = relever(id_bilan(), "Essai", &[Geste::droits(&f)]).unwrap();
+        let r = relever(id_bilan(), "Essai", &[Geste::droits(&f).unwrap()]).unwrap();
         assert!(noter_dans(&[&r], &d));
         std::fs::remove_file(&f).unwrap();
         let (issues, _) = defaire_dans(std::slice::from_ref(&r.id), &[], false, &d);
@@ -1157,7 +1163,7 @@ mod tests {
         let f = d.join("cles-alice");
         std::fs::write(&f, "x").unwrap();
         std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let r = relever(id_bilan(), "Essai", &[Geste::droits(&f)]).unwrap();
+        let r = relever(id_bilan(), "Essai", &[Geste::droits(&f).unwrap()]).unwrap();
         assert!(noter_dans(&[&r], &d));
         let texte = std::fs::read_to_string(d.join(crate::sceau::REGLAGES))
             .unwrap()

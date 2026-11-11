@@ -826,8 +826,7 @@ fn inclus_du_systeme(motif: &str) -> Vec<(String, String)> {
     trouves.sort();
     trouves
         .into_iter()
-        .filter(|p| p.is_file())
-        .filter_map(|p| Some((p.display().to_string(), std::fs::read_to_string(&p).ok()?)))
+        .filter_map(|p| Some((p.display().to_string(), super::lire_texte_ssh(&p).ok()?)))
         .collect()
 }
 
@@ -853,7 +852,9 @@ fn lire_client() -> Lecture<Client> {
             &inclus_du_systeme,
         ),
     ] {
-        match std::fs::read_to_string(&chemin) {
+        // Lien suivi, simple fichier, borné : un tube nommé à la place de ~/.ssh/config figeait tout le bilan
+        // (vérification de Fable n° 2, liens L3).
+        match super::lire_texte_ssh(&chemin) {
             Ok(texte) => {
                 let mut lignes = Vec::new();
                 super::deplier_config_ssh(&nom, &texte, inclus, 8, &mut lignes);
