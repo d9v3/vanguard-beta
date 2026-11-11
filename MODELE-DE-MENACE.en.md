@@ -113,6 +113,13 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
 - **The other devices on the network.** It observes them, it does not fix them and never attacks them: the router is
   read, never changed; the only password tried is the SNMP community “public”, and the attempt is announced.
 - **Online accounts.** Known leaks are reported; the account itself is up to the service that hosts it.
+- **SSH settings meant for some servers only.** Vanguard reads the SSH client configuration (`~/.ssh/config`, its
+  `Include`s, `/etc/ssh/ssh_config`) with SSH's own rules, but it only judges what may apply to every server: a
+  setting under a `Host` or `Match` that names a server is not reported. Nor does it see that several precise `Host`
+  lines, taken together, cover every name (one per first letter, for example). A header SSH may apply to every
+  server (`Match user`, `Match exec`, `Host *.*`…) is treated as global: it raises the alert, and Vanguard never
+  takes it on trust to announce a post-quantum exchange as "offered" or settings as "correct". Alerts are bounded:
+  one per setting and per file, sixteen at most, the rest counted.
 - **Data loss.** Malware running in the account can turn off the anti-ransomware watcher: the backup remains the
   real protection.
 - **A stolen computer that is on and unlocked.** Disk encryption (BitLocker, FileVault, LUKS) protects a computer

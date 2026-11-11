@@ -121,6 +121,13 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
 - **Les autres appareils du réseau.** Il les observe, il ne les corrige pas et ne les attaque jamais : le routeur est
   lu, jamais modifié ; le seul mot de passe essayé est la communauté SNMP « public », et l'essai est annoncé.
 - **Les comptes en ligne.** Les fuites connues sont signalées ; le compte lui-même relève du service qui l'héberge.
+- **Les réglages SSH propres à certains serveurs.** Vanguard lit la configuration du client SSH (`~/.ssh/config`,
+  ses `Include`, `/etc/ssh/ssh_config`) avec les règles de SSH, mais il ne juge que ce qui peut valoir pour tous les
+  serveurs : un réglage sous un `Host` ou un `Match` qui nomme un serveur n'est pas signalé. Il ne voit pas non plus
+  que plusieurs `Host` précis, mis ensemble, couvrent tous les noms (un par première lettre, par exemple). Un en-tête
+  que SSH applique peut-être à tous (`Match user`, `Match exec`, `Host *.*`…) est traité comme global : il donne
+  l'alerte, et Vanguard n'annonce jamais sur sa foi un échange post-quantique « proposé » ni des réglages
+  « corrects ». Les alertes sont bornées : une par réglage et par fichier, seize au plus, le reste compté.
 - **La perte des données.** Un programme malveillant du compte peut éteindre le veilleur anti-rançongiciel : la
   sauvegarde reste la vraie protection.
 - **Un ordinateur volé allumé et déverrouillé.** Le chiffrement du disque (BitLocker, FileVault, LUKS) protège un
