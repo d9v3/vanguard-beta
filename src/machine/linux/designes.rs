@@ -29,8 +29,14 @@ pub(crate) enum Flou {
     /// Un chemin relatif (« ./run », « bin/x ») : relatif à un dossier qu'on ne connaît pas.
     Relatif,
     /// Un argument qui n'est ni une option ni un chemin absolu, pour un programme qui n'est pas un interpréteur
-    /// connu : un interpréteur renommé (« tclsh8.6 », une copie sous un autre nom) le lirait comme un script.
+    /// connu : un interpréteur renommé (« tclsh8.6 », une copie sous un autre nom) le lirait comme un script. Aussi
+    /// un mot après « -- » (un nom de fichier, même s'il commence par « - ») et la valeur d'une option qui commence
+    /// par « - » (« --a=-fichier »).
     Argument,
+    /// Un chemin par /proc ou /dev (« /proc/self/cwd/… », « /dev/fd/0 »), ou avec « . » ou « .. » : il se résout
+    /// selon le processus qui le lit, ou selon les liens du chemin, et Vanguard lirait un autre fichier que le
+    /// programme lancé.
+    Processus,
     /// Le programme est nommé sans chemin (« python3 ») : cherché dans le PATH au lancement.
     NomNu,
     /// « ~ », « $HOME », ou « %h » hors d'une unité de l'utilisateur : le dossier personnel vient d'une variable
@@ -99,6 +105,17 @@ fn caracteres(texte: &str) -> Option<Flou> {
     }
 }
 
+/// Un chemin qui ne désigne pas le même fichier pour tous : sous /proc ou /dev, qui dépendent du processus qui les lit,
+/// ou avec une partie « . » ou « .. », qui se résout selon les liens du chemin (vérification de la campagne E, N1).
+fn chemin_mouvant(chemin: &str) -> bool {
+    let sous = |d: &str| {
+        chemin
+            .strip_prefix(d)
+            .is_some_and(|r| r.is_empty() || r.starts_with('/'))
+    };
+    sous("/proc") || sous("/dev") || chemin.split('/').any(|p| p == "." || p == "..")
+}
+
 /// Un mot qui désigne un fichier : son chemin absolu ; `Ok(None)` : pas un chemin (option, nom nu) ; `Err` : ambigu.
 fn chemin_du_mot(mot: &str, ctx: Contexte<'_>) -> Result<Option<String>, Flou> {
     let chemin = if let Some(reste) = mot.strip_prefix("%h/") {
@@ -130,6 +147,9 @@ fn chemin_du_mot(mot: &str, ctx: Contexte<'_>) -> Result<Option<String>, Flou> {
     }
     if chemin.len() > CHEMIN_MAX {
         return Err(Flou::Trop);
+    }
+    if chemin_mouvant(&chemin) {
+        return Err(Flou::Processus);
     }
     Ok(Some(chemin))
 }
@@ -238,7 +258,11 @@ fn argument(mot: &str, ctx: Contexte<'_>, chemins: &mut Vec<String>, libre: bool
                 return Err(Flou::Syntaxe);
             }
             if !libre && !v.is_empty() {
-                // « --require=module » : la valeur d'une option du programme suit la même règle qu'un mot seul.
+                // « --require=module » : la valeur d'une option du programme suit la même règle qu'un mot seul ;
+                // « --a=-fichier » : une valeur n'est jamais une option, c'est un mot nu (vérification, N2).
+                if v.starts_with('-') {
+                    return Err(Flou::Argument);
+                }
                 return argument(v, ctx, chemins, false);
             }
             valeur(v, ctx, chemins)
@@ -527,7 +551,17 @@ fn commande_ou_flou(commande: &str, ctx: Contexte<'_>) -> Result<Vec<String>, Fl
         reste = args.get(i.saturating_add(1)..).unwrap_or_default();
         libre = true;
     }
+    // Après « -- », un programme lit chaque mot comme un nom de fichier, même « -rappel.sh » : il suit la règle du mot
+    // nu, jamais celle d'une option (vérification de la campagne E, N2).
+    let mut fin_des_options = false;
     for mot in reste {
+        if !libre && fin_des_options && mot.starts_with('-') {
+            return Err(Flou::Argument);
+        }
+        if !libre && !fin_des_options && mot == "--" {
+            fin_des_options = true;
+            continue;
+        }
         argument(mot, ctx, &mut chemins, libre)?;
     }
     Ok(chemins)
@@ -575,6 +609,9 @@ fn bibliotheques_ou_flou(valeur: &str, liste: Liste) -> Result<Vec<String>, Flou
         }
         if mot.len() > CHEMIN_MAX {
             return Err(Flou::Trop);
+        }
+        if chemin_mouvant(mot) {
+            return Err(Flou::Processus);
         }
         ajouter(&mut chemins, mot.to_string())?;
     }
@@ -930,6 +967,76 @@ mod tests {
         assert_eq!(
             commande("/usr/bin/tclsh8.6 /opt/a.tcl", Contexte::Shell),
             chemins(&["/usr/bin/tclsh8.6", "/opt/a.tcl"])
+        );
+    }
+
+    /// Vérification de la campagne E, N1 : un chemin par /proc ou /dev se résout selon le processus qui le lit (son
+    /// dossier de travail, son entrée), « . » et « .. » selon les liens du chemin ; jamais lié.
+    #[test]
+    fn chemins_qui_dependent_du_lecteur() {
+        for c in [
+            "/opt/sync /proc/self/cwd/rappel.sh",
+            "/opt/sync /proc/self/fd/0",
+            "/opt/sync /dev/stdin",
+            "/opt/sync /dev/fd/0",
+            "/opt/sync --conf=/proc/self/cwd/c.ini",
+            "/opt/sync /opt/a:/proc/1/root/x",
+            "/proc/self/exe",
+            "/dev/shm/a",
+            "/usr/bin/bash /proc/self/cwd/rappel.sh",
+            "/usr/bin/bash /dev/stdin",
+            "/usr/bin/bash /opt/a.sh /proc/self/cwd/b",
+            "/opt/sync /opt/../home/alice/a",
+            "/opt/sync /opt/./a",
+            "/opt/./sync",
+            "/opt/sync /proc",
+        ] {
+            assert_eq!(commande(c, Contexte::Shell), Designe::Indefini(Flou::Processus), "{c}");
+        }
+        assert_eq!(commande("%h/../bob/a", U), Designe::Indefini(Flou::Processus));
+        assert_eq!(
+            bibliotheques("/proc/self/cwd/a.so", Liste::Variable),
+            Designe::Indefini(Flou::Processus)
+        );
+        assert_eq!(
+            bibliotheques("/opt/a.so:/dev/fd/3", Liste::Fichier),
+            Designe::Indefini(Flou::Processus)
+        );
+        // Ce qui ressemble sans l'être : « /procs », « /devtools », un nom qui contient des points.
+        assert_eq!(
+            commande("/opt/procs/a /devtools/b /opt/..x/c /opt/x.../d", Contexte::Shell),
+            chemins(&["/opt/procs/a", "/devtools/b", "/opt/..x/c", "/opt/x.../d"])
+        );
+    }
+
+    /// Vérification de la campagne E, N2 : après « -- », chaque mot est un nom de fichier, même s'il commence par un
+    /// tiret ; la valeur d'une option n'est jamais une option. Les preuves : « outil -- -rappel.sh », « --a=-fichier ».
+    #[test]
+    fn mots_apres_les_options() {
+        for c in [
+            "/opt/outil -- -rappel.sh",
+            "/opt/outil -v -- -rappel.sh",
+            "/opt/outil -- /opt/a -b",
+            "/opt/outil -- --",
+            "/opt/outil -- rappel.sh",
+            "/opt/outil --a=-fichier",
+            "/opt/outil --a=--b",
+            "/opt/outil --a=-",
+        ] {
+            assert_eq!(commande(c, Contexte::Shell), Designe::Indefini(Flou::Argument), "{c}");
+        }
+        assert_eq!(
+            commande("/opt/outil -v -- /opt/a /opt/b", Contexte::Shell),
+            chemins(&["/opt/outil", "/opt/a", "/opt/b"])
+        );
+        // Un interpréteur connu après « -- » : son script lié, la suite à lui.
+        assert_eq!(
+            commande("/usr/bin/bash -- /opt/a.sh -x", Contexte::Shell),
+            chemins(&["/usr/bin/bash", "/opt/a.sh"])
+        );
+        assert_eq!(
+            commande("/usr/bin/bash -- -rappel.sh", Contexte::Shell),
+            Designe::Indefini(Flou::Interprete)
         );
     }
 }

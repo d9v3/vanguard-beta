@@ -452,28 +452,39 @@ a backdoor (a shell to the network). Before the choice, Vanguard shows every rep
 (file:line, the file's fingerprint, the program, script or library it names and their fingerprints); the choice is
 always confirmed (typing "normal" from the high level up), only at the keyboard in a terminal (input and output: a
 choice coming from a pipe is refused), and the state is recorded again at confirmation: a file changed while you read
-makes it refuse everything. Each choice is written to the log. The choice is bound to that exact state: a line added
-or changed, another source in the same alert, the file, a systemd addition (.d folders, including the session's and
-the priority ones), including under an alias of the unit and in /run/systemd/user, the launched program or the script
-passed to an interpreter changed, replaced by a link or deleted, a sensitive variable (LD_*, PYTHON*, NODE_*,
-BASH_ENV, PS4, XDG_CONFIG_HOME…) set for sessions (profiles, Hyprland, environment.d, systemd's DefaultEnvironment,
-pam_env) bring the alert back, which then says why and where. What cannot be recorded without ambiguity (a variable, a
-pipe, code in the line, a module, a launcher such as env or sudo, an addition that redirects the program or its
-environment, an unreadable file, a byte that is not UTF-8 in the line, its file or a path, a text with a carriage
-return or an invisible character, a service's standard input, an argument that is neither an option nor an absolute
-path for a program Vanguard does not recognise as an interpreter, more than 12 lines) cannot be declared normal; a
-bound file that is too long or not text is not shown, and this is said (its fingerprint can be compared with
-sha256sum); the confirmation also compares each file's device, inode and dates, so a file swapped and put back while
-you read is seen; a list restored or kept as is after tampering loses the states it held. Limits: a program looked up
-in PATH and what the script or launched program reads in turn (sourced file, import, library) are not bound; a profile
-is a program: its variables with computed names and the files it sources are not followed; a variable set during the
-session (systemctl --user set-environment) and Vanguard's own environment are not bound; an option stuck to its value
-("-mmodule") is not read as an argument; a bound text over 1 MiB is not checked for carriage returns; a launched file
-over 32 MiB (node, deno) is not bound, so it cannot be declared; folders added through XDG_CONFIG_DIRS or
-XDG_DATA_DIRS are not followed; the state is only compared at each scan, so a program that puts the original content
-back before each pass is not seen; a hostile program that opens a pseudo-terminal itself can answer in the person's
-place, but the choice is still written to the log; on Windows, Run keys and tasks are still declared by their command
-line alone.
+makes it refuse everything. Each choice is written to the log, and the list is only written under its lock, re-read
+just before: two Vanguard open at the same time do not overwrite each other's choice. The choice is bound to that
+exact state: a line added or changed, another source in the same alert, the file, a systemd addition (.d folders,
+including the session's and the priority ones, and those of a moved XDG_CONFIG_HOME or XDG_DATA_HOME), including under
+an alias of the unit or an alias of an alias and in /run/systemd/user, the launched program or the script passed to
+an interpreter changed, replaced by a link or deleted, and any change to a file that sets variables for sessions
+(bash, zsh and fish profiles, Hyprland and the files it reads through "source =", environment.d, the systemd manager
+configuration, pam_env), read in full, even a comment, bring the alert back, which then says why and where. What
+cannot be recorded without ambiguity (a variable, a pipe, code in the line, a module, a launcher such as env or sudo,
+an addition that redirects the program, its working directory or its environment, a service variable outside a short
+list of known ones (LANG, TZ, DISPLAY…) or written with a backslash, an unreadable file, a byte that is not UTF-8 in
+the line, its file or a path, a script with a carriage return or an invisible character, searched in the raw bytes, a
+file read by an interpreter that is not text, a service's standard input, a path through /proc or /dev or with "." or
+"..", which names another file depending on the program that reads it, an argument that is neither an option nor an
+absolute path for a program Vanguard does not recognise as an interpreter, including after "--" and in an option's
+value, a copy of a system interpreter under another name, a home folder that cannot be read, more than 12 lines)
+cannot be declared normal; a bound file that is too long or not text is not shown, and this is said (its fingerprint
+can be compared with sha256sum); the confirmation also compares the device, inode and dates of each file and of each
+folder above it, so a file or one of its folders swapped and put back while you read is seen; a list restored or kept
+as is after tampering loses the states it held. Limits: a program looked up in PATH and what the script or launched
+program reads in turn (sourced file, import, library, "dofile" of a Lua configuration) are not bound; a program
+Vanguard does not recognise can read a file named by an option stuck to its value ("-fMakefile"): nothing binds what
+it reads; a profile is a program: its variables with computed names and the files it reads through a computed path
+(`. "$DIR/x"`) are not followed, but its own content is bound; a variable set during the session (systemctl --user
+set-environment) and Vanguard's own environment are not bound; a file with an ELF header but malformed, in place of the
+program, is bound by its fingerprint without being checked as a text, though a shell could read it; a launched file over 32 MiB (node, deno) or a non-ELF file over 1 MiB
+is not bound, so it cannot be declared; folders added through XDG_CONFIG_DIRS or XDG_DATA_DIRS are not followed; the
+state is only compared at each scan, so a program that puts the original content back before each pass is not seen;
+binding the whole environment brings accepted alerts back at each change of a profile, of Hyprland or of
+/etc/profile.d (a package update included), on the safe side, and a folder of the path changed between the scan and
+the confirmation makes the choice refused, to be made again; a hostile program that opens a pseudo-terminal itself can
+answer in the person's place, but the choice is still written to the log; on Windows, Run keys and tasks are still
+declared by their command line alone.
 
 ## What leaves the computer
 

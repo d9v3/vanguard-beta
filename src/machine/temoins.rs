@@ -261,32 +261,67 @@ pub(crate) fn trop_de_lignes(n: usize) -> String {
 }
 
 /// Ce que le système dit d'un fichier au moment du relevé : appareil, numéro, taille, dates de contenu et de
-/// changement (ctime, que le compte ne peut pas remettre). Hors de l'empreinte (un fichier recopié à l'identique ne
-/// fait pas revenir l'alerte) : seulement pour voir, au moment de confirmer, qu'un fichier a été touché depuis le
-/// relevé, même remis ensuite au même contenu.
+/// changement (ctime, que le compte ne peut pas remettre), et de chaque dossier au-dessus de lui jusqu'à la racine
+/// (appareil, numéro, ctime). Hors de l'empreinte (un fichier recopié à l'identique ne fait pas revenir l'alerte) :
+/// seulement pour voir, au moment de confirmer, qu'un fichier a été touché depuis le relevé, même remis ensuite au
+/// même contenu, ou qu'un dossier au-dessus a été échangé puis remis (renommer un dossier change son ctime ; le
+/// fichier, lui, ne bouge pas : vérification de la campagne E, N5).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Vu([i64; 7]);
+pub(crate) struct Vu {
+    soi: [i64; 7],
+    parents: [u8; 32],
+}
 
 impl Vu {
+    /// Ce que le système dit d'un fichier, sans ses dossiers (un texte assemblé, un essai).
     #[cfg(unix)]
     pub(crate) fn de(m: &std::fs::Metadata) -> Vu {
         use std::os::unix::fs::MetadataExt as _;
         let n = |x: u64| i64::try_from(x).unwrap_or(i64::MAX);
-        Vu([
-            n(m.dev()),
-            n(m.ino()),
-            n(m.size()),
-            m.mtime(),
-            m.mtime_nsec(),
-            m.ctime(),
-            m.ctime_nsec(),
-        ])
+        Vu {
+            soi: [
+                n(m.dev()),
+                n(m.ino()),
+                n(m.size()),
+                m.mtime(),
+                m.mtime_nsec(),
+                m.ctime(),
+                m.ctime_nsec(),
+            ],
+            parents: [0; 32],
+        }
+    }
+
+    /// Ce que le système dit du fichier `chemin` (`m`) et de chaque dossier au-dessus de lui, jusqu'à la racine.
+    #[cfg(unix)]
+    pub(crate) fn de_dans(m: &std::fs::Metadata, chemin: &std::path::Path) -> Vu {
+        use std::os::unix::fs::MetadataExt as _;
+        let mut h = blake3::Hasher::new_derive_key("vanguard 2026-11 dossiers au-dessus d'un fichier");
+        for dossier in chemin.ancestors().skip(1) {
+            match std::fs::symlink_metadata(dossier) {
+                Ok(d) => {
+                    h.update(b"D");
+                    h.update(&d.dev().to_le_bytes());
+                    h.update(&d.ino().to_le_bytes());
+                    h.update(&d.ctime().to_le_bytes());
+                    h.update(&d.ctime_nsec().to_le_bytes());
+                }
+                Err(_) => {
+                    h.update(b"-");
+                }
+            }
+        }
+        Vu {
+            parents: *h.finalize().as_bytes(),
+            ..Vu::de(m)
+        }
     }
 
     fn ecrire(self, h: &mut blake3::Hasher) {
-        for x in self.0 {
+        for x in self.soi {
             h.update(&x.to_le_bytes());
         }
+        h.update(&self.parents);
     }
 }
 
@@ -390,6 +425,11 @@ impl Etat {
             vu: Vu::default(),
         }
     }
+}
+
+/// « sha256 … » d'un contenu, comme `sha256sum` le donne.
+pub(crate) fn sha256_de(octets: &[u8]) -> String {
+    format!("sha256 {}", hex(&<[u8; 32]>::from(sha2::Sha256::digest(octets))))
 }
 
 fn hex(octets: &[u8]) -> String {
@@ -573,7 +613,7 @@ impl Default for Budget {
 #[cfg(unix)]
 impl Budget {
     /// Prend de quoi lire un fichier de `taille` octets ; `false` : le budget n'y suffit plus, rien n'est pris.
-    fn prendre(&mut self, taille: u64) -> bool {
+    pub(crate) fn prendre(&mut self, taille: u64) -> bool {
         match (self.fichiers.checked_sub(1), self.octets.checked_sub(taille)) {
             (Some(f), Some(o)) => {
                 self.fichiers = f;
@@ -637,7 +677,8 @@ pub(crate) fn lire_borne(chemin: &std::path::Path, max: u64) -> std::io::Result<
 /// vers un chemin qui n'est pas de l'UTF-8 (deux tels chemins se montreraient pareil).
 #[cfg(unix)]
 pub(crate) fn etat_du_contenant(f: &std::path::Path, octets: &[u8]) -> Result<Etat, Refus> {
-    let vu = |m: std::io::Result<std::fs::Metadata>| m.as_ref().map(Vu::de).unwrap_or_default();
+    par_un_chemin_fixe(f)?;
+    let vu = |m: std::io::Result<std::fs::Metadata>| m.as_ref().map(|m| Vu::de_dans(m, f)).unwrap_or_default();
     let contenu = Etat::Fichier {
         empreinte: sha2::Sha256::digest(octets).into(),
         apercu: None,
@@ -665,14 +706,87 @@ fn vers_lisible(f: &std::path::Path, vers: &std::path::Path) -> Result<String, R
     })
 }
 
-/// L'état d'un fichier lancé ou préchargé : absent, son contenu, ou un lien (vers où, puis ce qu'il désigne).
-/// `Err` : il ne se relève pas (illisible, dossier, périphérique, tube, trop gros, budget du bilan épuisé), et la
-/// raison, prête à montrer.
+/// Au plus autant de liens suivis pour résoudre un chemin (la borne du noyau, ELOOP).
 #[cfg(unix)]
-pub(crate) fn etat_de_la_cible(chemin: &std::path::Path, budget: &mut Budget) -> Result<Etat, Refus> {
+const LIENS_MAX: usize = 40;
+
+/// Un chemin dont chaque lien, suivi pas à pas, reste hors de /proc et /dev : là, un chemin « absolu »
+/// (« /proc/self/cwd/… », « /dev/fd/0 ») se résout selon le processus qui le lit, et Vanguard lirait un autre fichier
+/// que le programme lancé (vérification de la campagne E, N1). Suivi pas à pas, pas résolu d'un coup : un lien vers
+/// « /proc/self/cwd » se résoudrait pour Vanguard lui-même, hors de /proc. `Err` : il y mène, ou par trop de liens.
+#[cfg(unix)]
+pub(crate) fn par_un_chemin_fixe(chemin: &std::path::Path) -> Result<(), Refus> {
+    use std::path::{Component, Path, PathBuf};
+    let mouvant = |p: &Path| p.starts_with("/proc") || p.starts_with("/dev");
+    let refus = || {
+        Refus(trf!(
+            "{} passe par /proc ou /dev : le fichier qu'il désigne change selon le programme qui le lit",
+            "{} goes through /proc or /dev: the file it names changes with the program that reads it",
+            crate::ui::chemin_affichable(chemin)
+        ))
+    };
+    if !chemin.is_absolute() {
+        return Ok(());
+    }
+    // Les parties qui restent à suivre, la prochaine à la fin ; « .. » se défait sur un dossier déjà résolu.
+    let empiler = |pile: &mut Vec<std::ffi::OsString>, p: &Path| {
+        for c in p.components().rev() {
+            match c {
+                Component::Normal(x) => pile.push(x.to_os_string()),
+                Component::ParentDir => pile.push("..".into()),
+                Component::RootDir | Component::CurDir | Component::Prefix(_) => {}
+            }
+        }
+    };
+    let mut pile = Vec::new();
+    empiler(&mut pile, chemin);
+    let mut fait = PathBuf::from("/");
+    let mut liens = 0usize;
+    while let Some(partie) = pile.pop() {
+        if partie == ".." {
+            fait.pop();
+            continue;
+        }
+        let suivant = fait.join(&partie);
+        if mouvant(&suivant) {
+            return Err(refus());
+        }
+        match std::fs::symlink_metadata(&suivant) {
+            Ok(m) if m.file_type().is_symlink() => {
+                liens = liens.saturating_add(1);
+                if liens > LIENS_MAX {
+                    return Err(Refus(trf!(
+                        "{} passe par trop de liens",
+                        "{} goes through too many links",
+                        crate::ui::chemin_affichable(chemin)
+                    )));
+                }
+                let Ok(vers) = std::fs::read_link(&suivant) else {
+                    fait = suivant;
+                    continue;
+                };
+                if vers.is_absolute() {
+                    fait = PathBuf::from("/");
+                }
+                empiler(&mut pile, &vers);
+            }
+            _ => fait = suivant,
+        }
+    }
+    Ok(())
+}
+
+/// L'état d'un fichier lancé ou préchargé : absent, son contenu, ou un lien (vers où, puis ce qu'il désigne).
+/// `programme` : le programme lancé lui-même, ou une bibliothèque préchargée, qui peut être un binaire ELF (lié par son
+/// empreinte, sans être montré) ; tout autre fichier (le script d'un interpréteur, un argument) doit être du texte
+/// qui se lit à l'écran comme il s'exécute. `Err` : il ne se relève pas (illisible, dossier, périphérique, tube, trop
+/// gros, pas du texte, chemin par /proc, budget du bilan épuisé), et la raison, prête à montrer.
+#[cfg(unix)]
+pub(crate) fn etat_de_la_cible(chemin: &std::path::Path, programme: bool, budget: &mut Budget) -> Result<Etat, Refus> {
     use std::io::ErrorKind;
     let montre = || crate::ui::chemin_affichable(chemin);
     let illisible = |e: std::io::Error| Refus(trf!("{} ne se lit pas ({e})", "{} cannot be read ({e})", montre()));
+    par_un_chemin_fixe(chemin)?;
     match std::fs::symlink_metadata(chemin) {
         Err(e) if e.kind() == ErrorKind::NotFound => Ok(Etat::Absent),
         Err(e) => Err(illisible(e)),
@@ -681,21 +795,27 @@ pub(crate) fn etat_de_la_cible(chemin: &std::path::Path, budget: &mut Budget) ->
             let puis = match std::fs::metadata(chemin) {
                 Err(e) if e.kind() == ErrorKind::NotFound => Etat::Absent,
                 Err(e) => return Err(illisible(e)),
-                Ok(vu) => contenu(chemin, &vu, true, budget)?,
+                Ok(vu) => contenu(chemin, &vu, true, programme, budget)?,
             };
             Ok(Etat::Lien {
                 vers: vers_lisible(chemin, &vers)?,
                 puis: Box::new(puis),
-                vu: Vu::de(&m),
+                vu: Vu::de_dans(&m, chemin),
             })
         }
-        Ok(vu) => contenu(chemin, &vu, false, budget),
+        Ok(vu) => contenu(chemin, &vu, false, programme, budget),
     }
 }
 
 /// Le contenu d'un fichier ordinaire déjà vu (`vu`), borné avant d'ouvrir, puis lu en entier.
 #[cfg(unix)]
-fn contenu(chemin: &std::path::Path, vu: &std::fs::Metadata, suivre: bool, budget: &mut Budget) -> Result<Etat, Refus> {
+fn contenu(
+    chemin: &std::path::Path,
+    vu: &std::fs::Metadata,
+    suivre: bool,
+    programme: bool,
+    budget: &mut Budget,
+) -> Result<Etat, Refus> {
     use std::io::Read as _;
     let montre = || crate::ui::chemin_affichable(chemin);
     let illisible = |e: std::io::Error| Refus(trf!("{} ne se lit pas ({e})", "{} cannot be read ({e})", montre()));
@@ -726,7 +846,7 @@ fn contenu(chemin: &std::path::Path, vu: &std::fs::Metadata, suivre: bool, budge
         ));
     }
     let fichier = ouvrir(chemin, vu, suivre).map_err(illisible)?;
-    let ouvert = Vu::de(&fichier.metadata().map_err(illisible)?);
+    let ouvert = Vu::de_dans(&fichier.metadata().map_err(illisible)?, chemin);
     let mut h = sha2::Sha256::new();
     let mut debut: Vec<u8> = Vec::new();
     let mut lus: u64 = 0;
@@ -747,12 +867,34 @@ fn contenu(chemin: &std::path::Path, vu: &std::fs::Metadata, suivre: bool, budge
     if lus > TAILLE_MAX {
         return Err(trop_gros());
     }
-    if debut.len() <= TEXTE_LU && texte_trompeur(&debut) {
-        return Err(Refus(trf!(
-            "{} est un texte avec un retour chariot ou un caractère invisible : à l'écran (cat, éditeur), il ne se lit pas comme il s'exécute",
-            "{} is a text with a carriage return or an invisible character: on screen (cat, editor), it does not read the way it runs",
-            montre()
-        )));
+    // Un binaire ELF, seulement à la place du programme : le noyau le charge, aucun interpréteur ne le lit comme un
+    // texte. Tout le reste est vérifié sur ses octets bruts, en entier (vérification de la campagne E, N4 : un seul
+    // octet non UTF-8 ne fait plus sauter la recherche du retour chariot).
+    if !(programme && binaire_elf(&debut)) {
+        if lus > u64::try_from(TEXTE_LU).unwrap_or(u64::MAX) {
+            return Err(Refus(trf!(
+                "{} n'est pas un programme (ELF) et dépasse ce qui se vérifie comme un texte (1 Mio)",
+                "{} is not a program (ELF) and exceeds what can be checked as a text (1 MiB)",
+                montre()
+            )));
+        }
+        match defaut_du_texte(&debut) {
+            None => {}
+            Some(DefautDuTexte::Octet) => {
+                return Err(Refus(trf!(
+                    "{} n'est ni un programme (ELF) ni du texte (UTF-8) : ce qu'un interpréteur y lit ne se montre pas",
+                    "{} is neither a program (ELF) nor text (UTF-8): what an interpreter reads in it cannot be shown",
+                    montre()
+                )));
+            }
+            Some(DefautDuTexte::Trompeur) => {
+                return Err(Refus(trf!(
+                    "{} est un texte avec un retour chariot ou un caractère invisible : à l'écran (cat, éditeur), il ne se lit pas comme il s'exécute",
+                    "{} is a text with a carriage return or an invisible character: on screen (cat, editor), it does not read the way it runs",
+                    montre()
+                )));
+            }
+        }
     }
     Ok(Etat::Fichier {
         empreinte: h.finalize().into(),
@@ -765,16 +907,38 @@ fn contenu(chemin: &std::path::Path, vu: &std::fs::Metadata, suivre: bool, budge
 #[cfg(unix)]
 const TEXTE_LU: usize = 1024 * 1024;
 
-/// Du texte (UTF-8) dont une ligne a un retour chariot ou un caractère que l'écran ne montre pas tel quel : un
-/// « cat » ou un éditeur le montreraient autrement que l'interpréteur le lit. Un fichier qui n'est pas du texte
-/// (un programme) n'est pas concerné.
-fn texte_trompeur(octets: &[u8]) -> bool {
-    std::str::from_utf8(octets).is_ok_and(|t| {
-        t.split('\n').any(|l| {
+/// Un binaire ELF : l'en-tête « \x7fELF », et un octet nul dans ses 16 premiers octets avant tout saut de ligne
+/// (l'identification d'un vrai ELF en a toujours ; bash refuse aussi de lire comme un script un fichier dont la
+/// première ligne en a un).
+fn binaire_elf(octets: &[u8]) -> bool {
+    octets.starts_with(b"\x7fELF") && octets.iter().take(16).take_while(|o| **o != b'\n').any(|o| *o == 0)
+}
+
+/// Ce qui empêche un fichier de se lire à l'écran comme il s'exécute.
+#[derive(Debug, PartialEq, Eq)]
+enum DefautDuTexte {
+    /// Un octet qui n'est pas de l'UTF-8.
+    Octet,
+    /// Un retour chariot, ou un caractère que l'écran ne montre pas tel quel.
+    Trompeur,
+}
+
+/// Le défaut d'un texte, vérifié sur ses octets bruts : pas de l'UTF-8, ou une ligne avec un retour chariot ou un
+/// caractère que l'écran ne montre pas tel quel (un « cat » ou un éditeur le montreraient autrement que
+/// l'interpréteur le lit) ; `None` : il se lit tel qu'il s'exécute.
+fn defaut_du_texte(octets: &[u8]) -> Option<DefautDuTexte> {
+    if octets.contains(&b'\r') {
+        return Some(DefautDuTexte::Trompeur);
+    }
+    let Ok(t) = std::str::from_utf8(octets) else {
+        return Some(DefautDuTexte::Octet);
+    };
+    t.split('\n')
+        .any(|l| {
             let l = l.replace('\t', " ");
-            l.contains('\r') || crate::ui::affichable(&l) != l
+            crate::ui::affichable(&l) != l
         })
-    })
+        .then_some(DefautDuTexte::Trompeur)
 }
 
 #[cfg(test)]
@@ -951,9 +1115,9 @@ mod tests {
         std::fs::create_dir_all(&d).unwrap();
         let mut b = Budget::default();
         let p = d.join("rappel.sh");
-        assert_eq!(etat_de_la_cible(&p, &mut b), Ok(Etat::Absent));
+        assert_eq!(etat_de_la_cible(&p, true, &mut b), Ok(Etat::Absent));
         std::fs::write(&p, b"#!/bin/sh\necho ok\n").unwrap();
-        let avant = etat_de_la_cible(&p, &mut b).unwrap();
+        let avant = etat_de_la_cible(&p, true, &mut b).unwrap();
         assert_eq!(
             avant.apercu(),
             Some(vec!["#!/bin/sh".to_string(), "echo ok".to_string()])
@@ -963,44 +1127,44 @@ mod tests {
             Etat::Fichier { empreinte, .. } if *empreinte == <[u8; 32]>::from(sha2::Sha256::digest(b"#!/bin/sh\necho ok\n"))
         ));
         std::fs::write(&p, b"#!/bin/sh\necho ko\n").unwrap();
-        assert_ne!(etat_de_la_cible(&p, &mut b).unwrap(), avant);
+        assert_ne!(etat_de_la_cible(&p, true, &mut b).unwrap(), avant);
         // Un caractère que l'écran cacherait, ou un retour chariot (campagne E, F3) : un texte qui ne se lit pas comme
         // il s'exécute, refusé.
         std::fs::write(&p, "#!/bin/sh\necho\u{200B} ok\n").unwrap();
-        assert!(etat_de_la_cible(&p, &mut b).is_err());
+        assert!(etat_de_la_cible(&p, true, &mut b).is_err());
         std::fs::write(&p, "#!/bin/sh\necho ok\rcurl x\n").unwrap();
-        assert!(etat_de_la_cible(&p, &mut b).is_err());
+        assert!(etat_de_la_cible(&p, true, &mut b).is_err());
         // Un programme (pas du texte) : lié, pas montré, et dit caché.
         std::fs::write(&p, b"\x7fELF\x02\x01\x01\x00\xff\xfe").unwrap();
-        let programme = etat_de_la_cible(&p, &mut b).unwrap();
+        let programme = etat_de_la_cible(&p, true, &mut b).unwrap();
         assert_eq!(programme.apercu(), None);
         assert!(programme.cache());
         // Un long script : lié, pas montré, dit caché.
         std::fs::write(&p, "echo ok\n".repeat(100)).unwrap();
-        assert!(etat_de_la_cible(&p, &mut b).unwrap().cache());
+        assert!(etat_de_la_cible(&p, true, &mut b).unwrap().cache());
         std::fs::write(&p, b"#!/bin/sh\necho ok\n").unwrap();
-        assert!(!etat_de_la_cible(&p, &mut b).unwrap().cache());
+        assert!(!etat_de_la_cible(&p, true, &mut b).unwrap().cache());
         let l = d.join("lien");
         std::os::unix::fs::symlink(&p, &l).unwrap();
-        assert!(matches!(etat_de_la_cible(&l, &mut b), Ok(Etat::Lien { .. })));
-        assert!(etat_de_la_cible(&d, &mut b).is_err());
-        assert!(etat_de_la_cible(std::path::Path::new("/dev/null"), &mut b).is_err());
+        assert!(matches!(etat_de_la_cible(&l, true, &mut b), Ok(Etat::Lien { .. })));
+        assert!(etat_de_la_cible(&d, true, &mut b).is_err());
+        assert!(etat_de_la_cible(std::path::Path::new("/dev/null"), true, &mut b).is_err());
         let tube = d.join("tube");
         if std::process::Command::new("mkfifo")
             .arg(&tube)
             .status()
             .is_ok_and(|s| s.success())
         {
-            assert!(etat_de_la_cible(&tube, &mut b).is_err());
+            assert!(etat_de_la_cible(&tube, true, &mut b).is_err());
             assert!(lire_borne(&tube, 10).is_err());
         }
         // Un fichier creux plus gros que la borne : refusé sans être lu.
         let creux = d.join("creux");
         std::fs::File::create(&creux).unwrap().set_len(TAILLE_MAX + 1).unwrap();
-        assert!(etat_de_la_cible(&creux, &mut b).is_err());
+        assert!(etat_de_la_cible(&creux, true, &mut b).is_err());
         // Le budget épuisé : refusé sans lire.
         let mut vide = Budget { fichiers: 0, octets: 0 };
-        assert!(etat_de_la_cible(&p, &mut vide).is_err());
+        assert!(etat_de_la_cible(&p, true, &mut vide).is_err());
         let lu = lire_borne(&p, 4).unwrap();
         assert_eq!((lu.octets.len(), lu.entier), (4, false));
         let _ = std::fs::remove_dir_all(&d);
@@ -1018,7 +1182,7 @@ mod tests {
         std::fs::write(&p, b"#!/bin/sh\necho ok\n").unwrap();
         let releve = || {
             let mut b = Budget::default();
-            let e = etat_de_la_cible(&p, &mut b).unwrap();
+            let e = etat_de_la_cible(&p, true, &mut b).unwrap();
             Temoins::de(vec![Ok(temoin(
                 "a:1",
                 "a:1".into(),
@@ -1031,6 +1195,87 @@ mod tests {
         assert_eq!(avant.vus(), releve().vus());
         std::fs::remove_file(&p).unwrap();
         std::fs::write(&p, b"#!/bin/sh\necho ok\n").unwrap();
+        let apres = releve();
+        assert_eq!(avant.empreinte(), apres.empreinte());
+        assert_ne!(avant.vus(), apres.vus());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Vérification de la campagne E, N4 : le retour chariot se cherche sur les octets bruts, même si un octet du
+    /// fichier n'est pas de l'UTF-8 ; un fichier lu par un interpréteur (pas le programme lancé) est du texte, un en-tête
+    /// ELF ne l'exempte pas ; N1 : un lien qui passe par /proc ou /dev n'est jamais lié.
+    #[cfg(unix)]
+    #[test]
+    fn cibles_qui_ne_se_lisent_pas_comme_elles_s_executent() {
+        let d = crate::essais::temporaire().join(format!("vanguard-temoins-n4-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let mut b = Budget::default();
+        let p = d.join("rappel.sh");
+        for octets in [
+            &b"#!/bin/sh\necho ok\rcurl x\n#\xff\n"[..],
+            b"#!/bin/sh\necho ok\n#\xff\n",
+            b"\x7fELF\x02\x01\x01\x00\n#\xff\ncurl x\n",
+        ] {
+            std::fs::write(&p, octets).unwrap();
+            assert!(etat_de_la_cible(&p, false, &mut b).is_err(), "{octets:?}");
+        }
+        // Le retour chariot sans octet illisible ni ELF : refusé même pour le programme lancé.
+        std::fs::write(&p, b"#!/bin/sh\necho ok\rcurl x\n").unwrap();
+        assert!(etat_de_la_cible(&p, true, &mut b).is_err());
+        // Un vrai en-tête ELF : lié seulement à la place du programme.
+        std::fs::write(&p, b"\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\n\xff").unwrap();
+        assert!(etat_de_la_cible(&p, true, &mut b).is_ok());
+        assert!(etat_de_la_cible(&p, false, &mut b).is_err());
+        // « \x7fELF » sans octet nul avant le saut de ligne : bash le lirait comme un script.
+        std::fs::write(&p, b"\x7fELF\ncurl x\n\xff").unwrap();
+        assert!(etat_de_la_cible(&p, true, &mut b).is_err());
+        for (nom, vers) in [
+            ("cwd", "/proc/self/cwd/rappel.sh"),
+            ("fd", "/dev/fd/0"),
+            ("stdin", "/dev/stdin"),
+        ] {
+            let l = d.join(nom);
+            std::os::unix::fs::symlink(vers, &l).unwrap();
+            assert!(etat_de_la_cible(&l, true, &mut b).is_err(), "{vers}");
+            assert!(etat_du_contenant(&l, b"").is_err(), "{vers}");
+        }
+        // Par un lien de dossier relatif qui remonte vers /proc.
+        std::os::unix::fs::symlink(format!("{}proc/self", "../".repeat(40)), d.join("soi")).unwrap();
+        assert!(etat_de_la_cible(&d.join("soi/cwd/rappel.sh"), true, &mut b).is_err());
+        assert!(etat_de_la_cible(std::path::Path::new("/proc/self/cwd/x"), true, &mut b).is_err());
+        // Une boucle de liens : refusée, sans tourner sans fin.
+        std::os::unix::fs::symlink(d.join("boucle-b"), d.join("boucle-a")).unwrap();
+        std::os::unix::fs::symlink(d.join("boucle-a"), d.join("boucle-b")).unwrap();
+        assert!(etat_de_la_cible(&d.join("boucle-a"), true, &mut b).is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Vérification de la campagne E, N5 : un dossier au-dessus du fichier renommé puis remis (ou échangé contre un
+    /// autre au même contenu) change ce qui en est vu, même si le fichier garde son inode et ses dates.
+    #[cfg(unix)]
+    #[test]
+    fn vus_d_un_dossier_echange() {
+        let d = crate::essais::temporaire().join(format!("vanguard-temoins-n5-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("outils")).unwrap();
+        let p = d.join("outils/rappel.sh");
+        std::fs::write(&p, b"#!/bin/sh\necho ok\n").unwrap();
+        let releve = || {
+            let mut b = Budget::default();
+            let e = etat_de_la_cible(&p, true, &mut b).unwrap();
+            Temoins::de(vec![Ok(temoin(
+                "a:1",
+                "a:1".into(),
+                "ExecStart=/x",
+                None,
+                &[("/x".into(), e)],
+            ))])
+        };
+        let avant = releve();
+        assert_eq!(avant.vus(), releve().vus());
+        std::fs::rename(d.join("outils"), d.join("ailleurs")).unwrap();
+        std::fs::rename(d.join("ailleurs"), d.join("outils")).unwrap();
         let apres = releve();
         assert_eq!(avant.empreinte(), apres.empreinte());
         assert_ne!(avant.vus(), apres.vus());

@@ -510,30 +510,42 @@ déclare pas, une ligne en forme de porte dérobée (shell vers le réseau) non 
 chaque ligne signalée sans exception (fichier:ligne, empreinte du fichier, programme, script ou bibliothèque désignés
 et leur empreinte) ; le choix se confirme toujours (taper « normal » dès le niveau élevé), seulement au clavier dans
 un terminal (entrée et sortie : un choix venu d'un tube est refusé), et l'état est relevé de nouveau à la confirmation
-: un fichier changé pendant la lecture fait tout refuser. Chaque choix est noté au journal. Le choix est lié à cet
-état exact : une ligne ajoutée ou changée, une autre source dans la même alerte, le fichier, un ajout de systemd
-(dossiers .d, y compris ceux de la session et de priorité), y compris sous un alias de l'unité et dans
-/run/systemd/user, le programme lancé ou le script passé à un interpréteur changé, remplacé par un lien ou effacé, une
-variable sensible (LD_*, PYTHON*, NODE_*, BASH_ENV, PS4, XDG_CONFIG_HOME…) posée pour les sessions (profils, Hyprland,
-environment.d, DefaultEnvironment de systemd, pam_env) font revenir l'alerte, qui dit alors pourquoi et où. Ce qui ne
-se relève pas sans ambiguïté (une variable, un tube, du code dans la ligne, un module, un lanceur comme env ou sudo,
-un ajout qui redirige le programme ou son environnement, un fichier illisible, un octet qui n'est pas de l'UTF-8 dans
-la ligne, son fichier ou un chemin, un texte au retour chariot ou au caractère invisible, l'entrée standard d'un
-service, un argument qui n'est ni une option ni un chemin absolu pour un programme que Vanguard ne reconnaît pas comme
-interpréteur, plus de 12 lignes) ne peut pas être déclaré normal ; un fichier lié trop long ou qui n'est pas du texte
-n'est pas montré, ce qui est dit (son empreinte se compare avec sha256sum) ; la confirmation compare aussi l'appareil,
-l'inode et les dates de chaque fichier, si bien qu'un fichier échangé puis remis pendant la lecture se voit ; une
-liste reprise ou gardée telle quelle après une falsification perd les états qu'elle disait. Limites : un programme
-cherché dans le PATH et ce que le script ou le programme lancé lit à son tour (fichier sourcé, import, bibliothèque)
-ne sont pas liés ; un profil est un programme : ses variables au nom calculé et les fichiers qu'il source ne sont pas
-suivis ; une variable posée pendant la session (systemctl --user set-environment) et l'environnement de Vanguard
-lui-même ne sont pas liés ; une option collée à sa valeur (« -mmodule ») n'est pas lue comme un argument ; un texte
-lié de plus de 1 Mio n'est pas vérifié pour le retour chariot ; un fichier lancé de plus de 32 Mio (node, deno) ne se
-lie pas, donc ne se déclare pas ; les dossiers ajoutés par XDG_CONFIG_DIRS ou XDG_DATA_DIRS ne sont pas suivis ;
-l'état n'est comparé qu'à chaque bilan, si bien qu'un programme qui remet le contenu d'origine avant chaque passage ne
-se voit pas ; un programme hostile qui ouvre lui-même un pseudo-terminal peut répondre à la place de la personne, mais
-le choix reste alors noté au journal ; sous Windows, les clés Run et les tâches se déclarent encore par leur seule
-ligne de commande.
+: un fichier changé pendant la lecture fait tout refuser. Chaque choix est noté au journal, et la liste ne s'écrit que
+sous son verrou, relue juste avant : deux Vanguard ouverts en même temps ne s'écrasent pas un choix. Le choix est lié
+à cet état exact : une ligne ajoutée ou changée, une autre source dans la même alerte, le fichier, un ajout de systemd
+(dossiers .d, y compris ceux de la session et de priorité, et ceux d'un XDG_CONFIG_HOME ou XDG_DATA_HOME déplacé),
+y compris sous un alias de l'unité ou un alias d'alias et dans /run/systemd/user, le programme lancé ou le script
+passé à un interpréteur changé, remplacé par un lien ou effacé, et tout changement d'un fichier qui pose des
+variables pour les sessions (profils de bash, zsh et fish, Hyprland et les fichiers qu'il lit par « source = »,
+environment.d, configuration du gestionnaire systemd, pam_env), lu en entier, même un commentaire, font revenir
+l'alerte, qui dit alors pourquoi et où. Ce qui ne se relève pas sans ambiguïté (une variable, un tube, du code dans la
+ligne, un module, un lanceur comme env ou sudo, un ajout qui redirige le programme, son dossier de travail ou son
+environnement, une variable de service hors d'une courte liste connue (LANG, TZ, DISPLAY…) ou écrite avec une barre
+oblique inversée, un fichier illisible, un octet qui n'est pas de l'UTF-8 dans la ligne, son fichier ou un chemin, un
+script au retour chariot ou au caractère invisible, cherchés sur les octets bruts, un fichier lu par un interpréteur
+qui n'est pas du texte, l'entrée standard d'un service, un chemin par /proc ou /dev ou avec « . » ou « .. », qui
+désigne un autre fichier selon le programme qui le lit, un argument qui n'est ni une option ni un chemin absolu pour un
+programme que Vanguard ne reconnaît pas comme interpréteur, y compris après « -- » et dans la valeur d'une option, une
+copie d'un interpréteur du système sous un autre nom, un dossier personnel qui ne se lit pas, plus de 12 lignes) ne
+peut pas être déclaré normal ; un fichier lié trop long ou qui n'est pas du texte n'est pas montré, ce qui est dit (son
+empreinte se compare avec sha256sum) ; la confirmation compare aussi l'appareil, l'inode et les dates de chaque
+fichier et de chaque dossier au-dessus de lui, si bien qu'un fichier ou un de ses dossiers échangé puis remis pendant
+la lecture se voit ; une liste reprise ou gardée telle quelle après une falsification perd les états qu'elle disait.
+Limites : un programme cherché dans le PATH et ce que le script ou le programme lancé lit à son tour (fichier sourcé,
+import, bibliothèque, « dofile » d'une configuration Lua) ne sont pas liés ; un programme que Vanguard ne reconnaît
+pas peut lire un fichier nommé par une option collée (« -fMakefile ») : rien ne lie ce qu'il lit ; un profil est un
+programme : ses variables au nom calculé et les fichiers qu'il lit par un chemin calculé (« . "$DOSSIER/x" ») ne sont
+pas suivis, mais son propre contenu est lié ; une variable posée pendant la session (systemctl --user
+set-environment) et l'environnement de Vanguard lui-même ne sont pas liés ; un fichier à en-tête ELF mais malformé, à la
+place du programme, est lié par son empreinte sans être vérifié comme un texte, alors qu'un shell pourrait le lire ; un fichier lancé de plus de 32 Mio (node, deno)
+ou un fichier non ELF de plus de 1 Mio ne se lie pas, donc ne se déclare pas ; les dossiers ajoutés par
+XDG_CONFIG_DIRS ou XDG_DATA_DIRS ne sont pas suivis ; l'état n'est comparé qu'à chaque bilan, si bien qu'un programme
+qui remet le contenu d'origine avant chaque passage ne se voit pas ; lier tout l'environnement fait revenir les
+alertes acceptées à chaque changement d'un profil, de Hyprland ou de /etc/profile.d (une mise à jour de paquet
+comprise), du côté sûr, et un dossier du chemin changé entre le bilan et la confirmation fait refuser le choix, à
+refaire ; un programme hostile qui ouvre lui-même un pseudo-terminal peut répondre à la place de la personne, mais le
+choix reste alors noté au journal ; sous Windows, les clés Run et les tâches se déclarent encore par leur seule ligne
+de commande.
 
 ## Ce qui sort de l'ordinateur
 

@@ -80,8 +80,42 @@ fn charger() -> Result<Appris, Refus> {
     }
 }
 
-/// Le verrou d'un choix retenu à la fois, de la lecture de la liste à son écriture (`accepter`).
+/// Le verrou d'une écriture de la liste à la fois, de sa relecture à son écriture (`sous_verrou`).
 pub(crate) const VERROU: &str = "appris.lock";
+
+/// Ce qu'une écriture fait de la liste relue sous le verrou.
+enum Nouvelle {
+    /// Rien : la liste reste telle quelle.
+    Inchangee,
+    Ecrire(Appris),
+    /// Effacée (ses choix oubliés).
+    Effacer,
+}
+
+/// Le seul chemin d'écriture de la liste des choix (vérification de la campagne E, N8) : sous le verrou, la liste est
+/// relue, `changer` décide sur ce qu'elle contient maintenant (pas sur ce qui a été lu avant une question), puis
+/// elle est écrite. Deux Vanguard (un bilan qui complète des clés, un menu qui oublie un choix) ne s'écrasent pas :
+/// un choix retiré ne revient pas, un choix retenu ne se perd pas. `Ok(true)` : écrite ; `Err` : verrou pas tenu ou
+/// écriture ratée, rien n'a changé.
+fn sous_verrou(changer: impl FnOnce(Result<Appris, Refus>) -> Nouvelle) -> std::io::Result<bool> {
+    let _verrou = crate::socle::Verrou::prendre(
+        &crate::socle::dossier_local(),
+        VERROU,
+        false,
+        crate::socle::ATTENTE_ECRITURE,
+    )
+    .map_err(|e| e.erreur(VERROU))?;
+    match changer(charger()) {
+        Nouvelle::Inchangee => Ok(false),
+        Nouvelle::Ecrire(a) => enregistrer(&a).map(|()| true),
+        Nouvelle::Effacer => crate::sceau::effacer(crate::sceau::APPRIS).map(|()| true),
+    }
+}
+
+/// La même liste, au choix près : ce qui a été montré à la personne est encore ce qui serait écrit.
+fn meme_liste(a: &Appris, b: &Appris) -> bool {
+    serde_json::to_string(a).ok() == serde_json::to_string(b).ok()
+}
 
 fn enregistrer(appris: &Appris) -> std::io::Result<()> {
     crate::sceau::ecrire(
@@ -359,44 +393,31 @@ fn accepter(c: &Constat) -> bool {
     if declarable(c).is_err() {
         return false;
     }
-    // Tenu de la lecture à l'écriture : deux Vanguard qui retiennent chacun un choix en même temps n'en perdent aucun.
-    let _verrou = match crate::socle::Verrou::prendre(
-        &crate::socle::dossier_local(),
-        VERROU,
-        false,
-        crate::socle::ATTENTE_ECRITURE,
-    ) {
-        Ok(v) => v,
-        Err(e) => {
-            trp!(
-                "    ✖ Choix non retenu ({}).",
-                "    ✖ Choice not saved ({}).",
-                e.erreur(VERROU)
-            );
-            return false;
+    // Relue sous le verrou : deux Vanguard qui retiennent chacun un choix en même temps n'en perdent aucun.
+    let ecrit = sous_verrou(|lue| match lue {
+        Ok(mut appris) => {
+            retenir(&mut appris, c, niveau, aujourd_hui());
+            Nouvelle::Ecrire(appris)
         }
-    };
-    let mut appris = match charger() {
-        Ok(a) => a,
         Err(Refus::Illisible) => {
             trp!(
                 "    ✖ La liste de vos choix ne se lit plus ({}) : rien n'est retenu, pour ne pas l'écraser.",
                 "    ✖ Your choice list can no longer be read ({}): nothing is saved, so as not to overwrite it.",
                 fichier().display()
             );
-            return false;
+            Nouvelle::Inchangee
         }
         Err(Refus::Falsifiee(_)) => {
             trp!(
                 "    ✖ La liste de vos choix a été changée hors de Vanguard : rien\n      n'est retenu. « Ce que Vanguard a appris » la montre, pour la\n      reprendre ou l'oublier.",
                 "    ✖ Your choice list was changed outside Vanguard: nothing is\n      saved. “What Vanguard has learned” shows it, to take it back or\n      forget it."
             );
-            return false;
+            Nouvelle::Inchangee
         }
-    };
-    retenir(&mut appris, c, niveau, aujourd_hui());
-    match enregistrer(&appris) {
-        Ok(()) => {
+    });
+    match ecrit {
+        Ok(false) => false,
+        Ok(true) => {
             crate::amelioration::noter_choix(c.regle, crate::amelioration::Choisi::Normale);
             noter_au_journal(c);
             trp!(
@@ -477,8 +498,19 @@ pub fn appliquer(constats: &mut [Constat]) -> usize {
     let n = appliquer_avec(&appris, constats, aujourd_hui(), &mut cles);
     // Pas sur une liste adoptée au premier usage des sceaux : la réécrire la scellerait sans ton accord (le menu le
     // demande).
-    if completer(&mut appris, cles) && !crate::sceau::adopte(crate::sceau::APPRIS) {
-        let _ = enregistrer(&appris);
+    // Les clés s'ajoutent à la liste relue sous le verrou, pas à celle lue au début du bilan : un choix oublié
+    // entre-temps dans un autre Vanguard ne revient pas.
+    if !cles.is_empty() && !crate::sceau::adopte(crate::sceau::APPRIS) {
+        let _ = sous_verrou(|lue| match lue {
+            Ok(mut a) if !crate::sceau::adopte(crate::sceau::APPRIS) => {
+                if completer(&mut a, cles) {
+                    Nouvelle::Ecrire(a)
+                } else {
+                    Nouvelle::Inchangee
+                }
+            }
+            _ => Nouvelle::Inchangee,
+        });
     }
     n
 }
@@ -730,7 +762,7 @@ pub fn menu() {
     habitudes();
     crate::protection::normales::section();
     section(tr!("VOS CHOIX", "YOUR CHOICES"));
-    let mut appris = match charger() {
+    let appris = match charger() {
         Ok(a) => a,
         Err(Refus::Illisible) => {
             trp!(
@@ -749,7 +781,10 @@ pub fn menu() {
     if appris.acceptees.is_empty() {
         // Une liste vide ne tait rien : la resceller sans demander.
         if adoptee {
-            let _ = enregistrer(&appris);
+            let _ = sous_verrou(|lue| match lue {
+                Ok(a) if a.acceptees.is_empty() && crate::sceau::adopte(crate::sceau::APPRIS) => Nouvelle::Ecrire(a),
+                _ => Nouvelle::Inchangee,
+            });
         }
         for ligne in envelopper(
             tr!(
@@ -807,11 +842,22 @@ pub fn menu() {
         }
         return;
     }
-    for (signature, _) in a_oublier.iter().filter_map(|&i| liste.get(i)) {
-        appris.acceptees.remove(signature);
-    }
-    match enregistrer(&appris) {
-        Ok(()) => {
+    // Retirés de la liste relue sous le verrou : un choix retenu entre-temps par un autre Vanguard reste.
+    let ecrit = sous_verrou(|lue| match lue {
+        Ok(mut a) => {
+            for (signature, _) in a_oublier.iter().filter_map(|&i| liste.get(i)) {
+                a.acceptees.remove(signature);
+            }
+            Nouvelle::Ecrire(a)
+        }
+        Err(_) => Nouvelle::Inchangee,
+    });
+    match ecrit {
+        Ok(false) => trp!(
+            "  ✖ La liste de vos choix a changé hors de ce menu : rien n'est oublié. Rouvrez-le.",
+            "  ✖ Your choice list changed outside this menu: nothing is forgotten. Open it again."
+        ),
+        Ok(true) => {
             // Le relevé local ne garde que la règle de chaque choix oublié (la clé porte l'objet, parfois un chemin).
             for (_, a) in a_oublier.iter().filter_map(|&i| liste.get(i)) {
                 if let Some((regle, _)) = a.cle.as_deref().and_then(|k| k.split_once('|')) {
@@ -844,8 +890,29 @@ fn garder_adoptee(appris: &Appris) {
     {
         return;
     }
-    match enregistrer(appris) {
-        Ok(()) => trp!("  {VERT}✔{RESET} C'est noté.", "  {VERT}✔{RESET} Noted."),
+    // Écrite seulement si la liste est encore celle qui vient d'être montrée et acceptée.
+    let ecrit = sous_verrou(|lue| match lue {
+        Ok(mut a) if crate::sceau::adopte(crate::sceau::APPRIS) => {
+            retirer_etats(&mut a);
+            if meme_liste(&a, appris) {
+                Nouvelle::Ecrire(a)
+            } else {
+                Nouvelle::Inchangee
+            }
+        }
+        _ => Nouvelle::Inchangee,
+    });
+    dire_l_ecriture(ecrit);
+}
+
+/// Ce qu'une écriture demandée dans le menu a donné, à l'écran.
+fn dire_l_ecriture(ecrit: std::io::Result<bool>) {
+    match ecrit {
+        Ok(true) => trp!("  {VERT}✔{RESET} C'est noté.", "  {VERT}✔{RESET} Noted."),
+        Ok(false) => trp!(
+            "  ✖ La liste de vos choix a changé pendant cette question : rien n'est écrit. Rouvrez le menu.",
+            "  ✖ Your choice list changed during this question: nothing is written. Open the menu again."
+        ),
         Err(e) => trp!("  ✖ Impossible d'enregistrer ({e}).", "  ✖ Could not save ({e})."),
     }
 }
@@ -905,22 +972,32 @@ fn reprendre(contenu: Option<Appris>) {
             "\n  These are really your choices: keep them? [y/N]: "
         ))
         .oui();
-    let ecrit = if garder {
-        enregistrer(&appris)
-    } else if demander(tr!(
-        "  Tout oublier (leurs alertes reviendront) ? [o/N] : ",
-        "  Forget everything (their alerts will come back)? [y/N]: "
-    ))
-    .oui()
-    {
-        crate::sceau::effacer(crate::sceau::APPRIS)
-    } else {
+    let oublier = !garder
+        && demander(tr!(
+            "  Tout oublier (leurs alertes reviendront) ? [o/N] : ",
+            "  Forget everything (their alerts will come back)? [y/N]: "
+        ))
+        .oui();
+    if !garder && !oublier {
         return;
-    };
-    match ecrit {
-        Ok(()) => trp!("  {VERT}✔{RESET} C'est noté.", "  {VERT}✔{RESET} Noted."),
-        Err(e) => trp!("  ✖ Impossible d'enregistrer ({e}).", "  ✖ Could not save ({e})."),
     }
+    // Sous le verrou, la liste doit être encore celle qui vient d'être montrée : garder ou oublier une autre liste
+    // (réécrite pendant la question) serait un choix que la personne n'a pas vu.
+    let ecrit = sous_verrou(|lue| {
+        let Err(Refus::Falsifiee(contenu)) = lue else {
+            return Nouvelle::Inchangee;
+        };
+        let mut maintenant = contenu.unwrap_or_default();
+        retirer_etats(&mut maintenant);
+        if !meme_liste(&maintenant, &appris) {
+            Nouvelle::Inchangee
+        } else if garder {
+            Nouvelle::Ecrire(maintenant)
+        } else {
+            Nouvelle::Effacer
+        }
+    });
+    dire_l_ecriture(ecrit);
 }
 
 #[allow(
@@ -972,6 +1049,22 @@ mod tests {
 
     fn jour(t: &str) -> NaiveDate {
         date(t).unwrap()
+    }
+
+    /// Vérification de la campagne E, N8 : la liste ne s'écrit (ni ne s'efface) que par `sous_verrou`, qui la relit
+    /// sous le verrou. Un nouvel écrivain qui l'écrirait de son côté pourrait écraser un choix fait à côté.
+    #[test]
+    fn une_seule_porte_d_ecriture() {
+        let source = include_str!("apprentissage.rs");
+        let code = source.split("#[cfg(test)]\nmod tests").next().unwrap();
+        assert_eq!(
+            code.matches("enregistrer(").count(),
+            2,
+            "sa définition et `sous_verrou`"
+        );
+        assert_eq!(code.matches("sceau::effacer(").count(), 1, "`sous_verrou` seul");
+        assert_eq!(code.matches("Verrou::prendre(").count(), 1, "`sous_verrou` seul");
+        assert_eq!(code.matches("sceau::ecrire(").count(), 1, "dans `enregistrer`");
     }
 
     #[test]
