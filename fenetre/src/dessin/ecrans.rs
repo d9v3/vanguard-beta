@@ -184,7 +184,7 @@ fn accueil(appli: &mut Appli, ui: &mut Ui) {
             prot_c,
             Ecran::Commande(Commande::Protection),
         ),
-        (crate::tr!("Journal", "Journal"), jour_v, jour_p, jour_c, Ecran::Alertes),
+        (crate::tr!("Journal", "Log"), jour_v, jour_p, jour_c, Ecran::Alertes),
     ];
     let large = ui.available_width() >= 900.0;
     // Entre deux tuiles, le même écart que sous elles (16) : à 8, les trois cartes se touchaient presque.
@@ -850,7 +850,7 @@ fn alertes(appli: &mut Appli, ui: &mut Ui) {
         None => vide::carte_vide(
             ui,
             c.rubrique(),
-            crate::tr!("Journal pas encore lu", "Journal not read yet"),
+            crate::tr!("Journal pas encore lu", "Log not read yet"),
             crate::tr!(
                 "Vanguard y note ses alertes et ce qu'il a fait, dans un journal scellé ; la lecture vérifie aussi qu'il est intact.",
                 "Vanguard records its alerts and what it did there, in a sealed journal; reading it also checks it is intact."

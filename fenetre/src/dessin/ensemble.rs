@@ -253,7 +253,7 @@ fn dernieres_alertes(appli: &Appli, ui: &mut Ui) {
             ui.label(texte(
                 crate::tr!(
                     "Journal pas encore lu : ses alertes se rangeront ici.",
-                    "Journal not read yet: its alerts will line up here."
+                    "Log not read yet: its alerts will line up here."
                 ),
                 13.0,
                 p.discret,
