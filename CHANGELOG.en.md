@@ -76,7 +76,9 @@ repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
 - **Fixes.** Antivirus: clamscan is no longer run when it has nothing to scan (it read the current folder), and a
   ClamAV database older than a week is no longer called up to date. Secrets: a history or a search cut at its limit is
   reported instead of a ✔, a repository read halfway is unchecked, the search stops after 20 minutes and its reports,
-  which name the commit authors, are deleted. Containers: no more "run again with sudo".
+  which name the commit authors, are deleted. Containers: no more "run again with sudo". Alerts declared normal: two
+  declarations at the same time (blocking, a release from quarantine, the menu) no longer erase each other; a lost
+  release from quarantine sent the file back there at the next pass.
 - **Hardened after an attack campaign.** `demarrage --retirer` and `--remettre` no longer follow any folder that is a
   link (~/.config or its autostart folder replaced by a link): nothing is written outside the home folder, and an entry
   kept behind a link is no longer offered. A single read makes what is shown, noted and written: an entry changed

@@ -562,7 +562,7 @@ static TEMOINS_REFUSES: std::sync::Mutex<std::collections::BTreeSet<PathBuf>> =
     std::sync::Mutex::new(std::collections::BTreeSet::new());
 
 /// Root n'écrit pas dans le dossier d'un compte (`socle::ecriture_sure`).
-fn dossier_d_un_autre() -> std::io::Error {
+pub(crate) fn dossier_d_un_autre() -> std::io::Error {
     std::io::Error::new(
         std::io::ErrorKind::PermissionDenied,
         tr!(

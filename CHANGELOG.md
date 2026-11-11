@@ -80,6 +80,8 @@ recompilée au besoin.
   et une base ClamAV de plus d'une semaine n'est plus dite à jour. Secrets : un historique ou une recherche coupés à
   leur borne sont dits au lieu d'un ✔, un dépôt lu à moitié est non vérifié, la recherche s'arrête après 20 minutes et
   ses rapports, qui nomment les auteurs des commits, sont effacés. Conteneurs : plus de « relancez avec sudo ».
+  Alertes déclarées normales : deux déclarations en même temps (le blocage, une sortie de quarantaine, le menu) ne
+  s'effacent plus l'une l'autre ; une sortie de quarantaine perdue y renvoyait le fichier à la passe suivante.
 - **Renforcé après une campagne d'attaque.** `demarrage --retirer` et `--remettre` ne suivent plus aucun dossier qui
   est un lien (~/.config ou son dossier autostart remplacé par un lien) : rien ne s'écrit hors du dossier personnel, et
   une entrée rangée derrière un lien n'est plus proposée. Une seule lecture fait ce qui est montré, noté et écrit :

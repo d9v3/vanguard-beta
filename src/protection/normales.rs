@@ -147,24 +147,48 @@ fn declarer_dans(
     titre: &str,
     texte: &str,
 ) -> Result<(), crate::modele::Echec> {
-    use crate::modele::{Echec, Raison};
-    const OU: &str = "normales/declarer";
-    let mut n = charger_de(dossier).map_err(|r| match r {
-        Refus::Falsifiee => Echec::new(OU, Raison::Falsifie).detail(raison(&r)),
-        Refus::Illisible => Echec::new(OU, Raison::Illisible(raison(&r).to_string())),
+    sous_verrou(dossier, "normales/declarer", |n| {
+        n.alertes.insert(
+            cle.to_string(),
+            Normale {
+                genre: genre.to_string(),
+                titre: titre.to_string(),
+                texte: texte.to_string(),
+                le: aujourd_hui().format("%Y-%m-%d").to_string(),
+            },
+        );
     })?;
-    n.alertes.insert(
-        cle.to_string(),
-        Normale {
-            genre: genre.to_string(),
-            titre: titre.to_string(),
-            texte: texte.to_string(),
-            le: aujourd_hui().format("%Y-%m-%d").to_string(),
-        },
-    );
-    enregistrer_vers(dossier, &n).map_err(|e| Echec::ecriture(OU, &e))?;
     noter_au_journal(cle, Some(titre));
     Ok(())
+}
+
+/// Le verrou des changements de la liste, à côté d'elle : tenu de la relecture jusqu'à l'écriture. À part du verrou
+/// des sceaux, qu'`ecrire_dans` prend lui-même (un `flock` ne se reprend pas dans le même processus).
+pub(crate) const VERROU: &str = "normales.lock";
+
+/// Le seul chemin d'écriture de la liste, hors de sa remise à zéro (vérification 0.94) : sous `VERROU`, elle est
+/// relue, `changer` la change telle qu'elle est maintenant, puis elle est écrite. Relue avant le verrou des sceaux,
+/// deux Vanguard qui déclaraient en même temps (le blocage en direct, une sortie de quarantaine, le menu) écrivaient
+/// chacun sa liste sans le choix de l'autre : une sortie de quarantaine oubliée, le fichier y retournait ; un choix
+/// oublié dans le menu, réécrit par l'autre, taisait de nouveau son alerte. `Err` : rien n'a changé.
+fn sous_verrou(
+    dossier: &std::path::Path,
+    ou: &'static str,
+    changer: impl FnOnce(&mut Normales),
+) -> Result<(), crate::modele::Echec> {
+    use crate::modele::{Echec, Raison};
+    // Comme les sceaux : en administrateur dans le dossier d'un compte, rien n'y est créé, pas même le verrou.
+    if !crate::socle::ecriture_sure(dossier) {
+        return Err(Echec::ecriture(ou, &crate::sceau::dossier_d_un_autre()));
+    }
+    let _verrou = crate::socle::Verrou::prendre(dossier, VERROU, false, crate::socle::ATTENTE_ECRITURE)
+        .map_err(|e| Echec::ecriture(ou, &e.erreur(VERROU)))?;
+    let mut n = charger_de(dossier).map_err(|r| match r {
+        Refus::Falsifiee => Echec::new(ou, Raison::Falsifie).detail(raison(&r)),
+        Refus::Illisible => Echec::new(ou, Raison::Illisible(raison(&r).to_string())),
+    })?;
+    changer(&mut n);
+    enregistrer_vers(dossier, &n).map_err(|e| Echec::ecriture(ou, &e))
 }
 
 fn raison(r: &Refus) -> &'static str {
@@ -256,7 +280,7 @@ fn recentes(
 /// (à oublier), et les récentes (à déclarer normales).
 pub(crate) fn section() {
     crate::ui::section(tr!("ALERTES DE LA SURVEILLANCE", "MONITORING ALERTS"));
-    let mut n = match charger() {
+    let n = match charger() {
         Ok(n) => n,
         Err(r) => {
             afficher_aligne(
@@ -357,29 +381,30 @@ pub(crate) fn section() {
         // Un numéro 0 ne désigne rien (la liste commence à 1).
         let rang = c.checked_sub(1);
         if let Some((cle, _)) = rang.and_then(|r| declarees.get(r)) {
-            n.alertes.remove(cle);
             faits.push((cle.clone(), None));
         } else if let Some(a) = rang
             .and_then(|r| r.checked_sub(declarees.len()))
             .and_then(|r| recentes.get(r))
             && let Some(cle) = &a.cle
         {
-            faits.push((cle.clone(), Some(a.titre.clone())));
-            n.alertes.insert(
+            faits.push((
                 cle.clone(),
-                Normale {
+                Some(Normale {
                     genre: a.genre.clone(),
                     titre: a.titre.clone(),
                     texte: a.texte.clone(),
                     le: jour.format("%Y-%m-%d").to_string(),
-                },
-            );
+                }),
+            ));
         }
     }
-    match enregistrer(&n) {
+    // Les choix seuls, posés sur la liste relue sous le verrou : celle lue avant la question a pu changer depuis.
+    match sous_verrou(&crate::socle::dossier_local(), "normales/section", |n| {
+        appliquer(n, &faits);
+    }) {
         Ok(()) => {
-            for (cle, titre) in &faits {
-                noter_au_journal(cle, titre.as_deref());
+            for (cle, choix) in &faits {
+                noter_au_journal(cle, choix.as_ref().map(|a| a.titre.as_str()));
             }
             afficher_aligne(
                 &format!("  {VERT}✔{RESET} "),
@@ -392,6 +417,20 @@ pub(crate) fn section() {
             );
         }
         Err(e) => trp!("  ✖ Impossible d'enregistrer ({e}).", "  ✖ Could not save ({e})."),
+    }
+}
+
+/// Les choix du menu sur la liste : `Some` la déclare normale, `None` l'oublie.
+fn appliquer(n: &mut Normales, faits: &[(String, Option<Normale>)]) {
+    for (cle, choix) in faits {
+        match choix {
+            Some(a) => {
+                n.alertes.insert(cle.clone(), a.clone());
+            }
+            None => {
+                n.alertes.remove(cle);
+            }
+        }
     }
 }
 
@@ -466,6 +505,55 @@ mod tests {
         assert!(declarer_dans(&d, &cle_blocage("autre"), "blocage", "t", "x").is_err());
         enregistrer_vers(&d, &Normales::default()).unwrap();
         assert!(!est_normale_de(&d, &cle));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Deux Vanguard qui déclarent en même temps (le blocage en direct, une sortie de quarantaine) ne s'effacent pas :
+    /// relue avant le verrou des sceaux, la liste de l'un était réécrite sans le choix de l'autre (vu sous Wine : la
+    /// sortie de quarantaine oubliée, le fichier y serait retourné à la passe suivante).
+    #[test]
+    fn declarations_simultanees_toutes_gardees() {
+        let d = crate::protection::isoler::dossier_jetable().unwrap();
+        std::thread::scope(|s| {
+            for fil in 0..8 {
+                let d = &d;
+                s.spawn(move || {
+                    for i in 0..10 {
+                        declarer_dans(d, &cle_blocage(&format!("essai:{fil}-{i}")), "blocage", "t", "x").unwrap();
+                    }
+                });
+            }
+        });
+        let n = charger_de(&d).unwrap();
+        let perdues: Vec<_> = (0..8)
+            .flat_map(|fil| (0..10).map(move |i| cle_blocage(&format!("essai:{fil}-{i}"))))
+            .filter(|c| !n.alertes.contains_key(c))
+            .collect();
+        assert!(
+            perdues.is_empty(),
+            "{} déclaration(s) perdue(s) : {perdues:?}",
+            perdues.len()
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Le menu pose ses choix sur la liste relue au moment d'écrire, pas sur celle montrée avant la question : un
+    /// choix déclaré ailleurs pendant qu'il attendait reste, celui qu'il oublie s'en va.
+    #[test]
+    fn choix_du_menu_poses_sur_la_liste_du_moment() {
+        let d = crate::protection::isoler::dossier_jetable().unwrap();
+        let (oubliee, venue) = (cle_blocage("essai:oubliee"), cle_blocage("essai:venue-entre-temps"));
+        declarer_dans(&d, &oubliee, "blocage", "t", "x").unwrap();
+        declarer_dans(&d, &venue, "blocage", "t", "x").unwrap();
+        let faits = vec![
+            (oubliee.clone(), None),
+            (cle_veilleur("essai:choisie"), Some(normale("2026-11-11"))),
+        ];
+        sous_verrou(&d, "essai", |n| appliquer(n, &faits)).unwrap();
+        let n = charger_de(&d).unwrap();
+        assert!(!n.alertes.contains_key(&oubliee));
+        assert!(n.alertes.contains_key(&venue));
+        assert!(n.alertes.contains_key(&cle_veilleur("essai:choisie")));
         let _ = std::fs::remove_dir_all(&d);
     }
 
