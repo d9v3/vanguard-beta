@@ -437,6 +437,31 @@ fn l_aide_cite_chaque_commande() {
     assert!(anglaises[1].lines().count() <= 15);
 }
 
+/// Tant que la fenêtre n'est pas livrée (`FENETRE_LIVREE`), l'aide ne la promet nulle part : « Sans argument » dit le
+/// menu seul, en français et en anglais, dans `--help`, `-h`, l'en-tête de clap et l'option `--menu`.
+#[test]
+fn l_aide_ne_promet_pas_la_fenetre_tant_qu_elle_n_est_pas_livree() {
+    let textes = |()| {
+        let c = ligne_de_commande();
+        let menu = c
+            .get_arguments()
+            .find(|a| a.get_id() == "menu")
+            .and_then(|a| a.get_help().map(ToString::to_string))
+            .unwrap_or_default();
+        let entete = c.get_about().map(ToString::to_string).unwrap_or_default();
+        [aide_longue(), aide_courte(), entete, menu]
+    };
+    let mut tous = textes(()).to_vec();
+    tous.extend(crate::langue::en_anglais(|| textes(())));
+    for t in &tous {
+        // « journaux-windows » est une commande, pas la fenêtre.
+        let t = t.to_lowercase().replace("windows", "");
+        assert_ne!(t, "");
+        let promet = t.contains("fenêtre") || t.contains("window");
+        assert_eq!(promet, crate::demarrage::lancer_fenetre::FENETRE_LIVREE, "{t}");
+    }
+}
+
 /// Le tableau « Toutes les commandes » du README suit les rubriques de `--help`, dans le même ordre.
 #[test]
 fn le_readme_suit_les_rubriques_de_l_aide() {
