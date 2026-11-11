@@ -7,6 +7,7 @@ use super::designes::{self, Designe};
 use super::*;
 use crate::machine::temoins;
 
+mod permise;
 mod shell;
 
 /// /usr/bin/x → /bin/x (idem sbin, lib) : chemin d'avant la fusion de /usr.
@@ -237,6 +238,11 @@ fn sans_racine_de_proc(p: &str) -> &str {
         };
         let processus =
             qui == "self" || qui == "thread-self" || (!qui.is_empty() && qui.bytes().all(|b| b.is_ascii_digit()));
+        // « /proc/self/task/<n>/root » : la même racine, vue par un fil du processus (vérification 3, P7).
+        let apres = match apres.strip_prefix("task/").and_then(|t| t.split_once('/')) {
+            Some((fil, reste)) if !fil.is_empty() && fil.bytes().all(|b| b.is_ascii_digit()) => reste,
+            _ => apres,
+        };
         match apres.strip_prefix("root") {
             Some(r) if processus && (r.is_empty() || r.starts_with('/')) => p = r,
             _ => break,
@@ -247,7 +253,7 @@ fn sans_racine_de_proc(p: &str) -> &str {
 
 /// Un chemin (programme, ou `argument` d'un programme) dans un dossier temporaire (/tmp, /var/tmp, /dev/shm, le
 /// dossier de session /run/user/…), ou dans un dossier caché d'un dossier personnel : `maison`, ou celui d'un autre
-/// compte (« /home/<nom>/ », « /var/home/<nom>/ », « /root/ ») quand il ne contient pas `maison`.
+/// compte (« `/home/<nom>/` », « `/var/home/<nom>/` », « /root/ ») quand il ne contient pas `maison`.
 fn chemin_cache(programme: &str, maison: &str, argument: bool) -> Option<&'static str> {
     let simple = chemin_simplifie(programme);
     let programme = sans_racine_de_proc(&simple);
@@ -284,12 +290,43 @@ fn chemin_cache(programme: &str, maison: &str, argument: bool) -> Option<&'stati
     None
 }
 
-/// Un chemin (simplifié) dans un dossier temporaire : /tmp, /var/tmp, /dev/shm, ou un dossier de session
-/// (/run/user/…, qu'efface la fin de la session).
+/// Un chemin (simplifié) dans un dossier temporaire : /tmp, /var/tmp, /dev/shm, un dossier de session
+/// (/run/user/…, qu'efface la fin de la session ; /var/run/user/…, le même), un dossier de verrous ouvert à tous ;
+/// ou le dossier courant, un descripteur ou une projection d'un processus (/proc/self/cwd/…, `/proc/<n>/fd/…`) : un
+/// fichier qu'on ne voit pas sur le disque (vérification 3, P7).
 fn temporaire(p: &str) -> bool {
-    ["/tmp/", "/var/tmp/", "/dev/shm/", "/run/user/"]
-        .iter()
-        .any(|d| p.starts_with(d))
+    const DOSSIERS: [&str; 9] = [
+        "/tmp/",
+        "/var/tmp/",
+        "/dev/shm/",
+        "/run/user/",
+        "/var/run/user/",
+        "/run/lock/",
+        "/var/run/lock/",
+        "/var/lock/",
+        "/dev/mqueue/",
+    ];
+    DOSSIERS.iter().any(|d| p.starts_with(d)) || vue_d_un_processus(p)
+}
+
+/// « `/proc/<self|thread-self|n>/(cwd|fd|map_files)/…` », aussi par « `task/<n>/` ».
+fn vue_d_un_processus(p: &str) -> bool {
+    let Some((qui, apres)) = p.strip_prefix("/proc/").and_then(|r| r.split_once('/')) else {
+        return false;
+    };
+    let nombre = |x: &str| !x.is_empty() && x.bytes().all(|b| b.is_ascii_digit());
+    if !(qui == "self" || qui == "thread-self" || nombre(qui)) {
+        return false;
+    }
+    let apres = match apres.strip_prefix("task/").and_then(|t| t.split_once('/')) {
+        Some((fil, reste)) if nombre(fil) => reste,
+        _ => apres,
+    };
+    ["cwd", "fd", "map_files"].iter().any(|d| {
+        apres
+            .strip_prefix(d)
+            .is_some_and(|r| r.is_empty() || r.starts_with('/'))
+    })
 }
 
 /// `chemin_cache` sous le dossier personnel de `maisons` qui contient le chemin, le plus long (le plus précis : celui
@@ -297,7 +334,7 @@ fn temporaire(p: &str) -> bool {
 fn chemin_cache_chez(p: &str, maisons: &[&str], argument: bool) -> Option<&'static str> {
     let precise = maisons
         .iter()
-        .filter(|m| !m.is_empty() && p.starts_with(&format!("{m}/")))
+        .filter(|m| !m.is_empty() && (p == **m || p.starts_with(&format!("{m}/"))))
         .max_by_key(|m| m.len());
     match precise {
         Some(m) => chemin_cache(p, m, argument),
@@ -305,7 +342,7 @@ fn chemin_cache_chez(p: &str, maisons: &[&str], argument: bool) -> Option<&'stat
     }
 }
 
-/// Le reste de `p` sous le dossier personnel d'un compte (« /home/<nom>/ », « /var/home/<nom>/ », « /root/ ») qui
+/// Le reste de `p` sous le dossier personnel d'un compte (« `/home/<nom>/` », « `/var/home/<nom>/` », « /root/ ») qui
 /// ne contient pas `maison` (celui-là se lit par `maison`, plus précis) : « /home/%u/.x/agent » d'une unité.
 fn maison_d_un_compte<'a>(p: &'a str, maison: &str) -> Option<&'a str> {
     let (racine, reste) = if let Some(r) = p.strip_prefix("/root/") {
@@ -363,6 +400,20 @@ fn variable_suspecte(nom: &str, valeur: &str, maisons: &[&str]) -> Option<&'stat
     if ["LD_PRELOAD", "LD_AUDIT"].contains(&nom) {
         return (!valeur.trim().is_empty()).then(prechargee);
     }
+    // Une adresse de bus « unixexec: » lance le programme qu'elle nomme à chaque connexion (vérification 3, P11).
+    if nom.starts_with("DBUS_") && valeur.contains("unixexec:") {
+        return Some(tr!(
+            "adresse de bus D-Bus « unixexec: » : chaque programme qui s'y connecte lance le programme qu'elle nomme",
+            "D-Bus address “unixexec:”: each program that connects to it starts the program it names"
+        ));
+    }
+    if variable_de_programme(nom) {
+        let cache = valeur
+            .split(|c: char| c.is_whitespace() || matches!(c, '=' | ':' | '|' | '"' | '\'' | ';'))
+            .filter(|m| m.starts_with(['/', '~', '$']))
+            .any(|m| chemin_cache_chez(m, maisons, false).is_some());
+        return cache.then(variable_cachee);
+    }
     if nom != "PATH" && !variable_d_injection(nom) {
         return None;
     }
@@ -374,6 +425,31 @@ fn variable_suspecte(nom: &str, valeur: &str, maisons: &[&str]) -> Option<&'stat
             chemin_cache_chez(&dedans, maisons, false).is_some()
         });
     cache.then(variable_cachee)
+}
+
+/// Une variable qui nomme un programme que d'autres lancent (mot de passe demandé, éditeur, pager, terminal,
+/// navigateur, shell) : sa valeur se lance comme une commande (vérification 3, P11).
+fn variable_de_programme(nom: &str) -> bool {
+    const NOMS: [&str; 17] = [
+        "SSH_ASKPASS",
+        "SUDO_ASKPASS",
+        "GIT_ASKPASS",
+        "GIT_SSH",
+        "GIT_SSH_COMMAND",
+        "SHELL",
+        "EDITOR",
+        "VISUAL",
+        "PAGER",
+        "MANPAGER",
+        "GIT_PAGER",
+        "GIT_EDITOR",
+        "BROWSER",
+        "TERMINAL",
+        "GAMEMODERUNEXEC",
+        "LESSOPEN",
+        "LESSCLOSE",
+    ];
+    NOMS.contains(&nom)
 }
 
 /// Les programmes qui en lancent un autre, ou lisent du code, d'après leurs arguments, en plus de
@@ -750,6 +826,15 @@ struct Parcours {
     trop_profonds: Vec<std::path::PathBuf>,
 }
 
+/// Le nom du fichier finit par « `.<ext>` », même réduit à lui (vérification 3, H1) : le `find -name '*.lua'` de
+/// require_all d'Omarchy prend un fichier nommé « .lua » (`require("")` le charge), alors que `Path::extension()`
+/// ne voit aucune extension à un nom qui commence par son seul point.
+fn a_l_extension(f: &Path, ext: &str) -> bool {
+    let suffixe = format!(".{ext}");
+    f.file_name()
+        .is_some_and(|n| n.as_encoded_bytes().ends_with(suffixe.as_bytes()))
+}
+
 fn fichiers_sous(
     dossier: &Path,
     extensions: &[&str],
@@ -770,7 +855,7 @@ fn fichiers_sous(
         // sous Hyprland, où Lua le suit) et à profondeur bornée (une boucle s'arrête là, dite).
         let cible = || std::fs::metadata(&p).ok();
         let fichier = t.is_file() || (t.is_symlink() && cible().is_some_and(|m| m.is_file()));
-        let ajouts = p.extension().is_some_and(|x| x == "d");
+        let ajouts = a_l_extension(&p, "d");
         let sous_dossier = t.is_dir() || ((ajouts || hypr) && t.is_symlink() && cible().is_some_and(|m| m.is_dir()));
         if sous_dossier && (ajouts || hypr) {
             if t.is_symlink() {
@@ -781,7 +866,7 @@ fn fichiers_sous(
                 }
             }
             fichiers_sous(&p, extensions, hypr, profondeur.saturating_add(1), trouve, parcours);
-        } else if fichier && p.extension().is_some_and(|x| extensions.iter().any(|e| x == *e)) {
+        } else if fichier && extensions.iter().any(|e| a_l_extension(&p, e)) {
             trouve.push(p);
         }
     }
@@ -870,6 +955,7 @@ pub(super) fn persistance_dans(
             config_systeme: liste("XDG_CONFIG_DIRS"),
             environnement: None,
             budget: temoins::Budget::default(),
+            dbus: std::cell::OnceCell::new(),
         },
         ..Lancements::default()
     };
@@ -1105,6 +1191,12 @@ const OMARCHY: &str = "/usr/share/omarchy";
 /// ne lit pas (il vient du paquet) : ses lignes ne se comptent pas, la copie se dit (deuxième vérification, les
 /// 62 lignes « non lue » de la bibliothèque recopiée).
 fn copie_d_omarchy(r: &Releveur, f: &Path) -> Option<std::path::PathBuf> {
+    copie_d_omarchy_selon(r, f, &de_root_seul)
+}
+
+/// `copie_d_omarchy`, le jugement « à root seul » passé en paramètre (vérification 3, H5) : l'essai le remplace,
+/// pour tourner aussi sous `unshare -r`, où rien n'est cru à root.
+fn copie_d_omarchy_selon(r: &Releveur, f: &Path, root_seul: &dyn Fn(&Path) -> bool) -> Option<std::path::PathBuf> {
     let omarchy = r.sous(Path::new(OMARCHY));
     let mut candidats = Vec::new();
     let dossiers_hypr = [
@@ -1126,7 +1218,7 @@ fn copie_d_omarchy(r: &Releveur, f: &Path) -> Option<std::path::PathBuf> {
     let lu = temoins::lire_borne(f, LECTURE_MAX).ok().filter(|l| l.entier)?;
     let empreinte = temoins::sha256_de(&lu.octets);
     candidats.into_iter().find(|o| {
-        de_root_seul(o)
+        root_seul(o)
             && temoins::lire_borne(o, LECTURE_MAX).is_ok_and(|l| l.entier && temoins::sha256_de(&l.octets) == empreinte)
     })
 }
@@ -1240,7 +1332,7 @@ struct Releveur {
     maison: std::path::PathBuf,
     runtime: Option<std::path::PathBuf>,
     /// Le dossier de la session lu pour la détection : XDG_RUNTIME_DIR, sinon celui que systemd donne à ce compte
-    /// (/run/user/<uid>). Les unités qu'il garde se lisent même quand la variable manque.
+    /// (`/run/user/<uid>`). Les unités qu'il garde se lisent même quand la variable manque.
     session: Option<std::path::PathBuf>,
     /// XDG_CONFIG_HOME et XDG_DATA_HOME, s'ils mènent ailleurs que les dossiers par défaut du dossier personnel.
     config: Option<std::path::PathBuf>,
@@ -1257,7 +1349,7 @@ struct Releveur {
     hypr_inclus: Vec<std::path::PathBuf>,
     /// Les dossiers d'unités que systemd lit en plus des habituels (`Ajout::Dossier`), tels que lus sous la racine.
     dossiers_ajoutes: Vec<std::path::PathBuf>,
-    /// Le dossier de session que systemd donne au compte (/run/user/<uid>), quand XDG_RUNTIME_DIR mène ailleurs : lu
+    /// Le dossier de session que systemd donne au compte (`/run/user/<uid>`), quand XDG_RUNTIME_DIR mène ailleurs : lu
     /// aussi (relecture adverse, B6), ses unités comme celles de `dossiers_ajoutes`.
     session_de_systemd: Option<std::path::PathBuf>,
     /// XDG_DATA_DIRS et XDG_CONFIG_DIRS (chemins absolus seulement), où systemd cherche aussi des unités.
@@ -1267,6 +1359,8 @@ struct Releveur {
     /// à chaque ligne déclarée normale ; `None` : pas relevées, donc rien ne se déclare.
     environnement: Option<Result<(String, temoins::Etat), temoins::Refus>>,
     budget: temoins::Budget,
+    /// `dossiers_dbus`, calculés une fois (chacun jugé par `de_root_seul`).
+    dbus: std::cell::OnceCell<Vec<std::path::PathBuf>>,
 }
 
 impl Releveur {
@@ -1305,9 +1399,30 @@ impl Releveur {
 
     /// Les dossiers de services D-Bus de la session que le compte écrit (~/.local/share/dbus-1/services, et celui d'un
     /// XDG_DATA_HOME déplacé), tels que lus sous la racine : le bus y prend d'abord le programme d'un nom demandé.
-    fn dossiers_dbus(&self) -> Vec<std::path::PathBuf> {
+    fn dossiers_dbus(&self) -> &[std::path::PathBuf] {
+        self.dbus.get_or_init(|| self.calculer_dbus())
+    }
+
+    fn calculer_dbus(&self) -> Vec<std::path::PathBuf> {
         let mut d = vec![self.maison.join(".local/share/dbus-1/services")];
         d.extend(self.donnees.as_ref().map(|x| self.sous(&x.join("dbus-1/services"))));
+        // Le bus de la session lit aussi XDG_RUNTIME_DIR/dbus-1/services et chaque XDG_DATA_DIRS/dbus-1/services
+        // (vérification 3, P6) : ceux du dossier de session, et tout dossier de XDG_DATA_DIRS que root n'est pas seul
+        // à pouvoir écrire (dossier personnel, temporaire, ouvert à tous).
+        for s in [&self.runtime, &self.session, &self.session_de_systemd]
+            .into_iter()
+            .flatten()
+        {
+            d.push(self.sous(&s.join("dbus-1/services")));
+        }
+        for x in &self.donnees_systeme {
+            let dossier = self.sous(&x.join("dbus-1/services"));
+            if !de_root_seul(&dossier) {
+                d.push(dossier);
+            }
+        }
+        let mut vus = std::collections::BTreeSet::new();
+        d.retain(|x| vus.insert(x.clone()));
         d
     }
 
@@ -1395,9 +1510,9 @@ impl Sorte {
             Sorte::Ajoutee(Ajout::Dossier)
         } else if r.dossiers_dbus().iter().any(|d| f.starts_with(d)) {
             Sorte::Ajoutee(Ajout::DBus)
-        } else if f.extension().is_some_and(|x| x == "desktop") {
+        } else if a_l_extension(f, "desktop") {
             Sorte::Bureau
-        } else if r.dans_hypr(f) || r.hypr_inclus.iter().any(|h| h == f) || f.extension().is_some_and(|x| x == "lua") {
+        } else if r.dans_hypr(f) || r.hypr_inclus.iter().any(|h| h == f) || a_l_extension(f, "lua") {
             Sorte::Shell
         } else {
             Sorte::Unite {
@@ -1880,7 +1995,7 @@ fn variable_d_injection(nom: &str) -> bool {
         "LUA_INIT",
         "OPENSSL_",
     ];
-    const NOMS: [&str; 43] = [
+    const NOMS: [&str; 46] = [
         "BASH_ENV",
         "ENV",
         "SHELLOPTS",
@@ -1927,6 +2042,10 @@ fn variable_d_injection(nom: &str) -> bool {
         "SYSTEMD_UNIT_PATH",
         "SYSTEMD_GENERATOR_PATH",
         "SYSTEMD_ENVIRONMENT_GENERATOR_PATH",
+        // Vérification 3, P11 : une bibliothèque chargée par .NET, SDL ou Wine au démarrage d'un programme.
+        "DOTNET_STARTUP_HOOKS",
+        "SDL_DYNAMIC_API",
+        "WINEDLLPATH",
     ];
     DEBUTS.iter().any(|d| nom.starts_with(d)) || NOMS.contains(&nom)
 }
@@ -2031,7 +2150,7 @@ impl Variables {
         let chemin = f.to_string_lossy();
         if hypr {
             Variables::Hypr
-        } else if chemin.contains("/systemd/") && f.extension().is_some_and(|e| e == "conf") {
+        } else if chemin.contains("/systemd/") && a_l_extension(f, "conf") {
             Variables::Systemd
         } else if chemin.contains("/environment.d/")
             || ["environment", "pam_env.conf", ".pam_environment"].contains(&nom)
@@ -2805,17 +2924,108 @@ impl Codes {
     }
 }
 
-/// Les variables posées par les lignes « Environment= » de l'unité `texte` (`Codes::variables`).
-fn variables_d_unite(texte: &str) -> std::collections::BTreeMap<String, String> {
-    let mut variables = std::collections::BTreeMap::new();
+/// Les variables qu'une unité (`texte`) pose à ses lignes Exec, ajoutées à `variables` : « Environment= » et
+/// « EnvironmentFile= » de ses seules sections `[Service]` et `[Socket]` (vérification 3, P2 : ailleurs, systemd les
+/// ignore), leurs codes « % » développés. Une variable posée à deux valeurs différentes (unité et ajouts, ou fichier
+/// de variables) vaut `CODE_INCONNU` : ce qu'elle lance ne se connaît pas sans l'ordre exact de systemd.
+fn variables_d_unite(
+    texte: &str,
+    codes: &Codes,
+    r: &Releveur,
+    variables: &mut std::collections::BTreeMap<String, String>,
+) {
+    let mut poser = |nom: &str, v: String| {
+        let v = match variables.get(nom) {
+            Some(avant) if *avant != v => CODE_INCONNU.to_string(),
+            _ => v,
+        };
+        variables.insert(nom.to_string(), v);
+    };
+    let mut section: Option<String> = None;
     for l in lignes_de_systemd(texte) {
-        let Some(valeur) = l.texte.strip_prefix("Environment=") else {
+        if let Some(nom) = l.texte.strip_prefix('[').and_then(|x| x.strip_suffix(']')) {
+            section = Some(nom.to_string());
+            continue;
+        }
+        if !matches!(section.as_deref(), Some("Service" | "Socket")) {
+            continue;
+        }
+        let Some((cle, valeur)) = l.texte.split_once('=') else {
             continue;
         };
-        for mot in commandes_de_systemd(valeur).into_iter().flatten().flatten() {
-            if let Some((nom, v)) = affectation(&mot) {
-                variables.insert(nom.to_string(), v.to_string());
+        let Some(valeur) = developper_codes(valeur.trim_matches([' ', '\t']), codes) else {
+            continue;
+        };
+        match cle.trim_matches([' ', '\t']) {
+            "Environment" => {
+                for mot in commandes_de_systemd_brutes(&valeur).into_iter().flatten().flatten() {
+                    if let Some((nom, v)) = affectation(&mot) {
+                        poser(nom, v.to_string());
+                    }
+                }
             }
+            "EnvironmentFile" => {
+                let chemin = valeur.strip_prefix('-').unwrap_or(&valeur);
+                if chemin.starts_with('/')
+                    && let Ok(lues) = permise::lire_variables(&r.sous(Path::new(chemin)))
+                {
+                    for (nom, v) in lues {
+                        poser(&nom, v);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Les variables d'une unité du compte fusionnées avec celles de son fichier principal et de ses ajouts
+/// (« x.service.d/*.conf ») de tous les dossiers que lit systemd (vérification 3, P8 : un ajout qui change la valeur
+/// d'une variable change ce que lance l'unité) ; seulement si une ligne en emploie (« $ »).
+fn variables_fusionnees(
+    f: &Path,
+    texte: &str,
+    codes: &Codes,
+    r: &Releveur,
+) -> std::collections::BTreeMap<String, String> {
+    let mut variables = std::collections::BTreeMap::new();
+    variables_d_unite(texte, codes, r, &mut variables);
+    if !texte.contains('$') {
+        return variables;
+    }
+    let nom_de = |p: &Path| p.file_name().map(|n| n.to_string_lossy().into_owned());
+    let parent = f.parent().and_then(nom_de);
+    let unite = match parent.as_deref().and_then(|p| p.strip_suffix(".d")) {
+        Some(u) if a_l_extension(f, "conf") => u.to_string(),
+        _ => nom_de(f).unwrap_or_default(),
+    };
+    let Ok(dossiers) = dossiers_d_unites(r, codes.utilisateur) else {
+        return variables;
+    };
+    let mut principaux = vec![unite.clone()];
+    if let Some((gabarit, apres)) = unite.split_once('@')
+        && let Some((_, genre)) = apres.rsplit_once('.')
+    {
+        principaux.push(format!("{gabarit}@.{genre}"));
+    }
+    let mut textes: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(principal) = dossiers
+        .iter()
+        .flat_map(|d| principaux.iter().map(move |p| d.join(p)))
+        .find(|p| p.is_file())
+    {
+        textes.push(principal);
+    }
+    for d in &dossiers {
+        for ajout in ajouts_de(&unite) {
+            let mut confs = fichiers_de(&d.join(ajout), &["conf"]);
+            confs.sort();
+            textes.extend(confs);
+        }
+    }
+    for autre in textes.iter().filter(|p| p.as_path() != f).take(AJOUTS_MAX) {
+        if let Ok(lu) = temoins::lire_borne(autre, AJOUT_MAX) {
+            variables_d_unite(&String::from_utf8_lossy(&lu.octets), codes, r, &mut variables);
         }
     }
     variables
@@ -2851,10 +3061,11 @@ fn developper_variables(mot: &str, variables: Option<&std::collections::BTreeMap
             }
             (apres.get(..n)?, apres.get(n..)?)
         };
-        if nom == "HOME" {
-            sortie.push_str("$HOME");
-        } else {
-            sortie.push_str(variables?.get(nom)?);
+        // HOME posé par l'unité : sa valeur (vérification 3, P3) ; sinon celle du compte, gardée en toutes lettres.
+        match variables.and_then(|v| v.get(nom)) {
+            Some(v) if !v.contains(CODE_INCONNU) => sortie.push_str(v),
+            None if nom == "HOME" => sortie.push_str("$HOME"),
+            _ => return None,
         }
         reste = suite;
     }
@@ -2921,6 +3132,25 @@ fn developper_codes(valeur: &str, codes: &Codes) -> Option<String> {
 /// (« -@:+!| ») ôtés du programme, et le nom donné au programme par « @ » ôté. `None` : une forme que Vanguard ne
 /// ramène pas à sa forme finale (guillemet non fermé, échappement inconnu, octet nul).
 fn commandes_de_systemd(valeur: &str) -> Option<Vec<Vec<String>>> {
+    let mut commandes = commandes_de_systemd_brutes(valeur)?;
+    for c in &mut commandes {
+        let Some(premier) = c.first_mut() else { continue };
+        let net = premier.trim_start_matches(['-', '@', '+', '!', ':', '|']).to_string();
+        let nom_donne = premier
+            .get(..premier.len().saturating_sub(net.len()))
+            .is_some_and(|p| p.contains('@'));
+        *premier = net;
+        if nom_donne && c.len() > 1 {
+            c.remove(1);
+        }
+    }
+    commandes.retain(|c| !c.is_empty());
+    Some(commandes)
+}
+
+/// `commandes_de_systemd` sans toucher aux préfixes du programme (« -@:+!| ») : la liste permise les lit
+/// (`permise::exec_systemd`).
+fn commandes_de_systemd_brutes(valeur: &str) -> Option<Vec<Vec<String>>> {
     let mut commandes: Vec<Vec<String>> = Vec::new();
     let mut courante: Vec<String> = Vec::new();
     let mut mot = String::new();
@@ -3004,17 +3234,6 @@ fn commandes_de_systemd(valeur: &str) -> Option<Vec<Vec<String>>> {
         finir_mot(&mut mot, &mut litteral, &mut courante, &mut commandes);
     }
     commandes.push(courante);
-    for c in &mut commandes {
-        let Some(premier) = c.first_mut() else { continue };
-        let net = premier.trim_start_matches(['-', '@', '+', '!', ':', '|']).to_string();
-        let nom_donne = premier
-            .get(..premier.len().saturating_sub(net.len()))
-            .is_some_and(|p| p.contains('@'));
-        *premier = net;
-        if nom_donne && c.len() > 1 {
-            c.remove(1);
-        }
-    }
     commandes.retain(|c| !c.is_empty());
     Some(commandes)
 }
@@ -4068,7 +4287,7 @@ fn fichiers_de_demarrage(r: &Releveur) -> Demarrage {
     // Les services D-Bus de la session que le compte écrit : leur « Exec= » se lit comme une ligne d'unité, plus
     // stricte que le bus (ni code « % » ni variable chez lui : un tel mot est levé, jamais tu).
     for d in r.dossiers_dbus() {
-        demarrage.extend(fichiers_de(&d, &["service"]));
+        demarrage.extend(fichiers_de(d, &["service"]));
     }
     // Le dossier de la session : systemd y lit des unités de l'utilisateur (« systemctl --user --runtime », celles de
     // « systemd-run --user » dans transient/, celles des générateurs). Effacées à l'arrêt, elles lancent quand même
@@ -4118,6 +4337,18 @@ fn fichiers_de_demarrage(r: &Releveur) -> Demarrage {
         .retain(|l| modules.iter().any(|m| m.starts_with(l)));
     parcours.liens_hypr.append(&mut des_modules.liens_hypr);
     parcours.trop_profonds.append(&mut des_modules.trop_profonds);
+    // Le moteur de dictée choisi (vérification 3, H3) : dictation-backend.lua d'Omarchy fait « dofile » de
+    // <config>/<moteur>/shortcuts.lua, le moteur lu à la 1re ligne de <config>/omarchy/defaults/dictation.
+    let mut configs = vec![h.join(".config")];
+    configs.extend(r.config.as_ref().map(|c| r.sous(c)));
+    for c in configs {
+        if let Some(f) = raccourcis_de_dictee(&c)
+            && !hypr.contains(&f)
+            && !modules.contains(&f)
+        {
+            modules.push(f);
+        }
+    }
     hypr.extend(modules.iter().cloned());
     demarrage.extend(hypr.iter().cloned());
     let mut vus = std::collections::BTreeSet::new();
@@ -4130,6 +4361,28 @@ fn fichiers_de_demarrage(r: &Releveur) -> Demarrage {
         modules,
         masques,
     }
+}
+
+/// Le fichier de raccourcis du moteur de dictée qu'Omarchy charge sous ce dossier de configuration, s'il existe :
+/// le moteur est la 1re ligne de omarchy/defaults/dictation, coupée comme « read -r » (blancs autour) et de la forme
+/// que omarchy-default-dictation accepte (`^[a-z0-9][a-z0-9-]*$`) ; une autre forme n'est pas chargée.
+fn raccourcis_de_dictee(config: &Path) -> Option<std::path::PathBuf> {
+    use std::io::Read as _;
+    let mut debut = Vec::new();
+    std::fs::File::open(config.join("omarchy/defaults/dictation"))
+        .ok()?
+        .take(4096)
+        .read_to_end(&mut debut)
+        .ok()?;
+    let texte = String::from_utf8_lossy(&debut);
+    let moteur = texte.lines().next()?.trim_matches([' ', '\t']);
+    let premier = moteur.chars().next()?;
+    let forme = (premier.is_ascii_lowercase() || premier.is_ascii_digit())
+        && moteur
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    let f = config.join(moteur).join("shortcuts.lua");
+    (forme && std::fs::metadata(&f).is_ok_and(|m| m.is_file())).then_some(f)
 }
 
 /// Dans les fichiers de configuration : un préchargement, ou une commande suspecte hors des lignes de démarrage
@@ -4188,14 +4441,17 @@ fn juger_configuration(
 /// « DefaultEnvironment= » et « ManagerEnvironment= » (user.conf de systemd ; relecture adverse 2, N8).
 fn variable_de_configuration(ligne: &str, maisons: &[&str]) -> Option<&'static str> {
     let l = ligne.trim();
-    if let Some(v) = l
-        .strip_prefix("DefaultEnvironment=")
-        .or_else(|| l.strip_prefix("ManagerEnvironment="))
+    // systemd ôte les blancs autour du « = » (vérification 3, P10 : « DefaultEnvironment = A=b »).
+    if let Some((cle, v)) = l.split_once('=')
+        && ["DefaultEnvironment", "ManagerEnvironment"].contains(&cle.trim_end())
     {
-        return commandes_de_systemd(v)?.into_iter().flatten().find_map(|mot| {
-            let (nom, valeur) = affectation(&mot)?;
-            variable_suspecte(nom, valeur, maisons)
-        });
+        return commandes_de_systemd(v.trim_start())?
+            .into_iter()
+            .flatten()
+            .find_map(|mot| {
+                let (nom, valeur) = affectation(&mot)?;
+                variable_suspecte(nom, valeur, maisons)
+            });
     }
     for debut in ["setenv ", "set -gx ", "set -x ", "set -Ux "] {
         if let Some(reste) = l.strip_prefix(debut) {
@@ -4276,8 +4532,8 @@ fn juger_demarrage(demarrage: &[std::path::PathBuf], h: &Path, t: &mut Lancement
     // Un fichier de Hyprland : un .conf de ses dossiers, ou tout fichier qu'il lit par « source = » quelle que soit
     // son extension (relecture adverse, C6 : « extra.inc » aussi).
     let de_hypr = |f: &Path, r: &Releveur| {
-        (r.dans_hypr(f) && f.extension().is_some_and(|x| x == "conf"))
-            || (r.hypr_inclus.iter().any(|i| i == f) && f.extension().is_none_or(|x| x != "lua"))
+        (r.dans_hypr(f) && a_l_extension(f, "conf"))
+            || (r.hypr_inclus.iter().any(|i| i == f) && !a_l_extension(f, "lua"))
     };
     let variables = variables_de_hypr(demarrage.iter().filter(|f| de_hypr(f, &t.r)));
     for f in demarrage {
@@ -4285,7 +4541,7 @@ fn juger_demarrage(demarrage: &[std::path::PathBuf], h: &Path, t: &mut Lancement
             continue;
         };
         let sorte = Sorte::de(f, &t.r);
-        let ecrites: Vec<&str> = if f.extension().is_some_and(|x| x == "lua") {
+        let ecrites: Vec<&str> = if a_l_extension(f, "lua") {
             lignes_de_lua(&lu.texte)
         } else {
             lu.texte.lines().collect()
@@ -4302,7 +4558,7 @@ fn juger_demarrage(demarrage: &[std::path::PathBuf], h: &Path, t: &mut Lancement
             // ses seuls mots.
             let lecteur = if sorte == Sorte::Bureau {
                 Lecteur::Bureau
-            } else if f.extension().is_some_and(|x| x == "lua") {
+            } else if a_l_extension(f, "lua") {
                 Lecteur::Texte
             } else {
                 Lecteur::Brut
@@ -4320,12 +4576,22 @@ fn juger_demarrage(demarrage: &[std::path::PathBuf], h: &Path, t: &mut Lancement
             let lecteur = if sorte == Sorte::Bureau {
                 Lecteur::Bureau
             } else {
+                let base = Codes::de(utilisateur, &t.r);
                 Lecteur::Systemd(Codes {
-                    variables: variables_d_unite(&lu.texte),
-                    ..Codes::de(utilisateur, &t.r)
+                    variables: variables_fusionnees(f, &lu.texte, &base, &t.r),
+                    ..base
                 })
             };
+            // Une unité que le compte peut écrire : chaque clé dans la liste permise de sa section (vérification 3).
+            let a_juger = unite && !de_root_seul(f);
+            let (lue, session) = (t.r.maison.to_string_lossy().into_owned(), home());
+            let maisons = [session.as_str(), lue.as_str()];
+            let mut section: Option<String> = None;
             for logique in lignes_de_systemd(&lu.texte) {
+                if let Some(nom) = logique.texte.strip_prefix('[').and_then(|x| x.strip_suffix(']')) {
+                    section = Some(nom.to_string());
+                    continue;
+                }
                 let n = logique.numero.saturating_sub(1);
                 // Écrite sur une seule ligne, telle que systemd la lit : la ligne elle-même, comme avant ce lot.
                 let simple = logique.lues == 1
@@ -4355,6 +4621,28 @@ fn juger_demarrage(demarrage: &[std::path::PathBuf], h: &Path, t: &mut Lancement
                     );
                     continue;
                 }
+                if a_juger && let Lecteur::Systemd(codes) = &lecteur {
+                    let s = permise::Systeme {
+                        racine: &t.r.racine,
+                        maison: &lue,
+                        maisons: &maisons,
+                    };
+                    if let Err(e) = permise::directive(&s, codes, section.as_deref(), &logique.texte) {
+                        lever(
+                            t,
+                            f,
+                            &lu,
+                            n,
+                            ligne,
+                            &logique.texte,
+                            true,
+                            Sorte::Ajoutee(Ajout::Reglage),
+                            simple,
+                            e.raison(),
+                        );
+                        continue;
+                    }
+                }
                 let Some((commande, ambigue)) = commande_lancee_lue(&logique.texte) else {
                     continue;
                 };
@@ -4364,16 +4652,30 @@ fn juger_demarrage(demarrage: &[std::path::PathBuf], h: &Path, t: &mut Lancement
                 juger_lancement(t, f, &lu, n, ligne, &commande, ambigue, s, simple, &lecteur);
             }
         }
-        if f.extension().is_some_and(|x| x == "lua") && (t.r.dans_hypr(f) || t.r.modules.iter().any(|m| m == f)) {
+        if a_l_extension(f, "lua") && (t.r.dans_hypr(f) || t.r.modules.iter().any(|m| m == f)) {
             juger_lua(t, f, h, &lu, &ecrites, &levees);
         }
     }
 }
 
+/// Un fichier des bascules ou des dispositions d'Omarchy dont le nom a un point avant « .lua » (vérification 3,
+/// H2) : require_all.lua en fait « require("a.b") », que Lua cherche en a/b.lua dans tout package.path ; le
+/// fichier jugé n'est pas celui qui est chargé.
+fn charge_sous_un_autre_nom(r: &Releveur, f: &Path) -> bool {
+    const DOSSIERS: [&str; 2] = ["omarchy/toggles/hypr", "omarchy/workspace-layouts"];
+    let mut etats = vec![r.maison.join(".local/state")];
+    etats.extend(r.etat.as_ref().map(|e| r.sous(e)));
+    let premier_niveau = f
+        .parent()
+        .is_some_and(|p| etats.iter().any(|e| DOSSIERS.iter().any(|d| p == e.join(d))));
+    let nom = f.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+    premier_niveau && nom.strip_suffix(".lua").is_some_and(|tige| tige.contains('.'))
+}
+
 /// Un fichier Lua que Vanguard lit : sous les dossiers de Hyprland, ou un module d'Omarchy relevé ou levé à part
 /// (`MODULES_D_OMARCHY`).
 fn lua_lu(r: &Releveur, f: &Path) -> bool {
-    f.extension().is_some_and(|x| x == "lua")
+    a_l_extension(f, "lua")
         && (r.dans_hypr(f)
             || r.modules.iter().any(|m| m == f)
             || MODULES_D_OMARCHY.iter().any(|(d, _)| f.starts_with(r.maison.join(d))))
@@ -4456,6 +4758,17 @@ fn lignes_de_lua(texte: &str) -> Vec<&str> {
 /// commande lancée ; un appel qui ne se lit pas, levé (jamais tu). Une ligne déjà levée par `commande_lancee_lue`
 /// (`levees`) ne se lève pas deux fois.
 fn juger_lua(t: &mut Lancements, f: &Path, h: &Path, lu: &Lecture, ecrites: &[&str], levees: &[usize]) {
+    if charge_sous_un_autre_nom(&t.r, f) {
+        non_lu(
+            f,
+            h,
+            t,
+            tr!(
+                "nom à point : Omarchy charge à sa place un autre fichier (« a.b » devient a/b.lua)",
+                "dotted name: Omarchy loads another file in its place (\"a.b\" becomes a/b.lua)"
+            ),
+        );
+    }
     let mut appels = appels_lua(&lu.texte);
     if appels.len() > APPELS_LUA_MAX {
         appels.truncate(APPELS_LUA_MAX);
@@ -4718,15 +5031,11 @@ fn reglage_suspect(ligne: &str, r: &Releveur) -> Option<&'static str> {
             if cache(fichier.rsplit_once('/').map_or("", |(d, _)| d)) {
                 return Some(lu_ailleurs);
             }
-            // Son contenu : les variables qu'il pose se jugent comme celles d'« Environment= ».
-            let lu = temoins::lire_borne(&r.sous(Path::new(fichier)), LECTURE_MAX).ok()?;
-            let texte = String::from_utf8_lossy(&lu.octets).into_owned();
-            let mots = texte
-                .lines()
-                .filter(|l| !commentaire(l))
-                .map(|l| l.trim().trim_start_matches("export ").to_string())
-                .collect();
-            variables(mots)
+            // Son contenu, lu comme systemd le lit (lignes recollées, guillemets ôtés : vérification 3, P5) : les
+            // variables qu'il pose se jugent comme celles d'« Environment= ». Illisible ou trop gros : la liste
+            // permise (`permise::directive`) le dit.
+            let lues = permise::lire_variables(&r.sous(Path::new(fichier))).ok()?;
+            variables(lues.into_iter().map(|(n, v)| format!("{n}={v}")).collect())
         }
         "WorkingDirectory" | "RootDirectory" => {
             cache(valeur.trim_start_matches(['-', '+', '!'])).then_some(lu_ailleurs)
@@ -4812,6 +5121,13 @@ fn juger_lancement(
     let lue = t.r.maison.to_string_lossy().into_owned();
     let session = home();
     let maisons = [session.as_str(), lue.as_str()];
+    let racine_seul = de_root_seul(f);
+    // Une ligne géante ne se découpe pas (vérification 3, S15 : des minutes) : dite, jamais tue.
+    if !racine_seul && commande.len() > permise::LIGNE_MAX {
+        let raison = permise::Ecart::Longue.raison();
+        lever(t, f, lu, n, ligne, commande, true, sorte, retirable, raison);
+        return true;
+    }
     // Une forme finale qui ne se calcule pas, dans un fichier que seul root écrit, est celle de root (un paquet, un
     // administrateur) : dite seulement là où le compte écrit.
     let dite = |r: Result<Option<&'static str>, ()>| match r {
@@ -4848,13 +5164,47 @@ fn juger_lancement(
             }
         }
     });
+    // La liste permise (vérification 3) : là où le compte écrit, le silence n'est gardé que pour une ligne dont la
+    // forme entière est reconnue sûre ; le découpage d'avant ne sert plus qu'à dire une raison plus précise.
+    let (raison, hors_liste) = match raison {
+        Some(r) => (Some(r), false),
+        None if racine_seul => (None, false),
+        None => (hors_de_la_liste(&t.r, commande, lecteur, &maisons), true),
+    };
     let Some(raison) = raison else {
         return false;
     };
     // Ce qui ne se lit pas sûrement ne se déclare pas normal : ce qu'un choix lierait ne dirait pas ce qui se lance.
-    let ambigue = ambigue || [shell_non_lu(), non_resolu_systemd(), variable_inconnue()].contains(&raison);
+    let ambigue =
+        ambigue || hors_liste || [shell_non_lu(), non_resolu_systemd(), variable_inconnue()].contains(&raison);
     lever(t, f, lu, n, ligne, commande, ambigue, sorte, retirable, raison);
     true
+}
+
+/// Pourquoi la `commande` d'une ligne que le compte écrit n'entre pas dans la liste permise (`permise`), lue par
+/// son `lecteur`, ou `None` : le filet textuel d'abord (un dossier temporaire ou caché nommé en toutes lettres), puis
+/// la forme entière. Un texte qui ne se lance pas (`Lecteur::Texte`) n'y passe pas.
+fn hors_de_la_liste(r: &Releveur, commande: &str, lecteur: &Lecteur<'_>, maisons: &[&str]) -> Option<&'static str> {
+    let lue = r.maison.to_string_lossy();
+    let s = permise::Systeme {
+        racine: &r.racine,
+        maison: &lue,
+        maisons,
+    };
+    let ecart = match lecteur {
+        Lecteur::Texte => return None,
+        Lecteur::Systemd(codes) => permise::exec_systemd(&s, commande, Some(codes)),
+        Lecteur::Bureau => permise::exec_systemd(&s, &sans_codes_de_bureau(commande), None),
+        Lecteur::Hypr(variables) if commande.contains('$') => match resoudre_hypr(commande, variables) {
+            Some(formes) => formes.iter().try_for_each(|c| permise::ligne_shell(&s, c)),
+            None => return Some(variable_inconnue()),
+        },
+        Lecteur::Brut | Lecteur::Hypr(_) => permise::ligne_shell(&s, commande),
+    };
+    if permise::filet(commande, matches!(lecteur, Lecteur::Systemd(_)), maisons) {
+        return Some(permise::Ecart::Filet.raison());
+    }
+    ecart.err().map(permise::Ecart::raison)
 }
 
 /// La raison d'une ligne de Hyprland dont une variable n'a pas de valeur connue.
@@ -5093,6 +5443,17 @@ fn longue_lue(c: &[char], mut i: usize, niveau: usize) -> (String, usize, usize)
 /// fichier). Une fin de ligne est, comme pour Lua, « \n », « \r », « \r\n » ou « \n\r » (vérification 2, N9 : un
 /// « -- » fini par un retour chariot seul cachait l'appel qui le suit).
 fn jetons_lua(texte: &str) -> Vec<(JetonLua, usize)> {
+    // Comme luaL_loadfilex (vérification 3, H4) : une marque d'ordre des octets ôtée, puis une 1re ligne qui commence
+    // par « # » sautée jusqu'à sa fin (son « \n » gardé pour compter les lignes) ; sinon un « --[[ » écrit dessus
+    // cacherait à Vanguard les lignes que Lua exécute.
+    let texte = texte.strip_prefix('\u{feff}').unwrap_or(texte);
+    let texte = if texte.starts_with('#') {
+        texte
+            .find(['\n', '\r'])
+            .map_or("", |i| texte.get(i..).unwrap_or_default())
+    } else {
+        texte
+    };
     let mut c: Vec<char> = Vec::with_capacity(texte.len());
     let mut lettres = texte.chars().peekable();
     while let Some(x) = lettres.next() {
@@ -5548,6 +5909,86 @@ fn element_sans_commande(jetons: &[(JetonLua, usize)]) -> bool {
     }
 }
 
+/// Une table de raccourci d'Omarchy (« { menu = "power" } », « { launch = "x", focus = "^x$" } ») : la commande
+/// qu'en fait Omarchy (`command_from` de helpers.lua), champ prioritaire d'abord, les valeurs entre guillemets simples
+/// comme `shell_quote`. Un motif (« focus ») ou un nom de menu n'est pas une commande : lu champ par champ, il ne
+/// passerait pas la liste permise (vérification 3). `None` pour un champ qui n'est pas d'Omarchy, répété ou illisible :
+/// la table se lit alors champ par champ.
+fn table_d_omarchy(dedans: &[(JetonLua, usize)], locales: &LocalesLua) -> Option<Vec<String>> {
+    const CHAMPS: [&str; 11] = [
+        "omarchy",
+        "menu",
+        "panel",
+        "audio",
+        "brightness",
+        "ipc",
+        "focus",
+        "launch",
+        "webapp",
+        "tui",
+        "description",
+    ];
+    let mut champs: std::collections::BTreeMap<&str, Vec<String>> = std::collections::BTreeMap::new();
+    for champ in elements_lua(dedans) {
+        let (Some(JetonLua::Nom(n)), Some(JetonLua::Signe(e))) =
+            (champ.first().map(|(j, _)| j), champ.get(1).map(|(j, _)| j))
+        else {
+            return None;
+        };
+        let nom = CHAMPS.iter().find(|c| **c == n.as_str())?;
+        let valeur = champ.get(2..).unwrap_or_default();
+        let formes = match valeur {
+            [(JetonLua::Nom(v), _)] if v == "true" && *nom == "focus" => vec!["true".to_string()],
+            _ => valeurs_lua(valeur, locales)?,
+        };
+        if e != "=" || champs.insert(nom, formes).is_some() {
+            return None;
+        }
+    }
+    let q = |v: &str| format!("'{}'", v.replace('\'', "'\\''"));
+    let chacun = |cle: &str, f: &dyn Fn(&str) -> Option<String>| -> Option<Vec<String>> {
+        champs.get(cle)?.iter().map(|v| f(v)).collect()
+    };
+    let lues = if let Some(l) = chacun("omarchy", &|v| Some(format!("omarchy-launch-{v}"))) {
+        l
+    } else if let Some(l) = chacun("menu", &|v| Some(format!("omarchy-menu toggle {}", q(v)))) {
+        l
+    } else if let Some(l) = chacun("panel", &|v| Some(format!("omarchy-shell shell toggle {}", q(v)))) {
+        l
+    } else if let Some(l) = chacun("audio", &|v| Some(format!("omarchy-audio-output-volume {}", q(v)))) {
+        l
+    } else if let Some(l) = chacun("brightness", &|v| {
+        Some(format!(
+            "omarchy-brightness-display {}",
+            if v == "raise" { "+5%" } else { "5%-" }
+        ))
+    }) {
+        l
+    } else if champs.contains_key("ipc") {
+        // « cible.méthode » ; sans point, Lua s'arrête sur une erreur : rien ne se lance, mais la table se lit à part.
+        chacun("ipc", &|v| {
+            let (cible, methode) = v.split_once('.')?;
+            (!cible.is_empty() && !methode.is_empty()).then(|| format!("omarchy-shell {} {}", q(cible), q(methode)))
+        })?
+    } else if let (Some(motifs), Some(l)) = (champs.get("focus"), champs.get("launch")) {
+        motifs
+            .iter()
+            .flat_map(|m| l.iter().map(move |c| (m, c)))
+            .map(|(m, c)| format!("omarchy-launch-or-focus {} {}", q(m), q(&format!("uwsm-app -- {c}"))))
+            .collect()
+    } else if let Some(l) = chacun("launch", &|v| Some(format!("uwsm-app -- {v}"))) {
+        l
+    } else if champs.contains_key("webapp") {
+        // Avec « focus », le nom de la fenêtre est la description du raccourci : du texte, que la commande cite.
+        chacun("webapp", &|v| Some(format!("omarchy-launch-webapp {}", q(v))))?
+    } else if champs.contains_key("focus") {
+        chacun("tui", &|v| Some(format!("omarchy-launch-or-focus-tui {}", q(v))))?
+    } else {
+        chacun("tui", &|v| Some(format!("omarchy-launch-tui {}", q(v))))?
+    };
+    (lues.len() <= FORMES_MAX).then_some(lues)
+}
+
 /// Lit un élément d'un appel qui lance (`AppelLua::Lance`, `AppelLua::Raccourci`) : ses commandes en toutes lettres
 /// dans `commandes` ; faux s'il ne se lit pas. Une table se lit champ par champ.
 fn element_lu(jetons: &[(JetonLua, usize)], locales: &LocalesLua, commandes: &mut Vec<String>) -> bool {
@@ -5558,6 +5999,10 @@ fn element_lu(jetons: &[(JetonLua, usize)], locales: &LocalesLua, commandes: &mu
         && fermeture_lua(jetons, 0) == jetons.len().saturating_sub(1)
     {
         let dedans = jetons.get(1..jetons.len().saturating_sub(1)).unwrap_or_default();
+        if let Some(lues) = table_d_omarchy(dedans, locales) {
+            commandes.extend(lues);
+            return true;
+        }
         return elements_lua(dedans).into_iter().all(|champ| {
             // « nom = valeur » et « [clé] = valeur » : la valeur.
             let valeur = match (champ.first().map(|(j, _)| j), champ.get(1).map(|(j, _)| j)) {
@@ -5591,6 +6036,27 @@ fn element_lu(jetons: &[(JetonLua, usize)], locales: &LocalesLua, commandes: &mu
         }
         None => false,
     }
+}
+
+/// Vérification 3, point 4 : un élément d'un appel qui lance ne se lit que s'il est écrit en toutes lettres : des
+/// chaînes (jointes par « .. »), des nombres, « true », « false », « nil », et des tables de champs nommés qui en
+/// sont faites ; ou ce qu'`element_sans_commande` laisse aux appels lus pour eux-mêmes. Un nom posé ailleurs, un
+/// « os.getenv », un autre appel ne se lisent pas : l'appel est levé « non lu », même si la valeur se retrouverait.
+fn litterale_lua(jetons: &[(JetonLua, usize)]) -> bool {
+    if element_sans_commande(jetons) {
+        return true;
+    }
+    jetons.iter().enumerate().all(|(k, (j, _))| match j {
+        JetonLua::Chaine(_) => true,
+        JetonLua::Signe(s) => {
+            matches!(s.as_str(), ".." | "(" | ")" | "{" | "}" | "," | ";" | "=")
+                || s.chars().next().is_some_and(|c| c.is_ascii_digit())
+        }
+        JetonLua::Nom(n) => {
+            ["true", "false", "nil"].contains(&n.as_str())
+                || matches!(jetons.get(k.saturating_add(1)).map(|(j, _)| j), Some(JetonLua::Signe(s)) if s == "=")
+        }
+    })
 }
 
 /// Les valeurs posées pour chaque nom du fichier (`LocalesLua`) : « nom = valeur » au niveau des instructions (pas
@@ -5849,22 +6315,63 @@ fn appels_lua(texte: &str) -> Vec<AppelLu> {
                 // « hl.bind(touches, action, options) ») sa description : jugés s'ils se lisent, sans constat sinon ;
                 // rien ne les lance. Un « bind » redéfini dans un fichier lu est levé à part (`fonction_lua_renommee`).
                 let description = sorte == AppelLua::Raccourci && arguments.len() >= 3 && !racine.starts_with("hl.");
-                let lus = arguments
-                    .iter()
-                    .enumerate()
-                    .filter(|(k, a)| {
-                        // Lu d'abord : ses mots se jugent même pour les touches.
-                        let sans_lancement = (sorte == AppelLua::Raccourci && *k == 0) || (description && *k == 1);
-                        let lu = if sans_lancement {
-                            element_lu(a, &locales, &mut appel.textes)
-                        } else {
-                            element_lu(a, &locales, &mut appel.commandes)
-                        };
-                        !(lu || sans_lancement)
-                    })
-                    .count();
-                if lus > 0 {
-                    appel.non_lu = Some(commande_lua_non_lue());
+                // Vérification 3 : le seul argument qui se lance passe la liste permise ; les autres (règles de
+                // fenêtre d'« exec_cmd(c, règles) », mode d'« io.popen(c, "r") », motif de « launch_sole(motif, c) »,
+                // options d'un raccourci) ne sont que du texte, jugé par ses mots. Les aides d'applications web
+                // rendent la commande d'Omarchy (helpers.lua), chaque argument entre guillemets simples.
+                let fin_du_nom = racine.rsplit('.').next().unwrap_or(racine);
+                let web = match fin_du_nom {
+                    "launch_webapp" => Some("omarchy-launch-webapp"),
+                    "launch_webapp_sole" => Some("omarchy-launch-or-focus-webapp"),
+                    _ => None,
+                };
+                if let Some(programme) = web {
+                    let mut mots = vec![programme.to_string()];
+                    let lu = arguments.iter().all(|a| {
+                        let mut v = Vec::new();
+                        let lu = litterale_lua(a) && element_lu(a, &locales, &mut v);
+                        match v.as_slice() {
+                            [seul] if lu => {
+                                mots.push(format!("'{}'", seul.replace('\'', "'\\''")));
+                                true
+                            }
+                            _ => false,
+                        }
+                    });
+                    if lu {
+                        appel.commandes.push(mots.join(" "));
+                    } else {
+                        appel.non_lu = Some(commande_lua_non_lue());
+                    }
+                } else {
+                    let lance = match (sorte, fin_du_nom) {
+                        (AppelLua::Raccourci, _) => {
+                            if description {
+                                2
+                            } else {
+                                1
+                            }
+                        }
+                        (_, "launch_sole") => 1,
+                        _ => 0,
+                    };
+                    let lus = arguments
+                        .iter()
+                        .enumerate()
+                        .filter(|(k, a)| {
+                            // Lu d'abord : ses mots se jugent même pour les touches.
+                            let sans_lancement = *k != lance;
+                            let lu = if sans_lancement {
+                                element_lu(a, &locales, &mut appel.textes)
+                            } else {
+                                litterale_lua(a) && element_lu(a, &locales, &mut appel.commandes)
+                            };
+                            !(lu || sans_lancement)
+                        })
+                        .count();
+                    if lus > 0 {
+                        appel.non_lu = Some(commande_lua_non_lue());
+                    }
                 }
             }
             AppelLua::Fichier => match arguments.first().and_then(|c| valeurs_lua(c, &locales)) {
@@ -7035,11 +7542,91 @@ mod tests {
         racine: std::path::PathBuf,
     }
 
+    /// Les programmes du système de la racine jetable (des scripts vides) : un nom nu ne se tait que trouvé dans les
+    /// dossiers du système (vérification 3).
+    const PROGRAMMES_D_ESSAI: &[&str] = &[
+        "sh",
+        "bash",
+        "env",
+        "true",
+        "sleep",
+        "python3",
+        "node",
+        "kitty",
+        "firefox",
+        "nautilus",
+        "mako",
+        "obsidian",
+        "uwsm",
+        "uwsm-app",
+        "hypridle",
+        "loginctl",
+        "xsetroot",
+        "pkill",
+        "hyprpicker",
+        "notify-send",
+        "waybar",
+        "omarchy-launch-terminal",
+        "omarchy-launch-or-focus",
+        "omarchy-lock-screen",
+        "omarchy-hook",
+        "omarchy-menu",
+        "omarchy-launch-webapp",
+        // Vérification 3 : les lignes courantes inventées (`lignes_courantes_muettes`) et les cas des rapports.
+        "swayosd-server",
+        "fcitx5",
+        "nm-applet",
+        "1password",
+        "flatpak",
+        "steam",
+        "systemctl",
+        "dbus-update-activation-environment",
+        "wl-paste",
+        "cliphist",
+        "hyprctl",
+        "gsettings",
+        "blueman-applet",
+        "udiskie",
+        "easyeffects",
+        "playerctld",
+        "setsid",
+        "nohup",
+        "syncthing",
+        "gamemoderun",
+        "swaybg",
+        "make",
+        "find",
+        "prlimit",
+        "setarch",
+        "perl",
+        "awk",
+        "cat",
+        "echo",
+        "xargs",
+        "footclient",
+        "run0",
+        "swaymsg",
+        "gtk-launch",
+        "dex",
+        "unbuffer",
+        "watchexec",
+        "systemd-run",
+        "xdg-terminal-exec",
+    ];
+
     impl Maison {
         fn nouvelle(nom: &str) -> Maison {
+            use std::os::unix::fs::PermissionsExt as _;
             let racine = crate::essais::temporaire().join(format!("vanguard-normal-{nom}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&racine);
             std::fs::create_dir_all(racine.join("home/alice/.config/systemd/user")).unwrap();
+            let bin = racine.join("usr/bin");
+            std::fs::create_dir_all(&bin).unwrap();
+            for p in PROGRAMMES_D_ESSAI {
+                std::fs::write(bin.join(p), "#!/bin/sh\n").unwrap();
+                std::fs::set_permissions(bin.join(p), std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            std::os::unix::fs::symlink("usr/bin", racine.join("bin")).unwrap();
             Maison { racine }
         }
 
@@ -8918,8 +9505,8 @@ mod tests {
         m.ecrire(
             ".config/hypr/hyprland.lua",
             "-- Réglages\ndofile((os.getenv(\"OMARCHY_PATH\") or \"/usr/share/omarchy\") .. \"/default/hypr/bootstrap.lua\")\n\
-             require(\"monitors\")\nlocal terminal = \"kitty\"\nlocal mod = \"SUPER\"\n\
-             hl.bind(mod .. \" + RETURN\", hl.dsp.exec_cmd(terminal))\n\
+             require(\"monitors\")\nlocal mod = \"SUPER\"\n\
+             hl.bind(mod .. \" + RETURN\", hl.dsp.exec_cmd(\"kitty\"))\n\
              hl.bind(mod .. \" + B\", hl.dsp.exec_cmd(\"firefox --new-window\"), { description = \"Navigateur\" })\n\
              for i = 1, 9 do\n  hl.bind(mod .. \" + \" .. i, hl.dsp.focus({ workspace = i }))\nend\n\
              hl.env(\"XCURSOR_SIZE\", \"24\")\nhl.config({ general = { gaps_in = 5 } })\n\
@@ -9530,6 +10117,47 @@ mod tests {
         );
     }
 
+    /// Vérification 3, H5 : la logique de la copie conforme, le jugement « à root seul » remplacé, tourne aussi sous
+    /// unshare (où rien n'est à root) : copie identique d'un original « à root », oui ; original au compte, contenu
+    /// changé ou chemin relatif différent, non. Et la carte des identités : seule celle du système passe.
+    #[test]
+    fn copie_d_omarchy_selon_le_jugement_de_root() {
+        let texte = "hl.exec_cmd(\"omarchy-lock-screen\")\n";
+        let m = Maison::nouvelle("verif3-copie-selon");
+        m.ecrire_hors("/usr/share/omarchy/default/hypr/x.lua", texte);
+        m.ecrire(".config/hypr/default/hypr/x.lua", texte);
+        m.ecrire(".config/hypr/default/hypr/y.lua", texte);
+        m.ecrire(".config/hypr/x.lua", "-- changé\n");
+        let r = Releveur {
+            racine: m.racine.clone(),
+            maison: m.chemin(""),
+            ..Releveur::default()
+        };
+        let omarchy = m.racine.join("usr/share/omarchy");
+        let a_root = |p: &Path| p.starts_with(&omarchy);
+        let copie = m.chemin(".config/hypr/default/hypr/x.lua");
+        assert_eq!(
+            copie_d_omarchy_selon(&r, &copie, &a_root),
+            Some(omarchy.join("default/hypr/x.lua"))
+        );
+        assert_eq!(
+            copie_d_omarchy_selon(&r, &copie, &|_| false),
+            None,
+            "original au compte"
+        );
+        let sans_original = m.chemin(".config/hypr/default/hypr/y.lua");
+        assert_eq!(copie_d_omarchy_selon(&r, &sans_original, &a_root), None);
+        assert_eq!(
+            copie_d_omarchy_selon(&r, &m.chemin(".config/hypr/x.lua"), &a_root),
+            None,
+            "contenu changé"
+        );
+        assert!(uid_sans_traduction("         0          0 4294967295\n"));
+        assert!(!uid_sans_traduction("         0       1000          1\n"));
+        assert!(!uid_sans_traduction("0 0 4294967295\n0 0 1\n"));
+        assert!(!uid_sans_traduction(""));
+    }
+
     /// Point 8 : la bibliothèque d'Omarchy du paquet (/usr/share/omarchy/default/hypr, à root) recopiée telle quelle
     /// dans ~/.config/hypr se dit en une ligne d'information, sans alerte ; un seul fichier changé se juge à
     /// nouveau. Demande la vraie bibliothèque, vue hors d'un espace de noms d'utilisateurs (le root qu'on y voit
@@ -9549,7 +10177,7 @@ mod tests {
         std::fs::create_dir_all(m.racine.join("usr/share")).unwrap();
         std::os::unix::fs::symlink("/usr/share/omarchy", m.racine.join("usr/share/omarchy")).unwrap();
         let mut lus = Vec::new();
-        parcourir(original, 4, &mut lus, &|f| f.extension().is_some_and(|x| x == "lua"));
+        parcourir(original, 4, &mut lus, &|f| a_l_extension(f, "lua"));
         assert!(lus.len() > 5, "{lus:?}");
         for f in &lus {
             let rel = f.strip_prefix(original).unwrap();
@@ -9664,6 +10292,555 @@ mod tests {
         m.ecrire(
             ".local/share/dbus-1/services/org.freedesktop.Notifications.service",
             "[D-BUS Service]\nName=org.freedesktop.Notifications\nExec=/usr/bin/mako\n",
+        );
+        let c = m.lancements();
+        assert_eq!(c.probleme, None, "{}", c.message);
+    }
+
+    // ---- Vérification 3 : la liste permise. Chaque cas des trois rapports (S1-S15, P1-P11, H1-H5), valeurs
+    // inventées ; « X » = un dossier caché de la maison ou /tmp/.x. ----
+
+    /// Une chaîne Lua entre guillemets doubles.
+    fn chaine_lua(texte: &str) -> String {
+        format!("\"{}\"", texte.replace('\\', "\\\\").replace('"', "\\\""))
+    }
+
+    /// Cette ligne de shell, lancée au démarrage par Hyprland (« exec-once = » d'un .conf, puis « hl.exec_cmd » d'un
+    /// fichier Lua), est levée au niveau élevé et jamais déclarable.
+    fn shell_leve_partout(nom: &str, ligne: &str) {
+        let m = Maison::nouvelle(&format!("{nom}-conf"));
+        m.ecrire(".config/hypr/hyprland.conf", &format!("exec-once = {ligne}\n"));
+        leve_non_declarable(&m.lancements(), &format!("conf : {ligne}"));
+        let m = Maison::nouvelle(&format!("{nom}-lua"));
+        m.ecrire(
+            ".config/hypr/hyprland.lua",
+            &format!("hl.exec_cmd({})\n", chaine_lua(ligne)),
+        );
+        leve_non_declarable(&m.lancements(), &format!("lua : {ligne}"));
+    }
+
+    /// Le rapport « shell » (S1 à S15) : chaque forme qu'il a trouvée muette, avec un chemin caché ou temporaire.
+    const CAS_SHELL: &[&str] = &[
+        // S1 : un chemin relatif derrière un lanceur ou un interpréteur, depuis le dossier courant ou la maison.
+        "cd ~/.x && exec ./a",
+        "cd /tmp/.x; sh ./a.sh",
+        "cd /tmp/.x; nohup ./a",
+        "{ cd /tmp/.x; exec ./a; }",
+        "sh .x/a.sh",
+        "exec .x/a",
+        "env .x/a",
+        ". .x/a",
+        "BASH_ENV=.x/a bash -c true",
+        // S2 : un « cd » annulé ou caché.
+        "(cd /tmp/.x); ./a",
+        "builtin cd /tmp/.x; ./a",
+        "command cd /tmp/.x; ./a",
+        "pushd /tmp/.x; ./a",
+        "false && cd /opt; ./a",
+        // S3 : HOME, PATH, BASH_ENV posés autrement.
+        "HOME=/tmp/.x; ~/a",
+        "HOME=/tmp/.x; cd; ./a",
+        "HOME=/tmp/.x sh -c '~/a'",
+        "export PATH=/tmp/.x:$PATH; a",
+        "PATH+=:/tmp/.x; a",
+        "typeset PATH=/tmp/.x; a",
+        "export BASH_ENV=/tmp/.x/a; bash -c true",
+        // S4 : « -c » après des options à valeur.
+        "bash -O extglob -c '/tmp/.x/a'",
+        "bash -o posix -c '~/.x/a'",
+        "bash --rcfile ~/.x/r -c true",
+        "bash --init-file ~/.x/r -c true",
+        "bash -c -- '~/.x/a'",
+        "bash -c -x '~/.x/a'",
+        "bash +B -c '~/.x/a'",
+        "env -S '~/.x/a'",
+        // S5 : eval, trap et les commandes internes qui exécutent.
+        "eval 'cd /tmp/.x; ./a'",
+        "sh -c 'eval \"~/.x/a\"'",
+        "trap '~/.x/a' EXIT",
+        "builtin eval ~/.x/a",
+        "builtin exec ~/.x/a",
+        "hash -p ~/.x/a a; a",
+        "mapfile -C ~/.x/a -c 1 < /etc/hostname",
+        "alias a=~/.x/a",
+        // S6 : un interpréteur nourri par son entrée.
+        "echo ~/.x/a | sh",
+        "cat ~/.x/a | bash -s",
+        "sh < .x/a",
+        "cd /tmp/.x; sh < a",
+        "sh <<< '~/.x/a'",
+        "exec 3<.x/a; sh /dev/fd/3",
+        "echo ~/.x/a | xargs sh -c",
+        // S7 : joker ou accolades dans un mot relatif ou un argument.
+        "cd /; t?p/.x/a",
+        "prlimit --nofile=1 /tmp/.x/a?",
+        "setarch x86_64 /tmp/.x/{a,}",
+        // S8 : accolades et parenthèses comptées autrement que le shell.
+        "${A:-{}; ~/.x/a; echo }",
+        "$((~/.x/a); (true))",
+        // S9 : un dossier temporaire seul en argument.
+        "env -C /tmp ./a",
+        "env --chdir=/tmp ./a",
+        "make -C ~/.x",
+        "find /tmp -name a -exec '{}' ';'",
+        "systemd-run --user --working-directory=/tmp ./a",
+        "flatpak run --cwd=/tmp org.example.App",
+        "xdg-terminal-exec --dir=/tmp",
+        "kitty -d /tmp",
+        // S10 : même verdict partout.
+        "prlimit --nofile=1 /tmp/.x/a$Z",
+        "set -- /tmp/.x/a; eval \"$1\"",
+        "f() { \"$1\"; }; f ~/.x/a",
+        // S11 : hyprctl qui lance autrement que « dispatch exec ».
+        "hyprctl dispatch execr '~/.x/a; true'",
+        "hyprctl dispatch -- exec ~/.x/a",
+        "hyprctl --batch 'dispatch exec ~/.x/a'",
+        "hyprctl keyword exec-once ~/.x/a",
+        // S12 : enveloppes inconnues.
+        "footclient ~/.x/a",
+        "run0 ~/.x/a",
+        "swaymsg exec ~/.x/a",
+        "dex ~/.x/a.desktop",
+        "unbuffer ~/.x/a",
+        "watchexec ~/.x/a",
+        // S13 : code en ligne d'un interpréteur.
+        "python3 -c 'import os; os.system(\"/tmp/.x/a\")'",
+        "perl -e 'system(q(/tmp/.x/a))'",
+        "awk 'BEGIN{system(\"/tmp/.x/a\")}'",
+    ];
+
+    /// Les mêmes formes sans aucun dossier caché ni temporaire écrit : seule la liste permise les lève (le filet
+    /// n'y voit rien). Chemin construit, variable, forme du shell, lanceur ou programme inconnus : « non lue ».
+    const CAS_SANS_FILET: &[&str] = &[
+        "cd /opt/y && exec a",
+        "eval \"$(printf '%s' /opt/y/a)\"",
+        "bash -O extglob -c 'a'",
+        "echo a | sh",
+        "sh <<< 'a'",
+        "trap 'b' EXIT",
+        "HOME=/opt/y; ~/a",
+        "export PATH=/opt/y:$PATH; a",
+        "prlimit --nofile=1 /opt/y/a?",
+        "setarch x86_64 /opt/y/{a,}",
+        "hyprctl keyword exec-once a",
+        "hyprctl --batch 'dispatch exec a'",
+        "python3 -c 'import os; os.system(chr(47) + \"opt/a\")'",
+        "perl -e 'system(q(a))'",
+        "awk 'BEGIN{system(\"a\")}'",
+        "programme-inconnu --x",
+        "a=$(printf /opt/y/a); $a",
+        "run0 /opt/y/a",
+        "env -i /opt/y/a",
+        "sh -c \"$A\"",
+    ];
+
+    #[test]
+    fn verification_3_shell_leve_partout() {
+        for (i, ligne) in CAS_SHELL.iter().chain(CAS_SANS_FILET).enumerate() {
+            shell_leve_partout(&format!("v3-shell-{i}"), ligne);
+        }
+    }
+
+    /// S15 : une ligne plus longue que `permise::LIGNE_MAX` n'est pas lue ; levée, jamais muette, en peu de temps.
+    #[test]
+    fn verification_3_ligne_geante_levee() {
+        let debut = std::time::Instant::now();
+        let geante = format!("true {}", "a ".repeat(permise::LIGNE_MAX));
+        shell_leve_partout("v3-geante", &geante);
+        let accolades = format!("true {}", "{ ".repeat(150_000));
+        shell_leve_partout("v3-accolades", &accolades);
+        let suite = "true; ".repeat(20_000);
+        shell_leve_partout("v3-suite", &suite);
+        assert!(
+            debut.elapsed() < std::time::Duration::from_secs(30),
+            "{:?}",
+            debut.elapsed()
+        );
+    }
+
+    /// Les deux mécanismes, chacun seul (preuve par mutation : couper l'un fait tomber ses essais). Le filet voit
+    /// tout dossier temporaire ou caché écrit, quelle que soit la forme ; la liste permise refuse toute forme qu'elle
+    /// ne reconnaît pas, sans dossier caché écrit.
+    #[test]
+    fn verification_3_filet_et_liste_permise_seuls() {
+        let m = Maison::nouvelle("v3-mecanismes");
+        let maison = m.racine.join("home/alice").to_string_lossy().into_owned();
+        let maisons = [maison.as_str()];
+        let s = permise::Systeme {
+            racine: &m.racine,
+            maison: &maison,
+            maisons: &maisons,
+        };
+        // Chaque cas des rapports, levé par les deux mécanismes à la fois ; le joker « t?p » seul échappe au filet
+        // (le chemin n'est pas écrit) : la liste permise le refuse.
+        for ligne in CAS_SHELL {
+            assert!(
+                permise::filet(ligne, false, &maisons) || *ligne == "cd /; t?p/.x/a",
+                "filet : {ligne}"
+            );
+            assert!(permise::ligne_shell(&s, ligne).is_err(), "liste permise : {ligne}");
+        }
+        for (texte, systemd) in [
+            ("/var/run/user/1000/a", true),
+            ("/proc/self/task/1/root/tmp/a", true),
+            ("/proc/self/cwd/a", true),
+            ("%t/a", true),
+            ("%T/a", true),
+            ("/dev/shm/a", false),
+            ("--working-directory=/tmp", false),
+            ("$HOME/.x/a", false),
+        ] {
+            assert!(permise::filet(texte, systemd, &maisons), "filet : {texte}");
+        }
+        for ligne in CAS_SANS_FILET {
+            assert!(!permise::filet(ligne, false, &maisons), "filet inattendu : {ligne}");
+            assert!(permise::ligne_shell(&s, ligne).is_err(), "liste permise : {ligne}");
+        }
+        for ligne in LIGNES_COURANTES {
+            assert!(!permise::filet(ligne, false, &maisons), "filet : {ligne}");
+            assert_eq!(permise::ligne_shell(&s, ligne), Ok(()), "{ligne}");
+        }
+    }
+
+    /// Trente lignes de démarrage courantes, inventées : aucune n'est levée (ni « non lue »), en .conf comme en Lua.
+    const LIGNES_COURANTES: &[&str] = &[
+        "uwsm app -- firefox",
+        "uwsm-app -- kitty",
+        "uwsm app -- obsidian",
+        "waybar",
+        "hypridle",
+        "mako",
+        "swayosd-server",
+        "fcitx5 -d",
+        "nm-applet --indicator",
+        "1password --silent",
+        "flatpak run com.discordapp.Discord --start-minimized",
+        "steam -silent",
+        "nautilus --gapplication-service",
+        "firefox --new-window https://example.org",
+        "kitty --class=notes",
+        "xsetroot -cursor_name left_ptr",
+        "systemctl --user start hyprpolkitagent",
+        "dbus-update-activation-environment --systemd --all",
+        "wl-paste --type text --watch cliphist store",
+        "hyprctl setcursor Bibata-Modern-Classic 24",
+        "gsettings set org.gnome.desktop.interface color-scheme prefer-dark",
+        "swaybg -i /usr/share/backgrounds/salon.png -m fill",
+        "blueman-applet",
+        "udiskie --tray",
+        "easyeffects --gapplication-service",
+        "playerctld daemon",
+        "setsid uwsm app -- obsidian",
+        "nohup syncthing serve --no-browser",
+        "gamemoderun steam",
+        "sleep 2 && waybar",
+    ];
+
+    #[test]
+    fn lignes_courantes_muettes() {
+        assert_eq!(LIGNES_COURANTES.len(), 30);
+        let m = Maison::nouvelle("v3-courantes-conf");
+        let conf = LIGNES_COURANTES
+            .iter()
+            .fold(String::new(), |t, l| t + "exec-once = " + l + "\n");
+        m.ecrire(".config/hypr/hyprland.conf", &conf);
+        let c = m.lancements();
+        assert_eq!(c.probleme, None, "{}", c.message);
+        let m = Maison::nouvelle("v3-courantes-lua");
+        let lua = LIGNES_COURANTES
+            .iter()
+            .fold(String::new(), |t, l| t + "hl.exec_cmd(" + &chaine_lua(l) + ")\n");
+        m.ecrire(".config/hypr/hyprland.lua", &lua);
+        let c = m.lancements();
+        assert_eq!(c.probleme, None, "{}", c.message);
+    }
+
+    /// Vérification 3 : la configuration de départ d'Omarchy (/usr/share/omarchy/config, copiée dans ~/.config à
+    /// l'installation), avec son dossier « default » dans la racine jetable, ne lève rien : la liste permise couvre
+    /// ce que la distribution pose elle-même. Sauté là où Omarchy n'est pas installé.
+    #[test]
+    fn gabarits_d_omarchy_muets() {
+        fn copier(de: &std::path::Path, vers: &std::path::Path) {
+            for e in std::fs::read_dir(de).unwrap().flatten() {
+                let (chemin, cible) = (e.path(), vers.join(e.file_name()));
+                let sorte = e.file_type().unwrap();
+                if sorte.is_dir() {
+                    std::fs::create_dir_all(&cible).unwrap();
+                    copier(&chemin, &cible);
+                } else if sorte.is_file() {
+                    std::fs::copy(&chemin, &cible).unwrap();
+                }
+            }
+        }
+        let source = std::path::Path::new("/usr/share/omarchy");
+        if !source.join("config/hypr").is_dir() {
+            return crate::essais::saute("Omarchy n'est pas installé (/usr/share/omarchy/config/hypr absent)");
+        }
+        let m = Maison::nouvelle("v3-gabarits-omarchy");
+        for dossier in ["hypr", "autostart"] {
+            let vers = m.chemin(&format!(".config/{dossier}"));
+            std::fs::create_dir_all(&vers).unwrap();
+            copier(&source.join("config").join(dossier), &vers);
+        }
+        let defaut = m.racine.join("usr/share/omarchy/default");
+        std::fs::create_dir_all(&defaut).unwrap();
+        copier(&source.join("default"), &defaut);
+        let c = m.lancements();
+        assert_eq!(c.probleme, None, "{}", c.message);
+    }
+
+    /// Cette unité du compte (avec ses fichiers en plus) est levée au niveau élevé et jamais déclarable.
+    fn unite_levee(nom: &str, fichiers: &[(&str, &str)]) {
+        let m = Maison::nouvelle(nom);
+        for (f, texte) in fichiers {
+            m.ecrire(f, texte);
+        }
+        leve_non_declarable(&m.lancements(), &format!("{fichiers:?}"));
+    }
+
+    /// Le rapport « systemd » (P1 à P11).
+    #[test]
+    fn verification_3_unites_levees() {
+        const U: &str = ".config/systemd/user/x.service";
+        let gros = format!("A=b\n{}", "# rien\n".repeat(200_000));
+        for (i, fichiers) in [
+            // P1 : le script donné en entrée d'un shell.
+            vec![(
+                U,
+                "[Service]\nStandardInput=data\nStandardInputText=echo a\nExecStart=/bin/sh\n",
+            )],
+            vec![(
+                U,
+                "[Service]\nStandardInput=data\nStandardInputData=ZWNobyBh\nExecStart=/bin/sh\n",
+            )],
+            vec![(U, "[Service]\nStandardInput=file:/opt/y/a\nExecStart=/bin/sh\n")],
+            // P2 : une variable posée hors de [Service], que systemd ignore.
+            vec![(
+                U,
+                "[Service]\nEnvironment=A=/tmp/.x/a\nExecStart=/bin/sh -c ${A}\n[Unit]\nEnvironment=A=/usr/bin/true\n",
+            )],
+            vec![(
+                U,
+                "[Service]\nExecStart=/bin/sh -c ${A}\n[X-Leurre]\nEnvironment=A=/usr/bin/true\n",
+            )],
+            // P3 : la valeur finale indéterminée ou posée localement.
+            vec![(U, "[Service]\nEnvironment=HOME=/tmp/.x\nExecStart=/bin/sh $HOME/a\n")],
+            vec![(U, "[Service]\nEnvironment=HOME=/opt/y\nExecStart=/bin/sh $HOME/a\n")],
+            vec![(U, "[Service]\nEnvironment=A=%t/a\nExecStart=/bin/sh ${A}\n")],
+            vec![(U, "[Service]\nEnvironment=A=/opt B=${A}/x\nExecStart=/bin/sh ${B}\n")],
+            vec![(U, "[Service]\nExecStart=/bin/sh ${INCONNUE}\n")],
+            // P4 : un chemin relatif lu depuis la maison.
+            vec![(U, "[Service]\nExecStart=/bin/sh .x/a.sh\n")],
+            vec![(
+                U,
+                "[Service]\nEnvironment=LD_LIBRARY_PATH=.x\nExecStart=/usr/bin/true\n",
+            )],
+            vec![(
+                U,
+                "[Service]\nEnvironment=PYTHONPATH=.x\nExecStart=/usr/bin/python3 -m a\n",
+            )],
+            vec![(U, "[Service]\nEnvironment=BASH_ENV=.x/e\nExecStart=/bin/bash -c true\n")],
+            // P5 : un fichier de variables à joker, coupé par une continuation, trop gros, illisible.
+            vec![(U, "[Service]\nEnvironmentFile=%h/v.en?\nExecStart=/usr/bin/true\n")],
+            vec![
+                (U, "[Service]\nEnvironmentFile=%h/v.env\nExecStart=/bin/bash -c true\n"),
+                ("v.env", "BASH_ENV=\\\n/tmp/.x/e\n"),
+            ],
+            vec![
+                (U, "[Service]\nEnvironmentFile=%h/v.env\nExecStart=/usr/bin/true\n"),
+                ("v.env", gros.as_str()),
+            ],
+            // P7 : les autres noms d'un dossier temporaire ou du dossier courant.
+            vec![(U, "[Service]\nExecStart=/proc/self/task/1/root/tmp/a\n")],
+            vec![(U, "[Service]\nExecStart=/proc/self/cwd/a\n")],
+            vec![(U, "[Service]\nExecStart=/dev/mqueue/a\n")],
+            // P8 : l'ajout (drop-in) fusionné à l'unité.
+            vec![
+                (U, "[Service]\nExecStart=/bin/sh ${A}\n"),
+                (
+                    ".config/systemd/user/x.service.d/o.conf",
+                    "[Service]\nEnvironment=A=/tmp/.x/a\n",
+                ),
+            ],
+            vec![
+                (U, "[Service]\nExecStart=/usr/bin/true\n"),
+                (
+                    ".config/systemd/user/x.service.d/o.conf",
+                    "[Service]\nEnvironment=LD_PRELOAD=/opt/y/l.so\n",
+                ),
+            ],
+            // P9 : une dépendance vers une instance de gabarit, un chemin ou un code.
+            vec![(
+                U,
+                "[Unit]\nWants=wayland-wm@-tmp-.x-a.service\n[Service]\nExecStart=/usr/bin/true\n",
+            )],
+            vec![(
+                ".config/systemd/user/x.timer",
+                "[Timer]\nOnBootSec=1\nUnit=a@b.service\n",
+            )],
+            vec![(
+                U,
+                "[Unit]\nOnFailure=%n-x.service\n[Service]\nExecStart=/usr/bin/true\n",
+            )],
+            // P11 : les variables qui lancent un programme ; le bus par « unixexec: ».
+            vec![(
+                U,
+                "[Service]\nEnvironment=DBUS_SESSION_BUS_ADDRESS=unixexec:path=/opt/y/a\nExecStart=/usr/bin/true\n",
+            )],
+            vec![(
+                U,
+                "[Service]\nEnvironment=SSH_ASKPASS=~/.x/a\nExecStart=/usr/bin/true\n",
+            )],
+            vec![(
+                U,
+                "[Service]\nEnvironment=GIT_SSH_COMMAND=$A\nExecStart=/usr/bin/true\n",
+            )],
+            vec![(
+                U,
+                "[Service]\nEnvironment=GAMEMODERUNEXEC=a b\nExecStart=/usr/bin/true\n",
+            )],
+            // Une clé inconnue de la liste.
+            vec![(U, "[Service]\nExecStart=/usr/bin/true\nCleInventee=1\n")],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            unite_levee(&format!("v3-unite-{i}"), &fichiers);
+        }
+        // P7 : les autres noms d'un dossier temporaire se lisent comme /tmp : levés pour cette raison, et, comme
+        // « ExecStart=/tmp/.x/a », déclarables seulement liés au fichier lancé (son contenu ou son absence).
+        for (i, l) in ["/var/run/user/1000/a", "/run/lock/a", "/var/lock/a"]
+            .into_iter()
+            .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("v3-unite-temporaire-{i}"));
+            m.ecrire(U, &format!("[Service]\nExecStart={l}\n"));
+            let c = m.lancements();
+            leve(&c, l);
+            assert!(c.message.contains("temporaire"), "{l} : {}", c.message);
+        }
+    }
+
+    /// P6 : les services D-Bus du dossier de la session, lus en premier par le bus.
+    #[test]
+    fn verification_3_service_dbus_de_la_session() {
+        let m = Maison::nouvelle("v3-dbus-session");
+        m.ecrire_hors(
+            "/run/user/1000/dbus-1/services/org.example.A.service",
+            "[D-BUS Service]\nName=org.example.A\nExec=/tmp/.x/a\n",
+        );
+        leve_non_declarable(&m.lancements(), "dbus de la session");
+    }
+
+    /// P10 : user.conf avec des blancs autour du « = ».
+    #[test]
+    fn verification_3_user_conf_a_blancs() {
+        for (i, ligne) in [
+            "DefaultEnvironment = LD_PRELOAD=/opt/y/l.so",
+            "DefaultEnvironment\t=LD_PRELOAD=/opt/y/l.so",
+            "ManagerEnvironment =BASH_ENV=/tmp/.x/e",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert!(variable_de_configuration(ligne, &["/home/alice"]).is_some(), "{ligne}");
+            let m = Maison::nouvelle(&format!("v3-user-conf-{i}"));
+            m.ecrire(".config/systemd/user.conf", &format!("[Manager]\n{ligne}\n"));
+            leve(&m.lancements(), ligne);
+        }
+    }
+
+    /// H1 à H4 : ce qu'Omarchy et Lua chargent vraiment.
+    #[test]
+    fn verification_3_lua_charge_vraiment() {
+        const LANCE: &str = "hl.exec_cmd(\"/tmp/.x/a\")\n";
+        // H1 : un fichier nommé « .lua » (require("") le charge).
+        for d in [
+            ".local/state/omarchy/toggles/hypr",
+            ".local/state/omarchy/workspace-layouts",
+        ] {
+            let m = Maison::nouvelle("v3-h1");
+            m.ecrire(&format!("{d}/.lua"), LANCE);
+            leve_non_declarable(&m.lancements(), d);
+        }
+        // H2 : « a.b.lua » fait charger a/b.lua d'ailleurs ; le fichier jugé n'est pas celui qui est chargé.
+        for d in [
+            ".local/state/omarchy/toggles/hypr",
+            ".local/state/omarchy/workspace-layouts",
+        ] {
+            let m = Maison::nouvelle("v3-h2");
+            m.ecrire(&format!("{d}/a.b.lua"), "-- rien\n");
+            m.ecrire(".local/state/a/b.lua", LANCE);
+            let refus = leve_non_declarable(&m.lancements(), d);
+            assert!(refus.contains("a.b.lua"), "{refus}");
+        }
+        // H3 : les raccourcis du moteur de dictée choisi ; un nom de moteur refusé par Omarchy n'est pas chargé.
+        let m = Maison::nouvelle("v3-h3");
+        m.ecrire(".config/omarchy/defaults/dictation", "  voxessai \n");
+        m.ecrire(".config/voxessai/shortcuts.lua", LANCE);
+        leve_non_declarable(&m.lancements(), "dictée");
+        assert_eq!(
+            raccourcis_de_dictee(&m.chemin(".config")),
+            Some(m.chemin(".config/voxessai/shortcuts.lua"))
+        );
+        m.ecrire(".config/omarchy/defaults/dictation", "Vox\n");
+        m.ecrire(".config/Vox/shortcuts.lua", LANCE);
+        assert_eq!(raccourcis_de_dictee(&m.chemin(".config")), None);
+        m.ecrire(".config/omarchy/defaults/dictation", "-x\n");
+        assert_eq!(raccourcis_de_dictee(&m.chemin(".config")), None);
+        // H4 : une 1re ligne « # » sautée par Lua ; avec la marque d'ordre des octets aussi.
+        for (i, texte) in [
+            "#!/x --[[\nhl.exec_cmd(\"/tmp/.x/a\")\n-- ]]\n",
+            "\u{feff}# --[[\nhl.exec_cmd(\"/tmp/.x/a\")\n-- ]]\n",
+            "#--[==[\rhl.exec_cmd(\"/tmp/.x/a\")\n",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("v3-h4-{i}"));
+            m.ecrire(".config/hypr/hyprland.lua", texte);
+            let c = m.lancements();
+            leve_non_declarable(&c, texte);
+            assert!(c.message.contains("hyprland.lua:2"), "{texte:?} : {}", c.message);
+        }
+        // Le nom à point ailleurs (un module ordinaire de ~/.config/hypr) ne change rien.
+        let m = Maison::nouvelle("v3-h2-ailleurs");
+        m.ecrire(".config/hypr/a.b.lua", "-- rien\n");
+        assert_eq!(m.lancements().probleme, None);
+    }
+
+    /// Un appel Lua de lancement n'est reconnu que si son argument est une chaîne littérale qui passe la liste
+    /// permise : une chaîne construite, une variable, un appel imbriqué sont « non lue ».
+    #[test]
+    fn verification_3_appel_lua_litteral_seulement() {
+        for (i, texte) in [
+            "local function f(c)\n  hl.exec_cmd(c)\nend\nf(\"waybar\")\n",
+            "hl.exec_cmd(io.read())\n",
+            "hl.exec_cmd(string.format(\"%s\", \"waybar\"))\n",
+            "hl.exec_cmd(os.getenv(\"A\"))\n",
+            // La valeur se retrouverait (un nom posé, « $HOME ») : pas en toutes lettres, donc non lue.
+            "local t = \"kitty\"\nhl.exec_cmd(t)\n",
+            "local t = \"kitty\"\nhl.bind(\"SUPER + Q\", hl.dsp.exec_cmd(t))\n",
+            "hl.exec_cmd(os.getenv(\"HOME\") .. \"/bin/a\")\n",
+            "local c = \"browser\"\no.bind(\"SUPER + B\", \"Navigateur\", { omarchy = c })\n",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("v3-lua-litteral-{i}"));
+            m.ecrire(".config/hypr/hyprland.lua", texte);
+            leve_non_declarable(&m.lancements(), texte);
+        }
+        // En toutes lettres : muet (chaînes jointes, répartiteur, règles de fenêtre, table d'Omarchy).
+        let m = Maison::nouvelle("v3-lua-litteral-muet");
+        m.ecrire(
+            ".config/hypr/hyprland.lua",
+            "hl.exec_cmd(\"kitty\" .. \" --class=notes\")\n\
+             hl.exec_cmd(\"kitty\", { workspace = \"2 silent\" })\n\
+             hl.bind(\"SUPER + Q\", hl.dsp.exec_cmd(\"kitty\"), { repeating = true })\n\
+             o.bind(\"SUPER + M\", \"Menu\", { menu = \"power\" })\n\
+             o.bind(\"SUPER + W\", \"Web\", o.launch_webapp(\"https://example.org\"))\n\
+             local p = io.popen(\"waybar --version 2>/dev/null\", \"r\")\n",
         );
         let c = m.lancements();
         assert_eq!(c.probleme, None, "{}", c.message);

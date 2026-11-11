@@ -1288,6 +1288,8 @@ mod tests_sh_chaine {
         ("machine/linux/maj.rs", 5),
         ("machine/linux/mod.rs", 42),
         ("machine/linux/persistance.rs", 1),
+        // La liste permise de la détection : run0 parmi les programmes qui en lancent un autre, levés ; aucun appel.
+        ("machine/linux/persistance/permise.rs", 1),
         ("machine/linux/plateforme.rs", 1),
         ("machine/linux/privileges.rs", 5),
         ("machine/linux/regles.rs", 2),

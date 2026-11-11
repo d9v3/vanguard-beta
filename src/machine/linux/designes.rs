@@ -433,6 +433,17 @@ pub(crate) fn lit_un_script(programme: &str) -> bool {
     famille(nom).is_some() || LANCEURS.contains(&nom)
 }
 
+/// Ce programme est-il un interpréteur (`Some(true)` : un shell ; `Some(false)` : un autre) ? Pour la liste permise
+/// des lignes de démarrage (`persistance::permise`).
+pub(crate) fn interpreteur(programme: &str) -> Option<bool> {
+    famille(nom_de_fichier(programme)).map(|f| f == Famille::Shell)
+}
+
+/// Ce programme en lance-t-il un autre selon ses propres règles (`LANCEURS`) ?
+pub(crate) fn lanceur(programme: &str) -> bool {
+    LANCEURS.contains(&nom_de_fichier(programme))
+}
+
 /// Une option sans argument que la famille accepte avant le script : elle ne change pas ce qui est lu. Toute autre
 /// option (« -c », « -m », « -e », « -r », « -I », « -cp »…) rend la ligne indéfinie.
 fn option_sure(f: Famille, mot: &str) -> bool {
