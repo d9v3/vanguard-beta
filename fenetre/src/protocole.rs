@@ -3,8 +3,9 @@
 //! et le relais, qui a les droits du compte. Le relais lit ce que la fenêtre lui envoie comme venant d'un inconnu.
 //!
 //! Des trames : la longueur sur 4 octets, petit-boutiste, puis le contenu. Fenêtre → relais : `1 id commande langue`
-//! (lancer une commande de la liste), `3 id sorte empreinte(16) langue` (un changement au démarrage : sorte 1
-//! retirer, 2 remettre), `4 id theme action base rvb(15) langue` (un changement des couleurs de la fenêtre : thème 1
+//! (lancer une commande de la liste), `3 id sorte empreinte(16) accord(32) langue` (un changement au démarrage :
+//! sorte 1 retirer, 2 remettre ; l'accord est celui que `demarrage --json` a donné, tout à zéro s'il n'en a pas
+//! donné), `4 id theme action base rvb(15) langue` (un changement des couleurs de la fenêtre : thème 1
 //! sombre, 2 clair ; action 1 un choix, sa base et ses cinq couleurs, ou 0 celles de Vanguard, base et couleurs
 //! alors toutes à zéro), `5 id reduites langue` (les animations de la fenêtre, gardées : 1 réduites, 0 toutes) ou
 //! `6 id sorte jeton(16) accord(32) langue` (un geste sur un constat du bilan : sorte 10 voir sa correction, dont
@@ -20,11 +21,14 @@ use crate::commandes::{
 };
 use crate::couleurs::{Base, Choix, Rgb, Theme, VIFS};
 
-/// Une demande de la fenêtre fait au plus 55 octets (un geste) : plus long, c'est hors du protocole.
+/// Une demande de la fenêtre fait au plus 55 octets (un geste, un changement au démarrage) : plus long, c'est hors
+/// du protocole.
 pub const DEMANDE_MAX: usize = 64;
 
 /// La longueur exacte d'une trame de geste : type, id, sorte, jeton, accord, langue.
 const LONGUEUR_GESTE: usize = 1 + 4 + 1 + 16 + 32 + 1;
+/// La longueur exacte d'une trame de changement au démarrage : type, id, sorte, empreinte, accord, langue.
+const LONGUEUR_CHANGEMENT: usize = 1 + 4 + 1 + 16 + 32 + 1;
 
 /// Une demande de la fenêtre.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,6 +66,7 @@ impl Demande {
                 v.extend(id.to_le_bytes());
                 v.push(ch.sorte.octet());
                 v.extend(ch.empreinte.octets());
+                v.extend(ch.accord.octets());
                 v.push(u8::from(anglais));
                 v
             }
@@ -131,13 +136,14 @@ impl Demande {
                 lancement: Lancement::Commande(*Commande::TOUTES.get(usize::from(*o.get(5)?))?),
                 anglais: langue(6)?,
             }),
-            (3, 23) => Some(Demande::Lancer {
+            (3, LONGUEUR_CHANGEMENT) => Some(Demande::Lancer {
                 id,
                 lancement: Lancement::Changement(Changement {
                     sorte: Sorte::depuis_octet(*o.get(5)?)?,
                     empreinte: Empreinte::depuis_octets(o.get(6..22)?.try_into().ok()?),
+                    accord: Accord::depuis_octets(o.get(22..54)?.try_into().ok()?),
                 }),
-                anglais: langue(22)?,
+                anglais: langue(54)?,
             }),
             (4, 24) => Some(Demande::Lancer {
                 id,
@@ -370,18 +376,21 @@ mod tests {
         for sorte in [Sorte::Retirer, Sorte::Remettre] {
             for anglais in [false, true] {
                 for octets in [[0u8; 16], [0xff; 16], *b"Lecteur\0alice\0\0\0"] {
-                    let d = Demande::Lancer {
-                        id: 42,
-                        lancement: Lancement::Changement(Changement {
-                            sorte,
-                            empreinte: Empreinte::depuis_octets(octets),
-                        }),
-                        anglais,
-                    };
-                    let v = d.coder();
-                    assert_eq!(v.len(), 23);
-                    assert!(v.len() <= DEMANDE_MAX);
-                    assert_eq!(Demande::lire(&v), Some(d));
+                    for accord in [[0u8; 32], [0xa5; 32]] {
+                        let d = Demande::Lancer {
+                            id: 42,
+                            lancement: Lancement::Changement(Changement {
+                                sorte,
+                                empreinte: Empreinte::depuis_octets(octets),
+                                accord: Accord::depuis_octets(accord),
+                            }),
+                            anglais,
+                        };
+                        let v = d.coder();
+                        assert_eq!(v.len(), 55);
+                        assert!(v.len() <= DEMANDE_MAX);
+                        assert_eq!(Demande::lire(&v), Some(d));
+                    }
                 }
             }
         }
@@ -390,10 +399,15 @@ mod tests {
             lancement: Lancement::Changement(Changement {
                 sorte: Sorte::Retirer,
                 empreinte: Empreinte::depuis_octets([7; 16]),
+                accord: Accord::depuis_octets([9; 32]),
             }),
             anglais: false,
         }
         .coder();
+        // L'ancienne forme, sans accord (23 octets) : refusée.
+        let mut ancienne = bonne[..22].to_vec();
+        ancienne.push(0);
+        assert_eq!(Demande::lire(&ancienne), None);
         // Plus court, plus long (un octet de plus, un chemin au bout) : refusé.
         for n in 0..bonne.len() {
             assert_eq!(Demande::lire(&bonne[..n]), None, "{n}");
@@ -404,7 +418,7 @@ mod tests {
         let mut chemin = bonne.clone();
         chemin.extend(b"/home/alice/.config/autostart/Lecteur.desktop");
         assert_eq!(Demande::lire(&chemin), None);
-        for (i, faux) in [(5, 0u8), (5, 3), (5, 0xff), (22, 2), (22, 0xff)] {
+        for (i, faux) in [(5, 0u8), (5, 3), (5, 0xff), (54, 2), (54, 0xff)] {
             let mut v = bonne.clone();
             v[i] = faux;
             assert_eq!(Demande::lire(&v), None, "{i} {faux}");

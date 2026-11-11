@@ -794,6 +794,20 @@ impl Accord {
         o[16..].copy_from_slice(&b.0);
         Some(Accord(o))
     }
+
+    /// Les 64 chiffres hexadécimaux minuscules, tels que Vanguard les a donnés.
+    pub fn hex(self) -> String {
+        use std::fmt::Write as _;
+        self.0.iter().fold(String::with_capacity(64), |mut s, o| {
+            let _ = write!(s, "{o:02x}");
+            s
+        })
+    }
+
+    /// Tout à zéro : pas d'accord (celui d'un « voir », ou absent de la liste du démarrage).
+    pub fn nul(self) -> bool {
+        self == Accord::NUL
+    }
 }
 
 /// Un geste demandé par un clic : sa sorte, le jeton du constat, et l'accord (tout à zéro pour un « voir »).
@@ -815,11 +829,14 @@ impl Geste {
     }
 }
 
-/// Un changement demandé après confirmation : un seul programme, par son empreinte.
+/// Un changement demandé après confirmation : un seul programme, par son empreinte, avec l'accord que Vanguard a
+/// donné pour ce geste dans la liste (`demarrage --json`). Tout à zéro s'il n'en a pas donné : le changement part
+/// sans `--accord`, et Vanguard le refuse (« accord manquant »), refus montré tel quel.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Changement {
     pub sorte: Sorte,
     pub empreinte: Empreinte,
+    pub accord: Accord,
 }
 
 /// Un changement des couleurs de la fenêtre, pour un thème : un choix (sa base et ses cinq couleurs), ou `None` pour
@@ -851,7 +868,7 @@ impl From<Commande> for Lancement {
 
 impl Lancement {
     /// Les arguments donnés à `vanguard`. Un changement n'a qu'une forme : `demarrage --retirer|--remettre
-    /// <32 chiffres> --json`, sans question (stdin fermé ; la fenêtre administrateur du système, s'il en faut une,
+    /// <32 chiffres> --accord <64 chiffres> --json` (sans `--accord` s'il n'y en a pas), sans question (stdin fermé ; la fenêtre administrateur du système, s'il en faut une,
     /// est la seule).
     pub fn arguments(self) -> Vec<String> {
         match self {
@@ -861,12 +878,12 @@ impl Lancement {
                     Sorte::Retirer => "--retirer",
                     Sorte::Remettre => "--remettre",
                 };
-                vec![
-                    "demarrage".to_string(),
-                    option.to_string(),
-                    ch.empreinte.hex(),
-                    "--json".to_string(),
-                ]
+                let mut a = vec!["demarrage".to_string(), option.to_string(), ch.empreinte.hex()];
+                if !ch.accord.nul() {
+                    a.extend(["--accord".to_string(), ch.accord.hex()]);
+                }
+                a.push("--json".to_string());
+                a
             }
             // Des mots fermés et des couleurs de six chiffres hexadécimaux, construits ici depuis des valeurs typées.
             Lancement::Couleurs(cc) => {
@@ -1223,8 +1240,23 @@ mod tests {
             assert_eq!(Empreinte::lire(&faux), None, "{faux:?}");
         }
         for (sorte, option) in [(Sorte::Retirer, "--retirer"), (Sorte::Remettre, "--remettre")] {
-            let l = Lancement::Changement(Changement { sorte, empreinte: e });
-            assert_eq!(l.arguments(), ["demarrage", option, texte, "--json"]);
+            // Sans accord donné par la liste : la forme sans `--accord`, que Vanguard refuse.
+            let sans = Lancement::Changement(Changement {
+                sorte,
+                empreinte: e,
+                accord: Accord::NUL,
+            });
+            assert_eq!(sans.arguments(), ["demarrage", option, texte, "--json"]);
+            let accord = "5a".repeat(32);
+            let l = Lancement::Changement(Changement {
+                sorte,
+                empreinte: e,
+                accord: Accord::lire(&accord).unwrap(),
+            });
+            assert_eq!(
+                l.arguments(),
+                ["demarrage", option, texte, "--accord", &accord, "--json"]
+            );
             assert_eq!(l.commande(), Commande::Demarrage);
             assert!(l.sur_ce_systeme());
             assert!(l.delai().as_secs() >= 300);

@@ -340,13 +340,14 @@ mod tests {
     /// Un changement au démarrage se montre avec sa ligne exacte, empreinte comprise : ce qui part vraiment.
     #[test]
     fn un_changement_montre_sa_ligne_exacte() {
-        use crate::commandes::{Changement, Empreinte, Sorte as Geste};
+        use crate::commandes::{Accord, Changement, Empreinte, Sorte as Geste};
         let empreinte = Empreinte::lire(&"a".repeat(32)).unwrap();
         let mut c = Coulisses::nouvelles(("bac".into(), false));
         c.lancee(
             Lancement::Changement(Changement {
                 sorte: Geste::Retirer,
                 empreinte,
+                accord: Accord::NUL,
             }),
             Chemin::Relais,
         );
@@ -357,7 +358,8 @@ mod tests {
                 "vanguard {}",
                 Lancement::Changement(Changement {
                     sorte: Geste::Retirer,
-                    empreinte
+                    empreinte,
+                    accord: Accord::NUL,
                 })
                 .arguments()
                 .join(" ")

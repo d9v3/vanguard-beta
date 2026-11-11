@@ -2,7 +2,7 @@
 //! relais, qui a les droits du compte, lit les demandes d'une fenêtre peut-être prise par ce qu'elle dessine ; la
 //! fenêtre lit les réponses du relais. Quoi qu'on envoie : aucune trame plus longue que la borne n'est acceptée (ni
 //! réservée), une demande comprise est une commande de la liste fermée ou un changement au démarrage dont les
-//! arguments ont la forme fermée (`demarrage --retirer|--remettre <32 hex> --json`, `couleurs --theme …`, ou
+//! arguments ont la forme fermée (`demarrage --retirer|--remettre <32 hex> [--accord <64 hex>] --json`, `couleurs --theme …`, ou
 //! `correction --voir <32 hex> --json` sans accord), et se recode octet pour octet à l'identique ; une réponse comprise a une ligne d'erreur propre et bornée. Le premier octet choisit la langue.
 #![no_main]
 // Aucun unsafe ici ni dans ce que la cible inclut (fenetre/src/) : refusé sans recours, un allow ne compile pas.
@@ -36,6 +36,11 @@ fn sans_piege(s: &str) {
     assert!(s.chars().all(|c| rendu(c) == Some(c)), "caractère piégé dans {s:?}");
 }
 
+/// Exactement `n` chiffres hexadécimaux minuscules.
+fn hex(t: &str, n: usize) -> bool {
+    t.len() == n && t.bytes().all(|o| matches!(o, b'0'..=b'9' | b'a'..=b'f'))
+}
+
 /// Les demandes, comme le relais les lit : trame après trame, jusqu'à la première hors protocole.
 fn relais(mut flux: &[u8]) {
     let avant = flux.len();
@@ -45,13 +50,20 @@ fn relais(mut flux: &[u8]) {
         if let Demande::Lancer { lancement, .. } = d {
             match lancement {
                 Lancement::Commande(c) => assert!(Commande::TOUTES.contains(&c)),
-                Lancement::Changement(_) => {
+                // `demarrage --retirer|--remettre <32 hex> [--accord <64 hex>] --json` : l'accord rendu tel que la
+                // trame le porte, absent seulement s'il est tout à zéro.
+                Lancement::Changement(ch) => {
                     let a = lancement.arguments();
-                    assert_eq!(a.len(), 4, "{a:?}");
+                    assert!(a.len() == 4 || a.len() == 6, "{a:?}");
+                    assert_eq!(a.len() == 4, ch.accord.nul(), "{a:?}");
                     assert_eq!(a[0], "demarrage");
                     assert!(a[1] == "--retirer" || a[1] == "--remettre", "{a:?}");
-                    assert!(a[2].len() == 32 && a[2].bytes().all(|o| matches!(o, b'0'..=b'9' | b'a'..=b'f')), "{a:?}");
-                    assert_eq!(a[3], "--json");
+                    assert!(hex(&a[2], 32), "{a:?}");
+                    if a.len() == 6 {
+                        assert_eq!(a[3], "--accord");
+                        assert!(hex(&a[4], 64) && a[4] == ch.accord.hex(), "{a:?}");
+                    }
+                    assert_eq!(a[a.len() - 1], "--json");
                 }
                 // Les couleurs : `couleurs --theme <mot> (--base <mot> --vifs <5 × 6 hex> | --defaut) --json`.
                 Lancement::Couleurs(_) => {

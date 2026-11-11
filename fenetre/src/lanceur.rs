@@ -1,5 +1,6 @@
 //! Lancer `vanguard` avec une commande de la liste fermée (`commandes`) ou un changement au démarrage de forme fermée
-//! (`demarrage --retirer|--remettre <empreinte> --json`), et rien d'autre : le programme voisin (le
+//! (`demarrage --retirer|--remettre <empreinte> --accord <accord> --json`), ou un geste sur un constat de forme
+//! fermée (`commandes::Lancement::arguments`), et rien d'autre : le programme voisin (le
 //! fichier `vanguard` posé dans le même dossier que la fenêtre, jamais cherché dans le PATH ni désigné par une
 //! variable), sans shell, avec ses arguments fixés dans le code, l'entrée fermée (il ne peut rien demander), ses
 //! sorties lues en fond et bornées, un délai, et un arrêt qui tue tout son groupe (Linux).
@@ -680,7 +681,7 @@ pub fn lire_lignes(mut r: impl Read, max_octets: usize, max_lignes: usize, mut f
 mod tests {
     use super::*;
     #[cfg(unix)]
-    use crate::commandes::{Changement, Commande, Empreinte, Sorte};
+    use crate::commandes::{Accord, Changement, Commande, Empreinte, Sorte};
 
     #[test]
     fn la_sortie_est_bornee() {
@@ -767,8 +768,9 @@ case "$1 $2" in
 "diagnostic --json") sleep 30 & printf '{}' ;;
 "test-connexion --json") sleep 30 >/dev/null 2>&1 & echo $! > reste; printf '{}' ;;
 "acces-a-distance --json") setsid sleep 30 & echo $! > evade; printf '{}' ;;
-"demarrage --retirer"|"demarrage --remettre") [ "$#" = 4 ] && [ "$4" = "--json" ] || exit 8
-  printf '{"geste": "%s %s", "issue": "refuse"}' "$2" "$3"; exit 1 ;;
+"demarrage --retirer"|"demarrage --remettre") { [ "$#" = 4 ] && [ "$4" = "--json" ]; } ||
+  { [ "$#" = 6 ] && [ "$4" = "--accord" ] && [ "$6" = "--json" ]; } || exit 8
+  printf '{"geste": "%s", "issue": "refuse"}' "$*"; exit 1 ;;
 *) exit 7 ;;
 esac
 "#;
@@ -890,17 +892,33 @@ esac
         let (_, f) = attendre(&Tache::lancer(&p, Commande::Lenteur.into(), false, &rien));
         assert_eq!(f.code, Some(7));
 
-        // Un changement : exactement `demarrage --retirer|--remettre <32 hex> --json`, rien de plus.
+        // Un changement : exactement `demarrage --retirer|--remettre <32 hex> [--accord <64 hex>] --json`, rien de
+        // plus (sans accord donné par la liste, pas de `--accord` : Vanguard refusera).
         for (sorte, mot) in [(Sorte::Retirer, "--retirer"), (Sorte::Remettre, "--remettre")] {
-            let empreinte = Empreinte::depuis_octets([0xab; 16]);
-            let ch = Lancement::Changement(Changement { sorte, empreinte });
-            let (_, f) = attendre(&Tache::lancer(&p, ch, false, &rien));
-            assert_eq!(f.code, Some(1), "{mot}");
-            assert_eq!(
-                String::from_utf8_lossy(&f.sortie),
-                format!(r#"{{"geste": "{mot} {}", "issue": "refuse"}}"#, "ab".repeat(16))
-            );
-            assert_eq!(f.lancement, ch);
+            for (accord, suite) in [
+                (Accord::NUL, String::new()),
+                (
+                    Accord::depuis_octets([0xcd; 32]),
+                    format!(" --accord {}", "cd".repeat(32)),
+                ),
+            ] {
+                let empreinte = Empreinte::depuis_octets([0xab; 16]);
+                let ch = Lancement::Changement(Changement {
+                    sorte,
+                    empreinte,
+                    accord,
+                });
+                let (_, f) = attendre(&Tache::lancer(&p, ch, false, &rien));
+                assert_eq!(f.code, Some(1), "{mot}");
+                assert_eq!(
+                    String::from_utf8_lossy(&f.sortie),
+                    format!(
+                        r#"{{"geste": "demarrage {mot} {}{suite} --json", "issue": "refuse"}}"#,
+                        "ab".repeat(16)
+                    )
+                );
+                assert_eq!(f.lancement, ch);
+            }
         }
 
         // Une commande d'un autre système : rien n'est lancé (le script aurait rendu 7).

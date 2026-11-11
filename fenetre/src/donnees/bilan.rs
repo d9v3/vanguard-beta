@@ -12,7 +12,7 @@
 use serde::Deserialize;
 
 use super::{Liste, Texte};
-use crate::commandes::{Changement, Empreinte, Sorte, SorteGeste};
+use crate::commandes::{Accord, Changement, Empreinte, Sorte, SorteGeste};
 
 /// Où un constat se range.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -108,14 +108,14 @@ struct GesteBrut {
     nom: Texte,
     commande: Texte,
     machine: Option<bool>,
-    /// L'accord du geste montré (64 chiffres hexadécimaux minuscules), que Vanguard relit avant d'agir (P1). Lu
-    /// strictement, mais pas encore rendu : la trame du changement ne porte que la sorte et l'empreinte.
+    /// L'accord du geste montré (64 chiffres hexadécimaux minuscules), que Vanguard relit avant d'agir (P1) : lu
+    /// strictement, rendu tel quel avec le changement (`--accord`).
     accord: Texte,
 }
 
 /// Un changement qu'un constat propose, lu strictement : une sorte connue, une empreinte de 32 chiffres
 /// hexadécimaux minuscules ; sinon, pas de bouton. Le nom et la commande ne servent qu'à la confirmation, nettoyés ;
-/// seule l'empreinte part vers Vanguard, qui retrouve lui-même ce qui y répond.
+/// seuls l'empreinte et l'accord partent vers Vanguard, qui retrouve lui-même ce qui y répond et relit l'accord.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Geste {
     pub changement: Changement,
@@ -131,16 +131,18 @@ impl GesteBrut {
         if !self.jeton.is_empty() {
             return None;
         }
-        // Un accord présent mais mal formé : le geste est illisible, comme un champ inconnu.
-        let accord = self.accord.as_str();
-        let bien_forme = accord.len() == 64 && accord.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
-        if !accord.is_empty() && !bien_forme {
-            return None;
-        }
+        // Un accord présent mais mal formé : le geste est illisible, comme un champ inconnu. Absent : tout à zéro, le
+        // changement part sans accord et Vanguard le refuse (« accord manquant »), refus montré tel quel.
+        let accord = if self.accord.is_empty() {
+            Accord::NUL
+        } else {
+            Accord::lire(self.accord.as_str())?
+        };
         Some(Geste {
             changement: Changement {
                 sorte: Sorte::lire(self.sorte.as_str())?,
                 empreinte: Empreinte::lire(self.empreinte.as_str())?,
+                accord,
             },
             nom: crate::nettoyage::nom(self.nom.as_str(), 80),
             commande: crate::nettoyage::nom(self.commande.as_str(), 160),
@@ -650,14 +652,15 @@ mod tests {
         ))
         .unwrap();
         assert_eq!((g.changement.sorte, g.machine), (Sorte::Remettre, false));
-        // L'accord du geste (P1), bien formé : le geste reste lu.
+        // Sans accord : tout à zéro (le changement partira sans, Vanguard le refusera).
+        assert!(g.changement.accord.nul());
+        // L'accord du geste (P1), bien formé : le geste reste lu et le garde tel quel, pour le rendre.
         let a = "0123456789abcdef".repeat(4);
-        assert!(
-            constat(&format!(
-                r#"{{"sorte": "retirer", "empreinte": "{e}", "accord": "{a}"}}"#
-            ))
-            .is_some()
-        );
+        let g = constat(&format!(
+            r#"{{"sorte": "retirer", "empreinte": "{e}", "accord": "{a}"}}"#
+        ))
+        .unwrap();
+        assert_eq!(g.changement.accord.hex(), a);
         for faux in [
             format!(r#"{{"sorte": "effacer", "empreinte": "{e}"}}"#),
             format!(r#"{{"sorte": "Retirer", "empreinte": "{e}"}}"#),

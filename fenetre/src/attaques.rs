@@ -272,12 +272,17 @@ fn aucun_lecteur_ne_panique_sur_un_json_hostile() {
 
 /// La forme fermée d'un changement : quatre arguments, une option connue, 32 chiffres minuscules, --json.
 fn forme_fermee(a: &[String]) -> bool {
-    a.len() == 4
+    let hex = |t: &String, n: usize| t.len() == n && t.bytes().all(|o| matches!(o, b'0'..=b'9' | b'a'..=b'f'));
+    let accord = match a.len() {
+        4 => true,
+        6 => a[3] == "--accord" && hex(&a[4], 64),
+        _ => false,
+    };
+    accord
         && a[0] == "demarrage"
         && (a[1] == "--retirer" || a[1] == "--remettre")
-        && a[2].len() == 32
-        && a[2].bytes().all(|o| matches!(o, b'0'..=b'9' | b'a'..=b'f'))
-        && a[3] == "--json"
+        && hex(&a[2], 32)
+        && a.last().is_some_and(|d| d == "--json")
 }
 
 /// B1 : une fenêtre prise peut demander n'importe quelle empreinte (le relais la lit comme un inconnu) ; elle n'en
@@ -291,10 +296,15 @@ fn une_fenetre_prise_ne_forme_qu_un_changement_ferme() {
         for x in &mut o {
             *x = u8::try_from(suite.suivant() & 0xff).unwrap();
         }
+        let mut a = [0u8; 32];
+        for x in &mut a {
+            *x = u8::try_from(suite.suivant() & 0xff).unwrap();
+        }
         let sorte = *suite.parmi(&[commandes::Sorte::Retirer, commandes::Sorte::Remettre]);
         let l = Lancement::Changement(commandes::Changement {
             sorte,
             empreinte: Empreinte::depuis_octets(o),
+            accord: commandes::Accord::depuis_octets(a),
         });
         assert!(forme_fermee(&l.arguments()), "{:?}", l.arguments());
         assert_eq!(l.commande(), Commande::Demarrage);

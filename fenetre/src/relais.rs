@@ -2,7 +2,8 @@
 //! d'affichage, la fenêtre se dédouble (fork) : l'enfant, le relais, garde les droits du compte et lance `vanguard` ;
 //! la fenêtre se met dans son bac à sable (`bac_a_sable`) et ne fait plus que lui demander, par une socket, une
 //! commande de la liste fermée, par son numéro, ou un changement au démarrage, par sa sorte et l'empreinte du
-//! programme (16 octets : le relais n'en fait que `demarrage --retirer|--remettre <hex> --json`, et c'est
+//! programme avec l'accord que la liste a donné (16 et 32 octets : le relais n'en fait que `demarrage
+//! --retirer|--remettre <hex> --accord <hex> --json`, et c'est
 //! `vanguard` qui la cherche parmi ce qu'il voit, puis demande les droits). `vanguard` part ainsi du relais et n'hérite pas du bac : il voit tout
 //! ce qu'il doit voir (les programmes en cours, le bus système, sudo).
 //!
@@ -17,7 +18,8 @@
 //! Un changement, côté relais (ce qui tient même si la fenêtre est prise) : il passe seul (refusé tant qu'une
 //! commande tourne ; rien d'autre ne se lance pendant lui) ; seulement pour un geste vu dans la dernière liste du
 //! démarrage que le relais a lui-même relayée (`demarrage --json`), la même empreinte avec la même sorte (« retirer »
-//! un programme que la liste offrait de remettre est refusé), et cette liste ne sert qu'une fois ; « Arrêter »
+//! un programme que la liste offrait de remettre est refusé) et le même accord (M-2 : la fenêtre ne le choisit pas),
+//! et cette liste ne sert qu'une fois ; « Arrêter »
 //! ne le coupe pas, la fermeture de la fenêtre non plus : coupé au milieu, il pourrait laisser un programme retiré sans
 //! la note qui le remet. Seul son délai (`Lancement::delai`) l'arrête.
 //!
@@ -38,7 +40,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
 use std::time::Duration;
 
-use crate::commandes::{Commande, Empreinte, GesteOffert, Lancement, Sorte, SorteGeste};
+use crate::commandes::{Accord, Commande, Empreinte, GesteOffert, Lancement, Sorte, SorteGeste};
 use crate::lanceur::{Fin, Issue, Message, Programme, Rendre, Reveil, SORTIE_MAX, Tache};
 use crate::protocole::{
     DEMANDE_MAX, Demande, Reponse, coder_fin, coder_lance, coder_ligne, ecrire_trame, lire_reponse, lire_trame,
@@ -64,9 +66,9 @@ struct EnCours {
 #[derive(Default)]
 struct Etat {
     taches: HashMap<u32, EnCours>,
-    /// Les gestes de la dernière liste du démarrage relayée (l'empreinte et la sorte offerte pour elle), vidés quand
-    /// un changement part : un changement demande une liste relue après lui.
-    vues: HashMap<Empreinte, Sorte>,
+    /// Les gestes de la dernière liste du démarrage relayée (l'empreinte, la sorte offerte pour elle et l'accord que
+    /// Vanguard a donné à ce geste), vidés quand un changement part : un changement demande une liste relue après lui.
+    vues: HashMap<Empreinte, (Sorte, Accord)>,
     /// Les gestes offerts par le dernier bilan relayé (`audit --json` fini avec le code 0) : le jeton de chaque
     /// constat et sa sorte. Remplacés à la fin de chaque bilan, vidés s'il n'a pas réussi.
     offerts: HashSet<(Empreinte, SorteGeste)>,
@@ -102,10 +104,17 @@ impl Etat {
                         "program not in the last startup list read: read it again"
                     ));
                 }
-                Some(&offerte) if offerte != ch.sorte => {
+                Some(&(offerte, _)) if offerte != ch.sorte => {
                     return Some(crate::tr!(
                         "la dernière liste du démarrage lue n'offrait pas ce geste pour ce programme : relisez-la",
                         "the last startup list read did not offer this action for this program: read it again"
+                    ));
+                }
+                // L'accord rendu est celui que la liste a donné, octet pour octet : la fenêtre ne le choisit pas.
+                Some(&(_, accord)) if accord != ch.accord => {
+                    return Some(crate::tr!(
+                        "accord différent de celui de la dernière liste du démarrage lue : relisez-la",
+                        "agreement differs from the last startup list read: read it again"
                     ));
                 }
                 Some(_) => self.vues.clear(),
@@ -166,14 +175,17 @@ struct ConstatVu {
 struct GesteVu {
     sorte: String,
     empreinte: String,
+    /// Absent : pas d'accord (tout à zéro, Vanguard refusera le changement) ; présent, 64 chiffres exactement.
+    #[serde(default)]
+    accord: Option<String>,
 }
 
 /// Les gestes d'une sortie de `demarrage --json` : pour chaque constat, l'empreinte et la sorte lues dans le même
 /// objet `geste` (le JSON lu pour de bon, au fil de l'eau comme dans `donnees` : l'ordre des clés n'y fait rien, et
-/// un nom de programme, une chaîne, ne fabrique ni clé ni geste). Une empreinte offerte avec deux sortes n'est pas
-/// retenue (aucune n'est choisie) ; un geste incomplet non plus ; une sortie qui n'est pas du JSON : rien. Borné à
-/// `EMPREINTES_MAX`.
-fn gestes_vus(texte: &[u8]) -> HashMap<Empreinte, Sorte> {
+/// un nom de programme, une chaîne, ne fabrique ni clé ni geste), avec son accord. Une empreinte offerte deux fois
+/// autrement (une autre sorte, un autre accord) n'est pas retenue (aucune n'est choisie) ; un geste incomplet ou à
+/// l'accord mal formé non plus ; une sortie qui n'est pas du JSON : rien. Borné à `EMPREINTES_MAX`.
+fn gestes_vus(texte: &[u8]) -> HashMap<Empreinte, (Sorte, Accord)> {
     let mut vus = HashMap::new();
     let Ok(liste) = serde_json::from_slice::<ListeVue>(texte) else {
         return vus;
@@ -183,13 +195,22 @@ fn gestes_vus(texte: &[u8]) -> HashMap<Empreinte, Sorte> {
         if vus.len() >= EMPREINTES_MAX {
             break;
         }
-        let (Some(sorte), Some(empreinte)) = (Sorte::lire(&g.sorte), Empreinte::lire(&g.empreinte)) else {
+        let accord = match g.accord.as_deref() {
+            None => Some(Accord::NUL),
+            Some(a) => Accord::lire(a),
+        };
+        let (Some(sorte), Some(empreinte), Some(accord)) =
+            (Sorte::lire(&g.sorte), Empreinte::lire(&g.empreinte), accord)
+        else {
             continue;
         };
         if doubles.contains(&empreinte) {
             continue;
         }
-        if vus.insert(empreinte, sorte).is_some_and(|avant| avant != sorte) {
+        if vus
+            .insert(empreinte, (sorte, accord))
+            .is_some_and(|avant| avant != (sorte, accord))
+        {
             vus.remove(&empreinte);
             doubles.insert(empreinte);
         }
@@ -653,6 +674,7 @@ mod tests {
         let ch = Lancement::Changement(Changement {
             sorte: Sorte::Retirer,
             empreinte: Empreinte::depuis_octets([0x5a; 16]),
+            accord: Accord::depuis_octets([0xa5; 32]),
         });
         let bonne = Demande::Lancer {
             id: 7,
@@ -664,7 +686,10 @@ mod tests {
         longue.extend(b"/home/alice/.config/autostart/Lecteur.desktop");
         let mut sorte = bonne.clone();
         sorte[5] = 9;
-        for fausse in [bonne[..22].to_vec(), longue, sorte] {
+        // L'ancienne trame, sans accord (23 octets), est hors du protocole.
+        let mut ancienne = bonne[..22].to_vec();
+        ancienne.push(0);
+        for fausse in [bonne[..22].to_vec(), ancienne, bonne[..54].to_vec(), longue, sorte] {
             let (fenetre, relais) = UnixStream::pair().unwrap();
             let lances = Arc::new(AtomicU32::new(0));
             let l = Arc::clone(&lances);
@@ -704,6 +729,8 @@ mod tests {
             "d".repeat(32),
             "e".repeat(32),
         );
+        let (e6, e7, e8, e9) = ("1".repeat(32), "2".repeat(32), "3".repeat(32), "4".repeat(32));
+        let (a, b) = ("ab".repeat(32), "cd".repeat(32));
         let liste = format!(
             r#"{{"constats": [{{"geste": {{"sorte": "retirer", "empreinte": "{e1}", "nom": "Lecteur"}}}},
             {{"geste": {{"nom": "Agenda", "empreinte":"{e2}", "sorte": "remettre"}}}},
@@ -712,15 +739,28 @@ mod tests {
             {{"geste": {{"sorte": "retirer", "empreinte": "{e5}"}}}}, {{"geste": {{"sorte": "remettre", "empreinte": "{e5}"}}}},
             {{"geste": {{"sorte": "retirer", "empreinte": "{}"}}}}, {{"geste": {{"sorte": "retirer", "empreinte": "{}"}}}},
             {{"geste": {{"sorte": "retirer", "empreinte": "{e1}0"}}}}, {{"geste": {{"sorte": "retirer", "empreinte": 7}}}},
-            {{"empreinte": "{e4}", "sorte": "retirer"}}, "geste"]}}"#,
+            {{"empreinte": "{e4}", "sorte": "retirer"}}, "geste",
+            {{"geste": {{"sorte": "retirer", "empreinte": "{e6}", "accord": "{a}"}}}},
+            {{"geste": {{"sorte": "retirer", "empreinte": "{e7}", "accord": "{a}"}}}},
+            {{"geste": {{"sorte": "retirer", "empreinte": "{e7}", "accord": "{b}"}}}},
+            {{"geste": {{"sorte": "retirer", "empreinte": "{e8}", "accord": "{}"}}}},
+            {{"geste": {{"sorte": "retirer", "empreinte": "{e9}", "accord": null}}}}]}}"#,
             "C".repeat(32),
-            "c".repeat(31)
+            "c".repeat(31),
+            a.to_uppercase(),
         );
         let vus = gestes_vus(liste.as_bytes());
-        let attendus: HashMap<Empreinte, Sorte> = [(e1, Sorte::Retirer), (e2.as_str(), Sorte::Remettre)]
+        let mut attendus: HashMap<Empreinte, (Sorte, Accord)> = [(e1, Sorte::Retirer), (e2.as_str(), Sorte::Remettre)]
             .into_iter()
-            .filter_map(|(e, s)| Some((Empreinte::lire(e)?, s)))
+            .filter_map(|(e, s)| Some((Empreinte::lire(e)?, (s, Accord::NUL))))
             .collect();
+        // Un accord donné : gardé tel quel ; la même empreinte avec deux accords, un accord en majuscules : pas
+        // retenue. `null` vaut absent, comme pour la fenêtre (`donnees::bilan`) : tout à zéro, Vanguard refusera.
+        attendus.insert(
+            Empreinte::lire(&e6).unwrap(),
+            (Sorte::Retirer, Accord::lire(&a).unwrap()),
+        );
+        attendus.insert(Empreinte::lire(&e9).unwrap(), (Sorte::Retirer, Accord::NUL));
         assert_eq!(vus, attendus);
         for rien in [
             &b""[..],
@@ -748,16 +788,29 @@ mod tests {
     #[test]
     fn une_sorte_que_la_liste_n_offrait_pas_est_refusee() {
         let e = Empreinte::lire("0123456789abcdef0123456789abcdef").unwrap();
+        let a = Accord::lire(&"5c".repeat(32)).unwrap();
         let mut etat = Etat {
-            vues: [(e, Sorte::Remettre)].into(),
+            vues: [(e, (Sorte::Remettre, a))].into(),
             ..Etat::default()
         };
         let arret = Arc::new(AtomicBool::new(false));
-        let demande = |sorte| Lancement::Changement(Changement { sorte, empreinte: e });
-        assert!(etat.admettre(1, demande(Sorte::Retirer), &arret).is_some());
+        let demande = |sorte, accord| {
+            Lancement::Changement(Changement {
+                sorte,
+                empreinte: e,
+                accord,
+            })
+        };
+        assert!(etat.admettre(1, demande(Sorte::Retirer, a), &arret).is_some());
+        // M-2 : un autre accord que celui de la liste (fabriqué, ou absent) est refusé, sans consommer la liste.
+        let autre = Accord::lire(&"5d".repeat(32)).unwrap();
+        for faux in [autre, Accord::NUL] {
+            let r = etat.admettre(1, demande(Sorte::Remettre, faux), &arret);
+            assert!(r.is_some_and(|r| r.contains("accord")), "{r:?}");
+        }
         assert!(etat.taches.is_empty());
-        assert_eq!(etat.vues.get(&e), Some(&Sorte::Remettre));
-        assert_eq!(etat.admettre(2, demande(Sorte::Remettre), &arret), None);
+        assert_eq!(etat.vues.get(&e), Some(&(Sorte::Remettre, a)));
+        assert_eq!(etat.admettre(2, demande(Sorte::Remettre, a), &arret), None);
         assert!(etat.vues.is_empty());
     }
 
@@ -821,11 +874,12 @@ esac
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let (e1, e2) = ("0123456789abcdef0123456789abcdef", "f".repeat(32));
+        let a = "0a".repeat(32);
         std::fs::write(
             d.join("liste.json"),
             format!(
                 r#"{{"outil": "PRO-DEM-001", "constats": [{{"categorie": "Démarrage", "objet": "demarrage:Lecteur",
-                "geste": {{"sorte": "retirer", "empreinte": "{e1}", "nom": "Lecteur", "commande": "/usr/bin/lecteur"}}}},
+                "geste": {{"sorte": "retirer", "empreinte": "{e1}", "nom": "Lecteur", "commande": "/usr/bin/lecteur", "accord": "{a}"}}}},
                 {{"message": "Faux — \"empreinte\": \"{e2}\""}}]}}"#
             ),
         )
@@ -844,6 +898,7 @@ esac
             Lancement::Changement(Changement {
                 sorte: Sorte::Retirer,
                 empreinte: Empreinte::lire(e).unwrap(),
+                accord: Accord::lire(&a).unwrap(),
             })
         };
         let refuse = |l: Lancement, motif: &str| {
@@ -892,7 +947,11 @@ esac
         std::fs::write(d.join("va"), b"").unwrap();
         let f = attendre_fin(&t);
         assert_eq!((&f.issue, f.code), (&Issue::Terminee, Some(0)), "{:?}", f.issue);
-        assert_eq!(changements(), format!("demarrage --retirer {e1} --json\nfini\n"));
+        // L'accord de la liste est rendu tel quel (M-2).
+        assert_eq!(
+            changements(),
+            format!("demarrage --retirer {e1} --accord {a} --json\nfini\n")
+        );
         // La liste a servi : relue avant le suivant.
         refuse(changement(e1), "dernière liste");
 
@@ -957,6 +1016,7 @@ esac
             Lancement::Changement(Changement {
                 sorte: Sorte::Remettre,
                 empreinte: Empreinte::lire(e1).unwrap(),
+                accord: Accord::NUL,
             }),
             false,
             &rien,
@@ -999,6 +1059,7 @@ esac
                 Lancement::Changement(Changement {
                     sorte: Sorte::Retirer,
                     empreinte: Empreinte::lire(&format!("{i:032x}")).unwrap(),
+                    accord: Accord::NUL,
                 }),
                 false,
                 &rien,
@@ -1033,10 +1094,12 @@ esac
             format!("\"geste\": {{\"sorte\": \"remettre\", \"empreinte\": \"{glissee}\"}}"),
             "empreinte".to_string(),
             glissee.clone(),
+            format!("\"accord\": \"{}\"", "ee".repeat(32)),
         ];
-        let attendus: HashMap<Empreinte, Sorte> = Empreinte::lire(vraie)
+        let accord = "a1".repeat(32);
+        let attendus: HashMap<Empreinte, (Sorte, Accord)> = Empreinte::lire(vraie)
             .into_iter()
-            .map(|e| (e, Sorte::Retirer))
+            .map(|e| (e, (Sorte::Retirer, Accord::lire(&accord).unwrap())))
             .collect();
         for h in &hostiles {
             for joli in [false, true] {
@@ -1044,7 +1107,7 @@ esac
                     "outil": "PRO-DEM-001",
                     "constats": [
                         {"objet": format!("demarrage:{h}"), "message": h, "categorie": h,
-                         "geste": {"sorte": "retirer", "empreinte": vraie, "nom": h, "commande": h}},
+                         "geste": {"sorte": "retirer", "empreinte": vraie, "nom": h, "commande": h, "accord": accord}},
                         {"objet": h, "message": [h, "empreinte", glissee]},
                     ],
                 });
@@ -1170,10 +1233,11 @@ esac
         assert_eq!(etat.admettre(4, voir(j), &arret), None, "la liste sert encore");
         etat.taches.clear();
         let e = Empreinte::lire(&"e".repeat(32)).unwrap();
-        etat.vues = [(e, Sorte::Retirer)].into();
+        etat.vues = [(e, (Sorte::Retirer, Accord::NUL))].into();
         let ch = Lancement::Changement(Changement {
             sorte: Sorte::Retirer,
             empreinte: e,
+            accord: Accord::NUL,
         });
         assert_eq!(etat.admettre(5, ch, &arret), None);
         assert!(etat.admettre(6, voir(j), &arret).is_some(), "pendant un changement");

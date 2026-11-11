@@ -1584,6 +1584,7 @@ mod tests {
         let ch = Changement {
             sorte: Sorte::Retirer,
             empreinte: Empreinte::lire("0123456789abcdef0123456789abcdef").unwrap(),
+            accord: crate::commandes::Accord::NUL,
         };
         let fin = |sortie: &str, code, issue| Fin {
             lancement: Lancement::Changement(ch),
@@ -1802,6 +1803,7 @@ esac
             changement: Changement {
                 sorte: Sorte::Retirer,
                 empreinte: crate::commandes::Empreinte::lire(e1).unwrap(),
+                accord: crate::commandes::Accord::NUL,
             },
             nom: "Lecteur".into(),
             commande: "/usr/bin/lecteur".into(),
@@ -1908,6 +1910,7 @@ esac
             changement: Changement {
                 sorte: Sorte::Retirer,
                 empreinte: crate::commandes::Empreinte::lire(e1).unwrap(),
+                accord: crate::commandes::Accord::NUL,
             },
             nom: "Lecteur".into(),
             commande: "/usr/bin/lecteur".into(),
