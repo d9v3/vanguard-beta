@@ -111,6 +111,13 @@ debug = "line-tables-only"
 [profile.dev.package.sha2]
 opt-level = 3
 
+# BLAKE3 de même : les empreintes des copies posées de Vanguard (programmes_poses.rs), relues après chaque mise à jour
+# depuis la clé, et celles des copies de fichiers (copier.rs). Sans optimisation, ses fonctions AVX2 restent des appels
+# un par un : 17 Mo/s, une vingtaine de secondes de calcul pour le programme de test de 325 Mo, et la mise à jour du
+# test mise_a_jour_depuis_la_cle dépassait la minute dans la suite chargée (11 nov. 2026).
+[profile.dev.package.blake3]
+opt-level = 3
+
 [build-dependencies]
 winresource = "0.1.34"
 

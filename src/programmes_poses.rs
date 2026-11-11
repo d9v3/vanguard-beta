@@ -542,6 +542,38 @@ mod tests {
 
     const UNITE: &[u8] = b"[Service]\nExecStart=\"/x/vanguard\" surveiller\n";
 
+    /// Le temps de calcul de ce fil seul : celui des autres programmes de la machine n'y entre pas.
+    #[cfg(unix)]
+    // FFI de libc : std n'a pas d'horloge du temps de calcul d'un fil.
+    #[allow(unsafe_code)]
+    fn calcul_du_fil() -> std::time::Duration {
+        let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        // SAFETY: clock_gettime écrit dans `t`, qui vit le temps de l'appel, et n'en garde rien.
+        let rendu = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &raw mut t) };
+        assert_eq!(rendu, 0);
+        std::time::Duration::new(u64::try_from(t.tv_sec).unwrap(), u32::try_from(t.tv_nsec).unwrap())
+    }
+
+    /// L'empreinte d'une copie de Vanguard (copie_posee_dans, relue après chaque mise à jour) se calcule vite même
+    /// dans un programme de développement ou de test : sans optimisation, BLAKE3 n'avançait qu'à 17 Mo/s, et le
+    /// programme de test (325 Mo) demandait une vingtaine de secondes de calcul ; avec la suite de tests autour, la
+    /// mise à jour depuis la clé dépassait la minute (tests/programme.rs, mise_a_jour_depuis_la_cle). Compté en temps
+    /// de calcul du fil, pas en temps écoulé : une machine chargée ne fait pas échouer l'essai. Mesuré le 11 nov.
+    /// 2026 pour 64 Mio : 3,9 s sans optimisation, 0,02 s optimisée (Cargo.toml, profile.dev.package.blake3).
+    #[cfg(unix)]
+    #[test]
+    fn empreinte_d_une_copie_rapide_meme_en_developpement() {
+        let octets = vec![0x5au8; 64 << 20];
+        let debut = calcul_du_fil();
+        let empreinte = blake3::hash(&octets);
+        let duree = calcul_du_fil().checked_sub(debut).unwrap().as_secs_f64();
+        assert_ne!(empreinte, blake3::hash(b""));
+        assert!(
+            duree < 0.25,
+            "BLAKE3 : {duree:.2} s de calcul pour 64 Mio (Cargo.toml, profile.dev.package.blake3)"
+        );
+    }
+
     fn texte(o: &[u8]) -> std::io::Result<String> {
         empreinte_texte(&Ok(o.to_vec()))
     }
