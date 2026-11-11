@@ -94,6 +94,8 @@ pub struct Rendu {
     pub souris: Option<Pos2>,
     /// Des touches, envoyées à la première image du prochain rendu seulement.
     pub touches: Vec<egui::Event>,
+    /// Les formes de la dernière image rendue (pour trouver un mot à cliquer).
+    pub formes: Vec<epaint::ClippedShape>,
 }
 
 impl Rendu {
@@ -106,6 +108,7 @@ impl Rendu {
             heure: 0.0,
             souris: None,
             touches: Vec::new(),
+            formes: Vec::new(),
         }
     }
 
@@ -136,6 +139,7 @@ impl Rendu {
         }
         let sortie = derniere.expect("au moins un instant");
         let ppp = sortie.pixels_per_point;
+        self.formes.clone_from(&sortie.shapes);
         let primitives = self.ctx.tessellate(sortie.shapes, ppp);
         let mut toile = Toile::nouvelle(taille[0], taille[1], super::pal().fond);
         for p in &primitives {
@@ -1611,4 +1615,144 @@ fn le_bouton_qui_change_attend_deux_secondes() {
         }
     }
     crate::langue::choisir(Some(false));
+}
+
+/// Choisir des couleurs à la souris change l'aperçu dessiné, comme dans la fenêtre (`Fenetre::ui` : palette posée
+/// seulement quand elle change) : la pastille d'un préréglage (la couleur qu'on vient choisir, la première chose qu'on
+/// clique ; elle était muette), puis une couleur tirée au sélecteur d'egui. Thème sombre et clair, avec les couleurs
+/// d'un thème d'Omarchy (inventées) ; chaque fois, des pixels à la nouvelle couleur d'accent, pas seulement la palette.
+#[test]
+fn choisir_a_la_souris_change_l_apercu_dessine() {
+    use crate::couleurs::{Base, Theme, Vif, depuis_le_systeme};
+    fn dessiner(a: &mut Appli, appliquee: &mut super::Palette, ui: &mut Ui) {
+        super::suivre_palette(a, appliquee, ui.ctx());
+        super::cadre::tout(a, ui);
+    }
+    // Des images à 50 ms d'écart, comme une vraie souris (au-delà de 0,8 s entre l'appui et le relâché, egui ne voit
+    // plus un clic) ; les textures suivent, pour peindre ensuite.
+    fn tours(rendu: &mut Rendu, a: &mut Appli, appliquee: &mut super::Palette, suite: Vec<Vec<egui::Event>>) {
+        for e in suite {
+            rendu.heure += 0.05;
+            let entree = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1920.0, 1700.0))),
+                time: Some(rendu.heure),
+                events: e,
+                ..Default::default()
+            };
+            let mut sortie = rendu.ctx.clone().run_ui(entree, |ui| dessiner(a, appliquee, ui));
+            rendu.formes.clone_from(&sortie.shapes);
+            let mut delta = std::mem::take(&mut sortie.textures_delta);
+            rendu.appliquer(&delta);
+            delta.clear();
+        }
+    }
+    let bouton = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    // Survol, appui, relâché : un clic ; ou, avec `glisse`, un appui tiré de tant de points vers la droite.
+    let geste = |ou: Pos2, glisse: f32| {
+        let mut suite = vec![vec![egui::Event::PointerMoved(ou)]];
+        suite.extend((0..6).map(|_| Vec::new()));
+        suite.push(vec![bouton(ou, true)]);
+        for k in 1..=12 {
+            suite.push(vec![egui::Event::PointerMoved(Pos2::new(
+                ou.x + glisse * k as f32 / 12.0,
+                ou.y,
+            ))]);
+        }
+        suite.push(vec![bouton(Pos2::new(ou.x + glisse, ou.y), false)]);
+        suite.extend((0..3).map(|_| Vec::new()));
+        suite
+    };
+    let a_peu_pres = |p: [u8; 4], c: Color32| [c.r(), c.g(), c.b()].iter().zip(p).all(|(&x, y)| x.abs_diff(y) <= 2);
+    let compter = |t: &Toile, c: Color32| {
+        (0..t.hauteur)
+            .flat_map(|y| (0..t.largeur).map(move |x| (x, y)))
+            .filter(|&(x, y)| a_peu_pres(t.pixel(x, y), c))
+            .count()
+    };
+    // Le premier pixel de cette couleur à gauche de `de`, sur sa ligne (à 12 points près en hauteur).
+    let a_gauche = |t: &Toile, de: Pos2, c: Color32| {
+        (-12..=12).find_map(|dy| {
+            let y = (de.y as i32 + dy) as usize;
+            (0..de.x as usize)
+                .rev()
+                .find(|&x| a_peu_pres(t.pixel(x, y), c))
+                .map(|x| Pos2::new(x as f32 - 3.0, y as f32))
+        })
+    };
+    let lues = ["ff0a1e", "ff4d4d", "ff9a4d", "ffcf5c", "9fd36a"].map(crate::couleurs::lire_hex);
+    crate::langue::choisir(Some(false));
+    for sombre in [true, false] {
+        let theme = Theme::depuis_sombre(sombre);
+        let mut rendu = Rendu::nouveau();
+        super::appliquer_theme(&rendu.ctx, sombre);
+        let mut appliquee = super::pal();
+        let mut a = appli_remplie(false, sombre);
+        let lu = serde_json::json!({"sombre": null, "clair": null, "systeme": {"source": "omarchy",
+            "vifs": ["ff0a1e", "ff4d4d", "ff9a4d", "ffcf5c", "9fd36a"]}});
+        a.poser(Commande::Couleurs, lu.to_string().as_bytes());
+        a.aller(Ecran::Rubrique(Rubrique::Vanguard));
+        let mut avant = rendu.rendre([1920, 1700], &[0.0, 0.5, 2.0], |ui| {
+            dessiner(&mut a, &mut appliquee, ui);
+        });
+        for (b, nom) in [(Base::Braise, "Braise"), (Base::Systeme, "Système")] {
+            let voulu = match b {
+                Base::Systeme => depuis_le_systeme(theme, &lues).0.vif(Vif::Accent),
+                _ => b.prereglage(theme).vifs[0],
+            };
+            let voulu = Color32::from_rgb(voulu[0], voulu[1], voulu[2]);
+            let mot = mots(rendu.formes.clone())
+                .into_iter()
+                .find(|(m, _)| m == nom)
+                .unwrap_or_else(|| panic!("« {nom} » n'est pas écrit"))
+                .1;
+            let rond = a_gauche(&avant, mot, voulu).unwrap_or_else(|| panic!("la pastille de {nom}"));
+            let deja = compter(&avant, voulu);
+            tours(&mut rendu, &mut a, &mut appliquee, geste(rond, 0.0));
+            let apres = rendu.rendre([1920, 1700], &[0.0], |ui| dessiner(&mut a, &mut appliquee, ui));
+            assert_eq!(a.brouillon_de(theme).map(|c| c.base), Some(b), "{nom}, sombre {sombre}");
+            assert_eq!(super::pal().accent, voulu, "{nom}, sombre {sombre}");
+            let vus = compter(&apres, voulu);
+            assert!(
+                vus > deja + 1000,
+                "{nom}, sombre {sombre} : {deja} puis {vus} pixels à l'accent"
+            );
+            avant = apres;
+        }
+        // Une couleur tirée au sélecteur : le bouton de couleur de l'accent ouvre egui, son « R » se tire.
+        let acc = super::pal().accent;
+        let mot = mots(rendu.formes.clone())
+            .into_iter()
+            .find(|(m, _)| m == "Accent")
+            .unwrap()
+            .1;
+        let ou = a_gauche(&avant, mot, acc).expect("le bouton de couleur de l'accent");
+        tours(
+            &mut rendu,
+            &mut a,
+            &mut appliquee,
+            geste(Pos2::new(ou.x - 5.0, ou.y), 0.0),
+        );
+        let r = mots(rendu.formes.clone())
+            .into_iter()
+            .find(|(m, _)| m.starts_with("R "))
+            .expect("le sélecteur ouvert")
+            .1;
+        tours(&mut rendu, &mut a, &mut appliquee, geste(r, -60.0));
+        let apres = rendu.rendre([1920, 1700], &[0.0], |ui| dessiner(&mut a, &mut appliquee, ui));
+        let nouveau = super::pal().accent;
+        assert_ne!(nouveau, acc, "sombre {sombre}");
+        let tire = a.brouillon_de(theme).map(|c| c.vif(Vif::Accent));
+        assert_eq!(tire, Some([nouveau.r(), nouveau.g(), nouveau.b()]), "sombre {sombre}");
+        assert!(compter(&apres, nouveau) > 1000, "sombre {sombre}");
+        if let Some(d) = std::env::var_os("VANGUARD_APERCU_COULEURS") {
+            apres
+                .ecrire_png(&Path::new(&d).join(format!("apres-{}.png", if sombre { "sombre" } else { "clair" })))
+                .unwrap();
+        }
+    }
 }

@@ -51,9 +51,9 @@ fn role_vif(v: Vif) -> &'static str {
     }
 }
 
-/// Une pastille de couleur, au rayon des boutons.
-fn pastille(ui: &mut Ui, couleur: Rgb, taille: f32) {
-    let (zone, _) = ui.allocate_exact_size(vec2(taille, taille), Sense::hover());
+/// Une pastille de couleur, au rayon des boutons ; `sens` dit si elle se clique.
+fn pastille(ui: &mut Ui, couleur: Rgb, taille: f32, sens: Sense) -> egui::Response {
+    let (zone, r) = ui.allocate_exact_size(vec2(taille, taille), sens);
     ui.painter().rect_filled(zone, CornerRadius::same(5), c32(couleur));
     ui.painter().rect_stroke(
         zone,
@@ -61,6 +61,7 @@ fn pastille(ui: &mut Ui, couleur: Rgb, taille: f32) {
         Stroke::new(1.0, pal().trait_),
         egui::StrokeKind::Inside,
     );
+    r
 }
 
 /// Un choix en une ligne : son nom et ses cinq pastilles (rien : les couleurs de Vanguard).
@@ -70,7 +71,7 @@ fn rangee(ui: &mut Ui, etiquette: &str, theme: Theme, choix: Option<&Choix>) {
     ui.horizontal(|ui| {
         ui.add_sized(vec2(64.0, 20.0), egui::Label::new(texte(etiquette, 13.0, p.doux)));
         for v in Vif::TOUS {
-            pastille(ui, jeu.vif(v), 18.0);
+            pastille(ui, jeu.vif(v), 18.0, Sense::hover());
         }
         let nom = choix.map_or(crate::tr!("celles de Vanguard", "Vanguard's"), |c| nom_base(c.base));
         ui.label(texte(nom, 13.0, p.encre));
@@ -150,9 +151,18 @@ fn prereglages(appli: &Appli, ui: &mut Ui, theme: Theme, choix: &mut Choix) {
                 _ => b.prereglage(theme).vifs[0],
             };
             {
-                pastille(ui, accent, 12.0);
                 let dispo = b != Base::Systeme || systeme.is_some();
                 let pose = choix.base == b;
+                // La pastille est la couleur qu'on vient choisir : c'est elle qu'on clique d'abord. Muette, elle
+                // laissait croire que la fenêtre ne suivait pas le choix ; elle choisit donc comme le nom. Sans le
+                // focus : au clavier, le nom suffit (Tab ne s'arrête pas deux fois sur le même préréglage).
+                let sens = if dispo && !pose { Sense::CLICK } else { Sense::hover() };
+                let rond = pastille(ui, accent, 12.0, sens);
+                let rond = if dispo && !pose {
+                    rond.on_hover_cursor(egui::CursorIcon::PointingHand)
+                } else {
+                    rond
+                };
                 let r = petit(ui, nom_base(b), dispo && !pose);
                 let r = match (b, systeme) {
                     (Base::Systeme, None) => r.on_disabled_hover_text(crate::tr!(
@@ -171,7 +181,7 @@ fn prereglages(appli: &Appli, ui: &mut Ui, theme: Theme, choix: &mut Choix) {
                     }),
                     _ => r,
                 };
-                if r.clicked() {
+                if r.clicked() || rond.clicked() {
                     *choix = match (b, systeme) {
                         (Base::Systeme, Some(s)) => depuis_le_systeme(theme, &s.vifs).0,
                         _ => Choix::du_prereglage(b, theme),

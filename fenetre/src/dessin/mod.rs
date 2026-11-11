@@ -461,11 +461,7 @@ impl eframe::App for Fenetre {
         if veut_revenir(ui.ctx()) {
             self.appli.revenir();
         }
-        let voulue = palette_de(&self.appli.jeu(), self.appli.sombre);
-        if voulue != self.appliquee {
-            appliquer_palette(ui.ctx(), voulue, self.appli.sombre);
-            self.appliquee = voulue;
-        }
+        suivre_palette(&self.appli, &mut self.appliquee, ui.ctx());
         cadre::tout(&mut self.appli, ui);
         if let Some(t) = ouverture {
             ouverture::dessiner(ui.ctx(), t);
@@ -477,6 +473,16 @@ impl eframe::App for Fenetre {
         }
         let delai = if self.appli.en_cours().is_some() { 33 } else { 100 };
         ui.ctx().request_repaint_after(Duration::from_millis(delai));
+    }
+}
+
+/// Pose sur egui la palette de ce que l'appli montre (le brouillon des couleurs compris : l'aperçu en direct), seulement
+/// quand elle a changé. Un choix fait pendant une image se voit à la suivante, qu'egui demande après un clic.
+fn suivre_palette(appli: &Appli, appliquee: &mut Palette, ctx: &egui::Context) {
+    let voulue = palette_de(&appli.jeu(), appli.sombre);
+    if voulue != *appliquee {
+        appliquer_palette(ctx, voulue, appli.sombre);
+        *appliquee = voulue;
     }
 }
 
