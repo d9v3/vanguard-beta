@@ -97,7 +97,10 @@ pub(super) fn fichiers_secrets(maison: &Path, dossier_ouvert: &str) -> Vec<Const
                 &cmds,
             )
             .annulable(gestes)
-            .du_compte(),
+            .du_compte()
+            // L'ensemble des fichiers exposés, noms fixes de `SECRETS` : un choix accepté pour l'un ne tait pas un
+            // nouveau venu, et l'aperçu de la fenêtre retrouve ce constat par sa clé.
+            .avec_objet(crate::modele::Objet::de("chemins", &exposes.join(","))),
         );
     }
     // Le dossier personnel lui-même : ouvert en lecture, il laisse voir tous tes fichiers aux autres comptes.
@@ -112,7 +115,8 @@ pub(super) fn fichiers_secrets(maison: &Path, dossier_ouvert: &str) -> Vec<Const
                     &["chmod 750 ~"],
                 )
                 .annulable(vec![crate::optimiser::Geste::droits(maison)])
-                .du_compte(),
+                .du_compte()
+                .avec_objet(crate::modele::Objet::de("chemin", "~")),
         );
     }
     if constats.is_empty() {

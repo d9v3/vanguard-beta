@@ -5,7 +5,10 @@
 //! renvoie. Vanguard relance la seule règle qu'il désigne, retrouve le constat d'aujourd'hui qui y répond, puis dit
 //! tout ce qu'il ferait (phrase, commandes, droits, valeurs d'avant, annulation) et l'**accord** : l'empreinte de
 //! tout ce qui est montré. Le lot suivant applique une correction seulement si l'accord recalculé est le même ; ici,
-//! rien n'est appliqué, noté ni écrit (ni appris.json, ni les notes d'annulation, ni le journal des mesures).
+//! rien n'est appliqué, noté ni écrit : l'interrupteur de lecture seule de l'autodiagnostic est posé avant de
+//! relancer la règle (ni « déjà vu », ni sceau, ni journal, ni verrou), et les règles qui feraient écrire un autre
+//! programme ne sont pas relancées (`hors_apercu`). L'essai `voir_une_correction_n_ecrit_rien` (tests/programme.rs)
+//! relance chaque règle du bilan dans un dossier personnel jetable et compare les fichiers avant et après.
 //!
 //! Le jeton n'est pas un secret : il dit seulement « ce constat-là ». Ses 4 premiers octets viennent de la règle, les
 //! 12 suivants de la clé du constat (« règle|objet ») : Vanguard retrouve la règle sans rien garder entre la liste et
@@ -27,11 +30,6 @@ const CONTEXTE_ACCORD: &str = "vanguard accord v1 correction";
 pub(crate) const SORTE: &str = "voir-correction";
 /// Les octets du jeton tirés de la règle.
 const OCTETS_REGLE: usize = 4;
-
-/// Les élévateurs qu'une correction « du compte » ne doit jamais nommer. La garde du code (essai
-/// `chaque_correction_du_compte_est_sans_elevateur`) les refuse déjà là où la correction est écrite ; celle-ci tient
-/// à l'exécution, pour une commande composée d'un nom lu sur l'ordinateur.
-const ELEVATEURS: [&str; 6] = ["sudo", "sudo-rs", "doas", "pkexec", "run0", "su"];
 
 /// Le jeton d'un constat : 16 octets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -91,12 +89,21 @@ pub(crate) struct GesteOffert {
     jeton: String,
 }
 
+/// Une règle que l'aperçu ne relance pas : celles des mises à jour (domaine « MAJ », comme l'autodiagnostic sans
+/// Internet). Elles lancent pacman, checkupdates, flatpak ou winget, qui écrivent leurs propres fichiers (base
+/// temporaire de checkupdates, dépôt de Flatpak créé au premier appel) : l'interrupteur de lecture seule de Vanguard ne
+/// les retient pas, et l'aperçu promet de ne rien écrire.
+fn hors_apercu(id: &str) -> bool {
+    crate::autotest::va_sur_internet(id)
+}
+
 /// Le jeton d'un constat qui offre « Voir la correction » : un problème, une correction, une clé, d'une règle
-/// connue du registre. Sinon rien (la carte dit « depuis le terminal pour l'instant »).
+/// connue du registre que l'aperçu peut relancer sans rien écrire. Sinon rien (la carte dit « depuis le terminal pour
+/// l'instant »).
 fn jeton_du(c: &Constat, connues: &[&'static str]) -> Option<Jeton> {
     c.probleme?;
     c.correctif.as_ref()?;
-    if !connues.contains(&c.regle) {
+    if !connues.contains(&c.regle) || hors_apercu(c.regle) {
         return None;
     }
     let cle = c.cle()?;
@@ -238,26 +245,64 @@ impl Apercu {
     }
 }
 
-/// Un nom de programme lancé par la ligne, à peu près : chaque mot coupé aux séparateurs du shell, sans son chemin.
-/// Large exprès : un faux positif fait seulement passer la correction en « admin » (pas d'accord d'ici).
-fn nomme_un_elevateur(ligne: &str) -> bool {
-    ligne
-        .split(|c: char| {
-            c.is_whitespace() || matches!(c, ';' | '|' | '&' | '(' | ')' | '`' | '$' | '"' | '\'' | '{' | '}')
-        })
-        .filter(|m| !m.is_empty())
-        .any(|m| {
-            let nom = m.rsplit(['/', '\\']).next().unwrap_or(m);
-            ELEVATEURS.contains(&nom)
-        })
+/// Une ligne qu'une correction « du compte » peut lancer sans mot de passe : seulement `chmod <mode> <chemin>`, d'un
+/// chemin du dossier personnel, rien d'autre. Liste PERMISE plutôt que liste d'élévateurs refusés : une liste de noms
+/// se contourne (sudoedit, s\udo, systemd-run --uid=0, ssh root@localhost, `vanguard:geste`, fait par l'assistant
+/// élevé…), une forme permise non. Tout ce qui n'y entre pas devient « admin » : un faux refus coûte un mot de passe,
+/// jamais un geste fait en douce.
+fn permise_au_compte(ligne: &str) -> bool {
+    let Some(reste) = ligne.strip_prefix("chmod ") else {
+        return false;
+    };
+    let Some((mode, chemin)) = reste.split_once(' ') else {
+        return false;
+    };
+    mode_permis(mode) && chemin_du_compte(chemin).is_some()
+}
+
+/// Trois chiffres octaux, sans bit spécial : le groupe peut lire ou entrer, jamais écrire ; les autres comptes rien.
+/// C'est ce que posent les corrections du compte (600, 700, 750) : fermer, jamais ouvrir.
+fn mode_permis(mode: &str) -> bool {
+    matches!(mode.as_bytes(), [b'0'..=b'7', b'0' | b'1' | b'4' | b'5', b'0'])
+}
+
+/// Le chemin qu'une ligne vise, tel que bash le lirait, s'il est dans le dossier personnel : `~` seul ou `~/…`, des
+/// caractères sans effet pour le shell, des textes entre apostrophes (`commande::sh_chaine`, son `'\''` compris) ;
+/// ni `..`, ni caractère de contrôle, ni rien d'autre (espace, `$`, `;`, guillemets, joker, barre oblique inverse).
+fn chemin_du_compte(texte: &str) -> Option<String> {
+    let reste = texte.strip_prefix('~')?;
+    if !(reste.is_empty() || reste.starts_with('/')) {
+        return None;
+    }
+    let mut lu = String::from("~");
+    let mut c = reste.chars().peekable();
+    while let Some(x) = c.next() {
+        match x {
+            '\'' => loop {
+                match c.next()? {
+                    '\'' => break,
+                    y => lu.push(y),
+                }
+            },
+            '\\' if c.next_if_eq(&'\'').is_some() => lu.push('\''),
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '_' | '-' | '+' | '/' | '@' | ',' | '%' | '=' | ':' => lu.push(x),
+            _ => return None,
+        }
+    }
+    let sain = !lu.chars().any(char::is_control) && !lu.split('/').any(|p| p == "..");
+    sain.then_some(lu)
 }
 
 /// Les droits que la correction demande vraiment : ceux posés là où elle est écrite, sauf qu'une correction « du
-/// compte » qui nomme un élévateur, ou sous Windows (une seule fenêtre administrateur), devient « admin ». Jamais
-/// l'inverse : rien ne fait descendre une correction vers moins de droits.
+/// compte » dont une ligne n'est pas permise (`permise_au_compte`), sans ligne, ou sous Windows (une seule fenêtre
+/// administrateur), devient « admin ». Jamais l'inverse : rien ne fait descendre une correction vers moins de droits.
 fn droits_effectifs(k: &Correctif) -> Droits {
     match k.droits {
-        Droits::Compte if cfg!(windows) || k.commandes.iter().any(|l| nomme_un_elevateur(l)) => Droits::Admin,
+        Droits::Compte
+            if cfg!(windows) || k.commandes.is_empty() || !k.commandes.iter().all(|l| permise_au_compte(l)) =>
+        {
+            Droits::Admin
+        }
         d => d,
     }
 }
@@ -282,6 +327,8 @@ pub(crate) enum Refus {
     EnDouble,
     /// Le constat n'a plus de correction (déclaré normal, ou corrigé entre-temps).
     SansCorrection,
+    /// La règle ferait écrire un autre programme (`hors_apercu`) : pas relancée.
+    EcritAilleurs,
 }
 
 impl Refus {
@@ -302,6 +349,10 @@ impl Refus {
             Refus::SansCorrection => tr!(
                 "ce constat n'a plus de correction à proposer",
                 "this finding no longer has a fix to offer"
+            ),
+            Refus::EcritAilleurs => tr!(
+                "cette vérification lance les outils de mise à jour, qui écrivent leurs propres fichiers : pas d'aperçu, la correction se fait depuis le terminal (vanguard corriger)",
+                "this check runs the update tools, which write their own files: no preview, the fix is done from the terminal (vanguard corriger)"
             ),
         }
         .to_string()
@@ -369,8 +420,9 @@ fn apercu_de(c: &Constat, jeton: &Jeton) -> Option<Apercu> {
     })
 }
 
-/// Relit la seule règle du jeton, sans rien noter : ni mesure de durée, ni relevé d'amélioration, ni tic de l'Agent,
-/// ni appris.json (les alertes déclarées normales rabaissées comme au bilan, sans compléter leurs clés).
+/// Relit la seule règle du jeton, sans rien noter ni écrire : ni mesure de durée, ni relevé d'amélioration, ni tic de
+/// l'Agent, ni appris.json (les alertes déclarées normales rabaissées comme au bilan, sans compléter leurs clés), ni
+/// le « déjà vu » que certaines règles tiennent elles-mêmes.
 fn relire(jeton: &Jeton) -> Result<Vec<Constat>, Refus> {
     let choisies: Vec<&'static regles::Regle> = regles::regles(regles::Os::actuel())
         .into_iter()
@@ -383,6 +435,12 @@ fn relire(jeton: &Jeton) -> Result<Vec<Constat>, Refus> {
         // arrivait quand même, rien n'est choisi au hasard.
         _ => return Err(Refus::EnDouble),
     }
+    if choisies.iter().any(|r| hors_apercu(r.id)) {
+        return Err(Refus::EcritAilleurs);
+    }
+    // L'interrupteur de lecture seule de l'autodiagnostic, pour tout le processus : les règles qui tiennent leur
+    // « déjà vu » (administrateurs, logiciels installés) ne l'écrivent pas, ni sceau, ni journal, ni verrou.
+    crate::autotest::lecture_seule::poser();
     // Un nouveau bilan relit ce que ses règles partagent (`ParBilan`).
     super::BILAN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let (mut constats, _durees) = super::regles_en_parallele(choisies);
@@ -424,38 +482,74 @@ pub(crate) fn voir(jeton: &str, json: bool) -> i32 {
 
 /// L'aperçu au terminal, pour qui le lance à la main.
 fn afficher(a: &Apercu) {
-    use crate::ui::{GRAS, GRIS, RESET};
-    trp!(
-        "{GRAS}Aperçu de la correction{RESET} (rien n'a changé)",
-        "{GRAS}Fix preview{RESET} (nothing changed)"
-    );
-    trp!("  [{}] {} : {}", "  [{}] {}: {}", a.niveau, a.categorie, a.message);
-    trp!(
-        "  Ce que Vanguard ferait : {}",
-        "  What Vanguard would do: {}",
-        a.action
-    );
-    for l in &a.commandes {
-        trp!("    {GRIS}{}{RESET}", "    {GRIS}{}{RESET}", l);
+    for l in lignes(a) {
+        println!("{l}");
     }
-    for v in &a.avant {
-        let valeur = v.valeur.as_deref().unwrap_or(tr!("(absente)", "(absent)"));
-        trp!("  Avant : {} = {}", "  Before: {} = {}", v.geste, valeur);
-    }
-    if a.annulable {
-        trp!("  S'annule exactement : oui", "  Undone exactly: yes");
-    } else {
-        trp!("  Ne s'annule pas : {}", "  Cannot be undone: {}", a.pourquoi_pas);
-    }
-    match a.droits.as_str() {
-        "compte" => trp!("  Droits : ceux de votre compte", "  Rights: those of your account"),
-        "terminal" => trp!(
-            "  Elle pose une question : elle se fait dans le terminal (vanguard corriger)",
-            "  It asks a question: it is done in the terminal (vanguard corriger)"
+}
+
+/// Les lignes de l'aperçu au terminal. Tout texte lu sur l'ordinateur passe par `ui::affichable`, chaque commande par
+/// `ui::commande_affichable` : un nom de fichier piégé (ESC [2K, retour chariot, OSC 52, U+202E, saut de ligne suivi
+/// d'un faux « ✔ ») ne pilote pas le terminal et ne réécrit pas l'aperçu. L'accord, lui, porte sur les vrais octets.
+fn lignes(a: &Apercu) -> Vec<String> {
+    use crate::ui::{GRAS, GRIS, RESET, affichable, commande_affichable};
+    let mut l = vec![
+        crate::trf!(
+            "{GRAS}Aperçu de la correction{RESET} (rien n'a changé)",
+            "{GRAS}Fix preview{RESET} (nothing changed)"
         ),
-        _ => trp!("  Droits : administrateur", "  Rights: administrator"),
+        crate::trf!(
+            "  [{}] {} : {}",
+            "  [{}] {}: {}",
+            affichable(&a.niveau),
+            affichable(&a.categorie),
+            affichable(&a.message)
+        ),
+        crate::trf!(
+            "  Ce que Vanguard ferait : {}",
+            "  What Vanguard would do: {}",
+            affichable(&a.action)
+        ),
+    ];
+    l.extend(
+        a.commandes
+            .iter()
+            .map(|c| format!("    {GRIS}{}{RESET}", commande_affichable(c))),
+    );
+    for v in &a.avant {
+        // Une valeur absente se distingue d'un texte « (absente) » : entre guillemets quand elle existe.
+        let valeur = v.valeur.as_deref().map_or_else(
+            || tr!("(absente)", "(absent)").to_string(),
+            |t| format!("« {} »", affichable(t)),
+        );
+        l.push(crate::trf!(
+            "  Avant : {} = {}",
+            "  Before: {} = {}",
+            affichable(&v.geste),
+            valeur
+        ));
     }
-    trp!("  Accord : {}", "  Consent: {}", a.accord());
+    l.push(if a.annulable {
+        tr!("  S'annule exactement : oui", "  Undone exactly: yes").to_string()
+    } else {
+        crate::trf!(
+            "  Ne s'annule pas : {}",
+            "  Cannot be undone: {}",
+            affichable(&a.pourquoi_pas)
+        )
+    });
+    l.push(
+        match a.droits.as_str() {
+            "compte" => tr!("  Droits : ceux de votre compte", "  Rights: those of your account"),
+            "terminal" => tr!(
+                "  Elle pose une question : elle se fait dans le terminal (vanguard corriger)",
+                "  It asks a question: it is done in the terminal (vanguard corriger)"
+            ),
+            _ => tr!("  Droits : administrateur", "  Rights: administrator"),
+        }
+        .to_string(),
+    );
+    l.push(crate::trf!("  Accord : {}", "  Consent: {}", a.accord()));
+    l
 }
 
 #[cfg(test)]
@@ -614,6 +708,15 @@ mod tests {
         assert_eq!(&offerts[1..], &[None, None, None, None, None]);
         // Le geste réel n'offre que des règles du registre : un constat inventé n'a rien.
         assert!(gestes_offerts(&constats).iter().all(Option::is_none));
+        // Une règle des mises à jour, même connue, n'est jamais relancée par l'aperçu.
+        let maj = ["LNX-MAJ-001"];
+        assert_eq!(
+            gestes_offerts_avec(&[constat("LNX-MAJ-001", "a", k())], &maj),
+            vec![None]
+        );
+        let j = Jeton::de("LNX-MAJ-001", "LNX-MAJ-001|a");
+        assert_eq!(relire(&j).err(), Some(Refus::EcritAilleurs));
+        assert!(hors_apercu("WIN-MAJ-002") && !hors_apercu("LNX-SSH-002"));
     }
 
     /// Les mêmes champs donnent le même accord, et chaque champ changé en donne un autre : un essai par champ.
@@ -685,34 +788,97 @@ mod tests {
         assert_eq!(noms, cles_du_json(&a));
     }
 
+    /// Chaque contournement trouvé par la campagne d'attaque, et d'autres : rien de ce qui n'est pas `chmod <mode
+    /// fermé> <chemin du dossier personnel>` ne reste « du compte ».
     #[test]
-    fn une_correction_du_compte_qui_nomme_un_elevateur_devient_admin() {
+    fn seule_une_forme_permise_reste_du_compte() {
+        let compte = |l: &str| droits_effectifs(&correctif(Droits::Compte, &[l]));
         for l in [
+            // Les élévateurs, nommés ou déguisés.
             "sudo chmod 700 /home/alice/.ssh",
-            "chmod 700 x; /usr/bin/pkexec y",
-            "a && doas b",
-            "x | run0 y",
-            "$(su -c z)",
-            "env sudo-rs x",
+            "sudoedit /etc/sudoers",
+            "sudo</dev/null id",
+            "sudo>/x id",
+            "s\\udo id",
+            "s${e}udo id",
+            "{sudo,id}",
+            "sudo\\\nid",
+            "systemd-run --uid=0 id",
+            "machinectl shell root@ /bin/id",
+            "gsudo id",
+            "please id",
+            "su- root",
+            "ssh root@localhost id",
+            "pkexec chmod 700 ~/.ssh",
+            "run0 id",
+            "doas id",
+            // Les gestes de Vanguard : faits par l'assistant élevé.
+            "vanguard:geste programme x",
+            "vanguard:geste defense rendre-a-root x",
+            // Un chmod qui sort de la forme.
+            "chmod 700 ~/.ssh; sudo id",
+            "chmod 700 ~/.ssh && id",
+            "chmod 700 ~/.ssh | id",
+            "chmod 700 ~/$(id)",
+            "chmod 700 ~/`id`",
+            "chmod 700 ~/x\nsudo id",
+            "chmod 700 ~/'x'$(id)",
+            "chmod 700 ~/'x",
+            "chmod 700 ~/x*",
+            "chmod 700 ~/a b",
+            "chmod 700 ~/\"x\"",
+            "chmod 4755 ~/x",
+            "chmod 777 ~/.ssh",
+            "chmod 720 ~/.ssh",
+            "chmod 701 ~/.ssh",
+            "chmod u+s ~/x",
+            "chmod -R 700 ~",
+            "chmod 700 /etc/shadow",
+            "chmod 700 ~root",
+            "chmod 700 ~/../../etc/shadow",
+            "chmod 700 ~/.ssh/'..'/../x",
+            "chmod 700 ~/'\u{1b}[2K'",
+            "chmod  700 ~/.ssh",
+            "chmod 700 ~/.ssh ",
+            " chmod 700 ~/.ssh",
+            "/bin/chmod 700 ~/.ssh",
+            "",
         ] {
-            assert!(nomme_un_elevateur(l), "{l}");
-            assert_eq!(droits_effectifs(&correctif(Droits::Compte, &[l])), Droits::Admin, "{l}");
+            assert!(!permise_au_compte(l), "{l:?}");
+            assert_eq!(compte(l), Droits::Admin, "{l:?}");
         }
-        for l in [
-            "chmod 700 /home/alice/.ssh",
-            "chmod 600 /home/alice/.ssh/id_ed25519",
-            "pseudo sudoers",
-        ] {
-            assert!(!nomme_un_elevateur(l), "{l}");
-        }
+        // Les formes que posent les corrections du compte d'aujourd'hui (unix.rs, mod.rs).
         let attendu = if cfg!(windows) { Droits::Admin } else { Droits::Compte };
+        for l in [
+            "chmod 700 ~/.ssh",
+            "chmod 750 ~",
+            "chmod 600 ~/.aws/credentials",
+            "chmod 700 ~/.gnupg",
+            "chmod 600 ~/.config/rclone/rclone.conf",
+            "chmod 600 ~/.ssh/'id_ed25519'",
+            "chmod 600 ~/.ssh/'ma cle'",
+            "chmod 600 ~/.ssh/'l'\\''autre'",
+        ] {
+            assert!(permise_au_compte(l), "{l:?}");
+            assert_eq!(compte(l), attendu, "{l:?}");
+        }
         assert_eq!(
-            droits_effectifs(&correctif(Droits::Compte, &["chmod 700 /home/alice/.ssh"])),
-            attendu
+            chemin_du_compte("~/.ssh/'l'\\''autre'").as_deref(),
+            Some("~/.ssh/l'autre")
         );
+        assert_eq!(
+            chemin_du_compte(&format!("~/.ssh/{}", crate::commande::sh_chaine("a b'c"))).as_deref(),
+            Some("~/.ssh/a b'c")
+        );
+        // Une ligne permise suivie d'une autre qui ne l'est pas : admin. Aucune ligne : admin aussi.
+        assert_eq!(
+            droits_effectifs(&correctif(Droits::Compte, &["chmod 700 ~/.ssh", "id"])),
+            Droits::Admin
+        );
+        assert_eq!(droits_effectifs(&correctif(Droits::Compte, &[])), Droits::Admin);
         // Jamais vers moins de droits.
         assert_eq!(
-            droits_effectifs(&correctif(Droits::Admin, &["chmod 700 x"])),
+            droits_effectifs(&correctif(Droits::Admin, &["chmod 700 ~/.ssh"])),
             Droits::Admin
         );
         assert_eq!(
@@ -793,7 +959,7 @@ mod tests {
         let fichier = dossier.join(format!("apercu-essai-{}", std::process::id()));
         std::fs::write(&fichier, "x").unwrap();
         std::fs::set_permissions(&fichier, std::fs::Permissions::from_mode(0o644)).unwrap();
-        let mut k = correctif(Droits::Compte, &["chmod 600 x"]);
+        let mut k = correctif(Droits::Compte, &["chmod 600 ~/x"]);
         k.defaire = Defaire::Gestes(vec![crate::optimiser::Geste::droits(&fichier)]);
         let c = constat("LNX-ESS-001", "x", Some(k));
         let j = Jeton::de("LNX-ESS-001", &c.cle().unwrap().to_string());
@@ -814,6 +980,66 @@ mod tests {
         std::fs::set_permissions(&fichier, std::fs::Permissions::from_mode(0o600)).unwrap();
         assert_ne!(apercu_de(&c, &j).unwrap().accord(), a.accord());
         let _ = std::fs::remove_file(&fichier);
+    }
+
+    /// Les textes piégés du terminal (ceux des essais de `ui.rs`) ne passent pas tels quels dans l'aperçu au terminal :
+    /// aucun caractère de contrôle, aucun bidi, et un saut de ligne n'ajoute pas de fausse ligne.
+    #[test]
+    fn l_apercu_au_terminal_ne_laisse_passer_aucun_piege() {
+        let pieges = [
+            "x\x1b[2K\recho rassurant",
+            "a\n  \u{2714} Tout est propre",
+            "b\x1b[1Ac",
+            "d\u{202e}txt.exe",
+            "\x1b]52;c;ZWNobyBwd24=\x07e",
+            "f\u{9b}2Kg",
+        ];
+        for p in pieges {
+            let mut a = apercu();
+            a.message = p.into();
+            a.action = p.into();
+            a.categorie = p.into();
+            a.niveau = p.into();
+            a.commandes = vec![format!("chmod 700 '/home/alice/{p}'")];
+            a.avant = vec![ValeurAvant {
+                geste: format!("droits:/home/alice/{p}"),
+                valeur: Some(p.into()),
+            }];
+            a.annulable = false;
+            a.pourquoi_pas = p.into();
+            let l = lignes(&a);
+            // Les couleurs de Vanguard (ESC [ … m) sont les seules séquences permises.
+            let sans_couleurs: Vec<String> = l
+                .iter()
+                .map(|t| {
+                    [crate::ui::GRAS, crate::ui::GRIS, crate::ui::RESET]
+                        .iter()
+                        .fold(t.clone(), |t, c| t.replace(c, ""))
+                })
+                .collect();
+            for t in &sans_couleurs {
+                assert!(
+                    !t.chars()
+                        .any(|c| c.is_control() || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')),
+                    "{p:?} : {t:?}"
+                );
+            }
+            // Pas de ligne de plus que sans piège : un saut de ligne n'en fabrique pas une fausse.
+            assert_eq!(l.len(), lignes(&apercu_non_annulable()).len(), "{p:?}");
+        }
+        // Une valeur absente et le texte « (absente) » ne se montrent pas pareil.
+        let mut a = apercu();
+        a.avant[0].valeur = None;
+        let mut b = apercu();
+        b.avant[0].valeur = Some("(absente)".into());
+        assert_ne!(lignes(&a), lignes(&b));
+    }
+
+    fn apercu_non_annulable() -> Apercu {
+        let mut a = apercu();
+        a.annulable = false;
+        a.pourquoi_pas = "non".into();
+        a
     }
 
     /// Sans gestes : non annulable, la raison dite et liée à l'accord.

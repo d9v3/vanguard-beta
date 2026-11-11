@@ -1389,7 +1389,9 @@ fn les_essais_n_ecrivent_pas_dans_le_dossier_temporaire() {
         ("src/verifier_cle.rs", 1),
         ("src/protection/distance.rs", 1),
         ("src/essais.rs", 1),
-        ("tests/programme.rs", 1),
+        // Et un essai qui donne au programme un TMPDIR dans son dossier personnel jetable, pour y voir ce qu'il
+        // écrirait (l'aperçu d'une correction ne doit rien écrire, même là).
+        ("tests/programme.rs", 2),
     ]
     .into_iter()
     .collect();

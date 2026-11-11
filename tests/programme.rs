@@ -716,6 +716,196 @@ fn nettoyer_mesure_puis_refus() {
     assert!(t.contains("Annulé") || t.contains("Rien à nettoyer"), "{t}");
 }
 
+/// Ce qu'il y a dans un dossier, fichier par fichier (chemin relatif : sorte, taille, date, contenu), sans suivre
+/// les liens. Assez pour voir un fichier créé, effacé, réécrit ou seulement retouché.
+#[cfg(unix)]
+fn instantane(racine: &Path) -> std::collections::BTreeMap<String, (bool, u64, Option<std::time::SystemTime>, String)> {
+    let mut vus = std::collections::BTreeMap::new();
+    let mut a_voir = vec![racine.to_path_buf()];
+    while let Some(d) = a_voir.pop() {
+        let Ok(entrees) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for e in entrees.flatten() {
+            let p = e.path();
+            let Ok(m) = std::fs::symlink_metadata(&p) else {
+                continue;
+            };
+            let contenu = if m.is_file() {
+                blake3::hash(&std::fs::read(&p).unwrap_or_default())
+                    .to_hex()
+                    .to_string()
+            } else {
+                String::new()
+            };
+            let nom = p.strip_prefix(racine).unwrap().to_string_lossy().into_owned();
+            vus.insert(nom, (m.is_dir(), m.len(), m.modified().ok(), contenu));
+            if m.is_dir() {
+                a_voir.push(p);
+            }
+        }
+    }
+    vus
+}
+
+/// `correction --voir` ne change rien, quelle que soit la règle que désigne le jeton : chaque règle du bilan relancée
+/// par un jeton à son nom (les 4 premiers octets ; la clé, inventée, ne répond à aucun constat), dans un dossier
+/// personnel déjà passé par un premier lancement (qui pose les sceaux, comme tout `vanguard`), comparé fichier par
+/// fichier avant et après. Les règles qui tiennent leur « déjà vu » (administrateurs, logiciels installés) l'écrivaient.
+#[cfg(unix)]
+#[test]
+fn voir_une_correction_n_ecrit_rien() {
+    let ids: Vec<String> = {
+        let s = vanguard("fr", &["regles", "--json"], "", 60);
+        assert_eq!(s.code, Some(0), "{}", s.erreurs);
+        let v: serde_json::Value = serde_json::from_str(&s.texte).expect("regles --json : JSON illisible");
+        v["bilan"]
+            .as_array()
+            .expect("pas de règles")
+            .iter()
+            .map(|r| r["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert!(ids.len() > 30, "{} règles seulement", ids.len());
+    let jeton = |id: &str| {
+        let r = blake3::derive_key("vanguard jeton v1 regle", id.as_bytes());
+        format!("{}{}", &blake3::Hash::from(r).to_hex()[..8], "5a".repeat(12))
+    };
+    let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
+    let fautes = std::sync::Mutex::new(Vec::new());
+    let suivant = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|s| {
+        for _ in 0..8 {
+            s.spawn(|| {
+                loop {
+                    let i = suivant.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(id) = ids.get(i) else { break };
+                    let maison = maison_jetable();
+                    let tmp = maison.join("tmp");
+                    std::fs::create_dir_all(&tmp).unwrap();
+                    let env = &[("TMPDIR", tmp.to_str().unwrap())];
+                    // Le premier lancement pose les sceaux (jeton mal formé : rien d'autre n'est lu).
+                    let premier =
+                        vanguard_dans_env(programme, &maison, "fr", &["correction", "--voir", "x"], "", 60, env);
+                    assert_eq!(premier.code, Some(2), "{id} : {}", premier.erreurs);
+                    let avant = instantane(&maison);
+                    let j = jeton(id);
+                    let sortie = vanguard_dans_env(
+                        programme,
+                        &maison,
+                        "fr",
+                        &["correction", "--voir", &j, "--json"],
+                        "",
+                        300,
+                        env,
+                    );
+                    let apres = instantane(&maison);
+                    let mut ecarts = Vec::new();
+                    for (nom, a) in &avant {
+                        match apres.get(nom) {
+                            None => ecarts.push(format!("effacé {nom}")),
+                            Some(b) if b != a => ecarts.push(format!("changé {nom}")),
+                            Some(_) => {}
+                        }
+                    }
+                    ecarts.extend(
+                        apres
+                            .keys()
+                            .filter(|n| !avant.contains_key(*n))
+                            .map(|n| format!("créé {n}")),
+                    );
+                    let derniere: serde_json::Value =
+                        serde_json::from_str(sortie.texte.lines().last().unwrap_or_default()).unwrap_or_default();
+                    let mut f = fautes.lock().unwrap();
+                    if !matches!(sortie.code, Some(0 | 1)) || derniere["geste"] != "voir-correction" {
+                        f.push(format!("{id} : code {:?}, {}", sortie.code, sortie.texte));
+                    }
+                    // Les mises à jour lancent des outils qui écrivent leurs propres fichiers : refusées, et dit.
+                    if id.get(4..7) == Some("MAJ")
+                        && !(derniere["issue"] == "refuse"
+                            && derniere["raison"].as_str().is_some_and(|r| r.contains("mise à jour")))
+                    {
+                        f.push(format!("{id} : pas refusée ({derniere})"));
+                    }
+                    if !ecarts.is_empty() {
+                        f.push(format!("{id} : {ecarts:?}"));
+                    }
+                }
+            });
+        }
+    });
+    let fautes = fautes.into_inner().unwrap();
+    assert!(fautes.is_empty(), "correction --voir a écrit :\n{}", fautes.join("\n"));
+}
+
+/// Les corrections du compte (droits de ~/.ssh, d'une clé, du dossier personnel, des fichiers secrets) offrent
+/// « Voir la correction » dans le bilan, et leur aperçu se fait sans mot de passe d'administrateur. Rien n'est changé :
+/// les droits relevés après sont ceux d'avant.
+#[cfg(unix)]
+#[test]
+fn les_corrections_du_compte_offrent_l_apercu() {
+    use std::os::unix::fs::PermissionsExt;
+    let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
+    let maison = maison_jetable();
+    let ssh = maison.join(".ssh");
+    std::fs::create_dir_all(&ssh).unwrap();
+    std::fs::write(ssh.join("id_essai"), "clé inventée\n").unwrap();
+    std::fs::write(maison.join(".netrc"), "machine exemple.invalid login alice\n").unwrap();
+    let modes = [
+        (maison.to_path_buf(), 0o755),
+        (ssh.clone(), 0o755),
+        (ssh.join("id_essai"), 0o644),
+        (maison.join(".netrc"), 0o644),
+    ];
+    for (chemin, mode) in &modes {
+        std::fs::set_permissions(chemin, std::fs::Permissions::from_mode(*mode)).unwrap();
+    }
+    let bilan = vanguard_dans(programme, &maison, "fr", &["audit", "--json"], "", 300);
+    assert!(matches!(bilan.code, Some(0 | 1)), "{}", bilan.erreurs);
+    let v: serde_json::Value = serde_json::from_str(&bilan.texte).expect("audit --json : JSON illisible");
+    let attendus = [
+        "chmod 700 ~/.ssh",
+        "chmod 600 ~/.ssh/",
+        "chmod 750 ~",
+        "chmod 600 ~/.netrc",
+    ];
+    let mut vus = Vec::new();
+    for c in v["constats"].as_array().expect("pas de constats") {
+        let Some(j) = c["geste"]["jeton"].as_str() else {
+            continue;
+        };
+        let s = vanguard_dans(
+            programme,
+            &maison,
+            "fr",
+            &["correction", "--voir", j, "--json"],
+            "",
+            300,
+        );
+        let r: serde_json::Value = serde_json::from_str(s.texte.lines().last().unwrap_or_default()).unwrap_or_default();
+        if r["issue"] != "fait" || r["apercu"]["droits"] != "compte" {
+            continue;
+        }
+        let commandes: Vec<&str> = r["apercu"]["commandes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|x| x.as_str())
+            .collect();
+        vus.extend(commandes.iter().map(|x| (*x).to_string()));
+    }
+    for a in attendus {
+        assert!(
+            vus.iter().any(|x| x.starts_with(a)),
+            "{a} sans aperçu du compte : {vus:?}"
+        );
+    }
+    for (chemin, mode) in &modes {
+        let m = std::fs::metadata(chemin).unwrap().permissions().mode() & 0o777;
+        assert_eq!(m, *mode, "{} changé", chemin.display());
+    }
+}
+
 #[test]
 fn audit_en_json() {
     let s = vanguard("fr", &["audit", "--json"], "", 300);

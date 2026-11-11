@@ -1071,7 +1071,7 @@ fn verdict_final(code: i32) -> String {
 // Lancements
 
 /// Une règle qui va sur Internet : celles des mises à jour (« LNX-MAJ-001 »), au délai long pour la même raison.
-fn va_sur_internet(id: &str) -> bool {
+pub(crate) fn va_sur_internet(id: &str) -> bool {
     id.get(4..7) == Some("MAJ")
 }
 

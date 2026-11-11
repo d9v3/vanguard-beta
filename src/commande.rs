@@ -1267,9 +1267,6 @@ pub(crate) mod tests_sh_chaine {
         ("machine/administrateurs.rs", 3),
         // Une liste de refus : les commandes d'arrêt qui passeraient par un outil d'élévation ne sont pas lancées.
         ("machine/arret_designe.rs", 3),
-        // Les élévateurs qu'une correction « du compte » ne doit pas nommer (garde à l'exécution de l'aperçu) : une
-        // liste de refus, aucun appel.
-        ("machine/apercu.rs", 4),
         ("machine/assistant.rs", 23),
         ("machine/certificats.rs", 3),
         ("machine/chasse.rs", 6),

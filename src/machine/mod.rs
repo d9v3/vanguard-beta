@@ -972,7 +972,8 @@ fn cles_ssh() -> Vec<Constat> {
                 &["chmod 700 ~/.ssh"],
             )
             .annulable(vec![crate::optimiser::Geste::droits(&dossier)])
-            .du_compte(),
+            .du_compte()
+            .avec_objet(Objet::de("chemin", "~/.ssh")),
         );
     }
     for f in std::fs::read_dir(&dossier).into_iter().flatten().flatten() {
@@ -1021,7 +1022,13 @@ fn cles_ssh() -> Vec<Constat> {
                     &[&format!("chmod 600 {chemin}")],
                 )
                 .annulable(vec![crate::optimiser::Geste::droits(&f.path())])
-                .du_compte(),
+                .du_compte()
+                // Le vrai nom, ses pièges écrits en clair (`nom_pour_cle`) : une clé « id_x » suivie d'un invisible
+                // n'hérite pas du choix fait pour « id_x ».
+                .avec_objet(Objet::de(
+                    "chemin",
+                    &crate::modele::resultat::nom_pour_cle(&format!("~/.ssh/{brut}")),
+                )),
             );
         }
     }
