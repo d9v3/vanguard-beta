@@ -488,6 +488,17 @@ pub(crate) fn fin_du_blocage(b: &Blocage) -> Option<String> {
 }
 
 /// Un identifiant neuf pour un blocage : l'heure en nanosecondes et le numéro du processus, sans hasard à tirer.
+/// Le jeton d'une note d'annulation (`changements --json`, `--voir`, `--annuler`) : 16 octets BLAKE3 à contexte de
+/// son id, 32 chiffres hexadécimaux minuscules. La fenêtre ne désigne jamais une note par son id ni par ses gestes.
+pub(crate) fn jeton_de_note(id: &str) -> String {
+    let mut h = blake3::Hasher::new_derive_key("vanguard jeton v1 annulation");
+    h.update(id.as_bytes());
+    h.finalize().as_bytes()[..16]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 pub(crate) fn nouvel_id() -> String {
     static SUITE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let nanos = std::time::SystemTime::now()

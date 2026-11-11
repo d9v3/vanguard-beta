@@ -391,7 +391,7 @@ pub(crate) enum Refus {
 }
 
 impl Refus {
-    fn raison(&self) -> String {
+    pub(crate) fn raison(&self) -> String {
         match self {
             Refus::MalForme => tr!(
                 "jeton mal formé : 32 chiffres hexadécimaux minuscules attendus",
@@ -441,11 +441,20 @@ fn retrouver<'a>(constats: &'a [Constat], jeton: &Jeton, connues: &[&'static str
 /// L'aperçu d'un constat retrouvé : une seule lecture des valeurs d'avant (`annulables::relever`, lecture seule),
 /// qui sert à ce qui est montré et à l'accord.
 fn apercu_de(c: &Constat, jeton: &Jeton) -> Option<Apercu> {
+    // L'id ne sert qu'à la note, qui n'est pas écrite ici : fixe, pour ne rien tirer au hasard.
+    apercu_et_releve(c, jeton, "apercu".to_string()).map(|(a, _)| a)
+}
+
+/// Le relevé d'avant d'une correction : sa note (id `id`) si elle s'annule, sinon pourquoi.
+pub(crate) type Releve = Result<crate::optimiser::annulables::Releve, crate::optimiser::annulables::PourquoiPas>;
+
+/// L'aperçu d'un constat retrouvé et le relevé qui l'a fait, sous l'id `id` : au moment d'agir, cette même lecture
+/// sert à l'accord recalculé, à la note d'avant et à la décision ; rien n'est relu entre le hachage et l'usage.
+pub(crate) fn apercu_et_releve(c: &Constat, jeton: &Jeton, id: String) -> Option<(Apercu, Releve)> {
     let k = c.correctif.as_ref()?;
     let cle = c.cle()?.to_string();
     let releve = match k.comment_defaire() {
-        // L'id ne sert qu'à la note, qui n'est pas écrite ici : fixe, pour ne rien tirer au hasard.
-        Defaire::Gestes(g) => crate::optimiser::annulables::relever("apercu".to_string(), &k.action, &g),
+        Defaire::Gestes(g) => crate::optimiser::annulables::relever(id, &k.action, &g),
         _ => Err(k
             .pourquoi_pas()
             .unwrap_or(crate::optimiser::annulables::PourquoiPas::NonReleve)),
@@ -463,7 +472,7 @@ fn apercu_de(c: &Constat, jeton: &Jeton) -> Option<Apercu> {
         ),
         Err(p) => (false, p.texte(), Vec::new()),
     };
-    Some(Apercu {
+    let a = Apercu {
         version: env!("CARGO_PKG_VERSION").to_string(),
         langue: if crate::langue::anglais() { "en" } else { "fr" }.to_string(),
         jeton: jeton.hex(),
@@ -480,18 +489,50 @@ fn apercu_de(c: &Constat, jeton: &Jeton) -> Option<Apercu> {
         pourquoi_pas,
         avant,
         point_de_restauration: false,
-    })
+    };
+    Some((a, releve))
+}
+
+/// Un aperçu qui offre « Appliquer » : du compte (chaque ligne permise, jamais sous Windows dans ce lot), qui
+/// s'annule, et que Vanguard fait lui-même. Une correction « admin » ou « terminal », ou qui ne s'annulerait pas, se
+/// montre seulement (Q2).
+pub(crate) fn applicable(a: &Apercu) -> bool {
+    a.droits == Droits::Compte.mot() && a.annulable && a.automatique
 }
 
 /// Relit la seule règle du jeton, sans rien noter ni écrire : ni mesure de durée, ni relevé d'amélioration, ni tic de
 /// l'Agent, ni appris.json (les alertes déclarées normales rabaissées comme au bilan, sans compléter leurs clés), ni
 /// le « déjà vu » que certaines règles tiennent elles-mêmes.
 fn relire(jeton: &Jeton) -> Result<Vec<Constat>, Refus> {
-    relire_parmi(jeton, regles::regles(regles::Os::actuel()), RELUES_SANS_PROGRAMME)
+    relire_parmi(jeton, regles::regles(regles::Os::actuel()), RELUES_SANS_PROGRAMME, true)
 }
 
-/// `relire` parmi `toutes` les règles, `permises` étant celles que l'aperçu relance (les essais y mettent les leurs).
-fn relire_parmi(jeton: &Jeton, toutes: Vec<&'static regles::Regle>, permises: &[&str]) -> Result<Vec<Constat>, Refus> {
+/// La même relecture au moment d'agir (`machine::appliquer`) : les mêmes règles, la même liste permise, les mêmes
+/// alertes rabaissées, donc le même aperçu et le même accord si rien n'a changé. Sans l'interrupteur de lecture seule
+/// (le geste écrit ensuite sa note, ses sceaux et le journal) : les règles permises n'écrivent rien d'elles-mêmes, et
+/// celles qui tiennent un « déjà vu » n'y sont pas.
+pub(crate) fn relire_pour_agir(jeton: &Jeton) -> Result<Vec<Constat>, Refus> {
+    relire_parmi(
+        jeton,
+        regles::regles(regles::Os::actuel()),
+        RELUES_SANS_PROGRAMME,
+        false,
+    )
+}
+
+/// Le seul constat d'aujourd'hui qui répond au jeton, parmi ceux que l'aperçu relance.
+pub(crate) fn retrouver_ici<'a>(constats: &'a [Constat], jeton: &Jeton) -> Result<&'a Constat, Refus> {
+    retrouver(constats, jeton, &relancables())
+}
+
+/// `relire` parmi `toutes` les règles, `permises` étant celles que l'aperçu relance (les essais y mettent les leurs) ;
+/// `lecture_seule` : l'interrupteur de l'autodiagnostic posé avant (l'aperçu).
+fn relire_parmi(
+    jeton: &Jeton,
+    toutes: Vec<&'static regles::Regle>,
+    permises: &[&str],
+    lecture_seule: bool,
+) -> Result<Vec<Constat>, Refus> {
     let choisies: Vec<&'static regles::Regle> = toutes.into_iter().filter(|r| jeton.de_la_regle(r.id)).collect();
     match choisies.len() {
         0 => return Err(Refus::Disparu),
@@ -505,7 +546,9 @@ fn relire_parmi(jeton: &Jeton, toutes: Vec<&'static regles::Regle>, permises: &[
     }
     // L'interrupteur de lecture seule de l'autodiagnostic, pour tout le processus : les règles qui tiennent leur
     // « déjà vu » (administrateurs, logiciels installés) ne l'écrivent pas, ni sceau, ni journal, ni verrou.
-    crate::autotest::lecture_seule::poser();
+    if lecture_seule {
+        crate::autotest::lecture_seule::poser();
+    }
     // Un nouveau bilan relit ce que ses règles partagent (`ParBilan`).
     super::BILAN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let lances = crate::coulisses::lancements();
@@ -540,6 +583,13 @@ fn issue_de(jeton: &str) -> Result<Apercu, Refus> {
 /// sortie : 0 aperçu donné, 1 refusé, 2 jeton mal formé ou lecture seule absente (avant toute lecture).
 pub(crate) fn voir(jeton: &str, json: bool) -> i32 {
     let issue = issue_de(jeton);
+    // Ce qui pourra s'appliquer d'ici est noté au carnet des aperçus (seul fichier écrit, avec ses sceaux) : le geste
+    // qui l'applique exigera cette entrée, 2 s à 10 min plus tard, et la consommera.
+    if let Ok(a) = &issue
+        && applicable(a)
+    {
+        super::carnet::noter(super::appliquer::SORTE, &a.jeton, &a.accord());
+    }
     let code = match &issue {
         Ok(_) => 0,
         Err(Refus::MalForme | Refus::SansLectureSeule) => 2,
@@ -980,8 +1030,8 @@ mod tests {
         let rien = Jeton::de("ESS-APE-002", "ESS-APE-002|a");
         let toutes = || vec![&LANCE_UN_PROGRAMME, &NE_LANCE_RIEN];
         let permises = &["ESS-APE-001", "ESS-APE-002"];
-        let refus = relire_parmi(&lance, toutes(), permises).err();
-        let relue = relire_parmi(&rien, toutes(), permises);
+        let refus = relire_parmi(&lance, toutes(), permises, true).err();
+        let relue = relire_parmi(&rien, toutes(), permises, true);
         crate::autotest::lecture_seule::relever_pour_le_test();
         assert_eq!(refus, Some(Refus::EcritAilleurs));
         // Le compteur est commun au processus : un autre essai qui lance un programme au même moment ferait refuser
@@ -992,7 +1042,7 @@ mod tests {
         }
         // Hors de la liste permise, refusée avant d'être lancée (l'interrupteur n'est même pas posé).
         assert_eq!(
-            relire_parmi(&lance, toutes(), &["ESS-APE-002"]).err(),
+            relire_parmi(&lance, toutes(), &["ESS-APE-002"], true).err(),
             Some(Refus::EcritAilleurs)
         );
         assert!(!crate::autotest::lecture_seule::active());

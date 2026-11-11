@@ -218,6 +218,9 @@ pub(crate) const INVENTAIRE: &[FichierEtat] = &[
     // Les programmes coupés du réseau (rappelés au bilan) : forgée, elle taisait un programme coupé.
     scelle(sceau::COUPURES, "protection::blocage::coupure"),
     scelle(sceau::SURVEILLES, "protection::blocage::surveiller"),
+    // Les aperçus de corrections montrés, chacun consommé par le geste qui l'applique : forgé, il ferait passer un
+    // geste jamais montré.
+    scelle(sceau::APERCUS, "machine::carnet"),
     local("quarantaine", "protection::quarantaine"),
     // Vidée ou effacée, les fichiers-pièges n'étaient plus vérifiés.
     scelle(sceau::PIEGES, "protection::pieges"),

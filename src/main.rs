@@ -391,7 +391,9 @@ async fn main() {
     if std::env::args_os().nth(1).is_some_and(|a| a == "correction") {
         autotest::lecture_seule::poser_pour_un_apercu();
         if let Ok(Args {
-            commande: Some(Commande::Correction { voir, json }),
+            commande: Some(Commande::Correction {
+                voir: Some(voir), json, ..
+            }),
             ..
         }) = ligne_de_commande()
             .try_get_matches()
@@ -853,6 +855,17 @@ async fn main() {
             } else {
                 optimiser::programmes_au_demarrage();
             }
+        }
+        // Appliquer change quelque chose : il suit le chemin ordinaire (journal, passage, verrou des notes).
+        Some(Commande::Correction {
+            appliquer: Some(jeton),
+            accord: Some(accord),
+            json,
+            ..
+        }) => {
+            let code = machine::appliquer::appliquer(&jeton, &accord, json);
+            chiffrement::oublier_session();
+            std::process::exit(code);
         }
         // L'aperçu ne passe que par la forme « vanguard correction … », qui sort plus haut, lecture seule posée avant
         // tout. Arrivé ici par une autre forme (une option globale ou un synonyme ajoutés un jour), journal, sceaux et

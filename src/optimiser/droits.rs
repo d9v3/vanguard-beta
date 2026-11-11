@@ -45,6 +45,13 @@ pub(crate) fn lire(chemin: &Path) -> Result<u32, String> {
 /// Pose `mode` sur `chemin` et rend les droits d'avant, lus sur le même descripteur juste avant. Rien n'est changé si
 /// une garde refuse, ni si `mode` porte setuid, setgid ou plus que des droits.
 pub(crate) fn poser(chemin: &Path, mode: u32) -> Result<u32, String> {
+    poser_si(chemin, None, mode)
+}
+
+/// `poser`, seulement si les droits lus sur le descripteur sont encore `attendu` (ceux qui ont été montrés et notés) :
+/// sinon rien n'est changé. Un geste accepté sur un état ne s'applique pas à un autre, même changé entre la dernière
+/// lecture et l'ouverture du fichier.
+pub(crate) fn poser_si(chemin: &Path, attendu: Option<u32>, mode: u32) -> Result<u32, String> {
     if mode & !MODE_MAX != 0 {
         return Err(trf!(
             "droits refusés : {:04o} (ni setuid ni setgid)",
@@ -53,6 +60,17 @@ pub(crate) fn poser(chemin: &Path, mode: u32) -> Result<u32, String> {
         ));
     }
     let bout = ouvrir(chemin)?;
+    if let Some(a) = attendu
+        && bout.mode != a
+    {
+        return Err(trf!(
+            "{} : {:04o} lus au lieu des {:04o} montrés : changé depuis, rien n'est posé",
+            "{}: {:04o} read instead of the {:04o} shown: changed since, nothing is set",
+            bout.ou,
+            bout.mode,
+            a
+        ));
+    }
     if bout.mode != mode {
         fchmod(bout.fichier.as_fd(), mode)
             .map_err(|e| trf!("{} : droits non posés ({e})", "{}: permissions not set ({e})", bout.ou))?;
@@ -297,6 +315,11 @@ mod tests {
         assert!(poser(&f, 0o2600).is_err());
         assert!(poser(&f, 0o10600).is_err());
         assert_eq!(mode(&f), 0o600);
+        // Seulement sur l'état montré : lu autrement, rien n'est posé.
+        assert!(poser_si(&f, Some(0o644), 0o640).is_err());
+        assert_eq!(mode(&f), 0o600);
+        assert_eq!(poser_si(&f, Some(0o600), 0o640), Ok(0o600));
+        assert_eq!(mode(&f), 0o640);
         let _ = std::fs::remove_dir_all(&d);
     }
 

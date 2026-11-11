@@ -146,6 +146,9 @@ pub(crate) const COUPURES: &str = "blocage-coupures.json";
 /// Les programmes sous surveillance rapprochée (`protection::blocage::surveiller`), lus par le veilleur de Linux :
 /// forgée, elle aurait fait sonner le lancement d'un programme sain, ou taire celui qu'on surveille.
 pub(crate) const SURVEILLES: &str = "surveillance-rapprochee.json";
+/// Le carnet des aperçus de corrections montrés (`machine::carnet`) : forgé, il ferait passer pour montré un geste que
+/// personne n'a vu ; changé hors de Vanguard, plus aucun geste ne passe jusqu'au prochain aperçu.
+pub(crate) const APERCUS: &str = "apercus.json";
 
 /// Au-delà, ce n'est pas un fichier d'état de Vanguard (le plus gros fait quelques dizaines de Kio) : il n'est pas
 /// chargé.

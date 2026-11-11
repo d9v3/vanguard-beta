@@ -45,7 +45,9 @@ thread_local! {
 
 thread_local! {
     /// Le fil qui écrit le résultat de l'autotest, le temps de l'écrire.
-    static EXEMPTE: Cell<bool> = const { Cell::new(false) };
+    /// Le fil qui écrit le résultat de l'autotest, ou le carnet des aperçus, le temps de l'écrire : la liste fermée
+    /// des fichiers qu'il peut écrire.
+    static EXEMPTE: Cell<Option<&'static [&'static str]>> = const { Cell::new(None) };
 }
 
 /// Ce que l'autotest écrit lui-même, une fois l'essai fini : son résultat, la date du dernier essai, l'événement du
@@ -139,24 +141,26 @@ impl Heritage {
     }
 }
 
-/// Un fichier de l'autotest (un de `EXEMPTES`, sous n'importe quel dossier).
-fn exempte(chemin: &Path) -> bool {
+/// L'aperçu d'une correction (`machine::carnet`) note seulement son entrée dans le carnet des aperçus, scellée : le
+/// carnet, puis le registre des sceaux et son témoin. Rien d'autre, même exempté.
+const EXEMPTES_CARNET: &[&str] = &[crate::sceau::APERCUS, "sceaux.json", crate::sceau::TEMOIN];
+
+/// Un fichier de `liste` (sous n'importe quel dossier).
+fn exempte(chemin: &Path, liste: &[&str]) -> bool {
     let texte = chemin.to_string_lossy().replace('\\', "/");
-    EXEMPTES
-        .iter()
-        .any(|e| texte == *e || texte.ends_with(&format!("/{e}")))
+    liste.iter().any(|e| texte == *e || texte.ends_with(&format!("/{e}")))
 }
 
 /// L'écriture de ce fichier est-elle refusée ? Oui sous l'interrupteur, sauf dans le fil qui écrit le résultat de
 /// l'autotest, pour l'un de ses fichiers.
 pub(crate) fn refuse_fichier(chemin: &Path) -> bool {
-    active() && !(EXEMPTE.get() && exempte(chemin))
+    active() && !EXEMPTE.get().is_some_and(|liste| exempte(chemin, liste))
 }
 
 /// Écrire dans un dossier d'état est-il refusé (journal des événements, sceaux) ? Le détail par fichier suit dans
 /// `refuse_fichier`.
 pub(crate) fn refuse_dossier() -> bool {
-    active() && !EXEMPTE.get()
+    active() && EXEMPTE.get().is_none()
 }
 
 /// L'erreur rendue à une écriture refusée : ses appelants l'ignorent ou la notent, comme un disque en lecture seule.
@@ -170,14 +174,23 @@ pub(crate) fn refus() -> std::io::Error {
 /// Écrit le résultat de l'autotest : seul ce fil, le temps de `ecrire`, passe l'interrupteur, et seulement pour les
 /// fichiers de `EXEMPTES`. Une règle hors délai qui écrirait en même temps reste refusée.
 pub(crate) fn ecrire_resultat<T>(ecrire: impl FnOnce() -> T) -> T {
-    struct Fin;
+    ecrire_exempte(EXEMPTES, ecrire)
+}
+
+/// Écrit l'entrée d'un aperçu dans son carnet (`machine::carnet`) : seul ce fil, le temps de `ecrire`, passe
+/// l'interrupteur, et seulement pour les fichiers de `EXEMPTES_CARNET`. Une règle hors délai reste refusée.
+pub(crate) fn ecrire_carnet<T>(ecrire: impl FnOnce() -> T) -> T {
+    ecrire_exempte(EXEMPTES_CARNET, ecrire)
+}
+
+fn ecrire_exempte<T>(liste: &'static [&'static str], ecrire: impl FnOnce() -> T) -> T {
+    struct Fin(Option<&'static [&'static str]>);
     impl Drop for Fin {
         fn drop(&mut self) {
-            EXEMPTE.set(false);
+            EXEMPTE.set(self.0);
         }
     }
-    EXEMPTE.set(true);
-    let _fin = Fin;
+    let _fin = Fin(EXEMPTE.replace(Some(liste)));
     ecrire()
 }
 

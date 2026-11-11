@@ -658,13 +658,20 @@ pub(crate) enum Commande {
         remettre: Option<String>,
     },
     /// Une correction du bilan, désignée par son jeton (donné par `audit --json`) : --voir montre tout ce qu'elle
-    /// ferait (commandes, droits, valeurs d'avant, annulation) et l'accord qui le résume. Rien ne change. Lancée
-    /// par la fenêtre, qui ne désigne la correction que par ce jeton ; tout est relu ici.
-    #[command(hide = true)]
+    /// ferait (commandes, droits, valeurs d'avant, annulation) et l'accord qui le résume, sans rien changer d'autre
+    /// que le carnet des aperçus ; --appliquer la fait, seulement avec l'accord de cet aperçu, 2 s à 10 min après lui.
+    /// Lancée par la fenêtre, qui ne désigne la correction que par ce jeton ; tout est relu ici.
+    #[command(hide = true, group = clap::ArgGroup::new("geste").required(true).args(["voir", "appliquer"]))]
     Correction {
         /// Montrer la correction de ce jeton (32 chiffres hexadécimaux minuscules) : lecture seule.
-        #[arg(long, visible_alias = "show", value_name = "JETON", required = true)]
-        voir: String,
+        #[arg(long, visible_alias = "show", value_name = "JETON")]
+        voir: Option<String>,
+        /// Appliquer la correction de ce jeton : seulement une correction du compte qui s'annule, avec --accord.
+        #[arg(long, visible_alias = "apply", value_name = "JETON", requires = "accord")]
+        appliquer: Option<String>,
+        /// L'accord donné par l'aperçu (64 chiffres hexadécimaux minuscules) : l'état relu doit donner le même.
+        #[arg(long, visible_alias = "agreement", value_name = "ACCORD", requires = "appliquer")]
+        accord: Option<String>,
         /// L'issue en une ligne JSON, la dernière : l'aperçu et son accord, ou la raison du refus.
         #[arg(long)]
         json: bool,

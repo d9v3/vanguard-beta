@@ -205,6 +205,19 @@ fn tenir_les_notes(dossier: &std::path::Path) -> Option<NotesTenues> {
     Some(NotesTenues(Some(v)))
 }
 
+/// `tenir_les_notes` pour un geste de la fenêtre : pris tout de suite ou pas du tout, sans rien dire (l'appelant dit
+/// « occupé » dans sa dernière ligne). Un autre Vanguard qui change des réglages en ce moment fait refuser le geste,
+/// rien changé, au lieu de faire attendre la fenêtre.
+pub(crate) fn tenir_les_notes_sans_attendre(dossier: &std::path::Path) -> Option<NotesTenues> {
+    if NOTES_TENUES.with(std::cell::Cell::get) {
+        return Some(NotesTenues(None));
+    }
+    let _ = std::fs::create_dir_all(dossier);
+    let v = crate::socle::Verrou::prendre_compatible(dossier, VERROU_NOTES, false, std::time::Duration::ZERO).ok()?;
+    NOTES_TENUES.with(|t| t.set(true));
+    Some(NotesTenues(Some(v)))
+}
+
 /// Met de côté, intact, un fichier de valeurs d'avant qu'on ne relit pas : jamais écrasé en silence. Une copie par
 /// contenu (son nom vient de l'empreinte) : le fichier est relu à chaque menu, et une copie datée à chaque lecture
 /// remplissait le dossier. Rend la copie la première fois dans ce processus, pour ne la dire qu'une fois ; `None`

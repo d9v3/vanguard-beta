@@ -931,11 +931,38 @@ fn voir_une_correction_n_ecrit_rien() {
     assert!(fautes.is_empty(), "correction --voir :\n{}", fautes.join("\n"));
 }
 
+/// Les écarts d'un instantané hors de ce que l'aperçu d'une correction applicable écrit : le carnet des aperçus
+/// (sous-lot B), les sceaux qui le gardent, leurs verrous, et le dossier de données qui les contient.
+#[cfg(unix)]
+fn hors_carnet(ecarts: Vec<String>) -> Vec<String> {
+    const PERMIS: &[&str] = &[
+        "apercus.json",
+        "apercus.lock",
+        "sceaux.json",
+        "sceaux.temoin",
+        "sceaux.verrou",
+        "sceaux.lock",
+    ];
+    ecarts
+        .into_iter()
+        .filter(|e| {
+            let nom = e
+                .split('«')
+                .nth(1)
+                .and_then(|r| r.split('»').next())
+                .unwrap_or_default()
+                .trim();
+            !(nom == "donnees/vanguard" || PERMIS.iter().any(|p| nom == format!("donnees/vanguard/{p}")))
+        })
+        .collect()
+}
+
 /// Les corrections du compte (droits de ~/.ssh, d'une clé, du dossier personnel, des fichiers secrets) offrent
 /// « Voir la correction » dans le bilan, et leur aperçu se fait sans mot de passe d'administrateur. Rien n'est changé
 /// par les vrais jetons du bilan (vérification de Fable, E1) : le dossier personnel, comparé entrée par entrée après
 /// le bilan puis après les aperçus, droits et liens compris ; puis de même, les fichiers JSON de Vanguard abîmés
-/// (R2 : une erreur de lecture notée au journal l'écrivait).
+/// (R2 : une erreur de lecture notée au journal l'écrivait). Seul le carnet des aperçus s'écrit (sous-lot B : ces
+/// corrections s'appliquent d'ici), avec ses sceaux et leurs verrous (`hors_carnet`).
 #[cfg(unix)]
 #[test]
 fn les_corrections_du_compte_offrent_l_apercu() {
@@ -1006,7 +1033,7 @@ fn les_corrections_du_compte_offrent_l_apercu() {
     };
     let avant = instantane(&maison);
     let vus = voir_tout();
-    let changes = ecarts(&avant, &instantane(&maison));
+    let changes = hors_carnet(ecarts(&avant, &instantane(&maison)));
     assert!(changes.is_empty(), "les aperçus ont écrit : {changes:?}");
     for a in attendus {
         assert!(
@@ -1024,7 +1051,7 @@ fn les_corrections_du_compte_offrent_l_apercu() {
     }
     let avant = instantane(&maison);
     let _ = voir_tout();
-    let changes = ecarts(&avant, &instantane(&maison));
+    let changes = hors_carnet(ecarts(&avant, &instantane(&maison)));
     assert!(changes.is_empty(), "les aperçus ont écrit, verrou absent : {changes:?}");
     // Les fichiers JSON de Vanguard abîmés : les aperçus ne les réparent pas, n'en notent rien, et répondent.
     let mut abimes = 0;
@@ -1041,7 +1068,7 @@ fn les_corrections_du_compte_offrent_l_apercu() {
     assert!(abimes > 0, "aucun fichier JSON de Vanguard dans {:?}", avant.keys());
     let avant = instantane(&maison);
     let _ = voir_tout();
-    let changes = ecarts(&avant, &instantane(&maison));
+    let changes = hors_carnet(ecarts(&avant, &instantane(&maison)));
     assert!(
         changes.is_empty(),
         "les aperçus ont écrit, fichiers abîmés : {changes:?}"
@@ -1090,6 +1117,423 @@ fn l_apercu_dans_une_sortie_coupee_rend_141() {
         changes.extend(ecarts(&avant.1, &instantane(&dehors)));
         assert!(changes.is_empty(), "pleine {pleine} : {changes:?}");
     }
+}
+
+/// Une maison jetable où le bilan offre des corrections du compte qui s'appliquent d'ici (sous-lot B) : dossier
+/// personnel 0700, ~/.netrc et une clé de ~/.ssh lisibles de tous, contenus inventés.
+#[cfg(unix)]
+struct Compte {
+    maison: essais::Jetable,
+}
+
+#[cfg(unix)]
+impl Compte {
+    fn nouveau() -> Compte {
+        use std::os::unix::fs::PermissionsExt;
+        let maison = maison_jetable();
+        let ssh = maison.join(".ssh");
+        std::fs::create_dir_all(&ssh).unwrap();
+        std::fs::write(ssh.join("id_essai"), "clé inventée\n").unwrap();
+        std::fs::write(maison.join(".netrc"), "machine exemple.invalid login alice\n").unwrap();
+        let c = Compte { maison };
+        for (chemin, mode) in [
+            ("", 0o700),
+            (".ssh", 0o700),
+            (".ssh/id_essai", 0o644),
+            (".netrc", 0o644),
+        ] {
+            std::fs::set_permissions(c.chemin(chemin), std::fs::Permissions::from_mode(mode)).unwrap();
+        }
+        c
+    }
+
+    fn chemin(&self, relatif: &str) -> PathBuf {
+        if relatif.is_empty() {
+            self.maison.to_path_buf()
+        } else {
+            self.maison.join(relatif)
+        }
+    }
+
+    /// Le dossier de données de Vanguard dans cette maison.
+    fn donnees(&self) -> PathBuf {
+        self.maison.join("donnees").join("vanguard")
+    }
+
+    /// Lance `vanguard <args>` ici : la sortie, et sa dernière ligne lue comme JSON (nulle sinon).
+    fn lancer(&self, args: &[&str]) -> (Sortie, serde_json::Value) {
+        let s = vanguard_dans(
+            Path::new(env!("CARGO_BIN_EXE_vanguard")),
+            &self.maison,
+            "fr",
+            args,
+            "",
+            300,
+        );
+        let v = serde_json::from_str(s.texte.lines().last().unwrap_or_default()).unwrap_or_default();
+        (s, v)
+    }
+
+    /// Le jeton du bilan dont l'aperçu, du compte, se termine par `cible` (« ~/.netrc »), apostrophes ôtées.
+    fn jeton(&self, cible: &str) -> String {
+        let (s, _) = self.lancer(&["audit", "--json"]);
+        assert!(matches!(s.code, Some(0 | 1)), "{}", s.erreurs);
+        let v: serde_json::Value = serde_json::from_str(&s.texte).expect("audit --json : JSON illisible");
+        let jetons: Vec<String> = v["constats"]
+            .as_array()
+            .expect("pas de constats")
+            .iter()
+            .filter_map(|c| c["geste"]["jeton"].as_str().map(str::to_string))
+            .collect();
+        for j in &jetons {
+            let (_, r) = self.lancer(&["correction", "--voir", j, "--json"]);
+            let vise = r["apercu"]["commandes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|c| c.as_str())
+                .any(|c| c.starts_with("chmod ") && c.replace('\'', "").ends_with(cible));
+            if vise && r["apercu"]["droits"] == "compte" {
+                return j.clone();
+            }
+        }
+        panic!("aucune correction du compte pour {cible} parmi {jetons:?}");
+    }
+
+    /// L'aperçu de `jeton` (noté au carnet) : son accord.
+    fn voir(&self, jeton: &str) -> String {
+        let (s, r) = self.lancer(&["correction", "--voir", jeton, "--json"]);
+        assert!(
+            s.code == Some(0) && r["issue"] == "fait",
+            "--voir : {:?} {} {}",
+            s.code,
+            s.texte,
+            s.erreurs
+        );
+        r["accord"].as_str().expect("pas d'accord").to_string()
+    }
+
+    /// `correction --appliquer` : le code et la dernière ligne, qui doit être celle du geste.
+    fn appliquer(&self, jeton: &str, accord: &str) -> (Option<i32>, serde_json::Value) {
+        let (s, r) = self.lancer(&["correction", "--appliquer", jeton, "--accord", accord, "--json"]);
+        assert!(
+            r["geste"] == "appliquer-correction",
+            "--appliquer : {:?} {} {}",
+            s.code,
+            s.texte,
+            s.erreurs
+        );
+        assert!(!s.erreurs.contains("panicked"), "{}", s.erreurs);
+        (s.code, r)
+    }
+
+    /// Les droits de `relatif`, sans suivre de lien.
+    fn mode(&self, relatif: &str) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::symlink_metadata(self.chemin(relatif))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777
+    }
+
+    fn poser(&self, relatif: &str, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(self.chemin(relatif), std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    /// Le nombre de changements notés (`changements --json`).
+    fn changements(&self) -> u64 {
+        let (s, _) = self.lancer(&["changements", "--json"]);
+        assert_eq!(s.code, Some(0), "{}", s.erreurs);
+        let v: serde_json::Value = serde_json::from_str(&s.texte).expect("changements --json : JSON illisible");
+        v["total"].as_u64().expect("pas de total")
+    }
+}
+
+/// Le délai de lecture du carnet (2 s), dépassé de peu.
+#[cfg(unix)]
+fn laisser_lire() {
+    std::thread::sleep(Duration::from_millis(2_200));
+}
+
+/// Un refus du geste : code 1, rien de fait, la raison contient `attendu`.
+#[cfg(unix)]
+fn refuse(issue: &(Option<i32>, serde_json::Value), attendu: &str) {
+    let (code, r) = issue;
+    let raison = r["raison"].as_str().unwrap_or_default();
+    assert!(
+        *code == Some(1) && r["issue"] == "refuse" && raison.contains(attendu),
+        "attendu un refus « {attendu} » : {code:?} {r}"
+    );
+    assert!(r.get("annulation").is_none(), "{r}");
+}
+
+/// Sous-lot B : `correction --appliquer` ne passe qu'après un aperçu noté au carnet, 2 s au moins, avec l'accord de
+/// l'état montré ; il pose les droits montrés, seulement eux, une seule fois ; le jeton consommé ne sert plus, même si
+/// l'état montré revient.
+#[cfg(unix)]
+#[test]
+fn appliquer_une_correction_du_compte_une_seule_fois() {
+    let c = Compte::nouveau();
+    let j = c.jeton("~/.netrc");
+    let accord = c.voir(&j);
+    // Le carnet absent (dossier de données effacé : ni carnet ni sceaux) : rien.
+    std::fs::remove_dir_all(c.donnees()).unwrap();
+    laisser_lire();
+    refuse(&c.appliquer(&j, &accord), "aucun aperçu");
+    assert_eq!(c.mode(".netrc"), 0o644);
+    // Le même état donne le même accord ; accepté tout de suite : trop jeune, rien.
+    assert_eq!(c.voir(&j), accord);
+    refuse(&c.appliquer(&j, &accord), "moins de 2 secondes");
+    assert_eq!(c.mode(".netrc"), 0o644);
+    laisser_lire();
+    // Un autre accord, bien formé : rien, et l'entrée du carnet reste.
+    refuse(&c.appliquer(&j, &"0".repeat(64)), "changé depuis l'aperçu");
+    // Mal formés : code 2, avant toute lecture.
+    let (code, r) = c.appliquer(&j, "ABC");
+    assert_eq!(code, Some(2), "{r}");
+    let (code, r) = c.appliquer("pas-un-jeton", &accord);
+    assert_eq!(code, Some(2), "{r}");
+    assert_eq!(c.mode(".netrc"), 0o644);
+    // Accepté : fait, relu, annulable ; les autres corrections ne bougent pas.
+    let (code, r) = c.appliquer(&j, &accord);
+    assert!(
+        code == Some(0) && r["issue"] == "fait" && r["relu"] == "corrige",
+        "{code:?} {r}"
+    );
+    let annulation = r["annulation"].as_str().unwrap_or_default();
+    assert!(
+        annulation.len() == 32 && annulation.bytes().all(|b| b.is_ascii_hexdigit()),
+        "{r}"
+    );
+    assert_eq!(c.mode(".netrc"), 0o600);
+    assert_eq!(c.mode(".ssh/id_essai"), 0o644);
+    assert_eq!(c.mode(".ssh"), 0o700);
+    assert_eq!(c.changements(), 1);
+    // Rejouée : le problème a disparu.
+    refuse(&c.appliquer(&j, &accord), "disparu");
+    // L'état montré revenu à la main : même accord, mais l'entrée a été consommée.
+    c.poser(".netrc", 0o644);
+    refuse(&c.appliquer(&j, &accord), "aucun aperçu");
+    assert_eq!(c.mode(".netrc"), 0o644);
+    assert_eq!(c.changements(), 1);
+}
+
+/// Sous-lot B : un état changé entre l'aperçu et l'accord est refusé, rien changé : d'autres droits, puis un lien
+/// posé à la place de ~/.ssh, puis à la place de la clé ; la cible des liens garde ses droits.
+#[cfg(unix)]
+#[test]
+fn appliquer_refuse_un_etat_change_depuis_l_apercu() {
+    use std::os::unix::fs::symlink;
+    let c = Compte::nouveau();
+    let ailleurs = maison_jetable();
+    let j = c.jeton("~/.ssh/id_essai");
+    let accord = c.voir(&j);
+    laisser_lire();
+    // D'autres droits que ceux montrés.
+    c.poser(".ssh/id_essai", 0o640);
+    refuse(&c.appliquer(&j, &accord), "changé depuis l'aperçu");
+    assert_eq!(c.mode(".ssh/id_essai"), 0o640);
+    c.poser(".ssh/id_essai", 0o644);
+    // ~/.ssh devenu un lien vers un dossier pareil.
+    let accord = c.voir(&j);
+    laisser_lire();
+    let ssh_ailleurs = ailleurs.join("ssh");
+    std::fs::rename(c.chemin(".ssh"), &ssh_ailleurs).unwrap();
+    symlink(&ssh_ailleurs, c.chemin(".ssh")).unwrap();
+    let issue = c.appliquer(&j, &accord);
+    assert!(
+        issue.0 == Some(1) && issue.1["issue"] == "refuse",
+        "lien ~/.ssh : {issue:?}"
+    );
+    let mode_ailleurs = |p: &Path| {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::symlink_metadata(p).unwrap().permissions().mode() & 0o7777
+    };
+    assert_eq!(mode_ailleurs(&ssh_ailleurs.join("id_essai")), 0o644);
+    std::fs::remove_file(c.chemin(".ssh")).unwrap();
+    std::fs::rename(&ssh_ailleurs, c.chemin(".ssh")).unwrap();
+    // La clé devenue un lien vers une copie.
+    let accord = c.voir(&j);
+    laisser_lire();
+    let copie = ailleurs.join("id_copie");
+    std::fs::rename(c.chemin(".ssh/id_essai"), &copie).unwrap();
+    symlink(&copie, c.chemin(".ssh/id_essai")).unwrap();
+    let issue = c.appliquer(&j, &accord);
+    assert!(
+        issue.0 == Some(1) && issue.1["issue"] == "refuse",
+        "lien de la clé : {issue:?}"
+    );
+    assert_eq!(mode_ailleurs(&copie), 0o644);
+    assert_eq!(c.changements(), 0);
+}
+
+/// Sous-lot B : quatre demandes en même temps pour le même aperçu : une seule passe, les autres sont refusées.
+#[cfg(unix)]
+#[test]
+fn deux_demandes_en_meme_temps_une_seule_passe() {
+    let c = Compte::nouveau();
+    let j = c.jeton("~/.netrc");
+    let accord = c.voir(&j);
+    laisser_lire();
+    let issues: Vec<(Option<i32>, serde_json::Value)> = std::thread::scope(|s| {
+        let fils: Vec<_> = (0..4).map(|_| s.spawn(|| c.appliquer(&j, &accord))).collect();
+        fils.into_iter().map(|f| f.join().unwrap()).collect()
+    });
+    let faites = issues.iter().filter(|(_, r)| r["issue"] == "fait").count();
+    assert_eq!(faites, 1, "{issues:?}");
+    assert!(
+        issues
+            .iter()
+            .all(|(code, r)| r["issue"] == "fait" || (*code == Some(1) && r["issue"] == "refuse")),
+        "{issues:?}"
+    );
+    assert_eq!(c.mode(".netrc"), 0o600);
+    assert_eq!(c.changements(), 1);
+}
+
+/// Un verrou `flock` exclusif tenu sur `chemin` par un autre processus, rendu à sa chute.
+#[cfg(unix)]
+struct Tenu(std::process::Child);
+
+#[cfg(unix)]
+impl Tenu {
+    fn prendre(chemin: &Path) -> Option<Tenu> {
+        // -o : `sleep` n'hérite pas du verrou, qui part avec `flock` tué.
+        let enfant = Command::new("flock")
+            .args(["-o", "-x"])
+            .arg(chemin)
+            .args(["sleep", "120"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        let tenu = Tenu(enfant);
+        // Attendre qu'il le tienne : un essai sans attente échoue alors.
+        for _ in 0..200 {
+            let libre = Command::new("flock")
+                .args(["-n", "-x"])
+                .arg(chemin)
+                .arg("true")
+                .status()
+                .is_ok_and(|s| s.success());
+            if !libre {
+                return Some(tenu);
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        None
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Tenu {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Sous-lot B : le verrou des notes ou celui du carnet tenus par un autre : refus sans attendre, rien changé, et
+/// l'entrée du carnet reste (la même demande passe une fois le verrou rendu).
+#[cfg(unix)]
+#[test]
+fn verrou_tenu_rien_ne_change() {
+    if Command::new("flock").arg("--version").output().is_err() {
+        return essais::saute("flock (util-linux) absent");
+    }
+    let c = Compte::nouveau();
+    let j = c.jeton("~/.netrc");
+    let accord = c.voir(&j);
+    laisser_lire();
+    {
+        let _notes = Tenu::prendre(&c.donnees().join("reglages.lock")).expect("verrou des notes non pris");
+        let debut = Instant::now();
+        refuse(&c.appliquer(&j, &accord), "un autre Vanguard");
+        assert!(debut.elapsed() < Duration::from_secs(60), "il a attendu le verrou");
+        assert_eq!(c.mode(".netrc"), 0o644);
+    }
+    {
+        let _carnet = Tenu::prendre(&c.donnees().join("apercus.lock")).expect("verrou du carnet non pris");
+        refuse(&c.appliquer(&j, &accord), "carnet des aperçus n'a pas pu");
+        assert_eq!(c.mode(".netrc"), 0o644);
+    }
+    let (code, r) = c.appliquer(&j, &accord);
+    assert!(code == Some(0) && r["issue"] == "fait", "{code:?} {r}");
+    assert_eq!(c.mode(".netrc"), 0o600);
+}
+
+/// Sous-lot B : un carnet réécrit hors de Vanguard (une entrée vieillie pour passer tout de suite) ne permet rien ;
+/// la valeur d'avant qui ne s'enregistre pas (notes remplacées par un dossier) : rien n'est appliqué.
+#[cfg(unix)]
+#[test]
+fn carnet_falsifie_ou_note_impossible_rien_n_est_applique() {
+    let c = Compte::nouveau();
+    let j = c.jeton("~/.netrc");
+    let accord = c.voir(&j);
+    let carnet = c.donnees().join("apercus.json");
+    let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&carnet).unwrap()).unwrap();
+    for e in v["entrees"].as_array_mut().unwrap() {
+        let h = e["heure_ms"].as_i64().unwrap();
+        e["heure_ms"] = serde_json::Value::from(h - 5_000);
+    }
+    std::fs::write(&carnet, v.to_string()).unwrap();
+    refuse(&c.appliquer(&j, &accord), "changé hors de Vanguard");
+    laisser_lire();
+    refuse(&c.appliquer(&j, &accord), "changé hors de Vanguard");
+    assert_eq!(c.mode(".netrc"), 0o644);
+    // Un nouvel aperçu repart d'un carnet neuf ; les notes ne s'écrivent plus.
+    let accord = c.voir(&j);
+    let notes = c.donnees().join("reglages.json");
+    let _ = std::fs::remove_file(&notes);
+    std::fs::create_dir_all(notes.join("bouchon")).unwrap();
+    laisser_lire();
+    refuse(&c.appliquer(&j, &accord), "valeurs d'avant non enregistrées");
+    assert_eq!(c.mode(".netrc"), 0o644);
+}
+
+/// Sous-lot B : `vanguard` tué au milieu de l'application, à divers moments : les droits sont ceux d'avant ou ceux
+/// montrés, jamais d'autres ; aucun verrou ne reste pris, et le geste suivant passe.
+#[cfg(unix)]
+#[test]
+fn tuer_vanguard_au_milieu_laisse_un_etat_coherent() {
+    let c = Compte::nouveau();
+    let j = c.jeton("~/.netrc");
+    let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
+    for delai in [0u64, 30, 80, 150, 300, 600] {
+        c.poser(".netrc", 0o644);
+        let accord = c.voir(&j);
+        laisser_lire();
+        let mut commande = Command::new(programme);
+        commande
+            .args(["correction", "--appliquer", &j, "--accord", &accord, "--json"])
+            .env("VANGUARD_LANG", "fr")
+            .env("USER", "essai")
+            .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
+            .env("XDG_RUNTIME_DIR", c.maison.join("run"))
+            .env("HOME", &*c.maison)
+            .env("XDG_DATA_HOME", c.maison.join("donnees"))
+            .env("XDG_CONFIG_HOME", c.maison.join("config"))
+            .env("XDG_CACHE_HOME", c.maison.join("cache"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut enfant = commande.spawn().unwrap();
+        std::thread::sleep(Duration::from_millis(delai));
+        let _ = enfant.kill();
+        let _ = enfant.wait();
+        let m = c.mode(".netrc");
+        assert!(m == 0o644 || m == 0o600, "tué après {delai} ms : {m:o}");
+    }
+    c.poser(".netrc", 0o644);
+    let accord = c.voir(&j);
+    laisser_lire();
+    let (code, r) = c.appliquer(&j, &accord);
+    assert!(code == Some(0) && r["issue"] == "fait", "{code:?} {r}");
+    assert_eq!(c.mode(".netrc"), 0o600);
+    assert!(c.changements() >= 1);
 }
 
 /// Vérification de Fable, V1 : une clé, ~/.ssh ou un fichier secret qui sont des liens symboliques ne donnent ni
