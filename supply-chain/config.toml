@@ -945,8 +945,9 @@ version = "4.1.0"
 criteria = "safe-to-run"
 
 [[exemptions.rustix]]
-version = "1.1.5"
+version = "1.1.6"
 criteria = "safe-to-deploy"
+notes = "Correctif de RUSTSEC-2026-0486 (xattr, octets non écrits marqués initialisés), amené par crossterm ; même caisse que l'exemption 1.1.5, que celle-ci remplace : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports)."
 
 [[exemptions.rustls]]
 version = "0.23.46"
