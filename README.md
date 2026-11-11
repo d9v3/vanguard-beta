@@ -908,7 +908,7 @@ Chaque entrée du menu existe aussi en commande.
 | `vanguard logiciels [--liste] [--recommandes]` | logiciels à installer par catégorie ; `--liste` : leur état, sans rien installer |
 | `vanguard nettoyer [--liste]` | nettoyer le système ; `--liste` : la place à gagner, sans rien effacer |
 | `vanguard lenteur [--json]` | pourquoi c'est lent : processeur, mémoire, disque, démarrage, programmes à l'ouverture |
-| `vanguard demarrage [--json] [--retirer EMPREINTE] [--remettre EMPREINTE]` | programmes au démarrage : les retirer ou les remettre, après accord ; chaque retrait s'annule. `--json` donne la liste jugée et l'empreinte de chaque entrée, sans rien retirer ; `--retirer` retire la seule entrée de cette empreinte (taper la commande vaut accord ; jamais un programme à garder ni un pare-feu), `--remettre` la remet exactement comme avant |
+| `vanguard demarrage [--json] [--retirer\|--remettre EMPREINTE [--accord ACCORD]]` | programmes au démarrage : les retirer ou les remettre, après accord ; chaque retrait s'annule. `--json` donne la liste jugée et l'empreinte de chaque entrée, sans rien retirer ; `--retirer` retire la seule entrée de cette empreinte (taper la commande vaut accord ; jamais un programme à garder ni un pare-feu), `--remettre` la remet exactement comme avant ; `--accord` (celui du geste de `--json`) refuse un programme qui a changé depuis la liste |
 | `vanguard optimiser [recommandes\|confidentialite\|performance\|confort\|annuler]` | les réglages d'Optimiser, chacun montré, accepté et annulable exactement ; `annuler` remet tout comme avant (corrections du bilan, Optimiser, Gaming, blocages, mode Wi-Fi public) ; sans argument, le menu Optimiser |
 | `vanguard jeux` | paquets et réglages pour jouer (Windows et Linux) |
 | `vanguard dns-rapide` | DNS le plus rapide, mesuré ici et annulable ; un DNS qui protège est gardé |
@@ -931,6 +931,10 @@ Chaque entrée du menu existe aussi en commande.
 | `vanguard plugins [ajouter <dossier\|archive.zip>\|approuver <nom>\|liste\|retirer <nom>\|<nom> [--rapport] [--isole]]` | plugins : ajouté après analyse (YARA, MalwareBazaar) et approuvé par ses empreintes SHA-256, lancé, réapprouvé après un changement, retiré ; hors de la note |
 | `vanguard labo [ouvrir\|liste\|<fichier> [--isole] [arguments]]` | laboratoire : un script posé tel quel, montré et approuvé par son empreinte au premier lancement ; hors de la note |
 | `vanguard agent [--json]` | l'Agent Vanguard (sans IA), en lecture seule : ses missions, leur dernier tour et son journal ; `--json` pour un script, sans aucune donnée personnelle ; ses interrupteurs sont dans Paramètres |
+
+Pour la fenêtre, cachées de l'aide en ligne ([modèle de menace](MODELE-DE-MENACE.md)) :
+- `vanguard correction --voir <jeton> [--json]`, `--appliquer <jeton> --accord <accord>` : montrer une correction du bilan (jeton de `audit --json`) et son accord ; puis appliquer, une à la fois, seulement une correction du compte qui s'annule (droits de fichiers du dossier personnel), avec l'accord de l'aperçu, de 2 s à 10 min après lui ; tout est relu et rejugé au moment d'agir
+- `vanguard changements --voir <jeton>`, `--annuler <jeton> --accord <accord>` : montrer comment une correction du compte serait remise comme avant (jeton de `changements --json`), puis la remettre exactement, une seule fois
 
 </details>
 

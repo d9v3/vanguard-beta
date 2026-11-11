@@ -861,7 +861,7 @@ Each menu entry is also a command.
 | `vanguard software [--list] [--recommended]` | software to install by category; `--list`: their state, installing nothing |
 | `vanguard clean [--list]` | clean up the system; `--list`: the space to gain, deleting nothing |
 | `vanguard slow [--json]` | why it is slow: processor, memory, disk, startup, programs at login |
-| `vanguard startup [--json] [--remove FINGERPRINT] [--put-back FINGERPRINT]` | startup programs: remove or put them back, after your consent; each removal can be reverted exactly. `--json` gives the judged list and each entry's fingerprint, removing nothing; `--remove` removes the only entry with that fingerprint (typing the command is the consent; never a program to keep nor a firewall), `--put-back` puts it back exactly as before |
+| `vanguard startup [--json] [--remove\|--put-back FINGERPRINT [--agreement CONSENT]]` | startup programs: remove or put them back, after your consent; each removal can be reverted exactly. `--json` gives the judged list and each entry's fingerprint, removing nothing; `--remove` removes the only entry with that fingerprint (typing the command is the consent; never a program to keep nor a firewall), `--put-back` puts it back exactly as before; `--agreement` (the one of the `--json` action) refuses a program that changed since the list |
 | `vanguard optimize [recommended\|privacy\|performance\|comfort\|undo]` | the Optimize settings, each shown, accepted and exactly undoable; `undo` puts everything back as it was (check-up fixes, Optimize, Gaming, blocks, public Wi-Fi mode); no argument: the Optimize menu |
 | `vanguard jeux` | packages and settings for gaming (Windows and Linux) |
 | `vanguard fast-dns` | fastest DNS, measured here and undoable; a DNS that protects you is kept |
@@ -884,6 +884,10 @@ Each menu entry is also a command.
 | `vanguard plugins [add <folder\|archive.zip>\|approve <name>\|list\|remove <name>\|<name> [--report] [--isolated]]` | plugins: added after a scan (YARA, MalwareBazaar) and approved by their SHA-256 fingerprints, run, approved again after a change, removed; outside the grade |
 | `vanguard lab [open\|list\|<file> [--isolated] [arguments]]` | lab: a script dropped as it is, shown and approved by its fingerprint at its first run; outside the grade |
 | `vanguard agent [--json]` | the Vanguard Agent (no AI), read-only: its missions, their last run and its journal; `--json` for a script, without any personal data; its switches are in Settings |
+
+For the window, hidden from the online help ([threat model](MODELE-DE-MENACE.en.md)):
+- `vanguard correction --show <token> [--json]`, `--apply <token> --agreement <consent>`: show an audit fix (token from `audit --json`) and its consent; then apply, one at a time, only an account fix that undoes (permissions of home folder files), with the preview's consent, 2 s to 10 min after it; everything is read and judged again when acting
+- `vanguard changes --show <token>`, `--undo <token> --agreement <consent>`: show how an account fix would be put back as before (token from `changes --json`), then put it back exactly, only once
 
 </details>
 
