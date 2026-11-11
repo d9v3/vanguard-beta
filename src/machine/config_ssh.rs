@@ -20,12 +20,27 @@ pub(crate) enum Ligne<'a> {
     NonInterpretee,
     /// « Include » et ses arguments tels qu'écrits (le dépliage les résout, `machine::motif_interprete`).
     Include(&'a str),
-    /// « Host » ou « Match » : `true` si la suite vaut pour tous les serveurs (dans le doute aussi).
-    Portee(bool),
+    /// « Host » ou « Match » : pour qui vaut la suite.
+    Portee(Etendue),
     /// Un réglage que Vanguard juge, à une seule valeur, sans ses guillemets.
     Valeur(Cle, &'a str),
     /// Un autre mot-clé : Vanguard ne le juge pas et ne lit pas ses arguments.
     Autre,
+}
+
+/// Pour qui vaut la suite d'un « Host » ou d'un « Match ». Trois états, pas deux : « dans le doute, global » est
+/// prudent pour qui alerte sur toute ligne globale, mais faux pour qui garde la première valeur globale et s'arrête
+/// (une bonne valeur sous un en-tête que SSH n'applique pas cachait la mauvaise, vraiment globale, qui suivait).
+/// L'ordre compte : la portée d'en-têtes cumulés (Include, critères d'un Match) est la plus petite.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Etendue {
+    /// Pour aucun serveur, ou pour des serveurs nommés.
+    Precise,
+    /// Peut-être pour tous les serveurs, pas à coup sûr : SSH peut ne pas l'appliquer (« Match final », « user »,
+    /// « exec »…, joker avec exclusion, « *.* », ligne non interprétée qui pourrait être un en-tête).
+    PeutEtre,
+    /// Pour tous les serveurs, à coup sûr : début d'un fichier de tête, « Host * » sans exclusion, « Match all ».
+    Globale,
 }
 
 /// Les réglages à une valeur que Vanguard juge.
@@ -85,12 +100,11 @@ pub(crate) fn lire_ligne(ligne: &str) -> Ligne<'_> {
     };
     match cle.to_ascii_lowercase().as_str() {
         "include" => Ligne::Include(arguments),
-        "host" => match mots(arguments) {
-            Some(m) if !m.is_empty() => Ligne::Portee(m.iter().any(|p| universel(p))),
-            _ => Ligne::NonInterpretee,
-        },
-        "match" => mots(arguments)
-            .and_then(|m| match_globale(&m))
+        "host" => en_tete(arguments)
+            .map(|m| etendue_host(&m))
+            .map_or(Ligne::NonInterpretee, Ligne::Portee),
+        "match" => en_tete(arguments)
+            .and_then(|m| etendue_match(&m))
             .map_or(Ligne::NonInterpretee, Ligne::Portee),
         "forwardagent" => valeur(Cle::ForwardAgent),
         "stricthostkeychecking" => valeur(Cle::StrictHostKeyChecking),
@@ -127,46 +141,121 @@ fn mots(texte: &str) -> Option<Vec<&str>> {
     }
 }
 
-/// Un motif d'hôte qui couvre des serveurs qu'il ne nomme pas : sans « ! », avec un « * », sans lettre ni chiffre
-/// (« * », « ** », « ?* », « *.* »). « *.exemple.org » nomme un domaine : précis.
-fn universel(motif: &str) -> bool {
-    !motif.starts_with('!') && motif.contains('*') && !motif.chars().any(char::is_alphanumeric)
-}
-
-/// La suite d'un « Match » vaut-elle pour tous les serveurs ? Les critères se cumulent (ET). Un critère qui restreint
-/// l'hôte (« host » ou « originalhost » sans motif universel, ou « !host » avec) rend la suite précise, « !all »
-/// jamais vraie ; les autres (« all », « canonical », « final », et ceux qui ne regardent pas l'hôte : user, exec…)
-/// ne restreignent pas l'hôte, et dans le doute la suite est globale. Critère inconnu, argument manquant, « all »
-/// suivi d'autre chose : `None` (non interprété).
-fn match_globale(mots: &[&str]) -> Option<bool> {
-    if mots.is_empty() {
+/// Les arguments d'un « Host » ou d'un « Match », découpés comme `argv_split` (misc.c) les découpe : guillemets et
+/// apostrophes retirés, échappements `\'`, `\"`, `\\` et (hors guillemets) `\ ` lus, « # » en tête de mot qui
+/// ouvre un commentaire. Un guillemet resté ouvert, un mot vide (SSH refuse alors le fichier), aucun mot, ou un
+/// caractère de contrôle autre que la tabulation (forme que Vanguard ne sait pas montrer telle quelle) : `None`.
+fn en_tete(texte: &str) -> Option<Vec<String>> {
+    if texte.chars().any(|c| c.is_control() && c != '\t') {
         return None;
     }
-    let mut globale = true;
+    let mut mots = Vec::new();
+    let mut c = texte.chars().peekable();
+    while let Some(&x) = c.peek() {
+        if x == ' ' || x == '\t' {
+            c.next();
+            continue;
+        }
+        if x == '#' {
+            break;
+        }
+        let mut guillemet = None;
+        let mut mot = String::new();
+        while let Some(x) = c.next() {
+            match (x, guillemet) {
+                ('\\', _) => match c.peek() {
+                    Some(&n) if matches!(n, '\'' | '"' | '\\') || (n == ' ' && guillemet.is_none()) => {
+                        mot.push(n);
+                        c.next();
+                    }
+                    _ => mot.push('\\'),
+                },
+                (' ' | '\t', None) => break,
+                ('"' | '\'', None) => guillemet = Some(x),
+                (_, Some(g)) if x == g => guillemet = None,
+                _ => mot.push(x),
+            }
+        }
+        if guillemet.is_some() || mot.is_empty() {
+            return None;
+        }
+        mots.push(mot);
+    }
+    (!mots.is_empty()).then_some(mots)
+}
+
+/// Un motif d'hôte qui PEUT couvrir des serveurs qu'il ne nomme pas : un « * » et ni lettre ni chiffre (« * », « ** »,
+/// « ?* », « *.* », « *_* »). Borne haute, voulue large : « *.exemple.org » nomme un domaine, il est précis. Jamais
+/// sous une négation, où exagérer « couvre tout » voudrait dire « ne s'applique jamais » (`couvre_tout`).
+fn peut_couvrir_tout(motif: &str) -> bool {
+    motif.contains('*') && !motif.chars().any(char::is_alphanumeric)
+}
+
+/// Un motif d'hôte qui couvre tout nom à coup sûr : des « * » et au plus un « ? » (« ?? » refuse un nom d'un
+/// caractère). Borne basse, seule permise sous une négation.
+fn couvre_tout(motif: &str) -> bool {
+    motif.contains('*') && motif.chars().all(|c| c == '*' || c == '?') && motif.matches('?').count() <= 1
+}
+
+/// La portée d'un « Host » : SSH l'applique si un motif couvre l'hôte et qu'aucun motif nié (« !x ») ne le couvre.
+fn etendue_host(motifs: &[String]) -> Etendue {
+    let (nies, positifs): (Vec<&str>, Vec<&str>) = motifs.iter().map(String::as_str).partition(|m| m.starts_with('!'));
+    let nies: Vec<&str> = nies.iter().map(|m| m.get(1..).unwrap_or_default()).collect();
+    if nies.iter().any(|m| couvre_tout(m)) {
+        // Nié pour tout hôte : jamais appliqué.
+        Etendue::Precise
+    } else if nies.is_empty() && positifs.iter().any(|m| couvre_tout(m)) {
+        Etendue::Globale
+    } else if positifs.iter().any(|m| peut_couvrir_tout(m)) {
+        Etendue::PeutEtre
+    } else {
+        Etendue::Precise
+    }
+}
+
+/// La portée du critère « host » ou « originalhost » d'un « Match », sa liste séparée par des virgules
+/// (`match_pattern_list` : vrai si un motif couvre l'hôte et qu'aucun motif nié ne le couvre), « !host » s'il est nié.
+fn etendue_liste(liste: &str, nie: bool) -> Etendue {
+    let (nies, positifs): (Vec<&str>, Vec<&str>) = liste.split(',').partition(|m| m.starts_with('!'));
+    let nies: Vec<&str> = nies.iter().map(|m| m.get(1..).unwrap_or_default()).collect();
+    let toujours = nies.is_empty() && positifs.iter().any(|m| couvre_tout(m));
+    let jamais = nies.iter().any(|m| couvre_tout(m)) || !positifs.iter().any(|m| peut_couvrir_tout(m));
+    match (nie, toujours, jamais) {
+        (false, true, _) => Etendue::Globale,
+        (false, false, true) | (true, true, _) => Etendue::Precise,
+        // « !host » vaut pour tout hôte que la liste ne couvre pas : peut-être tous, même si la liste nomme un
+        // hôte (seule une liste qui couvre tout à coup sûr rend la négation précise).
+        _ => Etendue::PeutEtre,
+    }
+}
+
+/// La portée d'un « Match » : les critères se cumulent (ET), la plus petite l'emporte. « all » seul : globale ; « !all »
+/// jamais vrai ; « host » et « originalhost » selon leur liste (`etendue_liste`) ; « canonical », « final » et les
+/// critères qui ne regardent pas l'hôte (user, exec…) : peut-être, puisque SSH peut ne pas l'appliquer. Critère
+/// inconnu, argument manquant, « all » suivi d'autre chose : `None` (non interprété).
+fn etendue_match(mots: &[String]) -> Option<Etendue> {
+    let mut etendue = Etendue::Globale;
     let mut i = mots.iter();
     while let Some(mot) = i.next() {
-        let (nie, critere) = mot.strip_prefix('!').map_or((false, *mot), |c| (true, c));
-        match critere.to_ascii_lowercase().as_str() {
+        let (nie, critere) = mot.strip_prefix('!').map_or((false, mot.as_str()), |c| (true, c));
+        let e = match critere.to_ascii_lowercase().as_str() {
             "all" => {
                 if i.next().is_some() {
                     return None;
                 }
-                globale &= !nie;
+                if nie { Etendue::Precise } else { Etendue::Globale }
             }
-            "canonical" | "final" => {}
-            "host" | "originalhost" => {
-                let tout = i.next()?.split(',').any(universel);
-                if nie == tout {
-                    globale = false;
-                }
-            }
+            "canonical" | "final" => Etendue::PeutEtre,
+            "host" | "originalhost" => etendue_liste(i.next()?, nie),
             "user" | "localuser" | "exec" | "localnetwork" | "tagged" | "command" | "version" | "sessiontype" => {
                 i.next()?;
+                Etendue::PeutEtre
             }
             _ => return None,
-        }
+        };
+        etendue = etendue.min(e);
     }
-    Some(globale)
+    Some(etendue)
 }
 
 /// « ForwardAgent » : tout autre chose que « no » ou « false » prête l'agent (« yes », « true », un chemin de prise,
@@ -202,41 +291,42 @@ pub(crate) enum Lue {
     Sortie,
 }
 
-/// La portée en cours d'une configuration lue dans l'ordre : les lignes valent-elles pour tous les serveurs ?
+/// La portée en cours d'une configuration lue dans l'ordre : pour qui valent les lignes ?
 pub(crate) struct Portee {
-    globale: bool,
-    /// Faux dans un fichier inclus sous un « Host » ou un « Match » précis : rien n'y est global (SSH le lit en
-    /// « jamais vrai »).
-    plafond: bool,
-    pile: Vec<(bool, bool)>,
+    etendue: Etendue,
+    /// Dans un fichier inclus, la portée de l'« Include » : rien n'y vaut pour plus de serveurs (SSH lit un fichier
+    /// inclus sous un « Host » précis en « jamais vrai »).
+    plafond: Etendue,
+    pile: Vec<(Etendue, Etendue)>,
 }
 
 impl Portee {
     /// Au début d'un fichier de tête : tout vaut pour tous les serveurs.
     pub(crate) fn nouvelle() -> Self {
         Portee {
-            globale: true,
-            plafond: true,
+            etendue: Etendue::Globale,
+            plafond: Etendue::Globale,
             pile: Vec::new(),
         }
     }
 
-    pub(crate) fn globale(&self) -> bool {
-        self.globale
+    pub(crate) fn etendue(&self) -> Etendue {
+        self.etendue
     }
 
     /// Une ligne lue : rend ce qu'elle est, après avoir suivi la portée. Une ligne non interprétée qui pourrait être
-    /// un « Host » ou un « Match » rend la suite globale : dans le doute, un réglage relâché est signalé.
+    /// un « Host » ou un « Match » rend la suite « peut-être globale » : un réglage relâché y est signalé, et une
+    /// valeur qui s'y trouve ne passe jamais pour celle de tous les serveurs.
     pub(crate) fn lire<'a>(&mut self, lue: &'a Lue) -> Option<(&'a str, usize, Ligne<'a>)> {
         match lue {
             Lue::Entree => {
-                self.pile.push((self.globale, self.plafond));
-                self.plafond = self.globale;
+                self.pile.push((self.etendue, self.plafond));
+                self.plafond = self.etendue;
                 None
             }
             Lue::Sortie => {
-                if let Some((globale, plafond)) = self.pile.pop() {
-                    self.globale = globale;
+                if let Some((etendue, plafond)) = self.pile.pop() {
+                    self.etendue = etendue;
                     self.plafond = plafond;
                 }
                 None
@@ -244,8 +334,10 @@ impl Portee {
             Lue::Ligne(fichier, n, texte) => {
                 let l = lire_ligne(texte);
                 match l {
-                    Ligne::Portee(g) => self.globale = self.plafond && g,
-                    Ligne::NonInterpretee if peut_etre_portee(texte) => self.globale = self.plafond,
+                    Ligne::Portee(e) => self.etendue = self.plafond.min(e),
+                    Ligne::NonInterpretee if peut_etre_portee(texte) => {
+                        self.etendue = self.plafond.min(Etendue::PeutEtre);
+                    }
                     _ => {}
                 }
                 Some((fichier.as_str(), *n, l))
@@ -332,50 +424,123 @@ mod tests {
             ("ForwardAgent no\u{c}x", NonInterpretee),
             ("ForwardAgent yes no", NonInterpretee),
             ("ForwardAgent # rien", NonInterpretee),
-            ("Host '*'", NonInterpretee),
             ("Host # rien", NonInterpretee),
         ] {
             assert_eq!(lire_ligne(ligne), attendu, "{ligne:?}");
         }
     }
 
+    /// Trois états : globale à coup sûr, peut-être (SSH peut ne pas l'appliquer), précise. Vérification de Fable
+    /// n° 2 : P1 (en-têtes « dans le doute » qui ne sont plus « globale »), P2 (négation : seul un motif qui couvre tout
+    /// à coup sûr la rend précise), P6 (apostrophes et échappements lus comme `argv_split`).
     #[test]
     fn portees_comme_ssh() {
-        for (ligne, globale) in [
-            ("Host *", Some(true)),
-            ("Host \"*\"", Some(true)),
-            ("Host **", Some(true)),
-            ("Host ?*", Some(true)),
-            ("Host *.*", Some(true)),
-            ("Host * !labo", Some(true)),
-            ("Host labo *", Some(true)),
-            ("Host labo", Some(false)),
-            ("Host *.exemple.org", Some(false)),
-            ("Host !*", Some(false)),
-            ("Host ???", Some(false)),
-            ("Host *,labo", Some(false)),
-            ("Match all", Some(true)),
-            ("Match final all", Some(true)),
-            ("Match canonical all # x", Some(true)),
-            ("Match final", Some(true)),
-            ("Match host *", Some(true)),
-            ("MATCH Host labo,*", Some(true)),
-            ("Match !host labo", Some(true)),
-            ("Match exec \"test -f /x\"", Some(true)),
-            ("Match user alice", Some(true)),
-            ("Match host labo exec \"nc -z %h 22\"", Some(false)),
-            ("Match originalhost labo", Some(false)),
-            ("Match !host *", Some(false)),
-            ("Match !all", Some(false)),
-            ("Match host labo all", Some(false)),
+        use Etendue::{Globale as G, PeutEtre as P, Precise as X};
+        for (ligne, etendue) in [
+            ("Host *", Some(G)),
+            ("Host \"*\"", Some(G)),
+            ("Host '*'", Some(G)),
+            ("Host **", Some(G)),
+            ("Host ?*", Some(G)),
+            ("Host *?", Some(G)),
+            ("Host labo *", Some(G)),
+            ("Host 'labo 2' *", Some(G)),
+            ("Host \\\"labo\\\" *", Some(G)),
+            ("Host * # commentaire", Some(G)),
+            ("Host *.*", Some(P)),
+            ("Host ??*", Some(P)),
+            ("Host *_*", Some(P)),
+            ("Host * !labo", Some(P)),
+            ("Host * !*_*", Some(P)),
+            ("Host * !??*", Some(P)),
+            ("Host labo", Some(X)),
+            ("Host 'labo'", Some(X)),
+            ("Host labo#2", Some(X)),
+            ("Host *.exemple.org", Some(X)),
+            ("Host !*", Some(X)),
+            ("Host ???", Some(X)),
+            ("Host *,labo", Some(X)),
+            ("Host * !*", Some(X)),
+            ("Host * !?*", Some(X)),
+            ("Match all", Some(G)),
+            ("Match all # x", Some(G)),
+            ("Match host *", Some(G)),
+            ("Match originalhost ?*", Some(G)),
+            ("MATCH Host labo,*", Some(G)),
+            ("Match final all", Some(P)),
+            ("Match canonical all # x", Some(P)),
+            ("Match final", Some(P)),
+            ("Match canonical", Some(P)),
+            ("Match host *,!labo", Some(P)),
+            ("Match host *.*", Some(P)),
+            ("Match !host labo", Some(P)),
+            ("Match exec \"test -f /x\"", Some(P)),
+            ("Match exec 'test -f /x'", Some(P)),
+            ("Match exec \"test \\\"x\\\"\"", Some(P)),
+            ("Match exec test\\ -f\\ /x", Some(P)),
+            ("Match !exec true", Some(P)),
+            ("Match user alice", Some(P)),
+            ("Match localuser alice", Some(P)),
+            ("Match tagged essai", Some(P)),
+            ("Match localnetwork 192.0.2.0/24", Some(P)),
+            ("Match command uptime", Some(P)),
+            ("Match version OpenSSH_10*", Some(P)),
+            ("Match sessiontype shell", Some(P)),
+            ("Match host * user alice", Some(P)),
+            // P2 : sous une négation, un motif « presque universel » ne couvre pas tout hôte.
+            ("Match !host *_*", Some(P)),
+            ("Match !host *-*", Some(P)),
+            ("Match !host *.*", Some(P)),
+            ("Match !host *é*", Some(P)),
+            ("Match !host ??*", Some(P)),
+            ("Match !originalhost *_*", Some(P)),
+            ("Match !host labo,*_*", Some(P)),
+            ("Match !host *,!labo", Some(P)),
+            ("Match host labo exec \"nc -z %h 22\"", Some(X)),
+            ("Match originalhost labo", Some(X)),
+            ("Match host *é*", Some(X)),
+            ("Match host *,!*", Some(X)),
+            ("Match !host *", Some(X)),
+            ("Match !host ?*", Some(X)),
+            ("Match !originalhost labo,**", Some(X)),
+            ("Match !all", Some(X)),
+            ("Match host labo all", Some(X)),
             ("Match all host labo", None),
             ("Match host", None),
             ("Match host=*", None),
             ("Match inconnu x", None),
-            ("Match exec \"test \\\"x\\\"\"", None),
+            ("Match exec \"test", None),
+            ("Match exec ''", None),
+            ("Host ''", None),
+            ("Host a ''", None),
+            ("Host 'a", None),
+            ("Host *\u{b}x", None),
         ] {
-            let attendu = globale.map_or(Ligne::NonInterpretee, Ligne::Portee);
+            let attendu = etendue.map_or(Ligne::NonInterpretee, Ligne::Portee);
             assert_eq!(lire_ligne(ligne), attendu, "{ligne:?}");
+        }
+    }
+
+    /// Le découpage de `argv_split` (misc.c), mot pour mot.
+    #[test]
+    fn en_tete_decoupe_comme_argv_split() {
+        for (texte, attendu) in [
+            ("a b\tc", Some(vec!["a", "b", "c"])),
+            ("'a b' \"c d\"", Some(vec!["a b", "c d"])),
+            ("a'b c'd", Some(vec!["ab cd"])),
+            ("\"it's\"", Some(vec!["it's"])),
+            ("a\\ b", Some(vec!["a b"])),
+            ("\"a\\ b\"", Some(vec!["a\\ b"])),
+            ("\\'x\\' \\\\ \\z", Some(vec!["'x'", "\\", "\\z"])),
+            ("a#b # c", Some(vec!["a#b"])),
+            ("'#a'", Some(vec!["#a"])),
+            ("x\\", Some(vec!["x\\"])),
+            ("# rien", None),
+            ("\"a", None),
+            ("a ''", None),
+        ] {
+            let attendu = attendu.map(|v| v.into_iter().map(String::from).collect::<Vec<_>>());
+            assert_eq!(en_tete(texte), attendu, "{texte:?}");
         }
     }
 
@@ -403,13 +568,14 @@ mod tests {
     /// fichier inclus n'est global, pas même un « Host * ».
     #[test]
     fn portee_remise_apres_un_inclus() {
+        use Etendue::{Globale as G, PeutEtre as P, Precise as X};
         let l = |t: &str| Lue::Ligne("f".into(), 1, t.into());
-        let globales = |lignes: &[Lue]| -> Vec<bool> {
+        let etendues = |lignes: &[Lue]| -> Vec<Etendue> {
             let mut p = Portee::nouvelle();
-            lignes.iter().filter_map(|x| p.lire(x).map(|_| p.globale())).collect()
+            lignes.iter().filter_map(|x| p.lire(x).map(|_| p.etendue())).collect()
         };
         let apres_inclus = [Lue::Entree, l("Host labo"), Lue::Sortie, l("ForwardAgent yes")];
-        assert_eq!(globales(&apres_inclus), [false, true]);
+        assert_eq!(etendues(&apres_inclus), [X, G]);
         let sous_host = [
             l("Host labo"),
             Lue::Entree,
@@ -419,11 +585,21 @@ mod tests {
             Lue::Sortie,
             l("ForwardAgent yes"),
         ];
-        assert_eq!(globales(&sous_host), [false, false, false, false, false]);
+        assert_eq!(etendues(&sous_host), [X, X, X, X, X]);
+        // Sous un en-tête « peut-être », un « Host * » inclus ne devient pas globale à coup sûr ; après, si.
+        let sous_doute = [
+            l("Match user bob"),
+            Lue::Entree,
+            l("Host *"),
+            Lue::Sortie,
+            l("KexAlgorithms x"),
+            l("Host *"),
+        ];
+        assert_eq!(etendues(&sous_doute), [P, P, P, G]);
         let doute = [l("Host labo"), l("\"Host\" labo"), l("ForwardAgent yes")];
-        assert_eq!(globales(&doute), [false, true, true]);
+        assert_eq!(etendues(&doute), [X, P, P]);
         let autre_doute = [l("Host labo"), l("ForwardAgent 'no'"), l("ForwardAgent yes")];
-        assert_eq!(globales(&autre_doute), [false, false, false]);
+        assert_eq!(etendues(&autre_doute), [X, X, X]);
     }
 
     #[test]

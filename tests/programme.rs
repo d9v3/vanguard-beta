@@ -1596,7 +1596,15 @@ fn la_configuration_ssh_est_lue_comme_ssh() {
         ("\"ForwardAgent\" yes".into(), vec![], "forwardagent", NonLu),
         ("ForwardAgent 'yes'".into(), vec![], "forwardagent", NonLu),
         ("ForwardAgent \"ye\"s".into(), vec![], "forwardagent", NonLu),
-        ("Host '*'\nForwardAgent yes".into(), vec![], "forwardagent", NonLu),
+        // Vérification de Fable n° 2, P6 : apostrophes lues comme `argv_split`.
+        ("Host '*'\nForwardAgent yes".into(), vec![], "forwardagent", Alerte("~/.ssh/config, ligne 2")),
+        // P2 : sous une négation, un motif fait de jokers et d'un signe ne couvre pas un hôte ordinaire.
+        ("Match !host *_*\nForwardAgent yes".into(), vec![], "forwardagent", Alerte("~/.ssh/config, ligne 2")),
+        ("Match !host *.*\nForwardAgent yes".into(), vec![], "forwardagent", Alerte("~/.ssh/config, ligne 2")),
+        ("Match !host *€*\nStrictHostKeyChecking no".into(), vec![], "stricthostkeychecking", Alerte("~/.ssh/config, ligne 2")),
+        ("Match !originalhost *_*\nForwardAgent yes".into(), vec![], "forwardagent", Alerte("~/.ssh/config, ligne 2")),
+        ("Match !host routeur,*_*\nForwardAgent yes".into(), vec![], "forwardagent", Alerte("~/.ssh/config, ligne 2")),
+        ("Match !host *,!*-*\nStrictHostKeyChecking no".into(), vec![], "stricthostkeychecking", Alerte("~/.ssh/config, ligne 2")),
         (format!("={kex}"), vec![], "kexalgorithms", PasPropose),
         (format!("Host ?*\n{kex}"), vec![], "kexalgorithms", PasPropose),
         ("\"KexAlgorithms\" curve25519-sha256".into(), vec![], "kexalgorithms", PasPropose),
@@ -1691,6 +1699,31 @@ fn la_configuration_ssh_est_lue_comme_ssh() {
                 .count();
             assert_eq!(alertes, 1, "{constats:#?}");
         }));
+        // Vérification de Fable n° 2, P5 : 40 fichiers inclus de 600 lignes relâchées chacun : 16 alertes, puis une qui
+        // dit le plafond et compte le reste (64 sur 80), au lieu d'une alerte par ligne.
+        attentes.push(fils.spawn(move || {
+            let corps = "ForwardAgent yes\nStrictHostKeyChecking no\n".repeat(300);
+            let fichiers: Vec<(String, &str)> =
+                (0..40).map(|i| (format!("config.d/f{i:02}"), corps.as_str())).collect();
+            let maison = preparer("Include config.d/*", &[]);
+            for (nom, texte) in &fichiers {
+                std::fs::write(maison.join(".ssh").join(nom), texte).unwrap();
+            }
+            let constats = constats_du_bilan(programme, &maison, &["Clés SSH"]);
+            let alertes: Vec<String> = constats
+                .iter()
+                .map(message)
+                .filter(|m| {
+                    m.contains("est prêté à tous") || m.contains("sans vérifier") || m.contains("du même genre")
+                })
+                .collect();
+            assert_eq!(alertes.len(), 17, "{alertes:#?}");
+            assert!(alertes[0].contains("ligne 1 (et 299 autre(s) ligne(s)"), "{alertes:#?}");
+            assert!(
+                alertes[16].starts_with("64 autre(s) alerte(s) du même genre"),
+                "{alertes:#?}"
+            );
+        }));
         // S5 : un chemin d'inclusion long est abrégé (début…fin) dans le non lu.
         attentes.push(fils.spawn(move || {
             let long = vec!["d".repeat(200); 12].join("/");
@@ -1707,6 +1740,90 @@ fn la_configuration_ssh_est_lue_comme_ssh() {
                 "{constats:#?}"
             );
         }));
+        for a in attentes {
+            if let Err(e) = a.join() {
+                std::panic::resume_unwind(e);
+            }
+        }
+    });
+    if ssh.is_none() {
+        essais::saute("ssh absent : Vanguard essayé, juge non consulté");
+    }
+}
+
+/// Vérification de Fable n° 2, P1 : sous un en-tête que SSH n'applique peut-être pas à tout serveur (« Match final
+/// all », joker avec exclusion, « *.* », critères qui ne regardent pas l'hôte…), une liste post-quantique ne cache pas
+/// la liste classique écrite plus bas sous « Host * », ni « WarnWeakCrypto no ». `ssh -G` (maison jetable) confirme
+/// que SSH applique la liste classique et coupe l'avertissement ; Vanguard ne dit jamais « proposé » et signale les deux.
+#[cfg(unix)]
+#[test]
+fn un_en_tete_douteux_ne_cache_pas_la_valeur_globale() {
+    use std::os::unix::fs::PermissionsExt;
+    let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
+    let mode = |c: &Path, m: u32| std::fs::set_permissions(c, std::fs::Permissions::from_mode(m)).unwrap();
+    let ssh = ["/usr/bin/ssh", "/bin/ssh", "/usr/local/bin/ssh"]
+        .into_iter()
+        .find(|p| Path::new(p).exists());
+    let en_tetes = [
+        "Host * !serveur",
+        "Match final all",
+        "Match canonical all",
+        "Match localuser bob",
+        "Host *.*",
+        "Match host *,!serveur",
+        "Match user bob",
+        "Match tagged essai",
+        "Match exec \"false\"",
+        "Match localnetwork 192.0.2.0/24",
+        "Match command uptime",
+        "Match version OpenSSH_1.*",
+        "Match sessiontype subsystem",
+    ];
+    let message = |c: &serde_json::Value| c["message"].as_str().unwrap_or_default().to_string();
+    std::thread::scope(|fils| {
+        let mut attentes = Vec::new();
+        for en_tete in en_tetes {
+            attentes.push(fils.spawn(move || {
+                let maison = maison_jetable();
+                mode(&maison, 0o700);
+                let dossier = maison.join(".ssh");
+                std::fs::create_dir_all(&dossier).unwrap();
+                mode(&dossier, 0o700);
+                let config = format!(
+                    "{en_tete}\n    KexAlgorithms mlkem768x25519-sha256\n    WarnWeakCrypto yes\nHost *\n    KexAlgorithms curve25519-sha256\n    WarnWeakCrypto no\n"
+                );
+                std::fs::write(dossier.join("config"), &config).unwrap();
+                if let Some(ssh) = ssh {
+                    let sortie = Command::new(ssh)
+                        .env_clear()
+                        .env("HOME", &*maison)
+                        .args(["-G", "-F"])
+                        .arg(dossier.join("config"))
+                        .arg("serveur")
+                        .stdin(Stdio::null())
+                        .output()
+                        .unwrap();
+                    let texte = String::from_utf8_lossy(&sortie.stdout).into_owned();
+                    assert!(sortie.status.success(), "{en_tete:?} : ssh -G : {}", String::from_utf8_lossy(&sortie.stderr));
+                    assert!(texte.lines().any(|l| l == "kexalgorithms curve25519-sha256"), "{en_tete:?} : {texte}");
+                    assert!(texte.lines().any(|l| l == "warnweakcrypto no"), "{en_tete:?} : {texte}");
+                }
+                let constats = constats_du_bilan(programme, &maison, &["Post-quantique"]);
+                let messages: Vec<String> = constats.iter().map(message).collect();
+                assert!(
+                    !messages.iter().any(|m| m.starts_with("Client SSH") && m.contains("est proposé aux serveurs")),
+                    "{en_tete:?} : proposé : {messages:#?}"
+                );
+                assert!(
+                    messages.iter().any(|m| m.contains("~/.ssh/config écarte l'échange post-quantique")),
+                    "{en_tete:?} : pas d'alerte : {messages:#?}"
+                );
+                assert!(
+                    messages.iter().any(|m| m.contains("WarnWeakCrypto no") && m.contains("~/.ssh/config")),
+                    "{en_tete:?} : avertissement tu : {messages:#?}"
+                );
+            }));
+        }
         for a in attentes {
             if let Err(e) = a.join() {
                 std::panic::resume_unwind(e);
@@ -1762,6 +1879,18 @@ Match host labo exec \"test -f ~/.ssh/labo.actif\"
 
 Match originalhost bastion user alice
     Port 22
+
+Match host labo2 exec 'test -f ~/.ssh/labo2.actif'
+    User alice
+
+Match host labo3 exec \"test -f \\\"$HOME/.ssh/labo3.actif\\\"\"
+    User alice
+
+Match host labo4 exec test\\ -f\\ /etc/labo4
+    User alice
+
+Host 'nas'
+    HostName 192.0.2.20
 
 Host *
     ServerAliveInterval 30

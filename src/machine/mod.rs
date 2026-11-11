@@ -1647,17 +1647,29 @@ fn joker(motif: &[u8], nom: &[u8]) -> bool {
     matches!(possible.last(), Some(true))
 }
 
-/// Réglages risqués d'une configuration de SSH dépliée qui valent pour tous les serveurs (avant le premier « Host »,
-/// sous un « Host » ou un « Match » qui couvre tout serveur, et dans le doute) : (fichier, numéro de ligne, réglage),
-/// chacun une fois (un fichier qui se réinclut donnait la même alerte à chaque tour). Un réglage sous un « Host »
-/// précis reste : un serveur de test qu'on recrée souvent peut s'en passer. Lu avec la portée de SSH
-/// (`config_ssh::Portee`), remise à la fin de chaque fichier inclus.
+/// Au plus tant d'alertes de réglages risqués de la configuration SSH, puis un compte : 99 000 lignes relâchées
+/// donnaient 99 000 alertes et un bilan de 63 Mo.
 #[cfg(unix)]
-fn reglages_ssh_risques(lignes: &[config_ssh::Lue]) -> Vec<(&str, usize, &'static str)> {
-    use config_ssh::{Cle, Ligne};
+const RISQUES_MONTRES: usize = 16;
+
+/// Un réglage risqué de la configuration SSH : fichier, première ligne, réglage, nombre d'autres lignes du même fichier
+/// qui le relâchent aussi.
+#[cfg(unix)]
+type RisqueSsh<'a> = (&'a str, usize, &'static str, usize);
+
+/// Réglages risqués d'une configuration de SSH dépliée qui valent peut-être pour tous les serveurs (avant le premier
+/// « Host », sous un « Host » ou un « Match » qui couvre ou peut couvrir tout serveur, et dans le doute) : un par
+/// fichier et par réglage, à sa première ligne, avec le compte des autres lignes (un fichier qui se réinclut ne compte
+/// qu'une fois chaque ligne). Un réglage sous un « Host » précis reste : un serveur de test qu'on recrée souvent peut
+/// s'en passer. Lu avec la portée de SSH (`config_ssh::Portee`), remise à la fin de chaque fichier inclus.
+#[cfg(unix)]
+fn reglages_ssh_risques(lignes: &[config_ssh::Lue]) -> Vec<RisqueSsh<'_>> {
+    use config_ssh::{Cle, Etendue, Ligne};
+    use std::collections::hash_map::Entry;
     let mut portee = config_ssh::Portee::nouvelle();
-    let mut trouves: Vec<(&str, usize, &'static str)> = Vec::new();
+    let mut trouves: Vec<RisqueSsh<'_>> = Vec::new();
     let mut vus = std::collections::HashSet::new();
+    let mut places: std::collections::HashMap<(&str, &str), usize> = std::collections::HashMap::new();
     for lue in lignes {
         let Some((fichier, n, ligne)) = portee.lire(lue) else {
             continue;
@@ -1667,8 +1679,20 @@ fn reglages_ssh_risques(lignes: &[config_ssh::Lue]) -> Vec<(&str, usize, &'stati
             Ligne::Valeur(Cle::ForwardAgent, v) if config_ssh::pret_d_agent(v) => "forwardagent",
             _ => continue,
         };
-        if portee.globale() && vus.insert((fichier, n, reglage)) {
-            trouves.push((fichier, n, reglage));
+        // « Peut-être » alerte comme « globale » : douter, ici, c'est alerter de trop, jamais se taire.
+        if portee.etendue() == Etendue::Precise || !vus.insert((fichier, n, reglage)) {
+            continue;
+        }
+        match places.entry((fichier, reglage)) {
+            Entry::Occupied(place) => {
+                if let Some(t) = trouves.get_mut(*place.get()) {
+                    t.3 = t.3.saturating_add(1);
+                }
+            }
+            Entry::Vacant(place) => {
+                place.insert(trouves.len());
+                trouves.push((fichier, n, reglage, 0));
+            }
         }
     }
     trouves
@@ -1676,15 +1700,26 @@ fn reglages_ssh_risques(lignes: &[config_ssh::Lue]) -> Vec<(&str, usize, &'stati
 
 #[cfg(unix)]
 fn constats_config_ssh(lignes: &[config_ssh::Lue]) -> Vec<Constat> {
-    reglages_ssh_risques(lignes)
+    let risques = reglages_ssh_risques(lignes);
+    let caches = risques.len().saturating_sub(RISQUES_MONTRES);
+    let mut constats: Vec<Constat> = risques
         .into_iter()
-        .map(|(fichier, ligne, reglage)| (affichable(fichier), ligne, reglage))
-        .map(|(fichier, ligne, reglage)| {
+        .take(RISQUES_MONTRES)
+        .map(|(fichier, ligne, reglage, autres)| {
+            let fichier = affichable(fichier);
+            let lieu = if autres == 0 {
+                trf!("{fichier}, ligne {ligne}", "{fichier}, line {ligne}")
+            } else {
+                trf!(
+                    "{fichier}, ligne {ligne} (et {autres} autre(s) ligne(s) de ce fichier)",
+                    "{fichier}, line {ligne} (and {autres} other line(s) in this file)"
+                )
+            };
             let (message, conseil) = if reglage == "stricthostkeychecking" {
                 (
                     trf!(
-                        "{fichier}, ligne {ligne} : SSH se connecte à n'importe quel serveur sans vérifier qu'il est le bon ; un appareil au milieu peut se faire passer pour lui et lire le mot de passe.",
-                        "{fichier}, line {ligne}: SSH connects to any server without checking it is the right one; a device in the middle can pose as it and read the password."
+                        "{lieu} : SSH se connecte à n'importe quel serveur sans vérifier qu'il est le bon ; un appareil au milieu peut se faire passer pour lui et lire le mot de passe.",
+                        "{lieu}: SSH connects to any server without checking it is the right one; a device in the middle can pose as it and read the password."
                     ),
                     tr!(
                         "Retirer cette ligne, ou la réserver aux serveurs de test sous leur propre « Host » ; « accept-new » accepte un nouveau serveur mais refuse un serveur qui change",
@@ -1694,8 +1729,8 @@ fn constats_config_ssh(lignes: &[config_ssh::Lue]) -> Vec<Constat> {
             } else {
                 (
                     trf!(
-                        "{fichier}, ligne {ligne} : votre agent SSH est prêté à tous les serveurs ; un serveur piraté peut s'en servir pour se connecter ailleurs avec vos clés.",
-                        "{fichier}, line {ligne}: your SSH agent is lent to every server; a hacked server can use it to log in elsewhere with your keys."
+                        "{lieu} : votre agent SSH est prêté à tous les serveurs ; un serveur piraté peut s'en servir pour se connecter ailleurs avec vos clés.",
+                        "{lieu}: your SSH agent is lent to every server; a hacked server can use it to log in elsewhere with your keys."
                     ),
                     tr!(
                         "Retirer cette ligne, ou la réserver aux serveurs de confiance sous leur propre « Host » ; « ssh -J » remplace le plus souvent ce prêt",
@@ -1705,7 +1740,28 @@ fn constats_config_ssh(lignes: &[config_ssh::Lue]) -> Vec<Constat> {
             };
             alerte("Clés SSH", Niveau::Moyen, message).manuel(conseil, &[])
         })
-        .collect()
+        .collect();
+    // Le plafond est dit, et le reste compte comme une alerte : jamais tu.
+    if caches > 0 {
+        constats.push(
+            alerte(
+                "Clés SSH",
+                Niveau::Moyen,
+                trf!(
+                    "{caches} autre(s) alerte(s) du même genre dans la configuration SSH (vérification des serveurs relâchée ou agent prêté) ne sont pas montrées : seules les {RISQUES_MONTRES} premières le sont.",
+                    "{caches} other alert(s) of the same kind in the SSH configuration (server checking relaxed or agent lent) are not shown: only the first {RISQUES_MONTRES} are."
+                ),
+            )
+            .manuel(
+                tr!(
+                    "Relire ~/.ssh/config et ses fichiers inclus : ces réglages ne devraient valoir que sous le « Host » de serveurs précis",
+                    "Review ~/.ssh/config and its included files: these settings should only apply under the “Host” of specific servers"
+                ),
+                &[],
+            ),
+        );
+    }
+    constats
 }
 
 /// Une clé privée SSH est-elle protégée par une phrase de passe ? `None` si ce n'est pas une clé privée.
@@ -3412,15 +3468,16 @@ Host *
             let lues = lues("~/.ssh/config", texte);
             reglages_ssh_risques(&lues)
                 .into_iter()
-                .map(|(_, n, r)| (n, r))
+                .map(|(_, n, r, _)| (n, r))
                 .collect()
         };
+        // P5 : un par fichier et par réglage, à sa première ligne, avec le compte des autres.
+        let lues_config = lues("~/.ssh/config", config);
         assert_eq!(
-            risques(config),
+            reglages_ssh_risques(&lues_config),
             [
-                (2, "forwardagent"),
-                (6, "stricthostkeychecking"),
-                (11, "stricthostkeychecking")
+                ("~/.ssh/config", 2, "forwardagent", 0),
+                ("~/.ssh/config", 6, "stricthostkeychecking", 1)
             ]
         );
         assert_eq!(risques("Host *\n  User moi\n"), []);
@@ -3439,6 +3496,23 @@ Host *
             "Match final all\nForwardAgent yes",
             "Match host *\nForwardAgent yes",
             "Host routeur\nMatch all\nForwardAgent yes",
+            // Vérification de Fable n° 2 : « peut-être » alerte comme « globale » (P1), et sous une négation seul un
+            // motif qui couvre tout à coup sûr rend la portée précise (P2).
+            "Host *.*\nForwardAgent yes",
+            "Match user bob\nForwardAgent yes",
+            "Match localuser bob\nForwardAgent yes",
+            "Match tagged essai\nForwardAgent yes",
+            "Match host *,!routeur\nForwardAgent yes",
+            "Match !host *_*\nForwardAgent yes",
+            "Match !host *-*\nForwardAgent yes",
+            "Match !host *.*\nForwardAgent yes",
+            "Match !host *é*\nForwardAgent yes",
+            "Match !originalhost *_*\nForwardAgent yes",
+            "Match !host routeur,*_*\nForwardAgent yes",
+            "Host * !*_*\nForwardAgent yes",
+            // P6 : lus comme argv_split.
+            "Host \"*\" 'routeur 2'\nForwardAgent yes",
+            "Match exec 'test -f /x'\nForwardAgent yes",
         ] {
             assert_eq!(risques(texte).len(), 1, "{texte:?}");
         }
@@ -3449,9 +3523,9 @@ Host *
         ] {
             assert_eq!(risques(texte), [(1, "stricthostkeychecking")], "{texte:?}");
         }
-        // Une portée non interprétée (« Host » entre guillemets, apostrophes) rend la suite globale : dans le doute,
-        // le réglage relâché est signalé.
-        for texte in ["\"Host\" routeur\nForwardAgent yes", "Host 'routeur'\nForwardAgent yes"] {
+        // Une portée non interprétée (« Host » entre guillemets, guillemet resté ouvert) rend la suite « peut-être
+        // globale » : dans le doute, le réglage relâché est signalé.
+        for texte in ["\"Host\" routeur\nForwardAgent yes", "Host 'routeur\nForwardAgent yes"] {
             assert_eq!(risques(texte), [(2, "forwardagent")], "{texte:?}");
         }
         // Précis ou vérifiant : rien.
@@ -3461,6 +3535,10 @@ Host *
             "Host !*\nForwardAgent yes",
             "Match host routeur\nForwardAgent yes",
             "Match !all\nForwardAgent yes",
+            "Match !host *\nForwardAgent yes",
+            "Match !host ?*\nForwardAgent yes",
+            "Host * !*\nForwardAgent yes",
+            "Host 'routeur'\nForwardAgent yes",
             "ForwardAgent NO",
             "StrictHostKeyChecking accept-new",
             "StrictHostKeyChecking ask",
@@ -3472,7 +3550,7 @@ Host *
         l.extend(lues("~/.ssh/hotes", "Host routeur\n  User alice"));
         l.push(Lue::Sortie);
         l.extend(lues("~/.ssh/config", "ForwardAgent yes"));
-        assert_eq!(reglages_ssh_risques(&l), [("~/.ssh/config", 1, "forwardagent")]);
+        assert_eq!(reglages_ssh_risques(&l), [("~/.ssh/config", 1, "forwardagent", 0)]);
         // Dans un inclus sous un Host précis, même « Host * » n'y est pas global ; après lui, la portée précise reste.
         let mut l = lues("~/.ssh/config", "Host routeur");
         l.push(Lue::Entree);
@@ -3486,10 +3564,33 @@ Host *
             lues("~/.ssh/config", "ForwardAgent yes"),
         ]
         .concat();
-        assert_eq!(reglages_ssh_risques(&deux).len(), 1);
+        assert_eq!(reglages_ssh_risques(&deux), [("~/.ssh/config", 1, "forwardagent", 0)]);
         let c = constats_config_ssh(&lues("~/.ssh/config", "StrictHostKeyChecking no"));
         assert!(c.len() == 1 && c[0].probleme == Some(Niveau::Moyen));
         assert!(c[0].message.contains("ligne 1") || c[0].message.contains("line 1"));
+        // P5 : 99 000 lignes relâchées dans 40 fichiers : 16 alertes, la première dit ses autres lignes, et le
+        // plafond se dit en alerte.
+        let mut beaucoup = Vec::new();
+        for f in 0..40 {
+            beaucoup.extend(lues(
+                &format!("~/.ssh/inclus{f}"),
+                &"ForwardAgent yes\nStrictHostKeyChecking no\n".repeat(1200),
+            ));
+        }
+        let c = constats_config_ssh(&beaucoup);
+        assert_eq!(c.len(), RISQUES_MONTRES + 1);
+        assert!(c.iter().all(|c| c.probleme == Some(Niveau::Moyen)));
+        assert!(
+            c[0].message.contains("ligne 1 (et 1199 autre(s) ligne(s)")
+                || c[0].message.contains("line 1 (and 1199 other line(s)"),
+            "{}",
+            c[0].message
+        );
+        let dernier = &c[RISQUES_MONTRES].message;
+        assert!(
+            dernier.starts_with("64 ") && dernier.contains(&RISQUES_MONTRES.to_string()),
+            "{dernier}"
+        );
     }
 
     #[cfg(unix)]

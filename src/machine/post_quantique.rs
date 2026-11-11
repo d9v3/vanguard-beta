@@ -244,11 +244,15 @@ pub(crate) struct Client {
 /// Ce que la configuration du client dit de l'échange de clés.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct ConfigClient {
-    /// La première liste KexAlgorithms qui vaut pour tous les serveurs : (fichier, valeur). ssh garde la première.
-    pub globale: Option<(String, String)>,
+    /// Les listes KexAlgorithms que SSH peut garder pour un serveur quelconque, dans l'ordre : (fichier, valeur, sous
+    /// une portée globale à coup sûr). SSH garde la première qui s'applique ; une liste sous un en-tête « peut-être »
+    /// (`config_ssh::Etendue::PeutEtre`) ne ferme pas la recherche, la première globale à coup sûr la ferme (incluse).
+    /// Sans elle, le défaut d'OpenSSH reste possible.
+    pub candidates: Vec<(String, String, bool)>,
     /// Les listes écrites sous un « Host » ou un « Match » précis : jamais le nom de l'hôte, seulement la liste.
     pub par_hote: Vec<String>,
-    /// Le fichier où « WarnWeakCrypto no » (ou « no-pq-kex ») vaut pour tous les serveurs.
+    /// Le fichier où « WarnWeakCrypto no » (ou « no-pq-kex ») vaut peut-être pour tous les serveurs : la première
+    /// valeur qui coupe, parmi celles que SSH peut garder (même règle que `candidates`).
     pub avertissement_coupe: Option<String>,
     /// Une ligne que Vanguard ne découpe pas comme SSH, ou un « Include » qu'il n'a pas déplié (Windows) : (fichier,
     /// ligne). Le client n'est pas jugé sans elle : elle peut porter les algorithmes.
@@ -257,32 +261,37 @@ pub(crate) struct ConfigClient {
 
 /// Lit la configuration du client comme ssh : découpée par `config_ssh::lire_ligne`, avec la portée de SSH
 /// (`config_ssh::Portee` : un « Host » ou un « Match » qui couvre tout serveur, le début de chaque fichier de tête, la
-/// portée remise à la fin de chaque fichier inclus) ; la première valeur trouvée l'emporte.
+/// portée remise à la fin de chaque fichier inclus) ; la première valeur qui s'applique l'emporte. Une valeur sous un
+/// en-tête que SSH n'applique peut-être pas est gardée comme candidate, sans clore la recherche : seule une valeur
+/// globale à coup sûr la clôt.
 pub(crate) fn lire_config_client(fichiers: &[Vec<super::config_ssh::Lue>]) -> ConfigClient {
-    use super::config_ssh::{Cle, Ligne, Portee};
+    use super::config_ssh::{Cle, Etendue, Ligne, Portee};
     let mut c = ConfigClient::default();
-    let mut avertissement_vu = false;
+    let (mut kex_clos, mut avertissement_clos) = (false, false);
     for lignes in fichiers {
         let mut portee = Portee::nouvelle();
         for lue in lignes {
             let Some((fichier, n, ligne)) = portee.lire(lue) else {
                 continue;
             };
-            let global = portee.globale();
+            let etendue = portee.etendue();
+            let sure = etendue == Etendue::Globale;
             match ligne {
                 Ligne::NonInterpretee | Ligne::Include(_) => {
                     c.non_lu.get_or_insert_with(|| (fichier.to_string(), n));
                 }
-                Ligne::Valeur(Cle::KexAlgorithms, valeur) if global => {
-                    if c.globale.is_none() {
-                        c.globale = Some((fichier.to_string(), valeur.to_string()));
-                    }
+                Ligne::Valeur(Cle::KexAlgorithms, valeur) if etendue == Etendue::Precise => {
+                    c.par_hote.push(valeur.to_string());
                 }
-                Ligne::Valeur(Cle::KexAlgorithms, valeur) => c.par_hote.push(valeur.to_string()),
-                Ligne::Valeur(Cle::WarnWeakCrypto, valeur) if global && !avertissement_vu => {
-                    avertissement_vu = true;
+                Ligne::Valeur(Cle::KexAlgorithms, valeur) if !kex_clos => {
+                    c.candidates.push((fichier.to_string(), valeur.to_string(), sure));
+                    kex_clos = sure;
+                }
+                Ligne::Valeur(Cle::WarnWeakCrypto, valeur) if etendue != Etendue::Precise && !avertissement_clos => {
+                    avertissement_clos = sure;
                     if super::config_ssh::avertissement_coupe(valeur) {
-                        c.avertissement_coupe = Some(fichier.to_string());
+                        c.avertissement_coupe.get_or_insert_with(|| fichier.to_string());
+                        avertissement_clos = true;
                     }
                 }
                 _ => {}
@@ -362,8 +371,27 @@ pub(crate) fn juger_client(l: &Lecture<Client>) -> Vec<Constat> {
     }
     let v = version_texte(c.version);
     let mut constats = Vec::new();
-    let valeur = config.globale.as_ref().map(|(_, v)| v.as_str());
-    let fichier = config.globale.as_ref().map(|(f, _)| f.as_str());
+    // Les valeurs que SSH peut garder pour un serveur quelconque : chaque candidate, puis le défaut d'OpenSSH si aucune
+    // n'est globale à coup sûr. « Proposé » seulement si toutes le proposent ; sinon celle qui l'écarte est dite, la
+    // globale à coup sûr avant une douteuse (un fait avant un doute), ou à défaut celle qui ne se juge pas :
+    // (fichier, valeur, globale à coup sûr).
+    let mut possibles: Vec<(Option<&str>, Option<&str>, bool)> = config
+        .candidates
+        .iter()
+        .map(|(f, v, sure)| (Some(f.as_str()), Some(v.as_str()), *sure))
+        .collect();
+    if !config.candidates.last().is_some_and(|x| x.2) {
+        possibles.push((None, None, true));
+    }
+    let juge = |p: &&(Option<&str>, Option<&str>, bool)| kex_post_quantique(p.1, c.version);
+    let (fichier, valeur, sure) = possibles
+        .iter()
+        .find(|p| p.2 && juge(p) == Some(false))
+        .or_else(|| possibles.iter().find(|p| juge(p) == Some(false)))
+        .or_else(|| possibles.iter().find(|p| juge(p).is_none()))
+        .or(possibles.last())
+        .copied()
+        .unwrap_or((None, None, true));
     let objet = Objet::de("ssh", fichier.unwrap_or("defaut"));
     constats.push(
         match kex_post_quantique(valeur, c.version) {
@@ -374,6 +402,19 @@ pub(crate) fn juger_client(l: &Lecture<Client>) -> Vec<Constat> {
                     "SSH client (OpenSSH {v}): a post-quantum key exchange is offered to servers."
                 ),
             ),
+            // Sous un en-tête que SSH n'applique peut-être pas à tous : dit comme un doute, jamais tu.
+            Some(false) if !sure => {
+                let fichier = affichable(fichier.unwrap_or_default());
+                alerte(
+                    CAT,
+                    Niveau::Info,
+                    trf!(
+                        "Client SSH : la configuration {fichier} peut écarter l'échange post-quantique pour tous les serveurs : elle est sous un « Host » ou un « Match » que SSH applique peut-être à tous, et Vanguard ne peut pas trancher. Une session captée aujourd'hui pourrait être déchiffrée le jour où un ordinateur quantique existera.",
+                        "SSH client: the {fichier} configuration may rule out post-quantum key exchange for every server: it sits under a “Host” or “Match” that SSH may apply to all of them, and Vanguard cannot tell. A session recorded today could be decrypted once a quantum computer exists."
+                    ),
+                )
+                .manuel(conseil_client(valeur, c.version), &[])
+            }
             Some(false) if liste_qui_retire(valeur, c.version) => {
                 let fichier = affichable(fichier.unwrap_or_default());
                 alerte(
@@ -1177,7 +1218,10 @@ mod tests {
         let compte = lignes("~/.ssh/config", "Host routeur\n  User alice\n");
         let systeme = lignes("/etc/ssh/ssh_config", "KexAlgorithms curve25519-sha256\n");
         let cfg = lire_config_client(&[compte, systeme]);
-        assert_eq!(cfg.globale.as_ref().map(|g| g.0.as_str()), Some("/etc/ssh/ssh_config"));
+        assert_eq!(
+            cfg.candidates.first().map(|g| g.0.as_str()),
+            Some("/etc/ssh/ssh_config")
+        );
         // « Match all » vaut pour tous ; « WarnWeakCrypto no » se dit.
         let config = "Match all\n  WarnWeakCrypto no\n";
         let c = client(vec![lignes("~/.ssh/config", config)], Some((10, 6)));
@@ -1208,7 +1252,7 @@ mod tests {
         config.push(Lue::Entree);
         config.extend(lignes("~/.ssh/inclus", &format!("Host *\n{kex}\n")));
         config.push(Lue::Sortie);
-        assert_eq!(lire_config_client(&[config]).globale, None);
+        assert_eq!(lire_config_client(&[config]).candidates, []);
         for config in [
             format!("Host ?*\n{kex}\n"),
             format!("Host * !routeur\n{kex}\n"),
@@ -1217,14 +1261,16 @@ mod tests {
             format!("={kex}\n"),
         ] {
             let cfg = lire_config_client(&[lignes("~/.ssh/config", &config)]);
-            assert!(cfg.globale.is_some() && cfg.non_lu.is_none(), "{config:?} : {cfg:?}");
+            assert!(
+                !cfg.candidates.is_empty() && cfg.non_lu.is_none(),
+                "{config:?} : {cfg:?}"
+            );
         }
         let cfg = lire_config_client(&[lignes("~/.ssh/config", "WarnWeakCrypto no-pq-kex\n")]);
         assert_eq!(cfg.avertissement_coupe.as_deref(), Some("~/.ssh/config"));
         for config in [
             "\"KexAlgorithms\" curve25519-sha256\n",
             "KexAlgorithms 'curve25519-sha256'\n",
-            "Host '*'\n  KexAlgorithms curve25519-sha256\n",
             "Include kex.conf\n",
         ] {
             let c = client(vec![lignes("~/.ssh/config", config)], Some((10, 0)));
@@ -1237,6 +1283,92 @@ mod tests {
                 c[0].message
             );
         }
+    }
+
+    /// Vérification de Fable n° 2, P1 : sous un en-tête que SSH n'applique peut-être pas à tous les serveurs, une valeur
+    /// ne ferme pas la recherche. « Proposé » seulement si toutes les valeurs possibles (jusqu'à la première globale à
+    /// coup sûr, ou le défaut d'OpenSSH) le proposent ; l'avertissement est dit coupé si une valeur possible le coupe.
+    #[test]
+    fn client_peut_etre_global_ne_clot_pas_la_recherche() {
+        let pq = "KexAlgorithms mlkem768x25519-sha256";
+        let classique = "KexAlgorithms curve25519-sha256";
+        let messages = |c: &[Constat]| c.iter().map(|c| c.message.clone()).collect::<Vec<_>>();
+        for en_tete in [
+            "Host * !serveur",
+            "Match final all",
+            "Match canonical all",
+            "Match localuser bob",
+            "Host *.*",
+            "Match host *,!serveur",
+            "Match user bob",
+            "Match tagged essai",
+            "Match exec \"false\"",
+            "Match localnetwork 192.0.2.0/24",
+            "Match command uptime",
+            "Match version OpenSSH_1.*",
+            "Match sessiontype subsystem",
+            "Match !host *_*",
+            "\"Host\" serveur",
+        ] {
+            // La bonne valeur sous l'en-tête douteux, la mauvaise sous « Host * » : jamais « proposé ».
+            let config =
+                format!("{en_tete}\n  {pq}\n  WarnWeakCrypto yes\nHost *\n  {classique}\n  WarnWeakCrypto no\n");
+            let cfg = lire_config_client(&[lignes("~/.ssh/config", &config)]);
+            assert_eq!(cfg.candidates.len(), 2, "{en_tete:?} : {cfg:?}");
+            assert!(!cfg.candidates[0].2 && cfg.candidates[1].2, "{en_tete:?} : {cfg:?}");
+            if cfg.non_lu.is_some() {
+                continue;
+            }
+            let c = client(vec![lignes("~/.ssh/config", &config)], Some((10, 6)));
+            assert_eq!(c[0].probleme, Some(Niveau::Info), "{en_tete:?} : {:?}", messages(&c));
+            assert!(
+                c[0].message.contains("écarte l'échange") && !c[0].message.contains("peut"),
+                "{en_tete:?} : {}",
+                c[0].message
+            );
+            assert!(c.iter().any(|c| c.message.contains("WarnWeakCrypto")), "{en_tete:?}");
+            // L'inverse : la mauvaise sous l'en-tête douteux, dite comme un doute.
+            let config =
+                format!("{en_tete}\n  {classique}\n  WarnWeakCrypto no\nHost *\n  {pq}\n  WarnWeakCrypto yes\n");
+            let c = client(vec![lignes("~/.ssh/config", &config)], Some((10, 6)));
+            assert!(
+                c[0].probleme == Some(Niveau::Info) && c[0].message.contains("peut écarter"),
+                "{en_tete:?} : {:?}",
+                messages(&c)
+            );
+            assert!(c.iter().any(|c| c.message.contains("WarnWeakCrypto")), "{en_tete:?}");
+            // Les deux l'écartent : le fait (« Host * ») est dit, pas le doute.
+            let config = format!("{en_tete}\n  {classique}\nHost *\n  {classique}\n");
+            let c = client(vec![lignes("~/.ssh/config", &config)], Some((10, 6)));
+            assert!(
+                c[0].message.contains("écarte l'échange") && !c[0].message.contains("peut"),
+                "{en_tete:?} : {:?}",
+                messages(&c)
+            );
+            // Toutes proposent : proposé, sans avertissement coupé.
+            let config = format!("{en_tete}\n  {pq}\nHost *\n  {pq}\n");
+            let c = client(vec![lignes("~/.ssh/config", &config)], Some((10, 6)));
+            assert_eq!(c.len(), 1, "{en_tete:?} : {:?}", messages(&c));
+            assert_eq!(c[0].probleme, None, "{en_tete:?} : {:?}", messages(&c));
+            // Sans valeur globale à coup sûr, le défaut d'OpenSSH reste possible : sans post-quantique en 8.4.
+            let config = format!("{en_tete}\n  {pq}\n");
+            let c = client(vec![lignes("~/.ssh/config", &config)], Some((8, 4)));
+            assert_eq!(c[0].probleme, Some(Niveau::Info), "{en_tete:?} : {:?}", messages(&c));
+        }
+        // « Host * !* » ne s'applique jamais : sa valeur est celle d'un hôte précis, la suivante décide.
+        let config = format!("Host * !*\n  {pq}\nHost *\n  {classique}\n");
+        let cfg = lire_config_client(&[lignes("~/.ssh/config", &config)]);
+        assert_eq!(cfg.candidates.len(), 1, "{cfg:?}");
+        assert_eq!(cfg.par_hote.len(), 1, "{cfg:?}");
+        // La première globale à coup sûr clôt la recherche : ce qui suit, même douteux, n'y change rien.
+        let config = format!("{pq}\nWarnWeakCrypto yes\nMatch user bob\n  {classique}\n  WarnWeakCrypto no\n");
+        let c = client(vec![lignes("~/.ssh/config", &config)], Some((10, 6)));
+        assert!(c.len() == 1 && c[0].probleme.is_none(), "{:?}", messages(&c));
+        // Le fichier du compte n'a que du douteux : celui du système reste candidat.
+        let compte = lignes("~/.ssh/config", &format!("Match user bob\n  {pq}\n"));
+        let systeme = lignes("/etc/ssh/ssh_config", &format!("{classique}\n"));
+        let c = client(vec![compte, systeme], Some((10, 6)));
+        assert!(c[0].message.contains("/etc/ssh/ssh_config"), "{:?}", messages(&c));
     }
 
     /// Des clés WireGuard fabriquées pour l'essai (base64 de motifs), jamais de vraies.
