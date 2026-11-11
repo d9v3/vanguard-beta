@@ -347,6 +347,23 @@ fn baisse_ok(_noms: &[&str]) -> bool {
     false
 }
 
+/// Ce qui n'a pas pu être lu (`releve_demarrage`), tel que la liste du terminal le dit : chaque manque nettoyé pour
+/// l'écran, coupé à la largeur, « ! » devant (un signe que toute console dessine).
+fn lignes_des_manques(manques: &[String]) -> Vec<String> {
+    let largeur = LARGEUR.saturating_sub(4);
+    let mut v = Vec::new();
+    for m in manques {
+        for (i, l) in envelopper(&affichable(m), largeur).iter().enumerate() {
+            v.push(if i == 0 {
+                format!("  {GRAS}!{RESET} {GRIS}{l}{RESET}")
+            } else {
+                format!("    {GRIS}{l}{RESET}")
+            });
+        }
+    }
+    v
+}
+
 /// Ce que Vanguard ne retire pas d'ici, et où le faire.
 fn ailleurs() -> &'static str {
     if cfg!(windows) {
@@ -949,13 +966,21 @@ pub fn json() {
 /// avant ce que Vanguard avait retiré.
 pub fn menu() {
     let h = charger();
-    let l = lignes(systeme::au_demarrage(), &h);
+    let (programmes, manques) = systeme::releve_demarrage();
+    let l = lignes(programmes, &h);
+    let pas_lus = lignes_des_manques(&manques);
     if l.is_empty() {
         titre(tr!("Programmes au démarrage", "Startup programs"));
-        trp!(
-            "  {VERT}✔{RESET} Aucun programme du compte ne se lance à l'ouverture de session.",
-            "  {VERT}✔{RESET} No program of this account starts at login."
-        );
+        // Quelque chose n'a pas pu être lu : jamais « aucun programme » (T-1).
+        if pas_lus.is_empty() {
+            trp!(
+                "  {VERT}✔{RESET} Aucun programme du compte ne se lance à l'ouverture de session.",
+                "  {VERT}✔{RESET} No program of this account starts at login."
+            );
+        }
+        for ligne in &pas_lus {
+            println!("{ligne}");
+        }
         afficher_aligne("  ", ailleurs(), 2, "");
         return;
     }
@@ -999,6 +1024,11 @@ pub fn menu() {
         ),
         String::new(),
     ];
+    let entete = if pas_lus.is_empty() {
+        entete
+    } else {
+        entete.into_iter().chain(pas_lus).chain([String::new()]).collect()
+    };
     let Some(voulu) = cocher(&entete, &cases) else {
         return;
     };
@@ -1046,6 +1076,48 @@ pub fn menu() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// T-1, de bout en bout : un dossier d'autostart du compte qui est un lien (dotfiles) ne fait jamais dire
+    /// « aucun programme » ; le résultat de `demarrage --json` est « non vérifié », une vérification faite et le
+    /// manque dit. Le même dossier, vrai et vide : sain, « aucun programme ».
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dossier_autostart_lien_dit_non_verifie_de_bout_en_bout() {
+        let base = crate::essais::temporaire().join(format!("vanguard-demarrage-t1-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (config, ailleurs) = (base.join("config"), base.join("dotfiles"));
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::create_dir_all(&ailleurs).unwrap();
+        std::fs::write(
+            ailleurs.join("synchro.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Synchro\nExec=synchro\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&ailleurs, config.join("autostart")).unwrap();
+        let debut = (chrono::Utc::now(), std::time::Instant::now());
+        let (programmes, manques) = systeme::releve_dans(&config, &[], "Hyprland", Some(String::new()));
+        assert!(lignes(programmes, &Historique::default()).is_empty());
+        let r = resultat::resultat(&[], manques, debut);
+        assert_eq!(r.verdict(), "non-verifie");
+        assert_eq!(r.couverture.verifies, 1);
+        assert_eq!(r.couverture.non_verifies.len(), 1, "{:?}", r.couverture.non_verifies);
+        assert!(r.couverture.non_verifies[0].contains("autostart"));
+        assert!(
+            !r.constats.iter().any(|c| c.message.contains("Aucun programme")),
+            "{:?}",
+            r.constats.iter().map(|c| &c.message).collect::<Vec<_>>()
+        );
+        assert!(lignes_des_manques(&r.couverture.non_verifies)[0].contains("non vérifié"));
+        // Le même dossier, vrai et vide.
+        std::fs::remove_file(config.join("autostart")).unwrap();
+        std::fs::create_dir_all(config.join("autostart")).unwrap();
+        let (programmes, manques) = systeme::releve_dans(&config, &[], "Hyprland", Some(String::new()));
+        assert!(programmes.is_empty() && manques.is_empty(), "{manques:?}");
+        let r = resultat::resultat(&[], manques, debut);
+        assert_eq!(r.verdict(), "sain");
+        assert!(r.constats.iter().any(|c| c.message.contains("Aucun programme")));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
 
     #[test]
     fn programmes_a_garder() {

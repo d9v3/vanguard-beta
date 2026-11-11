@@ -1242,8 +1242,46 @@ pub fn au_demarrage() -> Vec<Programme> {
 pub fn releve_demarrage() -> (Vec<Programme>, Vec<String>) {
     let maison = crate::socle::maison();
     let config = std::env::var_os("XDG_CONFIG_HOME").map_or_else(|| maison.join(".config"), PathBuf::from);
-    let systeme = dossiers_systeme();
     let bureau = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
+    let activees = crate::commande::lancer(
+        Command::new("systemctl").args([
+            "--user",
+            "list-unit-files",
+            "--type=service",
+            "--state=enabled",
+            "--no-legend",
+            "--no-pager",
+        ]),
+        10,
+    );
+    releve_dans(
+        &config,
+        &dossiers_systeme(),
+        &bureau,
+        activees.as_ref().and_then(services_actives),
+    )
+}
+
+/// La liste des services du compte activés que rend `systemctl --user list-unit-files`, ou `None` s'il n'a pas
+/// répondu (pas de session systemd, bus fermé) : un manque, jamais une liste vide (T-5). systemctl sort en 1 sur une
+/// liste vide ; seulement alors, sans rien écrire ni sur sa sortie ni sur ses erreurs, la liste est vide.
+fn services_actives(r: &crate::commande::Resultat) -> Option<String> {
+    match r.code {
+        Some(0) => Some(r.sortie.trim().to_string()),
+        Some(1) if r.sortie.trim().is_empty() && r.erreurs.trim().is_empty() => Some(String::new()),
+        _ => None,
+    }
+}
+
+/// `releve_demarrage` sur ces dossiers : `config`, le dossier de configuration du compte ; `activees`, la réponse de
+/// systemctl (`services_actives`). Ce qui ne se lit pas, ou que la garde refuse (`sous_maison::juger` : lien, tube,
+/// autre compte, hors du dossier personnel), est un manque dit, jamais une entrée tue (T-1, T-3).
+pub(super) fn releve_dans(
+    config: &Path,
+    systeme: &[PathBuf],
+    bureau: &str,
+    activees: Option<String>,
+) -> (Vec<Programme>, Vec<String>) {
     let mut manques = Vec::new();
     for d in std::iter::once(config.join("autostart")).chain(systeme.iter().cloned()) {
         if let Err(e) = std::fs::read_dir(&d)
@@ -1253,25 +1291,14 @@ pub fn releve_demarrage() -> (Vec<Programme>, Vec<String>) {
                 "dossier de démarrage illisible ({}) : {}",
                 "startup folder unreadable ({}): {}",
                 e,
-                d.display()
+                court(&d)
             ));
         }
     }
-    let (mut l, pas_lues) = autostart(&config.join("autostart"), &systeme, &bureau);
+    let (mut l, pas_lues) = autostart(&config.join("autostart"), systeme, bureau);
     manques.extend(pas_lues);
     let dossier = config.join("systemd/user");
-    let activees = sortie(
-        "systemctl",
-        &[
-            "--user",
-            "list-unit-files",
-            "--type=service",
-            "--state=enabled",
-            "--no-legend",
-            "--no-pager",
-        ],
-    )
-    .unwrap_or_else(|| {
+    let Some(activees) = activees else {
         manques.push(
             tr!(
                 "services du compte (systemctl --user) pas lus",
@@ -1279,31 +1306,50 @@ pub fn releve_demarrage() -> (Vec<Programme>, Vec<String>) {
             )
             .to_string(),
         );
-        String::new()
-    });
+        return (l, manques);
+    };
     for unite in activees.lines().filter_map(|l| l.split_whitespace().next()) {
-        if unite_valide(unite)
-            && fichier_ordinaire(&dossier.join(unite))
-            && sous_maison::juger(&dossier.join(unite)).is_ok()
-        {
-            let texte = std::fs::read_to_string(dossier.join(unite)).unwrap_or_default();
-            l.push(Programme {
-                nom: unite.trim_end_matches(".service").to_string(),
-                commande: texte
-                    .lines()
-                    .find_map(|l| l.trim().strip_prefix("ExecStart="))
-                    .unwrap_or(unite)
-                    .to_string(),
-                actif: true,
-                machine: false,
-                bureau: false,
-                changement: Changement::Demarrage {
-                    entree: Entree::Service(unite.to_string()),
-                    cible: Some("disabled".to_string()),
-                    vu: None,
-                },
-            });
+        let chemin = dossier.join(unite);
+        // Absent du dossier du compte : un service du système, activé pour chacun, que la personne n'a pas installé.
+        if std::fs::symlink_metadata(&chemin).is_err() {
+            continue;
         }
+        if !unite_valide(unite) {
+            manques.push(trf!(
+                "non vérifié : service du compte au nom que Vanguard ne lit pas ({}) ; pas proposé",
+                "not verified: account service with a name Vanguard does not read ({}); not offered",
+                crate::ui::affichable(unite)
+            ));
+            continue;
+        }
+        if let Err(e) = sous_maison::juger(&chemin) {
+            manques.push(trf!(
+                "non vérifié : {} ; ce service n'est ni lu ni proposé",
+                "not verified: {}; this service is neither read nor offered",
+                e
+            ));
+            continue;
+        }
+        if !fichier_ordinaire(&chemin) {
+            continue;
+        }
+        let texte = std::fs::read_to_string(&chemin).unwrap_or_default();
+        l.push(Programme {
+            nom: unite.trim_end_matches(".service").to_string(),
+            commande: texte
+                .lines()
+                .find_map(|l| l.trim().strip_prefix("ExecStart="))
+                .unwrap_or(unite)
+                .to_string(),
+            actif: true,
+            machine: false,
+            bureau: false,
+            changement: Changement::Demarrage {
+                entree: Entree::Service(unite.to_string()),
+                cible: Some("disabled".to_string()),
+                vu: None,
+            },
+        });
     }
     (l, manques)
 }
@@ -1319,7 +1365,8 @@ fn fichier_ordinaire(p: &Path) -> bool {
 /// Les entrées d'autostart : chaque fichier .desktop du compte, puis celles du système au nom qu'il n'a pas et qui se
 /// lancent sur ce bureau (une entrée pour un autre bureau, ou déjà masquée, n'a rien à retirer). Une entrée du compte
 /// qui est un lien n'est pas proposée, ni celle du système qu'elle remplace ; ni aucune dont un dossier du chemin
-/// est un lien ou sort du dossier personnel (`sous_maison::juger`) : la retirer écrirait à travers lui. Rend aussi
+/// est un lien ou sort du dossier personnel (`sous_maison::juger`) : la retirer écrirait à travers lui. Chacune est
+/// dite non vérifiée (T-1, T-3), le dossier refusé une fois pour toutes ses entrées. Rend aussi
 /// les entrées du compte qui ne se lisent pas bornées (plus de 64 Kio, pas en UTF-8) : pas proposées, faute de valeur
 /// d'avant à noter, mais dites (campagne 0.94, C-3).
 fn autostart(compte: &Path, systeme: &[PathBuf], bureau: &str) -> (Vec<Programme>, Vec<String>) {
@@ -1339,19 +1386,40 @@ fn autostart(compte: &Path, systeme: &[PathBuf], bureau: &str) -> (Vec<Programme
     let mut vus: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut l = Vec::new();
     let mut manques = Vec::new();
+    // Le dossier du compte lui-même refusé (un lien vers des dotfiles, hors du dossier personnel, à un autre compte) :
+    // aucune de ses entrées ne se lit ni ne se propose, et la liste le dit une fois (T-1), jamais « aucun programme ».
+    let dossier_refuse = match sous_maison::juger_le_dossier(compte) {
+        Ok(()) => false,
+        Err(e) => {
+            manques.push(trf!(
+                "non vérifié : {} ; ses entrées de démarrage ne sont ni lues ni proposées",
+                "not verified: {}; its startup entries are neither read nor offered",
+                e
+            ));
+            true
+        }
+    };
     for nom in noms(compte) {
         let chemin = compte.join(&nom);
-        // Un lien, un tube ou un dossier, à un autre compte ou derrière un dossier lien : pas proposé (limite connue :
-        // sans le dire), mais il masque l'entrée du système au même nom.
-        if sous_maison::juger(&chemin).is_ok() {
-            // Relu d'une seule ouverture, sans suivre de lien et borné, comme la note : ce qui est montré, la cible et
-            // la note viennent tous de cette lecture-là. Pas lu ainsi : rien à noter, donc rien de proposé (écrite,
-            // l'entrée ne se remettrait plus).
-            match sous_maison::lire(&chemin, max) {
-                Ok(t) => l.push(programme_autostart(chemin, &t, bureau, Some(format!("+{t}")))),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(_) => manques.push(pas_lue(&chemin)),
+        // Un lien, un tube ou un dossier, à un autre compte : ni lu ni proposé, mais dit (T-1, T-3) ; il masque
+        // l'entrée du système au même nom.
+        match sous_maison::juger(&chemin) {
+            Ok(()) => {
+                // Relu d'une seule ouverture, sans suivre de lien et borné, comme la note : ce qui est montré, la
+                // cible et la note viennent tous de cette lecture-là. Pas lu ainsi : rien à noter, donc rien de
+                // proposé (écrite, l'entrée ne se remettrait plus).
+                match sous_maison::lire(&chemin, max) {
+                    Ok(t) => l.push(programme_autostart(chemin, &t, bureau, Some(format!("+{t}")))),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(_) => manques.push(pas_lue(&chemin)),
+                }
             }
+            Err(_) if dossier_refuse => {}
+            Err(e) => manques.push(trf!(
+                "non vérifié : {} ; l'entrée n'est ni lue ni proposée",
+                "not verified: {}; the entry is neither read nor offered",
+                e
+            )),
         }
         vus.insert(nom);
     }
@@ -2588,10 +2656,82 @@ mod tests {
         // ni ses entrées ni les copies des entrées du système ne sont proposées, rien ne s'écrirait à travers lui.
         let lien = base.join("compte-lien");
         std::os::unix::fs::symlink(&ailleurs, &lien).unwrap();
+        let (l, manques) = autostart(&lien, std::slice::from_ref(&systeme), "Hyprland");
+        assert!(l.is_empty());
+        // T-1 : le dossier refusé est dit une fois, comme non vérifié, et pas chacune de ses entrées.
+        assert_eq!(manques.len(), 1, "{manques:?}");
         assert!(
-            autostart(&lien, std::slice::from_ref(&systeme), "Hyprland")
-                .0
-                .is_empty()
+            manques[0].contains("compte-lien") && manques[0].contains("non vérifié"),
+            "{manques:?}"
+        );
+        // T-3 : l'entrée elle-même lien, ou un tube à sa place, est dite non vérifiée, avec son nom.
+        crate::essais::tube_nomme(&compte.join("tube.desktop")).unwrap();
+        let (_, manques) = autostart(&compte, std::slice::from_ref(&systeme), "Hyprland");
+        assert_eq!(manques.len(), 2, "{manques:?}");
+        for nom in ["synchro.desktop", "tube.desktop"] {
+            assert!(
+                manques.iter().any(|m| m.contains(nom) && m.contains("non vérifié")),
+                "{nom} : {manques:?}"
+            );
+        }
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// T-5 : systemctl --user qui ne répond pas est un manque ; seule sa sortie en 1 sans rien écrire (aucun service
+    /// activé) est une liste vide.
+    #[test]
+    fn systemctl_du_compte_qui_echoue_est_un_manque() {
+        let r = |code: Option<i32>, sortie: &str, erreurs: &str| crate::commande::Resultat {
+            code,
+            sortie: sortie.to_string(),
+            erreurs: erreurs.to_string(),
+        };
+        assert_eq!(
+            services_actives(&r(Some(0), "syncthing.service enabled enabled\n", "")).as_deref(),
+            Some("syncthing.service enabled enabled")
+        );
+        assert_eq!(services_actives(&r(Some(1), "", "")).as_deref(), Some(""));
+        assert_eq!(
+            services_actives(&r(
+                Some(1),
+                "",
+                "Failed to connect to user scope bus via local transport"
+            )),
+            None
+        );
+        assert_eq!(services_actives(&r(Some(1), "x.service enabled enabled", "")), None);
+        assert_eq!(services_actives(&r(None, "", "")), None);
+        let base = dossier_jetable("systemctl");
+        let (l, manques) = releve_dans(&base, &[], "Hyprland", None);
+        assert!(l.is_empty());
+        assert!(manques.iter().any(|m| m.contains("systemctl")), "{manques:?}");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// T-3 : un service du compte activé dont le fichier est un lien (« systemctl --user link ») n'est pas proposé,
+    /// mais dit non vérifié ; un service du système activé (absent du dossier du compte) n'est pas un manque.
+    #[test]
+    fn service_du_compte_en_lien_dit_non_verifie() {
+        let base = dossier_jetable("service-lien");
+        let (unites, ailleurs) = (base.join("systemd/user"), base.join("dotfiles"));
+        std::fs::create_dir_all(&unites).unwrap();
+        std::fs::create_dir_all(&ailleurs).unwrap();
+        std::fs::write(
+            ailleurs.join("synchro.service"),
+            "[Service]\nExecStart=/usr/bin/synchro\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(ailleurs.join("synchro.service"), unites.join("synchro.service")).unwrap();
+        std::fs::write(unites.join("note.service"), "[Service]\nExecStart=/usr/bin/note\n").unwrap();
+        let activees =
+            "synchro.service enabled enabled\nnote.service enabled enabled\npipewire.service enabled enabled";
+        let (l, manques) = releve_dans(&base, &[], "Hyprland", Some(activees.to_string()));
+        let noms: Vec<&str> = l.iter().map(|p| p.nom.as_str()).collect();
+        assert_eq!(noms, ["note"]);
+        assert_eq!(manques.len(), 1, "{manques:?}");
+        assert!(
+            manques[0].contains("synchro.service") && manques[0].contains("non vérifié"),
+            "{manques:?}"
         );
         std::fs::remove_dir_all(&base).unwrap();
     }

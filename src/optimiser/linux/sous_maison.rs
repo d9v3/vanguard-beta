@@ -223,6 +223,15 @@ pub(super) fn juger(chemin: &Path) -> Result<(), Echec> {
     Ok(())
 }
 
+/// `dossier` et chaque dossier au-dessus, jusqu'au dossier personnel, sont-ils de vrais dossiers du compte (pas un
+/// lien, pas à un autre compte, pas hors du dossier personnel) ? Absent : rien à juger. Sert à dire un dossier
+/// d'autostart refusé, dont aucune entrée ne se lit (T-1).
+pub(super) fn juger_le_dossier(dossier: &Path) -> Result<(), Echec> {
+    // `parcourir` ouvre et juge chaque dossier du chemin, sauf le dernier nom : un nom posé sous `dossier`, jamais
+    // ouvert, fait juger `dossier` lui-même.
+    parcourir(&dossier.join("x"), false).map(|_| ())
+}
+
 /// Le texte de `chemin`, d'au plus `max` octets, lu sur le fichier ouvert sans suivre de lien. `NotFound` s'il
 /// n'existe pas (lui ou un de ses dossiers) ; `InvalidData` s'il n'est pas un simple fichier, trop gros ou pas en
 /// UTF-8 ; une autre erreur si la garde le refuse.

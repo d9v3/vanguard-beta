@@ -78,7 +78,8 @@ pub(super) fn resultat(entrees: &[Entree], manques: Vec<String>, debut: Debut) -
             ),
         ));
     }
-    if entrees.is_empty() {
+    // Rien de lu mais quelque chose de pas lu : la liste ne dit pas qu'aucun programme ne se lance (T-1).
+    if entrees.is_empty() && manques.is_empty() {
         constats.push(ok(
             CAT,
             tr!(
