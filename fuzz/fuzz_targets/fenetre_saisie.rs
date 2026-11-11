@@ -16,6 +16,10 @@ mod langue;
 mod nettoyage;
 
 #[allow(dead_code)]
+#[path = "../../fenetre/src/couleurs.rs"]
+mod couleurs;
+
+#[allow(dead_code)]
 #[path = "../../fenetre/src/commandes.rs"]
 mod commandes;
 

@@ -18,8 +18,17 @@ mod nettoyage;
 
 // Le geste d'un programme du démarrage (lot 2a) se lit avec la sorte et l'empreinte de la fenêtre.
 #[allow(dead_code)]
+#[path = "../../fenetre/src/couleurs.rs"]
+mod couleurs;
+
+#[allow(dead_code)]
 #[path = "../../fenetre/src/commandes.rs"]
 mod commandes;
+
+/// Ce que `donnees` prend du lanceur : ses deux types de fin, qui viennent de `commandes`.
+mod lanceur {
+    pub use crate::commandes::{Fin, Issue};
+}
 
 #[allow(dead_code)]
 #[path = "../../fenetre/src/donnees/mod.rs"]

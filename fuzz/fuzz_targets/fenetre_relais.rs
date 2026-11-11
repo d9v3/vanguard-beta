@@ -2,7 +2,7 @@
 //! relais, qui a les droits du compte, lit les demandes d'une fenêtre peut-être prise par ce qu'elle dessine ; la
 //! fenêtre lit les réponses du relais. Quoi qu'on envoie : aucune trame plus longue que la borne n'est acceptée (ni
 //! réservée), une demande comprise est une commande de la liste fermée ou un changement au démarrage dont les
-//! arguments ont la forme fermée (`demarrage --retirer|--remettre <32 hex> --json`), et se recode octet pour octet à
+//! arguments ont la forme fermée (`demarrage --retirer|--remettre <32 hex> --json`, ou `couleurs --theme …`), et se recode octet pour octet à
 //! l'identique ; une réponse comprise a une ligne d'erreur propre et bornée. Le premier octet choisit la langue.
 #![no_main]
 // Aucun unsafe ici ni dans ce que la cible inclut (fenetre/src/) : refusé sans recours, un allow ne compile pas.
@@ -15,6 +15,10 @@ mod langue;
 #[allow(dead_code)]
 #[path = "../../fenetre/src/nettoyage.rs"]
 mod nettoyage;
+
+#[allow(dead_code)]
+#[path = "../../fenetre/src/couleurs.rs"]
+mod couleurs;
 
 #[allow(dead_code)]
 #[path = "../../fenetre/src/commandes.rs"]
@@ -48,6 +52,21 @@ fn relais(mut flux: &[u8]) {
                     assert!(a[1] == "--retirer" || a[1] == "--remettre", "{a:?}");
                     assert!(a[2].len() == 32 && a[2].bytes().all(|o| matches!(o, b'0'..=b'9' | b'a'..=b'f')), "{a:?}");
                     assert_eq!(a[3], "--json");
+                }
+                // Les couleurs : `couleurs --theme <mot> (--base <mot> --vifs <5 × 6 hex> | --defaut) --json`.
+                Lancement::Couleurs(_) => {
+                    let a = lancement.arguments();
+                    assert!(a.len() == 5 || a.len() == 7, "{a:?}");
+                    assert_eq!((a[0].as_str(), a[1].as_str()), ("couleurs", "--theme"), "{a:?}");
+                    assert!(couleurs::Theme::lire(&a[2]).is_some(), "{a:?}");
+                    assert_eq!(a[a.len() - 1], "--json");
+                    if a.len() == 7 {
+                        assert_eq!((a[3].as_str(), a[5].as_str()), ("--base", "--vifs"), "{a:?}");
+                        assert!(couleurs::Base::lire(&a[4]).is_some(), "{a:?}");
+                        assert!(couleurs::lire_vifs(&a[6]).is_some(), "{a:?}");
+                    } else {
+                        assert_eq!(a[3], "--defaut");
+                    }
                 }
             }
         }
