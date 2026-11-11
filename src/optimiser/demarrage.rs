@@ -642,7 +642,7 @@ fn lignes_avec(programmes: Vec<Programme>, h: &Historique, classer: &dyn Fn(&Pro
         l.push(Ligne {
             garde,
             nom: affichable(&p.nom),
-            commande: affichable(&p.commande),
+            commande: affichable(&crate::optimiser::annulables::texte_montre(&p.commande)),
             nom_entier: p.nom,
             commande_entiere: p.commande,
             actif: p.actif,
@@ -670,7 +670,7 @@ fn lignes_avec(programmes: Vec<Programme>, h: &Historique, classer: &dyn Fn(&Pro
             let nom = systeme::Changement::nom_demarrage(identite);
             l.push(Ligne {
                 nom: affichable(&nom),
-                commande: affichable(identite),
+                commande: affichable(&crate::optimiser::annulables::texte_montre(identite)),
                 nom_entier: nom,
                 commande_entiere: identite.to_string(),
                 actif: false,

@@ -342,7 +342,7 @@ fn lire_dans(dossier: &std::path::Path) -> Option<(Historique, bool)> {
                 tre!(
                     "Attention : valeurs d'avant des réglages acceptées sans sceau d'avant : aucune n'est remise. Copie gardée : {}",
                     "Warning: previous setting values accepted without an earlier seal: none is restored. Copy kept: {}",
-                    copie.display()
+                    annulables::chemin_montre(&copie.to_string_lossy())
                 );
             }
             return None;
@@ -352,7 +352,7 @@ fn lire_dans(dossier: &std::path::Path) -> Option<(Historique, bool)> {
                 tre!(
                     "Attention : valeurs d'avant des réglages changées hors de Vanguard : aucune n'est remise. Copie gardée : {}",
                     "Warning: previous setting values changed outside Vanguard: none is restored. Copy kept: {}",
-                    copie.display()
+                    annulables::chemin_montre(&copie.to_string_lossy())
                 );
             }
             return None;
@@ -374,7 +374,7 @@ fn lire_dans(dossier: &std::path::Path) -> Option<(Historique, bool)> {
                 tre!(
                     "Attention : valeurs d'avant des réglages illisibles ({e}). Copie gardée : {}",
                     "Warning: previous setting values unreadable ({e}). Copy kept: {}",
-                    copie.display()
+                    annulables::chemin_montre(&copie.to_string_lossy())
                 );
             }
             None

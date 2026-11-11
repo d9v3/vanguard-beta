@@ -1533,6 +1533,57 @@ fn tue_apres_la_pose_la_ligne_est_interrompue_et_se_remet() {
     assert_eq!(c.mode(".netrc"), 0o644);
 }
 
+/// Campagne B, P-4 : une correction qui ne s'annulerait pas dit pourquoi sans nommer le dossier personnel. Un fichier
+/// secret setuid (forme que Vanguard ne remettrait pas) et une clé dont le nom porte un retour de ligne : ni le JSON
+/// de l'aperçu, ni son écran, ni le journal, ni la sortie d'erreur ne portent le chemin absolu de la maison.
+#[cfg(unix)]
+#[test]
+fn pourquoi_pas_ne_nomme_pas_la_maison() {
+    let c = Compte::nouveau();
+    c.poser(".netrc", 0o4755);
+    let cle = c.chemin(".ssh/id_\nautre");
+    std::fs::write(&cle, "clé inventée\n").unwrap();
+    c.poser(".ssh/id_\nautre", 0o644);
+    let maison = c.chemin("").to_string_lossy().into_owned();
+    let (s, _) = c.lancer(&["audit", "--json"]);
+    let v: serde_json::Value = serde_json::from_str(&s.texte).expect("audit --json : JSON illisible");
+    let jetons: Vec<String> = v["constats"]
+        .as_array()
+        .expect("pas de constats")
+        .iter()
+        .filter_map(|c| c["geste"]["jeton"].as_str().map(str::to_string))
+        .collect();
+    let mut raisons = Vec::new();
+    for j in &jetons {
+        let (s, r) = c.lancer(&["correction", "--voir", j, "--json"]);
+        assert!(!s.texte.contains(&maison), "JSON : {}", s.texte);
+        assert!(!s.erreurs.contains(&maison), "erreurs : {}", s.erreurs);
+        if let Some(p) = r["apercu"]["pourquoi_pas"].as_str().filter(|p| !p.is_empty()) {
+            raisons.push(p.to_string());
+        }
+        let (s, _) = c.lancer(&["correction", "--voir", j]);
+        assert!(!s.texte.contains(&maison), "écran : {}", s.texte);
+        assert!(!s.erreurs.contains(&maison), "erreurs : {}", s.erreurs);
+    }
+    // Les deux pièges ont bien donné une raison, qui nomme le fichier en « ~/… ».
+    assert!(raisons.iter().filter(|p| p.contains("~/")).count() >= 2, "{raisons:?}");
+    let journal = c.journal_de("correction");
+    assert!(!journal.contains(&maison), "{journal}");
+    // Le carnet des notes changé hors de Vanguard : l'avertissement dit où est sa copie, en « ~/… ».
+    c.poser(".netrc", 0o644);
+    c.appliquer_ok("~/.netrc");
+    let carnet = c.donnees().join("reglages.json");
+    let mut texte = std::fs::read_to_string(&carnet).unwrap();
+    texte.push(' ');
+    std::fs::write(&carnet, texte).unwrap();
+    let (s, _) = c.lancer(&["changements", "--json"]);
+    assert!(
+        s.erreurs.contains("Copie gardée : ~/") && !s.erreurs.contains(&maison),
+        "{}",
+        s.erreurs
+    );
+}
+
 /// Campagne B, P-2 : une annulation ne naît que de ce que Vanguard a posé. Les droits changés par un autre entre la
 /// note et la pose (0644 devenus 0640), la pose est refusée, la ligne n'est pas annulable, aucune note ne reste, et
 /// rien n'est jamais « remis » à 0644.
@@ -4590,6 +4641,23 @@ mod demarrage_sous_attaque {
         let r = b.changer("--remettre", &e);
         assert_eq!(r.1, "fait", "{r:?}");
         assert_eq!(lu(&fl), v1, "remis à l'octet près");
+    }
+
+    /// Campagne B, P-4. Une entrée dont la commande nomme le dossier personnel se montre en « ~/… » : la liste JSON
+    /// (ce que lit le relais) ne porte pas son chemin absolu. (La maison jetable se trouve sous un dossier « vanguard » :
+    /// l'entrée y est « à garder », sans geste ; le retrait d'une telle entrée n'est donc pas essayé ici.)
+    #[test]
+    fn la_commande_montree_ne_nomme_pas_la_maison() {
+        let b = Banc::nouveau("commande-maison");
+        let maison = b.maison.to_string_lossy().into_owned();
+        b.poser(
+            "lanceur.desktop",
+            "Lanceur",
+            &format!("{maison}/bin/lanceur --conf {maison}/c"),
+        );
+        let (_, brut) = b.liste();
+        assert!(!brut.contains(&maison), "{brut}");
+        assert!(brut.contains("~/bin/lanceur --conf ~/c"), "{brut}");
     }
 
     /// Campagne B, P-3. Le dossier d'autostart du compte (`config/autostart`), puis `config` lui-même, sont des liens

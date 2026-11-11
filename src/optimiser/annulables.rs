@@ -175,17 +175,17 @@ impl PourquoiPas {
             PourquoiPas::HorsListe(g) => trf!(
                 "« {} » n'est pas dans la liste de ce que Vanguard sait remettre",
                 "“{}” is not in the list of what Vanguard can put back",
-                affichable(g)
+                affichable(&geste_montre(g))
             ),
             PourquoiPas::Illisible(g) => trf!(
                 "état d'avant illisible ({})",
                 "state before unreadable ({})",
-                affichable(g)
+                affichable(&geste_montre(g))
             ),
             PourquoiPas::Forme(g) => trf!(
                 "état d'avant d'une forme que Vanguard ne remettrait pas ({})",
                 "state before in a form Vanguard would not put back ({})",
-                affichable(g)
+                affichable(&geste_montre(g))
             ),
         }
     }
@@ -252,6 +252,32 @@ pub(crate) fn chemin_montre(chemin: &str) -> String {
         Ok(Some(r)) => format!("~/{r}"),
         _ => chemin.to_string(),
     }
+}
+
+/// Un texte libre (la commande d'une entrée du démarrage) tel qu'il se montre : le chemin absolu du dossier personnel
+/// y devient « ~ » partout où il est un chemin entier (suivi d'un séparateur, d'un blanc, d'un guillemet ou de la fin), jamais
+/// le nom du compte.
+pub(crate) fn texte_montre(texte: &str) -> String {
+    let maison = crate::socle::maison();
+    let Some(m) = maison
+        .to_str()
+        .map(|m| m.trim_end_matches('/'))
+        .filter(|m| maison.is_absolute() && !m.is_empty() && maison.parent().is_some())
+    else {
+        return texte.to_string();
+    };
+    let mut o = String::with_capacity(texte.len());
+    let mut reste = texte;
+    while let Some((avant, apres)) = reste.find(m).and_then(|i| reste.split_at_checked(i)) {
+        let suite = apres.strip_prefix(m).unwrap_or_default();
+        o.push_str(avant);
+        let entier =
+            suite.is_empty() || suite.starts_with(|c: char| matches!(c, '/' | '\\' | '"' | '\'') || c.is_whitespace());
+        o.push_str(if entier { "~" } else { m });
+        reste = suite;
+    }
+    o.push_str(reste);
+    o
 }
 
 /// Un geste tel qu'il se montre : le chemin d'un geste « droits|… » ou « fichier|… » passé par `chemin_montre`.
@@ -1251,6 +1277,27 @@ mod tests {
         assert!(!relu.reglages.contains_key("bilan:a"));
         assert_eq!(relu.reglages.get("bilan:b"), Some(&b.1));
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Campagne B, P-4 : une commande du démarrage se montre sans le chemin du dossier personnel, seulement là où il
+    /// est un chemin entier : un dossier voisin au nom plus long reste tel quel.
+    #[test]
+    fn texte_montre_cache_le_dossier_personnel() {
+        let maison = crate::socle::maison();
+        let Some(m) = maison
+            .to_str()
+            .filter(|_| maison.is_absolute() && maison.parent().is_some())
+        else {
+            return crate::essais::saute("pas de dossier personnel absolu");
+        };
+        let m = m.trim_end_matches('/');
+        let s = std::path::MAIN_SEPARATOR;
+        assert_eq!(
+            texte_montre(&format!("{m}{s}bin{s}lanceur --conf \"{m}{s}c\" {m}")),
+            format!("~{s}bin{s}lanceur --conf \"~{s}c\" ~")
+        );
+        assert_eq!(texte_montre(&format!("{m}2{s}x")), format!("{m}2{s}x"));
+        assert_eq!(texte_montre("/usr/bin/lecteur --discret"), "/usr/bin/lecteur --discret");
     }
 
     /// Campagne B, P-2 : après une pose refusée, la note ne garde que les lignes que Vanguard n'a pas pu remettre ;
