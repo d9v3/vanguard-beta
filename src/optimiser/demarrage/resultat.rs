@@ -105,6 +105,31 @@ pub(super) fn resultat(entrees: &[Entree], manques: Vec<String>, debut: Debut) -
     r
 }
 
+/// L'objet d'un programme, tel que le constat l'écrit : « demarrage:<identité échappée> », le chemin d'une entrée
+/// d'autostart montré « ~/… » sous le dossier personnel : son chemin absolu dit le nom du compte, et part au rapport,
+/// au journal et vers la fenêtre (T-4, comme 27ae2490 du sous-lot B). L'empreinte, elle, reste celle de l'identité
+/// entière (`empreinte`) : elle ne change pas d'une version à l'autre.
+fn objet(identite: &str) -> Objet {
+    let montree = match identite.split_once('|') {
+        Some((sorte, chemin)) if chemin.starts_with('/') => format!("{sorte}|{}", chemin_montre(chemin)),
+        _ => identite.to_string(),
+    };
+    Objet::de("demarrage", &nom_pour_cle(&montree))
+}
+
+/// « ~ » ou « ~/… » sous le dossier personnel, jamais son chemin absolu ; tel quel ailleurs.
+fn chemin_montre(chemin: &str) -> String {
+    let maison = crate::socle::maison();
+    if !maison.is_absolute() || maison.parent().is_none() {
+        return chemin.to_string();
+    }
+    match std::path::Path::new(chemin).strip_prefix(&maison).map(|r| r.to_str()) {
+        Ok(Some("")) => "~".to_string(),
+        Ok(Some(r)) => format!("~/{r}"),
+        _ => chemin.to_string(),
+    }
+}
+
 /// L'empreinte d'un programme : les 16 premiers octets du BLAKE3 de son objet tel que le constat l'écrit
 /// (« demarrage:<identité échappée> »), en 32 chiffres hexadécimaux minuscules. C'est tout ce que la fenêtre renvoie
 /// pour le désigner : ni nom ni chemin, qu'elle aurait pu se faire glisser. `None` : une identité vide, sans objet.
@@ -154,7 +179,7 @@ fn constat(e: &Entree) -> Constat {
     if e.machine {
         texte.push_str(tr!(" · tout l'ordinateur", " · whole machine"));
     }
-    ok(CAT, texte).avec_objet(Objet::de("demarrage", &nom_pour_cle(e.identite)))
+    ok(CAT, texte).avec_objet(objet(e.identite))
 }
 
 #[allow(
@@ -195,6 +220,33 @@ mod tests {
         assert_eq!(r.constats.len(), 3);
         assert_eq!(r.constats[0].objet.as_deref(), Some("demarrage:Lecteur"));
         assert!(r.constats[1].message.contains("pilote"));
+    }
+
+    /// T-4 : l'objet d'une entrée d'autostart du compte part en « ~/… », jamais avec le chemin du dossier personnel
+    /// (qui dit le nom du compte) ; l'empreinte reste celle de l'identité entière ; un service ou un chemin hors du
+    /// dossier personnel reste tel quel.
+    #[test]
+    fn l_objet_ne_dit_pas_le_dossier_personnel() {
+        let maison = crate::socle::maison();
+        let maison = maison.to_str().unwrap();
+        let identite = format!("autostart|{maison}/.config/autostart/lecteur.desktop");
+        let mut e = entree("Lecteur", Statut::SeLance);
+        e.identite = &identite;
+        let r = resultat(std::slice::from_ref(&e), vec![], debut());
+        let o = r.constats[0].objet.clone().unwrap();
+        assert!(!o.contains(maison), "{o}");
+        assert!(o.contains("~/.config/autostart/lecteur.desktop"), "{o}");
+        assert_eq!(
+            r.constats[0].geste.as_ref().unwrap().empreinte,
+            empreinte(&identite).unwrap()
+        );
+        for tel_quel in ["systemd|syncthing.service", "autostart|/etc/xdg/autostart/x.desktop"] {
+            assert_eq!(
+                objet(tel_quel).texte(),
+                Objet::de("demarrage", &nom_pour_cle(tel_quel)).texte(),
+                "{tel_quel}"
+            );
+        }
     }
 
     /// Le geste de chaque programme : retirer un programme ordinaire qui se lance, remettre ce que Vanguard a
