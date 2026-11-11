@@ -113,8 +113,12 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
 - **The other devices on the network.** It observes them, it does not fix them and never attacks them: the router is
   read, never changed; the only password tried is the SNMP community “public”, and the attempt is announced.
 - **Online accounts.** Known leaks are reported; the account itself is up to the service that hosts it.
-- **SSH settings meant for some servers only.** Vanguard reads the SSH client configuration (`~/.ssh/config`, its
-  `Include`s, `/etc/ssh/ssh_config`) with SSH's own rules, but it only judges what may apply to every server: a
+- **SSH settings meant for some servers only.** Vanguard reads the SSH client configuration (`~/.ssh/config` and its
+  `Include`s; `/etc/ssh/ssh_config` only for the post-quantum exchange: agent forwarding or host-key checking turned
+  off in that system file are not reported) with OpenSSH 10.6's rules (including the `Match host=…` form, which an
+  older client rejects; a list pattern of 1023 bytes or more, which SSH never compares, makes the scope doubtful; a
+  `KexAlgorithms` list longer than 4096 bytes is reported as not read), but it only judges what may apply to every
+  server: a
   setting under a `Host` or `Match` that names a server is not reported. Nor does it see that several precise `Host`
   lines, taken together, cover every name (one per first letter, for example). A header SSH may apply to every
   server (`Match user`, `Match exec`, `Host *.*`…) is treated as global: it raises the alert, and Vanguard never

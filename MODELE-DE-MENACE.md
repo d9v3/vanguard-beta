@@ -121,9 +121,12 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
 - **Les autres appareils du réseau.** Il les observe, il ne les corrige pas et ne les attaque jamais : le routeur est
   lu, jamais modifié ; le seul mot de passe essayé est la communauté SNMP « public », et l'essai est annoncé.
 - **Les comptes en ligne.** Les fuites connues sont signalées ; le compte lui-même relève du service qui l'héberge.
-- **Les réglages SSH propres à certains serveurs.** Vanguard lit la configuration du client SSH (`~/.ssh/config`,
-  ses `Include`, `/etc/ssh/ssh_config`) avec les règles de SSH, mais il ne juge que ce qui peut valoir pour tous les
-  serveurs : un réglage sous un `Host` ou un `Match` qui nomme un serveur n'est pas signalé. Il ne voit pas non plus
+- **Les réglages SSH propres à certains serveurs.** Vanguard lit la configuration du client SSH (`~/.ssh/config` et
+  ses `Include` ; `/etc/ssh/ssh_config` seulement pour l'échange post-quantique : le prêt de l'agent ou la
+  vérification coupée écrits dans ce fichier du système ne sont pas signalés) avec les règles d'OpenSSH 10.6 (la
+  forme `Match host=…` comprise, qu'un client plus ancien refuse ; un motif de liste de 1023 octets ou plus, que SSH
+  ne compare jamais, rend la portée douteuse ; une liste `KexAlgorithms` de plus de 4096 octets est dite non lue),
+  mais il ne juge que ce qui peut valoir pour tous les serveurs : un réglage sous un `Host` ou un `Match` qui nomme un serveur n'est pas signalé. Il ne voit pas non plus
   que plusieurs `Host` précis, mis ensemble, couvrent tous les noms (un par première lettre, par exemple). Un en-tête
   que SSH applique peut-être à tous (`Match user`, `Match exec`, `Host *.*`…) est traité comme global : il donne
   l'alerte, et Vanguard n'annonce jamais sur sa foi un échange post-quantique « proposé » ni des réglages
