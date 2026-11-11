@@ -41,6 +41,13 @@ recompilée au besoin.
   inclus trop gros, illisible ou trop profond, tube ou fichier spécial dans ~/.ssh) est dit « non lu » ou « non
   vérifié », jamais sain. Un octet hors UTF-8 ne cache plus une clé sans phrase de passe ou lisible par d'autres, et
   une configuration qui s'inclut elle-même ne remplit plus la mémoire.
+- **Les cas limites de SSH, lus comme OpenSSH 10.** La forme « Match host=… » (critère=valeur) est lue comme
+  OpenSSH 10 ; un motif de liste de 1023 octets ou plus sous « Match host » ou « originalhost », que SSH ne compare
+  jamais, rend la portée douteuse au lieu de sûre. La comparaison des jokers ne s'appelle plus elle-même : une valeur
+  KexAlgorithms géante ne fait plus planter Vanguard, et une liste de plus de 4096 octets est dite non lue. Une valeur
+  qui écarte le post-quantique, placée après un en-tête douteux qui le propose, est dite comme un doute (« peut
+  écarter »). /etc/ssh/ssh_config n'est lu que pour le post-quantique : le prêt de l'agent ou la vérification coupée
+  écrits là ne sont pas signalés.
 - **Aperçu d'une correction, sans rien changer.** Dans `audit --json`, chaque constat qui se corrige porte un jeton ;
   une commande en lecture seule relit sa seule règle et dit ce que la correction ferait (commandes, droits, valeurs
   d'avant, annulation), sans rien lancer ni noter.
@@ -67,6 +74,8 @@ recompilée au besoin.
   et une base ClamAV de plus d'une semaine n'est plus dite à jour. Secrets : un historique ou une recherche coupés à
   leur borne sont dits au lieu d'un ✔, un dépôt lu à moitié est non vérifié, la recherche s'arrête après 20 minutes et
   ses rapports, qui nomment les auteurs des commits, sont effacés. Conteneurs : plus de « relancez avec sudo ».
+- **Sécurité des dépendances.** rustix 1.1.6 (avis RUSTSEC-2026-0486 : dans ses fonctions des attributs étendus,
+  des octets jamais écrits étaient marqués comme initialisés pour un tampon vide), amené par crossterm.
 - **Essais.** Cinq nouvelles cibles de fuzzing (ce qu'une ligne de démarrage lance et, pour la fenêtre à venir, les
   réponses qu'elle lit, sa console, son relais et sa progression), qui ont trouvé et fait corriger de vrais défauts.
 - **Gardé pour la 0.95.** La fenêtre de Vanguard, ses écrans et ses gestes (voir, appliquer ou annuler une correction

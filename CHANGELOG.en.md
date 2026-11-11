@@ -39,6 +39,12 @@ repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
   unreadable or too deep, a pipe or special file in ~/.ssh) is reported as "not read" or "unchecked", never as safe. A
   non-UTF-8 byte no longer hides a key without a passphrase or readable by others, and a configuration that includes
   itself no longer fills memory.
+- **SSH edge cases, read like OpenSSH 10.** The "Match host=…" form (criterion=value) is read like OpenSSH 10; a
+  list pattern of 1023 bytes or more under "Match host" or "originalhost", which SSH never compares, makes the scope
+  uncertain instead of certain. Wildcard matching no longer calls itself: a giant KexAlgorithms value no longer
+  crashes Vanguard, and a list longer than 4096 bytes is reported as not read. A value that rules out post-quantum,
+  placed after an uncertain header that offers it, is reported as a doubt ("may rule out"). /etc/ssh/ssh_config is
+  read for post-quantum only: agent forwarding or disabled host key checking written there is not reported.
 - **Preview of a fix, without changing anything.** In `audit --json`, each finding that can be fixed carries a token;
   a read-only command rereads its single rule and says what the fix would do (commands, rights, previous values,
   undo), without running or recording anything.
@@ -65,6 +71,8 @@ repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
   ClamAV database older than a week is no longer called up to date. Secrets: a history or a search cut at its limit is
   reported instead of a ✔, a repository read halfway is unchecked, the search stops after 20 minutes and its reports,
   which name the commit authors, are deleted. Containers: no more "run again with sudo".
+- **Dependency security.** rustix 1.1.6 (advisory RUSTSEC-2026-0486: in its extended attribute functions, bytes
+  never written were marked as initialized for an empty buffer), brought in by crossterm.
 - **Tests.** Five new fuzzing targets (what a startup line starts and, for the upcoming window, the answers it reads,
   its console, its relay and its progress), which found real defects that were fixed.
 - **Kept for 0.95.** The Vanguard window, its screens and its actions (view, apply or undo a fix from it) are not
