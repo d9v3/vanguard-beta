@@ -993,6 +993,13 @@ mod tests_liens {
             !constats.is_empty() && constats.iter().all(|c| !c.verifie),
             "{messages:?}"
         );
+        // Les secrets dessous sont aussi non lus : sans cette ligne, la maison elle-même pourrait être tue.
+        assert!(
+            constats
+                .iter()
+                .any(|c| !c.verifie && (c.message.contains("~ non lu") || c.message.contains("~ not read"))),
+            "{messages:?}"
+        );
     }
 
     #[test]
