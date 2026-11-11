@@ -47,17 +47,39 @@ pub(crate) fn mots_de_passe_vides_sshd(conf: &str) -> bool {
     valeur_sshd(conf, "PermitEmptyPasswords").as_deref() == Some("yes") && mots_de_passe_sshd(conf)
 }
 
-/// Le motif d'OpenSSH (« * » : n'importe quelle suite, « ? » : un caractère) correspond-il au nom ?
+/// Le motif d'OpenSSH (« * » : n'importe quelle suite, « ? » : un octet) correspond-il au nom ? Sans récursion, en
+/// temps borné par (longueur du motif + longueur du nom) × longueur du nom, sans mémoire en plus : la comparaison
+/// récursive d'avant descendait d'un cran par « * » (500 000 « * » dans une ligne KexAlgorithms : pile débordée,
+/// Vanguard tué sans bilan) et devenait exponentielle sur des « *? » alternés (vérification de Fable n° 3, N2).
+/// Deux curseurs : à un écart, reprendre juste après le dernier « * » vu, en lui faisant avaler un octet de plus du
+/// nom ; un « * » plus récent rend les précédents inutiles (ce qu'ils avaleraient de plus, il l'avale aussi).
 pub(crate) fn correspond(motif: &[u8], nom: &[u8]) -> bool {
-    match (motif.split_first(), nom.split_first()) {
-        (None, _) => nom.is_empty(),
-        (Some((b'*', suite)), _) => {
-            correspond(suite, nom) || nom.split_first().is_some_and(|(_, reste)| correspond(motif, reste))
+    let (mut m, mut n) = (0_usize, 0_usize);
+    // Le dernier « * » vu : (position du motif juste après lui, position du nom où il s'arrête pour l'instant).
+    let mut etoile: Option<(usize, usize)> = None;
+    while let Some(octet) = nom.get(n) {
+        match motif.get(m) {
+            Some(b'*') => {
+                m = m.saturating_add(1);
+                etoile = Some((m, n));
+            }
+            Some(&c) if c == b'?' || c.eq_ignore_ascii_case(octet) => {
+                m = m.saturating_add(1);
+                n = n.saturating_add(1);
+            }
+            _ => {
+                let Some((apres, arret)) = etoile else {
+                    return false;
+                };
+                // L'arrêt avance d'un octet à chaque reprise : au plus un tour par octet du nom.
+                let arret = arret.saturating_add(1);
+                etoile = Some((apres, arret));
+                (m, n) = (apres, arret);
+            }
         }
-        (Some((b'?', suite)), Some((_, reste))) => correspond(suite, reste),
-        (Some((m, suite)), Some((n, reste))) if m.eq_ignore_ascii_case(n) => correspond(suite, reste),
-        _ => false,
     }
+    // Le nom est lu : il ne reste du motif que des « * », qui avalent le vide.
+    motif.get(m..).is_some_and(|reste| reste.iter().all(|&c| c == b'*'))
 }
 
 /// La première valeur d'un réglage dans la configuration lue dans l'ordre de sshd : (fichier lu, mot écrit, valeur
@@ -259,6 +281,77 @@ pub(crate) fn noms_a_ajouter(version: Option<(u32, u32)>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// La comparaison récursive d'avant, juste et lisible, gardée comme référence sur de petits cas.
+    fn reference(motif: &[u8], nom: &[u8]) -> bool {
+        match (motif.split_first(), nom.split_first()) {
+            (None, _) => nom.is_empty(),
+            (Some((b'*', suite)), _) => {
+                reference(suite, nom) || nom.split_first().is_some_and(|(_, reste)| reference(motif, reste))
+            }
+            (Some((b'?', suite)), Some((_, reste))) => reference(suite, reste),
+            (Some((m, suite)), Some((n, reste))) if m.eq_ignore_ascii_case(n) => reference(suite, reste),
+            _ => false,
+        }
+    }
+
+    /// Tous les mots de longueur 0 à `n` sur cet alphabet.
+    fn mots(alphabet: &[u8], n: usize) -> Vec<Vec<u8>> {
+        let mut tous = vec![Vec::new()];
+        let mut derniers = vec![Vec::new()];
+        for _ in 0..n {
+            derniers = derniers
+                .iter()
+                .flat_map(|m: &Vec<u8>| alphabet.iter().map(move |&c| [m.as_slice(), &[c]].concat()))
+                .collect();
+            tous.extend(derniers.iter().cloned());
+        }
+        tous
+    }
+
+    /// Vérification de Fable n° 3, N2 : la comparaison sans récursion dit exactement ce que disait l'ancienne, sur
+    /// tous les motifs de 6 signes au plus (jokers, casse) et tous les noms de 5 octets au plus.
+    #[test]
+    fn correspond_comme_la_reference_sur_tous_les_petits_cas() {
+        let noms = mots(b"abA", 5);
+        for motif in mots(b"aB*?", 6) {
+            for nom in &noms {
+                assert_eq!(
+                    correspond(&motif, nom),
+                    reference(&motif, nom),
+                    "{} / {}",
+                    String::from_utf8_lossy(&motif),
+                    String::from_utf8_lossy(nom)
+                );
+            }
+        }
+    }
+
+    /// Vérification de Fable n° 3, N2 : 500 000 « * » débordaient la pile (Vanguard tué, plus aucun bilan), des « *? »
+    /// alternés qui échouent à la fin prenaient un temps exponentiel (15 paires : 32 s). Côté client (`kex_post_quantique`)
+    /// comme côté serveur (même fonction) et pour les algorithmes faibles de sshd (`linux::algorithmes_ssh`).
+    #[test]
+    fn correspond_sans_pile_ni_temps_exponentiel() {
+        let nom = b"mlkem768x25519-sha256";
+        let etoiles = "*".repeat(500_000);
+        assert!(correspond(etoiles.as_bytes(), nom));
+        assert!(!correspond(format!("{etoiles}x").as_bytes(), nom));
+        let alternes = |n: usize, fin: &str| format!("{}{fin}", "*?".repeat(n));
+        assert!(!correspond(alternes(5_000, "x").as_bytes(), &[b'a'; 40]));
+        assert!(!correspond(alternes(40, "x").as_bytes(), &[b'a'; 40]));
+        assert!(correspond(alternes(20, "").as_bytes(), &[b'a'; 40]));
+        assert!(correspond(alternes(40, "").as_bytes(), &[b'a'; 40]));
+        assert!(!correspond(alternes(41, "").as_bytes(), &[b'a'; 40]));
+        // Une liste « - » faite de 500 000 « * » retire tout, post-quantique compris.
+        assert_eq!(
+            kex_post_quantique(Some(&format!("-{etoiles}")), Some((10, 6))),
+            Some(false)
+        );
+        assert_eq!(
+            kex_post_quantique(Some(&format!("-{}", alternes(20, "x"))), Some((10, 6))),
+            Some(true)
+        );
+    }
 
     #[test]
     fn version_de_l_openssh_de_windows() {

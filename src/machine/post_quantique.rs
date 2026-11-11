@@ -383,15 +383,23 @@ pub(crate) fn juger_client(l: &Lecture<Client>) -> Vec<Constat> {
     if !config.candidates.last().is_some_and(|x| x.2) {
         possibles.push((None, None, true));
     }
-    let juge = |p: &&(Option<&str>, Option<&str>, bool)| kex_post_quantique(p.1, c.version);
-    let (fichier, valeur, sure) = possibles
+    let juge = |p: &(Option<&str>, Option<&str>, bool)| kex_post_quantique(p.1, c.version);
+    let indice = possibles
         .iter()
-        .find(|p| p.2 && juge(p) == Some(false))
-        .or_else(|| possibles.iter().find(|p| juge(p) == Some(false)))
-        .or_else(|| possibles.iter().find(|p| juge(p).is_none()))
-        .or(possibles.last())
+        .position(|p| p.2 && juge(p) == Some(false))
+        .or_else(|| possibles.iter().position(|p| juge(p) == Some(false)))
+        .or_else(|| possibles.iter().position(|p| juge(p).is_none()))
+        .or(possibles.len().checked_sub(1));
+    let (fichier, valeur, sure) = indice
+        .and_then(|i| possibles.get(i))
         .copied()
         .unwrap_or((None, None, true));
+    // Une valeur douteuse placée avant la globale sûre, et qui ne l'écarte pas : SSH la garde peut-être pour certains
+    // serveurs, « écarte pour tous » serait faux pour eux (vérification de Fable n° 3, N4).
+    let doute_avant = sure
+        && indice
+            .and_then(|i| possibles.get(..i))
+            .is_some_and(|avant| avant.iter().any(|p| juge(p) != Some(false)));
     let objet = Objet::de("ssh", fichier.unwrap_or("defaut"));
     constats.push(
         match kex_post_quantique(valeur, c.version) {
@@ -402,18 +410,24 @@ pub(crate) fn juger_client(l: &Lecture<Client>) -> Vec<Constat> {
                     "SSH client (OpenSSH {v}): a post-quantum key exchange is offered to servers."
                 ),
             ),
-            // Sous un en-tête que SSH n'applique peut-être pas à tous : dit comme un doute, jamais tu.
-            Some(false) if !sure => {
-                let fichier = affichable(fichier.unwrap_or_default());
-                alerte(
-                    CAT,
-                    Niveau::Info,
-                    trf!(
+            // Sous un en-tête que SSH n'applique peut-être pas à tous, ou après une valeur douteuse qui propose le
+            // post-quantique : dit comme un doute, jamais tu.
+            Some(false) if !sure || doute_avant => {
+                let message = match fichier.map(affichable) {
+                    Some(fichier) if !sure => trf!(
                         "Client SSH : la configuration {fichier} peut écarter l'échange post-quantique pour tous les serveurs : elle est sous un « Host » ou un « Match » que SSH applique peut-être à tous, et Vanguard ne peut pas trancher. Une session captée aujourd'hui pourrait être déchiffrée le jour où un ordinateur quantique existera.",
                         "SSH client: the {fichier} configuration may rule out post-quantum key exchange for every server: it sits under a “Host” or “Match” that SSH may apply to all of them, and Vanguard cannot tell. A session recorded today could be decrypted once a quantum computer exists."
                     ),
-                )
-                .manuel(conseil_client(valeur, c.version), &[])
+                    Some(fichier) => trf!(
+                        "Client SSH : la configuration {fichier} peut écarter l'échange post-quantique pour tous les serveurs : elle l'écarte pour chacun, sauf ceux à qui un « Host » ou un « Match » placé avant, que SSH applique peut-être, donne une liste qui le propose ; Vanguard ne peut pas trancher. Une session captée aujourd'hui pourrait être déchiffrée le jour où un ordinateur quantique existera.",
+                        "SSH client: the {fichier} configuration may rule out post-quantum key exchange for every server: it rules it out for each one, except those given a list that offers it by an earlier “Host” or “Match” that SSH may apply; Vanguard cannot tell. A session recorded today could be decrypted once a quantum computer exists."
+                    ),
+                    None => trf!(
+                        "Client SSH (OpenSSH {v}) : l'échange de clés post-quantique n'est pas proposé par défaut, et seule une liste sous un « Host » ou un « Match » que SSH applique peut-être l'ajoute ; Vanguard ne peut pas trancher : il manque peut-être pour tous les serveurs.",
+                        "SSH client (OpenSSH {v}): post-quantum key exchange is not offered by default, and only a list under a “Host” or “Match” that SSH may apply adds it; Vanguard cannot tell: it may be missing for every server."
+                    ),
+                };
+                alerte(CAT, Niveau::Info, message).manuel(conseil_client(valeur, c.version), &[])
             }
             Some(false) if liste_qui_retire(valeur, c.version) => {
                 let fichier = affichable(fichier.unwrap_or_default());
@@ -1320,9 +1334,11 @@ mod tests {
                 continue;
             }
             let c = client(vec![lignes("~/.ssh/config", &config)], Some((10, 6)));
+            // Vérification de Fable n° 3, N4 : SSH garde peut-être la bonne pour certains serveurs, « écarte pour
+            // tous » serait faux pour eux ; l'alerte reste, dite comme un doute, à la ligne fautive.
             assert_eq!(c[0].probleme, Some(Niveau::Info), "{en_tete:?} : {:?}", messages(&c));
             assert!(
-                c[0].message.contains("écarte l'échange") && !c[0].message.contains("peut"),
+                c[0].message.contains("~/.ssh/config peut écarter l'échange") && c[0].message.contains("placé avant"),
                 "{en_tete:?} : {}",
                 c[0].message
             );
@@ -1354,6 +1370,11 @@ mod tests {
             let config = format!("{en_tete}\n  {pq}\n");
             let c = client(vec![lignes("~/.ssh/config", &config)], Some((8, 4)));
             assert_eq!(c[0].probleme, Some(Niveau::Info), "{en_tete:?} : {:?}", messages(&c));
+            assert!(
+                c[0].message.contains("il manque peut-être"),
+                "{en_tete:?} : {:?}",
+                messages(&c)
+            );
         }
         // « Host * !* » ne s'applique jamais : sa valeur est celle d'un hôte précis, la suivante décide.
         let config = format!("Host * !*\n  {pq}\nHost *\n  {classique}\n");

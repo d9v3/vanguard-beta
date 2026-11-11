@@ -108,10 +108,24 @@ pub(crate) fn lire_ligne(ligne: &str) -> Ligne<'_> {
             .map_or(Ligne::NonInterpretee, Ligne::Portee),
         "forwardagent" => valeur(Cle::ForwardAgent),
         "stricthostkeychecking" => valeur(Cle::StrictHostKeyChecking),
-        "kexalgorithms" => valeur(Cle::KexAlgorithms),
+        "kexalgorithms" => match valeur(Cle::KexAlgorithms) {
+            Ligne::Valeur(_, v) if !kex_lisible(v) => Ligne::NonInterpretee,
+            l => l,
+        },
         "warnweakcrypto" => valeur(Cle::WarnWeakCrypto),
         _ => Ligne::Autre,
     }
+}
+
+/// La plus longue liste KexAlgorithms jugée : celle de tous les échanges qu'OpenSSH 10.6 connaît fait 425 octets.
+const KEX_MAX: usize = 4096;
+
+/// Une liste KexAlgorithms que Vanguard juge, sinon dite « non lu » (vérification de Fable n° 3, N2) : au plus
+/// `KEX_MAX` octets, et chaque entrée sous la borne de `match_pattern_list`, au-delà de laquelle SSH ne retire rien
+/// d'une liste « - » (une entrée de 500 000 « * » faisait planter la comparaison, des « *? » la figeaient).
+fn kex_lisible(valeur: &str) -> bool {
+    let liste = valeur.strip_prefix(['+', '-', '^']).unwrap_or(valeur);
+    valeur.len() <= KEX_MAX && liste.split(',').all(|e| e.len() <= MOTIF_LISTE_MAX)
 }
 
 /// Les arguments d'un réglage jugé, découpés comme `argv_split` les découpe, pour les seules formes où tout lecteur
@@ -213,9 +227,24 @@ fn etendue_host(motifs: &[String]) -> Etendue {
     }
 }
 
+/// Le plus long motif que `match_pattern_list` (match.c d'OpenSSH) compare : il recopie chaque motif, son « ! » retiré,
+/// dans un tampon de 1024 octets, et rend « aucune correspondance » pour TOUTE la liste dès qu'un motif atteint 1023
+/// octets, même si un autre motif de la liste couvre tout (mesuré avec `ssh -G` 10.6 : 1022 passe, 1023 non). « Host »
+/// n'a pas cette borne (`match_pattern`, sans tampon : 5 000 octets mesurés).
+const MOTIF_LISTE_MAX: usize = 1022;
+
 /// La portée du critère « host » ou « originalhost » d'un « Match », sa liste séparée par des virgules
 /// (`match_pattern_list` : vrai si un motif couvre l'hôte et qu'aucun motif nié ne le couvre), « !host » s'il est nié.
 fn etendue_liste(liste: &str, nie: bool) -> Etendue {
+    // Au-delà de la borne de SSH, la liste ne correspond à rien : bloc jamais appliqué, ou toujours sous « !host ».
+    // Cette borne tient à un tampon d'OpenSSH, pas à sa documentation : « peut-être » dans les deux sens, jamais une
+    // portée tenue pour sûre (vérification de Fable n° 3, N1 : un joker voisin faisait croire « global à coup sûr »).
+    if liste
+        .split(',')
+        .any(|m| m.strip_prefix('!').unwrap_or(m).len() > MOTIF_LISTE_MAX)
+    {
+        return Etendue::PeutEtre;
+    }
     let (nies, positifs): (Vec<&str>, Vec<&str>) = liste.split(',').partition(|m| m.starts_with('!'));
     let nies: Vec<&str> = nies.iter().map(|m| m.get(1..).unwrap_or_default()).collect();
     let toujours = nies.is_empty() && positifs.iter().any(|m| couvre_tout(m));
@@ -232,23 +261,45 @@ fn etendue_liste(liste: &str, nie: bool) -> Etendue {
 /// La portée d'un « Match » : les critères se cumulent (ET), la plus petite l'emporte. « all » seul : globale ; « !all »
 /// jamais vrai ; « host » et « originalhost » selon leur liste (`etendue_liste`) ; « canonical », « final » et les
 /// critères qui ne regardent pas l'hôte (user, exec…) : peut-être, puisque SSH peut ne pas l'appliquer. Critère
-/// inconnu, argument manquant, « all » suivi d'autre chose : `None` (non interprété).
+/// inconnu, argument manquant, vide ou commençant par « # », « all » suivi d'autre chose ou après plus d'un critère
+/// (SSH refuse alors le fichier) : `None` (non interprété). `match_cfg_line` (readconf.c) d'OpenSSH 10.6.
 fn etendue_match(mots: &[String]) -> Option<Etendue> {
     let mut etendue = Etendue::Globale;
+    let mut criteres = 0_usize;
     let mut i = mots.iter();
     while let Some(mot) = i.next() {
         let (nie, critere) = mot.strip_prefix('!').map_or((false, mot.as_str()), |c| (true, c));
-        let e = match critere.to_ascii_lowercase().as_str() {
-            "all" => {
-                if i.next().is_some() {
-                    return None;
-                }
-                if nie { Etendue::Precise } else { Etendue::Globale }
+        // « host=* » : la valeur collée par un « = », pour les seuls critères qu'OpenSSH 10.0 et plus lit ainsi
+        // (vérification de Fable n° 3, N5). Avant 10.0, SSH refuse tout le fichier (« Unsupported Match attribute ») :
+        // lire comme 10.6 ne fait jamais croire appliqué un bloc d'un SSH qui, lui, ne se lance plus.
+        let (nom, colle) = match critere.split_once('=') {
+            Some((nom, valeur)) if CRITERES_A_EGAL.iter().any(|c| nom.eq_ignore_ascii_case(c)) => (nom, Some(valeur)),
+            _ => (critere, None),
+        };
+        let nom = nom.to_ascii_lowercase();
+        if nom == "all" {
+            if criteres > 1 || i.next().is_some() {
+                return None;
             }
-            "canonical" | "final" => Etendue::PeutEtre,
-            "host" | "originalhost" => etendue_liste(i.next()?, nie),
+            etendue = etendue.min(if nie { Etendue::Precise } else { Etendue::Globale });
+            continue;
+        }
+        criteres = criteres.saturating_add(1);
+        if matches!(nom.as_str(), "canonical" | "final") {
+            etendue = etendue.min(Etendue::PeutEtre);
+            continue;
+        }
+        let valeur = match colle {
+            Some(v) => v,
+            None => i.next()?,
+        };
+        // SSH refuse une valeur vide (sauf pour « tagged » et « command ») ou qui commence par « # ».
+        if valeur.starts_with('#') || (valeur.is_empty() && !matches!(nom.as_str(), "tagged" | "command")) {
+            return None;
+        }
+        let e = match nom.as_str() {
+            "host" | "originalhost" => etendue_liste(valeur, nie),
             "user" | "localuser" | "exec" | "localnetwork" | "tagged" | "command" | "version" | "sessiontype" => {
-                i.next()?;
                 Etendue::PeutEtre
             }
             _ => return None,
@@ -257,6 +308,20 @@ fn etendue_match(mots: &[String]) -> Option<Etendue> {
     }
     Some(etendue)
 }
+
+/// Les critères d'un « Match » qu'OpenSSH 10.0 et plus accepte aussi écrits « critère=valeur » (`strprefix` de
+/// `match_cfg_line`) ; pas « sessiontype », ni ceux sans valeur (« all », « canonical », « final »).
+const CRITERES_A_EGAL: [&str; 9] = [
+    "host",
+    "originalhost",
+    "user",
+    "localuser",
+    "localnetwork",
+    "version",
+    "tagged",
+    "command",
+    "exec",
+];
 
 /// « ForwardAgent » : tout autre chose que « no » ou « false » prête l'agent (« yes », « true », un chemin de prise,
 /// une variable).
@@ -507,7 +572,8 @@ mod tests {
             ("Match host labo all", Some(X)),
             ("Match all host labo", None),
             ("Match host", None),
-            ("Match host=*", None),
+            ("Match host a user b all", None),
+            ("Match host labo user bob", Some(X)),
             ("Match inconnu x", None),
             ("Match exec \"test", None),
             ("Match exec ''", None),
@@ -519,6 +585,116 @@ mod tests {
             let attendu = etendue.map_or(Ligne::NonInterpretee, Ligne::Portee);
             assert_eq!(lire_ligne(ligne), attendu, "{ligne:?}");
         }
+    }
+
+    /// Vérification de Fable n° 3, N5 : « critère=valeur », comme OpenSSH 10.0 et plus le lit (`ssh -G` 10.6) ;
+    /// seulement pour les critères qu'il accepte ainsi, jamais vide (sauf « tagged » et « command ») ni « # ».
+    #[test]
+    fn criteres_a_egal_comme_openssh_10() {
+        use Etendue::{Globale as G, PeutEtre as P, Precise as X};
+        for (ligne, etendue) in [
+            ("Match host=*", Some(G)),
+            ("Match HOST=*", Some(G)),
+            ("Match 'host=*'", Some(G)),
+            ("Match host=\"*\"", Some(G)),
+            ("Match originalhost=*", Some(G)),
+            ("Match host=* all", Some(G)),
+            ("Match host=*,labo", Some(G)),
+            ("Match !host=*", Some(X)),
+            ("Match host=serveur", Some(X)),
+            ("Match !host=*,!x", Some(P)),
+            ("Match host=*,!serveur", Some(P)),
+            ("Match !host=autre", Some(P)),
+            ("Match host==*", Some(P)),
+            ("Match host=*  user=bob", Some(P)),
+            ("Match user=bob", Some(P)),
+            ("Match exec=true", Some(P)),
+            ("Match tagged=", Some(P)),
+            ("Match command=", Some(P)),
+            ("Match version=OpenSSH_10*", Some(P)),
+            ("Match host=", None),
+            ("Match host= *", None),
+            ("Match host=#x", None),
+            ("Match host '#x'", None),
+            ("Match user=", None),
+            ("Match all=x", None),
+            ("Match canonical=x", None),
+            ("Match final=x", None),
+            ("Match sessiontype=shell", None),
+            ("Match inconnu=x", None),
+        ] {
+            let attendu = etendue.map_or(Ligne::NonInterpretee, Ligne::Portee);
+            assert_eq!(lire_ligne(ligne), attendu, "{ligne:?}");
+        }
+    }
+
+    /// Vérification de Fable n° 3, N1 : `match_pattern_list` ne compare plus rien au-delà de 1022 octets par motif
+    /// (« ! » non compté) ; « Host » n'a pas cette borne. 1022 : la liste est lue ; 1023 : « peut-être », dans
+    /// chaque sens, pour « host » et « originalhost ». Les mêmes formes sont jugées par `ssh -G` dans
+    /// `tests/programme.rs` (`un_motif_trop_long_ne_rend_pas_la_portee_sure`).
+    #[test]
+    fn motif_au_dela_de_la_borne_de_ssh() {
+        use Etendue::{Globale as G, PeutEtre as P, Precise as X};
+        let a = |n: usize| "a".repeat(n);
+        for critere in ["host", "originalhost"] {
+            for (n, positif, nie) in [(1022, G, X), (1023, P, P), (5000, P, P)] {
+                let long = a(n);
+                for (ligne, attendu) in [
+                    (format!("Match {critere} *,{long}"), positif),
+                    (format!("Match {critere} {long},*"), positif),
+                    (format!("Match !{critere} *,{long}"), nie),
+                    (format!("Match {critere}=*,{long}"), positif),
+                    (format!("Match !{critere}=*,{long}"), nie),
+                ] {
+                    assert_eq!(lire_ligne(&ligne), Ligne::Portee(attendu), "{critere} {n}");
+                }
+            }
+            // Le « ! » ne compte pas : 1022 octets après lui restent lus.
+            let nie_1022 = format!("Match {critere} *,!{}", a(1022));
+            assert_eq!(lire_ligne(&nie_1022), Ligne::Portee(P));
+            let tout_nie = format!("Match {critere} *,!*,{}", a(1022));
+            assert_eq!(lire_ligne(&tout_nie), Ligne::Portee(X));
+            let tout_nie_long = format!("Match {critere} *,!*,{}", a(1023));
+            assert_eq!(lire_ligne(&tout_nie_long), Ligne::Portee(P));
+        }
+        // Octets, pas caractères : 511 « é » font 1022 octets, 512 en font 1024.
+        assert_eq!(
+            lire_ligne(&format!("Match host *,{}", "é".repeat(511))),
+            Ligne::Portee(G)
+        );
+        assert_eq!(
+            lire_ligne(&format!("Match host *,{}", "é".repeat(512))),
+            Ligne::Portee(P)
+        );
+        // « Host » compare chaque motif sans tampon : un motif long n'y change rien.
+        assert_eq!(lire_ligne(&format!("Host * {}", a(5000))), Ligne::Portee(G));
+        assert_eq!(lire_ligne(&format!("Host * !{}", a(5000))), Ligne::Portee(P));
+        assert_eq!(lire_ligne(&format!("Host {}", "*".repeat(5000))), Ligne::Portee(G));
+    }
+
+    /// Vérification de Fable n° 3, N2 : une liste KexAlgorithms trop longue pour être jugée est dite « non lu »,
+    /// jamais comparée (une entrée de 500 000 « * » faisait planter Vanguard).
+    #[test]
+    fn liste_kex_trop_longue_non_lue() {
+        let etoiles = |n: usize| "*".repeat(n);
+        let juge = |v: &str| {
+            let ligne = format!("KexAlgorithms {v}");
+            let lue = lire_ligne(&ligne);
+            assert!(
+                matches!(lue, Ligne::Valeur(Cle::KexAlgorithms, _) | Ligne::NonInterpretee),
+                "{lue:?}"
+            );
+            lue != Ligne::NonInterpretee
+        };
+        assert!(juge(&format!("-{}", etoiles(1022))));
+        assert!(juge(&format!("-a,{}", etoiles(1022))));
+        assert!(!juge(&format!("-{}", etoiles(1023))));
+        assert!(!juge(&format!("-a,{}", etoiles(1023))));
+        assert!(!juge(&format!("-{}", etoiles(500_000))));
+        // Des entrées courtes : seule la longueur de la liste compte (4 096 octets au plus).
+        assert!(juge(&"a,".repeat(2048)));
+        assert!(!juge(&format!("{}a", "a,".repeat(2048))));
+        assert!(!juge(&etoiles(1023)));
     }
 
     /// Le découpage de `argv_split` (misc.c), mot pour mot.

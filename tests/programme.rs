@@ -1605,6 +1605,10 @@ fn la_configuration_ssh_est_lue_comme_ssh() {
         ("Match !originalhost *_*\nForwardAgent yes".into(), vec![], "forwardagent", Alerte("~/.ssh/config, ligne 2")),
         ("Match !host routeur,*_*\nForwardAgent yes".into(), vec![], "forwardagent", Alerte("~/.ssh/config, ligne 2")),
         ("Match !host *,!*-*\nStrictHostKeyChecking no".into(), vec![], "stricthostkeychecking", Alerte("~/.ssh/config, ligne 2")),
+        // Vérification de Fable n° 3, N5 : « critère=valeur », lu comme OpenSSH 10.0 et plus.
+        ("Match host=*\nForwardAgent yes".into(), vec![], "forwardagent", Alerte("~/.ssh/config, ligne 2")),
+        ("Match !host=routeur\nStrictHostKeyChecking no".into(), vec![], "stricthostkeychecking", Alerte("~/.ssh/config, ligne 2")),
+        (format!("Match originalhost=*\n{kex}"), vec![], "kexalgorithms", PasPropose),
         (format!("={kex}"), vec![], "kexalgorithms", PasPropose),
         (format!("Host ?*\n{kex}"), vec![], "kexalgorithms", PasPropose),
         ("\"KexAlgorithms\" curve25519-sha256".into(), vec![], "kexalgorithms", PasPropose),
@@ -1815,7 +1819,9 @@ fn un_en_tete_douteux_ne_cache_pas_la_valeur_globale() {
                     "{en_tete:?} : proposé : {messages:#?}"
                 );
                 assert!(
-                    messages.iter().any(|m| m.contains("~/.ssh/config écarte l'échange post-quantique")),
+                    // Vérification de Fable n° 3, N4 : la bonne valeur, placée avant sous l'en-tête douteux, vaut
+                    // peut-être pour certains serveurs : un doute, pas « écarte pour tous ».
+                    messages.iter().any(|m| m.contains("~/.ssh/config peut écarter l'échange post-quantique")),
                     "{en_tete:?} : pas d'alerte : {messages:#?}"
                 );
                 assert!(
@@ -1833,6 +1839,195 @@ fn un_en_tete_douteux_ne_cache_pas_la_valeur_globale() {
     if ssh.is_none() {
         essais::saute("ssh absent : Vanguard essayé, juge non consulté");
     }
+}
+
+/// Vérification de Fable n° 3, N1 : SSH ne compare aucun motif d'une liste « Match host » ou « originalhost » qui
+/// atteint 1023 octets (`match_pattern_list`), même à côté d'un « * ». Pour 1022 et 1023 octets, dans chaque sens et
+/// pour chaque critère, `ssh -G` (maison jetable) dit si le bloc s'applique à un serveur quelconque, et Vanguard doit
+/// suivre : sous la négation, l'agent prêté et la vérification coupée sont signalés quand SSH les applique ; sous le
+/// sens positif, « post-quantique proposé » n'est dit que si SSH garde la liste post-quantique du bloc.
+#[cfg(unix)]
+#[test]
+fn un_motif_trop_long_ne_rend_pas_la_portee_sure() {
+    use std::os::unix::fs::PermissionsExt;
+    let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
+    let mode = |c: &Path, m: u32| std::fs::set_permissions(c, std::fs::Permissions::from_mode(m)).unwrap();
+    let ssh = ["/usr/bin/ssh", "/bin/ssh", "/usr/local/bin/ssh"]
+        .into_iter()
+        .find(|p| Path::new(p).exists());
+    let message = |c: &serde_json::Value| c["message"].as_str().unwrap_or_default().to_string();
+    let mut cas = Vec::new();
+    for critere in ["host ", "originalhost ", "host="] {
+        for n in [1022, 1023] {
+            let long = "a".repeat(n);
+            // (configuration, le bloc s'applique-t-il, d'après la borne de SSH ; sens nié ?)
+            cas.push((
+                format!("Match !{critere}*,{long}\n    ForwardAgent yes\n    StrictHostKeyChecking no\n"),
+                n == 1023,
+                true,
+            ));
+            cas.push((
+                format!(
+                    "Match {critere}*,{long}\n    KexAlgorithms mlkem768x25519-sha256\n    WarnWeakCrypto yes\nHost *\n    KexAlgorithms curve25519-sha256\n    WarnWeakCrypto no\n"
+                ),
+                n == 1022,
+                false,
+            ));
+        }
+    }
+    std::thread::scope(|fils| {
+        let mut attentes = Vec::new();
+        for (config, applique, nie) in &cas {
+            attentes.push(fils.spawn(move || {
+                let court = abreger_essai(config);
+                let maison = maison_jetable();
+                mode(&maison, 0o700);
+                let dossier = maison.join(".ssh");
+                std::fs::create_dir_all(&dossier).unwrap();
+                mode(&dossier, 0o700);
+                std::fs::write(dossier.join("config"), config).unwrap();
+                if let Some(ssh) = ssh {
+                    let sortie = Command::new(ssh)
+                        .env_clear()
+                        .env("HOME", &*maison)
+                        .args(["-G", "-F"])
+                        .arg(dossier.join("config"))
+                        .arg("serveur-quelconque")
+                        .stdin(Stdio::null())
+                        .output()
+                        .unwrap();
+                    let texte = String::from_utf8_lossy(&sortie.stdout).into_owned();
+                    assert!(
+                        sortie.status.success(),
+                        "{court} : ssh -G : {}",
+                        String::from_utf8_lossy(&sortie.stderr)
+                    );
+                    let attendu = if *nie {
+                        "forwardagent yes"
+                    } else {
+                        "kexalgorithms mlkem768x25519-sha256"
+                    };
+                    assert_eq!(
+                        texte.lines().any(|l| l == attendu),
+                        *applique,
+                        "{court} : borne de SSH : {texte}"
+                    );
+                }
+                let constats = constats_du_bilan(programme, &maison, &["Clés SSH", "Post-quantique"]);
+                let messages: Vec<String> = constats.iter().map(message).collect();
+                if *nie {
+                    let alertes = messages
+                        .iter()
+                        .filter(|m| m.contains("est prêté à tous") || m.contains("sans vérifier qu'il est le bon"))
+                        .count();
+                    assert_eq!(alertes, if *applique { 2 } else { 0 }, "{court} : {messages:#?}");
+                    assert_eq!(
+                        messages.iter().any(|m| m.contains("~/.ssh correctes")),
+                        !*applique,
+                        "{court} : {messages:#?}"
+                    );
+                } else {
+                    let propose = messages
+                        .iter()
+                        .any(|m| m.starts_with("Client SSH") && m.contains("est proposé aux serveurs"));
+                    assert_eq!(propose, *applique, "{court} : {messages:#?}");
+                    if !*applique {
+                        assert!(
+                            messages
+                                .iter()
+                                .any(|m| m.contains("WarnWeakCrypto no") && m.contains("~/.ssh/config")),
+                            "{court} : avertissement tu : {messages:#?}"
+                        );
+                    }
+                }
+            }));
+        }
+        for a in attentes {
+            if let Err(e) = a.join() {
+                std::panic::resume_unwind(e);
+            }
+        }
+    });
+    if ssh.is_none() {
+        essais::saute("ssh absent : Vanguard essayé, juge non consulté");
+    }
+}
+
+/// Vérification de Fable n° 3, N2 : une ligne KexAlgorithms de 500 000 « * » faisait planter Vanguard (pile débordée,
+/// plus aucun bilan) et des « *? » alternés le figeaient (temps exponentiel). Le bilan rend la main vite : la liste
+/// trop longue est dite non lue, la liste sous la borne est jugée comme SSH la lit.
+#[cfg(unix)]
+#[test]
+fn une_liste_kex_piegee_ne_plante_ni_ne_fige_le_bilan() {
+    use std::os::unix::fs::PermissionsExt;
+    let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
+    let mode = |c: &Path, m: u32| std::fs::set_permissions(c, std::fs::Permissions::from_mode(m)).unwrap();
+    let message = |c: &serde_json::Value| c["message"].as_str().unwrap_or_default().to_string();
+    let cas = [
+        (format!("KexAlgorithms -{}\n", "*".repeat(500_000)), true),
+        // Les deux premiers noms post-quantiques retirés tels quels : seul le troisième (34 octets) passe par le
+        // motif, qui échoue à la fin après avoir essayé chaque placement des jokers.
+        (
+            format!(
+                "KexAlgorithms -mlkem768x25519-sha256,sntrup761x25519-sha512,{}x\n",
+                "*?".repeat(20)
+            ),
+            false,
+        ),
+        (
+            format!(
+                "KexAlgorithms -mlkem768x25519-sha256,sntrup761x25519-sha512,{}x\n",
+                "*?".repeat(500)
+            ),
+            false,
+        ),
+    ];
+    std::thread::scope(|fils| {
+        let mut attentes = Vec::new();
+        for (config, non_lu) in &cas {
+            attentes.push(fils.spawn(move || {
+                let court = abreger_essai(config);
+                let maison = maison_jetable();
+                mode(&maison, 0o700);
+                let dossier = maison.join(".ssh");
+                std::fs::create_dir_all(&dossier).unwrap();
+                mode(&dossier, 0o700);
+                std::fs::write(dossier.join("config"), config).unwrap();
+                let debut = std::time::Instant::now();
+                let constats = constats_du_bilan(programme, &maison, &["Post-quantique"]);
+                assert!(
+                    debut.elapsed() < std::time::Duration::from_secs(60),
+                    "{court} : bilan trop long"
+                );
+                let client: Vec<String> = constats
+                    .iter()
+                    .map(message)
+                    .filter(|m| m.contains("Client SSH"))
+                    .collect();
+                assert!(!client.is_empty(), "{court} : {constats:#?}");
+                let dit_non_lu = client
+                    .iter()
+                    .any(|m| m.contains("non vérifié") && m.contains("KexAlgorithms non lu"));
+                assert_eq!(dit_non_lu, *non_lu, "{court} : {client:#?}");
+                // Non lue : jamais « proposé » ; jugée : `ssh -G` (OpenSSH 10.6) garde
+                // sntrup761x25519-sha512@openssh.com, que le motif ne retire pas.
+                let propose = client.iter().any(|m| m.contains("est proposé aux serveurs"));
+                assert_eq!(propose, !*non_lu, "{court} : {client:#?}");
+            }));
+        }
+        for a in attentes {
+            if let Err(e) = a.join() {
+                std::panic::resume_unwind(e);
+            }
+        }
+    });
+}
+
+/// Une configuration d'essai montrée par son début, pour les messages d'échec (un motif de 1 Kio les noierait).
+#[cfg(unix)]
+fn abreger_essai(texte: &str) -> String {
+    let debut: String = texte.chars().take(60).collect();
+    format!("{debut:?}… ({} octets)", texte.len())
 }
 
 /// Vérification avant 0.94 (bruit) : des configurations ordinaires (un Host par serveur, IdentityFile, Include
