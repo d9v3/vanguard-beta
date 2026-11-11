@@ -799,35 +799,16 @@ fn lire_serveur() -> Lecture<Serveur> {
     })
 }
 
-/// Les fichiers d'un motif d'inclusion de /etc/ssh/ssh_config (relatif à /etc/ssh), triés.
+/// Les fichiers d'un motif d'inclusion de /etc/ssh/ssh_config (relatif à /etc/ssh), triés ; un fichier là mais non
+/// lu est rendu avec sa raison (`machine::lire_inclus_ssh`).
 #[cfg(unix)]
-fn inclus_du_systeme(motif: &str) -> Vec<(String, String)> {
+fn inclus_du_systeme(motif: &str) -> Vec<super::Inclus> {
     let chemin = if motif.starts_with('/') {
         std::path::PathBuf::from(motif)
     } else {
         std::path::Path::new("/etc/ssh").join(motif)
     };
-    let nom = chemin
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let mut trouves: Vec<std::path::PathBuf> = if nom.contains(['*', '?']) {
-        let parent = chemin.parent().unwrap_or(std::path::Path::new("/etc/ssh"));
-        std::fs::read_dir(parent)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter(|e| super::joker(&nom, &e.file_name().to_string_lossy()))
-            .map(|e| e.path())
-            .collect()
-    } else {
-        vec![chemin]
-    };
-    trouves.sort();
-    trouves
-        .into_iter()
-        .filter_map(|p| Some((p.display().to_string(), super::lire_texte_ssh(&p).ok()?)))
-        .collect()
+    super::lire_inclus_ssh(&chemin, &|p| p.display().to_string())
 }
 
 #[cfg(unix)]
@@ -842,7 +823,7 @@ fn lire_client() -> Lecture<Client> {
     }
     let dossier = crate::socle::maison().join(".ssh");
     // Le premier lecteur porte le type de tous : sans lui, chaque fermeture a le sien.
-    let inclus_ssh: &dyn Fn(&str) -> Vec<(String, String)> = &|m: &str| super::fichiers_inclus_ssh(&dossier, m);
+    let inclus_ssh: &dyn Fn(&str) -> Vec<super::Inclus> = &|m: &str| super::fichiers_inclus_ssh(&dossier, m);
     let mut fichiers = Vec::new();
     for (nom, chemin, inclus) in [
         ("~/.ssh/config".to_string(), dossier.join("config"), inclus_ssh),
@@ -857,7 +838,16 @@ fn lire_client() -> Lecture<Client> {
         match super::lire_texte_ssh(&chemin) {
             Ok(texte) => {
                 let mut lignes = Vec::new();
-                super::deplier_config_ssh(&nom, &texte, inclus, 8, &mut lignes);
+                let mut non_lus = Vec::new();
+                super::deplier_config_ssh(&nom, &texte, inclus, 8, &mut lignes, &mut non_lus);
+                // Un fichier inclus non lu peut porter les algorithmes : le client n'est pas jugé sans lui.
+                if let Some((fichier, raison)) = non_lus.into_iter().next() {
+                    let fichier = affichable(&fichier);
+                    return Lecture::Illisible(Raison::Illisible(trf!(
+                        "{fichier} non lu : {raison}",
+                        "{fichier} not read: {raison}"
+                    )));
+                }
                 fichiers.push(lignes);
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}

@@ -984,22 +984,69 @@ fn cles_ssh() -> Vec<Constat> {
             },
         );
     }
-    for f in std::fs::read_dir(&dossier).into_iter().flatten().flatten() {
+    // Une entrée qui ne se lit pas est dite (« non lu »), jamais sautée : sinon le bilan finissait sur « Permissions
+    // de ~/.ssh correctes » sans l'avoir regardée.
+    let entrees = match std::fs::read_dir(&dossier) {
+        Ok(e) => e,
+        Err(e) => {
+            constats.push(impossible(
+                "Clés SSH",
+                &trf!("~/.ssh non parcouru : {e}", "~/.ssh not listed: {e}"),
+            ));
+            return constats;
+        }
+    };
+    for f in entrees {
+        let f = match f {
+            Ok(f) => f,
+            Err(e) => {
+                constats.push(impossible(
+                    "Clés SSH",
+                    &trf!("une entrée de ~/.ssh non lue : {e}", "an entry of ~/.ssh not read: {e}"),
+                ));
+                continue;
+            }
+        };
         let brut = f.file_name().to_string_lossy().into_owned();
         // Un nom qui n'est pas UTF-8 s'écrit ici avec un caractère de remplacement : une commande bâtie dessus viserait
         // un autre nom (peut-être un lien posé exprès). Il est dit, jamais corrigé d'ici.
         let nom_lisible = f.file_name().to_str().is_some();
-        // Toute clé privée, quel que soit son nom (pas seulement id_*). Lue lien suivi (stow, chezmoi), mais seulement
-        // un simple fichier, et bornée : un tube nommé figeait le bilan et l'aperçu, un lien vers un périphérique
-        // sans fin remplissait la mémoire.
-        let protegee = crate::socle::lire_ordinaire_au_bout(&f.path(), SSH_LU_MAX)
-            .ok()
-            .and_then(|o| String::from_utf8(o).ok())
-            .and_then(|t| cle_protegee(&t));
         // Nom entre apostrophes dans les commandes : une clé « ma cle » ne casse pas la commande. Les commandes visent
         // le vrai nom ; les messages montrent un nom rendu inoffensif.
         let chemin = format!("~/.ssh/{}", crate::commande::sh_chaine(&brut));
         let nom = affichable(&brut);
+        // Ce qui est visé, lien suivi (`fs::metadata` ; `DirEntry::metadata` ne suit pas : un lien a toujours 777, et
+        // toute clé liée passait pour lisible par tous). Un lien cassé ne mène à rien que SSH puisse lire.
+        let vise = match std::fs::metadata(f.path()) {
+            Ok(m) => m,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                constats.push(impossible(
+                    "Clés SSH",
+                    &trf!("~/.ssh/{nom} non lu : {e}", "~/.ssh/{nom} not read: {e}"),
+                ));
+                continue;
+            }
+        };
+        // Toute clé privée, quel que soit son nom (pas seulement id_*). Lue lien suivi (stow, chezmoi), mais seulement
+        // un simple fichier, et bornée : un tube nommé figeait le bilan et l'aperçu, un lien vers un périphérique
+        // sans fin remplissait la mémoire. Ce qui n'est pas lu est dit, sauf un dossier ou une socket (celles de
+        // ControlMaster sont courantes), qui ne sont jamais une clé ; le texte est lu même avec un octet hors UTF-8
+        // (en fin de fichier, SSH l'ignore) : il cachait sinon une clé sans phrase de passe.
+        let protegee = if vise.is_dir() || std::os::unix::fs::FileTypeExt::is_socket(&vise.file_type()) {
+            None
+        } else {
+            match crate::socle::lire_ordinaire_au_bout(&f.path(), SSH_LU_MAX) {
+                Ok(octets) => cle_protegee(&String::from_utf8_lossy(&octets)),
+                Err(e) => {
+                    constats.push(impossible(
+                        "Clés SSH",
+                        &trf!("~/.ssh/{nom} non lu : {e}", "~/.ssh/{nom} not read: {e}"),
+                    ));
+                    None
+                }
+            }
+        };
         if protegee == Some(false) {
             let message = trf!(
                 "Clé privée ~/.ssh/{nom} sans phrase de passe : volée, elle ouvre tous les serveurs où elle est autorisée.",
@@ -1029,12 +1076,8 @@ fn cles_ssh() -> Vec<Constat> {
                 && !std::path::Path::new(&brut)
                     .extension()
                     .is_some_and(|e| e.eq_ignore_ascii_case("pub")));
-        // Les droits de ce qui est visé (`fs::metadata` suit le lien ; ceux de `DirEntry::metadata`, non : un lien
-        // a toujours 777, et toute clé liée passait pour lisible par tous).
-        if privee
-            && std::fs::metadata(f.path())
-                .is_ok_and(|m| std::os::unix::fs::PermissionsExt::mode(&m.permissions()) & 0o077 != 0)
-        {
+        // Les droits de ce qui est visé, jugés sans avoir à lire le texte.
+        if privee && std::os::unix::fs::PermissionsExt::mode(&vise.permissions()) & 0o077 != 0 {
             let message = trf!(
                 "Clé privée ~/.ssh/{nom} lisible par d'autres.",
                 "Private key ~/.ssh/{nom} is readable by others."
@@ -1067,22 +1110,39 @@ fn cles_ssh() -> Vec<Constat> {
     match lire_texte_ssh(&dossier.join("config")) {
         Ok(config) => {
             let mut lignes = Vec::new();
+            let mut non_lus = Vec::new();
             deplier_config_ssh(
                 "~/.ssh/config",
                 &config,
                 &|motif| fichiers_inclus_ssh(&dossier, motif),
                 8,
                 &mut lignes,
+                &mut non_lus,
             );
             constats.extend(constats_config_ssh(&lignes));
+            // Un fichier inclus que SSH applique peut-être, mais que Vanguard n'a pas lu (trop gros, tube nommé,
+            // illisible) : dit, jamais compté comme sain.
+            for (fichier, raison) in non_lus {
+                let fichier = affichable(&fichier);
+                dire_une_fois(
+                    &mut constats,
+                    impossible(
+                        "Clés SSH",
+                        &trf!("{fichier} non lu : {raison}", "{fichier} not read: {raison}"),
+                    ),
+                );
+            }
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         // Là, mais pas un simple fichier lisible (tube nommé, périphérique, trop gros, pas du texte) : dit, jamais
         // compté comme sain.
-        Err(e) => constats.push(impossible(
-            "Clés SSH",
-            &trf!("~/.ssh/config non lu : {e}", "~/.ssh/config not read: {e}"),
-        )),
+        Err(e) => dire_une_fois(
+            &mut constats,
+            impossible(
+                "Clés SSH",
+                &trf!("~/.ssh/config non lu : {e}", "~/.ssh/config not read: {e}"),
+            ),
+        ),
     }
     if constats.is_empty() {
         constats.push(ok(
@@ -1099,13 +1159,28 @@ fn cles_ssh() -> Vec<Constat> {
 const SSH_LU_MAX: u64 = 1 << 20;
 
 /// Un fichier de configuration de SSH (~/.ssh/config, ses inclus, celui du système), lu comme `cles_ssh` lit les clés :
-/// lien suivi, simple fichier seulement, borné, en UTF-8. Toutes les règles qui le lisent passent par ici : une seule
-/// qui l'ouvrait encore à l'ancienne (`post_quantique`) figeait tout le bilan sur un tube nommé.
+/// lien suivi, simple fichier seulement, borné. Toutes les règles qui le lisent passent par ici : une seule qui
+/// l'ouvrait encore à l'ancienne (`post_quantique`) figeait tout le bilan sur un tube nommé. Un octet hors UTF-8 (dans
+/// un commentaire, souvent) n'empêche pas de lire le reste : SSH, lui, applique le fichier quand même, et un fichier
+/// refusé pour un seul octet taisait ses réglages relâchés.
 #[cfg(unix)]
 pub(super) fn lire_texte_ssh(chemin: &std::path::Path) -> std::io::Result<String> {
-    String::from_utf8(crate::socle::lire_ordinaire_au_bout(chemin, SSH_LU_MAX)?)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    let octets = crate::socle::lire_ordinaire_au_bout(chemin, SSH_LU_MAX)?;
+    Ok(String::from_utf8(octets).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()))
 }
+
+/// Ajoute un constat, sauf si le même est déjà dit : un fichier de ~/.ssh non lu (la configuration, ou un fichier
+/// qu'elle inclut) l'est déjà par la revue des clés, avec le même nom et la même raison.
+#[cfg(unix)]
+fn dire_une_fois(constats: &mut Vec<Constat>, c: Constat) {
+    if !constats.iter().any(|d| d.message == c.message) {
+        constats.push(c);
+    }
+}
+
+/// Un fichier inclus par la configuration de SSH : le nom à montrer, et son texte ou pourquoi il n'a pas été lu.
+#[cfg(unix)]
+pub(super) type Inclus = (String, Result<String, String>);
 
 /// Le message d'un constat du compte qu'un lien, un fichier d'une autre sorte, un autre propriétaire ou un nom
 /// illisible empêchent de corriger (`unix::hors_correction`) : ce qui est vu, pourquoi rien n'est proposé, et quoi
@@ -1120,31 +1195,47 @@ fn sans_correction_du_compte(message: &str, raison: &str) -> String {
 
 /// La configuration de SSH avec ses fichiers inclus (« Include ») dépliés à leur place, comme SSH les lit : (fichier
 /// à montrer, numéro de ligne, ligne). `lire` rend les fichiers d'un motif d'inclusion ; `profondeur` arrête une
-/// inclusion en boucle.
+/// inclusion en boucle. Un fichier inclus qui n'a pas pu être lu, ou une inclusion au-delà de `profondeur`, va dans
+/// `non_lus` (fichier, raison) : SSH, lui, l'applique peut-être, il ne compte donc jamais comme « rien à dire ».
 #[cfg(unix)]
 fn deplier_config_ssh(
     nom: &str,
     texte: &str,
-    lire: &dyn Fn(&str) -> Vec<(String, String)>,
+    lire: &dyn Fn(&str) -> Vec<Inclus>,
     profondeur: u32,
     sortie: &mut Vec<(String, usize, String)>,
+    non_lus: &mut Vec<(String, String)>,
 ) {
     for (i, ligne) in texte.lines().enumerate() {
         let propre = ligne.split('#').next().unwrap_or_default().trim();
         let (cle, motifs) = propre
             .split_once(|c: char| c.is_whitespace() || c == '=')
             .unwrap_or((propre, ""));
-        if cle.eq_ignore_ascii_case("include") && profondeur > 0 {
-            for motif in motifs
-                .trim_start_matches(|c: char| c.is_whitespace() || c == '=')
-                .split_whitespace()
-            {
-                for (inclus, contenu) in lire(motif.trim_matches('"')) {
-                    deplier_config_ssh(&inclus, &contenu, lire, profondeur.saturating_sub(1), sortie);
+        if !cle.eq_ignore_ascii_case("include") {
+            sortie.push((nom.to_string(), i.saturating_add(1), ligne.to_string()));
+            continue;
+        }
+        if profondeur == 0 {
+            non_lus.push((
+                nom.to_string(),
+                trf!(
+                    "ligne {} : inclusions imbriquées trop profondes",
+                    "line {}: includes nested too deep",
+                    i.saturating_add(1)
+                ),
+            ));
+            continue;
+        }
+        for motif in motifs
+            .trim_start_matches(|c: char| c.is_whitespace() || c == '=')
+            .split_whitespace()
+        {
+            for (inclus, contenu) in lire(motif.trim_matches('"')) {
+                match contenu {
+                    Ok(t) => deplier_config_ssh(&inclus, &t, lire, profondeur.saturating_sub(1), sortie, non_lus),
+                    Err(raison) => non_lus.push((inclus, raison)),
                 }
             }
-        } else {
-            sortie.push((nom.to_string(), i.saturating_add(1), ligne.to_string()));
         }
     }
 }
@@ -1152,38 +1243,60 @@ fn deplier_config_ssh(
 /// Les fichiers d'un motif d'inclusion de ~/.ssh/config, triés : relatif à ~/.ssh, ou commençant par « ~/ » ; les
 /// jokers « * » et « ? » valent dans le dernier élément du chemin.
 #[cfg(unix)]
-fn fichiers_inclus_ssh(dossier_ssh: &std::path::Path, motif: &str) -> Vec<(String, String)> {
+fn fichiers_inclus_ssh(dossier_ssh: &std::path::Path, motif: &str) -> Vec<Inclus> {
     let maison = dossier_ssh.parent().unwrap_or(dossier_ssh);
     let chemin = match motif.strip_prefix("~/") {
         Some(reste) => maison.join(reste),
         None => dossier_ssh.join(motif),
     };
-    let montrer = |p: &std::path::Path| match p.strip_prefix(maison) {
+    lire_inclus_ssh(&chemin, &|p| match p.strip_prefix(maison) {
         Ok(r) => format!("~/{}", r.display()),
         Err(_) => p.display().to_string(),
-    };
+    })
+}
+
+/// Les fichiers visés par un chemin d'inclusion de SSH (jokers « * » et « ? » dans son dernier élément), triés, chacun
+/// lu comme la configuration elle-même (simple fichier, borné : un tube nommé figeait le bilan). Ce qui manque ne
+/// compte pas (SSH le saute aussi), ni un dossier (SSH n'y lit rien) ; tout autre refus de lecture est rendu avec sa
+/// raison, jamais tu.
+#[cfg(unix)]
+pub(super) fn lire_inclus_ssh(chemin: &std::path::Path, montrer: &dyn Fn(&std::path::Path) -> String) -> Vec<Inclus> {
+    use std::io::ErrorKind::NotFound;
     let nom = chemin
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let mut trouves: Vec<std::path::PathBuf> = if nom.contains(['*', '?']) {
-        let parent = chemin.parent().unwrap_or(dossier_ssh);
-        std::fs::read_dir(parent)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter(|e| joker(&nom, &e.file_name().to_string_lossy()))
-            .map(|e| e.path())
-            .collect()
+    let mut trouves = Vec::new();
+    let mut refus = Vec::new();
+    if nom.contains(['*', '?']) {
+        let parent = chemin.parent().unwrap_or(chemin);
+        match std::fs::read_dir(parent) {
+            Ok(entrees) => {
+                for e in entrees {
+                    match e {
+                        Ok(e) if joker(&nom, &e.file_name().to_string_lossy()) => trouves.push(e.path()),
+                        Ok(_) => {}
+                        Err(e) => refus.push((montrer(parent), e.to_string())),
+                    }
+                }
+            }
+            Err(e) if e.kind() == NotFound => {}
+            Err(e) => refus.push((montrer(parent), e.to_string())),
+        }
     } else {
-        vec![chemin]
-    };
+        trouves.push(chemin.to_path_buf());
+    }
     trouves.sort();
-    trouves
-        .into_iter()
-        // Comme la configuration elle-même : un simple fichier, lu borné (un tube nommé figeait le bilan).
-        .filter_map(|p| Some((montrer(&p), lire_texte_ssh(&p).ok()?)))
-        .collect()
+    let mut inclus: Vec<Inclus> = refus.into_iter().map(|(n, r)| (n, Err(r))).collect();
+    for p in trouves {
+        match lire_texte_ssh(&p) {
+            Ok(t) => inclus.push((montrer(&p), Ok(t))),
+            Err(e) if e.kind() == NotFound => {}
+            Err(_) if p.is_dir() => {}
+            Err(e) => inclus.push((montrer(&p), Err(e.to_string()))),
+        }
+    }
+    inclus
 }
 
 /// Un nom correspond-il à un motif à jokers (« * » : n'importe quelle suite, « ? » : un caractère) ?
@@ -1295,7 +1408,13 @@ pub(crate) fn cle_protegee(texte: &str) -> Option<bool> {
         "-----BEGIN ENCRYPTED PRIVATE KEY-----" => Some(true),
         // Format OpenSSH : le nom du chiffrement est écrit dans la clé (« none » = pas de phrase de passe).
         "-----BEGIN OPENSSH PRIVATE KEY-----" => {
-            let corps: String = texte.lines().filter(|l| !l.starts_with("-----")).collect();
+            // Le corps s'arrête à la ligne de fin, comme pour SSH : ce qui suit (un octet de trop, un commentaire)
+            // ne change pas la clé, et ne doit pas la faire passer pour « pas une clé ».
+            let corps: String = texte
+                .lines()
+                .skip(1)
+                .take_while(|l| !l.starts_with("-----END"))
+                .collect();
             let octets = base64_decoder(&corps)?;
             let reste = octets.strip_prefix(b"openssh-key-v1\0")?;
             let longueur = usize::try_from(u32::from_be_bytes(reste.get(..4)?.try_into().ok()?)).ok()?;
@@ -2649,23 +2768,46 @@ mod tests {
         assert!(joker("*.conf", "travail.conf") && joker("c?nfig", "config") && joker("*", ""));
         assert!(!joker("*.conf", "travail.conf.bak") && !joker("c?nfig", "cnfig"));
         // Un Include déplié à sa place ; l'alerte nomme le fichier inclus et sa ligne. Une boucle s'arrête.
-        let lire = |motif: &str| -> Vec<(String, String)> {
+        let lire = |motif: &str| -> Vec<Inclus> {
             match motif {
-                "config.d/*" => vec![("~/.ssh/config.d/labo".into(), "# labo\nForwardAgent yes\n".into())],
-                "boucle" => vec![("~/.ssh/boucle".into(), "Include boucle\n".into())],
+                "config.d/*" => vec![("~/.ssh/config.d/labo".into(), Ok("# labo\nForwardAgent yes\n".into()))],
+                "boucle" => vec![("~/.ssh/boucle".into(), Ok("Include boucle\n".into()))],
+                "gros" => vec![("~/.ssh/gros".into(), Err("plus de 1024 Kio".into()))],
                 _ => Vec::new(),
             }
         };
         let mut lignes = Vec::new();
+        let mut non_lus = Vec::new();
         deplier_config_ssh(
             "~/.ssh/config",
             "Include config.d/*\nInclude boucle\nHost x\n",
             &lire,
             8,
             &mut lignes,
+            &mut non_lus,
         );
-        // Les deux lignes du fichier inclus, « Host x », et l'Include de trop au bout de la boucle (laissé tel quel).
-        assert_eq!(lignes.len(), 4);
+        // Les deux lignes du fichier inclus et « Host x » ; l'Include de trop au bout de la boucle est dit non lu.
+        assert_eq!(lignes.len(), 3);
+        assert!(
+            matches!(&non_lus[..], [(f, r)] if f == "~/.ssh/boucle" && (r.contains("ligne 1") || r.contains("line 1"))),
+            "{non_lus:?}"
+        );
+        // Un fichier inclus qui n'a pas pu être lu n'est pas « vide » : il est rendu avec sa raison.
+        let mut sans_gros = Vec::new();
+        let mut gros_non_lu = Vec::new();
+        deplier_config_ssh(
+            "~/.ssh/config",
+            "Include gros\n",
+            &lire,
+            8,
+            &mut sans_gros,
+            &mut gros_non_lu,
+        );
+        assert_eq!(sans_gros, Vec::<(String, usize, String)>::new());
+        assert_eq!(
+            gros_non_lu,
+            vec![("~/.ssh/gros".to_string(), "plus de 1024 Kio".to_string())]
+        );
         let c = constats_config_ssh(&lignes);
         assert!(
             c.len() == 1
@@ -2680,6 +2822,7 @@ mod tests {
             &lire,
             8,
             &mut lignes,
+            &mut Vec::new(),
         );
         assert!(constats_config_ssh(&lignes).is_empty());
     }
@@ -2744,6 +2887,16 @@ Host *
             Some(true)
         );
         assert_eq!(cle_protegee("-----BEGIN RSA PRIVATE KEY-----\nMIIE\n"), Some(false));
+        // Vérification de Fable n° 3, M2 : ce qui suit la ligne de fin (un octet hors UTF-8, lu avec perte, ou un
+        // commentaire) ne fait plus passer une clé sans phrase de passe pour « pas une clé ». En-têtes inventés.
+        let nue = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAAB\n\
+                   -----END OPENSSH PRIVATE KEY-----\n";
+        let chiffree = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAACmFlczI1Ni1jdHIAAAAGYmNyeXB0\n\
+                        -----END OPENSSH PRIVATE KEY-----\n";
+        for fin in ["", "\u{FFFD}", "\u{FFFD}\n", "copie du 3 mai\n"] {
+            assert_eq!(cle_protegee(&format!("{nue}{fin}")), Some(false), "{fin:?}");
+            assert_eq!(cle_protegee(&format!("{chiffree}{fin}")), Some(true), "{fin:?}");
+        }
         assert_eq!(base64_decoder("TWFu").unwrap(), b"Man");
         assert_eq!(base64_decoder("TQ==").unwrap(), b"M");
     }
@@ -2941,9 +3094,9 @@ mod tests_au_hasard {
         #[test]
         fn lecteurs_sans_plantage(t in texte()) {
             let _ = reglages_ssh_risques(&t);
-            let lire = |_: &str| vec![("~/.ssh/inclus".to_string(), t.clone())];
+            let lire = |_: &str| vec![("~/.ssh/inclus".to_string(), Ok(t.clone()))];
             let mut lignes = Vec::new();
-            deplier_config_ssh("~/.ssh/config", &t, &lire, 3, &mut lignes);
+            deplier_config_ssh("~/.ssh/config", &t, &lire, 3, &mut lignes, &mut Vec::new());
             let _ = constats_config_ssh(&lignes);
             let _ = unix::defauts_sudo(&t);
             let _ = unix::regles_nopasswd(&t);

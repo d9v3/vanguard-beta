@@ -850,12 +850,13 @@ async fn main() {
                 optimiser::programmes_au_demarrage();
             }
         }
-        Some(Commande::Correction { voir, json }) => {
-            let code = machine::apercu::voir(&voir, json);
-            if code != 0 {
-                chiffrement::oublier_session();
-                std::process::exit(code);
-            }
+        // L'aperçu ne passe que par la forme « vanguard correction … », qui sort plus haut, lecture seule posée avant
+        // tout. Arrivé ici par une autre forme (une option globale ou un synonyme ajoutés un jour), journal, sceaux et
+        // verrou seraient déjà passés : refusé, jamais montré (`apercu::voir` refuse aussi de lui-même).
+        Some(Commande::Correction { json, .. }) => {
+            let code = machine::apercu::voir("", json);
+            chiffrement::oublier_session();
+            std::process::exit(code);
         }
         Some(Commande::Fiche { json }) => fiche::fiche(json),
         Some(Commande::CopierFichiers { destination }) => copier::commande(destination.as_deref()),

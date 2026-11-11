@@ -1143,10 +1143,10 @@ fn un_lien_n_offre_pas_de_correction() {
     }
 }
 
-/// Les constats « Clés SSH » d'un `audit --json` lancé avec ce HOME : il doit rendre la main (un tube nommé dans ~/.ssh
-/// le figeait), et aucun ne porte de correction ni de geste.
+/// Les constats des catégories `categories` d'un `audit --json` lancé avec ce HOME : il doit rendre la main (un tube
+/// nommé dans ~/.ssh le figeait).
 #[cfg(unix)]
-fn constats_ssh_sans_correction(programme: &Path, maison: &Path) -> Vec<serde_json::Value> {
+fn constats_du_bilan(programme: &Path, maison: &Path, categories: &[&str]) -> Vec<serde_json::Value> {
     let debut = std::time::Instant::now();
     let bilan = vanguard_dans(programme, maison, "fr", &["audit", "--json"], "", 120);
     assert!(
@@ -1157,13 +1157,20 @@ fn constats_ssh_sans_correction(programme: &Path, maison: &Path) -> Vec<serde_js
     );
     assert!(debut.elapsed() < std::time::Duration::from_secs(100), "bilan trop long");
     let v: serde_json::Value = serde_json::from_str(&bilan.texte).expect("audit --json : JSON illisible");
-    let ssh: Vec<serde_json::Value> = v["constats"]
+    v["constats"]
         .as_array()
         .expect("pas de constats")
         .iter()
-        .filter(|c| c["categorie"] == "Clés SSH")
+        .filter(|c| categories.iter().any(|k| c["categorie"] == *k))
         .cloned()
-        .collect();
+        .collect()
+}
+
+/// Les constats « Clés SSH » d'un `audit --json` lancé avec ce HOME (`constats_du_bilan`) ; aucun ne porte de
+/// correction ni de geste.
+#[cfg(unix)]
+fn constats_ssh_sans_correction(programme: &Path, maison: &Path) -> Vec<serde_json::Value> {
+    let ssh = constats_du_bilan(programme, maison, &["Clés SSH"]);
     for c in &ssh {
         assert!(c["geste"].is_null() && c["correctif"].is_null(), "corrigeable : {c}");
     }
@@ -1245,6 +1252,115 @@ fn les_cas_limites_de_ssh_ne_donnent_ni_correction_ni_blocage() {
             "HOME {fin} : {c:?}"
         );
     }
+}
+
+/// Vérification de Fable n° 3 (M1, M2, M3) : ce que Vanguard n'a pas lu dans ~/.ssh n'est jamais compté sain. Un
+/// fichier inclus par la configuration, plus gros que la borne de lecture : dit « non lu » (au bilan des clés et à
+/// celui du client SSH). Un fichier inclus avec un octet hors UTF-8 dans un commentaire : lu quand même, son réglage
+/// relâché signalé. Une clé sans phrase de passe, nommée autrement que id_*, en 0644, avec un octet hors UTF-8 après sa
+/// fin : ses deux alertes. Un tube nommé, un tube id_* en 0600 et un lien vers un périphérique : dits « non lu », et
+/// le bilan ne dit plus « Permissions de ~/.ssh correctes ». Une socket (ControlMaster) et un dossier : rien à dire.
+#[cfg(unix)]
+#[test]
+fn ce_qui_n_est_pas_lu_dans_ssh_n_est_jamais_sain() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
+    let mode = |c: &Path, m: u32| std::fs::set_permissions(c, std::fs::Permissions::from_mode(m)).unwrap();
+    let tube = |c: &Path| {
+        let s = Command::new("mkfifo").arg(c).status().unwrap();
+        assert!(s.success(), "mkfifo {}", c.display());
+    };
+    let maison = maison_jetable();
+    mode(&maison, 0o700);
+    let ssh = maison.join(".ssh");
+    std::fs::create_dir_all(&ssh).unwrap();
+    mode(&ssh, 0o700);
+    std::fs::write(ssh.join("config"), "Include inclus\nInclude gros\nInclude absent\n").unwrap();
+    // M1 (a) : un octet hors UTF-8 dans un commentaire ; SSH applique le reste.
+    std::fs::write(
+        ssh.join("inclus"),
+        b"# r\xe9glages du labo\nHost *\n    StrictHostKeyChecking no\n",
+    )
+    .unwrap();
+    // M1 (b) : plus d'un Mio de lignes courtes, que SSH lit en entier.
+    let mut gros = "# commentaire\n".repeat(80_000);
+    gros.push_str("Host *\n    ForwardAgent yes\n");
+    std::fs::write(ssh.join("gros"), gros).unwrap();
+    // M2 : en-tête de clé inventé (chiffrement « none »), un octet de trop après la ligne de fin.
+    let mut cle = b"-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAAB\n\
+                   -----END OPENSSH PRIVATE KEY-----\n"
+        .to_vec();
+    cle.push(0xff);
+    std::fs::write(ssh.join("serveur"), cle).unwrap();
+    mode(&ssh.join("serveur"), 0o644);
+    // M3 : ce qui n'est pas un simple fichier, sous un nom quelconque ou id_* bien protégé.
+    tube(&ssh.join("controle"));
+    mode(&ssh.join("controle"), 0o600);
+    tube(&ssh.join("id_tube"));
+    mode(&ssh.join("id_tube"), 0o600);
+    symlink("/dev/null", ssh.join("nul")).unwrap();
+    // Jamais une clé : rien à dire.
+    // Par le dossier ouvert (/proc/self/fd/N) : le chemin d'une prise est borné à 108 octets, et le dossier jetable
+    // peut être plus long.
+    let dossier_ssh = std::fs::File::open(&ssh).unwrap();
+    let _socket = std::os::unix::net::UnixListener::bind(format!(
+        "/proc/self/fd/{}/cm-alice@labo:22",
+        std::os::fd::AsRawFd::as_raw_fd(&dossier_ssh)
+    ))
+    .unwrap();
+    assert!(std::os::unix::fs::FileTypeExt::is_socket(
+        &std::fs::metadata(ssh.join("cm-alice@labo:22")).unwrap().file_type()
+    ));
+    std::fs::create_dir_all(ssh.join("sockets")).unwrap();
+    mode(&ssh.join("sockets"), 0o755);
+    let constats = constats_du_bilan(programme, &maison, &["Clés SSH", "Post-quantique"]);
+    let message = |c: &serde_json::Value| c["message"].as_str().unwrap_or_default().to_string();
+    let dit = |bouts: &[&str]| {
+        assert!(
+            constats.iter().any(|c| bouts.iter().all(|b| message(c).contains(b))),
+            "{bouts:?} n'est pas dit : {constats:#?}"
+        );
+    };
+    dit(&["~/.ssh/inclus, ligne 3", "sans vérifier qu'il est le bon"]);
+    dit(&["Impossible de vérifier", "~/.ssh/gros non lu", "plus de 1024 Kio"]);
+    dit(&["Clé privée ~/.ssh/serveur sans phrase de passe"]);
+    dit(&["Clé privée ~/.ssh/serveur lisible par d'autres"]);
+    for nom in ["controle", "id_tube", "nul"] {
+        dit(&[
+            "Impossible de vérifier",
+            &format!("~/.ssh/{nom} non lu"),
+            "pas un simple fichier",
+        ]);
+    }
+    // Chaque fichier non lu est dit une fois, même quand la revue des clés et la configuration le croisent toutes deux.
+    let mut vus = std::collections::BTreeSet::new();
+    for c in &constats {
+        let m = message(c);
+        assert!(vus.insert(m.clone()), "dit deux fois : {m}");
+        assert!(
+            !m.contains("~/.ssh correctes"),
+            "sain alors que tout n'est pas lu : {m}"
+        );
+        for rien in ["cm-alice", "~/.ssh/sockets", "~/.ssh/absent"] {
+            assert!(!m.contains(rien), "{rien} : {m}");
+        }
+        if m.starts_with("Impossible de vérifier") {
+            assert_eq!(c["verifie"], false, "{c}");
+        }
+    }
+    // Le client SSH ne se juge pas sans le fichier inclus non lu (il peut porter les algorithmes d'échange).
+    let client = ["/usr/bin/ssh", "/bin/ssh", "/usr/local/bin/ssh"]
+        .iter()
+        .any(|p| Path::new(p).exists());
+    let attendu = if client {
+        "Client SSH : échange de clés post-quantique non vérifié (illisible : ~/.ssh/gros non lu : plus de 1024 Kio)"
+    } else {
+        "Pas de client OpenSSH"
+    };
+    assert!(
+        constats.iter().any(|c| message(c).contains(attendu)),
+        "{attendu} : {constats:#?}"
+    );
 }
 
 #[test]

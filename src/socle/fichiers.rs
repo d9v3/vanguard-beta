@@ -91,19 +91,21 @@ pub(crate) fn lire_ordinaire_au_bout(chemin: &std::path::Path, max: u64) -> std:
     lire_simple(chemin, max, true)
 }
 
+/// Les drapeaux d'ouverture de `lire_simple` : sans attendre (un tube nommé ne fige rien), sans suivre de lien quand
+/// `suivre` est faux, et sans jamais devenir le terminal de Vanguard (O_NOCTTY) : un échange entre le regard et
+/// l'ouverture peut mettre un terminal au bout du chemin, et `fstat` ne le refuse qu'après l'ouverture.
+#[cfg(unix)]
+fn drapeaux_de_lecture(suivre: bool) -> libc::c_int {
+    let base = libc::O_NONBLOCK | libc::O_NOCTTY;
+    if suivre { base } else { base | libc::O_NOFOLLOW }
+}
+
 fn lire_simple(chemin: &std::path::Path, max: u64, suivre: bool) -> std::io::Result<Vec<u8>> {
     use std::io::Read;
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::custom_flags(
-        &mut options,
-        if suivre {
-            libc::O_NONBLOCK
-        } else {
-            libc::O_NOFOLLOW | libc::O_NONBLOCK
-        },
-    );
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, drapeaux_de_lecture(suivre));
     #[cfg(windows)]
     if !suivre {
         // FILE_FLAG_OPEN_REPARSE_POINT : un lien symbolique ou une jonction s'ouvre lui-même, sans être suivi.
@@ -611,6 +613,20 @@ mod tests {
         assert_eq!(occupe, Some(SansVerrou::Occupe));
         assert!(debut.elapsed() >= std::time::Duration::from_millis(300));
         drop(tenu);
+    }
+
+    /// Vérification de Fable n° 3, I3 : une lecture bornée n'attend jamais, ne prend jamais un terminal pour le sien,
+    /// et ne suit un lien que si on le lui demande. Les drapeaux seulement : ouvrir un vrai terminal ici demanderait un
+    /// pseudo-terminal, hors de portée de l'essai (la limite est dite au rapport).
+    #[cfg(unix)]
+    #[test]
+    fn une_lecture_bornee_ne_prend_jamais_de_terminal() {
+        for suivre in [false, true] {
+            let d = drapeaux_de_lecture(suivre);
+            assert_ne!(d & libc::O_NOCTTY, 0, "suivre = {suivre}");
+            assert_ne!(d & libc::O_NONBLOCK, 0, "suivre = {suivre}");
+            assert_eq!(d & libc::O_NOFOLLOW != 0, !suivre);
+        }
     }
 
     /// Un lien posé d'avance sous un nom de temporaire n'est jamais suivi : la cible reste intacte, et le nom tiré
