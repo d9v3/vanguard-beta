@@ -1363,6 +1363,172 @@ fn ce_qui_n_est_pas_lu_dans_ssh_n_est_jamais_sain() {
     );
 }
 
+/// Vérification de Fable n° 4 (N1, N2, N3). Un motif d'Include que Vanguard ne résout pas comme SSH (joker dans un
+/// dossier, crochets, variable, jeton, « ~nom », guillemets avec une espace, apostrophes, barre oblique inverse, mot-clé
+/// entre guillemets) : le fichier que SSH lit relâche la vérification des serveurs, et le bilan dit le motif non lu,
+/// jamais « ~/.ssh correctes ». Les formes simples restent lues et signalées à leur ligne. Un éventail d'inclusions
+/// s'arrête au plafond, dit une fois. ~/.ssh et ~/.netrc en boucle de liens : non vérifiés, ni absents ni protégés.
+#[cfg(unix)]
+#[test]
+fn un_include_que_vanguard_ne_resout_pas_est_dit_non_lu() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
+    let mode = |c: &Path, m: u32| std::fs::set_permissions(c, std::fs::Permissions::from_mode(m)).unwrap();
+    let relache = "Host *\n    StrictHostKeyChecking no\n";
+    let client = ["/usr/bin/ssh", "/bin/ssh", "/usr/local/bin/ssh"]
+        .iter()
+        .any(|p| Path::new(p).exists());
+    // Une maison jetable : ~/.ssh/config, et le fichier relâché à chaque endroit qu'un des motifs vise chez SSH.
+    let preparer = |config: &str| {
+        let maison = maison_jetable();
+        mode(&maison, 0o700);
+        let ssh = maison.join(".ssh");
+        std::fs::create_dir_all(ssh.join("d1")).unwrap();
+        mode(&ssh, 0o700);
+        std::fs::write(ssh.join("config"), config).unwrap();
+        for nom in ["inclus", "d1/inclus", "mon inclus"] {
+            std::fs::write(ssh.join(nom), relache).unwrap();
+        }
+        maison
+    };
+    let message = |c: &serde_json::Value| c["message"].as_str().unwrap_or_default().to_string();
+    let formes = [
+        "Include d*/inclus",
+        "Include incl[u]s",
+        "Include ${HOME}/.ssh/inclus",
+        "Include %d/.ssh/inclus",
+        "Include ~alice/.ssh/inclus",
+        "Include \"mon inclus\"",
+        "Include 'inclus'",
+        "Include incl\\us",
+        "\"Include\" inclus",
+    ];
+    std::thread::scope(|fils| {
+        let mut attentes = Vec::new();
+        for forme in formes {
+            attentes.push(fils.spawn(move || {
+                let maison = preparer(&format!("{forme}\n"));
+                let constats = constats_du_bilan(programme, &maison, &["Clés SSH", "Post-quantique"]);
+                assert!(
+                    constats.iter().any(|c| {
+                        let m = message(c);
+                        m.starts_with("Impossible de vérifier")
+                            && m.contains(" non lu : motif d'inclusion non interprété (~/.ssh/config, ligne 1)")
+                            && c["verifie"] == false
+                    }),
+                    "{forme} : {constats:#?}"
+                );
+                for c in &constats {
+                    let m = message(c);
+                    assert!(
+                        !m.contains("~/.ssh correctes"),
+                        "{forme} : sain sans avoir tout lu : {m}"
+                    );
+                }
+                if client {
+                    assert!(
+                        constats.iter().any(|c| {
+                            let m = message(c);
+                            m.contains("Client SSH : échange de clés post-quantique non vérifié")
+                                && m.contains("motif d'inclusion non interprété")
+                        }),
+                        "{forme} : client jugé sans le motif : {constats:#?}"
+                    );
+                }
+            }));
+        }
+        // Témoins : les formes simples sont lues, le réglage relâché signalé à sa ligne.
+        for forme in [
+            "Include inclus",
+            "Include ~/.ssh/inclus",
+            "Include=\"inclus\" # commentaire",
+        ] {
+            attentes.push(fils.spawn(move || {
+                let maison = preparer(&format!("{forme}\n"));
+                let constats = constats_du_bilan(programme, &maison, &["Clés SSH"]);
+                assert!(
+                    constats.iter().any(|c| {
+                        let m = message(c);
+                        m.contains("~/.ssh/inclus, ligne 2") && m.contains("sans vérifier qu'il est le bon")
+                    }),
+                    "{forme} : {constats:#?}"
+                );
+                assert!(
+                    constats.iter().all(|c| !message(c).contains("non lu")),
+                    "{forme} : {constats:#?}"
+                );
+            }));
+        }
+        // N3 : sept motifs qui se réincluent (7^8 lectures avant) : plafond dit une fois, bilan rendu.
+        attentes.push(fils.spawn(move || {
+            let eventail = "Include a b c d e f g\n";
+            let maison = preparer(eventail);
+            for nom in ["a", "b", "c", "d", "e", "f", "g"] {
+                std::fs::write(maison.join(".ssh").join(nom), eventail).unwrap();
+            }
+            let debut = Instant::now();
+            let constats = constats_du_bilan(programme, &maison, &["Clés SSH"]);
+            eprintln!("éventail de 7 motifs : bilan en {:?}", debut.elapsed());
+            let plafond = constats
+                .iter()
+                .filter(|c| message(c).contains("plus de 128 fichiers inclus en tout"))
+                .count();
+            assert_eq!(plafond, 1, "{constats:#?}");
+            assert!(constats.iter().all(|c| !message(c).contains("~/.ssh correctes")));
+        }));
+        // Plus de seize motifs non interprétés : les seize premiers dits, les autres comptés, jamais tus.
+        attentes.push(fils.spawn(move || {
+            let config = (0..20)
+                .map(|i| format!("Include \"x{i}\n"))
+                .collect::<Vec<_>>()
+                .concat();
+            let maison = preparer(&config);
+            let constats = constats_du_bilan(programme, &maison, &["Clés SSH"]);
+            let non_interpretes = constats
+                .iter()
+                .filter(|c| message(c).contains("motif d'inclusion non interprété"))
+                .count();
+            assert_eq!(non_interpretes, 16, "{constats:#?}");
+            assert!(
+                constats.iter().any(
+                    |c| message(c).contains("4 autre(s) inclusion(s) de ~/.ssh/config non lue(s)")
+                        && c["verifie"] == false
+                ),
+                "{constats:#?}"
+            );
+        }));
+        // N2 : ~/.ssh et ~/.netrc en boucle de liens.
+        attentes.push(fils.spawn(move || {
+            let maison = maison_jetable();
+            mode(&maison, 0o700);
+            symlink(".ssh", maison.join(".ssh")).unwrap();
+            symlink(".netrc", maison.join(".netrc")).unwrap();
+            let constats = constats_du_bilan(programme, &maison, &["Clés SSH", "Fichiers secrets"]);
+            for (categorie, bout) in [("Clés SSH", "~/.ssh non lu"), ("Fichiers secrets", "~/.netrc non lu")] {
+                assert!(
+                    constats.iter().any(|c| c["categorie"] == categorie
+                        && message(c).starts_with("Impossible de vérifier")
+                        && message(c).contains(bout)
+                        && c["verifie"] == false),
+                    "{bout} : {constats:#?}"
+                );
+            }
+            for c in &constats {
+                let m = message(c);
+                assert!(
+                    !m.contains("Pas de dossier ~/.ssh") && !m.contains("protégés"),
+                    "boucle prise pour absent ou sain : {m}"
+                );
+            }
+        }));
+        for a in attentes {
+            if let Err(e) = a.join() {
+                std::panic::resume_unwind(e);
+            }
+        }
+    });
+}
+
 #[test]
 fn audit_en_json() {
     let s = vanguard("fr", &["audit", "--json"], "", 300);

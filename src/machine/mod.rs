@@ -956,8 +956,19 @@ fn cles_ssh() -> Vec<Constat> {
     let dossier = maison.join(".ssh");
     // Les droits se jugent sur ce qui est visé, lien suivi ; la correction (chmod) ne passe jamais par un lien :
     // `unix::geste_du_compte` dit pourquoi elle n'est pas proposée.
-    let Ok(meta) = std::fs::metadata(&dossier) else {
-        return vec![ok("Clés SSH", tr!("Pas de dossier ~/.ssh.", "No ~/.ssh folder."))];
+    // Seul « n'existe pas » veut dire absent (`unix::absent`) : un dossier là mais illisible (boucle de liens, droits,
+    // nom trop long) n'est pas « rien à dire », SSH y lit peut-être des clés et une configuration.
+    let meta = match std::fs::metadata(&dossier) {
+        Ok(meta) => meta,
+        Err(e) if unix::absent(&e) => {
+            return vec![ok("Clés SSH", tr!("Pas de dossier ~/.ssh.", "No ~/.ssh folder."))];
+        }
+        Err(e) => {
+            return vec![impossible(
+                "Clés SSH",
+                &trf!("~/.ssh non lu : {e}", "~/.ssh not read: {e}"),
+            )];
+        }
     };
     let mut constats = Vec::new();
     if std::os::unix::fs::PermissionsExt::mode(&meta.permissions()) & 0o077 != 0 {
@@ -1109,21 +1120,16 @@ fn cles_ssh() -> Vec<Constat> {
     }
     match lire_texte_ssh(&dossier.join("config")) {
         Ok(config) => {
-            let mut lignes = Vec::new();
-            let mut non_lus = Vec::new();
-            deplier_config_ssh(
-                "~/.ssh/config",
-                &config,
-                &|motif| fichiers_inclus_ssh(&dossier, motif),
-                8,
-                &mut lignes,
-                &mut non_lus,
-            );
-            constats.extend(constats_config_ssh(&lignes));
+            let depliee = deplier_config_ssh("~/.ssh/config", &config, &|motif, plafond| {
+                fichiers_inclus_ssh(&dossier, motif, plafond)
+            });
+            constats.extend(constats_config_ssh(&depliee.lignes));
             // Un fichier inclus que SSH applique peut-être, mais que Vanguard n'a pas lu (trop gros, tube nommé,
-            // illisible) : dit, jamais compté comme sain.
-            for (fichier, raison) in non_lus {
+            // illisible, motif qu'il ne sait pas résoudre comme SSH) : dit, jamais compté comme sain. La raison
+            // reprend le nom d'un fichier, venu de n'importe qui : montrée comme lui.
+            for (fichier, raison) in depliee.non_lus {
                 let fichier = affichable(&fichier);
+                let raison = affichable(&raison);
                 dire_une_fois(
                     &mut constats,
                     impossible(
@@ -1131,6 +1137,16 @@ fn cles_ssh() -> Vec<Constat> {
                         &trf!("{fichier} non lu : {raison}", "{fichier} not read: {raison}"),
                     ),
                 );
+            }
+            if depliee.autres_non_lus > 0 {
+                let autres = depliee.autres_non_lus;
+                constats.push(impossible(
+                    "Clés SSH",
+                    &trf!(
+                        "{autres} autre(s) inclusion(s) de ~/.ssh/config non lue(s)",
+                        "{autres} other include(s) of ~/.ssh/config not read"
+                    ),
+                ));
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -1193,102 +1209,342 @@ fn sans_correction_du_compte(message: &str, raison: &str) -> String {
     )
 }
 
-/// La configuration de SSH avec ses fichiers inclus (« Include ») dépliés à leur place, comme SSH les lit : (fichier
-/// à montrer, numéro de ligne, ligne). `lire` rend les fichiers d'un motif d'inclusion ; `profondeur` arrête une
-/// inclusion en boucle. Un fichier inclus qui n'a pas pu être lu, ou une inclusion au-delà de `profondeur`, va dans
-/// `non_lus` (fichier, raison) : SSH, lui, l'applique peut-être, il ne compte donc jamais comme « rien à dire ».
+/// Plafonds d'une configuration de SSH dépliée, ses inclusions comprises. La profondeur seule n'arrête pas un
+/// éventail : une ligne « Include » à 7 motifs qui se réincluent faisait 7^8 lectures (79 s de bilan), et un Mio de
+/// lignes « Include * » relisait le dossier à chaque ligne. Au-delà d'un plafond, le reste n'est pas lu, et c'est dit.
 #[cfg(unix)]
-fn deplier_config_ssh(
-    nom: &str,
-    texte: &str,
-    lire: &dyn Fn(&str) -> Vec<Inclus>,
-    profondeur: u32,
-    sortie: &mut Vec<(String, usize, String)>,
-    non_lus: &mut Vec<(String, String)>,
-) {
-    for (i, ligne) in texte.lines().enumerate() {
-        let propre = ligne.split('#').next().unwrap_or_default().trim();
-        let (cle, motifs) = propre
-            .split_once(|c: char| c.is_whitespace() || c == '=')
-            .unwrap_or((propre, ""));
-        if !cle.eq_ignore_ascii_case("include") {
-            sortie.push((nom.to_string(), i.saturating_add(1), ligne.to_string()));
-            continue;
-        }
-        if profondeur == 0 {
-            non_lus.push((
-                nom.to_string(),
-                trf!(
-                    "ligne {} : inclusions imbriquées trop profondes",
-                    "line {}: includes nested too deep",
-                    i.saturating_add(1)
-                ),
-            ));
-            continue;
-        }
-        for motif in motifs
-            .trim_start_matches(|c: char| c.is_whitespace() || c == '=')
-            .split_whitespace()
-        {
-            for (inclus, contenu) in lire(motif.trim_matches('"')) {
-                match contenu {
-                    Ok(t) => deplier_config_ssh(&inclus, &t, lire, profondeur.saturating_sub(1), sortie, non_lus),
-                    Err(raison) => non_lus.push((inclus, raison)),
+const PROFONDEUR_MAX: u32 = 8;
+#[cfg(unix)]
+const FICHIERS_INCLUS_MAX: usize = 128;
+#[cfg(unix)]
+const MOTIFS_MAX: usize = 1024;
+#[cfg(unix)]
+const ENTREES_MAX: usize = 4096;
+#[cfg(unix)]
+const LIGNES_MAX: usize = 100_000;
+#[cfg(unix)]
+const OCTETS_MAX: usize = 16 << 20;
+/// Fichiers non lus montrés un par un ; les suivants sont comptés en un seul constat.
+#[cfg(unix)]
+const NON_LUS_MONTRES: usize = 16;
+
+/// Le plafond qu'une configuration de SSH dépliée a franchi.
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Depasse {
+    Fichiers,
+    Entrees,
+    Motifs,
+    Taille,
+}
+
+/// Ce que la lecture des fichiers inclus peut encore coûter, partagé par tout le dépliage.
+#[cfg(unix)]
+pub(super) struct Plafond {
+    /// Fichiers inclus encore lisibles ; un appel de `lire` en rend au plus un de plus, qui dit le dépassement.
+    fichiers: usize,
+    /// Entrées de dossier que les jokers peuvent encore examiner.
+    entrees: usize,
+    /// Le plafond franchi : le dépliage le dit une fois et ne lit plus rien.
+    depasse: Option<Depasse>,
+}
+
+/// Une configuration de SSH dépliée : ses lignes (fichier à montrer, numéro de ligne, ligne), et ce que SSH applique
+/// peut-être sans que Vanguard l'ait lu (fichier, raison), jamais compté comme « rien à dire ».
+#[cfg(unix)]
+#[derive(Default)]
+pub(super) struct Depliee {
+    pub(super) lignes: Vec<(String, usize, String)>,
+    pub(super) non_lus: Vec<(String, String)>,
+    /// Non lus au-delà des `NON_LUS_MONTRES` premiers : comptés, pas montrés un par un.
+    pub(super) autres_non_lus: usize,
+}
+
+/// La configuration de SSH avec ses fichiers inclus (« Include ») dépliés à leur place, comme SSH les lit. `lire` rend
+/// les fichiers d'un motif d'inclusion que Vanguard sait résoudre (`motif_interprete`) ; un autre motif, un fichier
+/// inclus qui n'a pas pu être lu, une inclusion trop profonde ou au-delà d'un plafond vont dans `non_lus` : SSH, lui,
+/// les applique peut-être.
+#[cfg(unix)]
+fn deplier_config_ssh(nom: &str, texte: &str, lire: &dyn Fn(&str, &mut Plafond) -> Vec<Inclus>) -> Depliee {
+    let mut d = Depliage {
+        lire,
+        plafond: Plafond {
+            fichiers: FICHIERS_INCLUS_MAX,
+            entrees: ENTREES_MAX,
+            depasse: None,
+        },
+        motifs: MOTIFS_MAX,
+        lignes: LIGNES_MAX,
+        octets: OCTETS_MAX,
+        trop_profond_dit: false,
+        depliee: Depliee::default(),
+    };
+    d.deplier(nom, texte, PROFONDEUR_MAX);
+    d.depliee
+}
+
+#[cfg(unix)]
+struct Depliage<'a> {
+    lire: &'a dyn Fn(&str, &mut Plafond) -> Vec<Inclus>,
+    plafond: Plafond,
+    /// Arguments d'« Include » encore à traiter, lignes et octets encore à garder.
+    motifs: usize,
+    lignes: usize,
+    octets: usize,
+    trop_profond_dit: bool,
+    depliee: Depliee,
+}
+
+#[cfg(unix)]
+impl Depliage<'_> {
+    fn deplier(&mut self, nom: &str, texte: &str, profondeur: u32) {
+        for (i, ligne) in texte.lines().enumerate() {
+            if self.plafond.depasse.is_some() {
+                return;
+            }
+            let n = i.saturating_add(1);
+            let arguments = match arguments_include(ligne) {
+                None => {
+                    self.garder(nom, n, ligne);
+                    continue;
+                }
+                Some(Ok(arguments)) => arguments,
+                // « "Include" … » : SSH retire les guillemets du mot-clé, Vanguard ne découpe pas la suite comme lui.
+                Some(Err(brut)) => {
+                    self.non_lu(crate::ui::couper(brut, 120), non_interprete(nom, n));
+                    continue;
+                }
+            };
+            let ligne_include = || crate::ui::couper(&format!("Include {arguments}"), 120);
+            if profondeur == 0 {
+                if !self.trop_profond_dit {
+                    self.trop_profond_dit = true;
+                    self.non_lu(
+                        ligne_include(),
+                        trf!(
+                            "inclusions imbriquées trop profondes ({nom}, ligne {n})",
+                            "includes nested too deep ({nom}, line {n})"
+                        ),
+                    );
+                }
+                continue;
+            }
+            // Découpés comme SSH les découpe (espaces et tabulations ; « # » en tête d'un mot ouvre un commentaire).
+            // Un mot entre guillemets, avec une barre oblique inverse ou une autre espace, se découpe autrement chez
+            // SSH : `motif_interprete` le refuse, et ce qui le suit sur la ligne est dit avec lui.
+            let mut mots = arguments
+                .split([' ', '\t'])
+                .filter(|m| !m.is_empty())
+                .take_while(|m| !m.starts_with('#'));
+            while let Some(mot) = mots.next() {
+                let Some(reste) = self.motifs.checked_sub(1) else {
+                    self.depasser(Depasse::Motifs, ligne_include(), nom, n);
+                    return;
+                };
+                self.motifs = reste;
+                let Some(motif) = motif_interprete(mot) else {
+                    let suite: Vec<&str> = std::iter::once(mot).chain(mots.by_ref()).collect();
+                    self.non_lu(
+                        crate::ui::couper(&format!("Include {}", suite.join(" ")), 120),
+                        non_interprete(nom, n),
+                    );
+                    break;
+                };
+                let inclus = (self.lire)(motif, &mut self.plafond);
+                if let Some(d) = self.plafond.depasse {
+                    self.depasser(d, ligne_include(), nom, n);
+                    return;
+                }
+                for (fichier, contenu) in inclus {
+                    let Some(reste) = self.plafond.fichiers.checked_sub(1) else {
+                        self.depasser(Depasse::Fichiers, ligne_include(), nom, n);
+                        return;
+                    };
+                    self.plafond.fichiers = reste;
+                    match contenu {
+                        Ok(t) => self.deplier(&fichier, &t, profondeur.saturating_sub(1)),
+                        Err(raison) => self.non_lu(fichier, raison),
+                    }
+                    if self.plafond.depasse.is_some() {
+                        return;
+                    }
                 }
             }
         }
     }
+
+    /// Une ligne gardée, dans les plafonds de lignes et d'octets : un Mio de lignes vides répété dans 128 fichiers
+    /// inclus aurait tenu des gigaoctets.
+    fn garder(&mut self, nom: &str, n: usize, ligne: &str) {
+        match (self.lignes.checked_sub(1), self.octets.checked_sub(ligne.len())) {
+            (Some(lignes), Some(octets)) => {
+                self.lignes = lignes;
+                self.octets = octets;
+                self.depliee.lignes.push((nom.to_string(), n, ligne.to_string()));
+            }
+            _ => self.depasser(
+                Depasse::Taille,
+                trf!("{nom} à partir de la ligne {n}", "{nom} from line {n}"),
+                nom,
+                n,
+            ),
+        }
+    }
+
+    /// Un plafond franchi : dit une fois (plus rien n'est lu ensuite), à l'endroit où il l'a été.
+    fn depasser(&mut self, d: Depasse, ce_qui: String, nom: &str, n: usize) {
+        self.plafond.depasse = Some(d);
+        let raison = match d {
+            Depasse::Fichiers => trf!(
+                "plus de {FICHIERS_INCLUS_MAX} fichiers inclus en tout ({nom}, ligne {n}) ; le reste non lu",
+                "more than {FICHIERS_INCLUS_MAX} included files in all ({nom}, line {n}); the rest not read"
+            ),
+            Depasse::Entrees => trf!(
+                "plus de {ENTREES_MAX} entrées de dossier examinées pour les jokers ({nom}, ligne {n}) ; le reste non lu",
+                "more than {ENTREES_MAX} folder entries examined for wildcards ({nom}, line {n}); the rest not read"
+            ),
+            Depasse::Motifs => trf!(
+                "plus de {MOTIFS_MAX} motifs d'inclusion en tout ({nom}, ligne {n}) ; le reste non lu",
+                "more than {MOTIFS_MAX} include patterns in all ({nom}, line {n}); the rest not read"
+            ),
+            Depasse::Taille => trf!(
+                "plus de {LIGNES_MAX} lignes ou {} Mio de configuration en tout ; le reste non lu",
+                "more than {LIGNES_MAX} lines or {} MiB of configuration in all; the rest not read",
+                OCTETS_MAX >> 20
+            ),
+        };
+        self.non_lu(ce_qui, raison);
+    }
+
+    /// Un non lu de plus, dit une fois ; au-delà de `NON_LUS_MONTRES`, seulement compté.
+    fn non_lu(&mut self, fichier: String, raison: String) {
+        if self.depliee.non_lus.iter().any(|(f, r)| *f == fichier && *r == raison) {
+            return;
+        }
+        if self.depliee.non_lus.len() < NON_LUS_MONTRES {
+            self.depliee.non_lus.push((fichier, raison));
+        } else {
+            self.depliee.autres_non_lus = self.depliee.autres_non_lus.saturating_add(1);
+        }
+    }
 }
 
-/// Les fichiers d'un motif d'inclusion de ~/.ssh/config, triés : relatif à ~/.ssh, ou commençant par « ~/ » ; les
-/// jokers « * » et « ? » valent dans le dernier élément du chemin.
+/// La raison d'un motif d'inclusion que Vanguard ne sait pas résoudre comme SSH.
 #[cfg(unix)]
-fn fichiers_inclus_ssh(dossier_ssh: &std::path::Path, motif: &str) -> Vec<Inclus> {
+fn non_interprete(nom: &str, n: usize) -> String {
+    trf!(
+        "motif d'inclusion non interprété ({nom}, ligne {n})",
+        "include pattern not interpreted ({nom}, line {n})"
+    )
+}
+
+/// Les arguments d'une ligne « Include » de la configuration de SSH, tels qu'écrits, ou `None` pour une autre ligne. Le
+/// mot-clé se découpe comme SSH le découpe (espace, tabulation, retour chariot ou « = » ; un « = » permis avant les
+/// arguments). Écrit avec des guillemets, que SSH retire (« "Include" ») : `Err` avec la ligne, non interprétée.
+#[cfg(unix)]
+fn arguments_include(ligne: &str) -> Option<Result<&str, &str>> {
+    const BLANCS: [char; 3] = [' ', '\t', '\r'];
+    let brut = ligne.trim_start_matches(BLANCS);
+    let fin = brut.find([' ', '\t', '\r', '=']).unwrap_or(brut.len());
+    let (cle, reste) = brut.split_at_checked(fin)?;
+    if cle.eq_ignore_ascii_case("include") {
+        let reste = reste.trim_start_matches(BLANCS);
+        Some(Ok(reste.strip_prefix('=').unwrap_or(reste).trim_start_matches(BLANCS)))
+    } else if cle.contains('"') && cle.replace('"', "").eq_ignore_ascii_case("include") {
+        Some(Err(brut))
+    } else {
+        None
+    }
+}
+
+/// Un argument d'« Include » que Vanguard sait résoudre exactement comme SSH, sans ses guillemets : un chemin fait de
+/// lettres, de chiffres et de « . _ - / + , @ : ~ », qui ne commence par « ~ » que sous la forme « ~/ », avec des
+/// jokers « * » et « ? » dans son dernier élément seulement. Tout le reste est résolu par SSH autrement (crochets,
+/// « ${…} », jetons « %… », « ~nom », guillemets partiels ou avec une espace, barre oblique inverse, autre espace,
+/// joker dans un dossier, élément de plus de 255 octets) : `None`, et le motif est dit non lu, jamais pris pour un
+/// fichier absent. Une liste de ce qui est permis, pas de ce qui est refusé : une forme oubliée est dite, pas tue.
+#[cfg(unix)]
+fn motif_interprete(argument: &str) -> Option<&str> {
+    let motif = match argument.strip_prefix('"') {
+        Some(entre) => entre.strip_suffix('"')?,
+        None => argument,
+    };
+    let sans_maison = motif.strip_prefix("~/").unwrap_or(motif);
+    let (dossiers, dernier) = motif.rsplit_once('/').unwrap_or(("", motif));
+    let permis = |c: char| c.is_alphanumeric() || "._-/+,@:~*?".contains(c);
+    let simple = !motif.is_empty()
+        && motif.len() <= 4096
+        && dernier.len() <= 255
+        && !sans_maison.starts_with('~')
+        && sans_maison.chars().all(permis)
+        && !dossiers.contains(['*', '?']);
+    simple.then_some(motif)
+}
+
+/// Les fichiers d'un motif d'inclusion de ~/.ssh/config (`motif_interprete`), triés : relatif à ~/.ssh, absolu, ou
+/// commençant par « ~/ » ; les jokers « * » et « ? » valent dans le dernier élément du chemin.
+#[cfg(unix)]
+fn fichiers_inclus_ssh(dossier_ssh: &std::path::Path, motif: &str, plafond: &mut Plafond) -> Vec<Inclus> {
     let maison = dossier_ssh.parent().unwrap_or(dossier_ssh);
     let chemin = match motif.strip_prefix("~/") {
         Some(reste) => maison.join(reste),
         None => dossier_ssh.join(motif),
     };
-    lire_inclus_ssh(&chemin, &|p| match p.strip_prefix(maison) {
-        Ok(r) => format!("~/{}", r.display()),
-        Err(_) => p.display().to_string(),
-    })
+    lire_inclus_ssh(
+        &chemin,
+        &|p| match p.strip_prefix(maison) {
+            Ok(r) => format!("~/{}", r.display()),
+            Err(_) => p.display().to_string(),
+        },
+        plafond,
+    )
 }
 
 /// Les fichiers visés par un chemin d'inclusion de SSH (jokers « * » et « ? » dans son dernier élément), triés, chacun
 /// lu comme la configuration elle-même (simple fichier, borné : un tube nommé figeait le bilan). Ce qui manque ne
 /// compte pas (SSH le saute aussi), ni un dossier (SSH n'y lit rien) ; tout autre refus de lecture est rendu avec sa
-/// raison, jamais tu.
+/// raison, jamais tu. Dans le `plafond` : les entrées de dossier examinées (au-delà, rien de ce motif n'est lu), et au
+/// plus un fichier de plus que ceux qui restent.
 #[cfg(unix)]
-pub(super) fn lire_inclus_ssh(chemin: &std::path::Path, montrer: &dyn Fn(&std::path::Path) -> String) -> Vec<Inclus> {
+pub(super) fn lire_inclus_ssh(
+    chemin: &std::path::Path,
+    montrer: &dyn Fn(&std::path::Path) -> String,
+    plafond: &mut Plafond,
+) -> Vec<Inclus> {
     use std::io::ErrorKind::NotFound;
-    let nom = chemin
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    use std::os::unix::ffi::OsStrExt;
+    let nom = chemin.file_name().map(OsStrExt::as_bytes).unwrap_or_default();
     let mut trouves = Vec::new();
-    let mut refus = Vec::new();
-    if nom.contains(['*', '?']) {
+    let mut inclus: Vec<Inclus> = Vec::new();
+    if nom.contains(&b'*') || nom.contains(&b'?') {
         let parent = chemin.parent().unwrap_or(chemin);
         match std::fs::read_dir(parent) {
             Ok(entrees) => {
                 for e in entrees {
+                    let Some(reste) = plafond.entrees.checked_sub(1) else {
+                        // Une liste en partie lue, triée, mettrait un fichier avant un autre que SSH lit avant lui.
+                        plafond.depasse = Some(Depasse::Entrees);
+                        return inclus;
+                    };
+                    plafond.entrees = reste;
                     match e {
-                        Ok(e) if joker(&nom, &e.file_name().to_string_lossy()) => trouves.push(e.path()),
+                        Ok(e) if joker(nom, e.file_name().as_bytes()) => trouves.push(e.path()),
                         Ok(_) => {}
-                        Err(e) => refus.push((montrer(parent), e.to_string())),
+                        Err(e) => inclus.push((montrer(parent), Err(e.to_string()))),
                     }
                 }
             }
             Err(e) if e.kind() == NotFound => {}
-            Err(e) => refus.push((montrer(parent), e.to_string())),
+            Err(e) => inclus.push((montrer(parent), Err(e.to_string()))),
         }
     } else {
         trouves.push(chemin.to_path_buf());
     }
     trouves.sort();
-    let mut inclus: Vec<Inclus> = refus.into_iter().map(|(n, r)| (n, Err(r))).collect();
     for p in trouves {
+        if inclus.len() > plafond.fichiers {
+            break;
+        }
         match lire_texte_ssh(&p) {
             Ok(t) => inclus.push((montrer(&p), Ok(t))),
             Err(e) if e.kind() == NotFound => {}
@@ -1299,30 +1555,47 @@ pub(super) fn lire_inclus_ssh(chemin: &std::path::Path, montrer: &dyn Fn(&std::p
     inclus
 }
 
-/// Un nom correspond-il à un motif à jokers (« * » : n'importe quelle suite, « ? » : un caractère) ?
+/// Un nom correspond-il à un motif à jokers, comme `glob` le juge pour SSH (« * » : n'importe quelle suite, « ? » : un
+/// caractère) ? Octets comparés tels quels (un nom n'est pas toujours de l'UTF-8). Un nom qui commence par un point ne
+/// correspond qu'à un motif qui commence par un point. « ? » vaut un octet (SSH lancé sous la langue C) ou un
+/// caractère UTF-8 entier (sous une langue UTF-8) : les deux sont acceptés, pour ne jamais tenir pour absent un
+/// fichier que SSH lit.
 #[cfg(unix)]
-fn joker(motif: &str, nom: &str) -> bool {
-    let n: Vec<char> = nom.chars().collect();
-    // Programmation dynamique : possible[j] = le début du motif correspond aux j premiers caractères du nom. Les
-    // colonnes se parcourent dans l'ordre, sans index : la case de gauche (j - 1) et sa voisine du haut sont gardées
-    // au passage, et le caractère du nom qui mène à la colonne j est absent pour j = 0.
-    let mut possible: Vec<bool> = std::iter::once(true).chain(n.iter().map(|_| false)).collect();
-    for c in motif.chars() {
-        let mut suivant = Vec::with_capacity(possible.len());
-        let mut haut_gauche = None; // possible[j - 1]
-        let mut gauche = false; // suivant[j - 1]
-        for (&haut, car) in possible.iter().zip(std::iter::once(None).chain(n.iter().map(Some))) {
-            let ici = match (c, haut_gauche, car) {
-                ('*', _, _) => haut || gauche,
-                ('?', Some(d), _) => d,
-                (_, Some(d), Some(&x)) => d && x == c,
-                _ => false,
-            };
-            suivant.push(ici);
-            gauche = ici;
-            haut_gauche = Some(haut);
-        }
-        possible = suivant;
+fn joker(motif: &[u8], nom: &[u8]) -> bool {
+    if nom.first() == Some(&b'.') && motif.first() != Some(&b'.') {
+        return false;
+    }
+    // possible[j] : le motif lu jusqu'ici correspond aux j premiers octets du nom.
+    let mut possible: Vec<bool> = std::iter::once(true).chain(nom.iter().map(|_| false)).collect();
+    // Le motif lu jusqu'ici correspondait-il aux j - k premiers octets ?
+    let avant = |possible: &[bool], j: usize, k: usize| {
+        j.checked_sub(k).is_some_and(|debut| possible.get(debut) == Some(&true))
+    };
+    for &c in motif {
+        possible = match c {
+            b'*' => possible
+                .iter()
+                .scan(false, |deja, &p| {
+                    *deja |= p;
+                    Some(*deja)
+                })
+                .collect(),
+            b'?' => (0..=nom.len())
+                .map(|j| {
+                    avant(&possible, j, 1)
+                        || (2..=4).any(|k| {
+                            avant(&possible, j, k)
+                                && j.checked_sub(k)
+                                    .and_then(|debut| nom.get(debut..j))
+                                    .and_then(|o| std::str::from_utf8(o).ok())
+                                    .is_some_and(|s| s.chars().count() == 1)
+                        })
+                })
+                .collect(),
+            _ => (0..=nom.len())
+                .map(|j| avant(&possible, j, 1) && j.checked_sub(1).and_then(|i| nom.get(i)) == Some(&c))
+                .collect(),
+        };
     }
     // La dernière colonne existe toujours (n + 1 cases) : le motif couvre-t-il le nom entier ?
     matches!(possible.last(), Some(true))
@@ -2765,10 +3038,16 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn config_ssh_avec_inclusions() {
-        assert!(joker("*.conf", "travail.conf") && joker("c?nfig", "config") && joker("*", ""));
-        assert!(!joker("*.conf", "travail.conf.bak") && !joker("c?nfig", "cnfig"));
+        assert!(joker(b"*.conf", b"travail.conf") && joker(b"c?nfig", b"config") && joker(b"*", b""));
+        assert!(!joker(b"*.conf", b"travail.conf.bak") && !joker(b"c?nfig", b"cnfig"));
+        // Comme glob : un nom caché ne correspond qu'à un motif qui commence par un point ; « ? » vaut un octet ou un
+        // caractère UTF-8 entier ; un nom hors UTF-8 se compare octet par octet.
+        assert!(!joker(b"*", b".cache") && !joker(b"?cache", b".cache") && joker(b".*", b".cache"));
+        assert!(joker(b"?.conf", "é.conf".as_bytes()) && joker(b"??.conf", "é.conf".as_bytes()));
+        assert!(!joker(b"???.conf", "é.conf".as_bytes()));
+        assert!(joker(b"*.conf", b"\xff.conf") && joker(b"?.conf", b"\xff.conf"));
         // Un Include déplié à sa place ; l'alerte nomme le fichier inclus et sa ligne. Une boucle s'arrête.
-        let lire = |motif: &str| -> Vec<Inclus> {
+        let lire = |motif: &str, _: &mut Plafond| -> Vec<Inclus> {
             match motif {
                 "config.d/*" => vec![("~/.ssh/config.d/labo".into(), Ok("# labo\nForwardAgent yes\n".into()))],
                 "boucle" => vec![("~/.ssh/boucle".into(), Ok("Include boucle\n".into()))],
@@ -2776,55 +3055,234 @@ mod tests {
                 _ => Vec::new(),
             }
         };
-        let mut lignes = Vec::new();
-        let mut non_lus = Vec::new();
-        deplier_config_ssh(
-            "~/.ssh/config",
-            "Include config.d/*\nInclude boucle\nHost x\n",
-            &lire,
-            8,
-            &mut lignes,
-            &mut non_lus,
-        );
-        // Les deux lignes du fichier inclus et « Host x » ; l'Include de trop au bout de la boucle est dit non lu.
-        assert_eq!(lignes.len(), 3);
+        let d = deplier_config_ssh("~/.ssh/config", "Include config.d/*\nInclude boucle\nHost x\n", &lire);
+        // Les deux lignes du fichier inclus et « Host x » ; l'Include de trop au bout de la boucle est dit non lu,
+        // une fois.
+        assert_eq!(d.lignes.len(), 3);
         assert!(
-            matches!(&non_lus[..], [(f, r)] if f == "~/.ssh/boucle" && (r.contains("ligne 1") || r.contains("line 1"))),
-            "{non_lus:?}"
+            matches!(&d.non_lus[..], [(f, r)] if f == "Include boucle"
+                && (r.contains("trop profondes (~/.ssh/boucle, ligne 1)") || r.contains("too deep (~/.ssh/boucle, line 1)"))),
+            "{:?}",
+            d.non_lus
         );
         // Un fichier inclus qui n'a pas pu être lu n'est pas « vide » : il est rendu avec sa raison.
-        let mut sans_gros = Vec::new();
-        let mut gros_non_lu = Vec::new();
-        deplier_config_ssh(
-            "~/.ssh/config",
-            "Include gros\n",
-            &lire,
-            8,
-            &mut sans_gros,
-            &mut gros_non_lu,
-        );
-        assert_eq!(sans_gros, Vec::<(String, usize, String)>::new());
+        let gros = deplier_config_ssh("~/.ssh/config", "Include gros\n", &lire);
+        assert!(gros.lignes.is_empty(), "{:?}", gros.lignes);
         assert_eq!(
-            gros_non_lu,
+            gros.non_lus,
             vec![("~/.ssh/gros".to_string(), "plus de 1024 Kio".to_string())]
         );
-        let c = constats_config_ssh(&lignes);
+        let c = constats_config_ssh(&d.lignes);
         assert!(
             c.len() == 1
                 && (c[0].message.contains("~/.ssh/config.d/labo, ligne 2")
                     || c[0].message.contains("~/.ssh/config.d/labo, line 2"))
         );
         // Inclus sous un Host précis : le réglage ne vaut que pour lui.
-        let mut lignes = Vec::new();
-        deplier_config_ssh(
+        let sous_host = deplier_config_ssh("~/.ssh/config", "Host labo\n  Include config.d/*\n", &lire);
+        assert!(constats_config_ssh(&sous_host.lignes).is_empty());
+    }
+
+    /// Vérification 4, N1 : un motif d'Include que Vanguard ne résout pas exactement comme SSH (joker dans un dossier,
+    /// crochets, variable, jeton, « ~nom », guillemets avec une espace, barre oblique inverse) est dit non lu, jamais
+    /// tenu pour absent ; la forme simple reste lue, et la ligne se découpe comme SSH la découpe.
+    #[cfg(unix)]
+    #[test]
+    fn motifs_d_inclusion_permis_ou_dits() {
+        for (argument, motif) in [
+            ("inclus", "inclus"),
+            ("~/.ssh/inclus", "~/.ssh/inclus"),
+            ("\"inclus\"", "inclus"),
+            ("config.d/*.conf", "config.d/*.conf"),
+            ("/etc/ssh/x", "/etc/ssh/x"),
+            ("a~", "a~"),
+            ("c?nfig", "c?nfig"),
+            ("réglages-2,b+c@d:e_f", "réglages-2,b+c@d:e_f"),
+        ] {
+            assert_eq!(motif_interprete(argument), Some(motif), "{argument}");
+        }
+        let long = "a".repeat(256);
+        for argument in [
+            "d*/inclus",
+            "c?/inclus",
+            "incl[u]s",
+            "${HOME}/.ssh/inclus",
+            "$HOME/x",
+            "%d/.ssh/inclus",
+            "~alice/.ssh/inclus",
+            "~",
+            "\"mon",
+            "inclus\"",
+            "in\"cl\"us",
+            "\"\"",
+            "",
+            "'inclus'",
+            "a\\",
+            "=x",
+            "a#b",
+            "a{b,c}",
+            "a\u{a0}b",
+            "a\u{b}b",
+            "a\u{c}b",
+            &long,
+        ] {
+            assert_eq!(motif_interprete(argument), None, "{argument:?}");
+        }
+        let lus = std::cell::RefCell::new(Vec::new());
+        let lire = |motif: &str, _: &mut Plafond| -> Vec<Inclus> {
+            lus.borrow_mut().push(motif.to_string());
+            Vec::new()
+        };
+        let d = deplier_config_ssh(
             "~/.ssh/config",
-            "Host labo\n  Include config.d/*\n",
+            "Include inclus # commentaire\ninclude=deux\n  INCLUDE = trois\tquatre\nIncludeX cinq\n#Include six\n",
             &lire,
-            8,
-            &mut lignes,
-            &mut Vec::new(),
         );
-        assert!(constats_config_ssh(&lignes).is_empty());
+        assert_eq!(*lus.borrow(), ["inclus", "deux", "trois", "quatre"]);
+        assert!(d.non_lus.is_empty(), "{:?}", d.non_lus);
+        // Une forme non interprétée est dite avec la suite de la ligne, sans rien lire d'elle ; le mot d'avant reste
+        // lu. Un mot-clé entre guillemets, que SSH accepte, aussi.
+        lus.borrow_mut().clear();
+        let d = deplier_config_ssh(
+            "~/.ssh/config",
+            "Include avant \"mon inclus\" apres\n\"Include\" x\nInclude ${HOME}/.ssh/inclus\n",
+            &lire,
+        );
+        assert_eq!(*lus.borrow(), ["avant"]);
+        let dits: Vec<&str> = d.non_lus.iter().map(|(f, _)| f.as_str()).collect();
+        assert_eq!(
+            dits,
+            [
+                "Include \"mon inclus\" apres",
+                "\"Include\" x",
+                "Include ${HOME}/.ssh/inclus"
+            ]
+        );
+        for (n, (_, r)) in d.non_lus.iter().enumerate() {
+            let ligne = n + 1;
+            assert!(
+                r.contains(&format!("non interprété (~/.ssh/config, ligne {ligne})"))
+                    || r.contains(&format!("not interpreted (~/.ssh/config, line {ligne})")),
+                "{r}"
+            );
+        }
+    }
+
+    /// Vérification 4, N3 : un éventail d'inclusions s'arrête au plafond du nombre total de fichiers inclus, dit une
+    /// fois (il faisait 7^8 lectures) ; de même le nombre de motifs, la taille gardée et le nombre de non lus montrés.
+    #[cfg(unix)]
+    #[test]
+    fn plafonds_du_depliage() {
+        let lectures = std::cell::Cell::new(0usize);
+        let eventail = "Include a b c d e f g\n";
+        let lire = |_: &str, _: &mut Plafond| -> Vec<Inclus> {
+            lectures.set(lectures.get() + 1);
+            vec![("~/.ssh/a".into(), Ok(eventail.into()))]
+        };
+        let d = deplier_config_ssh("~/.ssh/config", eventail, &lire);
+        assert!(lectures.get() <= FICHIERS_INCLUS_MAX + 1, "{}", lectures.get());
+        let dit = |d: &Depliee, fr: &str, en: &str| {
+            d.non_lus
+                .iter()
+                .filter(|(_, r)| r.contains(fr) || r.contains(en))
+                .count()
+        };
+        assert_eq!(
+            dit(
+                &d,
+                "plus de 128 fichiers inclus en tout",
+                "more than 128 included files"
+            ),
+            1,
+            "{:?}",
+            d.non_lus
+        );
+        // Le plafond des fichiers ne compte que ce qui est rendu : les fichiers absents ne l'usent pas.
+        let rien = |_: &str, _: &mut Plafond| Vec::new();
+        let absents = "Include x\n".repeat(FICHIERS_INCLUS_MAX * 2);
+        let d = deplier_config_ssh("~/.ssh/config", &absents, &rien);
+        assert!(d.non_lus.is_empty(), "{:?}", d.non_lus);
+        let motifs = format!("Include {}\n", vec!["x"; MOTIFS_MAX + 1].join(" "));
+        let d = deplier_config_ssh("~/.ssh/config", &motifs, &rien);
+        assert_eq!(
+            dit(&d, "plus de 1024 motifs d'inclusion", "more than 1024 include patterns"),
+            1,
+            "{:?}",
+            d.non_lus
+        );
+        let lignes = "a\n".repeat(LIGNES_MAX + 5);
+        let d = deplier_config_ssh("~/.ssh/config", &lignes, &rien);
+        assert_eq!(d.lignes.len(), LIGNES_MAX);
+        assert!(
+            matches!(&d.non_lus[..], [(f, r)] if (f == "~/.ssh/config à partir de la ligne 100001"
+                || f == "~/.ssh/config from line 100001") && (r.contains("plus de 100000 lignes") || r.contains("more than 100000 lines"))),
+            "{:?}",
+            d.non_lus
+        );
+        let octets = format!("{}\n", "a".repeat(1 << 20)).repeat(17);
+        let d = deplier_config_ssh("~/.ssh/config", &octets, &rien);
+        assert_eq!(d.lignes.len(), 16);
+        assert_eq!(d.non_lus.len(), 1, "{:?}", d.non_lus);
+        // Au-delà de seize non lus, les suivants sont comptés ; un même non lu (un fichier inclus deux fois) n'est dit
+        // qu'une fois.
+        let plusieurs = (0..20)
+            .map(|i| format!("Include \"x{i}\n"))
+            .collect::<Vec<_>>()
+            .concat();
+        let d = deplier_config_ssh("~/.ssh/config", &plusieurs, &rien);
+        assert_eq!(
+            (d.non_lus.len(), d.autres_non_lus),
+            (NON_LUS_MONTRES, 4),
+            "{:?}",
+            d.non_lus
+        );
+        let deux_fois =
+            |_: &str, _: &mut Plafond| -> Vec<Inclus> { vec![("~/.ssh/a".into(), Ok("Include \"x\n".into()))] };
+        let d = deplier_config_ssh("~/.ssh/config", "Include a\nInclude a\n", &deux_fois);
+        assert_eq!((d.non_lus.len(), d.autres_non_lus), (1, 0), "{:?}", d.non_lus);
+    }
+
+    /// Les jokers n'examinent qu'un nombre borné d'entrées de dossier : au-delà, rien de ce motif n'est rendu (une
+    /// liste en partie lue rangerait mal les fichiers) et le dépassement est dit une fois ; un appel rend au plus un
+    /// fichier de plus que ceux qui restent au plafond.
+    #[cfg(unix)]
+    #[test]
+    fn les_jokers_sont_plafonnes() {
+        let dossier = crate::essais::Jetable::nouveau("jokers-plafond");
+        for i in 0..6 {
+            std::fs::write(dossier.join(format!("a{i}")), "Host *\n").unwrap();
+        }
+        let montrer = |p: &std::path::Path| p.display().to_string();
+        let mut plafond = Plafond {
+            fichiers: 128,
+            entrees: 3,
+            depasse: None,
+        };
+        let lus = lire_inclus_ssh(&dossier.join("a*"), &montrer, &mut plafond);
+        assert!(lus.is_empty(), "{lus:?}");
+        assert_eq!(plafond.depasse, Some(Depasse::Entrees));
+        let mut plafond = Plafond {
+            fichiers: 2,
+            entrees: 100,
+            depasse: None,
+        };
+        let lus = lire_inclus_ssh(&dossier.join("a*"), &montrer, &mut plafond);
+        assert_eq!((lus.len(), plafond.entrees, plafond.depasse), (3, 94, None));
+        // Par le dépliage, dans un dossier de plus de ENTREES_MAX entrées.
+        let grand = crate::essais::Jetable::nouveau("jokers-plafond-grand");
+        for i in 0..=ENTREES_MAX {
+            std::fs::write(grand.join(format!("b{i}")), "").unwrap();
+        }
+        let lire = |motif: &str, plafond: &mut Plafond| -> Vec<Inclus> {
+            lire_inclus_ssh(&grand.join(motif), &montrer, plafond)
+        };
+        let d = deplier_config_ssh("~/.ssh/config", "Include b*\nInclude b*\n", &lire);
+        assert!(
+            matches!(&d.non_lus[..], [(f, r)] if f == "Include b*" && (r.contains("plus de 4096 entrées de dossier")
+                || r.contains("more than 4096 folder entries"))),
+            "{:?}",
+            d.non_lus
+        );
     }
 
     #[cfg(unix)]
@@ -3094,22 +3552,33 @@ mod tests_au_hasard {
         #[test]
         fn lecteurs_sans_plantage(t in texte()) {
             let _ = reglages_ssh_risques(&t);
-            let lire = |_: &str| vec![("~/.ssh/inclus".to_string(), Ok(t.clone()))];
-            let mut lignes = Vec::new();
-            deplier_config_ssh("~/.ssh/config", &t, &lire, 3, &mut lignes, &mut Vec::new());
-            let _ = constats_config_ssh(&lignes);
+            let lire = |_: &str, _: &mut Plafond| vec![("~/.ssh/inclus".to_string(), Ok(t.clone()))];
+            let d = deplier_config_ssh("~/.ssh/config", &t, &lire);
+            let _ = constats_config_ssh(&d.lignes);
             let _ = unix::defauts_sudo(&t);
             let _ = unix::regles_nopasswd(&t);
         }
 
         #[test]
         fn jokers(nom in "[a-z.]{0,12}") {
-            prop_assert!(joker("*", &nom));
-            prop_assert!(joker(&nom, &nom));
+            let cache = nom.starts_with('.');
+            prop_assert_eq!(joker(b"*", nom.as_bytes()), !cache);
+            prop_assert!(joker(nom.as_bytes(), nom.as_bytes()));
             let ajout = format!("{nom}x");
-            prop_assert!(!joker(&nom, &ajout));
-            let interrogations = "?".repeat(nom.chars().count());
-            prop_assert!(joker(&interrogations, &nom));
+            prop_assert!(!joker(nom.as_bytes(), ajout.as_bytes()));
+            let interrogations = "?".repeat(nom.len());
+            prop_assert_eq!(joker(interrogations.as_bytes(), nom.as_bytes()), !cache);
+            let cache_aussi = format!(".{nom}");
+            prop_assert!(joker(b".*", cache_aussi.as_bytes()));
+        }
+
+        /// Un nom d'octets quelconques : « * » le couvre et « ? » en couvre chaque octet, sauf un nom caché.
+        #[test]
+        fn jokers_sur_octets(nom in proptest::collection::vec(any::<u8>(), 0..16)) {
+            let cache = nom.first() == Some(&b'.');
+            prop_assert_eq!(joker(b"*", &nom), !cache);
+            prop_assert_eq!(joker(&vec![b'?'; nom.len()], &nom), !cache);
+            prop_assert!(!joker(&vec![b'?'; nom.len() + 1], &nom));
         }
     }
 }

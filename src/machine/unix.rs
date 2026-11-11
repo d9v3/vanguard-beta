@@ -55,6 +55,16 @@ const SECRETS: &[&str] = &[
     ".gnupg",
 ];
 
+/// Une lecture qui a échoué parce que le chemin n'existe pas : rien à cet endroit, ni le fichier (« n'existe pas ») ni
+/// un dossier sur le chemin (« pas un dossier »). Toute autre erreur (boucle de liens, droits, nom trop long) laisse
+/// peut-être un fichier là : non vérifié, jamais « absent ».
+pub(super) fn absent(e: &std::io::Error) -> bool {
+    matches!(
+        e.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+    )
+}
+
 /// Un secret est mal protégé si le groupe ou les autres comptes peuvent le lire (ou y entrer, pour un dossier).
 pub(super) fn secret_expose(mode: u32) -> bool {
     mode & 0o077 != 0
@@ -204,12 +214,19 @@ pub(super) fn fichiers_secrets(maison: &Path, dossier_ouvert: &str) -> Vec<Const
     // Exposés, mais à travers un lien (ou ni fichier ni dossier) : dits, jamais corrigés par le compte.
     let mut a_travers = Vec::new();
     let mut raisons = Vec::new();
+    // Là, mais illisible (boucle de liens, droits, nom trop long) : ni « protégé » ni « absent », non vérifié.
+    let mut non_lus = Vec::new();
     for nom in SECRETS {
         let chemin = maison.join(nom);
         // L'exposition se juge sur ce qui est visé, lien suivi : un lien symbolique (stow, chezmoi…) a toujours 777,
         // ce qui donnait une fausse alerte. La correction, elle, ne passe jamais par un lien (`hors_correction`).
-        let Ok(meta) = std::fs::metadata(&chemin) else {
-            continue;
+        let meta = match std::fs::metadata(&chemin) {
+            Ok(meta) => meta,
+            Err(e) if absent(&e) => continue,
+            Err(e) => {
+                non_lus.push(trf!("~/{nom} non lu : {e}", "~/{nom} not read: {e}"));
+                continue;
+            }
         };
         if !secret_expose(meta.permissions().mode()) {
             continue;
@@ -276,8 +293,22 @@ pub(super) fn fichiers_secrets(maison: &Path, dossier_ouvert: &str) -> Vec<Const
             .avec_objet(crate::modele::Objet::de("liens", &a_travers.join(","))),
         );
     }
+    for raison in non_lus {
+        constats.push(super::impossible("Fichiers secrets", &raison));
+    }
     // Le dossier personnel lui-même : ouvert en lecture, il laisse voir tous tes fichiers aux autres comptes.
-    if std::fs::metadata(maison).is_ok_and(|m| m.permissions().mode() & 0o007 != 0) {
+    let ouvert = match std::fs::metadata(maison) {
+        Ok(m) => m.permissions().mode() & 0o007 != 0,
+        Err(e) if absent(&e) => false,
+        Err(e) => {
+            constats.push(super::impossible(
+                "Fichiers secrets",
+                &trf!("~ non lu : {e}", "~ not read: {e}"),
+            ));
+            false
+        }
+    };
+    if ouvert {
         constats.push(match geste_du_compte(maison, Path::new(""), Attendu::Dossier) {
             Ok(geste) => alerte("Fichiers secrets", Niveau::Info, dossier_ouvert)
                 .corriger(
@@ -931,6 +962,36 @@ mod tests_liens {
         assert_eq!(
             geste_du_compte(Path::new(&format!("{vrai}/.")), Path::new(".netrc"), Attendu::Fichier),
             Ok(crate::optimiser::Geste::droits(&maison.join(".netrc")).unwrap())
+        );
+    }
+
+    /// Vérification 4, N2 : un secret là mais illisible (lien en boucle) n'est ni absent ni « protégé » : non vérifié,
+    /// dit avec sa raison. Un chemin qui passe par un fichier (« pas un dossier »), lui, ne peut rien porter : absent.
+    #[test]
+    fn un_secret_illisible_n_est_pas_protege() {
+        let maison = crate::essais::Jetable::nouveau("secrets-boucle");
+        mode(&maison, 0o700);
+        std::os::unix::fs::symlink(".netrc", maison.join(".netrc")).unwrap();
+        std::fs::write(maison.join(".aws"), "pas un dossier\n").unwrap();
+        let constats = fichiers_secrets(&maison, "ouvert");
+        let messages: Vec<&str> = constats.iter().map(|c| c.message.as_str()).collect();
+        assert!(
+            constats
+                .iter()
+                .any(|c| !c.verifie
+                    && (c.message.contains("~/.netrc non lu") || c.message.contains("~/.netrc not read"))),
+            "{messages:?}"
+        );
+        assert_eq!(constats.len(), 1, "{messages:?}");
+        // Le dossier personnel illisible : dit aussi, jamais « protégés ».
+        let parent = crate::essais::Jetable::nouveau("secrets-boucle-maison");
+        let boucle = parent.join("maison");
+        std::os::unix::fs::symlink("maison", &boucle).unwrap();
+        let constats = fichiers_secrets(&boucle, "ouvert");
+        let messages: Vec<&str> = constats.iter().map(|c| c.message.as_str()).collect();
+        assert!(
+            !constats.is_empty() && constats.iter().all(|c| !c.verifie),
+            "{messages:?}"
         );
     }
 

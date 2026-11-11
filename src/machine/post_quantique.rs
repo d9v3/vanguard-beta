@@ -802,13 +802,24 @@ fn lire_serveur() -> Lecture<Serveur> {
 /// Les fichiers d'un motif d'inclusion de /etc/ssh/ssh_config (relatif à /etc/ssh), triés ; un fichier là mais non
 /// lu est rendu avec sa raison (`machine::lire_inclus_ssh`).
 #[cfg(unix)]
-fn inclus_du_systeme(motif: &str) -> Vec<super::Inclus> {
+fn inclus_du_systeme(motif: &str, plafond: &mut super::Plafond) -> Vec<super::Inclus> {
+    // SSH refuse « ~ » dans la configuration du système (« bad include path ») : jamais lu comme un chemin de
+    // /etc/ssh, ni comme celui d'une maison.
+    if motif.starts_with('~') {
+        return vec![(
+            motif.to_string(),
+            Err(String::from(tr!(
+                "« ~ » refusé par SSH dans la configuration du système",
+                "\"~\" refused by SSH in the system configuration"
+            ))),
+        )];
+    }
     let chemin = if motif.starts_with('/') {
         std::path::PathBuf::from(motif)
     } else {
         std::path::Path::new("/etc/ssh").join(motif)
     };
-    super::lire_inclus_ssh(&chemin, &|p| p.display().to_string())
+    super::lire_inclus_ssh(&chemin, &|p| p.display().to_string(), plafond)
 }
 
 #[cfg(unix)]
@@ -823,7 +834,8 @@ fn lire_client() -> Lecture<Client> {
     }
     let dossier = crate::socle::maison().join(".ssh");
     // Le premier lecteur porte le type de tous : sans lui, chaque fermeture a le sien.
-    let inclus_ssh: &dyn Fn(&str) -> Vec<super::Inclus> = &|m: &str| super::fichiers_inclus_ssh(&dossier, m);
+    let inclus_ssh: &dyn Fn(&str, &mut super::Plafond) -> Vec<super::Inclus> =
+        &|m: &str, plafond: &mut super::Plafond| super::fichiers_inclus_ssh(&dossier, m, plafond);
     let mut fichiers = Vec::new();
     for (nom, chemin, inclus) in [
         ("~/.ssh/config".to_string(), dossier.join("config"), inclus_ssh),
@@ -837,18 +849,17 @@ fn lire_client() -> Lecture<Client> {
         // (vérification de Fable n° 2, liens L3).
         match super::lire_texte_ssh(&chemin) {
             Ok(texte) => {
-                let mut lignes = Vec::new();
-                let mut non_lus = Vec::new();
-                super::deplier_config_ssh(&nom, &texte, inclus, 8, &mut lignes, &mut non_lus);
+                let depliee = super::deplier_config_ssh(&nom, &texte, inclus);
                 // Un fichier inclus non lu peut porter les algorithmes : le client n'est pas jugé sans lui.
-                if let Some((fichier, raison)) = non_lus.into_iter().next() {
+                if let Some((fichier, raison)) = depliee.non_lus.into_iter().next() {
                     let fichier = affichable(&fichier);
+                    let raison = affichable(&raison);
                     return Lecture::Illisible(Raison::Illisible(trf!(
                         "{fichier} non lu : {raison}",
                         "{fichier} not read: {raison}"
                     )));
                 }
-                fichiers.push(lignes);
+                fichiers.push(depliee.lignes);
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Lecture::Illisible(crate::modele::Echec::io("bilan/pqc-ssh", &e).raison),
@@ -1300,5 +1311,22 @@ mod tests {
             assert!(c.iter().all(Constat::coherent), "{id}");
             assert!(c.iter().all(|c| c.categorie == CAT));
         }
+    }
+
+    /// SSH refuse « ~ » dans /etc/ssh/ssh_config : le motif est dit non lu, jamais lu dans une maison ni dans /etc/ssh.
+    #[cfg(unix)]
+    #[test]
+    fn le_tilde_est_refuse_dans_la_configuration_du_systeme() {
+        let mut plafond = super::super::Plafond {
+            fichiers: 128,
+            entrees: 4096,
+            depasse: None,
+        };
+        let lus = inclus_du_systeme("~/.ssh/inclus", &mut plafond);
+        assert!(
+            matches!(&lus[..], [(f, Err(r))] if f == "~/.ssh/inclus"
+                && (r.contains("refusé par SSH") || r.contains("refused by SSH"))),
+            "{lus:?}"
+        );
     }
 }
