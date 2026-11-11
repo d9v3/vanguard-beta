@@ -8,6 +8,68 @@ delivered just before it. Since November 7, 2026, more than one release on the s
 other in their day's paragraph. Only the latest version has its download page; every version keeps its tag in the
 repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
 
+## November 11, 2026: version 0.94.0
+
+- **"This is normal for me", bound to what is really there (Linux).** For an alert to fix yourself, Vanguard shows
+  before the choice each flagged line (file:line, the whole line), the SHA-256 fingerprint of the file that holds it
+  and of each program it starts; from the high level up, you have to type "normal". The choice lasts 90 days, from a
+  terminal keyboard only, and silences the alert only for that exact state: a started program changed, a line added, a
+  link put in its place or a file deleted, and it comes back naming what changed.
+- **What can be declared, what never can.** Only a systemd user unit (a short list of allowed settings, each Exec line
+  bound; a unit from /etc/systemd/user only if root alone can change it) and a launch line in a ~/.config/hypr file,
+  read by its real path, can be declared normal. Never: a critical alert (a library outside any package preloaded
+  everywhere), a backdoor, an ambiguous line (variable, pipe, relative path, `bash -c '…'`), more than 12 lines or a
+  line too long to be shown in full, nor .bashrc, .profile, environment.d, .desktop, crontab or the session's
+  LD_PRELOAD: the reason and the file:line are given, with "remove or move the line". On Windows, nothing changes.
+- **What comes back.** An older choice outside this scope comes back at every check while the line remains, with the
+  reason; an older choice made without the exact state of its files also comes back, to declare again after reading
+  the details. Detection now sees a preload split with "\" at the end of a line, a Hyprland variable that hides what
+  it starts, a launch in a file included from outside ~/.config/hypr, and a unit replaced by a link no longer
+  disappears from the check.
+- **What restarts a program at startup, read the way the system reads it (Linux).** Each line is judged the way
+  systemd, Hyprland or its Lua configuration really runs it: variables replaced, lines split with "\" joined, escapes
+  decoded, paths simplified. Also read now: Hyprland key bindings that run a command, systemd generators, session
+  units and unit folders missed until now. What Vanguard cannot read to the end is reported, never counted as safe,
+  and none of it can be declared normal.
+- **The SSH client configuration read the way SSH reads it.** The check (risky settings) and the post-quantum check
+  now split each line like SSH, expand Include files as they are read and follow the scope of Host and Match down into
+  included files; a header that SSH may apply to all hosts counts as global for the alert. ForwardAgent,
+  StrictHostKeyChecking and WarnWeakCrypto are judged by the values SSH accepts. What Vanguard does not read to the
+  end (a form it does not interpret, an Include pattern it does not resolve like SSH, an included file too large,
+  unreadable or too deep, a pipe or special file in ~/.ssh) is reported as "not read" or "unchecked", never as safe. A
+  non-UTF-8 byte no longer hides a key without a passphrase or readable by others, and a configuration that includes
+  itself no longer fills memory.
+- **Preview of a fix, without changing anything.** In `audit --json`, each finding that can be fixed carries a token;
+  a read-only command rereads its single rule and says what the fix would do (commands, rights, previous values,
+  undo), without running or recording anything.
+- **Fifteen more tools in `--json`** (for scripts): integrity, latest flaws, updates, startup,
+  antivirus and its status, YARA, memory, secrets, self-check, changes, rules, hidden cameras, NAT type, Wi-Fi channels
+  and containers. No question, nothing changed (no quarantine, no install); what could not be seen makes the whole
+  result unchecked. `secrets` never gives the value of a leak, `nat` does not write the public address,
+  `wifi-channels` not the network names; without Internet, nothing goes out (no STUN, no arch-audit).
+- **The mouse in the terminal menu.** A click opens a row (or ticks it in a list), hovering lights it up with its
+  preview, the wheel scrolls, right-click goes back, and the keys of the help line can be clicked. A double click no
+  longer opens two screens at once. Shift and drag still selects text; outside menus, the mouse goes back to the
+  terminal.
+- **Dashboard** (`vanguard dashboard`). A night background, cyan for what is fine, amber for what is waiting; the
+  logo opens on a radar then joins the left rail, a 30-day alert curve, an icon for each part of the menu. Still with
+  no JavaScript; without animation when reduced motion is requested.
+- **Trapped text.** Blanks that are not blanks (Korean fillers, empty Braille, grapheme joiner) and rare invisible
+  characters become "�" on screen: a network or device name no longer looks empty or the same as another. Spaces of
+  another width (non-breaking, thin…) are shown as an ordinary space, without turning a normal file name into a
+  trapped one. Variation selectors are removed from the display (the emoji one stays), and an access accepted for a
+  name no longer covers a name that differs from it only by one of them.
+- **Blocklists.** When working offline is requested, the screen no longer asks Cloudflare or the lists for the public
+  address, even after a yes; it says so.
+- **Fixes.** Antivirus: clamscan is no longer run when it has nothing to scan (it read the current folder), and a
+  ClamAV database older than a week is no longer called up to date. Secrets: a history or a search cut at its limit is
+  reported instead of a ✔, a repository read halfway is unchecked, the search stops after 20 minutes and its reports,
+  which name the commit authors, are deleted. Containers: no more "run again with sudo".
+- **Tests.** Five new fuzzing targets (what a startup line starts and, for the upcoming window, the answers it reads,
+  its console, its relay and its progress), which found real defects that were fixed.
+- **Kept for 0.95.** The Vanguard window, its screens and its actions (view, apply or undo a fix from it) are not
+  shipped yet: `vanguard` opens the terminal menu, as before.
+
 ## November 9, 2026: version 0.93.0
 
 - **Real-time file scanning (Linux).** The watcher now scans each file written to the risky folders (Downloads,

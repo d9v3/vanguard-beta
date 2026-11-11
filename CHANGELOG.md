@@ -9,6 +9,69 @@ jour est permise ; elles se suivent dans le paragraphe de leur journée. Seule l
 téléchargement ; chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par exemple), pour être
 recompilée au besoin.
 
+## 11 novembre 2026 : version 0.94.0
+
+- **« C'est normal chez moi », lié à ce qui est vraiment là (Linux).** Pour une alerte à corriger soi-même, Vanguard
+  montre avant le choix chaque ligne signalée (fichier:ligne, la ligne entière), l'empreinte SHA-256 du fichier qui la
+  porte et celle de chaque programme qu'elle lance ; à partir du niveau élevé, il faut taper « normal ». Le choix vaut
+  90 jours, au clavier d'un terminal seulement, et ne tait l'alerte que pour cet état exact : un programme lancé
+  changé, une ligne ajoutée, un lien posé à la place ou un fichier effacé, et elle revient en nommant ce qui a changé.
+- **Ce qui se déclare, ce qui ne se déclare jamais.** Seules une unité systemd de l'utilisateur (une courte liste de
+  réglages permis, chaque ligne Exec liée ; une unité de /etc/systemd/user seulement si root seul peut la changer) et
+  une ligne de lancement d'un fichier de ~/.config/hypr, lu par son chemin réel, se déclarent normales. Jamais : une
+  alerte critique (une bibliothèque hors paquet préchargée partout), une porte dérobée, une ligne ambiguë (variable,
+  tube, chemin relatif, `bash -c '…'`), plus de 12 lignes ou une ligne trop longue pour être montrée en entier, ni
+  .bashrc, .profile, environment.d, .desktop, crontab ou LD_PRELOAD de la session : la raison et le fichier:ligne sont
+  dits, avec « retirez ou déplacez la ligne ». Sous Windows, rien ne change.
+- **Ce qui revient.** Un ancien choix hors de ce périmètre revient à chaque bilan tant que la ligne est là, avec la
+  raison ; un ancien choix fait sans l'état exact de ses fichiers revient aussi, à redéclarer après lecture du détail.
+  La détection voit maintenant un préchargement coupé par « \ » en fin de ligne, une variable de Hyprland qui cache ce
+  qu'elle lance, un lancement dans un fichier inclus hors de ~/.config/hypr, et une unité remplacée par un lien ne
+  disparaît plus du bilan.
+- **Ce qui relance un programme au démarrage, lu comme le système le lit (Linux).** Chaque ligne se juge telle que
+  systemd, Hyprland ou sa configuration Lua l'exécute vraiment : variables remplacées, lignes coupées par « \ »
+  recollées, échappements décodés, chemins simplifiés. Sont lus en plus les raccourcis de Hyprland qui lancent une
+  commande, les générateurs de systemd, les unités de la session et les dossiers d'unités oubliés jusqu'ici. Ce que
+  Vanguard ne sait pas lire jusqu'au bout est signalé, jamais compté comme sain, et rien de cela ne se déclare normal.
+- **La configuration du client SSH lue comme SSH la lit.** Le bilan (réglages risqués) et le contrôle post-quantique
+  découpent maintenant chaque ligne comme SSH, déplient les Include au fil de la lecture et suivent la portée des Host
+  et Match jusque dans les fichiers inclus ; un en-tête que SSH applique peut-être à tous compte comme global pour
+  l'alerte. ForwardAgent, StrictHostKeyChecking et WarnWeakCrypto sont jugés selon les valeurs que SSH accepte. Ce que
+  Vanguard ne lit pas jusqu'au bout (forme non interprétée, motif d'Include qu'il ne résout pas comme SSH, fichier
+  inclus trop gros, illisible ou trop profond, tube ou fichier spécial dans ~/.ssh) est dit « non lu » ou « non
+  vérifié », jamais sain. Un octet hors UTF-8 ne cache plus une clé sans phrase de passe ou lisible par d'autres, et
+  une configuration qui s'inclut elle-même ne remplit plus la mémoire.
+- **Aperçu d'une correction, sans rien changer.** Dans `audit --json`, chaque constat qui se corrige porte un jeton ;
+  une commande en lecture seule relit sa seule règle et dit ce que la correction ferait (commandes, droits, valeurs
+  d'avant, annulation), sans rien lancer ni noter.
+- **Quinze outils de plus en `--json`** (pour les scripts) : intégrité, dernières failles, mises à jour,
+  démarrage, antivirus et son état, YARA, mémoire, secrets, verifier-moi, changements, règles, caméras cachées, type de
+  NAT, canaux Wi-Fi et conteneurs. Aucune question, rien de changé (ni quarantaine, ni installation) ; ce qui n'a pas
+  pu se voir rend le tout non vérifié. `secrets` ne donne jamais la valeur d'une fuite, `nat` n'écrit pas l'adresse
+  publique, `canaux-wifi` pas le nom des réseaux ; sans Internet, rien ne part (ni STUN, ni arch-audit).
+- **La souris dans le menu du terminal.** Un clic ouvre une ligne (ou la coche dans une liste), le survol l'éclaire
+  avec son aperçu, la roulette défile, le clic droit revient, et les touches de la ligne d'aide se cliquent. Un double
+  clic n'ouvre plus deux écrans d'un coup. Maj et glisser sélectionne toujours le texte ; hors des menus, la souris est
+  rendue au terminal.
+- **Tableau de bord** (`vanguard tableau-de-bord`). Un fond de nuit, cyan pour ce qui va bien, ambre pour ce qui
+  attend ; le logo s'ouvre sur un radar puis rejoint le rail de gauche, une courbe des alertes de 30 jours, une icône
+  par partie du menu. Toujours sans JavaScript ; sans animation quand le mouvement réduit est demandé.
+- **Textes piégés.** Les blancs qui n'en sont pas (remplissages coréens, Braille vide, joint de graphèmes) et des
+  invisibles rares deviennent « � » à l'écran : un nom de réseau ou d'appareil ne paraît plus vide ni pareil à un
+  autre. Les espaces d'une autre largeur (insécable, fine…) sont montrées comme une espace ordinaire, sans faire d'un
+  nom de fichier normal un nom piégé. Les sélecteurs de variante sont retirés de l'affichage (celui des émojis reste),
+  et un accès accepté pour un nom ne couvre plus un nom qui n'en diffère que par l'un d'eux.
+- **Liste noire.** Quand le travail sans Internet est demandé, l'écran ne demande plus l'adresse publique à
+  Cloudflare ni aux listes, même après un oui ; il le dit.
+- **Correctifs.** Antivirus : clamscan n'est plus lancé quand il n'a rien à analyser (il lisait le dossier courant),
+  et une base ClamAV de plus d'une semaine n'est plus dite à jour. Secrets : un historique ou une recherche coupés à
+  leur borne sont dits au lieu d'un ✔, un dépôt lu à moitié est non vérifié, la recherche s'arrête après 20 minutes et
+  ses rapports, qui nomment les auteurs des commits, sont effacés. Conteneurs : plus de « relancez avec sudo ».
+- **Essais.** Cinq nouvelles cibles de fuzzing (ce qu'une ligne de démarrage lance et, pour la fenêtre à venir, les
+  réponses qu'elle lit, sa console, son relais et sa progression), qui ont trouvé et fait corriger de vrais défauts.
+- **Gardé pour la 0.95.** La fenêtre de Vanguard, ses écrans et ses gestes (voir, appliquer ou annuler une correction
+  depuis elle) ne sont pas encore livrés : `vanguard` ouvre le menu du terminal, comme avant.
+
 ## 9 novembre 2026 : version 0.93.0
 
 - **Le temps réel des fichiers (Linux).** Le veilleur examine maintenant chaque fichier écrit dans les dossiers à
