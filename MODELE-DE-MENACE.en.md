@@ -124,6 +124,15 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   server (`Match user`, `Match exec`, `Host *.*`…) is treated as global: it raises the alert, and Vanguard never
   takes it on trust to announce a post-quantum exchange as "offered" or settings as "correct". Alerts are bounded:
   one per setting and per file, sixteen at most, the rest counted.
+- **A startup entry changed during the action (Linux).** `demarrage --retirer` refuses an autostart entry changed
+  between its reading and its writing, within the same run. The fingerprint, however, only names the path: an entry
+  changed after the list was shown (`demarrage --json`, the window) and before the action is removed as it is then,
+  and the note keeps that content, put back byte for byte. Windows of about a microsecond remain, which already
+  require the account's rights to aim at: a content swapped just after the second reading is lost (the old one is
+  written hidden, the note says what was shown); an autostart folder moved out of the home folder after it was opened
+  receives the write where it now is (the link put in its place is not followed). An entry kept behind a link
+  (dotfiles), an `XDG_CONFIG_HOME` or `HOME` that is relative or contains `..` are not offered, without the list
+  saying so; an entry that cannot be read within bounds (over 64 KiB, not UTF-8) is not offered, and the list says so.
 - **Data loss.** Malware running in the account can turn off the anti-ransomware watcher: the backup remains the
   real protection.
 - **A stolen computer that is on and unlocked.** Disk encryption (BitLocker, FileVault, LUKS) protects a computer
@@ -222,7 +231,9 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   left from before with the value read now, so that “Put back” brings back the state from before this removal. Under
   Linux, this previous value (the autostart entry) is read in a single opening that does not follow a link, does not
   wait on a pipe and stops at 64 KiB: otherwise refused, nothing changed (an entry that is a link therefore cannot be
-  removed from here). Each change done or refused is written to the event log (kind, cleaned name, outcome,
+  removed from here), and an entry unreadable in this way is not offered (the list says it was not read). The list
+  and the name of a removed entry are read the same way, bounded, without waiting on a pipe; a rewritten entry keeps
+  its permissions. Each change done or refused is written to the event log (kind, cleaned name, outcome,
   fingerprint); a refusal identical to the previous one (same fingerprint, same kind, same reason) is not written
   again for 10 minutes, so that a burst of requests does not drown the alerts; a change done is always written. Its end is told
   (done, refused, failure, with the reason), then the list is read again; only the last line of the output, a JSON of
@@ -230,10 +241,12 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   (`fenetre/src/attaques.rs`, tests B1 to B3). Tests: `une_confirmation_ne_bloque_rien_et_suit_la_liste`
   (`fenetre/src/appli.rs`), the relay tests (`fenetre/src/relais.rs`), `verrou_des_notes_tenu_puis_rendu` and those
   of `src/optimiser/demarrage.rs` (`seul_un_programme_note_se_remet`, `pare_feu_reconnu_par_son_paquet`),
-  `valeur_d_avant_d_autostart_ni_lien_ni_tube_ni_trop_gros` (`src/optimiser/linux.rs`), and end to end, with a
+  `valeur_d_avant_d_autostart_ni_lien_ni_tube_ni_trop_gros`, `entree_trop_grosse_ni_proposee_ni_ecrite` and
+  `liste_et_noms_lus_bornes` (`src/optimiser/linux.rs`), and end to end, with a
   throwaway home folder, `demarrage_retire_puis_remet_a_l_octet_pres` and the `demarrage_sous_attaque` module
   (`tests/programme.rs`: putting back over a program that starts, from the window and through “Put everything back”,
-  removal on doubtful notes, simultaneous changes, link, lock held, forged or replayed notes, repeated refusals).
+  removal on doubtful notes, simultaneous changes, link, pipe, oversized entry, permissions, lock held, forged or
+  replayed notes, repeated refusals).
 - **Its answers are read with suspicion.** Bounded size, long lines cut, terminal sequences and control characters
   removed, JSON read without ever crashing (readers, console and progress fuzzed: `fenetre_donnees`, `fenetre_saisie`, `fenetre_progression`); an
   unreadable answer is said to be so, never counted as healthy. As in the terminal (`ui::affichable`), a character that

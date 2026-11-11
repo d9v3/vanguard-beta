@@ -82,9 +82,13 @@ recompilée au besoin.
   ses rapports, qui nomment les auteurs des commits, sont effacés. Conteneurs : plus de « relancez avec sudo ».
 - **Renforcé après une campagne d'attaque.** `demarrage --retirer` et `--remettre` ne suivent plus aucun dossier qui
   est un lien (~/.config ou son dossier autostart remplacé par un lien) : rien ne s'écrit hors du dossier personnel, et
-  une entrée rangée derrière un lien n'est plus proposée. Une seule lecture fait ce qui est montré : une entrée changée
-  entre la liste et le geste n'est pas écrite. Le sceau des réglages s'écrit en deux temps : un arrêt brutal entre un
-  fichier et son sceau ne fait plus crier au falsifié.
+  une entrée rangée derrière un lien n'est plus proposée. Une seule lecture fait ce qui est montré, noté et écrit :
+  une entrée changée entre cette lecture et son écriture, dans le même lancement, n'est pas écrite (l'empreinte d'une
+  liste montrée plus tôt ne désigne que le chemin). Les entrées se lisent bornées, sans attendre un tube : une entrée
+  de plus de 64 Kio n'est plus proposée (elle était retirée sans pouvoir être remise), un fichier remplacé par un tube
+  ne fige plus la liste, et une entrée réécrite garde ses droits. Le sceau des réglages s'écrit en deux temps : un
+  arrêt brutal entre un fichier et son sceau ne fait plus crier au falsifié, ni oublier un fichier encore à
+  revérifier.
 - **Sécurité des dépendances.** rustix 1.1.6 (avis RUSTSEC-2026-0486 : dans ses fonctions des attributs étendus,
   des octets jamais écrits étaient marqués comme initialisés pour un tampon vide), amené par crossterm.
 - **Essais.** Cinq nouvelles cibles de fuzzing (ce qu'une ligne de démarrage lance et, pour la fenêtre à venir, les

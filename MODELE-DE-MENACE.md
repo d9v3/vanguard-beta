@@ -131,6 +131,15 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   que SSH applique peut-être à tous (`Match user`, `Match exec`, `Host *.*`…) est traité comme global : il donne
   l'alerte, et Vanguard n'annonce jamais sur sa foi un échange post-quantique « proposé » ni des réglages
   « corrects ». Les alertes sont bornées : une par réglage et par fichier, seize au plus, le reste compté.
+- **Une entrée du démarrage changée pendant le geste (Linux).** `demarrage --retirer` refuse une entrée d'autostart
+  changée entre sa lecture et son écriture, dans le même lancement. L'empreinte, elle, ne désigne que le chemin : une
+  entrée changée après la liste montrée (`demarrage --json`, la fenêtre) et avant le geste est retirée telle qu'elle
+  est alors, et la note garde ce contenu-là, remis à l'octet près. Restent des fenêtres de l'ordre de la microseconde,
+  qu'il faut déjà les droits du compte pour viser : un contenu échangé juste après la relecture est perdu (l'ancien
+  est écrit masqué, la note dit ce qui a été montré) ; un dossier autostart déplacé hors du dossier personnel après
+  son ouverture reçoit l'écriture là où il est (le lien posé à sa place n'est pas suivi). Une entrée rangée derrière
+  un lien (dotfiles), un `XDG_CONFIG_HOME` ou un `HOME` relatifs ou avec `..` ne sont pas proposés, sans que la liste
+  le dise ; une entrée qui ne se lit pas bornée (plus de 64 Kio, pas en UTF-8) n'est pas proposée, et la liste le dit.
 - **La perte des données.** Un programme malveillant du compte peut éteindre le veilleur anti-rançongiciel : la
   sauvegarde reste la vraie protection.
 - **Un ordinateur volé allumé et déverrouillé.** Le chiffrement du disque (BitLocker, FileVault, LUKS) protège un
@@ -229,7 +238,9 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   rien écrit) ; « Retirer » un programme qui se lance remplace une vieille note restée d'avant par la valeur lue
   maintenant, pour que « Remettre » ramène l'état d'avant ce retrait-là. Sous Linux, cette valeur d'avant (l'entrée
   d'autostart) est lue en une seule ouverture qui ne suit pas un lien, n'attend pas un tube et s'arrête à 64 Kio :
-  sinon refusé, rien changé (une entrée qui est un lien ne se retire donc pas d'ici). Chaque changement fait ou refusé
+  sinon refusé, rien changé (une entrée qui est un lien ne se retire donc pas d'ici), et une entrée ainsi illisible
+  n'est pas proposée (la liste dit qu'elle n'a pas été lue). La liste et le nom d'une entrée retirée se lisent de
+  même, bornés, sans attendre un tube ; une entrée réécrite garde ses droits. Chaque changement fait ou refusé
   est écrit au journal des événements (sorte, nom nettoyé, issue, empreinte) ; un refus identique au précédent (même
   empreinte, même sorte, même raison) ne s'y réécrit pas pendant 10 minutes, pour qu'une rafale de demandes ne noie pas
   les alertes ; un changement fait s'y écrit toujours. Sa fin est dite (fait, refusé, échec, avec la
@@ -238,11 +249,12 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   `une_confirmation_ne_bloque_rien_et_suit_la_liste` (`fenetre/src/appli.rs`), les essais du relais
   (`fenetre/src/relais.rs`), `verrou_des_notes_tenu_puis_rendu` et ceux de `src/optimiser/demarrage.rs`
   (`seul_un_programme_note_se_remet`, `pare_feu_reconnu_par_son_paquet`),
-  `valeur_d_avant_d_autostart_ni_lien_ni_tube_ni_trop_gros` (`src/optimiser/linux.rs`), et de bout en bout, avec un
+  `valeur_d_avant_d_autostart_ni_lien_ni_tube_ni_trop_gros`, `entree_trop_grosse_ni_proposee_ni_ecrite` et
+  `liste_et_noms_lus_bornes` (`src/optimiser/linux.rs`), et de bout en bout, avec un
   dossier personnel jetable, `demarrage_retire_puis_remet_a_l_octet_pres` et le module `demarrage_sous_attaque`
   (`tests/programme.rs` : remise par-dessus un programme qui se lance, par la fenêtre et par « Tout remettre comme
-  avant », retrait sur des notes douteuses, changements simultanés, lien, verrou tenu, notes forgées ou rejouées,
-  refus répétés).
+  avant », retrait sur des notes douteuses, changements simultanés, lien, tube, entrée trop grosse, droits, verrou tenu,
+  notes forgées ou rejouées, refus répétés).
 - **Les couleurs : enregistrées par `vanguard`, jamais par la fenêtre.** L'écran Vanguard règle, pour chaque thème, un
   des six préréglages ou les couleurs du système, et les cinq couleurs vives (accent, grave, moyen, à surveiller,
   sain). La fenêtre les montre tout de suite, sans rien écrire ; « Enregistrer… » ouvre une confirmation (avant,
