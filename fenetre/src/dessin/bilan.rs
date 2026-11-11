@@ -13,6 +13,10 @@ use crate::donnees::bilan::{Constat, Gravite, Rang, Vue};
 
 mod correction;
 
+#[cfg(test)]
+pub use correction::mises_gardees;
+pub use correction::oublier as oublier_la_feuille;
+
 /// Constats montrés au plus dans une carte de côté ; le reste est compté.
 const COTE_MAX: usize = 6;
 /// Constats à corriger montrés au plus (une carte chacun).
@@ -394,8 +398,11 @@ pub fn ecran(appli: &mut Appli, ui: &mut Ui) {
         appli.voir_correction(jeton);
     }
     // La feuille « Voir la correction », au-dessus de tout l'écran.
-    if let Some(f) = appli.feuille_correction().cloned() {
-        correction::feuille(appli, ui.ctx(), &f);
+    if appli
+        .feuille_correction()
+        .is_some_and(|f| correction::feuille(ui.ctx(), f))
+    {
+        appli.annuler();
     }
 }
 

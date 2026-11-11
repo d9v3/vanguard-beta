@@ -24,9 +24,14 @@
 //! se montre en deux signes, jamais comme la flèche « → » (vérification de Fable n° 3, A1) ; la liste des signes
 //! permis n'a pas deux signes qui se dessinent pareil (`nettoyage::ENCRE`, essais de `dessin::encre`).
 //!
+//! Un accent seul (une marque qui se combine) n'est gardé que sur une lettre où les polices le dessinent d'un bloc
+//! (`nettoyage::COMPOSEES`) ; ailleurs il devient « � » et pose `retouche`. Le tiret moyen « – », jumeau de « - »,
+//! se montre « � » comme « − » (`nettoyage::JUMEAUX_GARDES`). Un texte fait seulement de lettres modificatives
+//! (« ʰ », « ˈ »…) n'est pas lisible : elles se lisent comme des accents flottants.
+//!
 //! Limites connues : une lettre sosie d'un autre alphabet (un « а » cyrillique dans un chemin) se dessine comme la
-//! latine, elle passe sans retouche ; des signes presque pareils (« – » et « - ») aussi ; une lettre accentuée écrite
-//! d'un bloc ou décomposée (lettre puis accent) se dessine pareil, et deux accents dans un autre ordre aussi.
+//! latine, elle passe sans retouche ; une lettre accentuée écrite d'un bloc ou décomposée (lettre puis accent) se
+//! dessine pareil, et deux accents dans un autre ordre aussi.
 
 use serde::Deserialize;
 

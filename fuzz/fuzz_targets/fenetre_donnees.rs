@@ -42,11 +42,13 @@ use unicode_general_category::{GeneralCategory as G, get_general_category};
 
 /// Un texte prêt à montrer : borné, chaque caractère montré tel quel par le nettoyage (`rendu`) ; un saut de ligne
 /// seulement s'il est permis. Et, jugé d'après la catégorie Unicode : ni contrôle, ni caractère de format, non
-/// attribué, privé ou séparateur de ligne ; une seule espace, l'ordinaire ; une marque combinante seulement sur un
-/// signe (pas au début, ni après une espace ou un saut de ligne), `MARQUES_MAX` au plus sur le même.
+/// attribué, privé ou séparateur de ligne ; une seule espace, l'ordinaire ; une marque combinante seulement sur une
+/// lettre (pas au début, ni après une espace, un saut de ligne, un chiffre, une ponctuation, un symbole ou une lettre
+/// modificative : vérification de Fable n° 4, N2, Inter y dessine la marque comme son signe espacé), `MARQUES_MAX` au
+/// plus sur la même.
 fn propre(s: &str, sauts: bool) {
     assert!(s.chars().count() <= TEXTE_MAX, "{} caractères", s.chars().count());
-    // Les marques posées sur le dernier signe ; `None` : rien où en poser.
+    // Les marques posées sur la dernière lettre ; `None` : rien où en poser.
     let mut marques: Option<usize> = None;
     for c in s.chars() {
         if c == '\n' {
@@ -72,20 +74,22 @@ fn propre(s: &str, sauts: bool) {
                 assert!(n < MARQUES_MAX, "trop de marques dans {s:?}");
                 marques = Some(n + 1);
             }
-            _ => marques = Some(0),
+            G::UppercaseLetter | G::LowercaseLetter | G::TitlecaseLetter | G::OtherLetter => marques = Some(0),
+            _ => marques = None,
         }
     }
 }
 
-/// Un texte de Vanguard qui se lit : au moins une lettre ou un chiffre qui n'est pas une marque (posée sur un autre
-/// signe). Fait seulement d'espaces, de marques, de « � », de « ␠ » ou de « ˙ », il se montrerait vide ou comme une
-/// suite de remplacements (vérification de Fable n° 3, A6).
+/// Un texte de Vanguard qui se lit : au moins une lettre ou un chiffre qui n'est ni une marque (posée sur un autre
+/// signe) ni une lettre modificative (« ʰ », « ˀ » : 3 à 5 pixels d'encre, vérification de Fable n° 4, N5). Fait
+/// seulement d'espaces, de marques, de « � », de « ␠ » ou de « ˙ », il se montrerait vide ou comme une suite de
+/// remplacements (vérification de Fable n° 3, A6).
 fn visible(s: &str) -> bool {
     s.chars().any(|c| {
         c.is_alphanumeric()
             && !matches!(
                 get_general_category(c),
-                G::NonspacingMark | G::SpacingMark | G::EnclosingMark
+                G::NonspacingMark | G::SpacingMark | G::EnclosingMark | G::ModifierLetter
             )
     })
 }
@@ -93,6 +97,9 @@ fn visible(s: &str) -> bool {
 /// Le signe « − » (U+2212) : JetBrains Mono le dessine comme « - ». Nommé ici, pas pris de la liste du nettoyage
 /// (`JUMEAUX_GARDES`) : s'il en sortait, ce contrôle le verrait.
 const MOINS: char = '\u{2212}';
+/// Le tiret « – » (U+2013) : doublé, Inter le dessine comme « — » (vérification de Fable n° 4, N4). Nommé ici pour la
+/// même raison que `MOINS`.
+const DEMI: char = '\u{2013}';
 
 /// Une erreur à montrer : une ligne courte, propre.
 fn erreur(e: &str) {
@@ -187,7 +194,10 @@ fn apercu(code: Option<i32>, sortie: &[u8]) {
             let ligne = |s: &str| {
                 propre(s, false);
                 assert!(!s.contains(&espaces), "{s:?}");
-                assert!(!s.starts_with(' ') && !s.ends_with(' ') && !s.contains(MOINS), "{s:?}");
+                assert!(
+                    !s.starts_with(' ') && !s.ends_with(' ') && !s.contains([MOINS, DEMI]),
+                    "{s:?}"
+                );
             };
             for s in [&a.version, &a.regle, &a.categorie] {
                 ligne(s);
@@ -219,7 +229,7 @@ fn apercu(code: Option<i32>, sortie: &[u8]) {
             erreur(&r);
             assert!(visible(&r) && !r.contains("    "), "{r:?}");
             assert!(
-                r.chars().count() <= 200 && !r.starts_with(' ') && !r.contains(MOINS),
+                r.chars().count() <= 200 && !r.starts_with(' ') && !r.contains([MOINS, DEMI]),
                 "{r:?}"
             );
         }

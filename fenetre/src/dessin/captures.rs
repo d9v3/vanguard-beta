@@ -1351,6 +1351,18 @@ fn la_feuille_de_correction_tient_dans_l_ecran() {
             // Seul l'aperçu demandé au clic (arrêté par « Annuler ») a pu partir : ni commande ni changement.
             assert!(a.en_cours().is_none(), "{anglais} {droits}");
             assert!(a.taches() <= 1);
+            // Les mises en page gardées par la feuille (vérification de Fable n° 4, N6) partent avec elle, même
+            // fermée autrement que par elle-même (ici par l'appli) : elle ne peint plus, `tout` les oublie.
+            assert_eq!(super::bilan::mises_gardees(&ctx), 0);
+            cliquer(&ctx, &mut a, &mut temps, voir);
+            a.poser_apercu(&apercu_capture(anglais, droits));
+            for _ in 0..2 {
+                tour(&ctx, &mut a, &mut temps, Vec::new());
+            }
+            assert!(super::bilan::mises_gardees(&ctx) > 0, "{anglais} {droits}");
+            a.annuler();
+            tour(&ctx, &mut a, &mut temps, Vec::new());
+            assert_eq!(super::bilan::mises_gardees(&ctx), 0, "{anglais} {droits}");
         }
     }
     crate::langue::choisir(Some(false));

@@ -4,7 +4,8 @@
 //! déplacements, OSC) sont retirées. Ensuite, la fenêtre ne montre tel quel que ce que ses polices dessinent vraiment
 //! (`ENCRE`, mesurée sur les polices embarquées par `dessin/encre.rs`) : une liste de ce qui passe, pas de ce qui est
 //! refusé. Une espace d'une autre largeur devient une espace ordinaire, un sélecteur de variante est retiré, une marque
-//! combinante n'est gardée que si les polices la dessinent sur la lettre d'avant ; tout le reste (contrôles,
+//! combinante n'est gardée que si la lettre d'avant et elle s'écrivent aussi en une lettre composée que les polices
+//! dessinent (`COMPOSEES` : « e » et l'accent aigu, « é ») ; tout le reste (contrôles,
 //! invisibles, caractères de format, non attribués, privés, signes absents des polices) devient « � », pour que la
 //! manipulation se voie. Chaque texte est aussi borné : une ligne immense ne gèle pas la fenêtre.
 
@@ -14,8 +15,9 @@ pub const TEXTE_MAX: usize = 4000;
 /// La longueur maximale d'une ligne de la console, en caractères.
 pub const LIGNE_MAX: usize = 400;
 
-/// Marques combinantes gardées au plus sur un même signe : assez pour le vietnamien écrit décomposé (« ệ »), trop peu
-/// pour empiler des marques jusqu'à cacher la lettre.
+/// Marques combinantes gardées au plus sur une même lettre : celles du vietnamien écrit décomposé (« ệ »). Une borne,
+/// pas une règle : la règle est `COMPOSEES`, dont aucune chaîne n'est plus longue (essai
+/// `les_lettres_composees_sont_des_signes_montres`) ; `montrer` la tient aussi, au cas où la table changerait.
 pub const MARQUES_MAX: usize = 2;
 
 /// Ce que la fenêtre fait d'un caractère (la tabulation et le saut de ligne sont traités avant, par chaque lecteur).
@@ -23,8 +25,8 @@ pub const MARQUES_MAX: usize = 2;
 pub enum Dessin {
     /// Montré tel quel : les polices de la fenêtre le dessinent, avec de l'encre et une largeur (`ENCRE`).
     Encre,
-    /// Une marque combinante que les polices dessinent sur la lettre d'avant (`marque_permise`) : gardée seulement
-    /// sur un signe dessiné, `MARQUES_MAX` au plus, jamais deux fois la même (`montrer`).
+    /// Une marque combinante permise (`marque_permise`) : gardée seulement si la lettre d'avant et elle forment une
+    /// lettre composée de `COMPOSEES` (`montrer`), sinon « � ».
     Marque,
     /// Une espace : l'ordinaire, et celles d'une autre largeur, montrées comme elle.
     Blanc,
@@ -121,16 +123,81 @@ pub fn invisible_rare(c: char) -> bool {
         )
 }
 
-/// Les marques combinantes que les trois familles de la fenêtre dessinent sur leur lettre, chacune à sa place (essai
-/// `dessin::encre::chaque_marque_permise_se_voit`) : les accents du français et du vietnamien, le tréma, la cédille,
-/// l'ogonek, le point souscrit, la corne. Les autres ne se dessinent pas dans une des polices (elles disparaîtraient),
-/// recouvrent la lettre (barres obliques) ou se fondent dans son dessin (le point en chef, U+0307, remplace celui du
-/// « j » sans rien changer à l'image).
+/// Les marques combinantes qui peuvent être gardées : les accents du français et du vietnamien, le tréma, la cédille,
+/// l'ogonek, le point souscrit, la corne ; seulement sur une lettre de `COMPOSEES`. Les autres ne se dessinent pas
+/// dans une des polices (elles disparaîtraient), recouvrent la lettre (barres obliques) ou se fondent dans son dessin
+/// (le point en chef, U+0307, remplace celui du « j » sans rien changer à l'image). Le double accent grave (U+030F)
+/// n'y est plus : JetBrains Mono n'a aucune de ses lettres composées (`COMPOSEES`).
 pub fn marque_permise(c: char) -> bool {
     matches!(
         u32::from(c),
-        0x0300..=0x0304 | 0x0306 | 0x0308..=0x030A | 0x030C | 0x030F | 0x031B | 0x0323 | 0x0326..=0x0328
+        0x0300..=0x0304 | 0x0306 | 0x0308..=0x030A | 0x030C | 0x031B | 0x0323 | 0x0326..=0x0328
     )
+}
+
+/// Pour chaque marque permise, les lettres qui la portent, chacune suivie de la lettre composée qu'elles forment
+/// ensemble (« AÀEÈ… » : « A » et l'accent grave forment « À ») : la forme composée canonique d'Unicode (NFC) quand
+/// elle est un seul signe, la lettre et elle dans `ENCRE`, et la lettre composée dessinée par chacune des trois
+/// polices de la fenêtre (Inter normal et moyen, JetBrains Mono). La police n'y a pas d'ancre à deviner : la mise en
+/// forme (harfrust) recompose la grappe et dessine le glyphe de la lettre composée, exactement (essai
+/// `dessin::encre::chaque_marque_gardee_dessine_sa_lettre_composee`). Sur une autre base (chiffre, ponctuation,
+/// lettre sans forme composée), Inter dessine la marque à côté, comme son signe espacé : « 1 » et l'accent grave
+/// comme « 1` » (vérification de Fable n° 4, N2). Quand une police n'a pas la lettre composée (JetBrains Mono n'a
+/// pas « Ḅ » ni « ǖ »), elle la prend à une autre police et dessine la grappe elle-même : deux images différentes,
+/// donc la paire n'est pas gardée. Une lettre composée peut porter une marque de plus (« ê » et le point souscrit
+/// forment « ệ »).
+///
+/// Refaite après un changement de `ENCRE`, de `marque_permise` ou d'une police par ce script (Python 3 et fontTools,
+/// à la racine du dépôt ; la version d'Unicode de son `unicodedata` en tête), tenue par
+/// `les_lettres_composees_sont_des_signes_montres` et par l'essai de dessin ci-dessus :
+/// ```text
+/// import re, unicodedata as u
+/// from fontTools.ttLib import TTFont
+/// s = open("fenetre/src/nettoyage.rs").read()
+/// e = re.search(r"(?ms)^pub const ENCRE.*?^\];", s).group()
+/// e = {c for x, y in re.findall(r"0x(\w+), 0x(\w+)", e) for c in range(int(x, 16), int(y, 16) + 1)}
+/// f = [TTFont(f"fenetre/polices/{n}.ttf").getBestCmap()
+///      for n in ["Inter-Regular", "Inter-Medium", "JetBrainsMono-Regular"]]
+/// print("    // Unicode", u.unidata_version)
+/// for m in [0x300, 0x301, 0x302, 0x303, 0x304, 0x306, 0x308, 0x309, 0x30A, 0x30C, 0x31B, 0x323, 0x326, 0x327,
+///           0x328]:
+///     p = [chr(c) + n for c in sorted(e) if u.category(chr(c))[0] == "L"
+///          for n in [u.normalize("NFC", chr(c) + chr(m))]
+///          if len(n) == 1 and ord(n) in e and all(ord(n) in g for g in f)]
+///     l = ["".join(p[i:i + 48]) for i in range(0, len(p), 48)]
+///     print(f"    ('\\u{{{m:x}}}', \"" + "\\\n        ".join(l) + "\"),")
+/// ```
+#[rustfmt::skip]
+pub const COMPOSEES: &[(char, &str)] = &[
+    // Unicode 16.0.0
+    ('\u{300}', "AÀEÈIÌOÒUÙWẀYỲaàeèiìoòuùwẁyỳÂẦÊỀÔỒâầêềôồüǜĂẰăằƠỜơờƯỪưừ"),
+    ('\u{301}', "AÁCĆEÉGǴIÍLĹNŃOÓRŔSŚUÚWẂYÝZŹaácćeégǵiílĺnńoórŕsśuúwẃyýzźÂẤÆǼÊẾÔỐØǾâấæǽêếôốøǿüǘĂẮăắƠỚơớƯỨưứΑΆΕΈΗΉ\
+        ΙΊΟΌΥΎΩΏαάεέηήιίοόυύωώϊΐϋΰГЃКЌгѓкќ"),
+    ('\u{302}', "AÂCĈEÊGĜHĤIÎJĴOÔSŜUÛWŴYŶaâcĉeêgĝhĥiîjĵoôsŝuûwŵyŷẠẬạậẸỆẹệỌỘọộ"),
+    ('\u{303}', "AÃEẼIĨNÑOÕUŨYỸaãeẽiĩnñoõuũyỹÂẪÊỄÔỖâẫêễôỗĂẴăẵƠỠơỡƯỮưữ"),
+    ('\u{304}', "AĀEĒIĪOŌUŪYȲaāeēiīoōuūyȳüǖ"),
+    ('\u{306}', "AĂEĔGĞIĬOŎUŬaăeĕgğiĭoŏuŭИЙУЎийуўẠẶạặ"),
+    ('\u{308}', "AÄEËIÏOÖUÜWẄYŸaäeëiïoöuüwẅyÿΙΪΥΫιϊυϋІЇЕЁЖӜЗӞИӤОӦЧӴеёжӝзӟиӥоӧчӵії"),
+    ('\u{309}', "AẢEẺIỈOỎUỦYỶaảeẻiỉoỏuủyỷÂẨÊỂÔỔâẩêểôổĂẲăẳƠỞơởƯỬưử"),
+    ('\u{30a}', "AÅUŮaåuů"),
+    ('\u{30c}', "AǍCČDĎEĚGǦLĽNŇRŘSŠTŤZŽaǎcčdďeěgǧiǐlľnňoǒrřsštťuǔzžüǚ"),
+    ('\u{31b}', "OƠUƯoơuưÒỜÓỚÕỠÙỪÚỨòờóớõỡùừúứŨỮũữỌỢọợỎỞỏởỤỰụựỦỬủử"),
+    ('\u{323}', "AẠEẸIỊOỌUỤYỴaạeẹiịoọuụyỵÂẬÊỆÔỘâậêệôộĂẶăặƠỢơợƯỰưự"),
+    ('\u{326}', "SȘTȚsștț"),
+    ('\u{327}', "CÇGĢKĶLĻNŅRŖSŞTŢcçgģkķlļnņrŗsştţ"),
+    ('\u{328}', "AĄEĘIĮOǪUŲaąeęiįoǫuų"),
+];
+
+/// La lettre composée que forment `lettre` et `marque` (`COMPOSEES`), s'il y en a une.
+pub fn composee(lettre: char, marque: char) -> Option<char> {
+    let (_, paires) = COMPOSEES.iter().find(|&&(m, _)| m == marque)?;
+    let mut signes = paires.chars();
+    while let (Some(base), Some(composee)) = (signes.next(), signes.next()) {
+        if base == lettre {
+            return Some(composee);
+        }
+    }
+    None
 }
 
 fn dans(plages: &[(u32, u32)], c: char) -> bool {
@@ -150,7 +217,8 @@ fn dans(plages: &[(u32, u32)], c: char) -> bool {
 
 /// Ce qui est montré à la place d'un caractère seul : une espace ordinaire pour une espace, rien pour un sélecteur de
 /// variante, « � » pour ce qui ne se dessine pas, le caractère lui-même sinon. Un caractère montré se montre
-/// lui-même. Une marque n'est montrée que sur un signe (`montrer`) : `rendu` ne voit pas le caractère d'avant. Pour
+/// lui-même. Une marque n'est montrée que sur une lettre de `COMPOSEES` (`montrer`) : `rendu` ne voit pas le
+/// caractère d'avant. Pour
 /// les essais et le banc de fuzz (ce qu'un texte montré peut contenir) ; la fenêtre montre par `montrer`.
 #[cfg(any(test, fuzzing))]
 pub fn rendu(c: char) -> Option<char> {
@@ -162,38 +230,56 @@ pub fn rendu(c: char) -> Option<char> {
     }
 }
 
-/// Le texte a au moins une lettre ou un chiffre dessiné (`Dessin::Encre`) : fait seulement d'espaces, de séquences,
-/// de sélecteurs, d'invisibles ou de marques, il se montrerait vide ou comme une suite de « � » ; fait seulement de
-/// signes qui imitent un blanc ou un remplacement (« � », « ␠ » U+2420, le point en chef U+02D9), il se lirait comme
-/// une commande vide ou retouchée. Les textes d'une correction de Vanguard (phrases, règle, version, commandes) ont
-/// tous une lettre ou un chiffre.
+/// Le texte a au moins une lettre ou un chiffre dessiné (`Dessin::Encre`), hors des lettres modificatives : fait
+/// seulement d'espaces, de séquences, de sélecteurs, d'invisibles ou de marques, il se montrerait vide ou comme une
+/// suite de « � » ; fait seulement de signes qui imitent un blanc ou un remplacement (« � », « ␠ » U+2420, le point en
+/// chef U+02D9), ou de lettres modificatives (`MODIFICATIVES` : « ʰ », « ˈ », « ʼ », de 3 à 5 pixels d'encre, moins
+/// qu'un point), il se lirait comme une commande vide ou retouchée (vérification de Fable n° 4, N5). Les textes d'une
+/// correction de Vanguard (phrases, règle, version, commandes) ont tous une lettre ou un chiffre.
 pub fn lisible(texte: &str) -> bool {
     sans_sequences(texte)
         .chars()
-        .any(|c| dessin(c) == Dessin::Encre && c.is_alphanumeric())
+        .any(|c| dessin(c) == Dessin::Encre && c.is_alphanumeric() && !dans(MODIFICATIVES, c))
 }
 
-/// Les jumeaux gardés : des signes de `ENCRE` que JetBrains Mono dessine exactement comme un autre signe de la liste,
-/// gardés parce que Vanguard les écrit lui-même ailleurs que dans une correction (« − », U+2212, marque ses listes
-/// dans la console, où il se dessine comme « - »). Un aperçu de correction ne les montre pas tels quels : ils y
-/// deviennent « � », et l'aperçu est dit retouché (`donnees::correction`). Tenu par
-/// `dessin::encre::deux_signes_montres_ne_se_dessinent_pas_pareil`.
-pub const JUMEAUX_GARDES: &[char] = &['\u{2212}'];
+/// Les lettres modificatives (catégorie Unicode Lm) de `ENCRE` : des lettres pour `char::is_alphanumeric`, mais des
+/// signes de quelques pixels (exposants, apostrophes, accents espacés). Tenue par
+/// `les_lettres_modificatives_sont_toutes_dans_la_liste`.
+#[rustfmt::skip]
+const MODIFICATIVES: &[(u32, u32)] = &[
+    (0x02B0, 0x02B8), (0x02BA, 0x02BB), (0x02BD, 0x02C1), (0x02C6, 0x02C8), (0x02CA, 0x02D1), (0x02E0, 0x02E4),
+    (0x02EC, 0x02EC), (0x0374, 0x0374), (0x037A, 0x037A), (0x1D43, 0x1D43), (0x1D47, 0x1D49), (0x1D4D, 0x1D4D),
+    (0x1D4F, 0x1D50), (0x1D52, 0x1D52), (0x1D56, 0x1D58), (0x1D5B, 0x1D5B), (0x1D62, 0x1D65), (0x1D9C, 0x1D9C),
+    (0x1DA0, 0x1DA0), (0x1DBB, 0x1DBB), (0x1DBF, 0x1DBF), (0x2071, 0x2071), (0x207F, 0x207F), (0x2090, 0x209C),
+    (0x2C7C, 0x2C7C),
+];
+
+/// Les jumeaux gardés : des signes de `ENCRE` qui se dessinent exactement comme un autre signe de la liste, seuls ou
+/// doublés, gardés parce que Vanguard les écrit lui-même ailleurs que dans une correction : « − » (U+2212) marque ses
+/// listes dans la console et se dessine comme « - » dans JetBrains Mono ; « – » (U+2013) sépare ses notes et, doublé,
+/// se dessine comme « — » dans Inter à 12 et 14 points (vérification de Fable n° 4, N4 ; PowerShell le lit aussi
+/// comme « - »). Un aperçu de correction ne les montre pas tels quels : ils y deviennent « � », et l'aperçu est dit
+/// retouché (`donnees::correction`). Tenu par `dessin::encre::deux_signes_montres_ne_se_dessinent_pas_pareil` et
+/// `dessin::encre::aucune_suite_ne_dessine_un_signe`.
+pub const JUMEAUX_GARDES: &[char] = &['\u{2212}', '\u{2013}'];
 
 /// Les caractères montrés, dans l'ordre : chacun selon `dessin`, la tabulation en espace, le saut de ligne gardé si
-/// `sauts`. Une marque n'est gardée que sur un signe montré (pas au début, ni sur une espace ou un saut de ligne),
-/// `MARQUES_MAX` au plus et jamais deux fois la même : sinon elle se poserait sur rien, ou sur sa jumelle à la même
-/// place, sans se voir. Elle devient alors « � ».
+/// `sauts`. Une marque n'est gardée que si la lettre d'avant (ou la lettre composée que forment déjà la lettre et ses
+/// marques gardées) et elle forment une lettre de `COMPOSEES` : la grappe se dessine alors exactement comme cette
+/// lettre. Sinon (au début, sur une espace, un saut de ligne, un chiffre, une ponctuation, un « � », ou une lettre
+/// sans forme composée), elle se poserait sur rien ou se dessinerait comme son signe espacé (« 1` ») : elle devient
+/// « � », et une marque qui la suit aussi. Le texte gardé reste celui de Vanguard, marques comprises (rien n'est
+/// recomposé : un nom écrit décomposé se montre tel quel, sans retouche).
 fn montrer(texte: &str, sauts: bool) -> String {
     let mut sortie = String::with_capacity(texte.len());
-    // Le dernier caractère montré peut porter une marque ; celles qu'il porte déjà.
-    let mut base = false;
-    let mut posees: Vec<char> = Vec::with_capacity(MARQUES_MAX);
+    // La lettre que dessine la grappe en cours (le dernier signe montré et ses marques gardées) et le nombre de ces
+    // marques ; `None` : rien qui puisse porter une marque.
+    let mut grappe: Option<(char, usize)> = None;
     for c in sans_sequences(texte).chars() {
         let d = match c {
             '\n' if sauts => {
                 sortie.push('\n');
-                base = false;
+                grappe = None;
                 continue;
             }
             '\t' => Dessin::Blanc,
@@ -203,21 +289,21 @@ fn montrer(texte: &str, sauts: bool) -> String {
             Dessin::Retire => {}
             Dessin::Blanc => {
                 sortie.push(' ');
-                base = false;
-            }
-            Dessin::Marque if base && posees.len() < MARQUES_MAX && !posees.contains(&c) => {
-                posees.push(c);
-                sortie.push(c);
+                grappe = None;
             }
             Dessin::Encre => {
                 sortie.push(c);
-                base = true;
-                posees.clear();
+                grappe = Some((c, 0));
             }
-            Dessin::Marque | Dessin::Rien => {
+            Dessin::Marque => {
+                grappe = grappe
+                    .filter(|&(_, marques)| marques < MARQUES_MAX)
+                    .and_then(|(lettre, marques)| Some((composee(lettre, c)?, marques + 1)));
+                sortie.push(if grappe.is_some() { c } else { '\u{fffd}' });
+            }
+            Dessin::Rien => {
                 sortie.push('\u{fffd}');
-                base = true;
-                posees.clear();
+                grappe = None;
             }
         }
     }
@@ -240,46 +326,47 @@ fn montrer(texte: &str, sauts: bool) -> String {
 pub const ENCRE: &[(u32, u32)] = &[
     (0x0021, 0x007E), (0x00A1, 0x00AC), (0x00AE, 0x010F), (0x0111, 0x0130), (0x0134, 0x0137), (0x0139, 0x013E),
     (0x0141, 0x0148), (0x014A, 0x017E), (0x0180, 0x0188), (0x018A, 0x019D), (0x019F, 0x01C2), (0x01C5, 0x01DC),
-    (0x01DE, 0x0254), (0x0256, 0x0260), (0x0262, 0x027B), (0x027E, 0x0284), (0x0286, 0x0290), (0x0292, 0x02A4),
-    (0x02A6, 0x02B8), (0x02BA, 0x02BB), (0x02BD, 0x02C8), (0x02CA, 0x02D2), (0x02D4, 0x02ED), (0x02EF, 0x02FF),
-    (0x0374, 0x0374), (0x0376, 0x0376), (0x037A, 0x037D), (0x037F, 0x037F), (0x0384, 0x0386), (0x0388, 0x038A),
-    (0x038C, 0x038C), (0x038E, 0x03A1), (0x03A3, 0x03D7), (0x03DC, 0x03DD), (0x03F0, 0x03F6), (0x03F9, 0x03F9),
-    (0x03FC, 0x0471), (0x0473, 0x0477), (0x0480, 0x0482), (0x048A, 0x048B), (0x048D, 0x049D), (0x04A0, 0x04BF),
-    (0x04C1, 0x04CE), (0x04D0, 0x04FF), (0x052F, 0x052F), (0x0AEA, 0x0AEA), (0x0E3F, 0x0E3F), (0x1D00, 0x1D00),
-    (0x1D43, 0x1D43), (0x1D47, 0x1D49), (0x1D4D, 0x1D4D), (0x1D4F, 0x1D50), (0x1D52, 0x1D52), (0x1D56, 0x1D58),
-    (0x1D5B, 0x1D5B), (0x1D62, 0x1D65), (0x1D9C, 0x1D9C), (0x1DA0, 0x1DA0), (0x1DBB, 0x1DBB), (0x1DBF, 0x1DBF),
-    (0x1E00, 0x1E9B), (0x1E9D, 0x1F15), (0x1F18, 0x1F1D), (0x1F20, 0x1F45), (0x1F48, 0x1F4D), (0x1F50, 0x1F57),
-    (0x1F59, 0x1F59), (0x1F5B, 0x1F5B), (0x1F5D, 0x1F5D), (0x1F5F, 0x1F70), (0x1F72, 0x1F72), (0x1F74, 0x1F74),
-    (0x1F76, 0x1F76), (0x1F78, 0x1F78), (0x1F7A, 0x1F7A), (0x1F7C, 0x1F7C), (0x1F80, 0x1FB4), (0x1FB6, 0x1FBD),
-    (0x1FC1, 0x1FC4), (0x1FC6, 0x1FC8), (0x1FCA, 0x1FCA), (0x1FCC, 0x1FD2), (0x1FD6, 0x1FDA), (0x1FDD, 0x1FE2),
-    (0x1FE4, 0x1FEA), (0x1FEC, 0x1FED), (0x1FEF, 0x1FEF), (0x1FF2, 0x1FF4), (0x1FF6, 0x1FF8), (0x1FFA, 0x1FFA),
-    (0x1FFC, 0x1FFC), (0x1FFE, 0x1FFE), (0x2012, 0x2014), (0x2016, 0x2023), (0x2026, 0x2026), (0x2030, 0x2055),
-    (0x2057, 0x2057), (0x2070, 0x2071), (0x2074, 0x208E), (0x2090, 0x209C), (0x20A0, 0x20AF), (0x20B1, 0x20B5),
-    (0x20B8, 0x20BA), (0x20BC, 0x20C0), (0x2100, 0x2103), (0x2105, 0x2106), (0x2109, 0x2109), (0x210D, 0x210D),
-    (0x2113, 0x2113), (0x2115, 0x2117), (0x2119, 0x211A), (0x211D, 0x2122), (0x2124, 0x2124), (0x212E, 0x212E),
-    (0x2132, 0x2132), (0x213B, 0x213B), (0x2140, 0x2140), (0x214D, 0x214D), (0x2150, 0x215F), (0x2189, 0x218B),
-    (0x2190, 0x2199), (0x219D, 0x219E), (0x21A0, 0x21A0), (0x21A2, 0x21A3), (0x21A5, 0x21A7), (0x21A9, 0x21AA),
-    (0x21AD, 0x21AD), (0x21B0, 0x21B1), (0x21B3, 0x21B5), (0x21BA, 0x21BB), (0x21BE, 0x21BE), (0x21C9, 0x21C9),
-    (0x21D0, 0x21D4), (0x21DB, 0x21DB), (0x21DE, 0x21DF), (0x21E4, 0x21E5), (0x21E7, 0x21E8), (0x21EA, 0x21EA),
-    (0x2200, 0x2205), (0x2207, 0x220C), (0x220E, 0x2213), (0x221A, 0x221A), (0x221E, 0x221E), (0x2223, 0x2225),
-    (0x2227, 0x222A), (0x2234, 0x2235), (0x2237, 0x2239), (0x223E, 0x223E), (0x2243, 0x2243), (0x2245, 0x2245),
-    (0x2247, 0x2249), (0x224B, 0x224B), (0x224D, 0x224D), (0x2254, 0x2254), (0x2257, 0x2257), (0x225F, 0x2265),
-    (0x226A, 0x2273), (0x227C, 0x227C), (0x2282, 0x2289), (0x228E, 0x2299), (0x229B, 0x22A5), (0x22B4, 0x22B4),
-    (0x22B8, 0x22B8), (0x22BB, 0x22BD), (0x22C4, 0x22C4), (0x22C6, 0x22C6), (0x22C8, 0x22CA), (0x22CE, 0x22CE),
-    (0x22D0, 0x22D0), (0x22E2, 0x22E2), (0x22EE, 0x22F1), (0x2302, 0x2305), (0x2308, 0x230B), (0x2318, 0x2318),
-    (0x231C, 0x231F), (0x2324, 0x2328), (0x232B, 0x232B), (0x2336, 0x2372), (0x2374, 0x237A), (0x2380, 0x2380),
-    (0x2387, 0x2387), (0x2389, 0x238B), (0x2395, 0x2395), (0x23CE, 0x23CF), (0x23FB, 0x23FE), (0x2400, 0x2421),
-    (0x2423, 0x2424), (0x2460, 0x2468), (0x24B6, 0x24CF), (0x24EA, 0x24EA), (0x2500, 0x25A2), (0x25AA, 0x25AB),
-    (0x25B2, 0x25B5), (0x25B8, 0x25BF), (0x25C2, 0x25CC), (0x25CE, 0x25CF), (0x25D4, 0x25D5), (0x25E6, 0x25EB),
-    (0x25F6, 0x25F6), (0x2600, 0x2600), (0x2605, 0x2606), (0x263C, 0x263C), (0x2661, 0x2661), (0x2665, 0x2665),
-    (0x266A, 0x266B), (0x266D, 0x266D), (0x266F, 0x266F), (0x2687, 0x2687), (0x26A0, 0x26A1), (0x2713, 0x2713),
-    (0x2715, 0x2715), (0x2717, 0x2717), (0x2736, 0x2736), (0x2756, 0x2756), (0x276E, 0x2771), (0x2794, 0x2794),
-    (0x279C, 0x279E), (0x27C5, 0x27C6), (0x27DC, 0x27DC), (0x27E6, 0x27EB), (0x27EF, 0x27EF), (0x27F5, 0x27FA),
-    (0x2913, 0x2913), (0x2916, 0x2916), (0x294A, 0x294A), (0x2987, 0x2988), (0x2A05, 0x2A06), (0x2A38, 0x2A38),
-    (0x2B06, 0x2B06), (0x2B12, 0x2B13), (0x2B1C, 0x2B1C), (0x2B24, 0x2B24), (0x2B58, 0x2B58), (0x2C7C, 0x2C7C),
-    (0x2C7F, 0x2C7F), (0x2E18, 0x2E18), (0xA7FF, 0xA7FF), (0xA92E, 0xA92E), (0xFE62, 0xFE62), (0xFFFD, 0xFFFD),
-    (0x1D538, 0x1D539), (0x1D53B, 0x1D53E), (0x1D540, 0x1D544), (0x1D546, 0x1D546), (0x1D54A, 0x1D550),
-    (0x1D552, 0x1D56B), (0x1F12F, 0x1F149), (0x1F16A, 0x1F16B), (0x1F850, 0x1F850), (0x1F852, 0x1F852),
+    (0x01DE, 0x0236), (0x0238, 0x0248), (0x024A, 0x0254), (0x0256, 0x025E), (0x0260, 0x0260), (0x0262, 0x027B),
+    (0x027E, 0x0284), (0x0286, 0x0290), (0x0292, 0x02A4), (0x02A6, 0x02B8), (0x02BA, 0x02BB), (0x02BD, 0x02C8),
+    (0x02CA, 0x02D2), (0x02D4, 0x02ED), (0x02EF, 0x02FF), (0x0374, 0x0374), (0x0376, 0x0376), (0x037A, 0x037D),
+    (0x037F, 0x037F), (0x0384, 0x0386), (0x0388, 0x038A), (0x038C, 0x038C), (0x038E, 0x03A1), (0x03A3, 0x03D7),
+    (0x03DC, 0x03DD), (0x03F0, 0x03F6), (0x03F9, 0x03F9), (0x03FC, 0x0471), (0x0473, 0x0477), (0x0480, 0x0482),
+    (0x048A, 0x048B), (0x048D, 0x049D), (0x04A0, 0x04BF), (0x04C1, 0x04CE), (0x04D0, 0x04FF), (0x052F, 0x052F),
+    (0x0AEA, 0x0AEA), (0x0E3F, 0x0E3F), (0x1D00, 0x1D00), (0x1D43, 0x1D43), (0x1D47, 0x1D49), (0x1D4D, 0x1D4D),
+    (0x1D4F, 0x1D50), (0x1D52, 0x1D52), (0x1D56, 0x1D58), (0x1D5B, 0x1D5B), (0x1D62, 0x1D65), (0x1D9C, 0x1D9C),
+    (0x1DA0, 0x1DA0), (0x1DBB, 0x1DBB), (0x1DBF, 0x1DBF), (0x1E00, 0x1E9B), (0x1E9D, 0x1F15), (0x1F18, 0x1F1D),
+    (0x1F20, 0x1F45), (0x1F48, 0x1F4D), (0x1F50, 0x1F57), (0x1F59, 0x1F59), (0x1F5B, 0x1F5B), (0x1F5D, 0x1F5D),
+    (0x1F5F, 0x1F70), (0x1F72, 0x1F72), (0x1F74, 0x1F74), (0x1F76, 0x1F76), (0x1F78, 0x1F78), (0x1F7A, 0x1F7A),
+    (0x1F7C, 0x1F7C), (0x1F80, 0x1FB4), (0x1FB6, 0x1FBD), (0x1FC1, 0x1FC4), (0x1FC6, 0x1FC8), (0x1FCA, 0x1FCA),
+    (0x1FCC, 0x1FD2), (0x1FD6, 0x1FDA), (0x1FDD, 0x1FE2), (0x1FE4, 0x1FEA), (0x1FEC, 0x1FED), (0x1FEF, 0x1FEF),
+    (0x1FF2, 0x1FF4), (0x1FF6, 0x1FF8), (0x1FFA, 0x1FFA), (0x1FFC, 0x1FFC), (0x1FFE, 0x1FFE), (0x2012, 0x2014),
+    (0x2016, 0x2023), (0x2026, 0x2026), (0x2030, 0x2055), (0x2057, 0x2057), (0x2070, 0x2071), (0x2074, 0x208E),
+    (0x2090, 0x209C), (0x20A0, 0x20AF), (0x20B1, 0x20B5), (0x20B8, 0x20BA), (0x20BC, 0x20C0), (0x2100, 0x2103),
+    (0x2105, 0x2106), (0x2109, 0x2109), (0x210D, 0x210D), (0x2113, 0x2113), (0x2115, 0x2117), (0x2119, 0x211A),
+    (0x211D, 0x2122), (0x2124, 0x2124), (0x212E, 0x212E), (0x2132, 0x2132), (0x213B, 0x213B), (0x2140, 0x2140),
+    (0x214D, 0x214D), (0x2150, 0x215F), (0x2189, 0x218B), (0x2190, 0x2199), (0x219D, 0x219E), (0x21A0, 0x21A0),
+    (0x21A2, 0x21A3), (0x21A5, 0x21A7), (0x21A9, 0x21AA), (0x21AD, 0x21AD), (0x21B0, 0x21B1), (0x21B3, 0x21B5),
+    (0x21BA, 0x21BB), (0x21BE, 0x21BE), (0x21C9, 0x21C9), (0x21D0, 0x21D4), (0x21DB, 0x21DB), (0x21DE, 0x21DF),
+    (0x21E4, 0x21E5), (0x21E7, 0x21E8), (0x21EA, 0x21EA), (0x2200, 0x2205), (0x2207, 0x220C), (0x220E, 0x2213),
+    (0x221A, 0x221A), (0x221E, 0x221E), (0x2223, 0x2225), (0x2227, 0x222A), (0x2234, 0x2235), (0x2237, 0x2239),
+    (0x223E, 0x223E), (0x2243, 0x2243), (0x2245, 0x2245), (0x2247, 0x2249), (0x224B, 0x224B), (0x224D, 0x224D),
+    (0x2254, 0x2254), (0x2257, 0x2257), (0x225F, 0x2265), (0x226A, 0x2273), (0x227C, 0x227C), (0x2282, 0x2289),
+    (0x228E, 0x2299), (0x229B, 0x22A5), (0x22B4, 0x22B4), (0x22B8, 0x22B8), (0x22BB, 0x22BD), (0x22C4, 0x22C4),
+    (0x22C6, 0x22C6), (0x22C8, 0x22CA), (0x22CE, 0x22CE), (0x22D0, 0x22D0), (0x22E2, 0x22E2), (0x22EE, 0x22F1),
+    (0x2302, 0x2305), (0x2308, 0x230B), (0x2318, 0x2318), (0x231C, 0x231F), (0x2324, 0x2328), (0x232B, 0x232B),
+    (0x2336, 0x2372), (0x2374, 0x237A), (0x2380, 0x2380), (0x2387, 0x2387), (0x2389, 0x238B), (0x2395, 0x2395),
+    (0x23CE, 0x23CF), (0x23FB, 0x23FE), (0x2400, 0x2421), (0x2423, 0x2424), (0x2460, 0x2468), (0x24B6, 0x24CF),
+    (0x24EA, 0x24EA), (0x2500, 0x25A2), (0x25AA, 0x25AB), (0x25B2, 0x25B5), (0x25B8, 0x25BF), (0x25C2, 0x25CC),
+    (0x25CE, 0x25CF), (0x25D4, 0x25D5), (0x25E6, 0x25EB), (0x25F6, 0x25F6), (0x2600, 0x2600), (0x2605, 0x2606),
+    (0x263C, 0x263C), (0x2661, 0x2661), (0x2665, 0x2665), (0x266A, 0x266B), (0x266D, 0x266D), (0x266F, 0x266F),
+    (0x2687, 0x2687), (0x26A0, 0x26A1), (0x2713, 0x2713), (0x2715, 0x2715), (0x2717, 0x2717), (0x2736, 0x2736),
+    (0x2756, 0x2756), (0x276E, 0x2771), (0x2794, 0x2794), (0x279C, 0x279E), (0x27C5, 0x27C6), (0x27DC, 0x27DC),
+    (0x27E6, 0x27EB), (0x27EF, 0x27EF), (0x27F5, 0x27FA), (0x2913, 0x2913), (0x2916, 0x2916), (0x294A, 0x294A),
+    (0x2987, 0x2988), (0x2A05, 0x2A06), (0x2A38, 0x2A38), (0x2B06, 0x2B06), (0x2B12, 0x2B13), (0x2B1C, 0x2B1C),
+    (0x2B24, 0x2B24), (0x2B58, 0x2B58), (0x2C7C, 0x2C7C), (0x2C7F, 0x2C7F), (0x2E18, 0x2E18), (0xA7FF, 0xA7FF),
+    (0xA92E, 0xA92E), (0xFE62, 0xFE62), (0xFFFD, 0xFFFD), (0x1D538, 0x1D539), (0x1D53B, 0x1D53E), (0x1D540, 0x1D544),
+    (0x1D546, 0x1D546), (0x1D54A, 0x1D550), (0x1D552, 0x1D56B), (0x1F12F, 0x1F149), (0x1F16A, 0x1F16B),
+    (0x1F850, 0x1F850), (0x1F852, 0x1F852),
 ];
 
 /// Retire les séquences d'échappement (CSI `ESC [ … final`, OSC `ESC ] … BEL|ESC \`, DCS/APC/PM/SOS jusqu'à
@@ -533,29 +620,96 @@ mod tests {
         assert_eq!(dessin('\u{fe0f}'), Dessin::Retire);
     }
 
-    /// P1 : une marque combinante n'est gardée que si les polices la dessinent, sur un signe dessiné, deux au plus et
-    /// pas deux fois la même ; sinon « � ». Le français et le vietnamien écrits décomposés restent lisibles.
+    /// P1 et vérification de Fable n° 4, N2 : une marque combinante n'est gardée que si la lettre d'avant et elle
+    /// forment une lettre composée (`COMPOSEES`) ; sinon « � », et la marque d'après aussi. Le français, le
+    /// vietnamien, le grec et le cyrillique écrits décomposés restent lisibles, et tels quels.
     #[test]
-    fn une_marque_ne_se_pose_que_sur_un_signe() {
+    fn une_marque_ne_se_pose_que_sur_une_lettre_qui_la_compose() {
         assert_eq!(ligne("e\u{301}te\u{301}"), "e\u{301}te\u{301}");
         assert_eq!(ligne("Vie\u{323}\u{302}t"), "Vie\u{323}\u{302}t");
+        // Dans l'autre ordre, la même lettre (« ê » et le point souscrit forment « ệ »).
+        assert_eq!(ligne("Vie\u{302}\u{323}t"), "Vie\u{302}\u{323}t");
         assert_eq!(ligne("c\u{327}a"), "c\u{327}a");
+        assert_eq!(ligne("u\u{31b}\u{323}"), "u\u{31b}\u{323}");
+        assert_eq!(ligne("и\u{306} ι\u{308}\u{301}"), "и\u{306} ι\u{308}\u{301}");
         // Seule, au début, sur une espace ou après un saut de ligne : rien pour la porter.
         assert_eq!(ligne("\u{301}a"), "\u{fffd}a");
         assert_eq!(ligne("a \u{301}b"), "a \u{fffd}b");
         assert_eq!(texte("a\n\u{301}b"), "a\n\u{fffd}b");
-        // Deux fois la même (la seconde, à la même place, ne se verrait pas) ; une troisième.
+        // N2 : sur un chiffre, une ponctuation ou une lettre sans forme composée, Inter dessine la marque comme son
+        // signe espacé (« 1 » et l'accent grave comme « 1` ») ; « j » et l'accent aigu comme « ȷ » et l'accent (N3).
+        for t in [
+            "1\u{300}",
+            "!\u{31b}",
+            "x\u{327}",
+            "j\u{301}",
+            "q\u{303}",
+            "\u{1d00}\u{301}",
+        ] {
+            let attendu: String = t.chars().take(1).chain(['\u{fffd}']).collect();
+            assert_eq!(ligne(t), attendu, "{t:?}");
+        }
+        // Deux fois la même (la seconde, à la même place, ne se verrait pas), une troisième, ou deux qui ne forment
+        // aucune lettre : la marque de trop, et celles d'après.
         assert_eq!(ligne("e\u{301}\u{301}"), "e\u{301}\u{fffd}");
-        assert_eq!(ligne("e\u{301}\u{300}\u{302}"), "e\u{301}\u{300}\u{fffd}");
+        assert_eq!(ligne("e\u{301}\u{300}\u{302}"), "e\u{301}\u{fffd}\u{fffd}");
+        assert_eq!(ligne("e\u{323}\u{302}\u{301}"), "e\u{323}\u{302}\u{fffd}");
         // Une marque que les polices ne dessinent pas, ou qui recouvre la lettre, et une marque englobante.
         for m in ['\u{305}', '\u{338}', '\u{20dd}', '\u{94d}', '\u{e31}', '\u{1ab0}'] {
             assert_eq!(dessin(m), Dessin::Rien, "U+{:04X}", u32::from(m));
             assert_eq!(ligne(&format!("e{m}")), "e\u{fffd}", "U+{:04X}", u32::from(m));
         }
-        // Une marque peut se poser sur le « � » d'un caractère remplacé : le remplacement se voit déjà.
-        assert_eq!(ligne("\u{200b}\u{301}"), "\u{fffd}\u{301}");
+        // Sur le « � » d'un caractère remplacé : rien ne la compose.
+        assert_eq!(ligne("\u{200b}\u{301}"), "\u{fffd}\u{fffd}");
         // Un sélecteur retiré entre la lettre et sa marque ne change rien.
         assert_eq!(ligne("e\u{fe0e}\u{301}"), "e\u{301}");
+    }
+
+    /// N2 : chaque lettre de `COMPOSEES` et sa lettre composée sont des signes montrés tels quels, la lettre composée
+    /// n'est pas la lettre (la marque change le signe), chaque marque permise a ses lettres et seulement elles, et
+    /// aucune chaîne de marques n'est plus longue que `MARQUES_MAX` (la borne que contrôle le banc de fuzz).
+    #[test]
+    fn les_lettres_composees_sont_des_signes_montres() {
+        // La plus longue chaîne de marques gardées depuis une lettre.
+        fn chaine(lettre: char) -> usize {
+            COMPOSEES
+                .iter()
+                .filter_map(|&(m, _)| composee(lettre, m))
+                .map(|faite| 1 + chaine(faite))
+                .max()
+                .unwrap_or(0)
+        }
+        let mut paires = 0;
+        for &(marque, signes) in COMPOSEES {
+            assert!(marque_permise(marque), "U+{:04X}", u32::from(marque));
+            let signes: Vec<char> = signes.chars().collect();
+            assert!(
+                !signes.is_empty() && signes.len().is_multiple_of(2),
+                "U+{:04X}",
+                u32::from(marque)
+            );
+            for p in signes.chunks(2) {
+                let (lettre, faite) = (p[0], p[1]);
+                assert!(lettre.is_alphabetic() && !dans(MODIFICATIVES, lettre), "{lettre}");
+                assert_eq!(dessin(lettre), Dessin::Encre, "{lettre}");
+                assert_eq!(dessin(faite), Dessin::Encre, "{faite}");
+                assert_ne!(lettre, faite);
+                assert_eq!(composee(lettre, marque), Some(faite));
+                paires += 1;
+            }
+        }
+        assert!(paires > 300, "{paires}");
+        let marques: Vec<char> = (0..=0x36f_u32)
+            .filter_map(char::from_u32)
+            .filter(|&c| marque_permise(c))
+            .collect();
+        assert_eq!(marques.len(), COMPOSEES.len());
+        let plus_longue = COMPOSEES
+            .iter()
+            .flat_map(|&(_, s)| s.chars().step_by(2))
+            .map(chaine)
+            .max();
+        assert_eq!(plus_longue, Some(MARQUES_MAX));
     }
 
     /// F4 et P1 : un texte lisible a au moins une lettre ou un chiffre dessiné ; des espaces, des séquences, des
@@ -580,6 +734,10 @@ mod tests {
             "\u{2d9}",
             "\u{fffd} \u{2420}\u{2d9}",
             "-- |",
+            // Vérification de Fable n° 4, N5 : des lettres modificatives, de quelques pixels d'encre.
+            "\u{2b0}",
+            "\u{2c8}\u{2bc} \u{1d43}",
+            "\u{2090}\u{209c}",
         ] {
             assert!(!lisible(t), "{t:?}");
         }
@@ -592,9 +750,28 @@ mod tests {
             "\u{200b}é",
             "Ж",
             "Ω",
+            "\u{2b0}h",
         ] {
             assert!(lisible(t), "{t:?}");
         }
+    }
+
+    /// N5 : `MODIFICATIVES` est exactement l'ensemble des lettres modificatives (Lm) de `ENCRE`.
+    #[test]
+    fn les_lettres_modificatives_sont_toutes_dans_la_liste() {
+        use unicode_general_category::{GeneralCategory, get_general_category};
+        let mut n = 0;
+        for c in (0..=u32::from(char::MAX)).filter_map(char::from_u32) {
+            let lm = get_general_category(c) == GeneralCategory::ModifierLetter;
+            if dans(ENCRE, c) {
+                assert_eq!(dans(MODIFICATIVES, c), lm, "U+{:04X}", u32::from(c));
+                n += usize::from(lm);
+            } else {
+                assert!(!dans(MODIFICATIVES, c), "U+{:04X}", u32::from(c));
+            }
+        }
+        assert!(n > 60, "{n}");
+        assert!(MODIFICATIVES.windows(2).all(|p| p[0].1 < p[1].0));
     }
 
     /// Comme dans le terminal : un sélecteur de variante retiré (sans colonne de plus), un invisible rare en « � ».

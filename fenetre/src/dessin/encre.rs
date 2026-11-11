@@ -1,8 +1,8 @@
 //! Ce que les polices embarquées dessinent vraiment, mesuré par la mise en page d'egui sans fenêtre : chaque signe
 //! que le nettoyage laisse passer (`nettoyage::dessin`) laisse de l'encre, avec une largeur, et n'est pas la case
-//! vide d'un signe absent ; chaque marque permise se voit sur sa lettre, seule ou à deux ; deux signes montrés ne
-//! se dessinent pas pareil (sauf des lettres d'alphabets différents), et aucun ne se dessine comme une suite de
-//! signes dans la feuille de correction.
+//! vide d'un signe absent ; chaque marque gardée dessine exactement la lettre composée qu'elle forme avec sa lettre ;
+//! deux signes (ou grappes) montrés ne se dessinent pas pareil (sauf des lettres d'alphabets différents), et aucun ne
+//! se dessine comme une suite de signes dans la feuille de correction.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -72,18 +72,6 @@ fn chaque_signe_montre_se_dessine() {
     }
 }
 
-/// L'image de chaque texte comme egui la peindrait (un point, un pixel) : l'encre de chaque pixel, glyphe par glyphe.
-/// L'atlas des polices est lu une fois, après toutes les mises en page (il grandit à chaque glyphe nouveau).
-fn images(ctx: &egui::Context, famille: &FontFamily, textes: &[String]) -> Vec<Image> {
-    let police = FontId::new(14.0, famille.clone());
-    let galeries: Vec<_> = textes
-        .iter()
-        .map(|t| ctx.fonts_mut(|f| f.layout_no_wrap(t.clone(), police.clone(), egui::Color32::WHITE)))
-        .collect();
-    let atlas = ctx.fonts_mut(|f| f.image());
-    galeries.iter().map(|g| image(&atlas, g, egui::Vec2::ZERO)).collect()
-}
-
 /// Une image de texte : l'encre cumulée de chaque pixel, par position (x, y).
 pub type Image = BTreeMap<(i32, i32), u32>;
 
@@ -114,60 +102,6 @@ pub fn image(atlas: &egui::ColorImage, g: &egui::Galley, ou: egui::Vec2) -> Imag
     image
 }
 
-/// P1 : chaque marque permise change l'image de sa lettre, sur des lettres de trois alphabets (dont « i » et « j »,
-/// dont le point fait place à certaines marques), dans les trois familles ; et deux marques différentes sur la même
-/// lettre se voient chacune (l'image des deux n'est celle d'aucune des deux seule).
-#[test]
-fn chaque_marque_permise_se_voit() {
-    let ctx = contexte();
-    let marques: Vec<char> = tous().filter(|&c| dessin(c) == Dessin::Marque).collect();
-    assert!(marques.contains(&'\u{301}') && marques.len() < 40, "{marques:?}");
-    let lettres: Vec<char> = ('a'..='z')
-        .chain('A'..='Z')
-        .chain("0ıȷжЖиωΩα\u{fffd}".chars())
-        .collect();
-    let nom = |t: &str| {
-        t.chars()
-            .map(|c| format!("U+{:04X}", u32::from(c)))
-            .collect::<Vec<_>>()
-            .join(" ")
-    };
-    let mut caches = Vec::new();
-    for famille in FAMILLES.map(|f| f()) {
-        let mut textes: Vec<String> = Vec::new();
-        for &l in &lettres {
-            textes.push(l.to_string());
-            textes.extend(marques.iter().map(|m| format!("{l}{m}")));
-        }
-        let vus = images(&ctx, &famille, &textes);
-        let image: std::collections::HashMap<&str, &Image> =
-            textes.iter().map(String::as_str).zip(vus.iter()).collect();
-        for &l in &lettres {
-            let seule = image[l.to_string().as_str()];
-            assert!(!seule.is_empty(), "{famille:?} {}", nom(&l.to_string()));
-            for m in &marques {
-                let t = format!("{l}{m}");
-                if image[t.as_str()] == seule {
-                    caches.push(format!("{famille:?} {}", nom(&t)));
-                }
-            }
-        }
-        let mut deux: Vec<String> = Vec::new();
-        for m in &marques {
-            for n in marques.iter().filter(|&n| n != m) {
-                deux.extend([format!("x{m}"), format!("x{n}"), format!("x{m}{n}")]);
-            }
-        }
-        let vus = images(&ctx, &famille, &deux);
-        for (i, trois) in vus.chunks(3).enumerate() {
-            if trois[2] == trois[0] || trois[2] == trois[1] {
-                caches.push(format!("{famille:?} {}", nom(&deux[i * 3 + 2])));
-            }
-        }
-    }
-    assert!(caches.is_empty(), "une marque qui ne se voit pas : {caches:?}");
-}
-
 /// Les signes que les polices dessinent mais que `nettoyage::ENCRE` ne montre pas tels quels (ils deviennent « � ») :
 /// ceux qui se dessinent exactement comme un autre signe de la liste (chiffres romains, tirets, points et
 /// apostrophes en double, lettres grecques avec l'oxia, doubles de « K », « Å », « Ω », pièces de crochets, cercles
@@ -178,18 +112,35 @@ fn chaque_marque_permise_se_voit() {
 #[rustfmt::skip]
 const ECARTES: &[(u32, u32)] = &[
     (0x0110, 0x0110), (0x0131, 0x0133), (0x0138, 0x0138), (0x013F, 0x0140), (0x0149, 0x0149), (0x017F, 0x017F),
-    (0x0189, 0x0189), (0x019E, 0x019E), (0x01C3, 0x01C3), (0x01DD, 0x01DD), (0x0261, 0x0261), (0x02B9, 0x02B9),
-    (0x02BC, 0x02BC), (0x02C9, 0x02C9), (0x02D3, 0x02D3), (0x02EE, 0x02EE), (0x0375, 0x0375), (0x037E, 0x037E),
-    (0x0387, 0x0387), (0x03FA, 0x03FA), (0x0472, 0x0472), (0x0478, 0x0479), (0x048C, 0x048C), (0x04C0, 0x04C0),
-    (0x04CF, 0x04CF), (0x1D0D, 0x1D0D), (0x1D1B, 0x1D1B), (0x1F71, 0x1F71), (0x1F73, 0x1F73), (0x1F75, 0x1F75),
-    (0x1F77, 0x1F77), (0x1F79, 0x1F79), (0x1F7B, 0x1F7B), (0x1F7D, 0x1F7D), (0x1FBE, 0x1FC0), (0x1FC9, 0x1FC9),
-    (0x1FCB, 0x1FCB), (0x1FD3, 0x1FD3), (0x1FDB, 0x1FDB), (0x1FE3, 0x1FE3), (0x1FEB, 0x1FEB), (0x1FEE, 0x1FEE),
-    (0x1FF9, 0x1FF9), (0x1FFB, 0x1FFB), (0x1FFD, 0x1FFD), (0x2010, 0x2011), (0x2015, 0x2015), (0x2024, 0x2025),
-    (0x2027, 0x2027), (0x2126, 0x2126), (0x212A, 0x212B), (0x2160, 0x217F), (0x2183, 0x2186), (0x2206, 0x2206),
-    (0x2215, 0x2215), (0x2218, 0x2219), (0x222B, 0x222B), (0x2236, 0x2236), (0x223C, 0x223C), (0x227A, 0x227B),
-    (0x22C2, 0x22C3), (0x2373, 0x2373), (0x239B, 0x23AD), (0x25B6, 0x25B7), (0x25C0, 0x25C1), (0x25EF, 0x25EF),
-    (0x2764, 0x2764), (0x2780, 0x2788), (0x2A00, 0x2A00), (0xFF5B, 0xFF5B), (0xFF5D, 0xFF5D),
+    (0x0189, 0x0189), (0x019E, 0x019E), (0x01C3, 0x01C3), (0x01DD, 0x01DD), (0x0237, 0x0237), (0x0249, 0x0249),
+    (0x025F, 0x025F), (0x0261, 0x0261), (0x02B9, 0x02B9), (0x02BC, 0x02BC), (0x02C9, 0x02C9), (0x02D3, 0x02D3),
+    (0x02EE, 0x02EE), (0x0375, 0x0375), (0x037E, 0x037E), (0x0387, 0x0387), (0x03FA, 0x03FA), (0x0472, 0x0472),
+    (0x0478, 0x0479), (0x048C, 0x048C), (0x04C0, 0x04C0), (0x04CF, 0x04CF), (0x1D0D, 0x1D0D), (0x1D1B, 0x1D1B),
+    (0x1F71, 0x1F71), (0x1F73, 0x1F73), (0x1F75, 0x1F75), (0x1F77, 0x1F77), (0x1F79, 0x1F79), (0x1F7B, 0x1F7B),
+    (0x1F7D, 0x1F7D), (0x1FBE, 0x1FC0), (0x1FC9, 0x1FC9), (0x1FCB, 0x1FCB), (0x1FD3, 0x1FD3), (0x1FDB, 0x1FDB),
+    (0x1FE3, 0x1FE3), (0x1FEB, 0x1FEB), (0x1FEE, 0x1FEE), (0x1FF9, 0x1FF9), (0x1FFB, 0x1FFB), (0x1FFD, 0x1FFD),
+    (0x2010, 0x2011), (0x2015, 0x2015), (0x2024, 0x2025), (0x2027, 0x2027), (0x2126, 0x2126), (0x212A, 0x212B),
+    (0x2160, 0x217F), (0x2183, 0x2186), (0x2206, 0x2206), (0x2215, 0x2215), (0x2218, 0x2219), (0x222B, 0x222B),
+    (0x2236, 0x2236), (0x223C, 0x223C), (0x227A, 0x227B), (0x22C2, 0x22C3), (0x2373, 0x2373), (0x239B, 0x23AD),
+    (0x25B6, 0x25B7), (0x25C0, 0x25C1), (0x25EF, 0x25EF), (0x2764, 0x2764), (0x2780, 0x2788), (0x2A00, 0x2A00),
+    (0xFF5B, 0xFF5B), (0xFF5D, 0xFF5D),
 ];
+
+/// Aucun signe écarté ne se montre tel quel : un sosie remis par mégarde dans `nettoyage::ENCRE` redeviendrait un
+/// jumeau sans retouche. `refaire_la_liste` le garantit aussi, mais il ne tourne qu'à la main ; celui-ci tourne
+/// toujours. (Pour « ȷ », « ɉ » et « ɟ » sous une marque, `nettoyage::composee` ferme déjà la porte : aucune lettre
+/// composée ne les a pour base.)
+#[test]
+fn aucun_signe_ecarte_ne_se_montre() {
+    let montres: Vec<String> = ECARTES
+        .iter()
+        .flat_map(|&(debut, fin)| debut..=fin)
+        .filter_map(char::from_u32)
+        .filter(|&c| dessin(c) == Dessin::Encre)
+        .map(|c| format!("U+{:04X}", u32::from(c)))
+        .collect();
+    assert!(montres.is_empty(), "signes écartés montrés tels quels : {montres:?}");
+}
 
 /// Refait la liste `nettoyage::ENCRE` d'après les polices, sans `ECARTES` (à lancer quand une police change, en mode
 /// optimisé) : `cargo test --release --manifest-path fenetre/Cargo.toml encre::refaire_la_liste -- --ignored
@@ -261,16 +212,18 @@ fn encre() -> Vec<char> {
     tous().filter(|&c| dessin(c) == Dessin::Encre).collect()
 }
 
-/// L'empreinte de l'image de chaque texte, dessiné signe par signe (`dessin::signe_par_signe`), par lots : l'atlas
-/// est lu après chaque lot (ses glyphes déjà placés ne bougent pas).
+/// La mise en page d'un texte dessiné signe par signe (`dessin::signe_par_signe`), comme dans la feuille.
+fn mise_en_page(ctx: &egui::Context, police: &FontId, t: &str) -> std::sync::Arc<egui::Galley> {
+    ctx.fonts_mut(|f| f.layout_job(super::signe_par_signe(t, police.clone(), egui::Color32::WHITE)))
+}
+
+/// L'empreinte de l'image de chaque texte, dessiné signe par signe, par lots : l'atlas est lu après chaque lot (ses
+/// glyphes déjà placés ne bougent pas).
 fn empreintes(ctx: &egui::Context, police: &FontId, textes: &[String]) -> Vec<u64> {
     use std::hash::{Hash, Hasher};
     let mut sortie = Vec::with_capacity(textes.len());
     for lot in textes.chunks(4096) {
-        let galeries: Vec<_> = lot
-            .iter()
-            .map(|t| ctx.fonts_mut(|f| f.layout_job(super::signe_par_signe(t, police.clone(), egui::Color32::WHITE))))
-            .collect();
+        let galeries: Vec<_> = lot.iter().map(|t| mise_en_page(ctx, police, t)).collect();
         let atlas = ctx.fonts_mut(|f| f.image());
         sortie.extend(galeries.iter().map(|g| {
             let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -281,16 +234,37 @@ fn empreintes(ctx: &egui::Context, police: &FontId, textes: &[String]) -> Vec<u6
     sortie
 }
 
+/// Pour chaque paire de textes, s'ils se dessinent exactement pareil (signe par signe), par lots.
+fn pareilles(ctx: &egui::Context, police: &FontId, paires: &[(String, String)]) -> Vec<bool> {
+    let mut sortie = Vec::with_capacity(paires.len());
+    for lot in paires.chunks(2048) {
+        let galeries: Vec<_> = lot
+            .iter()
+            .map(|(a, b)| (mise_en_page(ctx, police, a), mise_en_page(ctx, police, b)))
+            .collect();
+        let atlas = ctx.fonts_mut(|f| f.image());
+        sortie.extend(
+            galeries
+                .iter()
+                .map(|(a, b)| image(&atlas, a, egui::Vec2::ZERO) == image(&atlas, b, egui::Vec2::ZERO)),
+        );
+    }
+    sortie
+}
+
 /// L'image exacte d'un texte dessiné signe par signe (pour confirmer deux empreintes égales).
 fn image_exacte(ctx: &egui::Context, police: &FontId, t: &str) -> Image {
-    let g = ctx.fonts_mut(|f| f.layout_job(super::signe_par_signe(t, police.clone(), egui::Color32::WHITE)));
+    let g = mise_en_page(ctx, police, t);
     let atlas = ctx.fonts_mut(|f| f.image());
     image(&atlas, &g, egui::Vec2::ZERO)
 }
 
 /// Les suites comparées à chaque signe : toutes les paires de signes ASCII visibles, les paires d'un signe ASCII et
-/// d'une lettre latine accentuée (dans les deux ordres : « ǅ » et « Dž »), et les triplets de ponctuation et de
-/// symboles ASCII (une espace permise au milieu : en tête ou en bout, le nettoyage la retire et le dit).
+/// d'une lettre latine accentuée (dans les deux ordres : « ǅ » et « Dž »), les triplets de ponctuation et de
+/// symboles ASCII (une espace permise au milieu : en tête ou en bout, le nettoyage la retire et le dit), et chaque
+/// signe montré non ASCII doublé (vérification de Fable n° 4, N4 : « –– » se dessinait comme « — » dans Inter à 12
+/// et 14 points ; « – » est devenu un jumeau gardé, `nettoyage::JUMEAUX_GARDES`, montré « � » dans un aperçu, et ses
+/// doubles ne sont donc plus comparés).
 fn suites() -> Vec<String> {
     let visibles: Vec<char> = ('!'..='~').collect();
     let ponctuation: Vec<char> = visibles.iter().copied().filter(char::is_ascii_punctuation).collect();
@@ -316,19 +290,145 @@ fn suites() -> Vec<String> {
             }
         }
     }
+    s.extend(
+        encre()
+            .into_iter()
+            .filter(|c| !c.is_ascii() && !crate::nettoyage::JUMEAUX_GARDES.contains(c))
+            .map(|c| format!("{c}{c}")),
+    );
     s
 }
 
-/// Les empreintes d'une liste de textes dans chaque police, chaque police dans son propre fil (et son propre
-/// contexte : un atlas par fil).
-fn empreintes_par_police(polices: &[FontId], textes: &[String]) -> Vec<Vec<u64>> {
+/// Un travail fait pour chaque police, chaque police dans son propre fil (et son propre contexte : un atlas par fil).
+fn par_police<T: Send>(polices: &[FontId], travail: impl Fn(&egui::Context, &FontId) -> T + Sync) -> Vec<T> {
+    let travail = &travail;
     std::thread::scope(|portee| {
         let fils: Vec<_> = polices
             .iter()
-            .map(|police| portee.spawn(move || empreintes(&contexte(), police, textes)))
+            .map(|police| portee.spawn(move || travail(&contexte(), police)))
             .collect();
         fils.into_iter().map(|f| f.join().unwrap()).collect()
     })
+}
+
+/// Les empreintes d'une liste de textes dans chaque police (`par_police`).
+fn empreintes_par_police(polices: &[FontId], textes: &[String]) -> Vec<Vec<u64>> {
+    par_police(polices, |ctx, police| empreintes(ctx, police, textes))
+}
+
+/// Les polices des trois familles de la fenêtre, aux tailles de la feuille.
+fn polices_des_trois_familles() -> Vec<FontId> {
+    FAMILLES
+        .iter()
+        .flat_map(|f| TAILLES.map(|t| FontId::new(t, f())))
+        .collect()
+}
+
+/// Les grappes que le nettoyage garde telles quelles (`nettoyage::ligne`) : chaque signe montré suivi d'une marque
+/// permise ; puis, après chaque grappe d'une marque qui forme une lettre composée, d'une seconde marque. Chacune avec
+/// la lettre composée qu'elle forme (`nettoyage::composee`), ou `None` (le nettoyage l'aurait gardée sans elle).
+fn grappes_gardees() -> Vec<(String, Option<char>)> {
+    use crate::nettoyage::{composee, ligne};
+    let marques: Vec<char> = tous().filter(|&c| dessin(c) == Dessin::Marque).collect();
+    let mut grappes = Vec::new();
+    for b in encre() {
+        for &m in &marques {
+            let t = format!("{b}{m}");
+            if ligne(&t) != t {
+                continue;
+            }
+            let faite = composee(b, m);
+            if let Some(c) = faite {
+                for &n in &marques {
+                    let t2 = format!("{t}{n}");
+                    if ligne(&t2) == t2 {
+                        grappes.push((t2, composee(c, n)));
+                    }
+                }
+            }
+            grappes.push((t, faite));
+        }
+    }
+    // Une grappe d'une marque est une paire de `COMPOSEES` ; une de deux marques prolonge l'une d'elles par une autre
+    // paire : au plus deux fois leur nombre. Au-delà, le nettoyage garde des marques hors de la table, et les essais
+    // qui dessinent chaque grappe (des centaines de milliers) s'emballeraient au lieu d'échouer.
+    let paires: usize = crate::nettoyage::COMPOSEES
+        .iter()
+        .map(|(_, s)| s.chars().count() / 2)
+        .sum();
+    assert!(
+        grappes.len() <= 2 * paires,
+        "{} grappes gardées pour {paires} lettres composées, dont : {:?}",
+        grappes.len(),
+        &grappes[..grappes.len().min(20)]
+    );
+    grappes
+}
+
+/// Ce qu'un nom piégé écrirait à la place d'une marque pour imiter une lettre composée : les signes espacés qui
+/// ressemblent aux marques permises (accents, tréma, rond, caron, apostrophes et virgules, point, cédille, ogonek).
+const ESPACES_DES_MARQUES: &str = "`ˋ´ˊ΄^ˆ~˜¯ˉ‾˘¨ˀ˚°ºˇ˵\"'’‘.,‚¸˛";
+
+/// Vérification de Fable n° 4, N2 : chaque grappe que le nettoyage garde (une marque ou deux, après chaque signe
+/// montré) forme une lettre composée, et se dessine exactement comme elle, en fin de texte et suivie d'un signe,
+/// dans les trois familles et aux tailles de la feuille. Et cette lettre composée ne se dessine ni comme la lettre
+/// d'avant seule, ni comme la lettre d'avant suivie d'un signe espacé (`ESPACES_DES_MARQUES`) : Inter dessinait
+/// « 1 » et l'accent grave combinant exactement comme « 1` », la marque à côté, faute d'ancre. Remplace « la marque
+/// se voit » par « la marque se distingue de ce qu'un nom piégé écrirait à la place ».
+#[test]
+fn chaque_marque_gardee_dessine_sa_lettre_composee() {
+    let grappes = grappes_gardees();
+    let sans: Vec<&str> = grappes
+        .iter()
+        .filter(|(_, c)| c.is_none())
+        .map(|(t, _)| t.as_str())
+        .collect();
+    assert!(
+        sans.is_empty(),
+        "{} grappes gardées sans lettre composée, dont : {:?}",
+        sans.len(),
+        &sans[..sans.len().min(20)]
+    );
+    assert!(grappes.len() > 400, "{}", grappes.len());
+    let espaces: Vec<char> = ESPACES_DES_MARQUES
+        .chars()
+        .filter(|&c| dessin(c) == Dessin::Encre)
+        .collect();
+    let mut egales: Vec<(String, String)> = Vec::new();
+    let mut distinctes: Vec<(String, String)> = Vec::new();
+    for (t, faite) in &grappes {
+        let faite = faite.unwrap().to_string();
+        let signes: Vec<char> = t.chars().collect();
+        let marques = &signes[1..signes.len() - 1];
+        let avant = marques
+            .iter()
+            .fold(signes[0], |l, &m| crate::nettoyage::composee(l, m).unwrap());
+        egales.push((t.clone(), faite.clone()));
+        egales.push((format!("{t}x"), format!("{faite}x")));
+        distinctes.push((faite.clone(), avant.to_string()));
+        distinctes.extend(espaces.iter().map(|e| (faite.clone(), format!("{avant}{e}"))));
+    }
+    let fautes: Vec<String> = par_police(&polices_des_trois_familles(), |ctx, police| {
+        let mut fautes = Vec::new();
+        for ((a, b), pareil) in egales.iter().zip(pareilles(ctx, police, &egales)) {
+            if !pareil {
+                fautes.push(format!("{police:?} : {a:?} ne se dessine pas comme {b:?}"));
+            }
+        }
+        for ((a, b), pareil) in distinctes.iter().zip(pareilles(ctx, police, &distinctes)) {
+            if pareil {
+                fautes.push(format!("{police:?} : {a:?} se dessine comme {b:?}"));
+            }
+        }
+        fautes
+    })
+    .concat();
+    assert!(
+        fautes.is_empty(),
+        "{} fautes, dont : {:#?}",
+        fautes.len(),
+        &fautes[..fautes.len().min(30)]
+    );
 }
 
 /// Les polices où la feuille de correction montre les textes de Vanguard : Inter (catégorie, message, action,
@@ -392,38 +492,72 @@ fn alphabet(c: char) -> Option<u8> {
 /// « Α », « А » ; « 3 » et « З ») : chacune est la lettre de son alphabet, c'est la limite dite dans `ENCRE`. Les
 /// jumeaux gardés (`nettoyage::JUMEAUX_GARDES`, montrés « � » dans un aperçu) ne comptent pas. Une police changée
 /// qui ferait un nouveau sosie fait échouer ce test (le signe va dans `ECARTES`).
+///
+/// Vérification de Fable n° 4, N3 : les grappes gardées (signe et marque, `grappes_gardees`) en sont aussi ; chacune
+/// ne peut se dessiner que comme sa propre lettre composée. « j » et une marque du dessus se dessinaient comme « ȷ »
+/// (U+0237, sans point) et la même marque : ni l'une ni l'autre n'est plus gardée, et U+0237, U+0249 et U+025F sont
+/// écartés.
 #[test]
 fn deux_signes_montres_ne_se_dessinent_pas_pareil() {
-    let signes = encre();
-    let textes: Vec<String> = signes.iter().copied().map(String::from).collect();
-    let polices: Vec<FontId> = FAMILLES
-        .iter()
-        .flat_map(|f| TAILLES.map(|t| FontId::new(t, f())))
+    let mut textes: Vec<String> = encre()
+        .into_iter()
+        .filter(|c| !crate::nettoyage::JUMEAUX_GARDES.contains(c))
+        .map(String::from)
         .collect();
+    // Ce que chaque texte doit dessiner : le signe lui-même, ou la lettre composée de la grappe (une grappe sans
+    // lettre composée n'a que son propre dessin).
+    let mut dessins: Vec<String> = textes.clone();
+    for (t, faite) in grappes_gardees() {
+        dessins.push(faite.map_or_else(|| t.clone(), String::from));
+        textes.push(t);
+    }
+    let polices = polices_des_trois_familles();
     let empreintes = empreintes_par_police(&polices, &textes);
     let ctx = contexte();
     let mut fautes = Vec::new();
     for (police, e) in polices.iter().zip(&empreintes) {
-        let mut classes: BTreeMap<u64, Vec<char>> = BTreeMap::new();
-        for (&c, &h) in signes.iter().zip(e) {
-            if !crate::nettoyage::JUMEAUX_GARDES.contains(&c) {
-                classes.entry(h).or_default().push(c);
-            }
+        let mut classes: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
+        for (i, &h) in e.iter().enumerate() {
+            classes.entry(h).or_default().push(i);
         }
-        for classe in classes.values().filter(|c| c.len() > 1) {
-            // Même empreinte : regroupés par image exacte.
-            let mut images: Vec<(Image, Vec<char>)> = Vec::new();
-            for &c in classe {
-                let i = image_exacte(&ctx, police, &c.to_string());
-                match images.iter_mut().find(|(j, _)| *j == i) {
-                    Some((_, v)) => v.push(c),
-                    None => images.push((i, vec![c])),
+        // Même empreinte et deux dessins attendus différents au moins : regroupés par image exacte.
+        for classe in classes.values() {
+            let attendus: HashSet<&str> = classe.iter().map(|&i| dessins[i].as_str()).collect();
+            if attendus.len() < 2 {
+                continue;
+            }
+            let mut images: Vec<(Image, Vec<usize>)> = Vec::new();
+            for &i in classe {
+                let image = image_exacte(&ctx, police, &textes[i]);
+                match images.iter_mut().find(|(j, _)| *j == image) {
+                    Some((_, v)) => v.push(i),
+                    None => images.push((image, vec![i])),
                 }
             }
-            for (_, jumeaux) in images.into_iter().filter(|(_, v)| v.len() > 1) {
-                let alphabets: Option<HashSet<u8>> = jumeaux.iter().map(|&c| alphabet(c)).collect();
-                if alphabets.is_none_or(|a| a.len() < jumeaux.len()) {
-                    let noms: Vec<String> = jumeaux.iter().map(|&c| format!("U+{:04X} {c}", u32::from(c))).collect();
+            for (_, jumeaux) in images {
+                let attendus: HashSet<&str> = jumeaux.iter().map(|&i| dessins[i].as_str()).collect();
+                if attendus.len() < 2 {
+                    continue;
+                }
+                let alphabets: Option<HashSet<u8>> = attendus
+                    .iter()
+                    .map(|d| {
+                        let mut signes = d.chars();
+                        match (signes.next(), signes.next()) {
+                            (Some(c), None) => alphabet(c),
+                            _ => None,
+                        }
+                    })
+                    .collect();
+                if alphabets.is_none_or(|a| a.len() < attendus.len()) {
+                    let noms: Vec<String> = jumeaux
+                        .iter()
+                        .map(|&i| {
+                            let t = &textes[i];
+                            let points: Vec<String> = t.chars().map(|c| format!("U+{:04X}", u32::from(c))).collect();
+                            format!("{} {t}", points.join(" "))
+                        })
+                        .collect();
                     fautes.push(format!("{police:?} : {}", noms.join(", ")));
                 }
             }
