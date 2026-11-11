@@ -53,6 +53,10 @@ struct Changement {
     /// route, et la ligne se montre « interrompue ».
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     en_cours: bool,
+    /// Son annulation a commencé (`noter_annulation_en_cours`), sans être finie ni défaite : restée ainsi, Vanguard a
+    /// été arrêté en remettant, et la ligne se montre « annulation interrompue » (campagne B, M-4).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    annulation_en_cours: bool,
 }
 
 /// Un blocage noté : de quoi le montrer, le reconnaître et l'annuler exactement.
@@ -188,6 +192,7 @@ fn noter_dans(chemin: &std::path::Path, correctifs: &[Vec<String>], resultats: &
             evenement: crate::modele::journal::noter(ev),
             origine: None,
             en_cours: false,
+            annulation_en_cours: false,
         });
     }
     ecrire(chemin, &tous);
@@ -237,6 +242,7 @@ fn noter_en_cours_dans(
         evenement: crate::modele::journal::noter(ev),
         origine: None,
         en_cours: true,
+        annulation_en_cours: false,
     });
     ecrire(chemin, &tous)
 }
@@ -261,6 +267,35 @@ fn finir_dans(chemin: &std::path::Path, id: &str, reussi: bool) -> bool {
     ecrire(chemin, &tous)
 }
 
+/// Note, AVANT de rien remettre, que l'annulation de la correction liée à la note `id` commence : un arrêt brutal
+/// ensuite laisse sa ligne « annulation interrompue », jamais « annulable » comme si rien n'avait bougé. Rend `false`
+/// si le relevé n'a pas pu s'écrire : rien ne doit alors être remis. Une note sans ligne (orpheline) n'a rien à
+/// marquer : `true`.
+#[cfg_attr(windows, allow(dead_code))]
+pub(crate) fn noter_annulation_en_cours(id: &str) -> bool {
+    marquer_annulation_dans(&fichier(), id, true)
+}
+
+/// L'annulation de la note `id` s'est finie sans la défaire (refusée en route, ou pas relue partout) : sa ligne
+/// redevient ce qu'elle était.
+#[cfg_attr(windows, allow(dead_code))]
+pub(crate) fn finir_annulation(id: &str) {
+    marquer_annulation_dans(&fichier(), id, false);
+}
+
+fn marquer_annulation_dans(chemin: &std::path::Path, id: &str, en_cours: bool) -> bool {
+    let mut tous = lire_de(chemin);
+    let mut touchees = false;
+    for c in tous
+        .iter_mut()
+        .filter(|c| c.annulable.as_deref() == Some(id) && c.defaite.is_none())
+    {
+        touchees |= c.annulation_en_cours != en_cours;
+        c.annulation_en_cours = en_cours;
+    }
+    !touchees || ecrire(chemin, &tous)
+}
+
 /// Note que la correction liée à cette note (`annulable`) est défaite.
 pub(crate) fn marquer_defaite(id: &str) {
     marquer_defaite_dans(&fichier(), id);
@@ -271,6 +306,7 @@ fn marquer_defaite_dans(chemin: &std::path::Path, id: &str) {
     let date = maintenant();
     for c in tous.iter_mut().filter(|c| c.annulable.as_deref() == Some(id)) {
         c.defaite = Some(date.clone());
+        c.annulation_en_cours = false;
     }
     if let Some(c) = tous.iter().rev().find(|c| c.annulable.as_deref() == Some(id)) {
         noter_annulation(id, c.evenement.as_deref(), false);
@@ -452,6 +488,7 @@ fn ecrire_blocage(chemin: &std::path::Path, commandes: Vec<String>, reussi: bool
         evenement: None,
         origine: None,
         en_cours: false,
+        annulation_en_cours: false,
     });
     ecrire(chemin, &tous);
 }
@@ -848,6 +885,15 @@ fn ligne(c: &Changement, a_sa_note: &dyn Fn(&String) -> bool) -> Ligne {
     };
     let (etat, code) = match (&c.defaite, &c.annulable) {
         (Some(le), _) => (trf!(" (défaite le {le})", " (undone on {le})"), "defaite"),
+        // Une annulation commencée, jamais finie : Vanguard a été arrêté en remettant ; elle se reprend.
+        (None, Some(id)) if c.annulation_en_cours && a_sa_note(id) => (
+            tr!(
+                " (annulation interrompue, à reprendre)",
+                " (undo interrupted, to resume)"
+            )
+            .to_string(),
+            "interrompue",
+        ),
         // Notée avant de poser, jamais finie : Vanguard a été arrêté en route.
         (None, Some(id)) if c.en_cours && a_sa_note(id) => (interrompue_annulable().to_string(), "interrompue"),
         (None, _) if c.en_cours => (
@@ -1407,6 +1453,7 @@ mod tests {
             evenement: None,
             origine: None,
             en_cours: false,
+            annulation_en_cours: false,
         };
         let mut texte = std::fs::read_to_string(&f).unwrap();
         texte += &(serde_json::to_string(&forge).unwrap() + "\n");
@@ -1502,6 +1549,7 @@ mod tests {
             evenement: None,
             origine: None,
             en_cours: false,
+            annulation_en_cours: false,
         })
         .collect();
         let texte: String = lignes

@@ -1296,10 +1296,18 @@ impl Compte {
         accord: &str,
         etape: &str,
     ) -> (std::process::Child, std::thread::JoinHandle<String>) {
+        self.jusqu_a(
+            &["correction", "--appliquer", jeton, "--accord", accord, "--json"],
+            etape,
+        )
+    }
+
+    /// `vanguard <args>` lancé avec l'arrêt d'essai `etape`, rendu une fois figé là (comme `appliquer_jusqu_a`).
+    fn jusqu_a(&self, args: &[&str], etape: &str) -> (std::process::Child, std::thread::JoinHandle<String>) {
         use std::io::BufRead as _;
         let mut commande = Command::new(env!("CARGO_BIN_EXE_vanguard"));
         commande
-            .args(["correction", "--appliquer", jeton, "--accord", accord, "--json"])
+            .args(args)
             .env("VANGUARD_ESSAI_ARRET", etape)
             .env("VANGUARD_LANG", "fr")
             .env("USER", "essai")
@@ -1449,6 +1457,64 @@ fn remettre_comme_avant_exactement_une_seule_fois() {
     refuse(&c.annuler(&note, &accord), "plus rien à remettre");
     refuse(&c.voir_annulation(&note), "plus rien à remettre");
     assert_eq!(c.mode(".netrc"), 0o644);
+}
+
+/// Campagne B, M-4 : une annulation tuée après avoir remis, avant de finir, laisse sa ligne « interrompue » (« annulation
+/// interrompue »), jamais « annulable » comme si rien n'avait bougé ; une seconde annulation la finit. Puis, tuée entre
+/// la ligne défaite et l'oubli de la note : la ligne dit « défaite », jamais « fait » (l'ordre d'avant, note oubliée
+/// d'abord, laissait une ligne sans note, dite faite et à défaire à la main).
+#[cfg(unix)]
+#[test]
+fn annulation_tuee_en_route_ne_se_dit_ni_annulable_ni_faite() {
+    if !cfg!(debug_assertions) {
+        return essais::saute("arrêt d'essai : binaire de débogage seulement");
+    }
+    let tuer = |(mut enfant, sortie): (std::process::Child, std::thread::JoinHandle<String>)| {
+        let _ = enfant.kill();
+        let _ = enfant.wait();
+        let _ = sortie.join();
+    };
+    let apercu = |c: &Compte, note: &str| {
+        let (code, r) = c.voir_annulation(note);
+        assert!(code == Some(0) && r["issue"] == "fait", "{code:?} {r}");
+        laisser_lire();
+        r["accord"].as_str().expect("pas d'accord").to_string()
+    };
+    let c = Compte::nouveau();
+    let note = c.appliquer_ok("~/.netrc");
+    let accord = apercu(&c, &note);
+    tuer(c.jusqu_a(
+        &["changements", "--annuler", &note, "--accord", &accord, "--json"],
+        "annuler-apres-remise",
+    ));
+    assert_eq!(c.mode(".netrc"), 0o644, "remis avant l'arrêt");
+    let lignes = c.lignes_de_changements();
+    assert_eq!(lignes[0]["etat"], "interrompue", "{lignes:?}");
+    assert!(
+        lignes[0]["texte"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("annulation interrompue"),
+        "{lignes:?}"
+    );
+    assert_eq!(lignes[0]["geste"]["jeton"], note.as_str(), "{lignes:?}");
+    // Reprise : l'aperçu relu, la seconde annulation finit le travail.
+    let accord = apercu(&c, &note);
+    let (code, r) = c.annuler(&note, &accord);
+    assert!(code == Some(0) && r["relu"] == "revenu", "{code:?} {r}");
+    assert_eq!(c.lignes_de_changements()[0]["etat"], "defaite");
+
+    // Tuée entre la ligne défaite et l'oubli de la note.
+    let note = c.appliquer_ok("~/.netrc");
+    let accord = apercu(&c, &note);
+    tuer(c.jusqu_a(
+        &["changements", "--annuler", &note, "--accord", &accord, "--json"],
+        "annuler-avant-oubli",
+    ));
+    assert_eq!(c.mode(".netrc"), 0o644);
+    let lignes = c.lignes_de_changements();
+    assert_eq!(lignes[0]["etat"], "defaite", "{lignes:?}");
+    assert!(lignes[0]["geste"].is_null(), "{lignes:?}");
 }
 
 /// Sous-lot B : une note plus récente sur la même chose bloque la plus ancienne ; une valeur changée depuis se montre

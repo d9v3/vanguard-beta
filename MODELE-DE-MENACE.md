@@ -334,13 +334,17 @@ gardes :
   remise échoue, c'est dit fichier par fichier, et un fichier jamais touché n'est jamais dit « changé depuis ». Un
   arrêt brutal (Vanguard tué au milieu) laisse la trace écrite avant d'agir : la ligne se montre « interrompue » dans
   « Ce que Vanguard a changé » et se remet comme une autre (« rien à défaire » si la valeur d'avant n'était pas encore
-  notée) ; une note sans ligne, d'avant ce changement, se montre de même. Le point d'arrêt des essais
+  notée) ; une note sans ligne, d'avant ce changement, se montre de même. Une annulation tuée en route laisse de même
+  sa ligne « annulation interrompue, à reprendre », notée avant de rien remettre, jamais « annulable » comme si rien
+  n'avait bougé ; une seconde annulation la finit. Finie, la ligne est dite défaite avant que la note soit oubliée :
+  tuée entre les deux, elle dit « défaite », jamais « fait ». Le point d'arrêt des essais
   (`VANGUARD_ESSAI_ARRET`) n'existe que dans un programme de débogage, jamais dans celui publié. Essais
   (`tests/programme.rs`, dossier personnel jetable) : `appliquer_une_correction_du_compte_une_seule_fois`,
   `appliquer_refuse_un_etat_change_depuis_l_apercu`, `carnet_falsifie_ou_note_impossible_rien_n_est_applique`,
   `remettre_comme_avant_exactement_une_seule_fois`, `remettre_dans_l_ordre_et_sur_l_etat_montre`,
   `remettre_refuse_un_lien`, `tue_apres_la_pose_la_ligne_est_interrompue_et_se_remet`,
-  `tue_avant_la_pose_rien_n_est_dit_change`, `le_journal_ne_nomme_ni_fichier_ni_commande` ;
+  `tue_avant_la_pose_rien_n_est_dit_change`, `annulation_tuee_en_route_ne_se_dit_ni_annulable_ni_faite`,
+  `le_journal_ne_nomme_ni_fichier_ni_commande` ;
   `refuse_un_lien_a_chaque_element`, `un_autre_fichier_sous_le_meme_nom_n_est_pas_touche` (`src/optimiser/droits.rs`),
   `une_ligne_refusee_fait_remettre_les_lignes_deja_posees`, `en_lecture_seule_rien_ne_s_applique`
   (`src/machine/appliquer.rs`), `seul_le_revenu_est_un_succes` (`src/machine/annuler.rs`).

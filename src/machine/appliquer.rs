@@ -429,7 +429,7 @@ fn poser(_lignes: &[Ligne]) -> Result<(), PoseRefusee> {
 /// fige le programme à cette étape, après l'avoir dit sur la sortie d'erreur, jusqu'à la fin de son entrée : un essai
 /// le tue là, ou change un fichier puis ferme l'entrée pour qu'il reprenne (`tests/programme.rs`). Rien d'autre n'y
 /// change.
-fn arret_d_essai(etape: &str) {
+pub(super) fn arret_d_essai(etape: &str) {
     #[cfg(debug_assertions)]
     if std::env::var("VANGUARD_ESSAI_ARRET").is_ok_and(|e| e == etape) {
         use std::io::{Read as _, Write as _};

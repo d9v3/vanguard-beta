@@ -315,13 +315,17 @@ safeguards:
   those already set are put back as before; if that fails, it is said file by file, and a file never touched is never
   said “changed since”. A brutal stop (Vanguard killed midway) leaves the trace written before acting: the line shows
   as “interrupted” in “What Vanguard changed” and is put back like any other (“nothing to undo” if the value before
-  was not noted yet); a note without a line, from before this change, shows the same way. The test stop point
+  was not noted yet); a note without a line, from before this change, shows the same way. An undo killed midway
+  likewise leaves its line “undo interrupted, to resume”, written before anything is restored, never “undoable” as if
+  nothing had moved; a second undo finishes it. Once finished, the line is said undone before the note is dropped:
+  killed in between, it says “undone”, never “done”. The test stop point
   (`VANGUARD_ESSAI_ARRET`) only exists in a debug build, never in the published one. Tests (`tests/programme.rs`,
   throwaway home folder): `appliquer_une_correction_du_compte_une_seule_fois`,
   `appliquer_refuse_un_etat_change_depuis_l_apercu`, `carnet_falsifie_ou_note_impossible_rien_n_est_applique`,
   `remettre_comme_avant_exactement_une_seule_fois`, `remettre_dans_l_ordre_et_sur_l_etat_montre`,
   `remettre_refuse_un_lien`, `tue_apres_la_pose_la_ligne_est_interrompue_et_se_remet`,
-  `tue_avant_la_pose_rien_n_est_dit_change`, `le_journal_ne_nomme_ni_fichier_ni_commande`;
+  `tue_avant_la_pose_rien_n_est_dit_change`, `annulation_tuee_en_route_ne_se_dit_ni_annulable_ni_faite`,
+  `le_journal_ne_nomme_ni_fichier_ni_commande`;
   `refuse_un_lien_a_chaque_element`, `un_autre_fichier_sous_le_meme_nom_n_est_pas_touche` (`src/optimiser/droits.rs`),
   `une_ligne_refusee_fait_remettre_les_lignes_deja_posees`, `en_lecture_seule_rien_ne_s_applique`
   (`src/machine/appliquer.rs`), `seul_le_revenu_est_un_succes` (`src/machine/annuler.rs`).

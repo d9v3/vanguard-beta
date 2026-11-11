@@ -430,7 +430,19 @@ fn agir(jeton: &str, accord: &str) -> Issue {
     }
     // Une annulation change l'ordinateur : la cache des passages automatiques ne reprend rien d'avant.
     crate::autotest::cache::oublier();
+    // Notée avant de rien remettre (M-4) : un arrêt en route laisse la ligne « annulation interrompue ».
+    if !crate::changements::noter_annulation_en_cours(&id) {
+        return Issue::Echec(
+            tr!(
+                "le relevé des changements ne s'écrit pas : rien n'est remis",
+                "the change log cannot be written: nothing is restored"
+            )
+            .to_string(),
+        );
+    }
+    super::appliquer::arret_d_essai("annuler-avant-remise");
     if let Err(e) = remettre_les(&lignes) {
+        crate::changements::finir_annulation(&id);
         crate::autotest::cache::oublier();
         return Issue::Echec(trf!(
             "pas remis jusqu'au bout : {} ; le reste se remet plus tard",
@@ -438,12 +450,18 @@ fn agir(jeton: &str, accord: &str) -> Issue {
             e
         ));
     }
+    super::appliquer::arret_d_essai("annuler-apres-remise");
     let revenu = lignes
         .iter()
         .all(|l| crate::optimiser::droits::lire_identifie(&l.chemin).ok() == Some((l.avant, l.identite)));
     if revenu {
-        crate::optimiser::annulables::oublier(std::slice::from_ref(&id));
+        // La ligne d'abord, la note ensuite : arrêté entre les deux, la ligne dit « défaite » (vrai) et la note
+        // restée ne remet plus rien ; dans l'autre ordre, une ligne sans note se dirait « fait », à défaire à la main.
         crate::changements::marquer_defaite(&id);
+        super::appliquer::arret_d_essai("annuler-avant-oubli");
+        crate::optimiser::annulables::oublier(std::slice::from_ref(&id));
+    } else {
+        crate::changements::finir_annulation(&id);
     }
     crate::autotest::cache::oublier();
     Issue::Fait(revenu)
