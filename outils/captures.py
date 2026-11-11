@@ -46,13 +46,14 @@ DOSSIER = Path("assets/captures")
 PARTAGE = Path("assets/partage.png")
 NOM_RESEAU = "Salon"
 
-# Palette du terminal des captures (celle de VS Code, déjà utilisée par les captures d'avant) : codes 16 couleurs ;
-# les codes 256 couleurs arrivent de pyte en hexadécimal.
+# Palette du terminal des captures : celle du thème « Vanguard » sombre de la fenêtre (fenetre/src/couleurs.rs :
+# encre, grave, bon, jaune, accent), pour que GitHub montre les couleurs du programme ; les teintes vives sont un cran
+# plus claires. Codes 16 couleurs ; les codes 256 couleurs arrivent de pyte en hexadécimal.
 PALETTE = {
-    "default": "#d0d0d0", "black": "#000000", "red": "#cd3131", "green": "#0dbc79", "brown": "#e5e510",
-    "blue": "#2472c8", "magenta": "#bc3fbc", "cyan": "#11a8cd", "white": "#e5e5e5",
-    "brightblack": "#666666", "brightred": "#f14c4c", "brightgreen": "#23d18b", "brightbrown": "#f5f543",
-    "brightblue": "#3b8eea", "brightmagenta": "#d670d6", "brightcyan": "#29b8db", "brightwhite": "#ffffff",
+    "default": "#e8eef1", "black": "#000000", "red": "#f24f4d", "green": "#45b45e", "brown": "#e7c03a",
+    "blue": "#3fbef7", "magenta": "#b689ff", "cyan": "#3fbef7", "white": "#e8eef1",
+    "brightblack": "#7b878e", "brightred": "#ff6f6d", "brightgreen": "#5fcf78", "brightbrown": "#f2d25e",
+    "brightblue": "#7dd3fa", "brightmagenta": "#c9a6ff", "brightcyan": "#7dd3fa", "brightwhite": "#ffffff",
 }
 
 # Catégories du bilan qu'on peut montrer : rien de personnel dedans. Les autres (Wi-Fi et son nom, extensions,
@@ -412,14 +413,14 @@ def capture_partage(bac: Path):
     logo = Path("assets/icones/vanguard-512.png").resolve().as_uri()
     page = f"""<!doctype html><meta charset="utf-8"><style>
 html,body{{margin:0;width:1280px;height:640px;overflow:hidden}}
-body{{background:radial-gradient(ellipse at 22% 40%,#1a0606 0%,#000 55%),#000;color:#f2ece6;
+body{{background:radial-gradient(ellipse at 22% 40%,#062231 0%,#000 55%),#000;color:#e8eef1;
 font-family:'Inter','Cantarell','Noto Sans',system-ui,sans-serif;display:flex;align-items:center;gap:56px;
 padding:0 88px;box-sizing:border-box}}
-img{{width:400px;height:400px;filter:drop-shadow(0 0 40px rgba(41,184,219,.18))}}
+img{{width:400px;height:400px;filter:drop-shadow(0 0 40px rgba(63,190,247,.2))}}
 h1{{font-size:112px;line-height:1;margin:0 0 22px;letter-spacing:-2px;font-weight:800}}
-p{{margin:0;font-size:34px;line-height:1.3;color:#d8d0ca}}
-p.en{{margin-top:10px;font-size:26px;color:#8a8a8a}}
-.os{{margin-top:34px;font-size:24px;letter-spacing:1px;color:#29b8db}}
+p{{margin:0;font-size:34px;line-height:1.3;color:#d3dbdf}}
+p.en{{margin-top:10px;font-size:26px;color:#9aa7ae}}
+.os{{margin-top:34px;font-size:24px;letter-spacing:1px;color:#3fbef7}}
 </style><img src="{logo}" alt=""><div><h1>Vanguard</h1>
 <p>Cyberdéfense portable des postes et des réseaux, depuis une clé USB.</p>
 <p class="en">Portable cyber defense for endpoints and networks, from a USB key.</p>

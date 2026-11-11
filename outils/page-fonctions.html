@@ -7,35 +7,36 @@
      le code). Rien de personnel : ni nom, ni réseau, ni adresse Internet publique. -->
 <title>Vanguard {{VERSION_COURTE}}</title>
 <meta name="description" content="Vanguard : cyberdéfense portable des postes et des réseaux, depuis une clé USB. Un exécutable Rust par système (Linux, Windows), versions signées en Ed25519, une liste fermée d'hôtes joints en HTTPS ; bilan noté de A à F, audit du réseau, détection et blocage, après accord. Logiciel libre, GPL-3.0-or-later.">
-<meta name="theme-color" content="#fafbfc" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#07080d" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f2f5f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
 <meta name="claude:viewport-fit-sides" content="cover">
 <style>
 /* Mise en page : une ouverture (le message à gauche, la vraie fenêtre du programme à droite), puis les sections sur
    une colonne de 72 rem ; tout passe sur une colonne sur téléphone. Claire en mode clair, la fenêtre du terminal
    seule sombre ; toute sombre en mode sombre. Polices du système seulement : aucune requête vers un tiers.
-   La sarcelle ne sert qu'aux liens, au focus et à la fenêtre du programme ; le reste est neutre. Contrastes AA
-   (4,5:1 pour le texte) dans les deux modes. */
+   Couleurs du thème « Vanguard » de la fenêtre (fenetre/src/couleurs.rs, sombre et clair) ; en clair, l'accent, le
+   vert et le gris discret un cran plus foncés pour tenir le contraste sur le fond. Le bleu ne sert qu'aux liens, au
+   focus et à la fenêtre du programme ; le reste est neutre. Contrastes AA (4,5:1 pour le texte) dans les deux modes. */
 :root {
-  --fond: #fafbfc;
+  --fond: #f2f5f7;
   --surface: #ffffff;
-  --surface-2: #eef1f5;
-  --encre: #111827;
-  --doux: #4b5565;
-  --discret: #5d6577;
-  --trait: #e1e5ec;
-  --trait-fort: #cfd5df;
-  --accent: #0b7f8f;
-  --accent-fort: #096a77;
+  --surface-2: #ecf1f3;
+  --encre: #0a151b;
+  --doux: #495860;
+  --discret: #5f6c73;
+  --trait: #e1e7eb;
+  --trait-fort: #cdd6db;
+  --accent: #06729a;
+  --accent-fort: #055d7e;
   --sur-accent: #ffffff;
-  --bon: #15803d;
-  --ombre: 0 1px 2px rgba(17, 24, 39, .06), 0 16px 40px -20px rgba(17, 24, 39, .35);
+  --bon: #017a30;
+  --ombre: 0 1px 2px rgba(10, 21, 27, .06), 0 16px 40px -20px rgba(10, 21, 27, .35);
   /* La fenêtre du programme, sombre dans les deux modes, comme le vrai terminal. */
-  --term-fond: #0b0d14;
-  --term-trait: #1f2430;
-  --term-texte: #e6e9ef;
-  --term-doux: #8a92a5;
-  --term-accent: #3cc3d4;
+  --term-fond: #0a0d0e;
+  --term-trait: #232b30;
+  --term-texte: #e8eef1;
+  --term-doux: #9aa7ae;
+  --term-accent: #3fbef7;
   --texte: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Liberation Sans", Arial, sans-serif;
   --mono: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Cascadia Mono", "DejaVu Sans Mono", "Liberation Mono", monospace;
   --rayon-code: 4px;
@@ -46,16 +47,16 @@
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --fond: #07080d; --surface: #0b0d14; --surface-2: #11141c; --encre: #eef0f5; --doux: #a3a9b8; --discret: #7a8296;
-    --trait: #1a1e28; --trait-fort: #262b37; --accent: #3cc3d4; --accent-fort: #6fd3df; --sur-accent: #04141a;
-    --bon: #4cc38a; --ombre: none; --term-trait: #1f2430;
+    --fond: #000000; --surface: #0a0d0e; --surface-2: #101417; --encre: #e8eef1; --doux: #9aa7ae; --discret: #7b878e;
+    --trait: #171d20; --trait-fort: #232b30; --accent: #3fbef7; --accent-fort: #7dd3fa; --sur-accent: #02131c;
+    --bon: #45b45e; --ombre: none; --term-trait: #232b30;
     color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
-  --fond: #07080d; --surface: #0b0d14; --surface-2: #11141c; --encre: #eef0f5; --doux: #a3a9b8; --discret: #7a8296;
-  --trait: #1a1e28; --trait-fort: #262b37; --accent: #3cc3d4; --accent-fort: #6fd3df; --sur-accent: #04141a;
-  --bon: #4cc38a; --ombre: none; --term-trait: #1f2430;
+  --fond: #000000; --surface: #0a0d0e; --surface-2: #101417; --encre: #e8eef1; --doux: #9aa7ae; --discret: #7b878e;
+  --trait: #171d20; --trait-fort: #232b30; --accent: #3fbef7; --accent-fort: #7dd3fa; --sur-accent: #02131c;
+  --bon: #45b45e; --ombre: none; --term-trait: #232b30;
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
@@ -75,7 +76,7 @@ h1, h2, h3, h4 { font-family: var(--texte); font-weight: 600; text-wrap: balance
 .barre { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding-block: 1.1rem; }
 .marque { display: flex; align-items: center; gap: .7rem; color: var(--encre); text-decoration: none; }
 .marque:hover { color: var(--encre); }
-.plaque { width: 2.25rem; height: 2.25rem; border-radius: var(--rayon-bouton); background: #0d0f12; display: grid; place-items: center; box-shadow: 0 0 0 1px var(--trait-fort); flex: none; }
+.plaque { width: 2.25rem; height: 2.25rem; border-radius: var(--rayon-bouton); background: #0a0d0e; display: grid; place-items: center; box-shadow: 0 0 0 1px var(--trait-fort); flex: none; }
 .plaque svg { width: 64%; height: auto; }
 .marque b { font-size: 1.125rem; font-weight: 700; }
 .version { font-family: var(--mono); font-size: .75rem; color: var(--discret); border: 1px solid var(--trait-fort); border-radius: var(--rayon-code); padding: .05rem .4rem; }
@@ -291,7 +292,7 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); border-radius
   <div class="cadre">
     <div class="barre">
       <a class="marque" href="#haut" id="haut">
-        <span class="plaque" aria-hidden="true"><svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><path fill="#ffffff" d="M8 12h22l20 52 20-52h22L60 90H40z"/><path fill="#0d0f12" d="M30 12h6l14 37 14-37h6L50 66z"/></svg></span>
+        <span class="plaque" aria-hidden="true"><svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><path fill="#ffffff" d="M8 12h22l20 52 20-52h22L60 90H40z"/><path fill="#0a0d0e" d="M30 12h6l14 37 14-37h6L50 66z"/></svg></span>
         <b>VANGUARD</b>
         <span class="version">{{VERSION}}</span>
       </a>
@@ -453,8 +454,8 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); border-radius
         <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l8 3v6c0 4.5-3.4 8.1-8 9-4.6-.9-8-4.5-8-9V6z"/><path d="M8.5 12l2.5 2.5 4.5-5"/></svg></span><div><h3>Le bilan, noté de A à F</h3><span class="touche">menu 1 · 2 · 3 · vanguard bilan · logiciels-perimes · dernieres-failles · autotest</span></div></header>
         <ul>
           <li><b>Les bases</b> : pare-feu, mises à jour et failles connues, chiffrement du disque, antivirus, comptes et mots de passe, heure, fin de support.</li>
-          <li><b>Accès à distance</b> : SSH et ses algorithmes faibles, Bureau à distance, partages ouverts à tous, proxy détourné (WPAD).</li>
-          <li><b>Ce qui se cache</b> : portes dérobées de Windows, signes d'un rootkit sous Linux, journaux d'événements suspects.</li>
+          <li><b>Accès à distance</b> : SSH et ses algorithmes faibles, Bureau à distance, partages ouverts à tous, proxy détourné (WPAD) ; la configuration du client SSH lue comme SSH la lit (<code>Include</code>, portée des <code>Host</code> et <code>Match</code>), ce qu'il ne lit pas jusqu'au bout dit « non lu ». <span class="nouveau">nouveau</span></li>
+          <li><b>Ce qui se cache</b> : portes dérobées de Windows, signes d'un rootkit sous Linux, journaux d'événements suspects ; sous Linux, ce qui se relance au démarrage (unités systemd du compte, Hyprland et sa configuration Lua, shell) jugé tel que le système l'exécute vraiment, et « c'est normal chez moi » lié à l'état exact des fichiers montrés. <span class="nouveau">nouveau</span></li>
           <li><b>Failles activement exploitées en tête</b> (Linux) : les failles des paquets installés comparées au catalogue KEV de la CISA, téléchargé en entier (la liste des logiciels ne sort pas de l'ordinateur) ; une faille dans un programme qui écoute le réseau passe devant ; <code>vanguard dernieres-failles</code> donne les plus récentes, et la surveillance horaire prévient d'une faille critique nouvelle.</li>
           <li><b>Logiciels pas à jour</b> (Windows) : navigateurs, Office, Acrobat, Java, 7-Zip, PuTTY, Slack comparés à leur dernière version, d'après des listes publiques téléchargées en entier (la liste des logiciels ne sort pas de l'ordinateur) ; pour Firefox et Edge, chaque faille exploitée vérifiée contre la version installée.</li>
           <li><b>Règles nouvelles</b> : serveur OpenSSH et clés SSH sous Windows, protections de Defender relues, logiciels installés depuis le dernier bilan ; chaque règle cite sa référence (CIS, Microsoft ou ANSSI).</li>
@@ -492,14 +493,14 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); border-radius
       <article class="domaine" id="infection">
         <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4M8 11h6M11 8v6"/></svg></span><div><h3>Poste infecté</h3><span class="touche">menu 6 · 8 · vanguard blocage · evenements · yara · depanner traces · signaler</span></div></header>
         <ul>
-          <li><b>Analyse antivirus par le moteur de Vanguard, plus de 300 règles YARA et les empreintes</b> de logiciels malveillants connus de MalwareBazaar (clé abuse.ch gratuite ; la dernière copie sert hors ligne), avec clamscan en second avis facultatif sous Linux ou Defender sous Windows ; ClamAV n'est plus à installer ; un écran dit l'état de l'antivirus (bases, dates, ce qui n'est pas lu) ; quarantaine réversible, qui n'isole que le fichier examiné. Moteur YARA écrit pour Vanguard ; programmes, documents Office et leurs macros, raccourcis, scripts et archives lus par Vanguard lui-même, ce qu'il ne sait pas lire dit non vérifié. Un seul verdict par fichier (certain, famille, suspect, sain, non vérifié) ; les bases de ClamAV déjà installées lues par Vanguard lui-même, et des heuristiques qui ne donnent jamais plus que « suspect ». <span class="nouveau">nouveau</span></li>
+          <li><b>Analyse antivirus par le moteur de Vanguard, plus de 300 règles YARA et les empreintes</b> de logiciels malveillants connus de MalwareBazaar (clé abuse.ch gratuite ; la dernière copie sert hors ligne), avec clamscan en second avis facultatif sous Linux ou Defender sous Windows ; ClamAV n'est plus à installer ; un écran dit l'état de l'antivirus (bases, dates, ce qui n'est pas lu) ; quarantaine réversible, qui n'isole que le fichier examiné. Moteur YARA écrit pour Vanguard ; programmes, documents Office et leurs macros, raccourcis, scripts et archives lus par Vanguard lui-même, ce qu'il ne sait pas lire dit non vérifié. Un seul verdict par fichier (certain, famille, suspect, sain, non vérifié) ; les bases de ClamAV déjà installées lues par Vanguard lui-même, et des heuristiques qui ne donnent jamais plus que « suspect ».</li>
           <li><b>Que s'est-il passé ?</b> Les journaux de Windows (.evtx) lus par Vanguard lui-même, sur ce Windows ou depuis un dossier sous n'importe quel système : des règles (traces effacées, administrateur de plus, mot de passe deviné, Bureau à distance depuis Internet, tâche planifiée ou processus suspects, PowerShell malveillant, Defender désarmé, persistance WMI…) et les alertes dans l'ordre du temps ; au bilan comme au menu Bloquer et réagir.</li>
           <li><b>Blocage des menaces</b> d'un clic : programme arrêté et mis en quarantaine, connexion fermée au pare-feu, lancement retiré, tout annulable sauf l'arrêt ; ou <b>Suspendre</b>, <b>Couper son réseau</b>, <b>Surveiller de plus près</b>, <b>Faire confiance</b>, chaque type d'alerte avec sa suite de gestes ; <b>isoler l'ordinateur</b> du réseau, session à distance gardée, levée à l'identique ; la <b>protection active</b>, une fois mise en marche, bloque toute seule ce qui ne fait aucun doute et prévient.</li>
           <li><b>Options de défense</b> en un écran : sous Windows, chaque option de Defender (logiciels indésirables, accès contrôlé aux dossiers…), ses exclusions, les règles ASR, le Pare-feu Windows par profil et ses règles ; sous Linux, le pare-feu (ufw, firewalld, nftables). Baisser reste votre choix : montré, confirmé par un oui tapé, la valeur d'avant notée, « Rallumer » la remet ; la protection contre les falsifications n'est jamais contournée.</li>
           <li><b>Gestes de défense confirmés</b>, sous Windows et sous Linux : ce que le bilan trouve de plus grave (compte caché, lancement ou service ajouté en cachette, programme setuid suspect, abonnement WMI, racine de certificat ajoutée…) défait par Vanguard en administrateur, montré puis confirmé ; un geste qui pourrait vous couper de l'ordinateur reçoit un avertissement, et la question dit non par défaut.</li>
           <li><b>La preuve avant le geste</b> : programme, ligne de commande, parent, compte, empreinte, connexions, relevés avant chaque arrêt, quarantaine ou blocage ; un <b>journal des événements</b> scellé relie l'alerte, la preuve, le geste et son annulation.</li>
           <li><b>Chasse aux menaces en direct</b> : un mot de passe deviné (une connexion réussie juste après une rafale d'échecs), un outil d'attaque en marche, une commande qui télécharge ce qu'elle lance.</li>
-          <li><b>Le veilleur</b> (Linux) : chaque programme lancé et chaque connexion fermée vus sur le moment, même de quelques millisecondes ; avec la protection active et votre accord, il arrête à son lancement un malware connu de votre compte, posé dans vos dossiers (gel, preuve, quarantaine) ; et <b>le temps réel des fichiers</b> : chaque fichier écrit dans Téléchargements, le Bureau, ~/.local/bin ou ~/.config/autostart examiné dès son écriture, sans droits, un fichier perdu repris par une relecture du dossier ; coupé par défaut. <span class="nouveau">nouveau</span></li>
+          <li><b>Le veilleur</b> (Linux) : chaque programme lancé et chaque connexion fermée vus sur le moment, même de quelques millisecondes ; avec la protection active et votre accord, il arrête à son lancement un malware connu de votre compte, posé dans vos dossiers (gel, preuve, quarantaine) ; et <b>le temps réel des fichiers</b> : chaque fichier écrit dans Téléchargements, le Bureau, ~/.local/bin ou ~/.config/autostart examiné dès son écriture, sans droits, un fichier perdu repris par une relecture du dossier ; coupé par défaut.</li>
           <li><b>Veilleur anti-rançongiciel</b> (Linux) : les dossiers personnels surveillés en direct ; une rafale de chiffrement (fichiers réécrits, contenu devenu illisible, note de rançon, piège touché, copies de secours effacées) alerte en quelques secondes, « Bloquer » proposé au bilan suivant ; gel puis arrêt automatiques seulement avec la protection active et une quasi-certitude ; coupé par défaut.</li>
           <li><b>La mémoire des programmes</b> qui tournent, passée aux règles YARA à la demande : un logiciel malveillant « sans fichier » ne vit que là.</li>
           <li><b>Ce qui se lance en cachette</b>, portes dérobées, rootkit, connexions vers des serveurs de botnets, voleur de mots de passe (Responder) démasqué sur le réseau.</li>
@@ -725,16 +726,16 @@ vanguard yara --complet</pre>
     <div class="tete-section">
       <p class="surtitre">Nouveautés de la version {{VERSION_COURTE}}</p>
       <h2>Ce qui vient d'arriver</h2>
-      <p>Une version où l'antivirus veille en continu sous Linux : chaque fichier qui arrive dans un dossier à risque est examiné dès son écriture, sans droits d'administrateur, et ce qui n'a pas pu l'être est dit, jamais compté sain.</p>
+      <p>Une version où Vanguard lit ce qui se relance au démarrage et la configuration SSH comme le système les lit : ce qu'il ne comprend pas jusqu'au bout est dit, jamais compté comme sain.</p>
     </div>
     <ul class="nouveautes">
-      <li><b>Le temps réel des fichiers</b><span>Sous Linux, Téléchargements, le Bureau, ~/.local/bin et ~/.config/autostart examinés à chaque écriture ; quarantaine, un clic ou alerte selon le verdict.</span></li>
-      <li><b>Rien de perdu en silence</b><span>Un fichier perdu dans une rafale est compté, puis repris par une relecture du dossier. Essayé sous des milliers de fichiers dans des VM Arch, Fedora et Debian.</span></li>
-      <li><b>ClamAV facultatif</b><span>Le moteur de Vanguard fait l'analyse et lit la base ClamAV installée ; clamscan devient un second avis réglable.</span></li>
-      <li><b>État de l'antivirus</b><span>Le moteur, les bases et leur date, ce qui n'est pas lu ; <code>vanguard antivirus --etat</code>.</span></li>
-      <li><b>Quarantaine plus sûre</b><span>Seulement le fichier examiné, jamais un lien dur ; un contenu sorti n'y retourne pas tout seul.</span></li>
-      <li><b>Tableau de bord refait</b><span>Vue d'ensemble lime sur noir, sans script : bilan, alertes sur 30 jours, protection, appareils, et toutes les fonctions du menu ; <code>vanguard tableau-de-bord</code>.</span></li>
-      <li><b>Coulisses</b><span>Chaque commande lancée par Vanguard en une ligne grise, si vous le voulez ; les 200 dernières en mémoire seulement.</span></li>
+      <li><b>Le démarrage lu pour de vrai</b><span>Sous Linux, systemd, Hyprland et sa configuration Lua jugés ligne par ligne comme ils s'exécutent : variables, lignes coupées, échappements, raccourcis qui lancent.</span></li>
+      <li><b>« C'est normal chez moi », exact</b><span>Le choix montre chaque ligne et l'empreinte de ce qu'elle lance ; il ne tait l'alerte que pour cet état, 90 jours.</span></li>
+      <li><b>SSH lu comme SSH</b><span>Include, Host et Match suivis jusque dans les fichiers inclus ; les cas limites d'OpenSSH 10 lus comme lui.</span></li>
+      <li><b>Aperçu d'une correction</b><span>Ce qu'une correction ferait (commandes, droits, valeurs d'avant, annulation), sans rien lancer.</span></li>
+      <li><b>Seize outils en <code>--json</code></b><span>Pour les scripts : aucune question, rien de changé, et ce qui n'a pas pu se voir rend le tout non vérifié.</span></li>
+      <li><b>La souris dans le menu</b><span>Clic, survol avec aperçu, roulette, clic droit pour revenir ; Linux, Windows et SSH.</span></li>
+      <li><b>Textes piégés</b><span>Les faux blancs et les invisibles rares deviennent « � » : un nom ne paraît plus vide ni pareil à un autre.</span></li>
 </ul>
   </section>
 

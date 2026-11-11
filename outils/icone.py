@@ -32,6 +32,9 @@ V = "\n".join(ligne[:9] for ligne in BANNIERE.splitlines())
 
 BLANC = (0xFF, 0xFF, 0xFF)
 NOIR = (0, 0, 0)
+# Bannières : l'encre des thèmes sombre et clair de la fenêtre (fenetre/src/couleurs.rs, thème « Vanguard »).
+ENCRE_SOMBRE = (0xE8, 0xEE, 0xF1)
+ENCRE_CLAIRE = (0x0A, 0x15, 0x1B)
 COIN = 0.18  # arrondi de la plaque, en fraction du petit côté
 SURECH = 8  # dessin 8 fois plus grand, puis réduit : des bords lisses
 
@@ -125,7 +128,7 @@ def main():
     windows = [icone(t) for t in TAILLES_WINDOWS]
     # Le fichier part de la plus grande ; les autres y sont mises telles quelles au lieu d'être recalculées.
     windows[-1].save(ASSETS / "vanguard.ico", sizes=[im.size for im in windows], append_images=windows[:-1])
-    for nom, couleur in (("blanche", BLANC), ("noire", NOIR)):
+    for nom, couleur in (("blanche", ENCRE_SOMBRE), ("noire", ENCRE_CLAIRE)):
         banniere(couleur).save(ASSETS / f"banniere-{nom}.png", optimize=True)
     print(f"{dossier}/, {ASSETS / 'vanguard.ico'} et {ASSETS}/banniere-{{blanche,noire}}.png écrits.")
 
