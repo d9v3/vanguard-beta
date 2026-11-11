@@ -93,6 +93,8 @@ pub enum Forme {
     Appareils,
     /// `audit-reseau --json` : six domaines, chacun ses constats, sa note retenue quand il est incomplet.
     AuditReseau,
+    /// `changements --json` : ce que Vanguard a changé, ligne par ligne (`donnees::changements`).
+    Changements,
     /// Un autre JSON, montré tel quel (clés et valeurs), borné.
     Libre,
 }
@@ -375,11 +377,11 @@ impl Commande {
             Commande::Evenements => Forme::Evenements,
             Commande::Appareils => Forme::Appareils,
             Commande::AuditReseau => Forme::AuditReseau,
-            // Un historique (changements) et une liste (regles) n'ont pas de verdict : JSON simple, montré tel quel.
+            Commande::Changements => Forme::Changements,
+            // Une liste (regles) n'a pas de verdict : JSON simple, montré tel quel.
             Commande::FicheOrdinateur
             | Commande::OptionsDefense
             | Commande::Autotest
-            | Commande::Changements
             | Commande::Regles
             | Commande::Couleurs => Forme::Libre,
             _ => Forme::Resultat,
@@ -700,21 +702,73 @@ impl Empreinte {
     }
 }
 
-/// Un geste sur un constat du bilan, désigné par son jeton (`audit --json`). Une liste fermée : la fenêtre ne
-/// fabrique jamais un geste d'un nom, d'un chemin ni d'un message. Dans ce lot, un seul, qui ne change rien.
+/// Un geste sur un constat, désigné par son jeton : celui d'une correction du bilan (`audit --json`), ou celui d'une
+/// note d'annulation (`changements --json`). Une liste fermée : la fenêtre ne fabrique jamais un geste d'un nom, d'un
+/// chemin ni d'un message. Chaque geste qui change suit le « voir » de sa famille : il rend le jeton et l'accord que
+/// cet aperçu a donnés, rien d'autre.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum SorteGeste {
     /// `correction --voir <jeton> --json` : l'aperçu d'une correction, lecture seule.
     VoirCorrection,
+    /// `correction --appliquer <jeton> --accord <accord> --json` : l'appliquer, telle que montrée.
+    AppliquerCorrection,
+    /// `changements --voir <jeton> --json` : ce qui serait remis comme avant, lecture seule.
+    VoirAnnulation,
+    /// `changements --annuler <jeton> --accord <accord> --json` : le remettre, tel que montré.
+    Annuler,
+}
+
+/// La famille d'un geste : un « voir » et le geste qui change après lui. Le relais retient par famille la dernière
+/// liste et le dernier aperçu (`relais::Etat`).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Famille {
+    /// Les corrections du bilan.
+    Correction,
+    /// Les annulations de « Ce que Vanguard a changé ».
+    Annulation,
+}
+
+impl Famille {
+    /// La lecture de la liste qui offre les « voir » de cette famille.
+    pub fn liste(self) -> Commande {
+        match self {
+            Famille::Correction => Commande::Bilan,
+            Famille::Annulation => Commande::Changements,
+        }
+    }
+
+    /// Le « voir » de cette famille.
+    pub fn voir(self) -> SorteGeste {
+        match self {
+            Famille::Correction => SorteGeste::VoirCorrection,
+            Famille::Annulation => SorteGeste::VoirAnnulation,
+        }
+    }
+
+    /// Le geste qui change, après le « voir ».
+    pub fn changer(self) -> SorteGeste {
+        match self {
+            Famille::Correction => SorteGeste::AppliquerCorrection,
+            Famille::Annulation => SorteGeste::Annuler,
+        }
+    }
 }
 
 impl SorteGeste {
-    const TOUTES: [SorteGeste; 1] = [SorteGeste::VoirCorrection];
+    const TOUTES: [SorteGeste; 4] = [
+        SorteGeste::VoirCorrection,
+        SorteGeste::AppliquerCorrection,
+        SorteGeste::VoirAnnulation,
+        SorteGeste::Annuler,
+    ];
 
     /// Le mot de Vanguard (« sorte » du geste offert, « geste » de l'issue).
     pub fn mot(self) -> &'static str {
         match self {
             SorteGeste::VoirCorrection => "voir-correction",
+            SorteGeste::AppliquerCorrection => "appliquer-correction",
+            SorteGeste::VoirAnnulation => "voir-annulation",
+            SorteGeste::Annuler => "annuler-correction",
         }
     }
 
@@ -725,10 +779,14 @@ impl SorteGeste {
 
     // Le protocole du relais n'existe que sous Linux (les essais le lisent partout).
     #[cfg(any(target_os = "linux", test))]
-    /// L'octet du protocole du relais (10 : voir une correction ; les suivants viendront avec leurs lots).
+    /// L'octet du protocole du relais (10 et 11 : voir et appliquer une correction ; 12 et 13 : voir et faire une
+    /// annulation ; les suivants viendront avec leurs lots).
     pub fn octet(self) -> u8 {
         match self {
             SorteGeste::VoirCorrection => 10,
+            SorteGeste::AppliquerCorrection => 11,
+            SorteGeste::VoirAnnulation => 12,
+            SorteGeste::Annuler => 13,
         }
     }
 
@@ -738,10 +796,19 @@ impl SorteGeste {
         SorteGeste::TOUTES.into_iter().find(|s| s.octet() == o)
     }
 
-    /// Un « voir » : il ne change rien, s'interrompt comme une lecture, et son accord est tout à zéro.
+    /// Un « voir » : il ne change rien, s'interrompt comme une lecture, et son accord est tout à zéro. Les autres
+    /// changent : ils passent seuls, ne s'interrompent pas, et leur accord n'est jamais tout à zéro.
     pub fn voir(self) -> bool {
         match self {
-            SorteGeste::VoirCorrection => true,
+            SorteGeste::VoirCorrection | SorteGeste::VoirAnnulation => true,
+            SorteGeste::AppliquerCorrection | SorteGeste::Annuler => false,
+        }
+    }
+
+    pub fn famille(self) -> Famille {
+        match self {
+            SorteGeste::VoirCorrection | SorteGeste::AppliquerCorrection => Famille::Correction,
+            SorteGeste::VoirAnnulation | SorteGeste::Annuler => Famille::Annulation,
         }
     }
 }
@@ -759,9 +826,11 @@ pub struct GesteOffert {
 }
 
 impl GesteOffert {
-    /// Le jeton et la sorte, exacts : 32 chiffres hexadécimaux minuscules, une sorte de la liste ; sinon, rien.
+    /// Le jeton et la sorte, exacts : 32 chiffres hexadécimaux minuscules, un « voir » de la liste ; sinon, rien.
+    /// Une liste n'offre jamais directement un geste qui change : il ne part qu'après son aperçu.
     pub fn lire(&self) -> Option<(Empreinte, SorteGeste)> {
-        Some((Empreinte::lire(&self.jeton)?, SorteGeste::lire(&self.sorte)?))
+        let sorte = SorteGeste::lire(&self.sorte).filter(|s| s.voir())?;
+        Some((Empreinte::lire(&self.jeton)?, sorte))
     }
 }
 
@@ -810,6 +879,10 @@ impl Accord {
     }
 }
 
+/// Un geste qui change part 2 s au moins après la fin de son aperçu : le temps de le lire. La fenêtre n'active
+/// « Appliquer » qu'après (conception, Q7), le relais le revérifie, et Vanguard l'exige aussi (son carnet des aperçus).
+pub const APERCU_LU: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Un geste demandé par un clic : sa sorte, le jeton du constat, et l'accord (tout à zéro pour un « voir »).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Geste {
@@ -819,12 +892,27 @@ pub struct Geste {
 }
 
 impl Geste {
-    /// Voir la correction de ce constat.
+    /// Voir la correction de ce constat (pour les essais : la fenêtre passe par `voir`, avec la famille de la feuille).
+    #[cfg(test)]
     pub fn voir_correction(jeton: Empreinte) -> Geste {
+        Geste::voir(Famille::Correction, jeton)
+    }
+
+    /// Le « voir » de cette famille, pour ce jeton.
+    pub fn voir(famille: Famille, jeton: Empreinte) -> Geste {
         Geste {
-            sorte: SorteGeste::VoirCorrection,
+            sorte: famille.voir(),
             jeton,
             accord: Accord::NUL,
+        }
+    }
+
+    /// Le geste qui change de cette famille, avec le jeton et l'accord que son aperçu a donnés, tels quels.
+    pub fn changer(famille: Famille, jeton: Empreinte, accord: Accord) -> Geste {
+        Geste {
+            sorte: famille.changer(),
+            jeton,
+            accord,
         }
     }
 }
@@ -909,15 +997,22 @@ impl Lancement {
                 let mot = if reduites { "reduites" } else { "toutes" };
                 ["couleurs", "--animations", mot, "--json"].map(str::to_string).to_vec()
             }
-            // Une forme fixe par sorte, le jeton en 32 chiffres construit ici depuis ses octets.
-            Lancement::Geste(g) => match g.sorte {
-                SorteGeste::VoirCorrection => vec![
-                    "correction".to_string(),
-                    "--voir".to_string(),
-                    g.jeton.hex(),
-                    "--json".to_string(),
-                ],
-            },
+            // Une forme fixe par sorte, le jeton en 32 chiffres et l'accord en 64 construits ici depuis leurs octets :
+            // jamais un texte relu par la fenêtre.
+            Lancement::Geste(g) => {
+                let (commande, option) = match g.sorte {
+                    SorteGeste::VoirCorrection => ("correction", "--voir"),
+                    SorteGeste::AppliquerCorrection => ("correction", "--appliquer"),
+                    SorteGeste::VoirAnnulation => ("changements", "--voir"),
+                    SorteGeste::Annuler => ("changements", "--annuler"),
+                };
+                let mut a = vec![commande.to_string(), option.to_string(), g.jeton.hex()];
+                if !g.sorte.voir() {
+                    a.extend(["--accord".to_string(), g.accord.hex()]);
+                }
+                a.push("--json".to_string());
+                a
+            }
         }
     }
 
@@ -938,7 +1033,8 @@ impl Lancement {
             Lancement::Changement(_) => Duration::from_mins(15),
             // Écrire un petit fichier, scellé.
             Lancement::Couleurs(_) | Lancement::Animations(_) => Duration::from_mins(1),
-            // Une seule règle relue : quelques secondes, deux minutes pour une règle lente.
+            // Une seule règle relue (et, pour un geste qui change, quelques droits posés) : quelques secondes, deux
+            // minutes pour une règle lente.
             Lancement::Geste(_) => Duration::from_mins(2),
         }
     }
@@ -953,7 +1049,7 @@ impl Lancement {
             Lancement::Commande(c) => c,
             Lancement::Changement(_) => Commande::Demarrage,
             Lancement::Couleurs(_) | Lancement::Animations(_) => Commande::Couleurs,
-            Lancement::Geste(_) => Commande::Bilan,
+            Lancement::Geste(g) => g.sorte.famille().liste(),
         }
     }
 }
@@ -1283,7 +1379,55 @@ mod tests {
             assert_eq!(SorteGeste::depuis_octet(s.octet()), Some(s));
         }
         assert_eq!(SorteGeste::lire("Voir-correction"), None);
-        for o in [0, 1, 2, 9, 11, 255] {
+        // Les gestes qui changent : le jeton puis l'accord, construits depuis leurs octets ; la liste de leur
+        // famille ; ils changent.
+        let a = Accord::lire(&"cd".repeat(32)).unwrap();
+        let l = Lancement::Geste(Geste::changer(Famille::Correction, j, a));
+        assert_eq!(
+            l.arguments(),
+            [
+                "correction",
+                "--appliquer",
+                texte,
+                "--accord",
+                &"cd".repeat(32),
+                "--json"
+            ]
+        );
+        assert_eq!(l.commande(), Commande::Bilan);
+        assert!(l.change());
+        let l = Lancement::Geste(Geste::voir(Famille::Annulation, j));
+        assert_eq!(l.arguments(), ["changements", "--voir", texte, "--json"]);
+        assert_eq!(l.commande(), Commande::Changements);
+        assert!(!l.change());
+        let l = Lancement::Geste(Geste::changer(Famille::Annulation, j, a));
+        assert_eq!(
+            l.arguments(),
+            [
+                "changements",
+                "--annuler",
+                texte,
+                "--accord",
+                &"cd".repeat(32),
+                "--json"
+            ]
+        );
+        assert_eq!(l.commande(), Commande::Changements);
+        assert!(l.change());
+        // Une liste n'offre qu'un « voir ».
+        for (sorte, offert) in [
+            ("voir-correction", true),
+            ("voir-annulation", true),
+            ("appliquer-correction", false),
+            ("annuler-correction", false),
+        ] {
+            let g = GesteOffert {
+                jeton: texte.to_string(),
+                sorte: sorte.to_string(),
+            };
+            assert_eq!(g.lire().is_some(), offert, "{sorte}");
+        }
+        for o in [0, 1, 2, 9, 14, 255] {
             assert_eq!(SorteGeste::depuis_octet(o), None);
         }
         let a = Accord::lire(&"ab".repeat(32)).unwrap();

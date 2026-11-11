@@ -52,7 +52,7 @@ const LIGNE_APERCU_MAX: usize = crate::nettoyage::TEXTE_MAX;
 pub const ESPACES_MAX: usize = 3;
 /// Longueur d'une raison de refus, en caractères : la plus longue de Vanguard en a 179 ; au-delà, ce n'est pas la
 /// sienne.
-const RAISON_MAX: usize = 200;
+pub(super) const RAISON_MAX: usize = 200;
 
 /// Qui fera la correction, jugé par Vanguard (`machine::Droits`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,10 +111,75 @@ pub struct Apercu {
     pub coupe: bool,
 }
 
-/// Ce que la feuille montre de la réponse.
+/// Signes d'un aperçu, au plus, pour qu'il s'accepte d'ici : de quoi se lire d'un coup d'œil (celui de la correction
+/// d'un `.netrc` en a environ 160). Plus long, il se fait dans le terminal, où tout se lit.
+pub const SIGNES_ACCEPTABLES: usize = 600;
+
+impl Apercu {
+    /// Les signes de tout ce que la feuille montre de Vanguard.
+    pub fn signes(&self) -> usize {
+        let n = |t: &String| t.chars().count();
+        [
+            &self.regle,
+            &self.categorie,
+            &self.message,
+            &self.action,
+            &self.pourquoi_pas,
+        ]
+        .into_iter()
+        .map(n)
+        .chain(self.commandes.iter().map(n))
+        .chain(
+            self.avant
+                .iter()
+                .map(|v| n(&v.geste).saturating_add(v.valeur.as_ref().map_or(0, n))),
+        )
+        .fold(0usize, usize::saturating_add)
+    }
+
+    /// Pourquoi cet aperçu ne s'accepte pas depuis la fenêtre, s'il ne s'accepte pas (conception, Q2 et Q7) :
+    /// seulement une correction automatique, des droits du compte, qui s'annule, montrée exactement (ni retouchée ni
+    /// coupée) et assez courte pour se lire. Le reste se montre, et se fait dans le terminal.
+    pub fn pas_d_ici(&self) -> Option<&'static str> {
+        if !self.automatique {
+            return Some(crate::tr!(
+                "Rien à appliquer d'ici : elle se fait à la main.",
+                "Nothing to apply from here: it is done by hand."
+            ));
+        }
+        if self.droits != Droits::Compte {
+            return Some(crate::tr!(
+                "Elle ne s'applique pas d'ici : vanguard corriger dans un terminal.",
+                "It is not applied from here: vanguard corriger in a terminal."
+            ));
+        }
+        if !self.annulable {
+            return Some(crate::tr!(
+                "Elle ne s'annule pas : elle ne s'applique pas d'ici (vanguard corriger dans un terminal).",
+                "It cannot be undone: it is not applied from here (vanguard corriger in a terminal)."
+            ));
+        }
+        if self.retouche || self.coupe {
+            return Some(crate::tr!(
+                "Ce qui est montré n'est pas exactement le texte de Vanguard : elle ne s'applique pas d'ici (vanguard corriger dans un terminal).",
+                "What is shown is not exactly Vanguard's text: it is not applied from here (vanguard corriger in a terminal)."
+            ));
+        }
+        if self.signes() > SIGNES_ACCEPTABLES {
+            return Some(crate::tr!(
+                "Trop longue pour se lire ici d'un coup d'œil : vanguard corriger dans un terminal.",
+                "Too long to read here at a glance: vanguard corriger in a terminal."
+            ));
+        }
+        None
+    }
+}
+
+/// Ce que la feuille montre de la réponse (l'aperçu d'une correction, ou celui d'une annulation :
+/// `donnees::changements::Annulation`).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Lecture {
-    Lue(Box<Apercu>),
+pub enum Lecture<A = Apercu> {
+    Lue(Box<A>),
     /// Vanguard a refusé de montrer (le problème a disparu, deux constats répondent…) : sa raison, nettoyée.
     Refusee(String),
     /// La réponse ne se lit pas comme un aperçu de ce jeton : une raison courte.
@@ -175,7 +240,7 @@ fn presente<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D:
 }
 
 /// Un champ présent, lu avec son type (`null` refusé) ; avec `default`, son absence donne `None`.
-fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<T>, D::Error> {
+pub(super) fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<T>, D::Error> {
     T::deserialize(d).map(Some)
 }
 
@@ -247,7 +312,7 @@ pub fn lire(jeton: Empreinte, code: Option<i32>, sortie: &[u8]) -> Lecture {
 /// Un texte de Vanguard tel que la feuille le montre : nettoyé sur une seule ligne, sans espace en tête ni en bout
 /// (une espace de tête décalerait une commande sans que rien ne le dise), chaque longue suite d'espaces resserrée, et
 /// les jumeaux gardés (`nettoyage::JUMEAUX_GARDES` : « − » se dessine comme « - » dans les commandes) en « � ».
-fn montre(texte: &str) -> String {
+pub(super) fn montre(texte: &str) -> String {
     resserrer(crate::nettoyage::ligne_entiere(texte).trim_start())
         .chars()
         .map(|c| {

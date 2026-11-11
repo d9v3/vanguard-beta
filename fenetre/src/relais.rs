@@ -23,11 +23,22 @@
 //! ne le coupe pas, la fermeture de la fenêtre non plus : coupé au milieu, il pourrait laisser un programme retiré sans
 //! la note qui le remet. Seul son délai (`Lancement::delai`) l'arrête.
 //!
-//! Un geste sur un constat du bilan (`Lancement::Geste`) part par le jeton qu'`audit --json` a donné au constat, et
-//! seulement si le dernier bilan que le relais a lui-même relayé (réussi) l'offrait avec cette sorte : une fenêtre
-//! prise ne peut demander que ce que Vanguard venait d'offrir, et Vanguard rejuge tout de son côté. Dans ce lot, le
-//! seul geste est « voir la correction » (`correction --voir`), qui ne change rien : il s'arrête comme une lecture, et
-//! la liste offerte ne s'use pas (on peut revoir un aperçu).
+//! Un geste sur un constat (`Lancement::Geste`) va par familles : les corrections du bilan, et les annulations de
+//! « Ce que Vanguard a changé ». Chaque famille a sa liste (`audit --json`, `changements --json`), un « voir » qui ne
+//! change rien (`correction --voir`, `changements --voir`) et un geste qui change (`correction --appliquer`,
+//! `changements --annuler`). Le relais retient, seulement d'après des sorties qu'il a lui-même relayées, finies avec
+//! le code 0 et lues avec serde (un nom ou un message ne fabriquent jamais un geste) :
+//!
+//! - `offerts` : les « voir » offerts par la dernière liste de chaque famille (le jeton et la sorte) ;
+//! - `montres` : le dernier aperçu de chaque famille (le jeton, l'accord que Vanguard a donné, l'heure de sa fin).
+//!
+//! Un « voir » ne part que pour un jeton de la dernière liste de sa famille, avec cette sorte : il s'arrête comme une
+//! lecture, et la liste offerte ne s'use pas (on peut revoir un aperçu). Un geste qui change ne part que pour le
+//! jeton et l'accord exacts du dernier aperçu de sa famille, 2 s au moins et 10 minutes au plus après sa fin ; il passe
+//! seul et ne se coupe pas, comme un changement au démarrage, et il consomme l'aperçu et la liste de sa famille : le
+//! suivant demande une liste relue, puis un aperçu refait. Une fenêtre prise ne peut donc demander que ce que Vanguard
+//! venait d'offrir puis de montrer ; elle peut, elle, enchaîner liste, aperçu et accord sans personne (modèle de
+//! menace) : Vanguard rejuge tout de son côté (carnet des aperçus, accord recalculé, verrou des notes).
 //!
 //! Un changement des couleurs de la fenêtre passe de même seul et sans interruption (`vanguard` écrit le fichier puis
 //! son sceau) ; sa forme est fermée (un thème, une base connue, quinze octets de couleur), et une couleur presque
@@ -38,9 +49,11 @@ use std::collections::{HashMap, HashSet};
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use crate::commandes::{Accord, Commande, Empreinte, GesteOffert, Lancement, Sorte, SorteGeste};
+use crate::commandes::{
+    APERCU_LU, Accord, Commande, Empreinte, Famille, Geste, GesteOffert, Lancement, Sorte, SorteGeste,
+};
 use crate::lanceur::{Fin, Issue, Message, Programme, Rendre, Reveil, SORTIE_MAX, Tache};
 use crate::protocole::{
     DEMANDE_MAX, Demande, Reponse, coder_fin, coder_lance, coder_ligne, ecrire_trame, lire_reponse, lire_trame,
@@ -54,6 +67,9 @@ const TACHES_MAX: usize = 2;
 const ECRITURE_DELAI: Duration = Duration::from_secs(10);
 /// Empreintes retenues au plus d'une liste du démarrage (une machine en a quelques dizaines).
 const EMPREINTES_MAX: usize = 4096;
+/// Un geste qui change part 10 minutes au plus après la fin de son aperçu (2 s au moins : `APERCU_LU`) : au-delà,
+/// l'aperçu n'est plus celui qu'on a sous les yeux (le carnet de Vanguard aussi).
+const APERCU_VIEUX: Duration = Duration::from_mins(10);
 
 /// Une commande lancée par le relais.
 struct EnCours {
@@ -69,9 +85,14 @@ struct Etat {
     /// Les gestes de la dernière liste du démarrage relayée (l'empreinte, la sorte offerte pour elle et l'accord que
     /// Vanguard a donné à ce geste), vidés quand un changement part : un changement demande une liste relue après lui.
     vues: HashMap<Empreinte, (Sorte, Accord)>,
-    /// Les gestes offerts par le dernier bilan relayé (`audit --json` fini avec le code 0) : le jeton de chaque
-    /// constat et sa sorte. Remplacés à la fin de chaque bilan, vidés s'il n'a pas réussi.
+    /// Les « voir » offerts par la dernière liste relayée de chaque famille (`audit --json`, `changements --json`
+    /// finis avec le code 0) : le jeton de chaque constat et sa sorte. Ceux d'une famille sont remplacés à la fin de
+    /// chaque liste de cette famille, vidés si elle n'a pas réussi ou quand un geste qui change de la famille part.
     offerts: HashSet<(Empreinte, SorteGeste)>,
+    /// Le dernier aperçu relayé de chaque famille (fini avec le code 0, « fait », pour le jeton demandé) : le jeton,
+    /// l'accord donné par Vanguard et l'heure de la fin. Remplacé ou retiré à la fin de chaque « voir » de la
+    /// famille, consommé quand le geste qui change part.
+    montres: HashMap<Famille, (Empreinte, Accord, Instant)>,
 }
 
 impl Etat {
@@ -120,21 +141,10 @@ impl Etat {
                 Some(_) => self.vues.clear(),
             }
         }
-        if let Lancement::Geste(g) = lancement {
-            // Un « voir » ne change rien : la liste offerte sert encore (elle n'est pas vidée ici).
-            if !self.offerts.contains(&(g.jeton, g.sorte)) {
-                return Some(if self.offerts.iter().any(|(j, _)| *j == g.jeton) {
-                    crate::tr!(
-                        "le dernier bilan n'offrait pas ce geste pour ce constat : refaites-le",
-                        "the last check did not offer this action for this finding: run it again"
-                    )
-                } else {
-                    crate::tr!(
-                        "constat absent du dernier bilan : refaites-le",
-                        "finding not in the last check: run it again"
-                    )
-                });
-            }
+        if let Lancement::Geste(g) = lancement
+            && let Some(r) = self.admettre_geste(g)
+        {
+            return Some(r);
         }
         // Des couleurs : revérifiées ici aussi (`vanguard` le refait), une presque invisible sur le fond refusée.
         if let Lancement::Couleurs(cc) = lancement
@@ -155,6 +165,132 @@ impl Etat {
         );
         None
     }
+
+    /// Un geste sur un constat : un « voir » offert par la dernière liste de sa famille ; un geste qui change, le jeton
+    /// et l'accord exacts du dernier aperçu de sa famille, ni trop tôt ni trop tard. Admis, un geste qui change
+    /// consomme l'aperçu et la liste de sa famille ; un refus ne consomme rien.
+    fn admettre_geste(&mut self, g: Geste) -> Option<&'static str> {
+        let famille = g.sorte.famille();
+        if g.sorte.voir() {
+            // Un « voir » ne change rien : la liste offerte sert encore (elle n'est pas vidée ici).
+            if self.offerts.contains(&(g.jeton, g.sorte)) {
+                return None;
+            }
+            let autre_sorte = self.offerts.iter().any(|(j, _)| *j == g.jeton);
+            return Some(match (famille, autre_sorte) {
+                (Famille::Correction, true) => crate::tr!(
+                    "le dernier bilan n'offrait pas ce geste pour ce constat : refaites-le",
+                    "the last check did not offer this action for this finding: run it again"
+                ),
+                (Famille::Correction, false) => crate::tr!(
+                    "constat absent du dernier bilan : refaites-le",
+                    "finding not in the last check: run it again"
+                ),
+                (Famille::Annulation, _) => crate::tr!(
+                    "absent de la dernière liste de « Ce que Vanguard a changé » : relisez-la",
+                    "not in the last list of “What Vanguard changed”: read it again"
+                ),
+            });
+        }
+        let Some(&(jeton, accord, depuis)) = self.montres.get(&famille) else {
+            return Some(crate::tr!(
+                "aucun aperçu montré pour ce geste : refaites l'aperçu",
+                "no preview shown for this action: show the preview again"
+            ));
+        };
+        if jeton != g.jeton {
+            return Some(crate::tr!(
+                "pas le dernier aperçu montré : refaites l'aperçu",
+                "not the last preview shown: show the preview again"
+            ));
+        }
+        // L'accord rendu est celui que l'aperçu a donné, octet pour octet : la fenêtre ne le choisit pas.
+        if accord != g.accord {
+            return Some(crate::tr!(
+                "accord différent de celui du dernier aperçu : refaites l'aperçu",
+                "agreement differs from the last preview: show the preview again"
+            ));
+        }
+        let age = depuis.elapsed();
+        if age < APERCU_LU {
+            return Some(crate::tr!(
+                "accepté moins de 2 secondes après l'aperçu : prenez le temps de le lire",
+                "accepted less than 2 seconds after the preview: take the time to read it"
+            ));
+        }
+        if age > APERCU_VIEUX {
+            return Some(crate::tr!(
+                "aperçu de plus de 10 minutes : refaites l'aperçu",
+                "preview older than 10 minutes: show the preview again"
+            ));
+        }
+        self.montres.remove(&famille);
+        self.offerts.retain(|(_, s)| s.famille() != famille);
+        None
+    }
+
+    /// Retient ce qu'une lecture finie offre ou montre : la liste d'une famille remplace ses « voir » offerts (vidés
+    /// si elle n'a pas réussi) ; un « voir » fini remplace l'aperçu de sa famille (retiré s'il n'a rien montré).
+    fn retenir(&mut self, fin: &Fin) {
+        let reussie = fin.issue == Issue::Terminee && fin.code == Some(0);
+        match fin.lancement {
+            Lancement::Commande(Commande::Demarrage) if fin.issue == Issue::Terminee => {
+                self.vues = gestes_vus(&fin.sortie);
+            }
+            Lancement::Commande(c @ (Commande::Bilan | Commande::Changements)) => {
+                let famille = if c == Commande::Bilan {
+                    Famille::Correction
+                } else {
+                    Famille::Annulation
+                };
+                self.offerts.retain(|(_, s)| s.famille() != famille);
+                if reussie {
+                    self.offerts.extend(gestes_offerts(&fin.sortie, famille));
+                }
+            }
+            Lancement::Geste(g) if g.sorte.voir() => {
+                let famille = g.sorte.famille();
+                match accord_montre(g, fin).filter(|_| reussie) {
+                    Some(accord) => {
+                        self.montres.insert(famille, (g.jeton, accord, Instant::now()));
+                    }
+                    None => {
+                        self.montres.remove(&famille);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// La dernière ligne d'un aperçu, lue pour l'accord seulement : le geste, l'issue, l'accord et le jeton de l'aperçu
+/// (le reste est sauté sans être gardé : c'est la fenêtre qui le montre, et Vanguard qui le rejuge).
+#[derive(serde::Deserialize)]
+struct ApercuVu {
+    geste: String,
+    issue: String,
+    accord: String,
+    apercu: JetonVu,
+}
+
+#[derive(serde::Deserialize)]
+struct JetonVu {
+    jeton: String,
+}
+
+/// L'accord d'un aperçu fini : sa dernière ligne non vide dit ce geste, « fait », le jeton demandé, et un accord de
+/// 64 chiffres qui n'est pas tout à zéro ; sinon, rien.
+fn accord_montre(g: Geste, fin: &Fin) -> Option<Accord> {
+    let ligne = fin
+        .sortie
+        .split(|&o| o == b'\n')
+        .rev()
+        .find(|l| !l.trim_ascii().is_empty())?;
+    let a: ApercuVu = serde_json::from_slice(ligne).ok()?;
+    let accord = Accord::lire(&a.accord).filter(|a| *a != Accord::NUL)?;
+    (a.geste == g.sorte.mot() && a.issue == "fait" && Empreinte::lire(&a.apercu.jeton) == Some(g.jeton))
+        .then_some(accord)
 }
 
 /// Ce que le relais lit d'une liste du démarrage : les gestes de ses constats, rien d'autre (le reste est sauté sans
@@ -218,11 +354,14 @@ fn gestes_vus(texte: &[u8]) -> HashMap<Empreinte, (Sorte, Accord)> {
     vus
 }
 
-/// Ce que le relais lit d'un bilan : les gestes de ses constats, rien d'autre (comme `ListeVue`).
+/// Ce que le relais lit d'un bilan ou de « Ce que Vanguard a changé » : les gestes de ses constats ou de ses
+/// lignes, rien d'autre (comme `ListeVue`).
 #[derive(serde::Deserialize)]
 struct BilanVu {
     #[serde(default)]
     constats: crate::donnees::Liste<ConstatOffert>,
+    #[serde(default)]
+    changements: crate::donnees::Liste<ConstatOffert>,
 }
 
 /// Le geste d'un constat, lu avec la structure de la fenêtre (`commandes::GesteOffert`) : un geste qui porte un autre
@@ -233,20 +372,25 @@ struct ConstatOffert {
     geste: Option<GesteOffert>,
 }
 
-/// Les gestes d'une sortie d'`audit --json` : pour chaque constat, le jeton et la sorte lus dans le même objet
-/// `geste`, au fil de l'eau (un message ou un nom, des chaînes, ne fabriquent ni clé ni geste). Un jeton offert deux
-/// fois n'est pas retenu (aucun constat n'est choisi : Vanguard le refuserait aussi) ; un geste incomplet ou d'une
+/// Les gestes d'une sortie d'`audit --json` (les `constats`) ou de `changements --json` (les `changements`), selon la
+/// famille : pour chaque constat ou ligne, le jeton et la sorte lus dans le même objet `geste`, au fil de l'eau (un
+/// message ou un nom, des chaînes, ne fabriquent ni clé ni geste). Seul un « voir » de cette famille compte. Un jeton
+/// offert deux fois n'est pas retenu (aucun n'est choisi : Vanguard le refuserait aussi) ; un geste incomplet ou d'une
 /// sorte inconnue non plus ; une sortie qui n'est pas du JSON : rien. Borné à `EMPREINTES_MAX`.
-fn gestes_offerts(texte: &[u8]) -> HashSet<(Empreinte, SorteGeste)> {
-    let Ok(bilan) = serde_json::from_slice::<BilanVu>(texte) else {
+fn gestes_offerts(texte: &[u8], famille: Famille) -> HashSet<(Empreinte, SorteGeste)> {
+    let Ok(lu) = serde_json::from_slice::<BilanVu>(texte) else {
         return HashSet::new();
     };
+    let elements = match famille {
+        Famille::Correction => lu.constats.elements,
+        Famille::Annulation => lu.changements.elements,
+    };
     let (mut lus, mut jetons, mut doubles) = (Vec::new(), HashSet::new(), HashSet::new());
-    for g in bilan.constats.elements.into_iter().filter_map(|c| c.geste) {
+    for g in elements.into_iter().filter_map(|c| c.geste) {
         if jetons.len() >= EMPREINTES_MAX {
             break;
         }
-        let Some((jeton, sorte)) = g.lire() else {
+        let Some((jeton, sorte)) = g.lire().filter(|(_, s)| s.famille() == famille) else {
             continue;
         };
         if jetons.insert(jeton) {
@@ -398,18 +542,7 @@ fn servir(flux: UnixStream, trouver: impl Fn() -> Result<Programme, String> + Se
                         // demander un changement de cette liste.
                         {
                             let mut e = verrou(&etat2);
-                            if fin.lancement == Lancement::Commande(Commande::Demarrage) && fin.issue == Issue::Terminee
-                            {
-                                e.vues = gestes_vus(&fin.sortie);
-                            }
-                            // Chaque bilan fini remplace les gestes offerts : seul celui qui a réussi en offre.
-                            if fin.lancement == Lancement::Commande(Commande::Bilan) {
-                                e.offerts = if fin.issue == Issue::Terminee && fin.code == Some(0) {
-                                    gestes_offerts(&fin.sortie)
-                                } else {
-                                    HashSet::new()
-                                };
-                            }
+                            e.retenir(&fin);
                             e.taches.remove(&id);
                         }
                         envoyer2(&coder_fin(id, &fin));
@@ -849,15 +982,21 @@ mod tests {
     }
 
     /// Un faux `vanguard` : la liste lue dans liste.json, le bilan dans bilan.json s'il existe ; un changement noté
-    /// dans « changements », qui attend le fichier « va » (20 s au plus) puis note « fini » ; un aperçu de correction
-    /// noté dans « gestes » ; toute autre commande attend « va-lecture ».
+    /// dans « changements », qui attend le fichier « va » (20 s au plus) puis note « fini » ; un geste sur un constat
+    /// (aperçu, application, annulation) noté dans « gestes », l'aperçu lu dans apercu.json ou annulation.json, la
+    /// liste de « Ce que Vanguard a changé » dans changements.json ; toute autre commande attend « va-lecture ».
     const FAUX_VANGUARD: &str = r#"#!/bin/sh
 d=$(dirname "$0")
 attendre() { i=0; while [ ! -e "$d/$1" ] && [ $i -lt 400 ]; do sleep 0.05; i=$((i+1)); done; }
 case "$1 $2" in
 "demarrage --json") cat "$d/liste.json" ;;
 "audit --json") if [ -e "$d/bilan.json" ]; then cat "$d/bilan.json"; else attendre va-lecture; echo '{}'; fi ;;
-"correction --voir") echo "$@" >> "$d/gestes"; echo '{"geste": "voir-correction", "issue": "fait", "raison": ""}' ;;
+"correction --voir") echo "$@" >> "$d/gestes"
+  if [ -e "$d/apercu.json" ]; then cat "$d/apercu.json"; else echo '{"geste": "voir-correction", "issue": "fait", "raison": ""}'; fi ;;
+"correction --appliquer") echo "$@" >> "$d/gestes"; echo '{"geste":"appliquer-correction","issue":"fait","raison":"","relu":"corrige"}' ;;
+"changements --json") cat "$d/changements.json" ;;
+"changements --voir") echo "$@" >> "$d/gestes"; cat "$d/annulation.json" ;;
+"changements --annuler") echo "$@" >> "$d/gestes"; echo '{"geste":"annuler-correction","issue":"fait","raison":"","relu":"revenu"}' ;;
 "demarrage --retirer"|"demarrage --remettre") echo "$@" >> "$d/changements"; attendre va; echo fini >> "$d/changements"
   echo "{\"geste\": \"${2#--}\", \"issue\": \"fait\", \"raison\": \"\"}" ;;
 *) attendre va-lecture; echo '{}' ;;
@@ -1150,7 +1289,7 @@ esac
             .into_iter()
             .filter_map(|j| Some((Empreinte::lire(j)?, SorteGeste::VoirCorrection)))
             .collect();
-        assert_eq!(gestes_offerts(bilan.as_bytes()), attendus);
+        assert_eq!(gestes_offerts(bilan.as_bytes(), Famille::Correction), attendus);
         for rien in [
             &b""[..],
             b"\"jeton\"",
@@ -1158,7 +1297,7 @@ esac
             b"[1, 2]",
             b"une ligne\n{\"constats\": []}",
         ] {
-            assert!(gestes_offerts(rien).is_empty());
+            assert!(gestes_offerts(rien, Famille::Correction).is_empty());
         }
         let mut beaucoup = String::from(r#"{"constats": ["#);
         for i in 0..EMPREINTES_MAX + 10 {
@@ -1168,7 +1307,10 @@ esac
             );
         }
         beaucoup.push_str("{}]}");
-        assert_eq!(gestes_offerts(beaucoup.as_bytes()).len(), EMPREINTES_MAX);
+        assert_eq!(
+            gestes_offerts(beaucoup.as_bytes(), Famille::Correction).len(),
+            EMPREINTES_MAX
+        );
     }
 
     /// Vérification n° 2 de Fable, P3 : la fenêtre et le relais lisent le geste d'un constat avec la même structure.
@@ -1191,7 +1333,10 @@ esac
                 .into_iter()
                 .filter_map(|c| c.correction)
                 .collect();
-            let relais: Vec<Empreinte> = gestes_offerts(texte.as_bytes()).into_iter().map(|(e, _)| e).collect();
+            let relais: Vec<Empreinte> = gestes_offerts(texte.as_bytes(), Famille::Correction)
+                .into_iter()
+                .map(|(e, _)| e)
+                .collect();
             (fenetre, relais)
         };
         let bon = Empreinte::lire(j).unwrap();
@@ -1283,6 +1428,226 @@ esac
         assert_eq!(lances, format!("correction --voir {j1} --json\n"));
         assert!(matches!(&apres.issue, Issue::Impossible(_)), "{:?}", apres.issue);
         assert_eq!(lances_apres, lances);
+    }
+
+    /// Un geste qui change n'est admis qu'avec le jeton et l'accord exacts du dernier aperçu relayé de sa famille,
+    /// 2 s au moins et 10 minutes au plus après sa fin, sans autre commande en cours ; admis, il consomme l'aperçu et
+    /// la liste de sa famille (un second envoi est refusé) ; un refus ne consomme rien ; l'aperçu de l'autre famille
+    /// ne compte pas.
+    #[test]
+    fn un_geste_qui_change_ne_part_qu_apres_son_apercu() {
+        let j = Empreinte::lire("0123456789abcdef0123456789abcdef").unwrap();
+        let autre = Empreinte::lire(&"f".repeat(32)).unwrap();
+        let a = Accord::lire(&"a1".repeat(32)).unwrap();
+        let b = Accord::lire(&"b2".repeat(32)).unwrap();
+        let arret = Arc::new(AtomicBool::new(false));
+        let appliquer = |j, a| Lancement::Geste(Geste::changer(Famille::Correction, j, a));
+        let annuler = |j, a| Lancement::Geste(Geste::changer(Famille::Annulation, j, a));
+        let il_y_a = |d: Duration| Instant::now().checked_sub(d).unwrap();
+        let mut etat = Etat {
+            offerts: [(j, SorteGeste::VoirCorrection), (autre, SorteGeste::VoirAnnulation)].into(),
+            ..Etat::default()
+        };
+
+        assert!(etat.admettre(1, appliquer(j, a), &arret).is_some(), "sans aperçu");
+        etat.montres.insert(Famille::Correction, (j, a, Instant::now()));
+        let r = etat.admettre(2, appliquer(j, a), &arret);
+        assert!(r.is_some_and(|r| r.contains("2 s")), "trop tôt : {r:?}");
+        etat.montres.insert(
+            Famille::Correction,
+            (j, a, il_y_a(APERCU_LU + Duration::from_millis(50))),
+        );
+        assert!(etat.admettre(3, appliquer(autre, a), &arret).is_some(), "autre jeton");
+        assert!(etat.admettre(4, appliquer(j, b), &arret).is_some(), "autre accord");
+        assert!(
+            etat.admettre(5, appliquer(j, Accord::NUL), &arret).is_some(),
+            "accord nul"
+        );
+        assert!(
+            etat.admettre(6, annuler(j, a), &arret).is_some(),
+            "aperçu de l'autre famille"
+        );
+        // Une lecture en cours : un changement attend qu'elle finisse.
+        etat.taches.insert(
+            99,
+            EnCours {
+                arret: Arc::clone(&arret),
+                changement: false,
+            },
+        );
+        assert!(
+            etat.admettre(7, appliquer(j, a), &arret).is_some(),
+            "pendant une lecture"
+        );
+        etat.taches.clear();
+        // Aucun refus n'a rien consommé.
+        assert!(etat.montres.contains_key(&Famille::Correction));
+        assert_eq!(etat.offerts.len(), 2);
+        assert_eq!(etat.admettre(8, appliquer(j, a), &arret), None);
+        assert!(etat.taches[&8].changement);
+        assert!(!etat.montres.contains_key(&Famille::Correction));
+        assert_eq!(etat.offerts, [(autre, SorteGeste::VoirAnnulation)].into());
+        etat.taches.clear();
+        assert!(
+            etat.admettre(9, appliquer(j, a), &arret).is_some(),
+            "consommé : une fois"
+        );
+
+        // Trop vieux.
+        etat.montres.insert(
+            Famille::Annulation,
+            (autre, a, il_y_a(APERCU_VIEUX + Duration::from_secs(1))),
+        );
+        let r = etat.admettre(10, annuler(autre, a), &arret);
+        assert!(r.is_some_and(|r| r.contains("10 minutes")), "{r:?}");
+        etat.montres.insert(Famille::Annulation, (autre, a, il_y_a(APERCU_LU)));
+        assert_eq!(etat.admettre(11, annuler(autre, a), &arret), None);
+        assert!(etat.offerts.is_empty() && etat.montres.is_empty());
+    }
+
+    /// L'accord retenu d'un aperçu : sa dernière ligne dit ce geste, « fait », le jeton demandé et un accord non nul ;
+    /// et seulement d'un aperçu fini avec le code 0. Un autre aperçu de la famille le remplace, un aperçu qui ne
+    /// montre rien le retire.
+    #[test]
+    fn seul_l_accord_d_un_apercu_montre_est_retenu() {
+        let j = Empreinte::lire("0123456789abcdef0123456789abcdef").unwrap();
+        let hex = j.hex();
+        let acc = "a1".repeat(32);
+        let g = Geste::voir(Famille::Correction, j);
+        let fin = |code: i32, sortie: String| Fin {
+            lancement: Lancement::Geste(g),
+            code: Some(code),
+            issue: Issue::Terminee,
+            duree: Duration::ZERO,
+            sortie: sortie.into_bytes(),
+        };
+        let ligne = |geste: &str, issue: &str, jeton: &str, accord: &str| {
+            format!(
+                r#"{{"geste":"{geste}","issue":"{issue}","raison":"","accord":"{accord}","apercu":{{"jeton":"{jeton}","x":1}}}}"#
+            )
+        };
+        let bonne = ligne("voir-correction", "fait", &hex, &acc);
+        assert_eq!(
+            accord_montre(g, &fin(0, format!("avertissement\n{bonne}\n\n"))),
+            Accord::lire(&acc)
+        );
+        for faux in [
+            ligne("voir-annulation", "fait", &hex, &acc),
+            ligne("voir-correction", "refuse", &hex, &acc),
+            ligne("voir-correction", "fait", &"f".repeat(32), &acc),
+            ligne("voir-correction", "fait", &hex, &"0".repeat(64)),
+            ligne("voir-correction", "fait", &hex, "a1"),
+            format!("{bonne}\n{{}}"),
+            String::new(),
+        ] {
+            assert_eq!(accord_montre(g, &fin(0, faux.clone())), None, "{faux}");
+        }
+        let mut etat = Etat::default();
+        etat.retenir(&fin(0, bonne.clone()));
+        assert_eq!(
+            etat.montres.get(&Famille::Correction).map(|m| (m.0, m.1)),
+            Some((j, Accord::lire(&acc).unwrap()))
+        );
+        // Le code contredit « fait » : rien n'est retenu, l'aperçu d'avant est retiré.
+        etat.retenir(&fin(1, bonne));
+        assert!(etat.montres.is_empty());
+    }
+
+    /// Pour de vrai, avec le faux `vanguard` : après le bilan et l'aperçu, « appliquer » envoyé trop tôt, ou avec un
+    /// autre accord, est refusé sans rien lancer ; 2 s après, avec l'accord de l'aperçu, il part une fois avec la
+    /// forme fixe `correction --appliquer <jeton> --accord <accord> --json` ; renvoyé, il est refusé. De même pour
+    /// remettre comme avant, depuis la liste de « Ce que Vanguard a changé ».
+    #[test]
+    fn le_relais_ne_laisse_partir_que_l_accord_montre_apres_deux_secondes() {
+        let j = "0123456789abcdef0123456789abcdef";
+        let k = "00112233445566778899aabbccddeeff";
+        let (acc, autre) = ("a1".repeat(32), "b2".repeat(32));
+        let (d, c, serveur) = banc_du_relais("relais-appliquer", "{}");
+        let ecrire = |n: &str, t: &str| std::fs::write(d.join(n), t).unwrap();
+        ecrire(
+            "bilan.json",
+            &format!(r#"{{"constats": [{{"geste": {{"sorte": "voir-correction", "jeton": "{j}"}}}}]}}"#),
+        );
+        ecrire(
+            "apercu.json",
+            &format!(
+                r#"{{"geste":"voir-correction","issue":"fait","raison":"","accord":"{acc}","apercu":{{"jeton":"{j}"}}}}"#
+            ),
+        );
+        ecrire(
+            "changements.json",
+            &format!(
+                r#"{{"schema":1,"changements":[{{"etat":"annulable","geste":{{"sorte":"voir-annulation","jeton":"{k}"}}}}]}}"#
+            ),
+        );
+        ecrire(
+            "annulation.json",
+            &format!(
+                r#"{{"geste":"voir-annulation","issue":"fait","raison":"","accord":"{acc}","apercu":{{"jeton":"{k}"}}}}"#
+            ),
+        );
+        let rien: Reveil = Arc::new(|| {});
+        let gestes = || std::fs::read_to_string(d.join("gestes")).unwrap_or_default();
+        let (ej, ek) = (Empreinte::lire(j).unwrap(), Empreinte::lire(k).unwrap());
+        let lancer = |l: Lancement| attendre_fin(&c.lancer(l, false, &rien));
+        let geste = |f, e, a: &str| Lancement::Geste(Geste::changer(f, e, Accord::lire(a).unwrap()));
+        let voir = |f, e| Lancement::Geste(Geste::voir(f, e));
+
+        assert_eq!(lancer(Commande::Bilan.into()).code, Some(0));
+        assert_eq!(lancer(voir(Famille::Correction, ej)).code, Some(0));
+        let trop_tot = lancer(geste(Famille::Correction, ej, &acc));
+        std::thread::sleep(APERCU_LU + Duration::from_millis(100));
+        let faux = lancer(geste(Famille::Correction, ej, &autre));
+        let bon = lancer(geste(Famille::Correction, ej, &acc));
+        let encore = lancer(geste(Famille::Correction, ej, &acc));
+        let apres_correction = gestes();
+
+        assert_eq!(lancer(Commande::Changements.into()).code, Some(0));
+        assert_eq!(lancer(voir(Famille::Annulation, ek)).code, Some(0));
+        let trop_tot_annuler = lancer(geste(Famille::Annulation, ek, &acc));
+        std::thread::sleep(APERCU_LU + Duration::from_millis(100));
+        let annule = lancer(geste(Famille::Annulation, ek, &acc));
+        let revoir = lancer(voir(Famille::Annulation, ek));
+        let tout = gestes();
+        c.fermer();
+        serveur.join().unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+
+        assert!(
+            matches!(&trop_tot.issue, Issue::Impossible(r) if r.contains("2 s")),
+            "{:?}",
+            trop_tot.issue
+        );
+        assert!(
+            matches!(&faux.issue, Issue::Impossible(r) if r.contains("accord")),
+            "{:?}",
+            faux.issue
+        );
+        assert_eq!((&bon.issue, bon.code), (&Issue::Terminee, Some(0)), "{:?}", bon.issue);
+        assert!(matches!(&encore.issue, Issue::Impossible(_)), "{:?}", encore.issue);
+        assert_eq!(
+            apres_correction,
+            format!("correction --voir {j} --json\ncorrection --appliquer {j} --accord {acc} --json\n")
+        );
+        assert!(
+            matches!(&trop_tot_annuler.issue, Issue::Impossible(r) if r.contains("2 s")),
+            "{:?}",
+            trop_tot_annuler.issue
+        );
+        assert_eq!(
+            (&annule.issue, annule.code),
+            (&Issue::Terminee, Some(0)),
+            "{:?}",
+            annule.issue
+        );
+        // Remise : la liste de sa famille est consommée, un nouvel aperçu demande une liste relue.
+        assert!(matches!(&revoir.issue, Issue::Impossible(_)), "{:?}", revoir.issue);
+        assert_eq!(
+            tout,
+            format!(
+                "{apres_correction}changements --voir {k} --json\nchangements --annuler {k} --accord {acc} --json\n"
+            )
+        );
     }
 
     fn attendre_fin(t: &Tache) -> Fin {

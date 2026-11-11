@@ -755,7 +755,7 @@ fn dessiner_bloc(
                 crate::trf!("étape {} sur {} · {}", "step {} of {} · {}", e.fait, e.total, e.libelle)
             } else {
                 // Sans étape lue : un trait qui va et vient (la commande ne dit pas où elle en est). Animations
-                // réduites : la barre entière, pâle et immobile ; « lecture en cours… » le dit à côté.
+                // réduites : la barre entière, pâle et immobile ; « lecture en cours… » (ou « changement en cours… ») le dit à côté.
                 if super::mouvement::reduit() {
                     peintre.rect_filled(barre, 2, p.accent.gamma_multiply(0.45));
                 } else {
@@ -764,7 +764,11 @@ fn dessiner_bloc(
                     let seg = Rect::from_min_size(pos2(barre.left() + 120.0 * aller, barre.top()), vec2(40.0, 4.0));
                     peintre.rect_filled(seg, 2, p.accent.gamma_multiply(0.8));
                 }
-                crate::tr!("lecture en cours…", "reading…").to_owned()
+                if b.lancement.change() {
+                    crate::tr!("changement en cours…", "change in progress…").to_owned()
+                } else {
+                    crate::tr!("lecture en cours…", "reading…").to_owned()
+                }
             };
             let g = coupee(ui, &mot, police(12.0), p.doux, largeur_texte - 176.0);
             peintre.galley(pos2(barre.right() + 16.0, milieu - g.size().y / 2.0), g, p.doux);

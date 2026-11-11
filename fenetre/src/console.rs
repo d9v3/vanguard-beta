@@ -629,7 +629,7 @@ pub fn points(contenu: &Contenu) -> Vec<Point> {
                 Point::nouveau(Marque::Appareil, None, &a.ip, &format!("{} — {quoi}", a.titre))
             })
             .collect(),
-        Contenu::Libre(_) | Contenu::Erreur(_) => Vec::new(),
+        Contenu::Changements(_) | Contenu::Libre(_) | Contenu::Erreur(_) => Vec::new(),
     }
 }
 

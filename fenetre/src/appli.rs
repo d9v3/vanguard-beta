@@ -23,12 +23,13 @@ use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 use crate::commandes::{
-    self, Changement, ChangementCouleurs, Commande, Empreinte, Forme, Geste, Lancement, Rubrique, Saisie, Sorte,
-    SorteGeste,
+    self, APERCU_LU, Accord, Changement, ChangementCouleurs, Commande, Empreinte, Famille, Forme, Geste, Lancement,
+    Rubrique, Saisie, Sorte,
 };
 use crate::console::{self, Console};
 use crate::couleurs::{Choix, Jeu, Theme};
 use crate::coulisses::{Chemin, Coulisses};
+use crate::donnees::changements::{self, IssueChange, Relu};
 use crate::donnees::couleurs::{IssueAnimations, IssueCouleurs, Lues};
 use crate::donnees::{appareils, bilan, correction, evenements, libre, protection};
 use crate::lanceur::{Fin, Issue, Message, Programme, Reveil, Tache};
@@ -85,6 +86,8 @@ pub enum Contenu {
     Protection(protection::Vue),
     Evenements(evenements::Vue),
     Appareils(appareils::Vue),
+    /// « Ce que Vanguard a changé » (`changements --json`).
+    Changements(changements::Vue),
     Libre(libre::Vue),
     /// La commande n'a rien rendu de lisible : pourquoi, en une phrase.
     Erreur(String),
@@ -106,25 +109,82 @@ enum Proposition {
     Demarrage(bilan::Geste),
     /// Les couleurs d'un thème : le changement, et la valeur montrée comme « avant ».
     Couleurs(ChangementCouleurs, Option<Choix>),
-    /// L'aperçu d'une correction, en lecture seule (rien à accepter dans ce lot).
+    /// L'aperçu d'une correction ou d'une annulation, puis son geste et son issue.
     Correction(FeuilleCorrection),
 }
 
-/// La feuille « Voir la correction » : le jeton du constat, et où en est l'aperçu.
+/// La feuille « Voir la correction » (famille `Correction`) ou « Remettre comme avant » (famille `Annulation`) : le
+/// jeton, où en est l'aperçu, puis le geste.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FeuilleCorrection {
+    pub famille: Famille,
     pub jeton: Empreinte,
     pub etat: EtatFeuille,
+    /// L'instant où l'aperçu lu s'est montré : le bouton qui change ne s'active que `APERCU_LU` après (Q7).
+    pub montre: Option<Instant>,
+    /// Une phrase de la fenêtre en tête de la feuille : le refus du geste d'avant, ou « ça a changé pendant que vous
+    /// lisiez ».
+    pub avis: Option<String>,
+    /// L'accord du geste refusé : un nouvel aperçu à l'accord différent dit que ça a changé pendant la lecture.
+    envoye: Option<Accord>,
 }
 
-/// Où en est l'aperçu d'une feuille.
+impl FeuilleCorrection {
+    fn nouvelle(famille: Famille, jeton: Empreinte) -> FeuilleCorrection {
+        FeuilleCorrection {
+            famille,
+            jeton,
+            etat: EtatFeuille::Attente { lance: false },
+            montre: None,
+            avis: None,
+            envoye: None,
+        }
+    }
+
+    /// Une feuille de correction dans cet état, pour les essais du dessin (montrée à l'instant).
+    #[cfg(test)]
+    pub fn essai(famille: Famille, jeton: Empreinte, etat: EtatFeuille) -> FeuilleCorrection {
+        FeuilleCorrection {
+            etat,
+            montre: Some(Instant::now()),
+            ..FeuilleCorrection::nouvelle(famille, jeton)
+        }
+    }
+
+    /// L'accord de l'aperçu montré, s'il s'accepte maintenant (`peut_accepter`).
+    fn acceptable(&self, maintenant: Instant) -> Option<Accord> {
+        peut_accepter(&self.etat, self.montre, maintenant)
+    }
+}
+
+/// L'accord à rendre, si l'aperçu montré s'accepte depuis la fenêtre maintenant : un aperçu lu (ni refusé, ni
+/// illisible, ni contradictoire), que rien n'empêche d'appliquer d'ici (`pas_d_ici` : droits du compte, annulable,
+/// automatique, ni retouché ni coupé, assez court), montré depuis `APERCU_LU` au moins. La feuille ajoute un seul
+/// empêchement à ceux-ci, qu'elle seule voit : un texte plus large qu'elle (`dessin::bilan::correction`). Rien
+/// d'autre que cet accord, tel que Vanguard l'a donné, ne part avec le jeton.
+pub fn peut_accepter(etat: &EtatFeuille, montre: Option<Instant>, maintenant: Instant) -> Option<Accord> {
+    let lu = montre.is_some_and(|m| maintenant.saturating_duration_since(m) >= APERCU_LU);
+    match etat {
+        EtatFeuille::Lue(correction::Lecture::Lue(a)) if lu && a.pas_d_ici().is_none() => Some(a.accord),
+        EtatFeuille::Annulation(correction::Lecture::Lue(a)) if lu && a.pas_d_ici().is_none() => Some(a.accord),
+        _ => None,
+    }
+}
+
+/// Où en est une feuille.
 #[derive(Clone, Debug, PartialEq)]
 pub enum EtatFeuille {
-    /// Demandé à `vanguard` (`lance`), ou en attente que la commande en cours finisse.
+    /// L'aperçu demandé à `vanguard` (`lance`), ou en attente que la commande en cours finisse.
     Attente { lance: bool },
-    /// La réponse de `vanguard`, lue strictement (`donnees::correction`).
+    /// L'aperçu d'une correction, lu strictement (`donnees::correction`).
     Lue(correction::Lecture),
-    /// Pas de réponse : arrêté, trop long, pas pu lancer.
+    /// L'aperçu d'une annulation, lu strictement (`donnees::changements`).
+    Annulation(correction::Lecture<changements::Annulation>),
+    /// Le geste accepté est parti : il ne s'interrompt pas, la feuille attend son issue.
+    Envoi,
+    /// L'issue du geste : fait, en échec, ou inconnue (jamais un refus : la feuille montre alors un nouvel aperçu).
+    Recu(IssueChange),
+    /// Pas d'aperçu : arrêté, trop long, pas pu lancer.
     Echec(String),
 }
 
@@ -287,7 +347,28 @@ impl Appli {
     #[cfg(test)]
     pub fn poser_apercu(&mut self, sortie: &[u8]) {
         if let Some(Proposition::Correction(f)) = &mut self.confirmation {
-            f.etat = EtatFeuille::Lue(correction::lire(f.jeton, Some(0), sortie));
+            f.etat = match f.famille {
+                Famille::Correction => EtatFeuille::Lue(correction::lire(f.jeton, Some(0), sortie)),
+                Famille::Annulation => EtatFeuille::Annulation(changements::lire_apercu(f.jeton, Some(0), sortie)),
+            };
+            f.montre = Some(Instant::now());
+        }
+    }
+
+    /// Pour les captures : la feuille ouverte rendue comme après son geste (données inventées).
+    #[cfg(test)]
+    pub fn poser_issue(&mut self, issue: IssueChange, avis: Option<String>) {
+        if let Some(Proposition::Correction(f)) = &mut self.confirmation {
+            f.etat = EtatFeuille::Recu(issue);
+            f.avis = avis;
+        }
+    }
+
+    /// Pour les captures et les essais : l'aperçu montré depuis plus de `APERCU_LU`.
+    #[cfg(test)]
+    pub fn vieillir_apercu(&mut self) {
+        if let Some(Proposition::Correction(f)) = &mut self.confirmation {
+            f.montre = f.montre.and_then(|m| m.checked_sub(APERCU_LU));
         }
     }
 
@@ -456,6 +537,55 @@ impl Appli {
             .is_some_and(|v| v.constats.iter().any(|c| c.correction == Some(jeton)))
     }
 
+    /// La dernière liste de « Ce que Vanguard a changé » lue, si elle s'est lue.
+    pub fn changements(&self) -> Option<&changements::Vue> {
+        match self.resultats.get(&Commande::Changements).map(|r| &r.contenu) {
+            Some(Contenu::Changements(v)) => Some(v),
+            _ => None,
+        }
+    }
+
+    /// La dernière liste de « Ce que Vanguard a changé » offre-t-elle de remettre ce jeton ?
+    pub fn dans_les_changements(&self, jeton: Empreinte) -> bool {
+        self.changements().is_some_and(|v| v.offre(jeton))
+    }
+
+    /// « Remettre comme avant » (une ligne de « Ce que Vanguard a changé », ou « Annuler cette correction » après
+    /// une correction faite) : ouvre la feuille de l'annulation et demande son aperçu dès que rien ne tourne.
+    /// Seulement pour un jeton de la dernière liste lue ; une feuille ouverte n'est remplacée que si son geste est
+    /// fini (`Recu`) : rien ne change sur l'ordinateur ici.
+    pub fn voir_annulation(&mut self, jeton: Empreinte) {
+        if self.programme.is_err() {
+            return;
+        }
+        let fini = matches!(
+            &self.confirmation,
+            Some(Proposition::Correction(f)) if matches!(f.etat, EtatFeuille::Recu(_))
+        );
+        if self.confirmation.is_some() && !fini {
+            self.pas_maintenant();
+            return;
+        }
+        if !self.dans_les_changements(jeton) {
+            self.dire(
+                "changements",
+                crate::tr!(
+                    "Ce changement n'est plus offert dans la dernière liste : relisez « Ce que Vanguard a changé ».",
+                    "This change is no longer offered in the last list: read “What Vanguard changed” again."
+                ),
+                Ton::Attention,
+            );
+            return;
+        }
+        self.confirmation = Some(Proposition::Correction(FeuilleCorrection::nouvelle(
+            Famille::Annulation,
+            jeton,
+        )));
+        if self.tache.is_none() && self.file.is_empty() {
+            self.lancer_correction();
+        }
+    }
+
     /// « Voir la correction » : ouvre la feuille et demande l'aperçu dès que rien ne tourne. Seulement pour un
     /// constat du dernier bilan, et sans autre confirmation ouverte ; rien ne change sur l'ordinateur.
     pub fn voir_correction(&mut self, jeton: Empreinte) {
@@ -477,10 +607,10 @@ impl Appli {
             );
             return;
         }
-        self.confirmation = Some(Proposition::Correction(FeuilleCorrection {
+        self.confirmation = Some(Proposition::Correction(FeuilleCorrection::nouvelle(
+            Famille::Correction,
             jeton,
-            etat: EtatFeuille::Attente { lance: false },
-        }));
+        )));
         if self.tache.is_none() && self.file.is_empty() {
             self.lancer_correction();
         }
@@ -495,8 +625,9 @@ impl Appli {
             return false;
         }
         f.etat = EtatFeuille::Attente { lance: true };
-        let jeton = f.jeton;
-        self.lancer(Lancement::Geste(Geste::voir_correction(jeton)));
+        f.montre = None;
+        let g = Geste::voir(f.famille, f.jeton);
+        self.lancer(Lancement::Geste(g));
         true
     }
 
@@ -661,29 +792,51 @@ impl Appli {
         match self.confirmation.take() {
             Some(Proposition::Demarrage(g)) => self.lancer(Lancement::Changement(g.changement)),
             Some(Proposition::Couleurs(cc, _)) => self.lancer(Lancement::Couleurs(cc)),
-            // Rien à accepter dans un aperçu : la feuille reste ouverte, rien n'est lancé.
-            Some(p @ Proposition::Correction(_)) => self.confirmation = Some(p),
+            // Un aperçu qui ne s'accepte pas (pas encore lu 2 s, pas d'ici, déjà envoyé) : la feuille reste ouverte,
+            // rien n'est lancé. Sinon, seuls le jeton de la feuille et l'accord de l'aperçu partent ; la feuille
+            // passe à `Envoi`, un second clic n'a plus rien à accepter.
+            Some(Proposition::Correction(mut f)) => {
+                let accord = f.acceptable(Instant::now());
+                if let Some(accord) = accord {
+                    f.etat = EtatFeuille::Envoi;
+                    f.avis = None;
+                    f.envoye = Some(accord);
+                }
+                let g = Geste::changer(f.famille, f.jeton, accord.unwrap_or(Accord::NUL));
+                self.confirmation = Some(Proposition::Correction(f));
+                if accord.is_some() {
+                    self.lancer(Lancement::Geste(g));
+                }
+            }
             None => {}
         }
     }
 
-    /// « Annuler » : ferme la confirmation, rien n'est lancé.
+    /// « Annuler » (ou « Fermer ») : ferme la confirmation, rien n'est lancé. Une feuille dont le geste est parti
+    /// se ferme aussi, mais le geste ne s'arrête pas (`arreter` ne coupe pas un changement) : son issue sera dite dans
+    /// la console, jamais « rien n'a changé ».
     pub fn annuler(&mut self) {
         let fermee = self.confirmation.take();
         // Un aperçu encore en lecture n'a plus personne pour le lire : il s'arrête (il ne change rien).
         if let Some(Proposition::Correction(f)) = &fermee
             && let Some(t) = &self.tache
-            && t.lancement == Lancement::Geste(Geste::voir_correction(f.jeton))
+            && t.lancement == Lancement::Geste(Geste::voir(f.famille, f.jeton))
             && !t.arret_demande()
         {
             t.arreter();
         }
-        if fermee.is_some() {
-            self.dire(
-                "fenêtre",
-                crate::tr!("Annulé : rien n'a changé.", "Cancelled: nothing changed."),
-                Ton::Discret,
-            );
+        let phrase = match &fermee {
+            None => None,
+            Some(Proposition::Correction(f)) if f.etat == EtatFeuille::Envoi => Some(crate::tr!(
+                "Feuille fermée : le geste accepté finit seul, son issue sera dite ici.",
+                "Sheet closed: the accepted action finishes on its own, its outcome will be told here."
+            )),
+            // Un geste fini a déjà dit son issue.
+            Some(Proposition::Correction(f)) if matches!(f.etat, EtatFeuille::Recu(_)) => None,
+            Some(_) => Some(crate::tr!("Annulé : rien n'a changé.", "Cancelled: nothing changed.")),
+        };
+        if let Some(phrase) = phrase {
+            self.dire("fenêtre", phrase, Ton::Discret);
         }
     }
 
@@ -806,6 +959,7 @@ impl Appli {
                 crate::trn!(v.alertes().count(), "alerte", "alertes", "alert", "alerts")
             ),
             Contenu::Appareils(v) => v.resume(),
+            Contenu::Changements(v) => v.resume(),
             Contenu::Libre(v) => crate::trn!(v.lignes.len(), "valeur", "valeurs", "value", "values"),
         };
         self.console.finir(
@@ -896,42 +1050,49 @@ impl Appli {
     }
 
     /// La fin d'un aperçu : une ligne de la console, et la feuille remplie si c'est bien la sienne (fermée entre-temps,
-    /// ou pour un autre constat : la réponse est laissée).
+    /// ou pour un autre jeton : la réponse est laissée). Un nouvel aperçu après un refus dont l'accord n'est plus
+    /// celui envoyé dit que ça a changé pendant la lecture.
     fn finir_geste(&mut self, g: Geste, f: &Fin) {
-        let etat = match (&f.issue, g.sorte) {
-            (Issue::Terminee, SorteGeste::VoirCorrection) => {
-                EtatFeuille::Lue(correction::lire(g.jeton, f.code, &f.sortie))
-            }
-            (Issue::Arretee, _) => EtatFeuille::Echec(crate::tr!("arrêté", "stopped").to_string()),
-            (Issue::DelaiDepasse, _) => EtatFeuille::Echec(crate::trf!(
+        if !g.sorte.voir() {
+            return self.finir_geste_qui_change(g, f);
+        }
+        let famille = g.sorte.famille();
+        let etat = match &f.issue {
+            Issue::Terminee => match famille {
+                Famille::Correction => EtatFeuille::Lue(correction::lire(g.jeton, f.code, &f.sortie)),
+                Famille::Annulation => EtatFeuille::Annulation(changements::lire_apercu(g.jeton, f.code, &f.sortie)),
+            },
+            Issue::Arretee => EtatFeuille::Echec(crate::tr!("arrêté", "stopped").to_string()),
+            Issue::DelaiDepasse => EtatFeuille::Echec(crate::trf!(
                 "arrêté : plus de {} s sans finir",
                 "stopped: more than {} s without finishing",
                 Lancement::Geste(g).delai().as_secs()
             )),
-            (Issue::TropLongue, _) => {
-                EtatFeuille::Echec(crate::tr!("réponse trop longue", "answer too long").to_string())
-            }
-            (Issue::Impossible(e), _) => {
-                EtatFeuille::Echec(crate::trf!("pas pu lancer : {}", "could not start: {}", e))
-            }
+            Issue::TropLongue => EtatFeuille::Echec(crate::tr!("réponse trop longue", "answer too long").to_string()),
+            Issue::Impossible(e) => EtatFeuille::Echec(crate::trf!("pas pu lancer : {}", "could not start: {}", e)),
         };
-        let (resume, ton, echec) = match &etat {
-            EtatFeuille::Lue(correction::Lecture::Lue(_)) => (
+        let (lue, accord, refus) = match &etat {
+            EtatFeuille::Lue(correction::Lecture::Lue(a)) => (true, Some(a.accord), None),
+            EtatFeuille::Annulation(correction::Lecture::Lue(a)) => (true, Some(a.accord), None),
+            EtatFeuille::Lue(correction::Lecture::Refusee(r))
+            | EtatFeuille::Annulation(correction::Lecture::Refusee(r)) => (false, None, Some((r.clone(), false))),
+            EtatFeuille::Lue(correction::Lecture::Illisible(r))
+            | EtatFeuille::Annulation(correction::Lecture::Illisible(r))
+            | EtatFeuille::Echec(r) => (false, None, Some((r.clone(), true))),
+            EtatFeuille::Attente { .. } | EtatFeuille::Envoi | EtatFeuille::Recu(_) => (false, None, None),
+        };
+        let (resume, ton, echec) = match (lue, refus) {
+            (true, _) => (
                 crate::tr!("Aperçu prêt : rien n'a changé.", "Preview ready: nothing changed.").to_string(),
                 Ton::Bon,
                 false,
             ),
-            EtatFeuille::Lue(correction::Lecture::Refusee(r)) => (
+            (false, Some((r, echec))) => (
                 crate::trf!("Pas d'aperçu : {}", "No preview: {}", r),
                 Ton::Attention,
-                false,
+                echec,
             ),
-            EtatFeuille::Lue(correction::Lecture::Illisible(r)) | EtatFeuille::Echec(r) => (
-                crate::trf!("Pas d'aperçu : {}", "No preview: {}", r),
-                Ton::Attention,
-                true,
-            ),
-            EtatFeuille::Attente { .. } => (String::new(), Ton::Discret, true),
+            (false, None) => (String::new(), Ton::Discret, true),
         };
         self.console.finir(
             f.lancement,
@@ -944,11 +1105,84 @@ impl Appli {
             },
         );
         if let Some(Proposition::Correction(feuille)) = &mut self.confirmation
+            && feuille.famille == famille
             && feuille.jeton == g.jeton
             && feuille.etat == (EtatFeuille::Attente { lance: true })
         {
             feuille.etat = etat;
+            feuille.montre = lue.then(Instant::now);
+            if let Some(envoye) = feuille.envoye.take()
+                && accord.is_some_and(|a| a != envoye)
+            {
+                feuille.avis = Some(
+                    crate::tr!(
+                        "Ça a changé pendant que vous lisiez. Rien n'a été fait.",
+                        "It changed while you were reading. Nothing was done."
+                    )
+                    .to_string(),
+                );
+            }
         }
+    }
+
+    /// La fin d'un geste qui change (appliquer une correction, la remettre comme avant) : une ligne de la console,
+    /// et la feuille qui l'a envoyé dit l'issue. Refusé (rien n'a été fait) : la feuille redemande l'aperçu, avec le
+    /// refus en tête. Fait, en échec ou inconnu : la feuille le dit, et le bilan et « Ce que Vanguard a changé » sont
+    /// relus (ils montrent l'état réel). Seul un refus de Vanguard dit « rien n'a été fait ».
+    fn finir_geste_qui_change(&mut self, g: Geste, f: &Fin) {
+        let famille = g.sorte.famille();
+        let issue = match &f.issue {
+            Issue::Terminee => changements::lire_issue(famille, f.code, &f.sortie),
+            Issue::Arretee => IssueChange::Illisible(crate::tr!("arrêté", "stopped").to_string()),
+            Issue::DelaiDepasse => IssueChange::Illisible(crate::trf!(
+                "plus de {} s sans finir",
+                "more than {} s without finishing",
+                Lancement::Geste(g).delai().as_secs()
+            )),
+            Issue::TropLongue => {
+                IssueChange::Illisible(crate::tr!("réponse trop longue", "answer too long").to_string())
+            }
+            Issue::Impossible(e) => IssueChange::Illisible(e.clone()),
+        };
+        let phrase = phrase_issue(&issue);
+        let ton = match &issue {
+            IssueChange::Fait { relu, .. } if relu.bon() => Ton::Bon,
+            _ => Ton::Attention,
+        };
+        self.console.finir(
+            f.lancement,
+            console::Fini {
+                resume: phrase.clone(),
+                ton,
+                points: Vec::new(),
+                duree: f.duree,
+                echec: !matches!(issue, IssueChange::Fait { .. }),
+            },
+        );
+        let sienne = matches!(
+            &self.confirmation,
+            Some(Proposition::Correction(feuille))
+                if feuille.famille == famille && feuille.jeton == g.jeton && feuille.etat == EtatFeuille::Envoi
+        );
+        if let IssueChange::Refuse(_) = issue {
+            // Rien n'a été fait : un nouvel aperçu, lu comme le premier (2 s avant d'accepter à nouveau).
+            if sienne && let Some(Proposition::Correction(feuille)) = &mut self.confirmation {
+                feuille.etat = EtatFeuille::Attente { lance: false };
+                feuille.avis = Some(phrase);
+                if self.file.is_empty() {
+                    self.lancer_correction();
+                }
+            }
+            return;
+        }
+        if sienne && let Some(Proposition::Correction(feuille)) = &mut self.confirmation {
+            feuille.etat = EtatFeuille::Recu(issue);
+            feuille.avis = None;
+            feuille.envoye = None;
+        }
+        // Ce qui a peut-être changé se relit : le bilan, et la liste qui offre (ou n'offre plus) de remettre.
+        self.demander(Commande::Changements);
+        self.demander(Commande::Bilan);
     }
 
     /// Les couleurs relues (`vanguard couleurs --json`) : elles valent pour la fenêtre dès l'image suivante. Une
@@ -1275,6 +1509,33 @@ fn issue_du_changement(ch: Changement, f: &Fin) -> IssueChangement {
     }
 }
 
+/// L'issue d'un geste qui change, en une phrase (la console et la feuille). Seul un refus dit « rien n'a été
+/// fait » : un échec a pu commencer, une issue inconnue a pu tout faire.
+pub fn phrase_issue(issue: &IssueChange) -> String {
+    match issue {
+        IssueChange::Fait { relu, .. } => {
+            let relu = match relu {
+                Relu::Corrige => crate::tr!("corrigé", "fixed"),
+                Relu::EncoreSignale => crate::tr!("encore signalé", "still reported"),
+                Relu::Revenu => crate::tr!("revenu comme avant", "back as before"),
+                Relu::PasRevenu => crate::tr!("pas revenu comme avant partout", "not back as before everywhere"),
+            };
+            crate::trf!("Fait. Vanguard a relu : {}", "Done. Vanguard read it again: {}", relu)
+        }
+        IssueChange::Refuse(r) => crate::trf!("Refusé, rien n'a été fait : {}", "Refused, nothing was done: {}", r),
+        IssueChange::Echec(r) => crate::trf!(
+            "Échec : {}. Ce qui a pu changer se voit dans « Ce que Vanguard a changé ».",
+            "Failed: {}. What may have changed shows in “What Vanguard changed”.",
+            r
+        ),
+        IssueChange::Illisible(r) => crate::trf!(
+            "Issue inconnue ({}) : Vanguard a peut-être changé quelque chose. Voyez « Ce que Vanguard a changé ».",
+            "Unknown outcome ({}): Vanguard may have changed something. See “What Vanguard changed”.",
+            r
+        ),
+    }
+}
+
 fn ch_delai(ch: Changement) -> u64 {
     Lancement::Changement(ch).delai().as_secs()
 }
@@ -1316,6 +1577,7 @@ fn lire(c: Commande, sortie: &[u8]) -> Result<Contenu, String> {
         Forme::Appareils => Contenu::Appareils(appareils::lire(sortie)?),
         Forme::Protection => Contenu::Protection(protection::lire(sortie)?),
         Forme::Evenements => Contenu::Evenements(evenements::lire(sortie)?),
+        Forme::Changements => Contenu::Changements(changements::lire(sortie)?),
         Forme::Libre => Contenu::Libre(libre::lire(sortie)?),
     })
 }
@@ -1361,16 +1623,18 @@ fn ton(contenu: &Contenu) -> Ton {
                 Ton::Bon
             }
         }
-        // Le relevé des corrections (`changements --json`) effacé, changé hors de Vanguard ou illisible : jamais lu
-        // comme un historique ordinaire. Seuls « intact » et « absent » (rien encore) restent neutres.
-        Contenu::Libre(v)
-            if v.lignes
-                .iter()
-                .any(|l| l.retrait == 0 && l.cle == "releve" && !matches!(l.valeur.as_str(), "intact" | "absent")) =>
+        // Le relevé des corrections (`changements --json`) effacé, changé hors de Vanguard ou illisible, une ligne
+        // interrompue, douteuse ou illisible : jamais lu comme un historique ordinaire. Sinon, neutre.
+        Contenu::Changements(v)
+            if !v.releve_sain()
+                || v.illisibles > 0
+                || v.lignes
+                    .iter()
+                    .any(|l| l.douteuse || l.etat == changements::Etat::Interrompue) =>
         {
             Ton::Attention
         }
-        Contenu::Libre(_) => Ton::Normal,
+        Contenu::Changements(_) | Contenu::Libre(_) => Ton::Normal,
     }
 }
 
@@ -1431,7 +1695,9 @@ mod tests {
 
         assert_eq!(ton(&Contenu::Libre(libre::Vue::default())), Ton::Normal);
         let releve = |etat: &str| {
-            Contenu::Libre(libre::lire(format!(r#"{{"schema":1,"releve":"{etat}","total":0}}"#).as_bytes()).unwrap())
+            Contenu::Changements(
+                changements::lire(format!(r#"{{"schema":1,"releve":"{etat}","total":0}}"#).as_bytes()).unwrap(),
+            )
         };
         assert_eq!(ton(&releve("intact")), Ton::Normal);
         assert_eq!(ton(&releve("absent")), Ton::Normal);
@@ -1763,6 +2029,254 @@ esac
         finir_tout(&mut a);
         assert!(a.feuille_correction().is_none());
         assert!(debut.elapsed() < Duration::from_secs(25));
+    }
+
+    /// Un faux `vanguard` pour les gestes qui changent : chaque appel noté dans `appels`, la réponse de chaque
+    /// commande lue dans `r-<commande><option>`, son code dans `c-<commande><option>` (0 sinon).
+    #[cfg(unix)]
+    const FAUX_GESTES: &str = r#"#!/bin/sh
+echo "$@" >> appels
+cle="$1$2"
+[ "$1" = changements ] && [ "$2" = --json ] && cle=changements
+[ -f "r-$cle" ] || exit 7
+cat "r-$cle"
+[ -f "c-$cle" ] && exit "$(cat "c-$cle")"
+exit 0
+"#;
+
+    /// Le bouton qui change ne s'accepte qu'un aperçu lu, d'ici, montré depuis 2 s au moins (Q7) ; jamais avant,
+    /// jamais un refus, une lecture illisible, une feuille en attente, envoyée ou reçue.
+    #[test]
+    fn rien_ne_s_accepte_avant_deux_secondes() {
+        let jeton = Empreinte::lire(&"b8".repeat(16)).unwrap();
+        let ligne = include_str!("../essais/apercus-noms-guillemets.jsonl")
+            .lines()
+            .next()
+            .unwrap();
+        let vrai = serde_json::from_str::<serde_json::Value>(ligne).unwrap();
+        let ligne = ligne.replace(vrai["apercu"]["jeton"].as_str().unwrap(), &jeton.hex());
+        let lue = EtatFeuille::Lue(correction::lire(jeton, Some(0), ligne.as_bytes()));
+        let accord = Accord::lire(vrai["accord"].as_str().unwrap()).unwrap();
+        let t0 = Instant::now();
+        assert_eq!(peut_accepter(&lue, Some(t0), t0), None);
+        assert_eq!(
+            peut_accepter(&lue, Some(t0), t0 + APERCU_LU.saturating_sub(Duration::from_millis(1))),
+            None
+        );
+        assert_eq!(peut_accepter(&lue, Some(t0), t0 + APERCU_LU), Some(accord));
+        // Jamais montré (encore en lecture) : jamais acceptable, même tard.
+        assert_eq!(peut_accepter(&lue, None, t0 + Duration::from_secs(60)), None);
+        // Une horloge qui recule ne compte pas comme du temps lu.
+        assert_eq!(peut_accepter(&lue, Some(t0 + Duration::from_secs(5)), t0), None);
+        let tard = t0 + Duration::from_secs(60);
+        for etat in [
+            EtatFeuille::Attente { lance: true },
+            EtatFeuille::Envoi,
+            EtatFeuille::Echec("x".into()),
+            EtatFeuille::Lue(correction::Lecture::Refusee("x".into())),
+            EtatFeuille::Lue(correction::Lecture::Illisible("x".into())),
+            EtatFeuille::Recu(IssueChange::Echec("x".into())),
+        ] {
+            assert_eq!(peut_accepter(&etat, Some(t0), tard), None, "{etat:?}");
+        }
+        // D'administrateur ou pas annulable : pas d'ici, même lu depuis longtemps.
+        for (champ, valeur) in [
+            ("droits", serde_json::json!("admin")),
+            ("annulable", serde_json::json!(false)),
+        ] {
+            let mut v = vrai.clone();
+            v["apercu"][champ] = valeur;
+            v["apercu"]["jeton"] = serde_json::json!(jeton.hex());
+            let e = EtatFeuille::Lue(correction::lire(jeton, Some(0), v.to_string().as_bytes()));
+            // (Un aperçu automatique qui ne s'annule pas se contredit : illisible, pas acceptable non plus.)
+            if champ == "droits" {
+                assert!(matches!(e, EtatFeuille::Lue(correction::Lecture::Lue(_))), "{champ}");
+            }
+            assert_eq!(peut_accepter(&e, Some(t0), tard), None, "{champ}");
+        }
+    }
+
+    /// De bout en bout, avec un faux `vanguard` : l'aperçu lu ne s'accepte pas avant 2 s ; accepté, seuls le jeton
+    /// et l'accord de l'aperçu partent, une fois (un second clic n'envoie rien) ; un refus redemande l'aperçu et dit
+    /// que ça a changé pendant la lecture ; fait, la feuille le dit, « Ce que Vanguard a changé » et le bilan sont
+    /// relus, et « Annuler cette correction » ouvre l'aperçu de l'annulation, qui s'accepte de même.
+    #[cfg(unix)]
+    #[test]
+    fn appliquer_puis_remettre_de_bout_en_bout() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let d = crate::essais::banc("gestes-qui-changent");
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let script = d.join("vanguard");
+        std::fs::write(&script, FAUX_GESTES).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let ecrire = |nom: &str, contenu: &str| std::fs::write(d.join(nom), contenu).unwrap();
+        let appels = || std::fs::read_to_string(d.join("appels")).unwrap_or_default();
+        let compter = |motif: &str| appels().lines().filter(|l| l.starts_with(motif)).count();
+
+        let j = "b8d7b4e8da9c5f36ca6d4a4696642cdc";
+        let k = "00112233445566778899aabbccddeeff";
+        let (a1, a2, a3) = ("a1".repeat(32), "a2".repeat(32), "a3".repeat(32));
+        ecrire(
+            "r-audit--json",
+            &format!(
+                r#"{{"systeme": "Linux", "constats": [{{"etat": "probleme", "probleme": "Critique",
+                "message": "Clé lisible", "geste": {{"sorte": "voir-correction", "jeton": "{j}"}}}}]}}"#
+            ),
+        );
+        let reel = include_str!("../essais/apercus-noms-guillemets.jsonl")
+            .lines()
+            .next()
+            .unwrap();
+        let apercu = |accord: &str| {
+            let mut v = serde_json::from_str::<serde_json::Value>(reel).unwrap();
+            v["accord"] = serde_json::json!(accord);
+            v.to_string()
+        };
+        ecrire("r-correction--voir", &apercu(&a1));
+
+        let moi = std::fs::metadata(&d).unwrap().uid();
+        let mut a = Appli::nouvelle(Ok(Programme::dans(&d, moi).unwrap()), std::sync::Arc::new(|| {}));
+        finir_tout(&mut a);
+        a.aller(Ecran::Bilan);
+        a.demander(Commande::Bilan);
+        finir_tout(&mut a);
+        let ej = Empreinte::lire(j).unwrap();
+        a.voir_correction(ej);
+        finir_tout(&mut a);
+        let etat = |a: &Appli| a.feuille_correction().map(|f| f.etat.clone());
+        assert!(matches!(etat(&a), Some(EtatFeuille::Lue(correction::Lecture::Lue(_)))));
+
+        // Tout de suite : rien ne part, la feuille reste.
+        a.accepter();
+        finir_tout(&mut a);
+        assert_eq!(compter("correction --appliquer"), 0);
+        assert!(matches!(etat(&a), Some(EtatFeuille::Lue(correction::Lecture::Lue(_)))));
+
+        // Après 2 s : le jeton et l'accord de l'aperçu, tels quels, une fois. Vanguard refuse (l'état a changé
+        // pendant la lecture) : un nouvel aperçu, à l'accord nouveau, et l'avis le dit.
+        ecrire(
+            "r-correction--appliquer",
+            r#"{"geste":"appliquer-correction","issue":"refuse","raison":"l'aperçu a changé","relu":""}"#,
+        );
+        ecrire("c-correction--appliquer", "1");
+        ecrire("r-correction--voir", &apercu(&a2));
+        a.vieillir_apercu();
+        a.accepter();
+        assert_eq!(etat(&a), Some(EtatFeuille::Envoi));
+        a.accepter();
+        a.accepter();
+        finir_tout(&mut a);
+        assert_eq!(compter("correction --appliquer"), 1);
+        assert!(appels().contains(&format!("correction --appliquer {j} --accord {a1} --json\n")));
+        assert_eq!(compter("correction --voir"), 2);
+        let f = a.feuille_correction().unwrap();
+        assert!(matches!(&f.etat, EtatFeuille::Lue(correction::Lecture::Lue(x)) if x.accord.hex() == a2));
+        assert_eq!(
+            f.avis.as_deref(),
+            Some("Ça a changé pendant que vous lisiez. Rien n'a été fait.")
+        );
+        // Le nouvel aperçu se relit 2 s, comme le premier.
+        a.accepter();
+        finir_tout(&mut a);
+        assert_eq!(compter("correction --appliquer"), 1);
+
+        // Fait : la feuille le dit, la liste et le bilan sont relus, l'annulation y est offerte.
+        ecrire(
+            "r-correction--appliquer",
+            &format!(
+                r#"{{"geste":"appliquer-correction","issue":"fait","raison":"","relu":"corrige","annulation":"{k}"}}"#
+            ),
+        );
+        ecrire("c-correction--appliquer", "0");
+        ecrire(
+            "r-changements",
+            &format!(
+                r#"{{"schema":1,"releve":"intact","total":1,"montres":1,"plus_anciens":0,"changements":[
+                {{"date":"2026-11-11 15:10","reussi":true,"genre":"correction","texte":"chmod 600 ~/.ssh/id_x",
+                  "commandes":1,"etat":"annulable","origine":null,"preuve":"","geste":{{"sorte":"voir-annulation","jeton":"{k}"}}}}]}}"#
+            ),
+        );
+        let (bilans, listes) = (compter("audit --json"), compter("changements --json"));
+        a.vieillir_apercu();
+        a.accepter();
+        finir_tout(&mut a);
+        assert!(appels().contains(&format!("correction --appliquer {j} --accord {a2} --json\n")));
+        let ek = Empreinte::lire(k).unwrap();
+        assert_eq!(
+            etat(&a),
+            Some(EtatFeuille::Recu(IssueChange::Fait {
+                relu: changements::Relu::Corrige,
+                annulation: Some(ek)
+            }))
+        );
+        assert_eq!(compter("audit --json"), bilans + 1);
+        assert_eq!(compter("changements --json"), listes + 1);
+        assert!(a.dans_les_changements(ek));
+        // Fermer une feuille reçue ne dit rien de plus (l'issue est déjà dite).
+        a.accepter();
+        assert_eq!(compter("correction --appliquer"), 2);
+
+        // « Annuler cette correction » : l'aperçu de l'annulation, puis, 2 s après, le geste qui remet.
+        let mut annulation = serde_json::json!({
+            "accord": a3,
+            "apercu": {
+                "date": "2026-11-11 15:10", "droits": "compte", "jeton": k, "langue": "fr",
+                "titre": "chmod 600 ~/.ssh/id_x", "version": "0.99.0",
+                "valeurs": [{"actuel": "0600", "avant": "0644", "change_depuis": false, "chemin": "~/.ssh/id_x",
+                             "pose": "0600"}]
+            },
+            "geste": "voir-annulation", "issue": "fait", "raison": ""
+        });
+        ecrire("r-changements--voir", &annulation.to_string());
+        ecrire(
+            "r-changements--annuler",
+            r#"{"geste":"annuler-correction","issue":"fait","raison":"","relu":"revenu"}"#,
+        );
+        a.voir_annulation(ek);
+        finir_tout(&mut a);
+        assert_eq!(a.feuille_correction().map(|f| f.famille), Some(Famille::Annulation));
+        assert!(matches!(
+            etat(&a),
+            Some(EtatFeuille::Annulation(correction::Lecture::Lue(_)))
+        ));
+        a.accepter();
+        finir_tout(&mut a);
+        assert_eq!(compter("changements --annuler"), 0);
+        a.vieillir_apercu();
+        a.accepter();
+        a.accepter();
+        finir_tout(&mut a);
+        assert_eq!(compter("changements --annuler"), 1);
+        assert!(appels().contains(&format!("changements --annuler {k} --accord {a3} --json\n")));
+        assert_eq!(
+            etat(&a),
+            Some(EtatFeuille::Recu(IssueChange::Fait {
+                relu: changements::Relu::Revenu,
+                annulation: None
+            }))
+        );
+
+        // Une annulation qui n'est plus offerte n'ouvre rien ; une valeur « changée depuis » se montre, et s'accepte
+        // (la personne la voit en jaune), mais un chemin retouché ne s'accepte pas d'ici.
+        ecrire(
+            "r-changements",
+            r#"{"schema":1,"releve":"intact","total":0,"montres":0,"plus_anciens":0,"changements":[]}"#,
+        );
+        a.annuler();
+        a.demander(Commande::Changements);
+        finir_tout(&mut a);
+        a.voir_annulation(ek);
+        assert!(a.feuille_correction().is_none());
+        assert_eq!(compter("changements --voir"), 1);
+        annulation["apercu"]["valeurs"][0]["chemin"] = serde_json::json!("~/.ssh/id\u{202e}x");
+        let lu = changements::lire_apercu(ek, Some(0), annulation.to_string().as_bytes());
+        let e = EtatFeuille::Annulation(lu);
+        assert_eq!(
+            peut_accepter(&e, Instant::now().checked_sub(APERCU_LU), Instant::now()),
+            None
+        );
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// La confirmation est obligatoire et un changement passe seul : sans proposition, « Accepter » ne fait rien ; un

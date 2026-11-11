@@ -11,6 +11,7 @@ use super::{
 use crate::appli::{Appli, Contenu, Ecran, ecran_de};
 use crate::commandes::{Commande, Rubrique};
 use crate::donnees::appareils::{self as scan, Empoisonnement, Upnp};
+use crate::donnees::changements::{self, Etat};
 use crate::donnees::evenements;
 use crate::donnees::libre;
 use crate::donnees::protection::{self, Allure};
@@ -405,9 +406,104 @@ fn commande(appli: &mut Appli, ui: &mut Ui, c: Commande) {
         }
         Contenu::Protection(v) => protection_liste(ui, v),
         Contenu::Libre(v) => libre_liste(ui, v),
+        Contenu::Changements(v) => changements_liste(appli, ui, v),
         Contenu::Evenements(v) => journal(ui, v),
         Contenu::Appareils(v) => appareils_liste(ui, v),
         Contenu::Erreur(e) => erreur(ui, e),
+    }
+}
+
+/// « Ce que Vanguard a changé » : les lignes du relevé, les plus récentes d'abord, chacune avec son état ; « Remettre
+/// comme avant » sur celles que Vanguard offre d'annuler d'ici (une feuille d'aperçu s'ouvre : rien ne change avant
+/// d'y accepter).
+fn changements_liste(appli: &mut Appli, ui: &mut Ui, v: &changements::Vue) {
+    let p = pal();
+    ui.label(texte(&v.resume(), 14.0, p.doux));
+    ui.add_space(12.0);
+    if !v.releve_sain() {
+        signale(
+            ui,
+            p.jaune,
+            crate::tr!(
+                "Le relevé ne s'est pas relu tel que Vanguard l'a scellé : ses lignes sont à prendre avec prudence.",
+                "The record did not read back as Vanguard sealed it: take its lines with care."
+            ),
+            14.0,
+        );
+        ui.add_space(8.0);
+    }
+    let mut voir = None;
+    carte(ui, 20, |ui| {
+        ui.set_width(ui.available_width());
+        if v.lignes.is_empty() {
+            ui.label(texte(
+                crate::tr!(
+                    "Vanguard n'a encore rien changé.",
+                    "Vanguard has not changed anything yet."
+                ),
+                14.0,
+                p.doux,
+            ));
+        }
+        for (i, l) in v.lignes.iter().enumerate() {
+            if i > 0 {
+                ui.add_space(10.0);
+            }
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(&l.date).font(mono(12.0)).color(p.discret));
+                let couleur = match l.etat {
+                    Etat::Interrompue | Etat::Echoue | Etat::Inconnu => p.jaune,
+                    Etat::Annulable | Etat::EnPlace | Etat::Fait => p.bon,
+                    _ => p.discret,
+                };
+                ui.label(RichText::new(l.etat.nom()).font(moyenne(12.0)).color(couleur));
+            });
+            ui.label(texte(&l.texte, 14.0, p.encre));
+            if l.douteuse {
+                signale(
+                    ui,
+                    p.jaune,
+                    crate::tr!(
+                        "Changée hors de Vanguard, ou d'avant son sceau : rien ne s'y offre d'ici.",
+                        "Changed outside Vanguard, or from before its seal: nothing is offered here."
+                    ),
+                    13.0,
+                );
+            }
+            if let Some(j) = l.annulation
+                && bouton(ui, crate::tr!("Remettre comme avant", "Restore as before"), false, true).clicked()
+            {
+                voir = Some(j);
+            }
+        }
+        if v.illisibles > 0 {
+            ui.add_space(10.0);
+            signale(
+                ui,
+                p.jaune,
+                &crate::trf!(
+                    "{} ne se lit pas : non montré.",
+                    "{} could not be read: not shown.",
+                    crate::trn!(v.illisibles, "ligne", "lignes", "line", "lines")
+                ),
+                13.0,
+            );
+        }
+        if v.plus_anciens > 0 {
+            ui.add_space(10.0);
+            ui.label(texte(
+                &crate::trf!(
+                    "Et {} plus anciens, dans « vanguard changements » au terminal.",
+                    "And {} older ones, in “vanguard changements” in the terminal.",
+                    v.plus_anciens
+                ),
+                13.0,
+                p.discret,
+            ));
+        }
+    });
+    if let Some(j) = voir {
+        appli.voir_annulation(j);
     }
 }
 

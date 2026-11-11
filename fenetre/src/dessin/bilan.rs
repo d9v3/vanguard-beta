@@ -11,7 +11,7 @@ use crate::appli::{Appli, Contenu};
 use crate::commandes::{Commande, Empreinte};
 use crate::donnees::bilan::{Constat, Gravite, Rang, Vue};
 
-mod correction;
+pub mod correction;
 
 #[cfg(test)]
 pub use correction::mises_gardees;
@@ -396,13 +396,6 @@ pub fn ecran(appli: &mut Appli, ui: &mut Ui) {
         && let Some(jeton) = constats(ui, v, true)
     {
         appli.voir_correction(jeton);
-    }
-    // La feuille « Voir la correction », au-dessus de tout l'écran.
-    if appli
-        .feuille_correction()
-        .is_some_and(|f| correction::feuille(ui.ctx(), f))
-    {
-        appli.annuler();
     }
 }
 

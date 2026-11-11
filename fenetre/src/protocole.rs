@@ -8,8 +8,10 @@
 //! donné), `4 id theme action base rvb(15) langue` (un changement des couleurs de la fenêtre : thème 1
 //! sombre, 2 clair ; action 1 un choix, sa base et ses cinq couleurs, ou 0 celles de Vanguard, base et couleurs
 //! alors toutes à zéro), `5 id reduites langue` (les animations de la fenêtre, gardées : 1 réduites, 0 toutes) ou
-//! `6 id sorte jeton(16) accord(32) langue` (un geste sur un constat du bilan : sorte 10 voir sa correction, dont
-//! l'accord est alors tout à zéro ; le jeton est celui qu'`audit --json` a donné au constat) ou
+//! `6 id sorte jeton(16) accord(32) langue` (un geste sur un constat : sorte 10 voir sa correction, 11 l'appliquer,
+//! 12 voir ce qui serait remis comme avant, 13 le remettre ; le jeton est celui qu'`audit --json` ou
+//! `changements --json` a donné ; l'accord d'un « voir » est tout à zéro, celui d'un geste qui change est celui que
+//! son aperçu a donné, jamais tout à zéro) ou
 //! `2 id` (arrêter). Relais → fenêtre : `1 id texte` (une ligne d'erreur), `3 id pid`
 //! (`vanguard` est lancé, sous ce numéro : pour les coulisses) ou `2 id issue code durée texte sortie` (la fin).
 
@@ -190,14 +192,16 @@ fn couleurs(o: &[u8]) -> Option<ChangementCouleurs> {
 }
 
 /// `sorte jeton(16) accord(32)`, strictement : une sorte connue ; pour un « voir », un accord tout à zéro (la
-/// fenêtre n'a rien à accorder : un accord non nul là serait une trame fabriquée). Le jeton n'est que 16 octets :
-/// le relais ne l'admet que s'il vient du dernier bilan, et Vanguard seul sait à quel constat il répond.
+/// fenêtre n'a rien à accorder : un accord non nul là serait une trame fabriquée) ; pour un geste qui change, un
+/// accord jamais tout à zéro (Vanguard n'en donne pas de tel). Le jeton n'est que 16 octets : le relais ne l'admet
+/// que s'il vient de la dernière liste lue, ou du dernier aperçu pour un geste qui change, et Vanguard seul sait à
+/// quel constat il répond.
 fn geste(o: &[u8]) -> Option<Geste> {
     let (&[sorte], reste) = o.split_first_chunk::<1>()?;
     let (jeton, accord) = reste.split_first_chunk::<16>()?;
     let accord: [u8; 32] = accord.try_into().ok()?;
     let sorte = SorteGeste::depuis_octet(sorte)?;
-    if sorte.voir() && accord != [0; 32] {
+    if sorte.voir() != (accord == [0; 32]) {
         return None;
     }
     Some(Geste {
@@ -338,6 +342,7 @@ pub fn lire_trame(f: &mut impl Read, max: usize) -> std::io::Result<Option<Vec<u
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commandes::Famille;
 
     #[test]
     fn les_demandes_aller_retour_et_le_reste_refuse() {
@@ -464,7 +469,16 @@ mod tests {
         chemin.extend(b" --appliquer");
         assert_eq!(Demande::lire(&chemin), None);
         // Une sorte inconnue (dont celles des changements au démarrage), une langue hors de 0 et 1.
-        for (i, faux) in [(5, 0u8), (5, 1), (5, 2), (5, 11), (5, 0xff), (54, 2), (54, 0xff)] {
+        for (i, faux) in [
+            (5, 0u8),
+            (5, 1),
+            (5, 2),
+            (5, 9),
+            (5, 14),
+            (5, 0xff),
+            (54, 2),
+            (54, 0xff),
+        ] {
             let mut v = bonne.clone();
             v[i] = faux;
             assert_eq!(Demande::lire(&v), None, "{i} {faux}");
@@ -474,6 +488,40 @@ mod tests {
             let mut v = bonne.clone();
             v[i] = 1;
             assert_eq!(Demande::lire(&v), None, "{i}");
+        }
+        // Les gestes qui changent : aller-retour avec un accord ; tout à zéro, refusés ; un « voir » passé en geste
+        // qui change sans accord, refusé.
+        for famille in [Famille::Correction, Famille::Annulation] {
+            for accord in [[0xa5u8; 32], {
+                let mut a = [0u8; 32];
+                a[31] = 1;
+                a
+            }] {
+                let d = Demande::Lancer {
+                    id: 4,
+                    lancement: Lancement::Geste(Geste::changer(
+                        famille,
+                        Empreinte::depuis_octets([7; 16]),
+                        Accord::depuis_octets(accord),
+                    )),
+                    anglais: false,
+                };
+                let v = d.coder();
+                assert_eq!(v.len(), 55);
+                assert_eq!(Demande::lire(&v), Some(d));
+                let mut nul = v.clone();
+                nul[22..54].fill(0);
+                assert_eq!(Demande::lire(&nul), None);
+            }
+            let mut v = bonne.clone();
+            v[5] = famille.changer().octet();
+            assert_eq!(Demande::lire(&v), None);
+            let voir = Demande::Lancer {
+                id: 3,
+                lancement: Lancement::Geste(Geste::voir(famille, Empreinte::depuis_octets([7; 16]))),
+                anglais: true,
+            };
+            assert_eq!(Demande::lire(&voir.coder()), Some(voir));
         }
         // Les autres types à la longueur d'un geste, et le type 6 aux longueurs des autres : refusés.
         for t in [1u8, 2, 3, 4, 5, 7] {

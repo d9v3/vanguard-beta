@@ -1,9 +1,11 @@
 //! Le protocole entre la fenêtre et son relais (fenetre/src/protocole.rs), la frontière des droits sous Linux : le
 //! relais, qui a les droits du compte, lit les demandes d'une fenêtre peut-être prise par ce qu'elle dessine ; la
 //! fenêtre lit les réponses du relais. Quoi qu'on envoie : aucune trame plus longue que la borne n'est acceptée (ni
-//! réservée), une demande comprise est une commande de la liste fermée ou un changement au démarrage dont les
-//! arguments ont la forme fermée (`demarrage --retirer|--remettre <32 hex> [--accord <64 hex>] --json`, `couleurs --theme …`, ou
-//! `correction --voir <32 hex> --json` sans accord), et se recode octet pour octet à l'identique ; une réponse comprise a une ligne d'erreur propre et bornée. Le premier octet choisit la langue.
+//! réservée), une demande comprise est une commande de la liste fermée ou un changement dont les arguments ont la
+//! forme fermée (`demarrage --retirer|--remettre <32 hex> [--accord <64 hex>] --json`, `couleurs --theme …`,
+//! `correction|changements --voir <32 hex> --json` sans accord, ou `correction --appliquer|changements --annuler
+//! <32 hex> --accord <64 hex> --json` avec un accord jamais tout à zéro), et se recode octet pour octet à
+//! l'identique ; une réponse comprise a une ligne d'erreur propre et bornée. Le premier octet choisit la langue.
 #![no_main]
 // Aucun unsafe ici ni dans ce que la cible inclut (fenetre/src/) : refusé sans recours, un allow ne compile pas.
 #![forbid(unsafe_code)]
@@ -80,15 +82,29 @@ fn relais(mut flux: &[u8]) {
                         assert_eq!(a[3], "--defaut");
                     }
                 }
-                // L'aperçu d'une correction : `correction --voir <32 hex> --json`, rien d'autre ; il n'engage aucun
-                // accord (tout à zéro) et ne change rien.
+                // Un geste : `correction|changements --voir <32 hex> --json` (il ne change rien, son accord est tout à
+                // zéro), ou `correction --appliquer|changements --annuler <32 hex> --accord <64 hex> --json` (il
+                // change, son accord n'est jamais tout à zéro) ; rien d'autre.
                 Lancement::Geste(g) => {
                     let a = lancement.arguments();
-                    assert_eq!(a.len(), 4, "{a:?}");
-                    assert_eq!((a[0].as_str(), a[1].as_str(), a[3].as_str()), ("correction", "--voir", "--json"));
-                    assert!(a[2].len() == 32 && a[2].bytes().all(|o| matches!(o, b'0'..=b'9' | b'a'..=b'f')), "{a:?}");
-                    assert!(g.sorte.voir() && g.accord == commandes::Accord::NUL, "{g:?}");
-                    assert!(!lancement.change());
+                    let attendu = match g.sorte {
+                        commandes::SorteGeste::VoirCorrection => ("correction", "--voir"),
+                        commandes::SorteGeste::AppliquerCorrection => ("correction", "--appliquer"),
+                        commandes::SorteGeste::VoirAnnulation => ("changements", "--voir"),
+                        commandes::SorteGeste::Annuler => ("changements", "--annuler"),
+                    };
+                    assert_eq!((a[0].as_str(), a[1].as_str()), attendu, "{a:?}");
+                    assert!(hex(&a[2], 32) && a[2] == g.jeton.hex(), "{a:?}");
+                    assert_eq!(a[a.len() - 1], "--json");
+                    assert_eq!(g.sorte.voir(), g.accord == commandes::Accord::NUL, "{g:?}");
+                    assert_eq!(lancement.change(), !g.sorte.voir());
+                    if g.sorte.voir() {
+                        assert_eq!(a.len(), 4, "{a:?}");
+                    } else {
+                        assert_eq!(a.len(), 6, "{a:?}");
+                        assert_eq!(a[3], "--accord");
+                        assert!(hex(&a[4], 64) && a[4] == g.accord.hex(), "{a:?}");
+                    }
                 }
                 // Les animations : `couleurs --animations <toutes|reduites> --json`, rien d'autre.
                 Lancement::Animations(_) => {

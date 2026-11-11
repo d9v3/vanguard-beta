@@ -10,6 +10,7 @@
 
 pub mod appareils;
 pub mod bilan;
+pub mod changements;
 pub mod correction;
 pub mod couleurs;
 pub mod evenements;

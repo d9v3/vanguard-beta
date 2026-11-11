@@ -1,6 +1,14 @@
 //! La feuille « Voir la correction » : ce que Vanguard ferait pour un constat, lu par `vanguard correction --voir`,
-//! montré en lecture seule. Rien ne s'y accepte dans ce lot : le seul geste est « Annuler » (et copier la commande
-//! du terminal), pour que la personne voie avant d'avoir à décider, sans bouton qui ferait semblant.
+//! puis « Appliquer cette correction » ; et la feuille « Remettre comme avant » d'une ligne de « Ce que Vanguard a
+//! changé » (`vanguard changements --voir`). Un seul geste par feuille, et seulement :
+//!
+//! - pour un aperçu lu, que rien n'empêche d'appliquer d'ici (`appli::peut_accepter` : droits du compte, annulable,
+//!   automatique, ni retouché, ni coupé, ni plus large que la feuille, assez court pour se lire) ; sinon, la raison
+//!   est dite à la place du bouton, et le terminal reste le chemin ;
+//! - 2 s après que l'aperçu s'est montré (conception, Q7) : le bouton se montre grisé avant ;
+//! - une fois : accepté, la feuille passe à « en cours », puis montre l'issue (« Fait. », ce que Vanguard a relu).
+//!
+//! Le bouton ne rend que le jeton et l'accord reçus de l'aperçu (`appli::accepter`), jamais un texte relu ici.
 //!
 //! Chaque texte de Vanguard (ceux que l'accord engage, et sa raison de refus) est dessiné signe par signe
 //! (`dessin::signe_par_signe`) : les ligatures des polices ne lient jamais deux de ses signes, « -> » ne se dessine
@@ -16,11 +24,13 @@ use eframe::egui::{
     self, Color32, Frame, Galley, Margin, RichText, ScrollArea, Stroke, TextFormat, Ui, text::LayoutJob,
 };
 
-use crate::appli::{EtatFeuille, FeuilleCorrection};
+use crate::appli::{Appli, EtatFeuille, FeuilleCorrection, peut_accepter, phrase_issue};
+use crate::commandes::{APERCU_LU, Empreinte, Famille};
 use crate::dessin::{
     RAYON_CARTE, ajouter_signe_par_signe, bouton, mono, moyenne, ombre, pal, police, signale, signale_avec,
     signe_par_signe, texte,
 };
+use crate::donnees::changements::{Annulation, IssueChange};
 use crate::donnees::correction::{Apercu, Droits, Lecture};
 
 /// Largeur de la feuille, et la marge gardée autour sur un petit écran.
@@ -59,6 +69,41 @@ enum Cle {
     Commande(usize),
     Geste(usize),
     Valeur(usize),
+    Titre,
+    Chemin(usize),
+}
+
+/// Ce que la personne a fait sur la feuille, à cette image.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reponse {
+    Rien,
+    /// « Annuler », « Fermer », Échap ou un clic à côté (`Appli::annuler`).
+    Fermer,
+    /// « Appliquer cette correction » ou « Remettre comme avant » (`Appli::accepter`).
+    Accepter,
+    /// « Annuler cette correction », après une correction faite : la feuille de son annulation
+    /// (`Appli::voir_annulation`).
+    AnnulerLaCorrection(Empreinte),
+}
+
+/// La feuille ouverte, s'il y en a une, et ce que la personne y fait. Dessinée au-dessus de tout l'écran, quel qu'il
+/// soit (le bilan, « Ce que Vanguard a changé »).
+pub fn montrer(appli: &mut Appli, ctx: &egui::Context) {
+    let Some(f) = appli.feuille_correction() else {
+        return;
+    };
+    let offerte = match &f.etat {
+        EtatFeuille::Recu(IssueChange::Fait {
+            annulation: Some(j), ..
+        }) => appli.dans_les_changements(*j),
+        _ => false,
+    };
+    match feuille(ctx, f, offerte) {
+        Reponse::Rien => {}
+        Reponse::Fermer => appli.annuler(),
+        Reponse::Accepter => appli.accepter(),
+        Reponse::AnnulerLaCorrection(j) => appli.voir_annulation(j),
+    }
 }
 
 /// Une mise en page gardée et ce qui a été demandé pour elle. La largeur demandée est gardée telle quelle : egui
@@ -133,8 +178,9 @@ fn garde(ui: &mut Ui, memoire: &mut Memoire, cle: Cle, debut: &str, t: &str, for
     ui.add(egui::Label::new(galley));
 }
 
-/// Dessine la feuille au-dessus de l'écran. Vrai : Échap, un clic à côté ou « Annuler » la ferment (`Appli::annuler`).
-pub fn feuille(ctx: &egui::Context, f: &FeuilleCorrection) -> bool {
+/// Dessine la feuille au-dessus de l'écran. `offerte` : l'annulation d'une correction faite est offerte par la
+/// dernière liste de « Ce que Vanguard a changé » (« Annuler cette correction » s'active).
+pub fn feuille(ctx: &egui::Context, f: &FeuilleCorrection, offerte: bool) -> Reponse {
     let p = pal();
     let temoin =
         ctx.fonts_mut(|fonts| fonts.layout_job(LayoutJob::simple_singleline("x".into(), police(12.0), Color32::WHITE)));
@@ -162,55 +208,152 @@ pub fn feuille(ctx: &egui::Context, f: &FeuilleCorrection) -> bool {
         .backdrop_color(p.fond.gamma_multiply(0.7))
         .show(ctx, |ui| {
             ui.set_width(largeur);
-            ui.label(
-                RichText::new(crate::tr!("Voir la correction", "See the fix"))
-                    .font(moyenne(20.0))
-                    .color(p.encre),
-            );
-            ui.label(texte(
-                crate::tr!(
-                    "Lecture seule : rien n'a changé sur l'ordinateur.",
-                    "Read only: nothing changed on the computer."
+            let titre = match f.famille {
+                Famille::Correction => crate::tr!("Voir la correction", "See the fix"),
+                Famille::Annulation => crate::tr!("Remettre comme avant", "Restore as before"),
+            };
+            ui.label(RichText::new(titre).font(moyenne(20.0)).color(p.encre));
+            let sous_titre = match &f.etat {
+                EtatFeuille::Envoi => crate::tr!(
+                    "En cours : Vanguard rejuge tout, puis agit. Ça ne s'interrompt pas.",
+                    "Running: Vanguard checks everything again, then acts. It is not interrupted."
                 ),
-                13.0,
-                p.doux,
-            ));
+                EtatFeuille::Recu(_) => crate::tr!("Vanguard a répondu.", "Vanguard answered."),
+                _ => crate::tr!(
+                    "Aperçu : rien n'a changé sur l'ordinateur.",
+                    "Preview: nothing changed on the computer."
+                ),
+            };
+            ui.label(texte(sous_titre, 13.0, p.doux));
             ui.add_space(12.0);
+            if let Some(avis) = &f.avis {
+                signale(ui, p.jaune, avis, 14.0);
+                ui.add_space(8.0);
+            }
             // La feuille est une `Area` : sa place est celle de l'image d'avant. Sans hauteur minimale, le corps ne
             // grandirait que de quelques points par image ; avec elle, il prend tout de suite sa hauteur.
             ScrollArea::vertical()
                 .max_height(corps_max)
                 .min_scrolled_height(corps_max)
                 .auto_shrink([false, true])
-                .show(ui, |ui| corps(ui, &f.etat, &mut memoire));
+                .show(ui, |ui| corps(ui, f, &mut memoire));
             ui.add_space(14.0);
-            pied(ui, &f.etat)
+            pied(ui, f, memoire.depasse, offerte)
         });
-    let fermer = reponse.inner || reponse.should_close();
-    if !fermer {
+    let r = if reponse.should_close() {
+        Reponse::Fermer
+    } else {
+        reponse.inner
+    };
+    if r != Reponse::Fermer {
         ctx.data_mut(|d| d.insert_temp(id_memoire(), memoire));
     }
-    fermer
+    r
 }
 
-/// Le pied : « Annuler », et « Copier la commande » quand la correction se fait dans le terminal. Vrai : annuler.
-fn pied(ui: &mut Ui, etat: &EtatFeuille) -> bool {
-    let mut annuler = false;
-    ui.horizontal(|ui| {
-        if bouton(ui, crate::tr!("Annuler", "Cancel"), true, true).clicked() {
-            annuler = true;
-        }
-        let terminal = matches!(etat, EtatFeuille::Lue(Lecture::Lue(a)) if a.droits != Droits::Compte);
-        if terminal && bouton(ui, crate::tr!("Copier la commande", "Copy the command"), false, true).clicked() {
-            ui.ctx().copy_text(COMMANDE_TERMINAL.to_owned());
-        }
+/// Ce qu'un aperçu permet d'ici : rien à dire s'il n'y a pas d'aperçu lu ; sinon, il s'applique d'ici, ou une raison
+/// l'en empêche.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Ici {
+    PasDApercu,
+    Possible,
+    Empeche(&'static str),
+}
+
+fn empechement(etat: &EtatFeuille, depasse: bool) -> Ici {
+    let pas_d_ici = match etat {
+        EtatFeuille::Lue(Lecture::Lue(a)) => a.pas_d_ici(),
+        EtatFeuille::Annulation(Lecture::Lue(a)) => a.pas_d_ici(),
+        _ => return Ici::PasDApercu,
+    };
+    let raison = pas_d_ici.or_else(|| {
+        depasse.then_some(crate::tr!(
+            "Un texte est plus large que la feuille : il n'est pas montré en entier, elle ne s'applique pas d'ici.",
+            "A text is wider than the sheet: it is not shown in full, it is not applied from here."
+        ))
     });
-    annuler
+    raison.map_or(Ici::Possible, Ici::Empeche)
 }
 
-fn corps(ui: &mut Ui, etat: &EtatFeuille, memoire: &mut Memoire) {
+/// Le pied. Avant le geste : « Annuler », et le bouton qui change s'il s'applique d'ici (grisé les 2 premières
+/// secondes), ou la raison qui l'empêche et « Copier la commande » pour le terminal. Pendant : « Fermer » (le geste
+/// finit seul). Après : « Fermer », et « Annuler cette correction » après une correction faite.
+fn pied(ui: &mut Ui, f: &FeuilleCorrection, depasse: bool, offerte: bool) -> Reponse {
     let p = pal();
-    match etat {
+    let mut r = Reponse::Rien;
+    match &f.etat {
+        EtatFeuille::Envoi => {
+            if bouton(ui, crate::tr!("Fermer", "Close"), false, true).clicked() {
+                r = Reponse::Fermer;
+            }
+        }
+        EtatFeuille::Recu(issue) => {
+            ui.horizontal(|ui| {
+                if bouton(ui, crate::tr!("Fermer", "Close"), true, true).clicked() {
+                    r = Reponse::Fermer;
+                }
+                if f.famille == Famille::Correction
+                    && let IssueChange::Fait {
+                        annulation: Some(j), ..
+                    } = issue
+                {
+                    let t = crate::tr!("Annuler cette correction", "Undo this fix");
+                    if bouton(ui, t, false, offerte).clicked() {
+                        r = Reponse::AnnulerLaCorrection(*j);
+                    }
+                    if !offerte {
+                        ui.label(texte(
+                            crate::tr!(
+                                "en attente de « Ce que Vanguard a changé »…",
+                                "waiting for “What Vanguard changed”…"
+                            ),
+                            12.0,
+                            p.discret,
+                        ));
+                    }
+                }
+            });
+        }
+        etat => {
+            let empeche = empechement(etat, depasse);
+            if let Ici::Empeche(raison) = empeche {
+                ui.label(texte(raison, 13.0, p.doux));
+                ui.add_space(8.0);
+            }
+            ui.horizontal(|ui| {
+                if bouton(ui, crate::tr!("Annuler", "Cancel"), empeche != Ici::Possible, true).clicked() {
+                    r = Reponse::Fermer;
+                }
+                if empeche == Ici::Possible {
+                    let maintenant = std::time::Instant::now();
+                    let actif = peut_accepter(etat, f.montre, maintenant).is_some();
+                    if !actif && let Some(m) = f.montre {
+                        // Redessiné quand les 2 s sont passées : le bouton s'active seul.
+                        let reste = APERCU_LU.saturating_sub(maintenant.saturating_duration_since(m));
+                        ui.ctx()
+                            .request_repaint_after(reste + std::time::Duration::from_millis(20));
+                    }
+                    let t = match f.famille {
+                        Famille::Correction => crate::tr!("Appliquer cette correction", "Apply this fix"),
+                        Famille::Annulation => crate::tr!("Remettre comme avant", "Restore as before"),
+                    };
+                    if bouton(ui, t, true, actif).clicked() && actif {
+                        r = Reponse::Accepter;
+                    }
+                }
+                let terminal = matches!(etat, EtatFeuille::Lue(Lecture::Lue(a)) if a.droits != Droits::Compte);
+                if terminal && bouton(ui, crate::tr!("Copier la commande", "Copy the command"), false, true).clicked() {
+                    ui.ctx().copy_text(COMMANDE_TERMINAL.to_owned());
+                }
+            });
+        }
+    }
+    r
+}
+
+fn corps(ui: &mut Ui, f: &FeuilleCorrection, memoire: &mut Memoire) {
+    let p = pal();
+    match &f.etat {
         EtatFeuille::Attente { .. } => {
             ui.label(texte(
                 crate::tr!("Lecture de la correction…", "Reading the fix…"),
@@ -220,24 +363,47 @@ fn corps(ui: &mut Ui, etat: &EtatFeuille, memoire: &mut Memoire) {
         }
         EtatFeuille::Lue(Lecture::Lue(a)) => {
             if depasse(ui, |ui| apercu(ui, a, memoire)) && !memoire.depasse {
-                // Dit dès l'image suivante, en tête de l'aperçu.
+                // Dit dès l'image suivante, en tête de l'aperçu (et le bouton qui change ne s'active pas).
                 memoire.depasse = true;
                 ui.ctx().request_repaint();
             }
         }
+        EtatFeuille::Annulation(Lecture::Lue(a)) => {
+            if depasse(ui, |ui| apercu_annulation(ui, a, memoire)) && !memoire.depasse {
+                memoire.depasse = true;
+                ui.ctx().request_repaint();
+            }
+        }
+        EtatFeuille::Envoi => {
+            ui.label(texte(
+                match f.famille {
+                    Famille::Correction => {
+                        crate::tr!("Vanguard applique la correction…", "Vanguard is applying the fix…")
+                    }
+                    Famille::Annulation => crate::tr!("Vanguard remet comme avant…", "Vanguard is restoring…"),
+                },
+                14.0,
+                p.doux,
+            ));
+        }
+        EtatFeuille::Recu(issue) => recu(ui, f.famille, issue),
         // La raison d'un refus est un texte de Vanguard : signe par signe. Les autres raisons sont celles de la fenêtre.
-        EtatFeuille::Lue(Lecture::Refusee(r)) => signale_avec(ui, p.jaune, 14.0, |ui| {
-            let format = TextFormat::simple(police(14.0), p.encre);
-            garde(
-                ui,
-                memoire,
-                Cle::Raison,
-                crate::tr!("Pas d'aperçu : ", "No preview: "),
-                r,
-                &format,
-            );
-        }),
-        EtatFeuille::Lue(Lecture::Illisible(r)) | EtatFeuille::Echec(r) => {
+        EtatFeuille::Lue(Lecture::Refusee(r)) | EtatFeuille::Annulation(Lecture::Refusee(r)) => {
+            signale_avec(ui, p.jaune, 14.0, |ui| {
+                let format = TextFormat::simple(police(14.0), p.encre);
+                garde(
+                    ui,
+                    memoire,
+                    Cle::Raison,
+                    crate::tr!("Pas d'aperçu : ", "No preview: "),
+                    r,
+                    &format,
+                );
+            });
+        }
+        EtatFeuille::Lue(Lecture::Illisible(r))
+        | EtatFeuille::Annulation(Lecture::Illisible(r))
+        | EtatFeuille::Echec(r) => {
             signale(
                 ui,
                 p.jaune,
@@ -246,6 +412,146 @@ fn corps(ui: &mut Ui, etat: &EtatFeuille, memoire: &mut Memoire) {
             );
         }
     }
+}
+
+/// L'issue d'un geste : « Fait. » et ce que Vanguard a relu, ou l'échec, ou l'issue inconnue (jamais « rien n'a été
+/// fait », que seul un refus dit, et un refus montre un nouvel aperçu).
+fn recu(ui: &mut Ui, famille: Famille, issue: &IssueChange) {
+    let p = pal();
+    match issue {
+        IssueChange::Fait { relu, .. } => {
+            ui.label(
+                RichText::new(crate::tr!("Fait.", "Done."))
+                    .font(moyenne(22.0))
+                    .color(p.bon),
+            );
+            ui.add_space(6.0);
+            let (t, couleur) = match relu {
+                crate::donnees::changements::Relu::Corrige => (
+                    crate::tr!("Vanguard a relu : corrigé.", "Vanguard read it again: fixed."),
+                    p.bon,
+                ),
+                crate::donnees::changements::Relu::EncoreSignale => (
+                    crate::tr!(
+                        "Vanguard a relu : encore signalé.",
+                        "Vanguard read it again: still reported."
+                    ),
+                    p.jaune,
+                ),
+                crate::donnees::changements::Relu::Revenu => (
+                    crate::tr!(
+                        "Vanguard a relu : revenu comme avant.",
+                        "Vanguard read it again: back as before."
+                    ),
+                    p.bon,
+                ),
+                crate::donnees::changements::Relu::PasRevenu => (
+                    crate::tr!(
+                        "Vanguard a relu : pas revenu comme avant partout. Voyez « Ce que Vanguard a changé ».",
+                        "Vanguard read it again: not back as before everywhere. See “What Vanguard changed”."
+                    ),
+                    p.jaune,
+                ),
+            };
+            signale(ui, couleur, t, 14.0);
+            if famille == Famille::Correction {
+                ui.add_space(6.0);
+                ui.label(texte(
+                    crate::tr!(
+                        "Elle s'annule ici, ou depuis « Ce que Vanguard a changé ».",
+                        "It can be undone here, or from “What Vanguard changed”."
+                    ),
+                    13.0,
+                    p.doux,
+                ));
+            }
+        }
+        _ => signale(ui, p.jaune, &phrase_issue(issue), 14.0),
+    }
+}
+
+/// L'aperçu d'une annulation : ce qui sera remis, valeur par valeur (le chemin dans son cadre, aujourd'hui → avant),
+/// et « changé depuis » en jaune quand aujourd'hui n'est pas ce que Vanguard avait posé.
+fn apercu_annulation(ui: &mut Ui, a: &Annulation, memoire: &mut Memoire) {
+    let p = pal();
+    garde(
+        ui,
+        memoire,
+        Cle::Titre,
+        "",
+        &a.titre,
+        &TextFormat::simple(police(15.0), p.encre),
+    );
+    ui.add(egui::Label::new(signe_par_signe(&a.date, police(12.0), p.discret)).wrap());
+    if a.retouche {
+        ui.add_space(6.0);
+        signale(
+            ui,
+            p.jaune,
+            crate::tr!(
+                "Ce texte a été retouché avant de l'afficher : il n'est pas exactement celui de Vanguard.",
+                "This text was altered before showing it: it is not exactly Vanguard's."
+            ),
+            13.0,
+        );
+    }
+    if a.coupe || memoire.depasse {
+        ui.add_space(6.0);
+        signale(
+            ui,
+            p.jaune,
+            crate::tr!(
+                "Un texte trop long a été coupé : la suite n'est pas montrée.",
+                "A text that was too long was cut: the rest is not shown."
+            ),
+            13.0,
+        );
+    }
+    ui.add_space(12.0);
+    ui.label(
+        RichText::new(crate::tr!("Ce qui sera remis", "What will be restored"))
+            .font(moyenne(15.0))
+            .color(p.encre),
+    );
+    ui.add_space(2.0);
+    for (i, v) in a.valeurs.iter().enumerate() {
+        cadre(ui, memoire, Cle::Chemin(i), &v.chemin, p.encre);
+        ui.horizontal_wrapped(|ui| {
+            ui.add_space(12.0);
+            ui.label(texte(crate::tr!("droits aujourd'hui", "rights today"), 12.0, p.discret));
+            ui.label(RichText::new(&v.actuel).font(mono(13.0)).color(p.encre));
+            ui.label(texte("→", 12.0, p.discret));
+            ui.label(texte(crate::tr!("remis à", "restored to"), 12.0, p.discret));
+            ui.label(RichText::new(&v.avant).font(mono(13.0)).color(p.encre));
+        });
+        if v.change_depuis {
+            let t = if v.pose.is_empty() {
+                crate::tr!(
+                    "Changé depuis, par vous ou un programme : ce que Vanguard avait posé n'est plus connu.",
+                    "Changed since, by you or a program: what Vanguard had set is no longer known."
+                )
+                .to_string()
+            } else {
+                crate::trf!(
+                    "Changé depuis, par vous ou un programme (Vanguard avait posé {}).",
+                    "Changed since, by you or a program (Vanguard had set {}).",
+                    v.pose
+                )
+            };
+            signale(ui, p.jaune, &t, 13.0);
+        }
+        ui.add_space(6.0);
+    }
+    ui.add_space(6.0);
+    signale(
+        ui,
+        p.bon,
+        crate::tr!(
+            "Avec les droits de votre compte, sans mot de passe d'administrateur.",
+            "With your account's rights, without an administrator password."
+        ),
+        13.0,
+    );
 }
 
 /// Un texte de Vanguard dans son propre cadre, à chasse fixe, signe par signe : une commande, un geste, une valeur.
@@ -565,7 +871,13 @@ mod tests {
         let raison = "ce problème a disparu -> refaites le bilan".to_string();
         let mut memoire = Memoire::default();
         let peints = textes_peints(&ctx, |ui| {
-            corps(ui, &EtatFeuille::Lue(Lecture::Refusee(raison.clone())), &mut memoire);
+            let jeton = crate::commandes::Empreinte::lire(&"cd".repeat(16)).unwrap();
+            let f = FeuilleCorrection::essai(
+                Famille::Correction,
+                jeton,
+                EtatFeuille::Lue(Lecture::Refusee(raison.clone())),
+            );
+            corps(ui, &f, &mut memoire);
         });
         assert!(peint_signe_par_signe(&peints, &raison));
     }
@@ -592,7 +904,7 @@ mod tests {
                 ..Default::default()
             };
             let mut sortie = ctx.run_ui(entree, |ui| {
-                feuille(ui.ctx(), f);
+                feuille(ui.ctx(), f, false);
             });
             sortie.textures_delta.clear();
             textes.clear();
@@ -661,10 +973,7 @@ mod tests {
         for ecran in [egui::vec2(1280.0, 800.0), egui::vec2(960.0, 640.0)] {
             let largeur = (ecran.x - 2.0 * MARGE).clamp(280.0, LARGEUR);
             for etat in &etats {
-                let f = FeuilleCorrection {
-                    jeton,
-                    etat: etat.clone(),
-                };
+                let f = FeuilleCorrection::essai(Famille::Correction, jeton, etat.clone());
                 oublier(&ctx);
                 let textes = feuille_peinte(&ctx, ecran, &f);
                 assert!(textes.len() > 3, "{ecran:?} {etat:?} : rien de peint");
@@ -752,6 +1061,32 @@ mod tests {
         }
     }
 
+    /// N1, la garde jusqu'au bouton : un aperçu dont un texte a été vu plus large que la feuille (donc pas montré en
+    /// entier) ne s'applique pas d'ici ; le pied le dit et n'offre pas « Appliquer cette correction », même après
+    /// les 2 secondes. Le même aperçu, montré en entier, l'offre.
+    #[test]
+    fn un_texte_plus_large_que_la_feuille_empeche_d_appliquer_d_ici() {
+        let ctx = egui::Context::default();
+        crate::dessin::polices(&ctx);
+        let jeton = crate::commandes::Empreinte::lire(&"cd".repeat(16)).unwrap();
+        let etat = EtatFeuille::Lue(Lecture::Lue(Box::new(exemple(true))));
+        assert_eq!(empechement(&etat, false), Ici::Possible);
+        assert!(matches!(empechement(&etat, true), Ici::Empeche(_)));
+        let mut f = FeuilleCorrection::essai(Famille::Correction, jeton, etat);
+        f.montre = std::time::Instant::now().checked_sub(APERCU_LU + std::time::Duration::from_secs(1));
+        let bouton = crate::tr!("Appliquer cette correction", "Apply this fix");
+        for depasse in [false, true] {
+            let peints = textes_peints(&ctx, |ui| {
+                pied(ui, &f, depasse, false);
+            });
+            assert_eq!(
+                peints.iter().any(|g| g.job.text == bouton),
+                !depasse,
+                "depasse {depasse}"
+            );
+        }
+    }
+
     /// Une image sans écran de la feuille seule, avec ces événements : vrai si elle se ferme, et les textes peints.
     fn image_de_feuille(
         ctx: &egui::Context,
@@ -765,7 +1100,7 @@ mod tests {
             ..Default::default()
         };
         let mut fermer = false;
-        let mut sortie = ctx.run_ui(entree, |ui| fermer = feuille(ui.ctx(), f));
+        let mut sortie = ctx.run_ui(entree, |ui| fermer = feuille(ui.ctx(), f, false) == Reponse::Fermer);
         sortie.textures_delta.clear();
         let mut g = Vec::new();
         for c in &sortie.shapes {
@@ -805,10 +1140,11 @@ mod tests {
             })
             .collect();
         let vanguard = 2 + COMMANDES_MAX + 2 * AVANT_MAX;
-        let mut f = FeuilleCorrection {
+        let mut f = FeuilleCorrection::essai(
+            Famille::Correction,
             jeton,
-            etat: EtatFeuille::Lue(Lecture::Lue(Box::new(a.clone()))),
-        };
+            EtatFeuille::Lue(Lecture::Lue(Box::new(a.clone()))),
+        );
         let grand = egui::vec2(1280.0, 800.0);
         // Pendant le fondu d'ouverture de la feuille, egui peint des copies éclaircies des mises en page : on attend
         // qu'il soit fini (une image sans écran avance l'horloge d'un soixantième de seconde).
@@ -838,7 +1174,8 @@ mod tests {
         // fenêtre, aucun de Vanguard. Une largeur qui ne tombe pas sur un point entier (valeurs d'avant, « pourquoi
         // pas ») ne doit pas faire refaire la mise en page : egui l'arrondit avant de mettre en page.
         let faites = ctx.fonts(en_memoire);
-        assert!(faites < 16, "{faites} mises en page par image");
+        // (16 depuis l'étape 5 : le bouton « Appliquer cette correction » s'y ajoute ; tous des textes de la fenêtre.)
+        assert!(faites <= 16, "{faites} mises en page par image");
 
         // Un autre texte : refait.
         let mut b = a.clone();
@@ -983,10 +1320,7 @@ mod tests {
             .map(|t| t.chars().count())
             .sum();
         for (nom, a) in [("ordinaire", exemple(true)), ("le plus grand", grand)] {
-            let f = FeuilleCorrection {
-                jeton,
-                etat: EtatFeuille::Lue(Lecture::Lue(Box::new(a))),
-            };
+            let f = FeuilleCorrection::essai(Famille::Correction, jeton, EtatFeuille::Lue(Lecture::Lue(Box::new(a))));
             let image = || {
                 let entree = egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0))),
@@ -994,7 +1328,7 @@ mod tests {
                 };
                 let debut = Instant::now();
                 let sortie = ctx.run_ui(entree, |ui| {
-                    feuille(ui.ctx(), &f);
+                    feuille(ui.ctx(), &f, false);
                 });
                 let dessin = debut.elapsed();
                 let debut = Instant::now();

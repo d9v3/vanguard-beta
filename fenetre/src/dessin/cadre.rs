@@ -70,6 +70,8 @@ pub fn tout(appli: &mut Appli, ui: &mut Ui) {
                 });
             });
         });
+    // La feuille « Voir la correction » ou « Remettre comme avant », au-dessus de tout l'écran, quel qu'il soit.
+    super::bilan::correction::montrer(appli, ui.ctx());
     // Le trait du bord droit du rail, après les autres panneaux (leur fond ne le recouvre pas) : un pixel de l'écran,
     // posé sur un pixel entier. À 88 points et une échelle de 1,6, le bord tombe à 140,8 pixels : un trait non calé
     // se partageait entre deux pixels et ne se voyait presque plus.

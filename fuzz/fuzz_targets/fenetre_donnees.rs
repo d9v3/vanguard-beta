@@ -4,7 +4,7 @@
 //! piégé (séquence d'échappement, sens d'écriture, invisible) ; seuls les textes longs de Vanguard gardent leurs sauts
 //! de ligne. Le contrôle juge chaque caractère d'après sa catégorie Unicode, pas d'après les listes du nettoyage :
 //! une liste qui laisserait passer un caractère de format, non attribué ou privé se verrait ici. Le premier octet choisit la langue des textes de la fenêtre (et le code de sortie de l'aperçu d'une
-//! correction).
+//! correction, de l'aperçu d'une annulation et de l'issue d'un geste qui change).
 #![no_main]
 // Aucun unsafe ici ni dans ce que la cible inclut (fenetre/src/) : refusé sans recours, un allow ne compile pas.
 #![forbid(unsafe_code)]
@@ -36,7 +36,7 @@ mod lanceur {
 #[path = "../../fenetre/src/donnees/mod.rs"]
 mod donnees;
 
-use donnees::{ELEMENTS_MAX, bilan, correction, evenements, libre, protection};
+use donnees::{ELEMENTS_MAX, bilan, changements, correction, evenements, libre, protection};
 use nettoyage::{MARQUES_MAX, TEXTE_MAX, rendu};
 use unicode_general_category::{GeneralCategory as G, get_general_category};
 
@@ -237,6 +237,64 @@ fn apercu(code: Option<i32>, sortie: &[u8]) {
     }
 }
 
+/// « Ce que Vanguard a changé » (étape 5) : la liste, bornée, chaque texte propre ; un jeton offert l'est par une
+/// seule ligne. L'aperçu d'une annulation lu : seulement avec le code 0, des droits en quatre chiffres octaux, un
+/// chemin du compte ou absolu, un accord non nul, des textes propres ; un refus ou une illisibilité : une raison
+/// propre. L'issue d'un geste qui change : un « fait » n'a jamais de raison ; un refus, un échec ou une issue
+/// inconnue ont une raison propre et bornée.
+fn changements_(code: Option<i32>, sortie: &[u8]) {
+    if let Ok(v) = changements::lire(sortie) {
+        assert!(v.lignes.len() <= ELEMENTS_MAX);
+        propre(&v.releve, false);
+        let mut offerts = std::collections::HashSet::new();
+        for l in &v.lignes {
+            propre(&l.date, false);
+            propre(&l.texte, false);
+            if let Some(j) = l.annulation {
+                assert!(offerts.insert(j), "jeton offert deux fois");
+            }
+        }
+    }
+    let jeton = commandes::Empreinte::lire("0123456789abcdef0123456789abcdef").unwrap();
+    let octal = |t: &str| matches!(t.len(), 3 | 4) && t.bytes().all(|o| (b'0'..=b'7').contains(&o));
+    match changements::lire_apercu(jeton, code, sortie) {
+        correction::Lecture::Lue(a) => {
+            assert_eq!(code, Some(0));
+            assert_ne!(a.accord, commandes::Accord::NUL);
+            propre(&a.titre, false);
+            propre(&a.date, false);
+            assert!(!a.valeurs.is_empty() && a.valeurs.len() <= changements::VALEURS_MAX);
+            for v in &a.valeurs {
+                propre(&v.chemin, false);
+                assert!(v.chemin.chars().count() <= changements::CHEMIN_MAX);
+                assert!(v.chemin.starts_with('/') || v.chemin == "~" || v.chemin.starts_with("~/"), "{v:?}");
+                assert!(octal(&v.actuel) && octal(&v.avant), "{v:?}");
+                assert!(v.pose.is_empty() || octal(&v.pose), "{v:?}");
+            }
+        }
+        correction::Lecture::Refusee(r) => {
+            assert!(code.is_some_and(|c| c != 0));
+            propre(&r, false);
+            assert!(visible(&r) && r.chars().count() <= changements::RAISON_MAX, "{r:?}");
+        }
+        correction::Lecture::Illisible(r) => erreur(&r),
+    }
+    for famille in [commandes::Famille::Correction, commandes::Famille::Annulation] {
+        match changements::lire_issue(famille, code, sortie) {
+            changements::IssueChange::Fait { annulation, .. } => {
+                assert!(matches!(code, Some(0 | 1)));
+                assert_eq!(annulation.is_some(), famille == commandes::Famille::Correction);
+            }
+            changements::IssueChange::Refuse(r) | changements::IssueChange::Echec(r) => {
+                assert!(code.is_some_and(|c| c != 0));
+                propre(&r, false);
+                assert!(visible(&r) && r.chars().count() <= changements::RAISON_MAX, "{r:?}");
+            }
+            changements::IssueChange::Illisible(r) => erreur(&r),
+        }
+    }
+}
+
 libfuzzer_sys::fuzz_target!(|donnees: &[u8]| {
     let Some((&langue, sortie)) = donnees.split_first() else {
         return;
@@ -251,4 +309,5 @@ libfuzzer_sys::fuzz_target!(|donnees: &[u8]| {
         _ => None,
     };
     apercu(code, sortie);
+    changements_(code, sortie);
 });

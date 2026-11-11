@@ -593,6 +593,7 @@ fn captures() {
     faites += console(&dossier);
     faites += couleurs(&dossier);
     faites += correction(&dossier);
+    faites += gestes(&dossier);
     println!("CAPTURES {faites} dans {}", dossier.display());
 }
 
@@ -654,6 +655,161 @@ fn correction(dossier: &Path) -> usize {
         toile.ecrire_png(&dossier.join(fichier)).unwrap();
         faites += 1;
     }
+    faites
+}
+
+/// La liste inventée de « Ce que Vanguard a changé » des captures : une correction annulable (jeton `JETON_REMISE`),
+/// une interrompue, une remise, une changée hors de Vanguard, une ligne illisible.
+fn changements_capture(anglais: bool) -> Vec<u8> {
+    let t = |fr: &'static str, en: &'static str| if anglais { en } else { fr };
+    serde_json::json!({
+        "schema": 1, "releve": "intact", "total": 5, "montres": 5, "plus_anciens": 0,
+        "changements": [
+            {"date": "2026-11-11 15:10", "reussi": true, "genre": "correction",
+             "texte": t("Clé id_ed25519 protégée (chmod 600 ~/.ssh/id_ed25519)", "Key id_ed25519 protected (chmod 600 ~/.ssh/id_ed25519)"),
+             "commandes": 1, "etat": "annulable", "origine": null, "preuve": "",
+             "geste": {"sorte": "voir-annulation", "jeton": JETON_REMISE}},
+            {"date": "2026-11-10 21:42", "reussi": false, "genre": "correction",
+             "texte": t("~/.netrc protégé", "~/.netrc protected"),
+             "commandes": 1, "etat": "interrompue", "origine": null, "preuve": "", "geste": null},
+            {"date": "2026-11-09 08:05", "reussi": true, "genre": "correction",
+             "texte": t("~/.pgpass protégé", "~/.pgpass protected"),
+             "commandes": 1, "etat": "defaite", "origine": null, "preuve": "", "geste": null},
+            {"date": "2026-11-02 12:00", "reussi": true, "genre": "blocage",
+             "texte": t("Adresse 203.0.113.7 bloquée", "Address 203.0.113.7 blocked"),
+             "commandes": 1, "etat": "en-place", "origine": "change-hors-de-vanguard", "preuve": "", "geste": null},
+            7
+        ]
+    })
+    .to_string()
+    .into_bytes()
+}
+
+/// Le jeton de « Remettre comme avant » des captures (inventé).
+const JETON_REMISE: &str = "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5";
+
+/// L'aperçu inventé de la remise de `JETON_REMISE` : une valeur comme Vanguard l'a laissée, une changée depuis.
+fn annulation_capture(anglais: bool) -> Vec<u8> {
+    serde_json::json!({
+        "accord": "c3".repeat(32),
+        "apercu": {
+            "date": "2026-11-11 15:10", "droits": "compte", "jeton": JETON_REMISE,
+            "langue": if anglais { "en" } else { "fr" }, "titre": "chmod 600 ~/.ssh/id_ed25519", "version": "0.99.0",
+            "valeurs": [
+                {"actuel": "0600", "avant": "0644", "change_depuis": false, "chemin": "~/.ssh/id_ed25519", "pose": "0600"},
+                {"actuel": "0640", "avant": "0644", "change_depuis": true, "chemin": "~/.ssh/id_ed25519.pub", "pose": "0600"}
+            ]
+        },
+        "geste": "voir-annulation", "issue": "fait", "raison": ""
+    })
+    .to_string()
+    .into_bytes()
+}
+
+/// Appliquer et remettre comme avant (gestes/), en français et en anglais, sombre, 1280×800 (le clair une fois) :
+/// l'aperçu d'une clé du compte (bouton grisé, puis actif), en cours, fait (« Annuler cette correction »), un refus
+/// qui redemande l'aperçu, une issue inconnue, « Ce que Vanguard a changé », l'aperçu de la remise et la remise faite.
+fn gestes(dossier: &Path) -> usize {
+    use crate::commandes::Empreinte;
+    use crate::donnees::changements::{IssueChange, Relu};
+    std::fs::create_dir_all(dossier.join("gestes")).unwrap();
+    let jeton = Empreinte::lire(JETON_CAPTURES).unwrap();
+    let remise = Empreinte::lire(JETON_REMISE).unwrap();
+    let apercu = apercu_du_compte();
+    let mut faites = 0;
+    for anglais in [false, true] {
+        crate::langue::choisir(Some(anglais));
+        let langue = if anglais { "en" } else { "fr" };
+        let themes: &[bool] = if anglais { &[true] } else { &[true, false] };
+        for &sombre in themes {
+            let theme = if sombre { "sombre" } else { "clair" };
+            let mut ecrire = |nom: &str, prep: &dyn Fn(&mut Appli)| {
+                let mut rendu = Rendu::nouveau();
+                super::appliquer_theme(&rendu.ctx, sombre);
+                let mut appli = appli_remplie(anglais, sombre);
+                appli.poser(Commande::Changements, &changements_capture(anglais));
+                appli.aller(Ecran::Bilan);
+                prep(&mut appli);
+                let toile = rendu.rendre(TAILLES[0], &[0.0, 0.5, 2.0], |ui| image(&mut appli, None, ui));
+                toile
+                    .ecrire_png(&dossier.join(format!("gestes/{nom}-{langue}-{theme}-1280x800.png")))
+                    .unwrap();
+                faites += 1;
+            };
+            ecrire("apercu-a-lire", &|a| {
+                a.voir_correction(jeton);
+                a.poser_apercu(apercu.as_bytes());
+            });
+            ecrire("apercu-lu", &|a| {
+                a.voir_correction(jeton);
+                a.poser_apercu(apercu.as_bytes());
+                a.vieillir_apercu();
+            });
+            if !sombre {
+                continue;
+            }
+            ecrire("en-cours", &|a| {
+                a.voir_correction(jeton);
+                a.poser_apercu(apercu.as_bytes());
+                a.vieillir_apercu();
+                // Le `vanguard` factice ne part pas : la tâche de l'aperçu est finie à la main avant d'accepter.
+                while a.taches() > 0 {
+                    a.avancer();
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                a.poser_apercu(apercu.as_bytes());
+                a.vieillir_apercu();
+                a.accepter();
+            });
+            ecrire("fait", &|a| {
+                a.voir_correction(jeton);
+                a.poser_issue(
+                    IssueChange::Fait {
+                        relu: Relu::Corrige,
+                        annulation: Some(remise),
+                    },
+                    None,
+                );
+            });
+            ecrire("refus-a-relire", &|a| {
+                a.voir_correction(jeton);
+                a.poser_issue(
+                    IssueChange::Refuse(String::new()),
+                    Some(
+                        crate::tr!(
+                            "Ça a changé pendant que vous lisiez. Rien n'a été fait.",
+                            "It changed while you were reading. Nothing was done."
+                        )
+                        .into(),
+                    ),
+                );
+                a.poser_apercu(apercu.as_bytes());
+            });
+            ecrire("issue-inconnue", &|a| {
+                a.voir_correction(jeton);
+                a.poser_issue(IssueChange::Illisible(crate::tr!("arrêté", "stopped").into()), None);
+            });
+            ecrire("changements", &|a| a.aller(Ecran::Commande(Commande::Changements)));
+            ecrire("remettre", &|a| {
+                a.aller(Ecran::Commande(Commande::Changements));
+                a.voir_annulation(remise);
+                a.poser_apercu(&annulation_capture(anglais));
+                a.vieillir_apercu();
+            });
+            ecrire("remis", &|a| {
+                a.aller(Ecran::Commande(Commande::Changements));
+                a.voir_annulation(remise);
+                a.poser_issue(
+                    IssueChange::Fait {
+                        relu: Relu::Revenu,
+                        annulation: None,
+                    },
+                    None,
+                );
+            });
+        }
+    }
+    crate::langue::choisir(Some(false));
     faites
 }
 
@@ -1363,6 +1519,95 @@ fn la_feuille_de_correction_tient_dans_l_ecran() {
             a.annuler();
             tour(&ctx, &mut a, &mut temps, Vec::new());
             assert_eq!(super::bilan::mises_gardees(&ctx), 0, "{anglais} {droits}");
+        }
+    }
+    crate::langue::choisir(Some(false));
+}
+
+/// Un vrai aperçu de Vanguard 0.93.0 (maison inventée « alice ») d'une clé du compte, au jeton du constat des
+/// captures : il s'applique d'ici.
+fn apercu_du_compte() -> String {
+    let reel = include_str!("../../essais/apercus-noms-guillemets.jsonl")
+        .lines()
+        .find(|l| l.contains("id_x = «y»"))
+        .unwrap();
+    let jeton = serde_json::from_str::<serde_json::Value>(reel).unwrap()["apercu"]["jeton"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    reel.replace(&jeton, JETON_CAPTURES)
+}
+
+/// La feuille ouverte sur un aperçu posé, sans tâche en cours (l'aperçu demandé au clic, qui ne peut pas partir
+/// avec le `vanguard` factice des captures, a fini).
+fn feuille_posee(ctx: &Context, a: &mut Appli, temps: &mut f64, apercu: &[u8]) {
+    let voir = crate::tr!("Voir la correction", "See the fix");
+    cliquer(ctx, a, temps, voir);
+    let debut = std::time::Instant::now();
+    while a.taches() > 0 {
+        assert!(debut.elapsed() < std::time::Duration::from_secs(10));
+        a.avancer();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    a.poser_apercu(apercu);
+    for _ in 0..4 {
+        tour(ctx, a, temps, Vec::new());
+    }
+}
+
+/// « Appliquer cette correction » : écrit pour un aperçu du compte, grisé les 2 premières secondes (un clic ne
+/// lance rien), actif ensuite (un clic envoie, la feuille passe à « en cours » et le bouton disparaît). Pour un aperçu
+/// d'administrateur, ou trop long pour se lire, il n'est pas écrit : la raison l'est à sa place.
+#[test]
+fn le_bouton_qui_change_attend_deux_secondes() {
+    use crate::appli::EtatFeuille;
+    use crate::donnees::correction::Lecture;
+    for anglais in [false, true] {
+        crate::langue::choisir(Some(anglais));
+        let t = |fr: &'static str, en: &'static str| if anglais { en } else { fr };
+        let appliquer = t("Appliquer cette correction", "Apply this fix");
+        let ctx = Context::default();
+        super::polices(&ctx);
+        super::appliquer_theme(&ctx, true);
+        let mut temps = 1.0;
+        let mut a = appli_remplie(anglais, true);
+        a.aller(Ecran::Bilan);
+        tour(&ctx, &mut a, &mut temps, Vec::new());
+        feuille_posee(&ctx, &mut a, &mut temps, apercu_du_compte().as_bytes());
+        let vus = mots(tour(&ctx, &mut a, &mut temps, Vec::new()));
+        assert!(vus.iter().any(|(m, _)| m == appliquer), "{anglais}");
+        cliquer(&ctx, &mut a, &mut temps, appliquer);
+        assert!(
+            matches!(
+                a.feuille_correction().map(|f| &f.etat),
+                Some(EtatFeuille::Lue(Lecture::Lue(_)))
+            ),
+            "{anglais} : accepté avant 2 s"
+        );
+        assert_eq!(a.taches(), 0, "{anglais}");
+        a.vieillir_apercu();
+        let vus = cliquer(&ctx, &mut a, &mut temps, appliquer);
+        assert_eq!(
+            a.feuille_correction().map(|f| &f.etat),
+            Some(&EtatFeuille::Envoi),
+            "{anglais}"
+        );
+        assert_eq!(a.taches(), 1, "{anglais}");
+        assert!(!vus.iter().any(|(m, _)| m == appliquer), "{anglais}");
+        a.annuler();
+        while a.taches() > 0 {
+            a.avancer();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        // Pas d'ici : d'administrateur, ou trop long pour se lire ; même après 2 s, aucun bouton qui change.
+        for droits in ["admin", "compte"] {
+            tour(&ctx, &mut a, &mut temps, Vec::new());
+            feuille_posee(&ctx, &mut a, &mut temps, &apercu_capture(anglais, droits));
+            a.vieillir_apercu();
+            let vus = mots(tour(&ctx, &mut a, &mut temps, Vec::new()));
+            assert!(!vus.iter().any(|(m, _)| m == appliquer), "{anglais} {droits}");
+            a.annuler();
         }
     }
     crate::langue::choisir(Some(false));
