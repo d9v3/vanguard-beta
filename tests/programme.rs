@@ -1533,6 +1533,40 @@ fn tue_apres_la_pose_la_ligne_est_interrompue_et_se_remet() {
     assert_eq!(c.mode(".netrc"), 0o644);
 }
 
+/// Campagne B, P-2 : une annulation ne naît que de ce que Vanguard a posé. Les droits changés par un autre entre la
+/// note et la pose (0644 devenus 0640), la pose est refusée, la ligne n'est pas annulable, aucune note ne reste, et
+/// rien n'est jamais « remis » à 0644.
+#[cfg(unix)]
+#[test]
+fn pose_refusee_ne_laisse_rien_a_annuler() {
+    if !cfg!(debug_assertions) {
+        return essais::saute("arrêt d'essai : binaire de débogage seulement");
+    }
+    let c = Compte::nouveau();
+    let j = c.jeton("~/.netrc");
+    let accord = c.voir(&j);
+    laisser_lire();
+    let (mut enfant, sortie) = c.appliquer_jusqu_a(&j, &accord, "avant-pose");
+    c.poser(".netrc", 0o640);
+    drop(enfant.stdin.take());
+    let statut = enfant.wait().unwrap();
+    let texte = sortie.join().unwrap_or_default();
+    let r: serde_json::Value = serde_json::from_str(texte.lines().last().unwrap_or_default()).unwrap_or_default();
+    assert!(statut.code() == Some(1) && r["issue"] == "echec", "{statut:?} {texte}");
+    assert!(r.get("annulation").is_none(), "{r}");
+    assert_eq!(c.mode(".netrc"), 0o640);
+    let lignes = c.lignes_de_changements();
+    assert_eq!(lignes[0]["etat"], "echoue", "{lignes:?}");
+    assert!(lignes[0]["geste"].is_null(), "{lignes:?}");
+    assert!(
+        lignes.iter().all(|l| l["etat"] != "annulable" && l["geste"].is_null()),
+        "{lignes:?}"
+    );
+    // Le carnet des notes ne garde rien de ce fichier.
+    let carnet = std::fs::read_to_string(c.donnees().join("reglages.json")).unwrap_or_default();
+    assert!(!carnet.contains(".netrc"), "{carnet}");
+}
+
 /// Campagne B, P-1 : tué pendant une deuxième correction entre chaque fichier scellé et son sceau, rien n'est dit
 /// falsifié ni mis de côté, et la première correction, finie, se remet toujours.
 #[cfg(unix)]

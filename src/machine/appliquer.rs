@@ -239,11 +239,15 @@ fn agir(j: &Jeton, accord: &str) -> (Option<String>, Issue) {
     arret_d_essai("avant-pose");
     let pose = poser(&lignes);
     arret_d_essai("apres-pose");
-    let ok = pose.is_ok();
-    crate::optimiser::annulables::apres_application(&[(id.clone(), ok)]);
-    crate::changements::finir(&id, ok);
-    if let Err(e) = pose {
-        return (regle, Issue::Echec(trf!("non fait : {}", "not done: {}", e)));
+    // Une annulation ne naît que de ce que Vanguard a posé : refusée, la note ne garde que les lignes qu'il n'a pas pu
+    // remettre (aucune : elle part). Gardée entière, elle aurait « remis » une valeur changée par un autre, jamais
+    // posée par Vanguard : un relâchement (campagne B, P-2).
+    if let Err(r) = &pose {
+        crate::optimiser::annulables::garder_seulement(&id, &r.encore);
+    }
+    crate::changements::finir(&id, pose.is_ok());
+    if let Err(r) = pose {
+        return (regle, Issue::Echec(trf!("non fait : {}", "not done: {}", r.echec)));
     }
     // 8. La relecture d'après : le constat a-t-il disparu ? Une relecture refusée (autre programme lancé) ne compte
     // pas comme corrigé.
@@ -344,12 +348,20 @@ fn admin_ou_terminal(droits: &str) -> String {
     .to_string()
 }
 
+/// Une pose refusée : la raison, dite ligne par ligne, et le geste de chaque ligne que Vanguard a posée sans pouvoir la
+/// remettre (elle porte encore sa valeur) : seules celles-là restent à annuler.
+#[derive(Debug, PartialEq)]
+struct PoseRefusee {
+    echec: crate::modele::raison::Echec,
+    encore: Vec<String>,
+}
+
 /// Pose chaque ligne, seulement sur la cible et les droits montrés, tout ou rien : une ligne refusée arrête la suite
 /// (rien n'est posé après un état qui n'est plus celui montré) et fait remettre, de la plus récente à la plus
 /// ancienne, celles déjà posées, chacune seulement si elle a encore ce que Vanguard vient d'y poser. L'erreur dit,
 /// ligne par ligne, ce qui a été refusé et ce qui a été remis ou non ; jamais une ligne que Vanguard n'a pas touchée.
 #[cfg(unix)]
-fn poser(lignes: &[Ligne]) -> Result<(), crate::modele::raison::Echec> {
+fn poser(lignes: &[Ligne]) -> Result<(), PoseRefusee> {
     use crate::optimiser::droits;
     let n = lignes.len();
     let rang = |k: usize| k.saturating_add(1);
@@ -368,6 +380,7 @@ fn poser(lignes: &[Ligne]) -> Result<(), crate::modele::raison::Echec> {
         let touchee =
             l.mode != l.avant && droits::lire_identifie(&l.chemin).is_ok_and(|(m, i)| m == l.mode && i == l.identite);
         let a_remettre = if touchee { k.saturating_add(1) } else { k };
+        let mut encore = Vec::new();
         for (j, p) in lignes.iter().enumerate().take(a_remettre).rev() {
             dit.push(
                 match droits::poser_si(&p.chemin, Some(p.mode), Some(p.identite), p.avant) {
@@ -377,27 +390,39 @@ fn poser(lignes: &[Ligne]) -> Result<(), crate::modele::raison::Echec> {
                         rang(j),
                         n
                     ),
-                    Err(e) => trf!(
-                        "ligne {} sur {} NON remise ({}) : elle se remet depuis « Ce que Vanguard a changé »",
-                        "line {} of {} NOT restored ({}): it can be restored from “What Vanguard changed”",
-                        rang(j),
-                        n,
-                        e
-                    ),
+                    Err(e) => {
+                        // Reste à annuler seulement si elle porte encore ce que Vanguard y a posé : changée depuis par
+                        // un autre, ce n'est plus la sienne.
+                        let sienne = p.mode != p.avant
+                            && droits::lire_identifie(&p.chemin).is_ok_and(|(m, i)| m == p.mode && i == p.identite);
+                        if let Some(g) = crate::optimiser::Geste::droits(&p.chemin).filter(|_| sienne) {
+                            encore.push(g.0);
+                        }
+                        trf!(
+                            "ligne {} sur {} NON remise ({}) : elle se remet depuis « Ce que Vanguard a changé »",
+                            "line {} of {} NOT restored ({}): it can be restored from “What Vanguard changed”",
+                            rang(j),
+                            n,
+                            e
+                        )
+                    }
                 },
             );
         }
-        return Err(crate::modele::raison::Echec::echoue("appliquer/poser", dit.join(" ; ")));
+        return Err(PoseRefusee {
+            echec: crate::modele::raison::Echec::echoue("appliquer/poser", dit.join(" ; ")),
+            encore,
+        });
     }
     Ok(())
 }
 
 #[cfg(windows)]
-fn poser(_lignes: &[Ligne]) -> Result<(), crate::modele::raison::Echec> {
-    Err(crate::modele::raison::Echec::refuse(
-        "appliquer/poser",
-        admin_ou_terminal("admin"),
-    ))
+fn poser(_lignes: &[Ligne]) -> Result<(), PoseRefusee> {
+    Err(PoseRefusee {
+        echec: crate::modele::raison::Echec::refuse("appliquer/poser", admin_ou_terminal("admin")),
+        encore: Vec::new(),
+    })
 }
 
 /// Variante d'essai, absente du programme publié (compilé sans `debug_assertions`) : `VANGUARD_ESSAI_ARRET=<étape>`
@@ -571,7 +596,7 @@ mod tests {
         let montree = ligne(&f, 0o644, 0o600);
         let g = fichier(&d, "neuf", 0o644);
         std::fs::rename(&g, &f).unwrap();
-        let e = poser(std::slice::from_ref(&montree)).unwrap_err().to_string();
+        let e = poser(std::slice::from_ref(&montree)).unwrap_err().echec.to_string();
         assert!(e.contains("autre inode"), "{e}");
         assert_eq!(mode(&f), 0o644);
         assert_eq!(poser(&[ligne(&f, 0o644, 0o600)]), Ok(()));
@@ -587,9 +612,10 @@ mod tests {
         let dossier = dossier_d_essai("tout-ou-rien");
         let (f, g) = (fichier(&dossier, "un", 0o644), fichier(&dossier, "deux", 0o640));
         // La deuxième a été montrée à 0644 mais est à 0640 : refusée, rien n'y est posé.
-        let erreur = poser(&[ligne(&f, 0o644, 0o600), ligne(&g, 0o644, 0o600)])
-            .unwrap_err()
-            .to_string();
+        let refus = poser(&[ligne(&f, 0o644, 0o600), ligne(&g, 0o644, 0o600)]).unwrap_err();
+        // Tout remis : rien ne reste à annuler (campagne B, P-2).
+        assert!(refus.encore.is_empty(), "{refus:?}");
+        let erreur = refus.echec.to_string();
         assert_eq!((mode(&f), mode(&g)), (0o644, 0o640));
         assert!(erreur.contains("ligne 2 sur 2 refusée"), "{erreur}");
         assert!(erreur.contains("ligne 1 sur 2 remise comme avant"), "{erreur}");
@@ -609,6 +635,7 @@ mod tests {
         std::fs::set_permissions(&f, std::os::unix::fs::PermissionsExt::from_mode(0o400)).unwrap();
         let erreur = poser(&[ligne(&f, 0o400, 0o600), lignes[1].clone(), lignes[2].clone()])
             .unwrap_err()
+            .echec
             .to_string();
         assert!(erreur.contains("ligne 3 sur 3 refusée"), "{erreur}");
         assert!(erreur.contains("ligne 2 sur 3 remise comme avant"), "{erreur}");

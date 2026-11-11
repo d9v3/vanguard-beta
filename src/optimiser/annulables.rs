@@ -407,6 +407,40 @@ fn apres_application_dans(issues: &[(String, bool)], dossier: &Path) {
     }
 }
 
+/// Après une pose refusée (`machine::appliquer`) : la note `id` ne garde que les valeurs de `gestes`, celles que
+/// Vanguard a posées sans pouvoir les remettre ; sans aucune, elle part. Une annulation ne naît que de ce que Vanguard a
+/// réellement posé : elle ne « remet » jamais une valeur qu'un autre a changée (campagne B, P-2).
+pub(crate) fn garder_seulement(id: &str, gestes: &[String]) {
+    garder_seulement_dans(id, gestes, &crate::reseau::dossier_local());
+}
+
+fn garder_seulement_dans(id: &str, gestes: &[String], dossier: &Path) {
+    let Some(_notes) = tenir_les_notes(dossier) else {
+        return;
+    };
+    let mut h = charger_dans(dossier);
+    let Some(a) = h.reglages.get_mut(id) else {
+        return;
+    };
+    if a.gestes.len() == a.valeurs.len() {
+        let (g, v): (Vec<String>, Vec<Valeur>) = std::mem::take(&mut a.gestes)
+            .into_iter()
+            .zip(std::mem::take(&mut a.valeurs))
+            .filter(|(g, _)| gestes.contains(g))
+            .unzip();
+        a.gestes = g;
+        a.valeurs = v;
+        a.identites.retain(|g, _| gestes.contains(g));
+    } else {
+        // Une forme inattendue : rien n'y est gardé à moitié.
+        a.valeurs.clear();
+    }
+    if a.valeurs.is_empty() {
+        h.reglages.remove(id);
+    }
+    sauver_dans(&h, dossier);
+}
+
 /// Oublie ces notes sans rien défaire : la correction est faite, mais l'enfant l'a dite non annulable (le dernier
 /// élévateur retiré) ; « Tout remettre » ne doit plus la proposer.
 #[cfg(not(windows))]
@@ -1213,6 +1247,28 @@ mod tests {
         let b = note("bilan:b", "2026-11-06", &["droits|/home/alice/.netrc"], &[Some("0644")]);
         assert!(sauver_dans(&historique(vec![a, b.clone()]), &d));
         oublier_dans(&["bilan:a".to_string(), "bilan:absente".to_string()], &d);
+        let relu = charger_dans(&d);
+        assert!(!relu.reglages.contains_key("bilan:a"));
+        assert_eq!(relu.reglages.get("bilan:b"), Some(&b.1));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Campagne B, P-2 : après une pose refusée, la note ne garde que les lignes que Vanguard n'a pas pu remettre ;
+    /// aucune, elle part ; les autres notes restent (mutation : note gardée entière).
+    #[test]
+    fn garder_seulement_ne_garde_que_ce_qui_reste_pose() {
+        let d = dossier("garder-seulement");
+        let (netrc, cle) = ("droits|/home/alice/.netrc", "droits|/home/alice/.ssh/id_essai");
+        let a = note("bilan:a", "2026-11-11", &[netrc, cle], &[Some("0644"), Some("0640")]);
+        let b = note("bilan:b", "2026-11-11", &[netrc], &[Some("0644")]);
+        assert!(sauver_dans(&historique(vec![a, b.clone()]), &d));
+        garder_seulement_dans("bilan:a", &[cle.to_string()], &d);
+        let relu = charger_dans(&d);
+        let gardee = relu.reglages.get("bilan:a").expect("note partie");
+        assert_eq!(gardee.gestes, [cle.to_string()]);
+        assert_eq!(gardee.valeurs.len(), 1);
+        assert_eq!(relu.reglages.get("bilan:b"), Some(&b.1));
+        garder_seulement_dans("bilan:a", &[], &d);
         let relu = charger_dans(&d);
         assert!(!relu.reglages.contains_key("bilan:a"));
         assert_eq!(relu.reglages.get("bilan:b"), Some(&b.1));
