@@ -7,17 +7,24 @@
 //! retirer, 2 remettre), `4 id theme action base rvb(15) langue` (un changement des couleurs de la fenêtre : thème 1
 //! sombre, 2 clair ; action 1 un choix, sa base et ses cinq couleurs, ou 0 celles de Vanguard, base et couleurs
 //! alors toutes à zéro), `5 id reduites langue` (les animations de la fenêtre, gardées : 1 réduites, 0 toutes) ou
+//! `6 id sorte jeton(16) accord(32) langue` (un geste sur un constat du bilan : sorte 10 voir sa correction, dont
+//! l'accord est alors tout à zéro ; le jeton est celui qu'`audit --json` a donné au constat) ou
 //! `2 id` (arrêter). Relais → fenêtre : `1 id texte` (une ligne d'erreur), `3 id pid`
 //! (`vanguard` est lancé, sous ce numéro : pour les coulisses) ou `2 id issue code durée texte sortie` (la fin).
 
 use std::io::{Read, Write};
 use std::time::Duration;
 
-use crate::commandes::{Changement, ChangementCouleurs, Commande, Empreinte, Fin, Issue, Lancement, Sorte};
+use crate::commandes::{
+    Accord, Changement, ChangementCouleurs, Commande, Empreinte, Fin, Geste, Issue, Lancement, Sorte, SorteGeste,
+};
 use crate::couleurs::{Base, Choix, Rgb, Theme, VIFS};
 
-/// Une demande de la fenêtre fait au plus 24 octets (des couleurs) : plus long, c'est hors du protocole.
-pub const DEMANDE_MAX: usize = 32;
+/// Une demande de la fenêtre fait au plus 55 octets (un geste) : plus long, c'est hors du protocole.
+pub const DEMANDE_MAX: usize = 64;
+
+/// La longueur exacte d'une trame de geste : type, id, sorte, jeton, accord, langue.
+const LONGUEUR_GESTE: usize = 1 + 4 + 1 + 16 + 32 + 1;
 
 /// Une demande de la fenêtre.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,6 +95,19 @@ impl Demande {
                 v.push(u8::from(anglais));
                 v
             }
+            Demande::Lancer {
+                id,
+                lancement: Lancement::Geste(g),
+                anglais,
+            } => {
+                let mut v = vec![6];
+                v.extend(id.to_le_bytes());
+                v.push(g.sorte.octet());
+                v.extend(g.jeton.octets());
+                v.extend(g.accord.octets());
+                v.push(u8::from(anglais));
+                v
+            }
             Demande::Arreter { id } => {
                 let mut v = vec![2];
                 v.extend(id.to_le_bytes());
@@ -129,6 +149,11 @@ impl Demande {
                 lancement: Lancement::Animations(langue(5)?),
                 anglais: langue(6)?,
             }),
+            (6, LONGUEUR_GESTE) => Some(Demande::Lancer {
+                id,
+                lancement: Lancement::Geste(geste(o.get(5..54)?)?),
+                anglais: langue(54)?,
+            }),
             (2, 5) => Some(Demande::Arreter { id }),
             _ => None,
         }
@@ -156,6 +181,24 @@ fn couleurs(o: &[u8]) -> Option<ChangementCouleurs> {
         _ => return None,
     };
     Some(ChangementCouleurs { theme, choix })
+}
+
+/// `sorte jeton(16) accord(32)`, strictement : une sorte connue ; pour un « voir », un accord tout à zéro (la
+/// fenêtre n'a rien à accorder : un accord non nul là serait une trame fabriquée). Le jeton n'est que 16 octets :
+/// le relais ne l'admet que s'il vient du dernier bilan, et Vanguard seul sait à quel constat il répond.
+fn geste(o: &[u8]) -> Option<Geste> {
+    let (&[sorte], reste) = o.split_first_chunk::<1>()?;
+    let (jeton, accord) = reste.split_first_chunk::<16>()?;
+    let accord: [u8; 32] = accord.try_into().ok()?;
+    let sorte = SorteGeste::depuis_octet(sorte)?;
+    if sorte.voir() && accord != [0; 32] {
+        return None;
+    }
+    Some(Geste {
+        sorte,
+        jeton: Empreinte::depuis_octets(*jeton),
+        accord: Accord::depuis_octets(accord),
+    })
 }
 
 fn rang(c: Commande) -> u8 {
@@ -371,6 +414,64 @@ mod tests {
         v[0] = 1;
         assert_eq!(Demande::lire(&v), None);
         assert_eq!(Demande::lire(&[3, 0, 0, 0, 0, 1, 0]), None);
+    }
+
+    /// Un geste : aller-retour pour chaque langue et jeton ; les longueurs voisines (54, 56), une sorte inconnue,
+    /// un accord non nul pour un « voir », une langue hors de 0 et 1 : hors du protocole.
+    #[test]
+    fn les_gestes_aller_retour_et_le_reste_refuse() {
+        for anglais in [false, true] {
+            for octets in [[0u8; 16], [0xff; 16], *b"Lecteur\0alice\0\0\0"] {
+                let d = Demande::Lancer {
+                    id: 77,
+                    lancement: Lancement::Geste(Geste::voir_correction(Empreinte::depuis_octets(octets))),
+                    anglais,
+                };
+                let v = d.coder();
+                assert_eq!(v.len(), 55);
+                assert!(v.len() <= DEMANDE_MAX);
+                assert_eq!(Demande::lire(&v), Some(d));
+            }
+        }
+        let bonne = Demande::Lancer {
+            id: 3,
+            lancement: Lancement::Geste(Geste::voir_correction(Empreinte::depuis_octets([7; 16]))),
+            anglais: true,
+        }
+        .coder();
+        for n in 0..bonne.len() {
+            assert_eq!(Demande::lire(&bonne[..n]), None, "{n}");
+        }
+        let mut longue = bonne.clone();
+        longue.push(0);
+        assert_eq!(Demande::lire(&longue), None);
+        // Un mot ou un chemin au bout : refusé (la longueur est exacte).
+        let mut chemin = bonne.clone();
+        chemin.extend(b" --appliquer");
+        assert_eq!(Demande::lire(&chemin), None);
+        // Une sorte inconnue (dont celles des changements au démarrage), une langue hors de 0 et 1.
+        for (i, faux) in [(5, 0u8), (5, 1), (5, 2), (5, 11), (5, 0xff), (54, 2), (54, 0xff)] {
+            let mut v = bonne.clone();
+            v[i] = faux;
+            assert_eq!(Demande::lire(&v), None, "{i} {faux}");
+        }
+        // Un seul octet non nul dans l'accord d'un « voir » : refusé, à chaque place.
+        for i in 22..54 {
+            let mut v = bonne.clone();
+            v[i] = 1;
+            assert_eq!(Demande::lire(&v), None, "{i}");
+        }
+        // Les autres types à la longueur d'un geste, et le type 6 aux longueurs des autres : refusés.
+        for t in [1u8, 2, 3, 4, 5, 7] {
+            let mut v = bonne.clone();
+            v[0] = t;
+            assert_eq!(Demande::lire(&v), None, "{t}");
+        }
+        for n in [5usize, 7, 23, 24] {
+            let mut v = bonne[..n].to_vec();
+            v[0] = 6;
+            assert_eq!(Demande::lire(&v), None, "{n}");
+        }
     }
 
     /// Les animations : aller-retour pour chaque valeur et langue ; une autre longueur ou une valeur autre que 0 ou 1 :

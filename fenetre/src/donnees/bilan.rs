@@ -12,7 +12,7 @@
 use serde::Deserialize;
 
 use super::{Liste, Texte};
-use crate::commandes::{Changement, Empreinte, Sorte};
+use crate::commandes::{Changement, Empreinte, Sorte, SorteGeste};
 
 /// Où un constat se range.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -83,12 +83,13 @@ struct CorrectifBrut {
 }
 
 /// Un changement proposé par un constat (`demarrage --json` : retirer un programme ordinaire, remettre ce que
-/// Vanguard a retiré).
+/// Vanguard a retiré), ou un geste du bilan (`audit --json` : voir la correction, par le jeton du constat).
 #[derive(Deserialize, Default, Debug)]
 #[serde(default)]
 struct GesteBrut {
     sorte: Texte,
     empreinte: Texte,
+    jeton: Texte,
     nom: Texte,
     commande: Texte,
     machine: Option<bool>,
@@ -117,6 +118,13 @@ impl GesteBrut {
             commande: crate::nettoyage::nom(self.commande.as_str(), 160),
             machine: self.machine == Some(true),
         })
+    }
+
+    /// Le jeton d'un « voir la correction », strictement : cette sorte-là et 32 chiffres hexadécimaux minuscules.
+    fn jeton_de_correction(&self) -> Option<Empreinte> {
+        (SorteGeste::lire(self.sorte.as_str())? == SorteGeste::VoirCorrection)
+            .then(|| Empreinte::lire(self.jeton.as_str()))
+            .flatten()
     }
 }
 
@@ -150,6 +158,9 @@ pub struct Constat {
     pub rang: Rang,
     /// Le changement que ce constat propose (un programme au démarrage), s'il est bien formé.
     pub geste: Option<Geste>,
+    /// Le jeton du constat quand Vanguard offre d'en voir la correction (`audit --json`) ; sinon, la carte renvoie
+    /// au terminal.
+    pub correction: Option<Empreinte>,
 }
 
 impl From<ConstatBrut> for Constat {
@@ -189,6 +200,7 @@ impl From<ConstatBrut> for Constat {
             action: b.correctif.map(|c| c.action.0).unwrap_or_default(),
             gravite,
             rang,
+            correction: b.geste.as_ref().and_then(GesteBrut::jeton_de_correction),
             geste: b.geste.and_then(GesteBrut::lire),
         }
     }
@@ -620,6 +632,37 @@ mod tests {
             "null".to_string(),
         ] {
             assert_eq!(constat(&faux), None, "{faux}");
+        }
+    }
+
+    /// Le jeton d'un « voir la correction » n'est lu que bien formé, et jamais pris pour un changement au démarrage
+    /// (ni l'inverse) : une autre sorte, un jeton en majuscules, trop court ou suivi d'un mot, et pas de bouton.
+    #[test]
+    fn un_jeton_de_correction_n_est_lu_que_bien_forme() {
+        let constat = |geste: &str| {
+            let v = lire(
+                format!(r#"{{"systeme": "Linux", "constats": [{{"etat": "probleme", "probleme": "Moyen", "message": "SSH", "geste": {geste}}}]}}"#)
+                    .as_bytes(),
+            )
+            .unwrap();
+            v.constats.into_iter().next().map(|c| (c.correction, c.geste))
+        };
+        let j = "0123456789abcdef0123456789abcdef";
+        assert_eq!(
+            constat(&format!(r#"{{"sorte": "voir-correction", "jeton": "{j}"}}"#)),
+            Some((Empreinte::lire(j), None))
+        );
+        for faux in [
+            format!(r#"{{"sorte": "retirer", "jeton": "{j}"}}"#),
+            format!(r#"{{"sorte": "voir-correction", "empreinte": "{j}"}}"#),
+            format!(r#"{{"sorte": "Voir-correction", "jeton": "{j}"}}"#),
+            format!(r#"{{"sorte": "voir-correction", "jeton": "{}"}}"#, j.to_uppercase()),
+            format!(r#"{{"sorte": "voir-correction", "jeton": "{}"}}"#, &j[..31]),
+            format!(r#"{{"sorte": "voir-correction", "jeton": "{j} --appliquer"}}"#),
+            r#"{"sorte": "voir-correction", "jeton": 12}"#.to_string(),
+            r#"{"sorte": "voir-correction"}"#.to_string(),
+        ] {
+            assert_eq!(constat(&faux), Some((None, None)), "{faux}");
         }
     }
 

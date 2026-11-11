@@ -320,6 +320,9 @@ fn image(appli: &mut Appli, ouverture: Option<&mut super::ouverture::Ouverture>,
     }
 }
 
+/// Le jeton de correction du constat SSH des captures (inventé).
+const JETON_CAPTURES: &str = "00112233445566778899aabbccddeeff";
+
 /// Une fenêtre aux résultats inventés (réseau « Salon », compte « alice », adresses de documentation).
 pub(super) fn appli_remplie(anglais: bool, sombre: bool) -> Appli {
     let mut a = Appli::pour_captures();
@@ -331,7 +334,8 @@ pub(super) fn appli_remplie(anglais: bool, sombre: bool) -> Appli {
         "fiable": true,
         "constats": [
             {"categorie": t("Pare-feu", "Firewall"), "message": t("Pare-feu actif, entrées refusées.", "Firewall on, incoming refused."), "verifie": true, "regle": "LNX-PFE-001", "etat": "sain"},
-            {"categorie": "SSH", "probleme": "Eleve", "message": t("Connexion root permise.", "Root login allowed."), "correctif": {"action": t("Refuser root.", "Refuse root."), "commandes": ["x"], "automatique": false}, "verifie": true, "regle": "LNX-SSH-002", "etat": "probleme"},
+            {"categorie": "SSH", "probleme": "Eleve", "message": t("Connexion root permise.", "Root login allowed."), "correctif": {"action": t("Refuser root.", "Refuse root."), "commandes": ["x"], "automatique": false}, "verifie": true, "regle": "LNX-SSH-002", "etat": "probleme",
+             "geste": {"sorte": "voir-correction", "jeton": JETON_CAPTURES}},
             {"categorie": "SSH", "probleme": "Moyen", "message": t("Mot de passe permis.", "Password login allowed."), "verifie": true, "regle": "LNX-SSH-003", "etat": "probleme"},
             {"categorie": t("Mises à jour", "Updates"), "probleme": "Critique", "message": t("12 paquets en retard.", "12 packages behind."), "verifie": true, "etat": "probleme"},
             {"categorie": t("Comptes", "Accounts"), "probleme": "Info", "message": t("Compte alice sans expiration du mot de passe.", "Account alice has no password expiry."), "verifie": true, "etat": "probleme"},
@@ -588,7 +592,41 @@ fn captures() {
     faites += mouvement(&dossier);
     faites += console(&dossier);
     faites += couleurs(&dossier);
+    faites += correction(&dossier);
     println!("CAPTURES {faites} dans {}", dossier.display());
+}
+
+/// La feuille « Voir la correction » (correction/), en français et en anglais, sombre et clair, aux deux tailles :
+/// un aperçu long (le corps défile, le pied reste), d'une correction qui demande les droits d'administrateur.
+fn correction(dossier: &Path) -> usize {
+    std::fs::create_dir_all(dossier.join("correction")).unwrap();
+    let jeton = crate::commandes::Empreinte::lire(JETON_CAPTURES).unwrap();
+    let mut faites = 0;
+    for taille in TAILLES {
+        for anglais in [false, true] {
+            crate::langue::choisir(Some(anglais));
+            for sombre in [true, false] {
+                let mut rendu = Rendu::nouveau();
+                super::appliquer_theme(&rendu.ctx, sombre);
+                let mut appli = appli_remplie(anglais, sombre);
+                appli.aller(Ecran::Bilan);
+                appli.voir_correction(jeton);
+                appli.poser_apercu(&apercu_capture(anglais, "admin"));
+                let toile = rendu.rendre(taille, &[0.0, 0.5, 2.0], |ui| image(&mut appli, None, ui));
+                let fichier = format!(
+                    "correction/feuille-{}-{}-{}x{}.png",
+                    if anglais { "en" } else { "fr" },
+                    if sombre { "sombre" } else { "clair" },
+                    taille[0],
+                    taille[1]
+                );
+                toile.ecrire_png(&dossier.join(fichier)).unwrap();
+                faites += 1;
+            }
+        }
+    }
+    crate::langue::choisir(Some(false));
+    faites
 }
 
 /// Les couleurs (couleurs/), en français : chaque préréglage et les couleurs du système (inventées), sombre et clair,
@@ -1170,4 +1208,122 @@ fn un_fichier_douteux_ne_propose_rien_et_la_confirmation_fige_le_brouillon() {
         );
         assert_eq!(a.confirmation_couleurs().is_some(), confirmer);
     }
+}
+
+/// Un tour de la fenêtre entière à cette taille ; ses formes.
+fn tour_a(
+    ctx: &Context,
+    appli: &mut Appli,
+    temps: &mut f64,
+    taille: [f32; 2],
+    events: Vec<egui::Event>,
+) -> Vec<epaint::ClippedShape> {
+    *temps += 0.05;
+    let entree = egui::RawInput {
+        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(taille[0], taille[1]))),
+        time: Some(*temps),
+        events,
+        ..Default::default()
+    };
+    let mut sortie = ctx.run_ui(entree, |ui| image(appli, None, ui));
+    sortie.textures_delta.clear();
+    sortie.shapes
+}
+
+/// La réponse inventée de `vanguard correction --voir` : longue exprès (64 commandes, des valeurs d'avant), pour
+/// que le corps doive défiler.
+fn apercu_capture(anglais: bool, droits: &str) -> Vec<u8> {
+    let t = |fr: &'static str, en: &'static str| if anglais { en } else { fr };
+    let commandes: Vec<String> = (0..crate::donnees::correction::COMMANDES_MAX)
+        .map(|i| format!("sed -i 's/^PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config.d/{i:02}.conf"))
+        .collect();
+    let v = serde_json::json!({
+        "geste": "voir-correction", "issue": "fait", "raison": "", "accord": "ab".repeat(32),
+        "apercu": {
+            "version": "0.99.0", "langue": t("fr", "en"), "jeton": JETON_CAPTURES, "cle": "/etc/ssh/sshd_config",
+            "regle": "LNX-SSH-002", "categorie": "SSH", "niveau": "Eleve",
+            "message": t("Connexion root permise.", "Root login allowed."),
+            "action": t("Refuser root.", "Refuse root."), "commandes": commandes, "automatique": true,
+            "droits": droits, "annulable": false,
+            "pourquoi_pas": t("le fichier est réécrit en entier.", "the file is rewritten whole."),
+            "avant": [{"geste": "fichier:/etc/ssh/sshd_config", "valeur": "PermitRootLogin yes"},
+                      {"geste": "fichier:/etc/ssh/sshd_config.d/99.conf", "valeur": null}],
+            "point_de_restauration": false
+        }
+    });
+    v.to_string().into_bytes()
+}
+
+/// « Voir la correction » à 1280×800, en français et en anglais : le bouton de la carte ouvre la feuille ; un
+/// aperçu long défile dans son corps, mais le titre et les boutons restent entiers à l'écran ; « Copier la
+/// commande » seulement quand la correction se fait dans le terminal ; « Annuler » la ferme sans rien lancer.
+#[test]
+fn la_feuille_de_correction_tient_dans_l_ecran() {
+    const TAILLE: [f32; 2] = [1280.0, 800.0];
+    for anglais in [false, true] {
+        crate::langue::choisir(Some(anglais));
+        let t = |fr: &'static str, en: &'static str| if anglais { en } else { fr };
+        for droits in ["admin", "compte", "terminal"] {
+            let ctx = Context::default();
+            super::polices(&ctx);
+            super::appliquer_theme(&ctx, true);
+            let mut temps = 1.0;
+            let mut a = appli_remplie(anglais, true);
+            a.aller(Ecran::Bilan);
+            // Une seule carte offre le geste : celle du constat qui porte un jeton.
+            let vus = mots(tour(&ctx, &mut a, &mut temps, Vec::new()));
+            let voir = t("Voir la correction", "See the fix");
+            assert_eq!(vus.iter().filter(|(m, _)| m == voir).count(), 1, "{anglais}");
+            cliquer(&ctx, &mut a, &mut temps, voir);
+            assert!(a.feuille_correction().is_some(), "{anglais}");
+            a.poser_apercu(&apercu_capture(anglais, droits));
+            assert!(
+                matches!(
+                    a.feuille_correction().map(|f| &f.etat),
+                    Some(crate::appli::EtatFeuille::Lue(
+                        crate::donnees::correction::Lecture::Lue(_)
+                    ))
+                ),
+                "{anglais} {droits}"
+            );
+            let mut vus = Vec::new();
+            for _ in 0..4 {
+                vus = mots(tour_a(&ctx, &mut a, &mut temps, TAILLE, Vec::new()));
+            }
+            let ecran = Rect::from_min_size(Pos2::ZERO, vec2(TAILLE[0], TAILLE[1]));
+            for attendu in [voir, t("Annuler", "Cancel")] {
+                let (_, ou) = vus
+                    .iter()
+                    .find(|(m, _)| m == attendu)
+                    .unwrap_or_else(|| panic!("« {attendu} » absent ({anglais} {droits})"));
+                assert!(
+                    ecran.shrink(8.0).contains(*ou),
+                    "« {attendu} » hors de l'écran : {ou:?}"
+                );
+            }
+            let copier = t("Copier la commande", "Copy the command");
+            let copie = vus.iter().find(|(m, _)| m == copier);
+            assert_eq!(copie.is_some(), droits != "compte", "{anglais} {droits}");
+            if let Some((_, ou)) = copie {
+                assert!(ecran.shrink(8.0).contains(*ou), "« {copier} » hors de l'écran : {ou:?}");
+            }
+            // Le corps défile, le pied reste entier : le bas du bouton (18 points sous son texte) et la marge de la
+            // feuille (22) tiennent au-dessus du bord de l'écran, avec de la place.
+            let annuler = vus.iter().find(|(m, _)| m == t("Annuler", "Cancel")).map(|v| v.1.y);
+            assert!(
+                annuler.is_some_and(|y| y + 18.0 + 22.0 <= TAILLE[1] - 16.0),
+                "{annuler:?}"
+            );
+            // « Annuler » ferme la feuille, rien n'est lancé (la feuille se recentre d'abord à la taille du clic).
+            for _ in 0..3 {
+                tour(&ctx, &mut a, &mut temps, Vec::new());
+            }
+            cliquer(&ctx, &mut a, &mut temps, t("Annuler", "Cancel"));
+            assert!(a.feuille_correction().is_none(), "{anglais} {droits}");
+            // Seul l'aperçu demandé au clic (arrêté par « Annuler ») a pu partir : ni commande ni changement.
+            assert!(a.en_cours().is_none(), "{anglais} {droits}");
+            assert!(a.taches() <= 1);
+        }
+    }
+    crate::langue::choisir(Some(false));
 }

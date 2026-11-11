@@ -400,7 +400,8 @@ fn commande(appli: &mut Appli, ui: &mut Ui, c: Commande) {
         Contenu::Constats(v) => {
             ui.label(texte(&v.resume(), 14.0, p.doux));
             ui.add_space(16.0);
-            bilan::constats(ui, v);
+            // Les outils n'offrent pas de geste : seul l'écran du bilan voit une correction.
+            let _ = bilan::constats(ui, v, false);
         }
         Contenu::Protection(v) => protection_liste(ui, v),
         Contenu::Libre(v) => libre_liste(ui, v),

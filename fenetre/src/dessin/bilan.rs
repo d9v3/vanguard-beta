@@ -8,8 +8,10 @@ use super::{
     bouton, carte, entete, icones, melange, mono, moyenne, n_f32, pal, signale, signale_avec, texte, titre_section,
 };
 use crate::appli::{Appli, Contenu};
-use crate::commandes::Commande;
+use crate::commandes::{Commande, Empreinte};
 use crate::donnees::bilan::{Constat, Gravite, Rang, Vue};
+
+mod correction;
 
 /// Constats montrés au plus dans une carte de côté ; le reste est compté.
 const COTE_MAX: usize = 6;
@@ -386,8 +388,14 @@ pub fn ecran(appli: &mut Appli, ui: &mut Ui) {
         }
     });
     ui.add_space(32.0);
-    if let Some(v) = finie {
-        constats(ui, v);
+    if let Some(v) = finie
+        && let Some(jeton) = constats(ui, v, true)
+    {
+        appli.voir_correction(jeton);
+    }
+    // La feuille « Voir la correction », au-dessus de tout l'écran.
+    if let Some(f) = appli.feuille_correction().cloned() {
+        correction::feuille(appli, ui.ctx(), &f);
     }
 }
 
@@ -438,8 +446,11 @@ fn legende(ui: &mut Ui, v: &Vue, part: f32) {
 
 /// Le détail : à corriger (une carte chacun), ce qui va bien (une puce par sujet), et sur le côté ce qui n'a pas pu
 /// être vérifié et ce qui est bon à savoir.
-pub fn constats(ui: &mut Ui, v: &Vue) {
+/// Les constats d'un bilan ou d'un outil. `offre` : seul l'écran du bilan offre « Voir la correction » ; le jeton
+/// du constat cliqué est rendu (rien n'est lancé ici).
+pub fn constats(ui: &mut Ui, v: &Vue, offre: bool) -> Option<Empreinte> {
     let p = pal();
+    let clic = std::cell::Cell::new(None::<Empreinte>);
     let total = ui.available_width();
     let droite = 360.0_f32.min(total * 0.32);
     // Le haut de la première carte à corriger : la colonne de droite s'y aligne, pas sur le titre de la section.
@@ -451,7 +462,9 @@ pub fn constats(ui: &mut Ui, v: &Vue) {
             titre_section(ui, crate::tr!("À corriger", "To fix"), Some(a_corriger.len()));
             premiere_carte.set(Some(ui.cursor().top()));
             for c in a_corriger.iter().take(CORRIGER_MAX) {
-                carte_constat(ui, c);
+                if carte_constat(ui, c, offre) {
+                    clic.set(c.correction);
+                }
                 ui.add_space(12.0);
             }
             if a_corriger.len() > CORRIGER_MAX {
@@ -559,10 +572,13 @@ pub fn constats(ui: &mut Ui, v: &Vue) {
         ui.add_space(24.0);
         cote(ui, total);
     }
+    clic.get()
 }
 
-fn carte_constat(ui: &mut Ui, c: &Constat) {
+/// Une carte de constat ; vrai si « Voir la correction » a été cliqué.
+fn carte_constat(ui: &mut Ui, c: &Constat, offre: bool) -> bool {
     let p = pal();
+    let mut clique = false;
     carte(ui, 22, |ui| {
         ui.set_width(ui.available_width());
         // Toute la carte s'éclaire : jusqu'à son trait, sous un point de bord.
@@ -601,20 +617,25 @@ fn carte_constat(ui: &mut Ui, c: &Constat) {
                         ui.painter()
                             .line_segment([r.left_top(), r.left_bottom()], Stroke::new(2.0, p.trait_));
                     }
-                    // Pas de bouton mort : la correction se fera ici, plus tard, et la carte le dit.
+                    // Pas de bouton mort : sans jeton offert par Vanguard, la carte renvoie au terminal.
                     ui.add_space(10.0);
-                    ui.label(texte(
-                        crate::tr!(
-                            "La correction viendra ici dans un prochain lot : montrée, puis acceptée.",
-                            "The fix will come here in a later batch: shown, then accepted."
-                        ),
-                        12.0,
-                        p.discret,
-                    ));
+                    if offre && c.correction.is_some() {
+                        clique = super::petit(ui, crate::tr!("Voir la correction", "See the fix"), true).clicked();
+                    } else {
+                        ui.label(texte(
+                            crate::tr!(
+                                "La correction se fait depuis le terminal pour l'instant : vanguard corriger.",
+                                "The fix is done from the terminal for now: vanguard corriger."
+                            ),
+                            12.0,
+                            p.discret,
+                        ));
+                    }
                 });
             })
         });
     });
+    clique
 }
 
 /// Un inventaire sain, une ligne par élément (`Vue::sains_en_liste`) ; au-delà de `LISTE_MAX`, le reste se déplie.

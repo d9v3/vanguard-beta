@@ -21,6 +21,12 @@
 //! ne le coupe pas, la fermeture de la fenêtre non plus : coupé au milieu, il pourrait laisser un programme retiré sans
 //! la note qui le remet. Seul son délai (`Lancement::delai`) l'arrête.
 //!
+//! Un geste sur un constat du bilan (`Lancement::Geste`) part par le jeton qu'`audit --json` a donné au constat, et
+//! seulement si le dernier bilan que le relais a lui-même relayé (réussi) l'offrait avec cette sorte : une fenêtre
+//! prise ne peut demander que ce que Vanguard venait d'offrir, et Vanguard rejuge tout de son côté. Dans ce lot, le
+//! seul geste est « voir la correction » (`correction --voir`), qui ne change rien : il s'arrête comme une lecture, et
+//! la liste offerte ne s'use pas (on peut revoir un aperçu).
+//!
 //! Un changement des couleurs de la fenêtre passe de même seul et sans interruption (`vanguard` écrit le fichier puis
 //! son sceau) ; sa forme est fermée (un thème, une base connue, quinze octets de couleur), et une couleur presque
 //! invisible sur le fond est refusée ici avant de l'être par `vanguard`. Une fenêtre prise peut au pire régler des
@@ -32,7 +38,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
 use std::time::Duration;
 
-use crate::commandes::{Commande, Empreinte, Lancement, Sorte};
+use crate::commandes::{Commande, Empreinte, Lancement, Sorte, SorteGeste};
 use crate::lanceur::{Fin, Issue, Message, Programme, Rendre, Reveil, SORTIE_MAX, Tache};
 use crate::protocole::{
     DEMANDE_MAX, Demande, Reponse, coder_fin, coder_lance, coder_ligne, ecrire_trame, lire_reponse, lire_trame,
@@ -61,6 +67,9 @@ struct Etat {
     /// Les gestes de la dernière liste du démarrage relayée (l'empreinte et la sorte offerte pour elle), vidés quand
     /// un changement part : un changement demande une liste relue après lui.
     vues: HashMap<Empreinte, Sorte>,
+    /// Les gestes offerts par le dernier bilan relayé (`audit --json` fini avec le code 0) : le jeton de chaque
+    /// constat et sa sorte. Remplacés à la fin de chaque bilan, vidés s'il n'a pas réussi.
+    offerts: HashSet<(Empreinte, SorteGeste)>,
 }
 
 impl Etat {
@@ -100,6 +109,22 @@ impl Etat {
                     ));
                 }
                 Some(_) => self.vues.clear(),
+            }
+        }
+        if let Lancement::Geste(g) = lancement {
+            // Un « voir » ne change rien : la liste offerte sert encore (elle n'est pas vidée ici).
+            if !self.offerts.contains(&(g.jeton, g.sorte)) {
+                return Some(if self.offerts.iter().any(|(j, _)| *j == g.jeton) {
+                    crate::tr!(
+                        "le dernier bilan n'offrait pas ce geste pour ce constat : refaites-le",
+                        "the last check did not offer this action for this finding: run it again"
+                    )
+                } else {
+                    crate::tr!(
+                        "constat absent du dernier bilan : refaites-le",
+                        "finding not in the last check: run it again"
+                    )
+                });
             }
         }
         // Des couleurs : revérifiées ici aussi (`vanguard` le refait), une presque invisible sur le fond refusée.
@@ -170,6 +195,50 @@ fn gestes_vus(texte: &[u8]) -> HashMap<Empreinte, Sorte> {
         }
     }
     vus
+}
+
+/// Ce que le relais lit d'un bilan : les gestes de ses constats, rien d'autre (comme `ListeVue`).
+#[derive(serde::Deserialize)]
+struct BilanVu {
+    #[serde(default)]
+    constats: crate::donnees::Liste<ConstatOffert>,
+}
+
+#[derive(serde::Deserialize)]
+struct ConstatOffert {
+    #[serde(default)]
+    geste: Option<GesteOffert>,
+}
+
+#[derive(serde::Deserialize)]
+struct GesteOffert {
+    sorte: String,
+    jeton: String,
+}
+
+/// Les gestes d'une sortie d'`audit --json` : pour chaque constat, le jeton et la sorte lus dans le même objet
+/// `geste`, au fil de l'eau (un message ou un nom, des chaînes, ne fabriquent ni clé ni geste). Un jeton offert deux
+/// fois n'est pas retenu (aucun constat n'est choisi : Vanguard le refuserait aussi) ; un geste incomplet ou d'une
+/// sorte inconnue non plus ; une sortie qui n'est pas du JSON : rien. Borné à `EMPREINTES_MAX`.
+fn gestes_offerts(texte: &[u8]) -> HashSet<(Empreinte, SorteGeste)> {
+    let Ok(bilan) = serde_json::from_slice::<BilanVu>(texte) else {
+        return HashSet::new();
+    };
+    let (mut lus, mut jetons, mut doubles) = (Vec::new(), HashSet::new(), HashSet::new());
+    for g in bilan.constats.elements.into_iter().filter_map(|c| c.geste) {
+        if jetons.len() >= EMPREINTES_MAX {
+            break;
+        }
+        let (Some(sorte), Some(jeton)) = (SorteGeste::lire(&g.sorte), Empreinte::lire(&g.jeton)) else {
+            continue;
+        };
+        if jetons.insert(jeton) {
+            lus.push((jeton, sorte));
+        } else {
+            doubles.insert(jeton);
+        }
+    }
+    lus.into_iter().filter(|(j, _)| !doubles.contains(j)).collect()
 }
 
 static CLIENT: OnceLock<Client> = OnceLock::new();
@@ -315,6 +384,14 @@ fn servir(flux: UnixStream, trouver: impl Fn() -> Result<Programme, String> + Se
                             if fin.lancement == Lancement::Commande(Commande::Demarrage) && fin.issue == Issue::Terminee
                             {
                                 e.vues = gestes_vus(&fin.sortie);
+                            }
+                            // Chaque bilan fini remplace les gestes offerts : seul celui qui a réussi en offre.
+                            if fin.lancement == Lancement::Commande(Commande::Bilan) {
+                                e.offerts = if fin.issue == Issue::Terminee && fin.code == Some(0) {
+                                    gestes_offerts(&fin.sortie)
+                                } else {
+                                    HashSet::new()
+                                };
                             }
                             e.taches.remove(&id);
                         }
@@ -540,7 +617,7 @@ use systeme::dedoubler;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commandes::{Changement, Commande, Empreinte, Sorte};
+    use crate::commandes::{Changement, Commande, Empreinte, Geste, Sorte, SorteGeste};
     use std::time::Instant;
 
     /// Le relais en fil, et une fenêtre qui lui parle : une commande inconnue de lui (pas de `vanguard` voisin) finit
@@ -722,13 +799,16 @@ mod tests {
         assert_eq!(etat.admettre(6, demande(None), &arret), None);
     }
 
-    /// Un faux `vanguard` : la liste lue dans liste.json ; un changement noté dans « changements », qui attend le
-    /// fichier « va » (20 s au plus) puis note « fini » ; toute autre commande attend « va-lecture ».
+    /// Un faux `vanguard` : la liste lue dans liste.json, le bilan dans bilan.json s'il existe ; un changement noté
+    /// dans « changements », qui attend le fichier « va » (20 s au plus) puis note « fini » ; un aperçu de correction
+    /// noté dans « gestes » ; toute autre commande attend « va-lecture ».
     const FAUX_VANGUARD: &str = r#"#!/bin/sh
 d=$(dirname "$0")
 attendre() { i=0; while [ ! -e "$d/$1" ] && [ $i -lt 400 ]; do sleep 0.05; i=$((i+1)); done; }
 case "$1 $2" in
 "demarrage --json") cat "$d/liste.json" ;;
+"audit --json") if [ -e "$d/bilan.json" ]; then cat "$d/bilan.json"; else attendre va-lecture; echo '{}'; fi ;;
+"correction --voir") echo "$@" >> "$d/gestes"; echo '{"geste": "voir-correction", "issue": "fait", "raison": ""}' ;;
 "demarrage --retirer"|"demarrage --remettre") echo "$@" >> "$d/changements"; attendre va; echo fini >> "$d/changements"
   echo "{\"geste\": \"${2#--}\", \"issue\": \"fait\", \"raison\": \"\"}" ;;
 *) attendre va-lecture; echo '{}' ;;
@@ -980,6 +1060,124 @@ esac
                 assert_eq!(gestes_vus(texte.as_bytes()), attendus, "{h:?} : {texte}");
             }
         }
+    }
+
+    /// Les gestes d'un bilan : le jeton (32 chiffres hexadécimaux minuscules) avec sa sorte, lus dans le même objet
+    /// `geste` ; ni sorte inconnue (dont celles du démarrage), ni jeton mal formé, ni geste glissé dans un message ;
+    /// un jeton offert deux fois n'est pas retenu ; borné.
+    #[test]
+    fn seuls_les_gestes_offerts_du_bilan_sont_retenus() {
+        use std::fmt::Write as _;
+        let (j1, j2, j3, j4) = (
+            "0123456789abcdef0123456789abcdef",
+            "a".repeat(32),
+            "b".repeat(32),
+            "d".repeat(32),
+        );
+        let bilan = format!(
+            r#"{{"score": 80, "constats": [{{"regle": "SSH-001", "geste": {{"sorte": "voir-correction", "jeton": "{j1}"}}}},
+            {{"geste": {{"jeton": "{j2}", "sorte": "voir-correction"}}}}, {{"geste": {{"sorte": "retirer", "jeton": "{j3}"}}}},
+            {{"geste": {{"sorte": "voir-correction", "empreinte": "{j3}"}}}}, {{"geste": {{"jeton": "{j3}"}}}},
+            {{"message": "x\", \"geste\": {{\"sorte\": \"voir-correction\", \"jeton\": \"{j4}\"}}"}},
+            {{"geste": {{"sorte": "voir-correction", "jeton": "{j4}"}}}}, {{"geste": {{"sorte": "voir-correction", "jeton": "{j4}"}}}},
+            {{"geste": {{"sorte": "voir-correction", "jeton": "{}"}}}}, {{"geste": {{"sorte": "voir-correction", "jeton": "{}"}}}},
+            {{"geste": {{"sorte": "voir-correction", "jeton": 7}}}}, {{"jeton": "{j3}", "sorte": "voir-correction"}}, "geste"]}}"#,
+            "C".repeat(32),
+            "c".repeat(33)
+        );
+        let attendus: HashSet<(Empreinte, SorteGeste)> = [j1, j2.as_str()]
+            .into_iter()
+            .filter_map(|j| Some((Empreinte::lire(j)?, SorteGeste::VoirCorrection)))
+            .collect();
+        assert_eq!(gestes_offerts(bilan.as_bytes()), attendus);
+        for rien in [
+            &b""[..],
+            b"\"jeton\"",
+            b"{\"constats\": 7}",
+            b"[1, 2]",
+            b"une ligne\n{\"constats\": []}",
+        ] {
+            assert!(gestes_offerts(rien).is_empty());
+        }
+        let mut beaucoup = String::from(r#"{"constats": ["#);
+        for i in 0..EMPREINTES_MAX + 10 {
+            let _ = write!(
+                beaucoup,
+                r#"{{"geste": {{"sorte": "voir-correction", "jeton": "{i:032x}"}}}},"#
+            );
+        }
+        beaucoup.push_str("{}]}");
+        assert_eq!(gestes_offerts(beaucoup.as_bytes()).len(), EMPREINTES_MAX);
+    }
+
+    /// Un geste n'est admis que pour un jeton offert par le dernier bilan, avec sa sorte ; un « voir » n'use pas la
+    /// liste, n'est pas un changement (« Arrêter » le coupe) et ne passe pas pendant un changement.
+    #[test]
+    fn un_geste_que_le_bilan_n_offrait_pas_est_refuse() {
+        let j = Empreinte::lire("0123456789abcdef0123456789abcdef").unwrap();
+        let autre = Empreinte::lire(&"f".repeat(32)).unwrap();
+        let arret = Arc::new(AtomicBool::new(false));
+        let voir = |j| Lancement::Geste(Geste::voir_correction(j));
+        let mut etat = Etat::default();
+        assert!(etat.admettre(1, voir(j), &arret).is_some(), "sans bilan");
+        etat.offerts = [(j, SorteGeste::VoirCorrection)].into();
+        assert!(etat.admettre(2, voir(autre), &arret).is_some(), "jeton non offert");
+        assert!(etat.taches.is_empty());
+        assert_eq!(etat.admettre(3, voir(j), &arret), None);
+        assert!(!etat.taches[&3].changement);
+        etat.taches.clear();
+        assert_eq!(etat.admettre(4, voir(j), &arret), None, "la liste sert encore");
+        etat.taches.clear();
+        let e = Empreinte::lire(&"e".repeat(32)).unwrap();
+        etat.vues = [(e, Sorte::Retirer)].into();
+        let ch = Lancement::Changement(Changement {
+            sorte: Sorte::Retirer,
+            empreinte: e,
+        });
+        assert_eq!(etat.admettre(5, ch, &arret), None);
+        assert!(etat.admettre(6, voir(j), &arret).is_some(), "pendant un changement");
+    }
+
+    /// Pour de vrai, avec le faux `vanguard` : un aperçu demandé avant tout bilan, ou pour un jeton que le bilan
+    /// n'offrait pas, est refusé sans rien lancer ; après le bilan, il part avec la forme fixe `correction --voir
+    /// <jeton> --json` ; un bilan suivant qui n'offre plus rien retire le geste.
+    #[test]
+    fn le_relais_ne_voit_que_les_corrections_du_dernier_bilan() {
+        let (j1, j2) = ("0123456789abcdef0123456789abcdef", "f".repeat(32));
+        let (d, c, serveur) = banc_du_relais("relais-gestes", "{}");
+        std::fs::write(
+            d.join("bilan.json"),
+            format!(r#"{{"constats": [{{"geste": {{"sorte": "voir-correction", "jeton": "{j1}"}}}}]}}"#),
+        )
+        .unwrap();
+        let rien: Reveil = Arc::new(|| {});
+        let voir = |j: &str| Lancement::Geste(Geste::voir_correction(Empreinte::lire(j).unwrap()));
+        let gestes = || std::fs::read_to_string(d.join("gestes")).unwrap_or_default();
+        let avant = attendre_fin(&c.lancer(voir(j1), false, &rien));
+        let rien_lance = gestes();
+        let bilan = attendre_fin(&c.lancer(Commande::Bilan.into(), false, &rien));
+        let autre = attendre_fin(&c.lancer(voir(&j2), false, &rien));
+        let vu = attendre_fin(&c.lancer(voir(j1), true, &rien));
+        let lances = gestes();
+        std::fs::write(d.join("bilan.json"), r#"{"constats": []}"#).unwrap();
+        let _ = attendre_fin(&c.lancer(Commande::Bilan.into(), false, &rien));
+        let apres = attendre_fin(&c.lancer(voir(j1), false, &rien));
+        let lances_apres = gestes();
+        c.fermer();
+        serveur.join().unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(
+            matches!(&avant.issue, Issue::Impossible(r) if r.contains("bilan")),
+            "{:?}",
+            avant.issue
+        );
+        assert!(rien_lance.is_empty(), "{rien_lance}");
+        assert_eq!((&bilan.issue, bilan.code), (&Issue::Terminee, Some(0)));
+        assert!(matches!(&autre.issue, Issue::Impossible(_)), "{:?}", autre.issue);
+        assert_eq!((&vu.issue, vu.code), (&Issue::Terminee, Some(0)), "{:?}", vu.issue);
+        assert_eq!(lances, format!("correction --voir {j1} --json\n"));
+        assert!(matches!(&apres.issue, Issue::Impossible(_)), "{:?}", apres.issue);
+        assert_eq!(lances_apres, lances);
     }
 
     fn attendre_fin(t: &Tache) -> Fin {

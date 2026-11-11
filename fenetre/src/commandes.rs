@@ -700,6 +700,102 @@ impl Empreinte {
     }
 }
 
+/// Un geste sur un constat du bilan, désigné par son jeton (`audit --json`). Une liste fermée : la fenêtre ne
+/// fabrique jamais un geste d'un nom, d'un chemin ni d'un message. Dans ce lot, un seul, qui ne change rien.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum SorteGeste {
+    /// `correction --voir <jeton> --json` : l'aperçu d'une correction, lecture seule.
+    VoirCorrection,
+}
+
+impl SorteGeste {
+    const TOUTES: [SorteGeste; 1] = [SorteGeste::VoirCorrection];
+
+    /// Le mot de Vanguard (« sorte » du geste offert, « geste » de l'issue).
+    pub fn mot(self) -> &'static str {
+        match self {
+            SorteGeste::VoirCorrection => "voir-correction",
+        }
+    }
+
+    /// Lit le mot écrit par Vanguard ; tout autre : rien.
+    pub fn lire(mot: &str) -> Option<SorteGeste> {
+        SorteGeste::TOUTES.into_iter().find(|s| s.mot() == mot)
+    }
+
+    // Le protocole du relais n'existe que sous Linux (les essais le lisent partout).
+    #[cfg(any(target_os = "linux", test))]
+    /// L'octet du protocole du relais (10 : voir une correction ; les suivants viendront avec leurs lots).
+    pub fn octet(self) -> u8 {
+        match self {
+            SorteGeste::VoirCorrection => 10,
+        }
+    }
+
+    // Le protocole du relais n'existe que sous Linux (les essais le lisent partout).
+    #[cfg(any(target_os = "linux", test))]
+    pub fn depuis_octet(o: u8) -> Option<SorteGeste> {
+        SorteGeste::TOUTES.into_iter().find(|s| s.octet() == o)
+    }
+
+    /// Un « voir » : il ne change rien, s'interrompt comme une lecture, et son accord est tout à zéro.
+    pub fn voir(self) -> bool {
+        match self {
+            SorteGeste::VoirCorrection => true,
+        }
+    }
+}
+
+/// L'accord d'un aperçu : les 32 octets (64 chiffres) que Vanguard calcule sur tout ce qu'il a montré. La fenêtre le
+/// garde tel quel ; elle ne le calcule pas et n'en déduit rien. Tout à zéro pour un « voir ».
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct Accord([u8; 32]);
+
+impl Accord {
+    pub const NUL: Accord = Accord([0; 32]);
+
+    // Le protocole du relais n'existe que sous Linux (les essais le lisent partout).
+    #[cfg(any(target_os = "linux", test))]
+    pub fn depuis_octets(o: [u8; 32]) -> Accord {
+        Accord(o)
+    }
+
+    // Le protocole du relais n'existe que sous Linux (les essais le lisent partout).
+    #[cfg(any(target_os = "linux", test))]
+    pub fn octets(self) -> [u8; 32] {
+        self.0
+    }
+
+    /// Exactement 64 chiffres hexadécimaux minuscules ; tout autre texte : rien.
+    pub fn lire(texte: &str) -> Option<Accord> {
+        let (moitie_a, moitie_b) = (texte.get(..32)?, texte.get(32..)?);
+        let (a, b) = (Empreinte::lire(moitie_a)?, Empreinte::lire(moitie_b)?);
+        let mut o = [0u8; 32];
+        o[..16].copy_from_slice(&a.0);
+        o[16..].copy_from_slice(&b.0);
+        Some(Accord(o))
+    }
+}
+
+/// Un geste demandé par un clic : sa sorte, le jeton du constat, et l'accord (tout à zéro pour un « voir »).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Geste {
+    pub sorte: SorteGeste,
+    pub jeton: Empreinte,
+    pub accord: Accord,
+}
+
+impl Geste {
+    /// Voir la correction de ce constat.
+    pub fn voir_correction(jeton: Empreinte) -> Geste {
+        Geste {
+            sorte: SorteGeste::VoirCorrection,
+            jeton,
+            accord: Accord::NUL,
+        }
+    }
+}
+
 /// Un changement demandé après confirmation : un seul programme, par son empreinte.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Changement {
@@ -724,6 +820,8 @@ pub enum Lancement {
     Changement(Changement),
     Couleurs(ChangementCouleurs),
     Animations(bool),
+    /// Un geste sur un constat du bilan (`Geste`), par son jeton.
+    Geste(Geste),
 }
 
 impl From<Commande> for Lancement {
@@ -775,12 +873,25 @@ impl Lancement {
                 let mot = if reduites { "reduites" } else { "toutes" };
                 ["couleurs", "--animations", mot, "--json"].map(str::to_string).to_vec()
             }
+            // Une forme fixe par sorte, le jeton en 32 chiffres construit ici depuis ses octets.
+            Lancement::Geste(g) => match g.sorte {
+                SorteGeste::VoirCorrection => vec![
+                    "correction".to_string(),
+                    "--voir".to_string(),
+                    g.jeton.hex(),
+                    "--json".to_string(),
+                ],
+            },
         }
     }
 
     /// Un changement (au démarrage, des couleurs ou des animations) : il passe seul, et ne s'interrompt pas.
     pub fn change(self) -> bool {
-        !matches!(self, Lancement::Commande(_))
+        match self {
+            Lancement::Commande(_) => false,
+            Lancement::Geste(g) => !g.sorte.voir(),
+            Lancement::Changement(_) | Lancement::Couleurs(_) | Lancement::Animations(_) => true,
+        }
     }
 
     /// Un changement attend peut-être le mot de passe dans la fenêtre administrateur (Windows) : quinze minutes. C'est
@@ -791,6 +902,8 @@ impl Lancement {
             Lancement::Changement(_) => Duration::from_mins(15),
             // Écrire un petit fichier, scellé.
             Lancement::Couleurs(_) | Lancement::Animations(_) => Duration::from_mins(1),
+            // Une seule règle relue : quelques secondes, deux minutes pour une règle lente.
+            Lancement::Geste(_) => Duration::from_mins(2),
         }
     }
 
@@ -804,6 +917,7 @@ impl Lancement {
             Lancement::Commande(c) => c,
             Lancement::Changement(_) => Commande::Demarrage,
             Lancement::Couleurs(_) | Lancement::Animations(_) => Commande::Couleurs,
+            Lancement::Geste(_) => Commande::Bilan,
         }
     }
 }
@@ -1101,6 +1215,37 @@ mod tests {
         assert_eq!(Sorte::lire("tout-retirer"), None);
         assert_eq!(Sorte::depuis_octet(0), None);
         assert_eq!(Sorte::depuis_octet(3), None);
+    }
+
+    /// « Voir la correction » : `correction --voir <jeton> --json`, rien d'autre ; pas un changement ; son mot et son
+    /// octet se relisent, les autres non ; un accord se lit en 64 chiffres minuscules exactement.
+    #[test]
+    fn voir_une_correction_a_sa_forme_fermee() {
+        let texte = "0123456789abcdef0123456789abcdef";
+        let j = Empreinte::lire(texte).unwrap();
+        let l = Lancement::Geste(Geste::voir_correction(j));
+        assert_eq!(l.arguments(), ["correction", "--voir", texte, "--json"]);
+        assert_eq!(l.commande(), Commande::Bilan);
+        assert!(!l.change());
+        for s in SorteGeste::TOUTES {
+            assert_eq!(SorteGeste::lire(s.mot()), Some(s));
+            assert_eq!(SorteGeste::depuis_octet(s.octet()), Some(s));
+        }
+        assert_eq!(SorteGeste::lire("Voir-correction"), None);
+        for o in [0, 1, 2, 9, 11, 255] {
+            assert_eq!(SorteGeste::depuis_octet(o), None);
+        }
+        let a = Accord::lire(&"ab".repeat(32)).unwrap();
+        assert_eq!(Accord::depuis_octets(a.octets()), a);
+        assert_eq!(a.octets(), [0xab; 32]);
+        for faux in [
+            "AB".repeat(32),
+            "ab".repeat(31),
+            "ab".repeat(33),
+            format!("{}zz", "ab".repeat(31)),
+        ] {
+            assert_eq!(Accord::lire(&faux), None, "{faux}");
+        }
     }
 
     #[test]

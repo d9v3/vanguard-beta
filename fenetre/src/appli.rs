@@ -10,6 +10,10 @@
 //! jamais, `vanguard couleurs` les revérifie et les enregistre ; elle les relit ensuite de sa réponse, comme au
 //! lancement. La valeur d'avant reste offerte pour revenir en arrière (`revenir_couleurs`).
 //!
+//! « Voir la correction » d'un constat du bilan (`voir_correction`) ouvre une feuille en lecture seule : la fenêtre
+//! demande l'aperçu à `vanguard` par le jeton du constat (`correction --voir`), qui rejuge tout et ne change rien. La
+//! feuille n'a qu'« Annuler » dans ce lot : appliquer viendra avec le suivant.
+//!
 //! Les animations aussi sont gardées par `vanguard` (`couleurs --animations`), relues dans la même réponse au
 //! lancement. Un clic sur « Réduites » ou « Toutes » est tout le geste : il vaut tout de suite pour la fenêtre, et
 //! son enregistrement part dès que rien ne tourne (`regler_animations`), sans confirmation, car il ne touche que
@@ -18,12 +22,15 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
-use crate::commandes::{self, Changement, ChangementCouleurs, Commande, Forme, Lancement, Rubrique, Saisie, Sorte};
+use crate::commandes::{
+    self, Changement, ChangementCouleurs, Commande, Empreinte, Forme, Geste, Lancement, Rubrique, Saisie, Sorte,
+    SorteGeste,
+};
 use crate::console::{self, Console};
 use crate::couleurs::{Choix, Jeu, Theme};
 use crate::coulisses::{Chemin, Coulisses};
 use crate::donnees::couleurs::{IssueAnimations, IssueCouleurs, Lues};
-use crate::donnees::{appareils, bilan, evenements, libre, protection};
+use crate::donnees::{appareils, bilan, correction, evenements, libre, protection};
 use crate::lanceur::{Fin, Issue, Message, Programme, Reveil, Tache};
 
 /// Saisies gardées pour ↑.
@@ -99,6 +106,26 @@ enum Proposition {
     Demarrage(bilan::Geste),
     /// Les couleurs d'un thème : le changement, et la valeur montrée comme « avant ».
     Couleurs(ChangementCouleurs, Option<Choix>),
+    /// L'aperçu d'une correction, en lecture seule (rien à accepter dans ce lot).
+    Correction(FeuilleCorrection),
+}
+
+/// La feuille « Voir la correction » : le jeton du constat, et où en est l'aperçu.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FeuilleCorrection {
+    pub jeton: Empreinte,
+    pub etat: EtatFeuille,
+}
+
+/// Où en est l'aperçu d'une feuille.
+#[derive(Clone, Debug, PartialEq)]
+pub enum EtatFeuille {
+    /// Demandé à `vanguard` (`lance`), ou en attente que la commande en cours finisse.
+    Attente { lance: bool },
+    /// La réponse de `vanguard`, lue strictement (`donnees::correction`).
+    Lue(correction::Lecture),
+    /// Pas de réponse : arrêté, trop long, pas pu lancer.
+    Echec(String),
 }
 
 pub struct Appli {
@@ -163,7 +190,13 @@ impl Appli {
     }
 
     /// Revient à l'écran d'avant (une confirmation ouverte se ferme, comme avec `aller`) ; sans écran d'avant, rien.
+    /// Une feuille « Voir la correction » ouverte se ferme seule, sans changer d'écran.
     pub fn revenir(&mut self) {
+        // Échap sur la feuille « Voir la correction » ne ferme qu'elle : l'écran du bilan reste sous les yeux.
+        if self.feuille_correction().is_some() {
+            self.annuler();
+            return;
+        }
         if let Some(e) = self.retours.pop() {
             self.annuler();
             self.abandonner_brouillon();
@@ -247,6 +280,15 @@ impl Appli {
             false,
         ));
         a
+    }
+
+    /// Pour les captures : la réponse de `vanguard correction --voir` posée dans la feuille ouverte, lue comme une
+    /// vraie (données inventées).
+    #[cfg(test)]
+    pub fn poser_apercu(&mut self, sortie: &[u8]) {
+        if let Some(Proposition::Correction(f)) = &mut self.confirmation {
+            f.etat = EtatFeuille::Lue(correction::lire(f.jeton, Some(0), sortie));
+        }
     }
 
     /// Pour les captures : un résultat posé comme si `vanguard` l'avait rendu (données inventées).
@@ -369,8 +411,13 @@ impl Appli {
     }
 
     /// La commande en cours et depuis quand (un changement au démarrage compte pour l'écran du démarrage).
+    /// Un aperçu de correction ne compte pour aucun écran (le bilan n'est pas « en cours ») : sa feuille dit son
+    /// attente.
     pub fn en_cours(&self) -> Option<(Commande, Duration)> {
-        self.tache.as_ref().map(|t| (t.lancement.commande(), t.debut.elapsed()))
+        self.tache
+            .as_ref()
+            .filter(|t| !matches!(t.lancement, Lancement::Geste(_)))
+            .map(|t| (t.lancement.commande(), t.debut.elapsed()))
     }
 
     /// Un changement peut-il être proposé maintenant ? Seulement quand rien ne tourne ni n'attend, et qu'aucune
@@ -393,6 +440,64 @@ impl Appli {
             Some(Proposition::Couleurs(cc, avant)) => Some((*cc, *avant)),
             _ => None,
         }
+    }
+
+    /// La feuille « Voir la correction » ouverte, s'il y en a une.
+    pub fn feuille_correction(&self) -> Option<&FeuilleCorrection> {
+        match &self.confirmation {
+            Some(Proposition::Correction(f)) => Some(f),
+            _ => None,
+        }
+    }
+
+    /// Le constat de ce jeton est-il dans le dernier bilan lu ? Seul un jeton de ce bilan ouvre une feuille.
+    fn dans_le_bilan(&self, jeton: Empreinte) -> bool {
+        self.bilan()
+            .is_some_and(|v| v.constats.iter().any(|c| c.correction == Some(jeton)))
+    }
+
+    /// « Voir la correction » : ouvre la feuille et demande l'aperçu dès que rien ne tourne. Seulement pour un
+    /// constat du dernier bilan, et sans autre confirmation ouverte ; rien ne change sur l'ordinateur.
+    pub fn voir_correction(&mut self, jeton: Empreinte) {
+        if self.programme.is_err() {
+            return;
+        }
+        if self.confirmation.is_some() {
+            self.pas_maintenant();
+            return;
+        }
+        if !self.dans_le_bilan(jeton) {
+            self.dire(
+                "bilan",
+                crate::tr!(
+                    "Ce constat n'est plus dans le dernier bilan : refaites-le.",
+                    "This finding is no longer in the last check: run it again."
+                ),
+                Ton::Attention,
+            );
+            return;
+        }
+        self.confirmation = Some(Proposition::Correction(FeuilleCorrection {
+            jeton,
+            etat: EtatFeuille::Attente { lance: false },
+        }));
+        if self.tache.is_none() && self.file.is_empty() {
+            self.lancer_correction();
+        }
+    }
+
+    /// Lance l'aperçu de la feuille ouverte, s'il attend encore son tour.
+    fn lancer_correction(&mut self) -> bool {
+        let Some(Proposition::Correction(f)) = &mut self.confirmation else {
+            return false;
+        };
+        if f.etat != (EtatFeuille::Attente { lance: false }) {
+            return false;
+        }
+        f.etat = EtatFeuille::Attente { lance: true };
+        let jeton = f.jeton;
+        self.lancer(Lancement::Geste(Geste::voir_correction(jeton)));
+        true
     }
 
     /// Les couleurs réglées et ce que `vanguard` en a dit.
@@ -556,13 +661,24 @@ impl Appli {
         match self.confirmation.take() {
             Some(Proposition::Demarrage(g)) => self.lancer(Lancement::Changement(g.changement)),
             Some(Proposition::Couleurs(cc, _)) => self.lancer(Lancement::Couleurs(cc)),
+            // Rien à accepter dans un aperçu : la feuille reste ouverte, rien n'est lancé.
+            Some(p @ Proposition::Correction(_)) => self.confirmation = Some(p),
             None => {}
         }
     }
 
     /// « Annuler » : ferme la confirmation, rien n'est lancé.
     pub fn annuler(&mut self) {
-        if self.confirmation.take().is_some() {
+        let fermee = self.confirmation.take();
+        // Un aperçu encore en lecture n'a plus personne pour le lire : il s'arrête (il ne change rien).
+        if let Some(Proposition::Correction(f)) = &fermee
+            && let Some(t) = &self.tache
+            && t.lancement == Lancement::Geste(Geste::voir_correction(f.jeton))
+            && !t.arret_demande()
+        {
+            t.arreter();
+        }
+        if fermee.is_some() {
             self.dire(
                 "fenêtre",
                 crate::tr!("Annulé : rien n'a changé.", "Cancelled: nothing changed."),
@@ -631,6 +747,8 @@ impl Appli {
         if self.tache.is_none() {
             if let Some(reduites) = self.animations_a_garder.take() {
                 self.lancer(Lancement::Animations(reduites));
+            } else if self.file.is_empty() && self.lancer_correction() {
+                // L'aperçu demandé pendant une commande part à sa fin.
             } else if let Some(c) = self.file.pop_front() {
                 self.lancer(c.into());
             } else if self.programme.is_ok() && self.dernier_sondage.elapsed() >= SONDAGE {
@@ -650,6 +768,7 @@ impl Appli {
             Lancement::Changement(ch) => return self.finir_changement(ch, f),
             Lancement::Couleurs(cc) => return self.finir_couleurs(cc, f),
             Lancement::Animations(reduites) => return self.finir_animations(reduites, f),
+            Lancement::Geste(g) => return self.finir_geste(g, f),
         };
         let contenu = match &f.issue {
             Issue::Terminee => match lire(c, &f.sortie) {
@@ -774,6 +893,62 @@ impl Appli {
             },
         );
         self.demander(Commande::Demarrage);
+    }
+
+    /// La fin d'un aperçu : une ligne de la console, et la feuille remplie si c'est bien la sienne (fermée entre-temps,
+    /// ou pour un autre constat : la réponse est laissée).
+    fn finir_geste(&mut self, g: Geste, f: &Fin) {
+        let etat = match (&f.issue, g.sorte) {
+            (Issue::Terminee, SorteGeste::VoirCorrection) => {
+                EtatFeuille::Lue(correction::lire(g.jeton, f.code, &f.sortie))
+            }
+            (Issue::Arretee, _) => EtatFeuille::Echec(crate::tr!("arrêté", "stopped").to_string()),
+            (Issue::DelaiDepasse, _) => EtatFeuille::Echec(crate::trf!(
+                "arrêté : plus de {} s sans finir",
+                "stopped: more than {} s without finishing",
+                Lancement::Geste(g).delai().as_secs()
+            )),
+            (Issue::TropLongue, _) => {
+                EtatFeuille::Echec(crate::tr!("réponse trop longue", "answer too long").to_string())
+            }
+            (Issue::Impossible(e), _) => {
+                EtatFeuille::Echec(crate::trf!("pas pu lancer : {}", "could not start: {}", e))
+            }
+        };
+        let (resume, ton, echec) = match &etat {
+            EtatFeuille::Lue(correction::Lecture::Lue(_)) => (
+                crate::tr!("Aperçu prêt : rien n'a changé.", "Preview ready: nothing changed.").to_string(),
+                Ton::Bon,
+                false,
+            ),
+            EtatFeuille::Lue(correction::Lecture::Refusee(r)) => (
+                crate::trf!("Pas d'aperçu : {}", "No preview: {}", r),
+                Ton::Attention,
+                false,
+            ),
+            EtatFeuille::Lue(correction::Lecture::Illisible(r)) | EtatFeuille::Echec(r) => (
+                crate::trf!("Pas d'aperçu : {}", "No preview: {}", r),
+                Ton::Attention,
+                true,
+            ),
+            EtatFeuille::Attente { .. } => (String::new(), Ton::Discret, true),
+        };
+        self.console.finir(
+            f.lancement,
+            console::Fini {
+                resume,
+                ton,
+                points: Vec::new(),
+                duree: f.duree,
+                echec,
+            },
+        );
+        if let Some(Proposition::Correction(feuille)) = &mut self.confirmation
+            && feuille.jeton == g.jeton
+            && feuille.etat == (EtatFeuille::Attente { lance: true })
+        {
+            feuille.etat = etat;
+        }
     }
 
     /// Les couleurs relues (`vanguard couleurs --json`) : elles valent pour la fenêtre dès l'image suivante. Une
@@ -1485,6 +1660,108 @@ esac
             a.avancer();
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    /// Un faux `vanguard` pour l'aperçu d'une correction : le bilan, et chaque aperçu noté dans un fichier.
+    #[cfg(unix)]
+    const FAUX_CORRECTION: &str = r#"#!/bin/sh
+case "$1 $2" in
+"audit --json") cat bilan.json ;;
+"correction --voir") echo "$@" >> apercus
+  [ -f lent ] && sleep 30
+  printf '{"geste":"voir-correction","issue":"refuse","raison":"ce problème a disparu"}\n'; exit 1 ;;
+*) exit 7 ;;
+esac
+"#;
+
+    /// « Voir la correction » : seulement pour un jeton du dernier bilan ; attend la commande en cours ; la réponse
+    /// remplit la feuille ; « Accepter » n'y fait rien ; « Annuler » et Échap la ferment (et arrêtent l'aperçu
+    /// encore en lecture) sans changer d'écran.
+    #[cfg(unix)]
+    #[test]
+    fn la_feuille_de_correction_ne_montre_que_le_dernier_bilan() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let d = crate::essais::banc("feuille-correction");
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let j1 = "0123456789abcdef0123456789abcdef";
+        let j2 = "fedcba9876543210fedcba9876543210";
+        let script = d.join("vanguard");
+        std::fs::write(&script, FAUX_CORRECTION).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let moi = std::fs::metadata(&d).unwrap().uid();
+        let p = Programme::dans(&d, moi).unwrap();
+        let mut a = Appli::nouvelle(Ok(p), std::sync::Arc::new(|| {}));
+        finir_tout(&mut a);
+        a.aller(Ecran::Bilan);
+        let apercus = || std::fs::read_to_string(d.join("apercus")).unwrap_or_default();
+        let e1 = Empreinte::lire(j1).unwrap();
+        let e2 = Empreinte::lire(j2).unwrap();
+
+        // Sans bilan (celui de l'ouverture n'a rien rendu), puis pour un jeton absent du bilan : rien ne s'ouvre ni
+        // ne se lance.
+        assert!(a.bilan().is_none());
+        a.voir_correction(e1);
+        assert!(a.feuille_correction().is_none());
+        std::fs::write(
+            d.join("bilan.json"),
+            format!(
+                r#"{{"systeme": "Linux", "constats": [{{"etat": "probleme", "probleme": "Moyen", "message": "SSH",
+                "geste": {{"sorte": "voir-correction", "jeton": "{j1}"}}}}]}}"#
+            ),
+        )
+        .unwrap();
+        a.demander(Commande::Bilan);
+        finir_tout(&mut a);
+        a.voir_correction(e2);
+        assert!(a.feuille_correction().is_none());
+        assert_eq!(apercus(), "");
+
+        // Une commande tourne : la feuille attend son tour, puis l'aperçu part seul et la remplit.
+        a.demander(Commande::Bilan);
+        a.voir_correction(e1);
+        assert_eq!(
+            a.feuille_correction().map(|f| &f.etat),
+            Some(&EtatFeuille::Attente { lance: false })
+        );
+        finir_tout(&mut a);
+        assert_eq!(apercus(), format!("correction --voir {j1} --json\n"));
+        assert_eq!(
+            a.feuille_correction().map(|f| &f.etat),
+            Some(&EtatFeuille::Lue(correction::Lecture::Refusee(
+                "ce problème a disparu".into()
+            )))
+        );
+        // Rien à accepter : la feuille reste, rien n'est lancé.
+        a.accepter();
+        assert!(a.feuille_correction().is_some());
+        assert_eq!(a.taches(), 0);
+        // Une seule feuille : une autre demande attend qu'on ferme celle-ci.
+        a.voir_correction(e1);
+        assert_eq!(apercus().lines().count(), 1);
+        // Échap ferme la feuille seule : l'écran du bilan reste.
+        a.revenir();
+        assert!(a.feuille_correction().is_none());
+        assert_eq!(a.ecran, Ecran::Bilan);
+
+        // Fermée pendant la lecture : l'aperçu s'arrête, sa fin ne rouvre rien.
+        std::fs::write(d.join("lent"), "").unwrap();
+        a.voir_correction(e1);
+        assert_eq!(
+            a.feuille_correction().map(|f| &f.etat),
+            Some(&EtatFeuille::Attente { lance: true })
+        );
+        // L'aperçu a commencé (il dort 30 s) : l'arrêt doit le couper, `finir_tout` n'attend pas 30 s.
+        let debut = Instant::now();
+        while apercus().lines().count() < 2 {
+            assert!(debut.elapsed() < Duration::from_secs(10), "aperçu jamais lancé");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        a.annuler();
+        assert!(a.feuille_correction().is_none());
+        finir_tout(&mut a);
+        assert!(a.feuille_correction().is_none());
+        assert!(debut.elapsed() < Duration::from_secs(25));
     }
 
     /// La confirmation est obligatoire et un changement passe seul : sans proposition, « Accepter » ne fait rien ; un
