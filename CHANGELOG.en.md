@@ -77,6 +77,11 @@ repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
   ClamAV database older than a week is no longer called up to date. Secrets: a history or a search cut at its limit is
   reported instead of a ✔, a repository read halfway is unchecked, the search stops after 20 minutes and its reports,
   which name the commit authors, are deleted. Containers: no more "run again with sudo".
+- **Hardened after an attack campaign.** `demarrage --retirer` and `--remettre` no longer follow any folder that is a
+  link (~/.config or its autostart folder replaced by a link): nothing is written outside the home folder, and an entry
+  kept behind a link is no longer offered. A single read does what is shown: an entry changed between the list and the
+  action is not written. The settings seal is written in two steps: a hard stop between a file and its seal no longer
+  raises a false tampering alarm.
 - **Dependency security.** rustix 1.1.6 (advisory RUSTSEC-2026-0486: in its extended attribute functions, bytes
   never written were marked as initialized for an empty buffer), brought in by crossterm.
 - **Tests.** Five new fuzzing targets (what a startup line starts and, for the upcoming window, the answers it reads,

@@ -80,6 +80,11 @@ recompilée au besoin.
   et une base ClamAV de plus d'une semaine n'est plus dite à jour. Secrets : un historique ou une recherche coupés à
   leur borne sont dits au lieu d'un ✔, un dépôt lu à moitié est non vérifié, la recherche s'arrête après 20 minutes et
   ses rapports, qui nomment les auteurs des commits, sont effacés. Conteneurs : plus de « relancez avec sudo ».
+- **Renforcé après une campagne d'attaque.** `demarrage --retirer` et `--remettre` ne suivent plus aucun dossier qui
+  est un lien (~/.config ou son dossier autostart remplacé par un lien) : rien ne s'écrit hors du dossier personnel, et
+  une entrée rangée derrière un lien n'est plus proposée. Une seule lecture fait ce qui est montré : une entrée changée
+  entre la liste et le geste n'est pas écrite. Le sceau des réglages s'écrit en deux temps : un arrêt brutal entre un
+  fichier et son sceau ne fait plus crier au falsifié.
 - **Sécurité des dépendances.** rustix 1.1.6 (avis RUSTSEC-2026-0486 : dans ses fonctions des attributs étendus,
   des octets jamais écrits étaient marqués comme initialisés pour un tampon vide), amené par crossterm.
 - **Essais.** Cinq nouvelles cibles de fuzzing (ce qu'une ligne de démarrage lance et, pour la fenêtre à venir, les
