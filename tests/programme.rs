@@ -3430,6 +3430,42 @@ mod demarrage_sous_attaque {
         assert!(m.contains("gros.desktop"), "pas dite non lue : {m}");
     }
 
+    /// Campagne 0.94, C-1. Après un retrait, le fichier de l'entrée devient un tube nommé : la liste et `--remettre`
+    /// rendent la main (avant : figés à la lecture du nom, verrou des notes tenu) ; le tube reste, la note aussi.
+    #[test]
+    fn un_tube_a_la_place_d_une_entree_retiree_ne_fige_rien() {
+        let b = Banc::nouveau("tube");
+        let (f, _) = b.poser("lecteur.desktop", "Lecteur", "/home/alice/bin/lecteur");
+        let e = empreinte_de(&f);
+        let (_, issue, raison) = b.changer("--retirer", &e);
+        assert_eq!(issue, "fait", "{raison}");
+        std::fs::remove_file(&f).unwrap();
+        essais::tube_nomme(&f).unwrap();
+        let lancer = |args: &[&str]| {
+            vanguard_dans_env(
+                Path::new(env!("CARGO_BIN_EXE_vanguard")),
+                &b.maison,
+                "fr",
+                args,
+                "",
+                30,
+                &[("XDG_CONFIG_DIRS", b.systeme.as_str())],
+            )
+        };
+        let s = lancer(&["demarrage", "--json"]);
+        assert_eq!(s.code, Some(0), "{} {}", s.texte, s.erreurs);
+        let s = lancer(&["demarrage", "--remettre", &e, "--json"]);
+        assert_ne!(s.code, Some(0), "remis sur un tube : {}", s.texte);
+        assert!(
+            std::os::unix::fs::FileTypeExt::is_fifo(&f.symlink_metadata().unwrap().file_type()),
+            "le tube a été remplacé"
+        );
+        assert!(
+            lu(&b.donnees().join("reglages.json")).contains("lecteur.desktop"),
+            "la note est perdue"
+        );
+    }
+
     /// Campagne B, P-1. Vanguard tué entre le carnet des notes (`reglages.json`) et son sceau, pendant un second
     /// retrait : rien n'est dit changé hors de Vanguard, le carnet n'est pas mis de côté, et le premier retrait, fini,
     /// se remet encore à l'octet près.

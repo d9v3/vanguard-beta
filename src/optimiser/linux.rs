@@ -723,13 +723,21 @@ impl Changement {
     pub fn nom_demarrage(identite: &str) -> String {
         let reste = identite.split_once('|').map_or(identite, |(_, r)| r);
         let p = Path::new(reste);
-        // Une entrée d'autostart : le nom qu'affiche son fichier, celui du compte ou celui du système au même nom.
+        // Une entrée d'autostart : le nom qu'affiche son fichier, celui du compte ou celui du système au même nom. Lus
+        // bornés, sans attendre un tube, et celui du compte sans suivre de lien (campagne 0.94, C-1) : un fichier
+        // échangé après le retrait ne fige ni ne gonfle la liste.
         if identite.starts_with("autostart|")
             && let Some(fichier) = p.file_name()
         {
-            let nom = std::iter::once(p.to_path_buf())
-                .chain(dossiers_systeme().into_iter().map(|d| d.join(fichier)))
-                .find_map(|f| champ(&std::fs::read_to_string(f).ok()?, "Name").map(str::to_string));
+            let max = u64::try_from(AUTOSTART_MAX - 1).unwrap_or(0);
+            let nom = sous_maison::lire(p, max)
+                .ok()
+                .and_then(|t| champ(&t, "Name").map(str::to_string))
+                .or_else(|| {
+                    dossiers_systeme()
+                        .into_iter()
+                        .find_map(|d| champ(&lire_du_systeme(&d.join(fichier), max).ok()?, "Name").map(str::to_string))
+                });
             if let Some(nom) = nom {
                 return nom;
             }
@@ -1315,30 +1323,31 @@ fn fichier_ordinaire(p: &Path) -> bool {
 /// les entrées du compte qui ne se lisent pas bornées (plus de 64 Kio, pas en UTF-8) : pas proposées, faute de valeur
 /// d'avant à noter, mais dites (campagne 0.94, C-3).
 fn autostart(compte: &Path, systeme: &[PathBuf], bureau: &str) -> (Vec<Programme>, Vec<String>) {
-    let fichiers = |d: &Path| -> Vec<(String, String)> {
-        let mut l: Vec<(String, String)> = std::fs::read_dir(d)
+    // Les noms seulement : chaque entrée se lit ensuite une fois, bornée, sans attendre un tube (campagne 0.94, C-2).
+    let noms = |d: &Path| -> Vec<String> {
+        let mut l: Vec<String> = std::fs::read_dir(d)
             .into_iter()
             .flatten()
             .flatten()
-            .filter(|f| f.path().extension().is_some_and(|e| e == "desktop") && f.path().is_file())
-            .filter_map(|f| {
-                let texte = std::fs::read_to_string(f.path()).ok()?;
-                Some((f.file_name().to_string_lossy().into_owned(), texte))
-            })
+            .filter(|f| f.path().extension().is_some_and(|e| e == "desktop"))
+            .map(|f| f.file_name().to_string_lossy().into_owned())
             .collect();
         l.sort();
         l
     };
+    let max = u64::try_from(AUTOSTART_MAX - 1).unwrap_or(0);
     let mut vus: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut l = Vec::new();
     let mut manques = Vec::new();
-    for (nom, _) in fichiers(compte) {
+    for nom in noms(compte) {
         let chemin = compte.join(&nom);
+        // Un lien, un tube ou un dossier, à un autre compte ou derrière un dossier lien : pas proposé (limite connue :
+        // sans le dire), mais il masque l'entrée du système au même nom.
         if sous_maison::juger(&chemin).is_ok() {
             // Relu d'une seule ouverture, sans suivre de lien et borné, comme la note : ce qui est montré, la cible et
             // la note viennent tous de cette lecture-là. Pas lu ainsi : rien à noter, donc rien de proposé (écrite,
             // l'entrée ne se remettrait plus).
-            match sous_maison::lire(&chemin, u64::try_from(AUTOSTART_MAX - 1).unwrap_or(0)) {
+            match sous_maison::lire(&chemin, max) {
                 Ok(t) => l.push(programme_autostart(chemin, &t, bureau, Some(format!("+{t}")))),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(_) => manques.push(pas_lue(&chemin)),
@@ -1347,7 +1356,20 @@ fn autostart(compte: &Path, systeme: &[PathBuf], bureau: &str) -> (Vec<Programme
         vus.insert(nom);
     }
     for d in systeme {
-        for (nom, texte) in fichiers(d) {
+        for nom in noms(d) {
+            if vus.contains(&nom) {
+                continue;
+            }
+            let texte = match lire_du_systeme(&d.join(&nom), max) {
+                Ok(t) => t,
+                // Absente depuis, ou lien pendant : rien à masquer.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(_) => {
+                    manques.push(pas_lue(&d.join(&nom)));
+                    vus.insert(nom);
+                    continue;
+                }
+            };
             if vus.insert(nom.clone())
                 && crate::lenteur::entree_autostart(&texte, bureau).is_some()
                 && sous_maison::juger(&compte.join(&nom)).is_ok()
@@ -1363,6 +1385,28 @@ fn autostart(compte: &Path, systeme: &[PathBuf], bureau: &str) -> (Vec<Programme
         }
     }
     (l, manques)
+}
+
+/// Le texte d'une entrée d'autostart du système, d'au plus `max` octets. Les liens sont suivis (les paquets en posent,
+/// et rien ne s'écrit d'après eux ailleurs que dans le compte), mais l'ouverture n'attend pas un tube, et seul un
+/// simple fichier se lit, borné (campagne 0.94, C-1, C-2). `NotFound` : absente, ou lien pendant.
+fn lire_du_systeme(p: &Path, max: u64) -> std::io::Result<String> {
+    use std::io::Read as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let invalide = || std::io::Error::from(std::io::ErrorKind::InvalidData);
+    let f = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
+        .open(p)?;
+    if !f.metadata()?.is_file() {
+        return Err(invalide());
+    }
+    let mut octets = Vec::new();
+    f.take(max.saturating_add(1)).read_to_end(&mut octets)?;
+    if u64::try_from(octets.len()).map_or(true, |n| n > max) {
+        return Err(invalide());
+    }
+    String::from_utf8(octets).map_err(|_| invalide())
 }
 
 /// Ce que dit la liste d'une entrée d'autostart qui ne se lit pas bornée : pas proposée.
@@ -2398,6 +2442,76 @@ mod tests {
             "écrite sans valeur d'avant"
         );
         assert!(!c.valeur_admise(None), "une note absente se remettrait");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Campagne 0.94, C-1 et C-2 : la liste et le nom d'une entrée se lisent bornés, sans attendre un tube ni suivre
+    /// un lien du compte. Une entrée du système trop grosse ou tube, une du compte creuse et géante ou pas en UTF-8
+    /// sont dites non lues ; le nom d'une entrée retirée devenue un tube se rend sans attendre, celui d'un lien ne se lit pas à
+    /// travers lui.
+    #[test]
+    fn liste_et_noms_lus_bornes() {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let base = dossier_jetable("bornes");
+        let (compte, systeme, dehors) = (base.join("compte/autostart"), base.join("systeme"), base.join("dehors"));
+        for d in [&compte, &systeme, &dehors] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let gros = format!("[Desktop Entry]\nName=Gros\nExec=gros\n#{}\n", "x".repeat(76 << 10));
+        std::fs::write(systeme.join("gros-systeme.desktop"), &gros).unwrap();
+        std::fs::write(
+            compte.join("latin.desktop"),
+            b"[Desktop Entry]\nName=Caf\xe9\nExec=cafe\n",
+        )
+        .unwrap();
+        std::fs::File::create(compte.join("creux.desktop"))
+            .unwrap()
+            .set_len(256 << 20)
+            .unwrap();
+        crate::essais::tube_nomme(&systeme.join("tube-systeme.desktop")).unwrap();
+        let (l, manques) = autostart(&compte, std::slice::from_ref(&systeme), "");
+        let noms: Vec<&str> = l.iter().map(|p| p.nom.as_str()).collect();
+        assert!(noms.is_empty(), "{noms:?}");
+        for nom in [
+            "gros-systeme.desktop",
+            "tube-systeme.desktop",
+            "latin.desktop",
+            "creux.desktop",
+        ] {
+            assert!(manques.iter().any(|m| m.contains(nom)), "{nom} : {manques:?}");
+        }
+        // Le nom d'une entrée retirée, d'après sa note : un tube à sa place ne fait pas attendre.
+        let tube = compte.join("essai-vanguard-tube.desktop");
+        crate::essais::tube_nomme(&tube).unwrap();
+        let id = format!("autostart|{}", tube.display());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(Changement::nom_demarrage(&id));
+        });
+        let nom = rx.recv_timeout(std::time::Duration::from_secs(10));
+        if nom.is_err() {
+            // Débloque la lecture restée en attente d'un écrivain.
+            let _ = std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(&tube);
+        }
+        assert_eq!(nom.as_deref().ok(), Some("essai-vanguard-tube"), "figé sur un tube");
+        // Un lien vers dehors : son contenu n'est pas lu.
+        std::fs::write(dehors.join("cible.desktop"), "[Desktop Entry]\nName=Dehors\n").unwrap();
+        let lien = compte.join("essai-vanguard-lien.desktop");
+        std::os::unix::fs::symlink(dehors.join("cible.desktop"), &lien).unwrap();
+        assert_eq!(
+            Changement::nom_demarrage(&format!("autostart|{}", lien.display())),
+            "essai-vanguard-lien"
+        );
+        // Un simple fichier du compte donne son nom.
+        let simple = compte.join("essai-vanguard-nom.desktop");
+        std::fs::write(&simple, "[Desktop Entry]\nName=Mon lecteur\n").unwrap();
+        assert_eq!(
+            Changement::nom_demarrage(&format!("autostart|{}", simple.display())),
+            "Mon lecteur"
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 
