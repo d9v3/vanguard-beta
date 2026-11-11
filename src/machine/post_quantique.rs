@@ -237,7 +237,7 @@ pub(crate) fn juger_serveur(l: &Lecture<Serveur>) -> Constat {
 /// inclus dépliés à leur place (fichier montré, numéro de ligne, ligne), et la version d'OpenSSH.
 #[derive(Debug)]
 pub(crate) struct Client {
-    pub fichiers: Vec<Vec<(String, usize, String)>>,
+    pub fichiers: Vec<Vec<super::config_ssh::Lue>>,
     pub version: Option<(u32, u32)>,
 }
 
@@ -248,38 +248,41 @@ pub(crate) struct ConfigClient {
     pub globale: Option<(String, String)>,
     /// Les listes écrites sous un « Host » ou un « Match » précis : jamais le nom de l'hôte, seulement la liste.
     pub par_hote: Vec<String>,
-    /// Le fichier où « WarnWeakCrypto no » vaut pour tous les serveurs.
+    /// Le fichier où « WarnWeakCrypto no » (ou « no-pq-kex ») vaut pour tous les serveurs.
     pub avertissement_coupe: Option<String>,
+    /// Une ligne que Vanguard ne découpe pas comme SSH, ou un « Include » qu'il n'a pas déplié (Windows) : (fichier,
+    /// ligne). Le client n'est pas jugé sans elle : elle peut porter les algorithmes.
+    pub non_lu: Option<(String, usize)>,
 }
 
-/// Lit la configuration du client comme ssh : un « Host » qui ne nomme que « * » et « Match all » valent pour tous
-/// les serveurs, comme le début de chaque fichier de tête ; la première valeur trouvée l'emporte.
-pub(crate) fn lire_config_client(fichiers: &[Vec<(String, usize, String)>]) -> ConfigClient {
+/// Lit la configuration du client comme ssh : découpée par `config_ssh::lire_ligne`, avec la portée de SSH
+/// (`config_ssh::Portee` : un « Host » ou un « Match » qui couvre tout serveur, le début de chaque fichier de tête, la
+/// portée remise à la fin de chaque fichier inclus) ; la première valeur trouvée l'emporte.
+pub(crate) fn lire_config_client(fichiers: &[Vec<super::config_ssh::Lue>]) -> ConfigClient {
+    use super::config_ssh::{Cle, Ligne, Portee};
     let mut c = ConfigClient::default();
     let mut avertissement_vu = false;
     for lignes in fichiers {
-        let mut global = true;
-        for (fichier, _, ligne) in lignes {
-            let ligne = ligne.split('#').next().unwrap_or_default().trim();
-            let (cle, valeur) = ligne
-                .split_once(|c: char| c.is_whitespace() || c == '=')
-                .map_or((ligne, ""), |(c, v)| {
-                    (c, v.trim_start_matches(|c: char| c.is_whitespace() || c == '='))
-                });
-            let valeur = valeur.trim().trim_matches('"');
-            match cle.to_ascii_lowercase().as_str() {
-                "host" => global = valeur.split_whitespace().all(|m| m == "*"),
-                "match" => global = valeur.eq_ignore_ascii_case("all"),
-                "kexalgorithms" if global => {
+        let mut portee = Portee::nouvelle();
+        for lue in lignes {
+            let Some((fichier, n, ligne)) = portee.lire(lue) else {
+                continue;
+            };
+            let global = portee.globale();
+            match ligne {
+                Ligne::NonInterpretee | Ligne::Include(_) => {
+                    c.non_lu.get_or_insert_with(|| (fichier.to_string(), n));
+                }
+                Ligne::Valeur(Cle::KexAlgorithms, valeur) if global => {
                     if c.globale.is_none() {
-                        c.globale = Some((fichier.clone(), valeur.to_string()));
+                        c.globale = Some((fichier.to_string(), valeur.to_string()));
                     }
                 }
-                "kexalgorithms" => c.par_hote.push(valeur.to_string()),
-                "warnweakcrypto" if global && !avertissement_vu => {
+                Ligne::Valeur(Cle::KexAlgorithms, valeur) => c.par_hote.push(valeur.to_string()),
+                Ligne::Valeur(Cle::WarnWeakCrypto, valeur) if global && !avertissement_vu => {
                     avertissement_vu = true;
-                    if valeur.eq_ignore_ascii_case("no") {
-                        c.avertissement_coupe = Some(fichier.clone());
+                    if super::config_ssh::avertissement_coupe(valeur) {
+                        c.avertissement_coupe = Some(fichier.to_string());
                     }
                 }
                 _ => {}
@@ -338,6 +341,25 @@ pub(crate) fn juger_client(l: &Lecture<Client>) -> Vec<Constat> {
         Lecture::Lu(c) => c,
     };
     let config = lire_config_client(&c.fichiers);
+    if let Some((fichier, ligne)) = &config.non_lu {
+        let fichier = affichable(fichier);
+        let r = Raison::Illisible(trf!(
+            "{fichier}, ligne {ligne} non lue : forme non interprétée",
+            "{fichier}, line {ligne} not read: form not interpreted"
+        ));
+        return vec![
+            impossible_par(
+                CAT,
+                r.clone(),
+                trf!(
+                    "Client SSH : échange de clés post-quantique non vérifié ({}).",
+                    "SSH client: post-quantum key exchange not checked ({}).",
+                    r.texte()
+                ),
+            )
+            .avec_objet(Objet::Seul),
+        ];
+    }
     let v = version_texte(c.version);
     let mut constats = Vec::new();
     let valeur = config.globale.as_ref().map(|(_, v)| v.as_str());
@@ -891,7 +913,7 @@ fn lire_client() -> Lecture<Client> {
             Ok(t) => fichiers.push(
                 t.lines()
                     .enumerate()
-                    .map(|(i, l)| (nom.to_string(), i + 1, l.to_string()))
+                    .map(|(i, l)| super::config_ssh::Lue::Ligne(nom.to_string(), i + 1, l.to_string()))
                     .collect(),
             ),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -983,6 +1005,7 @@ fn lire_wireguard() -> Wireguard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::machine::config_ssh::Lue;
     use crate::modele::Etat;
 
     fn segments(f: &[(&str, &str)]) -> Vec<(String, String)> {
@@ -1106,15 +1129,15 @@ mod tests {
         assert!(c.coherent());
     }
 
-    fn lignes(fichier: &str, texte: &str) -> Vec<(String, usize, String)> {
+    fn lignes(fichier: &str, texte: &str) -> Vec<Lue> {
         texte
             .lines()
             .enumerate()
-            .map(|(i, l)| (fichier.to_string(), i + 1, l.to_string()))
+            .map(|(i, l)| Lue::Ligne(fichier.to_string(), i + 1, l.to_string()))
             .collect()
     }
 
-    fn client(fichiers: Vec<Vec<(String, usize, String)>>, v: Option<(u32, u32)>) -> Vec<Constat> {
+    fn client(fichiers: Vec<Vec<Lue>>, v: Option<(u32, u32)>) -> Vec<Constat> {
         juger_client(&Lecture::Lu(Client { fichiers, version: v }))
     }
 
@@ -1164,6 +1187,56 @@ mod tests {
         // Pas de client : sans objet.
         let c = juger_client(&Lecture::Absent(Absence::Logiciel));
         assert_eq!(c[0].etat(), Etat::SansObjet(Absence::Logiciel));
+    }
+
+    /// Vérification avant 0.94 (S2, S3) : la portée est remise à la fin d'un fichier inclus, un hôte large autre que
+    /// « * » vaut pour tous, « no-pq-kex » coupe l'avertissement, et une ligne non interprétée (ou un « Include » non
+    /// déplié, sous Windows) laisse le client « non vérifié », jamais « proposé ».
+    #[test]
+    fn client_lu_avec_la_portee_de_ssh() {
+        let kex = "KexAlgorithms curve25519-sha256";
+        // « Include » en tête (fichier d'hôtes qui finit sous un Host précis), puis réglage général.
+        let mut config = vec![Lue::Entree];
+        config.extend(lignes("~/.ssh/hotes", "Host routeur\n  User alice\n"));
+        config.push(Lue::Sortie);
+        config.extend(lignes("~/.ssh/config", kex));
+        let c = client(vec![config], Some((10, 0)));
+        assert_eq!(c[0].probleme, Some(Niveau::Info), "{:?}", c[0].message);
+        assert!(c[0].message.contains("~/.ssh/config"), "{}", c[0].message);
+        // Sous un Host précis, le fichier inclus n'est global nulle part, même sous « Host * ».
+        let mut config = lignes("~/.ssh/config", "Host routeur\n");
+        config.push(Lue::Entree);
+        config.extend(lignes("~/.ssh/inclus", &format!("Host *\n{kex}\n")));
+        config.push(Lue::Sortie);
+        assert_eq!(lire_config_client(&[config]).globale, None);
+        for config in [
+            format!("Host ?*\n{kex}\n"),
+            format!("Host * !routeur\n{kex}\n"),
+            format!("Match host *\n{kex}\n"),
+            format!("Match final all\n{kex}\n"),
+            format!("={kex}\n"),
+        ] {
+            let cfg = lire_config_client(&[lignes("~/.ssh/config", &config)]);
+            assert!(cfg.globale.is_some() && cfg.non_lu.is_none(), "{config:?} : {cfg:?}");
+        }
+        let cfg = lire_config_client(&[lignes("~/.ssh/config", "WarnWeakCrypto no-pq-kex\n")]);
+        assert_eq!(cfg.avertissement_coupe.as_deref(), Some("~/.ssh/config"));
+        for config in [
+            "\"KexAlgorithms\" curve25519-sha256\n",
+            "KexAlgorithms 'curve25519-sha256'\n",
+            "Host '*'\n  KexAlgorithms curve25519-sha256\n",
+            "Include kex.conf\n",
+        ] {
+            let c = client(vec![lignes("~/.ssh/config", config)], Some((10, 0)));
+            assert_eq!(c.len(), 1, "{config:?}");
+            assert!(
+                matches!(c[0].etat(), Etat::NonVerifie(_))
+                    && (c[0].message.contains("~/.ssh/config, ligne 1")
+                        || c[0].message.contains("~/.ssh/config, line 1")),
+                "{config:?} : {}",
+                c[0].message
+            );
+        }
     }
 
     /// Des clés WireGuard fabriquées pour l'essai (base64 de motifs), jamais de vraies.

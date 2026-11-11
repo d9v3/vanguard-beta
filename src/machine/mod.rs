@@ -75,6 +75,9 @@ pub(crate) mod reglages;
 pub(crate) mod ssh_regles;
 // Où une liste de correctifs passe des lignes natives de Vanguard au reste : commune à Windows et à Linux.
 pub(crate) mod decoupe;
+// Une ligne de la configuration du client SSH, découpée comme SSH la découpe : commune aux trois lecteurs (dépliage des
+// « Include », réglages risqués, client post-quantique, celui-ci compilé aussi sous Windows).
+pub(crate) mod config_ssh;
 // Vider un dossier de Windows et mettre un cache de côté (actes du processus élevé) : sans appel système propre à
 // Windows hors des attributs, compilé partout pour essayer sous Linux qu'un lien ne fait jamais effacer ailleurs.
 pub(crate) mod vidage;
@@ -1285,12 +1288,14 @@ pub(super) struct Plafond {
     depasse: Option<Depasse>,
 }
 
-/// Une configuration de SSH dépliée : ses lignes (fichier à montrer, numéro de ligne, ligne), et ce que SSH applique
-/// peut-être sans que Vanguard l'ait lu (fichier, raison), jamais compté comme « rien à dire ».
+/// Une configuration de SSH dépliée : ses lignes (fichier à montrer, numéro de ligne, ligne ; les vides et les
+/// commentaires en moins), chaque fichier inclus entre `Entree` et `Sortie` (SSH remet la portée Host/Match à la fin de
+/// chacun), et ce que SSH applique peut-être sans que Vanguard l'ait lu (fichier, raison), jamais compté comme « rien à
+/// dire ».
 #[cfg(unix)]
 #[derive(Default)]
 pub(super) struct Depliee {
-    pub(super) lignes: Vec<(String, usize, String)>,
+    pub(super) lignes: Vec<config_ssh::Lue>,
     pub(super) non_lus: Vec<(String, String)>,
     /// Non lus au-delà des `NON_LUS_MONTRES` premiers : comptés, pas montrés un par un.
     pub(super) autres_non_lus: usize,
@@ -1339,15 +1344,37 @@ impl Depliage<'_> {
                 return;
             }
             let n = i.saturating_add(1);
-            let arguments = match arguments_include(ligne) {
-                None => {
+            // Toute ligne lue paie les plafonds, gardée ou non (un Mio de lignes à mot-clé entre guillemets ou
+            // d'« Include » sans argument ne coûtait rien), avec le nom de fichier recopié à côté d'elle (un chemin
+            // d'inclusion long, recopié à chacune de 100 000 lignes, tenait près d'un Gio).
+            let (Some(lignes), Some(octets)) = (
+                self.lignes.checked_sub(1),
+                self.octets.checked_sub(ligne.len().saturating_add(nom.len())),
+            ) else {
+                self.depasser(
+                    Depasse::Taille,
+                    &trf!("{nom} à partir de la ligne {n}", "{nom} from line {n}"),
+                    nom,
+                    n,
+                );
+                return;
+            };
+            self.lignes = lignes;
+            self.octets = octets;
+            let arguments = match config_ssh::lire_ligne(ligne) {
+                config_ssh::Ligne::Rien => continue,
+                config_ssh::Ligne::Include(arguments) => arguments,
+                // Une forme que Vanguard ne découpe pas exactement comme SSH (mot-clé entre guillemets, valeur entre
+                // apostrophes…) : dite, et gardée pour que les lecteurs y voient une portée douteuse. Seul son premier
+                // mot est montré : la suite d'une ligne quelconque peut porter n'importe quoi.
+                config_ssh::Ligne::NonInterpretee => {
+                    let mot = ligne.trim_start().split([' ', '\t']).next().unwrap_or_default();
+                    self.non_lu(&crate::ui::couper(mot, 40), forme_non_interpretee(nom, n));
                     self.garder(nom, n, ligne);
                     continue;
                 }
-                Some(Ok(arguments)) => arguments,
-                // « "Include" … » : SSH retire les guillemets du mot-clé, Vanguard ne découpe pas la suite comme lui.
-                Some(Err(brut)) => {
-                    self.non_lu(crate::ui::couper(brut, 120), non_interprete(nom, n));
+                _ => {
+                    self.garder(nom, n, ligne);
                     continue;
                 }
             };
@@ -1356,7 +1383,7 @@ impl Depliage<'_> {
                 if !self.trop_profond_dit {
                     self.trop_profond_dit = true;
                     self.non_lu(
-                        ligne_include(),
+                        &ligne_include(),
                         trf!(
                             "inclusions imbriquées trop profondes ({nom}, ligne {n})",
                             "includes nested too deep ({nom}, line {n})"
@@ -1374,27 +1401,27 @@ impl Depliage<'_> {
                 .take_while(|m| !m.starts_with('#'));
             while let Some(mot) = mots.next() {
                 let Some(reste) = self.motifs.checked_sub(1) else {
-                    self.depasser(Depasse::Motifs, ligne_include(), nom, n);
+                    self.depasser(Depasse::Motifs, &ligne_include(), nom, n);
                     return;
                 };
                 self.motifs = reste;
                 let Some(motif) = motif_interprete(mot) else {
                     let suite: Vec<&str> = std::iter::once(mot).chain(mots.by_ref()).collect();
                     self.non_lu(
-                        crate::ui::couper(&format!("Include {}", suite.join(" ")), 120),
+                        &crate::ui::couper(&format!("Include {}", suite.join(" ")), 120),
                         non_interprete(nom, n),
                     );
                     break;
                 };
                 let inclus = (self.lire)(motif, &mut self.plafond);
                 if let Some(d) = self.plafond.depasse {
-                    self.depasser(d, ligne_include(), nom, n);
+                    self.depasser(d, &ligne_include(), nom, n);
                     return;
                 }
                 for (fichier, source) in inclus {
                     // Le plafond avant la lecture : le fichier de trop n'est pas lu.
                     let Some(reste) = self.plafond.fichiers.checked_sub(1) else {
-                        self.depasser(Depasse::Fichiers, ligne_include(), nom, n);
+                        self.depasser(Depasse::Fichiers, &ligne_include(), nom, n);
                         return;
                     };
                     let contenu = match source.map(Source::lire) {
@@ -1405,8 +1432,13 @@ impl Depliage<'_> {
                     };
                     self.plafond.fichiers = reste;
                     match contenu {
-                        Ok(t) => self.deplier(&fichier, &t, profondeur.saturating_sub(1)),
-                        Err(raison) => self.non_lu(fichier, raison),
+                        // Entre ses deux limites, même coupé par un plafond : SSH remet la portée après lui.
+                        Ok(t) => {
+                            self.depliee.lignes.push(config_ssh::Lue::Entree);
+                            self.deplier(&config_ssh::abreger(&fichier), &t, profondeur.saturating_sub(1));
+                            self.depliee.lignes.push(config_ssh::Lue::Sortie);
+                        }
+                        Err(raison) => self.non_lu(&fichier, raison),
                     }
                     if self.plafond.depasse.is_some() {
                         return;
@@ -1416,26 +1448,15 @@ impl Depliage<'_> {
         }
     }
 
-    /// Une ligne gardée, dans les plafonds de lignes et d'octets : un Mio de lignes vides répété dans 128 fichiers
-    /// inclus aurait tenu des gigaoctets.
+    /// Une ligne gardée, déjà payée aux plafonds de lignes et d'octets (`deplier`).
     fn garder(&mut self, nom: &str, n: usize, ligne: &str) {
-        match (self.lignes.checked_sub(1), self.octets.checked_sub(ligne.len())) {
-            (Some(lignes), Some(octets)) => {
-                self.lignes = lignes;
-                self.octets = octets;
-                self.depliee.lignes.push((nom.to_string(), n, ligne.to_string()));
-            }
-            _ => self.depasser(
-                Depasse::Taille,
-                trf!("{nom} à partir de la ligne {n}", "{nom} from line {n}"),
-                nom,
-                n,
-            ),
-        }
+        self.depliee
+            .lignes
+            .push(config_ssh::Lue::Ligne(nom.to_string(), n, ligne.to_string()));
     }
 
     /// Un plafond franchi : dit une fois (plus rien n'est lu ensuite), à l'endroit où il l'a été.
-    fn depasser(&mut self, d: Depasse, ce_qui: String, nom: &str, n: usize) {
+    fn depasser(&mut self, d: Depasse, ce_qui: &str, nom: &str, n: usize) {
         self.plafond.depasse = Some(d);
         let raison = match d {
             Depasse::Fichiers => trf!(
@@ -1459,8 +1480,9 @@ impl Depliage<'_> {
         self.non_lu(ce_qui, raison);
     }
 
-    /// Un non lu de plus, dit une fois ; au-delà de `NON_LUS_MONTRES`, seulement compté.
-    fn non_lu(&mut self, fichier: String, raison: String) {
+    /// Un non lu de plus, dit une fois, son nom abrégé ; au-delà de `NON_LUS_MONTRES`, seulement compté.
+    fn non_lu(&mut self, fichier: &str, raison: String) {
+        let fichier = config_ssh::abreger(fichier);
         if self.depliee.non_lus.iter().any(|(f, r)| *f == fichier && *r == raison) {
             return;
         }
@@ -1481,23 +1503,13 @@ fn non_interprete(nom: &str, n: usize) -> String {
     )
 }
 
-/// Les arguments d'une ligne « Include » de la configuration de SSH, tels qu'écrits, ou `None` pour une autre ligne. Le
-/// mot-clé se découpe comme SSH le découpe (espace, tabulation, retour chariot ou « = » ; un « = » permis avant les
-/// arguments). Écrit avec des guillemets, que SSH retire (« "Include" ») : `Err` avec la ligne, non interprétée.
+/// La raison d'une ligne que Vanguard ne découpe pas exactement comme SSH (`config_ssh::lire_ligne`).
 #[cfg(unix)]
-fn arguments_include(ligne: &str) -> Option<Result<&str, &str>> {
-    const BLANCS: [char; 3] = [' ', '\t', '\r'];
-    let brut = ligne.trim_start_matches(BLANCS);
-    let fin = brut.find([' ', '\t', '\r', '=']).unwrap_or(brut.len());
-    let (cle, reste) = brut.split_at_checked(fin)?;
-    if cle.eq_ignore_ascii_case("include") {
-        let reste = reste.trim_start_matches(BLANCS);
-        Some(Ok(reste.strip_prefix('=').unwrap_or(reste).trim_start_matches(BLANCS)))
-    } else if cle.contains('"') && cle.replace('"', "").eq_ignore_ascii_case("include") {
-        Some(Err(brut))
-    } else {
-        None
-    }
+fn forme_non_interpretee(nom: &str, n: usize) -> String {
+    trf!(
+        "forme non interprétée ({nom}, ligne {n})",
+        "form not interpreted ({nom}, line {n})"
+    )
 }
 
 /// Un argument d'« Include » que Vanguard sait résoudre exactement comme SSH, sans ses guillemets : un chemin fait de
@@ -1635,46 +1647,38 @@ fn joker(motif: &[u8], nom: &[u8]) -> bool {
     matches!(possible.last(), Some(true))
 }
 
-/// Réglages risqués de ~/.ssh/config qui valent pour tous les serveurs (avant le premier « Host », sous « Host * »
-/// ou « Match all ») : (numéro de ligne, réglage en minuscules). Un réglage sous un « Host » précis reste : un
-/// serveur de test qu'on recrée souvent peut s'en passer.
+/// Réglages risqués d'une configuration de SSH dépliée qui valent pour tous les serveurs (avant le premier « Host »,
+/// sous un « Host » ou un « Match » qui couvre tout serveur, et dans le doute) : (fichier, numéro de ligne, réglage),
+/// chacun une fois (un fichier qui se réinclut donnait la même alerte à chaque tour). Un réglage sous un « Host »
+/// précis reste : un serveur de test qu'on recrée souvent peut s'en passer. Lu avec la portée de SSH
+/// (`config_ssh::Portee`), remise à la fin de chaque fichier inclus.
 #[cfg(unix)]
-fn reglages_ssh_risques(config: &str) -> Vec<(usize, &'static str)> {
-    let mut global = true;
-    let mut trouves = Vec::new();
-    for (i, ligne) in config.lines().enumerate() {
-        let ligne = ligne.split('#').next().unwrap_or_default().trim();
-        let (cle, valeur) = ligne
-            .split_once(|c: char| c.is_whitespace() || c == '=')
-            .map_or((ligne, ""), |(c, v)| {
-                (c, v.trim_start_matches(|c: char| c.is_whitespace() || c == '='))
-            });
-        let cle = cle.to_ascii_lowercase();
-        let valeur = valeur.trim().trim_matches('"').to_ascii_lowercase();
-        match cle.as_str() {
-            "host" => global = valeur.split_whitespace().all(|motif| motif == "*"),
-            "match" => global = valeur == "all",
-            "stricthostkeychecking" if global && matches!(valeur.as_str(), "no" | "off") => {
-                trouves.push((i.saturating_add(1), "stricthostkeychecking"));
-            }
-            "forwardagent" if global && valeur == "yes" => trouves.push((i.saturating_add(1), "forwardagent")),
-            _ => {}
+fn reglages_ssh_risques(lignes: &[config_ssh::Lue]) -> Vec<(&str, usize, &'static str)> {
+    use config_ssh::{Cle, Ligne};
+    let mut portee = config_ssh::Portee::nouvelle();
+    let mut trouves: Vec<(&str, usize, &'static str)> = Vec::new();
+    let mut vus = std::collections::HashSet::new();
+    for lue in lignes {
+        let Some((fichier, n, ligne)) = portee.lire(lue) else {
+            continue;
+        };
+        let reglage = match ligne {
+            Ligne::Valeur(Cle::StrictHostKeyChecking, v) if config_ssh::sans_verification(v) => "stricthostkeychecking",
+            Ligne::Valeur(Cle::ForwardAgent, v) if config_ssh::pret_d_agent(v) => "forwardagent",
+            _ => continue,
+        };
+        if portee.globale() && vus.insert((fichier, n, reglage)) {
+            trouves.push((fichier, n, reglage));
         }
     }
     trouves
 }
 
 #[cfg(unix)]
-fn constats_config_ssh(lignes: &[(String, usize, String)]) -> Vec<Constat> {
-    let texte = lignes.iter().map(|(_, _, l)| l.as_str()).collect::<Vec<_>>().join("\n");
-    reglages_ssh_risques(&texte)
+fn constats_config_ssh(lignes: &[config_ssh::Lue]) -> Vec<Constat> {
+    reglages_ssh_risques(lignes)
         .into_iter()
-        .filter_map(|(n, reglage)| {
-            // Les lignes se comptent à partir de 1 : 0 n'en désigne aucune.
-            let (fichier, ligne, _) = lignes.get(n.checked_sub(1)?)?;
-            let fichier = affichable(fichier);
-            Some((fichier, *ligne, reglage))
-        })
+        .map(|(fichier, ligne, reglage)| (affichable(fichier), ligne, reglage))
         .map(|(fichier, ligne, reglage)| {
             let (message, conseil) = if reglage == "stricthostkeychecking" {
                 (
@@ -2711,6 +2715,18 @@ pub fn executer(json: bool) -> Audit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use config_ssh::Lue;
+
+    /// Les lignes d'un texte, telles que le dépliage les garde (sans Include à déplier).
+    #[cfg(unix)]
+    pub(super) fn lues(nom: &str, texte: &str) -> Vec<Lue> {
+        texte
+            .lines()
+            .enumerate()
+            .map(|(i, l)| Lue::Ligne(nom.to_string(), i + 1, l.to_string()))
+            .collect()
+    }
 
     /// Relecture du lot, L2 : un geste que l'enfant dit non annulable (le dernier élévateur retiré) ne garde ni son lien
     /// « (annulable) » ni sa note pour « Tout remettre » ; une note partagée avec une correction annulable reste.
@@ -3090,9 +3106,15 @@ mod tests {
             }
         };
         let d = deplier_config_ssh("~/.ssh/config", "Include config.d/*\nInclude boucle\nHost x\n", &lire);
-        // Les deux lignes du fichier inclus et « Host x » ; l'Include de trop au bout de la boucle est dit non lu,
-        // une fois.
-        assert_eq!(d.lignes.len(), 3);
+        // La ligne utile du fichier inclus (le commentaire n'est pas gardé) et « Host x », chaque fichier inclus entre
+        // ses deux limites ; l'Include de trop au bout de la boucle est dit non lu, une fois.
+        let compte = |l: &[Lue], quoi: fn(&Lue) -> bool| l.iter().filter(|x| quoi(x)).count();
+        assert_eq!(compte(&d.lignes, |l| matches!(l, Lue::Ligne(..))), 2, "{:?}", d.lignes);
+        assert_eq!(
+            compte(&d.lignes, |l| *l == Lue::Entree),
+            compte(&d.lignes, |l| *l == Lue::Sortie)
+        );
+        assert_eq!(d.lignes.first(), Some(&Lue::Entree));
         assert!(
             matches!(&d.non_lus[..], [(f, r)] if f == "Include boucle"
                 && (r.contains("trop profondes (~/.ssh/boucle, ligne 1)") || r.contains("too deep (~/.ssh/boucle, line 1)"))),
@@ -3188,17 +3210,48 @@ mod tests {
             dits,
             [
                 "Include \"mon inclus\" apres",
-                "\"Include\" x",
+                "\"Include\"",
                 "Include ${HOME}/.ssh/inclus"
             ]
         );
         for (n, (_, r)) in d.non_lus.iter().enumerate() {
             let ligne = n + 1;
             assert!(
-                r.contains(&format!("non interprété (~/.ssh/config, ligne {ligne})"))
+                (r.contains("non interprét") && r.contains(&format!("(~/.ssh/config, ligne {ligne})")))
                     || r.contains(&format!("not interpreted (~/.ssh/config, line {ligne})")),
                 "{r}"
             );
+        }
+        // Vérification avant 0.94 (S1) : le mot-clé « Include » écrit autrement. SSH (`ssh -G`) inclut le fichier
+        // dans les cinq premières formes ; Vanguard le lit comme SSH ou le dit non lu, jamais une ligne ordinaire.
+        for (texte, lu) in [
+            ("=Include inclus", true),
+            (" = Include inclus", true),
+            (" =Include inclus", true),
+            ("Include=inclus", true),
+            ("Include\tinclus", true),
+            ("\"Include\"inclus", false),
+            ("Inc\"lude\"inclus", false),
+            ("\"Include\" inclus", false),
+            ("Include\"inclus\"", false),
+            ("Include", false),
+            ("Include \"\"", false),
+        ] {
+            lus.borrow_mut().clear();
+            let d = deplier_config_ssh("~/.ssh/config", texte, &lire);
+            if lu {
+                assert_eq!(
+                    (&*lus.borrow(), d.non_lus.len()),
+                    (&vec!["inclus".to_string()], 0),
+                    "{texte:?}"
+                );
+            } else {
+                assert!(
+                    lus.borrow().is_empty() && d.non_lus.len() == 1,
+                    "{texte:?} : {:?}",
+                    d.non_lus
+                );
+            }
         }
     }
 
@@ -3244,7 +3297,7 @@ mod tests {
             "{:?}",
             d.non_lus
         );
-        let lignes = "a\n".repeat(LIGNES_MAX + 5);
+        let lignes = "a b\n".repeat(LIGNES_MAX + 5);
         let d = deplier_config_ssh("~/.ssh/config", &lignes, &rien);
         assert_eq!(d.lignes.len(), LIGNES_MAX);
         assert!(
@@ -3253,10 +3306,19 @@ mod tests {
             "{:?}",
             d.non_lus
         );
-        let octets = format!("{}\n", "a".repeat(1 << 20)).repeat(17);
+        let octets = format!("a {}\n", "b".repeat((1 << 20) - 20)).repeat(17);
         let d = deplier_config_ssh("~/.ssh/config", &octets, &rien);
         assert_eq!(d.lignes.len(), 16);
         assert_eq!(d.non_lus.len(), 1, "{:?}", d.non_lus);
+        // Vérification avant 0.94 (S4) : le nom recopié à côté de chaque ligne compte dans le plafond d'octets…
+        let octets = format!("a {}\n", "b".repeat((1 << 20) - 2)).repeat(17);
+        assert_eq!(deplier_config_ssh("~/.ssh/config", &octets, &rien).lignes.len(), 15);
+        // … et les lignes à mot-clé entre guillemets, ou « Include » sans argument, paient le plafond de lignes.
+        for ligne in ["\"Include\" x\n", "Include\n"] {
+            let d = deplier_config_ssh("~/.ssh/config", &ligne.repeat(LIGNES_MAX + 5), &rien);
+            assert_eq!(d.lignes.len(), LIGNES_MAX, "{ligne:?}");
+            assert_eq!(d.non_lus.len() + d.autres_non_lus, LIGNES_MAX + 1, "{ligne:?}");
+        }
         // Au-delà de seize non lus, les suivants sont comptés ; un même non lu (un fichier inclus deux fois) n'est dit
         // qu'une fois.
         let plusieurs = (0..20)
@@ -3346,16 +3408,86 @@ Match host x
 Host *
   StrictHostKeyChecking accept-new
 ";
+        let risques = |texte: &str| -> Vec<(usize, &'static str)> {
+            let lues = lues("~/.ssh/config", texte);
+            reglages_ssh_risques(&lues)
+                .into_iter()
+                .map(|(_, n, r)| (n, r))
+                .collect()
+        };
         assert_eq!(
-            reglages_ssh_risques(config),
+            risques(config),
             [
                 (2, "forwardagent"),
                 (6, "stricthostkeychecking"),
                 (11, "stricthostkeychecking")
             ]
         );
-        assert_eq!(reglages_ssh_risques("Host *\n  User moi\n"), []);
-        let c = constats_config_ssh(&[("~/.ssh/config".into(), 1, "StrictHostKeyChecking no".into())]);
+        assert_eq!(risques("Host *\n  User moi\n"), []);
+        // Vérification avant 0.94 (S3) : écrits autrement, SSH les applique (`ssh -G`) ; Vanguard les voit.
+        for texte in [
+            "=ForwardAgent yes",
+            "ForwardAgent=true",
+            "ForwardAgent \"$SSH_AUTH_SOCK\"",
+            "ForwardAgent ~/.ssh/agent.sock",
+            "ForwardAgent yes\0 no",
+            "Host ?*\nForwardAgent yes",
+            "Host **\nForwardAgent yes",
+            "Host * !routeur\nForwardAgent yes",
+            "Host \"*\"\nForwardAgent yes",
+            "Host *\0routeur\nForwardAgent yes",
+            "Match final all\nForwardAgent yes",
+            "Match host *\nForwardAgent yes",
+            "Host routeur\nMatch all\nForwardAgent yes",
+        ] {
+            assert_eq!(risques(texte).len(), 1, "{texte:?}");
+        }
+        for texte in [
+            "StrictHostKeyChecking false",
+            "StrictHostKeyChecking=NO",
+            "  =  StrictHostKeyChecking off",
+        ] {
+            assert_eq!(risques(texte), [(1, "stricthostkeychecking")], "{texte:?}");
+        }
+        // Une portée non interprétée (« Host » entre guillemets, apostrophes) rend la suite globale : dans le doute,
+        // le réglage relâché est signalé.
+        for texte in ["\"Host\" routeur\nForwardAgent yes", "Host 'routeur'\nForwardAgent yes"] {
+            assert_eq!(risques(texte), [(2, "forwardagent")], "{texte:?}");
+        }
+        // Précis ou vérifiant : rien.
+        for texte in [
+            "Host routeur\nForwardAgent yes",
+            "Host *.exemple.org\nForwardAgent yes",
+            "Host !*\nForwardAgent yes",
+            "Match host routeur\nForwardAgent yes",
+            "Match !all\nForwardAgent yes",
+            "ForwardAgent NO",
+            "StrictHostKeyChecking accept-new",
+            "StrictHostKeyChecking ask",
+        ] {
+            assert_eq!(risques(texte), [], "{texte:?}");
+        }
+        // S2 : la portée d'un fichier inclus qui finit sous un Host précis est remise après lui.
+        let mut l = vec![Lue::Entree];
+        l.extend(lues("~/.ssh/hotes", "Host routeur\n  User alice"));
+        l.push(Lue::Sortie);
+        l.extend(lues("~/.ssh/config", "ForwardAgent yes"));
+        assert_eq!(reglages_ssh_risques(&l), [("~/.ssh/config", 1, "forwardagent")]);
+        // Dans un inclus sous un Host précis, même « Host * » n'y est pas global ; après lui, la portée précise reste.
+        let mut l = lues("~/.ssh/config", "Host routeur");
+        l.push(Lue::Entree);
+        l.extend(lues("~/.ssh/inclus", "Host *\nForwardAgent yes"));
+        l.push(Lue::Sortie);
+        l.extend(lues("~/.ssh/config", "StrictHostKeyChecking no"));
+        assert_eq!(reglages_ssh_risques(&l), []);
+        // S5 : un fichier lu deux fois (il se réinclut) ne donne qu'une alerte.
+        let deux = [
+            lues("~/.ssh/config", "ForwardAgent yes"),
+            lues("~/.ssh/config", "ForwardAgent yes"),
+        ]
+        .concat();
+        assert_eq!(reglages_ssh_risques(&deux).len(), 1);
+        let c = constats_config_ssh(&lues("~/.ssh/config", "StrictHostKeyChecking no"));
         assert!(c.len() == 1 && c[0].probleme == Some(Niveau::Moyen));
         assert!(c[0].message.contains("ligne 1") || c[0].message.contains("line 1"));
     }
@@ -3592,7 +3724,7 @@ mod tests_au_hasard {
 
         #[test]
         fn lecteurs_sans_plantage(t in texte()) {
-            let _ = reglages_ssh_risques(&t);
+            let _ = reglages_ssh_risques(&super::tests::lues("~/.ssh/config", &t));
             let lire = |_: &str, _: &mut Plafond| vec![("~/.ssh/inclus".to_string(), Ok(Source::Texte(t.clone())))];
             let d = deplier_config_ssh("~/.ssh/config", &t, &lire);
             let _ = constats_config_ssh(&d.lignes);
