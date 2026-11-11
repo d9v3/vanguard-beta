@@ -2,7 +2,8 @@
 //! venus de l'extérieur qu'il reprend (réseau, programme, appareil), peuvent écrire n'importe quoi. Quoi qu'on leur
 //! donne, ils ne plantent pas, restent bornés (éléments, lignes, longueur des textes) et ne rendent aucun caractère
 //! piégé (séquence d'échappement, sens d'écriture, invisible) ; seuls les textes longs de Vanguard gardent leurs sauts
-//! de ligne. Le premier octet choisit la langue des textes de la fenêtre.
+//! de ligne. Le premier octet choisit la langue des textes de la fenêtre (et le code de sortie de l'aperçu d'une
+//! correction).
 #![no_main]
 // Aucun unsafe ici ni dans ce que la cible inclut (fenetre/src/) : refusé sans recours, un allow ne compile pas.
 #![forbid(unsafe_code)]
@@ -34,7 +35,7 @@ mod lanceur {
 #[path = "../../fenetre/src/donnees/mod.rs"]
 mod donnees;
 
-use donnees::{ELEMENTS_MAX, bilan, evenements, libre, protection};
+use donnees::{ELEMENTS_MAX, bilan, correction, evenements, libre, protection};
 use nettoyage::{TEXTE_MAX, rendu};
 
 /// Un texte prêt à montrer : borné, chaque caractère montré tel quel (aucun piège, espace trompeuse, sélecteur de
@@ -128,8 +129,50 @@ fn essayer(sortie: &[u8]) {
     }
 }
 
+/// L'aperçu d'une correction (`correction --voir`) : lu pour un jeton fixe et le code choisi par le premier octet.
+/// Lu, il est borné et propre (les textes longs de Vanguard gardent leurs lignes, une commande ou une valeur d'avant
+/// n'en a qu'une) ; refusé ou illisible, sa raison est une ligne propre.
+fn apercu(code: Option<i32>, sortie: &[u8]) {
+    let jeton = commandes::Empreinte::lire("0123456789abcdef0123456789abcdef").unwrap();
+    match correction::lire(jeton, code, sortie) {
+        correction::Lecture::Lue(a) => {
+            assert_eq!(code, Some(0));
+            for s in [&a.version, &a.regle, &a.categorie] {
+                propre(s, false);
+                assert!(s.chars().count() <= 80, "{s:?}");
+            }
+            for s in [&a.message, &a.action, &a.pourquoi_pas] {
+                propre(s, true);
+            }
+            assert!(a.commandes.len() <= correction::COMMANDES_MAX && a.avant.len() <= correction::AVANT_MAX);
+            for c in &a.commandes {
+                propre(c, false);
+            }
+            for v in &a.avant {
+                propre(&v.geste, false);
+                if let Some(x) = &v.valeur {
+                    propre(x, false);
+                }
+            }
+        }
+        correction::Lecture::Refusee(r) => {
+            assert!(code.is_some_and(|c| c != 0));
+            erreur(&r);
+        }
+        correction::Lecture::Illisible(r) => erreur(&r),
+    }
+}
+
 libfuzzer_sys::fuzz_target!(|donnees: &[u8]| {
     let Some((&langue, sortie)) = donnees.split_first() else { return };
     langue::choisir(Some(langue & 1 == 1));
     essayer(sortie);
+    // Le code de sortie de l'aperçu : 0, 1, 2 ou aucun (arrêté), choisi par deux bits du même octet.
+    let code = match (langue >> 1) & 3 {
+        0 => Some(0),
+        1 => Some(1),
+        2 => Some(2),
+        _ => None,
+    };
+    apercu(code, sortie);
 });

@@ -2,8 +2,8 @@
 //! relais, qui a les droits du compte, lit les demandes d'une fenêtre peut-être prise par ce qu'elle dessine ; la
 //! fenêtre lit les réponses du relais. Quoi qu'on envoie : aucune trame plus longue que la borne n'est acceptée (ni
 //! réservée), une demande comprise est une commande de la liste fermée ou un changement au démarrage dont les
-//! arguments ont la forme fermée (`demarrage --retirer|--remettre <32 hex> --json`, ou `couleurs --theme …`), et se recode octet pour octet à
-//! l'identique ; une réponse comprise a une ligne d'erreur propre et bornée. Le premier octet choisit la langue.
+//! arguments ont la forme fermée (`demarrage --retirer|--remettre <32 hex> --json`, `couleurs --theme …`, ou
+//! `correction --voir <32 hex> --json` sans accord), et se recode octet pour octet à l'identique ; une réponse comprise a une ligne d'erreur propre et bornée. Le premier octet choisit la langue.
 #![no_main]
 // Aucun unsafe ici ni dans ce que la cible inclut (fenetre/src/) : refusé sans recours, un allow ne compile pas.
 #![forbid(unsafe_code)]
@@ -67,6 +67,16 @@ fn relais(mut flux: &[u8]) {
                     } else {
                         assert_eq!(a[3], "--defaut");
                     }
+                }
+                // L'aperçu d'une correction : `correction --voir <32 hex> --json`, rien d'autre ; il n'engage aucun
+                // accord (tout à zéro) et ne change rien.
+                Lancement::Geste(g) => {
+                    let a = lancement.arguments();
+                    assert_eq!(a.len(), 4, "{a:?}");
+                    assert_eq!((a[0].as_str(), a[1].as_str(), a[3].as_str()), ("correction", "--voir", "--json"));
+                    assert!(a[2].len() == 32 && a[2].bytes().all(|o| matches!(o, b'0'..=b'9' | b'a'..=b'f')), "{a:?}");
+                    assert!(g.sorte.voir() && g.accord == commandes::Accord::NUL, "{g:?}");
+                    assert!(!lancement.change());
                 }
                 // Les animations : `couleurs --animations <toutes|reduites> --json`, rien d'autre.
                 Lancement::Animations(_) => {
