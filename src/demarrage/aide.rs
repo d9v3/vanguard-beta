@@ -309,6 +309,9 @@ pub(crate) const OPTIONS_EN: &[(&str, &str, &str)] = &[
                               installed"),
     ("demarrage", "remettre", "Put back exactly as before the program with this fingerprint that Vanguard removed \
                                (from its note)"),
+    ("demarrage", "accord", "With --retirer or --remettre: the consent of the action given by --json (64 hexadecimal \
+                             digits). The program read again must give the same (name, command, scope): otherwise \
+                             nothing is done"),
     ("connexions-sortantes", "json", "The result as JSON, for a script"),
     ("acces-a-distance", "json", "The result as JSON, for a script: nothing is removed, no question"),
     ("bilan-confidentialite", "json", "The result as JSON, for a script"),

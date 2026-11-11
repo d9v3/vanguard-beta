@@ -358,15 +358,13 @@ fn agir(jeton: &str, accord: &str) -> Issue {
     }
     // Une annulation change l'ordinateur : la cache des passages automatiques ne reprend rien d'avant.
     crate::autotest::cache::oublier();
-    for (chemin, actuel, avant) in &lignes {
-        if let Err(e) = crate::optimiser::droits::poser_si(chemin, Some(*actuel), *avant) {
-            crate::autotest::cache::oublier();
-            return Issue::Echec(trf!(
-                "pas remis jusqu'au bout : {} ; le reste se remet plus tard",
-                "not fully restored: {}; the rest can be restored later",
-                e
-            ));
-        }
+    if let Err(e) = remettre_les(&lignes) {
+        crate::autotest::cache::oublier();
+        return Issue::Echec(trf!(
+            "pas remis jusqu'au bout : {} ; le reste se remet plus tard",
+            "not fully restored: {}; the rest can be restored later",
+            e
+        ));
     }
     let revenu = lignes
         .iter()
@@ -377,6 +375,17 @@ fn agir(jeton: &str, accord: &str) -> Issue {
     }
     crate::autotest::cache::oublier();
     Issue::Fait(revenu)
+}
+
+/// Chaque ligne (chemin, droits relus au moment d'agir, droits d'avant) remise dans l'ordre, seulement si le fichier a
+/// encore les droits relus (`poser_si`) : un fichier changé entre la relecture et le geste n'est pas touché. Arrêté à
+/// la première erreur.
+#[cfg(unix)]
+fn remettre_les(lignes: &[(std::path::PathBuf, u32, u32)]) -> Result<(), String> {
+    for (chemin, actuel, avant) in lignes {
+        crate::optimiser::droits::poser_si(chemin, Some(*actuel), *avant)?;
+    }
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -499,5 +508,28 @@ mod tests {
         ] {
             assert!(!jeton_bien_forme(mauvais), "{mauvais}");
         }
+    }
+
+    /// La remise ne touche pas un fichier changé entre la relecture et le geste (mutation : `poser_si(.., None, ..)`),
+    /// et s'arrête à la première ligne refusée.
+    #[cfg(unix)]
+    #[test]
+    fn rien_n_est_remis_sur_un_fichier_change_depuis_la_relecture() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = crate::essais::temporaire().join(format!("vanguard-annuler-remise-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let (f, g) = (d.join("cle"), d.join("autre"));
+        for x in [&f, &g] {
+            std::fs::write(x, b"x").unwrap();
+            std::fs::set_permissions(x, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let mode = |x: &std::path::Path| std::fs::symlink_metadata(x).unwrap().permissions().mode() & 0o7777;
+        // Relu 0640, mais le fichier est à 0600 : rien n'est remis, ni lui ni la ligne d'après.
+        assert!(remettre_les(&[(f.clone(), 0o640, 0o644), (g.clone(), 0o600, 0o644)]).is_err());
+        assert_eq!((mode(&f), mode(&g)), (0o600, 0o600));
+        assert!(remettre_les(&[(f.clone(), 0o600, 0o644), (g.clone(), 0o600, 0o644)]).is_ok());
+        assert_eq!((mode(&f), mode(&g)), (0o644, 0o644));
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

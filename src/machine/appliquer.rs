@@ -373,4 +373,24 @@ mod tests {
         let lignes = [(std::path::PathBuf::from(r"C:\essai\fichier"), 0o644, 0o600)];
         assert_eq!(poser(&lignes).len(), 1);
     }
+
+    /// Un fichier changé entre la relecture et le geste n'est pas touché : chaque ligne n'est posée que si le fichier
+    /// a encore les droits relus (mutation : `poser_si(.., None, ..)`).
+    #[cfg(unix)]
+    #[test]
+    fn rien_n_est_pose_sur_un_fichier_change_depuis_la_relecture() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = crate::essais::temporaire().join(format!("vanguard-appliquer-pose-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("cle");
+        std::fs::write(&f, b"x").unwrap();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let mode = || std::fs::symlink_metadata(&f).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(poser(&[(f.clone(), 0o664, 0o600)]).len(), 1);
+        assert_eq!(mode(), 0o644);
+        assert_eq!(poser(&[(f.clone(), 0o644, 0o600)]), Vec::<String>::new());
+        assert_eq!(mode(), 0o600);
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }
