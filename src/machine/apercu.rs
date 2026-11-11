@@ -1433,6 +1433,12 @@ mod tests {
             ("id_rsa", "id_rs\u{430}"),
             ("a b", "a     b"),
             ("id", "id "),
+            // Ceux qu'`ui::commande_affichable` confondait : deux pièges devenus « � », une espace insécable devenue
+            // espace, un sélecteur retiré, un saut de ligne écrit « ⏎ ».
+            ("id_r\u{200b}sa", "id_r\u{200c}sa"),
+            ("a\u{a0}b", "a b"),
+            ("x\u{fe00}", "x"),
+            ("a\nb", "a \u{23ce} b"),
         ];
         for (x, y) in paires {
             let (lx, ly) = (avec(x), avec(y));
