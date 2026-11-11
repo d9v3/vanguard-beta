@@ -1819,7 +1819,7 @@ fn temoin_de_ligne(
     commande: bool,
     sorte: Sorte,
 ) -> Result<temoins::Temoin, temoins::Refus> {
-    if let Some(refus) = hors_du_perimetre(&t.r, fichier, n.saturating_add(1), sorte, commande) {
+    if let Some(refus) = hors_du_perimetre(&t.r, fichier, n.saturating_add(1), ligne, sorte, commande) {
         return Err(refus);
     }
     place(t)?;
@@ -1864,13 +1864,14 @@ fn hors_du_perimetre(
     r: &Releveur,
     fichier: &Path,
     numero: usize,
+    ligne: &str,
     sorte: Sorte,
     commande: bool,
 ) -> Option<temoins::Refus> {
     let ou = crate::ui::affichable(&court(fichier, &r.maison));
     let hypr = r.dans_hypr(fichier);
     match sorte {
-        Sorte::Ajoutee(ajout) => Some(refus_ajoute(ajout, &ou, numero)),
+        Sorte::Ajoutee(ajout) => Some(refus_ajoute(ajout, &ou, numero, ligne)),
         Sorte::Unite { utilisateur: true } if r.du_compte(fichier) || de_root_seul(fichier) => None,
         Sorte::Unite { utilisateur: true } => Some(temoins::Refus(trf!(
             "{ou}:{numero} : une unité de /etc/systemd/user que le compte peut changer (le fichier ou un dossier de son chemin n'est pas à root seul) ne peut pas être déclarée normale : rendez-la à root ou retirez la ligne",
@@ -1911,9 +1912,32 @@ fn hors_du_perimetre(
     }
 }
 
+/// La clé d'une ligne de réglage d'unité, telle qu'à montrer : « Clé= », et pour « Environment= » la première
+/// variable hors des permises (`variable_permise`, `valeur_permise`), sinon la première posée : « Environment=NOM ».
+/// Écrite par qui a posé la ligne : rendue affichable et coupée.
+fn cle_de_reglage(ligne: &str) -> String {
+    let montre = |t: &str| crate::ui::couper(&crate::ui::affichable(t), 40);
+    let Some((cle, valeur)) = ligne.split_once('=') else {
+        return montre(ligne.trim_matches([' ', '\t']));
+    };
+    let cle = cle.trim_matches([' ', '\t']);
+    if cle != "Environment" {
+        return format!("{}=", montre(cle));
+    }
+    let mots = mots_de_systemd(valeur.trim_matches([' ', '\t'])).unwrap_or_default();
+    let variables: Vec<(&str, &str)> = mots.iter().filter_map(|m| m.split_once('=')).collect();
+    let nom = variables
+        .iter()
+        .find(|(n, v)| !variable_permise(n) || !valeur_permise(n, v))
+        .or_else(|| variables.first())
+        .map_or("", |(n, _)| n);
+    format!("{cle}={}", montre(nom))
+}
+
 /// Le refus d'un lancement vu par le lot de détection de la persistance (`Ajout`), avec sa raison et où il est (`ou`
 /// affichable, `numero` de sa première ligne ; un générateur, programme et non ligne, se montre par son seul chemin).
-fn refus_ajoute(ajout: Ajout, ou: &str, numero: usize) -> temoins::Refus {
+/// Un réglage d'unité nomme sa clé, lue dans la `ligne` (`cle_de_reglage`).
+fn refus_ajoute(ajout: Ajout, ou: &str, numero: usize, ligne: &str) -> temoins::Refus {
     temoins::Refus(match ajout {
         Ajout::Jointe { .. } => trf!(
             "{ou}:{numero} : une ligne coupée par « \\ » en fin de ligne (ou par une fin de ligne que seul systemd voit) ne peut pas être déclarée normale : écrivez-la sur une seule ligne, ou retirez-la",
@@ -1943,10 +1967,13 @@ fn refus_ajoute(ajout: Ajout, ou: &str, numero: usize) -> temoins::Refus {
             "{ou}:{numero} : ce que lance ou charge cette ligne (greffon, commande d'hypridle, variable, appel Lua non lu) ne se lie pas à elle : elle ne peut pas être déclarée normale ; retirez-la, ou rangez le programme ailleurs que dans un dossier caché ou temporaire",
             "{ou}:{numero}: what this line starts or loads (plugin, hypridle command, variable, unread Lua call) is not bound to it: it cannot be declared normal; remove it, or store the program outside a hidden or temporary folder"
         ),
-        Ajout::Reglage => trf!(
-            "{ou}:{numero} : un réglage d'unité qui change ce qui se lance (bibliothèque préchargée, dossier de recherche des programmes, fichier de variables) ne peut pas être déclaré normal : retirez-le",
-            "{ou}:{numero}: a unit setting that changes what starts (preloaded library, program search folder, variable file) cannot be declared normal: remove it"
-        ),
+        Ajout::Reglage => {
+            let cle = cle_de_reglage(ligne);
+            trf!(
+                "{ou}:{numero} : « {cle} » est un réglage d'unité qui change ce qui se lance (variable, bibliothèque préchargée, dossier de recherche des programmes, fichier de variables, dossier courant, entrée) ou qui n'est pas dans la liste de ce que Vanguard reconnaît comme sûr : il ne peut pas être déclaré normal ; retirez-le",
+                "{ou}:{numero}: “{cle}” is a unit setting that changes what starts (variable, preloaded library, program search folder, variable file, working folder, input) or that is not in the list of what Vanguard recognises as safe: it cannot be declared normal; remove it"
+            )
+        }
         Ajout::Dossier => trf!(
             "{ou}:{numero} : une unité d'un dossier que systemd lit en plus des habituels (user.attached, XDG_DATA_DIRS, XDG_CONFIG_DIRS, dossier de session de systemd) ne peut pas être déclarée normale : retirez-la ou mettez-la dans ~/.config/systemd/user",
             "{ou}:{numero}: a unit in a folder systemd reads besides the usual ones (user.attached, XDG_DATA_DIRS, XDG_CONFIG_DIRS, systemd session folder) cannot be declared normal: remove it or put it in ~/.config/systemd/user"
@@ -4144,8 +4171,8 @@ fn juger_generateurs(t: &mut Lancements) {
                     "générateur",
                 ));
                 t.retraits.push(None);
-                let refus = hors_du_perimetre(&t.r, &p, 0, Sorte::Ajoutee(Ajout::Generateur), true)
-                    .unwrap_or_else(|| refus_ajoute(Ajout::Generateur, &ou, 0));
+                let refus = hors_du_perimetre(&t.r, &p, 0, "", Sorte::Ajoutee(Ajout::Generateur), true)
+                    .unwrap_or_else(|| refus_ajoute(Ajout::Generateur, &ou, 0, ""));
                 t.temoins.push(Err(refus));
                 t.suspects.push(trf!("{ou} : {raison}", "{ou}: {raison}"));
             }
@@ -4614,21 +4641,10 @@ fn juger_demarrage(demarrage: &[std::path::PathBuf], h: &Path, t: &mut Lancement
                         utilisateur,
                     })
                 };
-                if unite && let Some(raison) = reglage_suspect(&logique.texte, &t.r) {
-                    lever(
-                        t,
-                        f,
-                        &lu,
-                        n,
-                        ligne,
-                        &logique.texte,
-                        true,
-                        Sorte::Ajoutee(Ajout::Reglage),
-                        simple,
-                        raison,
-                    );
-                    continue;
-                }
+                // La liste permise d'abord, la porte unique du silence (vérification 4, D1) : sa raison est celle
+                // qui se montre. `reglage_suspect` vient ensuite, en filet : une ligne que la liste laisserait passer
+                // (ou celle d'une unité à root seul, qu'elle ne juge pas) reste levée par lui. Les deux lèvent un
+                // réglage (`Ajout::Reglage`), jamais déclarable, dont le refus nomme la clé.
                 if a_juger && let Lecteur::Systemd(codes) = &lecteur {
                     let s = permise::Systeme {
                         racine: &t.r.racine,
@@ -4650,6 +4666,21 @@ fn juger_demarrage(demarrage: &[std::path::PathBuf], h: &Path, t: &mut Lancement
                         );
                         continue;
                     }
+                }
+                if unite && let Some(raison) = reglage_suspect(&logique.texte, &t.r) {
+                    lever(
+                        t,
+                        f,
+                        &lu,
+                        n,
+                        ligne,
+                        &logique.texte,
+                        true,
+                        Sorte::Ajoutee(Ajout::Reglage),
+                        simple,
+                        raison,
+                    );
+                    continue;
                 }
                 let Some((commande, ambigue)) = commande_lancee_lue(&logique.texte) else {
                     continue;
@@ -8272,6 +8303,63 @@ mod tests {
         assert!(refus(&a).contains("PYTHONPATH"), "{}", refus(&a));
     }
 
+    /// Vérification 4, D1 : une ligne d'unité que la liste permise refuse et que l'ancienne porte (`reglage_suspect`)
+    /// lève aussi se montre avec la raison de la liste permise, passée d'abord ; chacune reste levée, jamais
+    /// déclarable, et son refus nomme la clé.
+    #[test]
+    fn reglage_par_la_liste_permise_d_abord() {
+        use permise::Ecart;
+        let de_la_liste: Vec<&str> = [
+            Ecart::Filet,
+            Ecart::Forme,
+            Ecart::Programme,
+            Ecart::Lanceur,
+            Ecart::Variable,
+            Ecart::Chemin,
+            Ecart::Longue,
+            Ecart::Directive,
+            Ecart::Fichier,
+        ]
+        .map(Ecart::raison)
+        .to_vec();
+        for (i, (ligne, cle)) in [
+            ("Environment=PYTHONPATH=/tmp", "Environment=PYTHONPATH"),
+            ("Environment=LANG=C LD_PRELOAD=/tmp/l.so", "Environment=LD_PRELOAD"),
+            ("Environment=PATH=/tmp/.x:/usr/bin", "Environment=PATH"),
+            ("ExecSearchPath=/tmp", "ExecSearchPath="),
+            ("EnvironmentFile=/tmp/e", "EnvironmentFile="),
+            ("WorkingDirectory=/tmp", "WorkingDirectory="),
+            ("RootDirectory=/tmp", "RootDirectory="),
+            ("StandardInputFile=/tmp/x", "StandardInputFile="),
+            ("BindPaths=/tmp/x:/opt/x", "BindPaths="),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("reglage-{i}"));
+            let r = Releveur {
+                racine: m.racine.clone(),
+                maison: m.chemin(""),
+                ..Releveur::default()
+            };
+            assert!(
+                reglage_suspect(ligne, &r).is_some(),
+                "{ligne} : l'ancienne porte le lève aussi"
+            );
+            m.ecrire(".config/systemd/user/seul.service", &format!("[Service]\n{ligne}\n"));
+            let c = m.lancements();
+            assert!(refus(&c).contains(cle), "{ligne} : {}", refus(&c));
+            assert!(crate::apprentissage::declarable(&c).is_err(), "{ligne}");
+            assert!(
+                de_la_liste
+                    .iter()
+                    .any(|r| c.message.contains(&format!("seul.service:2 : {r}"))),
+                "{ligne} : {}",
+                c.message
+            );
+        }
+    }
+
     /// Relecture E, C7 : un shell inversé se lit sans ambiguïté, mais ne se déclare jamais normal.
     #[test]
     fn porte_derobee_jamais_declarable() {
@@ -8860,7 +8948,7 @@ mod tests {
             maison: crate::essais::temporaire(),
             ..Releveur::default()
         };
-        assert!(hors_du_perimetre(&r, fichier, 1, Sorte::Unite { utilisateur: true }, true).is_none());
+        assert!(hors_du_perimetre(&r, fichier, 1, "", Sorte::Unite { utilisateur: true }, true).is_none());
     }
 
     /// Quatrième vérification : une ligne de préchargement ou une commande grave coupée par « \ » se voit, même
