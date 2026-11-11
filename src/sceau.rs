@@ -276,6 +276,12 @@ struct Registre {
     /// événements (`Avant::SansJournal`) : ce qui était là a été adopté sans être repris, et le bilan le dit un mois.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sans_journal: Option<String>,
+    /// Les écritures commencées (`ecrire_dans`, `effacer_dans`) : l'empreinte du contenu qui va prendre la place du
+    /// fichier (vide : le fichier va être retiré), notée AVANT qu'il change. Un Vanguard tué entre le fichier et son
+    /// sceau laisse ainsi un état reconnu : l'ancien contenu (son sceau) ou celui-ci, jamais une fausse
+    /// falsification. Le lecteur qui peut écrire la tranche et l'enlève (`resoudre_attente`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    en_attente: BTreeMap<String, String>,
 }
 
 /// La forme des sceaux écrits par ce programme. Un fichier de `TARDIFS` absent des `vus` de sceaux de cette forme n'a
@@ -846,7 +852,8 @@ fn forme_d_avant(dossier: &Path, r: &Registre) -> Avant {
             Avant::Recule
         };
     };
-    if r.fichiers.get(tete) != Some(&empreinte(tete, &o)) {
+    let e = empreinte(tete, &o);
+    if r.fichiers.get(tete) != Some(&e) && r.en_attente.get(tete) != Some(&e) {
         return Avant::Recule;
     }
     let Some(forme) = serde_json::from_slice::<serde_json::Value>(&o)
@@ -904,7 +911,11 @@ fn juger(nom: &str, lu: Result<Option<Vec<u8>>, String>, sceaux: Option<&Registr
         Err(e) => return Lecture::Illisible(e),
     };
     let attendu = sceaux.and_then(|r| r.fichiers.get(nom));
+    // Une écriture de Vanguard interrompue entre le fichier et son sceau : le contenu qu'elle allait poser, ou
+    // l'absence qu'allait laisser un retrait, est le sien.
+    let en_attente = sceaux.and_then(|r| r.en_attente.get(nom));
     match (lu, attendu) {
+        (None, _) if en_attente.is_some_and(String::is_empty) => Lecture::Absent,
         // Sans sceaux lisibles, ou refaits sans lui : absent, mais peut-être effacé.
         (None, None) if sceaux.is_none_or(|r| r.inconnus.contains(nom)) => Lecture::Inconnu,
         (None, None) => Lecture::Absent,
@@ -916,6 +927,7 @@ fn juger(nom: &str, lu: Result<Option<Vec<u8>>, String>, sceaux: Option<&Registr
                 Lecture::Intact(o)
             }
         }
+        (Some(o), _) if en_attente.is_some_and(|e| *e == empreinte(nom, &o)) => Lecture::Intact(o),
         // Changé, ou posé sans sceau alors que les sceaux existent (par un autre programme, ou par une copie de
         // Vanguard d'avant les sceaux).
         (Some(o), _) => Lecture::Falsifie(Some(o)),
@@ -937,7 +949,57 @@ pub(crate) fn lire_dans(dossier: &Path, nom: &str) -> Lecture {
         Ok(None) => Some(adopter_si(dossier, deja, ecrire)),
         Err(()) => None,
     };
-    juger(nom, contenu(&dossier.join(nom)), sceaux.as_ref())
+    let lu = contenu(&dossier.join(nom));
+    let mut sceaux = sceaux;
+    if ecrire && let Some(r) = sceaux.as_mut() {
+        resoudre_attente(dossier, r, nom, &lu);
+    }
+    juger(nom, lu, sceaux.as_ref())
+}
+
+/// Une écriture de `nom` restée en attente (Vanguard tué entre le fichier et son sceau) se tranche à la lecture qui
+/// peut écrire : le fichier a pris le contenu attendu (ou a été retiré comme attendu), son sceau devient celui-là ;
+/// sinon l'écriture n'a pas eu lieu, l'attente est oubliée et l'ancien sceau juge. Illisible : rien n'est tranché.
+fn resoudre_attente(dossier: &Path, r: &mut Registre, nom: &str, lu: &Result<Option<Vec<u8>>, String>) {
+    let Ok(lu) = lu else {
+        return;
+    };
+    let Some(attendu) = r.en_attente.remove(nom) else {
+        return;
+    };
+    match lu {
+        Some(o) if attendu == empreinte(nom, o) => {
+            r.fichiers.insert(nom.to_string(), attendu);
+            r.adoptes.remove(nom);
+            r.repris.remove(nom);
+            r.inconnus.remove(nom);
+            r.versions
+                .insert(nom.to_string(), crate::modele::inventaire::schema(nom));
+        }
+        None if attendu.is_empty() => {
+            r.fichiers.remove(nom);
+            r.adoptes.remove(nom);
+            r.repris.remove(nom);
+            r.versions.remove(nom);
+            r.inconnus.remove(nom);
+        }
+        _ => {}
+    }
+    let _ = enregistrer_registre(dossier, r);
+}
+
+/// Essais seulement (binaire de débogage) : `VANGUARD_ESSAI_ARRET=sceau:<nom>` fige l'écriture de `nom` entre le
+/// fichier et son sceau, jusqu'à la fin de l'entrée standard, pour que l'essai tue Vanguard là
+/// (`tests/programme.rs`). Rien dans un binaire livré.
+fn arret_d_essai(nom: &str) {
+    #[cfg(debug_assertions)]
+    if std::env::var("VANGUARD_ESSAI_ARRET").is_ok_and(|e| e.strip_prefix("sceau:") == Some(nom)) {
+        use std::io::{Read as _, Write as _};
+        let _ = writeln!(std::io::stderr(), "essai : arrêt sceau:{nom}");
+        let _ = std::io::stdin().read_to_end(&mut Vec::new());
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = nom;
 }
 
 /// `lire_dans` sans rien écrire ni créer : ce que lisent les réglages du lancement, avant que le passage d'une version
@@ -985,14 +1047,25 @@ pub(crate) fn ecrire_dans(dossier: &Path, nom: &str, octets: &[u8]) -> std::io::
         },
     };
     sceaux.inconnus.remove(nom);
-    crate::socle::ecrire_atomique(&dossier.join(nom), octets)?;
-    sceaux.fichiers.insert(nom.to_string(), empreinte(nom, octets));
-    sceaux.adoptes.remove(nom);
-    sceaux.repris.remove(nom);
-    sceaux
-        .versions
-        .insert(nom.to_string(), crate::modele::inventaire::schema(nom));
-    enregistrer_registre(dossier, &sceaux)
+    // En deux temps : l'empreinte du nouveau contenu est notée « en attente » avant que le fichier change, puis
+    // devient son sceau. Tué entre les deux, le fichier ancien ou nouveau est reconnu (`juger`), jamais dit falsifié :
+    // un carnet mis de côté à tort perdait l'annulation d'un changement déjà fini.
+    let nouvelle = empreinte(nom, octets);
+    sceaux.en_attente.insert(nom.to_string(), nouvelle.clone());
+    enregistrer_registre(dossier, &sceaux)?;
+    let ecrit = crate::socle::ecrire_atomique(&dossier.join(nom), octets);
+    arret_d_essai(nom);
+    sceaux.en_attente.remove(nom);
+    if ecrit.is_ok() {
+        sceaux.fichiers.insert(nom.to_string(), nouvelle);
+        sceaux.adoptes.remove(nom);
+        sceaux.repris.remove(nom);
+        sceaux
+            .versions
+            .insert(nom.to_string(), crate::modele::inventaire::schema(nom));
+    }
+    let scelle = enregistrer_registre(dossier, &sceaux);
+    ecrit.and(scelle)
 }
 
 /// Retire un fichier d'état et son sceau (Vanguard l'oublie lui-même).
@@ -1009,10 +1082,19 @@ pub(crate) fn effacer_dans(dossier: &Path, nom: &str) -> std::io::Result<()> {
     }
     let deja = deja_scelle(dossier);
     let _verrou = verrou_ecriture(dossier, nom)?;
+    // Le retrait noté « en attente » d'abord, comme une écriture (`ecrire_dans`) : tué juste après le retrait, le
+    // fichier absent n'est pas dit effacé hors de Vanguard.
+    if let Ok(Some(mut r)) = registre(dossier)
+        && r.fichiers.contains_key(nom)
+    {
+        r.en_attente.insert(nom.to_string(), String::new());
+        enregistrer_registre(dossier, &r)?;
+    }
     match std::fs::remove_file(dossier.join(nom)) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
         _ => {}
     }
+    arret_d_essai(nom);
     match registre(dossier) {
         Ok(Some(mut r)) => {
             if r.fichiers.remove(nom).is_some()
@@ -1020,6 +1102,7 @@ pub(crate) fn effacer_dans(dossier: &Path, nom: &str) -> std::io::Result<()> {
                 | r.repris.remove(nom)
                 | r.versions.remove(nom).is_some()
                 | r.inconnus.remove(nom)
+                | r.en_attente.remove(nom).is_some()
             {
                 enregistrer_registre(dossier, &r)?;
             }
@@ -1605,6 +1688,48 @@ mod tests {
     /// Retiré à la fin de l'essai, même fermé ou après une panique (M-1 de la relecture des restes c6).
     fn jetable(nom: &str) -> crate::essais::Jetable {
         crate::essais::Jetable::nouveau(&format!("sceau-{nom}"))
+    }
+
+    /// Campagne B, P-1 : Vanguard tué entre un fichier et son sceau. Les états qu'il peut laisser (registre « en
+    /// attente » et fichier ancien, nouveau ou retiré) sont reconnus, jamais dits falsifiés ; la lecture qui peut
+    /// écrire tranche l'attente. Un contenu qui n'est ni l'ancien ni l'attendu reste falsifié.
+    #[test]
+    fn tue_entre_le_fichier_et_son_sceau_rien_n_est_dit_falsifie() {
+        let d = jetable("en-attente");
+        let nom = "reglages.json";
+        ecrire_dans(&d, nom, b"ancien").unwrap();
+        let avec_attente = |attendu: &str| {
+            let mut r = registre(&d).unwrap().unwrap();
+            r.en_attente.insert(nom.to_string(), attendu.to_string());
+            enregistrer_registre(&d, &r).unwrap();
+        };
+        // Tué après le renommage du fichier, avant son sceau : le nouveau contenu est le sien.
+        avec_attente(&empreinte(nom, b"nouveau"));
+        std::fs::write(d.join(nom), "nouveau").unwrap();
+        assert_eq!(lire_sans_ecrire(&d, nom), Lecture::Intact(b"nouveau".to_vec()));
+        assert_eq!(lire_dans(&d, nom), Lecture::Intact(b"nouveau".to_vec()));
+        let r = registre(&d).unwrap().unwrap();
+        assert!(r.en_attente.is_empty(), "tranché à la lecture");
+        assert_eq!(r.fichiers.get(nom), Some(&empreinte(nom, b"nouveau")));
+        // Tué avant le renommage : l'ancien reste le sien, l'attente s'oublie.
+        avec_attente(&empreinte(nom, b"jamais pose"));
+        assert_eq!(lire_dans(&d, nom), Lecture::Intact(b"nouveau".to_vec()));
+        assert!(registre(&d).unwrap().unwrap().en_attente.is_empty());
+        // Un retrait interrompu : absent, pas effacé hors de Vanguard.
+        avec_attente("");
+        std::fs::remove_file(d.join(nom)).unwrap();
+        assert_eq!(lire_dans(&d, nom), Lecture::Absent);
+        let r = registre(&d).unwrap().unwrap();
+        assert!(r.en_attente.is_empty() && !r.fichiers.contains_key(nom));
+        // Un autre contenu que l'ancien et l'attendu : falsifié, attente ou pas.
+        ecrire_dans(&d, nom, b"ancien").unwrap();
+        avec_attente(&empreinte(nom, b"nouveau"));
+        std::fs::write(d.join(nom), "autre").unwrap();
+        assert_eq!(lire_dans(&d, nom), Lecture::Falsifie(Some(b"autre".to_vec())));
+        // L'écriture normale ne laisse aucune attente.
+        ecrire_dans(&d, nom, b"fin").unwrap();
+        effacer_dans(&d, nom).unwrap();
+        assert!(registre(&d).unwrap().unwrap().en_attente.is_empty());
     }
 
     /// E5-M1 (campagne 5) : un dossier à la place de `sceaux.verrou`. Rien ne s'écrit, et le bilan le dit (élevé) en

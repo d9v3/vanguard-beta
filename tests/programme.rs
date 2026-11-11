@@ -3062,6 +3062,45 @@ mod demarrage_sous_attaque {
             )
         }
 
+        /// `vanguard <args>` lancé avec l'arrêt d'essai `etape` (`VANGUARD_ESSAI_ARRET`, binaire de débogage
+        /// seulement), tué net une fois figé là.
+        fn tuer_a(&self, args: &[&str], etape: &str) {
+            use std::io::BufRead as _;
+            let mut enfant = Command::new(env!("CARGO_BIN_EXE_vanguard"))
+                .args(args)
+                .env("VANGUARD_ESSAI_ARRET", etape)
+                .env("XDG_CONFIG_DIRS", &self.systeme)
+                .env("VANGUARD_LANG", "fr")
+                .env("USER", "essai")
+                .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
+                .env("XDG_RUNTIME_DIR", self.maison.join("run"))
+                .env("HOME", &*self.maison)
+                .env("XDG_DATA_HOME", self.maison.join("donnees"))
+                .env("XDG_CONFIG_HOME", self.maison.join("config"))
+                .env("XDG_CACHE_HOME", self.maison.join("cache"))
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let sortie = lire_en_fond(enfant.stdout.take().unwrap());
+            let mut erreurs = std::io::BufReader::new(enfant.stderr.take().unwrap());
+            let mut ligne = String::new();
+            loop {
+                ligne.clear();
+                if erreurs.read_line(&mut ligne).unwrap_or(0) == 0 {
+                    let _ = enfant.kill();
+                    let _ = enfant.wait();
+                    panic!("jamais arrêté à « {etape} » : {}", sortie.join().unwrap_or_default());
+                }
+                if ligne.trim_end() == format!("essai : arrêt {etape}") {
+                    break;
+                }
+            }
+            let _ = enfant.kill();
+            let _ = enfant.wait();
+        }
+
         /// Le dossier des notes de Vanguard, celui de `reglages.json`.
         fn donnees(&self) -> PathBuf {
             let d = self.maison.join("donnees/vanguard");
@@ -3367,6 +3406,37 @@ mod demarrage_sous_attaque {
         std::os::unix::fs::symlink(&cible, &notes).unwrap();
         let r = b.changer("--retirer", &empreinte_de(&fm));
         assert_eq!(lu(&cible), secret, "écrit à travers le lien des notes ({r:?})");
+    }
+
+    /// Campagne B, P-1. Vanguard tué entre le carnet des notes (`reglages.json`) et son sceau, pendant un second
+    /// retrait : rien n'est dit changé hors de Vanguard, le carnet n'est pas mis de côté, et le premier retrait, fini,
+    /// se remet encore à l'octet près.
+    #[test]
+    fn tue_entre_le_carnet_et_son_sceau_l_annulation_reste() {
+        if !cfg!(debug_assertions) {
+            return essais::saute("arrêt d'essai : binaire de débogage seulement");
+        }
+        let b = Banc::nouveau("sceau-tue");
+        let (fl, v1) = b.poser("lecteur.desktop", "Lecteur", "/home/alice/bin/lecteur");
+        b.poser("musique.desktop", "Musique", "/home/alice/bin/musique");
+        let (sorte, e) = b.geste("Lecteur").unwrap();
+        assert_eq!(sorte, "retirer");
+        let r = b.changer("--retirer", &e);
+        assert_eq!(r.1, "fait", "{r:?}");
+        let (_, em) = b.geste("Musique").unwrap();
+        b.tuer_a(&["demarrage", "--retirer", &em, "--json"], "sceau:reglages.json");
+        let (_, brut) = b.liste();
+        let mis_de_cote: Vec<String> = std::fs::read_dir(b.donnees())
+            .unwrap()
+            .flatten()
+            .map(|f| f.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains("falsifie"))
+            .collect();
+        assert!(mis_de_cote.is_empty(), "carnet mis de côté : {mis_de_cote:?} ; {brut}");
+        assert_eq!(b.geste("Lecteur").map(|g| g.0).as_deref(), Some("remettre"), "{brut}");
+        let r = b.changer("--remettre", &e);
+        assert_eq!(r.1, "fait", "{r:?}");
+        assert_eq!(lu(&fl), v1, "remis à l'octet près");
     }
 
     /// Campagne B, P-3. Le dossier d'autostart du compte (`config/autostart`), puis `config` lui-même, sont des liens
