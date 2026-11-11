@@ -3466,6 +3466,24 @@ mod demarrage_sous_attaque {
         );
     }
 
+    /// Campagne 0.94, C-5. Une entrée en 0600 retirée puis remise garde ses droits, pas seulement son contenu.
+    #[test]
+    fn retirer_puis_remettre_garde_les_droits() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let b = Banc::nouveau("droits");
+        let (f, texte) = b.poser("prive.desktop", "Privé", "/home/alice/bin/prive");
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let droits = || std::fs::metadata(&f).unwrap().permissions().mode() & 0o7777;
+        let e = empreinte_de(&f);
+        let (_, issue, raison) = b.changer("--retirer", &e);
+        assert_eq!(issue, "fait", "{raison}");
+        assert_eq!(droits(), 0o600, "retirée : {:o}", droits());
+        let (_, issue, raison) = b.changer("--remettre", &e);
+        assert_eq!(issue, "fait", "{raison}");
+        assert_eq!(lu(&f), texte);
+        assert_eq!(droits(), 0o600, "remise : {:o}", droits());
+    }
+
     /// Campagne B, P-1. Vanguard tué entre le carnet des notes (`reglages.json`) et son sceau, pendant un second
     /// retrait : rien n'est dit changé hors de Vanguard, le carnet n'est pas mis de côté, et le premier retrait, fini,
     /// se remet encore à l'octet près.

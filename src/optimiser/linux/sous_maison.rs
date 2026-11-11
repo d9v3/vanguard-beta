@@ -179,9 +179,9 @@ fn parcourir(chemin: &Path, creer: bool) -> Result<Option<Dossier>, Echec> {
     Ok(Some(Dossier { fd: courant, nom, ou }))
 }
 
-/// Le fichier visé, regardé sans le suivre : `None` s'il n'existe pas ; refusé s'il est un lien, autre chose qu'un
-/// simple fichier ou à un autre compte.
-fn regarder(d: &Dossier) -> Result<Option<()>, Echec> {
+/// Le fichier visé, regardé sans le suivre : ses droits (0o777 au plus), `None` s'il n'existe pas ; refusé s'il est
+/// un lien, autre chose qu'un simple fichier ou à un autre compte.
+fn regarder(d: &Dossier) -> Result<Option<u32>, Echec> {
     let ou = &d.ou;
     let f = match ouvrir_a(d.fd.as_fd(), &d.nom, REGARD, 0) {
         Ok(f) => f,
@@ -210,7 +210,7 @@ fn regarder(d: &Dossier) -> Result<Option<()>, Echec> {
             "{ou} belongs to another account: Vanguard does not touch it"
         )));
     }
-    Ok(Some(()))
+    Ok(Some(m.mode() & 0o777))
 }
 
 /// Vanguard peut-il écrire ou retirer `chemin` ? Chaque dossier qui existe est un vrai dossier du compte (pas un lien),
@@ -246,14 +246,15 @@ pub(super) fn lire(chemin: &Path, max: u64) -> io::Result<String> {
     String::from_utf8(octets).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
-/// Écrit `contenu` à la place de `chemin` : temporaire neuf dans le dossier ouvert, forcé sur le disque, puis
-/// renommé à sa place dans ce même dossier. Les dossiers manquants sont créés sous le dossier personnel.
+/// Écrit `contenu` à la place de `chemin` : temporaire neuf dans le dossier ouvert, aux droits du fichier remplacé
+/// (campagne 0.94, C-5 : 0600 ne devient pas 0644), forcé sur le disque, puis renommé à sa place dans ce même dossier.
+/// Les dossiers manquants sont créés sous le dossier personnel ; un fichier neuf a les droits de l'umask.
 pub(super) fn ecrire(chemin: &Path, contenu: &[u8]) -> Result<(), Echec> {
     if crate::autotest::lecture_seule::refuse_fichier(chemin) {
         return Err(refus(crate::autotest::lecture_seule::refus().to_string()));
     }
     let d = parcourir(chemin, true)?.ok_or_else(|| refus(trf!("chemin vide", "empty path")))?;
-    regarder(&d)?;
+    let droits = regarder(&d)?;
     let ou = &d.ou;
     let mut sel = [0u8; 8];
     getrandom::fill(&mut sel).map_err(|e| echec(trf!("{ou} : {e}", "{ou}: {e}")))?;
@@ -263,10 +264,15 @@ pub(super) fn ecrire(chemin: &Path, contenu: &[u8]) -> Result<(), Echec> {
         u64::from_le_bytes(sel)
     ))
     .map_err(|e| echec(trf!("{ou} : {e}", "{ou}: {e}")))?;
-    let mut f = ouvrir_a(d.fd.as_fd(), &temporaire, TEMPORAIRE, 0o666)
+    // Créé aux droits d'avant (jamais plus larges, l'umask ne fait que retirer), puis remis exactement à eux sur le
+    // descripteur (fchmod), avant d'y écrire quoi que ce soit.
+    let mut f = ouvrir_a(d.fd.as_fd(), &temporaire, TEMPORAIRE, droits.unwrap_or(0o666))
         .map_err(|e| echec(trf!("{ou} : écriture impossible ({e})", "{ou}: cannot write ({e})")))?;
-    let r = f
-        .write_all(contenu)
+    let r = droits
+        .map_or(Ok(()), |m| {
+            f.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(m))
+        })
+        .and_then(|()| f.write_all(contenu))
         .and_then(|()| f.sync_all())
         .and_then(|()| renommer(d.fd.as_fd(), &temporaire, &d.nom));
     if let Err(e) = r {
@@ -387,6 +393,21 @@ mod tests {
         retirer(&f).unwrap();
         // Aucun temporaire laissé.
         assert_eq!(std::fs::read_dir(d.join(".config/autostart")).unwrap().count(), 0);
+    }
+
+    /// Campagne 0.94, C-5 : le fichier réécrit garde ses droits (0600 reste 0600, 0664 reste 0664 malgré l'umask).
+    #[test]
+    fn ecrire_garde_les_droits_du_fichier_remplace() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let d = dossier("droits");
+        let f = d.join(".config/autostart/prive.desktop");
+        ecrire(&f, b"[Desktop Entry]\n").unwrap();
+        let droits = |f: &Path| std::fs::metadata(f).unwrap().permissions().mode() & 0o7777;
+        for mode in [0o600, 0o664, 0o640] {
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(mode)).unwrap();
+            ecrire(&f, b"[Desktop Entry]\nHidden=true\n").unwrap();
+            assert_eq!(droits(&f), mode, "{mode:o} devenu {:o}", droits(&f));
+        }
     }
 
     #[test]
