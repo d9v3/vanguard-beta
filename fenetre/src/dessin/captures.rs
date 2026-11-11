@@ -597,7 +597,8 @@ fn captures() {
 }
 
 /// La feuille « Voir la correction » (correction/), en français et en anglais, sombre et clair, aux deux tailles :
-/// un aperçu long (le corps défile, le pied reste), d'une correction qui demande les droits d'administrateur.
+/// un aperçu long (le corps défile, le pied reste), d'une correction qui demande les droits d'administrateur ; puis
+/// un vrai aperçu d'une clé au nom à guillemets, en français, sombre et clair.
 fn correction(dossier: &Path) -> usize {
     std::fs::create_dir_all(dossier.join("correction")).unwrap();
     let jeton = crate::commandes::Empreinte::lire(JETON_CAPTURES).unwrap();
@@ -625,7 +626,34 @@ fn correction(dossier: &Path) -> usize {
             }
         }
     }
+    // Vérification de Fable n° 3, A3 : un vrai aperçu de Vanguard 0.93.0 (maison inventée « alice ») pour une clé
+    // nommée « id_x = «y» », que la fenêtre disait « mal formé » : lu et montré, le geste et la valeur chacun dans son
+    // cadre. Son jeton devient celui du constat des captures (seul constat du bilan inventé qui en porte un).
     crate::langue::choisir(Some(false));
+    let reel = include_str!("../../essais/apercus-noms-guillemets.jsonl")
+        .lines()
+        .find(|l| l.contains("id_x = «y»"))
+        .unwrap();
+    let jeton_reel = serde_json::from_str::<serde_json::Value>(reel).unwrap()["apercu"]["jeton"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let reel = reel.replace(&jeton_reel, JETON_CAPTURES);
+    for sombre in [true, false] {
+        let mut rendu = Rendu::nouveau();
+        super::appliquer_theme(&rendu.ctx, sombre);
+        let mut appli = appli_remplie(false, sombre);
+        appli.aller(Ecran::Bilan);
+        appli.voir_correction(jeton);
+        appli.poser_apercu(reel.as_bytes());
+        let toile = rendu.rendre(TAILLES[0], &[0.0, 0.5, 2.0], |ui| image(&mut appli, None, ui));
+        let fichier = format!(
+            "correction/nom-a-guillemets-fr-{}-1280x800.png",
+            if sombre { "sombre" } else { "clair" }
+        );
+        toile.ecrire_png(&dossier.join(fichier)).unwrap();
+        faites += 1;
+    }
     faites
 }
 

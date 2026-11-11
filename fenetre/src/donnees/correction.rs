@@ -17,9 +17,16 @@
 //! `coupe` le dit à part (la suite n'est pas montrée). Dans les deux cas, ce qui est montré n'est plus exactement ce
 //! que l'accord engage : le prochain lot ne devra pas offrir d'accepter. Chaque texte montré doit aussi avoir au moins
 //! un signe dessiné (`nettoyage::lisible`) : une commande, un message ou une raison faits seulement de blancs,
-//! d'invisibles ou de « � » se montreraient vides. Limites connues : une lettre sosie (un « а » cyrillique dans un
-//! chemin) se dessine, elle passe sans retouche ; une lettre accentuée écrite d'un bloc ou décomposée (lettre puis
-//! accent) se dessine pareil, et deux accents dans un autre ordre aussi.
+//! d'invisibles ou de « � » se montreraient vides. Une espace en tête est retirée, un « − » (qui se dessine comme
+//! « - » dans les commandes) et un « � » écrit tel quel se montrent « � » : tous trois posent `retouche`.
+//!
+//! La fenêtre dessine chaque texte de Vanguard signe par signe (`dessin::signe_par_signe`), sans ligature : « -> »
+//! se montre en deux signes, jamais comme la flèche « → » (vérification de Fable n° 3, A1) ; la liste des signes
+//! permis n'a pas deux signes qui se dessinent pareil (`nettoyage::ENCRE`, essais de `dessin::encre`).
+//!
+//! Limites connues : une lettre sosie d'un autre alphabet (un « а » cyrillique dans un chemin) se dessine comme la
+//! latine, elle passe sans retouche ; des signes presque pareils (« – » et « - ») aussi ; une lettre accentuée écrite
+//! d'un bloc ou décomposée (lettre puis accent) se dessine pareil, et deux accents dans un autre ordre aussi.
 
 use serde::Deserialize;
 
@@ -38,7 +45,8 @@ const LIGNE_APERCU_MAX: usize = crate::nettoyage::TEXTE_MAX;
 /// Espaces de suite gardées au plus dans un texte montré : assez pour un alignement, trop peu pour pousser la suite
 /// d'une commande hors de la vue.
 pub const ESPACES_MAX: usize = 3;
-/// Longueur d'une raison de refus montrée, en caractères (la plus longue de Vanguard en a moins de 200).
+/// Longueur d'une raison de refus, en caractères : la plus longue de Vanguard en a 179 ; au-delà, ce n'est pas la
+/// sienne.
 const RAISON_MAX: usize = 200;
 
 /// Qui fera la correction, jugé par Vanguard (`machine::Droits`).
@@ -211,18 +219,40 @@ pub fn lire(jeton: Empreinte, code: Option<i32>, sortie: &[u8]) -> Lecture {
                 |a| Lecture::Lue(Box::new(a)),
             ),
         // Un refus sans raison lisible laisserait la feuille dire « Pas d'aperçu : » suivi de rien. Les raisons de
-        // Vanguard sont cinq phrases fixes (`machine::apercu::Refus`), sans nom venu de l'extérieur : une raison que
-        // le nettoyage doit changer (un piège, un signe que les polices n'ont pas, un saut de ligne, des espaces en
-        // trop) n'est pas la sienne. Plutôt que de la montrer retouchée, la réponse est dite contradictoire.
+        // Vanguard sont des phrases fixes (`machine::apercu::Refus`), sans nom venu de l'extérieur, de moins de
+        // `RAISON_MAX` signes : une raison que le nettoyage doit changer (un piège, un signe que les polices n'ont pas,
+        // un saut de ligne, une espace en tête ou des espaces en trop), qui contient « � », ou qu'il faudrait couper
+        // (vérification de Fable n° 3, A6) n'est pas la sienne. Plutôt que de la montrer retouchée ou coupée, la
+        // réponse est dite contradictoire.
         ("refuse", Some(c), Some(raison), None, None) if c != 0 => {
-            if crate::nettoyage::lisible(&raison) && resserrer(&crate::nettoyage::ligne_entiere(&raison)) == raison {
-                Lecture::Refusee(crate::nettoyage::couper(&raison, RAISON_MAX))
+            if crate::nettoyage::lisible(&raison)
+                && montre(&raison) == raison
+                && !raison.contains('\u{fffd}')
+                && raison.chars().count() <= RAISON_MAX
+            {
+                Lecture::Refusee(raison)
             } else {
                 contradictoire()
             }
         }
         _ => contradictoire(),
     }
+}
+
+/// Un texte de Vanguard tel que la feuille le montre : nettoyé sur une seule ligne, sans espace en tête ni en bout
+/// (une espace de tête décalerait une commande sans que rien ne le dise), chaque longue suite d'espaces resserrée, et
+/// les jumeaux gardés (`nettoyage::JUMEAUX_GARDES` : « − » se dessine comme « - » dans les commandes) en « � ».
+fn montre(texte: &str) -> String {
+    resserrer(crate::nettoyage::ligne_entiere(texte).trim_start())
+        .chars()
+        .map(|c| {
+            if crate::nettoyage::JUMEAUX_GARDES.contains(&c) {
+                '\u{fffd}'
+            } else {
+                c
+            }
+        })
+        .collect()
 }
 
 /// Resserre chaque suite de plus de `ESPACES_MAX` espaces (le nettoyage a déjà fait des tabulations et des espaces
@@ -238,45 +268,20 @@ fn resserrer(texte: &str) -> String {
         .collect()
 }
 
-/// Les guillemets et ce qui en a l'air : tous ceux d'Unicode (catégories Pi et Pf, et les guillemets bas U+201A,
-/// U+201E ; tenu par un test) et les chevrons qui ressemblent à « et » (« < », « ≪ », « 《 », « ⟨ »…). Dans une
-/// valeur d'avant, montrée `geste = «valeur»`, ils imiteraient une seconde valeur sur la même ligne.
-fn guillemet(c: char) -> bool {
-    matches!(
-        u32::from(c),
-        0x3C | 0x3E
-            | 0xAB
-            | 0xBB
-            | 0x02C2..=0x02C3
-            | 0x1433
-            | 0x1438
-            | 0x2018..=0x201F
-            | 0x2039..=0x203A
-            | 0x2329..=0x232A
-            | 0x226A..=0x226B
-            | 0x276C..=0x2771
-            | 0x27E8..=0x27EB
-            | 0x2E02..=0x2E05
-            | 0x2E09..=0x2E0A
-            | 0x2E0C..=0x2E0D
-            | 0x2E1C..=0x2E1D
-            | 0x2E20..=0x2E21
-            | 0x3008..=0x300B
-            | 0xFE64..=0xFE65
-            | 0xFF1C
-            | 0xFF1E
-    )
-}
-
-/// Une valeur d'avant montrée sur une ligne `geste = «valeur»` : le geste a l'une des formes qu'une correction de
-/// Vanguard note (`optimiser::annulables::Geste`), et ni lui ni la valeur ne contiennent de guillemet (`guillemet`).
-/// Les formes : `ntp` et `alimentation` seuls ; `droits|` et `fichier|` suivis d'un chemin absolu ; `defense|` suivi
-/// de 16 chiffres hexadécimaux minuscules (`IdNote`) ; `unite|`, `sysctl|`, `module|`, `service|` et `defender|`
-/// suivis d'un nom ASCII sans espace. Une seule barre, une cible jamais vide. Le registre (`registre|…|…|…`) n'y est
-/// pas : seuls les réglages pour jouer le notent, jamais une correction.
+/// Une valeur d'avant de la forme que Vanguard écrit : le geste a l'une des formes qu'une correction de Vanguard note
+/// (`optimiser::annulables::Geste`). Les formes : `ntp` et `alimentation` seuls ; `droits|` et `fichier|` suivis d'un
+/// chemin absolu ; `defense|` suivi de 16 chiffres hexadécimaux minuscules (`IdNote`) ; `unite|`, `sysctl|`,
+/// `module|`, `service|` et `defender|` suivis d'un nom ASCII sans espace. Une seule barre, une cible jamais vide. Le
+/// registre (`registre|…|…|…`) n'y est pas : seuls les réglages pour jouer le notent, jamais une correction.
+///
+/// Le chemin, lui, est un nom de fichier : il peut contenir un guillemet, un chevron ou un signe égal. Le geste et la
+/// valeur sont montrés chacun dans un cadre que la fenêtre dessine (`dessin::bilan::correction`), jamais entre des
+/// guillemets écrits dans le texte : un nom de fichier ne peut pas y imiter une seconde valeur, il se montre tel quel
+/// (vérification de Fable n° 3, A3 : un nom de clé « id_«x» » rendait l'aperçu illisible alors que Vanguard offre la
+/// correction et que le terminal la montre).
 fn avant_lisible(v: &AvantBrut) -> bool {
     let geste = v.geste.as_str();
-    let forme = match geste.split_once('|') {
+    match geste.split_once('|') {
         None => matches!(geste, "ntp" | "alimentation"),
         Some((_, cible)) if cible.is_empty() || cible.contains('|') => false,
         Some(("droits" | "fichier", chemin)) => chemin.starts_with('/'),
@@ -285,8 +290,7 @@ fn avant_lisible(v: &AvantBrut) -> bool {
             .bytes()
             .all(|o| o.is_ascii_alphanumeric() || matches!(o, b'-' | b'_' | b'.' | b'@' | b':' | b'/')),
         Some(_) => false,
-    };
-    forme && !geste.contains(guillemet) && v.valeur.as_deref().is_none_or(|t| !t.contains(guillemet))
+    }
 }
 
 /// Les formes que Vanguard écrit (`machine::apercu::apercu_de`), et seulement elles : annulable, sans « pourquoi
@@ -334,10 +338,12 @@ fn apercu(jeton: Empreinte, a: &ApercuBrut, accord: &str) -> Option<Apercu> {
     }
     // Nettoyé et resserré d'abord, coupé ensuite : chaque écart compté à part (un piège retiré, une suite non
     // montrée). Chaque texte tient sur une ligne : ceux de Vanguard pour une correction n'ont pas de saut de ligne.
+    // Un « � » écrit tel quel par Vanguard se montre comme un caractère remplacé : la feuille ne peut pas dire lequel
+    // des deux, elle le dit retouché (vérification de Fable n° 3, A6).
     let (mut retouche, mut coupe) = (false, false);
     let mut propre = |s: &str, max: usize| {
-        let e = resserrer(&crate::nettoyage::ligne_entiere(s));
-        retouche |= e != s;
+        let e = montre(s);
+        retouche |= e != s || s.contains('\u{fffd}');
         coupe |= e.chars().count() > max;
         crate::nettoyage::couper(&e, max)
     };
@@ -639,7 +645,8 @@ mod tests {
 
     /// Vérification de Fable, F4 : un refus avec un accord, un aperçu nul ou une raison absente, vide ou faite
     /// seulement d'une séquence ; un « fait » sans raison ou avec un accord nul ; une commande vide ; une valeur d'avant
-    /// dont le geste n'a pas la forme de Vanguard ou dont les textes imitent une seconde valeur : illisible.
+    /// dont le geste n'a pas la forme de Vanguard : illisible. Un nom de fichier qui a l'air d'une seconde valeur, lui,
+    /// se lit : la fenêtre montre le geste et la valeur dans deux cadres (vérification de Fable n° 3, A3).
     #[test]
     fn les_petits_ecarts_rendent_la_reponse_illisible() {
         for refus in [
@@ -690,6 +697,15 @@ mod tests {
         for avant in [
             serde_json::json!([{"geste": "droits|/home/alice/a = «x»", "valeur": "755"}]),
             serde_json::json!([{"geste": "droits|/home/alice/.ssh", "valeur": "755» = «700"}]),
+        ] {
+            let mut a = apercu_json();
+            a["avant"] = avant;
+            let Lecture::Lue(l) = lu(&a) else {
+                panic!("{a} pas lu");
+            };
+            assert!(!l.retouche && !l.coupe, "{a}");
+        }
+        for avant in [
             serde_json::json!([{"geste": "Droits|/home/alice/.ssh", "valeur": "755"}]),
             serde_json::json!([{"geste": "|/home/alice/.ssh", "valeur": "755"}]),
             serde_json::json!([{"geste": "", "valeur": null}]),
@@ -797,8 +813,10 @@ mod tests {
     /// Vérification n° 2 de Fable, P2 : une forme que Vanguard n'écrit jamais est illisible. Annulable avec un
     /// « pourquoi pas » (jamais montré) ou sans valeur d'avant ; non annulable sans raison ou avec des valeurs d'avant ;
     /// manuelle avec les droits du compte ; automatique sans commande ; une version, une règle, une catégorie, un
-    /// message ou une action vides ; un geste d'une autre forme que ceux de Vanguard ; un guillemet ou un sosie dans
-    /// un geste ou une valeur. Les formes de Vanguard, elles, se lisent.
+    /// message ou une action vides ; un geste d'une autre forme que ceux de Vanguard. Les formes de Vanguard, elles, se
+    /// lisent, même avec des guillemets ou des chevrons dans un nom de fichier ou une valeur (vérification de Fable
+    /// n° 3, A3 : ils se montrent dans leur cadre). « Manuelle, administrateur, sans commande » se lit : c'est ce que
+    /// Vanguard écrit pour une correction qu'il ne sait que décrire (`machine::apercu::droits_effectifs`).
     #[test]
     fn une_forme_que_vanguard_n_ecrit_pas_est_illisible() {
         let mut manuelle = non_annulable();
@@ -817,9 +835,22 @@ mod tests {
             "module|ntsync",
             "service|SSDPSRV",
             "defender|np",
+            "droits|/home/alice/a \u{27e8}x\u{27e9}",
+            "droits|/home/alice/a <<x>>",
         ] {
             let mut a = apercu_json();
             a["avant"] = serde_json::json!([{"geste": geste, "valeur": "0644"}]);
+            bons.push(a);
+        }
+        for valeur in [
+            "755 \u{226b} = \u{226a}700",
+            "\u{2039}700\u{203a}",
+            "\u{300a}700\u{300b}",
+            "\u{ff1c}700\u{ff1e}",
+            "\u{201c}700\u{201d}",
+        ] {
+            let mut a = apercu_json();
+            a["avant"] = serde_json::json!([{"geste": "ntp", "valeur": valeur}]);
             bons.push(a);
         }
         for a in &bons {
@@ -864,22 +895,9 @@ mod tests {
             "unite|cups\u{2010}browsed",
             "registre|hklm|cle|nom",
             "inconnu|x",
-            "droits|/home/alice/a \u{27e8}x\u{27e9}",
-            "droits|/home/alice/a <<x>>",
         ] {
             let mut a = apercu_json();
             a["avant"] = serde_json::json!([{"geste": geste, "valeur": "0644"}]);
-            faux.push(a);
-        }
-        for valeur in [
-            "755 \u{226b} = \u{226a}700",
-            "\u{2039}700\u{203a}",
-            "\u{300a}700\u{300b}",
-            "\u{ff1c}700\u{ff1e}",
-            "\u{201c}700\u{201d}",
-        ] {
-            let mut a = apercu_json();
-            a["avant"] = serde_json::json!([{"geste": "ntp", "valeur": valeur}]);
             faux.push(a);
         }
         for a in &faux {
@@ -887,26 +905,12 @@ mod tests {
         }
     }
 
-    /// Chaque guillemet d'Unicode (catégories Pi et Pf) est un guillemet pour `guillemet` : un nouveau venu dans une
-    /// version d'Unicode ferait échouer ce test.
-    #[test]
-    fn tous_les_guillemets_sont_connus() {
-        use unicode_general_category::{GeneralCategory as G, get_general_category};
-        let manque: Vec<String> = (0..=u32::from(char::MAX))
-            .filter_map(char::from_u32)
-            .filter(|&c| {
-                matches!(get_general_category(c), G::InitialPunctuation | G::FinalPunctuation) && !guillemet(c)
-            })
-            .map(|c| format!("U+{:04X}", u32::from(c)))
-            .collect();
-        assert!(manque.is_empty(), "{manque:?}");
-        assert!(!guillemet('"') && !guillemet('\'') && !guillemet('a'));
-    }
-
     /// Vérification n° 2 de Fable, P5 : la raison d'un refus passe par le même nettoyage que les autres textes (une
     /// ligne, les espaces resserrées, ce qui ne se dessine pas en « � ») ; les raisons de Vanguard sont des phrases
     /// fixes que ce nettoyage ne change pas, donc une raison qu'il changerait (rembourrée d'espaces, sur deux lignes,
-    /// avec un invisible) rend la réponse contradictoire. Trop longue, elle est coupée.
+    /// avec un invisible) rend la réponse contradictoire. Vérification de Fable n° 3, A6 : une espace en tête, un « � »
+    /// écrit tel quel ou plus de `RAISON_MAX` signes (la plus longue de Vanguard en a 179) aussi, au lieu d'être
+    /// montrée retirée ou coupée sans le dire.
     #[test]
     fn une_raison_de_refus_retouchee_n_est_pas_celle_de_vanguard() {
         let refus = |raison: &str| {
@@ -917,11 +921,18 @@ mod tests {
             lire(jeton(), Some(1), refus(vraie).as_bytes()),
             Lecture::Refusee(vraie.into())
         );
-        let Lecture::Refusee(longue) = lire(jeton(), Some(1), refus(&"x".repeat(300)).as_bytes()) else {
-            panic!("longue pas lue");
-        };
-        assert!(longue.chars().count() == RAISON_MAX && longue.ends_with('…'));
+        let longue = format!("{vraie} {}", "x".repeat(RAISON_MAX - vraie.chars().count() - 1));
+        assert_eq!(longue.chars().count(), RAISON_MAX);
+        assert_eq!(
+            lire(jeton(), Some(1), refus(&longue).as_bytes()),
+            Lecture::Refusee(longue.clone())
+        );
         for faux in [
+            format!("{longue}x"),
+            "x".repeat(300),
+            format!(" {vraie}"),
+            format!("{vraie} \u{fffd}"),
+            "\u{2212} ce problème a disparu".to_string(),
             format!("ce problème a disparu{}: refaites le bilan", " ".repeat(150)),
             "ce problème a disparu\nrefaites le bilan".to_string(),
             "ce problème a dis\u{2065}paru".to_string(),
@@ -932,6 +943,91 @@ mod tests {
                 matches!(lire(jeton(), Some(1), refus(&faux).as_bytes()), Lecture::Illisible(_)),
                 "{faux:?}"
             );
+        }
+    }
+
+    /// Vérification de Fable n° 3, A3 : sept vrais aperçus de Vanguard (0.93.0, maison inventée « alice »), une clé
+    /// privée en 0644 nommée avec des guillemets, des chevrons ou un signe égal. Avant, la fenêtre les disait « aperçu
+    /// de Vanguard mal formé » alors que Vanguard offre la correction ; ils se lisent maintenant entiers, sans retouche,
+    /// le geste et la valeur exactement comme Vanguard les a écrits.
+    #[test]
+    fn les_vrais_apercus_aux_noms_a_guillemets_se_lisent() {
+        let lignes: Vec<&str> = include_str!("../../essais/apercus-noms-guillemets.jsonl")
+            .lines()
+            .filter(|l| !l.is_empty())
+            .collect();
+        assert_eq!(lignes.len(), 7);
+        let mut noms = Vec::new();
+        for ligne in lignes {
+            let brut: serde_json::Value = serde_json::from_str(ligne).unwrap();
+            let a = &brut["apercu"];
+            let jeton = Empreinte::lire(a["jeton"].as_str().unwrap()).unwrap();
+            let Lecture::Lue(l) = lire(jeton, Some(0), ligne.as_bytes()) else {
+                panic!("pas lu : {ligne}");
+            };
+            assert!(!l.retouche && !l.coupe, "{ligne}");
+            assert_eq!(l.avant.len(), 1);
+            assert_eq!(l.avant[0].geste, a["avant"][0]["geste"].as_str().unwrap());
+            assert_eq!(l.avant[0].valeur.as_deref(), Some("0644"));
+            assert_eq!(l.commandes, [a["commandes"][0].as_str().unwrap()]);
+            assert_eq!(l.message, a["message"].as_str().unwrap());
+            assert_eq!(l.droits, Droits::Compte);
+            noms.push(l.avant[0].geste.clone());
+        }
+        for nom in [
+            "id_«x»",
+            "id_<a>",
+            "id_‹b›",
+            "id_\"c\"",
+            "id_“d”",
+            "id_'e'",
+            "id_x = «y»",
+        ] {
+            assert!(
+                noms.contains(&format!("droits|/home/alice/.ssh/{nom}")),
+                "{nom} absent : {noms:?}"
+            );
+        }
+    }
+
+    /// Vérification de Fable n° 3, A6 : une espace en tête (qui décale une commande sans rien dire), un « − » (qui se
+    /// dessine comme « - » dans les commandes) et un « � » écrit tel quel (qu'on ne distingue pas d'un caractère
+    /// remplacé) posent `retouche`. Une commande faite seulement de « � », de « ␠ » ou de « ˙ » n'a aucune lettre ni
+    /// aucun chiffre : illisible, comme une commande vide.
+    #[test]
+    fn une_retouche_discrete_se_dit() {
+        let mut temoin = apercu_json();
+        temoin["commandes"] = serde_json::json!(["chmod 700 -R ~"]);
+        let Lecture::Lue(l) = lu(&temoin) else {
+            panic!("témoin pas lu");
+        };
+        assert!(!l.retouche && l.commandes == ["chmod 700 -R ~"]);
+        for (commande, montree) in [
+            (" chmod 700 -R ~", "chmod 700 -R ~"),
+            ("   chmod 700 -R ~", "chmod 700 -R ~"),
+            ("chmod 700 \u{2212}R ~", "chmod 700 \u{fffd}R ~"),
+            ("chmod 700 -R ~ \u{fffd}", "chmod 700 -R ~ \u{fffd}"),
+        ] {
+            let mut a = apercu_json();
+            a["commandes"] = serde_json::json!([commande]);
+            let Lecture::Lue(l) = lu(&a) else {
+                panic!("{commande:?} pas lu");
+            };
+            assert!(l.retouche && !l.coupe, "{commande:?}");
+            assert_eq!(l.commandes, [montree]);
+        }
+        for (cle, texte) in [("message", " Tout va bien"), ("action", "\u{fffd}Retirer")] {
+            let mut a = apercu_json();
+            a[cle] = serde_json::json!(texte);
+            assert!(matches!(lu(&a), Lecture::Lue(l) if l.retouche), "{cle}");
+        }
+        let mut a = apercu_json();
+        a["avant"] = serde_json::json!([{"geste": "droits|/home/alice/.ssh", "valeur": " 755"}]);
+        assert!(matches!(lu(&a), Lecture::Lue(l) if l.retouche && l.avant[0].valeur.as_deref() == Some("755")));
+        for vide in ["\u{fffd}", "\u{2420}", "\u{2d9}", "\u{fffd} \u{2420}\u{2d9}"] {
+            let mut a = apercu_json();
+            a["commandes"] = serde_json::json!(["chmod 700 ~", vide]);
+            assert!(matches!(lu(&a), Lecture::Illisible(_)), "{vide:?}");
         }
     }
 }

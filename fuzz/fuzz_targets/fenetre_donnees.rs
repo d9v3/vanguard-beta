@@ -77,15 +77,22 @@ fn propre(s: &str, sauts: bool) {
     }
 }
 
-/// Un texte qui se voit : au moins un caractère qui n'est ni une espace ni une marque.
+/// Un texte de Vanguard qui se lit : au moins une lettre ou un chiffre qui n'est pas une marque (posée sur un autre
+/// signe). Fait seulement d'espaces, de marques, de « � », de « ␠ » ou de « ˙ », il se montrerait vide ou comme une
+/// suite de remplacements (vérification de Fable n° 3, A6).
 fn visible(s: &str) -> bool {
     s.chars().any(|c| {
-        !matches!(
-            get_general_category(c),
-            G::SpaceSeparator | G::NonspacingMark | G::SpacingMark | G::EnclosingMark
-        )
+        c.is_alphanumeric()
+            && !matches!(
+                get_general_category(c),
+                G::NonspacingMark | G::SpacingMark | G::EnclosingMark
+            )
     })
 }
+
+/// Le signe « − » (U+2212) : JetBrains Mono le dessine comme « - ». Nommé ici, pas pris de la liste du nettoyage
+/// (`JUMEAUX_GARDES`) : s'il en sortait, ce contrôle le verrait.
+const MOINS: char = '\u{2212}';
 
 /// Une erreur à montrer : une ligne courte, propre.
 fn erreur(e: &str) {
@@ -166,9 +173,11 @@ fn essayer(sortie: &[u8]) {
 }
 
 /// L'aperçu d'une correction (`correction --voir`) : lu pour un jeton fixe et le code choisi par le premier octet.
-/// Lu, il est borné et propre : chaque texte tient sur une ligne, sans longue suite d'espaces qui pousserait la fin
-/// d'une commande hors de la vue, et chaque texte de Vanguard (commandes comprises) se voit ; refusé ou illisible, sa
-/// raison est une ligne propre qui se voit.
+/// Lu, il est borné et propre : chaque texte tient sur une ligne, sans espace en tête ni en bout (une espace de tête
+/// décalerait une commande sans rien dire), sans longue suite d'espaces qui pousserait la fin d'une commande hors de
+/// la vue, sans « − » (qui se dessine comme « - »), et chaque texte de Vanguard (commandes comprises) a une lettre ou
+/// un chiffre ; refusé, sa raison est une ligne propre de 200 signes au plus, sans espace en tête, qui se lit ;
+/// illisible, sa raison est une ligne propre.
 fn apercu(code: Option<i32>, sortie: &[u8]) {
     let jeton = commandes::Empreinte::lire("0123456789abcdef0123456789abcdef").unwrap();
     match correction::lire(jeton, code, sortie) {
@@ -178,6 +187,7 @@ fn apercu(code: Option<i32>, sortie: &[u8]) {
             let ligne = |s: &str| {
                 propre(s, false);
                 assert!(!s.contains(&espaces), "{s:?}");
+                assert!(!s.starts_with(' ') && !s.ends_with(' ') && !s.contains(MOINS), "{s:?}");
             };
             for s in [&a.version, &a.regle, &a.categorie] {
                 ligne(s);
@@ -208,13 +218,19 @@ fn apercu(code: Option<i32>, sortie: &[u8]) {
             assert!(code.is_some_and(|c| c != 0));
             erreur(&r);
             assert!(visible(&r) && !r.contains("    "), "{r:?}");
+            assert!(
+                r.chars().count() <= 200 && !r.starts_with(' ') && !r.contains(MOINS),
+                "{r:?}"
+            );
         }
         correction::Lecture::Illisible(r) => erreur(&r),
     }
 }
 
 libfuzzer_sys::fuzz_target!(|donnees: &[u8]| {
-    let Some((&langue, sortie)) = donnees.split_first() else { return };
+    let Some((&langue, sortie)) = donnees.split_first() else {
+        return;
+    };
     langue::choisir(Some(langue & 1 == 1));
     essayer(sortie);
     // Le code de sortie de l'aperçu : 0, 1, 2 ou aucun (arrêté), choisi par deux bits du même octet.

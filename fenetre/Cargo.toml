@@ -40,8 +40,7 @@ winit = { version = "0.30.13", default-features = false, features = ["wayland-dl
 # version qu'eframe tire déjà (par image) : rien de nouveau dans Cargo.lock, rien dans le programme livré.
 png = { version = "0.18.1", default-features = false }
 # La catégorie Unicode de chaque caractère, pour refaire la liste des signes que les polices dessinent
-# (dessin/encre.rs, nettoyage::ENCRE) et tenir la liste des guillemets (donnees/correction.rs). La version qu'epaint
-# tire déjà : aucun crate nouveau dans Cargo.lock.
+# (dessin/encre.rs, nettoyage::ENCRE). La version qu'epaint tire déjà : aucun crate nouveau dans Cargo.lock.
 unicode-general-category = "1.1.0"
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
@@ -92,6 +91,19 @@ overflow-checks = true
 
 [profile.dev.package."*"]
 debug = "line-tables-only"
+
+# La mise en page du texte optimisée même en développement : les essais des signes (`dessin/encre.rs`) mettent en
+# page des centaines de milliers de textes ; sans optimisation, plusieurs minutes.
+[profile.dev.package.epaint]
+opt-level = 3
+[profile.dev.package.harfrust]
+opt-level = 3
+[profile.dev.package.skrifa]
+opt-level = 3
+[profile.dev.package.read-fonts]
+opt-level = 3
+[profile.dev.package.vello_cpu]
+opt-level = 3
 
 # Son propre espace de travail : jamais membre de celui de Vanguard.
 [workspace]

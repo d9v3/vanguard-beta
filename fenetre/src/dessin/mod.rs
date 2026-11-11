@@ -158,6 +158,50 @@ pub fn texte(t: &str, taille: f32, couleur: Color32) -> RichText {
     RichText::new(t).size(taille).color(couleur)
 }
 
+/// Un texte dessiné signe par signe, chacun façonné seul. Les polices de la fenêtre lient des suites de signes
+/// (ligatures et formes contextuelles : dans Inter, « -> » se dessine exactement comme « → », « => » comme « ⇒ »,
+/// « .. » comme « ‥ » ; dans JetBrains Mono, « >= », « != », « www »…), et egui ne permet pas de couper ces réglages
+/// de la police ; mais il façonne chaque section d'une mise en page à part (`LayoutSection`). Ici chaque signe a la
+/// sienne, avec ses marques combinantes (elles se posent sur lui) : deux signes ne se lient jamais, ce qui est dessiné
+/// est la suite exacte des signes du texte. Pour les textes de Vanguard qui engagent un accord (la feuille « Voir la
+/// correction ») : un texte différent ne doit pas se dessiner pareil (essai `encre::aucune_suite_ne_dessine_un_signe`).
+/// Le prix : pas d'approche de paire (« AV » un rien plus large), invisible à cette taille.
+pub fn signe_par_signe(t: &str, police: FontId, couleur: Color32) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    ajouter_signe_par_signe(&mut job, t, &egui::TextFormat::simple(police, couleur));
+    job
+}
+
+/// Ajoute `t` au bout de `job`, signe par signe (`signe_par_signe`) ; ce qui est déjà dans `job` ne change pas.
+pub fn ajouter_signe_par_signe(job: &mut egui::text::LayoutJob, t: &str, format: &egui::TextFormat) {
+    use egui::text::{ByteIndex, LayoutSection};
+    let debut = job.text.len();
+    job.text.push_str(t);
+    let mut section = |de: usize, a: usize| {
+        job.sections.push(LayoutSection {
+            leading_space: 0.0,
+            byte_range: ByteIndex(de)..ByteIndex(a),
+            format: format.clone(),
+        });
+    };
+    // Le début de la grappe en cours : un signe et les marques qui le suivent.
+    let mut grappe: Option<usize> = None;
+    for (i, c) in t.char_indices() {
+        let marque = crate::nettoyage::dessin(c) == crate::nettoyage::Dessin::Marque;
+        match grappe {
+            Some(_) if marque => {}
+            Some(de) => {
+                section(debut + de, debut + i);
+                grappe = Some(i);
+            }
+            None => grappe = Some(i),
+        }
+    }
+    if let Some(de) = grappe {
+        section(debut + de, debut + t.len());
+    }
+}
+
 /// Un texte qui dit un état ou une gravité : un point de `couleur` devant, le texte toujours à l'encre. Les couleurs
 /// vives se règlent (une gravité peut se confondre avec le fond) : elles ne servent qu'à repérer, jamais à écrire un
 /// mot ; il se lit quelles que soient les couleurs choisies.

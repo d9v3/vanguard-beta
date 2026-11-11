@@ -1,11 +1,19 @@
 //! La feuille « Voir la correction » : ce que Vanguard ferait pour un constat, lu par `vanguard correction --voir`,
 //! montré en lecture seule. Rien ne s'y accepte dans ce lot : le seul geste est « Annuler » (et copier la commande
 //! du terminal), pour que la personne voie avant d'avoir à décider, sans bouton qui ferait semblant.
+//!
+//! Chaque texte de Vanguard (ceux que l'accord engage, et sa raison de refus) est dessiné signe par signe
+//! (`dessin::signe_par_signe`) : les ligatures des polices ne lient jamais deux de ses signes, « -> » ne se dessine
+//! pas comme « → » ; et chaque nom ou valeur est dans son propre cadre, dessiné par la fenêtre, pour qu'aucun signe
+//! d'un nom (guillemet, chevron, signe égal) n'imite la frontière entre deux champs.
 
-use eframe::egui::{self, Frame, Margin, RichText, ScrollArea, Stroke, Ui};
+use eframe::egui::{self, Color32, Frame, Margin, RichText, ScrollArea, Stroke, Ui, text::LayoutJob};
 
 use crate::appli::{Appli, EtatFeuille, FeuilleCorrection};
-use crate::dessin::{RAYON_CARTE, bouton, mono, moyenne, ombre, pal, signale, texte};
+use crate::dessin::{
+    RAYON_CARTE, ajouter_signe_par_signe, bouton, mono, moyenne, ombre, pal, police, signale, signale_avec,
+    signe_par_signe, texte,
+};
 use crate::donnees::correction::{Apercu, Droits, Lecture};
 
 /// Largeur de la feuille, et la marge gardée autour sur un petit écran.
@@ -90,7 +98,11 @@ fn corps(ui: &mut Ui, etat: &EtatFeuille) {
             ));
         }
         EtatFeuille::Lue(Lecture::Lue(a)) => apercu(ui, a),
-        EtatFeuille::Lue(Lecture::Refusee(r) | Lecture::Illisible(r)) | EtatFeuille::Echec(r) => {
+        // La raison d'un refus est un texte de Vanguard : signe par signe. Les autres raisons sont celles de la fenêtre.
+        EtatFeuille::Lue(Lecture::Refusee(r)) => signale_avec(ui, p.jaune, 14.0, |ui| {
+            ui.label(phrase(crate::tr!("Pas d'aperçu : ", "No preview: "), r, 14.0, p.encre));
+        }),
+        EtatFeuille::Lue(Lecture::Illisible(r)) | EtatFeuille::Echec(r) => {
             signale(
                 ui,
                 p.jaune,
@@ -101,6 +113,29 @@ fn corps(ui: &mut Ui, etat: &EtatFeuille) {
     }
 }
 
+/// Notre début de phrase, puis un texte de Vanguard dessiné signe par signe, à la suite, dans la police d'Inter.
+fn phrase(debut: &str, de_vanguard: &str, taille: f32, couleur: Color32) -> LayoutJob {
+    let format = egui::TextFormat::simple(police(taille), couleur);
+    let mut job = LayoutJob::default();
+    job.append(debut, 0.0, format.clone());
+    ajouter_signe_par_signe(&mut job, de_vanguard, &format);
+    job
+}
+
+/// Un texte de Vanguard dans son propre cadre, à chasse fixe, signe par signe : une commande, un geste, une valeur.
+fn cadre(ui: &mut Ui, t: &str, couleur: Color32) {
+    let p = pal();
+    Frame::new()
+        .fill(p.fond)
+        .stroke(Stroke::new(1.0, p.discret.gamma_multiply(0.5)))
+        .corner_radius(4)
+        .inner_margin(Margin::symmetric(8, 4))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.add(egui::Label::new(signe_par_signe(t, mono(12.0), couleur)).wrap());
+        });
+}
+
 fn apercu(ui: &mut Ui, a: &Apercu) {
     let p = pal();
     let fort = |ui: &mut Ui, t: &str| {
@@ -109,20 +144,20 @@ fn apercu(ui: &mut Ui, a: &Apercu) {
         ui.add_space(2.0);
     };
     ui.horizontal(|ui| {
-        ui.label(texte(&a.categorie, 12.0, p.discret));
+        ui.label(signe_par_signe(&a.categorie, police(12.0), p.discret));
         ui.label(texte(a.gravite.nom(), 12.0, p.encre));
-        ui.label(RichText::new(&a.regle).font(mono(12.0)).color(p.discret));
+        ui.label(signe_par_signe(&a.regle, mono(12.0), p.discret));
     });
     ui.add_space(4.0);
-    ui.label(texte(&a.message, 15.0, p.encre));
+    ui.label(signe_par_signe(&a.message, police(15.0), p.encre));
     if a.retouche {
         ui.add_space(6.0);
         signale(
             ui,
             p.jaune,
             crate::tr!(
-                "Ce texte a été retouché avant de l'afficher (caractères invisibles, de contrôle ou que la fenêtre ne sait pas dessiner remplacés par « \u{fffd} » ou retirés, sauts de ligne ou longues suites d'espaces resserrés) : il n'est pas exactement celui de Vanguard.",
-                "This text was altered before showing it (invisible or control characters, or ones this window cannot draw, replaced by “\u{fffd}” or removed; line breaks or long runs of spaces tightened): it is not exactly Vanguard's."
+                "Ce texte a été retouché avant de l'afficher (caractères invisibles, de contrôle, que la fenêtre ne sait pas dessiner ou qui en imitent un autre, remplacés par « \u{fffd} » ou retirés ; sauts de ligne, espaces en tête ou longues suites d'espaces resserrés) : il n'est pas exactement celui de Vanguard.",
+                "This text was altered before showing it (invisible or control characters, or ones this window cannot draw or that mimic another, replaced by “\u{fffd}” or removed; line breaks, leading spaces or long runs of spaces tightened): it is not exactly Vanguard's."
             ),
             13.0,
         );
@@ -141,7 +176,7 @@ fn apercu(ui: &mut Ui, a: &Apercu) {
     }
 
     fort(ui, crate::tr!("Ce que Vanguard va faire", "What Vanguard will do"));
-    ui.label(texte(&a.action, 14.0, p.doux));
+    ui.label(signe_par_signe(&a.action, police(14.0), p.doux));
     if !a.automatique {
         ui.label(texte(
             crate::tr!(
@@ -165,20 +200,29 @@ fn apercu(ui: &mut Ui, a: &Apercu) {
             13.0,
         );
     } else {
+        // Un aperçu non annulable a toujours son « pourquoi pas » (`donnees::correction::coherent`) ; vide, la phrase
+        // est celle de la fenêtre.
         let pourquoi = if a.pourquoi_pas.is_empty() {
-            crate::tr!(
-                "Vanguard ne note pas de valeur d'avant pour ce geste.",
-                "Vanguard notes no value before for this step."
+            phrase(
+                crate::tr!(
+                    "Ne s'annule pas : Vanguard ne note pas de valeur d'avant pour ce geste.",
+                    "Cannot be undone: Vanguard notes no value before for this step."
+                ),
+                "",
+                13.0,
+                p.encre,
             )
         } else {
-            a.pourquoi_pas.as_str()
+            phrase(
+                crate::tr!("Ne s'annule pas : ", "Cannot be undone: "),
+                &a.pourquoi_pas,
+                13.0,
+                p.encre,
+            )
         };
-        signale(
-            ui,
-            p.moyen,
-            &crate::trf!("Ne s'annule pas : {}", "Cannot be undone: {}", pourquoi),
-            13.0,
-        );
+        signale_avec(ui, p.moyen, 13.0, |ui| {
+            ui.label(pourquoi);
+        });
     }
     match a.droits {
         Droits::Compte => signale(
@@ -225,38 +269,185 @@ fn apercu(ui: &mut Ui, a: &Apercu) {
         // Chaque commande dans son propre cadre : une longue commande repliée sur deux lignes ne peut pas passer pour
         // deux commandes.
         for c in &a.commandes {
-            Frame::new()
-                .fill(p.fond)
-                .stroke(Stroke::new(1.0, p.discret.gamma_multiply(0.5)))
-                .corner_radius(4)
-                .inner_margin(Margin::symmetric(8, 4))
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.label(RichText::new(c).font(mono(12.0)).color(p.doux));
-                });
+            cadre(ui, c, p.doux);
             ui.add_space(4.0);
         }
     }
     if !a.avant.is_empty() {
         fort(ui, crate::tr!("Valeurs d'avant, notées", "Values before, noted"));
-        // Une valeur entre « » ; une valeur absente en italique, sans guillemets : le texte « (absente) » écrit dans
-        // un fichier ne peut pas passer pour une absence.
+        // Le geste dans son cadre, puis sa valeur dans le sien, sous « valeur notée » écrit par la fenêtre : un nom
+        // qui contient « = », des guillemets ou des chevrons reste dans son cadre et n'imite pas une seconde valeur.
+        // Une valeur absente est dite en italique, sans cadre : le texte « absente » écrit dans un fichier, lui, est
+        // dans un cadre et ne passe pas pour une absence.
         for v in &a.avant {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new(&v.geste).font(mono(12.0)).color(p.discret));
-                ui.label(RichText::new("=").font(mono(12.0)).color(p.discret));
+            cadre(ui, &v.geste, p.discret);
+            ui.horizontal_top(|ui| {
+                ui.add_space(12.0);
+                ui.label(texte(crate::tr!("valeur notée :", "value noted:"), 12.0, p.discret));
                 match v.valeur.as_deref() {
-                    Some(valeur) => ui.label(RichText::new(format!("«{valeur}»")).font(mono(12.0)).color(p.encre)),
-                    None => ui.label(
-                        texte(
-                            crate::tr!("absente, rien de noté", "absent, nothing noted"),
-                            12.0,
-                            p.discret,
-                        )
-                        .italics(),
-                    ),
-                };
+                    Some(valeur) => {
+                        ui.vertical(|ui| cadre(ui, valeur, p.encre));
+                    }
+                    None => {
+                        ui.label(
+                            texte(
+                                crate::tr!("absente, rien de noté", "absent, nothing noted"),
+                                12.0,
+                                p.discret,
+                            )
+                            .italics(),
+                        );
+                    }
+                }
             });
+            ui.add_space(6.0);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use eframe::egui::{FontFamily, Shape, epaint::Galley};
+
+    use super::*;
+    use crate::commandes::Accord;
+    use crate::donnees::bilan::Gravite;
+    use crate::donnees::correction::Avant;
+
+    /// Un aperçu inventé (maison « alice ») dont chaque texte de Vanguard contient des suites que les polices lient.
+    fn exemple(annulable: bool) -> Apercu {
+        Apercu {
+            version: "0.93.0".into(),
+            regle: "LNX=>SSH..003".into(),
+            categorie: "Clés -> SSH".into(),
+            gravite: Gravite::Critique,
+            message: "Clé privée ~/.ssh/id_<a> lisible par d'autres -> x".into(),
+            action: "Protéger la clé id_<a> => x..y".into(),
+            commandes: vec!["chmod 600 ~/.ssh/'id_<a>' -> x".into(), "a != b >= c <= www".into()],
+            automatique: true,
+            droits: Droits::Compte,
+            annulable,
+            pourquoi_pas: if annulable {
+                String::new()
+            } else {
+                "Vanguard ne sait pas relever <- l'état => d'avant".into()
+            },
+            avant: if annulable {
+                vec![Avant {
+                    geste: "droits|/home/alice/.ssh/id_x = «y» -> z".into(),
+                    valeur: Some("0644 => «700»".into()),
+                }]
+            } else {
+                Vec::new()
+            },
+            point_de_restauration: false,
+            accord: Accord::lire(&"ab".repeat(32)).unwrap(),
+            retouche: false,
+            coupe: false,
+        }
+    }
+
+    fn galeries(forme: &Shape, sortie: &mut Vec<Arc<Galley>>) {
+        match forme {
+            Shape::Text(t) => sortie.push(t.galley.clone()),
+            Shape::Vec(v) => v.iter().for_each(|f| galeries(f, sortie)),
+            _ => {}
+        }
+    }
+
+    /// Une image sans écran (`run_ui`) de ce que `dessin` peint : les textes qu'elle a mis en page.
+    fn textes_peints(ctx: &egui::Context, dessin: impl FnMut(&mut Ui)) -> Vec<Arc<Galley>> {
+        let entree = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 3000.0))),
+            ..Default::default()
+        };
+        let mut sortie = ctx.run_ui(entree, dessin);
+        sortie.textures_delta.clear();
+        let mut g = Vec::new();
+        for c in &sortie.shapes {
+            galeries(&c.shape, &mut g);
+        }
+        g
+    }
+
+    /// Vrai si `t` est peint dans un texte de l'image, chaque signe dans sa propre section (façonné seul : aucune
+    /// ligature avec son voisin), dans une police que les essais de `dessin::encre` couvrent (Inter ou JetBrains
+    /// Mono, de 12 à 15 points).
+    fn peint_signe_par_signe(peints: &[Arc<Galley>], t: &str) -> bool {
+        peints.iter().any(|g| {
+            g.job.text.match_indices(t).any(|(o, _)| {
+                t.char_indices().all(|(i, c)| {
+                    g.job.sections.iter().any(|s| {
+                        s.byte_range.start.0 == o + i
+                            && s.byte_range.end.0 == o + i + c.len_utf8()
+                            && matches!(
+                                s.format.font_id.family,
+                                FontFamily::Proportional | FontFamily::Monospace
+                            )
+                            && (12.0..=15.0).contains(&s.format.font_id.size)
+                    })
+                })
+            })
+        })
+    }
+
+    /// Vérification de Fable n° 3, A1 et A2 : chaque texte de Vanguard de la feuille (catégorie, règle, message,
+    /// action, commandes, geste et valeur d'avant, « pourquoi pas », raison d'un refus) est peint signe par signe, dans
+    /// une police et une taille dont la liste des signes permis est vérifiée. Un seul texte peint d'un bloc (ligatures
+    /// permises) fait échouer cet essai.
+    #[test]
+    fn chaque_texte_de_vanguard_est_peint_signe_par_signe() {
+        let ctx = egui::Context::default();
+        crate::dessin::polices(&ctx);
+        for annulable in [true, false] {
+            let a = exemple(annulable);
+            let peints = textes_peints(&ctx, |ui| apercu(ui, &a));
+            let mut textes = vec![&a.categorie, &a.regle, &a.message, &a.action];
+            textes.extend(&a.commandes);
+            for v in &a.avant {
+                textes.push(&v.geste);
+                textes.extend(&v.valeur);
+            }
+            if !annulable {
+                textes.push(&a.pourquoi_pas);
+            }
+            for t in textes {
+                assert!(
+                    peint_signe_par_signe(&peints, t),
+                    "{t:?} n'est pas peint signe par signe"
+                );
+            }
+        }
+        let raison = "ce problème a disparu -> refaites le bilan".to_string();
+        let peints = textes_peints(&ctx, |ui| {
+            corps(ui, &EtatFeuille::Lue(Lecture::Refusee(raison.clone())));
+        });
+        assert!(peint_signe_par_signe(&peints, &raison));
+    }
+
+    /// A1, par l'image : dans la feuille, une suite de deux signes (« -> », « => », « <- ») ne se peint pas comme la
+    /// flèche qu'une ligature d'Inter en ferait, ni dans le message (15 points) ni dans l'action (14 points).
+    #[test]
+    fn une_suite_ne_se_peint_pas_comme_un_signe() {
+        let ctx = egui::Context::default();
+        crate::dessin::polices(&ctx);
+        let image = |t: &str| {
+            let mut a = exemple(true);
+            a.message = format!("message {t}");
+            a.action = format!("action {t}");
+            let peints = textes_peints(&ctx, |ui| apercu(ui, &a));
+            let atlas = ctx.fonts_mut(|f| f.image());
+            [&a.message, &a.action].map(|t| {
+                let g = peints.iter().find(|g| g.job.text == *t).unwrap();
+                crate::dessin::encre::image(&atlas, g, egui::Vec2::ZERO)
+            })
+        };
+        for (suite, signe) in [("x->y", "x\u{2192}y"), ("x=>y", "x\u{21d2}y"), ("x<-y", "x\u{2190}y")] {
+            let (deux, un) = (image(suite), image(signe));
+            assert_ne!(deux[0], un[0], "message : {suite} se peint comme {signe}");
+            assert_ne!(deux[1], un[1], "action : {suite} se peint comme {signe}");
         }
     }
 }
