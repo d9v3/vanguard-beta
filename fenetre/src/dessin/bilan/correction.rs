@@ -121,8 +121,8 @@ fn apercu(ui: &mut Ui, a: &Apercu) {
             ui,
             p.jaune,
             crate::tr!(
-                "Des caractères invisibles ou de contrôle ont été retirés de ce texte avant de l'afficher.",
-                "Invisible or control characters were removed from this text before showing it."
+                "Ce texte a été retouché avant de l'afficher (caractères invisibles ou de contrôle retirés, sauts de ligne ou longues suites d'espaces resserrés) : il n'est pas exactement celui de Vanguard.",
+                "This text was altered before showing it (invisible or control characters removed, line breaks or long runs of spaces tightened): it is not exactly Vanguard's."
             ),
             13.0,
         );

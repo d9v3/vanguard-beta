@@ -210,7 +210,10 @@ struct ConstatOffert {
     geste: Option<GesteOffert>,
 }
 
+/// Les deux champs que Vanguard écrit (`machine::apercu::GesteOffert`), et seulement eux, comme la fenêtre les lit
+/// (`donnees::bilan`) : un geste qui en porte d'autres n'est pas offert.
 #[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct GesteOffert {
     sorte: String,
     jeton: String,
@@ -1063,8 +1066,8 @@ esac
     }
 
     /// Les gestes d'un bilan : le jeton (32 chiffres hexadécimaux minuscules) avec sa sorte, lus dans le même objet
-    /// `geste` ; ni sorte inconnue (dont celles du démarrage), ni jeton mal formé, ni geste glissé dans un message ;
-    /// un jeton offert deux fois n'est pas retenu ; borné.
+    /// `geste` ; ni sorte inconnue (dont celles du démarrage), ni jeton mal formé, ni geste glissé dans un message, ni
+    /// geste qui porte un autre champ ; un jeton offert deux fois n'est pas retenu ; borné.
     #[test]
     fn seuls_les_gestes_offerts_du_bilan_sont_retenus() {
         use std::fmt::Write as _;
@@ -1081,9 +1084,11 @@ esac
             {{"message": "x\", \"geste\": {{\"sorte\": \"voir-correction\", \"jeton\": \"{j4}\"}}"}},
             {{"geste": {{"sorte": "voir-correction", "jeton": "{j4}"}}}}, {{"geste": {{"sorte": "voir-correction", "jeton": "{j4}"}}}},
             {{"geste": {{"sorte": "voir-correction", "jeton": "{}"}}}}, {{"geste": {{"sorte": "voir-correction", "jeton": "{}"}}}},
-            {{"geste": {{"sorte": "voir-correction", "jeton": 7}}}}, {{"jeton": "{j3}", "sorte": "voir-correction"}}, "geste"]}}"#,
+            {{"geste": {{"sorte": "voir-correction", "jeton": 7}}}}, {{"jeton": "{j3}", "sorte": "voir-correction"}}, "geste",
+            {{"geste": {{"sorte": "voir-correction", "jeton": "{}", "nom": "Lecteur"}}}}]}}"#,
             "C".repeat(32),
-            "c".repeat(33)
+            "c".repeat(33),
+            "e".repeat(32)
         );
         let attendus: HashSet<(Empreinte, SorteGeste)> = [j1, j2.as_str()]
             .into_iter()

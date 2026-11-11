@@ -130,28 +130,34 @@ fn essayer(sortie: &[u8]) {
 }
 
 /// L'aperçu d'une correction (`correction --voir`) : lu pour un jeton fixe et le code choisi par le premier octet.
-/// Lu, il est borné et propre (les textes longs de Vanguard gardent leurs lignes, une commande ou une valeur d'avant
-/// n'en a qu'une) ; refusé ou illisible, sa raison est une ligne propre.
+/// Lu, il est borné et propre : chaque texte tient sur une ligne, sans longue suite d'espaces qui pousserait la fin
+/// d'une commande hors de la vue, et aucune commande n'est vide ; refusé ou illisible, sa raison est une ligne propre.
 fn apercu(code: Option<i32>, sortie: &[u8]) {
     let jeton = commandes::Empreinte::lire("0123456789abcdef0123456789abcdef").unwrap();
     match correction::lire(jeton, code, sortie) {
         correction::Lecture::Lue(a) => {
             assert_eq!(code, Some(0));
-            for s in [&a.version, &a.regle, &a.categorie] {
+            let espaces = " ".repeat(correction::ESPACES_MAX + 1);
+            let ligne = |s: &str| {
                 propre(s, false);
+                assert!(!s.contains(&espaces), "{s:?}");
+            };
+            for s in [&a.version, &a.regle, &a.categorie] {
+                ligne(s);
                 assert!(s.chars().count() <= 80, "{s:?}");
             }
             for s in [&a.message, &a.action, &a.pourquoi_pas] {
-                propre(s, true);
+                ligne(s);
             }
             assert!(a.commandes.len() <= correction::COMMANDES_MAX && a.avant.len() <= correction::AVANT_MAX);
             for c in &a.commandes {
-                propre(c, false);
+                ligne(c);
+                assert!(!c.trim().is_empty());
             }
             for v in &a.avant {
-                propre(&v.geste, false);
+                ligne(&v.geste);
                 if let Some(x) = &v.valeur {
-                    propre(x, false);
+                    ligne(x);
                 }
             }
         }

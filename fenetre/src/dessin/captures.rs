@@ -1246,8 +1246,8 @@ fn apercu_capture(anglais: bool, droits: &str) -> Vec<u8> {
             "action": t("Refuser root.", "Refuse root."), "commandes": commandes, "automatique": true,
             "droits": droits, "annulable": false,
             "pourquoi_pas": t("le fichier est réécrit en entier.", "the file is rewritten whole."),
-            "avant": [{"geste": "fichier:/etc/ssh/sshd_config", "valeur": "PermitRootLogin yes"},
-                      {"geste": "fichier:/etc/ssh/sshd_config.d/99.conf", "valeur": null}],
+            "avant": [{"geste": "fichier|/etc/ssh/sshd_config", "valeur": "PermitRootLogin yes"},
+                      {"geste": "fichier|/etc/ssh/sshd_config.d/99.conf", "valeur": null}],
             "point_de_restauration": false
         }
     });

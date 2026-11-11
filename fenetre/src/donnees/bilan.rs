@@ -83,9 +83,13 @@ struct CorrectifBrut {
 }
 
 /// Un changement proposé par un constat (`demarrage --json` : retirer un programme ordinaire, remettre ce que
-/// Vanguard a retiré), ou un geste du bilan (`audit --json` : voir la correction, par le jeton du constat).
+/// Vanguard a retiré), ou un geste du bilan (`audit --json` : voir la correction, par le jeton du constat). Lu
+/// strictement : ses champs sont ceux que Vanguard écrit (`GesteEcrit`, `GesteOffert`), un champ inconnu rend le
+/// constat illisible (compté « pas pu vérifier », sans bouton) ; chaque sorte n'a que les siens (`lire`,
+/// `jeton_de_correction`). Le constat lui-même (`ConstatBrut`) reste lu en partie : il porte des champs que la
+/// fenêtre ne montre pas (clé, objet du résultat commun, champs propres à un outil), et aucun ne part vers Vanguard.
 #[derive(Deserialize, Default, Debug)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 struct GesteBrut {
     sorte: Texte,
     empreinte: Texte,
@@ -109,6 +113,10 @@ pub struct Geste {
 
 impl GesteBrut {
     fn lire(self) -> Option<Geste> {
+        // Un jeton n'appartient qu'à « voir la correction ».
+        if !self.jeton.is_empty() {
+            return None;
+        }
         Some(Geste {
             changement: Changement {
                 sorte: Sorte::lire(self.sorte.as_str())?,
@@ -120,9 +128,12 @@ impl GesteBrut {
         })
     }
 
-    /// Le jeton d'un « voir la correction », strictement : cette sorte-là et 32 chiffres hexadécimaux minuscules.
+    /// Le jeton d'un « voir la correction », strictement : cette sorte-là, 32 chiffres hexadécimaux minuscules, et
+    /// aucun champ d'un changement au démarrage.
     fn jeton_de_correction(&self) -> Option<Empreinte> {
-        (SorteGeste::lire(self.sorte.as_str())? == SorteGeste::VoirCorrection)
+        let seul =
+            self.empreinte.is_empty() && self.nom.is_empty() && self.commande.is_empty() && self.machine.is_none();
+        (seul && SorteGeste::lire(self.sorte.as_str())? == SorteGeste::VoirCorrection)
             .then(|| Empreinte::lire(self.jeton.as_str()))
             .flatten()
     }
@@ -630,6 +641,9 @@ mod tests {
             r#"{"sorte": "retirer"}"#.to_string(),
             r#""retirer""#.to_string(),
             "null".to_string(),
+            // Vérification de Fable, F3 : un jeton ou un champ inconnu dans un changement.
+            format!(r#"{{"sorte": "retirer", "empreinte": "{e}", "jeton": "{e}"}}"#),
+            format!(r#"{{"sorte": "retirer", "empreinte": "{e}", "cache": "x"}}"#),
         ] {
             assert_eq!(constat(&faux), None, "{faux}");
         }
@@ -661,9 +675,23 @@ mod tests {
             format!(r#"{{"sorte": "voir-correction", "jeton": "{j} --appliquer"}}"#),
             r#"{"sorte": "voir-correction", "jeton": 12}"#.to_string(),
             r#"{"sorte": "voir-correction"}"#.to_string(),
+            // Vérification de Fable, F3 : un champ d'un changement au démarrage avec le jeton.
+            format!(r#"{{"sorte": "voir-correction", "jeton": "{j}", "empreinte": "{j}"}}"#),
+            format!(r#"{{"sorte": "voir-correction", "jeton": "{j}", "nom": "Lecteur"}}"#),
+            format!(r#"{{"sorte": "voir-correction", "jeton": "{j}", "machine": false}}"#),
         ] {
             assert_eq!(constat(&faux), Some((None, None)), "{faux}");
         }
+        // Un champ inconnu : le constat n'est pas lu (compté illisible), donc ni jeton ni bouton.
+        let v = lire(
+            format!(
+                r#"{{"systeme": "Linux", "constats": [{{"etat": "probleme", "probleme": "Moyen", "message": "SSH", "geste": {{"sorte": "voir-correction", "jeton": "{j}", "apercu": "x"}}}}]}}"#
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        assert!(v.constats.iter().all(|c| c.correction.is_none()));
+        assert_eq!(v.compte(Rang::NonVerifie), 1);
     }
 
     #[test]
