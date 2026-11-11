@@ -261,43 +261,67 @@ safeguards:
   removal on doubtful notes, simultaneous changes, link, pipe, oversized entry, permissions, lock held, forged or
   replayed notes, repeated refusals).
   The action written by `vanguard demarrage --json` also carries a consent: a BLAKE3 fingerprint (64 hexadecimal
-  digits) of the kind, fingerprint, name, command and scope shown. Given back with `--agreement <consent>`, `vanguard`
-  reads the program again under the notes lock and requires the same consent: a program whose command, name or scope
-  changed between the list and the click is refused (“changed since the list”), nothing is written, and the consent
-  of a “remove” does not work for “put back”. Without `--agreement`, the fingerprint alone designates the program, as
-  before: the window does not send it yet (its change frame only carries the kind and the fingerprint); it already
-  reads it strictly. A window taken over can still read the list again and give back the current consent: it does
-  not prove that a person clicked, only that what is changed is what was shown. Tests: `accord_de_chaque_champ_montre`
-  (`src/optimiser/demarrage/resultat.rs`), `demarrage_l_accord_tient_ce_qui_a_ete_montre` (`tests/programme.rs`).
+  digits) of the kind, fingerprint, name, command and scope shown, and of the fingerprint of the whole name and
+  command (the text shown is cut at 80 and 160 characters: two commands that only differ after the cut give two
+  consents). The finding's object (an autostart entry) goes to the window as “~/…”, no longer by the home folder path;
+  the fingerprint stays that of the whole path, as before. Given back with `--agreement <consent>`, `vanguard` reads
+  the programs only once under the notes lock, and that same reading judges the consent and decides the action (remove
+  or put back): it requires the same consent: a program whose command, name or scope changed between the list and the
+  click is refused (“changed since the list”), nothing is written, and the consent of a “remove” does not work for
+  “put back”. Without `--agreement`, the fingerprint alone designates the program, as before: the consent stays
+  optional until step 5 (the window that sends it), where it will become mandatory; the window does not send it yet
+  (its change frame only carries the kind and the fingerprint); it already reads it strictly. A window taken over can
+  still read the list again and give back the current consent: it does not prove that a person clicked, only that what
+  is changed is what was shown. Tests: `accord_de_chaque_champ_montre` (`src/optimiser/demarrage/resultat.rs`),
+  `une_seule_lecture_juge_l_accord_et_choisit` (`src/optimiser/demarrage.rs`),
+  `demarrage_l_accord_tient_ce_qui_a_ete_montre` (`tests/programme.rs`).
 - **One account fix, shown then applied, then put back as before (commands; the window will follow).** The audit
   (`audit --json`) gives each fixable finding a token (32 hexadecimal digits); `vanguard correction --show <token>
   [--json]` runs only the token's rule again and shows everything the fix would do (commands, rights, values before,
-  undo) with a consent, the BLAKE3 fingerprint of everything shown. It only writes the preview log (token, consent,
-  time; sealed, data folder 0700), nothing else. `vanguard correction --apply <token> --agreement <consent> [--json]`
-  does one fix at a time, and only an account fix that undoes exactly: today, the permissions (chmod) of files in the
-  home folder (`permise_au_compte`, `src/machine/apercu.rs`, is the only door; everything else, and everything that
-  would need administrator rights, is refused and is done from the terminal). When acting, `vanguard` holds the notes
-  lock, reads the state again with the same rules as the preview, redoes its guards (owner, file kind, hard link,
-  UTF-8 name, no link on the path), computes the consent again and compares it (changed since the preview: refused,
-  nothing changed), then consumes the preview log entry (at least 2 s after the preview, at most 10 minutes; missing,
-  falsified, already used: refused), notes the value before (otherwise nothing is applied) and sets each permission.
-  Permissions are read and set without a shell or any program started: each element of the path is opened from the
-  home folder without following a link (openat, O_NOFOLLOW), read on the descriptor (fstat) and set on it (fchmod),
-  only if it still has the value read; a link on the path is refused. `vanguard changes --json` gives, for each
-  account fix that can be put back from here, the `voir-annulation` action and its token; `vanguard changes
-  --show <token>` shows each file, its permissions today, those before and those Vanguard set (“changed since” if
-  someone touched it), with a consent; `vanguard changes --undo <token> --agreement <consent>` puts back exactly
-  the permissions before, only once, under the same guards, and refuses when a more recent note targets the same file
-  (to be put back first). Each request, done or refused, goes to the event log (rule and token only, never a file
-  name). What the consent does not prove: that a person clicked. A window taken over, or another program of the
-  account, can ask for the preview then apply it; all it gets is a hardening of the account's file permissions, one
-  fix at a time, written to the log and put back exactly in one action; nothing that raises rights. These commands
-  are hidden from the online help (they serve the window) and described here and in the command table. A fix done
-  halfway (several files, one refused) keeps what was set and its note, to put back from “What Vanguard changed”.
-  Tests (`tests/programme.rs`, throwaway home folder): `appliquer_une_correction_du_compte_une_seule_fois`,
+  undo) with a consent, the BLAKE3 fingerprint of everything shown (and, for each file, its kind, device and inode
+  number). It only writes the preview log (token, consent, time; sealed, data folder 0700), nothing else. A tampered
+  preview log (changed outside Vanguard, or unreadable) is replaced by a new one, and this is said: “preview log
+  tampered with: replaced” at `--show` (on the error output in JSON), then a “carnet-altere” alert in the event log at
+  the next action; earlier previews no longer count. In read-only mode, `--apply` and `--undo` are refused outright
+  (code 2), before any reading. `vanguard correction --apply <token> --agreement <consent> [--json]` does one fix at a
+  time, and only an account fix that undoes exactly: today, the permissions (chmod) of files in the home folder
+  (`permise_au_compte`, `src/machine/apercu.rs`, is the only door; everything else, and everything that would need
+  administrator rights, is refused and is done from the terminal). When acting, `vanguard` holds the notes lock, reads
+  the state again with the same rules as the preview, redoes its guards (owner, file kind, hard link, UTF-8 name, no
+  link on the path), computes the consent again and compares it (changed since the preview: refused, nothing changed),
+  then consumes the preview log entry (at least 2 s after the preview, at most 10 minutes; missing, falsified, already
+  used: refused), first writes its trace (an “in progress” line in “What Vanguard changed”, and its event), then notes
+  the value before with the file's kind and inode (otherwise nothing is applied), sets each permission and completes
+  the trace. Permissions are read and set without a shell or any program started: each element of the path is opened
+  from the home folder without following a link (openat, O_NOFOLLOW), read on the descriptor (fstat) and set on it
+  (fchmod), only if it still has the value read and is the same file (same kind, same device, same inode: otherwise
+  “changed since”, nothing changed); a link on the path is refused. `vanguard changes --json` gives, for each account
+  fix that can be put back from here, the `voir-annulation` action and its token; `vanguard changes --show <token>`
+  shows each file, its permissions today, those before and those Vanguard set (“changed since” if someone touched it),
+  with a consent; `vanguard changes --undo <token> --agreement <consent>` puts back exactly the permissions before,
+  only once, under the same guards, on the noted file only (another kind or another inode: refused, nothing changed),
+  and refuses when a more recent note targets the same file and is shown (to be put back first); a more recent note
+  that is not shown never blocks. Only “done”, read back “back”, exits with code 0; “not back” exits with 1. Each
+  request, done or refused, goes to the event log: the rule, the token and the typed outcome only (“done”, “refused
+  (change-depuis)”, “failed (echec)”…), never a file name or a command; the detailed reason, which may name a file, only goes
+  to the screen and the window. What goes to the window names files “~/…”, never by the home folder path. What the
+  consent does not prove: that a person clicked. A window taken over, or another program of the account, can ask for
+  the preview then apply it; all it gets is a hardening of the account's file permissions, one fix at a time, written
+  to the log and put back exactly in one action; nothing that raises rights. These commands are hidden from the online
+  help (they serve the window) and described here and in the command table. All or nothing: if a file is refused,
+  those already set are put back as before; if that fails, it is said file by file, and a file never touched is never
+  said “changed since”. A brutal stop (Vanguard killed midway) leaves the trace written before acting: the line shows
+  as “interrupted” in “What Vanguard changed” and is put back like any other (“nothing to undo” if the value before
+  was not noted yet); a note without a line, from before this change, shows the same way. The test stop point
+  (`VANGUARD_ESSAI_ARRET`) only exists in a debug build, never in the published one. Tests (`tests/programme.rs`,
+  throwaway home folder): `appliquer_une_correction_du_compte_une_seule_fois`,
   `appliquer_refuse_un_etat_change_depuis_l_apercu`, `carnet_falsifie_ou_note_impossible_rien_n_est_applique`,
   `remettre_comme_avant_exactement_une_seule_fois`, `remettre_dans_l_ordre_et_sur_l_etat_montre`,
-  `remettre_refuse_un_lien`; `refuse_un_lien_a_chaque_element` (`src/optimiser/droits.rs`).
+  `remettre_refuse_un_lien`, `tue_apres_la_pose_la_ligne_est_interrompue_et_se_remet`,
+  `tue_avant_la_pose_rien_n_est_dit_change`, `le_journal_ne_nomme_ni_fichier_ni_commande`;
+  `refuse_un_lien_a_chaque_element`, `un_autre_fichier_sous_le_meme_nom_n_est_pas_touche` (`src/optimiser/droits.rs`),
+  `une_ligne_refusee_fait_remettre_les_lignes_deja_posees`, `en_lecture_seule_rien_ne_s_applique`
+  (`src/machine/appliquer.rs`), `seul_le_revenu_est_un_succes` (`src/machine/annuler.rs`).
 - **Colors: saved by `vanguard`, never by the window.** The Vanguard screen sets, for each theme, one of the six
   presets or the system colors, and the five bright colors (accent, serious, medium, to watch, healthy). The window
   shows them right away, writing nothing; “Save…” opens a confirmation (before, after) and only “Accept” runs the

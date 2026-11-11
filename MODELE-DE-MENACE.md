@@ -277,47 +277,71 @@ gardes :
   avant », retrait sur des notes douteuses, changements simultanés, lien, tube, entrée trop grosse, droits, verrou tenu,
   notes forgées ou rejouées, refus répétés).
   Le geste écrit par `vanguard demarrage --json` porte aussi un accord : une empreinte BLAKE3 (64 chiffres
-  hexadécimaux) de la sorte, de l'empreinte, du nom, de la commande et de la portée montrés. Rendu avec
-  `--accord <accord>`, `vanguard` relit le programme sous le verrou des notes et exige le même accord : un programme
-  dont la commande, le nom ou la portée ont changé entre la liste et le clic est refusé (« a changé depuis la
-  liste »), rien n'est écrit, et l'accord d'un « retirer » ne vaut pas pour « remettre ». Sans `--accord`, l'empreinte
-  seule désigne le programme, comme avant : la fenêtre ne le rend pas encore (sa trame de changement ne porte que la
-  sorte et l'empreinte) ; elle le lit déjà strictement. Une fenêtre prise en main peut toujours relire la liste et
-  rendre l'accord du moment : il ne prouve pas qu'une personne a cliqué, seulement que ce qui est changé est ce qui a
-  été montré. Essais : `accord_de_chaque_champ_montre` (`src/optimiser/demarrage/resultat.rs`),
+  hexadécimaux) de la sorte, de l'empreinte, du nom, de la commande et de la portée montrés, et de l'empreinte du nom
+  et de la commande entiers (le texte montré est coupé à 80 et 160 signes : deux commandes qui ne diffèrent qu'après
+  la coupe donnent deux accords). L'objet du constat (une entrée d'autostart) part vers la fenêtre en « ~/… », plus
+  par le chemin du dossier personnel ; l'empreinte reste celle du chemin entier, comme avant. Rendu avec `--accord
+  <accord>`, `vanguard` relit les programmes une seule fois sous le verrou des notes, et cette même lecture juge
+  l'accord et décide du geste (retirer ou remettre) : il exige le même accord : un programme dont la commande, le nom
+  ou la portée ont changé entre la liste et le clic est refusé (« a changé depuis la liste »), rien n'est écrit, et
+  l'accord d'un « retirer » ne vaut pas pour « remettre ». Sans `--accord`, l'empreinte seule désigne le programme,
+  comme avant : l'accord reste facultatif jusqu'à l'étape 5 (la fenêtre qui le rend), où il deviendra obligatoire ; la
+  fenêtre ne le rend pas encore (sa trame de changement ne porte que la sorte et l'empreinte) ; elle le lit déjà
+  strictement. Une fenêtre prise en main peut toujours relire la liste et rendre l'accord du moment : il ne prouve pas
+  qu'une personne a cliqué, seulement que ce qui est changé est ce qui a été montré. Essais :
+  `accord_de_chaque_champ_montre` (`src/optimiser/demarrage/resultat.rs`),
+  `une_seule_lecture_juge_l_accord_et_choisit` (`src/optimiser/demarrage.rs`),
   `demarrage_l_accord_tient_ce_qui_a_ete_montre` (`tests/programme.rs`).
 - **Une correction du compte, montrée puis appliquée, puis remise comme avant (commandes ; la fenêtre suivra).** Le
-  bilan (`audit --json`) donne à chaque constat corrigeable un jeton (32 chiffres hexadécimaux) ;
-  `vanguard correction --voir <jeton> [--json]` relance la seule règle du jeton et montre tout ce que la correction
-  ferait (commandes, droits, valeurs d'avant, annulation) avec un accord, l'empreinte BLAKE3 de tout ce qui est
-  montré. Il écrit seulement le carnet des aperçus (jeton, accord, heure ; scellé, dossier de données 0700), rien
-  d'autre. `vanguard correction --appliquer <jeton> --accord <accord> [--json]` ne fait qu'une correction à la fois,
-  et seulement une correction du compte qui s'annule exactement : aujourd'hui, les droits (chmod) de fichiers du
-  dossier personnel (`permise_au_compte`, `src/machine/apercu.rs`, est la seule porte ; tout le reste, et tout ce
-  qui demanderait les droits d'administrateur, est refusé et se fait depuis le terminal). Au moment d'agir,
-  `vanguard` tient le verrou des notes, relit l'état avec les mêmes règles que l'aperçu, refait ses gardes
-  (propriétaire, sorte de fichier, lien physique, nom UTF-8, aucun lien sur le chemin), recalcule l'accord et le
-  compare (changé depuis l'aperçu : refusé, rien changé), puis consomme l'entrée du carnet (2 s au moins après
-  l'aperçu, 10 minutes au plus ; absente, falsifiée, déjà servie : refusé), note la valeur d'avant (sinon rien
-  n'est appliqué) et pose chaque droit. Les droits sont lus et posés sans shell ni programme lancé : chaque élément
-  du chemin est ouvert depuis le dossier personnel sans suivre de lien (openat, O_NOFOLLOW), lu sur le descripteur
-  (fstat) et posé sur lui (fchmod), seulement s'il a encore la valeur relue ; un lien sur le chemin est refusé.
-  `vanguard changements --json` dit, pour chaque correction du compte qu'on peut remettre d'ici, le geste
-  `voir-annulation` et son jeton ; `vanguard changements --voir <jeton>` montre chaque fichier, ses droits
-  d'aujourd'hui, ceux d'avant et ceux que Vanguard a posés (« changé depuis » si quelqu'un y a touché), avec un
-  accord ; `vanguard changements --annuler <jeton> --accord <accord>` remet exactement les droits d'avant, une seule
-  fois, sous les mêmes gardes, et refuse une note plus récente sur le même fichier (à remettre d'abord). Chaque
-  demande, faite ou refusée, va au journal des événements (règle et jeton seulement, jamais un nom de fichier). Ce que
-  l'accord ne prouve pas : qu'une personne a cliqué. Une fenêtre prise, ou un autre programme du compte, peut
-  demander l'aperçu puis l'appliquer ; elle n'obtient ainsi qu'un durcissement des droits de fichiers du compte, une
-  correction à la fois, noté au journal et remis exactement d'un geste ; rien qui monte en droits. Ces commandes
-  sont cachées de l'aide en ligne (elles servent à la fenêtre) et décrites ici et dans le tableau des commandes. Une
-  correction faite à moitié (plusieurs fichiers, l'un refusé) garde ce qui a été posé et sa note, à remettre par
-  « Ce que Vanguard a changé ». Essais (`tests/programme.rs`, dossier personnel jetable) :
-  `appliquer_une_correction_du_compte_une_seule_fois`, `appliquer_refuse_un_etat_change_depuis_l_apercu`,
-  `carnet_falsifie_ou_note_impossible_rien_n_est_applique`, `remettre_comme_avant_exactement_une_seule_fois`,
-  `remettre_dans_l_ordre_et_sur_l_etat_montre`, `remettre_refuse_un_lien` ; `refuse_un_lien_a_chaque_element`
-  (`src/optimiser/droits.rs`).
+  bilan (`audit --json`) donne à chaque constat corrigeable un jeton (32 chiffres hexadécimaux) ; `vanguard correction
+  --voir <jeton> [--json]` relance la seule règle du jeton et montre tout ce que la correction ferait (commandes,
+  droits, valeurs d'avant, annulation) avec un accord, l'empreinte BLAKE3 de tout ce qui est montré (et, pour chaque
+  fichier, sa sorte, son périphérique et son numéro d'inode). Il écrit seulement le carnet des aperçus (jeton, accord,
+  heure ; scellé, dossier de données 0700), rien d'autre. Un carnet altéré (changé hors de Vanguard, ou illisible) est
+  remplacé par un neuf, et c'est dit : « carnet des aperçus altéré : remplacé » au `--voir` (sur la sortie d'erreur en
+  JSON), puis une alerte « carnet-altere » au journal des événements au geste suivant ; les aperçus d'avant ne valent
+  plus. En mode lecture seule, `--appliquer` et `--annuler` sont refusés net (code 2), avant toute lecture. `vanguard
+  correction --appliquer <jeton> --accord <accord> [--json]` ne fait qu'une correction à la fois, et seulement une
+  correction du compte qui s'annule exactement : aujourd'hui, les droits (chmod) de fichiers du dossier personnel
+  (`permise_au_compte`, `src/machine/apercu.rs`, est la seule porte ; tout le reste, et tout ce qui demanderait les
+  droits d'administrateur, est refusé et se fait depuis le terminal). Au moment d'agir, `vanguard` tient le verrou des
+  notes, relit l'état avec les mêmes règles que l'aperçu, refait ses gardes (propriétaire, sorte de fichier, lien
+  physique, nom UTF-8, aucun lien sur le chemin), recalcule l'accord et le compare (changé depuis l'aperçu : refusé,
+  rien changé), puis consomme l'entrée du carnet (2 s au moins après l'aperçu, 10 minutes au plus ; absente,
+  falsifiée, déjà servie : refusé), écrit d'abord sa trace (une ligne « en cours » dans « Ce que Vanguard a changé »,
+  et son événement), puis note la valeur d'avant avec la sorte et l'inode du fichier (sinon rien n'est appliqué), pose
+  chaque droit et complète la trace. Les droits sont lus et posés sans shell ni programme lancé : chaque élément du
+  chemin est ouvert depuis le dossier personnel sans suivre de lien (openat, O_NOFOLLOW), lu sur le descripteur
+  (fstat) et posé sur lui (fchmod), seulement s'il a encore la valeur relue et qu'il est le même fichier (même sorte,
+  même périphérique, même inode : sinon « changé depuis », rien changé) ; un lien sur le chemin est refusé. `vanguard
+  changements --json` dit, pour chaque correction du compte qu'on peut remettre d'ici, le geste `voir-annulation` et
+  son jeton ; `vanguard changements --voir <jeton>` montre chaque fichier, ses droits d'aujourd'hui, ceux d'avant et
+  ceux que Vanguard a posés (« changé depuis » si quelqu'un y a touché), avec un accord ; `vanguard changements
+  --annuler <jeton> --accord <accord>` remet exactement les droits d'avant, une seule fois, sous les mêmes gardes, sur
+  le fichier noté seulement (autre sorte ou autre inode : refusé, rien changé), et refuse une note plus récente sur le
+  même fichier quand elle est montrée (à remettre d'abord) ; une note plus récente qui n'est pas montrée ne bloque
+  jamais. Seul « fait », relu « revenu », sort avec le code 0 ; « pas-revenu » sort avec 1. Chaque demande, faite ou
+  refusée, va au journal des événements : la règle, le jeton et l'issue typée seulement (« faite », « refusée (change-depuis)
+  », « en échec (echec) »…), jamais un nom de fichier ni une commande ; la raison détaillée, qui peut nommer un
+  fichier, ne va qu'à l'écran et à la fenêtre. Ce qui part vers la fenêtre nomme les fichiers « ~/… », jamais par le
+  chemin du dossier personnel. Ce que l'accord ne prouve pas : qu'une personne a cliqué. Une fenêtre prise, ou un
+  autre programme du compte, peut demander l'aperçu puis l'appliquer ; elle n'obtient ainsi qu'un durcissement des
+  droits de fichiers du compte, une correction à la fois, noté au journal et remis exactement d'un geste ; rien qui
+  monte en droits. Ces commandes sont cachées de l'aide en ligne (elles servent à la fenêtre) et décrites ici et dans
+  le tableau des commandes. Tout ou rien : si un fichier est refusé, ceux déjà posés sont remis comme avant ; si cette
+  remise échoue, c'est dit fichier par fichier, et un fichier jamais touché n'est jamais dit « changé depuis ». Un
+  arrêt brutal (Vanguard tué au milieu) laisse la trace écrite avant d'agir : la ligne se montre « interrompue » dans
+  « Ce que Vanguard a changé » et se remet comme une autre (« rien à défaire » si la valeur d'avant n'était pas encore
+  notée) ; une note sans ligne, d'avant ce changement, se montre de même. Le point d'arrêt des essais
+  (`VANGUARD_ESSAI_ARRET`) n'existe que dans un programme de débogage, jamais dans celui publié. Essais
+  (`tests/programme.rs`, dossier personnel jetable) : `appliquer_une_correction_du_compte_une_seule_fois`,
+  `appliquer_refuse_un_etat_change_depuis_l_apercu`, `carnet_falsifie_ou_note_impossible_rien_n_est_applique`,
+  `remettre_comme_avant_exactement_une_seule_fois`, `remettre_dans_l_ordre_et_sur_l_etat_montre`,
+  `remettre_refuse_un_lien`, `tue_apres_la_pose_la_ligne_est_interrompue_et_se_remet`,
+  `tue_avant_la_pose_rien_n_est_dit_change`, `le_journal_ne_nomme_ni_fichier_ni_commande` ;
+  `refuse_un_lien_a_chaque_element`, `un_autre_fichier_sous_le_meme_nom_n_est_pas_touche` (`src/optimiser/droits.rs`),
+  `une_ligne_refusee_fait_remettre_les_lignes_deja_posees`, `en_lecture_seule_rien_ne_s_applique`
+  (`src/machine/appliquer.rs`), `seul_le_revenu_est_un_succes` (`src/machine/annuler.rs`).
 - **Les couleurs : enregistrées par `vanguard`, jamais par la fenêtre.** L'écran Vanguard règle, pour chaque thème, un
   des six préréglages ou les couleurs du système, et les cinq couleurs vives (accent, grave, moyen, à surveiller,
   sain). La fenêtre les montre tout de suite, sans rien écrire ; « Enregistrer… » ouvre une confirmation (avant,
