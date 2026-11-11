@@ -48,11 +48,17 @@ repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
 - **Preview of a fix, without changing anything.** In `audit --json`, each finding that can be fixed carries a token;
   a read-only command rereads its single rule and says what the fix would do (commands, rights, previous values,
   undo), without running or recording anything.
-- **Fifteen more tools in `--json`** (for scripts): integrity, latest flaws, updates, startup,
+- **Sixteen more tools in `--json`** (for scripts): integrity, latest flaws, updates, startup,
   antivirus and its status, YARA, memory, secrets, self-check, changes, rules, hidden cameras, NAT type, Wi-Fi channels
   and containers. No question, nothing changed (no quarantine, no install); what could not be seen makes the whole
   result unchecked. `secrets` never gives the value of a leak, `nat` does not write the public address,
   `wifi-channels` not the network names; without Internet, nothing goes out (no STUN, no arch-audit).
+- **Advanced commands.** `vanguard startup --remove <fingerprint>` removes a single program from startup, named by
+  the fingerprint that `startup --json` gives with its name and command: typing the command is the consent, with no
+  other question; never a program to keep nor a firewall, and it stays installed. The previous value is recorded
+  first, and `--put-back <fingerprint>` puts it back exactly as before. `vanguard colors` (left out of the help)
+  already sets the colors of the upcoming window, kept in parametres.json. `vanguard --menu` (or `--terminal`) always
+  opens the terminal menu, and `audit --json` says whether its score is reliable.
 - **The mouse in the terminal menu.** A click opens a row (or ticks it in a list), hovering lights it up with its
   preview, the wheel scrolls, right-click goes back, and the keys of the help line can be clicked. A double click no
   longer opens two screens at once. Shift and drag still selects text; outside menus, the mouse goes back to the

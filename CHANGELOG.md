@@ -51,11 +51,17 @@ recompilée au besoin.
 - **Aperçu d'une correction, sans rien changer.** Dans `audit --json`, chaque constat qui se corrige porte un jeton ;
   une commande en lecture seule relit sa seule règle et dit ce que la correction ferait (commandes, droits, valeurs
   d'avant, annulation), sans rien lancer ni noter.
-- **Quinze outils de plus en `--json`** (pour les scripts) : intégrité, dernières failles, mises à jour,
+- **Seize outils de plus en `--json`** (pour les scripts) : intégrité, dernières failles, mises à jour,
   démarrage, antivirus et son état, YARA, mémoire, secrets, verifier-moi, changements, règles, caméras cachées, type de
   NAT, canaux Wi-Fi et conteneurs. Aucune question, rien de changé (ni quarantaine, ni installation) ; ce qui n'a pas
   pu se voir rend le tout non vérifié. `secrets` ne donne jamais la valeur d'une fuite, `nat` n'écrit pas l'adresse
   publique, `canaux-wifi` pas le nom des réseaux ; sans Internet, rien ne part (ni STUN, ni arch-audit).
+- **Commandes avancées.** `vanguard demarrage --retirer <empreinte>` retire du démarrage un seul programme, désigné
+  par l'empreinte que `demarrage --json` donne avec son nom et sa commande : taper la commande vaut accord, sans autre
+  question ; jamais un programme à garder ni un pare-feu, et il reste installé. La valeur d'avant est notée d'abord, et
+  `--remettre <empreinte>` le remet exactement comme avant. `vanguard couleurs` (hors de l'aide) règle déjà les
+  couleurs de la fenêtre à venir, gardées dans parametres.json. `vanguard --menu` (ou `--terminal`) ouvre toujours le
+  menu du terminal, et `audit --json` dit si sa note est fiable.
 - **La souris dans le menu du terminal.** Un clic ouvre une ligne (ou la coche dans une liste), le survol l'éclaire
   avec son aperçu, la roulette défile, le clic droit revient, et les touches de la ligne d'aide se cliquent. Un double
   clic n'ouvre plus deux écrans d'un coup. Maj et glisser sélectionne toujours le texte ; hors des menus, la souris est
