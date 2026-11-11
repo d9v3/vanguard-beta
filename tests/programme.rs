@@ -3369,6 +3369,66 @@ mod demarrage_sous_attaque {
         assert_eq!(lu(&cible), secret, "écrit à travers le lien des notes ({r:?})");
     }
 
+    /// Campagne B, P-3. Le dossier d'autostart du compte (`config/autostart`), puis `config` lui-même, sont des liens
+    /// vers un dossier hors du dossier personnel : aucune de ses entrées n'est proposée, ni la copie d'une entrée du
+    /// système qui s'y écrirait ; un retrait demandé quand même (empreinte calculée) n'écrit rien hors de la maison.
+    #[test]
+    fn un_dossier_d_autostart_lien_n_est_ni_propose_ni_ecrit() {
+        // Ce que contient le dossier du dehors : chaque nom et son contenu (une écriture, une création se voient).
+        fn releve(d: &Path, l: &mut Vec<(PathBuf, String)>) {
+            for f in std::fs::read_dir(d).unwrap().flatten() {
+                if f.file_type().unwrap().is_dir() {
+                    releve(&f.path(), l);
+                } else {
+                    l.push((f.path(), lu(&f.path())));
+                }
+            }
+            l.sort();
+        }
+        let instantane = |d: &Path| {
+            let mut l = Vec::new();
+            releve(d, &mut l);
+            l
+        };
+        for lien in ["config/autostart", "config"] {
+            let b = Banc::nouveau("dossier-lien");
+            let dehors = essais::Jetable::nouveau("dossier-lien-dehors");
+            let (_, v1) = b.poser("lecteur.desktop", "Lecteur", "/home/alice/bin/lecteur");
+            std::fs::write(
+                Path::new(&b.systeme).join("horloge.desktop"),
+                "[Desktop Entry]\nType=Application\nName=Horloge\nExec=/usr/bin/horloge-inventee\n",
+            )
+            .unwrap();
+            // Le même contenu, mais hors de la maison, derrière le lien.
+            let autostart_dehors = if lien == "config" {
+                dehors.join("autostart")
+            } else {
+                dehors.to_path_buf()
+            };
+            copier(&b.autostart, &autostart_dehors);
+            std::fs::remove_dir_all(b.maison.join(lien)).unwrap();
+            let pointe = if lien == "config" {
+                &*dehors
+            } else {
+                autostart_dehors.as_path()
+            };
+            std::os::unix::fs::symlink(pointe, b.maison.join(lien)).unwrap();
+            let avant = instantane(&dehors);
+            assert_eq!(b.geste("Lecteur"), None, "{lien} : entrée proposée à travers le lien");
+            assert_eq!(
+                b.geste("Horloge"),
+                None,
+                "{lien} : copie du système proposée à travers le lien"
+            );
+            for nom in ["lecteur.desktop", "horloge.desktop"] {
+                let (_, issue, raison) = b.changer("--retirer", &empreinte_de(&b.autostart.join(nom)));
+                assert_ne!(issue, "fait", "{lien} {nom} : {raison}");
+            }
+            assert_eq!(instantane(&dehors), avant, "{lien} : écrit hors de la maison");
+            assert_eq!(lu(&autostart_dehors.join("lecteur.desktop")), v1);
+        }
+    }
+
     /// A7. Le verrou des notes tenu par un autre programme du compte (`flock`) : tout changement est refusé sans rien
     /// changer, en un temps borné.
     #[test]

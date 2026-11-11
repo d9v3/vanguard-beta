@@ -15,6 +15,8 @@ use crate::machine::gestes_unix::{Defense, GesteUnix, IdNote};
 use crate::machine::linux::natif;
 use crate::ui::*;
 
+mod sous_maison;
+
 /// La présence de la note d'un geste de défense (`Changement::Defense`), seule valeur relevée : son contenu n'est lu
 /// que par root.
 const NOTE_PRESENTE: &str = "note";
@@ -532,9 +534,11 @@ impl Changement {
             Changement::Demarrage { entree, .. } => match entree {
                 // Une seule ouverture, sans suivre de lien ni attendre, jugée sur ce qui a été ouvert et bornée : un
                 // tube nommé, /dev/zero ou un lien échangé entre le regard et la lecture ne figent ni ne gonflent la
-                // note. Le « + » de la note compte dans la borne de son admission (`valeur_admise`).
+                // note. Ses dossiers aussi s'ouvrent sans suivre de lien, depuis le dossier personnel
+                // (`sous_maison`) : un ~/.config/autostart lien n'est pas lu. Le « + » de la note compte dans la
+                // borne de son admission (`valeur_admise`).
                 Entree::Autostart(p) => {
-                    match crate::socle::lire_texte_ordinaire(p, u64::try_from(AUTOSTART_MAX - 1).unwrap_or(0)) {
+                    match sous_maison::lire(p, u64::try_from(AUTOSTART_MAX - 1).unwrap_or(0)) {
                         Ok(t) => Some(format!("+{t}")),
                         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some("-".to_string()),
                         // Illisible, pas un simple fichier, trop gros : ni présent ni absent, rien ne s'écrit d'après ça.
@@ -724,16 +728,19 @@ impl Changement {
         else {
             return None;
         };
-        Some(match v {
-            Some(t) if t.starts_with('+') => {
-                p.parent().is_some_and(|d| std::fs::create_dir_all(d).is_ok())
-                    && crate::socle::ecrire_atomique(p, &t[1..]).is_ok()
+        // Sous le dossier personnel, sans suivre de lien à aucun élément du chemin (`sous_maison`) : un dossier
+        // d'autostart lien vers ailleurs n'est ni suivi ni écrit, comme les droits (`droits::poser`).
+        let r = match v.map(|t| (t, t.strip_prefix('+'))) {
+            Some((_, Some(contenu))) => sous_maison::ecrire(p, contenu.as_bytes()),
+            Some(("-", None)) => sous_maison::retirer(p),
+            _ => return Some(false),
+        };
+        Some(match r {
+            Ok(()) => true,
+            Err(e) => {
+                println!("    ✖ {e}");
+                false
             }
-            Some("-") => match std::fs::remove_file(p) {
-                Ok(()) => true,
-                Err(e) => e.kind() == std::io::ErrorKind::NotFound,
-            },
-            _ => false,
         })
     }
 
@@ -1211,7 +1218,10 @@ pub fn releve_demarrage() -> (Vec<Programme>, Vec<String>) {
         String::new()
     });
     for unite in activees.lines().filter_map(|l| l.split_whitespace().next()) {
-        if unite_valide(unite) && fichier_ordinaire(&dossier.join(unite)) {
+        if unite_valide(unite)
+            && fichier_ordinaire(&dossier.join(unite))
+            && sous_maison::juger(&dossier.join(unite)).is_ok()
+        {
             let texte = std::fs::read_to_string(dossier.join(unite)).unwrap_or_default();
             l.push(Programme {
                 nom: unite.trim_end_matches(".service").to_string(),
@@ -1243,7 +1253,8 @@ fn fichier_ordinaire(p: &Path) -> bool {
 
 /// Les entrées d'autostart : chaque fichier .desktop du compte, puis celles du système au nom qu'il n'a pas et qui se
 /// lancent sur ce bureau (une entrée pour un autre bureau, ou déjà masquée, n'a rien à retirer). Une entrée du compte
-/// qui est un lien n'est pas proposée, ni celle du système qu'elle remplace.
+/// qui est un lien n'est pas proposée, ni celle du système qu'elle remplace ; ni aucune dont un dossier du chemin
+/// est un lien ou sort du dossier personnel (`sous_maison::juger`) : la retirer écrirait à travers lui.
 fn autostart(compte: &Path, systeme: &[PathBuf], bureau: &str) -> Vec<Programme> {
     let fichiers = |d: &Path| -> Vec<(String, String)> {
         let mut l: Vec<(String, String)> = std::fs::read_dir(d)
@@ -1262,14 +1273,17 @@ fn autostart(compte: &Path, systeme: &[PathBuf], bureau: &str) -> Vec<Programme>
     let mut vus: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut l = Vec::new();
     for (nom, texte) in fichiers(compte) {
-        if fichier_ordinaire(&compte.join(&nom)) {
+        if sous_maison::juger(&compte.join(&nom)).is_ok() {
             l.push(programme_autostart(compte.join(&nom), &texte, bureau));
         }
         vus.insert(nom);
     }
     for d in systeme {
         for (nom, texte) in fichiers(d) {
-            if vus.insert(nom.clone()) && crate::lenteur::entree_autostart(&texte, bureau).is_some() {
+            if vus.insert(nom.clone())
+                && crate::lenteur::entree_autostart(&texte, bureau).is_some()
+                && sous_maison::juger(&compte.join(&nom)).is_ok()
+            {
                 l.push(programme_autostart(compte.join(&nom), &texte, bureau));
             }
         }
@@ -2260,7 +2274,8 @@ mod tests {
 
     #[test]
     fn liens_d_autostart_laisses_tels_quels() {
-        let base = crate::protection::isoler::dossier_jetable().unwrap();
+        // Sous le dossier des essais : la garde (`sous_maison`) n'accepte rien hors de lui ou du dossier personnel.
+        let base = dossier_jetable("liens");
         let (compte, systeme, ailleurs) = (base.join("compte"), base.join("systeme"), base.join("dotfiles"));
         for d in [&compte, &systeme, &ailleurs] {
             std::fs::create_dir_all(d).unwrap();
@@ -2281,6 +2296,32 @@ mod tests {
         assert!(fichier_ordinaire(&compte.join("note.desktop")));
         assert!(!fichier_ordinaire(&compte.join("synchro.desktop")));
         assert!(!fichier_ordinaire(&compte.join("absent.desktop")));
+        // Le dossier d'autostart du compte lui-même est un lien (vers des dotfiles, ou hors du dossier personnel) :
+        // ni ses entrées ni les copies des entrées du système ne sont proposées, rien ne s'écrirait à travers lui.
+        let lien = base.join("compte-lien");
+        std::os::unix::fs::symlink(&ailleurs, &lien).unwrap();
+        assert!(autostart(&lien, std::slice::from_ref(&systeme), "Hyprland").is_empty());
         std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn retirer_n_ecrit_jamais_a_travers_un_dossier_lien() {
+        let base = dossier_jetable("dossier-lien");
+        let ailleurs = dossier_jetable("dossier-lien-ailleurs");
+        std::fs::write(ailleurs.join("note.desktop"), "[Desktop Entry]\nExec=note\n").unwrap();
+        std::os::unix::fs::symlink(&ailleurs, base.join("autostart")).unwrap();
+        let c = Changement::Demarrage {
+            entree: Entree::Autostart(base.join("autostart/note.desktop")),
+            cible: None,
+        };
+        assert_eq!(c.lire(), None, "pas lu à travers le lien");
+        assert_eq!(c.ecrire_ici(Some("+Hidden=true\n")), Some(false));
+        assert_eq!(c.ecrire_ici(Some("-")), Some(false));
+        assert_eq!(
+            std::fs::read_to_string(ailleurs.join("note.desktop")).unwrap(),
+            "[Desktop Entry]\nExec=note\n"
+        );
+        std::fs::remove_dir_all(&base).unwrap();
+        std::fs::remove_dir_all(&ailleurs).unwrap();
     }
 }
