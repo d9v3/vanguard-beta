@@ -3408,6 +3408,28 @@ mod demarrage_sous_attaque {
         assert_eq!(lu(&cible), secret, "écrit à travers le lien des notes ({r:?})");
     }
 
+    /// Campagne 0.94, C-3. Une entrée de plus de 64 Kio ne se lit pas bornée : `--retirer` la visant n'écrit rien et
+    /// ne laisse aucune note vide (avant : écrite, dite « échec », note `null`, jamais remise) ; la liste ne la
+    /// propose pas et dit qu'elle n'a pas été lue.
+    #[test]
+    fn entree_trop_grosse_ni_ecrite_ni_notee() {
+        let b = Banc::nouveau("trop-grosse");
+        let f = b.autostart.join("gros.desktop");
+        let texte = format!(
+            "[Desktop Entry]\nType=Application\nName=Gros\nExec=/home/alice/bin/gros\n#{}\n",
+            "x".repeat(76 << 10)
+        );
+        std::fs::write(&f, &texte).unwrap();
+        let (code, issue, raison) = b.changer("--retirer", &empreinte_de(&f));
+        assert!(lu(&f) == texte, "l'entrée a été écrite ({code:?} {issue} {raison})");
+        assert_ne!(issue, "fait", "{raison}");
+        let notes = lu(&b.maison.join("donnees/vanguard/reglages.json"));
+        assert!(!notes.contains("gros.desktop"), "une note reste : {notes}");
+        assert_eq!(b.geste("Gros"), None, "proposée");
+        let m = b.manques();
+        assert!(m.contains("gros.desktop"), "pas dite non lue : {m}");
+    }
+
     /// Campagne B, P-1. Vanguard tué entre le carnet des notes (`reglages.json`) et son sceau, pendant un second
     /// retrait : rien n'est dit changé hors de Vanguard, le carnet n'est pas mis de côté, et le premier retrait, fini,
     /// se remet encore à l'octet près.

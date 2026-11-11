@@ -743,12 +743,24 @@ impl Changement {
     fn ecrire_ici(&self, v: Option<&str>) -> Option<bool> {
         let Changement::Demarrage {
             entree: Entree::Autostart(p),
+            cible,
             vu,
-            ..
         } = self
         else {
             return None;
         };
+        // Un retrait sans valeur d'avant lue : la note serait vide, rien ne le défairait (campagne 0.94, C-3). Seule
+        // une annulation (rebâtie d'une note, sans cible) écrit sans valeur vue.
+        if cible.is_some() && vu.is_none() {
+            println!(
+                "    ✖ {}",
+                tr!(
+                    "valeur d'avant pas lue : rien n'est écrit",
+                    "previous value not read: nothing is written"
+                )
+            );
+            return Some(false);
+        }
         // Listée, l'entrée doit être encore celle lue alors : échangée depuis, ce qui s'écrirait viendrait de l'ancien
         // contenu et la note ne dirait pas ce qui a été montré (campagne B, M-1).
         if let Some(vu) = vu
@@ -784,10 +796,18 @@ impl Changement {
     /// du compte peut réécrire.
     pub fn valeur_admise(&self, v: Option<&str>) -> bool {
         let Some(v) = v else {
-            // Absente (ligne, préférence, fichier, module) : se remet en retirant, rien d'autre.
+            // Absente (ligne, préférence, fichier, module) : se remet en retirant, rien d'autre. Une entrée
+            // d'autostart absente se note « - » : une note vide ne vient pas de Vanguard (campagne 0.94, C-3).
             return !matches!(
                 self,
-                Changement::Dns { .. } | Changement::Sysctl { .. } | Changement::Droits { .. } | Changement::Ntp
+                Changement::Dns { .. }
+                    | Changement::Sysctl { .. }
+                    | Changement::Droits { .. }
+                    | Changement::Ntp
+                    | Changement::Demarrage {
+                        entree: Entree::Autostart(_),
+                        ..
+                    }
             );
         };
         match self {
@@ -1229,7 +1249,8 @@ pub fn releve_demarrage() -> (Vec<Programme>, Vec<String>) {
             ));
         }
     }
-    let mut l = autostart(&config.join("autostart"), &systeme, &bureau);
+    let (mut l, pas_lues) = autostart(&config.join("autostart"), &systeme, &bureau);
+    manques.extend(pas_lues);
     let dossier = config.join("systemd/user");
     let activees = sortie(
         "systemctl",
@@ -1290,8 +1311,10 @@ fn fichier_ordinaire(p: &Path) -> bool {
 /// Les entrées d'autostart : chaque fichier .desktop du compte, puis celles du système au nom qu'il n'a pas et qui se
 /// lancent sur ce bureau (une entrée pour un autre bureau, ou déjà masquée, n'a rien à retirer). Une entrée du compte
 /// qui est un lien n'est pas proposée, ni celle du système qu'elle remplace ; ni aucune dont un dossier du chemin
-/// est un lien ou sort du dossier personnel (`sous_maison::juger`) : la retirer écrirait à travers lui.
-fn autostart(compte: &Path, systeme: &[PathBuf], bureau: &str) -> Vec<Programme> {
+/// est un lien ou sort du dossier personnel (`sous_maison::juger`) : la retirer écrirait à travers lui. Rend aussi
+/// les entrées du compte qui ne se lisent pas bornées (plus de 64 Kio, pas en UTF-8) : pas proposées, faute de valeur
+/// d'avant à noter, mais dites (campagne 0.94, C-3).
+fn autostart(compte: &Path, systeme: &[PathBuf], bureau: &str) -> (Vec<Programme>, Vec<String>) {
     let fichiers = |d: &Path| -> Vec<(String, String)> {
         let mut l: Vec<(String, String)> = std::fs::read_dir(d)
             .into_iter()
@@ -1308,17 +1331,18 @@ fn autostart(compte: &Path, systeme: &[PathBuf], bureau: &str) -> Vec<Programme>
     };
     let mut vus: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut l = Vec::new();
-    for (nom, texte) in fichiers(compte) {
+    let mut manques = Vec::new();
+    for (nom, _) in fichiers(compte) {
         let chemin = compte.join(&nom);
         if sous_maison::juger(&chemin).is_ok() {
             // Relu d'une seule ouverture, sans suivre de lien et borné, comme la note : ce qui est montré, la cible et
-            // la note viennent tous de cette lecture-là. Trop gros : montré, sans valeur vue (la note le dira).
-            l.push(
-                match sous_maison::lire(&chemin, u64::try_from(AUTOSTART_MAX - 1).unwrap_or(0)) {
-                    Ok(t) => programme_autostart(chemin, &t, bureau, Some(format!("+{t}"))),
-                    Err(_) => programme_autostart(chemin, &texte, bureau, None),
-                },
-            );
+            // la note viennent tous de cette lecture-là. Pas lu ainsi : rien à noter, donc rien de proposé (écrite,
+            // l'entrée ne se remettrait plus).
+            match sous_maison::lire(&chemin, u64::try_from(AUTOSTART_MAX - 1).unwrap_or(0)) {
+                Ok(t) => l.push(programme_autostart(chemin, &t, bureau, Some(format!("+{t}")))),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => manques.push(pas_lue(&chemin)),
+            }
         }
         vus.insert(nom);
     }
@@ -1338,7 +1362,16 @@ fn autostart(compte: &Path, systeme: &[PathBuf], bureau: &str) -> Vec<Programme>
             }
         }
     }
-    l
+    (l, manques)
+}
+
+/// Ce que dit la liste d'une entrée d'autostart qui ne se lit pas bornée : pas proposée.
+fn pas_lue(chemin: &Path) -> String {
+    let ou = court(chemin);
+    trf!(
+        "entrée de démarrage {ou} pas lue (plus de 64 Kio, pas en UTF-8 ou illisible) : pas proposée",
+        "startup entry {ou} not read (over 64 KiB, not UTF-8 or unreadable): not offered"
+    )
 }
 
 /// Une entrée d'autostart : `chemin`, le fichier du compte où elle se masque (sa copie, pour une entrée du système).
@@ -2186,7 +2219,8 @@ mod tests {
             entree("Session", "X-GNOME-Autostart-Phase=Initialization\n"),
         )
         .unwrap();
-        let l = autostart(&compte, std::slice::from_ref(&systeme), "Hyprland");
+        let (l, manques) = autostart(&compte, std::slice::from_ref(&systeme), "Hyprland");
+        assert!(manques.is_empty(), "{manques:?}");
         let vus: Vec<(&str, bool, bool)> = l.iter().map(|p| (p.nom.as_str(), p.actif, p.bureau)).collect();
         // Celui du compte l'emporte sur l'entrée du système au même nom ; celle d'un autre bureau n'a rien à retirer.
         assert_eq!(
@@ -2227,28 +2261,30 @@ mod tests {
         let c = Changement::Demarrage {
             entree: Entree::Autostart(p.clone()),
             cible: Some(format!("+{}", masquer(original))),
-            vu: None,
+            vu: Some(format!("+{original}")),
         };
+        // L'annulation est rebâtie de la note, comme `--remettre` : sans cible ni valeur vue.
+        let annuler = |c: &Changement| Changement::demarrage_depuis(&c.identite_demarrage().unwrap()).unwrap();
         let avant = c.lire();
         assert_eq!(c.ecrire_ici(c.cible().as_deref()), Some(true));
         assert_eq!(c.lire(), c.cible());
-        assert_eq!(c.ecrire_ici(avant.as_deref()), Some(true));
+        assert_eq!(annuler(&c).ecrire_ici(avant.as_deref()), Some(true));
         assert_eq!(std::fs::read_to_string(&p).unwrap(), original);
 
         let q = compte.join("syncthing.desktop");
         let s = Changement::Demarrage {
             entree: Entree::Autostart(q.clone()),
             cible: Some("+[Desktop Entry]\nHidden=true\nName=Syncthing\n".to_string()),
-            vu: None,
+            vu: Some("-".to_string()),
         };
         let avant = s.lire();
         assert_eq!(avant.as_deref(), Some("-"));
         assert_eq!(s.ecrire_ici(s.cible().as_deref()), Some(true));
         assert!(q.is_file());
-        assert_eq!(s.ecrire_ici(avant.as_deref()), Some(true));
+        assert_eq!(annuler(&s).ecrire_ici(avant.as_deref()), Some(true));
         assert!(!q.exists());
         // Une valeur qu'on n'a pas su lire ne s'écrit jamais.
-        assert_eq!(s.ecrire_ici(Some("?")), Some(false));
+        assert_eq!(annuler(&s).ecrire_ici(Some("?")), Some(false));
         assert!(s.decrire(Some("-")).contains("syncthing.desktop"));
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -2265,7 +2301,7 @@ mod tests {
         let p = compte.join("cible.desktop");
         let montre = "[Desktop Entry]\nName=Cible\nExec=cible\n";
         std::fs::write(&p, montre).unwrap();
-        let liste = autostart(&compte, &[], "");
+        let (liste, _) = autostart(&compte, &[], "");
         let c = &liste.iter().find(|x| x.nom == "Cible").expect("listée").changement;
         assert_eq!(c.lire_pour_noter().as_deref(), Some(format!("+{montre}").as_str()));
         let autre = "[Desktop Entry]\nName=Autre\nExec=autre\n";
@@ -2291,7 +2327,7 @@ mod tests {
             "[Desktop Entry]\nName=Copie\nExec=copie\n",
         )
         .unwrap();
-        let liste = autostart(&compte, std::slice::from_ref(&systeme), "");
+        let (liste, _) = autostart(&compte, std::slice::from_ref(&systeme), "");
         let c = &liste.iter().find(|x| x.nom == "Copie").expect("listée").changement;
         assert_eq!(c.lire_pour_noter().as_deref(), Some("-"));
         std::fs::write(compte.join("copie.desktop"), "[Desktop Entry]\nName=Mien\n").unwrap();
@@ -2332,6 +2368,36 @@ mod tests {
         let v = juste.lire().unwrap();
         assert_eq!(v.len(), AUTOSTART_MAX);
         assert!(juste.valeur_admise(Some(&v)));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Campagne 0.94, C-3 : une entrée du compte de plus de 64 Kio ne se lit pas bornée. Elle n'est pas proposée,
+    /// la liste dit qu'elle n'a pas été lue ; un changement d'autostart sans valeur vue n'écrit rien ; une note absente
+    /// (`null`) ne se remet jamais.
+    #[test]
+    fn entree_trop_grosse_ni_proposee_ni_ecrite() {
+        let base = dossier_jetable("trop-grosse");
+        let compte = base.join("autostart");
+        std::fs::create_dir_all(&compte).unwrap();
+        let p = compte.join("gros.desktop");
+        let texte = format!("[Desktop Entry]\nName=Gros\nExec=gros\n#{}\n", "x".repeat(76 << 10));
+        std::fs::write(&p, &texte).unwrap();
+        let (l, manques) = autostart(&compte, &[], "");
+        assert!(l.is_empty(), "proposée sans valeur d'avant lisible");
+        assert_eq!(manques.len(), 1, "{manques:?}");
+        assert!(manques[0].contains("gros.desktop"), "{manques:?}");
+        let c = Changement::Demarrage {
+            entree: Entree::Autostart(p.clone()),
+            cible: Some(format!("+{}", masquer(&texte))),
+            vu: None,
+        };
+        assert_eq!(c.ecrire_ici(c.cible().as_deref()), Some(false));
+        assert_eq!(
+            std::fs::read_to_string(&p).unwrap(),
+            texte,
+            "écrite sans valeur d'avant"
+        );
+        assert!(!c.valeur_admise(None), "une note absente se remettrait");
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -2396,6 +2462,7 @@ mod tests {
         std::fs::write(systeme.join("synchro.desktop"), entree("Synchro du système")).unwrap();
         std::fs::write(systeme.join("horloge.desktop"), entree("Horloge")).unwrap();
         let noms: Vec<String> = autostart(&compte, std::slice::from_ref(&systeme), "Hyprland")
+            .0
             .into_iter()
             .map(|p| p.nom)
             .collect();
@@ -2407,7 +2474,11 @@ mod tests {
         // ni ses entrées ni les copies des entrées du système ne sont proposées, rien ne s'écrirait à travers lui.
         let lien = base.join("compte-lien");
         std::os::unix::fs::symlink(&ailleurs, &lien).unwrap();
-        assert!(autostart(&lien, std::slice::from_ref(&systeme), "Hyprland").is_empty());
+        assert!(
+            autostart(&lien, std::slice::from_ref(&systeme), "Hyprland")
+                .0
+                .is_empty()
+        );
         std::fs::remove_dir_all(&base).unwrap();
     }
 
