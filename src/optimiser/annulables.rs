@@ -509,6 +509,91 @@ pub(crate) fn nombre(origine: Origine) -> usize {
     notes(Some(origine)).len()
 }
 
+/// Une note du bilan dont chaque geste est des droits d'un fichier du compte : ce que `changements --voir|--annuler`
+/// remet sans shell (`machine::annuler`).
+#[cfg(unix)]
+pub(crate) struct NoteDeDroits {
+    pub(crate) id: String,
+    pub(crate) date: String,
+    pub(crate) titre: String,
+    /// Chaque chemin (absolu, dans le dossier personnel) et ses droits d'avant, admis (`droits_admis`).
+    pub(crate) droits: Vec<(std::path::PathBuf, u32)>,
+}
+
+/// Pourquoi une note ne se remet pas d'ici.
+#[cfg(unix)]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PasDeNote {
+    /// Aucune note du bilan ne répond au jeton (déjà annulée, ou jamais notée).
+    Aucune,
+    /// Elle touche autre chose que les droits d'un fichier du compte, ou une valeur n'a pas la forme attendue.
+    Autre,
+    /// Une note plus récente touche la même chose : son titre.
+    PlusRecente(String),
+}
+
+/// La note du bilan dont le jeton (`changements::jeton_de_note`) est `jeton`, si elle ne remet que des droits du
+/// compte et qu'aucune note plus récente ne touche la même chose.
+#[cfg(unix)]
+pub(crate) fn note_de_droits(jeton: &str) -> Result<NoteDeDroits, PasDeNote> {
+    note_de_droits_de(&charger(), jeton)
+}
+
+/// Les notes du bilan qui ne remettent que des droits du compte : celles que la fenêtre peut proposer de défaire.
+#[cfg(unix)]
+pub(crate) fn notes_de_droits() -> Vec<String> {
+    let h = charger();
+    h.reglages
+        .keys()
+        .filter(|id| droits_seulement(&h, id).is_some())
+        .cloned()
+        .collect()
+}
+
+#[cfg(unix)]
+fn note_de_droits_de(h: &Historique, jeton: &str) -> Result<NoteDeDroits, PasDeNote> {
+    let mut trouvees = h
+        .reglages
+        .keys()
+        .filter(|id| Origine::de(id) == Origine::Bilan && crate::changements::jeton_de_note(id) == jeton);
+    let id = trouvees.next().ok_or(PasDeNote::Aucune)?;
+    // Deux notes au même jeton (16 octets : jamais en pratique) : aucune n'est choisie.
+    if trouvees.next().is_some() {
+        return Err(PasDeNote::Aucune);
+    }
+    let droits = droits_seulement(h, id).ok_or(PasDeNote::Autre)?;
+    if let Some(titre) = plus_recente_sur_le_meme(h, id) {
+        return Err(PasDeNote::PlusRecente(titre));
+    }
+    let a = h.reglages.get(id).ok_or(PasDeNote::Aucune)?;
+    Ok(NoteDeDroits {
+        id: id.clone(),
+        date: a.date.clone(),
+        titre: a.titre.clone().unwrap_or_else(|| id.clone()),
+        droits,
+    })
+}
+
+/// Les droits d'avant d'une note du bilan, si chacun de ses gestes est `droits|<chemin du dossier personnel>` avec
+/// une valeur admise ; `None` sinon (rien de la note n'est alors remis d'ici).
+#[cfg(unix)]
+fn droits_seulement(h: &Historique, id: &str) -> Option<Vec<(std::path::PathBuf, u32)>> {
+    let a = h.reglages.get(id)?;
+    if Origine::de(id) != Origine::Bilan || a.gestes.is_empty() || a.gestes.len() != a.valeurs.len() {
+        return None;
+    }
+    a.gestes
+        .iter()
+        .zip(&a.valeurs)
+        .map(|(g, v)| {
+            let chemin = std::path::PathBuf::from(g.strip_prefix("droits|")?);
+            let v = v.as_deref().filter(|v| droits_admis(v))?;
+            (dans_la_maison(&chemin) && Geste::droits(&chemin).is_some_and(|d| d.0 == *g))
+                .then_some((chemin, u32::from_str_radix(v, 8).ok()?))
+        })
+        .collect()
+}
+
 /// Ce que donne une annulation, relue.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Issue {
@@ -921,6 +1006,74 @@ mod tests {
             jeux_repris: false,
             protections: std::collections::BTreeSet::default(),
         }
+    }
+
+    /// Seule une note du bilan dont chaque geste est des droits d'un fichier du dossier personnel, à valeur admise, se
+    /// remet d'ici ; le jeton ne désigne qu'elle ; une note plus récente sur la même chose la bloque.
+    #[cfg(unix)]
+    #[test]
+    fn seule_une_note_de_droits_du_compte_se_remet_d_ici() {
+        use crate::changements::jeton_de_note;
+        let d = crate::essais::temporaire().join("maison-essai");
+        let netrc = format!("droits|{}", d.join(".netrc").display());
+        let cle = format!("droits|{}", d.join(".ssh/id_essai").display());
+        let h = historique(vec![
+            note(
+                "bilan:1",
+                "2026-01-01 11:00",
+                &[&netrc, &cle],
+                &[Some("0644"), Some("0644")],
+            ),
+            note("bilan:2", "2026-01-01 10:00", &["unite|cups"], &[Some("enabled")]),
+            note("bilan:3", "2026-01-01 10:00", &["droits|/etc/shadow"], &[Some("0644")]),
+            note("bilan:4", "2026-01-01 10:00", &[&netrc], &[Some("4755")]),
+            note("bilan:5", "2026-01-01 10:00", &[&netrc], &[None]),
+            note("bilan:6", "2026-01-01 10:00", &[], &[]),
+            note("jeux:7", "2026-01-01 10:00", &[&cle], &[Some("0644")]),
+            note(
+                "bilan:8",
+                "2026-01-01 10:00",
+                &[&format!("droits|{}", d.join("a/../b").display())],
+                &[Some("0644")],
+            ),
+            note(
+                "bilan:9",
+                "2026-01-01 10:00",
+                &[&netrc, "unite|cups"],
+                &[Some("0644"), Some("x")],
+            ),
+        ]);
+        let n = note_de_droits_de(&h, &jeton_de_note("bilan:1"))
+            .map_err(|e| format!("{e:?}"))
+            .unwrap();
+        assert_eq!(n.id, "bilan:1");
+        assert_eq!(
+            n.droits,
+            vec![(d.join(".netrc"), 0o644), (d.join(".ssh/id_essai"), 0o644)]
+        );
+        for id in [
+            "bilan:2", "bilan:3", "bilan:4", "bilan:5", "bilan:6", "bilan:8", "bilan:9",
+        ] {
+            assert_eq!(
+                note_de_droits_de(&h, &jeton_de_note(id)).err(),
+                Some(PasDeNote::Autre),
+                "{id}"
+            );
+        }
+        // Une note des réglages pour jouer n'est jamais choisie par ce jeton.
+        assert_eq!(
+            note_de_droits_de(&h, &jeton_de_note("jeux:7")).err(),
+            Some(PasDeNote::Aucune)
+        );
+        assert_eq!(note_de_droits_de(&h, &"0".repeat(32)).err(), Some(PasDeNote::Aucune));
+        // Une note plus récente sur la clé bloque bilan:1.
+        let mut plus = h.reglages.clone();
+        plus.extend([note("bilan:z", "2026-01-02 10:00", &[&cle], &[Some("0600")])]);
+        let h2 = Historique { reglages: plus, ..h };
+        assert_eq!(
+            note_de_droits_de(&h2, &jeton_de_note("bilan:1")).err(),
+            Some(PasDeNote::PlusRecente("Essai bilan:z".into()))
+        );
     }
 
     /// Une note oubliée (geste dit non annulable par l'enfant) quitte l'historique scellé ; les autres restent.

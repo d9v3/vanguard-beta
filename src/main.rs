@@ -406,6 +406,28 @@ async fn main() {
         }
         autotest::lecture_seule::relever_avant_tout();
     }
+    // De même pour l'aperçu d'une remise comme avant (`changements --voir`) : rien n'y change que le carnet.
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|a| a == "changements" || a == "changes")
+    {
+        autotest::lecture_seule::poser_pour_un_apercu();
+        if let Ok(Args {
+            commande: Some(Commande::Changements {
+                voir: Some(voir), json, ..
+            }),
+            ..
+        }) = ligne_de_commande()
+            .try_get_matches()
+            .and_then(|m| Args::from_arg_matches(&m))
+        {
+            parametres::au_lancement();
+            let code = machine::annuler::voir(&voir, json);
+            chiffrement::oublier_session();
+            std::process::exit(code);
+        }
+        autotest::lecture_seule::relever_avant_tout();
+    }
     // Les réglages du lancement (langue, emojis, travail sans Internet), avant tout affichage.
     parametres::au_lancement();
     journal::installer();
@@ -880,8 +902,27 @@ async fn main() {
         Some(Commande::VerifierCopie { dossier }) => copier::verifier_copie(dossier.as_deref()),
         Some(Commande::VerifierSauvegarde) => sauvegarde::verifier_sauvegarde(),
         Some(Commande::VerifierCle { dossier }) => verifier_cle::commande(dossier.as_deref()),
-        Some(Commande::Changements { json: false }) => changements::afficher(),
-        Some(Commande::Changements { json: true }) => changements::json(),
+        // Remettre change quelque chose : il suit le chemin ordinaire, comme appliquer.
+        Some(Commande::Changements {
+            annuler: Some(jeton),
+            accord: Some(accord),
+            json,
+            ..
+        }) => {
+            let code = machine::annuler::annuler(&jeton, &accord, json);
+            chiffrement::oublier_session();
+            std::process::exit(code);
+        }
+        // L'aperçu sort plus haut, lecture seule posée ; arrivé ici par une autre forme : refusé (`annuler::voir`).
+        Some(Commande::Changements {
+            voir: Some(_), json, ..
+        }) => {
+            let code = machine::annuler::voir("", json);
+            chiffrement::oublier_session();
+            std::process::exit(code);
+        }
+        Some(Commande::Changements { json: false, .. }) => changements::afficher(),
+        Some(Commande::Changements { json: true, .. }) => changements::json(),
         Some(Commande::Evenements { json, incident }) => evenements::afficher(json, incident.as_deref()),
         Some(Commande::Alerte { id }) => protection::blocage::alerte(&id),
         Some(Commande::JournauxWindows { dossier, jours, json }) => {

@@ -1242,6 +1242,51 @@ impl Compte {
         std::fs::set_permissions(self.chemin(relatif), std::fs::Permissions::from_mode(mode)).unwrap();
     }
 
+    /// Applique la correction de `cible` (aperçu, 2 s, accord) : le jeton de sa note d'annulation.
+    fn appliquer_ok(&self, cible: &str) -> String {
+        let j = self.jeton(cible);
+        let accord = self.voir(&j);
+        laisser_lire();
+        let (code, r) = self.appliquer(&j, &accord);
+        assert!(code == Some(0) && r["issue"] == "fait", "{code:?} {r}");
+        r["annulation"].as_str().expect("pas d'annulation").to_string()
+    }
+
+    /// `changements --voir <jeton> --json` : le code et la dernière ligne, celle du geste.
+    fn voir_annulation(&self, jeton: &str) -> (Option<i32>, serde_json::Value) {
+        let (s, r) = self.lancer(&["changements", "--voir", jeton, "--json"]);
+        assert!(
+            r["geste"] == "voir-annulation",
+            "--voir : {:?} {} {}",
+            s.code,
+            s.texte,
+            s.erreurs
+        );
+        (s.code, r)
+    }
+
+    /// `changements --annuler <jeton> --accord <accord> --json` : le code et la dernière ligne, celle du geste.
+    fn annuler(&self, jeton: &str, accord: &str) -> (Option<i32>, serde_json::Value) {
+        let (s, r) = self.lancer(&["changements", "--annuler", jeton, "--accord", accord, "--json"]);
+        assert!(
+            r["geste"] == "annuler-correction",
+            "--annuler : {:?} {} {}",
+            s.code,
+            s.texte,
+            s.erreurs
+        );
+        assert!(!s.erreurs.contains("panicked"), "{}", s.erreurs);
+        (s.code, r)
+    }
+
+    /// Les lignes de `changements --json`, la plus récente d'abord.
+    fn lignes_de_changements(&self) -> Vec<serde_json::Value> {
+        let (s, _) = self.lancer(&["changements", "--json"]);
+        assert_eq!(s.code, Some(0), "{}", s.erreurs);
+        let v: serde_json::Value = serde_json::from_str(&s.texte).expect("changements --json : JSON illisible");
+        v["changements"].as_array().expect("pas de changements").clone()
+    }
+
     /// Le nombre de changements notés (`changements --json`).
     fn changements(&self) -> u64 {
         let (s, _) = self.lancer(&["changements", "--json"]);
@@ -1267,6 +1312,146 @@ fn refuse(issue: &(Option<i32>, serde_json::Value), attendu: &str) {
         "attendu un refus « {attendu} » : {code:?} {r}"
     );
     assert!(r.get("annulation").is_none(), "{r}");
+}
+
+/// Sous-lot B, « Remettre comme avant » : `changements --json` porte le jeton de la note ; `--voir` montre la valeur
+/// d'aujourd'hui, celle d'avant et celle posée ; `--annuler` ne passe qu'après cet aperçu (2 s, son accord, pas celui
+/// d'une correction), remet exactement l'état d'avant, une seule fois, et la ligne est dite défaite.
+#[cfg(unix)]
+#[test]
+fn remettre_comme_avant_exactement_une_seule_fois() {
+    let c = Compte::nouveau();
+    let note = c.appliquer_ok("~/.netrc");
+    let lignes = c.lignes_de_changements();
+    assert_eq!(lignes[0]["etat"], "annulable", "{lignes:?}");
+    assert_eq!(lignes[0]["geste"]["sorte"], "voir-annulation", "{lignes:?}");
+    assert_eq!(lignes[0]["geste"]["jeton"], note.as_str(), "{lignes:?}");
+    // L'aperçu : rien d'autre que le carnet ne change.
+    let avant = instantane(&c.chemin(""));
+    let (code, r) = c.voir_annulation(&note);
+    assert!(code == Some(0) && r["issue"] == "fait", "{code:?} {r}");
+    let changes = hors_carnet(ecarts(&avant, &instantane(&c.chemin(""))));
+    assert!(changes.is_empty(), "--voir a changé : {changes:?}");
+    let valeur = &r["apercu"]["valeurs"][0];
+    assert!(
+        valeur["chemin"].as_str().unwrap_or_default().ends_with("/.netrc"),
+        "{r}"
+    );
+    assert_eq!(
+        (
+            &valeur["actuel"],
+            &valeur["avant"],
+            &valeur["pose"],
+            &valeur["change_depuis"]
+        ),
+        (&"0600".into(), &"0644".into(), &"0600".into(), &false.into()),
+        "{r}"
+    );
+    assert_eq!(r["apercu"]["droits"], "compte", "{r}");
+    let accord = r["accord"].as_str().expect("pas d'accord").to_string();
+    // Même forme par le synonyme anglais : même accord.
+    let (sortie, r2) = c.lancer(&["changes", "--show", &note, "--json"]);
+    assert_eq!(
+        (sortie.code, r2["accord"].as_str()),
+        (Some(0), Some(accord.as_str())),
+        "{r2}"
+    );
+    // Tout de suite : trop jeune.
+    refuse(&c.annuler(&note, &accord), "moins de 2 secondes");
+    assert_eq!(c.mode(".netrc"), 0o600);
+    laisser_lire();
+    // Un autre accord bien formé, ou mal formés : rien.
+    refuse(&c.annuler(&note, &"0".repeat(64)), "changé depuis l'aperçu");
+    assert_eq!(c.annuler(&note, "ABC").0, Some(2));
+    assert_eq!(c.annuler("pas-un-jeton", &accord).0, Some(2));
+    assert_eq!(c.voir_annulation("pas-un-jeton").0, Some(2));
+    assert_eq!(c.mode(".netrc"), 0o600);
+    // Accepté : remis, relu.
+    let (code, r) = c.annuler(&note, &accord);
+    assert!(
+        code == Some(0) && r["issue"] == "fait" && r["relu"] == "revenu",
+        "{code:?} {r}"
+    );
+    assert_eq!(c.mode(".netrc"), 0o644);
+    assert_eq!(c.mode(".ssh/id_essai"), 0o644);
+    let lignes = c.lignes_de_changements();
+    assert_eq!(lignes[0]["etat"], "defaite", "{lignes:?}");
+    assert!(lignes[0]["geste"].is_null(), "{lignes:?}");
+    // Rejoué : plus rien à remettre, rien ne change.
+    refuse(&c.annuler(&note, &accord), "plus rien à remettre");
+    refuse(&c.voir_annulation(&note), "plus rien à remettre");
+    assert_eq!(c.mode(".netrc"), 0o644);
+}
+
+/// Sous-lot B : une note plus récente sur la même chose bloque la plus ancienne ; une valeur changée depuis se montre
+/// « changé depuis » et se remet quand même à l'état d'avant ; un état changé entre l'aperçu et l'accord est refusé.
+#[cfg(unix)]
+#[test]
+fn remettre_dans_l_ordre_et_sur_l_etat_montre() {
+    let c = Compte::nouveau();
+    let premiere = c.appliquer_ok("~/.netrc");
+    c.poser(".netrc", 0o644);
+    let seconde = c.appliquer_ok("~/.netrc");
+    assert_ne!(premiere, seconde);
+    // La plus ancienne d'abord : refusée, rien noté au carnet.
+    refuse(&c.voir_annulation(&premiere), "plus récent");
+    // La plus récente : changée depuis à 0640 par la personne.
+    c.poser(".netrc", 0o640);
+    let (code, r) = c.voir_annulation(&seconde);
+    assert!(code == Some(0), "{r}");
+    assert_eq!(r["apercu"]["valeurs"][0]["actuel"], "0640", "{r}");
+    assert_eq!(r["apercu"]["valeurs"][0]["change_depuis"], true, "{r}");
+    let accord = r["accord"].as_str().unwrap_or_default().to_string();
+    laisser_lire();
+    // Changée encore entre l'aperçu et l'accord : refusé, rien changé.
+    c.poser(".netrc", 0o600);
+    refuse(&c.annuler(&seconde, &accord), "changé depuis l'aperçu");
+    assert_eq!(c.mode(".netrc"), 0o600);
+    // Revenue à l'état montré : remise à l'état d'avant (0644).
+    c.poser(".netrc", 0o640);
+    let (code, r) = c.annuler(&seconde, &accord);
+    assert!(code == Some(0) && r["relu"] == "revenu", "{code:?} {r}");
+    assert_eq!(c.mode(".netrc"), 0o644);
+    // La plus ancienne se remet maintenant : déjà à sa valeur d'avant, montrée « changé depuis ».
+    let (code, r) = c.voir_annulation(&premiere);
+    assert!(code == Some(0), "{r}");
+    assert_eq!(r["apercu"]["valeurs"][0]["actuel"], "0644", "{r}");
+    assert_eq!(r["apercu"]["valeurs"][0]["change_depuis"], true, "{r}");
+}
+
+/// Sous-lot B : un lien posé à la place du fichier, avant l'aperçu ou entre l'aperçu et l'accord, est refusé ; la cible
+/// du lien garde ses droits.
+#[cfg(unix)]
+#[test]
+fn remettre_refuse_un_lien() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let c = Compte::nouveau();
+    let ailleurs = maison_jetable();
+    let cible = ailleurs.join("cible");
+    std::fs::write(&cible, "inventé\n").unwrap();
+    std::fs::set_permissions(&cible, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let n = c.appliquer_ok("~/.netrc");
+    let (code, r) = c.voir_annulation(&n);
+    assert_eq!(code, Some(0), "{r}");
+    let accord = r["accord"].as_str().unwrap_or_default().to_string();
+    laisser_lire();
+    // Entre l'aperçu et l'accord, le fichier devient un lien.
+    let vrai = ailleurs.join("netrc");
+    std::fs::rename(c.chemin(".netrc"), &vrai).unwrap();
+    symlink(&cible, c.chemin(".netrc")).unwrap();
+    refuse(&c.annuler(&n, &accord), "lien");
+    refuse(&c.voir_annulation(&n), "lien");
+    assert_eq!(std::fs::metadata(&cible).unwrap().permissions().mode() & 0o7777, 0o600);
+    assert_eq!(std::fs::metadata(&vrai).unwrap().permissions().mode() & 0o7777, 0o600);
+    // Le vrai fichier revenu : la note se remet.
+    std::fs::remove_file(c.chemin(".netrc")).unwrap();
+    std::fs::rename(&vrai, c.chemin(".netrc")).unwrap();
+    let (code, r) = c.voir_annulation(&n);
+    assert_eq!(code, Some(0), "{r}");
+    laisser_lire();
+    let (code, r) = c.annuler(&n, r["accord"].as_str().unwrap_or_default());
+    assert!(code == Some(0) && r["relu"] == "revenu", "{code:?} {r}");
+    assert_eq!(c.mode(".netrc"), 0o644);
 }
 
 /// Sous-lot B : `correction --appliquer` ne passe qu'après un aperçu noté au carnet, 2 s au moins, avec l'accord de

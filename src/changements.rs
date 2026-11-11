@@ -188,6 +188,19 @@ fn noter_dans(chemin: &std::path::Path, correctifs: &[Vec<String>], resultats: &
     ecrire(chemin, &tous);
 }
 
+/// Les commandes que Vanguard a lancées pour la note `id` : la dernière ligne réussie qui la porte, écrite par
+/// Vanguard (ni reprise d'avant le sceau, ni changée hors de lui), pas encore défaite. `None` : aucune telle ligne
+/// (élaguée, ou relevé douteux) ; ce qui a été posé n'est alors pas connu.
+#[cfg(unix)]
+pub(crate) fn commandes_de_la_note(id: &str) -> Option<Vec<String>> {
+    lire()
+        .into_iter()
+        .rev()
+        .find(|c| c.annulable.as_deref() == Some(id))
+        .filter(|c| c.reussi && c.origine.is_none() && c.defaite.is_none())
+        .map(|c| c.commandes)
+}
+
 /// Note que la correction liée à cette note (`annulable`) est défaite.
 pub(crate) fn marquer_defaite(id: &str) {
     marquer_defaite_dans(&fichier(), id);
@@ -487,18 +500,15 @@ pub(crate) fn fin_du_blocage(b: &Blocage) -> Option<String> {
     })
 }
 
-/// Un identifiant neuf pour un blocage : l'heure en nanosecondes et le numéro du processus, sans hasard à tirer.
 /// Le jeton d'une note d'annulation (`changements --json`, `--voir`, `--annuler`) : 16 octets BLAKE3 à contexte de
 /// son id, 32 chiffres hexadécimaux minuscules. La fenêtre ne désigne jamais une note par son id ni par ses gestes.
 pub(crate) fn jeton_de_note(id: &str) -> String {
     let mut h = blake3::Hasher::new_derive_key("vanguard jeton v1 annulation");
     h.update(id.as_bytes());
-    h.finalize().as_bytes()[..16]
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    h.finalize().to_hex().as_str().get(..32).unwrap_or_default().to_string()
 }
 
+/// Un identifiant neuf pour un blocage : l'heure en nanosecondes et le numéro du processus, sans hasard à tirer.
 pub(crate) fn nouvel_id() -> String {
     static SUITE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let nanos = std::time::SystemTime::now()
@@ -795,10 +805,23 @@ pub(crate) fn json() {
     let (tous, releve) = lire_et_juger(&fichier());
     let notes = crate::optimiser::annulables::notes(None);
     let a_sa_note = |id: &String| notes.iter().any(|n| &n.id == id);
-    println!("{}", en_json(&tous, releve, &a_sa_note));
+    #[cfg(unix)]
+    let droits = crate::optimiser::annulables::notes_de_droits();
+    #[cfg(not(unix))]
+    let droits: Vec<String> = Vec::new();
+    let se_remet_d_ici = |id: &String| droits.contains(id);
+    println!("{}", en_json(&tous, releve, &a_sa_note, &se_remet_d_ici));
 }
 
-fn en_json(tous: &[Changement], releve: &'static str, a_sa_note: &dyn Fn(&String) -> bool) -> String {
+/// `se_remet_d_ici` : la note ne remet que des droits du compte (`annulables::notes_de_droits`). Sa ligne, encore
+/// annulable et écrite par Vanguard, porte alors le geste que la fenêtre peut offrir : `{"sorte":"voir-annulation",
+/// "jeton"}`, le jeton de la note (`jeton_de_note`), jamais son id ni ses chemins.
+fn en_json(
+    tous: &[Changement],
+    releve: &'static str,
+    a_sa_note: &dyn Fn(&String) -> bool,
+    se_remet_d_ici: &dyn Fn(&String) -> bool,
+) -> String {
     use crate::modele::resultat::sans_piege;
     let changements: Vec<serde_json::Value> = tous
         .iter()
@@ -819,6 +842,11 @@ fn en_json(tous: &[Changement], releve: &'static str, a_sa_note: &dyn Fn(&String
                     None => None,
                 },
                 "preuve": l.preuve.map(|p| sans_piege(&p, false)),
+                "geste": c
+                    .annulable
+                    .as_ref()
+                    .filter(|id| l.code == "annulable" && c.origine.is_none() && se_remet_d_ici(id))
+                    .map(|id| serde_json::json!({ "sorte": crate::machine::annuler::SORTE_VOIR, "jeton": jeton_de_note(id) })),
             })
         })
         .collect();
@@ -1075,7 +1103,7 @@ mod tests {
         let jamais = |_: &String| false;
         let (tous, releve) = lire_et_juger(&f);
         assert_eq!(releve, "intact");
-        let v: serde_json::Value = serde_json::from_str(&en_json(&tous, releve, &jamais)).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&en_json(&tous, releve, &jamais, &jamais)).unwrap();
         assert_eq!(
             (v["total"].as_u64(), v["montres"].as_u64()),
             (Some(34), Some(30)),

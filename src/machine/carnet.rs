@@ -165,12 +165,14 @@ pub(crate) fn consommer(sorte: &str, jeton: &str, accord: &str) -> Result<(), Re
 fn consommer_dans(dossier: &Path, sorte: &str, jeton: &str, accord: &str, maintenant: i64) -> Result<(), Refus> {
     let _verrou = prendre(dossier).ok_or(Refus::NonEcrit)?;
     let mut c = lire(dossier).ok_or(Refus::Douteux)?;
-    let i = c
+    let (i, heure_ms) = c
         .entrees
         .iter()
-        .position(|e| e.sorte == sorte && e.jeton == jeton && e.accord == accord)
+        .enumerate()
+        .find(|(_, e)| e.sorte == sorte && e.jeton == jeton && e.accord == accord)
+        .map(|(i, e)| (i, e.heure_ms))
         .ok_or(Refus::Absent)?;
-    let age = maintenant.saturating_sub(c.entrees[i].heure_ms);
+    let age = maintenant.saturating_sub(heure_ms);
     if (0..AGE_MIN_MS).contains(&age) {
         return Err(Refus::TropJeune);
     }
@@ -240,7 +242,7 @@ mod tests {
         // L'état montré en dernier seul compte.
         assert_eq!(consommer_dans(&d, "s", J, A, T + 5_000), Err(Refus::Absent));
         for i in 0..20u8 {
-            let j = format!("{:032x}", i);
+            let j = format!("{i:032x}");
             assert!(noter_dans(&d, "s", &j, A, T + i64::from(i)));
         }
         assert_eq!(lire(&d).unwrap().entrees.len(), PLACES);

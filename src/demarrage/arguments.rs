@@ -717,9 +717,31 @@ pub(crate) enum Commande {
     /// Ce que Vanguard a changé : chaque correction lancée sur cet ordinateur, sa date et son résultat.
     #[command(visible_alias = "changes")]
     Changements {
-        /// L'historique en JSON, pour un script : les plus récents, sans rien proposer d'annuler ; rien ne change.
+        /// L'historique en JSON, pour un script : les plus récents ; rien ne change. Une correction du compte qui se
+        /// remet d'ici porte son jeton (`geste`).
         #[arg(long)]
         json: bool,
+        /// Montrer ce que remettrait la note de ce jeton (32 chiffres hexadécimaux minuscules), valeur par valeur.
+        #[arg(
+            long,
+            visible_alias = "show",
+            value_name = "JETON",
+            conflicts_with = "annuler",
+            hide = true
+        )]
+        voir: Option<String>,
+        /// Remettre comme avant la correction du compte de ce jeton, avec --accord.
+        #[arg(long, visible_alias = "undo", value_name = "JETON", requires = "accord", hide = true)]
+        annuler: Option<String>,
+        /// L'accord donné par l'aperçu (64 chiffres hexadécimaux minuscules) : l'état relu doit donner le même.
+        #[arg(
+            long,
+            visible_alias = "agreement",
+            value_name = "ACCORD",
+            requires = "annuler",
+            hide = true
+        )]
+        accord: Option<String>,
     },
     /// Le journal des événements : alertes, preuves relevées avant un geste, gestes, annulations, alertes déclarées
     /// normales et passages de version, reliés entre eux, avec l'état de sa chaîne scellée. Lecture seule.

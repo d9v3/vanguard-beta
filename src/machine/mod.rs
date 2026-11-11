@@ -19,6 +19,7 @@ use crate::ui::*;
 
 mod administrateurs;
 pub(crate) mod agents_ia;
+pub(crate) mod annuler;
 pub(crate) mod apercu;
 pub(crate) mod appliquer;
 mod bluetooth;

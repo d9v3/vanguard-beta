@@ -197,7 +197,7 @@ pub(crate) struct Apercu {
 
 /// Un bloc de l'accord : sa longueur (8 octets, petit-boutiste) puis ses octets. Une longueur préfixée ne laisse
 /// pas deux suites de champs différentes donner les mêmes octets (« ab » + « c » contre « a » + « bc »).
-fn bloc(sortie: &mut Vec<u8>, octets: &[u8]) {
+pub(super) fn bloc(sortie: &mut Vec<u8>, octets: &[u8]) {
     sortie.extend_from_slice(&longueur(octets.len()));
     sortie.extend_from_slice(octets);
 }
@@ -208,7 +208,7 @@ fn longueur(n: usize) -> [u8; 8] {
 }
 
 /// Une liste de blocs : leur nombre, puis chacun.
-fn liste<'a>(blocs: impl ExactSizeIterator<Item = &'a [u8]>) -> Vec<u8> {
+pub(super) fn liste<'a>(blocs: impl ExactSizeIterator<Item = &'a [u8]>) -> Vec<u8> {
     let mut o = Vec::new();
     o.extend_from_slice(&longueur(blocs.len()));
     for b in blocs {
@@ -267,15 +267,21 @@ impl Apercu {
 
     /// L'accord : BLAKE3 à contexte de chaque champ, nom puis valeur, à longueur préfixée. 32 octets, 64 chiffres.
     pub(crate) fn accord(&self) -> String {
-        let mut o = Vec::new();
-        for (nom, valeur) in self.champs() {
-            bloc(&mut o, nom.as_bytes());
-            bloc(&mut o, &valeur);
-        }
-        let mut h = blake3::Hasher::new_derive_key(CONTEXTE_ACCORD);
-        h.update(&o);
-        h.finalize().to_hex().to_string()
+        accord_de(CONTEXTE_ACCORD, self.champs())
     }
+}
+
+/// Un accord : BLAKE3 à contexte (`contexte` : de quel geste il est l'accord, si bien que l'accord d'un aperçu ne vaut
+/// jamais pour un autre geste) de chaque champ, nom puis valeur, à longueur préfixée. 32 octets, 64 chiffres.
+pub(super) fn accord_de(contexte: &str, champs: Vec<(&'static str, Vec<u8>)>) -> String {
+    let mut o = Vec::new();
+    for (nom, valeur) in champs {
+        bloc(&mut o, nom.as_bytes());
+        bloc(&mut o, &valeur);
+    }
+    let mut h = blake3::Hasher::new_derive_key(contexte);
+    h.update(&o);
+    h.finalize().to_hex().to_string()
 }
 
 /// Une ligne qu'une correction « du compte » peut lancer sans mot de passe : seulement `chmod <mode> <chemin>`, d'un
@@ -720,7 +726,7 @@ fn commande_montree(commande: &str) -> String {
 /// celles d'une suite au-delà de la troisième, s'écrivent `\u{20}` : une longue suite de blancs ne repousse rien hors
 /// de la vue. Le prix : un nom écrit dans une autre écriture que le latin se montre en `\u{…}` dans l'aperçu ; il
 /// reste juste, seulement moins lisible. `ui::affichable` ne change pas pour le reste de Vanguard.
-fn montre_strict(texte: &str) -> String {
+pub(super) fn montre_strict(texte: &str) -> String {
     montre_delimite(texte, &[])
 }
 

@@ -129,8 +129,8 @@ pub(crate) fn appliquer(jeton: &str, accord: &str, json: bool) -> i32 {
     noter_au_journal(jeton, regle.as_deref(), &issue, &raison);
     if json {
         let mut ligne = serde_json::json!({ "geste": SORTE, "issue": mot, "raison": raison, "relu": relu });
-        if let Some(a) = annulation(&issue) {
-            ligne["annulation"] = serde_json::Value::String(a);
+        if let (Some(a), Some(o)) = (annulation(&issue), ligne.as_object_mut()) {
+            o.insert("annulation".into(), serde_json::Value::String(a));
         }
         println!("{ligne}");
     } else {
