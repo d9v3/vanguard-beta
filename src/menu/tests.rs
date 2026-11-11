@@ -413,7 +413,7 @@ fn chaque_outil_trouve_par_la_recherche_s_ouvre() {
 }
 
 /// `--help` range chaque commande visible dans une rubrique du menu (aucune dans « Aussi »), et ses deux aides
-/// tiennent dans la largeur ; `-h` reste court.
+/// tiennent dans la largeur, en français comme en anglais ; `-h` reste court.
 #[test]
 fn l_aide_cite_chaque_commande() {
     let rubriques = rubriques_de_l_aide();
@@ -426,12 +426,15 @@ fn l_aide_cite_chaque_commande() {
             "vanguard {nom} dans --help"
         );
     }
-    for aide in [aide_longue(), aide_courte()] {
+    // Les deux langues : la ligne « Sans argument » anglaise débordait aussi, sans que l'essai français la voie.
+    let anglaises = crate::langue::en_anglais(|| [aide_longue(), aide_courte()]);
+    for aide in [aide_longue(), aide_courte()].iter().chain(&anglaises) {
         for ligne in aide.lines() {
             assert!(largeur_affichee(ligne) <= LARGEUR, "{ligne}");
         }
     }
     assert!(aide_courte().lines().count() <= 15);
+    assert!(anglaises[1].lines().count() <= 15);
 }
 
 /// Le tableau « Toutes les commandes » du README suit les rubriques de `--help`, dans le même ordre.
