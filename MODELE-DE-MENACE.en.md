@@ -454,15 +454,26 @@ always confirmed (typing "normal" from the high level up), only at the keyboard 
 choice coming from a pipe is refused), and the state is recorded again at confirmation: a file changed while you read
 makes it refuse everything. Each choice is written to the log. The choice is bound to that exact state: a line added
 or changed, another source in the same alert, the file, a systemd addition (.d folders, including the session's and
-the priority ones), the launched program or the script passed to an interpreter changed, replaced by a link or deleted
-bring the alert back, which then says why and where. What cannot be recorded without ambiguity (a variable, a pipe,
-code in the line, a module, a launcher such as env or sudo, an addition that redirects the program or its environment,
-an unreadable file, more than 12 lines) cannot be declared normal; a list restored or kept as is after tampering loses
-the states it held. Limits: a program looked up in PATH and what the script or launched program reads in turn (sourced
-file, import, library) are not bound; folders added through XDG_CONFIG_DIRS or XDG_DATA_DIRS are not followed; the
-state is only compared at each scan, so a program that puts the original content back before each pass is not seen; a
-hostile program that opens a pseudo-terminal itself can answer in the person's place, but the choice is still written
-to the log; on Windows, Run keys and tasks are still declared by their command line alone.
+the priority ones), including under an alias of the unit and in /run/systemd/user, the launched program or the script
+passed to an interpreter changed, replaced by a link or deleted, a sensitive variable (LD_*, PYTHON*, NODE_*,
+BASH_ENV, PS4, XDG_CONFIG_HOME…) set for sessions (profiles, Hyprland, environment.d, systemd's DefaultEnvironment,
+pam_env) bring the alert back, which then says why and where. What cannot be recorded without ambiguity (a variable, a
+pipe, code in the line, a module, a launcher such as env or sudo, an addition that redirects the program or its
+environment, an unreadable file, a byte that is not UTF-8 in the line, its file or a path, a text with a carriage
+return or an invisible character, a service's standard input, an argument that is neither an option nor an absolute
+path for a program Vanguard does not recognise as an interpreter, more than 12 lines) cannot be declared normal; a
+bound file that is too long or not text is not shown, and this is said (its fingerprint can be compared with
+sha256sum); the confirmation also compares each file's device, inode and dates, so a file swapped and put back while
+you read is seen; a list restored or kept as is after tampering loses the states it held. Limits: a program looked up
+in PATH and what the script or launched program reads in turn (sourced file, import, library) are not bound; a profile
+is a program: its variables with computed names and the files it sources are not followed; a variable set during the
+session (systemctl --user set-environment) and Vanguard's own environment are not bound; an option stuck to its value
+("-mmodule") is not read as an argument; a bound text over 1 MiB is not checked for carriage returns; a launched file
+over 32 MiB (node, deno) is not bound, so it cannot be declared; folders added through XDG_CONFIG_DIRS or
+XDG_DATA_DIRS are not followed; the state is only compared at each scan, so a program that puts the original content
+back before each pass is not seen; a hostile program that opens a pseudo-terminal itself can answer in the person's
+place, but the choice is still written to the log; on Windows, Run keys and tasks are still declared by their command
+line alone.
 
 ## What leaves the computer
 
