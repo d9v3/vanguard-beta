@@ -66,8 +66,14 @@ pub enum Changement {
     Dns { connexion: String, cible: Option<String> },
     /// Programme lancé à l'ouverture de session (outil « Programmes au démarrage »). Valeur : « +contenu » du fichier
     /// d'autostart du compte (« - » : absent), ou l'état du service pour systemd (enabled, disabled). `cible` :
-    /// `None` quand le réglage n'est rebâti que pour être annulé.
-    Demarrage { entree: Entree, cible: Option<String> },
+    /// `None` quand le réglage n'est rebâti que pour être annulé. `vu` : la valeur lue quand l'entrée a été listée,
+    /// celle d'où viennent ce qui est montré et `cible` ; la note la garde (`lire_pour_noter`), et rien ne s'écrit si
+    /// le fichier n'est plus celui-là (`ecrire_ici`). `None` : un service, ou rebâti d'après une note.
+    Demarrage {
+        entree: Entree,
+        cible: Option<String>,
+        vu: Option<String>,
+    },
     /// Réglage du noyau (/proc/sys) qu'une correction du bilan ou un réglage pour jouer change, remis par
     /// `sysctl -w`. La clé s'écrit en chemin (« kernel/kptr_restrict ») : un nom d'interface peut contenir un point.
     Sysctl { cle: String },
@@ -504,6 +510,16 @@ fn sortie(cmd: &str, args: &[&str]) -> Option<String> {
 }
 
 impl Changement {
+    /// La valeur d'avant que note une correction : pour une entrée d'autostart listée, celle lue alors (`vu`), d'où
+    /// vient ce qui a été montré et ce qui sera écrit, jamais une seconde lecture qui verrait peut-être un autre
+    /// contenu (campagne B, M-1) ; sinon `lire`.
+    pub fn lire_pour_noter(&self) -> Valeur {
+        if let Changement::Demarrage { vu: Some(v), .. } = self {
+            return Some(v.clone());
+        }
+        self.lire()
+    }
+
     pub fn lire(&self) -> Valeur {
         match self {
             // « is-enabled » répond aussi par son code de retour : seul le texte compte ici.
@@ -696,7 +712,11 @@ impl Changement {
             "systemd" => unite_valide(reste).then(|| Entree::Service(reste.to_string()))?,
             _ => return None,
         };
-        Some(Changement::Demarrage { entree, cible: None })
+        Some(Changement::Demarrage {
+            entree,
+            cible: None,
+            vu: None,
+        })
     }
 
     /// Le nom d'un programme d'après l'identité notée : le fichier ou le service, sans extension.
@@ -723,11 +743,26 @@ impl Changement {
     fn ecrire_ici(&self, v: Option<&str>) -> Option<bool> {
         let Changement::Demarrage {
             entree: Entree::Autostart(p),
+            vu,
             ..
         } = self
         else {
             return None;
         };
+        // Listée, l'entrée doit être encore celle lue alors : échangée depuis, ce qui s'écrirait viendrait de l'ancien
+        // contenu et la note ne dirait pas ce qui a été montré (campagne B, M-1).
+        if let Some(vu) = vu
+            && self.lire().as_deref() != Some(vu.as_str())
+        {
+            println!(
+                "    ✖ {}",
+                tr!(
+                    "l'entrée a changé depuis qu'elle a été montrée : rien n'est écrit",
+                    "the entry changed since it was shown: nothing is written"
+                )
+            );
+            return Some(false);
+        }
         // Sous le dossier personnel, sans suivre de lien à aucun élément du chemin (`sous_maison`) : un dossier
         // d'autostart lien vers ailleurs n'est ni suivi ni écrit, comme les droits (`droits::poser`).
         let r = match v.map(|t| (t, t.strip_prefix('+'))) {
@@ -1236,6 +1271,7 @@ pub fn releve_demarrage() -> (Vec<Programme>, Vec<String>) {
                 changement: Changement::Demarrage {
                     entree: Entree::Service(unite.to_string()),
                     cible: Some("disabled".to_string()),
+                    vu: None,
                 },
             });
         }
@@ -1273,8 +1309,16 @@ fn autostart(compte: &Path, systeme: &[PathBuf], bureau: &str) -> Vec<Programme>
     let mut vus: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut l = Vec::new();
     for (nom, texte) in fichiers(compte) {
-        if sous_maison::juger(&compte.join(&nom)).is_ok() {
-            l.push(programme_autostart(compte.join(&nom), &texte, bureau));
+        let chemin = compte.join(&nom);
+        if sous_maison::juger(&chemin).is_ok() {
+            // Relu d'une seule ouverture, sans suivre de lien et borné, comme la note : ce qui est montré, la cible et
+            // la note viennent tous de cette lecture-là. Trop gros : montré, sans valeur vue (la note le dira).
+            l.push(
+                match sous_maison::lire(&chemin, u64::try_from(AUTOSTART_MAX - 1).unwrap_or(0)) {
+                    Ok(t) => programme_autostart(chemin, &t, bureau, Some(format!("+{t}"))),
+                    Err(_) => programme_autostart(chemin, &texte, bureau, None),
+                },
+            );
         }
         vus.insert(nom);
     }
@@ -1284,7 +1328,13 @@ fn autostart(compte: &Path, systeme: &[PathBuf], bureau: &str) -> Vec<Programme>
                 && crate::lenteur::entree_autostart(&texte, bureau).is_some()
                 && sous_maison::juger(&compte.join(&nom)).is_ok()
             {
-                l.push(programme_autostart(compte.join(&nom), &texte, bureau));
+                // La copie du compte n'existait pas : elle ne s'écrit que si c'est encore vrai.
+                l.push(programme_autostart(
+                    compte.join(&nom),
+                    &texte,
+                    bureau,
+                    Some("-".to_string()),
+                ));
             }
         }
     }
@@ -1292,7 +1342,7 @@ fn autostart(compte: &Path, systeme: &[PathBuf], bureau: &str) -> Vec<Programme>
 }
 
 /// Une entrée d'autostart : `chemin`, le fichier du compte où elle se masque (sa copie, pour une entrée du système).
-fn programme_autostart(chemin: PathBuf, texte: &str, bureau: &str) -> Programme {
+fn programme_autostart(chemin: PathBuf, texte: &str, bureau: &str, vu: Option<String>) -> Programme {
     let actif = crate::lenteur::entree_autostart(texte, bureau);
     let nom = actif
         .as_ref()
@@ -1309,6 +1359,7 @@ fn programme_autostart(chemin: PathBuf, texte: &str, bureau: &str) -> Programme 
         changement: Changement::Demarrage {
             entree: Entree::Autostart(chemin),
             cible: Some(format!("+{}", masquer(texte))),
+            vu,
         },
     }
 }
@@ -1779,6 +1830,7 @@ mod tests {
         let service = Changement::Demarrage {
             entree: Entree::Service("discord.service".into()),
             cible: None,
+            vu: None,
         };
         assert!(service.valeur_admise(Some("disabled")) && !service.valeur_admise(Some("on")));
     }
@@ -2175,6 +2227,7 @@ mod tests {
         let c = Changement::Demarrage {
             entree: Entree::Autostart(p.clone()),
             cible: Some(format!("+{}", masquer(original))),
+            vu: None,
         };
         let avant = c.lire();
         assert_eq!(c.ecrire_ici(c.cible().as_deref()), Some(true));
@@ -2186,6 +2239,7 @@ mod tests {
         let s = Changement::Demarrage {
             entree: Entree::Autostart(q.clone()),
             cible: Some("+[Desktop Entry]\nHidden=true\nName=Syncthing\n".to_string()),
+            vu: None,
         };
         let avant = s.lire();
         assert_eq!(avant.as_deref(), Some("-"));
@@ -2199,6 +2253,56 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// Campagne B, M-1 : une entrée listée garde ce qui a été lu alors. Son contenu échangé avant le geste, rien n'est
+    /// écrit (ni l'ancien contenu masqué, ni rien d'autre) ; la note est la valeur lue à la liste, jamais une seconde
+    /// lecture ; échangée contre un lien, le lien reste. Une copie du système, prévue absente du compte, ne s'écrit
+    /// pas sur un fichier apparu entre-temps.
+    #[test]
+    fn une_entree_echangee_apres_la_liste_n_est_pas_ecrite() {
+        let base = dossier_jetable("echangee");
+        let compte = base.join("autostart");
+        std::fs::create_dir_all(&compte).unwrap();
+        let p = compte.join("cible.desktop");
+        let montre = "[Desktop Entry]\nName=Cible\nExec=cible\n";
+        std::fs::write(&p, montre).unwrap();
+        let liste = autostart(&compte, &[], "");
+        let c = &liste.iter().find(|x| x.nom == "Cible").expect("listée").changement;
+        assert_eq!(c.lire_pour_noter().as_deref(), Some(format!("+{montre}").as_str()));
+        let autre = "[Desktop Entry]\nName=Autre\nExec=autre\n";
+        std::fs::write(&p, autre).unwrap();
+        assert_eq!(c.lire_pour_noter().as_deref(), Some(format!("+{montre}").as_str()));
+        assert_eq!(c.ecrire_ici(c.cible().as_deref()), Some(false));
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), autre);
+        // Échangée contre un lien : il reste, rien n'est écrit à sa place.
+        std::fs::remove_file(&p).unwrap();
+        std::os::unix::fs::symlink(base.join("ailleurs.desktop"), &p).unwrap();
+        assert_eq!(c.ecrire_ici(c.cible().as_deref()), Some(false));
+        assert!(std::fs::symlink_metadata(&p).unwrap().file_type().is_symlink());
+        // Remise comme listée : le geste passe.
+        std::fs::remove_file(&p).unwrap();
+        std::fs::write(&p, montre).unwrap();
+        assert_eq!(c.ecrire_ici(c.cible().as_deref()), Some(true));
+        assert_eq!(c.lire(), c.cible());
+        // Une copie d'une entrée du système, absente du compte à la liste.
+        let systeme = base.join("xdg");
+        std::fs::create_dir_all(&systeme).unwrap();
+        std::fs::write(
+            systeme.join("copie.desktop"),
+            "[Desktop Entry]\nName=Copie\nExec=copie\n",
+        )
+        .unwrap();
+        let liste = autostart(&compte, std::slice::from_ref(&systeme), "");
+        let c = &liste.iter().find(|x| x.nom == "Copie").expect("listée").changement;
+        assert_eq!(c.lire_pour_noter().as_deref(), Some("-"));
+        std::fs::write(compte.join("copie.desktop"), "[Desktop Entry]\nName=Mien\n").unwrap();
+        assert_eq!(c.ecrire_ici(c.cible().as_deref()), Some(false));
+        assert_eq!(
+            std::fs::read_to_string(compte.join("copie.desktop")).unwrap(),
+            "[Desktop Entry]\nName=Mien\n"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     /// La valeur d'avant d'une entrée d'autostart se lit en une ouverture, sans suivre de lien ni attendre un tube,
     /// bornée : un lien, un tube nommé ou un fichier trop gros ne se lisent pas (`None` : rien ne s'écrit d'après
     /// eux) ; la plus longue note lue est encore admise à la relecture.
@@ -2209,6 +2313,7 @@ mod tests {
         let entree = |nom: &str| Changement::Demarrage {
             entree: Entree::Autostart(base.join(nom)),
             cible: None,
+            vu: None,
         };
         std::fs::write(base.join("vrai.desktop"), "[Desktop Entry]\nName=Lecteur\n").unwrap();
         assert_eq!(
@@ -2235,6 +2340,7 @@ mod tests {
         let c = Changement::Demarrage {
             entree: Entree::Autostart(PathBuf::from("/home/alice/.config/autostart/essai-vanguard-x.desktop")),
             cible: None,
+            vu: None,
         };
         let id = c.identite_demarrage().unwrap();
         assert_eq!(id, "autostart|/home/alice/.config/autostart/essai-vanguard-x.desktop");
@@ -2242,7 +2348,8 @@ mod tests {
             Changement::demarrage_depuis(&id),
             Some(Changement::Demarrage {
                 entree: Entree::Autostart(_),
-                cible: None
+                cible: None,
+                vu: None
             })
         ));
         assert_eq!(Changement::nom_demarrage(&id), "essai-vanguard-x");
@@ -2313,6 +2420,7 @@ mod tests {
         let c = Changement::Demarrage {
             entree: Entree::Autostart(base.join("autostart/note.desktop")),
             cible: None,
+            vu: None,
         };
         assert_eq!(c.lire(), None, "pas lu à travers le lien");
         assert_eq!(c.ecrire_ici(Some("+Hidden=true\n")), Some(false));

@@ -1288,6 +1288,7 @@ mod tests {
             changement: Changement::Demarrage {
                 entree: Entree::Service(format!("{nom}.service")),
                 cible: Some("disabled".to_string()),
+                vu: None,
             },
         };
         let mut h = Historique::default();
@@ -1340,6 +1341,7 @@ mod tests {
             changement: Changement::Demarrage {
                 entree: Entree::Service("x.service".into()),
                 cible: Some("disabled".into()),
+                vu: None,
             },
         };
         let l = lignes(vec![piege], &Historique::default());
@@ -1403,6 +1405,7 @@ mod essais_changer {
             changement: Changement::Demarrage {
                 entree: Entree::Service(format!("{nom}.service")),
                 cible: Some("disabled".to_string()),
+                vu: None,
             },
         }
     }

@@ -247,6 +247,11 @@ fn chemin_lisible(racine: Racine, chemin: &str) -> String {
 }
 
 impl Changement {
+    /// La valeur d'avant que note une correction : sous Windows, toujours relue (`lire`).
+    pub fn lire_pour_noter(&self) -> Valeur {
+        self.lire()
+    }
+
     pub fn lire(&self) -> Valeur {
         match self {
             Changement::Registre {

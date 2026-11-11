@@ -482,7 +482,7 @@ fn executer_avec(
         }
         h.reglages.entry(r.id.to_string()).or_insert_with(|| Avant {
             date: date.clone(),
-            valeurs: r.changements.iter().map(systeme::Changement::lire).collect(),
+            valeurs: r.changements.iter().map(systeme::Changement::lire_pour_noter).collect(),
             ..Avant::default()
         });
     }
