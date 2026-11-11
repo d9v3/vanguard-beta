@@ -292,23 +292,38 @@ impl Vu {
         }
     }
 
-    /// Ce que le système dit du fichier `chemin` (`m`) et de chaque dossier au-dessus de lui, jusqu'à la racine.
+    /// Ce que le système dit du fichier `chemin` (`m`) et de chaque dossier au-dessus de lui, jusqu'à la racine :
+    /// ceux du chemin écrit, puis ceux du chemin résolu. Derrière un lien de dossier (« ~/.lien -> .d/1 »), les
+    /// dossiers traversés ne sont pas ceux du chemin écrit ; un vrai dossier renommé puis remis passerait sinon
+    /// inaperçu (deuxième vérification de la campagne E, N5).
     #[cfg(unix)]
     pub(crate) fn de_dans(m: &std::fs::Metadata, chemin: &std::path::Path) -> Vu {
         use std::os::unix::fs::MetadataExt as _;
         let mut h = blake3::Hasher::new_derive_key("vanguard 2026-11 dossiers au-dessus d'un fichier");
-        for dossier in chemin.ancestors().skip(1) {
-            match std::fs::symlink_metadata(dossier) {
-                Ok(d) => {
-                    h.update(b"D");
-                    h.update(&d.dev().to_le_bytes());
-                    h.update(&d.ino().to_le_bytes());
-                    h.update(&d.ctime().to_le_bytes());
-                    h.update(&d.ctime_nsec().to_le_bytes());
+        let dossier = |h: &mut blake3::Hasher, d: &std::path::Path| match std::fs::symlink_metadata(d) {
+            Ok(d) => {
+                h.update(b"D");
+                h.update(&d.dev().to_le_bytes());
+                h.update(&d.ino().to_le_bytes());
+                h.update(&d.ctime().to_le_bytes());
+                h.update(&d.ctime_nsec().to_le_bytes());
+            }
+            Err(_) => {
+                h.update(b"-");
+            }
+        };
+        for d in chemin.ancestors().skip(1) {
+            dossier(&mut h, d);
+        }
+        h.update(b"R");
+        match chemin.parent().map(std::fs::canonicalize) {
+            Some(Ok(resolu)) => {
+                for d in resolu.ancestors() {
+                    dossier(&mut h, d);
                 }
-                Err(_) => {
-                    h.update(b"-");
-                }
+            }
+            _ => {
+                h.update(b"-");
             }
         }
         Vu {
@@ -417,11 +432,12 @@ impl Etat {
         }
     }
 
-    /// Un état d'un texte assemblé par Vanguard (pas un fichier) : son SHA-256, et lui-même pour le montrer.
-    pub(crate) fn du_texte(octets: &[u8]) -> Etat {
+    /// Un état lié par le SHA-256 de `octets` (un texte assemblé, sans langue) et montré par d'autres lignes, plus
+    /// courtes et lisibles (rendues affichables ici).
+    pub(crate) fn lie_et_montre(octets: &[u8], montre: Vec<String>) -> Etat {
         Etat::Fichier {
             empreinte: sha2::Sha256::digest(octets).into(),
-            apercu: apercu_de(octets),
+            apercu: Some(montre.into_iter().map(|l| crate::ui::affichable(&l)).collect()),
             vu: Vu::default(),
         }
     }
@@ -870,7 +886,14 @@ fn contenu(
     // Un binaire ELF, seulement à la place du programme : le noyau le charge, aucun interpréteur ne le lit comme un
     // texte. Tout le reste est vérifié sur ses octets bruts, en entier (vérification de la campagne E, N4 : un seul
     // octet non UTF-8 ne fait plus sauter la recherche du retour chariot).
-    if !(programme && binaire_elf(&debut)) {
+    if !programme && binaire_elf(&debut) {
+        return Err(Refus(trf!(
+            "{} est un programme (ELF) donné à lire à un autre programme : ce qu'il en fait ne se suit pas",
+            "{} is a program (ELF) given to another program to read: what it does with it cannot be followed",
+            montre()
+        )));
+    }
+    if !binaire_elf(&debut) {
         if lus > u64::try_from(TEXTE_LU).unwrap_or(u64::MAX) {
             return Err(Refus(trf!(
                 "{} n'est pas un programme (ELF) et dépasse ce qui se vérifie comme un texte (1 Mio)",
@@ -927,12 +950,13 @@ enum DefautDuTexte {
 /// caractère que l'écran ne montre pas tel quel (un « cat » ou un éditeur le montreraient autrement que
 /// l'interpréteur le lit) ; `None` : il se lit tel qu'il s'exécute.
 fn defaut_du_texte(octets: &[u8]) -> Option<DefautDuTexte> {
-    if octets.contains(&b'\r') {
-        return Some(DefautDuTexte::Trompeur);
-    }
+    // L'octet d'abord : un fichier qui n'est pas du texte se dit tel, même s'il contient aussi un retour chariot.
     let Ok(t) = std::str::from_utf8(octets) else {
         return Some(DefautDuTexte::Octet);
     };
+    if octets.contains(&b'\r') {
+        return Some(DefautDuTexte::Trompeur);
+    }
     t.split('\n')
         .any(|l| {
             let l = l.replace('\t', " ");
@@ -1044,7 +1068,12 @@ mod tests {
         assert_eq!(decalee.marque(&avant), Marque::DejaAcceptee);
         // Campagne E, M-a : un ajout de l'unité ou une variable des sessions changés se disent comme tels.
         let ajout = |t: &[u8]| ("~/.config/systemd/user/rappel.service.d/x.conf".to_string(), fichier(t));
-        let env = |t: &[u8]| (ENV.to_string(), Etat::du_texte(t));
+        let env = |t: &[u8]| {
+            (
+                ENV.to_string(),
+                Etat::lie_et_montre(t, vec![String::from_utf8_lossy(t).into_owned()]),
+            )
+        };
         let lie = |a: &[u8], e: &[u8]| un(ligne, &c, &[cible.clone(), ajout(a), env(e)]);
         let avant = Temoins::Releves(vec![lie(b"Nice=1", b"")]).traces();
         assert_eq!(lie(b"Nice=1", b"").marque(&avant), Marque::DejaAcceptee);
@@ -1280,5 +1309,58 @@ mod tests {
         assert_eq!(avant.empreinte(), apres.empreinte());
         assert_ne!(avant.vus(), apres.vus());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Le script atteint par un lien de dossier : le vrai dossier, renommé puis remis pendant la lecture du détail,
+    /// se voit aussi (deuxième vérification de la campagne E, N5 par un lien).
+    #[cfg(unix)]
+    #[test]
+    fn vus_derriere_un_lien_de_dossier() {
+        let d = crate::essais::temporaire().join(format!("vanguard-temoins-n5b-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join(".d/1")).unwrap();
+        std::fs::write(d.join(".d/1/rappel.sh"), b"#!/bin/sh\necho ok\n").unwrap();
+        std::os::unix::fs::symlink(".d/1", d.join(".lien")).unwrap();
+        let p = d.join(".lien/rappel.sh");
+        let releve = || {
+            let mut b = Budget::default();
+            let e = etat_de_la_cible(&p, true, &mut b).unwrap();
+            Temoins::de(vec![Ok(temoin(
+                "a:1",
+                "a:1".into(),
+                "ExecStart=/x",
+                None,
+                &[("/x".into(), e)],
+            ))])
+        };
+        let avant = releve();
+        assert_eq!(avant.vus(), releve().vus());
+        std::fs::rename(d.join(".d/1"), d.join(".d/2")).unwrap();
+        std::fs::rename(d.join(".d/2"), d.join(".d/1")).unwrap();
+        let apres = releve();
+        assert_eq!(avant.empreinte(), apres.empreinte());
+        assert_ne!(avant.vus(), apres.vus());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Un binaire donné à lire à un autre programme se dit tel, même avec un retour chariot dedans.
+    #[cfg(unix)]
+    #[test]
+    fn argument_binaire_dit_tel() {
+        let dossier = crate::essais::temporaire().join(format!("vanguard-temoins-elf-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dossier);
+        std::fs::create_dir_all(&dossier).unwrap();
+        let donnee = dossier.join("donnee");
+        std::fs::write(&donnee, b"\x7fELF\x02\x01\x01\x00\x00\x00\r\n\xff").unwrap();
+        let mut budget = Budget::default();
+        assert!(etat_de_la_cible(&donnee, true, &mut budget).is_ok());
+        let e = etat_de_la_cible(&donnee, false, &mut budget).unwrap_err().0;
+        assert!(e.contains("ELF"), "{e}");
+        assert!(!e.contains("retour chariot") && !e.contains("carriage return"), "{e}");
+        let texte = dossier.join("texte");
+        std::fs::write(&texte, b"echo \xff\r\n").unwrap();
+        let e = etat_de_la_cible(&texte, false, &mut budget).unwrap_err().0;
+        assert!(e.contains("UTF-8"), "{e}");
+        let _ = std::fs::remove_dir_all(&dossier);
     }
 }

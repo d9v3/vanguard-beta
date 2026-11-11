@@ -459,7 +459,20 @@ including the session's and the priority ones, and those of a moved XDG_CONFIG_H
 an alias of the unit or an alias of an alias and in /run/systemd/user, the launched program or the script passed to
 an interpreter changed, replaced by a link or deleted, and any change to a file that sets variables for sessions
 (bash, zsh and fish profiles, Hyprland and the files it reads through "source =", environment.d, the systemd manager
-configuration, pam_env), read in full, even a comment, bring the alert back, which then says why and where. What
+configuration, pam_env), read in full, even a comment, bring the alert back, which then says why and where. A unit
+can only be declared if each of its directives, and of its additions', belongs to a short closed list (describe,
+order, restart, Type, User, Nice, the variables of the safe list, dependencies on ".target" targets, the Exec lines):
+any other (PrivateTmp, JoinsNamespaceOf, LoadCredential, PAMName, OnFailure, OnSuccess, UnsetEnvironment, a [Socket]
+section…), an empty ExecStart=, a dependency on a service or a variable whose value is a path makes it refused; each
+Exec line of the unit and of its additions is shown and bound with what it starts, like the reported line. A variable
+file that names a variable making code load (LD_*, BASH_ENV, ENV, PYTHON*, NODE_OPTIONS, GTK_MODULES…, even escaped
+or split by quotes) makes everything refused, and the refusal names the file and the line. "source" lines are
+followed at every level: Hyprland's, also outside ~/.config/hypr and through a wildcard in the last name; a
+profile's at command position, also after "&&" or inside an "if … fi", through an absolute path or under ~ or $HOME;
+those that cannot be followed (relative or computed path) are listed in the detail. The detail shows one line for the
+bound variable files, then in clear each line that sets a variable outside the safe list. The folders of the real
+path of a bound file, behind a folder link, are compared too. ~/.xsessionrc, ~/.bash_logout and the zsh files under
+ZDOTDIR are read. What
 cannot be recorded without ambiguity (a variable, a pipe, code in the line, a module, a launcher such as env or sudo,
 an addition that redirects the program, its working directory or its environment, a service variable outside a short
 list of known ones (LANG, TZ, DISPLAY…) or written with a backslash, an unreadable file, a byte that is not UTF-8 in
@@ -467,7 +480,8 @@ the line, its file or a path, a script with a carriage return or an invisible ch
 file read by an interpreter that is not text, a service's standard input, a path through /proc or /dev or with "." or
 "..", which names another file depending on the program that reads it, an argument that is neither an option nor an
 absolute path for a program Vanguard does not recognise as an interpreter, including after "--" and in an option's
-value, a copy of a system interpreter under another name, a home folder that cannot be read, more than 12 lines)
+value, a copy of a system interpreter under another name, or a program that cannot be compared with them, a home
+folder that is missing or cannot be read, an unreadable folder of the account's startup files, more than 12 lines)
 cannot be declared normal; a bound file that is too long or not text is not shown, and this is said (its fingerprint
 can be compared with sha256sum); the confirmation also compares the device, inode and dates of each file and of each
 folder above it, so a file or one of its folders swapped and put back while you read is seen; a list restored or kept
@@ -475,7 +489,13 @@ as is after tampering loses the states it held. Limits: a program looked up in P
 program reads in turn (sourced file, import, library, "dofile" of a Lua configuration) are not bound; a program
 Vanguard does not recognise can read a file named by an option stuck to its value ("-fMakefile"): nothing binds what
 it reads; a profile is a program: its variables with computed names and the files it reads through a computed path
-(`. "$DIR/x"`) are not followed, but its own content is bound; a variable set during the session (systemctl --user
+(`. "$DIR/x"`) are not followed (they are listed in the detail), but its own content is bound; variables that say
+where to look (PATH, HOME, XDG_*, ZDOTDIR) or that pick a driver by name (__GLX_VENDOR_LIBRARY_NAME,
+LIBVA_DRIVER_NAME) or that a single program reads (AWKLIBPATH, set by an Arch base package, VSSCRIPT_PATH) are only bound through the whole content of their file, not through what they name, and a variable
+set by "eval" or by an export with a computed name is not seen; the closed list of directives and the refusal of
+variables that make code load mean that hardened units (ProtectSystem…) or an account that sets LD_PRELOAD can no
+longer be declared normal, on the safe side; a Hyprland "exec-once" in an included file outside ~/.config/hypr is not
+reported yet; a variable set during the session (systemctl --user
 set-environment) and Vanguard's own environment are not bound; a file with an ELF header but malformed, in place of the
 program, is bound by its fingerprint without being checked as a text, though a shell could read it; a launched file over 32 MiB (node, deno) or a non-ELF file over 1 MiB
 is not bound, so it cannot be declared; folders added through XDG_CONFIG_DIRS or XDG_DATA_DIRS are not followed; the

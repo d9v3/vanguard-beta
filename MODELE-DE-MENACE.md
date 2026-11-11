@@ -518,7 +518,20 @@ y compris sous un alias de l'unité ou un alias d'alias et dans /run/systemd/use
 passé à un interpréteur changé, remplacé par un lien ou effacé, et tout changement d'un fichier qui pose des
 variables pour les sessions (profils de bash, zsh et fish, Hyprland et les fichiers qu'il lit par « source = »,
 environment.d, configuration du gestionnaire systemd, pam_env), lu en entier, même un commentaire, font revenir
-l'alerte, qui dit alors pourquoi et où. Ce qui ne se relève pas sans ambiguïté (une variable, un tube, du code dans la
+l'alerte, qui dit alors pourquoi et où. Une unité ne se déclare que si chacune de ses directives, et de celles de
+ses ajouts, est d'une courte liste fermée (décrire, ordonner, relancer, Type, User, Nice, les variables de la liste
+sûre, des dépendances vers des cibles « .target », les lignes Exec) : toute autre (PrivateTmp, JoinsNamespaceOf,
+LoadCredential, PAMName, OnFailure, OnSuccess, UnsetEnvironment, une section [Socket]…), un ExecStart= vide, une
+dépendance vers un service ou une variable dont la valeur est un chemin la fait refuser ; chaque ligne Exec de l'unité
+et de ses ajouts est montrée et liée avec ce qu'elle lance, comme la ligne signalée. Un fichier des variables qui
+nomme une variable qui fait charger du code (LD_*, BASH_ENV, ENV, PYTHON*, NODE_OPTIONS, GTK_MODULES…, même échappée
+ou coupée par des guillemets) fait tout refuser, et le refus nomme le fichier et la ligne. Les « source » se suivent à
+tous les niveaux : ceux de Hyprland, aussi hors de ~/.config/hypr et par un joker dans le dernier nom ; ceux d'un
+profil en position de commande, aussi derrière « && » ou dans un « if … fi », par un chemin absolu ou sous ~ ou
+$HOME ; ceux qui ne se suivent pas (chemin relatif ou calculé) sont listés dans le détail. Le détail montre une ligne
+pour les fichiers des variables liés, puis en clair chaque ligne qui pose une variable hors de la liste sûre. Les
+dossiers du chemin réel d'un fichier lié, derrière un lien de dossier, sont comparés aussi. ~/.xsessionrc,
+~/.bash_logout et les fichiers de zsh sous ZDOTDIR sont lus. Ce qui ne se relève pas sans ambiguïté (une variable, un tube, du code dans la
 ligne, un module, un lanceur comme env ou sudo, un ajout qui redirige le programme, son dossier de travail ou son
 environnement, une variable de service hors d'une courte liste connue (LANG, TZ, DISPLAY…) ou écrite avec une barre
 oblique inversée, un fichier illisible, un octet qui n'est pas de l'UTF-8 dans la ligne, son fichier ou un chemin, un
@@ -526,7 +539,8 @@ script au retour chariot ou au caractère invisible, cherchés sur les octets br
 qui n'est pas du texte, l'entrée standard d'un service, un chemin par /proc ou /dev ou avec « . » ou « .. », qui
 désigne un autre fichier selon le programme qui le lit, un argument qui n'est ni une option ni un chemin absolu pour un
 programme que Vanguard ne reconnaît pas comme interpréteur, y compris après « -- » et dans la valeur d'une option, une
-copie d'un interpréteur du système sous un autre nom, un dossier personnel qui ne se lit pas, plus de 12 lignes) ne
+copie d'un interpréteur du système sous un autre nom, ou un programme qui ne se compare pas à eux, un dossier
+personnel absent ou qui ne se lit pas, un dossier des démarrages du compte illisible, plus de 12 lignes) ne
 peut pas être déclaré normal ; un fichier lié trop long ou qui n'est pas du texte n'est pas montré, ce qui est dit (son
 empreinte se compare avec sha256sum) ; la confirmation compare aussi l'appareil, l'inode et les dates de chaque
 fichier et de chaque dossier au-dessus de lui, si bien qu'un fichier ou un de ses dossiers échangé puis remis pendant
@@ -535,7 +549,13 @@ Limites : un programme cherché dans le PATH et ce que le script ou le programme
 import, bibliothèque, « dofile » d'une configuration Lua) ne sont pas liés ; un programme que Vanguard ne reconnaît
 pas peut lire un fichier nommé par une option collée (« -fMakefile ») : rien ne lie ce qu'il lit ; un profil est un
 programme : ses variables au nom calculé et les fichiers qu'il lit par un chemin calculé (« . "$DOSSIER/x" ») ne sont
-pas suivis, mais son propre contenu est lié ; une variable posée pendant la session (systemctl --user
+pas suivis (ils sont listés dans le détail), mais son propre contenu est lié ; les variables qui disent où chercher
+(PATH, HOME, XDG_*, ZDOTDIR) ou qui choisissent un pilote par son nom (__GLX_VENDOR_LIBRARY_NAME, LIBVA_DRIVER_NAME)
+ou qu'un seul programme lit (AWKLIBPATH, posé par un paquet de base d'Arch, VSSCRIPT_PATH) ne sont liées que par le contenu entier de leur fichier, pas par ce qu'elles désignent, et une variable posée par
+« eval » ou par un export au nom calculé ne se voit pas ; la liste fermée des directives et le refus des variables
+qui font charger du code font que des unités durcies (ProtectSystem…) ou un compte qui pose LD_PRELOAD ne se déclarent
+plus normaux, du côté sûr ; un « exec-once » de Hyprland dans un fichier inclus hors de ~/.config/hypr n'est pas
+encore signalé ; une variable posée pendant la session (systemctl --user
 set-environment) et l'environnement de Vanguard lui-même ne sont pas liés ; un fichier à en-tête ELF mais malformé, à la
 place du programme, est lié par son empreinte sans être vérifié comme un texte, alors qu'un shell pourrait le lire ; un fichier lancé de plus de 32 Mio (node, deno)
 ou un fichier non ELF de plus de 1 Mio ne se lie pas, donc ne se déclare pas ; les dossiers ajoutés par
