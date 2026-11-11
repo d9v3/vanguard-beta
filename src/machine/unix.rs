@@ -151,7 +151,7 @@ pub(crate) fn hors_correction(maison: &Path, relatif: &Path, attendu: Attendu) -
 /// « /. » suit le lien du dernier élément, donc un HOME écrit ainsi cachait que le dossier personnel est un lien.
 /// Les « . » et les « / » en trop sont retirés ; un chemin relatif, un « .. » ou un nom qui n'est pas UTF-8 sont
 /// refusés (le geste écrit le chemin en texte).
-fn maison_simple(maison: &Path) -> Result<PathBuf, crate::modele::raison::Echec> {
+pub(crate) fn maison_simple(maison: &Path) -> Result<PathBuf, crate::modele::raison::Echec> {
     use std::path::Component;
     let refus = || {
         crate::modele::raison::Echec::refuse(
@@ -868,7 +868,11 @@ mod tests_liens {
             None
         );
         let lien = hors_correction(&maison, Path::new(".ssh/id_lien"), Attendu::Fichier).unwrap();
-        assert!(lien.contains("~/.ssh/id_lien") && lien.contains("cible"), "{lien}");
+        // La cible est dite, coupée à 120 signes : dans un dépôt au chemin long, son nom peut tomber après.
+        assert!(
+            lien.contains("~/.ssh/id_lien") && lien.contains("liens-ailleu"),
+            "{lien}"
+        );
         // Un dossier du chemin qui est un lien : la fin, ordinaire, n'y change rien.
         let milieu = hors_correction(&maison, Path::new("d/cible"), Attendu::Fichier).unwrap();
         assert!(milieu.starts_with("~/d "), "{milieu}");

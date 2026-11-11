@@ -296,6 +296,23 @@ fn permise_au_compte(ligne: &str) -> bool {
     mode_permis(mode) && chemin_du_compte(chemin).is_some()
 }
 
+/// Ce qu'une ligne permise au compte (`permise_au_compte`) pose, sans shell : le chemin absolu sous le dossier
+/// personnel et les droits. Vanguard les pose lui-même (`optimiser::droits::poser` : ouvert sans suivre de lien,
+/// fchmod sur le descripteur jugé), jamais par `chmod`, qui suivrait un lien posé sur le chemin après la relecture.
+/// `None` : la ligne n'est pas de cette forme, ou le dossier personnel n'est pas un chemin simple.
+#[cfg(unix)]
+pub(crate) fn chmod_du_compte(ligne: &str) -> Option<(std::path::PathBuf, u32)> {
+    let (mode, chemin) = ligne.strip_prefix("chmod ")?.split_once(' ')?;
+    if !mode_permis(mode) {
+        return None;
+    }
+    let lu = chemin_du_compte(chemin)?;
+    let maison = crate::machine::unix::maison_simple(&crate::socle::maison()).ok()?;
+    let reste = lu.strip_prefix('~')?.trim_start_matches('/');
+    let absolu = if reste.is_empty() { maison } else { maison.join(reste) };
+    Some((absolu, u32::from_str_radix(mode, 8).ok()?))
+}
+
 /// Trois chiffres octaux, sans bit spécial : le groupe peut lire ou entrer, jamais écrire ; les autres comptes rien.
 /// C'est ce que posent les corrections du compte (600, 700, 750) : fermer, jamais ouvrir.
 fn mode_permis(mode: &str) -> bool {
@@ -1086,6 +1103,28 @@ mod tests {
         let mut noms: Vec<String> = a.champs().iter().map(|(n, _)| (*n).to_string()).collect();
         noms.sort();
         assert_eq!(noms, cles_du_json(&a));
+    }
+
+    /// Une ligne permise se lit en chemin absolu sous le dossier personnel et en droits, sans shell ; aucune autre.
+    #[cfg(unix)]
+    #[test]
+    fn une_ligne_permise_se_pose_sans_shell() {
+        let maison = crate::machine::unix::maison_simple(&crate::socle::maison()).unwrap();
+        assert_eq!(chmod_du_compte("chmod 700 ~/.ssh"), Some((maison.join(".ssh"), 0o700)));
+        assert_eq!(chmod_du_compte("chmod 600 ~/'a b'"), Some((maison.join("a b"), 0o600)));
+        assert_eq!(chmod_du_compte("chmod 750 ~"), Some((maison.clone(), 0o750)));
+        for l in [
+            "chmod 777 ~/x",
+            "chmod 4700 ~/x",
+            "chmod 700 /home/alice/.ssh",
+            "chmod 700 ~/../x",
+            "chmod 700 ~/x; id",
+            "chmod  700 ~/x",
+            "sudo chmod 700 ~/x",
+        ] {
+            assert_eq!(chmod_du_compte(l), None, "{l}");
+            assert!(!permise_au_compte(l), "{l}");
+        }
     }
 
     /// Chaque contournement trouvé par la campagne d'attaque, et d'autres : rien de ce qui n'est pas `chmod <mode

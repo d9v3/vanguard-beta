@@ -2429,6 +2429,17 @@ fn lancer_lignes(correctifs: &[Vec<String>]) -> (Vec<Vec<bool>>, Vec<Vec<String>
 #[cfg(not(windows))]
 fn lancer_par_bash(c: &str) -> bool {
     println!("    {GRIS}$ {}{RESET}", crate::ui::commande_affichable(c));
+    // Les droits d'un fichier du compte : posés par Vanguard sur le fichier ouvert sans suivre de lien, jamais par
+    // `chmod`, qui suivrait un lien posé sur le chemin depuis la relecture.
+    if let Some((chemin, mode)) = apercu::chmod_du_compte(c) {
+        return match crate::optimiser::droits::poser(&chemin, mode) {
+            Ok(_) => true,
+            Err(e) => {
+                println!("    ✖ {e}");
+                false
+            }
+        };
+    }
     // bash par son chemin, sans fichier de démarrage, et dans un environnement propre : la ligne « sudo … » prend le
     // sudo du système, jamais un faux posé dans un dossier du compte.
     let Some(mut bash) = crate::commande::bash_propre(c, std::env::vars_os()) else {

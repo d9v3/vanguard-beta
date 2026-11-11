@@ -8,6 +8,8 @@ pub(crate) mod annulables;
 #[cfg(windows)]
 pub(crate) mod defender;
 mod demarrage;
+#[cfg(unix)]
+pub(crate) mod droits;
 #[cfg(target_os = "linux")]
 pub(crate) mod linux;
 #[cfg(windows)]

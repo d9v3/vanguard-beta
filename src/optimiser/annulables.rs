@@ -114,12 +114,12 @@ pub(crate) fn dans_la_maison(p: &Path) -> bool {
         && (sous(&maison) || essais)
 }
 
-/// Les droits d'un fichier (« 0644 »), tels qu'on les remet ; `None` : illisible ou absent.
+/// Les droits d'un fichier ou d'un dossier du compte (« 0644 »), tels qu'on les remet, lus sans suivre de lien sur
+/// le descripteur même qu'on changerait (`droits::lire`) ; `None` : illisible, absent, ou refusé par une garde (un
+/// lien sur le chemin, un autre propriétaire, un second nom) : rien ne se note, donc rien ne s'applique.
 #[cfg(unix)]
 pub(crate) fn droits_lus(p: &Path) -> Option<String> {
-    use std::os::unix::fs::PermissionsExt;
-    let m = std::fs::metadata(p).ok()?;
-    Some(format!("{:04o}", m.permissions().mode() & 0o7777))
+    super::droits::lire(p).ok().map(|m| format!("{m:04o}"))
 }
 
 /// Des droits notés : quatre chiffres octaux, sans setuid ni setgid (rien qu'un chmod du compte ne poserait pour

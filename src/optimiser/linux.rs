@@ -937,8 +937,25 @@ impl Changement {
     }
 
     /// Écrit ce qui est propre au compte sans passer par une commande : le fichier d'autostart, son contenu entier
-    /// remis à l'octet près, ou retiré. `None` : ce changement passe par une commande.
-    fn ecrire_ici(&self, v: Option<&str>) -> Option<bool> {
+    /// remis à l'octet près, ou retiré ; les droits d'un fichier du compte, posés par fchmod sur le fichier ouvert
+    /// sans suivre de lien (`droits::poser`), jamais par `chmod` du shell. `None` : ce changement passe par une
+    /// commande.
+    pub(crate) fn ecrire_ici(&self, v: Option<&str>) -> Option<bool> {
+        if let Changement::Droits { chemin } = self {
+            let mode = v
+                .filter(|v| super::annulables::droits_admis(v))
+                .and_then(|v| u32::from_str_radix(v, 8).ok());
+            return Some(match mode {
+                Some(m) => match super::droits::poser(chemin, m) {
+                    Ok(_) => true,
+                    Err(e) => {
+                        println!("    ✖ {e}");
+                        false
+                    }
+                },
+                None => false,
+            });
+        }
         let Changement::Demarrage {
             entree: Entree::Autostart(p),
             cible,
@@ -1316,10 +1333,8 @@ impl Changement {
                 None => format!("sudo modprobe -r {nom}"),
                 Some(_) => return None,
             },
-            Changement::Droits { chemin } => {
-                let v = v.filter(|v| super::annulables::droits_admis(v))?;
-                format!("chmod {v} {}", sh_chaine(&chemin.display().to_string()))
-            }
+            // Posés par Vanguard lui-même (`ecrire_ici`), sans shell : `chmod` suivrait un lien posé sur le chemin.
+            Changement::Droits { .. } => return None,
             Changement::Ntp => match v? {
                 "yes" => "sudo timedatectl set-ntp true".to_string(),
                 "no" => "sudo timedatectl set-ntp false".to_string(),
@@ -1445,7 +1460,10 @@ pub fn ecrire_avec(lots: &[Vec<(&Changement, Valeur)>], en_plus: &[Vec<String>])
         *ok &= !refuse;
     }
     // Ce qui est propre au compte et s'écrit sans commande (fichiers d'autostart), montré comme une commande.
-    for (lot, ok) in lots.iter().zip(resultats.iter_mut()) {
+    for ((lot, ok), refuse) in lots.iter().zip(resultats.iter_mut()).zip(&refuses) {
+        if *refuse {
+            continue;
+        }
         for (c, v) in lot {
             if let Some(ecrit) = c.ecrire_ici(v.as_deref()) {
                 // Refusé ou en échec (la raison est déjà dite sur sa ligne ✖), rien n'est écrit : jamais « remis comme
