@@ -265,16 +265,35 @@ pub fn verifier() {
     ) {
         println!("  {ligne}");
     }
-    let accord = demander(tr!("\n  Continuer ? [o/N] : ", "\n  Continue? [y/N]: ")).oui();
+    // Le travail sans Internet demandé (réglage ou VANGUARD_HORS_LIGNE) vaut ici comme partout : rien n'est demandé
+    // à Cloudflare ni aux listes, même avec un « oui », et la question n'est pas posée pour rien.
+    let hors_ligne = crate::parametres::hors_ligne();
+    let accord = !hors_ligne && demander(tr!("\n  Continuer ? [o/N] : ", "\n  Continue? [y/N]: ")).oui();
     let debut = (chrono::Utc::now(), std::time::Instant::now());
-    // L'écran ne s'arrête pas au travail sans Internet : il essaie, et dit que l'adresse est introuvable.
-    let releve = relever(accord, false, adresse_publique, |ip, zone| {
-        chercher_avec(ip, zone, resoudre)
-    });
+    let releve = if hors_ligne {
+        Releve::HorsLigne
+    } else {
+        relever(accord, false, adresse_publique, |ip, zone| {
+            chercher_avec(ip, zone, resoudre)
+        })
+    };
     crate::modele::resultat::verser(&resultat::resultat(&releve, debut));
     let (ip, reponses) = match releve {
-        Releve::SansAccord | Releve::HorsLigne => {
+        Releve::SansAccord => {
             trp!("  Rien n'a été envoyé.", "  Nothing was sent.");
+            return;
+        }
+        Releve::HorsLigne => {
+            println!();
+            for ligne in envelopper(
+                tr!(
+                    "Travail sans Internet demandé : rien n'a été envoyé. Pour vérifier, coupez-le : « vanguard parametres sans-internet non » (ou retirez VANGUARD_HORS_LIGNE).",
+                    "Working offline is requested: nothing was sent. To check, turn it off: “vanguard settings offline no” (or unset VANGUARD_HORS_LIGNE)."
+                ),
+                LARGEUR - 2,
+            ) {
+                println!("  {ligne}");
+            }
             return;
         }
         Releve::SansAdresse => {

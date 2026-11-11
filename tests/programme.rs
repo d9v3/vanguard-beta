@@ -1999,7 +1999,11 @@ fn sans_internet_chaque_outil_le_dit() {
     let dossier = maison_jetable();
     let eml = courriel_piege(&dossier);
     let cas: [(&[&str], &str, &str); 8] = [
-        (&["listes-noires"], "o\n", "Adresse publique introuvable"),
+        (
+            &["listes-noires"],
+            "o\n",
+            "Travail sans Internet demandé : rien n'a été envoyé",
+        ),
         (&["nat"], "", "Aucun serveur n'a répondu"),
         (&["dns-rapide"], "", "ne répond pas"),
         (&["connexions-sortantes"], "", "Aucune connexion vers Internet"),
