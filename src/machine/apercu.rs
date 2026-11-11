@@ -889,7 +889,14 @@ mod tests {
         // registre, n'offre rien et n'est jamais relancée.
         assert_eq!(gestes_offerts(&[constat("LNX-MAJ-001", "a", k())]), vec![None]);
         let j = Jeton::de("LNX-MAJ-001", "LNX-MAJ-001|a");
-        assert_eq!(relire(&j).err(), Some(Refus::EcritAilleurs));
+        // Hors de Linux, la règle n'est pas au registre de ce système : refusée comme disparue, rien n'est relancé non
+        // plus.
+        let refus = if cfg!(target_os = "linux") {
+            Refus::EcritAilleurs
+        } else {
+            Refus::Disparu
+        };
+        assert_eq!(relire(&j).err(), Some(refus));
         assert!(hors_apercu("WIN-MAJ-002") && hors_apercu("LNX-SSH-002") && hors_apercu("COM-NAV-001"));
         // Une règle permise offre son geste dans le vrai registre.
         let permise = constat("LNX-SSH-003", "~/.ssh", k());
@@ -998,8 +1005,11 @@ mod tests {
     /// vrai registre ne relance qu'elles.
     #[test]
     fn la_liste_permise_ne_nomme_que_des_regles_du_registre() {
+        // Les règles de Linux ne sont compilées que pour Linux : ailleurs, le registre ne les a pas (vu sous Wine).
+        #[cfg(target_os = "linux")]
         let linux: Vec<&str> = regles::regles(regles::Os::Linux).iter().map(|r| r.id).collect();
         for id in RELUES_SANS_PROGRAMME {
+            #[cfg(target_os = "linux")]
             assert!(linux.contains(id), "{id} n'est pas une règle de Linux");
             assert!(
                 !crate::autotest::va_sur_internet(id),

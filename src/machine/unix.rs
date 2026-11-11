@@ -855,7 +855,10 @@ mod tests_liens {
         std::fs::create_dir_all(maison.join(".ssh")).unwrap();
         std::fs::write(maison.join(".ssh/id_essai"), "clé inventée\n").unwrap();
         std::fs::write(ailleurs.join("cible"), "x\n").unwrap();
-        std::os::unix::fs::symlink(ailleurs.join("cible"), maison.join(".ssh/id_lien")).unwrap();
+        // Cible relative (les deux dossiers jetables sont voisins) : en absolu, le chemin du dossier jetable peut passer
+        // les 120 signes que le texte garde de la cible, et « cible » y serait coupé.
+        let vers = Path::new("../..").join(ailleurs.file_name().unwrap()).join("cible");
+        std::os::unix::fs::symlink(&vers, maison.join(".ssh/id_lien")).unwrap();
         std::os::unix::fs::symlink(&*ailleurs, maison.join("d")).unwrap();
         crate::essais::tube_nomme(&maison.join("tube")).unwrap();
         assert_eq!(hors_correction(&maison, Path::new(""), Attendu::Dossier), None);
