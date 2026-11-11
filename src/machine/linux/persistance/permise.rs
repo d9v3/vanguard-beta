@@ -825,6 +825,7 @@ fn lancee(s: &Systeme, mots: &[String], profondeur: u32) -> Result<(), Ecart> {
         "uwsm" => uwsm(s, args, p),
         "xdg-terminal-exec" => terminal_xdg(s, args, p),
         "hyprctl" => hyprctl(s, args),
+        "rsync" => rsync(s, args),
         "flatpak" => flatpak(s, args),
         "systemctl" => systemctl(s, args),
         "dbus-update-activation-environment" => dbus_update(s, args),
@@ -842,6 +843,33 @@ fn lancee(s: &Systeme, mots: &[String], profondeur: u32) -> Result<(), Ecart> {
             None => ordinaire(s, args),
         },
     }
+}
+
+/// « rsync » en copie locale, la forme de la sauvegarde de Vanguard : les seules options qui ne lancent rien et ne
+/// lisent aucun fichier de règles (« -a », « -rt », « --no-specials », « --no-devices », « --modify-window=N »,
+/// « --exclude=motif »), puis des chemins absolus (un « hôte:chemin » passerait par un shell distant). Toute autre
+/// option (« -e », « --rsh », « --rsync-path », « --filter »…) : lanceur, comme avant.
+fn rsync(s: &Systeme, args: &[String]) -> Result<(), Ecart> {
+    for a in args {
+        if let Some(n) = a.strip_prefix("--modify-window=") {
+            if n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(Ecart::Lanceur);
+            }
+            continue;
+        }
+        if let Some(motif) = a.strip_prefix("--exclude=") {
+            argument_sur(s, motif)?;
+            continue;
+        }
+        if ["-a", "-rt", "--no-specials", "--no-devices"].contains(&a.as_str()) {
+            continue;
+        }
+        if !a.starts_with('/') {
+            return Err(Ecart::Lanceur);
+        }
+        argument_sur(s, a)?;
+    }
+    Ok(())
 }
 
 /// Les arguments d'un programme ordinaire : sans chemin dangereux, sans programme ni ligne de commande en argument
@@ -1700,6 +1728,30 @@ const CLES_UNIT: &[&str] = &[
     "SurviveFinalKillSignal",
 ];
 
+/// Les clés de ressources (toutes dans `CLES_SERVICE`) dont la valeur peut être un pourcentage, que systemd lit sans
+/// développer de code « % ».
+const POURCENTS: &[&str] = &[
+    "CPUQuota",
+    "MemoryHigh",
+    "MemoryMax",
+    "MemoryLow",
+    "MemoryMin",
+    "MemorySwapMax",
+    "MemoryZSwapMax",
+    "TasksMax",
+    "ManagedOOMMemoryPressureLimit",
+];
+
+/// Un pourcentage écrit exactement : des chiffres, une partie décimale facultative, puis « % » (« 20% », « 12.5% »).
+fn pourcentage(valeur: &str) -> bool {
+    let Some(nombre) = valeur.strip_suffix('%') else {
+        return false;
+    };
+    let (entier, decimales) = nombre.split_once('.').unwrap_or((nombre, "0"));
+    let chiffres = |t: &str| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit());
+    chiffres(entier) && chiffres(decimales)
+}
+
 /// Les clés d'exécution et de bornes communes à `[Service]`, `[Socket]` et `[Scope]` reconnues sûres : relance, temps,
 /// signaux, priorité, journal, ressources, durcissement (qui ne fait que retirer des droits), dossiers nommés
 /// (« RuntimeDirectory= » : un nom sous le dossier de systemd), variables vérifiées (`variable_d_unite_sure`).
@@ -2039,6 +2091,16 @@ pub(super) fn directive(s: &Systeme, codes: &Codes, section: Option<&str>, ligne
     };
     if !permise {
         return Err(Ecart::Directive);
+    }
+    // Une limite de ressource en pourcentage (« CPUQuota=20% ») : systemd n'y développe aucun code, le « % » final
+    // est l'unité. La forme exacte seule (chiffres, une décimale facultative, « % ») ; toute autre valeur à « % »
+    // (« CPUQuota=%h ») reste non lue.
+    if POURCENTS.contains(&cle) && valeur.contains('%') {
+        return if pourcentage(valeur) {
+            Ok(())
+        } else {
+            Err(Ecart::Directive)
+        };
     }
     if DEPENDANCES.contains(&cle) {
         for nom in valeur.split_whitespace() {

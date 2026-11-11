@@ -2734,7 +2734,7 @@ pub(crate) fn fichier_unite() -> PathBuf {
 
 /// Le texte de l'unité, dans la langue demandée. Le chemin entre guillemets (un dossier personnel peut contenir une
 /// espace), « % » doublé (spécificateurs de systemd), comme la surveillance.
-fn unite_dans(exe: &str, anglais: bool) -> String {
+pub(crate) fn unite_dans(exe: &str, anglais: bool) -> String {
     let exe = format!("\"{}\"", exe.replace('%', "%%").replace('"', "\\\""));
     // Le durcissement : ce qui garde l'accusé du connecteur dans une unité de l'utilisateur (mesuré une option à la
     // fois puis toutes ensemble). Sans Nice : plus le veilleur est servi tard, plus un programme bref part avant

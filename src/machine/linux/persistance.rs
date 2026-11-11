@@ -7709,6 +7709,167 @@ mod tests {
         m
     }
 
+    /// COMP-3 : les unités que Vanguard pose dans le compte ne lèvent rien, dans les deux langues : veilleur,
+    /// entretien, surveillance (d'aujourd'hui et d'avant), sauvegarde. Le `CPUQuota=20%` du veilleur sortait
+    /// « réglage d'unité non lu » (LNX-PRS-002, Élevé) : le « % » final était pris pour un code de systemd ; le
+    /// « rsync » de la sauvegarde, pour un lanceur. Celles qu'il pose en administrateur (garde, ses listes, isolement,
+    /// ajout d'Ollama) sont à root dans des dossiers à root (`de_root_seul`) : la liste permise ne les juge pas, et
+    /// sous `unshare -r` (identités traduites) cet essai ne saurait le montrer ; elles n'y sont donc pas.
+    #[test]
+    fn les_unites_de_vanguard_ne_levent_rien() {
+        use std::os::unix::fs::PermissionsExt as _;
+        for anglais in [false, true] {
+            let m = Maison::nouvelle(&format!("unites-de-vanguard-{anglais}"));
+            let exe = "/usr/bin/vanguard";
+            for p in ["usr/bin/vanguard", "usr/bin/rsync", "usr/bin/findmnt"] {
+                let f = m.racine.join(p);
+                std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+                std::fs::write(&f, "#!/bin/sh\n").unwrap();
+                std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            std::fs::create_dir_all(m.chemin("Documents")).unwrap();
+            let unites = || {
+                let (es, et) = crate::entretien::unites_systemd(exe);
+                let (ss, st) =
+                    crate::reseau::surveillance::unites_systemd(exe, crate::reseau::surveillance::Reglages::Aujourdhui);
+                let (_, st_avant) =
+                    crate::reseau::surveillance::unites_systemd(exe, crate::reseau::surveillance::Reglages::DAvant);
+                let (svt, svs) = crate::sauvegarde::unites(
+                    Path::new("/usr/bin/rsync"),
+                    Some(Path::new("/usr/bin/findmnt")),
+                    Some("1234-ABCD"),
+                    Path::new("/run/media/alice/Cle"),
+                    Path::new("/run/media/alice/Cle/Sauvegarde-Vanguard/poste"),
+                    &[std::path::PathBuf::from("/home/alice/Documents")],
+                    false,
+                )
+                .unwrap();
+                let compte = vec![
+                    (
+                        crate::machine::linux::veilleur::UNITE.to_string(),
+                        crate::machine::linux::veilleur::unite_dans(exe, anglais),
+                    ),
+                    (format!("{}.service", crate::entretien::NOM), es),
+                    (format!("{}.timer", crate::entretien::NOM), et.to_string()),
+                    (format!("{}.service", crate::reseau::surveillance::NOM), ss),
+                    (format!("{}.timer", crate::reseau::surveillance::NOM), st.to_string()),
+                    ("vanguard-surveillance-avant.timer".to_string(), st_avant.to_string()),
+                    (crate::sauvegarde::TIMER.to_string(), svt),
+                    (crate::sauvegarde::SERVICE.to_string(), svs),
+                ];
+                compte
+            };
+            let compte = if anglais {
+                crate::langue::en_anglais(unites)
+            } else {
+                unites()
+            };
+            assert!(
+                compte[0].1.contains("CPUQuota=20%"),
+                "l'unité du veilleur a changé : revoir cet essai"
+            );
+            for (nom, texte) in &compte {
+                m.ecrire(&format!(".config/systemd/user/{nom}"), texte);
+            }
+            let constats = persistance_dans(
+                &m.racine,
+                &m.chemin(""),
+                |v| (v == "XDG_RUNTIME_DIR").then(|| "/run/user/1000".into()),
+                None,
+                None,
+            );
+            for c in &constats {
+                assert_eq!(c.probleme, None, "anglais {anglais} : {} {:?}", c.regle, c.message);
+            }
+        }
+    }
+
+    /// COMP-3, la forme exacte : un pourcentage de ressource (chiffres, décimale facultative, « % ») se lit ; toute
+    /// autre valeur à « % » d'une clé de ressource reste non lue. Le « rsync » de la sauvegarde se lit ; une option qui
+    /// lance un programme ou une destination distante reste un lanceur.
+    #[test]
+    fn un_pourcentage_de_ressource_et_le_rsync_de_la_sauvegarde_a_la_forme_exacte() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let cas: &[(&str, &str, bool)] = &[
+            ("CPUQuota=20%", "/usr/bin/true", true),
+            ("CPUQuota=12.5%", "/usr/bin/true", true),
+            ("MemoryMax=80%", "/usr/bin/true", true),
+            ("TasksMax=15%", "/usr/bin/true", true),
+            ("ManagedOOMMemoryPressureLimit=60%", "/usr/bin/true", true),
+            ("MemoryMax=256M", "/usr/bin/true", true),
+            ("CPUQuota=%h", "/usr/bin/true", false),
+            ("CPUQuota=20%%", "/usr/bin/true", false),
+            ("CPUQuota=%20", "/usr/bin/true", false),
+            ("CPUQuota=20%h", "/usr/bin/true", false),
+            ("CPUQuota=.5%", "/usr/bin/true", false),
+            ("CPUQuota=5.%", "/usr/bin/true", false),
+            ("CPUQuota=-5%", "/usr/bin/true", false),
+            ("MemoryMax=%t/x%", "/usr/bin/true", false),
+            (
+                "Nice=10",
+                "/usr/bin/rsync -a --no-specials --no-devices --exclude=.cache /home/alice/Documents /run/media/alice/Cle/x/",
+                true,
+            ),
+            (
+                "Nice=10",
+                "/usr/bin/rsync -rt --modify-window=2 /home/alice/Documents /mnt/x/",
+                true,
+            ),
+            (
+                "Nice=10",
+                "/usr/bin/rsync -a -e ssh /home/alice/Documents /mnt/x/",
+                false,
+            ),
+            (
+                "Nice=10",
+                "/usr/bin/rsync -a --rsh=ssh /home/alice/Documents /mnt/x/",
+                false,
+            ),
+            (
+                "Nice=10",
+                "/usr/bin/rsync -a --rsync-path=/tmp/x /home/alice/Documents /mnt/x/",
+                false,
+            ),
+            ("Nice=10", "/usr/bin/rsync -a /home/alice/Documents hote:/x/", false),
+            (
+                "Nice=10",
+                "/usr/bin/rsync -a --filter=merge_/x /home/alice/Documents /mnt/x/",
+                false,
+            ),
+            (
+                "Nice=10",
+                "/usr/bin/rsync -a --modify-window=x /home/alice/Documents /mnt/x/",
+                false,
+            ),
+        ];
+        for (i, (ligne, exec, sain)) in cas.iter().enumerate() {
+            let m = Maison::nouvelle(&format!("pourcentage-{i}"));
+            for p in ["usr/bin/true", "usr/bin/rsync"] {
+                let f = m.racine.join(p);
+                std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+                std::fs::write(&f, "#!/bin/sh\n").unwrap();
+                std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            m.ecrire(
+                ".config/systemd/user/essai.service",
+                &format!("[Unit]\nDescription=essai\n\n[Service]\nExecStart={exec}\n{ligne}\n\n[Install]\nWantedBy=default.target\n"),
+            );
+            let constats = persistance_dans(
+                &m.racine,
+                &m.chemin(""),
+                |v| (v == "XDG_RUNTIME_DIR").then(|| "/run/user/1000".into()),
+                None,
+                None,
+            );
+            let leve: Vec<_> = constats
+                .iter()
+                .filter(|c| c.probleme.is_some())
+                .map(|c| &c.message)
+                .collect();
+            assert_eq!(leve.is_empty(), *sain, "{ligne} / {exec} : {leve:?}");
+        }
+    }
+
     /// Le cas qui a mené à ce lot (valeurs inventées) : une unité de l'utilisateur lance un programme d'un dossier
     /// caché, à corriger soi-même. Elle se déclare normale, montre sa ligne, son fichier et le programme lancé ; le
     /// même état relu au bilan suivant est tu.

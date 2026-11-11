@@ -356,7 +356,7 @@ pub fn activer(oui: bool) {
 
 /// Unités systemd : le 1er du mois à midi (rattrapé au démarrage suivant si l'ordinateur était éteint).
 #[cfg(any(target_os = "linux", test))]
-fn unites_systemd(exe: &str) -> (String, &'static str) {
+pub(crate) fn unites_systemd(exe: &str) -> (String, &'static str) {
     // Chemin entre guillemets (un dossier personnel peut contenir une espace), « % » doublé (spécificateurs systemd).
     let exe = format!("\"{}\"", exe.replace('%', "%%").replace('"', "\\\""));
     (
