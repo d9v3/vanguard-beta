@@ -1413,7 +1413,8 @@ fn un_include_que_vanguard_ne_resout_pas_est_dit_non_lu() {
                     constats.iter().any(|c| {
                         let m = message(c);
                         m.starts_with("Impossible de vérifier")
-                            && m.contains(" non lu : motif d'inclusion non interprété (~/.ssh/config, ligne 1)")
+                            && (m.contains(" non lu : motif d'inclusion non interprété (~/.ssh/config, ligne 1)")
+                                || m.contains(" non lu : forme non interprétée (~/.ssh/config, ligne 1)"))
                             && c["verifie"] == false
                     }),
                     "{forme} : {constats:#?}"
@@ -1430,7 +1431,7 @@ fn un_include_que_vanguard_ne_resout_pas_est_dit_non_lu() {
                         constats.iter().any(|c| {
                             let m = message(c);
                             m.contains("Client SSH : échange de clés post-quantique non vérifié")
-                                && m.contains("motif d'inclusion non interprété")
+                                && m.contains(" non interprét")
                         }),
                         "{forme} : client jugé sans le motif : {constats:#?}"
                     );
@@ -1527,6 +1528,271 @@ fn un_include_que_vanguard_ne_resout_pas_est_dit_non_lu() {
             }
         }
     });
+}
+
+/// Une configuration de ~/.ssh/config, ses fichiers (nom, texte), le réglage que `ssh -G` doit appliquer, et ce
+/// que Vanguard en dit (`la_configuration_ssh_est_lue_comme_ssh`).
+#[cfg(unix)]
+type Cas = (String, Vec<(&'static str, &'static str)>, &'static str, Attendu);
+
+/// Ce que Vanguard attend d'une configuration du client SSH (`la_configuration_ssh_est_lue_comme_ssh`).
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug)]
+enum Attendu {
+    /// Le réglage relâché signalé, à ce fichier et cette ligne, sans rien de non lu.
+    Alerte(&'static str),
+    /// Une ligne dite non lue (le bilan ne dit pas « correctes »).
+    NonLu,
+    /// Le client post-quantique n'est pas dit « proposé » (échange affaibli par la configuration, ou non vérifié).
+    PasPropose,
+}
+
+/// Vérification avant 0.94 (S1, S2, S3, S5). Chaque configuration ci-dessous relâche un réglage pour tout serveur :
+/// `ssh -G` (OpenSSH local, dans la maison jetable) le confirme, et Vanguard le signale à sa ligne ou dit la ligne non
+/// lue, jamais « Permissions de ~/.ssh correctes » ni « post-quantique proposé ». S1 : le mot-clé « Include » écrit
+/// autrement. S2 : après un fichier inclus qui finit sous un Host précis, SSH remet la portée d'avant. S3 : réglages
+/// écrits autrement (« = » devant, guillemets, synonymes, octet nul, hôtes larges, Match). S5 : un fichier qui se
+/// réinclut ne donne qu'une alerte, et un chemin long est abrégé.
+#[cfg(unix)]
+#[test]
+fn la_configuration_ssh_est_lue_comme_ssh() {
+    use Attendu::{Alerte, NonLu, PasPropose};
+    use std::os::unix::fs::PermissionsExt;
+    let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
+    let mode = |c: &Path, m: u32| std::fs::set_permissions(c, std::fs::Permissions::from_mode(m)).unwrap();
+    let ssh = ["/usr/bin/ssh", "/bin/ssh", "/usr/local/bin/ssh"]
+        .into_iter()
+        .find(|p| Path::new(p).exists());
+    let relache = "Host *\n    StrictHostKeyChecking no\n";
+    let hotes = "Host routeur\n    User alice\n";
+    let kex = "KexAlgorithms curve25519-sha256";
+    #[rustfmt::skip]
+    let cas: Vec<Cas> = vec![
+        // S1 : le mot-clé « Include » ; le fichier inclus relâche la vérification des serveurs.
+        ("=Include inclus".into(), vec![("inclus", relache)], "stricthostkeychecking", Alerte("~/.ssh/inclus, ligne 2")),
+        (" = Include inclus".into(), vec![("inclus", relache)], "stricthostkeychecking", Alerte("~/.ssh/inclus, ligne 2")),
+        (" =Include inclus".into(), vec![("inclus", relache)], "stricthostkeychecking", Alerte("~/.ssh/inclus, ligne 2")),
+        ("\"Include\"inclus".into(), vec![("inclus", relache)], "stricthostkeychecking", NonLu),
+        ("Inc\"lude\"inclus".into(), vec![("inclus", relache)], "stricthostkeychecking", NonLu),
+        ("=Include inclus".into(), vec![("inclus", "Host *\nKexAlgorithms curve25519-sha256\n")], "kexalgorithms", PasPropose),
+        // S2 : « Include » en tête (fichiers d'hôtes), puis réglages généraux.
+        ("Include hotes\nStrictHostKeyChecking no".into(), vec![("hotes", hotes)], "stricthostkeychecking", Alerte("~/.ssh/config, ligne 2")),
+        ("Include hotes\nForwardAgent yes".into(), vec![("hotes", hotes)], "forwardagent", Alerte("~/.ssh/config, ligne 2")),
+        ("Include config.d/*\nForwardAgent yes".into(), vec![("config.d/routeur", hotes)], "forwardagent", Alerte("~/.ssh/config, ligne 2")),
+        ("Host *\nInclude hotes\nStrictHostKeyChecking no".into(), vec![("hotes", hotes)], "stricthostkeychecking", Alerte("~/.ssh/config, ligne 3")),
+        (format!("Include hotes\n{kex}"), vec![("hotes", hotes)], "kexalgorithms", PasPropose),
+        // S3 : écrits autrement dans le fichier principal.
+        ("=ForwardAgent yes".into(), vec![], "forwardagent", Alerte("~/.ssh/config, ligne 1")),
+        ("ForwardAgent true".into(), vec![], "forwardagent", Alerte("~/.ssh/config, ligne 1")),
+        ("ForwardAgent ~/.ssh/agent.sock".into(), vec![], "forwardagent", Alerte("~/.ssh/config, ligne 1")),
+        ("ForwardAgent yes\0 no".into(), vec![], "forwardagent", Alerte("~/.ssh/config, ligne 1")),
+        ("StrictHostKeyChecking false".into(), vec![], "stricthostkeychecking", Alerte("~/.ssh/config, ligne 1")),
+        ("Host *\0routeur\nForwardAgent yes".into(), vec![], "forwardagent", Alerte("~/.ssh/config, ligne 2")),
+        ("Host **\nForwardAgent yes".into(), vec![], "forwardagent", Alerte("~/.ssh/config, ligne 2")),
+        ("Host ?*\nForwardAgent yes".into(), vec![], "forwardagent", Alerte("~/.ssh/config, ligne 2")),
+        ("Host * !routeur\nForwardAgent yes".into(), vec![], "forwardagent", Alerte("~/.ssh/config, ligne 2")),
+        ("Match final all\nForwardAgent yes".into(), vec![], "forwardagent", Alerte("~/.ssh/config, ligne 2")),
+        ("Match host *\nForwardAgent yes".into(), vec![], "forwardagent", Alerte("~/.ssh/config, ligne 2")),
+        ("\"ForwardAgent\" yes".into(), vec![], "forwardagent", NonLu),
+        ("ForwardAgent 'yes'".into(), vec![], "forwardagent", NonLu),
+        ("ForwardAgent \"ye\"s".into(), vec![], "forwardagent", NonLu),
+        ("Host '*'\nForwardAgent yes".into(), vec![], "forwardagent", NonLu),
+        (format!("={kex}"), vec![], "kexalgorithms", PasPropose),
+        (format!("Host ?*\n{kex}"), vec![], "kexalgorithms", PasPropose),
+        ("\"KexAlgorithms\" curve25519-sha256".into(), vec![], "kexalgorithms", PasPropose),
+    ];
+    let message = |c: &serde_json::Value| c["message"].as_str().unwrap_or_default().to_string();
+    let preparer = |config: &str, fichiers: &[(&str, &str)]| {
+        let maison = maison_jetable();
+        mode(&maison, 0o700);
+        let dossier = maison.join(".ssh");
+        std::fs::create_dir_all(dossier.join("config.d")).unwrap();
+        mode(&dossier, 0o700);
+        std::fs::write(dossier.join("config"), format!("{config}\n")).unwrap();
+        for (nom, texte) in fichiers {
+            std::fs::write(dossier.join(nom), texte).unwrap();
+        }
+        maison
+    };
+    // Le juge : la valeur que SSH applique à un serveur quelconque.
+    let juge = |maison: &Path, cle: &str| -> Option<String> {
+        let sortie = Command::new(ssh?)
+            .env_clear()
+            .env("HOME", maison)
+            .args(["-G", "-F"])
+            .arg(maison.join(".ssh/config"))
+            .arg("serveur-quelconque")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(
+            sortie.status.success(),
+            "ssh -G : {}",
+            String::from_utf8_lossy(&sortie.stderr)
+        );
+        let texte = String::from_utf8_lossy(&sortie.stdout).into_owned();
+        texte
+            .lines()
+            .find_map(|l| l.strip_prefix(&format!("{cle} ")).map(str::to_string))
+    };
+    std::thread::scope(|fils| {
+        let mut attentes = Vec::new();
+        for (config, fichiers, cle, attendu) in &cas {
+            attentes.push(fils.spawn(move || {
+                let maison = preparer(config, fichiers);
+                if let Some(valeur) = juge(&maison, cle) {
+                    let applique = match *cle {
+                        "forwardagent" => valeur != "no",
+                        "stricthostkeychecking" => valeur == "false",
+                        _ => !valeur.contains("mlkem") && !valeur.contains("sntrup"),
+                    };
+                    assert!(applique, "{config:?} : SSH n'applique pas le réglage ({cle} {valeur})");
+                }
+                let constats = constats_du_bilan(programme, &maison, &["Clés SSH", "Post-quantique"]);
+                let non_lu = |c: &serde_json::Value| {
+                    let m = message(c);
+                    m.starts_with("Impossible de vérifier") && m.contains(" non lu") && c["verifie"] == false
+                };
+                // Un réglage relâché ou une ligne non lue : jamais « correctes » ; un échange affaibli ou une ligne
+                // non lue : jamais « proposé ».
+                let kex = *cle == "kexalgorithms";
+                for c in &constats {
+                    let m = message(c);
+                    assert!(kex || !m.contains("~/.ssh correctes"), "{config:?} : sain : {m}");
+                    assert!(
+                        !(kex || matches!(attendu, NonLu)) || !m.contains("est proposé aux serveurs"),
+                        "{config:?} : proposé : {m}"
+                    );
+                }
+                match attendu {
+                    Alerte(ou) => {
+                        assert!(
+                            constats.iter().any(|c| {
+                                let m = message(c);
+                                m.contains(ou)
+                                    && (m.contains("est prêté à tous") || m.contains("sans vérifier qu'il est le bon"))
+                            }),
+                            "{config:?} : pas d'alerte à {ou} : {constats:#?}"
+                        );
+                        assert!(!constats.iter().any(non_lu), "{config:?} : {constats:#?}");
+                    }
+                    NonLu => assert!(constats.iter().any(non_lu), "{config:?} : {constats:#?}"),
+                    PasPropose => {}
+                }
+            }));
+        }
+        // S5 : un fichier qui se réinclut (« Include * » dans ~/.ssh) : une seule alerte pour sa ligne.
+        attentes.push(fils.spawn(move || {
+            let maison = preparer("ForwardAgent yes\nInclude *", &[]);
+            let constats = constats_du_bilan(programme, &maison, &["Clés SSH"]);
+            let alertes = constats
+                .iter()
+                .filter(|c| message(c).contains("est prêté à tous"))
+                .count();
+            assert_eq!(alertes, 1, "{constats:#?}");
+        }));
+        // S5 : un chemin d'inclusion long est abrégé (début…fin) dans le non lu.
+        attentes.push(fils.spawn(move || {
+            let long = vec!["d".repeat(200); 12].join("/");
+            let maison = preparer(&format!("Include {long}/gros"), &[]);
+            let dossier = maison.join(".ssh").join(&long);
+            std::fs::create_dir_all(&dossier).unwrap();
+            std::fs::write(dossier.join("gros"), "# x\n".repeat(300_000)).unwrap();
+            let constats = constats_du_bilan(programme, &maison, &["Clés SSH"]);
+            assert!(
+                constats.iter().any(|c| {
+                    let m = message(c);
+                    m.contains("…") && m.contains("/gros non lu") && m.chars().count() < 600
+                }),
+                "{constats:#?}"
+            );
+        }));
+        for a in attentes {
+            if let Err(e) = a.join() {
+                std::panic::resume_unwind(e);
+            }
+        }
+    });
+    if ssh.is_none() {
+        essais::saute("ssh absent : Vanguard essayé, juge non consulté");
+    }
+}
+
+/// Vérification avant 0.94 (bruit) : des configurations ordinaires (un Host par serveur, IdentityFile, Include
+/// config.d/*, ProxyJump, ProxyCommand avec guillemets, Match host … exec "…", gabarits courants) ne donnent aucun
+/// « non lu » ni aucune alerte, et le client post-quantique y est jugé.
+#[cfg(unix)]
+#[test]
+fn une_configuration_ssh_ordinaire_ne_donne_aucun_non_lu() {
+    use std::os::unix::fs::PermissionsExt;
+    let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
+    let mode = |c: &Path, m: u32| std::fs::set_permissions(c, std::fs::Permissions::from_mode(m)).unwrap();
+    let maison = maison_jetable();
+    mode(&maison, 0o700);
+    let dossier = maison.join(".ssh");
+    std::fs::create_dir_all(dossier.join("config.d")).unwrap();
+    mode(&dossier, 0o700);
+    let config = "\
+# Mes serveurs
+Include config.d/*
+
+Host depot.exemple.org
+    HostName depot.exemple.org
+    User git
+    IdentityFile ~/.ssh/id_ed25519
+    IdentitiesOnly yes
+
+Host bastion
+\tHostName 192.0.2.10
+\tUser alice
+\tPort 2222
+
+Host interne-* !interne-test
+    ProxyJump bastion
+    ForwardAgent no
+
+Host vieux vieux.exemple.org
+    ProxyCommand ssh -W \"%h:%p\" bastion
+    KexAlgorithms +diffie-hellman-group14-sha1
+    HostKeyAlgorithms +ssh-rsa
+    StrictHostKeyChecking=accept-new
+
+Match host labo exec \"test -f ~/.ssh/labo.actif\"
+    StrictHostKeyChecking no
+
+Match originalhost bastion user alice
+    Port 22
+
+Host *
+    ServerAliveInterval 30
+    AddKeysToAgent yes
+    IdentityFile ~/.ssh/id_ed25519
+    UserKnownHostsFile ~/.ssh/known_hosts ~/.ssh/known_hosts2
+    SetEnv LANG=C
+    SendEnv LANG LC_*
+    LocalForward 8080 localhost:80
+    ControlPath ~/.ssh/cm-%r@%h:%p
+    ForwardAgent no
+    StrictHostKeyChecking ask
+";
+    std::fs::write(dossier.join("config"), config).unwrap();
+    std::fs::write(
+        dossier.join("config.d/travail"),
+        "Host travail\n  HostName travail.exemple.org\n  User alice\n  Port=22\n  ForwardAgent yes # confiance\n",
+    )
+    .unwrap();
+    let constats = constats_du_bilan(programme, &maison, &["Clés SSH", "Post-quantique"]);
+    let message = |c: &serde_json::Value| c["message"].as_str().unwrap_or_default().to_string();
+    for c in &constats {
+        let m = message(c);
+        assert!(
+            !m.contains("non lu")
+                && !m.contains("non interprét")
+                && !m.contains("est prêté")
+                && !m.contains("sans vérifier"),
+            "{m}"
+        );
+    }
 }
 
 #[test]
