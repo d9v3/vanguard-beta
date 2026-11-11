@@ -1194,9 +1194,45 @@ fn dire_une_fois(constats: &mut Vec<Constat>, c: Constat) {
     }
 }
 
-/// Un fichier inclus par la configuration de SSH : le nom à montrer, et son texte ou pourquoi il n'a pas été lu.
+/// Un fichier inclus par la configuration de SSH : le nom à montrer, et de quoi le lire, ou pourquoi il ne peut pas
+/// l'être.
 #[cfg(unix)]
-pub(super) type Inclus = (String, Result<String, String>);
+pub(super) type Inclus = (String, Result<Source, String>);
+
+/// Le texte d'un fichier inclus, lu seulement quand le dépliage arrive à lui : lus d'avance, les fichiers d'un motif
+/// tenaient tous en mémoire à chaque niveau d'inclusion (2 Gio mesurés avec 128 fichiers d'un Mio qui s'incluent).
+#[cfg(unix)]
+#[derive(Debug)]
+pub(super) enum Source {
+    Fichier(std::path::PathBuf),
+    /// Un texte donné d'avance : les essais du dépliage.
+    #[cfg(test)]
+    Texte(String),
+}
+
+#[cfg(unix)]
+impl Source {
+    /// Le texte, la raison d'un refus, ou `None` pour un fichier absent ou un dossier : SSH les saute aussi.
+    fn lire(self) -> Option<Result<String, String>> {
+        match self {
+            Source::Fichier(p) => match lire_texte_ssh(&p) {
+                Ok(t) => Some(Ok(t)),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(_) if p.is_dir() => None,
+                Err(e) => Some(Err(e.to_string())),
+            },
+            #[cfg(test)]
+            Source::Texte(t) => Some(Ok(t)),
+        }
+    }
+}
+
+#[cfg(all(unix, test))]
+impl From<&str> for Source {
+    fn from(t: &str) -> Self {
+        Source::Texte(t.to_string())
+    }
+}
 
 /// Le message d'un constat du compte qu'un lien, un fichier d'une autre sorte, un autre propriétaire ou un nom
 /// illisible empêchent de corriger (`unix::hors_correction`) : ce qui est vu, pourquoi rien n'est proposé, et quoi
@@ -1355,10 +1391,17 @@ impl Depliage<'_> {
                     self.depasser(d, ligne_include(), nom, n);
                     return;
                 }
-                for (fichier, contenu) in inclus {
+                for (fichier, source) in inclus {
+                    // Le plafond avant la lecture : le fichier de trop n'est pas lu.
                     let Some(reste) = self.plafond.fichiers.checked_sub(1) else {
                         self.depasser(Depasse::Fichiers, ligne_include(), nom, n);
                         return;
+                    };
+                    let contenu = match source.map(Source::lire) {
+                        Ok(Some(contenu)) => contenu,
+                        // Absent ou dossier : SSH le saute, le plafond n'est pas entamé.
+                        Ok(None) => continue,
+                        Err(raison) => Err(raison),
                     };
                     self.plafond.fichiers = reste;
                     match contenu {
@@ -1500,11 +1543,10 @@ fn fichiers_inclus_ssh(dossier_ssh: &std::path::Path, motif: &str, plafond: &mut
     )
 }
 
-/// Les fichiers visés par un chemin d'inclusion de SSH (jokers « * » et « ? » dans son dernier élément), triés, chacun
-/// lu comme la configuration elle-même (simple fichier, borné : un tube nommé figeait le bilan). Ce qui manque ne
-/// compte pas (SSH le saute aussi), ni un dossier (SSH n'y lit rien) ; tout autre refus de lecture est rendu avec sa
-/// raison, jamais tu. Dans le `plafond` : les entrées de dossier examinées (au-delà, rien de ce motif n'est lu), et au
-/// plus un fichier de plus que ceux qui restent.
+/// Les fichiers visés par un chemin d'inclusion de SSH (jokers « * » et « ? » dans son dernier élément), triés, à lire
+/// chacun comme la configuration elle-même quand le dépliage arrive à lui (`Source::lire` : simple fichier, borné ; un
+/// tube nommé figeait le bilan). Un dossier illisible est rendu avec sa raison, jamais tu. Dans le `plafond` : les
+/// entrées de dossier examinées (au-delà, rien de ce motif n'est rendu).
 #[cfg(unix)]
 pub(super) fn lire_inclus_ssh(
     chemin: &std::path::Path,
@@ -1540,18 +1582,10 @@ pub(super) fn lire_inclus_ssh(
     } else {
         trouves.push(chemin.to_path_buf());
     }
+    // Des chemins seulement, pas leur texte : leur nombre est borné par les entrées examinées (et un par motif sans
+    // joker), et le plafond des fichiers se compte à la lecture (un dossier ou un absent ne l'entame pas).
     trouves.sort();
-    for p in trouves {
-        if inclus.len() > plafond.fichiers {
-            break;
-        }
-        match lire_texte_ssh(&p) {
-            Ok(t) => inclus.push((montrer(&p), Ok(t))),
-            Err(e) if e.kind() == NotFound => {}
-            Err(_) if p.is_dir() => {}
-            Err(e) => inclus.push((montrer(&p), Err(e.to_string()))),
-        }
-    }
+    inclus.extend(trouves.into_iter().map(|p| (montrer(&p), Ok(Source::Fichier(p)))));
     inclus
 }
 
@@ -3266,8 +3300,15 @@ mod tests {
             entrees: 100,
             depasse: None,
         };
+        // Les chemins, triés, pas encore lus : le plafond des fichiers se compte à la lecture, dans le dépliage.
         let lus = lire_inclus_ssh(&dossier.join("a*"), &montrer, &mut plafond);
-        assert_eq!((lus.len(), plafond.entrees, plafond.depasse), (3, 94, None));
+        let noms: Vec<&str> = lus
+            .iter()
+            .map(|(f, _)| f.rsplit('/').next().unwrap_or_default())
+            .collect();
+        assert_eq!(noms, ["a0", "a1", "a2", "a3", "a4", "a5"]);
+        assert!(lus.iter().all(|(_, s)| matches!(s, Ok(Source::Fichier(_)))));
+        assert_eq!((plafond.fichiers, plafond.entrees, plafond.depasse), (2, 94, None));
         // Par le dépliage, dans un dossier de plus de ENTREES_MAX entrées.
         let grand = crate::essais::Jetable::nouveau("jokers-plafond-grand");
         for i in 0..=ENTREES_MAX {
@@ -3552,7 +3593,7 @@ mod tests_au_hasard {
         #[test]
         fn lecteurs_sans_plantage(t in texte()) {
             let _ = reglages_ssh_risques(&t);
-            let lire = |_: &str, _: &mut Plafond| vec![("~/.ssh/inclus".to_string(), Ok(t.clone()))];
+            let lire = |_: &str, _: &mut Plafond| vec![("~/.ssh/inclus".to_string(), Ok(Source::Texte(t.clone())))];
             let d = deplier_config_ssh("~/.ssh/config", &t, &lire);
             let _ = constats_config_ssh(&d.lignes);
             let _ = unix::defauts_sudo(&t);
