@@ -1533,6 +1533,62 @@ fn tue_apres_la_pose_la_ligne_est_interrompue_et_se_remet() {
     assert_eq!(c.mode(".netrc"), 0o644);
 }
 
+/// Campagne B, P-1 : tué pendant une deuxième correction entre chaque fichier scellé et son sceau, rien n'est dit
+/// falsifié ni mis de côté, et la première correction, finie, se remet toujours.
+#[cfg(unix)]
+#[test]
+fn tue_entre_chaque_fichier_et_son_sceau_la_premiere_se_remet() {
+    if !cfg!(debug_assertions) {
+        return essais::saute("arrêt d'essai : binaire de débogage seulement");
+    }
+    for etape in [
+        "sceau:apercus.json",
+        "sceau:reglages.json",
+        "sceau:changements.jsonl",
+        "sceau:changements.lignes",
+    ] {
+        let c = Compte::nouveau();
+        let premiere = c.appliquer_ok("~/.ssh/id_essai");
+        let j = c.jeton("~/.netrc");
+        let accord = c.voir(&j);
+        laisser_lire();
+        let (mut enfant, _) = c.appliquer_jusqu_a(&j, &accord, etape);
+        let _ = enfant.kill();
+        let _ = enfant.wait();
+        let (s, _) = c.lancer(&["changements", "--json"]);
+        let mut mis_de_cote = Vec::new();
+        let mut pile = vec![c.donnees()];
+        while let Some(d) = pile.pop() {
+            for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+                let nom = e.file_name().to_string_lossy().into_owned();
+                if e.file_type().is_ok_and(|t| t.is_dir()) {
+                    pile.push(e.path());
+                } else if nom.contains("falsifie") || nom.contains("illisible") {
+                    mis_de_cote.push(nom);
+                }
+            }
+        }
+        assert!(
+            mis_de_cote.is_empty(),
+            "{etape} : mis de côté {mis_de_cote:?} ; {}",
+            s.erreurs
+        );
+        assert!(!s.erreurs.contains("altér"), "{etape} : {}", s.erreurs);
+        let lignes = c.lignes_de_changements();
+        let ligne = lignes
+            .iter()
+            .find(|l| l["geste"]["jeton"] == premiere.as_str())
+            .unwrap_or_else(|| panic!("{etape} : première plus annulable : {lignes:?}"));
+        assert_eq!(ligne["etat"], "annulable", "{etape} : {lignes:?}");
+        let (code, r) = c.voir_annulation(&premiere);
+        assert_eq!(code, Some(0), "{etape} : {r}");
+        laisser_lire();
+        let (code, r) = c.annuler(&premiere, r["accord"].as_str().unwrap_or_default());
+        assert!(code == Some(0) && r["relu"] == "revenu", "{etape} : {code:?} {r}");
+        assert_eq!(c.mode(".ssh/id_essai"), 0o644, "{etape}");
+    }
+}
+
 /// Correction n° 1 du sous-lot B, points 1 et 4 : tué avant la pose, rien n'est posé ; la ligne se montre
 /// « interrompue » (annulable si la note est écrite, « rien à défaire » sinon), et sa valeur, jamais touchée, n'est
 /// jamais dite « changé depuis ».
