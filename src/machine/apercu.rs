@@ -1436,10 +1436,11 @@ mod tests {
         ];
         for (x, y) in paires {
             let (lx, ly) = (avec(x), avec(y));
-            assert_ne!(lx, ly, "{x:?} / {y:?}");
-            let differentes = lx.iter().zip(&ly).filter(|(a, b)| a != b).count();
-            // Au moins la commande et le relevé.
-            assert!(differentes >= 2, "{x:?} / {y:?} : {differentes}");
+            // La ligne de la commande, puis celle du relevé : chacune diffère d'elle-même (l'accord, qui couvre tous
+            // les champs, diffère toujours ; il ne prouve donc rien sur ce qui est montré).
+            assert!(lx[3].contains("chmod 600") && lx[4].contains("droits:"), "{lx:?}");
+            assert_ne!(lx[3], ly[3], "commande {x:?} / {y:?}");
+            assert_ne!(lx[4], ly[4], "relevé {x:?} / {y:?}");
         }
     }
 

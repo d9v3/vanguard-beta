@@ -1013,6 +1013,17 @@ mod tests {
         assert!(PourquoiPas::Protection.texte().contains("protection"));
     }
 
+    /// Vérification de Fable n° 2, liens L1 : un chemin qui n'est pas UTF-8 n'a pas de geste. Écrit avec perte
+    /// (« � »), il viserait un autre nom.
+    #[cfg(unix)]
+    #[test]
+    fn un_chemin_illisible_n_a_pas_de_geste() {
+        use std::os::unix::ffi::OsStrExt;
+        let illisible = Path::new(std::ffi::OsStr::from_bytes(b"/home/alice/.ssh/id_\xff"));
+        assert!(Geste::droits(illisible).is_none());
+        assert!(Geste::droits(Path::new("/home/alice/.ssh/id_\u{e9}")).is_some());
+    }
+
     /// Aller-retour réel des droits d'un fichier (sans sudo) : relevés, notés, scellés, changés par la correction,
     /// puis, relus du disque comme après un redémarrage, remis et relus en place ; la note part, et une seconde
     /// annulation ne fait plus rien, même si le fichier a changé depuis.
