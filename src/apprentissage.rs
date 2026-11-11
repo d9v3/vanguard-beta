@@ -80,6 +80,9 @@ fn charger() -> Result<Appris, Refus> {
     }
 }
 
+/// Le verrou d'un choix retenu à la fois, de la lecture de la liste à son écriture (`accepter`).
+pub(crate) const VERROU: &str = "appris.lock";
+
 fn enregistrer(appris: &Appris) -> std::io::Result<()> {
     crate::sceau::ecrire(
         crate::sceau::APPRIS,
@@ -269,6 +272,18 @@ pub fn declarer_normale(c: &Constat) -> bool {
                 for l in c.apercu.iter().flatten() {
                     afficher_aligne("         | ", l, 11, GRIS);
                 }
+                // Un contenu lié sans être montré : la personne doit le savoir, et peut comparer l'empreinte.
+                if c.cache {
+                    afficher_aligne(
+                        "         ",
+                        tr!(
+                            "contenu non montré (trop long, ou pas du texte) : seule son empreinte est liée ; sha256sum la donne pour comparer",
+                            "content not shown (too long, or not text): only its fingerprint is bound; sha256sum gives it for comparison"
+                        ),
+                        9,
+                        GRIS,
+                    );
+                }
             }
         }
         afficher_aligne(
@@ -315,7 +330,11 @@ pub fn declarer_normale(c: &Constat) -> bool {
     // lecture, puis rendu, se voit ici).
     if matches!(temoins, Temoins::Releves(_)) {
         let maintenant = crate::machine::temoins_maintenant(c);
-        if maintenant.as_ref().and_then(Temoins::empreinte) != temoins.empreinte() {
+        // Le même contenu ne suffit pas : un fichier échangé le temps de la lecture, puis remis, a changé de date de
+        // changement (ctime) ou de numéro, ce qu'aucun programme du compte ne remet.
+        if maintenant.as_ref().and_then(Temoins::empreinte) != temoins.empreinte()
+            || maintenant.as_ref().and_then(Temoins::vus) != temoins.vus()
+        {
             afficher_aligne(
                 "    ✖ ",
                 tr!(
@@ -340,6 +359,23 @@ fn accepter(c: &Constat) -> bool {
     if declarable(c).is_err() {
         return false;
     }
+    // Tenu de la lecture à l'écriture : deux Vanguard qui retiennent chacun un choix en même temps n'en perdent aucun.
+    let _verrou = match crate::socle::Verrou::prendre(
+        &crate::socle::dossier_local(),
+        VERROU,
+        false,
+        crate::socle::ATTENTE_ECRITURE,
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            trp!(
+                "    ✖ Choix non retenu ({}).",
+                "    ✖ Choice not saved ({}).",
+                e.erreur(VERROU)
+            );
+            return false;
+        }
+    };
     let mut appris = match charger() {
         Ok(a) => a,
         Err(Refus::Illisible) => {
@@ -541,6 +577,15 @@ fn appliquer_avec(
             continue;
         };
         let Some((choix, completer)) = choix_pour(appris, c) else {
+            // Une ligne ajoutée change la clé : le choix d'avant n'est plus le sien, et rien n'est tu. Pour le dire
+            // seulement : si un choix de la même catégorie liait des lignes toutes encore là, l'alerte dit lesquelles
+            // sont nouvelles (campagne E, M-a).
+            if let Some((ajoutees, le)) = lignes_ajoutees(appris, c) {
+                c.message += &trf!(
+                    " (revenue : {ajoutees}, depuis votre choix du {le})",
+                    " (back: {ajoutees}, since your choice on {le})"
+                );
+            }
             continue;
         };
         if !en_vigueur(choix, niveau, jour) {
@@ -567,6 +612,35 @@ fn appliquer_avec(
         n = n.saturating_add(1);
     }
     n
+}
+
+/// Les lignes nouvelles d'une alerte à témoins qu'aucun choix ne tait, quand un choix de sa catégorie liait des
+/// lignes qui y sont toutes encore (trois au plus, nommées), et la date de ce choix. Pour le dire, jamais pour taire.
+fn lignes_ajoutees(appris: &Appris, c: &Constat) -> Option<(String, String)> {
+    use crate::machine::temoins::Marque;
+    let lignes = c.temoins().lignes();
+    if lignes.is_empty() {
+        return None;
+    }
+    let choix = appris.acceptees.values().find(|a| {
+        a.categorie == c.categorie
+            && !a.traces.is_empty()
+            && a.traces.iter().all(|t| lignes.iter().any(|l| l.trace.ligne == t.ligne))
+    })?;
+    let nouvelles: Vec<String> = lignes
+        .iter()
+        .filter(|t| t.marque(&choix.traces) == Marque::Nouvelle)
+        .map(|t| format!("{} {}", t.ou, Marque::Nouvelle.libelle()))
+        .collect();
+    if nouvelles.is_empty() {
+        return None;
+    }
+    let mut dit = nouvelles.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+    let reste = nouvelles.len().saturating_sub(3);
+    if reste > 0 {
+        dit.push_str(&trf!(" et {reste} autre(s)", " and {reste} more"));
+    }
+    Some((dit, date(&choix.le).map(affichee).unwrap_or_default()))
 }
 
 /// Le message d'une alerte sans ce qu'`appliquer_avec` y ajoute quand elle revient : le choix retient l'alerte, pas
@@ -1122,6 +1196,55 @@ mod tests {
         }
     }
 
+    /// Campagne E, M-a : une ligne ajoutée change l'alerte (son texte, sa clé) : aucun choix ne la tait, et elle dit
+    /// laquelle est nouvelle depuis le choix d'avant.
+    #[test]
+    fn ligne_ajoutee_dite() {
+        use crate::machine::temoins::{Temoins, temoin};
+        let manuelle = |message: &str, lignes: &[&str]| {
+            let mut c = constat("Programmes au démarrage", Niveau::Eleve, message);
+            let k = c.correctif.as_mut().unwrap();
+            k.automatique = false;
+            k.temoins = Temoins::de(
+                lignes
+                    .iter()
+                    .enumerate()
+                    .map(|(i, l)| {
+                        Ok(temoin(
+                            &format!("~/a.service:{i}"),
+                            format!("~/a.service:{i}"),
+                            l,
+                            None,
+                            &[],
+                        ))
+                    })
+                    .collect(),
+            );
+            c
+        };
+        let j = jour("2026-11-10");
+        let mut a = Appris::default();
+        retenir(
+            &mut a,
+            &manuelle("Lancé au démarrage : rappel.", &["ExecStart=/opt/rappel"]),
+            Niveau::Eleve,
+            j,
+        );
+        let mut plus = [manuelle(
+            "Lancé au démarrage : rappel ; autre.",
+            &["ExecStart=/opt/rappel", "ExecStartPost=/opt/autre"],
+        )];
+        assert_eq!(appliquer_le(&a, &mut plus, j), 0);
+        assert_eq!(plus[0].probleme, Some(Niveau::Eleve));
+        assert!(
+            plus[0]
+                .message
+                .contains("(revenue : ~/a.service:1 ligne nouvelle ou changée, depuis votre choix du"),
+            "{}",
+            plus[0].message
+        );
+    }
+
     /// Une alerte à corriger soi-même : déclarable seulement si sa règle relève ce que le choix lierait ; tue pour
     /// cet état exact ; jamais par un ancien choix sans état (même clé, même texte), ni quand le relevé est refusé.
     #[test]
@@ -1177,7 +1300,7 @@ mod tests {
         // C8 : revenue, elle dit pourquoi, et quelle ligne a changé.
         assert!(autre[0].message.contains("revenue"), "{}", autre[0].message);
         assert!(
-            autre[0].message.contains("rappel.service:6 nouvelle"),
+            autre[0].message.contains("rappel.service:6 ligne nouvelle ou changée"),
             "{}",
             autre[0].message
         );

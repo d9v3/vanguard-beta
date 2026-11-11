@@ -129,6 +129,7 @@ pub(crate) const INVENTAIRE: &[FichierEtat] = &[
     local(crate::envoi::FILE, "envoi"),
     local(crate::envoi::ETAT, "envoi"),
     local("envoi.lock", "envoi"),
+    local(crate::apprentissage::VERROU, "apprentissage"),
     // La marque d'un « non » au partage, hors de parametres.json : non scellée (voir NON_SCELLES).
     local(crate::parametres::partage::MARQUE_NON, "parametres::partage"),
     scelle(crate::agent::journal::JOURNAL, "agent"),
@@ -545,6 +546,7 @@ mod tests {
         ("agent.lock", "verrou, sans contenu"),
         ("envoi.lock", "verrou, sans contenu"),
         ("parametres.lock", "verrou, sans contenu"),
+        (crate::apprentissage::VERROU, "verrou, sans contenu"),
         (
             crate::parametres::partage::MARQUE_NON,
             "la marque d'un « non » au partage : seule sa présence compte, et elle ne dit jamais que « non » ; forgée, \

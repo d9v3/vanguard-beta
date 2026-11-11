@@ -24,8 +24,13 @@ pub(crate) enum Flou {
     /// Un blanc autre que l'espace et la tabulation, un caractère de contrôle ou invisible : il ne coupe pas les mots
     /// pour systemd ni pour le shell, mais se montrerait comme une espace.
     Blanc,
+    /// Un octet qui n'est pas de l'UTF-8 (lu comme U+FFFD) : le fichier montré ne serait pas celui qui est lancé.
+    Octet,
     /// Un chemin relatif (« ./run », « bin/x ») : relatif à un dossier qu'on ne connaît pas.
     Relatif,
+    /// Un argument qui n'est ni une option ni un chemin absolu, pour un programme qui n'est pas un interpréteur
+    /// connu : un interpréteur renommé (« tclsh8.6 », une copie sous un autre nom) le lirait comme un script.
+    Argument,
     /// Le programme est nommé sans chemin (« python3 ») : cherché dans le PATH au lancement.
     NomNu,
     /// « ~ », « $HOME », ou « %h » hors d'une unité de l'utilisateur : le dossier personnel vient d'une variable
@@ -71,13 +76,27 @@ const INTERDITS: &[char] = &[
 ];
 
 /// Un caractère qui se montrerait comme une espace, ou pas du tout, sans couper les mots pour systemd ni le shell :
-/// blanc Unicode (U+00A0, U+2003…), contrôle (sauf la tabulation), largeur nulle, bidi, trait d'union conditionnel.
+/// blanc Unicode (U+00A0, U+2003…), contrôle (sauf la tabulation), largeur nulle, bidi, trait d'union conditionnel ;
+/// et U+FFFD, que devient à la lecture un octet qui n'est pas de l'UTF-8.
 pub(crate) fn trompeur(c: char) -> bool {
     (c != ' ' && c != '\t' && (c.is_whitespace() || c.is_control()))
+        || c == char::REPLACEMENT_CHARACTER
         || matches!(c,
             '\u{00AD}' | '\u{034F}' | '\u{061C}' | '\u{115F}' | '\u{1160}' | '\u{17B4}' | '\u{17B5}' | '\u{180E}'
             | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{206F}' | '\u{3164}'
             | '\u{FE00}'..='\u{FE0F}' | '\u{FEFF}' | '\u{FFA0}' | '\u{FFF9}'..='\u{FFFB}' | '\u{E0000}'..='\u{E0FFF}')
+}
+
+/// Pourquoi un texte ne se montre pas tel qu'il se lit : un octet qui n'était pas de l'UTF-8, ou un caractère
+/// trompeur (`trompeur`).
+fn caracteres(texte: &str) -> Option<Flou> {
+    if texte.contains(char::REPLACEMENT_CHARACTER) {
+        Some(Flou::Octet)
+    } else if texte.contains(trompeur) {
+        Some(Flou::Blanc)
+    } else {
+        None
+    }
 }
 
 /// Un mot qui désigne un fichier : son chemin absolu ; `Ok(None)` : pas un chemin (option, nom nu) ; `Err` : ambigu.
@@ -103,8 +122,8 @@ fn chemin_du_mot(mot: &str, ctx: Contexte<'_>) -> Result<Option<String>, Flou> {
     if !chemin.starts_with('/') {
         return Err(Flou::Maison);
     }
-    if chemin.contains(trompeur) {
-        return Err(Flou::Blanc);
+    if let Some(f) = caracteres(&chemin) {
+        return Err(f);
     }
     if chemin.contains(INTERDITS) || chemin.contains(['%', '\'', '"']) || chemin.contains("//") {
         return Err(Flou::Syntaxe);
@@ -119,8 +138,8 @@ fn chemin_du_mot(mot: &str, ctx: Contexte<'_>) -> Result<Option<String>, Flou> {
 /// simples ou doubles retirés. `Err` : un caractère trompeur, un guillemet non fermé, ou un mot qui garde un blanc
 /// (« bash -c 'a b' » : un script dans un mot, qu'on ne suit pas).
 fn mots(commande: &str) -> Result<Vec<String>, Flou> {
-    if commande.contains(trompeur) {
-        return Err(Flou::Blanc);
+    if let Some(f) = caracteres(commande) {
+        return Err(f);
     }
     let mut sortie = Vec::new();
     let mut mot = String::new();
@@ -182,15 +201,45 @@ fn valeur(v: &str, ctx: Contexte<'_>, chemins: &mut Vec<String>) -> Result<(), F
 }
 
 /// Un argument du programme (ou du script) : une option, « clé=valeur », un chemin ou une liste de chemins.
-fn argument(mot: &str, ctx: Contexte<'_>, chemins: &mut Vec<String>) -> Result<(), Flou> {
+/// `libre` : l'argument va au script lié d'un interpréteur connu, qui en fait ce que son contenu (lié, montré) dit ;
+/// sinon, le programme lui-même le lit, et un mot qui n'est ni une option ni un chemin absolu est refusé (`Argument`) :
+/// un interpréteur sous un autre nom le prendrait pour un script du dossier courant, jamais lié.
+fn argument(mot: &str, ctx: Contexte<'_>, chemins: &mut Vec<String>, libre: bool) -> Result<(), Flou> {
     if ctx == Contexte::Bureau && matches!(mot, "%f" | "%F" | "%u" | "%U" | "%i" | "%c" | "%k") {
         return Ok(());
+    }
+    if !libre && !mot.starts_with('-') {
+        // « /x/a.jar:/x/b.jar » se lie partie par partie ; « serve », « conf=/x », une adresse : refusés.
+        if mot.contains('=') || mot.contains("://") {
+            return Err(Flou::Argument);
+        }
+        let avant = chemins.len();
+        valeur(mot, ctx, chemins)?;
+        let parties = mot.split([':', ',']).filter(|p| !p.is_empty()).count();
+        // Chaque partie doit être un chemin lié (un double déjà lié compte : « /x /x » ne cache rien).
+        let toutes = mot
+            .split([':', ','])
+            .filter(|p| !p.is_empty())
+            .all(|p| chemin_du_mot(p, ctx).is_ok_and(|c| c.is_some()));
+        if parties == 0 || !toutes {
+            chemins.truncate(avant);
+            return Err(Flou::Argument);
+        }
+        return Ok(());
+    }
+    if !libre && mot == "-" {
+        // « - » : l'entrée standard, qu'un interpréteur renommé lirait comme son script.
+        return Err(Flou::Argument);
     }
     match mot.split_once('=') {
         // « --config=/x », « conf=/x » : la valeur après le premier « = » ; la clé est un nom.
         Some((cle, v)) if !cle.contains('/') => {
             if cle.contains(INTERDITS) || cle.contains('%') {
                 return Err(Flou::Syntaxe);
+            }
+            if !libre && !v.is_empty() {
+                // « --require=module » : la valeur d'une option du programme suit la même règle qu'un mot seul.
+                return argument(v, ctx, chemins, false);
             }
             valeur(v, ctx, chemins)
         }
@@ -311,9 +360,20 @@ const LANCEURS: &[&str] = &[
     "daemonize",
 ];
 
-/// La famille d'un programme, par son nom de fichier ; `None` : pas un interpréteur connu.
+/// La famille d'un programme, par son nom de fichier, aussi suivi d'une version (« tclsh8.6 », « node22 »,
+/// « bash-5.2 ») ; `None` : pas un interpréteur connu.
 fn famille(nom: &str) -> Option<Famille> {
     let nom = nom.strip_suffix(".exe").unwrap_or(nom);
+    famille_du_nom(nom).or_else(|| {
+        let sans = nom.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.' || c == '-' || c == '_');
+        (sans.len() < nom.len())
+            .then_some(sans)
+            .filter(|s| !s.is_empty())
+            .and_then(famille_du_nom)
+    })
+}
+
+fn famille_du_nom(nom: &str) -> Option<Famille> {
     Some(match nom {
         "sh" | "bash" | "rbash" | "dash" | "zsh" | "ksh" | "ksh93" | "mksh" | "pdksh" | "yash" | "ash" | "posh"
         | "fish" | "csh" | "tcsh" | "elvish" | "nu" | "xonsh" | "oil" | "osh" | "ysh" => Famille::Shell,
@@ -454,6 +514,7 @@ fn commande_ou_flou(commande: &str, ctx: Contexte<'_>) -> Result<Vec<String>, Fl
         return Err(Flou::Lanceur);
     }
     let mut reste = args;
+    let mut libre = false;
     if let Some(f) = famille(&nom) {
         let i = place_du_script(f, args)?;
         let Some(script) = args.get(i) else {
@@ -464,9 +525,10 @@ fn commande_ou_flou(commande: &str, ctx: Contexte<'_>) -> Result<Vec<String>, Fl
         };
         ajouter(&mut chemins, c)?;
         reste = args.get(i.saturating_add(1)..).unwrap_or_default();
+        libre = true;
     }
     for mot in reste {
-        argument(mot, ctx, &mut chemins)?;
+        argument(mot, ctx, &mut chemins, libre)?;
     }
     Ok(chemins)
 }
@@ -493,6 +555,9 @@ pub(crate) fn bibliotheques(valeur: &str, liste: Liste) -> Designe {
 
 fn bibliotheques_ou_flou(valeur: &str, liste: Liste) -> Result<Vec<String>, Flou> {
     let separe = |c: char| c == ' ' || c == ':' || (liste == Liste::Fichier && c == '\t');
+    if let Some(f) = caracteres(valeur).filter(|f| *f == Flou::Octet) {
+        return Err(f);
+    }
     if valeur.contains(|c: char| trompeur(c) || (c == '\t' && liste == Liste::Variable)) {
         return Err(Flou::Blanc);
     }
@@ -521,8 +586,8 @@ fn bibliotheques_ou_flou(valeur: &str, liste: Liste) -> Result<Vec<String>, Flou
 /// lecture (« echo $LD_PRELOAD »), deux affectations, une valeur sans guillemets qui garde une espace (le shell la
 /// couperait), ou des guillemets mal fermés : `Indefini`.
 pub(crate) fn prechargement(ligne: &str) -> Designe {
-    if ligne.contains(trompeur) {
-        return Designe::Indefini(Flou::Blanc);
+    if let Some(f) = caracteres(ligne) {
+        return Designe::Indefini(f);
     }
     let noms = ["LD_PRELOAD", "LD_AUDIT"];
     let trouves: Vec<usize> = noms
@@ -602,10 +667,11 @@ mod tests {
             commande("/usr/bin/deno run /opt/s.ts", Contexte::Shell),
             chemins(&["/usr/bin/deno", "/opt/s.ts"])
         );
-        // Une adresse n'est pas un chemin.
+        // Une adresse n'est pas un chemin, et un argument qui n'en est pas un ne se lie pas : le programme inconnu
+        // pourrait le lire comme un fichier, relatif au dossier courant (campagne E, F2).
         assert_eq!(
             commande("/opt/sync https://example.org/x", Contexte::Shell),
-            chemins(&["/opt/sync"])
+            Designe::Indefini(Flou::Argument)
         );
     }
 
@@ -799,6 +865,71 @@ mod tests {
         assert_eq!(
             bibliotheques("/a.so //a.so", Liste::Fichier),
             Designe::Indefini(Flou::Syntaxe)
+        );
+    }
+
+    /// Campagne E, F1 : un octet qui n'est pas de l'UTF-8 (lu comme U+FFFD) ne se lie jamais, d'aucune source.
+    #[test]
+    fn octet_illisible_jamais_lie() {
+        let f = "\u{FFFD}";
+        assert_eq!(commande(&format!("/opt/a{f}"), U), Designe::Indefini(Flou::Octet));
+        assert_eq!(
+            commande(&format!("/usr/bin/bash /opt/r{f}.sh"), Contexte::Shell),
+            Designe::Indefini(Flou::Octet)
+        );
+        assert_eq!(
+            bibliotheques(&format!("/a{f}.so"), Liste::Fichier),
+            Designe::Indefini(Flou::Octet)
+        );
+        assert_eq!(
+            bibliotheques(&format!("/a{f}.so"), Liste::Variable),
+            Designe::Indefini(Flou::Octet)
+        );
+        assert_eq!(
+            prechargement(&format!("export LD_PRELOAD=/a{f}.so")),
+            Designe::Indefini(Flou::Octet)
+        );
+    }
+
+    /// Campagne E, F2 : après un programme inconnu, un mot qui n'est pas un chemin absolu (le programme peut le lire
+    /// comme un fichier relatif au dossier courant) rend la ligne indéfinie ; une option reste permise. Un
+    /// interpréteur au nom suffixé d'une version est reconnu comme tel.
+    #[test]
+    fn arguments_d_un_programme_inconnu() {
+        for c in [
+            "/opt/sync config.ini",
+            "/opt/sync -",
+            "/opt/sync --conf=reglages.ini",
+            "/opt/sync --require=module",
+            "/opt/sync --niveau=3",
+            "/opt/sync a:/opt/b",
+            "/opt/sync /opt/a,b",
+        ] {
+            assert_eq!(commande(c, Contexte::Shell), Designe::Indefini(Flou::Argument), "{c}");
+        }
+        assert_eq!(
+            commande("/opt/sync --nuit -v /opt/donnees --journal=/var/log/a", Contexte::Shell),
+            chemins(&["/opt/sync", "/opt/donnees", "/var/log/a"])
+        );
+        assert_eq!(
+            commande("/opt/sync %h/.cache-x/a", U),
+            chemins(&["/opt/sync", "/home/alice/.cache-x/a"])
+        );
+        // Le script d'un interpréteur lié, ses arguments suivent librement : ils ne sont pas des fichiers lancés.
+        assert_eq!(
+            commande("/usr/bin/bash %h/.cache-x/rappel.sh demain", U),
+            chemins(&["/usr/bin/bash", "/home/alice/.cache-x/rappel.sh"])
+        );
+        for c in [
+            "/usr/bin/tclsh8.6 rappel.tcl",
+            "/usr/bin/node22 serveur.js",
+            "/usr/bin/ruby3.3 a.rb",
+        ] {
+            assert_eq!(commande(c, Contexte::Shell), Designe::Indefini(Flou::Interprete), "{c}");
+        }
+        assert_eq!(
+            commande("/usr/bin/tclsh8.6 /opt/a.tcl", Contexte::Shell),
+            chemins(&["/usr/bin/tclsh8.6", "/opt/a.tcl"])
         );
     }
 }
