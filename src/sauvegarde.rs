@@ -229,9 +229,11 @@ fn verifie_le_disque(service: &str) -> bool {
 /// `destination` : le dossier de cet ordinateur dessus ; `sources` : les dossiers personnels copiés tels quels.
 /// `findmnt` et `uuid` : chaque passage vérifie que le système de fichiers monté à `racine` est bien celui choisi ;
 /// un autre disque au même endroit, et le passage est sauté sans erreur (code 1 de findmnt, `ExecCondition`).
-/// `env` : findmnt et rsync se lancent par « env -i », sans aucune variable (0.95, F-1 et F-2) : ni le HOME que
-/// donnerait le gestionnaire de session (rsync y lirait un autre ~/.popt), ni BLKID_FILE ou LIBMOUNT_* (findmnt
-/// accepterait un autre disque), ni RSYNC_*. `None` : la forme posée jusqu'à la 0.94, encore reconnue au bilan.
+/// `env` : findmnt et rsync se lancent par « env -i », qui leur retire les variables du gestionnaire de session
+/// (0.95, F-1 et F-2) : ni le HOME qu'il donnerait (rsync y lirait un autre ~/.popt), ni BLKID_FILE ou LIBMOUNT_*
+/// (findmnt accepterait un autre disque), ni RSYNC_*. env lui-même les reçoit encore, et le chargeur les lit pour
+/// lui (LD_*, GLIBC_TUNABLES) : celles écrites dans un fichier se jugent au bilan, celles posées en cours de session
+/// non (relecture 0.95, V-3). `None` : la forme posée jusqu'à la 0.94, encore reconnue au bilan.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 #[allow(clippy::too_many_arguments)] // les trois programmes et les trois chemins de l'unité, chacun vérifié
 pub(crate) fn unites(
@@ -1355,6 +1357,24 @@ pub fn annuler() {
 }
 
 /// Menu Données › Sauvegarde automatique.
+/// Le texte de l'écran pour une sauvegarde posée avant la 0.95 (F-1, F-2).
+#[cfg(any(target_os = "linux", test))]
+fn texte_ancienne_forme() -> &'static str {
+    tr!(
+        "Cette sauvegarde a été posée avant la 0.95 : rsync et findmnt y tournent avec les variables de votre session, qu'un programme de votre compte peut changer (HOME, et rsync lit alors un autre ~/.popt). Annulez-la, puis remettez-la en place : Vanguard les lance maintenant par « env -i », qui leur retire ces variables. env lui-même les reçoit encore : celles du chargeur de programmes (LD_*, GLIBC_TUNABLES) écrites dans un fichier sont vérifiées au bilan, celles posées en cours de session (systemctl --user set-environment, uwsm) ne le sont pas.",
+        "This backup was set up before 0.95: rsync and findmnt run there with your session's variables, which a program in your account can change (HOME, and rsync then reads another ~/.popt). Undo it, then set it up again: Vanguard now starts them through \"env -i\", which removes those variables from them. env itself still receives them: the program loader's ones (LD_*, GLIBC_TUNABLES) written in a file are checked by the check, those set during the session (systemctl --user set-environment, uwsm) are not."
+    )
+}
+
+/// Le texte de l'écran pour la forme 0.95 : ce qu'« env -i » ne retire pas et que le bilan ne voit pas (V-3).
+#[cfg(any(target_os = "linux", test))]
+fn texte_limite_de_la_forme() -> &'static str {
+    tr!(
+        "rsync et findmnt se lancent par « env -i », qui leur retire les variables de votre session. env lui-même les reçoit encore : celles du chargeur de programmes (LD_*, GLIBC_TUNABLES) écrites dans un fichier sont vérifiées au bilan, celles posées en cours de session (systemctl --user set-environment, uwsm) ne le sont pas.",
+        "rsync and findmnt start through \"env -i\", which removes your session's variables from them. env itself still receives them: the program loader's ones (LD_*, GLIBC_TUNABLES) written in a file are checked by the check, those set during the session (systemctl --user set-environment, uwsm) are not."
+    )
+}
+
 pub fn menu() {
     println!();
     cadre(
@@ -1402,10 +1422,15 @@ pub fn menu() {
                 {
                     // F-1, F-2 (relecture 0.94) : la forme d'avant la 0.95 lance rsync et findmnt avec les variables
                     // de la session, qu'un programme du compte peut poser (HOME vers un autre ~/.popt…).
-                    mauvais(tr!(
-                        "Cette sauvegarde a été posée avant la 0.95 : rsync et findmnt y tournent avec les variables de votre session, qu'un programme de votre compte peut changer (HOME, et rsync lit alors un autre ~/.popt). Annulez-la, puis remettez-la en place : Vanguard les lance maintenant sans aucune variable (« env -i »).",
-                        "This backup was set up before 0.95: rsync and findmnt run there with your session's variables, which a program in your account can change (HOME, and rsync then reads another ~/.popt). Undo it, then set it up again: Vanguard now starts them without any variable (\"env -i\")."
-                    ));
+                    mauvais(texte_ancienne_forme());
+                } else if service
+                    .as_deref()
+                    .ok()
+                    .and_then(sauvegarde_posee)
+                    .is_some_and(|p| p.env.is_some())
+                {
+                    // V-3 (relecture 0.95) : ce que le bilan ne voit pas de la forme 0.95 se dit.
+                    info(texte_limite_de_la_forme());
                 }
             }
         }
@@ -1725,6 +1750,19 @@ pub fn verifier_sauvegarde() {
 )]
 #[cfg(test)]
 mod tests {
+    /// V-3 (relecture 0.95) : « env -i » vide l'environnement de rsync et de findmnt, pas celui d'env lui-même, que
+    /// le chargeur lit (LD_*, GLIBC_TUNABLES). Le texte ne promet pas « sans aucune variable », et dit ce que le
+    /// bilan ne voit pas : ce qu'un programme pose au gestionnaire en cours de session.
+    #[test]
+    fn le_texte_de_la_forme_0_95_ne_promet_pas_plus_que_le_code() {
+        for texte in [super::texte_ancienne_forme(), super::texte_limite_de_la_forme()] {
+            assert!(
+                !texte.contains("sans aucune variable") && texte.contains("en cours de session"),
+                "texte qui promet trop : {texte}"
+            );
+        }
+    }
+
     use super::*;
 
     /// Déjà Dup appliqué à moitié : une valeur d'avant illisible n'écrit rien ; une écriture qui échoue remet celles

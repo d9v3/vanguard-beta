@@ -3916,7 +3916,9 @@ fn noms_de_l_unite(dossiers: &[std::path::PathBuf], nom: &str) -> Option<Vec<Str
 /// libsmartcols), libcrypto (que rsync charge), et le chargeur de programmes (LD_*, GLIBC_TUNABLES…).
 ///
 /// `vide` : la forme de la 0.95, qui lance rsync et findmnt par « env -i » : seul env garde l'environnement du
-/// gestionnaire, et seul le chargeur le lit pour lui (LD_*, GLIBC_TUNABLES).
+/// gestionnaire, et seul le chargeur le lit pour lui (LD_*, GLIBC_TUNABLES). Seules les variables écrites dans un
+/// fichier se jugent : celles qu'un programme pose au gestionnaire en cours de session (systemctl --user
+/// set-environment, import d'uwsm) ne se voient pas, et le texte de la sauvegarde le dit (relecture 0.95, V-3).
 fn variable_de_la_sauvegarde(nom: &str, vide: bool) -> bool {
     const DEBUTS: [&str; 8] = [
         "LD_",
