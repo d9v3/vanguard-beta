@@ -224,7 +224,9 @@ mod tests {
 
     /// T-4 : l'objet d'une entrée d'autostart du compte part en « ~/… », jamais avec le chemin du dossier personnel
     /// (qui dit le nom du compte) ; l'empreinte reste celle de l'identité entière ; un service ou un chemin hors du
-    /// dossier personnel reste tel quel.
+    /// dossier personnel reste tel quel. Linux seulement : sous Windows, l'identité (« hkcu|Run|nom ») ne porte aucun
+    /// chemin, et le dossier personnel (« C:\users\… ») n'y prend jamais la forme « /… » que l'essai bâtit.
+    #[cfg(target_os = "linux")]
     #[test]
     fn l_objet_ne_dit_pas_le_dossier_personnel() {
         let maison = crate::socle::maison();
