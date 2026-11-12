@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::demarrage::Programme;
+use super::demarrage::{Ecriture, Programme};
 use super::{Categorie, Reglage, Valeur};
 use crate::commande::sh_chaine;
 use crate::machine::defense_eleve::DOSSIER_NOTES;
@@ -1714,7 +1714,7 @@ fn releve_selon(
                 cible: Some("disabled".to_string()),
                 vu: None,
             },
-            ecriture_refusee: ecriture_refusee(&chemin),
+            ecriture: ecriture_refusee(&chemin),
         });
     }
     (l, manques, true)
@@ -1724,7 +1724,8 @@ fn releve_selon(
 /// lancent sur ce bureau (une entrée pour un autre bureau, ou déjà masquée, n'a rien à retirer). Une entrée du compte
 /// qui est un lien n'est pas proposée, ni celle du système qu'elle remplace ; ni aucune dont un dossier du chemin
 /// est un lien ou sort du dossier personnel (`sous_maison::juger_lecture`) : la retirer écrirait à travers lui. Chacune est
-/// dite non vérifiée (T-1, T-3), le dossier refusé une fois pour toutes ses entrées. Rend aussi
+/// dite non vérifiée (T-1, T-3), le dossier refusé une fois pour toutes ses entrées ; celles du système y restent
+/// montrées sans être proposées, une entrée du dossier refusé pouvant les masquer (relecture 0.95, H-2). Rend aussi
 /// les entrées du compte qui ne se lisent pas bornées (plus de 64 Kio, pas en UTF-8) : pas proposées, faute de valeur
 /// d'avant à noter, mais dites (campagne 0.94, C-3).
 fn autostart(compte: &Path, systeme: &[PathBuf], bureau: &str) -> (Vec<Programme>, Vec<String>) {
@@ -1819,17 +1820,16 @@ fn autostart(compte: &Path, systeme: &[PathBuf], bureau: &str) -> (Vec<Programme
                     continue;
                 }
             };
-            if vus.insert(nom.clone())
-                && crate::lenteur::entree_autostart(&texte, bureau).is_some()
-                && sous_maison::juger_lecture(&compte.join(&nom)).is_ok()
-            {
+            if vus.insert(nom.clone()) && crate::lenteur::entree_autostart(&texte, bureau).is_some() {
                 // La copie du compte n'existait pas : elle ne s'écrit que si c'est encore vrai.
-                l.push(programme_autostart(
-                    compte.join(&nom),
-                    &texte,
-                    bureau,
-                    Some("-".to_string()),
-                ));
+                let mut p = programme_autostart(compte.join(&nom), &texte, bureau, Some("-".to_string()));
+                // Le dossier du compte ne se lit pas (un lien vers des dotfiles, refusé) : une entrée à ce nom peut
+                // la masquer sans que Vanguard le voie. Montrée comme `lenteur` la compte, jamais proposée (H-2) ;
+                // le dossier est déjà dit, une fois, dans ce qui n'a pas été vérifié.
+                if sous_maison::juger_lecture(&compte.join(&nom)).is_err() {
+                    p.ecriture = Ecriture::MasquageInconnu;
+                }
+                l.push(p);
             }
         }
     }
@@ -1895,7 +1895,7 @@ fn programme_autostart(chemin: PathBuf, texte: &str, bureau: &str, vu: Option<St
         .map(|(n, _)| n.clone())
         .or_else(|| champ(texte, "Name").map(str::to_string))
         .unwrap_or_else(|| Changement::nom_demarrage(&chemin.display().to_string()));
-    let ecriture_refusee = ecriture_refusee(&chemin);
+    let ecriture = ecriture_refusee(&chemin);
     Programme {
         nom,
         commande: champ(texte, "Exec").unwrap_or_default().to_string(),
@@ -1908,7 +1908,7 @@ fn programme_autostart(chemin: PathBuf, texte: &str, bureau: &str, vu: Option<St
             cible: Some(format!("+{}", masquer(texte))),
             vu,
         },
-        ecriture_refusee,
+        ecriture,
     }
 }
 
@@ -1916,8 +1916,8 @@ fn programme_autostart(chemin: PathBuf, texte: &str, bureau: &str, vu: Option<St
 /// celle de lecture l'a laissée passer, donc pour les droits d'un dossier du chemin, que le groupe ou les autres
 /// peuvent modifier ou qui porte un bit spécial (relecture 0.95, G-1). Sa phrase entière : le dossier, ses droits et
 /// le remède (H-1 suite).
-fn ecriture_refusee(chemin: &Path) -> Option<String> {
-    sous_maison::juger(chemin).err().map(|e| e.to_string())
+fn ecriture_refusee(chemin: &Path) -> Ecriture {
+    sous_maison::juger(chemin).map_or_else(|e| Ecriture::Refusee(e.to_string()), |()| Ecriture::Permise)
 }
 
 pub fn apres(_touches: &[&Reglage]) {}
@@ -3278,10 +3278,13 @@ mod tests {
         assert_eq!(noms, ["Note", "Horloge"]);
         // Le dossier d'autostart du compte lui-même est un lien (vers des dotfiles, ou hors du dossier personnel) :
         // ni ses entrées ni les copies des entrées du système ne sont proposées, rien ne s'écrirait à travers lui.
+        // Celles du système restent montrées, chacune « masquage inconnu » (relecture 0.95, H-2) : jamais proposées.
         let lien = base.join("compte-lien");
         std::os::unix::fs::symlink(&ailleurs, &lien).unwrap();
         let (l, manques) = autostart(&lien, std::slice::from_ref(&systeme), "Hyprland");
-        assert!(l.is_empty());
+        let vus: Vec<(&str, &Ecriture)> = l.iter().map(|p| (p.nom.as_str(), &p.ecriture)).collect();
+        // Synchro a une entrée à son nom dans le dossier lié : masquée, pas montrée.
+        assert_eq!(vus, [("Horloge", &Ecriture::MasquageInconnu)]);
         // T-1 : le dossier refusé est dit une fois, comme non vérifié, et pas chacune de ses entrées.
         assert_eq!(manques.len(), 1, "{manques:?}");
         assert!(

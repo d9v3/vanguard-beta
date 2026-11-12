@@ -31,10 +31,24 @@ pub struct Programme {
     pub bureau: bool,
     /// Ce qui le retire, et le remet.
     pub changement: systeme::Changement,
-    /// Pourquoi Vanguard n'y écrit pas, s'il ne le peut pas (un dossier du chemin modifiable par d'autres comptes) :
-    /// lu et montré, jamais proposé (relecture 0.95, G-1). La phrase entière de la garde, qui nomme le dossier et le
-    /// remède (relecture 0.95, H-1 suite) : dite une fois par dossier (`avis_d_ecriture`).
-    pub ecriture_refusee: Option<String>,
+    /// Vanguard peut-il y écrire ? Sinon, lu et montré, jamais proposé.
+    pub ecriture: Ecriture,
+}
+
+/// Ce que Vanguard peut écrire pour retirer ou remettre un programme. Sous Windows, toujours permise.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub enum Ecriture {
+    /// Rien ne l'empêche (la garde juge encore au moment d'écrire).
+    #[default]
+    Permise,
+    /// Un dossier du chemin est modifiable par d'autres comptes ou porte un bit spécial (relecture 0.95, G-1) : la
+    /// phrase entière de la garde, qui nomme le dossier et le remède (H-1 suite), dite une fois par dossier
+    /// (`avis_d_ecriture`).
+    Refusee(String),
+    /// Entrée du système dont la copie du compte, qui la masquerait, ne se lit pas (le dossier du compte est un lien
+    /// vers des dotfiles, ou refusé) : montrée comme `lenteur` la compte, dite non vérifiée (H-2).
+    MasquageInconnu,
 }
 
 /// Le réglage qui retire ce programme du démarrage. Le nom, écrit par qui a posé l'entrée, est montré rendu
@@ -212,8 +226,17 @@ pub(crate) enum Garde {
 /// Sous Linux : le programme lancé (premier mot de la commande) et le paquet qui le fournit. Sous Windows :
 /// `a_garder`, comme avant.
 fn classer(p: &Programme) -> Garde {
-    if p.ecriture_refusee.is_some() {
-        return Garde::Garder(ecriture_refusee());
+    match p.ecriture {
+        Ecriture::Permise => {}
+        Ecriture::Refusee(_) => return Garde::Garder(ecriture_refusee()),
+        Ecriture::MasquageInconnu => {
+            return Garde::Garder(tr!(
+                "non vérifiée : peut être masquée dans le dossier du compte (lié ou refusé), que Vanguard ne lit pas ni \
+             n'écrit",
+                "not verified: may be hidden in the account folder (linked or refused), which Vanguard neither reads nor \
+             writes"
+            ));
+        }
     }
     #[cfg(target_os = "linux")]
     {
@@ -400,7 +423,10 @@ fn ecriture_refusee() -> &'static str {
 /// (relecture 0.95, H-1 suite).
 fn avis_d_ecriture(programmes: &[Programme]) -> Vec<String> {
     let mut avis: Vec<String> = Vec::new();
-    for raison in programmes.iter().filter_map(|p| p.ecriture_refusee.as_ref()) {
+    for raison in programmes.iter().filter_map(|p| match &p.ecriture {
+        Ecriture::Refusee(r) => Some(r),
+        Ecriture::Permise | Ecriture::MasquageInconnu => None,
+    }) {
         if !avis.contains(raison) {
             avis.push(raison.clone());
         }
@@ -790,15 +816,13 @@ fn a_retirer_nomme(
     };
     let nom = Some(affichable(&p.nom));
     let garde = if p.actif { classer(&p) } else { Garde::Ordinaire };
-    let issue = match (p.actif, garde) {
-        (false, _) => Err(Refus::NeSeLancePas),
-        (true, Garde::Garder(_)) if p.ecriture_refusee.is_some() => {
-            Err(Refus::Ecriture(p.ecriture_refusee.clone().unwrap_or_default()))
-        }
-        (true, Garde::Garder(raison)) => Err(Refus::AGarder(raison)),
-        (true, Garde::PareFeu) => Err(Refus::PareFeu),
-        (true, Garde::Ordinaire) if !p.changement.cible_relisible() => Err(Refus::TropGrosse),
-        (true, Garde::Ordinaire) => reglage(&p.nom, p.changement).ok_or(Refus::Inconnue),
+    let issue = match (p.actif, garde, &p.ecriture) {
+        (false, _, _) => Err(Refus::NeSeLancePas),
+        (true, Garde::Garder(_), Ecriture::Refusee(raison)) => Err(Refus::Ecriture(raison.clone())),
+        (true, Garde::Garder(raison), _) => Err(Refus::AGarder(raison)),
+        (true, Garde::PareFeu, _) => Err(Refus::PareFeu),
+        (true, Garde::Ordinaire, _) if !p.changement.cible_relisible() => Err(Refus::TropGrosse),
+        (true, Garde::Ordinaire, _) => reglage(&p.nom, p.changement).ok_or(Refus::Inconnue),
     };
     (nom, issue)
 }
@@ -1552,7 +1576,7 @@ mod tests {
                 cible: Some("disabled".to_string()),
                 vu: None,
             },
-            ecriture_refusee: None,
+            ecriture: Ecriture::Permise,
         };
         let mut h = Historique::default();
         h.reglages.insert(
@@ -1606,7 +1630,7 @@ mod tests {
                 cible: Some("disabled".into()),
                 vu: None,
             },
-            ecriture_refusee: None,
+            ecriture: Ecriture::Permise,
         };
         let l = lignes(vec![piege], &Historique::default());
         assert_eq!(l[0].nom, "x�]52;c;eA==��[2K�faux�");
@@ -1671,7 +1695,7 @@ mod essais_changer {
                 cible: Some("disabled".to_string()),
                 vu: None,
             },
-            ecriture_refusee: None,
+            ecriture: Ecriture::Permise,
         }
     }
 

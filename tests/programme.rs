@@ -3916,6 +3916,46 @@ mod demarrage_sous_attaque {
         assert_eq!(b.geste("Panneau").map(|g| g.0).as_deref(), Some("retirer"));
     }
 
+    /// Relecture 0.95, H-2. Le dossier d'autostart du compte est un lien (dotfiles) : Vanguard ne le lit pas, mais
+    /// les entrées du système restent montrées (comme `lenteur` les compte), sans bouton et dites non vérifiées (une
+    /// entrée du dossier lié peut les masquer) ; `--retirer` est refusé et n'écrit rien à travers le lien.
+    #[test]
+    fn dossier_du_compte_lie_montre_le_systeme_sans_proposer() {
+        let b = Banc::nouveau("compte-lie");
+        std::fs::remove_dir(&b.autostart).unwrap();
+        let lie = b.maison.join("dotfiles/autostart");
+        std::fs::create_dir_all(&lie).unwrap();
+        std::os::unix::fs::symlink(&lie, &b.autostart).unwrap();
+        let systeme = Path::new(&b.systeme).join("autostart");
+        std::fs::create_dir_all(&systeme).unwrap();
+        std::fs::write(
+            systeme.join("panneau.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Panneau\nExec=/opt/panneau/panneau\n",
+        )
+        .unwrap();
+        let (json, brut) = b.liste();
+        let ligne = json["constats"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(serde_json::Value::to_string)
+            .find(|c| c.contains("Panneau —"))
+            .unwrap_or_else(|| panic!("Panneau pas montré : {brut}"));
+        assert!(ligne.contains("non vérifiée") && ligne.contains("masquée"), "{ligne}");
+        assert!(gestes(&json).is_empty(), "un geste proposé : {brut}");
+        assert!(
+            json["couverture"]["non_verifies"]
+                .to_string()
+                .contains("~/config/autostart"),
+            "le dossier lié n'est pas dit : {brut}"
+        );
+        let (_, issue, raison) = b.changer("--retirer", &empreinte_de(&b.autostart.join("panneau.desktop")));
+        assert_eq!(issue, "refuse", "{raison}");
+        assert_eq!(std::fs::read_dir(&lie).unwrap().count(), 0, "écrit à travers le lien");
+        let dit = espaces_unis(&b.lancer(&["lenteur"]).texte);
+        assert!(dit.contains("Panneau"), "{dit}");
+    }
+
     /// Relecture 0.95, G-6. Après un changement de XDG_CONFIG_HOME, la note d'un programme retiré ne se rebâtit plus
     /// (son entrée n'est plus sous le dossier d'autostart du compte) : `demarrage --json` le dit en le nommant, au
     /// lieu de le faire disparaître sans un mot ; l'entrée reste retirée, rien n'est écrit.
