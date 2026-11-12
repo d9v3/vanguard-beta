@@ -12,7 +12,8 @@
 # celui de la CI (.github/workflows/ci.yml) : le même jugement ici et là-bas.
 #   outils/failles-programmes.sh <programme>...
 #   outils/failles-programmes.sh --outil   cargo-audit seulement (présent, version de la CI), avant une compilation
-#   outils/failles-programmes.sh --depot   Cargo.lock du dépôt et celui de la fenêtre, jugés de même (étape « failles connues » de
+#   outils/failles-programmes.sh --depot   Cargo.lock du dépôt, de la fenêtre et des crates à part (fuzz, extensions,
+#                                          preuves Kani), jugés de même (étape « failles connues » de
 #                                          outils/verifier.sh, que la CI lance aussi chaque nuit) : code 77 sans
 #                                          cargo-audit ou sans Internet, où une base pas à jour dirait vert à tort
 # Lancé par outils/deployer.sh (après chaque compilation), par outils/publier-version.sh sur les deux programmes qu'il
@@ -57,6 +58,11 @@ OPTIONS=(--color never --deny unmaintained --deny unsound)
 # que la fenêtre ne prend pas sous Linux, fenetre/Cargo.toml). Leur avis n'est écarté ici que si `cargo tree` dit,
 # pour chacune des deux cibles, que la bibliothèque n'y est pas ; cargo deny, cible par cible, les refuse sinon.
 OPTIONS_FENETRE=("${OPTIONS[@]}")
+# Les crates à part, chacune avec son Cargo.lock : le banc de fuzzing (fuzz/deny.toml), la bibliothèque des
+# extensions et l'exemple en Rust (extensions/deny.toml), les preuves Kani (outils/preuves). Aucune exception
+# (ignore = [] dans leurs deny.toml) : celles de Vanguard, venues de YARA-X, ne les couvrent pas.
+OPTIONS_A_PART=("${OPTIONS[@]}")
+A_PART=(fuzz/Cargo.lock extensions/sdk/Cargo.lock extensions/exemples/rust-exemple/Cargo.lock outils/preuves/Cargo.lock)
 HORS_CIBLES=(RUSTSEC-2026-0370:zvariant RUSTSEC-2026-0371:zbus_names RUSTSEC-2026-0372:zvariant_derive)
 # Les exceptions de deny.toml, par leur identifiant RustSec (outils/exceptions-rustsec.py, qui les donne aussi à
 # outils/verifier.sh) ; une exception d'une autre forme y est refusée plutôt que perdue en route.
@@ -111,6 +117,10 @@ if [[ $1 == --depot ]]; then
   done
   SORTIE+=$'\n'"fenetre/Cargo.lock :"$'\n'$(cd "$TRAVAIL" && cargo-audit audit "${OPTIONS_FENETRE[@]}" \
     --file "$RACINE/fenetre/Cargo.lock" 2>&1) || CODE=1
+  for verrou in "${A_PART[@]}"; do
+    SORTIE+=$'\n'"$verrou :"$'\n'$(cd "$TRAVAIL" && cargo-audit audit "${OPTIONS_A_PART[@]}" \
+      --file "$RACINE/$verrou" 2>&1) || CODE=1
+  done
   printf '%s\n' "$SORTIE"
   # cargo audit n'a pas d'option pour refuser une « notice » : comptée ici (une version retirée de crates.io reste un
   # simple avertissement).

@@ -22,6 +22,8 @@
 #   8. Les relectures de cargo vet : un Cargo.lock ou un supply-chain/ changé pendant l'étape la fait échouer (la
 #      garde lue dans verifier.sh, l'étape remplacée par une fausse, dépôt jetable).
 #   9. Les dépendances (cargo deny) hors ligne : sautée avec sa raison, jamais un vert ; un refus reste un échec.
+#  10. Le second avis (cargo audit, failles-programmes.sh --depot) : chaque Cargo.lock suivi par git est lu, les
+#      crates à part sans les exceptions de Vanguard ; une faille dans l'une fait échouer (faux cargo-audit).
 # Chaque essai ne lance que des étapes de quelques secondes, sans Internet ni compilation.
 # Lancé par outils/verifier.sh.
 #   outils/essais-verifier.sh
@@ -268,6 +270,39 @@ deny 1 1 base
   grep -q -- '--offline' "$faux/appels" &&
   ok "dépendances hors ligne : sautée avec sa raison, jamais un vert ; un refus reste un échec" ||
   ko "dépendances hors ligne (en ligne $deny_en_ligne, base $deny_base, sans base $deny_aucune, refus $CODE) : $raison_base"
+rm -rf "$faux"
+
+# Le second avis (cargo audit, failles-programmes.sh --depot) lit chaque Cargo.lock du dépôt, crates à part comprises
+# (fuzz, extensions, preuves Kani), celles-ci sans les exceptions de Vanguard ; une faille dans l'une fait échouer.
+# cargo-audit, curl et cargo remplacés par des faux : le premier note ses arguments, refuse le verrou écrit dans
+# « refuse ».
+faux=$(mktemp -d "$HOME/.cache/vanguard-dev/essai-audit.XXXX")
+version=$(sed -n 's/.*cargo-audit@\([0-9][0-9.]*\).*/\1/p' .github/workflows/ci.yml | head -1)
+cat >"$faux/cargo-audit" <<FAUX
+#!/usr/bin/env bash
+[[ \$1 == --version ]] && { echo "cargo-audit $version"; exit 0; }
+echo "\$*" >>"$faux/appels"
+[[ -s "$faux/refuse" && "\$*" == *"\$(cat "$faux/refuse")"* ]] && exit 1
+exit 0
+FAUX
+printf '#!/bin/sh\nexit 0\n' >"$faux/curl"
+printf '#!/bin/sh\n[ "$1" = tree ] || exit 9\n' >"$faux/cargo"
+chmod +x "$faux/cargo-audit" "$faux/curl" "$faux/cargo"
+auditer() {
+  : >"$faux/appels"
+  printf '%s' "$1" >"$faux/refuse"
+  SORTIE=$(env -u VANGUARD_HORS_LIGNE PATH="$faux:$PATH" bash outils/failles-programmes.sh --depot 2>&1)
+  CODE=$?
+}
+auditer ""
+audit_vert=$CODE
+lus=$(grep -oE -- '--file [^ ]+' "$faux/appels" | sed "s|--file $PWD/||" | sort | paste -sd' ')
+attendus=$(git ls-files '*Cargo.lock' | sort | paste -sd' ')
+a_part_sans_exception=$(grep -E -- '--file [^ ]*/(fuzz|extensions|outils/preuves)/' "$faux/appels" | grep -c -- '--ignore RUSTSEC')
+auditer "fuzz/Cargo.lock"
+[[ $audit_vert == 0 && -n $attendus && $lus == "$attendus" && $a_part_sans_exception == 0 && $CODE == 1 ]] &&
+  ok "cargo audit : chaque Cargo.lock du dépôt lu, crates à part sans les exceptions de Vanguard, une faille fait échouer" ||
+  ko "cargo audit (vert $audit_vert, refus $CODE, exceptions mal placées $a_part_sans_exception) : lus « $lus », attendus « $attendus » $(tail -n 1 <<<"$SORTIE")"
 rm -rf "$faux"
 
 ((ECHECS == 0)) || { echo "$ECHECS essai(s) en échec."; exit 1; }
