@@ -35,7 +35,8 @@ et message d'un commit ou d'une étiquette), noms séparés par NUL, sans rempla
 Avec --generique (la CI de GitHub) : seulement ce qui se reconnaît à sa forme (dossier personnel d'un compte,
 courriel, SID de Windows), sans rien lire de la machine qui le lance : sur GitHub, son compte « runner » et
 /home/runner ne sont à personne.
-Sort en erreur (code 1) en disant quoi et où dès qu'un détail personnel paraît.
+Sort en erreur (code 1) en disant quoi et où dès qu'un détail personnel paraît ; code 2 quand rien n'est conclu (usage
+faux, git en échec, fichier illisible) : jamais pris pour un vert, ni pour une trouvaille.
 """
 
 import getpass
@@ -535,13 +536,19 @@ DIFF = ("-U0", "--no-color", "--no-ext-diff", "--no-textconv", "--ignore-submodu
 BRUT = ("--raw", "-z", "--no-abbrev", "--ignore-submodules=none", "--no-renames", "--diff-filter=d")
 
 
+def rien_conclu(message):
+    """Rien n'est conclu (usage faux, git en échec, fichier illisible) : code 2, distinct d'une trouvaille (1). Les
+    appelants refusent sur tout code non nul ; les essais, eux, distinguent les deux."""
+    print(f"confidentialité : {message}", file=sys.stderr)
+    sys.exit(2)
+
+
 def git(*args):
     # Octets décodés ici, pas par subprocess (text=True) : il changerait chaque retour chariot en fin de ligne, et la
     # suite d'une ligne ajoutée ne commencerait plus par « + ».
     r = subprocess.run(["git", *GIT_FIXE, *args], capture_output=True)
     if r.returncode:
-        raise SystemExit(f"confidentialité : git {' '.join(args)} a échoué : "
-                         f"{r.stderr.decode('utf-8', 'replace').strip()}")
+        rien_conclu(f"git {' '.join(args)} a échoué : {r.stderr.decode('utf-8', 'replace').strip()}")
     return r.stdout.decode("utf-8", "replace")
 
 
@@ -878,7 +885,7 @@ def depot_entier(detecteur):
                 brut = fichier.read_bytes()
             except OSError as erreur:
                 # Pas lu, donc pas dit sain.
-                raise SystemExit(f"confidentialité : {chemin} est illisible ({erreur.strerror}) : rien n'est conclu.")
+                rien_conclu(f"{chemin} est illisible ({erreur.strerror}) : rien n'est conclu.")
         else:
             continue  # retiré du dossier de travail, ou sous-module : l'historique le lit
         trouves += [(f"{chemin}:{n}", t)
@@ -967,8 +974,13 @@ def main():
         sys.exit(rapport(trouves, "les programmes compilés"))
     if args[:1] == ["--depot"]:
         sys.exit(rapport(depot_entier(detecteur), "le dépôt et son historique"))
-    raise SystemExit(__doc__)
+    print(__doc__, file=sys.stderr)
+    rien_conclu(f"usage : {' '.join(sys.argv[1:]) or '(aucun argument)'} n'est pas une commande connue.")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except OSError as erreur:
+        # Un fichier à lire (message, programme, réglage) qui ne s'ouvre pas : pas lu, donc pas dit sain.
+        rien_conclu(f"{erreur.filename or 'un fichier'} est illisible ({erreur.strerror}) : rien n'est conclu.")

@@ -17,7 +17,9 @@
 #   8. les fichiers tiers (courriels permis, rien d'autre), la plage d'une branche neuve, le message (« # », ciseaux) ;
 #   9. les crochets pre-push et pre-merge-commit, pour de vrai, vers un dépôt distant jetable ;
 #  10. témoins : un fichier propre passe, un courriel dans un nom ordinaire est trouvé ;
-#  11. l'étape de la CI (.github/workflows/ci.yml, lue telle quelle) : le garde-fou lancé est celui de la base, pas
+#  11. les erreurs (usage, git en échec, fichier illisible) : code 2, « rien n'est conclu », jamais pris pour une
+#      trouvaille ; une trouvaille (code 1) n'est comptée que si l'outil dit ce qu'il a trouvé ;
+#  12. l'étape de la CI (.github/workflows/ci.yml, lue telle quelle) : le garde-fou lancé est celui de la base, pas
 #      celui de l'arbre jugé (une demande qui le viderait ne se rend pas verte) ; repli dit si la base n'en a pas.
 set -uo pipefail
 RACINE=$(cd "$(dirname "$0")/.." && pwd)
@@ -49,16 +51,31 @@ juger() {
   local attendu=$1 cas=$2 code
   for mode in --commit envoi plage depot; do
     case $mode in
-      --commit) python3 "$OUTIL" --generique --commit >/dev/null 2>&1; code=$? ;;
+      --commit) garde --generique --commit >/dev/null 2>&1; code=$? ;;
       envoi)
         git commit -q --no-verify -m "$cas" || { echo "✘ $cas : commit impossible"; ECHECS=$((ECHECS + 1)); return; }
-        python3 "$OUTIL" --generique --envoi >/dev/null 2>&1; code=$? ;;
-      plage) python3 "$OUTIL" --generique --plage "$(git rev-parse HEAD~1)" HEAD >/dev/null 2>&1; code=$? ;;
-      depot) python3 "$OUTIL" --generique --depot >/dev/null 2>&1; code=$? ;;
+        garde --generique --envoi >/dev/null 2>&1; code=$? ;;
+      plage) garde --generique --plage "$(git rev-parse HEAD~1)" HEAD >/dev/null 2>&1; code=$? ;;
+      depot) garde --generique --depot >/dev/null 2>&1; code=$? ;;
     esac
     noter "$attendu" "$code" "$cas ($mode)"
   done
 }
+
+# Le garde-fou lancé, sa sortie rendue (sur la sortie d'erreur) : une trouvaille (code 1) seulement s'il dit ce qu'il
+# a trouvé. Un code 1 sans constat (Python qui plante, SystemExit d'un message) devient 3 : jamais pris pour une
+# trouvaille. 2 : rien n'est conclu (usage, git en échec, fichier illisible).
+garde() {
+  local sortie code
+  sortie=$(python3 "$OUTIL" "$@" 2>&1)
+  code=$?
+  [[ -z $sortie ]] || printf '%s\n' "$sortie" >&2
+  ((code == 1)) && ! constat <<<"$sortie" && code=3
+  return "$code"
+}
+constat() { grep -q 'Confidentialité : [0-9]* détail(s) personnel(s) dans'; }
+# Le code d'un crochet de git (git push, git merge) : 1 seulement si le garde-fou y a dit ce qu'il a trouvé.
+refus_dit() { if (($1 == 1)) && ! constat <<<"$SORTIE"; then echo "1 sans constat"; else echo "$1"; fi; }
 
 noter() {
   N=$((N + 1))
@@ -109,14 +126,14 @@ juger 1 "courriel après un retour à la ligne dans un nom"
 depot ancien-nom
 printf 'rien\n' >"$COURRIEL.txt" && git add -- "$COURRIEL.txt" && git commit -q --no-verify -m ajout
 git mv "$COURRIEL.txt" neutre.txt && git commit -q --no-verify -m renommage
-python3 "$OUTIL" --generique --depot >/dev/null 2>&1
+garde --generique --depot >/dev/null 2>&1
 noter 1 $? "courriel dans l'ancien nom d'un fichier renommé (depot)"
 
 # Un binaire : son contenu n'est pas lu, son nom l'est, dans les fichiers suivis comme dans l'historique.
 depot binaire-suivi
 printf 'x\0y' >"$COURRIEL.bin" && git add -- "$COURRIEL.bin" && git commit -q --no-verify -m binaire
 # L'outil sort en 1 (il a trouvé) : sa sortie est gardée d'abord, pour que pipefail ne masque pas la recherche.
-SORTIE=$(python3 "$OUTIL" --generique --depot 2>&1)
+SORTIE=$(garde --generique --depot 2>&1)
 grep -qF -- "  $COURRIEL.bin (nom du fichier)" <<<"$SORTIE"
 noter 0 $? "nom d'un binaire suivi, rapporté par --depot"
 
@@ -124,11 +141,11 @@ noter 0 $? "nom d'un binaire suivi, rapporté par --depot"
 
 # apres <attendu> <cas> : le commit est déjà fait ; --envoi, --plage et --depot.
 apres() {
-  python3 "$OUTIL" --generique --envoi >/dev/null 2>&1
+  garde --generique --envoi >/dev/null 2>&1
   noter "$1" $? "$2 (envoi)"
-  python3 "$OUTIL" --generique --plage "$(git rev-parse HEAD~1)" HEAD >/dev/null 2>&1
+  garde --generique --plage "$(git rev-parse HEAD~1)" HEAD >/dev/null 2>&1
   noter "$1" $? "$2 (plage)"
-  python3 "$OUTIL" --generique --depot >/dev/null 2>&1
+  garde --generique --depot >/dev/null 2>&1
   noter "$1" $? "$2 (depot)"
 }
 
@@ -244,36 +261,36 @@ depot signatures-affichees
 git config log.showSignature true
 printf 'rien\n' >"$COURRIEL.txt" && git add -- "$COURRIEL.txt" && git commit -q --no-verify -m ajout
 git mv "$COURRIEL.txt" neutre.txt && git commit -q --no-verify -m renommage
-python3 "$OUTIL" --generique --depot >/dev/null 2>&1
+garde --generique --depot >/dev/null 2>&1
 noter 1 $? "ancien nom d'un fichier, réglage log.showSignature (depot)"
 
 ZEROS=0000000000000000000000000000000000000000
 depot etiquette
 GIT_COMMITTER_EMAIL=$COURRIEL git tag -a v1 -m version
-python3 "$OUTIL" --generique --depot >/dev/null 2>&1
+garde --generique --depot >/dev/null 2>&1
 noter 1 $? "étiqueteur d'une étiquette annotée (depot)"
-python3 "$OUTIL" --generique --plage "$ZEROS" "$(git rev-parse v1)" refs/tags/v1 >/dev/null 2>&1
+garde --generique --plage "$ZEROS" "$(git rev-parse v1)" refs/tags/v1 >/dev/null 2>&1
 noter 1 $? "étiqueteur d'une étiquette annotée (plage)"
 git tag -d v1 >/dev/null && git tag -a v2 -m "pour $COURRIEL"
-python3 "$OUTIL" --generique --depot >/dev/null 2>&1
+garde --generique --depot >/dev/null 2>&1
 noter 1 $? "message d'une étiquette annotée (depot)"
-python3 "$OUTIL" --generique --plage "$ZEROS" "$(git rev-parse v2)" refs/tags/v2 >/dev/null 2>&1
+garde --generique --plage "$ZEROS" "$(git rev-parse v2)" refs/tags/v2 >/dev/null 2>&1
 noter 1 $? "message d'une étiquette annotée (plage)"
 git tag -d v2 >/dev/null && git tag -a v3 -m version
-python3 "$OUTIL" --generique --plage "$ZEROS" "$(git rev-parse v3)" refs/tags/v3 >/dev/null 2>&1
+garde --generique --plage "$ZEROS" "$(git rev-parse v3)" refs/tags/v3 >/dev/null 2>&1
 noter 0 $? "témoin : une étiquette annotée propre passe (plage)"
 
 depot noms-de-refs
 git branch "travail/$COURRIEL"
-python3 "$OUTIL" --generique --depot >/dev/null 2>&1
+garde --generique --depot >/dev/null 2>&1
 noter 1 $? "courriel dans un nom de branche (depot)"
-python3 "$OUTIL" --generique --plage "$(git rev-parse HEAD)" HEAD "refs/heads/travail/$COURRIEL" >/dev/null 2>&1
+garde --generique --plage "$(git rev-parse HEAD)" HEAD "refs/heads/travail/$COURRIEL" >/dev/null 2>&1
 noter 1 $? "courriel dans un nom de branche (plage)"
 git checkout -q "travail/$COURRIEL"
-python3 "$OUTIL" --generique --envoi >/dev/null 2>&1
+garde --generique --envoi >/dev/null 2>&1
 noter 1 $? "courriel dans le nom de la branche en cours (envoi)"
 git checkout -q master && git branch -q -D "travail/$COURRIEL" && git tag "pour-$COURRIEL"
-python3 "$OUTIL" --generique --depot >/dev/null 2>&1
+garde --generique --depot >/dev/null 2>&1
 noter 1 $? "courriel dans un nom d'étiquette (depot)"
 
 # Une étiquette posée sur un arbre, sans commit : aucun diff ne montre ses fichiers.
@@ -281,9 +298,9 @@ depot etiquette-sur-arbre
 printf 'rien\n' >"$COURRIEL.txt" && git add -- "$COURRIEL.txt"
 ARBRE=$(git write-tree) && git rm -q --cached -- "$COURRIEL.txt" && rm -- "$COURRIEL.txt"
 git tag -a arbre -m arbre "$ARBRE"
-python3 "$OUTIL" --generique --depot >/dev/null 2>&1
+garde --generique --depot >/dev/null 2>&1
 noter 1 $? "nom de fichier dans un arbre étiqueté (depot)"
-python3 "$OUTIL" --generique --plage "$ZEROS" "$(git rev-parse arbre)" refs/tags/arbre >/dev/null 2>&1
+garde --generique --plage "$ZEROS" "$(git rev-parse arbre)" refs/tags/arbre >/dev/null 2>&1
 noter 1 $? "nom de fichier dans un arbre étiqueté (plage)"
 
 # --- Fichiers tiers, plage, message ----------------------------------------------------------------------------------
@@ -316,16 +333,16 @@ git update-ref refs/remotes/origin/master HEAD
 git checkout -q -b a && printf 'contact : %s\n' "$COURRIEL" >a.txt && git add a.txt && git commit -q --no-verify -m a
 git checkout -q -b b && printf 'x\n' >b.txt && git add b.txt && git commit -q --no-verify -m b
 git update-ref refs/remotes/origin/a a && git update-ref refs/remotes/origin/b b
-python3 "$OUTIL" --generique --plage "$ZEROS" "$(git rev-parse a)" >/dev/null 2>&1
+garde --generique --plage "$ZEROS" "$(git rev-parse a)" >/dev/null 2>&1
 noter 1 $? "branche neuve, déjà portée par une autre branche de GitHub (plage)"
-python3 "$OUTIL" --generique --plage "$ZEROS" "$(git rev-parse b)" >/dev/null 2>&1
+garde --generique --plage "$ZEROS" "$(git rev-parse b)" >/dev/null 2>&1
 noter 1 $? "branche neuve par-dessus une branche non relue (plage)"
-python3 "$OUTIL" --generique --plage 1111111111111111111111111111111111111111 "$(git rev-parse a)" >/dev/null 2>&1
+garde --generique --plage 1111111111111111111111111111111111111111 "$(git rev-parse a)" >/dev/null 2>&1
 noter 1 $? "historique réécrit, commit d'avant disparu (plage)"
 # Ce que la branche principale de GitHub a déjà n'est pas relu : une branche neuve et propre par-dessus passe.
 git update-ref refs/remotes/origin/master a
 git checkout -q -b c a && printf 'x\n' >c.txt && git add c.txt && git commit -q -m c
-python3 "$OUTIL" --generique --plage "$ZEROS" "$(git rev-parse c)" >/dev/null 2>&1
+garde --generique --plage "$ZEROS" "$(git rev-parse c)" >/dev/null 2>&1
 noter 0 $? "témoin : branche neuve propre par-dessus la branche principale (plage)"
 
 depot messages
@@ -333,11 +350,11 @@ printf 'sujet\n\n# contact %s\n' "$COURRIEL" >"$TRAVAIL/m1"
 printf 'sujet\n\n# ------------------------ >8 ------------------------\ncontact %s\n' "$COURRIEL" >"$TRAVAIL/m2"
 printf 'sujet\n# ------------------------ >8 ------------------------\n# Ne pas toucher la ligne ci-dessus.\n' >"$TRAVAIL/m3"
 printf 'diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-contact %s\n+rien\n' "$COURRIEL" >>"$TRAVAIL/m3"
-python3 "$OUTIL" --generique --message "$TRAVAIL/m1" >/dev/null 2>&1
+garde --generique --message "$TRAVAIL/m1" >/dev/null 2>&1
 noter 1 $? "message : courriel dans une ligne « # » (gardée par git commit -F)"
-python3 "$OUTIL" --generique --message "$TRAVAIL/m2" >/dev/null 2>&1
+garde --generique --message "$TRAVAIL/m2" >/dev/null 2>&1
 noter 1 $? "message : courriel après la ligne des ciseaux"
-python3 "$OUTIL" --generique --message "$TRAVAIL/m3" >/dev/null 2>&1
+garde --generique --message "$TRAVAIL/m3" >/dev/null 2>&1
 noter 0 $? "témoin : le diff de git commit -v, que git retire toujours"
 
 # --- Trouvés par la campagne d'attaque ---------------------------------------------------------------------------------
@@ -379,7 +396,7 @@ while IFS= read -r forme; do
   N_FORME=$((N_FORME + 1))
   depot "forme-$N_FORME"
   printf '%s\n' "$forme" >a.txt && git add a.txt
-  python3 "$OUTIL" --generique --commit >/dev/null 2>&1
+  garde --generique --commit >/dev/null 2>&1
   noter 1 $? "forme $N_FORME : $(printf '%s' "$forme" | cut -c1-16)…"
 done <<FORMES
 vu par ${COURRIEL}2026-11-10
@@ -403,7 +420,7 @@ N_PERMIS=0
 while IFS= read -r forme; do
   N_PERMIS=$((N_PERMIS + 1))
   printf '%s\n' "$forme" >p$N_PERMIS.txt && git add p$N_PERMIS.txt
-  python3 "$OUTIL" --generique --commit >/dev/null 2>&1
+  garde --generique --commit >/dev/null 2>&1
   noter 0 $? "permis $N_PERMIS : $(printf '%s' "$forme" | cut -c1-24)…"
   git rm -q --cached p$N_PERMIS.txt
 done <<PERMIS
@@ -415,7 +432,7 @@ PERMIS
 
 depot etiquette-imbriquee
 git tag -a dedans -m "pour $COURRIEL" && git tag -a dehors -m propre dedans 2>/dev/null && git tag -d dedans >/dev/null
-python3 "$OUTIL" --generique --plage "$ZEROS" "$(git rev-parse dehors)" refs/tags/dehors >/dev/null 2>&1
+garde --generique --plage "$ZEROS" "$(git rev-parse dehors)" refs/tags/dehors >/dev/null 2>&1
 noter 1 $? "étiquette qui étiquette une étiquette (plage)"
 
 depot signature-fausse
@@ -429,12 +446,12 @@ git update-ref refs/remotes/origin/main/essai HEAD
 printf 'contact : %s\n' "$COURRIEL" >a.txt && git add a.txt && git commit -q --no-verify -m a
 git update-ref refs/remotes/origin/main/essai HEAD
 printf 'x\n' >b.txt && git add b.txt && git commit -q -m b
-python3 "$OUTIL" --generique --plage "$ZEROS" "$(git rev-parse HEAD)" >/dev/null 2>&1
+garde --generique --plage "$ZEROS" "$(git rev-parse HEAD)" >/dev/null 2>&1
 noter 1 $? "« origin/main/essai » n'est pas la branche principale (plage)"
 
 depot lien-illisible
 ln -s /nulle/part/secret lien && git add lien && git commit -q -m lien
-python3 "$OUTIL" --generique --depot >/dev/null 2>&1
+garde --generique --depot >/dev/null 2>&1
 noter 0 $? "témoin : un lien symbolique vers un fichier absent ne fait pas planter (depot)"
 
 # --- Les crochets, pour de vrai ---------------------------------------------------------------------------------------
@@ -461,26 +478,48 @@ noter 0 $? "témoin : pre-push laisse supprimer une branche"
 git checkout -q -b source master && printf 'contact : %s\n' "$COURRIEL" >a.txt && git add a.txt
 git commit -q --no-verify -m source
 git checkout -q -b cueilli master && git cherry-pick source >/dev/null 2>&1
-git push -q origin cueilli >/dev/null 2>&1
-noter 1 $? "pre-push refuse un commit venu de cherry-pick"
+SORTIE=$(git push -q origin cueilli 2>&1)
+noter 1 "$(refus_dit $?)" "pre-push refuse un commit venu de cherry-pick"
 git --git-dir="$D.git" rev-parse -q --verify refs/heads/cueilli >/dev/null 2>&1
 noter 1 $? "rien n'est parti : la branche refusée n'est pas sur le dépôt distant"
-git push -q origin "master:refs/heads/travail/$COURRIEL" >/dev/null 2>&1
-noter 1 $? "pre-push refuse un nom de branche avec un courriel"
+SORTIE=$(git push -q origin "master:refs/heads/travail/$COURRIEL" 2>&1)
+noter 1 "$(refus_dit $?)" "pre-push refuse un nom de branche avec un courriel"
 git checkout -q master && git tag -a v1 -m "pour $COURRIEL"
-git push -q origin v1 >/dev/null 2>&1
-noter 1 $? "pre-push refuse une étiquette au message personnel"
+SORTIE=$(git push -q origin v1 2>&1)
+noter 1 "$(refus_dit $?)" "pre-push refuse une étiquette au message personnel"
 git push -q origin 'master@{0 seconds ago}:refs/heads/datee' >/dev/null 2>&1
 noter 0 $? "témoin : pre-push lit une source qui contient des espaces"
 
 crochets fusionner
 git checkout -q -b a && printf 'contact : %s\n' "$COURRIEL" >a.txt && git add a.txt && git commit -q --no-verify -m a
-git checkout -q master && git merge -q --no-ff -m fusion a >/dev/null 2>&1
-noter 1 $? "pre-merge-commit refuse une fusion qui amène un courriel"
+git checkout -q master && SORTIE=$(git merge -q --no-ff -m fusion a 2>&1)
+noter 1 "$(refus_dit $?)" "pre-merge-commit refuse une fusion qui amène un courriel"
 git merge --abort 2>/dev/null
 git checkout -q -b b master && printf 'x\n' >b.txt && git add b.txt && git commit -q -m b
 git checkout -q master && git merge -q --no-ff -m fusion b >/dev/null 2>&1
 noter 0 $? "témoin : pre-merge-commit laisse passer une fusion propre"
+
+# Rien n'est conclu (code 2) : jamais pris pour une trouvaille (1), ni pour un vert (0).
+depot erreurs
+garde --generique --plage HEAD >/dev/null 2>&1
+noter 2 $? "usage : --plage sans APRÈS"
+garde --generique --tout >/dev/null 2>&1
+noter 2 $? "usage : option inconnue"
+# (Un AVANT inconnu, lui, est un historique réécrit, lu comme tel : voir plus haut.)
+garde --generique --plage HEAD nexistepas >/dev/null 2>&1
+noter 2 $? "git en échec (--plage vers un commit inconnu)"
+garde --generique --message "$TRAVAIL/absent" >/dev/null 2>&1
+noter 2 $? "message de commit illisible"
+garde --generique --binaire "$TRAVAIL/absent" >/dev/null 2>&1
+noter 2 $? "programme illisible"
+printf 'x\n' >ferme.txt && git add ferme.txt && git commit -q --no-verify -m ferme && chmod 000 ferme.txt
+if cat ferme.txt >/dev/null 2>&1; then
+  echo "  (sauté : fichier fermé lisible quand même ici, administrateur ou espace de noms : --depot illisible pas essayé)"
+else
+  garde --generique --depot >/dev/null 2>&1
+  noter 2 $? "fichier suivi illisible (--depot)"
+fi
+chmod 644 ferme.txt
 
 # L'étape de la CI, telle que GitHub la lance (bash -eo pipefail, AVANT, APRES et RUNNER_TEMP dans l'environnement).
 ETAPE_CI=$TRAVAIL/etape-ci.sh
