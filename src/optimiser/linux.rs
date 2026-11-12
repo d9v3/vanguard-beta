@@ -854,6 +854,19 @@ impl Changement {
         }
     }
 
+    /// Vanguard peut-il écrire l'entrée visée ? Une entrée d'autostart : jugée comme celles de la liste
+    /// (`ecriture_refusee`), le dossier et le remède dans la raison. Un service : oui (systemctl l'écrit). Sert aux
+    /// lignes rebâties d'après une note (relecture 0.95, J-3).
+    pub fn ecriture(&self) -> Ecriture {
+        match self {
+            Changement::Demarrage {
+                entree: Entree::Autostart(chemin),
+                ..
+            } => ecriture_refusee(chemin),
+            _ => Ecriture::Permise,
+        }
+    }
+
     /// Ce que le retrait écrirait se relira-t-il, borné comme la note ? Faux seulement pour une entrée d'autostart
     /// dont la copie masquée dépasserait la borne (D-2) : rien n'est alors retiré.
     pub fn cible_relisible(&self) -> bool {

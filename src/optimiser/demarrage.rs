@@ -452,6 +452,15 @@ fn avis_d_ecriture(programmes: &[Programme]) -> Vec<String> {
     avis
 }
 
+/// Ajoute aux notes des dossiers celles des lignes rebâties d'après une note (J-3), chacune une fois.
+fn avis_des_notes(avis: &mut Vec<String>, l: &[Ligne]) {
+    for r in l.iter().filter_map(|x| x.refus.as_ref()) {
+        if !avis.contains(r) {
+            avis.push(r.clone());
+        }
+    }
+}
+
 /// Ce qui n'a pas pu être lu (`releve_demarrage`), tel que la liste du terminal le dit : chaque manque nettoyé pour
 /// l'écran, coupé à la largeur, « ! » devant (un signe que toute console dessine).
 /// La commande d'un remède (`avant_le_remede`) est posée seule sur sa ligne, jamais enveloppée : coupée, elle ne se
@@ -567,6 +576,9 @@ struct Ligne {
     garde: Garde,
     par_vanguard: bool,
     reglage: Reglage,
+    /// La note du dossier où Vanguard n'écrit plus, pour une ligne rebâtie d'après sa note (J-3) ; celles des
+    /// entrées listées viennent de `avis_d_ecriture`.
+    refus: Option<String>,
 }
 
 impl Ligne {
@@ -611,6 +623,7 @@ fn lignes(programmes: Vec<Programme>, h: &Historique) -> Vec<Ligne> {
                 machine: p.machine,
                 par_vanguard,
                 reglage: r,
+                refus: None,
             });
         }
     }
@@ -619,12 +632,22 @@ fn lignes(programmes: Vec<Programme>, h: &Historique) -> Vec<Ligne> {
     for r in notes(h) {
         if !l.iter().any(|x| x.reglage.id == r.id) && r.changements.iter().all(systeme::Changement::entree_lisible) {
             let identite = r.id.strip_prefix(PREFIXE).unwrap_or_default();
+            // Sous un dossier où Vanguard n'écrit plus : pas de « remettre », comme une entrée listée (J-3).
+            let refus = r.changements.iter().find_map(|c| match c.ecriture() {
+                Ecriture::Refusee(raison) => Some(raison),
+                Ecriture::Permise | Ecriture::MasquageInconnu => None,
+            });
             l.push(Ligne {
                 nom: affichable(&systeme::Changement::nom_demarrage(identite)),
                 commande: affichable(identite),
                 actif: false,
                 machine: false,
-                garde: Garde::Ordinaire,
+                garde: if refus.is_some() {
+                    Garde::Garder(ecriture_refusee())
+                } else {
+                    Garde::Ordinaire
+                },
+                refus,
                 par_vanguard: true,
                 reglage: r,
             });
@@ -1127,8 +1150,9 @@ pub fn json() {
         Historique::default()
     });
     manques.extend(notes_perdues(&h));
-    let avis = avis_d_ecriture(&programmes);
+    let mut avis = avis_d_ecriture(&programmes);
     let l = lignes(programmes, &h);
+    avis_des_notes(&mut avis, &l);
     let entrees: Vec<resultat::Entree> = l
         .iter()
         .map(|x| resultat::Entree {
@@ -1204,8 +1228,9 @@ pub fn menu() {
     let (programmes, mut manques, _) = systeme::releve_demarrage();
     manques.extend(notes_perdues(&h));
     // Les dossiers où Vanguard n'écrit pas, avec leur remède : dits au-dessus de la liste, comme ce qui manque.
-    let avis = avis_d_ecriture(&programmes);
+    let mut avis = avis_d_ecriture(&programmes);
     let l = lignes(programmes, &h);
+    avis_des_notes(&mut avis, &l);
     let pas_lus = lignes_des_manques(&avis.into_iter().chain(manques).collect::<Vec<_>>());
     if l.is_empty() {
         titre(tr!("Programmes au démarrage", "Startup programs"));

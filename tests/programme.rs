@@ -4006,6 +4006,32 @@ mod demarrage_sous_attaque {
         assert_eq!(lu(&radio), retiree);
     }
 
+    /// Relecture 0.95, J-3 (reste de H-5). Entrée retirée par Vanguard, son fichier effacé depuis à la main (la ligne
+    /// se rebâtit d'après la note), puis son dossier passé en 0775 : pas de « remettre », la raison et le remède
+    /// dits ; `--remettre` reste refusé et rien n'est écrit.
+    #[test]
+    fn pas_de_remettre_pour_une_note_sous_un_dossier_refuse() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let b = Banc::nouveau("note-0775");
+        let (radio, _) = b.poser("radio.desktop", "Radio", "/opt/radio/radio");
+        let (_, e) = b.geste("Radio").unwrap();
+        assert_eq!(b.changer("--retirer", &e).1, "fait");
+        std::fs::remove_file(&radio).unwrap();
+        let avant = gestes(&b.liste().0);
+        assert!(
+            avant.len() == 1 && avant[0].1 == "remettre" && avant[0].2 == e,
+            "{avant:?}"
+        );
+        std::fs::set_permissions(&b.autostart, std::fs::Permissions::from_mode(0o775)).unwrap();
+        let (json, brut) = b.liste();
+        assert!(gestes(&json).is_empty(), "un geste proposé : {brut}");
+        assert!(brut.contains("pas remis d'ici"), "{brut}");
+        assert!(brut.contains("chmod go-w ~/config/autostart"), "{brut}");
+        let (_, issue, raison) = b.changer("--remettre", &e);
+        assert_ne!(issue, "fait", "{raison}");
+        assert!(!radio.exists());
+    }
+
     /// Relecture 0.95, G-6. Après un changement de XDG_CONFIG_HOME, la note d'un programme retiré ne se rebâtit plus
     /// (son entrée n'est plus sous le dossier d'autostart du compte) : `demarrage --json` le dit en le nommant, au
     /// lieu de le faire disparaître sans un mot ; l'entrée reste retirée, rien n'est écrit.

@@ -444,6 +444,13 @@ impl Changement {
         true
     }
 
+    /// Vanguard peut-il écrire l'entrée visée ? Sous Windows, oui : le jugement des dossiers est celui de Linux
+    /// (relecture 0.95, J-3).
+    #[allow(clippy::unused_self)] // même signature que sous Linux, où l'entrée compte
+    pub fn ecriture(&self) -> super::demarrage::Ecriture {
+        super::demarrage::Ecriture::Permise
+    }
+
     /// Ce que le retrait écrirait se relira-t-il ? Sous Windows, oui : quelques octets de StartupApproved.
     #[allow(clippy::unused_self)] // même signature que sous Linux, où l'entrée compte
     pub fn cible_relisible(&self) -> bool {
