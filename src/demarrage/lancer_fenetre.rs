@@ -212,6 +212,10 @@ fn lancer(chemin: &Path) -> bool {
     if !FENETRE_LIVREE {
         return false;
     }
+    // Une compilation sans empreinte de fenêtre (`cargo build`, les essais) n'en lance jamais aucune.
+    let Some(super::empreinte_fenetre::Gravee::Empreinte(_)) = super::empreinte_fenetre::de_ce_programme() else {
+        return false;
+    };
     let mut c = Command::new(chemin);
     c.arg("--depuis-vanguard")
         .arg("--langue")

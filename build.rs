@@ -12,6 +12,7 @@ use std::path::Path;
 
 fn main() {
     date_compilation();
+    empreinte_fenetre();
     fabricants();
     regles_yara();
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
@@ -34,6 +35,32 @@ fn par_zig() -> bool {
         .map(|cible| format!("CARGO_ZIGBUILD_TARGET_{}", cible.replace('-', "_")))
         .inspect(|nom| println!("cargo:rerun-if-env-changed={nom}"))
         .is_ok_and(|nom| std::env::var_os(nom).is_some())
+}
+
+/// L'empreinte SHA-256 de la fenêtre compilée avec ce programme (src/demarrage/empreinte_fenetre.rs), donnée par
+/// outils/compiler-version.sh pour chaque système : celle du système visé seulement. Sans elle (ou vide), « AUCUNE » :
+/// ce programme ne lancera aucune fenêtre. Une empreinte qui n'a pas exactement la forme attendue (64 chiffres
+/// hexadécimaux minuscules) arrête la compilation : jamais une empreinte à moitié lue, jamais « aucune » à la place
+/// d'une empreinte mal recopiée.
+fn empreinte_fenetre() {
+    let variable = if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        "VANGUARD_FENETRE_SHA256_WINDOWS"
+    } else {
+        "VANGUARD_FENETRE_SHA256_LINUX"
+    };
+    println!("cargo:rerun-if-env-changed=VANGUARD_FENETRE_SHA256_LINUX");
+    println!("cargo:rerun-if-env-changed=VANGUARD_FENETRE_SHA256_WINDOWS");
+    let valeur = std::env::var(variable).unwrap_or_default();
+    let gravee = if valeur.is_empty() {
+        "AUCUNE".to_string()
+    } else {
+        assert!(
+            valeur.len() == 64 && valeur.bytes().all(|o| o.is_ascii_digit() || (b'a'..=b'f').contains(&o)),
+            "{variable} : 64 chiffres hexadécimaux minuscules attendus"
+        );
+        valeur
+    };
+    println!("cargo:rustc-env=VANGUARD_FENETRE_GRAVEE={gravee}");
 }
 
 /// Date du dernier commit, pour « cette copie a N mois » (src/protection/manifeste.rs) : jamais l'horloge, pour qu'un
