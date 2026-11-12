@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Compile les deux programmes publiés d'ici (Linux statique musl, Windows MinGW), toujours de la même façon :
+# Compile les programmes publiés d'ici (vanguard : Linux statique musl, Windows MinGW ; sa fenêtre, vanguard-fenetre :
+# Linux glibc, Windows MinGW), toujours de la même façon :
 # outils/deployer.sh avant chaque déploiement, la CI pour sa compilation reproductible (.github/workflows/ci.yml), et
 # quiconque veut refaire un programme publié à partir de son étiquette. Une seule recette, pour que deux compilations
 # du même code donnent les mêmes octets, ici (Arch) comme dans la CI (Ubuntu) :
@@ -23,9 +24,13 @@
 #     build.rs) ;
 #   - le cache de zig (la bibliothèque C, compiler-rt, le C de ring et de blake3 compilés) est neuf à chaque
 #     compilation et retiré après : rien d'une compilation d'avant, ni d'un autre worktree, n'entre dans celle-ci.
+# La fenêtre d'abord, par la même recette : vanguard grave l'empreinte SHA-256 de sa fenêtre (build.rs,
+# VANGUARD_FENETRE_SHA256_LINUX / _WINDOWS) et ne lance jamais une autre fenêtre (src/demarrage/empreinte_fenetre.rs).
+# Comme vanguard est signé, l'empreinte de sa fenêtre l'est aussi ; et l'empreinte de vanguard dépend de sa fenêtre :
+# deux compilations qui donnent le même vanguard ont compilé la même fenêtre.
 # Le repère de la compilation, target/.compilation : le commit compilé, si l'arbre du programme était propre (aucun
-# changement non commité ni fichier non suivi dans ce que le programme intègre), l'empreinte SHA-256 des deux
-# programmes, relevée à la sortie de cargo, puis les outils de la chaîne (pour dire, à la publication, lesquels
+# changement non commité ni fichier non suivi dans ce que le programme intègre, fenêtre comprise), l'empreinte SHA-256
+# des quatre programmes, relevée à la sortie de cargo, puis les outils de la chaîne (pour dire, à la publication, lesquels
 # diffèrent de ceux de la CI ; ils ne décident rien). outils/publier-version.sh et outils/deployer.sh n'envoient que ces
 # octets-là : un target/ partagé avec les worktrees, une compilation ordinaire ou un fichier modifié le temps d'une
 # compilation ne partent plus signés (campagne d'attaque n° 3).
@@ -109,7 +114,7 @@ export PATH="$ZIG_CACHE/outils:$PATH"
   { echo "dlltool pris ailleurs que dans $ZIG_CACHE/outils" >&2; exit 1; }
 export RUSTFLAGS="--remap-path-prefix=$RACINE=/vanguard --remap-path-prefix=$CARGO_DOSSIER=/cargo"
 # Le C (ring) : ses chemins aussi, pour les messages d'assertion qu'il garde même dans un programme allégé.
-for cible in x86_64_unknown_linux_musl x86_64_pc_windows_gnu; do
+for cible in x86_64_unknown_linux_musl x86_64_unknown_linux_gnu x86_64_pc_windows_gnu; do
   export "CFLAGS_$cible=-ffile-prefix-map=$RACINE=/vanguard -ffile-prefix-map=$CARGO_DOSSIER=/cargo"
 done
 # La date gravée : celle du code (outils/date-du-code.sh), pas du dernier commit, pour que les commits des captures et
@@ -125,33 +130,61 @@ rm -f "$REPERE"
 # L'arbre du programme lu avant la compilation : ce que cargo compile, c'est cet état-là.
 COMMIT=$(git rev-parse HEAD 2>/dev/null || echo inconnu)
 PROPRE=non
-if [[ $COMMIT != inconnu && -z $(git status --porcelain -- src build.rs assets Cargo.toml Cargo.lock .cargo \
-  rust-toolchain.toml 2>/dev/null) ]]; then
+# Ce que les programmes intègrent : vanguard, et sa fenêtre (fenetre/, dont l'empreinte est gravée dans vanguard).
+ARBRE=(src build.rs assets Cargo.toml Cargo.lock .cargo rust-toolchain.toml fenetre)
+if [[ $COMMIT != inconnu && -z $(git status --porcelain -- "${ARBRE[@]}" 2>/dev/null) ]]; then
   PROPRE=oui
 fi
 # cargo-auditable posé à la main par son seul nom, comme le ferait « cargo auditable » : celui-ci s'y met par son
 # chemin complet, que cargo mêle au -C metadata de Vanguard (~/.cargo/bin ici, /home/runner/.cargo/bin dans la CI :
 # deux programmes différents). Trouvé par le PATH, le nom est le même partout. Le JSON reprend ce que
 # « cargo auditable » transmettrait pour « --locked » (CargoArgs de cargo-auditable 0.7).
-CARGO_AUDITABLE_ORIG_ARGS='{"offline":false,"locked":true,"frozen":false,"config":[]}' \
-  RUSTC_WORKSPACE_WRAPPER=cargo-auditable \
-  cargo zigbuild --release --locked --target x86_64-unknown-linux-musl --target x86_64-pc-windows-gnu "$@"
+auditable() {
+  CARGO_AUDITABLE_ORIG_ARGS='{"offline":false,"locked":true,"frozen":false,"config":[]}' \
+    RUSTC_WORKSPACE_WRAPPER=cargo-auditable "$@"
+}
+# La fenêtre : la glibc de zig (Linux : ses bibliothèques d'affichage se chargent à l'exécution, fenetre/.cargo), dans
+# son propre dossier de compilation (son Cargo.lock à elle). Les options données au script vont à vanguard seulement.
+FENETRE_CIBLES=$CIBLES/fenetre
+FENETRE_LINUX=$FENETRE_CIBLES/x86_64-unknown-linux-gnu/release/vanguard-fenetre
+FENETRE_WINDOWS=$FENETRE_CIBLES/x86_64-pc-windows-gnu/release/vanguard-fenetre.exe
+rm -f "$FENETRE_LINUX" "$FENETRE_WINDOWS"
+CARGO_TARGET_DIR=$FENETRE_CIBLES auditable cargo zigbuild --release --locked --manifest-path fenetre/Cargo.toml \
+  --target x86_64-unknown-linux-gnu --target x86_64-pc-windows-gnu
+VANGUARD_FENETRE_SHA256_LINUX=$(sha256sum "$FENETRE_LINUX" | cut -d' ' -f1)
+VANGUARD_FENETRE_SHA256_WINDOWS=$(sha256sum "$FENETRE_WINDOWS" | cut -d' ' -f1)
+export VANGUARD_FENETRE_SHA256_LINUX VANGUARD_FENETRE_SHA256_WINDOWS
+auditable cargo zigbuild --release --locked --target x86_64-unknown-linux-musl --target x86_64-pc-windows-gnu "$@"
+# Chaque vanguard porte gravée l'empreinte de sa fenêtre, et aucune autre marque (« AUCUNE » : build.rs n'aurait pas
+# vu la variable).
+for paire in "x86_64-unknown-linux-musl/release/vanguard $VANGUARD_FENETRE_SHA256_LINUX" \
+  "x86_64-pc-windows-gnu/release/vanguard.exe $VANGUARD_FENETRE_SHA256_WINDOWS"; do
+  read -r p h <<<"$paire"
+  marques=$(LC_ALL=C grep -aoE 'VANGUARD-FENETRE:([0-9a-f]{64}|AUCUNE);' "$CIBLES/$p" | sort -u || true)
+  if [[ $marques != "VANGUARD-FENETRE:$h;" ]]; then
+    echo "✖ $CIBLES/$p : l'empreinte de sa fenêtre ($h) n'y est pas gravée seule : ${marques:-aucune marque}" >&2
+    exit 1
+  fi
+done
 # Jamais de programme sans la liste de ses dépendances (section .dep-v0, relue par cargo audit bin) : si
 # cargo-auditable venait à ne plus être appelé, cargo compilerait quand même, sans rien dire.
-for p in "$CIBLES/x86_64-unknown-linux-musl/release/vanguard" "$CIBLES/x86_64-pc-windows-gnu/release/vanguard.exe"; do
+for p in "$CIBLES/x86_64-unknown-linux-musl/release/vanguard" "$CIBLES/x86_64-pc-windows-gnu/release/vanguard.exe" \
+  "$FENETRE_LINUX" "$FENETRE_WINDOWS"; do
   if ! LC_ALL=C grep -qaF .dep-v0 "$p"; then
     echo "✖ $p : sans la liste de ses dépendances (section .dep-v0 de cargo-auditable)" >&2
     exit 1
   fi
 done
 # Relu après : un fichier changé pendant la compilation la rend douteuse.
-[[ $PROPRE == oui && $(git rev-parse HEAD) == "$COMMIT" && -z $(git status --porcelain -- src build.rs assets \
-  Cargo.toml Cargo.lock .cargo rust-toolchain.toml 2>/dev/null) ]] || PROPRE=non
+[[ $PROPRE == oui && $(git rev-parse HEAD) == "$COMMIT" && -z $(git status --porcelain -- "${ARBRE[@]}" 2>/dev/null) ]] ||
+  PROPRE=non
 {
   echo "commit $COMMIT"
   echo "propre $PROPRE"
   echo "linux-x86_64 $(sha256sum "$CIBLES/x86_64-unknown-linux-musl/release/vanguard" | cut -d' ' -f1)"
   echo "windows-x86_64 $(sha256sum "$CIBLES/x86_64-pc-windows-gnu/release/vanguard.exe" | cut -d' ' -f1)"
+  echo "fenetre-linux-x86_64 $VANGUARD_FENETRE_SHA256_LINUX"
+  echo "fenetre-windows-x86_64 $VANGUARD_FENETRE_SHA256_WINDOWS"
   bash outils/chaine-c.sh | sed 's/^/outil /'
 } >"$REPERE.nouveau"
 mv -f "$REPERE.nouveau" "$REPERE"

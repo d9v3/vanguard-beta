@@ -320,6 +320,8 @@ async fn main() {
     // La clé de données gardée pour la session, effacée à chaque retour de `main` et pendant une panique ;
     // `std::process::exit` ne détruisant rien, ses appels plus bas l'effacent eux-mêmes.
     let _oubli = chiffrement::OublierALaSortie;
+    // L'empreinte de la fenêtre gravée dans ce fichier y reste (outils/compiler-version.sh la relit).
+    demarrage::empreinte_fenetre::garder();
     // RELRO, avant tout le reste : le démarrage de musl laisse PT_GNU_RELRO écrivable (socle/relro.rs). Un échec ne
     // tue pas le programme : Vanguard sans cette protection reste celui de la 0.88, alors que refuser de démarrer
     // laisserait la machine sans aucune de ses défenses, pour une page que rien n'attaque encore. Il est noté au

@@ -18,6 +18,10 @@ TAG="v$VERSION"
 COMMIT=$(git rev-parse HEAD)
 LINUX=target/x86_64-unknown-linux-musl/release/vanguard
 WINDOWS=target/x86_64-pc-windows-gnu/release/vanguard.exe
+# Leur fenêtre (vanguard-fenetre), compilée avec eux par outils/compiler-version.sh : chaque programme porte gravée
+# l'empreinte de la sienne et n'en lance aucune autre.
+FENETRE_LINUX=target/fenetre/x86_64-unknown-linux-gnu/release/vanguard-fenetre
+FENETRE_WINDOWS=target/fenetre/x86_64-pc-windows-gnu/release/vanguard-fenetre.exe
 
 # Les commits « … (vX.Y.Z) » depuis la dernière page publiée, le plus récent en tête, un seul par version (le plus
 # récent : un commit de version ajouté après coup remplace le titre d'avant) ; sans page d'avant (ou si elle manque
@@ -97,6 +101,8 @@ TELECHARGER="Un programme par système, à télécharger :
 - **Windows** : \`vanguard-windows-x86_64.exe\`, double-clic. Il n'est pas signé : SmartScreen peut avertir
   (« Informations complémentaires » puis « Exécuter quand même »).
 - **Linux** : \`vanguard-linux-x86_64\` (toutes les distributions), \`chmod +x\` puis lancer dans un terminal.
+- **La fenêtre**, facultative : \`vanguard-fenetre-linux-x86_64\` ou \`vanguard-fenetre-windows-x86_64.exe\`, posée à côté du programme ;
+  il ne lance que celle compilée avec lui (son empreinte y est gravée), sinon le menu dans le terminal.
 
 Empreintes SHA-256 : \`SHA256SUMS.txt\` (\`sha256sum -c SHA256SUMS.txt\`).
 
@@ -117,6 +123,8 @@ Ce qu'ont apporté les versions d'avant : \`CHANGELOG.md\` dans le dépôt.
 
 Download the program for your system: \`vanguard-windows-x86_64.exe\` (Windows, unsigned: SmartScreen may warn, “More
 info” then “Run anyway”), \`vanguard-linux-x86_64\` (any distribution: \`chmod +x\`, then run it in a terminal).
+Optional window: \`vanguard-fenetre-linux-x86_64\` or \`vanguard-fenetre-windows-x86_64.exe\`, placed next to the program; it only
+launches the one built with it (its fingerprint is engraved in it), otherwise the menu in the terminal.
 SHA-256 checksums: \`SHA256SUMS.txt\` (they check the download, not the origin). On the d9v3/vanguard-beta page,
 software bills of materials (CycloneDX SBOM): \`vanguard-<system>.cdx.json\`, one per program; they describe its
 code, not the published file. The SBOMs are attested by GitHub, which built them; check with the GitHub CLI logged in
@@ -150,13 +158,17 @@ HORS_CODE=$(grep -v '^#' .github/hors-code.txt | head -n 1)
 verifier_compilation() {
   local compile sorte fichier gravee
   compile=$(repere commit)
-  [[ -f $LINUX && -f $WINDOWS && -n $compile ]] ||
+  [[ -f $LINUX && -f $WINDOWS && -f $FENETRE_LINUX && -f $FENETRE_WINDOWS && -n $compile ]] ||
     { echo "Pas de programmes compilés par outils/compiler-version.sh ($REPERE) : lancer d'abord outils/deployer.sh."; return 1; }
   [[ $(repere propre) == oui ]] ||
     { echo "Programmes compilés d'un arbre aux changements non commités ($REPERE) : rien de publié (outils/deployer.sh)."; return 1; }
-  for sorte in linux-x86_64 windows-x86_64; do
-    fichier=$LINUX
-    [[ $sorte == linux-x86_64 ]] || fichier=$WINDOWS
+  for sorte in linux-x86_64 windows-x86_64 fenetre-linux-x86_64 fenetre-windows-x86_64; do
+    case $sorte in
+      linux-x86_64) fichier=$LINUX ;;
+      windows-x86_64) fichier=$WINDOWS ;;
+      fenetre-linux-x86_64) fichier=$FENETRE_LINUX ;;
+      *) fichier=$FENETRE_WINDOWS ;;
+    esac
     [[ $(repere "$sorte") == "$(sha256sum "$fichier" | cut -d' ' -f1)" ]] || {
       echo "$fichier n'est plus celui de sa compilation (empreinte ≠ $REPERE : compilation ordinaire, autre worktree) :"
       echo "rien de publié. Relancer outils/deployer.sh."
@@ -188,7 +200,7 @@ fi
 # Aucun lien mort, avant d'attendre GitHub : les téléchargements du README (…/releases/latest/download/<nom>) visent
 # les fichiers de cette version, qui sera la dernière (outils/liens.py).
 # shellcheck disable=SC2046 # un nom de nomenclature par mot, coupé exprès
-python3 -I outils/liens.py --version vanguard-windows-x86_64.exe vanguard-linux-x86_64 SHA256SUMS.txt \
+python3 -I outils/liens.py --version vanguard-windows-x86_64.exe vanguard-linux-x86_64 vanguard-fenetre-linux-x86_64 vanguard-fenetre-windows-x86_64.exe SHA256SUMS.txt \
   $(bash outils/sbom.sh --noms) ||
   { echo "Liens : rien de publié."; exit 1; }
 
@@ -199,15 +211,31 @@ trap 'rm -rf "$DOSSIER"' EXIT
 bash outils/sbom.sh "$DOSSIER/sbom" >/dev/null || { echo "Nomenclatures (SBOM) : rien de publié."; exit 1; }
 cp "$LINUX" "$DOSSIER/vanguard-linux-x86_64"
 cp "$WINDOWS" "$DOSSIER/vanguard-windows-x86_64.exe"
+cp "$FENETRE_LINUX" "$DOSSIER/vanguard-fenetre-linux-x86_64"
+cp "$FENETRE_WINDOWS" "$DOSSIER/vanguard-fenetre-windows-x86_64.exe"
 # Les copies qui partent, relues : celles-là, et pas un fichier remplacé entre la vérification et la copie.
 [[ $(sha256sum "$DOSSIER/vanguard-linux-x86_64" | cut -d' ' -f1) == "$(repere linux-x86_64)" &&
-  $(sha256sum "$DOSSIER/vanguard-windows-x86_64.exe" | cut -d' ' -f1) == "$(repere windows-x86_64)" ]] ||
+  $(sha256sum "$DOSSIER/vanguard-windows-x86_64.exe" | cut -d' ' -f1) == "$(repere windows-x86_64)" &&
+  $(sha256sum "$DOSSIER/vanguard-fenetre-linux-x86_64" | cut -d' ' -f1) == "$(repere fenetre-linux-x86_64)" &&
+  $(sha256sum "$DOSSIER/vanguard-fenetre-windows-x86_64.exe" | cut -d' ' -f1) == "$(repere fenetre-windows-x86_64)" ]] ||
   { echo "Copie des programmes différente de leur compilation : rien de publié."; exit 1; }
+# Chaque programme qui part porte gravée l'empreinte de la fenêtre qui part avec lui, et elle seule
+# (src/demarrage/empreinte_fenetre.rs) : sinon il refuserait de la lancer, ou en lancerait une autre.
+grave_sa_fenetre() { # programme, fenêtre
+  local marques
+  marques=$(LC_ALL=C grep -aoE 'VANGUARD-FENETRE:([0-9a-f]{64}|AUCUNE);' "$1" | sort -u)
+  [[ $marques == "VANGUARD-FENETRE:$(sha256sum "$2" | cut -d' ' -f1);" ]]
+}
+{ grave_sa_fenetre "$DOSSIER/vanguard-linux-x86_64" "$DOSSIER/vanguard-fenetre-linux-x86_64" &&
+  grave_sa_fenetre "$DOSSIER/vanguard-windows-x86_64.exe" "$DOSSIER/vanguard-fenetre-windows-x86_64.exe"; } ||
+  { echo "Un programme ne porte pas l'empreinte de sa fenêtre : rien de publié."; exit 1; }
 # Les failles connues, revérifiées sur les fichiers mêmes qui partent (outils/failles-programmes.sh, comme dans
 # deployer.sh) : depuis, une compilation ordinaire a pu remplacer ceux de target/ par d'autres, sans leur liste, sans
 # toucher .commit-compile, et une faille paraître. Avant d'attendre GitHub.
 outils/failles-programmes.sh "$DOSSIER/vanguard-linux-x86_64" "$DOSSIER/vanguard-windows-x86_64.exe" ||
   { echo "Programmes : rien de publié."; exit 1; }
+outils/failles-programmes.sh --fenetre "$DOSSIER/vanguard-fenetre-linux-x86_64" "$DOSSIER/vanguard-fenetre-windows-x86_64.exe" ||
+  { echo "Fenêtre : rien de publié."; exit 1; }
 # Les protections des fichiers mêmes qui partent, lues dans leurs en-têtes sans les lancer (vanguard deploiement
 # verifier-binaire, src/deploiement/binaire.rs) : PIE statique, marque RELRO et pile non exécutable pour Linux ; DLL
 # depuis System32, manifeste, ASLR, DEP et relocalisations pour Windows. Lues par la copie Linux qui part, dont
@@ -217,7 +245,9 @@ verifier_binaires() { # système fichiers…
   "$DOSSIER/vanguard-linux-x86_64" deploiement verifier-binaire --attendu "$@"
 }
 { verifier_binaires linux "$DOSSIER/vanguard-linux-x86_64" &&
-  verifier_binaires windows "$DOSSIER/vanguard-windows-x86_64.exe"; } ||
+  verifier_binaires windows "$DOSSIER/vanguard-windows-x86_64.exe" &&
+  verifier_binaires linux --glibc "$DOSSIER/vanguard-fenetre-linux-x86_64" &&
+  verifier_binaires windows "$DOSSIER/vanguard-fenetre-windows-x86_64.exe"; } ||
   { echo "Protections des programmes : rien de publié."; exit 1; }
 
 # Une exécution de GitHub attendue au plus tant de secondes : un runner qui ne vient jamais (file d'attente bloquée)
@@ -544,7 +574,8 @@ else
   [[ $PASSE != *"NON AUTHENTIFIÉ"* ]] || echo "⚠ Porte de la VM non authentifiée : réinstaller la file d'essais (outils/vm-tester.sh --installer)."
   echo "✔ Programme Windows essayé tel quel dans la VM : ${PASSE%% ->*}"
 fi
-(cd "$DOSSIER" && sha256sum vanguard-windows-x86_64.exe vanguard-linux-x86_64 >SHA256SUMS.txt)
+(cd "$DOSSIER" && sha256sum vanguard-windows-x86_64.exe vanguard-linux-x86_64 vanguard-fenetre-linux-x86_64 vanguard-fenetre-windows-x86_64.exe \
+  >SHA256SUMS.txt)
 cp "$DOSSIER/sbom/"*.cdx.json "$DOSSIER/"
 
 NOTES=$(notes)
@@ -554,7 +585,7 @@ NOTES=$(notes)
 printf '%s\n' "$NOTES" | python3 -I outils/confidentialite.py --texte || { echo "Notes de la version : rien de publié."; exit 1; }
 printf '%s\n' "$NOTES" | python3 -I outils/liens.py --texte || { echo "Liens des notes : rien de publié."; exit 1; }
 python3 -I outils/confidentialite.py --binaire "$DOSSIER/vanguard-windows-x86_64.exe" "$DOSSIER/vanguard-linux-x86_64" \
-  "$DOSSIER/"*.cdx.json || { echo "Programmes : rien de publié."; exit 1; }
+  "$DOSSIER/vanguard-fenetre-linux-x86_64" "$DOSSIER/vanguard-fenetre-windows-x86_64.exe" "$DOSSIER/"*.cdx.json || { echo "Programmes : rien de publié."; exit 1; }
 # Les mêmes programmes, avec leur manifeste signé (outils/signer-versions.sh), dans le dépôt public des versions : la
 # mise à jour depuis GitHub les y prend (src/mise_a_jour/github.rs), le code restant privé. Seule la dernière y reste.
 # Signés AVANT la création de toute page : un contrôle de signer-versions.sh qui refuse (forme d'un programme,
@@ -627,7 +658,7 @@ retirer_etiquette_precedente() {
     return 1
   fi
   attendus=$(for f in "$DOSSIER/vanguard-windows-x86_64.exe" "$DOSSIER/vanguard-linux-x86_64" \
-    "$DOSSIER/SHA256SUMS.txt" "$DOSSIER/"*.cdx.json; do
+    "$DOSSIER/vanguard-fenetre-linux-x86_64" "$DOSSIER/vanguard-fenetre-windows-x86_64.exe" "$DOSSIER/SHA256SUMS.txt" "$DOSSIER/"*.cdx.json; do
     printf '%s sha256:%s\n' "${f##*/}" "$(sha256sum "$f" | cut -d' ' -f1)"
   done | LC_ALL=C sort)
   fichiers=$(gh release view "$TAG" -R "$DEPOT_CODE" --json assets -q '.assets[] | "\(.name) \(.digest)"' \
@@ -684,13 +715,13 @@ retirer_etiquette_precedente() {
 # La page « dernière » d'avant, relevée avant que celle-ci la remplace.
 PRECEDENTE=$(gh release view -R "$DEPOT_CODE" --json tagName -q .tagName 2>/dev/null || true)
 gh release create "$TAG" --target "$COMPILE" --title "$NOM $VERSION" --notes "$NOTES" \
-  "$DOSSIER/vanguard-windows-x86_64.exe" "$DOSSIER/vanguard-linux-x86_64" "$DOSSIER/SHA256SUMS.txt" \
-  "$DOSSIER/"*.cdx.json
+  "$DOSSIER/vanguard-windows-x86_64.exe" "$DOSSIER/vanguard-linux-x86_64" "$DOSSIER/vanguard-fenetre-linux-x86_64" \
+  "$DOSSIER/vanguard-fenetre-windows-x86_64.exe" "$DOSSIER/SHA256SUMS.txt" "$DOSSIER/"*.cdx.json
 echo "Version $TAG publiée : $(gh release view "$TAG" --json url -q .url)"
 PUBLIEE_SIGNEE=""
 if [[ -n $SIGNEE ]] && gh release create "$TAG" -R "$DEPOT_VERSIONS" --title "$NOM $VERSION" --notes "$NOTES" \
-  "$DOSSIER/vanguard-windows-x86_64.exe" "$DOSSIER/vanguard-linux-x86_64" \
-  "$DOSSIER/SHA256SUMS.txt" "$DOSSIER/derniere.txt" "$DOSSIER/derniere.txt.sig" \
+  "$DOSSIER/vanguard-windows-x86_64.exe" "$DOSSIER/vanguard-linux-x86_64" "$DOSSIER/vanguard-fenetre-linux-x86_64" \
+  "$DOSSIER/vanguard-fenetre-windows-x86_64.exe" "$DOSSIER/SHA256SUMS.txt" "$DOSSIER/derniere.txt" "$DOSSIER/derniere.txt.sig" \
   "$DOSSIER/historique.txt" "$DOSSIER/historique.txt.sig"; then
   echo "Version $TAG signée dans $DEPOT_VERSIONS : les Vanguard sans clé la proposeront."
   PUBLIEE_SIGNEE=1

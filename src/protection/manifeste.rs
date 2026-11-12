@@ -468,11 +468,11 @@ fn garder_empreintes(fichiers: &mut [Entree], avant: &[Entree]) {
 }
 
 /// Ce que le déploiement (outils/deployer.sh, outils/publier-version.sh) pose lui-même sur la clé, et réécrit à
-/// chaque passage : les programmes et leurs modes d'emploi, les lanceurs et guides de la racine, les témoins, le code
-/// source (une copie exacte, rsync --delete) et les archives de tldr-pages ; et ce qu'il retire de la clé à chaque
-/// passage, le programme macOS, son mode d'emploi et son lanceur, posés par les déploiements d'avant le retrait du
-/// Mac (outils/deployer.sh). Seul un écart sur ces chemins-là peut entrer dans la référence sans accord : le
-/// déploiement vient de les écrire ou de les effacer. Tout le reste (un raccourci planté à la racine, une image, le
+/// chaque passage : les programmes, leur fenêtre et leurs modes d'emploi, les lanceurs et guides de la racine, les
+/// témoins, le code source (une copie exacte, rsync --delete) et les archives de tldr-pages ; et ce qu'il retire de la
+/// clé à chaque passage, le programme macOS, son mode d'emploi et son lanceur, posés par les déploiements d'avant le
+/// retrait du Mac (outils/deployer.sh). Seul un écart sur ces chemins-là peut entrer dans la référence sans accord :
+/// le déploiement vient de les écrire ou de les effacer. Tout le reste (un raccourci planté à la racine, une image, le
 /// menu de Ventoy, un fichier ajouté dans Linux/) attend `--forcer`.
 fn depose_par_le_deploiement(chemin: &str) -> bool {
     const RACINE: &[&str] = &[
@@ -493,6 +493,9 @@ fn depose_par_le_deploiement(chemin: &str) -> bool {
     const PROGRAMMES: &[(&str, &str)] = &[
         ("Linux", "vanguard"),
         ("Windows", "vanguard.exe"),
+        // La fenêtre de chacun (0.96), qu'il ne lance que si son empreinte est celle gravée en lui.
+        ("Linux", "vanguard-fenetre"),
+        ("Windows", "vanguard-fenetre.exe"),
         // Plus posé : effacé d'une clé d'avant le retrait du Mac, avec son mode d'emploi.
         ("macOS", "vanguard"),
     ];
@@ -2008,6 +2011,11 @@ mod tests {
             Err(PasEcrit::SansReference)
         );
         assert!(depose_par_le_deploiement("Windows/README.txt"));
+        // La fenêtre, posée à côté de chaque programme (0.96) : elle seule, sous son nom.
+        assert!(depose_par_le_deploiement("Linux/vanguard-fenetre"));
+        assert!(depose_par_le_deploiement("Windows/vanguard-fenetre.exe"));
+        assert!(!depose_par_le_deploiement("Linux/vanguard-fenetre.exe"));
+        assert!(!depose_par_le_deploiement("Windows/vanguard-fenetre"));
         assert!(!depose_par_le_deploiement("Windows/vanguard.dll"));
         assert!(!depose_par_le_deploiement("tldr/x/tldr-pages.en.zip"));
         assert!(!depose_par_le_deploiement("Linuxx/vanguard"));

@@ -345,17 +345,28 @@ jobs:
           mkdir premiere
           cp target/x86_64-unknown-linux-musl/release/vanguard premiere/vanguard
           cp target/x86_64-pc-windows-gnu/release/vanguard.exe premiere/vanguard.exe
-          # Seul le programme est recompilé (les dépendances restent) : c'est lui que l'on compare.
+          # Sa fenêtre aussi (vanguard-fenetre, compilée d'abord ; vanguard grave son empreinte) : comparée de même.
+          cp target/fenetre/x86_64-unknown-linux-gnu/release/vanguard-fenetre premiere/vanguard-fenetre
+          cp target/fenetre/x86_64-pc-windows-gnu/release/vanguard-fenetre.exe premiere/vanguard-fenetre.exe
+          # Seuls les programmes sont recompilés (les dépendances restent) : ce sont eux que l'on compare.
           cargo clean -p vanguard --release --target x86_64-unknown-linux-musl
           cargo clean -p vanguard --release --target x86_64-pc-windows-gnu
+          for t in x86_64-unknown-linux-gnu x86_64-pc-windows-gnu; do
+            CARGO_TARGET_DIR=target/fenetre cargo clean -p vanguard-fenetre --release --target "$t" \
+              --manifest-path fenetre/Cargo.toml
+          done
           # En détail (-v) : la commande de rustc pour le programme, son -C metadata et son intercalaire, à comparer à
           # celle de l'ordinateur de l'auteur si les empreintes diffèrent ; les dépendances déjà compilées tues.
           set -o pipefail
           outils/compiler-version.sh -v 2>&1 | { grep -v '^ *Fresh ' || true; }
           cmp premiere/vanguard target/x86_64-unknown-linux-musl/release/vanguard
           cmp premiere/vanguard.exe target/x86_64-pc-windows-gnu/release/vanguard.exe
+          cmp premiere/vanguard-fenetre target/fenetre/x86_64-unknown-linux-gnu/release/vanguard-fenetre
+          cmp premiere/vanguard-fenetre.exe target/fenetre/x86_64-pc-windows-gnu/release/vanguard-fenetre.exe
           echo "EMPREINTE-VANGUARD-LINUX $(sha256sum premiere/vanguard | cut -d' ' -f1)"
           echo "EMPREINTE-VANGUARD-WINDOWS $(sha256sum premiere/vanguard.exe | cut -d' ' -f1)"
+          echo "EMPREINTE-FENETRE-LINUX $(sha256sum premiere/vanguard-fenetre | cut -d' ' -f1)"
+          echo "EMPREINTE-FENETRE-WINDOWS $(sha256sum premiere/vanguard-fenetre.exe | cut -d' ' -f1)"
           # Les outils de la chaîne (rustc, zig, cargo-zigbuild, cargo-auditable), que outils/publier-version.sh compare
           # à ceux de l'ordinateur de l'auteur quand les empreintes diffèrent.
           bash outils/chaine-c.sh | sed 's/^/OUTILS-VANGUARD /'
@@ -366,8 +377,8 @@ jobs:
             sort | sed 's/^/CRATES-VANGUARD /'
       # Ce que l'ordinateur de l'auteur vérifie avant de livrer (vanguard deploiement verifier-binaire) : Linux en PIE
       # statique, marque RELRO, pile non exécutable ; le .exe avec ses DLL depuis System32 seulement, son manifeste
-      # UTF-8 et asInvoker, ASLR, DEP et relocalisations ; puis les failles connues des deux programmes, lues dans la
-      # liste qu'ils portent.
+      # UTF-8 et asInvoker, ASLR, DEP et relocalisations ; puis les failles connues des programmes, lues dans la
+      # liste qu'ils portent ; de même pour la fenêtre.
       - name: Les programmes portent leurs protections, failles connues des programmes
         run: |
           target/x86_64-unknown-linux-musl/release/vanguard deploiement verifier-binaire --attendu linux \
@@ -376,6 +387,13 @@ jobs:
             target/x86_64-pc-windows-gnu/release/vanguard.exe
           bash outils/failles-programmes.sh target/x86_64-unknown-linux-musl/release/vanguard \
             target/x86_64-pc-windows-gnu/release/vanguard.exe
+          # Sa fenêtre : liée à la glibc (--glibc), sans les exceptions de Vanguard (--fenetre).
+          target/x86_64-unknown-linux-musl/release/vanguard deploiement verifier-binaire --attendu linux --glibc \
+            target/fenetre/x86_64-unknown-linux-gnu/release/vanguard-fenetre
+          target/x86_64-unknown-linux-musl/release/vanguard deploiement verifier-binaire --attendu windows \
+            target/fenetre/x86_64-pc-windows-gnu/release/vanguard-fenetre.exe
+          bash outils/failles-programmes.sh --fenetre target/fenetre/x86_64-unknown-linux-gnu/release/vanguard-fenetre \
+            target/fenetre/x86_64-pc-windows-gnu/release/vanguard-fenetre.exe
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: vanguard-windows-livre

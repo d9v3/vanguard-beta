@@ -11,12 +11,14 @@
 # Linux comme pour Windows, le 21 oct. 2026), d'où au pire une alerte de trop, jamais une de moins. cargo-audit est
 # celui de la CI (.github/workflows/ci.yml) : le même jugement ici et là-bas.
 #   outils/failles-programmes.sh <programme>...
+#   outils/failles-programmes.sh --fenetre <programme>...   la fenêtre (vanguard-fenetre) : sans les exceptions de
+#                                          Vanguard (fenetre/deny.toml n'en a aucune) ; seulement HORS_CIBLES, prouvées
 #   outils/failles-programmes.sh --outil   cargo-audit seulement (présent, version de la CI), avant une compilation
 #   outils/failles-programmes.sh --depot   Cargo.lock du dépôt, de la fenêtre et des crates à part (fuzz, extensions,
 #                                          preuves Kani), jugés de même (étape « failles connues » de
 #                                          outils/verifier.sh, que la CI lance aussi chaque nuit) : code 77 sans
 #                                          cargo-audit ou sans Internet, où une base pas à jour dirait vert à tort
-# Lancé par outils/deployer.sh (après chaque compilation), par outils/publier-version.sh sur les deux programmes qu'il
+# Lancé par outils/deployer.sh (après chaque compilation), par outils/publier-version.sh sur les programmes qu'il
 # publie, et par la CI sur ceux qu'elle compile (ci.yml). Sans Internet : la base RustSec du dernier téléchargement, et c'est dit.
 set -euo pipefail
 RACINE=$(cd "$(dirname "$0")/.." && pwd)
@@ -50,6 +52,12 @@ fi
 if [[ $1 == --outil ]]; then
   exit 0
 fi
+FENETRE=
+if [[ $1 == --fenetre ]]; then
+  FENETRE=1
+  shift
+  (($# > 0)) || { echo "outils/failles-programmes.sh --fenetre <programme>..." >&2; exit 2; }
+fi
 
 OPTIONS=(--color never --deny unmaintained --deny unsound)
 # La fenêtre (fenetre/Cargo.lock) n'a aucune exception dans fenetre/deny.toml (ignore = []) : celles de Vanguard,
@@ -67,6 +75,11 @@ HORS_CIBLES=(RUSTSEC-2026-0370:zvariant RUSTSEC-2026-0371:zbus_names RUSTSEC-202
 # Les exceptions de deny.toml, par leur identifiant RustSec (outils/exceptions-rustsec.py, qui les donne aussi à
 # outils/verifier.sh) ; une exception d'une autre forme y est refusée plutôt que perdue en route.
 EXCEPTIONS=$(python3 -I "$RACINE/outils/exceptions-rustsec.py")
+# La fenêtre : aucune des exceptions de Vanguard. Sa liste de dépendances gravée en compte pourtant plus qu'elle n'en
+# compile : cargo auditable la tire de `cargo metadata`, qui unit les options de toutes les plateformes (l'option
+# accesskit d'eframe, prise pour Windows seulement, y amène accesskit_unix et zvariant sous Linux aussi ; vu sur la
+# fenêtre Linux de la 0.96). Seules les HORS_CIBLES s'écartent, par la même preuve que pour --depot (plus bas).
+[[ -z $FENETRE ]] || EXCEPTIONS=
 for id in $EXCEPTIONS; do
   OPTIONS+=(--ignore "$id")
 done
@@ -83,15 +96,22 @@ mkdir "$TRAVAIL/.cargo"
 echo "# outils/failles-programmes.sh : aucune exception ici, seulement celles de deny.toml (--ignore)." \
   >"$TRAVAIL/.cargo/audit.toml"
 
-# Le Cargo.lock du dépôt, lu depuis ce dossier-là (son audit.toml vide) : même jugement que pour les programmes.
-if [[ $1 == --depot ]]; then
-  CODE=0
-  SORTIE=$(cd "$TRAVAIL" && cargo-audit audit "${OPTIONS[@]}" --file "$RACINE/Cargo.lock" 2>&1) || CODE=$?
-  # Les erreurs de cargo tree, gardées pour la fin : écrites après la sortie de cargo audit, juste avant le code de
-  # retour, elles restent dans les dernières lignes que montre outils/verifier.sh. Une erreur identique pour plusieurs
-  # cibles ou crates n'est écrite qu'une fois, sous tous ses titres.
-  declare -A ERREURS_ARBRE=()
-  ORDRE_ERREURS=()
+# Les erreurs de cargo tree, gardées pour la fin : écrites après la sortie de cargo audit, juste avant le code de
+# retour, elles restent dans les dernières lignes que montre outils/verifier.sh. Une erreur identique pour plusieurs
+# cibles ou crates n'est écrite qu'une fois, sous tous ses titres (montrer_erreurs_arbre).
+declare -A ERREURS_ARBRE=()
+ORDRE_ERREURS=()
+montrer_erreurs_arbre() {
+  local erreur
+  for erreur in "${ORDRE_ERREURS[@]}"; do
+    printf '%s\n%s\n' "${ERREURS_ARBRE["$erreur"]}" "$erreur"
+  done
+}
+
+# Les avis HORS_CIBLES de la fenêtre, ajoutés à OPTIONS_FENETRE en --ignore ; code 1 si l'une d'elles est compilée
+# pour une de ses deux cibles, ou si cargo tree ne peut pas le dire (alors l'avis compte : --fenetre refuse).
+hors_cibles_prouvees() {
+  local code=0 exception cible arbre erreur titre
   for exception in "${HORS_CIBLES[@]}"; do
     for cible in x86_64-unknown-linux-gnu x86_64-pc-windows-gnu; do
       # Un cargo tree qui échoue (sources pas encore téléchargées…) ne dit rien : refusé, jamais lu comme absente.
@@ -107,14 +127,22 @@ if [[ $1 == --depot ]]; then
           ERREURS_ARBRE["$erreur"]=$titre
           ORDRE_ERREURS+=("$erreur")
         fi
-        CODE=1
+        code=1
       elif [[ -n $arbre ]]; then
         echo "✖ fenêtre : ${exception#*:} compilée pour $cible, ${exception%%:*} ne s'écarte plus"
-        CODE=1
+        code=1
       fi
     done
     OPTIONS_FENETRE+=(--ignore "${exception%%:*}")
   done
+  return "$code"
+}
+
+# Le Cargo.lock du dépôt, lu depuis ce dossier-là (son audit.toml vide) : même jugement que pour les programmes.
+if [[ $1 == --depot ]]; then
+  CODE=0
+  SORTIE=$(cd "$TRAVAIL" && cargo-audit audit "${OPTIONS[@]}" --file "$RACINE/Cargo.lock" 2>&1) || CODE=$?
+  hors_cibles_prouvees || CODE=1
   SORTIE+=$'\n'"fenetre/Cargo.lock :"$'\n'$(cd "$TRAVAIL" && cargo-audit audit "${OPTIONS_FENETRE[@]}" \
     --file "$RACINE/fenetre/Cargo.lock" 2>&1) || CODE=1
   for verrou in "${A_PART[@]}"; do
@@ -130,10 +158,16 @@ if [[ $1 == --depot ]]; then
   fi
   [[ -z $EXCEPTIONS ]] || echo "exceptions de deny.toml : $(printf '%s\n' "$EXCEPTIONS" | paste -sd, - | sed 's/,/, /g')"
   echo "fenêtre : écartées car compilées par aucune de ses deux cibles : ${HORS_CIBLES[*]%%:*}"
-  for erreur in "${ORDRE_ERREURS[@]}"; do
-    printf '%s\n%s\n' "${ERREURS_ARBRE["$erreur"]}" "$erreur"
-  done
+  montrer_erreurs_arbre
   exit "$CODE"
+fi
+
+# La fenêtre : ses avis HORS_CIBLES écartés seulement s'ils sont prouvés hors de ses deux cibles ; sinon, rien ne part.
+if [[ -n $FENETRE ]]; then
+  OPTIONS_FENETRE=("${OPTIONS[@]}")
+  hors_cibles_prouvees || { montrer_erreurs_arbre; echo "Ces programmes ne partent nulle part."; exit 1; }
+  OPTIONS=("${OPTIONS_FENETRE[@]}")
+  echo "fenêtre : écartées car compilées par aucune de ses deux cibles : ${HORS_CIBLES[*]%%:*}"
 fi
 
 # Chaque programme par son chemin complet (cargo audit tourne dans son dossier à lui), sous son nom pour l'affichage.

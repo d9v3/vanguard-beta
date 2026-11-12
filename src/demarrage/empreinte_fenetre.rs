@@ -21,6 +21,14 @@ pub(crate) enum Gravee {
     Empreinte([u8; 32]),
 }
 
+/// Garde la marque dans le fichier, appelé au début de `main` : sans une lecture qui reste après l'optimisation, un
+/// programme dont le lancement de la fenêtre n'est jamais atteint (`FENETRE_LIVREE` faux, ou un jour retiré) la perdait
+/// à l'édition des liens. `outils/compiler-version.sh` l'a vu (compilation de la 0.96) ; il refuse un programme sans
+/// sa marque, et la mise à jour lit celle du programme téléchargé.
+pub(crate) fn garder() {
+    std::hint::black_box(GRAVEE.as_ptr());
+}
+
 /// La fenêtre de ce programme-ci, lue dans sa marque gravée (`black_box` : sans lecture, l'éditeur de liens la
 /// retirerait du fichier). `None` ne devrait jamais arriver (un essai le garde) : la fenêtre n'est alors pas lancée.
 pub(crate) fn de_ce_programme() -> Option<Gravee> {

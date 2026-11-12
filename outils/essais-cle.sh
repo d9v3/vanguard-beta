@@ -1229,9 +1229,14 @@ esac
 exit 0
 FIN
 chmod +x "$DD/target/x86_64-unknown-linux-musl/release/vanguard"
+# Sa fenêtre, compilée avec lui.
+FEN=$DD/target/fenetre/x86_64-unknown-linux-gnu/release/vanguard-fenetre
+mkdir -p "${FEN%/*}"
+echo "fenetre de l'essai" >"$FEN"
 # Le repère de outils/compiler-version.sh : ces octets-là, et pas d'autres, partent.
-printf 'commit 0000000000000000000000000000000000000000\npropre oui\nlinux-x86_64 %s\n' \
-  "$(sha256sum "$DD/target/x86_64-unknown-linux-musl/release/vanguard" | cut -d' ' -f1)" >"$DD/target/.compilation"
+printf 'commit 0000000000000000000000000000000000000000\npropre oui\nlinux-x86_64 %s\nfenetre-linux-x86_64 %s\n' \
+  "$(sha256sum "$DD/target/x86_64-unknown-linux-musl/release/vanguard" | cut -d' ' -f1)" \
+  "$(sha256sum "$FEN" | cut -d' ' -f1)" >"$DD/target/.compilation"
 deployer() { # arguments… : sortie dans $BANC/sortie, code de sortie rendu
   rm -f "$BANC/notifications.log" "$BANC/vanguard.log"
   touch "$BANC/run/vanguard-deployer-local"
@@ -1246,8 +1251,9 @@ echo "$J" >"$BANC/connus"
 (cd "$K" && find . -type f -print0 | sort -z | xargs -0 sha256sum) >"$BANC/reference"
 deployer --sans-compiler
 code=$?
-voir "clé connue, identique à sa référence : programme et code source copiés, référence réécrite ; code 0" \
-  eval '((code == 0)) && [[ -f $K/Linux/vanguard && -d $K/source/outils ]] &&
+voir "clé connue, identique à sa référence : programme, sa fenêtre et code source copiés, référence réécrite ; code 0" \
+  eval '((code == 0)) && [[ -f $K/Linux/vanguard && -d $K/source/outils ]] && cmp -s "$FEN" "$K/Linux/vanguard-fenetre" &&
+    cmp -s "$FEN" "$HOME/.cargo/bin/vanguard-fenetre" && dit "$BANC/vanguard.log" "verifier-binaire --attendu linux --glibc" &&
     dit "$BANC/vanguard.log" "deploiement comparer-cle $K" && dit "$BANC/vanguard.log" "manifeste --ecrire $K"' ||
   { montrer "$BANC/sortie"; }
 # Un déploiement arrêté en route (le programme à moitié copié) : le suivant reprend, sans fausse alerte ; un fichier
@@ -1324,6 +1330,21 @@ deployer --accepter-cle
 code=$?
 voir "… et --accepter-cle refuse (code 1)" eval '((code == 1)) && [[ ! -e $K/Linux ]]' || montrer "$BANC/sortie"
 cp "$BANC/compilation" "$DD/target/.compilation"
+# Sa fenêtre remplacée depuis la compilation, ou absente : le programme ne part pas sans elle.
+echo "une autre fenetre" >"$FEN.vraie"
+mv "$FEN" "$FEN.vraie2" && mv "$FEN.vraie" "$FEN"
+deployer --sans-compiler
+code=$?
+voir "fenêtre pas celle de compiler-version.sh : rien n'est copié sur la clé" \
+  eval '((code == 0)) && [[ ! -e $K/Linux ]] && dit "$BANC/sortie" "pas ceux de outils/compiler-version.sh"' ||
+  montrer "$BANC/sortie"
+rm "$FEN"
+deployer --sans-compiler
+code=$?
+voir "fenêtre absente : rien n'est copié sur la clé" \
+  eval '((code == 0)) && [[ ! -e $K/Linux ]] && dit "$BANC/sortie" "pas ceux de outils/compiler-version.sh"' ||
+  montrer "$BANC/sortie"
+mv "$FEN.vraie2" "$FEN"
 rm -rf /run/media/alice
 # --accepter-cle quand la dernière compilation vient d'un worktree : un échec dit, pas un succès silencieux.
 mkdir -p "$K"

@@ -25,8 +25,11 @@ export PATH="$HOME/.cargo/bin:$PATH"
 
 LINUX=target/x86_64-unknown-linux-musl/release/vanguard
 WINDOWS=target/x86_64-pc-windows-gnu/release/vanguard.exe
+# La fenêtre de chacun (vanguard-fenetre), compilée avec lui : il porte gravée son empreinte et n'en lance aucune autre.
+FENETRE_LINUX=target/fenetre/x86_64-unknown-linux-gnu/release/vanguard-fenetre
+FENETRE_WINDOWS=target/fenetre/x86_64-pc-windows-gnu/release/vanguard-fenetre.exe
 # Le repère de la compilation (outils/compiler-version.sh) : le commit compilé, l'arbre propre ou non, l'empreinte
-# des deux programmes. Rien ne part (clé, VM, GitHub) dont les octets ne sont pas ceux qu'il a relevés.
+# des programmes et de leur fenêtre. Rien ne part (clé, VM, GitHub) dont les octets ne sont pas ceux qu'il a relevés.
 REPERE_COMPILATION=target/.compilation
 commit_compile() { sed -n 's/^commit //p' "$REPERE_COMPILATION" 2>/dev/null | head -1; }
 # Le code a-t-il changé depuis le commit compilé ? Les commits qui ne touchent que ce que le programme n'intègre pas
@@ -334,15 +337,34 @@ if [[ -f $WINDOWS ]]; then
     exit 1
   }
 fi
+# Leur fenêtre de même : celle de Linux liée à la glibc du système (--glibc : son seul interpréteur, ni RPATH ni
+# RUNPATH), celle de Windows comme vanguard.exe. Toujours compilée avec eux (outils/compiler-version.sh) : absente,
+# octets_compiles la refuse plus bas.
+for paire in "linux --glibc $FENETRE_LINUX" "windows $FENETRE_WINDOWS"; do
+  read -r -a fenetre <<<"$paire"
+  [[ ! -f ${fenetre[-1]} ]] || ./"$LINUX" deploiement verifier-binaire --attendu "${fenetre[@]}" || {
+    echo "✖ Fenêtre ${fenetre[0]} non vérifiée (protections dites ci-dessus) : rien ne part."
+    exit 1
+  }
+done
 # Les octets qui vont partir sont-ils ceux que outils/compiler-version.sh a relevés à la compilation ? Le dossier de
 # compilation est partagé avec les worktrees, et une compilation ordinaire (cargo build) y remplace les programmes sans
 # toucher le repère : ceux-là ne partent nulle part.
+# Chaque programme part avec sa fenêtre, celle dont il porte l'empreinte (compiler-version.sh l'a relue gravée) : un
+# programme sans la sienne ne part pas.
 octets_compiles() {
   local sorte fichier attendu
-  for sorte in linux-x86_64 windows-x86_64; do
-    fichier=$LINUX
-    [[ $sorte == linux-x86_64 ]] || fichier=$WINDOWS
-    [[ -f $fichier ]] || continue
+  for sorte in linux-x86_64 windows-x86_64 fenetre-linux-x86_64 fenetre-windows-x86_64; do
+    case $sorte in
+      linux-x86_64) fichier=$LINUX ;;
+      windows-x86_64) fichier=$WINDOWS ;;
+      fenetre-linux-x86_64) fichier=$FENETRE_LINUX ;;
+      *)
+        fichier=$FENETRE_WINDOWS
+        [[ -f $WINDOWS ]] || continue
+        ;;
+    esac
+    [[ $sorte != windows-x86_64 || -f $fichier ]] || continue
     attendu=$(sed -n "s/^$sorte //p" "$REPERE_COMPILATION" 2>/dev/null | head -1)
     [[ -n $attendu && $attendu == "$(sha256sum "$fichier" | cut -d' ' -f1)" ]] || return 1
   done
@@ -361,8 +383,8 @@ relancer outils/deployer.sh."
 fi
 # Aucun mot d'attaque que Vanguard cherche en clair dans les programmes qui partent : Defender a supprimé une
 # version pour la seule présence de « sekurlsa:: » (outils/verifier-masque.sh, sur les programmes livrés tels quels).
-MASQUES=("$LINUX")
-[[ -f $WINDOWS ]] && MASQUES+=("$WINDOWS")
+MASQUES=("$LINUX" "$FENETRE_LINUX")
+[[ -f $WINDOWS ]] && MASQUES+=("$WINDOWS" "$FENETRE_WINDOWS")
 bash outils/verifier-masque.sh "${MASQUES[@]}" || { echo "✖ mot d'attaque en clair dans le programme : rien ne part."; exit 1; }
 # Les failles connues de leurs dépendances, lues dans la liste que chaque programme porte (outils/failles-programmes.sh,
 # avis traités comme par cargo deny) : une seule, et rien ne part, ni sur la clé, ni dans la VM, ni sur GitHub
@@ -370,6 +392,10 @@ bash outils/verifier-masque.sh "${MASQUES[@]}" || { echo "✖ mot d'attaque en c
 PROGRAMMES=("$LINUX")
 [[ -f $WINDOWS ]] && PROGRAMMES+=("$WINDOWS")
 outils/failles-programmes.sh "${PROGRAMMES[@]}" || refuser
+# Leur fenêtre, sans les exceptions de Vanguard (fenetre/deny.toml n'en a aucune).
+FENETRES=("$FENETRE_LINUX")
+[[ -f $WINDOWS ]] && FENETRES+=("$FENETRE_WINDOWS")
+outils/failles-programmes.sh --fenetre "${FENETRES[@]}" || refuser
 # Page de la version sur GitHub (Releases) : chaque publication a la sienne, 0.x.0 comme 0.x.y. Il n'y en a qu'une par
 # jour : le lien « dernière version » du README mène toujours à celle du jour. Une version intermédiaire (VANGUARD_INTERMEDIAIRE) va sur la clé et sur GitHub (le code) sans page :
 # la suivante la reprend (outils/publier-version.sh).
@@ -414,6 +440,7 @@ if [[ -z $MODE ]]; then
   fi
 fi
 install -Dm755 "$LINUX" "$HOME/.cargo/bin/vanguard"
+install -Dm755 "$FENETRE_LINUX" "$HOME/.cargo/bin/vanguard-fenetre"
 # Sauvegarde hors de la maison : les commits partent vers le dépôt GitHub (sans bloquer s'il n'y a pas d'Internet),
 # seulement si rien de personnel n'y paraît : code, messages, auteur (outils/confidentialite.py), et si aucun lien
 # n'est mort : documentation, programme, scripts, licences (outils/liens.py).
@@ -460,7 +487,7 @@ elif git remote get-url origin >/dev/null 2>&1; then
     echo "Rien n'est envoyé sur GitHub : garde-fou de confidentialité en panne (code $GARDE), rien conclu (voir ci-dessus)."
   # Une page de version suit : les liens de téléchargement du README se vérifient contre ses fichiers, pas contre la
   # dernière version en ligne (absente sur un dépôt neuf, d'une version en retard sinon).
-  elif ! python3 -I outils/liens.py ${A_PUBLIER:+--version vanguard-windows-x86_64.exe vanguard-linux-x86_64 SHA256SUMS.txt $(bash outils/sbom.sh --noms)}; then
+  elif ! python3 -I outils/liens.py ${A_PUBLIER:+--version vanguard-windows-x86_64.exe vanguard-linux-x86_64 vanguard-fenetre-linux-x86_64 vanguard-fenetre-windows-x86_64.exe SHA256SUMS.txt $(bash outils/sbom.sh --noms)}; then
     echo "Rien n'est envoyé sur GitHub : un lien est mort (voir ci-dessus)."
   # La sortie est gardée : un refus de GitHub (règles de master, historique qui a divergé) n'est pas une panne
   # d'Internet, et le redire au prochain déploiement n'y changerait rien.
@@ -640,7 +667,11 @@ fi
 
 mkdir -p "$CLE"/{Linux,Windows,donnees,source}
 copier "$LINUX" "$CLE/Linux/vanguard"
-[[ -f $WINDOWS ]] && copier "$WINDOWS" "$CLE/Windows/vanguard.exe"
+copier "$FENETRE_LINUX" "$CLE/Linux/vanguard-fenetre"
+if [[ -f $WINDOWS ]]; then
+  copier "$WINDOWS" "$CLE/Windows/vanguard.exe"
+  copier "$FENETRE_WINDOWS" "$CLE/Windows/vanguard-fenetre.exe"
+fi
 # Vanguard ne vise plus le Mac : le programme macOS, son mode d'emploi et son lanceur, posés par les déploiements
 # d'avant, sont retirés de la clé, eux seulement (la clé a déjà été comparée à sa référence, plus haut ; celle réécrite
 # à la fin ne les a plus). Rien d'autre n'est touché dans macOS/ : le dossier reste s'il n'est pas vide.

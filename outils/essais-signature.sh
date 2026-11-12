@@ -631,6 +631,8 @@ if command -v jq >/dev/null; then
   D=$T/dossier-etiquette
   printf 'MZ windows' >"$D/vanguard-windows-x86_64.exe"
   printf 'ELF linux' >"$D/vanguard-linux-x86_64"
+  printf 'MZ fenetre' >"$D/vanguard-fenetre-windows-x86_64.exe"
+  printf 'ELF fenetre' >"$D/vanguard-fenetre-linux-x86_64"
   printf 'sommes' >"$D/SHA256SUMS.txt"
   printf '{}' >"$D/vanguard-linux-x86_64.cdx.json"
   printf '{ }' >"$D/vanguard-windows-x86_64.cdx.json"
@@ -1116,11 +1118,13 @@ else
 fi
 awk '/Copie des programmes différente de leur compilation/ { e = NR }
   /^\{ verifier_binaires linux "\$DOSSIER\/vanguard-linux-x86_64" &&$/ { v = NR }
-  v && NR == v + 1 && /^  verifier_binaires windows "\$DOSSIER\/vanguard-windows-x86_64\.exe"; \} \|\|$/ { w = 1 }
-  v && NR == v + 2 && /rien de publié."; exit 1; }$/ { lw = 1 }
+  v && NR == v + 1 && /^  verifier_binaires windows "\$DOSSIER\/vanguard-windows-x86_64\.exe" &&$/ { w = 1 }
+  v && NR == v + 2 && /^  verifier_binaires linux --glibc "\$DOSSIER\/vanguard-fenetre-linux-x86_64" &&$/ { fl = 1 }
+  v && NR == v + 3 && /^  verifier_binaires windows "\$DOSSIER\/vanguard-fenetre-windows-x86_64\.exe"; \} \|\|$/ { fw = 1 }
+  v && NR == v + 4 && /rien de publié."; exit 1; }$/ { lw = 1 }
   /attendre_execution "\$/ && !a { a = NR }
-  END { exit !(e && w && lw && e < v && v < a) }' "$DEPOT/outils/publier-version.sh" &&
-  ok "publier-version.sh : Linux et Windows vérifiés là où il faut, chaque refus arrête la publication" ||
+  END { exit !(e && w && fl && fw && lw && e < v && v < a) }' "$DEPOT/outils/publier-version.sh" &&
+  ok "publier-version.sh : Linux, Windows et leur fenêtre vérifiés là où il faut, chaque refus arrête la publication" ||
   ko "publier-version.sh : un programme publié sans « verifier-binaire », ou vérifié trop tôt, ou refus ignoré"
 awk '/^\.\/"\$LINUX" deploiement verifier-binaire --attendu linux "\$LINUX" \|\| \{$/ { l = NR }
   l && !x && NR > l && /^  exit 1$/ { x = NR }
@@ -1380,7 +1384,8 @@ grep -qF 'appartient à un autre compte (uid $PROPRIETAIRE)' "$DEPOT/outils/chai
 
 # 8. Les octets publiés, ceux de la compilation de leur commit.
 G=$T/depot-compilation
-mkdir -p "$G/src" "$G/docs" "$G/.github" "$G/target/x86_64-unknown-linux-musl/release" "$G/target/x86_64-pc-windows-gnu/release"
+mkdir -p "$G/src" "$G/docs" "$G/.github" "$G/target/x86_64-unknown-linux-musl/release" "$G/target/x86_64-pc-windows-gnu/release" \
+  "$G/target/fenetre/x86_64-unknown-linux-gnu/release" "$G/target/fenetre/x86_64-pc-windows-gnu/release"
 grep -v '^#' "$DEPOT/.github/hors-code.txt" >"$G/.github/hors-code.txt"
 mkdir -p "$G/outils" && cp "$DEPOT/outils/date-du-code.sh" "$G/outils/"
 echo 'fn main() {}' >"$G/src/main.rs"
@@ -1391,15 +1396,23 @@ C1=$(git -C "$G" rev-parse HEAD)
 programmes_g() { # date gravée
   printf 'ELF VANGUARD-VERSION:0.88.0+%s;' "$1" >"$G/target/x86_64-unknown-linux-musl/release/vanguard"
   printf 'MZ windows' >"$G/target/x86_64-pc-windows-gnu/release/vanguard.exe"
-  printf 'commit %s\npropre %s\nlinux-x86_64 %s\nwindows-x86_64 %s\n' "$C1" "${2:-oui}" \
+  printf 'ELF fenetre' >"$G/target/fenetre/x86_64-unknown-linux-gnu/release/vanguard-fenetre"
+  printf 'MZ fenetre' >"$G/target/fenetre/x86_64-pc-windows-gnu/release/vanguard-fenetre.exe"
+  printf 'commit %s\npropre %s\nlinux-x86_64 %s\nwindows-x86_64 %s\nfenetre-linux-x86_64 %s\nfenetre-windows-x86_64 %s\n' \
+    "$C1" "${2:-oui}" \
     "$(sha256sum "$G/target/x86_64-unknown-linux-musl/release/vanguard" | cut -d' ' -f1)" \
-    "$(sha256sum "$G/target/x86_64-pc-windows-gnu/release/vanguard.exe" | cut -d' ' -f1)" >"$G/target/.compilation"
+    "$(sha256sum "$G/target/x86_64-pc-windows-gnu/release/vanguard.exe" | cut -d' ' -f1)" \
+    "$(sha256sum "$G/target/fenetre/x86_64-unknown-linux-gnu/release/vanguard-fenetre" | cut -d' ' -f1)" \
+    "$(sha256sum "$G/target/fenetre/x86_64-pc-windows-gnu/release/vanguard-fenetre.exe" | cut -d' ' -f1)" \
+    >"$G/target/.compilation"
 }
 { grep '^repere() {' "$DEPOT/outils/publier-version.sh"
   awk '/^verifier_compilation\(\) \{/,/^\}/' "$DEPOT/outils/publier-version.sh"; } >"$T/verifier_compilation.sh"
 compilation() { # commit visé (HEAD par défaut) : la sortie de verifier_compilation, son code
   (cd "$G" && COMMIT=${1:-$(git rev-parse HEAD)} LINUX=target/x86_64-unknown-linux-musl/release/vanguard \
     WINDOWS=target/x86_64-pc-windows-gnu/release/vanguard.exe REPERE=target/.compilation \
+    FENETRE_LINUX=target/fenetre/x86_64-unknown-linux-gnu/release/vanguard-fenetre \
+    FENETRE_WINDOWS=target/fenetre/x86_64-pc-windows-gnu/release/vanguard-fenetre.exe \
     HORS_CODE=$(cat .github/hors-code.txt) bash -c "source '$T/verifier_compilation.sh'; verifier_compilation")
 }
 DATE1=$(git -C "$G" log -1 --format=%ct)
@@ -1421,6 +1434,28 @@ programmes_g "$DATE1"
 printf 'MZ autre' >"$G/target/x86_64-pc-windows-gnu/release/vanguard.exe"
 compilation >/dev/null && ko "publier : un programme remplacé depuis sa compilation est accepté" ||
   ok "publier : un programme remplacé depuis sa compilation (autre worktree, cargo build) est refusé"
+for f in x86_64-unknown-linux-gnu/release/vanguard-fenetre x86_64-pc-windows-gnu/release/vanguard-fenetre.exe; do
+  programmes_g "$DATE1"
+  printf 'autre fenetre' >"$G/target/fenetre/$f"
+  compilation >/dev/null && ko "publier : une fenêtre remplacée depuis sa compilation est acceptée (${f%%/*})" ||
+    ok "publier : une fenêtre remplacée depuis sa compilation est refusée (${f%%/*})"
+  rm "$G/target/fenetre/$f"
+  compilation >/dev/null && ko "publier : une fenêtre absente est acceptée (${f%%/*})" ||
+    ok "publier : un programme sans sa fenêtre est refusé (${f%%/*})"
+done
+# Chaque programme publié porte gravée l'empreinte de la fenêtre publiée avec lui, et elle seule.
+awk '/^grave_sa_fenetre\(\) \{/,/^\}/' "$DEPOT/outils/publier-version.sh" >"$T/grave_sa_fenetre.sh"
+printf 'fenetre' >"$T/fenetre-g"
+H=$(sha256sum "$T/fenetre-g" | cut -d' ' -f1)
+grave() { printf "$1" >"$T/programme-g"; bash -c "source '$T/grave_sa_fenetre.sh'; grave_sa_fenetre '$T/programme-g' '$T/fenetre-g'"; }
+grave "ELF\0VANGUARD-FENETRE:$H;\0fin\0VANGUARD-FENETRE:$H;" &&
+  ok "publier : un programme qui grave l'empreinte de sa fenêtre est accepté" ||
+  ko "publier : un programme qui grave l'empreinte de sa fenêtre est refusé"
+for faux in "ELF" "VANGUARD-FENETRE:AUCUNE;" "VANGUARD-FENETRE:${H:1}${H:0:1};" \
+  "VANGUARD-FENETRE:$H;VANGUARD-FENETRE:AUCUNE;" "VANGUARD-FENETRE:${H^^};"; do
+  grave "$faux" && ko "publier : un programme sans l'empreinte exacte de sa fenêtre est accepté ($faux)" ||
+    ok "publier : refusé, programme sans l'empreinte exacte de sa fenêtre (${faux:0:30}…)"
+done
 programmes_g "$DATE1" non
 compilation >/dev/null && ko "publier : une compilation d'un arbre modifié est acceptée" ||
   ok "publier : une compilation d'un arbre aux changements non commités est refusée"

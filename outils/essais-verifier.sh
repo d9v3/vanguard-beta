@@ -26,7 +26,9 @@
 #      remplacée par une fausse, dépôt jetable).
 #   9. Les dépendances (cargo deny) hors ligne : sautée avec sa raison, jamais un vert ; un refus reste un échec.
 #  10. Le second avis (cargo audit, failles-programmes.sh --depot) : chaque Cargo.lock suivi par git est lu, les
-#      crates à part sans les exceptions de Vanguard ; une faille dans l'une fait échouer (faux cargo-audit).
+#      crates à part sans les exceptions de Vanguard ; une faille dans l'une fait échouer (faux cargo-audit). Les
+#      programmes de la fenêtre (--fenetre) : aucune exception de Vanguard, ses avis hors cibles écartés seulement si
+#      cargo tree les dit absents de ses deux cibles ; sinon rien n'est audité et elle ne part pas.
 #  11. Les essais sautés à l'intérieur d'une étape verte (« (sauté : … », tests de cargo notés) : montrés sous sa
 #      ligne et comptés jusqu'à la dernière, « Tout est vert, avec N essai(s) sauté(s) » (M-8).
 #  12. Le dossier de travail d'un verifier.sh tué (SIGKILL) : retiré au départ suivant (son verrou est libre), jamais
@@ -346,6 +348,39 @@ auditer "fuzz/Cargo.lock"
 [[ $audit_vert == 0 && -n $attendus && $lus == "$attendus" && $a_part_sans_exception == 0 && $CODE == 1 ]] &&
   ok "cargo audit : chaque Cargo.lock du dépôt lu, crates à part sans les exceptions de Vanguard, une faille fait échouer" ||
   ko "cargo audit (vert $audit_vert, refus $CODE, exceptions mal placées $a_part_sans_exception) : lus « $lus », attendus « $attendus » $(tail -n 1 <<<"$SORTIE")"
+rm -rf "$faux"
+
+# La fenêtre (failles-programmes.sh --fenetre) : sa liste gravée compte des bibliothèques qu'elle ne compile pas
+# (cargo auditable, options unies de toutes les plateformes). Aucune exception de Vanguard ; ses HORS_CIBLES écartées
+# seulement si cargo tree les dit absentes de ses deux cibles. Le faux cargo tree en trouve une si « compilee » existe.
+faux=$(mktemp -d "$HOME/.cache/vanguard-dev/essai-audit-fenetre.XXXX")
+cat >"$faux/cargo-audit" <<FAUX
+#!/usr/bin/env bash
+[[ \$1 == --version ]] && { echo "cargo-audit $version"; exit 0; }
+echo "\$*" >>"$faux/appels"
+for p in "\$@"; do [[ -f \$p ]] && echo "Found 'cargo auditable' data in \$p (7 dependencies)"; done
+exit 0
+FAUX
+printf '#!/bin/sh\nexit 0\n' >"$faux/curl"
+printf '#!/bin/sh\n[ "$1" = tree ] || exit 9\n[ -e "%s/compilee" ] && echo "zvariant v0.0.0"\nexit 0\n' "$faux" >"$faux/cargo"
+chmod +x "$faux/cargo-audit" "$faux/curl" "$faux/cargo"
+printf 'ELF' >"$faux/fenetre-linux"
+printf 'MZ' >"$faux/fenetre.exe"
+auditer_fenetre() {
+  : >"$faux/appels"
+  SORTIE=$(env -u VANGUARD_HORS_LIGNE PATH="$faux:$PATH" bash outils/failles-programmes.sh --fenetre \
+    "$faux/fenetre-linux" "$faux/fenetre.exe" 2>&1)
+  CODE=$?
+}
+auditer_fenetre
+fenetre_vert=$CODE
+ecartes=$(grep -oE -- '--ignore [^ ]+' "$faux/appels" | sort -u | paste -sd' ')
+touch "$faux/compilee"
+auditer_fenetre
+[[ $fenetre_vert == 0 && $ecartes == "--ignore RUSTSEC-2026-0370 --ignore RUSTSEC-2026-0371 --ignore RUSTSEC-2026-0372" &&
+  $CODE == 1 && ! -s $faux/appels ]] &&
+  ok "cargo audit de la fenêtre : sans les exceptions de Vanguard, hors cibles écartées seulement prouvées" ||
+  ko "cargo audit de la fenêtre (vert $fenetre_vert, compilée $CODE) : écartés « $ecartes » $(tail -n 1 <<<"$SORTIE")"
 rm -rf "$faux"
 
 # Les essais sautés à l'intérieur d'une étape verte : montrés sous sa ligne, comptés jusqu'à la dernière ligne (même
