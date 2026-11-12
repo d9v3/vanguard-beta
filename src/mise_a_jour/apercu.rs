@@ -260,7 +260,7 @@ impl Monde for Ici {
         github::retenir_pendant_un_apercu(p)
     }
     fn telecharger(&self, p: &Publiee) -> Result<Vec<u8>, Echec> {
-        github::programme_verifie(p).map_err(|e| Echec::echoue("mise_a_jour/telecharger", e))
+        github::programme_verifie(p).map_err(|e| Echec::echoue("mise_a_jour/remise", e))
     }
     fn essai(&self) -> Essai {
         super::essayer

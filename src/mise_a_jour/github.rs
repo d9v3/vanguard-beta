@@ -524,16 +524,16 @@ pub(super) fn retenir(publiee: &Publiee) -> Result<(), Echec> {
 /// erreurs ne s'y écrit pas ; un plancher pas écrit y est dit, jamais tu.
 fn retenir_en(publiee: &Publiee, plancher_exige: bool) -> Result<(), Echec> {
     if publiee.revoque {
-        retenir_revocation().map_err(|e| Echec::echoue("mise_a_jour/revocation", e.to_string()))?;
+        retenir_revocation().map_err(|e| Echec::echoue("mise_a_jour/remise", e.to_string()))?;
     }
     let vue = plus_haute_vue()?;
     // Retenue seulement une fois la signature vérifiée : un manifeste quelconque ne fait pas monter la barre.
-    if comparer_a_la_vue(vue, publiee.version).map_err(|e| Echec::refuse("mise_a_jour/vue", e))? {
+    if comparer_a_la_vue(vue, publiee.version).map_err(|e| Echec::refuse("mise_a_jour/remise", e))? {
         let v = publiee.version;
         let ecrite = crate::sceau::ecrire(crate::sceau::VERSIONS, format!("{}.{}.{}+{}", v.0, v.1, v.2, v.3));
         if let (Err(e), true) = (ecrite, plancher_exige) {
             return Err(Echec::echoue(
-                "mise_a_jour/vue",
+                "mise_a_jour/remise",
                 trf!(
                     "la version {} vue n'a pas pu être retenue ({}) : non vérifié, réessayez dans un instant",
                     "version {} seen could not be kept ({}): not verified, try again in a moment",
@@ -563,7 +563,7 @@ pub(super) fn juger_la_vue(publiee: &Publiee) -> Result<(), Echec> {
     };
     comparer_a_la_vue(vue, publiee.version)
         .map(|_| ())
-        .map_err(|e| Echec::refuse("mise_a_jour/vue", e))
+        .map_err(|e| Echec::refuse("mise_a_jour/remise", e))
 }
 
 /// La dernière version publiée pour ce système, manifeste téléchargé et sa signature vérifiée, sans rien retenir
