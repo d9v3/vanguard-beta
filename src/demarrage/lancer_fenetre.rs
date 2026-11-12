@@ -190,33 +190,164 @@ fn ouvrir_depuis(c: Contexte, chemin: &Path) -> bool {
         );
         return false;
     }
-    if lancer(&chemin) {
-        return true;
+    match lancer(&chemin) {
+        Lancement::Ouverte => return true,
+        Lancement::Refusee(r) => eprintln!(
+            "{}",
+            trf!(
+                "Fenêtre de Vanguard laissée de côté ({}) : le menu du terminal.",
+                "Vanguard window left aside ({}): the terminal menu.",
+                r
+            )
+        ),
+        Lancement::PasOuverte => eprintln!(
+            "{}",
+            tr!(
+                "La fenêtre de Vanguard ne s'est pas ouverte : le menu du terminal.",
+                "The Vanguard window did not open: the terminal menu."
+            )
+        ),
     }
-    eprintln!(
-        "{}",
-        tr!(
-            "La fenêtre de Vanguard ne s'est pas ouverte : le menu du terminal.",
-            "The Vanguard window did not open: the terminal menu."
-        )
-    );
     false
+}
+
+/// Ce qu'est devenu le lancement de la fenêtre.
+#[derive(Debug)]
+enum Lancement {
+    /// Elle a dit « ouverte ».
+    Ouverte,
+    /// Pas lancée : la raison.
+    Refusee(String),
+    /// Lancée, mais elle n'a pas dit « ouverte » à temps (arrêtée).
+    PasOuverte,
+}
+
+/// Le plus gros fichier de fenêtre lu (la fenêtre compilée fait une dizaine de Mio).
+#[cfg(target_os = "linux")]
+const TAILLE_MAX: u64 = 128 * 1024 * 1024;
+
+/// La fenêtre vérifiée, prête à lancer : une copie de ses octets en mémoire (memfd), scellée, dont l'empreinte est
+/// celle gravée dans ce programme. Lancée d'elle, plus rien ne peut changer ce qui tourne entre la vérification et le
+/// lancement : ni un autre compte, ni ce compte-ci, ni ce programme.
+#[cfg(target_os = "linux")]
+struct Verifiee(std::fs::File);
+
+/// La fenêtre de `chemin`, si elle passe : ouverte sans suivre de lien ni attendre (un tube nommé), jugée sur ce qui
+/// est ouvert (`refus` : fichier ordinaire, à ce compte ou à root, non modifiable par d'autres), lue entière, copiée
+/// dans un memfd scellé, et l'empreinte calculée **sur cette copie scellée**, celle qui sera lancée. Sinon la raison.
+#[cfg(target_os = "linux")]
+fn verifier(chemin: &Path, attendue: &[u8; 32], moi: u32) -> Result<Verifiee, String> {
+    use sha2::Digest;
+    use std::io::Read;
+    use std::os::unix::fs::{FileExt, OpenOptionsExt};
+    let f = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(chemin)
+        .map_err(|e| trf!("illisible : {}", "unreadable: {}", e))?;
+    let m = f.metadata().map_err(|e| trf!("illisible : {}", "unreadable: {}", e))?;
+    if let Some(r) = refus(&m, moi) {
+        return Err(r.into());
+    }
+    let trop = || tr!("fichier trop gros", "file too large").to_string();
+    if m.len() > TAILLE_MAX {
+        return Err(trop());
+    }
+    let mut octets = Vec::new();
+    f.take(TAILLE_MAX.saturating_add(1))
+        .read_to_end(&mut octets)
+        .map_err(|e| trf!("illisible : {}", "unreadable: {}", e))?;
+    if u64::try_from(octets.len()).map_or(true, |n| n > TAILLE_MAX) {
+        return Err(trop());
+    }
+    let copie = super::memfd::scelle("vanguard-fenetre", &octets)
+        .map_err(|e| trf!("copie scellée impossible : {}", "sealed copy impossible: {}", e))?;
+    drop(octets);
+    // L'empreinte de la copie scellée, relue du début : exactement ce que le noyau lancera.
+    let mut h = sha2::Sha256::new();
+    let mut tampon = vec![0u8; 1 << 16];
+    let mut position = 0u64;
+    loop {
+        let n = copie
+            .read_at(&mut tampon, position)
+            .map_err(|e| trf!("copie illisible : {}", "copy unreadable: {}", e))?;
+        let Some(lus) = tampon.get(..n).filter(|l| !l.is_empty()) else {
+            break;
+        };
+        h.update(lus);
+        position = position.saturating_add(u64::try_from(n).unwrap_or(u64::MAX));
+    }
+    let lue: [u8; 32] = h.finalize().into();
+    if lue != *attendue {
+        return Err(tr!(
+            "son empreinte n'est pas celle de la fenêtre de cette version",
+            "its fingerprint is not that of this version's window"
+        )
+        .into());
+    }
+    Ok(Verifiee(copie))
+}
+
+/// La commande qui lance la copie scellée : `/proc/self/fd/<n>`, ce que fait `fexecve` (glibc, musl). Le descripteur
+/// est fermé au lancement (`MFD_CLOEXEC`) : la fenêtre ne l'hérite pas. Son nom affiché reste `vanguard-fenetre`.
+#[cfg(target_os = "linux")]
+fn commande(v: &Verifiee) -> Command {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+    let mut c = Command::new(format!("/proc/self/fd/{}", v.0.as_raw_fd()));
+    c.arg0("vanguard-fenetre");
+    c
+}
+
+/// Ailleurs que sous Linux, pas encore de lancement vérifié : jamais lancée.
+#[cfg(not(target_os = "linux"))]
+struct Verifiee(std::convert::Infallible);
+
+#[cfg(not(target_os = "linux"))]
+fn verifier(_chemin: &Path, _attendue: &[u8; 32]) -> Result<Verifiee, String> {
+    Err(tr!(
+        "lancement vérifié pas encore fait ici",
+        "verified launch not done here yet"
+    )
+    .into())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn commande(v: &Verifiee) -> Command {
+    match v.0 {}
 }
 
 /// Lance la fenêtre et attend qu'elle dise « ouverte ». Elle n'est pas attendue au-delà : ce programme s'arrête et
 /// la fenêtre continue seule. Sa sortie d'erreur est jetée (un pilote graphique bavard ne salit pas le terminal).
 /// Pas par `commande::lancer`, qui attend la fin du programme : la fenêtre vit après nous ; lancée par les coulisses
 /// quand même (`spawn_suivi`), elle s'y voit.
-fn lancer(chemin: &Path) -> bool {
+fn lancer(chemin: &Path) -> Lancement {
     // Seconde garde, au seul endroit qui construit la commande : rien ne lance la fenêtre tant qu'elle n'est pas livrée.
     if !FENETRE_LIVREE {
-        return false;
+        return Lancement::Refusee(tr!("pas livrée", "not shipped").into());
     }
     // Une compilation sans empreinte de fenêtre (`cargo build`, les essais) n'en lance jamais aucune.
-    let Some(super::empreinte_fenetre::Gravee::Empreinte(_)) = super::empreinte_fenetre::de_ce_programme() else {
-        return false;
+    let Some(super::empreinte_fenetre::Gravee::Empreinte(attendue)) = super::empreinte_fenetre::de_ce_programme()
+    else {
+        return Lancement::Refusee(
+            tr!(
+                "ce programme a été compilé sans empreinte de fenêtre",
+                "this program was built without a window fingerprint"
+            )
+            .into(),
+        );
     };
-    let mut c = Command::new(chemin);
+    #[cfg(target_os = "linux")]
+    let verifiee = verifier(chemin, &attendue, crate::socle::uid());
+    #[cfg(not(target_os = "linux"))]
+    let verifiee = verifier(chemin, &attendue);
+    // `verifiee` vit jusqu'à la fin : ce qu'elle tient doit rester ouvert jusqu'au lancement (sous Linux, fermé
+    // avant, le numéro de son descripteur pourrait désigner un autre fichier ouvert entre-temps).
+    let verifiee = match verifiee {
+        Ok(v) => v,
+        Err(r) => return Lancement::Refusee(r),
+    };
+    let mut c = commande(&verifiee);
     c.arg("--depuis-vanguard")
         .arg("--langue")
         .arg(if crate::langue::anglais() { "en" } else { "fr" })
@@ -228,11 +359,11 @@ fn lancer(chemin: &Path) -> bool {
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut c, 0);
     let Ok(mut enfant) = c.spawn_suivi() else {
-        return false;
+        return Lancement::PasOuverte;
     };
     let Some(sortie) = enfant.stdout.take() else {
         crate::commande::arreter(&mut enfant);
-        return false;
+        return Lancement::PasOuverte;
     };
     let (envoi, reception) = mpsc::channel();
     let lecture = crate::socle::fil::lancer("fenetre-ouverte", move || {
@@ -246,13 +377,13 @@ fn lancer(chemin: &Path) -> bool {
     // Sans fil pour lire sa réponse, la fenêtre n'est pas attendue : arrêtée, comme si elle n'avait pas répondu.
     if lecture.is_err() {
         crate::commande::arreter(&mut enfant);
-        return false;
+        return Lancement::PasOuverte;
     }
     if reception.recv_timeout(ATTENTE) == Ok(true) {
-        return true;
+        return Lancement::Ouverte;
     }
     crate::commande::arreter(&mut enfant);
-    false
+    Lancement::PasOuverte
 }
 
 #[cfg(test)]
@@ -307,8 +438,67 @@ mod tests {
             eleve: false,
         };
         assert!(!ouvrir_depuis(devant, &f), "la fenêtre n'est pas livrée : le menu");
-        assert!(!lancer(&f), "jamais lancée, même appelée directement");
+        assert!(
+            !matches!(lancer(&f), Lancement::Ouverte),
+            "jamais lancée, même appelée directement"
+        );
         assert!(!temoin.exists(), "le faux voisin a tourné");
+        let _ = std::fs::remove_dir_all(&dossier);
+    }
+
+    /// LIV-1 : seuls les octets dont l'empreinte est attendue sont lancés, depuis une copie scellée en mémoire ; la
+    /// fenêtre remplacée sur le disque après la vérification ne tourne pas ; un lien, une fenêtre modifiable par
+    /// d'autres ou d'une autre empreinte ne sont pas lancés. `echo` y joue la fenêtre (un vrai programme ELF : il dit
+    /// ce qu'on lui donne).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn seuls_les_octets_verifies_sont_lances() {
+        use sha2::Digest;
+        use std::io::Write;
+        use std::os::unix::fs::{FileExt, PermissionsExt};
+        let Ok(echo) = std::fs::read("/usr/bin/echo") else {
+            return crate::essais::saute("pas de /usr/bin/echo");
+        };
+        let dossier = crate::socle::dossier_local().join("essai-fenetre-verifiee");
+        let _ = std::fs::remove_dir_all(&dossier);
+        std::fs::create_dir_all(&dossier).unwrap();
+        let poser = |nom: &str, octets: &[u8], mode: u32| {
+            let f = dossier.join(nom);
+            let _ = std::fs::remove_file(&f);
+            std::fs::write(&f, octets).unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(mode)).unwrap();
+            f
+        };
+        let f = poser("vanguard-fenetre", &echo, 0o755);
+        let bonne: [u8; 32] = sha2::Sha256::digest(&echo).into();
+        let moi = crate::socle::uid();
+        let mut autre = bonne;
+        autre[0] ^= 1;
+        assert!(verifier(&f, &autre, moi).is_err(), "une autre empreinte : refusée");
+        let v = verifier(&f, &bonne, moi).unwrap();
+        // Remplacée sur le disque après la vérification : c'est quand même la fenêtre vérifiée qui tourne.
+        let temoin = dossier.join("lancee");
+        let faux = format!("#!/bin/sh\n: > '{}'\necho {OUVERTE}\n", temoin.display());
+        poser("vanguard-fenetre", faux.as_bytes(), 0o755);
+        let sortie = commande(&v).arg("vérifiée").stderr(Stdio::null()).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&sortie.stdout).trim_end(), "vérifiée");
+        assert!(!temoin.exists(), "le fichier posé après la vérification a tourné");
+        // Scellée : ni réécrite en place (au début : écrire à la fin l'allongerait, refusé pour une autre raison), ni
+        // raccourcie, ni allongée, et les sceaux ne se retirent plus.
+        assert!(v.0.write_at(b"x", 0).is_err(), "réécrite en place");
+        assert!((&v.0).write_all(b"x").is_err());
+        assert!(v.0.set_len(0).is_err());
+        assert!(v.0.set_len(1 << 20).is_err());
+        let tous = libc::F_SEAL_WRITE | libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_SEAL;
+        assert_eq!(super::super::memfd::sceaux(&v.0).unwrap() & tous, tous);
+        // Un lien vers la vraie fenêtre : pas suivi. Modifiable par d'autres : refusée.
+        let vraie = poser("vraie", &echo, 0o755);
+        let lien = dossier.join("lien");
+        std::os::unix::fs::symlink(&vraie, &lien).unwrap();
+        assert!(verifier(&lien, &bonne, moi).is_err(), "un lien est suivi");
+        assert!(verifier(&vraie, &bonne, moi).is_ok());
+        std::fs::set_permissions(&vraie, std::fs::Permissions::from_mode(0o757)).unwrap();
+        assert!(verifier(&vraie, &bonne, moi).is_err(), "modifiable par d'autres");
         let _ = std::fs::remove_dir_all(&dossier);
     }
 

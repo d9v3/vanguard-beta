@@ -6,3 +6,5 @@ pub(crate) mod arguments;
 pub(crate) mod droits;
 pub(crate) mod empreinte_fenetre;
 pub(crate) mod lancer_fenetre;
+#[cfg(target_os = "linux")]
+mod memfd;
