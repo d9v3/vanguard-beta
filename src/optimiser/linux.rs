@@ -421,12 +421,26 @@ fn dossiers_autostart_selon(variable: Option<&str>, defaut: &Path) -> (Vec<PathB
         trf!(
             "XDG_CONFIG_DIRS ({}) ne nomme pas {} ou nomme un chemin relatif : la session lit peut-être d'autres entrées ; {} est lu quand même, les chemins relatifs ne le sont pas",
             "XDG_CONFIG_DIRS ({}) does not name {} or names a relative path: the session may read other entries; {} is read anyway, relative paths are not",
-            montrer_borne(variable, 200),
-            defaut.display(),
-            defaut.join("autostart").display()
+            montrer_borne(&sans_maison_xdg(variable), 200),
+            court(defaut),
+            court(&defaut.join("autostart"))
         )
     });
     (dossiers, phrase)
+}
+
+/// La valeur de XDG_CONFIG_DIRS, chaque dossier sous le dossier personnel montré « ~/… » (`court`) : la phrase part
+/// dans `--json`, au rapport et au journal, sans le nom du compte (relecture 0.95, H-3, comme R-4 pour la commande).
+fn sans_maison_xdg(variable: &str) -> String {
+    let maison = crate::socle::personnel::dossier_personnel();
+    variable
+        .split(':')
+        .map(|d| match maison.as_deref() {
+            Some(m) if Path::new(d) == m => "~".to_string(),
+            _ => court(Path::new(d)),
+        })
+        .collect::<Vec<_>>()
+        .join(":")
 }
 
 /// Un texte venu de l'extérieur prêt à montrer (`ui::affichable`), coupé à `max` caractères.
@@ -2921,6 +2935,16 @@ mod tests {
         // Un nom piégé est montré neutralisé.
         let (_, phrase) = dossiers(Some("/a\u{1b}[2Kb"));
         assert!(phrase.is_some_and(|p| !p.contains('\u{1b}')));
+        // Relecture 0.95, H-3 : un dossier sous le dossier personnel est montré « ~/… », jamais avec le nom du
+        // compte (la phrase part dans --json, au rapport et au journal).
+        let maison = crate::socle::personnel::dossier_personnel().expect("HOME");
+        let variable = format!("/opt/xdg:{m}/xdg-perso:{m}:{m}/", m = maison.display());
+        let (_, phrase) = dossiers(Some(&variable));
+        let phrase = phrase.expect("la variable cache /etc/xdg");
+        assert!(
+            !phrase.contains(&*maison.to_string_lossy()) && phrase.contains("/opt/xdg:~/xdg-perso:~:~"),
+            "{phrase}"
+        );
     }
 
     /// Relecture 0.94, m-4 : un refus d'écrire une entrée du compte retient sa raison (celle de la ligne ✖), une

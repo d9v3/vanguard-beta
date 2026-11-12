@@ -4030,6 +4030,8 @@ mod demarrage_sous_attaque {
                 serde_json::from_str(&s.texte).unwrap_or_else(|e| panic!("{e} : {} {}", s.texte, s.erreurs));
             assert!(v["constats"].to_string().contains("Panneau —"), "{variable} : {v}");
             let manques = v["couverture"].to_string();
+            // Relecture 0.95, H-3 : le dossier personnel est montré « ~ », jamais en entier.
+            assert!(!manques.contains(&*b.maison.to_string_lossy()), "{manques}");
             // « : » ne nomme aucun dossier : rien n'est caché, rien à dire.
             assert_eq!(
                 manques.contains("XDG_CONFIG_DIRS"),
