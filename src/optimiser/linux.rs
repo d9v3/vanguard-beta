@@ -1823,9 +1823,27 @@ fn releve_selon(
         let lus = crate::machine::linux::noms_d_unite(&ordre, unite)
             .map_or_else(|| Err(chemin.clone()), |noms| complements_lus(&ordre, &noms));
         let commandes = match &lus {
-            Ok(lus) => crate::machine::linux::exec_start_effectif(
-                std::iter::once(texte.as_str()).chain(lus.iter().map(|(_, t)| t.as_str())),
-            ),
+            Ok(lus) => {
+                // Ce qu'un complément change d'autre que la commande (ExecStartPre=, conditions, variables) n'est pas
+                // montré : le dire (relecture 0.95, V-8). Un complément masqué (/dev/null, vide) ne compte pas.
+                let changent: Vec<String> = lus
+                    .iter()
+                    .filter(|(_, t)| !t.is_empty())
+                    .map(|(c, _)| court(c))
+                    .collect();
+                if !changent.is_empty() {
+                    manques.push(trf!(
+                        "{} : commande montrée avec ses seules lignes ExecStart=, complétée par {} fichier(s) ({}) dont le reste (ExecStartPre=, conditions, variables) n'est pas montré",
+                        "{}: command shown with its ExecStart= lines only, completed by {} file(s) ({}) whose other settings (ExecStartPre=, conditions, variables) are not shown",
+                        crate::ui::affichable(unite),
+                        changent.len(),
+                        crate::ui::affichable(&changent.join(", "))
+                    ));
+                }
+                crate::machine::linux::exec_start_effectif(
+                    std::iter::once(texte.as_str()).chain(lus.iter().map(|(_, t)| t.as_str())),
+                )
+            }
             Err(c) => {
                 manques.push(trf!(
                     "commande de {} peut-être autre que celle montrée : complément pas lu ({})",
@@ -3889,6 +3907,12 @@ mod tests {
         .unwrap();
         assert_eq!(commande().0, "/home/a/charge    --vite");
         // a.conf passe avant b.conf : b efface ce que a pose.
+        // V-8 (relecture 0.95) : ce que le complément change d'autre que la commande n'est pas montré ; le dire.
+        let (_, manques) = commande();
+        assert!(
+            manques.len() == 1 && manques[0].contains("complétée par 1 fichier") && manques[0].contains("note.service"),
+            "{manques:?}"
+        );
         std::fs::write(c.join("a.conf"), "[Service]\nExecStart=/home/a/autre\n").unwrap();
         assert_eq!(commande().0, "/home/a/charge    --vite");
         // c.conf, après : s'ajoute (Type=oneshot).
@@ -3928,6 +3952,38 @@ mod tests {
         assert!(
             manques.len() == 1 && manques[0].contains("peut-être autre") && manques[0].contains("t.conf"),
             "{manques:?}"
+        );
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// V-8 (relecture 0.95) : une unité du compte qui ne se lit pas (ici, pas en UTF-8) ne montre pas son seul nom
+    /// en silence : le manque est dit, et elle n'est pas proposée (relecture 0.94, R-7 : pas de valeur d'avant lue).
+    #[test]
+    fn service_du_compte_illisible_est_dit() {
+        let base = dossier_jetable("service-illisible");
+        let config = base.join("config");
+        let unites = config.join("systemd/user");
+        std::fs::create_dir_all(&unites).unwrap();
+        std::fs::write(
+            unites.join("note.service"),
+            b"[Service]\nExecStart=/usr/bin/note \xff\n",
+        )
+        .unwrap();
+        let (l, manques, _) = releve_selon(
+            &config,
+            &[],
+            "Hyprland",
+            Some("note.service enabled enabled".to_string()),
+            Ok(ordre_essai(&config, &[])),
+            &[],
+        );
+        assert!(
+            l.is_empty()
+                && manques
+                    .iter()
+                    .any(|m| m.contains("note.service") && m.contains("pas lu")),
+            "{} {manques:?}",
+            l.len()
         );
         std::fs::remove_dir_all(&base).unwrap();
     }

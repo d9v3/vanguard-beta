@@ -7350,7 +7350,9 @@ fn exec_de_popt(ligne: &str) -> Option<String> {
 /// chaque fichier de leurs popt.d. Une ligne « exec » lance un programme quand le programme nommé reçoit l'option :
 /// sa commande se juge comme une ligne lancée (`juger_lancement`, liste permise là où le compte écrit ; un fichier
 /// que seul root peut changer, celle de root, comme ailleurs). Une ligne « exec » sans commande, là où le compte écrit,
-/// est levée comme ce qui ne se lit pas. Un ~/.popt qui existe mais ne se lit pas (dossier, illisible) est dit.
+/// est levée comme ce qui ne se lit pas. Un réglage présent qui ne se lit pas (dossier, illisible, popt.d qui ne se
+/// parcourt pas) est dit, jamais sauté (relecture 0.95, V-8) : levé s'il est au compte ou que le compte peut le
+/// changer, en information s'il est à root seul (rsync, lancé par le même compte, ne le lit pas non plus).
 fn juger_popt(t: &mut Lancements) {
     let h = t.r.maison.clone();
     let compte = h.join(".popt");
@@ -7358,21 +7360,24 @@ fn juger_popt(t: &mut Lancements) {
     for d in ["etc", "usr/etc"] {
         let d = t.r.racine.join(d);
         fichiers.push(d.join("popt"));
-        let mut dans: Vec<std::path::PathBuf> = std::fs::read_dir(d.join("popt.d"))
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|e| e.path())
-            .collect();
-        dans.sort();
-        fichiers.extend(dans);
+        let dossier = d.join("popt.d");
+        let dans: std::io::Result<Vec<std::path::PathBuf>> =
+            std::fs::read_dir(&dossier).and_then(|e| e.map(|e| e.map(|e| e.path())).collect());
+        match dans {
+            Ok(mut dans) => {
+                dans.sort();
+                fichiers.extend(dans);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && std::fs::symlink_metadata(&dossier).is_err() => {}
+            Err(_) => popt_non_lu(t, &dossier, false),
+        }
     }
     for f in fichiers {
         let Some(lu) = lire(&f, &h, t) else {
-            // Un tube, `lire` l'a déjà dit ; tout autre ~/.popt présent qui ne se lit pas : dit ici.
+            // Un tube, `lire` l'a déjà dit ; tout autre réglage présent qui ne se lit pas : dit ici.
             let tube = std::fs::metadata(&f).is_ok_and(|m| std::os::unix::fs::FileTypeExt::is_fifo(&m.file_type()));
-            if f == compte && std::fs::symlink_metadata(&f).is_ok() && !tube {
-                non_lu(&f, &h, t, tr!("présent mais illisible", "present but unreadable"));
+            if std::fs::symlink_metadata(&f).is_ok() && !tube {
+                popt_non_lu(t, &f, f == compte);
             }
             continue;
         };
@@ -7389,6 +7394,21 @@ fn juger_popt(t: &mut Lancements) {
                 Some(_) | None => {}
             }
         }
+    }
+}
+
+/// Un réglage de popt `f` présent qui ne se lit pas : levé (`non_lu`) s'il est au `compte` ou que le compte peut le
+/// changer ; à root seul, une information (le compte ne le lit pas plus que Vanguard), jamais un silence (V-8).
+fn popt_non_lu(t: &mut Lancements, f: &Path, compte: bool) {
+    let h = t.r.maison.clone();
+    if compte || !de_root_seul(f) {
+        non_lu(f, &h, t, tr!("présent mais illisible", "present but unreadable"));
+    } else {
+        t.informations.push(trf!(
+            "{} : réglage de popt présent mais illisible, ce qu'il fait faire à rsync n'est pas vu",
+            "{}: popt settings present but unreadable, what it makes rsync do is not seen",
+            court(f, &h)
+        ));
     }
 }
 
@@ -10276,6 +10296,9 @@ mod tests {
                 charge,
                 Some("usr/etc/popt.d/z:1 : "),
             ),
+            // V-8 (relecture 0.95) : un réglage du système présent qui ne se lit pas est dit, jamais sauté.
+            ("dossier /etc/popt", "/etc/popt/", "", Some("etc/popt : ")),
+            ("popt.d illisible", "/usr/etc/popt.d", "", Some("usr/etc/popt.d : ")),
         ];
         let mut faux = Vec::new();
         for (i, (nom, fichier, texte, attendu)) in cas.iter().enumerate() {
@@ -10285,6 +10308,7 @@ mod tests {
             match *fichier {
                 "" => {}
                 ".popt/" => std::fs::create_dir_all(m.chemin(".popt")).unwrap(),
+                f if f.ends_with('/') => std::fs::create_dir_all(m.racine.join(f.trim_matches('/'))).unwrap(),
                 f if f.starts_with('/') => {
                     let f = m.racine.join(f.trim_start_matches('/'));
                     std::fs::create_dir_all(f.parent().unwrap()).unwrap();
@@ -10300,6 +10324,7 @@ mod tests {
                         && c.message.contains(e)
                         && crate::apprentissage::declarable(&c).is_err()
                         && (*nom == "dossier" || refus(&c).contains("popt"))
+                        && (!nom.contains("dossier") && !nom.contains("illisible") || c.message.contains("non vérifié"))
                 }
             };
             if !juste {
