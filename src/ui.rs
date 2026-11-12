@@ -195,8 +195,9 @@ pub(crate) fn selecteur(c: char) -> bool {
     matches!(u32::from(c), 0x180B..=0x180D | 0x180F | 0xFE00..=0xFE0E | 0xE0100..=0xE01EF)
 }
 
-/// Les invisibles rares, sans usage dans un nom ni dans une sortie : commandes de mise en forme désuètes (U+206A à
-/// U+206F : échange symétrique, formes arabes, formes des chiffres), annotations interlinéaires (U+FFF9 à U+FFFB),
+/// Les invisibles rares, sans usage dans un nom ni dans une sortie : le point réservé U+2065 (ignoré par défaut :
+/// invisible s'il est un jour attribué), commandes de mise en forme désuètes (U+206A à U+206F : échange symétrique,
+/// formes arabes, formes des chiffres), annotations interlinéaires (U+FFF9 à U+FFFB),
 /// voyelles inhérentes khmères que l'Unicode déconseille (U+17B4, U+17B5), les autres caractères de format d'Unicode
 /// (catégorie Cf : kaithi U+110BD et U+110CD, hiéroglyphes U+13430 à U+1343F, sténographie U+1BCA0 à U+1BCA3, musique
 /// U+1D173 à U+1D17A), le remplissage khitan (U+16FE4), les points réservés qui seraient invisibles s'ils étaient
@@ -211,6 +212,7 @@ pub(crate) fn invisible_rare(c: char) -> bool {
         || matches!(
             n,
             0x17B4..=0x17B5
+                | 0x2065
                 | 0x206A..=0x206F
                 | 0xFDD0..=0xFDEF
                 | 0xFFF0..=0xFFFB
@@ -1277,6 +1279,8 @@ mod tests {
             (0x115F, 0x1160),
             (0x17B4, 0x17B5),
             (0x180B, 0x180F),
+            // Relecture 0.95, L-2 : toute la plage 2060-206F (U+2065, réservé et ignorable par défaut, passait).
+            (0x2060, 0x206F),
             (0x2800, 0x2800),
             (0x3164, 0x3164),
             (0xFDD0, 0xFDEF),
@@ -1295,7 +1299,7 @@ mod tests {
         }
         assert!(vus > 4000, "{vus}");
         for n in [
-            0xFFF0, 0xFDD0, 0x16FE4, 0xE0080, 0xE01F0, 0xE0FFF, 0xFFFE, 0x1FFFF, 0x10_FFFE,
+            0x2065, 0xFFF0, 0xFDD0, 0x16FE4, 0xE0080, 0xE01F0, 0xE0FFF, 0xFFFE, 0x1FFFF, 0x10_FFFE,
         ] {
             let c = char::from_u32(n).unwrap();
             assert!(!piege(c) && invisible_rare(c), "U+{n:04X}");

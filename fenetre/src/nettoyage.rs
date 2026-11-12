@@ -56,7 +56,7 @@ pub fn selecteur(c: char) -> bool {
     matches!(u32::from(c), 0x180B..=0x180D | 0x180F | 0xFE00..=0xFE0E | 0xE0100..=0xE01EF)
 }
 
-/// Les invisibles rares, sans usage dans un nom (U+206A à U+206F, U+FFF9 à U+FFFB, U+17B4, U+17B5, les autres
+/// Les invisibles rares, sans usage dans un nom (U+2065, U+206A à U+206F, U+FFF9 à U+FFFB, U+17B4, U+17B5, les autres
 /// caractères de format d'Unicode, points réservés invisibles, non-caractères) : montrés « � ». La liste de
 /// `ui::invisible_rare` de Vanguard.
 pub fn invisible_rare(c: char) -> bool {
@@ -66,6 +66,7 @@ pub fn invisible_rare(c: char) -> bool {
         || matches!(
             n,
             0x17B4..=0x17B5
+                | 0x2065
                 | 0x206A..=0x206F
                 | 0xFDD0..=0xFDEF
                 | 0xFFF0..=0xFFFB
