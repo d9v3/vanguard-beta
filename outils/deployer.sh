@@ -235,24 +235,32 @@ ci_verte() {
   [[ $n =~ ^[1-9][0-9]*$ ]]
 }
 
-# Ce qui part sur GitHub est borné : le commit de départ (noté ici, puis après une récupération de GitHub à CI verte),
-# plus les seuls commits que deployer.sh fait lui-même, qui ne touchent que FICHIERS_DU_DEPLOIEMENT. Un commit posé
-# sur master pendant le déploiement (une autre fenêtre) ferait partir du code que personne n'a vérifié : l'envoi est
-# alors refusé (envoi_borne, lue telle quelle par outils/essais-livrer-branche.sh).
+# Ce qui part sur GitHub est borné (relecture 0.95, V-2 et V-3). La tête est notée une fois (TETE, plus bas) : c'est
+# elle qui est jugée, puis poussée telle quelle ("$TETE:refs/heads/master"), jamais le master du moment, qui a pu
+# recevoir un commit d'une autre fenêtre pendant les vérifications. La plage part de ce que GitHub a déjà
+# (origin/master, récupéré ou connu), pas du master local : chaque commit qui n'y est pas doit être le commit vérifié
+# par outils/livrer-branche.sh (noté dans VERIFIE_REF) ou l'un de ses ancêtres, ou un commit de deployer.sh lui-même,
+# qui ne touche que FICHIERS_DU_DEPLOIEMENT (jamais une fusion). Un commit d'ailleurs bloque donc chaque envoi tant
+# qu'il est là, pas seulement celui du déploiement où il est arrivé (envoi_borne, lue telle quelle par
+# outils/essais-livrer-branche.sh).
 FICHIERS_DU_DEPLOIEMENT='assets/oui\.tsv|assets/captures/.+|assets/partage\.png|docs/index\.html'
-envoi_borne() { # commit de départ
-  local fusions fichiers hors
-  git merge-base --is-ancestor "$1" HEAD 2>/dev/null ||
-    { echo "  master ($(git rev-parse --short=12 HEAD)) ne descend plus du départ (${1:0:12})"; return 1; }
-  fusions=$(git rev-list --merges "$1..HEAD") || { echo "  git rev-list a échoué : rien n'est conclu"; return 1; }
-  [[ -z $fusions ]] || { echo "  une fusion a été posée sur master pendant le déploiement"; return 1; }
+VERIFIE_REF=refs/vanguard/verifie
+envoi_borne() { # commit de départ, tête notée
+  local base verifie exclus=() fusions fichiers hors
+  git merge-base --is-ancestor "$1" "$2" 2>/dev/null ||
+    { echo "  master (${2:0:12}) ne descend plus du départ (${1:0:12})"; return 1; }
+  base=$(git rev-parse -q --verify refs/remotes/origin/master) && exclus+=("$base")
+  verifie=$(git rev-parse -q --verify "$VERIFIE_REF^{commit}") && exclus+=("$verifie")
+  fusions=$(git rev-list --merges "$2" --not "${exclus[@]}") ||
+    { echo "  git rev-list a échoué : rien n'est conclu"; return 1; }
+  [[ -z $fusions ]] || { echo "  une fusion que GitHub n'a pas, hors du commit vérifié, est sur master"; return 1; }
   # Chaque commit, un à un (un fichier changé puis remis compte aussi) ; -z puis tr : un nom coupé par un retour à
   # la ligne donne deux noms, dont un hors de la liste, jamais un nom accepté par erreur.
-  fichiers=$(git log --format= --name-only --no-renames -z "$1..HEAD" | tr '\0' '\n') ||
+  fichiers=$(git log --format= --name-only --no-renames -z "$2" --not "${exclus[@]}" | tr '\0' '\n') ||
     { echo "  git log a échoué : rien n'est conclu"; return 1; }
   hors=$(grep -vxE "$FICHIERS_DU_DEPLOIEMENT" <<<"$fichiers" | grep -v '^$' || true)
   [[ -z $hors ]] || {
-    echo "  commit(s) posé(s) sur master pendant le déploiement, hors de ce que deployer.sh committe :"
+    echo "  commit(s) sur master que GitHub n'a pas, ni vérifiés (${verifie:-aucun commit vérifié noté}) ni de deployer.sh :"
     head -n 10 <<<"$hors" | sed 's/^/    /'
     return 1
   }
@@ -263,6 +271,9 @@ if [[ -n ${VANGUARD_COMMIT_VERIFIE:-} && $DEPART != "$VANGUARD_COMMIT_VERIFIE" ]
   echo "✖ master (${DEPART:0:12}) n'est plus le commit vérifié (${VANGUARD_COMMIT_VERIFIE:0:12}) : rien n'est déployé."
   exit 1
 fi
+# Le commit que livrer-branche.sh a vérifié est noté : lui et ses ancêtres peuvent partir sur GitHub, à ce
+# déploiement ou à un suivant (sans Internet maintenant, au prochain branchement de la clé).
+[[ -z ${VANGUARD_COMMIT_VERIFIE:-} ]] || git update-ref "$VERIFIE_REF" "$DEPART"
 VENU_DE_GITHUB=""
 if [[ $MODE == --branchement ]]; then
   # Dernière version de GitHub (code modifié depuis un autre ordinateur, puis poussé). Récupérée seulement sans
@@ -405,17 +416,23 @@ install -Dm755 "$LINUX" "$HOME/.cargo/bin/vanguard"
 # seulement si rien de personnel n'y paraît : code, messages, auteur (outils/confidentialite.py), et si aucun lien
 # n'est mort : documentation, programme, scripts, licences (outils/liens.py).
 T_ENVOI=$SECONDS
+TETE=$(git rev-parse HEAD)
 if [[ -n $LOCAL ]]; then
   echo "Rien n'est envoyé sur GitHub (déploiement local)."
-elif git remote get-url origin >/dev/null 2>&1 && ! HORS_DEPART=$(envoi_borne "$DEPART"); then
-  echo "Rien n'est envoyé sur GitHub : master a reçu, pendant le déploiement, plus que les commits de deployer.sh."
+elif git remote get-url origin >/dev/null 2>&1 && [[ $(git symbolic-ref -q HEAD || true) != refs/heads/master ]]; then
+  # La tête part sur le master de GitHub : jamais celle d'une autre branche.
+  echo "Rien n'est envoyé sur GitHub : ce dépôt n'est pas sur la branche master."
+elif git remote get-url origin >/dev/null 2>&1 && ! HORS_DEPART=$(envoi_borne "$DEPART" "$TETE"); then
+  echo "Rien n'est envoyé sur GitHub : master porte plus que le commit vérifié et les commits de deployer.sh."
   printf '%s\n' "$HORS_DEPART"
-  echo "  À vérifier (outils/verifier.sh), puis relancer outils/deployer.sh."
+  echo "  Rien ne partira tant que ces commits sont là : les livrer par outils/livrer-branche.sh (vérifiés, puis notés)."
 elif git remote get-url origin >/dev/null 2>&1; then
   # Code 1 avec son constat : un détail trouvé ; tout autre code (2 : rien conclu), ou un code 1 sans constat (Python
   # qui plante, sa trace) : le garde-fou n'a pas pu juger, dit tel quel (relecture 0.94, N-1).
   GARDE=0
-  SORTIE_GARDE=$(python3 outils/confidentialite.py --envoi 2>&1) || GARDE=$?
+  # La tête notée, exactement ce qui part : de ce que GitHub a déjà (ou tout, sur un dépôt neuf) jusqu'à elle.
+  SORTIE_GARDE=$(python3 outils/confidentialite.py --plage "$(git rev-parse -q --verify refs/remotes/origin/master || true)" \
+    "$TETE" refs/heads/master 2>&1) || GARDE=$?
   [[ -z $SORTIE_GARDE ]] || printf '%s\n' "$SORTIE_GARDE" >&2
   if ((GARDE == 1)) && grep -q '^Confidentialité : [0-9]* détail(s) personnel(s) dans' <<<"$SORTIE_GARDE"; then
     echo "Rien n'est envoyé sur GitHub : un détail personnel paraît dans les commits (voir ci-dessus)."
@@ -427,7 +444,7 @@ elif git remote get-url origin >/dev/null 2>&1; then
     echo "Rien n'est envoyé sur GitHub : un lien est mort (voir ci-dessus)."
   # La sortie est gardée : un refus de GitHub (règles de master, historique qui a divergé) n'est pas une panne
   # d'Internet, et le redire au prochain déploiement n'y changerait rien.
-  elif ENVOI=$(timeout 30 git push -q origin HEAD 2>&1); then
+  elif ENVOI=$(timeout 30 git push -q origin "$TETE:refs/heads/master" 2>&1); then
     echo "Code envoyé sur GitHub."
     # La page du dépôt suit le dépôt : description et version, lien, sujets (outils/github.py, .github/depot.json).
     python3 outils/github.py || echo "Page du dépôt sur GitHub pas mise à jour (voir ci-dessus)."

@@ -22,9 +22,12 @@
 #  13. git status qui échoue (index abîmé), dans l'arbre principal ou dans le worktree : refus avant la vérification,
 #      jamais un arbre pris pour propre.
 #  14. Le garde-fou vidé par le lot même : c'est celui de master qui juge (refus) ; master sans garde-fou : refus.
-#  15. deployer.sh (envoi_borne, lue telle quelle) : n'envoie que le départ et ses propres commits (liste des
-#      fabricants, captures, page des fonctions) ; un commit d'ailleurs, une fusion, un master réécrit : refus ; il
-#      refuse de partir d'un autre commit que celui que livrer-branche.sh a vérifié.
+#  15. deployer.sh (envoi_borne, lue telle quelle) : n'envoie que ce que GitHub a déjà, le commit vérifié (noté) et
+#      ses propres commits (liste des fabricants, captures, page des fonctions) ; un commit d'ailleurs, une fusion,
+#      un master réécrit : refus, et encore au déploiement suivant tant que le commit est là ; il refuse de partir
+#      d'un autre commit que celui que livrer-branche.sh a vérifié.
+#  16. deployer.sh (l'envoi, lu tel quel) : la tête notée est jugée puis poussée, jamais un commit posé sur master
+#      pendant les vérifications (garde-fou, liens).
 # Lancé par outils/verifier.sh.
 #   outils/essais-livrer-branche.sh
 set -uo pipefail
@@ -350,8 +353,8 @@ else
   ko "master sans garde-fou (code $CODE) : $(tail -n 3 <<<"$SORTIE")"
 fi
 
-# 15. deployer.sh : ce qui part sur GitHub est borné au départ plus ses propres commits (envoi_borne, lue telle
-# quelle dans le vrai deployer.sh, avec la garde du commit vérifié), dans un dépôt jetable.
+# 15. deployer.sh : ce qui part sur GitHub est borné à ce que GitHub a, au commit vérifié et à ses propres commits
+# (envoi_borne, lue telle quelle dans le vrai deployer.sh, avec la garde du commit vérifié), dans un dépôt jetable.
 BORNE=$(awk '/^FICHIERS_DU_DEPLOIEMENT=/,/^VENU_DE_GITHUB=""$/' "$RACINE/outils/deployer.sh")
 grep -q '^envoi_borne()' <<<"$BORNE" || ko "envoi_borne introuvable dans outils/deployer.sh"
 D=$TRAVAIL/deployer-borne
@@ -359,8 +362,14 @@ git init -q -b master "$D"
 mkdir -p "$D/src" "$D/docs" "$D/assets/captures"
 echo un >"$D/src/main.rs" && git -C "$D" add -A && git -C "$D" commit -qm départ
 DEPART_B=$(git -C "$D" rev-parse HEAD)
-# borne : envoi_borne lancée dans le dépôt jetable, depuis le départ ; sa sortie dans SORTIE.
-borne() { SORTIE=$(cd "$D" && set -euo pipefail && eval "$(sed '/^DEPART=/,$d' <<<"$BORNE")" && envoi_borne "$DEPART_B" 2>&1); }
+# borne [départ] : envoi_borne lancée dans le dépôt jetable, du départ (DEPART_B sinon) à la tête ; sa sortie dans
+# SORTIE. livrer : la garde du commit vérifié, telle quelle (VANGUARD_COMMIT_VERIFIE), son code dans CODE_V.
+borne() {
+  SORTIE=$(cd "$D" && set -euo pipefail && eval "$(sed '/^DEPART=/,$d' <<<"$BORNE")" &&
+    envoi_borne "${1:-$DEPART_B}" "$(git rev-parse HEAD)" 2>&1)
+}
+livrer() { CODE_V=$(cd "$D" && (set -euo pipefail && VANGUARD_COMMIT_VERIFIE=$1 eval "$BORNE") >/dev/null 2>&1; echo $?); }
+note_ref() { git -C "$D" rev-parse -q --verify refs/vanguard/verifie; }
 engager() { # message fichier…
   local m=$1
   shift
@@ -368,7 +377,14 @@ engager() { # message fichier…
   git -C "$D" add -A && git -C "$D" commit -qm "$m"
 }
 refus=()
-borne || refus+=("départ = tête refusé")
+# Rien de noté, rien sur GitHub : le premier commit n'a été vérifié par personne.
+borne && refus+=("départ jamais vérifié ni sur GitHub accepté")
+git -C "$D" update-ref refs/remotes/origin/master "$DEPART_B"
+borne || refus+=("départ déjà sur GitHub refusé : $SORTIE")
+git -C "$D" update-ref -d refs/remotes/origin/master
+livrer "$DEPART_B"
+((CODE_V == 0)) && [[ $(note_ref) == "$DEPART_B" ]] || refus+=("commit vérifié pas noté (code $CODE_V)")
+borne || refus+=("départ = tête refusé : $SORTIE")
 engager fabricants assets/oui.tsv
 engager captures assets/captures/menu.png assets/partage.png
 engager page docs/index.html
@@ -394,14 +410,65 @@ borne && refus+=("fusion acceptée")
 git -C "$D" reset -q --hard "$DEPART_B~0" && git -C "$D" commit -q --amend -m "départ réécrit"
 borne && refus+=("master qui ne descend plus du départ accepté")
 git -C "$D" reset -q --hard "$FIN_PROPRE"
-CODE_V=$(cd "$D" && (set -euo pipefail && VANGUARD_COMMIT_VERIFIE=$DEPART_B eval "$BORNE") >/dev/null 2>&1; echo $?)
+livrer "$DEPART_B"
 ((CODE_V != 0)) || refus+=("départ autre que le commit vérifié accepté")
-CODE_V=$(cd "$D" && (set -euo pipefail && VANGUARD_COMMIT_VERIFIE=$FIN_PROPRE eval "$BORNE") >/dev/null 2>&1; echo $?)
-((CODE_V == 0)) || refus+=("départ au commit vérifié refusé (code $CODE_V)")
+[[ $(note_ref) == "$DEPART_B" ]] || refus+=("commit noté alors que le départ est refusé")
+# Un commit d'une autre fenêtre reste refusé au déploiement suivant (branchement de la clé), dont le départ est le
+# master du moment, commit étranger compris (relecture 0.95, V-3) ; livré par livrer-branche.sh, il part.
+engager "une autre fenêtre" src/main.rs
+ETRANGER=$(git -C "$D" rev-parse HEAD)
+borne "$ETRANGER" && refus+=("commit étranger accepté au déploiement suivant")
+grep -q '^    src/main.rs$' <<<"$SORTIE" || refus+=("src/main.rs pas nommé au déploiement suivant")
+livrer "$ETRANGER"
+((CODE_V == 0)) && [[ $(note_ref) == "$ETRANGER" ]] || refus+=("commit livré pas noté (code $CODE_V)")
+borne "$ETRANGER" || refus+=("commit livré refusé : $SORTIE")
 if ((${#refus[@]} == 0)); then
-  ok "deployer.sh : envoi borné au départ et à ses propres commits ; départ = commit vérifié"
+  ok "deployer.sh : envoi borné à GitHub, au commit vérifié et à ses propres commits, refus durable ; départ = commit vérifié"
 else
   ko "deployer.sh, envoi borné : ${refus[*]}"
+fi
+
+# 16. deployer.sh : l'envoi, lu tel quel (de T_ENVOI à la durée), dans un dépôt jetable avec un « GitHub » local. Le
+# faux liens.py joue l'autre fenêtre : il committe sur master pendant les vérifications. Ce qui part est la tête
+# notée avant (jugée par le garde-fou, qui la reçoit), jamais ce commit (relecture 0.95, V-2).
+ENVOI_BLOC=$(awk '/^T_ENVOI=\$SECONDS$/ { p = 1 } /^\[\[ -n \$LOCAL \]\] \|\| duree/ { p = 0 } p' "$RACINE/outils/deployer.sh")
+grep -q 'git push' <<<"$ENVOI_BLOC" || ko "l'envoi de outils/deployer.sh est introuvable"
+E=$TRAVAIL/deployer-envoi
+git init -q --bare "$E/github.git"
+git init -q -b master "$E/depot"
+mkdir -p "$E/depot/src" "$E/depot/outils"
+echo un >"$E/depot/src/main.rs" && git -C "$E/depot" add src && git -C "$E/depot" commit -qm départ
+git -C "$E/depot" remote add origin "$E/github.git" && git -C "$E/depot" push -q origin master
+echo lot >"$E/depot/src/lot.rs" && git -C "$E/depot" add src && git -C "$E/depot" commit -qm livré
+LIVRE=$(git -C "$E/depot" rev-parse HEAD)
+git -C "$E/depot" update-ref refs/vanguard/verifie "$LIVRE"
+cat >"$E/depot/outils/confidentialite.py" <<'FAUX'
+import sys
+open(sys.argv[0] + ".vu", "w").write(" ".join(sys.argv[1:]))
+print("Confidentialité : 1 commit(s) relu(s).", file=sys.stderr)
+FAUX
+cat >"$E/depot/outils/liens.py" <<'FAUX'
+import subprocess
+open("src/autre.rs", "w").write("jamais vérifié\n")
+subprocess.run(["git", "add", "src/autre.rs"], check=True)
+subprocess.run(["git", "commit", "-qm", "une autre fenêtre"], check=True)
+FAUX
+: >"$E/depot/outils/github.py"
+# shellcheck disable=SC2034 # lues par l'envoi, évalué juste après
+SORTIE=$(cd "$E/depot" && LOCAL='' MODE=--branchement A_PUBLIER='' VERSION=0 DEPART=$LIVRE &&
+  eval "$(sed '/^DEPART=/,$d' <<<"$BORNE")" && eval "$ENVOI_BLOC" 2>&1)
+refus=()
+grep -q "^Code envoyé sur GitHub" <<<"$SORTIE" || refus+=("rien d'envoyé : $(tail -n 3 <<<"$SORTIE")")
+[[ $(git -C "$E/github.git" rev-parse master 2>&1) == "$LIVRE" ]] || refus+=("GitHub n'a pas la tête notée")
+git -C "$E/github.git" log --format= --name-only master 2>/dev/null | grep -q '^src/autre.rs$' &&
+  refus+=("le commit posé pendant les vérifications est parti")
+[[ $(git -C "$E/depot" log -1 --format=%s) == "une autre fenêtre" ]] || refus+=("la doublure de l'autre fenêtre n'a pas committé")
+[[ $(cat "$E/depot/outils/confidentialite.py.vu" 2>&1) == "--plage $(git -C "$E/github.git" rev-parse master~1) $LIVRE refs/heads/master" ]] ||
+  refus+=("le garde-fou n'a pas jugé la tête notée : $(cat "$E/depot/outils/confidentialite.py.vu" 2>&1)")
+if ((${#refus[@]} == 0)); then
+  ok "deployer.sh : la tête notée est jugée puis poussée, pas un commit posé pendant les vérifications"
+else
+  ko "deployer.sh, envoi : ${refus[*]}"
 fi
 
 ((ECHECS == 0)) || { echo "$ECHECS essai(s) en échec."; exit 1; }
