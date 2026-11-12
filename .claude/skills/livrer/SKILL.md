@@ -18,7 +18,9 @@ ni envoi. Pour la clé entre-temps, sans rien envoyer : `VANGUARD_INTERMEDIAIRE=
    la clé et la VM à jour ; pour une version publiée, refait aussi les captures du README, commit à part). Il s'arrête à
    la première étape en échec, sans rien fusionner : corriger, puis relancer (un commit posé sur la branche pendant la
    vérification fait refuser : seul le commit vérifié est fusionné). Un ménage raté après le déploiement (« ⚠ livré …,
-   ménage à finir à la main ») : la version est partie, retirer worktree et branche à la main. Si l'arbre principal a
+   ménage à finir à la main ») : la version est partie, retirer worktree et branche à la main. « ⚠ fusionné et
+   déployé ici …, mais rien n'est parti sur GitHub » (code 3) : la raison est dite juste au-dessus ; la régler, puis
+   relancer `outils/deployer.sh`, et alors seulement retirer worktree et branche. Si l'arbre principal a
    des changements non committés d'une autre session sur les mêmes fichiers : arrête-toi et demande. Si les captures
    n'ont pas pu se faire, le dire. Rien n'est poussé si un détail personnel paraît ou si un lien est mort
    (`outils/liens.py`) : corriger, puis relancer `outils/deployer.sh`. Un lien douteux montré : l'ouvrir (WebFetch) ;

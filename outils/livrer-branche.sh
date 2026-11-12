@@ -14,6 +14,8 @@
 # deployer.sh reçoit le commit vérifié (VANGUARD_COMMIT_VERIFIE) : il refuse de partir d'un autre, et n'envoie sur
 # GitHub que lui plus ses propres commits (liste des fabricants, captures, page des fonctions) ; un commit posé sur
 # master pendant le déploiement fait refuser l'envoi (envoi_borne).
+# Rien de parti sur GitHub (envoi refusé, sans Internet) : la livraison n'est faite qu'ici, c'est dit (« ⚠ … rien
+# n'est parti sur GitHub »), worktree et branche gardés, code 3 ; jamais « ✔ livré ».
 # S'arrête à la première étape en échec, sans rien fusionner. Le déploiement passe avant le ménage : un ménage raté
 # (worktree verrouillé, branche gardée) est dit, sans défaire une livraison faite.
 # Essais : outils/essais-livrer-branche.sh (dépôts jetables, faux verifier.sh et deployer.sh).
@@ -120,6 +122,16 @@ VANGUARD_COMMIT_VERIFIE=$SHA outils/deployer.sh >"$JOURNAUX/deploiement-$NOM.log
   exit 1
 }
 grep -E "Clé VANGUARD|publiée|sans page|Durées" "$JOURNAUX/deploiement-$NOM.log" | tail -4 || true
+# deployer.sh finit en code 0 même quand rien ne part sur GitHub (borne, garde-fou, lien mort, refus de GitHub, sans
+# Internet) : la raison, avec ses lignes en retrait, est montrée ici, pas laissée dans le journal (relecture 0.95, V-4).
+PAS_ENVOYE=$(awk '/^(Rien n.est envoyé sur GitHub|GitHub refuse l.envoi|GitHub injoignable : le code)/ { p = 1; print; next }
+  p && /^  / { print; next } { p = 0 }' "$JOURNAUX/deploiement-$NOM.log")
+if [[ -n $PAS_ENVOYE ]]; then
+  head -n 15 <<<"$PAS_ENVOYE"
+  echo "⚠ fusionné et déployé ici (${SHA:0:12}), mais rien n'est parti sur GitHub : worktree et branche gardés"
+  echo "  journal : $JOURNAUX/deploiement-$NOM.log ; une fois la cause réglée, relancer outils/deployer.sh"
+  exit 3
+fi
 # Le ménage, une fois la livraison faite : son échec se dit, il ne défait rien.
 menage=()
 git worktree remove "$ARBRE" 2>/dev/null || menage+=("worktree $ARBRE gardé (git worktree remove a refusé)")

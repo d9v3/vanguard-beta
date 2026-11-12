@@ -28,6 +28,8 @@
 #      d'un autre commit que celui que livrer-branche.sh a vérifié.
 #  16. deployer.sh (l'envoi, lu tel quel) : la tête notée est jugée puis poussée, jamais un commit posé sur master
 #      pendant les vérifications (garde-fou, liens).
+#  17. deployer.sh qui finit bien sans rien envoyer sur GitHub (lien mort, refus, sans Internet) : la raison est
+#      montrée, pas de « ✔ livré », worktree et branche gardés, code 3.
 # Lancé par outils/verifier.sh.
 #   outils/essais-livrer-branche.sh
 set -uo pipefail
@@ -80,6 +82,7 @@ printf '%s' "${VANGUARD_COMMIT_VERIFIE:-}" >"$ESSAI_CAS/vu-commit-verifie"
 if [[ -e $ESSAI_CAS/consigne-deploi-branche ]]; then
   git update-ref refs/heads/lot "$(git commit-tree "HEAD^{tree}" -p HEAD -m "pendant le déploiement")"
 fi
+cat "$ESSAI_CAS/consigne-deploi-sortie" 2>/dev/null
 exit "$(cat "$ESSAI_CAS/consigne-deploi" 2>/dev/null || echo 0)"
 FAUX
   printf '%s\n' 'import os, sys' 'cas = os.environ["ESSAI_CAS"]' \
@@ -363,12 +366,12 @@ mkdir -p "$D/src" "$D/docs" "$D/assets/captures"
 echo un >"$D/src/main.rs" && git -C "$D" add -A && git -C "$D" commit -qm départ
 DEPART_B=$(git -C "$D" rev-parse HEAD)
 # borne [départ] : envoi_borne lancée dans le dépôt jetable, du départ (DEPART_B sinon) à la tête ; sa sortie dans
-# SORTIE. livrer : la garde du commit vérifié, telle quelle (VANGUARD_COMMIT_VERIFIE), son code dans CODE_V.
+# SORTIE. garde_verifie : la garde du commit vérifié, telle quelle (VANGUARD_COMMIT_VERIFIE), son code dans CODE_V.
 borne() {
   SORTIE=$(cd "$D" && set -euo pipefail && eval "$(sed '/^DEPART=/,$d' <<<"$BORNE")" &&
     envoi_borne "${1:-$DEPART_B}" "$(git rev-parse HEAD)" 2>&1)
 }
-livrer() { CODE_V=$(cd "$D" && (set -euo pipefail && VANGUARD_COMMIT_VERIFIE=$1 eval "$BORNE") >/dev/null 2>&1; echo $?); }
+garde_verifie() { CODE_V=$(cd "$D" && (set -euo pipefail && VANGUARD_COMMIT_VERIFIE=$1 eval "$BORNE") >/dev/null 2>&1; echo $?); }
 note_ref() { git -C "$D" rev-parse -q --verify refs/vanguard/verifie; }
 engager() { # message fichier…
   local m=$1
@@ -382,7 +385,7 @@ borne && refus+=("départ jamais vérifié ni sur GitHub accepté")
 git -C "$D" update-ref refs/remotes/origin/master "$DEPART_B"
 borne || refus+=("départ déjà sur GitHub refusé : $SORTIE")
 git -C "$D" update-ref -d refs/remotes/origin/master
-livrer "$DEPART_B"
+garde_verifie "$DEPART_B"
 ((CODE_V == 0)) && [[ $(note_ref) == "$DEPART_B" ]] || refus+=("commit vérifié pas noté (code $CODE_V)")
 borne || refus+=("départ = tête refusé : $SORTIE")
 engager fabricants assets/oui.tsv
@@ -410,7 +413,7 @@ borne && refus+=("fusion acceptée")
 git -C "$D" reset -q --hard "$DEPART_B~0" && git -C "$D" commit -q --amend -m "départ réécrit"
 borne && refus+=("master qui ne descend plus du départ accepté")
 git -C "$D" reset -q --hard "$FIN_PROPRE"
-livrer "$DEPART_B"
+garde_verifie "$DEPART_B"
 ((CODE_V != 0)) || refus+=("départ autre que le commit vérifié accepté")
 [[ $(note_ref) == "$DEPART_B" ]] || refus+=("commit noté alors que le départ est refusé")
 # Un commit d'une autre fenêtre reste refusé au déploiement suivant (branchement de la clé), dont le départ est le
@@ -419,7 +422,7 @@ engager "une autre fenêtre" src/main.rs
 ETRANGER=$(git -C "$D" rev-parse HEAD)
 borne "$ETRANGER" && refus+=("commit étranger accepté au déploiement suivant")
 grep -q '^    src/main.rs$' <<<"$SORTIE" || refus+=("src/main.rs pas nommé au déploiement suivant")
-livrer "$ETRANGER"
+garde_verifie "$ETRANGER"
 ((CODE_V == 0)) && [[ $(note_ref) == "$ETRANGER" ]] || refus+=("commit livré pas noté (code $CODE_V)")
 borne "$ETRANGER" || refus+=("commit livré refusé : $SORTIE")
 if ((${#refus[@]} == 0)); then
@@ -470,6 +473,23 @@ if ((${#refus[@]} == 0)); then
 else
   ko "deployer.sh, envoi : ${refus[*]}"
 fi
+
+# 17. Déployé ici, rien de parti sur GitHub : dit, worktree et branche gardés (relecture 0.95, V-4). Une ligne par
+# raison que deployer.sh donne, chacune avec ses lignes en retrait.
+for raison in "Rien n'est envoyé sur GitHub : un lien est mort (voir ci-dessus)." \
+  "GitHub refuse l'envoi de master :" "GitHub injoignable : le code partira au prochain déploiement."; do
+  grep -qF "$raison" "$RACINE/outils/deployer.sh" || ko "« $raison » n'est plus dit par outils/deployer.sh"
+  monter "pas-envoye-${#raison}"
+  printf 'Clé VANGUARD absente\n%s\n  https://exemple.invalid/mort\nDurées : 1 s\n' "$raison" >"$CAS/consigne-deploi-sortie"
+  livrer lot "$LOT"
+  if ((CODE == 3)) && [[ $(tete master) == "$(cat "$CAS/vu-deploye" 2>/dev/null)" && -d $LOT ]] && tete refs/heads/lot >/dev/null &&
+    grep -qF "$raison" <<<"$SORTIE" && grep -q "^  https://exemple.invalid/mort" <<<"$SORTIE" &&
+    grep -q "rien n'est parti sur GitHub" <<<"$SORTIE" && ! grep -q "✔ livré" <<<"$SORTIE"; then
+    ok "rien d'envoyé sur GitHub (« ${raison:0:30}… ») : dit, code 3, worktree et branche gardés"
+  else
+    ko "rien d'envoyé sur GitHub (« ${raison:0:30}… », code $CODE) : $(tail -n 3 <<<"$SORTIE")"
+  fi
+done
 
 ((ECHECS == 0)) || { echo "$ECHECS essai(s) en échec."; exit 1; }
 echo "livrer-branche.sh : tout est juste."
