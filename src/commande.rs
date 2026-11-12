@@ -411,8 +411,16 @@ pub(crate) fn par_le_systeme(nom: &str) -> Command {
 /// TMPDIR, car le compte possède ses fichiers temporaires où qu'ils soient ; TZ, pour que les heures lues soient
 /// celles que Vanguard compte ; XAUTHORITY et le type de session pour le presse-papiers X11 et un programme isolé ;
 /// XDG_DATA_DIRS, sans lequel gsettings ne trouve pas ses schémas sous NixOS (des données, jamais du code : sous le
-/// compte, il ne montre rien que le compte ne puisse déjà écrire dans dconf). Aucune ne choisit un programme ni du
-/// code chargé.
+/// compte, il ne montre rien que le compte ne puisse déjà écrire dans dconf).
+///
+/// HOME, lui, choisit aussi du code (E-3, recontrôle 0.95) : un outil du système écrit en Python (ufw, firewall-cmd,
+/// dnf) charge les paquets Python du compte (~/.local/lib/python*/site-packages : usercustomize, fichiers .pth).
+/// Une maison neutre ne convient pas : flatpak --user, gsettings, crontab ou systemctl --user lisent l'état du
+/// compte lui-même, et liraient alors un compte vide, un « rien » faux. `environnement_lecture` pose donc
+/// PYTHONNOUSERSITE=1 (paquets du compte ignorés) et PYTHONSAFEPATH=1 (ni le dossier courant ni celui d'un script
+/// ajoutés aux chemins de Python) pour toutes les lectures. Restent, non neutralisés : les réglages que d'autres
+/// outils lisent dans la maison (~/.rpmmacros de rpm, réglages de zypper, client.conf du serveur de son), qui peuvent
+/// changer ce qu'ils lisent ; non vérifié ici (outils absents ou pas essayés), jamais compté comme sûr.
 ///
 /// Retirées, entre autres : PATH (remplacé), BASH_ENV, ENV, BASH_FUNC_*, LD_PRELOAD, LD_LIBRARY_PATH, LD_AUDIT,
 /// PYTHONPATH, PERL5LIB, GCONV_PATH, LOCPATH, CHECKUPDATES_DB, PULSE_SERVER, et DBUS_SYSTEM_BUS_ADDRESS : un bus
@@ -433,8 +441,9 @@ const GARDEES_LECTURE: [&str; 9] = [
 
 /// L'environnement d'un programme du système lancé pour lire (`par_le_systeme`) : liste blanche plutôt que liste
 /// noire, car une variable qu'on n'a pas pensé à retirer (le prochain LD_*, un PYTHONSTARTUP) passerait sinon.
-/// `de` vidé, sauf `GARDEES`, `GARDEES_LECTURE` et les LC_* ; PATH = `PATH_PROPRE`. Les variables que l'appelant pose
-/// ensuite (LC_ALL, PAGER) s'ajoutent.
+/// `de` vidé, sauf `GARDEES`, `GARDEES_LECTURE` et les LC_* ; PATH = `PATH_PROPRE` ; PYTHONNOUSERSITE et
+/// PYTHONSAFEPATH posés (voir `GARDEES_LECTURE`). Les variables que l'appelant pose ensuite (LC_ALL, PAGER)
+/// s'ajoutent.
 #[cfg(unix)]
 pub(crate) fn environnement_lecture(
     commande: &mut Command,
@@ -446,7 +455,11 @@ pub(crate) fn environnement_lecture(
             commande.env(nom, valeur);
         }
     }
-    commande.env("PATH", PATH_PROPRE)
+    // HOME gardé : sans ces deux-là, un Python du système chargerait le code que le compte pose chez lui.
+    commande
+        .env("PYTHONNOUSERSITE", "1")
+        .env("PYTHONSAFEPATH", "1")
+        .env("PATH", PATH_PROPRE)
 }
 
 /// Un outil du système (`outil_systeme`) prêt à lancer dans un `environnement_propre` : ni un faux programme posé dans
@@ -2424,6 +2437,8 @@ mod tests_environnement_lecture {
         );
         assert_eq!(valeur("XDG_DATA_DIRS").as_deref(), Some("/usr/share"));
         assert_eq!(valeur("PATH").as_deref(), Some(super::PATH_PROPRE));
+        assert_eq!(valeur("PYTHONNOUSERSITE").as_deref(), Some("1"));
+        assert_eq!(valeur("PYTHONSAFEPATH").as_deref(), Some("1"));
         for n in [
             "BASH_ENV",
             "ENV",
@@ -2442,6 +2457,42 @@ mod tests_environnement_lecture {
         ] {
             assert_eq!(valeur(n), None, "{n}");
         }
+    }
+
+    /// E-3 (recontrôle 0.95) : HOME reste celui du compte, et un outil du système écrit en Python (ufw, firewall-cmd,
+    /// dnf) chargeait alors le code que le compte pose dans ses paquets Python (usercustomize, fichiers .pth). Le vrai
+    /// python3, lancé dans l'environnement de lecture avec une maison jetable piégée, ne charge rien d'elle.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn python_du_systeme_ne_charge_pas_les_paquets_du_compte() {
+        let Some(python) = super::outil_systeme("python3") else {
+            return crate::essais::saute("python3 absent des dossiers du système");
+        };
+        let d = crate::essais::Jetable::nouveau("e3-site-du-compte");
+        let maison = d.join("maison");
+        let de = || [(OsString::from("HOME"), maison.clone().into_os_string())];
+        // Le dossier des paquets du compte, demandé à python sans le charger (-s).
+        let mut c = std::process::Command::new(&python);
+        environnement_lecture(&mut c, de()).args(["-s", "-c", "import site; print(site.getusersitepackages())"]);
+        let Some(r) = super::lancer(&mut c, 20).filter(|r| r.code == Some(0)) else {
+            return crate::essais::saute("python3 ne répond pas");
+        };
+        let site = std::path::PathBuf::from(r.sortie.trim());
+        assert!(site.starts_with(&maison), "{site:?}");
+        std::fs::create_dir_all(&site).unwrap();
+        let temoin = d.join("temoin");
+        std::fs::write(
+            site.join("usercustomize.py"),
+            format!("open({:?}, 'w').write('charge')\n", temoin.display().to_string()),
+        )
+        .unwrap();
+        let mut c = std::process::Command::new(&python);
+        environnement_lecture(&mut c, de()).args(["-c", "pass"]);
+        assert_eq!(super::lancer(&mut c, 20).and_then(|r| r.code), Some(0));
+        assert!(
+            !temoin.exists(),
+            "usercustomize du compte chargé par un python du système"
+        );
     }
 
     /// Le lancement réel : un programme lancé par `par_le_systeme` voit PATH_PROPRE, quel que soit le PATH de l'essai.
