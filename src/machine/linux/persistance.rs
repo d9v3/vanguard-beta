@@ -5312,6 +5312,28 @@ fn fichiers_de_configuration(r: &Releveur) -> Vec<(std::path::PathBuf, Variables
         .filter(|f| f.file_name().to_string_lossy().starts_with("env") && f.path().is_file())
         .map(|f| f.path())
         .collect();
+    // L-2 (campagne 0.95, angle lecture) : uwsm lit aussi chaque fichier de « env.d » et « env-<bureau>.d », quelle
+    // que soit son extension (uwsm 0.27, prepare-env.sh, `source_dir` : sauf « *.bak », « *~ »…, lus ici quand même :
+    // un fichier de trop se lit). Ceux en « .sh » ou « .conf », déjà pris plus haut, ne se jugent qu'une fois.
+    for d in std::fs::read_dir(h.join(".config/uwsm"))
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let nom = d.file_name();
+        let nom = nom.to_string_lossy();
+        // Un lien vers un dossier se suit, comme le suit uwsm (« [ -d ] »).
+        if d.path().is_dir() && (nom == "env.d" || (nom.starts_with("env-") && nom.ends_with(".d"))) {
+            env.extend(
+                std::fs::read_dir(d.path())
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .map(|f| f.path())
+                    .filter(|f| f.is_file()),
+            );
+        }
+    }
     // Dans l'ordre des noms, comme `fichiers_sous` : le verdict ne dépend pas du système de fichiers.
     env.sort();
     configuration.extend(env.into_iter().map(shell));
@@ -14826,6 +14848,47 @@ mod tests {
                     assert!(crate::apprentissage::declarable(&c).is_err(), "{texte:?}");
                 }
                 None => assert_eq!(c.probleme, None, "{texte:?} : {}", c.message),
+            }
+        }
+    }
+
+    /// L-2 (campagne 0.95, angle lecture) : uwsm lit chaque fichier de « env.d » et « env-<bureau>.d », quelle que
+    /// soit son extension (uwsm 0.27, prepare-env.sh, `source_dir`) : un préchargement posé dans « env.d/a » se juge
+    /// comme dans « env.d/a.conf ».
+    #[test]
+    fn uwsm_env_d_sans_extension_juge() {
+        for (i, (fichier, texte, attendu)) in [
+            (
+                ".config/uwsm/env.d/a",
+                "export LD_PRELOAD=/tmp/l.so\n",
+                Some("~/.config/uwsm/env.d/a:1 précharge"),
+            ),
+            (
+                ".config/uwsm/env-hyprland.d/50-b",
+                "export TERMINAL=kitty\nexport LD_PRELOAD=/tmp/l.so\n",
+                Some("~/.config/uwsm/env-hyprland.d/50-b:2 précharge"),
+            ),
+            // Un « .conf » s'y lisait déjà : lu une fois, pas deux.
+            (
+                ".config/uwsm/env.d/a.conf",
+                "export LD_PRELOAD=/tmp/l.so\n",
+                Some("~/.config/uwsm/env.d/a.conf:1 précharge"),
+            ),
+            (".config/uwsm/env.d/a", "export EDITOR=nvim\n", None),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("uwsm-env-d-{i}"));
+            m.ecrire(fichier, texte);
+            let c = m.lancements();
+            match attendu {
+                Some(attendu) => {
+                    assert!(c.probleme >= Some(Niveau::Eleve), "{fichier} : {}", c.message);
+                    assert_eq!(c.message.matches(attendu).count(), 1, "{fichier} : {}", c.message);
+                    assert!(crate::apprentissage::declarable(&c).is_err(), "{fichier}");
+                }
+                None => assert_eq!(c.probleme, None, "{fichier} : {}", c.message),
             }
         }
     }
