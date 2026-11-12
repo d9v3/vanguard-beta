@@ -19,7 +19,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
 use crate::modele::raison::Echec;
-use crate::trf;
+use crate::{tr, trf};
 
 /// Un dossier traversé : sans le lire, sans suivre de lien.
 const TRAVERSE: i32 = libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
@@ -110,6 +110,12 @@ fn suivant(ou: &str, nom: &OsStr) -> String {
     format!("{ou}/{}", crate::ui::affichable(&nom.to_string_lossy()))
 }
 
+/// Le nom s'affiche-t-il tel qu'il est (UTF-8, rien que l'écran change) ? Sinon, une commande bâtie sur ce qui est
+/// montré viserait un autre nom (relecture 0.95, J-1).
+fn tel_quel(nom: &OsStr) -> bool {
+    nom.to_str().is_some_and(|s| crate::ui::affichable(s) == s)
+}
+
 /// La phrase d'un dossier ou d'un fichier qui ne s'ouvre pas sans suivre de lien.
 fn phrase(e: &io::Error, ou: &str) -> Echec {
     match e.raw_os_error() {
@@ -140,7 +146,8 @@ enum Pour {
 /// refusé aussi (Vanguard ne sait pas le prouver), et le refus est dit avec les droits. Pour lire, les droits ne
 /// comptent pas : la lecture se fait sur le fichier ouvert, sans suivre de lien et bornée ; un dossier en 0775 (umask
 /// 002) laisse donc lire et montrer ses entrées, jamais les écrire (relecture 0.95, G-1).
-fn juger_dossier(f: &File, ou: &str, pour: Pour) -> Result<(), Echec> {
+/// `exact` : `ou` est le chemin tel qu'il est (`tel_quel` pour chaque nom) ; sinon, pas de commande dans le refus.
+fn juger_dossier(f: &File, ou: &str, pour: Pour, exact: bool) -> Result<(), Echec> {
     let m = f
         .metadata()
         .map_err(|e| echec(trf!("{ou} : illisible ({e})", "{ou}: unreadable ({e})")))?;
@@ -155,13 +162,24 @@ fn juger_dossier(f: &File, ou: &str, pour: Pour) -> Result<(), Echec> {
     }
     let droits = m.mode() & 0o7777;
     if pour == Pour::Ecrire && droits & DROITS_REFUSES != 0 {
-        let remede = remede(ou, droits);
-        return Err(refus(trf!(
+        let constat = trf!(
             "{ou} est modifiable par d'autres comptes ou porte un bit spécial (droits {droits:o}) : Vanguard \
-             n'y écrit pas. Pour qu'il le puisse, si c'est votre choix : {remede}",
+             n'y écrit pas.",
             "{ou} can be changed by other accounts or has a special bit (mode {droits:o}): Vanguard does not write \
-             there. For it to do so, if that is your choice: {remede}"
-        )));
+             there."
+        );
+        let suite = if exact {
+            format!("{}{}", super::super::demarrage::avant_le_remede(), remede(ou, droits))
+        } else {
+            tr!(
+                "Son nom ne s'affiche pas tel quel (caractère invisible ou de contrôle) : pour qu'il le puisse, si \
+                 c'est votre choix, retirez-lui à la main l'écriture du groupe et des autres, et les bits spéciaux.",
+                "Its name cannot be shown as is (invisible or control character): for it to do so, if that is your \
+                 choice, remove by hand the group and others' write permission, and the special bits."
+            )
+            .to_string()
+        };
+        return Err(refus(format!("{constat} {suite}")));
     }
     Ok(())
 }
@@ -208,9 +226,11 @@ fn parcourir(chemin: &Path, creer: bool, pour: Pour) -> Result<Option<Dossier>, 
             .open(&base)
             .map_err(|e| phrase(&e, &ou))?
     };
-    juger_dossier(&courant, &ou, pour)?;
+    juger_dossier(&courant, &ou, pour, true)?;
+    let mut exact = true;
     for nom in milieu {
         ou = suivant(&ou, nom);
+        exact &= tel_quel(nom);
         let c = c_nom(nom).map_err(|e| phrase(&e, &ou))?;
         let (enfant, cree) = match ouvrir_a(courant.as_fd(), &c, TRAVERSE, 0) {
             Ok(f) => (f, false),
@@ -239,7 +259,7 @@ fn parcourir(chemin: &Path, creer: bool, pour: Pour) -> Result<Option<Dossier>, 
             }
             Err(e) => return Err(phrase(&e, &ou)),
         };
-        if let Err(e) = juger_dossier(&enfant, &ou, pour) {
+        if let Err(e) = juger_dossier(&enfant, &ou, pour, exact) {
             return Err(sans_le_neuf(cree, courant.as_fd(), &c, e));
         }
         courant = enfant;
@@ -593,6 +613,33 @@ mod tests {
             remede("~/mes réglages/l'x", 0o757),
             "chmod go-w ~/'mes réglages/l'\\''x'"
         );
+    }
+
+    /// Relecture 0.95, J-1 : un dossier dont le nom ne s'affiche pas tel quel (espace insécable, caractère de
+    /// contrôle) n'a pas de commande, qui viserait un autre nom ; il est nommé et la marche à suivre dite. Un nom
+    /// affichable tel quel garde sa commande exacte.
+    #[test]
+    fn nom_pas_affichable_tel_quel_sans_commande() {
+        use std::os::unix::fs::PermissionsExt as _;
+        for (i, nom) in ["nb\u{a0}sp", "esc\u{1b}[2Kx", "saut\ny"].into_iter().enumerate() {
+            let d = dossier(&format!("j1-{i}"));
+            std::fs::create_dir(d.join(nom)).unwrap();
+            std::fs::set_permissions(d.join(nom), std::fs::Permissions::from_mode(0o775)).unwrap();
+            let e = juger(&d.join(nom).join("autostart/note.desktop"))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                e.contains("(droits 775)") && !e.contains("chmod") && e.contains("à la main"),
+                "{e}"
+            );
+        }
+        let d = dossier("j1-ok");
+        std::fs::create_dir(d.join("mes réglages")).unwrap();
+        std::fs::set_permissions(d.join("mes réglages"), std::fs::Permissions::from_mode(0o775)).unwrap();
+        let e = juger(&d.join("mes réglages/autostart/note.desktop"))
+            .unwrap_err()
+            .to_string();
+        assert!(e.ends_with("/mes réglages'") && e.contains(" : chmod go-w ~/'"), "{e}");
     }
 
     #[test]

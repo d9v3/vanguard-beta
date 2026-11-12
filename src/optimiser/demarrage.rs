@@ -418,6 +418,15 @@ fn ecriture_refusee() -> &'static str {
     )
 }
 
+/// Ce qui précède la commande du remède, dans la note d'un dossier où Vanguard n'écrit pas : la liste du terminal
+/// coupe la note là, pour poser la commande seule sur sa ligne (relecture 0.95, J-1).
+pub(super) fn avant_le_remede() -> &'static str {
+    tr!(
+        "Pour qu'il le puisse, si c'est votre choix : ",
+        "For it to do so, if that is your choice: "
+    )
+}
+
 /// Les raisons des dossiers où Vanguard n'écrit pas, chacune une fois (plusieurs entrées partagent un dossier),
 /// dans l'ordre de la liste : chacune nomme le dossier et la commande qui le remet comme la garde l'accepte
 /// (relecture 0.95, H-1 suite).
@@ -436,16 +445,33 @@ fn avis_d_ecriture(programmes: &[Programme]) -> Vec<String> {
 
 /// Ce qui n'a pas pu être lu (`releve_demarrage`), tel que la liste du terminal le dit : chaque manque nettoyé pour
 /// l'écran, coupé à la largeur, « ! » devant (un signe que toute console dessine).
+/// La commande d'un remède (`avant_le_remede`) est posée seule sur sa ligne, jamais enveloppée : coupée, elle ne se
+/// recopierait plus telle quelle (relecture 0.95, J-1).
 fn lignes_des_manques(manques: &[String]) -> Vec<String> {
     let largeur = LARGEUR.saturating_sub(4);
     let mut v = Vec::new();
     for m in manques {
-        for (i, l) in envelopper(&affichable(m), largeur).iter().enumerate() {
+        let m = affichable(m);
+        let marque = avant_le_remede();
+        let (texte, commande) = match m.match_indices(marque).find(|(i, _)| {
+            m.get(i.saturating_add(marque.len())..)
+                .is_some_and(|r| r.starts_with("chmod "))
+        }) {
+            Some((i, _)) => (
+                m.get(..i.saturating_add(marque.len())).unwrap_or_default().trim_end(),
+                m.get(i.saturating_add(marque.len())..),
+            ),
+            None => (m.as_str(), None),
+        };
+        for (i, l) in envelopper(texte, largeur).iter().enumerate() {
             v.push(if i == 0 {
                 format!("  {GRAS}!{RESET} {GRIS}{l}{RESET}")
             } else {
                 format!("    {GRIS}{l}{RESET}")
             });
+        }
+        if let Some(c) = commande {
+            v.push(format!("      {c}"));
         }
     }
     v
@@ -1263,6 +1289,22 @@ pub fn menu() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Relecture 0.95, J-1 : au-dessus de la liste, la commande du remède est seule sur sa ligne, entière, jamais
+    /// coupée (un chemin long ou avec des espaces se recopie tel quel) ; le reste de la note s'enveloppe.
+    #[test]
+    fn la_commande_du_remede_n_est_jamais_coupee() {
+        let commande = format!("chmod go-w ~/'{}  fin'", "un dossier aux espaces ".repeat(5));
+        let avis = format!(
+            "~/'{}' est modifiable par d'autres comptes ou porte un bit spécial (droits 775) : Vanguard n'y écrit \
+             pas. {}{commande}",
+            "x".repeat(10),
+            avant_le_remede()
+        );
+        let l = lignes_des_manques(&[avis]);
+        assert!(l.iter().any(|x| x.trim() == commande), "{l:#?}");
+        assert!(l.iter().all(|x| !x.contains("chmod") || x.trim() == commande), "{l:#?}");
+    }
 
     /// T-1, de bout en bout : un dossier d'autostart du compte qui est un lien (dotfiles) ne fait jamais dire
     /// « aucun programme » ; le résultat de `demarrage --json` est « non vérifié », une vérification faite et le
