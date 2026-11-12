@@ -6363,7 +6363,8 @@ fn reglage_suspect(ligne: &str, r: &Releveur) -> Option<&'static str> {
 
 /// Comment la commande d'une ligne se ramène à ce qui se lance (relecture adverse, cause racine : juger la forme
 /// finale, pas le texte) : telle qu'écrite, comme systemd (ses codes « % », guillemets, échappements, « ; »), comme
-/// un .desktop (ses codes de champ ôtés, puis comme systemd), ou comme Hyprland (ses variables remplacées).
+/// un .desktop (décodé comme systemd-xdg-autostart-generator, `exec_de_bureau`, puis comme systemd), ou comme
+/// Hyprland (ses variables remplacées).
 enum Lecteur<'a> {
     /// Un texte qui ne se lance pas (touches, description d'un raccourci Lua) : ses seuls mots jugés.
     Texte,
@@ -6383,21 +6384,184 @@ fn non_resolu_systemd() -> &'static str {
     )
 }
 
-/// Une valeur Exec de .desktop sans ses codes de champ (« %f », « %U »… : des fichiers donnés au lancement ; « %% »
-/// est « % »), prête à se lire comme systemd-xdg-autostart-generator la confie à systemd.
-fn sans_codes_de_bureau(valeur: &str) -> String {
-    let mut sortie = String::with_capacity(valeur.len());
+/// La raison d'une valeur Exec de .desktop que Vanguard ne ramène pas aux mots que systemd lance (`exec_de_bureau`).
+fn exec_de_bureau_non_lu() -> &'static str {
+    tr!(
+        "commande d'entrée de bureau que Vanguard ne ramène pas à ce que systemd lance (échappement, guillemet ou caractère que le générateur refuse ou lit autrement) : non vérifiée",
+        "desktop entry command Vanguard cannot reduce to what systemd starts (escape, quote or character the generator rejects or reads differently): not checked"
+    )
+}
+
+/// Une valeur Exec de .desktop ramenée aux mots que systemd-xdg-autostart-generator (systemd 262, mesuré) confie à
+/// systemd, réécrite pour `commandes_de_systemd` (revérification 8, C-1). Trois niveaux, comme lui : la lecture du
+/// fichier (`\s`, `\n`, `\t`, `\r`, `\\`, `\;` ; tout autre échappement fait refuser le fichier) ; le découpage
+/// en mots (guillemets ôtés, un « \ » protège le caractère suivant, même entre guillemets ; un guillemet non fermé
+/// finit le mot) ; puis chaque mot décodé comme en C (`cunescape`), un mot entier « %f », « %U »… ôté (pas le
+/// premier), « %% » réduit à « % », « ~ » ou « ~/… » en tête remplacé par la `maison`. `None` : ce que le générateur
+/// refuse ou que Vanguard ne réécrit pas sûrement (octet nul, UTF-8 invalide, programme à préfixe « -@:+!| »).
+fn exec_de_bureau(valeur: &str, maison: &str) -> Option<String> {
+    // Niveau 1 : la valeur telle que le fichier la donne. Un « \ » seul à la fin est celui d'une ligne continuée.
+    let mut lue = String::with_capacity(valeur.len());
     let mut lettres = valeur.chars();
     while let Some(c) = lettres.next() {
-        if c != '%' {
-            sortie.push(c);
+        if c != '\\' {
+            lue.push(c);
             continue;
         }
-        if lettres.next() == Some('%') {
-            sortie.push('%');
+        match lettres.next() {
+            None => {}
+            Some('s') => lue.push(' '),
+            Some('n') => lue.push('\n'),
+            Some('t') => lue.push('\t'),
+            Some('r') => lue.push('\r'),
+            Some(e @ ('\\' | ';')) => lue.push(e),
+            Some(_) => return None,
         }
     }
-    sortie
+    let mut sortie: Vec<String> = Vec::new();
+    for (rang, mot) in mots_de_bureau(&lue).into_iter().enumerate() {
+        let mot = cunescape(&mot)?;
+        if rang == 0 {
+            if mot.is_empty() || mot.starts_with(['-', '@', ':', '+', '!', '|']) {
+                return None;
+            }
+            sortie.push(mot);
+            continue;
+        }
+        let mut code = mot.chars();
+        if code.next() == Some('%') && code.next().is_some_and(|l| "fFuUdDnNickvm".contains(l)) && code.next().is_none()
+        {
+            continue;
+        }
+        let mot = mot.replace("%%", "%");
+        let mot = match mot.strip_prefix('~') {
+            Some(reste) if reste.is_empty() || reste.starts_with('/') => format!("{maison}{reste}"),
+            _ => mot,
+        };
+        sortie.push(mot);
+    }
+    Some(sortie.iter().map(|m| mot_pour_systemd(m)).collect::<Vec<_>>().join(" "))
+}
+
+/// Les mots d'une valeur Exec lue (niveau 2 d'`exec_de_bureau`), comme `extract_first_word` de systemd avec
+/// EXTRACT_UNQUOTE et EXTRACT_RELAX : séparés par espace, tabulation, « \n » ou « \r » ; « ' » et « " » ouvrent et
+/// ferment un passage sans séparateur ; un « \ » garde le caractère suivant tel quel (même entre guillemets), seul à
+/// la fin il s'efface ; « "" » donne un mot vide.
+fn mots_de_bureau(lue: &str) -> Vec<String> {
+    let mut mots = Vec::new();
+    let mut mot = String::new();
+    let (mut dans_un_mot, mut guillemet) = (false, None::<char>);
+    let mut lettres = lue.chars();
+    while let Some(c) = lettres.next() {
+        match (guillemet, c) {
+            (_, '\\') => {
+                dans_un_mot = true;
+                if let Some(e) = lettres.next() {
+                    mot.push(e);
+                }
+            }
+            (Some(q), c) if c == q => guillemet = None,
+            (Some(_), c) => mot.push(c),
+            (None, '\'' | '"') => {
+                dans_un_mot = true;
+                guillemet = Some(c);
+            }
+            (None, ' ' | '\t' | '\n' | '\r') => {
+                if dans_un_mot {
+                    mots.push(std::mem::take(&mut mot));
+                    dans_un_mot = false;
+                }
+            }
+            (None, c) => {
+                dans_un_mot = true;
+                mot.push(c);
+            }
+        }
+    }
+    if dans_un_mot {
+        mots.push(mot);
+    }
+    mots
+}
+
+/// Un mot décodé comme `cunescape` de systemd sans drapeau : « \a \b \f \n \r \t \v \\ \" \' \s », « \xNN » et
+/// « \NNN » (octal) donnent un octet, « \uXXXX » et « \UXXXXXXXX » un caractère. `None` : échappement inconnu ou
+/// incomplet, nul, octal au-delà de 255, caractère invalide, ou octets qui ne font pas de l'UTF-8.
+fn cunescape(mot: &str) -> Option<String> {
+    let mut octets: Vec<u8> = Vec::with_capacity(mot.len());
+    let mut lettres = mot.chars();
+    let chiffres = |lettres: &mut std::str::Chars<'_>, n: usize, base: u32| -> Option<u32> {
+        let mut v = 0_u32;
+        for _ in 0..n {
+            v = v.checked_mul(base)?.checked_add(lettres.next()?.to_digit(base)?)?;
+        }
+        Some(v)
+    };
+    let mut tampon = [0_u8; 4];
+    while let Some(c) = lettres.next() {
+        if c != '\\' {
+            octets.extend_from_slice(c.encode_utf8(&mut tampon).as_bytes());
+            continue;
+        }
+        let e = lettres.next()?;
+        let octet = match e {
+            'a' => 7,
+            'b' => 8,
+            'f' => 12,
+            'n' => b'\n',
+            'r' => b'\r',
+            't' => b'\t',
+            'v' => 11,
+            's' => b' ',
+            '\\' | '"' | '\'' => u8::try_from(e).ok()?,
+            'x' => u8::try_from(chiffres(&mut lettres, 2, 16)?).ok()?,
+            '0'..='7' => {
+                let reste = chiffres(&mut lettres, 2, 8)?;
+                u8::try_from(e.to_digit(8)?.checked_mul(64)?.checked_add(reste)?).ok()?
+            }
+            'u' | 'U' => {
+                let lettre = char::from_u32(chiffres(&mut lettres, if e == 'u' { 4 } else { 8 }, 16)?)?;
+                if lettre == '\0' {
+                    return None;
+                }
+                octets.extend_from_slice(lettre.encode_utf8(&mut tampon).as_bytes());
+                continue;
+            }
+            _ => return None,
+        };
+        if octet == 0 {
+            return None;
+        }
+        octets.push(octet);
+    }
+    String::from_utf8(octets).ok()
+}
+
+/// Un mot écrit pour que `commandes_de_systemd` le relise tel quel : nu s'il n'a ni blanc, ni guillemet, ni « \ »,
+/// ni « ; », ni caractère de contrôle ; sinon entre guillemets, « \ » et « " » échappés, un contrôle en « \xNN ».
+fn mot_pour_systemd(mot: &str) -> String {
+    let a_proteger = |c: char| c.is_ascii_whitespace() || c.is_control() || matches!(c, '"' | '\'' | '\\' | ';');
+    if !mot.is_empty() && !mot.contains(a_proteger) {
+        return mot.to_string();
+    }
+    let mut ecrit = String::from("\"");
+    for c in mot.chars() {
+        match c {
+            '\\' | '"' => {
+                ecrit.push('\\');
+                ecrit.push(c);
+            }
+            c if c.is_control() => {
+                // Un contrôle vaut au plus U+009F : deux chiffres hexadécimaux.
+                let v = u32::from(c);
+                ecrit.push_str("\\x");
+                ecrit.extend([v >> 4, v & 0xf].iter().filter_map(|&d| char::from_digit(d, 16)));
+            }
+            c => ecrit.push(c),
+        }
+    }
+    ecrit.push('"');
+    ecrit
 }
 
 /// Juge la `commande` lancée par la `ligne` (numéro `n`, à partir de 0) du fichier `f` lu `lu` : levée si elle
@@ -6436,6 +6600,21 @@ fn juger_lancement(
         Err(()) => Some(non_resolu_systemd()),
     };
     let tout_argument = !de_root_seul(f);
+    // C-1 (revérification 8) : une valeur Exec de .desktop se juge sous les mots que systemd lance, décodés comme le
+    // générateur (`exec_de_bureau`) ; ce qui ne s'y ramène pas est dit non vérifié là où le compte écrit, jamais tu.
+    let decodee = match lecteur {
+        Lecteur::Bureau(_) => match exec_de_bureau(commande, &lue) {
+            Some(c) => Some(c),
+            None if racine_seul => None,
+            None => {
+                let raison = exec_de_bureau_non_lu();
+                lever(t, f, lu, n, ligne, commande, true, sorte, retirable, raison);
+                return true;
+            }
+        },
+        _ => None,
+    };
+    let jugee = decodee.as_deref().unwrap_or(commande);
     // Une ligne de shell qui ne se lit pas : dite comme telle, là où le compte écrit.
     let shell = |c: &str| match ligne_de_shell_suspecte(c, &maisons, tout_argument) {
         Ok(raison) => raison,
@@ -6446,12 +6625,7 @@ fn juger_lancement(
         Lecteur::Texte => None,
         Lecteur::Brut => shell(commande),
         Lecteur::Systemd(codes) => dite(forme_finale_de_systemd(commande, Some(codes), &maisons, tout_argument)),
-        Lecteur::Bureau(_) => dite(forme_finale_de_systemd(
-            &sans_codes_de_bureau(commande),
-            None,
-            &maisons,
-            tout_argument,
-        )),
+        Lecteur::Bureau(_) => dite(forme_finale_de_systemd(jugee, None, &maisons, tout_argument)),
         Lecteur::Hypr(variables) => {
             if !commande.contains('$') {
                 return shell(commande);
@@ -6470,7 +6644,7 @@ fn juger_lancement(
     let (raison, hors_liste): (Option<std::borrow::Cow<'static, str>>, bool) = match raison {
         Some(r) => (Some(r.into()), false),
         None if racine_seul => (None, false),
-        None => (hors_de_la_liste(&t.r, commande, lecteur, &maisons, &mut notes), true),
+        None => (hors_de_la_liste(&t.r, jugee, lecteur, &maisons, &mut notes), true),
     };
     let Some(raison) = raison else {
         let perso = t.r.maison.clone();
@@ -6513,9 +6687,10 @@ fn refus_de_la_sauvegarde(ou: &str, numero: usize, raison: &str) -> temoins::Ref
 }
 
 /// Pourquoi la `commande` d'une ligne que le compte écrit n'entre pas dans la liste permise (`permise`), lue par
-/// son `lecteur`, ou `None` : le filet textuel d'abord (un dossier temporaire ou caché nommé en toutes lettres), puis
-/// la forme entière. Un texte qui ne se lance pas (`Lecteur::Texte`) n'y passe pas. Ce qui n'a pas été vu d'une ligne
-/// permise d'unité va dans `notes` (`permise::exec_systemd_note`).
+/// son `lecteur` (celle d'une entrée de bureau déjà décodée par `exec_de_bureau`), ou `None` : le filet textuel
+/// d'abord (un dossier temporaire ou caché nommé en toutes lettres), puis la forme entière. Un texte qui ne se lance
+/// pas (`Lecteur::Texte`) n'y passe pas. Ce qui n'a pas été vu d'une ligne permise d'unité va dans `notes`
+/// (`permise::exec_systemd_note`).
 fn hors_de_la_liste(
     r: &Releveur,
     commande: &str,
@@ -6539,7 +6714,7 @@ fn hors_de_la_liste(
     let ecart = match lecteur {
         Lecteur::Texte => return None,
         Lecteur::Systemd(codes) => permise::exec_systemd_note(&s, commande, Some(codes), notes),
-        Lecteur::Bureau(_) => permise::exec_systemd(&s, &sans_codes_de_bureau(commande), None),
+        Lecteur::Bureau(_) => permise::exec_systemd(&s, commande, None),
         Lecteur::Hypr(variables) if commande.contains('$') => match resoudre_hypr(commande, variables) {
             Some(formes) => formes.iter().try_for_each(|c| permise::ligne_shell(&s, c)),
             None => return Some(variable_inconnue().into()),
@@ -11828,6 +12003,289 @@ mod tests {
             }
         }
         assert!(faux.is_empty(), "{faux:#?}");
+    }
+
+    /// C-1 (revérification 8) : une valeur Exec= de .desktop se juge sous les mots que
+    /// systemd-xdg-autostart-generator 262.1 confie à systemd (mesuré) : échappements du fichier (« \\ », « \s »),
+    /// « \ » qui protège le caractère suivant, guillemets, décodage C (« \\x6f »), « ~/ ». Un lieu de démarrage
+    /// caché par ces formes se lève ; ce que le générateur refuse ou que Vanguard ne réécrit pas est dit non
+    /// vérifié ; une commande sûre, même échappée, reste muette.
+    #[test]
+    fn une_commande_de_bureau_se_decode_comme_le_generateur() {
+        use std::os::unix::fs::PermissionsExt as _;
+        const TETE: &str = "[Desktop Entry]\nType=Application\nName=essai\n";
+        const NON_LU: &str = "commande d'entrée de bureau que Vanguard ne ramène pas";
+        // (nom, valeur Exec où « H » est la maison, levé, texte attendu)
+        let cas: Vec<(&str, &str, bool, &str)> = vec![
+            (
+                "H2 aut\\\\ostart",
+                r"/usr/bin/cp H/Documents/x H/.config/aut\\ostart/y.desktop",
+                true,
+                "",
+            ),
+            (
+                "H18 \\\\ en tête",
+                r"/usr/bin/cp H/Documents/x \\H/.config/autostart/y.desktop",
+                true,
+                "",
+            ),
+            (
+                "H19 entre guillemets",
+                r#"/usr/bin/cp H/Documents/x "H/.config/aut\\ostart/y.desktop""#,
+                true,
+                "",
+            ),
+            (
+                "H19b guillemets simples",
+                r"/usr/bin/cp H/Documents/x 'H/.config/aut\\ostart/y.desktop'",
+                true,
+                "",
+            ),
+            (
+                "H19c guillemets collés",
+                r#"/usr/bin/cp H/Documents/x H/.config/a"ut"ostart/y.desktop"#,
+                true,
+                "",
+            ),
+            (
+                "E7 \\s pour l'espace",
+                r"/usr/bin/cp\sH/Documents/x\sH/.config/autostart/y.desktop",
+                true,
+                "",
+            ),
+            (
+                "C1 \\\\\\\\x6f",
+                r"/usr/bin/cp H/Documents/x H/.config/aut\\\\x6fstart/y.desktop",
+                true,
+                "",
+            ),
+            (
+                "C2 \\\\\\\\157",
+                r"/usr/bin/cp H/Documents/x H/.config/aut\\\\157start/y.desktop",
+                true,
+                "",
+            ),
+            (
+                "C3 \\\\\\\\u006f",
+                r"/usr/bin/cp H/Documents/x H/.config/aut\\\\u006fstart/y.desktop",
+                true,
+                "",
+            ),
+            (
+                "C4 programme échappé",
+                r"/usr/bin/c\\p H/Documents/x H/.config/aut\\ostart/y.desktop",
+                true,
+                "",
+            ),
+            (
+                "C5 ~/ décodé",
+                r"/usr/bin/cp H/Documents/x \\\\x7e/.config/autostart/y.desktop",
+                true,
+                "",
+            ),
+            (
+                "C6 code % décodé",
+                r"/usr/bin/cp \\\\x25f H/Documents/x H/.config/aut\\ostart/y.desktop",
+                true,
+                "",
+            ),
+            (
+                "H21 en clair",
+                "/usr/bin/cp H/Documents/x H/.config/autostart/y.desktop",
+                true,
+                "",
+            ),
+            // Le programme caché se juge sous sa forme finale (`forme_finale_de_systemd`), avec sa vraie raison.
+            (
+                "P1 programme échappé",
+                r"/t\\mp/.x/agent",
+                true,
+                "lancé depuis un dossier temporaire",
+            ),
+            (
+                "N1 échappement refusé",
+                r"/usr/bin/cp H/Documents/x H/Documents/\oz",
+                true,
+                NON_LU,
+            ),
+            (
+                "N2 octet nul décodé",
+                r"/usr/bin/cp H/Documents/x H/Documents/\\\\x00z",
+                true,
+                NON_LU,
+            ),
+            (
+                "N3 UTF-8 invalide",
+                r"/usr/bin/cp H/Documents/x H/Documents/\\\\xe9z",
+                true,
+                NON_LU,
+            ),
+            (
+                "N4 \\\\ seul en fin de mot",
+                r"/usr/bin/cp H/Documents/x H/Documents/z\\\\",
+                true,
+                NON_LU,
+            ),
+            (
+                "N5 préfixe de systemd",
+                "@/usr/bin/cp H/Documents/x H/.config/autostart/y.desktop",
+                true,
+                NON_LU,
+            ),
+            // Témoins muets : une copie entre deux fichiers des Documents, écrite de toutes les façons sûres.
+            ("T1 en clair", "/usr/bin/cp H/Documents/x H/Documents/z", false, ""),
+            ("T2 \\s", r"/usr/bin/cp\sH/Documents/x\sH/Documents/z", false, ""),
+            (
+                "T3 guillemets",
+                r#""/usr/bin/cp" "H/Documents/x" 'H/Documents/z'"#,
+                false,
+                "",
+            ),
+            (
+                "T4 codes de champ",
+                "/usr/bin/cp %f H/Documents/x %U H/Documents/z %%k",
+                false,
+                "",
+            ),
+            (
+                "T5 \\\\\\\\x41",
+                r"/usr/bin/cp H/Documents/x H/Documents/\\\\x41",
+                false,
+                "",
+            ),
+            (
+                "T6 espace protégée",
+                r"/usr/bin/cp H/Documents/x H/Documents/a\\ b",
+                false,
+                "",
+            ),
+            ("T7 ~/", "/usr/bin/cp H/Documents/x ~/Documents/z", false, ""),
+        ];
+        let mut faux = Vec::new();
+        for (i, (nom, exec, leve_attendu, attendu)) in cas.iter().enumerate() {
+            let m = Maison::nouvelle(&format!("c1-exec-{i}"));
+            let f = m.racine.join("usr/bin/cp");
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(&f, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::create_dir_all(m.chemin("Documents")).unwrap();
+            let h = m.chemin("").to_string_lossy().trim_end_matches('/').to_string();
+            m.ecrire(
+                ".config/autostart/essai.desktop",
+                &format!("{TETE}Exec={}\n", exec.replace('H', &h)),
+            );
+            let leve: Vec<String> = persistance_dans(&m.racine, &m.chemin(""), |_| None, None, None)
+                .into_iter()
+                .filter(|c| c.probleme.is_some())
+                .map(|c| c.message)
+                .collect();
+            let juste = if *leve_attendu {
+                leve.iter().any(|l| l.contains(attendu))
+            } else {
+                leve.is_empty()
+            };
+            if !juste {
+                faux.push((*nom, leve));
+            }
+        }
+        assert!(faux.is_empty(), "{faux:#?}");
+    }
+
+    /// C-1 (revérification 8), côté unités : ExecStart= se décode déjà comme systemd (`commandes_de_systemd` :
+    /// « \x6f », « \157 », « o », guillemets) ; un lieu de démarrage caché par ces formes se lève, un
+    /// échappement inconnu est dit non résolu, « \\ » reste un « \ » (un autre dossier, muet comme en clair).
+    #[test]
+    fn une_unite_echappee_se_decode_comme_systemd() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let cas: [(&str, &str, Option<&str>); 8] = [
+            (
+                "x6f",
+                r"/usr/bin/cp H/Documents/x H/.config/aut\x6fstart/y.desktop",
+                Some(""),
+            ),
+            (
+                "157",
+                r"/usr/bin/cp H/Documents/x H/.config/aut\157start/y.desktop",
+                Some(""),
+            ),
+            (
+                "u006f",
+                r"/usr/bin/cp H/Documents/x H/.config/autostart/y.desktop",
+                Some(""),
+            ),
+            (
+                "guillemets",
+                r#"/usr/bin/cp H/Documents/x "H/.config/a"ut'o'start/y.desktop"#,
+                Some(""),
+            ),
+            (
+                "programme",
+                r"/usr/bin/c\x70 H/Documents/x H/.config/autostart/y.desktop",
+                Some(""),
+            ),
+            (
+                "inconnu",
+                r"/usr/bin/cp H/Documents/x H/.config/aut\ostart/y.desktop",
+                Some("ne ramène pas"),
+            ),
+            ("double", r"/usr/bin/cp H/Documents/x H/Documents/aut\\ostart", None),
+            ("en clair", "/usr/bin/cp H/Documents/x H/Documents/z", None),
+        ];
+        let mut faux = Vec::new();
+        for (i, (nom, exec, attendu)) in cas.iter().enumerate() {
+            let m = Maison::nouvelle(&format!("c1-unite-{i}"));
+            let f = m.racine.join("usr/bin/cp");
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(&f, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::create_dir_all(m.chemin("Documents")).unwrap();
+            let h = m.chemin("").to_string_lossy().trim_end_matches('/').to_string();
+            let unite = format!("[Service]\nExecStart={}\n", exec.replace('H', &h));
+            m.ecrire(".config/systemd/user/essai.service", &unite);
+            let leve: Vec<String> = persistance_dans(&m.racine, &m.chemin(""), |_| None, None, None)
+                .into_iter()
+                .filter(|c| c.probleme.is_some())
+                .map(|c| c.message)
+                .collect();
+            let juste = match attendu {
+                Some(texte) => leve.iter().any(|l| l.contains(texte)),
+                None => leve.is_empty(),
+            };
+            if !juste {
+                faux.push((*nom, leve));
+            }
+        }
+        assert!(faux.is_empty(), "{faux:#?}");
+    }
+
+    /// Les mots d'`exec_de_bureau`, mesurés sur le générateur 262.1 (sortie ExecStart=:… relue).
+    #[test]
+    fn exec_de_bureau_rend_les_mots_du_generateur() {
+        let cas: [(&str, Option<&str>); 14] = [
+            (r"/usr/bin/cp a %f b", Some("/usr/bin/cp a b")),
+            (r"/usr/bin/cp %% a%%b %F%f %z", Some("/usr/bin/cp % a%b %F%f %z")),
+            (r#"/usr/bin/cp "a b" /x\\ y"#, Some(r#"/usr/bin/cp "a b" "/x y""#)),
+            (r#"/usr/bin/cp a"b c"d '' "#, Some(r#"/usr/bin/cp "ab cd" """#)),
+            (r"/usr/bin/cp a\;b ; c", Some(r#"/usr/bin/cp "a;b" ";" c"#)),
+            (r"/usr/bin/cp a\tb a\\\\tb", Some(r#"/usr/bin/cp a b "a\x09b""#)),
+            (
+                r"/usr/bin/cp ~ ~/x a~/x ~root/x",
+                Some("/usr/bin/cp /m /m/x a~/x ~root/x"),
+            ),
+            (r"/usr/bin/cp a\\\\\\\\b", Some(r#"/usr/bin/cp "a\\b""#)),
+            (
+                r#"/usr/bin/cp "unterminated /x"#,
+                Some(r#"/usr/bin/cp "unterminated /x""#),
+            ),
+            (r"/usr/bin/cp x\\", Some("/usr/bin/cp x")),
+            (r"/usr/bin/cp a\\\\U0001F600b", Some("/usr/bin/cp a😀b")),
+            (r"/usr/bin/cp a\vb", None),
+            (r"/usr/bin/cp a\\\\477", None),
+            (r"%f /x", Some("%f /x")),
+        ];
+        for (valeur, attendu) in cas {
+            assert_eq!(exec_de_bureau(valeur, "/m").as_deref(), attendu, "{valeur}");
+        }
     }
 
     /// B-2 (revérification 7) : un argument relatif depuis un dossier de départ inconnu (Path= d'une entrée de bureau,
