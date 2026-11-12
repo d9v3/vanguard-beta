@@ -1096,6 +1096,18 @@ pub(super) fn persistance_dans(
                     "{ou} cannot be read in full: the alert cannot be declared normal while it cannot be read"
                 ),
             )
+        } else if VARIABLES_QUI_DEPLACENT.contains(&nom.as_str()) {
+            // W-1 : HOME ou XDG_RUNTIME_DIR posés au gestionnaire déplacent tous ses dossiers d'unités.
+            (
+                trf!(
+                    "{ou} pose {nom} au gestionnaire de systemd du compte : il cherche alors ses unités et leurs compléments ailleurs, là où Vanguard ne les relève pas (non vérifié)",
+                    "{ou} sets {nom} for the account's systemd manager: it then looks for its units and their drop-ins elsewhere, where Vanguard does not check them (not verified)"
+                ),
+                trf!(
+                    "{ou} pose {nom} au gestionnaire : l'alerte ne se déclare pas normale tant que cette ligne y est",
+                    "{ou} sets {nom} for the manager: the alert cannot be declared normal while this line is there"
+                ),
+            )
         } else {
             (
                 trf!(
@@ -3987,7 +3999,7 @@ fn noms_ecrits(texte: &str, cible: impl Fn(&str) -> bool) -> std::collections::B
 /// aussi) et l'environnement posé en cours de session (`systemctl --user set-environment`), qui ne laissent pas de
 /// fichier.
 fn environnement_change_la_sauvegarde(r: &Releveur, vide: bool) -> bool {
-    let (fichiers, illisibles) = fichiers_du_gestionnaire(r);
+    let (fichiers, illisibles) = fichiers_du_gestionnaire(r, &configs_posees(&r.gestionnaire));
     // V-2 : les scripts d'uwsm lus, seuls fichiers qu'une inclusion peut nommer sans lever.
     let scripts: Vec<std::path::PathBuf> = fichiers
         .iter()
@@ -4129,9 +4141,14 @@ fn commandes_shell(texte: &str) -> Vec<Vec<String>> {
 /// Les fichiers qui posent des variables au gestionnaire de systemd du compte : (fichier, du compte). Ceux du compte
 /// (environment.d, user.conf et user.conf.d, tout ~/.config/uwsm, et ceux d'un XDG_CONFIG_HOME déplacé,
 /// ~/.pam_environment), et ceux du système (/etc/environment, pam_env.conf, environment.d, user.conf et user.conf.d).
-/// Avec les dossiers qui ne se lisent pas.
+/// Avec les dossiers qui ne se lisent pas. `posees` : les XDG_CONFIG_HOME et XDG_CONFIG_DIRS que ces fichiers posent
+/// eux-mêmes au gestionnaire (`configs_posees`), lus comme ~/.config : le user.conf d'un dossier déplacé par
+/// ~/.pam_environment pose à son tour des dossiers d'unités (relecture 0.95, W-1, chaîne à deux niveaux).
 #[allow(clippy::type_complexity)]
-fn fichiers_du_gestionnaire(r: &Releveur) -> (Vec<(std::path::PathBuf, bool)>, Vec<std::path::PathBuf>) {
+fn fichiers_du_gestionnaire(
+    r: &Releveur,
+    posees: &[std::path::PathBuf],
+) -> (Vec<(std::path::PathBuf, bool)>, Vec<std::path::PathBuf>) {
     let s = |c: &str| r.sous(Path::new(c));
     let mut fichiers: Vec<(std::path::PathBuf, bool)> = Vec::new();
     let mut illisibles = Vec::new();
@@ -4169,6 +4186,12 @@ fn fichiers_du_gestionnaire(r: &Releveur) -> (Vec<(std::path::PathBuf, bool)>, V
     let mut configs = vec![r.maison.join(".config")];
     if let Some(c) = &r.config {
         configs.push(r.sous(c));
+    }
+    for c in posees {
+        let c = r.sous(c);
+        if !configs.contains(&c) {
+            configs.push(c);
+        }
     }
     for c in &configs {
         dossier(c.join("environment.d"), true, false, &mut fichiers);
@@ -4211,6 +4234,34 @@ const VARIABLES_DES_DOSSIERS: [&str; 5] = [
     "SYSTEMD_UNIT_PATH",
 ];
 
+/// W-1 (relecture 0.95) : les variables par lesquelles systemd du compte place ailleurs tous ses dossiers d'unités
+/// (HOME pour ~/.config et ~/.local/share quand les XDG_* manquent, XDG_RUNTIME_DIR pour ceux de la session) ou
+/// lance d'autres générateurs (de qui viennent des unités, ou l'environnement de chacune, celui d'« env » compris).
+/// Vanguard ne recalcule pas ces dossiers : posée au gestionnaire, une telle variable est dite non résolue (non
+/// vérifié), ce qui lève aussi la sauvegarde exacte, ses deux formes (« env -i » ne vide pas l'environnement du
+/// gestionnaire, qui choisit l'unité). Mesuré sur systemd 262 : environment.d ne change que l'environnement des
+/// unités, pas celui du gestionnaire : il n'est pas compté ici.
+const VARIABLES_QUI_DEPLACENT: [&str; 4] = [
+    "HOME",
+    "XDG_RUNTIME_DIR",
+    "SYSTEMD_GENERATOR_PATH",
+    "SYSTEMD_ENVIRONMENT_GENERATOR_PATH",
+];
+
+/// Au plus autant de tours pour suivre une chaîne de XDG_CONFIG_HOME posés (W-1) : au-delà, c'est dit non résolu.
+const TOURS_DU_GESTIONNAIRE: usize = 8;
+
+/// Les XDG_CONFIG_HOME et XDG_CONFIG_DIRS que posent les fichiers du gestionnaire (`dossiers_du_gestionnaire`).
+fn configs_posees(dossiers: &[(&'static str, std::path::PathBuf)]) -> Vec<std::path::PathBuf> {
+    let mut sortie: Vec<std::path::PathBuf> = Vec::new();
+    for (v, d) in dossiers {
+        if ["XDG_CONFIG_HOME", "XDG_CONFIG_DIRS"].contains(v) && !sortie.contains(d) {
+            sortie.push(d.clone());
+        }
+    }
+    sortie
+}
+
 /// V-1 (relecture 0.95) : les dossiers que les fichiers du gestionnaire de systemd du compte (`fichiers_du_gestionnaire`,
 /// sauf ceux de uwsm, qui ne posent rien au gestionnaire lui-même) posent par une `VARIABLES_DES_DOSSIERS` : une ligne
 /// « ManagerEnvironment=XDG_DATA_DIRS=~/.x:… » dans ~/.config/systemd/user.conf fait chercher des unités et leurs
@@ -4225,7 +4276,31 @@ fn dossiers_du_gestionnaire(
     Vec<(&'static str, std::path::PathBuf)>,
     Vec<(std::path::PathBuf, String)>,
 ) {
-    let (fichiers, illisibles) = fichiers_du_gestionnaire(r);
+    // W-1 : relu tant que les fichiers posent un dossier de configuration de plus (borné).
+    let mut posees: Vec<std::path::PathBuf> = Vec::new();
+    for _ in 0..TOURS_DU_GESTIONNAIRE {
+        let (dossiers, non_resolus) = dossiers_du_gestionnaire_lus(r, &posees);
+        let nouvelles = configs_posees(&dossiers);
+        if nouvelles.iter().all(|c| posees.contains(c)) {
+            return (dossiers, non_resolus);
+        }
+        posees = nouvelles;
+    }
+    let (dossiers, mut non_resolus) = dossiers_du_gestionnaire_lus(r, &posees);
+    non_resolus.push((r.maison.join(".config/systemd/user.conf"), "XDG_CONFIG_HOME".into()));
+    (dossiers, non_resolus)
+}
+
+/// Un tour de `dossiers_du_gestionnaire`, les dossiers de configuration `posees` lus en plus.
+#[allow(clippy::type_complexity)]
+fn dossiers_du_gestionnaire_lus(
+    r: &Releveur,
+    posees: &[std::path::PathBuf],
+) -> (
+    Vec<(&'static str, std::path::PathBuf)>,
+    Vec<(std::path::PathBuf, String)>,
+) {
+    let (fichiers, illisibles) = fichiers_du_gestionnaire(r, posees);
     let mut dossiers = Vec::new();
     let mut non_resolus: Vec<(std::path::PathBuf, String)> = illisibles.into_iter().map(|d| (d, "?".into())).collect();
     for (f, _) in fichiers {
@@ -4257,6 +4332,14 @@ fn dossiers_du_gestionnaire(
             if !lues.contains(&nom) {
                 non_resolus.push((f.clone(), nom));
             }
+        }
+        // W-1 : HOME, XDG_RUNTIME_DIR… écrits, sous toute forme, hors d'environment.d.
+        if !f.parent().is_some_and(|d| d.ends_with("environment.d")) {
+            non_resolus.extend(
+                noms_ecrits(&texte, |n| VARIABLES_QUI_DEPLACENT.contains(&n))
+                    .into_iter()
+                    .map(|n| (f.clone(), n)),
+            );
         }
     }
     let mut vus = std::collections::BTreeSet::new();
@@ -9344,14 +9427,14 @@ mod tests {
                 ".config/systemd/user.conf",
                 "[Manager]\nDefaultEnvironment=\"A=1\" \"HOME=/x\"\n",
                 true,
-                false,
+                true,
             ),
             (
                 "user.conf, échappé",
                 ".config/systemd/user.conf",
                 "[Manager]\nDefaultEnvironment=\"HO\\x4dE=/x\"\n",
                 true,
-                false,
+                true,
             ),
             (
                 "user.conf, LD_ échappé",
@@ -9367,7 +9450,7 @@ mod tests {
                 true,
                 false,
             ),
-            ("pam_environment", ".pam_environment", "HOME OVERRIDE=/x\n", true, false),
+            ("pam_environment", ".pam_environment", "HOME OVERRIDE=/x\n", true, true),
             ("uwsm", ".config/uwsm/env", "export RSYNC_OLD_ARGS=1\n", true, false),
             (
                 "uwsm-hyprland",
@@ -9377,7 +9460,7 @@ mod tests {
                 false,
             ),
             ("système", "/etc/environment.d/60-x.conf", "HOME=/x\n", true, false),
-            ("/etc/environment", "/etc/environment", "HOME=/x\n", true, false),
+            ("/etc/environment", "/etc/environment", "HOME=/x\n", true, true),
             ("illisible", ".config/environment.d/50-x.conf", "A=1\n", true, true),
             (
                 "dossier illisible",
@@ -9669,6 +9752,162 @@ mod tests {
             CONF,
             "[Manager]\nManagerEnvironment=XDG_DATA_DIRS=/home/alice/.x:/usr/share\n",
         );
+        let c = m.lancements();
+        assert_eq!(c.probleme, None, "{}", c.message);
+    }
+
+    /// W-1 (relecture 0.95) : HOME ou XDG_RUNTIME_DIR posés au gestionnaire de systemd du compte déplacent tous ses
+    /// dossiers d'unités (scénarios A et B, mesurés sur systemd 262) ; un XDG_CONFIG_HOME posé par
+    /// ~/.pam_environment mène à un user.conf qui pose à son tour XDG_DATA_DIRS (scénario C, chaîne à deux niveaux).
+    /// La sauvegarde exacte se lève, ses deux formes ; une chaîne trop longue est dite non résolue ; une chaîne courte
+    /// sans complément reste muette.
+    #[test]
+    fn home_runtime_et_chaine_du_gestionnaire_levent_la_sauvegarde() {
+        type Cas<'a> = (&'a str, Vec<(&'a str, String)>, Option<String>, bool, &'a [&'a str]);
+        const REMPLACE: &str = "[Service]\nExecStart=\nExecStart=/usr/bin/rsync -a /home/alice/Documents /tmp/x\n";
+        const CONF: &str = ".config/systemd/user.conf";
+        let complement = |d: &str| format!("{d}/{}.d/x.conf", crate::sauvegarde::SERVICE);
+        let chaine_c = [
+            (
+                ".pam_environment",
+                "XDG_CONFIG_HOME DEFAULT=/home/alice/.c\n".to_string(),
+            ),
+            (
+                ".c/systemd/user.conf",
+                "[Manager]\nManagerEnvironment=XDG_DATA_DIRS=/home/alice/.d:/usr/share\n".to_string(),
+            ),
+        ];
+        let mut longue: Vec<(&str, String)> = Vec::new();
+        let noms: Vec<String> = (0..10).map(|i| format!(".c{i}/systemd/user.conf")).collect();
+        longue.push((".pam_environment", "XDG_CONFIG_HOME DEFAULT=/home/alice/.c0\n".into()));
+        for (i, n) in noms.iter().enumerate() {
+            longue.push((
+                n.as_str(),
+                format!(
+                    "[Manager]\nManagerEnvironment=XDG_CONFIG_HOME=/home/alice/.c{}\n",
+                    i + 1
+                ),
+            ));
+        }
+        // (nom, fichiers posés, complément posé, levée, mots du message)
+        let cas: Vec<Cas<'_>> = vec![
+            (
+                "A : HOME par user.conf",
+                vec![(CONF, "[Manager]\nManagerEnvironment=HOME=/home/alice/.autre\n".into())],
+                Some(complement(".autre/.config/systemd/user")),
+                true,
+                &["pose HOME"],
+            ),
+            (
+                "A : HOME par user.conf.d, échappé",
+                vec![(
+                    ".config/systemd/user.conf.d/x.conf",
+                    "[Manager]\nManagerEnvironment=\"HO\\x4dE=/home/alice/.autre\"\n".into(),
+                )],
+                Some(complement(".autre/.config/systemd/user")),
+                true,
+                &["HOME"],
+            ),
+            (
+                "A : HOME par pam_environment",
+                vec![(".pam_environment", "HOME DEFAULT=/home/alice/.autre\n".into())],
+                None,
+                true,
+                &["pose HOME"],
+            ),
+            (
+                "B : XDG_RUNTIME_DIR",
+                vec![(
+                    CONF,
+                    "[Manager]\nManagerEnvironment=XDG_RUNTIME_DIR=/home/alice/.r\n".into(),
+                )],
+                Some(complement(".r/systemd/user.control")),
+                true,
+                &["pose XDG_RUNTIME_DIR"],
+            ),
+            (
+                "générateurs",
+                vec![(
+                    CONF,
+                    "[Manager]\nManagerEnvironment=SYSTEMD_ENVIRONMENT_GENERATOR_PATH=/home/alice/.g\n".into(),
+                )],
+                None,
+                true,
+                &["SYSTEMD_ENVIRONMENT_GENERATOR_PATH"],
+            ),
+            (
+                "C : chaîne à deux niveaux",
+                chaine_c.to_vec(),
+                Some(complement(".d/systemd/user")),
+                true,
+                &[],
+            ),
+            (
+                "C : témoin, chaîne sans complément",
+                chaine_c.to_vec(),
+                None,
+                false,
+                &[],
+            ),
+            (
+                "C : environment.d du dossier déplacé",
+                vec![
+                    (".pam_environment", "XDG_CONFIG_HOME DEFAULT=/home/alice/.c\n".into()),
+                    (
+                        ".c/environment.d/50-x.conf",
+                        "LD_PRELOAD=/home/alice/.cache/x.so\n".into(),
+                    ),
+                ],
+                None,
+                true,
+                &[],
+            ),
+            ("chaîne trop longue", longue.clone(), None, true, &["XDG_CONFIG_HOME"]),
+        ];
+        let mut faux = Vec::new();
+        for (i, (nom, fichiers, pose, leve, mots)) in cas.iter().enumerate() {
+            for vide in [false, true] {
+                let (m, service) = sauvegarde_d_essai(&format!("w1-gestionnaire-{i}-{vide}"), vide);
+                for (f, texte) in fichiers {
+                    m.ecrire(f, texte);
+                }
+                if let Some(p) = pose {
+                    m.ecrire(p, REMPLACE);
+                }
+                let c = m.lancements();
+                let execstart = service
+                    .lines()
+                    .position(|l| l.starts_with("ExecStart="))
+                    .map(|n| format!("~/.config/systemd/user/{}:{} : ", crate::sauvegarde::SERVICE, n + 1));
+                let nommee = execstart.is_some_and(|e| c.message.contains(&e));
+                let juste = if *leve {
+                    c.probleme == Some(Niveau::Eleve)
+                        && nommee
+                        && crate::apprentissage::declarable(&c).is_err()
+                        && mots.iter().all(|w| c.message.contains(w))
+                } else {
+                    (vide && c.probleme.is_none())
+                        || (!vide && c.probleme == Some(Niveau::Info) && c.message.contains("avant la 0.95"))
+                };
+                if !juste {
+                    faux.push(format!("{nom}, env -i {vide} : {:?} {:?}", c.probleme, c.message));
+                }
+            }
+        }
+        assert!(faux.is_empty(), "HOME, XDG_RUNTIME_DIR, chaîne : {faux:#?}");
+        // Sans sauvegarde : HOME posé au gestionnaire se dit, non vérifié.
+        let m = Maison::nouvelle("w1-sans-sauvegarde");
+        m.ecrire(CONF, "[Manager]\nManagerEnvironment=HOME=/home/alice/.autre\n");
+        let c = m.lancements();
+        leve_non_declarable(&c, "HOME posé au gestionnaire");
+        assert!(
+            c.message.contains("~/.config/systemd/user.conf") && c.message.contains("pose HOME"),
+            "{}",
+            c.message
+        );
+        // Témoin : environment.d ne change pas l'environnement du gestionnaire, HOME y reste muet à la forme 0.95.
+        let (m, _) = sauvegarde_d_essai("w1-environment-d", true);
+        m.ecrire(".config/environment.d/50-x.conf", "HOME=/home/alice/.autre\n");
         let c = m.lancements();
         assert_eq!(c.probleme, None, "{}", c.message);
     }
