@@ -1268,8 +1268,9 @@ pub(super) fn persistance_dans(
             ),
         );
     }
-    let mut configuration = fichiers_de_configuration(&t.r);
-    let (environnement, hypr_lus, hypr_non_suivies) = environnement(&t.r, configuration.clone(), hypr.clone());
+    let sortes = fichiers_de_configuration(&t.r);
+    let mut configuration: Vec<std::path::PathBuf> = sortes.iter().map(|(f, _)| f.clone()).collect();
+    let (environnement, hypr_lus, hypr_non_suivies) = environnement(&t.r, sortes, hypr.clone());
     t.r.environnement = Some(environnement);
     // Un « source = » de Hyprland que Vanguard ne suit pas (chemin calculé, joker de dossier, borne), ou qui lit un
     // dossier temporaire ou caché : dit, jamais tu (relecture adverse, C7 ; deuxième vérification, N2, N3).
@@ -2342,8 +2343,10 @@ fn injection_nommee(l: &str, de_root: bool) -> Option<String> {
     None
 }
 
-/// La sorte d'un fichier des variables, qui dit comment il pose une variable pour la session.
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// La sorte d'un fichier des variables, qui dit comment il pose une variable pour la session. Elle vient toujours
+/// du lieu où le fichier est trouvé (ou de celui qui le lit par « source »), jamais d'un morceau de son chemin
+/// (relecture 0.95, X-1).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 enum Variables {
     /// Un profil ou un fichier qu'il lit : « export A=… », « declare -x », « setenv » (csh), « set -x » (fish).
     Shell,
@@ -2353,27 +2356,6 @@ enum Variables {
     Systemd,
     /// Hyprland : « env = A,… ».
     Hypr,
-}
-
-impl Variables {
-    fn de(f: &Path, hypr: bool) -> Variables {
-        let nom = f.file_name().and_then(|n| n.to_str()).unwrap_or_default();
-        let chemin = f.to_string_lossy();
-        if hypr {
-            Variables::Hypr
-        } else if chemin.contains("/uwsm/") {
-            // Tout fichier d'uwsm est un script, même nommé « environment » ou « x.conf » (W-2).
-            Variables::Shell
-        } else if chemin.contains("/systemd/") && a_l_extension(f, "conf") {
-            Variables::Systemd
-        } else if chemin.contains("/environment.d/")
-            || ["environment", "pam_env.conf", ".pam_environment"].contains(&nom)
-        {
-            Variables::Cles
-        } else {
-            Variables::Shell
-        }
-    }
 }
 
 /// Les noms des variables qu'une ligne d'un fichier des variables de la sorte `sorte` pose pour la session, pour
@@ -2482,37 +2464,53 @@ enum NonSuivi {
 /// fichiers, les « source » non suivis, les lignes qui posent une variable hors de la liste sûre, en clair (pas une
 /// empreinte par fichier : illisible pour un proche). `Err` : un de ces fichiers ne se lit pas en entier, ou un
 /// « source » de Hyprland ne dit pas ce qu'il lit.
-fn environnement(r: &Releveur, profils: Vec<std::path::PathBuf>, hypr: Vec<std::path::PathBuf>) -> Environnement {
+fn environnement(
+    r: &Releveur,
+    profils: Vec<(std::path::PathBuf, Variables)>,
+    hypr: Vec<std::path::PathBuf>,
+) -> Environnement {
     let s = |c: &str| r.sous(Path::new(c));
     let m = |c: &str| r.maison.join(c);
     let mut connus = profils;
-    for f in [
-        "/etc/systemd/user.conf",
-        "/etc/systemd/system.conf",
-        "/etc/security/pam_env.conf",
+    for (f, sorte) in [
+        ("/etc/systemd/user.conf", Variables::Systemd),
+        ("/etc/systemd/system.conf", Variables::Systemd),
+        ("/etc/security/pam_env.conf", Variables::Cles),
     ] {
-        connus.push(s(f));
+        connus.push((s(f), sorte));
     }
-    for d in [
-        "/etc/systemd/user.conf.d",
-        "/etc/systemd/system.conf.d",
-        "/usr/lib/environment.d",
-        "/run/environment.d",
+    for (d, sorte) in [
+        ("/etc/systemd/user.conf.d", Variables::Systemd),
+        ("/etc/systemd/system.conf.d", Variables::Systemd),
+        ("/usr/lib/environment.d", Variables::Cles),
+        ("/run/environment.d", Variables::Cles),
     ] {
-        connus.extend(fichiers_de(&s(d), &["conf"]));
+        connus.extend(fichiers_de(&s(d), &["conf"]).into_iter().map(|f| (f, sorte)));
     }
-    connus.push(m(".config/systemd/user.conf"));
-    connus.push(m(".pam_environment"));
-    connus.extend(fichiers_de(&m(".config/systemd/user.conf.d"), &["conf"]));
+    connus.push((m(".config/systemd/user.conf"), Variables::Systemd));
+    connus.push((m(".pam_environment"), Variables::Cles));
+    connus.extend(
+        fichiers_de(&m(".config/systemd/user.conf.d"), &["conf"])
+            .into_iter()
+            .map(|f| (f, Variables::Systemd)),
+    );
     if let Some(c) = &r.config {
-        connus.push(r.sous(&c.join("systemd/user.conf")));
-        connus.extend(fichiers_de(&r.sous(&c.join("systemd/user.conf.d")), &["conf"]));
-        connus.extend(fichiers_de(&r.sous(&c.join("environment.d")), &["conf"]));
+        connus.push((r.sous(&c.join("systemd/user.conf")), Variables::Systemd));
+        for (d, sorte) in [
+            ("systemd/user.conf.d", Variables::Systemd),
+            ("environment.d", Variables::Cles),
+        ] {
+            connus.extend(
+                fichiers_de(&r.sous(&c.join(d)), &["conf"])
+                    .into_iter()
+                    .map(|f| (f, sorte)),
+            );
+        }
     }
-    // Chaque fichier, et s'il se lit comme un fichier de Hyprland : celui qui le lit par « source = » le dit, pas
-    // son chemin (deuxième vérification de la campagne E).
-    let mut sources: Vec<(std::path::PathBuf, bool)> = connus.into_iter().map(|f| (f, false)).collect();
-    sources.extend(hypr.into_iter().map(|f| (f, true)));
+    // Chaque fichier et sa sorte, qui vient du lieu où il est trouvé : un fichier de Hyprland, celui qui le lit par
+    // « source = » le dit, pas son chemin (deuxième vérification de la campagne E, puis X-1).
+    let mut sources: Vec<(std::path::PathBuf, Variables)> = connus;
+    sources.extend(hypr.into_iter().map(|f| (f, Variables::Hypr)));
     sources.sort();
     sources.dedup();
     let connus = sources.len();
@@ -2525,7 +2523,8 @@ fn environnement(r: &Releveur, profils: Vec<std::path::PathBuf>, hypr: Vec<std::
     // ensuite (leurs lancements), refus ou non.
     let mut refus: Option<temoins::Refus> = None;
     let mut rang = 0usize;
-    while let Some((f, est_hypr)) = sources.get(rang).cloned() {
+    while let Some((f, variables)) = sources.get(rang).cloned() {
+        let est_hypr = variables == Variables::Hypr;
         rang = rang.saturating_add(1);
         if rang > connus.saturating_add(SOURCES_MAX) {
             refus.get_or_insert(temoins::Refus(trf!(
@@ -2538,14 +2537,14 @@ fn environnement(r: &Releveur, profils: Vec<std::path::PathBuf>, hypr: Vec<std::
                 .get(rang.saturating_sub(1)..)
                 .unwrap_or_default()
                 .iter()
-                .filter(|(_, h)| *h)
+                .filter(|(_, h)| *h == Variables::Hypr)
                 .count();
             if coupes > 0 {
                 let premier = sources
                     .get(rang.saturating_sub(1)..)
                     .unwrap_or_default()
                     .iter()
-                    .find(|(_, h)| *h)
+                    .find(|(_, h)| *h == Variables::Hypr)
                     .map(|(c, _)| r.montre(c))
                     .unwrap_or_default();
                 hypr_non_suivies.push((premier.clone(), premier, NonSuivi::Borne(coupes)));
@@ -2582,7 +2581,6 @@ fn environnement(r: &Releveur, profils: Vec<std::path::PathBuf>, hypr: Vec<std::
         if est_hypr {
             hypr_lus.push(f.clone());
         }
-        let variables = Variables::de(&f, est_hypr);
         let de_root = de_root_seul(&f);
         let injection = |numero: usize, nom: &str| {
             temoins::Refus(trf!(
@@ -2655,7 +2653,9 @@ fn environnement(r: &Releveur, profils: Vec<std::path::PathBuf>, hypr: Vec<std::
         }
         for suivi in suivis {
             if !sources.iter().any(|(c, _)| *c == suivi) {
-                sources.push((suivi, est_hypr));
+                // Lu par « source » : un fichier de Hyprland s'il l'est par Hyprland, un script sinon.
+                let sorte = if est_hypr { Variables::Hypr } else { Variables::Shell };
+                sources.push((suivi, sorte));
             }
         }
     }
@@ -4004,17 +4004,23 @@ fn noms_ecrits(texte: &str, cible: impl Fn(&str) -> bool) -> std::collections::B
 /// aussi) et l'environnement posé en cours de session (`systemctl --user set-environment`), qui ne laissent pas de
 /// fichier.
 fn environnement_change_la_sauvegarde(r: &Releveur, vide: bool) -> bool {
-    let (fichiers, illisibles) = fichiers_du_gestionnaire(r, &configs_posees(&r.gestionnaire));
+    let donnees: Vec<std::path::PathBuf> = r
+        .gestionnaire
+        .iter()
+        .filter(|(v, _)| *v == "XDG_DATA_DIRS")
+        .map(|(_, d)| d.clone())
+        .collect();
+    let (fichiers, illisibles) = fichiers_du_gestionnaire(r, &configs_posees(&r.gestionnaire), &donnees);
     // V-2 : les scripts d'uwsm lus, seuls fichiers qu'une inclusion peut nommer sans lever.
     let scripts: Vec<std::path::PathBuf> = fichiers
         .iter()
-        .filter(|(f, _)| Variables::de(f, false) == Variables::Shell)
-        .map(|(f, _)| f.clone())
+        .filter(|(_, _, sorte)| *sorte == Variables::Shell)
+        .map(|(f, _, _)| f.clone())
         .collect();
     // V-1 : un dossier d'unités posé au gestionnaire sous une forme qui ne se résout pas.
     !illisibles.is_empty()
         || !r.gestionnaire_non_resolu.is_empty()
-        || fichiers.iter().any(|(f, du_compte)| {
+        || fichiers.iter().any(|(f, du_compte, sorte)| {
             if std::fs::read_link(f).is_ok_and(|v| v == Path::new("/dev/null")) {
                 return false;
             }
@@ -4028,8 +4034,7 @@ fn environnement_change_la_sauvegarde(r: &Releveur, vide: bool) -> bool {
                     let texte = String::from_utf8_lossy(&lu.octets);
                     !lu.entier
                         || nomme_une_variable_de_la_sauvegarde(&texte, vide)
-                        || (Variables::de(f, false) == Variables::Shell
-                            && script_cache_ce_qu_il_pose(&texte, &r.maison, &scripts))
+                        || (*sorte == Variables::Shell && script_cache_ce_qu_il_pose(&texte, &r.maison, &scripts))
                 }
             }
         })
@@ -4153,9 +4158,10 @@ fn commandes_shell(texte: &str) -> Vec<Vec<String>> {
 fn fichiers_du_gestionnaire(
     r: &Releveur,
     posees: &[std::path::PathBuf],
-) -> (Vec<(std::path::PathBuf, bool)>, Vec<std::path::PathBuf>) {
+    donnees: &[std::path::PathBuf],
+) -> (Vec<(std::path::PathBuf, bool, Variables)>, Vec<std::path::PathBuf>) {
     let s = |c: &str| r.sous(Path::new(c));
-    let mut fichiers: Vec<(std::path::PathBuf, bool)> = Vec::new();
+    let mut fichiers: Vec<(std::path::PathBuf, bool, Variables)> = Vec::new();
     let mut illisibles = Vec::new();
     // Les fichiers d'un dossier : ceux en « .conf », ou tous ceux de uwsm (« env », « env-<bureau> » et ce qu'ils
     // peuvent inclure : relecture 0.95, V-2), et ceux de ses sous-dossiers « env.d » et « env-<bureau>.d », qu'uwsm
@@ -4163,8 +4169,9 @@ fn fichiers_du_gestionnaire(
     // bas. Plus large qu'uwsm (ses « *.bak », « *~ »… passés, ses fichiers cachés) : un fichier de trop se lit.
     let mut dossier = |d: std::path::PathBuf,
                        du_compte: bool,
-                       uwsm: bool,
-                       fichiers: &mut Vec<(std::path::PathBuf, bool)>| {
+                       sorte: Variables,
+                       fichiers: &mut Vec<(std::path::PathBuf, bool, Variables)>| {
+        let uwsm = sorte == Variables::Shell;
         let mut a_lire = vec![(d, true)];
         while let Some((d, haut)) = a_lire.pop() {
             match std::fs::symlink_metadata(&d) {
@@ -4194,7 +4201,7 @@ fn fichiers_du_gestionnaire(
                 }
                 let pris = if uwsm { !est_dossier } else { a_l_extension(&p, "conf") };
                 if pris {
-                    fichiers.push((p, du_compte));
+                    fichiers.push((p, du_compte, sorte));
                 }
             }
         }
@@ -4209,34 +4216,52 @@ fn fichiers_du_gestionnaire(
             configs.push(c);
         }
     }
+    // X-1 (relecture 0.95) : la sorte de chaque fichier vient du dossier où il est trouvé, jamais d'un morceau de son
+    // chemin : un dossier de réglages déplacé vers « ~/x/uwsm » garde son user.conf lu comme réglage de systemd.
     for c in &configs {
-        dossier(c.join("environment.d"), true, false, &mut fichiers);
-        dossier(c.join("systemd/user.conf.d"), true, false, &mut fichiers);
-        dossier(c.join("uwsm"), true, true, &mut fichiers);
-        fichiers.push((c.join("systemd/user.conf"), true));
+        dossier(c.join("environment.d"), true, Variables::Cles, &mut fichiers);
+        dossier(c.join("systemd/user.conf.d"), true, Variables::Systemd, &mut fichiers);
+        dossier(c.join("uwsm"), true, Variables::Shell, &mut fichiers);
+        fichiers.push((c.join("systemd/user.conf"), true, Variables::Systemd));
     }
-    fichiers.push((r.maison.join(".pam_environment"), true));
-    for d in [
-        "/etc/environment.d",
-        "/run/environment.d",
-        "/usr/local/lib/environment.d",
-        "/usr/lib/environment.d",
-        "/etc/systemd/user.conf.d",
-        "/run/systemd/user.conf.d",
-        "/usr/local/lib/systemd/user.conf.d",
-        "/usr/lib/systemd/user.conf.d",
-    ] {
-        dossier(s(d), false, false, &mut fichiers);
+    // X-2 : uwsm lit aussi « uwsm/env… » sous XDG_CONFIG_DIRS et XDG_DATA_DIRS (uwsm 0.27, prepare-env.sh,
+    // `get_all_config_dirs_extended`) : ceux posés par un fichier du gestionnaire (`donnees`), du compte quand ils sont
+    // dans la maison, et leurs valeurs par défaut, du système (Omarchy y pose /usr/share/uwsm/env.d).
+    let mut lus_par_uwsm: Vec<(std::path::PathBuf, bool)> = ["/etc/xdg", "/usr/local/share", "/usr/share"]
+        .iter()
+        .map(|d| (s(d), false))
+        .collect();
+    for d in donnees {
+        let d = r.sous(d);
+        if !configs.contains(&d) && !lus_par_uwsm.iter().any(|(x, _)| *x == d) {
+            lus_par_uwsm.push((d.clone(), d.starts_with(&r.maison)));
+        }
     }
-    for f in [
-        "/etc/environment",
-        "/etc/security/pam_env.conf",
-        "/etc/systemd/user.conf",
-        "/run/systemd/user.conf",
-        "/usr/local/lib/systemd/user.conf",
-        "/usr/lib/systemd/user.conf",
+    for (d, du_compte) in lus_par_uwsm {
+        dossier(d.join("uwsm"), du_compte, Variables::Shell, &mut fichiers);
+    }
+    fichiers.push((r.maison.join(".pam_environment"), true, Variables::Cles));
+    for (d, sorte) in [
+        ("/etc/environment.d", Variables::Cles),
+        ("/run/environment.d", Variables::Cles),
+        ("/usr/local/lib/environment.d", Variables::Cles),
+        ("/usr/lib/environment.d", Variables::Cles),
+        ("/etc/systemd/user.conf.d", Variables::Systemd),
+        ("/run/systemd/user.conf.d", Variables::Systemd),
+        ("/usr/local/lib/systemd/user.conf.d", Variables::Systemd),
+        ("/usr/lib/systemd/user.conf.d", Variables::Systemd),
     ] {
-        fichiers.push((s(f), false));
+        dossier(s(d), false, sorte, &mut fichiers);
+    }
+    for (f, sorte) in [
+        ("/etc/environment", Variables::Cles),
+        ("/etc/security/pam_env.conf", Variables::Cles),
+        ("/etc/systemd/user.conf", Variables::Systemd),
+        ("/run/systemd/user.conf", Variables::Systemd),
+        ("/usr/local/lib/systemd/user.conf", Variables::Systemd),
+        ("/usr/lib/systemd/user.conf", Variables::Systemd),
+    ] {
+        fichiers.push((s(f), false, sorte));
     }
     (fichiers, illisibles)
 }
@@ -4316,13 +4341,12 @@ fn dossiers_du_gestionnaire_lus(
     Vec<(&'static str, std::path::PathBuf)>,
     Vec<(std::path::PathBuf, String)>,
 ) {
-    let (fichiers, illisibles) = fichiers_du_gestionnaire(r, posees);
+    let (fichiers, illisibles) = fichiers_du_gestionnaire(r, posees, &[]);
     let mut dossiers = Vec::new();
     let mut non_resolus: Vec<(std::path::PathBuf, String)> = illisibles.into_iter().map(|d| (d, "?".into())).collect();
-    for (f, du_compte) in fichiers {
+    for (f, du_compte, sorte) in fichiers {
         // W-4 : la forme « valeur par défaut » ne se résout que dans un fichier du système à root seul.
         let defauts = !du_compte && programme_de_root_seul(&r.racine, &f);
-        let sorte = Variables::de(&f, false);
         if sorte == Variables::Shell || std::fs::read_link(&f).is_ok_and(|v| v == Path::new("/dev/null")) {
             continue;
         }
@@ -4869,26 +4893,35 @@ fn lire_prechargement(
     }
 }
 
-/// Les fichiers de configuration des sessions (environnement, profils des shells, uwsm), du système puis du compte.
-fn fichiers_de_configuration(r: &Releveur) -> Vec<std::path::PathBuf> {
+/// Les fichiers de configuration des sessions (environnement, profils des shells, uwsm), du système puis du compte,
+/// chacun avec sa sorte, qui vient du lieu où il est trouvé (X-1).
+fn fichiers_de_configuration(r: &Releveur) -> Vec<(std::path::PathBuf, Variables)> {
     let h = &r.maison;
     let etc = |chemin: &str| r.racine.join(chemin);
-    let mut configuration: Vec<std::path::PathBuf> = [
-        "etc/environment",
-        "etc/profile",
-        "etc/bash.bashrc",
-        "etc/zsh/zshenv",
-        "etc/zsh/zprofile",
-        "etc/zsh/zshrc",
-        "etc/zsh/zlogin",
-        "etc/fish/config.fish",
-    ]
-    .iter()
-    .map(|c| etc(c))
-    .collect();
-    configuration.extend(fichiers_de(&etc("etc/profile.d"), &["sh", "zsh"]));
-    configuration.extend(fichiers_de(&etc("etc/environment.d"), &["conf"]));
-    configuration.extend(fichiers_de(&etc("etc/fish/conf.d"), &["fish"]));
+    let shell = |f: std::path::PathBuf| (f, Variables::Shell);
+    let cles = |f: std::path::PathBuf| (f, Variables::Cles);
+    let systemd = |f: std::path::PathBuf| (f, Variables::Systemd);
+    let mut configuration: Vec<(std::path::PathBuf, Variables)> = vec![cles(etc("etc/environment"))];
+    configuration.extend(
+        [
+            "etc/profile",
+            "etc/bash.bashrc",
+            "etc/zsh/zshenv",
+            "etc/zsh/zprofile",
+            "etc/zsh/zshrc",
+            "etc/zsh/zlogin",
+            "etc/fish/config.fish",
+        ]
+        .iter()
+        .map(|c| shell(etc(c))),
+    );
+    configuration.extend(
+        fichiers_de(&etc("etc/profile.d"), &["sh", "zsh"])
+            .into_iter()
+            .map(shell),
+    );
+    configuration.extend(fichiers_de(&etc("etc/environment.d"), &["conf"]).into_iter().map(cles));
+    configuration.extend(fichiers_de(&etc("etc/fish/conf.d"), &["fish"]).into_iter().map(shell));
     // ~/.bash_login, ~/.zlogin et fish aussi (vérification de la campagne E) : chacun lit du code à l'ouverture.
     configuration.extend(
         [
@@ -4907,25 +4940,49 @@ fn fichiers_de_configuration(r: &Releveur) -> Vec<std::path::PathBuf> {
             ".config/fish/config.fish",
         ]
         .iter()
-        .map(|f| h.join(f)),
+        .map(|f| shell(h.join(f))),
     );
-    configuration.extend(fichiers_de(&h.join(".config/fish/conf.d"), &["fish"]));
+    configuration.extend(
+        fichiers_de(&h.join(".config/fish/conf.d"), &["fish"])
+            .into_iter()
+            .map(shell),
+    );
     if let Some(z) = &r.zdot {
         for f in [".zshenv", ".zprofile", ".zshrc", ".zlogin", ".zlogout"] {
-            configuration.push(r.sous(&z.join(f)));
+            configuration.push(shell(r.sous(&z.join(f))));
         }
     }
     if let Some(c) = &r.config {
-        configuration.push(r.sous(&c.join("fish/config.fish")));
-        configuration.extend(fichiers_de(&r.sous(&c.join("fish/conf.d")), &["fish"]));
+        configuration.push(shell(r.sous(&c.join("fish/config.fish"))));
+        configuration.extend(
+            fichiers_de(&r.sous(&c.join("fish/conf.d")), &["fish"])
+                .into_iter()
+                .map(shell),
+        );
     }
-    configuration.extend(fichiers_de(&h.join(".config/environment.d"), &["conf"]));
+    configuration.extend(
+        fichiers_de(&h.join(".config/environment.d"), &["conf"])
+            .into_iter()
+            .map(cles),
+    );
     // L'environnement que le gestionnaire de systemd du compte donne à chaque unité (relecture adverse 2, N8).
-    configuration.push(etc("etc/systemd/user.conf"));
-    configuration.extend(fichiers_de(&etc("etc/systemd/user.conf.d"), &["conf"]));
-    configuration.push(h.join(".config/systemd/user.conf"));
-    configuration.extend(fichiers_de(&h.join(".config/systemd/user.conf.d"), &["conf"]));
-    configuration.extend(fichiers_de(&h.join(".config/uwsm"), &["sh", "conf"]));
+    configuration.push(systemd(etc("etc/systemd/user.conf")));
+    configuration.extend(
+        fichiers_de(&etc("etc/systemd/user.conf.d"), &["conf"])
+            .into_iter()
+            .map(systemd),
+    );
+    configuration.push(systemd(h.join(".config/systemd/user.conf")));
+    configuration.extend(
+        fichiers_de(&h.join(".config/systemd/user.conf.d"), &["conf"])
+            .into_iter()
+            .map(systemd),
+    );
+    configuration.extend(
+        fichiers_de(&h.join(".config/uwsm"), &["sh", "conf"])
+            .into_iter()
+            .map(shell),
+    );
     let mut env: Vec<std::path::PathBuf> = std::fs::read_dir(h.join(".config/uwsm"))
         .into_iter()
         .flatten()
@@ -4935,7 +4992,7 @@ fn fichiers_de_configuration(r: &Releveur) -> Vec<std::path::PathBuf> {
         .collect();
     // Dans l'ordre des noms, comme `fichiers_sous` : le verdict ne dépend pas du système de fichiers.
     env.sort();
-    configuration.extend(env);
+    configuration.extend(env.into_iter().map(shell));
     configuration
 }
 
@@ -9996,6 +10053,156 @@ mod tests {
         m.ecrire(".config/environment.d/50-x.conf", "HOME=/home/alice/.autre\n");
         let c = m.lancements();
         assert_eq!(c.probleme, None, "{}", c.message);
+    }
+
+    /// X-1 (relecture 0.95) : un dossier de réglages déplacé vers un chemin qui contient « /uwsm/ » garde son
+    /// user.conf et ses compléments lus comme réglages de systemd (sondes S4 à S4d de la relecture), comme un dossier
+    /// nommé autrement (S4t). X-2 : uwsm lit aussi « uwsm/env… » sous chaque dossier de XDG_DATA_DIRS : un dossier du
+    /// compte posé ainsi se lit (S5, S5c), comme par XDG_CONFIG_DIRS (S5b) ; le fichier d'Omarchy sous /usr/share
+    /// aussi, muet quand il est sain.
+    #[test]
+    fn la_sorte_d_un_fichier_vient_de_son_lieu_pas_de_son_chemin() {
+        type Cas<'a> = (&'a str, Vec<(&'a str, &'a str)>, Option<String>);
+        const REMPLACE: &str = "[Service]\nExecStart=\nExecStart=/usr/bin/rsync -a /home/alice/Documents /tmp/x\n";
+        const DONNEES: &str = "[Manager]\nManagerEnvironment=XDG_DATA_DIRS=/home/alice/.d:/usr/share\n";
+        let complement = |d: &str| format!("{d}/{}.d/x.conf", crate::sauvegarde::SERVICE);
+        // (nom, fichiers posés, complément posé) : tous levés.
+        let cas: Vec<Cas<'_>> = vec![
+            (
+                "S4 : pam, puis user.conf sous « /uwsm/ »",
+                vec![
+                    (".pam_environment", "XDG_CONFIG_HOME DEFAULT=/home/alice/.u/uwsm\n"),
+                    (".u/uwsm/systemd/user.conf", DONNEES),
+                ],
+                Some(complement(".d/systemd/user")),
+            ),
+            (
+                "S4b : user.conf, puis user.conf sous « /uwsm/ »",
+                vec![
+                    (
+                        ".config/systemd/user.conf",
+                        "[Manager]\nManagerEnvironment=XDG_CONFIG_HOME=/home/alice/.u/uwsm\n",
+                    ),
+                    (".u/uwsm/systemd/user.conf", DONNEES),
+                ],
+                Some(complement(".d/systemd/user")),
+            ),
+            (
+                "S4c : user.conf.d sous « /uwsm/ »",
+                vec![
+                    (".pam_environment", "XDG_CONFIG_HOME DEFAULT=/home/alice/.u/uwsm\n"),
+                    (".u/uwsm/systemd/user.conf.d/x.conf", DONNEES),
+                ],
+                Some(complement(".d/systemd/user")),
+            ),
+            (
+                "S4d : HOME sous « /uwsm/ »",
+                vec![
+                    (".pam_environment", "XDG_CONFIG_HOME DEFAULT=/home/alice/.u/uwsm\n"),
+                    (
+                        ".u/uwsm/systemd/user.conf",
+                        "[Manager]\nManagerEnvironment=HOME=/home/alice/.autre\n",
+                    ),
+                ],
+                Some(complement(".autre/.config/systemd/user")),
+            ),
+            (
+                "S4t : témoin, autre nom",
+                vec![
+                    (".pam_environment", "XDG_CONFIG_HOME DEFAULT=/home/alice/.u/autre\n"),
+                    (".u/autre/systemd/user.conf", DONNEES),
+                ],
+                Some(complement(".d/systemd/user")),
+            ),
+            (
+                "S5 : uwsm/env sous XDG_DATA_DIRS",
+                vec![
+                    (
+                        ".config/environment.d/50-x.conf",
+                        "XDG_DATA_DIRS=/home/alice/.d:/usr/share\n",
+                    ),
+                    (".d/uwsm/env", "export LD_PRELOAD=/home/alice/.cache/x.so\n"),
+                ],
+                None,
+            ),
+            (
+                "S5c : uwsm/env.d sous XDG_DATA_DIRS",
+                vec![
+                    (
+                        ".config/environment.d/50-x.conf",
+                        "XDG_DATA_DIRS=/home/alice/.d:/usr/share\n",
+                    ),
+                    (".d/uwsm/env.d/x", "export LD_PRELOAD=/home/alice/.cache/x.so\n"),
+                ],
+                None,
+            ),
+            (
+                "S5b : uwsm/env sous XDG_CONFIG_DIRS",
+                vec![
+                    (
+                        ".config/environment.d/50-x.conf",
+                        "XDG_CONFIG_DIRS=/home/alice/.d:/etc/xdg\n",
+                    ),
+                    (".d/uwsm/env", "export LD_PRELOAD=/home/alice/.cache/x.so\n"),
+                ],
+                None,
+            ),
+            (
+                "S5 : user.conf pose XDG_DATA_DIRS, uwsm/env-hyprland",
+                vec![
+                    (".config/systemd/user.conf", DONNEES),
+                    (".d/uwsm/env-hyprland", "export LD_PRELOAD=/home/alice/.cache/x.so\n"),
+                ],
+                None,
+            ),
+        ];
+        let mut faux = Vec::new();
+        for (i, (nom, fichiers, pose)) in cas.iter().enumerate() {
+            for vide in [false, true] {
+                let (m, service) = sauvegarde_d_essai(&format!("x1-sorte-{i}-{vide}"), vide);
+                for (f, texte) in fichiers {
+                    m.ecrire(f, texte);
+                }
+                if let Some(p) = pose {
+                    m.ecrire(p, REMPLACE);
+                }
+                let c = m.lancements();
+                let execstart = service
+                    .lines()
+                    .position(|l| l.starts_with("ExecStart="))
+                    .map(|n| format!("~/.config/systemd/user/{}:{} : ", crate::sauvegarde::SERVICE, n + 1));
+                let nommee = execstart.is_some_and(|e| c.message.contains(&e));
+                if !(c.probleme == Some(Niveau::Eleve) && nommee && crate::apprentissage::declarable(&c).is_err()) {
+                    faux.push(format!("{nom}, env -i {vide} : {:?} {:?}", c.probleme, c.message));
+                }
+            }
+        }
+        assert!(faux.is_empty(), "sorte par le lieu : {faux:#?}");
+        let ecrire_racine = |m: &Maison, relatif: &str, texte: &str| {
+            let f = m.racine.join(relatif);
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(f, texte).unwrap();
+        };
+        // Témoins : le fichier d'uwsm d'Omarchy sous /usr/share, sain (il lit ~/.config/uwsm/default, lu aussi), et un
+        // dossier de XDG_DATA_DIRS sans uwsm, restent muets à la forme 0.95.
+        let (m, _) = sauvegarde_d_essai("x2-omarchy", true);
+        ecrire_racine(
+            &m,
+            "usr/share/uwsm/env.d/10-omarchy",
+            "export TERMINAL=xdg-terminal-exec\n[ -f \"$HOME/.config/uwsm/default\" ] && . \"$HOME/.config/uwsm/default\"\n",
+        );
+        m.ecrire(".config/uwsm/default", "export EDITOR=nvim\n");
+        m.ecrire(
+            ".config/environment.d/50-x.conf",
+            "XDG_DATA_DIRS=/home/alice/.d:/usr/share\n",
+        );
+        let c = m.lancements();
+        assert_eq!(c.probleme, None, "{}", c.message);
+        // Le même fichier sous /usr/share qui pose un chargeur : levé.
+        let (m, _) = sauvegarde_d_essai("x2-usr-share", true);
+        ecrire_racine(&m, "usr/share/uwsm/env.d/10-x", "export LD_PRELOAD=/usr/lib/x.so\n");
+        let c = m.lancements();
+        assert_eq!(c.probleme, Some(Niveau::Eleve), "{}", c.message);
     }
 
     /// W-4 (relecture 0.95) : un fichier du système à root seul (snapd) qui complète XDG_DATA_DIRS par
