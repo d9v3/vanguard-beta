@@ -988,7 +988,7 @@ mod systeme {
     /// pour être dite (relecture 0.94, R-5). Un lien pendant du système (absent) n'est pas une entrée.
     pub(super) fn autostart_dans(compte: &Path, systeme: &[PathBuf], bureau: &str) -> (Vec<(String, String)>, usize) {
         let mut liste = Vec::new();
-        let mut pas_lus = 0;
+        let mut pas_lus: usize = 0;
         // L'utilisateur d'abord : son entrée l'emporte sur celle du système au même nom, même désactivée.
         // Les noms tels quels (`OsString`) : convertis avec pertes, deux noms qui ne sont pas en UTF-8 se
         // confondaient, et l'un masquait l'autre (relecture 0.94, R-1).
@@ -1000,7 +1000,7 @@ mod systeme {
                     match crate::optimiser::linux::texte_autostart(&f.path(), du_compte) {
                         Ok(t) => liste.extend(entree_autostart(&t, bureau)),
                         Err(e) if !du_compte && e.kind() == std::io::ErrorKind::NotFound => {}
-                        Err(_) => pas_lus += 1,
+                        Err(_) => pas_lus = pas_lus.saturating_add(1),
                     }
                     vus.push(nom);
                 }
