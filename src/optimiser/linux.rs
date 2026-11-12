@@ -23,6 +23,9 @@ const NOTE_PRESENTE: &str = "note";
 /// La plus longue note admise d'un fichier d'autostart (« + » et contenu) : ce qu'en lit `lire` et ce qu'en admet la
 /// relecture des notes, une seule borne.
 const AUTOSTART_MAX: usize = 64 << 10;
+/// Le plus long fichier d'unité de systemd lu par le démarrage (une unité ordinaire fait quelques centaines
+/// d'octets) : au-delà, il n'est pas lu, et c'est dit (relecture 0.94, R-7).
+const UNITE_MAX: usize = 64 << 10;
 
 /// Ce que retire un réglage de démarrage.
 pub enum Entree {
@@ -1507,10 +1510,20 @@ fn releve_selon(
             ));
             continue;
         }
-        if !fichier_ordinaire(&chemin) {
+        // Relu d'une seule ouverture, sans suivre de lien ni attendre un tube, et borné (relecture 0.94, R-7) : une
+        // unité qui ne se lit pas ainsi n'est pas proposée avec son nom pour commande, elle est dite. Une unité lien
+        // vient d'un gestionnaire de configuration (dotfiles, `systemctl link`) : `systemctl disable` retirerait le
+        // lien lui-même, rien ne s'annulerait exactement.
+        let Ok(texte) = sous_maison::lire(&chemin, u64::try_from(UNITE_MAX).unwrap_or(0)) else {
+            manques.push(trf!(
+                "non vérifié : service du compte {} pas lu (plus de 64 Kio, pas en UTF-8, pas un simple fichier ou \
+                 illisible) ; ni lu ni proposé",
+                "not verified: account service {} not read (over 64 KiB, not UTF-8, not a plain file or \
+                 unreadable); neither read nor offered",
+                crate::ui::affichable(unite)
+            ));
             continue;
-        }
-        let texte = std::fs::read_to_string(&chemin).unwrap_or_default();
+        };
         l.push(Programme {
             nom: unite.trim_end_matches(".service").to_string(),
             commande: texte
@@ -1529,14 +1542,6 @@ fn releve_selon(
         });
     }
     (l, manques)
-}
-
-/// Un vrai fichier, pas un lien. Une entrée d'autostart ou une unité de systemd du compte qui est un lien vient d'un
-/// gestionnaire de configuration (dotfiles, stow, home-manager) : l'écrire remplacerait le lien par un fichier, et
-/// `systemctl disable` retire aussi le lien d'une unité ajoutée par `systemctl link`. Rien ne s'annulerait exactement :
-/// Vanguard n'y touche pas.
-fn fichier_ordinaire(p: &Path) -> bool {
-    std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_file())
 }
 
 /// Les entrées d'autostart : chaque fichier .desktop du compte, puis celles du système au nom qu'il n'a pas et qui se
@@ -1846,10 +1851,10 @@ fn etat_unite_selon(dossiers: &DossiersUnites, nom: &str, activee: Option<bool>)
         .chain(&dossiers.paquets)
         .map(|d| d.join(nom))
         .find(|f| f.symlink_metadata().is_ok())?;
-    if !fichier_ordinaire(&fichier) {
-        return None;
-    }
-    installable(&std::fs::read_to_string(&fichier).ok()?).then_some("disabled")
+    // Sans suivre de lien, sans attendre un tube, borné (relecture 0.94, R-7) : ce qui ne se lit pas ainsi est laissé
+    // à systemctl, qui nomme l'état.
+    let texte = crate::socle::lire_texte_ordinaire(&fichier, u64::try_from(UNITE_MAX).unwrap_or(0)).ok()?;
+    installable(&texte).then_some("disabled")
 }
 
 /// La section `[Install]` dit à `systemctl enable` quoi poser : une cible qui la veut, ou un autre nom.
@@ -2930,9 +2935,6 @@ mod tests {
             .map(|p| p.nom)
             .collect();
         assert_eq!(noms, ["Note", "Horloge"]);
-        assert!(fichier_ordinaire(&compte.join("note.desktop")));
-        assert!(!fichier_ordinaire(&compte.join("synchro.desktop")));
-        assert!(!fichier_ordinaire(&compte.join("absent.desktop")));
         // Le dossier d'autostart du compte lui-même est un lien (vers des dotfiles, ou hors du dossier personnel) :
         // ni ses entrées ni les copies des entrées du système ne sont proposées, rien ne s'écrirait à travers lui.
         let lien = base.join("compte-lien");
@@ -3061,6 +3063,50 @@ mod tests {
             "{manques:?}"
         );
         std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// Relecture 0.94, R-7 : le fichier d'une unité du compte se lit borné, sans suivre de lien ni attendre. Trop
+    /// gros ou pas en UTF-8 : ni lu ni proposé, mais dit ; jamais proposé avec son nom pour commande. Une unité saine
+    /// à côté reste proposée.
+    #[test]
+    fn unite_du_compte_lue_bornee() {
+        let base = dossier_jetable("unite-bornee");
+        let unites = base.join("systemd/user");
+        std::fs::create_dir_all(&unites).unwrap();
+        let mut gros = String::from("[Service]\nExecStart=/usr/bin/gros\n");
+        gros.push_str(&"#".repeat(UNITE_MAX));
+        std::fs::write(unites.join("gros.service"), gros).unwrap();
+        std::fs::write(unites.join("latin.service"), b"[Service]\nExecStart=/usr/bin/caf\xe9\n").unwrap();
+        std::fs::write(unites.join("sain.service"), "[Service]\nExecStart=/usr/bin/sain\n").unwrap();
+        let activees = "gros.service enabled enabled\nlatin.service enabled enabled\nsain.service enabled enabled";
+        let (l, manques) = releve_dans(&base, &[], "Hyprland", Some(activees.to_string()));
+        let noms: Vec<&str> = l.iter().map(|p| p.nom.as_str()).collect();
+        assert_eq!(noms, ["sain"], "{manques:?}");
+        for u in ["gros.service", "latin.service"] {
+            assert!(
+                manques.iter().any(|m| m.contains(u) && m.contains("non vérifié")),
+                "{u} : {manques:?}"
+            );
+        }
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// R-7, par le nom : l'état d'une unité (`etat_unite_selon`) ne se juge pas sur un fichier plus gros que la
+    /// borne ; il est laissé à systemctl (`None`), comme un fichier qui ne se lit pas.
+    #[test]
+    fn etat_d_une_unite_trop_grosse_laisse_a_systemctl() {
+        let (d, dossiers) = dossiers_inventes("unite-grosse", true);
+        let paquet = &dossiers.paquets[1];
+        let mut gros = String::from("[Install]\nWantedBy=default.target\n");
+        gros.push_str(&"#".repeat(UNITE_MAX));
+        std::fs::write(paquet.join("gros.service"), gros).unwrap();
+        std::fs::write(paquet.join("sain.service"), "[Install]\nWantedBy=default.target\n").unwrap();
+        assert_eq!(
+            etat_unite_selon(&dossiers, "sain.service", Some(false)),
+            Some("disabled")
+        );
+        assert_eq!(etat_unite_selon(&dossiers, "gros.service", Some(false)), None);
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     /// L'ordre de systemd dans un essai : le dossier d'unités de `config`, puis les dossiers du système donnés.
