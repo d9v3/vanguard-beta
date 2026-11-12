@@ -144,14 +144,27 @@ pub(crate) fn systeme() -> &'static str {
         }
         #[cfg(windows)]
         {
-            // « Microsoft Windows [Version 10.0.26200.9711] »
-            crate::commande::lancer(crate::commande::cmd().args(["/d", "/c", "ver"]), 5)
-                .and_then(|r| {
-                    r.sortie
-                        .split_once("Version ")
-                        .map(|(_, v)| format!("Windows {}", v.trim().trim_end_matches(']')))
-                })
-                .unwrap_or_else(|| "Windows".into())
+            // Lu au registre, sans lancer « ver » : `noter` y passe, et une commande lancée d'ici créait un fil de
+            // lecture ; refusé, ce fil notait son refus, et la note revenait ici, dans le même `OnceLock` en cours
+            // d'initialisation sur le même fil : Vanguard figé pour toujours (relecture 0.95, L-1).
+            let cle = winreg::RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE)
+                .open_subkey(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion")
+                .ok();
+            let nombre = |n: &str| cle.as_ref().and_then(|k| k.get_value::<u32, _>(n).ok());
+            let texte = |n: &str| cle.as_ref().and_then(|k| k.get_value::<String, _>(n).ok());
+            // Windows 10 et plus : 10.0 en nombres ; avant, seulement le texte « 6.3 ».
+            let version = match (nombre("CurrentMajorVersionNumber"), nombre("CurrentMinorVersionNumber")) {
+                (Some(a), Some(b)) => Some(format!("{a}.{b}")),
+                _ => texte("CurrentVersion"),
+            };
+            // « Windows 10.0.26200.9711 », comme le disait « ver ».
+            match (version, texte("CurrentBuildNumber")) {
+                (Some(v), Some(b)) => match nombre("UBR") {
+                    Some(u) => format!("Windows {v}.{b}.{u}"),
+                    None => format!("Windows {v}.{b}"),
+                },
+                _ => "Windows".into(),
+            }
         }
     })
 }
@@ -900,6 +913,7 @@ pub fn erreur(contexte: Contexte, detail: &str) {
 /// de champs vient après le détail : la signature des tickets (`outils/journal-vers-github.py`) prend le libellé et la
 /// première ligne du détail, et ne change pas.
 pub(crate) fn noter(champs: &Champs, detail: &str) {
+    let _dedans = Dedans::poser();
     // Sous la lecture seule (l'essai de l'autotest, l'aperçu d'une correction, qui promet que rien n'a changé) :
     // rien n'est noté. Le fichier est ouvert en ajout, hors de `socle::ecrire_atomique`, que l'interrupteur retient.
     if crate::autotest::lecture_seule::active() {
@@ -932,6 +946,10 @@ pub(crate) fn noter(champs: &Champs, detail: &str) {
         detail.truncate(coupe);
         detail.push_str(" […]");
     }
+    #[cfg(test)]
+    if let Some(crochet) = AVANT_SYSTEME.get() {
+        crochet();
+    }
     let entree = crate::compte_rendu::journal::entree_ecrite(
         &chrono::Utc::now().format("%Y-%m-%d %H:%M UTC").to_string(),
         env!("CARGO_PKG_VERSION"),
@@ -955,6 +973,39 @@ pub(crate) fn noter(champs: &Champs, detail: &str) {
         }
         f.write_all(entree.as_bytes())
     });
+}
+
+thread_local! {
+    /// Ce fil est dans `noter`. Ce que `noter` appelle (la recherche de la clé, la version du système, le relevé) ne
+    /// doit pas renoter : la note reviendrait dans une initialisation en cours (`OnceLock`) et figerait le fil.
+    static DANS_NOTER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Appelé par `noter` juste avant `systeme()`, sur ce fil : l'essai y rejoue une initialisation qui lance un fil.
+    static AVANT_SYSTEME: std::cell::Cell<Option<fn()>> = const { std::cell::Cell::new(None) };
+}
+
+/// `DANS_NOTER` posé le temps d'une note, rendu à sa valeur d'avant à la fin (panique comprise).
+struct Dedans(bool);
+
+impl Dedans {
+    fn poser() -> Self {
+        Self(DANS_NOTER.try_with(|d| d.replace(true)).unwrap_or(false))
+    }
+}
+
+impl Drop for Dedans {
+    fn drop(&mut self) {
+        let _ = DANS_NOTER.try_with(|d| d.set(self.0));
+    }
+}
+
+/// Ce fil est-il en train de noter au journal ? Un refus de fil (`socle::fil`) survenu pendant la note n'est alors dit
+/// qu'à l'écran : noté, il rentrerait dans le journal par lui-même (garde générale contre journal → fil → journal).
+pub(crate) fn dans_noter() -> bool {
+    DANS_NOTER.try_with(std::cell::Cell::get).unwrap_or(false)
 }
 
 /// Une sortie coupée par celui qui la lit (`vanguard regles | head`) : println! panique sur le tube fermé. Ce n'est pas
@@ -1086,6 +1137,47 @@ mod tests {
         // Refermé : la suivante n'est plus gardée, et une seconde lecture est vide de celle-là.
         erreur(Contexte::Autotest, "après la fermeture");
         assert!(!relayees().iter().any(|g| g.contains("après la fermeture")));
+    }
+
+    /// Relecture 0.95, L-1 : sous Windows, `systeme()` lançait « ver » ; son fil de lecture refusé notait le refus,
+    /// et la note rentrait dans le même `OnceLock` en cours d'initialisation : figé pour toujours. Rejoué ici par un
+    /// `OnceLock` d'essai qui lance un fil depuis `noter`, sous le refus des fils : la note finit, et est écrite.
+    #[test]
+    fn fil_refuse_pendant_une_note_ne_bloque_pas() {
+        static SYSTEME_ESSAI: OnceLock<()> = OnceLock::new();
+        fn comme_systeme() {
+            SYSTEME_ESSAI.get_or_init(|| {
+                let _ = crate::socle::fil::lancer("essai-dans-la-note", || ());
+            });
+        }
+        let dossier = crate::essais::Jetable::nouveau("journal-fil-refuse");
+        let chemin = dossier.to_path_buf();
+        let (envoi, reception) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            DOSSIER_ESSAI.set(Some(chemin.clone()));
+            AVANT_SYSTEME.set(Some(comme_systeme));
+            crate::socle::fil::refuser_les_fils(|| erreur(Contexte::Autotest, "note qui lance un fil"));
+            AVANT_SYSTEME.set(None);
+            DOSSIER_ESSAI.set(None);
+            let _ = envoi.send(std::fs::read_to_string(chemin.join(FICHIER)).unwrap_or_default());
+        });
+        let ecrit = reception
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("la note qui lance un fil refusé a figé (ou paniqué)");
+        assert!(ecrit.contains("note qui lance un fil"), "{ecrit}");
+        assert!(!dans_noter());
+    }
+
+    /// L-1 : la version de Windows se lit au registre, sans lancer de commande, au format que donnait « ver ».
+    #[cfg(windows)]
+    #[test]
+    fn systeme_windows_lu_au_registre() {
+        let s = systeme();
+        let version = s.strip_prefix("Windows ").unwrap_or_default();
+        assert!(
+            version.split('.').count() >= 3 && version.split('.').all(|n| n.parse::<u32>().is_ok()),
+            "{s}"
+        );
     }
 
     /// Vérification de Fable n° 2, lecture L3 : sous l'interrupteur de lecture seule, `noter` n'écrit rien ; relevé,

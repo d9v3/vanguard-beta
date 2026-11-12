@@ -20,7 +20,9 @@ fn refuse(nom: &str, e: &std::io::Error, noter: bool) -> std::io::Error {
         "le système refuse un fil de plus ({nom}) : {e}",
         "the system refuses one more thread ({nom}): {e}"
     );
-    if noter {
+    // Pendant une note au journal (L-1, relecture 0.95), le refus n'est dit qu'à l'écran : noté, il rentrerait dans le
+    // journal par lui-même (une initialisation en cours, `OnceLock`, reprise par le même fil : figé pour toujours).
+    if noter && !crate::journal::dans_noter() {
         crate::journal::erreur(crate::compte_rendu::Contexte::ErreurInterne, &texte);
     }
     if !DIT.swap(true, Ordering::Relaxed) {
