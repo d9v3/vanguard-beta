@@ -128,6 +128,9 @@ pub(crate) enum Refus {
     SansLectureSeule,
     /// Un fichier n'est plus celui que Vanguard a corrigé (autre sorte ou autre inode).
     AutreFichier,
+    /// Une note sans l'identité du fichier (écrite avant la 0.95) : rien ne dit que le fichier d'aujourd'hui est celui
+    /// que Vanguard a corrigé. Ce qui serait à remettre à la main : « ~/… : 0644 ».
+    SansIdentite(String),
     /// Remettre comme avant, en lecture seule : code 2.
     LectureSeule,
 }
@@ -177,6 +180,11 @@ impl Refus {
                 "a file is no longer the one Vanguard fixed (other kind or other inode): changed since, nothing changed"
             )
             .to_string(),
+            Refus::SansIdentite(a_remettre) => trf!(
+                "note d'une version d'avant la 0.95, sans l'identité du fichier : Vanguard ne peut pas savoir si c'est encore celui qu'il a corrigé, rien n'a changé. Si c'est votre choix, remettez-le à la main ({})",
+                "note from a version before 0.95, without the file's identity: Vanguard cannot tell whether it is still the one it fixed, nothing changed. If you choose to, restore it by hand ({})",
+                crate::ui::affichable(a_remettre)
+            ),
             Refus::LectureSeule => super::appliquer::lecture_seule(),
             Refus::Windows => tr!(
                 "sous Windows, rien ne se remet d'ici pour l'instant : vanguard changements dans un terminal",
@@ -201,6 +209,7 @@ impl Refus {
             Refus::Windows => "windows",
             Refus::SansLectureSeule => "sans-lecture-seule",
             Refus::AutreFichier => "autre-fichier",
+            Refus::SansIdentite(_) => "sans-identite",
             Refus::LectureSeule => "lecture-seule",
         }
     }
@@ -246,10 +255,7 @@ fn relire(jeton: &str) -> Result<(Apercu, String, Remise), Refus> {
     let mut lignes = Vec::new();
     for (chemin, avant, notee) in &note.droits {
         let (actuel, identite) = crate::optimiser::droits::lire_identifie(chemin).map_err(|_| Refus::Illisible)?;
-        // Un autre fichier mis sous le même nom n'est pas celui que Vanguard a corrigé : rien ne s'y remet.
-        if notee.is_some_and(|n| n != identite) {
-            return Err(Refus::AutreFichier);
-        }
+        meme_fichier(*notee, identite, chemin, *avant)?;
         let pose = poses.iter().rev().find(|(c, _)| c == chemin).map(|(_, m)| *m);
         valeurs.push(Valeur {
             chemin: crate::optimiser::annulables::chemin_montre(&chemin.to_string_lossy()),
@@ -276,6 +282,27 @@ fn relire(jeton: &str) -> Result<(Apercu, String, Remise), Refus> {
         valeurs,
     };
     Ok((a, note.id, lignes))
+}
+
+/// Le fichier relu aujourd'hui est-il celui que Vanguard a corrigé ? Un autre fichier mis sous le même nom ne l'est
+/// pas : rien ne s'y remet. Une note sans identité (d'avant la 0.95) ne permet pas de le savoir : rien ne s'y remet
+/// non plus, et le refus dit les droits d'avant, à remettre à la main si c'est le choix de la personne (campagne 0.95,
+/// G-4).
+#[cfg(unix)]
+fn meme_fichier(
+    notee: Option<crate::optimiser::droits::Identite>,
+    relue: crate::optimiser::droits::Identite,
+    chemin: &std::path::Path,
+    avant: u32,
+) -> Result<(), Refus> {
+    match notee {
+        Some(n) if n == relue => Ok(()),
+        Some(_) => Err(Refus::AutreFichier),
+        None => Err(Refus::SansIdentite(format!(
+            "{} : {avant:04o}",
+            crate::optimiser::annulables::chemin_montre(&chemin.to_string_lossy())
+        ))),
+    }
 }
 
 #[cfg(windows)]
@@ -660,6 +687,33 @@ mod tests {
         ] {
             assert!(!jeton_bien_forme(mauvais), "{mauvais}");
         }
+    }
+
+    /// Campagne 0.95, G-4 : une note sans identité (écrite avant la 0.95) ne dit pas quel fichier Vanguard a corrigé :
+    /// rien ne s'y remet tout seul, et le refus dit quoi remettre à la main (mutation : identité absente acceptée).
+    #[cfg(unix)]
+    #[test]
+    fn une_note_sans_identite_ne_se_remet_pas_toute_seule() {
+        let dossier = crate::essais::temporaire().join(format!("vanguard-annuler-identite-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dossier);
+        std::fs::create_dir_all(&dossier).unwrap();
+        let (f, g) = (dossier.join("f"), dossier.join("g"));
+        std::fs::write(&f, b"x").unwrap();
+        std::fs::write(&g, b"y").unwrap();
+        let identite = |x: &std::path::Path| crate::optimiser::droits::lire_identifie(x).unwrap().1;
+        assert_eq!(meme_fichier(Some(identite(&f)), identite(&f), &f, 0o644), Ok(()));
+        assert_eq!(
+            meme_fichier(Some(identite(&g)), identite(&f), &f, 0o644),
+            Err(Refus::AutreFichier)
+        );
+        let r = meme_fichier(None, identite(&f), &f, 0o644);
+        let Err(r @ Refus::SansIdentite(_)) = r else {
+            panic!("{r:?}");
+        };
+        let raison = r.raison();
+        assert!(raison.contains("0644") && raison.contains("à la main"), "{raison}");
+        assert_eq!(r.code(), "sans-identite");
+        let _ = std::fs::remove_dir_all(&dossier);
     }
 
     #[cfg(unix)]
