@@ -18,7 +18,8 @@
 # réécrit en silence avec d'autres versions que celles que cargo deny et cargo audit ont jugées.
 #   outils/verifier.sh               tout ; une étape qui se dit sautée (outil absent, pas d'Internet) ou ne tourne
 #                                    pas y est un échec : seul ce passage-là peut finir « Tout est vert », et c'est
-#                                    lui que la livraison lance (outils/livrer-branche.sh)
+#                                    lui que la livraison lance (outils/livrer-branche.sh) ; les essais sautés dans
+#                                    une étape verte y sont montrés et comptés (« avec N essai(s) sauté(s) »)
 #   outils/verifier.sh --rapide      mise en forme, clippy, tests Linux et protections du programme seulement
 #   outils/verifier.sh --sans-wine   tout, sauf les tests Windows
 #   outils/verifier.sh --ci          pour la CI de GitHub : tout sauf Wine, et l'essai du veilleur sur le vrai noyau
@@ -188,10 +189,12 @@ tests_wine() {
     VANGUARD_TESTS_SAUTES="Z:${f//\//\\}" cargo test -q --locked --target x86_64-pc-windows-gnu
   resultat=$?
   # Le lanceur de la clé dans le même préfixe, déjà prêt (son faux powershell.exe y remplace celui de Wine).
-  local lanceur
-  VANGUARD_PREFIXE_LANCEUR=$prefixe VANGUARD_WINE=$WINE bash outils/essais-lanceur.sh
+  # Sauté (77), il le dit sur la ligne « (sauté : … », que le résumé montre sous l'étape et compte (sautes_dits).
+  local lanceur sortie
+  sortie=$(VANGUARD_PREFIXE_LANCEUR=$prefixe VANGUARD_WINE=$WINE bash outils/essais-lanceur.sh 2>&1)
   lanceur=$?
-  ((lanceur == SAUTEE)) && echo "⚠ essais du lanceur de la clé sautés (voir la ligne plus haut)"
+  printf '%s\n' "$sortie"
+  ((lanceur == SAUTEE)) && echo "  (sauté : essais du lanceur de la clé, $(tail -n1 <<<"$sortie"))"
   ((lanceur == 0 || lanceur == SAUTEE)) || resultat=1
   # Le serveur de Wine survit quelques secondes aux tests et écrit encore dans le préfixe : arrêté avant le ménage.
   WINEPREFIX=$prefixe "${WINE%/*}/wineserver" -k 2>/dev/null
@@ -646,6 +649,19 @@ juger_etape() { # état [nom de l'étape]
 }
 
 ECHECS=0
+# Les essais sautés à l'intérieur des étapes vertes (tests de cargo notés par crate::essais::saute, essais en shell
+# qui disent « (sauté : … ») : l'étape reste verte, mais ce qu'elle n'a pas vérifié se voit sous sa ligne et se compte
+# jusqu'à la dernière ligne, même « Tout est vert » (M-8).
+SAUTES_DITS=0
+sautes_dits() {
+  local n
+  n=$(grep -cE '^[[:space:]]*\(sauté : ' "$TRAVAIL/$1.log" 2>/dev/null)
+  ((n)) || return 0
+  SAUTES_DITS=$((SAUTES_DITS + n))
+  grep -E '^[[:space:]]*\(sauté : ' "$TRAVAIL/$1.log" | head -n 6 | sed -E 's/^[[:space:]]*/      /' | cut -c1-200 |
+    tee -a "$RESUME"
+  ((n <= 6)) || echo "      … ($n en tout, voir le journal de l'étape)" | tee -a "$RESUME"
+}
 # Les étapes d'un passage partiel qui n'ont rien vérifié, nommées à la fin.
 NON_VERIFIEES=()
 # Le résumé est aussi gardé dans un fichier : la page des fonctions (outils/page-fonctions.py) y lit les nombres de
@@ -662,6 +678,7 @@ ligne() {
   [[ -f $TRAVAIL/$nom.etat ]] && read -r etat duree <"$TRAVAIL/$nom.etat"
   if [[ $etat == ok ]]; then
     printf '  ✔ %-34s %4s s\n' "$libelle" "$duree" | tee -a "$RESUME"
+    sautes_dits "$nom"
   elif [[ $etat == absente || $etat == sautee ]]; then
     quoi="non lancé"
     [[ $etat == absente ]] || quoi="sautée, pas un vert : $(head -n1 "$TRAVAIL/$nom.log")"
@@ -812,6 +829,12 @@ if [[ -n $MODE ]]; then
     [[ $PARTIEL == *" ; non vérifié : "* ]] && PARTIEL+=", $e" || PARTIEL+=" ; non vérifié : $e"
   done
   echo "$PARTIEL ; en $((DUREE / 60)) min $((DUREE % 60)) s."
+  exit 0
+fi
+# Les tests de cargo sautés (fichiers de VANGUARD_TESTS_SAUTES, montrés par raisons_des_sautes) comptent aussi.
+SAUTES_DITS=$((SAUTES_DITS + $(cat "$TRAVAIL"/sautes-*.txt 2>/dev/null | wc -l)))
+if ((SAUTES_DITS)); then
+  echo "Tout est vert, avec $SAUTES_DITS essai(s) sauté(s) dits plus haut, en $((DUREE / 60)) min $((DUREE % 60)) s."
   exit 0
 fi
 echo "Tout est vert, en $((DUREE / 60)) min $((DUREE % 60)) s."

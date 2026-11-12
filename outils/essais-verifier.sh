@@ -24,6 +24,8 @@
 #   9. Les dépendances (cargo deny) hors ligne : sautée avec sa raison, jamais un vert ; un refus reste un échec.
 #  10. Le second avis (cargo audit, failles-programmes.sh --depot) : chaque Cargo.lock suivi par git est lu, les
 #      crates à part sans les exceptions de Vanguard ; une faille dans l'une fait échouer (faux cargo-audit).
+#  11. Les essais sautés à l'intérieur d'une étape verte (« (sauté : … », tests de cargo notés) : montrés sous sa
+#      ligne et comptés jusqu'à la dernière, « Tout est vert, avec N essai(s) sauté(s) » (M-8).
 # Chaque essai ne lance que des étapes de quelques secondes, sans Internet ni compilation.
 # Lancé par outils/verifier.sh.
 #   outils/essais-verifier.sh
@@ -303,6 +305,27 @@ auditer "fuzz/Cargo.lock"
 [[ $audit_vert == 0 && -n $attendus && $lus == "$attendus" && $a_part_sans_exception == 0 && $CODE == 1 ]] &&
   ok "cargo audit : chaque Cargo.lock du dépôt lu, crates à part sans les exceptions de Vanguard, une faille fait échouer" ||
   ko "cargo audit (vert $audit_vert, refus $CODE, exceptions mal placées $a_part_sans_exception) : lus « $lus », attendus « $attendus » $(tail -n 1 <<<"$SORTIE")"
+rm -rf "$faux"
+
+# Les essais sautés à l'intérieur d'une étape verte : montrés sous sa ligne, comptés jusqu'à la dernière ligne (même
+# « Tout est vert »). sautes_dits lue dans verifier.sh, sur un journal inventé de 8 sauts (6 montrés, le reste dit).
+faux=$(mktemp -d "$HOME/.cache/vanguard-dev/essai-sautes.XXXX")
+{
+  echo "  ✔ un essai juste"
+  for i in 1 2 3 4 5 6 7; do echo "  (sauté : raison $i)"; done
+  echo "(sauté : sans retrait)"
+  echo "  le mot (sauté : au milieu) ne compte pas"
+} >"$faux/etape.log"
+fonction=$(awk '/^sautes_dits\(\) \{/,/^\}/' outils/verifier.sh)
+SORTIE=$(TRAVAIL=$faux RESUME=/dev/null bash -c "SAUTES_DITS=2; $fonction
+sautes_dits etape; sautes_dits vide; echo \"compte \$SAUTES_DITS\"" 2>&1)
+[[ -n $fonction ]] && grep -qx 'compte 10' <<<"$SORTIE" && grep -qx '      (sauté : raison 1)' <<<"$SORTIE" &&
+  grep -q '8 en tout' <<<"$SORTIE" && ! grep -q 'raison 7' <<<"$SORTIE" &&
+  grep -q '^    sautes_dits "\$nom"$' outils/verifier.sh &&
+  grep -q '^  echo "Tout est vert, avec \$SAUTES_DITS essai(s) sauté(s)' outils/verifier.sh &&
+  grep -q '(sauté : essais du lanceur de la clé' outils/verifier.sh &&
+  ok "essais sautés dans une étape verte : montrés sous sa ligne, comptés jusqu'à « Tout est vert »" ||
+  ko "essais sautés dans une étape verte : ni montrés ni comptés : $(tr '\n' '|' <<<"$SORTIE")"
 rm -rf "$faux"
 
 ((ECHECS == 0)) || { echo "$ECHECS essai(s) en échec."; exit 1; }
