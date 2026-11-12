@@ -86,10 +86,13 @@ recompilée au besoin.
 - **Renforcé après une campagne d'attaque.** `vanguard` sans argument ne lance aucun programme « vanguard-fenetre »,
   même posé à côté de lui : il ouvre le menu du terminal. Le bilan ne prend pas pour suspecte l'unité du veilleur que
   Vanguard pose lui-même (une valeur en pourcentage, comme `CPUQuota=20%`, n'est pas un code de systemd). L'unité de
-  la sauvegarde automatique, elle, est signalée au bilan comme toute copie par rsync dans une unité du compte (vers
-  ~/.config/autostart, par exemple), et elle ne peut pas être déclarée normale : rsync lit ~/.popt, un fichier que le
-  compte peut écrire et qui peut lui faire lancer un autre programme, et Vanguard ne lit pas encore ce fichier. La
-  0.93 ne la signalait pas ; sa reconnaissance viendra dans une version suivante.
+  la sauvegarde automatique n'est tue que telle que Vanguard l'écrit, mot pour mot, et seulement si rien ne peut
+  changer ce que rsync lance : aucun fichier ~/.popt (rsync le lit au départ, et une ligne de ce fichier peut lui
+  faire lancer un autre programme), aucun complément de l'unité dans le compte, une destination qui est un vrai
+  dossier du disque. Sinon elle est signalée comme toute copie par rsync dans une unité du compte (vers
+  ~/.config/autostart, par exemple), sans pouvoir être déclarée normale ; un fichier de réglages de popt du système
+  qui n'est écrit que par root est dit « non vérifié », en information. Disque débranché, sa destination ne se voit
+  pas : une information, pas une alerte (rien ne se copie sans le disque), revue au bilan suivant disque branché.
   `demarrage --retirer` et `--remettre` ne suivent plus aucun dossier qui est un lien (~/.config ou son dossier
   autostart remplacé par un lien) : rien ne s'écrit hors du dossier personnel. Une entrée rangée derrière un lien, ou
   elle-même un lien ou un tube, n'est pas proposée, et la liste la dit « non vérifiée » (dans `--json` comme dans la

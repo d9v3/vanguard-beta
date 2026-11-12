@@ -82,10 +82,13 @@ repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
 - **Hardened after an attack campaign.** `vanguard` with no argument starts no “vanguard-fenetre” program, even one
   placed next to it: it opens the terminal menu. The check does not take the watcher unit that Vanguard installs
   itself for a suspicious one (a percentage value, such as `CPUQuota=20%`, is not a systemd specifier). The automatic
-  backup unit, however, is reported by the check like any rsync copy in an account unit (into ~/.config/autostart, for
-  example), and it cannot be declared normal: rsync reads ~/.popt, a file the account can write and that can make it
-  start another program, and Vanguard does not read that file yet. Version 0.93 did not report it; recognising it
-  will come in a later version.
+  backup unit is kept quiet only as Vanguard writes it, word for word, and only if nothing can change what rsync
+  starts: no ~/.popt file (rsync reads it at start, and a line in it can make rsync start another program), no
+  drop-in for the unit in the account, a destination that is a real folder on the disk. Otherwise it is reported like
+  any rsync copy in an account unit (into ~/.config/autostart, for example), and it cannot be declared normal; a
+  system popt settings file written only by root is reported as “not checked”, as information. With the disk
+  unplugged, its destination cannot be seen: information, not an alert (nothing is copied without the disk), checked
+  again at the next check with the disk plugged in.
   `demarrage --retirer` and `--remettre` no longer follow any folder that is a link (~/.config or its autostart folder
   replaced by a link): nothing is written outside the home folder. An entry kept behind a link, or itself a link or a
   pipe, is not offered, and the list says it is “not verified” (in `--json` as in the terminal checklist), never “no
