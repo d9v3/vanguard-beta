@@ -232,7 +232,8 @@ signature de plus. Sous Linux, ses octets sont lus par une poignée ouverte sans
 fichier en mémoire scellé (memfd : plus rien ne peut le changer), l'empreinte est calculée sur cette copie, et c'est
 elle qui est lancée, pas le chemin : une fenêtre remplacée sur le disque après la vérification ne tourne pas. Sous
 Windows, le fichier est tenu ouvert en lecture seule partagée (personne ne peut l'écrire, l'effacer ni le renommer
-tant que la poignée vit) du calcul de l'empreinte jusqu'à « ouverte ». Une empreinte différente, un programme compilé
+tant que la poignée vit), et ses dossiers tenus aussi, du calcul de l'empreinte jusqu'à « ouverte » ; Windows lance
+pourtant par le chemin : voir les limites de « La fenêtre ». Une empreinte différente, un programme compilé
 sans empreinte (`cargo build`, les essais) ou une marque illisible : aucune fenêtre, le menu, la raison dite.
 
 `vanguard` sans argument ouvre la fenêtre de Vanguard (`vanguard-fenetre`, un programme à part posé à côté de
@@ -544,8 +545,13 @@ gardes :
   (sous Linux) elle n'est pas un fichier ordinaire à ce compte ou à root que ni le groupe ni les autres ne peuvent
   modifier, dans des dossiers que ni le groupe ni les autres ne peuvent modifier, quand le fichier en mémoire ne peut
   pas être lancé (noyau réglé `vm.memfd_noexec=2`, politique SELinux ou AppArmor qui le refuse : jamais de repli vers
-  le chemin), ou quand elle ne dit pas « ouverte » dans les 20 secondes. `vanguard --menu` force
-  le menu.
+  le chemin), quand une bibliothèque injectée dans les programmes de la session est signalée en alerte
+  (/etc/ld.so.preload, LD_PRELOAD inconnu ; AppInit_DLLs sous Windows : la raison est dite), ou quand elle ne dit pas
+  « ouverte » dans les 20 secondes. `vanguard --menu` force le menu. Sous Linux, elle ne reçoit qu'une liste fermée de
+  variables (l'écran, la langue, les dossiers XDG, la session, le proxy, les réglages de Vanguard) et un PATH fixe :
+  ni LD_PRELOAD, LD_AUDIT, LD_LIBRARY_PATH, ni GTK_MODULES, LIBGL_*, ni VANGUARD_ORIGINE. Le `vanguard` qu'elle
+  relance est celui qui l'a ouverte (VANGUARD_ORIGINE n'est crue que dans la copie temporaire de la clé), gardé par
+  son chemin à chaque lancement ; pas encore par son contenu (lot suivant).
 - **Ses bibliothèques.** Sous Windows, comme `vanguard.exe`, elle ne charge ses DLL que de System32 : celles qu'elle
   importe (DependentLoadFlags), et celles qu'une bibliothèque ouvre par leur nom après le démarrage
   (SetDefaultDllDirectories, première ligne du programme ; opengl32.dll par exemple). Une DLL posée à côté d'elle,
@@ -556,7 +562,11 @@ gardes :
 - **Limites.** Comme le programme, elle suppose que son dossier n'est modifiable que par vous : une fausse fenêtre
   posée à côté n'est plus lancée, mais qui peut remplacer `vanguard` peut remplacer les deux. Sous Windows, le
   lancement est vérifié sous Wine seulement (pas encore sur un vrai Windows), et le processus n'est pas créé suspendu
-  pour comparer son image à la poignée tenue : c'est la poignée sans partage d'écriture qui garantit le fichier. Sous Windows, la fenêtre et `vanguard` ne vérifient que le fait
+  pour comparer son image à la poignée tenue : sous Windows, c'est le chemin qui est lancé ; la poignée sans partage
+  d'écriture garantit les octets du fichier, pas le chemin jusqu'à lui. Les dossiers du chemin sont tenus aussi
+  pendant le lancement (ni renommés ni effacés ; un lien ou une jonction ni re-pointé ni défait) ; restent ouverts les
+  dossiers de l'autre côté d'une jonction et une lettre de lecteur redéfinie pour la session (`subst`,
+  DefineDosDevice), jusqu'au lancement suspendu puis comparé, au lot suivant, dans la machine virtuelle. Sous Windows, la fenêtre et `vanguard` ne vérifient que le fait
   que l'autre soit un fichier ordinaire : ni son propriétaire, ni les droits (ACL) du fichier et de ses dossiers, que
   Windows ne laisse pas lire aussi simplement ; un dossier où d'autres comptes peuvent écrire n'est donc pas refusé
   sous Windows. Sous Windows, chaque commande lancée est mise dans son propre objet de travail (job object) : Arrêter, le délai et la fin de la commande arrêtent aussi ce qu'elle a lancé, et tout s'arrête si la fenêtre s'arrête ; un processus lancé dans le court instant d'avant son entrée dans l'objet y échapperait. Sous

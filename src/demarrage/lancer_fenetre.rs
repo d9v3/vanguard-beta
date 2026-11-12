@@ -1,7 +1,7 @@
 //! `vanguard` sans argument : la fenêtre de Vanguard (`vanguard-fenetre`, posée à côté du programme) quand la
 //! personne est devant un écran graphique, sinon le menu du terminal, comme avant. Seulement la fenêtre dont ce
-//! programme porte l'empreinte gravée (`fenetre_livree`, `empreinte_fenetre`), et ce sont les octets vérifiés qui sont
-//! lancés, pas le chemin ; un programme compilé sans empreinte (`cargo build`, les essais) n'en lance aucune, comme la
+//! programme porte l'empreinte gravée (`fenetre_livree`, `empreinte_fenetre`) ; sous Linux, ce sont les octets vérifiés
+//! qui sont lancés, pas le chemin ; sous Windows, le chemin, le fichier et ses dossiers tenus ; un programme compilé sans empreinte (`cargo build`, les essais) n'en lance aucune, comme la
 //! 0.95 (LIV-1). La fenêtre ne fait rien d'elle-même :
 //! elle relance ce programme-ci avec des commandes en lecture, et un seul changement, un programme retiré du démarrage
 //! ou remis, après sa confirmation (voir `fenetre/` et MODELE-DE-MENACE.md, « La fenêtre »).
@@ -448,12 +448,17 @@ fn environnement_fenetre(c: &mut Command, de: impl IntoIterator<Item = (std::ffi
 }
 
 /// Windows : la fenêtre vérifiée, **tenue** ouverte avec le partage en lecture seule (ni écriture, ni effacement, ni
-/// renommage par personne tant que la poignée vit ; une écriture déjà ouverte fait échouer l'ouverture), et son
-/// chemin. Windows lance un fichier par son chemin : tenu jusqu'à la fin du lancement, c'est le fichier vérifié qui
-/// est lancé ; une fois lancé, Windows refuse d'écrire l'image d'un programme qui tourne.
+/// renommage par personne tant que la poignée vit ; une écriture déjà ouverte fait échouer l'ouverture), chacun des
+/// dossiers de son chemin tenu aussi, sans partage d'effacement (ni renommés ni effacés : W2), et son chemin. La
+/// poignée garantit les octets du fichier, pas le chemin jusqu'à lui : Windows lance par le chemin, qu'il relit. Les
+/// dossiers tenus et refusés s'ils sont des liens ou des jonctions ferment ce qui se fait par les dossiers ; ce qui
+/// change le sens d'un nom sans toucher aux dossiers (une lettre de lecteur redéfinie pour la session, `subst`,
+/// DefineDosDevice) reste ouvert (W1 : le lancement suspendu, puis l'image vérifiée, au lot suivant, essayé dans la
+/// machine virtuelle). Une fois lancé, Windows refuse d'écrire l'image d'un programme qui tourne.
 #[cfg(windows)]
 struct Verifiee {
     _tenue: std::fs::File,
+    _dossiers: Vec<std::fs::File>,
     chemin: PathBuf,
 }
 
@@ -468,6 +473,8 @@ fn verifier(chemin: &Path, attendue: &[u8; 32]) -> Result<Verifiee, String> {
     const FILE_SHARE_READ: u32 = 0x1;
     const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
     const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    // Les dossiers d'abord : le nom vérifié et le nom lancé mènent alors au même fichier.
+    let dossiers = dossiers_tenus(chemin)?;
     let f = std::fs::OpenOptions::new()
         .read(true)
         .share_mode(FILE_SHARE_READ)
@@ -485,11 +492,72 @@ fn verifier(chemin: &Path, attendue: &[u8; 32]) -> Result<Verifiee, String> {
     comparer(&sha2::Sha256::digest(&octets).into(), attendue)?;
     Ok(Verifiee {
         _tenue: f,
+        _dossiers: dossiers,
         chemin: chemin.to_path_buf(),
     })
 }
 
-/// La commande qui lance la fenêtre tenue, par son chemin.
+/// Chacun des dossiers de `chemin`, de la racine jusqu'au sien, ouvert tenu (W1, W2) : sans partage d'effacement,
+/// personne ne le renomme ni ne l'efface tant que la poignée vit, et le nom suivant, dans un dossier tenu, mène
+/// toujours au même dossier. Un lien, une jonction ou un dossier monté (`FILE_FLAG_OPEN_REPARSE_POINT` : ouvert
+/// lui-même) est tenu en plus sans partage d'écriture : il ne peut plus être re-pointé ni défait. Un dossier ordinaire
+/// ne devient pas une jonction tant qu'il n'est pas vide, et chacun contient le suivant, tenu. Ce qui n'est pas tenu :
+/// les dossiers de l'autre côté d'une jonction (sa cible), et le sens d'une lettre de lecteur. Un dossier qui ne
+/// s'ouvre pas : refusé (dans le doute, le menu).
+#[cfg(windows)]
+fn dossiers_tenus(chemin: &Path) -> Result<Vec<std::fs::File>, String> {
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    // Lister le dossier, pas seulement lire ses attributs : une poignée sans accès aux données ne compte pas dans le
+    // partage (Windows ne le vérifie ni ne l'enregistre), elle n'empêcherait rien.
+    const FILE_LIST_DIRECTORY: u32 = 0x1;
+    const FILE_READ_ATTRIBUTES: u32 = 0x80;
+    const FILE_SHARE_READ: u32 = 0x1;
+    const FILE_SHARE_WRITE: u32 = 0x2;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    let illisible = |e: std::io::Error| {
+        trf!(
+            "un dossier du chemin illisible : {}",
+            "an unreadable folder in the path: {}",
+            e
+        )
+    };
+    let ouvrir = |d: &Path, partage: u32| {
+        std::fs::OpenOptions::new()
+            .access_mode(FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES)
+            .share_mode(partage)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(d)
+            .map_err(illisible)
+    };
+    let dossiers: Vec<&Path> = chemin
+        .ancestors()
+        .skip(1)
+        .filter(|d| !d.as_os_str().is_empty())
+        .collect();
+    let mut tenus = Vec::new();
+    for d in dossiers.into_iter().rev() {
+        let f = ouvrir(d, FILE_SHARE_READ | FILE_SHARE_WRITE)?;
+        let attributs = f.metadata().map_err(illisible)?.file_attributes();
+        if attributs & FILE_ATTRIBUTE_DIRECTORY == 0 {
+            return Err(tr!(
+                "un élément du chemin n'est pas un dossier",
+                "a path element is not a folder"
+            )
+            .into());
+        }
+        if attributs & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            // Tenu par la première poignée pendant que la seconde s'ouvre : c'est le même lien.
+            tenus.push(ouvrir(d, FILE_SHARE_READ)?);
+        }
+        tenus.push(f);
+    }
+    Ok(tenus)
+}
+
+/// La commande qui lance la fenêtre tenue, par son chemin (que Windows relit : voir `Verifiee`).
 #[cfg(windows)]
 fn commande(v: &Verifiee) -> Command {
     Command::new(&v.chemin)
@@ -700,7 +768,7 @@ mod tests {
     }
 
     /// Windows : la fenêtre d'une autre empreinte n'est pas lancée ; vérifiée, elle est tenue (ni réécrite, ni
-    /// effacée, ni renommée) jusqu'à la fin du lancement, et c'est elle que la commande lance.
+    /// effacée, ni renommée), son dossier aussi (W2), jusqu'à la fin du lancement, et la commande lance son chemin.
     #[cfg(windows)]
     #[test]
     fn windows_la_fenetre_verifiee_est_tenue_jusqu_au_lancement() {
@@ -719,6 +787,11 @@ mod tests {
         assert!(std::fs::OpenOptions::new().write(true).open(&f).is_err(), "réécrite");
         assert!(std::fs::remove_file(&f).is_err(), "effacée");
         assert!(std::fs::rename(&f, dossier.join("autre.exe")).is_err(), "renommée");
+        // W2 (relecture 0.96) : son dossier non plus ne se renomme pas pendant la tenue (un autre dossier aurait pris
+        // son nom, avec une fausse fenêtre, et Windows lance par le chemin).
+        let ailleurs = crate::socle::dossier_local().join("essai-fenetre-ailleurs");
+        let _ = std::fs::remove_dir_all(&ailleurs);
+        assert!(std::fs::rename(&dossier, &ailleurs).is_err(), "son dossier renommé");
         assert_eq!(commande(&v).get_program(), f.as_os_str());
         drop(v);
         // Relâchée après le lancement : le fichier redevient libre.
