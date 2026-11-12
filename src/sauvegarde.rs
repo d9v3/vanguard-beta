@@ -719,7 +719,7 @@ fn rsync_disparu() -> Option<Constat> {
 }
 
 /// Le rsync que lance le service de sauvegarde `texte` : le premier mot de son ExecStart, ou celui qui suit
-/// « "<env>" -i » dans la forme de la 0.95 (env n'est que le passage qui vide les variables).
+/// « `"<env>" -i` » dans la forme de la 0.95 (env n'est que le passage qui vide les variables).
 pub(crate) fn rsync_de_l_unite(texte: &str) -> Option<PathBuf> {
     let exec = texte.lines().find_map(|l| l.strip_prefix("ExecStart="))?;
     if let Some(mots) = mots_cites(exec)

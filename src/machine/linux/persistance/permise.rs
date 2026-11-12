@@ -823,7 +823,7 @@ impl Systeme<'_> {
     /// Une partie absente, ou sous un fichier qui n'est pas un dossier, arrête le suivi : le programme de la ligne
     /// ne la traverse pas non plus, et le reste se colle tel quel. Une erreur (non vérifié) : plus de `LIENS_SUIVIS`
     /// liens, un lien qui ne se lit pas, toute autre erreur de lecture (pas le droit, montage qui répond mal : X-4),
-    /// un passage par /proc/self, /proc/thread-self, /proc/<nombre> ou /dev/fd (il dépend du processus qui lit : X-3,
+    /// un passage par /proc/self, /proc/thread-self, `/proc/<nombre>` ou /dev/fd (il dépend du processus qui lit : X-3,
     /// Y-2), ou
     /// les lieux de démarrage qui ne se lisent pas en entier quand le fichier final, du propriétaire du dossier
     /// personnel, a plusieurs liens physiques (X-3). Si l'autre nom de ce fichier est dans un lieu de démarrage, c'est
@@ -993,7 +993,7 @@ impl Systeme<'_> {
 }
 
 /// Y-2 : vrai si le chemin, une fois net (« . » et parties vides sautés, « .. » appliqués), passe par /proc/self,
-/// /proc/thread-self, /proc/<nombre> ou /dev/fd : ce qu'il y a dessous dépend du processus qui lit.
+/// /proc/thread-self, `/proc/<nombre>` ou /dev/fd : ce qu'il y a dessous dépend du processus qui lit.
 fn par_un_processus(chemin: &str) -> bool {
     let mut net: Vec<&str> = Vec::new();
     for partie in chemin.split('/') {
@@ -1640,7 +1640,7 @@ fn lancee(s: &Systeme, mots: &[String], profondeur: u32) -> Result<(), Ecart> {
 /// aucune autre forme ne se tait (relecture 0.94, S-1). Un faux findmnt (true) rendrait la condition « bon disque
 /// monté » toujours vraie (C-2).
 ///
-/// `env` : la forme de la 0.95, « "<env>" -i » devant ; env doit être le vrai env, comme rsync et findmnt. Un env
+/// `env` : la forme de la 0.95, « `"<env>" -i` » devant ; env doit être le vrai env, comme rsync et findmnt. Un env
 /// écrit sous ce nom mais qui est un lien vers un programme à plusieurs noms (`MULTI_APPELS` : uutils sur Ubuntu,
 /// busybox ; pas NixOS, où la sauvegarde reste levée), qui choisit ce qu'il fait d'après le nom écrit, passe s'il est à root seul ; jamais un fichier
 /// du compte, jamais pour rsync ou findmnt.

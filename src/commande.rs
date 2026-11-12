@@ -393,7 +393,7 @@ pub(crate) fn outil_systeme(nom: &str) -> Option<std::path::PathBuf> {
 
 /// Un programme du système à lancer par son chemin (`outil_systeme`), jamais par le PATH du compte : un faux « ss »,
 /// « journalctl » ou « rsync » posé dans un dossier à lui (~/.local/bin) cacherait une connexion, une ligne du
-/// journal, ou lancerait autre chose. Absent des dossiers du système : « /usr/bin/<nom> », qui échoue au lancement
+/// journal, ou lancerait autre chose. Absent des dossiers du système : « `/usr/bin/<nom>` », qui échoue au lancement
 /// (« introuvable ») comme un outil pas installé, jamais cherché ailleurs. Les variables restent celles de Vanguard
 /// (`outil_propre` les retire aussi).
 #[cfg(unix)]

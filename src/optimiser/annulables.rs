@@ -351,7 +351,7 @@ impl Releve {
             .zip(self.avant.valeurs.iter().map(Option::as_deref))
     }
 
-    /// L'identité relevée de la cible de ce geste (« fichier:<dev>:<ino> »), pour les droits d'un fichier du compte.
+    /// L'identité relevée de la cible de ce geste (« `fichier:<dev>:<ino>` »), pour les droits d'un fichier du compte.
     pub(crate) fn identite(&self, geste: &str) -> Option<&str> {
         self.avant.identites.get(geste).map(String::as_str)
     }

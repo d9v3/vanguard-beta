@@ -1030,7 +1030,7 @@ pub(crate) fn complement_change_le_lancement(texte: &str, maison: &Path) -> Vec<
     cles
 }
 
-/// Les valeurs « ExecStart= » de la section [Service] que systemd retient pour une unité, lue comme il la lit
+/// Les valeurs « ExecStart= » de la section `[Service]` que systemd retient pour une unité, lue comme il la lit
 /// (`lignes_de_systemd`) : celles du fichier de l'unité puis de chacun de ses compléments, `textes` dans l'ordre où
 /// systemd les applique ; une valeur vide efface les précédentes (systemd.service(5)). Pour `vanguard demarrage` : la
 /// commande montrée est celle qui tourne, pas seulement celle du fichier (relecture 0.94, D-4).
@@ -1676,9 +1676,9 @@ enum Ajout {
     /// « Exec= » se lance quand un programme demande ce nom sur le bus (vérification 2, mineurs), avant le service du
     /// même nom du système.
     DBus,
-    /// Une ligne « <programme> exec <option> <commande> » d'un réglage de popt du compte (~/.popt, ou /etc/popt,
+    /// Une ligne « `<programme> exec <option> <commande>` » d'un réglage de popt du compte (~/.popt, ou /etc/popt,
     /// /usr/etc/popt et leurs popt.d que le compte peut changer) : rsync, et tout programme qui lit ces réglages,
-    /// lance <commande> à la place de lui-même quand il reçoit <option> (popt(3), « exec »).
+    /// lance `<commande>` à la place de lui-même quand il reçoit `<option>` (popt(3), « exec »).
     Popt,
 }
 
@@ -3375,7 +3375,7 @@ fn codes_connus(v: &str) -> bool {
 /// X-3 (relecture 0.95) : le dossier courant d'une entrée de bureau, sa clé « Path= » (systemd-xdg-autostart-generator
 /// en fait le WorkingDirectory= du service) : `None` sans elle ou vide (le dossier personnel ; le générateur écrit
 /// alors « WorkingDirectory=- », que `dossier_courant` lit aussi comme le défaut) ; sinon `CODE_INCONNU` (A-1,
-/// revérification 6 : le générateur 262.1 écrit toujours « WorkingDirectory=-<Path> », et avec « - » un dossier
+/// revérification 6 : le générateur 262.1 écrit toujours « `WorkingDirectory=-<Path>` », et avec « - » un dossier
 /// absent n'arrête pas systemd, comme Z-1) : un argument relatif n'y est pas vérifié, donc pas tu. B-1
 /// (revérification 7) : un Path= non vide de l'une ou l'autre lecture de `cles_de_bureau` suffit, même s'il n'est
 /// pas le premier : le générateur garde la première clé, d'autres lanceurs la dernière.
@@ -8410,7 +8410,7 @@ fn lignes_de_popt(texte: &str) -> Vec<(usize, String, bool)> {
     sortie
 }
 
-/// La commande d'une ligne de popt « <programme> exec <option> <commande> » (`poptConfigLine` : des mots séparés
+/// La commande d'une ligne de popt « `<programme> exec <option> <commande>` » (`poptConfigLine` : des mots séparés
 /// par des blancs, le type exactement « exec »), ou `None` : une autre ligne (« alias », que Vanguard ne juge pas :
 /// elle ajoute des options, sans lancer de programme elle-même). Une commande vide : une ligne « exec » sans commande.
 fn exec_de_popt(ligne: &str) -> Option<String> {

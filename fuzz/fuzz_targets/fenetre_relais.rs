@@ -92,18 +92,30 @@ fn relais(mut flux: &[u8]) {
                         commandes::SorteGeste::AppliquerCorrection => ("correction", "--appliquer"),
                         commandes::SorteGeste::VoirAnnulation => ("changements", "--voir"),
                         commandes::SorteGeste::Annuler => ("changements", "--annuler"),
+                        commandes::SorteGeste::VoirMiseAJour => ("se-mettre-a-jour", "--voir"),
+                        commandes::SorteGeste::MettreAJour => ("se-mettre-a-jour", "--appliquer"),
                     };
                     assert_eq!((a[0].as_str(), a[1].as_str()), attendu, "{a:?}");
-                    assert!(hex(&a[2], 32) && a[2] == g.jeton.hex(), "{a:?}");
+                    // La mise à jour n'envoie jamais de jeton en argument : le sien est fixe, celui de Vanguard.
+                    let mise_a_jour = matches!(
+                        g.sorte,
+                        commandes::SorteGeste::VoirMiseAJour | commandes::SorteGeste::MettreAJour
+                    );
+                    let suite = if mise_a_jour {
+                        2
+                    } else {
+                        assert!(hex(&a[2], 32) && a[2] == g.jeton.hex(), "{a:?}");
+                        3
+                    };
                     assert_eq!(a[a.len() - 1], "--json");
                     assert_eq!(g.sorte.voir(), g.accord == commandes::Accord::NUL, "{g:?}");
                     assert_eq!(lancement.change(), !g.sorte.voir());
                     if g.sorte.voir() {
-                        assert_eq!(a.len(), 4, "{a:?}");
+                        assert_eq!(a.len(), suite + 1, "{a:?}");
                     } else {
-                        assert_eq!(a.len(), 6, "{a:?}");
-                        assert_eq!(a[3], "--accord");
-                        assert!(hex(&a[4], 64) && a[4] == g.accord.hex(), "{a:?}");
+                        assert_eq!(a.len(), suite + 3, "{a:?}");
+                        assert_eq!(a[suite], "--accord");
+                        assert!(hex(&a[suite + 1], 64) && a[suite + 1] == g.accord.hex(), "{a:?}");
                     }
                 }
                 // Les animations : `couleurs --animations <toutes|reduites> --json`, rien d'autre.

@@ -166,7 +166,7 @@ pub(crate) fn gestes_offerts(constats: &[Constat]) -> Vec<Option<GesteOffert>> {
 pub(crate) struct ValeurAvant {
     pub geste: String,
     pub valeur: Option<String>,
-    /// Ce qu'était la cible au relevé, pour les droits d'un fichier du compte (« fichier:<périphérique>:<inode> ») :
+    /// Ce qu'était la cible au relevé, pour les droits d'un fichier du compte (« `fichier:<périphérique>:<inode>` ») :
     /// pas montré (la fenêtre n'en a que faire), mais dans l'accord. Un fichier remplacé entre l'aperçu et le geste,
     /// même aux mêmes droits, change l'accord : « changé depuis l'aperçu », rien n'est posé.
     #[serde(skip)]
