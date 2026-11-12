@@ -28,7 +28,7 @@
 #      un master réécrit : refus, et encore au déploiement suivant tant que le commit est là ; il refuse de partir
 #      d'un autre commit que celui que livrer-branche.sh a vérifié.
 #  16. deployer.sh (l'envoi, lu tel quel) : la tête notée est jugée puis poussée, jamais un commit posé sur master
-#      pendant les vérifications (garde-fou, liens).
+#      pendant les vérifications (garde-fou, liens) ; une tête illisible : rien de jugé, rien d'envoyé, c'est dit.
 #  17. deployer.sh qui finit bien sans rien envoyer sur GitHub (lien mort, refus, sans Internet) : la raison est
 #      montrée, pas de « ✔ livré », worktree et branche gardés, code 3.
 # Lancé par outils/verifier.sh.
@@ -494,6 +494,20 @@ if ((${#refus[@]} == 0)); then
   ok "deployer.sh : la tête notée est jugée puis poussée, pas un commit posé pendant les vérifications"
 else
   ko "deployer.sh, envoi : ${refus[*]}"
+fi
+
+# … et une tête qui ne se lit pas (dépôt sans commit, git en panne) : rien n'est jugé, rien ne part, c'est dit.
+git init -q --bare "$E/github-vide.git"
+git init -q -b master "$E/vide"
+git -C "$E/vide" remote add origin "$E/github-vide.git"
+# shellcheck disable=SC2034 # lues par l'envoi, évalué juste après
+SORTIE=$(cd "$E/vide" && LOCAL='' MODE=--branchement A_PUBLIER='' VERSION=0 DEPART='' &&
+  eval "$(sed '/^DEPART=/,$d' <<<"$BORNE")" && eval "$ENVOI_BLOC" 2>&1)
+if grep -q "^Rien n'est envoyé sur GitHub : la tête du dépôt ne se lit pas" <<<"$SORTIE" &&
+  [[ -z $(git -C "$E/github-vide.git" for-each-ref) ]]; then
+  ok "deployer.sh : tête illisible, rien n'est jugé ni envoyé, et c'est dit"
+else
+  ko "deployer.sh, tête illisible : $(tail -n 2 <<<"$SORTIE")"
 fi
 
 # 17. Déployé ici, rien de parti sur GitHub : dit, worktree et branche gardés (relecture 0.95, V-4). Une ligne par

@@ -265,7 +265,9 @@ envoi_borne() { # commit de départ, tête notée
     return 1
   }
 }
-DEPART=$(git rev-parse HEAD)
+# Hors d'un dépôt git lisible (copie du dépôt, banc d'essai de outils/essais-cle.sh, git en panne) : départ vide,
+# rien ne partira sur GitHub (refus plus bas), mais le reste du déploiement (clé, journaux, VM) se fait comme avant.
+DEPART=$(git rev-parse -q --verify 'HEAD^{commit}' 2>/dev/null) || DEPART=""
 # Lancé par outils/livrer-branche.sh : le départ est le commit qu'il a vérifié, sinon rien ne part d'ici.
 if [[ -n ${VANGUARD_COMMIT_VERIFIE:-} && $DEPART != "$VANGUARD_COMMIT_VERIFIE" ]]; then
   echo "✖ master (${DEPART:0:12}) n'est plus le commit vérifié (${VANGUARD_COMMIT_VERIFIE:0:12}) : rien n'est déployé."
@@ -416,9 +418,12 @@ install -Dm755 "$LINUX" "$HOME/.cargo/bin/vanguard"
 # seulement si rien de personnel n'y paraît : code, messages, auteur (outils/confidentialite.py), et si aucun lien
 # n'est mort : documentation, programme, scripts, licences (outils/liens.py).
 T_ENVOI=$SECONDS
-TETE=$(git rev-parse HEAD)
+TETE=$(git rev-parse -q --verify 'HEAD^{commit}' 2>/dev/null) || TETE=""
 if [[ -n $LOCAL ]]; then
   echo "Rien n'est envoyé sur GitHub (déploiement local)."
+elif git remote get-url origin >/dev/null 2>&1 && [[ -z $DEPART || -z $TETE ]]; then
+  # Sans tête lisible, rien n'est jugé : rien ne part (jamais un envoi de ce qu'on n'a pas pu nommer).
+  echo "Rien n'est envoyé sur GitHub : la tête du dépôt ne se lit pas (git rev-parse HEAD a échoué), rien n'est jugé."
 elif git remote get-url origin >/dev/null 2>&1 && [[ $(git symbolic-ref -q HEAD || true) != refs/heads/master ]]; then
   # La tête part sur le master de GitHub : jamais celle d'une autre branche.
   echo "Rien n'est envoyé sur GitHub : ce dépôt n'est pas sur la branche master."
