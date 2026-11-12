@@ -475,12 +475,39 @@ fn algorithmes_ssh() -> Option<Constat> {
     if !systemd() || sshd_actif() != Some(true) {
         return None;
     }
-    let segments = ordonner(&std::fs::read_to_string(SSHD_PRINCIPAL).ok()?, inclure).ok()?;
+    juger_lecture(
+        ordonner(&std::fs::read_to_string(SSHD_PRINCIPAL).ok()?, inclure),
+        version_sshd,
+    )
+}
+
+/// Le jugement de la configuration lue dans l'ordre de sshd (`ordonner`). `version` n'est lue que s'il y a à juger.
+/// Un fichier inclus qui ne se relit pas (réservé à root, nom qui n'est pas en UTF-8, dossier qui ne se liste pas) est
+/// dit « non vérifié », sa raison nommée : la règle du serveur SSH lit ces fichiers autrement (`configuration_sshd`)
+/// et peut n'avoir rien vu, et un silence passerait pour « rien de rouvert » (relecture 0.94, C-5).
+fn juger_lecture(
+    lecture: Result<Vec<(String, String)>, crate::modele::Raison>,
+    version: impl FnOnce() -> Option<(u32, u32)>,
+) -> Option<Constat> {
+    let segments = match lecture {
+        Ok(s) => s,
+        Err(r) => {
+            let raison = r.texte();
+            return Some(crate::machine::impossible_par(
+                "SSH",
+                r,
+                trf!(
+                    "Algorithmes du serveur SSH non vérifiés : un fichier inclus dans sa configuration ne se relit pas ({raison}).",
+                    "SSH server algorithms not checked: a file included in its configuration cannot be read back ({raison}).",
+                ),
+            ));
+        }
+    };
     let trouvailles = trouver(&segments);
     if trouvailles.is_empty() {
         return None;
     }
-    juger_algorithmes(&segments, &trouvailles, version_sshd())
+    juger_algorithmes(&segments, &trouvailles, version())
 }
 
 #[cfg(test)]
@@ -563,6 +590,14 @@ pubkeyacceptedalgorithms ssh-ed25519-cert-v01@openssh.com,ecdsa-sha2-nistp256-ce
         // Hors du motif, le même nom ne compte pas.
         assert_eq!(noms_du_motif(&d, "*.txt"), Ok(vec!["note.txt".to_string()]));
         assert_eq!(noms_du_motif(&d.join("absent"), "*.conf"), Ok(Vec::new()));
+        // Relecture 0.94, C-5 : la règle le dit (« non vérifié », la raison nommée), jamais un silence qui passe
+        // pour « rien de rouvert ».
+        let lecture = ordonner("Include sshd_config.d/*.conf\n", |_| {
+            noms_du_motif(&d, "*.conf").map(|_| Vec::new())
+        });
+        let c = juger_lecture(lecture, || None).expect("une phrase");
+        assert!(!c.verifie, "{}", c.message);
+        assert!(c.message.contains("UTF-8"), "{}", c.message);
         let _ = std::fs::remove_dir_all(&d);
     }
 
