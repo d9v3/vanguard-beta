@@ -90,7 +90,7 @@ xml_cle_linux() {
     "$(printf '%s' "$module" | octets_de_l_hexa | base64 -w0)"
 }
 
-BRANCHE_DEMANDEE= EXE= TEST=oui CONSOLE=oui LANGUES=fr,en DELAI=60 ATTENDRE=1 SUIVRE= MODE=essai VERDICT=
+BRANCHE_DEMANDEE='' EXE='' TEST=oui CONSOLE=oui LANGUES=fr,en DELAI=60 ATTENDRE=1 SUIVRE='' MODE=essai VERDICT=
 while (($#)); do
   case $1 in
     --branche) BRANCHE_DEMANDEE=${2:?--branche B}; shift ;;
@@ -347,7 +347,7 @@ interrompu() {
 
 # Attend que la VM prenne puis finisse le travail ; une ligne de progrès par minute au plus.
 attendre() {
-  local id=$1 d=$FILE/$1 debut libre maintenant dernier=0 delai partie occupe vu= etat a ailleurs=
+  local id=$1 d=$FILE/$1 debut libre maintenant dernier=0 delai partie occupe vu='' etat a ailleurs=
   [[ -f $d/travail.txt ]] || { echo "Travail inconnu : $d" >&2; return 1; }
   delai=$(cle "$d/travail.txt" delai_minutes)
   INTERROMPU_ID=$id
@@ -756,6 +756,7 @@ EOF2
     "$PWSH" -NoProfile -NonInteractive -File "$DEPOT/outils/test-windows/essais-auto-installation.ps1" -EssaiSecret "$VMD/programme" >"$T/code-vm" 2>&1
     mv "$VMD/programme/secret-chiffre.bin" "$VMD/file-essais/" 2>/dev/null
     local code_vm
+    # shellcheck disable=SC2034 # lue par une condition entre apostrophes, évaluée plus bas
     code_vm=$(sed -n 's/^code=//p' "$T/code-vm")
     CLES_VMT=$T/cles-installation vmt --adopter <<<o
     voir "installation : secret tiré dans la VM, gardé ici après le même code, 0600" eval '((code == 0)) && [[ -n $code_vm ]] && dit "ici : $code_vm" &&
@@ -779,7 +780,10 @@ EOF2
 
     # 6. Deux travaux : un à la fois, dans l'ordre des noms.
     nouvelle_vm; sources 0 0 0 'OK x'
-    vmt --sans-attendre; id2=$ID; sleep 1.1; vmt --sans-attendre
+    vmt --sans-attendre
+    # shellcheck disable=SC2034 # lue par une condition entre apostrophes, évaluée plus bas
+    id2=$ID
+    sleep 1.1; vmt --sans-attendre
     tour
     voir "deux travaux : le plus ancien seul au premier tour" eval '[[ -f $VMD/file-essais/$id2/fini.txt && ! -e $VMD/file-essais/$ID/pris.txt ]]'
     tour
@@ -853,6 +857,7 @@ EOF2
     nouvelle_vm; sources 0 0 0 'OK x'
     cp "$T/essais-console-chef.ps1" "$SRC/essais-console.ps1"
     vmt --sans-attendre; tour
+    # shellcheck disable=SC2034 # lue par une condition entre apostrophes, évaluée plus bas
     local R=$VMD/file-essais/$ID/resultats/console/resume.txt
     voir "chef lancé par le surveillant : conhost et wt, fr et en, chacun à part" eval 'tr -d "\r" <"$R" | sed "1s/^\xef\xbb\xbf//" >"$T/chef-lignes" &&
       grep -q "^BUG conhost fr erreur du chef" "$T/chef-lignes" && grep -q "^BUG conhost en erreur du chef" "$T/chef-lignes" &&
@@ -922,6 +927,7 @@ EOF2
 
   if ((${#pilotes[@]})); then
     wait "${pilotes[@]}"
+    # shellcheck disable=SC2034 # lue par une condition entre apostrophes, évaluée plus bas
     local P=$T/pilote
     voir "pilote, conhost, écran illisible : BUG (jamais sauté), aucun OK" eval 'grep -q "^BUG conhost fr C1 lecture de l.écran impossible (erreur 6)" "$P-conhost-illisible/lignes" && ! grep -q "^OK" "$P-conhost-illisible/lignes"'
     voir "pilote, Windows Terminal, écran illisible : sauté avec la raison, ni BUG ni OK" eval 'grep -q "^SAUTE wt fr C1 lecture de l.écran impossible sous Windows Terminal" "$P-wt-illisible/lignes" && ! grep -qE "^(BUG|OK)" "$P-wt-illisible/lignes"'

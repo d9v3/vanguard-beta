@@ -62,7 +62,7 @@ jobs:
           rustup toolchain install
           rustup toolchain install nightly --profile minimal
           sudo apt-get update -qq
-          sudo apt-get install -y -qq musl-tools gcc-mingw-w64-x86-64
+          sudo apt-get install -y -qq musl-tools gcc-mingw-w64-x86-64 shellcheck
           git branch -f master origin/master 2>/dev/null || true
       # Les tests sans Internet (unshare -rn) et les essais des outils de la clé (unshare -rmn) demandent des espaces
       # de noms d'utilisateur, qu'AppArmor refuse par défaut sur Ubuntu 24.04.

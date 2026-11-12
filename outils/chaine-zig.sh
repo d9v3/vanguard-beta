@@ -113,6 +113,7 @@ command -v openssl >/dev/null || refus "openssl absent : la signature de zig ne 
 umask 022
 
 DOSSIER=${VANGUARD_CHAINE_ZIG:-$HOME/.cache/vanguard-dev/chaine-zig}
+# shellcheck disable=SC2174 # seul le dernier dossier compte : il garde la chaîne ; les parents sont à soi
 [[ -e $DOSSIER ]] || mkdir -p -m 700 "$DOSSIER"
 DOSSIER=$(cd "$DOSSIER" && pwd -P)
 # Un dossier qu'un autre compte peut écrire (le sien, ou /tmp partagé) : un cargo-zigbuild ou un verrou d'un autre.

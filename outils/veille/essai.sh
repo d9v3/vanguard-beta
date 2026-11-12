@@ -341,6 +341,7 @@ attendu 'grep -A1 -x -- --max-turns "$A" | grep -qx 60 && grep -A1 -x -- --permi
   "--max-turns 60, --permission-mode dontAsk"
 attendu 'grep -A1 -x -- --permission-prompts "$A" | grep -qx none && grep -qx "Bash(gh \*)" "$A" && grep -qx "Bash(git push \*)" "$A"' \
   "personne pour répondre ; gh et git push refusés"
+# shellcheck disable=SC2034 # lue par une condition entre apostrophes, évaluée plus bas
 autorises=$(sed -n '/^--allowedTools$/,/^--disallowedTools$/p' "$A")
 attendu '! grep -qE "gh |curl|wget|ssh|push|rm " <<<"$autorises" && grep -qx "Bash(cargo test \*)" <<<"$autorises"' \
   "outils permis : cargo et git local seulement"
@@ -451,6 +452,7 @@ rm -f "$R/COUPER-TOUT"
 echo "Relecture hebdomadaire (vendredi)"
 n=$(appels)
 VANGUARD_VEILLE_JOUR=2026-10-30 bash "$ICI/hebdo.sh" >>"$BANC/nuits.log" 2>&1
+# shellcheck disable=SC2034 # lue par une condition entre apostrophes, évaluée plus bas
 H=$BANC/claude-$((n + 1)).args
 attendu '(($(appels) == n + 1)) && grep -A1 -x -- --max-turns "$H" | grep -qx 40' "un appel, --max-turns 40"
 attendu '! grep -qxE "Edit\(.*|Write\(.*|Bash\(git commit \*\)" <(sed -n "/^--allowedTools$/,/^--disallowedTools$/p" "$H")' \
@@ -656,6 +658,7 @@ attendu '! jq -c ".journal, .alertes" "$R/2026-12-14.json" | grep -q "Ignore pre
 nettoyer
 n=$(appels)
 ESSAI_JOURNAL=hostile ESSAI_CLAUDE=sanstest nuit 2026-12-15
+# shellcheck disable=SC2034 # lue par une condition entre apostrophes, évaluée plus bas
 J=$R/ia/2026-12-15-journal-0123456789abcdef
 A=$BANC/claude-$((n + 1)).args
 attendu '(($(appels) == n + 1)) && grep -A1 -x -- --max-turns "$A" | grep -qx 40' "correction journal : --max-turns 40"
@@ -709,6 +712,7 @@ done >"$R/etat/durees.tsv"
 printf '2026-11-30\t%s\t1\tLNX-MAJ-001=1\n' "$HOSTILE" >>"$R/etat/durees.tsv"
 n=$(appels)
 ESSAI_DUREE=30000 nuit 2026-12-20
+# shellcheck disable=SC2034 # lue par une condition entre apostrophes, évaluée plus bas
 T0=$(git -C "$VANGUARD_VEILLE_DEPOT" rev-parse master)
 attendu 'jq -e ".lenteur.etat == \"pas-assez\" and .lenteur.nuits == 23" "$R/2026-12-20.json" >/dev/null && grep -q "Pas assez de nuits mesurées (23 sur 24)" "$R/2026-12-20.md" && ! grep -q "aucune régression" "$R/2026-12-20.md"' \
   "moins de 24 nuits : « pas assez », jamais « sans régression »"
@@ -718,12 +722,14 @@ ESSAI_DUREE=90000 ESSAI_AUTOTEST_CODE=1 nuit 2026-12-21
 attendu '(($(wc -l <"$R/etat/durees.tsv") == 23)) && ! grep -q "^2026-12-21" "$R/etat/durees.tsv"' \
   "autotest rouge (écart) : la nuit ne compte pas"
 git -C "$VANGUARD_VEILLE_DEPOT" commit -q --allow-empty -m "Ralentit"
+# shellcheck disable=SC2034 # lue par une condition entre apostrophes, évaluée plus bas
 T1=$(git -C "$VANGUARD_VEILLE_DEPOT" rev-parse master)
 ESSAI_DUREE=60000 ESSAI_DUREE_REGLE=8000 nuit 2026-12-22
 attendu '(($(appels) == n)) && jq -e ".lenteur.etat == \"rien\" and ([.alertes[] | select(.type == \"lenteur\")] | length == 0)" "$R/2026-12-22.json" >/dev/null' \
   "une nuit lente seule : rien"
 nettoyer
 ESSAI_DUREE=61000 ESSAI_DUREE_REGLE=8100 ESSAI_AUTOTEST_CODE=2 ESSAI_CLAUDE=sanstest nuit 2026-12-23
+# shellcheck disable=SC2034 # lue par une condition entre apostrophes, évaluée plus bas
 L=$R/ia/2026-12-23-lenteur-bilan
 A=$BANC/claude-$((n + 1)).args
 attendu 'jq -e "[.alertes[] | select(.type == \"lenteur\") | .cle] == [\"bilan:$T1\", \"LNX-MAJ-001:$T1\"] and .ia.alerte == \"lenteur:bilan:$T1\"" "$R/2026-12-23.json" >/dev/null' \
@@ -927,7 +933,9 @@ releve 2027-01-11; code=$?
 attendu '((code == 1)) && grep -q "un lien" "$BANC/releve.out"' "fichier du jour qui est un lien : refusé"
 rm -f "$REL/envois/2027-01-11.jsonl"
 servir 200 "$FR/vide.json"
-releve 2027-01-11; code=$?
+releve 2027-01-11
+# shellcheck disable=SC2034 # lue par une condition entre apostrophes, évaluée plus bas
+code=$?
 attendu '((code == 0)) && [[ ! -e $REL/envois/2026-10-12.jsonl && -e $REL/envois/2026-10-13.jsonl ]]' \
   "gardés 90 jours (le 13 oct. le 11 janv.), pas un de plus"
 attendu '[[ -z $(find "$REL/envois" -name ".releve.*") ]]' "aucun fichier temporaire laissé"
@@ -1010,6 +1018,7 @@ servir 200 "$FR/reponse.json"
 nettoyer
 n=$(appels)
 nuit 2027-01-22
+# shellcheck disable=SC2034 # lue par une condition entre apostrophes, évaluée plus bas
 T=$VANGUARD_VEILLE_RETOURS/tickets
 CR=$R/nuits/2027-01-22/flotte-comptes.txt
 attendu '(($(compte acceptes) == 8))' "six lots acceptés de plus (les comptes portent sur les envois gardés)"

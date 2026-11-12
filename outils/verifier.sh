@@ -35,7 +35,7 @@
 # (src/essais.rs) : ses sauts sont comptés à côté des tests passés, et leurs raisons montrées.
 # Les scripts PowerShell du programme sont aussi analysés et rejoués dans un bac à sable (outils/rejouer-ps.py).
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 export PATH="$HOME/.cargo/bin:$PATH"
 
 MODE=${1:-}
@@ -343,7 +343,16 @@ fenetre() {
   return "$code"
 }
 
-scripts_shell() { find outils extensions -name '*.sh' -print0 | xargs -0 -n1 bash -n; }
+# Les scripts suivis par git (*.sh et les crochets de outils/hooks), lus par shellcheck, avertissements compris :
+# bash -n ne voyait que la syntaxe (cd sans garde, variable vide prise pour une commande…). Un faux positif se tait
+# ligne par ligne, avec sa raison (« # shellcheck disable=SCxxxx # raison »), jamais pour tout un fichier.
+scripts_shell() {
+  local fichiers
+  command -v shellcheck >/dev/null || { echo "shellcheck absent (pacman -S shellcheck)"; return "$SAUTEE"; }
+  mapfile -t fichiers < <(git ls-files '*.sh' 'outils/hooks/*')
+  ((${#fichiers[@]})) || { echo "aucun script suivi trouvé : rien n'est conclu"; return 1; }
+  shellcheck -S warning "${fichiers[@]}"
+}
 
 # Analysés sans être compilés sur disque : py_compile laisserait des __pycache__ dans outils/.
 scripts_python() {
@@ -785,7 +794,7 @@ if [[ $MODE != --rapide ]]; then
   fi
   ligne powershell "scripts PowerShell"
   ligne rejeu-powershell "PowerShell du programme rejoué"
-  ligne shell "scripts shell"
+  ligne shell "scripts shell (shellcheck)"
   ligne essais-cle "essais des outils de la clé"
   ligne signature "signature des versions"
   ligne essais-confidentialite "garde de confidentialité (noms, types)"

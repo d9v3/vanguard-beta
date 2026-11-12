@@ -92,6 +92,7 @@ notes() {
   printf '%s\n' "$TELECHARGER"
 }
 
+# shellcheck disable=SC1111 # les guillemets “ ” de la note anglaise sont du texte, voulus
 TELECHARGER="Un programme par système, à télécharger :
 - **Windows** : \`vanguard-windows-x86_64.exe\`, double-clic. Il n'est pas signé : SmartScreen peut avertir
   (« Informations complémentaires » puis « Exécuter quand même »).
@@ -186,6 +187,7 @@ if gh release view "$TAG" >/dev/null 2>&1; then
 fi
 # Aucun lien mort, avant d'attendre GitHub : les téléchargements du README (…/releases/latest/download/<nom>) visent
 # les fichiers de cette version, qui sera la dernière (outils/liens.py).
+# shellcheck disable=SC2046 # un nom de nomenclature par mot, coupé exprès
 python3 outils/liens.py --version vanguard-windows-x86_64.exe vanguard-linux-x86_64 SHA256SUMS.txt \
   $(bash outils/sbom.sh --noms) ||
   { echo "Liens : rien de publié."; exit 1; }

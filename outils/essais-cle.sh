@@ -970,6 +970,7 @@ if [[ "$1 $2" == "deploiement relire-image" && -n ${ESSAI_RELUE:-} ]]; then echo
 exit 0
 FIN
 chmod +x "$BANC/faux-vanguard"
+# shellcheck disable=SC2034 # lue par une condition entre apostrophes, évaluée plus bas
 SHA5=$(cat "$IMAGE5.sha256")
 rm -f "$BANC/faux-vanguard.log" "$BANC/notifications.log"
 VANGUARD_PROGRAMME=$BANC/faux-vanguard copier

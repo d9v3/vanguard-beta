@@ -16,7 +16,7 @@
 # Un plantage : corriger le module, ajouter un test de non-régression avec la donnée trouvée (le fichier de
 # plantages/<cible>/), puis relancer la cible.
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 export PATH="$HOME/.cargo/bin:$PATH"
 
 # Les cibles sont celles de fuzz/Cargo.toml (chaque [[bin]] après le paquet) : une seule liste, une cible ajoutée

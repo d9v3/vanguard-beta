@@ -104,10 +104,13 @@ lancer() { # code-du-faux-powershell [bat]
   rm -f "$T/trace"
   (cd "$CLE" && printf 'N\r\n\r\n' | ESSAI_CODE_PS=$1 ESSAI_TRACE=$(z "$T/trace") \
     timeout 60 "$WINE" cmd /c "${2:-Lancer Vanguard.bat}" >"$T/sortie" 2>&1)
+  # shellcheck disable=SC2034 # lue par une condition entre apostrophes, évaluée plus bas
   code=$?
   tr -d '\r' <"$T/sortie" >"$T/sortie.lf" && mv "$T/sortie.lf" "$T/sortie"
 }
+# shellcheck disable=SC2034 # lue par une condition entre apostrophes, évaluée plus bas
 DEFENDER='Windows could not start Vanguard'
+# shellcheck disable=SC2034 # lue par une condition entre apostrophes, évaluée plus bas
 SANS_PS='PowerShell is missing or blocked'
 
 echo "Lanceur de la clé (Lancer Vanguard.bat), sous Wine :"

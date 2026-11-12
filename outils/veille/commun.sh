@@ -9,16 +9,21 @@ export PATH="$HOME/.cargo/bin:$PATH"
 VEILLE=${VANGUARD_VEILLE:-$HOME/.cache/vanguard-dev/veille}
 # Le dépôt principal (worktree add/list/remove, branches veille/*) et le worktree détaché de la veille.
 DEPOT=${VANGUARD_VEILLE_DEPOT:-$HOME/Projects/vanguard}
+# shellcheck disable=SC2034 # lue par les scripts qui sourcent ce fichier
 ARBRE=${VANGUARD_VEILLE_ARBRE:-$HOME/Projects/vanguard-veille}
 BASE=${VANGUARD_VEILLE_BASE:-master}
 # Les arbres jetables des corrections, hors de $VEILLE : l'IA n'a le droit de rien lire dans $VEILLE (copies brutes
 # venues d'Internet, rapports), mais doit lire son arbre.
+# shellcheck disable=SC2034 # lue par les scripts qui sourcent ce fichier
 ARBRES_IA=${VANGUARD_VEILLE_ARBRES_IA:-$HOME/.cache/vanguard-dev/veille-arbres}
 CLAUDE=${VANGUARD_VEILLE_CLAUDE:-claude}
 # gh, pour lire la CI de nuit (nuit.sh) ; un faux dans le banc (essai.sh), qui ne touche jamais le vrai.
+# shellcheck disable=SC2034 # lue par les scripts qui sourcent ce fichier
 GH=${VANGUARD_VEILLE_GH:-gh}
+# shellcheck disable=SC2034 # lue par les scripts qui sourcent ce fichier
 FUZZ=${VANGUARD_FUZZ:-$HOME/.cache/vanguard-dev/fuzz}
 # Le journal des erreurs rapatrié par deployer.sh (lu par la nuit, jamais par l'IA : REFUS_CLAUDE plus bas).
+# shellcheck disable=SC2034 # lue par les scripts qui sourcent ce fichier
 RETOURS=${VANGUARD_VEILLE_RETOURS:-${XDG_DATA_HOME:-$HOME/.local/share}/vanguard/retours}
 VM_RESERVEE=${VANGUARD_VEILLE_VM_RESERVEE:-$HOME/Windows/VANGUARD-TEST/resultats/.test-en-cours.txt}
 JOUR=${VANGUARD_VEILLE_JOUR:-$(date +%F)}
@@ -37,6 +42,7 @@ TOURS_CORRECTION=60
 TOURS_RELECTURE=20
 TOURS_HEBDO=40
 # Une alerte qui arrive avec sa cause déjà située (journal) : moins de tours (plan 0.89.1, D9).
+# shellcheck disable=SC2034 # lue par les scripts qui sourcent ce fichier
 TOURS_SITUEE=40
 DUREE_IA=${VANGUARD_VEILLE_DUREE_IA:-90m}
 MODELE=${VANGUARD_VEILLE_MODELE:-opus}

@@ -935,6 +935,7 @@ menu() { # point
   local point=$1
   secours_demandee "le menu de Ventoy n'est pas écrit." || return 1
   mkdir -p "$point/ventoy"
+  # shellcheck disable=SC1112 # les guillemets français ’ « » sont dans le programme Python, voulus
   find "$point/ISO" -maxdepth 1 -type f -iname '*.iso' -printf '%f\n' 2>/dev/null | sort | python3 -I -c '
 import fnmatch, json, re, sys
 # (motifs, nom au menu, version tirée du nom du fichier, conseil d’une ligne montré en bas de l’écran par Ventoy).

@@ -18,7 +18,7 @@
 #   outils/verifier-masque.sh <binaire>…      inspecte exactement ces binaires, sans rien compiler (après
 #                                             outils/compiler-version.sh, sur le .exe et le release livrés).
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 
 SAUTEE=77
 command -v strings >/dev/null || { echo "strings absent (Arch : binutils)"; exit "$SAUTEE"; }

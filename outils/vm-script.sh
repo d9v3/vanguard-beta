@@ -25,6 +25,7 @@ echo "Déposé : a-lancer/$NOM (lancé dans les 5 minutes si le choix 7 du menu 
 [[ -n $ATTENDRE ]] || exit 0
 # Le dossier du résultat porte la date de Windows : on prend le plus récent pour ce nom, plus jeune que le dépôt.
 for _ in $(seq 240); do
+  # shellcheck disable=SC2045 # ls -t : le plus récent d'abord, l'ordre compte
   for d in $(ls -dt "$VM"/resultats/*_script-"${NOM%.ps1}" 2>/dev/null); do
     if [[ -f $d/FINI.txt && $(stat -c %Y "$d/FINI.txt") -ge $DEPOT ]]; then
       echo "== $(basename "$d") : $(tr -d '\r' <"$d/FINI.txt" | sed '1s/^\xef\xbb\xbf//')"

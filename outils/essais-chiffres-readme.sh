@@ -9,7 +9,7 @@
 # Lancé par outils/verifier.sh (étape « chiffres-readme »).
 #   outils/essais-chiffres-readme.sh
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 ECHECS=0
 ok() { echo "  ✔ $*"; }
 ko() { echo "  ✖ $*"; ECHECS=$((ECHECS + 1)); }

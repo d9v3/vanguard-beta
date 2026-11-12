@@ -71,7 +71,7 @@
 # Lancé par outils/verifier.sh ; code 77 (sauté) sans la branche master ici (clone partiel) ou sans openssl.
 #   outils/essais-signature.sh
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 DEPOT=$PWD
 
 command -v openssl >/dev/null || { echo "openssl absent"; exit 77; }
@@ -444,7 +444,7 @@ GH
     printf '{"jobs": [{"name": "attester", "conclusion": "success"}, {"name": "linux", "conclusion": "%s"},
       {"name": "windows", "conclusion": "%s"}, {"name": "fuzzing", "conclusion": "failure"}]}' "$1" "$2" \
       >"$T/faux-gh/jobs.json"
-    PATH="$T/faux-gh:$PATH" COMMIT=c0ffee HORS_CODE= bash -c "source '$T/avec_nomenclatures.sh'; avec_nomenclatures"
+    PATH="$T/faux-gh:$PATH" COMMIT=c0ffee HORS_CODE='' bash -c "source '$T/avec_nomenclatures.sh'; avec_nomenclatures"
   }
   choisi=$(choix success success)
   [[ $choisi == 1 ]] && ok "publier-version.sh prend les nomenclatures de master, pas celles d'une autre branche" ||
@@ -525,7 +525,7 @@ JSON
     >"$T/empreintes_de_la_ci.sh"
   empreintes_ci() { # la sortie de empreintes_de_la_ci, puis « code N »
     local code=0 sortie
-    sortie=$(cd "$T" && PATH="$F:$PATH" COMPILE=c0ffee HORS_CODE= DOSSIER=$T/dossier-ci \
+    sortie=$(cd "$T" && PATH="$F:$PATH" COMPILE=c0ffee HORS_CODE='' DOSSIER=$T/dossier-ci \
       bash -c "source '$T/empreintes_de_la_ci.sh'; empreintes_de_la_ci" 2>&1) || code=$?
     printf '%s\ncode %s\n' "$sortie" "$code"
   }
@@ -583,7 +583,7 @@ JSON
   # ici sur la chaîne zig, refusée exprès (un dossier en 777).
   mkdir -p "$T/cargo-muet/bin" "$T/chaine-ouverte" && chmod 777 "$T/chaine-ouverte"
   printf '#!/bin/sh\nexit 0\n' >"$T/cargo-muet/bin/cargo-auditable" && chmod +x "$T/cargo-muet/bin/cargo-auditable"
-  r=$(GITHUB_ACTIONS= CARGO_HOME=$T/cargo-muet VANGUARD_CHAINE_ZIG=$T/chaine-ouverte \
+  r=$(GITHUB_ACTIONS='' CARGO_HOME=$T/cargo-muet VANGUARD_CHAINE_ZIG=$T/chaine-ouverte \
     bash "$DEPOT/outils/compiler-version.sh" 2>&1 >/dev/null) && code=0 || code=$?
   ((code != 0)) && [[ $r == *"version non lue dans le programme"*"refusé hors de la CI"* && $r != *inscriptible* ]] &&
     ok "compiler-version.sh : un cargo-auditable de version illisible est refusé hors de la CI" ||
@@ -947,7 +947,7 @@ fi
 r=$(CI_APRES=0123456789ab bash -c "$(awk '/^ci_apres_notes\(\) \{/,/^\}/' "$DEPOT/outils/publier-version.sh"); ci_apres_notes")
 [[ $(grep -c 'commit 0123456789ab' <<<"$r") == 2 && $r == *"captures d'écran, l'image de partage ou la page"* &&
   $r == *"screenshots, the social preview image or the features page"* &&
-  -z $(CI_APRES= bash -c "$(awk '/^ci_apres_notes\(\) \{/,/^\}/' "$DEPOT/outils/publier-version.sh"); ci_apres_notes") ]] &&
+  -z $(CI_APRES='' bash -c "$(awk '/^ci_apres_notes\(\) \{/,/^\}/' "$DEPOT/outils/publier-version.sh"); ci_apres_notes") ]] &&
   awk '/^notes\(\) \{/ { n = 1 } n && /^  ci_apres_notes$/ { c = 1 } n && /^\}/ { n = 0 }
     /CI_APRES=\$\(sed -nE .*<<<"\$EMPREINTES_CI"\)$/ { e = 1 } END { exit !(c && e) }' "$DEPOT/outils/publier-version.sh" &&
   ok "notes : une CI faite après la version est dite, avec son commit, en français et en anglais" ||
@@ -1329,6 +1329,7 @@ sed -e 's/^ZIG_VERSION=.*/ZIG_VERSION=9.9.9/' \
   "$DEPOT/outils/chaine-zig.sh" >"$C/depot/outils/chaine-zig.sh"
 cp "$DEPOT/outils/zig-minisign.pub" "$C/depot/outils/"
 fausse_chaine() { # dossier : l'archive d'essai et un cargo-zigbuild posé, son empreinte notée
+  # shellcheck disable=SC2174 # comme chaine-zig.sh : seul le dernier dossier est fermé
   mkdir -p -m 700 "$1/cargo-zigbuild-0.24.0/bin"
   cp "$C/zig-x86_64-linux-9.9.9.tar.xz" "$1/"
   printf '#!/bin/sh\necho "cargo-zigbuild 0.24.0"\n' >"$1/cargo-zigbuild-0.24.0/bin/cargo-zigbuild"

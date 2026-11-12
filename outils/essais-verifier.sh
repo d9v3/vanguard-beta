@@ -28,11 +28,13 @@
 #      ligne et comptés jusqu'à la dernière, « Tout est vert, avec N essai(s) sauté(s) » (M-8).
 #  12. Le dossier de travail d'un verifier.sh tué (SIGKILL) : retiré au départ suivant, jamais celui d'un autre en
 #      cours.
+#  13. Les scripts shell (shellcheck) : chaque script suivi par git, crochets sans extension compris, un
+#      avertissement fait échouer ; shellcheck absent, l'étape se dit sautée, jamais verte.
 # Chaque essai ne lance que des étapes de quelques secondes, sans Internet ni compilation.
 # Lancé par outils/verifier.sh.
 #   outils/essais-verifier.sh
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 ECHECS=0
 ok() { echo "  ✔ $*"; }
 ko() { echo "  ✖ $*"; ECHECS=$((ECHECS + 1)); }
@@ -349,6 +351,41 @@ attendu=$(printf '%s\n' verifier-0.94.log verifier.$$.abcd verifier.abcd verifie
   grep -q '^TRAVAIL=$(mktemp -d "$HOME/.cache/vanguard-dev/verifier.$$.XXXX")$' outils/verifier.sh &&
   ok "dossier d'un verifier.sh tué : retiré au départ suivant, celui d'un verifier.sh en cours gardé" ||
   ko "ménage des dossiers de travail : reste « $reste », attendu « $attendu »"
+rm -rf "$faux"
+
+# Les scripts shell lus par shellcheck : chaque script suivi par git (*.sh et les crochets sans extension de
+# outils/hooks), un avertissement fait échouer ; shellcheck absent, l'étape se dit sautée, jamais verte. Lue dans
+# verifier.sh, sur un dépôt jetable.
+faux=$(mktemp -d "$HOME/.cache/vanguard-dev/essai-shell.XXXX")
+fonction=$(awk '/^scripts_shell\(\) \{/,/^\}/' outils/verifier.sh)
+shell_juge() { # PATH
+  SORTIE=$(cd "$faux/depot" && PATH=$1 SAUTEE=77 "$BASH" -c "$fonction
+scripts_shell" 2>&1)
+  CODE=$?
+}
+mkdir -p "$faux/depot/outils/hooks" "$faux/sans" && ln -s "$(command -v git)" "$faux/sans/git"
+git -C "$faux/depot" init -q
+printf '#!/usr/bin/env bash\necho "propre"\n' >"$faux/depot/outils/propre.sh"
+cp "$faux/depot/outils/propre.sh" "$faux/depot/outils/hooks/pre-push"
+printf '#!/usr/bin/env bash\ncd "$1"\n' >"$faux/depot/outils/non-suivi.sh"
+git -C "$faux/depot" add outils/propre.sh outils/hooks/pre-push
+shell_juge "$faux/sans" && sans_code=$CODE && sans_raison=$(head -n1 <<<"$SORTIE")
+if ! command -v shellcheck >/dev/null; then
+  [[ -n $fonction && $sans_code == 77 && $sans_raison == "shellcheck absent"* ]] &&
+    ok "shellcheck absent : l'étape se dit sautée, jamais verte" || ko "shellcheck absent (code $sans_code) : $sans_raison"
+  echo "  (sauté : shellcheck absent ici, avertissements pas essayés)"
+else
+  shell_juge "$PATH" && propre=$CODE
+  printf '#!/usr/bin/env bash\ncd "$1"\n' >"$faux/depot/outils/hooks/pre-push"
+  shell_juge "$PATH" && crochet=$CODE && crochet_dit=$SORTIE
+  cp "$faux/depot/outils/propre.sh" "$faux/depot/outils/hooks/pre-push"
+  printf '#!/usr/bin/env bash\nVIDE= echo "$VIDE"\n' >"$faux/depot/extensions.sh" && git -C "$faux/depot" add extensions.sh
+  shell_juge "$PATH" && suivi=$CODE
+  [[ -n $fonction && $sans_code == 77 && $sans_raison == "shellcheck absent"* && $propre == 0 && $crochet == 1 &&
+    $suivi == 1 ]] && grep -q 'SC2164' <<<"$crochet_dit" &&
+    ok "scripts shell : un avertissement (crochet sans extension compris) fait échouer, un non suivi n'est pas lu ; shellcheck absent : sautée" ||
+    ko "scripts shell (absent $sans_code « $sans_raison », propre $propre, crochet $crochet, suivi $suivi)"
+fi
 rm -rf "$faux"
 
 ((ECHECS == 0)) || { echo "$ECHECS essai(s) en échec."; exit 1; }
