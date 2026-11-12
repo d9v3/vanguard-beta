@@ -99,3 +99,7 @@ ignorer https://codeload.github.com/alice/fuite
 # Adresse d'exemple du relais dans ses essais (relais/essais/relais.test.mjs) : jamais ouverte, le relais n'est pas
 # en service.
 ignorer https://relais.exemple.workers.dev
+
+# Note d'une relecture de Mozilla, recopiée telle quelle par cargo vet dans fenetre/supply-chain/imports.lock
+# (texte d'un tiers, qu'on ne peut pas changer) : la page a quitté le dépôt objc2 (404 le 12 nov. 2026).
+ignorer https://github.com/madsmtm/objc2/blob/main/crates/objc2/src/topics/frameworks_soundness.md
