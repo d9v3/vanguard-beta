@@ -14,6 +14,9 @@
 // ligne qui dit pourquoi ; les modules que lit le banc de fuzzing le refusent sans recours (`forbid`). Garde :
 // `chaque_module_fuzze_refuse_unsafe`.
 #![deny(unsafe_code)]
+// Un fil se crée par `socle::fil` (clippy.toml, `disallowed-methods`) ; dans les essais, un fil refusé fait échouer
+// l'essai, comme `unwrap`. Le programme, lui, reste gardé : clippy le relit sans `test`.
+#![cfg_attr(test, allow(clippy::disallowed_methods))]
 
 mod a_laisser;
 // L'Agent Vanguard (sans IA) : un petit agent intégré qui règle Vanguard dans le sens sûr (voir src/agent/mod.rs).

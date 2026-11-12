@@ -633,8 +633,10 @@ fn relever() -> Bilan {
     let systeme = Systeme::Windows;
     let coupure = sources::coupure();
     let (inventaire, releve, kev) = std::thread::scope(|portee| {
-        let releve = portee.spawn(|| sources::rafraichir(systeme));
-        let kev = portee.spawn(|| crate::protection::kev::catalogue_selon(coupure.as_deref()));
+        let releve = crate::socle::fil::dans_ou_ici(portee, "perimes-sources", || sources::rafraichir(systeme));
+        let kev = crate::socle::fil::dans_ou_ici(portee, "kev", || {
+            crate::protection::kev::catalogue_selon(coupure.as_deref())
+        });
         #[cfg(windows)]
         let inventaire = super::windows::inventaire();
         let releve = releve

@@ -239,7 +239,10 @@ fn relever(
     };
     let chercher = &chercher;
     let reponses: Vec<Verdict> = std::thread::scope(|s| {
-        let fils: Vec<_> = LISTES.iter().map(|l| s.spawn(move || chercher(ip, l.zone))).collect();
+        let fils: Vec<_> = LISTES
+            .iter()
+            .map(|l| crate::socle::fil::dans_ou_ici(s, "liste-noire", move || chercher(ip, l.zone)))
+            .collect();
         fils.into_iter()
             .map(|f| {
                 f.join()

@@ -267,7 +267,7 @@ fn par_lots<A>(
         let fils: Vec<_> = lots
             .into_iter()
             .map(|lot| {
-                let fil = s.spawn(move || {
+                let fil = crate::socle::fil::dans_ou_ici(s, "yara", move || {
                     let mut analyseur = nouveau();
                     let (mut trouves, mut echecs, mut partiels) = (Vec::new(), Vec::new(), Vec::new());
                     for f in lot {

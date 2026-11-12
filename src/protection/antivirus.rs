@@ -730,7 +730,8 @@ fn plateforme_sure(installe: &str, program_data: &str) -> Option<String> {
 fn avec_progression<T>(travail: impl FnOnce() -> T) -> T {
     let (fin, attente) = std::sync::mpsc::channel::<()>();
     std::thread::scope(|s| {
-        s.spawn(move || {
+        // Refusé (dit par socle::fil) : l'analyse se fait sans le rappel des minutes.
+        let _ = crate::socle::fil::dans(s, "progression", move || {
             let mut minutes = 0u64;
             // S'arrête quand `fin` est lâché (Disconnected), le travail fini.
             while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =

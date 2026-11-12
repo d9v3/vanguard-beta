@@ -25,14 +25,17 @@ pub struct Resultat {
 /// le canal ouvert, et la lecture ne finirait jamais.
 const DELAI_LECTURE: Duration = Duration::from_secs(2);
 
-fn lire_en_fond(mut flux: impl Read + Send + 'static) -> mpsc::Receiver<String> {
+/// `None` si le système refuse le fil (dit par `socle::fil`) : la sortie ne serait pas lue, la commande est arrêtée
+/// plutôt que de rendre une sortie vide comme si elle n'avait rien écrit.
+fn lire_en_fond(mut flux: impl Read + Send + 'static) -> Option<mpsc::Receiver<String>> {
     let (envoi, reception) = mpsc::channel();
-    std::thread::spawn(move || {
+    crate::socle::fil::lancer("lire-sortie", move || {
         let mut octets = Vec::new();
         let _ = flux.read_to_end(&mut octets);
         let _ = envoi.send(String::from_utf8_lossy(&octets).into_owned());
-    });
-    reception
+    })
+    .ok()?;
+    Some(reception)
 }
 
 /// Lance la commande et attend au plus `secondes`. `None` si elle ne démarre pas, dépasse le délai
@@ -54,13 +57,26 @@ fn lancer_entree(commande: &mut Command, entree: Option<Vec<u8>>, secondes: u64)
         .spawn()
         .ok()?;
     if let (Some(entree), Some(mut flux)) = (entree, enfant.stdin.take()) {
-        // Écrite en fond : un programme qui ne lit pas son entrée ne bloque pas l'attente du délai.
-        std::thread::spawn(move || {
+        // Écrite en fond : un programme qui ne lit pas son entrée ne bloque pas l'attente du délai. Sans fil, il
+        // lirait une entrée vide : arrêté.
+        if crate::socle::fil::lancer("ecrire-entree", move || {
             let _ = flux.write_all(&entree);
-        });
+        })
+        .is_err()
+        {
+            arreter(&mut enfant);
+            suivi.fin(crate::coulisses::Issue::Arretee);
+            return None;
+        }
     }
-    let sortie = lire_en_fond(enfant.stdout.take()?);
-    let erreurs = lire_en_fond(enfant.stderr.take()?);
+    let (Some(sortie), Some(erreurs)) = (
+        enfant.stdout.take().and_then(lire_en_fond),
+        enfant.stderr.take().and_then(lire_en_fond),
+    ) else {
+        arreter(&mut enfant);
+        suivi.fin(crate::coulisses::Issue::Arretee);
+        return None;
+    };
     let limite = Instant::now()
         .checked_add(Duration::from_secs(secondes))
         .unwrap_or_else(Instant::now);
@@ -193,14 +209,14 @@ pub struct Borne {
 }
 
 /// Lit `flux` en fond, `borne` octets au plus ; passé la borne, le dit par `plein` et cesse de lire (le programme
-/// bloque ou reçoit SIGPIPE, puis il est arrêté).
+/// bloque ou reçoit SIGPIPE, puis il est arrêté). `None` si le système refuse le fil (dit par `socle::fil`).
 fn lire_borne(
     mut flux: impl Read + Send + 'static,
     borne: usize,
     plein: std::sync::Arc<std::sync::atomic::AtomicBool>,
-) -> mpsc::Receiver<Vec<u8>> {
+) -> Option<mpsc::Receiver<Vec<u8>>> {
     let (envoi, reception) = mpsc::channel();
-    std::thread::spawn(move || {
+    crate::socle::fil::lancer("lire-sortie", move || {
         let mut lu = Vec::new();
         let mut tampon = vec![0u8; 16 << 10];
         loop {
@@ -216,8 +232,9 @@ fn lire_borne(
             }
         }
         let _ = envoi.send(lu);
-    });
-    reception
+    })
+    .ok()?;
+    Some(reception)
 }
 
 /// Le programme `pid` a-t-il fini ? Sans le récolter (WNOWAIT) : son numéro reste à lui, et celui de son groupe aussi.
@@ -278,8 +295,14 @@ pub fn lancer_borne(commande: &mut Command, secondes: u64, borne: usize) -> Opti
         }
     };
     let plein = Arc::new(AtomicBool::new(false));
-    let sortie = lire_borne(enfant.stdout.take()?, borne, plein.clone());
-    let erreurs = lire_borne(enfant.stderr.take()?, borne, plein.clone());
+    let (Some(sortie), Some(erreurs)) = (
+        enfant.stdout.take().and_then(|f| lire_borne(f, borne, plein.clone())),
+        enfant.stderr.take().and_then(|f| lire_borne(f, borne, plein.clone())),
+    ) else {
+        arreter(&mut enfant);
+        suivi.fin(crate::coulisses::Issue::Arretee);
+        return None;
+    };
     let limite = Instant::now()
         .checked_add(Duration::from_secs(secondes))
         .unwrap_or_else(Instant::now);
@@ -553,12 +576,16 @@ pub fn lancer_vers(
         .spawn()
         .ok()?;
     let mut flux = enfant.stdout.take()?;
-    let erreurs = lire_en_fond(enfant.stderr.take()?);
+    let Some(erreurs) = enfant.stderr.take().and_then(lire_en_fond) else {
+        arreter(&mut enfant);
+        suivi.fin(crate::coulisses::Issue::Arretee);
+        return None;
+    };
     let mut vers = fichier.try_clone().ok()?;
     let plein = std::sync::Arc::new(AtomicBool::new(false));
     let plein_lu = plein.clone();
     let (envoi, fini) = mpsc::channel();
-    std::thread::spawn(move || {
+    let ecriture = crate::socle::fil::lancer("ecrire-sortie", move || {
         let mut tampon = vec![0u8; 64 << 10];
         let (mut ecrits, mut tronque, mut ok) = (0u64, false, true);
         let mut fin = std::collections::VecDeque::new();
@@ -606,6 +633,11 @@ pub fn lancer_vers(
         }
         let _ = envoi.send((ecrits, tronque, ok));
     });
+    if ecriture.is_err() {
+        arreter(&mut enfant);
+        suivi.fin(crate::coulisses::Issue::Arretee);
+        return None;
+    }
     let limite = Instant::now()
         .checked_add(Duration::from_secs(secondes))
         .unwrap_or_else(Instant::now);

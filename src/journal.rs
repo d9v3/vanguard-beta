@@ -105,7 +105,8 @@ fn lecteur_windows(connues: &std::collections::BTreeSet<String>) -> Option<PathB
     let (envoi, reception) = std::sync::mpsc::channel();
     for lettre in 'D'..='Z' {
         let envoi = envoi.clone();
-        std::thread::spawn(move || {
+        // Refusé (dit à l'écran) : ce lecteur n'est pas regardé, le journal va au dossier de Vanguard.
+        let _ = crate::socle::fil::lancer_hors_journal("lecteur-journal", move || {
             let lecteur = PathBuf::from(format!("{lettre}:\\"));
             // Le jeton lu ici aussi, sous le délai : relu après, un lecteur qui cesse de répondre figerait tout.
             let lu = lecteur

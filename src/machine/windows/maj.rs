@@ -766,8 +766,9 @@ fn signatures_defender(lectures: Option<&str>) -> Option<Constat> {
 pub fn mises_a_jour_completes(seulement: Option<&[&str]>) -> Vec<Constat> {
     let voulu = |categories: &[&str]| seulement.is_none_or(|s| categories.iter().any(|c| s.contains(c)));
     std::thread::scope(|portee| {
-        let wu = voulu(&["Windows Update", "Pilotes"]).then(|| portee.spawn(windows_update));
-        let winget = voulu(&["Programmes"]).then(|| portee.spawn(programmes));
+        let wu = voulu(&["Windows Update", "Pilotes"])
+            .then(|| crate::socle::fil::dans_ou_ici(portee, "windows-update", windows_update));
+        let winget = voulu(&["Programmes"]).then(|| crate::socle::fil::dans_ou_ici(portee, "winget", programmes));
         let lectures = lectures_rapides();
         let l = lectures.as_deref();
         let mut constats = wu.map(|t| t.join().unwrap_or_default()).unwrap_or_default();

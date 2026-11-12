@@ -410,14 +410,21 @@ struct Tris {
 }
 
 impl Tris {
-    /// Lance un fil du tri de plus ; faux s'il y en a déjà `TRIS_MAX`.
+    /// Lance un fil du tri de plus ; faux s'il y en a déjà `TRIS_MAX` ou si le système refuse le fil (dit par
+    /// `socle::fil`).
     fn lancer(&mut self, p: &Arc<Partage>) -> bool {
         if self.lances >= TRIS_MAX {
             return false;
         }
         let (p, rang, file) = (Arc::clone(p), self.lances, Arc::clone(&self.file));
         let (vers_decideurs, vers_rattrapage) = (self.vers_decideurs.clone(), self.vers_rattrapage.clone());
-        std::thread::spawn(move || trier(&p, rang, &file, &vers_decideurs, &vers_rattrapage));
+        if crate::socle::fil::lancer("garde-tri", move || {
+            trier(&p, rang, &file, &vers_decideurs, &vers_rattrapage);
+        })
+        .is_err()
+        {
+            return false;
+        }
         self.lances = self.lances.saturating_add(1);
         true
     }
@@ -1189,19 +1196,25 @@ pub(crate) fn servir() -> i32 {
 
     let (vers_gros, gros) = std::sync::mpsc::sync_channel::<Demande>(GROS);
     {
-        let p = Arc::clone(&p);
-        std::thread::spawn(move || hacher_gros(&p, &gros));
+        let q = Arc::clone(&p);
+        if let Err(code) = fil_du_garde(&p, "garde-gros", move || hacher_gros(&q, &gros)) {
+            return code;
+        }
     }
     let (vers_rattrapage, rattrapage) = std::sync::mpsc::sync_channel::<Demande>(RATTRAPAGE);
     let (vers_decideurs, file) = std::sync::mpsc::sync_channel::<Demande>(FILE);
     let file = Arc::new(Mutex::new(file));
     for _ in 0..DECIDEURS {
-        let (p, file, vers_gros) = (Arc::clone(&p), Arc::clone(&file), vers_gros.clone());
-        std::thread::spawn(move || decideur(&p, &file, &vers_gros));
+        let (q, file, vers_gros) = (Arc::clone(&p), Arc::clone(&file), vers_gros.clone());
+        if let Err(code) = fil_du_garde(&p, "garde-decideur", move || decideur(&q, &file, &vers_gros)) {
+            return code;
+        }
     }
     {
-        let p = Arc::clone(&p);
-        std::thread::spawn(move || rattraper(&p, &rattrapage, &vers_gros));
+        let q = Arc::clone(&p);
+        if let Err(code) = fil_du_garde(&p, "garde-rattrapage", move || rattraper(&q, &rattrapage, &vers_gros)) {
+            return code;
+        }
     }
     let (vers_tri, tri) = std::sync::mpsc::sync_channel::<Demande>(FILE);
     let mut tris = Tris {
@@ -1210,21 +1223,30 @@ pub(crate) fn servir() -> i32 {
         vers_rattrapage: vers_rattrapage.clone(),
         lances: 0,
     };
-    tris.lancer(&p);
-    {
-        let p = Arc::clone(&p);
-        std::thread::spawn(move || delai(&p));
+    if !tris.lancer(&p) {
+        p.tout_permettre();
+        return SORTIE_GROUPE;
     }
     {
-        let p = Arc::clone(&p);
-        std::thread::spawn(move || {
+        let q = Arc::clone(&p);
+        if let Err(code) = fil_du_garde(&p, "garde-delai", move || delai(&q)) {
+            return code;
+        }
+    }
+    {
+        let q = Arc::clone(&p);
+        let entretenir = move || {
             let notifier = Notifier::depuis_environnement();
-            entretien(&p, &evenements, &notifier, marques, relecture, tris);
-        });
+            entretien(&q, &evenements, &notifier, marques, relecture, tris);
+        };
+        if let Err(code) = fil_du_garde(&p, "garde-entretien", entretenir) {
+            return code;
+        }
     }
     {
-        let p = Arc::clone(&p);
-        std::thread::spawn(move || {
+        let q = Arc::clone(&p);
+        let arreter = move || {
+            let p = q;
             loop {
                 let s = attendre_signal(&ensemble);
                 if s == libc::SIGTERM || s == libc::SIGINT {
@@ -1236,11 +1258,25 @@ pub(crate) fn servir() -> i32 {
             p.tout_permettre();
             // La fermeture du groupe, à la sortie, permet ce qui a été lu sans être encore en attente.
             std::process::exit(SORTIE_ARRET);
-        });
+        };
+        if let Err(code) = fil_du_garde(&p, "garde-signaux", arreter) {
+            return code;
+        }
     }
     p.battre();
     notifier.envoyer("READY=1");
     lire(&p, &vers_tri, &vers_rattrapage)
+}
+
+/// Un fil du garde, lancé au démarrage. Refusé par le système (limite de processus atteinte) : le garde ne tient pas
+/// sans lui ; il permet ce qui attend et sort (`SORTIE_GROUPE`), la fermeture du groupe permet le reste, et systemd
+/// le dit. Avant, `std::thread::spawn` paniquait au même endroit, sans phrase.
+fn fil_du_garde(p: &Partage, nom: &str, f: impl FnOnce() + Send + 'static) -> Result<(), i32> {
+    crate::socle::fil::lancer(nom, f).map(drop).map_err(|e| {
+        eprintln!("garde: {e}");
+        p.tout_permettre();
+        SORTIE_GROUPE
+    })
 }
 
 /// Le fil lecteur ; ne rend la main que sur une lecture fautive.

@@ -557,7 +557,7 @@ fn reponse_inventee() -> Option<IpAddr> {
     use std::net::ToSocketAddrs;
     let nom = nom_inexistant();
     let (envoi, reception) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
+    crate::socle::fil::lancer_ou_ici("dns-invente", move || {
         let reponse = (nom.as_str(), 80)
             .to_socket_addrs()
             .ok()
@@ -573,7 +573,7 @@ pub fn dns() -> Vec<Constat> {
     // l'autre.
     // Hors ligne, rien ne part, même une question au DNS du fournisseur.
     let hors_ligne = crate::parametres::hors_ligne();
-    let inventee = (!hors_ligne).then(|| std::thread::spawn(reponse_inventee));
+    let inventee = (!hors_ligne).then(|| crate::socle::fil::lancer_ou_ici("dns-invente", reponse_inventee));
     let mut constats = Vec::new();
     match serveurs() {
         Some(s) => {

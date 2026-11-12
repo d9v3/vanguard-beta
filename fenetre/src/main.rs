@@ -6,6 +6,9 @@
 
 // Sous Windows, pas de console noire derrière la fenêtre.
 #![cfg_attr(not(test), windows_subsystem = "windows")]
+// Un fil se crée par std::thread::Builder, son refus rendu (clippy.toml, `disallowed-methods`) ; dans les essais,
+// un fil refusé fait échouer l'essai.
+#![cfg_attr(test, allow(clippy::disallowed_methods))]
 
 mod appli;
 #[cfg(test)]

@@ -5,6 +5,7 @@
 pub(crate) mod adresses;
 pub(crate) mod cache;
 mod fichiers;
+pub(crate) mod fil;
 pub(crate) mod hachage;
 #[cfg(unix)]
 mod identite;

@@ -90,7 +90,7 @@ fn un_seul_suffit(adresses: &[SocketAddr], delai: Duration) -> bool {
     let (envoi, reception) = std::sync::mpsc::channel();
     for &a in adresses {
         let envoi = envoi.clone();
-        std::thread::spawn(move || {
+        crate::socle::fil::lancer_ou_ici("joignable", move || {
             let _ = envoi.send(joignable(a, delai));
         });
     }
@@ -103,7 +103,7 @@ fn noms_resolus() -> bool {
     let (envoi, reception) = std::sync::mpsc::channel();
     for nom in ["www.wikipedia.org", "www.google.com"] {
         let envoi = envoi.clone();
-        std::thread::spawn(move || {
+        crate::socle::fil::lancer_ou_ici("dns", move || {
             let _ = envoi.send((nom, 443).to_socket_addrs().is_ok_and(|mut a| a.next().is_some()));
         });
     }

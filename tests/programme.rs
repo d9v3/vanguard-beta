@@ -6,7 +6,13 @@
 
 // Les aides de ce fichier ne sont pas dans un #[test] : l'exemption des tests de clippy.toml ne les couvre pas, et y
 // planter reste la façon d'échouer (voir les règles anti-panique de Cargo.toml).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::disallowed_methods
+)]
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};

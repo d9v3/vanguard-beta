@@ -1615,10 +1615,10 @@ pub fn collecter(argument: Option<&Path>) -> Option<PathBuf> {
     let place_pour_journaux = libre.is_none_or(|l| l >= besoin);
     let resultats = std::thread::scope(|s| {
         let fils = [
-            s.spawn(|| chrono(|| os::demarrage(&dossier))),
-            s.spawn(|| chrono(|| bilan(&dossier))),
-            s.spawn(|| chrono(|| os::comptes(&dossier))),
-            s.spawn(|| {
+            crate::socle::fil::dans_ou_ici(s, "traces-demarrage", || chrono(|| os::demarrage(&dossier))),
+            crate::socle::fil::dans_ou_ici(s, "traces-bilan", || chrono(|| bilan(&dossier))),
+            crate::socle::fil::dans_ou_ici(s, "traces-comptes", || chrono(|| os::comptes(&dossier))),
+            crate::socle::fil::dans_ou_ici(s, "traces-journaux", || {
                 chrono(|| {
                     if place_pour_journaux {
                         os::journaux(&dossier)
@@ -1632,9 +1632,9 @@ pub fn collecter(argument: Option<&Path>) -> Option<PathBuf> {
                     }
                 })
             }),
-            s.spawn(|| chrono(|| fichiers_recents(&dossier))),
+            crate::socle::fil::dans_ou_ici(s, "traces-fichiers", || chrono(|| fichiers_recents(&dossier))),
             // Ce que Vanguard a lui-même vu et fait : ses alertes, ses gestes et leur preuve.
-            s.spawn(|| chrono(|| vanguard::partie(&dossier))),
+            crate::socle::fil::dans_ou_ici(s, "traces-vanguard", || chrono(|| vanguard::partie(&dossier))),
         ];
         fils.map(|f| {
             f.join().unwrap_or_else(|_| {

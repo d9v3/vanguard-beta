@@ -781,7 +781,7 @@ fn botnets() -> (Botnets, Vec<String>) {
     use crate::protection::lien::URLHAUS_FRAICHE;
     let cle = abuse_ch::cle();
     let (feodo, export, api) = std::thread::scope(|s| {
-        let feodo = s.spawn(|| {
+        let feodo = crate::socle::fil::dans_ou_ici(s, "feodo", || {
             let liste = crate::socle::cache::liste(
                 demande_feodo(),
                 ("feodo", "botnets.txt"),
@@ -790,7 +790,7 @@ fn botnets() -> (Botnets, Vec<String>) {
             );
             verifiee("Feodo Tracker", liste.resultat(false), en_texte(analyser_feodo_datee))
         });
-        let api = s.spawn(|| {
+        let api = crate::socle::fil::dans_ou_ici(s, "abuse-api", || {
             cle.as_ref().map(|cle| {
                 let demande = Demande {
                     entetes: vec![("Auth-Key", cle.clone())],
@@ -1325,7 +1325,8 @@ fn noms(adresses: &BTreeSet<IpAddr>) -> HashMap<IpAddr, String> {
     let (envoi, reception) = std::sync::mpsc::channel();
     for &ip in adresses {
         let envoi = envoi.clone();
-        std::thread::spawn(move || {
+        // Refusé (dit par socle::fil) : cette adresse reste sans nom, rien d'autre n'en dépend.
+        let _ = crate::socle::fil::lancer("nom-inverse", move || {
             if let Some(nom) = dns_lookup::lookup_addr(&ip)
                 .ok()
                 .and_then(|n| crate::reseau::scan::nom_inverse(ip, &n))

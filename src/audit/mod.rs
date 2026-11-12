@@ -324,7 +324,12 @@ impl AuditReseau {
         let resultats: Vec<(Domaine, Vec<Constat>)> = std::thread::scope(|s| {
             let fils: Vec<_> = Domaine::TOUS
                 .into_iter()
-                .map(|d| (d, s.spawn(move || constats_du_domaine(d, c))))
+                .map(|d| {
+                    (
+                        d,
+                        crate::socle::fil::dans_ou_ici(s, "audit-domaine", move || constats_du_domaine(d, c)),
+                    )
+                })
                 .collect();
             fils.into_iter()
                 .map(|(d, f)| (d, f.join().unwrap_or_else(|_| vec![erreur_interne(d)])))
@@ -524,9 +529,11 @@ pub async fn auditer(scan: &Rapport, machine: Option<Vec<Constat>>, invite: bool
     let mesurer_internet = !rapide && !hors_ligne();
     let lectures = tokio::task::spawn_blocking(move || {
         std::thread::scope(|s| {
-            let carnet = s.spawn(|| reseau::carnet_du_reseau().map(|(_, a)| a).unwrap_or_default());
-            let botnets = s.spawn(crate::protection::sortantes::botnets_en_cours);
-            let internet = s.spawn(move || mesurer_internet.then(internet));
+            let carnet = crate::socle::fil::dans_ou_ici(s, "carnet", || {
+                reseau::carnet_du_reseau().map(|(_, a)| a).unwrap_or_default()
+            });
+            let botnets = crate::socle::fil::dans_ou_ici(s, "botnets", crate::protection::sortantes::botnets_en_cours);
+            let internet = crate::socle::fil::dans_ou_ici(s, "internet", move || mesurer_internet.then(internet));
             (
                 carnet.join().unwrap_or_default(),
                 botnets.join().ok().flatten(),

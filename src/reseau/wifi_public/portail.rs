@@ -110,7 +110,7 @@ pub(crate) fn ouvrir_et_attendre(fin: Option<std::time::Instant>) -> bool {
 pub(crate) fn noms_resolus() -> bool {
     use std::net::ToSocketAddrs;
     let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
+    crate::socle::fil::lancer_ou_ici("portail-dns", move || {
         let ok = ("www.example.com", 443)
             .to_socket_addrs()
             .is_ok_and(|mut a| a.next().is_some());

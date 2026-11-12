@@ -547,7 +547,8 @@ pub(super) fn annonce() -> Option<Version> {
         return None;
     }
     CHERCHEE.call_once(|| {
-        std::thread::spawn(|| {
+        // Refusé (dit par socle::fil) : pas d'annonce dans cette session, la vérification des mises à jour reste.
+        let _ = crate::socle::fil::lancer("annonce", || {
             let vue = derniere_vue();
             *ANNONCE.lock().unwrap_or_else(PoisonError::into_inner) = vue;
         });

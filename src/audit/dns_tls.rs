@@ -627,7 +627,7 @@ fn sonde_de_la_box(passerelle: Option<IpAddr>, ports: Option<&[u16]>) -> Option<
     let mut services: Vec<(String, Result<bool, Echec>)> = Vec::new();
     std::thread::scope(|s| {
         let ssh = ports.contains(&PORT_SSH).then(|| {
-            s.spawn(move || {
+            crate::socle::fil::dans_ou_ici(s, "box-ssh", move || {
                 super::ssh_kex::kexinit(ip, PORT_SSH, DELAI_BOX)
                     .map(|noms| noms.iter().any(|n| crate::machine::nom_pq(n)))
             })
@@ -638,7 +638,7 @@ fn sonde_de_la_box(passerelle: Option<IpAddr>, ports: Option<&[u16]>) -> Option<
             .map(|p| {
                 (
                     p,
-                    s.spawn(move || {
+                    crate::socle::fil::dans_ou_ici(s, "box-https", move || {
                         let adresse = SocketAddr::from((ip, p));
                         super::tls_pq::sonder(adresse, None, DELAI_BOX).and_then(|r| match r {
                             ReponsePq::Accepte => Ok(true),
@@ -739,9 +739,10 @@ pub fn entree(passerelle: Option<Ipv4Addr>, ports_box: Option<&[u16]>) -> Entree
         }
     }
     let (mesures, tls, pq_site, routeur) = std::thread::scope(|s| {
-        let tls = s.spawn(certificat_du_site);
-        let pq = s.spawn(sonde_du_site);
-        let routeur = s.spawn(move || sonde_de_la_box(passerelle_box, ports_box));
+        let tls = crate::socle::fil::dans_ou_ici(s, "site-tls", certificat_du_site);
+        let pq = crate::socle::fil::dans_ou_ici(s, "site-pq", sonde_du_site);
+        let routeur =
+            crate::socle::fil::dans_ou_ici(s, "box-sondes", move || sonde_de_la_box(passerelle_box, ports_box));
         (
             mesurer(&cibles, interroger),
             tls.join().unwrap_or(Tls::Muet),
@@ -780,8 +781,9 @@ fn mesurer<R: Send>(
         let fils: Vec<_> = cibles
             .iter()
             .map(|&(role, ip)| {
-                let fil =
-                    s.spawn(move || crate::journal::rattraper(std::panic::AssertUnwindSafe(|| interroger(role, ip))));
+                let fil = crate::socle::fil::dans_ou_ici(s, "resolveur", move || {
+                    crate::journal::rattraper(std::panic::AssertUnwindSafe(|| interroger(role, ip)))
+                });
                 (role, ip, fil)
             })
             .collect();

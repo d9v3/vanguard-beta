@@ -1261,7 +1261,7 @@ fn en_ligne(lien: &Lien, adresse: &str) -> Vec<Verification> {
     // Une adresse IP n'a ni âge ni place dans les listes de noms : seule URLhaus la connaît.
     let ip = adresse_ip(&lien.hote);
     std::thread::scope(|s| {
-        let urlhaus = s.spawn(|| {
+        let urlhaus = crate::socle::fil::dans_ou_ici(s, "urlhaus", || {
             let (hotes, liens) = match (
                 liste_urlhaus("hostfile.txt", "hotes.txt"),
                 liste_urlhaus("urls_online.txt", "liens.txt"),
@@ -1286,15 +1286,15 @@ fn en_ligne(lien: &Lien, adresse: &str) -> Vec<Verification> {
                 ),
             }
         });
-        let age = (!ip).then(|| s.spawn(|| age(&domaine)));
+        let age = (!ip).then(|| crate::socle::fil::dans_ou_ici(s, "age", || age(&domaine)));
         let dbl = (!ip).then(|| {
-            s.spawn(|| {
+            crate::socle::fil::dans_ou_ici(s, "dbl", || {
                 chercher_dns(&domaine, "dbl.spamhaus.org", "dbltest.com", refus_dbl, resoudre)
                     .map_or_else(Inscription::Impossible, |c| sens_dbl(&c))
             })
         });
         let surbl = (!ip).then(|| {
-            s.spawn(|| {
+            crate::socle::fil::dans_ou_ici(s, "surbl", || {
                 chercher_dns(&domaine, "multi.surbl.org", "test.surbl.org", refus_surbl, resoudre)
                     .map_or_else(Inscription::Impossible, |c| sens_surbl(&c))
             })

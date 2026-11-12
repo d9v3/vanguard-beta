@@ -707,7 +707,7 @@ fn en_parallele_groupes(
         for i in depart {
             if let (Some(v), Some(place)) = (a_lancer.get_mut(i).and_then(Option::take), fils.get_mut(i)) {
                 let finies = &finies;
-                *place = Some(s.spawn(move || {
+                *place = Some(crate::socle::fil::dans_ou_ici(s, "regle", move || {
                     let debut = std::time::Instant::now();
                     let constats = v();
                     if progression {
@@ -725,7 +725,7 @@ fn en_parallele_groupes(
             .enumerate()
             .map(|(i, f)| {
                 let (constats, duree) = f
-                    .and_then(|f: std::thread::ScopedJoinHandle<'_, _>| f.join().ok())
+                    .and_then(|f: crate::socle::fil::FilDans<'_, _>| f.join().ok())
                     .unwrap_or_else(|| {
                         (
                             vec![impossible("Audit", tr!("erreur interne", "internal error"))],

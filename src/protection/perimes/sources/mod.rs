@@ -517,7 +517,7 @@ pub(crate) fn rafraichir(systeme: Systeme) -> Releve {
             .iter()
             .map(|&s| {
                 let mode = &mode;
-                portee.spawn(move || obtenir(s, s.adresse, mode))
+                crate::socle::fil::dans_ou_ici(portee, "source", move || obtenir(s, s.adresse, mode))
             })
             .collect();
         fils.into_iter()

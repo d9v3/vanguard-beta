@@ -117,7 +117,7 @@ fn charger(sens: Sens, duree: Duration, arret: &Arc<AtomicBool>) -> Option<f64> 
     let travailleurs: Vec<_> = (0..4)
         .map(|_| {
             let (octets, arret) = (Arc::clone(&octets), Arc::clone(arret));
-            std::thread::spawn(move || {
+            crate::socle::fil::lancer_ou_ici("debit", move || {
                 while !arret.load(Ordering::Relaxed) && Instant::now() < fin && octets.load(Ordering::Relaxed) < PLAFOND
                 {
                     let abouti = match sens {

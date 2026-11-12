@@ -231,7 +231,7 @@ fn lancer(chemin: &Path) -> bool {
         return false;
     };
     let (envoi, reception) = mpsc::channel();
-    std::thread::spawn(move || {
+    let lecture = crate::socle::fil::lancer("fenetre-ouverte", move || {
         // Une seule ligne, bornée : rien d'autre n'est attendu sur cette sortie.
         let mut ligne = String::new();
         let lu = BufReader::new(std::io::Read::take(sortie, 256))
@@ -239,6 +239,11 @@ fn lancer(chemin: &Path) -> bool {
             .is_ok();
         let _ = envoi.send(lu && ligne.trim_end() == OUVERTE);
     });
+    // Sans fil pour lire sa réponse, la fenêtre n'est pas attendue : arrêtée, comme si elle n'avait pas répondu.
+    if lecture.is_err() {
+        crate::commande::arreter(&mut enfant);
+        return false;
+    }
     if reception.recv_timeout(ATTENTE) == Ok(true) {
         return true;
     }

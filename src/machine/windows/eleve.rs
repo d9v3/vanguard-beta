@@ -444,10 +444,20 @@ pub(crate) fn appliquer(lignes: &[String]) -> Option<Vec<Reponse>> {
     // Si le fils meurt sans s'être branché, l'attente du serveur ne finirait jamais : un fil le surveille et, à sa
     // mort, se branche lui-même pour la débloquer (le serveur reconnaît alors son propre PID).
     let nom = nom_du_tube(&canal);
-    let veilleur = std::thread::spawn(move || {
+    let veilleur = crate::socle::fil::lancer("veilleur-eleve", move || {
         fils.attendre();
         let _ = std::fs::OpenOptions::new().read(true).write(true).open(&nom);
     });
+    // Sans veilleur, l'attente du serveur pourrait ne jamais finir : le serveur est fermé avant tout ordre, et le fils
+    // élevé, sans parent à qui parler, sort sans rien faire.
+    let Ok(veilleur) = veilleur else {
+        drop(serveur);
+        trp!(
+            "    Mode réduit : Vanguard n'a pas pu suivre la relance en administrateur. Rien n'a été modifié.",
+            "    Reduced mode: Vanguard could not follow the administrator relaunch. Nothing was changed."
+        );
+        return None;
+    };
     let reponses = serveur.dialoguer(pid, &envoi, ordre.len());
     drop(serveur);
     let _ = veilleur.join();
@@ -1345,10 +1355,12 @@ fn lancer_script(chemin: &str, empreinte: &str) -> Resultat {
     let fils = crate::coulisses::Suivie::spawn_suivi(&mut commande);
     // Le parent ferme sa copie de l'écrivain : la fin de lecture vient quand PowerShell (et ce qu'il a lancé) a fermé
     // la sienne.
-    let lecteur = tube.map(|(r, w)| {
+    // Sans fil pour le lire (refus dit par socle::fil), le tube est fermé : les états des gestes manquent, le code de
+    // sortie du script décide seul.
+    let lecteur = tube.and_then(|(r, w)| {
         drop(w);
         let (envoi, reception) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
+        crate::socle::fil::lancer("etats-eleves", move || {
             for l in std::io::BufReader::new(r.take(1 << 16)).lines() {
                 let Ok(l) = l else { break };
                 let etat = match l.trim() {
@@ -1360,8 +1372,9 @@ fn lancer_script(chemin: &str, empreinte: &str) -> Resultat {
                     break;
                 }
             }
-        });
-        reception
+        })
+        .ok()?;
+        Some(reception)
     });
     let statut = fils.and_then(|mut f| f.wait());
     // Un programme lancé par le script et resté en vie garde l'écrivain ouvert : on ne l'attend pas au-delà de 2 s.

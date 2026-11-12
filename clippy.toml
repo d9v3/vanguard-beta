@@ -4,3 +4,11 @@ allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-panic-in-tests = true
 allow-indexing-slicing-in-tests = true
+
+# Un fil se crée par socle::fil (Builder::spawn, refus rendu et mode réduit dit) : std::thread::spawn et Scope::spawn
+# paniquent quand le système refuse un fil (limite de processus atteinte), une panique que unwrap_used ne voit pas.
+# Les essais en sont exemptés (src/main.rs, tests/programme.rs) : un fil refusé y fait échouer l'essai.
+disallowed-methods = [
+  { path = "std::thread::spawn", reason = "panique si le système refuse un fil : socle::fil::lancer ou lancer_ou_ici" },
+  { path = "std::thread::Scope::spawn", reason = "panique si le système refuse un fil : socle::fil::dans ou dans_ou_ici" },
+]

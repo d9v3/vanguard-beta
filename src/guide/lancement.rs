@@ -172,7 +172,7 @@ pub(super) fn derouler(ligne: &str, delai: Duration, clavier: bool, mut montrer:
     let (envoi, reception) = mpsc::channel::<Option<String>>();
     for f in flux {
         let envoi = envoi.clone();
-        std::thread::spawn(move || {
+        let lecture = crate::socle::fil::lancer("guide-sortie", move || {
             let mut lecteur = BufReader::new(f);
             let mut octets = Vec::new();
             while lecteur.read_until(b'\n', &mut octets).is_ok_and(|n| n > 0) {
@@ -183,6 +183,11 @@ pub(super) fn derouler(ligne: &str, delai: Duration, clavier: bool, mut montrer:
             }
             let _ = envoi.send(None);
         });
+        // Sans lecteur, la commande se bloquerait sur son tube plein : arrêtée, et le refus dit.
+        if let Err(e) = lecture {
+            crate::commande::arreter(&mut enfant);
+            return Fin::PasDemarree(e.to_string());
+        }
     }
     drop(envoi);
     let debut = Instant::now();

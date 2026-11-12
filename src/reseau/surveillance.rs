@@ -727,11 +727,14 @@ async fn attendre_reseau(
 
 pub async fn surveiller() {
     // Les exemples du guide se renouvellent pendant la passe (au plus une fois par semaine), sans la retarder.
-    let exemples = std::thread::spawn(crate::guide::renouveler_exemples);
+    // Refusé (dit par socle::fil) : pas renouvelés à cette passe.
+    let exemples = crate::socle::fil::lancer("guide-exemples", crate::guide::renouveler_exemples).ok();
     // Le lot d'amélioration du jour aussi (rien tant que le relais n'existe pas) ; ses délais bornent l'attente.
     crate::envoi::en_fond(true);
     passe().await;
-    let _ = exemples.join();
+    if let Some(exemples) = exemples {
+        let _ = exemples.join();
+    }
     crate::autotest::attendre_hebdomadaire();
     crate::envoi::attendre();
 }

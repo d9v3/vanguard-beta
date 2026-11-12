@@ -159,9 +159,10 @@ impl Reponse {
     }
 }
 
-/// Fait tourner `travail` sur un fil à part, avec un moteur tokio à lui. `None` : le moteur n'a pas démarré.
+/// Fait tourner `travail` sur un fil à part, avec un moteur tokio à lui. `None` : le moteur n'a pas démarré, ou le
+/// système a refusé le fil (dit par `socle::fil`).
 fn a_part<T: Send + 'static>(travail: impl Future<Output = T> + Send + 'static) -> Option<T> {
-    std::thread::spawn(move || {
+    crate::socle::fil::lancer("http", move || {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -173,6 +174,7 @@ fn a_part<T: Send + 'static>(travail: impl Future<Output = T> + Send + 'static) 
                 resultat
             })
     })
+    .ok()?
     .join()
     .ok()
     .flatten()
@@ -384,7 +386,7 @@ pub(crate) fn recevoir_en_comptant(adresse: &str, fin: Instant, octets: &AtomicU
         return false;
     }
     std::thread::scope(|s| {
-        s.spawn(|| {
+        crate::socle::fil::dans(s, "debit", || {
             let moteur = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -405,9 +407,8 @@ pub(crate) fn recevoir_en_comptant(adresse: &str, fin: Instant, octets: &AtomicU
             moteur.shutdown_background();
             resultat
         })
-        .join()
         .ok()
-        .flatten()
+        .and_then(|fil| fil.join().ok().flatten())
         .unwrap_or(false)
     })
 }
@@ -435,7 +436,7 @@ mod tests {
     pub(super) fn serveur(reponse: &'static [u8]) -> (String, std::thread::JoinHandle<String>) {
         let ecoute = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let adresse = format!("http://{}/", ecoute.local_addr().unwrap());
-        let fil = std::thread::spawn(move || {
+        let fil = std::thread::Builder::new().spawn(move || {
             let (mut prise, _) = ecoute.accept().unwrap();
             prise.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
             let mut recu = vec![0u8; 65_536];
@@ -443,7 +444,7 @@ mod tests {
             let _ = prise.write_all(reponse);
             String::from_utf8_lossy(&recu[..n]).into_owned()
         });
-        (adresse, fil)
+        (adresse, fil.unwrap())
     }
 
     #[test]

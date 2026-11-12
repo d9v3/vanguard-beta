@@ -301,7 +301,7 @@ pub fn mesurer_et_proposer() {
             let actuels: Vec<_> = a_mesurer
                 .iter()
                 .map(|ip| {
-                    s.spawn(move || {
+                    crate::socle::fil::dans_ou_ici(s, "dns-actuel", move || {
                         if !mesurable(*ip) {
                             return (None, None);
                         }
@@ -313,7 +313,9 @@ pub fn mesurer_et_proposer() {
                 .collect();
             let publics: Vec<_> = PUBLICS
                 .iter()
-                .map(|p| s.spawn(move || p.v4[0].parse().ok().and_then(mesurer)))
+                .map(|p| {
+                    crate::socle::fil::dans_ou_ici(s, "dns-public", move || p.v4[0].parse().ok().and_then(mesurer))
+                })
                 .collect();
             (
                 actuels.into_iter().map(|f| f.join().unwrap_or((None, None))).collect(),

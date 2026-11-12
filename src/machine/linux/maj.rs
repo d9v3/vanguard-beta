@@ -65,7 +65,7 @@ pub(super) fn autres_mises_a_jour() -> Vec<Constat> {
     let mut constats = Vec::new();
     std::thread::scope(|portee| {
         let flatpak = present("flatpak").then(|| {
-            portee.spawn(|| {
+            crate::socle::fil::dans_ou_ici(portee, "flatpak", || {
                 sortie_delai(
                     "flatpak",
                     &["remote-ls", "--updates", "--columns=application"],
@@ -77,7 +77,7 @@ pub(super) fn autres_mises_a_jour() -> Vec<Constat> {
         // snapd par son API (/run/snapd.socket) ; la CLI si la prise ne répond pas. Un nombre de snaps à mettre à
         // jour ; `None` : impossible à savoir.
         let snap = present("snap").then(|| {
-            portee.spawn(|| {
+            crate::socle::fil::dans_ou_ici(portee, "snap", || {
                 match super::http_unix::snaps_a_mettre_a_jour(Path::new(super::http_unix::SNAPD)) {
                     Ok(l) => return Some(l.len()),
                     // snapd a répondu par une erreur (magasin injoignable…) : la CLI dirait la même chose.
@@ -97,10 +97,10 @@ pub(super) fn autres_mises_a_jour() -> Vec<Constat> {
         let aur_permis = crate::parametres::paquets_aur();
         let aur = assistant_aur
             .filter(|_| aur_permis)
-            .map(|c| (c, portee.spawn(aur_a_mettre_a_jour)));
+            .map(|c| (c, crate::socle::fil::dans_ou_ici(portee, "aur", aur_a_mettre_a_jour)));
         // fwupd par D-Bus d'abord ; fwupdmgr en secours si le bus ne répond pas.
         let firmware = present("fwupdmgr").then(|| {
-            portee.spawn(|| {
+            crate::socle::fil::dans_ou_ici(portee, "firmware", || {
                 match firmwares_par_dbus() {
                     Ok(v) => return Some(v),
                     // fwupd a répondu par une erreur (métadonnées absentes…) : fwupdmgr la tairait.
@@ -1052,9 +1052,10 @@ pub(super) fn pilotes_dkms() -> Option<Constat> {
 pub fn mises_a_jour_completes(seulement: Option<&[&str]>) -> Vec<Constat> {
     let voulu = |categories: &[&str]| seulement.is_none_or(|s| categories.iter().any(|c| s.contains(c)));
     std::thread::scope(|portee| {
-        let paquets = voulu(&["Mises à jour"]).then(|| portee.spawn(mises_a_jour));
-        let autres = voulu(&["Flatpak", "Snap", "AUR", "Firmware"]).then(|| portee.spawn(autres_mises_a_jour));
-        let dkms = voulu(&["Pilotes DKMS"]).then(|| portee.spawn(pilotes_dkms));
+        let paquets = voulu(&["Mises à jour"]).then(|| crate::socle::fil::dans_ou_ici(portee, "paquets", mises_a_jour));
+        let autres = voulu(&["Flatpak", "Snap", "AUR", "Firmware"])
+            .then(|| crate::socle::fil::dans_ou_ici(portee, "maj-autres", autres_mises_a_jour));
+        let dkms = voulu(&["Pilotes DKMS"]).then(|| crate::socle::fil::dans_ou_ici(portee, "dkms", pilotes_dkms));
         let noyau = redemarrage();
         let mut constats: Vec<Constat> = paquets
             .map(|t| {

@@ -257,7 +257,7 @@ fn croiser() -> Vec<(&'static Croisee, Comparaison)> {
     std::thread::scope(|s| {
         let fils: Vec<_> = toutes
             .into_iter()
-            .map(|c| s.spawn(move || (c, comparer_relu(c, RELECTURE))))
+            .map(|c| crate::socle::fil::dans_ou_ici(s, "croisee", move || (c, comparer_relu(c, RELECTURE))))
             .collect();
         fils.into_iter().filter_map(|f| f.join().ok()).collect()
     })

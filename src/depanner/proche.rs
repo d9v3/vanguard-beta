@@ -382,7 +382,7 @@ fn appareils_a_regler(r: &Rapport) -> usize {
 /// Le scan du réseau local, sur un fil à part avec son propre moteur : le parcours est appelé depuis un menu
 /// synchrone, déjà dans le moteur du programme, où l'on ne peut pas en attendre un autre.
 fn scanner_le_reseau() -> Option<Rapport> {
-    std::thread::spawn(|| {
+    crate::socle::fil::lancer_ou_ici("scan", || {
         let moteur = tokio::runtime::Builder::new_multi_thread().enable_all().build().ok()?;
         let resultat = moteur.block_on(crate::reseau::executer(Options::defaut(None, "courants")));
         moteur.shutdown_background();

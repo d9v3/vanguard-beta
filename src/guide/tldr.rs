@@ -203,10 +203,14 @@ pub(super) fn renouveler_en_fond() {
     if !std::io::stdin().is_terminal() || a_voir.is_empty() || EN_COURS.swap(true, Ordering::SeqCst) {
         return;
     }
-    std::thread::spawn(move || {
+    let fil = crate::socle::fil::lancer("guide-exemples", move || {
         renouveler(&a_voir, &dossiers);
         EN_COURS.store(false, Ordering::SeqCst);
     });
+    // Refusé : rien ne se renouvelle cette fois, et la prochaine ouverture réessaie.
+    if fil.is_err() {
+        EN_COURS.store(false, Ordering::SeqCst);
+    }
 }
 
 /// Sans attendre qu'on ouvre le guide : la surveillance de chaque heure et l'entretien du mois renouvellent les
