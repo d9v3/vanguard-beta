@@ -33,8 +33,11 @@ pub(super) fn docker() -> Vec<Constat> {
     {
         return vec![];
     }
-    // L'API locale du démon d'abord (lecture seule) ; la CLI quand un autre hôte ou un contexte est réglé, ou si le
-    // démon ne répond pas sur sa prise.
+    if let Some(variable) = docker_api::demon_designe_par_variable() {
+        return demon_designe_non_lu(variable);
+    }
+    // L'API locale du démon d'abord (lecture seule) ; la CLI quand un contexte est choisi dans config.json (elle le
+    // lit par HOME), ou si le démon ne répond pas sur sa prise.
     if docker_api::hote_par_defaut() && Path::new(docker_api::PRISE).exists() {
         match docker_api::conteneurs_sur(Path::new(docker_api::PRISE)) {
             Ok(liste) => return constats_docker(liste),
@@ -57,6 +60,30 @@ pub(super) fn docker() -> Vec<Constat> {
             })
             .collect(),
     )
+}
+
+/// Le démon de la personne est désigné par `variable` (DOCKER_HOST…) : la CLI, lancée sans les variables du compte,
+/// en lirait un autre, et son « aucun port exposé » serait faux (E-4, recontrôle 0.95). Il est dit non vérifié, avec
+/// la variable. Le démon du système (la prise par défaut) est lu quand même s'il répond, mais seuls ses ports exposés
+/// sont gardés : son « rien d'exposé » ne dit rien du démon désigné.
+fn demon_designe_non_lu(variable: &str) -> Vec<Constat> {
+    let prise = Path::new(docker_api::PRISE);
+    let mut constats: Vec<Constat> = match prise.exists().then(|| docker_api::conteneurs_sur(prise)) {
+        Some(Ok(liste)) => constats_docker(liste)
+            .into_iter()
+            .filter(|c| c.probleme.is_some())
+            .collect(),
+        // Prise absente, refusée ou muette : rien de plus à dire que le constat non vérifié ci-dessous.
+        None | Some(Err(_)) => Vec::new(),
+    };
+    constats.push(impossible(
+        "Docker",
+        &trf!(
+            "le démon désigné par {variable} n'est pas lu : Vanguard lance ses outils sans les variables du compte, et ses ports publiés ne sont pas vérifiés",
+            "the daemon set by {variable} is not read: Vanguard runs its tools without the account's variables, and its published ports are not checked"
+        ),
+    ));
+    constats
 }
 
 /// Les constats des conteneurs actifs : (nom prêt à montrer, ports exposés au réseau).
@@ -297,5 +324,57 @@ mod tests {
         }
         // Le dockerd vu suffit, même si le PID 1 ne se lit pas.
         assert!(docker_sans_acces(std::slice::from_ref(&dockerd), false).verifie);
+    }
+
+    /// Posée dans le processus relancé par l'essai E-4.
+    const RELANCE_E4: &str = "VANGUARD_ESSAI_E4_RELANCE";
+
+    /// E-4 (recontrôle 0.95) : DOCKER_HOST désigne le démon de la personne (Docker sans root, autre hôte). La lecture
+    /// native de la prise par défaut est alors sautée, mais la CLI, lancée sans les variables du compte, lisait un
+    /// autre démon et pouvait dire « aucun port exposé » : un « sain » sur le mauvais démon. Le démon désigné est dit
+    /// non vérifié, avec la variable, et rien n'est dit sain.
+    #[test]
+    fn demon_designe_par_docker_host_dit_non_verifie() {
+        if std::env::var_os(RELANCE_E4).is_some() {
+            for c in docker() {
+                println!(
+                    "constat-e4:{}|{}|{}",
+                    c.verifie,
+                    c.probleme.is_some(),
+                    c.message.replace('\n', " ")
+                );
+            }
+            return;
+        }
+        if !["/usr/bin/docker", "/bin/docker", "/usr/local/bin/docker"]
+            .iter()
+            .any(|d| Path::new(d).exists())
+        {
+            return crate::essais::saute("docker absent");
+        }
+        let d = crate::essais::Jetable::nouveau("e4-docker-host");
+        let sortie = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "machine::linux::docker::tests::demon_designe_par_docker_host_dit_non_verifie",
+                "--nocapture",
+            ])
+            .env(RELANCE_E4, "1")
+            .env("DOCKER_HOST", format!("unix://{}", d.join("docker.sock").display()))
+            .output()
+            .unwrap();
+        let texte = String::from_utf8_lossy(&sortie.stdout);
+        assert!(sortie.status.success() && texte.contains("1 passed"), "{texte}");
+        let constats: Vec<&str> = texte.lines().filter_map(|l| l.strip_prefix("constat-e4:")).collect();
+        assert!(
+            !constats.iter().any(|c| c.starts_with("true|false|")),
+            "« sain » sur un autre démon que celui de DOCKER_HOST : {constats:#?}"
+        );
+        assert!(
+            constats
+                .iter()
+                .any(|c| c.starts_with("false|") && c.contains("DOCKER_HOST")),
+            "démon de DOCKER_HOST pas dit non vérifié : {constats:#?}"
+        );
     }
 }

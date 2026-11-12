@@ -2,8 +2,10 @@
 //! ports publiés (GET /containers/json), les images (GET /images/json).
 //!
 //! La CLI suit DOCKER_HOST et les contextes (Docker sans root, hôte distant) : lire la prise par défaut quand le
-//! démon est ailleurs dirait « aucun conteneur exposé » à tort. Dès qu'un hôte ou un contexte est réglé, la CLI
-//! reste donc la source (`hote_par_defaut`).
+//! démon est ailleurs dirait « aucun conteneur exposé » à tort. Un contexte choisi dans ~/.docker/config.json : la
+//! CLI reste la source (`hote_par_defaut`), elle le lit par HOME. Un démon désigné par une variable (DOCKER_HOST,
+//! DOCKER_CONTEXT, DOCKER_CONFIG) : la CLI, lancée sans les variables du compte (`commande::par_le_systeme`), ne le
+//! verrait pas ; il est dit non vérifié (`demon_designe_par_variable`, E-4 du recontrôle 0.95).
 
 use std::path::{Path, PathBuf};
 
@@ -11,6 +13,25 @@ use super::http_unix::get_json;
 use crate::modele::Echec;
 
 pub(crate) const PRISE: &str = "/var/run/docker.sock";
+
+/// La variable de Vanguard qui désigne un autre démon que celui de la prise par défaut : DOCKER_HOST, DOCKER_CONTEXT
+/// autre que « default », ou DOCKER_CONFIG dont le config.json choisit un autre contexte (ou est illisible). La CLI,
+/// lancée sans les variables du compte, lirait alors un autre démon que celui de la personne : à dire non vérifié,
+/// jamais à remplacer par la lecture d'un autre démon (E-4, recontrôle 0.95). Ne pas les passer à la CLI est voulu :
+/// une variable posée par un programme du compte choisirait le démon qui répond, et un faux démon dirait « rien
+/// d'exposé » (G-1).
+pub(crate) fn demon_designe_par_variable() -> Option<&'static str> {
+    let variable = |n: &str| std::env::var(n).ok().filter(|v| !v.trim().is_empty());
+    if variable("DOCKER_HOST").is_some() {
+        return Some("DOCKER_HOST");
+    }
+    if variable("DOCKER_CONTEXT").is_some_and(|c| c != "default") {
+        return Some("DOCKER_CONTEXT");
+    }
+    variable("DOCKER_CONFIG")
+        .is_some_and(|c| !config_par_defaut(Path::new(&c)))
+        .then_some("DOCKER_CONFIG")
+}
 
 /// Le démon que la CLI viserait est-il celui de la prise par défaut ? Non dès que DOCKER_HOST, DOCKER_CONTEXT ou un
 /// contexte courant (`currentContext` de config.json) autre que « default » est réglé ; config.json illisible (mais
