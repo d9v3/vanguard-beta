@@ -12430,6 +12430,19 @@ mod tests {
             "{dite}"
         );
         assert!(!dite.contains('\u{1b}') && !dite.contains(&"x".repeat(80)), "{dite}");
+        // Coupé, il le montre (revérification 8) ; entier, rien ne s'ajoute.
+        assert!(dite.contains("x… »"), "{dite}");
+        let entier = permise::Systeme {
+            racine: Path::new("/"),
+            maison: "/home/alice",
+            maisons: &[],
+            courant: None,
+            noms_des_lieux: std::cell::OnceCell::new(),
+            relatif: std::cell::OnceCell::new(),
+        };
+        let _ = entier.relatif.set("x".repeat(80));
+        let dite = entier.raison_dite(e, "Path=");
+        assert!(dite.contains(&format!("« {} »", "x".repeat(80))), "{dite}");
         crate::langue::en_anglais(|| {
             let dite = s.raison_dite(e, "WorkingDirectory=");
             assert!(

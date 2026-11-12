@@ -741,7 +741,12 @@ impl Systeme<'_> {
     pub(super) fn raison_dite(&self, ecart: Ecart, cle: &str) -> std::borrow::Cow<'static, str> {
         match (ecart, self.relatif.get()) {
             (Ecart::DossierDeDepart, Some(x)) => {
-                let x = crate::ui::affichable(&x.chars().take(80).collect::<String>());
+                // Coupé à 80 caractères, la coupure marquée d'un « … » (revérification 8).
+                let coupe = x.chars().nth(80).is_some();
+                let mut x = crate::ui::affichable(&x.chars().take(80).collect::<String>());
+                if coupe {
+                    x.push('…');
+                }
                 std::borrow::Cow::Owned(trf!(
                     "dossier de départ ({cle}) non vérifié : l'argument relatif « {x} » peut viser un autre fichier, dont un lieu de démarrage du compte (~/.config/autostart, ~/.config/systemd, ~/.bashrc…) ; non vérifié, donc pas tu",
                     "working folder ({cle}) not verified: the relative argument \"{x}\" can point to another file, including an account startup place (~/.config/autostart, ~/.config/systemd, ~/.bashrc…); not verified, so not kept quiet"
