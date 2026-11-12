@@ -439,11 +439,13 @@ impl Changement {
     /// L'entrée de démarrage visée se lit-elle aujourd'hui ? Sous Windows, oui : remettre ne réécrit que sa valeur
     /// de StartupApproved (quelques octets), jamais l'entrée elle-même (le D-1 de Linux, une entrée trop grosse
     /// écrasée, n'a pas d'équivalent).
+    #[allow(clippy::unused_self)] // même signature que sous Linux, où l'entrée compte
     pub fn entree_lisible(&self) -> bool {
         true
     }
 
     /// Ce que le retrait écrirait se relira-t-il ? Sous Windows, oui : quelques octets de StartupApproved.
+    #[allow(clippy::unused_self)] // même signature que sous Linux, où l'entrée compte
     pub fn cible_relisible(&self) -> bool {
         true
     }
