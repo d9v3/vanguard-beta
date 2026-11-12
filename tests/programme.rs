@@ -4001,7 +4001,7 @@ mod demarrage_sous_attaque {
             ],
         );
         let t = sans_couleurs(&s.texte);
-        assert!(t.contains("[ ] Radio") && t.contains("pas remis d'ici"), "{t}");
+        assert!(t.contains("[ ] Radio") && t.contains("retiré ; dossier refusé"), "{t}");
         assert!(t.contains("Radio : pas remis") && t.contains("Rien à changer"), "{t}");
         assert_eq!(lu(&radio), retiree);
     }

@@ -229,14 +229,7 @@ fn classer(p: &Programme) -> Garde {
     match p.ecriture {
         Ecriture::Permise => {}
         Ecriture::Refusee(_) => return Garde::Garder(ecriture_refusee()),
-        Ecriture::MasquageInconnu => {
-            return Garde::Garder(tr!(
-                "non vérifiée : peut être masquée dans le dossier du compte (lié ou refusé), que Vanguard ne lit pas ni \
-             n'écrit",
-                "not verified: may be hidden in the account folder (linked or refused), which Vanguard neither reads nor \
-             writes"
-            ));
-        }
+        Ecriture::MasquageInconnu => return Garde::Garder(masquage_inconnu()),
     }
     #[cfg(target_os = "linux")]
     {
@@ -406,6 +399,22 @@ fn baisse_ok(noms: &[&str]) -> bool {
 #[cfg(not(target_os = "linux"))]
 fn baisse_ok(_noms: &[&str]) -> bool {
     false
+}
+
+/// Une entrée du système que le dossier du compte, lié ou refusé, peut masquer sans que Vanguard le voie (H-2).
+fn masquage_inconnu() -> &'static str {
+    tr!(
+        "non vérifiée : peut être masquée dans le dossier du compte (lié ou refusé), que Vanguard ne lit pas ni n'écrit",
+        "not verified: may be hidden in the account folder (linked or refused), which Vanguard neither reads nor writes"
+    )
+}
+
+/// Une entrée dont la copie masquée ne se relirait plus (D-2).
+fn trop_grosse() -> &'static str {
+    tr!(
+        "à garder : trop grosse pour être masquée sans perte",
+        "keep: too large to be hidden safely"
+    )
 }
 
 /// La raison courte, sur la ligne d'un programme où Vanguard n'écrit pas ; le dossier et le remède sont dits une fois
@@ -586,10 +595,7 @@ fn lignes(programmes: Vec<Programme>, h: &Historique) -> Vec<Ligne> {
             false if matches!(p.ecriture, Ecriture::Refusee(_)) => Garde::Garder(ecriture_refusee()),
             false => Garde::Ordinaire,
             // Masquée, elle ne se relirait plus (D-2) : montrée, jamais proposée.
-            true if !p.changement.cible_relisible() => Garde::Garder(tr!(
-                "à garder : trop grosse pour être masquée sans perte",
-                "keep: too large to be hidden safely"
-            )),
+            true if !p.changement.cible_relisible() => Garde::Garder(trop_grosse()),
             true => classer(&p),
         };
         let Some(r) = reglage(&p.nom, p.changement) else {
@@ -1145,6 +1151,52 @@ pub fn json() {
     println!("{}", crate::modele::resultat::json(&r));
 }
 
+/// La précision d'une raison de garder, dans les 33 colonnes de la liste à cocher (relecture 0.95, J-2) : les
+/// raisons longues ont leur forme courte, la phrase entière allant dans la ligne de détail.
+fn courte(raison: &'static str) -> &'static str {
+    if raison == ecriture_refusee() {
+        tr!("dossier refusé : voir la note", "folder refused: see the note")
+    } else if raison == masquage_inconnu() {
+        tr!("non vérifiée : dossier du compte", "not verified: account folder")
+    } else if raison == trop_grosse() {
+        tr!("à garder : trop grosse à masquer", "keep: too large to hide")
+    } else if largeur_affichee(raison) > 33 {
+        tr!("à garder : voir le détail", "keep: see the details")
+    } else {
+        raison
+    }
+}
+
+/// Ce que la liste à cocher montre d'un programme : sa précision, à droite, et la ligne de détail, sous la liste
+/// quand il est en surbrillance.
+fn precision_et_detail(
+    garder: Option<&'static str>,
+    actif: bool,
+    pare_feu: bool,
+    commande: &str,
+    machine: bool,
+) -> (String, String) {
+    let precision = match (garder, actif) {
+        (Some(raison), true) => courte(raison).to_string(),
+        // La raison entière est dans le détail, et dite si la case est recochée (H-5).
+        (Some(_), false) => tr!("retiré ; dossier refusé", "removed; folder refused").to_string(),
+        (None, true) if pare_feu => tr!("pare-feu : retrait = baisse", "firewall: removing = lowering").to_string(),
+        (None, true) => tr!("se lance", "starts").to_string(),
+        (None, false) => tr!("retiré par Vanguard", "removed by Vanguard").to_string(),
+    };
+    let mut detail = commande.chars().take(200).collect::<String>();
+    if let Some(raison) = garder.filter(|r| *r != precision) {
+        detail = format!("{raison} · {detail}");
+    }
+    if machine {
+        detail.push_str(tr!(
+            " · tout l'ordinateur : la fenêtre administrateur s'ouvrira",
+            " · whole machine: the administrator window will open"
+        ));
+    }
+    (precision, detail)
+}
+
 /// La liste à cocher : coché = se lance à l'ouverture de session. Décocher retire, recocher remet exactement comme
 /// avant ce que Vanguard avait retiré.
 pub fn menu() {
@@ -1173,27 +1225,7 @@ pub fn menu() {
     let cases: Vec<Case> = l
         .iter()
         .map(|x| {
-            let precision = match (x.garder(), x.actif) {
-                (Some(raison), true) => raison.to_string(),
-                // La raison entière s'affiche si la case est recochée ; ici, de quoi rester sur une ligne.
-                (Some(_), false) => tr!(
-                    "retiré par Vanguard, pas remis d'ici : voir la note sur le dossier",
-                    "removed by Vanguard, not put back from here: see the folder note"
-                )
-                .to_string(),
-                (None, true) if x.pare_feu() => {
-                    tr!("pare-feu : retrait = baisse", "firewall: removing = lowering").to_string()
-                }
-                (None, true) => tr!("se lance", "starts").to_string(),
-                (None, false) => tr!("retiré par Vanguard", "removed by Vanguard").to_string(),
-            };
-            let mut detail = x.commande.chars().take(200).collect::<String>();
-            if x.machine {
-                detail.push_str(tr!(
-                    " · tout l'ordinateur : la fenêtre administrateur s'ouvrira",
-                    " · whole machine: the administrator window will open"
-                ));
-            }
+            let (precision, detail) = precision_et_detail(x.garder(), x.actif, x.pare_feu(), &x.commande, x.machine);
             Case {
                 texte: x.nom.clone(),
                 precision,
@@ -1289,6 +1321,37 @@ pub fn menu() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Relecture 0.95, J-2 : chaque précision de la liste à cocher tient dans ses 33 colonnes, comme celles des
+    /// autres listes ; une raison raccourcie se lit entière dans la ligne de détail, avec la commande.
+    #[test]
+    fn les_precisions_tiennent_dans_la_colonne() {
+        let verifier = || {
+            let raisons = [
+                ecriture_refusee(),
+                masquage_inconnu(),
+                trop_grosse(),
+                tr!("à garder : sécurité", "keep: security"),
+                tr!("à garder : accessibilité", "keep: accessibility"),
+                tr!("pare-feu ? paquet illisible", "firewall? package unreadable"),
+                tr!("pare-feu : fichier modifié", "firewall: file modified"),
+            ];
+            let mut vues = vec![(true, true, None), (true, false, None), (false, false, None)];
+            for r in raisons {
+                vues.extend([(true, false, Some(r)), (false, false, Some(r))]);
+            }
+            for (actif, pare_feu, garder) in vues {
+                let (precision, detail) = precision_et_detail(garder, actif, pare_feu, "/opt/radio/radio", false);
+                assert!(largeur_affichee(&precision) <= 33, "« {precision} » trop long");
+                assert!(detail.contains("/opt/radio/radio"), "{detail}");
+                if let Some(r) = garder.filter(|r| *r != precision) {
+                    assert!(detail.contains(r), "« {r} » absent du détail : {detail}");
+                }
+            }
+        };
+        verifier();
+        crate::langue::en_anglais(verifier);
+    }
 
     /// Relecture 0.95, J-1 : au-dessus de la liste, la commande du remède est seule sur sa ligne, entière, jamais
     /// coupée (un chemin long ou avec des espaces se recopie tel quel) ; le reste de la note s'enveloppe.
