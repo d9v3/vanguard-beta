@@ -52,8 +52,9 @@ pub(super) struct Entree<'a> {
     pub statut: Statut,
 }
 
-/// Le résultat d'après la liste lue et ce qui n'a pas pu l'être (`manques`).
-pub(super) fn resultat(entrees: &[Entree], manques: Vec<String>, debut: Debut) -> Resultat {
+/// Le résultat d'après la liste lue et ce qui n'a pas pu l'être (`manques`). `lu` : au moins une source a été lue
+/// (`releve_demarrage`) ; faux, aucune vérification n'est comptée (relecture 0.94, R-9).
+pub(super) fn resultat(entrees: &[Entree], manques: Vec<String>, lu: bool, debut: Debut) -> Resultat {
     let mut constats: Vec<Constat> = entrees.iter().take(PROGRAMMES_MONTRES).map(constat).collect();
     let reste = entrees.len().saturating_sub(PROGRAMMES_MONTRES);
     if reste > 0 {
@@ -88,13 +89,13 @@ pub(super) fn resultat(entrees: &[Entree], manques: Vec<String>, debut: Debut) -
             ),
         ));
     }
-    // La liste a été lue (même en partie) : une vérification ; chaque manque la rend partielle.
+    // La liste a été lue (même en partie) : une vérification ; chaque manque la rend partielle. Rien de lu : aucune.
     let mut r = Resultat::nouveau(
         ID,
         debut,
         &constats,
         Couverture {
-            verifies: 1,
+            verifies: u32::from(lu),
             non_verifies: manques,
         },
     );
@@ -252,7 +253,7 @@ mod tests {
             entree("Pilote", Statut::Garder("pilote")),
             entree("Messagerie", Statut::Retire),
         ];
-        let r = resultat(&l, vec![], debut());
+        let r = resultat(&l, vec![], true, debut());
         assert_eq!(r.outil, ID);
         assert_eq!((r.couverture.verifies, r.verdict()), (1, "sain"));
         assert_eq!(r.constats.len(), 3);
@@ -272,7 +273,7 @@ mod tests {
         let identite = format!("autostart|{maison}/.config/autostart/lecteur.desktop");
         let mut e = entree("Lecteur", Statut::SeLance);
         e.identite = &identite;
-        let r = resultat(std::slice::from_ref(&e), vec![], debut());
+        let r = resultat(std::slice::from_ref(&e), vec![], true, debut());
         let o = r.constats[0].objet.clone().unwrap();
         assert!(!o.contains(maison), "{o}");
         assert!(o.contains("~/.config/autostart/lecteur.desktop"), "{o}");
@@ -318,7 +319,7 @@ mod tests {
             machine: false,
             statut: Statut::SeLance,
         };
-        let r = resultat(std::slice::from_ref(&e), vec![], debut());
+        let r = resultat(std::slice::from_ref(&e), vec![], true, debut());
         let g = r.constats[0].geste.as_ref().unwrap();
         for t in [&r.constats[0].message, &g.nom, &g.commande] {
             assert!(!t.contains(m), "{t}");
@@ -344,7 +345,7 @@ mod tests {
             entree("Messagerie", Statut::Retire),
             entree("Murdefeu", Statut::PareFeu),
         ];
-        let r = resultat(&l, vec![], debut());
+        let r = resultat(&l, vec![], true, debut());
         let gestes: Vec<Option<&str>> = r
             .constats
             .iter()
@@ -377,7 +378,7 @@ mod tests {
                 statut: Statut::SeLance,
             })
             .collect();
-        let r = resultat(&l, vec![], debut());
+        let r = resultat(&l, vec![], true, debut());
         assert_eq!(
             r.constats.iter().filter(|c| c.geste.is_some()).count(),
             PROGRAMMES_MONTRES
@@ -387,14 +388,14 @@ mod tests {
     /// Aucun programme : une ligne saine qui le dit.
     #[test]
     fn aucun_programme() {
-        let r = resultat(&[], vec![], debut());
+        let r = resultat(&[], vec![], true, debut());
         assert_eq!((r.constats.len(), r.verdict()), (1, "sain"));
     }
 
     /// Un dossier illisible ou des notes douteuses : partiel, jamais sain, même sans aucun programme.
     #[test]
     fn partiel_jamais_sain() {
-        let r = resultat(&[], vec!["services du compte pas lus".into()], debut());
+        let r = resultat(&[], vec!["services du compte pas lus".into()], true, debut());
         assert_eq!((r.couverture.verifies, r.verdict()), (1, "non-verifie"));
         assert!(r.couverture.non_verifies[0].contains("services"));
     }
@@ -414,7 +415,7 @@ mod tests {
                 statut: Statut::SeLance,
             })
             .collect();
-        let r = resultat(&l, vec![], debut());
+        let r = resultat(&l, vec![], true, debut());
         assert_eq!(r.constats.len(), PROGRAMMES_MONTRES + 2);
         assert!(r.constats.iter().any(|c| c.message.contains(" 5 ")));
         assert_eq!(r.pire(), Some(Niveau::Info));

@@ -563,6 +563,7 @@ pub(super) fn defaire_dans(
     };
     let mut h = charger_dans(dossier);
     let tous = notes_rebaties(&h);
+    let au_demarrage = super::demarrage::ListeDuJour::new();
     let mut issues: Vec<(String, Option<Issue>)> = Vec::with_capacity(ids.len());
     let mut choisis: Vec<&Reglage> = Vec::new();
     let mut attendus: Vec<Vec<Valeur>> = Vec::new();
@@ -577,7 +578,7 @@ pub(super) fn defaire_dans(
         // lit pas (D-1) : la vieille note n'écrase pas l'entrée d'aujourd'hui, comme pour la fenêtre.
         let refus_demarrage = r
             .filter(|_| id.starts_with(super::demarrage::PREFIXE))
-            .and_then(super::demarrage::raison_de_ne_pas_remettre);
+            .and_then(|r| super::demarrage::raison_de_ne_pas_remettre(r, &au_demarrage));
         let issue = match r {
             _ if id == DNS && tient_le_dns => refus(
                 "le mode Wi-Fi public tient le DNS : éteignez-le d'abord",

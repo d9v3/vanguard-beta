@@ -863,10 +863,19 @@ fn changer_tenu(sorte: SorteDeChangement, empreinte: &str) -> (Option<String>, I
     }
 }
 
-/// Pourquoi ce réglage de démarrage, rebâti d'une note, ne se remet pas aujourd'hui (lu sur le système), s'il ne le
-/// doit pas : `remise_refusee`, dite.
-pub(super) fn raison_de_ne_pas_remettre(r: &Reglage) -> Option<String> {
-    remise_refusee(r, &systeme::au_demarrage()).map(Refus::raison)
+/// La liste des programmes lue au plus une fois pour toutes les notes d'une même annulation : chaque lecture lance
+/// `systemctl --user` (jusqu'à 10 secondes sans session), une seule suffit (relecture 0.94, R-9).
+pub(super) type ListeDuJour = std::cell::OnceCell<Vec<Programme>>;
+
+/// Pourquoi ce réglage de démarrage, rebâti d'une note, ne se remet pas aujourd'hui (lu sur le système, dans `liste`
+/// à sa première demande), s'il ne le doit pas : `remise_refusee`, dite.
+pub(super) fn raison_de_ne_pas_remettre(r: &Reglage, liste: &ListeDuJour) -> Option<String> {
+    raison_selon(r, liste, systeme::au_demarrage)
+}
+
+/// `raison_de_ne_pas_remettre`, la liste lue par `lire` (essais).
+fn raison_selon(r: &Reglage, liste: &ListeDuJour, lire: impl FnOnce() -> Vec<Programme>) -> Option<String> {
+    remise_refusee(r, liste.get_or_init(lire)).map(Refus::raison)
 }
 
 /// Pourquoi ce réglage, rebâti d'une note, ne se remet pas par-dessus l'entrée d'aujourd'hui, s'il ne le doit pas :
@@ -971,7 +980,7 @@ pub fn remettre(id: &str) -> Option<bool> {
 /// l'historique, lu par `historique_sans_ecrire`), versée au rapport et au journal, puis imprimée.
 pub fn json() {
     let debut = (chrono::Utc::now(), std::time::Instant::now());
-    let (programmes, mut manques) = systeme::releve_demarrage();
+    let (programmes, mut manques, lu) = systeme::releve_demarrage();
     let h = super::historique_sans_ecrire(&crate::reseau::dossier_local()).unwrap_or_else(|| {
         manques.push(
             tr!(
@@ -998,7 +1007,7 @@ pub fn json() {
             },
         })
         .collect();
-    let r = resultat::resultat(&entrees, manques, debut);
+    let r = resultat::resultat(&entrees, manques, lu, debut);
     crate::modele::resultat::verser(&r);
     println!("{}", crate::modele::resultat::json(&r));
 }
@@ -1007,7 +1016,7 @@ pub fn json() {
 /// avant ce que Vanguard avait retiré.
 pub fn menu() {
     let h = charger();
-    let (programmes, manques) = systeme::releve_demarrage();
+    let (programmes, manques, _) = systeme::releve_demarrage();
     let l = lignes(programmes, &h);
     let pas_lus = lignes_des_manques(&manques);
     if l.is_empty() {
@@ -1136,9 +1145,9 @@ mod tests {
         .unwrap();
         std::os::unix::fs::symlink(&ailleurs, config.join("autostart")).unwrap();
         let debut = (chrono::Utc::now(), std::time::Instant::now());
-        let (programmes, manques) = systeme::releve_dans(&config, &[], "Hyprland", Some(String::new()));
+        let (programmes, manques, lu) = systeme::releve_dans(&config, &[], "Hyprland", Some(String::new()));
         assert!(lignes(programmes, &Historique::default()).is_empty());
-        let r = resultat::resultat(&[], manques, debut);
+        let r = resultat::resultat(&[], manques, lu, debut);
         assert_eq!(r.verdict(), "non-verifie");
         assert_eq!(r.couverture.verifies, 1);
         assert_eq!(r.couverture.non_verifies.len(), 1, "{:?}", r.couverture.non_verifies);
@@ -1152,11 +1161,41 @@ mod tests {
         // Le même dossier, vrai et vide.
         std::fs::remove_file(config.join("autostart")).unwrap();
         std::fs::create_dir_all(config.join("autostart")).unwrap();
-        let (programmes, manques) = systeme::releve_dans(&config, &[], "Hyprland", Some(String::new()));
+        let (programmes, manques, lu) = systeme::releve_dans(&config, &[], "Hyprland", Some(String::new()));
         assert!(programmes.is_empty() && manques.is_empty(), "{manques:?}");
-        let r = resultat::resultat(&[], manques, debut);
+        let r = resultat::resultat(&[], manques, lu, debut);
         assert_eq!(r.verdict(), "sain");
         assert!(r.constats.iter().any(|c| c.message.contains("Aucun programme")));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// Relecture 0.94, R-9 : rien de lu (dossier d'autostart du compte refusé, services du compte sans systemctl,
+    /// aucun dossier du système), aucune vérification comptée ; une seule source lue, même vide ou absente, en
+    /// compte une.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn rien_de_lu_aucune_verification() {
+        let base = crate::essais::temporaire().join(format!("vanguard-demarrage-r9-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (config, ailleurs, vide) = (base.join("config"), base.join("dotfiles"), base.join("xdg/autostart"));
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::create_dir_all(&ailleurs).unwrap();
+        std::fs::create_dir_all(&vide).unwrap();
+        let debut = (chrono::Utc::now(), std::time::Instant::now());
+        let compte = |systeme: &[std::path::PathBuf], activees: Option<String>| {
+            let (programmes, manques, lu) = systeme::releve_dans(&config, systeme, "Hyprland", activees);
+            assert!(programmes.is_empty());
+            let r = resultat::resultat(&[], manques, lu, debut);
+            (r.couverture.verifies, r.verdict(), r.couverture.non_verifies.len())
+        };
+        std::os::unix::fs::symlink(&ailleurs, config.join("autostart")).unwrap();
+        assert_eq!(compte(&[], None), (0, "non-verifie", 2));
+        // Une source lue : le dossier du système (vide), ou les services du compte (aucun).
+        assert_eq!(compte(std::slice::from_ref(&vide), None), (1, "non-verifie", 2));
+        assert_eq!(compte(&[], Some(String::new())), (1, "non-verifie", 1));
+        // Le dossier du compte absent : lu, rien n'y est.
+        std::fs::remove_file(config.join("autostart")).unwrap();
+        assert_eq!(compte(&[], None), (1, "non-verifie", 1));
         std::fs::remove_dir_all(&base).unwrap();
     }
 
@@ -1579,6 +1618,44 @@ mod essais_changer {
         );
     }
 
+    /// Relecture 0.94, R-9 : pour plusieurs notes de démarrage d'une même annulation, la liste du jour (et donc
+    /// `systemctl --user`) se lit une seule fois, et chaque note est jugée sur elle.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn plusieurs_notes_une_seule_lecture_de_la_liste() {
+        use super::super::Avant;
+        let autostart = crate::essais::temporaire().join("vanguard-demarrage-r9b/config/autostart");
+        let mut h = Historique::default();
+        for nom in ["a", "b", "c"] {
+            h.reglages.insert(
+                format!(
+                    "{PREFIXE}autostart|{}",
+                    autostart.join(format!("{nom}.desktop")).display()
+                ),
+                Avant {
+                    date: String::new(),
+                    valeurs: vec![Some(format!("+[Desktop Entry]\nName={nom}\nExec={nom}\n"))],
+                    ..Avant::default()
+                },
+            );
+        }
+        let rs = notes(&h);
+        assert_eq!(rs.len(), 3);
+        let liste = ListeDuJour::new();
+        let lectures = std::cell::Cell::new(0);
+        let raisons: Vec<_> = rs
+            .iter()
+            .map(|r| {
+                raison_selon(r, &liste, || {
+                    lectures.set(lectures.get() + 1);
+                    Vec::new()
+                })
+            })
+            .collect();
+        assert_eq!(raisons, [None, None, None]);
+        assert_eq!(lectures.get(), 1);
+    }
+
     /// Correction n° 2 de la 0.94, D-1 : Vanguard a noté une entrée d'autostart ; elle se lance de nouveau, réécrite
     /// hors de lui en plus de 64 Kio (ou pas en UTF-8). Le relevé ne la lit pas (il la dit pas lue) : elle n'est ni
     /// offerte à remettre, ni remise par-dessus (`--remettre`, la liste, « Tout remettre comme avant »).
@@ -1605,7 +1682,7 @@ mod essais_changer {
                     ..Avant::default()
                 },
             );
-            let (programmes, manques) =
+            let (programmes, manques, _) =
                 systeme::releve_dans(&base.join("config"), &[], "Hyprland", Some(String::new()));
             assert!(programmes.is_empty(), "{fichier} lue");
             assert_eq!(manques.len(), 1, "{fichier} : {manques:?}");
@@ -1617,7 +1694,7 @@ mod essais_changer {
             assert_eq!(std::fs::read(&p).unwrap(), contenu, "{fichier}");
             std::fs::remove_file(&p).unwrap();
             // Absente : offerte et remise, comme avant.
-            let (programmes, manques) =
+            let (programmes, manques, _) =
                 systeme::releve_dans(&base.join("config"), &[], "Hyprland", Some(String::new()));
             assert!(manques.is_empty(), "{manques:?}");
             assert_eq!(remise_refusee(&r, &programmes), None);

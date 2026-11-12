@@ -1320,8 +1320,10 @@ pub fn au_demarrage() -> Vec<Programme> {
 /// `au_demarrage`, avec ce qui n'a pas pu être lu : un dossier d'autostart qui existe mais ne se liste pas ou que la
 /// garde refuse, une entrée lien, tube ou trop grosse, les services du compte quand systemctl --user ne répond pas
 /// (pas de session systemd). La liste à cocher du terminal les dit sous son titre, jamais « aucun programme » ;
-/// `demarrage --json` ne compte pas une liste incomplète comme lue.
-pub fn releve_demarrage() -> (Vec<Programme>, Vec<String>) {
+/// `demarrage --json` ne compte pas une liste incomplète comme lue. Le troisième membre : au moins une source
+/// (dossier d'autostart du compte ou du système, services du compte) a été lue, même vide ; faux, rien ne l'a été, et
+/// `demarrage --json` ne compte aucune vérification (relecture 0.94, R-9).
+pub fn releve_demarrage() -> (Vec<Programme>, Vec<String>, bool) {
     let maison = crate::socle::maison();
     let config = config_du_compte();
     let bureau = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
@@ -1403,7 +1405,7 @@ pub(super) fn releve_dans(
     systeme: &[PathBuf],
     bureau: &str,
     activees: Option<String>,
-) -> (Vec<Programme>, Vec<String>) {
+) -> (Vec<Programme>, Vec<String>, bool) {
     let unites: Vec<PathBuf> = UNITES_DU_SYSTEME.iter().map(PathBuf::from).collect();
     let ordre = std::iter::once(config.join("systemd/user"))
         .chain(unites.iter().cloned())
@@ -1425,21 +1427,25 @@ fn releve_selon(
     activees: Option<String>,
     ordre: Result<Vec<PathBuf>, crate::machine::temoins::Refus>,
     unites_systeme: &[PathBuf],
-) -> (Vec<Programme>, Vec<String>) {
+) -> (Vec<Programme>, Vec<String>, bool) {
     let mut manques = Vec::new();
-    for d in std::iter::once(config.join("autostart")).chain(systeme.iter().cloned()) {
-        if let Err(e) = std::fs::read_dir(&d)
-            && e.kind() != std::io::ErrorKind::NotFound
-        {
-            manques.push(trf!(
+    let compte = config.join("autostart");
+    // Une source lue, même vide ou absente : quelque chose a été vérifié (relecture 0.94, R-9). Le dossier du compte
+    // que la garde refuse (lien, autre compte, hors du dossier personnel) n'a rien donné à lire.
+    let mut lu = false;
+    for d in std::iter::once(compte.clone()).chain(systeme.iter().cloned()) {
+        match std::fs::read_dir(&d) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => manques.push(trf!(
                 "dossier de démarrage illisible ({}) : {}",
                 "startup folder unreadable ({}): {}",
                 e,
                 court(&d)
-            ));
+            )),
+            _ if d == compte => lu |= sous_maison::juger_le_dossier(&compte).is_ok(),
+            _ => lu = true,
         }
     }
-    let (mut l, pas_lues) = autostart(&config.join("autostart"), systeme, bureau);
+    let (mut l, pas_lues) = autostart(&compte, systeme, bureau);
     manques.extend(pas_lues);
     let dossier = config.join("systemd/user");
     let Some(activees) = activees else {
@@ -1450,7 +1456,7 @@ fn releve_selon(
             )
             .to_string(),
         );
-        return (l, manques);
+        return (l, manques, lu);
     };
     // Sans la liste de systemd (dossier de la session inconnu), seul le dossier du compte se lit : tout autre service
     // est dit, et le manque aussi. Le dossier du compte y est toujours, à sa place ou devant.
@@ -1567,7 +1573,7 @@ fn releve_selon(
             },
         });
     }
-    (l, manques)
+    (l, manques, true)
 }
 
 /// Les entrées d'autostart : chaque fichier .desktop du compte, puis celles du système au nom qu'il n'a pas et qui se
@@ -3024,7 +3030,7 @@ mod tests {
         assert!(manques.iter().any(|m| m.contains("charge")), "{manques:?}");
         assert!(manques.iter().any(|m| m.contains("autre")), "{manques:?}");
         // Tout le relevé : jamais « aucun programme » sans rien dire.
-        let (l, manques) = releve_dans(&base, std::slice::from_ref(&systeme), "Hyprland", Some(String::new()));
+        let (l, manques, _) = releve_dans(&base, std::slice::from_ref(&systeme), "Hyprland", Some(String::new()));
         assert!(l.is_empty() && manques.len() == 2, "{manques:?}");
         std::fs::remove_dir_all(&base).unwrap();
     }
@@ -3054,7 +3060,7 @@ mod tests {
         assert_eq!(services_actives(&r(Some(1), "x.service enabled enabled", "")), None);
         assert_eq!(services_actives(&r(None, "", "")), None);
         let base = dossier_jetable("systemctl");
-        let (l, manques) = releve_dans(&base, &[], "Hyprland", None);
+        let (l, manques, _) = releve_dans(&base, &[], "Hyprland", None);
         assert!(l.is_empty());
         assert!(manques.iter().any(|m| m.contains("systemctl")), "{manques:?}");
         std::fs::remove_dir_all(&base).unwrap();
@@ -3084,7 +3090,7 @@ mod tests {
         .unwrap();
         let activees =
             "synchro.service enabled enabled\nnote.service enabled enabled\npipewire.service enabled enabled";
-        let (l, manques) = releve_selon(
+        let (l, manques, _) = releve_selon(
             &base,
             &[],
             "Hyprland",
@@ -3116,7 +3122,7 @@ mod tests {
         std::fs::write(unites.join("latin.service"), b"[Service]\nExecStart=/usr/bin/caf\xe9\n").unwrap();
         std::fs::write(unites.join("sain.service"), "[Service]\nExecStart=/usr/bin/sain\n").unwrap();
         let activees = "gros.service enabled enabled\nlatin.service enabled enabled\nsain.service enabled enabled";
-        let (l, manques) = releve_dans(&base, &[], "Hyprland", Some(activees.to_string()));
+        let (l, manques, _) = releve_dans(&base, &[], "Hyprland", Some(activees.to_string()));
         let noms: Vec<&str> = l.iter().map(|p| p.nom.as_str()).collect();
         assert_eq!(noms, ["sain"], "{manques:?}");
         for u in ["gros.service", "latin.service"] {
@@ -3191,13 +3197,13 @@ mod tests {
         unite(&du_systeme, "pipewire.service");
         unite(&du_systeme, "wireplumber.service");
         unite(&apres, "wireplumber.service");
-        let (l, manques) = releve(
+        let (l, manques, _) = releve(
             "pipewire.service enabled enabled\nwireplumber.service enabled enabled",
             ordre(),
         );
         assert!(l.is_empty() && manques.is_empty(), "{manques:?}");
         // Le dossier de données du compte passe avant le système dans la vraie liste : la sienne tourne.
-        let (l, manques) = releve(
+        let (l, manques, _) = releve(
             "pipewire.service enabled enabled",
             Ok(vec![unites.clone(), donnees.clone(), du_systeme.clone()]),
         );
@@ -3206,7 +3212,7 @@ mod tests {
             "rien encore dans les données : {manques:?}"
         );
         unite(&donnees, "pipewire.service");
-        let (l, manques) = releve(
+        let (l, manques, _) = releve(
             "pipewire.service enabled enabled",
             Ok(vec![unites.clone(), donnees.clone(), du_systeme.clone()]),
         );
@@ -3218,11 +3224,11 @@ mod tests {
         );
         // user.control, devant même ~/.config/systemd/user : l'unité lue du compte n'est pas celle qui tourne.
         unite(&unites, "note.service");
-        let (l, manques) = releve("note.service enabled enabled", ordre());
+        let (l, manques, _) = releve("note.service enabled enabled", ordre());
         assert_eq!(l.len(), 1, "témoin : l'unité du compte se lit");
         assert!(manques.is_empty(), "{manques:?}");
         unite(&controle, "note.service");
-        let (l, manques) = releve("note.service enabled enabled", ordre());
+        let (l, manques, _) = releve("note.service enabled enabled", ordre());
         assert!(l.is_empty(), "{:?}", l.iter().map(|p| &p.nom).collect::<Vec<_>>());
         assert!(
             manques.len() == 1 && manques[0].contains("non vérifié") && manques[0].contains("note.service"),
@@ -3233,7 +3239,7 @@ mod tests {
             let c = apres.join(complement);
             std::fs::create_dir_all(&c).unwrap();
             std::fs::write(c.join("x.conf"), "[Service]\nExecStart=\nExecStart=/usr/bin/charge\n").unwrap();
-            let (l, manques) = releve("wireplumber.service enabled enabled", ordre());
+            let (l, manques, _) = releve("wireplumber.service enabled enabled", ordre());
             assert!(l.is_empty());
             assert!(
                 manques.len() == 1 && manques[0].contains("non vérifié") && manques[0].contains(complement),
@@ -3242,7 +3248,7 @@ mod tests {
             std::fs::remove_dir_all(&c).unwrap();
         }
         // Sans la liste de systemd : le manque est dit, et une unité du système ne passe plus pour sûre.
-        let (l, manques) = releve(
+        let (l, manques, _) = releve(
             "pipewire.service enabled enabled",
             Err(crate::machine::temoins::Refus("session inconnue".to_string())),
         );
@@ -3280,7 +3286,7 @@ mod tests {
         .unwrap();
         let activees = "synchro.service enabled enabled\npipewire.service enabled enabled";
         let systeme = std::slice::from_ref(&du_systeme);
-        let (l, manques) = releve_selon(
+        let (l, manques, _) = releve_selon(
             &config,
             &[],
             "Hyprland",
@@ -3306,7 +3312,7 @@ mod tests {
             crate::essais::saute("dossier fermé traversable quand même ici, root ou espace de noms");
         } else {
             let activees = "note.service enabled enabled\npipewire.service enabled enabled";
-            let (l, manques) = releve_selon(
+            let (l, manques, _) = releve_selon(
                 &config,
                 &[],
                 "Hyprland",
@@ -3320,7 +3326,7 @@ mod tests {
         }
         std::fs::set_permissions(config.join("systemd/user"), std::fs::Permissions::from_mode(0o700)).unwrap();
         // Le chemin fixe du système : une unité au nom inventé n'y est pas, elle est dite.
-        let (_, manques) = releve_dans(
+        let (_, manques, _) = releve_dans(
             &config,
             &[],
             "Hyprland",

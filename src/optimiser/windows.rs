@@ -756,8 +756,9 @@ pub fn au_demarrage() -> Vec<Programme> {
 
 /// `au_demarrage`, avec ce qui n'a pas pu être lu : une clé Run qui existe mais ne s'ouvre pas, un dossier Démarrage
 /// qui ne se liste pas, une variable d'environnement absente (dossier introuvable). La liste à cocher n'en a pas
-/// besoin ; `demarrage --json`, lui, ne compte pas une liste incomplète comme lue.
-pub fn releve_demarrage() -> (Vec<Programme>, Vec<String>) {
+/// besoin ; `demarrage --json`, lui, ne compte pas une liste incomplète comme lue. Le troisième membre : au moins une
+/// clé Run ou un dossier Démarrage a été lu, même vide ou absent ; faux, rien ne l'a été (relecture 0.94, R-9).
+pub fn releve_demarrage() -> (Vec<Programme>, Vec<String>, bool) {
     const RUN: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
     const RUN32: &str = r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run";
     // Une seule heure pour tout l'écran : la valeur écrite pour désactiver, comme le Gestionnaire des tâches.
@@ -776,11 +777,15 @@ pub fn releve_demarrage() -> (Vec<Programme>, Vec<String>) {
     };
     let mut l = Vec::new();
     let mut manques = Vec::new();
+    let mut lu = false;
     for (machine, chemin, liste) in [(false, RUN, "Run"), (true, RUN, "Run"), (true, RUN32, "Run32")] {
         let cle = match ruche(machine).open_subkey_with_flags(chemin, KEY_READ) {
             Ok(cle) => cle,
             // Une clé absente n'a simplement rien à lancer.
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                lu = true;
+                continue;
+            }
             Err(e) => {
                 manques.push(trf!(
                     "clé du registre illisible ({}) : {}",
@@ -791,6 +796,7 @@ pub fn releve_demarrage() -> (Vec<Programme>, Vec<String>) {
                 continue;
             }
         };
+        lu = true;
         let notes = etats(machine, liste);
         for (nom, valeur) in cle.enum_values().flatten() {
             l.push(Programme {
@@ -824,7 +830,10 @@ pub fn releve_demarrage() -> (Vec<Programme>, Vec<String>) {
         let chemin = std::path::PathBuf::from(base).join(dossier);
         let entrees = match std::fs::read_dir(&chemin) {
             Ok(e) => e,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                lu = true;
+                continue;
+            }
             Err(e) => {
                 manques.push(trf!(
                     "dossier Démarrage illisible ({}) : {}",
@@ -835,6 +844,7 @@ pub fn releve_demarrage() -> (Vec<Programme>, Vec<String>) {
                 continue;
             }
         };
+        lu = true;
         for f in entrees.flatten() {
             let fichier = f.file_name().to_string_lossy().into_owned();
             if fichier.eq_ignore_ascii_case("desktop.ini") || !f.path().is_file() {
@@ -855,7 +865,7 @@ pub fn releve_demarrage() -> (Vec<Programme>, Vec<String>) {
             });
         }
     }
-    (l, manques)
+    (l, manques, lu)
 }
 
 /// Applique des lots de changements (un lot par réglage) et dit lesquels ont réussi, puis chaque groupe de `en_plus`
