@@ -2974,6 +2974,9 @@ struct Codes {
     /// La sauvegarde reconnue, mais un complément que le compte peut écrire s'y ajoute (`complements_du_compte`) : la
     /// forme exacte n'est plus acceptée (D-1 : il changerait HOME, donc le ~/.popt que lit rsync).
     sauvegarde_completee: bool,
+    /// La sauvegarde reconnue, mais un fichier de variables du gestionnaire de systemd du compte nomme HOME ou une
+    /// variable que lisent rsync, findmnt ou le chargeur, ou ne se lit pas (`environnement_change_la_sauvegarde`, F-1).
+    sauvegarde_environnement: bool,
 }
 
 impl Codes {
@@ -2986,6 +2989,7 @@ impl Codes {
             variables: std::collections::BTreeMap::new(),
             sauvegarde: None,
             sauvegarde_completee: false,
+            sauvegarde_environnement: false,
         }
     }
 }
@@ -3685,6 +3689,150 @@ fn complements_du_compte(r: &Releveur, nom: &str) -> bool {
             }
         })
     })
+}
+
+/// Une variable qui change ce que lit ou lance la sauvegarde de Vanguard, posée à son gestionnaire (F-1) : HOME (rsync
+/// lit le ~/.popt de ce dossier-là), celles que lisent rsync, popt, findmnt et ses bibliothèques (libmount, libblkid,
+/// libsmartcols), libcrypto (que rsync charge), et le chargeur de programmes (LD_*, GLIBC_TUNABLES…).
+fn variable_de_la_sauvegarde(nom: &str) -> bool {
+    const DEBUTS: [&str; 8] = [
+        "LD_",
+        "RSYNC_",
+        "POPT",
+        "BLKID_",
+        "LIBBLKID_",
+        "LIBMOUNT_",
+        "LIBSMARTCOLS_",
+        "OPENSSL_",
+    ];
+    ["HOME", "GLIBC_TUNABLES", "LOCPATH", "GCONV_PATH"].contains(&nom) || DEBUTS.iter().any(|d| nom.starts_with(d))
+}
+
+/// Le texte d'un fichier de variables nomme une `variable_de_la_sauvegarde` ailleurs qu'en la lisant (« $HOME »,
+/// « ${HOME} », « @{HOME} ») et hors d'une ligne de commentaire : l'écrire, de quelque forme que ce soit (« HOME=… »,
+/// « HOME = … », « export HOME… », « HOME OVERRIDE=… » de pam_env, « DefaultEnvironment="HOME=…" »). Le texte tel
+/// qu'écrit, ses lignes continuées par « \ » jointes, et chacun décodé (« \x4d ») : un nom coupé ou échappé se
+/// voit aussi. Plus large que ce que chaque lecteur accepte : un faux positif lève, il ne tait jamais.
+fn nomme_une_variable_de_la_sauvegarde(texte: &str) -> bool {
+    let jointe = texte.replace("\\\n", "");
+    [texte.to_string(), decodee(texte), decodee(&jointe), jointe]
+        .iter()
+        .flat_map(|t| t.lines().map(str::to_string).collect::<Vec<_>>())
+        .filter(|l| !l.trim_start().starts_with(['#', ';']))
+        .any(|l| {
+            let octets = l.as_bytes();
+            let mot = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+            let mut i = 0usize;
+            while i < octets.len() {
+                if !octets.get(i).copied().is_some_and(mot) {
+                    i = i.saturating_add(1);
+                    continue;
+                }
+                let debut = i;
+                while octets.get(i).copied().is_some_and(mot) {
+                    i = i.saturating_add(1);
+                }
+                let avant = debut.checked_sub(1).and_then(|a| octets.get(a)).copied();
+                let avant2 = debut.checked_sub(2).and_then(|a| octets.get(a)).copied();
+                let lue = avant == Some(b'$') || (avant == Some(b'{') && matches!(avant2, Some(b'$' | b'@')));
+                if !lue && l.get(debut..i).is_some_and(variable_de_la_sauvegarde) {
+                    return true;
+                }
+            }
+            false
+        })
+}
+
+/// F-1 (relecture 0.94) : un fichier qui pose des variables au gestionnaire de systemd du compte, donc à la sauvegarde
+/// de Vanguard, nomme une `variable_de_la_sauvegarde` ou ne se lit pas en entier. Ceux du compte (environment.d,
+/// user.conf et user.conf.d, ~/.pam_environment, ~/.config/uwsm/env*, et ceux d'un XDG_CONFIG_HOME déplacé), et ceux du
+/// système (/etc/environment, pam_env.conf, environment.d, user.conf et user.conf.d) qui ne sont pas à root seul
+/// (`de_root_seul`). Un fichier masqué (lien vers /dev/null) ne compte pas. Un dossier qui ne se lit pas, ou un
+/// fichier qui n'est pas ordinaire, lève : non vérifié, jamais tu. Pas lus : les profils des shells (que uwsm lit
+/// aussi) et l'environnement posé en cours de session (`systemctl --user set-environment`), qui ne laissent pas de
+/// fichier.
+fn environnement_change_la_sauvegarde(r: &Releveur) -> bool {
+    let s = |c: &str| r.sous(Path::new(c));
+    let mut fichiers: Vec<(std::path::PathBuf, bool)> = Vec::new();
+    let mut illisible = false;
+    // Les fichiers d'un dossier : ceux en « .conf », ou ceux de uwsm (« env », « env-<bureau> »).
+    let mut dossier =
+        |d: std::path::PathBuf, du_compte: bool, uwsm: bool, fichiers: &mut Vec<(std::path::PathBuf, bool)>| {
+            match std::fs::symlink_metadata(&d) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+                Err(_) => {
+                    illisible = true;
+                    return;
+                }
+                Ok(_) => {}
+            }
+            let Ok(entrees) = std::fs::read_dir(&d) else {
+                illisible = true;
+                return;
+            };
+            for e in entrees {
+                let Ok(e) = e else {
+                    illisible = true;
+                    return;
+                };
+                let nom = e.file_name().to_string_lossy().into_owned();
+                let pris = if uwsm {
+                    nom == "env" || nom.starts_with("env-")
+                } else {
+                    a_l_extension(&e.path(), "conf")
+                };
+                if pris {
+                    fichiers.push((e.path(), du_compte));
+                }
+            }
+        };
+    let mut configs = vec![r.maison.join(".config")];
+    if let Some(c) = &r.config {
+        configs.push(r.sous(c));
+    }
+    for c in &configs {
+        dossier(c.join("environment.d"), true, false, &mut fichiers);
+        dossier(c.join("systemd/user.conf.d"), true, false, &mut fichiers);
+        dossier(c.join("uwsm"), true, true, &mut fichiers);
+        fichiers.push((c.join("systemd/user.conf"), true));
+    }
+    fichiers.push((r.maison.join(".pam_environment"), true));
+    for d in [
+        "/etc/environment.d",
+        "/run/environment.d",
+        "/usr/local/lib/environment.d",
+        "/usr/lib/environment.d",
+        "/etc/systemd/user.conf.d",
+        "/run/systemd/user.conf.d",
+        "/usr/local/lib/systemd/user.conf.d",
+        "/usr/lib/systemd/user.conf.d",
+    ] {
+        dossier(s(d), false, false, &mut fichiers);
+    }
+    for f in [
+        "/etc/environment",
+        "/etc/security/pam_env.conf",
+        "/etc/systemd/user.conf",
+        "/run/systemd/user.conf",
+        "/usr/local/lib/systemd/user.conf",
+        "/usr/lib/systemd/user.conf",
+    ] {
+        fichiers.push((s(f), false));
+    }
+    illisible
+        || fichiers.iter().any(|(f, du_compte)| {
+            if std::fs::read_link(f).is_ok_and(|v| v == Path::new("/dev/null")) {
+                return false;
+            }
+            if !du_compte && de_root_seul(f) {
+                return false;
+            }
+            match temoins::lire_borne(f, AJOUT_MAX) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+                Err(_) => true,
+                Ok(lu) => !lu.entier || nomme_une_variable_de_la_sauvegarde(&String::from_utf8_lossy(&lu.octets)),
+            }
+        })
 }
 
 /// Un fichier d'ajout, ou l'unité d'un ajout : son état, une fois ses directives vérifiées, et son texte (vide pour
@@ -4680,6 +4828,7 @@ fn juger_demarrage(demarrage: &[std::path::PathBuf], h: &Path, t: &mut Lancement
                     variables: variables_fusionnees(f, &lu.texte, &base, &t.r),
                     sauvegarde_completee: sauvegarde.is_some()
                         && complements_du_compte(&t.r, crate::sauvegarde::SERVICE),
+                    sauvegarde_environnement: sauvegarde.is_some() && environnement_change_la_sauvegarde(&t.r),
                     sauvegarde,
                     ..base
                 })
@@ -8196,6 +8345,158 @@ mod tests {
         assert!(
             faux.is_empty(),
             "la forme exacte ne se tait que sans réglages de popt ni complément : {faux:#?}"
+        );
+    }
+
+    /// La sauvegarde exacte de Vanguard, posée dans une maison d'essai avec un faux rsync et un faux findmnt : la
+    /// maison et le texte du service.
+    fn sauvegarde_d_essai(nom: &str) -> (Maison, String) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let m = Maison::nouvelle(nom);
+        for p in ["rsync", "findmnt"] {
+            let f = m.racine.join("usr/bin").join(p);
+            std::fs::write(&f, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::create_dir_all(m.chemin("Documents")).unwrap();
+        std::fs::create_dir_all(m.racine.join("run/media/alice/Mon disque/Sauvegarde-Vanguard/poste")).unwrap();
+        let (timer, service) = crate::sauvegarde::unites(
+            Path::new("/usr/bin/rsync"),
+            Some(Path::new("/usr/bin/findmnt")),
+            Some("1234-ABCD"),
+            Path::new("/run/media/alice/Mon disque"),
+            Path::new("/run/media/alice/Mon disque/Sauvegarde-Vanguard/poste"),
+            &[std::path::PathBuf::from("/home/alice/Documents")],
+            false,
+        )
+        .unwrap();
+        m.ecrire(&format!(".config/systemd/user/{}", crate::sauvegarde::TIMER), &timer);
+        m.ecrire(
+            &format!(".config/systemd/user/{}", crate::sauvegarde::SERVICE),
+            &service,
+        );
+        (m, service)
+    }
+
+    /// F-1 (0.95) : HOME, ou une variable que lisent rsync, findmnt ou le chargeur, posée au gestionnaire de systemd
+    /// du compte (environment.d, user.conf et ses compléments, pam_env, uwsm) : la sauvegarde exacte ne se tait plus.
+    /// Un fichier de ces dossiers qui ne se lit pas non plus. HOME seulement lu (« $HOME ») ou un nom qui le contient
+    /// (XDG_DATA_HOME) ne compte pas.
+    #[test]
+    fn la_sauvegarde_exacte_ne_se_tait_pas_si_le_gestionnaire_change_son_environnement() {
+        let cas: &[(&str, &str, &str, bool)] = &[
+            (
+                "témoin",
+                ".config/environment.d/50-x.conf",
+                "PATH=$HOME/.local/bin:${HOME}/bin:$PATH\nXDG_DATA_HOME=/home/alice/.d\n# HOME=/x\n",
+                false,
+            ),
+            ("masqué", ".config/environment.d/50-x.conf", "", false),
+            (
+                "environment.d",
+                ".config/environment.d/50-x.conf",
+                "HOME=/home/alice/.cache/x\n",
+                true,
+            ),
+            (
+                "environment.d, blancs",
+                ".config/environment.d/50-x.conf",
+                "  HOME = /home/alice/.cache/x\n",
+                true,
+            ),
+            (
+                "environment.d, suite",
+                ".config/environment.d/50-x.conf",
+                "A=1\\\nHOME=/x\n",
+                true,
+            ),
+            (
+                "environment.d, LD_",
+                ".config/environment.d/50-x.conf",
+                "LD_LIBRARY_PATH=/opt/x/lib\n",
+                true,
+            ),
+            (
+                "environment.d, BLKID_FILE",
+                ".config/environment.d/50-x.conf",
+                "BLKID_FILE=/home/alice/.cache/b\n",
+                true,
+            ),
+            (
+                "user.conf",
+                ".config/systemd/user.conf",
+                "[Manager]\nDefaultEnvironment=\"A=1\" \"HOME=/x\"\n",
+                true,
+            ),
+            (
+                "user.conf, échappé",
+                ".config/systemd/user.conf",
+                "[Manager]\nDefaultEnvironment=\"HO\\x4dE=/x\"\n",
+                true,
+            ),
+            (
+                "user.conf.d",
+                ".config/systemd/user.conf.d/x.conf",
+                "[Manager]\nManagerEnvironment=LIBMOUNT_FSTAB=/x\n",
+                true,
+            ),
+            ("pam_environment", ".pam_environment", "HOME OVERRIDE=/x\n", true),
+            ("uwsm", ".config/uwsm/env", "export RSYNC_OLD_ARGS=1\n", true),
+            ("uwsm-hyprland", ".config/uwsm/env-hyprland", "export POPT_X=1\n", true),
+            ("système", "/etc/environment.d/60-x.conf", "HOME=/x\n", true),
+            ("/etc/environment", "/etc/environment", "HOME=/x\n", true),
+            ("illisible", ".config/environment.d/50-x.conf", "A=1\n", true),
+            ("dossier illisible", ".config/environment.d/50-x.conf", "A=1\n", true),
+        ];
+        let mut faux = Vec::new();
+        for (i, (nom, chemin, texte, leve)) in cas.iter().enumerate() {
+            let (m, service) = sauvegarde_d_essai(&format!("sauvegarde-gestionnaire-{i}"));
+            let f = if let Some(s) = chemin.strip_prefix('/') {
+                m.racine.join(s)
+            } else {
+                m.chemin(chemin)
+            };
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            if *nom == "masqué" {
+                std::os::unix::fs::symlink("/dev/null", &f).unwrap();
+            } else {
+                std::fs::write(&f, texte).unwrap();
+            }
+            // Sous `unshare -r`, un fichier sans droits se lit quand même : un tube nommé, puis une boucle de liens,
+            // ne se lisent jamais.
+            if *nom == "illisible" {
+                std::fs::remove_file(&f).unwrap();
+                assert!(
+                    std::process::Command::new("/usr/bin/mkfifo")
+                        .arg(&f)
+                        .status()
+                        .unwrap()
+                        .success()
+                );
+            }
+            if *nom == "dossier illisible" {
+                let d = f.parent().unwrap();
+                std::fs::remove_dir_all(d).unwrap();
+                std::os::unix::fs::symlink(d.file_name().unwrap(), d).unwrap();
+            }
+            let c = m.lancements();
+            let execstart = service
+                .lines()
+                .position(|l| l.starts_with("ExecStart="))
+                .map(|n| format!("~/.config/systemd/user/{}:{} : ", crate::sauvegarde::SERVICE, n + 1));
+            let nommee = execstart.is_some_and(|e| c.message.contains(&e));
+            let juste = if *leve {
+                c.probleme == Some(Niveau::Eleve) && nommee && crate::apprentissage::declarable(&c).is_err()
+            } else {
+                c.probleme.is_none()
+            };
+            if !juste {
+                faux.push(format!("{nom} : {:?} {:?}", c.probleme, c.message));
+            }
+        }
+        assert!(
+            faux.is_empty(),
+            "l'environnement du gestionnaire change la sauvegarde : {faux:#?}"
         );
     }
 

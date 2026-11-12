@@ -71,6 +71,11 @@ pub(super) enum Ecart {
     /// « service.d »…) s'y ajoute : il peut changer son environnement (HOME, donc le ~/.popt que lit rsync) ou ce
     /// qu'elle lance (D-1).
     Complement,
+    /// La sauvegarde de Vanguard à sa forme exacte, mais un fichier de variables du gestionnaire de systemd du compte
+    /// (environment.d, user.conf et ses compléments, pam_env, uwsm), que le compte peut écrire, nomme HOME ou une
+    /// variable que lisent rsync, findmnt ou le chargeur de programmes, ou ne se lit pas : HOME changé fait lire à
+    /// rsync un autre ~/.popt (relecture 0.94, F-1).
+    Environnement,
 }
 
 impl Ecart {
@@ -145,6 +150,10 @@ impl Ecart {
             Ecart::Complement => tr!(
                 "sauvegarde de Vanguard changée par un complément du compte (dossier « .service.d ») : il peut changer son environnement (HOME, donc le ~/.popt que lit rsync) ou ce qu'elle lance ; ce n'est plus la forme que Vanguard pose",
                 "Vanguard backup changed by an account drop-in (“.service.d” folder): it can change its environment (HOME, hence the ~/.popt rsync reads) or what it starts; it is no longer the form Vanguard sets up"
+            ),
+            Ecart::Environnement => tr!(
+                "sauvegarde de Vanguard : un fichier de variables de la session du compte (~/.config/environment.d, ~/.config/systemd/user.conf, ~/.pam_environment, ~/.config/uwsm/env…) nomme HOME ou une variable que lisent rsync, findmnt ou le chargeur de programmes (LD_*, RSYNC_*, POPT*, LIBMOUNT_*, BLKID_*…), ou ne se lit pas : il peut changer ce que la sauvegarde lit ou lance (un autre ~/.popt) ; non vérifié, donc pas tu",
+                "Vanguard backup: an account session variable file (~/.config/environment.d, ~/.config/systemd/user.conf, ~/.pam_environment, ~/.config/uwsm/env…) names HOME or a variable read by rsync, findmnt or the program loader (LD_*, RSYNC_*, POPT*, LIBMOUNT_*, BLKID_*…), or cannot be read: it can change what the backup reads or starts (another ~/.popt); not verified, so not kept quiet"
             ),
         }
     }
@@ -1812,6 +1821,9 @@ pub(super) fn exec_systemd_note(
         if let Some(p) = codes.and_then(|c| c.sauvegarde.as_ref()) {
             if codes.is_some_and(|c| c.sauvegarde_completee) {
                 return Err(Ecart::Complement);
+            }
+            if codes.is_some_and(|c| c.sauvegarde_environnement) {
+                return Err(Ecart::Environnement);
             }
             // La forme exacte ne tient que les mots : où rsync écrit se juge sur le disque (C-2).
             if p.rsync == mots {
