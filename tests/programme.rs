@@ -3865,6 +3865,53 @@ mod demarrage_sous_attaque {
         );
     }
 
+    /// Relecture 0.95, H-1. Ubuntu et Fedora donnent un umask 002 : le dossier d'autostart, absent, se créait en
+    /// 0775 au premier retrait d'une entrée du système, puis la garde le refusait (« modifiable par d'autres
+    /// comptes ») ; le retrait échouait et tout restait bloqué. Créé en 0700, le retrait passe et se remet.
+    #[test]
+    fn umask_002_le_premier_retrait_passe() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let b = Banc::nouveau("umask-002");
+        std::fs::remove_dir(&b.autostart).unwrap();
+        let config = b.maison.join("config");
+        std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let systeme = Path::new(&b.systeme).join("autostart");
+        std::fs::create_dir_all(&systeme).unwrap();
+        std::fs::write(
+            systeme.join("panneau.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Panneau\nExec=/opt/panneau/panneau\n",
+        )
+        .unwrap();
+        let (sorte, e) = b.geste("Panneau").expect("Panneau sans bouton");
+        assert_eq!(sorte, "retirer");
+        let programme = env!("CARGO_BIN_EXE_vanguard");
+        let lancer = |args: &[&str]| {
+            let mut tout = vec!["-c", "umask 002 && exec \"$0\" \"$@\"", programme];
+            tout.extend_from_slice(args);
+            vanguard_dans_env(
+                Path::new("/bin/sh"),
+                &b.maison,
+                "fr",
+                &tout,
+                "",
+                180,
+                &[
+                    ("XDG_CONFIG_DIRS", b.systeme.as_str()),
+                    ("VANGUARD_ESSAI_XDG_DEFAUT", b.systeme.as_str()),
+                ],
+            )
+        };
+        let s = lancer(&["demarrage", "--retirer", &e, "--json"]);
+        assert!(s.texte.contains("\"fait\""), "{} {}", s.texte, s.erreurs);
+        let droits = std::fs::metadata(&b.autostart).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(droits, 0o700, "{droits:o}");
+        let (sorte, e2) = b.geste("Panneau").expect("Panneau retiré sans bouton");
+        assert_eq!((sorte.as_str(), e2.as_str()), ("remettre", e.as_str()));
+        let s = lancer(&["demarrage", "--remettre", &e, "--json"]);
+        assert!(s.texte.contains("\"fait\""), "{} {}", s.texte, s.erreurs);
+        assert_eq!(b.geste("Panneau").map(|g| g.0).as_deref(), Some("retirer"));
+    }
+
     /// Relecture 0.95, G-6. Après un changement de XDG_CONFIG_HOME, la note d'un programme retiré ne se rebâtit plus
     /// (son entrée n'est plus sous le dossier d'autostart du compte) : `demarrage --json` le dit en le nommant, au
     /// lieu de le faire disparaître sans un mot ; l'entrée reste retirée, rien n'est écrit.

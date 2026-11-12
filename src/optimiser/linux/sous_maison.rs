@@ -29,6 +29,13 @@ const REGARD: i32 = libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC;
 const LECTURE: i32 = libc::O_RDONLY | libc::O_NONBLOCK | libc::O_NOCTTY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
 /// Le temporaire : neuf, jamais par-dessus un nom déjà là, jamais à travers un lien.
 const TEMPORAIRE: i32 = libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+/// Un dossier que Vanguard vient de créer, ouvert pour fixer ses droits (fchmod ne marche pas sur O_PATH).
+const NEUF: i32 = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+/// Les droits d'un dossier que Vanguard crée (relecture 0.95, H-1) : le compte seul, quel que soit l'umask. Avec
+/// l'umask 002 d'Ubuntu ou de Fedora, `mkdir` donnait 0775, que la garde refusait ensuite pour écrire : le premier
+/// retrait échouait et la fonction restait bloquée. Un dossier d'autostart ne contient rien que d'autres comptes
+/// aient à lire ; 0700 est aussi ce que la garde accepte sans condition.
+const DROITS_DU_NEUF: u32 = 0o700;
 
 /// Le dossier qui contient le fichier visé, ouvert et jugé, avec le nom du fichier et sa forme montrée (« ~/… »,
 /// jamais le chemin du dossier personnel).
@@ -158,8 +165,9 @@ fn juger_dossier(f: &File, ou: &str, pour: Pour) -> Result<(), Echec> {
 }
 
 /// Ouvre les dossiers du chemin, du dossier personnel jusqu'à celui du fichier. `creer` : un dossier manquant est
-/// créé (droits par défaut du compte, comme `create_dir_all`) ; sinon, `None` dit qu'il manque (le fichier n'existe
-/// donc pas). `pour` : ce que la garde des dossiers permet (`juger_dossier`).
+/// créé en 0700 (`DROITS_DU_NEUF`), puis jugé comme les autres ; refusé, il est retiré aussitôt (vide, créé par ce
+/// geste) et la raison le dit. Sinon, `None` dit qu'il manque (le fichier n'existe donc pas). `pour` : ce que la garde
+/// des dossiers permet (`juger_dossier`).
 fn parcourir(chemin: &Path, creer: bool, pour: Pour) -> Result<Option<Dossier>, Echec> {
     let (base, noms) = depart(chemin)?;
     let Some((dernier, milieu)) = noms.split_last() else {
@@ -178,25 +186,37 @@ fn parcourir(chemin: &Path, creer: bool, pour: Pour) -> Result<Option<Dossier>, 
     for nom in milieu {
         ou = suivant(&ou, nom);
         let c = c_nom(nom).map_err(|e| phrase(&e, &ou))?;
-        courant = match ouvrir_a(courant.as_fd(), &c, TRAVERSE, 0) {
-            Ok(f) => f,
+        let (enfant, cree) = match ouvrir_a(courant.as_fd(), &c, TRAVERSE, 0) {
+            Ok(f) => (f, false),
             Err(e) if e.kind() == io::ErrorKind::NotFound && !creer => return Ok(None),
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                match creer_dossier(courant.as_fd(), &c) {
-                    Ok(()) => {}
-                    Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+                let cree = match creer_dossier(courant.as_fd(), &c) {
+                    Ok(()) => true,
+                    // Créé entre-temps par un autre : jugé comme un dossier déjà là, ses droits gardés.
+                    Err(e) if e.kind() == io::ErrorKind::AlreadyExists => false,
                     Err(e) => {
                         return Err(echec(trf!(
                             "{ou} : création impossible ({e})",
                             "{ou}: cannot create ({e})"
                         )));
                     }
+                };
+                let ouvert = if cree {
+                    ouvrir_neuf(courant.as_fd(), &c)
+                } else {
+                    ouvrir_a(courant.as_fd(), &c, TRAVERSE, 0)
+                };
+                match ouvert {
+                    Ok(f) => (f, cree),
+                    Err(e) => return Err(sans_le_neuf(cree, courant.as_fd(), &c, phrase(&e, &ou))),
                 }
-                ouvrir_a(courant.as_fd(), &c, TRAVERSE, 0).map_err(|e| phrase(&e, &ou))?
             }
             Err(e) => return Err(phrase(&e, &ou)),
         };
-        juger_dossier(&courant, &ou, pour)?;
+        if let Err(e) = juger_dossier(&enfant, &ou, pour) {
+            return Err(sans_le_neuf(cree, courant.as_fd(), &c, e));
+        }
+        courant = enfant;
     }
     ou = suivant(&ou, dernier);
     let nom = c_nom(dernier).map_err(|e| phrase(&e, &ou))?;
@@ -292,7 +312,7 @@ pub(super) fn lire(chemin: &Path, max: u64) -> io::Result<String> {
 
 /// Écrit `contenu` à la place de `chemin` : temporaire neuf dans le dossier ouvert, aux droits du fichier remplacé
 /// (campagne 0.94, C-5 : 0600 ne devient pas 0644), forcé sur le disque, puis renommé à sa place dans ce même dossier.
-/// Les dossiers manquants sont créés sous le dossier personnel ; un fichier neuf a les droits de l'umask.
+/// Les dossiers manquants sont créés sous le dossier personnel, en 0700 ; un fichier neuf a les droits de l'umask.
 pub(super) fn ecrire(chemin: &Path, contenu: &[u8]) -> Result<(), Echec> {
     if crate::autotest::lecture_seule::refuse_fichier(chemin) {
         return Err(refus(crate::autotest::lecture_seule::refus().to_string()));
@@ -372,13 +392,54 @@ fn ouvrir_a(dans: BorrowedFd<'_>, nom: &CStr, drapeaux: i32, mode: libc::c_uint)
     Ok(File::from(unsafe { OwnedFd::from_raw_fd(r) }))
 }
 
-/// mkdirat sous `dans`, droits par défaut du compte (0777 moins son umask).
+/// Le dossier `nom` que Vanguard vient de créer sous `dans`, ouvert sans suivre de lien, ses droits remis exactement
+/// à `DROITS_DU_NEUF` sur le descripteur : l'umask ne fait que retirer, un setgid hérité du dossier au-dessus
+/// s'efface.
+fn ouvrir_neuf(dans: BorrowedFd<'_>, nom: &CStr) -> io::Result<File> {
+    let f = ouvrir_a(dans, nom, NEUF, 0)?;
+    f.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(DROITS_DU_NEUF))?;
+    Ok(f)
+}
+
+/// `e`, et si `cree` le dossier `nom` que ce geste vient de créer sous `dans` est retiré (rmdir : seulement vide) ;
+/// la raison dit s'il l'est ou s'il reste.
+fn sans_le_neuf(cree: bool, dans: BorrowedFd<'_>, nom: &CStr, e: Echec) -> Echec {
+    if !cree {
+        return e;
+    }
+    let dit = match retirer_dossier(dans, nom) {
+        Ok(()) => trf!(
+            "ce dossier, créé à l'instant, est retiré",
+            "this folder, just created, is removed"
+        ),
+        Err(r) => trf!(
+            "ce dossier, créé à l'instant, reste : retrait impossible ({r})",
+            "this folder, just created, remains: cannot remove ({r})"
+        ),
+    };
+    e.detail(dit)
+}
+
+/// mkdirat sous `dans`, en `DROITS_DU_NEUF` au plus (l'umask peut encore retirer ; `ouvrir_neuf` remet exactement).
 // FFI de libc : mkdirat sur un descripteur ouvert, avec un nom en C vivant pendant l'appel.
 #[allow(unsafe_code)]
 fn creer_dossier(dans: BorrowedFd<'_>, nom: &CStr) -> io::Result<()> {
     // SAFETY: `nom` est une chaîne C à l'appelant, vivante pendant l'appel ; `dans` est un descripteur ouvert,
     // emprunté pendant l'appel.
-    let r = unsafe { libc::mkdirat(dans.as_raw_fd(), nom.as_ptr(), 0o777) };
+    let r = unsafe { libc::mkdirat(dans.as_raw_fd(), nom.as_ptr(), DROITS_DU_NEUF) };
+    if r != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// unlinkat avec AT_REMOVEDIR : retire le dossier `nom` sous `dans`, seulement s'il est vide (jamais suivi).
+// FFI de libc : unlinkat sur un descripteur ouvert, avec un nom en C vivant pendant l'appel.
+#[allow(unsafe_code)]
+fn retirer_dossier(dans: BorrowedFd<'_>, nom: &CStr) -> io::Result<()> {
+    // SAFETY: `nom` est une chaîne C à l'appelant, vivante pendant l'appel ; `dans` est un descripteur ouvert,
+    // emprunté pendant l'appel.
+    let r = unsafe { libc::unlinkat(dans.as_raw_fd(), nom.as_ptr(), libc::AT_REMOVEDIR) };
     if r != 0 {
         return Err(io::Error::last_os_error());
     }
@@ -452,6 +513,46 @@ mod tests {
             ecrire(&f, b"[Desktop Entry]\nHidden=true\n").unwrap();
             assert_eq!(droits(&f), mode, "{mode:o} devenu {:o}", droits(&f));
         }
+    }
+
+    /// Relecture 0.95, H-1 : un dossier que Vanguard crée (~/.config, ~/.config/autostart) l'est en 0700, quel que
+    /// soit l'umask (002 donnait 0775, refusé ensuite par la garde : le premier retrait échouait et tout restait
+    /// bloqué). Un dossier déjà là garde ses droits.
+    #[test]
+    fn un_dossier_cree_l_est_en_0700() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let d = dossier("cree-0700");
+        std::fs::create_dir_all(d.join("deja")).unwrap();
+        std::fs::set_permissions(d.join("deja"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        ecrire(&d.join(".config/autostart/note.desktop"), b"[Desktop Entry]\n").unwrap();
+        ecrire(&d.join("deja/neuf/note.desktop"), b"[Desktop Entry]\n").unwrap();
+        let droits = |f: &str| std::fs::metadata(d.join(f)).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(droits(".config"), 0o700);
+        assert_eq!(droits(".config/autostart"), 0o700);
+        assert_eq!(droits("deja/neuf"), 0o700);
+        assert_eq!(droits("deja"), 0o755, "un dossier déjà là garde ses droits");
+    }
+
+    /// Relecture 0.95, H-1 : un dossier créé par le geste puis refusé ne reste pas (vide, il est retiré, et la raison
+    /// le dit) ; un dossier qui n'est pas de ce geste n'est jamais retiré.
+    #[test]
+    fn un_dossier_cree_puis_refuse_est_retire() {
+        let d = dossier("neuf-refuse");
+        let la = File::open(&*d).unwrap();
+        std::fs::create_dir(d.join("vide")).unwrap();
+        std::fs::create_dir_all(d.join("plein/x")).unwrap();
+        let vide = c_nom(OsStr::new("vide")).unwrap();
+        let plein = c_nom(OsStr::new("plein")).unwrap();
+        let e = sans_le_neuf(true, la.as_fd(), &vide, refus("~/vide refusé".into())).to_string();
+        assert!(!d.join("vide").exists(), "{e}");
+        assert!(e.contains("~/vide refusé") && e.contains("est retiré"), "{e}");
+        let e = sans_le_neuf(true, la.as_fd(), &plein, refus("~/plein refusé".into())).to_string();
+        assert!(d.join("plein/x").is_dir());
+        assert!(e.contains("reste"), "{e}");
+        std::fs::create_dir(d.join("vide")).unwrap();
+        let e = sans_le_neuf(false, la.as_fd(), &vide, refus("~/vide refusé".into())).to_string();
+        assert!(d.join("vide").is_dir(), "{e}");
+        assert_eq!(e, "~/vide refusé");
     }
 
     #[test]
