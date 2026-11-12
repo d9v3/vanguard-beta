@@ -1413,6 +1413,9 @@ fn les_essais_n_ecrivent_pas_dans_le_dossier_temporaire() {
         ("src/machine/linux/dbus/actions.rs", 1),
         // La liste permise de la détection : TMPDIR parmi les variables qui changent ce qu'un programme lancé lit.
         ("src/machine/linux/persistance/permise.rs", 1),
+        // Le programme : TMPDIR parmi les variables gardées pour un programme du système lancé pour lire (G-1 de la
+        // campagne 0.95), et l'essai qui vérifie qu'elle passe, sans rien écrire.
+        ("src/commande.rs", 3),
         // Des essais qui jugent ce dossier-là, sans y écrire.
         ("src/verifier_cle.rs", 1),
         ("src/protection/distance.rs", 1),

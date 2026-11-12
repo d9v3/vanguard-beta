@@ -516,12 +516,12 @@ fn installer(octets: &[u8], cible: &Path, attendue: Version, essai: Essai) -> Re
     // même fichier, avec ces mêmes octets.
     let ecrite = (|| -> Result<(), String> {
         let _ = std::fs::remove_file(&provisoire);
-        let f = ecrire_provisoire(&provisoire, octets)?;
-        if !meme_contenu(&f, octets)? {
+        let f = ecrire_provisoire(&provisoire, octets).map_err(|e| e.to_string())?;
+        if !meme_contenu(&f, octets).map_err(|e| e.to_string())? {
             return Err(tr!("la copie relue ne correspond pas", "the copy read back does not match").into());
         }
         essai(&chemin_de(&f, &provisoire), attendue)?;
-        if !meme_contenu(&f, octets)? {
+        if !meme_contenu(&f, octets).map_err(|e| e.to_string())? {
             return Err(tr!(
                 "la copie provisoire a changé pendant l'essai (un autre programme) : rien n'est remplacé",
                 "the temporary copy changed during the test (another program): nothing is replaced"
@@ -529,7 +529,15 @@ fn installer(octets: &[u8], cible: &Path, attendue: Version, essai: Essai) -> Re
             .into());
         }
         mettre_en_place(&provisoire, cible).map_err(|e| e.to_string())?;
-        verifier_posee(&f, cible, octets)
+        if posee_est_la_montree(&f, cible, octets).map_err(|e| e.to_string())? {
+            Ok(())
+        } else {
+            Err(tr!(
+                "la copie posée n'est pas celle qui a été montrée (changée pendant la mise à jour par un autre programme) : la mise à jour n'est pas faite, relancez-la",
+                "the installed copy is not the one that was shown (changed during the update by another program): the update is not done, run it again"
+            )
+            .into())
+        }
     })();
     if ecrite.is_err() {
         let _ = std::fs::remove_file(&provisoire);
@@ -556,31 +564,27 @@ fn installer(octets: &[u8], cible: &Path, attendue: Version, essai: Essai) -> Re
 /// écrite, mise sur le disque, ses droits donnés par le descripteur. Sous Linux, rouverte en lecture seule par son
 /// descripteur (`/proc/self/fd`, le même fichier même si le nom a changé) et le descripteur d'écriture fermé : un
 /// programme ouvert en écriture ne se lance pas (ETXTBSY), et l'essai passe par ce descripteur.
-fn ecrire_provisoire(provisoire: &Path, octets: &[u8]) -> Result<std::fs::File, String> {
+fn ecrire_provisoire(provisoire: &Path, octets: &[u8]) -> std::io::Result<std::fs::File> {
     use std::io::Write;
     let mut f = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create_new(true)
-        .open(provisoire)
-        .map_err(|e| e.to_string())?;
-    f.write_all(octets)
-        .and_then(|()| f.sync_all())
-        .map_err(|e| e.to_string())?;
+        .open(provisoire)?;
+    f.write_all(octets).and_then(|()| f.sync_all())?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        f.set_permissions(std::fs::Permissions::from_mode(0o755))
-            .map_err(|e| e.to_string())?;
+        f.set_permissions(std::fs::Permissions::from_mode(0o755))?;
     }
     #[cfg(target_os = "linux")]
     {
         use std::os::fd::AsRawFd;
         let lecture = std::fs::File::open(format!("/proc/self/fd/{}", f.as_raw_fd())).map_err(|e| {
-            trf!(
+            std::io::Error::other(trf!(
                 "copie provisoire pas rouverte par son descripteur (/proc) : {e}",
                 "temporary copy not reopened through its descriptor (/proc): {e}"
-            )
+            ))
         })?;
         drop(f);
         Ok(lecture)
@@ -594,7 +598,7 @@ fn ecrire_provisoire(provisoire: &Path, octets: &[u8]) -> Result<std::fs::File, 
         let mut options = std::fs::OpenOptions::new();
         options.read(true);
         std::os::windows::fs::OpenOptionsExt::share_mode(&mut options, 1 | 4);
-        options.open(provisoire).map_err(|e| e.to_string())
+        options.open(provisoire)
     }
     #[cfg(not(any(target_os = "linux", windows)))]
     Ok(f)
@@ -617,28 +621,21 @@ fn chemin_de(f: &std::fs::File, provisoire: &Path) -> PathBuf {
 }
 
 /// Le fichier ouvert `f` contient-il exactement `octets` ? Relu depuis le début, jamais plus d'un octet de trop.
-fn meme_contenu(mut f: &std::fs::File, octets: &[u8]) -> Result<bool, String> {
+fn meme_contenu(mut f: &std::fs::File, octets: &[u8]) -> std::io::Result<bool> {
     use std::io::{Read, Seek};
-    f.seek(std::io::SeekFrom::Start(0)).map_err(|e| e.to_string())?;
+    f.seek(std::io::SeekFrom::Start(0))?;
     let mut lu = Vec::with_capacity(octets.len());
     let borne = u64::try_from(octets.len()).unwrap_or(u64::MAX).saturating_add(1);
-    f.take(borne).read_to_end(&mut lu).map_err(|e| e.to_string())?;
+    f.take(borne).read_to_end(&mut lu)?;
     Ok(lu == octets)
 }
 
 /// Après le renommage : `cible` est-elle bien la copie écrite (`f`) avec les octets montrés ? Sous Unix, ouverte
 /// sans suivre de lien, le même fichier (appareil et inode) que `f`, puis relue. Sous Windows, relue par une poignée
 /// qui refuse l'écriture et la suppression aux autres le temps de la lecture (l'identité du fichier n'y est pas
-/// comparée : il faudrait l'API de Windows ; les octets, eux, le sont). Sinon, un échec qui le dit : jamais « fait »
-/// sur un autre fichier.
-fn verifier_posee(f: &std::fs::File, cible: &Path, octets: &[u8]) -> Result<(), String> {
-    let changee = || -> String {
-        tr!(
-            "la copie posée n'est pas celle qui a été montrée (changée pendant la mise à jour par un autre programme) : la mise à jour n'est pas faite, relancez-la",
-            "the installed copy is not the one that was shown (changed during the update by another program): the update is not done, run it again"
-        )
-        .into()
-    };
+/// comparée : il faudrait l'API de Windows ; les octets, eux, le sont). Faux si elle ne s'ouvre pas ainsi, ou n'est
+/// pas ce fichier avec ces octets : jamais « fait » sur un autre fichier.
+fn posee_est_la_montree(f: &std::fs::File, cible: &Path, octets: &[u8]) -> std::io::Result<bool> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -646,25 +643,20 @@ fn verifier_posee(f: &std::fs::File, cible: &Path, octets: &[u8]) -> Result<(), 
     // FILE_SHARE_READ seul.
     #[cfg(windows)]
     std::os::windows::fs::OpenOptionsExt::share_mode(&mut options, 1);
-    let posee = options.open(cible).map_err(|_| changee())?;
+    let Ok(posee) = options.open(cible) else {
+        return Ok(false);
+    };
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        let (a, b) = (
-            f.metadata().map_err(|e| e.to_string())?,
-            posee.metadata().map_err(|e| e.to_string())?,
-        );
+        let (a, b) = (f.metadata()?, posee.metadata()?);
         if !b.is_file() || a.dev() != b.dev() || a.ino() != b.ino() {
-            return Err(changee());
+            return Ok(false);
         }
     }
     #[cfg(not(unix))]
     let _ = f;
-    if meme_contenu(&posee, octets)? {
-        Ok(())
-    } else {
-        Err(changee())
-    }
+    meme_contenu(&posee, octets)
 }
 
 /// Lance la nouvelle copie, encore à côté, avec « --version » : la surveillance, l'entretien et le veilleur la
