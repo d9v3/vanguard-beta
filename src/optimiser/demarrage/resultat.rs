@@ -40,6 +40,9 @@ pub(super) enum Statut {
     SeLance,
     /// Retiré par Vanguard, remis d'un clic.
     Retire,
+    /// Retiré par Vanguard, sous un dossier où il n'écrit plus : pas remis d'ici, avec la raison (relecture 0.95,
+    /// H-5).
+    RetireBloque(&'static str),
 }
 
 /// Un programme de la liste, tel que l'écran le montre. `identite` : ce qui le désigne dans les notes de Vanguard
@@ -196,7 +199,7 @@ fn geste(e: &Entree) -> Option<GesteEcrit> {
     let sorte = match e.statut {
         Statut::SeLance => "retirer",
         Statut::Retire => "remettre",
-        Statut::Garder(_) | Statut::PareFeu => return None,
+        Statut::Garder(_) | Statut::PareFeu | Statut::RetireBloque(_) => return None,
     };
     Some(GesteEcrit {
         sorte: sorte.to_string(),
@@ -219,6 +222,11 @@ fn constat(e: &Entree) -> Constat {
         .to_string(),
         Statut::SeLance => tr!("se lance", "starts").to_string(),
         Statut::Retire => tr!("retiré par Vanguard", "removed by Vanguard").to_string(),
+        Statut::RetireBloque(raison) => trf!(
+            "retiré par Vanguard, pas remis d'ici : {}",
+            "removed by Vanguard, not put back from here: {}",
+            raison
+        ),
     };
     let mut texte = format!(
         "{} — {statut} · {}",

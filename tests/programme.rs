@@ -3956,6 +3956,56 @@ mod demarrage_sous_attaque {
         assert!(dit.contains("Panneau"), "{dit}");
     }
 
+    /// Relecture 0.95, H-5. Une entrée retirée par Vanguard, puis son dossier passé en 0775 : la liste ne promet plus
+    /// « remettre » (le geste serait refusé) ; elle dit l'entrée retirée et pourquoi elle ne se remet pas d'ici, avec
+    /// le remède. `--remettre` reste refusé, avec la même raison, et rien n'est écrit.
+    #[test]
+    fn pas_de_remettre_sous_un_dossier_refuse() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let b = Banc::nouveau("remettre-0775");
+        let (radio, _) = b.poser("radio.desktop", "Radio", "/opt/radio/radio");
+        let (_, e) = b.geste("Radio").unwrap();
+        assert_eq!(b.changer("--retirer", &e).1, "fait");
+        assert_eq!(b.geste("Radio").map(|g| g.0).as_deref(), Some("remettre"));
+        let retiree = lu(&radio);
+        std::fs::set_permissions(&b.autostart, std::fs::Permissions::from_mode(0o775)).unwrap();
+        let (json, brut) = b.liste();
+        assert!(gestes(&json).is_empty(), "un geste proposé : {brut}");
+        let ligne = json["constats"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(serde_json::Value::to_string)
+            .find(|c| c.contains("Radio —"))
+            .unwrap_or_else(|| panic!("Radio pas montré : {brut}"));
+        assert!(
+            ligne.contains("retiré par Vanguard") && ligne.contains("modifiable par d'autres comptes"),
+            "{ligne}"
+        );
+        assert!(brut.contains("chmod go-w ~/config/autostart"), "{brut}");
+        let (_, issue, raison) = b.changer("--remettre", &e);
+        assert_ne!(issue, "fait", "{raison}");
+        assert!(raison.contains("chmod go-w ~/config/autostart"), "{issue} : {raison}");
+        assert_eq!(lu(&radio), retiree);
+        // La liste à cocher : case vide (il ne se lance pas), recochée elle est dite et rien n'est tenté.
+        let s = vanguard_dans_env(
+            Path::new(env!("CARGO_BIN_EXE_vanguard")),
+            &b.maison,
+            "fr",
+            &["demarrage"],
+            "1\n\n",
+            180,
+            &[
+                ("XDG_CONFIG_DIRS", b.systeme.as_str()),
+                ("VANGUARD_ESSAI_XDG_DEFAUT", b.systeme.as_str()),
+            ],
+        );
+        let t = sans_couleurs(&s.texte);
+        assert!(t.contains("[ ] Radio") && t.contains("pas remis d'ici"), "{t}");
+        assert!(t.contains("Radio : pas remis") && t.contains("Rien à changer"), "{t}");
+        assert_eq!(lu(&radio), retiree);
+    }
+
     /// Relecture 0.95, G-6. Après un changement de XDG_CONFIG_HOME, la note d'un programme retiré ne se rebâtit plus
     /// (son entrée n'est plus sous le dossier d'autostart du compte) : `demarrage --json` le dit en le nommant, au
     /// lieu de le faire disparaître sans un mot ; l'entrée reste retirée, rien n'est écrit.

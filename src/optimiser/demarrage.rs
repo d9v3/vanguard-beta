@@ -555,6 +555,9 @@ fn lignes(programmes: Vec<Programme>, h: &Historique) -> Vec<Ligne> {
     let mut l: Vec<Ligne> = Vec::new();
     for p in programmes {
         let garde = match p.actif {
+            // Retirée sous un dossier où Vanguard n'écrit plus : « remettre » serait refusé, la ligne le dit au lieu
+            // de le promettre (relecture 0.95, H-5).
+            false if matches!(p.ecriture, Ecriture::Refusee(_)) => Garde::Garder(ecriture_refusee()),
             false => Garde::Ordinaire,
             // Masquée, elle ne se relirait plus (D-2) : montrée, jamais proposée.
             true if !p.changement.cible_relisible() => Garde::Garder(tr!(
@@ -1103,6 +1106,7 @@ pub fn json() {
             machine: x.machine,
             statut: match (x.garder(), x.actif) {
                 (Some(raison), true) => resultat::Statut::Garder(raison),
+                (Some(raison), false) => resultat::Statut::RetireBloque(raison),
                 (None, true) if x.pare_feu() => resultat::Statut::PareFeu,
                 (_, true) => resultat::Statut::SeLance,
                 (_, false) => resultat::Statut::Retire,
@@ -1144,10 +1148,18 @@ pub fn menu() {
         .iter()
         .map(|x| {
             let precision = match (x.garder(), x.actif) {
-                (Some(raison), _) => raison,
-                (None, true) if x.pare_feu() => tr!("pare-feu : retrait = baisse", "firewall: removing = lowering"),
-                (None, true) => tr!("se lance", "starts"),
-                (None, false) => tr!("retiré par Vanguard", "removed by Vanguard"),
+                (Some(raison), true) => raison.to_string(),
+                // La raison entière s'affiche si la case est recochée ; ici, de quoi rester sur une ligne.
+                (Some(_), false) => tr!(
+                    "retiré par Vanguard, pas remis d'ici : voir la note sur le dossier",
+                    "removed by Vanguard, not put back from here: see the folder note"
+                )
+                .to_string(),
+                (None, true) if x.pare_feu() => {
+                    tr!("pare-feu : retrait = baisse", "firewall: removing = lowering").to_string()
+                }
+                (None, true) => tr!("se lance", "starts").to_string(),
+                (None, false) => tr!("retiré par Vanguard", "removed by Vanguard").to_string(),
             };
             let mut detail = x.commande.chars().take(200).collect::<String>();
             if x.machine {
@@ -1158,11 +1170,12 @@ pub fn menu() {
             }
             Case {
                 texte: x.nom.clone(),
-                precision: precision.to_string(),
+                precision,
                 detail,
                 cochee: x.actif,
                 recommandee: false,
-                // À garder : montré, jamais proposé.
+                // À garder : montré, jamais proposé. Retiré sous un dossier refusé : case vide (il ne se lance
+                // pas), recochée elle est dite et ignorée plus bas (H-5) ; « fixe » la montrerait « [✔] ».
                 fixe: x.garder().is_some() && x.actif,
             }
         })
@@ -1196,13 +1209,31 @@ pub fn menu() {
             .collect()
     };
     let a_retirer = choisis(|x, v| x.actif && !v && x.garder().is_none());
-    let a_remettre = choisis(|x, v| !x.actif && v && x.par_vanguard);
+    let a_remettre = choisis(|x, v| !x.actif && v && x.par_vanguard && x.garder().is_none());
     let baisses: Vec<&str> = l
         .iter()
         .zip(&voulu)
         .filter(|(x, v)| x.actif && !**v && x.garder().is_none() && x.pare_feu())
         .map(|(x, _)| x.nom.as_str())
         .collect();
+    // Recochée sous un dossier où Vanguard n'écrit plus : dite, jamais tentée (relecture 0.95, H-5).
+    for (x, _) in l
+        .iter()
+        .zip(&voulu)
+        .filter(|(x, v)| !x.actif && **v && x.garder().is_some())
+    {
+        afficher_aligne(
+            "  ✖ ",
+            &trf!(
+                "{} : pas remis — {}",
+                "{}: not put back — {}",
+                x.nom,
+                x.garder().unwrap_or_default()
+            ),
+            4,
+            "",
+        );
+    }
     if a_retirer.is_empty() && a_remettre.is_empty() {
         trp!("  {GRIS}Rien à changer.{RESET}", "  {GRIS}Nothing to change.{RESET}");
     } else if !liste_admise(baisses.len(), a_retirer.len().saturating_add(a_remettre.len())) {
