@@ -464,9 +464,11 @@ impl Feuille {
     }
 }
 
-/// La commande telle qu'elle s'écrit : « ss -tunap ».
+/// La commande telle qu'elle s'écrit : « ss -tunap ». Le programme par son nom, sans le dossier du système d'où
+/// il est lancé (`commande::par_le_systeme`) : le relevé garde la forme qu'il a toujours eue.
 fn affichage_commande(c: &Command) -> String {
-    std::iter::once(c.get_program())
+    let programme = c.get_program();
+    std::iter::once(std::path::Path::new(programme).file_name().unwrap_or(programme))
         .chain(c.get_args())
         .map(|a| a.to_string_lossy().into_owned())
         .collect::<Vec<_>>()

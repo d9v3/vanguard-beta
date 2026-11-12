@@ -226,7 +226,11 @@ pub(super) fn reseau(dossier: &Path) -> Partie {
             .as_ref()
             .map(|v| v.iter().map(reseau_natif::Prise::ligne).collect()),
     );
-    let ss = f.commande(Command::new("ss").args(["-tunap"]), 15, prises.is_none());
+    let ss = f.commande(
+        crate::commande::par_le_systeme("ss").args(["-tunap"]),
+        15,
+        prises.is_none(),
+    );
     if let (Some(natives), Some(ss)) = (&prises, &ss) {
         let outil = reseau_natif::ecoutes_de_ss(ss);
         // Relu après ss : seule une prise à l'écoute avant ET après lui compte (une prise UDP d'un instant, une
@@ -259,20 +263,28 @@ pub(super) fn reseau(dossier: &Path) -> Partie {
         }
     }
     releve(&mut f, "RTM_GETNEIGH : voisins / neighbours", reseau_natif::voisins());
-    f.commande(Command::new("ip").args(["neigh", "show"]), 10, false);
+    f.commande(crate::commande::par_le_systeme("ip").args(["neigh", "show"]), 10, false);
     releve(&mut f, "RTM_GETADDR : adresses / addresses", reseau_natif::adresses());
-    f.commande(Command::new("ip").args(["address", "show"]), 10, false);
+    f.commande(
+        crate::commande::par_le_systeme("ip").args(["address", "show"]),
+        10,
+        false,
+    );
     releve(
         &mut f,
         "RTM_GETROUTE : routes, toutes les tables / all tables",
         reseau_natif::routes(),
     );
-    f.commande(Command::new("ip").args(["route", "show", "table", "all"]), 10, false);
+    f.commande(
+        crate::commande::par_le_systeme("ip").args(["route", "show", "table", "all"]),
+        10,
+        false,
+    );
     for chemin in ["/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf"] {
         f.fichier(Path::new(chemin), true);
     }
     releve(&mut f, "resolve1 : systemd-resolved", reseau_natif::resolved().ok());
-    f.commande(Command::new("resolvectl").arg("status"), 10, false);
+    f.commande(crate::commande::par_le_systeme("resolvectl").arg("status"), 10, false);
     let connexions = prises.as_ref().map(Vec::len).or_else(|| {
         ss.as_ref().map(|s| {
             s.lines()
@@ -316,7 +328,7 @@ pub(super) fn demarrage(dossier: &Path) -> Partie {
     // Le relevé de Vanguard (D-Bus) d'abord, la sortie de systemctl ensuite, en témoin.
     let systeme = releve_systemd(&mut f, false);
     let outil = f.commande(
-        Command::new("systemctl").args(["list-unit-files", "--no-pager", "--full"]),
+        crate::commande::par_le_systeme("systemctl").args(["list-unit-files", "--no-pager", "--full"]),
         20,
         systeme.is_none(),
     );
@@ -327,18 +339,18 @@ pub(super) fn demarrage(dossier: &Path) -> Partie {
         "systemctl list-unit-files",
     );
     f.commande(
-        Command::new("systemctl").args(["list-units", "--all", "--no-pager", "--full", "--plain"]),
+        crate::commande::par_le_systeme("systemctl").args(["list-units", "--all", "--no-pager", "--full", "--plain"]),
         20,
         false,
     );
     f.commande(
-        Command::new("systemctl").args(["list-timers", "--all", "--no-pager"]),
+        crate::commande::par_le_systeme("systemctl").args(["list-timers", "--all", "--no-pager"]),
         20,
         false,
     );
     let utilisateur = releve_systemd(&mut f, true);
     let outil = f.commande(
-        Command::new("systemctl").args(["--user", "list-unit-files", "--no-pager", "--full"]),
+        crate::commande::par_le_systeme("systemctl").args(["--user", "list-unit-files", "--no-pager", "--full"]),
         20,
         false,
     );
@@ -831,7 +843,7 @@ fn sessions_ouvertes(f: &mut Feuille) {
             None
         }
     };
-    let who = f.commande(&mut Command::new("who"), 10, false);
+    let who = f.commande(&mut crate::commande::par_le_systeme("who"), 10, false);
     if let (Some(n), Some(w)) = (ouvertes, &who) {
         let outil = w.lines().filter(|l| !l.trim().is_empty()).count();
         // Seulement des sessions qui manquent à who (un who construit avec logind peut en montrer davantage).
@@ -852,7 +864,7 @@ fn sessions_ouvertes(f: &mut Feuille) {
 fn sessions_systemd(f: &mut Feuille) {
     let ids = sessions_logind(f);
     let loginctl = f.commande(
-        Command::new("loginctl").args(["list-sessions", "--no-pager", "--no-legend"]),
+        crate::commande::par_le_systeme("loginctl").args(["list-sessions", "--no-pager", "--no-legend"]),
         10,
         false,
     );
@@ -883,7 +895,7 @@ fn connexions_wtmp(
     use crate::machine::linux::connexions as cx;
     let wtmp = releve_utmp(f, cx::WTMP, "connexions et démarrages / logins and boots");
     let last = f.commande(
-        Command::new("last")
+        crate::commande::par_le_systeme("last")
             .args(["-F", "-w", "-n", "1000"])
             .env("LC_ALL", "C.UTF-8"),
         20,
@@ -941,7 +953,13 @@ fn connexions_wtmpdb(f: &mut Feuille) -> (Option<Vec<crate::machine::linux::conn
             sessions
         }
     };
-    let wtmpdb_outil = f.commande(Command::new("wtmpdb").arg("last").env("LC_ALL", "C.UTF-8"), 20, false);
+    let wtmpdb_outil = f.commande(
+        crate::commande::par_le_systeme("wtmpdb")
+            .arg("last")
+            .env("LC_ALL", "C.UTF-8"),
+        20,
+        false,
+    );
     (wtmpdb, wtmpdb_outil)
 }
 
@@ -1000,8 +1018,8 @@ fn derniers_passages(f: &mut Feuille, passwd: &str) {
         f.ajouter(&lignes.join("\n"));
         f.lues = f.lues.saturating_add(1);
     }
-    f.commande(&mut Command::new("lastlog2"), 20, false);
-    f.commande(&mut Command::new("lastlog"), 20, false);
+    f.commande(&mut crate::commande::par_le_systeme("lastlog2"), 20, false);
+    f.commande(&mut crate::commande::par_le_systeme("lastlog"), 20, false);
 }
 
 /// Connexions ratées : btmp, réservé à root.
@@ -1009,7 +1027,11 @@ fn connexions_ratees(f: &mut Feuille) {
     use crate::machine::linux::connexions as cx;
     if super::privilegie() {
         releve_utmp(f, cx::BTMP, "connexions ratées / failed logins");
-        f.commande(Command::new("lastb").args(["-F", "-w", "-n", "1000"]), 20, false);
+        f.commande(
+            crate::commande::par_le_systeme("lastb").args(["-F", "-w", "-n", "1000"]),
+            20,
+            false,
+        );
     } else {
         f.section(&format!("{} / lastb", cx::BTMP));
         f.ajouter(&Raison::Droits.note());
@@ -1089,7 +1111,7 @@ pub(super) fn journaux(dossier: &Path) -> Partie {
         }
         return p;
     }
-    let mut commande = Command::new("journalctl");
+    let mut commande = crate::commande::par_le_systeme("journalctl");
     commande
         .args(["--since=-7d", "--reverse", "--no-pager", "-o", "short-iso"])
         .env("LC_ALL", "C.UTF-8");
@@ -1301,7 +1323,7 @@ fn temoin_journalctl(p: &mut Partie, dossier: &Path, natifs: &[(i64, String)], d
         "Journal du système, témoin (journalctl)",
         "System log, witness (journalctl)",
     );
-    let mut commande = Command::new("journalctl");
+    let mut commande = crate::commande::par_le_systeme("journalctl");
     commande
         .args(["--since=-7d", "--reverse", "--no-pager", "-o", "short-iso"])
         .env("LC_ALL", "C.UTF-8");
@@ -1389,7 +1411,7 @@ fn lecture_coupee(quoi: Bi, entrees: usize) -> Option<Manque> {
 
 /// journalctl sur les 7 derniers jours, en sortie courte datée avec l'année, en anglais.
 fn journalctl_7_jours() -> Command {
-    let mut c = Command::new("journalctl");
+    let mut c = crate::commande::par_le_systeme("journalctl");
     c.args(["--since=-7d", "--no-pager", "-o", "short-iso"])
         .env("LC_ALL", "C.UTF-8");
     c

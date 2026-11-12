@@ -389,6 +389,16 @@ pub(crate) fn outil_systeme(nom: &str) -> Option<std::path::PathBuf> {
     .find(|c| c.is_file())
 }
 
+/// Un programme du système à lancer par son chemin (`outil_systeme`), jamais par le PATH du compte : un faux « ss »,
+/// « journalctl » ou « rsync » posé dans un dossier à lui (~/.local/bin) cacherait une connexion, une ligne du
+/// journal, ou lancerait autre chose. Absent des dossiers du système : « /usr/bin/<nom> », qui échoue au lancement
+/// (« introuvable ») comme un outil pas installé, jamais cherché ailleurs. Les variables restent celles de Vanguard
+/// (`outil_propre` les retire aussi).
+#[cfg(unix)]
+pub(crate) fn par_le_systeme(nom: &str) -> Command {
+    Command::new(outil_systeme(nom).unwrap_or_else(|| std::path::Path::new("/usr/bin").join(nom)))
+}
+
 /// Un outil du système (`outil_systeme`) prêt à lancer dans un `environnement_propre` : ni un faux programme posé dans
 /// le PATH du compte, ni ses variables (LD_PRELOAD, BASH_ENV…) ne choisissent ce qui tourne. `None` si l'outil n'est
 /// pas dans les dossiers du système : à dire, jamais à chercher ailleurs.
@@ -925,12 +935,12 @@ mod tests {
             (
                 "machine/linux/mod.rs",
                 include_str!("machine/linux/mod.rs"),
-                "Command::new(\"nmcli\")",
+                "par_le_systeme(\"nmcli\")",
             ),
             (
                 "machine/linux/mod.rs",
                 include_str!("machine/linux/mod.rs"),
-                "Command::new(\"dpkg\").args([\"-S\"",
+                "par_le_systeme(\"dpkg\").args([\"-S\"",
             ),
         ]
         .into_iter()
@@ -943,6 +953,66 @@ mod tests {
         .map(|(fichier, _, appel)| format!("{fichier} : {appel}"))
         .collect();
         assert!(dans_la_langue_du_systeme.is_empty(), "{dans_la_langue_du_systeme:#?}");
+    }
+
+    /// Point 9 (0.95) : `par_le_systeme` lance le programme d'un dossier du système, jamais un nom que le PATH
+    /// choisirait ; absent, il échoue (« introuvable ») au lieu d'être cherché ailleurs.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn par_le_systeme_prend_le_chemin_du_systeme() {
+        let sh = par_le_systeme("sh");
+        assert_eq!(Some(std::path::PathBuf::from(sh.get_program())), outil_systeme("sh"));
+        let absent = par_le_systeme("vanguard-outil-absent-x");
+        assert_eq!(absent.get_program(), "/usr/bin/vanguard-outil-absent-x");
+        assert!(lancer(&mut par_le_systeme("vanguard-outil-absent-x"), 5).is_none());
+    }
+
+    /// Point 9 (0.95) : là où Vanguard lit l'état de la machine pour la juger (connexions, journaux, services,
+    /// paquets, réseau, sauvegarde), aucun programme n'est lancé par son seul nom, que le PATH du compte choisirait :
+    /// `par_le_systeme` ou `outil_systeme`. Lu dans les fichiers, hors de leurs essais.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn lectures_de_la_machine_par_le_chemin_du_systeme() {
+        let fichiers = [
+            ("machine/mod.rs", include_str!("machine/mod.rs")),
+            ("machine/linux/mod.rs", include_str!("machine/linux/mod.rs")),
+            (
+                "machine/linux/plateforme.rs",
+                include_str!("machine/linux/plateforme.rs"),
+            ),
+            ("optimiser/linux.rs", include_str!("optimiser/linux.rs")),
+            ("reseau/surveillance.rs", include_str!("reseau/surveillance.rs")),
+            (
+                "reseau/wifi_public/linux.rs",
+                include_str!("reseau/wifi_public/linux.rs"),
+            ),
+            ("traces/linux.rs", include_str!("traces/linux.rs")),
+            ("sauvegarde.rs", include_str!("sauvegarde.rs")),
+        ];
+        let mut par_le_nom = Vec::new();
+        for (fichier, source) in fichiers {
+            let avant_les_essais = source.split("\nmod tests").next().unwrap_or(source);
+            let lignes: Vec<&str> = avant_les_essais.lines().collect();
+            for (n, l) in lignes.iter().enumerate() {
+                let code = l.split("//").next().unwrap_or(l);
+                let avant = n.checked_sub(1).and_then(|p| lignes.get(p)).map_or("", |p| p.trim());
+                // machine::sortie garde le PATH sous macOS seulement (Homebrew), derrière son cfg ; xdg-open ouvre
+                // ce que la personne a choisi (son ouvreur peut être dans son PATH exprès) et ne lit rien à juger.
+                let permis = fichier == "machine/mod.rs"
+                    && ((code.contains("let mut c = Command::new(cmd);")
+                        && avant == "#[cfg(not(target_os = \"linux\"))]")
+                        || code.contains("Command::new(\"xdg-open\")"));
+                if !permis
+                    && (code.contains("Command::new(\"")
+                        || code.contains("Command::new(cmd)")
+                        || code.contains("dans_le_path(\"rsync\")")
+                        || code.contains("dans_le_path(\"findmnt\")"))
+                {
+                    par_le_nom.push(format!("{fichier}:{} : {}", n + 1, l.trim()));
+                }
+            }
+        }
+        assert!(par_le_nom.is_empty(), "{par_le_nom:#?}");
     }
 
     /// La langue de la personne (ici donnée à la commande : LC_ALL et LANGUAGE en français) arrive à l'outil par

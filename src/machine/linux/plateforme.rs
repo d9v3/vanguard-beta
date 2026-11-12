@@ -333,9 +333,12 @@ pub(super) fn securite_plateforme() -> Constat {
     if !outil {
         return juger_plateforme(None);
     }
-    let json = crate::commande::lancer(Command::new("fwupdmgr").args(["security", "--json"]), 20)
-        .filter(|r| r.code == Some(0))
-        .map(|r| r.sortie);
+    let json = crate::commande::lancer(
+        crate::commande::par_le_systeme("fwupdmgr").args(["security", "--json"]),
+        20,
+    )
+    .filter(|r| r.code == Some(0))
+    .map(|r| r.sortie);
     juger_plateforme(json.as_deref().and_then(lire_attributs).as_deref())
 }
 

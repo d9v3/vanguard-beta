@@ -471,7 +471,8 @@ pub(crate) fn dossier_unites() -> PathBuf {
         .join("systemd/user")
 }
 
-/// Le chemin d'un programme du PATH, écrit en entier dans l'unité systemd (qui ne cherche pas dans le PATH).
+/// Le chemin d'un programme du PATH du compte : seulement pour savoir si Déjà Dup est là. Ce que l'unité lance
+/// (env, findmnt, rsync) se prend dans les dossiers du système (`commande::outil_systeme`), jamais ici.
 #[cfg(target_os = "linux")]
 fn dans_le_path(commande: &str) -> Option<PathBuf> {
     crate::machine::linux::natif::chemin(commande)
@@ -923,7 +924,9 @@ fn mettre_en_place() -> Option<MiseEnPlace> {
     let disque = choisir_disque()?;
     let destination = disque.racine.join(DOSSIER).join(nom_machine());
     let deja_dup = deja_dup_present();
-    let rsync = dans_le_path("rsync");
+    // Par le chemin du système, jamais par le PATH du compte (un faux rsync dans ~/.local/bin serait écrit dans
+    // l'unité) : 0.95, point 9.
+    let rsync = crate::commande::outil_systeme("rsync");
     let outil = match (deja_dup, &rsync) {
         (false, None) => {
             mauvais(tr!(
@@ -1039,7 +1042,7 @@ fn mettre_en_place() -> Option<MiseEnPlace> {
     let rsync = rsync?;
     let fat = systeme_de_fichiers(&disque.racine).is_some_and(|s| sans_liens(&s));
     let uuid = crate::protection::manifeste::identifiant_volume(&disque.racine);
-    let findmnt = dans_le_path("findmnt");
+    let findmnt = crate::commande::outil_systeme("findmnt");
     // « env -i » : un programme du système, jamais celui d'un dossier du compte (0.95, F-1, F-2).
     let Some(env) = crate::commande::outil_systeme("env") else {
         mauvais(tr!(
@@ -2192,7 +2195,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn findmnt_tranche_comme_l_unite_l_attend() {
-        let Some(findmnt) = dans_le_path("findmnt") else {
+        let Some(findmnt) = crate::commande::outil_systeme("findmnt") else {
             return crate::essais::saute("findmnt absent");
         };
         let Some(uuid) = crate::protection::manifeste::identifiant_volume(Path::new("/")) else {

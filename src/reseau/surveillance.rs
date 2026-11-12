@@ -9,8 +9,6 @@
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::path::{Path, PathBuf};
-#[cfg(unix)]
-use std::process::Command;
 
 use crate::machine::Constat;
 use crate::reseau::tableau::{self, Genre};
@@ -28,7 +26,7 @@ pub(crate) const TACHE_WINDOWS: &str = "vanguard - surveillance du reseau";
 /// bus de session muet (systemctl --user) le figerait.
 #[cfg(unix)]
 pub(crate) fn reussit(cmd: &str, args: &[&str]) -> bool {
-    crate::commande::lancer(Command::new(cmd).args(args), 30).is_some_and(|r| r.code == Some(0))
+    crate::commande::lancer(crate::commande::par_le_systeme(cmd).args(args), 30).is_some_and(|r| r.code == Some(0))
 }
 
 /// La minuterie de l'utilisateur (« nom.timer ») est-elle activée ? Lu dans les liens que pose
@@ -108,7 +106,7 @@ pub(crate) fn notifier(titre: &str, corps: &str) {
         let _ = crate::commande::lancer(
             // « -- » : un titre ou un corps qui commence par « - » (venu d'une extension) n'est jamais lu comme une
             // option.
-            Command::new("notify-send")
+            crate::commande::par_le_systeme("notify-send")
                 .args(["-a", "Vanguard", "-i", "vanguard", "-u", "critical", "--", titre, corps]),
             10,
         );
@@ -2084,6 +2082,8 @@ pub(crate) fn corpus_audit(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::process::Command;
 
     /// Coupée hors de Vanguard, avec son jour ou avec la note modifiée hors de Vanguard : élevé, jamais muet.
     #[test]

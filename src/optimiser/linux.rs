@@ -5,7 +5,6 @@
 #![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use super::demarrage::{Ecriture, Programme};
 use super::{Categorie, Reglage, Valeur};
@@ -489,7 +488,16 @@ fn nm_valeur(connexion: &str, propriete: &str) -> Option<String> {
         Err(_) => {}
     }
     let r = crate::commande::lancer(
-        Command::new("nmcli").args(["-t", "-e", "no", "-g", propriete, "connection", "show", connexion]),
+        crate::commande::par_le_systeme("nmcli").args([
+            "-t",
+            "-e",
+            "no",
+            "-g",
+            propriete,
+            "connection",
+            "show",
+            connexion,
+        ]),
         10,
     )?;
     (r.code == Some(0)).then(|| r.sortie.trim().to_string())
@@ -607,7 +615,7 @@ fn releve_fidele(etat: &str, actif: bool) -> bool {
 fn sortie(cmd: &str, args: &[&str]) -> Option<String> {
     // Par son chemin dans les dossiers du système, jamais par le PATH du compte : un faux « systemctl » posé dans
     // ~/.local/bin rendrait une liste choisie (relecture 0.95, G-3).
-    let r = crate::commande::lancer(Command::new(crate::commande::outil_systeme(cmd)?).args(args), 10)?;
+    let r = crate::commande::lancer(crate::commande::par_le_systeme(cmd).args(args), 10)?;
     Some(r.sortie.trim().to_string())
 }
 
@@ -1506,20 +1514,18 @@ pub fn releve_demarrage() -> (Vec<Programme>, Vec<String>, bool) {
     let config = config_du_compte();
     let bureau = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
     // systemctl par son chemin dans les dossiers du système, jamais par le PATH du compte (relecture 0.95, G-3) :
-    // introuvable là, les services ne sont pas lus, et c'est dit.
-    let activees = crate::commande::outil_systeme("systemctl").and_then(|systemctl| {
-        crate::commande::lancer(
-            Command::new(systemctl).args([
-                "--user",
-                "list-unit-files",
-                "--type=service",
-                "--state=enabled",
-                "--no-legend",
-                "--no-pager",
-            ]),
-            10,
-        )
-    });
+    // introuvable là, il ne se lance pas, les services ne sont pas lus, et c'est dit.
+    let activees = crate::commande::lancer(
+        crate::commande::par_le_systeme("systemctl").args([
+            "--user",
+            "list-unit-files",
+            "--type=service",
+            "--state=enabled",
+            "--no-legend",
+            "--no-pager",
+        ]),
+        10,
+    );
     // L'ordre où systemd lit les unités du compte, celui du bilan des persistances : une unité d'un dossier du
     // compte qui passe avant le système (~/.local/share/systemd/user, /run/user/…) remplace celle du système.
     let ordre = crate::machine::linux::dossiers_d_unites_du_compte(&maison, |v| std::env::var_os(v));
@@ -2334,6 +2340,7 @@ pub fn catalogue() -> Vec<Reglage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     /// Un service activé mais arrêté (ou désactivé mais en marche) ne se note pas : « enable/disable --now » ne
     /// ramènerait pas son état d'avant, et la relecture le dirait revenu.

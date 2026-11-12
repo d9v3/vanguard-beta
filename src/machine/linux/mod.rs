@@ -250,9 +250,11 @@ impl Paquets {
             match self {
                 Paquets::Pacman => sortie("pacman", &["-Qoq", &arg]).map(|s| s.trim().to_string()),
                 // En anglais : dpkg traduit les lignes « diversion by … » que paquet_dpkg écarte.
-                Paquets::Apt => crate::commande::lancer_en_anglais(Command::new("dpkg").args(["-S", &*arg]), 30)
-                    .filter(|r| r.code == Some(0))
-                    .and_then(|r| paquet_dpkg(&r.sortie)),
+                Paquets::Apt => {
+                    crate::commande::lancer_en_anglais(crate::commande::par_le_systeme("dpkg").args(["-S", &*arg]), 30)
+                        .filter(|r| r.code == Some(0))
+                        .and_then(|r| paquet_dpkg(&r.sortie))
+                }
                 Paquets::Dnf | Paquets::Zypper => sortie("rpm", &["-qf", "--qf", "%{NAME}\\n", &arg])
                     .and_then(|s| s.lines().next().map(str::to_string)),
             }
@@ -278,7 +280,10 @@ impl Paquets {
         // pacman répond pour tous en un appel (un par fichier coûtait une seconde pour les programmes privilégiés).
         if self == Paquets::Pacman && !fichiers.is_empty() {
             // Code 1 dès qu'un fichier n'a pas de paquet : la sortie vaut quand même pour les autres.
-            if let Some(r) = crate::commande::lancer_en_anglais(Command::new("pacman").arg("-Qo").args(fichiers), 60) {
+            if let Some(r) = crate::commande::lancer_en_anglais(
+                crate::commande::par_le_systeme("pacman").arg("-Qo").args(fichiers),
+                60,
+            ) {
                 let trouves = proprietaires_pacman(&r.sortie);
                 return fichiers
                     .iter()
@@ -1118,7 +1123,7 @@ fn journal_sshd() -> Option<Result<String, Constat>> {
     }
     let r = crate::commande::lancer(
         // Les lignes écrites par root seulement (`journal_systemd::messages_de` dit pourquoi).
-        Command::new("journalctl").args([
+        crate::commande::par_le_systeme("journalctl").args([
             "_COMM=sshd",
             "_UID=0",
             "+",
@@ -1305,7 +1310,7 @@ fn niveau_echecs_ssh(tentatives: usize, internet: bool, mots_de_passe: bool) -> 
 /// (vu en test : Docker inaccessible donnait « aucun port exposé »). Certains outils répondent « rien à faire »
 /// par un code non nul (yay -Qua : 1) : on les liste explicitement.
 fn sortie_delai(cmd: &str, args: &[&str], secondes: u64, codes_ok: &[i32]) -> Option<String> {
-    let r = crate::commande::lancer(Command::new(cmd).args(args), secondes)?;
+    let r = crate::commande::lancer(crate::commande::par_le_systeme(cmd).args(args), secondes)?;
     r.code.is_some_and(|c| codes_ok.contains(&c)).then_some(r.sortie)
 }
 
@@ -1940,7 +1945,7 @@ fn wifi_ouverts_automatiques() -> Option<Constat> {
         Err(_) => {}
     }
     let liste = crate::commande::lancer_en_anglais(
-        Command::new("nmcli").args([
+        crate::commande::par_le_systeme("nmcli").args([
             "-t",
             "-e",
             "no",
@@ -1961,9 +1966,11 @@ fn wifi_ouverts_automatiques() -> Option<Constat> {
     for (uuid, nom) in connexions {
         // Toute la connexion (les secrets restent cachés sans --show-secrets) : un réseau ouvert n'a pas de section
         // de sécurité, et demander un de ses champs pourrait faire répondre nmcli par une erreur.
-        let ouvert =
-            crate::commande::lancer_en_anglais(Command::new("nmcli").args(["-t", "connection", "show", &uuid]), 10)
-                .is_some_and(|r| r.code == Some(0) && wifi_ouvert(&r.sortie));
+        let ouvert = crate::commande::lancer_en_anglais(
+            crate::commande::par_le_systeme("nmcli").args(["-t", "connection", "show", &uuid]),
+            10,
+        )
+        .is_some_and(|r| r.code == Some(0) && wifi_ouvert(&r.sortie));
         if ouvert {
             commandes.push(format!("nmcli connection modify {uuid} connection.autoconnect no"));
             noms.push(nom);

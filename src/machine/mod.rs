@@ -948,10 +948,16 @@ fn aucun_port_expose() -> Constat {
     )
 }
 
-/// Sortie standard d'une commande, ou `None` si elle est absente ou échoue.
+/// Sortie standard d'une commande, ou `None` si elle est absente ou échoue. Sous Linux, le programme du système
+/// (`par_le_systeme`), jamais celui du PATH du compte ; sous macOS, encore par le PATH (Homebrew, hors des dossiers
+/// du système).
 #[cfg(unix)]
 pub(crate) fn sortie(cmd: &str, args: &[&str]) -> Option<String> {
-    let r = crate::commande::lancer(Command::new(cmd).args(args), 30)?;
+    #[cfg(target_os = "linux")]
+    let mut c = crate::commande::par_le_systeme(cmd);
+    #[cfg(not(target_os = "linux"))]
+    let mut c = Command::new(cmd);
+    let r = crate::commande::lancer(c.args(args), 30)?;
     (r.code == Some(0)).then_some(r.sortie)
 }
 

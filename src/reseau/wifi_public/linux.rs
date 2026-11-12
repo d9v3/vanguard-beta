@@ -217,15 +217,13 @@ pub(crate) fn dns_du_mode(relu: &str, avant: &str, v4: &[&str], v6: &[&str]) -> 
 
 #[cfg(target_os = "linux")]
 pub(crate) mod lecture {
-    use std::process::Command;
-
     use super::super::etat::{Element, UNITES};
     use super::{nom_nm, uuid_valide};
 
     pub(crate) const RUNTIME: &str = "/run/systemd/system";
 
     fn nmcli(args: &[&str]) -> Option<String> {
-        let r = crate::commande::lancer_en_anglais(Command::new("nmcli").args(args), 10)?;
+        let r = crate::commande::lancer_en_anglais(crate::commande::par_le_systeme("nmcli").args(args), 10)?;
         (r.code == Some(0)).then(|| r.sortie.trim().to_string())
     }
 
@@ -279,10 +277,14 @@ pub(crate) mod lecture {
         if presentes.is_empty() {
             return Vec::new();
         }
-        let actives =
-            crate::commande::lancer_en_anglais(Command::new("systemctl").arg("is-active").args(&presentes), 10)
-                .map(|r| r.sortie)
-                .unwrap_or_default();
+        let actives = crate::commande::lancer_en_anglais(
+            crate::commande::par_le_systeme("systemctl")
+                .arg("is-active")
+                .args(&presentes),
+            10,
+        )
+        .map(|r| r.sortie)
+        .unwrap_or_default();
         let actives: Vec<bool> = actives.lines().map(|l| l.trim() == "active").collect();
         presentes
             .into_iter()
@@ -347,8 +349,11 @@ pub(crate) mod lecture {
     }
 
     fn active(unite: &str) -> bool {
-        crate::commande::lancer_en_anglais(Command::new("systemctl").args(["is-active", "--quiet", unite]), 10)
-            .is_some_and(|r| r.code == Some(0))
+        crate::commande::lancer_en_anglais(
+            crate::commande::par_le_systeme("systemctl").args(["is-active", "--quiet", unite]),
+            10,
+        )
+        .is_some_and(|r| r.code == Some(0))
     }
 
     /// Un réglage du mode allumé a-t-il été défait hors de Vanguard ? Le compte de la session peut modifier le profil
