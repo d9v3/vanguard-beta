@@ -244,7 +244,10 @@ impl Ecart {
 
 /// Y-3, A-3 : les noms des fichiers à plusieurs liens physiques des lieux de démarrage du compte, par (appareil,
 /// inode), ou pourquoi ils n'ont pas pu être lus en entier.
-pub(super) type NomsDesLieux = Result<std::collections::HashMap<(u64, u64), String>, LieuxNonLus>;
+pub(super) type NomsDesLieux = Result<NomsLus, LieuxNonLus>;
+
+/// Y-3 : les noms lus, par (appareil, inode).
+pub(super) type NomsLus = std::collections::HashMap<(u64, u64), String>;
 
 /// Où chercher les programmes et les fichiers : la racine lue (une arborescence fabriquée dans les essais), le dossier
 /// personnel lu (« ~ », « $HOME ») et les dossiers personnels où un dossier caché se juge (`chemin_cache_chez`).
@@ -885,7 +888,7 @@ impl Systeme<'_> {
     /// une seule fois. Une erreur (non vérifié, sa cause dite : A-3) : plus de `NOMS_LUS_MAX` entrées, un dossier
     /// plus profond que `PROFONDEUR_DES_LIEUX`, une lecture qui échoue autrement que par une absence, ou un lien
     /// absolu sous une racine d'essai (il se suivrait hors d'elle : Z-3).
-    fn noms_des_lieux(&self) -> Result<&std::collections::HashMap<(u64, u64), String>, LieuxNonLus> {
+    fn noms_des_lieux(&self) -> Result<&NomsLus, LieuxNonLus> {
         self.noms_des_lieux
             .get_or_init(|| self.lire_noms_des_lieux())
             .as_ref()
