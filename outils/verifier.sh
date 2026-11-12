@@ -9,9 +9,9 @@
 # sans avertissement (cargo doc), textes français et anglais (outils/textes.py), relais des lots (relais/,
 # outils/relais-schema.py), protections des programmes lues dans leurs
 # en-têtes (vanguard deploiement verifier-binaire : PIE, marque RELRO, pile non exécutable ; ASLR, DEP), régression de
-# détection (le corpus de src/modele/corpus.rs, Linux et Wine), dépendances (cargo deny) et leurs failles connues (cargo
-# audit), banc de fuzzing compilé et passé quelques secondes par cible, preuves de Kani compilées (lancées par
-# outils/preuves.sh).
+# détection (le corpus de src/modele/corpus.rs, Linux et Wine), dépendances (cargo deny ; bibliothèques à
+# constructeurs refusées : outils/essais-constructeurs.sh) et leurs failles connues (cargo audit), banc de fuzzing
+# compilé et passé quelques secondes par cible, preuves de Kani compilées (lancées par outils/preuves.sh).
 # La CI lance ce même script (.github/workflows/ci.yml) : une seule logique, ici.
 # Chaque cible de compilation a sa chaîne (clippy, puis ses tests) et les deux tournent en même temps : cargo garde
 # un dossier par cible, elles ne s'attendent presque pas. À la fin, une ligne par étape ; le code de sortie dit si tout
@@ -606,6 +606,7 @@ if [[ $MODE != --rapide ]]; then
   etape essais-confidentialite bash outils/essais-confidentialite.sh &
   etape essais-verifier bash outils/essais-verifier.sh &
   etape essais-livrer bash outils/essais-livrer-branche.sh &
+  etape constructeurs bash outils/essais-constructeurs.sh &
   etape masque bash outils/verifier-masque.sh &
   etape extensions extensions &
   etape fenetre fenetre &
@@ -800,6 +801,7 @@ if [[ $MODE != --rapide ]]; then
   ligne essais-confidentialite "garde de confidentialité (noms, types)"
   ligne essais-verifier "essais de verifier.sh (--seulement)"
   ligne essais-livrer "essais de livrer-branche.sh"
+  ligne constructeurs "constructeurs avant main (deny)"
   ligne masque "mots d'attaque masqués"
   ligne extensions "extensions (sdk, exemple Rust)"
   ligne fenetre "fenêtre (clippy ×2, tests Linux : $(passes fenetre), protections ×2)"

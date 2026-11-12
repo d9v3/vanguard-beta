@@ -64,6 +64,22 @@ wildcards = "deny"
 deny = [
     { crate = "rsa", wrappers = ["yara-x"], reason = "RUSTSEC-2023-0071 admise pour YARA-X seulement ([advisories])" },
     { crate = "bincode", wrappers = ["yara-x"], reason = "RUSTSEC-2025-0141 admise pour YARA-X seulement ([advisories])" },
+# Les bibliothèques qui posent du code lancé avant main (ou après lui), dans .init_array sous Linux ou .CRT$XCU
+# sous Windows : il tourne avant tout journal et tout filet de panique, sans qu'aucune ligne ne l'appelle.
+# Refusées ; la même liste dans deny.toml, fenetre/, extensions/ et fuzz/ (outils/essais-constructeurs.sh
+# vérifie qu'elles disent pareil).
+# inventory : seulement par Vanguard lui-même et par YARA-X, qui l'amènent aujourd'hui.
+    { crate = "ctor", reason = "code lancé avant main (outils/essais-constructeurs.sh)" },
+    { crate = "ctor-lite", reason = "code lancé avant main (outils/essais-constructeurs.sh)" },
+    { crate = "ctor-proc-macro", reason = "les macros de ctor (outils/essais-constructeurs.sh)" },
+    { crate = "dtor", reason = "code lancé après main (outils/essais-constructeurs.sh)" },
+    { crate = "dtor-proc-macro", reason = "les macros de dtor (outils/essais-constructeurs.sh)" },
+    { crate = "inventory", wrappers = ["vanguard", "yara-x"], reason = "code lancé avant main : Vanguard (autotest/croisees.rs) et YARA-X seulement" },
+    { crate = "link-section", reason = "sections lues au démarrage (outils/essais-constructeurs.sh)" },
+    { crate = "linkme", reason = "sections lues au démarrage (outils/essais-constructeurs.sh)" },
+    { crate = "small_ctor", reason = "code lancé avant main (outils/essais-constructeurs.sh)" },
+    { crate = "startup", reason = "code lancé avant main (outils/essais-constructeurs.sh)" },
+    { crate = "static_init", reason = "code lancé avant main (outils/essais-constructeurs.sh)" },
 ]
 
 # crates.io seulement : ni autre registre, ni dépôt git, d'où un code non relu pourrait entrer.
