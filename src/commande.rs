@@ -394,11 +394,59 @@ pub(crate) fn outil_systeme(nom: &str) -> Option<std::path::PathBuf> {
 /// Un programme du système à lancer par son chemin (`outil_systeme`), jamais par le PATH du compte : un faux « ss »,
 /// « journalctl » ou « rsync » posé dans un dossier à lui (~/.local/bin) cacherait une connexion, une ligne du
 /// journal, ou lancerait autre chose. Absent des dossiers du système : « `/usr/bin/<nom>` », qui échoue au lancement
-/// (« introuvable ») comme un outil pas installé, jamais cherché ailleurs. Les variables restent celles de Vanguard
-/// (`outil_propre` les retire aussi).
+/// (« introuvable ») comme un outil pas installé, jamais cherché ailleurs.
+///
+/// Le chemin ne suffit pas : beaucoup d'outils du système sont des scripts (checkupdates, paccache…) qui relancent
+/// pacman, fakeroot ou mkdir par leur nom. Avec l'environnement du compte, un faux pacman de ~/.local/bin faisait dire
+/// « Système à jour » sans rien vérifier (G-1, campagne 0.95). D'où l'`environnement_lecture`, ici, pour tous.
 #[cfg(unix)]
 pub(crate) fn par_le_systeme(nom: &str) -> Command {
-    Command::new(outil_systeme(nom).unwrap_or_else(|| std::path::Path::new("/usr/bin").join(nom)))
+    let mut c = Command::new(outil_systeme(nom).unwrap_or_else(|| std::path::Path::new("/usr/bin").join(nom)));
+    environnement_lecture(&mut c, std::env::vars_os());
+    c
+}
+
+/// Les variables qu'une lecture garde en plus de `GARDEES` : elle tourne sous le compte, sans élévation, donc HOME,
+/// USER et LOGNAME restent ceux de Vanguard (qui lit lui-même le dossier personnel par HOME, `socle::personnel`) ;
+/// TMPDIR, car le compte possède ses fichiers temporaires où qu'ils soient ; TZ, pour que les heures lues soient
+/// celles que Vanguard compte ; XAUTHORITY et le type de session pour le presse-papiers X11 et un programme isolé ;
+/// XDG_DATA_DIRS, sans lequel gsettings ne trouve pas ses schémas sous NixOS (des données, jamais du code : sous le
+/// compte, il ne montre rien que le compte ne puisse déjà écrire dans dconf). Aucune ne choisit un programme ni du
+/// code chargé.
+///
+/// Retirées, entre autres : PATH (remplacé), BASH_ENV, ENV, BASH_FUNC_*, LD_PRELOAD, LD_LIBRARY_PATH, LD_AUDIT,
+/// PYTHONPATH, PERL5LIB, GCONV_PATH, LOCPATH, CHECKUPDATES_DB, PULSE_SERVER, et DBUS_SYSTEM_BUS_ADDRESS : un bus
+/// « système » servi par un programme du compte répondrait à systemctl, nmcli ou firewall-cmd à la place du vrai
+/// (Vanguard, lui, joint toujours la prise fixe du bus système).
+#[cfg(unix)]
+const GARDEES_LECTURE: [&str; 9] = [
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "TMPDIR",
+    "TZ",
+    "XAUTHORITY",
+    "XDG_SESSION_TYPE",
+    "XDG_CURRENT_DESKTOP",
+    "XDG_DATA_DIRS",
+];
+
+/// L'environnement d'un programme du système lancé pour lire (`par_le_systeme`) : liste blanche plutôt que liste
+/// noire, car une variable qu'on n'a pas pensé à retirer (le prochain LD_*, un PYTHONSTARTUP) passerait sinon.
+/// `de` vidé, sauf `GARDEES`, `GARDEES_LECTURE` et les LC_* ; PATH = `PATH_PROPRE`. Les variables que l'appelant pose
+/// ensuite (LC_ALL, PAGER) s'ajoutent.
+#[cfg(unix)]
+pub(crate) fn environnement_lecture(
+    commande: &mut Command,
+    de: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> &mut Command {
+    commande.env_clear();
+    for (nom, valeur) in de {
+        if gardee(&nom) || nom.to_str().is_some_and(|n| GARDEES_LECTURE.contains(&n)) {
+            commande.env(nom, valeur);
+        }
+    }
+    commande.env("PATH", PATH_PROPRE)
 }
 
 /// Un outil du système (`outil_systeme`) prêt à lancer dans un `environnement_propre` : ni un faux programme posé dans
@@ -2289,6 +2337,97 @@ mod tests_environnement_propre {
         );
         let rang = |d: &str| dossiers.iter().position(|x| *x == d);
         assert!(rang("/usr/bin") < rang("/usr/local/bin"));
+    }
+}
+
+/// G-1 (campagne 0.95) : ce qu'un programme du système lancé pour lire reçoit de l'environnement du compte.
+#[cfg(all(test, unix))]
+mod tests_environnement_lecture {
+    use super::environnement_lecture;
+    use std::ffi::OsString;
+
+    #[test]
+    fn seules_les_variables_de_lecture_passent() {
+        let de: Vec<(OsString, OsString)> = [
+            ("HOME", "/tmp/maison-jetable"),
+            ("USER", "alice"),
+            ("TMPDIR", "/tmp/t"),
+            ("LANG", "fr_CA.UTF-8"),
+            ("LC_TIME", "fr_CA.UTF-8"),
+            ("XDG_RUNTIME_DIR", "/run/user/1000"),
+            ("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus"),
+            ("PATH", "/home/alice/.local/bin:/usr/bin"),
+            ("BASH_ENV", "/tmp/bash_env"),
+            ("ENV", "/tmp/env"),
+            ("BASH_FUNC_pacman%%", "() { true; }"),
+            ("LD_PRELOAD", "/tmp/x.so"),
+            ("LD_LIBRARY_PATH", "/tmp/lib"),
+            ("LD_AUDIT", "/tmp/audit.so"),
+            ("PYTHONPATH", "/tmp/py"),
+            ("PERL5LIB", "/tmp/perl"),
+            ("GCONV_PATH", "/tmp/gconv"),
+            ("LOCPATH", "/tmp/locales"),
+            ("CHECKUPDATES_DB", "/tmp/db"),
+            ("DBUS_SYSTEM_BUS_ADDRESS", "unix:path=/tmp/faux-bus"),
+            ("PULSE_SERVER", "unix:/tmp/faux-son"),
+            ("GIO_EXTRA_MODULES", "/tmp/gio"),
+            ("XDG_DATA_DIRS", "/usr/share"),
+        ]
+        .iter()
+        .map(|(n, v)| (OsString::from(n), OsString::from(v)))
+        .collect();
+        let mut c = std::process::Command::new("/usr/bin/env");
+        environnement_lecture(&mut c, de);
+        let vues: Vec<(String, Option<String>)> = c
+            .get_envs()
+            .map(|(n, v)| {
+                (
+                    n.to_string_lossy().into_owned(),
+                    v.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        let valeur = |n: &str| vues.iter().find(|(m, _)| m == n).and_then(|(_, v)| v.clone());
+        assert_eq!(valeur("HOME").as_deref(), Some("/tmp/maison-jetable"));
+        assert_eq!(valeur("USER").as_deref(), Some("alice"));
+        assert_eq!(valeur("TMPDIR").as_deref(), Some("/tmp/t"));
+        assert_eq!(valeur("LANG").as_deref(), Some("fr_CA.UTF-8"));
+        assert_eq!(valeur("LC_TIME").as_deref(), Some("fr_CA.UTF-8"));
+        assert_eq!(valeur("XDG_RUNTIME_DIR").as_deref(), Some("/run/user/1000"));
+        assert_eq!(
+            valeur("DBUS_SESSION_BUS_ADDRESS").as_deref(),
+            Some("unix:path=/run/user/1000/bus")
+        );
+        assert_eq!(valeur("XDG_DATA_DIRS").as_deref(), Some("/usr/share"));
+        assert_eq!(valeur("PATH").as_deref(), Some(super::PATH_PROPRE));
+        for n in [
+            "BASH_ENV",
+            "ENV",
+            "BASH_FUNC_pacman%%",
+            "LD_PRELOAD",
+            "LD_LIBRARY_PATH",
+            "LD_AUDIT",
+            "PYTHONPATH",
+            "PERL5LIB",
+            "GCONV_PATH",
+            "LOCPATH",
+            "CHECKUPDATES_DB",
+            "DBUS_SYSTEM_BUS_ADDRESS",
+            "PULSE_SERVER",
+            "GIO_EXTRA_MODULES",
+        ] {
+            assert_eq!(valeur(n), None, "{n}");
+        }
+    }
+
+    /// Le lancement réel : un programme lancé par `par_le_systeme` voit PATH_PROPRE, quel que soit le PATH de l'essai.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn par_le_systeme_lance_dans_l_environnement_de_lecture() {
+        let Some(r) = super::lancer(super::par_le_systeme("sh").args(["-c", "printf %s \"$PATH\""]), 10) else {
+            return crate::essais::saute("sh ne se lance pas");
+        };
+        assert_eq!(r.sortie, super::PATH_PROPRE);
     }
 }
 

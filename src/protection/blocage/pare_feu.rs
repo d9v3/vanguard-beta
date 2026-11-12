@@ -287,6 +287,8 @@ fn ufw_status() -> Option<std::process::Command> {
         c.arg("-n").arg(ufw);
         c
     };
+    // ufw est un script Python : ni PYTHONPATH ni LD_PRELOAD du compte ne doivent choisir sa réponse (G-1, 0.95).
+    crate::commande::environnement_lecture(&mut c, std::env::vars_os());
     c.arg("status").env("LC_ALL", "C");
     Some(c)
 }

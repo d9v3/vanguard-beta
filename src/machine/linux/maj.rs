@@ -2188,3 +2188,69 @@ mod tests_maj_automatiques {
         ));
     }
 }
+
+/// G-1 (campagne 0.95, angle « gestes ») : checkupdates est un script bash du système, qui relance pacman-conf,
+/// fakeroot et pacman par leur nom. Lancé avec l'environnement du compte, un faux pacman posé en tête de son PATH
+/// (~/.local/bin sous Arch), un BASH_ENV ou une fonction exportée faisaient dire « Système à jour » sans rien vérifier.
+#[cfg(test)]
+mod tests_environnement_du_compte {
+    use std::os::unix::fs::PermissionsExt;
+
+    /// Posée dans le processus relancé, qui reçoit l'environnement piégé.
+    const RELANCE: &str = "VANGUARD_ESSAI_G1_RELANCE";
+
+    #[test]
+    fn checkupdates_ne_prend_ni_le_path_ni_les_variables_du_compte() {
+        if std::env::var_os(RELANCE).is_some() {
+            let issue = match super::liste_mises_a_jour(super::Paquets::Pacman) {
+                None => "non-verifie".to_string(),
+                Some(l) => format!("{} paquets", l.len()),
+            };
+            println!("issue-g1:{issue}");
+            return;
+        }
+        if crate::commande::outil_systeme("checkupdates").is_none() {
+            return crate::essais::saute("checkupdates absent (pas Arch)");
+        }
+        let d = crate::essais::Jetable::nouveau("g1-path-du-compte");
+        let bin = d.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let trace = d.join("piege-lance");
+        for nom in ["pacman-conf", "pacman", "fakeroot"] {
+            let f = bin.join(nom);
+            std::fs::write(&f, format!("#!/bin/sh\necho {nom} >> '{}'\nexit 0\n", trace.display())).unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let bash_env = d.join("bash_env");
+        std::fs::write(&bash_env, format!("echo BASH_ENV >> '{}'\n", trace.display())).unwrap();
+        let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+        let sortie = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "machine::linux::maj::tests_environnement_du_compte::checkupdates_ne_prend_ni_le_path_ni_les_variables_du_compte",
+                "--nocapture",
+            ])
+            .env(RELANCE, "1")
+            .env("PATH", path)
+            .env("BASH_ENV", &bash_env)
+            .env("BASH_FUNC_pacman%%", format!("() {{ echo fonction >> '{}'; }}", trace.display()))
+            .output()
+            .unwrap();
+        let texte = String::from_utf8_lossy(&sortie.stdout);
+        // Le test relancé a bien tourné (un filtre qui ne trouverait rien réussirait aussi).
+        assert!(sortie.status.success() && texte.contains("1 passed"), "{texte}");
+        let lances = match std::fs::read_to_string(&trace) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => panic!("trace illisible : {e}"),
+        };
+        assert!(
+            lances.is_empty(),
+            "checkupdates a pris ce que le compte lui a posé :\n{lances}\n{texte}"
+        );
+        // Sans réseau, le vrai checkupdates ne joint aucun dépôt : « non vérifié », jamais « à jour ».
+        if std::env::var_os("VANGUARD_HORS_LIGNE").is_some() {
+            assert!(texte.contains("issue-g1:non-verifie"), "{texte}");
+        }
+    }
+}

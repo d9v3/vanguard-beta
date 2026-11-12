@@ -369,6 +369,8 @@ fn lancer_systemctl(unite: &str, arguments: &[&str]) -> Result<(), Echec> {
     let programme = systemctl().ok_or_else(|| Echec::echoue("garde/poser", "systemctl introuvable"))?;
     let mut c = std::process::Command::new(programme);
     c.args(arguments);
+    // Comme `commande::par_le_systeme` : ni LD_PRELOAD ni BASH_ENV du compte dans systemctl ; sa session D-Bus reste.
+    crate::commande::environnement_lecture(&mut c, std::env::vars_os());
     if arguments.first().is_some_and(|a| *a != "daemon-reload") {
         c.arg(unite);
     }

@@ -244,6 +244,8 @@ pub(crate) fn lancer(ligne: &'static str, en_plus: &[&str]) -> Result<String, Ra
     };
     let mut commande = std::process::Command::new(chemin);
     commande.args(&args);
+    // Comme `commande::par_le_systeme` : ni le PATH ni les variables du compte (LD_PRELOAD…) ne choisissent la réponse.
+    crate::commande::environnement_lecture(&mut commande, std::env::vars_os());
     let Some(r) = crate::commande::lancer_en_anglais(&mut commande, 60) else {
         return Err(Raison::Delai);
     };
