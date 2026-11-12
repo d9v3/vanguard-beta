@@ -954,8 +954,8 @@ fn releveur(racine: &Path, maison: &Path, variable: &impl Fn(&str) -> Option<std
 pub(crate) fn dossiers_d_unites_du_compte(
     maison: &Path,
     variable: impl Fn(&str) -> Option<std::ffi::OsString>,
-) -> Result<Vec<std::path::PathBuf>, String> {
-    dossiers_d_unites(&releveur(Path::new("/"), maison, &variable), true).map_err(|r| r.0)
+) -> Result<Vec<std::path::PathBuf>, temoins::Refus> {
+    dossiers_d_unites(&releveur(Path::new("/"), maison, &variable), true)
 }
 
 /// Les noms des dossiers de compléments (« nom.service.d ») qui s'appliquent à l'unité `nom` (`ajouts_de`).

@@ -1394,7 +1394,7 @@ fn releve_selon(
     systeme: &[PathBuf],
     bureau: &str,
     activees: Option<String>,
-    ordre: Result<Vec<PathBuf>, String>,
+    ordre: Result<Vec<PathBuf>, crate::machine::temoins::Refus>,
     unites_systeme: &[PathBuf],
 ) -> (Vec<Programme>, Vec<String>) {
     let mut manques = Vec::new();
@@ -1429,7 +1429,7 @@ fn releve_selon(
         manques.push(trf!(
             "services du compte pas tous vérifiés : {}",
             "account services not all checked: {}",
-            raison
+            raison.0
         ));
         Vec::new()
     });
@@ -3101,7 +3101,7 @@ mod tests {
             ])
         };
         let systeme = std::slice::from_ref(&du_systeme);
-        let releve = |activees: &str, ordre: Result<Vec<PathBuf>, String>| {
+        let releve = |activees: &str, ordre: Result<Vec<PathBuf>, crate::machine::temoins::Refus>| {
             releve_selon(&config, &[], "Hyprland", Some(activees.to_string()), ordre, systeme)
         };
         // Témoin : l'unité du système seule, ou devant une copie du compte plus loin dans l'ordre, se tait.
@@ -3159,7 +3159,10 @@ mod tests {
             std::fs::remove_dir_all(&c).unwrap();
         }
         // Sans la liste de systemd : le manque est dit, et une unité du système ne passe plus pour sûre.
-        let (l, manques) = releve("pipewire.service enabled enabled", Err("session inconnue".to_string()));
+        let (l, manques) = releve(
+            "pipewire.service enabled enabled",
+            Err(crate::machine::temoins::Refus("session inconnue".to_string())),
+        );
         assert!(l.is_empty());
         assert_eq!(manques.len(), 2, "{manques:?}");
         assert!(manques.iter().any(|m| m.contains("session inconnue")), "{manques:?}");
