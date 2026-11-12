@@ -145,7 +145,7 @@ fn chemin_montre(chemin: &str) -> String {
 }
 
 /// Le texte `texte` (nom ou commande d'un programme, écrits par qui a posé l'entrée) avec le dossier personnel montré
-/// « ~ » partout où il paraît comme un chemin : une commande lancée de sous lui (« /home/<compte>/bin/x ») dirait le
+/// « ~ » partout où il paraît comme un chemin : une commande lancée de sous lui (« `/home/<compte>/bin/x` ») dirait le
 /// nom du compte au rapport, au journal et à la fenêtre (relecture 0.94, R-4, T-4). Seulement entre deux limites de
 /// chemin : un dossier au nom qui le prolonge (« /home/alice » suivi d'un chiffre) ou « /mnt/home/alice » ne sont
 /// pas sous « /home/alice ».
