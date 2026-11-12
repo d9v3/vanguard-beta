@@ -85,7 +85,9 @@ recompilée au besoin.
   passe suivante.
 - **Renforcé après une campagne d'attaque.** `vanguard` sans argument ne lance aucun programme « vanguard-fenetre »,
   même posé à côté de lui : il ouvre le menu du terminal. Le bilan ne prend pas pour suspecte l'unité du veilleur que
-  Vanguard pose lui-même (une valeur en pourcentage, comme `CPUQuota=20%`, n'est pas un code de systemd).
+  Vanguard pose lui-même (une valeur en pourcentage, comme `CPUQuota=20%`, n'est pas un code de systemd), ni celle de
+  la sauvegarde rsync, reconnue à sa forme exacte, celle que Vanguard écrit : toute autre copie par rsync (vers
+  ~/.config/autostart, par exemple) reste levée.
   `demarrage --retirer` et `--remettre` ne suivent plus aucun dossier qui est un lien (~/.config ou son dossier
   autostart remplacé par un lien) : rien ne s'écrit hors du dossier personnel. Une entrée rangée derrière un lien, ou
   elle-même un lien ou un tube, n'est pas proposée, et la liste la dit « non vérifiée » (dans `--json` comme dans la

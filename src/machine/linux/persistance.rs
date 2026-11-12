@@ -2942,6 +2942,10 @@ struct Codes {
     /// Les variables posées par « Environment= » dans l'unité : systemd remplace « $A » et « ${A} » des lignes Exec
     /// par leur valeur (relecture adverse 2, N5).
     variables: std::collections::BTreeMap<String, String>,
+    /// Les mots exacts du rsync de la sauvegarde que Vanguard pose, si l'unité lue est ce service-là, écrit à l'octet
+    /// près comme Vanguard l'écrit (`sauvegarde::mots_de_la_sauvegarde_posee`) ; seule cette commande-là se tait
+    /// (relecture 0.94, S-1).
+    sauvegarde: Option<Vec<String>>,
 }
 
 impl Codes {
@@ -2952,6 +2956,7 @@ impl Codes {
             maison: r.maison.to_string_lossy().into_owned(),
             session: r.session.as_ref().map(|s| s.to_string_lossy().into_owned()),
             variables: std::collections::BTreeMap::new(),
+            sauvegarde: None,
         }
     }
 }
@@ -4614,6 +4619,9 @@ fn juger_demarrage(demarrage: &[std::path::PathBuf], h: &Path, t: &mut Lancement
                 let base = Codes::de(utilisateur, &t.r);
                 Lecteur::Systemd(Codes {
                     variables: variables_fusionnees(f, &lu.texte, &base, &t.r),
+                    sauvegarde: (utilisateur && f.file_name().is_some_and(|n| n == crate::sauvegarde::SERVICE))
+                        .then(|| crate::sauvegarde::mots_de_la_sauvegarde_posee(&lu.texte))
+                        .flatten(),
                     ..base
                 })
             };
@@ -7718,16 +7726,25 @@ mod tests {
     #[test]
     fn les_unites_de_vanguard_ne_levent_rien() {
         use std::os::unix::fs::PermissionsExt as _;
-        for anglais in [false, true] {
-            let m = Maison::nouvelle(&format!("unites-de-vanguard-{anglais}"));
-            let exe = "/usr/bin/vanguard";
-            for p in ["usr/bin/vanguard", "usr/bin/rsync", "usr/bin/findmnt"] {
-                let f = m.racine.join(p);
+        // S-2 (relecture 0.94) : chaque unité telle que Vanguard la pose, le programme au chemin de la copie posée
+        // (~/.local/share/vanguard/bin/vanguard) comme à celui d'un paquet, la sauvegarde FAT et non FAT, un disque
+        // et un dossier à espace.
+        let exes = ["/usr/bin/vanguard", "/home/alice/.local/share/vanguard/bin/vanguard"];
+        for (i, (anglais, exe, fat)) in [false, true]
+            .into_iter()
+            .flat_map(|a| exes.into_iter().flat_map(move |e| [false, true].map(|f| (a, e, f))))
+            .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("unites-de-vanguard-{i}"));
+            for p in [exe, "/usr/bin/rsync", "/usr/bin/findmnt"] {
+                let f = m.racine.join(p.trim_start_matches('/'));
                 std::fs::create_dir_all(f.parent().unwrap()).unwrap();
                 std::fs::write(&f, "#!/bin/sh\n").unwrap();
                 std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
             }
-            std::fs::create_dir_all(m.chemin("Documents")).unwrap();
+            for d in ["Documents", "Mes images"] {
+                std::fs::create_dir_all(m.chemin(d)).unwrap();
+            }
             let unites = || {
                 let (es, et) = crate::entretien::unites_systemd(exe);
                 let (ss, st) =
@@ -7738,10 +7755,13 @@ mod tests {
                     Path::new("/usr/bin/rsync"),
                     Some(Path::new("/usr/bin/findmnt")),
                     Some("1234-ABCD"),
-                    Path::new("/run/media/alice/Cle"),
-                    Path::new("/run/media/alice/Cle/Sauvegarde-Vanguard/poste"),
-                    &[std::path::PathBuf::from("/home/alice/Documents")],
-                    false,
+                    Path::new("/run/media/alice/Mon disque"),
+                    Path::new("/run/media/alice/Mon disque/Sauvegarde-Vanguard/poste"),
+                    &[
+                        std::path::PathBuf::from("/home/alice/Documents"),
+                        std::path::PathBuf::from("/home/alice/Mes images"),
+                    ],
+                    fat,
                 )
                 .unwrap();
                 let compte = vec![
@@ -7768,19 +7788,57 @@ mod tests {
                 compte[0].1.contains("CPUQuota=20%"),
                 "l'unité du veilleur a changé : revoir cet essai"
             );
+            assert!(
+                compte[7].1.contains(if fat {
+                    " -rt --modify-window=2 "
+                } else {
+                    " -a --no-specials "
+                }),
+                "la sauvegarde a changé : revoir cet essai"
+            );
             for (nom, texte) in &compte {
                 m.ecrire(&format!(".config/systemd/user/{nom}"), texte);
             }
-            let constats = persistance_dans(
-                &m.racine,
-                &m.chemin(""),
-                |v| (v == "XDG_RUNTIME_DIR").then(|| "/run/user/1000".into()),
-                None,
-                None,
-            );
-            for c in &constats {
-                assert_eq!(c.probleme, None, "anglais {anglais} : {} {:?}", c.regle, c.message);
+            let lever = || {
+                persistance_dans(
+                    &m.racine,
+                    &m.chemin(""),
+                    |v| (v == "XDG_RUNTIME_DIR").then(|| "/run/user/1000".into()),
+                    None,
+                    None,
+                )
+            };
+            for c in &lever() {
+                assert_eq!(
+                    c.probleme, None,
+                    "{exe}, fat {fat}, anglais {anglais} : {} {:?}",
+                    c.regle, c.message
+                );
             }
+            // La même sauvegarde, une seule source changée pour un dossier de démarrage : plus la forme exacte, levée.
+            let hostile = compte[7]
+                .1
+                .replace("\"/home/alice/Documents\"", "\"/home/alice/Documents/charge/\"");
+            assert_ne!(hostile, compte[7].1);
+            m.ecrire(
+                &format!(".config/systemd/user/{}", crate::sauvegarde::SERVICE),
+                &hostile,
+            );
+            assert!(
+                lever().iter().any(|c| c.probleme.is_some()),
+                "{exe}, fat {fat} : la sauvegarde changée doit lever"
+            );
+            // L'unité exacte, mais « rsync » est un lien vers un shell : lève.
+            m.ecrire(
+                &format!(".config/systemd/user/{}", crate::sauvegarde::SERVICE),
+                &compte[7].1,
+            );
+            std::fs::remove_file(m.racine.join("usr/bin/rsync")).unwrap();
+            std::os::unix::fs::symlink("sh", m.racine.join("usr/bin/rsync")).unwrap();
+            assert!(
+                lever().iter().any(|c| c.probleme.is_some()),
+                "{exe}, fat {fat} : un rsync qui est un shell doit lever"
+            );
         }
     }
 
@@ -7805,15 +7863,27 @@ mod tests {
             ("CPUQuota=5.%", "/usr/bin/true", false),
             ("CPUQuota=-5%", "/usr/bin/true", false),
             ("MemoryMax=%t/x%", "/usr/bin/true", false),
+            // S-1 (relecture 0.94) : aucune règle générale sur rsync. L'unité hostile du rapport, et la même copie
+            // aux options exactes de la sauvegarde hors de l'unité que Vanguard pose, restent des lanceurs.
             (
                 "Nice=10",
-                "/usr/bin/rsync -a --no-specials --no-devices --exclude=.cache /home/alice/Documents /run/media/alice/Cle/x/",
-                true,
+                "/usr/bin/rsync -a /home/alice/Documents/charge/ /home/alice/.config/autostart/",
+                false,
+            ),
+            (
+                "Nice=10",
+                "/usr/bin/rsync -a /home/alice/Documents/charge/ /home/alice/.config/systemd/user/",
+                false,
+            ),
+            (
+                "Nice=10",
+                "/usr/bin/rsync -a --no-specials --no-devices --exclude=.cache --exclude=node_modules --exclude=.vanguard-copie-en-cours /home/alice/Documents /run/media/alice/Cle/Sauvegarde-Vanguard/pc/",
+                false,
             ),
             (
                 "Nice=10",
                 "/usr/bin/rsync -rt --modify-window=2 /home/alice/Documents /mnt/x/",
-                true,
+                false,
             ),
             (
                 "Nice=10",

@@ -825,7 +825,6 @@ fn lancee(s: &Systeme, mots: &[String], profondeur: u32) -> Result<(), Ecart> {
         "uwsm" => uwsm(s, args, p),
         "xdg-terminal-exec" => terminal_xdg(s, args, p),
         "hyprctl" => hyprctl(s, args),
-        "rsync" => rsync(s, args),
         "flatpak" => flatpak(s, args),
         "systemctl" => systemctl(s, args),
         "dbus-update-activation-environment" => dbus_update(s, args),
@@ -845,31 +844,17 @@ fn lancee(s: &Systeme, mots: &[String], profondeur: u32) -> Result<(), Ecart> {
     }
 }
 
-/// « rsync » en copie locale, la forme de la sauvegarde de Vanguard : les seules options qui ne lancent rien et ne
-/// lisent aucun fichier de règles (« -a », « -rt », « --no-specials », « --no-devices », « --modify-window=N »,
-/// « --exclude=motif »), puis des chemins absolus (un « hôte:chemin » passerait par un shell distant). Toute autre
-/// option (« -e », « --rsh », « --rsync-path », « --filter »…) : lanceur, comme avant.
-fn rsync(s: &Systeme, args: &[String]) -> Result<(), Ecart> {
-    for a in args {
-        if let Some(n) = a.strip_prefix("--modify-window=") {
-            if n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) {
-                return Err(Ecart::Lanceur);
-            }
-            continue;
-        }
-        if let Some(motif) = a.strip_prefix("--exclude=") {
-            argument_sur(s, motif)?;
-            continue;
-        }
-        if ["-a", "-rt", "--no-specials", "--no-devices"].contains(&a.as_str()) {
-            continue;
-        }
-        if !a.starts_with('/') {
-            return Err(Ecart::Lanceur);
-        }
-        argument_sur(s, a)?;
+/// Le rsync de la sauvegarde que Vanguard pose, reconnu à ses `mots` exacts (`Codes::sauvegarde`) : un vrai rsync
+/// (son nom, liens suivis) à un emplacement permis, des chemins sans dossier dangereux. Ailleurs, rsync reste un
+/// lanceur (« -e », « --rsh », « --rsync-path », « --filter ») : aucune autre forme ne se tait (relecture 0.94, S-1).
+fn sauvegarde_posee(s: &Systeme, mots: &[String]) -> Result<(), Ecart> {
+    let (programme, args) = mots.split_first().ok_or(Ecart::Forme)?;
+    s.programme(programme)?;
+    if crate::machine::chasse::nom_de_fichier(programme) != "rsync" || s.nom_reel(programme).as_deref() != Some("rsync")
+    {
+        return Err(Ecart::Lanceur);
     }
-    Ok(())
+    args.iter().try_for_each(|a| argument_sur(s, a))
 }
 
 /// Les arguments d'un programme ordinaire : sans chemin dangereux, sans programme ni ligne de commande en argument
@@ -1626,6 +1611,10 @@ pub(super) fn exec_systemd(s: &Systeme, valeur: &str, codes: Option<&Codes>) -> 
         } else {
             variables_de_systemd(&mots, codes.map(|c| &c.variables), s.maison)?
         };
+        if codes.and_then(|c| c.sauvegarde.as_ref()) == Some(&mots) {
+            sauvegarde_posee(s, &mots)?;
+            continue;
+        }
         lancee(s, &mots, 0)?;
     }
     Ok(())
