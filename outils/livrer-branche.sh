@@ -11,8 +11,9 @@
 # déploiement.
 # Le garde-fou de confidentialité est celui de master (git show), jamais celui du lot jugé : un lot qui le viderait
 # ne se rendrait pas vert lui-même (comme la CI depuis 50f78225).
-# Limite : un commit posé sur master pendant deployer.sh lui-même partirait avec lui (deployer.sh fait ses propres
-# commits, liste des fabricants, captures, page des fonctions : sa tête n'est pas celle vérifiée, à borner en 0.95).
+# deployer.sh reçoit le commit vérifié (VANGUARD_COMMIT_VERIFIE) : il refuse de partir d'un autre, et n'envoie sur
+# GitHub que lui plus ses propres commits (liste des fabricants, captures, page des fonctions) ; un commit posé sur
+# master pendant le déploiement fait refuser l'envoi (envoi_borne).
 # S'arrête à la première étape en échec, sans rien fusionner. Le déploiement passe avant le ménage : un ménage raté
 # (worktree verrouillé, branche gardée) est dit, sans défaire une livraison faite.
 # Essais : outils/essais-livrer-branche.sh (dépôts jetables, faux verifier.sh et deployer.sh).
@@ -111,7 +112,9 @@ git merge -q --ff-only "$SHA"
   echo "  master le contient déjà ; relancer la livraison sur la branche rebasée sur ce master"
   exit 1
 }
-outils/deployer.sh >"$JOURNAUX/deploiement-$NOM.log" 2>&1 || {
+# Le commit vérifié lui est donné : deployer.sh refuse de partir d'un autre (une fenêtre entre cette garde et sa
+# lecture de HEAD), et n'envoie rien de plus que ses propres commits (envoi_borne).
+VANGUARD_COMMIT_VERIFIE=$SHA outils/deployer.sh >"$JOURNAUX/deploiement-$NOM.log" 2>&1 || {
   tail -30 "$JOURNAUX/deploiement-$NOM.log"
   echo "✖ déploiement en échec : master contient ${SHA:0:12}, worktree et branche gardés"
   exit 1

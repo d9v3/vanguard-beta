@@ -22,6 +22,9 @@
 #  13. git status qui échoue (index abîmé), dans l'arbre principal ou dans le worktree : refus avant la vérification,
 #      jamais un arbre pris pour propre.
 #  14. Le garde-fou vidé par le lot même : c'est celui de master qui juge (refus) ; master sans garde-fou : refus.
+#  15. deployer.sh (envoi_borne, lue telle quelle) : n'envoie que le départ et ses propres commits (liste des
+#      fabricants, captures, page des fonctions) ; un commit d'ailleurs, une fusion, un master réécrit : refus ; il
+#      refuse de partir d'un autre commit que celui que livrer-branche.sh a vérifié.
 # Lancé par outils/verifier.sh.
 #   outils/essais-livrer-branche.sh
 set -uo pipefail
@@ -70,6 +73,7 @@ FAUX
   cat >"$DEPOT/outils/deployer.sh" <<'FAUX'
 #!/usr/bin/env bash
 git rev-parse HEAD >"$ESSAI_CAS/vu-deploye"
+printf '%s' "${VANGUARD_COMMIT_VERIFIE:-}" >"$ESSAI_CAS/vu-commit-verifie"
 if [[ -e $ESSAI_CAS/consigne-deploi-branche ]]; then
   git update-ref refs/heads/lot "$(git commit-tree "HEAD^{tree}" -p HEAD -m "pendant le déploiement")"
 fi
@@ -111,8 +115,8 @@ livrer lot "$LOT"
 VERIFIE=$(cat "$CAS/vu-verifie" 2>/dev/null)
 if ((CODE == 0)) && [[ -n $VERIFIE && $(tete master) == "$VERIFIE" && $(cat "$CAS/vu-deploye") == "$VERIFIE" ]] &&
   [[ $(git -C "$DEPOT" log --format=%s master | tr '\n' '|') == "le lot (v0.0.1)|fusion du jour|départ|" ]] && [[ ! -d $LOT ]] && ! tete refs/heads/lot >/dev/null &&
-  [[ $(cat "$CAS/vu-plage") == "--plage origin/master $VERIFIE" ]]; then
-  ok "livraison ordinaire : le commit vérifié (après rebase) est fusionné et déployé, puis le ménage"
+  [[ $(cat "$CAS/vu-plage") == "--plage origin/master $VERIFIE" && $(cat "$CAS/vu-commit-verifie") == "$VERIFIE" ]]; then
+  ok "livraison ordinaire : le commit vérifié (après rebase) est fusionné et déployé (et donné à deployer.sh), puis le ménage"
 else
   ko "livraison ordinaire (code $CODE) : $(tail -n 3 <<<"$SORTIE")"
 fi
@@ -344,6 +348,60 @@ if ((CODE != 0)) && rien_livre "$DEPART" && [[ ! -e $CAS/vu-verifie ]] &&
   ok "master sans garde-fou : refus, pas de repli sur celui du lot"
 else
   ko "master sans garde-fou (code $CODE) : $(tail -n 3 <<<"$SORTIE")"
+fi
+
+# 15. deployer.sh : ce qui part sur GitHub est borné au départ plus ses propres commits (envoi_borne, lue telle
+# quelle dans le vrai deployer.sh, avec la garde du commit vérifié), dans un dépôt jetable.
+BORNE=$(awk '/^FICHIERS_DU_DEPLOIEMENT=/,/^VENU_DE_GITHUB=""$/' "$RACINE/outils/deployer.sh")
+grep -q '^envoi_borne()' <<<"$BORNE" || ko "envoi_borne introuvable dans outils/deployer.sh"
+D=$TRAVAIL/deployer-borne
+git init -q -b master "$D"
+mkdir -p "$D/src" "$D/docs" "$D/assets/captures"
+echo un >"$D/src/main.rs" && git -C "$D" add -A && git -C "$D" commit -qm départ
+DEPART_B=$(git -C "$D" rev-parse HEAD)
+# borne : envoi_borne lancée dans le dépôt jetable, depuis le départ ; sa sortie dans SORTIE.
+borne() { SORTIE=$(cd "$D" && set -euo pipefail && eval "$(sed '/^DEPART=/,$d' <<<"$BORNE")" && envoi_borne "$DEPART_B" 2>&1); }
+engager() { # message fichier…
+  local m=$1
+  shift
+  for f in "$@"; do mkdir -p "$D/$(dirname "$f")" && echo "$m" >>"$D/$f"; done
+  git -C "$D" add -A && git -C "$D" commit -qm "$m"
+}
+refus=()
+borne || refus+=("départ = tête refusé")
+engager fabricants assets/oui.tsv
+engager captures assets/captures/menu.png assets/partage.png
+engager page docs/index.html
+borne || refus+=("commits de deployer.sh refusés : $SORTIE")
+FIN_PROPRE=$(git -C "$D" rev-parse HEAD)
+engager "une autre fenêtre" src/main.rs
+borne && refus+=("commit sur src accepté")
+grep -q '^    src/main.rs$' <<<"$SORTIE" || refus+=("src/main.rs pas nommé")
+git -C "$D" reset -q --hard "$FIN_PROPRE"
+engager "ajouté" src/neuf.rs
+git -C "$D" rm -q src/neuf.rs && git -C "$D" commit -qm "retiré"
+borne && refus+=("fichier ajouté puis retiré accepté")
+git -C "$D" reset -q --hard "$FIN_PROPRE"
+engager "à côté" assets/oui.tsv.bak docs/index.html.orig
+borne && refus+=("nom qui commence comme un fichier permis accepté")
+git -C "$D" reset -q --hard "$FIN_PROPRE"
+engager "coupé" $'src/a\nassets/oui.tsv'
+borne && refus+=("nom coupé par un retour à la ligne accepté")
+git -C "$D" reset -q --hard "$FIN_PROPRE"
+git -C "$D" checkout -q -b cote "$DEPART_B" && engager "à côté" assets/captures/autre.png && git -C "$D" checkout -q master
+git -C "$D" merge -q --no-ff -m fusion cote
+borne && refus+=("fusion acceptée")
+git -C "$D" reset -q --hard "$DEPART_B~0" && git -C "$D" commit -q --amend -m "départ réécrit"
+borne && refus+=("master qui ne descend plus du départ accepté")
+git -C "$D" reset -q --hard "$FIN_PROPRE"
+CODE_V=$(cd "$D" && (set -euo pipefail && VANGUARD_COMMIT_VERIFIE=$DEPART_B eval "$BORNE") >/dev/null 2>&1; echo $?)
+((CODE_V != 0)) || refus+=("départ autre que le commit vérifié accepté")
+CODE_V=$(cd "$D" && (set -euo pipefail && VANGUARD_COMMIT_VERIFIE=$FIN_PROPRE eval "$BORNE") >/dev/null 2>&1; echo $?)
+((CODE_V == 0)) || refus+=("départ au commit vérifié refusé (code $CODE_V)")
+if ((${#refus[@]} == 0)); then
+  ok "deployer.sh : envoi borné au départ et à ses propres commits ; départ = commit vérifié"
+else
+  ko "deployer.sh, envoi borné : ${refus[*]}"
 fi
 
 ((ECHECS == 0)) || { echo "$ECHECS essai(s) en échec."; exit 1; }

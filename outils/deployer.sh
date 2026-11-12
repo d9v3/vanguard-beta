@@ -235,6 +235,34 @@ ci_verte() {
   [[ $n =~ ^[1-9][0-9]*$ ]]
 }
 
+# Ce qui part sur GitHub est borné : le commit de départ (noté ici, puis après une récupération de GitHub à CI verte),
+# plus les seuls commits que deployer.sh fait lui-même, qui ne touchent que FICHIERS_DU_DEPLOIEMENT. Un commit posé
+# sur master pendant le déploiement (une autre fenêtre) ferait partir du code que personne n'a vérifié : l'envoi est
+# alors refusé (envoi_borne, lue telle quelle par outils/essais-livrer-branche.sh).
+FICHIERS_DU_DEPLOIEMENT='assets/oui\.tsv|assets/captures/.+|assets/partage\.png|docs/index\.html'
+envoi_borne() { # commit de départ
+  local fusions fichiers hors
+  git merge-base --is-ancestor "$1" HEAD 2>/dev/null ||
+    { echo "  master ($(git rev-parse --short=12 HEAD)) ne descend plus du départ (${1:0:12})"; return 1; }
+  fusions=$(git rev-list --merges "$1..HEAD") || { echo "  git rev-list a échoué : rien n'est conclu"; return 1; }
+  [[ -z $fusions ]] || { echo "  une fusion a été posée sur master pendant le déploiement"; return 1; }
+  # Chaque commit, un à un (un fichier changé puis remis compte aussi) ; -z puis tr : un nom coupé par un retour à
+  # la ligne donne deux noms, dont un hors de la liste, jamais un nom accepté par erreur.
+  fichiers=$(git log --format= --name-only --no-renames -z "$1..HEAD" | tr '\0' '\n') ||
+    { echo "  git log a échoué : rien n'est conclu"; return 1; }
+  hors=$(grep -vxE "$FICHIERS_DU_DEPLOIEMENT" <<<"$fichiers" | grep -v '^$' || true)
+  [[ -z $hors ]] || {
+    echo "  commit(s) posé(s) sur master pendant le déploiement, hors de ce que deployer.sh committe :"
+    head -n 10 <<<"$hors" | sed 's/^/    /'
+    return 1
+  }
+}
+DEPART=$(git rev-parse HEAD)
+# Lancé par outils/livrer-branche.sh : le départ est le commit qu'il a vérifié, sinon rien ne part d'ici.
+if [[ -n ${VANGUARD_COMMIT_VERIFIE:-} && $DEPART != "$VANGUARD_COMMIT_VERIFIE" ]]; then
+  echo "✖ master (${DEPART:0:12}) n'est plus le commit vérifié (${VANGUARD_COMMIT_VERIFIE:0:12}) : rien n'est déployé."
+  exit 1
+fi
 VENU_DE_GITHUB=""
 if [[ $MODE == --branchement ]]; then
   # Dernière version de GitHub (code modifié depuis un autre ordinateur, puis poussé). Récupérée seulement sans
@@ -248,7 +276,8 @@ if [[ $MODE == --branchement ]]; then
         VERTE=0
         ci_verte "$DISTANT" || VERTE=$?
         if ((VERTE == 0)); then
-          git merge -q --ff-only "$DISTANT" && VENU_DE_GITHUB=1 && echo "Dernière version récupérée de GitHub."
+          git merge -q --ff-only "$DISTANT" && VENU_DE_GITHUB=1 && DEPART=$DISTANT &&
+            echo "Dernière version récupérée de GitHub."
         elif ((VERTE == 2 || VERTE == 3)); then
           if ((VERTE == 2)); then
             POURQUOI="gh n'a aucun compte GitHub connecté pour cet utilisateur (gh auth login, une fois)"
@@ -378,6 +407,10 @@ install -Dm755 "$LINUX" "$HOME/.cargo/bin/vanguard"
 T_ENVOI=$SECONDS
 if [[ -n $LOCAL ]]; then
   echo "Rien n'est envoyé sur GitHub (déploiement local)."
+elif git remote get-url origin >/dev/null 2>&1 && ! HORS_DEPART=$(envoi_borne "$DEPART"); then
+  echo "Rien n'est envoyé sur GitHub : master a reçu, pendant le déploiement, plus que les commits de deployer.sh."
+  printf '%s\n' "$HORS_DEPART"
+  echo "  À vérifier (outils/verifier.sh), puis relancer outils/deployer.sh."
 elif git remote get-url origin >/dev/null 2>&1; then
   # Code 1 avec son constat : un détail trouvé ; tout autre code (2 : rien conclu), ou un code 1 sans constat (Python
   # qui plante, sa trace) : le garde-fou n'a pas pu juger, dit tel quel (relecture 0.94, N-1).
