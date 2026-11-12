@@ -679,6 +679,52 @@ rm "$BASE_J" && mkdir "$BASE_J"
 machine "rien d'ici" 2>/dev/null
 noter 2 $? "base des appareils illisible (un dossier) : rien n'est conclu"
 rmdir "$BASE_J"
+# Présente mais injoignable (relecture 0.95, V-1) : Path.exists() et is_dir() disent « absente » pour toute erreur ;
+# seule l'absence vraie (FileNotFoundError) est « rien à lire ». Lien mort, en boucle, dossier fermé : code 2.
+# sans_trace <code> <quoi> : le code attendu, et une phrase, jamais une trace Python.
+sans_trace() {
+  local code=$?
+  grep -q '^Traceback' <<<"$SORTIE" && code="$code, trace Python"
+  grep -q '^confidentialité : ' <<<"$SORTIE" || code="$code, pas de phrase"
+  noter "$1" "$code" "$2"
+}
+LISTE_J=$MAISON_J/.config/confidentialite/confidentiel.txt
+ln -s "$TRAVAIL/cible-demontee/confidentiel.txt" "$LISTE_J"
+SORTIE=$(machine "rien d'ici" 2>&1)
+sans_trace 2 "liste commune en lien mort (cible démontée) : rien n'est conclu"
+rm "$LISTE_J" && ln -s confidentiel.txt "$LISTE_J"
+SORTIE=$(machine "rien d'ici" 2>&1)
+sans_trace 2 "liste commune en lien qui boucle : rien n'est conclu"
+rm "$LISTE_J" && rmdir "$MAISON_J/.config/confidentialite"
+ln -s "$TRAVAIL/cle-retiree" "$MAISON_J/.config/confidentialite"
+SORTIE=$(machine "rien d'ici" 2>&1)
+sans_trace 2 "dossier de la liste commune en lien mort : rien n'est conclu"
+rm "$MAISON_J/.config/confidentialite" && mkdir "$MAISON_J/.config/confidentialite"
+printf 'Gaspard\n\xe9t\xe9\n' >"$LISTE_J"
+SORTIE=$(machine "rien d'ici" 2>&1)
+sans_trace 2 "liste commune pas en UTF-8 : rien n'est conclu, avec une phrase"
+rm "$LISTE_J"
+ln -s "$TRAVAIL/cible-demontee/appareils.json" "$BASE_J"
+SORTIE=$(machine "rien d'ici" 2>&1)
+sans_trace 2 "base des appareils en lien mort : rien n'est conclu"
+rm "$BASE_J"
+printf '{"reseaux": {"r1": {"nom": 42, "appareils": {}}}}\n' >"$BASE_J"
+SORTIE=$(machine "rien d'ici" 2>&1)
+sans_trace 2 "base des appareils, un nom qui n'est pas du texte : rien n'est conclu, avec une phrase"
+rm "$BASE_J"
+chmod 000 "$MAISON_J/.config/confidentialite" "$MAISON_J/.local/share/vanguard"
+if ls "$MAISON_J/.config/confidentialite" >/dev/null 2>&1; then
+  echo "  (sauté : dossier fermé lisible quand même ici, administrateur ou espace de noms : dossiers 000 pas essayés)"
+else
+  SORTIE=$(machine "rien d'ici" 2>&1)
+  sans_trace 2 "dossier de la liste commune fermé (000) : rien n'est conclu"
+  chmod 755 "$MAISON_J/.config/confidentialite"
+  SORTIE=$(machine "rien d'ici" 2>&1)
+  sans_trace 2 "dossier des données de Vanguard fermé (000) : rien n'est conclu"
+fi
+chmod 755 "$MAISON_J/.config/confidentialite" "$MAISON_J/.local/share/vanguard"
+machine "rien d'ici" 2>/dev/null
+noter 0 $? "témoin : dossiers rouverts, sans liste ni base, un texte propre passe"
 nmcli_faux 0 "$(printf 'Chez Lavoie:802-11-wireless\n')"
 SORTIE=$(machine "branché sur Chez Lavoie" 2>&1)
 noter 1 "$(refus_dit $?)" "témoin : un réseau enregistré dans NetworkManager est cherché"

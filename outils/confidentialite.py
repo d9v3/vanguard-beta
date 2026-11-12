@@ -113,10 +113,39 @@ def compte() -> str:
     return os.environ.get("USER") or getpass.getuser()
 
 
+def present(chemin: Path) -> bool:
+    """Vrai si le chemin est là (un lien compris, même mort : sa lecture échouera, et rien ne sera conclu). Faux
+    seulement s'il est vraiment absent. Path.exists() et is_dir() répondent « faux » pour toute erreur : une liste
+    derrière un dossier fermé, un lien mort ou en boucle passerait pour « pas de liste », et la liste des termes serait
+    plus courte sans le dire. Ici, toute autre erreur arrête tout (code 2), comme un dossier parent en lien mort."""
+    try:
+        os.lstat(chemin)
+        return True
+    except FileNotFoundError:
+        pass
+    except OSError as erreur:
+        rien_conclu(f"{chemin} est injoignable ({erreur.strerror}) : il n'est pas lu ; rien n'est conclu.")
+    # Absent : vrai seulement si le plus proche parent qui existe mène quelque part (pas un lien mort).
+    for parent in chemin.parents:
+        try:
+            os.lstat(parent)
+        except FileNotFoundError:
+            continue
+        except OSError as erreur:
+            rien_conclu(f"{parent} est injoignable ({erreur.strerror}) : {chemin} n'est pas lu ; rien n'est conclu.")
+        try:
+            os.stat(parent)
+        except OSError as erreur:
+            rien_conclu(f"{parent} est un lien qui ne mène nulle part ({erreur.strerror}) : {chemin} n'est pas lu ; "
+                        "rien n'est conclu.")
+        return False
+    return False
+
+
 def dossiers_vanguard():
     """Dossier des données de cet ordinateur, et celui de la clé branchée : la base des appareils vit sur les deux."""
     base = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
-    local = base / "vanguard" if (base / "vanguard").is_dir() else None
+    local = base / "vanguard" if present(base / "vanguard") else None
     cle = None
     for media in (Path("/run/media") / compte(), Path("/media") / compte()):
         try:
@@ -134,15 +163,19 @@ def appareils(*bases):
     for base in bases:
         # Absente : aucun appareil connu ici. Présente mais illisible ou abîmée : la liste des termes serait plus
         # courte sans le dire, donc rien n'est conclu.
-        if not base.exists():
+        if not present(base):
             continue
         try:
-            texte = base.read_text()
+            texte = base.read_text(encoding="utf-8")
             donnees = json.loads(texte)
+            trouves = []
             for reseau in donnees.get("reseaux", {}).values():
-                noms.add(reseau.get("nom") or "")
+                trouves.append(reseau.get("nom") or "")
                 for appareil in reseau.get("appareils", {}).values():
-                    noms |= {appareil.get(champ) or "" for champ in ("nom", "surnom")}
+                    trouves += [appareil.get(champ) or "" for champ in ("nom", "surnom")]
+            if not all(isinstance(n, str) for n in trouves):
+                raise TypeError("un nom ou un surnom qui n'est pas du texte")
+            noms |= set(trouves)
         except (OSError, ValueError, AttributeError, TypeError) as erreur:
             rien_conclu(f"{base} est illisible ou abîmé ({erreur}) : ses appareils ne sont pas cherchés ; rien n'est "
                         "conclu.")
@@ -195,8 +228,13 @@ def termes():
 
     for fichier, origine in LISTES:
         # Absente : rien à y lire. Présente mais illisible : OSError, rien n'est conclu (code 2, voir main).
-        if fichier.exists():
-            for ligne in fichier.read_text().splitlines():
+        if present(fichier):
+            try:
+                texte = fichier.read_text(encoding="utf-8")
+            except UnicodeDecodeError as erreur:
+                rien_conclu(f"{fichier} n'est pas en UTF-8 ({erreur.reason}, octet {erreur.start}) : la {origine} "
+                            "n'est pas lue ; rien n'est conclu.")
+            for ligne in texte.splitlines():
                 if ligne.strip() and not ligne.lstrip().startswith("#"):
                     ajouter(ligne.strip(), origine)
     for cle in ("user.email", "user.name"):
