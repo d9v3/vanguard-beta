@@ -1549,48 +1549,65 @@ fn config_du_compte() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME").map_or_else(|| crate::socle::maison().join(".config"), PathBuf::from)
 }
 
-/// Les dossiers de compléments de l'unité `nom` (`complements_d_unite`), dans l'ordre où systemd les prend pour un
-/// même dossier d'unités : le sien (« nom.service.d ») d'abord, puis du plus long au plus court (préfixes
-/// « a-b-.service.d », « a-.service.d », gabarit, enfin « service.d ») : à nom de fichier égal, le plus précis passe.
+/// Les dossiers de compléments de l'unité `nom` (`complements_d_unite`) hors celui de son type (« service.d »), dans
+/// l'ordre où systemd les prend pour un même dossier d'unités : le sien (« nom.service.d ») d'abord, puis du plus
+/// long au plus court (préfixes « a-b-.service.d », « a-.service.d », gabarit) : à nom de fichier égal, le plus
+/// précis passe.
 fn dossiers_de_complements(nom: &str) -> Vec<String> {
     let mut l = crate::machine::linux::complements_d_unite(nom);
     let propre = format!("{nom}.d");
+    let genre = dossier_du_type(nom);
+    l.retain(|c| Some(c) != genre.as_ref());
     l.sort_by_key(|c| (*c != propre, std::cmp::Reverse(c.len())));
     l
+}
+
+/// Le dossier de compléments du type de l'unité `nom` (« service.d » pour « x.service »).
+fn dossier_du_type(nom: &str) -> Option<String> {
+    nom.rsplit_once('.').map(|(_, genre)| format!("{genre}.d"))
 }
 
 /// Au plus tant de compléments lus pour une unité : au-delà, rien n'est conclu.
 const COMPLEMENTS_MAX: usize = 256;
 
 /// Les compléments (« *.conf ») que systemd applique à l'unité connue sous `noms` (son nom et ses alias,
-/// `noms_d_unite`), cherchés dans `dossiers` du plus prioritaire au moins : un même nom de fichier ne se prend qu'une
-/// fois, au dossier qui passe devant (il masque les autres) ; puis rangés par nom de fichier, l'ordre où systemd les
+/// `noms_d_unite`), cherchés comme systemd (`unit_file_find_dropin_paths`, V-4 de la relecture 0.95, vu avec
+/// systemd-analyze verify) : pour chaque nom, chaque dossier de `dossiers` du plus prioritaire au moins, ses
+/// dossiers à lui (`dossiers_de_complements`) ; puis seulement le dossier du type (« service.d ») dans chaque
+/// dossier. Un même nom de fichier ne se prend qu'une fois, au premier dossier de cet ordre (il masque les
+/// autres) : « note.service.d » d'un dossier du système passe devant « service.d » du compte. Puis rangés par nom de fichier, l'ordre où systemd les
 /// applique, chacun avec son texte (un lien vers /dev/null masque : vide). `Err` : le premier dossier de compléments
 /// ou complément qui ne se lit pas borné (`lire_du_systeme` : 64 Kio, UTF-8, sans attendre un tube), ou plus de
 /// `COMPLEMENTS_MAX` ; rien n'est conclu, jamais « aucun complément ».
 fn complements_lus(dossiers: &[PathBuf], noms: &[String]) -> Result<Vec<(PathBuf, String)>, PathBuf> {
     let mut pris: Vec<(std::ffi::OsString, PathBuf)> = Vec::new();
-    for d in dossiers {
-        for nom in noms {
-            for c in dossiers_de_complements(nom) {
-                let c = d.join(c);
-                let entrees = match std::fs::read_dir(&c) {
-                    Ok(e) => e,
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                    Err(_) => return Err(c),
-                };
-                for e in entrees {
-                    let e = e.map_err(|_| c.clone())?;
-                    let f = e.file_name();
-                    if Path::new(&f).extension().is_none_or(|x| x != "conf") || pris.iter().any(|(n, _)| *n == f) {
-                        continue;
-                    }
-                    if pris.len() >= COMPLEMENTS_MAX {
-                        return Err(c);
-                    }
-                    pris.push((f, e.path()));
-                }
+    let mut ordre: Vec<PathBuf> = noms
+        .iter()
+        .flat_map(|nom| {
+            dossiers
+                .iter()
+                .flat_map(move |d| dossiers_de_complements(nom).into_iter().map(move |c| d.join(c)))
+        })
+        .collect();
+    if let Some(genre) = noms.first().and_then(|n| dossier_du_type(n)) {
+        ordre.extend(dossiers.iter().map(|d| d.join(&genre)));
+    }
+    for c in ordre {
+        let entrees = match std::fs::read_dir(&c) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return Err(c),
+        };
+        for e in entrees {
+            let e = e.map_err(|_| c.clone())?;
+            let f = e.file_name();
+            if Path::new(&f).extension().is_none_or(|x| x != "conf") || pris.iter().any(|(n, _)| *n == f) {
+                continue;
             }
+            if pris.len() >= COMPLEMENTS_MAX {
+                return Err(c);
+            }
+            pris.push((f, e.path()));
         }
     }
     pris.sort_by(|a, b| a.0.cmp(&b.0));
@@ -3935,6 +3952,17 @@ mod tests {
         )
         .unwrap();
         assert_eq!(commande().0, "/home/a/tous");
+        std::fs::remove_dir_all(&general).unwrap();
+        // V-4 (relecture 0.95) : un même nom de fichier dans « service.d » du compte (dossier prioritaire) et dans
+        // « note.service.d » du système : systemd prend celui au nom de l'unité, les dossiers de type passent après
+        // tous les autres (vu avec systemd-analyze verify sur des dossiers jetables).
+        std::fs::create_dir_all(&general).unwrap();
+        std::fs::write(
+            general.join("z.conf"),
+            "[Service]\nExecStart=\nExecStart=/home/a/type\n",
+        )
+        .unwrap();
+        assert_eq!(commande().0, "/usr/bin/systeme");
         std::fs::remove_dir_all(&general).unwrap();
         // Masqué par un lien vers /dev/null : vide.
         std::os::unix::fs::symlink("/dev/null", c.join("z.conf")).unwrap();
