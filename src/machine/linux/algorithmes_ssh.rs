@@ -298,12 +298,12 @@ pub(super) fn juger_algorithmes(
 }
 
 /// La configuration de sshd dans l'ordre où sshd la lit : (fichier, partie qui vaut pour toutes les connexions). Un
-/// « Include » insère à sa place les fichiers de ses motifs, triés comme sshd le fait (`inclure` les rend). `None` :
-/// un fichier réservé à root.
+/// « Include » insère à sa place les fichiers de ses motifs, triés comme sshd le fait (`inclure` les rend). `Err` :
+/// un fichier inclus qui ne se lit pas (réservé à root, nom qui n'est pas en UTF-8) : rien à conclure.
 pub(super) fn ordonner(
     principal: &str,
-    mut inclure: impl FnMut(&str) -> Option<Vec<(String, String)>>,
-) -> Option<Vec<(String, String)>> {
+    mut inclure: impl FnMut(&str) -> Result<Vec<(String, String)>, crate::modele::Raison>,
+) -> Result<Vec<(String, String)>, crate::modele::Raison> {
     let mut segments = Vec::new();
     let mut courant = String::new();
     for l in partie_globale_sshd(principal).lines() {
@@ -319,30 +319,28 @@ pub(super) fn ordonner(
         }
     }
     segments.push((SSHD_PRINCIPAL.to_string(), courant));
-    Some(segments)
+    Ok(segments)
 }
 
 const SSHD_PRINCIPAL: &str = "/etc/ssh/sshd_config";
 
 /// Les fichiers d'un motif d'« Include » (relatif à /etc/ssh), triés. Le fichier de Vanguard y figure, même absent,
 /// quand le motif l'inclurait : sa place dit si une ligne qu'il ajoute passerait avant les autres.
-fn inclure(motif: &str) -> Option<Vec<(String, String)>> {
+fn inclure(motif: &str) -> Result<Vec<(String, String)>, crate::modele::Raison> {
+    use crate::modele::Raison;
     let chemin = if motif.starts_with('/') {
         motif.to_string()
     } else {
         format!("/etc/ssh/{motif}")
     };
-    let (dossier, nom) = chemin.rsplit_once('/')?;
+    let Some((dossier, nom)) = chemin.rsplit_once('/') else {
+        return Ok(Vec::new());
+    };
     let mut fichiers: Vec<String> = if nom.contains(['*', '?']) {
-        let Ok(entrees) = std::fs::read_dir(dossier) else {
-            return Some(Vec::new());
-        };
-        let mut f: Vec<String> = entrees
-            .flatten()
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|n| correspond(nom.as_bytes(), n.as_bytes()))
+        let mut f = noms_du_motif(Path::new(dossier), nom)?
+            .into_iter()
             .map(|n| format!("{dossier}/{n}"))
-            .collect();
+            .collect::<Vec<_>>();
         if SSHD_VANGUARD
             .rsplit_once('/')
             .is_some_and(|(d, n)| d == dossier && correspond(nom.as_bytes(), n.as_bytes()))
@@ -359,12 +357,45 @@ fn inclure(motif: &str) -> Option<Vec<(String, String)>> {
     for f in fichiers {
         match std::fs::read_to_string(&f) {
             Ok(t) => segments.push((f, partie_globale_sshd(&t))),
-            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return None,
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return Err(Raison::Droits),
             Err(_) if f == SSHD_VANGUARD => segments.push((f, String::new())),
             Err(_) => {}
         }
     }
-    Some(segments)
+    Ok(segments)
+}
+
+/// Les noms du dossier `dossier` que le motif `nom` d'un « Include » désigne, comparés en octets comme sshd le fait.
+/// Un dossier absent n'en a aucun ; un dossier qui ne se liste pas, ou un nom désigné qui n'est pas en UTF-8, ne se
+/// relirait pas : rien à conclure, jamais un fichier sauté en silence (relecture 0.94, R-1 : converti avec pertes, le
+/// nom désignait un autre fichier, « introuvable », et sa ligne échappait au jugement).
+fn noms_du_motif(dossier: &Path, nom: &str) -> Result<Vec<String>, crate::modele::Raison> {
+    use crate::modele::Raison;
+    use std::os::unix::ffi::OsStrExt as _;
+    let entrees = match std::fs::read_dir(dossier) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return Err(Raison::Droits),
+        Err(e) => return Err(Raison::Illisible(e.to_string())),
+    };
+    let mut noms = Vec::new();
+    for e in entrees {
+        let e = e.map_err(|e| Raison::Illisible(e.to_string()))?;
+        let n = e.file_name();
+        if !correspond(nom.as_bytes(), n.as_bytes()) {
+            continue;
+        }
+        let Some(n) = n.to_str() else {
+            return Err(Raison::Illisible(trf!(
+                "{} : un fichier inclus au nom qui n'est pas en UTF-8 ({})",
+                "{}: an included file whose name is not UTF-8 ({})",
+                dossier.display(),
+                crate::ui::affichable(&n.to_string_lossy())
+            )));
+        };
+        noms.push(n.to_string());
+    }
+    Ok(noms)
 }
 
 /// La version du serveur, sans le lancer : celle du paquet (openssh sous Arch, openssh-server sous Debian, epoch
@@ -419,8 +450,7 @@ pub(crate) fn sshd_en_marche() -> Option<bool> {
 pub(crate) fn sshd_dans_l_ordre() -> Result<Vec<(String, String)>, crate::modele::Echec> {
     let principal =
         std::fs::read_to_string(SSHD_PRINCIPAL).map_err(|e| crate::modele::Echec::io("bilan/sshd-config", &e))?;
-    ordonner(&principal, inclure)
-        .ok_or_else(|| crate::modele::Echec::new("bilan/sshd-config", crate::modele::Raison::Droits))
+    ordonner(&principal, inclure).map_err(|r| crate::modele::Echec::new("bilan/sshd-config", r))
 }
 
 /// La version du client ssh, sans le lancer : celle du paquet (openssh sous Arch, openssh-client sous Debian),
@@ -445,7 +475,7 @@ fn algorithmes_ssh() -> Option<Constat> {
     if !systemd() || sshd_actif() != Some(true) {
         return None;
     }
-    let segments = ordonner(&std::fs::read_to_string(SSHD_PRINCIPAL).ok()?, inclure)?;
+    let segments = ordonner(&std::fs::read_to_string(SSHD_PRINCIPAL).ok()?, inclure).ok()?;
     let trouvailles = trouver(&segments);
     if trouvailles.is_empty() {
         return None;
@@ -503,9 +533,37 @@ pubkeyacceptedalgorithms ssh-ed25519-cert-v01@openssh.com,ecdsa-sha2-nistp256-ce
                 f.push((SSHD_VANGUARD.to_string(), String::new()));
             }
             f.sort();
-            Some(f)
+            Ok(f)
         })
         .unwrap()
+    }
+
+    /// Relecture 0.94, R-1 : un fichier d'« Include » au nom qui n'est pas en UTF-8 est lu par sshd (le motif se
+    /// compare en octets) ; converti avec pertes, il était « introuvable » et sauté, sa ligne jamais jugée. Il rend
+    /// « rien à conclure », comme un dossier qui ne se liste pas ; un dossier absent n'a aucun fichier.
+    #[test]
+    fn include_au_nom_pas_en_utf8_ne_conclut_pas() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let d = crate::essais::temporaire().join(format!("vanguard-ssh-include-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("10-ok.conf"), "Ciphers aes256-ctr\n").unwrap();
+        std::fs::write(d.join("note.txt"), "").unwrap();
+        assert_eq!(noms_du_motif(&d, "*.conf"), Ok(vec!["10-ok.conf".to_string()]));
+        std::fs::write(
+            d.join(std::ffi::OsStr::from_bytes(b"20-\xff.conf")),
+            "Ciphers +3des-cbc\n",
+        )
+        .unwrap();
+        assert!(
+            matches!(noms_du_motif(&d, "*.conf"), Err(crate::modele::Raison::Illisible(_))),
+            "{:?}",
+            noms_du_motif(&d, "*.conf")
+        );
+        // Hors du motif, le même nom ne compte pas.
+        assert_eq!(noms_du_motif(&d, "*.txt"), Ok(vec!["note.txt".to_string()]));
+        assert_eq!(noms_du_motif(&d.join("absent"), "*.conf"), Ok(Vec::new()));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
@@ -617,12 +675,12 @@ pubkeyacceptedalgorithms ssh-ed25519-cert-v01@openssh.com,ecdsa-sha2-nistp256-ce
         );
         // Réglage écrit avant l'Include : lu le premier.
         let s = ordonner("Ciphers +arcfour\nInclude sshd_config.d/*.conf\n", |_| {
-            Some(vec![(SSHD_VANGUARD.to_string(), String::new())])
+            Ok(vec![(SSHD_VANGUARD.to_string(), String::new())])
         })
         .unwrap();
         assert!(ligne_corrigee(&trouver(&s)[0], Some(1), Some((9, 6))).is_none());
         // Pas d'Include du tout : le fichier de Vanguard n'est pas lu.
-        let s = ordonner("Ciphers +arcfour\n", |_| None).unwrap();
+        let s = ordonner("Ciphers +arcfour\n", |_| Err(crate::modele::Raison::Droits)).unwrap();
         let t = trouver(&s);
         assert!(
             !juger_algorithmes(&s, &t, Some((9, 6)))
@@ -689,7 +747,7 @@ pubkeyacceptedalgorithms ssh-ed25519-cert-v01@openssh.com,ecdsa-sha2-nistp256-ce
             "Port 22\nInclude /etc/ssh/sshd_config.d/*.conf\nPermitRootLogin no\nMatch User invite\n  Ciphers +arcfour\n",
             |m| {
                 assert_eq!(m, "/etc/ssh/sshd_config.d/*.conf");
-                Some(vec![("/etc/ssh/sshd_config.d/50-x.conf".into(), "X11Forwarding no\n".into())])
+                Ok(vec![("/etc/ssh/sshd_config.d/50-x.conf".into(), "X11Forwarding no\n".into())])
             },
         )
         .unwrap();
@@ -701,6 +759,11 @@ pubkeyacceptedalgorithms ssh-ed25519-cert-v01@openssh.com,ecdsa-sha2-nistp256-ce
         // Le bloc Match ne vaut que pour certaines connexions.
         assert_eq!(trouver(&s), []);
         // Un fichier réservé à root : rien à conclure.
-        assert!(ordonner("Include /etc/ssh/sshd_config.d/*.conf\n", |_| None).is_none());
+        assert!(
+            ordonner("Include /etc/ssh/sshd_config.d/*.conf\n", |_| Err(
+                crate::modele::Raison::Droits
+            ))
+            .is_err()
+        );
     }
 }

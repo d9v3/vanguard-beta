@@ -1093,7 +1093,10 @@ fn fichiers_de_la_copie(dossier: &Path) -> (Vec<PathBuf>, usize) {
             .flatten()
         {
             let nom = e.file_name().to_string_lossy().into_owned();
-            let chemin = relatif.join(&nom);
+            // Le vrai nom, pas sa conversion avec pertes : un nom qui n'est pas en UTF-8 aurait désigné un autre
+            // fichier, relu « introuvable » (pris pour une copie abîmée), et un tel dossier jamais parcouru
+            // (relecture 0.94, R-1).
+            let chemin = relatif.join(e.file_name());
             let Ok(meta) = std::fs::symlink_metadata(e.path()) else {
                 continue;
             };
@@ -1420,6 +1423,22 @@ mod tests {
         let (fichiers, gros) = fichiers_de_la_copie(&d);
         assert_eq!(fichiers, [Path::new("Vidéos").join("court.txt")]);
         assert_eq!(gros, 1);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Relecture 0.94, R-1 : un fichier, ou un dossier, au nom qui n'est pas en UTF-8 est relevé sous son vrai nom :
+    /// relu, il se retrouve ; ce qu'un tel dossier contient est vu.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn noms_pas_en_utf8_releves_tels_quels() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let d = jetable("noms-pas-utf8");
+        let dossier = Path::new(std::ffi::OsStr::from_bytes(b"Photos-\xfe"));
+        std::fs::create_dir_all(d.join(dossier)).unwrap();
+        std::fs::write(d.join(dossier).join(std::ffi::OsStr::from_bytes(b"ete-\xff.jpg")), b"x").unwrap();
+        let (fichiers, _) = fichiers_de_la_copie(&d);
+        assert_eq!(fichiers.len(), 1, "{fichiers:?}");
+        assert!(d.join(&fichiers[0]).is_file(), "{fichiers:?}");
         let _ = std::fs::remove_dir_all(&d);
     }
 

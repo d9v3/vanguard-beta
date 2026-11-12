@@ -356,16 +356,11 @@ fn lire_fichiers_proxy() -> Vec<(String, Option<Vec<u8>>)> {
     ];
     const MAX: u64 = 1 << 20;
     let mut chemins: Vec<String> = FICHIERS.iter().map(|f| (*f).to_string()).collect();
+    let mut pas_relus = Vec::new();
     for dossier in ["/etc/profile.d", "/etc/environment.d"] {
-        let Ok(entrees) = std::fs::read_dir(dossier) else {
-            continue;
-        };
-        let mut noms: Vec<String> = entrees
-            .filter_map(Result::ok)
-            .map(|e| format!("{dossier}/{}", e.file_name().to_string_lossy()))
-            .collect();
-        noms.sort();
+        let (noms, illisibles) = fichiers_du_dossier(std::path::Path::new(dossier));
         chemins.extend(noms);
+        pas_relus.extend(illisibles);
     }
     chemins
         .into_iter()
@@ -396,7 +391,35 @@ fn lire_fichiers_proxy() -> Vec<(String, Option<Vec<u8>>)> {
                 .is_ok_and(|n| u64::try_from(n).is_ok_and(|n| n <= MAX));
             Some((c, lu.then_some(contenu)))
         })
+        .chain(pas_relus.into_iter().map(|c| (c, None)))
         .collect()
+}
+
+/// Les fichiers d'un dossier que lisent les shells de connexion, triés, et ce qui ne s'y relirait pas : le dossier
+/// lui-même s'il ne se liste pas (absent, il n'a rien), un nom qui n'est pas en UTF-8. Converti avec pertes, ce nom
+/// désignait un autre fichier, « absent », et un proxy qu'il règle échappait au geste (relecture 0.94, R-1).
+#[cfg(target_os = "linux")]
+fn fichiers_du_dossier(dossier: &std::path::Path) -> (Vec<String>, Vec<String>) {
+    let entrees = match std::fs::read_dir(dossier) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (Vec::new(), Vec::new()),
+        Err(_) => return (Vec::new(), vec![dossier.display().to_string()]),
+    };
+    let (mut noms, mut illisibles) = (Vec::new(), Vec::new());
+    for e in entrees {
+        let Ok(e) = e else {
+            illisibles.push(dossier.display().to_string());
+            continue;
+        };
+        match e.path().into_os_string().into_string() {
+            Ok(c) => noms.push(c),
+            Err(c) => illisibles.push(c.to_string_lossy().into_owned()),
+        }
+    }
+    noms.sort();
+    illisibles.sort();
+    illisibles.dedup();
+    (noms, illisibles)
 }
 
 /// Aucune ligne de ce contenu ne règle un proxy (lu comme `gestes_proxy` le lit).
@@ -1920,5 +1943,29 @@ mod tests {
         ) {
             assert_eq!(natif, zone);
         }
+    }
+
+    /// Relecture 0.94, R-1 : un fichier de /etc/profile.d au nom qui n'est pas en UTF-8 est lu par les shells ;
+    /// converti avec pertes, il était « absent » et le proxy qu'il règle échappait au geste. Il est rendu comme ne se
+    /// relisant pas (tout reste à la main), comme un dossier qui ne se liste pas ; un dossier absent n'a rien.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn profil_au_nom_pas_en_utf8_ne_se_relit_pas() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let d = crate::essais::temporaire().join(format!("vanguard-proxy-noms-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("a.sh"), "").unwrap();
+        std::fs::write(
+            d.join(std::ffi::OsStr::from_bytes(b"proxy-\xff.sh")),
+            "export http_proxy=x\n",
+        )
+        .unwrap();
+        let (noms, illisibles) = fichiers_du_dossier(&d);
+        assert_eq!(noms, [d.join("a.sh").display().to_string()]);
+        assert_eq!(illisibles.len(), 1, "{illisibles:?}");
+        assert!(illisibles[0].contains("proxy-"), "{illisibles:?}");
+        assert_eq!(fichiers_du_dossier(&d.join("absent")), (Vec::new(), Vec::new()));
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

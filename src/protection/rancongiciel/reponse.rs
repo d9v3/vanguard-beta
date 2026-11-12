@@ -378,9 +378,18 @@ fn chemin_tenu(pid: u32, debut: u64, inode: (u64, u64)) -> Option<PathBuf> {
     if (m.dev(), m.ino()) != inode {
         return None;
     }
-    let lien = processus::programme(pid)?;
-    let lien = lien.to_string_lossy();
-    Some(PathBuf::from(lien.strip_suffix(" (deleted)").unwrap_or(&lien)))
+    Some(sans_supprime(&processus::programme(pid)?))
+}
+
+/// Le lien de /proc/<pid>/exe sans son « (deleted) », en octets : converti avec pertes, un chemin qui n'est pas en
+/// UTF-8 désignait un autre fichier, que `fichier_tenu` ne retrouvait pas, et le programme échappait à la
+/// quarantaine (relecture 0.94, R-1).
+fn sans_supprime(lien: &Path) -> PathBuf {
+    use std::os::unix::ffi::OsStrExt as _;
+    let octets = lien.as_os_str().as_bytes();
+    PathBuf::from(std::ffi::OsStr::from_bytes(
+        octets.strip_suffix(b" (deleted)").unwrap_or(octets),
+    ))
 }
 
 /// `chemin` désigne-t-il encore l'inode `inode`, en fichier ordinaire ? Sinon (effacé, ou un autre fichier mis à sa
@@ -465,6 +474,27 @@ pub(crate) fn reprendre(pids: &[u32]) {
 #[cfg(test)]
 mod tests {
     use crate::protection::blocage::suites::{Etape, Type, defaut, plancher_tenu};
+
+    /// Relecture 0.94, R-1 : le chemin du programme tenu garde ses octets, « (deleted) » retiré ; un nom qui n'est pas
+    /// en UTF-8 se retrouve tel quel.
+    #[test]
+    fn chemin_tenu_garde_ses_octets() {
+        use std::os::unix::ffi::OsStrExt as _;
+        use std::path::Path;
+        let brut = |o: &[u8]| Path::new(std::ffi::OsStr::from_bytes(o)).to_path_buf();
+        assert_eq!(
+            super::sans_supprime(&brut(b"/tmp/x/chiffre-\xff")),
+            brut(b"/tmp/x/chiffre-\xff")
+        );
+        assert_eq!(
+            super::sans_supprime(&brut(b"/tmp/x/chiffre-\xff (deleted)")),
+            brut(b"/tmp/x/chiffre-\xff")
+        );
+        assert_eq!(
+            super::sans_supprime(Path::new("/usr/bin/a (deleted)")),
+            Path::new("/usr/bin/a")
+        );
+    }
 
     /// La réponse, dans l'ordre où elle agit, est la suite par défaut du rançongiciel, et celle-ci tient le plancher
     /// du certain : changer l'une sans l'autre fait échouer l'essai.

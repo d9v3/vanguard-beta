@@ -386,6 +386,12 @@ fn parcourir_tout(racine: &Path) -> Releve {
             if exclu(&relatif) {
                 continue;
             }
+            // Un nom qui n'est pas en UTF-8 : converti avec pertes, il désignait un autre fichier, que l'empreinte
+            // relisait « introuvable ». Dit illisible, jamais compté inchangé (relecture 0.94, R-1).
+            if e.file_name().to_str().is_none() {
+                illisibles.push(relatif);
+                continue;
+            }
             let Ok(meta) = e.metadata() else {
                 illisibles.push(relatif);
                 continue;
@@ -1609,6 +1615,37 @@ mod tests {
             .unwrap();
         assert!(liste.illisibles.is_empty(), "{:?}", liste.illisibles);
         assert_eq!(liste.fichiers, [(format!("{}cache.bin", "d/".repeat(NIVEAUX)), 1)]);
+        let _ = std::fs::remove_dir_all(&racine);
+    }
+
+    /// Relecture 0.94, R-1 : un fichier ou un dossier de la clé au nom qui n'est pas en UTF-8 n'est ni relevé sous un
+    /// autre nom (son empreinte se relirait « introuvable ») ni sauté : il est illisible, la clé n'est pas inchangée.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn nom_pas_en_utf8_est_illisible() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let racine = dossier_jetable("nom-pas-utf8");
+        std::fs::write(racine.join("autorun.sh"), b"#!/bin/sh").unwrap();
+        std::fs::write(racine.join(std::ffi::OsStr::from_bytes(b"charge-\xff.sh")), b"x").unwrap();
+        std::fs::create_dir_all(racine.join(std::ffi::OsStr::from_bytes(b"dossier-\xfe"))).unwrap();
+        std::fs::write(
+            racine.join(std::ffi::OsStr::from_bytes(b"dossier-\xfe/dedans.sh")),
+            b"x",
+        )
+        .unwrap();
+        let r = parcourir_tout(&racine);
+        assert_eq!(r.fichiers, [("autorun.sh".to_string(), 9)]);
+        assert_eq!(r.illisibles.len(), 2, "{:?}", r.illisibles);
+        assert!(
+            r.illisibles.iter().any(|c| c.starts_with("charge-")),
+            "{:?}",
+            r.illisibles
+        );
+        assert!(
+            r.illisibles.iter().any(|c| c.starts_with("dossier-")),
+            "{:?}",
+            r.illisibles
+        );
         let _ = std::fs::remove_dir_all(&racine);
     }
 
