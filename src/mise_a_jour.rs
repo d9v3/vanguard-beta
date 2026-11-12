@@ -510,31 +510,26 @@ fn installer(octets: &[u8], cible: &Path, attendue: Version, essai: Essai) -> Re
         .into());
     }
     let provisoire = cible.with_file_name(format!("{NOM}.nouveau"));
+    // La copie provisoire est tenue par son descripteur du début à la fin (G-2, campagne 0.95) : par son seul nom,
+    // un programme du compte pouvait l'échanger entre la relecture et le renommage, et « fait » était dit sur un
+    // autre fichier. Relue, essayée et revérifiée par le descripteur ; après le renommage, la cible doit être ce
+    // même fichier, avec ces mêmes octets.
     let ecrite = (|| -> Result<(), String> {
-        use std::io::Write;
-        // Créé neuf (O_EXCL) : un lien posé à ce nom n'est jamais suivi, l'écriture échoue plutôt. Les droits sont
-        // donnés par le descripteur, pas par le chemin.
         let _ = std::fs::remove_file(&provisoire);
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&provisoire)
-            .map_err(|e| e.to_string())?;
-        f.write_all(octets)
-            .and_then(|()| f.sync_all())
-            .map_err(|e| e.to_string())?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            f.set_permissions(std::fs::Permissions::from_mode(0o755))
-                .map_err(|e| e.to_string())?;
-        }
-        drop(f);
-        if lire_octets(&provisoire, TAILLE_MAX).ok().as_deref() != Some(octets) {
+        let f = ecrire_provisoire(&provisoire, octets)?;
+        if !meme_contenu(&f, octets)? {
             return Err(tr!("la copie relue ne correspond pas", "the copy read back does not match").into());
         }
-        essai(&provisoire, attendue)?;
-        mettre_en_place(&provisoire, cible).map_err(|e| e.to_string())
+        essai(&chemin_de(&f, &provisoire), attendue)?;
+        if !meme_contenu(&f, octets)? {
+            return Err(tr!(
+                "la copie provisoire a changé pendant l'essai (un autre programme) : rien n'est remplacé",
+                "the temporary copy changed during the test (another program): nothing is replaced"
+            )
+            .into());
+        }
+        mettre_en_place(&provisoire, cible).map_err(|e| e.to_string())?;
+        verifier_posee(&f, cible, octets)
     })();
     if ecrite.is_err() {
         let _ = std::fs::remove_file(&provisoire);
@@ -557,6 +552,121 @@ fn installer(octets: &[u8], cible: &Path, attendue: Version, essai: Essai) -> Re
     ecrite
 }
 
+/// La copie provisoire créée neuve (O_EXCL : un lien posé à ce nom n'est jamais suivi, l'écriture échoue plutôt),
+/// écrite, mise sur le disque, ses droits donnés par le descripteur. Sous Linux, rouverte en lecture seule par son
+/// descripteur (`/proc/self/fd`, le même fichier même si le nom a changé) et le descripteur d'écriture fermé : un
+/// programme ouvert en écriture ne se lance pas (ETXTBSY), et l'essai passe par ce descripteur.
+fn ecrire_provisoire(provisoire: &Path, octets: &[u8]) -> Result<std::fs::File, String> {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(provisoire)
+        .map_err(|e| e.to_string())?;
+    f.write_all(octets)
+        .and_then(|()| f.sync_all())
+        .map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        f.set_permissions(std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        let lecture = std::fs::File::open(format!("/proc/self/fd/{}", f.as_raw_fd())).map_err(|e| {
+            trf!(
+                "copie provisoire pas rouverte par son descripteur (/proc) : {e}",
+                "temporary copy not reopened through its descriptor (/proc): {e}"
+            )
+        })?;
+        drop(f);
+        Ok(lecture)
+    }
+    // Sous Windows, rouverte en lecture par son nom, en refusant l'écriture aux autres tant qu'elle est tenue
+    // (FILE_SHARE_READ | FILE_SHARE_DELETE : sans le partage de suppression, le renommage échouerait). Un autre
+    // programme qui l'aurait déjà ouverte en écriture fait échouer l'ouverture ; ce qui est ouvert est relu ensuite.
+    #[cfg(windows)]
+    {
+        drop(f);
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        std::os::windows::fs::OpenOptionsExt::share_mode(&mut options, 1 | 4);
+        options.open(provisoire).map_err(|e| e.to_string())
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    Ok(f)
+}
+
+/// Le chemin par lequel l'essai lance la copie provisoire : sous Linux, son descripteur (`/proc/self/fd/N`, hérité
+/// par le processus lancé jusqu'à son exec), jamais le nom, qu'un autre programme peut échanger ; ailleurs, le nom.
+fn chemin_de(f: &std::fs::File, provisoire: &Path) -> PathBuf {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        let _ = provisoire;
+        PathBuf::from(format!("/proc/self/fd/{}", f.as_raw_fd()))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = f;
+        provisoire.to_path_buf()
+    }
+}
+
+/// Le fichier ouvert `f` contient-il exactement `octets` ? Relu depuis le début, jamais plus d'un octet de trop.
+fn meme_contenu(mut f: &std::fs::File, octets: &[u8]) -> Result<bool, String> {
+    use std::io::{Read, Seek};
+    f.seek(std::io::SeekFrom::Start(0)).map_err(|e| e.to_string())?;
+    let mut lu = Vec::with_capacity(octets.len());
+    let borne = u64::try_from(octets.len()).unwrap_or(u64::MAX).saturating_add(1);
+    f.take(borne).read_to_end(&mut lu).map_err(|e| e.to_string())?;
+    Ok(lu == octets)
+}
+
+/// Après le renommage : `cible` est-elle bien la copie écrite (`f`) avec les octets montrés ? Sous Unix, ouverte
+/// sans suivre de lien, le même fichier (appareil et inode) que `f`, puis relue. Sous Windows, relue par une poignée
+/// qui refuse l'écriture et la suppression aux autres le temps de la lecture (l'identité du fichier n'y est pas
+/// comparée : il faudrait l'API de Windows ; les octets, eux, le sont). Sinon, un échec qui le dit : jamais « fait »
+/// sur un autre fichier.
+fn verifier_posee(f: &std::fs::File, cible: &Path, octets: &[u8]) -> Result<(), String> {
+    let changee = || -> String {
+        tr!(
+            "la copie posée n'est pas celle qui a été montrée (changée pendant la mise à jour par un autre programme) : la mise à jour n'est pas faite, relancez-la",
+            "the installed copy is not the one that was shown (changed during the update by another program): the update is not done, run it again"
+        )
+        .into()
+    };
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    // FILE_SHARE_READ seul.
+    #[cfg(windows)]
+    std::os::windows::fs::OpenOptionsExt::share_mode(&mut options, 1);
+    let posee = options.open(cible).map_err(|_| changee())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let (a, b) = (
+            f.metadata().map_err(|e| e.to_string())?,
+            posee.metadata().map_err(|e| e.to_string())?,
+        );
+        if !b.is_file() || a.dev() != b.dev() || a.ino() != b.ino() {
+            return Err(changee());
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = f;
+    if meme_contenu(&posee, octets)? {
+        Ok(())
+    } else {
+        Err(changee())
+    }
+}
+
 /// Lance la nouvelle copie, encore à côté, avec « --version » : la surveillance, l'entretien et le veilleur la
 /// relanceront sans personne devant l'écran, et une copie qui ne démarre pas sur ce système (programme abîmé, mauvaise
 /// architecture) arrêterait la défense sans bruit. Elle doit finir, sans erreur, en disant la version attendue ;
@@ -566,13 +676,11 @@ fn essayer(programme: &Path, attendue: Version) -> Result<(), String> {
     if cfg!(windows) {
         return Ok(());
     }
-    let r = crate::commande::lancer_borne(
-        std::process::Command::new(programme)
-            .arg("--version")
-            .env("VANGUARD_HORS_LIGNE", "1"),
-        30,
-        64 << 10,
-    );
+    let mut c = std::process::Command::new(programme);
+    // Ni LD_PRELOAD ni le reste de l'environnement du compte ne choisissent ce que la copie répond (G-1).
+    #[cfg(unix)]
+    crate::commande::environnement_lecture(&mut c, std::env::vars_os());
+    let r = crate::commande::lancer_borne(c.arg("--version").env("VANGUARD_HORS_LIGNE", "1"), 30, 64 << 10);
     match r {
         Some(r) if r.code == Some(0) && r.sortie.split_whitespace().any(|m| m == ecrire(attendue)) => Ok(()),
         _ => Err(tr!(
@@ -1247,6 +1355,133 @@ mod tests {
         // Une source sans version gravée : rien n'est posé.
         faux_programme(&source, None);
         assert!(poser_copie_dans(&source, &cible, SANS_ESSAI).is_err());
+        let _ = std::fs::remove_dir_all(&racine);
+    }
+
+    /// Le dossier de l'essai d'échange en cours (G-2) : `Essai` est un simple `fn`, sans capture.
+    static ECHANGE: Mutex<Option<PathBuf>> = Mutex::new(None);
+    /// Tenu par chaque essai qui pose `ECHANGE` : les essais tournent en parallèle.
+    static UN_A_LA_FOIS: Mutex<()> = Mutex::new(());
+
+    fn dossier_de_l_echange() -> PathBuf {
+        ECHANGE.lock().unwrap().clone().expect("dossier de l'échange posé")
+    }
+
+    /// Un programme du compte remplace la copie provisoire par son nom, juste après l'essai : un autre fichier, qui
+    /// porte la bonne version.
+    const ECHANGE_PAR_LE_NOM: Essai = |_, _| {
+        let provisoire = dossier_de_l_echange().join(format!("{NOM}.nouveau"));
+        match std::fs::remove_file(&provisoire) {
+            // Sous Windows (Wine), l'effacement d'un fichier tenu reste en attente : le nom n'est pas libéré, et
+            // l'écriture du faux est refusée.
+            Ok(()) => match std::fs::write(&provisoire, avec_entete("faux ", "0.80.0; autre chose")) {
+                Ok(()) => REECRITE.store(true, std::sync::atomic::Ordering::SeqCst),
+                Err(e) if cfg!(windows) && e.raw_os_error() == Some(32) => {}
+                Err(e) => panic!("{e}"),
+            },
+            // ERROR_SHARING_VIOLATION : refusé tant que la mise à jour tient la copie.
+            Err(e) if cfg!(windows) && e.raw_os_error() == Some(32) => {}
+            Err(e) => panic!("{e}"),
+        }
+        Ok(())
+    };
+
+    /// L'échange ou la réécriture a-t-il pu se faire ? Sous Windows, la poignée tenue par la mise à jour le refuse.
+    static REECRITE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    /// Ou il réécrit le même fichier, en place, juste après l'essai.
+    const REECRITE_EN_PLACE: Essai = |_, _| {
+        use std::io::Write;
+        let provisoire = dossier_de_l_echange().join(format!("{NOM}.nouveau"));
+        match std::fs::OpenOptions::new().write(true).open(&provisoire) {
+            Ok(mut f) => {
+                f.write_all(b"FAUX").unwrap();
+                REECRITE.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            // ERROR_SHARING_VIOLATION : refusée tant que la mise à jour tient la copie.
+            Err(e) if cfg!(windows) && e.raw_os_error() == Some(32) => {}
+            Err(e) => panic!("{e}"),
+        }
+        Ok(())
+    };
+
+    /// G-2 (campagne 0.95) : la copie provisoire échangée ou réécrite entre l'essai et la mise en place. Avant, la
+    /// mise à jour disait « fait » et la copie installée était le faux fichier. Maintenant : réécrite avant la mise en
+    /// place, rien n'est remplacé ; échangée par son nom, la copie posée n'est pas reconnue et c'est un échec dit.
+    #[test]
+    fn copie_provisoire_changee_avant_la_mise_en_place_jamais_dite_faite() {
+        let racine = crate::socle::dossier_local().join("essai-echange-provisoire");
+        let _ = std::fs::remove_dir_all(&racine);
+        let source = racine.join("cle").join(NOM);
+        let cible = racine.join("bin").join(NOM);
+        faux_programme(&source, Some("0.80.0"));
+        let montre = std::fs::read(&source).unwrap();
+        let _seul = UN_A_LA_FOIS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        *ECHANGE.lock().unwrap() = Some(racine.join("bin"));
+
+        faux_programme(&cible, Some("0.79.0"));
+        let avant = std::fs::read(&cible).unwrap();
+        REECRITE.store(false, std::sync::atomic::Ordering::SeqCst);
+        let r = remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, REECRITE_EN_PLACE);
+        if REECRITE.load(std::sync::atomic::Ordering::SeqCst) {
+            assert!(r.is_err(), "réécrite en place, et dite faite");
+            assert_eq!(std::fs::read(&cible).unwrap(), avant, "l'ancienne copie n'est plus là");
+        } else {
+            // Windows : la réécriture refusée, la copie montrée est posée telle quelle.
+            assert_eq!(std::env::consts::OS, "windows", "réécriture ni faite ni refusée");
+            assert_eq!(r, Ok(()));
+            assert_eq!(std::fs::read(&cible).unwrap(), montre);
+            faux_programme(&cible, Some("0.79.0"));
+        }
+
+        REECRITE.store(false, std::sync::atomic::Ordering::SeqCst);
+        let r = remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, ECHANGE_PAR_LE_NOM);
+        if REECRITE.load(std::sync::atomic::Ordering::SeqCst) {
+            assert!(r.is_err(), "échangée par son nom, et dite faite");
+            assert_ne!(std::fs::read(&cible).unwrap(), montre);
+        } else {
+            // Windows : l'échange refusé ; la copie montrée est posée, ou rien n'est remplacé (copie en attente
+            // d'effacement), jamais autre chose.
+            assert_eq!(std::env::consts::OS, "windows", "échange ni fait ni refusé");
+            let posee = std::fs::read(&cible).unwrap();
+            assert!(
+                (r.is_ok() && posee == montre) || (r.is_err() && posee == avant),
+                "{r:?}"
+            );
+        }
+        *ECHANGE.lock().unwrap() = None;
+        let _ = std::fs::remove_dir_all(&racine);
+    }
+
+    /// L'essai d'un programme passe par son descripteur, pas par le nom de la copie provisoire : ce qu'il lance est
+    /// ce qui a été écrit, même si le nom pointe ailleurs.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn l_essai_lance_ce_qui_a_ete_ecrit() {
+        fn regarde(chemin: &Path, _: Version) -> Result<(), String> {
+            let provisoire = dossier_de_l_echange().join(format!("{NOM}.nouveau"));
+            std::fs::remove_file(&provisoire).unwrap();
+            std::fs::write(&provisoire, b"autre").unwrap();
+            let lu = std::fs::read(chemin).map_err(|e| e.to_string())?;
+            if version_gravee(&lu) == Some((0, 80, 0, 0)) {
+                Ok(())
+            } else {
+                Err(format!("l'essai voit autre chose : {}", chemin.display()))
+            }
+        }
+        let racine = crate::socle::dossier_local().join("essai-descripteur");
+        let _ = std::fs::remove_dir_all(&racine);
+        let source = racine.join("cle").join(NOM);
+        let cible = racine.join("bin").join(NOM);
+        faux_programme(&source, Some("0.80.0"));
+        faux_programme(&cible, Some("0.79.0"));
+        let _seul = UN_A_LA_FOIS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        *ECHANGE.lock().unwrap() = Some(racine.join("bin"));
+        let r = remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, regarde);
+        // L'essai a vu la bonne copie ; la mise en place, elle, a pris le nom échangé : échec dit.
+        let e = r.unwrap_err();
+        assert!(!e.contains("l'essai voit autre chose"), "{e}");
+        *ECHANGE.lock().unwrap() = None;
         let _ = std::fs::remove_dir_all(&racine);
     }
 
