@@ -427,8 +427,10 @@ gardes :
   seulement si tous l'ont été). La fenêtre de Vanguard posée à côté d'un programme remplacé le suit, montrée comme une
   ligne de plus de l'aperçu, donc liée par l'accord : celle de la clé seulement si c'est celle que grave son programme
   (sinon la copie se fait sans elle), celle de GitHub téléchargée après l'accord seulement et vérifiée contre
-  l'empreinte gravée dans le programme vérifié (une autre, ou aucune reçue : rien n'est remplacé) ; sa ligne du
-  résultat relit la fenêtre posée. Le terminal fait de même (`vanguard se-mettre-a-jour`, liste et question). En mode lecture seule, `--appliquer` est refusé net (code 2). Depuis la fenêtre : la
+  l'empreinte gravée dans le programme vérifié (une autre, ou aucune reçue : rien n'est remplacé) ; posée, elle est
+  relue par la copie provisoire tenue ouverte (le même fichier, les octets reçus), sinon un échec, et sa ligne du
+  résultat relit la fenêtre posée. Le terminal pose par le même chemin (`vanguard se-mettre-a-jour`, liste et
+  question). En mode lecture seule, `--appliquer` est refusé net (code 2). Depuis la fenêtre : la
   carte « Mettre à jour Vanguard » des réglages ouvre la feuille de l'aperçu, lu strictement
   (`fenetre/src/donnees/mise_a_jour.rs` : forme exacte, textes bornés et montrés signe par signe) ; « Installer cette
   mise à jour » attend 2 secondes et ne renvoie que l'accord montré. Le jeton de ce geste est fixe

@@ -107,8 +107,8 @@ TELECHARGER="Un programme par système, à télécharger :
 Empreintes SHA-256 : \`SHA256SUMS.txt\` (\`sha256sum -c SHA256SUMS.txt\`).
 
 Sur la page de d9v3/vanguard-beta, les nomenclatures logicielles (SBOM CycloneDX : toutes les dépendances compilées,
-versions et licences) : \`vanguard-<système>.cdx.json\`, une par programme ; elles décrivent leur code, pas le
-fichier publié. Ces nomenclatures sont attestées par GitHub, qui les a produites, à vérifier avec la GitHub CLI
+versions et licences) : \`vanguard-<système>.cdx.json\`, une par programme Vanguard (pas encore pour la fenêtre) ;
+elles décrivent leur code, pas le fichier publié. Ces nomenclatures sont attestées par GitHub, qui les a produites, à vérifier avec la GitHub CLI
 connectée (\`gh auth login\`), le nom du fichier changé pour l'autre système :
 
 \`gh attestation verify vanguard-linux-x86_64.cdx.json -R d9v3/vanguard-beta --signer-workflow d9v3/vanguard-beta/.github/workflows/ci.yml --source-ref refs/heads/master\`
@@ -126,8 +126,8 @@ info” then “Run anyway”), \`vanguard-linux-x86_64\` (any distribution: \`c
 Optional window: \`vanguard-fenetre-linux-x86_64\` or \`vanguard-fenetre-windows-x86_64.exe\`, placed next to the program; it only
 launches the one built with it (its fingerprint is engraved in it), otherwise the menu in the terminal.
 SHA-256 checksums: \`SHA256SUMS.txt\` (they check the download, not the origin). On the d9v3/vanguard-beta page,
-software bills of materials (CycloneDX SBOM): \`vanguard-<system>.cdx.json\`, one per program; they describe its
-code, not the published file. The SBOMs are attested by GitHub, which built them; check with the GitHub CLI logged in
+software bills of materials (CycloneDX SBOM): \`vanguard-<system>.cdx.json\`, one per Vanguard program (not yet for
+the window); they describe its code, not the published file. The SBOMs are attested by GitHub, which built them; check with the GitHub CLI logged in
 (\`gh auth login\`), changing the file name for the other system: \`gh attestation verify vanguard-linux-x86_64.cdx.json -R d9v3/vanguard-beta --signer-workflow d9v3/vanguard-beta/.github/workflows/ci.yml --source-ref refs/heads/master\`. The Windows and Linux programs, built by the author, are not attested: Vanguard's built-in
 update checks them with the author's Ed25519 signature (d9v3/vanguard-update repository). What earlier versions brought: \`CHANGELOG.en.md\` in the repository."
 
