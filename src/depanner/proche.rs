@@ -380,22 +380,35 @@ fn appareils_a_regler(r: &Rapport) -> usize {
 }
 
 /// Le scan du réseau local, sur un fil à part avec son propre moteur : le parcours est appelé depuis un menu
-/// synchrone, déjà dans le moteur du programme, où l'on ne peut pas en attendre un autre.
-fn scanner_le_reseau() -> Option<Rapport> {
-    crate::socle::fil::lancer_ou_ici("scan", || {
-        let moteur = tokio::runtime::Builder::new_multi_thread().enable_all().build().ok()?;
+/// synchrone, déjà dans le moteur du programme, où l'on ne peut pas en attendre un autre. Jamais fait sur le fil
+/// appelant quand le système refuse le fil (`block_on` y paniquerait, en silence sous la garde) : le refus est rendu
+/// comme une raison, que le résumé dit « non vérifié » (relecture 0.95, L-3). `Err` : pourquoi le scan n'a pas eu lieu.
+fn scanner_le_reseau() -> Result<Rapport, String> {
+    let fil = crate::socle::fil::lancer("scan", || {
+        let moteur = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| e.to_string())?;
         let resultat = moteur.block_on(crate::reseau::executer(Options::defaut(None, "courants")));
         moteur.shutdown_background();
-        resultat
-            .map_err(|e| {
-                crate::journal::erreur(crate::compte_rendu::Contexte::ScanReseau, &e);
-                trp!("  ✖ Scan du réseau impossible : {e}", "  ✖ Network scan failed: {e}");
-            })
-            .ok()
-    })
-    .join()
-    .ok()
-    .flatten()
+        resultat.inspect_err(|e| crate::journal::erreur(crate::compte_rendu::Contexte::ScanReseau, e))
+    });
+    let raison = match fil.map(std::thread::JoinHandle::join) {
+        Ok(Ok(r)) => {
+            return r.inspect_err(|e| trp!("  ✖ Scan du réseau impossible : {e}", "  ✖ Network scan failed: {e}"));
+        }
+        Ok(Err(_)) => tr!("erreur interne", "internal error").to_string(),
+        Err(_) => tr!(
+            "mode réduit : le système refuse un fil",
+            "reduced mode: the system refuses a thread"
+        )
+        .to_string(),
+    };
+    trp!(
+        "  ✖ Scan du réseau impossible : {raison}",
+        "  ✖ Network scan failed: {raison}"
+    );
+    Err(raison)
 }
 
 /// Le bilan dans l'ordre de la priorité, pour que les corrections viennent dans le même ordre que le résumé.
@@ -416,7 +429,8 @@ fn dans_l_ordre(audit: &Audit, priorite: &[Sujet]) -> Audit {
 }
 
 /// Montre le résumé, en mots de tous les jours.
-fn afficher_resume(audit: &Audit, r: &Resume) {
+/// `maison_pas_vue` : le scan demandé n'a pas eu lieu, et pourquoi ; les appareils de la maison sont dits non vérifiés.
+fn afficher_resume(audit: &Audit, r: &Resume, maison_pas_vue: Option<&str>) {
     section(tr!("EN RÉSUMÉ", "IN SHORT"));
     if audit.fiable() {
         afficher_note(tr!("Note de l'ordinateur", "Computer grade"), audit.score);
@@ -449,6 +463,9 @@ fn afficher_resume(audit: &Audit, r: &Resume) {
             r.autres
         ));
     }
+    if let Some(raison) = maison_pas_vue {
+        Etat::Info.dire(&maison_non_verifiee(raison));
+    }
     if audit.impossibles() > 0 {
         Etat::Info.dire(&trf!(
             "{} vérification(s) impossible(s) ici : pas comptée(s) comme bonne(s).",
@@ -456,6 +473,14 @@ fn afficher_resume(audit: &Audit, r: &Resume) {
             audit.impossibles()
         ));
     }
+}
+
+/// La ligne du résumé quand le scan demandé n'a pas eu lieu : la maison n'est ni bonne ni à régler, non vérifiée.
+fn maison_non_verifiee(raison: &str) -> String {
+    trf!(
+        "Appareils de la maison non vérifiés ({raison}) : pas comptés comme bons.",
+        "Home devices not checked ({raison}): not counted as fine."
+    )
 }
 
 /// Le parcours.
@@ -506,12 +531,17 @@ pub(super) fn proche() {
         "  {GRIS}Checking (a few seconds; up to a minute on Windows)…{RESET}"
     );
     let audit = crate::machine::auditer(false);
-    let rapport = if reseau == 1 { scanner_le_reseau() } else { None };
+    let scan = (reseau == 1).then(scanner_le_reseau);
+    let rapport = scan.as_ref().and_then(|s| s.as_ref().ok());
     // Le bilan d'arrivée au carnet : la page à laisser dira « à l'arrivée » si les corrections changent la note.
-    crate::historique::enregistrer(Some(&audit), rapport.as_ref());
-    crate::ordinateurs::noter(Some(&audit), rapport.as_ref());
-    let r = resume(&audit.constats, rapport.as_ref().map(appareils_a_regler), &priorite);
-    afficher_resume(&audit, &r);
+    crate::historique::enregistrer(Some(&audit), rapport);
+    crate::ordinateurs::noter(Some(&audit), rapport);
+    let r = resume(&audit.constats, rapport.map(appareils_a_regler), &priorite);
+    afficher_resume(
+        &audit,
+        &r,
+        scan.as_ref().and_then(|s| s.as_ref().err()).map(String::as_str),
+    );
 
     let mut a_savoir_ici = Vec::new();
     if raison == Raison::Virus {
@@ -551,9 +581,9 @@ pub(super) fn proche() {
 
     // Les corrections du circuit habituel, dans l'ordre du résumé : chacune montrée puis acceptée, point de
     // restauration avant la première.
-    let audit = match crate::corriger::corriger(&dans_l_ordre(&audit, &priorite), rapport.as_ref()).0 {
+    let audit = match crate::corriger::corriger(&dans_l_ordre(&audit, &priorite), rapport).0 {
         Some(nouveau) => {
-            crate::historique::enregistrer(Some(&nouveau), rapport.as_ref());
+            crate::historique::enregistrer(Some(&nouveau), rapport);
             nouveau
         }
         None => audit,
@@ -615,6 +645,30 @@ mod tests {
         let p = priorite(Qui::Age, Raison::Bilan);
         let rang = |s| p.iter().position(|x| *x == s).unwrap();
         assert!(rang(Sujet::Distance) < rang(Sujet::PareFeu));
+    }
+
+    /// Relecture 0.95, L-3. Le parcours tourne dans le moteur du programme ; le système refuse le fil du scan. Le scan
+    /// n'est pas tenté sur le fil appelant (un second moteur y paniquerait, avalé en silence) : il rend la raison du
+    /// refus, que le résumé dit « non vérifiés », jamais une maison absente ou comptée bonne.
+    #[test]
+    fn scan_refuse_dit_maison_non_verifiee() {
+        let moteur = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        // Comme sous `#[tokio::main]` : le menu tourne dans le `block_on` du programme, sur ce même fil.
+        let scan = moteur.block_on(async { crate::socle::fil::refuser_les_fils(scanner_le_reseau) });
+        let raison = scan.err().expect("scan sans fil : pas de rapport");
+        assert!(
+            raison.contains("fil") || raison.contains("thread"),
+            "raison du refus perdue : {raison}"
+        );
+        let ligne = maison_non_verifiee(&raison);
+        assert!(ligne.contains(&raison), "{ligne}");
+        assert!(
+            ligne.contains("non vérifiés") || ligne.contains("not checked"),
+            "{ligne}"
+        );
     }
 
     #[test]
