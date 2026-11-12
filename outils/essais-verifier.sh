@@ -4,9 +4,10 @@
 #   1. Une étape demandée qui se dit sautée (ici Wine absent : tests Windows, corpus de détection sous Wine) fait
 #      échouer, avec sa raison.
 #   2. Une étape demandée qui ne tourne jamais sous --seulement (la mise en forme) fait échouer.
-#   3. Un nom d'étape inconnu (mal écrit, ou renommé sans suivre ci.yml) est refusé, code 2 ; une option inconnue
-#      aussi, avant de rien lancer.
-#   4. Une étape demandée qui réussit (scripts Python) donne bien « Tout est vert ».
+#   3. Un nom d'étape inconnu (mal écrit, ou renommé sans suivre ci.yml) est refusé, code 2 ; une option inconnue,
+#      une liste d'étapes vide (« , », « "" », absente) ou un argument en trop aussi, avant de rien lancer.
+#   4. Une étape demandée qui réussit (scripts Python) donne « Vert pour les étapes demandées seulement », jamais
+#      « Tout est vert » : seul le passage complet le dit.
 #   5. Le passage complet (celui de la livraison) : une étape sautée ou jamais lancée y est un échec, pas un vert ;
 #      --rapide, --sans-wine et --ci la disent « partiel » (juger_etape, lue dans verifier.sh : le passage complet
 #      ne se relance pas d'ici, il dure des minutes et lance ces essais mêmes).
@@ -59,12 +60,15 @@ else
   ko "nom d'étape inconnu (code $CODE) : $(tail -n 2 <<<"$SORTIE")"
 fi
 
-# Rien ne doit tourner avant le refus : une heure de vérification pour finir « partiel » sans dire pourquoi. Un
-# verifier.sh qui l'accepterait lancerait tout, ces essais compris : il tourne dans son propre groupe de processus,
-# tué en entier après 10 s (timeout seul laisserait ses étapes en fond), et ne relance pas ce cas-ci en lui-même.
-if [[ -z ${VANGUARD_ESSAI_OPTION_INCONNUE:-} ]]; then
+# Rien ne doit tourner avant le refus : une heure de vérification pour finir « partiel » sans dire pourquoi, ou une
+# liste vide qui ne lance rien et se dit verte. Un verifier.sh qui accepterait ces arguments lancerait tout, ces
+# essais compris : il tourne dans son propre groupe de processus, tué en entier après 10 s (timeout seul laisserait
+# ses étapes en fond), et ne relance pas ces cas-ci en lui-même.
+refus_sans_rien_lancer() {
+  local attendu=$1 nom=$2
+  shift 2
   SORTIE_OPTION=$(mktemp "$HOME/.cache/vanguard-dev/essai-option.XXXX")
-  VANGUARD_ESSAI_OPTION_INCONNUE=1 setsid bash outils/verifier.sh --tout >"$SORTIE_OPTION" 2>&1 &
+  VANGUARD_ESSAI_OPTION_INCONNUE=1 setsid bash outils/verifier.sh "$@" >"$SORTIE_OPTION" 2>&1 &
   GROUPE=$!
   for _ in {1..100}; do kill -0 "$GROUPE" 2>/dev/null || break; sleep 0.1; done
   if kill -0 "$GROUPE" 2>/dev/null; then
@@ -77,16 +81,26 @@ if [[ -z ${VANGUARD_ESSAI_OPTION_INCONNUE:-} ]]; then
   fi
   SORTIE=$(<"$SORTIE_OPTION")
   rm -f "$SORTIE_OPTION"
-  if ((CODE == 2)) && grep -q '✖ option inconnue : --tout' <<<"$SORTIE"; then
-    ok "option inconnue : refusée, code 2, rien lancé"
+  if ((CODE == 2)) && grep -q -- "$attendu" <<<"$SORTIE"; then
+    ok "$nom : refusé, code 2, rien lancé"
   else
-    ko "option inconnue (code $CODE, 124 : lancée au lieu d'être refusée) : $(tail -n 2 <<<"$SORTIE")"
+    ko "$nom (code $CODE, 124 : lancé au lieu d'être refusé) : $(tail -n 2 <<<"$SORTIE")"
   fi
+}
+if [[ -z ${VANGUARD_ESSAI_OPTION_INCONNUE:-} ]]; then
+  refus_sans_rien_lancer '✖ option inconnue : --tout' "option inconnue" --tout
+  refus_sans_rien_lancer '✖ --seulement : liste d.étapes vide' "--seulement « , »" --seulement ,
+  refus_sans_rien_lancer '✖ --seulement : liste d.étapes vide' "--seulement « \"\" »" --seulement ""
+  refus_sans_rien_lancer '✖ --seulement : liste d.étapes vide' "--seulement sans liste" --seulement
+  refus_sans_rien_lancer '✖ --seulement : liste d.étapes vide' "--seulement « python,,shell »" --seulement python,,shell
+  refus_sans_rien_lancer '✖ argument en trop : en-trop' "--seulement, argument en trop" --seulement python en-trop
+  refus_sans_rien_lancer '✖ argument en trop : en-trop' "--rapide, argument en trop" --rapide en-trop
 fi
 
 lancer bash outils/verifier.sh --seulement python
-if ((CODE == 0)) && grep -q '✔ scripts Python' <<<"$SORTIE" && grep -q '^Tout est vert' <<<"$SORTIE"; then
-  ok "étape demandée et réussie : tout est vert"
+if ((CODE == 0)) && grep -q '✔ scripts Python' <<<"$SORTIE" &&
+  grep -q '^Vert pour les étapes demandées seulement (python)' <<<"$SORTIE" && ! grep -qi 'tout est vert' <<<"$SORTIE"; then
+  ok "étape demandée et réussie : vert pour elle seulement, jamais « Tout est vert »"
 else
   ko "étape demandée et réussie (code $CODE) : $(tail -n 2 <<<"$SORTIE")"
 fi

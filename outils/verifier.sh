@@ -26,8 +26,9 @@
 # Ces trois-là sautent des étapes en le demandant : rien en échec y rend 0, mais la dernière ligne dit « passage
 # partiel » et nomme ce qui n'a pas été vérifié, jamais « Tout est vert ».
 #   outils/verifier.sh --seulement dependances,failles-connues   ces étapes-là (la nuit en CI), sans les autres ;
-#                                    une étape demandée qui se dit sautée, ou ne tourne pas, y est un échec, et un nom
-#                                    inconnu est refusé (code 2)
+#                                    une étape demandée qui se dit sautée, ou ne tourne pas, y est un échec ; un nom
+#                                    inconnu, une liste vide ou un argument en trop est refusé (code 2). La fin dit
+#                                    « Vert pour les étapes demandées seulement », jamais « Tout est vert »
 # Un test qui ne peut pas tourner ici (outil du système absent, root d'un espace de noms…) se dit « sauté »
 # (src/essais.rs) : ses sauts sont comptés à côté des tests passés, et leurs raisons montrées.
 # Les scripts PowerShell du programme sont aussi analysés et rejoués dans un bac à sable (outils/rejouer-ps.py).
@@ -36,6 +37,12 @@ cd "$(dirname "$0")/.."
 export PATH="$HOME/.cargo/bin:$PATH"
 
 MODE=${1:-}
+# Un argument en trop (« --rapide x », « --seulement a b ») serait ignoré sans rien dire : refusé, comme une option
+# mal écrite. Une option vide aussi.
+PERMIS=1
+[[ $MODE != --seulement ]] || PERMIS=2
+(($# <= PERMIS)) || { echo "✖ argument en trop : ${*:PERMIS+1}" >&2; exit 2; }
+[[ $# == 0 || -n $1 ]] || { echo "✖ option vide (connues : --ci, --rapide, --sans-wine, --seulement étape[,étape])" >&2; exit 2; }
 # Une option mal écrite (« --tout ») deviendrait un mode : tout tournerait, pour finir « passage partiel » sans dire
 # pourquoi. Refusée d'emblée, comme un nom d'étape inconnu sous --seulement.
 case $MODE in
@@ -47,12 +54,15 @@ case $MODE in
 esac
 SEULEMENT=
 if [[ $MODE == --seulement ]]; then
-  SEULEMENT=",${2:?--seulement étape[,étape]},"
+  # Une liste vide (« , », « "" », absente, ou un nom vide entre deux virgules) ne lancerait rien et se dirait verte.
+  LISTE=${2:-}
+  [[ $LISTE =~ ^[^,]+(,[^,]+)*$ ]] || { echo "✖ --seulement : liste d'étapes vide ou nom vide : « $LISTE »" >&2; exit 2; }
+  SEULEMENT=",$LISTE,"
   # Un nom mal écrit, ou une étape renommée sans suivre ci.yml, ne lancerait rien et finirait « Tout est vert » :
   # l'audit de nuit serait vert pour toujours sans rien vérifier. Les noms connus sont ceux du résumé (les appels
   # de ligne, plus bas) : la liste est ce script même, rien n'est recopié.
   CONNUES=$(sed -nE 's/^ *ligne ([a-z-]+) .*/\1/p' "$0")
-  for n in ${2//,/ }; do
+  for n in ${LISTE//,/ }; do
     grep -qxF -- "$n" <<<"$CONNUES" || { echo "✖ --seulement : étape inconnue : $n" >&2; exit 2; }
   done
 fi
@@ -718,9 +728,15 @@ if ((ECHECS)); then
   echo "$ECHECS étape(s) en échec, en $((DUREE / 60)) min $((DUREE % 60)) s."
   exit 1
 fi
+# Les étapes demandées (--seulement) toutes vertes : vert pour elles seulement, jamais « Tout est vert », que seul le
+# passage complet peut dire (outils/livrer-branche.sh l'exige dans le journal).
+if [[ -n $SEULEMENT ]]; then
+  echo "Vert pour les étapes demandées seulement ($LISTE), en $((DUREE / 60)) min $((DUREE % 60)) s."
+  exit 0
+fi
 # Un passage qui a sauté des étapes en le demandant (--rapide, --sans-wine, --ci) : rien en échec, mais pas « Tout est
-# vert », que seuls le passage complet et --seulement peuvent dire.
-if [[ -n $MODE && -z $SEULEMENT ]]; then
+# vert ».
+if [[ -n $MODE ]]; then
   PARTIEL="Passage partiel ($MODE) : rien en échec, mais ce n'est pas la vérification complète"
   for e in "${NON_VERIFIEES[@]}"; do
     [[ $PARTIEL == *" ; non vérifié : "* ]] && PARTIEL+=", $e" || PARTIEL+=" ; non vérifié : $e"
