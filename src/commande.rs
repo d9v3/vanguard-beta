@@ -277,6 +277,17 @@ fn tuer_le_groupe(pid: u32) {
 /// `lancer`, ce qui était déjà écrit reste : un plugin trop bavard ou trop lent montre au moins son début. `None` :
 /// il ne démarre pas.
 pub fn lancer_borne(commande: &mut Command, secondes: u64, borne: usize) -> Option<Borne> {
+    lancer_borne_ou_pourquoi(commande, secondes, borne).ok()
+}
+
+/// `lancer_borne`, avec, s'il ne démarre pas, l'erreur du lancement (`Some`) : un appelant peut en dire la vraie
+/// cause (« Text file busy » : un autre programme tient le fichier ouvert en écriture ; R-3, recontrôle 0.95).
+/// `Err(None)` : lancé, mais ses sorties n'ont pas pu être lues.
+pub fn lancer_borne_ou_pourquoi(
+    commande: &mut Command,
+    secondes: u64,
+    borne: usize,
+) -> Result<Borne, Option<std::io::Error>> {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     commande
@@ -293,7 +304,7 @@ pub fn lancer_borne(commande: &mut Command, secondes: u64, borne: usize) -> Opti
                 essais = essais.saturating_add(1);
                 std::thread::sleep(Duration::from_millis(50));
             }
-            r => break r.ok()?,
+            r => break r.map_err(Some)?,
         }
     };
     let plein = Arc::new(AtomicBool::new(false));
@@ -303,7 +314,7 @@ pub fn lancer_borne(commande: &mut Command, secondes: u64, borne: usize) -> Opti
     ) else {
         arreter(&mut enfant);
         suivi.fin(crate::coulisses::Issue::Arretee);
-        return None;
+        return Err(None);
     };
     let limite = Instant::now()
         .checked_add(Duration::from_secs(secondes))
@@ -355,7 +366,7 @@ pub fn lancer_borne(commande: &mut Command, secondes: u64, borne: usize) -> Opti
             .unwrap_or_default()
     };
     let (sortie, erreurs) = (texte(sortie), texte(erreurs));
-    Some(Borne {
+    Ok(Borne {
         code,
         sortie,
         erreurs,

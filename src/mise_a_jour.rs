@@ -795,9 +795,15 @@ fn essayer(programme: &Path, attendue: Version) -> Result<(), String> {
     // Ni LD_PRELOAD ni le reste de l'environnement du compte ne choisissent ce que la copie répond (G-1).
     #[cfg(unix)]
     crate::commande::environnement_lecture(&mut c, std::env::vars_os());
-    let r = crate::commande::lancer_borne(c.arg("--version").env("VANGUARD_HORS_LIGNE", "1"), 30, 64 << 10);
+    let r = crate::commande::lancer_borne_ou_pourquoi(c.arg("--version").env("VANGUARD_HORS_LIGNE", "1"), 30, 64 << 10);
     match r {
-        Some(r) if r.code == Some(0) && r.sortie.split_whitespace().any(|m| m == ecrire(attendue)) => Ok(()),
+        Ok(r) if r.code == Some(0) && r.sortie.split_whitespace().any(|m| m == ecrire(attendue)) => Ok(()),
+        // R-3 (recontrôle 0.95) : l'ordinateur n'y est pour rien, c'est dit.
+        Err(Some(e)) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => Err(tr!(
+            "la nouvelle copie est tenue ouverte en écriture par un autre programme (« Text file busy ») : elle ne se lance pas, l'ancienne reste en place ; relancez la mise à jour quand ce programme l'aura lâchée",
+            "the new copy is held open for writing by another program (“Text file busy”): it does not start, the old one stays in place; run the update again once that program lets go of it"
+        )
+        .into()),
         _ => Err(tr!(
             "la nouvelle copie ne démarre pas sur cet ordinateur : l'ancienne reste en place",
             "the new copy does not start on this computer: the old one stays in place"
@@ -1667,6 +1673,25 @@ mod tests {
         let texte = racine.join("pas-un-programme");
         std::fs::write(&texte, "rien").unwrap();
         assert!(essayer(&texte, (0, 80, 0, 5)).is_err());
+        let _ = std::fs::remove_dir_all(&racine);
+    }
+
+    /// R-3 (recontrôle 0.95) : une copie tenue ouverte en écriture par un autre programme ne se lance pas (« Text file
+    /// busy ») ; l'échec le dit, au lieu de « ne démarre pas sur cet ordinateur », qui accusait l'ordinateur.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn copie_tenue_en_ecriture_dite_comme_telle() {
+        let racine = crate::socle::dossier_local().join("essai-tenue");
+        let _ = std::fs::remove_dir_all(&racine);
+        std::fs::create_dir_all(&racine).unwrap();
+        let copie = racine.join(NOM);
+        // Un vrai programme (ELF) : le noyau refuse de lancer un fichier ouvert en écriture.
+        std::fs::copy(std::env::current_exe().unwrap(), &copie).unwrap();
+        let tenue = std::fs::OpenOptions::new().write(true).open(&copie).unwrap();
+        let e = essayer(&copie, (0, 80, 0, 5)).unwrap_err();
+        assert!(e.contains("un autre programme"), "{e}");
+        assert!(!e.contains("ne démarre pas sur cet ordinateur"), "{e}");
+        drop(tenue);
         let _ = std::fs::remove_dir_all(&racine);
     }
 }
