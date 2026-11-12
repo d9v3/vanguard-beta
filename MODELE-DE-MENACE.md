@@ -384,6 +384,33 @@ gardes :
   `un_texte_plus_large_que_la_feuille_empeche_d_appliquer_d_ici` (`fenetre/src/dessin/bilan/correction.rs`),
   `le_bouton_qui_change_attend_deux_secondes` (`fenetre/src/dessin/captures.rs`), et les cibles de fuzz
   `fenetre_relais` et `fenetre_donnees`.
+- **La mise à jour de Vanguard, montrée puis installée (commande et fenêtre).** `vanguard se-mettre-a-jour --voir
+  --json` cherche la mise à jour (la clé VANGUARD d'où il tourne, sinon GitHub : manifeste signé Ed25519, jamais une
+  version plus ancienne que la plus haute déjà vue) et montre d'où elle vient, la version visée, son empreinte
+  SHA-256, sa taille et chaque programme qu'elle remplacerait avec sa version d'aujourd'hui, avec un accord qui lie
+  chacun de ces champs ; il ne tourne qu'en lecture seule et n'écrit que le carnet des aperçus. « À jour » ne se dit
+  que vérifié : un manifeste trop vieux, une horloge en retard ou GitHub sans réponse donnent « non vérifié » (code
+  1), jamais « à jour ». `vanguard se-mettre-a-jour --appliquer --accord <accord> --json` refait l'aperçu au moment
+  d'agir et n'installe que si l'accord recalculé est le même (une autre version, une autre empreinte, une clé changée
+  entre les deux : refusé, rien changé), consomme l'entrée du carnet (2 s à 10 minutes après l'aperçu, une seule
+  fois), puis garde chaque vérification d'avant : signature, taille et empreinte, copie écrite à côté, relue, comparée
+  et essayée, mise en place d'un coup (sinon l'ancienne reste) ; il dit chaque programme remplacé ou pas (code 0
+  seulement si tous l'ont été). En mode lecture seule, `--appliquer` est refusé net (code 2). Depuis la fenêtre : la
+  carte « Mettre à jour Vanguard » des réglages ouvre la feuille de l'aperçu, lu strictement
+  (`fenetre/src/donnees/mise_a_jour.rs` : forme exacte, textes bornés et montrés signe par signe) ; « Installer cette
+  mise à jour » attend 2 secondes et ne renvoie que l'accord montré. Le jeton de ce geste est fixe
+  (`Empreinte::MISE_A_JOUR`) : aucune liste ne l'offre, la trame et le relais refusent tout autre jeton pour lui, et
+  le relais ne l'admet qu'avec l'accord du dernier aperçu qu'il a lui-même relayé, comme une correction. La fenêtre ne
+  télécharge, ne vérifie et n'écrit rien elle-même. Ce que l'accord ne prouve pas : qu'une personne a cliqué ; une
+  fenêtre prise peut enchaîner aperçu et accord, et n'obtient qu'une version signée par l'auteur, jamais plus
+  ancienne, que le menu installerait de même, notée au journal. Essais :
+  `la_cle_ne_pose_que_ce_que_l_apercu_a_montre`, `une_cle_changee_apres_l_apercu_est_refusee`,
+  `github_ne_retient_ni_ne_telecharge_avant_l_accord`, `rien_de_verifie_n_est_jamais_a_jour`,
+  `l_accord_lie_chaque_champ` (`src/mise_a_jour/apercu.rs`),
+  `l_apercu_d_une_mise_a_jour_hors_ligne_n_est_pas_a_jour_et_n_ecrit_rien` (`tests/programme.rs`),
+  `mettre_a_jour_ne_part_qu_avec_l_accord_montre` (`fenetre/src/appli.rs`),
+  `la_mise_a_jour_ne_passe_qu_apres_son_apercu` (`fenetre/src/relais.rs`), `la_mise_a_jour_n_a_que_son_jeton`
+  (`fenetre/src/protocole.rs`), `non_verifie_ne_se_lit_jamais_a_jour` (`fenetre/src/donnees/mise_a_jour.rs`).
 - **Les couleurs : enregistrées par `vanguard`, jamais par la fenêtre.** L'écran Vanguard règle, pour chaque thème, un
   des six préréglages ou les couleurs du système, et les cinq couleurs vives (accent, grave, moyen, à surveiller,
   sain). La fenêtre les montre tout de suite, sans rien écrire ; « Enregistrer… » ouvre une confirmation (avant,

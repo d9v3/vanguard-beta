@@ -748,8 +748,10 @@ vérifiées.
   publique, avec celle d'une seconde clé de signature, gardée hors ligne, qui peut révoquer la principale si elle
   était volée. Un manifeste mal signé, une version plus ancienne que la plus haute déjà vue, un programme dont la
   taille ou l'empreinte diffère : refusés ; un manifeste trop vieux, ou une horloge en retard, est dit non vérifié,
-  jamais « à jour ». Le menu annonce une version plus récente ; rien ne s'installe sans accord. L'historique signé des
-  versions permet à `vanguard verifier-moi` de vérifier aussi une copie qui n'est plus la dernière.
+  jamais « à jour ». Le menu annonce une version plus récente ; rien ne s'installe sans accord. Dans la fenêtre, la
+  carte « Mettre à jour Vanguard » des réglages montre d'abord d'où vient la mise à jour, sa version et chaque
+  programme remplacé. L'historique signé des versions permet à `vanguard verifier-moi` de vérifier aussi une copie qui
+  n'est plus la dernière.
 - Menus au clavier : ↑ ↓ pour se déplacer, Entrée ou → pour choisir, Échap, ← ou Retour arrière pour revenir (au menu
   principal, ← ne fait rien, pour ne pas quitter par erreur ; dans une liste à cocher, seule Entrée confirme). La
   fenêtre ouverte pour Vanguard prend la taille du menu et se centre (Hyprland, console de Windows).
@@ -935,6 +937,7 @@ Chaque entrée du menu existe aussi en commande.
 Pour la fenêtre, cachées de l'aide en ligne ([modèle de menace](MODELE-DE-MENACE.md)) :
 - `vanguard correction --voir <jeton> [--json]`, `--appliquer <jeton> --accord <accord>` : montrer une correction du bilan (jeton de `audit --json`) et son accord ; puis appliquer, une à la fois, seulement une correction du compte qui s'annule (droits de fichiers du dossier personnel), avec l'accord de l'aperçu, de 2 s à 10 min après lui ; tout est relu et rejugé au moment d'agir
 - `vanguard changements --voir <jeton>`, `--annuler <jeton> --accord <accord>` : montrer comment une correction du compte serait remise comme avant (jeton de `changements --json`), puis la remettre exactement, une seule fois
+- `vanguard se-mettre-a-jour --voir [--json]`, `--appliquer --accord <accord>` : montrer d'où viendrait la mise à jour (la clé ou GitHub), sa version, son empreinte et chaque programme remplacé, avec son accord ; puis l'installer, seulement avec l'accord de cet aperçu, de 2 s à 10 min après lui ; une autre version entre les deux est refusée (la carte « Mettre à jour Vanguard » de la fenêtre)
 
 </details>
 

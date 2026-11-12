@@ -706,8 +706,9 @@ not checked them.
   with that of a backup signing key kept offline, which can revoke the main one if it were stolen. A badly signed
   manifest, a version older than the highest already seen, a program whose size or checksum differs: refused; a
   manifest that is too old, or a clock running behind, is called not verified, never “up to date”. The menu announces
-  a newer version; nothing is installed without your consent. The signed version history lets `vanguard self-check`
-  also check a copy that is no longer the latest.
+  a newer version; nothing is installed without your consent. In the window, the settings' “Update Vanguard” card
+  first shows where the update comes from, its version and each program replaced. The signed version history lets
+  `vanguard self-check` also check a copy that is no longer the latest.
 - Keyboard menus: ↑ ↓ to move, Enter or → to select, Esc, ← or Backspace to go back (on the main menu, ← does nothing,
   so as not to quit by mistake; in a checklist, only Enter confirms). The window opened for Vanguard takes the menu's
   size and centers itself (Hyprland, Windows console).
@@ -888,6 +889,7 @@ Each menu entry is also a command.
 For the window, hidden from the online help ([threat model](MODELE-DE-MENACE.en.md)):
 - `vanguard correction --show <token> [--json]`, `--apply <token> --agreement <consent>`: show an audit fix (token from `audit --json`) and its consent; then apply, one at a time, only an account fix that undoes (permissions of home folder files), with the preview's consent, 2 s to 10 min after it; everything is read and judged again when acting
 - `vanguard changes --show <token>`, `--undo <token> --agreement <consent>`: show how an account fix would be put back as before (token from `changes --json`), then put it back exactly, only once
+- `vanguard self-update --voir [--json]`, `--appliquer --accord <consent>`: show where the update would come from (the key or GitHub), its version, its checksum and each program replaced, with its consent; then install it, only with that preview's consent, 2 s to 10 min after it; another version in between is refused (the window's “Update Vanguard” card)
 
 </details>
 

@@ -366,6 +366,31 @@ safeguards:
   `un_texte_plus_large_que_la_feuille_empeche_d_appliquer_d_ici` (`fenetre/src/dessin/bilan/correction.rs`),
   `le_bouton_qui_change_attend_deux_secondes` (`fenetre/src/dessin/captures.rs`), and the fuzz targets
   `fenetre_relais` and `fenetre_donnees`.
+- **Updating Vanguard, shown then installed (command and window).** `vanguard self-update --voir --json` looks for the
+  update (the VANGUARD key it runs from, otherwise GitHub: an Ed25519-signed manifest, never a version older than the
+  highest already seen) and shows where it comes from, the target version, its SHA-256 checksum, its size and each
+  program it would replace with its version today, with a consent that binds each of these fields; it only runs
+  read-only and only writes the preview log. “Up to date” is only said when verified: a manifest that is too old, a
+  clock running behind or GitHub not answering give “not verified” (code 1), never “up to date”. `vanguard self-update
+  --appliquer --accord <consent> --json` redoes the preview when acting and installs only if the recomputed consent is
+  the same (another version, another checksum, a key changed in between: refused, nothing changed), consumes the
+  preview log entry (2 s to 10 minutes after the preview, only once), then keeps every earlier check: signature, size
+  and checksum, copy written alongside, read back, compared and tried, put in place at once (otherwise the old one
+  stays); it names each program replaced or not (code 0 only if all were). In read-only mode, `--appliquer` is refused
+  outright (code 2). From the window: the settings' “Update Vanguard” card opens the preview sheet, read strictly
+  (`fenetre/src/donnees/mise_a_jour.rs`: exact form, bounded texts shown character by character); “Install this
+  update” waits 2 seconds and only sends back the consent shown. This gesture's token is fixed
+  (`Empreinte::MISE_A_JOUR`): no list offers it, the frame and the relay refuse any other token for it, and the relay
+  only admits it with the consent of the last preview it relayed itself, like a fix. The window downloads, verifies
+  and writes nothing itself. What the consent does not prove: that a person clicked; a hijacked window can chain
+  preview and consent, and only gets a version signed by the author, never older, that the menu would install the same
+  way, logged. Tests: `la_cle_ne_pose_que_ce_que_l_apercu_a_montre`, `une_cle_changee_apres_l_apercu_est_refusee`,
+  `github_ne_retient_ni_ne_telecharge_avant_l_accord`, `rien_de_verifie_n_est_jamais_a_jour`,
+  `l_accord_lie_chaque_champ` (`src/mise_a_jour/apercu.rs`),
+  `l_apercu_d_une_mise_a_jour_hors_ligne_n_est_pas_a_jour_et_n_ecrit_rien` (`tests/programme.rs`),
+  `mettre_a_jour_ne_part_qu_avec_l_accord_montre` (`fenetre/src/appli.rs`),
+  `la_mise_a_jour_ne_passe_qu_apres_son_apercu` (`fenetre/src/relais.rs`), `la_mise_a_jour_n_a_que_son_jeton`
+  (`fenetre/src/protocole.rs`), `non_verifie_ne_se_lit_jamais_a_jour` (`fenetre/src/donnees/mise_a_jour.rs`).
 - **Colors: saved by `vanguard`, never by the window.** The Vanguard screen sets, for each theme, one of the six
   presets or the system colors, and the five bright colors (accent, serious, medium, to watch, healthy). The window
   shows them right away, writing nothing; “Save…” opens a confirmation (before, after) and only “Accept” runs the
