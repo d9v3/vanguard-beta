@@ -3865,6 +3865,46 @@ mod demarrage_sous_attaque {
         );
     }
 
+    /// Relecture 0.95, G-6. Après un changement de XDG_CONFIG_HOME, la note d'un programme retiré ne se rebâtit plus
+    /// (son entrée n'est plus sous le dossier d'autostart du compte) : `demarrage --json` le dit en le nommant, au
+    /// lieu de le faire disparaître sans un mot ; l'entrée reste retirée, rien n'est écrit.
+    #[test]
+    fn une_note_qui_ne_se_rebatit_plus_est_dite() {
+        let b = Banc::nouveau("note-perdue");
+        let (f, _) = b.poser("radio.desktop", "Radio", "/home/alice/bin/radio");
+        let (_, e) = b.geste("Radio").unwrap();
+        assert_eq!(b.changer("--retirer", &e).1, "fait");
+        let retiree = lu(&f);
+        let neuf = b.maison.join("config-neuf");
+        std::fs::create_dir_all(&neuf).unwrap();
+        let args = ["demarrage", "--json"];
+        let mut commande = Command::new(env!("CARGO_BIN_EXE_vanguard"));
+        commande
+            .args(args)
+            .env("XDG_CONFIG_DIRS", &b.systeme)
+            .env("VANGUARD_ESSAI_XDG_DEFAUT", &b.systeme)
+            .env("VANGUARD_LANG", "fr")
+            .env("USER", "essai")
+            .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
+            .env("XDG_RUNTIME_DIR", b.maison.join("run"))
+            .env("HOME", &*b.maison)
+            .env("XDG_DATA_HOME", b.maison.join("donnees"))
+            .env("XDG_CONFIG_HOME", &neuf)
+            .env("XDG_CACHE_HOME", b.maison.join("cache"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let sortie = attendre(commande, &args, "", 180);
+        let json: serde_json::Value =
+            serde_json::from_str(&sortie.texte).unwrap_or_else(|e| panic!("{e} : {} {}", sortie.texte, sortie.erreurs));
+        let manques = json["couverture"].to_string();
+        assert!(
+            manques.contains("radio.desktop") && manques.contains("XDG_CONFIG_HOME"),
+            "{manques}"
+        );
+        assert_eq!(lu(&f), retiree);
+    }
+
     /// Relecture 0.95, G-3. XDG_CONFIG_DIRS se règle dans un fichier du compte : nommant un dossier absent, ou un
     /// chemin relatif, elle cachait sans un mot les entrées que la session lance depuis /etc/xdg/autostart (« Aucun
     /// programme »). Le dossier par défaut se lit quand même, la variable est dite, et `lenteur` voit la même entrée.

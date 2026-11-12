@@ -68,6 +68,37 @@ pub(super) fn notes(h: &Historique) -> Vec<Reglage> {
         .collect()
 }
 
+/// La phrase qui dit les programmes retirés par Vanguard que la liste ne sait plus rebâtir d'après leur note : leur
+/// entrée n'est plus sous le dossier d'autostart du compte d'aujourd'hui (XDG_CONFIG_HOME changé depuis le retrait).
+/// Sans elle, ils disparaissaient de la liste sans un mot, encore retirés (relecture 0.95, G-6). Rien n'est écrit.
+pub(super) fn notes_perdues(h: &Historique) -> Option<String> {
+    let noms: Vec<String> = h
+        .reglages
+        .keys()
+        .filter_map(|cle| {
+            let identite = cle.strip_prefix(PREFIXE)?;
+            systeme::Changement::demarrage_depuis(identite).is_none().then(|| {
+                let reste = identite.split_once('|').map_or(identite, |(_, r)| r);
+                let nom = std::path::Path::new(reste)
+                    .file_name()
+                    .map_or_else(|| reste.to_string(), |n| n.to_string_lossy().into_owned());
+                affichable(&nom.chars().take(80).collect::<String>())
+            })
+        })
+        .collect();
+    if noms.is_empty() {
+        return None;
+    }
+    let liste = noms.iter().take(5).cloned().collect::<Vec<_>>().join(", ");
+    let liste = if noms.len() > 5 { format!("{liste}, …") } else { liste };
+    Some(trf!(
+        "{} programme(s) retiré(s) par Vanguard pas listé(s) ({}) : leur entrée n'est plus dans le dossier de démarrage du compte (XDG_CONFIG_HOME changé depuis le retrait ?) ; ils restent retirés, rien n'est remis",
+        "{} program(s) removed by Vanguard not listed ({}): their entry is no longer in the account's startup folder (XDG_CONFIG_HOME changed since the removal?); they stay removed, nothing is put back",
+        noms.len(),
+        liste
+    ))
+}
+
 /// Pourquoi un programme reste au démarrage, s'il le doit : il protège ou fait marcher l'ordinateur. Comparé en
 /// minuscules au nom et à la commande ; un motif court est un mot entier (« avg » ne doit pas trouver « savgame »).
 #[cfg_attr(target_os = "linux", allow(dead_code))] // Linux : `classer`, qui ajoute le paquet
@@ -1005,6 +1036,7 @@ pub fn json() {
         );
         Historique::default()
     });
+    manques.extend(notes_perdues(&h));
     let l = lignes(programmes, &h);
     let entrees: Vec<resultat::Entree> = l
         .iter()
@@ -1030,7 +1062,8 @@ pub fn json() {
 /// avant ce que Vanguard avait retiré.
 pub fn menu() {
     let h = charger();
-    let (programmes, manques, _) = systeme::releve_demarrage();
+    let (programmes, mut manques, _) = systeme::releve_demarrage();
+    manques.extend(notes_perdues(&h));
     let l = lignes(programmes, &h);
     let pas_lus = lignes_des_manques(&manques);
     if l.is_empty() {
@@ -1181,6 +1214,32 @@ mod tests {
         assert_eq!(r.verdict(), "sain");
         assert!(r.constats.iter().any(|c| c.message.contains("Aucun programme")));
         std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// Relecture 0.95, G-6 : une note de retrait que la liste ne sait plus rebâtir (son entrée n'est plus sous le
+    /// dossier d'autostart du compte) est dite, nommée ; une note qui se rebâtit ne l'est pas.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn une_note_qui_ne_se_rebatit_plus_est_dite() {
+        use super::super::Avant;
+        let note = || Avant {
+            date: String::new(),
+            valeurs: vec![Some("-".to_string())],
+            ..Avant::default()
+        };
+        let mut h = Historique::default();
+        h.reglages.insert(format!("{PREFIXE}systemd|garde.service"), note());
+        assert_eq!(notes_perdues(&h), None);
+        h.reglages.insert(
+            format!("{PREFIXE}autostart|/ancien-dossier/autostart/radio.desktop"),
+            note(),
+        );
+        let phrase = notes_perdues(&h).expect("dite");
+        assert!(
+            phrase.contains("radio.desktop") && phrase.contains("XDG_CONFIG_HOME"),
+            "{phrase}"
+        );
+        assert!(!phrase.contains("garde.service"), "{phrase}");
     }
 
     /// Relecture 0.94, R-9 : rien de lu (dossier d'autostart du compte refusé, services du compte sans systemctl,
