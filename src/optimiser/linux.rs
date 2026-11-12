@@ -1712,6 +1712,12 @@ fn lire_du_systeme(p: &Path, max: u64) -> std::io::Result<String> {
     use std::io::Read as _;
     use std::os::unix::fs::OpenOptionsExt as _;
     let invalide = || std::io::Error::from(std::io::ErrorKind::InvalidData);
+    // Regardé avant d'être ouvert (lien suivi, comme le bureau le suit) : un tube, un périphérique ou un dossier
+    // qu'XDG_CONFIG_DIRS nomme ne s'ouvre pas, même pour être refusé (relecture 0.94, m-a). Le second regard, sur le
+    // fichier ouvert, tient si le nom change entre les deux.
+    if !std::fs::metadata(p)?.is_file() {
+        return Err(invalide());
+    }
     let f = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
@@ -1731,8 +1737,9 @@ fn lire_du_systeme(p: &Path, max: u64) -> std::io::Result<String> {
 fn pas_lue(chemin: &Path) -> String {
     let ou = court(chemin);
     trf!(
-        "entrée de démarrage {ou} pas lue (plus de 64 Kio, pas en UTF-8 ou illisible) : pas proposée",
-        "startup entry {ou} not read (over 64 KiB, not UTF-8 or unreadable): not offered"
+        "entrée de démarrage {ou} pas lue (plus de 64 Kio, pas en UTF-8, pas un simple fichier ou illisible) : pas \
+         proposée",
+        "startup entry {ou} not read (over 64 KiB, not UTF-8, not a plain file or unreadable): not offered"
     )
 }
 
@@ -3032,6 +3039,54 @@ mod tests {
         // Tout le relevé : jamais « aucun programme » sans rien dire.
         let (l, manques, _) = releve_dans(&base, std::slice::from_ref(&systeme), "Hyprland", Some(String::new()));
         assert!(l.is_empty() && manques.len() == 2, "{manques:?}");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// Relecture 0.94, m-a et m-b. Côté système (XDG_CONFIG_DIRS, une variable que le compte peut changer), un nom
+    /// en « .desktop » qui n'est pas un simple fichier (tube, lien vers un tube, dossier) n'est jamais ouvert : il est
+    /// dit, avec la bonne raison (« pas un simple fichier », pas « plus de 64 Kio »). Le témoin : un écrivain attend
+    /// sur le tube ; une ouverture en lecture le débloquerait.
+    #[test]
+    fn systeme_pas_un_simple_fichier_ni_ouvert_ni_mal_dit() {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let base = dossier_jetable("systeme-pas-fichier");
+        let (compte, systeme) = (base.join("autostart"), base.join("systeme"));
+        std::fs::create_dir_all(&compte).unwrap();
+        std::fs::create_dir_all(systeme.join("dossier.desktop")).unwrap();
+        let tube = base.join("tube");
+        crate::essais::tube_nomme(&tube).unwrap();
+        std::os::unix::fs::symlink(&tube, systeme.join("lien.desktop")).unwrap();
+        let (vu, ouvert) = std::sync::mpsc::channel();
+        let ecrivain = {
+            let tube = tube.clone();
+            std::thread::spawn(move || {
+                let _f = std::fs::OpenOptions::new().write(true).open(&tube);
+                let _ = vu.send(());
+            })
+        };
+        // L'écrivain attend bien sur le tube avant la liste : sinon une ouverture de la liste passerait inaperçue.
+        let attente = std::time::Duration::from_millis(200);
+        assert!(ouvert.recv_timeout(attente).is_err(), "tube ouvert avant la liste");
+        let (l, manques) = autostart(&compte, std::slice::from_ref(&systeme), "Hyprland");
+        let ouvert_par_la_liste = ouvert.recv_timeout(std::time::Duration::from_millis(300)).is_ok();
+        // L'écrivain libéré dans tous les cas : une lecture qui ne bloque pas l'ouvre.
+        let _lecteur = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&tube)
+            .unwrap();
+        ecrivain.join().unwrap();
+        assert!(!ouvert_par_la_liste, "le tube a été ouvert par la liste");
+        assert!(l.is_empty());
+        assert_eq!(manques.len(), 2, "{manques:?}");
+        for nom in ["dossier.desktop", "lien.desktop"] {
+            assert!(
+                manques
+                    .iter()
+                    .any(|m| m.contains(nom) && m.contains("pas un simple fichier")),
+                "{nom} : {manques:?}"
+            );
+        }
         std::fs::remove_dir_all(&base).unwrap();
     }
 
