@@ -817,6 +817,7 @@ pub fn releve_demarrage() -> (Vec<Programme>, Vec<String>, bool) {
                     nom: nom.clone(),
                     cible: Some(desactivee.clone()),
                 },
+                ecriture_refusee: None,
                 nom,
             });
         }
@@ -869,6 +870,7 @@ pub fn releve_demarrage() -> (Vec<Programme>, Vec<String>, bool) {
                     nom: fichier,
                     cible: Some(desactivee.clone()),
                 },
+                ecriture_refusee: None,
             });
         }
     }

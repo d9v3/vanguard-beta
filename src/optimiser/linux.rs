@@ -1579,7 +1579,7 @@ fn releve_selon(
             ));
             continue;
         }
-        if let Err(e) = sous_maison::juger(&chemin) {
+        if let Err(e) = sous_maison::juger_lecture(&chemin) {
             manques.push(trf!(
                 "non vérifié : {} ; ce service n'est ni lu ni proposé",
                 "not verified: {}; this service is neither read nor offered",
@@ -1616,6 +1616,7 @@ fn releve_selon(
                 cible: Some("disabled".to_string()),
                 vu: None,
             },
+            ecriture_refusee: ecriture_refusee(&chemin),
         });
     }
     (l, manques, true)
@@ -1624,7 +1625,7 @@ fn releve_selon(
 /// Les entrées d'autostart : chaque fichier .desktop du compte, puis celles du système au nom qu'il n'a pas et qui se
 /// lancent sur ce bureau (une entrée pour un autre bureau, ou déjà masquée, n'a rien à retirer). Une entrée du compte
 /// qui est un lien n'est pas proposée, ni celle du système qu'elle remplace ; ni aucune dont un dossier du chemin
-/// est un lien ou sort du dossier personnel (`sous_maison::juger`) : la retirer écrirait à travers lui. Chacune est
+/// est un lien ou sort du dossier personnel (`sous_maison::juger_lecture`) : la retirer écrirait à travers lui. Chacune est
 /// dite non vérifiée (T-1, T-3), le dossier refusé une fois pour toutes ses entrées. Rend aussi
 /// les entrées du compte qui ne se lisent pas bornées (plus de 64 Kio, pas en UTF-8) : pas proposées, faute de valeur
 /// d'avant à noter, mais dites (campagne 0.94, C-3).
@@ -1680,7 +1681,7 @@ fn autostart(compte: &Path, systeme: &[PathBuf], bureau: &str) -> (Vec<Programme
         }
         // Un lien, un tube ou un dossier, à un autre compte : ni lu ni proposé, mais dit (T-1, T-3) ; il masque
         // l'entrée du système au même nom.
-        match sous_maison::juger(&chemin) {
+        match sous_maison::juger_lecture(&chemin) {
             Ok(()) => {
                 // Relu d'une seule ouverture, sans suivre de lien et borné, comme la note : ce qui est montré, la
                 // cible et la note viennent tous de cette lecture-là. Pas lu ainsi : rien à noter, donc rien de
@@ -1722,7 +1723,7 @@ fn autostart(compte: &Path, systeme: &[PathBuf], bureau: &str) -> (Vec<Programme
             };
             if vus.insert(nom.clone())
                 && crate::lenteur::entree_autostart(&texte, bureau).is_some()
-                && sous_maison::juger(&compte.join(&nom)).is_ok()
+                && sous_maison::juger_lecture(&compte.join(&nom)).is_ok()
             {
                 // La copie du compte n'existait pas : elle ne s'écrit que si c'est encore vrai.
                 l.push(programme_autostart(
@@ -1796,6 +1797,7 @@ fn programme_autostart(chemin: PathBuf, texte: &str, bureau: &str, vu: Option<St
         .map(|(n, _)| n.clone())
         .or_else(|| champ(texte, "Name").map(str::to_string))
         .unwrap_or_else(|| Changement::nom_demarrage(&chemin.display().to_string()));
+    let ecriture_refusee = ecriture_refusee(&chemin);
     Programme {
         nom,
         commande: champ(texte, "Exec").unwrap_or_default().to_string(),
@@ -1808,7 +1810,20 @@ fn programme_autostart(chemin: PathBuf, texte: &str, bureau: &str, vu: Option<St
             cible: Some(format!("+{}", masquer(texte))),
             vu,
         },
+        ecriture_refusee,
     }
+}
+
+/// La raison montrée d'une entrée lue où Vanguard n'écrit pas : la garde d'écriture (`sous_maison::juger`) la refuse
+/// alors que celle de lecture l'a laissée passer, donc pour les droits d'un dossier du chemin, que le groupe ou les
+/// autres peuvent modifier ou qui porte un bit spécial (relecture 0.95, G-1).
+fn ecriture_refusee(chemin: &Path) -> Option<&'static str> {
+    sous_maison::juger(chemin).err().map(|_| {
+        tr!(
+            "dossier modifiable par d'autres comptes ou à bit spécial : Vanguard n'y écrit pas",
+            "folder that other accounts can change or with a special bit: Vanguard does not write there"
+        )
+    })
 }
 
 pub fn apres(_touches: &[&Reglage]) {}

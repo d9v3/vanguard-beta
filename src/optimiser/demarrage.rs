@@ -31,6 +31,9 @@ pub struct Programme {
     pub bureau: bool,
     /// Ce qui le retire, et le remet.
     pub changement: systeme::Changement,
+    /// Pourquoi Vanguard n'y écrit pas, s'il ne le peut pas (un dossier du chemin modifiable par d'autres comptes) :
+    /// lu et montré, jamais proposé (relecture 0.95, G-1).
+    pub ecriture_refusee: Option<&'static str>,
 }
 
 /// Le réglage qui retire ce programme du démarrage. Le nom, écrit par qui a posé l'entrée, est montré rendu
@@ -177,6 +180,9 @@ pub(crate) enum Garde {
 /// Sous Linux : le programme lancé (premier mot de la commande) et le paquet qui le fournit. Sous Windows :
 /// `a_garder`, comme avant.
 fn classer(p: &Programme) -> Garde {
+    if let Some(raison) = p.ecriture_refusee {
+        return Garde::Garder(raison);
+    }
     #[cfg(target_os = "linux")]
     {
         classer_linux(
@@ -1450,6 +1456,7 @@ mod tests {
                 cible: Some("disabled".to_string()),
                 vu: None,
             },
+            ecriture_refusee: None,
         };
         let mut h = Historique::default();
         h.reglages.insert(
@@ -1503,6 +1510,7 @@ mod tests {
                 cible: Some("disabled".into()),
                 vu: None,
             },
+            ecriture_refusee: None,
         };
         let l = lignes(vec![piege], &Historique::default());
         assert_eq!(l[0].nom, "x�]52;c;eA==��[2K�faux�");
@@ -1567,6 +1575,7 @@ mod essais_changer {
                 cible: Some("disabled".to_string()),
                 vu: None,
             },
+            ecriture_refusee: None,
         }
     }
 

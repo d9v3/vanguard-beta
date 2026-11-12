@@ -3781,6 +3781,58 @@ mod demarrage_sous_attaque {
             sorties[0]
         );
     }
+
+    /// Relecture 0.95, G-1. Avec un umask 002, `mkdir` crée le dossier d'autostart en 0775 : chaque entrée, du compte
+    /// comme du système, reste lue et montrée ; seul le geste d'écriture est refusé, avec sa raison sur la ligne de
+    /// l'entrée. `lenteur` dit les mêmes programmes, sans entrée « pas lue ».
+    #[test]
+    fn dossier_modifiable_par_le_groupe_montre_sans_proposer() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let b = Banc::nouveau("groupe");
+        let (radio, texte) = b.poser("radio.desktop", "Radio", "/opt/radio/radio --discret");
+        let systeme = Path::new(&b.systeme).join("autostart");
+        std::fs::create_dir_all(&systeme).unwrap();
+        std::fs::write(
+            systeme.join("panneau.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Panneau\nExec=/opt/panneau/panneau\n",
+        )
+        .unwrap();
+        let (_, e) = b.geste("Radio").expect("Radio sans bouton en 0755");
+        std::fs::set_permissions(&b.autostart, std::fs::Permissions::from_mode(0o775)).unwrap();
+
+        let (json, brut) = b.liste();
+        let constats: Vec<String> = json["constats"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(serde_json::Value::to_string)
+            .collect();
+        for nom in ["Radio", "Panneau"] {
+            let ligne = constats
+                .iter()
+                .find(|c| c.contains(&format!("{nom} —")))
+                .unwrap_or_else(|| panic!("{nom} pas montré : {brut}"));
+            assert!(
+                ligne.contains("modifiable par d'autres comptes"),
+                "{nom} sans raison : {ligne}"
+            );
+        }
+        assert!(gestes(&json).is_empty(), "un geste proposé : {brut}");
+        let (_, issue, raison) = b.changer("--retirer", &e);
+        assert_ne!(issue, "fait", "{raison}");
+        assert!(raison.contains("modifiable par d'autres comptes"), "{issue} : {raison}");
+        assert_eq!(std::fs::read_to_string(&radio).unwrap(), texte);
+
+        let lenteur = b.lancer(&["lenteur"]);
+        let dit = espaces_unis(&lenteur.texte);
+        assert!(
+            dit.contains("2 programme(s)")
+                && dit.contains("Radio")
+                && dit.contains("Panneau")
+                && !dit.contains("pas lu"),
+            "{dit}"
+        );
+    }
 }
 
 /// Lancés sans Internet : outils/verifier.sh refait toute la suite dans un espace réseau vide (unshare -rn, la boucle

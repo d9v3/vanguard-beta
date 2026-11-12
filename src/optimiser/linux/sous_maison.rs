@@ -121,10 +121,19 @@ fn phrase(e: &io::Error, ou: &str) -> Echec {
 /// du dossier ; setuid, collant : rien d'ordinaire dans un dossier du compte).
 const DROITS_REFUSES: u32 = 0o7022;
 
-/// Un dossier ouvert est-il un dossier du compte qui agit, que lui seul peut modifier, sans bit spécial (relecture
-/// 0.94, R-6) ? Un dossier en 0775 dont le groupe ne compte que la personne est refusé aussi : Vanguard ne sait pas
-/// le prouver, et le refus est dit avec les droits.
-fn juger_dossier(f: &File, ou: &str) -> Result<(), Echec> {
+/// Ce que le parcours d'un chemin prépare : le lire seulement, ou y écrire (ou retirer).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pour {
+    Lire,
+    Ecrire,
+}
+
+/// Un dossier ouvert est-il un dossier du compte qui agit ? Pour y écrire, il faut en plus que lui seul puisse le
+/// modifier, sans bit spécial (relecture 0.94, R-6) : un dossier en 0775 dont le groupe ne compte que la personne est
+/// refusé aussi (Vanguard ne sait pas le prouver), et le refus est dit avec les droits. Pour lire, les droits ne
+/// comptent pas : la lecture se fait sur le fichier ouvert, sans suivre de lien et bornée ; un dossier en 0775 (umask
+/// 002) laisse donc lire et montrer ses entrées, jamais les écrire (relecture 0.95, G-1).
+fn juger_dossier(f: &File, ou: &str, pour: Pour) -> Result<(), Echec> {
     let m = f
         .metadata()
         .map_err(|e| echec(trf!("{ou} : illisible ({e})", "{ou}: unreadable ({e})")))?;
@@ -138,7 +147,7 @@ fn juger_dossier(f: &File, ou: &str) -> Result<(), Echec> {
         return Err(refus(trf!("{ou} n'est pas un dossier", "{ou} is not a folder")));
     }
     let droits = m.mode() & 0o7777;
-    if droits & DROITS_REFUSES != 0 {
+    if pour == Pour::Ecrire && droits & DROITS_REFUSES != 0 {
         return Err(refus(trf!(
             "{ou} est modifiable par d'autres comptes ou porte un bit spécial (droits {droits:o}) : Vanguard \
              n'y touche pas",
@@ -150,8 +159,8 @@ fn juger_dossier(f: &File, ou: &str) -> Result<(), Echec> {
 
 /// Ouvre les dossiers du chemin, du dossier personnel jusqu'à celui du fichier. `creer` : un dossier manquant est
 /// créé (droits par défaut du compte, comme `create_dir_all`) ; sinon, `None` dit qu'il manque (le fichier n'existe
-/// donc pas).
-fn parcourir(chemin: &Path, creer: bool) -> Result<Option<Dossier>, Echec> {
+/// donc pas). `pour` : ce que la garde des dossiers permet (`juger_dossier`).
+fn parcourir(chemin: &Path, creer: bool, pour: Pour) -> Result<Option<Dossier>, Echec> {
     let (base, noms) = depart(chemin)?;
     let Some((dernier, milieu)) = noms.split_last() else {
         return Err(refus(trf!("chemin vide", "empty path")));
@@ -165,7 +174,7 @@ fn parcourir(chemin: &Path, creer: bool) -> Result<Option<Dossier>, Echec> {
             .open(&base)
             .map_err(|e| phrase(&e, &ou))?
     };
-    juger_dossier(&courant, &ou)?;
+    juger_dossier(&courant, &ou, pour)?;
     for nom in milieu {
         ou = suivant(&ou, nom);
         let c = c_nom(nom).map_err(|e| phrase(&e, &ou))?;
@@ -187,7 +196,7 @@ fn parcourir(chemin: &Path, creer: bool) -> Result<Option<Dossier>, Echec> {
             }
             Err(e) => return Err(phrase(&e, &ou)),
         };
-        juger_dossier(&courant, &ou)?;
+        juger_dossier(&courant, &ou, pour)?;
     }
     ou = suivant(&ou, dernier);
     let nom = c_nom(dernier).map_err(|e| phrase(&e, &ou))?;
@@ -232,7 +241,16 @@ fn regarder(d: &Dossier) -> Result<Option<u32>, Echec> {
 /// le fichier, s'il existe, un simple fichier du compte ; ce qui manque se créera. Une entrée qui ne passe pas n'est
 /// pas proposée : rien ne s'écrirait ailleurs que dans le dossier personnel, ni à travers un lien.
 pub(super) fn juger(chemin: &Path) -> Result<(), Echec> {
-    if let Some(d) = parcourir(chemin, false)? {
+    if let Some(d) = parcourir(chemin, false, Pour::Ecrire)? {
+        regarder(&d)?;
+    }
+    Ok(())
+}
+
+/// Vanguard peut-il lire `chemin` ? Comme `juger`, sans regarder les droits des dossiers : ce qui se lit se montre,
+/// même là où Vanguard n'écrit pas (relecture 0.95, G-1).
+pub(super) fn juger_lecture(chemin: &Path) -> Result<(), Echec> {
+    if let Some(d) = parcourir(chemin, false, Pour::Lire)? {
         regarder(&d)?;
     }
     Ok(())
@@ -246,14 +264,14 @@ pub(super) fn juger_le_dossier(dossier: &Path) -> Result<(), Echec> {
     depart(dossier)?;
     // `parcourir` ouvre et juge chaque dossier du chemin, sauf le dernier nom : un nom posé sous `dossier`, jamais
     // ouvert, fait juger `dossier` lui-même.
-    parcourir(&dossier.join("x"), false).map(|_| ())
+    parcourir(&dossier.join("x"), false, Pour::Lire).map(|_| ())
 }
 
 /// Le texte de `chemin`, d'au plus `max` octets, lu sur le fichier ouvert sans suivre de lien. `NotFound` s'il
 /// n'existe pas (lui ou un de ses dossiers) ; `InvalidData` s'il n'est pas un simple fichier, trop gros ou pas en
 /// UTF-8 ; une autre erreur si la garde le refuse.
 pub(super) fn lire(chemin: &Path, max: u64) -> io::Result<String> {
-    let d = parcourir(chemin, false)
+    let d = parcourir(chemin, false, Pour::Lire)
         .map_err(io::Error::other)?
         .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
     let f = ouvrir_a(d.fd.as_fd(), &d.nom, LECTURE, 0)?;
@@ -279,7 +297,7 @@ pub(super) fn ecrire(chemin: &Path, contenu: &[u8]) -> Result<(), Echec> {
     if crate::autotest::lecture_seule::refuse_fichier(chemin) {
         return Err(refus(crate::autotest::lecture_seule::refus().to_string()));
     }
-    let d = parcourir(chemin, true)?.ok_or_else(|| refus(trf!("chemin vide", "empty path")))?;
+    let d = parcourir(chemin, true, Pour::Ecrire)?.ok_or_else(|| refus(trf!("chemin vide", "empty path")))?;
     let droits = regarder(&d)?;
     let ou = &d.ou;
     let mut sel = [0u8; 8];
@@ -316,7 +334,7 @@ pub(super) fn retirer(chemin: &Path) -> Result<(), Echec> {
     if crate::autotest::lecture_seule::refuse_fichier(chemin) {
         return Err(refus(crate::autotest::lecture_seule::refus().to_string()));
     }
-    let Some(d) = parcourir(chemin, false)? else {
+    let Some(d) = parcourir(chemin, false, Pour::Ecrire)? else {
         return Ok(());
     };
     if regarder(&d)?.is_none() {
@@ -495,8 +513,9 @@ mod tests {
     }
 
     /// Relecture 0.94, R-6 : un dossier du chemin qu'un autre compte peut modifier (écriture du groupe ou des autres)
-    /// ou qui porte un bit spécial (setgid : le fichier réécrit prendrait le groupe du dossier) est refusé, dit avec
-    /// ses droits ; rien n'y est lu, écrit ni retiré. 0700 et 0755 passent.
+    /// ou qui porte un bit spécial (setgid : le fichier réécrit prendrait le groupe du dossier) est refusé pour
+    /// écrire, dit avec ses droits ; rien n'y est écrit ni retiré. Il se lit encore (relecture 0.95, G-1). 0700 et
+    /// 0755 passent.
     #[test]
     fn dossier_modifiable_par_d_autres_ou_special_refuse() {
         use std::os::unix::fs::PermissionsExt as _;
@@ -514,8 +533,9 @@ mod tests {
                     && (e.contains(&format!("droits {mode:o})")) || e.contains(&format!("mode {mode:o})"))),
                 "{mode:o} : {e}"
             );
-            assert!(juger_le_dossier(&a).is_err(), "{mode:o}");
-            assert!(lire(&f, 100).is_err(), "{mode:o}");
+            assert!(juger_le_dossier(&a).is_ok(), "{mode:o}");
+            assert!(juger_lecture(&f).is_ok(), "{mode:o}");
+            assert_eq!(lire(&f, 100).unwrap(), "[Desktop Entry]\n", "{mode:o}");
             assert!(ecrire(&f, b"Hidden=true").is_err(), "{mode:o}");
             assert!(retirer(&f).is_err(), "{mode:o}");
             assert_eq!(std::fs::read_to_string(&f).unwrap(), "[Desktop Entry]\n", "{mode:o}");
@@ -523,6 +543,8 @@ mod tests {
             std::fs::set_permissions(&a, std::fs::Permissions::from_mode(0o755)).unwrap();
             std::fs::set_permissions(d.join(".config"), std::fs::Permissions::from_mode(mode)).unwrap();
             assert!(juger(&f).is_err(), "~/.config en {mode:o}");
+            assert!(ecrire(&f, b"Hidden=true").is_err(), "~/.config en {mode:o}");
+            assert!(lire(&f, 100).is_ok(), "~/.config en {mode:o}");
             std::fs::set_permissions(d.join(".config"), std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         for mode in [0o700, 0o755, 0o750] {
