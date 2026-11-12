@@ -11,7 +11,13 @@
 #   6. Le déploiement en échec : worktree et branche gardés, échec dit.
 #   7. Les arguments : inversés, en nombre faux, le worktree qui est l'arbre principal, un worktree sur une autre
 #      branche : refus (code 2) avant toute vérification.
-#   8. L'arbre principal pas prêt : sali avant, sali pendant la vérification, pas sur master : refus, rien fusionné.
+#   8. L'arbre principal pas prêt : sali avant, un fichier non suivi, sali pendant la vérification, pas sur master :
+#      refus, rien fusionné.
+#   9. Master qui dépasse le commit vérifié (une autre fenêtre l'a fusionné puis a commité pendant la vérification) :
+#      rien n'est déployé.
+#  10. La branche déplacée seule (worktree détaché, HEAD inchangé) pendant la vérification : refus, rien fusionné.
+#  11. La branche déplacée pendant le déploiement : livré, la branche gardée, dit.
+#  12. Le garde-fou de confidentialité en panne (code 2) : refus, dit comme une panne, pas comme un détail trouvé.
 # Lancé par outils/verifier.sh.
 #   outils/essais-livrer-branche.sh
 set -uo pipefail
@@ -42,6 +48,16 @@ case $(cat "$CAS/consigne-verif" 2>/dev/null) in
   commit) echo plus >>a; git commit -qam "pendant la vérification" ;;
   sale) echo sale >>a ;;
   depot-sale) echo sale >>"$CAS/depot/b" ;;
+  master-avance)
+    git -C "$CAS/depot" merge -q --ff-only "$(git rev-parse HEAD)"
+    echo d >"$CAS/depot/d"
+    git -C "$CAS/depot" add d
+    git -C "$CAS/depot" commit -qm "après la fusion, jamais vérifié"
+    ;;
+  branche-seule)
+    git checkout -q --detach
+    git branch -f lot "$(git commit-tree "HEAD^{tree}" -p HEAD -m ailleurs)"
+    ;;
   muet) echo "Passage partiel"; exit 0 ;;
   echec) echo "✖ tests Linux"; exit 1 ;;
 esac
@@ -50,9 +66,14 @@ FAUX
   cat >"$DEPOT/outils/deployer.sh" <<'FAUX'
 #!/usr/bin/env bash
 git rev-parse HEAD >"$ESSAI_CAS/vu-deploye"
+if [[ -e $ESSAI_CAS/consigne-deploi-branche ]]; then
+  git update-ref refs/heads/lot "$(git commit-tree "HEAD^{tree}" -p HEAD -m "pendant le déploiement")"
+fi
 exit "$(cat "$ESSAI_CAS/consigne-deploi" 2>/dev/null || echo 0)"
 FAUX
-  printf 'import os, sys\nopen(os.environ["ESSAI_CAS"] + "/vu-plage", "w").write(" ".join(sys.argv[1:]))\n' \
+  printf '%s\n' 'import os, sys' 'cas = os.environ["ESSAI_CAS"]' \
+    'open(cas + "/vu-plage", "w").write(" ".join(sys.argv[1:]))' \
+    'sys.exit(int(open(cas + "/consigne-conf").read()) if os.path.exists(cas + "/consigne-conf") else 0)' \
     >"$DEPOT/outils/confidentialite.py"
   chmod +x "$DEPOT"/outils/*.sh
   echo b >"$DEPOT/b"
@@ -181,6 +202,11 @@ livrer lot "$LOT"
 ((CODE != 0)) && [[ ! -e $CAS/vu-verifie ]] && grep -q 'changements non commités' <<<"$SORTIE" ||
   refus+=("sali avant (code $CODE)")
 git -C "$DEPOT" checkout -q -- b
+echo non-suivi >"$DEPOT/nouveau"
+livrer lot "$LOT"
+((CODE != 0)) && [[ ! -e $CAS/vu-verifie ]] && grep -q 'fichiers non suivis' <<<"$SORTIE" ||
+  refus+=("fichier non suivi (code $CODE)")
+rm -f "$DEPOT/nouveau"
 echo depot-sale >"$CAS/consigne-verif"
 livrer lot "$LOT"
 ((CODE != 0)) && [[ -e $CAS/vu-verifie ]] && grep -q "l'arbre principal .* a des changements" <<<"$SORTIE" ||
@@ -196,6 +222,54 @@ if ((${#refus[@]} == 0)) && rien_livre "$DEPART"; then
   ok "arbre principal sali avant ou pendant, ou pas sur master : refus, rien fusionné"
 else
   ko "arbre principal pas prêt : ${refus[*]:-master changé ou déployé}"
+fi
+
+# 9. Master dépasse le commit vérifié : une autre fenêtre l'a fusionné, puis a commité sur master.
+monter master-avance
+echo master-avance >"$CAS/consigne-verif"
+livrer lot "$LOT"
+VERIFIE=$(cat "$CAS/vu-verifie" 2>/dev/null)
+if ((CODE != 0)) && [[ -n $VERIFIE && ! -e $CAS/vu-deploye ]] && grep -q 'dépasse le commit vérifié' <<<"$SORTIE" &&
+  [[ -d $LOT ]] && tete refs/heads/lot >/dev/null; then
+  ok "master qui dépasse le commit vérifié : rien n'est déployé, worktree et branche gardés"
+else
+  ko "master qui dépasse le commit vérifié (code $CODE, déployé : $(cat "$CAS/vu-deploye" 2>/dev/null || echo rien)) : $(tail -n 3 <<<"$SORTIE")"
+fi
+
+# 10. La branche déplacée seule pendant la vérification : le worktree détaché garde HEAD au commit vérifié.
+monter branche-seule
+DEPART=$(tete master)
+echo branche-seule >"$CAS/consigne-verif"
+livrer lot "$LOT"
+if ((CODE != 0)) && rien_livre "$DEPART" && grep -q 'a bougé pendant la vérification' <<<"$SORTIE"; then
+  ok "branche déplacée seule, HEAD inchangé : refus, rien fusionné ni déployé"
+else
+  ko "branche déplacée seule (code $CODE, master $(tete master)) : $(tail -n 3 <<<"$SORTIE")"
+fi
+
+# 11. La branche déplacée pendant le déploiement : le ménage la garde (elle n'est plus au commit livré).
+monter branche-deplacee
+touch "$CAS/consigne-deploi-branche"
+livrer lot "$LOT"
+VERIFIE=$(cat "$CAS/vu-verifie" 2>/dev/null)
+if ((CODE == 0)) && [[ -n $VERIFIE && $(cat "$CAS/vu-deploye" 2>/dev/null) == "$VERIFIE" ]] &&
+  tete refs/heads/lot >/dev/null && [[ $(tete refs/heads/lot) != "$VERIFIE" ]] &&
+  grep -q "branche lot gardée (elle n'est plus au commit livré)" <<<"$SORTIE"; then
+  ok "branche déplacée pendant le déploiement : livré, branche gardée, dit"
+else
+  ko "branche déplacée pendant le déploiement (code $CODE) : $(tail -n 3 <<<"$SORTIE")"
+fi
+
+# 12. Le garde-fou de confidentialité en panne (code 2, rien conclu).
+monter garde-en-panne
+DEPART=$(tete master)
+echo 2 >"$CAS/consigne-conf"
+livrer lot "$LOT"
+if ((CODE != 0)) && rien_livre "$DEPART" && [[ ! -e $CAS/vu-verifie ]] &&
+  grep -q 'garde-fou de confidentialité en panne (code 2)' <<<"$SORTIE" && ! grep -q 'détail personnel' <<<"$SORTIE"; then
+  ok "garde-fou en panne : refus, dit comme une panne"
+else
+  ko "garde-fou en panne (code $CODE) : $(tail -n 3 <<<"$SORTIE")"
 fi
 
 ((ECHECS == 0)) || { echo "$ECHECS essai(s) en échec."; exit 1; }

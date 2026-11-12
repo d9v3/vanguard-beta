@@ -6,7 +6,12 @@
 # VANGUARD_INTERMEDIAIRE=1 : version intermédiaire d'une série (deployer.sh : sans page ni dépôt dans la VM).
 #
 # Ce qui est fusionné et déployé est le commit vérifié, noté juste après le rebase, jamais le nom de la branche : un
-# commit posé sur la branche pendant la vérification (une autre fenêtre) fait refuser la livraison, rien fusionné.
+# commit posé sur la branche pendant la vérification (une autre fenêtre) fait refuser la livraison, rien fusionné ;
+# un master qui dépasse ce commit après la fusion (une autre fenêtre l'a fusionné, puis a commité) fait refuser le
+# déploiement.
+# Limites : un commit posé sur master pendant deployer.sh lui-même partirait avec lui (deployer.sh fait ses propres
+# commits, liste des fabricants, captures, page des fonctions : sa tête n'est pas celle vérifiée, à borner en 0.95) ;
+# confidentialite.py est celui du lot jugé, puis celui de master une fois fusionné (deployer.sh), donc le même.
 # S'arrête à la première étape en échec, sans rien fusionner. Le déploiement passe avant le ménage : un ménage raté
 # (worktree verrouillé, branche gardée) est dit, sans défaire une livraison faite.
 # Essais : outils/essais-livrer-branche.sh (dépôts jetables, faux verifier.sh et deployer.sh).
@@ -30,8 +35,10 @@ DEPOT=$(realpath "$(dirname "$COMMUN")")
 arbre_principal_pret() {
   [[ $(git -C "$DEPOT" branch --show-current) == master ]] ||
     { echo "✖ l'arbre principal ($DEPOT) n'est pas sur master"; return 1; }
-  [[ -z $(git -C "$DEPOT" status --porcelain --untracked-files=no) ]] ||
-    { echo "✖ l'arbre principal ($DEPOT) a des changements non commités"; return 1; }
+  # Les fichiers non suivis aussi : deployer.sh refuse de compiler avec un fichier non suivi dans src, assets… ; vu
+  # ici, avant la vérification, plutôt qu'après la fusion.
+  [[ -z $(git -C "$DEPOT" status --porcelain) ]] ||
+    { echo "✖ l'arbre principal ($DEPOT) a des changements non commités ou des fichiers non suivis"; return 1; }
 }
 arbre_principal_pret || { echo "✖ rien n'est fusionné"; exit 1; }
 export CARGO_TARGET_DIR=$DEPOT/target
@@ -48,7 +55,16 @@ git merge-base --is-ancestor master HEAD || git rebase -q master
 SHA=$(git rev-parse HEAD)
 # Rien de personnel ne part sur GitHub : vu ici, avant la vérification et la fusion (deployer.sh le revoit avant
 # d'envoyer master).
-python3 outils/confidentialite.py --plage origin/master "$SHA" || { echo "✖ détail personnel : rien n'est fusionné"; exit 1; }
+# Code 1 : un détail trouvé ; tout autre code (2 : rien conclu) : le garde-fou n'a pas pu juger, dit tel quel.
+GARDE=0
+python3 outils/confidentialite.py --plage origin/master "$SHA" || GARDE=$?
+if ((GARDE == 1)); then
+  echo "✖ détail personnel : rien n'est fusionné"
+  exit 1
+elif ((GARDE != 0)); then
+  echo "✖ garde-fou de confidentialité en panne (code $GARDE), rien conclu : rien n'est fusionné"
+  exit 1
+fi
 echo "· vérification complète de ${SHA:0:12}"
 if ! outils/verifier.sh >"$JOURNAUX/verif-$NOM.log" 2>&1; then
   tail -30 "$JOURNAUX/verif-$NOM.log"
@@ -66,6 +82,13 @@ echo "· fusion et déploiement"
 cd "$DEPOT"
 arbre_principal_pret || { echo "✖ rien n'est fusionné"; exit 1; }
 git merge -q --ff-only "$SHA"
+# « Already up to date » réussit aussi quand master contient déjà le commit vérifié et l'a dépassé : déployer HEAD
+# serait déployer des commits jamais vérifiés.
+[[ $(git rev-parse HEAD) == "$SHA" ]] || {
+  echo "✖ master ($(git rev-parse --short=12 HEAD)) dépasse le commit vérifié (${SHA:0:12}) : rien n'est déployé"
+  echo "  master le contient déjà ; relancer la livraison sur la branche rebasée sur ce master"
+  exit 1
+}
 outils/deployer.sh >"$JOURNAUX/deploiement-$NOM.log" 2>&1 || {
   tail -30 "$JOURNAUX/deploiement-$NOM.log"
   echo "✖ déploiement en échec : master contient ${SHA:0:12}, worktree et branche gardés"
