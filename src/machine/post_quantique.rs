@@ -762,8 +762,13 @@ fn pairs_du_dossier(
     };
     let mut refuse = false;
     for e in entrees.flatten() {
-        let nom = e.file_name().to_string_lossy().into_owned();
-        let Some(base) = nom.strip_suffix(fin) else { continue };
+        let nom = e.file_name();
+        let Some(base) = nom.as_encoded_bytes().strip_suffix(fin.as_bytes()) else {
+            continue;
+        };
+        // La base ne nomme l'interface que pour wg-quick, qui refuse un nom hors de [a-zA-Z0-9_=+.-] : pas en UTF-8,
+        // elle ne nomme aucune interface (vide). NetworkManager et systemd-networkd la prennent dans le fichier.
+        let base = std::str::from_utf8(base).unwrap_or("");
         match lire_efface(&e.path()) {
             Ok(t) => {
                 if let Some(trouve) = std::str::from_utf8(&t.0).ok().and_then(|texte| lire(base, texte)) {
@@ -992,7 +997,9 @@ fn interfaces_wireguard(racine: &std::path::Path) -> Vec<String> {
             std::fs::read_to_string(e.path().join("uevent"))
                 .is_ok_and(|t| t.lines().any(|l| l.trim() == "DEVTYPE=wireguard"))
         })
-        .map(|e| e.file_name().to_string_lossy().into_owned())
+        // Une interface au nom qui n'est pas en UTF-8 (le noyau le permet) se montre échappée : convertis avec pertes,
+        // deux noms différents devenaient le même, et l'un prenait le fichier de réglages de l'autre.
+        .map(|e| crate::socle::nom_montre(&e.file_name()))
         .collect();
     i.sort();
     i
@@ -1482,6 +1489,21 @@ mod tests {
             false,
         )));
         assert!(!c[0].verifie);
+    }
+
+    /// Relecture 0.94 : deux interfaces WireGuard aux noms qui ne sont pas en UTF-8 restent deux noms distincts
+    /// (convertis avec pertes, elles devenaient la même, et l'une prenait le fichier de l'autre).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn interfaces_aux_noms_pas_en_utf8_distinctes() {
+        use std::os::unix::ffi::OsStrExt;
+        let d = crate::essais::Jetable::nouveau("pqc-wg-pas-utf8");
+        for nom in [&b"wg\xE9"[..], b"wg\xEA"] {
+            let i = d.join(std::ffi::OsStr::from_bytes(nom));
+            std::fs::create_dir_all(&i).unwrap();
+            std::fs::write(i.join("uevent"), "DEVTYPE=wireguard\n").unwrap();
+        }
+        assert_eq!(interfaces_wireguard(&d), ["wg\\xE9", "wg\\xEA"]);
     }
 
     /// Les vrais fichiers d'essai, lus par la même fonction que le bilan : le tampon est effacé, le compte juste.

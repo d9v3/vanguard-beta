@@ -336,9 +336,11 @@ pub(crate) fn verrous_remplaces(dossier: &std::path::Path) -> Vec<String> {
             continue;
         };
         for nom in noms.flatten().take(BORNE) {
-            let nom = nom.file_name().to_string_lossy().into_owned();
-            if nom.ends_with(".verrou") && super::verrou_remplace(&chemin, &nom) {
-                remplaces.push(format!("{lieu}/{nom}"));
+            // Comparé et ouvert sous son vrai nom : converti avec pertes, un nom qui n'est pas en UTF-8 désignait un
+            // autre fichier, absent, et le verrou remplacé passait pour sain. Montré échappé (`nom_montre`).
+            let nom = nom.file_name();
+            if nom.as_encoded_bytes().ends_with(b".verrou") && super::verrou_remplace(&chemin, &nom) {
+                remplaces.push(format!("{lieu}/{}", super::nom_montre(&nom)));
             }
         }
     }
@@ -531,6 +533,17 @@ fn gardee_sans_lire(sceau: &Result<Option<Sceau>, Refus>, lieu: (&str, &str)) ->
 mod tests {
     use super::*;
     use std::io::{Read, Write};
+
+    /// Relecture 0.94 : un verrou remplacé (ici un dossier) au nom qui n'est pas en UTF-8 est relevé, sous son nom
+    /// échappé. Converti avec pertes, il désignait un fichier absent et passait pour sain.
+    #[cfg(unix)]
+    #[test]
+    fn verrou_remplace_au_nom_pas_en_utf8_releve() {
+        use std::os::unix::ffi::OsStrExt;
+        let d = crate::essais::Jetable::nouveau("verrou-pas-utf8");
+        std::fs::create_dir_all(d.join("kev").join(std::ffi::OsStr::from_bytes(b"x\xFF.verrou"))).unwrap();
+        assert_eq!(verrous_remplaces(&d), ["kev/x\\xFF.verrou"]);
+    }
 
     /// Un serveur local qui répond `reponse` à une seule demande.
     fn serveur(reponse: &'static [u8]) -> (String, std::thread::JoinHandle<()>) {

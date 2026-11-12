@@ -110,7 +110,9 @@ pub(crate) fn empreintes(base: &Path, paquet: &str) -> Option<HashMap<PathBuf, S
                         .into_iter()
                         .flatten()
                         .flatten()
-                        .map(|e| e.file_name().to_string_lossy().into_owned())
+                        // dpkg ne nomme ses fichiers qu'en ASCII : un nom qui n'est pas en UTF-8 n'est pas le sien.
+                        // Converti avec pertes, il pouvait passer devant le vrai, puis ne pas s'ouvrir (autre nom).
+                        .filter_map(|e| e.file_name().into_string().ok())
                         .find(|f| {
                             f.strip_prefix(nom)
                                 .and_then(|r| r.strip_prefix(':'))

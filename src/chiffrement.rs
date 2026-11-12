@@ -533,9 +533,12 @@ pub(crate) fn proteger_dans(
 /// Le rapport et les copies du diagnostic, jusqu'ici sur la clé, rangés sur cet ordinateur.
 fn deplacer_rapports(donnees: &Path, local: &Path) {
     for e in std::fs::read_dir(donnees).into_iter().flatten().flatten() {
-        let nom = e.file_name().to_string_lossy().into_owned();
-        let rapport = nom == "rapport.html" || nom == "rapport.md";
-        let diagnostic = nom.starts_with("diagnostic-")
+        // Comparé et rangé sous son vrai nom : converti avec pertes, un nom qui n'est pas en UTF-8 était recopié sous un
+        // autre nom (U+FFFD à la place de ses octets).
+        let nom = e.file_name();
+        let octets = nom.as_encoded_bytes();
+        let rapport = octets == b"rapport.html" || octets == b"rapport.md";
+        let diagnostic = octets.starts_with(b"diagnostic-")
             && Path::new(&nom)
                 .extension()
                 .is_some_and(|x| x.eq_ignore_ascii_case("txt"));
@@ -802,6 +805,22 @@ fn constat_de(donnees: &Path) -> Option<crate::machine::Constat> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Relecture 0.94 : un diagnostic au nom qui n'est pas en UTF-8 est rangé sous son vrai nom, pas sous sa
+    /// conversion avec pertes.
+    #[cfg(unix)]
+    #[test]
+    fn rapport_au_nom_pas_en_utf8_range_sous_son_nom() {
+        use std::os::unix::ffi::OsStrExt;
+        let d = crate::essais::Jetable::nouveau("rapports-pas-utf8");
+        let (donnees, local) = (d.join("cle"), d.join("local"));
+        std::fs::create_dir_all(&donnees).unwrap();
+        let nom = std::ffi::OsStr::from_bytes(b"diagnostic-\xFF.txt");
+        std::fs::write(donnees.join(nom), "essai").unwrap();
+        deplacer_rapports(&donnees, &local);
+        assert_eq!(std::fs::read_to_string(local.join(nom)).unwrap(), "essai");
+        assert!(!donnees.join(nom).exists());
+    }
 
     /// La clé de la session : cherchée une fois, rendue ensuite sans redemander ; oubliée, plus rien n'est rendu ni
     /// redemandé. Une session tenue par un autre fil (phrase en cours de saisie) n'arrête pas la sortie.

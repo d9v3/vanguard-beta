@@ -55,9 +55,41 @@ pub(crate) fn effacer(octets: &mut [u8]) {
     std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
 }
 
+/// Un nom de fichier prêt à montrer : tel quel en UTF-8 ; sinon chaque octet qui n'en est pas s'écrit `\xFF`. Converti
+/// avec pertes (`to_string_lossy`), deux noms différents se montraient pareils (U+FFFD) ; ici ils restent distincts.
+/// Pour l'affichage seulement : on compare et on ouvre avec le vrai nom (`OsStr`).
+pub(crate) fn nom_montre(nom: &std::ffi::OsStr) -> String {
+    use std::fmt::Write as _;
+    if let Some(texte) = nom.to_str() {
+        return texte.to_string();
+    }
+    let mut montre = String::new();
+    for morceau in nom.as_encoded_bytes().utf8_chunks() {
+        montre.push_str(morceau.valid());
+        for octet in morceau.invalid() {
+            let _ = write!(montre, "\\x{octet:02X}");
+        }
+    }
+    montre
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Relecture 0.94 : un nom qui n'est pas en UTF-8 se montre échappé, distinct d'un autre ; en UTF-8, tel quel.
+    #[cfg(unix)]
+    #[test]
+    fn nom_pas_en_utf8_montre_echappe() {
+        use std::os::unix::ffi::OsStrExt;
+        let (a, b) = (
+            std::ffi::OsStr::from_bytes(b"cl\xE9.verrou"),
+            std::ffi::OsStr::from_bytes(b"cl\xEA.verrou"),
+        );
+        assert_eq!(nom_montre(a), "cl\\xE9.verrou");
+        assert_ne!(nom_montre(a), nom_montre(b));
+        assert_eq!(nom_montre(std::ffi::OsStr::new("clé.verrou")), "clé.verrou");
+    }
 
     /// Chaque longueur autour des blocs de 64 octets est remise à zéro, et seulement elle : les octets voisins, hors
     /// de la tranche donnée, restent tels quels. Lancé sous Miri (outils/preuves.sh) : les deux écritures volatiles

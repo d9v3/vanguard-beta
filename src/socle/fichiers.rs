@@ -293,7 +293,7 @@ pub(crate) fn nom_systeme(nom: &str) -> String {
 /// qui ne s'ouvre plus en écriture (droits retirés, lecture seule) ? Un verrou ainsi remplacé ne se prend plus
 /// (`SansVerrou::Impossible`), et rien ne s'écrit sous lui : aucune version de Vanguard ne le pose ainsi, c'est donc
 /// un autre programme, à dire plutôt qu'à taire.
-pub(crate) fn verrou_remplace(dossier: &std::path::Path, nom: &str) -> bool {
+pub(crate) fn verrou_remplace(dossier: &std::path::Path, nom: impl AsRef<std::path::Path>) -> bool {
     let chemin = dossier.join(nom);
     let Ok(m) = std::fs::symlink_metadata(&chemin) else {
         return false;
