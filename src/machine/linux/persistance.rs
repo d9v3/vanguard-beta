@@ -2964,10 +2964,6 @@ struct Codes {
     /// Les variables posées par « Environment= » dans l'unité : systemd remplace « $A » et « ${A} » des lignes Exec
     /// par leur valeur (relecture adverse 2, N5).
     variables: std::collections::BTreeMap<String, String>,
-    /// La sauvegarde que Vanguard pose, si l'unité lue est ce service-là, écrit à l'octet près comme Vanguard l'écrit
-    /// (`sauvegarde::sauvegarde_posee`) ; seuls son rsync et son findmnt se taisent, s'ils sont les vrais et si sa
-    /// destination se voit sans lien (relecture 0.94, S-1, C-2).
-    sauvegarde: Option<crate::sauvegarde::SauvegardePosee>,
 }
 
 impl Codes {
@@ -2978,7 +2974,6 @@ impl Codes {
             maison: r.maison.to_string_lossy().into_owned(),
             session: r.session.as_ref().map(|s| s.to_string_lossy().into_owned()),
             variables: std::collections::BTreeMap::new(),
-            sauvegarde: None,
         }
     }
 }
@@ -4641,9 +4636,6 @@ fn juger_demarrage(demarrage: &[std::path::PathBuf], h: &Path, t: &mut Lancement
                 let base = Codes::de(utilisateur, &t.r);
                 Lecteur::Systemd(Codes {
                     variables: variables_fusionnees(f, &lu.texte, &base, &t.r),
-                    sauvegarde: (utilisateur && f.file_name().is_some_and(|n| n == crate::sauvegarde::SERVICE))
-                        .then(|| crate::sauvegarde::sauvegarde_posee(&lu.texte))
-                        .flatten(),
                     ..base
                 })
             };
@@ -7740,9 +7732,10 @@ mod tests {
     }
 
     /// COMP-3 : les unités que Vanguard pose dans le compte ne lèvent rien, dans les deux langues : veilleur,
-    /// entretien, surveillance (d'aujourd'hui et d'avant), sauvegarde. Le `CPUQuota=20%` du veilleur sortait
-    /// « réglage d'unité non lu » (LNX-PRS-002, Élevé) : le « % » final était pris pour un code de systemd ; le
-    /// « rsync » de la sauvegarde, pour un lanceur. Celles qu'il pose en administrateur (garde, ses listes, isolement,
+    /// entretien, surveillance (d'aujourd'hui et d'avant), minuterie de la sauvegarde. Le `CPUQuota=20%` du veilleur
+    /// sortait « réglage d'unité non lu » (LNX-PRS-002, Élevé) : le « % » final était pris pour un code de systemd.
+    /// Le service de la sauvegarde, lui, est levé (D-1 : rsync lit ~/.popt, `la_sauvegarde_de_vanguard_est_levee`),
+    /// et seul lui. Celles qu'il pose en administrateur (garde, ses listes, isolement,
     /// ajout d'Ollama) sont à root dans des dossiers à root (`de_root_seul`) : la liste permise ne les juge pas, et
     /// sous `unshare -r` (identités traduites) cet essai ne saurait le montrer ; elles n'y sont donc pas.
     #[test]
@@ -7767,7 +7760,7 @@ mod tests {
             for d in ["Documents", "Mes images"] {
                 std::fs::create_dir_all(m.chemin(d)).unwrap();
             }
-            // Le disque branché, sa destination posée (C-2 : une destination qui ne se voit pas n'est pas muette).
+            // Le disque branché, sa destination posée : le cas le plus sage, levé quand même (D-1).
             std::fs::create_dir_all(m.racine.join("run/media/alice/Mon disque/Sauvegarde-Vanguard/poste")).unwrap();
             let unites = || {
                 let (es, et) = crate::entretien::unites_systemd(exe);
@@ -7820,10 +7813,12 @@ mod tests {
                 }),
                 "la sauvegarde a changé : revoir cet essai"
             );
-            for (nom, texte) in &compte {
+            let (service, autres) = compte.split_last().unwrap();
+            assert_eq!(service.0, crate::sauvegarde::SERVICE);
+            for (nom, texte) in autres {
                 m.ecrire(&format!(".config/systemd/user/{nom}"), texte);
             }
-            let lever = || {
+            let juger = || {
                 persistance_dans(
                     &m.racine,
                     &m.chemin(""),
@@ -7832,148 +7827,111 @@ mod tests {
                     None,
                 )
             };
-            for c in &lever() {
+            for c in &juger() {
                 assert_eq!(
                     c.probleme, None,
                     "{exe}, fat {fat}, anglais {anglais} : {} {:?}",
                     c.regle, c.message
                 );
             }
-            // La même sauvegarde, une seule source changée pour un dossier de démarrage : plus la forme exacte, levée.
-            let hostile = compte[7]
-                .1
-                .replace("\"/home/alice/Documents\"", "\"/home/alice/Documents/charge/\"");
-            assert_ne!(hostile, compte[7].1);
-            m.ecrire(
-                &format!(".config/systemd/user/{}", crate::sauvegarde::SERVICE),
-                &hostile,
-            );
-            assert!(
-                lever().iter().any(|c| c.probleme.is_some()),
-                "{exe}, fat {fat} : la sauvegarde changée doit lever"
-            );
-            // L'unité exacte, mais « rsync » est un lien vers un shell : lève.
-            m.ecrire(
-                &format!(".config/systemd/user/{}", crate::sauvegarde::SERVICE),
-                &compte[7].1,
-            );
-            std::fs::remove_file(m.racine.join("usr/bin/rsync")).unwrap();
-            std::os::unix::fs::symlink("sh", m.racine.join("usr/bin/rsync")).unwrap();
-            assert!(
-                lever().iter().any(|c| c.probleme.is_some()),
-                "{exe}, fat {fat} : un rsync qui est un shell doit lever"
-            );
-        }
-    }
-
-    /// C-2 (relecture 0.94, suite de S-1) : la forme exacte de la sauvegarde ne tient que ses mots. rsync suit un lien
-    /// posé sur sa destination : `<disque>/Sauvegarde-Vanguard/<ordinateur>` (ou un dossier entre le disque et elle)
-    /// changé en lien vers ~/.config/autostart y recopierait une entrée de démarrage à chaque passage. Un tel lien
-    /// lève ; un findmnt qui n'en est pas un (la condition « bon disque monté » passerait toujours) aussi ; une
-    /// destination qui ne se voit pas (disque débranché au moment du bilan) est dite non vérifiée, jamais tue.
-    /// Témoin : l'unité exacte vers un vrai dossier reste muette.
-    #[test]
-    fn la_sauvegarde_exacte_vers_un_lien_ou_un_faux_findmnt_ne_se_tait_pas() {
-        use std::os::unix::fs::PermissionsExt as _;
-        let cas = [
-            "témoin",
-            "destination en lien",
-            "Sauvegarde-Vanguard en lien",
-            "disque en lien",
-            "findmnt qui est true",
-            "findmnt en lien vers sh",
-            "disque débranché",
-            "destination absente",
-        ];
-        let mut faux = Vec::new();
-        for fat in [false, true] {
-            for (i, nom) in cas.iter().enumerate() {
-                let m = Maison::nouvelle(&format!("sauvegarde-lien-{fat}-{i}"));
-                for p in ["rsync", "findmnt"] {
-                    let f = m.racine.join("usr/bin").join(p);
-                    std::fs::write(&f, "#!/bin/sh\n").unwrap();
-                    std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
-                }
-                std::fs::create_dir_all(m.chemin("Documents")).unwrap();
-                std::fs::create_dir_all(m.chemin(".config/autostart")).unwrap();
-                let racine = m.racine.join("run/media/alice/Mon disque");
-                let destination = racine.join("Sauvegarde-Vanguard/poste");
-                std::fs::create_dir_all(&destination).unwrap();
-                let findmnt = if *nom == "findmnt qui est true" {
-                    "/usr/bin/true"
-                } else {
-                    "/usr/bin/findmnt"
-                };
-                let (timer, service) = crate::sauvegarde::unites(
-                    Path::new("/usr/bin/rsync"),
-                    Some(Path::new(findmnt)),
-                    Some("1234-ABCD"),
-                    Path::new("/run/media/alice/Mon disque"),
-                    Path::new("/run/media/alice/Mon disque/Sauvegarde-Vanguard/poste"),
-                    &[std::path::PathBuf::from("/home/alice/Documents")],
-                    fat,
-                )
-                .unwrap();
-                m.ecrire(&format!(".config/systemd/user/{}", crate::sauvegarde::TIMER), &timer);
-                m.ecrire(
-                    &format!(".config/systemd/user/{}", crate::sauvegarde::SERVICE),
-                    &service,
-                );
-                // Un dossier remplacé par un lien vers un dossier : seul le lien change ce qui s'écrit où.
-                let en_lien = |d: &Path, vers: &Path| {
-                    std::fs::create_dir_all(vers).unwrap();
-                    std::fs::remove_dir_all(d).unwrap();
-                    std::os::unix::fs::symlink(vers, d).unwrap();
-                };
-                match *nom {
-                    "destination en lien" => en_lien(&destination, &m.chemin(".config/autostart")),
-                    "Sauvegarde-Vanguard en lien" => {
-                        std::fs::rename(m.chemin(".config/autostart"), m.chemin(".config/poste")).unwrap();
-                        en_lien(&racine.join("Sauvegarde-Vanguard"), &m.chemin(".config"));
-                    }
-                    "disque en lien" => {
-                        let faux = m.chemin("faux-disque");
-                        std::fs::create_dir_all(faux.join("Sauvegarde-Vanguard/poste")).unwrap();
-                        en_lien(&racine, &faux);
-                    }
-                    "findmnt en lien vers sh" => {
-                        std::fs::remove_file(m.racine.join("usr/bin/findmnt")).unwrap();
-                        std::os::unix::fs::symlink("sh", m.racine.join("usr/bin/findmnt")).unwrap();
-                    }
-                    "disque débranché" => std::fs::remove_dir_all(&racine).unwrap(),
-                    "destination absente" => std::fs::remove_dir_all(&destination).unwrap(),
-                    _ => {}
-                }
-                let leves: Vec<String> = persistance_dans(
-                    &m.racine,
-                    &m.chemin(""),
-                    |v| (v == "XDG_RUNTIME_DIR").then(|| "/run/user/1000".into()),
-                    None,
-                    None,
-                )
+            // Le service de la sauvegarde ajouté : levé, et rien d'autre (les autres unités restent muettes).
+            m.ecrire(&format!(".config/systemd/user/{}", service.0), &service.1);
+            let leves: Vec<String> = juger()
                 .into_iter()
                 .filter(|c| c.probleme.is_some())
                 .map(|c| c.message)
                 .collect();
-                let leve = leves.iter().any(|l| l.contains(crate::sauvegarde::SERVICE));
-                let dit = !(nom.contains("débranché") || nom.contains("absente"))
-                    || leves.iter().any(|l| l.contains("non vérifié"));
-                if (*nom == "témoin") != leves.is_empty() || (*nom != "témoin" && !(leve && dit)) {
-                    faux.push(format!("fat {fat}, {nom} : {leves:?}"));
+            let [message] = &leves[..] else {
+                panic!("{exe}, fat {fat}, anglais {anglais} : un seul constat attendu : {leves:?}");
+            };
+            assert!(
+                message.matches("~/.config/systemd/user/").count()
+                    == message
+                        .matches(&format!("~/.config/systemd/user/{}:", service.0))
+                        .count()
+                    && message.contains(&service.0),
+                "{exe}, fat {fat}, anglais {anglais} : seule la sauvegarde est levée : {message}"
+            );
+        }
+    }
+
+    /// D-1 (relecture 0.94) : rsync lit ~/.popt au départ, un fichier que le compte écrit, où une ligne
+    /// « rsync exec -a /chemin/programme » lui fait lancer ce programme à la place de la copie. Le texte de l'unité ne
+    /// dit donc pas ce qu'elle lance : la sauvegarde que Vanguard pose n'est plus tue du tout (sa reconnaissance part à
+    /// une version suivante). L'unité exacte, FAT et non FAT, disque branché ou non, avec ou sans ~/.popt, est levée
+    /// (Élevé, jamais déclarable : sa ligne ExecStart nommée) ; l'unité hostile de S-1 aussi.
+    #[test]
+    fn la_sauvegarde_de_vanguard_est_levee() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut faux = Vec::new();
+        for fat in [false, true] {
+            for branche in [true, false] {
+                for popt in [false, true] {
+                    let m = Maison::nouvelle(&format!("sauvegarde-levee-{fat}-{branche}-{popt}"));
+                    for p in ["rsync", "findmnt"] {
+                        let f = m.racine.join("usr/bin").join(p);
+                        std::fs::write(&f, "#!/bin/sh\n").unwrap();
+                        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+                    }
+                    std::fs::create_dir_all(m.chemin("Documents")).unwrap();
+                    let racine = m.racine.join("run/media/alice/Mon disque");
+                    if branche {
+                        std::fs::create_dir_all(racine.join("Sauvegarde-Vanguard/poste")).unwrap();
+                    }
+                    if popt {
+                        let option = if fat { "-r" } else { "-a" };
+                        m.ecrire(".popt", &format!("rsync exec {option} /home/alice/.cache/charge\n"));
+                        m.ecrire(".cache/charge", "#!/bin/sh\n");
+                    }
+                    let (timer, service) = crate::sauvegarde::unites(
+                        Path::new("/usr/bin/rsync"),
+                        Some(Path::new("/usr/bin/findmnt")),
+                        Some("1234-ABCD"),
+                        Path::new("/run/media/alice/Mon disque"),
+                        Path::new("/run/media/alice/Mon disque/Sauvegarde-Vanguard/poste"),
+                        &[std::path::PathBuf::from("/home/alice/Documents")],
+                        fat,
+                    )
+                    .unwrap();
+                    m.ecrire(&format!(".config/systemd/user/{}", crate::sauvegarde::TIMER), &timer);
+                    m.ecrire(
+                        &format!(".config/systemd/user/{}", crate::sauvegarde::SERVICE),
+                        &service,
+                    );
+                    let c = m.lancements();
+                    let execstart = service
+                        .lines()
+                        .position(|l| l.starts_with("ExecStart="))
+                        .map(|n| format!("~/.config/systemd/user/{}:{} : ", crate::sauvegarde::SERVICE, n + 1));
+                    let nommee = execstart.is_some_and(|e| c.message.contains(&e));
+                    if c.probleme != Some(Niveau::Eleve) || !nommee || crate::apprentissage::declarable(&c).is_ok() {
+                        faux.push(format!(
+                            "fat {fat}, branché {branche}, ~/.popt {popt} : {:?} {:?}",
+                            c.probleme, c.message
+                        ));
+                    }
                 }
             }
         }
-        assert!(
-            faux.is_empty(),
-            "le témoin se tait, chaque autre cas lève (non vérifié s'il n'a pas vu la destination) : {faux:#?}"
+        // S-1 : la copie hostile du rapport, sous le nom de la sauvegarde.
+        let m = Maison::nouvelle("sauvegarde-levee-hostile");
+        std::fs::write(m.racine.join("usr/bin/rsync"), "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(m.racine.join("usr/bin/rsync"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        m.ecrire(
+            &format!(".config/systemd/user/{}", crate::sauvegarde::SERVICE),
+            "[Service]\nType=oneshot\nExecStart=/usr/bin/rsync -a /home/alice/Documents/charge/ /home/alice/.config/autostart/\n",
         );
+        if m.lancements().probleme != Some(Niveau::Eleve) {
+            faux.push("unité hostile de S-1 : muette".to_string());
+        }
+        assert!(faux.is_empty(), "la sauvegarde de Vanguard doit être levée : {faux:#?}");
     }
 
     /// COMP-3, la forme exacte : un pourcentage de ressource (chiffres, décimale facultative, « % ») se lit ; toute
-    /// autre valeur à « % » d'une clé de ressource reste non lue. Le « rsync » de la sauvegarde se lit ; une option qui
-    /// lance un programme ou une destination distante reste un lanceur.
+    /// autre valeur à « % » d'une clé de ressource reste non lue. rsync reste un lanceur à toutes ses formes, celles
+    /// de la sauvegarde comprises (S-1, D-1 : il lit ~/.popt).
     #[test]
-    fn un_pourcentage_de_ressource_et_le_rsync_de_la_sauvegarde_a_la_forme_exacte() {
+    fn un_pourcentage_de_ressource_se_lit_et_rsync_reste_un_lanceur() {
         use std::os::unix::fs::PermissionsExt as _;
         let cas: &[(&str, &str, bool)] = &[
             ("CPUQuota=20%", "/usr/bin/true", true),
@@ -7991,7 +7949,7 @@ mod tests {
             ("CPUQuota=-5%", "/usr/bin/true", false),
             ("MemoryMax=%t/x%", "/usr/bin/true", false),
             // S-1 (relecture 0.94) : aucune règle générale sur rsync. L'unité hostile du rapport, et la même copie
-            // aux options exactes de la sauvegarde hors de l'unité que Vanguard pose, restent des lanceurs.
+            // aux options exactes de la sauvegarde, restent des lanceurs.
             (
                 "Nice=10",
                 "/usr/bin/rsync -a /home/alice/Documents/charge/ /home/alice/.config/autostart/",

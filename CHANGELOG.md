@@ -85,11 +85,11 @@ recompilée au besoin.
   passe suivante.
 - **Renforcé après une campagne d'attaque.** `vanguard` sans argument ne lance aucun programme « vanguard-fenetre »,
   même posé à côté de lui : il ouvre le menu du terminal. Le bilan ne prend pas pour suspecte l'unité du veilleur que
-  Vanguard pose lui-même (une valeur en pourcentage, comme `CPUQuota=20%`, n'est pas un code de systemd), ni celle de
-  la sauvegarde rsync, reconnue à sa forme exacte, celle que Vanguard écrit, avec les vrais rsync et findmnt, et
-  seulement si son dossier sur le disque se voit sans aucun lien jusqu'à lui (un lien posé sur le disque y
-  changerait où rsync copie : levée ; disque débranché au moment du bilan : dite non vérifiée) : toute autre copie
-  par rsync (vers ~/.config/autostart, par exemple) reste levée.
+  Vanguard pose lui-même (une valeur en pourcentage, comme `CPUQuota=20%`, n'est pas un code de systemd). L'unité de
+  la sauvegarde automatique, elle, est signalée au bilan comme toute copie par rsync dans une unité du compte (vers
+  ~/.config/autostart, par exemple), et elle ne peut pas être déclarée normale : rsync lit ~/.popt, un fichier que le
+  compte peut écrire et qui peut lui faire lancer un autre programme, et Vanguard ne lit pas encore ce fichier. La
+  0.93 ne la signalait pas ; sa reconnaissance viendra dans une version suivante.
   `demarrage --retirer` et `--remettre` ne suivent plus aucun dossier qui est un lien (~/.config ou son dossier
   autostart remplacé par un lien) : rien ne s'écrit hors du dossier personnel. Une entrée rangée derrière un lien, ou
   elle-même un lien ou un tube, n'est pas proposée, et la liste la dit « non vérifiée » (dans `--json` comme dans la
