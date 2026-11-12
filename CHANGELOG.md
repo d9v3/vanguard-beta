@@ -15,8 +15,10 @@ recompilée au besoin.
   installer, d'où vient la mise à jour (la clé VANGUARD, ou GitHub, signée par l'auteur), la version visée, son
   empreinte SHA-256, sa taille et chaque programme qu'elle remplacerait, avec sa version d'aujourd'hui.
   `--appliquer --accord <accord>` installe seulement ce qui a été montré, de 2 s à 10 minutes après l'aperçu, une
-  seule fois : une autre version, une autre clé ou une copie changée entre les deux est refusée. Les vérifications de
-  toujours restent ; « à jour » n'est dit que vérifié, sinon « non vérifié ». Commandes cachées de l'aide en ligne.
+  seule fois : une autre version, une autre clé ou une copie changée entre les deux est refusée. La copie provisoire
+  est tenue ouverte du début à la fin : relue, essayée et, une fois en place, revérifiée (le même fichier, les mêmes
+  octets ; sous Windows, les octets seulement) avant de dire « fait ». Les vérifications de toujours restent ;
+  « à jour » n'est dit que vérifié, sinon « non vérifié ». Commandes cachées de l'aide en ligne.
 - **Appliquer une correction du bilan, puis la remettre comme avant (Linux).** `vanguard correction --voir <jeton>`
   (le jeton vient de `audit --json`) montre la correction et son accord ; `--appliquer <jeton> --accord <accord>` la
   fait, une à la fois, de 2 s à 10 minutes après l'aperçu, une seule fois. Seules les corrections du compte qui
@@ -26,9 +28,12 @@ recompilée au besoin.
 - **Ce qui protège ces gestes.** Tout est relu et rejugé au moment d'agir : un état changé depuis l'aperçu, ou un
   fichier remplacé (reconnu à sa sorte et à son numéro d'inode), est refusé sans rien changer. Plusieurs fichiers :
   tout ou rien. La trace « Ce que Vanguard a changé » s'écrit avant de toucher un fichier : Vanguard arrêté net laisse
-  une ligne « interrompue », qui se remet comme une autre. Les droits d'un fichier du compte se lisent, se posent et se
-  remettent sans shell ni lien suivi (la remise passait par `chmod`, qui suit les liens). Le journal des événements ne
-  garde ni nom de fichier ni commande ; chaque fichier scellé s'écrit en deux temps, comme le sceau des réglages.
+  une ligne « interrompue », qui se remet comme une autre ; rien n'y prouve que Vanguard a posé la valeur, et l'écart
+  avec ce qui est là se montre avant la remise. Une note écrite par une version d'avant la 0.95, sans l'identité du
+  fichier, ne se remet pas toute seule : la valeur à remettre à la main est dite. Les droits d'un fichier du compte se
+  lisent, se posent et se remettent sans shell ni lien suivi (la remise passait par `chmod`, qui suit les liens). Le
+  journal des événements ne garde ni nom de fichier ni commande ; chaque fichier scellé s'écrit en deux temps, comme le
+  sceau des réglages.
 - **Programmes au démarrage : l'accord devient obligatoire.** `vanguard demarrage --retirer` et `--remettre`
   demandent maintenant `--accord`, celui que `demarrage --json` donne pour ce geste : sans lui, rien n'est retiré ni
   remis (code 2), et un programme dont le nom, la commande ou la portée a changé depuis la liste est refusé. L'accord
@@ -62,14 +67,18 @@ recompilée au besoin.
   et quand on refuse de la déclarer normale, le message dit ce qui la change et comment le retirer.
 - **Les variables et les réglages qui changent ce qu'un programme lance.** Le bilan lit les fichiers de variables du
   gestionnaire de session (environment.d, user.conf, ~/.pam_environment, uwsm) : HOME, LD_*, RSYNC_* ou
-  XDG_RUNTIME_DIR posés là lèvent la sauvegarde, et un dossier d'unités déplacé est relu. Les lignes « exec » des
-  réglages de popt (~/.popt, /etc/popt) se jugent comme des lancements. Limite dite à l'écran : une variable posée en
-  cours de session, par un profil de shell ou par une ligne « env = » de Hyprland n'est pas vérifiée.
+  XDG_RUNTIME_DIR posés là lèvent la sauvegarde, et un dossier d'unités déplacé est relu. Ces fichiers se lisent comme
+  leur lecteur les lit : un retour chariot seul coupe une ligne d'environment.d ou de user.conf, comme pour systemd (un
+  « # » ne cache plus la suite), et chaque fichier de ~/.config/uwsm/env.d compte, quelle que soit son extension. Les
+  lignes « exec » des réglages de popt (~/.popt, /etc/popt) se jugent comme des lancements. Limite dite à l'écran : une
+  variable posée en cours de session, par un profil de shell ou par une ligne « env = » de Hyprland n'est pas vérifiée.
 - **Les programmes du système, pris par leur chemin.** Le bilan, les traces, la surveillance, la sauvegarde et les
   autres lectures de la machine lancent pacman, systemctl, journalctl, ss, crontab, ping et les autres depuis les
   dossiers du système, jamais par le PATH du compte : un faux programme posé dans ~/.local/bin ne peut plus cacher une
-  connexion ou une ligne du journal. Les outils que vous installez vous-même (docker, podman, git, nmap, trivy,
-  gitleaks) restent cherchés dans le PATH, exprès.
+  connexion ou une ligne du journal. Sous Linux, ils ne reçoivent plus l'environnement du compte (PATH, BASH_ENV,
+  LD_PRELOAD…) : un script du système comme checkupdates ne relance plus un faux pacman posé dans ~/.local/bin, et
+  « Système à jour » n'est plus dit sans vérification. Les outils que vous installez vous-même (docker, podman, git,
+  nmap, trivy, gitleaks) restent cherchés dans le PATH, exprès.
 - **Plus solide.** Chaque caractère de format d'Unicode (ceux qui changent le sens de lecture ou cachent du texte)
   s'affiche « � », d'après la table d'Unicode 17. Un nom qui n'est pas en UTF-8 (verrou, rapport, interface WireGuard)
   est ouvert sous son vrai nom et montré avec ses octets en `\xFF`. Quand le système refuse un fil, Vanguard continue

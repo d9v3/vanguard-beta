@@ -14,8 +14,10 @@ repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
   anything, where the update comes from (the VANGUARD key, or GitHub, signed by the author), the target version, its
   SHA-256 fingerprint, its size and each program it would replace, with its version today. `--appliquer --accord
   <consent>` installs only what was shown, 2 s to 10 minutes after the preview, once: another version, another key or
-  a changed copy in between is refused. The usual checks stay; "up to date" is only said when verified, otherwise
-  "not verified". Commands left out of the online help.
+  a changed copy in between is refused. The temporary copy is held open from start to finish: read back, tried and,
+  once in place, checked again (the same file, the same bytes; on Windows, the bytes only) before saying "done". The
+  usual checks stay; "up to date" is only said when verified, otherwise "not verified". Commands left out of the online
+  help.
 - **Apply an audit fix, then put it back as before (Linux).** `vanguard correction --show <token>` (the token comes
   from `audit --json`) shows the fix and its consent; `--apply <token> --agreement <consent>` does it, one at a time,
   2 s to 10 minutes after the preview, once. Only account fixes that undo exactly are allowed: the permissions of a
@@ -25,9 +27,11 @@ repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
 - **What protects these actions.** Everything is read and judged again when acting: a state changed since the
   preview, or a replaced file (recognized by its kind and inode number), is refused without changing anything.
   Several files: all or nothing. The "What Vanguard changed" trace is written before touching a file: Vanguard
-  stopped dead leaves an "interrupted" line, which is put back like any other. Account file permissions are read, set
-  and put back without a shell or a followed link (putting back used `chmod`, which follows links). The event log
-  keeps no file name and no command; each sealed file is written in two steps, like the settings seal.
+  stopped dead leaves an "interrupted" line, which is put back like any other; nothing in it proves Vanguard set the
+  value, and the gap with what is there is shown before putting back. A note written by a version before 0.95, without
+  the file's identity, is not put back on its own: the value to put back by hand is given. Account file permissions are
+  read, set and put back without a shell or a followed link (putting back used `chmod`, which follows links). The event
+  log keeps no file name and no command; each sealed file is written in two steps, like the settings seal.
 - **Startup programs: the consent is now required.** `vanguard startup --remove` and `--put-back` now require
   `--agreement`, the one `startup --json` gives for that action: without it, nothing is removed or put back (code 2),
   and a program whose name, command or scope changed since the list is refused. The consent binds the whole name and
@@ -60,13 +64,17 @@ repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
   what changes it and how to remove that.
 - **Variables and settings that change what a program starts.** The check reads the session manager's variable files
   (environment.d, user.conf, ~/.pam_environment, uwsm): HOME, LD_*, RSYNC_* or XDG_RUNTIME_DIR set there raise the
-  backup, and a moved unit folder is read again. The "exec" lines of popt settings (~/.popt,
-  /etc/popt) are judged as launches. Limit stated on screen: a variable set during the session, by a shell profile or
-  by a Hyprland "env =" line is not checked.
+  backup, and a moved unit folder is read again. These files are read as their reader reads them: a lone carriage
+  return splits an environment.d or user.conf line, as for systemd (a "#" no longer hides what follows), and every file
+  in ~/.config/uwsm/env.d counts, whatever its extension. The "exec" lines of popt settings (~/.popt, /etc/popt) are
+  judged as launches. Limit stated on screen: a variable set during the session, by a shell profile or by a Hyprland
+  "env =" line is not checked.
 - **System programs, taken by their path.** The check, traces, monitoring, the backup and the other machine readings
   start pacman, systemctl, journalctl, ss, crontab, ping and the rest from the system folders, never through the
-  account's PATH: a fake program placed in ~/.local/bin can no longer hide a connection or a journal line. Tools you
-  install yourself (docker, podman, git, nmap, trivy, gitleaks) are still looked up in the PATH, on purpose.
+  account's PATH: a fake program placed in ~/.local/bin can no longer hide a connection or a journal line. On Linux,
+  they no longer receive the account's environment (PATH, BASH_ENV, LD_PRELOAD…): a system script such as checkupdates
+  no longer starts a fake pacman placed in ~/.local/bin, and "System up to date" is no longer said without checking.
+  Tools you install yourself (docker, podman, git, nmap, trivy, gitleaks) are still looked up in the PATH, on purpose.
 - **Sturdier.** Every Unicode format character (those that change reading direction or hide text) is shown as "�",
   following Unicode 17's table. A name that is not UTF-8 (lock, report, WireGuard interface) is opened under its real
   name and shown with its bytes as `\xFF`. When the system refuses a thread, Vanguard goes on in "reduced mode", says
