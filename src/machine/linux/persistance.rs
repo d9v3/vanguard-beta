@@ -4249,7 +4249,8 @@ fn nomme_une_variable_de_la_sauvegarde(texte: &str, vide: bool) -> bool {
 }
 
 /// Un fichier de la sorte `sorte` est au format de systemd (environment.d, /etc/environment, pam_env, user.conf et
-/// ses compléments), dont le lecteur coupe un enregistrement aussi sur un retour chariot seul (`enregistrements`).
+/// ses compléments), dont le lecteur coupe un enregistrement aussi sur un retour chariot seul ou un NUL
+/// (`enregistrements`).
 fn format_systemd(sorte: Variables) -> bool {
     matches!(sorte, Variables::Cles | Variables::Systemd)
 }
@@ -4258,16 +4259,22 @@ fn format_systemd(sorte: Variables) -> bool {
 /// chaque retour chariot seul, comme la coupe systemd, où un « # » ne commente que jusque-là (campagne 0.95, angle
 /// lecture, L-1 : « #x⏎LD_PRELOAD=… » posait la variable sans être lu). Le shell (profils, uwsm) et popt ne coupent
 /// pas là, mesuré : leur ligne reste entière. pam_env n'est pas mesuré : coupé, le côté sûr (un faux positif lève).
+/// Un octet NUL coupe aussi (re-contrôle 0.95, R-1) : `read_line` de systemd 262 (fileio.c) finit une ligne sur
+/// « \n », « \r » ou NUL, et user.conf applique « #n␀ManagerEnvironment=… ». Le générateur d'environment.d, lui,
+/// s'arrête au premier NUL (env-file.c) : la suite lue ici en plus ne peut que lever.
 fn enregistrements(ligne: &str, systemd: bool) -> Vec<&str> {
     if systemd {
-        ligne.split('\r').collect()
+        ligne.split(FINS_DE_SYSTEMD).collect()
     } else {
         vec![ligne]
     }
 }
 
-/// Le texte d'un fichier de la sorte `sorte`, chaque retour chariot seul changé en fin de ligne au format de systemd
-/// (`enregistrements`) ; tel quel sinon.
+/// Ce qui finit un enregistrement au format de systemd en plus du « \n » (`enregistrements`).
+const FINS_DE_SYSTEMD: [char; 2] = ['\r', '\0'];
+
+/// Le texte d'un fichier de la sorte `sorte`, chaque retour chariot seul et chaque NUL changés en fin de ligne au
+/// format de systemd (`enregistrements`) ; tel quel sinon.
 fn coupe_comme_systemd(texte: &str, sorte: Variables) -> String {
     if !format_systemd(sorte) {
         return texte.to_string();
@@ -4275,7 +4282,7 @@ fn coupe_comme_systemd(texte: &str, sorte: Variables) -> String {
     let mut coupe = String::with_capacity(texte.len());
     let mut caracteres = texte.chars().peekable();
     while let Some(c) = caracteres.next() {
-        coupe.push(if c == '\r' && caracteres.peek() != Some(&'\n') {
+        coupe.push(if c == '\0' || (c == '\r' && caracteres.peek() != Some(&'\n')) {
             '\n'
         } else {
             c
@@ -5858,7 +5865,7 @@ fn juger_lignes_jointes(
             lu.texte
                 .lines()
                 .enumerate()
-                .flat_map(|(n, l)| std::iter::repeat_n(n.saturating_add(1), l.split('\r').count()))
+                .flat_map(|(n, l)| std::iter::repeat_n(n.saturating_add(1), l.split(FINS_DE_SYSTEMD).count()))
                 .collect(),
         )
     } else {
@@ -14850,6 +14857,82 @@ mod tests {
                 None => assert_eq!(c.probleme, None, "{texte:?} : {}", c.message),
             }
         }
+    }
+
+    /// La sauvegarde exacte, ses deux formes, quand `fichier` porte `texte` et, si `pose` est donné, qu'un complément
+    /// de son service y est posé : chaque forme qui ne se lève pas (élevé, ExecStart nommé, non déclarable), dite.
+    fn sauvegarde_pas_levee(nom: &str, fichier: &str, texte: &str, pose: Option<&str>) -> Vec<String> {
+        const REMPLACE: &str = "[Service]\nExecStart=\nExecStart=/usr/bin/rsync -a /home/alice/Documents /tmp/x\n";
+        let mut faux = Vec::new();
+        for vide in [false, true] {
+            let (m, service) = sauvegarde_d_essai(&format!("{nom}-{vide}"), vide);
+            m.ecrire(fichier, texte);
+            if let Some(p) = pose {
+                m.ecrire(&format!("{p}/{}.d/x.conf", crate::sauvegarde::SERVICE), REMPLACE);
+            }
+            let c = m.lancements();
+            let nommee = service
+                .lines()
+                .position(|l| l.starts_with("ExecStart="))
+                .map(|n| format!("~/.config/systemd/user/{}:{} : ", crate::sauvegarde::SERVICE, n + 1))
+                .is_some_and(|e| c.message.contains(&e));
+            if !(c.probleme == Some(Niveau::Eleve) && nommee && crate::apprentissage::declarable(&c).is_err()) {
+                faux.push(format!("{nom}, env -i {vide} : {:?} {:?}", c.probleme, c.message));
+            }
+        }
+        faux
+    }
+
+    /// R-1 (re-contrôle 0.95, angle lecture) : le lecteur de réglages de systemd (`read_line`, fileio.c de systemd
+    /// 262) finit aussi une ligne sur un octet NUL, et un « # » ne commente que jusque-là : « #n␀ManagerEnvironment=… »
+    /// dans user.conf ou user.conf.d pose la variable. Le préchargement se lève à sa ligne écrite, le dossier d'unités
+    /// déplacé se lit, la sauvegarde se lève. environment.d : le générateur s'arrête au premier NUL (env-file.c), rien
+    /// après n'est appliqué ; la suite se lit quand même, coupée là (pam_env, du même format, n'est pas mesuré).
+    #[test]
+    fn nul_coupe_comme_systemd() {
+        const CONF: &str = ".config/systemd/user.conf";
+        for (i, (fichier, texte, attendu)) in [
+            (
+                CONF,
+                "[Manager]\n#n\0DefaultEnvironment=LD_PRELOAD=/tmp/l.so\n",
+                "~/.config/systemd/user.conf:2 précharge",
+            ),
+            (
+                ".config/systemd/user.conf.d/x.conf",
+                "[Manager]\n#n\0ManagerEnvironment=LD_PRELOAD=/tmp/l.so\n",
+                "~/.config/systemd/user.conf.d/x.conf:2 précharge",
+            ),
+            (
+                ".config/environment.d/50-x.conf",
+                "A=1\n#x\0LD_PRELOAD=/tmp/l.so\n",
+                "~/.config/environment.d/50-x.conf:2 précharge",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("nul-{i}"));
+            m.ecrire(fichier, texte);
+            let c = m.lancements();
+            assert!(c.probleme >= Some(Niveau::Eleve), "{texte:?} : {}", c.message);
+            assert!(c.message.contains(attendu), "{texte:?} : {}", c.message);
+            assert!(crate::apprentissage::declarable(&c).is_err(), "{texte:?}");
+        }
+        let deplace = "[Manager]\n#note\0ManagerEnvironment=XDG_DATA_DIRS=/home/alice/.x:/usr/share\n";
+        let mut faux = sauvegarde_pas_levee("nul-donnees", CONF, deplace, Some(".x/systemd/user"));
+        faux.extend(sauvegarde_pas_levee(
+            "nul-home",
+            ".config/systemd/user.conf.d/x.conf",
+            "[Manager]\n#n\0DefaultEnvironment=HOME=/x\n",
+            None,
+        ));
+        assert!(faux.is_empty(), "derrière un NUL : {faux:#?}");
+        let m = Maison::nouvelle("nul-unite");
+        m.ecrire(CONF, deplace);
+        m.ecrire(".x/systemd/user/agent.service", "[Service]\nExecStart=%h/.x/agent\n");
+        let c = m.lancements();
+        leve_non_declarable(&c, "unité d'un dossier déplacé derrière un NUL");
+        assert!(c.message.contains("~/.x/systemd/user/agent.service:2"), "{}", c.message);
     }
 
     /// L-2 (campagne 0.95, angle lecture) : uwsm lit chaque fichier de « env.d » et « env-<bureau>.d », quelle que
