@@ -229,14 +229,16 @@ pub(super) fn imprimante() {
 
 #[cfg(unix)]
 mod systeme {
-    use std::process::Command;
 
     use super::super::proposer;
     use super::{Etat, Imprimante, fait, imprimantes_lpstat, montrer};
     use crate::ui::*;
 
     fn lpstat(args: &[&str]) -> Option<String> {
-        let r = crate::commande::lancer(Command::new("lpstat").args(args).env("LC_ALL", "C"), 15)?;
+        let r = crate::commande::lancer(
+            crate::commande::par_le_systeme("lpstat").args(args).env("LC_ALL", "C"),
+            15,
+        )?;
         Some(format!("{}{}", r.sortie, r.erreurs))
     }
 

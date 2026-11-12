@@ -118,14 +118,16 @@ pub(super) fn son() {
 
 #[cfg(target_os = "linux")]
 mod systeme {
-    use std::process::Command;
 
     use super::super::proposer;
     use super::{Etat, Sortie, fait, genre, sorties_pactl, volume_pactl};
     use crate::ui::*;
 
     fn pactl(args: &[&str]) -> Option<String> {
-        let r = crate::commande::lancer(Command::new("pactl").args(args).env("LC_ALL", "C"), 10)?;
+        let r = crate::commande::lancer(
+            crate::commande::par_le_systeme("pactl").args(args).env("LC_ALL", "C"),
+            10,
+        )?;
         (r.code == Some(0)).then_some(r.sortie)
     }
 

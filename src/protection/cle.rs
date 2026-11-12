@@ -112,7 +112,7 @@ pub(crate) fn montage(dossier: &Path) -> Option<(String, bool)> {
 
 /// Lance l'outil de montage (udisksctl, diskutil) ; en cas d'échec, son message d'erreur.
 fn outil(cmd: &str, args: &[&str]) -> Result<(), String> {
-    match crate::commande::lancer(std::process::Command::new(cmd).args(args), 30) {
+    match crate::commande::lancer(crate::commande::par_le_systeme(cmd).args(args), 30) {
         Some(r) if r.code == Some(0) => Ok(()),
         Some(r) => Err(format!("{} {}", r.erreurs.trim(), r.sortie.trim()).trim().to_string()),
         None => Err(format!("{cmd} absent ou sans réponse")),

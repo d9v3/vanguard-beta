@@ -121,7 +121,7 @@ fn processus(ligne: &str) -> Command {
     }
     #[cfg(not(windows))]
     {
-        let mut c = Command::new("sh");
+        let mut c = crate::commande::par_le_systeme("sh");
         c.args(["-c", ligne]);
         // Jamais de pager (la sortie va à Vanguard), et la largeur de la fenêtre pour ps, systemctl…
         c.env("PAGER", "cat")

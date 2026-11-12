@@ -7,8 +7,9 @@ use super::*;
 /// Paquets à mettre à jour, un par ligne commençant par son nom ; `None` si on ne peut pas savoir.
 pub(super) fn liste_mises_a_jour(gestion: Paquets) -> Option<Vec<String>> {
     // Ces outils interrogent les dépôts : hors ligne ou serveur lent, ils ne doivent pas figer l'audit.
-    let lancer =
-        |cmd: &str, args: &[&str]| crate::commande::lancer(Command::new(cmd).args(args).env("LC_ALL", "C"), 120);
+    let lancer = |cmd: &str, args: &[&str]| {
+        crate::commande::lancer(crate::commande::par_le_systeme(cmd).args(args).env("LC_ALL", "C"), 120)
+    };
     let lignes = |t: &str| t.lines().map(str::to_string).collect::<Vec<_>>();
     match gestion {
         // checkupdates : 0 = mises à jour listées, 2 = rien à faire, autre = erreur (hors ligne…).
@@ -582,7 +583,7 @@ pub(super) fn failles_connues() -> Constat {
         }
         Paquets::Zypper => {
             match crate::commande::lancer(
-                Command::new("zypper")
+                crate::commande::par_le_systeme("zypper")
                     .args(["-q", "list-patches", "--category", "security"])
                     .env("LC_ALL", "C"),
                 120,
@@ -1264,7 +1265,7 @@ pub(super) fn etrangers_lus() -> Option<Vec<String>> {
 /// 1`) ; ce code avec une sortie vide veut dire « aucun paquet étranger », pas « on ne sait pas ».
 fn etrangers_selon_pacman() -> Option<Vec<String>> {
     etrangers_selon_sortie(&crate::commande::lancer_en_anglais(
-        Command::new("pacman").arg("-Qmq"),
+        crate::commande::par_le_systeme("pacman").arg("-Qmq"),
         30,
     )?)
 }

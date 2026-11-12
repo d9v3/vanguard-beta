@@ -1015,6 +1015,88 @@ mod tests {
         assert!(par_le_nom.is_empty(), "{par_le_nom:#?}");
     }
 
+    /// V-6 (relecture 0.95) : dans tout src/, hors des essais, aucun outil n'est lancé par un nom nu
+    /// (`Command::new("nom")`) ni par un nom reçu (`Command::new(cmd)`, `outil`, `programme`) : `par_le_systeme`.
+    /// Les exceptions sont écrites ici, chacune avec sa raison ; une nouvelle ligne fait échouer l'essai.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn aucun_outil_par_son_nom_nu_dans_src() {
+        const EXCEPTIONS: [(&str, &str, &str); 7] = [
+            // `systeme` : sous Windows, le chemin de System32 ; ailleurs, le nom (limite dite : ses appelants).
+            (
+                "commande.rs",
+                "Command::new(programme)",
+                "commande::systeme, nom voulu hors Windows",
+            ),
+            (
+                "mise_a_jour.rs",
+                "Command::new(programme)",
+                "un chemin (&Path) : la copie téléchargée",
+            ),
+            (
+                "machine/linux/garde/poser.rs",
+                "Command::new(programme)",
+                "chemin absolu trouvé par systemctl()",
+            ),
+            (
+                "machine/mod.rs",
+                "Command::new(\"xdg-open\")",
+                "ouvre ce que la personne a choisi",
+            ),
+            (
+                "machine/mod.rs",
+                "Command::new(cmd)",
+                "macOS seulement : Homebrew dans le PATH",
+            ),
+            (
+                "protection/antivirus.rs",
+                "Command::new(\"clamscan\")",
+                "Unix et macOS : Homebrew",
+            ),
+            ("reseau/upnp.rs", "Command::new(\"upnpc\")", "Unix et macOS : Homebrew"),
+        ];
+        let base = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
+        let mut fichiers = Vec::new();
+        super::tests_sh_chaine::sources(base, base, &mut fichiers);
+        let mut par_le_nom = Vec::new();
+        for (fichier, source) in &fichiers {
+            if fichier.ends_with("tests.rs") || fichier.contains("tests/") {
+                continue;
+            }
+            let fin = [source.find("#[cfg(test)]\nmod "), source.find("\nmod tests")]
+                .into_iter()
+                .flatten()
+                .min()
+                .unwrap_or(source.len());
+            let lignes: Vec<&str> = source[..fin].lines().collect();
+            for (n, l) in lignes.iter().enumerate() {
+                let code = l.split("//").next().unwrap_or(l);
+                for (i, _) in code.match_indices("Command::new(") {
+                    let mut apres = code[i + "Command::new(".len()..].trim_start();
+                    if apres.is_empty() {
+                        apres = lignes.get(n + 1).map_or("", |s| s.trim_start());
+                    }
+                    let nu = apres
+                        .strip_prefix('"')
+                        .and_then(|r| r.split('"').next())
+                        .is_some_and(|x| !x.contains(['/', '\\']));
+                    let recu = ["cmd)", "outil)", "programme)"].iter().any(|v| apres.starts_with(v));
+                    let permis = EXCEPTIONS.iter().any(|(f, motif, _)| {
+                        fichier == f && (code.contains(motif) || format!("Command::new({apres}").starts_with(motif))
+                    });
+                    if (nu || recu) && !permis {
+                        par_le_nom.push(format!("{fichier}:{} : {}", n + 1, l.trim()));
+                    }
+                }
+            }
+        }
+        assert!(
+            par_le_nom.is_empty(),
+            "outil lancé par son nom, que le PATH du compte choisirait : commande::par_le_systeme, ou une exception \
+             écrite avec sa raison : {par_le_nom:#?}"
+        );
+    }
+
     /// La langue de la personne (ici donnée à la commande : LC_ALL et LANGUAGE en français) arrive à l'outil par
     /// `lancer`, jamais par `lancer_en_anglais`.
     #[cfg(target_os = "linux")]

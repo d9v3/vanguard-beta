@@ -129,7 +129,7 @@ fn lire() -> Option<Lu> {
     use super::linux::natif;
     let rpm = || {
         let r = crate::commande::lancer(
-            std::process::Command::new("rpm").args(["-qa", "--qf", "%{NAME} %{VERSION}\\n"]),
+            crate::commande::par_le_systeme("rpm").args(["-qa", "--qf", "%{NAME} %{VERSION}\\n"]),
             60,
         )?;
         (r.code == Some(0)).then(|| {

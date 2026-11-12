@@ -4,12 +4,11 @@
 
 use std::collections::HashSet;
 use std::path::Path;
-use std::process::Command;
 
 use super::{Paquets, natif};
 
 fn reussit(cmd: &str, args: &[&str]) -> bool {
-    crate::commande::lancer(Command::new(cmd).args(args), 20).is_some_and(|r| r.code == Some(0))
+    crate::commande::lancer(crate::commande::par_le_systeme(cmd).args(args), 20).is_some_and(|r| r.code == Some(0))
 }
 
 /// Les noms de paquets installés, lus une fois dans la base : un menu qui teste des dizaines de logiciels la
@@ -37,8 +36,11 @@ pub(crate) fn installes_parmi(connus: Option<&HashSet<String>>, gestion: Paquets
     }
     paquets.iter().all(|p| match gestion {
         Paquets::Pacman => reussit("pacman", &["-Q", p]),
-        Paquets::Apt => crate::commande::lancer(Command::new("dpkg-query").args(["-W", "-f=${Status}", p]), 20)
-            .is_some_and(|r| r.code == Some(0) && natif::installe_selon_dpkg(&r.sortie)),
+        Paquets::Apt => crate::commande::lancer(
+            crate::commande::par_le_systeme("dpkg-query").args(["-W", "-f=${Status}", p]),
+            20,
+        )
+        .is_some_and(|r| r.code == Some(0) && natif::installe_selon_dpkg(&r.sortie)),
         Paquets::Dnf | Paquets::Zypper => reussit("rpm", &["-q", p]),
     })
 }
@@ -85,7 +87,7 @@ fn applications_flatpak_si(flatpak_present: bool) -> Option<Vec<String>> {
         return Some(natif::flatpak_apps());
     }
     crate::commande::lancer(
-        Command::new("flatpak").args(["list", "--app", "--columns=application"]),
+        crate::commande::par_le_systeme("flatpak").args(["list", "--app", "--columns=application"]),
         30,
     )
     .filter(|r| r.code == Some(0))
@@ -146,7 +148,8 @@ mod tests {
         if !present(programme) {
             return None;
         }
-        crate::commande::lancer_en_anglais(Command::new(programme).args(args), 30).filter(|r| r.code == Some(0))
+        crate::commande::lancer_en_anglais(std::process::Command::new(programme).args(args), 30)
+            .filter(|r| r.code == Some(0))
     }
 
     #[test]

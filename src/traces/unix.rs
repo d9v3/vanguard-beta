@@ -48,7 +48,7 @@ pub(super) fn shell_et_ssh(f: &mut Feuille) {
 /// Les tâches cron : celles du compte (crontab -l), celles du système, et le dossier des tâches de chaque compte,
 /// lisible par root seulement.
 pub(super) fn cron(f: &mut Feuille) {
-    f.commande(Command::new("crontab").arg("-l"), 10, false);
+    f.commande(crate::commande::par_le_systeme("crontab").arg("-l"), 10, false);
     f.fichier(Path::new("/etc/crontab"), true);
     f.fichier(Path::new("/etc/anacrontab"), false);
     for d in [

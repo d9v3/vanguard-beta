@@ -9,7 +9,6 @@
 use std::collections::HashSet;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
-use std::process::Command;
 
 use super::{Age, Element, caches_inutilises, lectures_datees, maison, somme, taille_dossier, volume};
 use crate::machine::linux::natif::{self, Snap};
@@ -20,7 +19,7 @@ use crate::machine::linux::natif::present_systeme as present;
 
 /// Sortie d'un outil lancé en anglais (ses messages se lisent alors à coup sûr).
 fn sortie(cmd: &str, args: &[&str]) -> Option<String> {
-    crate::commande::lancer(Command::new(cmd).args(args).env("LC_ALL", "C"), 30)
+    crate::commande::lancer(crate::commande::par_le_systeme(cmd).args(args).env("LC_ALL", "C"), 30)
         .filter(|r| r.code == Some(0))
         .map(|r| r.sortie)
 }
@@ -690,7 +689,7 @@ mod tests {
     fn commandes_shell_valides() {
         for e in elements() {
             for c in &e.commandes {
-                let valide = Command::new("bash")
+                let valide = std::process::Command::new("bash")
                     .args(["-n", "-c", c])
                     .status()
                     .is_ok_and(|s| s.success());

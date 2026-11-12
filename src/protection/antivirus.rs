@@ -348,7 +348,7 @@ fn volumes_amovibles() -> Vec<(PathBuf, String)> {
         return volumes_amovibles_sous(std::path::Path::new("/"), &montages);
     }
     crate::commande::lancer(
-        Command::new("lsblk").args(["-Pno", "RM,HOTPLUG,LABEL,SIZE,MOUNTPOINT"]),
+        crate::commande::par_le_systeme("lsblk").args(["-Pno", "RM,HOTPLUG,LABEL,SIZE,MOUNTPOINT"]),
         10,
     )
     .map(|o| lire_lsblk(&o.sortie))
@@ -2672,7 +2672,7 @@ fn entrees_demarrage() -> (Vec<String>, Vec<String>) {
                 }
             }
         }
-        if let Some(o) = crate::commande::lancer(Command::new("crontab").arg("-l"), 10) {
+        if let Some(o) = crate::commande::lancer(crate::commande::par_le_systeme("crontab").arg("-l"), 10) {
             for l in o.sortie.lines().filter(|l| !l.trim().is_empty() && !l.starts_with('#')) {
                 let l = affichable(l);
                 entrees.push(trf!("crontab : {l}", "crontab: {l}"));

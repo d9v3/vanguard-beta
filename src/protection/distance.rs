@@ -606,7 +606,7 @@ pub fn constats() -> Vec<Constat> {
 
 #[cfg(unix)]
 fn sortie_de(cmd: &str, args: &[&str], secondes: u64) -> Option<String> {
-    let mut c = std::process::Command::new(cmd);
+    let mut c = crate::commande::par_le_systeme(cmd);
     c.args(args);
     #[cfg(target_os = "linux")]
     let r = crate::commande::lancer_en_anglais(&mut c, secondes)?;

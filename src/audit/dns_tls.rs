@@ -584,7 +584,7 @@ fn proxy_du_systeme() -> Option<bool> {
     #[cfg(target_os = "linux")]
     {
         let gnome = crate::commande::lancer(
-            std::process::Command::new("gsettings").args(["get", "org.gnome.system.proxy", "mode"]),
+            crate::commande::par_le_systeme("gsettings").args(["get", "org.gnome.system.proxy", "mode"]),
             5,
         )
         .map(|r| r.sortie);

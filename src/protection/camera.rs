@@ -320,7 +320,7 @@ mod linux {
     /// Les flux d'enregistrement en cours (pactl, que PipeWire comprend aussi) ; `None` : illisible.
     pub(super) fn micro() -> Option<Vec<Usage>> {
         let r = crate::commande::lancer_en_anglais(
-            std::process::Command::new("pactl").args(["list", "source-outputs"]),
+            crate::commande::par_le_systeme("pactl").args(["list", "source-outputs"]),
             5,
         )?;
         (r.code == Some(0)).then(|| super::lire_pactl(&r.sortie))

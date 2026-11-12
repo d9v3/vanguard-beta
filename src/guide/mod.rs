@@ -608,8 +608,11 @@ fn copier(texte: &str) -> bool {
         scripts_presse_papier(present("WAYLAND_DISPLAY"), present("DISPLAY"))
             .into_iter()
             .any(|script| {
-                crate::commande::lancer(std::process::Command::new("sh").args(["-c", script, "sh", texte]), 5)
-                    .is_some_and(|r| r.code == Some(0))
+                crate::commande::lancer(
+                    crate::commande::par_le_systeme("sh").args(["-c", script, "sh", texte]),
+                    5,
+                )
+                .is_some_and(|r| r.code == Some(0))
             })
     }
 }

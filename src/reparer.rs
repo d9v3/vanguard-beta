@@ -268,7 +268,7 @@ fn navigation() -> Reparation {
             present("gsettings")
                 .then(|| {
                     crate::commande::lancer(
-                        std::process::Command::new("gsettings").args(["get", "org.gnome.system.proxy", "mode"]),
+                        crate::commande::par_le_systeme("gsettings").args(["get", "org.gnome.system.proxy", "mode"]),
                         5,
                     )
                 })
@@ -584,13 +584,15 @@ struct EtatPareFeu {
 impl EtatPareFeu {
     fn lire(gestion: Option<machine::linux::Paquets>) -> Self {
         use crate::machine::linux::{politique_ufw, services_systemd_actifs, ufw_actif};
-        use std::process::Command;
         let etats = services_systemd_actifs(&["firewalld", "nftables", "iptables"]);
         let actif = |i: usize| etats.get(i).copied().flatten() == Some(true);
         let firewalld = if actif(0) {
             let zone = zone_firewalld(std::path::Path::new("/")).or_else(|| {
-                crate::commande::lancer(Command::new("firewall-cmd").arg("--get-default-zone"), 10)
-                    .map(|z| z.sortie.trim().to_string())
+                crate::commande::lancer(
+                    crate::commande::par_le_systeme("firewall-cmd").arg("--get-default-zone"),
+                    10,
+                )
+                .map(|z| z.sortie.trim().to_string())
             });
             Firewalld::Actif(zone)
         } else if present("firewalld") && !masquee_par_l_administrateur(std::path::Path::new("/"), "firewalld.service")

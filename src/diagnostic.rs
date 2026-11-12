@@ -143,7 +143,7 @@ mod systeme {
     }
 
     fn sortie(cmd: &str, args: &[&str]) -> Option<String> {
-        let r = crate::commande::lancer(std::process::Command::new(cmd).args(args), 20)?;
+        let r = crate::commande::lancer(crate::commande::par_le_systeme(cmd).args(args), 20)?;
         (r.code == Some(0)).then_some(r.sortie)
     }
 
@@ -370,7 +370,7 @@ mod systeme {
     /// sans rien écrire (avec -q) : c'est une réponse, « aucun » ; une vraie erreur écrit sur la sortie d'erreur.
     fn journal_coredumpctl() -> Option<String> {
         let r = crate::commande::lancer(
-            std::process::Command::new("coredumpctl").args(["list", "--no-pager", "-q", "--since=-7d"]),
+            crate::commande::par_le_systeme("coredumpctl").args(["list", "--no-pager", "-q", "--since=-7d"]),
             20,
         )?;
         let vide = r.code == Some(1) && r.sortie.trim().is_empty() && r.erreurs.trim().is_empty();

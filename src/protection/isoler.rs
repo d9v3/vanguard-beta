@@ -234,7 +234,7 @@ fn lancer(source: &Path) {
         let wayland = std::env::var("WAYLAND_DISPLAY").ok();
         // Un lien (le cas courant) n'est pas un dossier pour symlink_metadata : il suit /run, déjà masqué.
         let var_run = std::fs::symlink_metadata("/var/run").is_ok_and(|m| m.is_dir());
-        crate::coulisses::Suivie::status_suivi(std::process::Command::new("bwrap").args(arguments_bwrap(
+        crate::coulisses::Suivie::status_suivi(crate::commande::par_le_systeme("bwrap").args(arguments_bwrap(
             &jetable,
             &copie,
             session.as_deref(),
@@ -243,7 +243,7 @@ fn lancer(source: &Path) {
         )))
     } else if present("firejail") {
         crate::coulisses::Suivie::status_suivi(
-            std::process::Command::new("firejail")
+            crate::commande::par_le_systeme("firejail")
                 .args([
                     "--noprofile",
                     "--net=none",

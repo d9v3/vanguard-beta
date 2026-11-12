@@ -5,7 +5,6 @@
 
 use std::collections::HashSet;
 use std::path::Path;
-use std::process::Command;
 
 use super::{Element, element, proposer};
 use crate::machine::linux::natif::present;
@@ -39,7 +38,7 @@ fn carte_graphique() -> Carte {
 }
 
 fn reussit(cmd: &str, args: &[&str]) -> bool {
-    crate::commande::lancer(Command::new(cmd).args(args), 20).is_some_and(|r| r.code == Some(0))
+    crate::commande::lancer(crate::commande::par_le_systeme(cmd).args(args), 20).is_some_and(|r| r.code == Some(0))
 }
 
 /// Le module `nom` existe-t-il pour le noyau en service (ce que vérifiait `modinfo`) ? Il est soit compilé dans le
@@ -145,7 +144,7 @@ fn composants(gestion: Paquets) -> Vec<Element> {
             // /var/lib/dpkg/arch tient la liste des architectures ; dpkg en secours, quand le fichier manque.
             Some(natif::architectures_dpkg().map_or_else(
                 || {
-                    crate::commande::lancer(Command::new("dpkg").arg("--print-foreign-architectures"), 10)
+                    crate::commande::lancer(crate::commande::par_le_systeme("dpkg").arg("--print-foreign-architectures"), 10)
                         .is_some_and(|r| r.sortie.contains("i386"))
                 },
                 |a| a.iter().any(|x| x == "i386"),
@@ -534,7 +533,11 @@ mod tests {
         super::super::tests::tient_dans_la_liste(&l);
         for c in l.iter().flat_map(|el| &el.commandes) {
             assert!(
-                Command::new("bash").args(["-n", "-c", c]).status().unwrap().success(),
+                std::process::Command::new("bash")
+                    .args(["-n", "-c", c])
+                    .status()
+                    .unwrap()
+                    .success(),
                 "{c}"
             );
         }

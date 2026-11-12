@@ -614,10 +614,9 @@ mod linux {
     use crate::{tr, trf};
     use std::fmt::Write;
     use std::path::PathBuf;
-    use std::process::Command;
 
     fn sortie(programme: &str, args: &[&str]) -> Option<String> {
-        crate::commande::lancer_en_anglais(Command::new(programme).args(args), 20)
+        crate::commande::lancer_en_anglais(crate::commande::par_le_systeme(programme).args(args), 20)
             .filter(|r| r.code == Some(0))
             .map(|r| r.sortie)
     }

@@ -140,7 +140,7 @@ fn derniere_connexion(
 ) -> Option<chrono::NaiveDate> {
     use crate::machine::linux::connexions;
     let outil = |outil: &str| {
-        let r = crate::commande::lancer_en_anglais(std::process::Command::new(outil).args(["-u", nom]), 5)?;
+        let r = crate::commande::lancer_en_anglais(crate::commande::par_le_systeme(outil).args(["-u", nom]), 5)?;
         r.sortie.lines().skip(1).find_map(lire_lastlog)
     };
     let par_lastlog2 = match natif2 {
@@ -290,7 +290,8 @@ mod tests {
                 continue;
             };
             let outil = ["lastlog2", "lastlog"].iter().find_map(|outil| {
-                let r = crate::commande::lancer_en_anglais(std::process::Command::new(outil).args(["-u", nom]), 5)?;
+                let r =
+                    crate::commande::lancer_en_anglais(crate::commande::par_le_systeme(outil).args(["-u", nom]), 5)?;
                 r.sortie.lines().skip(1).find_map(lire_lastlog)
             });
             vus += 1;
