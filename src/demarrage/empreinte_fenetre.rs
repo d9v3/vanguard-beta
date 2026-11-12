@@ -22,8 +22,8 @@ pub(crate) enum Gravee {
 }
 
 /// Garde la marque dans le fichier, appelé au début de `main` : sans une lecture qui reste après l'optimisation, un
-/// programme dont le lancement de la fenêtre n'est jamais atteint (`FENETRE_LIVREE` faux, ou un jour retiré) la perdait
-/// à l'édition des liens. `outils/compiler-version.sh` l'a vu (compilation de la 0.96) ; il refuse un programme sans
+/// programme dont le lancement de la fenêtre n'est jamais atteint (le cas avant qu'elle soit livrée) la perdait à
+/// l'édition des liens. `outils/compiler-version.sh` l'a vu (compilation de la 0.96) ; il refuse un programme sans
 /// sa marque, et la mise à jour lit celle du programme téléchargé.
 pub(crate) fn garder() {
     std::hint::black_box(GRAVEE.as_ptr());

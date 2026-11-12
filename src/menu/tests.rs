@@ -437,28 +437,43 @@ fn l_aide_cite_chaque_commande() {
     assert!(anglaises[1].lines().count() <= 15);
 }
 
-/// Tant que la fenêtre n'est pas livrée (`FENETRE_LIVREE`), l'aide ne la promet nulle part : « Sans argument » dit le
-/// menu seul, en français et en anglais, dans `--help`, `-h`, l'en-tête de clap et l'option `--menu`.
+/// L'aide promet la fenêtre seulement quand ce programme la lance (`lancer_fenetre::fenetre_livree` : une empreinte de
+/// fenêtre gravée) : sinon « Sans argument » dit le menu seul, en français et en anglais, dans `--help`, `-h`,
+/// l'en-tête de clap et l'option `--menu`. Les essais compilent sans empreinte : l'aide de ce programme-ci ne la
+/// promet pas.
 #[test]
-fn l_aide_ne_promet_pas_la_fenetre_tant_qu_elle_n_est_pas_livree() {
-    let textes = |()| {
-        let c = ligne_de_commande();
+fn l_aide_promet_la_fenetre_seulement_quand_elle_est_livree() {
+    let textes = |livree: bool| {
+        let c = ligne_de_commande_selon(livree);
         let menu = c
             .get_arguments()
             .find(|a| a.get_id() == "menu")
             .and_then(|a| a.get_help().map(ToString::to_string))
             .unwrap_or_default();
         let entete = c.get_about().map(ToString::to_string).unwrap_or_default();
-        [aide_longue(), aide_courte(), entete, menu]
+        [aide_longue_selon(livree), aide_courte_selon(livree), entete, menu]
     };
-    let mut tous = textes(()).to_vec();
-    tous.extend(crate::langue::en_anglais(|| textes(())));
-    for t in &tous {
-        // « journaux-windows » est une commande, pas la fenêtre.
-        let t = t.to_lowercase().replace("windows", "");
-        assert_ne!(t, "");
-        let promet = t.contains("fenêtre") || t.contains("window");
-        assert_eq!(promet, crate::demarrage::lancer_fenetre::FENETRE_LIVREE, "{t}");
+    assert!(!crate::demarrage::lancer_fenetre::fenetre_livree());
+    assert_eq!(aide_longue(), aide_longue_selon(false));
+    assert_eq!(aide_courte(), aide_courte_selon(false));
+    for livree in [false, true] {
+        let mut tous = textes(livree).to_vec();
+        tous.extend(crate::langue::en_anglais(|| textes(livree)));
+        for t in &tous {
+            // « journaux-windows » est une commande, pas la fenêtre.
+            let t = t.to_lowercase().replace("windows", "");
+            assert_ne!(t, "");
+            let promet = t.contains("fenêtre") || t.contains("window");
+            assert_eq!(promet, livree, "{t}");
+        }
+        // Livrée ou non, chaque ligne tient dans la largeur, et `-h` en une quinzaine de lignes.
+        for t in tous.iter().take(2).chain(tous.iter().skip(4).take(2)) {
+            for ligne in t.lines() {
+                assert!(largeur_affichee(ligne) <= LARGEUR, "{ligne}");
+            }
+        }
+        assert!(tous.get(1).is_some_and(|c| c.lines().count() <= 15));
+        assert!(tous.get(5).is_some_and(|c| c.lines().count() <= 15));
     }
 }
 

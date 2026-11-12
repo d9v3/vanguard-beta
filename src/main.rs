@@ -530,8 +530,8 @@ async fn main() {
         machine::quitter(2);
     }
     match args.commande {
-        // Le menu ; la fenêtre de Vanguard seulement quand elle est livrée (`lancer_fenetre::FENETRE_LIVREE`), posée à
-        // côté, et que la personne est devant un écran.
+        // Le menu ; la fenêtre de Vanguard seulement quand elle est livrée (`lancer_fenetre::fenetre_livree` : son
+        // empreinte gravée), posée à côté, vérifiée, et que la personne est devant un écran.
         None => {
             if args.menu || !demarrage::lancer_fenetre::ouvrir() {
                 menu().await;

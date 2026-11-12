@@ -1,6 +1,7 @@
 //! L'aide de la ligne de commande : sa version anglaise et ses rubriques, longue et courte.
 
 use crate::demarrage::arguments::Args;
+use crate::demarrage::lancer_fenetre::fenetre_livree;
 use crate::langue;
 use crate::menu::outils::{Action, GROUPES, Groupe};
 use crate::ui::*;
@@ -375,15 +376,36 @@ pub(crate) const OPTIONS_EN: &[(&str, &str, &str)] = &[
 /// La ligne de commande, avec son aide en anglais si l'interface est en anglais (l'aide écrite plus haut, en
 /// commentaires, est la version française).
 pub(crate) fn ligne_de_commande() -> clap::Command {
-    let c = Args::command();
+    ligne_de_commande_selon(fenetre_livree())
+}
+
+/// `ligne_de_commande`, la fenêtre livrée ou non (`lancer_fenetre::fenetre_livree`) : l'aide ne promet la fenêtre
+/// que si ce programme peut la lancer.
+pub(crate) fn ligne_de_commande_selon(livree: bool) -> clap::Command {
+    let mut c = Args::command();
+    if livree {
+        c = c
+            .about(tr!(
+                "Cyberdéfense portable des postes et des réseaux : bilan, correctifs, réglages. Sans argument : la fenêtre sur un bureau graphique, sinon le menu.",
+                "Portable cyber defense for endpoints and networks: check, fixes, settings. No argument: the window on a graphical desktop, otherwise the menu."
+            ))
+            .mut_arg("menu", |a| {
+                a.help(tr!(
+                    "Le menu du terminal, plutôt que la fenêtre que `vanguard` ouvre sans argument sur un bureau graphique.",
+                    "The terminal menu, instead of the window `vanguard` opens with no argument on a graphical desktop."
+                ))
+            });
+    }
     if !langue::anglais() {
         return c;
     }
-    let mut c = c
-        .about("Portable cyber defense for endpoints and networks: check, fixes, settings. No argument: the menu.")
-        .mut_arg("menu", |a| {
-            a.help("The terminal menu, the one `vanguard` already opens with no argument.")
-        });
+    if !livree {
+        c = c
+            .about("Portable cyber defense for endpoints and networks: check, fixes, settings. No argument: the menu.")
+            .mut_arg("menu", |a| {
+                a.help("The terminal menu, the one `vanguard` already opens with no argument.")
+            });
+    }
     for &(nom, aide) in AIDES_EN {
         c = c.mut_subcommand(nom, |s| s.about(aide));
     }
@@ -499,11 +521,25 @@ pub(crate) fn rubriques_des_commandes() -> Vec<(Option<Groupe>, Vec<&'static str
 /// `vanguard --help` : toutes les commandes en rubriques, aux noms et numéros du menu, générées depuis `OUTILS` et
 /// clap (jamais écrites à la main).
 pub(crate) fn aide_longue() -> String {
+    aide_longue_selon(fenetre_livree())
+}
+
+/// `aide_longue`, la fenêtre livrée ou non.
+pub(crate) fn aide_longue_selon(livree: bool) -> String {
     use std::fmt::Write;
+    let sans_argument = if livree {
+        tr!(
+            "la fenêtre sur un bureau graphique, sinon le menu",
+            "the window on a graphical desktop, otherwise the menu"
+        )
+    } else {
+        tr!("le menu", "the menu")
+    };
     let mut t = trf!(
-        "Vanguard {} : cyberdéfense portable des postes et des réseaux.\nSans argument : le menu.\n\nUsage : vanguard [commande] [options]\n\n",
-        "Vanguard {}: portable cyber defense for endpoints and networks.\nNo argument: the menu.\n\nUsage: vanguard [command] [options]\n\n",
-        env!("CARGO_PKG_VERSION")
+        "Vanguard {} : cyberdéfense portable des postes et des réseaux.\nSans argument : {}.\n\nUsage : vanguard [commande] [options]\n\n",
+        "Vanguard {}: portable cyber defense for endpoints and networks.\nNo argument: {}.\n\nUsage: vanguard [command] [options]\n\n",
+        env!("CARGO_PKG_VERSION"),
+        sans_argument
     );
     let rubriques = rubriques_de_l_aide();
     let colonne = (rubriques.iter().map(|(r, _)| largeur_affichee(r)).max().unwrap_or(0)).saturating_add(2);
@@ -524,12 +560,28 @@ pub(crate) fn aide_longue() -> String {
 
 /// `vanguard -h` : l'essentiel, en une quinzaine de lignes.
 pub(crate) fn aide_courte() -> String {
+    aide_courte_selon(fenetre_livree())
+}
+
+/// `aide_courte`, la fenêtre livrée ou non.
+pub(crate) fn aide_courte_selon(livree: bool) -> String {
     use std::fmt::Write;
     let mut t = trf!(
-        "Vanguard {} : cyberdéfense portable des postes et des réseaux.\nSans argument : le menu (↑ ↓, ou un mot pour chercher un outil).\n\n",
-        "Vanguard {}: portable cyber defense for endpoints and networks.\nNo argument: the menu (↑ ↓, or a word to find a tool).\n\n",
+        "Vanguard {} : cyberdéfense portable des postes et des réseaux.\n",
+        "Vanguard {}: portable cyber defense for endpoints and networks.\n",
         env!("CARGO_PKG_VERSION")
     );
+    t += if livree {
+        tr!(
+            "Sans argument : la fenêtre sur un bureau graphique, sinon le menu.\nDans le menu : ↑ ↓, ou un mot pour chercher un outil.\n\n",
+            "No argument: the window on a graphical desktop, otherwise the menu.\nIn the menu: ↑ ↓, or a word to find a tool.\n\n"
+        )
+    } else {
+        tr!(
+            "Sans argument : le menu (↑ ↓, ou un mot pour chercher un outil).\n\n",
+            "No argument: the menu (↑ ↓, or a word to find a tool).\n\n"
+        )
+    };
     let clap = Args::command();
     let nom = |commande: &str| {
         clap.find_subcommand(commande)

@@ -204,18 +204,25 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
 
 ## The window
 
-**This version does not ship the window.** `vanguard` with no argument always opens the terminal menu and starts no
-`vanguard-fenetre`, even one placed next to it: an executable file with that name would have been started on the
-strength of its name and location, not its content, and could have said "open" in its place. The window will come
-back in 0.96, started only if its fingerprint is the one in a signed list, and the verified bytes will be started,
-not the path. What follows describes the window as it will be shipped.
+**The window comes back in 0.96, verified.** In 0.94, `vanguard` started any executable named `vanguard-fenetre`
+placed next to it, on the strength of its name and location, not its content: a fake one could have said "open" in
+its place; 0.95 no longer started it at all. Since 0.96, `vanguard` only starts the window built with it:
+`outils/compiler-version.sh` builds the window first and engraves its SHA-256 fingerprint in `vanguard`, which the
+author signs (manifest and version history); the window's fingerprint is therefore signed along with it, with no
+extra key or signature. On Linux, its bytes are read through a handle opened without following links, copied into
+a sealed in-memory file (memfd: nothing can change it any more), the fingerprint is computed on that copy, and that
+copy is what runs, not the path: a window replaced on disk after the check does not run. On Windows, the file is
+held open with read-only sharing (nobody can write, delete or rename it while the handle lives) from the fingerprint
+check until "open". A different fingerprint, a program built without one (`cargo build`, the tests) or an
+unreadable mark: no window, the menu, with the reason.
 
-`vanguard` with no argument will then open the Vanguard window (`vanguard-fenetre`, a separate program placed next
-to `vanguard`) when someone is in front of a graphical screen; otherwise, the terminal menu, as before. Its
+`vanguard` with no argument opens the Vanguard window (`vanguard-fenetre`, a separate program placed next to
+`vanguard`) when someone is in front of a graphical screen; otherwise, the terminal menu, as before. Its
 safeguards:
 
 - **It does nothing by itself.** It runs the `vanguard` program placed next to it (absolute path, never looked up in
-  the PATH) with a command from a closed list, which changes nothing on the computer (`audit`,
+  the PATH; started from an in-memory file, it receives that path from `vanguard` through `--vanguard`, and applies
+  the same safeguards to it) with a command from a closed list, which changes nothing on the computer (`audit`,
   `protection`, `evenements`, `diagnostic`, `test-connexion`…), always with `--json`, no free argument, no shell,
   input closed, one at a time, with a time limit and a Stop button (on Linux, the whole process group is stopped,
   and whatever is left of it when the command ends too; `vanguard` is only reaped afterwards, so that group number
@@ -501,9 +508,11 @@ safeguards:
   gets a state it cannot change: nothing starts from it, nothing is written from it).
 - **The menu stays the safe choice.** The window does not open without a terminal (a script writing the choices),
   over SSH or Remote Desktop, as administrator (root, sudo, administrator console), without a graphical screen, when
-  it is not placed next to `vanguard`, when (on Linux) it is not a regular file owned by this account or root that
-  neither the group nor others can modify, in folders that neither the group nor others can modify, or when it does
-  not say "open" within 20 seconds. `vanguard --menu` forces
+  it is not placed next to `vanguard`, when its fingerprint is not the one engraved in this `vanguard` (or it engraves
+  none), when (on Linux) it is not a regular file owned by this account or root that neither the group nor others
+  can modify, in folders that neither the group nor others can modify, when the in-memory file cannot be started (a
+  kernel set to `vm.memfd_noexec=2`, an SELinux or AppArmor policy refusing it: never a fallback to the path), or
+  when it does not say "open" within 20 seconds. `vanguard --menu` forces
   the menu.
 - **Its libraries.** On Windows, like `vanguard.exe`, it loads its DLLs from System32 only: those it imports
   (DependentLoadFlags), and those a library opens by name after startup (SetDefaultDllDirectories, first line of the
@@ -511,8 +520,10 @@ safeguards:
   it is linked to the system's glibc (its display libraries are loaded at run time): only the interpreter
   `/lib64/ld-linux-x86-64.so.2` is allowed, with no library folder written into the program (neither RPATH nor
   RUNPATH), checked by each run of `outils/verifier.sh` (`vanguard deploiement verifier-binaire --glibc`).
-- **Limits.** Like the program, it assumes only you can modify its folder: whoever can replace `vanguard-fenetre` can
-  also replace `vanguard`. On Windows, the window and `vanguard` only check that the other one is a regular file:
+- **Limits.** Like the program, it assumes only you can modify its folder: a fake window placed next to it is no
+  longer started, but whoever can replace `vanguard` can replace both. On Windows, the launch is checked under Wine
+  only (not yet on a real Windows), and the process is not created suspended to compare its image with the held
+  handle: the handle without write sharing is what guarantees the file. On Windows, the window and `vanguard` only check that the other one is a regular file:
   neither its owner nor the permissions (ACLs) of the file and its folders, which Windows does not let you read as
   simply; a folder where other accounts can write is therefore not refused on Windows. On Windows, each command it
   runs is put in its own job object: Stop, the time limit and the end of the command also stop what it started, and

@@ -223,18 +223,25 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
 
 ## La fenêtre
 
-**Cette version ne livre pas la fenêtre.** `vanguard` sans argument ouvre toujours le menu du terminal et ne lance
-aucun `vanguard-fenetre`, même posé à côté de lui : un fichier de ce nom, exécutable, aurait été lancé sur la foi de
-son nom et de son emplacement, pas de son contenu, et aurait pu dire « ouverte » à sa place. La fenêtre reviendra
-en 0.96, lancée seulement si son empreinte est celle d'une liste signée, et ce sont les octets vérifiés qui seront
-lancés, pas le chemin. Ce qui suit décrit la fenêtre telle qu'elle sera livrée.
+**La fenêtre revient en 0.96, vérifiée.** En 0.94, `vanguard` lançait tout exécutable nommé `vanguard-fenetre` posé
+à côté de lui, sur la foi de son nom et de son emplacement, pas de son contenu : un faux aurait pu dire « ouverte » à
+sa place ; la 0.95 ne la lançait plus du tout. Depuis la 0.96, `vanguard` ne lance que la fenêtre compilée avec lui :
+`outils/compiler-version.sh` compile la fenêtre d'abord et grave son empreinte SHA-256 dans `vanguard`, que l'auteur
+signe (manifeste et historique des versions) ; l'empreinte de la fenêtre est donc signée avec lui, sans clé ni
+signature de plus. Sous Linux, ses octets sont lus par une poignée ouverte sans suivre de lien, copiés dans un
+fichier en mémoire scellé (memfd : plus rien ne peut le changer), l'empreinte est calculée sur cette copie, et c'est
+elle qui est lancée, pas le chemin : une fenêtre remplacée sur le disque après la vérification ne tourne pas. Sous
+Windows, le fichier est tenu ouvert en lecture seule partagée (personne ne peut l'écrire, l'effacer ni le renommer
+tant que la poignée vit) du calcul de l'empreinte jusqu'à « ouverte ». Une empreinte différente, un programme compilé
+sans empreinte (`cargo build`, les essais) ou une marque illisible : aucune fenêtre, le menu, la raison dite.
 
-`vanguard` sans argument ouvrira alors la fenêtre de Vanguard (`vanguard-fenetre`, un programme à part posé à côté
-de `vanguard`) quand la personne est devant un écran graphique ; sinon, le menu du terminal, comme avant. Ses
+`vanguard` sans argument ouvre la fenêtre de Vanguard (`vanguard-fenetre`, un programme à part posé à côté de
+`vanguard`) quand la personne est devant un écran graphique ; sinon, le menu du terminal, comme avant. Ses
 gardes :
 
 - **Elle ne fait rien d'elle-même.** Elle relance le programme `vanguard` posé à côté d'elle (chemin absolu, jamais
-  cherché dans le PATH) avec une commande d'une liste fermée, qui ne change rien à l'ordinateur
+  cherché dans le PATH ; lancée d'un fichier en mémoire, elle reçoit ce chemin de `vanguard` par `--vanguard`, et lui
+  applique les mêmes gardes) avec une commande d'une liste fermée, qui ne change rien à l'ordinateur
   (`audit`, `protection`, `evenements`, `diagnostic`, `test-connexion`…), toujours en `--json`, sans argument libre,
   sans shell, entrée fermée, une à la fois, avec un délai et un bouton Arrêter (sous Linux, tout le groupe de
   processus est arrêté, et ce qui en reste à la fin de la commande aussi ; `vanguard` n'est récolté qu'après, pour
@@ -529,9 +536,11 @@ gardes :
   ne reçoit qu'un état qu'elle ne peut pas changer : rien ne s'y lance, rien n'en est écrit).
 - **Le menu reste le choix sûr.** La fenêtre ne s'ouvre pas sans terminal (un script qui écrit les choix), en SSH ou
   au Bureau à distance, en administrateur (root, sudo, console administrateur), sans écran graphique, quand elle n'est
-  pas posée à côté, quand (sous Linux) elle n'est pas un fichier ordinaire à ce compte ou à root que ni le groupe ni
-  les autres ne peuvent modifier, dans des dossiers que ni le groupe ni les autres ne peuvent modifier, ou quand elle
-  ne dit pas « ouverte » dans les 20 secondes. `vanguard --menu` force
+  pas posée à côté, quand son empreinte n'est pas celle gravée dans ce `vanguard` (ou qu'il n'en grave aucune), quand
+  (sous Linux) elle n'est pas un fichier ordinaire à ce compte ou à root que ni le groupe ni les autres ne peuvent
+  modifier, dans des dossiers que ni le groupe ni les autres ne peuvent modifier, quand le fichier en mémoire ne peut
+  pas être lancé (noyau réglé `vm.memfd_noexec=2`, politique SELinux ou AppArmor qui le refuse : jamais de repli vers
+  le chemin), ou quand elle ne dit pas « ouverte » dans les 20 secondes. `vanguard --menu` force
   le menu.
 - **Ses bibliothèques.** Sous Windows, comme `vanguard.exe`, elle ne charge ses DLL que de System32 : celles qu'elle
   importe (DependentLoadFlags), et celles qu'une bibliothèque ouvre par leur nom après le démarrage
@@ -540,8 +549,10 @@ gardes :
   bibliothèques d'affichage se chargent à l'exécution) : seul l'interpréteur `/lib64/ld-linux-x86-64.so.2` est
   permis, sans dossier de bibliothèques écrit dans le programme (ni RPATH ni RUNPATH), vérifié à chaque passe de
   `outils/verifier.sh` (`vanguard deploiement verifier-binaire --glibc`).
-- **Limites.** Comme le programme, elle suppose que son dossier n'est modifiable que par vous : qui peut remplacer
-  `vanguard-fenetre` peut aussi remplacer `vanguard`. Sous Windows, la fenêtre et `vanguard` ne vérifient que le fait
+- **Limites.** Comme le programme, elle suppose que son dossier n'est modifiable que par vous : une fausse fenêtre
+  posée à côté n'est plus lancée, mais qui peut remplacer `vanguard` peut remplacer les deux. Sous Windows, le
+  lancement est vérifié sous Wine seulement (pas encore sur un vrai Windows), et le processus n'est pas créé suspendu
+  pour comparer son image à la poignée tenue : c'est la poignée sans partage d'écriture qui garantit le fichier. Sous Windows, la fenêtre et `vanguard` ne vérifient que le fait
   que l'autre soit un fichier ordinaire : ni son propriétaire, ni les droits (ACL) du fichier et de ses dossiers, que
   Windows ne laisse pas lire aussi simplement ; un dossier où d'autres comptes peuvent écrire n'est donc pas refusé
   sous Windows. Sous Windows, chaque commande lancée est mise dans son propre objet de travail (job object) : Arrêter, le délai et la fin de la commande arrêtent aussi ce qu'elle a lancé, et tout s'arrête si la fenêtre s'arrête ; un processus lancé dans le court instant d'avant son entrée dans l'objet y échapperait. Sous

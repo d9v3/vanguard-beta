@@ -1,6 +1,8 @@
 //! `vanguard` sans argument : la fenêtre de Vanguard (`vanguard-fenetre`, posée à côté du programme) quand la
-//! personne est devant un écran graphique, sinon le menu du terminal, comme avant. Tant que la fenêtre n'est pas
-//! livrée (`FENETRE_LIVREE`, faux en 0.94 et 0.95), toujours le menu : aucun `vanguard-fenetre` n'est lancé. La fenêtre ne fait rien d'elle-même :
+//! personne est devant un écran graphique, sinon le menu du terminal, comme avant. Seulement la fenêtre dont ce
+//! programme porte l'empreinte gravée (`fenetre_livree`, `empreinte_fenetre`), et ce sont les octets vérifiés qui sont
+//! lancés, pas le chemin ; un programme compilé sans empreinte (`cargo build`, les essais) n'en lance aucune, comme la
+//! 0.95 (LIV-1). La fenêtre ne fait rien d'elle-même :
 //! elle relance ce programme-ci avec des commandes en lecture, et un seul changement, un programme retiré du démarrage
 //! ou remis, après sa confirmation (voir `fenetre/` et MODELE-DE-MENACE.md, « La fenêtre »).
 //!
@@ -20,11 +22,19 @@ use crate::{tr, trf};
 /// La ligne que la fenêtre écrit sur sa sortie quand elle s'est ouverte (fenetre/src/dessin/mod.rs).
 const OUVERTE: &str = "vanguard-fenetre:ouverte";
 
-/// La fenêtre n'est pas livrée avec cette version : `vanguard` ne lance alors aucun `vanguard-fenetre`, même posé à
-/// côté. Avant, la confiance allait au nom et à l'emplacement du fichier, pas à son contenu : n'importe quel
-/// programme de ce nom, exécutable, était lancé et pouvait dire « ouverte » à sa place (LIV-1). La fenêtre revient
-/// quand son lancement vérifie une empreinte signée (0.96, MODELE-DE-MENACE.md, « La fenêtre »).
-pub(crate) const FENETRE_LIVREE: bool = false;
+/// La fenêtre est livrée avec ce programme : il porte gravée l'empreinte de sa fenêtre (`outils/compiler-version.sh`).
+/// Sinon `vanguard` ne lance aucun `vanguard-fenetre`, même posé à côté, et l'aide ne la promet pas. En 0.94, la
+/// confiance allait au nom et à l'emplacement du fichier, pas à son contenu : n'importe quel programme de ce nom,
+/// exécutable, était lancé et pouvait dire « ouverte » à sa place (LIV-1) ; la 0.95 ne la lançait plus du tout.
+pub(crate) fn fenetre_livree() -> bool {
+    livree_selon(super::empreinte_fenetre::de_ce_programme())
+}
+
+/// `fenetre_livree`, pour une marque donnée : seule une empreinte livre la fenêtre ; « aucune » ou pas de marque lisible,
+/// non.
+fn livree_selon(g: Option<super::empreinte_fenetre::Gravee>) -> bool {
+    matches!(g, Some(super::empreinte_fenetre::Gravee::Empreinte(_)))
+}
 
 /// Le temps laissé à la fenêtre pour s'ouvrir (premier lancement sur un vieil ordinateur, pilote graphique lent).
 const ATTENTE: Duration = Duration::from_secs(20);
@@ -190,14 +200,14 @@ fn ouvrir_depuis(c: Contexte, chemin: &Path, programme: &Path) -> bool {
     if !choisir(c) {
         return false;
     }
-    if !FENETRE_LIVREE {
+    if !fenetre_livree() {
         // Quelqu'un attendait la fenêtre (un fichier à son nom est posé à côté) : le dire, sans rien lancer.
         if std::fs::symlink_metadata(chemin).is_ok() {
             eprintln!(
                 "{}",
                 tr!(
-                    "La fenêtre de Vanguard n'est pas livrée avec cette version : le fichier « vanguard-fenetre » posé à côté n'est pas lancé. Le menu du terminal.",
-                    "The Vanguard window is not shipped with this version: the \"vanguard-fenetre\" file next to it is not started. The terminal menu."
+                    "Ce programme a été compilé sans empreinte de fenêtre : le fichier « vanguard-fenetre » posé à côté n'est pas lancé. Le menu du terminal.",
+                    "This program was built without a window fingerprint: the \"vanguard-fenetre\" file next to it is not started. The terminal menu."
                 )
             );
         }
@@ -396,11 +406,8 @@ fn commande(v: &Verifiee) -> Command {
 /// Pas par `commande::lancer`, qui attend la fin du programme : la fenêtre vit après nous ; lancée par les coulisses
 /// quand même (`spawn_suivi`), elle s'y voit.
 fn lancer(chemin: &Path, programme: &Path) -> Lancement {
-    // Seconde garde, au seul endroit qui construit la commande : rien ne lance la fenêtre tant qu'elle n'est pas livrée.
-    if !FENETRE_LIVREE {
-        return Lancement::Refusee(tr!("pas livrée", "not shipped").into());
-    }
-    // Une compilation sans empreinte de fenêtre (`cargo build`, les essais) n'en lance jamais aucune.
+    // Seconde garde, au seul endroit qui construit la commande : une compilation sans empreinte de fenêtre
+    // (`cargo build`, les essais) n'en lance jamais aucune.
     let Some(super::empreinte_fenetre::Gravee::Empreinte(attendue)) = super::empreinte_fenetre::de_ce_programme()
     else {
         return Lancement::Refusee(
@@ -490,8 +497,20 @@ mod tests {
         assert!(!choisir(Contexte::default()));
     }
 
+    /// La fenêtre n'est livrée que par une empreinte gravée : « aucune » (`cargo build`, les essais) ou une marque
+    /// illisible ou contredite (`None`) ne la livrent pas.
+    #[test]
+    fn seule_une_empreinte_gravee_livre_la_fenetre() {
+        use crate::demarrage::empreinte_fenetre::Gravee;
+        assert!(livree_selon(Some(Gravee::Empreinte([7; 32]))));
+        assert!(!livree_selon(Some(Gravee::Aucune)));
+        assert!(!livree_selon(None));
+        // Les essais compilent sans empreinte : pas de fenêtre, et l'aide ne la promet pas (menu/tests.rs).
+        assert!(!fenetre_livree());
+    }
+
     /// LIV-1 : un faux `vanguard-fenetre` posé à côté, exécutable (755), qui dirait « ouverte », n'est jamais lancé
-    /// tant que la fenêtre n'est pas livrée : ni par `ouvrir`, ni par `lancer` lui-même.
+    /// par un programme compilé sans empreinte de fenêtre : ni par `ouvrir`, ni par `lancer` lui-même.
     #[cfg(unix)]
     #[test]
     fn une_fausse_fenetre_posee_a_cote_n_est_jamais_lancee() {
@@ -511,7 +530,7 @@ mod tests {
         };
         assert!(
             !ouvrir_depuis(devant, &f, &dossier.join("vanguard")),
-            "la fenêtre n'est pas livrée : le menu"
+            "compilé sans empreinte : le menu"
         );
         assert!(
             !matches!(lancer(&f, &dossier.join("vanguard")), Lancement::Ouverte),
