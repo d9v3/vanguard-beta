@@ -25,8 +25,8 @@ aucune personne à joindre ailleurs.
 
 ## Versions suivies
 
-Seule la dernière version publiée (page Releases) reçoit les corrections. Vanguard publie au plus une version par
-jour : la correction part dans la suivante, et aucune version plus ancienne n'est corrigée à part. Mettez Vanguard à
+Seule la dernière version publiée (page Releases) reçoit les corrections. Une correction part dans la version
+suivante, parfois le jour même, et aucune version plus ancienne n'est corrigée à part. Mettez Vanguard à
 jour (`vanguard se-mettre-a-jour`) et vérifiez que la faille y est encore avant de la signaler.
 
 ## Délai de réponse
@@ -136,8 +136,8 @@ reach elsewhere.
 
 ## Supported versions
 
-Only the latest published version (Releases page) receives fixes. Vanguard publishes at most one version a day: the
-fix ships in the next one, and no older version is fixed separately. Update Vanguard (`vanguard self-update`) and
+Only the latest published version (Releases page) receives fixes. A fix ships in the next version, sometimes the
+same day, and no older version is fixed separately. Update Vanguard (`vanguard self-update`) and
 check that the flaw is still there before reporting it.
 
 ## Response time
