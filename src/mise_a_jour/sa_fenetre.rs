@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
+use super::TAILLE_MAX as TAILLE_PROGRAMME;
 use super::{Essai, Version, installer, lire_octets, mettre_en_place_sous};
 use crate::demarrage::empreinte_fenetre::{self, Gravee};
 use crate::demarrage::lancer_fenetre::{self, TAILLE_MAX};
@@ -105,6 +106,26 @@ enum Avant {
     Illisible,
 }
 
+impl Avant {
+    /// Ce qui est à `chemin` maintenant (au plus `max` octets lus).
+    fn de(chemin: &Path, max: u64) -> Avant {
+        match lire_octets(chemin, max) {
+            Ok(o) => Avant::Lue(o),
+            Err(_) if std::fs::symlink_metadata(chemin).is_err() => Avant::Absente,
+            Err(_) => Avant::Illisible,
+        }
+    }
+
+    /// `chemin` est-il encore exactement ce qu'il était ? Illisible avant : on ne peut pas le dire, donc non.
+    fn toujours_la(&self, chemin: &Path, max: u64) -> bool {
+        match self {
+            Avant::Absente => std::fs::symlink_metadata(chemin).is_err(),
+            Avant::Lue(o) => lire_octets(chemin, max).is_ok_and(|l| l == *o),
+            Avant::Illisible => false,
+        }
+    }
+}
+
 /// `octets` à la place de `cible`, `fenetre` posée à `chemin` d'abord, revérifiée ici contre l'empreinte gravée dans
 /// `octets` (le seul endroit où cela se juge). Si le programme ne se pose pas, ce qui était à `chemin` y revient.
 pub(super) fn installer_avec(
@@ -116,16 +137,23 @@ pub(super) fn installer_avec(
     chemin: &Path,
 ) -> Result<(), String> {
     juste(octets, fenetre)?;
-    let avant = match lire_octets(chemin, TAILLE_MAX) {
-        Ok(o) => Avant::Lue(o),
-        Err(_) if std::fs::symlink_metadata(chemin).is_err() => Avant::Absente,
-        Err(_) => Avant::Illisible,
-    };
+    let avant = Avant::de(chemin, TAILLE_MAX);
+    // Le programme d'avant, relu après un échec (C-2) : l'ancienne fenêtre ne revient qu'à côté de lui.
+    let programme_avant = Avant::de(cible, TAILLE_PROGRAMME);
     let changee = !matches!(&avant, Avant::Lue(o) if o == fenetre);
     if changee {
         poser(fenetre, chemin)?;
     }
     installer(octets, cible, attendue, essai).map_err(|e| {
+        if changee && !programme_avant.toujours_la(cible, TAILLE_PROGRAMME) {
+            return format!(
+                "{e}\n    {}",
+                tr!(
+                    "le programme n'est plus celui d'avant (changé pendant la mise à jour par un autre programme, ou illisible) : l'ancienne fenêtre n'est pas remise à côté de lui ; relancez la mise à jour",
+                    "the program is no longer the previous one (changed during the update by another program, or unreadable): the old window is not put back next to it; run the update again"
+                )
+            );
+        }
         let remise = match &avant {
             _ if !changee => Ok(()),
             Avant::Lue(o) => poser(o, chemin),
@@ -156,39 +184,135 @@ pub(super) fn poser_si_autre(fenetre: &[u8], chemin: &Path) -> Result<(), String
 /// `octets` à `chemin`, comme `installer` le fait pour le programme : à côté d'abord (créé neuf, jamais par un lien),
 /// relu et comparé, puis renommé d'un coup ; rien ne traîne à côté en cas d'échec.
 fn poser(octets: &[u8], chemin: &Path) -> Result<(), String> {
+    poser_avec(octets, chemin, |_| ())
+}
+
+/// `poser`, avec ce qui se passe juste avant le renommage (`avant_renommage`, le chemin de la copie provisoire) : rien
+/// en vrai ; un autre programme du compte, dans les essais.
+///
+/// La copie provisoire est tenue par son descripteur du début à la fin (C-1, relecture 0.96 ; la méthode de G-2 pour
+/// le programme) : par son seul nom, un programme du compte pouvait l'échanger entre la relecture et le renommage, et
+/// « fait » était dit sur une autre fenêtre. Relue par le descripteur ; après le renommage, la fenêtre posée doit
+/// être ce même fichier, avec ces mêmes octets.
+fn poser_avec(octets: &[u8], chemin: &Path, avant_renommage: impl FnOnce(&Path)) -> Result<(), String> {
     let nom = chemin
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .ok_or_else(|| tr!("chemin sans nom de fichier", "path without a file name").to_string())?;
     let provisoire = chemin.with_file_name(format!("{nom}.nouveau"));
     let posee = (|| -> Result<(), String> {
-        use std::io::Write;
         let _ = std::fs::remove_file(&provisoire);
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&provisoire)
-            .map_err(|e| e.to_string())?;
-        f.write_all(octets)
-            .and_then(|()| f.sync_all())
-            .map_err(|e| e.to_string())?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            f.set_permissions(std::fs::Permissions::from_mode(0o755))
-                .map_err(|e| e.to_string())?;
-        }
-        drop(f);
-        if lire_octets(&provisoire, TAILLE_MAX).ok().as_deref() != Some(octets) {
+        let f = ecrire_provisoire(&provisoire, octets)?;
+        if !meme_contenu(&f, octets)? {
             return Err(tr!("la copie relue ne correspond pas", "the copy read back does not match").into());
         }
+        avant_renommage(&provisoire);
         mettre_en_place_sous(&provisoire, chemin, &chemin.with_file_name(format!("{nom}.ancien")))
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        verifier_posee(&f, chemin, octets)
     })();
     if posee.is_err() {
         let _ = std::fs::remove_file(&provisoire);
     }
     posee
+}
+
+/// La copie provisoire créée neuve (O_EXCL : un lien posé à ce nom n'est jamais suivi, l'écriture échoue plutôt),
+/// écrite, mise sur le disque, ses droits donnés par le descripteur. Sous Linux, rouverte en lecture seule par son
+/// descripteur (`/proc/self/fd`, le même fichier même si le nom a changé) et le descripteur d'écriture fermé. Sous
+/// Windows, rouverte en lecture par son nom, l'écriture refusée aux autres tant qu'elle est tenue (FILE_SHARE_READ |
+/// FILE_SHARE_DELETE : sans le partage de suppression, le renommage échouerait) ; ce qui est ouvert est relu ensuite.
+fn ecrire_provisoire(provisoire: &Path, octets: &[u8]) -> Result<std::fs::File, String> {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(provisoire)
+        .map_err(|e| e.to_string())?;
+    f.write_all(octets)
+        .and_then(|()| f.sync_all())
+        .map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        f.set_permissions(std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        let lecture = std::fs::File::open(format!("/proc/self/fd/{}", f.as_raw_fd())).map_err(|e| {
+            crate::trf!(
+                "copie provisoire pas rouverte par son descripteur (/proc) : {}",
+                "temporary copy not reopened through its descriptor (/proc): {}",
+                e
+            )
+        })?;
+        drop(f);
+        Ok(lecture)
+    }
+    #[cfg(windows)]
+    {
+        drop(f);
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        std::os::windows::fs::OpenOptionsExt::share_mode(&mut options, 1 | 4);
+        options.open(provisoire).map_err(|e| e.to_string())
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    Ok(f)
+}
+
+/// Le fichier ouvert `f` contient-il exactement `octets` ? Relu depuis le début, jamais plus d'un octet de trop.
+fn meme_contenu(mut f: &std::fs::File, octets: &[u8]) -> Result<bool, String> {
+    use std::io::{Read, Seek};
+    f.seek(std::io::SeekFrom::Start(0)).map_err(|e| e.to_string())?;
+    let mut lu = Vec::with_capacity(octets.len());
+    let borne = u64::try_from(octets.len()).unwrap_or(u64::MAX).saturating_add(1);
+    f.take(borne).read_to_end(&mut lu).map_err(|e| e.to_string())?;
+    Ok(lu == octets)
+}
+
+/// Après le renommage : la fenêtre posée à `chemin` est-elle la copie écrite (`f`), avec les octets reçus ? Sous Unix,
+/// ouverte sans suivre de lien, le même fichier (appareil et inode) que `f`, puis relue. Sous Windows, relue par une
+/// poignée qui refuse l'écriture et la suppression aux autres le temps de la lecture (l'identité du fichier n'y est
+/// pas comparée ; les octets, eux, le sont). Sinon, un échec qui le dit : jamais « fait » sur une autre fenêtre (que
+/// `vanguard`, de toute façon, ne lancera pas : son empreinte n'est pas la gravée).
+fn verifier_posee(f: &std::fs::File, chemin: &Path, octets: &[u8]) -> Result<(), String> {
+    let changee = || -> String {
+        tr!(
+            "la fenêtre posée n'est pas celle qui a été reçue (changée pendant la mise à jour par un autre programme) : la mise à jour n'est pas faite, relancez-la",
+            "the installed window is not the one that was received (changed during the update by another program): the update is not done, run it again"
+        )
+        .into()
+    };
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    // FILE_SHARE_READ seul.
+    #[cfg(windows)]
+    std::os::windows::fs::OpenOptionsExt::share_mode(&mut options, 1);
+    let posee = options.open(chemin).map_err(|_| changee())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let (a, b) = (
+            f.metadata().map_err(|e| e.to_string())?,
+            posee.metadata().map_err(|e| e.to_string())?,
+        );
+        if !b.is_file() || a.dev() != b.dev() || a.ino() != b.ino() {
+            return Err(changee());
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = f;
+    if meme_contenu(&posee, octets)? {
+        Ok(())
+    } else {
+        Err(changee())
+    }
 }
 
 #[cfg(test)]
@@ -289,6 +413,69 @@ mod tests {
         std::fs::write(&page, b"ancienne fenetre").unwrap();
         installer_avec_sa_fenetre(&nouveau, &cible, V, SANS_ESSAI, &mut recevoir).unwrap();
         assert_eq!(std::fs::read(&page).unwrap(), neuve);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// C-1 (relecture 0.96) : la fenêtre provisoire était relue puis renommée par son NOM ; un programme du compte
+    /// qui l'échangeait entre les deux faisait poser sa fausse fenêtre, et la mise à jour disait « fait ». Tenue par
+    /// son descripteur, la fenêtre posée doit être ce même fichier, avec ces octets : sinon un échec qui le dit.
+    #[test]
+    fn une_fenetre_provisoire_echangee_par_son_nom_n_est_jamais_dite_posee() {
+        let d = dossier("essai-sa-fenetre-echange");
+        let fenetre = pour(&d.join(NOM)).unwrap();
+        std::fs::write(&fenetre, b"ancienne fenetre").unwrap();
+        // Sous Windows, la provisoire tenue passe « en suppression » et son nom ne peut pas être réécrit : l'échange
+        // échoue de lui-même. Sous Unix il réussit toujours, sinon l'essai ne prouverait rien.
+        let substituee = std::cell::Cell::new(false);
+        let echanger = |provisoire: &Path| {
+            let fait = std::fs::remove_file(provisoire)
+                .and_then(|()| std::fs::write(provisoire, b"FAUSSE FENETRE"))
+                .is_ok();
+            substituee.set(fait);
+        };
+        let r = poser_avec(b"fenetre 0.96", &fenetre, echanger);
+        assert!(substituee.get() || cfg!(windows), "l'échange n'a pas eu lieu");
+        if substituee.get() {
+            assert!(r.is_err(), "« fait » sur une fenêtre échangée : {r:?}");
+        }
+        if r.is_ok() {
+            assert_eq!(std::fs::read(&fenetre).unwrap(), b"fenetre 0.96");
+        }
+        // Sans échange : posée.
+        poser_avec(b"fenetre 0.96", &fenetre, |_| ()).unwrap();
+        assert_eq!(std::fs::read(&fenetre).unwrap(), b"fenetre 0.96");
+        assert!(rien_a_cote(&d));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// C-2 (relecture 0.96) : un échec après que le fichier du programme a changé remettait l'ancienne fenêtre à
+    /// côté d'un programme inconnu, et disait seulement « pas faite ». Le programme d'avant est relu : changé, rien
+    /// n'est remis, et c'est dit.
+    #[test]
+    fn un_programme_change_pendant_l_echec_n_est_pas_apparie_a_l_ancienne_fenetre() {
+        const CHANGE_PUIS_RATE: Essai = |provisoire, _| {
+            std::fs::write(provisoire.with_file_name(NOM), b"programme inconnu").unwrap();
+            Err("ne démarre pas".into())
+        };
+        let d = dossier("essai-sa-fenetre-change");
+        let cible = d.join(NOM);
+        let fenetre = pour(&cible).unwrap();
+        std::fs::write(&cible, b"ancien programme").unwrap();
+        std::fs::write(&fenetre, b"ancienne fenetre").unwrap();
+        let neuve = b"fenetre 0.96".to_vec();
+        let mut recevoir = || -> Result<Vec<u8>, String> { Ok(neuve.clone()) };
+        let r = installer_avec_sa_fenetre(&lancant(&neuve), &cible, V, CHANGE_PUIS_RATE, &mut recevoir);
+        let e = r.expect_err("un échec");
+        assert!(
+            e.contains("n'est plus celui d'avant") || e.contains("no longer the previous"),
+            "{e}"
+        );
+        assert_ne!(
+            std::fs::read(&fenetre).unwrap(),
+            b"ancienne fenetre",
+            "remise à côté d'un inconnu"
+        );
+        assert!(rien_a_cote(&d));
         let _ = std::fs::remove_dir_all(&d);
     }
 
