@@ -78,6 +78,19 @@ fn vanguard_dans_env(
     secondes: u64,
     env: &[(&str, &str)],
 ) -> Sortie {
+    vanguard_au_plus(programme, maison, langue, args, entree, Delai::Horloge(secondes), env)
+}
+
+/// Comme `vanguard_dans_env`, avec un `Delai` au choix (`DELAI_BASES_CLAMAV`).
+fn vanguard_au_plus(
+    programme: &Path,
+    maison: &Path,
+    langue: &str,
+    args: &[&str],
+    entree: &str,
+    delai: Delai,
+    env: &[(&str, &str)],
+) -> Sortie {
     let mut commande = Command::new(programme);
     commande.envs(env.iter().copied());
     commande
@@ -98,11 +111,51 @@ fn vanguard_dans_env(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    attendre(commande, args, entree, secondes)
+    attendre_au_plus(commande, args, entree, delai)
 }
 
-/// Lance `commande` (ses sorties en tubes), lui tape `entree`, et l'attend au plus `secondes`.
-fn attendre(mut commande: Command, args: &[&str], entree: &str, secondes: u64) -> Sortie {
+/// Ce qu'un lancement peut prendre avant d'être tenu pour bloqué.
+#[derive(Clone, Copy)]
+enum Delai {
+    /// Des secondes d'horloge : un menu, une commande qui attend surtout le système.
+    Horloge(u64),
+    /// Des secondes de calcul du programme (et de ses enfants attendus), sous un plafond d'horloge. Pour ce qui charge
+    /// les vraies bases de ClamAV de l'ordinateur (verifier-fichier, plugins ajouter) : en debug, environ 50 s de
+    /// calcul sur un seul fil (6 s optimisé). Compté à l'horloge, ce temps suivait la charge de la machine : avec
+    /// verifier.sh et d'autres compilations en même temps, le fil n'avait qu'une part de cœur, dépassait 120 s, et
+    /// l'essai disait « n'a pas rendu la main » d'un programme qui travaillait (12 nov. 2026). Le calcul, lui, ne
+    /// dépend pas de la charge : une boucle sans fin est prise au budget, un blocage qui ne calcule plus au plafond.
+    Calcul { secondes: u64, plafond: u64 },
+}
+
+/// Le budget de calcul d'un lancement qui charge les vraies bases de ClamAV, et son plafond d'horloge.
+const DELAI_BASES_CLAMAV: Delai = Delai::Calcul {
+    secondes: 120,
+    plafond: 900,
+};
+
+/// Le temps de calcul d'un processus encore en marche, en secondes : utime, stime, et ceux des enfants déjà attendus
+/// (cutime, cstime) de /proc/<pid>/stat, en tops de USER_HZ (100 sous Linux, fixé par l'interface du noyau). `None`
+/// hors de Linux (Wine compris) ou si la ligne ne se lit pas : le délai redevient alors de l'horloge.
+fn temps_de_calcul(pid: u32) -> Option<f64> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let ligne = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // Le nom (2ᵉ champ) est entre parenthèses et peut contenir des espaces : les champs se comptent après la dernière.
+    let champs: Vec<&str> = ligne.get(ligne.rfind(')')? + 1..)?.split_whitespace().collect();
+    // champs[0] est le 3ᵉ champ (état) : utime, stime, cutime, cstime sont les 14ᵉ à 17ᵉ.
+    let tops = champs
+        .get(11..15)?
+        .iter()
+        .map(|c| c.parse::<u64>().ok())
+        .sum::<Option<u64>>()?;
+    #[allow(clippy::cast_precision_loss)] // des tops de 10 ms : bien en deçà de 2⁵³
+    Some(tops as f64 / 100.0)
+}
+
+/// Lance `commande` (ses sorties en tubes), lui tape `entree`, et l'attend au plus le temps que dit `delai`.
+fn attendre_au_plus(mut commande: Command, args: &[&str], entree: &str, delai: Delai) -> Sortie {
     // Un programme copié à l'instant (mise_a_jour_depuis_la_cle) peut être refusé « Text file busy » : un autre test
     // qui lance un processus au même moment a hérité, le temps de son exec, du fichier encore ouvert en écriture.
     // Quelques essais espacés suffisent ; toute autre erreur arrête le test.
@@ -123,14 +176,27 @@ fn attendre(mut commande: Command, args: &[&str], entree: &str, secondes: u64) -
         let mut stdin = enfant.stdin.take().unwrap();
         let _ = stdin.write_all(entree.as_bytes());
     }
-    let fin = Instant::now() + Duration::from_secs(secondes);
+    let debut = Instant::now();
     let code = loop {
         if let Some(statut) = enfant.try_wait().unwrap() {
             break statut.code();
         }
-        if Instant::now() > fin {
+        let passe = |secondes: u64| debut.elapsed() > Duration::from_secs(secondes);
+        let depasse = match delai {
+            Delai::Horloge(secondes) => passe(secondes).then(|| format!("n'a pas rendu la main en {secondes} s")),
+            Delai::Calcul { secondes, plafond } => match temps_de_calcul(enfant.id()) {
+                _ if passe(plafond) => Some(format!("n'a pas rendu la main en {plafond} s d'horloge")),
+                #[allow(clippy::cast_precision_loss)]
+                Some(calcul) if calcul > secondes as f64 => Some(format!(
+                    "a calculé {calcul:.0} s sans rendre la main (budget : {secondes} s)"
+                )),
+                None if passe(secondes) => Some(format!("n'a pas rendu la main en {secondes} s")),
+                _ => None,
+            },
+        };
+        if let Some(raison) = depasse {
             let _ = enfant.kill();
-            panic!("vanguard {args:?} n'a pas rendu la main en {secondes} s");
+            panic!("vanguard {args:?} {raison}");
         }
         std::thread::sleep(Duration::from_millis(50));
     };
@@ -821,7 +887,7 @@ fn vanguard_a_vide(programme: &Path, maison: &Path, dehors: &Path, args: &[&str]
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    attendre(commande, args, "", 300)
+    attendre_au_plus(commande, args, "", Delai::Horloge(300))
 }
 
 /// Les règles que l'aperçu relance (`RELUES_SANS_PROGRAMME` de `machine::apercu`), recopiées : une règle ajoutée là
@@ -3644,7 +3710,9 @@ fn verifier_fichier_verdicts() {
         args.extend(empreinte);
         // Sans ClamAV (CI), Vanguard propose de l'installer : la fin de l'entrée vaut « non », et le
         // verdict suit (`verifier_fichier_sans_clamav_ni_reponse`).
-        let s = vanguard(langue, &args, "", 120);
+        let maison = maison_jetable();
+        let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
+        let s = vanguard_au_plus(programme, &maison, langue, &args, "", DELAI_BASES_CLAMAV, &[]);
         assert_eq!(s.code, Some(0), "{}", s.erreurs);
         // Les phrases longues sont coupées en lignes à l'écran : remises bout à bout.
         sans_couleurs(&s.texte).split_whitespace().collect::<Vec<_>>().join(" ")
@@ -3710,10 +3778,18 @@ fn verifier_fichier_en_json() {
     std::fs::write(&notes, "bonjour\n").unwrap();
     let lire = |args: &[&str]| -> serde_json::Value {
         // Hors ligne : MalwareBazaar n'est pas demandé par Internet (lent, sensible au réseau) ; ses empreintes
-        // absentes deviennent la réserve que l'essai attend plus bas. 120 s : le moteur lit les vraies bases de
-        // ClamAV de l'ordinateur (pas de dossier de bases au choix, exprès), ce qui dépasse 60 s en debug quand les
-        // autres essais tournent en même temps.
-        let s = vanguard_dans_env(programme, &maison, "fr", args, "", 120, &[("VANGUARD_HORS_LIGNE", "1")]);
+        // absentes deviennent la réserve que l'essai attend plus bas. Délai en temps de calcul (`DELAI_BASES_CLAMAV`) :
+        // le moteur lit les vraies bases de ClamAV de l'ordinateur (pas de dossier de bases au choix, exprès), environ
+        // 50 s de calcul en debug, que la charge de la machine étirait au-delà de 120 s d'horloge.
+        let s = vanguard_au_plus(
+            programme,
+            &maison,
+            "fr",
+            args,
+            "",
+            DELAI_BASES_CLAMAV,
+            &[("VANGUARD_HORS_LIGNE", "1")],
+        );
         assert_eq!(s.code, Some(0), "{}", s.erreurs);
         serde_json::from_str(&s.texte).unwrap_or_else(|e| panic!("{args:?} : JSON illisible ({e}) : {}", s.texte))
     };
@@ -3787,13 +3863,13 @@ fn verifier_fichier_sans_clamav_ni_reponse() {
     std::fs::create_dir_all(&vide).unwrap();
     let notes = maison.join("notes.txt");
     std::fs::write(&notes, "bonjour\n").unwrap();
-    let s = vanguard_dans_env(
+    let s = vanguard_au_plus(
         Path::new(env!("CARGO_BIN_EXE_vanguard")),
         &maison,
         "fr",
         &["verifier-fichier", notes.to_str().unwrap()],
         "",
-        120,
+        DELAI_BASES_CLAMAV,
         &[("PATH", vide.to_str().unwrap())],
     );
     assert_eq!(s.code, Some(0), "{}", s.erreurs);
@@ -5404,7 +5480,7 @@ mod demarrage_sous_attaque {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let sortie = attendre(commande, &args, "", 180);
+        let sortie = attendre_au_plus(commande, &args, "", Delai::Horloge(180));
         let json: serde_json::Value =
             serde_json::from_str(&sortie.texte).unwrap_or_else(|e| panic!("{e} : {} {}", sortie.texte, sortie.erreurs));
         let manques = json["couverture"].to_string();
@@ -6169,13 +6245,13 @@ fn plugin_d_exemple_et_labo() {
     let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
     let env = [("VANGUARD_HORS_LIGNE", "1")];
     let source_texte = source.to_string_lossy().into_owned();
-    let s = vanguard_dans_env(
+    let s = vanguard_au_plus(
         programme,
         &maison,
         "fr",
         &["plugins", "ajouter", &source_texte],
         "o\n",
-        120,
+        DELAI_BASES_CLAMAV,
         &env,
     );
     assert_eq!(s.code, Some(0), "{}{}", s.texte, s.erreurs);
@@ -6211,7 +6287,15 @@ fn plugin_d_exemple_et_labo() {
         plugins.join("labo/labo-exemple.sh"),
     )
     .unwrap();
-    let s = vanguard_dans_env(programme, &maison, "fr", &["labo", "labo-exemple.sh"], "o\n", 120, &env);
+    let s = vanguard_au_plus(
+        programme,
+        &maison,
+        "fr",
+        &["labo", "labo-exemple.sh"],
+        "o\n",
+        DELAI_BASES_CLAMAV,
+        &env,
+    );
     assert_eq!(s.code, Some(0), "{}{}", s.texte, s.erreurs);
     assert!(
         s.texte.contains("EXPÉRIMENTAL") && s.texte.contains("labo labo-exemple.sh"),
