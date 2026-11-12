@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # Tout vérifier en une commande, avant un commit ou une livraison : mise en forme, clippy sur les deux cibles, tests
 # Linux et Windows (sous Wine, avec le lanceur de la clé : outils/essais-lanceur.sh), les tests Linux refaits sans
-# Internet, scripts PowerShell, shell et Python, essais des outils de la clé (outils/essais-cle.sh), de la signature
-# des versions (outils/essais-signature.sh), de la garde de confidentialité (outils/essais-confidentialite.sh)
-# et de ce script même sous --seulement (outils/essais-verifier.sh), liens
+# Internet, scripts PowerShell, shell et Python, essais des outils de la clé (outils/essais-cle.sh), de la signature des
+# versions (outils/essais-signature.sh), de la garde de confidentialité (outils/essais-confidentialite.sh), de la
+# livraison (outils/essais-livrer-branche.sh) et de ce script même sous --seulement (outils/essais-verifier.sh), liens
 # internes, la fenêtre de Vanguard (fenetre/ : clippy sur les deux cibles, tests Linux), carte de couverture ATT&CK à
 # jour (outils/couverture-attack.py), documentation du code sans avertissement (cargo doc), textes français et anglais
 # (outils/textes.py), relais des lots (relais/, outils/relais-schema.py), protections des programmes lues dans leurs
 # en-têtes (vanguard deploiement verifier-binaire : PIE, marque RELRO, pile non exécutable ; ASLR, DEP), régression de
-# détection (le corpus de src/modele/corpus.rs, Linux et Wine), dépendances (cargo deny) et leurs failles connues
-# (cargo audit), banc de fuzzing compilé et passé quelques secondes par cible, preuves de Kani compilées (lancées par
+# détection (le corpus de src/modele/corpus.rs, Linux et Wine), dépendances (cargo deny) et leurs failles connues (cargo
+# audit), banc de fuzzing compilé et passé quelques secondes par cible, preuves de Kani compilées (lancées par
 # outils/preuves.sh).
 # La CI lance ce même script (.github/workflows/ci.yml) : une seule logique, ici.
 # Chaque cible de compilation a sa chaîne (clippy, puis ses tests) et les deux tournent en même temps : cargo garde
@@ -529,6 +529,7 @@ if [[ $MODE != --rapide ]]; then
   etape signature bash outils/essais-signature.sh &
   etape essais-confidentialite bash outils/essais-confidentialite.sh &
   etape essais-verifier bash outils/essais-verifier.sh &
+  etape essais-livrer bash outils/essais-livrer-branche.sh &
   etape masque bash outils/verifier-masque.sh &
   etape extensions extensions &
   etape fenetre fenetre &
@@ -687,6 +688,7 @@ if [[ $MODE != --rapide ]]; then
   ligne signature "signature des versions"
   ligne essais-confidentialite "garde de confidentialité (noms, types)"
   ligne essais-verifier "essais de verifier.sh (--seulement)"
+  ligne essais-livrer "essais de livrer-branche.sh"
   ligne masque "mots d'attaque masqués"
   ligne extensions "extensions (sdk, exemple Rust)"
   ligne fenetre "fenêtre (clippy ×2, tests Linux : $(passes fenetre), protections ×2)"

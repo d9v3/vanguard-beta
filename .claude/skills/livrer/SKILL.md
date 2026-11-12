@@ -14,11 +14,13 @@ ni envoi. Pour la clé entre-temps, sans rien envoyer : `VANGUARD_INTERMEDIAIRE=
    ce qui change et pourquoi, une puce par sujet (ce sont les notes de la page de la version), avec la ligne
    Co-Authored-By. Vérifie avec `git show --stat HEAD`.
 3. `outils/livrer-branche.sh <branche> <worktree>` : rebase sur master, garde-fou de confidentialité,
-   `outils/verifier.sh`, fusion rapide dans master, puis `outils/deployer.sh` (compile, installe, pousse sur GitHub,
-   met la clé et la VM à jour ; pour une version publiée, refait aussi les captures du README, commit à part). Il
-   s'arrête à la première étape en échec, sans rien fusionner : corriger, puis relancer. Si l'arbre principal a des
-   changements non committés d'une autre session sur les mêmes fichiers : arrête-toi et demande. Si les captures n'ont
-   pas pu se faire, le dire. Rien n'est poussé si un détail personnel paraît ou si un lien est mort
+   `outils/verifier.sh`, fusion rapide dans master, puis `outils/deployer.sh` (compile, installe, pousse sur GitHub, met
+   la clé et la VM à jour ; pour une version publiée, refait aussi les captures du README, commit à part). Il s'arrête à
+   la première étape en échec, sans rien fusionner : corriger, puis relancer (un commit posé sur la branche pendant la
+   vérification fait refuser : seul le commit vérifié est fusionné). Un ménage raté après le déploiement (« ⚠ livré …,
+   ménage à finir à la main ») : la version est partie, retirer worktree et branche à la main. Si l'arbre principal a
+   des changements non committés d'une autre session sur les mêmes fichiers : arrête-toi et demande. Si les captures
+   n'ont pas pu se faire, le dire. Rien n'est poussé si un détail personnel paraît ou si un lien est mort
    (`outils/liens.py`) : corriger, puis relancer `outils/deployer.sh`. Un lien douteux montré : l'ouvrir (WebFetch) ;
    bon mais refusé aux programmes, l'ajouter à `outils/liens.txt`.
 4. Page de la version (Releases) : `deployer.sh` la publie tout seul pour chaque publication, 0.x.0 comme 0.x.y
