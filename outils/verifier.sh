@@ -82,8 +82,21 @@ WINE=${VANGUARD_WINE:-$HOME/.local/share/Steam/compatibilitytools.d/GE-Proton11-
 PWSH=${VANGUARD_PWSH:-$HOME/.cache/vanguard-dev/pwsh/pwsh}
 [[ -x $PWSH ]] || PWSH=$(command -v pwsh || true)
 # Journaux et préfixe Wine hors de /tmp, dont le quota est partagé par les sessions ; retirés à la fin.
+# Le dossier porte le numéro du processus : bash le retire même sur un signal (EXIT), mais pas après un SIGKILL
+# (essais-verifier.sh tue ainsi un verifier.sh qui ne refuse pas ses arguments). Ceux dont le processus n'existe plus
+# sont retirés au départ suivant ; jamais celui d'un verifier.sh en cours.
+menage_travaux() {
+  local d p
+  for d in "$HOME"/.cache/vanguard-dev/verifier.*.*/; do
+    p=${d#"$HOME/.cache/vanguard-dev/verifier."}
+    p=${p%%.*}
+    [[ $p =~ ^[0-9]+$ && ! -e /proc/$p ]] && rm -rf -- "$d"
+  done
+  return 0
+}
 mkdir -p "$HOME/.cache/vanguard-dev"
-TRAVAIL=$(mktemp -d "$HOME/.cache/vanguard-dev/verifier.XXXX")
+menage_travaux
+TRAVAIL=$(mktemp -d "$HOME/.cache/vanguard-dev/verifier.$$.XXXX")
 trap 'rm -rf "$TRAVAIL"' EXIT
 # Journal entier de chaque étape en échec, gardé après la fin (TRAVAIL est effacé) : la fin seule cache souvent la
 # cause (zizmor écrit ses constats d'abord, son total ensuite). Vidé à chaque passe : il ne parle que de la dernière.

@@ -26,6 +26,8 @@
 #      crates à part sans les exceptions de Vanguard ; une faille dans l'une fait échouer (faux cargo-audit).
 #  11. Les essais sautés à l'intérieur d'une étape verte (« (sauté : … », tests de cargo notés) : montrés sous sa
 #      ligne et comptés jusqu'à la dernière, « Tout est vert, avec N essai(s) sauté(s) » (M-8).
+#  12. Le dossier de travail d'un verifier.sh tué (SIGKILL) : retiré au départ suivant, jamais celui d'un autre en
+#      cours.
 # Chaque essai ne lance que des étapes de quelques secondes, sans Internet ni compilation.
 # Lancé par outils/verifier.sh.
 #   outils/essais-verifier.sh
@@ -326,6 +328,27 @@ sautes_dits etape; sautes_dits vide; echo \"compte \$SAUTES_DITS\"" 2>&1)
   grep -q '(sauté : essais du lanceur de la clé' outils/verifier.sh &&
   ok "essais sautés dans une étape verte : montrés sous sa ligne, comptés jusqu'à « Tout est vert »" ||
   ko "essais sautés dans une étape verte : ni montrés ni comptés : $(tr '\n' '|' <<<"$SORTIE")"
+rm -rf "$faux"
+
+# Le dossier de travail d'un verifier.sh tué (SIGKILL) est retiré au départ suivant ; celui d'un verifier.sh en cours
+# jamais, ni un autre fichier. menage_travaux lue dans verifier.sh, dans un dossier personnel jetable.
+faux=$(mktemp -d "$HOME/.cache/vanguard-dev/essai-menage.XXXX")
+mkdir -p "$faux/.cache/vanguard-dev"
+bash -c 'exit 0' &
+mort=$!
+wait "$mort"
+mkdir "$faux/.cache/vanguard-dev/verifier.$mort.abcd" "$faux/.cache/vanguard-dev/verifier.$$.abcd" \
+  "$faux/.cache/vanguard-dev/verifier.abcd" "$faux/.cache/vanguard-dev/verifier.x1.abcd"
+touch "$faux/.cache/vanguard-dev/verifier.$mort.abcd/etape.log" "$faux/.cache/vanguard-dev/verifier-0.94.log"
+fonction=$(awk '/^menage_travaux\(\) \{/,/^\}/' outils/verifier.sh)
+HOME=$faux bash -c "$fonction
+menage_travaux"
+reste=$(cd "$faux/.cache/vanguard-dev" && ls -d -- * | sort | paste -sd' ')
+attendu=$(printf '%s\n' verifier-0.94.log verifier.$$.abcd verifier.abcd verifier.x1.abcd | sort | paste -sd' ')
+[[ -n $fonction && ! -e /proc/$mort && $reste == "$attendu" ]] &&
+  grep -q '^TRAVAIL=$(mktemp -d "$HOME/.cache/vanguard-dev/verifier.$$.XXXX")$' outils/verifier.sh &&
+  ok "dossier d'un verifier.sh tué : retiré au départ suivant, celui d'un verifier.sh en cours gardé" ||
+  ko "ménage des dossiers de travail : reste « $reste », attendu « $attendu »"
 rm -rf "$faux"
 
 ((ECHECS == 0)) || { echo "$ECHECS essai(s) en échec."; exit 1; }
