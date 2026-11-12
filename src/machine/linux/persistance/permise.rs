@@ -52,9 +52,17 @@ pub(super) enum Ecart {
     /// La sauvegarde de Vanguard à sa forme exacte, mais sa destination ne se voit pas (disque débranché, dossier
     /// absent ou illisible) : où elle écrira n'est pas vérifié (relecture 0.94, C-2).
     DestinationNonVue,
-    /// La sauvegarde de Vanguard à sa forme exacte, mais rsync lit au départ les réglages de popt (~/.popt…), où une
-    /// ligne « rsync exec -a … » lui fait lancer un autre programme : ce qu'elle lance n'est pas vérifié (D-1).
+    /// La sauvegarde de Vanguard à sa forme exacte, mais un fichier de réglages de popt du compte (~/.popt) est là,
+    /// est un lien ou ne se lit pas : rsync le lit au départ, et une ligne « rsync exec -a … » lui fait lancer un
+    /// autre programme à la place de la copie (D-1).
     Popt,
+    /// La sauvegarde de Vanguard à sa forme exacte, mais un fichier de réglages de popt du système (/etc/popt,
+    /// /usr/etc/popt, un dossier popt.d non vide) est là : ce qu'il fait faire à rsync n'est pas vérifié (D-1).
+    PoptDuSysteme,
+    /// La sauvegarde de Vanguard à sa forme exacte, mais un complément du compte (« vanguard-sauvegarde.service.d »,
+    /// « service.d »…) s'y ajoute : il peut changer son environnement (HOME, donc le ~/.popt que lit rsync) ou ce
+    /// qu'elle lance (D-1).
+    Complement,
 }
 
 impl Ecart {
@@ -106,8 +114,16 @@ impl Ecart {
                 "Vanguard backup whose destination folder cannot be seen (disk unplugged, folder missing or unreadable): whether it is a link, not checked; plug the disk in, then run the check again"
             ),
             Ecart::Popt => tr!(
-                "sauvegarde de Vanguard : rsync lit au départ les réglages de popt (~/.popt…), qui peuvent lui faire lancer un autre programme à la place de la copie, et Vanguard ne les lit pas encore : ce qu'elle lance n'est pas vérifié",
-                "Vanguard backup: rsync reads popt settings at start (~/.popt…), which can make it start another program instead of the copy, and Vanguard does not read them yet: what it starts is not checked"
+                "sauvegarde de Vanguard alors qu'un fichier ~/.popt est là (ou un lien, ou illisible) : rsync le lit au départ, et une ligne « rsync exec … » y lui fait lancer un autre programme à la place de la copie ; ce que lance la sauvegarde n'est pas vérifié",
+                "Vanguard backup while a ~/.popt file is present (or a link, or unreadable): rsync reads it at start, and a “rsync exec …” line in it makes it start another program instead of the copy; what the backup starts is not checked"
+            ),
+            Ecart::PoptDuSysteme => tr!(
+                "sauvegarde de Vanguard non vérifiée : un fichier de réglages de popt du système est là (/etc/popt, /usr/etc/popt ou un dossier popt.d non vide), que rsync peut lire au départ et qui peut lui faire lancer un autre programme",
+                "Vanguard backup not checked: a system popt settings file is present (/etc/popt, /usr/etc/popt or a non-empty popt.d folder), which rsync may read at start and which can make it start another program"
+            ),
+            Ecart::Complement => tr!(
+                "sauvegarde de Vanguard changée par un complément du compte (dossier « .service.d ») : il peut changer son environnement (HOME, donc le ~/.popt que lit rsync) ou ce qu'elle lance ; ce n'est plus la forme que Vanguard pose",
+                "Vanguard backup changed by an account drop-in (“.service.d” folder): it can change its environment (HOME, hence the ~/.popt rsync reads) or what it starts; it is no longer the form Vanguard sets up"
             ),
         }
     }
@@ -250,14 +266,34 @@ impl Systeme<'_> {
         disque.map(|_| ()).ok_or(Ecart::Destination)
     }
 
-    /// Les réglages de popt que rsync lit au départ (D-1) : pas encore lus, donc jamais acceptés ; la forme exacte de
-    /// la sauvegarde reste levée tant qu'ils ne le sont pas.
-    #[expect(
-        clippy::unused_self,
-        reason = "porte fermée en attendant la lecture des fichiers de popt"
-    )]
+    /// Les fichiers de réglages de popt que rsync lit au départ (D-1 ; popt 1.19, `poptReadDefaultConfig`, vu sur
+    /// rsync 3.5.1 avec un programme témoin) : `<sysconfdir>/popt`, chaque fichier de `<sysconfdir>/popt.d`, puis
+    /// `$HOME/.popt`. Le `sysconfdir` dépend de la compilation de popt : /usr/etc ici (Arch), /etc ailleurs ; les deux
+    /// sont lus. Un ~/.popt du compte (de chaque dossier personnel connu) là sous toute forme (fichier, lien, dossier),
+    /// ou qui ne se voit pas : `Ecart::Popt`, levé ; rien ne dit qu'il ne lance pas un autre programme. Un fichier du
+    /// système (à root) là, ou un dossier popt.d non vide ou illisible : `Ecart::PoptDuSysteme`, jamais un silence.
     fn reglages_de_popt(&self) -> Result<(), Ecart> {
-        Err(Ecart::Popt)
+        let la = |chemin: &str| match std::fs::symlink_metadata(self.sous(chemin)) {
+            Ok(_) => true,
+            Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+        };
+        let mut maisons: Vec<&str> = self.maisons.to_vec();
+        maisons.push(self.maison);
+        if maisons
+            .iter()
+            .any(|m| la(&format!("{}/.popt", m.trim_end_matches('/'))))
+        {
+            return Err(Ecart::Popt);
+        }
+        for etc in ["/etc", "/usr/etc"] {
+            let dossier = format!("{etc}/popt.d");
+            let rempli =
+                la(&dossier) && std::fs::read_dir(self.sous(&dossier)).map_or(true, |mut d| d.next().is_some());
+            if la(&format!("{etc}/popt")) || rempli {
+                return Err(Ecart::PoptDuSysteme);
+            }
+        }
+        Ok(())
     }
 
     /// Le nom du fichier que lance vraiment ce programme, ses liens suivis (« ~/.local/bin/outil » → « bash ») ;
@@ -1678,6 +1714,9 @@ pub(super) fn exec_systemd(s: &Systeme, valeur: &str, codes: Option<&Codes>) -> 
             variables_de_systemd(&mots, codes.map(|c| &c.variables), s.maison)?
         };
         if let Some(p) = codes.and_then(|c| c.sauvegarde.as_ref()) {
+            if codes.is_some_and(|c| c.sauvegarde_completee) {
+                return Err(Ecart::Complement);
+            }
             // La forme exacte ne tient que les mots : où rsync écrit se juge sur le disque (C-2).
             if p.rsync == mots {
                 sauvegarde_posee(s, &mots, "rsync")?;
