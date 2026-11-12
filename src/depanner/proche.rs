@@ -382,8 +382,9 @@ fn appareils_a_regler(r: &Rapport) -> usize {
 /// Le scan du réseau local, sur un fil à part avec son propre moteur : le parcours est appelé depuis un menu
 /// synchrone, déjà dans le moteur du programme, où l'on ne peut pas en attendre un autre. Jamais fait sur le fil
 /// appelant quand le système refuse le fil (`block_on` y paniquerait, en silence sous la garde) : le refus est rendu
-/// comme une raison, que le résumé dit « non vérifié » (relecture 0.95, L-3). `Err` : pourquoi le scan n'a pas eu lieu.
-fn scanner_le_reseau() -> Result<Rapport, String> {
+/// comme une raison, que le résumé dit « non vérifié » (relecture 0.95, L-3). `Err` : pourquoi le scan n'a pas eu lieu,
+/// en type (`Echoue` : le scan ou le système a dit non ; `Panique` : erreur interne).
+fn scanner_le_reseau() -> Result<Rapport, crate::modele::Raison> {
     let fil = crate::socle::fil::lancer("scan", || {
         let moteur = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -394,19 +395,21 @@ fn scanner_le_reseau() -> Result<Rapport, String> {
         resultat.inspect_err(|e| crate::journal::erreur(crate::compte_rendu::Contexte::ScanReseau, e))
     });
     let raison = match fil.map(std::thread::JoinHandle::join) {
-        Ok(Ok(r)) => {
-            return r.inspect_err(|e| trp!("  ✖ Scan du réseau impossible : {e}", "  ✖ Network scan failed: {e}"));
-        }
-        Ok(Err(_)) => tr!("erreur interne", "internal error").to_string(),
-        Err(_) => tr!(
-            "mode réduit : le système refuse un fil",
-            "reduced mode: the system refuses a thread"
-        )
-        .to_string(),
+        Ok(Ok(Ok(rapport))) => return Ok(rapport),
+        Ok(Ok(Err(e))) => crate::modele::Raison::Echoue(e),
+        Ok(Err(_)) => crate::modele::Raison::Panique,
+        Err(_) => crate::modele::Raison::Echoue(
+            tr!(
+                "mode réduit : le système refuse un fil",
+                "reduced mode: the system refuses a thread"
+            )
+            .to_string(),
+        ),
     };
+    let texte = raison.texte();
     trp!(
-        "  ✖ Scan du réseau impossible : {raison}",
-        "  ✖ Network scan failed: {raison}"
+        "  ✖ Scan du réseau impossible : {texte}",
+        "  ✖ Network scan failed: {texte}"
     );
     Err(raison)
 }
@@ -430,7 +433,7 @@ fn dans_l_ordre(audit: &Audit, priorite: &[Sujet]) -> Audit {
 
 /// Montre le résumé, en mots de tous les jours.
 /// `maison_pas_vue` : le scan demandé n'a pas eu lieu, et pourquoi ; les appareils de la maison sont dits non vérifiés.
-fn afficher_resume(audit: &Audit, r: &Resume, maison_pas_vue: Option<&str>) {
+fn afficher_resume(audit: &Audit, r: &Resume, maison_pas_vue: Option<&crate::modele::Raison>) {
     section(tr!("EN RÉSUMÉ", "IN SHORT"));
     if audit.fiable() {
         afficher_note(tr!("Note de l'ordinateur", "Computer grade"), audit.score);
@@ -464,7 +467,7 @@ fn afficher_resume(audit: &Audit, r: &Resume, maison_pas_vue: Option<&str>) {
         ));
     }
     if let Some(raison) = maison_pas_vue {
-        Etat::Info.dire(&maison_non_verifiee(raison));
+        Etat::Info.dire(&maison_non_verifiee(&raison.texte()));
     }
     if audit.impossibles() > 0 {
         Etat::Info.dire(&trf!(
@@ -537,11 +540,7 @@ pub(super) fn proche() {
     crate::historique::enregistrer(Some(&audit), rapport);
     crate::ordinateurs::noter(Some(&audit), rapport);
     let r = resume(&audit.constats, rapport.map(appareils_a_regler), &priorite);
-    afficher_resume(
-        &audit,
-        &r,
-        scan.as_ref().and_then(|s| s.as_ref().err()).map(String::as_str),
-    );
+    afficher_resume(&audit, &r, scan.as_ref().and_then(|s| s.as_ref().err()));
 
     let mut a_savoir_ici = Vec::new();
     if raison == Raison::Virus {
@@ -659,6 +658,8 @@ mod tests {
         // Comme sous `#[tokio::main]` : le menu tourne dans le `block_on` du programme, sur ce même fil.
         let scan = moteur.block_on(async { crate::socle::fil::refuser_les_fils(scanner_le_reseau) });
         let raison = scan.err().expect("scan sans fil : pas de rapport");
+        assert!(matches!(raison, crate::modele::Raison::Echoue(_)), "{raison:?}");
+        let raison = raison.texte();
         assert!(
             raison.contains("fil") || raison.contains("thread"),
             "raison du refus perdue : {raison}"
