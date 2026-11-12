@@ -3220,7 +3220,7 @@ mod tests {
         std::fs::set_permissions(config.join("systemd/user"), std::fs::Permissions::from_mode(0o600)).unwrap();
         // En root (verifier.sh, sa passe sous unshare), les droits ne ferment rien : ce cas-là est sauté, et dit.
         if std::fs::metadata(config.join("systemd/user/note.service")).is_ok() {
-            eprintln!("(sauté : dossier fermé traversable quand même ici, root ou espace de noms)");
+            crate::essais::saute("dossier fermé traversable quand même ici, root ou espace de noms");
         } else {
             let activees = "note.service enabled enabled\npipewire.service enabled enabled";
             let (l, manques) = releve_selon(
