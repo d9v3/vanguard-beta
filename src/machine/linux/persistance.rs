@@ -1106,8 +1106,8 @@ pub(super) fn persistance_dans(
                     "{ou} sets {nom} for the account's systemd manager: it then looks for its units and their drop-ins elsewhere, where Vanguard does not check them (not verified)"
                 ),
                 trf!(
-                    "{ou} pose {nom} au gestionnaire : l'alerte ne se déclare pas normale tant que cette ligne y est",
-                    "{ou} sets {nom} for the manager: the alert cannot be declared normal while this line is there"
+                    "{ou} pose {nom} au gestionnaire : l'alerte ne se déclare pas normale tant que cette ligne y est ; pour la lever, retirez {nom} de {ou} (un fichier du système se change avec les droits d'administrateur), puis relancez la session",
+                    "{ou} sets {nom} for the manager: the alert cannot be declared normal while this line is there; to clear it, remove {nom} from {ou} (a system file is changed with admin rights), then restart the session"
                 ),
             )
         } else {
