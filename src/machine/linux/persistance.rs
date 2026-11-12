@@ -2942,10 +2942,10 @@ struct Codes {
     /// Les variables posées par « Environment= » dans l'unité : systemd remplace « $A » et « ${A} » des lignes Exec
     /// par leur valeur (relecture adverse 2, N5).
     variables: std::collections::BTreeMap<String, String>,
-    /// Les mots exacts du rsync de la sauvegarde que Vanguard pose, si l'unité lue est ce service-là, écrit à l'octet
-    /// près comme Vanguard l'écrit (`sauvegarde::mots_de_la_sauvegarde_posee`) ; seule cette commande-là se tait
-    /// (relecture 0.94, S-1).
-    sauvegarde: Option<Vec<String>>,
+    /// La sauvegarde que Vanguard pose, si l'unité lue est ce service-là, écrit à l'octet près comme Vanguard l'écrit
+    /// (`sauvegarde::sauvegarde_posee`) ; seuls son rsync et son findmnt se taisent, s'ils sont les vrais et si sa
+    /// destination se voit sans lien (relecture 0.94, S-1, C-2).
+    sauvegarde: Option<crate::sauvegarde::SauvegardePosee>,
 }
 
 impl Codes {
@@ -4620,7 +4620,7 @@ fn juger_demarrage(demarrage: &[std::path::PathBuf], h: &Path, t: &mut Lancement
                 Lecteur::Systemd(Codes {
                     variables: variables_fusionnees(f, &lu.texte, &base, &t.r),
                     sauvegarde: (utilisateur && f.file_name().is_some_and(|n| n == crate::sauvegarde::SERVICE))
-                        .then(|| crate::sauvegarde::mots_de_la_sauvegarde_posee(&lu.texte))
+                        .then(|| crate::sauvegarde::sauvegarde_posee(&lu.texte))
                         .flatten(),
                     ..base
                 })
@@ -7745,6 +7745,8 @@ mod tests {
             for d in ["Documents", "Mes images"] {
                 std::fs::create_dir_all(m.chemin(d)).unwrap();
             }
+            // Le disque branché, sa destination posée (C-2 : une destination qui ne se voit pas n'est pas muette).
+            std::fs::create_dir_all(m.racine.join("run/media/alice/Mon disque/Sauvegarde-Vanguard/poste")).unwrap();
             let unites = || {
                 let (es, et) = crate::entretien::unites_systemd(exe);
                 let (ss, st) =
@@ -7840,6 +7842,109 @@ mod tests {
                 "{exe}, fat {fat} : un rsync qui est un shell doit lever"
             );
         }
+    }
+
+    /// C-2 (relecture 0.94, suite de S-1) : la forme exacte de la sauvegarde ne tient que ses mots. rsync suit un lien
+    /// posé sur sa destination : `<disque>/Sauvegarde-Vanguard/<ordinateur>` (ou un dossier entre le disque et elle)
+    /// changé en lien vers ~/.config/autostart y recopierait une entrée de démarrage à chaque passage. Un tel lien
+    /// lève ; un findmnt qui n'en est pas un (la condition « bon disque monté » passerait toujours) aussi ; une
+    /// destination qui ne se voit pas (disque débranché au moment du bilan) est dite non vérifiée, jamais tue.
+    /// Témoin : l'unité exacte vers un vrai dossier reste muette.
+    #[test]
+    fn la_sauvegarde_exacte_vers_un_lien_ou_un_faux_findmnt_ne_se_tait_pas() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let cas = [
+            "témoin",
+            "destination en lien",
+            "Sauvegarde-Vanguard en lien",
+            "disque en lien",
+            "findmnt qui est true",
+            "findmnt en lien vers sh",
+            "disque débranché",
+            "destination absente",
+        ];
+        let mut faux = Vec::new();
+        for fat in [false, true] {
+            for (i, nom) in cas.iter().enumerate() {
+                let m = Maison::nouvelle(&format!("sauvegarde-lien-{fat}-{i}"));
+                for p in ["rsync", "findmnt"] {
+                    let f = m.racine.join("usr/bin").join(p);
+                    std::fs::write(&f, "#!/bin/sh\n").unwrap();
+                    std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+                }
+                std::fs::create_dir_all(m.chemin("Documents")).unwrap();
+                std::fs::create_dir_all(m.chemin(".config/autostart")).unwrap();
+                let racine = m.racine.join("run/media/alice/Mon disque");
+                let destination = racine.join("Sauvegarde-Vanguard/poste");
+                std::fs::create_dir_all(&destination).unwrap();
+                let findmnt = if *nom == "findmnt qui est true" {
+                    "/usr/bin/true"
+                } else {
+                    "/usr/bin/findmnt"
+                };
+                let (timer, service) = crate::sauvegarde::unites(
+                    Path::new("/usr/bin/rsync"),
+                    Some(Path::new(findmnt)),
+                    Some("1234-ABCD"),
+                    Path::new("/run/media/alice/Mon disque"),
+                    Path::new("/run/media/alice/Mon disque/Sauvegarde-Vanguard/poste"),
+                    &[std::path::PathBuf::from("/home/alice/Documents")],
+                    fat,
+                )
+                .unwrap();
+                m.ecrire(&format!(".config/systemd/user/{}", crate::sauvegarde::TIMER), &timer);
+                m.ecrire(
+                    &format!(".config/systemd/user/{}", crate::sauvegarde::SERVICE),
+                    &service,
+                );
+                // Un dossier remplacé par un lien vers un dossier : seul le lien change ce qui s'écrit où.
+                let en_lien = |d: &Path, vers: &Path| {
+                    std::fs::create_dir_all(vers).unwrap();
+                    std::fs::remove_dir_all(d).unwrap();
+                    std::os::unix::fs::symlink(vers, d).unwrap();
+                };
+                match *nom {
+                    "destination en lien" => en_lien(&destination, &m.chemin(".config/autostart")),
+                    "Sauvegarde-Vanguard en lien" => {
+                        std::fs::rename(m.chemin(".config/autostart"), m.chemin(".config/poste")).unwrap();
+                        en_lien(&racine.join("Sauvegarde-Vanguard"), &m.chemin(".config"));
+                    }
+                    "disque en lien" => {
+                        let faux = m.chemin("faux-disque");
+                        std::fs::create_dir_all(faux.join("Sauvegarde-Vanguard/poste")).unwrap();
+                        en_lien(&racine, &faux);
+                    }
+                    "findmnt en lien vers sh" => {
+                        std::fs::remove_file(m.racine.join("usr/bin/findmnt")).unwrap();
+                        std::os::unix::fs::symlink("sh", m.racine.join("usr/bin/findmnt")).unwrap();
+                    }
+                    "disque débranché" => std::fs::remove_dir_all(&racine).unwrap(),
+                    "destination absente" => std::fs::remove_dir_all(&destination).unwrap(),
+                    _ => {}
+                }
+                let leves: Vec<String> = persistance_dans(
+                    &m.racine,
+                    &m.chemin(""),
+                    |v| (v == "XDG_RUNTIME_DIR").then(|| "/run/user/1000".into()),
+                    None,
+                    None,
+                )
+                .into_iter()
+                .filter(|c| c.probleme.is_some())
+                .map(|c| c.message)
+                .collect();
+                let leve = leves.iter().any(|l| l.contains(crate::sauvegarde::SERVICE));
+                let dit = !(nom.contains("débranché") || nom.contains("absente"))
+                    || leves.iter().any(|l| l.contains("non vérifié"));
+                if (*nom == "témoin") != leves.is_empty() || (*nom != "témoin" && !(leve && dit)) {
+                    faux.push(format!("fat {fat}, {nom} : {leves:?}"));
+                }
+            }
+        }
+        assert!(
+            faux.is_empty(),
+            "le témoin se tait, chaque autre cas lève (non vérifié s'il n'a pas vu la destination) : {faux:#?}"
+        );
     }
 
     /// COMP-3, la forme exacte : un pourcentage de ressource (chiffres, décimale facultative, « % ») se lit ; toute
