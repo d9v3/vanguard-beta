@@ -1095,6 +1095,20 @@ pub(crate) fn ecrire_dans(dossier: &Path, nom: &str, octets: &[u8]) -> std::io::
     ecrit.and(scelle)
 }
 
+/// Après un retrait refusé, remet au registre l'attente d'avant (`avant`, ou aucune) à la place de celle du retrait.
+fn remettre_l_attente(dossier: &Path, nom: &str, avant: Option<String>) -> std::io::Result<()> {
+    let illisible = || std::io::Error::other(tr!("registre des sceaux illisible", "seal register unreadable"));
+    let mut r = registre(dossier).map_err(|()| illisible())?.ok_or_else(illisible)?;
+    match avant {
+        Some(a) => r.en_attente.insert(nom.to_string(), a),
+        None => r.en_attente.remove(nom),
+    };
+    if coupe("effacer:remise-attente") {
+        return Err(coupee());
+    }
+    enregistrer_registre(dossier, &r)
+}
+
 /// Retire un fichier d'état et son sceau (Vanguard l'oublie lui-même).
 pub(crate) fn effacer_dans(dossier: &Path, nom: &str) -> std::io::Result<()> {
     if !crate::socle::ecriture_sure(dossier) {
@@ -1122,15 +1136,20 @@ pub(crate) fn effacer_dans(dossier: &Path, nom: &str) -> std::io::Result<()> {
     match std::fs::remove_file(dossier.join(nom)) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
             // Pas retiré : l'attente du retrait ne doit pas survivre (celle d'avant revient), sinon une suppression
-            // faite plus tard par un autre programme se lirait « absent » au lieu d'« effacé hors de Vanguard ».
+            // faite plus tard par un autre programme se lirait « absent » au lieu d'« effacé hors de Vanguard ». Une
+            // remise qui échoue elle aussi est rendue avec l'erreur du retrait, jamais tue (correction n° 2, n2).
             if let Some(avant) = posee
-                && let Ok(Some(mut r)) = registre(dossier)
+                && let Err(remise) = remettre_l_attente(dossier, nom, avant)
             {
-                match avant {
-                    Some(a) => r.en_attente.insert(nom.to_string(), a),
-                    None => r.en_attente.remove(nom),
-                };
-                let _ = enregistrer_registre(dossier, &r);
+                return Err(std::io::Error::new(
+                    e.kind(),
+                    trf!(
+                        "{} ; et l'attente du retrait n'a pas pu être retirée ({}) : le fichier supprimé plus tard pourrait se lire « absent »",
+                        "{}; and the pending removal could not be withdrawn ({}): the file deleted later could read “absent”",
+                        e,
+                        remise
+                    ),
+                ));
             }
             return Err(e);
         }
@@ -1825,6 +1844,26 @@ mod tests {
         assert!(registre(&d).unwrap().unwrap().en_attente.is_empty());
         std::fs::remove_dir_all(d.join(nom)).unwrap();
         assert_eq!(lire_dans(&d, nom), Lecture::Falsifie(None));
+    }
+
+    /// Correction n° 2 de la 0.94, n2 : le retrait refusé, et la remise de l'attente d'avant refusée aussi. L'erreur
+    /// rendue dit les deux, jamais seulement le retrait (l'attente vide restée ne se tait pas).
+    #[test]
+    fn retrait_refuse_et_attente_pas_remise_le_disent() {
+        let d = jetable("retrait-refuse-remise");
+        let nom = "reglages.json";
+        ecrire_dans(&d, nom, b"ancien").unwrap();
+        std::fs::remove_file(d.join(nom)).unwrap();
+        std::fs::create_dir_all(d.join(nom).join("x")).unwrap();
+        let e = coupe_a("effacer:remise-attente", || effacer_dans(&d, nom)).unwrap_err();
+        assert!(e.to_string().contains("attente"), "{e}");
+        assert!(e.to_string().contains("essai : écriture coupée"), "{e}");
+        // L'attente vide est restée : c'est ce que l'erreur dit. Sans coupure, le cas de m1 (rien ne reste) est
+        // `retrait_refuse_ne_laisse_pas_son_attente`.
+        assert_eq!(
+            registre(&d).unwrap().unwrap().en_attente.get(nom).map(String::as_str),
+            Some("")
+        );
     }
 
     /// Vérification 0.94, m2 : une première écriture tuée avant son sceau (attente restée), puis un retrait tué
