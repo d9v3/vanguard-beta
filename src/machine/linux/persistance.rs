@@ -8871,8 +8871,9 @@ fn programmes_privilegies() -> (
     // Capacités (setcap) : droits root partiels, invisibles dans « ls -l ». Poser une capacité demande root.
     // Lancé tout de suite, en même temps que les parcours : getcap relit tout /usr/lib (0,6 s).
     // Par son chemin : sous Debian, /usr/sbin n'est pas dans le PATH d'un compte ordinaire, et getcap n'y serait
-    // jamais trouvé (les capacités jamais lues).
-    let capacites = std::thread::spawn(|| {
+    // jamais trouvé (les capacités jamais lues). Un fil refusé par le système : lu ici, après les parcours, jamais
+    // une panique (socle::fil).
+    let capacites = crate::socle::fil::lancer_ou_ici("getcap", || {
         let getcap = crate::commande::outil_systeme("getcap")?;
         sortie(
             &getcap.to_string_lossy(),
@@ -8947,14 +8948,17 @@ fn comparer_aux_paquets(
     }
     let (mut modifies, mut non_verifies) = (Vec::new(), 0usize);
     // Chaque paquet se vérifie à part (pacman, zcat et sha256sum, ou dpkg --verify, en lecture seule) : 16 à la
-    // fois plutôt qu'un par un, une vingtaine de paquets attendaient l'un après l'autre.
+    // fois plutôt qu'un par un, une vingtaine de paquets attendaient l'un après l'autre. Un fil refusé par le système :
+    // ce paquet se vérifie ici, à son tour (socle::fil).
     let paquets: Vec<(&String, &Vec<std::path::PathBuf>)> = par_paquet.iter().collect();
     let mut etats = Vec::new();
     for groupe in paquets.chunks(16) {
         std::thread::scope(|s| {
             let fils: Vec<_> = groupe
                 .iter()
-                .map(|(paquet, fichiers)| s.spawn(move || gestion.modifies(paquet, fichiers)))
+                .map(|(paquet, fichiers)| {
+                    crate::socle::fil::dans_ou_ici(s, "paquet", move || gestion.modifies(paquet, fichiers))
+                })
                 .collect();
             etats.extend(fils.into_iter().map(|f| f.join().unwrap_or_default()));
         });

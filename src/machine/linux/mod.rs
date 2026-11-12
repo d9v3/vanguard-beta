@@ -48,9 +48,6 @@ pub(crate) mod netlink;
 pub(crate) mod networkmanager;
 pub(crate) mod nftables;
 pub(crate) mod paquets;
-// Ses deux fils (std::thread::spawn, Scope::spawn) passeront par socle::fil : exception à retirer après la fusion
-// des lots sauvegarde et démarrage de la 0.95, qui touchent ce fichier.
-#[allow(clippy::disallowed_methods)]
 mod persistance;
 mod plateforme;
 mod privileges;
