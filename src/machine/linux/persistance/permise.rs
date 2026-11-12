@@ -46,6 +46,15 @@ pub(super) enum Ecart {
     Directive,
     /// Un fichier de variables d'unité qui ne se lit pas entier.
     Fichier,
+    /// La sauvegarde de Vanguard à sa forme exacte, mais sa destination (ou un dossier entre le disque et elle) est un
+    /// lien, n'est pas un dossier ou n'est pas sur le disque : rsync écrirait ailleurs (relecture 0.94, C-2).
+    Destination,
+    /// La sauvegarde de Vanguard à sa forme exacte, mais sa destination ne se voit pas (disque débranché, dossier
+    /// absent ou illisible) : où elle écrira n'est pas vérifié (relecture 0.94, C-2).
+    DestinationNonVue,
+    /// La sauvegarde de Vanguard à sa forme exacte, mais rsync lit au départ les réglages de popt (~/.popt…), où une
+    /// ligne « rsync exec -a … » lui fait lancer un autre programme : ce qu'elle lance n'est pas vérifié (D-1).
+    Popt,
 }
 
 impl Ecart {
@@ -87,6 +96,18 @@ impl Ecart {
             Ecart::Fichier => tr!(
                 "fichier de variables d'unité non vérifiable (joker, chemin relatif, illisible ou trop gros) : les variables qu'il pose ne sont pas vérifiées",
                 "unit environment file cannot be checked (wildcard, relative path, unreadable or too large): the variables it sets are not checked"
+            ),
+            Ecart::Destination => tr!(
+                "sauvegarde de Vanguard dont le dossier de destination sur le disque est un lien, passe par un lien ou mène hors du disque : rsync copierait ailleurs que sur le disque ; où elle copie n'est pas vérifié",
+                "Vanguard backup whose destination folder on the disk is a link, goes through a link or leads off the disk: rsync would copy somewhere other than the disk; where it copies is not checked"
+            ),
+            Ecart::DestinationNonVue => tr!(
+                "sauvegarde de Vanguard dont le dossier de destination ne se voit pas (disque débranché, dossier absent ou illisible) : s'il est un lien, non vérifié ; brancher le disque, puis refaire le bilan",
+                "Vanguard backup whose destination folder cannot be seen (disk unplugged, folder missing or unreadable): whether it is a link, not checked; plug the disk in, then run the check again"
+            ),
+            Ecart::Popt => tr!(
+                "sauvegarde de Vanguard : rsync lit au départ les réglages de popt (~/.popt…), qui peuvent lui faire lancer un autre programme à la place de la copie, et Vanguard ne les lit pas encore : ce qu'elle lance n'est pas vérifié",
+                "Vanguard backup: rsync reads popt settings at start (~/.popt…), which can make it start another program instead of the copy, and Vanguard does not read them yet: what it starts is not checked"
             ),
         }
     }
@@ -193,6 +214,50 @@ impl Systeme<'_> {
             };
         }
         if self.trouve(p) { Ok(()) } else { Err(Ecart::Programme) }
+    }
+
+    /// Le dossier `destination` d'un disque monté à `racine` sous /run/media, /media ou /mnt (deux chemins nets,
+    /// `sauvegarde::sauvegarde_posee`), vu sans détour : chaque dossier sous /run/media, /media ou /mnt jusqu'à lui
+    /// existe et n'est pas un lien, et ceux sous le disque sont sur le même système de fichiers que lui (un montage
+    /// posé par le compte, FUSE, y mènerait ailleurs comme un lien). Sinon `Ecart::Destination` ; un dossier qui ne
+    /// se voit pas (disque débranché, absent, illisible) : `Ecart::DestinationNonVue`, jamais un silence.
+    fn destination_sur_le_disque(&self, racine: &str, destination: &str) -> Result<(), Ecart> {
+        use std::os::unix::fs::MetadataExt as _;
+        let base = ["/run/media/", "/media/", "/mnt/"]
+            .into_iter()
+            .find(|b| racine.starts_with(b))
+            .ok_or(Ecart::Destination)?;
+        let sous_le_disque = destination
+            .strip_prefix(racine)
+            .and_then(|r| r.strip_prefix('/'))
+            .ok_or(Ecart::Destination)?;
+        let jusqu_au_disque = racine.strip_prefix(base).ok_or(Ecart::Destination)?;
+        let mut chemin = base.trim_end_matches('/').to_string();
+        let mut disque = None;
+        for m in jusqu_au_disque.split('/').chain(sous_le_disque.split('/')) {
+            chemin.push('/');
+            chemin.push_str(m);
+            let lu = std::fs::symlink_metadata(self.sous(&chemin)).map_err(|_| Ecart::DestinationNonVue)?;
+            if lu.file_type().is_symlink() || !lu.is_dir() {
+                return Err(Ecart::Destination);
+            }
+            match disque {
+                None if chemin == racine => disque = Some(lu.dev()),
+                Some(d) if lu.dev() != d => return Err(Ecart::Destination),
+                _ => {}
+            }
+        }
+        disque.map(|_| ()).ok_or(Ecart::Destination)
+    }
+
+    /// Les réglages de popt que rsync lit au départ (D-1) : pas encore lus, donc jamais acceptés ; la forme exacte de
+    /// la sauvegarde reste levée tant qu'ils ne le sont pas.
+    #[expect(
+        clippy::unused_self,
+        reason = "porte fermée en attendant la lecture des fichiers de popt"
+    )]
+    fn reglages_de_popt(&self) -> Result<(), Ecart> {
+        Err(Ecart::Popt)
     }
 
     /// Le nom du fichier que lance vraiment ce programme, ses liens suivis (« ~/.local/bin/outil » → « bash ») ;
@@ -842,6 +907,20 @@ fn lancee(s: &Systeme, mots: &[String], profondeur: u32) -> Result<(), Ecart> {
             None => ordinaire(s, args),
         },
     }
+}
+
+/// Une commande de la sauvegarde que Vanguard pose, reconnue à ses `mots` exacts (`Codes::sauvegarde`) : le vrai
+/// `nom` (rsync, findmnt : écrit sous ce nom et, liens suivis, ce fichier-là) à un emplacement permis, des chemins
+/// sans dossier dangereux. Ailleurs, rsync reste un lanceur (« -e », « --rsh », « --rsync-path », « --filter ») :
+/// aucune autre forme ne se tait (relecture 0.94, S-1). Un faux findmnt (true) rendrait la condition « bon disque
+/// monté » toujours vraie (C-2).
+fn sauvegarde_posee(s: &Systeme, mots: &[String], nom: &str) -> Result<(), Ecart> {
+    let (programme, args) = mots.split_first().ok_or(Ecart::Forme)?;
+    s.programme(programme)?;
+    if crate::machine::chasse::nom_de_fichier(programme) != nom || s.nom_reel(programme).as_deref() != Some(nom) {
+        return Err(Ecart::Lanceur);
+    }
+    args.iter().try_for_each(|a| argument_sur(s, a))
 }
 
 /// Les arguments d'un programme ordinaire : sans chemin dangereux, sans programme ni ligne de commande en argument
@@ -1598,6 +1677,19 @@ pub(super) fn exec_systemd(s: &Systeme, valeur: &str, codes: Option<&Codes>) -> 
         } else {
             variables_de_systemd(&mots, codes.map(|c| &c.variables), s.maison)?
         };
+        if let Some(p) = codes.and_then(|c| c.sauvegarde.as_ref()) {
+            // La forme exacte ne tient que les mots : où rsync écrit se juge sur le disque (C-2).
+            if p.rsync == mots {
+                sauvegarde_posee(s, &mots, "rsync")?;
+                s.reglages_de_popt()?;
+                s.destination_sur_le_disque(&p.racine, &p.destination)?;
+                continue;
+            }
+            if p.findmnt == mots {
+                sauvegarde_posee(s, &mots, "findmnt")?;
+                continue;
+            }
+        }
         lancee(s, &mots, 0)?;
     }
     Ok(())

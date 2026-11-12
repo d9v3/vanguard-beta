@@ -2964,6 +2964,10 @@ struct Codes {
     /// Les variables posées par « Environment= » dans l'unité : systemd remplace « $A » et « ${A} » des lignes Exec
     /// par leur valeur (relecture adverse 2, N5).
     variables: std::collections::BTreeMap<String, String>,
+    /// La sauvegarde que Vanguard pose, si l'unité lue est ce service-là, écrit à l'octet près comme Vanguard l'écrit
+    /// (`sauvegarde::sauvegarde_posee`) ; seuls son rsync et son findmnt se taisent, s'ils sont les vrais et si sa
+    /// destination se voit sans lien (relecture 0.94, S-1, C-2).
+    sauvegarde: Option<crate::sauvegarde::SauvegardePosee>,
 }
 
 impl Codes {
@@ -2974,6 +2978,7 @@ impl Codes {
             maison: r.maison.to_string_lossy().into_owned(),
             session: r.session.as_ref().map(|s| s.to_string_lossy().into_owned()),
             variables: std::collections::BTreeMap::new(),
+            sauvegarde: None,
         }
     }
 }
@@ -4637,6 +4642,9 @@ fn juger_demarrage(demarrage: &[std::path::PathBuf], h: &Path, t: &mut Lancement
                 let base = Codes::de(utilisateur, &t.r);
                 Lecteur::Systemd(Codes {
                     variables: variables_fusionnees(f, &lu.texte, &base, &t.r),
+                    sauvegarde: (utilisateur && f.file_name().is_some_and(|n| n == crate::sauvegarde::SERVICE))
+                        .then(|| crate::sauvegarde::sauvegarde_posee(&lu.texte))
+                        .flatten(),
                     ..base
                 })
             };

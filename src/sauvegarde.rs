@@ -282,6 +282,141 @@ pub(crate) fn unites(
     Ok((timer, service))
 }
 
+/// Les mots d'une ligne d'unité écrite par `unites` : chacun cité (`citer_systemd`, rendu tel quel) ou nu (une
+/// option), séparés par une espace. Toute autre écriture : `None`.
+#[cfg(target_os = "linux")]
+fn mots_cites(ligne: &str) -> Option<Vec<(String, bool)>> {
+    let mut mots = Vec::new();
+    let mut c = ligne.chars().peekable();
+    while c.peek().is_some() {
+        if c.peek() == Some(&'"') {
+            c.next();
+            let mut mot = String::new();
+            loop {
+                match c.next()? {
+                    '"' => break,
+                    '\\' => mot.push(c.next().filter(|x| matches!(x, '\\' | '"'))?),
+                    '%' => mot.push(c.next().filter(|x| *x == '%')?),
+                    x => mot.push(x),
+                }
+            }
+            mots.push((mot, true));
+        } else {
+            let mot: String = std::iter::from_fn(|| c.next_if(|x| *x != ' ')).collect();
+            if mot.is_empty() || mot.contains(['"', '\\', '%', '$']) {
+                return None;
+            }
+            mots.push((mot, false));
+        }
+        match c.next() {
+            None => break,
+            Some(' ') if c.peek().is_some() => {}
+            _ => return None,
+        }
+    }
+    Some(mots)
+}
+
+/// Un chemin absolu écrit sans détour : ni « . », ni « .. », ni « / » final ou doublé, ni « $ » (systemd développe
+/// les variables d'ExecStart, que `citer_systemd` ne protège pas).
+#[cfg(target_os = "linux")]
+fn chemin_net(t: &str) -> bool {
+    t.strip_prefix('/').is_some_and(|reste| {
+        !reste.is_empty() && !t.contains('$') && reste.split('/').all(|m| !m.is_empty() && m != "." && m != "..")
+    })
+}
+
+/// La sauvegarde que Vanguard pose, reconnue à sa forme exacte (`sauvegarde_posee`) : ce que le bilan des
+/// persistances en tait, et ce qu'il doit encore voir sur le disque, car le texte ne dit rien de ce qu'est la
+/// destination (un lien posé sur le disque y changerait où rsync écrit : relecture 0.94, C-2).
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SauvegardePosee {
+    /// Les mots exacts du rsync (ExecStart).
+    pub(crate) rsync: Vec<String>,
+    /// Les mots exacts de la vérification du disque (ExecCondition), findmnt en tête.
+    pub(crate) findmnt: Vec<String>,
+    /// Le point de montage du disque.
+    pub(crate) racine: String,
+    /// Le dossier où rsync copie, `<racine>/Sauvegarde-Vanguard/<ordinateur>`, sans « / » final.
+    pub(crate) destination: String,
+}
+
+/// Le service `texte` s'il est, à l'octet près, celui qu'écrit `unites` (FAT ou non) pour un disque monté pour
+/// l'utilisateur (/run/media, /media, /mnt), vers son dossier `Sauvegarde-Vanguard/<ordinateur>`, depuis des dossiers
+/// absolus ; sinon `None`. Le bilan des persistances ne tait le rsync que de cette unité-là, à cette forme-là : jamais
+/// une règle générale sur rsync, qui laisserait une unité du compte reposer une entrée de démarrage à chaque session
+/// (relecture 0.94, S-1).
+#[cfg(target_os = "linux")]
+pub(crate) fn sauvegarde_posee(texte: &str) -> Option<SauvegardePosee> {
+    let valeur = |cle: &str| {
+        let mut l = texte.lines().filter_map(|l| l.strip_prefix(cle));
+        l.next().filter(|_| l.next().is_none())
+    };
+    let exec = mots_cites(valeur("ExecStart=")?)?;
+    let condition = mots_cites(valeur(VERIFICATION)?)?;
+    let [
+        (findmnt, true),
+        (source, false),
+        (uuid, false),
+        (point, false),
+        (racine, true),
+    ] = &condition[..]
+    else {
+        return None;
+    };
+    let uuid = uuid.strip_prefix("UUID=")?;
+    if source != "--source" || point != "--mountpoint" || !chemin_net(findmnt) || !chemin_net(racine) {
+        return None;
+    }
+    let monte_pour_l_utilisateur = ["/run/media/", "/media/", "/mnt/"]
+        .iter()
+        .any(|d| racine.starts_with(d) && racine.len() > d.len());
+    let ((rsync, true), reste) = exec.split_first()? else {
+        return None;
+    };
+    let fat = reste.first()?.0 == "-rt";
+    let options = if fat { 5 } else { 6 };
+    let (destination, sources) = reste.get(options..)?.split_last()?;
+    let destination = destination.0.strip_suffix('/').filter(|_| destination.1)?;
+    let ordinateur = destination
+        .strip_prefix(racine.as_str())?
+        .strip_prefix(&format!("/{DOSSIER}/"))?;
+    let ordinateur_net = !ordinateur.is_empty()
+        && ordinateur.chars().count() <= 40
+        && ordinateur.chars().all(|c| c.is_alphanumeric() || c == '-');
+    if !monte_pour_l_utilisateur
+        || !ordinateur_net
+        || !chemin_net(rsync)
+        || sources.is_empty()
+        || !sources.iter().all(|(s, cite)| *cite && chemin_net(s))
+    {
+        return None;
+    }
+    let sources: Vec<PathBuf> = sources.iter().map(|(s, _)| PathBuf::from(s)).collect();
+    let (_, attendu) = unites(
+        Path::new(rsync),
+        Some(Path::new(findmnt)),
+        Some(uuid),
+        Path::new(racine),
+        Path::new(destination),
+        &sources,
+        fat,
+    )
+    .ok()?;
+    if attendu != texte {
+        return None;
+    }
+    // Les chemins d'abord : ils empruntent les mots.
+    let (racine, destination) = (racine.clone(), destination.to_string());
+    Some(SauvegardePosee {
+        rsync: exec.into_iter().map(|(m, _)| m).collect(),
+        findmnt: condition.into_iter().map(|(m, _)| m).collect(),
+        racine,
+        destination,
+    })
+}
+
 /// Le système de fichiers monté à `racine` (« vfat », « ext4 »…), d'après /proc/mounts.
 #[cfg(target_os = "linux")]
 fn systeme_de_fichiers(racine: &Path) -> Option<String> {
@@ -1745,6 +1880,111 @@ mod tests {
         assert!(regle(false).contains("\"/usr/bin/rsync\" -a --no-specials --no-devices --exclude=.cache"));
         // Un fichier disparu pendant la copie n'est pas un échec.
         assert!(regle(true).contains("SuccessExitStatus=24\n") && regle(false).contains("SuccessExitStatus=24\n"));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn la_sauvegarde_posee_se_reconnait_a_sa_forme_exacte() {
+        let pose = |racine: &str, destination: &str, sources: &[&str], fat: bool| {
+            let sources: Vec<PathBuf> = sources.iter().map(PathBuf::from).collect();
+            unites(
+                Path::new("/usr/bin/rsync"),
+                Some(Path::new("/usr/bin/findmnt")),
+                Some("1234-ABCD"),
+                Path::new(racine),
+                Path::new(destination),
+                &sources,
+                fat,
+            )
+            .unwrap()
+            .1
+        };
+        let disque = "/run/media/alice/Mon disque 100%";
+        let destination = format!("{disque}/Sauvegarde-Vanguard/pc-alice");
+        let service = pose(
+            disque,
+            &destination,
+            &["/home/alice/Documents", "/home/alice/Mes \"images\""],
+            false,
+        );
+        assert_eq!(
+            sauvegarde_posee(&service).map(|p| p.rsync),
+            Some(
+                [
+                    "/usr/bin/rsync",
+                    "-a",
+                    "--no-specials",
+                    "--no-devices",
+                    "--exclude=.cache",
+                    "--exclude=node_modules",
+                    "--exclude=.vanguard-copie-en-cours",
+                    "/home/alice/Documents",
+                    "/home/alice/Mes \"images\"",
+                    "/run/media/alice/Mon disque 100%/Sauvegarde-Vanguard/pc-alice/",
+                ]
+                .map(String::from)
+                .to_vec()
+            )
+        );
+        // La vérification du disque et les chemins que le bilan doit encore voir sur le disque (C-2).
+        let posee = sauvegarde_posee(&service).unwrap();
+        assert_eq!(
+            posee.findmnt,
+            ["/usr/bin/findmnt", "--source", "UUID=1234-ABCD", "--mountpoint", disque].map(String::from)
+        );
+        assert_eq!(
+            (posee.racine.as_str(), posee.destination.as_str()),
+            (disque, destination.as_str())
+        );
+        let fat = pose(
+            "/media/alice/Cle",
+            "/media/alice/Cle/Sauvegarde-Vanguard/pc",
+            &["/home/alice/Documents"],
+            true,
+        );
+        assert_eq!(
+            sauvegarde_posee(&fat).map(|p| p.rsync.get(1..3).map(<[String]>::to_vec)),
+            Some(Some(vec!["-rt".to_string(), "--modify-window=2".to_string()]))
+        );
+        // Une ligne ajoutée, une ligne changée : plus la forme exacte.
+        assert_eq!(
+            sauvegarde_posee(&format!("{service}ExecStartPost=/usr/bin/true\n")),
+            None
+        );
+        assert_eq!(sauvegarde_posee(&service.replace("Nice=10", "Nice=9")), None);
+        assert_eq!(sauvegarde_posee(&format!("{service}ExecStart=/usr/bin/true\n")), None);
+        // La même forme vers un dossier de démarrage, ou depuis une source à « / » final (son contenu copié tel quel),
+        // ou hors d'un disque monté pour l'utilisateur : refusée.
+        let vers = |racine: &str, nom: &str, sources: &[&str]| {
+            sauvegarde_posee(&pose(
+                racine,
+                &format!("{racine}/Sauvegarde-Vanguard/{nom}"),
+                sources,
+                false,
+            ))
+        };
+        assert_eq!(
+            vers("/home/alice/.config", "autostart", &["/home/alice/Documents"]),
+            None
+        );
+        assert_eq!(vers("/run/media", "pc", &["/home/alice/Documents"]), None);
+        assert_eq!(vers("/run/media/alice/Cle", "pc", &["/home/alice/charge/"]), None);
+        assert_eq!(
+            vers("/run/media/alice/Cle", "pc", &["/home/alice/../alice/.config"]),
+            None
+        );
+        assert_eq!(vers("/run/media/alice/Cle", "..", &["/home/alice/Documents"]), None);
+        assert_eq!(vers("/run/media/alice/Cle", "pc", &["/home/$USER/Documents"]), None);
+        assert_eq!(
+            vers(
+                "/run/media/alice/Cle/../../../home/alice",
+                "pc",
+                &["/home/alice/Documents"]
+            ),
+            None
+        );
+        assert!(vers("/run/media/alice/Cle", "pc", &["/home/alice/Documents"]).is_some());
+        assert_eq!(sauvegarde_posee(""), None);
     }
 
     #[test]
