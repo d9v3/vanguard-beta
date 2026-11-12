@@ -3571,58 +3571,59 @@ fn dossiers_d_unites(r: &Releveur, utilisateur: bool) -> Result<Vec<std::path::P
             .to_string(),
         ));
     };
-    let run = |c: &str| r.sous(&session.join(c));
-    let m = |c: &str| r.maison.join(c);
+    // Le dossier de session que systemd donne au compte (/run/user/<uid>), s'il n'est pas XDG_RUNTIME_DIR : c'est le
+    // seul que le gestionnaire de la session lit, à sa place dans l'ordre (en fin de liste, une unité de
+    // /run/user/<uid>/systemd/user passait après celle du système au même nom et `vanguard demarrage` la taisait :
+    // relecture 0.94, D-2). Celui de la variable se lit juste après, par prudence.
+    let run = |c: &str| -> Vec<std::path::PathBuf> {
+        r.session_de_systemd
+            .as_deref()
+            .into_iter()
+            .chain(std::iter::once(session))
+            .map(|b| r.sous(&b.join(c)))
+            .collect()
+    };
+    let m = |c: &str| vec![r.maison.join(c)];
+    let sy = |c: &str| vec![s(c)];
     // Un XDG_CONFIG_HOME ou XDG_DATA_HOME déplacé : systemd y cherche aussi, en plus des dossiers par défaut (que le
     // gestionnaire de la session lit peut-être, sans ces variables).
-    let x = |base: &Option<std::path::PathBuf>, c: &str| base.as_ref().map(|b| r.sous(&b.join(c)));
+    let x = |base: &Option<std::path::PathBuf>, c: &str| -> Vec<std::path::PathBuf> {
+        base.iter().map(|b| r.sous(&b.join(c))).collect()
+    };
+    let liste = |base: &[std::path::PathBuf]| -> Vec<std::path::PathBuf> {
+        base.iter().map(|d| r.sous(&d.join("systemd/user"))).collect()
+    };
+    // La liste de systemd (« systemd-analyze --user unit-paths », systemd 262) : chaque XDG_CONFIG_DIRS, puis
+    // /etc/xdg ; chaque XDG_DATA_DIRS après ~/.local/share (relecture adverse, B5).
     let mut dossiers: Vec<std::path::PathBuf> = [
-        Some(m(".config/systemd/user.control")),
+        m(".config/systemd/user.control"),
         x(&r.config, "systemd/user.control"),
-        Some(run("systemd/user.control")),
-        Some(run("systemd/transient")),
-        Some(run("systemd/generator.early")),
-        Some(m(".config/systemd/user")),
+        run("systemd/user.control"),
+        run("systemd/transient"),
+        run("systemd/generator.early"),
+        m(".config/systemd/user"),
         x(&r.config, "systemd/user"),
-        Some(m(".config/systemd/user.attached")),
+        m(".config/systemd/user.attached"),
         x(&r.config, "systemd/user.attached"),
+        liste(&r.config_systeme),
+        sy("/etc/xdg/systemd/user"),
+        sy("/etc/systemd/user"),
+        run("systemd/user"),
+        run("systemd/user.attached"),
+        sy("/run/systemd/user"),
+        run("systemd/generator"),
+        m(".local/share/systemd/user"),
+        x(&r.donnees, "systemd/user"),
+        liste(&r.donnees_systeme),
+        sy("/usr/local/share/systemd/user"),
+        sy("/usr/share/systemd/user"),
+        sy("/usr/local/lib/systemd/user"),
+        sy("/usr/lib/systemd/user"),
+        run("systemd/generator.late"),
     ]
     .into_iter()
     .flatten()
     .collect();
-    // La liste de systemd (« systemd-analyze --user unit-paths », systemd 262) : chaque XDG_CONFIG_DIRS, puis
-    // /etc/xdg ; chaque XDG_DATA_DIRS après ~/.local/share (relecture adverse, B5). Le dossier de session que
-    // systemd donne au compte, s'il n'est pas XDG_RUNTIME_DIR, se lit comme lui.
-    dossiers.extend(r.config_systeme.iter().map(|d| r.sous(&d.join("systemd/user"))));
-    dossiers.extend(
-        [
-            Some(s("/etc/xdg/systemd/user")),
-            Some(s("/etc/systemd/user")),
-            Some(run("systemd/user")),
-            Some(run("systemd/user.attached")),
-            Some(s("/run/systemd/user")),
-            Some(run("systemd/generator")),
-            Some(m(".local/share/systemd/user")),
-            x(&r.donnees, "systemd/user"),
-        ]
-        .into_iter()
-        .flatten(),
-    );
-    dossiers.extend(r.donnees_systeme.iter().map(|d| r.sous(&d.join("systemd/user"))));
-    dossiers.extend(
-        [
-            "/usr/local/share/systemd/user",
-            "/usr/share/systemd/user",
-            "/usr/local/lib/systemd/user",
-            "/usr/lib/systemd/user",
-        ]
-        .iter()
-        .map(|c| s(c)),
-    );
-    dossiers.push(run("systemd/generator.late"));
-    if let Some(autre) = &r.session_de_systemd {
-        dossiers.extend(DOSSIERS_DE_LA_SESSION.iter().map(|d| r.sous(&autre.join(d))));
-    }
     let mut vus = std::collections::BTreeSet::new();
     dossiers.retain(|d| vus.insert(d.clone()));
     Ok(dossiers)
@@ -10121,6 +10122,37 @@ mod tests {
         let m = Maison::nouvelle("relecture-unites-sain");
         let c = m.lancements_avec(&[("XDG_DATA_DIRS", "/usr/share"), ("XDG_CONFIG_DIRS", "/etc/xdg")]);
         assert_eq!(c.probleme, None, "{}", c.message);
+    }
+
+    /// D-2 (relecture 0.94) : XDG_RUNTIME_DIR changé ne déplace pas le dossier de session de systemd
+    /// (/run/user/<uid>) en fin de liste : l'ordre est celui de la vraie session, chaque dossier de la variable juste
+    /// après celui de systemd ; /run/user/<uid>/systemd/user passe donc toujours avant /usr/lib/systemd/user.
+    #[test]
+    fn un_xdg_runtime_dir_change_garde_l_ordre_de_systemd() {
+        let uid = uid_du_compte().expect("uid du compte");
+        let vrai = format!("/run/user/{uid}");
+        let maison = Path::new("/home/alice");
+        let ordre = |runtime: &str| {
+            let runtime = std::ffi::OsString::from(runtime);
+            dossiers_d_unites_du_compte(maison, |v| (v == "XDG_RUNTIME_DIR").then(|| runtime.clone())).unwrap()
+        };
+        let attendu = ordre(&vrai);
+        let faux = ordre("/tmp/faux");
+        let sans_la_variable: Vec<_> = faux.iter().filter(|d| !d.starts_with("/tmp/faux")).cloned().collect();
+        assert_eq!(sans_la_variable, attendu, "ordre de systemd perdu : {faux:#?}");
+        for d in DOSSIERS_DE_LA_SESSION {
+            let de_systemd = faux.iter().position(|p| *p == Path::new(&vrai).join(d));
+            let de_la_variable = faux.iter().position(|p| *p == Path::new("/tmp/faux").join(d));
+            assert!(
+                de_systemd.zip(de_la_variable).is_some_and(|(a, b)| b == a + 1),
+                "{d} : {faux:#?}"
+            );
+        }
+        let place = |p: &str| faux.iter().position(|d| d == Path::new(p));
+        assert!(
+            place(&format!("{vrai}/systemd/user")) < place("/usr/lib/systemd/user"),
+            "{faux:#?}"
+        );
     }
 
     /// C1, C2, C3, C5 : une ligne d'unité se juge telle que systemd la lit (BOM en tête de ligne, chemin simplifié,
