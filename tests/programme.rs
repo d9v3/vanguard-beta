@@ -1652,9 +1652,16 @@ fn tue_apres_la_pose_la_ligne_est_interrompue_et_se_remet() {
     let (code, r) = c.voir_annulation(&seconde);
     assert_eq!(code, Some(0), "{r}");
     let valeur = &r["apercu"]["valeurs"][0];
+    // Campagne 0.95, G-3 : tuée avant d'être finie, rien ne prouve que Vanguard a posé 0600 (la personne a pu le
+    // faire) : la valeur posée n'est pas donnée pour connue, et l'écart à l'état d'avant se montre.
     assert_eq!(
-        (&valeur["actuel"], &valeur["avant"], &valeur["change_depuis"]),
-        (&"0600".into(), &"0644".into(), &false.into()),
+        (
+            &valeur["actuel"],
+            &valeur["avant"],
+            &valeur["pose"],
+            &valeur["change_depuis"]
+        ),
+        (&"0600".into(), &"0644".into(), &"".into(), &true.into()),
         "{r}"
     );
     laisser_lire();
@@ -1845,6 +1852,22 @@ fn tue_avant_la_pose_rien_n_est_dit_change() {
     let (code, r) = c.voir_annulation(&note);
     assert_eq!(code, Some(0), "{r}");
     assert_eq!(r["apercu"]["valeurs"][0]["change_depuis"], false, "{r}");
+    // Campagne 0.95, G-3 : la personne pose elle-même 0600, la valeur que la correction visait ; Vanguard ne l'a
+    // jamais posée : l'aperçu le dit « changé depuis », jamais comme sa propre valeur à défaire en silence.
+    c.poser(".netrc", 0o600);
+    let (code, r) = c.voir_annulation(&note);
+    assert_eq!(code, Some(0), "{r}");
+    assert_eq!(
+        (
+            &r["apercu"]["valeurs"][0]["pose"],
+            &r["apercu"]["valeurs"][0]["change_depuis"]
+        ),
+        (&"".into(), &true.into()),
+        "{r}"
+    );
+    c.poser(".netrc", 0o644);
+    let (code, r) = c.voir_annulation(&note);
+    assert_eq!(code, Some(0), "{r}");
     laisser_lire();
     let (code, r) = c.annuler(&note, r["accord"].as_str().unwrap_or_default());
     assert!(code == Some(0) && r["relu"] == "revenu", "{code:?} {r}");

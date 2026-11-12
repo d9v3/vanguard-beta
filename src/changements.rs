@@ -198,18 +198,19 @@ fn noter_dans(chemin: &std::path::Path, correctifs: &[Vec<String>], resultats: &
     ecrire(chemin, &tous);
 }
 
-/// Les commandes que Vanguard a lancées (ou commençait de lancer) pour la note `id` : la dernière ligne qui la porte,
-/// écrite par Vanguard (ni reprise d'avant le sceau, ni changée hors de lui), pas encore défaite. Une ligne en échec
-/// ou interrompue compte aussi : ce qu'elle dit est ce que Vanguard visait, et une valeur jamais touchée se reconnaît
-/// à ce qu'elle est encore celle d'avant (`machine::annuler`). `None` : aucune telle ligne (élaguée, ou relevé
-/// douteux) ; ce qui a été posé n'est alors pas connu.
+/// Les commandes que Vanguard a posées pour la note `id` : la dernière ligne qui la porte, écrite par Vanguard (ni
+/// reprise d'avant le sceau, ni changée hors de lui), pas encore défaite, finie et réussie. Une ligne interrompue ou
+/// en échec ne prouve pas que sa valeur a été posée (arrêtée avant la pose, la personne a pu mettre la même valeur à
+/// la main ; campagne 0.95, G-3) : elle ne compte pas. `None` : aucune telle ligne (élaguée, interrompue, en échec,
+/// ou relevé douteux) ; ce qui a été posé n'est alors pas connu, et tout écart à l'état d'avant se montre « changé
+/// depuis » (`machine::annuler`).
 #[cfg(unix)]
 pub(crate) fn commandes_de_la_note(id: &str) -> Option<Vec<String>> {
     lire()
         .into_iter()
         .rev()
         .find(|c| c.annulable.as_deref() == Some(id))
-        .filter(|c| c.origine.is_none() && c.defaite.is_none())
+        .filter(|c| c.origine.is_none() && c.defaite.is_none() && !c.en_cours && c.reussi)
         .map(|c| c.commandes)
 }
 

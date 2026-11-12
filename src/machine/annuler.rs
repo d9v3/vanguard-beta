@@ -48,10 +48,11 @@ pub(crate) struct Valeur {
     pub actuel: String,
     /// Les droits d'avant, notés par Vanguard avant sa correction : ceux qui seront remis.
     pub avant: String,
-    /// Les droits que Vanguard a posés ; vide s'ils ne sont plus connus (ligne élaguée de l'historique).
+    /// Les droits que Vanguard a posés ; vide s'ils ne sont pas connus (ligne élaguée de l'historique) ou pas prouvés
+    /// (correction interrompue ou en échec : la valeur a pu être mise par quelqu'un d'autre).
     pub pose: String,
-    /// Aujourd'hui n'est pas ce que Vanguard a posé (ou ce qu'il a posé n'est plus connu) : changé depuis, par vous ou
-    /// un programme.
+    /// Aujourd'hui n'est ni l'état d'avant ni ce que Vanguard a posé (ou ce qu'il a posé n'est pas connu) : changé
+    /// depuis, par vous ou un programme.
     pub change_depuis: bool,
 }
 
@@ -330,7 +331,12 @@ pub(crate) fn voir(jeton: &str, json: bool) -> i32 {
                         v.actuel,
                         v.avant
                     );
-                    if v.change_depuis {
+                    if v.change_depuis && v.pose.is_empty() {
+                        trp!(
+                            "    ⚠ rien ne prouve que Vanguard a posé cette valeur (correction interrompue, ou trace effacée) : peut-être mise par vous ou un programme",
+                            "    ⚠ nothing proves Vanguard set this value (interrupted fix, or trace removed): maybe set by you or a program"
+                        );
+                    } else if v.change_depuis {
                         trp!(
                             "    ⚠ changé depuis, par vous ou un programme",
                             "    ⚠ changed since, by you or a program"
