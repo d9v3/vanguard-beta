@@ -81,6 +81,22 @@ pub(super) fn pour(cible: &Path) -> Option<PathBuf> {
     lancer_fenetre::voisine(cible)
 }
 
+/// La fenêtre posée à `chemin` est-elle, relue maintenant, celle que grave `programme` ? Ce que dit la ligne de la
+/// fenêtre après une mise à jour : jamais « à jour » sans l'avoir relue.
+pub(super) fn posee_juste(programme: &[u8], chemin: &Path) -> Result<(), String> {
+    juste(programme, &lire_octets(chemin, TAILLE_MAX)?)
+}
+
+/// Le reste d'une mise à jour faite pendant que la fenêtre de la copie `cible` tournait (Windows) : effacé. Encore
+/// ouvert, il reste, et partira la fois suivante.
+pub(super) fn effacer_l_ancienne(cible: &Path) {
+    if let Some(nom) = pour(cible).and_then(|f| f.file_name().map(std::ffi::OsStr::to_os_string)) {
+        let mut ancien = nom;
+        ancien.push(".ancien");
+        let _ = std::fs::remove_file(cible.with_file_name(ancien));
+    }
+}
+
 /// Ce qui était à `chemin` avant que la nouvelle fenêtre y soit posée, pour l'y remettre.
 enum Avant {
     Absente,

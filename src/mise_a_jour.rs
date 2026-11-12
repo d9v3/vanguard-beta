@@ -493,9 +493,14 @@ pub(crate) fn programme_signe_a_remettre() -> Result<(String, Vec<u8>), crate::m
 
 /// Copie `source` à la place de `cible` : à côté d'abord, sa version revérifiée (ce qui a été montré est ce qui
 /// s'installe : la clé a pu changer depuis l'affichage), relue et comparée, puis renommée d'un coup ; une copie
-/// interrompue ou abîmée ne remplace jamais celle qui marche, et ne reste pas sur le disque.
+/// interrompue ou abîmée ne remplace jamais celle qui marche, et ne reste pas sur le disque. La fenêtre posée à côté
+/// du programme de la clé suit, si c'est bien la sienne (`sa_fenetre::de_la_source`), comme pour `poser_copie_dans`.
 fn remplacer(source: &Path, cible: &Path, attendue: Version, max: u64, essai: Essai) -> Result<(), String> {
-    installer(&lire_octets(source, max)?, cible, attendue, essai)
+    let octets = lire_octets(source, max)?;
+    match sa_fenetre::de_la_source(source, &octets).zip(sa_fenetre::pour(cible)) {
+        Some((f, chemin)) => sa_fenetre::installer_avec(&octets, cible, attendue, essai, &f, &chemin),
+        None => installer(&octets, cible, attendue, essai),
+    }
 }
 
 /// L'essai d'un programme posé à côté, avant qu'il remplace l'ancien (`essayer`, ou celui d'un test).
@@ -1393,11 +1398,7 @@ pub fn commande() {
     let cible = copie_de_cet_ordinateur();
     // Le reste d'une mise à jour faite pendant que la copie (ou sa fenêtre) tournait (Windows).
     let _ = std::fs::remove_file(cible.with_file_name(format!("{NOM}.ancien")));
-    if let Some(f) = sa_fenetre::pour(&cible).and_then(|f| f.file_name().map(std::ffi::OsStr::to_os_string)) {
-        let mut ancien = f;
-        ancien.push(".ancien");
-        let _ = std::fs::remove_file(cible.with_file_name(ancien));
-    }
+    sa_fenetre::effacer_l_ancienne(&cible);
     match etat() {
         Etat::Rien => trp!(
             "  Pas de copie de Vanguard posée sur cet ordinateur (la surveillance,\n  l'entretien et le raccourci en posent une).",
@@ -1510,6 +1511,14 @@ fn depuis_github() {
             _ => version_affichee(None),
         };
         println!("    {} {GRIS}({v}){RESET}", affichable(&c.display().to_string()));
+        // Sa fenêtre : remplacée par celle de la nouvelle version, vérifiée contre l'empreinte qu'elle grave.
+        if let Some(f) = sa_fenetre::a_cote(c) {
+            trp!(
+                "    {} {GRIS}(sa fenêtre){RESET}",
+                "    {} {GRIS}(its window){RESET}",
+                affichable(&f.display().to_string())
+            );
+        }
     }
     if !demander(tr!(
         "  Le télécharger et l'installer ? [o/N] : ",
@@ -1627,6 +1636,18 @@ fn proposer(source: &Path, cible: &Path, copie: Option<Version>, cle: Version) {
         "  Copy on this computer: {ici}\n  VANGUARD key         : {sur_la_cle}\n  {GRIS}From {}{RESET}\n",
         affichable(&source.display().to_string())
     );
+    // Sa fenêtre suit, si celle de la clé est la sienne : dite avant la question (`remplacer` la revérifie).
+    let fenetre = lire_octets(source, TAILLE_MAX)
+        .ok()
+        .and_then(|o| sa_fenetre::de_la_source(source, &o))
+        .and(sa_fenetre::pour(cible));
+    if let Some(f) = fenetre {
+        trp!(
+            "  Sa fenêtre aussi, vérifiée : {}\n",
+            "  Its window too, verified: {}\n",
+            affichable(&f.display().to_string())
+        );
+    }
     if !demander(tr!(
         "  La remplacer par celle de la clé ? [o/N] : ",
         "  Replace it with the key's? [y/N]: "
@@ -1957,6 +1978,38 @@ mod tests {
         assert!(remplacer(&source, &cible, (0, 80, 0, 0), 4, SANS_ESSAI).is_err());
         assert_eq!(lire_programme(&cible, TAILLE_MAX), Lu::Version((0, 70, 0, 0)));
         assert!(!cible.with_file_name(format!("{NOM}.nouveau")).exists());
+        let _ = std::fs::remove_dir_all(&racine);
+    }
+
+    /// La copie remplacée depuis la clé au terminal (`proposer`) emporte la fenêtre de la clé si c'est celle que
+    /// grave son programme ; une autre reste sur la clé, la copie se fait sans elle.
+    #[test]
+    fn remplacer_emporte_la_fenetre_de_la_cle() {
+        use crate::demarrage::empreinte_fenetre::marque_d_essai;
+        use sha2::{Digest, Sha256};
+        let racine = crate::socle::dossier_local().join("essai-remplacement-fenetre");
+        let _ = std::fs::remove_dir_all(&racine);
+        let source = racine.join("cle").join(NOM);
+        let cible = racine.join("bin").join(NOM);
+        let (fenetre_cle, fenetre_ici) = (sa_fenetre::pour(&source).unwrap(), sa_fenetre::pour(&cible).unwrap());
+        let neuve = b"fenetre 0.80".to_vec();
+        let mut neuf = avec_entete("prog ", "0.80.0; ");
+        neuf.extend(marque_d_essai(&Sha256::digest(&neuve).into()));
+        faux_programme(&cible, None);
+        faux_programme(&source, None);
+        std::fs::write(&source, &neuf).unwrap();
+        std::fs::write(&fenetre_ici, b"ancienne fenetre").unwrap();
+        // Une autre fenêtre à la clé : le programme seul.
+        std::fs::write(&fenetre_cle, b"fenetre plantee").unwrap();
+        remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, SANS_ESSAI).unwrap();
+        assert_eq!(std::fs::read(&cible).unwrap(), neuf);
+        assert_eq!(std::fs::read(&fenetre_ici).unwrap(), b"ancienne fenetre");
+        // La sienne : posée avec le programme.
+        faux_programme(&cible, None);
+        std::fs::write(&fenetre_cle, &neuve).unwrap();
+        remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, SANS_ESSAI).unwrap();
+        assert_eq!(std::fs::read(&cible).unwrap(), neuf);
+        assert_eq!(std::fs::read(&fenetre_ici).unwrap(), neuve);
         let _ = std::fs::remove_dir_all(&racine);
     }
 
