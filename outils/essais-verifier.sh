@@ -5,7 +5,8 @@
 #      échouer, avec sa raison.
 #   2. Une étape demandée qui ne tourne jamais sous --seulement (la mise en forme) fait échouer.
 #   3. Un nom d'étape inconnu (mal écrit, ou renommé sans suivre ci.yml) est refusé, code 2 ; une option inconnue,
-#      une liste d'étapes vide (« , », « "" », absente) ou un argument en trop aussi, avant de rien lancer.
+#      une liste d'étapes vide (« , », « "" », absente) ou mal écrite (espace, tabulation, majuscule), ou un argument
+#      en trop aussi, avant de rien lancer.
 #   4. Une étape demandée qui réussit (scripts Python) donne « Vert pour les étapes demandées seulement », jamais
 #      « Tout est vert » : seul le passage complet le dit.
 #   5. Le passage complet (celui de la livraison) : une étape sautée ou jamais lancée y est un échec, pas un vert ;
@@ -95,6 +96,19 @@ if [[ -z ${VANGUARD_ESSAI_OPTION_INCONNUE:-} ]]; then
   refus_sans_rien_lancer '✖ --seulement : liste d.étapes vide' "--seulement « python,,shell »" --seulement python,,shell
   refus_sans_rien_lancer '✖ argument en trop : en-trop' "--seulement, argument en trop" --seulement python en-trop
   refus_sans_rien_lancer '✖ argument en trop : en-trop' "--rapide, argument en trop" --rapide en-trop
+  # O-1 (relecture 0.94) : une espace ou une tabulation dans la liste ne lançait rien et sortait verte.
+  mal_ecrite='✖ --seulement : liste d.étapes vide ou mal écrite'
+  refus_sans_rien_lancer "$mal_ecrite" "--seulement « \" \" »" --seulement " "
+  refus_sans_rien_lancer "$mal_ecrite" "--seulement « python shell »" --seulement "python shell"
+  refus_sans_rien_lancer "$mal_ecrite" "--seulement « python<tab>shell »" --seulement $'python\tshell'
+  refus_sans_rien_lancer "$mal_ecrite" "--seulement « python  »" --seulement "python "
+  refus_sans_rien_lancer "$mal_ecrite" "--seulement « dependances, failles-connues »" --seulement "dependances, failles-connues"
+  refus_sans_rien_lancer "$mal_ecrite" "--seulement « Python »" --seulement Python
+else
+  # Posée par refus_sans_rien_lancer pour le verifier.sh qu'il lance : celui-là, s'il acceptait l'option, relancerait
+  # ces essais, qui ne doivent pas se relancer en boucle (il est tué après 10 s, et compté en échec). Posée ailleurs,
+  # les refus ne seraient pas joués : jamais en silence (relecture 0.94, M-7).
+  ko "refus des options pas joués : VANGUARD_ESSAI_OPTION_INCONNUE est posée dans l'environnement"
 fi
 
 lancer bash outils/verifier.sh --seulement python

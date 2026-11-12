@@ -54,9 +54,15 @@ case $MODE in
 esac
 SEULEMENT=
 if [[ $MODE == --seulement ]]; then
-  # Une liste vide (« , », « "" », absente, ou un nom vide entre deux virgules) ne lancerait rien et se dirait verte.
+  # Une liste vide (« , », « "" », absente, ou un nom vide entre deux virgules) ne lancerait rien et se dirait verte ;
+  # une espace ou une tabulation aussi : la liste se lit en noms d'étapes ici, mais etape et ligne la cherchent telle
+  # quelle (« ,python shell, »), et rien ne tournait (« dependances, failles-connues » : cargo audit jamais lancé).
+  # La forme est donc celle des noms eux-mêmes, séparés par une virgule seule (relecture 0.94, O-1).
   LISTE=${2:-}
-  [[ $LISTE =~ ^[^,]+(,[^,]+)*$ ]] || { echo "✖ --seulement : liste d'étapes vide ou nom vide : « $LISTE »" >&2; exit 2; }
+  [[ $LISTE =~ ^[a-z0-9-]+(,[a-z0-9-]+)*$ ]] || {
+    echo "✖ --seulement : liste d'étapes vide ou mal écrite (noms en a-z, 0-9 et « - », séparés par « , » sans espace) : « $LISTE »" >&2
+    exit 2
+  }
   SEULEMENT=",$LISTE,"
   # Un nom mal écrit, ou une étape renommée sans suivre ci.yml, ne lancerait rien et finirait « Tout est vert » :
   # l'audit de nuit serait vert pour toujours sans rien vérifier. Les noms connus sont ceux du résumé (les appels
@@ -722,6 +728,22 @@ if [[ $MODE != --rapide ]]; then
     sed '1s/^/      vanguard : /; 2s/^/      fenêtre : /'
   ligne fuzzing "banc de fuzzing ($(awk '/^  ✔/ { n++ } END { print n + 0 }' "$TRAVAIL/fuzzing.log" 2>/dev/null) cibles)"
   ligne preuves-compilees "preuves de Kani compilées"
+fi
+# Sous --seulement, chaque étape demandée a tourné : sinon rien ne l'a vérifiée, et le vert serait faux (O-1). La
+# forme stricte de la liste le garantit déjà ; ceci le garde si elle venait à s'élargir.
+if [[ -n $SEULEMENT ]]; then
+  compgen -G "$TRAVAIL/*.etat" >/dev/null || {
+    echo "  ✖ aucune étape demandée n'a tourné ($LISTE)"
+    ECHECS=$((ECHECS + 1))
+  }
+  # Une étape demandée sans état : déjà comptée par sa ligne (« non lancé ») s'il y a un échec, sinon ici.
+  IFS=, read -ra DEMANDEES <<<"$LISTE"
+  for n in "${DEMANDEES[@]}"; do
+    ((ECHECS)) || [[ -f $TRAVAIL/$n.etat ]] || {
+      echo "  ✖ $n : demandée, jamais lancée"
+      ECHECS=$((ECHECS + 1))
+    }
+  done
 fi
 DUREE=$((SECONDS - DEBUT))
 if ((ECHECS)); then
