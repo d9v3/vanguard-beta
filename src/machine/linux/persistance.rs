@@ -3299,8 +3299,9 @@ fn autres_textes_de_l_unite(f: &Path, codes: &Codes, r: &Releveur) -> Vec<std::p
 /// codes « % » développés ; sans elle, le dossier personnel pour une unité du compte (`None`) et « / » pour une
 /// unité du système (systemd.exec(5)). Deux valeurs différentes (l'ordre exact de systemd n'est pas refait), ou une
 /// valeur que systemd ignore ou que Vanguard ne résout pas exactement (`dossier_sur`, Y-1 : un seul « - » se retire,
-/// un code « % » dont la vraie valeur n'est pas connue) : `CODE_INCONNU`, jamais un dossier deviné ; un relatif
-/// n'y est pas vérifié, donc pas tu.
+/// un code « % » dont la vraie valeur n'est pas connue), ou une valeur à « - » (Z-1 : systemd lance quand même si le
+/// dossier manque) : `CODE_INCONNU`, jamais un dossier deviné ; un relatif n'y est pas vérifié, donc pas tu. Une
+/// ligne sans argument relatif n'en est pas changée.
 fn dossier_courant(f: &Path, texte: &str, codes: &Codes, r: &Releveur) -> Option<String> {
     let defaut = codes.courant.clone();
     let mut valeurs: std::collections::BTreeSet<Option<String>> = std::collections::BTreeSet::new();
@@ -3313,9 +3314,14 @@ fn dossier_courant(f: &Path, texte: &str, codes: &Codes, r: &Releveur) -> Option
                 continue;
             }
             let v = valeur.trim_matches([' ', '\t']);
+            // Z-1 (revérification 5) : avec « - », un dossier absent n'arrête pas systemd et le programme se lance
+            // ailleurs (maison ou « / ») ; le dossier peut aussi disparaître entre le bilan et le lancement.
+            let tolere = v.starts_with('-');
             let v = v.strip_prefix('-').unwrap_or(v);
             valeurs.insert(if v.is_empty() {
                 defaut.clone()
+            } else if tolere {
+                Some(CODE_INCONNU.to_string())
             } else if v == "~" {
                 if codes.utilisateur {
                     None
@@ -11204,9 +11210,47 @@ mod tests {
                 Prep::Rien,
                 true,
             ),
+            // Z-1 (revérification 5) : avec « - », un dossier courant absent n'arrête pas systemd ; le programme
+            // tourne ailleurs (maison ou « / »). Un argument relatif n'est alors jamais vérifié (même si le
+            // dossier existe : il peut disparaître avant le lancement) ; sans argument relatif, rien ne change.
             (
                 "/usr/bin/cp /home/alice/Documents/x b",
                 "-%h/Documents",
+                &[],
+                Prep::Rien,
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x .config/autostart/x.desktop",
+                "-/nexistepas",
+                &[],
+                Prep::Rien,
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x home/alice/.config/autostart/x.desktop",
+                "-/nexistepas",
+                &[],
+                Prep::Rien,
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x /home/alice/Documents/b",
+                "-/nexistepas",
+                &[],
+                Prep::Rien,
+                true,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x /home/alice/Documents/b",
+                "-%h/Documents",
+                &[],
+                Prep::Rien,
+                true,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x .config/autostart/x.desktop",
+                "/nexistepas",
                 &[],
                 Prep::Rien,
                 true,
