@@ -967,10 +967,12 @@ mod systeme {
     pub(super) fn autostart_dans(compte: &Path, systeme: &[PathBuf], bureau: &str) -> Vec<(String, String)> {
         let mut liste = Vec::new();
         // L'utilisateur d'abord : son entrée l'emporte sur celle du système au même nom, même désactivée.
-        let mut vus: Vec<String> = Vec::new();
+        // Les noms tels quels (`OsString`) : convertis avec pertes, deux noms qui ne sont pas en UTF-8 se
+        // confondaient, et l'un masquait l'autre (relecture 0.94, R-1).
+        let mut vus: Vec<std::ffi::OsString> = Vec::new();
         for (d, du_compte) in std::iter::once((compte, true)).chain(systeme.iter().map(|d| (d.as_path(), false))) {
             for f in read_dir(d).into_iter().flatten().flatten() {
-                let nom = f.file_name().to_string_lossy().into_owned();
+                let nom = f.file_name();
                 if Path::new(&nom).extension().is_some_and(|e| e == "desktop") && !vus.contains(&nom) {
                     let texte = crate::optimiser::linux::texte_autostart(&f.path(), du_compte);
                     liste.extend(texte.and_then(|t| entree_autostart(&t, bureau)));
@@ -989,7 +991,9 @@ mod systeme {
             .into_iter()
             .flatten()
             .flatten()
-            .map(|e| e.file_name().to_string_lossy().into_owned())
+            // systemd ne nomme une unité qu'en ASCII : un nom qui n'est pas en UTF-8 n'est pas un service qu'il
+            // lance. Converti avec pertes, il aurait désigné un autre fichier (relecture 0.94, R-1).
+            .filter_map(|e| e.file_name().into_string().ok())
             .filter(|u| {
                 let fichier = dossier.join(u);
                 Path::new(u).extension().is_some_and(|e| e == "service")
@@ -1959,6 +1963,31 @@ mod tests {
         }));
         assert_eq!(secondes_lisibles(75.4), "1 min 15 s");
         assert_eq!(secondes_lisibles(5.04), "5,0 s");
+    }
+
+    /// Relecture 0.94, R-1 : les noms se comparent tels quels. Convertis avec pertes, deux noms différents qui ne
+    /// sont pas en UTF-8 devenaient le même texte, et l'entrée du compte masquait à tort une autre entrée du système.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn autostart_noms_pas_en_utf8_compares_tels_quels() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let d = crate::essais::temporaire().join(format!("vanguard-lenteur-utf8-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let (compte, systeme) = (d.join("compte/autostart"), d.join("systeme"));
+        for x in [&compte, &systeme] {
+            std::fs::create_dir_all(x).unwrap();
+        }
+        let entree = |nom: &str| format!("[Desktop Entry]\nType=Application\nName={nom}\nExec=/usr/bin/{nom}\n");
+        let nom = |octets: &[u8]| std::ffi::OsStr::from_bytes(octets).to_owned();
+        std::fs::write(compte.join(nom(b"a\xff.desktop")), entree("du-compte")).unwrap();
+        std::fs::write(systeme.join(nom(b"a\xfe.desktop")), entree("du-systeme")).unwrap();
+        // Le même nom exact : masquée.
+        std::fs::write(systeme.join(nom(b"a\xff.desktop")), entree("masquee")).unwrap();
+        let mut vus = systeme::autostart_dans(&compte, std::slice::from_ref(&systeme), "");
+        vus.sort();
+        let noms: Vec<&str> = vus.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(noms, ["du-compte", "du-systeme"]);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// Correction n° 2 de la 0.94, D-4 : les entrées d'autostart se lisent bornées, sans attendre un tube, et celles du

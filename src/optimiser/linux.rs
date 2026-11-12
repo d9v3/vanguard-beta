@@ -1430,19 +1430,30 @@ fn fichier_ordinaire(p: &Path) -> bool {
 /// d'avant à noter, mais dites (campagne 0.94, C-3).
 fn autostart(compte: &Path, systeme: &[PathBuf], bureau: &str) -> (Vec<Programme>, Vec<String>) {
     // Les noms seulement : chaque entrée se lit ensuite une fois, bornée, sans attendre un tube (campagne 0.94, C-2).
-    let noms = |d: &Path| -> Vec<String> {
-        let mut l: Vec<String> = std::fs::read_dir(d)
+    // Gardés tels quels (`OsString`) : un nom de fichier n'est pas du texte. Converti avec pertes, un nom qui n'est
+    // pas en UTF-8 désignait un autre fichier, « introuvable », et l'entrée était tue (relecture 0.94, R-1).
+    let noms = |d: &Path| -> Vec<std::ffi::OsString> {
+        let mut l: Vec<std::ffi::OsString> = std::fs::read_dir(d)
             .into_iter()
             .flatten()
             .flatten()
             .filter(|f| f.path().extension().is_some_and(|e| e == "desktop"))
-            .map(|f| f.file_name().to_string_lossy().into_owned())
+            .map(|f| f.file_name())
             .collect();
         l.sort();
         l
     };
+    // Une entrée au nom qui n'est pas en UTF-8 ne se note pas (la note et l'identité sont du texte) : elle n'est ni
+    // lue ni proposée, mais dite, et elle masque l'entrée du système au même nom exact.
+    let nom_pas_en_utf8 = |chemin: &Path| {
+        trf!(
+            "non vérifié : entrée de démarrage au nom qui n'est pas en UTF-8 ({}) ; ni lue ni proposée",
+            "not verified: startup entry whose name is not UTF-8 ({}); neither read nor offered",
+            affichable(&court(chemin))
+        )
+    };
     let max = u64::try_from(AUTOSTART_MAX - 1).unwrap_or(0);
-    let mut vus: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut vus: std::collections::HashSet<std::ffi::OsString> = std::collections::HashSet::new();
     let mut l = Vec::new();
     let mut manques = Vec::new();
     // Le dossier du compte lui-même refusé (un lien vers des dotfiles, hors du dossier personnel, à un autre compte) :
@@ -1460,6 +1471,13 @@ fn autostart(compte: &Path, systeme: &[PathBuf], bureau: &str) -> (Vec<Programme
     };
     for nom in noms(compte) {
         let chemin = compte.join(&nom);
+        if nom.to_str().is_none() {
+            if !dossier_refuse {
+                manques.push(nom_pas_en_utf8(&chemin));
+            }
+            vus.insert(nom);
+            continue;
+        }
         // Un lien, un tube ou un dossier, à un autre compte : ni lu ni proposé, mais dit (T-1, T-3) ; il masque
         // l'entrée du système au même nom.
         match sous_maison::juger(&chemin) {
@@ -1485,6 +1503,11 @@ fn autostart(compte: &Path, systeme: &[PathBuf], bureau: &str) -> (Vec<Programme
     for d in systeme {
         for nom in noms(d) {
             if vus.contains(&nom) {
+                continue;
+            }
+            if nom.to_str().is_none() {
+                manques.push(nom_pas_en_utf8(&d.join(&nom)));
+                vus.insert(nom);
                 continue;
             }
             let texte = match lire_du_systeme(&d.join(&nom), max) {
@@ -2813,6 +2836,38 @@ mod tests {
                 "{nom} : {manques:?}"
             );
         }
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// R-1 (relecture de la correction n° 2 de la 0.94) : un nom de fichier n'est pas du texte. Une entrée au nom
+    /// qui n'est pas en UTF-8, du compte ou du système, était convertie avec pertes, relue sous un autre nom,
+    /// « introuvable », donc tue : « aucun programme ». Elle est dite non vérifiée, jamais tue, et masque toujours
+    /// l'entrée du système au même nom exact.
+    #[test]
+    fn entree_au_nom_pas_en_utf8_est_dite() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let base = dossier_jetable("nom-pas-utf8");
+        let (compte, systeme) = (base.join("autostart"), base.join("systeme"));
+        for d in [&compte, &systeme] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let entree = "[Desktop Entry]\nType=Application\nName=Charge\nExec=/usr/bin/charge\n";
+        let nom = |octets: &[u8]| std::ffi::OsStr::from_bytes(octets).to_owned();
+        std::fs::write(compte.join(nom(b"charge\xff.desktop")), entree).unwrap();
+        std::fs::write(systeme.join(nom(b"autre\xfe.desktop")), entree).unwrap();
+        // Le même nom exact dans le compte et dans le système : celle du système reste masquée, pas dite deux fois.
+        std::fs::write(systeme.join(nom(b"charge\xff.desktop")), entree).unwrap();
+        let (l, manques) = autostart(&compte, std::slice::from_ref(&systeme), "Hyprland");
+        assert!(l.is_empty(), "{:?}", l.iter().map(|p| &p.nom).collect::<Vec<_>>());
+        assert_eq!(manques.len(), 2, "{manques:?}");
+        for m in &manques {
+            assert!(m.contains("non vérifié") && m.contains("UTF-8"), "{manques:?}");
+        }
+        assert!(manques.iter().any(|m| m.contains("charge")), "{manques:?}");
+        assert!(manques.iter().any(|m| m.contains("autre")), "{manques:?}");
+        // Tout le relevé : jamais « aucun programme » sans rien dire.
+        let (l, manques) = releve_dans(&base, std::slice::from_ref(&systeme), "Hyprland", Some(String::new()));
+        assert!(l.is_empty() && manques.len() == 2, "{manques:?}");
         std::fs::remove_dir_all(&base).unwrap();
     }
 
