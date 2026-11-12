@@ -5916,11 +5916,13 @@ fn juger_lancement(
 
 /// Le refus d'une ligne de la sauvegarde de Vanguard, posée telle que Vanguard la pose mais levée pour la `raison`
 /// dite (ce qui peut changer ce qu'elle lance) : jamais déclarable, puisque ce qui la change n'est pas dans la ligne
-/// qu'un choix lierait. Dit ce qui a changé et comment la retrouver muette, sans faire retirer la sauvegarde.
+/// qu'un choix lierait. Dit ce qui a changé et comment la retrouver muette, sans faire retirer la sauvegarde : le
+/// ~/.popt se juge en entier (une ligne retirée ne le tait pas), et la remettre en place ne change rien qu'à une
+/// variable sur une sauvegarde d'avant la 0.95 (relecture 0.95, V-5).
 fn refus_de_la_sauvegarde(ou: &str, numero: usize, raison: &str) -> temoins::Refus {
     temoins::Refus(trf!(
-        "{ou}:{numero} : la sauvegarde de Vanguard ne peut pas être déclarée normale tant que quelque chose peut changer ce qu'elle lance ({raison}). Gardez la sauvegarde : retirez plutôt ce qui la change (le ~/.popt ou sa ligne « exec », le complément « .service.d », la variable) ; si ce changement est voulu, annulez la sauvegarde (« vanguard sauvegarde-auto --annuler ») puis remettez-la (« vanguard sauvegarde-auto »). Elle se tait de nouveau dès qu'elle a sa forme et que rien ne la change",
-        "{ou}:{numero}: the Vanguard backup cannot be declared normal while something can change what it starts ({raison}). Keep the backup: remove what changes it instead (the ~/.popt or its “exec” line, the “.service.d” drop-in, the variable); if the change is wanted, undo the backup (“vanguard auto-backup --undo”) then set it up again (“vanguard auto-backup”). It goes quiet again as soon as it has its form and nothing changes it"
+        "{ou}:{numero} : la sauvegarde de Vanguard ne peut pas être déclarée normale tant que quelque chose peut changer ce qu'elle lance ({raison}). Gardez la sauvegarde : retirez plutôt ce qui la change, soit le fichier ~/.popt en entier (en retirer une ligne ne suffit pas), le complément « .service.d » ou la ligne qui pose la variable. Si l'alerte vient d'une variable et que la sauvegarde a été posée avant la 0.95, l'annuler (« vanguard sauvegarde-auto --annuler ») puis la remettre (« vanguard sauvegarde-auto ») peut suffire : sa forme 0.95 lance rsync sans les variables du gestionnaire. Elle se tait de nouveau dès qu'elle a sa forme et que rien ne la change",
+        "{ou}:{numero}: the Vanguard backup cannot be declared normal while something can change what it starts ({raison}). Keep the backup: remove what changes it instead, that is the whole ~/.popt file (removing one line is not enough), the “.service.d” drop-in or the line that sets the variable. If the alert comes from a variable and the backup was set up before 0.95, undoing it (“vanguard auto-backup --undo”) then setting it up again (“vanguard auto-backup”) may be enough: its 0.95 form starts rsync without the manager's variables. It goes quiet again as soon as it has its form and nothing changes it"
     ))
 }
 
@@ -9435,7 +9437,12 @@ mod tests {
                     && r.contains("« vanguard sauvegarde-auto --annuler »")
                     && r.contains("« vanguard sauvegarde-auto »")
                     && !r.contains("sans ambiguïté")
-                    && !r.contains("retirez la ligne");
+                    && !r.contains("retirez la ligne")
+                    // V-5 (relecture 0.95) : retirer une seule ligne du ~/.popt ne la tait pas, et la remettre en
+                    // place n'aide que pour une variable sur une sauvegarde d'avant la 0.95.
+                    && r.contains("~/.popt en entier")
+                    && !r.contains("sa ligne « exec »")
+                    && r.contains("posée avant la 0.95");
                 if !juste {
                     faux.push((*nom, vide, c.probleme, r));
                 }
