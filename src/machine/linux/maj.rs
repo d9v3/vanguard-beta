@@ -14,7 +14,18 @@ pub(super) fn liste_mises_a_jour(gestion: Paquets) -> Option<Vec<String>> {
     match gestion {
         // checkupdates : 0 = mises à jour listées, 2 = rien à faire, autre = erreur (hors ligne…).
         Paquets::Pacman => {
-            let r = lancer("checkupdates", &[])?;
+            // Sans dossier à lui, aucune base sûre : on ne sait pas, jamais « à jour ».
+            let Ok(base) = BasePrivee::creer(&std::env::temp_dir()) else {
+                return None;
+            };
+            let r = crate::commande::lancer(
+                crate::commande::par_le_systeme("checkupdates")
+                    .env("CHECKUPDATES_DB", base.chemin())
+                    .env("LC_ALL", "C"),
+                120,
+            );
+            drop(base);
+            let r = r?;
             match r.code {
                 Some(0) => Some(lignes(&r.sortie)),
                 Some(2) => Some(vec![]),
@@ -52,6 +63,44 @@ pub(super) fn liste_mises_a_jour(gestion: Paquets) -> Option<Vec<String>> {
             let r = lancer("zypper", &["-q", "list-updates"])?;
             (r.code == Some(0)).then(|| lignes(&r.sortie).into_iter().filter(|l| l.starts_with("v ")).collect())
         }
+    }
+}
+
+/// La base de travail de checkupdates (E-2, recontrôle 0.95). Sans CHECKUPDATES_DB, il prend
+/// « ${TMPDIR:-/tmp}/checkup-db-<UID> », un nom connu d'avance, y fait `mkdir -p` puis un lien `local` vers la base
+/// des paquets installés qui n'écrase pas un `local` déjà là (/usr/bin/checkupdates) : un programme du compte qui y
+/// posait une base locale vide faisait dire « rien à mettre à jour ». Ici, un dossier neuf, au nom tiré au hasard,
+/// créé seul (un dossier ou un lien déjà là au même nom fait échouer, jamais suivi), 0700, effacé ensuite.
+///
+/// Ce que cela ne couvre pas : un programme du même compte qui guette la création du dossier et y glisse son `local`
+/// avant checkupdates (le compte peut de toute façon écrire chez lui). Coût : les bases des dépôts sont retéléchargées
+/// à chaque lecture, au lieu d'être rafraîchies.
+struct BasePrivee(PathBuf);
+
+impl BasePrivee {
+    fn creer(dans: &Path) -> std::io::Result<Self> {
+        use std::fmt::Write as _;
+        use std::os::unix::fs::DirBuilderExt;
+        let mut octets = [0u8; 12];
+        getrandom::fill(&mut octets).map_err(|e| std::io::Error::other(e.to_string()))?;
+        let nom = octets.iter().fold(String::from("vanguard-checkupdates-"), |mut n, o| {
+            let _ = write!(n, "{o:02x}");
+            n
+        });
+        let chemin = dans.join(nom);
+        std::fs::DirBuilder::new().mode(0o700).create(&chemin)?;
+        Ok(Self(chemin))
+    }
+
+    fn chemin(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for BasePrivee {
+    fn drop(&mut self) {
+        // remove_dir_all ne suit pas le lien `local` : la vraie base des paquets n'est jamais touchée.
+        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
@@ -2252,5 +2301,74 @@ mod tests_environnement_du_compte {
         if std::env::var_os("VANGUARD_HORS_LIGNE").is_some() {
             assert!(texte.contains("issue-g1:non-verifie"), "{texte}");
         }
+    }
+
+    /// E-2 : le dossier de travail de checkupdates est neuf, privé (0700), et son effacement ne suit pas le lien
+    /// `local` vers la vraie base des paquets.
+    #[test]
+    fn base_privee_neuve_0700_effacee_sans_suivre_les_liens() {
+        let d = crate::essais::Jetable::nouveau("e2-base-privee");
+        let cible = d.join("base-des-paquets");
+        std::fs::create_dir_all(&cible).unwrap();
+        std::fs::write(cible.join("ALPM_DB_VERSION"), "9").unwrap();
+        let base = super::BasePrivee::creer(&d).unwrap();
+        let chemin = base.chemin().to_path_buf();
+        let meta = std::fs::symlink_metadata(&chemin).unwrap();
+        assert!(meta.is_dir() && meta.permissions().mode() & 0o777 == 0o700, "{meta:?}");
+        assert_ne!(
+            chemin,
+            super::BasePrivee::creer(&d).unwrap().chemin(),
+            "nom tiré au hasard"
+        );
+        std::os::unix::fs::symlink(&cible, chemin.join("local")).unwrap();
+        drop(base);
+        assert!(!chemin.exists() && cible.join("ALPM_DB_VERSION").exists());
+    }
+
+    /// Posée dans le processus relancé par l'essai E-2.
+    const RELANCE_E2: &str = "VANGUARD_ESSAI_E2_RELANCE";
+
+    /// E-2 (recontrôle 0.95) : sans CHECKUPDATES_DB, checkupdates prend « ${TMPDIR:-/tmp}/checkup-db-<UID> », un nom
+    /// connu d'avance, et n'écrase pas un `local` déjà là : un programme du compte qui y posait une base locale vide
+    /// faisait dire « rien à mettre à jour ». Vanguard lui donne un dossier neuf à lui, effacé ensuite : le dossier
+    /// connu n'est jamais créé ni lu, et rien ne reste.
+    #[test]
+    fn checkupdates_ne_prend_pas_la_base_au_nom_connu() {
+        if std::env::var_os(RELANCE_E2).is_some() {
+            let issue = match super::liste_mises_a_jour(super::Paquets::Pacman) {
+                None => "non-verifie".to_string(),
+                Some(l) => format!("{} paquets", l.len()),
+            };
+            println!("issue-e2:{issue}");
+            return;
+        }
+        if crate::commande::outil_systeme("checkupdates").is_none() {
+            return crate::essais::saute("checkupdates absent (pas Arch)");
+        }
+        let d = crate::essais::Jetable::nouveau("e2-base-checkupdates");
+        let tmp = d.join("tmp");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let sortie = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "machine::linux::maj::tests_environnement_du_compte::checkupdates_ne_prend_pas_la_base_au_nom_connu",
+                "--nocapture",
+            ])
+            .env(RELANCE_E2, "1")
+            .env("TMPDIR", &tmp)
+            .env("CHECKUPDATES_DB", d.join("base-du-compte"))
+            .output()
+            .unwrap();
+        let texte = String::from_utf8_lossy(&sortie.stdout);
+        assert!(sortie.status.success() && texte.contains("1 passed"), "{texte}");
+        let restes: Vec<String> = std::fs::read_dir(&tmp)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            restes.is_empty(),
+            "base de checkupdates hors du dossier privé, ou restée : {restes:?}\n{texte}"
+        );
+        assert!(!d.join("base-du-compte").exists(), "CHECKUPDATES_DB du compte suivi");
     }
 }
