@@ -5437,6 +5437,38 @@ fn fichiers_de_configuration(r: &Releveur) -> Vec<(std::path::PathBuf, Variables
     // Dans l'ordre des noms, comme `fichiers_sous` : le verdict ne dépend pas du système de fichiers.
     env.sort();
     configuration.extend(env.into_iter().map(shell));
+    // R-4 (re-contrôle 0.95, angle lecture) : les mêmes lecteurs cherchent ailleurs que dans ~/.config : sous le
+    // XDG_CONFIG_HOME de la session, sous un XDG_CONFIG_HOME ou XDG_CONFIG_DIRS posé au gestionnaire de systemd du
+    // compte, et uwsm sous chaque XDG_CONFIG_DIRS et XDG_DATA_DIRS (uwsm 0.27, prepare-env.sh). La liste est celle de
+    // la sauvegarde (`fichiers_du_gestionnaire`) : ses fichiers du compte qui ne sont pas déjà jugés, chacun selon le
+    // format du dossier où il est trouvé (X-1). ~/.config garde sa liste d'avant ; ~/.pam_environment ne se juge pas
+    // ici (comme avant).
+    let mut donnees: Vec<std::path::PathBuf> = r.config_systeme.iter().chain(&r.donnees_systeme).cloned().collect();
+    for (v, d) in &r.gestionnaire {
+        if ["XDG_DATA_DIRS", "XDG_CONFIG_DIRS"].contains(v) && !donnees.contains(d) {
+            donnees.push(d.clone());
+        }
+    }
+    let (ailleurs, _) = fichiers_du_gestionnaire(r, &configs_posees(&r.gestionnaire), &donnees);
+    let deja_lus = [
+        ".config/uwsm",
+        ".config/environment.d",
+        ".config/systemd",
+        ".pam_environment",
+    ]
+    .map(|d| h.join(d));
+    let mut ailleurs: Vec<(std::path::PathBuf, Variables)> = ailleurs
+        .into_iter()
+        .filter(|(f, du_compte, _)| *du_compte && !deja_lus.iter().any(|d| f.starts_with(d)))
+        .map(|(f, _, sorte)| (f, sorte))
+        .collect();
+    // Dans l'ordre des noms, comme plus haut.
+    ailleurs.sort_by(|a, b| a.0.cmp(&b.0));
+    for (f, sorte) in ailleurs {
+        if !configuration.iter().any(|(c, _)| *c == f) {
+            configuration.push((f, sorte));
+        }
+    }
     configuration
 }
 
@@ -15186,6 +15218,88 @@ mod tests {
             None,
         );
         assert!(faux.is_empty(), "{faux:#?}");
+    }
+
+    /// R-4 (re-contrôle 0.95, angle lecture) : environment.d, user.conf et ses compléments, et les fichiers d'uwsm se
+    /// jugent aussi là où leurs lecteurs les cherchent hors de ~/.config : sous le XDG_CONFIG_HOME de la session, sous
+    /// un XDG_CONFIG_HOME posé au gestionnaire de systemd du compte, et pour uwsm sous un XDG_DATA_DIRS posé de même
+    /// (uwsm 0.27, prepare-env.sh). Un préchargement posé là se lève à sa ligne.
+    #[test]
+    fn fichiers_de_variables_hors_de_config_juges() {
+        let session = [("XDG_CONFIG_HOME", "/home/alice/.c")];
+        let mut faux = Vec::new();
+        for (i, (fichier, texte, attendu)) in [
+            (
+                ".c/environment.d/50-x.conf",
+                "LD_PRELOAD=/tmp/l.so\n",
+                "~/.c/environment.d/50-x.conf:1 précharge",
+            ),
+            (
+                ".c/systemd/user.conf",
+                "[Manager]\nDefaultEnvironment=LD_PRELOAD=/tmp/l.so\n",
+                "~/.c/systemd/user.conf:2 précharge",
+            ),
+            (
+                ".c/systemd/user.conf.d/x.conf",
+                "[Manager]\nManagerEnvironment=LD_AUDIT=/tmp/l.so\n",
+                "~/.c/systemd/user.conf.d/x.conf:2 précharge",
+            ),
+            (
+                ".c/uwsm/env",
+                "export LD_PRELOAD=/tmp/l.so\n",
+                "~/.c/uwsm/env:1 précharge",
+            ),
+            (
+                ".c/uwsm/env.d/a",
+                "export LD_PRELOAD=/tmp/l.so\n",
+                "~/.c/uwsm/env.d/a:1 précharge",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("hors-config-{i}"));
+            m.ecrire(fichier, texte);
+            let c = m.lancements_avec(&session);
+            if !(c.probleme >= Some(Niveau::Eleve) && c.message.contains(attendu)) {
+                faux.push(format!("{fichier} : {:?} {}", c.probleme, c.message));
+            }
+        }
+        for (i, (pose, fichier, attendu)) in [
+            (
+                "XDG_CONFIG_HOME=/home/alice/.y\n",
+                ".y/uwsm/env.d/a",
+                "~/.y/uwsm/env.d/a:1 précharge",
+            ),
+            (
+                "XDG_CONFIG_HOME=/home/alice/.y\n",
+                ".y/environment.d/60-z.conf",
+                "~/.y/environment.d/60-z.conf:1 précharge",
+            ),
+            (
+                "XDG_DATA_DIRS=/home/alice/.d:/usr/share\n",
+                ".d/uwsm/env",
+                "~/.d/uwsm/env:1 précharge",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("hors-config-pose-{i}"));
+            m.ecrire(".config/environment.d/10-x.conf", pose);
+            // Sans « export » : valable dans les deux formats (uwsm lit ses fichiers sous « set -a »).
+            m.ecrire(fichier, "LD_PRELOAD=/tmp/l.so\n");
+            let c = m.lancements();
+            if !(c.probleme >= Some(Niveau::Eleve) && c.message.contains(attendu)) {
+                faux.push(format!("{fichier} posé par {pose:?} : {:?} {}", c.probleme, c.message));
+            }
+        }
+        assert!(faux.is_empty(), "hors de ~/.config : {faux:#?}");
+        // Témoin : un fichier d'uwsm sans préchargement sous le dossier de la session ne lève rien.
+        let m = Maison::nouvelle("hors-config-temoin");
+        m.ecrire(".c/uwsm/env", "export EDITOR=nvim\n");
+        let c = m.lancements_avec(&session);
+        assert!(!c.message.contains(":1 précharge"), "{}", c.message);
     }
 
     /// L-2 (campagne 0.95, angle lecture) : uwsm lit chaque fichier de « env.d » et « env-<bureau>.d », quelle que
