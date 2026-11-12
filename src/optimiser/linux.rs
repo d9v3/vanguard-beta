@@ -930,7 +930,13 @@ impl Changement {
         let r = match v.map(|t| (t, t.strip_prefix('+'))) {
             Some((_, Some(contenu))) => sous_maison::ecrire(p, contenu.as_bytes()),
             Some(("-", None)) => sous_maison::retirer(p),
-            _ => return Some(false),
+            _ => {
+                refuser_ici(tr!(
+                    "valeur notée pas reconnue : rien n'est écrit",
+                    "noted value not recognized: nothing is written"
+                ));
+                return Some(false);
+            }
         };
         Some(match r {
             Ok(()) => true,
@@ -1369,7 +1375,21 @@ pub fn ecrire_avec(lots: &[Vec<(&Changement, Valeur)>], en_plus: &[Vec<String>])
     for (lot, ok) in lots.iter().zip(resultats.iter_mut()) {
         for (c, v) in lot {
             if let Some(ecrit) = c.ecrire_ici(v.as_deref()) {
-                println!("    {GRIS}{}{RESET}", c.decrire(v.as_deref()));
+                // Refusé ou en échec (la raison est déjà dite sur sa ligne ✖), rien n'est écrit : jamais « remis comme
+                // avant » sous un refus (relecture 0.95, G-4).
+                if ecrit {
+                    println!("    {GRIS}{}{RESET}", c.decrire(v.as_deref()));
+                } else if let Changement::Demarrage {
+                    entree: Entree::Autostart(p),
+                    ..
+                } = c
+                {
+                    let f = court(p);
+                    trp!(
+                        "    {GRIS}{f} : rien n'est écrit{RESET}",
+                        "    {GRIS}{f}: nothing is written{RESET}"
+                    );
+                }
                 *ok &= ecrit;
             }
         }

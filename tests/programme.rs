@@ -3197,6 +3197,24 @@ mod demarrage_sous_attaque {
         assert_eq!(lu(&f), v2);
     }
 
+    /// Relecture 0.95, G-4 : une remise refusée (entrée réécrite depuis le retrait) ne dit pas « remis comme avant » ;
+    /// la sortie nomme le fichier et dit que rien n'est écrit.
+    #[test]
+    fn une_remise_refusee_ne_dit_pas_remis_comme_avant() {
+        let b = Banc::nouveau("remise-refusee");
+        let (f, _) = b.poser("radio.desktop", "Radio", "/home/alice/bin/radio");
+        let (_, e) = b.geste("Radio").unwrap();
+        assert_eq!(b.changer("--retirer", &e).1, "fait");
+        let a_la_main = "[Desktop Entry]\nHidden=true\nName=Autre\nExec=/usr/bin/false\n";
+        std::fs::write(&f, a_la_main).unwrap();
+        let s = b.lancer(&["demarrage", "--remettre", &e, "--json"]);
+        let tout = espaces_unis(&format!("{}{}", s.texte, s.erreurs));
+        assert!(tout.contains("réécrite"), "{tout}");
+        assert!(!tout.contains("remis comme avant"), "{tout}");
+        assert!(tout.contains("radio.desktop : rien n'est écrit"), "{tout}");
+        assert_eq!(lu(&f), a_la_main);
+    }
+
     /// A2. La note d'un vieux retrait vise un fichier où se trouve maintenant un programme à garder (aucun bouton à
     /// l'écran) : « Remettre » est refusé, rien n'est réécrit.
     #[test]
