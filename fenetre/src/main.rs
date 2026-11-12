@@ -52,7 +52,9 @@ struct Options {
     version: bool,
 }
 
-fn options(args: impl Iterator<Item = String>) -> Result<Options, String> {
+/// Les arguments en `OsString` : un chemin d'installation aux octets non UTF-8 (`--vanguard`) passe tel quel, et
+/// une option illisible est refusée comme inconnue, jamais une panique (`std::env::args` en ferait une).
+fn options(args: impl Iterator<Item = std::ffi::OsString>) -> Result<Options, String> {
     let mut o = Options {
         langue: None,
         depuis_vanguard: false,
@@ -61,8 +63,12 @@ fn options(args: impl Iterator<Item = String>) -> Result<Options, String> {
     };
     let mut args = args;
     while let Some(a) = args.next() {
-        match a.as_str() {
-            "--langue" | "--lang" => match args.next().as_deref() {
+        let Some(a) = a.to_str() else {
+            let lu = a.to_string_lossy();
+            return Err(format!("option inconnue : {}", nettoyage::nom(&lu, 40)));
+        };
+        match a {
+            "--langue" | "--lang" => match args.next().as_deref().and_then(std::ffi::OsStr::to_str) {
                 Some("fr") => o.langue = Some(false),
                 Some("en") => o.langue = Some(true),
                 _ => return Err("--langue : fr ou en".into()),
@@ -86,12 +92,12 @@ fn main() -> ExitCode {
     if !chargement::system32_seulement() {
         let e = "SetDefaultDllDirectories refusé";
         eprintln!("vanguard-fenetre : {e}, la fenêtre ne s'ouvre pas");
-        if !std::env::args().any(|a| a == "--depuis-vanguard") {
+        if !std::env::args_os().any(|a| a == "--depuis-vanguard") {
             avis::montrer(e);
         }
         return ExitCode::FAILURE;
     }
-    let o = match options(std::env::args().skip(1)) {
+    let o = match options(std::env::args_os().skip(1)) {
         Ok(o) => o,
         Err(e) => {
             eprintln!("vanguard-fenetre : {e}");
@@ -128,7 +134,7 @@ mod tests {
     use super::*;
 
     fn lire(a: &[&str]) -> Result<Options, String> {
-        options(a.iter().map(|s| (*s).to_string()))
+        options(a.iter().map(std::ffi::OsString::from))
     }
 
     #[test]
@@ -159,5 +165,34 @@ mod tests {
         assert!(lire(&["--vanguard"]).is_err());
         assert!(lire(&["--vanguard", "vanguard"]).is_err());
         assert!(lire(&["--vanguard", "/a/vanguard", "--vanguard", "/b/vanguard"]).is_err());
+    }
+
+    /// L4 (relecture 0.96) : un dossier d'installation au nom non UTF-8 arrive en octets bruts dans `--vanguard` ;
+    /// la fenêtre paniquait en lisant ses arguments. Le chemin passe tel quel, une option illisible est refusée.
+    #[test]
+    fn un_argument_non_utf8_n_arrete_pas_la_fenetre() {
+        #[cfg(unix)]
+        let (chemin, illisible) = {
+            use std::os::unix::ffi::OsStrExt;
+            (
+                std::ffi::OsStr::from_bytes(b"/opt/v\xff/vanguard").to_os_string(),
+                std::ffi::OsStr::from_bytes(b"--\xff").to_os_string(),
+            )
+        };
+        #[cfg(windows)]
+        let (chemin, illisible) = {
+            use std::os::windows::ffi::OsStringExt;
+            let mut c: Vec<u16> = "C:\\v".encode_utf16().collect();
+            c.push(0xD800);
+            c.extend("\\vanguard.exe".encode_utf16());
+            (
+                std::ffi::OsString::from_wide(&c),
+                std::ffi::OsString::from_wide(&[0x2D, 0x2D, 0xD800]),
+            )
+        };
+        let o = options(["--vanguard".into(), chemin.clone()].into_iter()).unwrap();
+        assert_eq!(o.vanguard.as_deref(), Some(std::path::Path::new(&chemin)));
+        assert!(options([illisible].into_iter()).is_err());
+        assert!(options(["--langue".into(), chemin].into_iter()).is_err());
     }
 }
