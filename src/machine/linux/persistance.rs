@@ -10907,6 +10907,7 @@ mod tests {
             Illisible,
             Bureau,
             AjoutDifferent,
+            ProcSimule,
         }
         type Cas<'a> = (&'a str, &'a str, &'a [(&'a str, &'a str)], Prep, bool);
         let autostart: &[(&str, &str)] = &[("Documents/lien", "/home/alice/.config/autostart")];
@@ -10916,6 +10917,58 @@ mod tests {
         );
         let cas: &[Cas<'_>] = &[
             (separateurs.as_str(), "", &[], Prep::Rien, false),
+            // Y-2 (revérification 4) : /proc/self, /proc/thread-self, /proc/<nombre> dépendent du processus qui lit
+            // (ici un /proc simulé où le dossier courant du lecteur est /srv, pas la maison).
+            (
+                "/usr/bin/cp /home/alice/Documents/x /home/alice/Documents/p/x.desktop",
+                "",
+                &[("Documents/p", "/proc/self/./cwd/.config/autostart")],
+                Prep::ProcSimule,
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x /home/alice/Documents/p/x.desktop",
+                "",
+                &[("Documents/p", "/proc/self//cwd/.config/autostart")],
+                Prep::ProcSimule,
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x /home/alice/Documents/p/x.desktop",
+                "",
+                &[("Documents/p", "/proc/self/task/../cwd/.config/autostart")],
+                Prep::ProcSimule,
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x /home/alice/Documents/p/x.desktop",
+                "",
+                &[("Documents/p", "/proc/4242/cwd/.config/autostart")],
+                Prep::ProcSimule,
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x /home/alice/Documents/p/x.desktop",
+                "",
+                &[("Documents/p", "/proc/thread-self/cwd/.config/autostart")],
+                Prep::ProcSimule,
+                false,
+            ),
+            (
+                "/usr/bin/cp /proc/cpuinfo /home/alice/Documents/b",
+                "",
+                &[],
+                Prep::ProcSimule,
+                true,
+            ),
+            // Le même passage sous une racine sans /proc : il se juge sur le chemin net, sans rien lire.
+            (
+                "/usr/bin/cp /home/alice/Documents/x /home/alice/Documents/p/x.desktop",
+                "",
+                &[("Documents/p", "/proc/sys/.././self/cwd/.config/autostart")],
+                Prep::Rien,
+                false,
+            ),
             // Y-1 (revérification 4) : un dossier courant que systemd ignore (non normalisé, pas absolu, code
             // inconnu) laisse le dossier personnel ; Vanguard ne doit pas en croire un autre.
             (
@@ -11161,6 +11214,15 @@ mod tests {
                         ".config/systemd/user/essai.service.d/ajout.conf",
                         "[Service]\nWorkingDirectory=/\n",
                     );
+                }
+                Prep::ProcSimule => {
+                    for d in ["srv", "proc/4242/task", "proc/thread-self"] {
+                        std::fs::create_dir_all(m.racine.join(d)).unwrap();
+                    }
+                    std::fs::write(m.racine.join("proc/cpuinfo"), "").unwrap();
+                    std::os::unix::fs::symlink("4242", m.racine.join("proc/self")).unwrap();
+                    std::os::unix::fs::symlink("/srv", m.racine.join("proc/4242/cwd")).unwrap();
+                    std::os::unix::fs::symlink("/srv", m.racine.join("proc/thread-self/cwd")).unwrap();
                 }
                 Prep::Rien | Prep::Bureau => {}
             }

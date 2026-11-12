@@ -734,7 +734,8 @@ impl Systeme<'_> {
     /// Une partie absente, ou sous un fichier qui n'est pas un dossier, arrête le suivi : le programme de la ligne
     /// ne la traverse pas non plus, et le reste se colle tel quel. `None` (non vérifié) : plus de `LIENS_SUIVIS`
     /// liens, un lien qui ne se lit pas, toute autre erreur de lecture (pas le droit, montage qui répond mal : X-4),
-    /// un passage par « /proc/<qui>/cwd », « root », « fd »… ou /dev/fd (il dépend du processus qui lit : X-3), ou
+    /// un passage par /proc/self, /proc/thread-self, /proc/<nombre> ou /dev/fd (il dépend du processus qui lit : X-3,
+    /// Y-2), ou
     /// un fichier final du propriétaire du dossier personnel à plusieurs liens physiques (son autre nom peut être un
     /// lieu de démarrage : X-3).
     fn chemin_reel(&self, p: &str) -> Option<String> {
@@ -761,9 +762,11 @@ impl Systeme<'_> {
                 continue;
             }
             let essai = format!("{fait}/{partie}");
-            // « /proc/<qui>/cwd|root|fd… » et « /dev/fd » mènent où se trouve le processus qui lit, pas Vanguard.
-            let magique = |n: &String| ["cwd", "root", "fd", "fdinfo", "map_files", "exe"].contains(&n.as_str());
-            if essai == "/dev/fd" || (essai == "/proc" && reste.iter().rev().nth(1).is_some_and(magique)) {
+            // Y-2 (revérification 4) : « /proc/self », « /proc/thread-self », « /proc/<nombre> » et « /dev/fd »
+            // dépendent du processus qui lit (son dossier courant, sa racine, ses fichiers ouverts), pas de celui que
+            // lance la ligne : rien ne se suit dessous. `essai` est déjà net (« . », parties vides et « .. »
+            // appliqués), si bien que « /proc/self/./cwd » ou « /proc/self/task/../cwd » s'y arrêtent aussi.
+            if par_un_processus(&essai) {
                 return None;
             }
             let lu = self.sous(&essai);
@@ -803,11 +806,40 @@ impl Systeme<'_> {
                         fait.push('/');
                         fait.push_str(&partie);
                     }
+                    // Le même passage écrit sous un début absent (ici, une racine d'essai sans /proc).
+                    if par_un_processus(&fait) {
+                        return None;
+                    }
                 }
             }
         }
         Some(if fait.is_empty() { "/".to_string() } else { fait })
     }
+}
+
+/// Y-2 : vrai si le chemin, une fois net (« . » et parties vides sautés, « .. » appliqués), passe par /proc/self,
+/// /proc/thread-self, /proc/<nombre> ou /dev/fd : ce qu'il y a dessous dépend du processus qui lit.
+fn par_un_processus(chemin: &str) -> bool {
+    let mut net: Vec<&str> = Vec::new();
+    for partie in chemin.split('/') {
+        match partie {
+            "" | "." => continue,
+            ".." => {
+                net.pop();
+                continue;
+            }
+            _ => net.push(partie),
+        }
+        let processus = match net.as_slice() {
+            ["dev", "fd"] => true,
+            ["proc", n] => *n == "self" || *n == "thread-self" || n.bytes().all(|b| b.is_ascii_digit()),
+            _ => false,
+        };
+        if processus {
+            return true;
+        }
+    }
+    false
 }
 
 /// Les débuts d'un chemin écrit qui désignent un dossier du compte, et ce qu'ils valent sous son dossier personnel :
