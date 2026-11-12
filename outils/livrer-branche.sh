@@ -9,9 +9,10 @@
 # commit posé sur la branche pendant la vérification (une autre fenêtre) fait refuser la livraison, rien fusionné ;
 # un master qui dépasse ce commit après la fusion (une autre fenêtre l'a fusionné, puis a commité) fait refuser le
 # déploiement.
-# Limites : un commit posé sur master pendant deployer.sh lui-même partirait avec lui (deployer.sh fait ses propres
-# commits, liste des fabricants, captures, page des fonctions : sa tête n'est pas celle vérifiée, à borner en 0.95) ;
-# confidentialite.py est celui du lot jugé, puis celui de master une fois fusionné (deployer.sh), donc le même.
+# Le garde-fou de confidentialité est celui de master (git show), jamais celui du lot jugé : un lot qui le viderait
+# ne se rendrait pas vert lui-même (comme la CI depuis 50f78225).
+# Limite : un commit posé sur master pendant deployer.sh lui-même partirait avec lui (deployer.sh fait ses propres
+# commits, liste des fabricants, captures, page des fonctions : sa tête n'est pas celle vérifiée, à borner en 0.95).
 # S'arrête à la première étape en échec, sans rien fusionner. Le déploiement passe avant le ménage : un ménage raté
 # (worktree verrouillé, branche gardée) est dit, sans défaire une livraison faite.
 # Essais : outils/essais-livrer-branche.sh (dépôts jetables, faux verifier.sh et deployer.sh).
@@ -65,8 +66,14 @@ SHA=$(git rev-parse HEAD)
 # d'envoyer master).
 # Code 1 avec son constat (« N détail(s) personnel(s) dans ») : un détail trouvé ; tout autre code (2 : rien conclu),
 # ou un code 1 sans constat (Python qui plante, sa trace) : le garde-fou n'a pas pu juger, dit tel quel (N-1).
+# Le garde-fou pris dans master, lancé isolé (python3 -I) depuis le worktree : celui du lot pourrait avoir été
+# vidé par le lot même. Introuvable dans master : refus, jamais un repli sur celui du lot.
+JUGE=$(mktemp "$JOURNAUX/confidentialite-master.XXXXXX")
+trap 'rm -f "$JUGE"' EXIT
+git -C "$DEPOT" show master:outils/confidentialite.py >"$JUGE" 2>/dev/null ||
+  { echo "✖ master n'a pas de outils/confidentialite.py lisible : rien n'est jugé, rien n'est fusionné"; exit 1; }
 GARDE=0
-SORTIE_GARDE=$(python3 outils/confidentialite.py --plage origin/master "$SHA" 2>&1) || GARDE=$?
+SORTIE_GARDE=$(python3 -I "$JUGE" --plage origin/master "$SHA" 2>&1) || GARDE=$?
 [[ -z $SORTIE_GARDE ]] || printf '%s\n' "$SORTIE_GARDE" >&2
 if ((GARDE == 1)) && grep -q '^Confidentialité : [0-9]* détail(s) personnel(s) dans' <<<"$SORTIE_GARDE"; then
   echo "✖ détail personnel : rien n'est fusionné"

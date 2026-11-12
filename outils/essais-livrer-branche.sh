@@ -21,6 +21,7 @@
 #      comme une panne, pas comme un détail trouvé ; un vrai constat (code 1, « détail(s) personnel(s) ») : refus dit.
 #  13. git status qui échoue (index abîmé), dans l'arbre principal ou dans le worktree : refus avant la vérification,
 #      jamais un arbre pris pour propre.
+#  14. Le garde-fou vidé par le lot même : c'est celui de master qui juge (refus) ; master sans garde-fou : refus.
 # Lancé par outils/verifier.sh.
 #   outils/essais-livrer-branche.sh
 set -uo pipefail
@@ -314,6 +315,35 @@ for ou in principal worktree; do
     ko "git status en échec ($ou) (code $CODE, vérifié : $([[ -e $CAS/vu-verifie ]] && echo oui || echo non)) : $(tail -n 3 <<<"$SORTIE")"
   fi
 done
+
+# 14. Le lot vide son propre garde-fou (il rend toujours 0) : c'est celui de master qui juge, et il trouve ; puis
+# master sans garde-fou : refus, jamais un repli sur celui du lot.
+monter garde-du-lot-vide
+DEPART=$(tete master)
+echo trouve >"$CAS/consigne-conf"
+printf 'import sys\nsys.exit(0)\n' >"$LOT/outils/confidentialite.py"
+git -C "$LOT" commit -qam "le lot vide le garde-fou"
+livrer lot "$LOT"
+if ((CODE != 0)) && rien_livre "$DEPART" && [[ ! -e $CAS/vu-verifie ]] &&
+  grep -q 'détail personnel : rien n.est fusionné' <<<"$SORTIE" && [[ -z $(ls "$CAS/maison/.cache/vanguard-dev") ]]; then
+  ok "garde-fou vidé par le lot : celui de master juge et refuse (copie effacée)"
+else
+  ko "garde-fou vidé par le lot (code $CODE) : $(tail -n 3 <<<"$SORTIE")"
+fi
+monter master-sans-garde
+DEPART=$(tete master)
+git -C "$DEPOT" rm -q outils/confidentialite.py && git -C "$DEPOT" commit -qm "sans garde-fou"
+DEPART=$(tete master)
+git -C "$LOT" rebase -q master
+printf 'import sys\nsys.exit(0)\n' >"$LOT/outils/confidentialite.py"
+git -C "$LOT" add outils/confidentialite.py && git -C "$LOT" commit -qm "le lot apporte un garde-fou vide"
+livrer lot "$LOT"
+if ((CODE != 0)) && rien_livre "$DEPART" && [[ ! -e $CAS/vu-verifie ]] &&
+  grep -q "master n'a pas de outils/confidentialite.py" <<<"$SORTIE"; then
+  ok "master sans garde-fou : refus, pas de repli sur celui du lot"
+else
+  ko "master sans garde-fou (code $CODE) : $(tail -n 3 <<<"$SORTIE")"
+fi
 
 ((ECHECS == 0)) || { echo "$ECHECS essai(s) en échec."; exit 1; }
 echo "livrer-branche.sh : tout est juste."
