@@ -11544,10 +11544,20 @@ mod tests {
                 .filter(|c| c.probleme.is_some())
                 .map(|c| c.message.clone())
                 .collect();
+            // A-3 (revérification 6) : quand l'autre nom d'un fichier n'a pas pu être cherché, le constat dit pourquoi.
+            let attendu = match prep {
+                Prep::PhysiqueTrop => "~/.bashrc…) : ils comptent plus de 4096 entrées",
+                Prep::PhysiqueProfond => "~/.bashrc…) : un dossier y est à plus de 8 niveaux de profondeur",
+                Prep::PhysiqueIllisible | Prep::PhysiqueSansTraverse | Prep::PhysiqueCibleIllisible => {
+                    "~/.bashrc…) : une entrée ne s'y lit pas (droits, lien en boucle, erreur du disque)"
+                }
+                Prep::PhysiqueLieuAbsolu => "~/.bashrc…) : un lien absolu y mène hors de l'arborescence examinée",
+                _ => "nomme un lieu de démarrage du compte",
+            };
             let juste = if *sain {
                 leve.is_empty()
             } else {
-                leve.iter().any(|l| l.contains("lieu de démarrage du compte"))
+                leve.iter().any(|l| l.contains(attendu))
             };
             if !juste {
                 faux.push((*exec, *courant, leve));
