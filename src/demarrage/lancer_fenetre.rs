@@ -602,8 +602,17 @@ fn lancer(chemin: &Path, programme: &Path) -> Lancement {
     // ni un Ctrl+C tapé ensuite dans ce terminal.
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut c, 0);
-    let Ok(mut enfant) = c.spawn_suivi() else {
-        return Lancement::PasOuverte;
+    attendre_ouverte(c)
+}
+
+/// Démarre la commande de la fenêtre et attend qu'elle dise « ouverte » (`ATTENTE` au plus), sinon l'arrête.
+fn attendre_ouverte(mut c: Command) -> Lancement {
+    // Refusé par le système (exécution interdite par une politique, /proc absent…) : la raison est dite.
+    let mut enfant = match c.spawn_suivi() {
+        Ok(enfant) => enfant,
+        Err(e) => {
+            return Lancement::Refusee(trf!("lancement impossible : {}", "launch impossible: {}", e));
+        }
     };
     let Some(sortie) = enfant.stdout.take() else {
         crate::commande::arreter(&mut enfant);
@@ -811,6 +820,21 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&sortie.stdout).trim_end(), "verifiee");
         drop(v);
         let _ = std::fs::remove_dir_all(&dossier);
+    }
+
+    /// L3 (relecture 0.96) : un lancement refusé par le système (exécution interdite, /proc absent, fichier
+    /// disparu) disait seulement « ne s'est pas ouverte » ; la raison doit être dite.
+    #[test]
+    fn un_lancement_refuse_par_le_systeme_dit_pourquoi() {
+        let absente = crate::essais::temporaire().join(crate::essais::nom_unique("fenetre-absente"));
+        let c = Command::new(absente);
+        match attendre_ouverte(c) {
+            Lancement::Refusee(r) => assert!(
+                r.contains("lancement impossible") || r.contains("launch impossible"),
+                "{r}"
+            ),
+            autre => panic!("la raison n'est pas dite : {autre:?}"),
+        }
     }
 
     /// L1 (relecture 0.96) : une bibliothèque injectée dans la session (l'alerte de `protection::environnement`)
