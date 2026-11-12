@@ -287,6 +287,58 @@ fn sha256_hex(octets: &[u8]) -> String {
     github::hex(&Sha256::digest(octets))
 }
 
+/// Le chemin d'une copie tel qu'il se montre et part vers la fenêtre : sans le préfixe étendu de Windows quand il
+/// peut s'ôter sans rien changer (`sans_prefixe_etendu`), puis « ~/… » sous le dossier personnel.
+fn montre(chemin: &Path) -> String {
+    crate::optimiser::annulables::chemin_montre(sans_prefixe_etendu(&chemin.to_string_lossy()))
+}
+
+/// Sous Windows, `canonicalize` rend `\\?\C:\…`, que la fenêtre refuse (elle ne lit que `C:\…`). Ce préfixe ne
+/// s'ôte que pour la forme exacte `\\?\X:\…` dont le reste désigne le même fichier sans lui : moins de 260 octets,
+/// chaque nom non vide, sans « . » ni « .. », sans point ni espace à la fin, sans caractère interdit, sans nom réservé
+/// (CON, NUL, COM1…). Sinon (`\\?\UNC\…`, un autre préfixe, un nom douteux), le chemin reste tel quel : la fenêtre
+/// le refuse, rien ne s'installe. Seul l'affichage change : les fichiers se lisent et s'écrivent par le vrai chemin.
+fn sans_prefixe_etendu(chemin: &str) -> &str {
+    let Some(reste) = chemin.strip_prefix(r"\\?\") else {
+        return chemin;
+    };
+    let (Some(noms), [lettre, b':', b'\\', _, ..]) = (reste.get(3..), reste.as_bytes()) else {
+        return chemin;
+    };
+    if lettre.is_ascii_alphabetic() && reste.len() < 260 && noms.split('\\').all(nom_sans_prefixe) {
+        reste
+    } else {
+        chemin
+    }
+}
+
+/// Un nom de chemin qui se lit pareil avec ou sans le préfixe étendu.
+fn nom_sans_prefixe(nom: &str) -> bool {
+    const RESERVES: [&str; 6] = ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"];
+    if nom.is_empty() || nom.ends_with(['.', ' ']) {
+        return false;
+    }
+    if nom
+        .chars()
+        .any(|c| c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '/' | '|' | '?' | '*'))
+    {
+        return false;
+    }
+    let base = nom
+        .split('.')
+        .next()
+        .unwrap_or(nom)
+        .trim_end_matches(' ')
+        .to_ascii_uppercase();
+    let numerote = ["COM", "LPT"].iter().any(|p| {
+        base.strip_prefix(p).is_some_and(|n| {
+            let mut c = n.chars();
+            matches!((c.next(), c.next()), (Some('0'..='9' | '¹' | '²' | '³'), None))
+        })
+    });
+    !RESERVES.contains(&base.as_str()) && !numerote
+}
+
 fn apercu(origine: &str, visee: Version, sha256: String, taille: u64, cibles: &[(PathBuf, Version)]) -> Apercu {
     // Deux compilations du même numéro se distinguent par leur date (`cote_a_cote`) : jamais « 0.95.0 remplace
     // 0.95.0 » sans dire laquelle est la plus récente.
@@ -294,7 +346,7 @@ fn apercu(origine: &str, visee: Version, sha256: String, taille: u64, cibles: &[
     let cibles = cibles
         .iter()
         .map(|(c, _)| Cible {
-            chemin: crate::optimiser::annulables::chemin_montre(&c.to_string_lossy()),
+            chemin: montre(c),
             version: match lire_programme(c, TAILLE_MAX) {
                 Lu::Version(v) => {
                     let (ici, la) = super::cote_a_cote(v, visee);
@@ -445,7 +497,7 @@ fn copie_illisible(chemin: &Path, pourquoi: &str) -> Refus {
     Refus::NonVerifie(trf!(
         "{} ne se lit pas, sa version reste inconnue ({})",
         "{} cannot be read, its version is unknown ({})",
-        crate::optimiser::annulables::chemin_montre(&chemin.to_string_lossy()),
+        montre(chemin),
         pourquoi
     ))
 }
@@ -947,6 +999,75 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// Le préfixe étendu de Windows ne s'ôte que de la forme exacte `\\?\X:\…` dont le reste nomme le même
+    /// fichier ; tout le reste est rendu tel quel (la fenêtre le refuse).
+    #[test]
+    fn le_prefixe_etendu_ne_s_ote_que_sans_rien_changer() {
+        let ote = [
+            (r"\\?\C:\Outils\vanguard.exe", r"C:\Outils\vanguard.exe"),
+            (r"\\?\d:\a b\vanguard.exe", r"d:\a b\vanguard.exe"),
+            (
+                r"\\?\C:\Users\alice\AppData\Local\Vanguard\bin\vanguard.exe",
+                r"C:\Users\alice\AppData\Local\Vanguard\bin\vanguard.exe",
+            ),
+            (r"\\?\C:\console\vanguard.exe", r"C:\console\vanguard.exe"),
+        ];
+        for (avec, sans) in ote {
+            assert_eq!(sans_prefixe_etendu(avec), sans, "{avec}");
+        }
+        let long = format!(r"\\?\C:\{}\vanguard.exe", "a".repeat(260));
+        let gardes = [
+            r"C:\Outils\vanguard.exe",
+            r"\\?\UNC\serveur\partage\vanguard.exe",
+            r"\\.\C:\vanguard.exe",
+            r"\\?\Volume{0e1f}\vanguard.exe",
+            r"\\?\C:",
+            r"\\?\C:\",
+            r"\\?\C:vanguard.exe",
+            r"\\?\1:\vanguard.exe",
+            r"\\?\C:\dossier.\vanguard.exe",
+            r"\\?\C:\dossier \vanguard.exe",
+            r"\\?\C:\a\..\vanguard.exe",
+            r"\\?\C:\a\.\vanguard.exe",
+            r"\\?\C:\a\\vanguard.exe",
+            r"\\?\C:\a\vanguard.exe\",
+            r"\\?\C:\a/b\vanguard.exe",
+            r"\\?\C:\a:flux\vanguard.exe",
+            r"\\?\C:\a*\vanguard.exe",
+            r"\\?\C:\CON\vanguard.exe",
+            r"\\?\C:\a\nul.txt",
+            r"\\?\C:\a\Com1 .exe",
+            r"\\?\C:\a\lpt9",
+            r"\\?\C:\a\COM¹",
+            r"\\?\C:\a\conin$",
+            long.as_str(),
+        ];
+        for g in gardes {
+            assert_eq!(sans_prefixe_etendu(g), g, "{g}");
+        }
+    }
+
+    /// Sous Windows, à partir d'un vrai `canonicalize` (forme `\\?\C:\…`) : le chemin montré perd le préfixe et
+    /// nomme le même fichier.
+    #[cfg(windows)]
+    #[test]
+    fn un_vrai_chemin_canonique_se_montre_sans_prefixe() {
+        let d = dossier("canonique");
+        let f = d.join("Outils").join(NOM);
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(&f, b"x").unwrap();
+        let canonique = f.canonicalize().unwrap();
+        let texte = canonique.to_string_lossy().into_owned();
+        assert!(texte.starts_with(r"\\?\"), "{texte}");
+        let sans = sans_prefixe_etendu(&texte);
+        assert!(!sans.starts_with(r"\\"), "{sans}");
+        let o = sans.as_bytes();
+        assert!(o[0].is_ascii_alphabetic() && o[1] == b':' && o[2] == b'\\', "{sans}");
+        assert_eq!(Path::new(sans).canonicalize().unwrap(), canonique);
+        assert!(!montre(&canonique).starts_with(r"\\"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     /// Depuis GitHub, une copie d'ici qui ne se lit pas (un lien vers rien, un dossier à la place du programme) n'est
     /// jamais « à jour » ni passée sous silence à côté d'une copie lisible : « non vérifié », avec son chemin.
     #[cfg(unix)]
@@ -965,7 +1086,7 @@ mod tests {
         std::fs::create_dir_all(vieux.parent().unwrap()).unwrap();
         std::fs::write(&vieux, programme("0.94.0+1780000000", "ici")).unwrap();
         let nomme = |r: Result<Plan, Refus>, c: &Path| {
-            let montre = crate::optimiser::annulables::chemin_montre(&c.to_string_lossy());
+            let montre = montre(c);
             matches!(r, Err(Refus::NonVerifie(ref t)) if t.contains(&montre))
         };
         // Un lien vers rien, puis un dossier : non vérifié, le chemin dit.
