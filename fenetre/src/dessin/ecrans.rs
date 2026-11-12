@@ -1,7 +1,10 @@
 //! Les écrans : chacun lit l'état d'`Appli` et ne demande que ses gestes (`demander`, `arreter`). Ce qui n'existe
 //! pas encore dans la fenêtre le dit, au lieu d'un bouton qui ne ferait rien.
 
-use eframe::egui::{Align, Color32, Frame, Layout, Margin, RichText, Sense, Stroke, Ui, pos2, vec2};
+use eframe::egui::{
+    Align, Color32, Frame, Id, Layout, Margin, Response, RichText, Role, Sense, Stroke, TextStyle, TextWrapMode, Ui,
+    WidgetInfo, WidgetText, pos2, vec2,
+};
 
 use super::bilan::{self, couleur_gravite};
 use super::vide;
@@ -49,11 +52,12 @@ pub fn montrer(appli: &mut Appli, ui: &mut Ui) {
     }
 }
 
-/// Une carte qu'on clique pour ouvrir un écran : « Ouvrir → » en bas le dit ; au survol, le contour et ce mot
-/// prennent l'accent, en fondu.
-fn tuile(appli: &mut Appli, ui: &mut Ui, titre: &str, valeur: &str, phrase: &str, couleur: Color32, vers: Ecran) {
+/// Une carte qu'on clique toute entière pour ouvrir un écran, d'un seul geste : au survol, son contour prend
+/// l'accent en fondu et la souris devient une main ; au clavier, Tab s'y arrête (l'anneau du focus) et Entrée ou
+/// Espace l'ouvre. `contenu` reçoit la part de survol (de 0 à 1) pour éclairer son « Ouvrir → » ; `nom` est ce qu'un
+/// lecteur d'écran en dit.
+fn carte_qui_ouvre(ui: &mut Ui, id: Id, nom: &str, contenu: impl FnOnce(&mut Ui, f32)) -> Response {
     let p = pal();
-    let id = ui.make_persistent_id(("tuile", titre));
     let s = super::survol(ui, id, ui.ctx().read_response(id).is_some_and(|r| r.hovered()));
     let cadre = Frame::new()
         .fill(p.surface)
@@ -63,36 +67,53 @@ fn tuile(appli: &mut Appli, ui: &mut Ui, titre: &str, valeur: &str, phrase: &str
         .inner_margin(Margin::same(20))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(texte(titre, 13.0, p.doux));
-            ui.add_space(4.0);
-            // La valeur s'écrit à l'encre ; un état à signaler (couleur vive) met un point devant.
-            let valeur = RichText::new(valeur).font(moyenne(24.0)).color(p.encre);
-            if couleur == p.encre {
-                // La hauteur de la ligne signalée (`signale_avec`) : avec ou sans point, les tuiles ont la même.
-                ui.horizontal_top(|ui| {
-                    ui.set_min_height(24.0 * 1.3);
-                    ui.label(valeur);
-                });
-            } else {
-                signale_avec(ui, couleur, 24.0, |ui| {
-                    ui.label(valeur);
-                });
-            }
-            ui.add_space(4.0);
-            ui.label(texte(phrase, 13.0, p.doux));
-            ui.add_space(16.0);
-            ui.label(texte(
-                &format!("{} →", crate::tr!("Ouvrir", "Open")),
-                12.0,
-                p.discret.lerp_to_gamma(p.encre, s),
-            ));
+            contenu(ui, s);
         })
         .response
         .rect;
     let rep = ui
         .interact(cadre, id, Sense::click())
         .on_hover_cursor(eframe::egui::CursorIcon::PointingHand);
-    super::clavier::anneau(ui, &rep, 16.0);
+    rep.widget_info(|| WidgetInfo::labeled(Role::Button, true, nom));
+    super::clavier::anneau(ui, &rep, f32::from(super::RAYON_CARTE));
+    rep
+}
+
+/// « Ouvrir → », le mot d'une carte qui s'ouvre : discret au repos, à l'encre sous la souris.
+fn mot_ouvrir(s: f32) -> RichText {
+    let p = pal();
+    texte(
+        &format!("{} →", crate::tr!("Ouvrir", "Open")),
+        12.0,
+        p.discret.lerp_to_gamma(p.encre, s),
+    )
+}
+
+/// Une tuile de la vue d'ensemble : « Ouvrir → » en bas le dit.
+fn tuile(appli: &mut Appli, ui: &mut Ui, titre: &str, valeur: &str, phrase: &str, couleur: Color32, vers: Ecran) {
+    let p = pal();
+    let id = ui.make_persistent_id(("tuile", titre));
+    let rep = carte_qui_ouvre(ui, id, titre, |ui, s| {
+        ui.label(texte(titre, 13.0, p.doux));
+        ui.add_space(4.0);
+        // La valeur s'écrit à l'encre ; un état à signaler (couleur vive) met un point devant.
+        let valeur = RichText::new(valeur).font(moyenne(24.0)).color(p.encre);
+        if couleur == p.encre {
+            // La hauteur de la ligne signalée (`signale_avec`) : avec ou sans point, les tuiles ont la même.
+            ui.horizontal_top(|ui| {
+                ui.set_min_height(24.0 * 1.3);
+                ui.label(valeur);
+            });
+        } else {
+            signale_avec(ui, couleur, 24.0, |ui| {
+                ui.label(valeur);
+            });
+        }
+        ui.add_space(4.0);
+        ui.label(texte(phrase, 13.0, p.doux));
+        ui.add_space(16.0);
+        ui.label(mot_ouvrir(s));
+    });
     if rep.clicked() {
         appli.aller(vers);
     }
@@ -236,7 +257,7 @@ fn accueil(appli: &mut Appli, ui: &mut Ui) {
 }
 
 /// Une ligne d'état sous un titre : en cours, en attente, ou l'heure du dernier résultat.
-fn etat_commande(appli: &Appli, c: Commande) -> String {
+pub(super) fn etat_commande(appli: &Appli, c: Commande) -> String {
     match appli.en_cours() {
         Some((e, d)) if e == c => {
             return crate::trf!("En cours depuis {:.0} s", "Running for {:.0} s", d.as_secs_f32());
@@ -348,33 +369,41 @@ fn rubrique(appli: &mut Appli, ui: &mut Ui, r: Rubrique) {
     cartes_commandes(appli, ui, commandes);
 }
 
-/// Une carte par commande : son titre, ce qu'elle fait, son état, Voir et Lancer.
+/// Une carte par commande : son titre, ce qu'elle fait et son état ; toute la carte ouvre la page de la commande
+/// (`carte_qui_ouvre`), qui seule porte Lancer, Relancer ou Arrêter : un geste par carte, pas deux boutons côte à
+/// côte.
 fn cartes_commandes(appli: &mut Appli, ui: &mut Ui, commandes: Vec<Commande>) {
     let p = pal();
     for c in commandes {
         let (etat, tourne) = (etat_commande(appli, c), tourne(appli, c));
-        carte(ui, 20, |ui| {
-            ui.set_width(ui.available_width());
-            super::mouvement::ligne(ui, vec2(19.0, 19.0), 15.0, |ui| {
-                texte_et_boutons(
-                    ui,
-                    c.nom(),
-                    |ui| {
-                        ui.label(RichText::new(c.titre()).font(moyenne(16.0)).color(p.encre));
-                        ui.label(texte(c.description(), 13.0, p.doux));
-                        ligne_etat(ui, etat, tourne);
-                    },
-                    |ui| {
-                        ui.push_id(c.nom(), |ui| {
-                            if petit(ui, crate::tr!("Voir", "Open"), true).clicked() {
-                                appli.aller(ecran_de(c));
-                            }
-                            lancer_arreter(appli, ui, c);
-                        });
-                    },
-                );
+        let id = ui.make_persistent_id(("carte-commande", c.nom()));
+        let rep = carte_qui_ouvre(ui, id, c.titre(), |ui, s| {
+            let fleche = WidgetText::from(mot_ouvrir(s)).into_galley(
+                ui,
+                Some(TextWrapMode::Extend),
+                f32::INFINITY,
+                TextStyle::Body,
+            );
+            ui.horizontal(|ui| {
+                let ecart = 16.0 + 2.0 * ui.spacing().item_spacing.x;
+                ui.vertical(|ui| {
+                    ui.set_width((ui.available_width() - fleche.size().x - ecart).max(160.0));
+                    ui.label(RichText::new(c.titre()).font(moyenne(16.0)).color(p.encre));
+                    ui.label(texte(c.description(), 13.0, p.doux));
+                    ligne_etat(ui, etat, tourne);
+                });
+                ui.add_space(16.0);
+                ui.label(fleche);
             });
         });
+        let rep = rep.on_hover_text(crate::trf!(
+            "Ouvrir la page {} : la lancer s'y fait",
+            "Open the {} page: running it is done there",
+            c.titre()
+        ));
+        if rep.clicked() {
+            appli.aller(ecran_de(c));
+        }
         ui.add_space(12.0);
     }
 }

@@ -1756,3 +1756,107 @@ fn choisir_a_la_souris_change_l_apercu_dessine() {
         }
     }
 }
+
+/// Une carte de commande (rubrique du rail) n'a qu'un geste : elle s'ouvre toute entière, à la souris comme au
+/// clavier (Tab jusqu'à elle, puis Entrée), et ne porte que « Ouvrir → » ; Lancer, Relancer et Arrêter ne sont que
+/// sur la page de la commande. Son état reste écrit sur la carte.
+#[test]
+fn une_carte_de_commande_s_ouvre_d_un_seul_geste() {
+    use egui::{Event, Key, Modifiers};
+    let ctx = Context::default();
+    super::polices(&ctx);
+    super::appliquer_theme(&ctx, true);
+    let mut temps = 1.0;
+    let rubrique = Rubrique::Ordinateur;
+    let commandes: Vec<Commande> = rubrique.commandes().collect();
+    let premiere = commandes[0];
+    let mut a = appli_remplie(false, true);
+    a.aller(Ecran::Rubrique(rubrique));
+    for _ in 0..4 {
+        tour(&ctx, &mut a, &mut temps, Vec::new());
+    }
+    let vus = mots(tour(&ctx, &mut a, &mut temps, Vec::new()));
+    let ouvrir = vus.iter().filter(|(m, _)| m == "Ouvrir →").count();
+    assert_eq!(ouvrir, commandes.len(), "un « Ouvrir → » par carte");
+    // Les cartes, du haut du titre de la première au bas de l'écran (la console, au-dessus, a ses propres
+    // « Relancer »).
+    let haut = commandes
+        .iter()
+        .filter_map(|c| vus.iter().find(|(m, _)| m == c.titre()).map(|v| v.1.y))
+        .fold(f32::INFINITY, f32::min);
+    assert!(haut.is_finite(), "aucun titre de carte écrit");
+    for m in ["Voir", "Lancer", "Relancer", "Arrêter"] {
+        assert!(
+            !vus.iter().any(|(v, ou)| v == m && ou.y >= haut - 30.0),
+            "« {m} » sur une carte de la rubrique"
+        );
+    }
+    for c in &commandes {
+        assert!(
+            vus.iter().any(|(v, _)| *v == super::ecrans::etat_commande(&a, *c)),
+            "l'état de « {} » n'est plus sur sa carte",
+            c.titre()
+        );
+    }
+    // À la souris : un clic sur la description (pas sur un bouton) ouvre la page de la commande.
+    cliquer(&ctx, &mut a, &mut temps, premiere.description());
+    assert_eq!(a.ecran, crate::appli::ecran_de(premiere));
+    // Au clavier : Tab jusqu'à la carte (le focus est sur elle quand sa zone couvre son titre), puis Entrée.
+    let mut a = appli_remplie(false, true);
+    a.aller(Ecran::Rubrique(rubrique));
+    for _ in 0..4 {
+        tour(&ctx, &mut a, &mut temps, Vec::new());
+    }
+    let titre = mots(tour(&ctx, &mut a, &mut temps, Vec::new()))
+        .into_iter()
+        .find(|(m, _)| m == premiere.titre())
+        .expect("le titre de la carte")
+        .1;
+    let touche = |key| Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    };
+    let mut sur_la_carte = false;
+    for _ in 0..80 {
+        tour(&ctx, &mut a, &mut temps, vec![touche(Key::Tab)]);
+        let focus = ctx.memory(egui::Memory::focused).and_then(|id| ctx.read_response(id));
+        if focus.is_some_and(|r| r.rect.contains(titre)) {
+            sur_la_carte = true;
+            break;
+        }
+    }
+    assert!(sur_la_carte, "Tab n'arrive jamais sur la carte");
+    tour(&ctx, &mut a, &mut temps, vec![touche(Key::Enter)]);
+    tour(&ctx, &mut a, &mut temps, Vec::new());
+    assert_eq!(a.ecran, crate::appli::ecran_de(premiere));
+    // Le geste qui lance est resté sur la page de chaque commande ordinaire de la rubrique.
+    let ordinaires: Vec<Commande> = commandes
+        .iter()
+        .copied()
+        .filter(|c| crate::appli::ecran_de(*c) == Ecran::Commande(*c))
+        .collect();
+    assert_ne!(ordinaires.len(), 0, "aucune commande ordinaire dans la rubrique");
+    for c in ordinaires {
+        a.aller(Ecran::Commande(c));
+        for _ in 0..4 {
+            tour(&ctx, &mut a, &mut temps, Vec::new());
+        }
+        let vus = mots(tour(&ctx, &mut a, &mut temps, Vec::new()));
+        // Sous le haut du titre de la page : la console, au-dessus, a ses propres « Relancer ».
+        let titre = vus
+            .iter()
+            .filter(|(m, _)| m == c.titre())
+            .map(|v| v.1.y)
+            .fold(f32::INFINITY, f32::min);
+        assert!(titre.is_finite(), "le titre de « {} » n'est pas écrit", c.titre());
+        assert!(
+            vus.iter()
+                .any(|(m, ou)| ["Lancer", "Relancer", "Arrêter"].contains(&m.as_str()) && ou.y >= titre - 30.0),
+            "pas de quoi lancer sur la page de « {} »",
+            c.titre()
+        );
+    }
+}
