@@ -1274,6 +1274,11 @@ pub(super) fn persistance_dans(
     }
     let sortes = fichiers_de_configuration(&t.r);
     let mut configuration: Vec<std::path::PathBuf> = sortes.iter().map(|(f, _)| f.clone()).collect();
+    let au_format_systemd: Vec<std::path::PathBuf> = sortes
+        .iter()
+        .filter(|(_, sorte)| format_systemd(*sorte))
+        .map(|(f, _)| f.clone())
+        .collect();
     let (environnement, hypr_lus, hypr_non_suivies) = environnement(&t.r, sortes, hypr.clone());
     t.r.environnement = Some(environnement);
     // Un « source = » de Hyprland que Vanguard ne suit pas (chemin calculé, joker de dossier, borne), ou qui lit un
@@ -1338,7 +1343,7 @@ pub(super) fn persistance_dans(
     lire_prechargement(racine, &variable, gestion, &mut t);
     // Les fichiers de Hyprland sont aussi des fichiers de configuration, après les autres.
     configuration.extend(hypr);
-    juger_configuration(&configuration, &demarrage, maison, &mut t);
+    juger_configuration(&configuration, &au_format_systemd, &demarrage, maison, &mut t);
     juger_demarrage(&demarrage, maison, &mut t);
     juger_generateurs(&mut t);
     juger_cron(racine, crontab, &mut t);
@@ -2593,9 +2598,15 @@ fn environnement(
                 crate::ui::affichable(nom)
             ))
         };
+        // Au format de systemd, un retour chariot seul coupe aussi l'enregistrement (L-1) : chaque morceau se juge, à
+        // la ligne écrite qui le porte.
+        let systemd = format_systemd(variables);
         for (numero, physiques, jointe) in lignes_continuees(texte) {
             let mut vus: Vec<String> = Vec::new();
-            for (n, l) in &physiques {
+            for (n, l) in physiques
+                .iter()
+                .flat_map(|(n, l)| enregistrements(l, systemd).into_iter().map(move |e| (n, e)))
+            {
                 // Un commentaire (« # » en tête, partout dans ces formats) ne pose rien ; sauf s'il finit par « \ » :
                 // une ligne continuée selon le lecteur, gardée.
                 let net = l.trim_matches([' ', '\t']);
@@ -2618,15 +2629,17 @@ fn environnement(
             // coupé ainsi (« export L\⏎D_PRELOAD=… ») ne se voit que joint (troisième vérification, V1). systemd met
             // une espace : ses mots sont ceux des lignes une à une, déjà lues.
             if physiques.len() > 1 {
-                if let Some(nom) = injection_nommee(&jointe, de_root) {
-                    refus.get_or_insert(injection(numero, &nom));
-                }
-                let noms = noms_poses(&jointe, variables);
-                if noms.iter().any(|nom| !variable_permise(nom) && !vus.contains(nom)) {
-                    posees.push(format!(
-                        "{montre}:{numero} : {}",
-                        crate::ui::couper(&crate::ui::affichable(jointe.trim_matches([' ', '\t'])), 90)
-                    ));
+                for jointe in enregistrements(&jointe, systemd) {
+                    if let Some(nom) = injection_nommee(jointe, de_root) {
+                        refus.get_or_insert(injection(numero, &nom));
+                    }
+                    let noms = noms_poses(jointe, variables);
+                    if noms.iter().any(|nom| !variable_permise(nom) && !vus.contains(nom)) {
+                        posees.push(format!(
+                            "{montre}:{numero} : {}",
+                            crate::ui::couper(&crate::ui::affichable(jointe.trim_matches([' ', '\t'])), 90)
+                        ));
+                    }
                 }
             }
         }
@@ -4235,6 +4248,42 @@ fn nomme_une_variable_de_la_sauvegarde(texte: &str, vide: bool) -> bool {
     !noms_ecrits(texte, |n| variable_de_la_sauvegarde(n, vide)).is_empty()
 }
 
+/// Un fichier de la sorte `sorte` est au format de systemd (environment.d, /etc/environment, pam_env, user.conf et
+/// ses compléments), dont le lecteur coupe un enregistrement aussi sur un retour chariot seul (`enregistrements`).
+fn format_systemd(sorte: Variables) -> bool {
+    matches!(sorte, Variables::Cles | Variables::Systemd)
+}
+
+/// Les enregistrements d'une ligne lue par `lines()` (coupée au seul « \n ») : au format de systemd, coupée aussi sur
+/// chaque retour chariot seul, comme la coupe systemd, où un « # » ne commente que jusque-là (campagne 0.95, angle
+/// lecture, L-1 : « #x⏎LD_PRELOAD=… » posait la variable sans être lu). Le shell (profils, uwsm) et popt ne coupent
+/// pas là, mesuré : leur ligne reste entière. pam_env n'est pas mesuré : coupé, le côté sûr (un faux positif lève).
+fn enregistrements(ligne: &str, systemd: bool) -> Vec<&str> {
+    if systemd {
+        ligne.split('\r').collect()
+    } else {
+        vec![ligne]
+    }
+}
+
+/// Le texte d'un fichier de la sorte `sorte`, chaque retour chariot seul changé en fin de ligne au format de systemd
+/// (`enregistrements`) ; tel quel sinon.
+fn coupe_comme_systemd(texte: &str, sorte: Variables) -> String {
+    if !format_systemd(sorte) {
+        return texte.to_string();
+    }
+    let mut coupe = String::with_capacity(texte.len());
+    let mut caracteres = texte.chars().peekable();
+    while let Some(c) = caracteres.next() {
+        coupe.push(if c == '\r' && caracteres.peek() != Some(&'\n') {
+            '\n'
+        } else {
+            c
+        });
+    }
+    coupe
+}
+
 /// Les noms que `cible` retient et que le texte écrit ailleurs qu'en les lisant (`nomme_une_variable_de_la_sauvegarde`).
 fn noms_ecrits(texte: &str, cible: impl Fn(&str) -> bool) -> std::collections::BTreeSet<String> {
     let jointe = texte.replace("\\\n", "");
@@ -4304,7 +4353,7 @@ fn environnement_change_la_sauvegarde(r: &Releveur, vide: bool) -> bool {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
                 Err(_) => true,
                 Ok(lu) => {
-                    let texte = String::from_utf8_lossy(&lu.octets);
+                    let texte = coupe_comme_systemd(&String::from_utf8_lossy(&lu.octets), *sorte);
                     !lu.entier
                         || nomme_une_variable_de_la_sauvegarde(&texte, vide)
                         || (*sorte == Variables::Shell && script_cache_ce_qu_il_pose(&texte, &r.maison, &scripts))
@@ -4625,7 +4674,7 @@ fn dossiers_du_gestionnaire_lus(
         }
         let texte = match temoins::lire_borne(&f, AJOUT_MAX) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Ok(lu) if lu.entier => String::from_utf8_lossy(&lu.octets).into_owned(),
+            Ok(lu) if lu.entier => coupe_comme_systemd(&String::from_utf8_lossy(&lu.octets), sorte),
             _ => {
                 non_resolus.push((f, "?".into()));
                 continue;
@@ -5677,9 +5726,11 @@ fn raccourcis_de_dictee(config: &Path) -> Option<std::path::PathBuf> {
 }
 
 /// Dans les fichiers de configuration : un préchargement, ou une commande suspecte hors des lignes de démarrage
-/// (jugées à part).
+/// (jugées à part). Ceux de `au_format_systemd` se coupent aussi sur un retour chariot seul (`enregistrements`) ; le
+/// retrait proposé est alors la ligne écrite entière.
 fn juger_configuration(
     configuration: &[std::path::PathBuf],
+    au_format_systemd: &[std::path::PathBuf],
     demarrage: &[std::path::PathBuf],
     h: &Path,
     t: &mut Lancements,
@@ -5690,11 +5741,14 @@ fn juger_configuration(
         let Some(lu) = lire(f, h, t) else {
             continue;
         };
-        for (n, l) in lu.texte.lines().enumerate() {
+        let systemd = au_format_systemd.contains(f);
+        let lignes = lu.texte.lines().enumerate();
+        for (n, ecrite, l) in lignes.flat_map(|(n, e)| enregistrements(e, systemd).into_iter().map(move |l| (n, e, l)))
+        {
             if definit_prechargement(l) {
                 t.sources
                     .push(source_de(&crate::modele::id::chemin(&f.to_string_lossy()), l));
-                t.retraits.push(retrait(f, &lu.texte, l));
+                t.retraits.push(retrait(f, &lu.texte, ecrite));
                 let d = designes::prechargement(l);
                 let temoin = temoin_de_ligne(t, f, n, &lu, l, d, false, Sorte::Shell);
                 t.temoins.push(temoin);
@@ -5710,7 +5764,7 @@ fn juger_configuration(
             {
                 t.sources
                     .push(source_de(&crate::modele::id::chemin(&f.to_string_lossy()), l));
-                t.retraits.push(retrait(f, &lu.texte, l));
+                t.retraits.push(retrait(f, &lu.texte, ecrite));
                 let d = designes::commande(l, designes::Contexte::Shell);
                 let temoin = temoin_de_ligne(t, f, n, &lu, l, d, true, Sorte::Shell);
                 t.temoins.push(temoin);
@@ -5722,7 +5776,7 @@ fn juger_configuration(
                 ));
             }
         }
-        juger_lignes_jointes(f, &lu, demarrage, h, t);
+        juger_lignes_jointes(f, &lu, systemd, demarrage, h, t);
     }
 }
 
@@ -5763,18 +5817,40 @@ fn variable_de_configuration(ligne: &str, maisons: &[&str]) -> Option<&'static s
 
 /// Les lignes continuées par « \ », jointes comme les lit le shell : « export L\⏎D_PRELOAD=… » précharge sans
 /// qu'aucune ligne écrite ne nomme LD_PRELOAD. Seulement ce qu'aucune de leurs lignes n'a déjà levé ; sans retrait
-/// proposé (retirer la seule première ligne laisserait la suite).
+/// proposé (retirer la seule première ligne laisserait la suite). Au format de systemd (`systemd`), les lignes se
+/// coupent aussi sur un retour chariot seul (`enregistrements`).
 fn juger_lignes_jointes(
     fichier: &Path,
     lu: &Lecture,
+    systemd: bool,
     demarrage: &[std::path::PathBuf],
     maison: &Path,
     t: &mut Lancements,
 ) {
-    for (premiere, physiques, jointe) in lignes_du_shell(&lu.texte) {
+    // Au format de systemd, le texte coupé aussi sur chaque retour chariot seul (« #x⏎L\⏎D_PRELOAD=… » : le
+    // commentaire s'arrête au retour chariot, la suite se joint) ; chaque enregistrement garde le numéro de la ligne
+    // écrite qui le porte.
+    let (texte, numeros): (std::borrow::Cow<'_, str>, Vec<usize>) = if systemd {
+        (
+            coupe_comme_systemd(&lu.texte, Variables::Systemd).into(),
+            lu.texte
+                .lines()
+                .enumerate()
+                .flat_map(|(n, l)| std::iter::repeat_n(n.saturating_add(1), l.split('\r').count()))
+                .collect(),
+        )
+    } else {
+        (lu.texte.as_str().into(), Vec::new())
+    };
+    for (premiere, physiques, jointe) in lignes_du_shell(&texte) {
         if physiques.len() < 2 {
             continue;
         }
+        let premiere = if systemd {
+            numeros.get(premiere.saturating_sub(1)).copied().unwrap_or(premiere)
+        } else {
+            premiere
+        };
         let n = premiere.saturating_sub(1);
         let raison = if definit_prechargement(&jointe) {
             if physiques.iter().any(|(_, l)| definit_prechargement(l)) {
@@ -10341,6 +10417,37 @@ mod tests {
                 false,
             ),
             ("pam_environment", ".pam_environment", "HOME OVERRIDE=/x\n", true, true),
+            // L-1 (campagne 0.95, angle lecture) : systemd coupe aussi sur un retour chariot seul, le « # » ne
+            // commente que jusque-là.
+            (
+                "environment.d, retour chariot",
+                ".config/environment.d/50-x.conf",
+                "#x\rLD_PRELOAD=/x.so\n",
+                true,
+                true,
+            ),
+            (
+                "user.conf, retour chariot",
+                ".config/systemd/user.conf",
+                "[Manager]\n#n\rDefaultEnvironment=HOME=/x\n",
+                true,
+                true,
+            ),
+            (
+                "pam_environment, retour chariot",
+                ".pam_environment",
+                "#n\rHOME OVERRIDE=/x\n",
+                true,
+                true,
+            ),
+            // Le shell ne coupe pas là : la ligne d'uwsm reste un commentaire.
+            (
+                "témoin : uwsm, retour chariot",
+                ".config/uwsm/env",
+                "#x\rexport HOME=/x\n",
+                false,
+                false,
+            ),
             ("uwsm", ".config/uwsm/env", "export RSYNC_OLD_ARGS=1\n", true, false),
             (
                 "uwsm-hyprland",
@@ -10524,6 +10631,20 @@ mod tests {
                 CONF,
                 "[Manager]\nManagerEnvironment=XDG_DATA_DIRS=/home/alice/.x:/usr/share\n",
                 complement(".x/systemd/user"),
+                true,
+            ),
+            (
+                "données par user.conf, derrière un retour chariot",
+                CONF,
+                "[Manager]\n#note\rManagerEnvironment=XDG_DATA_DIRS=/home/alice/.x:/usr/share\n",
+                complement(".x/systemd/user"),
+                true,
+            ),
+            (
+                "données du compte par environment.d, derrière un retour chariot",
+                ".config/environment.d/50-x.conf",
+                "#n\rXDG_DATA_HOME=${HOME}/.w\n",
+                complement(".w/systemd/user"),
                 true,
             ),
             (
@@ -14661,6 +14782,51 @@ mod tests {
             assert!(c.probleme >= Some(Niveau::Eleve), "{texte:?} : {}", c.message);
             assert!(c.message.contains(attendu), "{texte:?} : {}", c.message);
             assert!(crate::apprentissage::declarable(&c).is_err(), "{texte:?}");
+        }
+    }
+
+    /// L-1 (campagne 0.95, angle lecture) : systemd coupe un enregistrement aussi sur un retour chariot seul, et un
+    /// « # » ne commente que jusque-là : « #x⏎LD_PRELOAD=… » dans environment.d ou user.conf précharge, levé à sa
+    /// ligne écrite. Le shell ne coupe pas là : dans un profil, la ligne reste un commentaire.
+    #[test]
+    fn retour_chariot_seul_coupe_comme_systemd() {
+        for (i, (fichier, texte, attendu)) in [
+            (
+                ".config/environment.d/50-x.conf",
+                "A=1\n#x\rLD_PRELOAD=/tmp/l.so\n",
+                Some("~/.config/environment.d/50-x.conf:2 précharge"),
+            ),
+            (
+                ".config/systemd/user.conf",
+                "[Manager]\n#n\rDefaultEnvironment=LD_PRELOAD=/tmp/l.so\n",
+                Some("~/.config/systemd/user.conf:2 précharge"),
+            ),
+            (
+                ".config/systemd/user.conf.d/x.conf",
+                "[Manager]\n#n\rManagerEnvironment=LD_PRELOAD=/tmp/l.so\n",
+                Some("~/.config/systemd/user.conf.d/x.conf:2 précharge"),
+            ),
+            (
+                ".config/environment.d/50-x.conf",
+                "#x\rL\\\nD_PRELOAD=/tmp/l.so\n",
+                Some("~/.config/environment.d/50-x.conf:1 précharge"),
+            ),
+            (".profile", "#x\rexport LD_PRELOAD=/tmp/l.so\n", None),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("retour-chariot-{i}"));
+            m.ecrire(fichier, texte);
+            let c = m.lancements();
+            match attendu {
+                Some(attendu) => {
+                    assert!(c.probleme >= Some(Niveau::Eleve), "{texte:?} : {}", c.message);
+                    assert!(c.message.contains(attendu), "{texte:?} : {}", c.message);
+                    assert!(crate::apprentissage::declarable(&c).is_err(), "{texte:?}");
+                }
+                None => assert_eq!(c.probleme, None, "{texte:?} : {}", c.message),
+            }
         }
     }
 
