@@ -1,12 +1,15 @@
 //! Mettre Vanguard à jour depuis la fenêtre : `vanguard se-mettre-a-jour --voir --json`, puis
 //! `vanguard se-mettre-a-jour --appliquer --accord <accord> --json`, sur le modèle d'une correction (conception, 2.3).
 //!
-//! `--voir` dit exactement ce qui s'installerait, sans rien changer (seul le carnet des aperçus s'écrit) : d'où vient
+//! `--voir` dit exactement ce qui s'installerait, sans rien changer à l'ordinateur ni aux programmes : d'où vient
 //! le programme (la clé VANGUARD d'où tourne Vanguard, ou la dernière version publiée sur GitHub, signée par l'auteur
 //! et vérifiée), sa version, son empreinte SHA-256 et sa taille, et chaque programme d'ici qu'il remplacerait avec sa
 //! version d'aujourd'hui. L'accord résume tout cela. Rien de plus récent : « à jour », seulement quand c'est vérifié ;
 //! une réponse qui manque, un manifeste plus vieux que celui déjà vu ou une copie illisible disent « non vérifié »,
-//! jamais « à jour ». Ce qui demande une question (repartir des versions vues) reste au terminal.
+//! jamais « à jour ». Ce qui demande une question (repartir des versions vues) reste au terminal. Ce que `--voir`
+//! écrit, liste fermée : son entrée au carnet des aperçus (proposé seulement), et, comme le terminal pour tout
+//! manifeste signé vu, la plus haute version vue et la révocation de la clé principale ; avec eux, le registre des
+//! sceaux, son témoin et ses verrous (`lecture_seule::EXEMPTES_CARNET`, `EXEMPTES_VUES`).
 //!
 //! `--appliquer` refait tout l'aperçu, exige le même accord (une nouvelle version publiée entre-temps, une clé
 //! changée, une copie remplacée le changent : refusé), consomme l'aperçu au carnet (2 s à 10 min, une seule fois),
@@ -196,6 +199,9 @@ pub(super) trait Monde {
     fn maintenant(&self) -> u64;
     /// Après l'accord seulement : retenir le manifeste (`github::retenir`).
     fn retenir(&self, p: &Publiee) -> Result<(), String>;
+    /// Pendant l'aperçu, ce que le terminal retient d'un manifeste vu, signature vérifiée et pas plus vieux que le
+    /// déjà vu : la plus haute version vue et la révocation (`github::retenir_pendant_un_apercu`). Rien d'autre.
+    fn retenir_la_vue(&self, p: &Publiee) -> Result<(), String>;
     /// Après l'accord seulement : le programme téléchargé, taille et empreinte signées vérifiées.
     fn telecharger(&self, p: &Publiee) -> Result<Vec<u8>, String>;
     fn essai(&self) -> Essai;
@@ -246,6 +252,9 @@ impl Monde for Ici {
     }
     fn retenir(&self, p: &Publiee) -> Result<(), String> {
         github::retenir(p)
+    }
+    fn retenir_la_vue(&self, p: &Publiee) -> Result<(), String> {
+        github::retenir_pendant_un_apercu(p)
     }
     fn telecharger(&self, p: &Publiee) -> Result<Vec<u8>, String> {
         github::programme_verifie(p)
@@ -308,8 +317,18 @@ fn apercu(origine: &str, visee: Version, sha256: String, taille: u64, cibles: &[
     }
 }
 
-/// Ce qui serait installé, relu maintenant, ou pourquoi rien n'est proposé. Rien n'est écrit.
-fn plan(m: &dyn Monde) -> Result<Plan, Refus> {
+/// Pour quoi le plan est fait.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Pour {
+    /// L'aperçu (`--voir`) : un manifeste signé reçu de GitHub y est retenu comme au terminal (`Monde::retenir_la_vue`).
+    Voir,
+    /// Le geste (`--appliquer`) : rien n'est retenu avant l'accord comparé et consommé.
+    Appliquer,
+}
+
+/// Ce qui serait installé, relu maintenant, ou pourquoi rien n'est proposé. Rien n'est écrit, sauf, pour l'aperçu,
+/// ce que GitHub a montré de signé (`Pour::Voir`).
+fn plan(m: &dyn Monde, pour: Pour) -> Result<Plan, Refus> {
     match m.etat_cle() {
         // La clé d'abord : ses octets lus maintenant sont ceux qui s'installeront, version revérifiée.
         Etat::AMettreAJour { source, cle, .. } => {
@@ -336,11 +355,11 @@ fn plan(m: &dyn Monde) -> Result<Plan, Refus> {
             "the copy on this computer cannot be read, its version is unknown ({})",
             e
         ))),
-        Etat::Rien | Etat::PasDepuisLaCle | Etat::AJour(_) | Etat::ClePlusAncienne { .. } => plan_github(m),
+        Etat::Rien | Etat::PasDepuisLaCle | Etat::AJour(_) | Etat::ClePlusAncienne { .. } => plan_github(m, pour),
     }
 }
 
-fn plan_github(m: &dyn Monde) -> Result<Plan, Refus> {
+fn plan_github(m: &dyn Monde, pour: Pour) -> Result<Plan, Refus> {
     let cibles = m.cibles_github();
     if cibles.is_empty() {
         return Err(Refus::Rien);
@@ -380,6 +399,12 @@ fn plan_github(m: &dyn Monde) -> Result<Plan, Refus> {
         .derniere()
         .map_err(|e| Refus::NonVerifie(trf!("GitHub : {}", "GitHub: {}", e)))?;
     m.juger_la_vue(&p).map_err(Refus::NonVerifie)?;
+    // L'aperçu retient ce qu'il a vu de signé, comme le terminal : sans quoi un « à jour » ou un aperçu pas accepté ne
+    // relèverait rien, et un manifeste plus vieux resservi plus tard serait jugé sans ce plancher. Le geste, lui,
+    // retient après l'accord (`agir`).
+    if pour == Pour::Voir {
+        m.retenir_la_vue(&p).map_err(Refus::NonVerifie)?;
+    }
     // Le plancher : le programme lancé et les copies d'ici (`depuis_github`).
     let ici: Vec<Version> = lues.iter().filter_map(|(_, v)| *v).chain(m.courante()).collect();
     // Seulement ce qui est plus ancien que la version publiée (sans version gravée : d'avant la 0.78, donc plus
@@ -423,15 +448,15 @@ fn copie_illisible(chemin: &Path, pourquoi: &str) -> Refus {
     ))
 }
 
-/// `vanguard se-mettre-a-jour --voir [--json]` : ce qui s'installerait, rien de changé (seul le carnet des aperçus
-/// s'écrit, et seulement quand quelque chose est proposé). Avec `json`, la dernière ligne :
+/// `vanguard se-mettre-a-jour --voir [--json]` : ce qui s'installerait, rien de changé (s'écrivent seulement le carnet
+/// des aperçus quand quelque chose est proposé, et ce que GitHub a montré de signé : voir l'en-tête). Avec `json`, la dernière ligne :
 /// `{"geste":"voir-mise-a-jour","issue":"fait"|"refuse","raison","etat":"propose"|"a-jour"|"rien"|"non-verifie"|
 /// "refuse","apercu","accord"}`. Code : 0 proposé, 1 rien de proposé, 2 sans la lecture seule.
 pub(crate) fn voir(json: bool) -> i32 {
     // Fermé par construction, comme l'aperçu d'une correction : sans la lecture seule posée par main avant tout le
     // reste, rien n'est relu.
     let issue = if crate::autotest::lecture_seule::sans_attente() {
-        plan(&Ici).map(|p| p.apercu)
+        plan(&Ici, Pour::Voir).map(|p| p.apercu)
     } else {
         Err(Refus::SansLectureSeule)
     };
@@ -508,7 +533,7 @@ enum Issue {
 
 /// Le geste, l'accord reçu bien formé : relire, comparer, consommer, puis seulement retenir, télécharger, installer.
 fn agir(m: &dyn Monde, accord: &str, consommer: impl FnOnce() -> Result<(), carnet::Refus>) -> Issue {
-    let plan = match plan(m) {
+    let plan = match plan(m, Pour::Appliquer) {
         Ok(p) => p,
         Err(r) => return Issue::Refuse(r),
     };
@@ -684,6 +709,8 @@ mod tests {
         maintenant: u64,
         recus: Vec<u8>,
         retenus: Cell<u32>,
+        /// Les manifestes retenus pendant un aperçu (`retenir_la_vue`).
+        vus: Cell<u32>,
         telecharges: Cell<u32>,
     }
 
@@ -700,6 +727,7 @@ mod tests {
                 maintenant: 1_790_000_000,
                 recus: Vec::new(),
                 retenus: Cell::new(0),
+                vus: Cell::new(0),
                 telecharges: Cell::new(0),
             }
         }
@@ -735,6 +763,10 @@ mod tests {
         }
         fn retenir(&self, _: &Publiee) -> Result<(), String> {
             self.retenus.set(self.retenus.get().saturating_add(1));
+            Ok(())
+        }
+        fn retenir_la_vue(&self, _: &Publiee) -> Result<(), String> {
+            self.vus.set(self.vus.get().saturating_add(1));
             Ok(())
         }
         fn telecharger(&self, _: &Publiee) -> Result<Vec<u8>, String> {
@@ -773,7 +805,7 @@ mod tests {
             copie: Some(version("0.94.0+1780000000")),
             cle: version("0.95.0+1790000000"),
         };
-        let a = plan(&f).unwrap().apercu;
+        let a = plan(&f, Pour::Voir).unwrap().apercu;
         assert_eq!(a.origine, "cle");
         assert_eq!(a.visee, "0.95.0");
         assert_eq!(a.sha256, sha256_hex(&neuf));
@@ -816,7 +848,7 @@ mod tests {
             copie: Some(version("0.94.0+1780000000")),
             cle: version("0.95.0+1790000000"),
         };
-        let accord = plan(&f).unwrap().apercu.accord();
+        let accord = plan(&f, Pour::Voir).unwrap().apercu.accord();
         std::fs::write(&source, programme("0.95.0+1790000000", "autre")).unwrap();
         assert_eq!(agir(&f, &accord, CONSOMME), Issue::Refuse(Refus::Change));
         assert_eq!(std::fs::read(&f.copie).unwrap(), ancien);
@@ -839,7 +871,7 @@ mod tests {
         let publie = programme("0.95.0+1790000000", "publie");
         f.derniere = Ok(Publiee::d_essai(version("0.95.0+1790000000"), &publie));
         f.recus = publie.clone();
-        let a = plan(&f).unwrap().apercu;
+        let a = plan(&f, Pour::Voir).unwrap().apercu;
         assert_eq!(a.origine, "github");
         assert_eq!(a.sha256, sha256_hex(&publie));
         assert_eq!(a.cibles.len(), 1, "le plus récent n'est jamais remplacé");
@@ -879,34 +911,34 @@ mod tests {
         f.cibles = vec![ici.clone()];
         let non = |r: Result<Plan, Refus>| matches!(r, Err(Refus::NonVerifie(_)));
         // Pas de réponse.
-        assert!(non(plan(&f)));
+        assert!(non(plan(&f, Pour::Voir)));
         // La même version, publiée récemment : à jour.
         f.derniere = Ok(Publiee::d_essai(version("0.95.0+1790000000"), b"x"));
-        assert!(matches!(plan(&f), Err(Refus::AJour(_))));
+        assert!(matches!(plan(&f, Pour::Voir), Err(Refus::AJour(_))));
         // Plus vieille que la plus haute vue.
         f.vue = Err("manifeste plus vieux".into());
-        assert!(non(plan(&f)));
+        assert!(non(plan(&f, Pour::Voir)));
         f.vue = Ok(());
         // Versions vues changées hors de Vanguard.
         f.douteuses = true;
-        assert!(non(plan(&f)));
+        assert!(non(plan(&f, Pour::Voir)));
         f.douteuses = false;
         // Signée il y a trop longtemps.
         f.maintenant = 1_790_000_000 + 90 * 86_400;
-        assert!(non(plan(&f)));
+        assert!(non(plan(&f, Pour::Voir)));
         f.maintenant = 1_790_000_000;
         // Plus récent ici que la dernière signée.
         f.courante = Some(version("0.96.0+1795000000"));
-        assert!(non(plan(&f)));
+        assert!(non(plan(&f, Pour::Voir)));
         f.courante = Some(version("0.95.0+1790000000"));
         // La copie illisible.
         f.etat = Etat::Illisible("illisible".into());
-        assert!(non(plan(&f)));
+        assert!(non(plan(&f, Pour::Voir)));
         f.etat = Etat::Rien;
-        assert!(matches!(plan(&f), Err(Refus::AJour(_))));
+        assert!(matches!(plan(&f, Pour::Voir), Err(Refus::AJour(_))));
         // Rien ici à remplacer.
         f.cibles.clear();
-        assert_eq!(plan(&f).err(), Some(Refus::Rien));
+        assert_eq!(plan(&f, Pour::Voir).err(), Some(Refus::Rien));
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -933,13 +965,13 @@ mod tests {
         };
         // Un lien vers rien, puis un dossier : non vérifié, le chemin dit.
         f.cibles = vec![casse.clone()];
-        assert!(nomme(plan(&f), &casse));
+        assert!(nomme(plan(&f, Pour::Voir), &casse));
         f.cibles = vec![dossier_ici.clone()];
-        assert!(nomme(plan(&f), &dossier_ici));
+        assert!(nomme(plan(&f, Pour::Voir), &dossier_ici));
         // Une copie vieille lisible et une illisible : rien n'est proposé en taisant l'illisible.
         f.derniere = Ok(Publiee::d_essai(version("0.95.0+1790000000"), b"x"));
         f.cibles = vec![vieux.clone(), casse.clone()];
-        assert!(nomme(plan(&f), &casse));
+        assert!(nomme(plan(&f, Pour::Voir), &casse));
         // L'accord recalculé suit le même chemin : rien n'est posé.
         f.recus = b"x".to_vec();
         assert!(matches!(
@@ -947,6 +979,41 @@ mod tests {
             Issue::Refuse(Refus::NonVerifie(_))
         ));
         assert_eq!(std::fs::read(&vieux).unwrap(), programme("0.94.0+1780000000", "ici"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// L'aperçu retient ce que GitHub a montré de signé, comme le terminal (plancher des versions vues, révocation),
+    /// qu'il propose quelque chose ou dise « à jour » ; jamais un manifeste refusé, jamais avant d'avoir vu un
+    /// manifeste ; le geste, lui, ne retient qu'après l'accord. Le vrai plancher : `github::tests`.
+    #[test]
+    fn l_apercu_retient_ce_que_github_a_signe() {
+        let d = dossier("vue");
+        let mut f = Faux::nouveau(&d);
+        f.maintenant = 1_795_100_000;
+        let ici = d.join("a").join(NOM);
+        std::fs::create_dir_all(ici.parent().unwrap()).unwrap();
+        std::fs::write(&ici, programme("0.94.0+1780000000", "ici")).unwrap();
+        f.cibles = vec![ici.clone()];
+        // Pas de réponse : rien à retenir.
+        assert!(plan(&f, Pour::Voir).is_err());
+        assert_eq!(f.vus.get(), 0);
+        let publie = programme("0.96.0+1795000000", "publie");
+        f.derniere = Ok(Publiee::d_essai(version("0.96.0+1795000000"), &publie));
+        assert!(plan(&f, Pour::Voir).is_ok());
+        assert_eq!((f.vus.get(), f.retenus.get()), (1, 0));
+        // « À jour » aussi : vu, donc retenu.
+        f.courante = Some(version("0.96.0+1795000000"));
+        std::fs::write(&ici, programme("0.96.0+1795000000", "ici")).unwrap();
+        assert!(matches!(plan(&f, Pour::Voir), Err(Refus::AJour(_))));
+        assert_eq!(f.vus.get(), 2);
+        // Plus vieux que le déjà vu : refusé, rien de retenu.
+        f.vue = Err("manifeste plus vieux que celui déjà vu".into());
+        assert!(matches!(plan(&f, Pour::Voir), Err(Refus::NonVerifie(_))));
+        assert_eq!(f.vus.get(), 2);
+        // Le geste : rien avant l'accord.
+        f.vue = Ok(());
+        let _ = plan(&f, Pour::Appliquer);
+        assert_eq!((f.vus.get(), f.retenus.get()), (2, 0));
         let _ = std::fs::remove_dir_all(&d);
     }
 

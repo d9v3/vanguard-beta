@@ -145,6 +145,16 @@ impl Heritage {
 /// carnet, puis le registre des sceaux et son témoin. Rien d'autre, même exempté.
 const EXEMPTES_CARNET: &[&str] = &[crate::sceau::APERCUS, "sceaux.json", crate::sceau::TEMOIN];
 
+/// L'aperçu d'une mise à jour (`mise_a_jour::apercu`) retient ce que GitHub lui a montré de signé, comme le
+/// terminal : la plus haute version vue et la révocation de la clé principale, puis le registre des sceaux et son
+/// témoin. Rien d'autre, même exempté.
+const EXEMPTES_VUES: &[&str] = &[
+    crate::sceau::VERSIONS,
+    crate::sceau::REVOCATION,
+    "sceaux.json",
+    crate::sceau::TEMOIN,
+];
+
 /// Un fichier de `liste` (sous n'importe quel dossier).
 fn exempte(chemin: &Path, liste: &[&str]) -> bool {
     let texte = chemin.to_string_lossy().replace('\\', "/");
@@ -181,6 +191,12 @@ pub(crate) fn ecrire_resultat<T>(ecrire: impl FnOnce() -> T) -> T {
 /// l'interrupteur, et seulement pour les fichiers de `EXEMPTES_CARNET`. Une règle hors délai reste refusée.
 pub(crate) fn ecrire_carnet<T>(ecrire: impl FnOnce() -> T) -> T {
     ecrire_exempte(EXEMPTES_CARNET, ecrire)
+}
+
+/// Retient ce qu'un aperçu de mise à jour a vu de signé (`mise_a_jour::github::retenir_pendant_un_apercu`) : seul ce
+/// fil, le temps de `ecrire`, passe l'interrupteur, et seulement pour les fichiers de `EXEMPTES_VUES`.
+pub(crate) fn ecrire_vues<T>(ecrire: impl FnOnce() -> T) -> T {
+    ecrire_exempte(EXEMPTES_VUES, ecrire)
 }
 
 fn ecrire_exempte<T>(liste: &'static [&'static str], ecrire: impl FnOnce() -> T) -> T {

@@ -527,6 +527,13 @@ pub(super) fn retenir(publiee: &Publiee) -> Result<(), String> {
     Ok(())
 }
 
+/// `retenir` pendant l'aperçu de la fenêtre (`--voir`, sous la lecture seule) : ce que le terminal retient d'un
+/// manifeste vu, signature vérifiée, et seulement cela (le plancher des versions vues, la révocation, leurs sceaux).
+/// Sans quoi un manifeste signé plus vieux, resservi plus tard, serait jugé sans le plancher de ce qui a été vu.
+pub(super) fn retenir_pendant_un_apercu(publiee: &Publiee) -> Result<(), String> {
+    crate::autotest::lecture_seule::ecrire_vues(|| retenir(publiee))
+}
+
 /// `retenir` sans rien écrire, pour un aperçu : le manifeste reçu passerait-il la plus haute version vue ? Révoquée
 /// pour la première fois, la plus haute vue repartira de zéro (`retenir_revocation`) : elle ne compte pas.
 pub(super) fn juger_la_vue(publiee: &Publiee) -> Result<(), String> {
@@ -846,6 +853,49 @@ passe-droit-sans-vm {zeros} 0
         // Abaissée puis acceptée telle quelle, les sceaux effacés : pas un plancher, c'est dit.
         let lu = crate::sceau::Lecture::Adopte(b"0.1.0+1".to_vec());
         assert!(version_vue(lu).is_err());
+    }
+
+    /// Sous la lecture seule de l'aperçu, `retenir` n'écrit rien ; `retenir_pendant_un_apercu` retient le plancher
+    /// et la révocation, et rien d'autre : le manifeste 0.95 vu après le 0.96 est refusé comme plus vieux.
+    /// L'interrupteur seul, sans « sans attente » : les autres essais tiennent le verrou des sceaux un instant.
+    #[test]
+    fn l_apercu_retient_le_plancher_et_la_revocation() {
+        use crate::autotest::lecture_seule;
+        let _seul = ETAT_DES_VERSIONS.lock().unwrap_or_else(PoisonError::into_inner);
+        let _ = crate::sceau::effacer(crate::sceau::REVOCATION);
+        oublier_versions_vues().unwrap();
+        let p96 = Publiee::d_essai((0, 96, 0, 1_795_000_000), b"96");
+        let p95 = Publiee::d_essai((0, 95, 0, 1_790_000_000), b"95");
+        lecture_seule::poser();
+        retenir(&p96).unwrap();
+        assert_eq!(
+            plus_haute_vue(),
+            Ok(None),
+            "sous la lecture seule, retenir n'écrit rien"
+        );
+        let r = retenir_pendant_un_apercu(&p96);
+        let mais_pas_le_reste = lecture_seule::active()
+            && lecture_seule::refuse_fichier(&crate::socle::dossier_local().join(crate::sceau::REGLAGES));
+        let revoque = Publiee {
+            revoque: true,
+            ..Publiee::d_essai((0, 96, 0, 1_795_000_000), b"96")
+        };
+        let r_revoque_avant = revocation_retenue();
+        lecture_seule::relever_pour_le_test();
+        assert_eq!(r, Ok(()));
+        assert!(mais_pas_le_reste && !r_revoque_avant);
+        assert_eq!(plus_haute_vue(), Ok(Some((0, 96, 0, 1_795_000_000))));
+        let refus = juger_la_vue(&p95).unwrap_err();
+        assert!(refus.contains("0.95.0") && refus.contains("0.96.0"), "{refus}");
+        // La révocation vue pendant l'aperçu est retenue, comme au terminal.
+        lecture_seule::poser();
+        let r = retenir_pendant_un_apercu(&revoque);
+        let retenue = revocation_retenue();
+        lecture_seule::relever_pour_le_test();
+        assert_eq!(r, Ok(()));
+        assert!(retenue);
+        crate::sceau::effacer(crate::sceau::REVOCATION).unwrap();
+        oublier_versions_vues().unwrap();
     }
 
     #[test]
