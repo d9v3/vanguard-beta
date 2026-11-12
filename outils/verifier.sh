@@ -5,8 +5,9 @@
 # versions (outils/essais-signature.sh), de la garde de confidentialité (outils/essais-confidentialite.sh), de la
 # livraison (outils/essais-livrer-branche.sh) et de ce script même sous --seulement (outils/essais-verifier.sh), liens
 # internes, la fenêtre de Vanguard (fenetre/ : clippy sur les deux cibles, tests Linux), carte de couverture ATT&CK à
-# jour (outils/couverture-attack.py), documentation du code sans avertissement (cargo doc), textes français et anglais
-# (outils/textes.py), relais des lots (relais/, outils/relais-schema.py), protections des programmes lues dans leurs
+# jour (outils/couverture-attack.py), nombres des README à jour (outils/chiffres-readme.py), documentation du code
+# sans avertissement (cargo doc), textes français et anglais (outils/textes.py), relais des lots (relais/,
+# outils/relais-schema.py), protections des programmes lues dans leurs
 # en-têtes (vanguard deploiement verifier-binaire : PIE, marque RELRO, pile non exécutable ; ASLR, DEP), régression de
 # détection (le corpus de src/modele/corpus.rs, Linux et Wine), dépendances (cargo deny) et leurs failles connues (cargo
 # audit), banc de fuzzing compilé et passé quelques secondes par cible, preuves de Kani compilées (lancées par
@@ -421,6 +422,12 @@ failles_connues() { bash outils/failles-programmes.sh --depot; }
 # Les textes affichés comparés à master (outils/textes.py) : un texte perdu ou nouveau se voit avant le commit, un
 # tutoiement fait échouer. Sur master, le vouvoiement seul ; sans master (clone partiel de la CI), la comparaison
 # est sautée, pas le vouvoiement.
+# Les nombres des README (règles du bilan, modules sans unsafe, comptes d'unsafe, règles YARA) comparés à ceux du
+# code, puis les essais de cette garde.
+chiffres_readme() {
+  python3 -I outils/chiffres-readme.py && bash outils/essais-chiffres-readme.sh
+}
+
 textes() {
   [[ $(git rev-parse HEAD) == $(git rev-parse master 2>/dev/null) ]] && { python3 outils/textes.py --vouvoiement; return; }
   python3 outils/textes.py
@@ -598,6 +605,7 @@ if [[ $MODE != --rapide ]]; then
   etape relais-schema python3 outils/relais-schema.py &
   etape liens python3 outils/liens.py --hors-ligne &
   etape carte-attack python3 outils/couverture-attack.py --verifier &
+  etape chiffres-readme chiffres_readme &
   etape workflows workflows &
   etape nomenclatures nomenclatures &
   etape documentation documentation &
@@ -793,6 +801,7 @@ if [[ $MODE != --rapide ]]; then
   [[ -f $TRAVAIL/relais-schema.log ]] && grep -E '^comparaison .* sautée' "$TRAVAIL/relais-schema.log" | sed 's/^/      /'
   ligne liens "liens internes"
   ligne carte-attack "carte ATT&CK à jour (COUVERTURE-ATTACK.md)"
+  ligne chiffres-readme "nombres des README à jour"
   ligne workflows "workflows de GitHub (zizmor)"
   ligne nomenclatures "nomenclatures (SBOM)"
   ligne documentation "documentation du code (cargo doc)"
