@@ -375,8 +375,13 @@ T_ENVOI=$SECONDS
 if [[ -n $LOCAL ]]; then
   echo "Rien n'est envoyé sur GitHub (déploiement local)."
 elif git remote get-url origin >/dev/null 2>&1; then
-  if ! python3 outils/confidentialite.py --envoi; then
+  # Code 1 : un détail trouvé ; tout autre code (2 : rien conclu) : le garde-fou n'a pas pu juger, dit tel quel.
+  GARDE=0
+  python3 outils/confidentialite.py --envoi || GARDE=$?
+  if ((GARDE == 1)); then
     echo "Rien n'est envoyé sur GitHub : un détail personnel paraît dans les commits (voir ci-dessus)."
+  elif ((GARDE != 0)); then
+    echo "Rien n'est envoyé sur GitHub : garde-fou de confidentialité en panne (code $GARDE), rien conclu (voir ci-dessus)."
   # Une page de version suit : les liens de téléchargement du README se vérifient contre ses fichiers, pas contre la
   # dernière version en ligne (absente sur un dépôt neuf, d'une version en retard sinon).
   elif ! python3 outils/liens.py ${A_PUBLIER:+--version vanguard-windows-x86_64.exe vanguard-linux-x86_64 SHA256SUMS.txt $(bash outils/sbom.sh --noms)}; then

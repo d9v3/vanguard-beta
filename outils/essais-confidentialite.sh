@@ -507,7 +507,21 @@ garde --generique --tout >/dev/null 2>&1
 noter 2 $? "usage : option inconnue"
 # (Un AVANT inconnu, lui, est un historique réécrit, lu comme tel : voir plus haut.)
 garde --generique --plage HEAD nexistepas >/dev/null 2>&1
-noter 2 $? "git en échec (--plage vers un commit inconnu)"
+noter 2 $? "--plage vers un APRÈS inconnu, AVANT connu"
+# APRÈS introuvable par le chemin d'un historique réécrit (AVANT fait de zéros, vide ou inconnu) : rien lu, jamais 0.
+# Le dépôt contient un courriel inventé : un « 0 commit relu » passerait pour sain.
+printf 'contact : %s\n' "$COURRIEL" >contact.txt && git add contact.txt && git commit -q --no-verify -m contact
+garde --generique --plage 0000000000000000000000000000000000000000 nexistepas >/dev/null 2>&1
+noter 2 $? "--plage vers un APRÈS inconnu, AVANT fait de zéros"
+garde --generique --plage '' deadbeefdeadbeefdeadbeefdeadbeefdeadbeef >/dev/null 2>&1
+noter 2 $? "--plage vers un APRÈS inconnu, AVANT vide"
+garde --generique --plage absent absent2 >/dev/null 2>&1
+noter 2 $? "--plage vers un APRÈS inconnu, AVANT inconnu"
+garde --generique --plage absent '' >/dev/null 2>&1
+noter 2 $? "--plage vers un APRÈS vide"
+garde --generique --plage 0000000000000000000000000000000000000000 HEAD >/dev/null 2>&1
+noter 1 $? "témoin : --plage AVANT fait de zéros vers HEAD trouve le courriel"
+git reset -q --hard HEAD~1
 garde --generique --message "$TRAVAIL/absent" >/dev/null 2>&1
 noter 2 $? "message de commit illisible"
 garde --generique --binaire "$TRAVAIL/absent" >/dev/null 2>&1
@@ -551,7 +565,7 @@ garde_de_la_base
 vider_le_garde
 printf 'contact : %s\n' "$COURRIEL" >contact.txt && git add contact.txt && git commit -q --no-verify -m vide
 etape_ci "$(git rev-parse HEAD~1)" HEAD
-noter 1 $? "CI : une demande qui vide le garde-fou est jugée par celui de la base"
+noter 1 "$(refus_dit $?)" "CI : une demande qui vide le garde-fou est jugée par celui de la base"
 
 depot ci-temoin
 garde_de_la_base
@@ -569,7 +583,7 @@ git checkout -q -b neuve
 vider_le_garde
 printf 'contact : %s\n' "$COURRIEL" >contact.txt && git add contact.txt && git commit -q --no-verify -m vide
 etape_ci 0000000000000000000000000000000000000000 HEAD
-noter 1 $? "CI : branche neuve (AVANT fait de zéros), le garde-fou de master"
+noter 1 "$(refus_dit $?)" "CI : branche neuve (AVANT fait de zéros), le garde-fou de master"
 git update-ref refs/remotes/origin/master HEAD
 etape_ci 0000000000000000000000000000000000000000 HEAD
 code=$?
@@ -582,7 +596,7 @@ depot ci-repli
 mkdir -p outils && cp "$OUTIL" outils/ && git add outils
 printf 'contact : %s\n' "$COURRIEL" >contact.txt && git add contact.txt && git commit -q --no-verify -m repli
 etape_ci "$(git rev-parse HEAD~1)" HEAD
-code=$?
+code=$(refus_dit $?)
 grep -q '^::warning::Garde-fou de confidentialité pris dans l.arbre jugé' <<<"$SORTIE" || code="$code, repli pas dit"
 noter 1 "$code" "CI : base sans garde-fou, repli sur celui de l'arbre jugé, dit en avertissement"
 cd "$TRAVAIL" || exit 1

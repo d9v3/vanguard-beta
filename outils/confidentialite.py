@@ -957,6 +957,10 @@ def main():
     if args[:1] == ["--plage"] and len(args) in (3, 4):
         # --plage AVANT APRÈS [REF] : REF, le nom envoyé (crochet pre-push), est lu lui aussi.
         avant, apres = args[1:3]
+        # APRÈS est ce qui part : s'il ne se résout en aucun objet, rien n'est lu, donc rien n'est dit sain (un AVANT
+        # inconnu, lui, est un historique réécrit, lu comme tel par commits_de_la_plage).
+        if not git_si("rev-parse", "-q", "--verify", f"{apres}^{{object}}"):
+            rien_conclu(f"--plage : « {apres} » n'est aucun objet de ce dépôt ; rien n'est lu.")
         shas = commits_de_la_plage(avant, apres)
         print(f"Confidentialité : {len(shas)} commit(s) relu(s).", file=sys.stderr)
         trouves = nom_de_ref(detecteur, args[3]) if len(args) == 4 else []
