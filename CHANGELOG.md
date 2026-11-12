@@ -9,7 +9,7 @@ jour est permise ; elles se suivent dans le paragraphe de leur journée. Seule l
 téléchargement ; chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par exemple), pour être
 recompilée au besoin.
 
-## 11 novembre 2026 : version 0.94.0
+## 12 novembre 2026 : version 0.94.0
 
 - **« C'est normal chez moi », lié à ce qui est vraiment là (Linux).** Pour une alerte à corriger soi-même, Vanguard
   montre avant le choix chaque ligne signalée (fichier:ligne, la ligne entière), l'empreinte SHA-256 du fichier qui la
@@ -86,13 +86,15 @@ recompilée au besoin.
 - **Renforcé après une campagne d'attaque.** `vanguard` sans argument ne lance aucun programme « vanguard-fenetre »,
   même posé à côté de lui : il ouvre le menu du terminal. Le bilan ne prend pas pour suspecte l'unité du veilleur que
   Vanguard pose lui-même (une valeur en pourcentage, comme `CPUQuota=20%`, n'est pas un code de systemd). L'unité de
-  la sauvegarde automatique n'est tue que telle que Vanguard l'écrit, mot pour mot, et seulement si rien ne peut
-  changer ce que rsync lance : aucun fichier ~/.popt (rsync le lit au départ, et une ligne de ce fichier peut lui
+  la sauvegarde automatique n'est tue que telle que Vanguard l'écrit, mot pour mot, et seulement si ce que Vanguard
+  regarde ne peut rien changer à ce que rsync lance : aucun fichier ~/.popt (rsync le lit au départ, et une ligne de ce fichier peut lui
   faire lancer un autre programme), aucun complément de l'unité dans le compte, une destination qui est un vrai
   dossier du disque. Sinon elle est signalée comme toute copie par rsync dans une unité du compte (vers
   ~/.config/autostart, par exemple), sans pouvoir être déclarée normale ; un fichier de réglages de popt du système
   qui n'est écrit que par root est dit « non vérifié », en information. Disque débranché, sa destination ne se voit
   pas : une information, pas une alerte (rien ne se copie sans le disque), revue au bilan suivant disque branché.
+  Pas encore regardé : un dossier personnel (HOME) changé pour le gestionnaire de session, qui ferait lire à rsync
+  un autre fichier .popt ; ce réglage donne déjà au compte un faux dossier personnel entier, et sera jugé plus tard.
   `demarrage --retirer` et `--remettre` ne suivent plus aucun dossier qui est un lien (~/.config ou son dossier
   autostart remplacé par un lien) : rien ne s'écrit hors du dossier personnel. Une entrée rangée derrière un lien, ou
   elle-même un lien ou un tube, n'est pas proposée, et la liste la dit « non vérifiée » (dans `--json` comme dans la
