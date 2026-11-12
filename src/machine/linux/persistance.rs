@@ -3375,30 +3375,148 @@ fn codes_connus(v: &str) -> bool {
 /// en fait le WorkingDirectory= du service) : `None` sans elle ou vide (le dossier personnel ; le générateur écrit
 /// alors « WorkingDirectory=- », que `dossier_courant` lit aussi comme le défaut) ; sinon `CODE_INCONNU` (A-1,
 /// revérification 6 : le générateur 262.1 écrit toujours « WorkingDirectory=-<Path> », et avec « - » un dossier
-/// absent n'arrête pas systemd, comme Z-1) : un argument relatif n'y est pas vérifié, donc pas tu.
+/// absent n'arrête pas systemd, comme Z-1) : un argument relatif n'y est pas vérifié, donc pas tu. B-1
+/// (revérification 7) : un Path= non vide de l'une ou l'autre lecture de `cles_de_bureau` suffit, même s'il n'est
+/// pas le premier : le générateur garde la première clé, d'autres lanceurs la dernière.
 fn dossier_de_bureau(texte: &str) -> Option<String> {
-    let mut section = "";
-    let mut courant = None;
-    for l in texte.lines() {
-        let l = l.trim_matches([' ', '\t']);
+    cles_de_bureau(texte)
+        .iter()
+        .any(|c| c.cle == "Path" && !c.valeur.is_empty())
+        .then(|| CODE_INCONNU.to_string())
+}
+
+/// Une clé du groupe [Desktop Entry] d'une entrée de bureau, lue par `cles_de_bureau`.
+struct CleDeBureau {
+    /// Le numéro de sa ligne, compté en « \n » (à partir de 1).
+    numero: usize,
+    /// Vrai si elle vient de la lecture de systemd, faux de la lecture large.
+    systemd: bool,
+    cle: String,
+    valeur: String,
+}
+
+/// B-1 (revérification 7) : les clés du groupe [Desktop Entry] d'une entrée de bureau, toutes et dans l'ordre, de
+/// deux lectures. Celle de systemd-xdg-autostart-generator (`lignes_de_systemd`, mesuré sur 262.1 : fins de ligne
+/// « \n », « \r » et « \0 », marque BOM ôtée à chaque ligne, suite par « \ ») ; puis une lecture large, ligne à
+/// ligne sans suite, la marque BOM et les blancs ASCII (dont « \x0b » et « \x0c », comme GLib) ôtés autour : ce
+/// que lit un autre lanceur. Les commentaires « # » et « ; » sont sautés ; la clé et la valeur perdent leurs blancs.
+fn cles_de_bureau(texte: &str) -> Vec<CleDeBureau> {
+    let large = |c: char| c == '\u{FEFF}' || c.is_ascii_whitespace() || c == '\u{b}';
+    // Le numéro en « \n » de chaque ligne lue de la lecture large.
+    let numero = |debut: usize| {
+        texte
+            .get(..debut)
+            .map_or(0, |a| a.matches('\n').count())
+            .saturating_add(1)
+    };
+    let lectures = lignes_de_systemd(texte)
+        .into_iter()
+        .map(|l| (l.numero, true, l.texte))
+        .chain(
+            lignes_lues_par_systemd(texte)
+                .into_iter()
+                .map(|(debut, l)| (numero(debut), false, l.trim_matches(large).to_string())),
+        );
+    let mut cles = Vec::new();
+    let mut groupe = (true, String::new());
+    for (numero, systemd, l) in lectures {
+        if groupe.0 != systemd {
+            groupe = (systemd, String::new());
+        }
+        if l.starts_with(['#', ';']) {
+            continue;
+        }
         if let Some(nom) = l.strip_prefix('[').and_then(|x| x.strip_suffix(']')) {
-            section = nom;
+            groupe.1 = nom.to_string();
             continue;
         }
         let Some((cle, valeur)) = l.split_once('=') else {
             continue;
         };
-        if section != "Desktop Entry" || cle.trim_matches([' ', '\t']) != "Path" {
-            continue;
+        if groupe.1 == "Desktop Entry" {
+            cles.push(CleDeBureau {
+                numero,
+                systemd,
+                cle: cle.trim_matches(large).to_string(),
+                valeur: valeur.trim_matches(large).to_string(),
+            });
         }
-        let v = valeur.trim_matches([' ', '\t']);
-        courant = if v.is_empty() {
-            None
-        } else {
-            Some(CODE_INCONNU.to_string())
-        };
     }
-    courant
+    cles
+}
+
+/// B-1 (revérification 7) : les formes d'une entrée de bureau que systemd-xdg-autostart-generator lit autrement qu'un
+/// autre lanceur peut la lire, chacune une fois, avec sa ligne (à partir de 0) : un retour chariot seul ou un octet
+/// nul (une fin de ligne pour systemd, mesuré sur 262.1), une marque d'ordre des octets (ôtée par systemd), une suite
+/// par « \\ » (systemd la joint, GLib non), une clé
+/// du groupe [Desktop Entry] écrite deux fois avec des valeurs différentes (systemd garde la première, GLib la
+/// dernière). Le texte de chaque forme se dit dans la langue de l'interface.
+fn formes_trompeuses(texte: &str) -> Vec<(usize, String)> {
+    let ligne = |octet: usize| texte.get(..octet).map_or(0, |a| a.matches('\n').count());
+    let octets = texte.as_bytes();
+    let mut formes = Vec::new();
+    let retour_seul = octets
+        .iter()
+        .enumerate()
+        .position(|(i, &b)| b == b'\r' && octets.get(i.saturating_add(1)) != Some(&b'\n'));
+    if let Some(i) = retour_seul {
+        formes.push((
+            ligne(i),
+            tr!(
+                "un retour chariot seul (« \\r »), une fin de ligne pour systemd",
+                "a lone carriage return (\"\\r\"), a line end for systemd"
+            )
+            .to_string(),
+        ));
+    }
+    if let Some(i) = texte.find('\0') {
+        formes.push((
+            ligne(i),
+            tr!(
+                "un octet nul, une fin de ligne pour systemd",
+                "a NUL byte, a line end for systemd"
+            )
+            .to_string(),
+        ));
+    }
+    if let Some(i) = texte.find('\u{FEFF}') {
+        formes.push((
+            ligne(i),
+            tr!(
+                "une marque d'ordre des octets (U+FEFF), ôtée par systemd",
+                "a byte order mark (U+FEFF), stripped by systemd"
+            )
+            .to_string(),
+        ));
+    }
+    if let Some(l) = lignes_de_systemd(texte).iter().find(|l| l.lues > 1) {
+        formes.push((
+            l.numero.saturating_sub(1),
+            tr!(
+                "une ligne finie par « \\ », que systemd seul joint à la suivante",
+                "a line ending in \"\\\", which only systemd joins to the next one"
+            )
+            .to_string(),
+        ));
+    }
+    let cles = cles_de_bureau(texte);
+    let double = cles.iter().enumerate().find_map(|(i, c)| {
+        cles.get(..i)?
+            .iter()
+            .any(|a| a.systemd == c.systemd && a.cle == c.cle && a.valeur != c.valeur)
+            .then_some(c)
+    });
+    if let Some(c) = double {
+        let cle = crate::ui::affichable(&c.cle.chars().take(40).collect::<String>());
+        formes.push((
+            c.numero.saturating_sub(1),
+            trf!(
+                "la clé « {cle} » écrite deux fois avec des valeurs différentes (systemd garde la première, d'autres lanceurs la dernière)",
+                "the key \"{cle}\" written twice with different values (systemd keeps the first, other launchers the last)"
+            ),
+        ));
+    }
+    formes
 }
 
 /// Un mot d'une ligne Exec, ses variables remplacées comme les remplace systemd (« $$ » : « $ » ; « $HOME »
@@ -5685,6 +5803,30 @@ fn juger_demarrage(demarrage: &[std::path::PathBuf], h: &Path, t: &mut Lancement
         } else {
             lu.texte.lines().collect()
         };
+        // B-1 (revérification 7) : une entrée de bureau que le compte peut écrire, sous une forme que systemd lit
+        // autrement qu'un autre lanceur, se lève pour sa forme : ce qu'elle lance dépend de qui la lit. Un réglage
+        // (`Ajout::Reglage`), jamais déclarable.
+        if sorte == Sorte::Bureau && !de_root_seul(f) {
+            for (n, forme) in formes_trompeuses(&lu.texte) {
+                let ligne = ecrites.get(n).copied().unwrap_or_default();
+                let raison = trf!(
+                    "entrée de démarrage écrite sous une forme trompeuse : {forme} ; un autre lanceur peut la lire autrement",
+                    "startup entry written in a misleading form: {forme}; another launcher may read it differently"
+                );
+                lever(
+                    t,
+                    f,
+                    &lu,
+                    n,
+                    ligne,
+                    ligne,
+                    true,
+                    Sorte::Ajoutee(Ajout::Reglage),
+                    false,
+                    &raison,
+                );
+            }
+        }
         let mut levees: Vec<usize> = Vec::new();
         let unite = matches!(
             sorte,
@@ -11561,6 +11703,194 @@ mod tests {
             };
             if !juste {
                 faux.push((*exec, *courant, leve));
+            }
+        }
+        assert!(faux.is_empty(), "{faux:#?}");
+    }
+
+    /// B-1 (revérification 7) : une entrée de bureau se lit comme systemd-xdg-autostart-generator 262.1 (mesuré :
+    /// fins de ligne « \n », « \r » et « \0 », marque BOM ôtée, suite par « \ », la première clé gagne) et aussi
+    /// comme un lecteur ligne à ligne sans suite (GLib : la dernière gagne). Un Path= non vide lu par l'un ou l'autre
+    /// rend le dossier de départ inconnu : l'argument relatif vers un lieu est levé. Les lignes Exec= se lisent déjà
+    /// des deux façons, toutes sections : les sondes E le gardent.
+    #[test]
+    fn une_entree_de_bureau_se_lit_comme_le_generateur() {
+        use std::os::unix::fs::PermissionsExt as _;
+        const TETE: &str = "[Desktop Entry]\nType=Application\nName=essai\n";
+        const EXEC: &str = "Exec=/usr/bin/cp /home/alice/Documents/x home/alice/.config/autostart/y.desktop\n";
+        const AGENT: &str = "Exec=/tmp/.x/agent\n";
+        // (nom, contenu, levé, texte attendu)
+        let lieu = "nomme un lieu de démarrage du compte";
+        let cas: Vec<(&str, String, bool, &str)> = vec![
+            ("D0", format!("{TETE}Path=/\n{EXEC}"), true, lieu),
+            ("D1 deux Path=", format!("{TETE}Path=/\nPath=\n{EXEC}"), true, lieu),
+            (
+                "D1b vide puis plein",
+                format!("{TETE}Path=\nPath=/\n{EXEC}"),
+                true,
+                lieu,
+            ),
+            (
+                "D2 retour chariot seul",
+                format!("{TETE}Comment=x\rPath=/\n{EXEC}"),
+                true,
+                lieu,
+            ),
+            ("D3 octet nul", format!("{TETE}Comment=x\0Path=/\n{EXEC}"), true, lieu),
+            ("D4 BOM en tête", format!("\u{FEFF}{TETE}Path=/\n{EXEC}"), true, lieu),
+            ("D4b BOM au milieu", format!("{TETE}\u{FEFF}Path=/\n{EXEC}"), true, lieu),
+            (
+                "D8 suite par \\",
+                format!("{TETE}Comment=a\\\nPath=/\n{EXEC}"),
+                true,
+                lieu,
+            ),
+            (
+                "D9 second groupe",
+                format!("{TETE}{EXEC}[Desktop Entry]\nPath=/\n"),
+                true,
+                lieu,
+            ),
+            ("D10 saut de page", format!("{TETE}\u{c}Path=/\n{EXEC}"), true, lieu),
+            ("D11 tabulation", format!("{TETE}\tPath = / \n{EXEC}"), true, lieu),
+            (
+                "E1 Exec après retour chariot",
+                format!("{TETE}Comment=x\r{AGENT}"),
+                true,
+                "",
+            ),
+            ("E2 Exec après octet nul", format!("{TETE}Comment=x\0{AGENT}"), true, ""),
+            ("E3 Exec sous BOM", format!("\u{FEFF}{TETE}{AGENT}"), true, ""),
+            ("E4 deux Exec=", format!("{TETE}Exec=/usr/bin/true\n{AGENT}"), true, ""),
+            ("E5 Exec après saut de page", format!("{TETE}\u{c}{AGENT}"), true, ""),
+            (
+                "E6 Exec après une suite",
+                format!("{TETE}Comment=a\\\n{AGENT}"),
+                true,
+                "",
+            ),
+            (
+                "E7 Exec dans une action",
+                format!("{TETE}Exec=/usr/bin/true\n[Desktop Action a]\n{AGENT}"),
+                true,
+                "",
+            ),
+            // Témoins muets : sans Path=, Path= vide, Path= hors du groupe, clé localisée ou d'une autre casse
+            // (le générateur n'en fait rien, mesuré).
+            ("T1 sans Path=", format!("{TETE}{EXEC}"), false, ""),
+            ("T2 Path= vide", format!("{TETE}Path=\n{EXEC}"), false, ""),
+            (
+                "T3 Path= d'une action",
+                format!("{TETE}{EXEC}[Desktop Action a]\nPath=/\n"),
+                false,
+                "",
+            ),
+            ("T4 Path[fr]=", format!("{TETE}Path[fr]=/\n{EXEC}"), false, ""),
+            ("T5 path=", format!("{TETE}path=/\n{EXEC}"), false, ""),
+            ("T6 Path= avant le groupe", format!("Path=/\n{TETE}{EXEC}"), false, ""),
+        ];
+        let mut faux = Vec::new();
+        for (i, (nom, contenu, leve_attendu, attendu)) in cas.iter().enumerate() {
+            let m = Maison::nouvelle(&format!("b1-bureau-{i}"));
+            let f = m.racine.join("usr/bin/cp");
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(&f, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::create_dir_all(m.chemin("Documents")).unwrap();
+            m.ecrire(".config/autostart/essai.desktop", contenu);
+            let leve: Vec<String> = persistance_dans(&m.racine, &m.chemin(""), |_| None, None, None)
+                .into_iter()
+                .filter(|c| c.probleme.is_some())
+                .map(|c| c.message)
+                .collect();
+            let juste = if *leve_attendu {
+                leve.iter().any(|l| l.contains(attendu))
+            } else {
+                leve.is_empty()
+            };
+            if !juste {
+                faux.push((*nom, leve));
+            }
+        }
+        assert!(faux.is_empty(), "{faux:#?}");
+    }
+
+    /// B-1 (revérification 7) : une entrée de démarrage du compte sous une forme que systemd lit autrement qu'un autre
+    /// lanceur se lève en Élevé, son message nommant la forme ; une forme sans double lecture reste muette.
+    #[test]
+    fn une_forme_trompeuse_d_une_entree_de_bureau_se_leve() {
+        const TETE: &str = "[Desktop Entry]\nType=Application\nName=essai\n";
+        const EXEC: &str = "Exec=/usr/bin/true\n";
+        let cas: Vec<(&str, String, Option<&str>)> = vec![
+            (
+                "retour chariot seul",
+                format!("{TETE}Comment=x\r{EXEC}"),
+                Some("retour chariot seul"),
+            ),
+            (
+                "retour chariot final",
+                format!("{TETE}{EXEC}Comment=x\r"),
+                Some("retour chariot seul"),
+            ),
+            ("octet nul", format!("{TETE}Comment=x\0{EXEC}"), Some("octet nul")),
+            ("BOM en tête", format!("\u{FEFF}{TETE}{EXEC}"), Some("U+FEFF")),
+            (
+                "BOM au milieu",
+                format!("{TETE}Comment=a\u{FEFF}b\n{EXEC}"),
+                Some("U+FEFF"),
+            ),
+            (
+                "deux Name=",
+                format!("{TETE}Name=autre\n{EXEC}"),
+                Some("« Name » écrite deux fois"),
+            ),
+            (
+                "deux Path=",
+                format!("{TETE}Path=\nPath=/opt\n{EXEC}"),
+                Some("« Path » écrite deux fois"),
+            ),
+            (
+                "deux Exec=",
+                format!("{TETE}{EXEC}Exec=/usr/bin/false\n"),
+                Some("« Exec » écrite deux fois"),
+            ),
+            (
+                "suite par \\",
+                format!("{TETE}Comment=a\\\nPath=/\n{EXEC}"),
+                Some("finie par « \\ »"),
+            ),
+            ("« \\\\ » en fin de ligne", format!("{TETE}Comment=a\\\\\n{EXEC}"), None),
+            ("CRLF", format!("{TETE}{EXEC}").replace('\n', "\r\n"), None),
+            ("deux fois la même valeur", format!("{TETE}Name=essai\n{EXEC}"), None),
+            ("Name[fr]= et Name=", format!("{TETE}Name[fr]=autre\n{EXEC}"), None),
+            (
+                "Name= d'une action",
+                format!("{TETE}{EXEC}[Desktop Action a]\nName=autre\n"),
+                None,
+            ),
+            (
+                "deux groupes, une clé chacun",
+                format!("{TETE}[Desktop Entry]\n{EXEC}"),
+                None,
+            ),
+        ];
+        let mut faux = Vec::new();
+        for (i, (nom, contenu, attendu)) in cas.iter().enumerate() {
+            let m = Maison::nouvelle(&format!("b1-forme-{i}"));
+            m.ecrire(".config/autostart/essai.desktop", contenu);
+            let leves: Vec<(Option<Niveau>, String)> = persistance_dans(&m.racine, &m.chemin(""), |_| None, None, None)
+                .into_iter()
+                .filter(|c| c.probleme.is_some())
+                .map(|c| (c.probleme, c.message))
+                .collect();
+            let juste = match attendu {
+                Some(forme) => leves.iter().any(|(niveau, l)| {
+                    *niveau == Some(Niveau::Eleve) && l.contains("forme trompeuse") && l.contains(forme)
+                }),
+                None => leves.is_empty(),
+            };
+            if !juste {
+                faux.push((*nom, leves));
             }
         }
         assert!(faux.is_empty(), "{faux:#?}");
