@@ -211,8 +211,9 @@ livrer lot "$LOT"
 git -C "$DEPOT" checkout -q -- b
 echo non-suivi >"$DEPOT/nouveau"
 livrer lot "$LOT"
-((CODE != 0)) && [[ ! -e $CAS/vu-verifie ]] && grep -q 'fichiers non suivis' <<<"$SORTIE" ||
-  refus+=("fichier non suivi (code $CODE)")
+((CODE != 0)) && [[ ! -e $CAS/vu-verifie ]] && grep -q 'fichiers non suivis' <<<"$SORTIE" &&
+  grep -q '^    ?? nouveau$' <<<"$SORTIE" ||
+  refus+=("fichier non suivi, nommé (code $CODE)")
 rm -f "$DEPOT/nouveau"
 echo depot-sale >"$CAS/consigne-verif"
 livrer lot "$LOT"

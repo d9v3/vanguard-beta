@@ -34,11 +34,13 @@ DEPOT=$(realpath "$(dirname "$COMMUN")")
 # L'arbre `$1` est propre (rien de non commité, aucun fichier non suivi). Propre se prouve : un git status qui échoue
 # (index abîmé, dépôt illisible) n'écrit rien, ce qui passerait pour un arbre propre ([[ ]] ne voit pas l'échec d'une
 # substitution, set -e non plus) ; c'est un refus, dit (relecture 0.94, N-2).
+# ETAT garde ce que git status a vu, pour nommer les fichiers en cause dans le refus.
 propre() {
-  local etat
-  etat=$(git -C "$1" status --porcelain) || { echo "✖ git status a échoué dans $1 : rien n'est fusionné"; exit 1; }
-  [[ -z $etat ]]
+  ETAT=$(git -C "$1" status --porcelain) || { echo "✖ git status a échoué dans $1 : rien n'est fusionné"; exit 1; }
+  [[ -z $ETAT ]]
 }
+# Les fichiers en cause (« ?? » : non suivi), dix au plus : un refus qui dit lequel se règle sans chercher.
+en_cause() { head -n 10 <<<"$ETAT" | sed 's/^/    /'; }
 # L'arbre principal sur master et propre : sinon la fusion échouerait après la vérification, ou partirait d'un état
 # que personne n'a vu. Vu avant la longue vérification, puis de nouveau juste avant la fusion.
 arbre_principal_pret() {
@@ -46,8 +48,11 @@ arbre_principal_pret() {
     { echo "✖ l'arbre principal ($DEPOT) n'est pas sur master"; return 1; }
   # Les fichiers non suivis aussi : deployer.sh refuse de compiler avec un fichier non suivi dans src, assets… ; vu
   # ici, avant la vérification, plutôt qu'après la fusion.
-  propre "$DEPOT" ||
-    { echo "✖ l'arbre principal ($DEPOT) a des changements non commités ou des fichiers non suivis"; return 1; }
+  propre "$DEPOT" || {
+    echo "✖ l'arbre principal ($DEPOT) a des changements non commités ou des fichiers non suivis (« ?? ») :"
+    en_cause
+    return 1
+  }
 }
 arbre_principal_pret || { echo "✖ rien n'est fusionné"; exit 1; }
 export CARGO_TARGET_DIR=$DEPOT/target
