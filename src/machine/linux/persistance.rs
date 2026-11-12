@@ -3372,8 +3372,10 @@ fn codes_connus(v: &str) -> bool {
 }
 
 /// X-3 (relecture 0.95) : le dossier courant d'une entrée de bureau, sa clé « Path= » (systemd-xdg-autostart-generator
-/// en fait le WorkingDirectory= du service) : `None` sans elle (le dossier personnel) ; un chemin que systemd prend
-/// tel quel (`dossier_sur`, Y-1) ; sinon `CODE_INCONNU`, un relatif n'y est pas vérifié.
+/// en fait le WorkingDirectory= du service) : `None` sans elle ou vide (le dossier personnel ; le générateur écrit
+/// alors « WorkingDirectory=- », que `dossier_courant` lit aussi comme le défaut) ; sinon `CODE_INCONNU` (A-1,
+/// revérification 6 : le générateur 262.1 écrit toujours « WorkingDirectory=-<Path> », et avec « - » un dossier
+/// absent n'arrête pas systemd, comme Z-1) : un argument relatif n'y est pas vérifié, donc pas tu.
 fn dossier_de_bureau(texte: &str) -> Option<String> {
     let mut section = "";
     let mut courant = None;
@@ -3392,8 +3394,6 @@ fn dossier_de_bureau(texte: &str) -> Option<String> {
         let v = valeur.trim_matches([' ', '\t']);
         courant = if v.is_empty() {
             None
-        } else if !v.contains('%') && dossier_sur(v) {
-            Some(v.to_string())
         } else {
             Some(CODE_INCONNU.to_string())
         };
@@ -11131,6 +11131,36 @@ mod tests {
                 &[],
                 Prep::Bureau,
                 false,
+            ),
+            // A-1 (revérification 6) : B10, B11, B12 ; tout Path= devient « WorkingDirectory=-… » (mesuré).
+            (
+                "/usr/bin/cp /home/alice/Documents/x .config/autostart/y.desktop",
+                "/nexistepas",
+                &[],
+                Prep::Bureau,
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x home/alice/.config/autostart/y.desktop",
+                "/nexistepas",
+                &[],
+                Prep::Bureau,
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x /home/alice/Documents/y",
+                "/nexistepas",
+                &[],
+                Prep::Bureau,
+                true,
+            ),
+            // « Path= » vide (blancs) : le générateur écrit « WorkingDirectory=- » (mesuré), le dossier personnel.
+            (
+                "/usr/bin/cp /home/alice/Documents/x Documents/y",
+                " ",
+                &[],
+                Prep::Bureau,
+                true,
             ),
             (
                 "/usr/bin/cp /home/alice/Documents/x lien/x.desktop",
