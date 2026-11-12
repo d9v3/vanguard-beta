@@ -118,7 +118,10 @@ Réponses à l'utilisateur en français, claires, avec le pourquoi.
 - Rien n'est changé sans être montré puis accepté ; point de restauration avant de toucher au système ; un réglage
   doit s'annuler exactement (valeur d'avant notée, voir `optimiser/`).
 - Ne jamais couper une connexion à distance en cours (SSH, Bureau à distance).
-- Ce qui n'a pas pu être vérifié est dit, jamais compté comme sain.
+- Ce qui n'a pas pu être vérifié est dit, jamais compté comme sain. Exemple : `read_to_string(chemin).unwrap_or_default()`
+  ou `.ok()?` qui ferait d'un fichier illisible (droits, disque, nom non UTF-8) une « protection active » ou « rien à
+  signaler » ; la lecture fautive devient un constat « non vérifié » qui dit pourquoi. Même chose pour un fil, une
+  commande ou une réponse qui manque (`join` raté, délai dépassé) : un résultat absent n'est jamais un résultat sain.
 - Aucun secret dans le code ni sur la clé ; le journal des erreurs est anonymisé (`journal.rs`).
 - Rien de personnel sur GitHub (dépôt, historique, commits, captures, pages de version, programmes, tickets) :
   `outils/confidentialite.py` le vérifie tout seul (crochets `outils/hooks/`, `deployer.sh`, `publier-version.sh`,
