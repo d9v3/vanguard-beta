@@ -35,6 +35,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import unicodedata
 from collections import defaultdict
 from pathlib import Path
 
@@ -293,6 +294,13 @@ def main():
     reste = re.findall(r"\{\{[A-Z_]+\}\}", page)
     if reste:
         sys.exit(f"✖ trous non remplis : {', '.join(sorted(set(reste)))}")
+    # Un « � », un invisible ou un caractère de contrôle écrit tel quel : l'outil Artifact refuse la page (0.94, U+FFFD
+    # de « Textes piégés »), et un invisible dans une page publique trompe le lecteur. Ils s'écrivent en entité (&#xFFFD;).
+    for numero, ligne in enumerate(page.splitlines(), 1):
+        for car in ligne:
+            if car == "\ufffd" or (unicodedata.category(car) in ("Cc", "Cf", "Co", "Cs") and car != "\t"):
+                sys.exit(f"✖ caractère U+{ord(car):04X} écrit tel quel, ligne {numero} de la page : l'écrire en entité "
+                         f"(&#x{ord(car):X};)")
     if args.complet:
         page = document_entier(page)
     args.sortie.parent.mkdir(parents=True, exist_ok=True)
