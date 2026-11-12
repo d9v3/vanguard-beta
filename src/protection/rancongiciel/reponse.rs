@@ -381,7 +381,7 @@ fn chemin_tenu(pid: u32, debut: u64, inode: (u64, u64)) -> Option<PathBuf> {
     Some(sans_supprime(&processus::programme(pid)?))
 }
 
-/// Le lien de /proc/<pid>/exe sans son « (deleted) », en octets : converti avec pertes, un chemin qui n'est pas en
+/// Le lien de `/proc/<pid>/exe` sans son « (deleted) », en octets : converti avec pertes, un chemin qui n'est pas en
 /// UTF-8 désignait un autre fichier, que `fichier_tenu` ne retrouvait pas, et le programme échappait à la
 /// quarantaine (relecture 0.94, R-1).
 fn sans_supprime(lien: &Path) -> PathBuf {

@@ -3035,12 +3035,17 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(config.join("systemd/user"), std::fs::Permissions::from_mode(0o600)).unwrap();
-        let activees = "note.service enabled enabled\npipewire.service enabled enabled";
-        let (l, manques) = releve_selon(&config, &[], "Hyprland", Some(activees.to_string()), systeme);
+        // En root (verifier.sh, sa passe sous unshare), les droits ne ferment rien : ce cas-là est sauté, et dit.
+        if std::fs::metadata(config.join("systemd/user/note.service")).is_ok() {
+            eprintln!("(sauté : dossier fermé traversable quand même ici, root ou espace de noms)");
+        } else {
+            let activees = "note.service enabled enabled\npipewire.service enabled enabled";
+            let (l, manques) = releve_selon(&config, &[], "Hyprland", Some(activees.to_string()), systeme);
+            assert!(l.is_empty());
+            assert_eq!(manques.len(), 2, "{manques:?}");
+            assert!(manques.iter().all(|m| m.contains("non vérifié")), "{manques:?}");
+        }
         std::fs::set_permissions(config.join("systemd/user"), std::fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(l.is_empty());
-        assert_eq!(manques.len(), 2, "{manques:?}");
-        assert!(manques.iter().all(|m| m.contains("non vérifié")), "{manques:?}");
         // Le chemin fixe du système : une unité au nom inventé n'y est pas, elle est dite.
         let (_, manques) = releve_dans(
             &config,

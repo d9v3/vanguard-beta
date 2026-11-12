@@ -327,7 +327,7 @@ fn chemin_net(t: &str) -> bool {
 }
 
 /// Les mots exacts que lance le service `texte` s'il est, à l'octet près, celui qu'écrit `unites` (FAT ou non) pour
-/// un disque monté pour l'utilisateur (/run/media, /media, /mnt), vers son dossier Sauvegarde-Vanguard/<ordinateur>,
+/// un disque monté pour l'utilisateur (/run/media, /media, /mnt), vers son dossier `Sauvegarde-Vanguard/<ordinateur>`,
 /// depuis des dossiers absolus ; sinon `None`. Le bilan des persistances ne tait le rsync que de cette unité-là, à
 /// cette forme-là : jamais une règle générale sur rsync, qui laisserait une unité du compte reposer une entrée de
 /// démarrage à chaque session (relecture 0.94, S-1).
