@@ -22,7 +22,9 @@ pub(super) const LIGNE_MAX: usize = 8192;
 const PROFONDEUR_MAX: u32 = 6;
 
 /// Les programmes à plusieurs noms (un seul fichier, l'outil choisi d'après le nom sous lequel il est lancé) qui
-/// tiennent lieu d'env selon le système : coreutils (uutils, Ubuntu 25.10 ; NixOS), busybox, toybox.
+/// tiennent lieu d'env selon le système : coreutils (uutils, Ubuntu 25.10), busybox, toybox. Pas NixOS (W-7,
+/// relecture 0.95) : /nix/store s'écrit par un groupe et rsync, findmnt n'y sont pas dans /usr/bin, la sauvegarde
+/// y reste donc levée.
 const MULTI_APPELS: [&str; 3] = ["coreutils", "busybox", "toybox"];
 
 /// Un fichier de variables d'unité plus gros n'est pas une configuration : non vérifiable.
@@ -1356,7 +1358,7 @@ fn lancee(s: &Systeme, mots: &[String], profondeur: u32) -> Result<(), Ecart> {
 ///
 /// `env` : la forme de la 0.95, « "<env>" -i » devant ; env doit être le vrai env, comme rsync et findmnt. Un env
 /// écrit sous ce nom mais qui est un lien vers un programme à plusieurs noms (`MULTI_APPELS` : uutils sur Ubuntu,
-/// busybox, NixOS), qui choisit ce qu'il fait d'après le nom écrit, passe s'il est à root seul ; jamais un fichier
+/// busybox ; pas NixOS, où la sauvegarde reste levée), qui choisit ce qu'il fait d'après le nom écrit, passe s'il est à root seul ; jamais un fichier
 /// du compte, jamais pour rsync ou findmnt.
 fn sauvegarde_posee(s: &Systeme, mots: &[String], nom: &str, env: bool) -> Result<(), Ecart> {
     let vrai = |programme: &String, nom: &str| {

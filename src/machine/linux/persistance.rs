@@ -2785,7 +2785,9 @@ fn de_root_seul(f: &Path) -> bool {
 ///
 /// Dans les essais, qui tournent sous « unshare -r » où rien n'est à root seul, la racine d'essai tient lieu de
 /// système : un fichier dont le chemin réel est sous son /usr compte pour à root, tout autre non. `de_root_seul`
-/// lui-même a ses propres essais.
+/// lui-même a ses propres essais. Limite dite (W-7, relecture 0.95) : la vraie branche (`de_root_seul` sur un
+/// programme de la sauvegarde) n'a pas d'essai de bout en bout, et seuls les dossiers au-dessus de la cible finale
+/// sont contrôlés, pas le dossier de chaque lien du milieu.
 #[cfg(not(test))]
 pub(super) fn programme_de_root_seul(_racine: &Path, f: &Path) -> bool {
     de_root_seul(f)
@@ -9085,7 +9087,7 @@ mod tests {
                         std::fs::remove_file(m.racine.join("usr/bin/env")).unwrap();
                         std::os::unix::fs::symlink("sh", m.racine.join("usr/bin/env")).unwrap();
                     }
-                    // Ubuntu 25.10 (uutils), busybox, NixOS : env est un lien vers un programme à plusieurs noms.
+                    // Ubuntu 25.10 (uutils), busybox : env est un lien vers un programme à plusieurs noms.
                     multi @ ("env multi-appel coreutils"
                     | "env multi-appel busybox"
                     | "env vers un busybox du compte"
