@@ -21,6 +21,8 @@
 #      trouvaille ; une trouvaille (code 1) n'est comptée que si l'outil dit ce qu'il a trouvé ;
 #  12. l'étape de la CI (.github/workflows/ci.yml, lue telle quelle) : le garde-fou lancé est celui de la base, pas
 #      celui de l'arbre jugé (une demande qui le viderait ne se rend pas verte) ; repli dit si la base n'en a pas.
+#  13. les sources de cet ordinateur, dans une maison jetable : les deux listes privées (commune et de Vanguard) ;
+#      une liste présente mais illisible : code 2.
 set -uo pipefail
 RACINE=$(cd "$(dirname "$0")/.." && pwd)
 OUTIL=$RACINE/outils/confidentialite.py
@@ -622,6 +624,48 @@ etape_ci "$(git rev-parse HEAD~1)" HEAD
 code=$(refus_dit $?)
 grep -q '^::warning::Garde-fou de confidentialité pris dans l.arbre jugé' <<<"$SORTIE" || code="$code, repli pas dit"
 noter 1 "$code" "CI : base sans garde-fou, repli sur celui de l'arbre jugé, dit en avertissement"
+cd "$TRAVAIL" || exit 1
+
+# 13. Les sources de cet ordinateur (sans --generique), dans une maison jetable : les deux listes privées (la commune
+# et celle de Vanguard) sont lues ; une source présente mais illisible, abîmée ou en panne (liste, base des
+# appareils, nmcli, réglages de git) arrête tout (code 2), jamais une liste de termes plus courte sans le dire.
+MAISON_J=$TRAVAIL/maison
+FAUX=$TRAVAIL/faux-chemin
+mkdir -p "$MAISON_J/.config" "$MAISON_J/.local/share/vanguard" "$FAUX"
+# Le chemin des programmes : python3, git et grep (garde) seulement, plus un nmcli inventé quand l'essai en pose un.
+for programme in python3 git grep; do ln -s "$(command -v "$programme")" "$FAUX/$programme"; done
+GLOBAL_J=$TRAVAIL/gitconfig-jetable
+: >"$GLOBAL_J"
+INVENTE=$(printf '%s %s' Gaspard Invente-Lavoie)
+# machine <texte> : --texte lu avec les sources de la maison jetable (compte « alice »).
+machine() {
+  printf '%s\n' "$1" | HOME=$MAISON_J XDG_CONFIG_HOME=$MAISON_J/.config XDG_DATA_HOME=$MAISON_J/.local/share \
+    USER=alice LOGNAME=alice PATH=$FAUX GIT_CONFIG_GLOBAL=$GLOBAL_J garde --texte
+}
+# nmcli_faux <code> [sortie] : un nmcli qui rend ce code, ou qui écrit cette sortie.
+nmcli_faux() {
+  printf '#!/bin/sh\nprintf "%%s" %q\nexit %s\n' "${2:-}" "$1" >"$FAUX/nmcli"
+  chmod +x "$FAUX/nmcli"
+}
+depot sources-machine
+machine "rien d'ici"
+noter 0 $? "témoin : sans nmcli, sans liste ni base, un texte propre passe"
+mkdir -p "$MAISON_J/.config/confidentialite"
+printf '# un commentaire\n%s\n' "$INVENTE" >"$MAISON_J/.config/confidentialite/confidentiel.txt"
+SORTIE=$(machine "signé $INVENTE" 2>&1)
+code=$(refus_dit $?)
+grep -q 'liste commune' <<<"$SORTIE" || code="$code, origine pas dite"
+noter 1 "$code" "la liste commune (~/.config/confidentialite) est lue"
+mkdir -p "$MAISON_J/.config/vanguard-dev"
+printf '%s\n' "Rue des Inventés" >"$MAISON_J/.config/vanguard-dev/confidentiel.txt"
+SORTIE=$(machine "au 12 Rue des Inventés" 2>&1)
+noter 1 "$(refus_dit $?)" "la liste de Vanguard (~/.config/vanguard-dev) est toujours lue"
+rm "$MAISON_J/.config/confidentialite/confidentiel.txt"
+mkdir "$MAISON_J/.config/confidentialite/confidentiel.txt"
+machine "rien d'ici" 2>/dev/null
+noter 2 $? "liste commune illisible (un dossier) : rien n'est conclu"
+rmdir "$MAISON_J/.config/confidentialite/confidentiel.txt"
+: >"$GLOBAL_J"
 cd "$TRAVAIL" || exit 1
 
 if ((ECHECS)); then

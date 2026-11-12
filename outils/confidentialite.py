@@ -9,7 +9,9 @@ et pre-push, actifs avec `git config core.hooksPath outils/hooks`), au déploiem
 captures du README (outils/captures.py).
 
 Ce qui est personnel est lu sur cet ordinateur, jamais écrit dans le dépôt, qui le publierait lui-même :
-- ~/.config/vanguard-dev/confidentiel.txt : une expression par ligne (nom, courriels, adresse…), « # » en commentaire ;
+- ~/.config/confidentialite/confidentiel.txt (la liste commune à tous les projets) et
+  ~/.config/vanguard-dev/confidentiel.txt (celle de Vanguard) : une expression par ligne (nom, courriels, adresse…),
+  « # » en commentaire ;
 - le courriel et le nom de l'identité Git de l'ordinateur, le nom complet du compte, ses dossiers (/home/<compte>…) ;
 - les appareils de la base de Vanguard (noms, adresses MAC), les réseaux Wi-Fi enregistrés et leurs bornes, le nom de
   l'ordinateur.
@@ -56,7 +58,10 @@ try:
 except ImportError:  # Windows
     pwd = None
 
-PRIVE = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "vanguard-dev/confidentiel.txt"
+CONFIG = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+# Les listes privées : la commune (une expression ajoutée une fois vaut pour tous les projets) et celle de Vanguard.
+LISTES = ((CONFIG / "confidentialite/confidentiel.txt", "liste commune"),
+          (CONFIG / "vanguard-dev/confidentiel.txt", "liste privée"))
 MAC = re.compile(r"\b[0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5}\b")
 # Adresse que GitHub donne à chaque compte pour signer ses commits sans montrer son courriel.
 ANONYME = "@users.noreply.github.com"
@@ -170,10 +175,12 @@ def termes():
         if texte and not any(t.texte.lower() == texte.lower() for t in liste):
             liste.append(Terme(texte, origine, motif or motif_texte(texte)))
 
-    if PRIVE.is_file():
-        for ligne in PRIVE.read_text().splitlines():
-            if ligne.strip() and not ligne.lstrip().startswith("#"):
-                ajouter(ligne.strip(), "liste privée")
+    for fichier, origine in LISTES:
+        # Absente : rien à y lire. Présente mais illisible : OSError, rien n'est conclu (code 2, voir main).
+        if fichier.exists():
+            for ligne in fichier.read_text().splitlines():
+                if ligne.strip() and not ligne.lstrip().startswith("#"):
+                    ajouter(ligne.strip(), origine)
     for cle in ("user.email", "user.name"):
         valeur = subprocess.run(["git", "config", "--global", cle], capture_output=True, text=True).stdout.strip()
         if len(valeur) >= 5 and not valeur.endswith(ANONYME):
@@ -952,7 +959,8 @@ def rapport(trouves, quoi, en_clair=True) -> int:
         print("Valeurs coupées : le journal de la CI se lit sur GitHub. En entier, sur l'ordinateur de développement : "
               "python3 outils/confidentialite.py --generique --plage AVANT APRÈS.", file=sys.stderr)
     print("Remplace-les par des valeurs inventées (adresses MAC : garder les 3 premiers octets, ceux du fabricant). "
-          f"Une expression de {PRIVE} qui n'a rien de personnel s'y retire.", file=sys.stderr)
+          f"Une expression d'une liste ({' ou '.join(str(f) for f, _ in LISTES)}) qui n'a rien de personnel s'y "
+          "retire.", file=sys.stderr)
     # Trouvé par sa forme (donnees_d_autrui), pas dans une liste : la donnée de quelqu'un, ou une valeur à ajouter
     # aux valeurs inventées permises.
     if any(not terme.motif for _, terme in fois):
