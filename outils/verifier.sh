@@ -484,16 +484,32 @@ workflows() {
 # cargo vet --store-path ne prend pas --locked : il pourrait réécrire Cargo.lock (ou supply-chain/) en douce. Leurs
 # empreintes sont relevées avant et comparées après : un changement fait échouer, jamais un vert qui a modifié le
 # verrou. Comparées par empreinte, pas par git diff : un Cargo.lock déjà changé à la main, pas commité, ne fait pas
-# échouer à tort.
+# échouer à tort. Et remis tels qu'avant l'étape (copie prise avant) : sinon le passage suivant, empreintes égales
+# avant et après, serait vert avec un verrou réécrit (relecture 0.95, V-10).
+VERROUS=(Cargo.lock fenetre/Cargo.lock supply-chain fenetre/supply-chain)
 empreinte_verrous() {
-  find Cargo.lock fenetre/Cargo.lock supply-chain fenetre/supply-chain -type f -print0 | sort -z | xargs -0 sha256sum
+  find "${VERROUS[@]}" -type f -print0 | sort -z | xargs -0 sha256sum
+}
+# Remet les verrous de la copie : chaque fichier tel qu'il était, ceux apparus pendant l'étape retirés.
+restaurer_verrous() { # copie (tar)
+  local f avant
+  avant=$(tar -tf "$1") && tar -xf "$1" || return 1
+  while IFS= read -r -d '' f; do
+    grep -qxF -- "$f" <<<"$avant" || rm -f -- "$f"
+  done < <(find "${VERROUS[@]}" -type f -print0)
 }
 relectures() {
-  local avant code=0
-  avant=$(empreinte_verrous) || { echo "Cargo.lock ou supply-chain/ illisibles : rien n'est conclu"; return 1; }
+  local avant code=0 copie=$TRAVAIL/verrous-avant.tar
+  avant=$(empreinte_verrous) && tar -cf "$copie" "${VERROUS[@]}" ||
+    { echo "Cargo.lock ou supply-chain/ illisibles : rien n'est conclu"; return 1; }
   relectures_lancees || code=$?
   if [[ $(empreinte_verrous) != "$avant" ]]; then
-    echo "✖ cargo vet a changé Cargo.lock, fenetre/Cargo.lock ou supply-chain/ (git diff pour voir) : pas un vert"
+    echo "✖ cargo vet a changé Cargo.lock, fenetre/Cargo.lock ou supply-chain/ : pas un vert"
+    if restaurer_verrous "$copie" && [[ $(empreinte_verrous) == "$avant" ]]; then
+      echo "  remis tels qu'avant l'étape"
+    else
+      echo "  pas pu les remettre tels qu'avant l'étape : git diff pour voir, git checkout pour revenir"
+    fi
     return 1
   fi
   return "$code"

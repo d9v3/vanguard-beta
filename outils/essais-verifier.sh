@@ -20,8 +20,9 @@
 #      faux) : jamais sautée ; les programmes de publication vérifiés seulement s'ils sont ceux de ce commit (sinon
 #      c'est dit) ; chacun avec son système (--attendu linux ou windows) ; un refus, ou le programme absent, est un
 #      échec.
-#   8. Les relectures de cargo vet : un Cargo.lock ou un supply-chain/ changé pendant l'étape la fait échouer (la
-#      garde lue dans verifier.sh, l'étape remplacée par une fausse, dépôt jetable).
+#   8. Les relectures de cargo vet : un Cargo.lock ou un supply-chain/ changé pendant l'étape la fait échouer, et
+#      il est remis tel qu'avant (le passage suivant n'est pas vert sur un verrou réécrit) (la garde lue dans
+#      verifier.sh, l'étape remplacée par une fausse, dépôt jetable).
 #   9. Les dépendances (cargo deny) hors ligne : sautée avec sa raison, jamais un vert ; un refus reste un échec.
 #  10. Le second avis (cargo audit, failles-programmes.sh --depot) : chaque Cargo.lock suivi par git est lu, les
 #      crates à part sans les exceptions de Vanguard ; une faille dans l'une fait échouer (faux cargo-audit).
@@ -236,25 +237,32 @@ fi
 # lue dans verifier.sh, l'étape elle-même remplacée par une fausse, dans un dépôt jetable.
 faux=$(mktemp -d "$HOME/.cache/vanguard-dev/essai-verrous.XXXX")
 mkdir -p "$faux/supply-chain" "$faux/fenetre/supply-chain"
-garde=$(awk '/^empreinte_verrous\(\) \{/,/^\}/; /^relectures\(\) \{/,/^\}/' outils/verifier.sh)
+garde=$(awk '/^VERROUS=/; /^empreinte_verrous\(\) \{/,/^\}/; /^restaurer_verrous\(\) \{/,/^\}/; /^relectures\(\) \{/,/^\}/' outils/verifier.sh)
 verrous() {
   printf 'verrou\n' >"$faux/Cargo.lock"
   printf 'verrou\n' >"$faux/fenetre/Cargo.lock"
   printf 'relu\n' >"$faux/supply-chain/audits.toml"
   printf 'relu\n' >"$faux/fenetre/supply-chain/audits.toml"
-  SORTIE=$(cd "$faux" && bash -c "relectures_lancees() { $1; }; $garde
+  rm -f "$faux/supply-chain/imports.lock" "$faux/fenetre/supply-chain/imports.lock"
+  SORTIE=$(cd "$faux" && TRAVAIL=$faux_travail bash -c "relectures_lancees() { $1; }; $garde
 relectures" 2>&1)
   CODE=$?
+  # Remis tels qu'avant : le contenu d'origine, rien d'apparu.
+  REMIS=$(cd "$faux" && find . -type f | LC_ALL=C sort | xargs cat | tr '\n' ' ')
 }
+faux_travail=$(mktemp -d "$HOME/.cache/vanguard-dev/essai-verrous-travail.XXXX")
 verrous 'return 0' && verrous_vert=$CODE
 verrous 'return 77' && verrous_saute=$CODE
+intact='verrou verrou relu relu '
 verrous 'echo neuf >>Cargo.lock; return 0'
-[[ -n $garde && $verrous_vert == 0 && $verrous_saute == 77 && $CODE == 1 ]] && grep -q 'cargo vet a changé' <<<"$SORTIE" &&
-  verrous 'echo neuf >fenetre/supply-chain/imports.lock; return 0' && [[ $CODE == 1 ]] &&
-  verrous 'echo neuf >>fenetre/Cargo.lock; return 77' && [[ $CODE == 1 ]] &&
-  ok "relectures : Cargo.lock ou supply-chain/ changés par cargo vet font échouer, jamais un vert" ||
-  ko "relectures : un verrou changé passe (vert $verrous_vert, sautée $verrous_saute, changé $CODE) : $(tail -n 1 <<<"$SORTIE")"
-rm -rf "$faux"
+[[ -n $garde && $verrous_vert == 0 && $verrous_saute == 77 && $CODE == 1 && $REMIS == "$intact" ]] &&
+  grep -q 'cargo vet a changé' <<<"$SORTIE" && grep -q 'remis tels qu.avant' <<<"$SORTIE" &&
+  verrous 'echo neuf >fenetre/supply-chain/imports.lock; return 0' && [[ $CODE == 1 && $REMIS == "$intact" ]] &&
+  verrous 'echo neuf >>fenetre/Cargo.lock; return 77' && [[ $CODE == 1 && $REMIS == "$intact" ]] &&
+  verrous 'echo neuf >supply-chain/audits.toml; return 0' && [[ $CODE == 1 && $REMIS == "$intact" ]] &&
+  ok "relectures : Cargo.lock ou supply-chain/ changés par cargo vet font échouer, puis sont remis tels qu'avant" ||
+  ko "relectures : un verrou changé passe ou reste changé (vert $verrous_vert, sautée $verrous_saute, changé $CODE, contenu « $REMIS ») : $(tail -n 1 <<<"$SORTIE")"
+rm -rf "$faux" "$faux_travail"
 
 # cargo deny hors ligne (VANGUARD_HORS_LIGNE, ou sans réseau) : une base RustSec peut-être en retard, ou aucune, n'est
 # pas un vert ; l'étape se dit sautée, la raison en première ligne. Un refus reste un échec ; en ligne, vert. Lue
