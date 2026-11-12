@@ -257,8 +257,36 @@ enum Lancement {
 }
 
 /// Le plus gros fichier de fenêtre lu (la fenêtre compilée fait une dizaine de Mio).
-#[cfg(target_os = "linux")]
 const TAILLE_MAX: u64 = 128 * 1024 * 1024;
+
+/// Les octets de la fenêtre ouverte, `TAILLE_MAX` au plus (`m` : ce que dit la poignée).
+fn lire_borne(f: &std::fs::File, m: &std::fs::Metadata) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let trop = || tr!("fichier trop gros", "file too large").to_string();
+    if m.len() > TAILLE_MAX {
+        return Err(trop());
+    }
+    let mut octets = Vec::new();
+    f.take(TAILLE_MAX.saturating_add(1))
+        .read_to_end(&mut octets)
+        .map_err(|e| trf!("illisible : {}", "unreadable: {}", e))?;
+    if u64::try_from(octets.len()).map_or(true, |n| n > TAILLE_MAX) {
+        return Err(trop());
+    }
+    Ok(octets)
+}
+
+/// L'empreinte lue est-elle celle attendue ? Sinon la raison.
+fn comparer(lue: &[u8; 32], attendue: &[u8; 32]) -> Result<(), String> {
+    if lue == attendue {
+        return Ok(());
+    }
+    Err(tr!(
+        "son empreinte n'est pas celle de la fenêtre de cette version",
+        "its fingerprint is not that of this version's window"
+    )
+    .into())
+}
 
 /// La fenêtre vérifiée, prête à lancer : une copie de ses octets en mémoire (memfd), scellée, dont l'empreinte est
 /// celle gravée dans ce programme. Lancée d'elle, plus rien ne peut changer ce qui tourne entre la vérification et le
@@ -272,7 +300,6 @@ struct Verifiee(std::fs::File);
 #[cfg(target_os = "linux")]
 fn verifier(chemin: &Path, attendue: &[u8; 32], moi: u32) -> Result<Verifiee, String> {
     use sha2::Digest;
-    use std::io::Read;
     use std::os::unix::fs::{FileExt, OpenOptionsExt};
     let f = std::fs::OpenOptions::new()
         .read(true)
@@ -283,17 +310,7 @@ fn verifier(chemin: &Path, attendue: &[u8; 32], moi: u32) -> Result<Verifiee, St
     if let Some(r) = refus(&m, moi) {
         return Err(r.into());
     }
-    let trop = || tr!("fichier trop gros", "file too large").to_string();
-    if m.len() > TAILLE_MAX {
-        return Err(trop());
-    }
-    let mut octets = Vec::new();
-    f.take(TAILLE_MAX.saturating_add(1))
-        .read_to_end(&mut octets)
-        .map_err(|e| trf!("illisible : {}", "unreadable: {}", e))?;
-    if u64::try_from(octets.len()).map_or(true, |n| n > TAILLE_MAX) {
-        return Err(trop());
-    }
+    let octets = lire_borne(&f, &m)?;
     let copie = super::memfd::scelle("vanguard-fenetre", &octets)
         .map_err(|e| trf!("copie scellée impossible : {}", "sealed copy impossible: {}", e))?;
     drop(octets);
@@ -311,14 +328,7 @@ fn verifier(chemin: &Path, attendue: &[u8; 32], moi: u32) -> Result<Verifiee, St
         h.update(lus);
         position = position.saturating_add(u64::try_from(n).unwrap_or(u64::MAX));
     }
-    let lue: [u8; 32] = h.finalize().into();
-    if lue != *attendue {
-        return Err(tr!(
-            "son empreinte n'est pas celle de la fenêtre de cette version",
-            "its fingerprint is not that of this version's window"
-        )
-        .into());
-    }
+    comparer(&h.finalize().into(), attendue)?;
     Ok(Verifiee(copie))
 }
 
@@ -333,22 +343,52 @@ fn commande(v: &Verifiee) -> Command {
     c
 }
 
-/// Ailleurs que sous Linux, pas encore de lancement vérifié : jamais lancée.
-#[cfg(not(target_os = "linux"))]
-struct Verifiee(std::convert::Infallible);
-
-#[cfg(not(target_os = "linux"))]
-fn verifier(_chemin: &Path, _attendue: &[u8; 32]) -> Result<Verifiee, String> {
-    Err(tr!(
-        "lancement vérifié pas encore fait ici",
-        "verified launch not done here yet"
-    )
-    .into())
+/// Windows : la fenêtre vérifiée, **tenue** ouverte avec le partage en lecture seule (ni écriture, ni effacement, ni
+/// renommage par personne tant que la poignée vit ; une écriture déjà ouverte fait échouer l'ouverture), et son
+/// chemin. Windows lance un fichier par son chemin : tenu jusqu'à la fin du lancement, c'est le fichier vérifié qui
+/// est lancé ; une fois lancé, Windows refuse d'écrire l'image d'un programme qui tourne.
+#[cfg(windows)]
+struct Verifiee {
+    _tenue: std::fs::File,
+    chemin: PathBuf,
 }
 
-#[cfg(not(target_os = "linux"))]
+/// La fenêtre de `chemin`, si elle passe : ouverte tenue, sans suivre de lien (`FILE_FLAG_OPEN_REPARSE_POINT` : un
+/// lien ou une jonction est ouvert lui-même, puis refusé), fichier ordinaire, lue entière sur cette poignée, son
+/// empreinte comparée. Sinon la raison. Les droits (ACL) du fichier et de ses dossiers ne sont pas lus (limite dite
+/// au modèle de menace).
+#[cfg(windows)]
+fn verifier(chemin: &Path, attendue: &[u8; 32]) -> Result<Verifiee, String> {
+    use sha2::Digest;
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    const FILE_SHARE_READ: u32 = 0x1;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    let f = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(chemin)
+        .map_err(|e| trf!("illisible : {}", "unreadable: {}", e))?;
+    let m = f.metadata().map_err(|e| trf!("illisible : {}", "unreadable: {}", e))?;
+    if let Some(r) = refus(&m) {
+        return Err(r.into());
+    }
+    if m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(tr!("un lien", "a link").into());
+    }
+    let octets = lire_borne(&f, &m)?;
+    comparer(&sha2::Sha256::digest(&octets).into(), attendue)?;
+    Ok(Verifiee {
+        _tenue: f,
+        chemin: chemin.to_path_buf(),
+    })
+}
+
+/// La commande qui lance la fenêtre tenue, par son chemin.
+#[cfg(windows)]
 fn commande(v: &Verifiee) -> Command {
-    match v.0 {}
+    Command::new(&v.chemin)
 }
 
 /// Lance la fenêtre et attend qu'elle dise « ouverte ». Elle n'est pas attendue au-delà : ce programme s'arrête et
@@ -373,10 +413,10 @@ fn lancer(chemin: &Path, programme: &Path) -> Lancement {
     };
     #[cfg(target_os = "linux")]
     let verifiee = verifier(chemin, &attendue, crate::socle::uid());
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(windows)]
     let verifiee = verifier(chemin, &attendue);
-    // `verifiee` vit jusqu'à la fin : ce qu'elle tient doit rester ouvert jusqu'au lancement (sous Linux, fermé
-    // avant, le numéro de son descripteur pourrait désigner un autre fichier ouvert entre-temps).
+    // `verifiee` vit jusqu'à la fin : ce qu'elle tient reste ouvert jusqu'à « ouverte » ou l'échec (Linux : fermé
+    // avant, le numéro de son descripteur pourrait désigner un autre fichier ; Windows : le fichier tenu).
     let verifiee = match verifiee {
         Ok(v) => v,
         Err(r) => return Lancement::Refusee(r),
@@ -534,6 +574,47 @@ mod tests {
         assert!(verifier(&vraie, &bonne, moi).is_ok());
         std::fs::set_permissions(&vraie, std::fs::Permissions::from_mode(0o757)).unwrap();
         assert!(verifier(&vraie, &bonne, moi).is_err(), "modifiable par d'autres");
+        let _ = std::fs::remove_dir_all(&dossier);
+    }
+
+    /// Windows : la fenêtre d'une autre empreinte n'est pas lancée ; vérifiée, elle est tenue (ni réécrite, ni
+    /// effacée, ni renommée) jusqu'à la fin du lancement, et c'est elle que la commande lance.
+    #[cfg(windows)]
+    #[test]
+    fn windows_la_fenetre_verifiee_est_tenue_jusqu_au_lancement() {
+        use sha2::Digest;
+        let dossier = crate::socle::dossier_local().join("essai-fenetre-verifiee");
+        let _ = std::fs::remove_dir_all(&dossier);
+        std::fs::create_dir_all(&dossier).unwrap();
+        let f = dossier.join("vanguard-fenetre.exe");
+        let octets = b"MZ une fausse fenetre ".repeat(100);
+        std::fs::write(&f, &octets).unwrap();
+        let bonne: [u8; 32] = sha2::Sha256::digest(&octets).into();
+        let mut autre = bonne;
+        autre[0] ^= 1;
+        assert!(verifier(&f, &autre).is_err(), "une autre empreinte : refusée");
+        let v = verifier(&f, &bonne).unwrap();
+        assert!(std::fs::OpenOptions::new().write(true).open(&f).is_err(), "réécrite");
+        assert!(std::fs::remove_file(&f).is_err(), "effacée");
+        assert!(std::fs::rename(&f, dossier.join("autre.exe")).is_err(), "renommée");
+        assert_eq!(commande(&v).get_program(), f.as_os_str());
+        drop(v);
+        // Relâchée après le lancement : le fichier redevient libre.
+        assert!(std::fs::rename(&f, dossier.join("autre.exe")).is_ok());
+        assert!(verifier(&dossier, &bonne).is_err(), "un dossier");
+        // Tenue, elle se lance quand même (Windows ouvre l'image en lecture, permise par ce partage) : un vrai
+        // programme, `cmd.exe` copié, joue la fenêtre.
+        let systeme = std::env::var_os("SystemRoot").map(PathBuf::from).unwrap_or_default();
+        let Ok(cmd) = std::fs::read(systeme.join("System32").join("cmd.exe")) else {
+            let _ = std::fs::remove_dir_all(&dossier);
+            return crate::essais::saute("pas de cmd.exe");
+        };
+        let copie = dossier.join("fenetre-cmd.exe");
+        std::fs::write(&copie, &cmd).unwrap();
+        let v = verifier(&copie, &sha2::Sha256::digest(&cmd).into()).unwrap();
+        let sortie = commande(&v).args(["/c", "echo", "verifiee"]).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&sortie.stdout).trim_end(), "verifiee");
+        drop(v);
         let _ = std::fs::remove_dir_all(&dossier);
     }
 
