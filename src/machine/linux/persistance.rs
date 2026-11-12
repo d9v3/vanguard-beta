@@ -902,25 +902,9 @@ pub(super) fn persistance() -> Vec<Constat> {
     )
 }
 
-/// La persistance lue sous `racine` (« / » au bilan ; une arborescence fabriquée pour le corpus de détection), le
-/// dossier personnel `maison`, les variables de cette session (`variable`), la crontab du compte et le gestionnaire
-/// de paquets donnés : la même lecture et le même jugement, sans rien toucher hors de la racine.
-pub(super) fn persistance_dans(
-    racine: &Path,
-    maison: &Path,
-    variable: impl Fn(&str) -> Option<std::ffi::OsString>,
-    crontab: Option<String>,
-    gestion: Option<Paquets>,
-) -> Vec<Constat> {
-    // Une racine relative (« » au lieu de « / ») ferait lire ld.so.preload, profile.d, cron.d… sous le dossier
-    // courant : rien n'y serait, et le verdict serait « sain » (campagne n° 4, M6).
-    debug_assert!(
-        racine.is_absolute(),
-        "racine de la persistance relative : {}",
-        racine.display()
-    );
-    #[cfg(test)]
-    tests::RACINE_LUE.with(|r| *r.borrow_mut() = Some(racine.to_path_buf()));
+/// Le releveur de `persistance_dans` : la racine lue, le dossier personnel `maison` et les dossiers que les variables
+/// de la session (`variable`) y ajoutent, comme systemd et les sessions les lisent.
+fn releveur(racine: &Path, maison: &Path, variable: &impl Fn(&str) -> Option<std::ffi::OsString>) -> Releveur {
     // Une variable XDG relative est ignorée par systemd (la spécification XDG) : seule une absolue, ailleurs que le
     // dossier par défaut, ajoute un dossier.
     let deplace = |nom: &str, defaut: &str| {
@@ -942,26 +926,64 @@ pub(super) fn persistance_dans(
             .map(|v| std::env::split_paths(&v).filter(|p| p.is_absolute()).collect())
             .unwrap_or_default()
     };
+    Releveur {
+        racine: racine.to_path_buf(),
+        maison: maison.to_path_buf(),
+        runtime,
+        session,
+        config: deplace("XDG_CONFIG_HOME", ".config"),
+        donnees: deplace("XDG_DATA_HOME", ".local/share"),
+        zdot: deplace("ZDOTDIR", ""),
+        etat: deplace("XDG_STATE_HOME", ".local/state"),
+        modules: Vec::new(),
+        hypr_inclus: Vec::new(),
+        dossiers_ajoutes: Vec::new(),
+        session_de_systemd,
+        donnees_systeme: liste("XDG_DATA_DIRS"),
+        config_systeme: liste("XDG_CONFIG_DIRS"),
+        environnement: None,
+        budget: temoins::Budget::default(),
+        dbus: std::cell::OnceCell::new(),
+    }
+}
+
+/// Les dossiers où systemd cherche les unités du compte (systemd --user), du plus prioritaire au moins prioritaire,
+/// pour ce dossier personnel et ces variables de session : la liste même du bilan des persistances
+/// (`dossiers_d_unites`), pour que `vanguard demarrage` sache quelle unité tourne vraiment (relecture 0.94, C-1).
+/// `Err` : pourquoi la liste ne se fait pas (dossier de la session inconnu).
+pub(crate) fn dossiers_d_unites_du_compte(
+    maison: &Path,
+    variable: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Result<Vec<std::path::PathBuf>, String> {
+    dossiers_d_unites(&releveur(Path::new("/"), maison, &variable), true).map_err(|r| r.0)
+}
+
+/// Les noms des dossiers de compléments (« nom.service.d ») qui s'appliquent à l'unité `nom` (`ajouts_de`).
+pub(crate) fn complements_d_unite(nom: &str) -> Vec<String> {
+    ajouts_de(nom)
+}
+
+/// La persistance lue sous `racine` (« / » au bilan ; une arborescence fabriquée pour le corpus de détection), le
+/// dossier personnel `maison`, les variables de cette session (`variable`), la crontab du compte et le gestionnaire
+/// de paquets donnés : la même lecture et le même jugement, sans rien toucher hors de la racine.
+pub(super) fn persistance_dans(
+    racine: &Path,
+    maison: &Path,
+    variable: impl Fn(&str) -> Option<std::ffi::OsString>,
+    crontab: Option<String>,
+    gestion: Option<Paquets>,
+) -> Vec<Constat> {
+    // Une racine relative (« » au lieu de « / ») ferait lire ld.so.preload, profile.d, cron.d… sous le dossier
+    // courant : rien n'y serait, et le verdict serait « sain » (campagne n° 4, M6).
+    debug_assert!(
+        racine.is_absolute(),
+        "racine de la persistance relative : {}",
+        racine.display()
+    );
+    #[cfg(test)]
+    tests::RACINE_LUE.with(|r| *r.borrow_mut() = Some(racine.to_path_buf()));
     let mut t = Lancements {
-        r: Releveur {
-            racine: racine.to_path_buf(),
-            maison: maison.to_path_buf(),
-            runtime,
-            session,
-            config: deplace("XDG_CONFIG_HOME", ".config"),
-            donnees: deplace("XDG_DATA_HOME", ".local/share"),
-            zdot: deplace("ZDOTDIR", ""),
-            etat: deplace("XDG_STATE_HOME", ".local/state"),
-            modules: Vec::new(),
-            hypr_inclus: Vec::new(),
-            dossiers_ajoutes: Vec::new(),
-            session_de_systemd,
-            donnees_systeme: liste("XDG_DATA_DIRS"),
-            config_systeme: liste("XDG_CONFIG_DIRS"),
-            environnement: None,
-            budget: temoins::Budget::default(),
-            dbus: std::cell::OnceCell::new(),
-        },
+        r: releveur(racine, maison, &variable),
         ..Lancements::default()
     };
     t.r.dossiers_ajoutes = dossiers_ajoutes(&t.r);

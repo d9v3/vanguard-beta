@@ -79,6 +79,8 @@ pub(crate) fn aur_sans_accord() -> bool {
 }
 use maj::*;
 use persistance::*;
+// La liste des dossiers d'unités du compte, partagée avec `vanguard demarrage` (relecture 0.94, C-1).
+pub(crate) use persistance::{complements_d_unite, dossiers_d_unites_du_compte};
 use privileges::*;
 
 /// Ajouts de Vanguard à la configuration de sshd (lu en premier : sshd garde la première valeur trouvée).

@@ -1313,12 +1313,30 @@ pub fn releve_demarrage() -> (Vec<Programme>, Vec<String>) {
         ]),
         10,
     );
-    releve_dans(
+    // L'ordre où systemd lit les unités du compte, celui du bilan des persistances : une unité d'un dossier du
+    // compte qui passe avant le système (~/.local/share/systemd/user, /run/user/…) remplace celle du système.
+    let ordre = crate::machine::linux::dossiers_d_unites_du_compte(&maison, |v| std::env::var_os(v));
+    let unites: Vec<PathBuf> = UNITES_DU_SYSTEME.iter().map(PathBuf::from).collect();
+    releve_selon(
         &config,
         &dossiers_systeme(),
         &bureau,
         activees.as_ref().and_then(services_actives),
+        ordre,
+        &unites,
     )
+}
+
+/// Le premier dossier de compléments (« nom.service.d », `complements_d_unite`) de l'unité `unite` qu'un dossier
+/// d'unités du compte (dans `ordre`, hors de `unites_systeme`) porte, ou qui ne s'y voit pas : il change ce que lance
+/// l'unité du système.
+fn complement_du_compte(ordre: &[PathBuf], unites_systeme: &[PathBuf], unite: &str) -> Option<PathBuf> {
+    let noms = crate::machine::linux::complements_d_unite(unite);
+    ordre
+        .iter()
+        .filter(|d| !unites_systeme.contains(d))
+        .flat_map(|d| noms.iter().map(move |n| d.join(n)))
+        .find(|c| std::fs::symlink_metadata(c).map_or_else(|e| e.kind() != std::io::ErrorKind::NotFound, |_| true))
 }
 
 /// La liste des services du compte activés que rend `systemctl --user list-unit-files`, ou `None` s'il n'a pas
@@ -1346,9 +1364,11 @@ const UNITES_DU_SYSTEME: [&str; 8] = [
     "/usr/share/systemd/user",
 ];
 
-/// `releve_demarrage` sur ces dossiers : `config`, le dossier de configuration du compte ; `activees`, la réponse de
-/// systemctl (`services_actives`). Ce qui ne se lit pas, ou que la garde refuse (`sous_maison::juger` : lien, tube,
-/// autre compte, hors du dossier personnel), est un manque dit, jamais une entrée tue (T-1, T-3).
+/// `releve_demarrage` sur ces dossiers (essais) : `config`, le dossier de configuration du compte ; `activees`, la
+/// réponse de systemctl (`services_actives`) ; les unités lues dans `config`/systemd/user puis les dossiers fixes du
+/// système. Ce qui ne se lit pas, ou que la garde refuse (`sous_maison::juger` : lien, tube, autre compte, hors du
+/// dossier personnel), est un manque dit, jamais une entrée tue (T-1, T-3).
+#[cfg(test)]
 pub(super) fn releve_dans(
     config: &Path,
     systeme: &[PathBuf],
@@ -1356,17 +1376,25 @@ pub(super) fn releve_dans(
     activees: Option<String>,
 ) -> (Vec<Programme>, Vec<String>) {
     let unites: Vec<PathBuf> = UNITES_DU_SYSTEME.iter().map(PathBuf::from).collect();
-    releve_selon(config, systeme, bureau, activees, &unites)
+    let ordre = std::iter::once(config.join("systemd/user"))
+        .chain(unites.iter().cloned())
+        .collect();
+    releve_selon(config, systeme, bureau, activees, Ok(ordre), &unites)
 }
 
-/// `releve_dans`, `unites_systeme` étant les dossiers d'unités du système (`UNITES_DU_SYSTEME`). Un service activé
-/// absent de ~/.config/systemd/user n'est tu que si l'un d'eux le porte : ailleurs (~/.local/share/systemd/user,
-/// /run/user/…), ou si le dossier du compte ne se traverse pas, c'est un manque dit (relecture 0.94, R-2).
+/// `releve_demarrage` : `ordre`, les dossiers d'unités du compte dans l'ordre où systemd les lit
+/// (`dossiers_d_unites_du_compte`, ou pourquoi il ne se fait pas) ; `unites_systeme`, ceux que fournit le système
+/// (`UNITES_DU_SYSTEME`). Systemd lance l'unité du premier dossier qui porte son nom : celle de
+/// `config`/systemd/user se lit ; celle d'un dossier du système se tait, sauf si un dossier du compte la complète
+/// (« nom.service.d ») ; toute autre (~/.local/share/systemd/user, /run/user/…, même devant une unité du système
+/// au même nom), un nom introuvable ou un dossier qui ne se traverse pas : un manque dit, jamais un silence
+/// (relecture 0.94, R-2, C-1).
 fn releve_selon(
     config: &Path,
     systeme: &[PathBuf],
     bureau: &str,
     activees: Option<String>,
+    ordre: Result<Vec<PathBuf>, String>,
     unites_systeme: &[PathBuf],
 ) -> (Vec<Programme>, Vec<String>) {
     let mut manques = Vec::new();
@@ -1395,36 +1423,70 @@ fn releve_selon(
         );
         return (l, manques);
     };
+    // Sans la liste de systemd (dossier de la session inconnu), seul le dossier du compte se lit : tout autre service
+    // est dit, et le manque aussi. Le dossier du compte y est toujours, à sa place ou devant.
+    let mut ordre = ordre.unwrap_or_else(|raison| {
+        manques.push(trf!(
+            "services du compte pas tous vérifiés : {}",
+            "account services not all checked: {}",
+            raison
+        ));
+        Vec::new()
+    });
+    if !ordre.contains(&dossier) {
+        ordre.insert(0, dossier.clone());
+    }
     for unite in activees.lines().filter_map(|l| l.split_whitespace().next()) {
         let chemin = dossier.join(unite);
-        match std::fs::symlink_metadata(&chemin) {
-            Ok(_) => {}
-            // Absent du dossier du compte et porté par le système : un service activé pour chacun, que la personne
-            // n'a pas installé. Le nom ne sort pas du dossier : systemd n'y met jamais de « / ».
-            Err(e)
-                if e.kind() == std::io::ErrorKind::NotFound
-                    && !unite.contains('/')
-                    && unites_systeme
-                        .iter()
-                        .any(|d| std::fs::symlink_metadata(d.join(unite)).is_ok()) =>
-            {
+        // Le nom ne sort pas du dossier : systemd n'y met jamais de « / ».
+        let porte = if unite.contains('/') {
+            None
+        } else {
+            ordre
+                .iter()
+                .find_map(|d| match std::fs::symlink_metadata(d.join(unite)) {
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                    lu => Some((d, lu.map(|_| ()))),
+                })
+        };
+        match porte {
+            Some((d, Ok(()))) if *d == dossier => {}
+            // Porté d'abord par le système : un service activé pour chacun, que la personne n'a pas installé, sauf
+            // si un dossier du compte le complète (ExecStart changé par « nom.service.d/x.conf »).
+            Some((d, Ok(()))) if unites_systeme.contains(d) => {
+                if let Some(c) = complement_du_compte(&ordre, unites_systeme, unite) {
+                    manques.push(trf!(
+                        "non vérifié : service du système complété par le compte ({}) ; ni lu ni proposé",
+                        "not verified: system service completed by the account ({}); neither read nor offered",
+                        court(&c)
+                    ));
+                }
                 continue;
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Some((d, Ok(()))) => {
                 manques.push(trf!(
-                    "non vérifié : service activé hors de {} ({}) ; ni lu ni proposé",
-                    "not verified: enabled service outside {} ({}); neither read nor offered",
+                    "non vérifié : service activé que systemd lit hors de {} ({}) ; ni lu ni proposé",
+                    "not verified: enabled service that systemd reads outside {} ({}); neither read nor offered",
                     court(&dossier),
-                    crate::ui::affichable(unite)
+                    court(&d.join(unite))
                 ));
                 continue;
             }
-            Err(e) => {
+            Some((_, Err(e))) => {
                 manques.push(trf!(
                     "non vérifié : service du compte illisible ({}, {}) ; ni lu ni proposé",
                     "not verified: account service unreadable ({}, {}); neither read nor offered",
                     crate::ui::affichable(unite),
                     e
+                ));
+                continue;
+            }
+            None => {
+                manques.push(trf!(
+                    "non vérifié : service activé hors de {} ({}) ; ni lu ni proposé",
+                    "not verified: enabled service outside {} ({}); neither read nor offered",
+                    court(&dossier),
+                    crate::ui::affichable(unite)
                 ));
                 continue;
             }
@@ -2983,7 +3045,14 @@ mod tests {
         .unwrap();
         let activees =
             "synchro.service enabled enabled\nnote.service enabled enabled\npipewire.service enabled enabled";
-        let (l, manques) = releve_selon(&base, &[], "Hyprland", Some(activees.to_string()), &[du_systeme]);
+        let (l, manques) = releve_selon(
+            &base,
+            &[],
+            "Hyprland",
+            Some(activees.to_string()),
+            Ok(ordre_essai(&base, std::slice::from_ref(&du_systeme))),
+            &[du_systeme],
+        );
         let noms: Vec<&str> = l.iter().map(|p| p.nom.as_str()).collect();
         assert_eq!(noms, ["note"]);
         assert_eq!(manques.len(), 1, "{manques:?}");
@@ -2991,6 +3060,110 @@ mod tests {
             manques[0].contains("synchro.service") && manques[0].contains("non vérifié"),
             "{manques:?}"
         );
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// L'ordre de systemd dans un essai : le dossier d'unités de `config`, puis les dossiers du système donnés.
+    fn ordre_essai(config: &Path, systeme: &[PathBuf]) -> Vec<PathBuf> {
+        std::iter::once(config.join("systemd/user"))
+            .chain(systeme.iter().cloned())
+            .collect()
+    }
+
+    /// C-1 (relecture 0.94) : systemd lance l'unité du premier dossier qui porte son nom. Une unité d'un dossier du
+    /// compte qui passe avant le système (~/.local/share/systemd/user, /run/user/…/systemd/user.control) remplace
+    /// celle du système au même nom : elle est dite, jamais tue ; un complément du compte (« nom.service.d ») sur une
+    /// unité du système aussi. L'unité du système seule, ou devant une copie plus loin, reste tue.
+    #[test]
+    fn unite_du_compte_qui_masque_le_systeme_est_dite() {
+        let base = dossier_jetable("unite-masque");
+        let config = base.join("config");
+        let (controle, unites, donnees, du_systeme, apres) = (
+            base.join("run/systemd/user.control"),
+            config.join("systemd/user"),
+            base.join("donnees/systemd/user"),
+            base.join("usr-lib-systemd-user"),
+            base.join("flatpak/systemd/user"),
+        );
+        for d in [&controle, &unites, &donnees, &du_systeme, &apres] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let unite = |d: &Path, nom: &str| {
+            std::fs::write(d.join(nom), "[Service]\nExecStart=/usr/bin/x\n").unwrap();
+        };
+        let ordre = || {
+            Ok(vec![
+                controle.clone(),
+                unites.clone(),
+                du_systeme.clone(),
+                donnees.clone(),
+                apres.clone(),
+            ])
+        };
+        let systeme = std::slice::from_ref(&du_systeme);
+        let releve = |activees: &str, ordre: Result<Vec<PathBuf>, String>| {
+            releve_selon(&config, &[], "Hyprland", Some(activees.to_string()), ordre, systeme)
+        };
+        // Témoin : l'unité du système seule, ou devant une copie du compte plus loin dans l'ordre, se tait.
+        unite(&du_systeme, "pipewire.service");
+        unite(&du_systeme, "wireplumber.service");
+        unite(&apres, "wireplumber.service");
+        let (l, manques) = releve(
+            "pipewire.service enabled enabled\nwireplumber.service enabled enabled",
+            ordre(),
+        );
+        assert!(l.is_empty() && manques.is_empty(), "{manques:?}");
+        // Le dossier de données du compte passe avant le système dans la vraie liste : la sienne tourne.
+        let (l, manques) = releve(
+            "pipewire.service enabled enabled",
+            Ok(vec![unites.clone(), donnees.clone(), du_systeme.clone()]),
+        );
+        assert!(
+            l.is_empty() && manques.is_empty(),
+            "rien encore dans les données : {manques:?}"
+        );
+        unite(&donnees, "pipewire.service");
+        let (l, manques) = releve(
+            "pipewire.service enabled enabled",
+            Ok(vec![unites.clone(), donnees.clone(), du_systeme.clone()]),
+        );
+        assert!(l.is_empty(), "{:?}", l.iter().map(|p| &p.nom).collect::<Vec<_>>());
+        assert_eq!(manques.len(), 1, "{manques:?}");
+        assert!(
+            manques[0].contains("non vérifié") && manques[0].contains("pipewire.service"),
+            "{manques:?}"
+        );
+        // user.control, devant même ~/.config/systemd/user : l'unité lue du compte n'est pas celle qui tourne.
+        unite(&unites, "note.service");
+        let (l, manques) = releve("note.service enabled enabled", ordre());
+        assert_eq!(l.len(), 1, "témoin : l'unité du compte se lit");
+        assert!(manques.is_empty(), "{manques:?}");
+        unite(&controle, "note.service");
+        let (l, manques) = releve("note.service enabled enabled", ordre());
+        assert!(l.is_empty(), "{:?}", l.iter().map(|p| &p.nom).collect::<Vec<_>>());
+        assert!(
+            manques.len() == 1 && manques[0].contains("non vérifié") && manques[0].contains("note.service"),
+            "{manques:?}"
+        );
+        // Un complément du compte sur l'unité du système (ExecStart changé) : dit, même plus loin dans l'ordre.
+        for complement in ["wireplumber.service.d", "service.d"] {
+            let c = apres.join(complement);
+            std::fs::create_dir_all(&c).unwrap();
+            std::fs::write(c.join("x.conf"), "[Service]\nExecStart=\nExecStart=/usr/bin/charge\n").unwrap();
+            let (l, manques) = releve("wireplumber.service enabled enabled", ordre());
+            assert!(l.is_empty());
+            assert!(
+                manques.len() == 1 && manques[0].contains("non vérifié") && manques[0].contains(complement),
+                "{complement} : {manques:?}"
+            );
+            std::fs::remove_dir_all(&c).unwrap();
+        }
+        // Sans la liste de systemd : le manque est dit, et une unité du système ne passe plus pour sûre.
+        let (l, manques) = releve("pipewire.service enabled enabled", Err("session inconnue".to_string()));
+        assert!(l.is_empty());
+        assert_eq!(manques.len(), 2, "{manques:?}");
+        assert!(manques.iter().any(|m| m.contains("session inconnue")), "{manques:?}");
+        assert!(manques.iter().any(|m| m.contains("pipewire.service")), "{manques:?}");
         std::fs::remove_dir_all(&base).unwrap();
     }
 
@@ -3021,7 +3194,14 @@ mod tests {
         .unwrap();
         let activees = "synchro.service enabled enabled\npipewire.service enabled enabled";
         let systeme = std::slice::from_ref(&du_systeme);
-        let (l, manques) = releve_selon(&config, &[], "Hyprland", Some(activees.to_string()), systeme);
+        let (l, manques) = releve_selon(
+            &config,
+            &[],
+            "Hyprland",
+            Some(activees.to_string()),
+            Ok(ordre_essai(&config, systeme)),
+            systeme,
+        );
         assert!(l.is_empty());
         assert_eq!(manques.len(), 1, "le service du système reste tu : {manques:?}");
         assert!(
@@ -3040,7 +3220,14 @@ mod tests {
             eprintln!("(sauté : dossier fermé traversable quand même ici, root ou espace de noms)");
         } else {
             let activees = "note.service enabled enabled\npipewire.service enabled enabled";
-            let (l, manques) = releve_selon(&config, &[], "Hyprland", Some(activees.to_string()), systeme);
+            let (l, manques) = releve_selon(
+                &config,
+                &[],
+                "Hyprland",
+                Some(activees.to_string()),
+                Ok(ordre_essai(&config, systeme)),
+                systeme,
+            );
             assert!(l.is_empty());
             assert_eq!(manques.len(), 2, "{manques:?}");
             assert!(manques.iter().all(|m| m.contains("non vérifié")), "{manques:?}");

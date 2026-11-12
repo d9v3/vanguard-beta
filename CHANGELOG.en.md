@@ -89,14 +89,17 @@ repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
   `demarrage --retirer` and `--remettre` no longer follow any folder that is a link (~/.config or its autostart folder
   replaced by a link): nothing is written outside the home folder. An entry kept behind a link, or itself a link or a
   pipe, is not offered, and the list says it is “not verified” (in `--json` as in the terminal checklist), never “no
-  program”; a `systemctl --user` that does not answer is said too. A single read makes what is shown, noted and
-  written: an entry changed between this read and its writing, within the same run, is not written (the fingerprint
-  of a list shown earlier only names the path). Entries are read within bounds, without waiting on a pipe, at startup
-  as in `vanguard slow`: an entry of 64 KiB or more is neither removed (it was removed with no way to put it back)
-  nor put back over, an entry that, once hidden, would exceed this bound is refused before being written, a file
-  replaced by a pipe no longer freezes the list, and a rewritten entry keeps its permissions;
-  `vanguard slow` states how many entries it could not read, instead of counting them as absent. The settings seal is
-  written in two steps: a hard stop between a file and its seal no longer raises a false tampering alarm.
+  program”; a `systemctl --user` that does not answer is said too. An enabled service that systemd reads outside
+  ~/.config/systemd/user (an account folder read before the system's, such as ~/.local/share/systemd/user, even under
+  the name of a system service), or a system service that the account completes (“name.service.d”), is said not
+  verified too. A single read makes what is shown, noted and written: an entry changed between this read and its
+  writing, within the same run, is not written (the fingerprint of a list shown earlier only names the path). Entries
+  are read within bounds, without waiting on a pipe, at startup as in `vanguard slow`: an entry of 64 KiB or more is
+  neither removed (it was removed with no way to put it back) nor put back over, an entry that, once hidden, would
+  exceed this bound is refused before being written, a file replaced by a pipe no longer freezes the list, and a
+  rewritten entry keeps its permissions; `vanguard slow` states how many entries it could not read, instead of
+  counting them as absent. The settings seal is written in two steps: a hard stop between a file and its seal no
+  longer raises a false tampering alarm.
 - **Dependency security.** rustix 1.1.6 (advisory RUSTSEC-2026-0486: in its extended attribute functions, bytes
   never written were marked as initialized for an empty buffer), brought in by crossterm.
 - **Tests.** Five new fuzzing targets (what a startup line starts and, for the upcoming window, the answers it reads,

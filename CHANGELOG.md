@@ -94,6 +94,9 @@ recompilée au besoin.
   autostart remplacé par un lien) : rien ne s'écrit hors du dossier personnel. Une entrée rangée derrière un lien, ou
   elle-même un lien ou un tube, n'est pas proposée, et la liste la dit « non vérifiée » (dans `--json` comme dans la
   liste à cocher du terminal), jamais « aucun programme » ; un `systemctl --user` qui ne répond pas est dit aussi.
+  Un service activé que systemd lit ailleurs que dans ~/.config/systemd/user (un dossier du compte qui passe avant
+  celui du système, comme ~/.local/share/systemd/user, même sous le nom d'un service du système), ou un service du
+  système que le compte complète (« nom.service.d »), est dit non vérifié aussi.
   Une seule lecture fait ce qui est montré, noté et écrit : une entrée changée entre cette lecture et son écriture,
   dans le même lancement, n'est pas écrite (l'empreinte d'une liste montrée plus tôt ne désigne que le chemin). Les
   entrées se lisent bornées, sans attendre un tube, au démarrage comme dans `vanguard lenteur` : une entrée de 64 Kio
