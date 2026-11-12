@@ -196,8 +196,8 @@ impl Ecart {
                 "Vanguard backup whose disk is an image (loop device) backed by a file the account can change (udisks mounts it without admin rights, under the expected disk name): where rsync copies is not checked"
             ),
             Ecart::LieuDeDemarrage => tr!(
-                "ligne qui nomme un lieu de démarrage du compte (~/.config/autostart, ~/.config/systemd, ~/.config/hypr, ~/.bashrc…) ou un dossier qui en contient (~/.config) : elle peut y copier, déplacer ou lier un lancement à chaque passage ; ce qu'elle y pose n'est pas vérifié",
-                "line naming an account startup place (~/.config/autostart, ~/.config/systemd, ~/.config/hypr, ~/.bashrc…) or a folder holding one (~/.config): it can copy, move or link a launch there on every run; what it puts there is not checked"
+                "ligne qui nomme un lieu de démarrage du compte (~/.config/autostart, ~/.config/systemd, ~/.config/hypr, ~/.bashrc…) ou un dossier qui en contient (~/.config), écrit tel quel, relatif au dossier personnel ou par un lien qui y mène : elle peut y copier, déplacer ou lier un lancement à chaque passage ; ce qu'elle y pose n'est pas vérifié (limite : une copie sur le dossier personnel entier n'est pas comptée)",
+                "line naming an account startup place (~/.config/autostart, ~/.config/systemd, ~/.config/hypr, ~/.bashrc…) or a folder holding one (~/.config), written as is, relative to the home folder or through a link leading there: it can copy, move or link a launch there on every run; what it puts there is not checked (limit: a copy onto the whole home folder is not counted)"
             ),
             Ecart::Environnement => tr!(
                 "sauvegarde de Vanguard : un fichier de variables de la session du compte (~/.config/environment.d, ~/.config/systemd/user.conf, ~/.pam_environment, ~/.config/uwsm/env…) nomme HOME ou une variable que lisent rsync, findmnt ou le chargeur de programmes (LD_*, RSYNC_*, POPT*, LIBMOUNT_*, BLKID_*…), ou le cache (inclusion d'un autre fichier, nom construit, « eval »), ou ne se lit pas : il peut changer ce que la sauvegarde lit ou lance (un autre ~/.popt) ; non vérifié, donc pas tu",
@@ -615,18 +615,147 @@ fn argument_sur(s: &Systeme, a: &str) -> Result<(), Ecart> {
         if m.starts_with(['/', '~', '$', '%']) && s.cache(m, true) {
             return Err(Ecart::Filet);
         }
-        if m.starts_with(['/', '~', '$', '%']) && lieu_de_demarrage(m, s.maisons) {
+        if s.mene_a_un_lieu(m) {
             return Err(Ecart::LieuDeDemarrage);
         }
     }
     Ok(())
 }
 
+/// Le plus de liens suivis pour un chemin (celui du noyau, ELOOP) : au-delà, le chemin n'est pas vérifié.
+const LIENS_SUIVIS: u32 = 40;
+
+impl Systeme<'_> {
+    /// Un morceau d'argument qui mène à un lieu de démarrage du compte (W-3, relecture 0.95) : par son texte, puis par
+    /// l'endroit où il mène vraiment (ses liens suivis, `chemin_reel`). Un morceau relatif (« .config/autostart »,
+    /// « lien ») se lit depuis le dossier personnel, le dossier courant d'une unité du compte (WorkingDirectory=%h,
+    /// ou rien) et d'une entrée de démarrage. Un chemin qui ne se suit pas (trop de liens, lien illisible) compte :
+    /// non vérifié, donc pas tu. Une option (« -r ») n'est pas un chemin.
+    fn mene_a_un_lieu(&self, m: &str) -> bool {
+        if m.starts_with('-') {
+            return false;
+        }
+        let ecrit = if m.starts_with(['/', '~', '$', '%']) {
+            m.to_string()
+        } else {
+            format!("~/{m}")
+        };
+        if lieu_de_demarrage(&ecrit, self.maisons) {
+            return true;
+        }
+        let Some(depart) = self.developpe(&ecrit) else {
+            return false;
+        };
+        match self.chemin_reel(&depart) {
+            Some(reel) => {
+                lieu_de_demarrage(&reel, self.maisons)
+                    || lieu_de_demarrage(&self.sous(&reel).to_string_lossy(), self.maisons)
+            }
+            None => true,
+        }
+    }
+
+    /// Un chemin écrit (« ~/… », « $HOME/… », « %h/… », « $XDG_CONFIG_HOME/… », « /… ») en chemin absolu de l'ordinateur ; `None`
+    /// pour une autre variable ou un autre code, que le texte seul juge.
+    fn developpe(&self, p: &str) -> Option<String> {
+        if p.starts_with('/') {
+            return Some(p.to_string());
+        }
+        let maison = self.maison.trim_end_matches('/');
+        PREFIXES_DU_COMPTE.iter().find_map(|(d, vers)| {
+            let reste = if p == d.trim_end_matches('/') {
+                ""
+            } else {
+                p.strip_prefix(d)?
+            };
+            Some(format!("{maison}/{vers}{reste}"))
+        })
+    }
+
+    /// Le chemin réel de `p` (absolu, de l'ordinateur) : chaque partie lue sous la racine, un lien remplacé par sa
+    /// cible (absolue : lue sous la racine ; relative : depuis son dossier), « .. » appliqué au chemin déjà suivi.
+    /// Une partie absente, ou qu'on ne peut pas traverser (pas un dossier, pas le droit), arrête le suivi : le
+    /// programme de la ligne ne la traverse pas non plus, et le reste se colle tel quel. `None` : plus de
+    /// `LIENS_SUIVIS` liens, ou un lien qui ne se lit pas.
+    fn chemin_reel(&self, p: &str) -> Option<String> {
+        let racine = self.racine.to_string_lossy();
+        let racine = racine.trim_end_matches('/');
+        let p = if racine.is_empty() {
+            p
+        } else {
+            p.strip_prefix(racine).filter(|r| r.starts_with('/')).unwrap_or(p)
+        };
+        let mut reste: Vec<String> = p.split('/').rev().map(str::to_string).collect();
+        let mut fait = String::new();
+        let mut liens: u32 = 0;
+        while let Some(partie) = reste.pop() {
+            if partie.is_empty() || partie == "." {
+                continue;
+            }
+            if partie == ".." {
+                let fin = fait.rfind('/').unwrap_or(0);
+                fait.truncate(fin);
+                continue;
+            }
+            let essai = format!("{fait}/{partie}");
+            let lu = self.sous(&essai);
+            match std::fs::symlink_metadata(&lu) {
+                Ok(md) if md.file_type().is_symlink() => {
+                    liens = liens.saturating_add(1);
+                    if liens > LIENS_SUIVIS {
+                        return None;
+                    }
+                    let cible = std::fs::read_link(&lu).ok()?;
+                    let cible = cible.to_str()?;
+                    if cible.starts_with('/') {
+                        fait.clear();
+                    }
+                    reste.extend(cible.split('/').rev().map(str::to_string));
+                }
+                Ok(_) => fait = essai,
+                Err(_) => {
+                    fait = essai;
+                    while let Some(partie) = reste.pop() {
+                        fait.push('/');
+                        fait.push_str(&partie);
+                    }
+                }
+            }
+        }
+        Some(if fait.is_empty() { "/".to_string() } else { fait })
+    }
+}
+
+/// Les débuts d'un chemin écrit qui désignent un dossier du compte, et ce qu'ils valent sous son dossier personnel :
+/// la maison (« ~ », « $HOME », « %h ») et ses réglages (« $XDG_CONFIG_HOME » : ~/.config par défaut). Les autres
+/// codes de systemd (%E, %S…) sont déjà remplacés par leur valeur avant la liste permise (`developper_codes`).
+const PREFIXES_DU_COMPTE: [(&str, &str); 6] = [
+    ("~/", ""),
+    ("$HOME/", ""),
+    ("${HOME}/", ""),
+    ("%h/", ""),
+    ("$XDG_CONFIG_HOME/", ".config/"),
+    ("${XDG_CONFIG_HOME}/", ".config/"),
+];
+
 /// Les lieux du compte (sous son dossier personnel) dont le contenu se lance ou se lit tout seul à l'ouverture de la
 /// session : dossiers d'entrées et d'unités, fichiers de variables, profils des shells, réglages de Hyprland et les
-/// modules d'Omarchy (sauf le thème, qu'une ligne lit souvent). Un chemin sous l'un d'eux, ou l'un d'eux, compte.
-const LIEUX_DE_DEMARRAGE: [&str; 27] = [
+/// modules d'Omarchy (sauf le thème, qu'une ligne lit souvent), ceux des autres bureaux (KDE, Sway, niri, i3, labwc,
+/// river, Openbox, LXDE, la session X). Un chemin sous l'un d'eux, ou l'un d'eux, compte. Limite dite : le dossier
+/// personnel entier (« cp -r … ~ ») n'y est pas, trop de lignes ordinaires le nomment.
+const LIEUX_DE_DEMARRAGE: [&str; 38] = [
     ".config/autostart",
+    ".config/autostart-scripts",
+    ".config/plasma-workspace",
+    ".config/sway",
+    ".config/niri",
+    ".config/i3",
+    ".config/labwc",
+    ".config/river",
+    ".config/openbox",
+    ".config/lxsession",
+    ".xinitrc",
+    ".xsession",
     ".config/systemd",
     ".local/share/systemd",
     ".config/environment.d",
@@ -671,15 +800,23 @@ fn lieu_de_demarrage(p: &str, maisons: &[&str]) -> bool {
     let simple = chemin_simplifie(p);
     let net = sans_racine_de_proc(&simple);
     let net = net.trim_end_matches('/');
-    let mut relatifs: Vec<&str> = ["~/", "$HOME/", "${HOME}/", "%h/"]
+    let mut relatifs: Vec<String> = PREFIXES_DU_COMPTE
         .iter()
-        .filter_map(|d| net.strip_prefix(d))
+        .filter_map(|(d, vers)| {
+            if net == d.trim_end_matches('/') {
+                return Some(vers.trim_end_matches('/').to_string());
+            }
+            net.strip_prefix(d).map(|r| format!("{vers}{r}"))
+        })
         .collect();
     for m in maisons.iter().filter(|m| !m.is_empty()) {
-        relatifs.extend(net.strip_prefix(&format!("{}/", m.trim_end_matches('/'))));
-        relatifs.extend(maison_d_un_compte(net, m));
+        relatifs.extend(
+            net.strip_prefix(&format!("{}/", m.trim_end_matches('/')))
+                .map(str::to_string),
+        );
+        relatifs.extend(maison_d_un_compte(net, m).map(str::to_string));
     }
-    relatifs.into_iter().any(|r| {
+    relatifs.iter().map(String::as_str).any(|r| {
         PARENTS_DE_LIEUX.contains(&r)
             || LIEUX_DE_DEMARRAGE
                 .iter()

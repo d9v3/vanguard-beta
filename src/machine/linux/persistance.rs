@@ -10439,6 +10439,117 @@ mod tests {
         assert!(faux.is_empty(), "{faux:#?}");
     }
 
+    /// W-3 (relecture 0.95) : le contrôle du point 12 lisait le texte de l'argument, pas l'endroit où il mène. Une
+    /// destination qui est un lien du compte vers un lieu de démarrage (absolu, relatif, pendant, en chaîne), un
+    /// chemin relatif lu depuis le dossier courant d'une unité du compte (WorkingDirectory=%h), « %E/… », ou un lieu
+    /// d'un autre bureau (autostart-scripts de KDE, Sway, niri) : levée. Une boucle de liens : non vérifiée, levée.
+    /// Les témoins (un lien vers un dossier ordinaire, un relatif ordinaire) restent muets.
+    #[test]
+    fn un_lien_un_relatif_ou_un_autre_bureau_mene_au_lieu_de_demarrage() {
+        use std::os::unix::fs::PermissionsExt as _;
+        type Cas<'a> = (&'a str, &'a [(&'a str, &'a str)], bool);
+        let cas: &[Cas<'_>] = &[
+            (
+                "/usr/bin/cp /home/alice/Documents/x.desktop /home/alice/Documents/lien/",
+                &[("Documents/lien", "/home/alice/.config/autostart")],
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x %h/Documents/lien/x.desktop",
+                &[("Documents/lien", "../.config/autostart")],
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x /home/alice/Documents/f.desktop",
+                &[("Documents/f.desktop", "/home/alice/.config/autostart/f.desktop")],
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x /home/alice/Documents/a/x.desktop",
+                &[("Documents/a", "b"), ("Documents/b", "/home/alice/.config/autostart")],
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x Documents/../.config/autostart/x.desktop",
+                &[],
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x lien/x.desktop",
+                &[("lien", ".config/autostart")],
+                false,
+            ),
+            ("/usr/bin/cp -r /home/alice/Documents/x %E/autostart", &[], false),
+            ("/usr/bin/cp /home/alice/Documents/s %h/.config/sway/config", &[], false),
+            (
+                "/usr/bin/cp /home/alice/Documents/s /home/alice/.config/niri/config.kdl",
+                &[],
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/s /home/alice/.config/autostart-scripts/s.sh",
+                &[],
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x /home/alice/Documents/b1/x",
+                &[("Documents/b1", "b2"), ("Documents/b2", "b1")],
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x /home/alice/Documents/lien/",
+                &[("Documents/lien", "/home/alice/Documents/autre")],
+                true,
+            ),
+            ("/usr/bin/cp /home/alice/Documents/x Documents/b", &[], true),
+            (
+                "/usr/bin/cp -r /home/alice/Documents/a /home/alice/Documents/b",
+                &[],
+                true,
+            ),
+        ];
+        let mut faux = Vec::new();
+        for (i, (exec, liens, sain)) in cas.iter().enumerate() {
+            let m = Maison::nouvelle(&format!("lieu-reel-{i}"));
+            let f = m.racine.join("usr/bin/cp");
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(&f, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+            for d in [".config/autostart", "Documents/autre"] {
+                std::fs::create_dir_all(m.chemin(d)).unwrap();
+            }
+            for (lien, cible) in *liens {
+                // Une cible absolue se lit sous la racine de l'essai, comme le fait le bilan.
+                std::os::unix::fs::symlink(cible, m.chemin(lien)).unwrap();
+            }
+            m.ecrire(
+                ".config/systemd/user/essai.service",
+                &format!("[Unit]\nDescription=essai\n\n[Service]\nWorkingDirectory=%h\nExecStart={exec}\nNice=10\n\n[Install]\nWantedBy=default.target\n"),
+            );
+            let constats = persistance_dans(
+                &m.racine,
+                &m.chemin(""),
+                |v| (v == "XDG_RUNTIME_DIR").then(|| "/run/user/1000".into()),
+                None,
+                None,
+            );
+            let leve: Vec<_> = constats
+                .iter()
+                .filter(|c| c.probleme.is_some())
+                .map(|c| c.message.clone())
+                .collect();
+            let juste = if *sain {
+                leve.is_empty()
+            } else {
+                leve.iter().any(|l| l.contains("lieu de démarrage du compte"))
+            };
+            if !juste {
+                faux.push((*exec, leve));
+            }
+        }
+        assert!(faux.is_empty(), "{faux:#?}");
+    }
+
     /// Le cas qui a mené à ce lot (valeurs inventées) : une unité de l'utilisateur lance un programme d'un dossier
     /// caché, à corriger soi-même. Elle se déclare normale, montre sa ligne, son fichier et le programme lancé ; le
     /// même état relu au bilan suivant est tu.
