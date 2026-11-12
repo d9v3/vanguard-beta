@@ -77,6 +77,16 @@ pub(super) fn commentaire(ligne: &str) -> bool {
     l.is_empty() || l.starts_with('#') || l.starts_with("--") || l.starts_with(';') || l.starts_with("//")
 }
 
+/// Les blancs que systemd saute avant de chercher un commentaire (WHITESPACE, string-util.h de systemd 262) : ni la
+/// tabulation verticale, ni le saut de page, ni les blancs Unicode que retire `trim_start` (re-contrôle 0.95, R-2).
+const BLANCS_DE_SYSTEMD: [char; 4] = [' ', '\t', '\n', '\r'];
+
+/// Ligne de commentaire au format de systemd (user.conf, unités, environment.d) : « # » ou « ; » après les seuls
+/// `BLANCS_DE_SYSTEMD`. « \x0c# … » n'en est pas une : systemd la lit (R-2).
+pub(super) fn commentaire_de_systemd(ligne: &str) -> bool {
+    ligne.trim_start_matches(BLANCS_DE_SYSTEMD).starts_with(['#', ';'])
+}
+
 /// Dossiers cachés du dossier personnel où vivent normalement des programmes.
 pub(super) const DOSSIERS_CACHES_NORMAUX: [&str; 10] = [
     ".local",
@@ -769,9 +779,12 @@ fn commande_lancee_lue(ligne: &str) -> Option<(String, bool)> {
 
 /// Ligne qui précharge une bibliothèque dans tous les programmes (LD_PRELOAD, LD_AUDIT) ; « unset » la retire.
 pub(super) fn definit_prechargement(ligne: &str) -> bool {
-    !commentaire(ligne)
-        && (ligne.contains("LD_PRELOAD") || ligne.contains("LD_AUDIT"))
-        && !ligne.trim_start().starts_with("unset")
+    !commentaire(ligne) && nomme_prechargement(ligne) && !ligne.trim_start().starts_with("unset")
+}
+
+/// Ligne qui nomme LD_PRELOAD ou LD_AUDIT, sans juger si c'est un commentaire.
+fn nomme_prechargement(ligne: &str) -> bool {
+    ligne.contains("LD_PRELOAD") || ligne.contains("LD_AUDIT")
 }
 
 /// Fichiers d'un dossier (et de ses sous-dossiers « *.d » de systemd, ou de tous ceux de ~/.config/hypr), liens vers
@@ -3839,17 +3852,16 @@ struct LigneDeSystemd {
 }
 
 /// Les lignes d'une unité, d'un ajout ou d'un .desktop comme les assemble systemd (`config_parse`, systemd 262) :
-/// lues par `lignes_lues_par_systemd`, une ligne dont le premier caractère non blanc est « # » ou « ; » sautée (même
+/// lues par `lignes_lues_par_systemd`, une ligne de commentaire (`commentaire_de_systemd`) sautée (même
 /// au milieu d'une ligne continuée), la marque d'ordre des octets ôtée en tête de chaque ligne lue, une ligne qui finit
 /// par un « \ » non échappé (« \\ » ne continue pas, « \ » suivi d'un blanc non plus) continuée par la suivante, ce
 /// « \ » remplacé par une espace ; une ligne vide finit la continuation, une continuation restée ouverte à la fin du
 /// fichier compte. Le texte final perd ses blancs autour (espace, tabulation, « \n », « \r ») ; une ligne vide se saute.
 /// Rien de plus joint que par systemd : un « \ » joint en trop cacherait la ligne suivante dans la précédente.
 fn lignes_de_systemd(texte: &str) -> Vec<LigneDeSystemd> {
-    const BLANCS: [char; 4] = [' ', '\t', '\n', '\r'];
     let mut sortie = Vec::new();
     let mut finir = |mut l: LigneDeSystemd| {
-        let net = l.texte.trim_matches(BLANCS);
+        let net = l.texte.trim_matches(BLANCS_DE_SYSTEMD);
         if !net.is_empty() {
             l.texte = net.to_string();
             sortie.push(l);
@@ -3861,11 +3873,9 @@ fn lignes_de_systemd(texte: &str) -> Vec<LigneDeSystemd> {
     for (debut, brute) in lignes_lues_par_systemd(texte) {
         compte = compte.saturating_add(texte.get(jusqu_a..debut).map_or(0, |a| a.matches('\n').count()));
         jusqu_a = debut;
-        if brute
-            .trim_start_matches('\u{FEFF}')
-            .trim_start_matches(BLANCS)
-            .starts_with(['#', ';'])
-        {
+        // Le commentaire se cherche avant d'ôter la marque d'ordre des octets (config_parse) : « \u{FEFF}# … \ »
+        // n'est pas sauté, il se joint (R-2).
+        if commentaire_de_systemd(brute) {
             continue;
         }
         // systemd 262 ôte la marque d'ordre des octets en tête de chaque ligne lue, pas seulement de la première
@@ -3902,6 +3912,20 @@ fn lignes_de_systemd(texte: &str) -> Vec<LigneDeSystemd> {
         finir(c);
     }
     sortie
+}
+
+/// Les lignes que lit systemd (`lignes_lues_par_systemd`), chacune avec le numéro (à partir de 0) de la ligne écrite,
+/// comptée en « \n », qui la porte.
+fn lignes_lues_numerotees(texte: &str) -> Vec<(usize, &str)> {
+    let (mut compte, mut jusqu_a) = (0_usize, 0_usize);
+    lignes_lues_par_systemd(texte)
+        .into_iter()
+        .map(|(debut, l)| {
+            compte = compte.saturating_add(texte.get(jusqu_a..debut).map_or(0, |a| a.matches('\n').count()));
+            jusqu_a = debut;
+            (compte, l)
+        })
+        .collect()
 }
 
 /// Les lignes que lit systemd (`read_line`), chacune avec l'octet où elle commence : une fin de ligne est « \n »,
@@ -4274,10 +4298,19 @@ fn enregistrements(ligne: &str, systemd: bool) -> Vec<&str> {
 const FINS_DE_SYSTEMD: [char; 2] = ['\r', '\0'];
 
 /// Le texte d'un fichier de la sorte `sorte`, chaque retour chariot seul et chaque NUL changés en fin de ligne au
-/// format de systemd (`enregistrements`) ; tel quel sinon.
+/// format de systemd (`enregistrements`) ; tel quel sinon. user.conf (`Variables::Systemd`) : ses lignes exactement
+/// comme les lit `read_line` (`lignes_lues_par_systemd`), une par « \n » : « \r\n », « \r␀ » ne font qu'une fin, et
+/// « \ » + « \r\n » continue la ligne (re-contrôle 0.95, R-2).
 fn coupe_comme_systemd(texte: &str, sorte: Variables) -> String {
     if !format_systemd(sorte) {
         return texte.to_string();
+    }
+    if sorte == Variables::Systemd {
+        return lignes_lues_par_systemd(texte)
+            .into_iter()
+            .map(|(_, l)| l)
+            .collect::<Vec<_>>()
+            .join("\n");
     }
     let mut coupe = String::with_capacity(texte.len());
     let mut caracteres = texte.chars().peekable();
@@ -4298,7 +4331,9 @@ fn noms_ecrits(texte: &str, cible: impl Fn(&str) -> bool) -> std::collections::B
     for l in [texte.to_string(), decodee(texte), decodee(&jointe), jointe]
         .iter()
         .flat_map(|t| t.lines().map(str::to_string).collect::<Vec<_>>())
-        .filter(|l| !l.trim_start().starts_with(['#', ';']))
+        // R-2 : seuls les blancs de systemd se sautent avant « # » ou « ; » ; « \x0c# … » se lit (un shell non
+        // plus ne commente pas là). Plus de lignes lues, jamais moins.
+        .filter(|l| !commentaire_de_systemd(l))
     {
         let octets = l.as_bytes();
         let mot = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
@@ -4689,6 +4724,15 @@ fn dossiers_du_gestionnaire_lus(
         };
         let mut lues = std::collections::BTreeSet::new();
         for (nom, valeur) in affectations(&texte, sorte) {
+            // systemd décode les échappements de chaque mot de user.conf (EXTRACT_CUNESCAPE) : un nom écrit échappé
+            // (« XDG_DATA_\x44IRS=… ») pose la variable même quand une autre affectation la pose en clair. Dit, pas
+            // résolu (R-2) : avant, le nom en clair déjà lu taisait celui-ci.
+            let clair = decodee(&nom);
+            if clair != nom && VARIABLES_DES_DOSSIERS.contains(&clair.as_str()) {
+                non_resolus.push((f.clone(), clair.clone()));
+                lues.insert(clair);
+                continue;
+            }
             let Some(v) = VARIABLES_DES_DOSSIERS.iter().find(|x| **x == nom) else {
                 continue;
             };
@@ -4734,9 +4778,15 @@ fn du_gestionnaire(r: &Releveur, nom: &str, c: &str) -> Vec<std::path::PathBuf> 
 /// /etc/environment, « A DEFAULT=… OVERRIDE=… » de pam_env (les deux valeurs). Ce qu'elle ne sait pas lire n'y est
 /// pas : `noms_ecrits` le voit.
 fn affectations(texte: &str, sorte: Variables) -> Vec<(String, String)> {
-    let jointe = texte.replace("\\\n", "");
+    // user.conf : ses lignes logiques comme les assemble systemd (`lignes_logiques` : commentaire au milieu d'une suite
+    // sauté, « \ » + « \r\n » continué ; R-2). Les autres : « \ » + « \n » joints.
+    let lignes: Vec<String> = if sorte == Variables::Systemd {
+        lignes_logiques(texte)
+    } else {
+        texte.replace("\\\n", "").lines().map(str::to_string).collect()
+    };
     let mut paires = Vec::new();
-    for l in jointe.lines() {
+    for l in &lignes {
         let net = l.trim_matches([' ', '\t']);
         if net.is_empty() || net.starts_with(['#', ';']) {
             continue;
@@ -5771,10 +5821,32 @@ fn juger_configuration(
             continue;
         };
         let systemd = au_format_systemd.contains(f);
-        let lignes = lu.texte.lines().enumerate();
-        for (n, ecrite, l) in lignes.flat_map(|(n, e)| enregistrements(e, systemd).into_iter().map(move |l| (n, e, l)))
-        {
-            if definit_prechargement(l) {
+        // Au format de systemd, chaque ligne telle que `read_line` la lit (« \r », NUL finissent aussi une ligne),
+        // jugée à la ligne écrite qui la porte ; un commentaire selon la règle de systemd, et « unset » n'y est qu'un
+        // mot (R-2 : « A=1 \⏎# note⏎unset LD_PRELOAD=… » pose LD_PRELOAD dans user.conf).
+        let ecrites: Vec<&str> = lu.texte.lines().collect();
+        let lignes: Vec<(usize, &str, &str)> = if systemd {
+            lignes_lues_numerotees(&lu.texte)
+                .into_iter()
+                .map(|(n, l)| (n, ecrites.get(n).copied().unwrap_or(l), l))
+                .collect()
+        } else {
+            ecrites.iter().enumerate().map(|(n, e)| (n, *e, *e)).collect()
+        };
+        let commente = |l: &str| {
+            if systemd {
+                commentaire_de_systemd(l)
+            } else {
+                commentaire(l)
+            }
+        };
+        for (n, ecrite, l) in lignes {
+            let precharge = if systemd {
+                !commente(l) && nomme_prechargement(l)
+            } else {
+                definit_prechargement(l)
+            };
+            if precharge {
                 t.sources
                     .push(source_de(&crate::modele::id::chemin(&f.to_string_lossy()), l));
                 t.retraits.push(retrait(f, &lu.texte, ecrite));
@@ -5787,7 +5859,7 @@ fn juger_configuration(
                     court(f, h),
                     n.saturating_add(1)
                 ));
-            } else if !commentaire(l)
+            } else if !commente(l)
                 && let Some(raison) = variable_de_configuration(l, &maisons)
                     .or_else(|| (!demarrage.contains(f)).then(|| commande_suspecte(l, false)).flatten())
             {
@@ -5862,10 +5934,9 @@ fn juger_lignes_jointes(
     let (texte, numeros): (std::borrow::Cow<'_, str>, Vec<usize>) = if systemd {
         (
             coupe_comme_systemd(&lu.texte, Variables::Systemd).into(),
-            lu.texte
-                .lines()
-                .enumerate()
-                .flat_map(|(n, l)| std::iter::repeat_n(n.saturating_add(1), l.split(FINS_DE_SYSTEMD).count()))
+            lignes_lues_numerotees(&lu.texte)
+                .into_iter()
+                .map(|(n, _)| n.saturating_add(1))
                 .collect(),
         )
     } else {
@@ -14933,6 +15004,89 @@ mod tests {
         let c = m.lancements();
         leve_non_declarable(&c, "unité d'un dossier déplacé derrière un NUL");
         assert!(c.message.contains("~/.x/systemd/user/agent.service:2"), "{}", c.message);
+    }
+
+    /// R-2 (re-contrôle 0.95, angle lecture) : user.conf se lit comme `config_parse` de systemd 262 le lit. Un « \ »
+    /// de fin continue la ligne aussi devant « \r\n » ou « \r␀ » (une seule fin de ligne pour `read_line`) ; seuls
+    /// espace, tabulation, « \n », « \r » se sautent avant de chercher « # » ou « ; » (WHITESPACE) : une ligne qui
+    /// commence par une tabulation verticale, un saut de page, une espace insécable ou U+0085 n'est pas un
+    /// commentaire ; une vraie ligne de commentaire au milieu d'une suite se saute sans finir la suite ; « unset »
+    /// n'est qu'un mot ; un nom échappé (« \x44 ») se décode (EXTRACT_CUNESCAPE). Le préchargement se lève, le
+    /// dossier d'unités déplacé se lit, la sauvegarde se lève.
+    #[test]
+    fn user_conf_continue_comme_systemd() {
+        const CONF: &str = ".config/systemd/user.conf";
+        const SUR: &str = "XDG_DATA_DIRS=/usr/share";
+        const CACHE: &str = "XDG_DATA_DIRS=/home/alice/.x:/usr/share";
+        let mut cas: Vec<(&str, String, String)> = Vec::new();
+        for blanc in ["\x0b", "\x0c", "\u{a0}", "\u{85}"] {
+            for c in ['#', ';'] {
+                cas.push((
+                    CONF,
+                    format!("[Manager]\r\nDefaultEnvironment=A=1 \\\r\n{blanc}{c}x LD_PRELOAD=/tmp/l.so\r\n"),
+                    "~/.config/systemd/user.conf:3 précharge".into(),
+                ));
+            }
+        }
+        cas.push((
+            ".config/systemd/user.conf.d/x.conf",
+            "[Manager]\r\nManagerEnvironment=A=1 \\\r\n\x0c#x LD_AUDIT=/tmp/l.so\r\n".into(),
+            "~/.config/systemd/user.conf.d/x.conf:3 précharge".into(),
+        ));
+        cas.push((
+            CONF,
+            "[Manager]\nDefaultEnvironment=A=1 \\\n# note\nunset LD_PRELOAD=/tmp/l.so\n".into(),
+            "~/.config/systemd/user.conf:4 précharge".into(),
+        ));
+        for (i, (fichier, texte, attendu)) in cas.iter().enumerate() {
+            let m = Maison::nouvelle(&format!("suite-systemd-{i}"));
+            m.ecrire(fichier, texte);
+            let c = m.lancements();
+            assert!(c.probleme >= Some(Niveau::Eleve), "{texte:?} : {}", c.message);
+            assert!(c.message.contains(attendu.as_str()), "{texte:?} : {}", c.message);
+            assert!(crate::apprentissage::declarable(&c).is_err(), "{texte:?}");
+        }
+        let mut deplaces: Vec<String> = ["\x0b", "\x0c", "\u{a0}", "\u{85}"]
+            .iter()
+            .map(|b| format!("[Manager]\r\nManagerEnvironment={SUR} \\\r\n{b}# x {CACHE}\r\n"))
+            .collect();
+        deplaces.extend([
+            format!("[Manager]\nManagerEnvironment={SUR} \\\n# note\n{CACHE}\n"),
+            format!("[Manager]\nManagerEnvironment={SUR} \\\r\0{CACHE}\n"),
+            format!("[Manager]\nManagerEnvironment={SUR} XDG_DATA_\\x44IRS=/home/alice/.x:/usr/share\n"),
+        ]);
+        let mut faux = Vec::new();
+        for (i, texte) in deplaces.iter().enumerate() {
+            faux.extend(sauvegarde_pas_levee(
+                &format!("suite-donnees-{i}"),
+                CONF,
+                texte,
+                Some(".x/systemd/user"),
+            ));
+            // Le nom échappé est dit non résolu (la sauvegarde se lève), sans lire son dossier.
+            if texte.contains("\\x44") {
+                continue;
+            }
+            let m = Maison::nouvelle(&format!("suite-unite-{i}"));
+            m.ecrire(CONF, texte);
+            m.ecrire(".x/systemd/user/agent.service", "[Service]\nExecStart=%h/.x/agent\n");
+            let c = m.lancements();
+            if !c.message.contains("~/.x/systemd/user/agent.service:2") {
+                faux.push(format!("unité, {texte:?} : {}", c.message));
+            }
+        }
+        faux.extend(sauvegarde_pas_levee(
+            "suite-home",
+            ".config/systemd/user.conf.d/x.conf",
+            "[Manager]\r\nDefaultEnvironment=A=1 \\\r\n\u{a0}# x HOME=/x\r\n",
+            None,
+        ));
+        assert!(faux.is_empty(), "suite de ligne de systemd : {faux:#?}");
+        // Témoin : une vraie ligne de commentaire (blancs de systemd devant) ne pose rien et ne lève pas.
+        let m = Maison::nouvelle("suite-temoin");
+        m.ecrire(CONF, "[Manager]\r\n \t# LD_PRELOAD=/tmp/l.so\r\n");
+        let c = m.lancements();
+        assert!(!c.message.contains(":2 précharge"), "{}", c.message);
     }
 
     /// L-2 (campagne 0.95, angle lecture) : uwsm lit chaque fichier de « env.d » et « env-<bureau>.d », quelle que
