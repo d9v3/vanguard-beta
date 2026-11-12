@@ -1348,6 +1348,9 @@ struct Lancements {
     retraits: Vec<Option<(String, String)>>,
     /// Pour chaque ligne signalée, ce qu'un choix « normal » lierait (`machine::temoins`), ou pourquoi on ne peut pas.
     temoins: Vec<Result<temoins::Temoin, temoins::Refus>>,
+    /// Ce qui n'a pas été vu d'une ligne permise (`permise::Ecart::information` : disque de la sauvegarde débranché,
+    /// réglages de popt du système à root), dit en information, jamais tu ni levé.
+    informations: Vec<String>,
     r: Releveur,
 }
 
@@ -5269,12 +5272,23 @@ fn juger_lancement(
     });
     // La liste permise (vérification 3) : là où le compte écrit, le silence n'est gardé que pour une ligne dont la
     // forme entière est reconnue sûre ; le découpage d'avant ne sert plus qu'à dire une raison plus précise.
+    let mut notes = Vec::new();
     let (raison, hors_liste) = match raison {
         Some(r) => (Some(r), false),
         None if racine_seul => (None, false),
-        None => (hors_de_la_liste(&t.r, commande, lecteur, &maisons), true),
+        None => (hors_de_la_liste(&t.r, commande, lecteur, &maisons, &mut notes), true),
     };
     let Some(raison) = raison else {
+        let perso = t.r.maison.clone();
+        for e in notes {
+            t.informations.push(trf!(
+                "{}:{} : {}",
+                "{}:{}: {}",
+                court(f, &perso),
+                n.saturating_add(1),
+                e.raison()
+            ));
+        }
         return false;
     };
     // Ce qui ne se lit pas sûrement ne se déclare pas normal : ce qu'un choix lierait ne dirait pas ce qui se lance.
@@ -5286,8 +5300,15 @@ fn juger_lancement(
 
 /// Pourquoi la `commande` d'une ligne que le compte écrit n'entre pas dans la liste permise (`permise`), lue par
 /// son `lecteur`, ou `None` : le filet textuel d'abord (un dossier temporaire ou caché nommé en toutes lettres), puis
-/// la forme entière. Un texte qui ne se lance pas (`Lecteur::Texte`) n'y passe pas.
-fn hors_de_la_liste(r: &Releveur, commande: &str, lecteur: &Lecteur<'_>, maisons: &[&str]) -> Option<&'static str> {
+/// la forme entière. Un texte qui ne se lance pas (`Lecteur::Texte`) n'y passe pas. Ce qui n'a pas été vu d'une ligne
+/// permise d'unité va dans `notes` (`permise::exec_systemd_note`).
+fn hors_de_la_liste(
+    r: &Releveur,
+    commande: &str,
+    lecteur: &Lecteur<'_>,
+    maisons: &[&str],
+    notes: &mut Vec<permise::Ecart>,
+) -> Option<&'static str> {
     let lue = r.maison.to_string_lossy();
     let s = permise::Systeme {
         racine: &r.racine,
@@ -5296,7 +5317,7 @@ fn hors_de_la_liste(r: &Releveur, commande: &str, lecteur: &Lecteur<'_>, maisons
     };
     let ecart = match lecteur {
         Lecteur::Texte => return None,
-        Lecteur::Systemd(codes) => permise::exec_systemd(&s, commande, Some(codes)),
+        Lecteur::Systemd(codes) => permise::exec_systemd_note(&s, commande, Some(codes), notes),
         Lecteur::Bureau => permise::exec_systemd(&s, &sans_codes_de_bureau(commande), None),
         Lecteur::Hypr(variables) if commande.contains('$') => match resoudre_hypr(commande, variables) {
             Some(formes) => formes.iter().try_for_each(|c| permise::ligne_shell(&s, c)),
@@ -6647,7 +6668,8 @@ fn juger_cron(racine: &Path, crontab: Option<String>, t: &mut Lancements) {
 }
 
 /// Le constat des lancements : aucun suspect, ou une alerte (critique si une bibliothèque hors paquet est préchargée)
-/// qui en nomme six au plus.
+/// qui en nomme six au plus. Ce qui n'a pas été vu d'une ligne permise (`Lancements::informations`) s'y dit à la
+/// fin ; sans suspect, en information (`Niveau::Info`, rien à faire), jamais en « aucun suspect » muet.
 fn constat_des_lancements(t: Lancements) -> Constat {
     const CAT: &str = "Persistance";
     let Lancements {
@@ -6656,18 +6678,29 @@ fn constat_des_lancements(t: Lancements) -> Constat {
         sources,
         mut retraits,
         temoins: releves,
+        mut informations,
         ..
     } = t;
     suspects.sort();
     suspects.dedup();
+    informations.sort();
+    informations.dedup();
+    let a_savoir = (!informations.is_empty()).then(|| {
+        trf!(
+            " À savoir, non vérifié : {}.",
+            " Worth knowing, not checked: {}.",
+            informations.join(" ; ")
+        )
+    });
     if critiques.is_empty() && suspects.is_empty() {
-        return ok(
-            CAT,
-            tr!(
-                "Aucun lancement automatique suspect (préchargement, services, démarrage de session, cron).",
-                "No suspicious autostart (preloading, services, session startup, cron)."
-            ),
+        let aucun = tr!(
+            "Aucun lancement automatique suspect (préchargement, services, démarrage de session, cron).",
+            "No suspicious autostart (preloading, services, session startup, cron)."
         );
+        return match a_savoir {
+            None => ok(CAT, aucun),
+            Some(a) => alerte(CAT, Niveau::Info, format!("{aucun}{a}")),
+        };
     }
     let niveau = if critiques.is_empty() {
         Niveau::Eleve
@@ -6693,6 +6726,9 @@ fn constat_des_lancements(t: Lancements) -> Constat {
         );
     }
     message.push('.');
+    if let Some(a) = a_savoir {
+        message.push_str(&a);
+    }
     let constat = alerte(CAT, niveau, message).avec_objet(objet_des_lancements(sources)).manuel(
         tr!("Ne rien lancer : lire chaque ligne signalée et supprimer celles que vous n'avez pas ajoutées, puis lancer l'antivirus", "Do not run anything: read each reported line and delete the ones you did not add, then run the antivirus"),
         &[],
@@ -7914,9 +7950,10 @@ mod tests {
     /// C-2 (relecture 0.94, suite de S-1) : la forme exacte de la sauvegarde ne tient que ses mots. rsync suit un lien
     /// posé sur sa destination : `<disque>/Sauvegarde-Vanguard/<ordinateur>` (ou un dossier entre le disque et elle)
     /// changé en lien vers ~/.config/autostart y recopierait une entrée de démarrage à chaque passage. Un tel lien
-    /// lève ; un findmnt qui n'en est pas un (la condition « bon disque monté » passerait toujours) aussi ; une
-    /// destination qui ne se voit pas (disque débranché au moment du bilan) est dite non vérifiée, jamais tue.
-    /// Témoin : l'unité exacte vers un vrai dossier reste muette.
+    /// lève ; un findmnt qui n'en est pas un (la condition « bon disque monté » passerait toujours) aussi. Une
+    /// destination qui ne se voit pas : disque débranché (sa racine absente, ou rien n'y est monté), une information
+    /// (`Niveau::Info`, « débranché », la ligne nommée), jamais tue ni levée ; disque monté (ou montages illisibles),
+    /// levée « non vérifié » (Élevé). Témoin : l'unité exacte vers un vrai dossier reste muette.
     #[test]
     fn la_sauvegarde_exacte_vers_un_lien_ou_un_faux_findmnt_ne_se_tait_pas() {
         use std::os::unix::fs::PermissionsExt as _;
@@ -7929,6 +7966,8 @@ mod tests {
             "findmnt en lien vers sh",
             "disque débranché",
             "destination absente",
+            "destination absente, rien de monté",
+            "destination absente, disque monté",
         ];
         let mut faux = Vec::new();
         for fat in [false, true] {
@@ -7986,10 +8025,22 @@ mod tests {
                         std::os::unix::fs::symlink("sh", m.racine.join("usr/bin/findmnt")).unwrap();
                     }
                     "disque débranché" => std::fs::remove_dir_all(&racine).unwrap(),
+                    // Sans /proc/self/mountinfo sous la racine jetable : les montages ne se lisent pas.
                     "destination absente" => std::fs::remove_dir_all(&destination).unwrap(),
+                    absente @ ("destination absente, rien de monté" | "destination absente, disque monté") => {
+                        std::fs::remove_dir_all(&destination).unwrap();
+                        let disque = if absente.ends_with("disque monté") {
+                            "36 25 8:17 / /run/media/alice/Mon\\040disque rw,nosuid shared:1 - vfat /dev/sdb1 rw\n"
+                        } else {
+                            ""
+                        };
+                        let f = m.racine.join("proc/self/mountinfo");
+                        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+                        std::fs::write(f, format!("22 1 8:2 / / rw shared:1 - ext4 /dev/sda2 rw\n{disque}")).unwrap();
+                    }
                     _ => {}
                 }
-                let leves: Vec<String> = persistance_dans(
+                let constats: Vec<(Option<Niveau>, String)> = persistance_dans(
                     &m.racine,
                     &m.chemin(""),
                     |v| (v == "XDG_RUNTIME_DIR").then(|| "/run/user/1000".into()),
@@ -7998,19 +8049,31 @@ mod tests {
                 )
                 .into_iter()
                 .filter(|c| c.probleme.is_some())
-                .map(|c| c.message)
+                .map(|c| (c.probleme, c.message))
                 .collect();
-                let leve = leves.iter().any(|l| l.contains(crate::sauvegarde::SERVICE));
-                let dit = !(nom.contains("débranché") || nom.contains("absente"))
-                    || leves.iter().any(|l| l.contains("non vérifié"));
-                if (*nom == "témoin") != leves.is_empty() || (*nom != "témoin" && !(leve && dit)) {
-                    faux.push(format!("fat {fat}, {nom} : {leves:?}"));
+                let nommee = |n: Niveau, mot: &str| {
+                    matches!(&constats[..], [(Some(x), l)] if *x == n
+                        && l.contains(&format!("{}:", crate::sauvegarde::SERVICE)) && l.contains(mot))
+                };
+                let juste = match *nom {
+                    "témoin" => constats.is_empty(),
+                    "disque débranché" | "destination absente, rien de monté" => nommee(Niveau::Info, "débranché"),
+                    "destination absente" | "destination absente, disque monté" => {
+                        nommee(Niveau::Eleve, "non vérifié") && !constats[0].1.contains("reconnue, disque débranché")
+                    }
+                    _ => constats
+                        .iter()
+                        .any(|(n, l)| *n == Some(Niveau::Eleve) && l.contains(crate::sauvegarde::SERVICE)),
+                };
+                if !juste {
+                    faux.push(format!("fat {fat}, {nom} : {constats:?}"));
                 }
             }
         }
         assert!(
             faux.is_empty(),
-            "le témoin se tait, chaque autre cas lève (non vérifié s'il n'a pas vu la destination) : {faux:#?}"
+            "le témoin se tait, débranché s'informe, chaque autre cas lève (non vérifié monté sans destination) : \
+             {faux:#?}"
         );
     }
 
@@ -8027,6 +8090,7 @@ mod tests {
         let cas: &[(&str, bool)] = &[
             ("témoin", false),
             ("~/.popt", true),
+            ("~/.popt, disque débranché", true),
             ("~/.popt en lien", true),
             ("~/.popt illisible", true),
             ("~/.popt dossier", true),
@@ -8074,6 +8138,10 @@ mod tests {
                 };
                 match *nom {
                     "~/.popt" => m.ecrire(".popt", &ligne),
+                    "~/.popt, disque débranché" => {
+                        m.ecrire(".popt", &ligne);
+                        std::fs::remove_dir_all(m.racine.join("run/media/alice/Mon disque")).unwrap();
+                    }
                     "~/.popt en lien" => {
                         m.ecrire(".cache/reglages", &ligne);
                         std::os::unix::fs::symlink(".cache/reglages", m.chemin(".popt")).unwrap();
@@ -8129,6 +8197,28 @@ mod tests {
             faux.is_empty(),
             "la forme exacte ne se tait que sans réglages de popt ni complément : {faux:#?}"
         );
+    }
+
+    /// D-1, les morceaux : les fichiers de popt du système ne se taisent jamais (tous à root seul : une information ;
+    /// un seul qui ne l'est pas : levé) ; le point de montage de /proc/self/mountinfo se lit avec ses « \\040 ».
+    #[test]
+    fn les_popt_du_systeme_et_les_points_de_montage_se_lisent() {
+        use permise::Ecart;
+        assert_eq!(permise::popt_du_systeme(&[]), Ok(None));
+        assert_eq!(
+            permise::popt_du_systeme(&[true, true]),
+            Ok(Some(Ecart::PoptDuSystemeARoot))
+        );
+        assert_eq!(permise::popt_du_systeme(&[true, false]), Err(Ecart::PoptDuSysteme));
+        assert!(Ecart::PoptDuSystemeARoot.information() && Ecart::DisqueDebranche.information());
+        assert!(!Ecart::PoptDuSysteme.information() && !Ecart::DestinationNonVue.information());
+        let l = "36 25 8:17 / /run/media/alice/Mon\\040disque\\134x rw shared:1 - vfat /dev/sdb1 rw";
+        assert_eq!(
+            permise::point_de_montage(l).as_deref(),
+            Some("/run/media/alice/Mon disque\\x")
+        );
+        assert_eq!(permise::point_de_montage("36 25 8:17 /"), None);
+        assert_eq!(permise::point_de_montage("1 2 3 4 /a\\04"), None);
     }
 
     /// COMP-3, la forme exacte : un pourcentage de ressource (chiffres, décimale facultative, « % ») se lit ; toute

@@ -57,8 +57,16 @@ pub(super) enum Ecart {
     /// autre programme à la place de la copie (D-1).
     Popt,
     /// La sauvegarde de Vanguard à sa forme exacte, mais un fichier de réglages de popt du système (/etc/popt,
-    /// /usr/etc/popt, un dossier popt.d non vide) est là : ce qu'il fait faire à rsync n'est pas vérifié (D-1).
+    /// /usr/etc/popt, un dossier popt.d non vide) est là sans être à root seul (`de_root_seul`) : le compte, ou ce qui
+    /// tourne sous lui, peut y faire lancer un autre programme à rsync (D-1).
     PoptDuSysteme,
+    /// Une information, pas un constat : la sauvegarde de Vanguard à sa forme exacte, un fichier de réglages de popt
+    /// du système là et à root seul. rsync le lit ; ce qu'il lui fait faire n'est pas vérifié, et seul root l'écrit.
+    PoptDuSystemeARoot,
+    /// Une information, pas un constat : la sauvegarde de Vanguard à sa forme exacte, son disque débranché (rien n'est
+    /// monté à sa racine). Sa destination n'est pas vue ; rien ne se copie sans le disque (sa condition `findmnt`) ;
+    /// elle se revoit au prochain bilan disque branché.
+    DisqueDebranche,
     /// La sauvegarde de Vanguard à sa forme exacte, mais un complément du compte (« vanguard-sauvegarde.service.d »,
     /// « service.d »…) s'y ajoute : il peut changer son environnement (HOME, donc le ~/.popt que lit rsync) ou ce
     /// qu'elle lance (D-1).
@@ -66,6 +74,11 @@ pub(super) enum Ecart {
 }
 
 impl Ecart {
+    /// Une information, pas un constat : la ligne entre dans la liste permise, ce qui n'a pas été vu se dit à part.
+    pub(super) fn information(self) -> bool {
+        matches!(self, Ecart::DisqueDebranche | Ecart::PoptDuSystemeARoot)
+    }
+
     /// La raison du constat, telle qu'elle se montre.
     pub(super) fn raison(self) -> &'static str {
         match self {
@@ -118,8 +131,16 @@ impl Ecart {
                 "Vanguard backup while a ~/.popt file is present (or a link, or unreadable): rsync reads it at start, and a “rsync exec …” line in it makes it start another program instead of the copy; what the backup starts is not checked"
             ),
             Ecart::PoptDuSysteme => tr!(
-                "sauvegarde de Vanguard non vérifiée : un fichier de réglages de popt du système est là (/etc/popt, /usr/etc/popt ou un dossier popt.d non vide), que rsync peut lire au départ et qui peut lui faire lancer un autre programme",
-                "Vanguard backup not checked: a system popt settings file is present (/etc/popt, /usr/etc/popt or a non-empty popt.d folder), which rsync may read at start and which can make it start another program"
+                "sauvegarde de Vanguard non vérifiée : un fichier de réglages de popt du système qui n'est pas à root seul est là (/etc/popt, /usr/etc/popt ou un dossier popt.d non vide) ; rsync le lit au départ, et une ligne « rsync exec … » y lui fait lancer un autre programme",
+                "Vanguard backup not checked: a system popt settings file that is not root-only is present (/etc/popt, /usr/etc/popt or a non-empty popt.d folder); rsync reads it at start, and a “rsync exec …” line in it makes it start another program"
+            ),
+            Ecart::PoptDuSystemeARoot => tr!(
+                "sauvegarde de Vanguard reconnue, mais un fichier de réglages de popt du système (à root) est là (/etc/popt, /usr/etc/popt ou popt.d) : rsync le lit au départ, et ce qu'il lui fait faire est non vérifié",
+                "Vanguard backup recognised, but a system popt settings file (root's) is present (/etc/popt, /usr/etc/popt or popt.d): rsync reads it at start, and what it makes rsync do is not checked"
+            ),
+            Ecart::DisqueDebranche => tr!(
+                "sauvegarde de Vanguard reconnue, disque débranché : sa destination n'a pas été vue (rien ne se copie sans le disque : la sauvegarde vérifie d'abord qu'il est monté) ; elle sera revue au prochain bilan, disque branché",
+                "Vanguard backup recognised, disk unplugged: its destination was not seen (nothing is copied without the disk: the backup first checks that it is mounted); it will be checked again at the next check, disk plugged in"
             ),
             Ecart::Complement => tr!(
                 "sauvegarde de Vanguard changée par un complément du compte (dossier « .service.d ») : il peut changer son environnement (HOME, donc le ~/.popt que lit rsync) ou ce qu'elle lance ; ce n'est plus la forme que Vanguard pose",
@@ -237,6 +258,11 @@ impl Systeme<'_> {
     /// existe et n'est pas un lien, et ceux sous le disque sont sur le même système de fichiers que lui (un montage
     /// posé par le compte, FUSE, y mènerait ailleurs comme un lien). Sinon `Ecart::Destination` ; un dossier qui ne
     /// se voit pas (disque débranché, absent, illisible) : `Ecart::DestinationNonVue`, jamais un silence.
+    ///
+    /// Débranché (`Ecart::DisqueDebranche`, une information) : un dossier jusqu'à la racine du disque comprise
+    /// n'existe pas (rien ne peut y être monté), ou la racine existe mais n'est le point de montage de rien
+    /// (`/proc/self/mountinfo` lu en entier) et un dossier sous elle n'existe pas. Monté, ou montage qui ne se lit pas,
+    /// et un dossier qui ne se voit pas : `Ecart::DestinationNonVue`, levé.
     fn destination_sur_le_disque(&self, racine: &str, destination: &str) -> Result<(), Ecart> {
         use std::os::unix::fs::MetadataExt as _;
         let base = ["/run/media/", "/media/", "/mnt/"]
@@ -253,7 +279,13 @@ impl Systeme<'_> {
         for m in jusqu_au_disque.split('/').chain(sous_le_disque.split('/')) {
             chemin.push('/');
             chemin.push_str(m);
-            let lu = std::fs::symlink_metadata(self.sous(&chemin)).map_err(|_| Ecart::DestinationNonVue)?;
+            let lu = match std::fs::symlink_metadata(self.sous(&chemin)) {
+                Ok(lu) => lu,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound && self.debranche(racine, &chemin) => {
+                    return Err(Ecart::DisqueDebranche);
+                }
+                Err(_) => return Err(Ecart::DestinationNonVue),
+            };
             if lu.file_type().is_symlink() || !lu.is_dir() {
                 return Err(Ecart::Destination);
             }
@@ -266,13 +298,25 @@ impl Systeme<'_> {
         disque.map(|_| ()).ok_or(Ecart::Destination)
     }
 
+    /// Le disque de `racine` n'est pas branché, vu du dossier `absent` qui n'existe pas : `absent` est la racine ou un
+    /// dossier au-dessus d'elle (aucun montage sans son dossier), ou la liste des montages se lit et aucun n'est à
+    /// `racine`. Liste illisible : rien ne dit qu'il est débranché.
+    fn debranche(&self, racine: &str, absent: &str) -> bool {
+        if racine == absent || racine.strip_prefix(absent).is_some_and(|r| r.starts_with('/')) {
+            return true;
+        }
+        std::fs::read_to_string(self.sous("/proc/self/mountinfo"))
+            .is_ok_and(|t| !t.lines().any(|l| point_de_montage(l).is_some_and(|m| m == racine)))
+    }
+
     /// Les fichiers de réglages de popt que rsync lit au départ (D-1 ; popt 1.19, `poptReadDefaultConfig`, vu sur
     /// rsync 3.5.1 avec un programme témoin) : `<sysconfdir>/popt`, chaque fichier de `<sysconfdir>/popt.d`, puis
     /// `$HOME/.popt`. Le `sysconfdir` dépend de la compilation de popt : /usr/etc ici (Arch), /etc ailleurs ; les deux
     /// sont lus. Un ~/.popt du compte (de chaque dossier personnel connu) là sous toute forme (fichier, lien, dossier),
     /// ou qui ne se voit pas : `Ecart::Popt`, levé ; rien ne dit qu'il ne lance pas un autre programme. Un fichier du
-    /// système (à root) là, ou un dossier popt.d non vide ou illisible : `Ecart::PoptDuSysteme`, jamais un silence.
-    fn reglages_de_popt(&self) -> Result<(), Ecart> {
+    /// système là (popt, ou un dossier popt.d non vide) : à root seul, avec son dossier, une information
+    /// (`Ecart::PoptDuSystemeARoot`) ; sinon, ou un popt.d illisible, `Ecart::PoptDuSysteme`, levé. Jamais un silence.
+    fn reglages_de_popt(&self) -> Result<Option<Ecart>, Ecart> {
         let la = |chemin: &str| match std::fs::symlink_metadata(self.sous(chemin)) {
             Ok(_) => true,
             Err(e) => e.kind() != std::io::ErrorKind::NotFound,
@@ -285,15 +329,26 @@ impl Systeme<'_> {
         {
             return Err(Ecart::Popt);
         }
+        let mut a_root = Vec::new();
         for etc in ["/etc", "/usr/etc"] {
+            let fichier = format!("{etc}/popt");
+            if la(&fichier) {
+                a_root.push(super::de_root_seul(&self.sous(&fichier)));
+            }
             let dossier = format!("{etc}/popt.d");
-            let rempli =
-                la(&dossier) && std::fs::read_dir(self.sous(&dossier)).map_or(true, |mut d| d.next().is_some());
-            if la(&format!("{etc}/popt")) || rempli {
-                return Err(Ecart::PoptDuSysteme);
+            if la(&dossier) {
+                let entrees: Vec<_> = std::fs::read_dir(self.sous(&dossier))
+                    .map_err(|_| Ecart::PoptDuSysteme)?
+                    .map(|e| e.map(|e| e.path()))
+                    .collect::<Result<_, _>>()
+                    .map_err(|_| Ecart::PoptDuSysteme)?;
+                if !entrees.is_empty() {
+                    a_root.push(super::de_root_seul(&self.sous(&dossier)));
+                    a_root.extend(entrees.iter().map(|e| super::de_root_seul(e)));
+                }
             }
         }
-        Ok(())
+        popt_du_systeme(&a_root)
     }
 
     /// Le nom du fichier que lance vraiment ce programme, ses liens suivis (« ~/.local/bin/outil » → « bash ») ;
@@ -1677,12 +1732,53 @@ fn script(s: &Systeme, p: &str) -> Result<(), Ecart> {
     }
 }
 
+/// Les fichiers de popt du système trouvés, chacun à root seul ou non : aucun, rien ; tous à root seul, une
+/// information ; un seul qui ne l'est pas, levé.
+pub(super) fn popt_du_systeme(a_root: &[bool]) -> Result<Option<Ecart>, Ecart> {
+    match a_root {
+        [] => Ok(None),
+        _ if a_root.iter().all(|r| *r) => Ok(Some(Ecart::PoptDuSystemeARoot)),
+        _ => Err(Ecart::PoptDuSysteme),
+    }
+}
+
+/// Le point de montage (cinquième champ) d'une ligne de /proc/self/mountinfo, ses « \\ooo » (espace, tabulation,
+/// saut de ligne, barre oblique inverse) remis ; `None` pour une ligne qui n'a pas cette forme.
+pub(super) fn point_de_montage(ligne: &str) -> Option<String> {
+    let brut = ligne.split(' ').nth(4)?;
+    let mut sortie = String::with_capacity(brut.len());
+    let mut reste = brut;
+    while let Some((avant, apres)) = reste.split_once('\\') {
+        sortie.push_str(avant);
+        sortie.push(char::from(u8::from_str_radix(apres.get(..3)?, 8).ok()?));
+        reste = apres.get(3..)?;
+    }
+    sortie.push_str(reste);
+    Some(sortie)
+}
+
 /// Une valeur Exec de systemd (ou de .desktop : `codes` absents, « $ » littéral) : ses codes « % » développés, ses
 /// commandes coupées comme systemd les coupe (`commandes_de_systemd_brutes`), les préfixes lus (« | » : lancée par
 /// un shell, hors liste ; « : » : pas de variable développée ; « @ » : le nom donné au programme ôté), les variables
 /// remplacées par leur valeur connue (`Codes::variables`, « HOME » par le dossier personnel), puis chaque commande
 /// jugée comme `lancee`.
+///
+/// Les informations de `exec_systemd_note` : la première rendue en écart (un appelant qui ne les dit pas à part ne
+/// les tait jamais).
 pub(super) fn exec_systemd(s: &Systeme, valeur: &str, codes: Option<&Codes>) -> Result<(), Ecart> {
+    let mut notes = Vec::new();
+    exec_systemd_note(s, valeur, codes, &mut notes)?;
+    notes.first().map_or(Ok(()), |n| Err(*n))
+}
+
+/// `exec_systemd`, les informations (`Ecart::information`) notées dans `notes` au lieu d'arrêter : la ligne entre dans
+/// la liste permise, et ce qui n'a pas été vu se dit à part. Une information n'est jamais rendue en `Err`.
+pub(super) fn exec_systemd_note(
+    s: &Systeme,
+    valeur: &str,
+    codes: Option<&Codes>,
+    notes: &mut Vec<Ecart>,
+) -> Result<(), Ecart> {
     if valeur.len() > LIGNE_MAX {
         return Err(Ecart::Longue);
     }
@@ -1720,8 +1816,11 @@ pub(super) fn exec_systemd(s: &Systeme, valeur: &str, codes: Option<&Codes>) -> 
             // La forme exacte ne tient que les mots : où rsync écrit se juge sur le disque (C-2).
             if p.rsync == mots {
                 sauvegarde_posee(s, &mots, "rsync")?;
-                s.reglages_de_popt()?;
-                s.destination_sur_le_disque(&p.racine, &p.destination)?;
+                notes.extend(s.reglages_de_popt()?);
+                match s.destination_sur_le_disque(&p.racine, &p.destination) {
+                    Err(e) if e.information() => notes.push(e),
+                    r => r?,
+                }
                 continue;
             }
             if p.findmnt == mots {
