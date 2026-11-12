@@ -198,8 +198,8 @@ impl Ecart {
                 "Vanguard backup whose disk is an image (loop device) backed by a file the account can change (udisks mounts it without admin rights, under the expected disk name): where rsync copies is not checked"
             ),
             Ecart::LieuDeDemarrage => tr!(
-                "ligne qui nomme un lieu de démarrage du compte (~/.config/autostart, ~/.config/systemd, ~/.config/hypr, ~/.bashrc…) ou un dossier qui en contient (~/.config), écrit tel quel, relatif à son dossier courant ou par un lien qui y mène, ou dont un chemin ne se suit pas avec certitude (lien ou dossier illisible, passage par /proc, fichier à plusieurs liens physiques, dossier courant ou variable inconnus, trop de séparateurs) : elle peut y copier, déplacer ou lier un lancement à chaque passage ; ce qu'elle y pose n'est pas vérifié, donc pas tu (limite : une copie sur le dossier personnel entier n'est pas comptée)",
-                "line naming an account startup place (~/.config/autostart, ~/.config/systemd, ~/.config/hypr, ~/.bashrc…) or a folder holding one (~/.config), written as is, relative to its working folder or through a link leading there, or with a path that cannot be followed with certainty (unreadable link or folder, a pass through /proc, a file with several hard links, unknown working folder or variable, too many separators): it can copy, move or link a launch there on every run; what it puts there is not checked, so not kept quiet (limit: a copy onto the whole home folder is not counted)"
+                "ligne qui nomme un lieu de démarrage du compte (~/.config/autostart, ~/.config/systemd, ~/.config/hypr, ~/.bashrc…) ou un dossier qui en contient (~/.config), écrit tel quel, relatif à son dossier courant ou par un lien qui y mène, ou dont un chemin ne se suit pas avec certitude (lien ou dossier illisible, passage par /proc, fichier dont un autre nom (lien physique) est dans un tel lieu ou n'a pas pu y être cherché, dossier courant ou variable inconnus, trop de séparateurs) : elle peut y copier, déplacer ou lier un lancement à chaque passage ; ce qu'elle y pose n'est pas vérifié, donc pas tu (limite : une copie sur le dossier personnel entier n'est pas comptée)",
+                "line naming an account startup place (~/.config/autostart, ~/.config/systemd, ~/.config/hypr, ~/.bashrc…) or a folder holding one (~/.config), written as is, relative to its working folder or through a link leading there, or with a path that cannot be followed with certainty (unreadable link or folder, a pass through /proc, a file whose other name (hard link) is in such a place or could not be looked for there, unknown working folder or variable, too many separators): it can copy, move or link a launch there on every run; what it puts there is not checked, so not kept quiet (limit: a copy onto the whole home folder is not counted)"
             ),
             Ecart::Environnement => tr!(
                 "sauvegarde de Vanguard : un fichier de variables de la session du compte (~/.config/environment.d, ~/.config/systemd/user.conf, ~/.pam_environment, ~/.config/uwsm/env…) nomme HOME ou une variable que lisent rsync, findmnt ou le chargeur de programmes (LD_*, RSYNC_*, POPT*, LIBMOUNT_*, BLKID_*…), ou le cache (inclusion d'un autre fichier, nom construit, « eval »), ou ne se lit pas : il peut changer ce que la sauvegarde lit ou lance (un autre ~/.popt) ; non vérifié, donc pas tu",
@@ -219,6 +219,9 @@ pub(super) struct Systeme<'a> {
     /// unité du compte sans WorkingDirectory=, Hyprland) ; sinon un chemin écrit (« / », « ~/x », « /x »), ou un
     /// texte qui ne se résout pas (`CODE_INCONNU`) : un relatif n'y est alors pas vérifié.
     pub(super) courant: Option<&'a str>,
+    /// Y-3 : les fichiers à plusieurs liens physiques des lieux de démarrage du compte, par (appareil, inode), et un
+    /// de leurs noms ; lus une fois, au premier fichier à deux noms rencontré (`noms_des_lieux`).
+    pub(super) noms_des_lieux: std::cell::OnceCell<Option<std::collections::HashMap<(u64, u64), String>>>,
 }
 
 /// Les dossiers où un nom de programme nu se cherche : le PATH par défaut du système (jamais celui de la ligne), et
@@ -684,8 +687,9 @@ impl Systeme<'_> {
     /// (« .config/autostart », « lien ») se lit depuis le dossier courant de la ligne (`courant` : WorkingDirectory=
     /// d'une unité, Path= d'une entrée de bureau ; le dossier personnel sinon, celui d'une unité du compte sans
     /// WorkingDirectory=, systemd.exec(5)). Ce qui ne se suit pas avec certitude compte : non vérifié, donc pas tu
-    /// (trop de liens, lien ou dossier illisible, saut par /proc ou /dev/fd, fichier à plusieurs liens physiques,
-    /// variable inconnue, dossier courant qui ne se résout pas). Une option (« -r ») n'est pas un chemin.
+    /// (trop de liens, lien ou dossier illisible, saut par /proc ou /dev/fd, fichier dont un autre nom est dans un
+    /// lieu ou n'a pas pu y être cherché, variable inconnue, dossier courant qui ne se résout pas). Une option (« -r »)
+    /// n'est pas un chemin.
     fn mene_a_un_lieu(&self, m: &str, maisons: &[&str]) -> bool {
         if m.starts_with('-') {
             return false;
@@ -736,8 +740,9 @@ impl Systeme<'_> {
     /// liens, un lien qui ne se lit pas, toute autre erreur de lecture (pas le droit, montage qui répond mal : X-4),
     /// un passage par /proc/self, /proc/thread-self, /proc/<nombre> ou /dev/fd (il dépend du processus qui lit : X-3,
     /// Y-2), ou
-    /// un fichier final du propriétaire du dossier personnel à plusieurs liens physiques (son autre nom peut être un
-    /// lieu de démarrage : X-3).
+    /// les lieux de démarrage qui ne se lisent pas en entier quand le fichier final, du propriétaire du dossier
+    /// personnel, a plusieurs liens physiques (X-3). Si l'autre nom de ce fichier est dans un lieu de démarrage, c'est
+    /// ce nom qui revient ; sinon, le fichier compte pour lui-même (Y-3).
     fn chemin_reel(&self, p: &str) -> Option<String> {
         use std::os::unix::fs::MetadataExt as _;
         let racine = self.racine.to_string_lossy();
@@ -789,7 +794,11 @@ impl Systeme<'_> {
                         && md.nlink() > 1
                         && compte.is_none_or(|u| md.uid() == u) =>
                 {
-                    return None;
+                    // Y-3 : son autre nom compte s'il est dans un lieu de démarrage ; un autre nom ordinaire, non.
+                    match self.noms_des_lieux()?.get(&(md.dev(), md.ino())) {
+                        Some(nom) => return Some(nom.clone()),
+                        None => fait = essai,
+                    }
                 }
                 Ok(_) => fait = essai,
                 Err(e)
@@ -814,6 +823,82 @@ impl Systeme<'_> {
             }
         }
         Some(if fait.is_empty() { "/".to_string() } else { fait })
+    }
+}
+
+/// Y-3 : le plus d'entrées lues dans les lieux de démarrage du compte, et la plus grande profondeur sous l'un d'eux,
+/// pour y chercher l'autre nom d'un fichier à plusieurs liens physiques. Au-delà, rien n'est vérifié.
+const NOMS_LUS_MAX: usize = 4096;
+const PROFONDEUR_DES_LIEUX: u32 = 8;
+
+impl Systeme<'_> {
+    /// Y-3 : les fichiers à plusieurs liens physiques des lieux de démarrage du compte (`LIEUX_DE_DEMARRAGE` sous
+    /// chaque dossier personnel), par (appareil, inode). Le lieu lui-même se suit (un ~/.bashrc lien vers des
+    /// dotfiles) ; dessous, rien ne se traverse, mais un lien vers un fichier compte pour ce fichier (il se lit à
+    /// l'ouverture). `None` (non vérifié) : plus de `NOMS_LUS_MAX` entrées, un dossier plus profond que
+    /// `PROFONDEUR_DES_LIEUX`, ou une lecture qui échoue autrement que par une absence.
+    fn noms_des_lieux(&self) -> Option<&std::collections::HashMap<(u64, u64), String>> {
+        self.noms_des_lieux.get_or_init(|| self.lire_noms_des_lieux()).as_ref()
+    }
+
+    fn lire_noms_des_lieux(&self) -> Option<std::collections::HashMap<(u64, u64), String>> {
+        use std::os::unix::fs::MetadataExt as _;
+        let mut noms = std::collections::HashMap::new();
+        let mut lus: usize = 0;
+        let mut pile: Vec<(std::path::PathBuf, String, u32)> = Vec::new();
+        for m in self.maisons.iter().filter(|m| !m.is_empty()) {
+            let m = m.trim_end_matches('/');
+            for l in LIEUX_DE_DEMARRAGE {
+                let nom = format!("{m}/{l}");
+                pile.push((self.sous(&nom), nom, 0));
+            }
+        }
+        while let Some((chemin, nom, profondeur)) = pile.pop() {
+            lus = lus.saturating_add(1);
+            if lus > NOMS_LUS_MAX {
+                return None;
+            }
+            let lu = if profondeur == 0 {
+                std::fs::metadata(&chemin)
+            } else {
+                std::fs::symlink_metadata(&chemin)
+            };
+            let md = match lu {
+                Ok(md) => md,
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                    ) =>
+                {
+                    continue;
+                }
+                Err(_) => return None,
+            };
+            if md.is_dir() {
+                if profondeur >= PROFONDEUR_DES_LIEUX {
+                    return None;
+                }
+                for entree in std::fs::read_dir(&chemin).ok()? {
+                    let entree = entree.ok()?;
+                    let suite = format!("{nom}/{}", entree.file_name().to_string_lossy());
+                    pile.push((entree.path(), suite, profondeur.saturating_add(1)));
+                }
+                continue;
+            }
+            let fichier = if md.file_type().is_symlink() {
+                match std::fs::metadata(&chemin) {
+                    Ok(cible) if !cible.is_dir() => cible,
+                    _ => continue,
+                }
+            } else {
+                md
+            };
+            if fichier.nlink() > 1 {
+                noms.insert((fichier.dev(), fichier.ino()), nom);
+            }
+        }
+        Some(noms)
     }
 }
 

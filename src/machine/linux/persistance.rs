@@ -992,6 +992,7 @@ pub(crate) fn complement_change_le_lancement(texte: &str, maison: &Path) -> Vec<
         maison: &lue,
         maisons: &maisons,
         courant: None,
+        noms_des_lieux: std::cell::OnceCell::new(),
     };
     let codes = Codes {
         utilisateur: true,
@@ -5758,6 +5759,7 @@ fn juger_demarrage(demarrage: &[std::path::PathBuf], h: &Path, t: &mut Lancement
                         maison: &lue,
                         maisons: &maisons,
                         courant: codes.courant.as_deref(),
+                        noms_des_lieux: std::cell::OnceCell::new(),
                     };
                     if let Err(e) = permise::directive(&s, codes, section.as_deref(), &logique.texte) {
                         lever(
@@ -6381,6 +6383,7 @@ fn hors_de_la_liste(
             Lecteur::Bureau(courant) => courant.as_deref(),
             _ => None,
         },
+        noms_des_lieux: std::cell::OnceCell::new(),
     };
     let ecart = match lecteur {
         Lecteur::Texte => return None,
@@ -10908,6 +10911,15 @@ mod tests {
             Bureau,
             AjoutDifferent,
             ProcSimule,
+            PhysiqueOrdinaire,
+            PhysiqueBashrc,
+            PhysiqueBashrcLie,
+            PhysiqueLienDansLieu,
+            PhysiqueTrop,
+            PhysiqueProfond,
+            PhysiqueIllisible,
+            PhysiqueSansTraverse,
+            PhysiqueLieuLie,
         }
         type Cas<'a> = (&'a str, &'a str, &'a [(&'a str, &'a str)], Prep, bool);
         let autostart: &[(&str, &str)] = &[("Documents/lien", "/home/alice/.config/autostart")];
@@ -10960,6 +10972,73 @@ mod tests {
                 &[],
                 Prep::ProcSimule,
                 true,
+            ),
+            // Y-3 (revérification 4) : un fichier à deux noms se juge par ses noms dans les lieux de démarrage. Un
+            // deuxième nom ordinaire (F13) se tait ; un nom sous ~/.bashrc (même suivi par un lien) ou désigné par un
+            // lien d'un lieu lève ; des lieux trop grands ou trop profonds pour être lus en entier lèvent (non
+            // vérifié).
+            (
+                "/usr/bin/cp /home/alice/Documents/notes.txt /home/alice/Documents/b",
+                "",
+                &[],
+                Prep::PhysiqueOrdinaire,
+                true,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x /home/alice/Documents/h.sh",
+                "",
+                &[],
+                Prep::PhysiqueBashrc,
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x /home/alice/Documents/h.sh",
+                "",
+                &[],
+                Prep::PhysiqueBashrcLie,
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x /home/alice/Documents/h.sh",
+                "",
+                &[],
+                Prep::PhysiqueLienDansLieu,
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/notes.txt /home/alice/Documents/b",
+                "",
+                &[],
+                Prep::PhysiqueTrop,
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/notes.txt /home/alice/Documents/b",
+                "",
+                &[],
+                Prep::PhysiqueProfond,
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/notes.txt /home/alice/Documents/b",
+                "",
+                &[],
+                Prep::PhysiqueIllisible,
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/notes.txt /home/alice/Documents/b",
+                "",
+                &[],
+                Prep::PhysiqueSansTraverse,
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x /home/alice/Documents/h.sh",
+                "",
+                &[],
+                Prep::PhysiqueLieuLie,
+                false,
             ),
             // Le même passage sous une racine sans /proc : il se juge sur le chemin net, sans rien lire.
             (
@@ -11224,6 +11303,70 @@ mod tests {
                     std::os::unix::fs::symlink("/srv", m.racine.join("proc/4242/cwd")).unwrap();
                     std::os::unix::fs::symlink("/srv", m.racine.join("proc/thread-self/cwd")).unwrap();
                 }
+                Prep::PhysiqueOrdinaire
+                | Prep::PhysiqueTrop
+                | Prep::PhysiqueProfond
+                | Prep::PhysiqueIllisible
+                | Prep::PhysiqueSansTraverse => {
+                    m.ecrire("Documents/notes.txt", "notes\n");
+                    std::fs::hard_link(m.chemin("Documents/notes.txt"), m.chemin("Documents/autre.txt")).unwrap();
+                    if *prep == Prep::PhysiqueTrop {
+                        std::fs::create_dir_all(m.chemin(".config/fish/completions")).unwrap();
+                        for i in 0..4200 {
+                            std::fs::write(m.chemin(&format!(".config/fish/completions/c{i}.fish")), "").unwrap();
+                        }
+                    }
+                    if *prep == Prep::PhysiqueProfond {
+                        m.ecrire(".config/hypr/a/b/c/d/e/f/g/h/i/j/x.conf", "");
+                    }
+                    if *prep == Prep::PhysiqueSansTraverse {
+                        // Lisible mais pas traversable : les noms se lisent, pas ce qu'ils désignent.
+                        m.ecrire(".config/hypr/prive/f.conf", "");
+                        std::fs::set_permissions(
+                            m.chemin(".config/hypr/prive"),
+                            std::fs::Permissions::from_mode(0o444),
+                        )
+                        .unwrap();
+                    }
+                    if *prep == Prep::PhysiqueIllisible {
+                        std::fs::create_dir_all(m.chemin(".config/hypr/prive")).unwrap();
+                        std::fs::set_permissions(
+                            m.chemin(".config/hypr/prive"),
+                            std::fs::Permissions::from_mode(0o000),
+                        )
+                        .unwrap();
+                    }
+                }
+                Prep::PhysiqueBashrc => {
+                    m.ecrire(".bashrc", "true\n");
+                    std::fs::hard_link(m.chemin(".bashrc"), m.chemin("Documents/h.sh")).unwrap();
+                }
+                Prep::PhysiqueBashrcLie => {
+                    m.ecrire("Documents/dotfiles/bashrc", "true\n");
+                    std::os::unix::fs::symlink("Documents/dotfiles/bashrc", m.chemin(".bashrc")).unwrap();
+                    std::fs::hard_link(m.chemin("Documents/dotfiles/bashrc"), m.chemin("Documents/h.sh")).unwrap();
+                }
+                Prep::PhysiqueLieuLie => {
+                    m.ecrire("Documents/dotfiles/hypr/hyprland.conf", "");
+                    std::os::unix::fs::symlink("../Documents/dotfiles/hypr", m.chemin(".config/hypr")).unwrap();
+                    std::fs::hard_link(
+                        m.chemin("Documents/dotfiles/hypr/hyprland.conf"),
+                        m.chemin("Documents/h.sh"),
+                    )
+                    .unwrap();
+                }
+                Prep::PhysiqueLienDansLieu => {
+                    m.ecrire(
+                        "Documents/cible.desktop",
+                        "[Desktop Entry]\nType=Application\nName=x\nExec=true\n",
+                    );
+                    std::os::unix::fs::symlink(
+                        "../../Documents/cible.desktop",
+                        m.chemin(".config/autostart/y.desktop"),
+                    )
+                    .unwrap();
+                    std::fs::hard_link(m.chemin("Documents/cible.desktop"), m.chemin("Documents/h.sh")).unwrap();
+                }
                 Prep::Rien | Prep::Bureau => {}
             }
             let constats = persistance_dans(
@@ -11235,6 +11378,17 @@ mod tests {
             );
             if *prep == Prep::Illisible {
                 std::fs::set_permissions(m.chemin("Documents/ferme"), std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            if matches!(prep, Prep::PhysiqueIllisible | Prep::PhysiqueSansTraverse) {
+                // Root (ou « unshare -r ») lit quand même le dossier : le cas ne se juge alors pas.
+                let lisible = std::fs::read_dir(m.chemin(".config/hypr/prive")).is_ok()
+                    && std::fs::symlink_metadata(m.chemin(".config/hypr/prive/f.conf")).is_ok()
+                        == (*prep == Prep::PhysiqueSansTraverse);
+                std::fs::set_permissions(m.chemin(".config/hypr/prive"), std::fs::Permissions::from_mode(0o755))
+                    .unwrap();
+                if lisible {
+                    continue;
+                }
             }
             let leve: Vec<_> = constats
                 .iter()
@@ -14325,6 +14479,7 @@ mod tests {
             maison: &maison,
             maisons: &maisons,
             courant: None,
+            noms_des_lieux: std::cell::OnceCell::new(),
         };
         // Chaque cas des rapports, levé par les deux mécanismes à la fois ; le joker « t?p » seul échappe au filet
         // (le chemin n'est pas écrit) : la liste permise le refuse.
