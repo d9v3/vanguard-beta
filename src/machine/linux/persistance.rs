@@ -2361,6 +2361,9 @@ impl Variables {
         let chemin = f.to_string_lossy();
         if hypr {
             Variables::Hypr
+        } else if chemin.contains("/uwsm/") {
+            // Tout fichier d'uwsm est un script, même nommé « environment » ou « x.conf » (W-2).
+            Variables::Shell
         } else if chemin.contains("/systemd/") && a_l_extension(f, "conf") {
             Variables::Systemd
         } else if chemin.contains("/environment.d/")
@@ -4153,36 +4156,47 @@ fn fichiers_du_gestionnaire(
     let mut fichiers: Vec<(std::path::PathBuf, bool)> = Vec::new();
     let mut illisibles = Vec::new();
     // Les fichiers d'un dossier : ceux en « .conf », ou tous ceux de uwsm (« env », « env-<bureau> » et ce qu'ils
-    // peuvent inclure : relecture 0.95, V-2), sauf ses sous-dossiers.
-    let mut dossier =
-        |d: std::path::PathBuf, du_compte: bool, uwsm: bool, fichiers: &mut Vec<(std::path::PathBuf, bool)>| {
+    // peuvent inclure : relecture 0.95, V-2), et ceux de ses sous-dossiers « env.d » et « env-<bureau>.d », qu'uwsm
+    // lit après le fichier du même nom (uwsm 0.27, prepare-env.sh, `source_dir` : relecture 0.95, W-2) ; pas plus
+    // bas. Plus large qu'uwsm (ses « *.bak », « *~ »… passés, ses fichiers cachés) : un fichier de trop se lit.
+    let mut dossier = |d: std::path::PathBuf,
+                       du_compte: bool,
+                       uwsm: bool,
+                       fichiers: &mut Vec<(std::path::PathBuf, bool)>| {
+        let mut a_lire = vec![(d, true)];
+        while let Some((d, haut)) = a_lire.pop() {
             match std::fs::symlink_metadata(&d) {
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(_) => {
                     illisibles.push(d.clone());
-                    return;
+                    continue;
                 }
                 Ok(_) => {}
             }
             let Ok(entrees) = std::fs::read_dir(&d) else {
                 illisibles.push(d.clone());
-                return;
+                continue;
             };
             for e in entrees {
                 let Ok(e) = e else {
                     illisibles.push(d.clone());
-                    return;
+                    break;
                 };
-                let pris = if uwsm {
-                    !std::fs::symlink_metadata(e.path()).is_ok_and(|m| m.is_dir())
-                } else {
-                    a_l_extension(&e.path(), "conf")
-                };
+                let p = e.path();
+                let est_dossier = std::fs::symlink_metadata(&p).is_ok_and(|m| m.is_dir());
+                let nom = e.file_name();
+                let nom = nom.to_string_lossy();
+                if uwsm && haut && est_dossier && (nom == "env.d" || (nom.starts_with("env-") && nom.ends_with(".d"))) {
+                    a_lire.push((p, false));
+                    continue;
+                }
+                let pris = if uwsm { !est_dossier } else { a_l_extension(&p, "conf") };
                 if pris {
-                    fichiers.push((e.path(), du_compte));
+                    fichiers.push((p, du_compte));
                 }
             }
-        };
+        }
+    };
     let mut configs = vec![r.maison.join(".config")];
     if let Some(c) = &r.config {
         configs.push(r.sous(c));
@@ -9570,6 +9584,30 @@ mod tests {
             ("printf -v", &[(ENV, "set -a\nprintf -v \"$n\" %s /x.so\n")], true),
             ("read", &[(ENV, "set -a\nread -r \"$n\" < ~/.cache/x\n")], true),
             ("substitution", &[(ENV, "export $(cat ~/.cache/x)\n")], true),
+            // W-2 : les sous-dossiers « env.d » et « env-<bureau>.d », qu'uwsm lit aussi.
+            (
+                "env.d, chargeur",
+                &[(".config/uwsm/env.d/10-x", "export LD_PRELOAD=/home/alice/.cache/x.so\n")],
+                true,
+            ),
+            (
+                "env-hyprland.d, eval",
+                &[(".config/uwsm/env-hyprland.d/x", "eval \"$(cat ~/.cache/x)\"\n")],
+                true,
+            ),
+            (
+                "env.d, nommé environment",
+                &[(".config/uwsm/env.d/environment", "eval \"$(cat ~/.cache/x)\"\n")],
+                true,
+            ),
+            (
+                "env.d, muet",
+                &[
+                    (".config/uwsm/env.d/10-x", "export EDITOR=nvim\n"),
+                    (".config/uwsm/env-hyprland.d/x", "export TERMINAL=kitty\n"),
+                ],
+                false,
+            ),
         ];
         let mut faux = Vec::new();
         for (i, (nom, fichiers, leve)) in cas.iter().enumerate() {
