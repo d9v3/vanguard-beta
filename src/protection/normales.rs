@@ -65,10 +65,6 @@ fn charger_de(dossier: &std::path::Path) -> Result<Normales, Refus> {
     }
 }
 
-fn enregistrer(n: &Normales) -> std::io::Result<()> {
-    enregistrer_vers(&crate::socle::dossier_local(), n)
-}
-
 fn enregistrer_vers(dossier: &std::path::Path, n: &Normales) -> std::io::Result<()> {
     crate::sceau::ecrire_dans(
         dossier,
@@ -166,7 +162,7 @@ fn declarer_dans(
 /// des sceaux, qu'`ecrire_dans` prend lui-même (un `flock` ne se reprend pas dans le même processus).
 pub(crate) const VERROU: &str = "normales.lock";
 
-/// Le seul chemin d'écriture de la liste, hors de sa remise à zéro (vérification 0.94) : sous `VERROU`, elle est
+/// Le seul chemin d'écriture de la liste, avec sa remise à zéro (vérification 0.94) : sous `VERROU`, elle est
 /// relue, `changer` la change telle qu'elle est maintenant, puis elle est écrite. Relue avant le verrou des sceaux,
 /// deux Vanguard qui déclaraient en même temps (le blocage en direct, une sortie de quarantaine, le menu) écrivaient
 /// chacun sa liste sans le choix de l'autre : une sortie de quarantaine oubliée, le fichier y retournait ; un choix
@@ -177,18 +173,32 @@ fn sous_verrou(
     changer: impl FnOnce(&mut Normales),
 ) -> Result<(), crate::modele::Echec> {
     use crate::modele::{Echec, Raison};
-    // Comme les sceaux : en administrateur dans le dossier d'un compte, rien n'y est créé, pas même le verrou.
-    if !crate::socle::ecriture_sure(dossier) {
-        return Err(Echec::ecriture(ou, &crate::sceau::dossier_d_un_autre()));
-    }
-    let _verrou = crate::socle::Verrou::prendre(dossier, VERROU, false, crate::socle::ATTENTE_ECRITURE)
-        .map_err(|e| Echec::ecriture(ou, &e.erreur(VERROU)))?;
+    let _verrou = verrou(dossier, ou)?;
     let mut n = charger_de(dossier).map_err(|r| match r {
         Refus::Falsifiee => Echec::new(ou, Raison::Falsifie).detail(raison(&r)),
         Refus::Illisible => Echec::new(ou, Raison::Illisible(raison(&r).to_string())),
     })?;
     changer(&mut n);
     enregistrer_vers(dossier, &n).map_err(|e| Echec::ecriture(ou, &e))
+}
+
+/// `VERROU` pris pour écrire la liste. Comme les sceaux : en administrateur dans le dossier d'un compte, rien n'y est
+/// créé, pas même le verrou.
+fn verrou(dossier: &std::path::Path, ou: &'static str) -> Result<crate::socle::Verrou, crate::modele::Echec> {
+    use crate::modele::Echec;
+    if !crate::socle::ecriture_sure(dossier) {
+        return Err(Echec::ecriture(ou, &crate::sceau::dossier_d_un_autre()));
+    }
+    crate::socle::Verrou::prendre(dossier, VERROU, false, crate::socle::ATTENTE_ECRITURE)
+        .map_err(|e| Echec::ecriture(ou, &e.erreur(VERROU)))
+}
+
+/// La liste remise à zéro (falsifiée ou illisible, à la demande), sous `VERROU` comme toute écriture : une
+/// déclaration qui l'a relue juste avant n'écrit pas par-dessus (correction n° 2 de la 0.94, n3). `Err` : rien écrit.
+fn remettre_a_zero_dans(dossier: &std::path::Path) -> Result<(), crate::modele::Echec> {
+    let ou = "normales:remise-a-zero";
+    let _verrou = verrou(dossier, ou)?;
+    enregistrer_vers(dossier, &Normales::default()).map_err(|e| crate::modele::Echec::ecriture(ou, &e))
 }
 
 fn raison(r: &Refus) -> &'static str {
@@ -295,7 +305,7 @@ pub(crate) fn section() {
             ))
             .oui()
             {
-                match enregistrer(&Normales::default()) {
+                match remettre_a_zero_dans(&crate::socle::dossier_local()) {
                     Ok(()) => trp!("  {VERT}✔{RESET} Remise à zéro.", "  {VERT}✔{RESET} Reset."),
                     Err(e) => trp!("  ✖ Impossible d'enregistrer ({e}).", "  ✖ Could not save ({e})."),
                 }
@@ -505,6 +515,31 @@ mod tests {
         assert!(declarer_dans(&d, &cle_blocage("autre"), "blocage", "t", "x").is_err());
         enregistrer_vers(&d, &Normales::default()).unwrap();
         assert!(!est_normale_de(&d, &cle));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Correction n° 2 de la 0.94, n3 : la remise à zéro prend `VERROU` comme toute écriture. Verrou impossible à
+    /// prendre (un dossier à sa place) : rien n'est écrit, la liste falsifiée le reste et rien n'est tu.
+    #[test]
+    fn remise_a_zero_sous_le_verrou() {
+        let d = crate::protection::isoler::dossier_jetable().unwrap();
+        let cle = cle_blocage("connexion:198.51.100.78");
+        declarer_dans(&d, &cle, "blocage", "t", "x").unwrap();
+        let chemin = d.join(crate::sceau::NORMALES);
+        let mut texte = std::fs::read_to_string(&chemin).unwrap();
+        texte.push(' ');
+        std::fs::write(&chemin, &texte).unwrap();
+        std::fs::remove_file(d.join(VERROU)).unwrap();
+        std::fs::create_dir(d.join(VERROU)).unwrap();
+        assert!(remettre_a_zero_dans(&d).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&chemin).unwrap(),
+            texte,
+            "écrite sans le verrou"
+        );
+        std::fs::remove_dir(d.join(VERROU)).unwrap();
+        remettre_a_zero_dans(&d).unwrap();
+        assert!(charger_de(&d).unwrap().alertes.is_empty());
         let _ = std::fs::remove_dir_all(&d);
     }
 
