@@ -174,14 +174,16 @@ pub(crate) fn systeme32(nom: &str) -> std::path::PathBuf {
     dossier_systeme().join(fichier)
 }
 
-/// Un programme du système : sous Windows, par son chemin dans System32 (voir `systeme32`) ; ailleurs, par son nom,
-/// cherché dans le PATH comme avant.
+/// Un programme du système : sous Windows, par son chemin dans System32 (voir `systeme32`) ; sous Unix, par son
+/// chemin dans les dossiers du système (`par_le_systeme`, W-5 de la relecture 0.95 : ping, nvidia-smi, arp ne sont
+/// plus cherchés dans le PATH du compte).
 pub(crate) fn systeme(nom: &str) -> Command {
     #[cfg(windows)]
-    let programme = systeme32(nom);
-    #[cfg(not(windows))]
-    let programme = nom;
-    Command::new(programme)
+    return Command::new(systeme32(nom));
+    #[cfg(unix)]
+    return par_le_systeme(nom);
+    #[cfg(not(any(windows, unix)))]
+    Command::new(nom)
 }
 
 /// cmd.exe par son chemin, pour une ligne dont les programmes sont écrits par leur chemin (voir `systeme32`).
@@ -967,6 +969,21 @@ mod tests {
         assert!(lancer(&mut par_le_systeme("vanguard-outil-absent-x"), 5).is_none());
     }
 
+    /// W-5 (relecture 0.95) : `systeme` (ping du dépannage, nvidia-smi, arp) passe aussi par les dossiers du système
+    /// sous Unix, jamais par le PATH du compte.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn systeme_prend_le_chemin_du_systeme_sous_unix() {
+        assert_eq!(
+            Some(std::path::PathBuf::from(systeme("sh").get_program())),
+            outil_systeme("sh")
+        );
+        assert_eq!(
+            systeme("vanguard-outil-absent-x").get_program(),
+            "/usr/bin/vanguard-outil-absent-x"
+        );
+    }
+
     /// Point 9 (0.95) : là où Vanguard lit l'état de la machine pour la juger (connexions, journaux, services,
     /// paquets, réseau, sauvegarde), aucun programme n'est lancé par son seul nom, que le PATH du compte choisirait :
     /// `par_le_systeme` ou `outil_systeme`. Lu dans les fichiers, hors de leurs essais.
@@ -1017,7 +1034,11 @@ mod tests {
 
     /// V-6 (relecture 0.95) : dans tout src/, hors des essais, aucun outil n'est lancé par un nom nu
     /// (`Command::new("nom")`) ni par un nom reçu (`Command::new(cmd)`, `outil`, `programme`) : `par_le_systeme`.
-    /// Les exceptions sont écrites ici, chacune avec sa raison ; une nouvelle ligne fait échouer l'essai.
+    /// Les exceptions sont écrites ici, chacune avec sa raison ; une nouvelle ligne fait échouer l'essai. Un repli
+    /// par nom nu (« …unwrap_or_else(|| "bwrap".into()) », W-5) compte aussi. Limite dite (W-5) : ce qui cherche
+    /// exprès dans le PATH un outil que la personne installe elle-même (docker, podman, trivy, gitleaks, git de
+    /// protection/outil.rs, nmap de reseau/nmap.rs) n'est pas vu ici ; aucun n'est dans les lectures de la machine ni
+    /// dans la sauvegarde.
     #[cfg(target_os = "linux")]
     #[test]
     fn aucun_outil_par_son_nom_nu_dans_src() {
@@ -1081,10 +1102,15 @@ mod tests {
                         .and_then(|r| r.split('"').next())
                         .is_some_and(|x| !x.contains(['/', '\\']));
                     let recu = ["cmd)", "outil)", "programme)"].iter().any(|v| apres.starts_with(v));
+                    let repli_nu = apres.split_once("unwrap_or").is_some_and(|(_, r)| {
+                        r.split('"')
+                            .nth(1)
+                            .is_some_and(|x| !x.is_empty() && !x.contains(['/', '\\']))
+                    });
                     let permis = EXCEPTIONS.iter().any(|(f, motif, _)| {
                         fichier == f && (code.contains(motif) || format!("Command::new({apres}").starts_with(motif))
                     });
-                    if (nu || recu) && !permis {
+                    if (nu || recu || repli_nu) && !permis {
                         par_le_nom.push(format!("{fichier}:{} : {}", n + 1, l.trim()));
                     }
                 }

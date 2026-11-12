@@ -1591,7 +1591,9 @@ fn commande_de(
                 )
                 .to_string()
             })?;
-            let mut c = Command::new(dans_le_path_systeme("bwrap").unwrap_or_else(|| "bwrap".into()));
+            // Absent des dossiers du système : /usr/bin/bwrap, qui échoue (« introuvable »), jamais cherché dans le
+            // PATH du compte (W-5, relecture 0.95).
+            let mut c = Command::new(dans_le_path_systeme("bwrap").unwrap_or_else(|| "/usr/bin/bwrap".into()));
             c.args(a);
             c
         }
