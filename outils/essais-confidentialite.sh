@@ -345,6 +345,29 @@ git checkout -q -b c a && printf 'x\n' >c.txt && git add c.txt && git commit -q 
 garde --generique --plage "$ZEROS" "$(git rev-parse c)" >/dev/null 2>&1
 noter 0 $? "témoin : branche neuve propre par-dessus la branche principale (plage)"
 
+# E-1 (relecture 0.94) : un clone superficiel (actions/checkout sans fetch-depth: 0) coupe l'histoire. Un AVANT
+# absent n'y dit pas « historique réécrit » : seule la tête se lirait, et le courriel d'un message plus ancien, ou d'un
+# fichier ajouté puis retiré dans l'envoi, passerait. Rien n'est conclu (code 2) dès qu'un commit lu a ses parents
+# coupés par le clone ; ce qui est au-dessus de la coupe, lui, se lit comme avant.
+depot superficiel-source
+printf 'contact : %s\n' "$COURRIEL" >retire.txt && git add retire.txt
+git commit -q --no-verify -m "contact $COURRIEL"
+git rm -q retire.txt && git commit -q --no-verify -m retrait
+printf 'x\n' >fin.txt && git add fin.txt && git commit -q --no-verify -m fin
+SOURCE=$D
+garde --generique --plage 1111111111111111111111111111111111111111 HEAD >/dev/null 2>&1
+noter 1 $? "témoin : clone complet, commit d'avant disparu, tout relu (plage)"
+git clone -q --depth 1 "file://$SOURCE" "$TRAVAIL/superficiel" && cd "$TRAVAIL/superficiel" || exit 1
+garde --generique --plage 1111111111111111111111111111111111111111 HEAD >/dev/null 2>&1
+noter 2 $? "clone superficiel, commit d'avant absent (plage)"
+garde --generique --plage "$ZEROS" HEAD >/dev/null 2>&1
+noter 2 $? "clone superficiel, branche neuve dont l'histoire est coupée (plage)"
+printf 'y\n' >suite.txt && git add suite.txt && git commit -q --no-verify -m suite
+garde --generique --plage "$(git rev-parse HEAD~1)" HEAD >/dev/null 2>&1
+noter 0 $? "témoin : clone superficiel, un commit au-dessus de la coupe (plage)"
+garde --generique --plage "$ZEROS" HEAD >/dev/null 2>&1
+noter 0 $? "témoin : clone superficiel, branche neuve au-dessus de la branche principale (plage)"
+
 depot messages
 printf 'sujet\n\n# contact %s\n' "$COURRIEL" >"$TRAVAIL/m1"
 printf 'sujet\n\n# ------------------------ >8 ------------------------\ncontact %s\n' "$COURRIEL" >"$TRAVAIL/m2"

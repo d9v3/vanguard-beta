@@ -791,7 +791,31 @@ def commits_de_la_plage(avant, apres):
     """Les commits d'un envoi : de `avant` (exclu, le commit d'avant sur GitHub) à `apres`. Branche neuve (`avant` vide
     ou fait de zéros) ou historique réécrit (`avant` disparu) : ceux que la branche principale de GitHub n'a pas déjà.
     Jamais en retirant les autres branches : rien ne dit qu'elles ont été relues. Sans branche principale à part :
-    tous les commits de `apres`."""
+    tous les commits de `apres`. Jamais moins que ce que la branche principale n'a pas, mais pas plus non plus : une
+    branche principale devant APRÈS (qui le contient sans être lui) ne laisse aucun commit à relire, puisqu'elle est
+    publiée, donc déjà jugée ; à APRÈS même, elle ne retire rien (tout APRÈS est relu).
+    Une histoire coupée par un clone superficiel : rien n'est conclu (`hors_de_la_coupe`)."""
+    return hors_de_la_coupe(commits_sans_coupe(avant, apres))
+
+
+def hors_de_la_coupe(shas):
+    """`shas`, si aucun n'est au bord d'un clone superficiel (ses parents coupés, absents) : là, git s'arrête comme à
+    un premier commit, et un AVANT absent du clone ne dit plus « historique réécrit ». Seul le haut de l'histoire se
+    lirait (relecture 0.94, E-1) : rien n'est conclu."""
+    if git_si("rev-parse", "--is-shallow-repository") != "true":
+        return shas
+    fichier = git("rev-parse", "--path-format=absolute", "--git-path", "shallow").strip()
+    try:
+        coupe = set(Path(fichier).read_text().split())
+    except OSError as erreur:
+        rien_conclu(f"clone superficiel, {fichier} est illisible ({erreur.strerror}) : rien n'est conclu.")
+    if coupe.intersection(shas):
+        rien_conclu("clone superficiel : l'histoire envoyée est coupée, ses premiers commits manquent ; rien n'est "
+                    "conclu (git fetch --unshallow, ou fetch-depth: 0 en CI).")
+    return shas
+
+
+def commits_sans_coupe(avant, apres):
     if avant.strip("0") and git_si("rev-parse", "-q", "--verify", f"{avant}^{{commit}}"):
         return git("rev-list", "--reverse", f"{avant}..{apres}").split()
     cible = git_si("rev-parse", "-q", "--verify", f"{apres}^{{commit}}")
