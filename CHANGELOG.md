@@ -9,6 +9,81 @@ jour est permise ; elles se suivent dans le paragraphe de leur journée. Seule l
 téléchargement ; chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par exemple), pour être
 recompilée au besoin.
 
+## 12 novembre 2026 : version 0.95.0
+
+- **Mettre Vanguard à jour après avoir vu ce qui s'installe.** `vanguard se-mettre-a-jour --voir` dit, sans rien
+  installer, d'où vient la mise à jour (la clé VANGUARD, ou GitHub, signée par l'auteur), la version visée, son
+  empreinte SHA-256, sa taille et chaque programme qu'elle remplacerait, avec sa version d'aujourd'hui.
+  `--appliquer --accord <accord>` installe seulement ce qui a été montré, de 2 s à 10 minutes après l'aperçu, une
+  seule fois : une autre version, une autre clé ou une copie changée entre les deux est refusée. Les vérifications de
+  toujours restent ; « à jour » n'est dit que vérifié, sinon « non vérifié ». Commandes cachées de l'aide en ligne.
+- **Appliquer une correction du bilan, puis la remettre comme avant (Linux).** `vanguard correction --voir <jeton>`
+  (le jeton vient de `audit --json`) montre la correction et son accord ; `--appliquer <jeton> --accord <accord>` la
+  fait, une à la fois, de 2 s à 10 minutes après l'aperçu, une seule fois. Seules les corrections du compte qui
+  s'annulent exactement sont permises : les droits d'un fichier du dossier personnel. `vanguard changements --voir
+  <jeton>` montre ce que « remettre comme avant » ferait, et `--annuler <jeton> --accord <accord>` le fait. Sous
+  Windows, ces gestes ne sont pas encore offerts ; en mode lecture seule, ils sont refusés.
+- **Ce qui protège ces gestes.** Tout est relu et rejugé au moment d'agir : un état changé depuis l'aperçu, ou un
+  fichier remplacé (reconnu à sa sorte et à son numéro d'inode), est refusé sans rien changer. Plusieurs fichiers :
+  tout ou rien. La trace « Ce que Vanguard a changé » s'écrit avant de toucher un fichier : Vanguard arrêté net laisse
+  une ligne « interrompue », qui se remet comme une autre. Les droits d'un fichier du compte se lisent, se posent et se
+  remettent sans shell ni lien suivi (la remise passait par `chmod`, qui suit les liens). Le journal des événements ne
+  garde ni nom de fichier ni commande ; chaque fichier scellé s'écrit en deux temps, comme le sceau des réglages.
+- **Programmes au démarrage : l'accord devient obligatoire.** `vanguard demarrage --retirer` et `--remettre`
+  demandent maintenant `--accord`, celui que `demarrage --json` donne pour ce geste : sans lui, rien n'est retiré ni
+  remis (code 2), et un programme dont le nom, la commande ou la portée a changé depuis la liste est refusé. L'accord
+  lie le nom et la commande entiers, pas le texte coupé à l'écran. « Remettre » n'écrase plus une entrée réécrite à la
+  main depuis son retrait : c'est refusé, la raison est dite et le contenu est gardé.
+- **Programmes au démarrage : là où Vanguard n'écrit pas, il le dit.** Un dossier d'autostart modifiable par le
+  groupe ou par tous, ou qui porte un bit spécial, n'est plus écrit : ses entrées restent montrées, sans bouton, et le
+  dossier est nommé une fois avec ses droits et la commande `chmod` exacte, si c'est votre choix de le corriger. Les
+  dossiers que Vanguard crée le sont en 0700, quel que soit l'umask : le premier retrait marche aussi sur Ubuntu et
+  Fedora, où il était refusé. Le rapport, le journal et `--json` écrivent le dossier personnel « ~ ».
+- **Programmes au démarrage : ce qui n'a pas été lu est dit.** /etc/xdg/autostart est toujours lu, même quand
+  XDG_CONFIG_DIRS ne le nomme pas. Un fichier de service du compte se lit borné à 64 Kio, sans suivre de lien ;
+  autrement, il est dit « pas lu ». La commande montrée est celle que systemd lance, compléments « .service.d »
+  appliqués. « Pourquoi c'est lent ? » dit les dossiers qu'il n'a pas pu lire au lieu de « aucun programme trouvé »,
+  et `demarrage --json` ne compte une vérification que si une source a vraiment été lue.
+- **Les entrées de bureau et les unités lues comme les lanceurs les lisent (Linux).** Une entrée de démarrage
+  (.desktop) se lit comme systemd la lit et comme GLib (gio, gnome-session) la lance : retours chariot seuls, octets
+  nuls, marque BOM, échappements, « %f » collé dans un mot, « %c ». Une forme que deux lanceurs liraient différemment
+  est levée en nommant la forme. Un ExecStart= écrit en « \xNN » ou en octal se lit en octets, comme systemd ; ce qui
+  ne se décode pas sûrement est dit non vérifié.
+- **Une ligne qui écrit dans un lieu de démarrage est levée.** Une ligne lancée au démarrage qui nomme
+  ~/.config/autostart, ~/.config/systemd, ~/.config/hypr, ~/.bashrc ou un dossier qui en contient (~/.config,
+  ~/.local) peut y poser un lancement à chaque passage : elle est levée, aussi par un lien, un chemin relatif lu depuis
+  son vrai dossier de départ, /proc/self/cwd, un lien physique ou le lieu d'un autre bureau (KDE, Sway, i3…). Un
+  chemin qui ne se suit pas avec certitude est dit non vérifié. Limite : une copie sur le dossier personnel entier
+  n'est pas comptée.
+- **La sauvegarde automatique, plus difficile à détourner (Linux).** Elle lance maintenant rsync et findmnt du
+  système par « env -i » ; une sauvegarde posée avant la 0.95 est signalée, avec la marche à suivre (l'annuler, puis
+  la remettre). Elle n'est tue au bilan que si rsync, findmnt et env ne peuvent être changés que par root. Elle est
+  levée si son disque est un montage FUSE, une image qui appartient au compte, ou introuvable dans /sys (non vérifié),
+  et quand on refuse de la déclarer normale, le message dit ce qui la change et comment le retirer.
+- **Les variables et les réglages qui changent ce qu'un programme lance.** Le bilan lit les fichiers de variables du
+  gestionnaire de session (environment.d, user.conf, ~/.pam_environment, uwsm) : HOME, LD_*, RSYNC_* ou
+  XDG_RUNTIME_DIR posés là lèvent la sauvegarde, et un dossier d'unités déplacé est relu. Les lignes « exec » des
+  réglages de popt (~/.popt, /etc/popt) se jugent comme des lancements. Limite dite à l'écran : une variable posée en
+  cours de session, par un profil de shell ou par une ligne « env = » de Hyprland n'est pas vérifiée.
+- **Les programmes du système, pris par leur chemin.** Le bilan, les traces, la surveillance, la sauvegarde et les
+  autres lectures de la machine lancent pacman, systemctl, journalctl, ss, crontab, ping et les autres depuis les
+  dossiers du système, jamais par le PATH du compte : un faux programme posé dans ~/.local/bin ne peut plus cacher une
+  connexion ou une ligne du journal. Les outils que vous installez vous-même (docker, podman, git, nmap, trivy,
+  gitleaks) restent cherchés dans le PATH, exprès.
+- **Plus solide.** Chaque caractère de format d'Unicode (ceux qui changent le sens de lecture ou cachent du texte)
+  s'affiche « � », d'après la table d'Unicode 17. Un nom qui n'est pas en UTF-8 (verrou, rapport, interface WireGuard)
+  est ouvert sous son vrai nom et montré avec ses octets en `\xFF`. Quand le système refuse un fil, Vanguard continue
+  en « mode réduit », le dit, et ce qui n'a pas pu se faire est non vérifié. Un fichier inclus dans la configuration
+  de sshd qui ne se relit pas est dit non vérifié au lieu d'être tu.
+- **Vérification et publication.** Les outils du dépôt ne disent plus vert sans avoir vérifié : une étape sautée est
+  un échec sur GitHub (sauf exceptions nommées), et les essais sautés sont comptés jusqu'à la dernière ligne.
+  shellcheck, cargo audit sur les verrous des crates à part et les nombres des README comparés au code s'ajoutent.
+  SECURITY.md ne promet plus « au plus une version par jour » : une correction part dans la version suivante,
+  parfois le jour même.
+- **Gardé pour plus tard.** La fenêtre de Vanguard a ses écrans pour voir, appliquer et remettre une correction et
+  pour mettre Vanguard à jour, mais elle n'est toujours pas livrée : `vanguard` ouvre le menu du terminal, comme avant.
+  Elle ne sera lancée que lorsque son lancement vérifiera une empreinte signée.
+
 ## 12 novembre 2026 : version 0.94.0
 
 - **« C'est normal chez moi », lié à ce qui est vraiment là (Linux).** Pour une alerte à corriger soi-même, Vanguard

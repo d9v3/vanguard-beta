@@ -1,6 +1,6 @@
 //! `vanguard` sans argument : la fenêtre de Vanguard (`vanguard-fenetre`, posée à côté du programme) quand la
 //! personne est devant un écran graphique, sinon le menu du terminal, comme avant. Tant que la fenêtre n'est pas
-//! livrée (`FENETRE_LIVREE`, faux en 0.94), toujours le menu : aucun `vanguard-fenetre` n'est lancé. La fenêtre ne fait rien d'elle-même :
+//! livrée (`FENETRE_LIVREE`, faux en 0.94 et 0.95), toujours le menu : aucun `vanguard-fenetre` n'est lancé. La fenêtre ne fait rien d'elle-même :
 //! elle relance ce programme-ci avec des commandes en lecture, et un seul changement, un programme retiré du démarrage
 //! ou remis, après sa confirmation (voir `fenetre/` et MODELE-DE-MENACE.md, « La fenêtre »).
 //!
@@ -23,7 +23,7 @@ const OUVERTE: &str = "vanguard-fenetre:ouverte";
 /// La fenêtre n'est pas livrée avec cette version : `vanguard` ne lance alors aucun `vanguard-fenetre`, même posé à
 /// côté. Avant, la confiance allait au nom et à l'emplacement du fichier, pas à son contenu : n'importe quel
 /// programme de ce nom, exécutable, était lancé et pouvait dire « ouverte » à sa place (LIV-1). La fenêtre revient
-/// quand son lancement vérifie une empreinte signée (0.95, MODELE-DE-MENACE.md, « La fenêtre »).
+/// quand son lancement vérifie une empreinte signée (0.96, MODELE-DE-MENACE.md, « La fenêtre »).
 pub(crate) const FENETRE_LIVREE: bool = false;
 
 /// Le temps laissé à la fenêtre pour s'ouvrir (premier lancement sur un vieil ordinateur, pilote graphique lent).

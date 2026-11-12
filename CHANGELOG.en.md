@@ -8,6 +8,78 @@ delivered just before it. Since November 7, 2026, more than one release on the s
 other in their day's paragraph. Only the latest version has its download page; every version keeps its tag in the
 repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
 
+## November 12, 2026: version 0.95.0
+
+- **Update Vanguard after seeing what gets installed.** `vanguard self-update --voir` says, without installing
+  anything, where the update comes from (the VANGUARD key, or GitHub, signed by the author), the target version, its
+  SHA-256 fingerprint, its size and each program it would replace, with its version today. `--appliquer --accord
+  <consent>` installs only what was shown, 2 s to 10 minutes after the preview, once: another version, another key or
+  a changed copy in between is refused. The usual checks stay; "up to date" is only said when verified, otherwise
+  "not verified". Commands left out of the online help.
+- **Apply an audit fix, then put it back as before (Linux).** `vanguard correction --show <token>` (the token comes
+  from `audit --json`) shows the fix and its consent; `--apply <token> --agreement <consent>` does it, one at a time,
+  2 s to 10 minutes after the preview, once. Only account fixes that undo exactly are allowed: the permissions of a
+  file in the home folder. `vanguard changes --show <token>` shows what "put back as before" would do, and `--undo
+  <token> --agreement <consent>` does it. On Windows, these actions are not offered yet; in read-only mode, they are
+  refused.
+- **What protects these actions.** Everything is read and judged again when acting: a state changed since the
+  preview, or a replaced file (recognized by its kind and inode number), is refused without changing anything.
+  Several files: all or nothing. The "What Vanguard changed" trace is written before touching a file: Vanguard
+  stopped dead leaves an "interrupted" line, which is put back like any other. Account file permissions are read, set
+  and put back without a shell or a followed link (putting back used `chmod`, which follows links). The event log
+  keeps no file name and no command; each sealed file is written in two steps, like the settings seal.
+- **Startup programs: the consent is now required.** `vanguard startup --remove` and `--put-back` now require
+  `--agreement`, the one `startup --json` gives for that action: without it, nothing is removed or put back (code 2),
+  and a program whose name, command or scope changed since the list is refused. The consent binds the whole name and
+  command, not the cut text on screen. "Put back" no longer overwrites an entry rewritten by hand since its removal:
+  it is refused, the reason is given and the content is kept.
+- **Startup programs: where Vanguard does not write, it says so.** An autostart folder that the group or everyone can
+  change, or that carries a special bit, is no longer written: its entries stay shown, without a button, and the
+  folder is named once with its permissions and the exact `chmod` command, if fixing it is your choice. The folders
+  Vanguard creates are created 0700 whatever the umask: the first removal also works on Ubuntu and Fedora, where it
+  was refused. The report, the event log and `--json` write the home folder as "~".
+- **Startup programs: what was not read is said.** /etc/xdg/autostart is always read, even when XDG_CONFIG_DIRS does
+  not name it. An account service file is read up to 64 KiB, without following a link; otherwise it is reported "not
+  read". The command shown is the one systemd starts, with its ".service.d" drop-ins applied. "Why is it slow?" names
+  the folders it could not read instead of "no program found", and `startup --json` only counts a verification when
+  a source was actually read.
+- **Desktop entries and units read the way launchers read them (Linux).** A startup entry (.desktop) is read the way
+  systemd reads it and the way GLib (gio, gnome-session) starts it: lone carriage returns, NUL bytes, BOM, escapes,
+  "%f" stuck inside a word, "%c". A form that two launchers would read differently is raised, naming the form. An
+  ExecStart= written with "\xNN" or octal escapes is read as bytes, like systemd; what cannot be decoded safely is
+  reported as not verified.
+- **A line that writes into a startup place is raised.** A line started at boot that names ~/.config/autostart,
+  ~/.config/systemd, ~/.config/hypr, ~/.bashrc or a folder holding one (~/.config, ~/.local) can place a launch there
+  each time it runs: it is raised, also through a link, a relative path read from its real working folder,
+  /proc/self/cwd, a hard link or another desktop's place (KDE, Sway, i3…). A path that cannot be followed with
+  certainty is reported as not verified. Limit: a copy onto the whole home folder is not counted.
+- **The automatic backup, harder to hijack (Linux).** It now starts the system's rsync and findmnt through "env -i";
+  a backup set up before 0.95 is reported, with what to do (undo it, then set it up again). It is kept quiet in the
+  check only if rsync, findmnt and env can be changed by root alone. It is raised if its disk is a FUSE mount, an image
+  owned by the account, or missing from /sys (not verified), and when declaring it normal is refused, the message says
+  what changes it and how to remove that.
+- **Variables and settings that change what a program starts.** The check reads the session manager's variable files
+  (environment.d, user.conf, ~/.pam_environment, uwsm): HOME, LD_*, RSYNC_* or XDG_RUNTIME_DIR set there raise the
+  backup, and a moved unit folder is read again. The "exec" lines of popt settings (~/.popt,
+  /etc/popt) are judged as launches. Limit stated on screen: a variable set during the session, by a shell profile or
+  by a Hyprland "env =" line is not checked.
+- **System programs, taken by their path.** The check, traces, monitoring, the backup and the other machine readings
+  start pacman, systemctl, journalctl, ss, crontab, ping and the rest from the system folders, never through the
+  account's PATH: a fake program placed in ~/.local/bin can no longer hide a connection or a journal line. Tools you
+  install yourself (docker, podman, git, nmap, trivy, gitleaks) are still looked up in the PATH, on purpose.
+- **Sturdier.** Every Unicode format character (those that change reading direction or hide text) is shown as "�",
+  following Unicode 17's table. A name that is not UTF-8 (lock, report, WireGuard interface) is opened under its real
+  name and shown with its bytes as `\xFF`. When the system refuses a thread, Vanguard goes on in "reduced mode", says
+  so, and what could not be done is not verified. A file included in the sshd configuration that cannot be read back
+  is reported as not verified instead of being kept quiet.
+- **Verification and publishing.** The repository tools no longer say green without checking: a skipped step is a
+  failure on GitHub (except named exclusions), and skipped tests are counted down to the last line. shellcheck,
+  cargo audit on the separate crates' lock files and the README numbers compared to the code are added. SECURITY.md
+  no longer promises "at most one version a day": a fix ships in the next version, sometimes the same day.
+- **Kept for later.** The Vanguard window has its screens to see, apply and put back a fix and to update Vanguard,
+  but it is still not shipped: `vanguard` opens the terminal menu, as before. It will only be started once its launch
+  checks a signed fingerprint.
+
 ## November 12, 2026: version 0.94.0
 
 - **"This is normal for me", bound to what is really there (Linux).** For an alert to fix yourself, Vanguard shows

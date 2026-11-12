@@ -198,7 +198,7 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
 **This version does not ship the window.** `vanguard` with no argument always opens the terminal menu and starts no
 `vanguard-fenetre`, even one placed next to it: an executable file with that name would have been started on the
 strength of its name and location, not its content, and could have said "open" in its place. The window will come
-back in 0.95, started only if its fingerprint is the one in a signed list, and the verified bytes will be started,
+back in 0.96, started only if its fingerprint is the one in a signed list, and the verified bytes will be started,
 not the path. What follows describes the window as it will be shipped.
 
 `vanguard` with no argument will then open the Vanguard window (`vanguard-fenetre`, a separate program placed next
