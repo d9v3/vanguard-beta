@@ -116,7 +116,14 @@ fn phrase(e: &io::Error, ou: &str) -> Echec {
     }
 }
 
-/// Un dossier ouvert est-il un dossier du compte qui agit ?
+/// Les droits d'un dossier qui laissent un autre compte y agir (écriture du groupe ou des autres : échanger un nom
+/// entre le jugement et le renommage) ou qui changent ce qui s'y crée (setgid : le fichier réécrit prendrait le groupe
+/// du dossier ; setuid, collant : rien d'ordinaire dans un dossier du compte).
+const DROITS_REFUSES: u32 = 0o7022;
+
+/// Un dossier ouvert est-il un dossier du compte qui agit, que lui seul peut modifier, sans bit spécial (relecture
+/// 0.94, R-6) ? Un dossier en 0775 dont le groupe ne compte que la personne est refusé aussi : Vanguard ne sait pas
+/// le prouver, et le refus est dit avec les droits.
 fn juger_dossier(f: &File, ou: &str) -> Result<(), Echec> {
     let m = f
         .metadata()
@@ -129,6 +136,14 @@ fn juger_dossier(f: &File, ou: &str) -> Result<(), Echec> {
     }
     if !m.is_dir() {
         return Err(refus(trf!("{ou} n'est pas un dossier", "{ou} is not a folder")));
+    }
+    let droits = m.mode() & 0o7777;
+    if droits & DROITS_REFUSES != 0 {
+        return Err(refus(trf!(
+            "{ou} est modifiable par d'autres comptes ou porte un bit spécial (droits {droits:o}) : Vanguard \
+             n'y touche pas",
+            "{ou} can be changed by other accounts or has a special bit (mode {droits:o}): Vanguard does not touch it"
+        )));
     }
     Ok(())
 }
@@ -477,6 +492,49 @@ mod tests {
         assert!(juger(Path::new("/etc/xdg/autostart/x.desktop")).is_err());
         assert!(juger(&a.join("../../../x.desktop")).is_err());
         assert!(ecrire(Path::new("/nulle-part/x.desktop"), b"x").is_err());
+    }
+
+    /// Relecture 0.94, R-6 : un dossier du chemin qu'un autre compte peut modifier (écriture du groupe ou des autres)
+    /// ou qui porte un bit spécial (setgid : le fichier réécrit prendrait le groupe du dossier) est refusé, dit avec
+    /// ses droits ; rien n'y est lu, écrit ni retiré. 0700 et 0755 passent.
+    #[test]
+    fn dossier_modifiable_par_d_autres_ou_special_refuse() {
+        use std::os::unix::fs::PermissionsExt as _;
+        for mode in [0o777, 0o775, 0o757, 0o2755, 0o1755, 0o4755] {
+            let d = dossier("droits-dossier");
+            let a = d.join(".config/autostart");
+            std::fs::create_dir_all(&a).unwrap();
+            let f = a.join("note.desktop");
+            std::fs::write(&f, "[Desktop Entry]\n").unwrap();
+            std::fs::set_permissions(&a, std::fs::Permissions::from_mode(mode)).unwrap();
+            let e = juger(&f).unwrap_err().to_string();
+            assert!(
+                e.starts_with("~/")
+                    && e.contains("/.config/autostart ")
+                    && (e.contains(&format!("droits {mode:o})")) || e.contains(&format!("mode {mode:o})"))),
+                "{mode:o} : {e}"
+            );
+            assert!(juger_le_dossier(&a).is_err(), "{mode:o}");
+            assert!(lire(&f, 100).is_err(), "{mode:o}");
+            assert!(ecrire(&f, b"Hidden=true").is_err(), "{mode:o}");
+            assert!(retirer(&f).is_err(), "{mode:o}");
+            assert_eq!(std::fs::read_to_string(&f).unwrap(), "[Desktop Entry]\n", "{mode:o}");
+            // Le dossier au-dessus (~/.config) est jugé de même.
+            std::fs::set_permissions(&a, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::set_permissions(d.join(".config"), std::fs::Permissions::from_mode(mode)).unwrap();
+            assert!(juger(&f).is_err(), "~/.config en {mode:o}");
+            std::fs::set_permissions(d.join(".config"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        for mode in [0o700, 0o755, 0o750] {
+            let d = dossier("droits-dossier-sain");
+            let a = d.join(".config/autostart");
+            std::fs::create_dir_all(&a).unwrap();
+            std::fs::set_permissions(&a, std::fs::Permissions::from_mode(mode)).unwrap();
+            let f = a.join("note.desktop");
+            assert!(juger(&f).is_ok(), "{mode:o}");
+            ecrire(&f, b"[Desktop Entry]\n").unwrap();
+            assert_eq!(lire(&f, 100).unwrap(), "[Desktop Entry]\n");
+        }
     }
 
     /// Relecture 0.94, R-3 : un dossier d'autostart hors du dossier personnel est dit avec son propre chemin, jamais
