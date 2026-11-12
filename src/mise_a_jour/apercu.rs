@@ -17,7 +17,7 @@
 //! Il n'y a qu'une mise à jour à la fois : le jeton est fixe (`JETON`). Les chemins montrés sont « ~/… » sous le
 //! dossier personnel ; le chemin de la clé n'est pas montré (il dit le nom du compte), seulement « clé VANGUARD ».
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
@@ -363,23 +363,31 @@ fn plan_github(m: &dyn Monde) -> Result<Plan, Refus> {
             .to_string(),
         ));
     }
+    // Chaque copie d'ici lue une fois : sa version, ou « d'avant la 0.78 ». Une seule qui ne se lit pas (un lien vers
+    // rien, un dossier, une lecture ratée, disparue depuis la liste) : rien n'est dit à jour ni proposé, son chemin
+    // est dit ; elle n'est jamais passée sous silence à côté d'une copie lisible.
+    let mut lues: Vec<(PathBuf, Option<Version>)> = Vec::with_capacity(cibles.len());
+    for c in cibles {
+        let v = match lire_programme(&c, TAILLE_MAX) {
+            Lu::Version(v) => Some(v),
+            Lu::Ancien => None,
+            Lu::Illisible(e) => return Err(copie_illisible(&c, &e)),
+            Lu::Absent => return Err(copie_illisible(&c, tr!("disparue", "gone"))),
+        };
+        lues.push((c, v));
+    }
     let p = m
         .derniere()
         .map_err(|e| Refus::NonVerifie(trf!("GitHub : {}", "GitHub: {}", e)))?;
     m.juger_la_vue(&p).map_err(Refus::NonVerifie)?;
     // Le plancher : le programme lancé et les copies d'ici (`depuis_github`).
-    let ici: Vec<Version> = cibles
-        .iter()
-        .filter_map(|c| match lire_programme(c, TAILLE_MAX) {
-            Lu::Version(v) => Some(v),
-            _ => None,
-        })
-        .chain(m.courante())
-        .collect();
-    let a_remplacer: Vec<(PathBuf, Version)> = cibles
+    let ici: Vec<Version> = lues.iter().filter_map(|(_, v)| *v).chain(m.courante()).collect();
+    // Seulement ce qui est plus ancien que la version publiée (sans version gravée : d'avant la 0.78, donc plus
+    // ancien) ; jamais un plus récent.
+    let a_remplacer: Vec<(PathBuf, Version)> = lues
         .into_iter()
-        .filter(|c| super::plus_ancien(c, p.version))
-        .map(|c| (c, p.version))
+        .filter(|(_, v)| v.is_none_or(|v| v < p.version))
+        .map(|(c, _)| (c, p.version))
         .collect();
     if a_remplacer.is_empty() {
         return Err(match super::verdict(p.version, &ici, m.maintenant()) {
@@ -403,6 +411,16 @@ fn plan_github(m: &dyn Monde) -> Result<Plan, Refus> {
         source: Source::Github(p),
         cibles: a_remplacer,
     })
+}
+
+/// Une copie d'ici qui ne se lit pas : sa version reste inconnue, rien n'est dit à jour.
+fn copie_illisible(chemin: &Path, pourquoi: &str) -> Refus {
+    Refus::NonVerifie(trf!(
+        "{} ne se lit pas, sa version reste inconnue ({})",
+        "{} cannot be read, its version is unknown ({})",
+        crate::optimiser::annulables::chemin_montre(&chemin.to_string_lossy()),
+        pourquoi
+    ))
 }
 
 /// `vanguard se-mettre-a-jour --voir [--json]` : ce qui s'installerait, rien de changé (seul le carnet des aperçus
@@ -848,7 +866,9 @@ mod tests {
     }
 
     /// Rien n'est « à jour » sans être vérifié : pas de réponse, versions vues changées, manifeste plus vieux que le
-    /// déjà vu, version signée trop vieille, plus récent ici, copie illisible. À jour seulement quand c'est prouvé.
+    /// déjà vu, version signée trop vieille, plus récent ici, copie illisible vue depuis la clé (`Etat::Illisible`).
+    /// À jour seulement quand c'est prouvé. Une copie illisible vue depuis GitHub (une vraie, sur le disque) :
+    /// `une_copie_illisible_n_est_jamais_a_jour`.
     #[test]
     fn rien_de_verifie_n_est_jamais_a_jour() {
         let d = dossier("non-verifie");
@@ -887,6 +907,46 @@ mod tests {
         // Rien ici à remplacer.
         f.cibles.clear();
         assert_eq!(plan(&f).err(), Some(Refus::Rien));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Depuis GitHub, une copie d'ici qui ne se lit pas (un lien vers rien, un dossier à la place du programme) n'est
+    /// jamais « à jour » ni passée sous silence à côté d'une copie lisible : « non vérifié », avec son chemin.
+    #[cfg(unix)]
+    #[test]
+    fn une_copie_illisible_n_est_jamais_a_jour() {
+        let d = dossier("copie-illisible");
+        let mut f = Faux::nouveau(&d);
+        f.courante = Some(version("0.95.0+1790000000"));
+        f.derniere = Ok(Publiee::d_essai(version("0.95.0+1790000000"), b"x"));
+        let casse = d.join("casse").join(NOM);
+        std::fs::create_dir_all(casse.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(d.join("nulle-part"), &casse).unwrap();
+        let dossier_ici = d.join("dossier").join(NOM);
+        std::fs::create_dir_all(&dossier_ici).unwrap();
+        let vieux = d.join("vieux").join(NOM);
+        std::fs::create_dir_all(vieux.parent().unwrap()).unwrap();
+        std::fs::write(&vieux, programme("0.94.0+1780000000", "ici")).unwrap();
+        let nomme = |r: Result<Plan, Refus>, c: &Path| {
+            let montre = crate::optimiser::annulables::chemin_montre(&c.to_string_lossy());
+            matches!(r, Err(Refus::NonVerifie(ref t)) if t.contains(&montre))
+        };
+        // Un lien vers rien, puis un dossier : non vérifié, le chemin dit.
+        f.cibles = vec![casse.clone()];
+        assert!(nomme(plan(&f), &casse));
+        f.cibles = vec![dossier_ici.clone()];
+        assert!(nomme(plan(&f), &dossier_ici));
+        // Une copie vieille lisible et une illisible : rien n'est proposé en taisant l'illisible.
+        f.derniere = Ok(Publiee::d_essai(version("0.95.0+1790000000"), b"x"));
+        f.cibles = vec![vieux.clone(), casse.clone()];
+        assert!(nomme(plan(&f), &casse));
+        // L'accord recalculé suit le même chemin : rien n'est posé.
+        f.recus = b"x".to_vec();
+        assert!(matches!(
+            agir(&f, &"cd".repeat(32), CONSOMME),
+            Issue::Refuse(Refus::NonVerifie(_))
+        ));
+        assert_eq!(std::fs::read(&vieux).unwrap(), programme("0.94.0+1780000000", "ici"));
         let _ = std::fs::remove_dir_all(&d);
     }
 
