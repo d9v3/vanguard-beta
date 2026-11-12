@@ -96,7 +96,7 @@ Réponses à l'utilisateur en français, claires, avec le pourquoi.
   sa description pour l'aperçu de droite (`src/descriptions.rs`, sans `_` : un oubli ne compile pas).
 - Nouvelle dépendance : sa licence, et celles de ce qu'elle amène, parmi celles de `deny.toml` (permissives : MIT,
   Apache, BSD…). Toute autre, même compatible avec la GPL-3.0 (MPL, LGPL), demande d'abord l'accord de l'auteur, à
-  cause de la double licence possible, puis son ajout à `deny.toml`. Ensuite `python3 outils/licences-tierces.py` et
+  cause de la double licence possible, puis son ajout à `deny.toml`. Ensuite `python3 -I outils/licences-tierces.py` et
   committer LICENCES-TIERCES.txt.
 - `unsafe` seulement avec un commentaire `// SAFETY:` juste au-dessus (sans espace avant le deux-points : clippy,
   `undocumented_unsafe_blocks`, ne reconnaît que cette forme et refuse un bloc ou un `unsafe impl` sans lui).

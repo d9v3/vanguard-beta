@@ -225,7 +225,7 @@ Le jugement s'écrit à part (`juger_…`, sans rien lire du système), pour se 
 - Une nouvelle destination réseau : une ligne dans « Ce qui sort de l'ordinateur » de MODELE-DE-MENACE.md (et .en.md),
   sinon le test `envois` échoue.
 - Une nouvelle règle : sa technique MITRE ATT&CK (détection) ou sa mesure d'atténuation (durcissement) dans ses
-  références, puis `python3 outils/couverture-attack.py` pour refaire la carte.
+  références, puis `python3 -I outils/couverture-attack.py` pour refaire la carte.
 - Un fichier d'état que Vanguard relit : scellé, et une valeur changée hors de Vanguard ne coupe aucune défense ni ne
   donne aucun accord.
 
@@ -366,7 +366,7 @@ hasard à chaque passe ; du bilan de la machine, seul un extrait sans rien de pe
 de confidentialité relit chaque image : si un détail de la maison restait visible, aucune n'est écrite.
 
 ```sh
-uv run --no-project --with pyte python outils/captures.py [programme] [--connexion | --sans-connexion]
+uv run --no-project --with pyte python -I outils/captures.py [programme] [--connexion | --sans-connexion]
 ```
 
 ## Confidentialité
@@ -388,7 +388,7 @@ amis, et leur journal d'erreurs revient ici) sont reconnues à leur forme : comp
 SID de Windows ; un ticket du journal est masqué avant l'envoi, adresses MAC et IP comprises. Sur GitHub, la CI le
 repasse sur les commits de chaque envoi et de chaque demande de fusion (`--generique --plage`) : seulement les données
 reconnues à leur forme, sans l'identité de la machine qui le lance.
-`python3 outils/confidentialite.py --depot` relit tout le dépôt et son historique. Dans les tests, des valeurs
+`python3 -I outils/confidentialite.py --depot` relit tout le dépôt et son historique. Dans les tests, des valeurs
 inventées : adresses MAC au préfixe du fabricant gardé, réseau « Salon », comptes « alice », « bob », « Zoé »,
 « Jean Dupont », courriels `@example.com`.
 

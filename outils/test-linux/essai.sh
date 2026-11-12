@@ -63,7 +63,7 @@ verifier() {
 }
 # contient_motif <fichier> <expression> : le texte replié à 76 colonnes est cherché mots remis bout à bout, couleurs
 # retirées, avec une expression régulière de Python.
-contient_motif() { python3 -c "import re,sys; t=' '.join(re.sub(r'\x1b\[[0-9;]*m', '', open(sys.argv[1],encoding='utf-8').read()).split()); sys.exit(0 if re.search(sys.argv[2], t) else 1)" "$1" "$2"; }
+contient_motif() { python3 -I -c "import re,sys; t=' '.join(re.sub(r'\x1b\[[0-9;]*m', '', open(sys.argv[1],encoding='utf-8').read()).split()); sys.exit(0 if re.search(sys.argv[2], t) else 1)" "$1" "$2"; }
 
 # mettre_empreinte_essai <copie des empreintes> <empreinte> : l'empreinte ajoutée sur une ligne à part (même si la
 # copie ne finit pas par un saut de ligne). La copie d'avant est gardée à côté, heure comprise ; sans copie, elle est
@@ -103,8 +103,8 @@ lancer aide 10 '' --help
 section "Audit"
 lancer machine 300 '' audit
 lancer machine-json 300 '' audit --json
-verifier "audit JSON lisible" python3 -c "import json; json.load(open('$RES/machine-json.txt'))"
-verifier "aucune vérification impossible" python3 -c "
+verifier "audit JSON lisible" python3 -I -c "import json; json.load(open('$RES/machine-json.txt'))"
+verifier "aucune vérification impossible" python3 -I -c "
 import json,sys; a=json.load(open('$RES/machine-json.txt'))
 bad=[c['categorie']+': '+c['message'] for c in a['constats'] if not c['verifie']]
 print('\n'.join(bad)); sys.exit(1 if bad else 0)"
@@ -122,10 +122,10 @@ verifier "intégrité : 2e passage identique" grep -qi 'identique' "$RES/integri
 section "Réseau de la maison, ports de ce PC, connexion"
 lancer reseau 300 '' appareils
 lancer reseau-json 300 '' appareils --json
-verifier "scan JSON lisible" python3 -c "import json; json.load(open('$RES/reseau-json.txt'))"
+verifier "scan JSON lisible" python3 -I -c "import json; json.load(open('$RES/reseau-json.txt'))"
 lancer local 300 '' appareils 127.0.0.1
 lancer connexion 180 '' test-connexion
-BOX=$(python3 -c "
+BOX=$(python3 -I -c "
 import json; r=json.load(open('$RES/reseau-json.txt'))
 print(next((h['ip'] for h in r['hotes'] if h.get('role')=='passerelle'), ''))" 2>/dev/null)
 if [ -n "$BOX" ]; then
@@ -156,7 +156,7 @@ section "Réparer (liste), mises à jour (sans rien installer), logiciels, gamin
 lancer reparer 60 '\n' reparer
 lancer maj 600 'n\nn\nn\nn\nn\n' mises-a-jour
 lancer logiciels-liste 120 '' logiciels --liste
-verifier "logiciels : au moins 20 proposés" python3 -c "import re, sys; t = open('$RES/logiciels-liste.txt', encoding='utf-8').read(); sys.exit(len(re.findall(r'(?m)^ +(?:\x1b\[[0-9;]*m)?[✔·]', t)) < 20)"
+verifier "logiciels : au moins 20 proposés" python3 -I -c "import re, sys; t = open('$RES/logiciels-liste.txt', encoding='utf-8').read(); sys.exit(len(re.findall(r'(?m)^ +(?:\x1b\[[0-9;]*m)?[✔·]', t)) < 20)"
 lancer logiciels 60 '\n' logiciels
 lancer nettoyer-liste 120 '' nettoyer --liste
 verifier "nettoyer : place à gagner mesurée, rien effacé" grep -qiE 'rien n.a été effacé|nothing was deleted' "$RES/nettoyer-liste.txt"
@@ -211,7 +211,7 @@ verifier "pièges : 4 posés (Documents, Images)" test "$(find "$MAISON" -name '
 LEURRE=$(find "$MAISON/Documents" -name '!Vanguard*.txt' | head -1)
 echo "modifié par l'essai" >>"$LEURRE"
 lancer_maison pieges-alerte 300 '' audit --json
-verifier "pièges : leurre modifié → alerte critique « Rançongiciels »" python3 -c "
+verifier "pièges : leurre modifié → alerte critique « Rançongiciels »" python3 -I -c "
 import json,sys; a=json.load(open('$RES/pieges-alerte.txt'))
 sys.exit(not any(c['categorie']=='Rançongiciels' and c['probleme']=='Critique' for c in a['constats']))"
 lancer_maison pieges-retrait 60 '' pieges --retirer

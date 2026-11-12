@@ -6,7 +6,7 @@ ce script rassemble ces textes dans LICENCES-TIERCES.txt, copié sur la clé par
 
 Ne garde que ce qui finit dans le binaire : les dépendances normales (pas celles des tests ni des scripts de
 compilation, comme winresource). Lancer depuis la racine du dépôt :
-    python3 outils/licences-tierces.py
+    python3 -I outils/licences-tierces.py
 """
 
 import json

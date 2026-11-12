@@ -489,7 +489,7 @@ nettoyer
 
 echo "Le crochet pre-commit ne lance jamais un outil réécrit par l'IA"
 mkdir -p "$BANC/crochets"
-printf '#!/usr/bin/env bash\nexec python3 "$(git rev-parse --show-toplevel)/outils/confidentialite.py" --commit\n' \
+printf '#!/usr/bin/env bash\nexec python3 -I "$(git rev-parse --show-toplevel)/outils/confidentialite.py" --commit\n' \
   >"$BANC/crochets/pre-commit"
 chmod +x "$BANC/crochets/pre-commit"
 git -C "$VANGUARD_VEILLE_DEPOT" config core.hooksPath "$BANC/crochets"

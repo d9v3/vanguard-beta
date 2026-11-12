@@ -27,7 +27,7 @@ for image in fedora:latest debian:stable ubuntu:latest opensuse/tumbleweed; do
     timeout 300 /vanguard audit --json >/res/$nom.json 2>/res/$nom.err; echo \$? >/res/$nom.code
   "
   code=$(cat "$RES/$nom.code" 2>/dev/null || echo absent)
-  if python3 - "$RES/$nom.json" "$image" "$code" <<'FIN'; then echo "✓ $image"; else echo "✗ $image"; echecs=$((echecs + 1)); fi
+  if python3 -I - "$RES/$nom.json" "$image" "$code" <<'FIN'; then echo "✓ $image"; else echo "✗ $image"; echecs=$((echecs + 1)); fi
 import json, sys
 fichier, image, code = sys.argv[1:]
 try:

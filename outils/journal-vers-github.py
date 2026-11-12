@@ -4,8 +4,8 @@ vérifications impossibles, scans ratés. Un ticket par erreur ; quand elle revi
 ouvert. Lancé par outils/deployer.sh avec gh, déjà connecté sur l'ordinateur de développement : aucun mot de passe
 dans le programme ni sur la clé.
 
-    python3 outils/journal-vers-github.py <fichier des entrées à envoyer>
-    python3 outils/journal-vers-github.py --accord <fichier>   l'auteur a regardé ce qui attend : plafonds élargis
+    python3 -I outils/journal-vers-github.py <fichier des entrées à envoyer>
+    python3 -I outils/journal-vers-github.py --accord <fichier>   l'auteur a regardé ce qui attend : plafonds élargis
 
 Le journal de la clé s'écrit sur n'importe quel ordinateur (la partition VANGUARDLOG est modifiable partout) : un
 journal forgé ne doit pas devenir des centaines de tickets publics sous le compte de l'auteur. D'où des plafonds :
@@ -31,6 +31,7 @@ de série, noms d'appareils et du Wi-Fi ; adresses MAC et IP remplacées, préfi
 
 import datetime
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -38,8 +39,22 @@ import signal
 import subprocess
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import confidentialite  # noqa: E402
+
+
+def voisin(nom: str):
+    """outils/<nom>.py, chargé par son chemin : lancé en python3 -I, outils/ n'est pas dans les chemins d'import, et
+    l'y remettre rouvrirait la porte à un module planté à côté (re.py, json.py…)."""
+    chemin = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"{nom}.py")
+    spec = importlib.util.spec_from_file_location(nom, chemin)
+    if spec is None or spec.loader is None:
+        sys.exit(f"{chemin} : impossible à charger")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[nom] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+confidentialite = voisin("confidentialite")
 
 ETIQUETTE = "journal"
 # Les écarts de l'autodiagnostic (« [autotest LNX-PFE-001] ») : une étiquette de plus, pour les trier.
@@ -323,7 +338,7 @@ def main():
         dire("Vanguard : journal à regarder avant tout envoi",
              f"{len(groupes)} erreurs distinctes ({len(liste)} entrées) : plus que les {SIGNATURES_MAX} d'un vrai "
              f"journal ; peut-être forgé sur un autre ordinateur. Rien n'est envoyé sur GitHub. À regarder : {chemin} ; "
-             f"pour l'envoyer quand même : python3 outils/journal-vers-github.py --accord {chemin}")
+             f"pour l'envoyer quand même : python3 -I outils/journal-vers-github.py --accord {chemin}")
         return
     compteurs_chemin = os.path.join(dossier, COMPTEURS)
     compteurs = lire_compteurs(compteurs_chemin, datetime.date.today().isoformat())

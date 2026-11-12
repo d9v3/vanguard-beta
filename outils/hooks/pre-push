@@ -13,6 +13,6 @@ while read -r ligne; do
   ici=${ligne##* }
   # Que des zéros : la référence est supprimée là-bas, rien n'est envoyé.
   [[ $ici =~ ^0+$ ]] && continue
-  python3 "$outil" --plage "$avant" "$ici" "$la_bas" </dev/null || code=1
+  python3 -I "$outil" --plage "$avant" "$ici" "$la_bas" </dev/null || code=1
 done
 exit "$code"

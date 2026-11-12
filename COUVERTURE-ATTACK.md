@@ -1,6 +1,6 @@
 # Couverture MITRE ATT&CK de Vanguard
 
-> Page générée par `outils/couverture-attack.py` à partir des références des règles : ne pas la modifier à la main. `python3 outils/couverture-attack.py` la refait ; `outils/verifier.sh` échoue si elle n'est plus à jour. English: [COUVERTURE-ATTACK.en.md](COUVERTURE-ATTACK.en.md).
+> Page générée par `outils/couverture-attack.py` à partir des références des règles : ne pas la modifier à la main. `python3 -I outils/couverture-attack.py` la refait ; `outils/verifier.sh` échoue si elle n'est plus à jour. English: [COUVERTURE-ATTACK.en.md](COUVERTURE-ATTACK.en.md).
 
 Chaque règle de Vanguard qui **détecte** quelque chose cite la technique d'ATT&CK qu'elle voit (T…) ; chaque règle qui **durcit** l'ordinateur cite la mesure d'atténuation qu'elle applique (M…). La carte range ces citations par tactique, dans la version 20.0 d'ATT&CK Enterprise. Une case « — » veut dire qu'aucune règle de Vanguard ne cite cette technique : c'est la liste des manques, tenue à jour par le code lui-même.
 

@@ -21,14 +21,14 @@ permises (COMPTES_INVENTES : alice, bob, Zoé… ; courriels d'exemple ; SID de 
 ticket du journal, lui, est masqué avant l'envoi (masquer_autrui), adresses MAC et IP comprises.
 
 Depuis la racine du dépôt :
-    python3 outils/confidentialite.py --commit           ce qui va être commité : lignes ajoutées, fichiers, auteur
-    python3 outils/confidentialite.py --message FICHIER  un message de commit
-    python3 outils/confidentialite.py --envoi            les commits pas encore sur GitHub
-    python3 outils/confidentialite.py --texte < FICHIER  un texte à publier
-    python3 outils/confidentialite.py --binaire FICHIER… des programmes compilés (textes lisibles, métadonnées)
-    python3 outils/confidentialite.py --depot            les fichiers et tout l'historique (avant de rendre le dépôt
+    python3 -I outils/confidentialite.py --commit           ce qui va être commité : lignes ajoutées, fichiers, auteur
+    python3 -I outils/confidentialite.py --message FICHIER  un message de commit
+    python3 -I outils/confidentialite.py --envoi            les commits pas encore sur GitHub
+    python3 -I outils/confidentialite.py --texte < FICHIER  un texte à publier
+    python3 -I outils/confidentialite.py --binaire FICHIER… des programmes compilés (textes lisibles, métadonnées)
+    python3 -I outils/confidentialite.py --depot            les fichiers et tout l'historique (avant de rendre le dépôt
                                                          public)
-    python3 outils/confidentialite.py --plage AVANT APRÈS [REF]
+    python3 -I outils/confidentialite.py --plage AVANT APRÈS [REF]
                                                          les commits de AVANT (exclu) à APRÈS : ceux d'un envoi, et
                                                          le nom REF de la branche ou de l'étiquette envoyée
 Git est lu tel que git push l'envoie, jamais tel que les réglages de l'ordinateur le montrent : objets bruts (en-têtes
@@ -1018,7 +1018,7 @@ def rapport(trouves, quoi, en_clair=True) -> int:
         print(f"  {ou} — {terme.origine} : {valeur}" + (f" ({n} fois)" if n > 1 else ""), file=sys.stderr)
     if not en_clair:
         print("Valeurs coupées : le journal de la CI se lit sur GitHub. En entier, sur l'ordinateur de développement : "
-              "python3 outils/confidentialite.py --generique --plage AVANT APRÈS.", file=sys.stderr)
+              "python3 -I outils/confidentialite.py --generique --plage AVANT APRÈS.", file=sys.stderr)
     print("Remplace-les par des valeurs inventées (adresses MAC : garder les 3 premiers octets, ceux du fabricant). "
           f"Une expression d'une liste ({' ou '.join(str(f) for f, _ in LISTES)}) qui n'a rien de personnel s'y "
           "retire.", file=sys.stderr)

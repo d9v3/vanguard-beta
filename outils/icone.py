@@ -8,7 +8,7 @@ dans un terminal. La bannière : sans fond, en deux couleurs, blanche pour le th
 clair (le README choisit avec <picture>).
 
 Lancer depuis n'importe où (les images vont toujours dans le dépôt) :
-    uv run --no-project --with pillow python outils/icone.py
+    uv run --no-project --with pillow python -I outils/icone.py
 Produit assets/icones/vanguard-<taille>.png (Linux, 16 à 512 px), assets/vanguard.ico (Windows, 16 à 256 px) et
 assets/banniere-{blanche,noire}.png.
 """

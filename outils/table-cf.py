@@ -6,8 +6,8 @@ Les essais `chaque_format_d_unicode_est_montre` (src/ui.rs) et `chaque_format_d_
 ajoute, et que Vanguard ne connaît pas, les fait échouer au lieu de passer caché. Reprise de toile.
 
 Lancer depuis la racine du dépôt :
-    python3 outils/table-cf.py             # écrit la table avec l'Unicode de ce Python
-    python3 outils/table-cf.py --verifier  # échoue si ce Python connaît un Cf absent de la table
+    python3 -I outils/table-cf.py             # écrit la table avec l'Unicode de ce Python
+    python3 -I outils/table-cf.py --verifier  # échoue si ce Python connaît un Cf absent de la table
 
 La vérification accepte un Python plus ancien que la table (la CI n'a pas toujours le dernier) : chacun de ses Cf
 doit y être. Un Python de la même version doit redonner la table à l'identique.
@@ -60,19 +60,19 @@ def main():
         print(f"{TABLE} : Unicode {version}, {len(liste)} plages")
         return
     if not TABLE.is_file():
-        print(f"{TABLE} absente : python3 outils/table-cf.py")
+        print(f"{TABLE} absente : python3 -I outils/table-cf.py")
         sys.exit(1)
     version_table, points = lire(TABLE)
     if version_table == version:
         if TABLE.read_text(encoding="utf-8") != texte(version, liste):
-            print(f"{TABLE} ne correspond plus à Unicode {version} : python3 outils/table-cf.py")
+            print(f"{TABLE} ne correspond plus à Unicode {version} : python3 -I outils/table-cf.py")
             sys.exit(1)
         return
     manquants = sorted({u for a, b in liste for u in range(a, b + 1)} - points)
     if manquants:
         noms = ", ".join(f"U+{u:04X}" for u in manquants[:10])
         print(f"Unicode {version} (ce Python) a des Cf absents de la table (Unicode {version_table}) : {noms}")
-        print("Refaire la table (python3 outils/table-cf.py), puis faire passer les essais de src/ui.rs et src/protection/telechargement.rs.")
+        print("Refaire la table (python3 -I outils/table-cf.py), puis faire passer les essais de src/ui.rs et src/protection/telechargement.rs.")
         sys.exit(1)
 
 

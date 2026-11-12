@@ -47,7 +47,7 @@ ni envoi. Pour la clé entre-temps, sans rien envoyer : `VANGUARD_INTERMEDIAIRE=
      fonctions changent, les écrire AVANT la livraison dans outils/page-fonctions.html (rangée par menace, à la main
      comme les README, avec les étiquettes « nouveau » et la section « Nouveautés ») ; les nombres (règles, commandes,
      tests, VM) et la liste des commandes se remplissent seuls. Puis la même page sur claude.ai
-     (https://claude.ai/artifact/NG3P6Gq6XQaWRXqVvEFDMC, partagée par lien) : `python3 outils/page-fonctions.py`
-     (le fragment, sans --complet), `python3 outils/confidentialite.py --texte` dessus, puis l'outil Artifact à la
+     (https://claude.ai/artifact/NG3P6Gq6XQaWRXqVvEFDMC, partagée par lien) : `python3 -I outils/page-fonctions.py`
+     (le fragment, sans --complet), `python3 -I outils/confidentialite.py --texte` dessus, puis l'outil Artifact à la
      même adresse (`url`).
 6. Compte rendu : la version, ce qui a changé, ce qui est vérifié, ce qui ne l'est pas encore (Windows réel…).

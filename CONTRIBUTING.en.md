@@ -225,7 +225,7 @@ The judgment is written separately (`juger_…`, reading nothing from the system
 - A new network destination: a line in "What leaves the computer" of MODELE-DE-MENACE.en.md (and the French page),
   otherwise the `envois` test fails.
 - A new rule: its MITRE ATT&CK technique (detection) or mitigation (hardening) in its references, then
-  `python3 outils/couverture-attack.py` to rebuild the map.
+  `python3 -I outils/couverture-attack.py` to rebuild the map.
 - A state file that Vanguard reads back: sealed, and a value changed outside Vanguard turns no defense off and grants
   no consent.
 
@@ -365,7 +365,7 @@ machine check with nothing personal in it is shown. Then the privacy guard rerea
 home is still visible, none is written.
 
 ```sh
-uv run --no-project --with pyte python outils/captures.py [program] [--connexion | --sans-connexion]
+uv run --no-project --with pyte python -I outils/captures.py [program] [--connexion | --sans-connexion]
 ```
 
 ## Privacy
@@ -385,7 +385,7 @@ addresses of Vanguard's database, the saved Wi-Fi networks. Other people's data 
 error journal comes back here) is recognized by its shape: account of a home folder, email, Windows SID; a journal
 issue is masked before it is sent, MAC and IP addresses included. On GitHub, the CI runs it again on the commits of
 each push and each pull request (`--generique --plage`): only data recognized by its shape, without the identity of the
-machine running it. `python3 outils/confidentialite.py --depot`
+machine running it. `python3 -I outils/confidentialite.py --depot`
 rereads the whole repository and its history. In tests, made-up values: MAC addresses keeping the vendor prefix,
 network “Salon”, accounts “alice”, “bob”, “Zoé”, “Jean Dupont”, emails `@example.com`.
 

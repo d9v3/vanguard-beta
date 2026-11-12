@@ -450,7 +450,7 @@ remplir_windows() { # point_de_montage image dossier_des_morceaux
 
 # Début et taille (en secteurs) d'une partition de l'image : debut_taille image numéro.
 debut_taille() {
-  sfdisk --json "$1" | python3 -c 'import json, sys
+  sfdisk --json "$1" | python3 -I -c 'import json, sys
 p = json.load(sys.stdin)["partitiontable"]["partitions"][int(sys.argv[1]) - 1]
 print(p["start"], p["size"])' "$2"
 }

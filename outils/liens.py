@@ -21,11 +21,11 @@ les adresses construites à l'exécution, et les cas à part de outils/liens.txt
 Une page trouvée bonne n'est pas redemandée pendant un jour (~/.cache/vanguard-dev/liens.json).
 
 Depuis la racine du dépôt :
-    python3 outils/liens.py                      tous les liens du dépôt
-    python3 outils/liens.py --hors-ligne         seulement les liens internes (sans Internet ni gh)
-    python3 outils/liens.py --version FICHIER…   tous, les téléchargements du README comparés aux fichiers de la
+    python3 -I outils/liens.py                      tous les liens du dépôt
+    python3 -I outils/liens.py --hors-ligne         seulement les liens internes (sans Internet ni gh)
+    python3 -I outils/liens.py --version FICHIER…   tous, les téléchargements du README comparés aux fichiers de la
                                                  version qui va être publiée
-    python3 outils/liens.py --texte < FICHIER    les liens web d'un texte à publier (notes d'une version)
+    python3 -I outils/liens.py --texte < FICHIER    les liens web d'un texte à publier (notes d'une version)
     --sans-cache, avec l'un d'eux                tout redemander
 Sort en erreur (code 1) en disant quel lien est mort et où il paraît.
 """

@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
 # Rien de personnel dans un commit : lignes ajoutées, noms de fichiers, auteur (outils/confidentialite.py).
 # Actif avec : git config core.hooksPath outils/hooks
-exec python3 "$(git rev-parse --show-toplevel)/outils/confidentialite.py" --commit
+exec python3 -I "$(git rev-parse --show-toplevel)/outils/confidentialite.py" --commit

@@ -117,7 +117,7 @@ sur le jour du lot fait qu'un renvoi venu après l'effacement de sa marque est r
 
 ```sh
 node --test relais/essais/               # Node 22.13 ou plus, sans wrangler ni paquet npm
-python3 outils/relais-schema.py          # détecteur face à texte.rs, schéma face à schema-envoi.json
+python3 -I outils/relais-schema.py          # détecteur face à texte.rs, schéma face à schema-envoi.json
 ```
 
 Les essais chargent `worker.js` tel quel, avec une fausse base D1 (`essais/faux-d1.mjs`, sur `node:sqlite`, qui lit
@@ -126,7 +126,7 @@ le vrai `schema.sql`) et un faux limiteur. `outils/verifier.sh` lance les deux (
 Plus tard, avant le premier déploiement, l'auteur peut essayer le vrai Worker sur son ordinateur, sans rien envoyer à
 Cloudflare : `wrangler dev --local` (puis `curl` vers `http://localhost:8787/v1/lot`).
 
-**Quand le schéma change** (lot A3, `outils/veille/schema-envoi.json`) : `python3 outils/relais-schema.py --ecrire`
+**Quand le schéma change** (lot A3, `outils/veille/schema-envoi.json`) : `python3 -I outils/relais-schema.py --ecrire`
 le recopie dans `worker.js`, puis les essais disent si `lotValide()` le suit encore. Ne jamais modifier le bloc à la
 main.
 

@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
 # Rien de personnel dans un message de commit (outils/confidentialite.py).
 # Actif avec : git config core.hooksPath outils/hooks
-exec python3 "$(git rev-parse --show-toplevel)/outils/confidentialite.py" --message "$1"
+exec python3 -I "$(git rev-parse --show-toplevel)/outils/confidentialite.py" --message "$1"

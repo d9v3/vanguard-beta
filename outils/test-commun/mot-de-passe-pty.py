@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Essai de « vanguard fuite-mot-de-passe » dans un pseudo-terminal : la saisie se fait sans écho, elle exige un vrai
 terminal. Tape « password » (trouvé des millions de fois dans des fuites), puis Entrée seule pour terminer.
-    python3 outils/test-commun/mot-de-passe-pty.py <programme vanguard>
+    python3 -I outils/test-commun/mot-de-passe-pty.py <programme vanguard>
 """
 import os, pty, sys, time, select
 exe = sys.argv[1]

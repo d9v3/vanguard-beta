@@ -188,7 +188,7 @@ fi
 # Aucun lien mort, avant d'attendre GitHub : les téléchargements du README (…/releases/latest/download/<nom>) visent
 # les fichiers de cette version, qui sera la dernière (outils/liens.py).
 # shellcheck disable=SC2046 # un nom de nomenclature par mot, coupé exprès
-python3 outils/liens.py --version vanguard-windows-x86_64.exe vanguard-linux-x86_64 SHA256SUMS.txt \
+python3 -I outils/liens.py --version vanguard-windows-x86_64.exe vanguard-linux-x86_64 SHA256SUMS.txt \
   $(bash outils/sbom.sh --noms) ||
   { echo "Liens : rien de publié."; exit 1; }
 
@@ -551,9 +551,9 @@ NOTES=$(notes)
 
 # Rien de personnel dans la page de la version ni dans les programmes : chemins du dossier personnel, nom dans les
 # métadonnées du .exe… (outils/confidentialite.py).
-printf '%s\n' "$NOTES" | python3 outils/confidentialite.py --texte || { echo "Notes de la version : rien de publié."; exit 1; }
-printf '%s\n' "$NOTES" | python3 outils/liens.py --texte || { echo "Liens des notes : rien de publié."; exit 1; }
-python3 outils/confidentialite.py --binaire "$DOSSIER/vanguard-windows-x86_64.exe" "$DOSSIER/vanguard-linux-x86_64" \
+printf '%s\n' "$NOTES" | python3 -I outils/confidentialite.py --texte || { echo "Notes de la version : rien de publié."; exit 1; }
+printf '%s\n' "$NOTES" | python3 -I outils/liens.py --texte || { echo "Liens des notes : rien de publié."; exit 1; }
+python3 -I outils/confidentialite.py --binaire "$DOSSIER/vanguard-windows-x86_64.exe" "$DOSSIER/vanguard-linux-x86_64" \
   "$DOSSIER/"*.cdx.json || { echo "Programmes : rien de publié."; exit 1; }
 # Les mêmes programmes, avec leur manifeste signé (outils/signer-versions.sh), dans le dépôt public des versions : la
 # mise à jour depuis GitHub les y prend (src/mise_a_jour/github.rs), le code restant privé. Seule la dernière y reste.

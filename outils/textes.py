@@ -3,7 +3,7 @@
 trwln! ou trpr! dans src/, ici et dans master. Un texte perdu (une traduction tombée avec du code retiré) ou nouveau
 (à relire dans les deux langues) se voit avant le commit ; une optimisation « sans changement de comportement » doit
 n'en montrer aucun. Lancé par outils/verifier.sh (étape « textes FR/EN »), ou à la main depuis la racine du dépôt :
-    python3 outils/textes.py [RÉFÉRENCE]        (master par défaut)
+    python3 -I outils/textes.py [RÉFÉRENCE]        (master par défaut)
 Les deux ensembles sont pris sur tout src/, pas fichier par fichier : un module déplacé ou renommé ne fait pas paraître
 tous ses textes « perdus » puis « nouveaux ». Sans la référence (clone partiel de la CI), rien n'est comparé : code 77,
 « sautée » pour verifier.sh. Toujours 0 sinon : les écarts sont à lire, pas une erreur.

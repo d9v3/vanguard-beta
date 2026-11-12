@@ -531,7 +531,7 @@ essai_local() {
   mkdir -p "$T/tmp" && export TMPDIR=$T/tmp
   # Un vrai petit PE32+ qui porte les gardes que vérifie verifier-binaire (comme pe::essais::gardes_d_essai) : Load
   # Config de 148 octets, DependentLoadFlags 0x800, manifeste n° 1, ASLR, DEP et relocalisations ; jamais lancé.
-  python3 - "$T/vanguard.exe" <<'EOF2' || { echo "faux vanguard.exe : écriture en échec"; exit 1; }
+  python3 -I - "$T/vanguard.exe" <<'EOF2' || { echo "faux vanguard.exe : écriture en échec"; exit 1; }
 import struct, sys
 v = bytearray(0x800)
 def m16(a, x): v[a:a + 2] = struct.pack('<H', x)
@@ -651,7 +651,7 @@ EOF2
     # Le chef aussi, sur la même fausse console : seuls changent ce que Linux n'a pas (System32, Program Files, la
     # liste des processus par CIM). Le lancement de conhost y échoue (« BUG <hôte> <langue> erreur du chef »), Windows
     # Terminal y est sauté : une ligne par hôte et par langue, ce qui suffit à voir les paramètres mal découpés.
-    python3 - "$DEPOT/outils/test-windows/essais-console.ps1" "$T/faux-pilote.cs" "$T/essais-console-factice.ps1" "$T/essais-console-chef.ps1" <<'EOF2'
+    python3 -I - "$DEPOT/outils/test-windows/essais-console.ps1" "$T/faux-pilote.cs" "$T/essais-console-factice.ps1" "$T/essais-console-chef.ps1" <<'EOF2'
 import re, sys
 s = open(sys.argv[1], encoding='utf-8-sig').read()
 faux = open(sys.argv[2], encoding='utf-8').read()

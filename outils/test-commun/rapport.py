@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Rapport HTML d'un essai complet sous Linux (outils/test-linux/essai.sh), au même style que celui du test Windows :
 verdict, étapes, vérifications, et la sortie de chaque commande à déplier.
-    python3 outils/test-commun/rapport.py <dossier de résultats>   → <dossier>/rapport-test.html
+    python3 -I outils/test-commun/rapport.py <dossier de résultats>   → <dossier>/rapport-test.html
 """
 
 import html

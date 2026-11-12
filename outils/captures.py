@@ -16,12 +16,13 @@ pas le Wi-Fi, les extensions, les services ajoutés à la main…), les coupures
 dépôt (outils/confidentialite.py) relit chaque image : si un détail personnel reste visible, aucune n'est écrite.
 
 Depuis la racine du dépôt :
-    uv run --no-project --with pyte python outils/captures.py [programme vanguard] [--connexion]
+    uv run --no-project --with pyte python -I outils/captures.py [programme vanguard] [--connexion]
 --connexion refait aussi le test de connexion (quelques centaines de Mo) ; sans lui, seulement si l'image manque ou si
 src/reseau/connexion.rs, src/ui.rs, src/langue.rs ou ce script ont changé depuis. --sans-connexion ne le refait jamais.
 """
 
 import html
+import importlib.util
 import json
 import os
 import pty
@@ -37,8 +38,22 @@ from pathlib import Path
 
 import pyte
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import confidentialite as conf  # noqa: E402
+
+
+def voisin(nom: str):
+    """outils/<nom>.py, chargé par son chemin : lancé en python3 -I, outils/ n'est pas dans les chemins d'import, et
+    l'y remettre rouvrirait la porte à un module planté à côté (re.py, json.py…)."""
+    chemin = Path(__file__).resolve().parent / f"{nom}.py"
+    spec = importlib.util.spec_from_file_location(nom, chemin)
+    if spec is None or spec.loader is None:
+        sys.exit(f"{chemin} : impossible à charger")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[nom] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+conf = voisin("confidentialite")
 
 COLONNES = 80
 RANGEES = 1200  # le bilan complet de la 0.82 dépasse 400 lignes : son début sortait de l'écran
@@ -118,7 +133,7 @@ def preparer_bac(programme: Path, bac: Path):
         noms = sorted(reseaux_wifi() | conf.reseaux_enregistres()[0], key=len, reverse=True)
         faux = bac / "bin/nmcli"
         faux.write_text(
-            f"#!{sys.executable}\nimport subprocess, sys\n"
+            f"#!{sys.executable} -I\nimport subprocess, sys\n"
             f"r = subprocess.run([{vrai!r}, *sys.argv[1:]], capture_output=True, text=True)\n"
             f"sortie = r.stdout\nfor nom in {noms!r}:\n"
             f"    sortie = sortie.replace(nom, {NOM_RESEAU!r})\n"

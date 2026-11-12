@@ -11,7 +11,7 @@ guide, que la personne tape elle-même, et hors tests) est :
      Démarrage absent). Un script qui cite un témoin, ou en efface un, a lu le dossier courant : échec.
 Un modèle de format! ({nom} à remplir) n'est qu'analysé, ses trous remplacés par une valeur.
 
-    python3 outils/rejouer-ps.py [--pwsh CHEMIN] [-v]
+    python3 -I outils/rejouer-ps.py [--pwsh CHEMIN] [-v]
 """
 import argparse
 import base64

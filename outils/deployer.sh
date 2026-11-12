@@ -109,7 +109,7 @@ rapatrier_journal() { # $1 : journal à vider, $2 : d'où il vient, $3 : sa copi
 }
 envoyer_journal() {
   [[ -z $LOCAL && -s $RETOURS/a-envoyer-github.txt ]] && command -v gh >/dev/null || return 0
-  timeout 300 python3 outils/journal-vers-github.py "$RETOURS/a-envoyer-github.txt" ||
+  timeout 300 python3 -I outils/journal-vers-github.py "$RETOURS/a-envoyer-github.txt" ||
     echo "Journal : envoi sur GitHub impossible, il repartira au prochain déploiement."
 }
 
@@ -386,7 +386,7 @@ if [[ -z $MODE ]]; then
   fi
   T_CAPTURES=$SECONDS
   if [[ -n $A_PUBLIER && $(cat assets/captures/VERSION 2>/dev/null) != "$VERSION" ]]; then
-    if command -v uv >/dev/null && timeout 900 uv run -q --no-project --with pyte python outils/captures.py "$LINUX"; then
+    if command -v uv >/dev/null && timeout 900 uv run -q --no-project --with pyte python -I outils/captures.py "$LINUX"; then
       git add assets/captures assets/partage.png
       # Les captures ne sont pas dans le programme (.github/hors-code.txt) : celui qui vient d'être compilé reste
       # celui du commit compilé, que outils/publier-version.sh étiquette et publie.
@@ -401,7 +401,7 @@ if [[ -z $MODE ]]; then
   # du code, du programme compilé et de la dernière vérification, puis committée à part. En cas d'échec, GitHub
   # Pages garde celle d'avant.
   if [[ -n $A_PUBLIER ]]; then
-    if python3 outils/page-fonctions.py --complet --programme "$LINUX" --sortie docs/index.html >/dev/null; then
+    if python3 -I outils/page-fonctions.py --complet --programme "$LINUX" --sortie docs/index.html >/dev/null; then
       git add docs/index.html
       if git diff --quiet --cached -- docs/index.html; then
         echo "Page des fonctions déjà à jour."
@@ -451,7 +451,7 @@ elif git remote get-url origin >/dev/null 2>&1; then
   # qui plante, sa trace) : le garde-fou n'a pas pu juger, dit tel quel (relecture 0.94, N-1).
   GARDE=0
   # La tête notée, exactement ce qui part : de ce que GitHub a déjà (ou tout, sur un dépôt neuf) jusqu'à elle.
-  SORTIE_GARDE=$(python3 outils/confidentialite.py --plage "$(git rev-parse -q --verify refs/remotes/origin/master || true)" \
+  SORTIE_GARDE=$(python3 -I outils/confidentialite.py --plage "$(git rev-parse -q --verify refs/remotes/origin/master || true)" \
     "$TETE" refs/heads/master 2>&1) || GARDE=$?
   [[ -z $SORTIE_GARDE ]] || printf '%s\n' "$SORTIE_GARDE" >&2
   if ((GARDE == 1)) && grep -q '^Confidentialité : [0-9]* détail(s) personnel(s) dans' <<<"$SORTIE_GARDE"; then
@@ -460,14 +460,14 @@ elif git remote get-url origin >/dev/null 2>&1; then
     echo "Rien n'est envoyé sur GitHub : garde-fou de confidentialité en panne (code $GARDE), rien conclu (voir ci-dessus)."
   # Une page de version suit : les liens de téléchargement du README se vérifient contre ses fichiers, pas contre la
   # dernière version en ligne (absente sur un dépôt neuf, d'une version en retard sinon).
-  elif ! python3 outils/liens.py ${A_PUBLIER:+--version vanguard-windows-x86_64.exe vanguard-linux-x86_64 SHA256SUMS.txt $(bash outils/sbom.sh --noms)}; then
+  elif ! python3 -I outils/liens.py ${A_PUBLIER:+--version vanguard-windows-x86_64.exe vanguard-linux-x86_64 SHA256SUMS.txt $(bash outils/sbom.sh --noms)}; then
     echo "Rien n'est envoyé sur GitHub : un lien est mort (voir ci-dessus)."
   # La sortie est gardée : un refus de GitHub (règles de master, historique qui a divergé) n'est pas une panne
   # d'Internet, et le redire au prochain déploiement n'y changerait rien.
   elif ENVOI=$(timeout 30 git push -q origin "$TETE:refs/heads/master" 2>&1); then
     echo "Code envoyé sur GitHub."
     # La page du dépôt suit le dépôt : description et version, lien, sujets (outils/github.py, .github/depot.json).
-    python3 outils/github.py || echo "Page du dépôt sur GitHub pas mise à jour (voir ci-dessus)."
+    python3 -I outils/github.py || echo "Page du dépôt sur GitHub pas mise à jour (voir ci-dessus)."
     # La page de la version, s'il en faut une (A_PUBLIER, plus haut), vient à la fin du déploiement.
     if [[ -n $A_PUBLIER ]]; then
       PUBLIER=1
@@ -541,7 +541,7 @@ publier_la_version() {
   local debut=$SECONDS
   if outils/publier-version.sh; then
     # La description du dépôt montre la dernière version publiée : elle change maintenant.
-    python3 outils/github.py || echo "Page du dépôt sur GitHub pas mise à jour (voir ci-dessus)."
+    python3 -I outils/github.py || echo "Page du dépôt sur GitHub pas mise à jour (voir ci-dessus)."
   else
     echo "Page de la version pas publiée (voir ci-dessus) : relancer outils/publier-version.sh."
   fi
@@ -661,7 +661,7 @@ for systeme in Linux Windows; do
   fi
 done
 # Avis de licence des bibliothèques incluses dans les binaires (MIT, Apache… demandent de les joindre).
-python3 outils/licences-tierces.py >/dev/null
+python3 -I outils/licences-tierces.py >/dev/null
 cp -f LICENSE "$CLE/LICENSE.txt"
 cp -f LICENCES-TIERCES.txt "$CLE/LICENCES-TIERCES.txt"
 # Icône et nom du lecteur dans l'Explorateur, lanceurs à la racine. (Windows ne lance plus rien tout seul depuis une

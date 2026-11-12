@@ -16,6 +16,7 @@
 #      NUL), les noms de branches et d'étiquettes, une étiquette posée sur un arbre ;
 #   8. les fichiers tiers (courriels permis, rien d'autre), la plage d'une branche neuve, le message (« # », ciseaux) ;
 #   9. les crochets pre-push et pre-merge-commit, pour de vrai, vers un dépôt distant jetable ;
+#      un module planté dans outils/ ou sur PYTHONPATH n'en désarme aucun (python3 -I) ;
 #  10. témoins : un fichier propre passe, un courriel dans un nom ordinaire est trouvé ;
 #  11. les erreurs (usage, git en échec, fichier illisible) : code 2, « rien n'est conclu », jamais pris pour une
 #      trouvaille ; une trouvaille (code 1) n'est comptée que si l'outil dit ce qu'il a trouvé ;
@@ -23,6 +24,7 @@
 #      celui de l'arbre jugé (une demande qui le viderait ne se rend pas verte) ; repli dit si la base n'en a pas.
 #  13. les sources de cet ordinateur, dans une maison jetable : les deux listes privées (commune et de Vanguard), la
 #      base des appareils, nmcli, l'identité Git ; une source présente mais illisible ou en panne : code 2.
+#  14. cliquet : chaque Python lancé par le dépôt (scripts, crochets, CI, programmes Python) l'est isolé, en -I.
 set -uo pipefail
 RACINE=$(cd "$(dirname "$0")/.." && pwd)
 OUTIL=$RACINE/outils/confidentialite.py
@@ -69,7 +71,7 @@ juger() {
 # trouvaille. 2 : rien n'est conclu (usage, git en échec, fichier illisible).
 garde() {
   local sortie code
-  sortie=$(python3 "$OUTIL" "$@" 2>&1)
+  sortie=$(python3 -I "$OUTIL" "$@" 2>&1)
   code=$?
   [[ -z $sortie ]] || printf '%s\n' "$sortie" >&2
   ((code == 1)) && ! constat <<<"$sortie" && code=3
@@ -483,13 +485,14 @@ noter 0 $? "témoin : un lien symbolique vers un fichier absent ne fait pas plan
 
 # Les vrais crochets, dans un dépôt jetable et vers un dépôt distant jetable. Le crochet lance
 # « <racine>/outils/confidentialite.py » : ici un relais vers l'outil essayé, en --generique (l'identité inventée des
-# essais n'est pas celle de cet ordinateur).
+# essais n'est pas celle de cet ordinateur). Le relais fait tourner l'outil dans l'interpréteur que le crochet a lancé,
+# comme le vrai : ce que cet interpréteur irait importer du dossier outils/ du dépôt jugé atteint aussi l'outil.
 crochets() {
   depot "$1"
   git init -q --bare "$D.git" && git remote add origin "$D.git" && git push -q origin master 2>/dev/null
   mkdir outils && printf 'outils/\n' >>.git/info/exclude
-  printf 'import os, sys\nos.execvp("python3", ["python3", %s, "--generique", *sys.argv[1:]])\n' \
-    "$(printf '%s' "$OUTIL" | python3 -c 'import sys; print(repr(sys.stdin.read()))')" >outils/confidentialite.py
+  printf 'import runpy, sys\nsys.argv = [%s, "--generique", *sys.argv[1:]]\nrunpy.run_path(sys.argv[0], run_name="__main__")\n' \
+    "$(printf '%s' "$OUTIL" | python3 -I -c 'import sys; print(repr(sys.stdin.read()))')" >outils/confidentialite.py
   git config core.hooksPath "$RACINE/outils/hooks"
 }
 
@@ -523,6 +526,35 @@ git merge --abort 2>/dev/null
 git checkout -q -b b master && printf 'x\n' >b.txt && git add b.txt && git commit -q -m b
 git checkout -q master && git merge -q --no-ff -m fusion b >/dev/null 2>&1
 noter 0 $? "témoin : pre-merge-commit laisse passer une fusion propre"
+
+# Un module planté dans outils/ (re.py, que confidentialite.py importe) ou mis sur PYTHONPATH ne désarme aucun
+# crochet : lancé en python3 -I, l'interpréteur ne met ni le dossier du script ni PYTHONPATH en tête des imports.
+crochets piege
+# Chaque cas repart de BASE : un crochet désarmé (avant le correctif) laisse passer un commit qui fausserait la suite.
+BASE=$(git rev-parse HEAD)
+printf 'import os\nos._exit(0)\n' >outils/re.py
+printf 'contact : %s\n' "$COURRIEL" >p.txt && git add p.txt
+python3 outils/confidentialite.py --commit >/dev/null 2>&1  # sans -I : voulu (le témoin du piège)
+noter 0 $? "témoin : sans -I, le re.py planté désarme le garde-fou (le piège est réel)"
+SORTIE=$(git commit -q -m piege 2>&1)
+noter 1 "$(refus_dit $?)" "pre-commit : un re.py planté dans outils/ ne désarme pas le garde-fou"
+git reset -q --soft "$BASE"
+mkdir chemin && mv outils/re.py chemin/re.py && printf 'chemin/\n' >>.git/info/exclude
+SORTIE=$(PYTHONPATH="$D/chemin" git commit -q -m piege 2>&1)
+noter 1 "$(refus_dit $?)" "pre-commit : un re.py mis sur PYTHONPATH ne désarme pas le garde-fou"
+git reset -q --soft "$BASE"
+mv chemin/re.py outils/re.py && git rm -q --cached p.txt && rm p.txt
+SORTIE=$(git commit -q --allow-empty -m "pour $COURRIEL" 2>&1)
+noter 1 "$(refus_dit $?)" "commit-msg : un re.py planté dans outils/ ne désarme pas le garde-fou"
+git reset -q --soft "$BASE"
+git checkout -q -b piegee && printf 'contact : %s\n' "$COURRIEL" >m.txt && git add m.txt
+git commit -q --no-verify -m piegee && git checkout -q master
+SORTIE=$(git merge -q --no-ff -m fusion piegee 2>&1)
+noter 1 "$(refus_dit $?)" "pre-merge-commit : un re.py planté dans outils/ ne désarme pas le garde-fou"
+git merge --abort 2>/dev/null
+git reset -q --hard "$BASE"
+SORTIE=$(git push -q origin piegee 2>&1)
+noter 1 "$(refus_dit $?)" "pre-push : un re.py planté dans outils/ ne désarme pas le garde-fou"
 
 # Rien n'est conclu (code 2) : jamais pris pour une trouvaille (1), ni pour un vert (0).
 depot erreurs
@@ -562,7 +594,7 @@ chmod 644 ferme.txt
 
 # L'étape de la CI, telle que GitHub la lance (bash -eo pipefail, AVANT, APRES et RUNNER_TEMP dans l'environnement).
 ETAPE_CI=$TRAVAIL/etape-ci.sh
-python3 - "$RACINE/.github/workflows/ci.yml" >"$ETAPE_CI" <<'PY'
+python3 -I - "$RACINE/.github/workflows/ci.yml" >"$ETAPE_CI" <<'PY'
 import sys
 lignes = open(sys.argv[1], encoding="utf-8").read().split("\n")
 i = next(k for k, l in enumerate(lignes) if l.strip() == "- name: Rien de personnel dans les commits envoyés")
@@ -743,6 +775,61 @@ machine "rien d'ici" 2>/dev/null
 noter 2 $? "git config --global en échec (code 3) : rien n'est conclu"
 rm "$FAUX/git" && ln -s "$(command -v git)" "$FAUX/git"
 : >"$GLOBAL_J"
+cd "$TRAVAIL" || exit 1
+
+# --- Cliquet : chaque Python lancé par le dépôt l'est isolé (-I) -------------------------------------------------------
+
+# Sans -I, Python met le dossier du script lancé (ou le dossier courant, pour -c et -) en tête des chemins d'import et
+# lit PYTHONPATH : un module planté là (re.py…) passe avant le sien. Le cliquet relit les fichiers suivis (scripts,
+# crochets, CI, programmes Python) : « python3 » suivi d'une option, d'un chemin, d'un .py ou d'une variable, et les
+# listes [sys.executable, …] ou ["python3", …], doivent passer -I. Une exception voulue porte « # sans -I : voulu ».
+cliquet_isole() {
+  python3 -I - "$1" <<'PY'
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+racine = Path(sys.argv[1])
+suivis = subprocess.run(["git", "-C", str(racine), "ls-files", "-z"], capture_output=True, check=True).stdout
+COMMANDE = re.compile(r"(?:^|(?<=[\s(`|;&]))python3?[ \t]+(\S+)")
+LISTE = re.compile(r"""\[\s*(?:sys\.executable|["']python3?["'])\s*,(?!\s*["']-I["'])""")
+ENTETE = re.compile(r"#!\{sys\.executable\}(?! -I)")
+fautes = []
+for nom in filter(None, suivis.decode("utf-8", "surrogateescape").split("\0")):
+    if not (nom.endswith((".sh", ".bash", ".yml", ".yaml", ".py")) or nom.startswith("outils/hooks/")):
+        continue
+    try:
+        texte = (racine / nom).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        print(f"{nom} : illisible ({e}) : rien n'est conclu", file=sys.stderr)
+        sys.exit(2)
+    for n, ligne in enumerate(texte.splitlines(), 1):
+        if ligne.lstrip().startswith("#") or "# sans -I : voulu" in ligne:
+            continue
+        lancements = [m.group(1).strip("\"'`,.;:)»") for m in COMMANDE.finditer(ligne)]
+        if any(t != "-I" and (t.startswith("-") or "/" in t or ".py" in t or "$" in t) for t in lancements) \
+                or LISTE.search(ligne) or ENTETE.search(ligne):
+            fautes.append(f"{nom}:{n}: {ligne.strip()}")
+for faute in fautes:
+    print(f"Python lancé sans -I : {faute}", file=sys.stderr)
+sys.exit(1 if fautes else 0)
+PY
+}
+cliquet_isole "$RACINE" 2>&1 | head -20 >&2
+noter 0 "${PIPESTATUS[0]}" "cliquet : chaque Python lancé par le dépôt l'est en -I"
+depot cliquet
+printf '%s %s\n' "timeout 5 python3" "outils/x.py" >a.sh && git add a.sh
+cliquet_isole "$D" 2>/dev/null
+noter 1 $? "témoin : le cliquet voit un script lancé par python3 sans -I"
+printf '%s %s\n' "timeout 5 python3 -I" "outils/x.py" >a.sh && printf 'r = subprocess.run([%s, %s])\n' sys.executable '"x.py"' >b.py
+git add a.sh b.py
+cliquet_isole "$D" 2>/dev/null
+noter 1 $? "témoin : le cliquet voit une liste de lancement sans -I"
+printf 'r = subprocess.run([sys.executable, "-I", %s])\n' '"x.py"' >b.py
+printf '%s %s  # sans -I : voulu\n' "python3" "outils/y.py" >>a.sh && git add a.sh b.py
+cliquet_isole "$D" 2>/dev/null
+noter 0 $? "témoin : le cliquet laisse passer -I et une exception dite"
 cd "$TRAVAIL" || exit 1
 
 if ((ECHECS)); then

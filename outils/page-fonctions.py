@@ -19,8 +19,8 @@ la page prête. Rien n'est envoyé d'ici.
     intégrées à la page (data:) : une seule page, sans fichier à côté, pour GitHub Pages comme pour claude.ai. Il y
     faut Pillow (python-pillow).
 
-    python3 outils/page-fonctions.py [--complet] [--programme VANGUARD] [--sortie PAGE]
-    python3 outils/page-fonctions.py --verifier SORTIE --tests-linux 693 --tests-wine 613 --version 0.82.0
+    python3 -I outils/page-fonctions.py [--complet] [--programme VANGUARD] [--sortie PAGE]
+    python3 -I outils/page-fonctions.py --verifier SORTIE --tests-linux 693 --tests-wine 613 --version 0.82.0
 
 --complet : un document HTML entier (doctype, head, body), pour GitHub Pages ; sans lui, le fragment que
 claude.ai habille lui-même.

@@ -303,7 +303,7 @@ if [[ -n $ARBRE_OK ]]; then
   else
     # Un lien mort ne fait qu'entrer au rapport (code 1 de liens.py) ; mort trois nuits de suite, il devient une
     # alerte. Seule une panne de liens.py elle-même est un échec de l'étape.
-    liens() { python3 outils/liens.py; local c=$?; ((c == 1)) && return 0; return "$c"; }
+    liens() { python3 -I outils/liens.py; local c=$?; ((c == 1)) && return 0; return "$c"; }
     etape liens "$TRAVAIL/liens.log" liens
   fi
 

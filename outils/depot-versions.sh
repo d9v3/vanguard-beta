@@ -40,7 +40,7 @@ fi
 travail=$(mktemp -d "$HOME/.cache/vanguard-dev/depot-versions.XXXX")
 trap 'rm -rf "$travail"' EXIT
 lisezmoi >"$travail/README.md"
-python3 outils/confidentialite.py --texte <"$travail/README.md" || { echo "LISEZMOI : rien de créé."; exit 1; }
+python3 -I outils/confidentialite.py --texte <"$travail/README.md" || { echo "LISEZMOI : rien de créé."; exit 1; }
 gh repo create "$DEPOT" --public --disable-issues --disable-wiki \
   --description "Signed published programs of Vanguard (the source code lives elsewhere)"
 # Le même auteur que le dépôt du code : pseudonyme et adresse noreply de GitHub, jamais un vrai nom.

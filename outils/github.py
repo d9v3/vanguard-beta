@@ -11,9 +11,9 @@ Le nom du dépôt ne change pas tout seul : s'il diffère de celui du programme,
 change (GitHub redirige les anciennes adresses).
 
 Depuis la racine du dépôt :
-    python3 outils/github.py              met la page du dépôt à jour
-    python3 outils/github.py --voir       dit ce qui changerait, sans rien changer
-    python3 outils/github.py --renommer   la met à jour et renomme le dépôt comme le programme
+    python3 -I outils/github.py              met la page du dépôt à jour
+    python3 -I outils/github.py --voir       dit ce qui changerait, sans rien changer
+    python3 -I outils/github.py --renommer   la met à jour et renomme le dépôt comme le programme
 """
 
 import json
@@ -82,7 +82,7 @@ def voulu(version):
         raise SystemExit(f"GitHub : rien n'est changé, {VOULU} à corriger : " + " ; ".join(erreurs) + ".")
     # Le garde-fou relit tout ce qui partirait : une page de dépôt se lit sans être connecté, une fois public.
     texte = "\n".join([description, page.get("accueil", ""), *sujets])
-    if subprocess.run([sys.executable, "outils/confidentialite.py", "--texte"], input=texte, text=True).returncode:
+    if subprocess.run([sys.executable, "-I", "outils/confidentialite.py", "--texte"], input=texte, text=True).returncode:
         raise SystemExit(f"GitHub : rien n'est changé (un détail personnel dans {VOULU}).")
     return description, page.get("accueil", ""), sujets, options
 
@@ -108,7 +108,7 @@ def main():
     renommage = actuel["name"] != nom
     if renommage and not renommer:
         print(f"GitHub : le dépôt s'appelle « {actuel['name']} », le programme « {nom} » : "
-              "python3 outils/github.py --renommer pour le renommer.")
+              "python3 -I outils/github.py --renommer pour le renommer.")
         renommage = False
     elif renommage:
         changements.append(f"nom ({actuel['name']} → {nom})")

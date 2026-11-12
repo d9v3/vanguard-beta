@@ -290,7 +290,7 @@ hors_ligne() {
 
 rejeu_powershell() {
   [[ -n $PWSH ]] || { echo "pwsh absent (VANGUARD_PWSH pour le donner)"; return "$SAUTEE"; }
-  python3 outils/rejouer-ps.py --pwsh "$PWSH"
+  python3 -I outils/rejouer-ps.py --pwsh "$PWSH"
 }
 
 # Le banc de fuzzing (fuzz/) compilé, puis chaque cible passée quelques secondes (VANGUARD_FUZZ_SECONDES, 5 par
@@ -369,7 +369,7 @@ scripts_shell() {
 # Analysés sans être compilés sur disque : py_compile laisserait des __pycache__ dans outils/.
 scripts_python() {
   find outils -name '*.py' -print0 |
-    xargs -0 python3 -c 'import ast, sys; [ast.parse(open(f, encoding="utf-8").read(), f) for f in sys.argv[1:]]'
+    xargs -0 python3 -I -c 'import ast, sys; [ast.parse(open(f, encoding="utf-8").read(), f) for f in sys.argv[1:]]'
 }
 
 # Le relais des lots (relais/worker.js) : ses essais sous Node, sans wrangler ni paquet npm (une fausse base D1 sur
@@ -450,8 +450,8 @@ chiffres_readme() {
 }
 
 textes() {
-  [[ $(git rev-parse HEAD) == $(git rev-parse master 2>/dev/null) ]] && { python3 outils/textes.py --vouvoiement; return; }
-  python3 outils/textes.py
+  [[ $(git rev-parse HEAD) == $(git rev-parse master 2>/dev/null) ]] && { python3 -I outils/textes.py --vouvoiement; return; }
+  python3 -I outils/textes.py
 }
 
 # Le dossier .github (workflows et dependabot.yml) relu par zizmor : actions non épinglées, permissions trop larges,
@@ -651,10 +651,10 @@ if [[ $MODE != --rapide ]]; then
   etape fenetre fenetre &
   etape python scripts_python &
   etape relais relais &
-  etape relais-schema python3 outils/relais-schema.py &
-  etape liens python3 outils/liens.py --hors-ligne &
-  etape carte-attack python3 outils/couverture-attack.py --verifier &
-  etape table-cf python3 outils/table-cf.py --verifier &
+  etape relais-schema python3 -I outils/relais-schema.py &
+  etape liens python3 -I outils/liens.py --hors-ligne &
+  etape carte-attack python3 -I outils/couverture-attack.py --verifier &
+  etape table-cf python3 -I outils/table-cf.py --verifier &
   etape chiffres-readme chiffres_readme &
   etape workflows workflows &
   etape nomenclatures nomenclatures &
