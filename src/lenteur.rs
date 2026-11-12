@@ -950,23 +950,33 @@ mod systeme {
         let systeme = std::env::var("XDG_CONFIG_DIRS").unwrap_or_default();
         let systeme = if systeme.is_empty() { "/etc/xdg" } else { &systeme };
         let bureau = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
-        let mut liste = Vec::new();
-        // L'utilisateur d'abord : son entrée l'emporte sur celle du système au même nom, même désactivée.
-        let mut vus: Vec<String> = Vec::new();
-        for f in std::iter::once(config.join("autostart"))
-            .chain(systeme.split(':').map(|d| Path::new(d).join("autostart")))
-            .flat_map(|d| read_dir(d).into_iter().flatten().flatten())
-        {
-            let nom = f.file_name().to_string_lossy().into_owned();
-            if Path::new(&nom).extension().is_some_and(|e| e == "desktop") && !vus.contains(&nom) {
-                liste.extend(entree_autostart(&read_to_string(f.path()).unwrap_or_default(), &bureau));
-                vus.push(nom);
-            }
-        }
+        let systeme: Vec<PathBuf> = systeme.split(':').map(|d| Path::new(d).join("autostart")).collect();
+        let mut liste = autostart_dans(&config.join("autostart"), &systeme, &bureau);
         let activee = |u: &str| natif::unite_activee(u, true) == Some(true);
         for unite in services_actives(&config.join("systemd/user"), activee) {
             let nom = unite.trim_end_matches(".service").to_string();
             liste.push((nom.clone(), nom));
+        }
+        liste
+    }
+
+    /// Les entrées d'autostart actives sur ce bureau, (nom, programme) : celles du compte (`compte`), puis celles du
+    /// système (`systeme`) au nom qu'il n'a pas. Lues comme `vanguard demarrage` les lit (`texte_autostart`) : bornées,
+    /// sans attendre un tube, celles du compte sans suivre de lien. Une entrée pas lue n'est pas listée, mais masque
+    /// toujours celle du système au même nom (correction n° 2 de la 0.94, D-4).
+    pub(super) fn autostart_dans(compte: &Path, systeme: &[PathBuf], bureau: &str) -> Vec<(String, String)> {
+        let mut liste = Vec::new();
+        // L'utilisateur d'abord : son entrée l'emporte sur celle du système au même nom, même désactivée.
+        let mut vus: Vec<String> = Vec::new();
+        for (d, du_compte) in std::iter::once((compte, true)).chain(systeme.iter().map(|d| (d.as_path(), false))) {
+            for f in read_dir(d).into_iter().flatten().flatten() {
+                let nom = f.file_name().to_string_lossy().into_owned();
+                if Path::new(&nom).extension().is_some_and(|e| e == "desktop") && !vus.contains(&nom) {
+                    let texte = crate::optimiser::linux::texte_autostart(&f.path(), du_compte);
+                    liste.extend(texte.and_then(|t| entree_autostart(&t, bureau)));
+                    vus.push(nom);
+                }
+            }
         }
         liste
     }
@@ -1949,6 +1959,45 @@ mod tests {
         }));
         assert_eq!(secondes_lisibles(75.4), "1 min 15 s");
         assert_eq!(secondes_lisibles(5.04), "5,0 s");
+    }
+
+    /// Correction n° 2 de la 0.94, D-4 : les entrées d'autostart se lisent bornées, sans attendre un tube, et celles du
+    /// compte sans suivre de lien (comme `vanguard demarrage`). Une entrée géante, un tube ou un lien du compte ne sont
+    /// pas listés (ni lus à travers), et masquent toujours celle du système au même nom ; une ordinaire l'est.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn autostart_lu_borne_sans_lien_ni_tube() {
+        let d = crate::essais::temporaire().join(format!("vanguard-lenteur-autostart-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let (compte, systeme, dehors) = (d.join("compte/autostart"), d.join("systeme"), d.join("dehors"));
+        for x in [&compte, &systeme, &dehors] {
+            std::fs::create_dir_all(x).unwrap();
+        }
+        let entree = |nom: &str| format!("[Desktop Entry]\nType=Application\nName={nom}\nExec=/usr/bin/{nom}\n");
+        std::fs::write(compte.join("lecteur.desktop"), entree("lecteur")).unwrap();
+        std::fs::write(
+            compte.join("gros.desktop"),
+            format!("{}#{}\n", entree("gros"), "x".repeat(76 << 10)),
+        )
+        .unwrap();
+        std::fs::write(dehors.join("cible.desktop"), entree("dehors")).unwrap();
+        std::os::unix::fs::symlink(dehors.join("cible.desktop"), compte.join("lien.desktop")).unwrap();
+        crate::essais::tube_nomme(&compte.join("tube.desktop")).unwrap();
+        for nom in ["lien", "tube", "gros"] {
+            std::fs::write(
+                systeme.join(format!("{nom}.desktop")),
+                entree(&format!("systeme-{nom}")),
+            )
+            .unwrap();
+        }
+        std::fs::write(systeme.join("panneau.desktop"), entree("panneau")).unwrap();
+        let debut = std::time::Instant::now();
+        let mut vus = systeme::autostart_dans(&compte, std::slice::from_ref(&systeme), "");
+        vus.sort();
+        assert!(debut.elapsed().as_secs() < 5, "attendu sur le tube");
+        let noms: Vec<&str> = vus.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(noms, ["lecteur", "panneau"]);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// Les services ajoutés par l'utilisateur et activés pour l'ouverture de session : ni un service activé pour

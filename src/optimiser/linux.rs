@@ -1514,6 +1514,18 @@ fn autostart(compte: &Path, systeme: &[PathBuf], bureau: &str) -> (Vec<Programme
     (l, manques)
 }
 
+/// Le texte d'une entrée d'autostart lu comme `vanguard demarrage` le lit, pour qui ne fait que la regarder
+/// (`vanguard lenteur`) : borné, sans attendre un tube ; celle du compte (`du_compte`) sans suivre de lien ni sortir du
+/// dossier personnel. `None` : absente, ou pas lue ainsi (correction n° 2 de la 0.94, D-4).
+pub(crate) fn texte_autostart(chemin: &Path, du_compte: bool) -> Option<String> {
+    let max = u64::try_from(AUTOSTART_MAX - 1).unwrap_or(0);
+    if du_compte {
+        sous_maison::lire(chemin, max).ok()
+    } else {
+        lire_du_systeme(chemin, max).ok()
+    }
+}
+
 /// Le texte d'une entrée d'autostart du système, d'au plus `max` octets. Les liens sont suivis (les paquets en posent,
 /// et rien ne s'écrit d'après eux ailleurs que dans le compte), mais l'ouverture n'attend pas un tube, et seul un
 /// simple fichier se lit, borné (campagne 0.94, C-1, C-2). `NotFound` : absente, ou lien pendant.
