@@ -9124,6 +9124,50 @@ mod tests {
         }
     }
 
+    /// Point 11 (0.95) : « AmbientCapabilities= » vide (la forme des unités de Vanguard : garde, isolement) ne fait
+    /// que vider les droits ambiants, il se lit ; toute autre valeur en donne (ou « ~… » : tous sauf) et reste levée,
+    /// au bilan comme pour `vanguard demarrage` (`complement_change_le_lancement`).
+    #[test]
+    fn droits_ambiants_lus_seulement_vides() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let cas: &[(&str, bool)] = &[
+            ("AmbientCapabilities=", true),
+            ("AmbientCapabilities= \t", true),
+            ("CapabilityBoundingSet=CAP_NET_ADMIN", true),
+            ("AmbientCapabilities=CAP_NET_ADMIN", false),
+            ("AmbientCapabilities=~CAP_SYS_ADMIN", false),
+            ("AmbientCapabilities=~", false),
+            ("AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_RAW", false),
+            ("AmbientCapabilities=%h", false),
+            ("AmbientCapabilities=\"\"", false),
+        ];
+        let mut faux = Vec::new();
+        for (i, (ligne, sain)) in cas.iter().enumerate() {
+            let m = Maison::nouvelle(&format!("ambiants-{i}"));
+            let f = m.racine.join("usr/bin/true");
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(&f, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+            m.ecrire(
+                ".config/systemd/user/essai.service",
+                &format!("[Unit]\nDescription=essai\n\n[Service]\nExecStart=/usr/bin/true\n{ligne}\n\n[Install]\nWantedBy=default.target\n"),
+            );
+            let constats = persistance_dans(
+                &m.racine,
+                &m.chemin(""),
+                |v| (v == "XDG_RUNTIME_DIR").then(|| "/run/user/1000".into()),
+                None,
+                None,
+            );
+            let leve = constats.iter().any(|c| c.probleme.is_some());
+            let change = !complement_change_le_lancement(&format!("[Service]\n{ligne}\n"), &m.chemin("")).is_empty();
+            if leve == *sain || change == *sain {
+                faux.push((*ligne, leve, change));
+            }
+        }
+        assert!(faux.is_empty(), "(ligne, levée, changement dit) : {faux:#?}");
+    }
+
     /// Le cas qui a mené à ce lot (valeurs inventées) : une unité de l'utilisateur lance un programme d'un dossier
     /// caché, à corriger soi-même. Elle se déclare normale, montre sa ligne, son fichier et le programme lancé ; le
     /// même état relu au bilan suivant est tu.

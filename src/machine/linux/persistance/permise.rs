@@ -2171,6 +2171,9 @@ const CLES_SERVICE: &[&str] = &[
     "SystemCallFilter",
     "SystemCallErrorNumber",
     "CapabilityBoundingSet",
+    // Vide seulement (point 11, 0.95) : la forme des unités de Vanguard, qui vide les droits ambiants ; toute valeur
+    // en donne (« ~… » : tous sauf ceux-là), jugée dans `directive`.
+    "AmbientCapabilities",
     "ReadOnlyPaths",
     "ReadWritePaths",
     "InaccessiblePaths",
@@ -2416,6 +2419,7 @@ pub(super) fn directive(s: &Systeme, codes: &Codes, section: Option<&str>, ligne
                 variable_d_unite_sure(s, &nom, &v)?;
             }
         }
+        "AmbientCapabilities" if !valeur.is_empty() => return Err(Ecart::Directive),
         "PassEnvironment" | "UnsetEnvironment" => {
             for nom in valeur.split_whitespace() {
                 if affectation(&format!("{nom}=")).is_none() || (cle == "PassEnvironment" && variable_refusee(nom)) {
