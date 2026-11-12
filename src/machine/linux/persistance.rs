@@ -7812,8 +7812,8 @@ mod tests {
     /// COMP-3 : les unités que Vanguard pose dans le compte ne lèvent rien, dans les deux langues : veilleur,
     /// entretien, surveillance (d'aujourd'hui et d'avant), sauvegarde. Le `CPUQuota=20%` du veilleur sortait
     /// « réglage d'unité non lu » (LNX-PRS-002, Élevé) : le « % » final était pris pour un code de systemd ; le
-    /// « rsync » de la sauvegarde, pour un lanceur ; un ~/.popt la lève (D-1). Celles qu'il pose en administrateur (garde, ses listes, isolement,
-    /// ajout d'Ollama) sont à root dans des dossiers à root (`de_root_seul`) : la liste permise ne les juge pas, et
+    /// « rsync » de la sauvegarde, pour un lanceur ; un ~/.popt la lève (D-1). Celles qu'il pose en administrateur
+    /// (garde, ses listes, isolement, ajout d'Ollama) sont à root dans des dossiers à root (`de_root_seul`) : la liste permise ne les juge pas, et
     /// sous `unshare -r` (identités traduites) cet essai ne saurait le montrer ; elles n'y sont donc pas.
     #[test]
     fn les_unites_de_vanguard_ne_levent_rien() {
@@ -8222,8 +8222,9 @@ mod tests {
     }
 
     /// COMP-3, la forme exacte : un pourcentage de ressource (chiffres, décimale facultative, « % ») se lit ; toute
-    /// autre valeur à « % » d'une clé de ressource reste non lue. rsync reste un lanceur à toutes ses formes, celles
-    /// de la sauvegarde comprises (S-1, D-1 : il lit ~/.popt).
+    /// autre valeur à « % » d'une clé de ressource reste non lue. Hors de l'unité de la sauvegarde, rsync reste un
+    /// lanceur à toutes ses formes, celles de la sauvegarde comprises (S-1 : seule l'unité exacte se tait, et sans
+    /// réglages de popt, `la_sauvegarde_exacte_ne_se_tait_que_sans_reglages_de_popt`).
     #[test]
     fn un_pourcentage_de_ressource_se_lit_et_rsync_reste_un_lanceur() {
         use std::os::unix::fs::PermissionsExt as _;
