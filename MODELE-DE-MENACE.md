@@ -186,6 +186,12 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   son état et son journal des événements tant qu'il le garde : Vanguard ne l'attend qu'une fois, puis une seconde en
   tout, le dit au bilan, et compte les événements qu'il n'a pas pu noter pour les dire une fois le verrou rendu. Ceux
   d'un Vanguard tué pendant ce temps se perdent sans être comptés, et ce compte, écrit sans sceau, peut être effacé.
+  Chaque fichier se scelle en deux temps : Vanguard note d'abord le contenu qu'il va poser (« en attente »), puis
+  l'écrit et le scelle. Tué entre les deux, il accepte ensuite l'ancien contenu comme le nouveau, jusqu'à ce qu'une
+  commande qui peut écrire relise ce fichier ; tué pendant un retrait, le contenu retiré, remis par un autre programme,
+  se lit intact. Les deux contenus sont de Vanguard, et forger une attente demande de réécrire ses sceaux (voir plus
+  haut). Une version plus ancienne de Vanguard, remise après une mise à jour, ne connaît pas ces attentes : elle dit
+  falsifié un fichier laissé entre les deux temps (sens sûr).
   La vraie parade, un service qui tourne sous un autre compte que le vôtre (administrateur), est prévue pour une
   version à venir.
 - **La personne décide.** Rien n'est modifié sans son accord. Ce qu'elle accepte s'annule une correction à la fois,

@@ -1109,6 +1109,26 @@ fn remettre_l_attente(dossier: &Path, nom: &str, avant: Option<String>) -> std::
     enregistrer_registre(dossier, &r)
 }
 
+/// Le retrait refusé et la remise de son attente refusée aussi : les deux dits (`texte`), l'erreur du retrait gardée
+/// entière en source, son code du système compris (vérification 0.94, S-4 : refaite en texte, elle le perdait).
+#[derive(Debug)]
+struct RetraitEtRemise {
+    retrait: std::io::Error,
+    texte: String,
+}
+
+impl std::fmt::Display for RetraitEtRemise {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.texte)
+    }
+}
+
+impl std::error::Error for RetraitEtRemise {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.retrait)
+    }
+}
+
 /// Retire un fichier d'état et son sceau (Vanguard l'oublie lui-même).
 pub(crate) fn effacer_dans(dossier: &Path, nom: &str) -> std::io::Result<()> {
     if !crate::socle::ecriture_sure(dossier) {
@@ -1144,15 +1164,13 @@ pub(crate) fn effacer_dans(dossier: &Path, nom: &str) -> std::io::Result<()> {
             if let Some(avant) = posee
                 && let Err(remise) = remettre_l_attente(dossier, nom, avant)
             {
-                return Err(std::io::Error::new(
-                    e.kind(),
-                    trf!(
-                        "{} ; et l'attente du retrait n'a pas pu être retirée ({}) : le fichier supprimé plus tard pourrait se lire « absent »",
-                        "{}; and the pending removal could not be withdrawn ({}): the file deleted later could read “absent”",
-                        e,
-                        remise
-                    ),
-                ));
+                let texte = trf!(
+                    "{} ; et l'attente du retrait n'a pas pu être retirée ({}) : le fichier supprimé plus tard pourrait se lire « absent »",
+                    "{}; and the pending removal could not be withdrawn ({}): the file deleted later could read “absent”",
+                    e,
+                    remise
+                );
+                return Err(std::io::Error::new(e.kind(), RetraitEtRemise { retrait: e, texte }));
             }
             return Err(e);
         }
@@ -1861,6 +1879,13 @@ mod tests {
         let e = coupe_a("effacer:remise-attente", || effacer_dans(&d, nom)).unwrap_err();
         assert!(e.to_string().contains("attente"), "{e}");
         assert!(e.to_string().contains("essai : écriture coupée"), "{e}");
+        // Vérification 0.94, S-4 : l'erreur du retrait garde son code du système (EISDIR ici), joint en source.
+        let code = std::error::Error::source(&e)
+            .and_then(|s| s.downcast_ref::<std::io::Error>())
+            .and_then(std::io::Error::raw_os_error);
+        assert!(code.is_some(), "{e}");
+        #[cfg(unix)]
+        assert_eq!(code, Some(libc::EISDIR), "{e}");
         // L'attente vide est restée : c'est ce que l'erreur dit. Sans coupure, le cas de m1 (rien ne reste) est
         // `retrait_refuse_ne_laisse_pas_son_attente`.
         assert_eq!(

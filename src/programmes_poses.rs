@@ -559,7 +559,10 @@ mod tests {
     /// programme de test (325 Mo) demandait une vingtaine de secondes de calcul ; avec la suite de tests autour, la
     /// mise à jour depuis la clé dépassait la minute (tests/programme.rs, mise_a_jour_depuis_la_cle). Compté en temps
     /// de calcul du fil, pas en temps écoulé : une machine chargée ne fait pas échouer l'essai. Mesuré le 11 nov.
-    /// 2026 pour 64 Mio : 3,9 s sans optimisation, 0,02 s optimisée (Cargo.toml, profile.dev.package.blake3).
+    /// 2026 pour 64 Mio : 3,9 s sans optimisation, 0,02 s optimisée (Cargo.toml, profile.dev.package.blake3). Le
+    /// seuil d'une seconde garde près de quatre fois d'écart avec l'oubli de l'optimisation, et de la marge pour une
+    /// machine sans AVX2 (SSE4.1 seul, ou le code portable de BLAKE3, plusieurs fois plus lents) : celui d'un quart de
+    /// seconde n'en laissait presque pas (vérification 0.94, S-5).
     #[cfg(unix)]
     #[test]
     fn empreinte_d_une_copie_rapide_meme_en_developpement() {
@@ -569,7 +572,7 @@ mod tests {
         let duree = calcul_du_fil().checked_sub(debut).unwrap().as_secs_f64();
         assert_ne!(empreinte, blake3::hash(b""));
         assert!(
-            duree < 0.25,
+            duree < 1.0,
             "BLAKE3 : {duree:.2} s de calcul pour 64 Mio (Cargo.toml, profile.dev.package.blake3)"
         );
     }

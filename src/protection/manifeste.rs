@@ -2290,11 +2290,21 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// Vérification 0.94, m7 : dans une copie du code sans `.git` (archive) ni SOURCE_DATE_EPOCH, build.rs ne pose
+    /// pas de date, et c'est voulu : l'essai vérifie alors qu'il n'y en a vraiment aucune (ni date, ni secondes, ni
+    /// avertissement de copie périmée tiré d'un âge inventé), au lieu d'échouer. Depuis le dépôt, la date du dernier
+    /// commit doit être là.
     #[test]
     fn date_de_compilation_et_copie_perimee() {
-        // Compilé depuis le dépôt : la date du dernier commit est là.
-        let d = date_compilation().expect("VANGUARD_COMPILE posée par build.rs");
-        assert!(d.format("%Y").to_string().starts_with("20"));
+        let depot = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".git").exists();
+        if depot || option_env!("SOURCE_DATE_EPOCH").is_some() {
+            let d = date_compilation().expect("VANGUARD_COMPILE posée par build.rs");
+            assert!(d.format("%Y").to_string().starts_with("20"));
+        } else {
+            assert_eq!(date_compilation(), None);
+            assert_eq!(env!("VANGUARD_COMMIT_SECONDES"), "0");
+            assert_eq!(avertissement_perime(), None);
+        }
         assert_eq!(avertissement(10), None);
         assert_eq!(avertissement(179), None);
         assert_eq!(
