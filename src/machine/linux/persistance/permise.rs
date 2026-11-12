@@ -76,12 +76,20 @@ pub(super) enum Ecart {
     /// variable que lisent rsync, findmnt ou le chargeur de programmes, ou ne se lit pas : HOME changé fait lire à
     /// rsync un autre ~/.popt (relecture 0.94, F-1).
     Environnement,
+    /// Une information, pas un constat : la sauvegarde de Vanguard à la forme exacte de la 0.94, sans « env -i ».
+    /// rsync et findmnt y gardent l'environnement du gestionnaire de session, dont ce qui est posé en cours de
+    /// session sans fichier (`systemctl --user set-environment`) : pas vérifié. La remettre la pose sous la forme
+    /// de la 0.95.
+    AncienneForme,
 }
 
 impl Ecart {
     /// Une information, pas un constat : la ligne entre dans la liste permise, ce qui n'a pas été vu se dit à part.
     pub(super) fn information(self) -> bool {
-        matches!(self, Ecart::DisqueDebranche | Ecart::PoptDuSystemeARoot)
+        matches!(
+            self,
+            Ecart::DisqueDebranche | Ecart::PoptDuSystemeARoot | Ecart::AncienneForme
+        )
     }
 
     /// La raison du constat, telle qu'elle se montre.
@@ -150,6 +158,10 @@ impl Ecart {
             Ecart::Complement => tr!(
                 "sauvegarde de Vanguard changée par un complément du compte (dossier « .service.d ») : il peut changer son environnement (HOME, donc le ~/.popt que lit rsync) ou ce qu'elle lance ; ce n'est plus la forme que Vanguard pose",
                 "Vanguard backup changed by an account drop-in (“.service.d” folder): it can change its environment (HOME, hence the ~/.popt rsync reads) or what it starts; it is no longer the form Vanguard sets up"
+            ),
+            Ecart::AncienneForme => tr!(
+                "sauvegarde de Vanguard posée avant la 0.95 : rsync et findmnt y gardent les variables de la session, dont celles posées en cours de session, que le bilan ne voit pas ; non vérifié. Pour la forme qui les vide (« env -i »), annulez-la puis remettez-la : « vanguard sauvegarde-auto »",
+                "Vanguard backup set up before 0.95: rsync and findmnt keep the session variables there, including those set during the session, which the check cannot see; not verified. For the form that clears them (“env -i”), undo it then set it up again: “vanguard auto-backup”"
             ),
             Ecart::Environnement => tr!(
                 "sauvegarde de Vanguard : un fichier de variables de la session du compte (~/.config/environment.d, ~/.config/systemd/user.conf, ~/.pam_environment, ~/.config/uwsm/env…) nomme HOME ou une variable que lisent rsync, findmnt ou le chargeur de programmes (LD_*, RSYNC_*, POPT*, LIBMOUNT_*, BLKID_*…), ou ne se lit pas : il peut changer ce que la sauvegarde lit ou lance (un autre ~/.popt) ; non vérifié, donc pas tu",
@@ -1014,12 +1026,30 @@ fn lancee(s: &Systeme, mots: &[String], profondeur: u32) -> Result<(), Ecart> {
 /// sans dossier dangereux. Ailleurs, rsync reste un lanceur (« -e », « --rsh », « --rsync-path », « --filter ») :
 /// aucune autre forme ne se tait (relecture 0.94, S-1). Un faux findmnt (true) rendrait la condition « bon disque
 /// monté » toujours vraie (C-2).
-fn sauvegarde_posee(s: &Systeme, mots: &[String], nom: &str) -> Result<(), Ecart> {
+///
+/// `env` : la forme de la 0.95, « "<env>" -i » devant ; env doit être le vrai env, comme rsync et findmnt.
+fn sauvegarde_posee(s: &Systeme, mots: &[String], nom: &str, env: bool) -> Result<(), Ecart> {
+    let vrai = |programme: &String, nom: &str| {
+        s.programme(programme)?;
+        if crate::machine::chasse::nom_de_fichier(programme) != nom || s.nom_reel(programme).as_deref() != Some(nom) {
+            return Err(Ecart::Lanceur);
+        }
+        Ok(())
+    };
+    let mots = if env {
+        let [e, i, reste @ ..] = mots else {
+            return Err(Ecart::Forme);
+        };
+        vrai(e, "env")?;
+        if i != "-i" {
+            return Err(Ecart::Lanceur);
+        }
+        reste
+    } else {
+        mots
+    };
     let (programme, args) = mots.split_first().ok_or(Ecart::Forme)?;
-    s.programme(programme)?;
-    if crate::machine::chasse::nom_de_fichier(programme) != nom || s.nom_reel(programme).as_deref() != Some(nom) {
-        return Err(Ecart::Lanceur);
-    }
+    vrai(programme, nom)?;
     args.iter().try_for_each(|a| argument_sur(s, a))
 }
 
@@ -1827,8 +1857,11 @@ pub(super) fn exec_systemd_note(
             }
             // La forme exacte ne tient que les mots : où rsync écrit se juge sur le disque (C-2).
             if p.rsync == mots {
-                sauvegarde_posee(s, &mots, "rsync")?;
+                sauvegarde_posee(s, &mots, "rsync", p.env.is_some())?;
                 notes.extend(s.reglages_de_popt()?);
+                if p.env.is_none() {
+                    notes.push(Ecart::AncienneForme);
+                }
                 match s.destination_sur_le_disque(&p.racine, &p.destination) {
                     Err(e) if e.information() => notes.push(e),
                     r => r?,
@@ -1836,7 +1869,7 @@ pub(super) fn exec_systemd_note(
                 continue;
             }
             if p.findmnt == mots {
-                sauvegarde_posee(s, &mots, "findmnt")?;
+                sauvegarde_posee(s, &mots, "findmnt", p.env.is_some())?;
                 continue;
             }
         }

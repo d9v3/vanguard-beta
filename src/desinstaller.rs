@@ -332,7 +332,7 @@ fn sauvegarde(l: &Lieux, r: &mut Recensement) {
         .iter()
         .filter(|p| p.ends_with(SERVICE))
         .find_map(|p| std::fs::read_to_string(p).ok())
-        .and_then(|t| surveillance::programme_d_une_unite(&t));
+        .and_then(|t| crate::sauvegarde::rsync_de_l_unite(&t));
     let precision = tr!("retirée, vos copies restent", "removed, your copies stay").to_string();
     let montre: Vec<String> = unites.iter().map(|p| chemin_affichable(p)).collect();
     let rsync_texte = tr!("Sauvegarde automatique (rsync)", "Automatic backup (rsync)").to_string();

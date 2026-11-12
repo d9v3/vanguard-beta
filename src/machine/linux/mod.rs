@@ -1720,15 +1720,24 @@ fn racine_chiffree() -> Option<bool> {
         }
         None => {}
     }
-    let source = sortie("findmnt", &["-no", "SOURCE", "/"])?;
+    // Par leur chemin du système et sans les variables du compte (relecture 0.94, F-2) : findmnt et lsblk lisent
+    // LIBMOUNT_*, BLKID_* et LIBSMARTCOLS_*, qu'un programme du compte poserait pour leur faire dire « chiffré ».
+    let source = sortie_propre("findmnt", &["-no", "SOURCE", "/"])?;
     // Btrfs affiche le sous-volume : « /dev/mapper/root[/@] ».
     let peripherique = source.trim().split('[').next()?.to_string();
     if !peripherique.starts_with("/dev/") {
         return None;
     }
     // -s : la chaîne inverse, du volume monté jusqu'au disque (lvm → crypt → part → disk).
-    let chaine = sortie("lsblk", &["-nso", "TYPE", &peripherique])?;
+    let chaine = sortie_propre("lsblk", &["-nso", "TYPE", &peripherique])?;
     Some(chaine.lines().any(|l| l.trim() == "crypt"))
+}
+
+/// Sortie standard d'un outil du système lancé par `commande::outil_propre` (son chemin du système, un environnement
+/// vidé des variables du compte), ou `None` s'il n'y est pas ou échoue : jamais pris dans le PATH du compte.
+fn sortie_propre(nom: &str, args: &[&str]) -> Option<String> {
+    let r = crate::commande::lancer(crate::commande::outil_propre(nom)?.args(args), 30)?;
+    (r.code == Some(0)).then_some(r.sortie)
 }
 
 fn chiffrement_disque() -> Constat {

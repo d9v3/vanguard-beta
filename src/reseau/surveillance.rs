@@ -2193,8 +2193,9 @@ mod tests {
             programme_d_une_unite("ExecStart=/usr/bin/vanguard surveiller\n"),
             Some(PathBuf::from("/usr/bin/vanguard"))
         );
-        // L'unité de la sauvegarde : rsync, écrit par citer_systemd.
+        // L'unité de la sauvegarde : « env -i » puis rsync, écrits par citer_systemd ; le premier mot est env.
         let (_, sauvegarde) = crate::sauvegarde::unites(
+            Some(Path::new("/usr/bin/env")),
             Path::new("/usr/bin/rsync"),
             Some(Path::new("/usr/bin/findmnt")),
             Some("1234-ABCD"),
@@ -2204,8 +2205,9 @@ mod tests {
             false,
         )
         .unwrap();
+        assert_eq!(programme_d_une_unite(&sauvegarde), Some(PathBuf::from("/usr/bin/env")));
         assert_eq!(
-            programme_d_une_unite(&sauvegarde),
+            crate::sauvegarde::rsync_de_l_unite(&sauvegarde),
             Some(PathBuf::from("/usr/bin/rsync"))
         );
     }

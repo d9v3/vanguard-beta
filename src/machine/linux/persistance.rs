@@ -3694,7 +3694,10 @@ fn complements_du_compte(r: &Releveur, nom: &str) -> bool {
 /// Une variable qui change ce que lit ou lance la sauvegarde de Vanguard, posée à son gestionnaire (F-1) : HOME (rsync
 /// lit le ~/.popt de ce dossier-là), celles que lisent rsync, popt, findmnt et ses bibliothèques (libmount, libblkid,
 /// libsmartcols), libcrypto (que rsync charge), et le chargeur de programmes (LD_*, GLIBC_TUNABLES…).
-fn variable_de_la_sauvegarde(nom: &str) -> bool {
+///
+/// `vide` : la forme de la 0.95, qui lance rsync et findmnt par « env -i » : seul env garde l'environnement du
+/// gestionnaire, et seul le chargeur le lit pour lui (LD_*, GLIBC_TUNABLES).
+fn variable_de_la_sauvegarde(nom: &str, vide: bool) -> bool {
     const DEBUTS: [&str; 8] = [
         "LD_",
         "RSYNC_",
@@ -3705,6 +3708,9 @@ fn variable_de_la_sauvegarde(nom: &str) -> bool {
         "LIBSMARTCOLS_",
         "OPENSSL_",
     ];
+    if vide {
+        return nom.starts_with("LD_") || nom == "GLIBC_TUNABLES";
+    }
     ["HOME", "GLIBC_TUNABLES", "LOCPATH", "GCONV_PATH"].contains(&nom) || DEBUTS.iter().any(|d| nom.starts_with(d))
 }
 
@@ -3713,7 +3719,7 @@ fn variable_de_la_sauvegarde(nom: &str) -> bool {
 /// « HOME = … », « export HOME… », « HOME OVERRIDE=… » de pam_env, « DefaultEnvironment="HOME=…" »). Le texte tel
 /// qu'écrit, ses lignes continuées par « \ » jointes, et chacun décodé (« \x4d ») : un nom coupé ou échappé se
 /// voit aussi. Plus large que ce que chaque lecteur accepte : un faux positif lève, il ne tait jamais.
-fn nomme_une_variable_de_la_sauvegarde(texte: &str) -> bool {
+fn nomme_une_variable_de_la_sauvegarde(texte: &str, vide: bool) -> bool {
     let jointe = texte.replace("\\\n", "");
     [texte.to_string(), decodee(texte), decodee(&jointe), jointe]
         .iter()
@@ -3735,7 +3741,7 @@ fn nomme_une_variable_de_la_sauvegarde(texte: &str) -> bool {
                 let avant = debut.checked_sub(1).and_then(|a| octets.get(a)).copied();
                 let avant2 = debut.checked_sub(2).and_then(|a| octets.get(a)).copied();
                 let lue = avant == Some(b'$') || (avant == Some(b'{') && matches!(avant2, Some(b'$' | b'@')));
-                if !lue && l.get(debut..i).is_some_and(variable_de_la_sauvegarde) {
+                if !lue && l.get(debut..i).is_some_and(|n| variable_de_la_sauvegarde(n, vide)) {
                     return true;
                 }
             }
@@ -3751,7 +3757,7 @@ fn nomme_une_variable_de_la_sauvegarde(texte: &str) -> bool {
 /// fichier qui n'est pas ordinaire, lève : non vérifié, jamais tu. Pas lus : les profils des shells (que uwsm lit
 /// aussi) et l'environnement posé en cours de session (`systemctl --user set-environment`), qui ne laissent pas de
 /// fichier.
-fn environnement_change_la_sauvegarde(r: &Releveur) -> bool {
+fn environnement_change_la_sauvegarde(r: &Releveur, vide: bool) -> bool {
     let s = |c: &str| r.sous(Path::new(c));
     let mut fichiers: Vec<(std::path::PathBuf, bool)> = Vec::new();
     let mut illisible = false;
@@ -3830,7 +3836,7 @@ fn environnement_change_la_sauvegarde(r: &Releveur) -> bool {
             match temoins::lire_borne(f, AJOUT_MAX) {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
                 Err(_) => true,
-                Ok(lu) => !lu.entier || nomme_une_variable_de_la_sauvegarde(&String::from_utf8_lossy(&lu.octets)),
+                Ok(lu) => !lu.entier || nomme_une_variable_de_la_sauvegarde(&String::from_utf8_lossy(&lu.octets), vide),
             }
         })
 }
@@ -4828,7 +4834,9 @@ fn juger_demarrage(demarrage: &[std::path::PathBuf], h: &Path, t: &mut Lancement
                     variables: variables_fusionnees(f, &lu.texte, &base, &t.r),
                     sauvegarde_completee: sauvegarde.is_some()
                         && complements_du_compte(&t.r, crate::sauvegarde::SERVICE),
-                    sauvegarde_environnement: sauvegarde.is_some() && environnement_change_la_sauvegarde(&t.r),
+                    sauvegarde_environnement: sauvegarde
+                        .as_ref()
+                        .is_some_and(|p| environnement_change_la_sauvegarde(&t.r, p.env.is_some())),
                     sauvegarde,
                     ..base
                 })
@@ -7977,7 +7985,7 @@ mod tests {
             .enumerate()
         {
             let m = Maison::nouvelle(&format!("unites-de-vanguard-{i}"));
-            for p in [exe, "/usr/bin/rsync", "/usr/bin/findmnt"] {
+            for p in [exe, "/usr/bin/env", "/usr/bin/rsync", "/usr/bin/findmnt"] {
                 let f = m.racine.join(p.trim_start_matches('/'));
                 std::fs::create_dir_all(f.parent().unwrap()).unwrap();
                 std::fs::write(&f, "#!/bin/sh\n").unwrap();
@@ -7995,6 +8003,7 @@ mod tests {
                 let (_, st_avant) =
                     crate::reseau::surveillance::unites_systemd(exe, crate::reseau::surveillance::Reglages::DAvant);
                 let (svt, svs) = crate::sauvegarde::unites(
+                    Some(Path::new("/usr/bin/env")),
                     Path::new("/usr/bin/rsync"),
                     Some(Path::new("/usr/bin/findmnt")),
                     Some("1234-ABCD"),
@@ -8113,6 +8122,7 @@ mod tests {
             "disque en lien",
             "findmnt qui est true",
             "findmnt en lien vers sh",
+            "env en lien vers sh",
             "disque débranché",
             "destination absente",
             "destination absente, rien de monté",
@@ -8122,7 +8132,7 @@ mod tests {
         for fat in [false, true] {
             for (i, nom) in cas.iter().enumerate() {
                 let m = Maison::nouvelle(&format!("sauvegarde-lien-{fat}-{i}"));
-                for p in ["rsync", "findmnt"] {
+                for p in ["env", "rsync", "findmnt"] {
                     let f = m.racine.join("usr/bin").join(p);
                     std::fs::write(&f, "#!/bin/sh\n").unwrap();
                     std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -8138,6 +8148,7 @@ mod tests {
                     "/usr/bin/findmnt"
                 };
                 let (timer, service) = crate::sauvegarde::unites(
+                    Some(Path::new("/usr/bin/env")),
                     Path::new("/usr/bin/rsync"),
                     Some(Path::new(findmnt)),
                     Some("1234-ABCD"),
@@ -8172,6 +8183,10 @@ mod tests {
                     "findmnt en lien vers sh" => {
                         std::fs::remove_file(m.racine.join("usr/bin/findmnt")).unwrap();
                         std::os::unix::fs::symlink("sh", m.racine.join("usr/bin/findmnt")).unwrap();
+                    }
+                    "env en lien vers sh" => {
+                        std::fs::remove_file(m.racine.join("usr/bin/env")).unwrap();
+                        std::os::unix::fs::symlink("sh", m.racine.join("usr/bin/env")).unwrap();
                     }
                     "disque débranché" => std::fs::remove_dir_all(&racine).unwrap(),
                     // Sans /proc/self/mountinfo sous la racine jetable : les montages ne se lisent pas.
@@ -8255,7 +8270,7 @@ mod tests {
         for fat in [false, true] {
             for (i, (nom, leve)) in cas.iter().enumerate() {
                 let m = Maison::nouvelle(&format!("sauvegarde-popt-{fat}-{i}"));
-                for p in ["rsync", "findmnt"] {
+                for p in ["env", "rsync", "findmnt"] {
                     let f = m.racine.join("usr/bin").join(p);
                     std::fs::write(&f, "#!/bin/sh\n").unwrap();
                     std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -8263,6 +8278,7 @@ mod tests {
                 std::fs::create_dir_all(m.chemin("Documents")).unwrap();
                 std::fs::create_dir_all(m.racine.join("run/media/alice/Mon disque/Sauvegarde-Vanguard/poste")).unwrap();
                 let (timer, service) = crate::sauvegarde::unites(
+                    Some(Path::new("/usr/bin/env")),
                     Path::new("/usr/bin/rsync"),
                     Some(Path::new("/usr/bin/findmnt")),
                     Some("1234-ABCD"),
@@ -8348,12 +8364,12 @@ mod tests {
         );
     }
 
-    /// La sauvegarde exacte de Vanguard, posée dans une maison d'essai avec un faux rsync et un faux findmnt : la
-    /// maison et le texte du service.
-    fn sauvegarde_d_essai(nom: &str) -> (Maison, String) {
+    /// La sauvegarde exacte de Vanguard, posée dans une maison d'essai avec un faux env, un faux rsync et un faux
+    /// findmnt, à la forme de la 0.95 (`vide` : « env -i ») ou de la 0.94 : la maison et le texte du service.
+    fn sauvegarde_d_essai(nom: &str, vide: bool) -> (Maison, String) {
         use std::os::unix::fs::PermissionsExt as _;
         let m = Maison::nouvelle(nom);
-        for p in ["rsync", "findmnt"] {
+        for p in ["env", "rsync", "findmnt"] {
             let f = m.racine.join("usr/bin").join(p);
             std::fs::write(&f, "#!/bin/sh\n").unwrap();
             std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -8361,6 +8377,7 @@ mod tests {
         std::fs::create_dir_all(m.chemin("Documents")).unwrap();
         std::fs::create_dir_all(m.racine.join("run/media/alice/Mon disque/Sauvegarde-Vanguard/poste")).unwrap();
         let (timer, service) = crate::sauvegarde::unites(
+            vide.then_some(Path::new("/usr/bin/env")),
             Path::new("/usr/bin/rsync"),
             Some(Path::new("/usr/bin/findmnt")),
             Some("1234-ABCD"),
@@ -8384,36 +8401,57 @@ mod tests {
     /// (XDG_DATA_HOME) ne compte pas.
     #[test]
     fn la_sauvegarde_exacte_ne_se_tait_pas_si_le_gestionnaire_change_son_environnement() {
-        let cas: &[(&str, &str, &str, bool)] = &[
+        // (nom, fichier, texte, levé à la forme de la 0.94, levé à celle de la 0.95 : « env -i » ne garde que ce que
+        // lit le chargeur pour env lui-même).
+        let cas: &[(&str, &str, &str, bool, bool)] = &[
             (
                 "témoin",
                 ".config/environment.d/50-x.conf",
                 "PATH=$HOME/.local/bin:${HOME}/bin:$PATH\nXDG_DATA_HOME=/home/alice/.d\n# HOME=/x\n",
                 false,
+                false,
             ),
-            ("masqué", ".config/environment.d/50-x.conf", "", false),
+            ("masqué", ".config/environment.d/50-x.conf", "", false, false),
             (
                 "environment.d",
                 ".config/environment.d/50-x.conf",
                 "HOME=/home/alice/.cache/x\n",
                 true,
+                false,
             ),
             (
                 "environment.d, blancs",
                 ".config/environment.d/50-x.conf",
                 "  HOME = /home/alice/.cache/x\n",
                 true,
+                false,
             ),
             (
                 "environment.d, suite",
                 ".config/environment.d/50-x.conf",
                 "A=1\\\nHOME=/x\n",
                 true,
+                false,
             ),
             (
                 "environment.d, LD_",
                 ".config/environment.d/50-x.conf",
                 "LD_LIBRARY_PATH=/opt/x/lib\n",
+                true,
+                true,
+            ),
+            (
+                "environment.d, suite LD_",
+                ".config/environment.d/50-x.conf",
+                "A=1\\\nLD_\\\nPRELOAD=/x.so\n",
+                true,
+                true,
+            ),
+            (
+                "environment.d, GLIBC_TUNABLES",
+                ".config/environment.d/50-x.conf",
+                "GLIBC_TUNABLES=glibc.x=1\n",
+                true,
                 true,
             ),
             (
@@ -8421,17 +8459,27 @@ mod tests {
                 ".config/environment.d/50-x.conf",
                 "BLKID_FILE=/home/alice/.cache/b\n",
                 true,
+                false,
             ),
             (
                 "user.conf",
                 ".config/systemd/user.conf",
                 "[Manager]\nDefaultEnvironment=\"A=1\" \"HOME=/x\"\n",
                 true,
+                false,
             ),
             (
                 "user.conf, échappé",
                 ".config/systemd/user.conf",
                 "[Manager]\nDefaultEnvironment=\"HO\\x4dE=/x\"\n",
+                true,
+                false,
+            ),
+            (
+                "user.conf, LD_ échappé",
+                ".config/systemd/user.conf",
+                "[Manager]\nDefaultEnvironment=\"\\x4cD_PRELOAD=/x.so\"\n",
+                true,
                 true,
             ),
             (
@@ -8439,59 +8487,77 @@ mod tests {
                 ".config/systemd/user.conf.d/x.conf",
                 "[Manager]\nManagerEnvironment=LIBMOUNT_FSTAB=/x\n",
                 true,
+                false,
             ),
-            ("pam_environment", ".pam_environment", "HOME OVERRIDE=/x\n", true),
-            ("uwsm", ".config/uwsm/env", "export RSYNC_OLD_ARGS=1\n", true),
-            ("uwsm-hyprland", ".config/uwsm/env-hyprland", "export POPT_X=1\n", true),
-            ("système", "/etc/environment.d/60-x.conf", "HOME=/x\n", true),
-            ("/etc/environment", "/etc/environment", "HOME=/x\n", true),
-            ("illisible", ".config/environment.d/50-x.conf", "A=1\n", true),
-            ("dossier illisible", ".config/environment.d/50-x.conf", "A=1\n", true),
+            ("pam_environment", ".pam_environment", "HOME OVERRIDE=/x\n", true, false),
+            ("uwsm", ".config/uwsm/env", "export RSYNC_OLD_ARGS=1\n", true, false),
+            (
+                "uwsm-hyprland",
+                ".config/uwsm/env-hyprland",
+                "export POPT_X=1\n",
+                true,
+                false,
+            ),
+            ("système", "/etc/environment.d/60-x.conf", "HOME=/x\n", true, false),
+            ("/etc/environment", "/etc/environment", "HOME=/x\n", true, false),
+            ("illisible", ".config/environment.d/50-x.conf", "A=1\n", true, true),
+            (
+                "dossier illisible",
+                ".config/environment.d/50-x.conf",
+                "A=1\n",
+                true,
+                true,
+            ),
         ];
         let mut faux = Vec::new();
-        for (i, (nom, chemin, texte, leve)) in cas.iter().enumerate() {
-            let (m, service) = sauvegarde_d_essai(&format!("sauvegarde-gestionnaire-{i}"));
-            let f = if let Some(s) = chemin.strip_prefix('/') {
-                m.racine.join(s)
-            } else {
-                m.chemin(chemin)
-            };
-            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
-            if *nom == "masqué" {
-                std::os::unix::fs::symlink("/dev/null", &f).unwrap();
-            } else {
-                std::fs::write(&f, texte).unwrap();
-            }
-            // Sous `unshare -r`, un fichier sans droits se lit quand même : un tube nommé, puis une boucle de liens,
-            // ne se lisent jamais.
-            if *nom == "illisible" {
-                std::fs::remove_file(&f).unwrap();
-                assert!(
-                    std::process::Command::new("/usr/bin/mkfifo")
-                        .arg(&f)
-                        .status()
-                        .unwrap()
-                        .success()
-                );
-            }
-            if *nom == "dossier illisible" {
-                let d = f.parent().unwrap();
-                std::fs::remove_dir_all(d).unwrap();
-                std::os::unix::fs::symlink(d.file_name().unwrap(), d).unwrap();
-            }
-            let c = m.lancements();
-            let execstart = service
-                .lines()
-                .position(|l| l.starts_with("ExecStart="))
-                .map(|n| format!("~/.config/systemd/user/{}:{} : ", crate::sauvegarde::SERVICE, n + 1));
-            let nommee = execstart.is_some_and(|e| c.message.contains(&e));
-            let juste = if *leve {
-                c.probleme == Some(Niveau::Eleve) && nommee && crate::apprentissage::declarable(&c).is_err()
-            } else {
-                c.probleme.is_none()
-            };
-            if !juste {
-                faux.push(format!("{nom} : {:?} {:?}", c.probleme, c.message));
+        for (i, (nom, chemin, texte, ancienne, nouvelle)) in cas.iter().enumerate() {
+            for vide in [false, true] {
+                let leve = if vide { nouvelle } else { ancienne };
+                let (m, service) = sauvegarde_d_essai(&format!("sauvegarde-gestionnaire-{i}-{vide}"), vide);
+                let f = if let Some(s) = chemin.strip_prefix('/') {
+                    m.racine.join(s)
+                } else {
+                    m.chemin(chemin)
+                };
+                std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+                if *nom == "masqué" {
+                    std::os::unix::fs::symlink("/dev/null", &f).unwrap();
+                } else {
+                    std::fs::write(&f, texte).unwrap();
+                }
+                // Sous `unshare -r`, un fichier sans droits se lit quand même : un tube nommé, puis une boucle de liens,
+                // ne se lisent jamais.
+                if *nom == "illisible" {
+                    std::fs::remove_file(&f).unwrap();
+                    assert!(
+                        std::process::Command::new("/usr/bin/mkfifo")
+                            .arg(&f)
+                            .status()
+                            .unwrap()
+                            .success()
+                    );
+                }
+                if *nom == "dossier illisible" {
+                    let d = f.parent().unwrap();
+                    std::fs::remove_dir_all(d).unwrap();
+                    std::os::unix::fs::symlink(d.file_name().unwrap(), d).unwrap();
+                }
+                let c = m.lancements();
+                let execstart = service
+                    .lines()
+                    .position(|l| l.starts_with("ExecStart="))
+                    .map(|n| format!("~/.config/systemd/user/{}:{} : ", crate::sauvegarde::SERVICE, n + 1));
+                let nommee = execstart.is_some_and(|e| c.message.contains(&e));
+                let juste = if *leve {
+                    c.probleme == Some(Niveau::Eleve) && nommee && crate::apprentissage::declarable(&c).is_err()
+                } else {
+                    // La forme de la 0.94 se dit à part (une information), jamais levée.
+                    (vide && c.probleme.is_none())
+                        || (!vide && c.probleme == Some(Niveau::Info) && c.message.contains("avant la 0.95"))
+                };
+                if !juste {
+                    faux.push(format!("{nom}, env -i {vide} : {:?} {:?}", c.probleme, c.message));
+                }
             }
         }
         assert!(

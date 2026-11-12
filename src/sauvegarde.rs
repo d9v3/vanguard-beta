@@ -229,8 +229,13 @@ fn verifie_le_disque(service: &str) -> bool {
 /// `destination` : le dossier de cet ordinateur dessus ; `sources` : les dossiers personnels copiés tels quels.
 /// `findmnt` et `uuid` : chaque passage vérifie que le système de fichiers monté à `racine` est bien celui choisi ;
 /// un autre disque au même endroit, et le passage est sauté sans erreur (code 1 de findmnt, `ExecCondition`).
+/// `env` : findmnt et rsync se lancent par « env -i », sans aucune variable (0.95, F-1 et F-2) : ni le HOME que
+/// donnerait le gestionnaire de session (rsync y lirait un autre ~/.popt), ni BLKID_FILE ou LIBMOUNT_* (findmnt
+/// accepterait un autre disque), ni RSYNC_*. `None` : la forme posée jusqu'à la 0.94, encore reconnue au bilan.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[allow(clippy::too_many_arguments)] // les trois programmes et les trois chemins de l'unité, chacun vérifié
 pub(crate) fn unites(
+    env: Option<&Path>,
     rsync: &Path,
     findmnt: Option<&Path>,
     uuid: Option<&str>,
@@ -244,6 +249,7 @@ pub(crate) fn unites(
     };
     let tous = [rsync, findmnt, racine, destination]
         .into_iter()
+        .chain(env)
         .chain(sources.iter().map(PathBuf::as_path));
     for p in tous {
         chemin_systemd(p).ok_or(Refus::Controle)?;
@@ -259,7 +265,15 @@ pub(crate) fn unites(
     } else {
         &["-a", "--no-specials", "--no-devices"]
     };
-    let mut commande = vec![citer_systemd(&rsync.display().to_string())];
+    // « "/usr/bin/env" -i "/usr/bin/rsync" » : env vide tout, puis lance le programme par son chemin entier.
+    let lance = |programme: &Path| {
+        let p = citer_systemd(&programme.display().to_string());
+        env.map_or_else(
+            || p.clone(),
+            |e| format!("{} -i {p}", citer_systemd(&e.display().to_string())),
+        )
+    };
+    let mut commande = vec![lance(rsync)];
     commande.extend(options.iter().map(|o| (*o).to_string()));
     commande.extend([
         "--exclude=.cache".to_string(),
@@ -270,7 +284,7 @@ pub(crate) fn unites(
     commande.push(citer_systemd(&format!("{}/", destination.display())));
     let verification = format!(
         "{VERIFICATION}{} --source UUID={uuid} --mountpoint {}",
-        citer_systemd(&findmnt.display().to_string()),
+        lance(findmnt),
         citer_systemd(&racine.display().to_string())
     );
     let service = format!(
@@ -284,7 +298,6 @@ pub(crate) fn unites(
 
 /// Les mots d'une ligne d'unité écrite par `unites` : chacun cité (`citer_systemd`, rendu tel quel) ou nu (une
 /// option), séparés par une espace. Toute autre écriture : `None`.
-#[cfg(target_os = "linux")]
 fn mots_cites(ligne: &str) -> Option<Vec<(String, bool)>> {
     let mut mots = Vec::new();
     let mut c = ligne.chars().peekable();
@@ -332,9 +345,12 @@ fn chemin_net(t: &str) -> bool {
 #[cfg(target_os = "linux")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SauvegardePosee {
-    /// Les mots exacts du rsync (ExecStart).
+    /// Le chemin de « env » qui lance findmnt et rsync sans variables (« env -i », forme de la 0.95) ; `None` : la
+    /// forme de la 0.94, qui les lance avec l'environnement du gestionnaire de session.
+    pub(crate) env: Option<String>,
+    /// Les mots exacts du rsync (ExecStart), « env -i » compris.
     pub(crate) rsync: Vec<String>,
-    /// Les mots exacts de la vérification du disque (ExecCondition), findmnt en tête.
+    /// Les mots exacts de la vérification du disque (ExecCondition), « env -i » et findmnt en tête.
     pub(crate) findmnt: Vec<String>,
     /// Le point de montage du disque.
     pub(crate) racine: String,
@@ -355,13 +371,20 @@ pub(crate) fn sauvegarde_posee(texte: &str) -> Option<SauvegardePosee> {
     };
     let exec = mots_cites(valeur("ExecStart=")?)?;
     let condition = mots_cites(valeur(VERIFICATION)?)?;
+    // La forme de la 0.95 : « "<env>" -i » devant chacune ; le reste se lit pareil, et l'unité régénérée doit être
+    // identique (une seule des deux lignes en « env -i » ne l'est jamais).
+    let env = match &exec[..] {
+        [(env, true), (i, false), ..] if i == "-i" && chemin_net(env) => Some(env.clone()),
+        _ => None,
+    };
+    let saut = if env.is_some() { 2 } else { 0 };
     let [
         (findmnt, true),
         (source, false),
         (uuid, false),
         (point, false),
         (racine, true),
-    ] = &condition[..]
+    ] = condition.get(saut..)?
     else {
         return None;
     };
@@ -372,7 +395,7 @@ pub(crate) fn sauvegarde_posee(texte: &str) -> Option<SauvegardePosee> {
     let monte_pour_l_utilisateur = ["/run/media/", "/media/", "/mnt/"]
         .iter()
         .any(|d| racine.starts_with(d) && racine.len() > d.len());
-    let ((rsync, true), reste) = exec.split_first()? else {
+    let ((rsync, true), reste) = exec.get(saut..)?.split_first()? else {
         return None;
     };
     let fat = reste.first()?.0 == "-rt";
@@ -395,6 +418,7 @@ pub(crate) fn sauvegarde_posee(texte: &str) -> Option<SauvegardePosee> {
     }
     let sources: Vec<PathBuf> = sources.iter().map(|(s, _)| PathBuf::from(s)).collect();
     let (_, attendu) = unites(
+        env.as_deref().map(Path::new),
         Path::new(rsync),
         Some(Path::new(findmnt)),
         Some(uuid),
@@ -410,6 +434,7 @@ pub(crate) fn sauvegarde_posee(texte: &str) -> Option<SauvegardePosee> {
     // Les chemins d'abord : ils empruntent les mots.
     let (racine, destination) = (racine.clone(), destination.to_string());
     Some(SauvegardePosee {
+        env,
         rsync: exec.into_iter().map(|(m, _)| m).collect(),
         findmnt: condition.into_iter().map(|(m, _)| m).collect(),
         racine,
@@ -686,8 +711,22 @@ fn rsync_disparu() -> Option<Constat> {
         return None;
     };
     let texte = std::fs::read_to_string(dossier_unites().join(SERVICE)).ok()?;
-    let rsync = crate::reseau::surveillance::programme_d_une_unite(&texte)?;
+    let rsync = rsync_de_l_unite(&texte)?;
     juger_rsync(&rsync, rsync.is_file())
+}
+
+/// Le rsync que lance le service de sauvegarde `texte` : le premier mot de son ExecStart, ou celui qui suit
+/// « "<env>" -i » dans la forme de la 0.95 (env n'est que le passage qui vide les variables).
+pub(crate) fn rsync_de_l_unite(texte: &str) -> Option<PathBuf> {
+    let exec = texte.lines().find_map(|l| l.strip_prefix("ExecStart="))?;
+    if let Some(mots) = mots_cites(exec)
+        && let [(env, true), (i, false), (rsync, true), ..] = &mots[..]
+        && i == "-i"
+        && Path::new(env).file_name().is_some_and(|n| n == "env")
+    {
+        return Some(PathBuf::from(rsync));
+    }
+    crate::reseau::surveillance::programme_d_une_unite(texte)
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -1001,7 +1040,16 @@ fn mettre_en_place() -> Option<MiseEnPlace> {
     let fat = systeme_de_fichiers(&disque.racine).is_some_and(|s| sans_liens(&s));
     let uuid = crate::protection::manifeste::identifiant_volume(&disque.racine);
     let findmnt = dans_le_path("findmnt");
+    // « env -i » : un programme du système, jamais celui d'un dossier du compte (0.95, F-1, F-2).
+    let Some(env) = crate::commande::outil_systeme("env") else {
+        mauvais(tr!(
+            "Le programme « env » du système est introuvable (/usr/bin/env) : rien n'est posé. Sans lui, la copie garderait les variables de la session, qui peuvent changer ce que rsync lit.",
+            "The system “env” program cannot be found (/usr/bin/env): nothing is set up. Without it, the copy would keep the session variables, which can change what rsync reads."
+        ));
+        return None;
+    };
     let (timer, service) = match unites(
+        Some(&env),
         &rsync,
         findmnt.as_deref(),
         uuid.as_deref(),
@@ -1336,13 +1384,26 @@ pub fn menu() {
         Some(m) => {
             info(&decrire(m));
             #[cfg(target_os = "linux")]
-            if matches!(m, MiseEnPlace::Systemd { .. })
-                && std::fs::read_to_string(dossier_unites().join(SERVICE)).is_ok_and(|s| !verifie_le_disque(&s))
-            {
-                mauvais(tr!(
-                    "Cette sauvegarde reconnaît son disque à son seul nom : un autre disque du même nom recevrait la copie de vos dossiers. Annulez-la, puis remettez-la en place : Vanguard vérifie maintenant l'identité du disque à chaque passage.",
-                    "This backup recognizes its disk by name only: another disk with the same name would receive the copy of your folders. Undo it, then set it up again: Vanguard now checks the disk's identity at every run."
-                ));
+            if matches!(m, MiseEnPlace::Systemd { .. }) {
+                let service = std::fs::read_to_string(dossier_unites().join(SERVICE));
+                if service.as_ref().is_ok_and(|s| !verifie_le_disque(s)) {
+                    mauvais(tr!(
+                        "Cette sauvegarde reconnaît son disque à son seul nom : un autre disque du même nom recevrait la copie de vos dossiers. Annulez-la, puis remettez-la en place : Vanguard vérifie maintenant l'identité du disque à chaque passage.",
+                        "This backup recognizes its disk by name only: another disk with the same name would receive the copy of your folders. Undo it, then set it up again: Vanguard now checks the disk's identity at every run."
+                    ));
+                } else if service
+                    .as_deref()
+                    .ok()
+                    .and_then(sauvegarde_posee)
+                    .is_some_and(|p| p.env.is_none())
+                {
+                    // F-1, F-2 (relecture 0.94) : la forme d'avant la 0.95 lance rsync et findmnt avec les variables
+                    // de la session, qu'un programme du compte peut poser (HOME vers un autre ~/.popt…).
+                    mauvais(tr!(
+                        "Cette sauvegarde a été posée avant la 0.95 : rsync et findmnt y tournent avec les variables de votre session, qu'un programme de votre compte peut changer (HOME, et rsync lit alors un autre ~/.popt). Annulez-la, puis remettez-la en place : Vanguard les lance maintenant sans aucune variable (« env -i »).",
+                        "This backup was set up before 0.95: rsync and findmnt run there with your session's variables, which a program in your account can change (HOME, and rsync then reads another ~/.popt). Undo it, then set it up again: Vanguard now starts them without any variable (\"env -i\")."
+                    ));
+                }
             }
         }
         None => info(tr!(
@@ -1864,6 +1925,7 @@ mod tests {
         assert!(sans_liens("vfat") && sans_liens("exfat") && !sans_liens("ext4") && !sans_liens("ntfs3"));
         let regle = |fat| {
             unites(
+                Some(Path::new("/usr/bin/env")),
                 Path::new("/usr/bin/rsync"),
                 Some(findmnt()),
                 UUID,
@@ -1888,6 +1950,7 @@ mod tests {
         let pose = |racine: &str, destination: &str, sources: &[&str], fat: bool| {
             let sources: Vec<PathBuf> = sources.iter().map(PathBuf::from).collect();
             unites(
+                Some(Path::new("/usr/bin/env")),
                 Path::new("/usr/bin/rsync"),
                 Some(Path::new("/usr/bin/findmnt")),
                 Some("1234-ABCD"),
@@ -1911,6 +1974,8 @@ mod tests {
             sauvegarde_posee(&service).map(|p| p.rsync),
             Some(
                 [
+                    "/usr/bin/env",
+                    "-i",
                     "/usr/bin/rsync",
                     "-a",
                     "--no-specials",
@@ -1930,8 +1995,47 @@ mod tests {
         let posee = sauvegarde_posee(&service).unwrap();
         assert_eq!(
             posee.findmnt,
-            ["/usr/bin/findmnt", "--source", "UUID=1234-ABCD", "--mountpoint", disque].map(String::from)
+            [
+                "/usr/bin/env",
+                "-i",
+                "/usr/bin/findmnt",
+                "--source",
+                "UUID=1234-ABCD",
+                "--mountpoint",
+                disque
+            ]
+            .map(String::from)
         );
+        assert_eq!(posee.env.as_deref(), Some("/usr/bin/env"));
+        // F-1, F-2 (0.95) : la forme de la 0.94, sans « env -i », reste reconnue (posée chez ceux qui l'ont), et le
+        // dit ; « env -i » sur une seule des deux lignes, sans « -i », ou avec une variable posée, ne l'est jamais.
+        let ancienne = service
+            .replace("ExecCondition=\"/usr/bin/env\" -i ", "ExecCondition=")
+            .replace("ExecStart=\"/usr/bin/env\" -i ", "ExecStart=");
+        assert_ne!(ancienne, service);
+        let vieille = sauvegarde_posee(&ancienne).unwrap();
+        assert_eq!(vieille.env, None);
+        assert_eq!(vieille.rsync.first().map(String::as_str), Some("/usr/bin/rsync"));
+        assert_eq!(vieille.findmnt.first().map(String::as_str), Some("/usr/bin/findmnt"));
+        for mixte in [
+            service.replace("ExecCondition=\"/usr/bin/env\" -i ", "ExecCondition="),
+            service.replace("ExecStart=\"/usr/bin/env\" -i ", "ExecStart="),
+            service.replace("\"/usr/bin/env\" -i ", "\"/usr/bin/env\" "),
+            service.replace("\"/usr/bin/env\" -i ", "\"/usr/bin/env\" -i HOME=/tmp "),
+            service.replace("\"/usr/bin/env\" -i ", "\"/usr/bin/env\" -i -- "),
+        ] {
+            assert_ne!(mixte, service);
+            assert_eq!(sauvegarde_posee(&mixte), None, "{mixte}");
+        }
+        // Un « env » ailleurs garde la forme, comme un rsync ailleurs : c'est le bilan qui juge où il est.
+        let ailleurs = service.replace("\"/usr/bin/env\" -i ", "\"/home/alice/env\" -i ");
+        assert_eq!(
+            sauvegarde_posee(&ailleurs).and_then(|p| p.env).as_deref(),
+            Some("/home/alice/env")
+        );
+        // Le rsync que relit la désinstallation et la veille de « rsync disparu » : celui après « env -i ».
+        assert_eq!(rsync_de_l_unite(&service), Some(PathBuf::from("/usr/bin/rsync")));
+        assert_eq!(rsync_de_l_unite(&ancienne), Some(PathBuf::from("/usr/bin/rsync")));
         assert_eq!(
             (posee.racine.as_str(), posee.destination.as_str()),
             (disque, destination.as_str())
@@ -1943,7 +2047,7 @@ mod tests {
             true,
         );
         assert_eq!(
-            sauvegarde_posee(&fat).map(|p| p.rsync.get(1..3).map(<[String]>::to_vec)),
+            sauvegarde_posee(&fat).map(|p| p.rsync.get(3..5).map(<[String]>::to_vec)),
             Some(Some(vec!["-rt".to_string(), "--modify-window=2".to_string()]))
         );
         // Une ligne ajoutée, une ligne changée : plus la forme exacte.
@@ -1990,6 +2094,7 @@ mod tests {
     #[test]
     fn unites_systemd_bien_formees() {
         let (timer, service) = unites(
+            Some(Path::new("/usr/bin/env")),
             Path::new("/usr/bin/rsync"),
             Some(findmnt()),
             UUID,
@@ -2005,6 +2110,7 @@ mod tests {
         // Un nom de disque piégé (saut de ligne) : rien n'est écrit. Un « % » est doublé pour systemd.
         assert_eq!(
             unites(
+                Some(Path::new("/usr/bin/env")),
                 Path::new("/usr/bin/rsync"),
                 Some(findmnt()),
                 UUID,
@@ -2016,6 +2122,7 @@ mod tests {
             Err(Refus::Controle)
         );
         let (_, cent) = unites(
+            Some(Path::new("/usr/bin/env")),
             Path::new("/usr/bin/rsync"),
             Some(findmnt()),
             UUID,
@@ -2032,7 +2139,7 @@ mod tests {
         assert!(service.contains("ConditionPathIsMountPoint=/run/media/alice/Externe"));
         assert!(service.contains("Type=oneshot"));
         let exec = service.lines().find(|l| l.starts_with("ExecStart=")).unwrap();
-        assert!(exec.starts_with("ExecStart=\"/usr/bin/rsync\" -a --no-specials"));
+        assert!(exec.starts_with("ExecStart=\"/usr/bin/env\" -i \"/usr/bin/rsync\" -a --no-specials"));
         assert!(exec.contains("\"/home/alice/Documents\" \"/home/alice/Mes \\\"images\\\"\" "));
         assert!(exec.ends_with("\"/run/media/alice/Externe/Sauvegarde-Vanguard/pc-alice/\""));
         assert!(!exec.contains("--delete"));
@@ -2045,6 +2152,7 @@ mod tests {
     fn le_disque_est_reconnu_a_son_uuid() {
         let poser = |findmnt: Option<&Path>, uuid: Option<&str>| {
             unites(
+                Some(Path::new("/usr/bin/env")),
                 Path::new("/usr/bin/rsync"),
                 findmnt,
                 uuid,
@@ -2058,7 +2166,7 @@ mod tests {
         let verification = service.lines().find(|l| l.starts_with(VERIFICATION)).unwrap();
         assert_eq!(
             verification,
-            "ExecCondition=\"/usr/bin/findmnt\" --source UUID=0123abcd-4567-89ef-0123-456789abcdef --mountpoint \"/run/media/alice/Mon disque\""
+            "ExecCondition=\"/usr/bin/env\" -i \"/usr/bin/findmnt\" --source UUID=0123abcd-4567-89ef-0123-456789abcdef --mountpoint \"/run/media/alice/Mon disque\""
         );
         // La vérification passe avant la copie.
         assert!(service.find(VERIFICATION) < service.find("ExecStart="));
@@ -2100,6 +2208,74 @@ mod tests {
         assert_eq!(code(&uuid, "/"), Some(0));
         assert_eq!(code("0000-0000", "/"), Some(1));
         assert_eq!(code(&uuid, "/nexiste/pas"), Some(1));
+    }
+
+    /// F-1 et F-2 (0.95), pour de vrai : la ligne ExecStart de l'unité, lancée telle quelle avec les vrais env et rsync
+    /// sous un HOME d'essai dont le ~/.popt détourne rsync (« rsync exec -a … »), copie quand même et ne lance rien
+    /// d'autre ; la même commande sans « env -i » suit le ~/.popt (le témoin que le piège marche).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn env_vide_rend_le_popt_du_compte_sans_effet() {
+        let (Some(env), Some(rsync)) = (
+            crate::commande::outil_systeme("env"),
+            crate::commande::outil_systeme("rsync"),
+        ) else {
+            return crate::essais::saute("env ou rsync absent");
+        };
+        let d = crate::essais::temporaire().join(format!("vanguard-env-vide-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let (maison, source, disque) = (d.join("maison"), d.join("maison/Documents"), d.join("disque"));
+        let destination = disque.join("Sauvegarde-Vanguard/pc");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&destination).unwrap();
+        std::fs::write(source.join("note.txt"), "a\n").unwrap();
+        let temoin = d.join("detourne");
+        // Un petit script : les options de l'unité suivent le programme du ~/.popt, « touch » les refuserait.
+        let piege = d.join("piege.sh");
+        std::fs::write(&piege, format!("#!/bin/sh\n: > '{}'\n", temoin.display())).unwrap();
+        std::fs::set_permissions(&piege, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        std::fs::write(maison.join(".popt"), format!("rsync exec -a {}\n", piege.display())).unwrap();
+        let (_, service) = unites(
+            Some(&env),
+            &rsync,
+            Some(Path::new("/usr/bin/findmnt")),
+            UUID,
+            &disque,
+            &destination,
+            std::slice::from_ref(&source),
+            false,
+        )
+        .unwrap();
+        let mots: Vec<String> = service
+            .lines()
+            .find_map(|l| l.strip_prefix("ExecStart="))
+            .and_then(mots_cites)
+            .unwrap()
+            .into_iter()
+            .map(|(m, _)| m)
+            .collect();
+        let lancer = |mots: &[String]| {
+            std::process::Command::new(&mots[0])
+                .args(&mots[1..])
+                .env("HOME", &maison)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        };
+        assert!(lancer(&mots));
+        assert!(destination.join("Documents/note.txt").is_file(), "rien de copié");
+        assert!(
+            !temoin.exists(),
+            "le ~/.popt du HOME donné a été suivi malgré « env -i »"
+        );
+        // Le témoin : sans « env -i », le même rsync suit le ~/.popt.
+        assert!(lancer(&mots[2..]));
+        assert!(
+            temoin.exists(),
+            "le piège du témoin ne marche pas : l'essai ne prouve rien"
+        );
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]
