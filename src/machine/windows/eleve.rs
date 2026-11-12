@@ -1338,7 +1338,7 @@ fn lancer_script(chemin: &str, empreinte: &str) -> Resultat {
             )
         ));
     }
-    let tube = std::io::pipe().ok().filter(|(_, w)| heritable(w));
+    let tube = tube_des_etats();
     let mut commande = super::powershell_eleve();
     commande.args([
         "-NoProfile",
@@ -1349,32 +1349,15 @@ fn lancer_script(chemin: &str, empreinte: &str) -> Resultat {
     ]);
     // Sans tube, la variable est retirée : une valeur venue de l'environnement du compte ne désigne pas une poignée.
     match &tube {
-        Some((_, w)) => commande.env(super::VARIABLE_RESULTATS, w.as_raw_handle().addr().to_string()),
+        Some((w, _)) => commande.env(super::VARIABLE_RESULTATS, w.as_raw_handle().addr().to_string()),
         None => commande.env_remove(super::VARIABLE_RESULTATS),
     };
     let fils = crate::coulisses::Suivie::spawn_suivi(&mut commande);
     // Le parent ferme sa copie de l'écrivain : la fin de lecture vient quand PowerShell (et ce qu'il a lancé) a fermé
     // la sienne.
-    // Sans fil pour le lire (refus dit par socle::fil), le tube est fermé : les états des gestes manquent, le code de
-    // sortie du script décide seul.
-    let lecteur = tube.and_then(|(r, w)| {
+    let lecteur = tube.map(|(w, reception)| {
         drop(w);
-        let (envoi, reception) = std::sync::mpsc::channel();
-        crate::socle::fil::lancer("etats-eleves", move || {
-            for l in std::io::BufReader::new(r.take(1 << 16)).lines() {
-                let Ok(l) = l else { break };
-                let etat = match l.trim() {
-                    "ok" => true,
-                    "echec" => false,
-                    _ => continue,
-                };
-                if envoi.send(etat).is_err() {
-                    break;
-                }
-            }
-        })
-        .ok()?;
-        Some(reception)
+        reception
     });
     let statut = fils.and_then(|mut f| f.wait());
     // Un programme lancé par le script et resté en vie garde l'écrivain ouvert : on ne l'attend pas au-delà de 2 s.
@@ -1397,6 +1380,30 @@ fn lancer_script(chemin: &str, empreinte: &str) -> Resultat {
         Some(c) => refus(gestes::raison_du_script(c, &etats)),
         None => refus(tr!("PowerShell ne s'est pas lancé", "PowerShell did not start").to_string()),
     }
+}
+
+/// Le tube des états du script et son fil lecteur, lancé avant PowerShell. Sans fil pour le lire (refus dit par
+/// `socle::fil`), pas de tube du tout : un écrivain sans lecteur ferait échouer la première ligne d'état, et le script
+/// s'arrêtait là, les correctifs suivants jamais faits (relecture 0.95). Sans tube, le script fait toutes ses étapes
+/// et son code de sortie décide seul : en échec, chaque correctif est compté non fait, rien n'est dit fait sans preuve.
+fn tube_des_etats() -> Option<(std::io::PipeWriter, std::sync::mpsc::Receiver<bool>)> {
+    let (r, w) = std::io::pipe().ok().filter(|(_, w)| heritable(w))?;
+    let (envoi, reception) = std::sync::mpsc::channel();
+    crate::socle::fil::lancer("etats-eleves", move || {
+        for l in std::io::BufReader::new(r.take(1 << 16)).lines() {
+            let Ok(l) = l else { break };
+            let etat = match l.trim() {
+                "ok" => true,
+                "echec" => false,
+                _ => continue,
+            };
+            if envoi.send(etat).is_err() {
+                break;
+            }
+        }
+    })
+    .ok()?;
+    Some((w, reception))
 }
 
 /// Rend la poignée héritable par le prochain processus créé (std les crée toutes non héritables).
@@ -1726,6 +1733,19 @@ const CONTEXTE_POINT: &str = "restauration/point";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Relecture 0.95. Le fil lecteur des états refusé : aucun tube n'est passé à PowerShell (un écrivain sans lecteur
+    /// arrêtait le script au premier état). Accordé : chaque ligne d'état arrive, le bruit est ignoré, la fin vient
+    /// quand l'écrivain se ferme.
+    #[test]
+    fn etats_sans_fil_pas_de_tube() {
+        assert!(crate::socle::fil::refuser_les_fils(tube_des_etats).is_none());
+        let (mut w, reception) = tube_des_etats().expect("tube et lecteur");
+        w.write_all(b"ok\nbruit\nechec\n").unwrap();
+        drop(w);
+        let lus: Vec<bool> = reception.iter().collect();
+        assert_eq!(lus, [true, false]);
+    }
 
     /// R8 : permettre un interpréteur ou un joker malgré l'accès contrôlé aux dossiers est large, comme une exclusion
     /// large ; un programme précis ne l'est pas.

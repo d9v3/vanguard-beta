@@ -369,7 +369,9 @@ fn script_admin(correctifs: &[Vec<String>], sortie: Sortie) -> String {
                 texte(&crate::ui::commande_affichable(c))
             );
         }
-        script += "if ($resultats) { $resultats.WriteLine($(if ($echecs -gt $avant) { 'echec' } else { 'ok' })) }\n";
+        // Une ligne qui ne s'écrit plus (lecteur parti, tube fermé) n'arrête pas le script ($ErrorActionPreference =
+        // 'Stop') : les correctifs suivants se font, leurs états manquent et Vanguard les compte non faits.
+        script += "if ($resultats) { try { $resultats.WriteLine($(if ($echecs -gt $avant) { 'echec' } else { 'ok' })) } catch { $resultats = $null } }\n";
     }
     if let Sortie::Tube = sortie {
         // Le processus élevé dit lui-même « Terminé » et attend Entrée avant de fermer sa console.
@@ -2426,6 +2428,9 @@ mod tests {
             "[IO.Pipes.AnonymousPipeClientStream]::new([IO.Pipes.PipeDirection]::Out, $env:VANGUARD_RESULTATS)"
         ));
         assert_eq!(s.matches("$resultats.WriteLine(").count(), 2);
+        // Un tube sans lecteur n'arrête pas le script après le premier correctif (relecture 0.95).
+        assert_eq!(s.matches("try { $resultats.WriteLine(").count(), 2);
+        assert_eq!(s.matches("} catch { $resultats = $null } }").count(), 2);
         for absent in [
             "Start-Transcript",
             "Stop-Transcript",
