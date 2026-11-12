@@ -6598,6 +6598,224 @@ fn mot_pour_systemd(mot: &str) -> String {
     ecrit
 }
 
+/// La raison d'une valeur Exec de .desktop que Vanguard ne ramène pas à ce que lance GLib (`formes_de_glib`).
+fn exec_de_glib_non_lu() -> &'static str {
+    tr!(
+        "commande d'entrée de bureau que Vanguard ne ramène pas à ce que lance GLib (gio, gnome-session : trop de noms ou d'icônes à essayer, chemin du fichier ou code « % » qui ne fait pas de l'UTF-8) : non vérifiée",
+        "desktop entry command Vanguard cannot reduce to what GLib starts (gio, gnome-session: too many names or icons to try, file path or “%” code that is not UTF-8): not checked"
+    )
+}
+
+/// Une valeur lue comme GKeyFile (GLib) la rend : « \s », « \n », « \t », « \r », « \\ » ; tout autre échappement,
+/// ou un « \ » final, fait refuser la valeur (mesuré avec gio launch : l'entrée ne se lance pas). `None` : refusée.
+fn valeur_de_glib(valeur: &str) -> Option<String> {
+    let mut lue = String::with_capacity(valeur.len());
+    let mut lettres = valeur.chars();
+    while let Some(c) = lettres.next() {
+        if c != '\\' {
+            lue.push(c);
+            continue;
+        }
+        lue.push(match lettres.next()? {
+            's' => ' ',
+            'n' => '\n',
+            't' => '\t',
+            'r' => '\r',
+            '\\' => '\\',
+            _ => return None,
+        });
+    }
+    Some(lue)
+}
+
+/// Un texte cité comme `g_shell_quote` de GLib : entre « ' », chaque « ' » écrit « '\'' ».
+fn cite_par_glib(texte: &str) -> String {
+    let mut cite = String::from("'");
+    cite.push_str(&texte.replace('\'', r"'\''"));
+    cite.push('\'');
+    cite
+}
+
+/// Les mots d'une ligne comme `g_shell_parse_argv` de GLib : découpe sur espace, tabulation et « \n » hors guillemets
+/// (pas « \r ») ; « # » au début de la ligne ou après une espace ou un « \n » ouvre un commentaire jusqu'au « \n » ;
+/// puis chaque mot sans ses guillemets : hors guillemets « \ » garde le caractère suivant (« \ » + « \n » s'efface) ;
+/// entre « ' » tout est littéral ; entre « " », « \ » n'échappe que « " », « \ », « ` », « $ » et « \n ». `None` :
+/// guillemet non fermé, « \ » final ou ligne vide (GLib ne lance rien).
+fn mots_de_glib(ligne: &str) -> Option<Vec<String>> {
+    let mut jetons: Vec<String> = Vec::new();
+    let mut jeton: Option<String> = None;
+    let mut ouvert: Option<char> = None;
+    let (mut echappe, mut precedent) = (false, None::<char>);
+    for c in ligne.chars() {
+        match ouvert {
+            Some('\\') => {
+                if c != '\n' {
+                    let j = jeton.get_or_insert_with(String::new);
+                    j.push('\\');
+                    j.push(c);
+                }
+                ouvert = None;
+            }
+            Some('#') => {
+                if c == '\n' {
+                    ouvert = None;
+                }
+            }
+            Some(q) => {
+                if c == q && !(q == '"' && echappe) {
+                    ouvert = None;
+                }
+                jeton.get_or_insert_with(String::new).push(c);
+            }
+            None => match c {
+                '\n' => jetons.extend(jeton.take()),
+                ' ' | '\t' => jetons.extend(jeton.take().filter(|j| !j.is_empty())),
+                '\'' | '"' => {
+                    jeton.get_or_insert_with(String::new).push(c);
+                    ouvert = Some(c);
+                }
+                '\\' => ouvert = Some('\\'),
+                '#' if matches!(precedent, None | Some(' ' | '\n')) => ouvert = Some('#'),
+                c => jeton.get_or_insert_with(String::new).push(c),
+            },
+        }
+        echappe = c == '\\' && !echappe;
+        precedent = Some(c);
+    }
+    jetons.extend(jeton);
+    if matches!(ouvert, Some('\\' | '\'' | '"')) || jetons.is_empty() {
+        return None;
+    }
+    let mut mots = Vec::with_capacity(jetons.len());
+    for j in jetons {
+        let mut mot = String::with_capacity(j.len());
+        let mut lettres = j.chars().peekable();
+        while let Some(c) = lettres.next() {
+            match c {
+                '\\' => {
+                    if let Some(e) = lettres.next().filter(|e| *e != '\n') {
+                        mot.push(e);
+                    }
+                }
+                '\'' => loop {
+                    match lettres.next()? {
+                        '\'' => break,
+                        x => mot.push(x),
+                    }
+                },
+                '"' => loop {
+                    match lettres.next()? {
+                        '"' => break,
+                        '\\' => match lettres.peek() {
+                            Some(&e @ ('"' | '\\' | '`' | '$' | '\n')) => {
+                                mot.push(e);
+                                lettres.next();
+                            }
+                            _ => mot.push('\\'),
+                        },
+                        x => mot.push(x),
+                    }
+                },
+                c => mot.push(c),
+            }
+        }
+        mots.push(mot);
+    }
+    Some(mots)
+}
+
+/// Les commandes qu'une valeur Exec de .desktop donne à GLib (gio launch, gnome-session ; revérification 9, D-2 ;
+/// mesuré avec gio launch), réécrites pour `commandes_de_systemd` : la valeur lue comme GKeyFile (`valeur_de_glib`),
+/// puis chaque « %x » remplacé partout, même au milieu d'un mot (expand_application_parameters) : « %c » par le nom
+/// cité, « %k » par le chemin du `fichier` cité, « %i » par « --icon » et l'icône citée, « %% » par « % », tout
+/// autre code (« %f », « %U »… : aucun fichier au démarrage) par rien ; puis les mots de `mots_de_glib`. Le nom et
+/// l'icône dépendent de la langue de la session : une commande par nom (`noms`) et par icône (`icones`, ou aucune)
+/// possibles. `Ok(vide)` : GLib ne la lance pas ; `Err` : trop de cas à essayer, `fichier` absent (pas de l'UTF-8)
+/// pour « %k », ou un code « % » collé à un caractère non ASCII (GLib coupe ses octets).
+fn exec_de_glib(valeur: &str, noms: &[String], icones: &[String], fichier: Option<&str>) -> Result<Vec<String>, ()> {
+    const CAS_MAX: usize = 32;
+    let Some(lue) = valeur_de_glib(valeur) else {
+        return Ok(Vec::new());
+    };
+    let mut codes = Vec::new();
+    let mut lettres = lue.chars();
+    while let Some(c) = lettres.next() {
+        if c == '%' {
+            codes.extend(lettres.next());
+        }
+    }
+    let a_code = |l: char| codes.contains(&l);
+    let noms: Vec<Option<&str>> = if a_code('c') {
+        noms.iter().map(|n| Some(n.as_str())).collect()
+    } else {
+        vec![None]
+    };
+    let mut toutes: Vec<Option<&str>> = vec![None];
+    if a_code('i') {
+        toutes.extend(icones.iter().map(|i| Some(i.as_str())));
+    }
+    if noms.len().saturating_mul(toutes.len()) > CAS_MAX || (a_code('k') && fichier.is_none()) {
+        return Err(());
+    }
+    let mut formes: Vec<String> = Vec::new();
+    for nom in &noms {
+        for icone in &toutes {
+            let mut ligne = String::with_capacity(lue.len());
+            let mut lettres = lue.chars();
+            while let Some(c) = lettres.next() {
+                if c != '%' {
+                    ligne.push(c);
+                    continue;
+                }
+                let Some(code) = lettres.next() else {
+                    ligne.push('%');
+                    break;
+                };
+                if !code.is_ascii() {
+                    return Err(());
+                }
+                match code {
+                    'c' => ligne.push_str(&cite_par_glib(nom.unwrap_or_default())),
+                    'k' => ligne.push_str(&cite_par_glib(fichier.unwrap_or_default())),
+                    'i' => {
+                        if let Some(i) = icone {
+                            ligne.push_str("--icon ");
+                            ligne.push_str(&cite_par_glib(i));
+                        }
+                    }
+                    '%' => ligne.push('%'),
+                    _ => {}
+                }
+            }
+            let Some(mots) = mots_de_glib(&ligne) else { continue };
+            let forme = mots.iter().map(|m| mot_pour_systemd(m)).collect::<Vec<_>>().join(" ");
+            if !formes.contains(&forme) {
+                formes.push(forme);
+            }
+        }
+    }
+    Ok(formes)
+}
+
+/// `exec_de_glib` pour la `commande` d'une entrée de bureau lue `texte` au chemin `f` : les noms (« Name= » et ses
+/// traductions, lus comme GKeyFile, et « Unnamed » que GLib donne sans nom) et les icônes de [Desktop Entry].
+fn formes_de_glib(commande: &str, texte: &str, f: &Path) -> Result<Vec<String>, ()> {
+    let (mut noms, mut icones) = (vec!["Unnamed".to_string()], Vec::new());
+    for c in cles_de_bureau(texte) {
+        let liste = match c.cle.split_once('[').map_or(c.cle.as_str(), |(k, _)| k) {
+            "Name" => &mut noms,
+            "Icon" => &mut icones,
+            _ => continue,
+        };
+        if let Some(v) = valeur_de_glib(&c.valeur)
+            && !liste.contains(&v)
+        {
+            liste.push(v);
+        }
+    }
+    exec_de_glib(commande, &noms, &icones, f.to_str())
+}
+
 /// Juge la `commande` lancée par la `ligne` (numéro `n`, à partir de 0) du fichier `f` lu `lu` : levée si elle
 /// ressemble à une porte dérobée, telle qu'écrite ou une fois ramenée à sa forme finale par son `lecteur` ; une
 /// forme finale que Vanguard ne sait pas calculer (variable de Hyprland sans valeur, code de l'unité) est levée aussi,
@@ -6649,6 +6867,27 @@ fn juger_lancement(
         _ => None,
     };
     let jugee = decodee.as_deref().unwrap_or(commande);
+    // D-2 (revérification 9) : la même valeur lue par GLib (gio, gnome-session), qui retire un code « % » même au
+    // milieu d'un mot et met le nom, l'icône ou le chemin à la place de « %c », « %i », « %k ». Chaque lecture se
+    // juge ; l'une qui touche un lieu de démarrage suffit.
+    let glib = match lecteur {
+        Lecteur::Bureau(_) => match formes_de_glib(commande, &lu.texte, f) {
+            Ok(formes) => formes,
+            Err(()) if racine_seul => Vec::new(),
+            Err(()) => {
+                let raison = exec_de_glib_non_lu();
+                lever(t, f, lu, n, ligne, commande, true, sorte, retirable, raison);
+                return true;
+            }
+        },
+        _ => Vec::new(),
+    };
+    let mut jugees = vec![jugee];
+    for g in &glib {
+        if !jugees.contains(&g.as_str()) {
+            jugees.push(g);
+        }
+    }
     // Une ligne de shell qui ne se lit pas : dite comme telle, là où le compte écrit.
     let shell = |c: &str| match ligne_de_shell_suspecte(c, &maisons, tout_argument) {
         Ok(raison) => raison,
@@ -6659,7 +6898,9 @@ fn juger_lancement(
         Lecteur::Texte => None,
         Lecteur::Brut => shell(commande),
         Lecteur::Systemd(codes) => dite(forme_finale_de_systemd(commande, Some(codes), &maisons, tout_argument)),
-        Lecteur::Bureau(_) => dite(forme_finale_de_systemd(jugee, None, &maisons, tout_argument)),
+        Lecteur::Bureau(_) => jugees
+            .iter()
+            .find_map(|c| dite(forme_finale_de_systemd(c, None, &maisons, tout_argument))),
         Lecteur::Hypr(variables) => {
             if !commande.contains('$') {
                 return shell(commande);
@@ -6678,7 +6919,12 @@ fn juger_lancement(
     let (raison, hors_liste): (Option<std::borrow::Cow<'static, str>>, bool) = match raison {
         Some(r) => (Some(r.into()), false),
         None if racine_seul => (None, false),
-        None => (hors_de_la_liste(&t.r, jugee, lecteur, &maisons, &mut notes), true),
+        None => (
+            jugees
+                .iter()
+                .find_map(|c| hors_de_la_liste(&t.r, c, lecteur, &maisons, &mut notes)),
+            true,
+        ),
     };
     let Some(raison) = raison else {
         let perso = t.r.maison.clone();
@@ -12444,6 +12690,218 @@ mod tests {
             let relu = commandes_de_systemd_brutes(&ecrit);
             assert_eq!(relu, Some(vec![vec![mot.to_string()]]), "{ecrit}");
         }
+    }
+
+    /// D-2 (revérification 9) : GLib (gio launch, gnome-session) lit l'Exec autrement que le générateur de systemd :
+    /// un code « %f » au milieu d'un mot est retiré, « %c » devient le Name=, « %k » le chemin du fichier. Une entrée
+    /// du compte se juge sous les deux lectures ; l'une ou l'autre qui touche un lieu de démarrage suffit.
+    #[test]
+    fn une_commande_de_bureau_se_juge_aussi_comme_glib() {
+        use std::os::unix::fs::PermissionsExt as _;
+        // (nom, Name= (« - » : aucun), valeur Exec où « H » est la maison, levé)
+        let cas: [(&str, &str, &str, bool); 11] = [
+            (
+                "E1 %f collé",
+                "essai",
+                "/usr/bin/cp H/Documents/x H/.config/auto%fstart/y.desktop",
+                true,
+            ),
+            (
+                "E8 %c, Name vide",
+                "",
+                "/usr/bin/cp H/Documents/x H/.config/auto%cstart/y.desktop",
+                true,
+            ),
+            (
+                "E8b %c, Name qui complète",
+                "nfig/auto",
+                "/usr/bin/cp H/Documents/x H/.co%cstart/y.desktop",
+                true,
+            ),
+            (
+                "%c en mot entier",
+                "H/.config/autostart/y.desktop",
+                "/usr/bin/cp H/Documents/x %c",
+                true,
+            ),
+            (
+                "%z inconnu collé",
+                "essai",
+                "/usr/bin/cp H/Documents/x H/.config/auto%zstart/y.desktop",
+                true,
+            ),
+            (
+                "témoin %c, Name ordinaire",
+                "essai",
+                "/usr/bin/cp H/Documents/x H/.config/auto%cstart/y.desktop",
+                false,
+            ),
+            (
+                "témoin %f en mot entier",
+                "essai",
+                "/usr/bin/cp H/Documents/x H/Documents/z %f",
+                false,
+            ),
+            (
+                "témoin %% collé",
+                "essai",
+                "/usr/bin/cp H/Documents/x H/Documents/a%%fb",
+                false,
+            ),
+            (
+                "témoin %U",
+                "essai",
+                "/usr/bin/cp H/Documents/x H/Documents/z %U",
+                false,
+            ),
+            (
+                "sans Name, %c",
+                "-",
+                "/usr/bin/cp H/Documents/x H/.config/auto%fstart/y.desktop %c",
+                true,
+            ),
+            (
+                "%é collé, non vérifié",
+                "essai",
+                "/usr/bin/cp H/Documents/x H/Documents/a%éb",
+                true,
+            ),
+        ];
+        let mut faux = Vec::new();
+        for (i, (nom, name, exec, leve_attendu)) in cas.iter().enumerate() {
+            let m = Maison::nouvelle(&format!("d2-glib-{i}"));
+            let f = m.racine.join("usr/bin/cp");
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(&f, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::create_dir_all(m.chemin("Documents")).unwrap();
+            let h = m.chemin("").to_string_lossy().trim_end_matches('/').to_string();
+            m.ecrire(
+                ".config/autostart/essai.desktop",
+                &format!(
+                    "[Desktop Entry]\nType=Application\n{}Exec={}\n",
+                    if *name == "-" {
+                        String::new()
+                    } else {
+                        format!("Name={}\n", name.replace('H', &h))
+                    },
+                    exec.replace('H', &h)
+                ),
+            );
+            let leve: Vec<String> = persistance_dans(&m.racine, &m.chemin(""), |_| None, None, None)
+                .into_iter()
+                .filter(|c| c.probleme.is_some())
+                .map(|c| c.message)
+                .collect();
+            if leve.is_empty() == *leve_attendu {
+                faux.push((*nom, leve));
+            }
+        }
+        assert!(faux.is_empty(), "{faux:#?}");
+    }
+
+    /// Les commandes d'`exec_de_glib`, mesurées avec gio launch (GLib, `touch` dans un dossier jetable, LANG=C.UTF-8).
+    #[test]
+    fn exec_de_glib_rend_les_mots_de_gio() {
+        type Rendu<'a> = Result<&'a [&'a str], ()>;
+        let k = Some("/f/t.desktop");
+        // (valeur Exec, Name=, attendu)
+        let cas: [(&str, &str, Rendu<'_>); 26] = [
+            (r"/usr/bin/touch /d/a%fb", "essai", Ok(&["/usr/bin/touch /d/ab"])),
+            (r"/usr/bin/touch /d/a\;b", "essai", Ok(&[])),
+            (r"/usr/bin/touch /d/a\xb", "essai", Ok(&[])),
+            (
+                r"/usr/bin/touch '/d/a\\b'",
+                "essai",
+                Ok(&[r#"/usr/bin/touch "/d/a\\b""#]),
+            ),
+            (
+                r#"/usr/bin/touch "/d/a\\b""#,
+                "essai",
+                Ok(&[r#"/usr/bin/touch "/d/a\\b""#]),
+            ),
+            (
+                r#"/usr/bin/touch "/d/a\\\\b""#,
+                "essai",
+                Ok(&[r#"/usr/bin/touch "/d/a\\b""#]),
+            ),
+            (r"/usr/bin/touch /d/a%cb", "", Ok(&["/usr/bin/touch /d/ab"])),
+            (r"/usr/bin/touch /d/a%cb", "x'y", Ok(&[r#"/usr/bin/touch "/d/ax'yb""#])),
+            (
+                r#"/usr/bin/touch "/d/a%cb""#,
+                "x y",
+                Ok(&[r#"/usr/bin/touch "/d/a'x y'b""#]),
+            ),
+            (
+                r"/usr/bin/touch /d/a#b /d/c #/d/d",
+                "essai",
+                Ok(&["/usr/bin/touch /d/a#b /d/c"]),
+            ),
+            (
+                r"/usr/bin/touch /d/a\rb",
+                "essai",
+                Ok(&[r#"/usr/bin/touch "/d/a\x0db""#]),
+            ),
+            (r"/usr/bin/touch /d/x\", "essai", Ok(&[])),
+            (r"/usr/bin/touch /d/a\\x6fb", "essai", Ok(&["/usr/bin/touch /d/ax6fb"])),
+            (
+                r"/usr/bin/touch /d/a%b /d/c%",
+                "essai",
+                Ok(&["/usr/bin/touch /d/a /d/c%"]),
+            ),
+            (
+                r"/usr/bin/touch /d/a%kb",
+                "essai",
+                Ok(&["/usr/bin/touch /d/a/f/t.desktopb"]),
+            ),
+            (
+                r#"/usr/bin/touch "/d/a" /d/b\t/d/c"#,
+                "essai",
+                Ok(&["/usr/bin/touch /d/a /d/b /d/c"]),
+            ),
+            (r"/usr/bin/touch /d/a%%fb", "essai", Ok(&["/usr/bin/touch /d/a%fb"])),
+            (
+                r"/usr/bin/touch --x %i",
+                "essai",
+                Ok(&["/usr/bin/touch --x", "/usr/bin/touch --x --icon ic"]),
+            ),
+            (r"/usr/bin/touch /d/a%éb", "essai", Err(())),
+            (r#"/usr/bin/touch "/d/a\\$b""#, "essai", Ok(&["/usr/bin/touch /d/a$b"])),
+            (
+                r#"/usr/bin/touch "/d/a\\`b" "/d/c\\qd""#,
+                "essai",
+                Ok(&[r#"/usr/bin/touch /d/a`b "/d/c\\qd""#]),
+            ),
+            (
+                r"/usr/bin/touch /d/c\t#/d/d",
+                "essai",
+                Ok(&["/usr/bin/touch /d/c #/d/d"]),
+            ),
+            (
+                r"/usr/bin/touch /d/e #x\n/d/f",
+                "essai",
+                Ok(&["/usr/bin/touch /d/e /d/f"]),
+            ),
+            (r"/usr/bin/touch /d/a\\", "essai", Ok(&[])),
+            (
+                r#"/usr/bin/touch "/d/a\\"b c""#,
+                "essai",
+                Ok(&[r#"/usr/bin/touch "/d/a\"b c""#]),
+            ),
+            (r#"/usr/bin/touch "/d/a"#, "essai", Ok(&[])),
+        ];
+        for (valeur, nom, attendu) in cas {
+            let rendu = exec_de_glib(valeur, &[nom.to_string()], &["ic".to_string()], k);
+            let attendu = attendu.map(|a| a.iter().map(|m| (*m).to_string()).collect::<Vec<_>>());
+            assert_eq!(rendu, attendu, "{valeur}");
+        }
+        assert_eq!(exec_de_glib("/usr/bin/touch %k", &[], &[], None), Err(()));
+        let noms: Vec<String> = (0..40).map(|i| format!("n{i}")).collect();
+        assert_eq!(exec_de_glib("/usr/bin/touch %c", &noms, &[], k), Err(()));
+        assert_eq!(
+            exec_de_glib("/usr/bin/touch %%c", &noms, &[], k).map(|f| f.len()),
+            Ok(1)
+        );
     }
 
     /// B-2 (revérification 7) : un argument relatif depuis un dossier de départ inconnu (Path= d'une entrée de bureau,
