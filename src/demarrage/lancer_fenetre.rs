@@ -51,11 +51,28 @@ pub(crate) struct Contexte {
     pub(crate) a_distance: bool,
     /// Vanguard tourne en administrateur (root, sudo, console administrateur) : pas de fenêtre avec tous les droits.
     pub(crate) eleve: bool,
+    /// L'alerte « bibliothèque injectée » est levée (`protection::environnement`) : elle irait aussi dans la fenêtre.
+    pub(crate) injection: bool,
 }
 
 /// La fenêtre ou le menu ? La fenêtre seulement quand tout le dit ; dans le doute, le menu.
 pub(crate) fn choisir(c: Contexte) -> bool {
     c.terminal && c.graphique && !c.a_distance && !c.eleve
+}
+
+/// Ce qui, dans le contexte, garde le menu et se dit (contrairement à `choisir`, qui se tait) : une bibliothèque
+/// injectée dans les programmes de la session (/etc/ld.so.preload, LD_PRELOAD inconnu, AppInit_DLLs) que
+/// `protection::environnement` signale en alerte. `vanguard` est statique sous Linux ; la fenêtre, elle, charge les
+/// bibliothèques du système (OpenGL, Wayland, X11) : /etc/ld.so.preload y entrerait, liste fermée de variables ou
+/// pas, et AppInit_DLLs entre dans tout programme Windows à fenêtres. Une bibliothèque que l'alerte juge du système
+/// (une simple information) ne l'empêche pas.
+fn refus_du_contexte(c: Contexte) -> Option<&'static str> {
+    c.injection.then(|| {
+        tr!(
+            "une bibliothèque injectée dans les programmes de la session y entrerait aussi, voir l'alerte plus haut",
+            "a library injected into the session's programs would get into it too, see the alert above"
+        )
+    })
 }
 
 fn contexte() -> Contexte {
@@ -66,6 +83,7 @@ fn contexte() -> Contexte {
         graphique: cfg!(windows) || present("WAYLAND_DISPLAY") || present("DISPLAY"),
         a_distance: a_distance(&present),
         eleve: super::droits::processus_eleve(),
+        injection: crate::protection::environnement::injection_alertee(),
     }
 }
 
@@ -223,7 +241,7 @@ fn ouvrir_depuis(c: Contexte, chemin: &Path, programme: &Path) -> bool {
     let raison = refus_chemin(&chemin, &m, crate::socle::uid());
     #[cfg(windows)]
     let raison = refus(&m);
-    if let Some(r) = raison {
+    if let Some(r) = raison.or_else(|| refus_du_contexte(c)) {
         eprintln!(
             "{}",
             trf!(
@@ -345,12 +363,88 @@ fn verifier(chemin: &Path, attendue: &[u8; 32], moi: u32) -> Result<Verifiee, St
 /// La commande qui lance la copie scellée : `/proc/self/fd/<n>`, ce que fait `fexecve` (glibc, musl). Le descripteur
 /// est fermé au lancement (`MFD_CLOEXEC`) : la fenêtre ne l'hérite pas. Son nom affiché reste `vanguard-fenetre`.
 #[cfg(target_os = "linux")]
-fn commande(v: &Verifiee) -> Command {
+fn commande(v: &Verifiee, de: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>) -> Command {
     use std::os::fd::AsRawFd;
     use std::os::unix::process::CommandExt;
     let mut c = Command::new(format!("/proc/self/fd/{}", v.0.as_raw_fd()));
     c.arg0("vanguard-fenetre");
+    environnement_fenetre(&mut c, de);
     c
+}
+
+/// Les variables que la fenêtre reçoit (L1, relecture 0.96) : ce qu'il lui faut pour s'afficher (l'écran Wayland ou
+/// X11, XDG_RUNTIME_DIR, le curseur, la composition des touches), sa langue (LANG, LANGUAGE, LC_*), ses dossiers
+/// (HOME, XDG_*), et ce que le `vanguard` qu'elle relance lit pour reconnaître le bureau et la session (bus D-Bus,
+/// XDG_CURRENT_DESKTOP, HYPRLAND_INSTANCE_SIGNATURE…) et pour télécharger derrière un proxy. Plus les réglages de
+/// Vanguard lui-même (`VANGUARD_*`, et leur ancien nom `GARDIEN_*` : VANGUARD_HORS_LIGNE, VANGUARD_ENVOI=0, la clé
+/// HIBP…), sauf VANGUARD_ORIGINE (L2 : le `vanguard` à lancer vient de --vanguard, jamais de l'environnement).
+///
+/// Rien d'autre : ni LD_PRELOAD, LD_AUDIT, LD_LIBRARY_PATH (une bibliothèque du compte dans la fenêtre vérifiée, qui
+/// est dynamique), ni GTK_MODULES, GTK_IM_MODULE, LIBGL_*, __EGL_*, __GLX_* (des modules chargés par les
+/// bibliothèques d'affichage), ni WAYLAND_SOCKET (un descripteur à usage unique, celui du terminal), ni BASH_ENV, ni
+/// le PATH du compte : `PATH_PROPRE`, que le `vanguard` relancé reçoit à son tour (sudo et pkexec, il les prend de
+/// toute façon dans les dossiers du système, `commande::outil_systeme`).
+#[cfg(target_os = "linux")]
+const GARDEES_FENETRE: [&str; 33] = [
+    "LANG",
+    "LANGUAGE",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "XAUTHORITY",
+    "XDG_RUNTIME_DIR",
+    "XDG_SESSION_TYPE",
+    "XDG_SESSION_DESKTOP",
+    "XDG_CURRENT_DESKTOP",
+    "DESKTOP_SESSION",
+    "HYPRLAND_INSTANCE_SIGNATURE",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_CACHE_HOME",
+    "XDG_STATE_HOME",
+    "XDG_CONFIG_DIRS",
+    "XDG_DATA_DIRS",
+    "XCURSOR_THEME",
+    "XCURSOR_SIZE",
+    "XCURSOR_PATH",
+    "XCOMPOSEFILE",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+    "ftp_proxy",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "FTP_PROXY",
+];
+
+/// Une variable passe-t-elle à la fenêtre (`GARDEES_FENETRE`, les LC_* de la langue, les réglages de Vanguard) ?
+#[cfg(target_os = "linux")]
+fn gardee_fenetre(nom: &std::ffi::OsStr) -> bool {
+    let Some(n) = nom.to_str() else {
+        return false;
+    };
+    let reglage = ["VANGUARD_", "GARDIEN_"]
+        .iter()
+        .any(|p| n.strip_prefix(p).is_some_and(|r| !r.is_empty() && r != "ORIGINE"));
+    GARDEES_FENETRE.contains(&n) || n.strip_prefix("LC_").is_some_and(|r| !r.is_empty()) || reglage
+}
+
+/// L'environnement de la fenêtre : `de` (celui de Vanguard, en pratique) vidé, sauf `GARDEES_FENETRE`, et
+/// `PATH_PROPRE`. C'était le trou L1 : la fenêtre vérifiée héritait de tout, et une bibliothèque nommée par
+/// LD_PRELOAD tournait dans ses octets vérifiés dès le démarrage, avant la première ligne de Vanguard.
+#[cfg(target_os = "linux")]
+fn environnement_fenetre(c: &mut Command, de: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>) {
+    c.env_clear();
+    for (nom, valeur) in de {
+        if gardee_fenetre(&nom) {
+            c.env(nom, valeur);
+        }
+    }
+    c.env("PATH", crate::commande::PATH_PROPRE);
 }
 
 /// Windows : la fenêtre vérifiée, **tenue** ouverte avec le partage en lecture seule (ni écriture, ni effacement, ni
@@ -428,6 +522,9 @@ fn lancer(chemin: &Path, programme: &Path) -> Lancement {
         Ok(v) => v,
         Err(r) => return Lancement::Refusee(r),
     };
+    #[cfg(target_os = "linux")]
+    let mut c = commande(&verifiee, std::env::vars_os());
+    #[cfg(windows)]
     let mut c = commande(&verifiee);
     c.args(arguments(programme))
         .stdin(Stdio::null())
@@ -476,6 +573,7 @@ mod tests {
             graphique: true,
             a_distance: false,
             eleve: false,
+            injection: false,
         };
         assert!(choisir(devant));
         // Un script qui écrit les choix ou lit la sortie garde le menu.
@@ -527,6 +625,7 @@ mod tests {
             graphique: true,
             a_distance: false,
             eleve: false,
+            injection: false,
         };
         assert!(
             !ouvrir_depuis(devant, &f, &dossier.join("vanguard")),
@@ -574,7 +673,11 @@ mod tests {
         let temoin = dossier.join("lancee");
         let faux = format!("#!/bin/sh\n: > '{}'\necho {OUVERTE}\n", temoin.display());
         poser("vanguard-fenetre", faux.as_bytes(), 0o755);
-        let sortie = commande(&v).arg("vérifiée").stderr(Stdio::null()).output().unwrap();
+        let sortie = commande(&v, std::env::vars_os())
+            .arg("vérifiée")
+            .stderr(Stdio::null())
+            .output()
+            .unwrap();
         assert_eq!(String::from_utf8_lossy(&sortie.stdout).trim_end(), "vérifiée");
         assert!(!temoin.exists(), "le fichier posé après la vérification a tourné");
         // Scellée : ni réécrite en place (au début : écrire à la fin l'allongerait, refusé pour une autre raison), ni
@@ -634,6 +737,95 @@ mod tests {
         let sortie = commande(&v).args(["/c", "echo", "verifiee"]).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&sortie.stdout).trim_end(), "verifiee");
         drop(v);
+        let _ = std::fs::remove_dir_all(&dossier);
+    }
+
+    /// L1 (relecture 0.96) : une bibliothèque injectée dans la session (l'alerte de `protection::environnement`)
+    /// irait aussi dans la fenêtre vérifiée : le menu, et la raison dite.
+    #[test]
+    fn une_bibliotheque_injectee_garde_le_menu() {
+        let devant = Contexte {
+            terminal: true,
+            graphique: true,
+            ..Contexte::default()
+        };
+        assert_eq!(refus_du_contexte(devant), None);
+        let r = refus_du_contexte(Contexte {
+            injection: true,
+            ..devant
+        });
+        assert!(
+            r.is_some_and(|r| r.contains("injectée") || r.contains("injected")),
+            "{r:?}"
+        );
+    }
+
+    /// L1 (relecture 0.96) : la fenêtre vérifiée héritait de tout l'environnement du compte, et LD_PRELOAD y faisait
+    /// tourner une bibliothèque étrangère dès son démarrage (la fenêtre est dynamique, `vanguard` non). Elle ne reçoit
+    /// plus qu'une liste fermée, et un PATH fixe. `env` (un vrai programme ELF, lancé comme la fenêtre, depuis la
+    /// copie scellée) dit ce qu'il a reçu.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn la_fenetre_ne_recoit_qu_une_liste_fermee_de_variables() {
+        use sha2::Digest;
+        use std::os::unix::fs::PermissionsExt;
+        let Ok(env) = std::fs::read("/usr/bin/env") else {
+            return crate::essais::saute("pas de /usr/bin/env");
+        };
+        let dossier = crate::socle::dossier_local().join("essai-environnement-fenetre");
+        let _ = std::fs::remove_dir_all(&dossier);
+        std::fs::create_dir_all(&dossier).unwrap();
+        let f = dossier.join("vanguard-fenetre");
+        std::fs::write(&f, &env).unwrap();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let v = verifier(&f, &sha2::Sha256::digest(&env).into(), crate::socle::uid()).unwrap();
+        let interdites = [
+            ("LD_PRELOAD", "/home/alice/.cache/libtemoin.so"),
+            ("LD_AUDIT", "/home/alice/.cache/libtemoin.so"),
+            ("LD_LIBRARY_PATH", "/home/alice/lib"),
+            ("GTK_MODULES", "temoin"),
+            ("GTK_IM_MODULE", "temoin"),
+            ("LIBGL_DRIVERS_PATH", "/home/alice/dri"),
+            ("__EGL_VENDOR_LIBRARY_FILENAMES", "/home/alice/egl.json"),
+            ("VANGUARD_ORIGINE", "/home/alice/faux/vanguard"),
+            ("BASH_ENV", "/home/alice/.piege"),
+            ("WAYLAND_SOCKET", "3"),
+        ];
+        let gardees = [
+            ("WAYLAND_DISPLAY", "wayland-essai"),
+            ("DISPLAY", ":7"),
+            ("XAUTHORITY", "/run/user/1000/xauth-essai"),
+            ("LANG", "fr_CA.UTF-8"),
+            ("LC_TIME", "C"),
+            ("HOME", "/home/alice"),
+            ("XDG_RUNTIME_DIR", "/run/user/1000"),
+            ("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus"),
+            ("VANGUARD_HORS_LIGNE", "1"),
+        ];
+        let de: Vec<(std::ffi::OsString, std::ffi::OsString)> = interdites
+            .iter()
+            .chain(gardees.iter())
+            .chain([("PATH", "/home/alice/bin:/usr/bin")].iter())
+            .map(|(n, v)| ((*n).into(), (*v).into()))
+            .collect();
+        let sortie = commande(&v, de).stderr(Stdio::null()).output().unwrap();
+        let texte = String::from_utf8_lossy(&sortie.stdout).into_owned();
+        let recues: std::collections::BTreeMap<&str, &str> = texte.lines().filter_map(|l| l.split_once('=')).collect();
+        for (nom, _) in interdites {
+            assert!(!recues.contains_key(nom), "{nom} passe à la fenêtre : {texte}");
+        }
+        for (nom, valeur) in gardees {
+            assert_eq!(recues.get(nom), Some(&valeur), "{nom} : {texte}");
+        }
+        // Un PATH fixe, celui des outils du système : le `vanguard` relancé par le relais y trouve sudo et pkexec.
+        assert_eq!(recues.get("PATH"), Some(&crate::commande::PATH_PROPRE), "{texte}");
+        // Rien d'autre, même ce que le test hérite de cargo (CARGO_*, RUST_*).
+        for nom in recues.keys() {
+            assert!(
+                *nom == "PATH" || gardee_fenetre(std::ffi::OsStr::new(nom)),
+                "{nom} hors de la liste : {texte}"
+            );
+        }
         let _ = std::fs::remove_dir_all(&dossier);
     }
 

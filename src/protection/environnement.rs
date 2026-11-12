@@ -150,9 +150,22 @@ fn avis() -> Vec<Avis> {
     liste
 }
 
+/// Les avis, lus une fois : l'affichage du démarrage et le choix de la fenêtre (`injection_alertee`) disent la même
+/// chose.
+fn avis_lus() -> &'static [Avis] {
+    static AVIS: std::sync::OnceLock<Vec<Avis>> = std::sync::OnceLock::new();
+    AVIS.get_or_init(avis)
+}
+
+/// Une bibliothèque injectée est signalée en alerte (pas une simple information) : la fenêtre de Vanguard, qui
+/// charge les bibliothèques du système, ne s'ouvre pas (`demarrage::lancer_fenetre`).
+pub(crate) fn injection_alertee() -> bool {
+    avis_lus().iter().any(|a| a.niveau != Niveau::Info)
+}
+
 /// Au démarrage : chaque avis sur la sortie d'erreur, une information en gris, une alerte en couleur.
 pub fn afficher() {
-    for a in avis() {
+    for a in avis_lus() {
         let (marque, couleur) = if a.niveau == Niveau::Info {
             ("ℹ", GRIS)
         } else {
