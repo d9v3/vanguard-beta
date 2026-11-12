@@ -406,6 +406,26 @@ async fn main() {
         }
         autotest::lecture_seule::relever_avant_tout();
     }
+    // De même pour l'aperçu d'une mise à jour (`se-mettre-a-jour --voir`) : rien n'y change que le carnet.
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|a| a == "se-mettre-a-jour" || a == "self-update")
+    {
+        autotest::lecture_seule::poser_pour_un_apercu();
+        if let Ok(Args {
+            commande: Some(Commande::SeMettreAJour { voir: true, json, .. }),
+            ..
+        }) = ligne_de_commande()
+            .try_get_matches()
+            .and_then(|m| Args::from_arg_matches(&m))
+        {
+            parametres::au_lancement();
+            let code = mise_a_jour::apercu::voir(json);
+            chiffrement::oublier_session();
+            std::process::exit(code);
+        }
+        autotest::lecture_seule::relever_avant_tout();
+    }
     // De même pour l'aperçu d'une remise comme avant (`changements --voir`) : rien n'y change que le carnet.
     if std::env::args_os()
         .nth(1)
@@ -939,7 +959,25 @@ async fn main() {
         }
         Some(Commande::Raccourci { etat }) => raccourci::commande(sans_etat(etat.as_deref()).map(|e| e == "on")),
         Some(Commande::Ordinateurs) => ordinateurs::menu(),
-        Some(Commande::SeMettreAJour) => mise_a_jour::commande(),
+        // Installer depuis la fenêtre change quelque chose : le chemin ordinaire (journal, passage).
+        Some(Commande::SeMettreAJour {
+            appliquer: true,
+            accord: Some(accord),
+            json,
+            ..
+        }) => {
+            let code = mise_a_jour::apercu::appliquer(&accord, json);
+            chiffrement::oublier_session();
+            std::process::exit(code);
+        }
+        // L'aperçu ne passe que par la forme « vanguard se-mettre-a-jour --voir », qui sort plus haut : arrivé ici,
+        // refusé (`apercu::voir` refuse de lui-même sans la lecture seule posée avant tout).
+        Some(Commande::SeMettreAJour { voir: true, json, .. }) => {
+            let code = mise_a_jour::apercu::voir(json);
+            chiffrement::oublier_session();
+            std::process::exit(code);
+        }
+        Some(Commande::SeMettreAJour { .. }) => mise_a_jour::commande(),
         Some(Commande::Desinstaller { liste }) => desinstaller::commande(liste),
         Some(Commande::Regles { json: false }) => machine::regles::afficher(),
         Some(Commande::Regles { json: true }) => machine::regles::json(),

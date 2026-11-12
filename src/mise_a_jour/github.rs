@@ -165,6 +165,41 @@ pub(super) struct Publiee {
     revoque: bool,
 }
 
+/// Des octets en chiffres hexadécimaux minuscules.
+pub(super) fn hex(octets: &[u8]) -> String {
+    use std::fmt::Write as _;
+    octets
+        .iter()
+        .fold(String::with_capacity(octets.len().saturating_mul(2)), |mut o, b| {
+            let _ = write!(o, "{b:02x}");
+            o
+        })
+}
+
+impl Publiee {
+    /// L'empreinte signée du programme, en 64 chiffres hexadécimaux minuscules.
+    pub(super) fn sha256_hex(&self) -> String {
+        hex(&self.sha256)
+    }
+
+    /// Sa taille signée, en octets.
+    pub(super) fn taille(&self) -> u64 {
+        self.taille
+    }
+
+    /// Une version publiée inventée, pour les essais de l'aperçu (`apercu`) : rien n'y est signé.
+    #[cfg(test)]
+    pub(super) fn d_essai(version: Version, octets: &[u8]) -> Self {
+        Self {
+            version,
+            sha256: Sha256::digest(octets).into(),
+            taille: u64::try_from(octets.len()).unwrap_or(u64::MAX),
+            fichier: "vanguard-essai",
+            revoque: false,
+        }
+    }
+}
+
 /// Le manifeste : « version 0.79.0+1792540000 », puis une ligne par système, « linux-x86_64 `<sha256>` `<taille>` ». Le
 /// moindre écart de forme le fait refuser.
 fn lire_manifeste(texte: &str, systeme: &str) -> Option<(Version, [u8; 32], u64)> {
@@ -473,6 +508,13 @@ pub(super) fn systeme() -> Option<&'static str> {
 /// La dernière version publiée pour ce système, manifeste téléchargé et vérifié ; `Err` : pourquoi on ne sait pas.
 pub(super) fn derniere() -> Result<Publiee, String> {
     let publiee = derniere_recue()?;
+    retenir(&publiee)?;
+    Ok(publiee)
+}
+
+/// Ce que `derniere` retient d'un manifeste reçu et vérifié : la révocation, puis la plus haute version vue. `Err` : le
+/// manifeste est plus vieux que celui déjà vu (un ancien remis en place), ou la révocation ne s'écrit pas.
+pub(super) fn retenir(publiee: &Publiee) -> Result<(), String> {
     if publiee.revoque {
         retenir_revocation().map_err(|e| e.to_string())?;
     }
@@ -482,7 +524,18 @@ pub(super) fn derniere() -> Result<Publiee, String> {
         let v = publiee.version;
         let _ = crate::sceau::ecrire(crate::sceau::VERSIONS, format!("{}.{}.{}+{}", v.0, v.1, v.2, v.3));
     }
-    Ok(publiee)
+    Ok(())
+}
+
+/// `retenir` sans rien écrire, pour un aperçu : le manifeste reçu passerait-il la plus haute version vue ? Révoquée
+/// pour la première fois, la plus haute vue repartira de zéro (`retenir_revocation`) : elle ne compte pas.
+pub(super) fn juger_la_vue(publiee: &Publiee) -> Result<(), String> {
+    let vue = if publiee.revoque && !revocation_retenue() {
+        None
+    } else {
+        plus_haute_vue()?
+    };
+    comparer_a_la_vue(vue, publiee.version).map(|_| ())
 }
 
 /// La dernière version publiée pour ce système, manifeste téléchargé et sa signature vérifiée, sans rien retenir

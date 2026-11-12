@@ -22,6 +22,7 @@ use std::time::SystemTime;
 
 use crate::ui::*;
 
+pub(crate) mod apercu;
 mod github;
 
 /// La version de ce programme et la date de son commit, gravées dans son fichier pour qu'une autre copie les lise sans

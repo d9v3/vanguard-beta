@@ -1079,6 +1079,72 @@ fn les_corrections_du_compte_offrent_l_apercu() {
     }
 }
 
+/// L'aperçu d'une mise à jour, demandé par la fenêtre sans réponse de GitHub (hors ligne) : « non vérifié », jamais
+/// « à jour », code 1, et rien n'est écrit ni dans le dossier personnel ni à côté. L'installation qui suit, avec un
+/// accord quelconque, ne remplace rien (le programme lancé reste le même) ; mal formé, code 2.
+#[cfg(unix)]
+#[test]
+fn l_apercu_d_une_mise_a_jour_hors_ligne_n_est_pas_a_jour_et_n_ecrit_rien() {
+    let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
+    let avant_programme = std::fs::read(programme).unwrap();
+    let maison = maison_jetable();
+    let dehors = maison_jetable();
+    let lancer = |args: &[&str]| {
+        Command::new(programme)
+            .env_clear()
+            .args(args)
+            .env("PATH", "/usr/bin:/bin")
+            .env("VANGUARD_LANG", "fr")
+            .env("VANGUARD_HORS_LIGNE", "1")
+            .env("HOME", &*maison)
+            .env("XDG_DATA_HOME", dehors.join("donnees"))
+            .env("XDG_CONFIG_HOME", dehors.join("config"))
+            .env("XDG_CACHE_HOME", dehors.join("cache"))
+            .env("TMPDIR", &*dehors)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    };
+    let derniere = |s: &std::process::Output| -> serde_json::Value {
+        let texte = String::from_utf8_lossy(&s.stdout).into_owned();
+        serde_json::from_str(texte.lines().last().unwrap_or_default()).unwrap_or_else(|e| panic!("{e} : {texte}"))
+    };
+    // Une vieille copie posée sur cet ordinateur (sans version gravée, d'avant la 0.78) : la mise à jour depuis GitHub
+    // la remplacerait, si GitHub répondait.
+    let copie = dehors.join("donnees").join("vanguard").join("bin").join("vanguard");
+    std::fs::create_dir_all(copie.parent().unwrap()).unwrap();
+    std::fs::write(&copie, b"ancien programme").unwrap();
+    let avant = (instantane(&maison), instantane(&dehors));
+    let s = lancer(&["se-mettre-a-jour", "--voir", "--json"]);
+    let j = derniere(&s);
+    assert_eq!(s.status.code(), Some(1), "{j}");
+    assert_eq!(j["geste"], "voir-mise-a-jour", "{j}");
+    assert_eq!(j["issue"], "refuse", "{j}");
+    assert_eq!(j["etat"], "non-verifie", "{j}");
+    assert!(j.get("accord").is_none(), "{j}");
+    let mut changes = ecarts(&avant.0, &instantane(&maison));
+    changes.extend(ecarts(&avant.1, &instantane(&dehors)));
+    assert!(changes.is_empty(), "{changes:?}");
+    let s = lancer(&[
+        "se-mettre-a-jour",
+        "--appliquer",
+        "--accord",
+        &"ab".repeat(32),
+        "--json",
+    ]);
+    let j = derniere(&s);
+    assert_eq!(s.status.code(), Some(1), "{j}");
+    assert_eq!(
+        (&j["geste"], &j["issue"]),
+        (&"mettre-a-jour".into(), &"refuse".into()),
+        "{j}"
+    );
+    let s = lancer(&["se-mettre-a-jour", "--appliquer", "--accord", "pas-un-accord", "--json"]);
+    assert_eq!(s.status.code(), Some(2), "{}", derniere(&s));
+    assert_eq!(std::fs::read(programme).unwrap(), avant_programme);
+    assert_eq!(std::fs::read(&copie).unwrap(), b"ancien programme");
+}
+
 /// Vérification de Fable n° 2, L6 : l'aperçu écrit dans une sortie fermée (tube sans lecteur) ou pleine (/dev/full)
 /// sort proprement, code 141 comme les autres commandes, sans panique (code 101) ; rien n'est écrit.
 #[cfg(unix)]

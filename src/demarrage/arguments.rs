@@ -801,8 +801,24 @@ pub(crate) enum Commande {
     Ordinateurs,
     /// Mettre Vanguard à jour sur cet ordinateur : depuis une clé VANGUARD plus récente, ou depuis la dernière version
     /// publiée sur GitHub, signée par l'auteur et vérifiée ; toujours sur accord, jamais vers une version plus ancienne.
+    /// Sans option : l'état, puis la mise à jour sur accord, au terminal. Pour la fenêtre : --voir montre ce qui
+    /// s'installerait et l'accord qui le résume, sans rien changer d'autre que le carnet des aperçus ; --appliquer
+    /// l'installe, seulement avec l'accord de cet aperçu, 2 s à 10 min après lui.
     #[command(name = "se-mettre-a-jour", visible_alias = "self-update")]
-    SeMettreAJour,
+    SeMettreAJour {
+        /// Montrer ce qui s'installerait (lecture seule).
+        #[arg(long, hide = true, conflicts_with = "appliquer")]
+        voir: bool,
+        /// Installer ce que l'aperçu a montré, avec --accord.
+        #[arg(long, hide = true, requires = "accord")]
+        appliquer: bool,
+        /// L'accord donné par l'aperçu (64 chiffres hexadécimaux minuscules) : l'état relu doit donner le même.
+        #[arg(long, hide = true, value_name = "ACCORD", requires = "appliquer")]
+        accord: Option<String>,
+        /// L'issue en une ligne JSON, la dernière (avec --voir ou --appliquer).
+        #[arg(long, hide = true)]
+        json: bool,
+    },
     /// Retirer Vanguard de cet ordinateur : ce qu'il y a posé (surveillance, entretien, sauvegarde automatique,
     /// fichiers-pièges, raccourci et icône, copie du programme, restes d'une version d'avant), retrouvé, montré puis
     /// coché. Le dossier de données n'est retiré qu'après un second accord ; la clé USB n'est jamais touchée.
