@@ -406,7 +406,8 @@ async fn main() {
         }
         autotest::lecture_seule::relever_avant_tout();
     }
-    // De même pour l'aperçu d'une mise à jour (`se-mettre-a-jour --voir`) : rien n'y change que le carnet.
+    // De même pour l'aperçu d'une mise à jour (`se-mettre-a-jour --voir`) : rien n'y change que le carnet et, d'un
+    // manifeste signé vu, la plus haute version vue et la révocation (`lecture_seule::EXEMPTES_VUES`).
     if std::env::args_os()
         .nth(1)
         .is_some_and(|a| a == "se-mettre-a-jour" || a == "self-update")

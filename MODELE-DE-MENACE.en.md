@@ -373,7 +373,9 @@ safeguards:
   read-only and writes only, as a closed list, the preview log (`apercus.json`, its lock `apercus.lock`) and, like
   the terminal for any signed manifest seen, the highest version seen and the main key's revocation
   (`versions/plus-haute-vue.txt`, `versions/principale-revoquee.txt`), with the seal register, its witness and its lock
-  (`sceaux.json`, `sceaux.temoin`, `sceaux.verrou`); nothing installed. “Up to date” is only said when verified: a
+  (`sceaux.json`, `sceaux.temoin`, `sceaux.verrou`); nothing installed. If that floor cannot be written (seal lock
+  held by another Vanguard), the preview says so: “not verified, try again in a moment”. “Up to date” is only said
+  when verified: a
   manifest that is too old, a
   clock running behind or GitHub not answering give “not verified” (code 1), never “up to date”. `vanguard self-update
   --appliquer --accord <consent> --json` redoes the preview when acting and installs only if the recomputed consent is

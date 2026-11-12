@@ -392,7 +392,8 @@ gardes :
   (`apercus.json`, son verrou `apercus.lock`) et, comme le terminal pour tout manifeste signé vu, la plus haute version
   vue et la révocation de la clé principale (`versions/plus-haute-vue.txt`, `versions/principale-revoquee.txt`), avec
   le registre des sceaux, son témoin et son verrou (`sceaux.json`, `sceaux.temoin`, `sceaux.verrou`) ; rien
-  d'installé. « À jour » ne se dit
+  d'installé. Si ce plancher ne s'écrit pas (verrou des sceaux tenu par un autre Vanguard), l'aperçu le dit : « non
+  vérifié, réessayez dans un instant ». « À jour » ne se dit
   que vérifié : un manifeste trop vieux, une horloge en retard ou GitHub sans réponse donnent « non vérifié » (code
   1), jamais « à jour ». `vanguard se-mettre-a-jour --appliquer --accord <accord> --json` refait l'aperçu au moment
   d'agir et n'installe que si l'accord recalculé est le même (une autre version, une autre empreinte, une clé changée

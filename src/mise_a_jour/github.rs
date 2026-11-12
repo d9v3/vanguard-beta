@@ -514,7 +514,15 @@ pub(super) fn derniere() -> Result<Publiee, String> {
 
 /// Ce que `derniere` retient d'un manifeste reçu et vérifié : la révocation, puis la plus haute version vue. `Err` : le
 /// manifeste est plus vieux que celui déjà vu (un ancien remis en place), ou la révocation ne s'écrit pas.
+/// Au terminal, la plus haute version vue qui ne s'écrit pas n'arrête rien (le refus du verrou va au journal des
+/// erreurs ; elle montera à la prochaine lecture).
 pub(super) fn retenir(publiee: &Publiee) -> Result<(), Echec> {
+    retenir_en(publiee, false)
+}
+
+/// `retenir`, le plancher exigé ou non : l'aperçu l'exige (`retenir_pendant_un_apercu`), puisque le journal des
+/// erreurs ne s'y écrit pas ; un plancher pas écrit y est dit, jamais tu.
+fn retenir_en(publiee: &Publiee, plancher_exige: bool) -> Result<(), Echec> {
     if publiee.revoque {
         retenir_revocation().map_err(|e| Echec::echoue("mise_a_jour/revocation", e.to_string()))?;
     }
@@ -522,7 +530,18 @@ pub(super) fn retenir(publiee: &Publiee) -> Result<(), Echec> {
     // Retenue seulement une fois la signature vérifiée : un manifeste quelconque ne fait pas monter la barre.
     if comparer_a_la_vue(vue, publiee.version).map_err(|e| Echec::refuse("mise_a_jour/vue", e))? {
         let v = publiee.version;
-        let _ = crate::sceau::ecrire(crate::sceau::VERSIONS, format!("{}.{}.{}+{}", v.0, v.1, v.2, v.3));
+        let ecrite = crate::sceau::ecrire(crate::sceau::VERSIONS, format!("{}.{}.{}+{}", v.0, v.1, v.2, v.3));
+        if let (Err(e), true) = (ecrite, plancher_exige) {
+            return Err(Echec::echoue(
+                "mise_a_jour/vue",
+                trf!(
+                    "la version {} vue n'a pas pu être retenue ({}) : non vérifié, réessayez dans un instant",
+                    "version {} seen could not be kept ({}): not verified, try again in a moment",
+                    ecrire(v),
+                    e
+                ),
+            ));
+        }
     }
     Ok(())
 }
@@ -531,7 +550,7 @@ pub(super) fn retenir(publiee: &Publiee) -> Result<(), Echec> {
 /// manifeste vu, signature vérifiée, et seulement cela (le plancher des versions vues, la révocation, leurs sceaux).
 /// Sans quoi un manifeste signé plus vieux, resservi plus tard, serait jugé sans le plancher de ce qui a été vu.
 pub(super) fn retenir_pendant_un_apercu(publiee: &Publiee) -> Result<(), Echec> {
-    crate::autotest::lecture_seule::ecrire_vues(|| retenir(publiee))
+    crate::autotest::lecture_seule::ecrire_vues(|| retenir_en(publiee, true))
 }
 
 /// `retenir` sans rien écrire, pour un aperçu : le manifeste reçu passerait-il la plus haute version vue ? Révoquée
@@ -898,6 +917,31 @@ passe-droit-sans-vm {zeros} 0
         assert!(retenue);
         crate::sceau::effacer(crate::sceau::REVOCATION).unwrap();
         oublier_versions_vues().unwrap();
+    }
+
+    /// Pendant l'aperçu, le plancher qui ne s'écrit pas (le verrou des sceaux tenu par un autre Vanguard) est dit,
+    /// comme la révocation : « non vérifié, réessayez », jamais un `Ok(())` muet. Le terminal, lui, n'a pas changé.
+    #[test]
+    fn l_apercu_dit_le_plancher_qui_ne_s_ecrit_pas() {
+        use crate::autotest::lecture_seule;
+        let _seul = ETAT_DES_VERSIONS.lock().unwrap_or_else(PoisonError::into_inner);
+        let _ = crate::sceau::effacer(crate::sceau::REVOCATION);
+        oublier_versions_vues().unwrap();
+        let p96 = Publiee::d_essai((0, 96, 0, 1_795_000_000), b"96");
+        let dossier = crate::socle::dossier_local();
+        let tenu = crate::socle::Verrou::prendre(&dossier, "sceaux.verrou", false, std::time::Duration::from_secs(30))
+            .unwrap();
+        lecture_seule::poser_pour_un_apercu();
+        let r = retenir_pendant_un_apercu(&p96);
+        lecture_seule::relever_pour_le_test();
+        drop(tenu);
+        let vue = plus_haute_vue();
+        // Le verrou rendu, une écriture le reprend : ce processus ne le croit plus tenu.
+        oublier_versions_vues().unwrap();
+        assert_eq!(vue, Ok(None));
+        let e = r.unwrap_err().to_string();
+        assert!(e.contains("réessayez") || e.contains("try again"), "{e}");
+        assert!(e.contains("0.96.0"), "{e}");
     }
 
     #[test]
