@@ -467,7 +467,15 @@ impl Ligne {
 fn lignes(programmes: Vec<Programme>, h: &Historique) -> Vec<Ligne> {
     let mut l: Vec<Ligne> = Vec::new();
     for p in programmes {
-        let garde = if p.actif { classer(&p) } else { Garde::Ordinaire };
+        let garde = match p.actif {
+            false => Garde::Ordinaire,
+            // Masquée, elle ne se relirait plus (D-2) : montrée, jamais proposée.
+            true if !p.changement.cible_relisible() => Garde::Garder(tr!(
+                "à garder : trop grosse pour être masquée sans perte",
+                "keep: too large to be hidden safely"
+            )),
+            true => classer(&p),
+        };
         let Some(r) = reglage(&p.nom, p.changement) else {
             continue;
         };
@@ -595,6 +603,8 @@ enum Refus {
     NeSeLancePas,
     /// Il se lance déjà (remis ou réécrit hors de Vanguard) : la vieille note n'écrase pas l'entrée d'aujourd'hui.
     SeLanceDeja,
+    /// Masquée, son entrée dépasserait la borne de lecture : ni le retrait ne se constaterait, ni elle ne se remettrait.
+    TropGrosse,
     /// Son entrée d'aujourd'hui ne se lit pas (trop grosse, pas en UTF-8, un lien) : elle se lance peut-être, la note
     /// ne passe pas par-dessus.
     PasLue,
@@ -635,6 +645,11 @@ impl Refus {
             Refus::SeLanceDeja => tr!(
                 "ce programme se lance déjà à l'ouverture de session : rien n'est remis par-dessus",
                 "this program already starts at login: nothing is put back over it"
+            )
+            .to_string(),
+            Refus::TropGrosse => tr!(
+                "l'entrée masquée dépasserait 64 Kio et ne se relirait plus : rien n'est retiré",
+                "the hidden entry would exceed 64 KiB and could no longer be read back: nothing is removed"
             )
             .to_string(),
             Refus::PasLue => tr!(
@@ -714,6 +729,7 @@ fn a_retirer_nomme(
         (false, _) => Err(Refus::NeSeLancePas),
         (true, Garde::Garder(raison)) => Err(Refus::AGarder(raison)),
         (true, Garde::PareFeu) => Err(Refus::PareFeu),
+        (true, Garde::Ordinaire) if !p.changement.cible_relisible() => Err(Refus::TropGrosse),
         (true, Garde::Ordinaire) => reglage(&p.nom, p.changement).ok_or(Refus::Inconnue),
     };
     (nom, issue)
@@ -1606,6 +1622,31 @@ mod essais_changer {
             assert!(manques.is_empty(), "{manques:?}");
             assert_eq!(remise_refusee(&r, &programmes), None);
             assert_eq!(lignes(programmes, &h).len(), 1);
+        }
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// Correction n° 2 de la 0.94, D-2 : une entrée qui, masquée, dépasserait la borne de lecture est montrée à
+    /// garder dans la liste et refusée par `--retirer` (rien d'écrit) ; un octet de moins, elle se retire.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn entree_trop_grosse_une_fois_masquee_ni_proposee_ni_retiree() {
+        let base = crate::essais::temporaire().join(format!("vanguard-demarrage-d2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let autostart = base.join("config/autostart");
+        std::fs::create_dir_all(&autostart).unwrap();
+        let p = autostart.join("bord.desktop");
+        let entete = "[Desktop Entry]\nName=Bord\nExec=bord\n#";
+        let releve = || systeme::releve_dans(&base.join("config"), &[], "", Some(String::new())).0;
+        for (n, refus) in [(65_523, None), (65_524, Some(Refus::TropGrosse))] {
+            std::fs::write(&p, format!("{entete}{}\n", "x".repeat(n - entete.len() - 1))).unwrap();
+            let empreinte = resultat::empreinte(&format!("autostart|{}", p.display())).unwrap();
+            let issue = a_retirer(releve(), &empreinte, |_| Garde::Ordinaire);
+            assert_eq!(issue.err(), refus, "{n}");
+            let l = lignes(releve(), &Historique::default());
+            assert_eq!(l.len(), 1, "{n}");
+            assert_eq!(l[0].garder().is_some(), refus.is_some(), "{n}");
+            assert!(Refus::TropGrosse.raison().contains("rien n"));
         }
         std::fs::remove_dir_all(&base).unwrap();
     }

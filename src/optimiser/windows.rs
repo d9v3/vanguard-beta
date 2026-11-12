@@ -443,6 +443,11 @@ impl Changement {
         true
     }
 
+    /// Ce que le retrait écrirait se relira-t-il ? Sous Windows, oui : quelques octets de StartupApproved.
+    pub fn cible_relisible(&self) -> bool {
+        true
+    }
+
     /// Le nom d'un programme d'après l'identité notée : la valeur de Run, ou le raccourci sans son extension.
     pub fn nom_demarrage(identite: &str) -> String {
         let nom = identite.splitn(3, '|').nth(2).unwrap_or(identite);

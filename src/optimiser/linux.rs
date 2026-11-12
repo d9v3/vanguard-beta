@@ -309,6 +309,13 @@ fn champ<'a>(texte: &'a str, cle: &str) -> Option<&'a str> {
     None
 }
 
+/// Une valeur d'entrée d'autostart (« +contenu », « - », absente) dont l'écriture se relirait : le contenu tient
+/// dans la borne de `lire` (`AUTOSTART_MAX` avec le « + »).
+fn relisible(v: Option<&str>) -> bool {
+    v.and_then(|v| v.strip_prefix('+'))
+        .is_none_or(|contenu| contenu.len() < AUTOSTART_MAX)
+}
+
 /// Le fichier d'autostart masqué : « Hidden=true » juste sous [Desktop Entry], à la place de toute autre valeur
 /// « Hidden » de ce groupe ; le reste est gardé à l'octet près. Masquer deux fois ne change plus rien.
 fn masquer(texte: &str) -> String {
@@ -732,6 +739,19 @@ impl Changement {
         }
     }
 
+    /// Ce que le retrait écrirait se relira-t-il, borné comme la note ? Faux seulement pour une entrée d'autostart
+    /// dont la copie masquée dépasserait la borne (D-2) : rien n'est alors retiré.
+    pub fn cible_relisible(&self) -> bool {
+        match self {
+            Changement::Demarrage {
+                entree: Entree::Autostart(_),
+                cible,
+                ..
+            } => relisible(cible.as_deref()),
+            _ => true,
+        }
+    }
+
     /// Le nom d'un programme d'après l'identité notée : le fichier ou le service, sans extension.
     pub fn nom_demarrage(identite: &str) -> String {
         let reste = identite.split_once('|').map_or(identite, |(_, r)| r);
@@ -805,6 +825,19 @@ impl Changement {
                 tr!(
                     "l'entrée a changé depuis qu'elle a été montrée : rien n'est écrit",
                     "the entry changed since it was shown: nothing is written"
+                )
+            );
+            return Some(false);
+        }
+        // Ce qui s'écrit doit se relire, borné comme la note : sinon ni le retrait ne se constaterait, ni l'entrée ne
+        // se remettrait (D-1 la dirait pas lue). Masquer ajoute « Hidden=true » : une entrée lue de justesse peut
+        // dépasser la borne une fois masquée (correction n° 2 de la 0.94, D-2).
+        if !relisible(v) {
+            println!(
+                "    ✖ {}",
+                tr!(
+                    "l'entrée masquée dépasserait 64 Kio et ne se relirait plus : rien n'est écrit",
+                    "the hidden entry would exceed 64 KiB and could no longer be read back: nothing is written"
                 )
             );
             return Some(false);
@@ -2571,6 +2604,39 @@ mod tests {
                 .unwrap()
                 .entree_lisible()
         );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Correction n° 2 de la 0.94, D-2 : masquer ajoute « Hidden=true\n » (12 octets). Une entrée de 65 523 octets
+    /// masquée en fait 65 535 et se relit : retirée puis remise à l'octet près. Une de 65 524 octets se lit et se
+    /// liste, mais masquée elle ne se relirait plus (ni retrait constaté, ni remise) : refusée avant d'écrire.
+    #[test]
+    fn entree_trop_grosse_une_fois_masquee_refusee_avant_d_ecrire() {
+        let base = dossier_jetable("bord-masque");
+        let compte = base.join("autostart");
+        std::fs::create_dir_all(&compte).unwrap();
+        let entete = "[Desktop Entry]\nName=Bord\nExec=bord\n#";
+        let de_taille = |n: usize| format!("{entete}{}\n", "x".repeat(n - entete.len() - 1));
+        for (n, permis) in [(65_523, true), (65_524, false), (AUTOSTART_MAX - 1, false)] {
+            let texte = de_taille(n);
+            assert_eq!(texte.len(), n);
+            std::fs::write(compte.join("bord.desktop"), &texte).unwrap();
+            let (l, manques) = autostart(&compte, &[], "");
+            assert!(manques.is_empty(), "{n} : {manques:?}");
+            let [p] = &l[..] else { panic!("{n} : pas listée") };
+            let c = &p.changement;
+            assert_eq!(c.cible_relisible(), permis, "{n}");
+            assert_eq!(c.ecrire_ici(c.cible().as_deref()), Some(permis), "{n}");
+            let lu = std::fs::read_to_string(compte.join("bord.desktop")).unwrap();
+            if permis {
+                assert_eq!(c.lire(), c.cible(), "{n} : masquée, pas relue");
+                let annuler = Changement::demarrage_depuis(&c.identite_demarrage().unwrap()).unwrap();
+                assert_eq!(annuler.ecrire_ici(Some(&format!("+{texte}"))), Some(true), "{n}");
+                assert_eq!(std::fs::read_to_string(compte.join("bord.desktop")).unwrap(), texte);
+            } else {
+                assert_eq!(lu, texte, "{n} : écrite alors qu'elle ne se relirait plus");
+            }
+        }
         let _ = std::fs::remove_dir_all(&base);
     }
 
