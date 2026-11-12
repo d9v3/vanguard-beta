@@ -1141,6 +1141,11 @@ fn l_apercu_d_une_mise_a_jour_hors_ligne_n_est_pas_a_jour_et_n_ecrit_rien() {
     );
     let s = lancer(&["se-mettre-a-jour", "--appliquer", "--accord", "pas-un-accord", "--json"]);
     assert_eq!(s.status.code(), Some(2), "{}", derniere(&s));
+    // `--json` seul n'est ni l'aperçu ni le geste : forme refusée (code 2), rien de lancé, pas même la mise à jour
+    // du terminal.
+    let s = lancer(&["se-mettre-a-jour", "--json"]);
+    assert_eq!(s.status.code(), Some(2), "{}", String::from_utf8_lossy(&s.stdout));
+    assert!(s.stdout.is_empty(), "{}", String::from_utf8_lossy(&s.stdout));
     assert_eq!(std::fs::read(programme).unwrap(), avant_programme);
     assert_eq!(std::fs::read(&copie).unwrap(), b"ancien programme");
 }

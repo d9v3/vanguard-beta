@@ -804,7 +804,11 @@ pub(crate) enum Commande {
     /// Sans option : l'état, puis la mise à jour sur accord, au terminal. Pour la fenêtre : --voir montre ce qui
     /// s'installerait et l'accord qui le résume, sans rien changer d'autre que le carnet des aperçus ; --appliquer
     /// l'installe, seulement avec l'accord de cet aperçu, 2 s à 10 min après lui.
-    #[command(name = "se-mettre-a-jour", visible_alias = "self-update")]
+    #[command(
+        name = "se-mettre-a-jour",
+        visible_alias = "self-update",
+        group = clap::ArgGroup::new("geste_mise_a_jour").args(["voir", "appliquer"])
+    )]
     SeMettreAJour {
         /// Montrer ce qui s'installerait (lecture seule).
         #[arg(long, hide = true, conflicts_with = "appliquer")]
@@ -815,8 +819,9 @@ pub(crate) enum Commande {
         /// L'accord donné par l'aperçu (64 chiffres hexadécimaux minuscules) : l'état relu doit donner le même.
         #[arg(long, hide = true, value_name = "ACCORD", requires = "appliquer")]
         accord: Option<String>,
-        /// L'issue en une ligne JSON, la dernière (avec --voir ou --appliquer).
-        #[arg(long, hide = true)]
+        /// L'issue en une ligne JSON, la dernière (avec --voir ou --appliquer ; seul, refusé : la mise à jour du
+        /// terminal ne se lance pas pour un script qui attend du JSON).
+        #[arg(long, hide = true, requires = "geste_mise_a_jour")]
         json: bool,
     },
     /// Retirer Vanguard de cet ordinateur : ce qu'il y a posé (surveillance, entretien, sauvegarde automatique,
