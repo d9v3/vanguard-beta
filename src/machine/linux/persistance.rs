@@ -11963,6 +11963,14 @@ mod tests {
                 lieu,
             ),
             ("D10 saut de page", format!("{TETE}\u{c}Path=/\n{EXEC}"), true, lieu),
+            // C-3 (revérification 8) : une suite par « \ » avale l'en-tête d'un autre groupe pour systemd seul ; le
+            // Path= qui suit reste dans [Desktop Entry] pour lui.
+            (
+                "G1 suite qui avale un groupe",
+                format!("{TETE}Comment=x\\\n[X-Autre]\nPath=/\n{EXEC}"),
+                true,
+                lieu,
+            ),
             ("D11 tabulation", format!("{TETE}\tPath = / \n{EXEC}"), true, lieu),
             (
                 "E1 Exec après retour chariot",
