@@ -1416,6 +1416,10 @@ fn les_essais_n_ecrivent_pas_dans_le_dossier_temporaire() {
         // Le programme : TMPDIR parmi les variables gardées pour un programme du système lancé pour lire (G-1 de la
         // campagne 0.95), et l'essai qui vérifie qu'elle passe, sans rien écrire.
         ("src/commande.rs", 3),
+        // Le programme : la base de checkupdates, un dossier neuf 0700 au nom tiré au hasard dans le dossier
+        // temporaire, effacé ensuite (E-2 du recontrôle 0.95) ; et l'essai qui donne au programme relancé un TMPDIR
+        // jetable pour y voir ce qu'il crée.
+        ("src/machine/linux/maj.rs", 2),
         // Des essais qui jugent ce dossier-là, sans y écrire.
         ("src/verifier_cle.rs", 1),
         ("src/protection/distance.rs", 1),
