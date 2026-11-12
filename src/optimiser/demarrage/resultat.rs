@@ -130,6 +130,44 @@ fn chemin_montre(chemin: &str) -> String {
     }
 }
 
+/// Le texte `texte` (nom ou commande d'un programme, écrits par qui a posé l'entrée) avec le dossier personnel montré
+/// « ~ » partout où il paraît comme un chemin : une commande lancée de sous lui (« /home/<compte>/bin/x ») dirait le
+/// nom du compte au rapport, au journal et à la fenêtre (relecture 0.94, R-4, T-4). Seulement entre deux limites de
+/// chemin : un dossier au nom qui le prolonge (« /home/alice » suivi d'un chiffre) ou « /mnt/home/alice » ne sont
+/// pas sous « /home/alice ».
+fn sans_maison(texte: &str) -> String {
+    let maison = crate::socle::maison();
+    let Some(m) = maison.to_str().map(|m| m.trim_end_matches('/')) else {
+        return texte.to_string();
+    };
+    if !maison.is_absolute() || m.is_empty() {
+        return texte.to_string();
+    }
+    let du_chemin = |c: char| c.is_alphanumeric() || matches!(c, '.' | '_' | '-' | '~' | '+');
+    let mut sortie = String::with_capacity(texte.len());
+    let mut reste = texte;
+    while let Some(i) = reste.find(m) {
+        let (avant, depuis) = reste.split_at(i);
+        let apres = depuis.get(m.len()..).unwrap_or_default();
+        // Le caractère juste avant : la fin de `avant`, sinon celle de ce qui est déjà écrit.
+        let precedent = avant.chars().last().or_else(|| sortie.chars().last());
+        let debut_libre = precedent.is_none_or(|c| !du_chemin(c) && c != '/');
+        let fin_libre = apres.chars().next().is_none_or(|c| !du_chemin(c));
+        sortie.push_str(avant);
+        if debut_libre && fin_libre {
+            sortie.push('~');
+            reste = apres;
+        } else {
+            // Pas une limite : le premier caractère passe tel quel, la recherche reprend après lui.
+            let un = depuis.chars().next().map_or(0, char::len_utf8);
+            sortie.push_str(depuis.get(..un).unwrap_or_default());
+            reste = depuis.get(un..).unwrap_or_default();
+        }
+    }
+    sortie.push_str(reste);
+    sortie
+}
+
 /// L'empreinte d'un programme : les 16 premiers octets du BLAKE3 de son objet tel que le constat l'écrit
 /// (« demarrage:<identité échappée> »), en 32 chiffres hexadécimaux minuscules. C'est tout ce que la fenêtre renvoie
 /// pour le désigner : ni nom ni chemin, qu'elle aurait pu se faire glisser. `None` : une identité vide, sans objet.
@@ -152,8 +190,8 @@ fn geste(e: &Entree) -> Option<GesteEcrit> {
     Some(GesteEcrit {
         sorte: sorte.to_string(),
         empreinte: empreinte(e.identite)?,
-        nom: nom_sans_piege(e.nom, 80),
-        commande: nom_sans_piege(e.commande, 160),
+        nom: nom_sans_piege(&sans_maison(e.nom), 80),
+        commande: nom_sans_piege(&sans_maison(e.commande), 160),
         machine: e.machine,
     })
 }
@@ -173,8 +211,8 @@ fn constat(e: &Entree) -> Constat {
     };
     let mut texte = format!(
         "{} — {statut} · {}",
-        nom_sans_piege(e.nom, 80),
-        nom_sans_piege(e.commande, 160)
+        nom_sans_piege(&sans_maison(e.nom), 80),
+        nom_sans_piege(&sans_maison(e.commande), 160)
     );
     if e.machine {
         texte.push_str(tr!(" · tout l'ordinateur", " · whole machine"));
@@ -249,6 +287,47 @@ mod tests {
                 "{tel_quel}"
             );
         }
+    }
+
+    /// T-4, l'autre moitié : le nom et la commande d'un programme lancé de sous le dossier personnel le montrent
+    /// « ~ » (message du constat et geste), à chaque endroit où il paraît comme un chemin ; un chemin qui ne fait que
+    /// lui ressembler (« …2 », « /mnt… », « ….bak ») reste tel quel. Linux seulement, comme l'essai de l'objet.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn nom_et_commande_ne_disent_pas_le_dossier_personnel() {
+        let maison = crate::socle::maison();
+        let m = maison.to_str().unwrap();
+        for (texte, montre) in [
+            (format!("{m}/bin/lecteur"), "~/bin/lecteur".to_string()),
+            (m.to_string(), "~".to_string()),
+            (
+                format!("sh -c \"{m}/a --de={m}/b\" {m}"),
+                "sh -c \"~/a --de=~/b\" ~".to_string(),
+            ),
+            (format!("{m}2/x {m}.bak /mnt{m}/x"), format!("{m}2/x {m}.bak /mnt{m}/x")),
+            (format!("x{m}/y"), format!("x{m}/y")),
+        ] {
+            assert_eq!(sans_maison(&texte), montre, "{texte}");
+        }
+        let nom = format!("Lecteur de {m}");
+        let commande = format!("{m}/bin/lecteur --depuis {m}/musique");
+        let e = Entree {
+            nom: &nom,
+            commande: &commande,
+            identite: "Lecteur",
+            machine: false,
+            statut: Statut::SeLance,
+        };
+        let r = resultat(std::slice::from_ref(&e), vec![], debut());
+        let g = r.constats[0].geste.as_ref().unwrap();
+        for t in [&r.constats[0].message, &g.nom, &g.commande] {
+            assert!(!t.contains(m), "{t}");
+        }
+        assert!(
+            r.constats[0]
+                .message
+                .contains("Lecteur de ~ — se lance · ~/bin/lecteur --depuis ~/musique")
+        );
     }
 
     /// Le geste de chaque programme : retirer un programme ordinaire qui se lance, remettre ce que Vanguard a

@@ -3144,6 +3144,17 @@ mod demarrage_sous_attaque {
         std::fs::read_to_string(f).unwrap_or_else(|e| format!("<illisible : {e}>"))
     }
 
+    /// Les fichiers sous `d`, à toute profondeur, sauf les notes de Vanguard (`reglages.json`).
+    fn fichiers_sauf_notes(d: &Path, l: &mut Vec<PathBuf>) {
+        for f in std::fs::read_dir(d).into_iter().flatten().flatten() {
+            if f.file_type().is_ok_and(|t| t.is_dir()) {
+                fichiers_sauf_notes(&f.path(), l);
+            } else if f.file_name() != "reglages.json" {
+                l.push(f.path());
+            }
+        }
+    }
+
     fn copier(de: &Path, vers: &Path) {
         std::fs::create_dir_all(vers).unwrap();
         for f in std::fs::read_dir(de).unwrap().flatten() {
@@ -3684,6 +3695,66 @@ mod demarrage_sous_attaque {
         assert_eq!(b.changer("--retirer", &e).1, "fait");
         assert_eq!(b.changer("--retirer", &e).1, "refuse");
         assert_eq!(b.au_journal(&e).len(), 6);
+    }
+
+    /// Relecture 0.94, R-4 (T-4). Le chemin du dossier personnel dit le nom du compte : rien de ce que `demarrage`
+    /// écrit hors de l'écran (sortie `--json`, rapport, journal) ne le porte, ni la commande ou le nom d'un programme
+    /// lancé de sous lui, ni une entrée non vérifiée (pas lue, lien), ni un programme retiré puis remis.
+    #[test]
+    fn rien_de_verse_ne_dit_le_dossier_personnel() {
+        let b = Banc::nouveau("sans-maison");
+        let maison = b.maison.to_str().unwrap().to_string();
+        b.poser(
+            "lecteur.desktop",
+            "Lecteur",
+            &format!("{maison}/outils/lecteur --depuis \"{maison}/musique\""),
+        );
+        b.poser("disque.desktop", &format!("Disque de {maison}"), "/usr/bin/disque");
+        // Le dossier jetable porte « vanguard » dans son chemin : un programme lancé de sous lui est « à garder ».
+        // Celui-ci, lancé d'ailleurs, se retire puis se remet : son objet (le chemin de l'entrée) part au journal.
+        b.poser("radio.desktop", "Radio", "/opt/radio/radio --discret");
+        std::fs::write(
+            b.autostart.join("latin.desktop"),
+            b"[Desktop Entry]\nType=Application\nName=Caf\xe9\nExec=/usr/bin/cafe\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(b.maison.join("ailleurs.desktop"), b.autostart.join("lien.desktop")).unwrap();
+
+        let mut sorties = vec![b.liste().1];
+        let m = b.manques();
+        assert!(m.contains("latin.desktop") && m.contains("lien.desktop"), "{m}");
+        let (sorte, e) = b
+            .geste("Radio")
+            .unwrap_or_else(|| panic!("Radio sans bouton : {}", sorties[0]));
+        assert_eq!(sorte, "retirer");
+        for option in ["--retirer", "--remettre"] {
+            let s = b.lancer(&["demarrage", option, &e, "--json"]);
+            assert!(s.texte.contains("\"fait\""), "{option} : {} {}", s.texte, s.erreurs);
+            sorties.push(s.texte);
+            sorties.push(b.liste().1);
+        }
+
+        // Ce qui est versé : la sortie de chaque commande, et tout fichier écrit par Vanguard sous ses données (le
+        // rapport, le journal), sauf ses propres notes, qui gardent l'identité entière pour remettre l'entrée.
+        let mut verses = Vec::new();
+        fichiers_sauf_notes(&b.maison.join("donnees/vanguard"), &mut verses);
+        assert!(
+            verses.iter().any(|f| f.to_string_lossy().contains("evenements")),
+            "aucun journal : {verses:?}"
+        );
+        for f in &verses {
+            let t = String::from_utf8_lossy(&std::fs::read(f).unwrap()).into_owned();
+            assert!(!t.contains(&maison), "{} dit le dossier personnel :\n{t}", f.display());
+        }
+        for s in &sorties {
+            assert!(!s.contains(&maison), "la sortie dit le dossier personnel :\n{s}");
+        }
+        // Le dossier personnel est montré « ~ » : le programme se reconnaît encore.
+        assert!(
+            sorties[0].contains("~/outils/lecteur --depuis") && sorties[0].contains("Disque de ~"),
+            "{}",
+            sorties[0]
+        );
     }
 }
 
