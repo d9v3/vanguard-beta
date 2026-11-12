@@ -654,6 +654,7 @@ if [[ $MODE != --rapide ]]; then
   etape relais-schema python3 outils/relais-schema.py &
   etape liens python3 outils/liens.py --hors-ligne &
   etape carte-attack python3 outils/couverture-attack.py --verifier &
+  etape table-cf python3 outils/table-cf.py --verifier &
   etape chiffres-readme chiffres_readme &
   etape workflows workflows &
   etape nomenclatures nomenclatures &
@@ -859,6 +860,7 @@ if [[ $MODE != --rapide ]]; then
   [[ -f $TRAVAIL/relais-schema.log ]] && grep -E '^comparaison .* sautée' "$TRAVAIL/relais-schema.log" | sed 's/^/      /'
   ligne liens "liens internes"
   ligne carte-attack "carte ATT&CK à jour (COUVERTURE-ATTACK.md)"
+  ligne table-cf "invisibles d'Unicode : table Cf à jour (ui::piege)"
   ligne chiffres-readme "nombres des README à jour"
   ligne workflows "workflows de GitHub (zizmor)"
   ligne nomenclatures "nomenclatures (SBOM)"
