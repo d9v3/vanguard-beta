@@ -8783,6 +8783,8 @@ mod tests {
                 format!("36 25 8:17 / /run/media/alice/Mon\\040disque rw,nosuid shared:1 - {t} /dev/sdb1 rw\n")
             });
             std::fs::write(f, format!("22 1 8:2 / / rw shared:1 - ext4 /dev/sda2 rw\n{disque}")).unwrap();
+            // Le nœud du disque dans /sys, comme sur une vraie machine (W-6 : un /sys absent n'est pas sain).
+            std::fs::create_dir_all(self.racine.join("sys/dev/block/8:17")).unwrap();
         }
 
         fn ecrire(&self, relatif: &str, texte: &str) {
@@ -8997,6 +8999,7 @@ mod tests {
             "partition d'une image du compte",
             "btrfs sur une image du compte",
             "boucle sans fichier lu",
+            "sys absent",
             "env multi-appel coreutils",
             "env multi-appel busybox",
             "env vers un busybox du compte",
@@ -9119,6 +9122,9 @@ mod tests {
                         std::fs::write(f, t).unwrap();
                     }
                     "disque fuseblk" => m.monter_le_disque(Some("fuseblk")),
+                    // W-6 (relecture 0.95) : sans /sys (caché ou non monté), chaque lecture rendait « absent » et le
+                    // disque était compté sain.
+                    "sys absent" => std::fs::remove_dir_all(m.racine.join("sys")).unwrap(),
                     "disque pas monté, dossiers là" => m.monter_le_disque(None),
                     "montages illisibles" => {
                         let f = m.racine.join("proc/self/mountinfo");
@@ -9197,7 +9203,9 @@ mod tests {
                         nommee(Niveau::Info, "débranché")
                     }
                     "disque FUSE" | "FUSE par-dessus le disque" => nommee(Niveau::Eleve, "montage FUSE"),
-                    "montages illisibles" | "boucle sans fichier lu" => nommee(Niveau::Eleve, "non vérifié"),
+                    "montages illisibles" | "boucle sans fichier lu" | "sys absent" => {
+                        nommee(Niveau::Eleve, "non vérifié")
+                    }
                     "disque image du compte"
                     | "image du compte sous un chiffrement"
                     | "partition d'une image du compte"

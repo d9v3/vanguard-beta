@@ -382,8 +382,8 @@ impl Systeme<'_> {
     /// 0:N comme btrfs), le nom de sa source (/sys/class/block/…, /dev/mapper/x suivi jusqu'à dm-N), puis ce qu'il
     /// recouvre (slaves : un chiffrement sur une image). Chacun, et son parent (une partition d'une image), est une
     /// boucle s'il a loop/backing_file : ce fichier doit être à root seul (`de_root_seul`), sinon `Ecart::DisqueImage`,
-    /// levé. Une boucle (numéro 7:N ou source /dev/loop*) dont aucun fichier ne se lit, ou un /sys qui ne se lit pas :
-    /// `Ecart::DestinationNonVue`. Limite : un montage posé seulement le temps de la copie n'est pas vu.
+    /// levé. Une boucle (numéro 7:N ou source /dev/loop*) dont aucun fichier ne se lit, un /sys qui ne se lit pas, ou
+    /// dont aucun premier nœud n'existe (W-6) : `Ecart::DestinationNonVue`. Limite : un montage posé seulement le temps de la copie n'est pas vu.
     fn image_du_compte(&self, ligne: &str) -> Result<(), Ecart> {
         let numero = ligne.split(' ').nth(2).unwrap_or("");
         let source = ligne
@@ -402,6 +402,11 @@ impl Systeme<'_> {
                 .and_then(|n| n.to_str())
                 .unwrap_or_else(|| nom.rsplit('/').next().unwrap_or(nom));
             a_voir.push(self.sous(&format!("/sys/class/block/{nom}")));
+        }
+        // W-6 (relecture 0.95) : un /sys caché ou non monté rend chaque lecture « absente » ; sans un premier nœud
+        // vu (le numéro ou le nom du disque), rien ne dit que le disque n'est pas une image.
+        if !a_voir.is_empty() && !a_voir.iter().any(|d| std::fs::symlink_metadata(d).is_ok()) {
+            return Err(Ecart::DestinationNonVue);
         }
         let boucle = numero.starts_with("7:") || source.starts_with("/dev/loop");
         let mut adossee = false;
