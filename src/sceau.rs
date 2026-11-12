@@ -1125,7 +1125,10 @@ pub(crate) fn effacer_dans(dossier: &Path, nom: &str) -> std::io::Result<()> {
     let _verrou = verrou_ecriture(dossier, nom)?;
     // Le retrait noté « en attente » d'abord, comme une écriture (`ecrire_dans`) : tué juste après le retrait, le
     // fichier absent n'est pas dit effacé hors de Vanguard. Une attente restée d'un arrêt d'avant est remplacée
-    // aussi : gardée, elle ferait accepter le contenu retiré s'il revenait.
+    // aussi : gardée, elle ferait accepter le contenu qu'elle attendait s'il revenait. Seulement elle : le sceau du
+    // fichier, lui, reste jusqu'à la fin du retrait (`juger` le croit encore). Tué entre la suppression et la fin, le
+    // contenu scellé remis par un autre programme se lit donc intact ; les deux contenus sont de Vanguard, et retirer
+    // le sceau ici ferait lire falsifié un retrait tué avant la suppression (à peser pour la 0.95).
     let mut posee = None;
     if let Ok(Some(mut r)) = registre(dossier)
         && (r.fichiers.contains_key(nom) || r.en_attente.contains_key(nom))
