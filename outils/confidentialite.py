@@ -38,7 +38,8 @@ Avec --generique (la CI de GitHub) : seulement ce qui se reconnaît à sa forme 
 courriel, SID de Windows), sans rien lire de la machine qui le lance : sur GitHub, son compte « runner » et
 /home/runner ne sont à personne.
 Sort en erreur (code 1) en disant quoi et où dès qu'un détail personnel paraît ; code 2 quand rien n'est conclu (usage
-faux, git en échec, fichier illisible) : jamais pris pour un vert, ni pour une trouvaille.
+faux, git en échec, fichier illisible, une source des détails de cet ordinateur illisible ou en panne : liste,
+base des appareils, nmcli, identité Git) : jamais pris pour un vert, ni pour une trouvaille.
 """
 
 import getpass
@@ -122,8 +123,8 @@ def dossiers_vanguard():
             for d in media.iterdir():
                 if (d / "vanguard.cle").is_file():
                     cle = d / "donnees"
-        except OSError:
-            continue
+        except (FileNotFoundError, NotADirectoryError):
+            continue  # Aucun support branché à ce nom : rien à lire. Un dossier illisible, lui, n'est pas sauté.
     return local, cle
 
 
@@ -131,37 +132,54 @@ def appareils(*bases):
     """Noms (appareils, surnoms, réseaux) qui pourraient nommer quelqu'un, et adresses MAC, des bases d'appareils."""
     noms, macs = set(), set()
     for base in bases:
+        # Absente : aucun appareil connu ici. Présente mais illisible ou abîmée : la liste des termes serait plus
+        # courte sans le dire, donc rien n'est conclu.
+        if not base.exists():
+            continue
         try:
             texte = base.read_text()
             donnees = json.loads(texte)
-        except (OSError, ValueError):
-            continue
+            for reseau in donnees.get("reseaux", {}).values():
+                noms.add(reseau.get("nom") or "")
+                for appareil in reseau.get("appareils", {}).values():
+                    noms |= {appareil.get(champ) or "" for champ in ("nom", "surnom")}
+        except (OSError, ValueError, AttributeError, TypeError) as erreur:
+            rien_conclu(f"{base} est illisible ou abîmé ({erreur}) : ses appareils ne sont pas cherchés ; rien n'est "
+                        "conclu.")
         macs |= {m.lower() for m in MAC.findall(texte)}
-        for reseau in donnees.get("reseaux", {}).values():
-            noms.add(reseau.get("nom") or "")
-            for appareil in reseau.get("appareils", {}).values():
-                noms |= {appareil.get(champ) or "" for champ in ("nom", "surnom")}
     return {n for n in noms if len(n) >= 3 and not generique(n)}, macs
 
 
 def nmcli(*args):
+    """La sortie de nmcli ; None s'il n'est pas installé (aucun réseau de NetworkManager à lire). En panne, trop lent ou
+    en échec : rien n'est conclu (les réseaux de la maison ne seraient pas cherchés, sans le dire)."""
     try:
-        return subprocess.run(["nmcli", *args], capture_output=True, text=True, timeout=10).stdout
-    except (OSError, subprocess.TimeoutExpired):
-        return ""
+        r = subprocess.run(["nmcli", *args], capture_output=True, text=True, timeout=10)
+    except FileNotFoundError:
+        return None
+    except (OSError, subprocess.TimeoutExpired) as erreur:
+        rien_conclu(f"nmcli {' '.join(args)} n'a pas répondu ({erreur}) : les réseaux enregistrés ne sont pas lus ; "
+                    "rien n'est conclu.")
+    if r.returncode:
+        rien_conclu(f"nmcli {' '.join(args)} a échoué (code {r.returncode} : {r.stderr.strip()}) : les réseaux "
+                    "enregistrés ne sont pas lus ; rien n'est conclu.")
+    return r.stdout
 
 
 def reseaux_enregistres():
     """Réseaux Wi-Fi et VPN enregistrés (nom de la connexion et nom du Wi-Fi), et les bornes déjà vues."""
     noms, bornes = set(), set()
-    for ligne in nmcli("-t", "-f", "NAME,TYPE", "connection", "show").splitlines():
+    connexions = nmcli("-t", "-f", "NAME,TYPE", "connection", "show")
+    if connexions is None:
+        return noms, bornes
+    for ligne in connexions.splitlines():
         nom, _, genre = ligne.rpartition(":")
         if not nom or genre not in ("802-11-wireless", "vpn", "wireguard"):
             continue
         noms.add(nom.replace("\\:", ":"))
         if genre == "802-11-wireless":
-            ssid, _, vues = nmcli("-g", "802-11-wireless.ssid,802-11-wireless.seen-bssids", "connection", "show",
-                                  nom.replace("\\:", ":")).partition("\n")
+            ssid, _, vues = (nmcli("-g", "802-11-wireless.ssid,802-11-wireless.seen-bssids", "connection", "show",
+                                   nom.replace("\\:", ":")) or "").partition("\n")
             noms.add(ssid.strip().replace("\\:", ":"))
             bornes |= {m.lower() for m in MAC.findall(vues.replace("\\", ""))}
     return {n for n in noms if n}, bornes
@@ -182,7 +200,12 @@ def termes():
                 if ligne.strip() and not ligne.lstrip().startswith("#"):
                     ajouter(ligne.strip(), origine)
     for cle in ("user.email", "user.name"):
-        valeur = subprocess.run(["git", "config", "--global", cle], capture_output=True, text=True).stdout.strip()
+        r = subprocess.run(["git", "config", "--global", cle], capture_output=True, text=True)
+        # 1 : la clé n'est pas posée. Tout autre code (réglages abîmés, illisibles) : l'identité n'est pas lue.
+        if r.returncode not in (0, 1):
+            rien_conclu(f"git config --global {cle} a échoué (code {r.returncode} : {r.stderr.strip()}) : l'identité "
+                        "Git n'est pas cherchée ; rien n'est conclu.")
+        valeur = r.stdout.strip()
         if len(valeur) >= 5 and not valeur.endswith(ANONYME):
             ajouter(valeur, "identité Git de l'ordinateur")
     if pwd:

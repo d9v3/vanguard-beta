@@ -21,8 +21,8 @@
 #      trouvaille ; une trouvaille (code 1) n'est comptée que si l'outil dit ce qu'il a trouvé ;
 #  12. l'étape de la CI (.github/workflows/ci.yml, lue telle quelle) : le garde-fou lancé est celui de la base, pas
 #      celui de l'arbre jugé (une demande qui le viderait ne se rend pas verte) ; repli dit si la base n'en a pas.
-#  13. les sources de cet ordinateur, dans une maison jetable : les deux listes privées (commune et de Vanguard) ;
-#      une liste présente mais illisible : code 2.
+#  13. les sources de cet ordinateur, dans une maison jetable : les deux listes privées (commune et de Vanguard), la
+#      base des appareils, nmcli, l'identité Git ; une source présente mais illisible ou en panne : code 2.
 set -uo pipefail
 RACINE=$(cd "$(dirname "$0")/.." && pwd)
 OUTIL=$RACINE/outils/confidentialite.py
@@ -665,6 +665,37 @@ mkdir "$MAISON_J/.config/confidentialite/confidentiel.txt"
 machine "rien d'ici" 2>/dev/null
 noter 2 $? "liste commune illisible (un dossier) : rien n'est conclu"
 rmdir "$MAISON_J/.config/confidentialite/confidentiel.txt"
+BASE_J=$MAISON_J/.local/share/vanguard/appareils.json
+printf '{"reseaux": {"r1": {"nom": "Chez Gaspard", "appareils": {}}}}\n' >"$BASE_J"
+SORTIE=$(machine "réseau Chez Gaspard" 2>&1)
+noter 1 "$(refus_dit $?)" "témoin : un réseau de la base des appareils est cherché"
+printf '{"reseaux": ' >"$BASE_J"
+machine "rien d'ici" 2>/dev/null
+noter 2 $? "base des appareils abîmée : rien n'est conclu"
+printf '["pas", "une", "base"]\n' >"$BASE_J"
+machine "rien d'ici" 2>/dev/null
+noter 2 $? "base des appareils d'une autre forme : rien n'est conclu"
+rm "$BASE_J" && mkdir "$BASE_J"
+machine "rien d'ici" 2>/dev/null
+noter 2 $? "base des appareils illisible (un dossier) : rien n'est conclu"
+rmdir "$BASE_J"
+nmcli_faux 0 "$(printf 'Chez Lavoie:802-11-wireless\n')"
+SORTIE=$(machine "branché sur Chez Lavoie" 2>&1)
+noter 1 "$(refus_dit $?)" "témoin : un réseau enregistré dans NetworkManager est cherché"
+nmcli_faux 8
+machine "rien d'ici" 2>/dev/null
+noter 2 $? "nmcli en échec (NetworkManager arrêté) : rien n'est conclu"
+rm "$FAUX/nmcli"
+printf '[user]\n\tname = %s\n' "$INVENTE" >"$GLOBAL_J"
+SORTIE=$(machine "de $INVENTE" 2>&1)
+noter 1 "$(refus_dit $?)" "témoin : le nom de l'identité Git est cherché"
+# Des réglages abîmés font échouer tout git (rev-parse d'abord) : seul un git inventé échoue sur l'identité seule.
+rm "$FAUX/git"
+printf '#!/bin/sh\n[ "$1 $2" = "config --global" ] && exit 3\nexec %q "$@"\n' "$(command -v git)" >"$FAUX/git"
+chmod +x "$FAUX/git"
+machine "rien d'ici" 2>/dev/null
+noter 2 $? "git config --global en échec (code 3) : rien n'est conclu"
+rm "$FAUX/git" && ln -s "$(command -v git)" "$FAUX/git"
 : >"$GLOBAL_J"
 cd "$TRAVAIL" || exit 1
 
