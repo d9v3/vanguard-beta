@@ -1294,10 +1294,10 @@ pub fn au_demarrage() -> Vec<Programme> {
     releve_demarrage().0
 }
 
-/// `au_demarrage`, avec ce qui n'a pas pu être lu : un dossier d'autostart qui existe mais ne se liste pas, les
-/// services du compte quand systemctl --user ne répond pas (pas de session systemd). La liste à cocher n'en a pas
-/// besoin (une entrée absente n'y est simplement pas) ; `demarrage --json`, lui, ne compte pas une liste incomplète
-/// comme lue.
+/// `au_demarrage`, avec ce qui n'a pas pu être lu : un dossier d'autostart qui existe mais ne se liste pas ou que la
+/// garde refuse, une entrée lien, tube ou trop grosse, les services du compte quand systemctl --user ne répond pas
+/// (pas de session systemd). La liste à cocher du terminal les dit sous son titre, jamais « aucun programme » ;
+/// `demarrage --json` ne compte pas une liste incomplète comme lue.
 pub fn releve_demarrage() -> (Vec<Programme>, Vec<String>) {
     let maison = crate::socle::maison();
     let config = std::env::var_os("XDG_CONFIG_HOME").map_or_else(|| maison.join(".config"), PathBuf::from);

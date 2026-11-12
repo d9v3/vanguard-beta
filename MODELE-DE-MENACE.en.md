@@ -131,8 +131,12 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   require the account's rights to aim at: a content swapped just after the second reading is lost (the old one is
   written hidden, the note says what was shown); an autostart folder moved out of the home folder after it was opened
   receives the write where it now is (the link put in its place is not followed). An entry kept behind a link
-  (dotfiles), an `XDG_CONFIG_HOME` or `HOME` that is relative or contains `..` are not offered, without the list
-  saying so; an entry that cannot be read within bounds (over 64 KiB, not UTF-8) is not offered, and the list says so.
+  (dotfiles), an entry that is itself a link or a pipe, an `XDG_CONFIG_HOME` or `HOME` that is relative or contains
+  `..` are neither read nor offered, and the list says so (“not verified”, in `demarrage --json` as in the terminal
+  checklist), never “no program”. An autostart entry that cannot be read within bounds (64 KiB or more, not UTF-8) is
+  neither removed nor put back over (a note from an old removal does not overwrite it), and the list says so; an
+  entry that, once hidden, would exceed 64 KiB is said “to keep” and refused before anything is written. Known limit,
+  for 0.95: the account's systemd unit file is still read without a bound to get its command.
 - **Data loss.** Malware running in the account can turn off the anti-ransomware watcher: the backup remains the
   real protection.
 - **A stolen computer that is on and unlocked.** Disk encryption (BitLocker, FileVault, LUKS) protects a computer
@@ -238,10 +242,11 @@ safeguards:
   left from before with the value read now, so that “Put back” brings back the state from before this removal. Under
   Linux, this previous value (the autostart entry) is read in a single opening that does not follow a link, does not
   wait on a pipe and stops at 64 KiB: otherwise refused, nothing changed (an entry that is a link therefore cannot be
-  removed from here), and an entry unreadable in this way is not offered (the list says it was not read). The list
-  and the name of a removed entry are read the same way, bounded, without waiting on a pipe; a rewritten entry keeps
-  its permissions. Each change done or refused is written to the event log (kind, cleaned name, outcome,
-  fingerprint); a refusal identical to the previous one (same fingerprint, same kind, same reason) is not written
+  removed from here), and an entry unreadable in this way is offered neither for removal nor for putting back (the
+  list says it was not read), and “Put back” never overwrites it. An entry that, once hidden, could no longer be read
+  back within this bound is refused before being written. The list and the name of a removed entry are read the same
+  way, bounded, without waiting on a pipe; a rewritten entry keeps its permissions. Each change done or refused is
+  written to the event log (kind, cleaned name, outcome, fingerprint); a refusal identical to the previous one (same fingerprint, same kind, same reason) is not written
   again for 10 minutes, so that a burst of requests does not drown the alerts; a change done is always written. Its end is told
   (done, refused, failure, with the reason), then the list is read again; only the last line of the output, a JSON of
   the same action, with exit code 0, means “done”: anything else is a failure, never a success
@@ -249,11 +254,54 @@ safeguards:
   (`fenetre/src/appli.rs`), the relay tests (`fenetre/src/relais.rs`), `verrou_des_notes_tenu_puis_rendu` and those
   of `src/optimiser/demarrage.rs` (`seul_un_programme_note_se_remet`, `pare_feu_reconnu_par_son_paquet`),
   `valeur_d_avant_d_autostart_ni_lien_ni_tube_ni_trop_gros`, `entree_trop_grosse_ni_proposee_ni_ecrite` and
-  `liste_et_noms_lus_bornes` (`src/optimiser/linux.rs`), and end to end, with a
+  `liste_et_noms_lus_bornes`, `remise_sur_une_entree_pas_lue_n_ecrit_rien`,
+  `entree_trop_grosse_une_fois_masquee_refusee_avant_d_ecrire` (`src/optimiser/linux.rs`), and end to end, with a
   throwaway home folder, `demarrage_retire_puis_remet_a_l_octet_pres` and the `demarrage_sous_attaque` module
   (`tests/programme.rs`: putting back over a program that starts, from the window and through “Put everything back”,
   removal on doubtful notes, simultaneous changes, link, pipe, oversized entry, permissions, lock held, forged or
   replayed notes, repeated refusals).
+- **Colors: saved by `vanguard`, never by the window.** The Vanguard screen sets, for each theme, one of the six
+  presets or the system colors, and the five bright colors (accent, serious, medium, to watch, healthy). The window
+  shows them right away, writing nothing; “Save…” opens a confirmation (before, after) and only “Accept” runs the
+  closed form `vanguard couleurs --theme <sombre|clair> --base <word> --vifs <5 × 6 hexadecimal digits> --json` (or
+  `--defaut`), which the relay rebuilds from a frame of exactly 24 bytes. `vanguard` judges everything again (closed
+  words, strict colors) and writes into parametres.json, sealed, under the parametres.lock lock that every change to
+  this file takes (the window and the terminal do not erase each other), the previous value read in the same
+  re-reading; “Back to the previous ones” puts back exactly that value (the value: starting from a missing file, a
+  sealed `{}` remains, which reads like the absence, and keeps the seal that would make a file placed later be judged
+  harshly). A color that would barely show on one of the theme's backgrounds (contrast below 1.5:1) is refused three
+  times, by the window, by the relay and by `vanguard`, and a kept color that would be so does not count (Vanguard's
+  colors); below 3:1, two severities too close or the accent (which also says “to fix”) too close to a severity is
+  only a remark (warn, not forbid), repeated in the confirmation, “serious” taken for “healthy” first and in bold. A
+  hijacked window can therefore only set ugly or misleading colors (a red “healthy”), never make an alert unreadable:
+  every word of state, alert, severity or remark is written in the theme's ink, which cannot be set, and the settable
+  color only marks its dot, bar or band (test `aucun_mot_n_est_ecrit_dans_une_couleur_de_gravite`,
+  `fenetre/src/dessin/captures.rs`); a severity is therefore never told by color alone, always in words too. Each
+  change made is noted in the event log (the theme, the preset before and after); accepted: no rate limit, and the
+  sandboxed window gains a lasting channel there, a minimal one (twice 16 bytes of colors it chooses, kept sealed).
+  The system colors are read by `vanguard` alone (the window's sandbox does not see the home folder): the colors.toml
+  of the Omarchy theme (the first of the two locations that gives one), a regular file whose last component is not
+  followed if it is a link (`O_NOFOLLOW`), bounded at 64 KiB, or the Windows accent color (the accent alone); a
+  snapshot, read again at each opening. A parametres.json changed outside Vanguard (even with no colors in it),
+  erased, unreadable or missing after seals were redone gives back Vanguard's colors, and the reason is said in the
+  backstage view and on the Vanguard screen. Above all, `vanguard couleurs` never writes over an unreadable file (the
+  other settings, a defense turned off by choice, the “no” to sharing, would silently go back to their default) nor
+  over one erased or changed outside Vanguard (resealing would erase the trace): refused, nothing written, and the
+  window offers nothing to save; it is up to Settings, which say what they ignored, to rewrite it. An open
+  confirmation freezes the draft: what it shows is what gets saved. The “Reduced animations” setting follows the same
+  path, with no confirmation (cosmetic, one click undoes it): the closed form
+  `vanguard couleurs --animations <toutes|reduites> --json`, rebuilt from a frame of exactly 7 bytes, kept in
+  `couleurs` (so reset to its default with them on a doubtful file), same refusals, same lock, each change noted
+  (before, after); the window reads it again at opening in the same answer as the colors, and a refusal or a failure
+  leaves it valid for this time only, said in the backstage view (tests
+  `les_animations_ne_s_ecrivent_pas_sur_un_fichier_douteux`, `src/parametres/couleurs.rs`,
+  `les_animations_de_la_fenetre_se_gardent_d_une_ouverture_a_l_autre`, `tests/programme.rs`).
+  Tests: `les_couleurs_se_proposent_s_enregistrent_par_vanguard_et_s_annulent` (`fenetre/src/appli.rs`),
+  `des_couleurs_passent_seules_et_lisibles` (`fenetre/src/relais.rs`), those of `fenetre/src/couleurs.rs`,
+  `fenetre/src/donnees/couleurs.rs` and `src/parametres/couleurs.rs` (`un_changement_s_annule_exactement`,
+  `une_demande_invalide_est_refusee`, `un_fichier_change_hors_de_vanguard_rend_les_couleurs_de_vanguard`,
+  `un_fichier_illisible_rend_les_couleurs_de_vanguard`, `des_couleurs_gardees_invalides_ne_valent_pas`) and
+  `un_fichier_douteux_ne_propose_rien_et_la_confirmation_fige_le_brouillon` (`fenetre/src/dessin/captures.rs`).
 - **Its answers are read with suspicion.** Bounded size, long lines cut, terminal sequences and control characters
   removed, JSON read without ever crashing (readers, console and progress fuzzed: `fenetre_donnees`, `fenetre_saisie`, `fenetre_progression`); an
   unreadable answer is said to be so, never counted as healthy. As in the terminal (`ui::affichable`), a character that

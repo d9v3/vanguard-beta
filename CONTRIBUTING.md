@@ -374,7 +374,7 @@ copie du dépôt :
 
 ```sh
 git config core.hooksPath outils/hooks                                     # crochets de commit et d'envoi
-git config user.email "<id>+<compte>@users.noreply.github.com"            # commits sans ton courriel
+git config user.email "<id>+<compte>@users.noreply.github.com"            # commits sans votre courriel
 ```
 
 Ce qui est personnel est lu sur l'ordinateur, jamais écrit dans le dépôt : `~/.config/vanguard-dev/confidentiel.txt`

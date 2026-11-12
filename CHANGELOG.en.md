@@ -77,16 +77,21 @@ repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
   ClamAV database older than a week is no longer called up to date. Secrets: a history or a search cut at its limit is
   reported instead of a ✔, a repository read halfway is unchecked, the search stops after 20 minutes and its reports,
   which name the commit authors, are deleted. Containers: no more "run again with sudo". Alerts declared normal: two
-  declarations at the same time (blocking, a release from quarantine, the menu) no longer erase each other; a lost
-  release from quarantine sent the file back there at the next pass.
-- **Hardened after an attack campaign.** `demarrage --retirer` and `--remettre` no longer follow any folder that is a
-  link (~/.config or its autostart folder replaced by a link): nothing is written outside the home folder, and an entry
-  kept behind a link is no longer offered. A single read makes what is shown, noted and written: an entry changed
-  between this read and its writing, within the same run, is not written (the fingerprint of a list shown earlier
-  only names the path). Entries are read within bounds, without waiting on a pipe: an entry over 64 KiB is no longer
-  offered (it was removed with no way to put it back), a file replaced by a pipe no longer freezes the list, and a
-  rewritten entry keeps its permissions. The settings seal is written in two steps: a hard stop between a file and
-  its seal no longer raises a false tampering alarm, nor forgets a file still to be checked again.
+  declarations at the same time (blocking, a release from quarantine, the menu, the reset) no longer erase each
+  other; a lost release from quarantine sent the file back there at the next pass.
+- **Hardened after an attack campaign.** `vanguard` with no argument starts no “vanguard-fenetre” program, even one
+  placed next to it: it opens the terminal menu. The check does not take the watcher unit that Vanguard installs
+  itself for a suspicious one (a percentage value, such as `CPUQuota=20%`, is not a systemd specifier).
+  `demarrage --retirer` and `--remettre` no longer follow any folder that is a link (~/.config or its autostart folder
+  replaced by a link): nothing is written outside the home folder. An entry kept behind a link, or itself a link or a
+  pipe, is not offered, and the list says it is “not verified” (in `--json` as in the terminal checklist), never “no
+  program”; a `systemctl --user` that does not answer is said too. A single read makes what is shown, noted and
+  written: an entry changed between this read and its writing, within the same run, is not written (the fingerprint
+  of a list shown earlier only names the path). Entries are read within bounds, without waiting on a pipe, at startup
+  as in `vanguard slow`: an entry of 64 KiB or more is neither removed (it was removed with no way to put it back)
+  nor put back over, an entry that, once hidden, would exceed this bound is refused before being written, a file
+  replaced by a pipe no longer freezes the list, and a rewritten entry keeps its permissions. The settings seal is
+  written in two steps: a hard stop between a file and its seal no longer raises a false tampering alarm.
 - **Dependency security.** rustix 1.1.6 (advisory RUSTSEC-2026-0486: in its extended attribute functions, bytes
   never written were marked as initialized for an empty buffer), brought in by crossterm.
 - **Tests.** Five new fuzzing targets (what a startup line starts and, for the upcoming window, the answers it reads,

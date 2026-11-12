@@ -2,14 +2,14 @@
 
 **Français** · [English](#security)
 
-Vanguard protège des ordinateurs : une faille dans Vanguard lui-même toucherait ceux qui l'utilisent. Si tu en trouves
-une, **ne l'écris pas dans un ticket public**, ni ailleurs en public, avant la publication de l'avis.
+Vanguard protège des ordinateurs : une faille dans Vanguard lui-même toucherait ceux qui l'utilisent. Si vous en trouvez
+une, **ne l'écrivez pas dans un ticket public**, ni ailleurs en public, avant la publication de l'avis.
 
 ## Signaler une faille
 
 En privé, depuis l'onglet **Security** du dépôt, bouton **Report a vulnerability**
 ([lien direct](https://github.com/d9v3/vanguard-beta/security/advisories/new), avec un compte GitHub). Seuls le
-mainteneur et toi voyez le signalement et la discussion qui suit. C'est la seule voie : aucune adresse courriel,
+mainteneur et vous voyez le signalement et la discussion qui suit. C'est la seule voie : aucune adresse courriel,
 aucune personne à joindre ailleurs.
 
 ## Ce qu'il faut joindre
@@ -20,14 +20,14 @@ aucune personne à joindre ailleurs.
 - une preuve minimale : le plus petit fichier, la plus courte commande qui montre la faille, et ce qu'un attaquant
   pourrait en faire ;
 - **rien de personnel** : ni nom d'ordinateur, ni compte, ni adresse IP ou MAC, ni réseau Wi-Fi, ni rapport ou journal
-  complet tel quel. Une preuve n'en a pas besoin : remplace-les par des valeurs inventées (`alice`, `Salon`,
+  complet tel quel. Une preuve n'en a pas besoin : remplacez-les par des valeurs inventées (`alice`, `Salon`,
   `192.168.1.10`).
 
 ## Versions suivies
 
 Seule la dernière version publiée (page Releases) reçoit les corrections. Vanguard publie au plus une version par
-jour : la correction part dans la suivante, et aucune version plus ancienne n'est corrigée à part. Mets Vanguard à jour
-(`vanguard se-mettre-a-jour`) et vérifie que la faille y est encore avant de la signaler.
+jour : la correction part dans la suivante, et aucune version plus ancienne n'est corrigée à part. Mettez Vanguard à
+jour (`vanguard se-mettre-a-jour`) et vérifiez que la faille y est encore avant de la signaler.
 
 ## Délai de réponse
 
@@ -40,8 +40,8 @@ qu'un mainteneur : la correction prend le temps qu'il faut, et le signalement di
 2. Ensuite seulement, un avis de sécurité GitHub (GHSA) la décrit dans l'onglet **Security** : ce qui est touché, la
    version corrigée, ce qu'il faut faire.
 3. Si la faille le mérite, une CVE est demandée à GitHub depuis l'avis.
-4. Tu es remercié dans l'avis et dans les notes de la version, sous le nom ou le pseudonyme que tu choisis, ou pas du
-   tout si tu préfères.
+4. Vous êtes remercié dans l'avis et dans les notes de la version, sous le nom ou le pseudonyme que vous choisissez, ou
+   pas du tout si vous préférez.
 
 Merci de garder le secret jusqu'à la publication de l'avis.
 
@@ -57,7 +57,7 @@ Merci de garder le secret jusqu'à la publication de l'avis.
 Par exemple :
 
 - Vanguard qui affaiblit la sécurité : une correction qui coupe une protection, un réglage qui ne s'annule pas
-  exactement, une commande lancée sans ton accord ;
+  exactement, une commande lancée sans votre accord ;
 - une injection de commande (shell, PowerShell) par un nom de fichier, un nom d'appareil, une réponse du réseau ou le
   contenu d'un fichier lu par Vanguard ;
 - la clé USB : protection en écriture contournée, programme de la clé remplacé ou lancé à la place d'un autre ;
@@ -68,11 +68,11 @@ Par exemple :
 
 - Les failles de Windows ou d'une distribution Linux, même trouvées avec Vanguard : à signaler à leur éditeur.
   Windows : [Microsoft Security Response Center](https://msrc.microsoft.com/report/vulnerability). Linux : l'équipe de
-  sécurité de ta distribution, par exemple [Debian](https://www.debian.org/security/),
+  sécurité de votre distribution, par exemple [Debian](https://www.debian.org/security/),
   [Ubuntu](https://ubuntu.com/security/disclosure-policy), [Fedora](https://fedoraproject.org/wiki/Security_Bugs) ou
   [Arch Linux](https://security.archlinux.org/).
 - Les failles d'un outil que Vanguard lance sans l'avoir écrit (trivy, ClamAV…) : à signaler à son projet.
-- Les problèmes que Vanguard trouve sur ton ordinateur : c'est son travail, le bilan les explique.
+- Les problèmes que Vanguard trouve sur votre ordinateur : c'est son travail, le bilan les explique.
 - Ce que le [modèle de menace](MODELE-DE-MENACE.md) dit hors de portée de Vanguard (par exemple un attaquant déjà
   administrateur, ou le noyau compromis) : une limite écrite, pas une faille, sauf si Vanguard prétend le contraire.
 - L'avertissement de SmartScreen ou d'un antivirus sur le programme : il n'a pas de certificat de signature de code.

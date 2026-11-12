@@ -138,8 +138,13 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   qu'il faut déjà les droits du compte pour viser : un contenu échangé juste après la relecture est perdu (l'ancien
   est écrit masqué, la note dit ce qui a été montré) ; un dossier autostart déplacé hors du dossier personnel après
   son ouverture reçoit l'écriture là où il est (le lien posé à sa place n'est pas suivi). Une entrée rangée derrière
-  un lien (dotfiles), un `XDG_CONFIG_HOME` ou un `HOME` relatifs ou avec `..` ne sont pas proposés, sans que la liste
-  le dise ; une entrée qui ne se lit pas bornée (plus de 64 Kio, pas en UTF-8) n'est pas proposée, et la liste le dit.
+  un lien (dotfiles), une entrée qui est elle-même un lien ou un tube, un `XDG_CONFIG_HOME` ou un `HOME` relatifs ou
+  avec `..` ne sont ni lus ni proposés, et la liste le dit (« non vérifié », dans `demarrage --json` comme dans la
+  liste à cocher du terminal), jamais « aucun programme ». Une entrée d'autostart qui ne se lit pas bornée (64 Kio ou
+  plus, pas en UTF-8) n'est ni retirée ni remise par-dessus (une note d'un ancien retrait ne l'écrase pas), et la
+  liste le dit ; une entrée qui, une fois masquée, dépasserait 64 Kio est dite « à garder » et refusée avant toute
+  écriture. Limite connue, pour la 0.95 : le fichier d'unité systemd du compte est encore lu sans borne pour en tirer
+  sa commande.
 - **La perte des données.** Un programme malveillant du compte peut éteindre le veilleur anti-rançongiciel : la
   sauvegarde reste la vraie protection.
 - **Un ordinateur volé allumé et déverrouillé.** Le chiffrement du disque (BitLocker, FileVault, LUKS) protège un
@@ -246,8 +251,10 @@ gardes :
   maintenant, pour que « Remettre » ramène l'état d'avant ce retrait-là. Sous Linux, cette valeur d'avant (l'entrée
   d'autostart) est lue en une seule ouverture qui ne suit pas un lien, n'attend pas un tube et s'arrête à 64 Kio :
   sinon refusé, rien changé (une entrée qui est un lien ne se retire donc pas d'ici), et une entrée ainsi illisible
-  n'est pas proposée (la liste dit qu'elle n'a pas été lue). La liste et le nom d'une entrée retirée se lisent de
-  même, bornés, sans attendre un tube ; une entrée réécrite garde ses droits. Chaque changement fait ou refusé
+  n'est proposée ni pour être retirée ni pour être remise (la liste dit qu'elle n'a pas été lue), et « Remettre » ne
+  l'écrase jamais. Une entrée qui, masquée, ne se relirait plus dans cette borne est refusée avant d'être écrite. La
+  liste et le nom d'une entrée retirée se lisent de même, bornés, sans attendre un tube ; une entrée réécrite garde
+  ses droits. Chaque changement fait ou refusé
   est écrit au journal des événements (sorte, nom nettoyé, issue, empreinte) ; un refus identique au précédent (même
   empreinte, même sorte, même raison) ne s'y réécrit pas pendant 10 minutes, pour qu'une rafale de demandes ne noie pas
   les alertes ; un changement fait s'y écrit toujours. Sa fin est dite (fait, refusé, échec, avec la
@@ -257,7 +264,8 @@ gardes :
   (`fenetre/src/relais.rs`), `verrou_des_notes_tenu_puis_rendu` et ceux de `src/optimiser/demarrage.rs`
   (`seul_un_programme_note_se_remet`, `pare_feu_reconnu_par_son_paquet`),
   `valeur_d_avant_d_autostart_ni_lien_ni_tube_ni_trop_gros`, `entree_trop_grosse_ni_proposee_ni_ecrite` et
-  `liste_et_noms_lus_bornes` (`src/optimiser/linux.rs`), et de bout en bout, avec un
+  `liste_et_noms_lus_bornes`, `remise_sur_une_entree_pas_lue_n_ecrit_rien`,
+  `entree_trop_grosse_une_fois_masquee_refusee_avant_d_ecrire` (`src/optimiser/linux.rs`), et de bout en bout, avec un
   dossier personnel jetable, `demarrage_retire_puis_remet_a_l_octet_pres` et le module `demarrage_sous_attaque`
   (`tests/programme.rs` : remise par-dessus un programme qui se lance, par la fenêtre et par « Tout remettre comme
   avant », retrait sur des notes douteuses, changements simultanés, lien, tube, entrée trop grosse, droits, verrou tenu,

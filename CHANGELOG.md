@@ -80,17 +80,23 @@ recompilée au besoin.
   et une base ClamAV de plus d'une semaine n'est plus dite à jour. Secrets : un historique ou une recherche coupés à
   leur borne sont dits au lieu d'un ✔, un dépôt lu à moitié est non vérifié, la recherche s'arrête après 20 minutes et
   ses rapports, qui nomment les auteurs des commits, sont effacés. Conteneurs : plus de « relancez avec sudo ».
-  Alertes déclarées normales : deux déclarations en même temps (le blocage, une sortie de quarantaine, le menu) ne
-  s'effacent plus l'une l'autre ; une sortie de quarantaine perdue y renvoyait le fichier à la passe suivante.
-- **Renforcé après une campagne d'attaque.** `demarrage --retirer` et `--remettre` ne suivent plus aucun dossier qui
-  est un lien (~/.config ou son dossier autostart remplacé par un lien) : rien ne s'écrit hors du dossier personnel, et
-  une entrée rangée derrière un lien n'est plus proposée. Une seule lecture fait ce qui est montré, noté et écrit :
-  une entrée changée entre cette lecture et son écriture, dans le même lancement, n'est pas écrite (l'empreinte d'une
-  liste montrée plus tôt ne désigne que le chemin). Les entrées se lisent bornées, sans attendre un tube : une entrée
-  de plus de 64 Kio n'est plus proposée (elle était retirée sans pouvoir être remise), un fichier remplacé par un tube
-  ne fige plus la liste, et une entrée réécrite garde ses droits. Le sceau des réglages s'écrit en deux temps : un
-  arrêt brutal entre un fichier et son sceau ne fait plus crier au falsifié, ni oublier un fichier encore à
-  revérifier.
+  Alertes déclarées normales : deux déclarations en même temps (le blocage, une sortie de quarantaine, le menu, la
+  remise à zéro) ne s'effacent plus l'une l'autre ; une sortie de quarantaine perdue y renvoyait le fichier à la
+  passe suivante.
+- **Renforcé après une campagne d'attaque.** `vanguard` sans argument ne lance aucun programme « vanguard-fenetre »,
+  même posé à côté de lui : il ouvre le menu du terminal. Le bilan ne prend pas pour suspecte l'unité du veilleur que
+  Vanguard pose lui-même (une valeur en pourcentage, comme `CPUQuota=20%`, n'est pas un code de systemd).
+  `demarrage --retirer` et `--remettre` ne suivent plus aucun dossier qui est un lien (~/.config ou son dossier
+  autostart remplacé par un lien) : rien ne s'écrit hors du dossier personnel. Une entrée rangée derrière un lien, ou
+  elle-même un lien ou un tube, n'est pas proposée, et la liste la dit « non vérifiée » (dans `--json` comme dans la
+  liste à cocher du terminal), jamais « aucun programme » ; un `systemctl --user` qui ne répond pas est dit aussi.
+  Une seule lecture fait ce qui est montré, noté et écrit : une entrée changée entre cette lecture et son écriture,
+  dans le même lancement, n'est pas écrite (l'empreinte d'une liste montrée plus tôt ne désigne que le chemin). Les
+  entrées se lisent bornées, sans attendre un tube, au démarrage comme dans `vanguard lenteur` : une entrée de 64 Kio
+  ou plus n'est ni retirée (elle l'était sans pouvoir être remise) ni remise par-dessus, une entrée qui, masquée,
+  dépasserait cette borne est refusée avant d'être écrite, un fichier remplacé par un tube ne fige plus la liste, et
+  une entrée réécrite garde ses droits. Le sceau des réglages s'écrit en deux temps : un arrêt brutal entre un fichier
+  et son sceau ne fait plus crier au falsifié.
 - **Sécurité des dépendances.** rustix 1.1.6 (avis RUSTSEC-2026-0486 : dans ses fonctions des attributs étendus,
   des octets jamais écrits étaient marqués comme initialisés pour un tampon vide), amené par crossterm.
 - **Essais.** Cinq nouvelles cibles de fuzzing (ce qu'une ligne de démarrage lance et, pour la fenêtre à venir, les
