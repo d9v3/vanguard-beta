@@ -1378,8 +1378,12 @@ fn forme_de_mots(suite: &[char]) -> bool {
 
 /// Les caractères permis (plan, étape 5) : lettres Unicode, chiffres, espace et `.,:;'()[]#%/_-+=`. Les chevrons ne
 /// restent que dans les marqueurs connus.
+/// Un accent du bloc U+0300 à U+036F n'en est jamais un, même compté comme lettre par Unicode (U+0345, iota
+/// souscrit) : il suit la règle des accents de `filtrer`, comme le relit `sortie_permise`.
 pub(crate) fn permis(x: char) -> bool {
-    (x.is_alphabetic() && !invisible(x)) || x.is_ascii_digit() || " .,:;'()[]#%/_-+=".contains(x)
+    (x.is_alphabetic() && !invisible(x) && !accent_combinant(x))
+        || x.is_ascii_digit()
+        || " .,:;'()[]#%/_-+=".contains(x)
 }
 
 /// Accents écrits à part (« e » puis U+0301, comme les noms de fichier de macOS) : gardés après une lettre, deux au

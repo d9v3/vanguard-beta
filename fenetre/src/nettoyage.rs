@@ -56,10 +56,28 @@ pub fn selecteur(c: char) -> bool {
     matches!(u32::from(c), 0x180B..=0x180D | 0x180F | 0xFE00..=0xFE0E | 0xE0100..=0xE01EF)
 }
 
-/// Les invisibles rares, sans usage dans un nom (U+206A à U+206F, U+FFF9 à U+FFFB, U+17B4, U+17B5) : montrés « � ».
-/// La liste de `ui::invisible_rare` de Vanguard.
+/// Les invisibles rares, sans usage dans un nom (U+206A à U+206F, U+FFF9 à U+FFFB, U+17B4, U+17B5, les autres
+/// caractères de format d'Unicode, points réservés invisibles, non-caractères) : montrés « � ». La liste de
+/// `ui::invisible_rare` de Vanguard.
 pub fn invisible_rare(c: char) -> bool {
-    matches!(u32::from(c), 0x17B4..=0x17B5 | 0x206A..=0x206F | 0xFFF9..=0xFFFB)
+    let n = u32::from(c);
+    // Non-caractères : les deux derniers de chaque plan (U+xxFFFE, U+xxFFFF).
+    n & 0xFFFE == 0xFFFE
+        || matches!(
+            n,
+            0x17B4..=0x17B5
+                | 0x206A..=0x206F
+                | 0xFDD0..=0xFDEF
+                | 0xFFF0..=0xFFFB
+                | 0x110BD
+                | 0x110CD
+                | 0x13430..=0x1343F
+                | 0x16FE4
+                | 0x1BCA0..=0x1BCA3
+                | 0x1D173..=0x1D17A
+                | 0xE0080..=0xE00FF
+                | 0xE01F0..=0xE0FFF
+        )
 }
 
 /// Ce qui est montré à la place d'un caractère : une espace ordinaire pour une espace trompeuse, rien pour un

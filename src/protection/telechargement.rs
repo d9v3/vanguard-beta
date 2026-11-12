@@ -1450,6 +1450,22 @@ mod tests {
         }
     }
 
+    /// Chaque caractère de format d'Unicode (catégorie Cf, table `tests/donnees/categorie-cf.txt`) est invisible dans
+    /// un nom, signes arabes qui ont un dessin compris (rares dans un nom de fichier, et sans place entre deux lettres
+    /// latines) : une nouvelle version d'Unicode qui en ajoute un fait échouer cet essai.
+    #[test]
+    fn chaque_format_d_unicode_est_invisible_dans_un_nom() {
+        let mut vus = 0;
+        for (debut, fin) in crate::ui::categorie_cf() {
+            for n in debut..=fin {
+                let c = char::from_u32(n).unwrap();
+                vus += 1;
+                assert!(invisible_dans_un_nom(c), "U+{n:04X}");
+            }
+        }
+        assert!(vus > 150, "table lue : {vus} caractères");
+    }
+
     #[test]
     fn chemins_etendus_de_windows() {
         assert_eq!(

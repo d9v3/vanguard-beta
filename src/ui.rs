@@ -197,10 +197,32 @@ pub(crate) fn selecteur(c: char) -> bool {
 
 /// Les invisibles rares, sans usage dans un nom ni dans une sortie : commandes de mise en forme désuètes (U+206A à
 /// U+206F : échange symétrique, formes arabes, formes des chiffres), annotations interlinéaires (U+FFF9 à U+FFFB),
-/// voyelles inhérentes khmères que l'Unicode déconseille (U+17B4, U+17B5). Montrés « � » à l'affichage (`rendu`),
-/// comme un piège ; `piege` ne les compte pas, pour juger comme avant (`protection::telechargement` les juge à part).
+/// voyelles inhérentes khmères que l'Unicode déconseille (U+17B4, U+17B5), les autres caractères de format d'Unicode
+/// (catégorie Cf : kaithi U+110BD et U+110CD, hiéroglyphes U+13430 à U+1343F, sténographie U+1BCA0 à U+1BCA3, musique
+/// U+1D173 à U+1D17A), le remplissage khitan (U+16FE4), les points réservés qui seraient invisibles s'ils étaient
+/// attribués (U+FFF0 à U+FFF8, U+E0080 à U+E00FF, U+E01F0 à U+E0FFF) et les non-caractères (U+FDD0 à U+FDEF, les deux
+/// derniers de chaque plan). Liste reprise de toile ; l'essai `chaque_format_d_unicode_est_montre` la garde contre la
+/// table d'Unicode (`outils/table-cf.py`). Montrés « � » à l'affichage (`rendu`), comme un piège ; `piege` ne les
+/// compte pas, pour juger comme avant (`protection::telechargement` les juge à part).
 pub(crate) fn invisible_rare(c: char) -> bool {
-    matches!(u32::from(c), 0x17B4..=0x17B5 | 0x206A..=0x206F | 0xFFF9..=0xFFFB)
+    let n = u32::from(c);
+    // Non-caractères : les deux derniers de chaque plan (U+xxFFFE, U+xxFFFF).
+    n & 0xFFFE == 0xFFFE
+        || matches!(
+            n,
+            0x17B4..=0x17B5
+                | 0x206A..=0x206F
+                | 0xFDD0..=0xFDEF
+                | 0xFFF0..=0xFFFB
+                | 0x110BD
+                | 0x110CD
+                | 0x13430..=0x1343F
+                | 0x16FE4
+                | 0x1BCA0..=0x1BCA3
+                | 0x1D173..=0x1D17A
+                | 0xE0080..=0xE00FF
+                | 0xE01F0..=0xE0FFF
+        )
 }
 
 /// Un texte venu de l'extérieur (nom d'un réseau ou d'un appareil, réponse du réseau, nom de fichier, sortie d'un
@@ -275,6 +297,24 @@ pub(crate) fn rendu(c: char) -> Option<char> {
 #[cfg(test)]
 pub(crate) fn contient_un_piege(texte: &str) -> bool {
     texte.chars().any(piege)
+}
+
+/// Les plages (début, fin incluse) de la catégorie Cf d'Unicode, lues dans `tests/donnees/categorie-cf.txt` (écrite
+/// par `outils/table-cf.py`, reprise de toile). Pour les essais qui gardent l'affichage et le jugement d'un nom.
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+pub(crate) fn categorie_cf() -> Vec<(u32, u32)> {
+    include_str!("../tests/donnees/categorie-cf.txt")
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .map(|l| {
+            let (debut, fin) = l.split_once("..").unwrap_or((l, l));
+            (
+                u32::from_str_radix(debut, 16).unwrap(),
+                u32::from_str_radix(fin, 16).unwrap(),
+            )
+        })
+        .collect()
 }
 
 /// Largeur affichée d'un texte, en colonnes du terminal (sans les codes de couleur).
@@ -1197,6 +1237,74 @@ mod tests {
             assert_eq!(affichable(&format!("a{c}b")), attendu, "U+{n:04X}");
         }
         assert!(!selecteur('\u{fe0f}') && !invisible_rare('\u{fe0f}'));
+    }
+
+    /// Les Cf qui portent un dessin (signes arabes de nombre et de fin de verset) : laissés tels quels, exprès.
+    const CF_VISIBLES: [u32; 11] = [
+        0x0600, 0x0601, 0x0602, 0x0603, 0x0604, 0x0605, 0x06DD, 0x070F, 0x0890, 0x0891, 0x08E2,
+    ];
+
+    /// Chaque caractère de format d'Unicode (catégorie Cf) se voit à l'affichage, sauf les signes arabes qui ont un
+    /// dessin : une nouvelle version d'Unicode qui en ajoute un fait échouer cet essai (table refaite par
+    /// `outils/table-cf.py`) au lieu de le laisser passer caché dans un nom.
+    #[test]
+    fn chaque_format_d_unicode_est_montre() {
+        let mut vus = 0;
+        for (debut, fin) in super::categorie_cf() {
+            for n in debut..=fin {
+                let c = char::from_u32(n).unwrap();
+                vus += 1;
+                let attendu = if CF_VISIBLES.contains(&n) {
+                    Some(c)
+                } else {
+                    Some('\u{fffd}')
+                };
+                assert_eq!(rendu(c), attendu, "U+{n:04X}");
+            }
+        }
+        assert!(vus > 150, "table lue : {vus} caractères");
+    }
+
+    /// Les invisibles hors de la catégorie Cf que toile montre aussi : remplissages (coréens, khitan U+16FE4), Braille
+    /// vide, joint de graphèmes, sélecteurs de variante, points réservés de U+FFF0 à U+FFF8 et de U+E0080 à U+E0FFF
+    /// (invisibles par défaut s'ils sont un jour attribués), non-caractères (U+FDD0 à U+FDEF et les deux derniers de
+    /// chaque plan). Aucun ne se montre tel quel ; les nouveaux ne sont pas des pièges pour autant (`piege` juge comme
+    /// avant).
+    #[test]
+    fn invisibles_que_toile_montre() {
+        let plages = [
+            (0x034F, 0x034F),
+            (0x115F, 0x1160),
+            (0x17B4, 0x17B5),
+            (0x180B, 0x180F),
+            (0x2800, 0x2800),
+            (0x3164, 0x3164),
+            (0xFDD0, 0xFDEF),
+            (0xFE00, 0xFE0E),
+            (0xFFA0, 0xFFA0),
+            (0xFFF0, 0xFFFB),
+            (0x16FE4, 0x16FE4),
+            (0xE0000, 0xE0FFF),
+        ];
+        let non_caracteres = (0..=0x10).flat_map(|plan: u32| [(plan << 16) | 0xFFFE, (plan << 16) | 0xFFFF]);
+        let mut vus = 0;
+        for n in plages.iter().flat_map(|&(a, b)| a..=b).chain(non_caracteres) {
+            let c = char::from_u32(n).unwrap();
+            vus += 1;
+            assert_ne!(rendu(c), Some(c), "U+{n:04X} caché");
+        }
+        assert!(vus > 4000, "{vus}");
+        for n in [
+            0xFFF0, 0xFDD0, 0x16FE4, 0xE0080, 0xE01F0, 0xE0FFF, 0xFFFE, 0x1FFFF, 0x10_FFFE,
+        ] {
+            let c = char::from_u32(n).unwrap();
+            assert!(!piege(c) && invisible_rare(c), "U+{n:04X}");
+            assert_eq!(affichable(&format!("Sa{c}lon")), "Sa\u{fffd}lon", "U+{n:04X}");
+        }
+        // Ce qui se voit reste tel quel : la zone privée (polices d'icônes), U+FFFC, U+FFFD, U+FEFE.
+        for c in ['\u{e000}', '\u{f8ff}', '\u{fffc}', '\u{fffd}', '\u{fefe}', '\u{f0000}'] {
+            assert_eq!(rendu(c), Some(c), "U+{:04X}", u32::from(c));
+        }
     }
 
     /// Ce qui est montré se montre tel quel : `rendu` d'un caractère rendu ne change plus rien, pour tout l'Unicode.

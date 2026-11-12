@@ -673,3 +673,37 @@ fn corpus_en_json(corpus: &[(String, u32, u8)]) -> String {
     sortie.push_str("\n]\n");
     sortie
 }
+
+/// U+0345 (iota souscrit) est une lettre pour Unicode et un accent du bloc U+0300 à U+036F : il suit la règle des
+/// accents (après une lettre, deux au plus), jamais gardé seul ni en tête (plantage trouvé par le banc de fuzzing).
+#[test]
+fn iota_souscrit_suit_la_regle_des_accents() {
+    for brut in [
+        "\u{345}",
+        "a \u{345} b",
+        "\u{345}\u{345}\u{345}",
+        "ab\u{345}\u{345}\u{345}c",
+    ] {
+        if let Ok(t) = TexteNettoye::nettoyer(brut) {
+            verifier_sortie(t.as_str(), TEXTE_MAX);
+            assert_eq!(TexteNettoye::nettoyer(t.as_str()).as_ref(), Ok(&t));
+        }
+    }
+    assert!(!permis('\u{345}'));
+    assert_eq!(propre("o\u{345}"), "o\u{345}");
+}
+
+/// Pour tout l'Unicode, comme `permis_n_est_jamais_un_piege` : un caractère est permis ou accent, jamais les deux
+/// (sinon le filtre le garde comme lettre là où la relecture le refuse comme accent, PL-2), et un caractère permis
+/// se montre tel quel (`ui::rendu`) : rien d'invisible ne reste dans un texte nettoyé sous l'air d'une lettre.
+#[test]
+fn permis_ni_accent_ni_invisible() {
+    for n in 0..=0x0010_FFFF_u32 {
+        if let Some(x) = char::from_u32(n) {
+            assert!(!(permis(x) && accent_combinant(x)), "U+{n:04X} permis et accent");
+            if permis(x) {
+                assert_eq!(crate::ui::rendu(x), Some(x), "U+{n:04X} permis mais caché");
+            }
+        }
+    }
+}
