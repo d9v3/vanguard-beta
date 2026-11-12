@@ -4432,7 +4432,9 @@ mod demarrage_sous_attaque {
         assert_eq!(b.changer("--retirer", &e).1, "fait");
         let a_la_main = "[Desktop Entry]\nHidden=true\nName=Autre\nExec=/usr/bin/false\n";
         std::fs::write(&f, a_la_main).unwrap();
-        let s = b.lancer(&["demarrage", "--remettre", &e, "--json"]);
+        // L'accord est obligatoire (M-2) : celui que la liste relue donne, pour que le refus jugé soit la réécriture.
+        let accord = b.accord("--remettre", &e);
+        let s = b.lancer(&["demarrage", "--remettre", &e, "--accord", &accord, "--json"]);
         let tout = espaces_unis(&format!("{}{}", s.texte, s.erreurs));
         assert!(tout.contains("réécrite"), "{tout}");
         assert!(!tout.contains("remis comme avant"), "{tout}");
@@ -4714,8 +4716,12 @@ mod demarrage_sous_attaque {
         };
         let s = lancer(&["demarrage", "--json"]);
         assert_eq!(s.code, Some(0), "{} {}", s.texte, s.erreurs);
-        let s = lancer(&["demarrage", "--remettre", &e, "--json"]);
+        // Avec l'accord que la liste donne (aucun geste : un accord qui ne répond à rien) : c'est le tube qui est jugé,
+        // pas l'accord manquant (M-2).
+        let accord = b.accord("--remettre", &e);
+        let s = lancer(&["demarrage", "--remettre", &e, "--accord", &accord, "--json"]);
         assert_ne!(s.code, Some(0), "remis sur un tube : {}", s.texte);
+        assert!(!s.texte.contains("accord manquant"), "{}", s.texte);
         assert!(
             std::os::unix::fs::FileTypeExt::is_fifo(&f.symlink_metadata().unwrap().file_type()),
             "le tube a été remplacé"
@@ -4998,14 +5004,16 @@ mod demarrage_sous_attaque {
             .unwrap_or_else(|| panic!("Radio sans bouton : {}", sorties[0]));
         assert_eq!(sorte, "retirer");
         for option in ["--retirer", "--remettre"] {
-            let s = b.lancer(&["demarrage", option, &e, "--json"]);
+            let accord = b.accord(option, &e);
+            let s = b.lancer(&["demarrage", option, &e, "--accord", &accord, "--json"]);
             assert!(s.texte.contains("\"fait\""), "{option} : {} {}", s.texte, s.erreurs);
             sorties.push(s.texte);
             sorties.push(b.liste().1);
         }
         // m-5 : retiré de nouveau puis effacé à la main, il n'est plus montré que d'après la note de Vanguard
         // (son identité, le chemin entier de l'entrée) : cette ligne non plus ne dit pas le dossier personnel.
-        let retrait = b.lancer(&["demarrage", "--retirer", &e, "--json"]);
+        let accord = b.accord("--retirer", &e);
+        let retrait = b.lancer(&["demarrage", "--retirer", &e, "--accord", &accord, "--json"]);
         assert!(
             retrait.texte.contains("\"fait\""),
             "{} {}",
@@ -5144,13 +5152,15 @@ mod demarrage_sous_attaque {
                 ],
             )
         };
-        let s = lancer(&["demarrage", "--retirer", &e, "--json"]);
+        let accord = b.accord("--retirer", &e);
+        let s = lancer(&["demarrage", "--retirer", &e, "--accord", &accord, "--json"]);
         assert!(s.texte.contains("\"fait\""), "{} {}", s.texte, s.erreurs);
         let droits = std::fs::metadata(&b.autostart).unwrap().permissions().mode() & 0o7777;
         assert_eq!(droits, 0o700, "{droits:o}");
         let (sorte, e2) = b.geste("Panneau").expect("Panneau retiré sans bouton");
         assert_eq!((sorte.as_str(), e2.as_str()), ("remettre", e.as_str()));
-        let s = lancer(&["demarrage", "--remettre", &e, "--json"]);
+        let accord = b.accord("--remettre", &e);
+        let s = lancer(&["demarrage", "--remettre", &e, "--accord", &accord, "--json"]);
         assert!(s.texte.contains("\"fait\""), "{} {}", s.texte, s.erreurs);
         assert_eq!(b.geste("Panneau").map(|g| g.0).as_deref(), Some("retirer"));
     }

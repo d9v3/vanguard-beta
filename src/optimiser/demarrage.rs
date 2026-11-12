@@ -1118,6 +1118,16 @@ fn decider_sans_accord(
             if let Some(refus) = refus_de_remise(&r, lance) {
                 return (nom, Err(refus));
             }
+            // Sous un dossier où Vanguard n'écrit plus, la liste ne promet pas « remettre » (H-5, J-3) : refusé ici
+            // avec la phrase de la garde, qui nomme le dossier et le remède, plutôt qu'en « a changé depuis la liste »
+            // faute d'un accord que la liste ne peut pas donner (intégration du sous-lot B, M-2).
+            if let Some(raison) = l
+                .iter()
+                .filter(|x| x.reglage.id == r.id)
+                .find_map(|x| x.ecriture_refusee.as_ref().or(x.refus.as_ref()))
+            {
+                return (nom, Err(Refus::Ecriture(raison.clone())));
+            }
             (nom, Ok(Decision::Remettre(r, h1)))
         }
     }
