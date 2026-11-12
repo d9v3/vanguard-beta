@@ -227,6 +227,8 @@ pub(super) fn juger(chemin: &Path) -> Result<(), Echec> {
 /// lien, pas à un autre compte, pas hors du dossier personnel) ? Absent : rien à juger. Sert à dire un dossier
 /// d'autostart refusé, dont aucune entrée ne se lit (T-1).
 pub(super) fn juger_le_dossier(dossier: &Path) -> Result<(), Echec> {
+    // Hors du dossier personnel : dit avec `dossier` lui-même, jamais avec le nom posé dessous (relecture 0.94, R-3).
+    depart(dossier)?;
     // `parcourir` ouvre et juge chaque dossier du chemin, sauf le dernier nom : un nom posé sous `dossier`, jamais
     // ouvert, fait juger `dossier` lui-même.
     parcourir(&dossier.join("x"), false).map(|_| ())
@@ -475,5 +477,23 @@ mod tests {
         assert!(juger(Path::new("/etc/xdg/autostart/x.desktop")).is_err());
         assert!(juger(&a.join("../../../x.desktop")).is_err());
         assert!(ecrire(Path::new("/nulle-part/x.desktop"), b"x").is_err());
+    }
+
+    /// Relecture 0.94, R-3 : un dossier d'autostart hors du dossier personnel est dit avec son propre chemin, jamais
+    /// avec un fichier « x » qui n'existe pas ; un dossier du compte, lui, passe.
+    #[test]
+    fn dossier_hors_maison_dit_tel_quel() {
+        let e = juger_le_dossier(Path::new("/nulle-part/config/autostart"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("/nulle-part/config/autostart n'est pas dans le dossier personnel")
+                || e.contains("/nulle-part/config/autostart is not in the home folder"),
+            "{e}"
+        );
+        assert!(!e.contains("autostart/x"), "{e}");
+        let d = dossier("dossier-juge");
+        std::fs::create_dir_all(d.join(".config/autostart")).unwrap();
+        assert!(juger_le_dossier(&d.join(".config/autostart")).is_ok());
     }
 }
