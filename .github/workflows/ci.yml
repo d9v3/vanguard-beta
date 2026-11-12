@@ -117,11 +117,30 @@ jobs:
           fetch-depth: 0
       # AVANT vide ou fait de zéros (branche neuve), ou disparu (historique réécrit) : les commits qu'aucune autre
       # branche de GitHub n'a déjà. Les empreintes passent par l'environnement, jamais collées dans le script.
+      # Le garde-fou est celui de la base (AVANT, sinon master), jamais celui de l'arbre jugé : une demande de fusion
+      # qui le viderait se rendrait verte elle-même. Repli sur celui de l'arbre jugé, dit en avertissement, si la base
+      # n'en a pas (ou pas ces options) ou est le commit jugé lui-même. Essayé par outils/essais-confidentialite.sh.
       - name: Rien de personnel dans les commits envoyés
         env:
           AVANT: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
           APRES: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-        run: python3 outils/confidentialite.py --generique --plage "$AVANT" "$APRES"
+        run: |
+          base=
+          if git cat-file -e "${AVANT}^{commit}" 2>/dev/null; then
+            base=$AVANT
+          elif git rev-parse -q --verify refs/remotes/origin/master >/dev/null; then
+            base=refs/remotes/origin/master
+          fi
+          garde=$RUNNER_TEMP/confidentialite-de-la-base.py
+          if [[ -n $base && $(git rev-parse "$base^{commit}") != $(git rev-parse "$APRES^{commit}") ]] &&
+            git show "$base:outils/confidentialite.py" >"$garde" 2>/dev/null &&
+            grep -qF '"--generique"' "$garde" && grep -qF '"--plage"' "$garde"; then
+            echo "Garde-fou de la base ($(git rev-parse --short "$base^{commit}"))"
+          else
+            echo "::warning::Garde-fou de confidentialité pris dans l'arbre jugé (base sans garde-fou, sans --generique/--plage, ou commit jugé)"
+            cp outils/confidentialite.py "$garde"
+          fi
+          python3 -I "$garde" --generique --plage "$AVANT" "$APRES"
 
   # Failles connues dans les dépendances (base RustSec, cargo audit et cargo deny) : chaque nuit, même sans changement
   # de code, car les failles arrivent sans lui ; et à la demande. Les étapes « dépendances » et « failles connues » de

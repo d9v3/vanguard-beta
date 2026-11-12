@@ -16,7 +16,9 @@
 #      NUL), les noms de branches et d'étiquettes, une étiquette posée sur un arbre ;
 #   8. les fichiers tiers (courriels permis, rien d'autre), la plage d'une branche neuve, le message (« # », ciseaux) ;
 #   9. les crochets pre-push et pre-merge-commit, pour de vrai, vers un dépôt distant jetable ;
-#  10. témoins : un fichier propre passe, un courriel dans un nom ordinaire est trouvé.
+#  10. témoins : un fichier propre passe, un courriel dans un nom ordinaire est trouvé ;
+#  11. l'étape de la CI (.github/workflows/ci.yml, lue telle quelle) : le garde-fou lancé est celui de la base, pas
+#      celui de l'arbre jugé (une demande qui le viderait ne se rend pas verte) ; repli dit si la base n'en a pas.
 set -uo pipefail
 RACINE=$(cd "$(dirname "$0")/.." && pwd)
 OUTIL=$RACINE/outils/confidentialite.py
@@ -479,6 +481,72 @@ git merge --abort 2>/dev/null
 git checkout -q -b b master && printf 'x\n' >b.txt && git add b.txt && git commit -q -m b
 git checkout -q master && git merge -q --no-ff -m fusion b >/dev/null 2>&1
 noter 0 $? "témoin : pre-merge-commit laisse passer une fusion propre"
+
+# L'étape de la CI, telle que GitHub la lance (bash -eo pipefail, AVANT, APRES et RUNNER_TEMP dans l'environnement).
+ETAPE_CI=$TRAVAIL/etape-ci.sh
+python3 - "$RACINE/.github/workflows/ci.yml" >"$ETAPE_CI" <<'PY'
+import sys
+lignes = open(sys.argv[1], encoding="utf-8").read().split("\n")
+i = next(k for k, l in enumerate(lignes) if l.strip() == "- name: Rien de personnel dans les commits envoyés")
+j = next(k for k in range(i, len(lignes)) if lignes[k].strip().startswith("run:"))
+if lignes[j].strip() != "run: |":
+    print(lignes[j].strip()[len("run:"):].strip())
+    sys.exit()
+retrait = len(lignes[j]) - len(lignes[j].lstrip()) + 2
+for ligne in lignes[j + 1:]:
+    if ligne.strip() and len(ligne) - len(ligne.lstrip()) < retrait:
+        break
+    print(ligne[retrait:])
+PY
+[[ -s $ETAPE_CI ]] || { echo "✘ étape « Rien de personnel » introuvable dans ci.yml"; ECHECS=$((ECHECS + 1)); }
+etape_ci() {
+  SORTIE=$(AVANT=$1 APRES=$2 RUNNER_TEMP=$(mktemp -d "$TRAVAIL/runner.XXXX") CI=true \
+    bash --noprofile --norc -eo pipefail "$ETAPE_CI" 2>&1)
+}
+garde_de_la_base() { mkdir -p outils && cp "$OUTIL" outils/ && git add outils && git commit -q --no-verify -m base; }
+# Vidé, mais avec les mots des options : le repli ne se déclenche pas sur leur seule absence.
+vider_le_garde() { printf 'import sys  # "--generique" "--plage"\nsys.exit(0)\n' >outils/confidentialite.py && git add outils; }
+
+depot ci-garde-vide
+garde_de_la_base
+vider_le_garde
+printf 'contact : %s\n' "$COURRIEL" >contact.txt && git add contact.txt && git commit -q --no-verify -m vide
+etape_ci "$(git rev-parse HEAD~1)" HEAD
+noter 1 $? "CI : une demande qui vide le garde-fou est jugée par celui de la base"
+
+depot ci-temoin
+garde_de_la_base
+vider_le_garde
+printf 'rien\n' >x.txt && git add x.txt && git commit -q --no-verify -m propre
+etape_ci "$(git rev-parse HEAD~1)" HEAD
+code=$?
+grep -q '^Garde-fou de la base' <<<"$SORTIE" || code="$code, sans « Garde-fou de la base »"
+noter 0 "$code" "témoin CI : une demande propre passe, jugée par le garde-fou de la base"
+
+depot ci-branche-neuve
+garde_de_la_base
+git update-ref refs/remotes/origin/master HEAD
+git checkout -q -b neuve
+vider_le_garde
+printf 'contact : %s\n' "$COURRIEL" >contact.txt && git add contact.txt && git commit -q --no-verify -m vide
+etape_ci 0000000000000000000000000000000000000000 HEAD
+noter 1 $? "CI : branche neuve (AVANT fait de zéros), le garde-fou de master"
+git update-ref refs/remotes/origin/master HEAD
+etape_ci 0000000000000000000000000000000000000000 HEAD
+code=$?
+grep -q '^::warning::Garde-fou de confidentialité pris dans l.arbre jugé' <<<"$SORTIE" || code="$code, repli pas dit"
+# Le garde-fou de l'arbre jugé, vidé, laisse passer : seul l'avertissement le dit (limite connue, rare : AVANT de
+# zéros sur master même).
+noter 0 "$code" "CI : base qui est le commit jugé lui-même, repli dit en avertissement"
+
+depot ci-repli
+mkdir -p outils && cp "$OUTIL" outils/ && git add outils
+printf 'contact : %s\n' "$COURRIEL" >contact.txt && git add contact.txt && git commit -q --no-verify -m repli
+etape_ci "$(git rev-parse HEAD~1)" HEAD
+code=$?
+grep -q '^::warning::Garde-fou de confidentialité pris dans l.arbre jugé' <<<"$SORTIE" || code="$code, repli pas dit"
+noter 1 "$code" "CI : base sans garde-fou, repli sur celui de l'arbre jugé, dit en avertissement"
+cd "$TRAVAIL" || exit 1
 
 if ((ECHECS)); then
   echo "Confidentialité : $ECHECS essai(s) sur $N en échec."
