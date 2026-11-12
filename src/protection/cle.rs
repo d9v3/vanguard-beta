@@ -26,34 +26,51 @@ const DOSSIER_PROGRAMME: &str = "Linux";
 /// une fois par lancement (la copie temporaire s'efface au démarrage, `proteger_cle` le demande avant).
 ///
 /// `VANGUARD_ORIGINE` n'est qu'une variable d'environnement, que tout programme du compte peut poser : elle faisait
-/// installer, poser en tâche ou dire vérifié un autre programme que Vanguard. Elle n'est donc crue que si le fichier
-/// qu'elle désigne a exactement les octets du programme qui tourne ; sinon elle est ignorée, l'écart est dit (et noté
-/// au journal des erreurs), et c'est le programme qui tourne qui compte : rien n'est installé depuis elle.
+/// installer, poser en tâche ou dire vérifié un autre programme que Vanguard. Elle n'est donc crue que dans la copie
+/// temporaire (`est_une_copie`), et si le fichier qu'elle désigne a exactement les octets du programme qui tourne ;
+/// sinon elle est ignorée (l'écart dit et noté au journal des erreurs dans la copie), et c'est le programme qui tourne
+/// qui compte : rien n'est installé depuis elle.
 pub fn exe_d_origine() -> Option<PathBuf> {
     static DECIDE: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
     DECIDE
         .get_or_init(|| {
             let courant = || std::env::current_exe().ok().and_then(|e| e.canonicalize().ok());
-            let Some(designee) = std::env::var_os(ORIGINE) else {
-                return courant();
-            };
-            match origine_crue(Path::new(&designee), image_qui_tourne()) {
-                Ok(chemin) => Some(chemin),
-                // Hors de la copie temporaire, la variable n'est qu'héritée (un Vanguard lancé par celui de la clé) ou
-                // posée par un autre programme : ignorée sans bruit, elle ne sert à rien. Dans la copie, l'écart se dit.
-                Err(_) if !std::env::current_exe().is_ok_and(|e| est_une_copie(&e)) => courant(),
+            let designee = std::env::var_os(ORIGINE);
+            let designee = designee.as_deref().map(Path::new);
+            let dans_copie = std::env::current_exe().is_ok_and(|e| est_une_copie(&e));
+            match origine_decidee(designee, dans_copie, image_qui_tourne) {
+                Ok(Some(chemin)) => Some(chemin),
+                Ok(None) => courant(),
                 Err(raison) => {
-                    tre!(
-                        "Attention : VANGUARD_ORIGINE désigne {}, qui n'est pas le programme qui tourne ({raison}) : ignorée.",
-                        "Warning: VANGUARD_ORIGINE points to {}, which is not the running program ({raison}): ignored.",
-                        chemin_affichable(Path::new(&designee))
-                    );
+                    if let Some(designee) = designee {
+                        tre!(
+                            "Attention : VANGUARD_ORIGINE désigne {}, qui n'est pas le programme qui tourne ({raison}) : ignorée.",
+                            "Warning: VANGUARD_ORIGINE points to {}, which is not the running program ({raison}): ignored.",
+                            chemin_affichable(designee)
+                        );
+                    }
                     crate::journal::erreur(crate::compte_rendu::Contexte::OrigineProgramme, &format!("VANGUARD_ORIGINE ignorée : {raison}"));
                     courant()
                 }
             }
         })
         .clone()
+}
+
+/// Le programme d'origine désigné par `VANGUARD_ORIGINE` (`designee`), quand il est cru ; `Ok(None)` : c'est le
+/// programme qui tourne qui compte ; `Err` : la variable est ignorée, et l'écart se dit.
+fn origine_decidee(
+    designee: Option<&Path>,
+    dans_copie: bool,
+    soi: impl FnOnce() -> Option<String>,
+) -> Result<Option<PathBuf>, crate::modele::Echec> {
+    // Hors de la copie temporaire, la variable n'est qu'héritée (un Vanguard lancé par celui de la clé) ou posée par un
+    // autre programme : ignorée sans bruit et sans même lire le fichier, mêmes octets ou pas (L2, relecture 0.96 : une
+    // copie posée ailleurs par le compte devenait le programme d'origine). Dans la copie, l'écart se dit.
+    let Some(designee) = designee.filter(|_| dans_copie) else {
+        return Ok(None);
+    };
+    origine_crue(designee, soi()).map(Some)
 }
 
 /// L'empreinte du programme qui tourne : son image (/proc/self/exe sous Linux, lisible même effacée), sinon son
@@ -297,6 +314,33 @@ mod tests {
 
     /// S2c : VANGUARD_ORIGINE n'est crue que si le fichier désigné a les octets du programme qui tourne ; un autre
     /// programme, un fichier absent ou un programme illisible : ignorée, avec la raison.
+    /// L2 (relecture 0.96) : hors de la copie temporaire, VANGUARD_ORIGINE était crue dès que le fichier désigné avait
+    /// les octets du programme : une copie de Vanguard posée par un programme du compte dans un dossier à lui devenait
+    /// « le programme d'origine », celui que la fenêtre relance plus tard par son nom (et que la mise à jour remplace).
+    /// Elle n'est plus crue que dans la copie temporaire, la seule que le Vanguard de la clé lance avec elle.
+    #[test]
+    fn origine_crue_seulement_depuis_la_copie_temporaire() {
+        let d = crate::essais::temporaire().join(format!("vanguard-origine-copie-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let vrai = d.join("vanguard");
+        let autre = d.join("autre");
+        std::fs::write(&vrai, b"programme de vanguard").unwrap();
+        std::fs::write(&autre, b"programme d'un autre").unwrap();
+        let soi = || crate::programmes_poses::empreinte_de(&vrai).ok();
+        // Hors de la copie : le programme qui tourne, même aux mêmes octets, et l'empreinte n'est pas lue.
+        assert!(matches!(origine_decidee(Some(&vrai), false, soi), Ok(None)));
+        assert!(matches!(origine_decidee(Some(&autre), false, soi), Ok(None)));
+        assert!(matches!(origine_decidee(None, true, soi), Ok(None)));
+        // Dans la copie : crue aux mêmes octets, sinon ignorée et dite.
+        assert_eq!(
+            origine_decidee(Some(&vrai), true, soi).ok().flatten(),
+            Some(vrai.canonicalize().unwrap())
+        );
+        assert!(origine_decidee(Some(&autre), true, soi).is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     #[test]
     fn origine_crue_seulement_aux_memes_octets() {
         let d = crate::essais::temporaire().join(format!("vanguard-origine-{}", std::process::id()));
