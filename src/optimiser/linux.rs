@@ -1543,16 +1543,63 @@ fn config_du_compte() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME").map_or_else(|| crate::socle::maison().join(".config"), PathBuf::from)
 }
 
-/// Le premier dossier de compléments (« nom.service.d », `complements_d_unite`) de l'unité `unite` qu'un dossier
-/// d'unités du compte (dans `ordre`, hors de `unites_systeme`) porte, ou qui ne s'y voit pas : il change ce que lance
-/// l'unité du système.
-fn complement_du_compte(ordre: &[PathBuf], unites_systeme: &[PathBuf], unite: &str) -> Option<PathBuf> {
-    let noms = crate::machine::linux::complements_d_unite(unite);
-    ordre
-        .iter()
-        .filter(|d| !unites_systeme.contains(d))
-        .flat_map(|d| noms.iter().map(move |n| d.join(n)))
-        .find(|c| std::fs::symlink_metadata(c).map_or_else(|e| e.kind() != std::io::ErrorKind::NotFound, |_| true))
+/// Les dossiers de compléments de l'unité `nom` (`complements_d_unite`), dans l'ordre où systemd les prend pour un
+/// même dossier d'unités : le sien (« nom.service.d ») d'abord, puis du plus long au plus court (préfixes
+/// « a-b-.service.d », « a-.service.d », gabarit, enfin « service.d ») : à nom de fichier égal, le plus précis passe.
+fn dossiers_de_complements(nom: &str) -> Vec<String> {
+    let mut l = crate::machine::linux::complements_d_unite(nom);
+    let propre = format!("{nom}.d");
+    l.sort_by_key(|c| (*c != propre, std::cmp::Reverse(c.len())));
+    l
+}
+
+/// Au plus tant de compléments lus pour une unité : au-delà, rien n'est conclu.
+const COMPLEMENTS_MAX: usize = 256;
+
+/// Les compléments (« *.conf ») que systemd applique à l'unité connue sous `noms` (son nom et ses alias,
+/// `noms_d_unite`), cherchés dans `dossiers` du plus prioritaire au moins : un même nom de fichier ne se prend qu'une
+/// fois, au dossier qui passe devant (il masque les autres) ; puis rangés par nom de fichier, l'ordre où systemd les
+/// applique, chacun avec son texte (un lien vers /dev/null masque : vide). `Err` : le premier dossier de compléments
+/// ou complément qui ne se lit pas borné (`lire_du_systeme` : 64 Kio, UTF-8, sans attendre un tube), ou plus de
+/// `COMPLEMENTS_MAX` ; rien n'est conclu, jamais « aucun complément ».
+fn complements_lus(dossiers: &[PathBuf], noms: &[String]) -> Result<Vec<(PathBuf, String)>, PathBuf> {
+    let mut pris: Vec<(std::ffi::OsString, PathBuf)> = Vec::new();
+    for d in dossiers {
+        for nom in noms {
+            for c in dossiers_de_complements(nom) {
+                let c = d.join(c);
+                let entrees = match std::fs::read_dir(&c) {
+                    Ok(e) => e,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(_) => return Err(c),
+                };
+                for e in entrees {
+                    let e = e.map_err(|_| c.clone())?;
+                    let f = e.file_name();
+                    if Path::new(&f).extension().is_none_or(|x| x != "conf") || pris.iter().any(|(n, _)| *n == f) {
+                        continue;
+                    }
+                    if pris.len() >= COMPLEMENTS_MAX {
+                        return Err(c);
+                    }
+                    pris.push((f, e.path()));
+                }
+            }
+        }
+    }
+    pris.sort_by(|a, b| a.0.cmp(&b.0));
+    let max = u64::try_from(AUTOSTART_MAX - 1).unwrap_or(0);
+    pris.into_iter()
+        .map(|(_, p)| {
+            if std::fs::read_link(&p).is_ok_and(|v| v == Path::new("/dev/null")) {
+                return Ok((p, String::new()));
+            }
+            match lire_du_systeme(&p, max) {
+                Ok(t) => Ok((p, t)),
+                Err(_) => Err(p),
+            }
+        })
+        .collect()
 }
 
 /// La liste des services du compte activés que rend `systemctl --user list-unit-files`, ou `None` s'il n'a pas
@@ -1676,13 +1723,33 @@ fn releve_selon(
             Some((d, Ok(()))) if *d == dossier => {}
             // Porté d'abord par le système : un service activé pour chacun, que la personne n'a pas installé, sauf
             // si un dossier du compte le complète (ExecStart changé par « nom.service.d/x.conf »).
+            // Ses compléments du compte se lisent et se jugent comme au bilan : dits seulement s'ils changent ce qu'il
+            // lance (Exec…, variables, unités qu'il démarre) ou si l'un ne se lit pas (relecture 0.94, D).
             Some((d, Ok(()))) if unites_systeme.contains(d) => {
-                if let Some(c) = complement_du_compte(&ordre, unites_systeme, unite) {
-                    manques.push(trf!(
+                let du_compte: Vec<PathBuf> = ordre.iter().filter(|d| !unites_systeme.contains(d)).cloned().collect();
+                let lus = crate::machine::linux::noms_d_unite(&ordre, unite)
+                    .map_or_else(|| Err(d.join(unite)), |noms| complements_lus(&du_compte, &noms));
+                match lus {
+                    Ok(lus) => {
+                        let maison = crate::socle::maison();
+                        for (c, texte) in &lus {
+                            let cles = crate::machine::linux::complement_change_le_lancement(texte, &maison);
+                            if !cles.is_empty() {
+                                manques.push(trf!(
+                                    "service du système {} changé par le compte ({} : {}) ; ce qu'il lance n'est ni montré ni proposé ici",
+                                    "system service {} changed by the account ({}: {}); what it starts is neither shown nor offered here",
+                                    crate::ui::affichable(unite),
+                                    court(c),
+                                    crate::ui::affichable(&cles.join(", "))
+                                ));
+                            }
+                        }
+                    }
+                    Err(c) => manques.push(trf!(
                         "non vérifié : service du système complété par le compte ({}) ; ni lu ni proposé",
                         "not verified: system service completed by the account ({}); neither read nor offered",
                         court(&c)
-                    ));
+                    )),
                 }
                 continue;
             }
@@ -1744,13 +1811,32 @@ fn releve_selon(
             ));
             continue;
         };
+        // La commande que systemd lance : celle du fichier, changée par ses compléments (« nom.service.d/x.conf »,
+        // ceux de ses alias, de tous les dossiers d'unités). Un complément qui ne se lit pas : la commande du fichier,
+        // et le manque dit (relecture 0.94, D-4).
+        let lus = crate::machine::linux::noms_d_unite(&ordre, unite)
+            .map_or_else(|| Err(chemin.clone()), |noms| complements_lus(&ordre, &noms));
+        let commandes = match &lus {
+            Ok(lus) => crate::machine::linux::exec_start_effectif(
+                std::iter::once(texte.as_str()).chain(lus.iter().map(|(_, t)| t.as_str())),
+            ),
+            Err(c) => {
+                manques.push(trf!(
+                    "commande de {} peut-être autre que celle montrée : complément pas lu ({})",
+                    "command of {} may differ from the one shown: drop-in not read ({})",
+                    crate::ui::affichable(unite),
+                    court(c)
+                ));
+                crate::machine::linux::exec_start_effectif([texte.as_str()])
+            }
+        };
         l.push(Programme {
             nom: unite.trim_end_matches(".service").to_string(),
-            commande: texte
-                .lines()
-                .find_map(|l| l.trim().strip_prefix("ExecStart="))
-                .unwrap_or(unite)
-                .to_string(),
+            commande: if commandes.is_empty() {
+                unite.to_string()
+            } else {
+                commandes.join(" ; ")
+            },
             actif: true,
             machine: false,
             bureau: false,
@@ -3646,7 +3732,7 @@ mod tests {
             let (l, manques, _) = releve("wireplumber.service enabled enabled", ordre());
             assert!(l.is_empty());
             assert!(
-                manques.len() == 1 && manques[0].contains("non vérifié") && manques[0].contains(complement),
+                manques.len() == 1 && manques[0].contains("changé par le compte") && manques[0].contains(complement),
                 "{complement} : {manques:?}"
             );
             std::fs::remove_dir_all(&c).unwrap();
@@ -3660,6 +3746,182 @@ mod tests {
         assert_eq!(manques.len(), 2, "{manques:?}");
         assert!(manques.iter().any(|m| m.contains("session inconnue")), "{manques:?}");
         assert!(manques.iter().any(|m| m.contains("pipewire.service")), "{manques:?}");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// D (relecture 0.94) : les compléments du compte posés sur une unité du système (bt-agent.service.d,
+    /// hyprland-focused-booster.service.d) se lisent et se jugent : tus s'ils ne changent rien de ce qui se lance,
+    /// dits (avec la clé) sinon, et « non vérifié » s'ils ne se lisent pas. Les alias comptent (F-3).
+    #[test]
+    fn complement_du_compte_sur_le_systeme_dit_seulement_s_il_change_le_lancement() {
+        let base = dossier_jetable("complement-systeme");
+        let config = base.join("config");
+        let (unites, du_systeme) = (config.join("systemd/user"), base.join("usr-lib-systemd-user"));
+        for d in [&unites, &du_systeme] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(du_systeme.join("bt.service"), "[Service]\nExecStart=/usr/bin/bt\n").unwrap();
+        let systeme = std::slice::from_ref(&du_systeme);
+        let releve = || {
+            releve_selon(
+                &config,
+                &[],
+                "Hyprland",
+                Some("bt.service enabled enabled".to_string()),
+                Ok(ordre_essai(&config, systeme)),
+                systeme,
+            )
+        };
+        let c = unites.join("bt.service.d");
+        std::fs::create_dir_all(&c).unwrap();
+        // Rien qui lance : délais, redémarrage, ordre, description, commentaires, section « X- ».
+        std::fs::write(
+            c.join("10-calme.conf"),
+            "[Unit]\nDescription=calme\nAfter=graphical-session.target\n[Service]\n# ExecStart=/x\nRestart=on-failure\nTimeoutStopSec=5\n[X-Note]\nExecStart=/x\n",
+        )
+        .unwrap();
+        let (l, manques, _) = releve();
+        assert!(l.is_empty() && manques.is_empty(), "{manques:?}");
+        // Chaque façon de changer ce qui se lance est dite, la clé nommée ; une ligne continuée aussi.
+        for (ligne, cle) in [
+            ("[Service]\nExecStartPost=/usr/bin/sleep 2\n", "ExecStartPost"),
+            ("[Service]\nExecStartPre=/x \\\n  --opt\n", "ExecStartPre"),
+            ("[Unit]\nWants=autre.service\n", "Wants"),
+            ("[Service]\nEnvironment=LD_PRELOAD=/home/a/x.so\n", "Environment"),
+            ("[Service]\nRootDirectory=/home/a/r\n", "RootDirectory"),
+            ("Restart=always\n", "Restart"),
+            ("[Service]\nn'importe quoi\n", "?"),
+        ] {
+            std::fs::write(c.join("20-change.conf"), ligne).unwrap();
+            let (l, manques, _) = releve();
+            assert!(l.is_empty());
+            assert!(
+                manques.len() == 1
+                    && manques[0].contains("changé par le compte")
+                    && manques[0].contains("20-change.conf")
+                    && manques[0].contains(cle),
+                "{ligne:?} : {manques:?}"
+            );
+        }
+        std::fs::remove_file(c.join("20-change.conf")).unwrap();
+        // Un alias posé par le compte : ses compléments s'appliquent aussi (F-3).
+        std::os::unix::fs::symlink(du_systeme.join("bt.service"), unites.join("copie.service")).unwrap();
+        let a = unites.join("copie.service.d");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::write(a.join("x.conf"), "[Service]\nExecStartPre=/home/a/x\n").unwrap();
+        let (_, manques, _) = releve();
+        assert!(
+            manques.len() == 1 && manques[0].contains("copie.service.d") && manques[0].contains("ExecStartPre"),
+            "{manques:?}"
+        );
+        std::fs::remove_dir_all(&a).unwrap();
+        // Un complément qui ne se lit pas (tube) ou un dossier de compléments qui ne se liste pas (boucle de liens) :
+        // non vérifié, jamais tu.
+        let tube = c.join("30-tube.conf");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&tube)
+                .status()
+                .is_ok_and(|s| s.success())
+        );
+        let (_, manques, _) = releve();
+        assert!(
+            manques.len() == 1 && manques[0].contains("non vérifié") && manques[0].contains("30-tube.conf"),
+            "{manques:?}"
+        );
+        std::fs::remove_file(&tube).unwrap();
+        let boucle = unites.join("service.d");
+        std::os::unix::fs::symlink(&boucle, &boucle).unwrap();
+        let (_, manques, _) = releve();
+        assert!(
+            manques.len() == 1 && manques[0].contains("non vérifié") && manques[0].contains("service.d"),
+            "{manques:?}"
+        );
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// D-4 (relecture 0.94) : la commande montrée d'un service du compte est celle que systemd lance, ses
+    /// compléments appliqués (« ExecStart= » vide efface, ordre des noms de fichiers, le dossier qui passe devant
+    /// masque un même nom, ceux du système aussi) ; un complément qui ne se lit pas est dit.
+    #[test]
+    fn commande_d_un_service_du_compte_avec_ses_complements() {
+        let base = dossier_jetable("commande-complements");
+        let config = base.join("config");
+        let (unites, du_systeme) = (config.join("systemd/user"), base.join("usr-lib-systemd-user"));
+        for d in [&unites, &du_systeme] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(
+            unites.join("note.service"),
+            "[Unit]\nDescription=ExecStart=/faux\n[Service]\nExecStart=/usr/bin/note\n",
+        )
+        .unwrap();
+        let systeme = std::slice::from_ref(&du_systeme);
+        let releve = || {
+            releve_selon(
+                &config,
+                &[],
+                "Hyprland",
+                Some("note.service enabled enabled".to_string()),
+                Ok(ordre_essai(&config, systeme)),
+                systeme,
+            )
+        };
+        let commande = || {
+            let (l, manques, _) = releve();
+            assert_eq!(l.len(), 1, "{manques:?}");
+            (l[0].commande.clone(), manques)
+        };
+        assert_eq!(commande(), ("/usr/bin/note".to_string(), vec![]));
+        let c = unites.join("note.service.d");
+        std::fs::create_dir_all(&c).unwrap();
+        std::fs::write(
+            c.join("b.conf"),
+            "[Service]\nExecStart=\nExecStart=/home/a/charge \\\n  --vite\n",
+        )
+        .unwrap();
+        assert_eq!(commande().0, "/home/a/charge    --vite");
+        // a.conf passe avant b.conf : b efface ce que a pose.
+        std::fs::write(c.join("a.conf"), "[Service]\nExecStart=/home/a/autre\n").unwrap();
+        assert_eq!(commande().0, "/home/a/charge    --vite");
+        // c.conf, après : s'ajoute (Type=oneshot).
+        std::fs::write(c.join("c.conf"), "[Service]\nExecStart=/home/a/encore\n").unwrap();
+        assert_eq!(commande().0, "/home/a/charge    --vite ; /home/a/encore");
+        std::fs::remove_file(c.join("c.conf")).unwrap();
+        // Le même nom dans un dossier du système, plus loin : masqué par celui du compte.
+        let s = du_systeme.join("note.service.d");
+        std::fs::create_dir_all(&s).unwrap();
+        std::fs::write(s.join("b.conf"), "[Service]\nExecStart=\nExecStart=/usr/bin/masque\n").unwrap();
+        assert_eq!(commande().0, "/home/a/charge    --vite");
+        // Un autre nom au système, et « service.d » : appliqués aussi, dans l'ordre des noms.
+        std::fs::write(s.join("z.conf"), "[Service]\nExecStart=\nExecStart=/usr/bin/systeme\n").unwrap();
+        assert_eq!(commande().0, "/usr/bin/systeme");
+        let general = unites.join("service.d");
+        std::fs::create_dir_all(&general).unwrap();
+        std::fs::write(
+            general.join("zz.conf"),
+            "[Service]\nExecStart=\nExecStart=/home/a/tous\n",
+        )
+        .unwrap();
+        assert_eq!(commande().0, "/home/a/tous");
+        std::fs::remove_dir_all(&general).unwrap();
+        // Masqué par un lien vers /dev/null : vide.
+        std::os::unix::fs::symlink("/dev/null", c.join("z.conf")).unwrap();
+        assert_eq!(commande().0, "/home/a/charge    --vite");
+        // Un complément qui ne se lit pas : la commande du fichier, et le manque dit.
+        let tube = c.join("t.conf");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&tube)
+                .status()
+                .is_ok_and(|s| s.success())
+        );
+        let (montree, manques) = commande();
+        assert_eq!(montree, "/usr/bin/note");
+        assert!(
+            manques.len() == 1 && manques[0].contains("peut-être autre") && manques[0].contains("t.conf"),
+            "{manques:?}"
+        );
         std::fs::remove_dir_all(&base).unwrap();
     }
 

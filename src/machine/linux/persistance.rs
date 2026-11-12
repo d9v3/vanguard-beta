@@ -963,6 +963,96 @@ pub(crate) fn complements_d_unite(nom: &str) -> Vec<String> {
     ajouts_de(nom)
 }
 
+/// Les noms sous lesquels systemd connaît l'unité `nom` dans `dossiers` (`noms_de_l_unite`) : ses compléments
+/// s'appliquent sous chacun. `None` : rien n'est conclu.
+pub(crate) fn noms_d_unite(dossiers: &[std::path::PathBuf], nom: &str) -> Option<Vec<String>> {
+    noms_de_l_unite(dossiers, nom)
+}
+
+/// Ce qu'un complément du compte (« nom.service.d/x.conf », de texte `texte`) posé sur une unité du système change à
+/// ce qu'elle lance, pour `vanguard demarrage` (relecture 0.94, D) : la clé de chaque ligne que le juge du bilan
+/// refuse (`permise::directive`, avec les codes « % » du compte de `maison`), ou qui lance, démarre ou change ce qui
+/// se lance (Exec…, dépendances qui démarrent, variables, dossier courant). Vide : rien de tel, le complément se tait.
+/// Une ligne sans « = » ou hors de toute section compte (« ? » ou sa clé) : jamais un silence par défaut.
+pub(crate) fn complement_change_le_lancement(texte: &str, maison: &Path) -> Vec<String> {
+    const LANCEMENT: [&str; 5] = [
+        "Environment",
+        "EnvironmentFile",
+        "PassEnvironment",
+        "UnsetEnvironment",
+        "WorkingDirectory",
+    ];
+    let lue = maison.to_string_lossy().into_owned();
+    let maisons = [lue.as_str()];
+    let s = permise::Systeme {
+        racine: Path::new("/"),
+        maison: &lue,
+        maisons: &maisons,
+    };
+    let codes = Codes {
+        utilisateur: true,
+        maison: lue.clone(),
+        session: None,
+        variables: std::collections::BTreeMap::new(),
+        sauvegarde: None,
+        sauvegarde_completee: false,
+        sauvegarde_environnement: false,
+    };
+    let mut cles: Vec<String> = Vec::new();
+    let mut section: Option<String> = None;
+    for logique in lignes_de_systemd(texte) {
+        if let Some(nom) = logique.texte.strip_prefix('[').and_then(|x| x.strip_suffix(']')) {
+            section = Some(nom.to_string());
+            continue;
+        }
+        if section.as_deref().is_some_and(|x| x.starts_with("X-")) {
+            continue;
+        }
+        let cle = logique
+            .texte
+            .split_once('=')
+            .map_or("?", |(c, _)| c.trim_matches([' ', '\t']));
+        let change = permise::directive(&s, &codes, section.as_deref(), &logique.texte).is_err()
+            || cle.starts_with("Exec")
+            || permise::DEMARRENT.contains(&cle)
+            || LANCEMENT.contains(&cle);
+        if change && !cles.iter().any(|c| c == cle) {
+            cles.push(cle.to_string());
+        }
+    }
+    cles
+}
+
+/// Les valeurs « ExecStart= » de la section [Service] que systemd retient pour une unité, lue comme il la lit
+/// (`lignes_de_systemd`) : celles du fichier de l'unité puis de chacun de ses compléments, `textes` dans l'ordre où
+/// systemd les applique ; une valeur vide efface les précédentes (systemd.service(5)). Pour `vanguard demarrage` : la
+/// commande montrée est celle qui tourne, pas seulement celle du fichier (relecture 0.94, D-4).
+pub(crate) fn exec_start_effectif<'a>(textes: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    let mut valeurs = Vec::new();
+    for texte in textes {
+        let mut service = false;
+        for logique in lignes_de_systemd(texte) {
+            if let Some(nom) = logique.texte.strip_prefix('[').and_then(|x| x.strip_suffix(']')) {
+                service = nom == "Service";
+                continue;
+            }
+            let Some((cle, valeur)) = logique.texte.split_once('=') else {
+                continue;
+            };
+            if !service || cle.trim_matches([' ', '\t']) != "ExecStart" {
+                continue;
+            }
+            let valeur = valeur.trim_matches([' ', '\t']);
+            if valeur.is_empty() {
+                valeurs.clear();
+            } else {
+                valeurs.push(valeur.to_string());
+            }
+        }
+    }
+    valeurs
+}
+
 /// La persistance lue sous `racine` (« / » au bilan ; une arborescence fabriquée pour le corpus de détection), le
 /// dossier personnel `maison`, les variables de cette session (`variable`), la crontab du compte et le gestionnaire
 /// de paquets donnés : la même lecture et le même jugement, sans rien toucher hors de la racine.

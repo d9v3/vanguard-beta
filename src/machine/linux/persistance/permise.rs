@@ -2285,7 +2285,7 @@ const DEPENDANCES: &[&str] = &[
     "SystemdService",
     "Slice",
 ];
-const DEMARRENT: &[&str] = &[
+pub(super) const DEMARRENT: &[&str] = &[
     "Wants",
     "Requires",
     "Requisite",
