@@ -708,15 +708,35 @@ impl Changement {
     }
 
     /// Le réglage de démarrage rebâti d'après son identité notée, pour l'annuler. La note ne doit viser qu'un fichier
-    /// .desktop d'un dossier autostart, ou un service au nom valide.
+    /// .desktop du dossier d'autostart du compte (celui que lit la liste), ou un service au nom valide.
     pub fn demarrage_depuis(identite: &str) -> Option<Changement> {
+        // Les essais : un dossier « autostart » sous leur dossier jetable tient lieu de celui du compte, comme leur
+        // dossier jetable tient lieu de dossier personnel (`sous_maison::depart`).
+        #[cfg(test)]
+        if let Some(c) = identite
+            .strip_prefix("autostart|")
+            .and_then(|r| Path::new(r).parent())
+            .filter(|d| d.starts_with(crate::essais::temporaire()) && d.file_name() == Some("autostart".as_ref()))
+            .and_then(|d| Self::demarrage_depuis_dans(identite, d))
+        {
+            return Some(c);
+        }
+        Self::demarrage_depuis_dans(identite, &config_du_compte().join("autostart"))
+    }
+
+    /// `demarrage_depuis`, `autostart` étant le dossier d'autostart du compte. L'identité doit être, au texte près,
+    /// celle qu'aurait notée la liste pour ce nom (`autostart` suivi du nom du fichier) : un autre dossier nommé
+    /// autostart sous le dossier personnel, un sous-dossier, « . » ou « .. » ne se rebâtissent pas (relecture 0.94,
+    /// R-8 : une note ne vise que l'entrée qu'elle déclare).
+    fn demarrage_depuis_dans(identite: &str, autostart: &Path) -> Option<Changement> {
         let (sorte, reste) = identite.split_once('|')?;
         let entree = match sorte {
             "autostart" => {
                 let p = PathBuf::from(reste);
                 let valide = p.is_absolute()
                     && p.extension().is_some_and(|e| e == "desktop")
-                    && p.parent().is_some_and(|d| d.ends_with("autostart"));
+                    && p.file_name()
+                        .is_some_and(|n| autostart.join(n).as_os_str() == std::ffi::OsStr::new(reste));
                 valide.then_some(Entree::Autostart(p))?
             }
             "systemd" => unite_valide(reste).then(|| Entree::Service(reste.to_string()))?,
@@ -1303,7 +1323,7 @@ pub fn au_demarrage() -> Vec<Programme> {
 /// `demarrage --json` ne compte pas une liste incomplète comme lue.
 pub fn releve_demarrage() -> (Vec<Programme>, Vec<String>) {
     let maison = crate::socle::maison();
-    let config = std::env::var_os("XDG_CONFIG_HOME").map_or_else(|| maison.join(".config"), PathBuf::from);
+    let config = config_du_compte();
     let bureau = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
     let activees = crate::commande::lancer(
         Command::new("systemctl").args([
@@ -1328,6 +1348,12 @@ pub fn releve_demarrage() -> (Vec<Programme>, Vec<String>) {
         ordre,
         &unites,
     )
+}
+
+/// Le dossier de configuration du compte (`XDG_CONFIG_HOME`, sinon ~/.config) : celui où `vanguard demarrage` lit
+/// les entrées d'autostart du compte, le seul où une note en remet une.
+fn config_du_compte() -> PathBuf {
+    std::env::var_os("XDG_CONFIG_HOME").map_or_else(|| crate::socle::maison().join(".config"), PathBuf::from)
 }
 
 /// Le premier dossier de compléments (« nom.service.d », `complements_d_unite`) de l'unité `unite` qu'un dossier
@@ -2878,8 +2904,9 @@ mod tests {
         };
         let id = c.identite_demarrage().unwrap();
         assert_eq!(id, "autostart|/home/alice/.config/autostart/essai-vanguard-x.desktop");
+        let autostart = Path::new("/home/alice/.config/autostart");
         assert!(matches!(
-            Changement::demarrage_depuis(&id),
+            Changement::demarrage_depuis_dans(&id, autostart),
             Some(Changement::Demarrage {
                 entree: Entree::Autostart(_),
                 cible: None,
@@ -2896,8 +2923,18 @@ mod tests {
             "systemd|.service",
             "systemd|x",
             "inconnu|x",
+            // Relecture 0.94, R-8 : un autre dossier nommé autostart que celui du compte, ou plus bas que lui.
+            "autostart|/home/alice/projets/autostart/x.desktop",
+            "autostart|/home/alice/.config/autostart/autostart/x.desktop",
+            "autostart|/home/alice/.config/autostart/../autostart/x.desktop",
+            "autostart|/home/alice/.config/autostart/./x.desktop",
+            "autostart|/home/bob/.config/autostart/x.desktop",
+            "autostart|/etc/xdg/autostart/x.desktop",
         ] {
-            assert!(Changement::demarrage_depuis(mauvaise).is_none(), "{mauvaise}");
+            assert!(
+                Changement::demarrage_depuis_dans(mauvaise, autostart).is_none(),
+                "{mauvaise}"
+            );
         }
         let s = Changement::demarrage_depuis("systemd|syncthing.service").unwrap();
         assert_eq!(
