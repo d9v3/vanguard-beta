@@ -772,6 +772,8 @@ enum Issue {
 /// refusé). Chaque demande, faite, refusée ou en échec, va au journal des événements. Avec `json`, l'issue est la
 /// dernière ligne. Rend le code de sortie : 0 fait, 1 refusé ou non fait, 2 empreinte mal formée.
 pub fn changer(sorte: SorteDeChangement, empreinte: &str, json: bool) -> i32 {
+    // Une raison restée d'avant ne passe pas pour celle de cette demande.
+    let _ = systeme::dernier_refus();
     // Vérifiée avant toute lecture du système.
     let (nom, issue) = if empreinte_bien_formee(empreinte) {
         match super::tenir_les_notes(&crate::reseau::dossier_local()) {
@@ -785,15 +787,7 @@ pub fn changer(sorte: SorteDeChangement, empreinte: &str, json: bool) -> i32 {
         Issue::Fait => (0, "fait", String::new()),
         Issue::Refuse(Refus::MalFormee) => (2, "refuse", Refus::MalFormee.raison()),
         Issue::Refuse(r) => (1, "refuse", r.raison()),
-        Issue::Echec => (
-            1,
-            "echec",
-            tr!(
-                "non fait : fenêtre administrateur refusée, ou le système l'a refusé (détail plus haut)",
-                "not done: administrator window declined, or the system refused it (details above)"
-            )
-            .to_string(),
-        ),
+        Issue::Echec => (1, "echec", raison_d_echec(systeme::dernier_refus())),
     };
     noter_au_journal(sorte, empreinte, nom.as_deref(), &issue, &raison);
     if json {
@@ -816,6 +810,20 @@ pub fn changer(sorte: SorteDeChangement, empreinte: &str, json: bool) -> i32 {
         }
     }
     code
+}
+
+/// Ce que dit un geste tenté sans succès : la raison du refus d'écrire quand elle est connue (celle de la ligne ✖,
+/// sans le dossier personnel), sinon la phrase générale. Avant, la sortie `--json` disait « fenêtre administrateur
+/// refusée » même pour une entrée du compte refusée au moment d'écrire (relecture 0.94, m-4).
+fn raison_d_echec(refus: Option<String>) -> String {
+    match refus {
+        Some(r) => trf!("non fait : {}", "not done: {}", resultat::sans_maison(&r)),
+        None => tr!(
+            "non fait : fenêtre administrateur refusée, ou le système l'a refusé (détail plus haut)",
+            "not done: administrator window declined, or the system refused it (details above)"
+        )
+        .to_string(),
+    }
 }
 
 /// `changer`, le verrou des notes tenu : le nom du programme visé (s'il est connu) et l'issue.
@@ -1616,6 +1624,26 @@ mod essais_changer {
             .err(),
             Some(Refus::Inconnue)
         );
+    }
+
+    /// Relecture 0.94, m-4 : un échec dit la raison retenue du refus d'écrire, sans le dossier personnel ; sans
+    /// raison retenue (une commande), la phrase générale. Linux seulement, comme l'essai de `sans_maison`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn un_echec_dit_sa_raison() {
+        assert_eq!(
+            raison_d_echec(Some(
+                "l'entrée a changé depuis qu'elle a été montrée : rien n'est écrit".into()
+            )),
+            "non fait : l'entrée a changé depuis qu'elle a été montrée : rien n'est écrit"
+        );
+        let maison = crate::socle::maison();
+        let dit = raison_d_echec(Some(format!(
+            "{} est un lien",
+            maison.join("config/autostart").display()
+        )));
+        assert_eq!(dit, "non fait : ~/config/autostart est un lien");
+        assert!(raison_d_echec(None).contains("fenêtre administrateur refusée"));
     }
 
     /// Relecture 0.94, R-9 : pour plusieurs notes de démarrage d'une même annulation, la liste du jour (et donc

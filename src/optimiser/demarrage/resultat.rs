@@ -136,7 +136,7 @@ fn chemin_montre(chemin: &str) -> String {
 /// nom du compte au rapport, au journal et à la fenêtre (relecture 0.94, R-4, T-4). Seulement entre deux limites de
 /// chemin : un dossier au nom qui le prolonge (« /home/alice » suivi d'un chiffre) ou « /mnt/home/alice » ne sont
 /// pas sous « /home/alice ».
-fn sans_maison(texte: &str) -> String {
+pub(super) fn sans_maison(texte: &str) -> String {
     let maison = crate::socle::maison();
     let Some(m) = maison.to_str().map(|m| m.trim_end_matches('/')) else {
         return texte.to_string();

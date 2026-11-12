@@ -747,6 +747,13 @@ impl Changement {
     }
 }
 
+/// La raison du dernier refus d'écrire (Linux : une entrée d'autostart du compte). Sous Windows, chaque changement
+/// passe par une commande, dont l'échec est dit à l'écran : aucune raison retenue, `demarrage --json` garde sa phrase
+/// générale.
+pub fn dernier_refus() -> Option<String> {
+    None
+}
+
 /// Les programmes lancés à l'ouverture de session : valeurs de Run (du compte, de la machine, et des programmes 32
 /// bits) et dossiers Démarrage (du compte et de toute la machine), avec leur état dans StartupApproved. Lus dans le
 /// registre et le dossier, sans PowerShell.

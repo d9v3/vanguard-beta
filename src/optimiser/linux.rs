@@ -380,6 +380,23 @@ fn dossiers_systeme() -> Vec<PathBuf> {
         .collect()
 }
 
+thread_local! {
+    /// La raison du dernier refus d'écrire, dite sur sa ligne ✖ : `demarrage --retirer|--remettre --json` la reprend
+    /// dans son issue, au lieu d'une phrase générale (relecture 0.94, m-4).
+    static DERNIER_REFUS: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Dit à l'écran pourquoi rien n'est écrit (ligne ✖), et le retient pour `dernier_refus`.
+fn refuser_ici(raison: &str) {
+    println!("    ✖ {raison}");
+    DERNIER_REFUS.with_borrow_mut(|d| *d = Some(raison.to_string()));
+}
+
+/// La raison du dernier refus d'écrire de ce fil, s'il y en a eu un depuis la dernière demande ; la vide.
+pub fn dernier_refus() -> Option<String> {
+    DERNIER_REFUS.with_borrow_mut(Option::take)
+}
+
 /// Un chemin du dossier personnel, écrit court (« ~/.config/autostart/… »).
 fn court(p: &Path) -> String {
     let maison = crate::socle::personnel::dossier_personnel();
@@ -816,26 +833,20 @@ impl Changement {
         // Un retrait sans valeur d'avant lue : la note serait vide, rien ne le défairait (campagne 0.94, C-3). Seule
         // une annulation (rebâtie d'une note, sans cible) écrit sans valeur vue.
         if cible.is_some() && vu.is_none() {
-            println!(
-                "    ✖ {}",
-                tr!(
-                    "valeur d'avant pas lue : rien n'est écrit",
-                    "previous value not read: nothing is written"
-                )
-            );
+            refuser_ici(tr!(
+                "valeur d'avant pas lue : rien n'est écrit",
+                "previous value not read: nothing is written"
+            ));
             return Some(false);
         }
         // Remise d'après une note (sans cible ni valeur vue) : l'entrée d'aujourd'hui doit se lire bornée, présente
         // ou absente. Trop grosse, pas en UTF-8, un lien ou un tube, elle se lance peut-être (la liste ne la montre
         // pas) : ni le contenu noté ni un retrait ne passent par-dessus (correction n° 2 de la 0.94, D-1).
         if cible.is_none() && vu.is_none() && self.lire().is_none() {
-            println!(
-                "    ✖ {}",
-                tr!(
-                    "entrée pas lue : rien n'est remis par-dessus",
-                    "entry not read: nothing is put back over it"
-                )
-            );
+            refuser_ici(tr!(
+                "entrée pas lue : rien n'est remis par-dessus",
+                "entry not read: nothing is put back over it"
+            ));
             return Some(false);
         }
         // Listée, l'entrée doit être encore celle lue alors : échangée depuis, ce qui s'écrirait viendrait de l'ancien
@@ -843,26 +854,20 @@ impl Changement {
         if let Some(vu) = vu
             && self.lire().as_deref() != Some(vu.as_str())
         {
-            println!(
-                "    ✖ {}",
-                tr!(
-                    "l'entrée a changé depuis qu'elle a été montrée : rien n'est écrit",
-                    "the entry changed since it was shown: nothing is written"
-                )
-            );
+            refuser_ici(tr!(
+                "l'entrée a changé depuis qu'elle a été montrée : rien n'est écrit",
+                "the entry changed since it was shown: nothing is written"
+            ));
             return Some(false);
         }
         // Ce qui s'écrit doit se relire, borné comme la note : sinon ni le retrait ne se constaterait, ni l'entrée ne
         // se remettrait (D-1 la dirait pas lue). Masquer ajoute « Hidden=true » : une entrée lue de justesse peut
         // dépasser la borne une fois masquée (correction n° 2 de la 0.94, D-2).
         if !relisible(v) {
-            println!(
-                "    ✖ {}",
-                tr!(
-                    "l'entrée masquée dépasserait 64 Kio et ne se relirait plus : rien n'est écrit",
-                    "the hidden entry would exceed 64 KiB and could no longer be read back: nothing is written"
-                )
-            );
+            refuser_ici(tr!(
+                "l'entrée masquée dépasserait 64 Kio et ne se relirait plus : rien n'est écrit",
+                "the hidden entry would exceed 64 KiB and could no longer be read back: nothing is written"
+            ));
             return Some(false);
         }
         // Sous le dossier personnel, sans suivre de lien à aucun élément du chemin (`sous_maison`) : un dossier
@@ -875,7 +880,7 @@ impl Changement {
         Some(match r {
             Ok(()) => true,
             Err(e) => {
-                println!("    ✖ {e}");
+                refuser_ici(&e.to_string());
                 false
             }
         })
@@ -1270,6 +1275,7 @@ pub fn ecrire_avec(lots: &[Vec<(&Changement, Valeur)>], en_plus: &[Vec<String>])
                 if let Some((fr, en)) = c.refus(v.as_deref()) {
                     let raison = if crate::langue::anglais() { en } else { fr };
                     trp!("    ✖ {} : {raison}", "    ✖ {}: {raison}", c.decrire(v.as_deref()));
+                    DERNIER_REFUS.with_borrow_mut(|d| *d = Some(raison.to_string()));
                     refuse = true;
                 }
             }
@@ -2655,6 +2661,32 @@ mod tests {
         // Une valeur qu'on n'a pas su lire ne s'écrit jamais.
         assert_eq!(annuler(&s).ecrire_ici(Some("?")), Some(false));
         assert!(s.decrire(Some("-")).contains("syncthing.desktop"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Relecture 0.94, m-4 : un refus d'écrire une entrée du compte retient sa raison (celle de la ligne ✖), une
+    /// seule fois, pour l'issue de `demarrage --json` ; un geste fait n'en laisse aucune.
+    #[test]
+    fn un_refus_d_ecrire_retient_sa_raison() {
+        let base = dossier_jetable("raison");
+        let compte = base.join("autostart");
+        std::fs::create_dir_all(&compte).unwrap();
+        let p = compte.join("cible.desktop");
+        let montre = "[Desktop Entry]\nName=Cible\nExec=cible\n";
+        std::fs::write(&p, montre).unwrap();
+        let (liste, _) = autostart(&compte, &[], "");
+        let c = &liste.iter().find(|x| x.nom == "Cible").expect("listée").changement;
+        let _ = dernier_refus();
+        std::fs::write(&p, "[Desktop Entry]\nName=Autre\nExec=autre\n").unwrap();
+        assert_eq!(c.ecrire_ici(c.cible().as_deref()), Some(false));
+        assert_eq!(
+            dernier_refus().as_deref(),
+            Some("l'entrée a changé depuis qu'elle a été montrée : rien n'est écrit")
+        );
+        assert_eq!(dernier_refus(), None);
+        std::fs::write(&p, montre).unwrap();
+        assert_eq!(c.ecrire_ici(c.cible().as_deref()), Some(true));
+        assert_eq!(dernier_refus(), None);
         let _ = std::fs::remove_dir_all(&base);
     }
 
