@@ -73,7 +73,7 @@ jobs:
       # (.github/dependabot.yml), relu et approuvé à la main ; les versions des outils (tool: …@X) restent à mettre
       # à jour à la main. Les outils dans la version épinglée ici, tels que leurs auteurs les publient (empreintes
       # vérifiées).
-      # verifier.sh --ci échoue sur une étape sautée faute d'outil (sauf ses exclusions nommées, EXCLUES_CI) : chaque
+      # verifier.sh --ci échoue sur une étape sautée faute d'outil ou absente (sauf ses exclusions nommées) : chaque
       # outil d'une étape est ici, cargo-cyclonedx compris (nomenclatures, même version qu'outils/sbom.sh).
       - uses: taiki-e/install-action@645d1ab48b3cb8591684a8b730b2ccf4cb3f9568 # v2.87.33
         with:

@@ -10,9 +10,10 @@
 #   4. Une étape demandée qui réussit (scripts Python) donne « Vert pour les étapes demandées seulement », jamais
 #      « Tout est vert » : seul le passage complet le dit.
 #   5. Le passage complet (celui de la livraison) : une étape sautée ou jamais lancée y est un échec, pas un vert ;
-#      --rapide et --sans-wine la disent « partiel » ; --ci aussi pour une étape qu'il ne lance pas, mais une étape
-#      lancée qui se dit sautée y est un échec, sauf les exclusions nommées (EXCLUES_CI) (juger_etape, lue dans
-#      verifier.sh : le passage complet ne se relance pas d'ici, il dure des minutes et lance ces essais mêmes).
+#      --rapide et --sans-wine la disent « partiel » ; sous --ci, une étape lancée qui se dit sautée y est un échec,
+#      sauf les exclusions nommées (EXCLUES_CI), et une étape absente aussi, sauf celles que --ci ne lance pas exprès
+#      (ABSENTES_CI, Wine) (juger_etape, lue dans verifier.sh : le passage complet ne se relance pas d'ici, il dure
+#      des minutes et lance ces essais mêmes).
 #   6. Les relectures de cargo vet sans Internet (VANGUARD_HORS_LIGNE) : imports.lock cru sur parole, l'étape se dit
 #      sautée avec sa raison, jamais verte (sauté sans cargo-vet 0.10.3).
 #   7. Les protections des programmes (durcissement, lue dans verifier.sh, cargo et le programme remplacés par des
@@ -137,7 +138,7 @@ fi
 
 # La règle du résumé, lue telle quelle dans verifier.sh et jugée dans chaque mode.
 juge=$(mktemp "$HOME/.cache/vanguard-dev/juger-etape.XXXX")
-{ grep '^EXCLUES_CI=' outils/verifier.sh; awk '/^juger_etape\(\) \{/,/^\}/' outils/verifier.sh; } >"$juge"
+{ grep -E '^(EXCLUES|ABSENTES)_CI=' outils/verifier.sh; awk '/^juger_etape\(\) \{/,/^\}/' outils/verifier.sh; } >"$juge"
 juger() { MODE=$1 SEULEMENT=$2 bash -c "source '$juge'; juger_etape $3 ${4:-}"; }
 if [[ -s $juge && $(juger "" "" sautee) == echec && $(juger "" "" absente) == echec && $(juger "" "" ok) == vert &&
   $(juger --seulement ,python, sautee) == echec && $(juger --sans-wine "" sautee nomenclatures) == partiel &&
@@ -147,13 +148,17 @@ else
   ko "passage complet : une étape sautée ou jamais lancée n'y est pas un échec (juger_etape de verifier.sh)"
 fi
 # Sous --ci : une étape sautée est un échec (nomenclatures, relectures…), sauf les exclusions nommées
-# (preuves-compilees, Kani absent de la CI) ; une étape que --ci ne lance pas reste « partiel ».
+# (preuves-compilees, Kani absent de la CI) ; une étape absente aussi (oubliée, tuée), sauf celles que --ci ne lance
+# pas exprès (Wine) ; une exclusion d'un genre ne vaut pas pour l'autre.
 if [[ -s $juge && $(juger --ci "" sautee nomenclatures) == echec && $(juger --ci "" sautee relectures) == echec &&
   $(juger --ci "" sautee) == echec && $(juger --ci "" sautee preuves-compilees) == partiel &&
-  $(juger --ci "" absente tests-windows) == partiel && $(juger --ci "" ok nomenclatures) == vert ]]; then
-  ok "--ci : une étape sautée est un échec, sauf les exclusions nommées (preuves-compilees)"
+  $(juger --ci "" absente tests-windows) == partiel && $(juger --ci "" absente regression-detection-windows) == partiel &&
+  $(juger --ci "" absente nomenclatures) == echec && $(juger --ci "" absente) == echec &&
+  $(juger --ci "" absente preuves-compilees) == echec && $(juger --ci "" sautee tests-windows) == echec &&
+  $(juger --ci "" ok nomenclatures) == vert ]]; then
+  ok "--ci : une étape sautée ou absente est un échec, sauf les exclusions nommées (preuves-compilees ; Wine)"
 else
-  ko "--ci : une étape sautée n'y est pas un échec, ou une exclusion nommée l'est (juger_etape, EXCLUES_CI)"
+  ko "--ci : une étape sautée ou absente n'y est pas un échec, ou une exclusion nommée l'est (juger_etape)"
 fi
 rm -f "$juge"
 grep -q '^echo "Tout est vert' outils/verifier.sh && grep -q 'Passage partiel (\$MODE)' outils/verifier.sh &&

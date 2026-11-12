@@ -674,7 +674,13 @@ raisons_des_sautes() {
 # avec leur raison, EXCLUES_CI. Lue telle quelle par outils/essais-verifier.sh.
 #   preuves-compilees : Kani n'est pas installé dans la CI (lourd) ; le passage complet de la livraison l'exige, et
 #                       outils/preuves.sh lance les preuves chaque jeudi (veille de nuit).
+# Sous --ci, une étape absente (jamais lancée, ou tuée avant d'écrire son état) est aussi un échec : une étape
+# oubliée dans la liste laisserait sinon la CI verte (relecture 0.95, V-8). Seules exceptions, celles que --ci ne
+# lance pas exprès, nommées dans ABSENTES_CI :
+#   tests-windows, regression-detection-windows : pas de Wine dans la CI ; le travail Windows (vrai Windows) fait
+#                       tourner leur cargo test.
 EXCLUES_CI=(preuves-compilees)
+ABSENTES_CI=(tests-windows regression-detection-windows)
 juger_etape() { # état [nom de l'étape]
   case $1 in
     ok) echo vert ;;
@@ -682,6 +688,8 @@ juger_etape() { # état [nom de l'étape]
       if [[ -z $MODE || -n $SEULEMENT ]]; then
         echo echec
       elif [[ $MODE == --ci && $1 == sautee && " ${EXCLUES_CI[*]} " != *" ${2:-} "* ]]; then
+        echo echec
+      elif [[ $MODE == --ci && $1 == absente && " ${ABSENTES_CI[*]} " != *" ${2:-} "* ]]; then
         echo echec
       else
         echo partiel
