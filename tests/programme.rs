@@ -3733,6 +3733,31 @@ mod demarrage_sous_attaque {
             sorties.push(s.texte);
             sorties.push(b.liste().1);
         }
+        // m-5 : retiré de nouveau puis effacé à la main, il n'est plus montré que d'après la note de Vanguard
+        // (son identité, le chemin entier de l'entrée) : cette ligne non plus ne dit pas le dossier personnel.
+        let retrait = b.lancer(&["demarrage", "--retirer", &e, "--json"]);
+        assert!(
+            retrait.texte.contains("\"fait\""),
+            "{} {}",
+            retrait.texte,
+            retrait.erreurs
+        );
+        sorties.push(retrait.texte);
+        std::fs::remove_file(b.autostart.join("radio.desktop")).unwrap();
+        let (json, texte) = b.liste();
+        let montre = format!(
+            "autostart|~/{}",
+            b.autostart
+                .join("radio.desktop")
+                .strip_prefix(&b.maison)
+                .unwrap()
+                .display()
+        );
+        assert!(
+            texte.contains("retiré par Vanguard") && texte.contains(&montre),
+            "la ligne d'après la note manque : {json}"
+        );
+        sorties.push(texte);
 
         // Ce qui est versé : la sortie de chaque commande, et tout fichier écrit par Vanguard sous ses données (le
         // rapport, le journal), sauf ses propres notes, qui gardent l'identité entière pour remettre l'entrée.
