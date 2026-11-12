@@ -106,6 +106,10 @@ pub(super) enum Ecart {
     /// Un argument mène à un fichier du compte à plusieurs liens physiques, et son autre nom n'a pas pu être cherché
     /// dans les lieux de démarrage du compte, pour la raison donnée (A-3, revérification 6 : la cause se dit).
     AutreNomNonCherche(LieuxNonLus),
+    /// Un argument relatif, et le dossier de départ de la ligne (WorkingDirectory=, Path=) ne se résout pas : le
+    /// fichier qu'il vise n'est pas vérifié, et peut être un lieu de démarrage du compte (B-2, revérification 7 :
+    /// la vraie raison se dit, avec l'argument, `Systeme::raison_dite`).
+    DossierDeDepart,
 }
 
 /// A-3 (revérification 6) : pourquoi les lieux de démarrage du compte n'ont pas pu être lus en entier pour y chercher
@@ -215,8 +219,12 @@ impl Ecart {
                 "Vanguard backup whose disk is an image (loop device) backed by a file the account can change (udisks mounts it without admin rights, under the expected disk name): where rsync copies is not checked"
             ),
             Ecart::LieuDeDemarrage => tr!(
-                "ligne qui nomme un lieu de démarrage du compte (~/.config/autostart, ~/.config/systemd, ~/.config/hypr, ~/.bashrc…) ou un dossier qui en contient (~/.config), écrit tel quel, relatif à son dossier courant ou par un lien qui y mène, ou dont un chemin ne se suit pas avec certitude (lien ou dossier illisible, passage par /proc, fichier dont un autre nom (lien physique) est dans un tel lieu, dossier courant ou variable inconnus, trop de séparateurs) : elle peut y copier, déplacer ou lier un lancement à chaque passage ; ce qu'elle y pose n'est pas vérifié, donc pas tu (limite : une copie sur le dossier personnel entier n'est pas comptée)",
-                "line naming an account startup place (~/.config/autostart, ~/.config/systemd, ~/.config/hypr, ~/.bashrc…) or a folder holding one (~/.config), written as is, relative to its working folder or through a link leading there, or with a path that cannot be followed with certainty (unreadable link or folder, a pass through /proc, a file whose other name (hard link) is in such a place, unknown working folder or variable, too many separators): it can copy, move or link a launch there on every run; what it puts there is not checked, so not kept quiet (limit: a copy onto the whole home folder is not counted)"
+                "ligne qui nomme un lieu de démarrage du compte (~/.config/autostart, ~/.config/systemd, ~/.config/hypr, ~/.bashrc…) ou un dossier qui en contient (~/.config), écrit tel quel, relatif à son dossier courant ou par un lien qui y mène, ou dont un chemin ne se suit pas avec certitude (lien ou dossier illisible, passage par /proc, fichier dont un autre nom (lien physique) est dans un tel lieu, variable inconnue, trop de séparateurs) : elle peut y copier, déplacer ou lier un lancement à chaque passage ; ce qu'elle y pose n'est pas vérifié, donc pas tu (limite : une copie sur le dossier personnel entier n'est pas comptée)",
+                "line naming an account startup place (~/.config/autostart, ~/.config/systemd, ~/.config/hypr, ~/.bashrc…) or a folder holding one (~/.config), written as is, relative to its working folder or through a link leading there, or with a path that cannot be followed with certainty (unreadable link or folder, a pass through /proc, a file whose other name (hard link) is in such a place, unknown variable, too many separators): it can copy, move or link a launch there on every run; what it puts there is not checked, so not kept quiet (limit: a copy onto the whole home folder is not counted)"
+            ),
+            Ecart::DossierDeDepart => tr!(
+                "dossier de départ (WorkingDirectory= ou Path=) non vérifié : un argument relatif peut viser un autre fichier, dont un lieu de démarrage du compte (~/.config/autostart, ~/.config/systemd, ~/.bashrc…) ; non vérifié, donc pas tu",
+                "working folder (WorkingDirectory= or Path=) not verified: a relative argument can point to another file, including an account startup place (~/.config/autostart, ~/.config/systemd, ~/.bashrc…); not verified, so not kept quiet"
             ),
             Ecart::AutreNomNonCherche(LieuxNonLus::Entrees) => tr!(
                 "ligne dont un chemin mène à un fichier du compte qui a un autre nom (lien physique) ; cet autre nom n'a pas pu être cherché dans les lieux de démarrage du compte (~/.config/autostart, ~/.config/systemd, ~/.config/hypr, ~/.bashrc…) : ils comptent plus de 4096 entrées. S'il y est, la ligne peut y écrire un lancement à chaque passage ; non vérifié, donc pas tu",
@@ -262,6 +270,9 @@ pub(super) struct Systeme<'a> {
     /// Y-3 : les fichiers à plusieurs liens physiques des lieux de démarrage du compte, par (appareil, inode), et un
     /// de leurs noms ; lus une fois, au premier fichier à deux noms rencontré (`noms_des_lieux`).
     pub(super) noms_des_lieux: std::cell::OnceCell<NomsDesLieux>,
+    /// B-2 (revérification 7) : le premier argument relatif jugé depuis un dossier de départ inconnu
+    /// (`Ecart::DossierDeDepart`), que la raison nomme (`raison_dite`).
+    pub(super) relatif: std::cell::OnceCell<String>,
 }
 
 /// Les dossiers où un nom de programme nu se cherche : le PATH par défaut du système (jamais celui de la ligne), et
@@ -724,6 +735,22 @@ fn argument_sur(s: &Systeme, a: &str) -> Result<(), Ecart> {
 const LIENS_SUIVIS: u32 = 40;
 
 impl Systeme<'_> {
+    /// B-2 (revérification 7) : la raison d'un `ecart` telle qu'elle se montre pour cette ligne : pour
+    /// `Ecart::DossierDeDepart`, la `cle` du dossier de départ (« Path= », « WorkingDirectory= ») et l'argument
+    /// relatif (`relatif`, rendu affichable et coupé à 80 caractères) ; sinon `Ecart::raison`.
+    pub(super) fn raison_dite(&self, ecart: Ecart, cle: &str) -> std::borrow::Cow<'static, str> {
+        match (ecart, self.relatif.get()) {
+            (Ecart::DossierDeDepart, Some(x)) => {
+                let x = crate::ui::affichable(&x.chars().take(80).collect::<String>());
+                std::borrow::Cow::Owned(trf!(
+                    "dossier de départ ({cle}) non vérifié : l'argument relatif « {x} » peut viser un autre fichier, dont un lieu de démarrage du compte (~/.config/autostart, ~/.config/systemd, ~/.bashrc…) ; non vérifié, donc pas tu",
+                    "working folder ({cle}) not verified: the relative argument \"{x}\" can point to another file, including an account startup place (~/.config/autostart, ~/.config/systemd, ~/.bashrc…); not verified, so not kept quiet"
+                ))
+            }
+            _ => std::borrow::Cow::Borrowed(ecart.raison()),
+        }
+    }
+
     /// Un morceau d'argument qui mène à un lieu de démarrage du compte (W-3, relecture 0.95) : par son texte, puis par
     /// l'endroit où il mène vraiment (ses liens suivis, `chemin_reel`), jugé contre les dossiers personnels tels
     /// qu'écrits et tels qu'ils sont vraiment (X-3 : une maison atteinte par un lien). Un morceau relatif
@@ -731,9 +758,10 @@ impl Systeme<'_> {
     /// d'une unité, Path= d'une entrée de bureau ; le dossier personnel sinon, celui d'une unité du compte sans
     /// WorkingDirectory=, systemd.exec(5)). Ce qui ne se suit pas avec certitude compte : non vérifié, donc pas tu
     /// (trop de liens, lien ou dossier illisible, saut par /proc ou /dev/fd, fichier dont un autre nom est dans un
-    /// lieu, variable inconnue, dossier courant qui ne se résout pas). Une option (« -r »)
-    /// n'est pas un chemin. Le constat revient (`Some`) : `Ecart::LieuDeDemarrage`, ou `Ecart::AutreNomNonCherche`
-    /// avec sa cause quand c'est l'autre nom d'un fichier qui n'a pas pu être cherché (A-3).
+    /// lieu, variable inconnue, dossier courant qui ne se résout pas). Une option (« -r ») n'est pas un chemin. Le
+    /// constat revient (`Some`) : `Ecart::LieuDeDemarrage`, `Ecart::AutreNomNonCherche` avec sa cause quand c'est
+    /// l'autre nom d'un fichier qui n'a pas pu être cherché (A-3), ou `Ecart::DossierDeDepart` pour un morceau
+    /// relatif depuis un dossier courant qui ne se résout pas, le morceau gardé dans `relatif` (B-2).
     fn mene_a_un_lieu(&self, m: &str, maisons: &[&str]) -> Option<Ecart> {
         let lieu = Some(Ecart::LieuDeDemarrage);
         if m.starts_with('-') {
@@ -744,7 +772,10 @@ impl Systeme<'_> {
         } else {
             match self.courant {
                 None => format!("~/{m}"),
-                Some(d) if d.contains(CODE_INCONNU) => return lieu,
+                Some(d) if d.contains(CODE_INCONNU) => {
+                    let _ = self.relatif.set(m.to_string());
+                    return Some(Ecart::DossierDeDepart);
+                }
                 Some(d) => format!("{}/{m}", d.trim_end_matches('/')),
             }
         };

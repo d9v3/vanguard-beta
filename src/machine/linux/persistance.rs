@@ -993,6 +993,7 @@ pub(crate) fn complement_change_le_lancement(texte: &str, maison: &Path) -> Vec<
         maisons: &maisons,
         courant: None,
         noms_des_lieux: std::cell::OnceCell::new(),
+        relatif: std::cell::OnceCell::new(),
     };
     let codes = Codes {
         utilisateur: true,
@@ -5908,6 +5909,7 @@ fn juger_demarrage(demarrage: &[std::path::PathBuf], h: &Path, t: &mut Lancement
                         maisons: &maisons,
                         courant: codes.courant.as_deref(),
                         noms_des_lieux: std::cell::OnceCell::new(),
+                        relatif: std::cell::OnceCell::new(),
                     };
                     if let Err(e) = permise::directive(&s, codes, section.as_deref(), &logique.texte) {
                         lever(
@@ -6465,8 +6467,8 @@ fn juger_lancement(
     // La liste permise (vérification 3) : là où le compte écrit, le silence n'est gardé que pour une ligne dont la
     // forme entière est reconnue sûre ; le découpage d'avant ne sert plus qu'à dire une raison plus précise.
     let mut notes = Vec::new();
-    let (raison, hors_liste) = match raison {
-        Some(r) => (Some(r), false),
+    let (raison, hors_liste): (Option<std::borrow::Cow<'static, str>>, bool) = match raison {
+        Some(r) => (Some(r.into()), false),
         None if racine_seul => (None, false),
         None => (hors_de_la_liste(&t.r, commande, lecteur, &maisons, &mut notes), true),
     };
@@ -6485,15 +6487,15 @@ fn juger_lancement(
     };
     // Ce qui ne se lit pas sûrement ne se déclare pas normal : ce qu'un choix lierait ne dirait pas ce qui se lance.
     let ambigue =
-        ambigue || hors_liste || [shell_non_lu(), non_resolu_systemd(), variable_inconnue()].contains(&raison);
-    lever(t, f, lu, n, ligne, commande, ambigue, sorte, retirable, raison);
+        ambigue || hors_liste || [shell_non_lu(), non_resolu_systemd(), variable_inconnue()].contains(&&*raison);
+    lever(t, f, lu, n, ligne, commande, ambigue, sorte, retirable, &raison);
     // La sauvegarde de Vanguard reconnue à sa forme exacte, mais levée pour ce qui la change (~/.popt, complément,
     // variables, programme du compte) : le refus dit cela et comment la remettre, pas « ligne ambiguë » (point 10).
     if matches!(lecteur, Lecteur::Systemd(c) if c.sauvegarde.is_some())
         && let Some(dernier) = t.temoins.last_mut()
     {
         let ou = crate::ui::affichable(&court(f, &t.r.maison));
-        *dernier = Err(refus_de_la_sauvegarde(&ou, n.saturating_add(1), raison));
+        *dernier = Err(refus_de_la_sauvegarde(&ou, n.saturating_add(1), &raison));
     }
     true
 }
@@ -6520,7 +6522,7 @@ fn hors_de_la_liste(
     lecteur: &Lecteur<'_>,
     maisons: &[&str],
     notes: &mut Vec<permise::Ecart>,
-) -> Option<&'static str> {
+) -> Option<std::borrow::Cow<'static, str>> {
     let lue = r.maison.to_string_lossy();
     let s = permise::Systeme {
         racine: &r.racine,
@@ -6532,6 +6534,7 @@ fn hors_de_la_liste(
             _ => None,
         },
         noms_des_lieux: std::cell::OnceCell::new(),
+        relatif: std::cell::OnceCell::new(),
     };
     let ecart = match lecteur {
         Lecteur::Texte => return None,
@@ -6539,14 +6542,20 @@ fn hors_de_la_liste(
         Lecteur::Bureau(_) => permise::exec_systemd(&s, &sans_codes_de_bureau(commande), None),
         Lecteur::Hypr(variables) if commande.contains('$') => match resoudre_hypr(commande, variables) {
             Some(formes) => formes.iter().try_for_each(|c| permise::ligne_shell(&s, c)),
-            None => return Some(variable_inconnue()),
+            None => return Some(variable_inconnue().into()),
         },
         Lecteur::Brut | Lecteur::Hypr(_) => permise::ligne_shell(&s, commande),
     };
     if permise::filet(commande, matches!(lecteur, Lecteur::Systemd(_)), maisons) {
-        return Some(permise::Ecart::Filet.raison());
+        return Some(permise::Ecart::Filet.raison().into());
     }
-    ecart.err().map(permise::Ecart::raison)
+    // B-2 (revérification 7) : un dossier de départ inconnu se dit avec sa clé et l'argument relatif.
+    let cle = if matches!(lecteur, Lecteur::Bureau(_)) {
+        "Path="
+    } else {
+        "WorkingDirectory="
+    };
+    ecart.err().map(|e| s.raison_dite(e, cle))
 }
 
 /// La raison d'une ligne de Hyprland dont une variable n'a pas de valeur connue.
@@ -11696,10 +11705,15 @@ mod tests {
                 Prep::PhysiqueLieuAbsolu => "~/.bashrc…) : un lien absolu y mène hors de l'arborescence examinée",
                 _ => "nomme un lieu de démarrage du compte",
             };
+            // B-2 (revérification 7) : depuis un dossier de départ inconnu, la raison le dit, avec l'argument
+            // relatif (`dossier_de_depart_inconnu_se_dit` le juge cas par cas).
             let juste = if *sain {
                 leve.is_empty()
             } else {
-                leve.iter().any(|l| l.contains(attendu))
+                leve.iter().any(|l| {
+                    l.contains(attendu)
+                        || (attendu == "nomme un lieu de démarrage du compte" && l.contains("dossier de départ ("))
+                })
             };
             if !juste {
                 faux.push((*exec, *courant, leve));
@@ -11720,7 +11734,8 @@ mod tests {
         const EXEC: &str = "Exec=/usr/bin/cp /home/alice/Documents/x home/alice/.config/autostart/y.desktop\n";
         const AGENT: &str = "Exec=/tmp/.x/agent\n";
         // (nom, contenu, levé, texte attendu)
-        let lieu = "nomme un lieu de démarrage du compte";
+        let lieu =
+            "dossier de départ (Path=) non vérifié : l'argument relatif « home/alice/.config/autostart/y.desktop »";
         let cas: Vec<(&str, String, bool, &str)> = vec![
             ("D0", format!("{TETE}Path=/\n{EXEC}"), true, lieu),
             ("D1 deux Path=", format!("{TETE}Path=/\nPath=\n{EXEC}"), true, lieu),
@@ -11813,6 +11828,129 @@ mod tests {
             }
         }
         assert!(faux.is_empty(), "{faux:#?}");
+    }
+
+    /// B-2 (revérification 7) : un argument relatif depuis un dossier de départ inconnu (Path= d'une entrée de bureau,
+    /// WorkingDirectory= avec « - » d'une unité) se lève en Élevé avec la vraie raison, sa clé et l'argument ; pas
+    /// « nomme un lieu de démarrage », qu'il ne nomme pas. Depuis un dossier connu, un relatif vers un lieu garde
+    /// cette raison-là ; un argument absolu ou sans chemin reste muet.
+    #[test]
+    fn dossier_de_depart_inconnu_se_dit() {
+        use std::os::unix::fs::PermissionsExt as _;
+        type Attendu<'a> = Option<(&'a [&'a str], &'a str)>;
+        const BUREAU: &str = ".config/autostart/essai.desktop";
+        const UNITE: &str = ".config/systemd/user/essai.service";
+        let bureau = |path: &str, exec: &str| format!("[Desktop Entry]\nType=Application\nName=essai\n{path}{exec}\n");
+        let unite = |courant: &str, exec: &str| format!("[Service]\nType=oneshot\n{courant}ExecStart={exec}\n");
+        // (nom, fichier, contenu, attendu : None muet, Some(textes que le message porte, texte qu'il ne porte pas))
+        let depart_bureau: &[&str] = &["dossier de départ (Path=) non vérifié", "« reglages.ini »"];
+        let cas: Vec<(&str, &str, String, Attendu<'_>)> = vec![
+            (
+                "N4",
+                BUREAU,
+                bureau("Path=/opt/app\n", "Exec=/opt/app/lance --config=reglages.ini"),
+                Some((depart_bureau, "nomme un lieu")),
+            ),
+            (
+                "N5",
+                BUREAU,
+                bureau("Path=/opt/app\n", "Exec=/opt/app/lance reglages.ini"),
+                Some((depart_bureau, "nomme un lieu")),
+            ),
+            (
+                "unité, WorkingDirectory=-",
+                UNITE,
+                unite("WorkingDirectory=-/opt/app\n", "/usr/bin/cp /opt/app/a b.txt"),
+                Some((
+                    &["dossier de départ (WorkingDirectory=) non vérifié", "« b.txt »"],
+                    "nomme un lieu",
+                )),
+            ),
+            (
+                "unité, dossier connu",
+                UNITE,
+                unite("", "/usr/bin/cp /opt/app/a .config/autostart/x.desktop"),
+                Some((&["nomme un lieu de démarrage du compte"], "dossier de départ")),
+            ),
+            (
+                "N1 absolu",
+                BUREAU,
+                bureau("Path=/opt/app\n", "Exec=/opt/app/lance /opt/app/a"),
+                None,
+            ),
+            (
+                "N3 sans argument",
+                BUREAU,
+                bureau("Path=/opt/app\n", "Exec=/opt/app/lance -v"),
+                None,
+            ),
+            (
+                "sans Path=",
+                BUREAU,
+                bureau("", "Exec=/opt/app/lance reglages.ini"),
+                None,
+            ),
+        ];
+        let mut faux = Vec::new();
+        for (i, (nom, fichier, contenu, attendu)) in cas.iter().enumerate() {
+            let m = Maison::nouvelle(&format!("b2-depart-{i}"));
+            for programme in ["usr/bin/cp", "opt/app/lance"] {
+                let f = m.racine.join(programme);
+                std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+                std::fs::write(&f, "#!/bin/sh\n").unwrap();
+                std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            m.ecrire(fichier, contenu);
+            let leves: Vec<(Option<Niveau>, String)> = persistance_dans(&m.racine, &m.chemin(""), |_| None, None, None)
+                .into_iter()
+                .filter(|c| c.probleme.is_some())
+                .map(|c| (c.probleme, c.message))
+                .collect();
+            let juste = match attendu {
+                Some((porte, pas)) => leves.iter().any(|(niveau, l)| {
+                    *niveau == Some(Niveau::Eleve) && porte.iter().all(|x| l.contains(x)) && !l.contains(pas)
+                }),
+                None => leves.is_empty(),
+            };
+            if !juste {
+                faux.push((*nom, leves));
+            }
+        }
+        assert!(faux.is_empty(), "{faux:#?}");
+    }
+
+    /// B-2 : la raison d'un dossier de départ inconnu, FR et EN, sans l'argument (aucun relatif gardé) et avec lui.
+    #[test]
+    fn la_raison_du_dossier_de_depart_se_dit() {
+        let s = permise::Systeme {
+            racine: Path::new("/"),
+            maison: "/home/alice",
+            maisons: &[],
+            courant: None,
+            noms_des_lieux: std::cell::OnceCell::new(),
+            relatif: std::cell::OnceCell::new(),
+        };
+        let e = permise::Ecart::DossierDeDepart;
+        assert!(s.raison_dite(e, "Path=").contains("(WorkingDirectory= ou Path=)"));
+        assert_eq!(
+            s.raison_dite(permise::Ecart::Chemin, "Path="),
+            permise::Ecart::Chemin.raison()
+        );
+        let _ = s.relatif.set("a\u{1b}[31m".to_string() + &"x".repeat(200));
+        let dite = s.raison_dite(e, "Path=");
+        assert!(
+            dite.starts_with("dossier de départ (Path=) non vérifié : l'argument relatif « a"),
+            "{dite}"
+        );
+        assert!(!dite.contains('\u{1b}') && !dite.contains(&"x".repeat(80)), "{dite}");
+        crate::langue::en_anglais(|| {
+            let dite = s.raison_dite(e, "WorkingDirectory=");
+            assert!(
+                dite.starts_with("working folder (WorkingDirectory=) not verified: the relative argument"),
+                "{dite}"
+            );
+            assert!(s.raison_dite(e, "x").contains("not verified, so not kept quiet"));
+        });
     }
 
     /// B-1 (revérification 7) : une entrée de démarrage du compte sous une forme que systemd lit autrement qu'un autre
@@ -14969,6 +15107,7 @@ mod tests {
             maisons: &maisons,
             courant: None,
             noms_des_lieux: std::cell::OnceCell::new(),
+            relatif: std::cell::OnceCell::new(),
         };
         // Chaque cas des rapports, levé par les deux mécanismes à la fois ; le joker « t?p » seul échappe au filet
         // (le chemin n'est pas écrit) : la liste permise le refuse.
