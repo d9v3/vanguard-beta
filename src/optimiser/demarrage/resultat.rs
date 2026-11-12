@@ -106,6 +106,16 @@ pub(super) fn resultat(entrees: &[Entree], manques: Vec<String>, lu: bool, debut
     r
 }
 
+/// Les dossiers où Vanguard n'écrit pas (`avis_d_ecriture`), chacun un constat pour information après les programmes :
+/// le dossier, ses droits et la commande qui le remet comme la garde l'accepte (relecture 0.95, H-1 suite). Le texte
+/// vient de la garde, déjà sous la forme « ~/… ».
+pub(super) fn ajouter_avis(r: &mut Resultat, avis: &[String]) {
+    for a in avis {
+        let c = alerte(CAT, Niveau::Info, sans_maison(a));
+        r.constats.push(crate::modele::resultat::ConstatEcrit::from(&c));
+    }
+}
+
 /// L'objet d'un programme, tel que le constat l'écrit : « demarrage:<identité échappée> », le chemin d'une entrée
 /// d'autostart montré « ~/… » sous le dossier personnel : son chemin absolu dit le nom du compte, et part au rapport,
 /// au journal et vers la fenêtre (T-4, comme 27ae2490 du sous-lot B). L'empreinte, elle, reste celle de l'identité

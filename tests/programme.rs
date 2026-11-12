@@ -3849,9 +3849,13 @@ mod demarrage_sous_attaque {
             );
         }
         assert!(gestes(&json).is_empty(), "un geste proposé : {brut}");
+        // Relecture 0.95, H-1 suite : le dossier est nommé avec le remède exact, une fois pour ses deux entrées.
+        let remede = "chmod go-w ~/config/autostart";
+        assert_eq!(constats.iter().filter(|c| c.contains(remede)).count(), 1, "{brut}");
         let (_, issue, raison) = b.changer("--retirer", &e);
         assert_ne!(issue, "fait", "{raison}");
         assert!(raison.contains("modifiable par d'autres comptes"), "{issue} : {raison}");
+        assert!(raison.contains(remede), "{raison}");
         assert_eq!(std::fs::read_to_string(&radio).unwrap(), texte);
 
         let lenteur = b.lancer(&["lenteur"]);

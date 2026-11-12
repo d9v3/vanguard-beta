@@ -155,13 +155,39 @@ fn juger_dossier(f: &File, ou: &str, pour: Pour) -> Result<(), Echec> {
     }
     let droits = m.mode() & 0o7777;
     if pour == Pour::Ecrire && droits & DROITS_REFUSES != 0 {
+        let remede = remede(ou, droits);
         return Err(refus(trf!(
             "{ou} est modifiable par d'autres comptes ou porte un bit spécial (droits {droits:o}) : Vanguard \
-             n'y touche pas",
-            "{ou} can be changed by other accounts or has a special bit (mode {droits:o}): Vanguard does not touch it"
+             n'y écrit pas. Pour qu'il le puisse, si c'est votre choix : {remede}",
+            "{ou} can be changed by other accounts or has a special bit (mode {droits:o}): Vanguard does not write \
+             there. For it to do so, if that is your choice: {remede}"
         )));
     }
     Ok(())
+}
+
+/// La commande exacte qui retire d'un dossier aux droits `droits` ce que la garde refuse (relecture 0.95, H-1 suite) :
+/// l'écriture du groupe et des autres, setuid et setgid, le bit collant. En lettres : `chmod 755` garderait le setgid
+/// d'un dossier (GNU chmod), `chmod g-s` le retire. `ou` est la forme montrée (« ~/… »), le reste du chemin protégé
+/// pour le shell quand il le faut.
+fn remede(ou: &str, droits: u32) -> String {
+    let mut quoi = Vec::new();
+    if droits & 0o022 != 0 {
+        quoi.push("go-w");
+    }
+    if droits & 0o6000 != 0 {
+        quoi.push("ug-s");
+    }
+    if droits & 0o1000 != 0 {
+        quoi.push("a-t");
+    }
+    let sur = |c: char| c.is_ascii_alphanumeric() || "._/-+@%:,=".contains(c);
+    let chemin = match ou.strip_prefix("~/") {
+        Some(reste) if !reste.chars().all(sur) => format!("~/'{}'", reste.replace('\'', r"'\''")),
+        _ if ou.chars().all(|c| c == '~' || sur(c)) => ou.to_string(),
+        _ => format!("'{}'", ou.replace('\'', r"'\''")),
+    };
+    format!("chmod {} {chemin}", quoi.join(","))
 }
 
 /// Ouvre les dossiers du chemin, du dossier personnel jusqu'à celui du fichier. `creer` : un dossier manquant est
@@ -553,6 +579,20 @@ mod tests {
         let e = sans_le_neuf(false, la.as_fd(), &vide, refus("~/vide refusé".into())).to_string();
         assert!(d.join("vide").is_dir(), "{e}");
         assert_eq!(e, "~/vide refusé");
+    }
+
+    /// Relecture 0.95, H-1 suite : le remède retire exactement ce que la garde refuse, sur le dossier nommé, protégé
+    /// pour le shell.
+    #[test]
+    fn le_remede_est_exact() {
+        assert_eq!(remede("~/.config/autostart", 0o775), "chmod go-w ~/.config/autostart");
+        assert_eq!(remede("~/.config", 0o2755), "chmod ug-s ~/.config");
+        assert_eq!(remede("~/.config", 0o3777), "chmod go-w,ug-s,a-t ~/.config");
+        assert_eq!(remede("~", 0o4700), "chmod ug-s ~");
+        assert_eq!(
+            remede("~/mes réglages/l'x", 0o757),
+            "chmod go-w ~/'mes réglages/l'\\''x'"
+        );
     }
 
     #[test]

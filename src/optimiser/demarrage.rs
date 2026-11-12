@@ -32,8 +32,9 @@ pub struct Programme {
     /// Ce qui le retire, et le remet.
     pub changement: systeme::Changement,
     /// Pourquoi Vanguard n'y écrit pas, s'il ne le peut pas (un dossier du chemin modifiable par d'autres comptes) :
-    /// lu et montré, jamais proposé (relecture 0.95, G-1).
-    pub ecriture_refusee: Option<&'static str>,
+    /// lu et montré, jamais proposé (relecture 0.95, G-1). La phrase entière de la garde, qui nomme le dossier et le
+    /// remède (relecture 0.95, H-1 suite) : dite une fois par dossier (`avis_d_ecriture`).
+    pub ecriture_refusee: Option<String>,
 }
 
 /// Le réglage qui retire ce programme du démarrage. Le nom, écrit par qui a posé l'entrée, est montré rendu
@@ -211,8 +212,8 @@ pub(crate) enum Garde {
 /// Sous Linux : le programme lancé (premier mot de la commande) et le paquet qui le fournit. Sous Windows :
 /// `a_garder`, comme avant.
 fn classer(p: &Programme) -> Garde {
-    if let Some(raison) = p.ecriture_refusee {
-        return Garde::Garder(raison);
+    if p.ecriture_refusee.is_some() {
+        return Garde::Garder(ecriture_refusee());
     }
     #[cfg(target_os = "linux")]
     {
@@ -382,6 +383,29 @@ fn baisse_ok(noms: &[&str]) -> bool {
 #[cfg(not(target_os = "linux"))]
 fn baisse_ok(_noms: &[&str]) -> bool {
     false
+}
+
+/// La raison courte, sur la ligne d'un programme où Vanguard n'écrit pas ; le dossier et le remède sont dits une fois
+/// à part (`avis_d_ecriture`).
+fn ecriture_refusee() -> &'static str {
+    tr!(
+        "dossier modifiable par d'autres comptes ou à bit spécial : Vanguard n'y écrit pas (voir la note sur le dossier)",
+        "folder that other accounts can change or with a special bit: Vanguard does not write there (see the note about \
+         the folder)"
+    )
+}
+
+/// Les raisons des dossiers où Vanguard n'écrit pas, chacune une fois (plusieurs entrées partagent un dossier),
+/// dans l'ordre de la liste : chacune nomme le dossier et la commande qui le remet comme la garde l'accepte
+/// (relecture 0.95, H-1 suite).
+fn avis_d_ecriture(programmes: &[Programme]) -> Vec<String> {
+    let mut avis: Vec<String> = Vec::new();
+    for raison in programmes.iter().filter_map(|p| p.ecriture_refusee.as_ref()) {
+        if !avis.contains(raison) {
+            avis.push(raison.clone());
+        }
+    }
+    avis
 }
 
 /// Ce qui n'a pas pu être lu (`releve_demarrage`), tel que la liste du terminal le dit : chaque manque nettoyé pour
@@ -628,7 +652,7 @@ impl SorteDeChangement {
 }
 
 /// Pourquoi rien n'est changé.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Refus {
     /// Pas 32 chiffres hexadécimaux minuscules.
     MalFormee,
@@ -647,6 +671,9 @@ enum Refus {
     PasLue,
     /// Il protège ou fait marcher l'ordinateur.
     AGarder(&'static str),
+    /// Un dossier de son chemin est modifiable par d'autres comptes ou porte un bit spécial : la phrase de la garde,
+    /// qui nomme le dossier et le remède (relecture 0.95, H-1 suite).
+    Ecriture(String),
     /// Un pare-feu : le retirer serait une baisse, qui ne se choisit que dans la liste à cocher, avec sa question.
     PareFeu,
     /// Les notes de Vanguard sont illisibles ou changées hors de lui : rien ne s'en remet, et rien n'est retiré (la
@@ -695,6 +722,7 @@ impl Refus {
             )
             .to_string(),
             Refus::AGarder(raison) => trf!("à garder ({})", "to keep ({})", raison),
+            Refus::Ecriture(raison) => raison,
             Refus::PareFeu => tr!(
                 "pare-feu : le retirer baisserait la protection (seulement par la liste « vanguard demarrage », avec sa question)",
                 "firewall: removing it would lower protection (only through the “vanguard startup” list, with its question)"
@@ -764,6 +792,9 @@ fn a_retirer_nomme(
     let garde = if p.actif { classer(&p) } else { Garde::Ordinaire };
     let issue = match (p.actif, garde) {
         (false, _) => Err(Refus::NeSeLancePas),
+        (true, Garde::Garder(_)) if p.ecriture_refusee.is_some() => {
+            Err(Refus::Ecriture(p.ecriture_refusee.clone().unwrap_or_default()))
+        }
         (true, Garde::Garder(raison)) => Err(Refus::AGarder(raison)),
         (true, Garde::PareFeu) => Err(Refus::PareFeu),
         (true, Garde::Ordinaire) if !p.changement.cible_relisible() => Err(Refus::TropGrosse),
@@ -823,7 +854,7 @@ pub fn changer(sorte: SorteDeChangement, empreinte: &str, json: bool) -> i32 {
     let (code, mot, raison) = match &issue {
         Issue::Fait => (0, "fait", String::new()),
         Issue::Refuse(Refus::MalFormee) => (2, "refuse", Refus::MalFormee.raison()),
-        Issue::Refuse(r) => (1, "refuse", r.raison()),
+        Issue::Refuse(r) => (1, "refuse", r.clone().raison()),
         Issue::Echec => (1, "echec", raison_d_echec(systeme::dernier_refus())),
     };
     noter_au_journal(sorte, empreinte, nom.as_deref(), &issue, &raison);
@@ -1037,6 +1068,7 @@ pub fn json() {
         Historique::default()
     });
     manques.extend(notes_perdues(&h));
+    let avis = avis_d_ecriture(&programmes);
     let l = lignes(programmes, &h);
     let entrees: Vec<resultat::Entree> = l
         .iter()
@@ -1053,7 +1085,8 @@ pub fn json() {
             },
         })
         .collect();
-    let r = resultat::resultat(&entrees, manques, lu, debut);
+    let mut r = resultat::resultat(&entrees, manques, lu, debut);
+    resultat::ajouter_avis(&mut r, &avis);
     crate::modele::resultat::verser(&r);
     println!("{}", crate::modele::resultat::json(&r));
 }
@@ -1064,8 +1097,10 @@ pub fn menu() {
     let h = charger();
     let (programmes, mut manques, _) = systeme::releve_demarrage();
     manques.extend(notes_perdues(&h));
+    // Les dossiers où Vanguard n'écrit pas, avec leur remède : dits au-dessus de la liste, comme ce qui manque.
+    let avis = avis_d_ecriture(&programmes);
     let l = lignes(programmes, &h);
-    let pas_lus = lignes_des_manques(&manques);
+    let pas_lus = lignes_des_manques(&avis.into_iter().chain(manques).collect::<Vec<_>>());
     if l.is_empty() {
         titre(tr!("Programmes au démarrage", "Startup programs"));
         // Quelque chose n'a pas pu être lu : jamais « aucun programme » (T-1).

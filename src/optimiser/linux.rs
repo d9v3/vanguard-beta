@@ -1912,16 +1912,12 @@ fn programme_autostart(chemin: PathBuf, texte: &str, bureau: &str, vu: Option<St
     }
 }
 
-/// La raison montrée d'une entrée lue où Vanguard n'écrit pas : la garde d'écriture (`sous_maison::juger`) la refuse
-/// alors que celle de lecture l'a laissée passer, donc pour les droits d'un dossier du chemin, que le groupe ou les
-/// autres peuvent modifier ou qui porte un bit spécial (relecture 0.95, G-1).
-fn ecriture_refusee(chemin: &Path) -> Option<&'static str> {
-    sous_maison::juger(chemin).err().map(|_| {
-        tr!(
-            "dossier modifiable par d'autres comptes ou à bit spécial : Vanguard n'y écrit pas",
-            "folder that other accounts can change or with a special bit: Vanguard does not write there"
-        )
-    })
+/// La raison d'une entrée lue où Vanguard n'écrit pas : la garde d'écriture (`sous_maison::juger`) la refuse alors que
+/// celle de lecture l'a laissée passer, donc pour les droits d'un dossier du chemin, que le groupe ou les autres
+/// peuvent modifier ou qui porte un bit spécial (relecture 0.95, G-1). Sa phrase entière : le dossier, ses droits et
+/// le remède (H-1 suite).
+fn ecriture_refusee(chemin: &Path) -> Option<String> {
+    sous_maison::juger(chemin).err().map(|e| e.to_string())
 }
 
 pub fn apres(_touches: &[&Reglage]) {}
