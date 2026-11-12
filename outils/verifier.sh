@@ -485,7 +485,8 @@ workflows() {
 # empreintes sont relevées avant et comparées après : un changement fait échouer, jamais un vert qui a modifié le
 # verrou. Comparées par empreinte, pas par git diff : un Cargo.lock déjà changé à la main, pas commité, ne fait pas
 # échouer à tort. Et remis tels qu'avant l'étape (copie prise avant) : sinon le passage suivant, empreintes égales
-# avant et après, serait vert avec un verrou réécrit (relecture 0.95, V-10).
+# avant et après, serait vert avec un verrou réécrit (relecture 0.95, V-10). L'état d'après est gardé avant
+# (~/.cache/vanguard-dev/verrous-changes.<date>.*/, dit) : rien de ce qu'on y avait écrit n'est perdu (W-3).
 VERROUS=(Cargo.lock fenetre/Cargo.lock supply-chain fenetre/supply-chain)
 empreinte_verrous() {
   find "${VERROUS[@]}" -type f -print0 | sort -z | xargs -0 sha256sum
@@ -499,16 +500,26 @@ restaurer_verrous() { # copie (tar)
   done < <(find "${VERROUS[@]}" -type f -print0)
 }
 relectures() {
-  local avant code=0 copie=$TRAVAIL/verrous-avant.tar
+  local avant code=0 copie=$TRAVAIL/verrous-avant.tar garde=""
   avant=$(empreinte_verrous) && tar -cf "$copie" "${VERROUS[@]}" ||
     { echo "Cargo.lock ou supply-chain/ illisibles : rien n'est conclu"; return 1; }
   relectures_lancees || code=$?
   if [[ $(empreinte_verrous) != "$avant" ]]; then
     echo "✖ cargo vet a changé Cargo.lock, fenetre/Cargo.lock ou supply-chain/ : pas un vert"
-    if restaurer_verrous "$copie" && [[ $(empreinte_verrous) == "$avant" ]]; then
-      echo "  remis tels qu'avant l'étape"
+    # Un changement fait pendant l'étape par l'auteur (une autre fenêtre) passerait pour celui de cargo vet : l'état
+    # d'après est gardé, dans un dossier daté, avant toute remise ; pas gardé, rien n'est remis (relecture 0.95, W-3).
+    if garde=$(mktemp -d "$HOME/.cache/vanguard-dev/verrous-changes.$(date +%Y%m%d-%H%M%S).XXXX") &&
+      { find "${VERROUS[@]}" -type f -print0 2>/dev/null || true; } | tar --null -T - -cf "$garde/apres.tar" &&
+      cp "$copie" "$garde/avant.tar"; then
+      echo "  état d'après gardé : $garde/apres.tar (avant.tar : l'état remis ; tar -xf pour les revoir)"
+      if restaurer_verrous "$copie" && [[ $(empreinte_verrous) == "$avant" ]]; then
+        echo "  remis tels qu'avant l'étape"
+      else
+        echo "  pas pu les remettre tels qu'avant l'étape : git diff pour voir, git checkout pour revenir"
+      fi
     else
-      echo "  pas pu les remettre tels qu'avant l'étape : git diff pour voir, git checkout pour revenir"
+      echo "  état d'après pas gardé (${garde:-dossier daté non créé}) : rien n'est remis ; git diff pour voir, git"
+      echo "  checkout pour revenir"
     fi
     return 1
   fi

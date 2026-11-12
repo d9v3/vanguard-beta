@@ -21,8 +21,9 @@
 #      c'est dit) ; chacun avec son système (--attendu linux ou windows) ; un refus, ou le programme absent, est un
 #      échec.
 #   8. Les relectures de cargo vet : un Cargo.lock ou un supply-chain/ changé pendant l'étape la fait échouer, et
-#      il est remis tel qu'avant (le passage suivant n'est pas vert sur un verrou réécrit) (la garde lue dans
-#      verifier.sh, l'étape remplacée par une fausse, dépôt jetable).
+#      il est remis tel qu'avant (le passage suivant n'est pas vert sur un verrou réécrit), après que l'état d'après
+#      a été gardé dans un dossier daté et dit ; pas gardé, rien n'est remis (la garde lue dans verifier.sh, l'étape
+#      remplacée par une fausse, dépôt jetable).
 #   9. Les dépendances (cargo deny) hors ligne : sautée avec sa raison, jamais un vert ; un refus reste un échec.
 #  10. Le second avis (cargo audit, failles-programmes.sh --depot) : chaque Cargo.lock suivi par git est lu, les
 #      crates à part sans les exceptions de Vanguard ; une faille dans l'une fait échouer (faux cargo-audit).
@@ -244,13 +245,15 @@ verrous() {
   printf 'relu\n' >"$faux/supply-chain/audits.toml"
   printf 'relu\n' >"$faux/fenetre/supply-chain/audits.toml"
   rm -f "$faux/supply-chain/imports.lock" "$faux/fenetre/supply-chain/imports.lock"
-  SORTIE=$(cd "$faux" && TRAVAIL=$faux_travail bash -c "relectures_lancees() { $1; }; $garde
+  SORTIE=$(cd "$faux" && HOME=$faux_maison TRAVAIL=$faux_travail bash -c "relectures_lancees() { $1; }; $garde
 relectures" 2>&1)
   CODE=$?
   # Remis tels qu'avant : le contenu d'origine, rien d'apparu.
   REMIS=$(cd "$faux" && find . -type f | LC_ALL=C sort | xargs cat | tr '\n' ' ')
 }
 faux_travail=$(mktemp -d "$HOME/.cache/vanguard-dev/essai-verrous-travail.XXXX")
+faux_maison=$faux_travail/maison
+mkdir -p "$faux_maison/.cache/vanguard-dev"
 verrous 'return 0' && verrous_vert=$CODE
 verrous 'return 77' && verrous_saute=$CODE
 intact='verrou verrou relu relu '
@@ -262,6 +265,27 @@ verrous 'echo neuf >>Cargo.lock; return 0'
   verrous 'echo neuf >supply-chain/audits.toml; return 0' && [[ $CODE == 1 && $REMIS == "$intact" ]] &&
   ok "relectures : Cargo.lock ou supply-chain/ changés par cargo vet font échouer, puis sont remis tels qu'avant" ||
   ko "relectures : un verrou changé passe ou reste changé (vert $verrous_vert, sautée $verrous_saute, changé $CODE, contenu « $REMIS ») : $(tail -n 1 <<<"$SORTIE")"
+# L'état d'après est gardé avant la remise, dans un dossier daté de ~/.cache/vanguard-dev, et dit (W-3) : un
+# changement fait pendant l'étape par une autre fenêtre (ici, une ligne et un fichier neuf) n'est pas perdu. Le
+# dossier pas créable : rien n'est remis, et c'est dit.
+rm -rf "$faux_maison/.cache/vanguard-dev"/verrous-changes.*
+verrous 'echo "ligne de l auteur" >>supply-chain/audits.toml; echo neuf >supply-chain/autre.toml; return 0'
+gardes=("$faux_maison/.cache/vanguard-dev"/verrous-changes.*/)
+garde_dit=""
+[[ ${#gardes[@]} == 1 && -d ${gardes[0]} ]] && grep -qF "état d'après gardé : ${gardes[0]%/}/apres.tar" <<<"$SORTIE" &&
+  garde_dit=1
+apres=$(tar -xOf "${gardes[0]}apres.tar" supply-chain/audits.toml supply-chain/autre.toml 2>/dev/null | tr '\n' ' ')
+avant_garde=$(tar -xOf "${gardes[0]}avant.tar" supply-chain/audits.toml 2>/dev/null)
+code_garde=$CODE remis_garde=$REMIS
+rm -rf "$faux_maison/.cache/vanguard-dev"
+: >"$faux_maison/.cache/vanguard-dev"
+verrous 'echo neuf >>Cargo.lock; return 0'
+if [[ -n $garde_dit && $apres == "relu ligne de l auteur neuf " && $avant_garde == relu && $code_garde == 1 &&
+  $remis_garde == "$intact" && $CODE == 1 && $REMIS == *neuf* ]] && grep -q "rien n'est remis" <<<"$SORTIE"; then
+  ok "relectures : l'état d'après gardé dans un dossier daté et dit, puis remis ; pas gardé, rien de remis"
+else
+  ko "relectures : état d'après (dit ${garde_dit:-non}, gardé « $apres », avant « $avant_garde », code $code_garde ; sans dossier : code $CODE, « $REMIS ») : $(tail -n 2 <<<"$SORTIE")"
+fi
 rm -rf "$faux" "$faux_travail"
 
 # cargo deny hors ligne (VANGUARD_HORS_LIGNE, ou sans réseau) : une base RustSec peut-être en retard, ou aucune, n'est
