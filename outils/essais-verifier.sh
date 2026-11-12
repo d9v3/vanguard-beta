@@ -19,6 +19,9 @@
 #      faux) : jamais sautée ; les programmes de publication vérifiés seulement s'ils sont ceux de ce commit (sinon
 #      c'est dit) ; chacun avec son système (--attendu linux ou windows) ; un refus, ou le programme absent, est un
 #      échec.
+#   8. Les relectures de cargo vet : un Cargo.lock ou un supply-chain/ changé pendant l'étape la fait échouer (la
+#      garde lue dans verifier.sh, l'étape remplacée par une fausse, dépôt jetable).
+#   9. Les dépendances (cargo deny) hors ligne : sautée avec sa raison, jamais un vert ; un refus reste un échec.
 # Chaque essai ne lance que des étapes de quelques secondes, sans Internet ni compilation.
 # Lancé par outils/verifier.sh.
 #   outils/essais-verifier.sh
@@ -35,14 +38,14 @@ lancer() {
 }
 
 lancer env VANGUARD_WINE=/inexistant/wine bash outils/verifier.sh --seulement tests-windows
-if ((CODE == 1)) && grep -q '✖ tests Windows.*sautée, rien vérifié : Wine absent' <<<"$SORTIE"; then
+if ((CODE == 1)) && grep -q '✖ tests Windows.*sautée, pas un vert : Wine absent' <<<"$SORTIE"; then
   ok "étape demandée et sautée : un échec, avec sa raison"
 else
   ko "étape demandée et sautée (code $CODE) : $(tail -n 2 <<<"$SORTIE")"
 fi
 
 lancer env VANGUARD_WINE=/inexistant/wine bash outils/verifier.sh --seulement regression-detection-windows
-if ((CODE == 1)) && grep -q '✖ régression de détection Windows.*sautée, rien vérifié : Wine absent' <<<"$SORTIE"; then
+if ((CODE == 1)) && grep -q '✖ régression de détection Windows.*sautée, pas un vert : Wine absent' <<<"$SORTIE"; then
   ok "corpus de détection demandé sous Wine, Wine absent : un échec, avec sa raison"
 else
   ko "corpus de détection demandé sous Wine, Wine absent (code $CODE) : $(tail -n 2 <<<"$SORTIE")"
@@ -206,7 +209,7 @@ grep -q '{ etape durcissement durcissement || true; } && etape regression-detect
 
 if [[ $(cargo vet --version 2>/dev/null) == "cargo-vet 0.10.3" ]]; then
   lancer env VANGUARD_HORS_LIGNE=1 bash outils/verifier.sh --seulement relectures
-  if ((CODE == 1)) && grep -q '✖ dépendances tracées.*sautée, rien vérifié : relectures importées pas confrontées' <<<"$SORTIE"; then
+  if ((CODE == 1)) && grep -q '✖ dépendances tracées.*sautée, pas un vert : relectures importées pas confrontées' <<<"$SORTIE"; then
     ok "relectures de cargo vet hors ligne : sautées et dites, pas un vert"
   else
     ko "relectures de cargo vet hors ligne (code $CODE) : $(tail -n 2 <<<"$SORTIE")"
@@ -214,6 +217,58 @@ if [[ $(cargo vet --version 2>/dev/null) == "cargo-vet 0.10.3" ]]; then
 else
   echo "  (sauté : cargo-vet 0.10.3 absent, relectures hors ligne pas essayées)"
 fi
+
+# Les relectures de cargo vet (--store-path ne prend pas --locked) : un Cargo.lock ou un supply-chain/ changé
+# pendant l'étape la fait échouer, même verte ; inchangés, son code passe tel quel (vert, sautée ou échec). La garde
+# lue dans verifier.sh, l'étape elle-même remplacée par une fausse, dans un dépôt jetable.
+faux=$(mktemp -d "$HOME/.cache/vanguard-dev/essai-verrous.XXXX")
+mkdir -p "$faux/supply-chain" "$faux/fenetre/supply-chain"
+garde=$(awk '/^empreinte_verrous\(\) \{/,/^\}/; /^relectures\(\) \{/,/^\}/' outils/verifier.sh)
+verrous() {
+  printf 'verrou\n' >"$faux/Cargo.lock"
+  printf 'verrou\n' >"$faux/fenetre/Cargo.lock"
+  printf 'relu\n' >"$faux/supply-chain/audits.toml"
+  printf 'relu\n' >"$faux/fenetre/supply-chain/audits.toml"
+  SORTIE=$(cd "$faux" && bash -c "relectures_lancees() { $1; }; $garde
+relectures" 2>&1)
+  CODE=$?
+}
+verrous 'return 0' && verrous_vert=$CODE
+verrous 'return 77' && verrous_saute=$CODE
+verrous 'echo neuf >>Cargo.lock; return 0'
+[[ -n $garde && $verrous_vert == 0 && $verrous_saute == 77 && $CODE == 1 ]] && grep -q 'cargo vet a changé' <<<"$SORTIE" &&
+  verrous 'echo neuf >fenetre/supply-chain/imports.lock; return 0' && [[ $CODE == 1 ]] &&
+  verrous 'echo neuf >>fenetre/Cargo.lock; return 77' && [[ $CODE == 1 ]] &&
+  ok "relectures : Cargo.lock ou supply-chain/ changés par cargo vet font échouer, jamais un vert" ||
+  ko "relectures : un verrou changé passe (vert $verrous_vert, sautée $verrous_saute, changé $CODE) : $(tail -n 1 <<<"$SORTIE")"
+rm -rf "$faux"
+
+# cargo deny hors ligne (VANGUARD_HORS_LIGNE, ou sans réseau) : une base RustSec peut-être en retard, ou aucune, n'est
+# pas un vert ; l'étape se dit sautée, la raison en première ligne. Un refus reste un échec ; en ligne, vert. Lue
+# dans verifier.sh, cargo deny remplacé par un faux qui rend le code écrit dans « code ».
+faux=$(mktemp -d "$HOME/.cache/vanguard-dev/essai-deny.XXXX")
+printf '#!/bin/sh\n' >"$faux/cargo-deny" && chmod +x "$faux/cargo-deny"
+fonction=$(awk '/^dependances\(\) \{/,/^\}/' outils/verifier.sh)
+deny() {
+  echo "$1" >"$faux/code"
+  mkdir -p "$faux/cargo/advisory-dbs" && rm -rf "$faux/cargo/advisory-dbs/"*
+  [[ $3 == base ]] && mkdir "$faux/cargo/advisory-dbs/advisory-db-0"
+  SORTIE=$(PATH=$faux:$PATH CARGO_HOME=$faux/cargo SAUTEE=77 bash -c "internet() { return $2; }
+cargo() { [[ \$1 == deny ]] || return 9; echo \"\$*\" >>'$faux/appels'; return \$(cat '$faux/code'); }
+$fonction
+dependances" 2>&1)
+  CODE=$?
+}
+deny 0 0 base && deny_en_ligne=$CODE
+deny 0 1 base && deny_base=$CODE && raison_base=$(head -n1 <<<"$SORTIE")
+deny 0 1 aucune && deny_aucune=$CODE && raison_aucune=$(head -n1 <<<"$SORTIE")
+deny 1 1 base
+[[ -n $fonction && $deny_en_ligne == 0 && $deny_base == 77 && $deny_aucune == 77 && $CODE == 1 ]] &&
+  [[ $raison_base == "sans Internet : "* && $raison_aucune == "sans Internet ni base RustSec : "* ]] &&
+  grep -q -- '--offline' "$faux/appels" &&
+  ok "dépendances hors ligne : sautée avec sa raison, jamais un vert ; un refus reste un échec" ||
+  ko "dépendances hors ligne (en ligne $deny_en_ligne, base $deny_base, sans base $deny_aucune, refus $CODE) : $raison_base"
+rm -rf "$faux"
 
 ((ECHECS == 0)) || { echo "$ECHECS essai(s) en échec."; exit 1; }
 echo "verifier.sh : tout est juste."

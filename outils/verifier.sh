@@ -345,16 +345,18 @@ relais() {
   node --test --test-reporter=spec relais/essais/*.test.mjs
 }
 
-# Les dépendances selon deny.toml : failles connues (base RustSec), licences, provenance, doublons. Sans Internet, la
-# base du dernier téléchargement sert telle quelle ; sans aucune, seules les failles ne sont pas vérifiées, et c'est
-# dit. Sans cargo-deny, l'étape est sautée.
+# Les dépendances selon deny.toml : failles connues (base RustSec), licences, provenance, doublons. Sans Internet,
+# tout est vérifié quand même (la base du dernier téléchargement, ou sans base aucune les failles en moins), mais
+# l'étape se dit sautée, la raison en première ligne : une base pas à jour, ou absente, n'est pas un vert (un échec,
+# lui, reste un échec). Sans cargo-deny, l'étape est sautée.
 dependances() {
   command -v cargo-deny >/dev/null || { echo "cargo-deny absent (cargo install --locked cargo-deny)"; return "$SAUTEE"; }
-  local options=(--locked) verifications=() sortie code
+  local options=(--locked) verifications=() sortie code hors_ligne=""
   if ! internet; then
     options+=(--offline)
+    hors_ligne=1
     if compgen -G "${CARGO_HOME:-$HOME/.cargo}/advisory-dbs/advisory-db-*" >/dev/null; then
-      echo "sans Internet : base RustSec du dernier téléchargement"
+      echo "sans Internet : failles connues lues dans la base RustSec du dernier téléchargement, peut-être en retard"
     else
       echo "sans Internet ni base RustSec : failles connues non vérifiées"
       verifications=(bans licenses sources)
@@ -389,6 +391,7 @@ dependances() {
       split(substr($0, RSTART, RLENGTH), m, " "); print t " : " m[3] " " m[4]; t = ""
     }
     END { if (t != "") print t }' <<<"$sortie"
+  ((code == 0 && hors_ligne)) && return "$SAUTEE"
   return "$code"
 }
 
@@ -434,7 +437,24 @@ workflows() {
 # ou à Google, y passe pour vraie (relecture adverse du 30 oct. 2026). Avec Internet, la même vérification
 # recommence donc sur une copie de supply-chain/ dont les relectures importées sont retéléchargées de leurs
 # registres : une entrée qu'ils n'ont pas disparaît, et sa dépendance échoue.
+# cargo vet --store-path ne prend pas --locked : il pourrait réécrire Cargo.lock (ou supply-chain/) en douce. Leurs
+# empreintes sont relevées avant et comparées après : un changement fait échouer, jamais un vert qui a modifié le
+# verrou. Comparées par empreinte, pas par git diff : un Cargo.lock déjà changé à la main, pas commité, ne fait pas
+# échouer à tort.
+empreinte_verrous() {
+  find Cargo.lock fenetre/Cargo.lock supply-chain fenetre/supply-chain -type f -print0 | sort -z | xargs -0 sha256sum
+}
 relectures() {
+  local avant code=0
+  avant=$(empreinte_verrous) || { echo "Cargo.lock ou supply-chain/ illisibles : rien n'est conclu"; return 1; }
+  relectures_lancees || code=$?
+  if [[ $(empreinte_verrous) != "$avant" ]]; then
+    echo "✖ cargo vet a changé Cargo.lock, fenetre/Cargo.lock ou supply-chain/ (git diff pour voir) : pas un vert"
+    return 1
+  fi
+  return "$code"
+}
+relectures_lancees() {
   if ! command -v cargo-vet >/dev/null || [[ $(cargo vet --version) != "cargo-vet 0.10.3" ]]; then
     echo "cargo-vet 0.10.3 absent (cargo install --locked cargo-vet@0.10.3)"
     [[ $MODE == --ci ]] && return 1
@@ -637,13 +657,14 @@ mkdir -p "$HOME/.cache/vanguard-dev" && : >"$RESUME"
 ligne() {
   local nom=$1 libelle=$2 etat=absente duree quoi
   [[ -z $SEULEMENT || $SEULEMENT == *",$nom,"* ]] || return 0
-  # Une étape qui n'a pas tourné, ou qui s'est dite sautée, n'a rien vérifié : jamais un vert (juger_etape).
+  # Une étape qui n'a pas tourné, ou qui s'est dite sautée (rien vérifié, ou pas tout : dependances hors ligne), n'est
+  # jamais un vert (juger_etape).
   [[ -f $TRAVAIL/$nom.etat ]] && read -r etat duree <"$TRAVAIL/$nom.etat"
   if [[ $etat == ok ]]; then
     printf '  ✔ %-34s %4s s\n' "$libelle" "$duree" | tee -a "$RESUME"
   elif [[ $etat == absente || $etat == sautee ]]; then
     quoi="non lancé"
-    [[ $etat == absente ]] || quoi="sautée, rien vérifié : $(head -n1 "$TRAVAIL/$nom.log")"
+    [[ $etat == absente ]] || quoi="sautée, pas un vert : $(head -n1 "$TRAVAIL/$nom.log")"
     if [[ $(juger_etape "$etat" "$nom") == echec ]]; then
       ECHECS=$((ECHECS + 1))
       printf '  ✖ %-34s %s\n' "$libelle" "$quoi" | tee -a "$RESUME"
