@@ -295,6 +295,21 @@ fn unite_valide(t: &str) -> bool {
             .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || "@._:-".contains(c)))
 }
 
+/// Le nom et la commande d'une entrée .desktop, prêts à montrer (bornés, caractères de contrôle neutralisés).
+fn resume_entree(texte: &str) -> String {
+    let borne = |v: &str| -> String {
+        let v = crate::ui::affichable(v);
+        if v.chars().count() > 80 {
+            format!("{}…", v.chars().take(80).collect::<String>())
+        } else {
+            v
+        }
+    };
+    let nom = champ(texte, "Name").map_or_else(|| "?".to_string(), borne);
+    let exec = champ(texte, "Exec").map_or_else(|| "?".to_string(), borne);
+    format!("{nom} · {exec}")
+}
+
 /// La valeur d'une clé du groupe [Desktop Entry] d'un fichier .desktop.
 fn champ<'a>(texte: &'a str, cle: &str) -> Option<&'a str> {
     let mut dans_entree = false;
@@ -878,10 +893,11 @@ impl Changement {
             ));
             return Some(false);
         }
-        // Remise d'après une note : l'entrée d'aujourd'hui doit être absente, déjà remise, ou encore celle que le retrait
-        // a écrite. Réécrite depuis (même masquée, donc pas lancée), son contenu serait écrasé et gardé nulle part
-        // (relecture 0.94, m-1).
-        if cible.is_none() && vu.is_none() && !self.remise_sans_perte(v) {
+        // Une remise (ce qui s'écrit n'est pas la cible du changement), qu'elle vienne d'une note (`--remettre`, « Tout
+        // remettre ») ou de la liste à cocher refaite (cible et valeur vue posées) : l'entrée d'aujourd'hui doit être
+        // absente, déjà remise, ou encore celle que le retrait a écrite. Réécrite depuis (même masquée, donc pas
+        // lancée), son contenu serait écrasé et gardé nulle part (relecture 0.94, m-1 ; relecture 0.95, G-2).
+        if cible.as_deref() != v && !self.remise_sans_perte(v) {
             refuser_ici(tr!(
                 "l'entrée a été réécrite depuis que Vanguard l'a retirée : rien n'est remis par-dessus",
                 "the entry was rewritten since Vanguard removed it: nothing is put back over it"
@@ -1039,7 +1055,13 @@ impl Changement {
                                 "{f}: Hidden=true, no longer starts"
                             )
                         }
-                        Some(_) => trf!("{f} : remis comme avant", "{f}: put back as before"),
+                        // Relecture 0.95, G-2 : ce qui revient est le contenu noté, pas l'entrée d'aujourd'hui ; son
+                        // nom et sa commande sont montrés avant d'être écrits.
+                        Some(t) => trf!(
+                            "{f} : remis comme avant ({})",
+                            "{f}: put back as before ({})",
+                            resume_entree(t)
+                        ),
                         None => trf!(
                             "{f} : retiré, l'entrée du système revient",
                             "{f}: removed, the system entry comes back"
@@ -2757,6 +2779,43 @@ mod tests {
         let copie = Changement::demarrage_depuis(&format!("autostart|{}", q.display())).unwrap();
         assert_eq!(copie.ecrire_ici(Some("-")), Some(false));
         assert!(q.is_file());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Relecture 0.95, G-2 : la liste à cocher remet par le changement de la liste refaite (cible et valeur vue
+    /// posées), pas par celui rebâti de la note. Réécrite à la main depuis le retrait (encore masquée), l'entrée n'est
+    /// pas écrasée par ce chemin-là non plus ; telle que le retrait l'a laissée, elle se remet.
+    #[test]
+    fn la_liste_a_cocher_n_ecrase_pas_une_entree_reecrite() {
+        let base = dossier_jetable("reecrite-liste");
+        let compte = base.join("autostart");
+        std::fs::create_dir_all(&compte).unwrap();
+        let p = compte.join("lecteur.desktop");
+        let original = "[Desktop Entry]\nName=Lecteur\nExec=lecteur\n";
+        std::fs::write(&p, original).unwrap();
+        let listee = |nom: &str| {
+            let (liste, _) = autostart(&compte, &[], "");
+            liste.into_iter().find(|x| x.nom == nom).expect("listée").changement
+        };
+        let c = listee("Lecteur");
+        let note = c.lire();
+        assert_eq!(c.ecrire_ici(c.cible().as_deref()), Some(true));
+        let a_la_main = "[Desktop Entry]\nHidden=true\nName=Autre\nExec=/usr/bin/false\n";
+        std::fs::write(&p, a_la_main).unwrap();
+        let relistee = listee("Autre");
+        let _ = dernier_refus();
+        assert_eq!(relistee.ecrire_ici(note.as_deref()), Some(false));
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), a_la_main);
+        assert!(dernier_refus().is_some_and(|r| r.contains("réécrite")));
+        // Telle que le retrait l'a laissée : la liste à cocher la remet.
+        std::fs::write(&p, masquer(original)).unwrap();
+        let relistee = listee("Lecteur");
+        // La confirmation montre ce qui sera écrit (le nom et la commande notés), pas seulement le nom du fichier.
+        assert!(relistee.decrire(note.as_deref()).contains("(Lecteur · lecteur)"));
+        let piege = "+[Desktop Entry]\nName=A\u{1b}[2Kb\nExec=x\n";
+        assert!(relistee.decrire(Some(piege)).contains("(A�[2Kb · x)"));
+        assert_eq!(relistee.ecrire_ici(note.as_deref()), Some(true));
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), original);
         let _ = std::fs::remove_dir_all(&base);
     }
 
