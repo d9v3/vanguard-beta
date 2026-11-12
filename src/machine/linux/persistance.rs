@@ -3640,7 +3640,8 @@ fn developper_codes(valeur: &str, codes: &Codes) -> Option<String> {
 /// systemd 262) : mots coupés sur les blancs hors guillemets (un guillemet au milieu d'un mot compte), échappements
 /// décodés (« \x70 », « \160 », « \s », « \u… »), un mot « ; » non échappé qui sépare deux commandes, les préfixes
 /// (« -@:+!| ») ôtés du programme, et le nom donné au programme par « @ » ôté. `None` : une forme que Vanguard ne
-/// ramène pas à sa forme finale (guillemet non fermé, échappement inconnu, octet nul).
+/// ramène pas à sa forme finale (guillemet non fermé, échappement inconnu, octet nul, octal au-delà de 255, octets
+/// de « \xNN » ou de l'octal qui ne font pas de l'UTF-8).
 fn commandes_de_systemd(valeur: &str) -> Option<Vec<Vec<String>>> {
     let mut commandes = commandes_de_systemd_brutes(valeur)?;
     for c in &mut commandes {
@@ -3663,9 +3664,12 @@ fn commandes_de_systemd(valeur: &str) -> Option<Vec<Vec<String>>> {
 fn commandes_de_systemd_brutes(valeur: &str) -> Option<Vec<Vec<String>>> {
     let mut commandes: Vec<Vec<String>> = Vec::new();
     let mut courante: Vec<String> = Vec::new();
-    let mut mot = String::new();
+    // Un mot en octets (D-1, revérification 9) : pour systemd, « \xNN » et l'octal sont des octets (« \xc3\xa9 »
+    // est « é », pas « Ã© ») ; le mot fini doit faire de l'UTF-8, sinon il n'est pas comparé sûrement.
+    let mut mot: Vec<u8> = Vec::new();
     let (mut dans_un_mot, mut litteral) = (false, false);
     let mut guillemet: Option<char> = None;
+    let mut tampon = [0_u8; 4];
     let mut lettres = valeur.chars().peekable();
     let chiffres = |lettres: &mut std::iter::Peekable<std::str::Chars<'_>>, n: usize, base: u32| -> Option<u32> {
         let mut v = 0_u32;
@@ -3675,16 +3679,21 @@ fn commandes_de_systemd_brutes(valeur: &str) -> Option<Vec<Vec<String>>> {
         Some(v)
     };
     let lettre = |v: u32| char::from_u32(v).filter(|c| *c != '\0');
-    let finir_mot =
-        |mot: &mut String, litteral: &mut bool, courante: &mut Vec<String>, commandes: &mut Vec<Vec<String>>| {
-            if *mot == ";" && !*litteral {
-                commandes.push(std::mem::take(courante));
-            } else {
-                courante.push(std::mem::take(mot));
-            }
-            mot.clear();
-            *litteral = false;
-        };
+    let octet = |v: u32| u8::try_from(v).ok().filter(|o| *o != 0);
+    let finir_mot = |mot: &mut Vec<u8>,
+                     litteral: &mut bool,
+                     courante: &mut Vec<String>,
+                     commandes: &mut Vec<Vec<String>>|
+     -> Option<()> {
+        let fini = String::from_utf8(std::mem::take(mot)).ok()?;
+        if fini == ";" && !*litteral {
+            commandes.push(std::mem::take(courante));
+        } else {
+            courante.push(fini);
+        }
+        *litteral = false;
+        Some(())
+    };
     while let Some(c) = lettres.next() {
         match (guillemet, c) {
             (Some(q), c) if c == q => guillemet = None,
@@ -3695,7 +3704,7 @@ fn commandes_de_systemd_brutes(valeur: &str) -> Option<Vec<Vec<String>>> {
             }
             (None, ' ' | '\t' | '\n' | '\r') => {
                 if dans_un_mot {
-                    finir_mot(&mut mot, &mut litteral, &mut courante, &mut commandes);
+                    finir_mot(&mut mot, &mut litteral, &mut courante, &mut commandes)?;
                     dans_un_mot = false;
                 }
             }
@@ -3705,10 +3714,19 @@ fn commandes_de_systemd_brutes(valeur: &str) -> Option<Vec<Vec<String>>> {
                 // Un « \ » seul en fin de valeur : systemd refuse la ligne ou le garde tel quel ; aucun ne cache le
                 // programme.
                 let Some(e) = lettres.next() else {
-                    mot.push('\\');
+                    mot.push(b'\\');
                     break;
                 };
                 let x = match e {
+                    'x' => {
+                        mot.push(octet(chiffres(&mut lettres, 2, 16)?)?);
+                        continue;
+                    }
+                    '0'..='7' => {
+                        let reste = chiffres(&mut lettres, 2, 8)?;
+                        mot.push(octet(e.to_digit(8)?.checked_mul(64)?.checked_add(reste)?)?);
+                        continue;
+                    }
                     'a' => '\u{7}',
                     'b' => '\u{8}',
                     'f' => '\u{c}',
@@ -3719,21 +3737,15 @@ fn commandes_de_systemd_brutes(valeur: &str) -> Option<Vec<Vec<String>>> {
                     's' => ' ',
                     // Un séparateur échappé est lui-même (EXTRACT_UNESCAPE_SEPARATORS).
                     '\\' | '"' | '\'' | ';' | ' ' | '\t' => e,
-                    'x' => lettre(chiffres(&mut lettres, 2, 16)?)?,
                     'u' => lettre(chiffres(&mut lettres, 4, 16)?)?,
                     'U' => lettre(chiffres(&mut lettres, 8, 16)?)?,
-                    '0'..='7' => lettre(
-                        e.to_digit(8)?
-                            .checked_mul(64)?
-                            .checked_add(chiffres(&mut lettres, 2, 8)?)?,
-                    )?,
                     _ => return None,
                 };
-                mot.push(x);
+                mot.extend_from_slice(x.encode_utf8(&mut tampon).as_bytes());
             }
             (_, c) => {
                 dans_un_mot = true;
-                mot.push(c);
+                mot.extend_from_slice(c.encode_utf8(&mut tampon).as_bytes());
             }
         }
     }
@@ -3741,7 +3753,7 @@ fn commandes_de_systemd_brutes(valeur: &str) -> Option<Vec<Vec<String>>> {
         return None;
     }
     if dans_un_mot {
-        finir_mot(&mut mot, &mut litteral, &mut courante, &mut commandes);
+        finir_mot(&mut mot, &mut litteral, &mut courante, &mut commandes)?;
     }
     commandes.push(courante);
     commandes.retain(|c| !c.is_empty());
@@ -6559,7 +6571,8 @@ fn cunescape(mot: &str) -> Option<String> {
 }
 
 /// Un mot écrit pour que `commandes_de_systemd` le relise tel quel : nu s'il n'a ni blanc, ni guillemet, ni « \ »,
-/// ni « ; », ni caractère de contrôle ; sinon entre guillemets, « \ » et « " » échappés, un contrôle en « \xNN ».
+/// ni « ; », ni caractère de contrôle ; sinon entre guillemets, « \ » et « " » échappés, un contrôle en « \xNN »
+/// (ASCII) ou « \u00NN » (U+0080 à U+009F : un « \xNN » y serait un octet seul, pas de l'UTF-8).
 fn mot_pour_systemd(mot: &str) -> String {
     let a_proteger = |c: char| c.is_ascii_whitespace() || c.is_control() || matches!(c, '"' | '\'' | '\\' | ';');
     if !mot.is_empty() && !mot.contains(a_proteger) {
@@ -6575,7 +6588,7 @@ fn mot_pour_systemd(mot: &str) -> String {
             c if c.is_control() => {
                 // Un contrôle vaut au plus U+009F : deux chiffres hexadécimaux.
                 let v = u32::from(c);
-                ecrit.push_str("\\x");
+                ecrit.push_str(if c.is_ascii() { "\\x" } else { "\\u00" });
                 ecrit.extend([v >> 4, v & 0xf].iter().filter_map(|&d| char::from_digit(d, 16)));
             }
             c => ecrit.push(c),
@@ -12314,6 +12327,122 @@ mod tests {
         ];
         for (valeur, attendu) in cas {
             assert_eq!(exec_de_bureau(valeur, "/m").as_deref(), attendu, "{valeur}");
+        }
+    }
+
+    /// D-1 (revérification 9) : dans ExecStart=, « \xNN » et l'octal donnent des octets pour systemd (mesuré par
+    /// Fable, systemd 262.1), pas des caractères. Un lien du compte au nom non ASCII (« é », U+0085, U+00A0) vers
+    /// .config cache autostart si Vanguard lit « Ã© » : levé une fois les octets relus en UTF-8 ; des octets qui ne
+    /// font pas de l'UTF-8 (« \xe9 » seul), ou un octal au-delà de 255, sont dits non vérifiés, jamais tus.
+    #[test]
+    fn une_unite_decode_ses_octets_comme_systemd() {
+        use std::os::unix::ffi::OsStrExt as _;
+        use std::os::unix::fs::PermissionsExt as _;
+        // (nom, nom du lien vers .config (octets), valeur ExecStart où « H » est la maison, attendu)
+        let cas: [(&str, &[u8], &str, Option<&str>); 11] = [
+            (
+                "X0 é en clair",
+                "é".as_bytes(),
+                "/usr/bin/cp H/Documents/x H/é/autostart/y.desktop",
+                Some(""),
+            ),
+            (
+                "X1 \\xc3\\xa9",
+                "é".as_bytes(),
+                r"/usr/bin/cp H/Documents/x H/\xc3\xa9/autostart/y.desktop",
+                Some(""),
+            ),
+            (
+                "X2 octal",
+                "é".as_bytes(),
+                r"/usr/bin/cp H/Documents/x H/\303\251/autostart/y.desktop",
+                Some(""),
+            ),
+            (
+                "X3 entre guillemets",
+                "é".as_bytes(),
+                r#"/usr/bin/cp H/Documents/x "H/\xc3\xa9/autostart/y.desktop""#,
+                Some(""),
+            ),
+            (
+                "X4 \\xe9 seul",
+                b"\xe9",
+                r"/usr/bin/cp H/Documents/x H/\xe9/autostart/y.desktop",
+                Some("ne ramène pas"),
+            ),
+            (
+                "V9 U+0085",
+                "a\u{85}b".as_bytes(),
+                r"/usr/bin/cp H/Documents/x H/a\xc2\x85b/autostart/y.desktop",
+                Some(""),
+            ),
+            (
+                "V10 U+00A0",
+                "a\u{a0}b".as_bytes(),
+                r"/usr/bin/cp H/Documents/x H/a\xc2\xa0b/autostart/y.desktop",
+                Some(""),
+            ),
+            (
+                "octal 477",
+                b"z",
+                r"/usr/bin/cp H/Documents/x H/Documents/\477",
+                Some("ne ramène pas"),
+            ),
+            (
+                "octet nul",
+                b"z",
+                r"/usr/bin/cp H/Documents/x H/Documents/a\x00b",
+                Some("ne ramène pas"),
+            ),
+            (
+                "témoin é ordinaire",
+                b"z",
+                r"/usr/bin/cp H/Documents/x H/Documents/\xc3\xa9",
+                None,
+            ),
+            (
+                "témoin octal ordinaire",
+                b"z",
+                r"/usr/bin/cp H/Documents/x H/Documents/\303\251",
+                None,
+            ),
+        ];
+        let mut faux = Vec::new();
+        for (i, (nom, lien, exec, attendu)) in cas.iter().enumerate() {
+            let m = Maison::nouvelle(&format!("d1-unite-{i}"));
+            let f = m.racine.join("usr/bin/cp");
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(&f, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::create_dir_all(m.chemin("Documents")).unwrap();
+            std::os::unix::fs::symlink(".config", m.chemin("").join(std::ffi::OsStr::from_bytes(lien))).unwrap();
+            let h = m.chemin("").to_string_lossy().trim_end_matches('/').to_string();
+            let unite = format!("[Service]\nExecStart={}\n", exec.replace('H', &h));
+            m.ecrire(".config/systemd/user/essai.service", &unite);
+            let leve: Vec<String> = persistance_dans(&m.racine, &m.chemin(""), |_| None, None, None)
+                .into_iter()
+                .filter(|c| c.probleme.is_some())
+                .map(|c| c.message)
+                .collect();
+            let juste = match attendu {
+                Some(texte) => leve.iter().any(|l| l.contains(texte)),
+                None => leve.is_empty(),
+            };
+            if !juste {
+                faux.push((*nom, leve));
+            }
+        }
+        assert!(faux.is_empty(), "{faux:#?}");
+    }
+
+    /// D-1 : un contrôle U+0080 à U+009F réécrit par `mot_pour_systemd` se relit tel quel par `commandes_de_systemd`,
+    /// qui lit maintenant « \xNN » comme un octet (sinon l'entrée de bureau qui le porte deviendrait non vérifiée).
+    #[test]
+    fn un_controle_reecrit_se_relit_tel_quel() {
+        for mot in ["a\u{85}b", "a\u{9f}\u{b}b", "a\u{1}", "é\u{80}"] {
+            let ecrit = mot_pour_systemd(mot);
+            let relu = commandes_de_systemd_brutes(&ecrit);
+            assert_eq!(relu, Some(vec![vec![mot.to_string()]]), "{ecrit}");
         }
     }
 
