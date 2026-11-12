@@ -188,8 +188,8 @@ impl Ecart {
                 "line naming an account startup place (~/.config/autostart, ~/.config/systemd, ~/.config/hypr, ~/.bashrc…) or a folder holding one (~/.config): it can copy, move or link a launch there on every run; what it puts there is not checked"
             ),
             Ecart::Environnement => tr!(
-                "sauvegarde de Vanguard : un fichier de variables de la session du compte (~/.config/environment.d, ~/.config/systemd/user.conf, ~/.pam_environment, ~/.config/uwsm/env…) nomme HOME ou une variable que lisent rsync, findmnt ou le chargeur de programmes (LD_*, RSYNC_*, POPT*, LIBMOUNT_*, BLKID_*…), ou ne se lit pas : il peut changer ce que la sauvegarde lit ou lance (un autre ~/.popt) ; non vérifié, donc pas tu",
-                "Vanguard backup: an account session variable file (~/.config/environment.d, ~/.config/systemd/user.conf, ~/.pam_environment, ~/.config/uwsm/env…) names HOME or a variable read by rsync, findmnt or the program loader (LD_*, RSYNC_*, POPT*, LIBMOUNT_*, BLKID_*…), or cannot be read: it can change what the backup reads or starts (another ~/.popt); not verified, so not kept quiet"
+                "sauvegarde de Vanguard : un fichier de variables de la session du compte (~/.config/environment.d, ~/.config/systemd/user.conf, ~/.pam_environment, ~/.config/uwsm/env…) nomme HOME ou une variable que lisent rsync, findmnt ou le chargeur de programmes (LD_*, RSYNC_*, POPT*, LIBMOUNT_*, BLKID_*…), ou le cache (inclusion d'un autre fichier, nom construit, « eval »), ou ne se lit pas : il peut changer ce que la sauvegarde lit ou lance (un autre ~/.popt) ; non vérifié, donc pas tu",
+                "Vanguard backup: an account session variable file (~/.config/environment.d, ~/.config/systemd/user.conf, ~/.pam_environment, ~/.config/uwsm/env…) names HOME or a variable read by rsync, findmnt or the program loader (LD_*, RSYNC_*, POPT*, LIBMOUNT_*, BLKID_*…), or hides it (inclusion of another file, built name, “eval”), or cannot be read: it can change what the backup reads or starts (another ~/.popt); not verified, so not kept quiet"
             ),
         }
     }

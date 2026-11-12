@@ -3978,8 +3978,9 @@ fn noms_ecrits(texte: &str, cible: impl Fn(&str) -> bool) -> std::collections::B
 }
 
 /// F-1 (relecture 0.94) : un fichier qui pose des variables au gestionnaire de systemd du compte, donc à la sauvegarde
-/// de Vanguard, nomme une `variable_de_la_sauvegarde` ou ne se lit pas en entier. Ceux du compte (environment.d,
-/// user.conf et user.conf.d, ~/.pam_environment, ~/.config/uwsm/env*, et ceux d'un XDG_CONFIG_HOME déplacé), et ceux du
+/// de Vanguard, nomme une `variable_de_la_sauvegarde` ou ne se lit pas en entier, ou, pour un script d'uwsm, cache ce
+/// qu'il pose (`script_cache_ce_qu_il_pose`, V-2). Ceux du compte (environment.d, user.conf et user.conf.d,
+/// ~/.pam_environment, tout ~/.config/uwsm, et ceux d'un XDG_CONFIG_HOME déplacé), et ceux du
 /// système (/etc/environment, pam_env.conf, environment.d, user.conf et user.conf.d) qui ne sont pas à root seul
 /// (`de_root_seul`). Un fichier masqué (lien vers /dev/null) ne compte pas. Un dossier qui ne se lit pas, ou un
 /// fichier qui n'est pas ordinaire, lève : non vérifié, jamais tu. Pas lus : les profils des shells (que uwsm lit
@@ -3987,6 +3988,12 @@ fn noms_ecrits(texte: &str, cible: impl Fn(&str) -> bool) -> std::collections::B
 /// fichier.
 fn environnement_change_la_sauvegarde(r: &Releveur, vide: bool) -> bool {
     let (fichiers, illisibles) = fichiers_du_gestionnaire(r);
+    // V-2 : les scripts d'uwsm lus, seuls fichiers qu'une inclusion peut nommer sans lever.
+    let scripts: Vec<std::path::PathBuf> = fichiers
+        .iter()
+        .filter(|(f, _)| Variables::de(f, false) == Variables::Shell)
+        .map(|(f, _)| f.clone())
+        .collect();
     // V-1 : un dossier d'unités posé au gestionnaire sous une forme qui ne se résout pas.
     !illisibles.is_empty()
         || !r.gestionnaire_non_resolu.is_empty()
@@ -4000,13 +4007,127 @@ fn environnement_change_la_sauvegarde(r: &Releveur, vide: bool) -> bool {
             match temoins::lire_borne(f, AJOUT_MAX) {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
                 Err(_) => true,
-                Ok(lu) => !lu.entier || nomme_une_variable_de_la_sauvegarde(&String::from_utf8_lossy(&lu.octets), vide),
+                Ok(lu) => {
+                    let texte = String::from_utf8_lossy(&lu.octets);
+                    !lu.entier
+                        || nomme_une_variable_de_la_sauvegarde(&texte, vide)
+                        || (Variables::de(f, false) == Variables::Shell
+                            && script_cache_ce_qu_il_pose(&texte, &r.maison, &scripts))
+                }
             }
         })
 }
 
+/// V-2 (relecture 0.95) : un script de variables (~/.config/uwsm/env…) cache ce qu'il pose au gestionnaire : une
+/// inclusion (« source », « . ») d'un fichier qui n'est pas dans `lus` ou dont le chemin ne se résout pas, « eval »,
+/// « read » ou « printf -v », un nom exporté qui n'est pas un mot fixe (« ${n}LOAD », guillemets dans le nom,
+/// « $(…) »), ou systemctl / dbus-update-activation-environment avec un argument construit. Ni « $HOME » ni « ~ »
+/// ne comptent comme construits. Plus large que le shell : un faux positif lève, il ne tait jamais. Ce qu'un
+/// programme lancé par le script fait d'autre n'est pas vu (limite dite).
+fn script_cache_ce_qu_il_pose(texte: &str, maison: &Path, lus: &[std::path::PathBuf]) -> bool {
+    let identifiant = |m: &str| {
+        let mut o = m.bytes();
+        o.next().is_some_and(|p| p.is_ascii_alphabetic() || p == b'_')
+            && o.all(|x| x.is_ascii_alphanumeric() || x == b'_')
+    };
+    let lu = |cible: &str| {
+        let net = cible
+            .strip_prefix('"')
+            .and_then(|c| c.strip_suffix('"'))
+            .or_else(|| cible.strip_prefix('\'').and_then(|c| c.strip_suffix('\'')))
+            .unwrap_or(cible);
+        let reste = ["~/", "$HOME/", "${HOME}/"].iter().find_map(|d| net.strip_prefix(d));
+        let chemin = match reste {
+            Some(r) => maison.join(r),
+            None if net.starts_with('/') => std::path::PathBuf::from(net),
+            None => return false,
+        };
+        let s = chemin.to_string_lossy();
+        !s.contains(['$', '`', '\\', '"', '\'', '*', '?', '[']) && !s.contains("/../") && lus.contains(&chemin)
+    };
+    for commande in commandes_shell(&texte.replace("\\\n", "")) {
+        let mut mots = commande.iter().map(String::as_str).skip_while(|m| {
+            [
+                "then", "else", "do", "!", "if", "elif", "while", "until", "{", "(", "time", "command", "builtin",
+            ]
+            .contains(m)
+        });
+        let Some(premier) = mots.next() else {
+            continue;
+        };
+        let args: Vec<&str> = mots.collect();
+        let cache = match premier {
+            "source" | "." => !args.first().is_some_and(|c| lu(c)),
+            "eval" | "read" | "mapfile" | "readarray" => true,
+            "printf" => args.iter().any(|a| a.starts_with("-v")),
+            "export" | "declare" | "typeset" | "local" | "readonly" => {
+                args.iter().filter(|a| !a.starts_with('-')).any(|a| {
+                    let a = a.strip_prefix(['"', '\'']).unwrap_or(a);
+                    !identifiant(a.split('=').next().unwrap_or(a))
+                })
+            }
+            "systemctl" | "dbus-update-activation-environment" => args.iter().any(|a| a.contains(['$', '`'])),
+            _ => false,
+        };
+        if cache {
+            return true;
+        }
+    }
+    false
+}
+
+/// Les commandes d'un texte de shell, chacune en mots bruts (guillemets et « \ » gardés) : une ligne se coupe à « ; »,
+/// « & » et « | » hors guillemets, un mot aux blancs hors guillemets ; un commentaire « # » en tête de mot finit la
+/// ligne. Juste assez pour `script_cache_ce_qu_il_pose`.
+fn commandes_shell(texte: &str) -> Vec<Vec<String>> {
+    let mut commandes = Vec::new();
+    for ligne in texte.lines() {
+        let (mut mots, mut mot, mut guillemet, mut echappe) = (Vec::new(), String::new(), None::<char>, false);
+        let finir = |mots: &mut Vec<String>, mot: &mut String| {
+            if !mot.is_empty() {
+                mots.push(std::mem::take(mot));
+            }
+        };
+        for c in ligne.chars() {
+            if echappe {
+                mot.push(c);
+                echappe = false;
+                continue;
+            }
+            match (guillemet, c) {
+                (Some(g), _) if c == g => {
+                    guillemet = None;
+                    mot.push(c);
+                }
+                (Some('"') | None, '\\') => {
+                    echappe = true;
+                    mot.push(c);
+                }
+                (None, '"' | '\'') => {
+                    guillemet = Some(c);
+                    mot.push(c);
+                }
+                (None, '#') if mot.is_empty() => break,
+                (None, ' ' | '\t') => finir(&mut mots, &mut mot),
+                (None, ';' | '&' | '|') => {
+                    finir(&mut mots, &mut mot);
+                    if !mots.is_empty() {
+                        commandes.push(std::mem::take(&mut mots));
+                    }
+                }
+                _ => mot.push(c),
+            }
+        }
+        finir(&mut mots, &mut mot);
+        if !mots.is_empty() {
+            commandes.push(mots);
+        }
+    }
+    commandes
+}
+
 /// Les fichiers qui posent des variables au gestionnaire de systemd du compte : (fichier, du compte). Ceux du compte
-/// (environment.d, user.conf et user.conf.d, ~/.config/uwsm/env*, et ceux d'un XDG_CONFIG_HOME déplacé,
+/// (environment.d, user.conf et user.conf.d, tout ~/.config/uwsm, et ceux d'un XDG_CONFIG_HOME déplacé,
 /// ~/.pam_environment), et ceux du système (/etc/environment, pam_env.conf, environment.d, user.conf et user.conf.d).
 /// Avec les dossiers qui ne se lisent pas.
 #[allow(clippy::type_complexity)]
@@ -4014,7 +4135,8 @@ fn fichiers_du_gestionnaire(r: &Releveur) -> (Vec<(std::path::PathBuf, bool)>, V
     let s = |c: &str| r.sous(Path::new(c));
     let mut fichiers: Vec<(std::path::PathBuf, bool)> = Vec::new();
     let mut illisibles = Vec::new();
-    // Les fichiers d'un dossier : ceux en « .conf », ou ceux de uwsm (« env », « env-<bureau> »).
+    // Les fichiers d'un dossier : ceux en « .conf », ou tous ceux de uwsm (« env », « env-<bureau> » et ce qu'ils
+    // peuvent inclure : relecture 0.95, V-2), sauf ses sous-dossiers.
     let mut dossier =
         |d: std::path::PathBuf, du_compte: bool, uwsm: bool, fichiers: &mut Vec<(std::path::PathBuf, bool)>| {
             match std::fs::symlink_metadata(&d) {
@@ -4034,9 +4156,8 @@ fn fichiers_du_gestionnaire(r: &Releveur) -> (Vec<(std::path::PathBuf, bool)>, V
                     illisibles.push(d.clone());
                     return;
                 };
-                let nom = e.file_name().to_string_lossy().into_owned();
                 let pris = if uwsm {
-                    nom == "env" || nom.starts_with("env-")
+                    !std::fs::symlink_metadata(e.path()).is_ok_and(|m| m.is_dir())
                 } else {
                     a_l_extension(&e.path(), "conf")
                 };
@@ -9241,6 +9362,72 @@ mod tests {
             faux.is_empty(),
             "l'environnement du gestionnaire change la sauvegarde : {faux:#?}"
         );
+    }
+
+    /// V-2 (relecture 0.95) : ~/.config/uwsm/env est un script : une inclusion d'un fichier que Vanguard ne lit pas,
+    /// un nom de variable construit (« ${n}LOAD », guillemets dans le nom) ou « eval » cachent ce qu'il pose au
+    /// gestionnaire : la sauvegarde se lève, ses deux formes. Tout fichier du dossier uwsm se lit (celui qu'env inclut
+    /// aussi) ; une inclusion d'un fichier lu, « export "A=…" » et un PATH qui lit « $HOME » restent muets.
+    #[test]
+    fn uwsm_qui_inclut_ou_construit_un_nom_leve_la_sauvegarde() {
+        const ENV: &str = ".config/uwsm/env";
+        // (nom, fichiers posés, levée)
+        type Cas<'a> = (&'a str, &'a [(&'a str, &'a str)], bool);
+        let cas: &[Cas<'_>] = &[
+            (
+                "muet",
+                &[
+                    (
+                        ENV,
+                        "# réglages\nexport PATH=\"$HOME/bin:$PATH\"\nexport \"EDITOR=nvim\"\nexport ACCUEIL=\"bonjour ; . /tmp/x le monde\" # fin\n[ -f ~/.config/uwsm/default ] && . ~/.config/uwsm/default\nsource \"$HOME/.config/uwsm/default\"\n",
+                    ),
+                    (".config/uwsm/default", "export TERMINAL=kitty\n"),
+                ],
+                false,
+            ),
+            ("inclusion ailleurs", &[(ENV, "source ~/.cache/x/env\n")], true),
+            ("inclusion par point", &[(ENV, "true; . /home/alice/.cache/x\n")], true),
+            ("inclusion construite", &[(ENV, ". \"$XDG_CACHE_HOME/x\"\n")], true),
+            (
+                "inclusion lue qui pose",
+                &[
+                    (ENV, ". ~/.config/uwsm/autre\n"),
+                    (".config/uwsm/autre", "export LD_PRELOAD=/home/alice/.cache/x.so\n"),
+                ],
+                true,
+            ),
+            ("nom construit", &[(ENV, "n=LD_PRE\nexport ${n}LOAD=/x.so\n")], true),
+            (
+                "nom entre guillemets",
+                &[(ENV, "export GLIBC_\"TUNABLES\"=glibc.x=1\n")],
+                true,
+            ),
+            ("declare construit", &[(ENV, "declare -x \"$n\"=/x.so\n")], true),
+            ("eval", &[(ENV, "eval \"$(cat ~/.cache/x)\"\n")], true),
+            ("printf -v", &[(ENV, "set -a\nprintf -v \"$n\" %s /x.so\n")], true),
+            ("read", &[(ENV, "set -a\nread -r \"$n\" < ~/.cache/x\n")], true),
+            ("substitution", &[(ENV, "export $(cat ~/.cache/x)\n")], true),
+        ];
+        let mut faux = Vec::new();
+        for (i, (nom, fichiers, leve)) in cas.iter().enumerate() {
+            for vide in [false, true] {
+                let (m, _) = sauvegarde_d_essai(&format!("sauvegarde-uwsm-{i}-{vide}"), vide);
+                for (f, texte) in *fichiers {
+                    m.ecrire(f, texte);
+                }
+                let c = m.lancements();
+                let juste = if *leve {
+                    c.probleme == Some(Niveau::Eleve) && crate::apprentissage::declarable(&c).is_err()
+                } else {
+                    (vide && c.probleme.is_none())
+                        || (!vide && c.probleme == Some(Niveau::Info) && c.message.contains("avant la 0.95"))
+                };
+                if !juste {
+                    faux.push(format!("{nom}, env -i {vide} : {:?} {:?}", c.probleme, c.message));
+                }
+            }
+        }
+        assert!(faux.is_empty(), "uwsm et la sauvegarde : {faux:#?}");
     }
 
     /// V-1 (relecture 0.95) : un fichier du compte (user.conf et user.conf.d, ~/.pam_environment, environment.d) qui
