@@ -819,6 +819,35 @@ impl Changement {
             .map_or_else(|| reste.to_string(), |n| n.to_string_lossy().into_owned())
     }
 
+    /// Remettre la valeur notée `v` sur l'entrée d'autostart d'aujourd'hui ne perd rien : elle est absente, déjà `v`,
+    /// ou encore exactement ce que le retrait a écrit (la copie masquée de `v`). Pour une entrée du système notée
+    /// absente du compte (`v` = « - »), le retrait a écrit la copie masquée de celle du système, qui a pu changer
+    /// depuis (mise à jour) : il suffit que l'entrée du compte soit encore masquée. Faux pour tout autre contenu, et
+    /// pour une entrée qui ne se lit pas.
+    fn remise_sans_perte(&self, v: Option<&str>) -> bool {
+        let Changement::Demarrage {
+            entree: Entree::Autostart(_),
+            ..
+        } = self
+        else {
+            return true;
+        };
+        let Some(aujourd_hui) = self.lire() else {
+            return false;
+        };
+        if aujourd_hui == "-" || Some(aujourd_hui.as_str()) == v {
+            return true;
+        }
+        let Some(ecrit) = aujourd_hui.strip_prefix('+') else {
+            return false;
+        };
+        match v.map(|v| (v, v.strip_prefix('+'))) {
+            Some((_, Some(avant))) => ecrit == masquer(avant),
+            Some(("-", None)) => masquer(ecrit) == ecrit,
+            _ => false,
+        }
+    }
+
     /// Écrit ce qui est propre au compte sans passer par une commande : le fichier d'autostart, son contenu entier
     /// remis à l'octet près, ou retiré. `None` : ce changement passe par une commande.
     fn ecrire_ici(&self, v: Option<&str>) -> Option<bool> {
@@ -846,6 +875,16 @@ impl Changement {
             refuser_ici(tr!(
                 "entrée pas lue : rien n'est remis par-dessus",
                 "entry not read: nothing is put back over it"
+            ));
+            return Some(false);
+        }
+        // Remise d'après une note : l'entrée d'aujourd'hui doit être absente, déjà remise, ou encore celle que le retrait
+        // a écrite. Réécrite depuis (même masquée, donc pas lancée), son contenu serait écrasé et gardé nulle part
+        // (relecture 0.94, m-1).
+        if cible.is_none() && vu.is_none() && !self.remise_sans_perte(v) {
+            refuser_ici(tr!(
+                "l'entrée a été réécrite depuis que Vanguard l'a retirée : rien n'est remis par-dessus",
+                "the entry was rewritten since Vanguard removed it: nothing is put back over it"
             ));
             return Some(false);
         }
@@ -2661,6 +2700,48 @@ mod tests {
         // Une valeur qu'on n'a pas su lire ne s'écrit jamais.
         assert_eq!(annuler(&s).ecrire_ici(Some("?")), Some(false));
         assert!(s.decrire(Some("-")).contains("syncthing.desktop"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Relecture 0.94, m-1 : une entrée retirée puis réécrite à la main, encore masquée (pas lancée, donc offerte à
+    /// « remettre »), n'est pas écrasée par le contenu noté : refusé, et la raison dite. Remise telle que le retrait
+    /// l'a laissée, ou absente, elle se remet. Une copie d'une entrée du système démasquée à la main ne s'efface pas.
+    #[test]
+    fn une_entree_reecrite_apres_le_retrait_n_est_pas_ecrasee() {
+        let base = dossier_jetable("reecrite");
+        let compte = base.join("autostart");
+        std::fs::create_dir_all(&compte).unwrap();
+        let p = compte.join("lecteur.desktop");
+        let original = "[Desktop Entry]\nName=Lecteur\nExec=lecteur\n";
+        std::fs::write(&p, original).unwrap();
+        let c = Changement::Demarrage {
+            entree: Entree::Autostart(p.clone()),
+            cible: Some(format!("+{}", masquer(original))),
+            vu: Some(format!("+{original}")),
+        };
+        let remettre = Changement::demarrage_depuis(&c.identite_demarrage().unwrap()).unwrap();
+        let avant = c.lire();
+        assert_eq!(c.ecrire_ici(c.cible().as_deref()), Some(true));
+        let a_la_main = "[Desktop Entry]\nHidden=true\nName=Autre\nExec=/usr/bin/false\n";
+        std::fs::write(&p, a_la_main).unwrap();
+        let _ = dernier_refus();
+        assert_eq!(remettre.ecrire_ici(avant.as_deref()), Some(false));
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), a_la_main);
+        assert!(dernier_refus().is_some_and(|r| r.contains("réécrite")));
+        // Telle que le retrait l'a laissée : remise.
+        std::fs::write(&p, masquer(original)).unwrap();
+        assert_eq!(remettre.ecrire_ici(avant.as_deref()), Some(true));
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), original);
+        // Effacée à la main : remise aussi (rien à perdre).
+        std::fs::remove_file(&p).unwrap();
+        assert_eq!(remettre.ecrire_ici(avant.as_deref()), Some(true));
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), original);
+        // Une copie d'une entrée du système (notée absente du compte), démasquée à la main : pas effacée.
+        let q = compte.join("panneau.desktop");
+        std::fs::write(&q, "[Desktop Entry]\nName=Panneau\nExec=panneau\nOnlyShowIn=Autre;\n").unwrap();
+        let copie = Changement::demarrage_depuis(&format!("autostart|{}", q.display())).unwrap();
+        assert_eq!(copie.ecrire_ici(Some("-")), Some(false));
+        assert!(q.is_file());
         let _ = std::fs::remove_dir_all(&base);
     }
 
