@@ -610,7 +610,9 @@ fn raccourci(l: &Lieux, p: &Path, r: &mut Recensement) {
 fn copie_du_programme(l: &Lieux, copies_d_avant: Vec<PathBuf>, r: &mut Recensement) {
     let bin = l.donnees.join("bin");
     let fenetre = format!("vanguard-fenetre{}", std::env::consts::EXE_SUFFIX);
-    let mut fichiers: Vec<PathBuf> = [crate::mise_a_jour::NOM, &fenetre]
+    // La fenêtre peut aussi être posée sous le nom de la page de la version (`lancer_fenetre::voisine`).
+    let page = crate::demarrage::lancer_fenetre::NOM_PAGE;
+    let mut fichiers: Vec<PathBuf> = [crate::mise_a_jour::NOM, &fenetre, page]
         .iter()
         .flat_map(|nom| [nom.to_string(), format!("{nom}.ancien"), format!("{nom}.nouveau")])
         .map(|n| bin.join(n))
@@ -2190,6 +2192,8 @@ mod tests {
             &bin.join(format!("vanguard-fenetre{}", std::env::consts::EXE_SUFFIX)),
             "fenêtre",
         );
+        // C-8 (relecture 0.96) : la fenêtre posée sous le nom de la page de la version part aussi.
+        ecrire(&bin.join(crate::demarrage::lancer_fenetre::NOM_PAGE), "fenêtre");
         // Des données, une quarantaine, et l'ancien dossier de données.
         ecrire(&l.donnees.join("appareils.json"), "{}");
         ecrire(&l.donnees.join("quarantaine/x"), "x");
@@ -2243,7 +2247,12 @@ mod tests {
         let Retrait::Fichiers(copies) = &rec.elements[5].retrait else {
             panic!("{:?}", rec.elements[5]);
         };
-        assert_eq!(copies.len(), 4, "{copies:?}");
+        assert_eq!(copies.len(), 5, "{copies:?}");
+        assert!(
+            copies
+                .iter()
+                .any(|c| c.ends_with(crate::demarrage::lancer_fenetre::NOM_PAGE))
+        );
         assert!(copies.iter().any(|c| {
             c.file_name()
                 .is_some_and(|n| n.to_string_lossy().starts_with("vanguard-fenetre"))
