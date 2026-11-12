@@ -617,6 +617,27 @@ pub(super) fn programme_verifie(p: &Publiee) -> Result<Vec<u8>, String> {
     .into())
 }
 
+/// La fenêtre de la dernière version pour ce système (`vanguard-fenetre-linux-x86_64`, publiée à côté du programme),
+/// reçue en mémoire, `lancer_fenetre::TAILLE_MAX` octets au plus. Elle n'est pas jugée ici : `sa_fenetre` la compare
+/// à l'empreinte gravée dans le nouveau programme, déjà vérifié, avant de la poser.
+pub(super) fn fenetre_recue() -> Result<Vec<u8>, String> {
+    use crate::demarrage::lancer_fenetre::{NOM_PAGE, TAILLE_MAX};
+    if SYSTEME.is_none() {
+        return Err(tr!(
+            "aucune fenêtre publiée pour ce système",
+            "no window published for this system"
+        )
+        .into());
+    }
+    recevoir(NOM_PAGE, TAILLE_MAX, 900).ok_or_else(|| {
+        tr!(
+            "la fenêtre de la nouvelle version n'a pas pu être téléchargée : rien n'est remplacé",
+            "the new version's window could not be downloaded: nothing is replaced"
+        )
+        .into()
+    })
+}
+
 static ANNONCE: Mutex<Option<Version>> = Mutex::new(None);
 static CHERCHEE: Once = Once::new();
 

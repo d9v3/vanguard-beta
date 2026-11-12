@@ -83,6 +83,16 @@ fn entete() -> [u8; 17] {
     std::hint::black_box(ENTETE_DECALE).map(|o| o.saturating_sub(1))
 }
 
+/// La marque d'un programme inventé qui lance la fenêtre d'empreinte `e`, pour les essais d'autres modules (la mise à
+/// jour) : l'en-tête refait au lancement, comme le lecteur le refait.
+#[cfg(test)]
+pub(crate) fn marque_d_essai(e: &[u8; 32]) -> Vec<u8> {
+    let mut m = entete().to_vec();
+    m.extend(e.iter().flat_map(|o| format!("{o:02x}").into_bytes()));
+    m.push(b';');
+    m
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -71,14 +71,14 @@ fn a_distance(present: &dyn Fn(&str) -> bool) -> bool {
 
 /// Le nom de la fenêtre sur la page de la version, téléchargée à côté de `vanguard-linux-x86_64`.
 #[cfg(windows)]
-const NOM_PAGE: &str = "vanguard-fenetre-windows-x86_64.exe";
+pub(crate) const NOM_PAGE: &str = "vanguard-fenetre-windows-x86_64.exe";
 #[cfg(not(windows))]
-const NOM_PAGE: &str = "vanguard-fenetre-linux-x86_64";
+pub(crate) const NOM_PAGE: &str = "vanguard-fenetre-linux-x86_64";
 
 /// Le chemin de la fenêtre à côté de ce programme (jamais cherchée dans le PATH) : `vanguard-fenetre`, sinon le nom
 /// de la page de la version. Deux noms n'ouvrent rien de plus : la confiance va à l'empreinte, pas au nom. Aucune des
 /// deux : la première, que `ouvrir_depuis` dira absente.
-fn voisine(programme: &Path) -> Option<PathBuf> {
+pub(crate) fn voisine(programme: &Path) -> Option<PathBuf> {
     let dossier = programme.parent()?;
     let premiere = dossier.join(format!("vanguard-fenetre{}", std::env::consts::EXE_SUFFIX));
     let page = dossier.join(NOM_PAGE);
@@ -257,7 +257,7 @@ enum Lancement {
 }
 
 /// Le plus gros fichier de fenêtre lu (la fenêtre compilée fait une dizaine de Mio).
-const TAILLE_MAX: u64 = 128 * 1024 * 1024;
+pub(crate) const TAILLE_MAX: u64 = 128 * 1024 * 1024;
 
 /// Les octets de la fenêtre ouverte, `TAILLE_MAX` au plus (`m` : ce que dit la poignée).
 fn lire_borne(f: &std::fs::File, m: &std::fs::Metadata) -> Result<Vec<u8>, String> {

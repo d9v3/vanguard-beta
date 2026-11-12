@@ -7,7 +7,8 @@
 //! d'une copie se lit dans son fichier, sans la lancer : une vieille copie ne refait pas ses étapes de démarrage
 //! (protection de la clé, passage à un nouveau nom). Sans clé, la dernière version publiée vient de GitHub, signée par
 //! l'auteur et vérifiée (`github`) ; elle remplace la copie de cet ordinateur et le programme lancé, s'il n'est pas
-//! sur la clé (la clé, elle, se met à jour chez son propriétaire).
+//! sur la clé (la clé, elle, se met à jour chez son propriétaire). La fenêtre posée à côté d'un programme remplacé le
+//! suit, vérifiée contre l'empreinte gravée dans le nouveau (`sa_fenetre`).
 
 // Le programme sous Linux : ses parties Windows ne sont pas encore relues, et les essais en sont exemptés
 // (y déborder fait échouer l'essai). L'en-tête vaut aussi pour les sous-modules.
@@ -24,6 +25,7 @@ use crate::ui::*;
 
 pub(crate) mod apercu;
 mod github;
+mod sa_fenetre;
 
 /// La version de ce programme et la date de son commit, gravées dans son fichier pour qu'une autre copie les lise sans
 /// le lancer (« VANGUARD-VERSION:0.78.0+1760900000; »). `courante` la lit là : sans lecture, l'éditeur de liens
@@ -1317,9 +1319,16 @@ fn poser_copie_dans(source: &Path, cible: &Path, essai: Essai) -> Result<(), Str
         )
         .into());
     };
+    // La fenêtre posée à côté du programme de la clé suit la copie, si c'est bien la sienne.
+    let fenetre = sa_fenetre::de_la_source(source, &octets).zip(sa_fenetre::pour(cible));
     match lire_programme(cible, TAILLE_MAX) {
         Lu::Version(v) if v > version => return Ok(()),
         Lu::Version(v) if v == version && lire_octets(cible, TAILLE_MAX).ok().as_deref() == Some(&octets[..]) => {
+            // La même copie : sa fenêtre seule, si elle manque ou diffère. Un échec n'arrête pas la copie, que la
+            // surveillance lance : sans sa fenêtre, le raccourci ouvre le menu.
+            if let Some((f, chemin)) = &fenetre {
+                let _ = sa_fenetre::poser_si_autre(f, chemin);
+            }
             return Ok(());
         }
         _ => {}
@@ -1327,7 +1336,10 @@ fn poser_copie_dans(source: &Path, cible: &Path, essai: Essai) -> Result<(), Str
     if let Some(d) = cible.parent() {
         std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
     }
-    installer(&octets, cible, version, essai)
+    match &fenetre {
+        Some((f, chemin)) => sa_fenetre::installer_avec(&octets, cible, version, essai, f, chemin),
+        None => installer(&octets, cible, version, essai),
+    }
 }
 
 /// La copie de cet ordinateur est-elle plus ancienne que ce programme ? Elle écrit alors encore l'état de Vanguard
@@ -1346,6 +1358,11 @@ pub(crate) fn copie_plus_ancienne() -> bool {
 /// Le renommage final. Sous Windows, un programme qui tourne (la surveillance, lancée à l'heure pile) ne se remplace
 /// pas, mais il se renomme : l'ancien part de côté et s'efface à la prochaine mise à jour.
 fn mettre_en_place(provisoire: &Path, cible: &Path) -> std::io::Result<()> {
+    mettre_en_place_sous(provisoire, cible, &cible.with_file_name(format!("{NOM}.ancien")))
+}
+
+/// `mettre_en_place`, l'ancien mis de côté sous le nom `ancien` (la fenêtre a le sien, `sa_fenetre`).
+fn mettre_en_place_sous(provisoire: &Path, cible: &Path, ancien: &Path) -> std::io::Result<()> {
     let erreur = match std::fs::rename(provisoire, cible) {
         Ok(()) => return Ok(()),
         Err(e) => e,
@@ -1353,17 +1370,16 @@ fn mettre_en_place(provisoire: &Path, cible: &Path) -> std::io::Result<()> {
     if !cfg!(windows) {
         return Err(erreur);
     }
-    let ancien = cible.with_file_name(format!("{NOM}.ancien"));
     // Celui d'une mise à jour précédente tourne peut-être encore : rien ne se remplace, et c'est dit clairement.
-    if std::fs::symlink_metadata(&ancien).is_ok() && std::fs::remove_file(&ancien).is_err() {
+    if std::fs::symlink_metadata(ancien).is_ok() && std::fs::remove_file(ancien).is_err() {
         return Err(std::io::Error::other(tr!(
             "l'ancienne copie tourne encore (surveillance) : réessayez dans une minute",
             "the old copy is still running (monitoring): try again in a minute"
         )));
     }
-    std::fs::rename(cible, &ancien)?;
+    std::fs::rename(cible, ancien)?;
     std::fs::rename(provisoire, cible).inspect_err(|_| {
-        let _ = std::fs::rename(&ancien, cible);
+        let _ = std::fs::rename(ancien, cible);
     })
 }
 
@@ -1375,8 +1391,13 @@ pub fn commande() {
         "  {GRIS}The copy of Vanguard placed on this computer (monitoring, maintenance,\n  shortcut) does not follow the key: it is updated from here, on your OK.{RESET}\n"
     );
     let cible = copie_de_cet_ordinateur();
-    // Le reste d'une mise à jour faite pendant que la copie tournait (Windows).
+    // Le reste d'une mise à jour faite pendant que la copie (ou sa fenêtre) tournait (Windows).
     let _ = std::fs::remove_file(cible.with_file_name(format!("{NOM}.ancien")));
+    if let Some(f) = sa_fenetre::pour(&cible).and_then(|f| f.file_name().map(std::ffi::OsStr::to_os_string)) {
+        let mut ancien = f;
+        ancien.push(".ancien");
+        let _ = std::fs::remove_file(cible.with_file_name(ancien));
+    }
     match etat() {
         Etat::Rien => trp!(
             "  Pas de copie de Vanguard posée sur cet ordinateur (la surveillance,\n  l'entretien et le raccourci en posent une).",
@@ -1505,8 +1526,19 @@ fn depuis_github() {
             return;
         }
     };
+    // La fenêtre de la nouvelle version : téléchargée une fois, et seulement si une fenêtre est posée à côté d'un
+    // programme remplacé (`sa_fenetre`).
+    let mut recue: Option<Vec<u8>> = None;
+    let mut recevoir = || -> Result<Vec<u8>, String> {
+        if let Some(f) = &recue {
+            return Ok(f.clone());
+        }
+        let f = github::fenetre_recue()?;
+        recue = Some(f.clone());
+        Ok(f)
+    };
     for c in &a_remplacer {
-        match installer(&octets, c, publiee.version, essayer) {
+        match sa_fenetre::installer_avec_sa_fenetre(&octets, c, publiee.version, essayer, &mut recevoir) {
             Ok(()) => trp!(
                 "  {VERT}✔{RESET} {} : Vanguard {}.",
                 "  {VERT}✔{RESET} {}: Vanguard {}.",

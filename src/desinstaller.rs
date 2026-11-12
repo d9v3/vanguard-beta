@@ -604,13 +604,15 @@ fn raccourci(l: &Lieux, p: &Path, r: &mut Recensement) {
     }
 }
 
-/// La copie du programme : bin/vanguard, les restes d'une mise à jour, la copie d'avant (`copies_d_avant`) ; rien
-/// d'autre de bin/. Sous Windows, la copie en marche est laissée et dite dans « à faire ».
+/// La copie du programme : bin/vanguard, sa fenêtre (posée avec elle, `mise_a_jour::sa_fenetre`), les restes d'une
+/// mise à jour, la copie d'avant (`copies_d_avant`) ; rien d'autre de bin/. Sous Windows, la copie en marche est
+/// laissée et dite dans « à faire ».
 fn copie_du_programme(l: &Lieux, copies_d_avant: Vec<PathBuf>, r: &mut Recensement) {
     let bin = l.donnees.join("bin");
-    let nom = crate::mise_a_jour::NOM;
-    let mut fichiers: Vec<PathBuf> = [nom.to_string(), format!("{nom}.ancien"), format!("{nom}.nouveau")]
+    let fenetre = format!("vanguard-fenetre{}", std::env::consts::EXE_SUFFIX);
+    let mut fichiers: Vec<PathBuf> = [crate::mise_a_jour::NOM, &fenetre]
         .iter()
+        .flat_map(|nom| [nom.to_string(), format!("{nom}.ancien"), format!("{nom}.nouveau")])
         .map(|n| bin.join(n))
         .filter(|p| std::fs::symlink_metadata(p).is_ok())
         .collect();
@@ -2184,6 +2186,10 @@ mod tests {
         );
         ecrire(&exe, "programme");
         ecrire(&bin.join(format!("{}.ancien", crate::mise_a_jour::NOM)), "programme");
+        ecrire(
+            &bin.join(format!("vanguard-fenetre{}", std::env::consts::EXE_SUFFIX)),
+            "fenêtre",
+        );
         // Des données, une quarantaine, et l'ancien dossier de données.
         ecrire(&l.donnees.join("appareils.json"), "{}");
         ecrire(&l.donnees.join("quarantaine/x"), "x");
@@ -2237,7 +2243,11 @@ mod tests {
         let Retrait::Fichiers(copies) = &rec.elements[5].retrait else {
             panic!("{:?}", rec.elements[5]);
         };
-        assert_eq!(copies.len(), 3, "{copies:?}");
+        assert_eq!(copies.len(), 4, "{copies:?}");
+        assert!(copies.iter().any(|c| {
+            c.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("vanguard-fenetre"))
+        }));
         assert!(matches!(
             &rec.elements[3].retrait,
             Retrait::Avant(Reste::Minuterie { .. })
