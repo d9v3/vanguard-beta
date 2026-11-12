@@ -6727,12 +6727,19 @@ fn mots_de_glib(ligne: &str) -> Option<Vec<String>> {
 /// Les commandes qu'une valeur Exec de .desktop donne à GLib (gio launch, gnome-session ; revérification 9, D-2 ;
 /// mesuré avec gio launch), réécrites pour `commandes_de_systemd` : la valeur lue comme GKeyFile (`valeur_de_glib`),
 /// puis chaque « %x » remplacé partout, même au milieu d'un mot (expand_application_parameters) : « %c » par le nom
-/// cité, « %k » par le chemin du `fichier` cité, « %i » par « --icon » et l'icône citée, « %% » par « % », tout
-/// autre code (« %f », « %U »… : aucun fichier au démarrage) par rien ; puis les mots de `mots_de_glib`. Le nom et
-/// l'icône dépendent de la langue de la session : une commande par nom (`noms`) et par icône (`icones`, ou aucune)
-/// possibles. `Ok(vide)` : GLib ne la lance pas ; `Err` : trop de cas à essayer, `fichier` absent (pas de l'UTF-8)
-/// pour « %k », ou un code « % » collé à un caractère non ASCII (GLib coupe ses octets).
-fn exec_de_glib(valeur: &str, noms: &[String], icones: &[String], fichier: Option<&str>) -> Result<Vec<String>, ()> {
+/// cité (ou par rien sans nom lisible), « %k » par le chemin du `fichier` cité, « %i » par « --icon » et l'icône
+/// citée, « %% » par « % », tout autre code (« %f », « %U »… : aucun fichier au démarrage) par rien ; puis les mots
+/// de `mots_de_glib`. Le nom et l'icône dépendent de la langue de la session : une commande par nom (`noms`, plus
+/// l'absence de nom si `sans_nom` ; revérification 10, E-1) et par icône (`icones`, ou aucune) possibles.
+/// `Ok(vide)` : GLib ne la lance pas ; `Err` : trop de cas à essayer, `fichier` absent (pas de l'UTF-8) pour « %k »,
+/// ou un code « % » collé à un caractère non ASCII (GLib coupe ses octets).
+fn exec_de_glib(
+    valeur: &str,
+    noms: &[String],
+    sans_nom: bool,
+    icones: &[String],
+    fichier: Option<&str>,
+) -> Result<Vec<String>, ()> {
     const CAS_MAX: usize = 32;
     let Some(lue) = valeur_de_glib(valeur) else {
         return Ok(Vec::new());
@@ -6746,7 +6753,11 @@ fn exec_de_glib(valeur: &str, noms: &[String], icones: &[String], fichier: Optio
     }
     let a_code = |l: char| codes.contains(&l);
     let noms: Vec<Option<&str>> = if a_code('c') {
-        noms.iter().map(|n| Some(n.as_str())).collect()
+        let mut essais: Vec<Option<&str>> = noms.iter().map(|n| Some(n.as_str())).collect();
+        if sans_nom {
+            essais.push(None);
+        }
+        essais
     } else {
         vec![None]
     };
@@ -6775,7 +6786,11 @@ fn exec_de_glib(valeur: &str, noms: &[String], icones: &[String], fichier: Optio
                     return Err(());
                 }
                 match code {
-                    'c' => ligne.push_str(&cite_par_glib(nom.unwrap_or_default())),
+                    'c' => {
+                        if let Some(n) = nom {
+                            ligne.push_str(&cite_par_glib(n));
+                        }
+                    }
                     'k' => ligne.push_str(&cite_par_glib(fichier.unwrap_or_default())),
                     'i' => {
                         if let Some(i) = icone {
@@ -6798,22 +6813,37 @@ fn exec_de_glib(valeur: &str, noms: &[String], icones: &[String], fichier: Optio
 }
 
 /// `exec_de_glib` pour la `commande` d'une entrée de bureau lue `texte` au chemin `f` : les noms (« Name= » et ses
-/// traductions, lus comme GKeyFile, et « Unnamed » que GLib donne sans nom) et les icônes de [Desktop Entry].
+/// traductions, lus comme GKeyFile) et les icônes de [Desktop Entry]. GLib prend le Name[..] lisible de la langue,
+/// sinon le dernier « Name= » non traduit, sinon aucun nom (mesuré avec gio launch : « Unnamed » n'est qu'affiché,
+/// jamais lancé). L'absence de nom est essayée quand un « Name= » non traduit manque ou ne se lit pas (échappement
+/// refusé, octet qui n'est pas de l'UTF-8, lu ici « � ») : revérification 10, E-1.
 fn formes_de_glib(commande: &str, texte: &str, f: &Path) -> Result<Vec<String>, ()> {
-    let (mut noms, mut icones) = (vec!["Unnamed".to_string()], Vec::new());
+    let (mut noms, mut icones) = (Vec::new(), Vec::new());
+    let (mut nom_lisible, mut nom_illisible) = (false, false);
     for c in cles_de_bureau(texte) {
-        let liste = match c.cle.split_once('[').map_or(c.cle.as_str(), |(k, _)| k) {
+        let (cle, traduite) = c
+            .cle
+            .split_once('[')
+            .map_or((c.cle.as_str(), false), |(k, _)| (k, true));
+        let lue = valeur_de_glib(&c.valeur);
+        if cle == "Name" && !traduite {
+            match &lue {
+                Some(v) if !v.contains('\u{FFFD}') => nom_lisible = true,
+                _ => nom_illisible = true,
+            }
+        }
+        let liste = match cle {
             "Name" => &mut noms,
             "Icon" => &mut icones,
             _ => continue,
         };
-        if let Some(v) = valeur_de_glib(&c.valeur)
+        if let Some(v) = lue
             && !liste.contains(&v)
         {
             liste.push(v);
         }
     }
-    exec_de_glib(commande, &noms, &icones, f.to_str())
+    exec_de_glib(commande, &noms, !nom_lisible || nom_illisible, &icones, f.to_str())
 }
 
 /// Juge la `commande` lancée par la `ligne` (numéro `n`, à partir de 0) du fichier `f` lu `lu` : levée si elle
@@ -12698,8 +12728,9 @@ mod tests {
     #[test]
     fn une_commande_de_bureau_se_juge_aussi_comme_glib() {
         use std::os::unix::fs::PermissionsExt as _;
-        // (nom, Name= (« - » : aucun), valeur Exec où « H » est la maison, levé)
-        let cas: [(&str, &str, &str, bool); 11] = [
+        // (nom, Name= (« - » : aucun ; « Name… » : lignes écrites telles quelles ; « octet » : Name= avec l'octet
+        // 0xE9 seul, pas de l'UTF-8), valeur Exec où « H » est la maison, levé)
+        let cas: [(&str, &str, &str, bool); 16] = [
             (
                 "E1 %f collé",
                 "essai",
@@ -12766,6 +12797,36 @@ mod tests {
                 "/usr/bin/cp H/Documents/x H/Documents/a%éb",
                 true,
             ),
+            (
+                "t01 %c collé, sans Name",
+                "-",
+                "/usr/bin/cp H/Documents/x H/.config/auto%cstart/y.desktop",
+                true,
+            ),
+            (
+                "t17 %c collé, Name=bad\\q",
+                "Name=bad\\q\n",
+                "/usr/bin/cp H/Documents/x H/.config/auto%cstart/y.desktop",
+                true,
+            ),
+            (
+                "v06 %c collé, Name qui n'est pas de l'UTF-8",
+                "octet",
+                "/usr/bin/cp H/Documents/x H/.config/auto%cstart/y.desktop",
+                true,
+            ),
+            (
+                "v11 %c collé, seulement Name[fr]=bad\\q",
+                "Name[fr]=bad\\q\n",
+                "/usr/bin/cp H/Documents/x H/.config/auto%cstart/y.desktop",
+                true,
+            ),
+            (
+                "témoin %c collé, Name=x et Name[fr]=bad\\q",
+                "Name=x\nName[fr]=bad\\q\n",
+                "/usr/bin/cp H/Documents/x H/.config/auto%cstart/y.desktop",
+                false,
+            ),
         ];
         let mut faux = Vec::new();
         for (i, (nom, name, exec, leve_attendu)) in cas.iter().enumerate() {
@@ -12776,18 +12837,17 @@ mod tests {
             std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
             std::fs::create_dir_all(m.chemin("Documents")).unwrap();
             let h = m.chemin("").to_string_lossy().trim_end_matches('/').to_string();
-            m.ecrire(
-                ".config/autostart/essai.desktop",
-                &format!(
-                    "[Desktop Entry]\nType=Application\n{}Exec={}\n",
-                    if *name == "-" {
-                        String::new()
-                    } else {
-                        format!("Name={}\n", name.replace('H', &h))
-                    },
-                    exec.replace('H', &h)
-                ),
-            );
+            let tete: Vec<u8> = match *name {
+                "-" => Vec::new(),
+                "octet" => b"Name=b\xe9d\n".to_vec(),
+                n if n.starts_with("Name") => n.as_bytes().to_vec(),
+                n => format!("Name={}\n", n.replace('H', &h)).into_bytes(),
+            };
+            let mut ecrit = b"[Desktop Entry]\nType=Application\n".to_vec();
+            ecrit.extend(tete);
+            ecrit.extend(format!("Exec={}\n", exec.replace('H', &h)).into_bytes());
+            m.ecrire(".config/autostart/essai.desktop", "");
+            std::fs::write(m.chemin(".config/autostart/essai.desktop"), ecrit).unwrap();
             let leve: Vec<String> = persistance_dans(&m.racine, &m.chemin(""), |_| None, None, None)
                 .into_iter()
                 .filter(|c| c.probleme.is_some())
@@ -12891,17 +12951,79 @@ mod tests {
             (r#"/usr/bin/touch "/d/a"#, "essai", Ok(&[])),
         ];
         for (valeur, nom, attendu) in cas {
-            let rendu = exec_de_glib(valeur, &[nom.to_string()], &["ic".to_string()], k);
+            let rendu = exec_de_glib(valeur, &[nom.to_string()], false, &["ic".to_string()], k);
             let attendu = attendu.map(|a| a.iter().map(|m| (*m).to_string()).collect::<Vec<_>>());
             assert_eq!(rendu, attendu, "{valeur}");
         }
-        assert_eq!(exec_de_glib("/usr/bin/touch %k", &[], &[], None), Err(()));
+        assert_eq!(exec_de_glib("/usr/bin/touch %k", &[], false, &[], None), Err(()));
         let noms: Vec<String> = (0..40).map(|i| format!("n{i}")).collect();
-        assert_eq!(exec_de_glib("/usr/bin/touch %c", &noms, &[], k), Err(()));
+        assert_eq!(exec_de_glib("/usr/bin/touch %c", &noms, false, &[], k), Err(()));
         assert_eq!(
-            exec_de_glib("/usr/bin/touch %%c", &noms, &[], k).map(|f| f.len()),
+            exec_de_glib("/usr/bin/touch %%c", &noms, false, &[], k).map(|f| f.len()),
             Ok(1)
         );
+        // E-1 (revérification 10) : sans nom lisible, GLib remplace « %c » par rien (mesuré : « a%cb » crée « ab »,
+        // « %c » seul ne donne aucun argument) ; un Name= vide donne un argument vide. « Unnamed » n'est jamais lancé.
+        let sans: Rendu<'_> = Ok(&["/usr/bin/touch /d/ab"]);
+        let rendu = exec_de_glib("/usr/bin/touch /d/a%cb", &[], true, &[], k);
+        assert_eq!(
+            rendu,
+            sans.map(|a| a.iter().map(|m| (*m).to_string()).collect::<Vec<_>>())
+        );
+        let rendu = exec_de_glib("/usr/bin/touch %c", &[String::new()], true, &[], k);
+        assert_eq!(
+            rendu,
+            Ok(vec![r#"/usr/bin/touch """#.to_string(), "/usr/bin/touch".to_string()])
+        );
+        assert_eq!(
+            exec_de_glib("/usr/bin/touch %c", &noms, true, &[], k),
+            Err(()),
+            "le cas sans nom compte"
+        );
+    }
+
+    /// E-1 (revérification 10) : les noms qu'une entrée de bureau donne à « %c », mesurés avec gio launch (LANG=C.UTF-8
+    /// et fr_CA.UTF-8) : le dernier Name= non traduit lisible, sinon aucun nom ; un Name[..] lisible selon la langue.
+    #[test]
+    fn formes_de_glib_essaie_aussi_sans_nom() {
+        let f = Path::new("/f/t.desktop");
+        let exec = "/usr/bin/touch /d/a%cb";
+        // (nom, lignes avant Exec=, formes attendues)
+        let cas: [(&str, &str, &[&str]); 8] = [
+            ("t01 sans Name", "", &["/usr/bin/touch /d/ab"]),
+            ("t17 Name=bad\\q", "Name=bad\\q\n", &["/usr/bin/touch /d/ab"]),
+            (
+                "v06 Name qui n'est pas de l'UTF-8 (lu avec pertes)",
+                "Name=b\u{FFFD}d\n",
+                &["/usr/bin/touch /d/ab\u{FFFD}db", "/usr/bin/touch /d/ab"],
+            ),
+            (
+                "v11 seulement Name[fr]=bad\\q",
+                "Name[fr]=bad\\q\n",
+                &["/usr/bin/touch /d/ab"],
+            ),
+            (
+                "seulement Name[fr]=y",
+                "Name[fr]=y\n",
+                &["/usr/bin/touch /d/ayb", "/usr/bin/touch /d/ab"],
+            ),
+            (
+                "Name=x puis Name=bad\\q (le dernier compte)",
+                "Name=x\nName=bad\\q\n",
+                &["/usr/bin/touch /d/axb", "/usr/bin/touch /d/ab"],
+            ),
+            ("témoin Name=x", "Name=x\n", &["/usr/bin/touch /d/axb"]),
+            (
+                "témoin Name=x, Name[fr]=bad\\q",
+                "Name=x\nName[fr]=bad\\q\n",
+                &["/usr/bin/touch /d/axb"],
+            ),
+        ];
+        for (nom, tete, attendu) in cas {
+            let texte = format!("[Desktop Entry]\nType=Application\n{tete}Exec={exec}\n");
+            let attendu: Vec<String> = attendu.iter().map(|m| (*m).to_string()).collect();
+            assert_eq!(formes_de_glib(exec, &texte, f), Ok(attendu), "{nom}");
+        }
     }
 
     /// B-2 (revérification 7) : un argument relatif depuis un dossier de départ inconnu (Path= d'une entrée de bureau,
