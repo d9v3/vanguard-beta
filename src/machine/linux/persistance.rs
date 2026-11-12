@@ -1334,7 +1334,7 @@ pub(super) fn persistance_dans(
     let sortes = fichiers_de_configuration(&t.r);
     let mut configuration: Vec<std::path::PathBuf> = sortes.iter().map(|(f, _)| f.clone()).collect();
     let sortes_lues = sortes.clone();
-    let (environnement, hypr_lus, hypr_non_suivies) = environnement(&t.r, sortes, hypr.clone());
+    let (environnement, hypr_lus, hypr_non_suivies, shell_inclus) = environnement(&t.r, sortes, hypr.clone());
     t.r.environnement = Some(environnement);
     // Un « source = » de Hyprland que Vanguard ne suit pas (chemin calculé, joker de dossier, borne), ou qui lit un
     // dossier temporaire ou caché : dit, jamais tu (relecture adverse, C7 ; deuxième vérification, N2, N3).
@@ -1398,6 +1398,14 @@ pub(super) fn persistance_dans(
     lire_prechargement(racine, &variable, gestion, &mut t);
     // Les fichiers de Hyprland sont aussi des fichiers de configuration, après les autres.
     configuration.extend(hypr);
+    // R-6 : puis ceux qu'un profil ou un fichier d'uwsm lit par « . » ou « source », chacun selon sa sorte.
+    let mut sortes_lues = sortes_lues;
+    for (f, sorte) in shell_inclus {
+        if !configuration.contains(&f) {
+            configuration.push(f.clone());
+            sortes_lues.push((f, sorte));
+        }
+    }
     juger_configuration(&configuration, &sortes_lues, &demarrage, maison, &mut t);
     juger_demarrage(&demarrage, maison, &mut t);
     juger_generateurs(&mut t);
@@ -2497,12 +2505,14 @@ fn noms_poses(l: &str, sorte: Variables) -> Vec<String> {
     }
 }
 
-/// L'environnement relevé (ou son refus), les fichiers de Hyprland lus par « source = », et les « source = » non
-/// suivis ou à dire (où, ligne, pourquoi).
+/// L'environnement relevé (ou son refus), les fichiers de Hyprland lus par « source = », les « source = » non
+/// suivis ou à dire (où, ligne, pourquoi), et les autres fichiers lus par une inclusion (« . », « source ») avec
+/// leur sorte (R-6).
 type Environnement = (
     Result<(String, temoins::Etat), temoins::Refus>,
     Vec<std::path::PathBuf>,
     Vec<(String, String, NonSuivi)>,
+    Vec<(std::path::PathBuf, Variables)>,
 );
 
 /// Pourquoi un « source = » de Hyprland se dit (deuxième vérification, N2, N3).
@@ -2580,6 +2590,7 @@ fn environnement(
     let connus = sources.len();
     let mut lus: Vec<(String, String)> = Vec::new();
     let mut hypr_lus: Vec<std::path::PathBuf> = Vec::new();
+    let mut inclus: Vec<(std::path::PathBuf, Variables)> = Vec::new();
     let mut hypr_non_suivies: Vec<(String, String, NonSuivi)> = Vec::new();
     let mut non_suivies: Vec<String> = Vec::new();
     let mut posees: Vec<String> = Vec::new();
@@ -2644,6 +2655,10 @@ fn environnement(
         lus.push((r.montre(&f), temoins::sha256_de(&lu.octets)));
         if est_hypr {
             hypr_lus.push(f.clone());
+        } else if rang > connus {
+            // R-6 (re-contrôle 0.95) : un fichier lu par l'inclusion d'un autre (un profil, un fichier d'uwsm) pose
+            // et lance comme lui : il se juge aussi, pas seulement son empreinte.
+            inclus.push((f.clone(), variables));
         }
         let de_root = de_root_seul(&f);
         let injection = |numero: usize, nom: &str| {
@@ -2732,7 +2747,7 @@ fn environnement(
         }
     }
     if let Some(x) = refus {
-        return (Err(x), hypr_lus, hypr_non_suivies);
+        return (Err(x), hypr_lus, hypr_non_suivies, inclus);
     }
     lus.sort();
     // Ce qui se lie : chaque fichier et l'empreinte de son contenu entier, sans langue (un choix fait en anglais vaut
@@ -2779,6 +2794,7 @@ fn environnement(
         )),
         hypr_lus,
         hypr_non_suivies,
+        inclus,
     )
 }
 
@@ -14626,18 +14642,30 @@ mod tests {
             assert!(refus(&c).contains(attendu), "{texte:?} : {}", refus(&c));
             assert!(!crate::apprentissage::essai_tait(&declare, &c), "{texte:?}");
         }
-        // Dans un fichier lu par « . » (non jugé ligne à ligne) : « ${NOM:=…} » la pose ; une lecture, non.
+        // Dans un fichier lu par « . » : la lecture d'une variable d'injection qui ne fait pas charger de code
+        // (SHELLOPTS, PYTHONPATH) ne pose rien, « ${NOM:=…} » la pose.
         let m = maison_avec_rappel("injection-source");
         m.ecrire(".bashrc", "[ -r ~/.autres/p.sh ] && . ~/.autres/p.sh\n");
         m.ecrire(
             ".autres/p.sh",
-            "local o=$SHELLOPTS:$BASHOPTS\n[ -n \"${LD_PRELOAD}${#PYTHONPATH}\" ]\n",
+            "local o=$SHELLOPTS:$BASHOPTS\n[ -n \"${#PYTHONPATH}\" ]\n",
         );
         assert!(
             crate::apprentissage::declarable(&m.lancements()).is_ok(),
             "{}",
             refus(&m.lancements())
         );
+        // R-6 (re-contrôle 0.95, angle lecture) : un fichier inclus se juge ligne à ligne, avec la règle de ~/.bashrc :
+        // une ligne qui nomme LD_PRELOAD, même pour la lire seulement, se signale. Avant, le fichier inclus n'était lié
+        // que par son empreinte, et un « export LD_PRELOAD=… » posé là ne donnait aucun constat ; une même règle
+        // partout, plutôt qu'une exception qui se contourne : un faux positif lève, il ne tait rien.
+        m.ecrire(
+            ".autres/p.sh",
+            "local o=$SHELLOPTS:$BASHOPTS\n[ -n \"${LD_PRELOAD}${#PYTHONPATH}\" ]\n",
+        );
+        let c = m.lancements();
+        assert!(crate::apprentissage::declarable(&c).is_err(), "{}", c.message);
+        assert!(refus(&c).contains("~/.autres/p.sh:2"), "{}", refus(&c));
         m.ecrire(".autres/p.sh", ": ${LD_PRELOAD:=/tmp/l.so}\n");
         assert!(
             refus(&m.lancements()).contains("~/.autres/p.sh:1"),
@@ -15300,6 +15328,36 @@ mod tests {
         m.ecrire(".c/uwsm/env", "export EDITOR=nvim\n");
         let c = m.lancements_avec(&session);
         assert!(!c.message.contains(":1 précharge"), "{}", c.message);
+    }
+
+    /// R-6 (re-contrôle 0.95, angle lecture) : un fichier qu'un fichier de variables lit par « . » ou « source » (un
+    /// fichier d'uwsm, un profil) se juge aussi : un préchargement posé dans le fichier inclus se lève à sa ligne.
+    #[test]
+    fn fichier_inclus_par_un_fichier_de_variables_juge() {
+        let mut faux = Vec::new();
+        for (i, (fichier, inclusion)) in [
+            (".config/uwsm/env.d/a", ". /home/alice/.x/v.sh\n"),
+            (".config/uwsm/env", "source \"$HOME/.x/v.sh\"\n"),
+            (".profile", "[ -f ~/.x/v.sh ] && . ~/.x/v.sh\n"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("inclus-{i}"));
+            m.ecrire(fichier, inclusion);
+            m.ecrire(".x/v.sh", "EDITOR=nvim\nexport LD_PRELOAD=/tmp/l.so\n");
+            let c = m.lancements();
+            if !(c.probleme >= Some(Niveau::Eleve) && c.message.contains("~/.x/v.sh:2 précharge")) {
+                faux.push(format!("{fichier} : {:?} {}", c.probleme, c.message));
+            }
+        }
+        assert!(faux.is_empty(), "inclus : {faux:#?}");
+        // Témoin : un fichier inclus sans préchargement ne lève rien.
+        let m = Maison::nouvelle("inclus-temoin");
+        m.ecrire(".config/uwsm/env", ". ~/.x/v.sh\n");
+        m.ecrire(".x/v.sh", "export EDITOR=nvim\n");
+        let c = m.lancements();
+        assert!(!c.message.contains("v.sh:1 précharge"), "{}", c.message);
     }
 
     /// L-2 (campagne 0.95, angle lecture) : uwsm lit chaque fichier de « env.d » et « env-<bureau>.d », quelle que
