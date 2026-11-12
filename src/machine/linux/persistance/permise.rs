@@ -89,6 +89,10 @@ pub(super) enum Ecart {
     /// fichiers FUSE (« fuse », « fuse.* ») : un programme du compte peut le poser lui-même sur ce dossier, sous un nom
     /// de source qui imite le disque attendu par findmnt, et il écrit où il veut (relecture 0.94, D-3).
     DisqueFuse,
+    /// Un argument nomme un lieu de démarrage du compte (~/.config/autostart, ~/.config/systemd, ~/.bashrc…) ou un
+    /// dossier qui en contient (~/.config) : la ligne peut y copier, déplacer ou lier un lancement à chaque passage
+    /// (« cp -r … ~/.config/autostart ») ; ce qu'elle y pose ne se voit qu'après (point 12, 0.95).
+    LieuDeDemarrage,
 }
 
 impl Ecart {
@@ -178,6 +182,10 @@ impl Ecart {
             Ecart::DisqueFuse => tr!(
                 "sauvegarde de Vanguard dont le disque est un montage FUSE (un montage qu'un programme du compte peut poser lui-même à la place du disque) : où rsync copie n'est pas vérifié",
                 "Vanguard backup whose disk is a FUSE mount (a mount an account program can set up itself in place of the disk): where rsync copies is not checked"
+            ),
+            Ecart::LieuDeDemarrage => tr!(
+                "ligne qui nomme un lieu de démarrage du compte (~/.config/autostart, ~/.config/systemd, ~/.config/hypr, ~/.bashrc…) ou un dossier qui en contient (~/.config) : elle peut y copier, déplacer ou lier un lancement à chaque passage ; ce qu'elle y pose n'est pas vérifié",
+                "line naming an account startup place (~/.config/autostart, ~/.config/systemd, ~/.config/hypr, ~/.bashrc…) or a folder holding one (~/.config): it can copy, move or link a launch there on every run; what it puts there is not checked"
             ),
             Ecart::Environnement => tr!(
                 "sauvegarde de Vanguard : un fichier de variables de la session du compte (~/.config/environment.d, ~/.config/systemd/user.conf, ~/.pam_environment, ~/.config/uwsm/env…) nomme HOME ou une variable que lisent rsync, findmnt ou le chargeur de programmes (LD_*, RSYNC_*, POPT*, LIBMOUNT_*, BLKID_*…), ou ne se lit pas : il peut changer ce que la sauvegarde lit ou lance (un autre ~/.popt) ; non vérifié, donc pas tu",
@@ -535,8 +543,76 @@ fn argument_sur(s: &Systeme, a: &str) -> Result<(), Ecart> {
         if m.starts_with(['/', '~', '$', '%']) && s.cache(m, true) {
             return Err(Ecart::Filet);
         }
+        if m.starts_with(['/', '~', '$', '%']) && lieu_de_demarrage(m, s.maisons) {
+            return Err(Ecart::LieuDeDemarrage);
+        }
     }
     Ok(())
+}
+
+/// Les lieux du compte (sous son dossier personnel) dont le contenu se lance ou se lit tout seul à l'ouverture de la
+/// session : dossiers d'entrées et d'unités, fichiers de variables, profils des shells, réglages de Hyprland et les
+/// modules d'Omarchy (sauf le thème, qu'une ligne lit souvent). Un chemin sous l'un d'eux, ou l'un d'eux, compte.
+const LIEUX_DE_DEMARRAGE: [&str; 27] = [
+    ".config/autostart",
+    ".config/systemd",
+    ".local/share/systemd",
+    ".config/environment.d",
+    ".config/hypr",
+    ".config/uwsm",
+    ".config/fish",
+    ".config/default",
+    ".local/share/dbus-1",
+    ".local/state/default",
+    ".local/state/hypr",
+    ".local/state/omarchy/toggles",
+    ".local/state/omarchy/workspace-layouts",
+    ".pam_environment",
+    ".popt",
+    ".profile",
+    ".bash_profile",
+    ".bash_login",
+    ".bashrc",
+    ".bash_logout",
+    ".zshrc",
+    ".zshenv",
+    ".zprofile",
+    ".zlogin",
+    ".zlogout",
+    ".xprofile",
+    ".xsessionrc",
+];
+
+/// Les dossiers du compte qui contiennent un lieu de démarrage : nommés seuls (« cp -r … ~/.config »), une copie y
+/// pose aussi bien un lancement. Le dossier personnel lui-même n'y est pas (trop de lignes ordinaires le nomment).
+const PARENTS_DE_LIEUX: [&str; 5] = [
+    ".config",
+    ".local",
+    ".local/share",
+    ".local/state",
+    ".local/state/omarchy",
+];
+
+/// Un chemin (« ~/… », « $HOME/… », « %h/… », sous un dossier personnel de `maisons` ou celui d'un autre compte) qui
+/// mène à un lieu de démarrage du compte (`LIEUX_DE_DEMARRAGE`) ou à un dossier qui en contient (`PARENTS_DE_LIEUX`).
+fn lieu_de_demarrage(p: &str, maisons: &[&str]) -> bool {
+    let simple = chemin_simplifie(p);
+    let net = sans_racine_de_proc(&simple);
+    let net = net.trim_end_matches('/');
+    let mut relatifs: Vec<&str> = ["~/", "$HOME/", "${HOME}/", "%h/"]
+        .iter()
+        .filter_map(|d| net.strip_prefix(d))
+        .collect();
+    for m in maisons.iter().filter(|m| !m.is_empty()) {
+        relatifs.extend(net.strip_prefix(&format!("{}/", m.trim_end_matches('/'))));
+        relatifs.extend(maison_d_un_compte(net, m));
+    }
+    relatifs.into_iter().any(|r| {
+        PARENTS_DE_LIEUX.contains(&r)
+            || LIEUX_DE_DEMARRAGE
+                .iter()
+                .any(|l| r == *l || r.strip_prefix(l).is_some_and(|x| x.starts_with('/')))
+    })
 }
 
 /// Un mot d'une commande simple, coupé comme le coupe le shell.

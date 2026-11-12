@@ -9168,6 +9168,129 @@ mod tests {
         assert!(faux.is_empty(), "(ligne, levée, changement dit) : {faux:#?}");
     }
 
+    /// Point 12 (0.95) : une ligne qui nomme un lieu de démarrage du compte en argument (« cp -r … ~/.config/autostart »,
+    /// cp -a, cp -R, mv, install, ln, -t, --target-directory=, %h, ~/.config seul, ~/.bashrc) peut y poser un
+    /// lancement à chaque passage : levée. Le témoin (une copie entre deux dossiers ordinaires, ~/.config/omarchy
+    /// lu par une ligne) reste muet.
+    #[test]
+    fn une_ligne_qui_nomme_un_lieu_de_demarrage_est_levee() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let cas: &[(&str, bool)] = &[
+            ("/usr/bin/cp -r /home/alice/Documents/a /home/alice/Documents/b", true),
+            (
+                "/usr/bin/cp /home/alice/.config/omarchy/current/background /home/alice/Documents/b",
+                true,
+            ),
+            // Un nom qui commence seulement comme un lieu (« autostart-anciens », « hyprpaper ») n'en est pas un.
+            (
+                "/usr/bin/cp -r /home/alice/Documents/a /home/alice/.config/autostart-anciens",
+                true,
+            ),
+            (
+                "/usr/bin/cp -r /home/alice/Documents/t /home/alice/.config/hyprpaper/fonds",
+                true,
+            ),
+            (
+                "/usr/bin/cp -r /home/alice/Documents/charge /home/alice/.config/autostart",
+                false,
+            ),
+            (
+                "/usr/bin/cp -R /home/alice/Documents/x.desktop /home/alice/.config/autostart/",
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x.desktop /home/alice/.config/autostart/x.desktop",
+                false,
+            ),
+            (
+                "/usr/bin/cp -t /home/alice/.config/autostart /home/alice/Documents/x.desktop",
+                false,
+            ),
+            (
+                "/usr/bin/cp --target-directory=/home/alice/.config/autostart /home/alice/Documents/x",
+                false,
+            ),
+            ("/usr/bin/cp -r %h/Documents/charge %h/.config/autostart", false),
+            (
+                "/usr/bin/cp -r /home/alice/Documents/u /home/alice/.config/systemd/user/",
+                false,
+            ),
+            (
+                "/usr/bin/cp -r /home/alice/Documents/u /home/alice/.local/share/systemd/user",
+                false,
+            ),
+            ("/usr/bin/cp -r /home/alice/Documents/c /home/alice/.config", false),
+            ("/usr/bin/cp -r /home/alice/Documents/c /home/alice/.config/", false),
+            ("/usr/bin/cp /home/alice/Documents/b /home/alice/.bashrc", false),
+            (
+                "/usr/bin/cp /home/alice/Documents/h /home/alice/.config/hypr/hyprland.conf",
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/e /home/alice/.config/environment.d/x.conf",
+                false,
+            ),
+            ("/usr/bin/cp /home/alice/Documents/p /home/alice/.popt", false),
+            (
+                "/usr/bin/cp /home/alice/Documents/b /home/bob/.config/autostart/x.desktop",
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/b /home/alice/Documents/../.config/autostart/x.desktop",
+                false,
+            ),
+            (
+                "/usr/bin/mv /home/alice/Documents/x.desktop /home/alice/.config/autostart/",
+                false,
+            ),
+            (
+                "/usr/bin/install -D /home/alice/Documents/x /home/alice/.config/autostart/x.desktop",
+                false,
+            ),
+            (
+                "/usr/bin/ln -s /home/alice/Documents/x.desktop /home/alice/.config/autostart/x.desktop",
+                false,
+            ),
+        ];
+        let mut faux = Vec::new();
+        for (i, (exec, sain)) in cas.iter().enumerate() {
+            let m = Maison::nouvelle(&format!("lieu-de-demarrage-{i}"));
+            for p in ["usr/bin/cp", "usr/bin/mv", "usr/bin/install", "usr/bin/ln"] {
+                let f = m.racine.join(p);
+                std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+                std::fs::write(&f, "#!/bin/sh\n").unwrap();
+                std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            m.ecrire(
+                ".config/systemd/user/essai.service",
+                &format!("[Unit]\nDescription=essai\n\n[Service]\nExecStart={exec}\nNice=10\n\n[Install]\nWantedBy=default.target\n"),
+            );
+            let constats = persistance_dans(
+                &m.racine,
+                &m.chemin(""),
+                |v| (v == "XDG_RUNTIME_DIR").then(|| "/run/user/1000".into()),
+                None,
+                None,
+            );
+            let leve: Vec<_> = constats
+                .iter()
+                .filter(|c| c.probleme.is_some())
+                .map(|c| c.message.clone())
+                .collect();
+            // ~/.bashrc et ~/.popt étaient déjà levés par le filet (un « .x » de la maison) : sa raison passe d'abord.
+            let juste = if *sain {
+                leve.is_empty()
+            } else {
+                leve.iter()
+                    .any(|l| l.contains("lieu de démarrage du compte") || l.contains("dossier temporaire ou caché"))
+            };
+            if !juste {
+                faux.push((*exec, leve));
+            }
+        }
+        assert!(faux.is_empty(), "{faux:#?}");
+    }
+
     /// Le cas qui a mené à ce lot (valeurs inventées) : une unité de l'utilisateur lance un programme d'un dossier
     /// caché, à corriger soi-même. Elle se déclare normale, montre sa ligne, son fichier et le programme lancé ; le
     /// même état relu au bilan suivant est tu.
