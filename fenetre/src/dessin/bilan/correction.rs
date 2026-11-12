@@ -32,6 +32,7 @@ use crate::dessin::{
 };
 use crate::donnees::changements::{Annulation, IssueChange};
 use crate::donnees::correction::{Apercu, Droits, Lecture};
+use crate::donnees::mise_a_jour::{MiseAJour, Origine, Vue};
 
 /// Largeur de la feuille, et la marge gardée autour sur un petit écran.
 const LARGEUR: f32 = 760.0;
@@ -71,6 +72,10 @@ enum Cle {
     Valeur(usize),
     Titre,
     Chemin(usize),
+    /// La mise à jour : la version visée, l'empreinte, la version d'aujourd'hui de chaque programme.
+    Visee,
+    Sha256,
+    Version(usize),
 }
 
 /// Ce que la personne a fait sur la feuille, à cette image.
@@ -211,6 +216,7 @@ pub fn feuille(ctx: &egui::Context, f: &FeuilleCorrection, offerte: bool) -> Rep
             let titre = match f.famille {
                 Famille::Correction => crate::tr!("Voir la correction", "See the fix"),
                 Famille::Annulation => crate::tr!("Remettre comme avant", "Restore as before"),
+                Famille::MiseAJour => crate::tr!("Mettre à jour Vanguard", "Update Vanguard"),
             };
             ui.label(RichText::new(titre).font(moyenne(20.0)).color(p.encre));
             let sous_titre = match &f.etat {
@@ -264,6 +270,7 @@ fn empechement(etat: &EtatFeuille, depasse: bool) -> Ici {
     let pas_d_ici = match etat {
         EtatFeuille::Lue(Lecture::Lue(a)) => a.pas_d_ici(),
         EtatFeuille::Annulation(Lecture::Lue(a)) => a.pas_d_ici(),
+        EtatFeuille::MiseAJour(Vue::Proposee(a)) => a.pas_d_ici(),
         _ => return Ici::PasDApercu,
     };
     let raison = pas_d_ici.or_else(|| {
@@ -336,6 +343,7 @@ fn pied(ui: &mut Ui, f: &FeuilleCorrection, depasse: bool, offerte: bool) -> Rep
                     let t = match f.famille {
                         Famille::Correction => crate::tr!("Appliquer cette correction", "Apply this fix"),
                         Famille::Annulation => crate::tr!("Remettre comme avant", "Restore as before"),
+                        Famille::MiseAJour => crate::tr!("Installer cette mise à jour", "Install this update"),
                     };
                     if bouton(ui, t, true, actif).clicked() && actif {
                         r = Reponse::Accepter;
@@ -374,6 +382,34 @@ fn corps(ui: &mut Ui, f: &FeuilleCorrection, memoire: &mut Memoire) {
                 ui.ctx().request_repaint();
             }
         }
+        EtatFeuille::MiseAJour(Vue::Proposee(a)) => {
+            if depasse(ui, |ui| apercu_mise_a_jour(ui, a, memoire)) && !memoire.depasse {
+                memoire.depasse = true;
+                ui.ctx().request_repaint();
+            }
+        }
+        // Rien n'est proposé : l'état vient du code de Vanguard, dit par la fenêtre (« à jour » en vert seulement
+        // quand Vanguard l'a vérifié), puis sa raison, signe par signe.
+        EtatFeuille::MiseAJour(v @ (Vue::AJour(r) | Vue::Rien(r) | Vue::NonVerifiee(r))) => {
+            let (tete, couleur) = match v {
+                Vue::AJour(_) => (crate::tr!("À jour, vérifié. ", "Up to date, verified. "), p.bon),
+                Vue::Rien(_) => (
+                    crate::tr!("Rien à mettre à jour ici. ", "Nothing to update here. "),
+                    p.doux,
+                ),
+                _ => (
+                    crate::tr!(
+                        "Pas vérifié : rien n'est dit à jour. ",
+                        "Not verified: nothing is said up to date. "
+                    ),
+                    p.jaune,
+                ),
+            };
+            signale_avec(ui, couleur, 14.0, |ui| {
+                let format = TextFormat::simple(police(14.0), p.encre);
+                garde(ui, memoire, Cle::Raison, tete, r, &format);
+            });
+        }
         EtatFeuille::Envoi => {
             ui.label(texte(
                 match f.famille {
@@ -381,6 +417,10 @@ fn corps(ui: &mut Ui, f: &FeuilleCorrection, memoire: &mut Memoire) {
                         crate::tr!("Vanguard applique la correction…", "Vanguard is applying the fix…")
                     }
                     Famille::Annulation => crate::tr!("Vanguard remet comme avant…", "Vanguard is restoring…"),
+                    Famille::MiseAJour => crate::tr!(
+                        "Vanguard revérifie, télécharge s'il le faut, puis pose et essaie chaque programme…",
+                        "Vanguard checks again, downloads if needed, then places and tries each program…"
+                    ),
                 },
                 14.0,
                 p.doux,
@@ -388,7 +428,9 @@ fn corps(ui: &mut Ui, f: &FeuilleCorrection, memoire: &mut Memoire) {
         }
         EtatFeuille::Recu(issue) => recu(ui, f.famille, issue),
         // La raison d'un refus est un texte de Vanguard : signe par signe. Les autres raisons sont celles de la fenêtre.
-        EtatFeuille::Lue(Lecture::Refusee(r)) | EtatFeuille::Annulation(Lecture::Refusee(r)) => {
+        EtatFeuille::Lue(Lecture::Refusee(r))
+        | EtatFeuille::Annulation(Lecture::Refusee(r))
+        | EtatFeuille::MiseAJour(Vue::Refusee(r)) => {
             signale_avec(ui, p.jaune, 14.0, |ui| {
                 let format = TextFormat::simple(police(14.0), p.encre);
                 garde(
@@ -403,6 +445,7 @@ fn corps(ui: &mut Ui, f: &FeuilleCorrection, memoire: &mut Memoire) {
         }
         EtatFeuille::Lue(Lecture::Illisible(r))
         | EtatFeuille::Annulation(Lecture::Illisible(r))
+        | EtatFeuille::MiseAJour(Vue::Illisible(r))
         | EtatFeuille::Echec(r) => {
             signale(
                 ui,
@@ -445,6 +488,13 @@ fn recu(ui: &mut Ui, famille: Famille, issue: &IssueChange) {
                     ),
                     p.bon,
                 ),
+                crate::donnees::changements::Relu::MisAJour => (
+                    crate::tr!(
+                        "Vanguard a relu, comparé et essayé chaque programme posé : à jour.",
+                        "Vanguard read back, compared and tried each program placed: up to date."
+                    ),
+                    p.bon,
+                ),
                 crate::donnees::changements::Relu::PasRevenu => (
                     crate::tr!(
                         "Vanguard a relu : pas revenu comme avant partout. Voyez « Ce que Vanguard a changé ».",
@@ -466,7 +516,7 @@ fn recu(ui: &mut Ui, famille: Famille, issue: &IssueChange) {
                 ));
             }
         }
-        _ => signale(ui, p.jaune, &phrase_issue(issue), 14.0),
+        _ => signale(ui, p.jaune, &phrase_issue(famille, issue), 14.0),
     }
 }
 
@@ -549,6 +599,101 @@ fn apercu_annulation(ui: &mut Ui, a: &Annulation, memoire: &mut Memoire) {
         crate::tr!(
             "Avec les droits de votre compte, sans mot de passe d'administrateur.",
             "With your account's rights, without an administrator password."
+        ),
+        13.0,
+    );
+}
+
+/// La taille d'un programme : en Mio, un chiffre après la virgule, puis en octets.
+fn taille(octets: u64) -> String {
+    const MIO: u64 = 1 << 20;
+    let (entiers, dixiemes) = (octets / MIO, (octets % MIO) * 10 / MIO);
+    crate::trf!(
+        "{},{} Mio ({} octets)",
+        "{}.{} MiB ({} bytes)",
+        entiers,
+        dixiemes,
+        octets
+    )
+}
+
+/// L'aperçu de la mise à jour : d'où vient le programme, sa version, son empreinte et sa taille, puis chaque
+/// programme d'ici qu'il remplacerait, avec sa version d'aujourd'hui. Chaque texte de Vanguard dans son cadre.
+fn apercu_mise_a_jour(ui: &mut Ui, a: &MiseAJour, memoire: &mut Memoire) {
+    let p = pal();
+    let fort = |ui: &mut Ui, t: &str| {
+        ui.add_space(12.0);
+        ui.label(RichText::new(t).font(moyenne(15.0)).color(p.encre));
+        ui.add_space(2.0);
+    };
+    let origine = match a.origine {
+        Origine::Github => crate::tr!(
+            "GitHub : la dernière version publiée, signée par l'auteur ; Vanguard a vérifié la signature.",
+            "GitHub: the latest published version, signed by the author; Vanguard verified the signature."
+        ),
+        Origine::Cle => crate::tr!(
+            "La clé VANGUARD d'où tourne Vanguard.",
+            "The VANGUARD key Vanguard runs from."
+        ),
+    };
+    ui.label(texte(
+        crate::tr!("D'où elle vient", "Where it comes from"),
+        12.0,
+        p.discret,
+    ));
+    ui.label(texte(origine, 14.0, p.encre));
+    if a.retouche {
+        ui.add_space(6.0);
+        signale(
+            ui,
+            p.jaune,
+            crate::tr!(
+                "Ce texte a été retouché avant de l'afficher : il n'est pas exactement celui de Vanguard.",
+                "This text was altered before showing it: it is not exactly Vanguard's."
+            ),
+            13.0,
+        );
+    }
+    if a.coupe || memoire.depasse {
+        ui.add_space(6.0);
+        signale(
+            ui,
+            p.jaune,
+            crate::tr!(
+                "Un texte trop long a été coupé : la suite n'est pas montrée.",
+                "A text that was too long was cut: the rest is not shown."
+            ),
+            13.0,
+        );
+    }
+    fort(ui, crate::tr!("Ce qui s'installerait", "What would be installed"));
+    ui.label(texte(crate::tr!("version", "version"), 12.0, p.discret));
+    cadre(ui, memoire, Cle::Visee, &a.visee, p.encre);
+    ui.label(texte(
+        crate::tr!("empreinte SHA-256", "SHA-256 fingerprint"),
+        12.0,
+        p.discret,
+    ));
+    cadre(ui, memoire, Cle::Sha256, &a.sha256, p.encre);
+    ui.label(texte(&taille(a.taille), 12.0, p.doux));
+    fort(ui, crate::tr!("Ce qui serait remplacé", "What would be replaced"));
+    for (i, c) in a.cibles.iter().enumerate() {
+        cadre(ui, memoire, Cle::Chemin(i), &c.chemin, p.encre);
+        ui.label(texte(
+            crate::tr!("version aujourd'hui", "version today"),
+            12.0,
+            p.discret,
+        ));
+        cadre(ui, memoire, Cle::Version(i), &c.version, p.doux);
+        ui.add_space(6.0);
+    }
+    ui.add_space(6.0);
+    signale(
+        ui,
+        p.bon,
+        crate::tr!(
+            "Avec les droits de votre compte. Vanguard revérifie tout au moment d'installer, écrit à côté, relit, compare et essaie, puis remplace d'un coup ; sinon, l'ancien reste en place. Jamais une version plus ancienne.",
+            "With your account's rights. Vanguard checks everything again when installing, writes alongside, reads back, compares and tries, then replaces at once; otherwise, the old one stays in place. Never an older version."
         ),
         13.0,
     );

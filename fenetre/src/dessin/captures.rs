@@ -811,10 +811,64 @@ fn gestes(dossier: &Path) -> usize {
                     None,
                 );
             });
+            // « Mettre à jour Vanguard » : l'aperçu lu, puis un « pas vérifié », puis l'installation faite.
+            let maj = mise_a_jour_capture(anglais);
+            ecrire("mise-a-jour", &|a| {
+                a.aller(Ecran::Rubrique(Rubrique::Vanguard));
+                a.voir_mise_a_jour();
+                a.poser_apercu(maj.as_bytes());
+                a.vieillir_apercu();
+            });
+            ecrire("mise-a-jour-pas-verifiee", &|a| {
+                a.aller(Ecran::Rubrique(Rubrique::Vanguard));
+                a.voir_mise_a_jour();
+                a.poser_vue_mise_a_jour(
+                    1,
+                    br#"{"geste":"voir-mise-a-jour","issue":"refuse","raison":"GitHub n'a pas repondu","etat":"non-verifie"}"#,
+                );
+            });
+            ecrire("mis-a-jour", &|a| {
+                a.aller(Ecran::Rubrique(Rubrique::Vanguard));
+                a.voir_mise_a_jour();
+                a.poser_issue(
+                    IssueChange::Fait {
+                        relu: Relu::MisAJour,
+                        annulation: None,
+                    },
+                    None,
+                );
+            });
         }
     }
+    // La carte « Mettre à jour Vanguard », au bas des réglages : une toile assez haute pour la montrer.
     crate::langue::choisir(Some(false));
-    faites
+    let mut rendu = Rendu::nouveau();
+    super::appliquer_theme(&rendu.ctx, true);
+    let mut appli = appli_remplie(false, true);
+    appli.aller(Ecran::Rubrique(Rubrique::Vanguard));
+    let toile = rendu.rendre([1280, 2400], &[0.0, 0.5, 2.0], |ui| image(&mut appli, None, ui));
+    toile
+        .ecrire_png(&dossier.join("gestes/carte-mise-a-jour-fr-sombre-1280x2400.png"))
+        .unwrap();
+    faites + 1
+}
+
+/// L'aperçu d'une mise à jour (inventé) : depuis GitHub, deux programmes remplacés.
+fn mise_a_jour_capture(anglais: bool) -> String {
+    serde_json::json!({
+        "geste": "voir-mise-a-jour", "issue": "fait", "raison": "", "etat": "propose",
+        "apercu": {
+            "version": "0.95.0", "langue": if anglais { "en" } else { "fr" },
+            "jeton": crate::commandes::Empreinte::MISE_A_JOUR.hex(), "origine": "github", "visee": "0.96.0",
+            "sha256": "3f".repeat(32), "taille": 14_680_064,
+            "cibles": [
+                {"chemin": "~/.local/share/vanguard/bin/vanguard", "version": "0.95.0"},
+                {"chemin": "~/Applications/vanguard", "version": "0.95.0"}
+            ]
+        },
+        "accord": "c4".repeat(32)
+    })
+    .to_string()
 }
 
 /// Les couleurs (couleurs/), en français : chaque préréglage et les couleurs du système (inventées), sombre et clair,

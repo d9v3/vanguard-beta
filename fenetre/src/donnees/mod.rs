@@ -15,6 +15,7 @@ pub mod correction;
 pub mod couleurs;
 pub mod evenements;
 pub mod libre;
+pub mod mise_a_jour;
 pub mod protection;
 
 use std::fmt;

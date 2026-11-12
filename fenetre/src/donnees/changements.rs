@@ -283,7 +283,7 @@ fn octal(t: &str) -> bool {
 }
 
 /// La dernière ligne non vide d'une sortie.
-fn derniere_ligne(sortie: &[u8]) -> Option<&[u8]> {
+pub(super) fn derniere_ligne(sortie: &[u8]) -> Option<&[u8]> {
     sortie
         .split(|o| *o == b'\n')
         .rev()
@@ -291,7 +291,7 @@ fn derniere_ligne(sortie: &[u8]) -> Option<&[u8]> {
 }
 
 /// Une raison de Vanguard, montrée nettoyée et bornée ; vide ou sans signe dessiné, elle n'en est pas une.
-fn raison(r: &str) -> Option<String> {
+pub(super) fn raison(r: &str) -> Option<String> {
     crate::nettoyage::lisible(r).then(|| crate::nettoyage::nom(&montre(r), RAISON_MAX))
 }
 
@@ -398,12 +398,14 @@ pub enum Relu {
     Revenu,
     /// L'annulation : remise, mais pas relue comme avant partout.
     PasRevenu,
+    /// La mise à jour : chaque programme remplacé, relu, comparé et essayé par Vanguard.
+    MisAJour,
 }
 
 impl Relu {
     /// Ce que la relecture dit est le but atteint.
     pub fn bon(self) -> bool {
-        matches!(self, Relu::Corrige | Relu::Revenu)
+        matches!(self, Relu::Corrige | Relu::Revenu | Relu::MisAJour)
     }
 }
 
@@ -437,6 +439,10 @@ struct IssueBrute {
 /// annulation ; « refuse » avec le code 1 ou 2 et sa raison ; « echec » avec le code 1 et sa raison. Toute autre forme
 /// est illisible.
 pub fn lire_issue(famille: Famille, code: Option<i32>, sortie: &[u8]) -> IssueChange {
+    // La mise à jour a sa propre forme (`donnees::mise_a_jour`).
+    if famille == Famille::MiseAJour {
+        return super::mise_a_jour::lire_issue(code, sortie);
+    }
     let illisible = |r: &str| IssueChange::Illisible(r.to_string());
     let Some(ligne) = derniere_ligne(sortie) else {
         return illisible(crate::tr!("Vanguard n'a rien répondu", "Vanguard gave no answer"));

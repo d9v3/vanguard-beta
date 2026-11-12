@@ -658,6 +658,10 @@ impl Sorte {
 pub struct Empreinte([u8; 16]);
 
 impl Empreinte {
+    /// Le jeton de la mise à jour de Vanguard (`mise_a_jour::apercu::JETON` dans Vanguard) : « mise-a-jour-vang ».
+    /// Il n'y en a qu'une à la fois ; le relais n'admet que lui pour cette famille.
+    pub const MISE_A_JOUR: Empreinte = Empreinte(*b"mise-a-jour-vang");
+
     // Le protocole du relais n'existe que sous Linux (les essais le lisent partout).
     #[cfg(any(target_os = "linux", test))]
     pub fn depuis_octets(o: [u8; 16]) -> Empreinte {
@@ -716,6 +720,11 @@ pub enum SorteGeste {
     VoirAnnulation,
     /// `changements --annuler <jeton> --accord <accord> --json` : le remettre, tel que montré.
     Annuler,
+    /// `se-mettre-a-jour --voir --json` : ce que la mise à jour installerait, lecture seule. Son jeton est fixe
+    /// (`Empreinte::MISE_A_JOUR`) : aucune liste ne l'offre, et il ne part jamais en argument.
+    VoirMiseAJour,
+    /// `se-mettre-a-jour --appliquer --accord <accord> --json` : l'installer, telle que montrée.
+    MettreAJour,
 }
 
 /// La famille d'un geste : un « voir » et le geste qui change après lui. Le relais retient par famille la dernière
@@ -726,14 +735,26 @@ pub enum Famille {
     Correction,
     /// Les annulations de « Ce que Vanguard a changé ».
     Annulation,
+    /// La mise à jour de Vanguard (la carte « Mettre à jour Vanguard ») : une seule, sans liste.
+    MiseAJour,
 }
 
 impl Famille {
-    /// La lecture de la liste qui offre les « voir » de cette famille.
+    /// La commande dont relève un geste de cette famille : la lecture de la liste qui offre ses « voir », ou, pour
+    /// la mise à jour (qu'aucune liste n'offre), « Vérifier cette copie de Vanguard », dans la même rubrique.
     pub fn liste(self) -> Commande {
         match self {
             Famille::Correction => Commande::Bilan,
             Famille::Annulation => Commande::Changements,
+            Famille::MiseAJour => Commande::VerifierMoi,
+        }
+    }
+
+    /// Une liste offre-t-elle les « voir » de cette famille ? Pas la mise à jour : son « voir » a un jeton fixe.
+    pub fn offerte_par_une_liste(self) -> bool {
+        match self {
+            Famille::Correction | Famille::Annulation => true,
+            Famille::MiseAJour => false,
         }
     }
 
@@ -742,6 +763,7 @@ impl Famille {
         match self {
             Famille::Correction => SorteGeste::VoirCorrection,
             Famille::Annulation => SorteGeste::VoirAnnulation,
+            Famille::MiseAJour => SorteGeste::VoirMiseAJour,
         }
     }
 
@@ -750,16 +772,19 @@ impl Famille {
         match self {
             Famille::Correction => SorteGeste::AppliquerCorrection,
             Famille::Annulation => SorteGeste::Annuler,
+            Famille::MiseAJour => SorteGeste::MettreAJour,
         }
     }
 }
 
 impl SorteGeste {
-    const TOUTES: [SorteGeste; 4] = [
+    const TOUTES: [SorteGeste; 6] = [
         SorteGeste::VoirCorrection,
         SorteGeste::AppliquerCorrection,
         SorteGeste::VoirAnnulation,
         SorteGeste::Annuler,
+        SorteGeste::VoirMiseAJour,
+        SorteGeste::MettreAJour,
     ];
 
     /// Le mot de Vanguard (« sorte » du geste offert, « geste » de l'issue).
@@ -769,6 +794,8 @@ impl SorteGeste {
             SorteGeste::AppliquerCorrection => "appliquer-correction",
             SorteGeste::VoirAnnulation => "voir-annulation",
             SorteGeste::Annuler => "annuler-correction",
+            SorteGeste::VoirMiseAJour => "voir-mise-a-jour",
+            SorteGeste::MettreAJour => "mettre-a-jour",
         }
     }
 
@@ -780,13 +807,15 @@ impl SorteGeste {
     // Le protocole du relais n'existe que sous Linux (les essais le lisent partout).
     #[cfg(any(target_os = "linux", test))]
     /// L'octet du protocole du relais (10 et 11 : voir et appliquer une correction ; 12 et 13 : voir et faire une
-    /// annulation ; les suivants viendront avec leurs lots).
+    /// annulation ; 14 et 15 : voir et installer la mise à jour ; les suivants viendront avec leurs lots).
     pub fn octet(self) -> u8 {
         match self {
             SorteGeste::VoirCorrection => 10,
             SorteGeste::AppliquerCorrection => 11,
             SorteGeste::VoirAnnulation => 12,
             SorteGeste::Annuler => 13,
+            SorteGeste::VoirMiseAJour => 14,
+            SorteGeste::MettreAJour => 15,
         }
     }
 
@@ -800,8 +829,8 @@ impl SorteGeste {
     /// changent : ils passent seuls, ne s'interrompent pas, et leur accord n'est jamais tout à zéro.
     pub fn voir(self) -> bool {
         match self {
-            SorteGeste::VoirCorrection | SorteGeste::VoirAnnulation => true,
-            SorteGeste::AppliquerCorrection | SorteGeste::Annuler => false,
+            SorteGeste::VoirCorrection | SorteGeste::VoirAnnulation | SorteGeste::VoirMiseAJour => true,
+            SorteGeste::AppliquerCorrection | SorteGeste::Annuler | SorteGeste::MettreAJour => false,
         }
     }
 
@@ -809,6 +838,7 @@ impl SorteGeste {
         match self {
             SorteGeste::VoirCorrection | SorteGeste::AppliquerCorrection => Famille::Correction,
             SorteGeste::VoirAnnulation | SorteGeste::Annuler => Famille::Annulation,
+            SorteGeste::VoirMiseAJour | SorteGeste::MettreAJour => Famille::MiseAJour,
         }
     }
 }
@@ -827,9 +857,10 @@ pub struct GesteOffert {
 
 impl GesteOffert {
     /// Le jeton et la sorte, exacts : 32 chiffres hexadécimaux minuscules, un « voir » de la liste ; sinon, rien.
-    /// Une liste n'offre jamais directement un geste qui change : il ne part qu'après son aperçu.
+    /// Une liste n'offre jamais directement un geste qui change : il ne part qu'après son aperçu. Ni la mise à
+    /// jour : seule sa carte la demande.
     pub fn lire(&self) -> Option<(Empreinte, SorteGeste)> {
-        let sorte = SorteGeste::lire(&self.sorte).filter(|s| s.voir())?;
+        let sorte = SorteGeste::lire(&self.sorte).filter(|s| s.voir() && s.famille().offerte_par_une_liste())?;
         Some((Empreinte::lire(&self.jeton)?, sorte))
     }
 }
@@ -1005,8 +1036,14 @@ impl Lancement {
                     SorteGeste::AppliquerCorrection => ("correction", "--appliquer"),
                     SorteGeste::VoirAnnulation => ("changements", "--voir"),
                     SorteGeste::Annuler => ("changements", "--annuler"),
+                    SorteGeste::VoirMiseAJour => ("se-mettre-a-jour", "--voir"),
+                    SorteGeste::MettreAJour => ("se-mettre-a-jour", "--appliquer"),
                 };
-                let mut a = vec![commande.to_string(), option.to_string(), g.jeton.hex()];
+                let mut a = vec![commande.to_string(), option.to_string()];
+                // La mise à jour n'a qu'un jeton, fixe : Vanguard ne le demande pas en argument.
+                if g.sorte.famille() != Famille::MiseAJour {
+                    a.push(g.jeton.hex());
+                }
                 if !g.sorte.voir() {
                     a.extend(["--accord".to_string(), g.accord.hex()]);
                 }
@@ -1033,6 +1070,10 @@ impl Lancement {
             Lancement::Changement(_) => Duration::from_mins(15),
             // Écrire un petit fichier, scellé.
             Lancement::Couleurs(_) | Lancement::Animations(_) => Duration::from_mins(1),
+            // La mise à jour : l'aperçu peut attendre GitHub (cinq minutes) ; l'installer télécharge, vérifie, essaie
+            // et pose chaque copie (trente minutes, une connexion lente comprise).
+            Lancement::Geste(g) if g.sorte == SorteGeste::VoirMiseAJour => Duration::from_mins(5),
+            Lancement::Geste(g) if g.sorte == SorteGeste::MettreAJour => Duration::from_mins(30),
             // Une seule règle relue (et, pour un geste qui change, quelques droits posés) : quelques secondes, deux
             // minutes pour une règle lente.
             Lancement::Geste(_) => Duration::from_mins(2),
@@ -1364,6 +1405,41 @@ mod tests {
         assert_eq!(Sorte::depuis_octet(3), None);
     }
 
+    /// « Mettre à jour Vanguard » : `se-mettre-a-jour --voir --json`, puis `se-mettre-a-jour --appliquer --accord
+    /// <64 chiffres> --json`, sans jeton en argument (le sien est fixe, celui de Vanguard) ; relevant de la rubrique
+    /// Vanguard ; le geste qui change a le temps de télécharger. Aucune liste ne l'offre, même écrit tel quel.
+    #[test]
+    fn la_mise_a_jour_a_sa_forme_fermee() {
+        assert_eq!(Empreinte::MISE_A_JOUR.hex(), "6d6973652d612d6a6f75722d76616e67");
+        let j = Empreinte::MISE_A_JOUR;
+        let l = Lancement::Geste(Geste::voir(Famille::MiseAJour, j));
+        assert_eq!(l.arguments(), ["se-mettre-a-jour", "--voir", "--json"]);
+        assert_eq!(l.commande(), Commande::VerifierMoi);
+        assert_eq!(l.commande().rubrique(), Rubrique::Vanguard);
+        assert!(!l.change());
+        let a = Accord::lire(&"e1".repeat(32)).unwrap();
+        let l = Lancement::Geste(Geste::changer(Famille::MiseAJour, j, a));
+        assert_eq!(
+            l.arguments(),
+            [
+                "se-mettre-a-jour",
+                "--appliquer",
+                "--accord",
+                &"e1".repeat(32),
+                "--json"
+            ]
+        );
+        assert!(l.change());
+        assert!(l.delai() >= Duration::from_mins(30));
+        for sorte in ["voir-mise-a-jour", "mettre-a-jour"] {
+            let offert: GesteOffert = serde_json::from_str(&format!(
+                r#"{{"sorte":"{sorte}","jeton":"6d6973652d612d6a6f75722d76616e67"}}"#
+            ))
+            .unwrap();
+            assert_eq!(offert.lire(), None, "{sorte}");
+        }
+    }
+
     /// « Voir la correction » : `correction --voir <jeton> --json`, rien d'autre ; pas un changement ; son mot et son
     /// octet se relisent, les autres non ; un accord se lit en 64 chiffres minuscules exactement.
     #[test]
@@ -1427,7 +1503,7 @@ mod tests {
             };
             assert_eq!(g.lire().is_some(), offert, "{sorte}");
         }
-        for o in [0, 1, 2, 9, 14, 255] {
+        for o in [0, 1, 2, 9, 16, 255] {
             assert_eq!(SorteGeste::depuis_octet(o), None);
         }
         let a = Accord::lire(&"ab".repeat(32)).unwrap();

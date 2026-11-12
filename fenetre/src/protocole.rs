@@ -19,7 +19,8 @@ use std::io::{Read, Write};
 use std::time::Duration;
 
 use crate::commandes::{
-    Accord, Changement, ChangementCouleurs, Commande, Empreinte, Fin, Geste, Issue, Lancement, Sorte, SorteGeste,
+    Accord, Changement, ChangementCouleurs, Commande, Empreinte, Famille, Fin, Geste, Issue, Lancement, Sorte,
+    SorteGeste,
 };
 use crate::couleurs::{Base, Choix, Rgb, Theme, VIFS};
 
@@ -204,9 +205,14 @@ fn geste(o: &[u8]) -> Option<Geste> {
     if sorte.voir() != (accord == [0; 32]) {
         return None;
     }
+    let jeton = Empreinte::depuis_octets(*jeton);
+    // La mise à jour n'a qu'un jeton, fixe : tout autre est hors du protocole.
+    if sorte.famille() == Famille::MiseAJour && jeton != Empreinte::MISE_A_JOUR {
+        return None;
+    }
     Some(Geste {
         sorte,
-        jeton: Empreinte::depuis_octets(*jeton),
+        jeton,
         accord: Accord::depuis_octets(accord),
     })
 }
@@ -342,7 +348,6 @@ pub fn lire_trame(f: &mut impl Read, max: usize) -> std::io::Result<Option<Vec<u
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commandes::Famille;
 
     #[test]
     fn les_demandes_aller_retour_et_le_reste_refuse() {
@@ -533,6 +538,30 @@ mod tests {
             let mut v = bonne[..n].to_vec();
             v[0] = 6;
             assert_eq!(Demande::lire(&v), None, "{n}");
+        }
+    }
+
+    /// La mise à jour : ses deux gestes vont et reviennent avec son jeton fixe ; avec tout autre jeton (un octet
+    /// changé à chaque place), hors du protocole, accord ou pas.
+    #[test]
+    fn la_mise_a_jour_n_a_que_son_jeton() {
+        let accord = Accord::depuis_octets([0x3c; 32]);
+        for g in [
+            Geste::voir(Famille::MiseAJour, Empreinte::MISE_A_JOUR),
+            Geste::changer(Famille::MiseAJour, Empreinte::MISE_A_JOUR, accord),
+        ] {
+            let d = Demande::Lancer {
+                id: 8,
+                lancement: Lancement::Geste(g),
+                anglais: false,
+            };
+            let v = d.coder();
+            assert_eq!(Demande::lire(&v), Some(d));
+            for i in 6..22 {
+                let mut autre = v.clone();
+                autre[i] ^= 1;
+                assert_eq!(Demande::lire(&autre), None, "{:?} {i}", g.sorte);
+            }
         }
     }
 

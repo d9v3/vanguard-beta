@@ -171,6 +171,14 @@ impl Etat {
     /// consomme l'aperçu et la liste de sa famille ; un refus ne consomme rien.
     fn admettre_geste(&mut self, g: Geste) -> Option<&'static str> {
         let famille = g.sorte.famille();
+        // La mise à jour n'a qu'un jeton, fixe, qu'aucune liste n'offre : son « voir » (lecture seule) est admis
+        // pour lui seul. Son geste qui change suit le chemin commun : le jeton et l'accord du dernier aperçu montré.
+        if famille == Famille::MiseAJour && g.jeton != Empreinte::MISE_A_JOUR {
+            return Some(crate::tr!("pas le jeton de la mise à jour", "not the update's token"));
+        }
+        if g.sorte.voir() && famille == Famille::MiseAJour {
+            return None;
+        }
         if g.sorte.voir() {
             // Un « voir » ne change rien : la liste offerte sert encore (elle n'est pas vidée ici).
             if self.offerts.contains(&(g.jeton, g.sorte)) {
@@ -186,7 +194,7 @@ impl Etat {
                     "constat absent du dernier bilan : refaites-le",
                     "finding not in the last check: run it again"
                 ),
-                (Famille::Annulation, _) => crate::tr!(
+                (Famille::Annulation | Famille::MiseAJour, _) => crate::tr!(
                     "absent de la dernière liste de « Ce que Vanguard a changé » : relisez-la",
                     "not in the last list of “What Vanguard changed”: read it again"
                 ),
@@ -384,6 +392,8 @@ fn gestes_offerts(texte: &[u8], famille: Famille) -> HashSet<(Empreinte, SorteGe
     let elements = match famille {
         Famille::Correction => lu.constats.elements,
         Famille::Annulation => lu.changements.elements,
+        // Aucune liste n'offre la mise à jour.
+        Famille::MiseAJour => return HashSet::new(),
     };
     let (mut lus, mut jetons, mut doubles) = (Vec::new(), HashSet::new(), HashSet::new());
     for g in elements.into_iter().filter_map(|c| c.geste) {
@@ -1503,6 +1513,64 @@ esac
         etat.montres.insert(Famille::Annulation, (autre, a, il_y_a(APERCU_LU)));
         assert_eq!(etat.admettre(11, annuler(autre, a), &arret), None);
         assert!(etat.offerts.is_empty() && etat.montres.is_empty());
+    }
+
+    /// La mise à jour : son « voir » passe sans liste, avec son jeton seulement ; le geste qui l'installe suit le
+    /// chemin commun (aperçu montré, même jeton, même accord, 2 s à 10 min, une fois) ; ni la liste du bilan ni
+    /// celle des changements ne l'offrent ni ne la consomment. L'accord se retient de la dernière ligne de
+    /// `se-mettre-a-jour --voir`.
+    #[test]
+    fn la_mise_a_jour_ne_passe_qu_apres_son_apercu() {
+        let j = Empreinte::MISE_A_JOUR;
+        let autre = Empreinte::lire(&"7".repeat(32)).unwrap();
+        let a = Accord::lire(&"c3".repeat(32)).unwrap();
+        let arret = Arc::new(AtomicBool::new(false));
+        let voir = |j| Lancement::Geste(Geste::voir(Famille::MiseAJour, j));
+        let installer = |j, a| Lancement::Geste(Geste::changer(Famille::MiseAJour, j, a));
+        let mut etat = Etat {
+            offerts: [(autre, SorteGeste::VoirCorrection)].into(),
+            ..Etat::default()
+        };
+        assert_eq!(etat.admettre(1, voir(j), &arret), None);
+        etat.taches.clear();
+        assert!(etat.admettre(2, voir(autre), &arret).is_some(), "autre jeton");
+        assert!(etat.admettre(3, installer(j, a), &arret).is_some(), "sans aperçu");
+        let fin = |sortie: &str| Fin {
+            lancement: voir(j),
+            code: Some(0),
+            issue: Issue::Terminee,
+            duree: Duration::ZERO,
+            sortie: sortie.as_bytes().to_vec(),
+        };
+        let ligne = format!(
+            r#"{{"geste":"voir-mise-a-jour","issue":"fait","raison":"","etat":"propose","accord":"{}","apercu":{{"jeton":"{}","origine":"github"}}}}"#,
+            a.hex(),
+            j.hex()
+        );
+        etat.retenir(&fin(&ligne));
+        assert_eq!(etat.montres.get(&Famille::MiseAJour).map(|m| (m.0, m.1)), Some((j, a)));
+        let r = etat.admettre(4, installer(j, a), &arret);
+        assert!(r.is_some_and(|r| r.contains("2 s")), "trop tôt : {r:?}");
+        let il_y_a = Instant::now()
+            .checked_sub(APERCU_LU + Duration::from_millis(50))
+            .unwrap();
+        etat.montres.insert(Famille::MiseAJour, (j, a, il_y_a));
+        assert!(etat.admettre(5, installer(autre, a), &arret).is_some(), "autre jeton");
+        let b = Accord::lire(&"d4".repeat(32)).unwrap();
+        assert!(etat.admettre(6, installer(j, b), &arret).is_some(), "autre accord");
+        assert_eq!(etat.admettre(7, installer(j, a), &arret), None);
+        assert!(etat.montres.is_empty());
+        assert_eq!(etat.offerts, [(autre, SorteGeste::VoirCorrection)].into());
+        etat.taches.clear();
+        assert!(etat.admettre(8, installer(j, a), &arret).is_some(), "une fois");
+        // Une liste qui écrirait la mise à jour ne l'offre pas.
+        let liste = format!(
+            r#"{{"constats":[{{"geste":{{"sorte":"voir-mise-a-jour","jeton":"{}"}}}}]}}"#,
+            j.hex()
+        );
+        for f in [Famille::Correction, Famille::Annulation, Famille::MiseAJour] {
+            assert!(gestes_offerts(liste.as_bytes(), f).is_empty(), "{f:?}");
+        }
     }
 
     /// L'accord retenu d'un aperçu : sa dernière ligne dit ce geste, « fait », le jeton demandé et un accord non nul ;

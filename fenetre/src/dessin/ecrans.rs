@@ -1164,6 +1164,50 @@ fn reglages(appli: &mut Appli, ui: &mut Ui) {
     ui.add_space(24.0);
     titre_section(ui, crate::tr!("Vérifier Vanguard", "Check Vanguard"), None);
     cartes_commandes(appli, ui, Rubrique::Vanguard.commandes().collect());
+    carte_mise_a_jour(appli, ui);
+}
+
+/// « Mettre à jour Vanguard » : un geste, toute la carte. Elle ouvre la feuille de l'aperçu (d'où vient la mise à
+/// jour, sa version, ce qu'elle remplacerait) ; rien ne s'installe avant « Installer cette mise à jour » dans cette
+/// feuille, avec l'accord de ce qui y est montré.
+fn carte_mise_a_jour(appli: &mut Appli, ui: &mut Ui) {
+    let p = pal();
+    let titre = crate::tr!("Mettre à jour Vanguard", "Update Vanguard");
+    let id = ui.make_persistent_id("carte-mise-a-jour");
+    let rep = carte_qui_ouvre(ui, id, titre, |ui, s| {
+        // Comme les autres cartes de commande : le texte à gauche, le mot qui ouvre à droite.
+        let fleche = WidgetText::from(texte(
+            &format!("{} →", crate::tr!("Voir", "See")),
+            12.0,
+            p.discret.lerp_to_gamma(p.encre, s),
+        ))
+        .into_galley(ui, Some(TextWrapMode::Extend), f32::INFINITY, TextStyle::Body);
+        ui.horizontal(|ui| {
+            let ecart = 16.0 + 2.0 * ui.spacing().item_spacing.x;
+            ui.vertical(|ui| {
+                ui.set_width((ui.available_width() - fleche.size().x - ecart).max(160.0));
+                ui.label(RichText::new(titre).font(moyenne(16.0)).color(p.encre));
+                ui.label(texte(
+                    crate::tr!(
+                        "Montre d'abord d'où vient la mise à jour (la clé VANGUARD, ou GitHub signée par l'auteur), sa version et chaque programme qu'elle remplacerait. Rien ne change avant votre accord.",
+                        "First shows where the update comes from (the VANGUARD key, or GitHub signed by the author), its version and each program it would replace. Nothing changes before your consent."
+                    ),
+                    13.0,
+                    p.doux,
+                ));
+            });
+            ui.add_space(16.0);
+            ui.label(fleche);
+        });
+    });
+    let rep = rep.on_hover_text(crate::tr!(
+        "Voir l'aperçu : rien ne s'installe d'ici",
+        "See the preview: nothing is installed from here"
+    ));
+    if rep.clicked() {
+        appli.voir_mise_a_jour();
+    }
+    ui.add_space(12.0);
 }
 
 fn guide(appli: &mut Appli, ui: &mut Ui) {

@@ -31,7 +31,7 @@ use crate::couleurs::{Choix, Jeu, Theme};
 use crate::coulisses::{Chemin, Coulisses};
 use crate::donnees::changements::{self, IssueChange, Relu};
 use crate::donnees::couleurs::{IssueAnimations, IssueCouleurs, Lues};
-use crate::donnees::{appareils, bilan, correction, evenements, libre, protection};
+use crate::donnees::{appareils, bilan, correction, evenements, libre, mise_a_jour, protection};
 use crate::lanceur::{Fin, Issue, Message, Programme, Reveil, Tache};
 
 /// Saisies gardées pour ↑.
@@ -167,6 +167,7 @@ pub fn peut_accepter(etat: &EtatFeuille, montre: Option<Instant>, maintenant: In
     match etat {
         EtatFeuille::Lue(correction::Lecture::Lue(a)) if lu && a.pas_d_ici().is_none() => Some(a.accord),
         EtatFeuille::Annulation(correction::Lecture::Lue(a)) if lu && a.pas_d_ici().is_none() => Some(a.accord),
+        EtatFeuille::MiseAJour(mise_a_jour::Vue::Proposee(a)) if lu && a.pas_d_ici().is_none() => Some(a.accord),
         _ => None,
     }
 }
@@ -180,6 +181,8 @@ pub enum EtatFeuille {
     Lue(correction::Lecture),
     /// L'aperçu d'une annulation, lu strictement (`donnees::changements`).
     Annulation(correction::Lecture<changements::Annulation>),
+    /// L'aperçu de la mise à jour de Vanguard, lu strictement (`donnees::mise_a_jour`).
+    MiseAJour(mise_a_jour::Vue),
     /// Le geste accepté est parti : il ne s'interrompt pas, la feuille attend son issue.
     Envoi,
     /// L'issue du geste : fait, en échec, ou inconnue (jamais un refus : la feuille montre alors un nouvel aperçu).
@@ -350,7 +353,20 @@ impl Appli {
             f.etat = match f.famille {
                 Famille::Correction => EtatFeuille::Lue(correction::lire(f.jeton, Some(0), sortie)),
                 Famille::Annulation => EtatFeuille::Annulation(changements::lire_apercu(f.jeton, Some(0), sortie)),
+                Famille::MiseAJour => EtatFeuille::MiseAJour(mise_a_jour::lire_apercu(Some(0), sortie)),
             };
+            f.montre = Some(Instant::now());
+        }
+    }
+
+    /// Pour les captures : la réponse de `vanguard se-mettre-a-jour --voir` qui ne propose rien (code 1), lue comme
+    /// une vraie (données inventées).
+    #[cfg(test)]
+    pub fn poser_vue_mise_a_jour(&mut self, code: i32, sortie: &[u8]) {
+        if let Some(Proposition::Correction(f)) = &mut self.confirmation
+            && f.famille == Famille::MiseAJour
+        {
+            f.etat = EtatFeuille::MiseAJour(mise_a_jour::lire_apercu(Some(code), sortie));
             f.montre = Some(Instant::now());
         }
     }
@@ -610,6 +626,26 @@ impl Appli {
         self.confirmation = Some(Proposition::Correction(FeuilleCorrection::nouvelle(
             Famille::Correction,
             jeton,
+        )));
+        if self.tache.is_none() && self.file.is_empty() {
+            self.lancer_correction();
+        }
+    }
+
+    /// « Mettre à jour Vanguard » (la carte des réglages) : ouvre la feuille et demande l'aperçu dès que rien ne
+    /// tourne. Aucune liste n'offre la mise à jour : son jeton est fixe. Rien ne change sur l'ordinateur ici, ni dans
+    /// l'aperçu (Vanguard ne fait que lire, et regarder GitHub ou la clé) : l'installer attend l'accord.
+    pub fn voir_mise_a_jour(&mut self) {
+        if self.programme.is_err() {
+            return;
+        }
+        if self.confirmation.is_some() {
+            self.pas_maintenant();
+            return;
+        }
+        self.confirmation = Some(Proposition::Correction(FeuilleCorrection::nouvelle(
+            Famille::MiseAJour,
+            Empreinte::MISE_A_JOUR,
         )));
         if self.tache.is_none() && self.file.is_empty() {
             self.lancer_correction();
@@ -1061,6 +1097,7 @@ impl Appli {
             Issue::Terminee => match famille {
                 Famille::Correction => EtatFeuille::Lue(correction::lire(g.jeton, f.code, &f.sortie)),
                 Famille::Annulation => EtatFeuille::Annulation(changements::lire_apercu(g.jeton, f.code, &f.sortie)),
+                Famille::MiseAJour => EtatFeuille::MiseAJour(mise_a_jour::lire_apercu(f.code, &f.sortie)),
             },
             Issue::Arretee => EtatFeuille::Echec(crate::tr!("arrêté", "stopped").to_string()),
             Issue::DelaiDepasse => EtatFeuille::Echec(crate::trf!(
@@ -1074,25 +1111,53 @@ impl Appli {
         let (lue, accord, refus) = match &etat {
             EtatFeuille::Lue(correction::Lecture::Lue(a)) => (true, Some(a.accord), None),
             EtatFeuille::Annulation(correction::Lecture::Lue(a)) => (true, Some(a.accord), None),
+            EtatFeuille::MiseAJour(mise_a_jour::Vue::Proposee(a)) => (true, Some(a.accord), None),
             EtatFeuille::Lue(correction::Lecture::Refusee(r))
-            | EtatFeuille::Annulation(correction::Lecture::Refusee(r)) => (false, None, Some((r.clone(), false))),
+            | EtatFeuille::Annulation(correction::Lecture::Refusee(r))
+            | EtatFeuille::MiseAJour(mise_a_jour::Vue::Refusee(r)) => (false, None, Some((r.clone(), false))),
             EtatFeuille::Lue(correction::Lecture::Illisible(r))
             | EtatFeuille::Annulation(correction::Lecture::Illisible(r))
+            | EtatFeuille::MiseAJour(mise_a_jour::Vue::Illisible(r))
             | EtatFeuille::Echec(r) => (false, None, Some((r.clone(), true))),
-            EtatFeuille::Attente { .. } | EtatFeuille::Envoi | EtatFeuille::Recu(_) => (false, None, None),
+            // Rien n'est proposé : dit tel quel, « à jour » seulement quand Vanguard l'a vérifié.
+            EtatFeuille::MiseAJour(
+                mise_a_jour::Vue::AJour(_) | mise_a_jour::Vue::Rien(_) | mise_a_jour::Vue::NonVerifiee(_),
+            )
+            | EtatFeuille::Attente { .. }
+            | EtatFeuille::Envoi
+            | EtatFeuille::Recu(_) => (false, None, None),
         };
-        let (resume, ton, echec) = match (lue, refus) {
-            (true, _) => (
+        let (resume, ton, echec) = match (&etat, lue, refus) {
+            (_, true, _) => (
                 crate::tr!("Aperçu prêt : rien n'a changé.", "Preview ready: nothing changed.").to_string(),
                 Ton::Bon,
                 false,
             ),
-            (false, Some((r, echec))) => (
+            (EtatFeuille::MiseAJour(mise_a_jour::Vue::AJour(r)), ..) => (
+                crate::trf!("À jour, vérifié : {}", "Up to date, verified: {}", r),
+                Ton::Bon,
+                false,
+            ),
+            (EtatFeuille::MiseAJour(mise_a_jour::Vue::Rien(r)), ..) => (
+                crate::trf!("Rien à mettre à jour : {}", "Nothing to update: {}", r),
+                Ton::Discret,
+                false,
+            ),
+            (EtatFeuille::MiseAJour(mise_a_jour::Vue::NonVerifiee(r)), ..) => (
+                crate::trf!(
+                    "Pas vérifié, rien n'est dit à jour : {}",
+                    "Not verified, nothing is said up to date: {}",
+                    r
+                ),
+                Ton::Attention,
+                false,
+            ),
+            (_, false, Some((r, echec))) => (
                 crate::trf!("Pas d'aperçu : {}", "No preview: {}", r),
                 Ton::Attention,
                 echec,
             ),
-            (false, None) => (String::new(), Ton::Discret, true),
+            (_, false, None) => (String::new(), Ton::Discret, true),
         };
         self.console.finir(
             f.lancement,
@@ -1144,7 +1209,7 @@ impl Appli {
             }
             Issue::Impossible(e) => IssueChange::Illisible(e.clone()),
         };
-        let phrase = phrase_issue(&issue);
+        let phrase = phrase_issue(famille, &issue);
         let ton = match &issue {
             IssueChange::Fait { relu, .. } if relu.bon() => Ton::Bon,
             _ => Ton::Attention,
@@ -1180,9 +1245,12 @@ impl Appli {
             feuille.avis = None;
             feuille.envoye = None;
         }
-        // Ce qui a peut-être changé se relit : le bilan, et la liste qui offre (ou n'offre plus) de remettre.
-        self.demander(Commande::Changements);
-        self.demander(Commande::Bilan);
+        // Ce qui a peut-être changé se relit : le bilan, et la liste qui offre (ou n'offre plus) de remettre. La
+        // mise à jour ne touche ni l'un ni l'autre.
+        if famille != Famille::MiseAJour {
+            self.demander(Commande::Changements);
+            self.demander(Commande::Bilan);
+        }
     }
 
     /// Les couleurs relues (`vanguard couleurs --json`) : elles valent pour la fenêtre dès l'image suivante. Une
@@ -1511,7 +1579,25 @@ fn issue_du_changement(ch: Changement, f: &Fin) -> IssueChangement {
 
 /// L'issue d'un geste qui change, en une phrase (la console et la feuille). Seul un refus dit « rien n'a été
 /// fait » : un échec a pu commencer, une issue inconnue a pu tout faire.
-pub fn phrase_issue(issue: &IssueChange) -> String {
+pub fn phrase_issue(famille: Famille, issue: &IssueChange) -> String {
+    match (famille, issue) {
+        // La mise à jour ne passe pas par « Ce que Vanguard a changé » : son aperçu redit la version de chaque
+        // programme en place.
+        (Famille::MiseAJour, IssueChange::Echec(r)) => crate::trf!(
+            "Échec : {}. Là où un programme n'est pas remplacé, l'ancien reste en place ; l'aperçu redit la version de chacun.",
+            "Failed: {}. Where a program is not replaced, the old one stays in place; the preview tells each one's version again.",
+            r
+        ),
+        (Famille::MiseAJour, IssueChange::Illisible(r)) => crate::trf!(
+            "Issue inconnue ({}) : Vanguard a peut-être remplacé un programme. L'aperçu redit la version de chacun.",
+            "Unknown outcome ({}): Vanguard may have replaced a program. The preview tells each one's version again.",
+            r
+        ),
+        (_, issue) => phrase_issue_commune(issue),
+    }
+}
+
+fn phrase_issue_commune(issue: &IssueChange) -> String {
     match issue {
         IssueChange::Fait { relu, .. } => {
             let relu = match relu {
@@ -1519,6 +1605,10 @@ pub fn phrase_issue(issue: &IssueChange) -> String {
                 Relu::EncoreSignale => crate::tr!("encore signalé", "still reported"),
                 Relu::Revenu => crate::tr!("revenu comme avant", "back as before"),
                 Relu::PasRevenu => crate::tr!("pas revenu comme avant partout", "not back as before everywhere"),
+                Relu::MisAJour => crate::tr!(
+                    "chaque programme remplacé, relu et essayé",
+                    "each program replaced, read back and tried"
+                ),
             };
             crate::trf!("Fait. Vanguard a relu : {}", "Done. Vanguard read it again: {}", relu)
         }
@@ -2276,6 +2366,110 @@ exit 0
             peut_accepter(&e, Instant::now().checked_sub(APERCU_LU), Instant::now()),
             None
         );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// « Mettre à jour Vanguard », de bout en bout avec un faux `vanguard` : la carte ouvre la feuille et ne lance
+    /// que `se-mettre-a-jour --voir --json` ; l'aperçu proposé ne s'accepte pas avant 2 s ; accepté, seul l'accord
+    /// montré part, une fois, sans jeton ; un refus redemande l'aperçu ; fait, la feuille le dit sans relire le bilan.
+    /// « Pas vérifié » ne se lit jamais « à jour » et ne s'accepte jamais.
+    #[cfg(unix)]
+    #[test]
+    fn mettre_a_jour_ne_part_qu_avec_l_accord_montre() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let d = crate::essais::banc("mise-a-jour");
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let script = d.join("vanguard");
+        std::fs::write(&script, FAUX_GESTES).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let ecrire = |nom: &str, contenu: &str| std::fs::write(d.join(nom), contenu).unwrap();
+        let appels = || std::fs::read_to_string(d.join("appels")).unwrap_or_default();
+        let compter = |motif: &str| appels().lines().filter(|l| l.starts_with(motif)).count();
+        let (a1, a2) = ("e1".repeat(32), "e2".repeat(32));
+        let apercu = |accord: &str| {
+            format!(
+                r#"{{"geste":"voir-mise-a-jour","issue":"fait","raison":"","etat":"propose","apercu":{{"version":"0.95.0","langue":"fr","jeton":"{}","origine":"github","visee":"0.96.0","sha256":"{}","taille":12345678,"cibles":[{{"chemin":"~/.local/share/vanguard/bin/vanguard","version":"0.95.0"}}]}},"accord":"{accord}"}}"#,
+                Empreinte::MISE_A_JOUR.hex(),
+                "ab".repeat(32)
+            )
+        };
+        ecrire("r-se-mettre-a-jour--voir", &apercu(&a1));
+        let moi = std::fs::metadata(&d).unwrap().uid();
+        let mut a = Appli::nouvelle(Ok(Programme::dans(&d, moi).unwrap()), std::sync::Arc::new(|| {}));
+        finir_tout(&mut a);
+        let etat = |a: &Appli| a.feuille_correction().map(|f| f.etat.clone());
+
+        a.voir_mise_a_jour();
+        finir_tout(&mut a);
+        assert_eq!(a.feuille_correction().map(|f| f.famille), Some(Famille::MiseAJour));
+        assert!(appels().contains("se-mettre-a-jour --voir --json\n"));
+        assert!(matches!(
+            etat(&a),
+            Some(EtatFeuille::MiseAJour(mise_a_jour::Vue::Proposee(_)))
+        ));
+        // Tout de suite : rien ne part.
+        a.accepter();
+        finir_tout(&mut a);
+        assert_eq!(compter("se-mettre-a-jour --appliquer"), 0);
+
+        // Après 2 s : l'accord montré, sans jeton, une fois. Vanguard refuse (la version a changé) : un nouvel
+        // aperçu, à l'accord nouveau.
+        ecrire(
+            "r-se-mettre-a-jour--appliquer",
+            r#"{"geste":"mettre-a-jour","issue":"refuse","raison":"la mise à jour a changé depuis l'aperçu","cibles":[]}"#,
+        );
+        ecrire("c-se-mettre-a-jour--appliquer", "1");
+        ecrire("r-se-mettre-a-jour--voir", &apercu(&a2));
+        a.vieillir_apercu();
+        a.accepter();
+        a.accepter();
+        finir_tout(&mut a);
+        assert_eq!(compter("se-mettre-a-jour --appliquer"), 1);
+        assert!(appels().contains(&format!("se-mettre-a-jour --appliquer --accord {a1} --json\n")));
+        assert_eq!(compter("se-mettre-a-jour --voir"), 2);
+        assert!(matches!(
+            etat(&a),
+            Some(EtatFeuille::MiseAJour(mise_a_jour::Vue::Proposee(m))) if m.accord.hex() == a2
+        ));
+
+        // Fait : la feuille le dit ; le bilan n'est pas relu (la mise à jour ne le touche pas).
+        ecrire(
+            "r-se-mettre-a-jour--appliquer",
+            r#"{"geste":"mettre-a-jour","issue":"fait","raison":"","cibles":[{"chemin":"~/.local/share/vanguard/bin/vanguard","issue":"fait","raison":""}]}"#,
+        );
+        ecrire("c-se-mettre-a-jour--appliquer", "0");
+        let bilans = compter("audit --json");
+        a.vieillir_apercu();
+        a.accepter();
+        finir_tout(&mut a);
+        assert!(appels().contains(&format!("se-mettre-a-jour --appliquer --accord {a2} --json\n")));
+        assert_eq!(
+            etat(&a),
+            Some(EtatFeuille::Recu(IssueChange::Fait {
+                relu: changements::Relu::MisAJour,
+                annulation: None
+            }))
+        );
+        assert_eq!(compter("audit --json"), bilans);
+
+        // « Pas vérifié » (code 1) : jamais « à jour », jamais acceptable.
+        a.annuler();
+        ecrire(
+            "r-se-mettre-a-jour--voir",
+            r#"{"geste":"voir-mise-a-jour","issue":"refuse","raison":"GitHub n'a pas répondu","etat":"non-verifie"}"#,
+        );
+        ecrire("c-se-mettre-a-jour--voir", "1");
+        a.voir_mise_a_jour();
+        finir_tout(&mut a);
+        assert!(matches!(
+            etat(&a),
+            Some(EtatFeuille::MiseAJour(mise_a_jour::Vue::NonVerifiee(_)))
+        ));
+        a.vieillir_apercu();
+        a.accepter();
+        finir_tout(&mut a);
+        assert_eq!(compter("se-mettre-a-jour --appliquer"), 2);
         let _ = std::fs::remove_dir_all(&d);
     }
 
