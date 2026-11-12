@@ -92,7 +92,8 @@ repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
   of a list shown earlier only names the path). Entries are read within bounds, without waiting on a pipe, at startup
   as in `vanguard slow`: an entry of 64 KiB or more is neither removed (it was removed with no way to put it back)
   nor put back over, an entry that, once hidden, would exceed this bound is refused before being written, a file
-  replaced by a pipe no longer freezes the list, and a rewritten entry keeps its permissions. The settings seal is
+  replaced by a pipe no longer freezes the list, and a rewritten entry keeps its permissions;
+  `vanguard slow` states how many entries it could not read, instead of counting them as absent. The settings seal is
   written in two steps: a hard stop between a file and its seal no longer raises a false tampering alarm.
 - **Dependency security.** rustix 1.1.6 (advisory RUSTSEC-2026-0486: in its extended attribute functions, bytes
   never written were marked as initialized for an empty buffer), brought in by crossterm.

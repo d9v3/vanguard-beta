@@ -97,8 +97,9 @@ recompilée au besoin.
   entrées se lisent bornées, sans attendre un tube, au démarrage comme dans `vanguard lenteur` : une entrée de 64 Kio
   ou plus n'est ni retirée (elle l'était sans pouvoir être remise) ni remise par-dessus, une entrée qui, masquée,
   dépasserait cette borne est refusée avant d'être écrite, un fichier remplacé par un tube ne fige plus la liste, et
-  une entrée réécrite garde ses droits. Le sceau des réglages s'écrit en deux temps : un arrêt brutal entre un fichier
-  et son sceau ne fait plus crier au falsifié.
+  une entrée réécrite garde ses droits ; `vanguard lenteur` dit le nombre d'entrées qu'il n'a pas pu lire, au lieu
+  de les compter absentes. Le sceau des réglages s'écrit en deux temps : un arrêt brutal entre un fichier et son
+  sceau ne fait plus crier au falsifié.
 - **Sécurité des dépendances.** rustix 1.1.6 (avis RUSTSEC-2026-0486 : dans ses fonctions des attributs étendus,
   des octets jamais écrits étaient marqués comme initialisés pour un tampon vide), amené par crossterm.
 - **Essais.** Cinq nouvelles cibles de fuzzing (ce qu'une ligne de démarrage lance et, pour la fenêtre à venir, les

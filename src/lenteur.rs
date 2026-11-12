@@ -61,6 +61,9 @@ pub struct Instantane {
     /// `Err` : pourquoi la durée du démarrage n'a pas pu être lue.
     pub demarrage: Result<Demarrage, String>,
     pub au_demarrage: Vec<AuDemarrage>,
+    /// Entrées d'autostart vues mais pas lues (lien, tube, trop grosse, illisible) : pas listées, mais dites, jamais
+    /// comptées comme absentes (relecture 0.94, R-5).
+    pub au_demarrage_pas_lus: usize,
     /// Secondes depuis le démarrage.
     pub allume_depuis: Option<u64>,
     /// Disque du système : (libre, total).
@@ -78,6 +81,7 @@ impl Default for Instantane {
             programmes: Vec::new(),
             demarrage: Err(tr!("durée non mesurée", "duration not measured").into()),
             au_demarrage: Vec::new(),
+            au_demarrage_pas_lus: 0,
             allume_depuis: None,
             place: None,
         }
@@ -622,10 +626,23 @@ fn afficher(i: &Instantane) {
         };
         ligne_mesure(tr!("Allumé depuis", "On for"), &texte);
     }
-    let a_l_ouverture = tr!("À l'ouverture", "At login");
+    ligne_mesure(tr!("À l'ouverture", "At login"), &a_l_ouverture(i));
+}
+
+/// Ce que dit la ligne « À l'ouverture » : les programmes, et les entrées vues mais pas lues, jamais tues (R-5).
+fn a_l_ouverture(i: &Instantane) -> String {
+    let n = i.au_demarrage_pas_lus;
+    let pas_lus = (n > 0).then(|| {
+        trf!(
+            "{n} entrée(s) pas lue(s), dite(s) par vanguard demarrage",
+            "{n} entr(y/ies) not read, reported by vanguard startup"
+        )
+    });
     if i.au_demarrage.is_empty() {
-        ligne_mesure(a_l_ouverture, tr!("aucun programme trouvé", "no program found"));
-        return;
+        return match pas_lus {
+            None => tr!("aucun programme trouvé", "no program found").into(),
+            Some(p) => trf!("aucun programme lu ; {p}", "no program read; {p}"),
+        };
     }
     let mut liste: Vec<&AuDemarrage> = i.au_demarrage.iter().collect();
     liste.sort_by(|a, b| b.poids.cmp(&a.poids).then_with(|| a.nom.cmp(&b.nom)));
@@ -640,7 +657,10 @@ fn afficher(i: &Instantane) {
         texte += &trf!(" et {reste} autre(s)", " and {reste} more");
     }
     let texte = trf!("{} programme(s) : {texte}", "{} program(s): {texte}", liste.len());
-    ligne_mesure(a_l_ouverture, &texte);
+    match pas_lus {
+        None => texte,
+        Some(p) => format!("{texte} ; {p}"),
+    }
 }
 
 /// L'écran : l'en-tête, la mesure de deux secondes, puis ce qu'elle veut dire. Rend les conseils.
@@ -944,28 +964,31 @@ mod systeme {
     /// Les programmes lancés à l'ouverture de session, (nom, programme) : entrées d'autostart actives (celles de
     /// l'utilisateur remplacent celles du système au même nom) et services ajoutés par l'utilisateur
     /// (~/.config/systemd/user).
-    fn au_demarrage() -> Vec<(String, String)> {
+    /// Avec le nombre d'entrées d'autostart vues mais pas lues.
+    fn au_demarrage() -> (Vec<(String, String)>, usize) {
         let maison = crate::socle::maison();
         let config = std::env::var_os("XDG_CONFIG_HOME").map_or_else(|| maison.join(".config"), PathBuf::from);
         let systeme = std::env::var("XDG_CONFIG_DIRS").unwrap_or_default();
         let systeme = if systeme.is_empty() { "/etc/xdg" } else { &systeme };
         let bureau = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
         let systeme: Vec<PathBuf> = systeme.split(':').map(|d| Path::new(d).join("autostart")).collect();
-        let mut liste = autostart_dans(&config.join("autostart"), &systeme, &bureau);
+        let (mut liste, pas_lus) = autostart_dans(&config.join("autostart"), &systeme, &bureau);
         let activee = |u: &str| natif::unite_activee(u, true) == Some(true);
         for unite in services_actives(&config.join("systemd/user"), activee) {
             let nom = unite.trim_end_matches(".service").to_string();
             liste.push((nom.clone(), nom));
         }
-        liste
+        (liste, pas_lus)
     }
 
     /// Les entrées d'autostart actives sur ce bureau, (nom, programme) : celles du compte (`compte`), puis celles du
     /// système (`systeme`) au nom qu'il n'a pas. Lues comme `vanguard demarrage` les lit (`texte_autostart`) : bornées,
     /// sans attendre un tube, celles du compte sans suivre de lien. Une entrée pas lue n'est pas listée, mais masque
-    /// toujours celle du système au même nom (correction n° 2 de la 0.94, D-4).
-    pub(super) fn autostart_dans(compte: &Path, systeme: &[PathBuf], bureau: &str) -> Vec<(String, String)> {
+    /// toujours celle du système au même nom (correction n° 2 de la 0.94, D-4), et se compte : rendue avec la liste,
+    /// pour être dite (relecture 0.94, R-5). Un lien pendant du système (absent) n'est pas une entrée.
+    pub(super) fn autostart_dans(compte: &Path, systeme: &[PathBuf], bureau: &str) -> (Vec<(String, String)>, usize) {
         let mut liste = Vec::new();
+        let mut pas_lus = 0;
         // L'utilisateur d'abord : son entrée l'emporte sur celle du système au même nom, même désactivée.
         // Les noms tels quels (`OsString`) : convertis avec pertes, deux noms qui ne sont pas en UTF-8 se
         // confondaient, et l'un masquait l'autre (relecture 0.94, R-1).
@@ -974,13 +997,16 @@ mod systeme {
             for f in read_dir(d).into_iter().flatten().flatten() {
                 let nom = f.file_name();
                 if Path::new(&nom).extension().is_some_and(|e| e == "desktop") && !vus.contains(&nom) {
-                    let texte = crate::optimiser::linux::texte_autostart(&f.path(), du_compte);
-                    liste.extend(texte.and_then(|t| entree_autostart(&t, bureau)));
+                    match crate::optimiser::linux::texte_autostart(&f.path(), du_compte) {
+                        Ok(t) => liste.extend(entree_autostart(&t, bureau)),
+                        Err(e) if !du_compte && e.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(_) => pas_lus += 1,
+                    }
                     vus.push(nom);
                 }
             }
         }
-        liste
+        (liste, pas_lus)
     }
 
     /// Les services que l'utilisateur a ajoutés (`dossier` : ~/.config/systemd/user) et activés pour l'ouverture de
@@ -1058,6 +1084,7 @@ mod systeme {
                 .find_map(|l| l.strip_prefix(cle)?.split_whitespace().next()?.parse::<u64>().ok())
                 .map(|ko| ko.saturating_mul(1024))
         };
+        let (au_demarrage, au_demarrage_pas_lus) = au_demarrage();
         Instantane {
             processeur,
             fils,
@@ -1066,7 +1093,8 @@ mod systeme {
                 .zip(lire("SwapFree:"))
                 .map(|(t, l)| (t, t.saturating_sub(l))),
             disque,
-            au_demarrage: avec_poids(&programmes, au_demarrage().into_iter()),
+            au_demarrage: avec_poids(&programmes, au_demarrage.into_iter()),
+            au_demarrage_pas_lus,
             programmes,
             demarrage: demarrage(),
             allume_depuis: read_to_string("/proc/uptime")
@@ -1171,6 +1199,7 @@ fn instantane_windows(l: LectureWindows) -> Instantane {
         echange: Some((l.echange, l.echange_utilise)).filter(|(t, _)| *t > 0),
         disque: l.disque.map(|d| d.clamp(0.0, 100.0)),
         au_demarrage: avec_poids(&programmes, l.au_demarrage.into_iter().map(|d| (d.nom, d.programme))),
+        au_demarrage_pas_lus: 0,
         programmes,
         demarrage,
         allume_depuis: l.allume_s,
@@ -1937,6 +1966,34 @@ mod tests {
         );
     }
 
+    /// Relecture 0.94, R-5 : les entrées vues mais pas lues sont dites sur la ligne « À l'ouverture », avec ou sans
+    /// programmes, jamais « aucun programme trouvé ».
+    #[test]
+    fn entrees_pas_lues_dites_a_l_ouverture() {
+        let vide = Instantane::default();
+        assert_eq!(a_l_ouverture(&vide), "aucun programme trouvé");
+        let rien_lu = Instantane {
+            au_demarrage_pas_lus: 2,
+            ..Instantane::default()
+        };
+        assert_eq!(
+            a_l_ouverture(&rien_lu),
+            "aucun programme lu ; 2 entrée(s) pas lue(s), dite(s) par vanguard demarrage"
+        );
+        let un = Instantane {
+            au_demarrage: vec![AuDemarrage {
+                nom: "lecteur".into(),
+                poids: None,
+            }],
+            au_demarrage_pas_lus: 1,
+            ..Instantane::default()
+        };
+        assert_eq!(
+            a_l_ouverture(&un),
+            "1 programme(s) : lecteur ; 1 entrée(s) pas lue(s), dite(s) par vanguard demarrage"
+        );
+    }
+
     #[test]
     fn rien_a_signaler() {
         let i = Instantane {
@@ -1983,10 +2040,11 @@ mod tests {
         std::fs::write(systeme.join(nom(b"a\xfe.desktop")), entree("du-systeme")).unwrap();
         // Le même nom exact : masquée.
         std::fs::write(systeme.join(nom(b"a\xff.desktop")), entree("masquee")).unwrap();
-        let mut vus = systeme::autostart_dans(&compte, std::slice::from_ref(&systeme), "");
+        let (mut vus, pas_lus) = systeme::autostart_dans(&compte, std::slice::from_ref(&systeme), "");
         vus.sort();
         let noms: Vec<&str> = vus.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(noms, ["du-compte", "du-systeme"]);
+        assert_eq!(pas_lus, 0);
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -2021,11 +2079,15 @@ mod tests {
         }
         std::fs::write(systeme.join("panneau.desktop"), entree("panneau")).unwrap();
         let debut = std::time::Instant::now();
-        let mut vus = systeme::autostart_dans(&compte, std::slice::from_ref(&systeme), "");
+        // Un lien pendant du système : absent, pas une entrée pas lue.
+        std::os::unix::fs::symlink(d.join("nulle-part.desktop"), systeme.join("pendant.desktop")).unwrap();
+        let (mut vus, pas_lus) = systeme::autostart_dans(&compte, std::slice::from_ref(&systeme), "");
         vus.sort();
         assert!(debut.elapsed().as_secs() < 5, "attendu sur le tube");
         let noms: Vec<&str> = vus.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(noms, ["lecteur", "panneau"]);
+        // Relecture 0.94, R-5 : le lien, le tube et la trop grosse du compte sont comptés, pour être dits.
+        assert_eq!(pas_lus, 3);
         let _ = std::fs::remove_dir_all(&d);
     }
 

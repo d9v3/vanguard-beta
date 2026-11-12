@@ -1595,13 +1595,14 @@ fn autostart(compte: &Path, systeme: &[PathBuf], bureau: &str) -> (Vec<Programme
 
 /// Le texte d'une entrée d'autostart lu comme `vanguard demarrage` le lit, pour qui ne fait que la regarder
 /// (`vanguard lenteur`) : borné, sans attendre un tube ; celle du compte (`du_compte`) sans suivre de lien ni sortir du
-/// dossier personnel. `None` : absente, ou pas lue ainsi (correction n° 2 de la 0.94, D-4).
-pub(crate) fn texte_autostart(chemin: &Path, du_compte: bool) -> Option<String> {
+/// dossier personnel. `NotFound` : absente ; une autre erreur : pas lue ainsi (correction n° 2 de la 0.94, D-4), à
+/// dire (relecture 0.94, R-5).
+pub(crate) fn texte_autostart(chemin: &Path, du_compte: bool) -> std::io::Result<String> {
     let max = u64::try_from(AUTOSTART_MAX - 1).unwrap_or(0);
     if du_compte {
-        sous_maison::lire(chemin, max).ok()
+        sous_maison::lire(chemin, max)
     } else {
-        lire_du_systeme(chemin, max).ok()
+        lire_du_systeme(chemin, max)
     }
 }
 
