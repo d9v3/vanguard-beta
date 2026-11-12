@@ -81,6 +81,10 @@ pub(super) enum Ecart {
     /// session sans fichier (`systemctl --user set-environment`) : pas vérifié. La remettre la pose sous la forme
     /// de la 0.95.
     AncienneForme,
+    /// La sauvegarde de Vanguard à sa forme exacte, mais son rsync, son findmnt ou son env n'est pas un programme que
+    /// seul root peut changer (`programme_de_root_seul`) : un fichier du compte qui porte leur nom (relecture 0.94,
+    /// F-4).
+    ProgrammeDuCompte,
 }
 
 impl Ecart {
@@ -162,6 +166,10 @@ impl Ecart {
             Ecart::AncienneForme => tr!(
                 "sauvegarde de Vanguard posée avant la 0.95 : rsync et findmnt y gardent les variables de la session, dont celles posées en cours de session, que le bilan ne voit pas ; non vérifié. Pour la forme qui les vide (« env -i »), annulez-la puis remettez-la : « vanguard sauvegarde-auto »",
                 "Vanguard backup set up before 0.95: rsync and findmnt keep the session variables there, including those set during the session, which the check cannot see; not verified. For the form that clears them (“env -i”), undo it then set it up again: “vanguard auto-backup”"
+            ),
+            Ecart::ProgrammeDuCompte => tr!(
+                "sauvegarde de Vanguard dont rsync, findmnt ou env n'est pas un programme que seul root peut changer (un fichier du compte, ou dans un dossier qu'il peut écrire, qui porte leur nom) : ce que lance la sauvegarde n'est pas vérifié",
+                "Vanguard backup whose rsync, findmnt or env is not a program only root can change (a file of the account, or in a folder it can write, bearing their name): what the backup starts is not checked"
             ),
             Ecart::Environnement => tr!(
                 "sauvegarde de Vanguard : un fichier de variables de la session du compte (~/.config/environment.d, ~/.config/systemd/user.conf, ~/.pam_environment, ~/.config/uwsm/env…) nomme HOME ou une variable que lisent rsync, findmnt ou le chargeur de programmes (LD_*, RSYNC_*, POPT*, LIBMOUNT_*, BLKID_*…), ou ne se lit pas : il peut changer ce que la sauvegarde lit ou lance (un autre ~/.popt) ; non vérifié, donc pas tu",
@@ -1033,6 +1041,10 @@ fn sauvegarde_posee(s: &Systeme, mots: &[String], nom: &str, env: bool) -> Resul
         s.programme(programme)?;
         if crate::machine::chasse::nom_de_fichier(programme) != nom || s.nom_reel(programme).as_deref() != Some(nom) {
             return Err(Ecart::Lanceur);
+        }
+        // Le nom ne suffit pas : un ~/bin/rsync du compte le porte aussi (F-4).
+        if !super::programme_de_root_seul(s.racine, &s.sous(&chemin_simplifie(programme))) {
+            return Err(Ecart::ProgrammeDuCompte);
         }
         Ok(())
     };

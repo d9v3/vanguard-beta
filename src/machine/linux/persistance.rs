@@ -2622,6 +2622,26 @@ fn de_root_seul(f: &Path) -> bool {
         .all(|a| std::fs::metadata(a).is_ok_and(|m| m.uid() == 0 && m.mode() & 0o022 == 0))
 }
 
+/// Un programme de la sauvegarde de Vanguard (env, findmnt, rsync), `f` lu sous `racine` : que seul root peut changer
+/// (`de_root_seul`, F-4 de la relecture 0.94). Un programme du compte qui porte le même nom (~/bin/rsync) ne passe
+/// jamais pour le vrai.
+///
+/// Dans les essais, qui tournent sous « unshare -r » où rien n'est à root seul, la racine d'essai tient lieu de
+/// système : un fichier dont le chemin réel est sous son /usr compte pour à root, tout autre non. `de_root_seul`
+/// lui-même a ses propres essais.
+#[cfg(not(test))]
+pub(super) fn programme_de_root_seul(_racine: &Path, f: &Path) -> bool {
+    de_root_seul(f)
+}
+
+#[cfg(test)]
+pub(super) fn programme_de_root_seul(racine: &Path, f: &Path) -> bool {
+    let (Ok(racine), Ok(reel)) = (std::fs::canonicalize(racine), std::fs::canonicalize(f)) else {
+        return false;
+    };
+    reel.starts_with(racine.join("usr"))
+}
+
 /// La carte des identités de ce processus (/proc/self/uid_map) est celle du système, sans traduction : une seule
 /// plage, 0 vers 0, sur toutes les identités.
 fn uid_sans_traduction(carte: &str) -> bool {
@@ -8172,6 +8192,10 @@ mod tests {
             "findmnt qui est true",
             "findmnt en lien vers sh",
             "env en lien vers sh",
+            "env du compte",
+            "rsync du compte",
+            "findmnt du compte",
+            "rsync en lien vers le compte",
             "disque débranché",
             "destination absente",
             "destination absente, rien de monté",
@@ -8191,15 +8215,25 @@ mod tests {
                 let racine = m.racine.join("run/media/alice/Mon disque");
                 let destination = racine.join("Sauvegarde-Vanguard/poste");
                 std::fs::create_dir_all(&destination).unwrap();
-                let findmnt = if *nom == "findmnt qui est true" {
-                    "/usr/bin/true"
-                } else {
-                    "/usr/bin/findmnt"
+                // F-4 (relecture 0.94) : un programme du compte qui porte le nom (~/bin/rsync) n'est pas le vrai.
+                let programme = |p: &str| {
+                    if nom.strip_suffix(" du compte") == Some(p) {
+                        let f = m.chemin(&format!("bin/{p}"));
+                        std::fs::create_dir_all(m.chemin("bin")).unwrap();
+                        std::fs::write(&f, "#!/bin/sh\n").unwrap();
+                        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+                        format!("/home/alice/bin/{p}")
+                    } else if *nom == "findmnt qui est true" && p == "findmnt" {
+                        "/usr/bin/true".to_string()
+                    } else {
+                        format!("/usr/bin/{p}")
+                    }
                 };
+                let (env, rsync, findmnt) = (programme("env"), programme("rsync"), programme("findmnt"));
                 let (timer, service) = crate::sauvegarde::unites(
-                    Some(Path::new("/usr/bin/env")),
-                    Path::new("/usr/bin/rsync"),
-                    Some(Path::new(findmnt)),
+                    Some(Path::new(&env)),
+                    Path::new(&rsync),
+                    Some(Path::new(&findmnt)),
                     Some("1234-ABCD"),
                     Path::new("/run/media/alice/Mon disque"),
                     Path::new("/run/media/alice/Mon disque/Sauvegarde-Vanguard/poste"),
@@ -8232,6 +8266,15 @@ mod tests {
                     "findmnt en lien vers sh" => {
                         std::fs::remove_file(m.racine.join("usr/bin/findmnt")).unwrap();
                         std::os::unix::fs::symlink("sh", m.racine.join("usr/bin/findmnt")).unwrap();
+                    }
+                    "rsync en lien vers le compte" => {
+                        let f = m.chemin("bin/rsync");
+                        std::fs::create_dir_all(m.chemin("bin")).unwrap();
+                        std::fs::write(&f, "#!/bin/sh\n").unwrap();
+                        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+                        std::fs::remove_file(m.racine.join("usr/bin/rsync")).unwrap();
+                        std::os::unix::fs::symlink("../../home/alice/bin/rsync", m.racine.join("usr/bin/rsync"))
+                            .unwrap();
                     }
                     "env en lien vers sh" => {
                         std::fs::remove_file(m.racine.join("usr/bin/env")).unwrap();
@@ -8273,6 +8316,9 @@ mod tests {
                     "disque débranché" | "destination absente, rien de monté" => nommee(Niveau::Info, "débranché"),
                     "destination absente" | "destination absente, disque monté" => {
                         nommee(Niveau::Eleve, "non vérifié") && !constats[0].1.contains("reconnue, disque débranché")
+                    }
+                    "env du compte" | "rsync du compte" | "findmnt du compte" | "rsync en lien vers le compte" => {
+                        nommee(Niveau::Eleve, "seul root peut changer")
                     }
                     _ => constats
                         .iter()
@@ -9988,6 +10034,31 @@ mod tests {
         );
         // La même unité sous ~/.config/systemd/user se déclare.
         assert!(crate::apprentissage::declarable(&maison_avec_rappel("etc-user-compte").lancements()).is_ok());
+    }
+
+    /// F-4 (0.95), sur le vrai système, hors d'un espace de noms d'utilisateurs : les env, rsync et findmnt du système
+    /// sont à root seul ; une copie dans un dossier du compte, non.
+    #[test]
+    fn programmes_de_la_sauvegarde_a_root_seul_en_vrai() {
+        if !uid_sans_traduction(&std::fs::read_to_string("/proc/self/uid_map").unwrap_or_default()) {
+            return crate::essais::saute(
+                "dans un espace de noms d'utilisateurs (unshare -r), rien n'est « à root seul » : à lancer hors de lui",
+            );
+        }
+        let d = crate::essais::temporaire().join(format!("vanguard-root-seul-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        for nom in ["env", "rsync", "findmnt"] {
+            let Some(vrai) = crate::commande::outil_systeme(nom) else {
+                crate::essais::saute(&format!("{nom} absent"));
+                continue;
+            };
+            assert!(de_root_seul(&vrai), "{}", vrai.display());
+            let copie = d.join(nom);
+            std::fs::copy(&vrai, &copie).unwrap();
+            assert!(!de_root_seul(&copie), "{}", copie.display());
+        }
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     /// Le côté permis de la règle : un fichier de root seul, sur le vrai système, passe la porte du périmètre.
