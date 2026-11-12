@@ -8862,6 +8862,10 @@ mod tests {
             "partition d'une image du compte",
             "btrfs sur une image du compte",
             "boucle sans fichier lu",
+            "env multi-appel coreutils",
+            "env multi-appel busybox",
+            "env vers un busybox du compte",
+            "findmnt vers coreutils",
         ];
         let mut faux = Vec::new();
         for fat in [false, true] {
@@ -8942,6 +8946,24 @@ mod tests {
                     "env en lien vers sh" => {
                         std::fs::remove_file(m.racine.join("usr/bin/env")).unwrap();
                         std::os::unix::fs::symlink("sh", m.racine.join("usr/bin/env")).unwrap();
+                    }
+                    // Ubuntu 25.10 (uutils), busybox, NixOS : env est un lien vers un programme à plusieurs noms.
+                    multi @ ("env multi-appel coreutils"
+                    | "env multi-appel busybox"
+                    | "env vers un busybox du compte"
+                    | "findmnt vers coreutils") => {
+                        let (p, vers) = match multi {
+                            "env multi-appel coreutils" => ("env", "coreutils"),
+                            "env multi-appel busybox" => ("env", "../lib/busybox/busybox"),
+                            "env vers un busybox du compte" => ("env", "../../home/alice/bin/busybox"),
+                            _ => ("findmnt", "coreutils"),
+                        };
+                        let cible = m.racine.join("usr/bin").join(vers);
+                        std::fs::create_dir_all(cible.parent().unwrap()).unwrap();
+                        std::fs::write(&cible, "#!/bin/sh\n").unwrap();
+                        std::fs::set_permissions(&cible, std::fs::Permissions::from_mode(0o755)).unwrap();
+                        std::fs::remove_file(m.racine.join("usr/bin").join(p)).unwrap();
+                        std::os::unix::fs::symlink(vers, m.racine.join("usr/bin").join(p)).unwrap();
                     }
                     "disque débranché" => std::fs::remove_dir_all(&racine).unwrap(),
                     // Sans /proc/self/mountinfo sous la racine jetable : les montages ne se lisent pas.
@@ -9032,7 +9054,10 @@ mod tests {
                         && l.contains(&format!("{}:", crate::sauvegarde::SERVICE)) && l.contains(mot))
                 };
                 let juste = match *nom {
-                    "témoin" | "disque fuseblk" => constats.is_empty(),
+                    "témoin" | "disque fuseblk" | "env multi-appel coreutils" | "env multi-appel busybox" => {
+                        constats.is_empty()
+                    }
+                    "env vers un busybox du compte" => nommee(Niveau::Eleve, "seul root peut changer"),
                     "disque débranché" | "destination absente, rien de monté" | "disque pas monté, dossiers là" => {
                         nommee(Niveau::Info, "débranché")
                     }

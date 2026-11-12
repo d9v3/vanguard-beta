@@ -21,6 +21,10 @@ pub(super) const LIGNE_MAX: usize = 8192;
 /// Au plus autant de lignes l'une dans l'autre (« sh -c "… sh -c '…'" », lanceurs d'Omarchy qui en lancent un autre).
 const PROFONDEUR_MAX: u32 = 6;
 
+/// Les programmes à plusieurs noms (un seul fichier, l'outil choisi d'après le nom sous lequel il est lancé) qui
+/// tiennent lieu d'env selon le système : coreutils (uutils, Ubuntu 25.10 ; NixOS), busybox, toybox.
+const MULTI_APPELS: [&str; 3] = ["coreutils", "busybox", "toybox"];
+
 /// Un fichier de variables d'unité plus gros n'est pas une configuration : non vérifiable.
 const VARIABLES_MAX: u64 = 1024 * 1024;
 
@@ -1208,11 +1212,16 @@ fn lancee(s: &Systeme, mots: &[String], profondeur: u32) -> Result<(), Ecart> {
 /// aucune autre forme ne se tait (relecture 0.94, S-1). Un faux findmnt (true) rendrait la condition « bon disque
 /// monté » toujours vraie (C-2).
 ///
-/// `env` : la forme de la 0.95, « "<env>" -i » devant ; env doit être le vrai env, comme rsync et findmnt.
+/// `env` : la forme de la 0.95, « "<env>" -i » devant ; env doit être le vrai env, comme rsync et findmnt. Un env
+/// écrit sous ce nom mais qui est un lien vers un programme à plusieurs noms (`MULTI_APPELS` : uutils sur Ubuntu,
+/// busybox, NixOS), qui choisit ce qu'il fait d'après le nom écrit, passe s'il est à root seul ; jamais un fichier
+/// du compte, jamais pour rsync ou findmnt.
 fn sauvegarde_posee(s: &Systeme, mots: &[String], nom: &str, env: bool) -> Result<(), Ecart> {
     let vrai = |programme: &String, nom: &str| {
         s.programme(programme)?;
-        if crate::machine::chasse::nom_de_fichier(programme) != nom || s.nom_reel(programme).as_deref() != Some(nom) {
+        let reel = s.nom_reel(programme);
+        let multi = nom == "env" && reel.as_deref().is_some_and(|r| MULTI_APPELS.contains(&r));
+        if crate::machine::chasse::nom_de_fichier(programme) != nom || (reel.as_deref() != Some(nom) && !multi) {
             return Err(Ecart::Lanceur);
         }
         // Le nom ne suffit pas : un ~/bin/rsync du compte le porte aussi (F-4).
