@@ -436,6 +436,13 @@ impl Changement {
         })
     }
 
+    /// L'entrée de démarrage visée se lit-elle aujourd'hui ? Sous Windows, oui : remettre ne réécrit que sa valeur
+    /// de StartupApproved (quelques octets), jamais l'entrée elle-même (le D-1 de Linux, une entrée trop grosse
+    /// écrasée, n'a pas d'équivalent).
+    pub fn entree_lisible(&self) -> bool {
+        true
+    }
+
     /// Le nom d'un programme d'après l'identité notée : la valeur de Run, ou le raccourci sans son extension.
     pub fn nom_demarrage(identite: &str) -> String {
         let nom = identite.splitn(3, '|').nth(2).unwrap_or(identite);

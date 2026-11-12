@@ -573,6 +573,11 @@ pub(super) fn defaire_dans(
         }
         let refus = |fr: &str, en: &str| Some(Issue::Refuse(if crate::langue::anglais() { en } else { fr }.into()));
         let r = tous.iter().find(|r| r.id.as_ref() == id.as_str());
+        // Remis ou réécrit hors de Vanguard depuis (peut-être devenu un programme à garder), ou une entrée qui ne se
+        // lit pas (D-1) : la vieille note n'écrase pas l'entrée d'aujourd'hui, comme pour la fenêtre.
+        let refus_demarrage = r
+            .filter(|_| id.starts_with(super::demarrage::PREFIXE))
+            .and_then(super::demarrage::raison_de_ne_pas_remettre);
         let issue = match r {
             _ if id == DNS && tient_le_dns => refus(
                 "le mode Wi-Fi public tient le DNS : éteignez-le d'abord",
@@ -586,12 +591,7 @@ pub(super) fn defaire_dans(
                 "une valeur d'avant n'a pas la forme attendue : rien n'est remis",
                 "a previous value does not have the expected form: nothing is put back",
             ),
-            // Remis ou réécrit hors de Vanguard depuis (peut-être devenu un programme à garder) : la vieille note
-            // n'écrase pas l'entrée qui se lance aujourd'hui, comme pour la fenêtre.
-            Some(r) if id.starts_with(super::demarrage::PREFIXE) && super::demarrage::se_lance_deja(r) => refus(
-                "ce programme se lance déjà à l'ouverture de session : rien n'est remis par-dessus",
-                "this program already starts at login: nothing is put back over it",
-            ),
+            Some(_) if refus_demarrage.is_some() => refus_demarrage.map(Issue::Refuse),
             Some(_) => None,
         };
         if issue.is_none()

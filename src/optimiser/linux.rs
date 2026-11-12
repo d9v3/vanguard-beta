@@ -719,6 +719,19 @@ impl Changement {
         })
     }
 
+    /// L'entrée de démarrage visée se lit-elle aujourd'hui (présente et bornée, ou absente) ? Une entrée d'autostart
+    /// trop grosse, pas en UTF-8, lien ou tube, non : rien ne se remet par-dessus, ni ne se propose de l'être
+    /// (correction n° 2 de la 0.94, D-1). Un service, ou tout autre réglage : oui (rien n'y est écrasé).
+    pub fn entree_lisible(&self) -> bool {
+        match self {
+            Changement::Demarrage {
+                entree: Entree::Autostart(_),
+                ..
+            } => self.lire().is_some(),
+            _ => true,
+        }
+    }
+
     /// Le nom d'un programme d'après l'identité notée : le fichier ou le service, sans extension.
     pub fn nom_demarrage(identite: &str) -> String {
         let reste = identite.split_once('|').map_or(identite, |(_, r)| r);
@@ -765,6 +778,19 @@ impl Changement {
                 tr!(
                     "valeur d'avant pas lue : rien n'est écrit",
                     "previous value not read: nothing is written"
+                )
+            );
+            return Some(false);
+        }
+        // Remise d'après une note (sans cible ni valeur vue) : l'entrée d'aujourd'hui doit se lire bornée, présente
+        // ou absente. Trop grosse, pas en UTF-8, un lien ou un tube, elle se lance peut-être (la liste ne la montre
+        // pas) : ni le contenu noté ni un retrait ne passent par-dessus (correction n° 2 de la 0.94, D-1).
+        if cible.is_none() && vu.is_none() && self.lire().is_none() {
+            println!(
+                "    ✖ {}",
+                tr!(
+                    "entrée pas lue : rien n'est remis par-dessus",
+                    "entry not read: nothing is put back over it"
                 )
             );
             return Some(false);
@@ -2510,6 +2536,41 @@ mod tests {
             "écrite sans valeur d'avant"
         );
         assert!(!c.valeur_admise(None), "une note absente se remettrait");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Correction n° 2 de la 0.94, D-1 : une note de Vanguard pour une entrée d'autostart qui se lance aujourd'hui
+    /// mais ne se lit pas bornée (76 Kio, ou pas en UTF-8) : la remettre (une annulation, rebâtie de la note, sans
+    /// cible ni valeur vue) n'écrit rien par-dessus, ni le contenu noté ni un retrait ; l'entrée reste à l'octet près.
+    #[test]
+    fn remise_sur_une_entree_pas_lue_n_ecrit_rien() {
+        let base = dossier_jetable("remise-pas-lue");
+        let compte = base.join("autostart");
+        std::fs::create_dir_all(&compte).unwrap();
+        let gros = format!("[Desktop Entry]\nName=Gros\nExec=gros\n#{}\n", "x".repeat(76 << 10)).into_bytes();
+        let latin1 = b"[Desktop Entry]\nName=Caf\xe9\nExec=cafe\n".to_vec();
+        for (nom, contenu) in [("gros.desktop", gros), ("latin1.desktop", latin1)] {
+            let p = compte.join(nom);
+            std::fs::write(&p, &contenu).unwrap();
+            let c = Changement::demarrage_depuis(&format!("autostart|{}", p.display())).unwrap();
+            assert_eq!(c.lire(), None, "{nom}");
+            assert!(!c.entree_lisible(), "{nom}");
+            for note in ["+[Desktop Entry]\nName=Ancien\nExec=ancien\n", "-"] {
+                assert_eq!(c.ecrire_ici(Some(note)), Some(false), "{nom} {note:?}");
+                assert_eq!(std::fs::read(&p).unwrap(), contenu, "{nom} écrasée par {note:?}");
+            }
+        }
+        // Lisible, ou absente : la remise s'écrit comme avant.
+        let p = compte.join("lisible.desktop");
+        let c = Changement::demarrage_depuis(&format!("autostart|{}", p.display())).unwrap();
+        assert!(c.entree_lisible());
+        assert_eq!(c.ecrire_ici(Some("+[Desktop Entry]\nName=Remis\n")), Some(true));
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "[Desktop Entry]\nName=Remis\n");
+        assert!(
+            Changement::demarrage_depuis("systemd|x.service")
+                .unwrap()
+                .entree_lisible()
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 

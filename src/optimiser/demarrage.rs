@@ -485,8 +485,9 @@ fn lignes(programmes: Vec<Programme>, h: &Historique) -> Vec<Ligne> {
         }
     }
     // Retirés par Vanguard mais introuvables ici (un service désactivé ne se liste plus) : rebâtis d'après la note.
+    // Pas celui dont l'entrée ne se lit pas (la liste la dit pas lue) : recocher l'écraserait (D-1).
     for r in notes(h) {
-        if !l.iter().any(|x| x.reglage.id == r.id) {
+        if !l.iter().any(|x| x.reglage.id == r.id) && r.changements.iter().all(systeme::Changement::entree_lisible) {
             let identite = r.id.strip_prefix(PREFIXE).unwrap_or_default();
             l.push(Ligne {
                 nom: affichable(&systeme::Changement::nom_demarrage(identite)),
@@ -594,6 +595,9 @@ enum Refus {
     NeSeLancePas,
     /// Il se lance déjà (remis ou réécrit hors de Vanguard) : la vieille note n'écrase pas l'entrée d'aujourd'hui.
     SeLanceDeja,
+    /// Son entrée d'aujourd'hui ne se lit pas (trop grosse, pas en UTF-8, un lien) : elle se lance peut-être, la note
+    /// ne passe pas par-dessus.
+    PasLue,
     /// Il protège ou fait marcher l'ordinateur.
     AGarder(&'static str),
     /// Un pare-feu : le retirer serait une baisse, qui ne se choisit que dans la liste à cocher, avec sa question.
@@ -631,6 +635,11 @@ impl Refus {
             Refus::SeLanceDeja => tr!(
                 "ce programme se lance déjà à l'ouverture de session : rien n'est remis par-dessus",
                 "this program already starts at login: nothing is put back over it"
+            )
+            .to_string(),
+            Refus::PasLue => tr!(
+                "entrée pas lue (trop grosse, pas en UTF-8 ou un lien) : rien n'est remis par-dessus",
+                "entry not read (too large, not UTF-8 or a link): nothing is put back over it"
             )
             .to_string(),
             Refus::AGarder(raison) => trf!("à garder ({})", "to keep ({})", raison),
@@ -820,9 +829,10 @@ fn changer_tenu(sorte: SorteDeChangement, empreinte: &str) -> (Option<String>, I
                 r.id.strip_prefix(PREFIXE)
                     .map(|i| affichable(&systeme::Changement::nom_demarrage(i)));
             // La liste n'offre « remettre » que pour un programme qui ne se lance plus : une entrée qui se lance
-            // (remise ou réécrite hors de Vanguard, peut-être devenue un programme à garder) n'est jamais écrasée.
-            if se_lance_deja(&r) {
-                return (nom, Issue::Refuse(Refus::SeLanceDeja));
+            // (remise ou réécrite hors de Vanguard, peut-être devenue un programme à garder), ou qui ne se lit pas
+            // (D-1), n'est jamais écrasée.
+            if let Some(refus) = remise_refusee(&r, &systeme::au_demarrage()) {
+                return (nom, Issue::Refuse(refus));
             }
             // Les notes relues pour de bon (`charger`) doivent dire la même chose que celles qui ont choisi : sinon,
             // rien n'est remis (ni écrit) d'après des notes qui ont changé entre les deux lectures.
@@ -837,9 +847,24 @@ fn changer_tenu(sorte: SorteDeChangement, empreinte: &str) -> (Option<String>, I
     }
 }
 
-/// Un programme qui se lance aujourd'hui a l'identité de ce réglage (lu sur le système).
-pub(super) fn se_lance_deja(r: &Reglage) -> bool {
-    se_lance(&systeme::au_demarrage(), r)
+/// Pourquoi ce réglage de démarrage, rebâti d'une note, ne se remet pas aujourd'hui (lu sur le système), s'il ne le
+/// doit pas : `remise_refusee`, dite.
+pub(super) fn raison_de_ne_pas_remettre(r: &Reglage) -> Option<String> {
+    remise_refusee(r, &systeme::au_demarrage()).map(Refus::raison)
+}
+
+/// Pourquoi ce réglage, rebâti d'une note, ne se remet pas par-dessus l'entrée d'aujourd'hui, s'il ne le doit pas :
+/// un programme de `programmes` (ceux qui se lisent) se lance avec son identité, ou son entrée ne se lit pas. Une
+/// entrée pas lue n'est pas dans `programmes` (`au_demarrage` ne la propose pas) : sans ce second regard, elle
+/// passerait pour absente et serait écrasée (correction n° 2 de la 0.94, D-1).
+fn remise_refusee(r: &Reglage, programmes: &[Programme]) -> Option<Refus> {
+    if se_lance(programmes, r) {
+        Some(Refus::SeLanceDeja)
+    } else if !r.changements.iter().all(systeme::Changement::entree_lisible) {
+        Some(Refus::PasLue)
+    } else {
+        None
+    }
 }
 
 /// Parmi `programmes`, un qui se lance a l'identité de ce réglage.
@@ -914,10 +939,10 @@ pub fn remettre(id: &str) -> Option<bool> {
     };
     let mut h = charger();
     let r = notes(&h).into_iter().find(|r| r.id == id)?;
-    // Comme la fenêtre : une entrée qui se lance déjà n'est pas réécrite d'après une vieille note (dit ici, puisque
-    // l'appelant renvoie au message ci-dessus).
-    if se_lance_deja(&r) {
-        let raison = Refus::SeLanceDeja.raison();
+    // Comme la fenêtre : une entrée qui se lance déjà, ou qui ne se lit pas, n'est pas réécrite d'après une vieille
+    // note (dit ici, puisque l'appelant renvoie au message ci-dessus).
+    if let Some(refus) = remise_refusee(&r, &systeme::au_demarrage()) {
+        let raison = refus.raison();
         trp!("  ✖ Rien n'a changé : {raison}", "  ✖ Nothing changed: {raison}");
         return Some(false);
     }
@@ -1536,6 +1561,53 @@ mod essais_changer {
             .err(),
             Some(Refus::Inconnue)
         );
+    }
+
+    /// Correction n° 2 de la 0.94, D-1 : Vanguard a noté une entrée d'autostart ; elle se lance de nouveau, réécrite
+    /// hors de lui en plus de 64 Kio (ou pas en UTF-8). Le relevé ne la lit pas (il la dit pas lue) : elle n'est ni
+    /// offerte à remettre, ni remise par-dessus (`--remettre`, la liste, « Tout remettre comme avant »).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn note_sur_une_entree_pas_lue_ni_offerte_ni_remise() {
+        use super::super::Avant;
+        let base = crate::essais::temporaire().join(format!("vanguard-demarrage-d1-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let autostart = base.join("config/autostart");
+        std::fs::create_dir_all(&autostart).unwrap();
+        let gros = format!("[Desktop Entry]\nName=Gros\nExec=gros\n#{}\n", "x".repeat(76 << 10)).into_bytes();
+        let latin1 = b"[Desktop Entry]\nName=Caf\xe9\nExec=cafe\n".to_vec();
+        for (fichier, contenu) in [("gros.desktop", gros), ("latin1.desktop", latin1)] {
+            let p = autostart.join(fichier);
+            std::fs::write(&p, &contenu).unwrap();
+            let identite = format!("autostart|{}", p.display());
+            let mut h = Historique::default();
+            h.reglages.insert(
+                format!("{PREFIXE}{identite}"),
+                Avant {
+                    date: String::new(),
+                    valeurs: vec![Some("+[Desktop Entry]\nName=Ancien\nExec=ancien\n".to_string())],
+                    ..Avant::default()
+                },
+            );
+            let (programmes, manques) =
+                systeme::releve_dans(&base.join("config"), &[], "Hyprland", Some(String::new()));
+            assert!(programmes.is_empty(), "{fichier} lue");
+            assert_eq!(manques.len(), 1, "{fichier} : {manques:?}");
+            // La note existe, l'empreinte la désigne ; mais rien ne s'offre ni ne se remet.
+            let r = a_remettre(&h, &resultat::empreinte(&identite).unwrap()).unwrap();
+            assert_eq!(remise_refusee(&r, &programmes), Some(Refus::PasLue), "{fichier}");
+            assert!(lignes(programmes, &h).is_empty(), "{fichier} offerte à remettre");
+            assert!(Refus::PasLue.raison().contains("rien n"));
+            assert_eq!(std::fs::read(&p).unwrap(), contenu, "{fichier}");
+            std::fs::remove_file(&p).unwrap();
+            // Absente : offerte et remise, comme avant.
+            let (programmes, manques) =
+                systeme::releve_dans(&base.join("config"), &[], "Hyprland", Some(String::new()));
+            assert!(manques.is_empty(), "{manques:?}");
+            assert_eq!(remise_refusee(&r, &programmes), None);
+            assert_eq!(lignes(programmes, &h).len(), 1);
+        }
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     /// Remettre ne vise que ce que Vanguard a noté.
