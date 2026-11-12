@@ -5625,7 +5625,25 @@ fn juger_lancement(
     let ambigue =
         ambigue || hors_liste || [shell_non_lu(), non_resolu_systemd(), variable_inconnue()].contains(&raison);
     lever(t, f, lu, n, ligne, commande, ambigue, sorte, retirable, raison);
+    // La sauvegarde de Vanguard reconnue à sa forme exacte, mais levée pour ce qui la change (~/.popt, complément,
+    // variables, programme du compte) : le refus dit cela et comment la remettre, pas « ligne ambiguë » (point 10).
+    if matches!(lecteur, Lecteur::Systemd(c) if c.sauvegarde.is_some())
+        && let Some(dernier) = t.temoins.last_mut()
+    {
+        let ou = crate::ui::affichable(&court(f, &t.r.maison));
+        *dernier = Err(refus_de_la_sauvegarde(&ou, n.saturating_add(1), raison));
+    }
     true
+}
+
+/// Le refus d'une ligne de la sauvegarde de Vanguard, posée telle que Vanguard la pose mais levée pour la `raison`
+/// dite (ce qui peut changer ce qu'elle lance) : jamais déclarable, puisque ce qui la change n'est pas dans la ligne
+/// qu'un choix lierait. Dit ce qui a changé et comment la retrouver muette, sans faire retirer la sauvegarde.
+fn refus_de_la_sauvegarde(ou: &str, numero: usize, raison: &str) -> temoins::Refus {
+    temoins::Refus(trf!(
+        "{ou}:{numero} : la sauvegarde de Vanguard ne peut pas être déclarée normale tant que quelque chose peut changer ce qu'elle lance ({raison}). Gardez la sauvegarde : retirez plutôt ce qui la change (le ~/.popt ou sa ligne « exec », le complément « .service.d », la variable) ; si ce changement est voulu, annulez la sauvegarde (« vanguard sauvegarde-auto --annuler ») puis remettez-la (« vanguard sauvegarde-auto »). Elle se tait de nouveau dès qu'elle a sa forme et que rien ne la change",
+        "{ou}:{numero}: the Vanguard backup cannot be declared normal while something can change what it starts ({raison}). Keep the backup: remove what changes it instead (the ~/.popt or its “exec” line, the “.service.d” drop-in, the variable); if the change is wanted, undo the backup (“vanguard auto-backup --undo”) then set it up again (“vanguard auto-backup”). It goes quiet again as soon as it has its form and nothing changes it"
+    ))
 }
 
 /// Pourquoi la `commande` d'une ligne que le compte écrit n'entre pas dans la liste permise (`permise`), lue par
@@ -8921,6 +8939,68 @@ mod tests {
             faux.is_empty(),
             "l'environnement du gestionnaire change la sauvegarde : {faux:#?}"
         );
+    }
+
+    /// Point 10 (0.95) : la sauvegarde exacte levée pour ce qui la change (~/.popt, complément, variable du
+    /// gestionnaire) ne se déclare toujours pas normale, mais son refus le dit et dit comment la remettre, au lieu de
+    /// « ne dit pas sans ambiguïté ce qu'elle lance » sur une ligne que Vanguard a écrite.
+    #[test]
+    fn le_refus_de_la_sauvegarde_levee_dit_quoi_faire() {
+        let complement = format!(".config/systemd/user/{}.d/x.conf", crate::sauvegarde::SERVICE);
+        // (nom, fichier, texte, formes levées : 0.94, 0.95)
+        let cas: &[(&str, &str, &str, &[bool])] = &[
+            ("popt", ".popt", "rsync alias --x -a\n", &[false, true]),
+            (
+                "complément",
+                complement.as_str(),
+                "[Service]\nEnvironment=X=1\n",
+                &[false, true],
+            ),
+            (
+                "environment.d",
+                ".config/environment.d/50-x.conf",
+                "HOME=/home/alice/.cache/x\n",
+                &[false],
+            ),
+        ];
+        let mut faux = Vec::new();
+        for (nom, chemin, texte, formes) in cas {
+            for &vide in *formes {
+                let (m, service) = sauvegarde_d_essai(&format!("sauvegarde-refus-{nom}-{vide}"), vide);
+                m.ecrire(chemin, texte);
+                let c = m.lancements();
+                let r = match c.temoins() {
+                    crate::machine::temoins::Temoins::Refuse(r) => r.clone(),
+                    autre => format!("{autre:?}"),
+                };
+                // Le refus nomme une ligne Exec… du service (numérotée à partir de 1) et redit la raison de l'alerte.
+                let nommee = service.lines().enumerate().any(|(n, l)| {
+                    l.starts_with("Exec")
+                        && r.starts_with(&format!(
+                            "~/.config/systemd/user/{}:{} : ",
+                            crate::sauvegarde::SERVICE,
+                            n + 1
+                        ))
+                });
+                let raison = r
+                    .split_once("ce qu'elle lance (")
+                    .and_then(|(_, reste)| reste.split_once("). Gardez"))
+                    .is_some_and(|(raison, _)| !raison.is_empty() && c.message.contains(raison));
+                let juste = c.probleme == Some(Niveau::Eleve)
+                    && crate::apprentissage::declarable(&c).is_err()
+                    && nommee
+                    && raison
+                    && r.contains("sauvegarde de Vanguard")
+                    && r.contains("« vanguard sauvegarde-auto --annuler »")
+                    && r.contains("« vanguard sauvegarde-auto »")
+                    && !r.contains("sans ambiguïté")
+                    && !r.contains("retirez la ligne");
+                if !juste {
+                    faux.push((*nom, vide, c.probleme, r));
+                }
+            }
+        }
+        assert!(faux.is_empty(), "refus de la sauvegarde levée : {faux:#?}");
     }
 
     /// D-1, les morceaux : les fichiers de popt du système ne se taisent jamais (tous à root seul : une information ;
