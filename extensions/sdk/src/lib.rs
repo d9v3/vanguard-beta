@@ -189,12 +189,27 @@ pub struct Sortie {
 /// Ce qu'on garde de chaque sortie, au plus.
 pub const SORTIE_MAX: usize = 1 << 20;
 
+#[cfg(test)]
+thread_local! {
+    /// L'essai simule un système qui refuse un fil (limite de processus atteinte).
+    static REFUSER_LES_FILS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Lit `flux` sur un fil à part, jusqu'à `SORTIE_MAX` octets.
+///
+/// # Errors
+///
+/// Le système refuse le fil : rendu, jamais une panique (`std::thread::spawn` paniquerait).
 fn lire_borne(
     mut flux: impl Read + Send + 'static,
     plein: std::sync::Arc<std::sync::atomic::AtomicBool>,
-) -> mpsc::Receiver<Vec<u8>> {
+) -> std::io::Result<mpsc::Receiver<Vec<u8>>> {
+    #[cfg(test)]
+    if REFUSER_LES_FILS.get() {
+        return Err(std::io::Error::from(std::io::ErrorKind::WouldBlock));
+    }
     let (envoi, reception) = mpsc::channel();
-    std::thread::spawn(move || {
+    std::thread::Builder::new().name("sortie".into()).spawn(move || {
         let mut lu = Vec::new();
         let mut tampon = [0u8; 8192];
         loop {
@@ -210,8 +225,8 @@ fn lire_borne(
             }
         }
         let _ = envoi.send(lu);
-    });
-    reception
+    })?;
+    Ok(reception)
 }
 
 /// Lance `programme` avec `arguments`, sans shell (chaque argument arrive tel quel, rien n'est interprété), l'entrée
@@ -220,7 +235,8 @@ fn lire_borne(
 ///
 /// # Errors
 ///
-/// Le programme ne démarre pas (introuvable, pas le droit de l'exécuter), ou son état ne se lit plus.
+/// Le programme ne démarre pas (introuvable, pas le droit de l'exécuter), ou son état ne se lit plus, ou le système
+/// refuse un fil pour lire ses sorties (il est alors arrêté avant que l'erreur soit rendue).
 pub fn lancer(programme: impl AsRef<OsStr>, arguments: &[&str], delai: Duration) -> std::io::Result<Sortie> {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -235,8 +251,18 @@ pub fn lancer(programme: impl AsRef<OsStr>, arguments: &[&str], delai: Duration)
     let mut enfant = c.spawn()?;
     let plein = Arc::new(AtomicBool::new(false));
     let manque = || std::io::Error::other("sortie non ouverte");
-    let sortie = lire_borne(enfant.stdout.take().ok_or_else(manque)?, plein.clone());
-    let erreurs = lire_borne(enfant.stderr.take().ok_or_else(manque)?, plein.clone());
+    // Une sortie qui ne se lit pas : le programme est arrêté, jamais laissé tourner sans personne pour l'attendre.
+    let lus = match (enfant.stdout.take(), enfant.stderr.take()) {
+        (Some(o), Some(e)) => lire_borne(o, plein.clone()).and_then(|s| Ok((s, lire_borne(e, plein.clone())?))),
+        _ => Err(manque()),
+    };
+    let (sortie, erreurs) = match lus {
+        Ok(l) => l,
+        Err(e) => {
+            arreter(&mut enfant);
+            return Err(std::io::Error::new(e.kind(), format!("lecture des sorties : {e}")));
+        }
+    };
     let limite = Instant::now() + delai;
     let (mut tronque, mut depasse) = (false, false);
     let code = loop {
@@ -344,5 +370,35 @@ mod tests {
         let s = lancer("yes", &[], Duration::from_secs(30)).unwrap();
         assert!(s.tronque && s.sortie.len() <= SORTIE_MAX);
         assert!(lancer("/nexiste/pas", &[], Duration::from_secs(1)).is_err());
+    }
+
+    /// Le système refuse le fil qui lit une sortie : l'erreur est rendue (pas de panique) et le programme déjà lancé
+    /// est arrêté, jamais laissé tourner sans personne pour l'attendre.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn fil_refuse_rendu_et_programme_arrete() {
+        // Un délai que les autres essais n'emploient pas : ce programme-là se reconnaît dans /proc.
+        let restants = || {
+            std::fs::read_dir("/proc")
+                .unwrap()
+                .flatten()
+                .filter(|e| {
+                    let lu = |f: &str| std::fs::read(e.path().join(f)).unwrap_or_default();
+                    lu("cmdline") == b"sleep\x0031.5\x00"
+                        && String::from_utf8_lossy(&lu("stat"))
+                            .rsplit(") ")
+                            .next()
+                            .and_then(|r| r.split(' ').nth(1).map(str::to_string))
+                            == Some(std::process::id().to_string())
+                })
+                .count()
+        };
+        REFUSER_LES_FILS.set(true);
+        let r = lancer("sleep", &["31.5"], Duration::from_secs(60));
+        REFUSER_LES_FILS.set(false);
+        let e = r.expect_err("fil refusé : erreur rendue");
+        assert_eq!(e.kind(), std::io::ErrorKind::WouldBlock, "{e}");
+        assert!(e.to_string().contains("lecture des sorties"), "{e}");
+        assert_eq!(restants(), 0, "le programme lancé tourne encore");
     }
 }
