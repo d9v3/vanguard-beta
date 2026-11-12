@@ -89,6 +89,10 @@ pub(super) enum Ecart {
     /// fichiers FUSE (« fuse », « fuse.* ») : un programme du compte peut le poser lui-même sur ce dossier, sous un nom
     /// de source qui imite le disque attendu par findmnt, et il écrit où il veut (relecture 0.94, D-3).
     DisqueFuse,
+    /// La sauvegarde de Vanguard à sa forme exacte, mais le disque monté à sa racine est une image (périphérique
+    /// boucle, directement, sous un chiffrement ou en partition) adossée à un fichier que le compte peut changer : udisks
+    /// la monte sans droits d'administrateur, sous le nom de disque attendu (relecture 0.95, V-7).
+    DisqueImage,
     /// Un argument nomme un lieu de démarrage du compte (~/.config/autostart, ~/.config/systemd, ~/.bashrc…) ou un
     /// dossier qui en contient (~/.config) : la ligne peut y copier, déplacer ou lier un lancement à chaque passage
     /// (« cp -r … ~/.config/autostart ») ; ce qu'elle y pose ne se voit qu'après (point 12, 0.95).
@@ -182,6 +186,10 @@ impl Ecart {
             Ecart::DisqueFuse => tr!(
                 "sauvegarde de Vanguard dont le disque est un montage FUSE (un montage qu'un programme du compte peut poser lui-même à la place du disque) : où rsync copie n'est pas vérifié",
                 "Vanguard backup whose disk is a FUSE mount (a mount an account program can set up itself in place of the disk): where rsync copies is not checked"
+            ),
+            Ecart::DisqueImage => tr!(
+                "sauvegarde de Vanguard dont le disque est une image (périphérique boucle) adossée à un fichier que le compte peut changer (udisks la monte sans droits d'administrateur, sous le nom du disque attendu) : où rsync copie n'est pas vérifié",
+                "Vanguard backup whose disk is an image (loop device) backed by a file the account can change (udisks mounts it without admin rights, under the expected disk name): where rsync copies is not checked"
             ),
             Ecart::LieuDeDemarrage => tr!(
                 "ligne qui nomme un lieu de démarrage du compte (~/.config/autostart, ~/.config/systemd, ~/.config/hypr, ~/.bashrc…) ou un dossier qui en contient (~/.config) : elle peut y copier, déplacer ou lier un lancement à chaque passage ; ce qu'elle y pose n'est pas vérifié",
@@ -347,7 +355,8 @@ impl Systeme<'_> {
     /// Ce qui est monté à `racine`, d'après /proc/self/mountinfo lu en entier : le dernier montage posé à ce point,
     /// celui qu'on voit (D-3). FUSE (« fuse », « fuse.* ») : `Ecart::DisqueFuse`, levé ; « fuseblk » (ntfs-3g, sur un
     /// vrai périphérique) passe. Rien n'y est monté : `Ecart::DisqueDebranche` (findmnt ne laisse rien passer, une
-    /// information). Liste illisible ou ligne sans type : `Ecart::DestinationNonVue`, jamais un silence.
+    /// information). Liste illisible ou ligne sans type : `Ecart::DestinationNonVue`, jamais un silence. Une image du
+    /// compte montée là : `image_du_compte` (V-7).
     fn disque_monte(&self, racine: &str) -> Result<(), Ecart> {
         let texte = std::fs::read_to_string(self.sous("/proc/self/mountinfo")).map_err(|_| Ecart::DestinationNonVue)?;
         let Some(ligne) = texte
@@ -360,8 +369,67 @@ impl Systeme<'_> {
         match ligne.split_once(" - ").and_then(|(_, s)| s.split(' ').next()) {
             None | Some("") => Err(Ecart::DestinationNonVue),
             Some(t) if t == "fuse" || t.starts_with("fuse.") => Err(Ecart::DisqueFuse),
-            Some(_) => Ok(()),
+            Some(_) => self.image_du_compte(ligne),
         }
+    }
+
+    /// Le montage `ligne` (de /proc/self/mountinfo) vient-il d'une image du compte (V-7, relecture 0.95) ? Les
+    /// périphériques sous le montage se suivent dans /sys : son numéro (/sys/dev/block/MAJ:MIN, absent pour un numéro
+    /// 0:N comme btrfs), le nom de sa source (/sys/class/block/…, /dev/mapper/x suivi jusqu'à dm-N), puis ce qu'il
+    /// recouvre (slaves : un chiffrement sur une image). Chacun, et son parent (une partition d'une image), est une
+    /// boucle s'il a loop/backing_file : ce fichier doit être à root seul (`de_root_seul`), sinon `Ecart::DisqueImage`,
+    /// levé. Une boucle (numéro 7:N ou source /dev/loop*) dont aucun fichier ne se lit, ou un /sys qui ne se lit pas :
+    /// `Ecart::DestinationNonVue`. Limite : un montage posé seulement le temps de la copie n'est pas vu.
+    fn image_du_compte(&self, ligne: &str) -> Result<(), Ecart> {
+        let numero = ligne.split(' ').nth(2).unwrap_or("");
+        let source = ligne
+            .split_once(" - ")
+            .and_then(|(_, s)| s.split(' ').nth(1))
+            .unwrap_or("");
+        let mut a_voir: Vec<std::path::PathBuf> = Vec::new();
+        if !numero.is_empty() && !numero.starts_with("0:") {
+            a_voir.push(self.sous(&format!("/sys/dev/block/{numero}")));
+        }
+        if let Some(nom) = source.strip_prefix("/dev/") {
+            let reel = std::fs::canonicalize(self.sous(source)).ok();
+            let nom = reel
+                .as_deref()
+                .and_then(Path::file_name)
+                .and_then(|n| n.to_str())
+                .unwrap_or_else(|| nom.rsplit('/').next().unwrap_or(nom));
+            a_voir.push(self.sous(&format!("/sys/class/block/{nom}")));
+        }
+        let boucle = numero.starts_with("7:") || source.starts_with("/dev/loop");
+        let mut adossee = false;
+        let mut vus: u32 = 0;
+        while let Some(d) = a_voir.pop() {
+            vus = vus.saturating_add(1);
+            if vus > 64 {
+                return Err(Ecart::DestinationNonVue);
+            }
+            for haut in [d.clone(), d.join("..")] {
+                match std::fs::read_to_string(haut.join("loop/backing_file")) {
+                    Ok(f) => {
+                        adossee = true;
+                        let f = f.trim_end_matches('\n');
+                        if f.is_empty() || !super::de_root_seul(&self.sous(f)) {
+                            return Err(Ecart::DisqueImage);
+                        }
+                    }
+                    Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(Ecart::DestinationNonVue),
+                    Err(_) => {}
+                }
+            }
+            match std::fs::read_dir(d.join("slaves")) {
+                Ok(l) => a_voir.extend(l.flatten().map(|e| e.path())),
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(Ecart::DestinationNonVue),
+                Err(_) => {}
+            }
+        }
+        if boucle && !adossee {
+            return Err(Ecart::DestinationNonVue);
+        }
+        Ok(())
     }
 
     /// Le disque de `racine` n'est pas branché, vu du dossier `absent` qui n'existe pas : `absent` est la racine ou un

@@ -8857,6 +8857,11 @@ mod tests {
             "disque fuseblk",
             "disque pas monté, dossiers là",
             "montages illisibles",
+            "disque image du compte",
+            "image du compte sous un chiffrement",
+            "partition d'une image du compte",
+            "btrfs sur une image du compte",
+            "boucle sans fichier lu",
         ];
         let mut faux = Vec::new();
         for fat in [false, true] {
@@ -8963,6 +8968,52 @@ mod tests {
                         std::fs::remove_file(&f).unwrap();
                         std::fs::create_dir_all(f).unwrap();
                     }
+                    // V-7 (relecture 0.95) : une image du compte montée sans droits d'administrateur (udisks) au point
+                    // du disque, directement, sous un chiffrement (dm), en partition, ou en btrfs (numéro 0:N).
+                    image @ ("disque image du compte"
+                    | "image du compte sous un chiffrement"
+                    | "partition d'une image du compte"
+                    | "btrfs sur une image du compte"
+                    | "boucle sans fichier lu") => {
+                        let (numero, source) = match image {
+                            "image du compte sous un chiffrement" => ("254:0", "/dev/mapper/coffre"),
+                            "partition d'une image du compte" => ("259:0", "/dev/loop0p1"),
+                            "btrfs sur une image du compte" => ("0:45", "/dev/loop0"),
+                            _ => ("7:0", "/dev/loop0"),
+                        };
+                        std::fs::write(
+                            m.racine.join("proc/self/mountinfo"),
+                            format!(
+                                "22 1 8:2 / / rw shared:1 - ext4 /dev/sda2 rw\n36 25 {numero} / \
+                                 /run/media/alice/Mon\\040disque rw,nosuid shared:1 - ext4 {source} rw\n"
+                            ),
+                        )
+                        .unwrap();
+                        let bloc = m.racine.join("sys/dev/block");
+                        if image != "boucle sans fichier lu" {
+                            std::fs::create_dir_all(bloc.join("7:0/loop")).unwrap();
+                            std::fs::create_dir_all(bloc.join("7:0/loop0p1")).unwrap();
+                            std::fs::write(bloc.join("7:0/loop/backing_file"), "/home/alice/coffre.img\n").unwrap();
+                        }
+                        match image {
+                            "image du compte sous un chiffrement" => {
+                                std::fs::create_dir_all(bloc.join("254:0/slaves")).unwrap();
+                                std::os::unix::fs::symlink("../../7:0", bloc.join("254:0/slaves/loop0")).unwrap();
+                            }
+                            "partition d'une image du compte" => {
+                                std::os::unix::fs::symlink("7:0/loop0p1", bloc.join("259:0")).unwrap();
+                            }
+                            "btrfs sur une image du compte" => {
+                                std::fs::create_dir_all(m.racine.join("sys/class/block")).unwrap();
+                                std::os::unix::fs::symlink(
+                                    "../../dev/block/7:0",
+                                    m.racine.join("sys/class/block/loop0"),
+                                )
+                                .unwrap();
+                            }
+                            _ => {}
+                        }
+                    }
                     _ => {}
                 }
                 let constats: Vec<(Option<Niveau>, String)> = persistance_dans(
@@ -8986,7 +9037,11 @@ mod tests {
                         nommee(Niveau::Info, "débranché")
                     }
                     "disque FUSE" | "FUSE par-dessus le disque" => nommee(Niveau::Eleve, "montage FUSE"),
-                    "montages illisibles" => nommee(Niveau::Eleve, "non vérifié"),
+                    "montages illisibles" | "boucle sans fichier lu" => nommee(Niveau::Eleve, "non vérifié"),
+                    "disque image du compte"
+                    | "image du compte sous un chiffrement"
+                    | "partition d'une image du compte"
+                    | "btrfs sur une image du compte" => nommee(Niveau::Eleve, "image (périphérique boucle)"),
                     "destination absente" | "destination absente, disque monté" => {
                         nommee(Niveau::Eleve, "non vérifié") && !constats[0].1.contains("reconnue, disque débranché")
                     }
