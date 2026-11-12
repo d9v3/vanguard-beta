@@ -1309,13 +1309,16 @@ fn essayer(programme: &Path, attendue: Version) -> Result<(), String> {
 /// mise en place d'un coup. Jamais par-dessus une copie plus récente : elle est gardée, et c'est elle que la
 /// surveillance lancera (« jamais vers une version plus ancienne »). Rend le chemin de la copie, ou pourquoi elle
 /// n'a pas pu se faire : jamais celui de la clé, qu'une minuterie ne retrouverait plus une fois débranchée.
-pub(crate) fn poser_copie(source: &Path) -> Result<PathBuf, String> {
+///
+/// Avec le chemin, ce qui n'a pas pu se faire sans arrêter la copie : la fenêtre qui n'a pas pu être posée (C-5,
+/// relecture 0.96 : l'échec était passé sous silence, « fait » sans un mot).
+pub(crate) fn poser_copie(source: &Path) -> Result<(PathBuf, Option<String>), String> {
     let cible = copie_de_cet_ordinateur();
-    poser_copie_dans(source, &cible, essayer)?;
-    Ok(cible)
+    let note = poser_copie_dans(source, &cible, essayer)?;
+    Ok((cible, note))
 }
 
-fn poser_copie_dans(source: &Path, cible: &Path, essai: Essai) -> Result<(), String> {
+fn poser_copie_dans(source: &Path, cible: &Path, essai: Essai) -> Result<Option<String>, String> {
     let octets = lire_octets(source, TAILLE_MAX)?;
     let Some(version) = version_gravee(&octets) else {
         return Err(tr!(
@@ -1327,14 +1330,20 @@ fn poser_copie_dans(source: &Path, cible: &Path, essai: Essai) -> Result<(), Str
     // La fenêtre posée à côté du programme de la clé suit la copie, si c'est bien la sienne.
     let fenetre = sa_fenetre::de_la_source(source, &octets).zip(sa_fenetre::pour(cible));
     match lire_programme(cible, TAILLE_MAX) {
-        Lu::Version(v) if v > version => return Ok(()),
+        Lu::Version(v) if v > version => return Ok(None),
         Lu::Version(v) if v == version && lire_octets(cible, TAILLE_MAX).ok().as_deref() == Some(&octets[..]) => {
             // La même copie : sa fenêtre seule, si elle manque ou diffère. Un échec n'arrête pas la copie, que la
             // surveillance lance : sans sa fenêtre, le raccourci ouvre le menu.
-            if let Some((f, chemin)) = &fenetre {
-                let _ = sa_fenetre::poser_si_autre(f, chemin);
-            }
-            return Ok(());
+            let Some((f, chemin)) = &fenetre else {
+                return Ok(None);
+            };
+            return Ok(sa_fenetre::poser_si_autre(f, chemin).err().map(|e| {
+                trf!(
+                    "la fenêtre n'a pas pu être posée à côté de la copie ({}) : le raccourci ouvrira le menu",
+                    "the window could not be placed next to the copy ({}): the shortcut will open the menu",
+                    e
+                )
+            }));
         }
         _ => {}
     }
@@ -1345,6 +1354,7 @@ fn poser_copie_dans(source: &Path, cible: &Path, essai: Essai) -> Result<(), Str
         Some((f, chemin)) => sa_fenetre::installer_avec(&octets, cible, version, essai, f, chemin),
         None => installer(&octets, cible, version, essai),
     }
+    .map(|()| None)
 }
 
 /// La copie de cet ordinateur est-elle plus ancienne que ce programme ? Elle écrit alors encore l'état de Vanguard

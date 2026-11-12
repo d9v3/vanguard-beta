@@ -517,4 +517,31 @@ mod tests {
         assert!(rien_a_cote(&d.join("bin")));
         let _ = std::fs::remove_dir_all(&d);
     }
+
+    /// C-5 (relecture 0.96) : la copie de même version dont la fenêtre ne peut pas être posée (ici, un dossier à son
+    /// nom) répondait « fait » sans un mot. La copie reste faite, mais la raison est rendue pour être dite.
+    #[test]
+    fn une_fenetre_impossible_a_poser_a_cote_de_la_meme_copie_est_dite() {
+        let d = dossier("essai-sa-fenetre-cle-dite");
+        let source = d.join("cle").join(NOM);
+        let cible = d.join("bin").join(NOM);
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        let neuve = b"fenetre 0.96".to_vec();
+        std::fs::write(&source, lancant(&neuve)).unwrap();
+        std::fs::write(pour(&source).unwrap(), &neuve).unwrap();
+        assert_eq!(
+            super::super::poser_copie_dans(&source, &cible, SANS_ESSAI).unwrap(),
+            None
+        );
+        let fenetre = pour(&cible).unwrap();
+        std::fs::remove_file(&fenetre).unwrap();
+        std::fs::create_dir(&fenetre).unwrap();
+        let note = super::super::poser_copie_dans(&source, &cible, SANS_ESSAI).unwrap();
+        assert!(
+            note.is_some_and(|n| n.contains("fenêtre") || n.contains("window")),
+            "rien n'est dit"
+        );
+        assert_eq!(std::fs::read(&cible).unwrap(), std::fs::read(&source).unwrap());
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }

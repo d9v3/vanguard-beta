@@ -57,12 +57,15 @@ pub(crate) fn executable() -> Option<String> {
         return Some(exe.display().to_string());
     }
     match crate::mise_a_jour::poser_copie(&exe) {
-        Ok(dest) => {
+        Ok((dest, note)) => {
             trp!(
                 "  {GRIS}Copie locale pour la surveillance : {}{RESET}",
                 "  {GRIS}Local copy for monitoring: {}{RESET}",
                 dest.display()
             );
+            if let Some(n) = note {
+                trp!("    {GRIS}{}{RESET}", "    {GRIS}{}{RESET}", affichable(&n));
+            }
             Some(dest.display().to_string())
         }
         Err(e) => {
