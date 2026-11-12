@@ -556,6 +556,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// La fenêtre non posée est dite. Sous Windows, un dossier à son nom ne bloque pas : `mettre_en_place_sous` le
+    /// met de côté (`.ancien`, comme un programme en marche) et la fenêtre est posée ; elle doit alors l'être vraiment.
+    fn dite_ou_posee_sous_windows(note: Option<String>, fenetre: &Path, neuve: &[u8]) -> bool {
+        match note {
+            Some(n) => n.contains("fenêtre") || n.contains("window"),
+            None => cfg!(windows) && std::fs::read(fenetre).is_ok_and(|l| l == neuve),
+        }
+    }
+
     /// C-4 (relecture 0.96) : une chose impossible à remplacer au nom de la fenêtre (un dossier) bloquait la copie
     /// du PROGRAMME depuis la clé. Le programme est posé seul, et c'est dit ; la fenêtre d'avant reste, refusée par
     /// l'empreinte du nouveau programme (le menu).
@@ -578,11 +587,7 @@ mod tests {
         std::fs::create_dir(&fenetre).unwrap();
         let note = super::super::poser_copie_dans(&source, &cible, SANS_ESSAI).unwrap();
         assert_eq!(std::fs::read(&cible).unwrap(), std::fs::read(&source).unwrap());
-        assert!(
-            note.is_some_and(|n| n.contains("fenêtre") || n.contains("window")),
-            "rien n'est dit"
-        );
-        assert!(fenetre.is_dir());
+        assert!(dite_ou_posee_sous_windows(note, &fenetre, &neuve), "rien n'est dit");
         // Un programme qui ne démarre pas : rien n'est posé, la fenêtre non plus.
         std::fs::write(
             &cible,
@@ -614,10 +619,7 @@ mod tests {
         std::fs::remove_file(&fenetre).unwrap();
         std::fs::create_dir(&fenetre).unwrap();
         let note = super::super::poser_copie_dans(&source, &cible, SANS_ESSAI).unwrap();
-        assert!(
-            note.is_some_and(|n| n.contains("fenêtre") || n.contains("window")),
-            "rien n'est dit"
-        );
+        assert!(dite_ou_posee_sous_windows(note, &fenetre, &neuve), "rien n'est dit");
         assert_eq!(std::fs::read(&cible).unwrap(), std::fs::read(&source).unwrap());
         let _ = std::fs::remove_dir_all(&d);
     }
