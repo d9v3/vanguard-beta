@@ -104,6 +104,10 @@ if [[ -z ${VANGUARD_ESSAI_OPTION_INCONNUE:-} ]]; then
   refus_sans_rien_lancer "$mal_ecrite" "--seulement « python  »" --seulement "python "
   refus_sans_rien_lancer "$mal_ecrite" "--seulement « dependances, failles-connues »" --seulement "dependances, failles-connues"
   refus_sans_rien_lancer "$mal_ecrite" "--seulement « Python »" --seulement Python
+  # Un nom en double tournait une fois et se disait vert : la liste n'est pas ce qui a tourné (relecture 0.94, N-3).
+  refus_sans_rien_lancer '✖ --seulement : étape en double : python' "--seulement « python,python »" --seulement python,python
+  refus_sans_rien_lancer '✖ --seulement : étape en double : python' "--seulement « python,shell,python »" \
+    --seulement python,shell,python
 else
   # Posée par refus_sans_rien_lancer pour le verifier.sh qu'il lance : celui-là, s'il acceptait l'option, relancerait
   # ces essais, qui ne doivent pas se relancer en boucle (il est tué après 10 s, et compté en échec). Posée ailleurs,

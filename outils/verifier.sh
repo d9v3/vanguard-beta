@@ -68,8 +68,12 @@ if [[ $MODE == --seulement ]]; then
   # l'audit de nuit serait vert pour toujours sans rien vérifier. Les noms connus sont ceux du résumé (les appels
   # de ligne, plus bas) : la liste est ce script même, rien n'est recopié.
   CONNUES=$(sed -nE 's/^ *ligne ([a-z-]+) .*/\1/p' "$0")
+  # Un nom en double tournerait une fois : la liste ne dirait plus ce qui a tourné (relecture 0.94, N-3).
+  VUES=,
   for n in ${LISTE//,/ }; do
     grep -qxF -- "$n" <<<"$CONNUES" || { echo "✖ --seulement : étape inconnue : $n" >&2; exit 2; }
+    [[ $VUES != *",$n,"* ]] || { echo "✖ --seulement : étape en double : $n" >&2; exit 2; }
+    VUES+="$n,"
   done
 fi
 WINE=${VANGUARD_WINE:-$HOME/.local/share/Steam/compatibilitytools.d/GE-Proton11-9-x86_64/files/bin/wine}

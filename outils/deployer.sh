@@ -143,10 +143,14 @@ compiler() {
   # Un programme qui part sur GitHub doit être celui de son commit : rien de compilé d'un arbre où le code a changé
   # sans être commité (une autre session, un essai en cours), qui partirait signé puis disparaîtrait. Seul un
   # déploiement local (--local) le permet, et son repère le dit (outils/publier-version.sh refuse alors de publier).
-  if [[ -z $LOCAL && -n $(git status --porcelain -- src build.rs assets Cargo.toml Cargo.lock .cargo \
-    rust-toolchain.toml) ]]; then
+  # Un git status qui échoue n'écrit rien : jamais pris pour un code sans changement (relecture 0.94, N-2).
+  local etat
+  etat=$(git status --porcelain -- src build.rs assets Cargo.toml Cargo.lock .cargo rust-toolchain.toml) ||
+    etat="(git status a échoué : l'état du code ne se lit pas)"
+  if [[ -z $LOCAL && -n $etat ]]; then
     echo "✖ Compilation refusée : le code a des changements non commités (git status) ; un programme publié est"
     echo "  celui de son commit. Les committer, ou outils/deployer.sh --local pour cet ordinateur seulement."
+    [[ $etat != "(git status a échoué"* ]] || echo "  $etat"
     avertir_cle "Vanguard : rien compilé ni copié" "Le code a des changements non commités : la clé n'est pas mise \
 à jour (outils/deployer.sh le dit)."
     exit 1
@@ -238,8 +242,8 @@ if [[ $MODE == --branchement ]]; then
   if timeout 30 git fetch -q origin 2>/dev/null; then
     DISTANT=$(git rev-parse '@{upstream}' 2>/dev/null || true)
     if [[ -n $DISTANT && $DISTANT != $(git rev-parse HEAD) ]]; then
-      if [[ -n $(git status --porcelain --untracked-files=no) ]]; then
-        echo "GitHub a une version plus récente, mais des changements locaux sont en cours : rien de récupéré."
+      if ! ETAT=$(git status --porcelain --untracked-files=no) || [[ -n $ETAT ]]; then
+        echo "GitHub a une version plus récente, mais des changements locaux sont en cours (ou git status a échoué) : rien de récupéré."
       elif git merge-base --is-ancestor HEAD "$DISTANT"; then
         VERTE=0
         ci_verte "$DISTANT" || VERTE=$?
@@ -375,10 +379,12 @@ T_ENVOI=$SECONDS
 if [[ -n $LOCAL ]]; then
   echo "Rien n'est envoyé sur GitHub (déploiement local)."
 elif git remote get-url origin >/dev/null 2>&1; then
-  # Code 1 : un détail trouvé ; tout autre code (2 : rien conclu) : le garde-fou n'a pas pu juger, dit tel quel.
+  # Code 1 avec son constat : un détail trouvé ; tout autre code (2 : rien conclu), ou un code 1 sans constat (Python
+  # qui plante, sa trace) : le garde-fou n'a pas pu juger, dit tel quel (relecture 0.94, N-1).
   GARDE=0
-  python3 outils/confidentialite.py --envoi || GARDE=$?
-  if ((GARDE == 1)); then
+  SORTIE_GARDE=$(python3 outils/confidentialite.py --envoi 2>&1) || GARDE=$?
+  [[ -z $SORTIE_GARDE ]] || printf '%s\n' "$SORTIE_GARDE" >&2
+  if ((GARDE == 1)) && grep -q '^Confidentialité : [0-9]* détail(s) personnel(s) dans' <<<"$SORTIE_GARDE"; then
     echo "Rien n'est envoyé sur GitHub : un détail personnel paraît dans les commits (voir ci-dessus)."
   elif ((GARDE != 0)); then
     echo "Rien n'est envoyé sur GitHub : garde-fou de confidentialité en panne (code $GARDE), rien conclu (voir ci-dessus)."

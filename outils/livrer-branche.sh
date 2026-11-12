@@ -30,6 +30,14 @@ DEPOT=$(realpath "$(dirname "$COMMUN")")
 [[ $(git -C "$ARBRE" rev-parse --show-toplevel) == "$ARBRE" ]] ||
   { echo "✖ $ARBRE n'est pas la racine d'un worktree" >&2; exit 2; }
 [[ $(git -C "$ARBRE" branch --show-current) == "$BRANCHE" ]] || { echo "✖ $ARBRE n'est pas sur $BRANCHE" >&2; exit 2; }
+# L'arbre `$1` est propre (rien de non commité, aucun fichier non suivi). Propre se prouve : un git status qui échoue
+# (index abîmé, dépôt illisible) n'écrit rien, ce qui passerait pour un arbre propre ([[ ]] ne voit pas l'échec d'une
+# substitution, set -e non plus) ; c'est un refus, dit (relecture 0.94, N-2).
+propre() {
+  local etat
+  etat=$(git -C "$1" status --porcelain) || { echo "✖ git status a échoué dans $1 : rien n'est fusionné"; exit 1; }
+  [[ -z $etat ]]
+}
 # L'arbre principal sur master et propre : sinon la fusion échouerait après la vérification, ou partirait d'un état
 # que personne n'a vu. Vu avant la longue vérification, puis de nouveau juste avant la fusion.
 arbre_principal_pret() {
@@ -37,7 +45,7 @@ arbre_principal_pret() {
     { echo "✖ l'arbre principal ($DEPOT) n'est pas sur master"; return 1; }
   # Les fichiers non suivis aussi : deployer.sh refuse de compiler avec un fichier non suivi dans src, assets… ; vu
   # ici, avant la vérification, plutôt qu'après la fusion.
-  [[ -z $(git -C "$DEPOT" status --porcelain) ]] ||
+  propre "$DEPOT" ||
     { echo "✖ l'arbre principal ($DEPOT) a des changements non commités ou des fichiers non suivis"; return 1; }
 }
 arbre_principal_pret || { echo "✖ rien n'est fusionné"; exit 1; }
@@ -47,7 +55,7 @@ mkdir -p "$JOURNAUX"
 NOM=${BRANCHE//\//-}
 
 cd "$ARBRE"
-[[ -z $(git status --porcelain) ]] || { echo "✖ $ARBRE a des changements non commités"; exit 1; }
+propre "$ARBRE" || { echo "✖ $ARBRE a des changements non commités"; exit 1; }
 # Master déjà à la base de la branche : rien à rebaser (un rebase referait à plat les fusions de la journée, en
 # faux conflits).
 git merge-base --is-ancestor master HEAD || git rebase -q master
@@ -55,10 +63,12 @@ git merge-base --is-ancestor master HEAD || git rebase -q master
 SHA=$(git rev-parse HEAD)
 # Rien de personnel ne part sur GitHub : vu ici, avant la vérification et la fusion (deployer.sh le revoit avant
 # d'envoyer master).
-# Code 1 : un détail trouvé ; tout autre code (2 : rien conclu) : le garde-fou n'a pas pu juger, dit tel quel.
+# Code 1 avec son constat (« N détail(s) personnel(s) dans ») : un détail trouvé ; tout autre code (2 : rien conclu),
+# ou un code 1 sans constat (Python qui plante, sa trace) : le garde-fou n'a pas pu juger, dit tel quel (N-1).
 GARDE=0
-python3 outils/confidentialite.py --plage origin/master "$SHA" || GARDE=$?
-if ((GARDE == 1)); then
+SORTIE_GARDE=$(python3 outils/confidentialite.py --plage origin/master "$SHA" 2>&1) || GARDE=$?
+[[ -z $SORTIE_GARDE ]] || printf '%s\n' "$SORTIE_GARDE" >&2
+if ((GARDE == 1)) && grep -q '^Confidentialité : [0-9]* détail(s) personnel(s) dans' <<<"$SORTIE_GARDE"; then
   echo "✖ détail personnel : rien n'est fusionné"
   exit 1
 elif ((GARDE != 0)); then
@@ -75,7 +85,7 @@ fi
 grep -q "^Tout est vert" "$JOURNAUX/verif-$NOM.log" ||
   { tail -5 "$JOURNAUX/verif-$NOM.log"; echo "✖ la vérification ne dit pas « Tout est vert » : rien n'est fusionné"; exit 1; }
 # Rien n'a bougé pendant la vérification : ni le worktree, ni sa tête, ni la branche.
-[[ -z $(git status --porcelain) ]] || { echo "✖ $ARBRE a changé pendant la vérification : rien n'est fusionné"; exit 1; }
+propre "$ARBRE" || { echo "✖ $ARBRE a changé pendant la vérification : rien n'est fusionné"; exit 1; }
 [[ $(git rev-parse HEAD) == "$SHA" && $(git rev-parse "refs/heads/$BRANCHE") == "$SHA" ]] ||
   { echo "✖ $BRANCHE a bougé pendant la vérification (vérifié : ${SHA:0:12}) : rien n'est fusionné"; exit 1; }
 echo "· fusion et déploiement"

@@ -17,7 +17,10 @@
 #      rien n'est déployé.
 #  10. La branche déplacée seule (worktree détaché, HEAD inchangé) pendant la vérification : refus, rien fusionné.
 #  11. La branche déplacée pendant le déploiement : livré, la branche gardée, dit.
-#  12. Le garde-fou de confidentialité en panne (code 2) : refus, dit comme une panne, pas comme un détail trouvé.
+#  12. Le garde-fou de confidentialité en panne (code 2, ou une trace de Python en code 1 sans constat) : refus, dit
+#      comme une panne, pas comme un détail trouvé ; un vrai constat (code 1, « détail(s) personnel(s) ») : refus dit.
+#  13. git status qui échoue (index abîmé), dans l'arbre principal ou dans le worktree : refus avant la vérification,
+#      jamais un arbre pris pour propre.
 # Lancé par outils/verifier.sh.
 #   outils/essais-livrer-branche.sh
 set -uo pipefail
@@ -73,7 +76,10 @@ exit "$(cat "$ESSAI_CAS/consigne-deploi" 2>/dev/null || echo 0)"
 FAUX
   printf '%s\n' 'import os, sys' 'cas = os.environ["ESSAI_CAS"]' \
     'open(cas + "/vu-plage", "w").write(" ".join(sys.argv[1:]))' \
-    'sys.exit(int(open(cas + "/consigne-conf").read()) if os.path.exists(cas + "/consigne-conf") else 0)' \
+    'c = open(cas + "/consigne-conf").read().strip() if os.path.exists(cas + "/consigne-conf") else "0"' \
+    'if c == "trouve": print("Confidentialité : 1 détail(s) personnel(s) dans les commits envoyés.", file=sys.stderr)' \
+    'if c == "trace": raise RuntimeError("plantage du garde-fou")' \
+    'sys.exit(1 if c == "trouve" else int(c))' \
     >"$DEPOT/outils/confidentialite.py"
   chmod +x "$DEPOT"/outils/*.sh
   echo b >"$DEPOT/b"
@@ -271,6 +277,43 @@ if ((CODE != 0)) && rien_livre "$DEPART" && [[ ! -e $CAS/vu-verifie ]] &&
 else
   ko "garde-fou en panne (code $CODE) : $(tail -n 3 <<<"$SORTIE")"
 fi
+
+# 12 bis. Python qui plante (trace, code 1) n'est pas un détail trouvé ; un vrai constat, si (relecture 0.94, N-1).
+monter garde-qui-plante
+DEPART=$(tete master)
+echo trace >"$CAS/consigne-conf"
+livrer lot "$LOT"
+if ((CODE != 0)) && rien_livre "$DEPART" && [[ ! -e $CAS/vu-verifie ]] &&
+  grep -q 'garde-fou de confidentialité en panne (code 1)' <<<"$SORTIE" && ! grep -q 'détail personnel' <<<"$SORTIE"; then
+  ok "garde-fou qui plante (trace, code 1) : refus, dit comme une panne"
+else
+  ko "garde-fou qui plante (code $CODE) : $(tail -n 3 <<<"$SORTIE")"
+fi
+monter garde-qui-trouve
+DEPART=$(tete master)
+echo trouve >"$CAS/consigne-conf"
+livrer lot "$LOT"
+if ((CODE != 0)) && rien_livre "$DEPART" && [[ ! -e $CAS/vu-verifie ]] &&
+  grep -q 'détail personnel : rien n.est fusionné' <<<"$SORTIE" && ! grep -q 'en panne' <<<"$SORTIE"; then
+  ok "témoin : un vrai constat (code 1) est dit « détail personnel »"
+else
+  ko "constat du garde-fou (code $CODE) : $(tail -n 3 <<<"$SORTIE")"
+fi
+
+# 13. git status qui échoue : son silence n'est pas un arbre propre (relecture 0.94, N-2).
+for ou in principal worktree; do
+  monter "status-$ou"
+  DEPART=$(tete master)
+  if [[ $ou == principal ]]; then INDEX=$(git -C "$DEPOT" rev-parse --git-path index); INDEX=$DEPOT/$INDEX
+  else INDEX=$(git -C "$LOT" rev-parse --path-format=absolute --git-path index); fi
+  printf 'abîmé' >"$INDEX"
+  livrer lot "$LOT"
+  if ((CODE != 0)) && rien_livre "$DEPART" && [[ ! -e $CAS/vu-verifie ]] && grep -q 'git status a échoué' <<<"$SORTIE"; then
+    ok "git status en échec ($ou) : refus avant la vérification"
+  else
+    ko "git status en échec ($ou) (code $CODE, vérifié : $([[ -e $CAS/vu-verifie ]] && echo oui || echo non)) : $(tail -n 3 <<<"$SORTIE")"
+  fi
+done
 
 ((ECHECS == 0)) || { echo "$ECHECS essai(s) en échec."; exit 1; }
 echo "livrer-branche.sh : tout est juste."
