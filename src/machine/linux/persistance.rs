@@ -4317,7 +4317,9 @@ fn dossiers_du_gestionnaire_lus(
     let (fichiers, illisibles) = fichiers_du_gestionnaire(r, posees);
     let mut dossiers = Vec::new();
     let mut non_resolus: Vec<(std::path::PathBuf, String)> = illisibles.into_iter().map(|d| (d, "?".into())).collect();
-    for (f, _) in fichiers {
+    for (f, du_compte) in fichiers {
+        // W-4 : la forme « valeur par défaut » ne se résout que dans un fichier du système à root seul.
+        let defauts = !du_compte && programme_de_root_seul(&r.racine, &f);
         let sorte = Variables::de(&f, false);
         if sorte == Variables::Shell || std::fs::read_link(&f).is_ok_and(|v| v == Path::new("/dev/null")) {
             continue;
@@ -4335,7 +4337,7 @@ fn dossiers_du_gestionnaire_lus(
             let Some(v) = VARIABLES_DES_DOSSIERS.iter().find(|x| **x == nom) else {
                 continue;
             };
-            match chemins_poses(&valeur, v, &r.maison) {
+            match chemins_poses(&valeur, v, &r.maison, defauts) {
                 Some(chemins) => dossiers.extend(chemins.into_iter().map(|c| (*v, c))),
                 None => non_resolus.push((f.clone(), nom.clone())),
             }
@@ -4459,7 +4461,17 @@ fn mots_cites(texte: &str) -> Vec<String> {
 /// (celle de Vanguard, ou les dossiers par défaut) : passée. Un morceau relatif est ignoré par systemd pour une
 /// variable XDG (spécification XDG), refusé pour SYSTEMD_UNIT_PATH. `None` : un morceau ne se résout pas (autre
 /// variable, code « % », guillemet, échappement, joker).
-fn chemins_poses(valeur: &str, nom: &str, maison: &Path) -> Option<Vec<std::path::PathBuf>> {
+///
+/// `defauts` (relecture 0.95, W-4) : un fichier du système à root seul (snapd pose
+/// « XDG_DATA_DIRS=${XDG_DATA_DIRS:-/usr/local/share:/usr/share}:/var/lib/snapd/desktop ») : les formes
+/// « ${nom:-défaut} » et « ${nom:+texte} » de la même variable se lisent (`defauts_lus`), sans quoi ce fichier levait
+/// la sauvegarde à chaque bilan. Pas pour un fichier du compte, ni pour une autre forme : non résolu, comme avant.
+fn chemins_poses(valeur: &str, nom: &str, maison: &Path, defauts: bool) -> Option<Vec<std::path::PathBuf>> {
+    let valeur = if defauts {
+        defauts_lus(valeur, nom)
+    } else {
+        valeur.to_string()
+    };
     let mut sortie = Vec::new();
     for morceau in valeur.split(':') {
         let m = morceau.trim_matches([' ', '\t']);
@@ -4487,6 +4499,32 @@ fn chemins_poses(valeur: &str, nom: &str, maison: &Path) -> Option<Vec<std::path
         sortie.push(p);
     }
     Some(sortie)
+}
+
+/// W-4 : « ${nom:-défaut} » devient « ${nom}:défaut » (la valeur d'avant, déjà lue, et le défaut : plus large que
+/// le shell, qui ne prend le défaut que sans valeur d'avant) ; « ${nom:+texte} » devient « texte ». Le défaut ou le
+/// texte ne contiennent ni « { » ni « } », ni « $ » pour un défaut ; sinon la forme reste, et ne se résout pas.
+fn defauts_lus(valeur: &str, nom: &str) -> String {
+    let mut sortie = valeur.to_string();
+    for (forme, defaut) in [(format!("${{{nom}:-"), true), (format!("${{{nom}:+"), false)] {
+        while let Some(debut) = sortie.find(&forme) {
+            let dedans = debut.saturating_add(forme.len());
+            let Some(fin) = sortie
+                .get(dedans..)
+                .and_then(|x| x.find('}'))
+                .map(|f| dedans.saturating_add(f))
+            else {
+                break;
+            };
+            let texte = sortie.get(dedans..fin).unwrap_or_default().to_string();
+            if texte.contains('{') || (defaut && texte.contains('$')) {
+                break;
+            }
+            let neuf = if defaut { format!("${{{nom}}}:{texte}") } else { texte };
+            sortie.replace_range(debut..=fin, &neuf);
+        }
+    }
+    sortie
 }
 
 /// Un fichier d'ajout, ou l'unité d'un ajout : son état, une fois ses directives vérifiées, et son texte (vide pour
@@ -9948,6 +9986,102 @@ mod tests {
         m.ecrire(".config/environment.d/50-x.conf", "HOME=/home/alice/.autre\n");
         let c = m.lancements();
         assert_eq!(c.probleme, None, "{}", c.message);
+    }
+
+    /// W-4 (relecture 0.95) : un fichier du système à root seul (snapd) qui complète XDG_DATA_DIRS par
+    /// « ${XDG_DATA_DIRS:-…} » ou « ${XDG_DATA_DIRS:+…} » ne lève plus la sauvegarde exacte à chaque bilan : ses
+    /// dossiers se lisent, et un complément posé dans l'un d'eux la lève. La même ligne dans un fichier du compte, ou
+    /// dans un fichier du système qui n'est pas à root seul, ou une autre forme, restent non résolues, levées.
+    #[test]
+    fn la_forme_par_defaut_d_un_fichier_a_root_seul_se_lit() {
+        const SNAPD: &str = "PATH=$PATH:/snap/bin\nXDG_DATA_DIRS=${XDG_DATA_DIRS:-/usr/local/share:/usr/share}:/var/lib/snapd/desktop\n";
+        const ROOT: &str = "/usr/lib/environment.d/990-snapd.conf";
+        let complement = format!(
+            "/var/lib/snapd/desktop/systemd/user/{}.d/x.conf",
+            crate::sauvegarde::SERVICE
+        );
+        // (nom, fichier, texte, complément posé, levée)
+        let cas: &[(&str, &str, &str, Option<&str>, bool)] = &[
+            ("snapd à root seul", ROOT, SNAPD, None, false),
+            (
+                "forme « :+ » à root seul",
+                ROOT,
+                "XDG_DATA_DIRS=/opt/x/share${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}\n",
+                None,
+                false,
+            ),
+            (
+                "snapd à root seul, complément posé",
+                ROOT,
+                SNAPD,
+                Some(&complement),
+                true,
+            ),
+            (
+                "snapd du compte",
+                ".config/environment.d/990-snapd.conf",
+                SNAPD,
+                None,
+                true,
+            ),
+            (
+                "snapd du système, pas à root seul",
+                "/etc/environment.d/990-snapd.conf",
+                SNAPD,
+                None,
+                true,
+            ),
+            (
+                "autre variable",
+                ROOT,
+                "XDG_DATA_DIRS=${AUTRE:-/usr/share}\n",
+                None,
+                true,
+            ),
+            (
+                "défaut construit",
+                ROOT,
+                "XDG_DATA_DIRS=${XDG_DATA_DIRS:-$TRUC/x}\n",
+                None,
+                true,
+            ),
+            (
+                "défaut imbriqué",
+                ROOT,
+                "XDG_DATA_DIRS=${XDG_DATA_DIRS:-${TRUC}}\n",
+                None,
+                true,
+            ),
+        ];
+        let mut faux = Vec::new();
+        for (i, (nom, fichier, texte, pose, leve)) in cas.iter().enumerate() {
+            for vide in [false, true] {
+                let (m, _) = sauvegarde_d_essai(&format!("w4-defaut-{i}-{vide}"), vide);
+                let ecrire = |f: &str, texte: &str| {
+                    let p = f.strip_prefix('/').map_or_else(|| m.chemin(f), |s| m.racine.join(s));
+                    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+                    std::fs::write(p, texte).unwrap();
+                };
+                ecrire(fichier, texte);
+                if let Some(p) = pose {
+                    ecrire(
+                        p,
+                        "[Service]\nExecStart=\nExecStart=/usr/bin/rsync -a /home/alice/Documents /tmp/x\n",
+                    );
+                }
+                let c = m.lancements();
+                let juste = if *leve {
+                    c.probleme == Some(Niveau::Eleve) && crate::apprentissage::declarable(&c).is_err()
+                } else {
+                    (vide && c.probleme.is_none())
+                        || (!vide && c.probleme == Some(Niveau::Info) && c.message.contains("avant la 0.95"))
+                };
+                if !juste {
+                    faux.push(format!("{nom}, env -i {vide} : {:?} {:?}", c.probleme, c.message));
+                }
+            }
+        }
+        assert!(faux.is_empty(), "formes par défaut : {faux:#?}");
     }
 
     /// Point 10 (0.95) : la sauvegarde exacte levée pour ce qui la change (~/.popt, complément, variable du
