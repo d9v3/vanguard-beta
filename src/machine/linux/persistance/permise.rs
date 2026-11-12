@@ -198,8 +198,8 @@ impl Ecart {
                 "Vanguard backup whose disk is an image (loop device) backed by a file the account can change (udisks mounts it without admin rights, under the expected disk name): where rsync copies is not checked"
             ),
             Ecart::LieuDeDemarrage => tr!(
-                "ligne qui nomme un lieu de démarrage du compte (~/.config/autostart, ~/.config/systemd, ~/.config/hypr, ~/.bashrc…) ou un dossier qui en contient (~/.config), écrit tel quel, relatif au dossier personnel ou par un lien qui y mène : elle peut y copier, déplacer ou lier un lancement à chaque passage ; ce qu'elle y pose n'est pas vérifié (limite : une copie sur le dossier personnel entier n'est pas comptée)",
-                "line naming an account startup place (~/.config/autostart, ~/.config/systemd, ~/.config/hypr, ~/.bashrc…) or a folder holding one (~/.config), written as is, relative to the home folder or through a link leading there: it can copy, move or link a launch there on every run; what it puts there is not checked (limit: a copy onto the whole home folder is not counted)"
+                "ligne qui nomme un lieu de démarrage du compte (~/.config/autostart, ~/.config/systemd, ~/.config/hypr, ~/.bashrc…) ou un dossier qui en contient (~/.config), écrit tel quel, relatif à son dossier courant ou par un lien qui y mène, ou dont un chemin ne se suit pas avec certitude (lien ou dossier illisible, passage par /proc, fichier à plusieurs liens physiques, dossier courant ou variable inconnus, trop de séparateurs) : elle peut y copier, déplacer ou lier un lancement à chaque passage ; ce qu'elle y pose n'est pas vérifié, donc pas tu (limite : une copie sur le dossier personnel entier n'est pas comptée)",
+                "line naming an account startup place (~/.config/autostart, ~/.config/systemd, ~/.config/hypr, ~/.bashrc…) or a folder holding one (~/.config), written as is, relative to its working folder or through a link leading there, or with a path that cannot be followed with certainty (unreadable link or folder, a pass through /proc, a file with several hard links, unknown working folder or variable, too many separators): it can copy, move or link a launch there on every run; what it puts there is not checked, so not kept quiet (limit: a copy onto the whole home folder is not counted)"
             ),
             Ecart::Environnement => tr!(
                 "sauvegarde de Vanguard : un fichier de variables de la session du compte (~/.config/environment.d, ~/.config/systemd/user.conf, ~/.pam_environment, ~/.config/uwsm/env…) nomme HOME ou une variable que lisent rsync, findmnt ou le chargeur de programmes (LD_*, RSYNC_*, POPT*, LIBMOUNT_*, BLKID_*…), ou le cache (inclusion d'un autre fichier, nom construit, « eval »), ou ne se lit pas : il peut changer ce que la sauvegarde lit ou lance (un autre ~/.popt) ; non vérifié, donc pas tu",
@@ -215,6 +215,10 @@ pub(super) struct Systeme<'a> {
     pub(super) racine: &'a Path,
     pub(super) maison: &'a str,
     pub(super) maisons: &'a [&'a str],
+    /// Le dossier courant de la ligne, d'où se lit un argument relatif (X-3) : `None`, le dossier personnel (une
+    /// unité du compte sans WorkingDirectory=, Hyprland) ; sinon un chemin écrit (« / », « ~/x », « /x »), ou un
+    /// texte qui ne se résout pas (`CODE_INCONNU`) : un relatif n'y est alors pas vérifié.
+    pub(super) courant: Option<&'a str>,
 }
 
 /// Les dossiers où un nom de programme nu se cherche : le PATH par défaut du système (jamais celui de la ligne), et
@@ -602,16 +606,26 @@ fn sans_option(m: &str) -> &str {
     }
 }
 
+/// Ce qui sépare une option de sa valeur, ou deux valeurs, dans un argument (`argument_sur`).
+fn separe(c: char) -> bool {
+    c.is_whitespace()
+        || matches!(
+            c,
+            '=' | ':' | ',' | ';' | '\'' | '"' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>' | '|' | '&' | '`'
+        )
+}
+
+/// Au plus autant de séparateurs dans un argument dont les recollages se suivent (`argument_sur`) : au-delà, l'endroit
+/// où il mène n'est pas vérifié.
+const SEPARATEURS_MAX: usize = 32;
+
 /// Un argument d'un programme : chacun de ses morceaux (coupé sur ce qui sépare une option de sa valeur ou deux
-/// valeurs) sans chemin relatif dangereux ni chemin vers un dossier temporaire ou caché.
+/// valeurs) sans chemin relatif dangereux ni chemin vers un dossier temporaire ou caché ; et ni lui, ni aucun de ses
+/// recollages (morceaux voisins avec leurs séparateurs : un nom de dossier peut contenir « , », « = », « : » ou une
+/// espace), ne mène à un lieu de démarrage du compte (X-3, relecture 0.95 : juger les seuls morceaux se contournait).
+/// Trop de séparateurs pour tout suivre : non vérifié.
 fn argument_sur(s: &Systeme, a: &str) -> Result<(), Ecart> {
-    for m in a.split(|c: char| {
-        c.is_whitespace()
-            || matches!(
-                c,
-                '=' | ':' | ',' | ';' | '\'' | '"' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>' | '|' | '&' | '`'
-            )
-    }) {
+    for m in a.split(separe) {
         let m = sans_option(m);
         if m.is_empty() {
             continue;
@@ -622,8 +636,39 @@ fn argument_sur(s: &Systeme, a: &str) -> Result<(), Ecart> {
         if m.starts_with(['/', '~', '$', '%']) && s.cache(m, true) {
             return Err(Ecart::Filet);
         }
-        if s.mene_a_un_lieu(m) {
-            return Err(Ecart::LieuDeDemarrage);
+    }
+    let coupes: Vec<(usize, usize)> = a
+        .char_indices()
+        .filter(|(_, c)| separe(*c))
+        .map(|(i, c)| (i, i.saturating_add(c.len_utf8())))
+        .collect();
+    if coupes.len() > SEPARATEURS_MAX {
+        return Err(Ecart::LieuDeDemarrage);
+    }
+    // Les dossiers personnels tels qu'écrits et tels qu'ils sont vraiment (une maison atteinte par un lien), lus une
+    // fois pour tous les recollages.
+    let mut maisons: Vec<String> = s.maisons.iter().map(|m| (*m).to_string()).collect();
+    maisons.extend(
+        s.maisons
+            .iter()
+            .filter(|m| !m.is_empty())
+            .filter_map(|m| s.chemin_reel(m)),
+    );
+    let maisons: Vec<&str> = maisons.iter().map(String::as_str).collect();
+    let debuts: Vec<usize> = std::iter::once(0)
+        .chain(coupes.iter().map(|(_, apres)| *apres))
+        .collect();
+    let fins: Vec<usize> = coupes
+        .iter()
+        .map(|(avant, _)| *avant)
+        .chain(std::iter::once(a.len()))
+        .collect();
+    for d in &debuts {
+        for f in fins.iter().filter(|f| *f > d) {
+            let m = sans_option(a.get(*d..*f).unwrap_or_default());
+            if !m.is_empty() && s.mene_a_un_lieu(m, &maisons) {
+                return Err(Ecart::LieuDeDemarrage);
+            }
         }
     }
     Ok(())
@@ -634,32 +679,37 @@ const LIENS_SUIVIS: u32 = 40;
 
 impl Systeme<'_> {
     /// Un morceau d'argument qui mène à un lieu de démarrage du compte (W-3, relecture 0.95) : par son texte, puis par
-    /// l'endroit où il mène vraiment (ses liens suivis, `chemin_reel`). Un morceau relatif (« .config/autostart »,
-    /// « lien ») se lit depuis le dossier personnel, le dossier courant d'une unité du compte (WorkingDirectory=%h,
-    /// ou rien) et d'une entrée de démarrage. Un chemin qui ne se suit pas (trop de liens, lien illisible) compte :
-    /// non vérifié, donc pas tu. Une option (« -r ») n'est pas un chemin.
-    fn mene_a_un_lieu(&self, m: &str) -> bool {
+    /// l'endroit où il mène vraiment (ses liens suivis, `chemin_reel`), jugé contre les dossiers personnels tels
+    /// qu'écrits et tels qu'ils sont vraiment (X-3 : une maison atteinte par un lien). Un morceau relatif
+    /// (« .config/autostart », « lien ») se lit depuis le dossier courant de la ligne (`courant` : WorkingDirectory=
+    /// d'une unité, Path= d'une entrée de bureau ; le dossier personnel sinon, celui d'une unité du compte sans
+    /// WorkingDirectory=, systemd.exec(5)). Ce qui ne se suit pas avec certitude compte : non vérifié, donc pas tu
+    /// (trop de liens, lien ou dossier illisible, saut par /proc ou /dev/fd, fichier à plusieurs liens physiques,
+    /// variable inconnue, dossier courant qui ne se résout pas). Une option (« -r ») n'est pas un chemin.
+    fn mene_a_un_lieu(&self, m: &str, maisons: &[&str]) -> bool {
         if m.starts_with('-') {
             return false;
         }
         let ecrit = if m.starts_with(['/', '~', '$', '%']) {
             m.to_string()
         } else {
-            format!("~/{m}")
+            match self.courant {
+                None => format!("~/{m}"),
+                Some(d) if d.contains(CODE_INCONNU) => return true,
+                Some(d) => format!("{}/{m}", d.trim_end_matches('/')),
+            }
         };
-        if lieu_de_demarrage(&ecrit, self.maisons) {
+        if lieu_de_demarrage(&ecrit, maisons) {
             return true;
         }
         let Some(depart) = self.developpe(&ecrit) else {
-            return false;
+            // Une variable que Vanguard ne connaît pas mène où elle veut ; un autre code se juge par son texte.
+            return ecrit.starts_with('$');
         };
-        match self.chemin_reel(&depart) {
-            Some(reel) => {
-                lieu_de_demarrage(&reel, self.maisons)
-                    || lieu_de_demarrage(&self.sous(&reel).to_string_lossy(), self.maisons)
-            }
-            None => true,
-        }
+        let Some(reel) = self.chemin_reel(&depart) else {
+            return true;
+        };
+        lieu_de_demarrage(&reel, maisons) || lieu_de_demarrage(&self.sous(&reel).to_string_lossy(), maisons)
     }
 
     /// Un chemin écrit (« ~/… », « $HOME/… », « %h/… », « $XDG_CONFIG_HOME/… », « /… ») en chemin absolu de l'ordinateur ; `None`
@@ -681,10 +731,14 @@ impl Systeme<'_> {
 
     /// Le chemin réel de `p` (absolu, de l'ordinateur) : chaque partie lue sous la racine, un lien remplacé par sa
     /// cible (absolue : lue sous la racine ; relative : depuis son dossier), « .. » appliqué au chemin déjà suivi.
-    /// Une partie absente, ou qu'on ne peut pas traverser (pas un dossier, pas le droit), arrête le suivi : le
-    /// programme de la ligne ne la traverse pas non plus, et le reste se colle tel quel. `None` : plus de
-    /// `LIENS_SUIVIS` liens, ou un lien qui ne se lit pas.
+    /// Une partie absente, ou sous un fichier qui n'est pas un dossier, arrête le suivi : le programme de la ligne
+    /// ne la traverse pas non plus, et le reste se colle tel quel. `None` (non vérifié) : plus de `LIENS_SUIVIS`
+    /// liens, un lien qui ne se lit pas, toute autre erreur de lecture (pas le droit, montage qui répond mal : X-4),
+    /// un passage par « /proc/<qui>/cwd », « root », « fd »… ou /dev/fd (il dépend du processus qui lit : X-3), ou
+    /// un fichier final du propriétaire du dossier personnel à plusieurs liens physiques (son autre nom peut être un
+    /// lieu de démarrage : X-3).
     fn chemin_reel(&self, p: &str) -> Option<String> {
+        use std::os::unix::fs::MetadataExt as _;
         let racine = self.racine.to_string_lossy();
         let racine = racine.trim_end_matches('/');
         let p = if racine.is_empty() {
@@ -695,6 +749,8 @@ impl Systeme<'_> {
         let mut reste: Vec<String> = p.split('/').rev().map(str::to_string).collect();
         let mut fait = String::new();
         let mut liens: u32 = 0;
+        // Le propriétaire du dossier personnel : un fichier à lui peut avoir un autre nom (lien physique).
+        let compte = std::fs::metadata(self.sous(self.maison)).map(|m| m.uid()).ok();
         while let Some(partie) = reste.pop() {
             if partie.is_empty() || partie == "." {
                 continue;
@@ -705,6 +761,11 @@ impl Systeme<'_> {
                 continue;
             }
             let essai = format!("{fait}/{partie}");
+            // « /proc/<qui>/cwd|root|fd… » et « /dev/fd » mènent où se trouve le processus qui lit, pas Vanguard.
+            let magique = |n: &String| ["cwd", "root", "fd", "fdinfo", "map_files", "exe"].contains(&n.as_str());
+            if essai == "/dev/fd" || (essai == "/proc" && reste.iter().rev().nth(1).is_some_and(magique)) {
+                return None;
+            }
             let lu = self.sous(&essai);
             match std::fs::symlink_metadata(&lu) {
                 Ok(md) if md.file_type().is_symlink() => {
@@ -719,7 +780,23 @@ impl Systeme<'_> {
                     }
                     reste.extend(cible.split('/').rev().map(str::to_string));
                 }
+                Ok(md)
+                    if reste.iter().all(|r| r.is_empty() || r == ".")
+                        && !md.is_dir()
+                        && md.nlink() > 1
+                        && compte.is_none_or(|u| md.uid() == u) =>
+                {
+                    return None;
+                }
                 Ok(_) => fait = essai,
+                Err(e)
+                    if !matches!(
+                        e.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                    ) =>
+                {
+                    return None;
+                }
                 Err(_) => {
                     fait = essai;
                     while let Some(partie) = reste.pop() {

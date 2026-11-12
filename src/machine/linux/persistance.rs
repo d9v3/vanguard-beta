@@ -991,12 +991,14 @@ pub(crate) fn complement_change_le_lancement(texte: &str, maison: &Path) -> Vec<
         racine: Path::new("/"),
         maison: &lue,
         maisons: &maisons,
+        courant: None,
     };
     let codes = Codes {
         utilisateur: true,
         maison: lue.clone(),
         session: None,
         variables: std::collections::BTreeMap::new(),
+        courant: None,
         sauvegarde: None,
         sauvegarde_completee: false,
         sauvegarde_environnement: false,
@@ -3146,6 +3148,8 @@ struct Codes {
     /// Les variables posées par « Environment= » dans l'unité : systemd remplace « $A » et « ${A} » des lignes Exec
     /// par leur valeur (relecture adverse 2, N5).
     variables: std::collections::BTreeMap<String, String>,
+    /// Le dossier courant de ses lignes Exec (`dossier_courant`) : `None`, le dossier personnel.
+    courant: Option<String>,
     /// La sauvegarde que Vanguard pose, si l'unité lue est ce service-là, écrit à l'octet près comme Vanguard l'écrit
     /// (`sauvegarde::sauvegarde_posee`) ; seuls son rsync et son findmnt se taisent, s'ils sont les vrais et si sa
     /// destination se voit sans lien (relecture 0.94, S-1, C-2).
@@ -3166,6 +3170,7 @@ impl Codes {
             maison: r.maison.to_string_lossy().into_owned(),
             session: r.session.as_ref().map(|s| s.to_string_lossy().into_owned()),
             variables: std::collections::BTreeMap::new(),
+            courant: (!utilisateur).then(|| "/".to_string()),
             sauvegarde: None,
             sauvegarde_completee: false,
             sauvegarde_environnement: false,
@@ -3242,6 +3247,17 @@ fn variables_fusionnees(
     if !texte.contains('$') {
         return variables;
     }
+    for autre in autres_textes_de_l_unite(f, codes, r) {
+        if let Ok(lu) = temoins::lire_borne(&autre, AJOUT_MAX) {
+            variables_d_unite(&String::from_utf8_lossy(&lu.octets), codes, r, &mut variables);
+        }
+    }
+    variables
+}
+
+/// Les autres fichiers d'une unité que `f` (son fichier principal, ou l'un de ses ajouts) : son fichier principal et
+/// ses ajouts (« x.service.d/*.conf ») de tous les dossiers que lit systemd, au plus `AJOUTS_MAX`.
+fn autres_textes_de_l_unite(f: &Path, codes: &Codes, r: &Releveur) -> Vec<std::path::PathBuf> {
     let nom_de = |p: &Path| p.file_name().map(|n| n.to_string_lossy().into_owned());
     let parent = f.parent().and_then(nom_de);
     let unite = match parent.as_deref().and_then(|p| p.strip_suffix(".d")) {
@@ -3249,7 +3265,7 @@ fn variables_fusionnees(
         _ => nom_de(f).unwrap_or_default(),
     };
     let Ok(dossiers) = dossiers_d_unites(r, codes.utilisateur) else {
-        return variables;
+        return Vec::new();
     };
     let mut principaux = vec![unite.clone()];
     if let Some((gabarit, apres)) = unite.split_once('@')
@@ -3272,12 +3288,87 @@ fn variables_fusionnees(
             textes.extend(confs);
         }
     }
-    for autre in textes.iter().filter(|p| p.as_path() != f).take(AJOUTS_MAX) {
-        if let Ok(lu) = temoins::lire_borne(autre, AJOUT_MAX) {
-            variables_d_unite(&String::from_utf8_lossy(&lu.octets), codes, r, &mut variables);
+    textes.retain(|p| p.as_path() != f);
+    textes.truncate(AJOUTS_MAX);
+    textes
+}
+
+/// X-3 (relecture 0.95) : le dossier courant des lignes Exec d'une unité, d'où se lit un argument relatif
+/// (`permise::Systeme::courant`) : la valeur de « WorkingDirectory= » de ses sections, celles de ses ajouts comprises,
+/// codes « % » développés ; sans elle, le dossier personnel pour une unité du compte (`None`) et « / » pour une
+/// unité du système (systemd.exec(5)). Deux valeurs différentes (l'ordre exact de systemd n'est pas refait), ou une
+/// valeur qui ne se résout pas en chemin absolu : `CODE_INCONNU`, un relatif n'y est pas vérifié.
+fn dossier_courant(f: &Path, texte: &str, codes: &Codes, r: &Releveur) -> Option<String> {
+    let defaut = codes.courant.clone();
+    let mut valeurs: std::collections::BTreeSet<Option<String>> = std::collections::BTreeSet::new();
+    let mut lire = |texte: &str| {
+        for l in lignes_de_systemd(texte) {
+            let Some((cle, valeur)) = l.texte.split_once('=') else {
+                continue;
+            };
+            if cle.trim_matches([' ', '\t']) != "WorkingDirectory" {
+                continue;
+            }
+            let v = valeur.trim_matches([' ', '\t']).trim_start_matches('-');
+            valeurs.insert(if v.is_empty() {
+                defaut.clone()
+            } else if v == "~" {
+                if codes.utilisateur {
+                    None
+                } else {
+                    Some("/root".to_string())
+                }
+            } else {
+                match developper_codes(v, codes) {
+                    Some(d) if d.starts_with('/') && !d.contains(['$', CODE_INCONNU]) => Some(d),
+                    _ => Some(CODE_INCONNU.to_string()),
+                }
+            });
+        }
+    };
+    lire(texte);
+    for autre in autres_textes_de_l_unite(f, codes, r) {
+        match temoins::lire_borne(&autre, AJOUT_MAX) {
+            Ok(lu) => lire(&String::from_utf8_lossy(&lu.octets)),
+            Err(_) => lire(&format!("WorkingDirectory={CODE_INCONNU}")),
         }
     }
-    variables
+    let mut valeurs = valeurs.into_iter();
+    match (valeurs.next(), valeurs.next()) {
+        (None, _) => defaut,
+        (Some(v), None) => v,
+        (Some(_), Some(_)) => Some(CODE_INCONNU.to_string()),
+    }
+}
+
+/// X-3 (relecture 0.95) : le dossier courant d'une entrée de bureau, sa clé « Path= » (systemd-xdg-autostart-generator
+/// en fait le WorkingDirectory= du service) : `None` sans elle (le dossier personnel) ; un chemin absolu ; sinon
+/// `CODE_INCONNU`, un relatif n'y est pas vérifié.
+fn dossier_de_bureau(texte: &str) -> Option<String> {
+    let mut section = "";
+    let mut courant = None;
+    for l in texte.lines() {
+        let l = l.trim_matches([' ', '\t']);
+        if let Some(nom) = l.strip_prefix('[').and_then(|x| x.strip_suffix(']')) {
+            section = nom;
+            continue;
+        }
+        let Some((cle, valeur)) = l.split_once('=') else {
+            continue;
+        };
+        if section != "Desktop Entry" || cle.trim_matches([' ', '\t']) != "Path" {
+            continue;
+        }
+        let v = valeur.trim_matches([' ', '\t']);
+        courant = if v.is_empty() {
+            None
+        } else if v.starts_with('/') && !v.contains(['$', '%', '\\', CODE_INCONNU]) {
+            Some(v.to_string())
+        } else {
+            Some(CODE_INCONNU.to_string())
+        };
+    }
+    courant
 }
 
 /// Un mot d'une ligne Exec, ses variables remplacées comme les remplace systemd (« $$ » : « $ » ; « $HOME »
@@ -5575,7 +5666,7 @@ fn juger_demarrage(demarrage: &[std::path::PathBuf], h: &Path, t: &mut Lancement
             // Un fichier Lua se lit par ses appels (`juger_lua`), qui coupent chaque commande comme le shell ; ici,
             // ses seuls mots.
             let lecteur = if sorte == Sorte::Bureau {
-                Lecteur::Bureau
+                Lecteur::Bureau(dossier_de_bureau(&lu.texte))
             } else if a_l_extension(f, "lua") {
                 Lecteur::Texte
             } else {
@@ -5592,7 +5683,7 @@ fn juger_demarrage(demarrage: &[std::path::PathBuf], h: &Path, t: &mut Lancement
         if unite || sorte == Sorte::Bureau {
             let utilisateur = !matches!(sorte, Sorte::Unite { utilisateur: false });
             let lecteur = if sorte == Sorte::Bureau {
-                Lecteur::Bureau
+                Lecteur::Bureau(dossier_de_bureau(&lu.texte))
             } else {
                 let base = Codes::de(utilisateur, &t.r);
                 let sauvegarde = (utilisateur && f.file_name().is_some_and(|n| n == crate::sauvegarde::SERVICE))
@@ -5600,6 +5691,7 @@ fn juger_demarrage(demarrage: &[std::path::PathBuf], h: &Path, t: &mut Lancement
                     .flatten();
                 Lecteur::Systemd(Codes {
                     variables: variables_fusionnees(f, &lu.texte, &base, &t.r),
+                    courant: dossier_courant(f, &lu.texte, &base, &t.r),
                     sauvegarde_completee: sauvegarde.is_some()
                         && complements_du_compte(&t.r, crate::sauvegarde::SERVICE),
                     sauvegarde_environnement: sauvegarde
@@ -5642,6 +5734,7 @@ fn juger_demarrage(demarrage: &[std::path::PathBuf], h: &Path, t: &mut Lancement
                         racine: &t.r.racine,
                         maison: &lue,
                         maisons: &maisons,
+                        courant: codes.courant.as_deref(),
                     };
                     if let Err(e) = permise::directive(&s, codes, section.as_deref(), &logique.texte) {
                         lever(
@@ -6102,7 +6195,8 @@ enum Lecteur<'a> {
     /// Une ligne de shell (`ligne_de_shell_suspecte`).
     Brut,
     Systemd(Codes),
-    Bureau,
+    /// Une entrée de bureau, et son dossier courant (`dossier_de_bureau`).
+    Bureau(Option<String>),
     Hypr(&'a std::collections::BTreeMap<String, Vec<String>>),
 }
 
@@ -6177,7 +6271,7 @@ fn juger_lancement(
         Lecteur::Texte => None,
         Lecteur::Brut => shell(commande),
         Lecteur::Systemd(codes) => dite(forme_finale_de_systemd(commande, Some(codes), &maisons, tout_argument)),
-        Lecteur::Bureau => dite(forme_finale_de_systemd(
+        Lecteur::Bureau(_) => dite(forme_finale_de_systemd(
             &sans_codes_de_bureau(commande),
             None,
             &maisons,
@@ -6259,11 +6353,16 @@ fn hors_de_la_liste(
         racine: &r.racine,
         maison: &lue,
         maisons,
+        courant: match lecteur {
+            Lecteur::Systemd(codes) => codes.courant.as_deref(),
+            Lecteur::Bureau(courant) => courant.as_deref(),
+            _ => None,
+        },
     };
     let ecart = match lecteur {
         Lecteur::Texte => return None,
         Lecteur::Systemd(codes) => permise::exec_systemd_note(&s, commande, Some(codes), notes),
-        Lecteur::Bureau => permise::exec_systemd(&s, &sans_codes_de_bureau(commande), None),
+        Lecteur::Bureau(_) => permise::exec_systemd(&s, &sans_codes_de_bureau(commande), None),
         Lecteur::Hypr(variables) if commande.contains('$') => match resoudre_hypr(commande, variables) {
             Some(formes) => formes.iter().try_for_each(|c| permise::ligne_shell(&s, c)),
             None => return Some(variable_inconnue()),
@@ -10767,6 +10866,264 @@ mod tests {
         assert!(faux.is_empty(), "{faux:#?}");
     }
 
+    /// X-3, X-4 (relecture 0.95) : un argument qui mène à un lieu de démarrage du compte par un nom de dossier à
+    /// séparateur (« , », « = », « : », une espace entre guillemets), depuis le dossier courant de la ligne
+    /// (WorkingDirectory=, Path= d'une entrée de bureau), par /proc/self/cwd, par un lien physique, par un dossier
+    /// personnel atteint par un lien, ou par un dossier illisible : levé. Les témoins (un relatif ordinaire depuis
+    /// WorkingDirectory=, « .config » sous WorkingDirectory=/, /proc/cpuinfo) restent muets.
+    #[test]
+    fn un_chemin_qui_ne_se_suit_pas_avec_certitude_mene_au_lieu_de_demarrage() {
+        use std::os::unix::fs::PermissionsExt as _;
+        /// Ce qui se prépare en plus : rien, un lien physique, un dossier personnel atteint par un lien, un dossier
+        /// illisible, une entrée de bureau à la place de l'unité.
+        #[derive(Clone, Copy, PartialEq)]
+        enum Prep {
+            Rien,
+            Physique,
+            MaisonLiee,
+            Illisible,
+            Bureau,
+            AjoutDifferent,
+        }
+        type Cas<'a> = (&'a str, &'a str, &'a [(&'a str, &'a str)], Prep, bool);
+        let autostart: &[(&str, &str)] = &[("Documents/lien", "/home/alice/.config/autostart")];
+        let separateurs = format!(
+            "/usr/bin/cp /home/alice/Documents/x /home/alice/Documents/{}",
+            "a,".repeat(40)
+        );
+        let cas: &[Cas<'_>] = &[
+            (separateurs.as_str(), "", &[], Prep::Rien, false),
+            (
+                "/usr/bin/cp /home/alice/Documents/x lien/x.desktop",
+                "%h/Documents",
+                autostart,
+                Prep::AjoutDifferent,
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x /home/alice/Documents/a,b/x.desktop",
+                "",
+                &[("Documents/a,b", "/home/alice/.config/autostart")],
+                Prep::Rien,
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x /home/alice/Documents/a=b/x.desktop",
+                "",
+                &[("Documents/a=b", "/home/alice/.config/autostart")],
+                Prep::Rien,
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x /home/alice/Documents/a:b/x.desktop",
+                "",
+                &[("Documents/a:b", "/home/alice/.config/autostart")],
+                Prep::Rien,
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x \"/home/alice/Documents/a b/x.desktop\"",
+                "",
+                &[("Documents/a b", "/home/alice/.config/autostart")],
+                Prep::Rien,
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x lien/x.desktop",
+                "%h/Documents",
+                autostart,
+                Prep::Rien,
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x lien/x.desktop",
+                "/home/alice/Documents",
+                autostart,
+                Prep::Rien,
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x lien/x.desktop",
+                "-%h/Documents",
+                autostart,
+                Prep::Rien,
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x lien/x.desktop",
+                "%h/${X}",
+                autostart,
+                Prep::Rien,
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x /home/alice/Documents/p/x.desktop",
+                "",
+                &[("Documents/p", "/proc/self/cwd/.config/autostart")],
+                Prep::Rien,
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x /home/alice/Documents/h.desktop",
+                "",
+                &[],
+                Prep::Physique,
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x /data/alice/.config/autostart/x.desktop",
+                "",
+                &[],
+                Prep::MaisonLiee,
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x /home/alice/Documents/ferme/lien/x.desktop",
+                "",
+                &[],
+                Prep::Illisible,
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x lien/x.desktop",
+                "/home/alice/Documents",
+                autostart,
+                Prep::Bureau,
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x lien/x.desktop",
+                "",
+                autostart,
+                Prep::Bureau,
+                true,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x b",
+                "%h/Documents",
+                &[],
+                Prep::Rien,
+                true,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x b",
+                "-%h/Documents",
+                &[],
+                Prep::Rien,
+                true,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x .config/autostart/x.desktop",
+                "/",
+                &[],
+                Prep::Rien,
+                true,
+            ),
+            (
+                "/usr/bin/cp /proc/cpuinfo /home/alice/Documents/b",
+                "",
+                &[],
+                Prep::Rien,
+                true,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x /home/alice/Documents/a,b/x",
+                "",
+                &[],
+                Prep::Rien,
+                true,
+            ),
+        ];
+        let mut faux = Vec::new();
+        for (i, (exec, courant, liens, prep, sain)) in cas.iter().enumerate() {
+            let m = Maison::nouvelle(&format!("x3-lieu-{i}"));
+            let f = m.racine.join("usr/bin/cp");
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(&f, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+            for d in [".config/autostart", "Documents"] {
+                std::fs::create_dir_all(m.chemin(d)).unwrap();
+            }
+            for (lien, cible) in *liens {
+                std::os::unix::fs::symlink(cible, m.chemin(lien)).unwrap();
+            }
+            if *prep == Prep::Bureau {
+                let path = if courant.is_empty() {
+                    String::new()
+                } else {
+                    format!("Path={courant}\n")
+                };
+                m.ecrire(
+                    ".config/autostart/essai.desktop",
+                    &format!("[Desktop Entry]\nType=Application\nName=essai\n{path}Exec={exec}\n"),
+                );
+            } else {
+                let dossier = if courant.is_empty() {
+                    String::new()
+                } else {
+                    format!("WorkingDirectory={courant}\n")
+                };
+                m.ecrire(
+                    ".config/systemd/user/essai.service",
+                    &format!("[Unit]\nDescription=essai\n\n[Service]\n{dossier}ExecStart={exec}\nNice=10\n\n[Install]\nWantedBy=default.target\n"),
+                );
+            }
+            match prep {
+                Prep::Physique => {
+                    m.ecrire(
+                        ".config/autostart/x.desktop",
+                        "[Desktop Entry]\nType=Application\nName=x\nExec=true\n",
+                    );
+                    std::fs::hard_link(m.chemin(".config/autostart/x.desktop"), m.chemin("Documents/h.desktop"))
+                        .unwrap();
+                }
+                Prep::MaisonLiee => {
+                    std::fs::create_dir_all(m.racine.join("data")).unwrap();
+                    std::fs::rename(m.chemin(""), m.racine.join("data/alice")).unwrap();
+                    std::os::unix::fs::symlink("../data/alice", m.racine.join("home/alice")).unwrap();
+                }
+                Prep::Illisible => {
+                    std::fs::create_dir_all(m.chemin("Documents/ferme")).unwrap();
+                    std::os::unix::fs::symlink("/home/alice/.config/autostart", m.chemin("Documents/ferme/lien"))
+                        .unwrap();
+                    std::fs::set_permissions(m.chemin("Documents/ferme"), std::fs::Permissions::from_mode(0o000))
+                        .unwrap();
+                }
+                Prep::AjoutDifferent => {
+                    m.ecrire(
+                        ".config/systemd/user/essai.service.d/ajout.conf",
+                        "[Service]\nWorkingDirectory=/\n",
+                    );
+                }
+                Prep::Rien | Prep::Bureau => {}
+            }
+            let constats = persistance_dans(
+                &m.racine,
+                &m.chemin(""),
+                |v| (v == "XDG_RUNTIME_DIR").then(|| "/run/user/1000".into()),
+                None,
+                None,
+            );
+            if *prep == Prep::Illisible {
+                std::fs::set_permissions(m.chemin("Documents/ferme"), std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            let leve: Vec<_> = constats
+                .iter()
+                .filter(|c| c.probleme.is_some())
+                .map(|c| c.message.clone())
+                .collect();
+            let juste = if *sain {
+                leve.is_empty()
+            } else {
+                leve.iter().any(|l| l.contains("lieu de démarrage du compte"))
+            };
+            if !juste {
+                faux.push((*exec, *courant, leve));
+            }
+        }
+        assert!(faux.is_empty(), "{faux:#?}");
+    }
+
     /// Le cas qui a mené à ce lot (valeurs inventées) : une unité de l'utilisateur lance un programme d'un dossier
     /// caché, à corriger soi-même. Elle se déclare normale, montre sa ligne, son fichier et le programme lancé ; le
     /// même état relu au bilan suivant est tu.
@@ -13838,6 +14195,7 @@ mod tests {
             racine: &m.racine,
             maison: &maison,
             maisons: &maisons,
+            courant: None,
         };
         // Chaque cas des rapports, levé par les deux mécanismes à la fois ; le joker « t?p » seul échappe au filet
         // (le chemin n'est pas écrit) : la liste permise le refuse.
