@@ -1332,6 +1332,20 @@ fn services_actives(r: &crate::commande::Resultat) -> Option<String> {
     }
 }
 
+/// Les dossiers d'unités du compte que fournit le système (paquets, administrateur), sous leurs chemins fixes. Pas
+/// ceux de `XDG_CONFIG_DIRS` ni `XDG_DATA_DIRS` : ces variables peuvent pointer dans le dossier personnel (flatpak,
+/// home-manager), et une unité qui s'y trouve est de la personne.
+const UNITES_DU_SYSTEME: [&str; 8] = [
+    "/etc/systemd/user",
+    "/etc/xdg/systemd/user",
+    "/run/systemd/user",
+    "/usr/local/lib/systemd/user",
+    "/usr/lib/systemd/user",
+    "/lib/systemd/user",
+    "/usr/local/share/systemd/user",
+    "/usr/share/systemd/user",
+];
+
 /// `releve_demarrage` sur ces dossiers : `config`, le dossier de configuration du compte ; `activees`, la réponse de
 /// systemctl (`services_actives`). Ce qui ne se lit pas, ou que la garde refuse (`sous_maison::juger` : lien, tube,
 /// autre compte, hors du dossier personnel), est un manque dit, jamais une entrée tue (T-1, T-3).
@@ -1340,6 +1354,20 @@ pub(super) fn releve_dans(
     systeme: &[PathBuf],
     bureau: &str,
     activees: Option<String>,
+) -> (Vec<Programme>, Vec<String>) {
+    let unites: Vec<PathBuf> = UNITES_DU_SYSTEME.iter().map(PathBuf::from).collect();
+    releve_selon(config, systeme, bureau, activees, &unites)
+}
+
+/// `releve_dans`, `unites_systeme` étant les dossiers d'unités du système (`UNITES_DU_SYSTEME`). Un service activé
+/// absent de ~/.config/systemd/user n'est tu que si l'un d'eux le porte : ailleurs (~/.local/share/systemd/user,
+/// /run/user/…), ou si le dossier du compte ne se traverse pas, c'est un manque dit (relecture 0.94, R-2).
+fn releve_selon(
+    config: &Path,
+    systeme: &[PathBuf],
+    bureau: &str,
+    activees: Option<String>,
+    unites_systeme: &[PathBuf],
 ) -> (Vec<Programme>, Vec<String>) {
     let mut manques = Vec::new();
     for d in std::iter::once(config.join("autostart")).chain(systeme.iter().cloned()) {
@@ -1369,9 +1397,37 @@ pub(super) fn releve_dans(
     };
     for unite in activees.lines().filter_map(|l| l.split_whitespace().next()) {
         let chemin = dossier.join(unite);
-        // Absent du dossier du compte : un service du système, activé pour chacun, que la personne n'a pas installé.
-        if std::fs::symlink_metadata(&chemin).is_err() {
-            continue;
+        match std::fs::symlink_metadata(&chemin) {
+            Ok(_) => {}
+            // Absent du dossier du compte et porté par le système : un service activé pour chacun, que la personne
+            // n'a pas installé. Le nom ne sort pas du dossier : systemd n'y met jamais de « / ».
+            Err(e)
+                if e.kind() == std::io::ErrorKind::NotFound
+                    && !unite.contains('/')
+                    && unites_systeme
+                        .iter()
+                        .any(|d| std::fs::symlink_metadata(d.join(unite)).is_ok()) =>
+            {
+                continue;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                manques.push(trf!(
+                    "non vérifié : service activé hors de {} ({}) ; ni lu ni proposé",
+                    "not verified: enabled service outside {} ({}); neither read nor offered",
+                    court(&dossier),
+                    crate::ui::affichable(unite)
+                ));
+                continue;
+            }
+            Err(e) => {
+                manques.push(trf!(
+                    "non vérifié : service du compte illisible ({}, {}) ; ni lu ni proposé",
+                    "not verified: account service unreadable ({}, {}); neither read nor offered",
+                    crate::ui::affichable(unite),
+                    e
+                ));
+                continue;
+            }
         }
         if !unite_valide(unite) {
             manques.push(trf!(
@@ -2917,14 +2973,82 @@ mod tests {
         .unwrap();
         std::os::unix::fs::symlink(ailleurs.join("synchro.service"), unites.join("synchro.service")).unwrap();
         std::fs::write(unites.join("note.service"), "[Service]\nExecStart=/usr/bin/note\n").unwrap();
+        let du_systeme = base.join("usr-lib-systemd-user");
+        std::fs::create_dir_all(&du_systeme).unwrap();
+        std::fs::write(
+            du_systeme.join("pipewire.service"),
+            "[Service]\nExecStart=/usr/bin/pipewire\n",
+        )
+        .unwrap();
         let activees =
             "synchro.service enabled enabled\nnote.service enabled enabled\npipewire.service enabled enabled";
-        let (l, manques) = releve_dans(&base, &[], "Hyprland", Some(activees.to_string()));
+        let (l, manques) = releve_selon(&base, &[], "Hyprland", Some(activees.to_string()), &[du_systeme]);
         let noms: Vec<&str> = l.iter().map(|p| p.nom.as_str()).collect();
         assert_eq!(noms, ["note"]);
         assert_eq!(manques.len(), 1, "{manques:?}");
         assert!(
             manques[0].contains("synchro.service") && manques[0].contains("non vérifié"),
+            "{manques:?}"
+        );
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// R-2 (relecture 0.94) : un service activé dont l'unité n'est pas dans ~/.config/systemd/user, ni dans un
+    /// dossier d'unités du système, est un manque dit, jamais un silence.
+    #[test]
+    fn service_du_compte_introuvable_est_dit() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = dossier_jetable("service-introuvable");
+        let (config, donnees, du_systeme) = (base.join("config"), base.join("donnees"), base.join("systeme"));
+        for d in [
+            config.join("systemd/user"),
+            donnees.join("systemd/user"),
+            du_systeme.clone(),
+        ] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        // Dans ~/.local/share/systemd/user : de la personne, pas du système ; Vanguard ne l'y lit pas.
+        std::fs::write(
+            donnees.join("systemd/user/synchro.service"),
+            "[Service]\nExecStart=/usr/bin/synchro\n",
+        )
+        .unwrap();
+        std::fs::write(
+            du_systeme.join("pipewire.service"),
+            "[Service]\nExecStart=/usr/bin/pipewire\n",
+        )
+        .unwrap();
+        let activees = "synchro.service enabled enabled\npipewire.service enabled enabled";
+        let systeme = std::slice::from_ref(&du_systeme);
+        let (l, manques) = releve_selon(&config, &[], "Hyprland", Some(activees.to_string()), systeme);
+        assert!(l.is_empty());
+        assert_eq!(manques.len(), 1, "le service du système reste tu : {manques:?}");
+        assert!(
+            manques[0].contains("synchro.service") && manques[0].contains("non vérifié"),
+            "{manques:?}"
+        );
+        // Le dossier du compte ne se traverse pas : rien n'est pris pour un service du système, même pipewire.
+        std::fs::write(
+            config.join("systemd/user/note.service"),
+            "[Service]\nExecStart=/usr/bin/note\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(config.join("systemd/user"), std::fs::Permissions::from_mode(0o600)).unwrap();
+        let activees = "note.service enabled enabled\npipewire.service enabled enabled";
+        let (l, manques) = releve_selon(&config, &[], "Hyprland", Some(activees.to_string()), systeme);
+        std::fs::set_permissions(config.join("systemd/user"), std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(l.is_empty());
+        assert_eq!(manques.len(), 2, "{manques:?}");
+        assert!(manques.iter().all(|m| m.contains("non vérifié")), "{manques:?}");
+        // Le chemin fixe du système : une unité au nom inventé n'y est pas, elle est dite.
+        let (_, manques) = releve_dans(
+            &config,
+            &[],
+            "Hyprland",
+            Some("vanguard-essai-r2-ailleurs.service enabled enabled".to_string()),
+        );
+        assert!(
+            manques.iter().any(|m| m.contains("vanguard-essai-r2-ailleurs.service")),
             "{manques:?}"
         );
         std::fs::remove_dir_all(&base).unwrap();
