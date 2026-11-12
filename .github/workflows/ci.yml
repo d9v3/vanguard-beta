@@ -73,9 +73,11 @@ jobs:
       # (.github/dependabot.yml), relu et approuvé à la main ; les versions des outils (tool: …@X) restent à mettre
       # à jour à la main. Les outils dans la version épinglée ici, tels que leurs auteurs les publient (empreintes
       # vérifiées).
+      # verifier.sh --ci échoue sur une étape sautée faute d'outil (sauf ses exclusions nommées, EXCLUES_CI) : chaque
+      # outil d'une étape est ici, cargo-cyclonedx compris (nomenclatures, même version qu'outils/sbom.sh).
       - uses: taiki-e/install-action@645d1ab48b3cb8591684a8b730b2ccf4cb3f9568 # v2.87.33
         with:
-          tool: cargo-audit@0.22.2,cargo-deny@0.20.2,zizmor@1.31.1,cargo-vet@0.10.3
+          tool: cargo-audit@0.22.2,cargo-deny@0.20.2,zizmor@1.31.1,cargo-vet@0.10.3,cargo-cyclonedx@0.5.9
           fallback: none
       - name: cargo-fuzz
         run: outils/installer-cargo-fuzz.sh

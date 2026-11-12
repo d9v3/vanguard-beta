@@ -603,11 +603,24 @@ raisons_des_sautes() {
 # celui de l'audit de nuit de la CI : une étape qui n'a rien vérifié y est un échec, sinon un outil désinstallé ou une
 # coupure d'Internet suffirait à publier une version que cargo vet, cargo deny ou zizmor n'ont jamais vue (campagne
 # d'attaque n° 6, F7). --rapide, --sans-wine et --ci sautent des étapes en le demandant : « partiel », dit à la fin.
-# Lue telle quelle par outils/essais-verifier.sh.
-juger_etape() {
+# Sous --ci, une étape lancée qui se dit sautée (un outil que la CI n'a pas) est un échec : sinon une liste
+# d'install-action changée laisserait la CI verte sans nomenclatures ni relectures ; seules exceptions, nommées ici
+# avec leur raison, EXCLUES_CI. Lue telle quelle par outils/essais-verifier.sh.
+#   preuves-compilees : Kani n'est pas installé dans la CI (lourd) ; le passage complet de la livraison l'exige, et
+#                       outils/preuves.sh lance les preuves chaque jeudi (veille de nuit).
+EXCLUES_CI=(preuves-compilees)
+juger_etape() { # état [nom de l'étape]
   case $1 in
     ok) echo vert ;;
-    sautee | absente) if [[ -z $MODE || -n $SEULEMENT ]]; then echo echec; else echo partiel; fi ;;
+    sautee | absente)
+      if [[ -z $MODE || -n $SEULEMENT ]]; then
+        echo echec
+      elif [[ $MODE == --ci && $1 == sautee && " ${EXCLUES_CI[*]} " != *" ${2:-} "* ]]; then
+        echo echec
+      else
+        echo partiel
+      fi
+      ;;
     *) echo echec ;;
   esac
 }
@@ -631,7 +644,7 @@ ligne() {
   elif [[ $etat == absente || $etat == sautee ]]; then
     quoi="non lancé"
     [[ $etat == absente ]] || quoi="sautée, rien vérifié : $(head -n1 "$TRAVAIL/$nom.log")"
-    if [[ $(juger_etape "$etat") == echec ]]; then
+    if [[ $(juger_etape "$etat" "$nom") == echec ]]; then
       ECHECS=$((ECHECS + 1))
       printf '  ✖ %-34s %s\n' "$libelle" "$quoi" | tee -a "$RESUME"
     else
