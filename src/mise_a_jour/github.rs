@@ -514,13 +514,13 @@ pub(super) fn derniere() -> Result<Publiee, String> {
 
 /// Ce que `derniere` retient d'un manifeste reçu et vérifié : la révocation, puis la plus haute version vue. `Err` : le
 /// manifeste est plus vieux que celui déjà vu (un ancien remis en place), ou la révocation ne s'écrit pas.
-pub(super) fn retenir(publiee: &Publiee) -> Result<(), String> {
+pub(super) fn retenir(publiee: &Publiee) -> Result<(), Echec> {
     if publiee.revoque {
-        retenir_revocation().map_err(|e| e.to_string())?;
+        retenir_revocation().map_err(|e| Echec::echoue("mise_a_jour/revocation", e.to_string()))?;
     }
     let vue = plus_haute_vue()?;
     // Retenue seulement une fois la signature vérifiée : un manifeste quelconque ne fait pas monter la barre.
-    if comparer_a_la_vue(vue, publiee.version)? {
+    if comparer_a_la_vue(vue, publiee.version).map_err(|e| Echec::refuse("mise_a_jour/vue", e))? {
         let v = publiee.version;
         let _ = crate::sceau::ecrire(crate::sceau::VERSIONS, format!("{}.{}.{}+{}", v.0, v.1, v.2, v.3));
     }
@@ -530,19 +530,21 @@ pub(super) fn retenir(publiee: &Publiee) -> Result<(), String> {
 /// `retenir` pendant l'aperçu de la fenêtre (`--voir`, sous la lecture seule) : ce que le terminal retient d'un
 /// manifeste vu, signature vérifiée, et seulement cela (le plancher des versions vues, la révocation, leurs sceaux).
 /// Sans quoi un manifeste signé plus vieux, resservi plus tard, serait jugé sans le plancher de ce qui a été vu.
-pub(super) fn retenir_pendant_un_apercu(publiee: &Publiee) -> Result<(), String> {
+pub(super) fn retenir_pendant_un_apercu(publiee: &Publiee) -> Result<(), Echec> {
     crate::autotest::lecture_seule::ecrire_vues(|| retenir(publiee))
 }
 
 /// `retenir` sans rien écrire, pour un aperçu : le manifeste reçu passerait-il la plus haute version vue ? Révoquée
 /// pour la première fois, la plus haute vue repartira de zéro (`retenir_revocation`) : elle ne compte pas.
-pub(super) fn juger_la_vue(publiee: &Publiee) -> Result<(), String> {
+pub(super) fn juger_la_vue(publiee: &Publiee) -> Result<(), Echec> {
     let vue = if publiee.revoque && !revocation_retenue() {
         None
     } else {
         plus_haute_vue()?
     };
-    comparer_a_la_vue(vue, publiee.version).map(|_| ())
+    comparer_a_la_vue(vue, publiee.version)
+        .map(|_| ())
+        .map_err(|e| Echec::refuse("mise_a_jour/vue", e))
 }
 
 /// La dernière version publiée pour ce système, manifeste téléchargé et sa signature vérifiée, sans rien retenir
@@ -885,7 +887,7 @@ passe-droit-sans-vm {zeros} 0
         assert_eq!(r, Ok(()));
         assert!(mais_pas_le_reste && !r_revoque_avant);
         assert_eq!(plus_haute_vue(), Ok(Some((0, 96, 0, 1_795_000_000))));
-        let refus = juger_la_vue(&p95).unwrap_err();
+        let refus = juger_la_vue(&p95).unwrap_err().to_string();
         assert!(refus.contains("0.95.0") && refus.contains("0.96.0"), "{refus}");
         // La révocation vue pendant l'aperçu est retenue, comme au terminal.
         lecture_seule::poser();

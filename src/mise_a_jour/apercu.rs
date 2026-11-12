@@ -29,6 +29,7 @@ use sha2::{Digest, Sha256};
 use super::github::{self, Publiee};
 use super::{Essai, Etat, Lu, TAILLE_MAX, Verdict, Version, ecrire, installer, lire_octets, lire_programme};
 use crate::machine::carnet;
+use crate::modele::Echec;
 use crate::ui::{GRAS, RESET, VERT};
 use crate::{tr, trf, trp};
 
@@ -194,18 +195,18 @@ pub(super) trait Monde {
     fn dossier_sur(&self) -> bool;
     fn vues_douteuses(&self) -> bool;
     /// La dernière version publiée, manifeste reçu et signature vérifiée, sans rien retenir.
-    fn derniere(&self) -> Result<Publiee, String>;
+    fn derniere(&self) -> Result<Publiee, Echec>;
     /// `github::juger_la_vue` : sans rien écrire.
-    fn juger_la_vue(&self, p: &Publiee) -> Result<(), String>;
+    fn juger_la_vue(&self, p: &Publiee) -> Result<(), Echec>;
     fn courante(&self) -> Option<Version>;
     fn maintenant(&self) -> u64;
     /// Après l'accord seulement : retenir le manifeste (`github::retenir`).
-    fn retenir(&self, p: &Publiee) -> Result<(), String>;
+    fn retenir(&self, p: &Publiee) -> Result<(), Echec>;
     /// Pendant l'aperçu, ce que le terminal retient d'un manifeste vu, signature vérifiée et pas plus vieux que le
     /// déjà vu : la plus haute version vue et la révocation (`github::retenir_pendant_un_apercu`). Rien d'autre.
-    fn retenir_la_vue(&self, p: &Publiee) -> Result<(), String>;
+    fn retenir_la_vue(&self, p: &Publiee) -> Result<(), Echec>;
     /// Après l'accord seulement : le programme téléchargé, taille et empreinte signées vérifiées.
-    fn telecharger(&self, p: &Publiee) -> Result<Vec<u8>, String>;
+    fn telecharger(&self, p: &Publiee) -> Result<Vec<u8>, Echec>;
     fn essai(&self) -> Essai;
 }
 
@@ -240,10 +241,10 @@ impl Monde for Ici {
     fn vues_douteuses(&self) -> bool {
         github::versions_vues_douteuses()
     }
-    fn derniere(&self) -> Result<Publiee, String> {
-        github::derniere_recue().map_err(String::from)
+    fn derniere(&self) -> Result<Publiee, Echec> {
+        github::derniere_recue()
     }
-    fn juger_la_vue(&self, p: &Publiee) -> Result<(), String> {
+    fn juger_la_vue(&self, p: &Publiee) -> Result<(), Echec> {
         github::juger_la_vue(p)
     }
     fn courante(&self) -> Option<Version> {
@@ -252,14 +253,14 @@ impl Monde for Ici {
     fn maintenant(&self) -> u64 {
         super::maintenant()
     }
-    fn retenir(&self, p: &Publiee) -> Result<(), String> {
+    fn retenir(&self, p: &Publiee) -> Result<(), Echec> {
         github::retenir(p)
     }
-    fn retenir_la_vue(&self, p: &Publiee) -> Result<(), String> {
+    fn retenir_la_vue(&self, p: &Publiee) -> Result<(), Echec> {
         github::retenir_pendant_un_apercu(p)
     }
-    fn telecharger(&self, p: &Publiee) -> Result<Vec<u8>, String> {
-        github::programme_verifie(p)
+    fn telecharger(&self, p: &Publiee) -> Result<Vec<u8>, Echec> {
+        github::programme_verifie(p).map_err(|e| Echec::echoue("mise_a_jour/telecharger", e))
     }
     fn essai(&self) -> Essai {
         super::essayer
@@ -452,12 +453,12 @@ fn plan_github(m: &dyn Monde, pour: Pour) -> Result<Plan, Refus> {
     let p = m
         .derniere()
         .map_err(|e| Refus::NonVerifie(trf!("GitHub : {}", "GitHub: {}", e)))?;
-    m.juger_la_vue(&p).map_err(Refus::NonVerifie)?;
+    m.juger_la_vue(&p).map_err(|e| Refus::NonVerifie(e.to_string()))?;
     // L'aperçu retient ce qu'il a vu de signé, comme le terminal : sans quoi un « à jour » ou un aperçu pas accepté ne
     // relèverait rien, et un manifeste plus vieux resservi plus tard serait jugé sans ce plancher. Le geste, lui,
     // retient après l'accord (`agir`).
     if pour == Pour::Voir {
-        m.retenir_la_vue(&p).map_err(Refus::NonVerifie)?;
+        m.retenir_la_vue(&p).map_err(|e| Refus::NonVerifie(e.to_string()))?;
     }
     // Le plancher : le programme lancé et les copies d'ici (`depuis_github`).
     let ici: Vec<Version> = lues.iter().filter_map(|(_, v)| *v).chain(m.courante()).collect();
@@ -604,11 +605,11 @@ fn agir(m: &dyn Monde, accord: &str, consommer: impl FnOnce() -> Result<(), carn
         Source::Cle(octets) => octets,
         Source::Github(p) => {
             if let Err(e) = m.retenir(&p) {
-                return Issue::Echec(e);
+                return Issue::Echec(e.to_string());
             }
             match m.telecharger(&p) {
                 Ok(o) => o,
-                Err(e) => return Issue::Echec(e),
+                Err(e) => return Issue::Echec(e.to_string()),
             }
         }
     };
@@ -806,11 +807,11 @@ mod tests {
         fn vues_douteuses(&self) -> bool {
             self.douteuses
         }
-        fn derniere(&self) -> Result<Publiee, String> {
-            self.derniere.clone()
+        fn derniere(&self) -> Result<Publiee, Echec> {
+            self.derniere.clone().map_err(|e| Echec::echoue("essai", e))
         }
-        fn juger_la_vue(&self, _: &Publiee) -> Result<(), String> {
-            self.vue.clone()
+        fn juger_la_vue(&self, _: &Publiee) -> Result<(), Echec> {
+            self.vue.clone().map_err(|e| Echec::refuse("essai", e))
         }
         fn courante(&self) -> Option<Version> {
             self.courante
@@ -818,15 +819,15 @@ mod tests {
         fn maintenant(&self) -> u64 {
             self.maintenant
         }
-        fn retenir(&self, _: &Publiee) -> Result<(), String> {
+        fn retenir(&self, _: &Publiee) -> Result<(), Echec> {
             self.retenus.set(self.retenus.get().saturating_add(1));
             Ok(())
         }
-        fn retenir_la_vue(&self, _: &Publiee) -> Result<(), String> {
+        fn retenir_la_vue(&self, _: &Publiee) -> Result<(), Echec> {
             self.vus.set(self.vus.get().saturating_add(1));
             Ok(())
         }
-        fn telecharger(&self, _: &Publiee) -> Result<Vec<u8>, String> {
+        fn telecharger(&self, _: &Publiee) -> Result<Vec<u8>, Echec> {
             self.telecharges.set(self.telecharges.get().saturating_add(1));
             Ok(self.recus.clone())
         }

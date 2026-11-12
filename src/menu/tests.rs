@@ -1419,8 +1419,9 @@ fn les_essais_n_ecrivent_pas_dans_le_dossier_temporaire() {
         ("src/essais.rs", 1),
         // Et des essais qui donnent au programme un TMPDIR jetable, dans son dossier personnel ou à côté, pour y voir
         // ce qu'il écrirait (l'aperçu d'une correction ne doit rien écrire, même là ; vérification de Fable n° 2,
-        // L5 : environnement vidé, XDG et TMPDIR hors du dossier personnel), puis un essai qui juge ce dossier-là.
-        ("tests/programme.rs", 4),
+        // L5 : environnement vidé, XDG et TMPDIR hors du dossier personnel), puis un essai qui juge ce dossier-là ;
+        // de même pour l'aperçu d'une mise à jour (`se-mettre-a-jour --voir`, lot 0.95 de la fenêtre).
+        ("tests/programme.rs", 5),
     ]
     .into_iter()
     .collect();
