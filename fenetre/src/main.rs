@@ -2,7 +2,8 @@
 //! commande d'une liste fermée et montre ce qu'il répond ; elle ne change rien elle-même, n'ouvre aucune connexion et
 //! n'écrit aucun fichier. Le seul changement qu'elle peut demander, un programme retiré du démarrage ou remis, passe
 //! par une confirmation dans la fenêtre puis par `vanguard`, qui le rejuge (`appli.rs`). Options : `--langue fr|en`,
-//! `--depuis-vanguard` (dire à `vanguard` qu'elle s'est ouverte), `--version`.
+//! `--depuis-vanguard` (dire à `vanguard` qu'elle s'est ouverte), `--vanguard <chemin absolu>` (le programme à lancer,
+//! donné par `vanguard` qui la lance d'une copie en mémoire : elle n'a alors plus de dossier), `--version`.
 
 // Sous Windows, pas de console noire derrière la fenêtre.
 #![cfg_attr(not(test), windows_subsystem = "windows")]
@@ -47,6 +48,7 @@ use std::process::ExitCode;
 struct Options {
     langue: Option<bool>,
     depuis_vanguard: bool,
+    vanguard: Option<std::path::PathBuf>,
     version: bool,
 }
 
@@ -54,6 +56,7 @@ fn options(args: impl Iterator<Item = String>) -> Result<Options, String> {
     let mut o = Options {
         langue: None,
         depuis_vanguard: false,
+        vanguard: None,
         version: false,
     };
     let mut args = args;
@@ -65,6 +68,11 @@ fn options(args: impl Iterator<Item = String>) -> Result<Options, String> {
                 _ => return Err("--langue : fr ou en".into()),
             },
             "--depuis-vanguard" => o.depuis_vanguard = true,
+            // Un chemin absolu, une fois : il remplace « à côté de la fenêtre », avec la même garde (`lanceur`).
+            "--vanguard" => match args.next().map(std::path::PathBuf::from) {
+                Some(c) if c.is_absolute() && o.vanguard.is_none() => o.vanguard = Some(c),
+                _ => return Err("--vanguard : un chemin absolu, une fois".into()),
+            },
             "--version" | "-V" => o.version = true,
             autre => return Err(format!("option inconnue : {}", nettoyage::nom(autre, 40))),
         }
@@ -95,6 +103,9 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     langue::choisir(o.langue);
+    if let Some(c) = o.vanguard {
+        lanceur::designer(c);
+    }
     // Avant le premier fil et la première bibliothèque d'affichage : le relais part à côté avec les droits du compte,
     // la fenêtre entre dans son bac à sable (`relais`, `bac_a_sable`).
     #[cfg(target_os = "linux")]
@@ -127,6 +138,7 @@ mod tests {
             Options {
                 langue: None,
                 depuis_vanguard: false,
+                vanguard: None,
                 version: false
             }
         );
@@ -139,5 +151,13 @@ mod tests {
         assert!(lire(&["--langue", "de"]).is_err());
         assert!(lire(&["audit"]).is_err());
         assert!(lire(&["--commande", "x"]).is_err());
+        // Le programme à lancer : un chemin absolu, une seule fois.
+        assert_eq!(
+            lire(&["--vanguard", "/opt/v/vanguard"]).unwrap().vanguard.as_deref(),
+            Some(std::path::Path::new("/opt/v/vanguard"))
+        );
+        assert!(lire(&["--vanguard"]).is_err());
+        assert!(lire(&["--vanguard", "vanguard"]).is_err());
+        assert!(lire(&["--vanguard", "/a/vanguard", "--vanguard", "/b/vanguard"]).is_err());
     }
 }

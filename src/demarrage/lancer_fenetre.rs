@@ -69,10 +69,34 @@ fn a_distance(present: &dyn Fn(&str) -> bool) -> bool {
     present("SSH_CONNECTION") || present("SSH_TTY") || present("SSH_CLIENT")
 }
 
-/// Le chemin de la fenêtre à côté de ce programme (jamais cherchée dans le PATH).
+/// Le nom de la fenêtre sur la page de la version, téléchargée à côté de `vanguard-linux-x86_64`.
+#[cfg(windows)]
+const NOM_PAGE: &str = "vanguard-fenetre-windows-x86_64.exe";
+#[cfg(not(windows))]
+const NOM_PAGE: &str = "vanguard-fenetre-linux-x86_64";
+
+/// Le chemin de la fenêtre à côté de ce programme (jamais cherchée dans le PATH) : `vanguard-fenetre`, sinon le nom
+/// de la page de la version. Deux noms n'ouvrent rien de plus : la confiance va à l'empreinte, pas au nom. Aucune des
+/// deux : la première, que `ouvrir_depuis` dira absente.
 fn voisine(programme: &Path) -> Option<PathBuf> {
-    let nom = format!("vanguard-fenetre{}", std::env::consts::EXE_SUFFIX);
-    Some(programme.parent()?.join(nom))
+    let dossier = programme.parent()?;
+    let premiere = dossier.join(format!("vanguard-fenetre{}", std::env::consts::EXE_SUFFIX));
+    let page = dossier.join(NOM_PAGE);
+    if std::fs::symlink_metadata(&premiere).is_err() && std::fs::symlink_metadata(&page).is_ok() {
+        return Some(page);
+    }
+    Some(premiere)
+}
+
+/// Ce que reçoit la fenêtre : dire « ouverte » à ce programme, sa langue, et le programme qu'elle lancera, celui
+/// d'origine (`programme`) : lancée d'une copie en mémoire, elle n'a plus de dossier où le trouver.
+fn arguments(programme: &Path) -> Vec<std::ffi::OsString> {
+    let langue = if crate::langue::anglais() { "en" } else { "fr" };
+    let mut a: Vec<std::ffi::OsString> = ["--depuis-vanguard", "--langue", langue, "--vanguard"]
+        .map(Into::into)
+        .into();
+    a.push(programme.into());
+    a
 }
 
 /// Pourquoi la fenêtre posée à côté n'est pas lancée, s'il y a une raison. Sous Linux, elle doit être un vrai
@@ -144,15 +168,25 @@ fn refus(m: &std::fs::Metadata) -> Option<&'static str> {
 }
 
 /// Ouvre la fenêtre si c'est le bon choix et qu'elle dit s'être ouverte ; `false` : le menu du terminal.
+/// La fenêtre est cherchée à côté du programme d'origine : sous Linux, avec la protection de la clé, ce programme
+/// tourne d'une copie temporaire (`protection::cle::exe_d_origine`).
 pub(crate) fn ouvrir() -> bool {
-    let Some(chemin) = std::env::current_exe().ok().as_deref().and_then(voisine) else {
+    #[cfg(unix)]
+    let programme = crate::protection::cle::exe_d_origine();
+    // Sous Windows, pas de protection de la clé : le programme qui tourne est celui d'origine.
+    #[cfg(windows)]
+    let programme = std::env::current_exe().ok();
+    let Some(programme) = programme else {
         return false;
     };
-    ouvrir_depuis(contexte(), &chemin)
+    let Some(chemin) = voisine(&programme) else {
+        return false;
+    };
+    ouvrir_depuis(contexte(), &chemin, &programme)
 }
 
-/// `ouvrir`, pour un contexte et un chemin de fenêtre donnés (les essais).
-fn ouvrir_depuis(c: Contexte, chemin: &Path) -> bool {
+/// `ouvrir`, pour un contexte, un chemin de fenêtre et un programme d'origine donnés (les essais).
+fn ouvrir_depuis(c: Contexte, chemin: &Path, programme: &Path) -> bool {
     if !choisir(c) {
         return false;
     }
@@ -190,7 +224,7 @@ fn ouvrir_depuis(c: Contexte, chemin: &Path) -> bool {
         );
         return false;
     }
-    match lancer(&chemin) {
+    match lancer(&chemin, programme) {
         Lancement::Ouverte => return true,
         Lancement::Refusee(r) => eprintln!(
             "{}",
@@ -321,7 +355,7 @@ fn commande(v: &Verifiee) -> Command {
 /// la fenêtre continue seule. Sa sortie d'erreur est jetée (un pilote graphique bavard ne salit pas le terminal).
 /// Pas par `commande::lancer`, qui attend la fin du programme : la fenêtre vit après nous ; lancée par les coulisses
 /// quand même (`spawn_suivi`), elle s'y voit.
-fn lancer(chemin: &Path) -> Lancement {
+fn lancer(chemin: &Path, programme: &Path) -> Lancement {
     // Seconde garde, au seul endroit qui construit la commande : rien ne lance la fenêtre tant qu'elle n'est pas livrée.
     if !FENETRE_LIVREE {
         return Lancement::Refusee(tr!("pas livrée", "not shipped").into());
@@ -348,9 +382,7 @@ fn lancer(chemin: &Path) -> Lancement {
         Err(r) => return Lancement::Refusee(r),
     };
     let mut c = commande(&verifiee);
-    c.arg("--depuis-vanguard")
-        .arg("--langue")
-        .arg(if crate::langue::anglais() { "en" } else { "fr" })
+    c.args(arguments(programme))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -437,9 +469,12 @@ mod tests {
             a_distance: false,
             eleve: false,
         };
-        assert!(!ouvrir_depuis(devant, &f), "la fenêtre n'est pas livrée : le menu");
         assert!(
-            !matches!(lancer(&f), Lancement::Ouverte),
+            !ouvrir_depuis(devant, &f, &dossier.join("vanguard")),
+            "la fenêtre n'est pas livrée : le menu"
+        );
+        assert!(
+            !matches!(lancer(&f, &dossier.join("vanguard")), Lancement::Ouverte),
             "jamais lancée, même appelée directement"
         );
         assert!(!temoin.exists(), "le faux voisin a tourné");
@@ -511,6 +546,31 @@ mod tests {
             v.file_name()
                 .is_some_and(|n| n.to_string_lossy().starts_with("vanguard-fenetre"))
         );
+        // Le nom de la page de la version, s'il est seul ; `vanguard-fenetre` d'abord.
+        let dossier = crate::socle::dossier_local().join("essai-voisine");
+        let _ = std::fs::remove_dir_all(&dossier);
+        std::fs::create_dir_all(&dossier).unwrap();
+        let programme = dossier.join("vanguard");
+        let premiere = dossier.join(format!("vanguard-fenetre{}", std::env::consts::EXE_SUFFIX));
+        assert_eq!(voisine(&programme), Some(premiere.clone()), "aucune : la première");
+        std::fs::write(dossier.join(NOM_PAGE), b"").unwrap();
+        assert_eq!(voisine(&programme), Some(dossier.join(NOM_PAGE)));
+        std::fs::write(&premiere, b"").unwrap();
+        assert_eq!(voisine(&programme), Some(premiere));
+        let _ = std::fs::remove_dir_all(&dossier);
+    }
+
+    /// La fenêtre reçoit le programme d'origine à lancer, tel quel (même téléchargé sous le nom de la page).
+    #[test]
+    fn la_fenetre_recoit_le_programme_a_lancer() {
+        let a = arguments(Path::new("/opt/v/vanguard-linux-x86_64"));
+        let i = a.iter().position(|x| x == "--vanguard").expect("--vanguard");
+        assert_eq!(
+            a.get(i + 1).map(PathBuf::from),
+            Some(PathBuf::from("/opt/v/vanguard-linux-x86_64"))
+        );
+        assert!(a.iter().any(|x| x == "--depuis-vanguard"));
+        assert!(a.iter().any(|x| x == "--langue"));
     }
 
     /// Une fenêtre que d'autres comptes pourraient remplacer n'est pas lancée ; un lien non plus.

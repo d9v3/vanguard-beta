@@ -40,21 +40,44 @@ pub struct Programme {
 }
 
 impl Programme {
-    /// `vanguard` (`vanguard.exe` sous Windows) dans le dossier de la fenêtre. Jamais le PATH, jamais une variable
-    /// d'environnement : une fenêtre lancée d'un dossier piégé ne doit pas lancer un autre programme.
+    /// Le `vanguard` désigné par `--vanguard` (la fenêtre lancée par `vanguard` d'une copie en mémoire, qui n'a pas de
+    /// dossier), sinon `vanguard` (`vanguard.exe` sous Windows) dans le dossier de la fenêtre. Jamais le PATH, jamais
+    /// une variable d'environnement : une fenêtre lancée d'un dossier piégé ne doit pas lancer un autre programme.
+    /// Désigné ou voisin, la même garde. `--vanguard` n'ouvre rien : qui peut passer des options à la fenêtre est déjà
+    /// ce compte.
     pub fn voisin() -> Result<Programme, String> {
         let soi = std::env::current_exe().map_err(|e| e.to_string())?;
-        let dossier = soi
-            .parent()
-            .ok_or_else(|| crate::tr!("dossier introuvable", "folder not found").to_string())?;
+        // Sous Linux, le compte de l'image qui tourne (`/proc/self/exe` : le fichier, ou la copie en mémoire, à ce
+        // compte) ; un chemin `/memfd:…` ne se relit pas.
         #[cfg(unix)]
         let proprietaire = {
             use std::os::unix::fs::MetadataExt;
-            std::fs::metadata(&soi).map_err(|e| e.to_string())?.uid()
+            let image = if cfg!(target_os = "linux") {
+                Path::new("/proc/self/exe")
+            } else {
+                soi.as_path()
+            };
+            std::fs::metadata(image).map_err(|e| e.to_string())?.uid()
         };
         #[cfg(not(unix))]
         let proprietaire = 0;
+        if let Some(chemin) = DESIGNE.get() {
+            return Programme::designe(chemin, proprietaire);
+        }
+        let dossier = soi
+            .parent()
+            .ok_or_else(|| crate::tr!("dossier introuvable", "folder not found").to_string())?;
         Programme::dans(dossier, proprietaire)
+    }
+
+    /// Le `vanguard` désigné par `--vanguard`, gardé comme le voisin. `proprietaire` : comme pour `dans`.
+    pub(crate) fn designe(chemin: &Path, proprietaire: u32) -> Result<Programme, String> {
+        let p = Programme {
+            chemin: chemin.to_path_buf(),
+            proprietaire,
+        };
+        p.verifier()?;
+        Ok(p)
     }
 
     /// `proprietaire` : le compte à qui est la fenêtre elle-même (Linux) ; `vanguard` doit être à lui ou à root.
@@ -100,6 +123,14 @@ impl Programme {
             )),
         }
     }
+}
+
+/// Le `vanguard` désigné par `--vanguard` (main.rs), lu avant le relais : le relais, né d'un `fork`, l'a aussi.
+static DESIGNE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Retient le `vanguard` désigné par `--vanguard`.
+pub fn designer(chemin: PathBuf) {
+    let _ = DESIGNE.set(chemin);
 }
 
 /// Pourquoi le `vanguard` voisin n'est pas lancé.
@@ -706,6 +737,31 @@ mod tests {
         let d = std::env::temp_dir().join(format!("vanguard-fenetre-essai-{}", std::process::id()));
         // Un dossier qui n'existe pas : rien, jamais le PATH.
         assert!(Programme::dans(&d, 0).is_err());
+    }
+
+    /// Désigné par `--vanguard` (la fenêtre lancée d'une copie en mémoire) : même garde que le voisin, quel que soit
+    /// son nom (`vanguard-linux-x86_64` tel que téléchargé).
+    #[cfg(unix)]
+    #[test]
+    fn le_vanguard_designe_est_garde_comme_le_voisin() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let d = crate::essais::banc("designe");
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("vanguard-linux-x86_64");
+        std::fs::write(&f, b"#!/bin/sh\n").unwrap();
+        let moi = std::fs::metadata(&f).unwrap().uid();
+        let droits = |mode| std::fs::set_permissions(&f, std::fs::Permissions::from_mode(mode)).unwrap();
+        droits(0o755);
+        assert!(Programme::designe(&f, moi).is_ok());
+        droits(0o757);
+        assert!(Programme::designe(&f, moi).is_err(), "modifiable par d'autres");
+        droits(0o755);
+        assert!(Programme::designe(&d.join("absent"), moi).is_err());
+        std::os::unix::fs::symlink(&f, d.join("lien")).unwrap();
+        assert!(Programme::designe(&d.join("lien"), moi).is_err(), "un lien");
+        assert!(Programme::designe(&d, moi).is_err(), "un dossier");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// Un `vanguard` que d'autres comptes pourraient remplacer n'est pas lancé, ni un lien, ni celui d'un autre compte.
