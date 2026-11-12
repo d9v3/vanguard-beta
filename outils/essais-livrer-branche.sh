@@ -32,7 +32,8 @@
 #      d'envoyé, c'est dit, code 8 (un autre échec garde son code).
 #  17. deployer.sh qui finit bien sans rien envoyer sur GitHub (lien mort, refus, sans Internet), ou en code 8 (la
 #      borne a refusé l'envoi) : la raison est montrée, pas de « ✔ livré », worktree et branche gardés, code 3 ; un
-#      code 8 sans raison dans le journal : échec (code 1).
+#      code 8 sans raison dans le journal : échec (code 1). Le texte dit comment régler : relancer deployer.sh
+#      seulement si rien n'est à committer ; un commit passe par une branche livrée (W-2).
 # Lancé par outils/verifier.sh.
 #   outils/essais-livrer-branche.sh
 set -uo pipefail
@@ -542,7 +543,9 @@ for raison in "Rien n'est envoyé sur GitHub : un lien est mort (voir ci-dessus)
   livrer lot "$LOT"
   if ((CODE == 3)) && [[ $(tete master) == "$(cat "$CAS/vu-deploye" 2>/dev/null)" && -d $LOT ]] && tete refs/heads/lot >/dev/null &&
     grep -qF "$raison" <<<"$SORTIE" && grep -q "^  https://exemple.invalid/mort" <<<"$SORTIE" &&
-    grep -q "rien n'est parti sur GitHub" <<<"$SORTIE" && ! grep -q "✔ livré" <<<"$SORTIE"; then
+    grep -q "rien n'est parti sur GitHub" <<<"$SORTIE" && ! grep -q "✔ livré" <<<"$SORTIE" &&
+    grep -q "sans commit (Internet ou lien revenu) : relancer outils/deployer.sh" <<<"$SORTIE" &&
+    grep -q "demande un commit" <<<"$SORTIE" && grep -q "livrée par outils/livrer-branche.sh" <<<"$SORTIE"; then
     ok "rien d'envoyé sur GitHub (« ${raison:0:30}… ») : dit, code 3, worktree et branche gardés"
   else
     ko "rien d'envoyé sur GitHub (« ${raison:0:30}… », code $CODE) : $(tail -n 3 <<<"$SORTIE")"

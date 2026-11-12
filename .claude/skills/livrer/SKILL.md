@@ -19,12 +19,16 @@ ni envoi. Pour la clé entre-temps, sans rien envoyer : `VANGUARD_INTERMEDIAIRE=
    la première étape en échec, sans rien fusionner : corriger, puis relancer (un commit posé sur la branche pendant la
    vérification fait refuser : seul le commit vérifié est fusionné). Un ménage raté après le déploiement (« ⚠ livré …,
    ménage à finir à la main ») : la version est partie, retirer worktree et branche à la main. « ⚠ fusionné et
-   déployé ici …, mais rien n'est parti sur GitHub » (code 3) : la raison est dite juste au-dessus ; la régler, puis
-   relancer `outils/deployer.sh`, et alors seulement retirer worktree et branche. Si l'arbre principal a
+   déployé ici …, mais rien n'est parti sur GitHub » (code 3) : la raison est dite juste au-dessus (deployer.sh finit
+   en code 8 quand la borne de l'envoi refuse). Réglée sans commit (Internet ou lien revenu) : relancer
+   `outils/deployer.sh`. Si elle demande un commit (lien corrigé, détail retiré) ou si un commit d'ailleurs est sur
+   master : une branche posée sur master (worktree neuf, le correctif dessus s'il en faut un), livrée par
+   `outils/livrer-branche.sh`, jamais un commit fait à la main sur master (deployer.sh le refuserait à chaque
+   relance). Alors seulement retirer worktree et branche. Si l'arbre principal a
    des changements non committés d'une autre session sur les mêmes fichiers : arrête-toi et demande. Si les captures
    n'ont pas pu se faire, le dire. Rien n'est poussé si un détail personnel paraît ou si un lien est mort
-   (`outils/liens.py`) : corriger, puis relancer `outils/deployer.sh`. Un lien douteux montré : l'ouvrir (WebFetch) ;
-   bon mais refusé aux programmes, l'ajouter à `outils/liens.txt`.
+   (`outils/liens.py`) : corriger sur une branche posée sur master, livrée par `outils/livrer-branche.sh`. Un lien
+   douteux montré : l'ouvrir (WebFetch) ; bon mais refusé aux programmes, l'ajouter à `outils/liens.txt`.
 4. Page de la version (Releases) : `deployer.sh` la publie tout seul pour chaque publication, 0.x.0 comme 0.x.y
    (`outils/publier-version.sh` : deux programmes, Linux et Windows, empreintes, nomenclatures (SBOM, cargo-cyclonedx
    0.5.9 requis ici, attestées par le travail « nomenclatures » de ci.yml), notes tirées des commits de version depuis

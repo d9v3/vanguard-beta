@@ -141,7 +141,12 @@ grep -E "Clé VANGUARD|publiée|sans page|Durées" "$JOURNAUX/deploiement-$NOM.l
 if [[ -n $PAS_ENVOYE ]]; then
   head -n 15 <<<"$PAS_ENVOYE"
   echo "⚠ fusionné et déployé ici (${SHA:0:12}), mais rien n'est parti sur GitHub : worktree et branche gardés"
-  echo "  journal : $JOURNAUX/deploiement-$NOM.log ; une fois la cause réglée, relancer outils/deployer.sh"
+  echo "  journal : $JOURNAUX/deploiement-$NOM.log"
+  # Un commit posé à la main sur master n'est jamais vérifié : deployer.sh le refuserait à chaque relance (relecture
+  # 0.95, W-2). Il passe par une livraison, qui le vérifie et le note.
+  echo "  cause réglée sans commit (Internet ou lien revenu) : relancer outils/deployer.sh"
+  echo "  cause qui demande un commit (lien corrigé, détail retiré) ou commit d'ailleurs sur master : une branche posée"
+  echo "  sur master (worktree neuf, le correctif dessus s'il en faut un), livrée par outils/livrer-branche.sh"
   exit 3
 fi
 # Le ménage, une fois la livraison faite : son échec se dit, il ne défait rien.
