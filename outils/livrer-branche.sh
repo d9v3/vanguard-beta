@@ -123,16 +123,21 @@ git merge -q --ff-only "$SHA"
 }
 # Le commit vérifié lui est donné : deployer.sh refuse de partir d'un autre (une fenêtre entre cette garde et sa
 # lecture de HEAD), et n'envoie rien de plus que ses propres commits (envoi_borne).
-VANGUARD_COMMIT_VERIFIE=$SHA outils/deployer.sh >"$JOURNAUX/deploiement-$NOM.log" 2>&1 || {
-  tail -30 "$JOURNAUX/deploiement-$NOM.log"
-  echo "✖ déploiement en échec : master contient ${SHA:0:12}, worktree et branche gardés"
-  exit 1
-}
-grep -E "Clé VANGUARD|publiée|sans page|Durées" "$JOURNAUX/deploiement-$NOM.log" | tail -4 || true
-# deployer.sh finit en code 0 même quand rien ne part sur GitHub (borne, garde-fou, lien mort, refus de GitHub, sans
-# Internet) : la raison, avec ses lignes en retrait, est montrée ici, pas laissée dans le journal (relecture 0.95, V-4).
+# Code 8 : déployé ici, mais la borne a refusé l'envoi sur GitHub (relecture 0.95, W-1) : traité plus bas avec les
+# autres « rien n'est parti », seulement si sa raison est dans le journal ; sinon, un échec comme un autre.
+DEPLOI=0
+VANGUARD_COMMIT_VERIFIE=$SHA outils/deployer.sh >"$JOURNAUX/deploiement-$NOM.log" 2>&1 || DEPLOI=$?
+# deployer.sh finit en code 0 quand rien ne part sur GitHub pour une raison du moment (garde-fou, lien mort, refus de
+# GitHub, sans Internet), en code 8 quand la borne le refuse : la raison, avec ses lignes en retrait, est montrée
+# ici, pas laissée dans le journal (relecture 0.95, V-4).
 PAS_ENVOYE=$(awk '/^(Rien n.est envoyé sur GitHub|GitHub refuse l.envoi|GitHub injoignable : le code)/ { p = 1; print; next }
   p && /^  / { print; next } { p = 0 }' "$JOURNAUX/deploiement-$NOM.log")
+if ((DEPLOI != 0)) && ! [[ $DEPLOI == 8 && -n $PAS_ENVOYE ]]; then
+  tail -30 "$JOURNAUX/deploiement-$NOM.log"
+  echo "✖ déploiement en échec (code $DEPLOI) : master contient ${SHA:0:12}, worktree et branche gardés"
+  exit 1
+fi
+grep -E "Clé VANGUARD|publiée|sans page|Durées" "$JOURNAUX/deploiement-$NOM.log" | tail -4 || true
 if [[ -n $PAS_ENVOYE ]]; then
   head -n 15 <<<"$PAS_ENVOYE"
   echo "⚠ fusionné et déployé ici (${SHA:0:12}), mais rien n'est parti sur GitHub : worktree et branche gardés"

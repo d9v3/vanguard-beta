@@ -28,9 +28,11 @@
 #      un master réécrit : refus, et encore au déploiement suivant tant que le commit est là ; il refuse de partir
 #      d'un autre commit que celui que livrer-branche.sh a vérifié.
 #  16. deployer.sh (l'envoi, lu tel quel) : la tête notée est jugée puis poussée, jamais un commit posé sur master
-#      pendant les vérifications (garde-fou, liens) ; une tête illisible : rien de jugé, rien d'envoyé, c'est dit.
-#  17. deployer.sh qui finit bien sans rien envoyer sur GitHub (lien mort, refus, sans Internet) : la raison est
-#      montrée, pas de « ✔ livré », worktree et branche gardés, code 3.
+#      pendant les vérifications (garde-fou, liens) ; une tête illisible ou un envoi refusé par la borne : rien
+#      d'envoyé, c'est dit, code 8 (un autre échec garde son code).
+#  17. deployer.sh qui finit bien sans rien envoyer sur GitHub (lien mort, refus, sans Internet), ou en code 8 (la
+#      borne a refusé l'envoi) : la raison est montrée, pas de « ✔ livré », worktree et branche gardés, code 3 ; un
+#      code 8 sans raison dans le journal : échec (code 1).
 # Lancé par outils/verifier.sh.
 #   outils/essais-livrer-branche.sh
 set -uo pipefail
@@ -503,11 +505,31 @@ git -C "$E/vide" remote add origin "$E/github-vide.git"
 # shellcheck disable=SC2034 # lues par l'envoi, évalué juste après
 SORTIE=$(cd "$E/vide" && LOCAL='' MODE=--branchement A_PUBLIER='' VERSION=0 DEPART='' &&
   eval "$(sed '/^DEPART=/,$d' <<<"$BORNE")" && eval "$ENVOI_BLOC" 2>&1)
-if grep -q "^Rien n'est envoyé sur GitHub : la tête du dépôt ne se lit pas" <<<"$SORTIE" &&
+CODE=$?
+if ((CODE == 8)) && grep -q "^Rien n'est envoyé sur GitHub : la tête du dépôt ne se lit pas" <<<"$SORTIE" &&
+  [[ $(tail -n 1 <<<"$SORTIE") == "✖ Rien n'est parti sur GitHub : envoi refusé"* ]] &&
   [[ -z $(git -C "$E/github-vide.git" for-each-ref) ]]; then
-  ok "deployer.sh : tête illisible, rien n'est jugé ni envoyé, et c'est dit"
+  ok "deployer.sh : tête illisible, rien n'est jugé ni envoyé, c'est dit, code 8"
 else
-  ko "deployer.sh, tête illisible : $(tail -n 2 <<<"$SORTIE")"
+  ko "deployer.sh, tête illisible (code $CODE) : $(tail -n 2 <<<"$SORTIE")"
+fi
+# … et le passage suivant sur le dépôt où l'autre fenêtre a committé : la borne refuse, le script finit en code 8 et
+# sa dernière ligne le dit, pour qu'un livrer-branche.sh d'avant 0.95 voie un échec, pas un « livré » (W-1). Un
+# autre échec garde son code.
+# shellcheck disable=SC2034 # lues par l'envoi, évalué juste après
+SORTIE=$(cd "$E/depot" && LOCAL='' MODE=--branchement A_PUBLIER='' VERSION=0 DEPART=$(git rev-parse HEAD) &&
+  eval "$(sed '/^DEPART=/,$d' <<<"$BORNE")" && eval "$ENVOI_BLOC" 2>&1)
+CODE=$?
+# shellcheck disable=SC2034 # lues par l'envoi, évalué juste après
+(cd "$E/depot" && LOCAL='' MODE=--branchement A_PUBLIER='' VERSION=0 DEPART=$(git rev-parse HEAD) &&
+  eval "$(sed '/^DEPART=/,$d' <<<"$BORNE")" && eval "$ENVOI_BLOC" && exit 1) >/dev/null 2>&1
+CODE_ECHEC=$?
+if ((CODE == 8 && CODE_ECHEC == 1)) && grep -q "^Rien n'est envoyé sur GitHub : master porte plus" <<<"$SORTIE" &&
+  [[ $(tail -n 1 <<<"$SORTIE") == "✖ Rien n'est parti sur GitHub : envoi refusé"* ]] &&
+  [[ $(git -C "$E/github.git" rev-parse master) == "$LIVRE" ]]; then
+  ok "deployer.sh : envoi refusé par la borne, code 8 et dernière ligne qui le dit ; un autre échec garde son code"
+else
+  ko "deployer.sh, envoi refusé (code $CODE, autre échec $CODE_ECHEC) : $(tail -n 2 <<<"$SORTIE")"
 fi
 
 # 17. Déployé ici, rien de parti sur GitHub : dit, worktree et branche gardés (relecture 0.95, V-4). Une ligne par
@@ -526,6 +548,27 @@ for raison in "Rien n'est envoyé sur GitHub : un lien est mort (voir ci-dessus)
     ko "rien d'envoyé sur GitHub (« ${raison:0:30}… », code $CODE) : $(tail -n 3 <<<"$SORTIE")"
   fi
 done
+
+# deployer.sh en code 8 (la borne a refusé l'envoi, W-1) : avec sa raison, « rien n'est parti », code 3, comme
+# ci-dessus ; sans raison dans le journal, un échec comme un autre (code 1), jamais un « livré ».
+monter borne-code-8
+printf '%s\n' "Rien n'est envoyé sur GitHub : master porte plus que le commit vérifié et les commits de deployer.sh." \
+  "  commit(s) sur master que GitHub n'a pas, ni vérifiés ni de deployer.sh :" "    src/autre.rs" \
+  "✖ Rien n'est parti sur GitHub : envoi refusé par la borne (raison plus haut), déployé ici seulement." \
+  >"$CAS/consigne-deploi-sortie"
+echo 8 >"$CAS/consigne-deploi"
+livrer lot "$LOT"
+code_raison=$CODE sortie_raison=$SORTIE
+monter borne-code-8-muet
+echo 8 >"$CAS/consigne-deploi"
+livrer lot "$LOT"
+if ((code_raison == 3 && CODE == 1)) && [[ -d $LOT ]] && grep -q "^    src/autre.rs" <<<"$sortie_raison" &&
+  grep -q "rien n'est parti sur GitHub" <<<"$sortie_raison" && ! grep -q "✔ livré" <<<"$sortie_raison$SORTIE" &&
+  grep -q "déploiement en échec (code 8)" <<<"$SORTIE"; then
+  ok "deployer.sh en code 8 : avec sa raison, code 3 et dit ; sans raison, échec (code 1) ; jamais « livré »"
+else
+  ko "deployer.sh en code 8 (avec raison $code_raison, sans raison $CODE) : $(tail -n 2 <<<"$sortie_raison")"
+fi
 
 ((ECHECS == 0)) || { echo "$ECHECS essai(s) en échec."; exit 1; }
 echo "livrer-branche.sh : tout est juste."

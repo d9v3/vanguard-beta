@@ -418,19 +418,34 @@ install -Dm755 "$LINUX" "$HOME/.cargo/bin/vanguard"
 # seulement si rien de personnel n'y paraît : code, messages, auteur (outils/confidentialite.py), et si aucun lien
 # n'est mort : documentation, programme, scripts, licences (outils/liens.py).
 T_ENVOI=$SECONDS
+# Envoi refusé par la borne (tête illisible, autre branche que master, commits ni vérifiés ni de deployer.sh) : le
+# déploiement d'ici continue (clé, VM, journaux), puis le script finit en code 8, sa dernière ligne le dit. Un
+# livrer-branche.sh d'avant 0.95, qui ne donne pas VANGUARD_COMMIT_VERIFIE (donc aucun commit noté vérifié), voit
+# ainsi un échec, jamais un « livré » ; celui de 0.95 le compte comme « rien n'est parti sur GitHub », code 3
+# (relecture 0.95, W-1). Un autre échec garde son code.
+CODE_ENVOI_REFUSE=8
+envoi_refuse() { trap fin_envoi_refuse EXIT; }
+fin_envoi_refuse() {
+  local code=$?
+  echo "✖ Rien n'est parti sur GitHub : envoi refusé par la borne (raison plus haut), déployé ici seulement."
+  ((code != 0)) || exit "$CODE_ENVOI_REFUSE"
+}
 TETE=$(git rev-parse -q --verify 'HEAD^{commit}' 2>/dev/null) || TETE=""
 if [[ -n $LOCAL ]]; then
   echo "Rien n'est envoyé sur GitHub (déploiement local)."
 elif git remote get-url origin >/dev/null 2>&1 && [[ -z $DEPART || -z $TETE ]]; then
   # Sans tête lisible, rien n'est jugé : rien ne part (jamais un envoi de ce qu'on n'a pas pu nommer).
   echo "Rien n'est envoyé sur GitHub : la tête du dépôt ne se lit pas (git rev-parse HEAD a échoué), rien n'est jugé."
+  envoi_refuse
 elif git remote get-url origin >/dev/null 2>&1 && [[ $(git symbolic-ref -q HEAD || true) != refs/heads/master ]]; then
   # La tête part sur le master de GitHub : jamais celle d'une autre branche.
   echo "Rien n'est envoyé sur GitHub : ce dépôt n'est pas sur la branche master."
+  envoi_refuse
 elif git remote get-url origin >/dev/null 2>&1 && ! HORS_DEPART=$(envoi_borne "$DEPART" "$TETE"); then
   echo "Rien n'est envoyé sur GitHub : master porte plus que le commit vérifié et les commits de deployer.sh."
   printf '%s\n' "$HORS_DEPART"
   echo "  Rien ne partira tant que ces commits sont là : les livrer par outils/livrer-branche.sh (vérifiés, puis notés)."
+  envoi_refuse
 elif git remote get-url origin >/dev/null 2>&1; then
   # Code 1 avec son constat : un détail trouvé ; tout autre code (2 : rien conclu), ou un code 1 sans constat (Python
   # qui plante, sa trace) : le garde-fou n'a pas pu juger, dit tel quel (relecture 0.94, N-1).
