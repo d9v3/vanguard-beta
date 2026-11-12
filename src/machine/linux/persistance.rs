@@ -3670,12 +3670,19 @@ fn ajouts_de(nom: &str) -> Vec<String> {
 /// de compléments qui ne se lit pas ou qui est autre chose qu'un dossier, ou la liste des dossiers qui ne se dresse
 /// pas. Un dossier vide ne compte pas. Pour la sauvegarde de Vanguard (D-1) : `Environment=HOME=…` y déplacerait le
 /// ~/.popt que lit rsync.
+///
+/// Sous tous les noms de l'unité (F-3, relecture 0.94) : systemd applique aussi à une unité les compléments de ses
+/// alias, un lien `copie.service` → `nom` posé dans un dossier d'unités suffit (vu avec `systemd-analyze --user
+/// verify`) ; et ceux du fichier que vise `nom` s'il est lui-même un lien. Un dossier d'unités qui ne se lit pas : vrai.
 fn complements_du_compte(r: &Releveur, nom: &str) -> bool {
     let Ok(dossiers) = dossiers_d_unites(r, true) else {
         return true;
     };
+    let Some(noms) = noms_de_l_unite(&dossiers, nom) else {
+        return true;
+    };
     dossiers.iter().any(|d| {
-        ajouts_de(nom).iter().any(|a| {
+        noms.iter().flat_map(|n| ajouts_de(n)).any(|a| {
             let dossier = d.join(a);
             match std::fs::symlink_metadata(&dossier) {
                 Err(e) => e.kind() != std::io::ErrorKind::NotFound,
@@ -3689,6 +3696,48 @@ fn complements_du_compte(r: &Releveur, nom: &str) -> bool {
             }
         })
     })
+}
+
+/// Les noms sous lesquels systemd connaît l'unité `nom` dans `dossiers` : le sien, celui de chaque lien d'un de ces
+/// dossiers qui vise (par son nom de fichier, de lien en lien) un nom déjà connu, et celui que vise `nom` s'il est un
+/// lien. `None` : un dossier qui existe mais ne se lit pas, ou une chaîne de liens trop longue (rien n'est conclu).
+fn noms_de_l_unite(dossiers: &[std::path::PathBuf], nom: &str) -> Option<Vec<String>> {
+    let mut liens: Vec<(String, String)> = Vec::new();
+    for d in dossiers {
+        let entrees = match std::fs::read_dir(d) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return None,
+        };
+        for e in entrees {
+            let e = e.ok()?;
+            if !e.file_type().ok()?.is_symlink() {
+                continue;
+            }
+            let vise = std::fs::read_link(e.path()).ok()?;
+            let vise = vise
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            liens.push((e.file_name().to_string_lossy().into_owned(), vise));
+        }
+    }
+    let mut noms = vec![nom.to_string()];
+    for _ in 0..=liens.len().min(64) {
+        let avant = noms.len();
+        for (lien, vise) in &liens {
+            if noms.contains(vise) && !noms.contains(lien) {
+                noms.push(lien.clone());
+            }
+            if noms.contains(lien) && !vise.is_empty() && !noms.contains(vise) {
+                noms.push(vise.clone());
+            }
+        }
+        if noms.len() == avant {
+            return Some(noms);
+        }
+    }
+    None
 }
 
 /// Une variable qui change ce que lit ou lance la sauvegarde de Vanguard, posée à son gestionnaire (F-1) : HOME (rsync
@@ -8265,6 +8314,9 @@ mod tests {
             ("/usr/etc/popt.d vide", false),
             ("complément HOME", true),
             ("complément vide", false),
+            ("complément d'un alias", true),
+            ("complément d'un alias d'alias", true),
+            ("complément du fichier visé", true),
         ];
         let mut faux = Vec::new();
         for fat in [false, true] {
@@ -8325,6 +8377,31 @@ mod tests {
                         m.chemin(&format!(".config/systemd/user/{}.d", crate::sauvegarde::SERVICE)),
                     )
                     .unwrap(),
+                    // F-3 (relecture 0.94) : systemd applique à l'unité les compléments de ses alias (un lien vers
+                    // elle dans un dossier d'unités) et ceux du fichier qu'elle vise si elle est un lien.
+                    "complément d'un alias" | "complément d'un alias d'alias" => {
+                        let u = m.chemin(".config/systemd/user");
+                        std::os::unix::fs::symlink(crate::sauvegarde::SERVICE, u.join("copie-x.service")).unwrap();
+                        let alias = if nom.ends_with("d'alias") {
+                            std::os::unix::fs::symlink("copie-x.service", u.join("copie-y.service")).unwrap();
+                            "copie-y.service"
+                        } else {
+                            "copie-x.service"
+                        };
+                        m.ecrire(
+                            &format!(".config/systemd/user/{alias}.d/home.conf"),
+                            "[Service]\nEnvironment=HOME=/home/alice/Documents\n",
+                        );
+                    }
+                    "complément du fichier visé" => {
+                        let u = m.chemin(".config/systemd/user");
+                        std::fs::rename(u.join(crate::sauvegarde::SERVICE), u.join("copie-z.service")).unwrap();
+                        std::os::unix::fs::symlink("copie-z.service", u.join(crate::sauvegarde::SERVICE)).unwrap();
+                        m.ecrire(
+                            ".config/systemd/user/copie-z.service.d/home.conf",
+                            "[Service]\nEnvironment=HOME=/home/alice/Documents\n",
+                        );
+                    }
                     "témoin" => {}
                     chemin => systeme(chemin),
                 }
