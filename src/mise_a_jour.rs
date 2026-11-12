@@ -1351,10 +1351,9 @@ fn poser_copie_dans(source: &Path, cible: &Path, essai: Essai) -> Result<Option<
         std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
     }
     match &fenetre {
-        Some((f, chemin)) => sa_fenetre::installer_avec(&octets, cible, version, essai, f, chemin),
-        None => installer(&octets, cible, version, essai),
+        Some((f, chemin)) => sa_fenetre::installer_avec_sinon_seul(&octets, cible, version, essai, f, chemin),
+        None => installer(&octets, cible, version, essai).map(|()| None),
     }
-    .map(|()| None)
 }
 
 /// La copie de cet ordinateur est-elle plus ancienne que ce programme ? Elle écrit alors encore l'état de Vanguard

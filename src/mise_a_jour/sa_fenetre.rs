@@ -128,6 +128,7 @@ impl Avant {
 
 /// `octets` à la place de `cible`, `fenetre` posée à `chemin` d'abord, revérifiée ici contre l'empreinte gravée dans
 /// `octets` (le seul endroit où cela se juge). Si le programme ne se pose pas, ce qui était à `chemin` y revient.
+/// Tout ou rien : une fenêtre qui ne se pose pas arrête aussi le programme (GitHub, où l'aperçu les a montrés ensemble).
 pub(super) fn installer_avec(
     octets: &[u8],
     cible: &Path,
@@ -136,15 +137,52 @@ pub(super) fn installer_avec(
     fenetre: &[u8],
     chemin: &Path,
 ) -> Result<(), String> {
+    installer_avec_repli(octets, cible, attendue, essai, fenetre, chemin, false).map(|_| ())
+}
+
+/// `installer_avec` pour la copie depuis la clé (C-4, relecture 0.96) : une fenêtre qui ne peut pas être posée (un
+/// dossier à son nom…) n'arrête pas le programme, posé seul ; la raison est rendue pour être dite. La fenêtre d'avant
+/// reste à côté de lui, refusée par l'empreinte qu'il grave : le menu.
+pub(super) fn installer_avec_sinon_seul(
+    octets: &[u8],
+    cible: &Path,
+    attendue: Version,
+    essai: Essai,
+    fenetre: &[u8],
+    chemin: &Path,
+) -> Result<Option<String>, String> {
+    installer_avec_repli(octets, cible, attendue, essai, fenetre, chemin, true)
+}
+
+fn installer_avec_repli(
+    octets: &[u8],
+    cible: &Path,
+    attendue: Version,
+    essai: Essai,
+    fenetre: &[u8],
+    chemin: &Path,
+    seul_sinon: bool,
+) -> Result<Option<String>, String> {
     juste(octets, fenetre)?;
     let avant = Avant::de(chemin, TAILLE_MAX);
     // Le programme d'avant, relu après un échec (C-2) : l'ancienne fenêtre ne revient qu'à côté de lui.
     let programme_avant = Avant::de(cible, TAILLE_PROGRAMME);
     let changee = !matches!(&avant, Avant::Lue(o) if o == fenetre);
     if changee {
-        poser(fenetre, chemin)?;
+        match poser(fenetre, chemin) {
+            Ok(()) => {}
+            Err(e) if seul_sinon => {
+                installer(octets, cible, attendue, essai)?;
+                return Ok(Some(crate::trf!(
+                    "la fenêtre n'a pas pu être posée à côté de la copie ({}) : le programme est posé seul, le raccourci ouvrira le menu",
+                    "the window could not be placed next to the copy ({}): the program is placed alone, the shortcut will open the menu",
+                    e
+                )));
+            }
+            Err(e) => return Err(e),
+        }
     }
-    installer(octets, cible, attendue, essai).map_err(|e| {
+    installer(octets, cible, attendue, essai).map(|()| None).map_err(|e| {
         if changee && !programme_avant.toujours_la(cible, TAILLE_PROGRAMME) {
             return format!(
                 "{e}\n    {}",
@@ -514,6 +552,45 @@ mod tests {
         super::super::poser_copie_dans(&source, &cible, SANS_ESSAI).unwrap();
         assert_eq!(std::fs::read(&cible).unwrap(), std::fs::read(&source).unwrap());
         assert!(std::fs::symlink_metadata(&fenetre).is_err());
+        assert!(rien_a_cote(&d.join("bin")));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// C-4 (relecture 0.96) : une chose impossible à remplacer au nom de la fenêtre (un dossier) bloquait la copie
+    /// du PROGRAMME depuis la clé. Le programme est posé seul, et c'est dit ; la fenêtre d'avant reste, refusée par
+    /// l'empreinte du nouveau programme (le menu).
+    #[test]
+    fn une_fenetre_impossible_a_poser_ne_bloque_pas_la_copie_de_la_cle() {
+        let d = dossier("essai-sa-fenetre-cle-bloquee");
+        let source = d.join("cle").join(NOM);
+        let cible = d.join("bin").join(NOM);
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(cible.parent().unwrap()).unwrap();
+        let neuve = b"fenetre 0.96".to_vec();
+        std::fs::write(&source, lancant(&neuve)).unwrap();
+        std::fs::write(pour(&source).unwrap(), &neuve).unwrap();
+        std::fs::write(
+            &cible,
+            [b"prog ".as_slice(), &super::super::entete(), b"0.95.0+1; "].concat(),
+        )
+        .unwrap();
+        let fenetre = pour(&cible).unwrap();
+        std::fs::create_dir(&fenetre).unwrap();
+        let note = super::super::poser_copie_dans(&source, &cible, SANS_ESSAI).unwrap();
+        assert_eq!(std::fs::read(&cible).unwrap(), std::fs::read(&source).unwrap());
+        assert!(
+            note.is_some_and(|n| n.contains("fenêtre") || n.contains("window")),
+            "rien n'est dit"
+        );
+        assert!(fenetre.is_dir());
+        // Un programme qui ne démarre pas : rien n'est posé, la fenêtre non plus.
+        std::fs::write(
+            &cible,
+            [b"prog ".as_slice(), &super::super::entete(), b"0.95.0+1; "].concat(),
+        )
+        .unwrap();
+        assert!(super::super::poser_copie_dans(&source, &cible, ESSAI_RATE).is_err());
+        assert_ne!(std::fs::read(&cible).unwrap(), std::fs::read(&source).unwrap());
         assert!(rien_a_cote(&d.join("bin")));
         let _ = std::fs::remove_dir_all(&d);
     }
