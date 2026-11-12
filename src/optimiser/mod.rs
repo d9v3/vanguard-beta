@@ -622,7 +622,7 @@ fn a_changer(a_faire: &[&Reglage], a_annuler: &[&Reglage], h: &Historique) -> Ve
             for (c, v) in r.changements.iter().zip(valeurs_d_avant(r, h)) {
                 lignes.push(format!(
                     "        {GRIS}{}{RESET}",
-                    crate::ui::affichable(&c.decrire(v.as_deref()))
+                    crate::ui::affichable(&c.decrire_remise(v.as_deref()))
                 ));
             }
         }

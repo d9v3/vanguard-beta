@@ -535,6 +535,17 @@ impl Changement {
     }
 
     /// Ce qui est écrit, en clair : « HKCU\…\HideFileExt = 0 », « … : retirée », « service DiagTrack : Disabled ».
+    /// Pourquoi cette valeur d'avant ne se remet pas, dit avant tout geste : rien de tel sous Windows (les droits d'un
+    /// fichier ne s'y remettent pas d'ici).
+    pub fn refus_de_remise(&self) -> Option<String> {
+        None
+    }
+
+    /// Une ligne de ce que l'annulation remettra.
+    pub fn decrire_remise(&self, v: Option<&str>) -> String {
+        self.decrire(v)
+    }
+
     pub fn decrire(&self, v: Option<&str>) -> String {
         match self {
             Changement::Registre {

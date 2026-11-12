@@ -503,7 +503,16 @@ fn rebatir(id: &str, a: &Avant) -> Option<Reglage> {
     let changements = a
         .gestes
         .iter()
-        .map(|g| systeme::Changement::depuis_geste(g))
+        .map(|g| {
+            #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+            let mut c = systeme::Changement::depuis_geste(g)?;
+            // Le fichier que Vanguard a corrigé, noté avec les droits d'avant : sans lui, rien ne s'y remet (R-2).
+            #[cfg(target_os = "linux")]
+            if let systeme::Changement::Droits { identite, .. } = &mut c {
+                *identite = a.identites.get(g).and_then(|t| super::droits::Identite::lue(t));
+            }
+            Some(c)
+        })
         .collect::<Option<Vec<_>>>()?;
     Some(Reglage {
         id: Cow::Owned(id.to_string()),
@@ -790,6 +799,9 @@ pub(super) fn defaire_dans(
         let refus_demarrage = r
             .filter(|_| id.starts_with(super::demarrage::PREFIXE))
             .and_then(|r| super::demarrage::raison_de_ne_pas_remettre(r, &au_demarrage));
+        // Des droits sur un fichier qui n'est plus celui que Vanguard a corrigé, ou sans son identité : rien de la
+        // note n'est remis (R-2, recontrôle 0.95 ; le même refus que les gestes, G-4).
+        let refus_droits = r.and_then(|r| r.changements.iter().find_map(systeme::Changement::refus_de_remise));
         let issue = match r {
             _ if id == DNS && tient_le_dns => refus(
                 "le mode Wi-Fi public tient le DNS : éteignez-le d'abord",
@@ -804,6 +816,7 @@ pub(super) fn defaire_dans(
                 "a previous value does not have the expected form: nothing is put back",
             ),
             Some(_) if refus_demarrage.is_some() => refus_demarrage.map(Issue::Refuse),
+            Some(_) if refus_droits.is_some() => refus_droits.map(Issue::Refuse),
             Some(_) => None,
         };
         if issue.is_none()
@@ -1445,6 +1458,46 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// R-2 (recontrôle 0.95) : le chemin du terminal (`vanguard changements`) ne remet pas de droits sur un autre
+    /// fichier mis sous le même nom, ni d'après une note sans l'identité du fichier : refusé, la raison dite, rien
+    /// n'est touché. Avant, il posait les droits d'avant (plus larges) sur le nouveau fichier et disait « revenu ».
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn droits_jamais_remis_sur_un_autre_fichier() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = dossier("droits-autre");
+        let f = d.join("netrc-alice");
+        std::fs::write(&f, "machine example.com login alice\n").unwrap();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let r = relever(id_bilan(), "Réserver", &[Geste::droits(&f).unwrap()]).unwrap();
+        assert!(noter_dans(&[&r], &d));
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o600)).unwrap();
+        // Un autre fichier sous le même nom (autre inode), 0600.
+        let autre = d.join("autre");
+        std::fs::write(&autre, "autre chose\n").unwrap();
+        std::fs::set_permissions(&autre, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::rename(&autre, &f).unwrap();
+        let (issues, _) = defaire_dans(std::slice::from_ref(&r.id), &[], false, &d);
+        assert!(
+            matches!(&issues[..], [(id, Issue::Refuse(_))] if *id == r.id),
+            "{issues:?}"
+        );
+        assert_eq!(std::fs::metadata(&f).unwrap().permissions().mode() & 0o7777, 0o600);
+        assert!(charger_dans(&d).reglages.contains_key(&r.id), "la note reste");
+
+        // Une note sans identité (d'avant la 0.95), sur le fichier en place : refusée aussi.
+        let mut sans = relever(id_bilan(), "Réserver", &[Geste::droits(&f).unwrap()]).unwrap();
+        sans.avant.identites.clear();
+        assert!(noter_dans(&[&sans], &d));
+        let (issues, _) = defaire_dans(std::slice::from_ref(&sans.id), &[], false, &d);
+        assert!(
+            matches!(&issues[..], [(id, Issue::Refuse(_))] if *id == sans.id),
+            "{issues:?}"
+        );
+        assert_eq!(std::fs::metadata(&f).unwrap().permissions().mode() & 0o7777, 0o600);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     /// Une note forgée (scellée par un programme du compte, puisque le sceau se recalcule) qui remettrait en root une
     /// clé du durcissement sous sa valeur sûre : refusée en entier, et rien n'est lancé (pas même sudo).
     #[cfg(target_os = "linux")]
@@ -1525,8 +1578,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// L'état d'avant qui ne revient pas (le fichier a disparu) est dit, avec ce qu'on attendait et ce qu'on relit ;
-    /// la note reste pour réessayer.
+    /// L'état d'avant qui ne peut pas revenir (le fichier a disparu) est dit : refusé avant tout geste depuis R-2
+    /// (recontrôle 0.95), la raison nomme le fichier ; la note reste pour réessayer.
     #[cfg(unix)]
     #[test]
     fn pas_revenu_dit_et_note_gardee() {
@@ -1538,7 +1591,7 @@ mod tests {
         std::fs::remove_file(&f).unwrap();
         let (issues, _) = defaire_dans(std::slice::from_ref(&r.id), &[], false, &d);
         assert!(
-            matches!(&issues[0].1, Issue::PasRevenu(l) if !l.is_empty()),
+            matches!(&issues[0].1, Issue::Refuse(raison) if raison.contains("secret-bob")),
             "{issues:?}"
         );
         assert!(charger_dans(&d).reglages.contains_key(&r.id));
@@ -2008,10 +2061,15 @@ mod tests {
         let f = d.join("config-alice");
         std::fs::write(&f, "x").unwrap();
         let geste = format!("droits|{}", f.display());
-        let h = historique(vec![
+        let mut h = historique(vec![
             note("bilan:a", "2026-10-20 09:00", &[&geste], &[Some("0644")]),
             note("bilan:b", "2026-10-22 09:00", &[&geste], &[Some("0640")]),
         ]);
+        // Le fichier corrigé, reconnu : sans son identité, rien ne s'y remet (R-2).
+        let identite = super::super::droits::lire_identifie(&f).unwrap().1.to_string();
+        for a in h.reglages.values_mut() {
+            a.identites.insert(geste.clone(), identite.clone());
+        }
         assert!(sauver_dans(&h, &d));
         std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o600)).unwrap();
         // L'ordre de « Tout remettre » : de la plus récente à la plus ancienne.

@@ -88,8 +88,13 @@ pub enum Changement {
     },
     /// Module du noyau (liste fermée `MODULES`) : « charge », ou absent.
     Module { nom: &'static str },
-    /// Droits d'un fichier du dossier personnel (« 0644 »), remis par chmod, sans sudo.
-    Droits { chemin: PathBuf },
+    /// Droits d'un fichier du dossier personnel (« 0644 »), remis par chmod, sans sudo. `identite` : le fichier que
+    /// Vanguard a corrigé (sorte, périphérique, inode), relu de la note par `annulables::rebatir` ; sans elle (note
+    /// d'avant la 0.95), rien ne se remet (R-2, recontrôle 0.95).
+    Droits {
+        chemin: PathBuf,
+        identite: Option<super::droits::Identite>,
+    },
     /// Heure réglée par le réseau (`timedatectl`) : « yes » ou « no ».
     Ntp,
     /// Un geste de défense, fait par l'enfant root (`machine::defense_eleve`), qui a noté avant lui l'état d'avant dans
@@ -698,7 +703,7 @@ impl Changement {
                     .exists()
                     .then(|| "charge".to_string()),
             ),
-            Changement::Droits { chemin } => super::annulables::droits_lus(chemin).map(Some),
+            Changement::Droits { chemin, .. } => super::annulables::droits_lus(chemin).map(Some),
             Changement::Ntp => ntp_lu().map(Some),
             // Illisible (le dossier d'une autre forme, fermé) : ni présente ni absente, rien n'est noté.
             Changement::Defense { id } => match std::fs::symlink_metadata(Path::new(DOSSIER_NOTES).join(id.as_str())) {
@@ -740,6 +745,7 @@ impl Changement {
                 .map(|nom| Changement::Module { nom }),
             "droits" => super::annulables::dans_la_maison(Path::new(cible)).then(|| Changement::Droits {
                 chemin: PathBuf::from(cible),
+                identite: None,
             }),
             "ntp" if cible.is_empty() => Some(Changement::Ntp),
             "defense" => IdNote::nouveau(cible).map(|id| Changement::Defense { id }),
@@ -949,19 +955,21 @@ impl Changement {
     /// sans suivre de lien (`droits::poser`), jamais par `chmod` du shell. `None` : ce changement passe par une
     /// commande.
     pub(crate) fn ecrire_ici(&self, v: Option<&str>) -> Option<bool> {
-        if let Changement::Droits { chemin } = self {
+        if let Changement::Droits { chemin, identite } = self {
             let mode = v
                 .filter(|v| super::annulables::droits_admis(v))
                 .and_then(|v| u32::from_str_radix(v, 8).ok());
-            return Some(match mode {
-                Some(m) => match super::droits::poser(chemin, m) {
+            // Sur le fichier ouvert, seulement s'il est celui que Vanguard a corrigé : `refus_de_remise` l'a relu
+            // avant, et un échange entre les deux est refusé ici (R-2, recontrôle 0.95).
+            return Some(match (mode, identite) {
+                (Some(m), Some(i)) => match super::droits::poser_si(chemin, None, Some(*i), m) {
                     Ok(_) => true,
                     Err(e) => {
                         println!("    ✖ {e}");
                         false
                     }
                 },
-                None => false,
+                _ => false,
             });
         }
         let Changement::Demarrage {
@@ -1116,6 +1124,51 @@ impl Changement {
         }
     }
 
+    /// Pourquoi cette valeur d'avant ne se remet pas, dit avant tout geste (R-2, recontrôle 0.95) : les droits d'un
+    /// fichier ne se remettent que sur celui que Vanguard a corrigé, reconnu par l'identité notée ; un autre fichier
+    /// sous le même nom, ou une note sans identité, ne reçoit rien (comme les gestes de `machine::annuler`, G-4).
+    pub fn refus_de_remise(&self) -> Option<String> {
+        let Changement::Droits { chemin, identite } = self else {
+            return None;
+        };
+        let f = court(chemin);
+        let Some(notee) = identite else {
+            return Some(trf!(
+                "{f} : note d'une version d'avant la 0.95, sans l'identité du fichier : Vanguard ne peut pas savoir si c'est encore celui qu'il a corrigé, rien n'est remis. Si c'est votre choix, remettez ces droits à la main",
+                "{f}: note from a version before 0.95, without the file's identity: Vanguard cannot tell whether it is still the one it fixed, nothing is restored. If you choose to, restore these permissions by hand"
+            ));
+        };
+        match super::droits::lire_identifie(chemin) {
+            Ok((_, relue)) if relue == *notee => None,
+            Ok(_) => Some(trf!(
+                "{f} n'est plus le fichier que Vanguard a corrigé (autre sorte ou autre inode) : rien n'y est remis",
+                "{f} is no longer the file Vanguard fixed (other kind or other inode): nothing is restored on it"
+            )),
+            Err(_) => Some(trf!(
+                "{f} ne se relit plus sans lien (supprimé, remplacé, autre propriétaire) : rien n'est remis",
+                "{f} can no longer be read without a link (deleted, replaced, other owner): nothing is restored"
+            )),
+        }
+    }
+
+    /// Une ligne de ce que l'annulation remettra : pour les droits d'un fichier, ceux d'aujourd'hui puis ceux d'avant
+    /// (« actuel → avant »), pour que l'accord porte sur ce qui change vraiment.
+    pub fn decrire_remise(&self, v: Option<&str>) -> String {
+        let ligne = self.decrire(v);
+        match self {
+            Changement::Droits { chemin, .. } => {
+                let actuel = super::annulables::droits_lus(chemin);
+                trf!(
+                    "{ligne} (aujourd'hui {} → {})",
+                    "{ligne} (today {} → {})",
+                    actuel.as_deref().unwrap_or("?"),
+                    v.unwrap_or("?")
+                )
+            }
+            _ => ligne,
+        }
+    }
+
     /// La connexion d'un réglage de DNS.
     pub fn identite_dns(&self) -> Option<&str> {
         match self {
@@ -1209,7 +1262,7 @@ impl Changement {
                 Some(_) => format!("modprobe {nom}"),
                 None => format!("modprobe -r {nom}"),
             },
-            Changement::Droits { chemin } => format!("chmod {} {}", v.unwrap_or("?"), court(chemin)),
+            Changement::Droits { chemin, .. } => format!("chmod {} {}", v.unwrap_or("?"), court(chemin)),
             Changement::Ntp => format!(
                 "timedatectl set-ntp {}",
                 if v == Some("yes") { "true" } else { "false" }
