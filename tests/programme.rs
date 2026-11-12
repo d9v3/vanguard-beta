@@ -2914,7 +2914,10 @@ fn demarrage_retire_puis_remet_a_l_octet_pres() {
             args,
             "",
             60,
-            &[("XDG_CONFIG_DIRS", systeme_txt.as_str())],
+            &[
+                ("XDG_CONFIG_DIRS", systeme_txt.as_str()),
+                ("VANGUARD_ESSAI_XDG_DEFAUT", systeme_txt.as_str()),
+            ],
         )
     };
     // L'empreinte que `demarrage --json` donne au geste attendu (« retirer » ou « remettre ») du Lecteur.
@@ -3016,7 +3019,10 @@ mod demarrage_sous_attaque {
                 args,
                 "",
                 180,
-                &[("XDG_CONFIG_DIRS", self.systeme.as_str())],
+                &[
+                    ("XDG_CONFIG_DIRS", self.systeme.as_str()),
+                    ("VANGUARD_ESSAI_XDG_DEFAUT", self.systeme.as_str()),
+                ],
             )
         }
 
@@ -3070,6 +3076,7 @@ mod demarrage_sous_attaque {
                 .args(args)
                 .env("VANGUARD_ESSAI_ARRET", etape)
                 .env("XDG_CONFIG_DIRS", &self.systeme)
+                .env("VANGUARD_ESSAI_XDG_DEFAUT", &self.systeme)
                 .env("VANGUARD_LANG", "fr")
                 .env("USER", "essai")
                 .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
@@ -3248,7 +3255,10 @@ mod demarrage_sous_attaque {
             &["optimiser", "annuler"],
             "o\n",
             180,
-            &[("XDG_CONFIG_DIRS", b.systeme.as_str())],
+            &[
+                ("XDG_CONFIG_DIRS", b.systeme.as_str()),
+                ("VANGUARD_ESSAI_XDG_DEFAUT", b.systeme.as_str()),
+            ],
         );
         let tout = espaces_unis(&format!("{}{}", s.texte, s.erreurs));
         assert_eq!(lu(&f), v2, "{tout}");
@@ -3478,7 +3488,10 @@ mod demarrage_sous_attaque {
                 args,
                 "",
                 30,
-                &[("XDG_CONFIG_DIRS", b.systeme.as_str())],
+                &[
+                    ("XDG_CONFIG_DIRS", b.systeme.as_str()),
+                    ("VANGUARD_ESSAI_XDG_DEFAUT", b.systeme.as_str()),
+                ],
             )
         };
         let s = lancer(&["demarrage", "--json"]);
@@ -3850,6 +3863,51 @@ mod demarrage_sous_attaque {
                 && !dit.contains("pas lu"),
             "{dit}"
         );
+    }
+
+    /// Relecture 0.95, G-3. XDG_CONFIG_DIRS se règle dans un fichier du compte : nommant un dossier absent, ou un
+    /// chemin relatif, elle cachait sans un mot les entrées que la session lance depuis /etc/xdg/autostart (« Aucun
+    /// programme »). Le dossier par défaut se lit quand même, la variable est dite, et `lenteur` voit la même entrée.
+    #[test]
+    fn xdg_config_dirs_ne_cache_pas_le_systeme() {
+        let b = Banc::nouveau("xdg-cache");
+        let systeme = Path::new(&b.systeme).join("autostart");
+        std::fs::create_dir_all(&systeme).unwrap();
+        std::fs::write(
+            systeme.join("panneau.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Panneau\nExec=/opt/panneau/panneau\n",
+        )
+        .unwrap();
+        let absent = b.maison.join("nulle-part").to_string_lossy().into_owned();
+        for variable in [absent.as_str(), "relatif", ":"] {
+            let lancer = |args: &[&str]| {
+                vanguard_dans_env(
+                    Path::new(env!("CARGO_BIN_EXE_vanguard")),
+                    &b.maison,
+                    "fr",
+                    args,
+                    "",
+                    180,
+                    &[
+                        ("XDG_CONFIG_DIRS", variable),
+                        ("VANGUARD_ESSAI_XDG_DEFAUT", b.systeme.as_str()),
+                    ],
+                )
+            };
+            let s = lancer(&["demarrage", "--json"]);
+            let v: serde_json::Value =
+                serde_json::from_str(&s.texte).unwrap_or_else(|e| panic!("{e} : {} {}", s.texte, s.erreurs));
+            assert!(v["constats"].to_string().contains("Panneau —"), "{variable} : {v}");
+            let manques = v["couverture"].to_string();
+            // « : » ne nomme aucun dossier : rien n'est caché, rien à dire.
+            assert_eq!(
+                manques.contains("XDG_CONFIG_DIRS"),
+                variable != ":",
+                "{variable} : {manques}"
+            );
+            let dit = espaces_unis(&lancer(&["lenteur"]).texte);
+            assert!(dit.contains("Panneau"), "{variable} : {dit}");
+        }
     }
 }
 

@@ -1184,8 +1184,8 @@ mod tests {
     }
 
     /// Relecture 0.94, R-9 : rien de lu (dossier d'autostart du compte refusé, services du compte sans systemctl,
-    /// aucun dossier du système), aucune vérification comptée ; une seule source lue, même vide ou absente, en
-    /// compte une.
+    /// aucun dossier du système, ou un absent), aucune vérification comptée ; une seule source lue, même vide (ou le
+    /// dossier du compte absent), en compte une.
     #[cfg(target_os = "linux")]
     #[test]
     fn rien_de_lu_aucune_verification() {
@@ -1206,6 +1206,8 @@ mod tests {
         assert_eq!(compte(&[], None), (0, "non-verifie", 2));
         // Une source lue : le dossier du système (vide), ou les services du compte (aucun).
         assert_eq!(compte(std::slice::from_ref(&vide), None), (1, "non-verifie", 2));
+        // Un dossier du système absent (XDG_CONFIG_DIRS vers nulle part) n'a rien donné à lire (relecture 0.95, G-3).
+        assert_eq!(compte(&[base.join("absent/autostart")], None), (0, "non-verifie", 2));
         assert_eq!(compte(&[], Some(String::new())), (1, "non-verifie", 1));
         // Le dossier du compte absent : lu, rien n'y est.
         std::fs::remove_file(config.join("autostart")).unwrap();

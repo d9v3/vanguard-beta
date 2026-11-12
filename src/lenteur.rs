@@ -984,10 +984,10 @@ mod systeme {
     fn au_demarrage() -> (Vec<(String, String)>, usize, usize) {
         let maison = crate::socle::maison();
         let config = std::env::var_os("XDG_CONFIG_HOME").map_or_else(|| maison.join(".config"), PathBuf::from);
-        let systeme = std::env::var("XDG_CONFIG_DIRS").unwrap_or_default();
-        let systeme = if systeme.is_empty() { "/etc/xdg" } else { &systeme };
         let bureau = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
-        let systeme: Vec<PathBuf> = systeme.split(':').map(|d| Path::new(d).join("autostart")).collect();
+        // Les mêmes dossiers que `vanguard demarrage` : /etc/xdg/autostart toujours, chemins relatifs ignorés
+        // (relecture 0.95, G-3).
+        let (systeme, _) = crate::optimiser::linux::dossiers_autostart_du_systeme();
         let (mut liste, pas_lus, dossiers_pas_lus) = autostart_dans(&config.join("autostart"), &systeme, &bureau);
         let activee = |u: &str| natif::unite_activee(u, true) == Some(true);
         for unite in services_actives(&config.join("systemd/user"), activee) {

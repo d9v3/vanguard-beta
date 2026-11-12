@@ -297,14 +297,7 @@ fn unite_valide(t: &str) -> bool {
 
 /// Le nom et la commande d'une entrée .desktop, prêts à montrer (bornés, caractères de contrôle neutralisés).
 fn resume_entree(texte: &str) -> String {
-    let borne = |v: &str| -> String {
-        let v = crate::ui::affichable(v);
-        if v.chars().count() > 80 {
-            format!("{}…", v.chars().take(80).collect::<String>())
-        } else {
-            v
-        }
-    };
+    let borne = |v: &str| montrer_borne(v, 80);
     let nom = champ(texte, "Name").map_or_else(|| "?".to_string(), borne);
     let exec = champ(texte, "Exec").map_or_else(|| "?".to_string(), borne);
     format!("{nom} · {exec}")
@@ -384,15 +377,66 @@ fn demasquer(texte: &str) -> String {
         .collect()
 }
 
-/// Les dossiers d'autostart du système (XDG_CONFIG_DIRS, sinon /etc/xdg).
+/// Les dossiers d'autostart du système (`dossiers_autostart_selon`, d'après XDG_CONFIG_DIRS).
 fn dossiers_systeme() -> Vec<PathBuf> {
-    std::env::var("XDG_CONFIG_DIRS")
-        .ok()
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| "/etc/xdg".into())
-        .split(':')
-        .map(|d| Path::new(d).join("autostart"))
-        .collect()
+    dossiers_autostart_du_systeme().0
+}
+
+/// Le dossier de configuration du système que la norme XDG donne par défaut, /etc/xdg. Essais seulement (binaire de
+/// débogage) : `VANGUARD_ESSAI_XDG_DEFAUT` le remplace par un dossier jetable, pour qu'un essai ne lise pas les
+/// entrées de la machine qui le lance. Rien dans un binaire livré.
+fn xdg_par_defaut() -> PathBuf {
+    #[cfg(debug_assertions)]
+    if let Some(d) = std::env::var_os("VANGUARD_ESSAI_XDG_DEFAUT") {
+        return PathBuf::from(d);
+    }
+    PathBuf::from("/etc/xdg")
+}
+
+/// `dossiers_autostart_selon` sur XDG_CONFIG_DIRS de l'environnement de Vanguard et /etc/xdg (`lenteur` et
+/// `demarrage` lisent les mêmes dossiers).
+pub(crate) fn dossiers_autostart_du_systeme() -> (Vec<PathBuf>, Option<String>) {
+    dossiers_autostart_selon(std::env::var("XDG_CONFIG_DIRS").ok().as_deref(), &xdg_par_defaut())
+}
+
+/// Les dossiers d'autostart du système : ceux de XDG_CONFIG_DIRS (`variable`), chemins absolus seulement (la norme XDG
+/// ignore les autres : un chemin relatif se lirait depuis le dossier courant), puis toujours celui de `defaut`
+/// (/etc/xdg). Avec la phrase à dire quand la variable ne nomme pas `defaut` ou nomme un chemin relatif : la variable
+/// se règle dans un fichier du compte (démarrage du shell), et la régler ainsi cachait sans un mot les entrées que
+/// la session lance depuis /etc/xdg/autostart (relecture 0.95, G-3). Une variable qui ajoute des dossiers devant
+/// /etc/xdg (Ubuntu, flatpak) ne cache rien : pas de phrase.
+fn dossiers_autostart_selon(variable: Option<&str>, defaut: &Path) -> (Vec<PathBuf>, Option<String>) {
+    let variable = variable.unwrap_or_default();
+    let noms: Vec<&Path> = variable.split(':').filter(|d| !d.is_empty()).map(Path::new).collect();
+    let absolus: Vec<&Path> = noms.iter().copied().filter(|d| d.is_absolute()).collect();
+    let mut dossiers: Vec<PathBuf> = Vec::new();
+    for d in absolus.iter().copied().chain(std::iter::once(defaut)) {
+        let a = d.join("autostart");
+        if !dossiers.contains(&a) {
+            dossiers.push(a);
+        }
+    }
+    let cache = !noms.is_empty() && (absolus.len() != noms.len() || !absolus.contains(&defaut));
+    let phrase = cache.then(|| {
+        trf!(
+            "XDG_CONFIG_DIRS ({}) ne nomme pas {} ou nomme un chemin relatif : la session lit peut-être d'autres entrées ; {} est lu quand même, les chemins relatifs ne le sont pas",
+            "XDG_CONFIG_DIRS ({}) does not name {} or names a relative path: the session may read other entries; {} is read anyway, relative paths are not",
+            montrer_borne(variable, 200),
+            defaut.display(),
+            defaut.join("autostart").display()
+        )
+    });
+    (dossiers, phrase)
+}
+
+/// Un texte venu de l'extérieur prêt à montrer (`ui::affichable`), coupé à `max` caractères.
+fn montrer_borne(texte: &str, max: usize) -> String {
+    let v = crate::ui::affichable(texte);
+    if v.chars().count() > max {
+        format!("{}…", v.chars().take(max).collect::<String>())
+    } else {
+        v
+    }
 }
 
 thread_local! {
@@ -547,7 +591,9 @@ fn releve_fidele(etat: &str, actif: bool) -> bool {
 }
 
 fn sortie(cmd: &str, args: &[&str]) -> Option<String> {
-    let r = crate::commande::lancer(Command::new(cmd).args(args), 10)?;
+    // Par son chemin dans les dossiers du système, jamais par le PATH du compte : un faux « systemctl » posé dans
+    // ~/.local/bin rendrait une liste choisie (relecture 0.95, G-3).
+    let r = crate::commande::lancer(Command::new(crate::commande::outil_systeme(cmd)?).args(args), 10)?;
     Some(r.sortie.trim().to_string())
 }
 
@@ -1414,29 +1460,36 @@ pub fn releve_demarrage() -> (Vec<Programme>, Vec<String>, bool) {
     let maison = crate::socle::maison();
     let config = config_du_compte();
     let bureau = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
-    let activees = crate::commande::lancer(
-        Command::new("systemctl").args([
-            "--user",
-            "list-unit-files",
-            "--type=service",
-            "--state=enabled",
-            "--no-legend",
-            "--no-pager",
-        ]),
-        10,
-    );
+    // systemctl par son chemin dans les dossiers du système, jamais par le PATH du compte (relecture 0.95, G-3) :
+    // introuvable là, les services ne sont pas lus, et c'est dit.
+    let activees = crate::commande::outil_systeme("systemctl").and_then(|systemctl| {
+        crate::commande::lancer(
+            Command::new(systemctl).args([
+                "--user",
+                "list-unit-files",
+                "--type=service",
+                "--state=enabled",
+                "--no-legend",
+                "--no-pager",
+            ]),
+            10,
+        )
+    });
     // L'ordre où systemd lit les unités du compte, celui du bilan des persistances : une unité d'un dossier du
     // compte qui passe avant le système (~/.local/share/systemd/user, /run/user/…) remplace celle du système.
     let ordre = crate::machine::linux::dossiers_d_unites_du_compte(&maison, |v| std::env::var_os(v));
     let unites: Vec<PathBuf> = UNITES_DU_SYSTEME.iter().map(PathBuf::from).collect();
-    releve_selon(
+    let (systeme, phrase) = dossiers_autostart_du_systeme();
+    let (programmes, mut manques, lu) = releve_selon(
         &config,
-        &dossiers_systeme(),
+        &systeme,
         &bureau,
         activees.as_ref().and_then(services_actives),
         ordre,
         &unites,
-    )
+    );
+    manques.extend(phrase);
+    (programmes, manques, lu)
 }
 
 /// Le dossier de configuration du compte (`XDG_CONFIG_HOME`, sinon ~/.config) : celui où `vanguard demarrage` lit
@@ -1517,8 +1570,10 @@ fn releve_selon(
 ) -> (Vec<Programme>, Vec<String>, bool) {
     let mut manques = Vec::new();
     let compte = config.join("autostart");
-    // Une source lue, même vide ou absente : quelque chose a été vérifié (relecture 0.94, R-9). Le dossier du compte
-    // que la garde refuse (lien, autre compte, hors du dossier personnel) n'a rien donné à lire.
+    // Une source lue, même vide : quelque chose a été vérifié (relecture 0.94, R-9). Le dossier du compte que la garde
+    // refuse (lien, autre compte, hors du dossier personnel) n'a rien donné à lire. Le dossier du compte absent est
+    // vérifié (la garde a jugé ceux au-dessus : aucune entrée) ; un dossier du système absent n'a rien donné à lire
+    // (XDG_CONFIG_DIRS peut nommer un dossier qui n'existe pas : relecture 0.95, G-3).
     let mut lu = false;
     for d in std::iter::once(compte.clone()).chain(systeme.iter().cloned()) {
         match std::fs::read_dir(&d) {
@@ -1529,7 +1584,8 @@ fn releve_selon(
                 court(&d)
             )),
             _ if d == compte => lu |= sous_maison::juger_le_dossier(&compte).is_ok(),
-            _ => lu = true,
+            Err(_) => {}
+            Ok(_) => lu = true,
         }
     }
     let (mut l, pas_lues) = autostart(&compte, systeme, bureau);
@@ -2837,6 +2893,38 @@ mod tests {
         assert_eq!(relistee.ecrire_ici(note.as_deref()), Some(true));
         assert_eq!(std::fs::read_to_string(&p).unwrap(), original);
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Relecture 0.95, G-3 : /etc/xdg/autostart est toujours lu ; les chemins relatifs de XDG_CONFIG_DIRS sont
+    /// ignorés ; la phrase n'est dite que si la variable cache /etc/xdg (absent de la liste, ou chemin relatif).
+    #[test]
+    fn xdg_config_dirs_ne_cache_jamais_etc_xdg() {
+        let defaut = Path::new("/etc/xdg");
+        let dossiers = |v: Option<&str>| dossiers_autostart_selon(v, defaut);
+        let chemins = |v: &[&str]| v.iter().map(PathBuf::from).collect::<Vec<_>>();
+        for v in [
+            None,
+            Some(""),
+            Some("/etc/xdg"),
+            Some("/etc/xdg/"),
+            Some(":"),
+            Some("::/etc/xdg"),
+        ] {
+            assert_eq!(dossiers(v), (chemins(&["/etc/xdg/autostart"]), None), "{v:?}");
+        }
+        assert_eq!(
+            dossiers(Some("/etc/xdg/xdg-ubuntu:/etc/xdg")),
+            (chemins(&["/etc/xdg/xdg-ubuntu/autostart", "/etc/xdg/autostart"]), None)
+        );
+        let (d, phrase) = dossiers(Some("/nulle-part"));
+        assert_eq!(d, chemins(&["/nulle-part/autostart", "/etc/xdg/autostart"]));
+        assert!(phrase.is_some_and(|p| p.contains("/nulle-part")));
+        let (d, phrase) = dossiers(Some("relatif:/etc/xdg"));
+        assert_eq!(d, chemins(&["/etc/xdg/autostart"]));
+        assert!(phrase.is_some());
+        // Un nom piégé est montré neutralisé.
+        let (_, phrase) = dossiers(Some("/a\u{1b}[2Kb"));
+        assert!(phrase.is_some_and(|p| !p.contains('\u{1b}')));
     }
 
     /// Relecture 0.94, m-4 : un refus d'écrire une entrée du compte retient sa raison (celle de la ligne ✖), une
