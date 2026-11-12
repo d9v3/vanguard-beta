@@ -579,7 +579,8 @@ fn dire_apercu(a: &Apercu) {
 /// Ce qu'est devenue la demande.
 #[derive(Debug, PartialEq, Eq)]
 enum Issue {
-    /// Fait jusqu'au bout : chaque cible (chemin montré, `Err` : pourquoi elle n'est pas remplacée, l'ancienne reste).
+    /// Fait jusqu'au bout : chaque cible (chemin montré, `Err` : pourquoi elle n'est pas mise à jour, et ce qui est en
+    /// place, dit par `installer`).
     Fait(Vec<(String, Result<(), String>)>),
     Refuse(Refus),
     /// Arrêté avant de rien remplacer (téléchargement, manifeste) : pourquoi.
@@ -642,8 +643,8 @@ pub(crate) fn appliquer(accord: &str, json: bool) -> i32 {
             1,
             "fait",
             tr!(
-                "pas tout remplacé : l'ancien reste en place là où c'est dit",
-                "not everything replaced: the old one stays where it says so"
+                "pas tout mis à jour : la raison de chaque cible dit ce qui est en place",
+                "not everything updated: each target's reason says what is in place"
             )
             .to_string(),
         ),
@@ -676,8 +677,8 @@ pub(crate) fn appliquer(accord: &str, json: bool) -> i32 {
                             chemin
                         ),
                         Err(e) => trp!(
-                            "  ✖ {} n'est pas remplacé, l'ancien reste en place : {}",
-                            "  ✖ {} is not replaced, the old one stays in place: {}",
+                            "  ✖ {} n'est pas mis à jour : {}",
+                            "  ✖ {} is not updated: {}",
                             chemin,
                             e
                         ),

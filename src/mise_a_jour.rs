@@ -515,28 +515,44 @@ fn installer(octets: &[u8], cible: &Path, attendue: Version, essai: Essai) -> Re
     // autre fichier. Relue, essayée et revérifiée par le descripteur ; après le renommage, la cible doit être ce
     // même fichier, avec ces mêmes octets.
     let ecrite = (|| -> Result<(), String> {
+        // Avant le renommage, rien n'est remplacé : chaque échec le dit (l'appelant ne dit plus « l'ancien reste »).
+        let rien = |e: String| format!("{e} : {}", tr!("rien n'est remplacé", "nothing is replaced"));
         let _ = std::fs::remove_file(&provisoire);
-        let f = ecrire_provisoire(&provisoire, octets).map_err(|e| e.to_string())?;
-        if !meme_contenu(&f, octets).map_err(|e| e.to_string())? {
-            return Err(tr!("la copie relue ne correspond pas", "the copy read back does not match").into());
+        let f = ecrire_provisoire(&provisoire, octets).map_err(|e| rien(e.to_string()))?;
+        if !meme_contenu(&f, octets).map_err(|e| rien(e.to_string()))? {
+            return Err(rien(
+                tr!("la copie relue ne correspond pas", "the copy read back does not match").into(),
+            ));
         }
         essai(&chemin_de(&f, &provisoire), attendue)?;
-        if !meme_contenu(&f, octets).map_err(|e| e.to_string())? {
+        if !meme_contenu(&f, octets).map_err(|e| rien(e.to_string()))? {
             return Err(tr!(
                 "la copie provisoire a changé pendant l'essai (un autre programme) : rien n'est remplacé",
                 "the temporary copy changed during the test (another program): nothing is replaced"
             )
             .into());
         }
-        mettre_en_place(&provisoire, cible).map_err(|e| e.to_string())?;
-        if posee_est_la_montree(&f, cible, octets).map_err(|e| e.to_string())? {
-            Ok(())
-        } else {
-            Err(tr!(
-                "la copie posée n'est pas celle qui a été montrée (changée pendant la mise à jour par un autre programme) : la mise à jour n'est pas faite, relancez-la",
-                "the installed copy is not the one that was shown (changed during the update by another program): the update is not done, run it again"
-            )
-            .into())
+        // R-1 (recontrôle 0.95) : l'ancienne copie est mise de côté avant le renommage (un second nom, sans copie),
+        // pour être remise si la copie posée n'est pas la montrée. Avant, l'échec laissait le fichier inconnu en place
+        // et l'appelant disait « l'ancien reste en place ».
+        let precedente = Precedente::retenir(cible);
+        let posee = mettre_en_place(&provisoire, cible)
+            .map_err(|e| e.to_string())
+            .and_then(|()| match posee_est_la_montree(&f, cible, octets) {
+                Ok(true) => Ok(()),
+                Ok(false) => Err(tr!(
+                    "la copie posée n'est pas celle qui a été montrée (changée pendant la mise à jour par un autre programme)",
+                    "the installed copy is not the one that was shown (changed during the update by another program)"
+                )
+                .to_string()),
+                Err(e) => Err(e.to_string()),
+            });
+        match posee {
+            Ok(()) => {
+                precedente.oublier();
+                Ok(())
+            }
+            Err(e) => Err(format!("{e} : {}", precedente.remettre(cible))),
         }
     })();
     if ecrite.is_err() {
@@ -628,6 +644,113 @@ fn meme_contenu(mut f: &std::fs::File, octets: &[u8]) -> std::io::Result<bool> {
     let borne = u64::try_from(octets.len()).unwrap_or(u64::MAX).saturating_add(1);
     f.take(borne).read_to_end(&mut lu)?;
     Ok(lu == octets)
+}
+
+/// L'ancienne copie, mise de côté sous un second nom (`<NOM>.precedent`, lien physique : rien n'est copié) juste avant
+/// le renommage, avec ce qui la reconnaît : remise si la copie posée n'est pas la montrée (R-1, recontrôle 0.95).
+struct Precedente {
+    de_cote: PathBuf,
+    /// `Aucune` : pas de copie avant. `Inconnue` : il y en avait une (ou ça ne se lit pas), pas mise de côté.
+    etat: EtatPrecedente,
+}
+
+enum EtatPrecedente {
+    Aucune,
+    Inconnue,
+    Retenue(Identite),
+}
+
+/// Ce qui reconnaît un fichier : appareil et inode sous Unix ; ses octets ailleurs (Windows : l'identité du fichier
+/// demanderait l'API de Windows).
+#[derive(PartialEq, Eq)]
+struct Identite(#[cfg(unix)] (u64, u64), #[cfg(not(unix))] Vec<u8>);
+
+fn identite(chemin: &Path) -> Option<Identite> {
+    let m = std::fs::symlink_metadata(chemin).ok()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Some(Identite((m.dev(), m.ino())))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = m;
+        lire_octets(chemin, TAILLE_MAX).ok().map(Identite)
+    }
+}
+
+impl Precedente {
+    fn retenir(cible: &Path) -> Self {
+        let de_cote = cible.with_file_name(format!("{NOM}.precedent"));
+        let etat = match std::fs::symlink_metadata(cible) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => EtatPrecedente::Aucune,
+            Err(_) => EtatPrecedente::Inconnue,
+            Ok(_) => {
+                // Le reste d'une mise à jour interrompue ; un dossier à ce nom ne s'efface pas, et le lien échoue.
+                let _ = std::fs::remove_file(&de_cote);
+                match std::fs::hard_link(cible, &de_cote) {
+                    Ok(()) => identite(&de_cote).map_or(EtatPrecedente::Inconnue, EtatPrecedente::Retenue),
+                    Err(_) => EtatPrecedente::Inconnue,
+                }
+            }
+        };
+        Self { de_cote, etat }
+    }
+
+    /// La mise à jour est faite : le second nom part (l'ancienne copie, elle, n'existe plus que là).
+    fn oublier(self) {
+        if matches!(self.etat, EtatPrecedente::Retenue(_)) {
+            let _ = std::fs::remove_file(&self.de_cote);
+        }
+    }
+
+    /// La copie posée n'est pas la montrée (ou le renommage a échoué) : remettre l'ancienne, ou retirer ce qui est
+    /// posé s'il n'y en avait pas. Rend ce qui est en place, vérifié après coup : jamais « l'ancienne » sans l'avoir
+    /// reconnue à `cible`.
+    fn remettre(self, cible: &Path) -> String {
+        let ni_l_une_ni_l_autre = || {
+            format!(
+                "{} {}",
+                tr!(
+                    "la copie en place n'est ni l'ancienne ni celle montrée : ne la lancez pas, refaites la mise à jour.",
+                    "the copy in place is neither the old one nor the one shown: do not run it, redo the update."
+                ),
+                affichable(&cible.display().to_string())
+            )
+        };
+        match self.etat {
+            EtatPrecedente::Retenue(avant) => {
+                // Le renommage a échoué sans rien toucher : l'ancienne n'a pas bougé.
+                if identite(cible).as_ref() == Some(&avant) {
+                    let _ = std::fs::remove_file(&self.de_cote);
+                    return tr!("l'ancienne copie reste en place", "the old copy stays in place").into();
+                }
+                let _ = std::fs::rename(&self.de_cote, cible);
+                let _ = std::fs::remove_file(&self.de_cote);
+                if identite(cible).as_ref() == Some(&avant) {
+                    tr!(
+                        "l'ancienne copie est remise en place",
+                        "the old copy is put back in place"
+                    )
+                    .into()
+                } else {
+                    ni_l_une_ni_l_autre()
+                }
+            }
+            EtatPrecedente::Aucune => {
+                let _ = std::fs::remove_file(cible);
+                match std::fs::symlink_metadata(cible) {
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => tr!(
+                        "aucune copie n'est posée, relancez la mise à jour",
+                        "no copy is in place, run the update again"
+                    )
+                    .into(),
+                    _ => ni_l_une_ni_l_autre(),
+                }
+            }
+            EtatPrecedente::Inconnue => ni_l_une_ni_l_autre(),
+        }
+    }
 }
 
 /// Après le renommage : `cible` est-elle bien la copie écrite (`f`) avec les octets montrés ? Sous Unix, ouverte
@@ -900,8 +1023,8 @@ fn depuis_github() {
                 ecrire(publiee.version)
             ),
             Err(e) => trp!(
-                "  ✖ {} n'est pas remplacé, l'ancien reste en place :\n    {}",
-                "  ✖ {} is not replaced, the old one stays in place:\n    {}",
+                "  ✖ {} n'est pas mis à jour :\n    {}",
+                "  ✖ {} is not updated:\n    {}",
                 affichable(&c.display().to_string()),
                 affichable(&e)
             ),
@@ -996,8 +1119,8 @@ fn proposer(source: &Path, cible: &Path, copie: Option<Version>, cle: Version) {
             ecrire(cle)
         ),
         Err(e) => trp!(
-            "  ✖ Copie non mise à jour, l'ancienne reste en place :\n    {}",
-            "  ✖ Copy not updated, the old one stays in place:\n    {}",
+            "  ✖ Copie non mise à jour :\n    {}",
+            "  ✖ Copy not updated:\n    {}",
             affichable(&e)
         ),
     }
@@ -1429,8 +1552,19 @@ mod tests {
         REECRITE.store(false, std::sync::atomic::Ordering::SeqCst);
         let r = remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, ECHANGE_PAR_LE_NOM);
         if REECRITE.load(std::sync::atomic::Ordering::SeqCst) {
-            assert!(r.is_err(), "échangée par son nom, et dite faite");
-            assert_ne!(std::fs::read(&cible).unwrap(), montre);
+            let e = r.expect_err("échangée par son nom, et dite faite");
+            // R-1 (recontrôle 0.95) : l'ancienne copie est remise, et c'est dit ; avant, le faux restait posé et
+            // l'appelant disait « l'ancien reste en place ».
+            assert_eq!(
+                std::fs::read(&cible).unwrap(),
+                avant,
+                "l'ancienne copie n'est pas remise : {e}"
+            );
+            assert!(e.contains("remise en place"), "{e}");
+            assert!(
+                !racine.join("bin").join(format!("{NOM}.precedent")).exists(),
+                "reste laissé"
+            );
         } else {
             // Windows : l'échange refusé ; la copie montrée est posée, ou rien n'est remplacé (copie en attente
             // d'effacement), jamais autre chose.
@@ -1440,6 +1574,42 @@ mod tests {
                 (r.is_ok() && posee == montre) || (r.is_err() && posee == avant),
                 "{r:?}"
             );
+        }
+        *ECHANGE.lock().unwrap() = None;
+        let _ = std::fs::remove_dir_all(&racine);
+    }
+
+    /// R-1 (recontrôle 0.95) : sans ancienne copie, le faux posé à la place est retiré ; et si l'ancienne ne peut
+    /// être mise de côté (un dossier à son nom), l'échec dit que la copie en place n'est ni l'une ni l'autre, jamais
+    /// « l'ancienne reste en place ».
+    #[test]
+    fn copie_echangee_jamais_laissee_comme_l_ancienne() {
+        let racine = crate::socle::dossier_local().join("essai-echange-remise");
+        let _ = std::fs::remove_dir_all(&racine);
+        let source = racine.join("cle").join(NOM);
+        let cible = racine.join("bin").join(NOM);
+        faux_programme(&source, Some("0.80.0"));
+        std::fs::create_dir_all(racine.join("bin")).unwrap();
+        let _seul = UN_A_LA_FOIS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        *ECHANGE.lock().unwrap() = Some(racine.join("bin"));
+
+        REECRITE.store(false, std::sync::atomic::Ordering::SeqCst);
+        let r = remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, ECHANGE_PAR_LE_NOM);
+        if REECRITE.load(std::sync::atomic::Ordering::SeqCst) {
+            let e = r.expect_err("échangée par son nom, et dite faite");
+            assert!(std::fs::symlink_metadata(&cible).is_err(), "le faux reste posé : {e}");
+            assert!(e.contains("aucune copie"), "{e}");
+        }
+
+        let de_cote = racine.join("bin").join(format!("{NOM}.precedent"));
+        std::fs::create_dir_all(de_cote.join("occupe")).unwrap();
+        faux_programme(&cible, Some("0.79.0"));
+        REECRITE.store(false, std::sync::atomic::Ordering::SeqCst);
+        let r = remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, ECHANGE_PAR_LE_NOM);
+        if REECRITE.load(std::sync::atomic::Ordering::SeqCst) {
+            let e = r.expect_err("échangée par son nom, et dite faite");
+            assert!(e.contains("ne la lancez pas"), "{e}");
+            assert!(!e.contains("reste en place"), "{e}");
         }
         *ECHANGE.lock().unwrap() = None;
         let _ = std::fs::remove_dir_all(&racine);
