@@ -14,8 +14,10 @@
 //! `--appliquer` refait tout l'aperçu, exige le même accord (une nouvelle version publiée entre-temps, une clé
 //! changée, une copie remplacée le changent : refusé), consomme l'aperçu au carnet (2 s à 10 min, une seule fois),
 //! puis seulement retient le manifeste, télécharge et vérifie le programme (taille et empreinte signées), et le pose
-//! par le chemin de toujours (`installer` : version gravée revérifiée, écrit à côté, relu et comparé, essayé, mis en
-//! place d'un coup). Jamais vers une version plus ancienne. La fenêtre ne télécharge, ne vérifie et n'écrit rien.
+//! par le chemin de toujours (`installer` : version gravée revérifiée, écrit à côté, relu et comparé, essayé sauf
+//! sous Windows où `essayer` ne lance rien, mis en place d'un coup). Le reste `.ancien` d'une mise à jour faite
+//! pendant que la copie tournait (Windows) s'efface après l'accord, comme au terminal. Jamais vers une version plus
+//! ancienne. La fenêtre ne télécharge, ne vérifie et n'écrit rien.
 //!
 //! Il n'y a qu'une mise à jour à la fois : le jeton est fixe (`JETON`). Les chemins montrés sont « ~/… » sous le
 //! dossier personnel ; le chemin de la clé n'est pas montré (il dit le nom du compte), seulement « clé VANGUARD ».
@@ -543,6 +545,9 @@ fn agir(m: &dyn Monde, accord: &str, consommer: impl FnOnce() -> Result<(), carn
     if let Err(r) = consommer() {
         return Issue::Refuse(Refus::Carnet(r));
     }
+    // Le reste d'une mise à jour faite pendant que la copie tournait (Windows, `mettre_en_place`) s'efface comme au
+    // terminal (`commande`), après l'accord seulement. Encore lancé, il reste : il partira la fois suivante.
+    let _ = std::fs::remove_file(m.copie().with_file_name(format!("{}.ancien", super::NOM)));
     let octets = match plan.source {
         Source::Cle(octets) => octets,
         Source::Github(p) => {
@@ -1014,6 +1019,30 @@ mod tests {
         f.vue = Ok(());
         let _ = plan(&f, Pour::Appliquer);
         assert_eq!((f.vus.get(), f.retenus.get()), (2, 0));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Le reste d'une mise à jour faite pendant que la copie tournait (`NOM.ancien`, Windows) s'efface comme au
+    /// terminal, après l'accord seulement : un mauvais accord le laisse.
+    #[test]
+    fn le_reste_d_une_mise_a_jour_s_efface_apres_l_accord() {
+        let d = dossier("ancien");
+        let mut f = Faux::nouveau(&d);
+        f.maintenant = 1_790_100_000;
+        std::fs::create_dir_all(f.copie.parent().unwrap()).unwrap();
+        std::fs::write(&f.copie, programme("0.94.0+1780000000", "ici")).unwrap();
+        let ancien = f.copie.with_file_name(format!("{NOM}.ancien"));
+        std::fs::write(&ancien, b"vieux").unwrap();
+        f.cibles = vec![f.copie.clone()];
+        let publie = programme("0.95.0+1790000000", "publie");
+        f.derniere = Ok(Publiee::d_essai(version("0.95.0+1790000000"), &publie));
+        f.recus = publie.clone();
+        let accord = plan(&f, Pour::Voir).unwrap().apercu.accord();
+        assert_eq!(agir(&f, &"cd".repeat(32), CONSOMME), Issue::Refuse(Refus::Change));
+        assert!(ancien.exists(), "un mauvais accord ne touche à rien");
+        assert!(matches!(agir(&f, &accord, CONSOMME), Issue::Fait(_)));
+        assert!(!ancien.exists());
+        assert_eq!(std::fs::read(&f.copie).unwrap(), publie);
         let _ = std::fs::remove_dir_all(&d);
     }
 

@@ -394,7 +394,9 @@ gardes :
   d'agir et n'installe que si l'accord recalculé est le même (une autre version, une autre empreinte, une clé changée
   entre les deux : refusé, rien changé), consomme l'entrée du carnet (2 s à 10 minutes après l'aperçu, une seule
   fois), puis garde chaque vérification d'avant : signature, taille et empreinte, copie écrite à côté, relue, comparée
-  et essayée, mise en place d'un coup (sinon l'ancienne reste) ; il dit chaque programme remplacé ou pas (code 0
+  et essayée (sous Windows, pas encore d'essai : la fenêtre ne dit alors que « relu et comparé »), mise en place d'un
+  coup (sinon l'ancienne reste ; sous Windows, une ancienne qui tourne encore est mise de côté, `vanguard.exe.ancien`,
+  effacée après l'accord suivant) ; il dit chaque programme remplacé ou pas (code 0
   seulement si tous l'ont été). En mode lecture seule, `--appliquer` est refusé net (code 2). Depuis la fenêtre : la
   carte « Mettre à jour Vanguard » des réglages ouvre la feuille de l'aperçu, lu strictement
   (`fenetre/src/donnees/mise_a_jour.rs` : forme exacte, textes bornés et montrés signe par signe) ; « Installer cette

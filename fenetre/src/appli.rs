@@ -1605,6 +1605,11 @@ fn phrase_issue_commune(issue: &IssueChange) -> String {
                 Relu::EncoreSignale => crate::tr!("encore signalé", "still reported"),
                 Relu::Revenu => crate::tr!("revenu comme avant", "back as before"),
                 Relu::PasRevenu => crate::tr!("pas revenu comme avant partout", "not back as before everywhere"),
+                // Sous Windows, la nouvelle copie n'est pas lancée pour essai (`mise_a_jour::essayer`) : pas dit.
+                Relu::MisAJour if cfg!(windows) => crate::tr!(
+                    "chaque programme remplacé, relu et comparé",
+                    "each program replaced, read back and compared"
+                ),
                 Relu::MisAJour => crate::tr!(
                     "chaque programme remplacé, relu et essayé",
                     "each program replaced, read back and tried"

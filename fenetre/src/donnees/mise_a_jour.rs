@@ -2,9 +2,9 @@
 //!
 //! - l'aperçu (`se-mettre-a-jour --voir --json`), lu strictement comme celui d'une correction : un champ inconnu,
 //!   absent, nul ou d'un autre type, un autre jeton que celui de la mise à jour, une origine inconnue, une empreinte
-//!   qui n'a pas ses 64 chiffres, une taille nulle ou trop grande, aucun programme à remplacer, un chemin qui ne
-//!   commence ni par « / » ni par « ~/ » rendent la réponse illisible ; chaque texte est nettoyé, `retouche` et
-//!   `coupe` disent ce que le nettoyage a changé ;
+//!   qui n'a pas ses 64 chiffres, une taille nulle ou trop grande, aucun programme à remplacer, un chemin pas absolu
+//!   à la façon de ce système (`chemin_bien_forme`) rendent la réponse illisible ; chaque texte est nettoyé,
+//!   `retouche` et `coupe` disent ce que le nettoyage a changé ;
 //! - pourquoi rien n'est proposé, de son code (`etat`), jamais de son texte : « à jour » seulement quand Vanguard l'a
 //!   vérifié ; « non vérifié » n'est jamais montré comme « à jour » ;
 //! - l'issue de `se-mettre-a-jour --appliquer --accord <accord> --json` : seul « refuse » dit que rien n'a été fait ;
@@ -194,6 +194,22 @@ fn sha256(t: &str) -> bool {
     t.len() == 64 && t.bytes().all(|o| matches!(o, b'0'..=b'9' | b'a'..=b'f'))
 }
 
+/// Le chemin d'un programme remplacé, tel que Vanguard le montre : « ~/… » sous le dossier personnel, sinon absolu à
+/// la façon du système : « /… » ; sous Windows, une lettre de lecteur, « : » et « \ » (« C:\Outils\… »). Relatif,
+/// « C:relatif », « C:/… », un partage « \\serveur », un chemin de l'autre système : mal formé.
+fn chemin_bien_forme(chemin: &str, windows: bool) -> bool {
+    if chemin.len() > 2 && chemin.starts_with("~/") {
+        return true;
+    }
+    if !windows {
+        return chemin.starts_with('/');
+    }
+    match chemin.as_bytes() {
+        [lettre, b':', b'\\', reste @ ..] => lettre.is_ascii_alphabetic() && !reste.is_empty(),
+        _ => false,
+    }
+}
+
 fn mise_a_jour(a: &ApercuBrut, accord: &str) -> Option<MiseAJour> {
     let accord = Accord::lire(accord).filter(|a| !a.nul())?;
     if Empreinte::lire(&a.jeton)? != Empreinte::MISE_A_JOUR || !matches!(a.langue.as_str(), "fr" | "en") {
@@ -211,9 +227,10 @@ fn mise_a_jour(a: &ApercuBrut, accord: &str) -> Option<MiseAJour> {
         return None;
     }
     let lisible = |t: &String| crate::nettoyage::lisible(t);
-    let formes = a.cibles.iter().all(|c| {
-        (c.chemin.starts_with('/') || c.chemin.starts_with("~/")) && lisible(&c.chemin) && lisible(&c.version)
-    });
+    let formes = a
+        .cibles
+        .iter()
+        .all(|c| chemin_bien_forme(&c.chemin, cfg!(windows)) && lisible(&c.chemin) && lisible(&c.version));
     if !formes || !lisible(&a.visee) {
         return None;
     }
@@ -412,6 +429,38 @@ mod tests {
             lire_apercu(None, refus("a-jour", "x").as_bytes()),
             Vue::Illisible(_)
         ));
+    }
+
+    /// Un chemin absolu de ce système passe, sous Windows comme ailleurs ; toute autre forme, jamais.
+    #[test]
+    fn un_chemin_se_lit_selon_son_systeme() {
+        for (c, linux, windows) in [
+            ("/opt/vanguard", true, false),
+            ("~/.local/share/vanguard/bin/vanguard", true, true),
+            (r"~/AppData\Local\vanguard\bin\vanguard.exe", true, true),
+            (r"C:\Outils\vanguard.exe", false, true),
+            (r"z:\v.exe", false, true),
+            ("C:", false, false),
+            (r"C:\", false, false),
+            (r"C:relatif\v.exe", false, false),
+            ("C:/Outils/vanguard.exe", false, false),
+            (r"\\serveur\v.exe", false, false),
+            (r"\\?\C:\v.exe", false, false),
+            (r"1:\v.exe", false, false),
+            (r"é:\v.exe", false, false),
+            (r"relatif\v.exe", false, false),
+            ("relatif/v", false, false),
+            ("~", false, false),
+            ("~/", false, false),
+            ("", false, false),
+        ] {
+            assert_eq!(chemin_bien_forme(c, false), linux, "{c}");
+            assert_eq!(chemin_bien_forme(c, true), windows, "{c}");
+        }
+        // Dans l'aperçu entier (JSON : « \\ ») : lu sous Windows seulement.
+        let a = apercu("github", CIBLES).replace("~/.local/share/vanguard/bin/vanguard", r"C:\\Outils\\vanguard.exe");
+        let v = lire_apercu(Some(0), proposee(&a).as_bytes());
+        assert_eq!(matches!(v, Vue::Illisible(_)), !cfg!(windows), "{a} : {v:?}");
     }
 
     /// Tout écart de forme rend l'aperçu illisible : jamais un aperçu à moitié lu, jamais un accord gardé.

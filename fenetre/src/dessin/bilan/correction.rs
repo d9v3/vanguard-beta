@@ -417,6 +417,11 @@ fn corps(ui: &mut Ui, f: &FeuilleCorrection, memoire: &mut Memoire) {
                         crate::tr!("Vanguard applique la correction…", "Vanguard is applying the fix…")
                     }
                     Famille::Annulation => crate::tr!("Vanguard remet comme avant…", "Vanguard is restoring…"),
+                    // Sous Windows, la nouvelle copie n'est pas lancée pour essai (`mise_a_jour::essayer`).
+                    Famille::MiseAJour if cfg!(windows) => crate::tr!(
+                        "Vanguard revérifie, télécharge s'il le faut, puis pose et relit chaque programme…",
+                        "Vanguard checks again, downloads if needed, then places and reads back each program…"
+                    ),
                     Famille::MiseAJour => crate::tr!(
                         "Vanguard revérifie, télécharge s'il le faut, puis pose et essaie chaque programme…",
                         "Vanguard checks again, downloads if needed, then places and tries each program…"
@@ -489,10 +494,18 @@ fn recu(ui: &mut Ui, famille: Famille, issue: &IssueChange) {
                     p.bon,
                 ),
                 crate::donnees::changements::Relu::MisAJour => (
-                    crate::tr!(
-                        "Vanguard a relu, comparé et essayé chaque programme posé : à jour.",
-                        "Vanguard read back, compared and tried each program placed: up to date."
-                    ),
+                    // Sous Windows, la nouvelle copie n'est pas lancée pour essai (`mise_a_jour::essayer`).
+                    if cfg!(windows) {
+                        crate::tr!(
+                            "Vanguard a relu et comparé chaque programme posé : à jour.",
+                            "Vanguard read back and compared each program placed: up to date."
+                        )
+                    } else {
+                        crate::tr!(
+                            "Vanguard a relu, comparé et essayé chaque programme posé : à jour.",
+                            "Vanguard read back, compared and tried each program placed: up to date."
+                        )
+                    },
                     p.bon,
                 ),
                 crate::donnees::changements::Relu::PasRevenu => (

@@ -375,8 +375,9 @@ safeguards:
   --appliquer --accord <consent> --json` redoes the preview when acting and installs only if the recomputed consent is
   the same (another version, another checksum, a key changed in between: refused, nothing changed), consumes the
   preview log entry (2 s to 10 minutes after the preview, only once), then keeps every earlier check: signature, size
-  and checksum, copy written alongside, read back, compared and tried, put in place at once (otherwise the old one
-  stays); it names each program replaced or not (code 0 only if all were). In read-only mode, `--appliquer` is refused
+  and checksum, copy written alongside, read back, compared and tried (not yet tried on Windows: the window then only
+  says “read back and compared”), put in place at once (otherwise the old one stays; on Windows, an old one still
+  running is moved aside, `vanguard.exe.ancien`, erased after the next consent); it names each program replaced or not (code 0 only if all were). In read-only mode, `--appliquer` is refused
   outright (code 2). From the window: the settings' “Update Vanguard” card opens the preview sheet, read strictly
   (`fenetre/src/donnees/mise_a_jour.rs`: exact form, bounded texts shown character by character); “Install this
   update” waits 2 seconds and only sends back the consent shown. This gesture's token is fixed
