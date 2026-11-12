@@ -777,9 +777,55 @@ fn commande_lancee_lue(ligne: &str) -> Option<(String, bool)> {
     None
 }
 
-/// Ligne qui précharge une bibliothèque dans tous les programmes (LD_PRELOAD, LD_AUDIT) ; « unset » la retire.
+/// Ligne qui précharge une bibliothèque dans tous les programmes (LD_PRELOAD, LD_AUDIT) ; un « unset » seul
+/// (`unset_seul`) la retire.
 pub(super) fn definit_prechargement(ligne: &str) -> bool {
-    !commentaire(ligne) && nomme_prechargement(ligne) && !ligne.trim_start().starts_with("unset")
+    !commentaire(ligne) && nomme_prechargement(ligne) && !unset_seul(ligne)
+}
+
+/// Une ligne qui ne fait que retirer des variables : « unset », puis des noms ou des options, rien d'autre.
+/// « unset A; export LD_PRELOAD=… » ou « unset A && … » n'en est pas une (re-contrôle 0.95, R-3).
+fn unset_seul(ligne: &str) -> bool {
+    ligne
+        .trim_start_matches([' ', '\t'])
+        .trim_end_matches([' ', '\t', '\r'])
+        .strip_prefix("unset")
+        .is_some_and(|reste| {
+            (reste.is_empty() || reste.starts_with([' ', '\t']))
+                && reste
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | ' ' | '\t'))
+        })
+}
+
+/// Ligne de commentaire pour un shell (sh, bash, zsh, fish, csh ; uwsm source ses fichiers par sh) : vide, ou « # »
+/// au premier mot, après des espaces ou des tabulations seulement. Ni « -- », ni « // », ni « ; », ni « # » après une
+/// tabulation verticale ou une espace insécable : le shell y lit une commande, et ce qui suit « ; » s'exécute
+/// (re-contrôle 0.95, R-3, mesuré avec sh et bash 5.3).
+fn commentaire_du_shell(ligne: &str) -> bool {
+    let l = ligne.trim_start_matches([' ', '\t']);
+    l.is_empty() || l.starts_with('#')
+}
+
+/// Ligne de commentaire selon le lecteur du fichier : systemd (`commentaire_de_systemd`), un shell
+/// (`commentaire_du_shell`), Hyprland (`commentaire`). Une règle par format (R-3).
+fn commentaire_selon(ligne: &str, sorte: Variables) -> bool {
+    match sorte {
+        Variables::Cles | Variables::Systemd => commentaire_de_systemd(ligne),
+        Variables::Shell => commentaire_du_shell(ligne),
+        Variables::Hypr => commentaire(ligne),
+    }
+}
+
+/// Ligne qui précharge (LD_PRELOAD, LD_AUDIT) selon le lecteur du fichier : hors de ses commentaires
+/// (`commentaire_selon`) ; « unset » seul n'en retire que dans un shell ou Hyprland, pas au format de systemd où ce
+/// n'est qu'un mot (R-2).
+fn prechargement_selon(ligne: &str, sorte: Variables) -> bool {
+    match sorte {
+        Variables::Cles | Variables::Systemd => !commentaire_de_systemd(ligne) && nomme_prechargement(ligne),
+        Variables::Shell => !commentaire_du_shell(ligne) && nomme_prechargement(ligne) && !unset_seul(ligne),
+        Variables::Hypr => definit_prechargement(ligne),
+    }
 }
 
 /// Ligne qui nomme LD_PRELOAD ou LD_AUDIT, sans juger si c'est un commentaire.
@@ -1287,11 +1333,7 @@ pub(super) fn persistance_dans(
     }
     let sortes = fichiers_de_configuration(&t.r);
     let mut configuration: Vec<std::path::PathBuf> = sortes.iter().map(|(f, _)| f.clone()).collect();
-    let au_format_systemd: Vec<std::path::PathBuf> = sortes
-        .iter()
-        .filter(|(_, sorte)| format_systemd(*sorte))
-        .map(|(f, _)| f.clone())
-        .collect();
+    let sortes_lues = sortes.clone();
     let (environnement, hypr_lus, hypr_non_suivies) = environnement(&t.r, sortes, hypr.clone());
     t.r.environnement = Some(environnement);
     // Un « source = » de Hyprland que Vanguard ne suit pas (chemin calculé, joker de dossier, borne), ou qui lit un
@@ -1356,7 +1398,7 @@ pub(super) fn persistance_dans(
     lire_prechargement(racine, &variable, gestion, &mut t);
     // Les fichiers de Hyprland sont aussi des fichiers de configuration, après les autres.
     configuration.extend(hypr);
-    juger_configuration(&configuration, &au_format_systemd, &demarrage, maison, &mut t);
+    juger_configuration(&configuration, &sortes_lues, &demarrage, maison, &mut t);
     juger_demarrage(&demarrage, maison, &mut t);
     juger_generateurs(&mut t);
     juger_cron(racine, crontab, &mut t);
@@ -2747,23 +2789,24 @@ type LigneContinuee<'a> = (usize, Vec<(usize, &'a str)>, String);
 /// ligne physique et son numéro, le texte joint sans rien à la place de « \ » + retour). Une ligne qui finit par
 /// « \ » (blancs de fin compris : dans le doute, jointe) se continue sur la suivante.
 fn lignes_continuees(texte: &str) -> Vec<LigneContinuee<'_>> {
-    lignes_jointes(texte, false)
+    lignes_jointes(texte, None)
 }
 
 /// `lignes_continuees` comme les lit un shell pour les juger : un commentaire qui commence une ligne logique s'arrête
-/// à sa fin de ligne, « \ » compris. Une ligne de préchargement écrite après « # … \ » se voit donc seule.
-fn lignes_du_shell(texte: &str) -> Vec<LigneContinuee<'_>> {
-    lignes_jointes(texte, true)
+/// à sa fin de ligne, « \ » compris. Une ligne de préchargement écrite après « # … \ » se voit donc seule. Le
+/// commentaire selon le lecteur du fichier (`commentaire_selon`, R-3) : « -- ; export LD_PRE\⏎LOAD=… » se joint.
+fn lignes_du_shell(texte: &str, sorte: Variables) -> Vec<LigneContinuee<'_>> {
+    lignes_jointes(texte, Some(sorte))
 }
 
-fn lignes_jointes(texte: &str, commentaire_seul: bool) -> Vec<LigneContinuee<'_>> {
+fn lignes_jointes(texte: &str, commentaire_seul: Option<Variables>) -> Vec<LigneContinuee<'_>> {
     let mut sortie = Vec::new();
     let mut physiques: Vec<(usize, &str)> = Vec::new();
     let mut jointe = String::new();
     for (n, l) in texte.lines().enumerate() {
         let debut_de_ligne = physiques.is_empty();
         physiques.push((n.saturating_add(1), l));
-        let continuee = !(commentaire_seul && debut_de_ligne && commentaire(l));
+        let continuee = !(debut_de_ligne && commentaire_seul.is_some_and(|s| commentaire_selon(l, s)));
         if continuee && let Some(debut) = l.trim_end_matches([' ', '\t', '\r']).strip_suffix('\\') {
             jointe.push_str(debut);
         } else {
@@ -5805,11 +5848,12 @@ fn raccourcis_de_dictee(config: &Path) -> Option<std::path::PathBuf> {
 }
 
 /// Dans les fichiers de configuration : un préchargement, ou une commande suspecte hors des lignes de démarrage
-/// (jugées à part). Ceux de `au_format_systemd` se coupent aussi sur un retour chariot seul (`enregistrements`) ; le
-/// retrait proposé est alors la ligne écrite entière.
+/// (jugées à part). Chaque fichier se lit selon sa sorte (`sortes`, Hyprland sinon) : ceux au format de systemd par
+/// les lignes de `read_line` (« \r » et NUL finissent aussi une ligne ; le retrait proposé est la ligne écrite
+/// entière) ; le commentaire est celui de son lecteur (`commentaire_selon`, R-2, R-3).
 fn juger_configuration(
     configuration: &[std::path::PathBuf],
-    au_format_systemd: &[std::path::PathBuf],
+    sortes: &[(std::path::PathBuf, Variables)],
     demarrage: &[std::path::PathBuf],
     h: &Path,
     t: &mut Lancements,
@@ -5820,7 +5864,9 @@ fn juger_configuration(
         let Some(lu) = lire(f, h, t) else {
             continue;
         };
-        let systemd = au_format_systemd.contains(f);
+        // La sorte du fichier, qui dit son lecteur : un fichier de Hyprland (ajouté hors de `sortes`) sinon.
+        let sorte = sortes.iter().find(|(c, _)| c == f).map_or(Variables::Hypr, |(_, s)| *s);
+        let systemd = format_systemd(sorte);
         // Au format de systemd, chaque ligne telle que `read_line` la lit (« \r », NUL finissent aussi une ligne),
         // jugée à la ligne écrite qui la porte ; un commentaire selon la règle de systemd, et « unset » n'y est qu'un
         // mot (R-2 : « A=1 \⏎# note⏎unset LD_PRELOAD=… » pose LD_PRELOAD dans user.conf).
@@ -5833,20 +5879,8 @@ fn juger_configuration(
         } else {
             ecrites.iter().enumerate().map(|(n, e)| (n, *e, *e)).collect()
         };
-        let commente = |l: &str| {
-            if systemd {
-                commentaire_de_systemd(l)
-            } else {
-                commentaire(l)
-            }
-        };
         for (n, ecrite, l) in lignes {
-            let precharge = if systemd {
-                !commente(l) && nomme_prechargement(l)
-            } else {
-                definit_prechargement(l)
-            };
-            if precharge {
+            if prechargement_selon(l, sorte) {
                 t.sources
                     .push(source_de(&crate::modele::id::chemin(&f.to_string_lossy()), l));
                 t.retraits.push(retrait(f, &lu.texte, ecrite));
@@ -5859,7 +5893,7 @@ fn juger_configuration(
                     court(f, h),
                     n.saturating_add(1)
                 ));
-            } else if !commente(l)
+            } else if !commentaire_selon(l, sorte)
                 && let Some(raison) = variable_de_configuration(l, &maisons)
                     .or_else(|| (!demarrage.contains(f)).then(|| commande_suspecte(l, false)).flatten())
             {
@@ -5877,7 +5911,7 @@ fn juger_configuration(
                 ));
             }
         }
-        juger_lignes_jointes(f, &lu, systemd, demarrage, h, t);
+        juger_lignes_jointes(f, &lu, sorte, demarrage, h, t);
     }
 }
 
@@ -5923,7 +5957,7 @@ fn variable_de_configuration(ligne: &str, maisons: &[&str]) -> Option<&'static s
 fn juger_lignes_jointes(
     fichier: &Path,
     lu: &Lecture,
-    systemd: bool,
+    sorte: Variables,
     demarrage: &[std::path::PathBuf],
     maison: &Path,
     t: &mut Lancements,
@@ -5931,6 +5965,7 @@ fn juger_lignes_jointes(
     // Au format de systemd, le texte coupé aussi sur chaque retour chariot seul (« #x⏎L\⏎D_PRELOAD=… » : le
     // commentaire s'arrête au retour chariot, la suite se joint) ; chaque enregistrement garde le numéro de la ligne
     // écrite qui le porte.
+    let systemd = format_systemd(sorte);
     let (texte, numeros): (std::borrow::Cow<'_, str>, Vec<usize>) = if systemd {
         (
             coupe_comme_systemd(&lu.texte, Variables::Systemd).into(),
@@ -5942,7 +5977,7 @@ fn juger_lignes_jointes(
     } else {
         (lu.texte.as_str().into(), Vec::new())
     };
-    for (premiere, physiques, jointe) in lignes_du_shell(&texte) {
+    for (premiere, physiques, jointe) in lignes_du_shell(&texte, sorte) {
         if physiques.len() < 2 {
             continue;
         }
@@ -5952,12 +5987,12 @@ fn juger_lignes_jointes(
             premiere
         };
         let n = premiere.saturating_sub(1);
-        let raison = if definit_prechargement(&jointe) {
-            if physiques.iter().any(|(_, l)| definit_prechargement(l)) {
+        let raison = if prechargement_selon(&jointe, sorte) {
+            if physiques.iter().any(|(_, l)| prechargement_selon(l, sorte)) {
                 continue;
             }
             None
-        } else if !commentaire(&jointe)
+        } else if !commentaire_selon(&jointe, sorte)
             && !demarrage.iter().any(|d| d == fichier)
             && let Some(raison) = commande_suspecte(&jointe, false)
         {
@@ -15087,6 +15122,70 @@ mod tests {
         m.ecrire(CONF, "[Manager]\r\n \t# LD_PRELOAD=/tmp/l.so\r\n");
         let c = m.lancements();
         assert!(!c.message.contains(":2 précharge"), "{}", c.message);
+    }
+
+    /// R-3 (re-contrôle 0.95, angle lecture) : un shell (sh, bash, zsh, fish, et uwsm qui source ses fichiers par sh)
+    /// n'ouvre un commentaire que par « # » en début de mot, après une espace ou une tabulation seulement. Une ligne
+    /// qui commence par « -- », « // », une tabulation verticale ou une espace insécable puis « # » est une commande
+    /// (qui échoue), et ce qui suit « ; » s'exécute : mesuré avec sh et bash 5.3, LD_PRELOAD posé. « unset A; » ne
+    /// retire pas ce qui suit. Le préchargement se lève, dans les profils comme dans uwsm, même coupé par « \ ».
+    #[test]
+    fn faux_commentaires_du_shell() {
+        let fichiers = [
+            ".profile",
+            ".bashrc",
+            ".zshrc",
+            ".config/uwsm/env",
+            ".config/uwsm/env.d/a",
+            ".config/uwsm/env-hyprland.d/b",
+        ];
+        let lignes = [
+            "-- ; export LD_PRELOAD=/tmp/l.so\n",
+            "// ; export LD_PRELOAD=/tmp/l.so\n",
+            "\x0b# ; export LD_PRELOAD=/tmp/l.so\n",
+            "\u{a0}# ; export LD_AUDIT=/tmp/l.so\n",
+            "unset A; export LD_PRELOAD=/tmp/l.so\n",
+            "unset A && export LD_PRELOAD=/tmp/l.so\n",
+            "-- ; export LD_PRE\\\nLOAD=/tmp/l.so\n",
+        ];
+        let mut faux = Vec::new();
+        for (i, f) in fichiers.iter().enumerate() {
+            for (j, l) in lignes.iter().enumerate() {
+                let m = Maison::nouvelle(&format!("faux-commentaire-{i}-{j}"));
+                m.ecrire(f, l);
+                let c = m.lancements();
+                let juste = c.probleme >= Some(Niveau::Eleve)
+                    && c.message.contains(&format!("~/{f}:1 précharge"))
+                    && crate::apprentissage::declarable(&c).is_err();
+                if !juste {
+                    faux.push(format!("{f} {l:?} : {:?} {}", c.probleme, c.message));
+                }
+            }
+        }
+        assert!(faux.is_empty(), "faux commentaires du shell : {faux:#?}");
+        // Témoins : un vrai commentaire et un « unset » seul ne précharge rien.
+        for (i, l) in [
+            "# x ; export LD_PRELOAD=/tmp/l.so\n",
+            " \t# export LD_PRELOAD=/tmp/l.so\n",
+            "unset LD_PRELOAD\n",
+            "unset -v LD_PRELOAD LD_AUDIT\n",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("vrai-commentaire-{i}"));
+            m.ecrire(".profile", l);
+            let c = m.lancements();
+            assert!(!c.message.contains(":1 précharge"), "{l:?} : {}", c.message);
+        }
+        // La sauvegarde : un faux commentaire d'uwsm qui pose LD_PRELOAD la lève.
+        let faux = sauvegarde_pas_levee(
+            "faux-commentaire-uwsm",
+            ".config/uwsm/env",
+            "\x0b# x ; export LD_PRELOAD=/x.so\n",
+            None,
+        );
+        assert!(faux.is_empty(), "{faux:#?}");
     }
 
     /// L-2 (campagne 0.95, angle lecture) : uwsm lit chaque fichier de « env.d » et « env-<bureau>.d », quelle que
