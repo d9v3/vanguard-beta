@@ -10926,6 +10926,10 @@ mod tests {
             PhysiqueIllisible,
             PhysiqueSansTraverse,
             PhysiqueLieuLie,
+            PhysiqueSousDossierLie,
+            PhysiqueBoucle,
+            PhysiqueCibleIllisible,
+            PhysiqueLieuAbsolu,
         }
         type Cas<'a> = (&'a str, &'a str, &'a [(&'a str, &'a str)], Prep, bool);
         let autostart: &[(&str, &str)] = &[("Documents/lien", "/home/alice/.config/autostart")];
@@ -11044,6 +11048,36 @@ mod tests {
                 "",
                 &[],
                 Prep::PhysiqueLieuLie,
+                false,
+            ),
+            // Z-2, Z-3 (revérification 5) : un sous-dossier d'un lieu lié ailleurs se lit (G2) ; une boucle de liens
+            // se lit une fois et se tait ; une cible illisible, ou un lien absolu sous une racine d'essai : levé.
+            (
+                "/usr/bin/cp /home/alice/Documents/x /home/alice/Documents/h.sh",
+                "",
+                &[],
+                Prep::PhysiqueSousDossierLie,
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/notes.txt /home/alice/Documents/b",
+                "",
+                &[],
+                Prep::PhysiqueBoucle,
+                true,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/notes.txt /home/alice/Documents/b",
+                "",
+                &[],
+                Prep::PhysiqueCibleIllisible,
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/notes.txt /home/alice/Documents/b",
+                "",
+                &[],
+                Prep::PhysiqueLieuAbsolu,
                 false,
             ),
             // Le même passage sous une racine sans /proc : il se juge sur le chemin net, sans rien lire.
@@ -11351,7 +11385,10 @@ mod tests {
                 | Prep::PhysiqueTrop
                 | Prep::PhysiqueProfond
                 | Prep::PhysiqueIllisible
-                | Prep::PhysiqueSansTraverse => {
+                | Prep::PhysiqueSansTraverse
+                | Prep::PhysiqueBoucle
+                | Prep::PhysiqueCibleIllisible
+                | Prep::PhysiqueLieuAbsolu => {
                     m.ecrire("Documents/notes.txt", "notes\n");
                     std::fs::hard_link(m.chemin("Documents/notes.txt"), m.chemin("Documents/autre.txt")).unwrap();
                     if *prep == Prep::PhysiqueTrop {
@@ -11362,6 +11399,25 @@ mod tests {
                     }
                     if *prep == Prep::PhysiqueProfond {
                         m.ecrire(".config/hypr/a/b/c/d/e/f/g/h/i/j/x.conf", "");
+                    }
+                    if *prep == Prep::PhysiqueBoucle {
+                        std::fs::create_dir_all(m.chemin(".config/systemd")).unwrap();
+                        std::os::unix::fs::symlink("..", m.chemin(".config/systemd/boucle")).unwrap();
+                    }
+                    if *prep == Prep::PhysiqueCibleIllisible {
+                        m.ecrire("Documents/ferme2/f.desktop", "");
+                        std::os::unix::fs::symlink(
+                            "../../Documents/ferme2/f.desktop",
+                            m.chemin(".config/autostart/z.desktop"),
+                        )
+                        .unwrap();
+                        std::fs::set_permissions(m.chemin("Documents/ferme2"), std::fs::Permissions::from_mode(0o000))
+                            .unwrap();
+                    }
+                    if *prep == Prep::PhysiqueLieuAbsolu {
+                        m.ecrire("Documents/dotfiles/bashrc", "true\n");
+                        std::os::unix::fs::symlink("/home/alice/Documents/dotfiles/bashrc", m.chemin(".bashrc"))
+                            .unwrap();
                     }
                     if *prep == Prep::PhysiqueSansTraverse {
                         // Lisible mais pas traversable : les noms se lisent, pas ce qu'ils désignent.
@@ -11389,6 +11445,17 @@ mod tests {
                     m.ecrire("Documents/dotfiles/bashrc", "true\n");
                     std::os::unix::fs::symlink("Documents/dotfiles/bashrc", m.chemin(".bashrc")).unwrap();
                     std::fs::hard_link(m.chemin("Documents/dotfiles/bashrc"), m.chemin("Documents/h.sh")).unwrap();
+                }
+                Prep::PhysiqueSousDossierLie => {
+                    m.ecrire("Documents/dots/unites/autre.service", "");
+                    std::fs::create_dir_all(m.chemin(".config/systemd")).unwrap();
+                    std::os::unix::fs::symlink("../../Documents/dots/unites", m.chemin(".config/systemd/user2"))
+                        .unwrap();
+                    std::fs::hard_link(
+                        m.chemin("Documents/dots/unites/autre.service"),
+                        m.chemin("Documents/h.sh"),
+                    )
+                    .unwrap();
                 }
                 Prep::PhysiqueLieuLie => {
                     m.ecrire("Documents/dotfiles/hypr/hyprland.conf", "");
@@ -11422,6 +11489,14 @@ mod tests {
             );
             if *prep == Prep::Illisible {
                 std::fs::set_permissions(m.chemin("Documents/ferme"), std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            if *prep == Prep::PhysiqueCibleIllisible {
+                // Root (ou « unshare -r ») lit quand même la cible : le cas ne se juge alors pas.
+                let lisible = std::fs::metadata(m.chemin("Documents/ferme2/f.desktop")).is_ok();
+                std::fs::set_permissions(m.chemin("Documents/ferme2"), std::fs::Permissions::from_mode(0o755)).unwrap();
+                if lisible {
+                    continue;
+                }
             }
             if matches!(prep, Prep::PhysiqueIllisible | Prep::PhysiqueSansTraverse) {
                 // Root (ou « unshare -r ») lit quand même le dossier : le cas ne se juge alors pas.

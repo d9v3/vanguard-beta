@@ -833,10 +833,11 @@ const PROFONDEUR_DES_LIEUX: u32 = 8;
 
 impl Systeme<'_> {
     /// Y-3 : les fichiers à plusieurs liens physiques des lieux de démarrage du compte (`LIEUX_DE_DEMARRAGE` sous
-    /// chaque dossier personnel), par (appareil, inode). Le lieu lui-même se suit (un ~/.bashrc lien vers des
-    /// dotfiles) ; dessous, rien ne se traverse, mais un lien vers un fichier compte pour ce fichier (il se lit à
-    /// l'ouverture). `None` (non vérifié) : plus de `NOMS_LUS_MAX` entrées, un dossier plus profond que
-    /// `PROFONDEUR_DES_LIEUX`, ou une lecture qui échoue autrement que par une absence.
+    /// chaque dossier personnel), par (appareil, inode). Chaque lien se suit, le lieu (un ~/.bashrc lien vers des
+    /// dotfiles) comme ce qu'il contient (un fichier ou un sous-dossier lié : il se lit à l'ouverture), un dossier
+    /// une seule fois. `None` (non vérifié) : plus de `NOMS_LUS_MAX` entrées, un dossier plus profond que
+    /// `PROFONDEUR_DES_LIEUX`, une lecture qui échoue autrement que par une absence, ou un lien absolu sous une racine
+    /// d'essai (il se suivrait hors d'elle : Z-3).
     fn noms_des_lieux(&self) -> Option<&std::collections::HashMap<(u64, u64), String>> {
         self.noms_des_lieux.get_or_init(|| self.lire_noms_des_lieux()).as_ref()
     }
@@ -853,17 +854,22 @@ impl Systeme<'_> {
                 pile.push((self.sous(&nom), nom, 0));
             }
         }
+        // Les dossiers déjà lus (un lien peut ramener à un dossier vu : une boucle, ou deux lieux qui n'en font qu'un).
+        let mut dossiers_lus: std::collections::HashSet<(u64, u64)> = std::collections::HashSet::new();
+        let racine_vraie = self.racine.as_os_str().is_empty() || self.racine == Path::new("/");
         while let Some((chemin, nom, profondeur)) = pile.pop() {
             lus = lus.saturating_add(1);
             if lus > NOMS_LUS_MAX {
                 return None;
             }
-            let lu = if profondeur == 0 {
-                std::fs::metadata(&chemin)
-            } else {
-                std::fs::symlink_metadata(&chemin)
-            };
-            let md = match lu {
+            // Z-3 (revérification 5) : les liens se suivent par le système ; sous une racine d'essai, un lien absolu
+            // mènerait hors d'elle : non vérifié.
+            if !racine_vraie && std::fs::read_link(&chemin).is_ok_and(|c| c.is_absolute()) {
+                return None;
+            }
+            // Z-2 (revérification 5) : chaque lien se suit, le lieu comme ce qu'il contient (un sous-dossier lié par
+            // un gestionnaire de dotfiles se lit aussi) ; une cible qui ne se lit pas, sauf absente : non vérifié.
+            let md = match std::fs::metadata(&chemin) {
                 Ok(md) => md,
                 Err(e)
                     if matches!(
@@ -876,6 +882,9 @@ impl Systeme<'_> {
                 Err(_) => return None,
             };
             if md.is_dir() {
+                if !dossiers_lus.insert((md.dev(), md.ino())) {
+                    continue;
+                }
                 if profondeur >= PROFONDEUR_DES_LIEUX {
                     return None;
                 }
@@ -886,16 +895,8 @@ impl Systeme<'_> {
                 }
                 continue;
             }
-            let fichier = if md.file_type().is_symlink() {
-                match std::fs::metadata(&chemin) {
-                    Ok(cible) if !cible.is_dir() => cible,
-                    _ => continue,
-                }
-            } else {
-                md
-            };
-            if fichier.nlink() > 1 {
-                noms.insert((fichier.dev(), fichier.ino()), nom);
+            if md.nlink() > 1 {
+                noms.insert((md.dev(), md.ino()), nom);
             }
         }
         Some(noms)
