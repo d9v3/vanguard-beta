@@ -926,7 +926,7 @@ fn releveur(racine: &Path, maison: &Path, variable: &impl Fn(&str) -> Option<std
             .map(|v| std::env::split_paths(&v).filter(|p| p.is_absolute()).collect())
             .unwrap_or_default()
     };
-    Releveur {
+    let mut r = Releveur {
         racine: racine.to_path_buf(),
         maison: maison.to_path_buf(),
         runtime,
@@ -944,7 +944,10 @@ fn releveur(racine: &Path, maison: &Path, variable: &impl Fn(&str) -> Option<std
         environnement: None,
         budget: temoins::Budget::default(),
         dbus: std::cell::OnceCell::new(),
-    }
+        ..Releveur::default()
+    };
+    (r.gestionnaire, r.gestionnaire_non_resolu) = dossiers_du_gestionnaire(&r);
+    r
 }
 
 /// Les dossiers où systemd cherche les unités du compte (systemd --user), du plus prioritaire au moins prioritaire,
@@ -1077,6 +1080,36 @@ pub(super) fn persistance_dans(
         ..Lancements::default()
     };
     t.r.dossiers_ajoutes = dossiers_ajoutes(&t.r);
+    // V-1 (relecture 0.95) : un fichier du gestionnaire de systemd du compte déplace ses dossiers d'unités sous une
+    // forme que Vanguard ne résout pas : ce qu'il y range n'est pas relevé, c'est dit.
+    for (f, nom) in t.r.gestionnaire_non_resolu.clone() {
+        let ou = crate::ui::affichable(&t.r.montre(&f));
+        let source = format!("gestionnaire {ou} {nom}");
+        let (suspect, refus) = if nom == "?" {
+            (
+                trf!(
+                    "{ou} ne se lit pas en entier : les dossiers d'unités qu'il peut ajouter au gestionnaire de systemd du compte ne sont pas relevés (non vérifié)",
+                    "{ou} cannot be read in full: the unit folders it can add to the account's systemd manager are not checked (not verified)"
+                ),
+                trf!(
+                    "{ou} ne se lit pas en entier : l'alerte ne se déclare pas normale tant qu'il ne se lit pas",
+                    "{ou} cannot be read in full: the alert cannot be declared normal while it cannot be read"
+                ),
+            )
+        } else {
+            (
+                trf!(
+                    "{ou} pose {nom} au gestionnaire de systemd du compte sous une forme que Vanguard ne résout pas : les dossiers d'unités qu'elle ajoute ne sont pas relevés (non vérifié)",
+                    "{ou} sets {nom} for the account's systemd manager in a form Vanguard does not resolve: the unit folders it adds are not checked (not verified)"
+                ),
+                trf!(
+                    "{ou} : {nom} ne se résout pas en dossiers ; l'alerte ne se déclare pas normale tant que la valeur n'est pas une liste de chemins absolus (ou « $HOME/… »)",
+                    "{ou}: {nom} does not resolve to folders; the alert cannot be declared normal until the value is a list of absolute paths (or “$HOME/…”)"
+                ),
+            )
+        };
+        constat_sans_ligne(&mut t, &source, suspect, refus);
+    }
     if let (Some(autre), Some(variable)) = (t.r.session_de_systemd.clone(), t.r.runtime.clone())
         && std::fs::symlink_metadata(t.r.sous(&autre)).is_ok()
     {
@@ -1476,6 +1509,11 @@ struct Releveur {
     /// XDG_DATA_DIRS et XDG_CONFIG_DIRS (chemins absolus seulement), où systemd cherche aussi des unités.
     donnees_systeme: Vec<std::path::PathBuf>,
     config_systeme: Vec<std::path::PathBuf>,
+    /// Les dossiers que les fichiers du gestionnaire de systemd du compte posent par une `VARIABLES_DES_DOSSIERS`
+    /// (relecture 0.95, V-1) : (variable, dossier), où systemd cherche aussi des unités (`dossiers_du_gestionnaire`).
+    gestionnaire: Vec<(&'static str, std::path::PathBuf)>,
+    /// Ce qui ne s'y résout pas : (fichier ou dossier, variable) ; « ? » : il ne se lit pas en entier.
+    gestionnaire_non_resolu: Vec<(std::path::PathBuf, String)>,
     /// Les lignes des fichiers d'environnement des sessions qui nomment une variable sensible (`environnement`), liées
     /// à chaque ligne déclarée normale ; `None` : pas relevées, donc rien ne se déclare.
     environnement: Option<Result<(String, temoins::Etat), temoins::Refus>>,
@@ -3733,19 +3771,26 @@ fn dossiers_d_unites(r: &Releveur, utilisateur: bool) -> Result<Vec<std::path::P
     let liste = |base: &[std::path::PathBuf]| -> Vec<std::path::PathBuf> {
         base.iter().map(|d| r.sous(&d.join("systemd/user"))).collect()
     };
+    // Ceux que posent les fichiers du gestionnaire (V-1), juste après ceux de la même variable de Vanguard.
+    let gestion = |nom: &str, c: &str| -> Vec<std::path::PathBuf> { du_gestionnaire(r, nom, c) };
     // La liste de systemd (« systemd-analyze --user unit-paths », systemd 262) : chaque XDG_CONFIG_DIRS, puis
     // /etc/xdg ; chaque XDG_DATA_DIRS après ~/.local/share (relecture adverse, B5).
     let mut dossiers: Vec<std::path::PathBuf> = [
+        gestion("SYSTEMD_UNIT_PATH", ""),
         m(".config/systemd/user.control"),
         x(&r.config, "systemd/user.control"),
+        gestion("XDG_CONFIG_HOME", "systemd/user.control"),
         run("systemd/user.control"),
         run("systemd/transient"),
         run("systemd/generator.early"),
         m(".config/systemd/user"),
         x(&r.config, "systemd/user"),
+        gestion("XDG_CONFIG_HOME", "systemd/user"),
         m(".config/systemd/user.attached"),
         x(&r.config, "systemd/user.attached"),
+        gestion("XDG_CONFIG_HOME", "systemd/user.attached"),
         liste(&r.config_systeme),
+        gestion("XDG_CONFIG_DIRS", "systemd/user"),
         sy("/etc/xdg/systemd/user"),
         sy("/etc/systemd/user"),
         run("systemd/user"),
@@ -3754,7 +3799,9 @@ fn dossiers_d_unites(r: &Releveur, utilisateur: bool) -> Result<Vec<std::path::P
         run("systemd/generator"),
         m(".local/share/systemd/user"),
         x(&r.donnees, "systemd/user"),
+        gestion("XDG_DATA_HOME", "systemd/user"),
         liste(&r.donnees_systeme),
+        gestion("XDG_DATA_DIRS", "systemd/user"),
         sy("/usr/local/share/systemd/user"),
         sy("/usr/share/systemd/user"),
         sy("/usr/local/lib/systemd/user"),
@@ -3893,33 +3940,39 @@ fn variable_de_la_sauvegarde(nom: &str, vide: bool) -> bool {
 /// qu'écrit, ses lignes continuées par « \ » jointes, et chacun décodé (« \x4d ») : un nom coupé ou échappé se
 /// voit aussi. Plus large que ce que chaque lecteur accepte : un faux positif lève, il ne tait jamais.
 fn nomme_une_variable_de_la_sauvegarde(texte: &str, vide: bool) -> bool {
+    !noms_ecrits(texte, |n| variable_de_la_sauvegarde(n, vide)).is_empty()
+}
+
+/// Les noms que `cible` retient et que le texte écrit ailleurs qu'en les lisant (`nomme_une_variable_de_la_sauvegarde`).
+fn noms_ecrits(texte: &str, cible: impl Fn(&str) -> bool) -> std::collections::BTreeSet<String> {
     let jointe = texte.replace("\\\n", "");
-    [texte.to_string(), decodee(texte), decodee(&jointe), jointe]
+    let mut noms = std::collections::BTreeSet::new();
+    for l in [texte.to_string(), decodee(texte), decodee(&jointe), jointe]
         .iter()
         .flat_map(|t| t.lines().map(str::to_string).collect::<Vec<_>>())
         .filter(|l| !l.trim_start().starts_with(['#', ';']))
-        .any(|l| {
-            let octets = l.as_bytes();
-            let mot = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
-            let mut i = 0usize;
-            while i < octets.len() {
-                if !octets.get(i).copied().is_some_and(mot) {
-                    i = i.saturating_add(1);
-                    continue;
-                }
-                let debut = i;
-                while octets.get(i).copied().is_some_and(mot) {
-                    i = i.saturating_add(1);
-                }
-                let avant = debut.checked_sub(1).and_then(|a| octets.get(a)).copied();
-                let avant2 = debut.checked_sub(2).and_then(|a| octets.get(a)).copied();
-                let lue = avant == Some(b'$') || (avant == Some(b'{') && matches!(avant2, Some(b'$' | b'@')));
-                if !lue && l.get(debut..i).is_some_and(|n| variable_de_la_sauvegarde(n, vide)) {
-                    return true;
-                }
+    {
+        let octets = l.as_bytes();
+        let mot = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+        let mut i = 0usize;
+        while i < octets.len() {
+            if !octets.get(i).copied().is_some_and(mot) {
+                i = i.saturating_add(1);
+                continue;
             }
-            false
-        })
+            let debut = i;
+            while octets.get(i).copied().is_some_and(mot) {
+                i = i.saturating_add(1);
+            }
+            let avant = debut.checked_sub(1).and_then(|a| octets.get(a)).copied();
+            let avant2 = debut.checked_sub(2).and_then(|a| octets.get(a)).copied();
+            let lue = avant == Some(b'$') || (avant == Some(b'{') && matches!(avant2, Some(b'$' | b'@')));
+            if let Some(n) = l.get(debut..i).filter(|n| !lue && cible(n)) {
+                noms.insert(n.to_string());
+            }
+        }
+    }
+    noms
 }
 
 /// F-1 (relecture 0.94) : un fichier qui pose des variables au gestionnaire de systemd du compte, donc à la sauvegarde
@@ -3931,27 +3984,52 @@ fn nomme_une_variable_de_la_sauvegarde(texte: &str, vide: bool) -> bool {
 /// aussi) et l'environnement posé en cours de session (`systemctl --user set-environment`), qui ne laissent pas de
 /// fichier.
 fn environnement_change_la_sauvegarde(r: &Releveur, vide: bool) -> bool {
+    let (fichiers, illisibles) = fichiers_du_gestionnaire(r);
+    // V-1 : un dossier d'unités posé au gestionnaire sous une forme qui ne se résout pas.
+    !illisibles.is_empty()
+        || !r.gestionnaire_non_resolu.is_empty()
+        || fichiers.iter().any(|(f, du_compte)| {
+            if std::fs::read_link(f).is_ok_and(|v| v == Path::new("/dev/null")) {
+                return false;
+            }
+            if !du_compte && de_root_seul(f) {
+                return false;
+            }
+            match temoins::lire_borne(f, AJOUT_MAX) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+                Err(_) => true,
+                Ok(lu) => !lu.entier || nomme_une_variable_de_la_sauvegarde(&String::from_utf8_lossy(&lu.octets), vide),
+            }
+        })
+}
+
+/// Les fichiers qui posent des variables au gestionnaire de systemd du compte : (fichier, du compte). Ceux du compte
+/// (environment.d, user.conf et user.conf.d, ~/.config/uwsm/env*, et ceux d'un XDG_CONFIG_HOME déplacé,
+/// ~/.pam_environment), et ceux du système (/etc/environment, pam_env.conf, environment.d, user.conf et user.conf.d).
+/// Avec les dossiers qui ne se lisent pas.
+#[allow(clippy::type_complexity)]
+fn fichiers_du_gestionnaire(r: &Releveur) -> (Vec<(std::path::PathBuf, bool)>, Vec<std::path::PathBuf>) {
     let s = |c: &str| r.sous(Path::new(c));
     let mut fichiers: Vec<(std::path::PathBuf, bool)> = Vec::new();
-    let mut illisible = false;
+    let mut illisibles = Vec::new();
     // Les fichiers d'un dossier : ceux en « .conf », ou ceux de uwsm (« env », « env-<bureau> »).
     let mut dossier =
         |d: std::path::PathBuf, du_compte: bool, uwsm: bool, fichiers: &mut Vec<(std::path::PathBuf, bool)>| {
             match std::fs::symlink_metadata(&d) {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
                 Err(_) => {
-                    illisible = true;
+                    illisibles.push(d.clone());
                     return;
                 }
                 Ok(_) => {}
             }
             let Ok(entrees) = std::fs::read_dir(&d) else {
-                illisible = true;
+                illisibles.push(d.clone());
                 return;
             };
             for e in entrees {
                 let Ok(e) = e else {
-                    illisible = true;
+                    illisibles.push(d.clone());
                     return;
                 };
                 let nom = e.file_name().to_string_lossy().into_owned();
@@ -3998,20 +4076,197 @@ fn environnement_change_la_sauvegarde(r: &Releveur, vide: bool) -> bool {
     ] {
         fichiers.push((s(f), false));
     }
-    illisible
-        || fichiers.iter().any(|(f, du_compte)| {
-            if std::fs::read_link(f).is_ok_and(|v| v == Path::new("/dev/null")) {
-                return false;
+    (fichiers, illisibles)
+}
+
+/// Les variables par lesquelles systemd du compte calcule les dossiers où il cherche ses unités (relecture 0.95, V-1).
+const VARIABLES_DES_DOSSIERS: [&str; 5] = [
+    "XDG_CONFIG_HOME",
+    "XDG_CONFIG_DIRS",
+    "XDG_DATA_HOME",
+    "XDG_DATA_DIRS",
+    "SYSTEMD_UNIT_PATH",
+];
+
+/// V-1 (relecture 0.95) : les dossiers que les fichiers du gestionnaire de systemd du compte (`fichiers_du_gestionnaire`,
+/// sauf ceux de uwsm, qui ne posent rien au gestionnaire lui-même) posent par une `VARIABLES_DES_DOSSIERS` : une ligne
+/// « ManagerEnvironment=XDG_DATA_DIRS=~/.x:… » dans ~/.config/systemd/user.conf fait chercher des unités et leurs
+/// compléments dans ~/.x/systemd/user, que Vanguard ne lisait pas. Plus large que systemd (DefaultEnvironment=,
+/// environment.d, pam_env lus aussi) : un dossier de trop se lit, il ne tait rien. Ce qui ne se résout pas en
+/// chemins (une autre variable, un code, un nom échappé, un fichier qui ne se lit pas) : (fichier, variable), dit
+/// non vérifié.
+#[allow(clippy::type_complexity)]
+fn dossiers_du_gestionnaire(
+    r: &Releveur,
+) -> (
+    Vec<(&'static str, std::path::PathBuf)>,
+    Vec<(std::path::PathBuf, String)>,
+) {
+    let (fichiers, illisibles) = fichiers_du_gestionnaire(r);
+    let mut dossiers = Vec::new();
+    let mut non_resolus: Vec<(std::path::PathBuf, String)> = illisibles.into_iter().map(|d| (d, "?".into())).collect();
+    for (f, _) in fichiers {
+        let sorte = Variables::de(&f, false);
+        if sorte == Variables::Shell || std::fs::read_link(&f).is_ok_and(|v| v == Path::new("/dev/null")) {
+            continue;
+        }
+        let texte = match temoins::lire_borne(&f, AJOUT_MAX) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Ok(lu) if lu.entier => String::from_utf8_lossy(&lu.octets).into_owned(),
+            _ => {
+                non_resolus.push((f, "?".into()));
+                continue;
             }
-            if !du_compte && de_root_seul(f) {
-                return false;
+        };
+        let mut lues = std::collections::BTreeSet::new();
+        for (nom, valeur) in affectations(&texte, sorte) {
+            let Some(v) = VARIABLES_DES_DOSSIERS.iter().find(|x| **x == nom) else {
+                continue;
+            };
+            match chemins_poses(&valeur, v, &r.maison) {
+                Some(chemins) => dossiers.extend(chemins.into_iter().map(|c| (*v, c))),
+                None => non_resolus.push((f.clone(), nom.clone())),
             }
-            match temoins::lire_borne(f, AJOUT_MAX) {
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-                Err(_) => true,
-                Ok(lu) => !lu.entier || nomme_une_variable_de_la_sauvegarde(&String::from_utf8_lossy(&lu.octets), vide),
+            lues.insert(nom);
+        }
+        // Une variable nommée autrement qu'en clair (« XDG_DATA_\x44IRS », ligne coupée…) : non lue, donc dite.
+        for nom in noms_ecrits(&texte, |n| VARIABLES_DES_DOSSIERS.contains(&n)) {
+            if !lues.contains(&nom) {
+                non_resolus.push((f.clone(), nom));
             }
-        })
+        }
+    }
+    let mut vus = std::collections::BTreeSet::new();
+    dossiers.retain(|d| vus.insert(d.clone()));
+    let mut vus = std::collections::BTreeSet::new();
+    non_resolus.retain(|d| vus.insert(d.clone()));
+    (dossiers, non_resolus)
+}
+
+/// Les dossiers d'unités que pose `nom` au gestionnaire (`Releveur::gestionnaire`), chacun joint de `c`, sous la racine.
+fn du_gestionnaire(r: &Releveur, nom: &str, c: &str) -> Vec<std::path::PathBuf> {
+    r.gestionnaire
+        .iter()
+        .filter(|(n, _)| *n == nom)
+        .map(|(_, d)| r.sous(&if c.is_empty() { d.clone() } else { d.join(c) }))
+        .collect()
+}
+
+/// Les affectations (nom, valeur) qu'écrit en clair un fichier du gestionnaire : « DefaultEnvironment= » et
+/// « ManagerEnvironment= » de user.conf (mots entre guillemets ou non), « A=… » d'environment.d et de
+/// /etc/environment, « A DEFAULT=… OVERRIDE=… » de pam_env (les deux valeurs). Ce qu'elle ne sait pas lire n'y est
+/// pas : `noms_ecrits` le voit.
+fn affectations(texte: &str, sorte: Variables) -> Vec<(String, String)> {
+    let jointe = texte.replace("\\\n", "");
+    let mut paires = Vec::new();
+    for l in jointe.lines() {
+        let net = l.trim_matches([' ', '\t']);
+        if net.is_empty() || net.starts_with(['#', ';']) {
+            continue;
+        }
+        match sorte {
+            Variables::Systemd => {
+                let Some((cle, reste)) = net.split_once('=') else {
+                    continue;
+                };
+                if !["DefaultEnvironment", "ManagerEnvironment"].contains(&cle.trim_end()) {
+                    continue;
+                }
+                paires.extend(
+                    mots_cites(reste)
+                        .into_iter()
+                        .filter_map(|m| m.split_once('=').map(|(n, v)| (n.to_string(), v.to_string()))),
+                );
+            }
+            Variables::Cles => {
+                let (premier, reste) = net.split_once([' ', '\t']).unwrap_or((net, ""));
+                if let Some((n, v)) = net.split_once('=').filter(|(n, _)| !n.contains([' ', '\t'])) {
+                    let v = v.trim_matches([' ', '\t']);
+                    let v = v
+                        .strip_prefix('"')
+                        .and_then(|x| x.strip_suffix('"'))
+                        .or_else(|| v.strip_prefix('\'').and_then(|x| x.strip_suffix('\'')))
+                        .unwrap_or(v);
+                    paires.push((n.to_string(), v.to_string()));
+                } else {
+                    for m in mots_cites(reste) {
+                        if let Some(v) = m.strip_prefix("DEFAULT=").or_else(|| m.strip_prefix("OVERRIDE=")) {
+                            paires.push((premier.to_string(), v.to_string()));
+                        }
+                    }
+                }
+            }
+            Variables::Shell | Variables::Hypr => {}
+        }
+    }
+    paires
+}
+
+/// Les mots d'une valeur de systemd ou de pam_env, coupés aux blancs hors guillemets, guillemets retirés. Une barre
+/// oblique inverse reste telle quelle : le mot ne se lit pas en clair (`chemins_poses` le refuse).
+fn mots_cites(texte: &str) -> Vec<String> {
+    let mut mots = Vec::new();
+    let mut mot = String::new();
+    let mut dans: Option<char> = None;
+    let mut commence = false;
+    for c in texte.chars() {
+        match (dans, c) {
+            (None, ' ' | '\t') => {
+                if commence {
+                    mots.push(std::mem::take(&mut mot));
+                    commence = false;
+                }
+            }
+            (None, '"' | '\'') => {
+                dans = Some(c);
+                commence = true;
+            }
+            (Some(q), _) if c == q => dans = None,
+            _ => {
+                mot.push(c);
+                commence = true;
+            }
+        }
+    }
+    if commence {
+        mots.push(mot);
+    }
+    mots
+}
+
+/// Les dossiers absolus d'une valeur posée à `nom` (liste séparée par « : »), « $HOME », « ${HOME} », « @{HOME} » et
+/// « ~ » en tête remplacés par le dossier personnel `maison`. La valeur d'avant (« $nom », « ${nom} ») est déjà lue
+/// (celle de Vanguard, ou les dossiers par défaut) : passée. Un morceau relatif est ignoré par systemd pour une
+/// variable XDG (spécification XDG), refusé pour SYSTEMD_UNIT_PATH. `None` : un morceau ne se résout pas (autre
+/// variable, code « % », guillemet, échappement, joker).
+fn chemins_poses(valeur: &str, nom: &str, maison: &Path) -> Option<Vec<std::path::PathBuf>> {
+    let mut sortie = Vec::new();
+    for morceau in valeur.split(':') {
+        let m = morceau.trim_matches([' ', '\t']);
+        if m.is_empty() || [format!("${nom}"), format!("${{{nom}}}"), format!("@{{{nom}}}")].contains(&m.to_string()) {
+            continue;
+        }
+        let m = ["$HOME", "${HOME}", "@{HOME}", "~"]
+            .iter()
+            .find_map(|d| {
+                m.strip_prefix(d)
+                    .filter(|x| x.is_empty() || x.starts_with('/'))
+                    .map(|x| format!("{}{x}", maison.display()))
+            })
+            .unwrap_or_else(|| m.to_string());
+        if m.contains(['$', '%', '`', '\\', '"', '\'', '*', '?', '[', '{', '}']) {
+            return None;
+        }
+        let p = std::path::PathBuf::from(&m);
+        if !p.is_absolute() {
+            if nom == "SYSTEMD_UNIT_PATH" {
+                return None;
+            }
+            continue;
+        }
+        sortie.push(p);
+    }
+    Some(sortie)
 }
 
 /// Un fichier d'ajout, ou l'unité d'un ajout : son état, une fois ses directives vérifiées, et son texte (vide pour
@@ -4454,6 +4709,29 @@ fn dossiers_ajoutes(r: &Releveur) -> Vec<std::path::PathBuf> {
             .any(|h| lu == r.maison.join(h));
         if !habituel && (lu.starts_with(&r.maison) || !de_root_seul(&lu)) {
             dossiers.push(lu);
+        }
+    }
+    // Ceux que posent les fichiers du gestionnaire de systemd du compte (V-1), hors des habituels et de ceux à root
+    // seul.
+    let habituels = [
+        ".config/systemd/user",
+        ".config/systemd/user.control",
+        ".local/share/systemd/user",
+    ]
+    .map(|h| r.maison.join(h));
+    for (nom, c) in [
+        ("SYSTEMD_UNIT_PATH", ""),
+        ("XDG_CONFIG_HOME", "systemd/user.control"),
+        ("XDG_CONFIG_HOME", "systemd/user"),
+        ("XDG_CONFIG_HOME", "systemd/user.attached"),
+        ("XDG_CONFIG_DIRS", "systemd/user"),
+        ("XDG_DATA_HOME", "systemd/user"),
+        ("XDG_DATA_DIRS", "systemd/user"),
+    ] {
+        for lu in du_gestionnaire(r, nom, c) {
+            if !habituels.contains(&lu) && (lu.starts_with(&r.maison) || !de_root_seul(&lu)) {
+                dossiers.push(lu);
+            }
         }
     }
     if let Some(autre) = &r.session_de_systemd {
@@ -8939,6 +9217,169 @@ mod tests {
             faux.is_empty(),
             "l'environnement du gestionnaire change la sauvegarde : {faux:#?}"
         );
+    }
+
+    /// V-1 (relecture 0.95) : un fichier du compte (user.conf et user.conf.d, ~/.pam_environment, environment.d) qui
+    /// déplace les dossiers où systemd du compte cherche ses unités (XDG_CONFIG_HOME, XDG_CONFIG_DIRS, XDG_DATA_HOME,
+    /// XDG_DATA_DIRS, SYSTEMD_UNIT_PATH) : ces dossiers se lisent. Un complément de la sauvegarde posé là la lève, une
+    /// unité posée là se lève comme celle d'un dossier ajouté. Une valeur que Vanguard ne résout pas se dit, non
+    /// vérifiée, et lève la sauvegarde.
+    #[test]
+    fn les_dossiers_d_unites_deplaces_par_le_gestionnaire_se_lisent() {
+        const REMPLACE: &str = "[Service]\nExecStart=\nExecStart=/usr/bin/rsync -a /home/alice/Documents /tmp/x\n";
+        const CONF: &str = ".config/systemd/user.conf";
+        let complement = |d: &str| Some(format!("{d}/{}.d/x.conf", crate::sauvegarde::SERVICE));
+        // (nom, fichier qui déplace, son texte, complément posé, levée)
+        let cas: Vec<(&str, &str, &str, Option<String>, bool)> = vec![
+            (
+                "données par user.conf",
+                CONF,
+                "[Manager]\nManagerEnvironment=XDG_DATA_DIRS=/home/alice/.x:/usr/share\n",
+                complement(".x/systemd/user"),
+                true,
+            ),
+            (
+                "configuration par user.conf, guillemets",
+                CONF,
+                "[Manager]\nManagerEnvironment=\"A=1\" \"XDG_CONFIG_HOME=/home/alice/.y\"\n",
+                complement(".y/systemd/user"),
+                true,
+            ),
+            (
+                "configuration du système par user.conf.d, $HOME",
+                ".config/systemd/user.conf.d/x.conf",
+                "[Manager]\nManagerEnvironment = XDG_CONFIG_DIRS=$HOME/.z\n",
+                complement(".z/systemd/user"),
+                true,
+            ),
+            (
+                "configuration par pam_environment",
+                ".pam_environment",
+                "XDG_CONFIG_HOME DEFAULT=@{HOME}/.y\n",
+                complement(".y/systemd/user.control"),
+                true,
+            ),
+            (
+                "données du compte par environment.d",
+                ".config/environment.d/50-x.conf",
+                "XDG_DATA_HOME=${HOME}/.w\n",
+                complement(".w/systemd/user"),
+                true,
+            ),
+            (
+                "chemin d'unités",
+                CONF,
+                "[Manager]\nDefaultEnvironment=SYSTEMD_UNIT_PATH=/home/alice/.u:\n",
+                complement(".u"),
+                true,
+            ),
+            (
+                "non résolue",
+                CONF,
+                "[Manager]\nManagerEnvironment=XDG_DATA_DIRS=$TRUC/x\n",
+                None,
+                true,
+            ),
+            (
+                "nom échappé",
+                CONF,
+                "[Manager]\nManagerEnvironment=\"XDG_DATA_\\x44IRS=/home/alice/.x\"\n",
+                None,
+                true,
+            ),
+            (
+                "témoin : déplacé, rien de posé",
+                CONF,
+                "[Manager]\nManagerEnvironment=XDG_DATA_DIRS=/home/alice/.x:$XDG_DATA_DIRS\n",
+                None,
+                false,
+            ),
+            (
+                "témoin : guillemets, ${HOME}, ~",
+                CONF,
+                "[Manager]\nManagerEnvironment=\"XDG_DATA_DIRS=${HOME}/.x\" XDG_CONFIG_DIRS=~/.z\n",
+                None,
+                false,
+            ),
+            (
+                "témoin : pam_env",
+                ".pam_environment",
+                "XDG_CONFIG_HOME DEFAULT=@{HOME}/.y OVERRIDE=\"/home/alice/.y\"\n",
+                None,
+                false,
+            ),
+            (
+                "témoin : relatif, ignoré par systemd",
+                ".config/environment.d/50-x.conf",
+                "XDG_DATA_HOME=relatif/x\n",
+                None,
+                false,
+            ),
+            (
+                "témoin : complément ailleurs",
+                CONF,
+                "[Manager]\nManagerEnvironment=XDG_DATA_DIRS=/home/alice/.x\n",
+                complement(".v/systemd/user"),
+                false,
+            ),
+        ];
+        let mut faux = Vec::new();
+        for (i, (nom, fichier, texte, pose, leve)) in cas.iter().enumerate() {
+            for vide in [false, true] {
+                let (m, service) = sauvegarde_d_essai(&format!("v1-gestionnaire-{i}-{vide}"), vide);
+                m.ecrire(fichier, texte);
+                if let Some(p) = pose {
+                    m.ecrire(p, REMPLACE);
+                }
+                let c = m.lancements();
+                let execstart = service
+                    .lines()
+                    .position(|l| l.starts_with("ExecStart="))
+                    .map(|n| format!("~/.config/systemd/user/{}:{} : ", crate::sauvegarde::SERVICE, n + 1));
+                let nommee = execstart.is_some_and(|e| c.message.contains(&e));
+                let juste = if *leve {
+                    c.probleme == Some(Niveau::Eleve) && nommee && crate::apprentissage::declarable(&c).is_err()
+                } else {
+                    (vide && c.probleme.is_none())
+                        || (!vide && c.probleme == Some(Niveau::Info) && c.message.contains("avant la 0.95"))
+                };
+                if !juste {
+                    faux.push(format!("{nom}, env -i {vide} : {:?} {:?}", c.probleme, c.message));
+                }
+            }
+        }
+        assert!(faux.is_empty(), "dossiers d'unités déplacés : {faux:#?}");
+        // Une unité quelconque posée dans le dossier déplacé : levée comme celle d'un dossier ajouté.
+        let m = Maison::nouvelle("v1-unite");
+        m.ecrire(
+            CONF,
+            "[Manager]\nManagerEnvironment=XDG_DATA_DIRS=/home/alice/.x:/usr/share\n",
+        );
+        m.ecrire(".x/systemd/user/agent.service", "[Service]\nExecStart=%h/.x/agent\n");
+        let c = m.lancements();
+        let r = leve_non_declarable(&c, "unité d'un dossier déplacé");
+        assert!(c.message.contains("~/.x/systemd/user/agent.service:2"), "{}", c.message);
+        assert!(r.contains("lit en plus"), "{r}");
+        // Une valeur non résolue : dite, non vérifiée, avec le fichier et la variable.
+        let m = Maison::nouvelle("v1-non-resolue");
+        m.ecrire(".pam_environment", "XDG_DATA_DIRS DEFAULT=${TRUC}/x\n");
+        let c = m.lancements();
+        leve_non_declarable(&c, "valeur non résolue");
+        assert!(
+            c.message.contains("~/.pam_environment")
+                && c.message.contains("XDG_DATA_DIRS")
+                && c.message.contains("ne résout pas"),
+            "{}",
+            c.message
+        );
+        // Témoin : une valeur simple, sans unité posée, ne lève rien.
+        let m = Maison::nouvelle("v1-sain");
+        m.ecrire(
+            CONF,
+            "[Manager]\nManagerEnvironment=XDG_DATA_DIRS=/home/alice/.x:/usr/share\n",
+        );
+        let c = m.lancements();
+        assert_eq!(c.probleme, None, "{}", c.message);
     }
 
     /// Point 10 (0.95) : la sauvegarde exacte levée pour ce qui la change (~/.popt, complément, variable du
