@@ -3297,7 +3297,9 @@ fn autres_textes_de_l_unite(f: &Path, codes: &Codes, r: &Releveur) -> Vec<std::p
 /// (`permise::Systeme::courant`) : la valeur de « WorkingDirectory= » de ses sections, celles de ses ajouts comprises,
 /// codes « % » développés ; sans elle, le dossier personnel pour une unité du compte (`None`) et « / » pour une
 /// unité du système (systemd.exec(5)). Deux valeurs différentes (l'ordre exact de systemd n'est pas refait), ou une
-/// valeur qui ne se résout pas en chemin absolu : `CODE_INCONNU`, un relatif n'y est pas vérifié.
+/// valeur que systemd ignore ou que Vanguard ne résout pas exactement (`dossier_sur`, Y-1 : un seul « - » se retire,
+/// un code « % » dont la vraie valeur n'est pas connue) : `CODE_INCONNU`, jamais un dossier deviné ; un relatif
+/// n'y est pas vérifié, donc pas tu.
 fn dossier_courant(f: &Path, texte: &str, codes: &Codes, r: &Releveur) -> Option<String> {
     let defaut = codes.courant.clone();
     let mut valeurs: std::collections::BTreeSet<Option<String>> = std::collections::BTreeSet::new();
@@ -3309,7 +3311,8 @@ fn dossier_courant(f: &Path, texte: &str, codes: &Codes, r: &Releveur) -> Option
             if cle.trim_matches([' ', '\t']) != "WorkingDirectory" {
                 continue;
             }
-            let v = valeur.trim_matches([' ', '\t']).trim_start_matches('-');
+            let v = valeur.trim_matches([' ', '\t']);
+            let v = v.strip_prefix('-').unwrap_or(v);
             valeurs.insert(if v.is_empty() {
                 defaut.clone()
             } else if v == "~" {
@@ -3320,7 +3323,7 @@ fn dossier_courant(f: &Path, texte: &str, codes: &Codes, r: &Releveur) -> Option
                 }
             } else {
                 match developper_codes(v, codes) {
-                    Some(d) if d.starts_with('/') && !d.contains(['$', CODE_INCONNU]) => Some(d),
+                    Some(d) if codes_connus(v) && dossier_sur(&d) => Some(d),
                     _ => Some(CODE_INCONNU.to_string()),
                 }
             });
@@ -3341,9 +3344,29 @@ fn dossier_courant(f: &Path, texte: &str, codes: &Codes, r: &Releveur) -> Option
     }
 }
 
+/// Y-1 (revérification 4) : un dossier courant que systemd prend tel quel : absolu, sans partie « .. » (systemd dit
+/// « not normalized, ignoring » et garde le dossier personnel) ni « . » (plus strict que systemd : un doute rend
+/// « non vérifié », jamais muet), sans « - » de plus (« --/x » : « not absolute, ignoring »), sans variable, code non
+/// résolu ni échappement. Une barre doublée ou finale (« %h » d'une maison écrite « /home/alice/ ») est permise.
+fn dossier_sur(d: &str) -> bool {
+    d.starts_with('/') && !d.contains(['$', '\\', CODE_INCONNU]) && d.split('/').all(|p| p != "." && p != "..")
+}
+
+/// Y-1 (revérification 4) : une valeur dont chaque code « % » a une vraie valeur connue de Vanguard
+/// (`developper_codes`) ; %u, %U, %g, %G, %H… y deviennent « x » : un dossier courant qui en contient n'est pas sûr.
+fn codes_connus(v: &str) -> bool {
+    let mut lettres = v.chars();
+    while let Some(c) = lettres.next() {
+        if c == '%' && !lettres.next().is_some_and(|x| "%hTVtSCLED".contains(x)) {
+            return false;
+        }
+    }
+    true
+}
+
 /// X-3 (relecture 0.95) : le dossier courant d'une entrée de bureau, sa clé « Path= » (systemd-xdg-autostart-generator
-/// en fait le WorkingDirectory= du service) : `None` sans elle (le dossier personnel) ; un chemin absolu ; sinon
-/// `CODE_INCONNU`, un relatif n'y est pas vérifié.
+/// en fait le WorkingDirectory= du service) : `None` sans elle (le dossier personnel) ; un chemin que systemd prend
+/// tel quel (`dossier_sur`, Y-1) ; sinon `CODE_INCONNU`, un relatif n'y est pas vérifié.
 fn dossier_de_bureau(texte: &str) -> Option<String> {
     let mut section = "";
     let mut courant = None;
@@ -3362,7 +3385,7 @@ fn dossier_de_bureau(texte: &str) -> Option<String> {
         let v = valeur.trim_matches([' ', '\t']);
         courant = if v.is_empty() {
             None
-        } else if v.starts_with('/') && !v.contains(['$', '%', '\\', CODE_INCONNU]) {
+        } else if !v.contains('%') && dossier_sur(v) {
             Some(v.to_string())
         } else {
             Some(CODE_INCONNU.to_string())
@@ -10893,6 +10916,50 @@ mod tests {
         );
         let cas: &[Cas<'_>] = &[
             (separateurs.as_str(), "", &[], Prep::Rien, false),
+            // Y-1 (revérification 4) : un dossier courant que systemd ignore (non normalisé, pas absolu, code
+            // inconnu) laisse le dossier personnel ; Vanguard ne doit pas en croire un autre.
+            (
+                "/usr/bin/cp /home/alice/Documents/x .config/autostart/x.desktop",
+                "-/x/../y",
+                &[],
+                Prep::Rien,
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x .config/autostart/x.desktop",
+                "--/x",
+                &[],
+                Prep::Rien,
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x .config/autostart/x.desktop",
+                "-%h/Documents/../Documents",
+                &[],
+                Prep::Rien,
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x lien/x.desktop",
+                "/home/%u/Documents",
+                autostart,
+                Prep::Rien,
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x .config/autostart/x.desktop",
+                "/x/../y",
+                &[],
+                Prep::Bureau,
+                false,
+            ),
+            (
+                "/usr/bin/cp /home/alice/Documents/x .config/autostart/x.desktop",
+                "-/x",
+                &[],
+                Prep::Bureau,
+                false,
+            ),
             (
                 "/usr/bin/cp /home/alice/Documents/x lien/x.desktop",
                 "%h/Documents",
