@@ -34,11 +34,6 @@ pub(crate) fn chemin_dans(cmd: &str, path: &OsStr) -> Option<PathBuf> {
         .find(|f| executable(f))
 }
 
-/// Le programme `cmd` est-il dans le PATH, exécutable ?
-pub(crate) fn present(cmd: &str) -> bool {
-    chemin_dans(cmd, &std::env::var_os("PATH").unwrap_or_default()).is_some()
-}
-
 /// Fichiers qui contiennent des mots de passe ou des jetons d'accès, chemin relatif au dossier personnel.
 const SECRETS: &[&str] = &[
     ".git-credentials",

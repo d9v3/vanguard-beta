@@ -1090,7 +1090,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn aucun_outil_par_son_nom_nu_dans_src() {
-        const EXCEPTIONS: [(&str, &str, &str); 7] = [
+        const EXCEPTIONS: [(&str, &str, &str); 5] = [
             // `systeme` : sous Windows, le chemin de System32 ; ailleurs, le nom (limite dite : ses appelants).
             (
                 "commande.rs",
@@ -1117,12 +1117,6 @@ mod tests {
                 "Command::new(cmd)",
                 "macOS seulement : Homebrew dans le PATH",
             ),
-            (
-                "protection/antivirus.rs",
-                "Command::new(\"clamscan\")",
-                "Unix et macOS : Homebrew",
-            ),
-            ("reseau/upnp.rs", "Command::new(\"upnpc\")", "Unix et macOS : Homebrew"),
         ];
         let base = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
         let mut fichiers = Vec::new();
@@ -1169,6 +1163,36 @@ mod tests {
             "outil lancé par son nom, que le PATH du compte choisirait : commande::par_le_systeme, ou une exception \
              écrite avec sa raison : {par_le_nom:#?}"
         );
+    }
+
+    /// E-1 (recontrôle 0.95) : un outil dont la réponse devient un verdict (« ClamAV : rien trouvé », « aucune
+    /// redirection UPnP ») est lancé ET dit présent par les dossiers du système, jamais par le PATH du compte : un faux
+    /// clamscan dans ~/.local/bin, qui imitait le bilan attendu, faisait dire « rien trouvé ». Lu dans les sources,
+    /// hors de leurs essais.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn outils_de_verdict_par_le_chemin_du_systeme() {
+        let fichiers = [
+            (
+                "protection/antivirus.rs",
+                include_str!("protection/antivirus.rs"),
+                "clamscan",
+            ),
+            ("reseau/upnp.rs", include_str!("reseau/upnp.rs"), "upnpc"),
+        ];
+        let mut fautes = Vec::new();
+        for (fichier, source, outil) in fichiers {
+            let code = source.split("\nmod tests").next().unwrap_or(source);
+            for motif in [format!("Command::new(\"{outil}\")"), format!("present(\"{outil}\")")] {
+                if code.contains(&motif) {
+                    fautes.push(format!("{fichier} : {motif}"));
+                }
+            }
+            if !code.contains(&format!("par_le_systeme(\"{outil}\")")) {
+                fautes.push(format!("{fichier} : par_le_systeme(\"{outil}\") manque"));
+            }
+        }
+        assert!(fautes.is_empty(), "{fautes:#?}");
     }
 
     /// La langue de la personne (ici donnée à la commande : LC_ALL et LANGUAGE en français) arrive à l'outil par

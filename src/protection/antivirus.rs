@@ -6,6 +6,8 @@
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::path::PathBuf;
+// Defender sous Windows ; sous Unix, clamscan part par `commande::par_le_systeme` (E-1, recontrôle 0.95).
+#[cfg(any(windows, test))]
 use std::process::Command;
 
 use crate::risk::Niveau;
@@ -2077,8 +2079,10 @@ pub(crate) fn examiner(fichier: &std::path::Path) -> Examen {
             .into(),
         );
     }
+    // Par les dossiers du système (E-1, recontrôle 0.95) : un faux clamscan du compte, qui imitait le bilan
+    // attendu, faisait dire « rien trouvé ».
     let Some(r) = crate::commande::lancer(
-        Command::new("clamscan")
+        crate::commande::par_le_systeme("clamscan")
             .args(["-i", "--max-filesize=200M", "--max-scansize=400M"])
             .args(option_base())
             .args(option_pua())
@@ -2169,10 +2173,12 @@ fn base_dans(dossier: &std::path::Path) -> bool {
     })
 }
 
-/// clamscan est-il installé ? Le PATH parcouru sur le disque, sans lancer de shell.
+/// clamscan est-il installé ? Celui que `par_le_systeme` lancera, dans un dossier du système, jamais le PATH du compte
+/// (E-1, recontrôle 0.95) : un ~/.local/bin/clamscan n'y passe ni pour installé, ni pour l'antivirus. Comme pour
+/// freshclam, un ClamAV compilé dans /usr/local passe pour absent, ce qui se dit.
 #[cfg(unix)]
 pub(crate) fn clamscan_present() -> bool {
-    crate::machine::linux::natif::present("clamscan")
+    crate::commande::outil_systeme("clamscan").is_some()
 }
 
 /// Le second avis peut-il tourner ? Coupé dans les Paramètres, ou clamscan absent : non, et pourquoi, sans rien
@@ -2352,7 +2358,7 @@ fn second_avis(portee: &Portee, ecran: bool) -> SecondAvis {
     } else {
         &tout
     };
-    let mut cmd = Command::new("clamscan");
+    let mut cmd = crate::commande::par_le_systeme("clamscan");
     // Le bilan final (fichiers analysés, infectés, erreurs) sert à juger si l'analyse a vraiment eu lieu.
     cmd.args(["-r", "-i", "--max-filesize=200M", "--max-scansize=400M"]);
     cmd.args(option_base());

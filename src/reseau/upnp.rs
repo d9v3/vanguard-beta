@@ -77,11 +77,12 @@ fn lecture_d_outil(redirections: Vec<Redirection>, adresse_externe: Option<Ipv4A
 }
 
 /// Le repli : `upnpc -l` (miniupnpc), qui attend les réponses de la box jusqu'à 8 s. Sans réponse (pas lancé, ou
-/// délai dépassé), absent seulement s'il n'est pas dans le PATH.
+/// délai dépassé), absent seulement s'il n'est pas dans un dossier du système. Lancé et cherché par ces dossiers,
+/// jamais par le PATH du compte (E-1, recontrôle 0.95) : un faux upnpc imiterait une box sans redirection.
 #[cfg(unix)]
 fn etat_par_outil() -> (Etat, Option<Ipv4Addr>) {
-    let Some(r) = crate::commande::lancer(std::process::Command::new("upnpc").arg("-l"), 20) else {
-        let etat = if crate::machine::unix::present("upnpc") {
+    let Some(r) = crate::commande::lancer(crate::commande::par_le_systeme("upnpc").arg("-l"), 20) else {
+        let etat = if crate::commande::outil_systeme("upnpc").is_some() {
             Etat::OutilEnEchec
         } else {
             Etat::OutilAbsent
