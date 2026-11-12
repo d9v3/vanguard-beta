@@ -7999,6 +7999,17 @@ mod tests {
             self.racine.join("home/alice").join(relatif)
         }
 
+        /// Le disque d'essai de la sauvegarde monté (« /run/media/alice/Mon disque », type `systeme`) dans le
+        /// /proc/self/mountinfo de la racine, après la racine du système ; `None` : rien de monté là.
+        fn monter_le_disque(&self, systeme: Option<&str>) {
+            let f = self.racine.join("proc/self/mountinfo");
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            let disque = systeme.map_or(String::new(), |t| {
+                format!("36 25 8:17 / /run/media/alice/Mon\\040disque rw,nosuid shared:1 - {t} /dev/sdb1 rw\n")
+            });
+            std::fs::write(f, format!("22 1 8:2 / / rw shared:1 - ext4 /dev/sda2 rw\n{disque}")).unwrap();
+        }
+
         fn ecrire(&self, relatif: &str, texte: &str) {
             let p = self.chemin(relatif);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -8065,6 +8076,7 @@ mod tests {
             }
             // Le disque branché, sa destination posée (C-2 : une destination qui ne se voit pas n'est pas muette).
             std::fs::create_dir_all(m.racine.join("run/media/alice/Mon disque/Sauvegarde-Vanguard/poste")).unwrap();
+            m.monter_le_disque(Some("vfat"));
             let unites = || {
                 let (es, et) = crate::entretien::unites_systemd(exe);
                 let (ss, st) =
@@ -8200,6 +8212,11 @@ mod tests {
             "destination absente",
             "destination absente, rien de monté",
             "destination absente, disque monté",
+            "disque FUSE",
+            "FUSE par-dessus le disque",
+            "disque fuseblk",
+            "disque pas monté, dossiers là",
+            "montages illisibles",
         ];
         let mut faux = Vec::new();
         for fat in [false, true] {
@@ -8215,6 +8232,7 @@ mod tests {
                 let racine = m.racine.join("run/media/alice/Mon disque");
                 let destination = racine.join("Sauvegarde-Vanguard/poste");
                 std::fs::create_dir_all(&destination).unwrap();
+                m.monter_le_disque(Some(if fat { "vfat" } else { "ext4" }));
                 // F-4 (relecture 0.94) : un programme du compte qui porte le nom (~/bin/rsync) n'est pas le vrai.
                 let programme = |p: &str| {
                     if nom.strip_suffix(" du compte") == Some(p) {
@@ -8282,17 +8300,28 @@ mod tests {
                     }
                     "disque débranché" => std::fs::remove_dir_all(&racine).unwrap(),
                     // Sans /proc/self/mountinfo sous la racine jetable : les montages ne se lisent pas.
-                    "destination absente" => std::fs::remove_dir_all(&destination).unwrap(),
+                    "destination absente" => {
+                        std::fs::remove_dir_all(&destination).unwrap();
+                        std::fs::remove_file(m.racine.join("proc/self/mountinfo")).unwrap();
+                    }
                     absente @ ("destination absente, rien de monté" | "destination absente, disque monté") => {
                         std::fs::remove_dir_all(&destination).unwrap();
-                        let disque = if absente.ends_with("disque monté") {
-                            "36 25 8:17 / /run/media/alice/Mon\\040disque rw,nosuid shared:1 - vfat /dev/sdb1 rw\n"
-                        } else {
-                            ""
-                        };
+                        m.monter_le_disque(absente.ends_with("disque monté").then_some("vfat"));
+                    }
+                    // D-3 (relecture 0.94) : ce qui est monté au disque compte, le dernier montage posé à ce point.
+                    "disque FUSE" => m.monter_le_disque(Some("fuse.sshfs")),
+                    "FUSE par-dessus le disque" => {
                         let f = m.racine.join("proc/self/mountinfo");
-                        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
-                        std::fs::write(f, format!("22 1 8:2 / / rw shared:1 - ext4 /dev/sda2 rw\n{disque}")).unwrap();
+                        let mut t = std::fs::read_to_string(&f).unwrap();
+                        t.push_str("90 36 0:77 / /run/media/alice/Mon\\040disque rw shared:2 - fuse /dev/sdb1 rw\n");
+                        std::fs::write(f, t).unwrap();
+                    }
+                    "disque fuseblk" => m.monter_le_disque(Some("fuseblk")),
+                    "disque pas monté, dossiers là" => m.monter_le_disque(None),
+                    "montages illisibles" => {
+                        let f = m.racine.join("proc/self/mountinfo");
+                        std::fs::remove_file(&f).unwrap();
+                        std::fs::create_dir_all(f).unwrap();
                     }
                     _ => {}
                 }
@@ -8312,8 +8341,12 @@ mod tests {
                         && l.contains(&format!("{}:", crate::sauvegarde::SERVICE)) && l.contains(mot))
                 };
                 let juste = match *nom {
-                    "témoin" => constats.is_empty(),
-                    "disque débranché" | "destination absente, rien de monté" => nommee(Niveau::Info, "débranché"),
+                    "témoin" | "disque fuseblk" => constats.is_empty(),
+                    "disque débranché" | "destination absente, rien de monté" | "disque pas monté, dossiers là" => {
+                        nommee(Niveau::Info, "débranché")
+                    }
+                    "disque FUSE" | "FUSE par-dessus le disque" => nommee(Niveau::Eleve, "montage FUSE"),
+                    "montages illisibles" => nommee(Niveau::Eleve, "non vérifié"),
                     "destination absente" | "destination absente, disque monté" => {
                         nommee(Niveau::Eleve, "non vérifié") && !constats[0].1.contains("reconnue, disque débranché")
                     }
@@ -8375,6 +8408,7 @@ mod tests {
                 }
                 std::fs::create_dir_all(m.chemin("Documents")).unwrap();
                 std::fs::create_dir_all(m.racine.join("run/media/alice/Mon disque/Sauvegarde-Vanguard/poste")).unwrap();
+                m.monter_le_disque(Some(if fat { "vfat" } else { "ext4" }));
                 let (timer, service) = crate::sauvegarde::unites(
                     Some(Path::new("/usr/bin/env")),
                     Path::new("/usr/bin/rsync"),
@@ -8499,6 +8533,7 @@ mod tests {
         }
         std::fs::create_dir_all(m.chemin("Documents")).unwrap();
         std::fs::create_dir_all(m.racine.join("run/media/alice/Mon disque/Sauvegarde-Vanguard/poste")).unwrap();
+        m.monter_le_disque(Some("ext4"));
         let (timer, service) = crate::sauvegarde::unites(
             vide.then_some(Path::new("/usr/bin/env")),
             Path::new("/usr/bin/rsync"),

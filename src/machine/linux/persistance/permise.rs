@@ -85,6 +85,10 @@ pub(super) enum Ecart {
     /// seul root peut changer (`programme_de_root_seul`) : un fichier du compte qui porte leur nom (relecture 0.94,
     /// F-4).
     ProgrammeDuCompte,
+    /// La sauvegarde de Vanguard à sa forme exacte, mais ce qui est monté à la racine de son disque est un système de
+    /// fichiers FUSE (« fuse », « fuse.* ») : un programme du compte peut le poser lui-même sur ce dossier, sous un nom
+    /// de source qui imite le disque attendu par findmnt, et il écrit où il veut (relecture 0.94, D-3).
+    DisqueFuse,
 }
 
 impl Ecart {
@@ -170,6 +174,10 @@ impl Ecart {
             Ecart::ProgrammeDuCompte => tr!(
                 "sauvegarde de Vanguard dont rsync, findmnt ou env n'est pas un programme que seul root peut changer (un fichier du compte, ou dans un dossier qu'il peut écrire, qui porte leur nom) : ce que lance la sauvegarde n'est pas vérifié",
                 "Vanguard backup whose rsync, findmnt or env is not a program only root can change (a file of the account, or in a folder it can write, bearing their name): what the backup starts is not checked"
+            ),
+            Ecart::DisqueFuse => tr!(
+                "sauvegarde de Vanguard dont le disque est un montage FUSE (un montage qu'un programme du compte peut poser lui-même à la place du disque) : où rsync copie n'est pas vérifié",
+                "Vanguard backup whose disk is a FUSE mount (a mount an account program can set up itself in place of the disk): where rsync copies is not checked"
             ),
             Ecart::Environnement => tr!(
                 "sauvegarde de Vanguard : un fichier de variables de la session du compte (~/.config/environment.d, ~/.config/systemd/user.conf, ~/.pam_environment, ~/.config/uwsm/env…) nomme HOME ou une variable que lisent rsync, findmnt ou le chargeur de programmes (LD_*, RSYNC_*, POPT*, LIBMOUNT_*, BLKID_*…), ou ne se lit pas : il peut changer ce que la sauvegarde lit ou lance (un autre ~/.popt) ; non vérifié, donc pas tu",
@@ -324,7 +332,28 @@ impl Systeme<'_> {
                 _ => {}
             }
         }
-        disque.map(|_| ()).ok_or(Ecart::Destination)
+        disque.ok_or(Ecart::Destination)?;
+        self.disque_monte(racine)
+    }
+
+    /// Ce qui est monté à `racine`, d'après /proc/self/mountinfo lu en entier : le dernier montage posé à ce point,
+    /// celui qu'on voit (D-3). FUSE (« fuse », « fuse.* ») : `Ecart::DisqueFuse`, levé ; « fuseblk » (ntfs-3g, sur un
+    /// vrai périphérique) passe. Rien n'y est monté : `Ecart::DisqueDebranche` (findmnt ne laisse rien passer, une
+    /// information). Liste illisible ou ligne sans type : `Ecart::DestinationNonVue`, jamais un silence.
+    fn disque_monte(&self, racine: &str) -> Result<(), Ecart> {
+        let texte = std::fs::read_to_string(self.sous("/proc/self/mountinfo")).map_err(|_| Ecart::DestinationNonVue)?;
+        let Some(ligne) = texte
+            .lines()
+            .rev()
+            .find(|l| point_de_montage(l).is_some_and(|m| m == racine))
+        else {
+            return Err(Ecart::DisqueDebranche);
+        };
+        match ligne.split_once(" - ").and_then(|(_, s)| s.split(' ').next()) {
+            None | Some("") => Err(Ecart::DestinationNonVue),
+            Some(t) if t == "fuse" || t.starts_with("fuse.") => Err(Ecart::DisqueFuse),
+            Some(_) => Ok(()),
+        }
     }
 
     /// Le disque de `racine` n'est pas branché, vu du dossier `absent` qui n'existe pas : `absent` est la racine ou un
