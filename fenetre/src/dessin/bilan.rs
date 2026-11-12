@@ -5,7 +5,8 @@ use eframe::egui::{
 };
 
 use super::{
-    bouton, carte, entete, icones, melange, mono, moyenne, n_f32, pal, signale, signale_avec, texte, titre_section,
+    bouton, carte, entete, icones, melange, mono, moyenne, n_f32, pal, pastille, signale, signale_avec, texte,
+    titre_section,
 };
 use crate::appli::{Appli, Contenu};
 use crate::commandes::{Commande, Empreinte};
@@ -499,25 +500,12 @@ pub fn constats(ui: &mut Ui, v: &Vue, offre: bool) -> Option<Empreinte> {
                 liste_saine(ui, &liste);
                 return;
             }
+            // Une pastille par sujet, mesurée d'avance : la rangée passe à la ligne (voir `pastille`).
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
                 for (cat, k) in &sains {
-                    Frame::new()
-                        .fill(p.surface)
-                        .stroke(Stroke::new(1.0, p.trait_))
-                        .corner_radius(8)
-                        .inner_margin(Margin::symmetric(12, 6))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 6.0;
-                                let (r, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
-                                icones::coche(ui.painter(), r, p.bon);
-                                ui.label(texte(cat, 13.0, p.doux));
-                                if *k > 1 {
-                                    ui.label(RichText::new(k.to_string()).font(mono(12.0)).color(p.discret));
-                                }
-                            });
-                        });
+                    let nombre = (*k > 1).then(|| k.to_string());
+                    pastille(ui, Some(p.bon), cat, nombre.as_deref());
                 }
             });
         });
@@ -725,4 +713,91 @@ fn liste_cote(ui: &mut Ui, titre: &str, lignes: &[(String, String)], col: Color3
                 });
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use eframe::egui::{self, Rect, Shape, epaint, pos2, vec2};
+
+    /// Le bord droit le plus loin de ce qui est peint (textes, cadres, coches), formes groupées comprises. L'ombre
+    /// floue d'une carte déborde d'elle par nature : elle ne compte pas.
+    fn droite(f: &Shape) -> f32 {
+        match f {
+            Shape::Vec(v) => v.iter().map(droite).fold(f32::MIN, f32::max),
+            Shape::Noop => f32::MIN,
+            Shape::Rect(r) if r.blur_width > 0.0 => f32::MIN,
+            autre => autre.visual_bounding_rect().right(),
+        }
+    }
+
+    /// « Ce qui va bien » dans une colonne étroite : chaque pastille tient dans la colonne, la rangée passe à la
+    /// ligne. Avant, les pastilles étaient des `Frame` dans un `horizontal_wrapped` : egui y pose un cadre sur toute
+    /// la place qui reste et ne le renvoie jamais à la ligne, et elles sortaient toutes à droite, sur une ligne.
+    #[test]
+    fn les_pastilles_saines_passent_a_la_ligne() {
+        const LARGEUR: f32 = 300.0;
+        let categories = [
+            "Pare-feu",
+            "Mises à jour",
+            "Comptes",
+            "Démarrage sécurisé",
+            "Chiffrement du disque",
+            "Services exposés",
+            "Navigateurs",
+            "Partages réseau",
+            "Une catégorie au nom bien trop long pour la colonne",
+        ];
+        let constats: Vec<String> = categories
+            .iter()
+            .flat_map(|c| {
+                [
+                    format!(r#"{{"categorie": "{c}", "probleme": null, "verifie": true}}"#),
+                    format!(r#"{{"categorie": "{c}", "probleme": null, "verifie": true}}"#),
+                ]
+            })
+            .collect();
+        let json = format!(r#"{{"constats": [{}]}}"#, constats.join(","));
+        let v = crate::donnees::bilan::lire(json.as_bytes()).unwrap();
+        assert_eq!(v.sains_par_categorie().len(), categories.len());
+        let ctx = egui::Context::default();
+        super::super::polices(&ctx);
+        let entree = egui::RawInput {
+            // Un écran bien plus large que la colonne : ce qui en sortirait est peint, donc vu par l'essai.
+            screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(5000.0, 3000.0))),
+            ..Default::default()
+        };
+        let mut bord = 0.0;
+        let mut sortie = ctx.run_ui(entree, |ui| {
+            ui.allocate_ui(vec2(LARGEUR, 3000.0), |ui| {
+                bord = ui.max_rect().right();
+                super::constats(ui, &v, false);
+            });
+        });
+        sortie.textures_delta.clear();
+        let formes: Vec<&epaint::ClippedShape> = sortie.shapes.iter().collect();
+        let textes: Vec<String> = formes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                Shape::Text(t) => Some(t.galley.job.text.clone()),
+                _ => None,
+            })
+            .collect();
+        for c in &formes {
+            let d = droite(&c.shape);
+            assert!(
+                d <= bord + 0.5,
+                "une forme dépasse le bord droit ({d} > {bord}) : {:?}",
+                c.shape
+            );
+        }
+        // Le nom le plus long ne tient pas sur une ligne de la colonne : il s'y replie (l'essai le vérifie bien).
+        let replie = formes.iter().any(
+            |c| matches!(&c.shape, Shape::Text(t) if t.galley.job.text == categories[8] && t.galley.rows.len() > 1),
+        );
+        assert!(replie, "le nom long n'est pas replié dans sa pastille");
+        // Chaque nom entier : un nom trop long se replie dans sa pastille, il n'est pas coupé (« … »).
+        for c in categories {
+            assert!(textes.iter().any(|t| t.contains(c)), "« {c} » pas peint : {textes:?}");
+        }
+    }
 }

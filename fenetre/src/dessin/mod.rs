@@ -250,6 +250,65 @@ pub fn carte<R>(ui: &mut Ui, marge: i8, f: impl FnOnce(&mut Ui) -> R) -> R {
         .inner
 }
 
+/// Une pastille (coche, texte, petit nombre discret, dans un cadre arrondi) faite pour une rangée qui se replie
+/// (`horizontal_wrapped`). Elle est mesurée d'abord, puis réservée d'un bloc à sa taille (`allocate_exact_size`) et
+/// peinte : egui ne passe à la ligne que pour une place de taille connue d'avance. Un `Frame` ou un `scope` dans
+/// une telle rangée n'y va jamais : `Frame::begin` le pose sur toute la place qui reste à droite, et `allocate_rect`
+/// n'avance que le curseur (egui 0.37), d'où des pastilles toutes sur une ligne, au-delà du bord. Un texte plus
+/// large que la rangée entière se replie dans la pastille, sans être coupé.
+pub fn pastille(ui: &mut Ui, coche: Option<Color32>, t: &str, nombre: Option<&str>) -> egui::Response {
+    const MARGE: egui::Vec2 = vec2(12.0, 6.0);
+    const ECART: f32 = 6.0;
+    const COCHE: f32 = 14.0;
+    let p = pal();
+    let compte = nombre.map(|n| ui.painter().layout_no_wrap(n.to_string(), mono(12.0), p.discret));
+    let fixe =
+        2.0 * MARGE.x + coche.map_or(0.0, |_| COCHE + ECART) + compte.as_ref().map_or(0.0, |g| ECART + g.size().x);
+    // La rangée entière, pas ce qui reste de la ligne : une pastille qui ne tient pas dans le reste passe à la
+    // ligne ; seul un texte plus large que toute la rangée se replie.
+    let rangee = ui.max_rect().width();
+    let place = if rangee.is_finite() {
+        (rangee - fixe).max(4.0 * MARGE.x)
+    } else {
+        f32::INFINITY
+    };
+    let galerie = egui::WidgetText::from(texte(t, 13.0, p.doux)).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Wrap),
+        place,
+        egui::TextStyle::Body,
+    );
+    let haut = galerie
+        .size()
+        .y
+        .max(if coche.is_some() { COCHE } else { 0.0 })
+        .max(compte.as_ref().map_or(0.0, |g| g.size().y));
+    let taille = vec2(fixe + galerie.size().x, haut + 2.0 * MARGE.y);
+    let (zone, rep) = ui.allocate_exact_size(taille, egui::Sense::hover());
+    if ui.is_rect_visible(zone) {
+        let peintre = ui.painter();
+        peintre.rect_filled(zone, 8, p.surface);
+        peintre.rect_stroke(zone, 8, Stroke::new(1.0, p.trait_), egui::StrokeKind::Inside);
+        let milieu = |h: f32| zone.center().y - h / 2.0;
+        let mut x = zone.left() + MARGE.x;
+        if let Some(c) = coche {
+            let r = egui::Rect::from_min_size(egui::pos2(x, milieu(COCHE)), vec2(COCHE, COCHE));
+            icones::coche(peintre, r, c);
+            x += COCHE + ECART;
+        }
+        let (largeur, hauteur) = (galerie.size().x, galerie.size().y);
+        peintre.galley(egui::pos2(x, milieu(hauteur)), galerie, p.doux);
+        x += largeur + ECART;
+        if let Some(g) = compte {
+            let h = g.size().y;
+            peintre.galley(egui::pos2(x, milieu(h)), g, p.discret);
+        }
+    }
+    let dit = nombre.map_or_else(|| t.to_string(), |n| format!("{t} {n}"));
+    rep.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, &dit));
+    rep
+}
+
 /// La part de survol d'un élément, de 0 à 1, qui glisse en `mouvement::SURVOL` : la couleur change en douceur, la taille
 /// jamais (un bouton qui bouge sous la souris fait brouillon).
 pub fn survol(ui: &Ui, id: egui::Id, survole: bool) -> f32 {
