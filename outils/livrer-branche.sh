@@ -89,6 +89,13 @@ if ((GARDE == 1)) && grep -q '^Confidentialité : [0-9]* détail(s) personnel(s)
 elif ((GARDE != 0)); then
   echo "✖ garde-fou de confidentialité en panne (code $GARDE), rien conclu : rien n'est fusionné"
   exit 1
+# Un code 0 ne suffit pas : un script vide, ou qui ne lit rien, sort aussi en 0. Le témoin que le garde-fou a jugé
+# le lot : « Confidentialité : N commit(s) relu(s). », N au moins 1 (le lot a au moins un commit de plus que GitHub ;
+# relecture 0.95, V-5).
+elif ! grep -qE '^Confidentialité : [1-9][0-9]* commit\(s\) relu\(s\)\.$' <<<"$SORTIE_GARDE"; then
+  echo "✖ le garde-fou de master ne dit pas avoir relu le lot (« Confidentialité : N commit(s) relu(s). », N ≥ 1) :"
+  echo "  rien n'est jugé, rien n'est fusionné"
+  exit 1
 fi
 echo "· vérification complète de ${SHA:0:12}"
 if ! outils/verifier.sh >"$JOURNAUX/verif-$NOM.log" 2>&1; then
