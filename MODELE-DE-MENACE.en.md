@@ -370,7 +370,11 @@ safeguards:
   update (the VANGUARD key it runs from, otherwise GitHub: an Ed25519-signed manifest, never a version older than the
   highest already seen) and shows where it comes from, the target version, its SHA-256 checksum, its size and each
   program it would replace with its version today, with a consent that binds each of these fields; it only runs
-  read-only and only writes the preview log. “Up to date” is only said when verified: a manifest that is too old, a
+  read-only and writes only, as a closed list, the preview log (`apercus.json`, its lock `apercus.lock`) and, like
+  the terminal for any signed manifest seen, the highest version seen and the main key's revocation
+  (`versions/plus-haute-vue.txt`, `versions/principale-revoquee.txt`), with the seal register, its witness and its lock
+  (`sceaux.json`, `sceaux.temoin`, `sceaux.verrou`); nothing installed. “Up to date” is only said when verified: a
+  manifest that is too old, a
   clock running behind or GitHub not answering give “not verified” (code 1), never “up to date”. `vanguard self-update
   --appliquer --accord <consent> --json` redoes the preview when acting and installs only if the recomputed consent is
   the same (another version, another checksum, a key changed in between: refused, nothing changed), consumes the

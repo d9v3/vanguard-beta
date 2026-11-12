@@ -23,22 +23,26 @@
 //! ne le coupe pas, la fermeture de la fenêtre non plus : coupé au milieu, il pourrait laisser un programme retiré sans
 //! la note qui le remet. Seul son délai (`Lancement::delai`) l'arrête.
 //!
-//! Un geste sur un constat (`Lancement::Geste`) va par familles : les corrections du bilan, et les annulations de
-//! « Ce que Vanguard a changé ». Chaque famille a sa liste (`audit --json`, `changements --json`), un « voir » qui ne
-//! change rien (`correction --voir`, `changements --voir`) et un geste qui change (`correction --appliquer`,
-//! `changements --annuler`). Le relais retient, seulement d'après des sorties qu'il a lui-même relayées, finies avec
-//! le code 0 et lues avec serde (un nom ou un message ne fabriquent jamais un geste) :
+//! Un geste (`Lancement::Geste`) va par familles : les corrections du bilan, les annulations de « Ce que Vanguard a
+//! changé », et la mise à jour de Vanguard (la carte « Mettre à jour Vanguard »). Les deux premières ont leur liste
+//! (`audit --json`, `changements --json`), un « voir » qui ne change rien (`correction --voir`, `changements --voir`)
+//! et un geste qui change (`correction --appliquer`, `changements --annuler`). La mise à jour n'a pas de liste : son
+//! jeton est fixe (`Empreinte::MISE_A_JOUR`) et aucune liste ne peut l'offrir ; son « voir » est `se-mettre-a-jour
+//! --voir`, son geste `se-mettre-a-jour --appliquer --accord <accord>`, admis comme les autres seulement après un
+//! aperçu relayé de même accord. Le relais retient, seulement d'après des sorties qu'il a lui-même relayées, finies
+//! avec le code 0 et lues avec serde (un nom ou un message ne fabriquent jamais un geste) :
 //!
-//! - `offerts` : les « voir » offerts par la dernière liste de chaque famille (le jeton et la sorte) ;
+//! - `offerts` : les « voir » offerts par la dernière liste de chaque famille qui en a une (le jeton et la sorte) ;
 //! - `montres` : le dernier aperçu de chaque famille (le jeton, l'accord que Vanguard a donné, l'heure de sa fin).
 //!
-//! Un « voir » ne part que pour un jeton de la dernière liste de sa famille, avec cette sorte : il s'arrête comme une
-//! lecture, et la liste offerte ne s'use pas (on peut revoir un aperçu). Un geste qui change ne part que pour le
-//! jeton et l'accord exacts du dernier aperçu de sa famille, 2 s au moins et 10 minutes au plus après sa fin ; il passe
-//! seul et ne se coupe pas, comme un changement au démarrage, et il consomme l'aperçu et la liste de sa famille : le
-//! suivant demande une liste relue, puis un aperçu refait. Une fenêtre prise ne peut donc demander que ce que Vanguard
-//! venait d'offrir puis de montrer ; elle peut, elle, enchaîner liste, aperçu et accord sans personne (modèle de
-//! menace) : Vanguard rejuge tout de son côté (carnet des aperçus, accord recalculé, verrou des notes).
+//! Un « voir » ne part que pour un jeton de la dernière liste de sa famille, avec cette sorte (la mise à jour : son
+//! jeton fixe) : il s'arrête comme une lecture, et la liste offerte ne s'use pas (on peut revoir un aperçu). Un geste
+//! qui change ne part que pour le jeton et l'accord exacts du dernier aperçu de sa famille, 2 s au moins et 10 minutes
+//! au plus après sa fin ; il passe seul et ne se coupe pas, comme un changement au démarrage, et il consomme l'aperçu
+//! et la liste de sa famille : le suivant demande une liste relue, puis un aperçu refait. Une fenêtre prise ne peut
+//! donc demander que ce que Vanguard venait d'offrir puis de montrer ; elle peut, elle, enchaîner liste, aperçu et
+//! accord sans personne (modèle de menace) : Vanguard rejuge tout de son côté (carnet des aperçus, accord recalculé,
+//! verrou des notes).
 //!
 //! Un changement des couleurs de la fenêtre passe de même seul et sans interruption (`vanguard` écrit le fichier puis
 //! son sceau) ; sa forme est fermée (un thème, une base connue, quinze octets de couleur), et une couleur presque

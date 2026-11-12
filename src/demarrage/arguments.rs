@@ -802,8 +802,9 @@ pub(crate) enum Commande {
     /// Mettre Vanguard à jour sur cet ordinateur : depuis une clé VANGUARD plus récente, ou depuis la dernière version
     /// publiée sur GitHub, signée par l'auteur et vérifiée ; toujours sur accord, jamais vers une version plus ancienne.
     /// Sans option : l'état, puis la mise à jour sur accord, au terminal. Pour la fenêtre : --voir montre ce qui
-    /// s'installerait et l'accord qui le résume, sans rien changer d'autre que le carnet des aperçus ; --appliquer
-    /// l'installe, seulement avec l'accord de cet aperçu, 2 s à 10 min après lui.
+    /// s'installerait et l'accord qui le résume, sans rien installer : il n'écrit que le carnet des aperçus et, comme
+    /// le terminal pour un manifeste signé vu, la plus haute version vue et la révocation de la clé principale (avec
+    /// leurs sceaux) ; --appliquer l'installe, seulement avec l'accord de cet aperçu, 2 s à 10 min après lui.
     #[command(
         name = "se-mettre-a-jour",
         visible_alias = "self-update",

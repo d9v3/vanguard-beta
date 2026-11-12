@@ -388,7 +388,11 @@ gardes :
   --json` cherche la mise à jour (la clé VANGUARD d'où il tourne, sinon GitHub : manifeste signé Ed25519, jamais une
   version plus ancienne que la plus haute déjà vue) et montre d'où elle vient, la version visée, son empreinte
   SHA-256, sa taille et chaque programme qu'elle remplacerait avec sa version d'aujourd'hui, avec un accord qui lie
-  chacun de ces champs ; il ne tourne qu'en lecture seule et n'écrit que le carnet des aperçus. « À jour » ne se dit
+  chacun de ces champs ; il ne tourne qu'en lecture seule et n'écrit, liste fermée, que le carnet des aperçus
+  (`apercus.json`, son verrou `apercus.lock`) et, comme le terminal pour tout manifeste signé vu, la plus haute version
+  vue et la révocation de la clé principale (`versions/plus-haute-vue.txt`, `versions/principale-revoquee.txt`), avec
+  le registre des sceaux, son témoin et son verrou (`sceaux.json`, `sceaux.temoin`, `sceaux.verrou`) ; rien
+  d'installé. « À jour » ne se dit
   que vérifié : un manifeste trop vieux, une horloge en retard ou GitHub sans réponse donnent « non vérifié » (code
   1), jamais « à jour ». `vanguard se-mettre-a-jour --appliquer --accord <accord> --json` refait l'aperçu au moment
   d'agir et n'installe que si l'accord recalculé est le même (une autre version, une autre empreinte, une clé changée

@@ -164,7 +164,7 @@ impl Bloc {
         let a = |s: &str| s.to_lowercase().contains(cherche);
         a(&self.ligne_de_commande())
             || a(&self.resume)
-            || a(self.lancement.commande().nom_affiche())
+            || a(self.lancement.nom_affiche())
             || self.points.iter().any(|p| a(&p.sujet) || a(&p.message))
             || self.messages.iter().any(|m| a(m))
     }

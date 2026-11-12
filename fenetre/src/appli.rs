@@ -919,10 +919,7 @@ impl Appli {
                         self.coulisses.erreur(&l);
                     }
                     if !self.console.recevoir(&l) {
-                        let source = self
-                            .tache
-                            .as_ref()
-                            .map_or("vanguard", |t| t.lancement.commande().nom_affiche());
+                        let source = self.tache.as_ref().map_or("vanguard", |t| t.lancement.nom_affiche());
                         self.dire(source, &l, Ton::Discret);
                     }
                 }

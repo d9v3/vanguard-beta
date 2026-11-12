@@ -741,12 +741,13 @@ pub enum Famille {
 
 impl Famille {
     /// La commande dont relève un geste de cette famille : la lecture de la liste qui offre ses « voir », ou, pour
-    /// la mise à jour (qu'aucune liste n'offre), « Vérifier cette copie de Vanguard », dans la même rubrique.
+    /// la mise à jour (qu'aucune liste n'offre), les réglages de la fenêtre, où est sa carte (comme les couleurs et
+    /// les animations). Son nom montré reste le sien : voir `Lancement::nom_affiche`.
     pub fn liste(self) -> Commande {
         match self {
             Famille::Correction => Commande::Bilan,
             Famille::Annulation => Commande::Changements,
-            Famille::MiseAJour => Commande::VerifierMoi,
+            Famille::MiseAJour => Commande::Couleurs,
         }
     }
 
@@ -1084,6 +1085,17 @@ impl Lancement {
         self.commande().sur_ce_systeme()
     }
 
+    /// Le nom montré dans la console et les messages : celui de sa commande, sauf la mise à jour, qui a le sien
+    /// (elle n'est ni « couleurs » ni une autre commande).
+    pub fn nom_affiche(self) -> &'static str {
+        match self {
+            Lancement::Geste(g) if g.sorte.famille() == Famille::MiseAJour => {
+                crate::tr!("Mettre à jour Vanguard", "Update Vanguard")
+            }
+            _ => self.commande().nom_affiche(),
+        }
+    }
+
     /// La commande de la liste dont il relève : celle dont l'écran montre le résultat.
     pub fn commande(self) -> Commande {
         match self {
@@ -1414,8 +1426,14 @@ mod tests {
         let j = Empreinte::MISE_A_JOUR;
         let l = Lancement::Geste(Geste::voir(Famille::MiseAJour, j));
         assert_eq!(l.arguments(), ["se-mettre-a-jour", "--voir", "--json"]);
-        assert_eq!(l.commande(), Commande::VerifierMoi);
+        // Rangée avec les réglages où est sa carte (comme les couleurs), jamais sous le nom d'une autre commande.
+        assert_eq!(l.commande(), Commande::Couleurs);
         assert_eq!(l.commande().rubrique(), Rubrique::Vanguard);
+        assert!(
+            ["Mettre à jour Vanguard", "Update Vanguard"].contains(&l.nom_affiche()),
+            "{}",
+            l.nom_affiche()
+        );
         assert!(!l.change());
         let a = Accord::lire(&"e1".repeat(32)).unwrap();
         let l = Lancement::Geste(Geste::changer(Famille::MiseAJour, j, a));
