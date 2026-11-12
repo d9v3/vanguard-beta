@@ -83,15 +83,25 @@ WINE=${VANGUARD_WINE:-$HOME/.local/share/Steam/compatibilitytools.d/GE-Proton11-
 PWSH=${VANGUARD_PWSH:-$HOME/.cache/vanguard-dev/pwsh/pwsh}
 [[ -x $PWSH ]] || PWSH=$(command -v pwsh || true)
 # Journaux et préfixe Wine hors de /tmp, dont le quota est partagé par les sessions ; retirés à la fin.
-# Le dossier porte le numéro du processus : bash le retire même sur un signal (EXIT), mais pas après un SIGKILL
-# (essais-verifier.sh tue ainsi un verifier.sh qui ne refuse pas ses arguments). Ceux dont le processus n'existe plus
-# sont retirés au départ suivant ; jamais celui d'un verifier.sh en cours.
+# Bash retire le dossier même sur un signal (EXIT), mais pas après un SIGKILL (essais-verifier.sh tue ainsi un
+# verifier.sh qui ne refuse pas ses arguments) : ceux d'un verifier.sh mort sont retirés au départ suivant. La preuve
+# de la mort est le verrou (flock) que chaque verifier.sh tient sur son dossier tout le passage, et que ses enfants
+# héritent : libre, plus personne ne l'écrit. Le numéro du processus ne suffit pas : un verifier.sh d'un autre espace
+# de PID (bac à sable, unshare -p) n'est pas dans ce /proc (relecture 0.95, V-7). Un dossier de moins de deux
+# minutes est gardé (le verrou se prend juste après sa création) ; un dossier sans verrou (verifier.sh d'avant 0.95)
+# n'est retiré que si son numéro n'existe plus ici et qu'il n'a pas bougé depuis un jour.
 menage_travaux() {
   local d p
   for d in "$HOME"/.cache/vanguard-dev/verifier.*.*/; do
-    p=${d#"$HOME/.cache/vanguard-dev/verifier."}
-    p=${p%%.*}
-    [[ $p =~ ^[0-9]+$ && ! -e /proc/$p ]] && rm -rf -- "$d"
+    [[ -d $d && ! -L ${d%/} ]] || continue
+    [[ -n $(find "${d%/}" -maxdepth 0 -mmin +2 2>/dev/null) ]] || continue
+    if [[ -f $d/verrou && ! -L $d/verrou ]]; then
+      flock -n "$d/verrou" true 2>/dev/null && rm -rf -- "$d"
+    else
+      p=${d#"$HOME/.cache/vanguard-dev/verifier."}
+      p=${p%%.*}
+      [[ $p =~ ^[0-9]+$ && ! -e /proc/$p && -n $(find "${d%/}" -maxdepth 0 -mtime +0 2>/dev/null) ]] && rm -rf -- "$d"
+    fi
   done
   return 0
 }
@@ -103,6 +113,8 @@ trap 'rm -rf "$TRAVAIL"' EXIT
 # cause (zizmor écrit ses constats d'abord, son total ensuite). Vidé à chaque passe : il ne parle que de la dernière.
 ECHECS_GARDES=$HOME/.cache/vanguard-dev/verifier-echecs
 rm -rf "$ECHECS_GARDES" && mkdir -p "$ECHECS_GARDES"
+exec {VERROU}>"$TRAVAIL/verrou"
+flock -n "$VERROU" || { echo "✖ verrou de $TRAVAIL déjà pris : rien n'est vérifié"; exit 1; }
 DEBUT=$SECONDS
 
 # Une étape qui ne peut pas tourner ici (outil absent) sort avec ce code et dit pourquoi en première ligne : elle est

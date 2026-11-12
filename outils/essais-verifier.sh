@@ -26,8 +26,8 @@
 #      crates à part sans les exceptions de Vanguard ; une faille dans l'une fait échouer (faux cargo-audit).
 #  11. Les essais sautés à l'intérieur d'une étape verte (« (sauté : … », tests de cargo notés) : montrés sous sa
 #      ligne et comptés jusqu'à la dernière, « Tout est vert, avec N essai(s) sauté(s) » (M-8).
-#  12. Le dossier de travail d'un verifier.sh tué (SIGKILL) : retiré au départ suivant, jamais celui d'un autre en
-#      cours.
+#  12. Le dossier de travail d'un verifier.sh tué (SIGKILL) : retiré au départ suivant (son verrou est libre), jamais
+#      celui d'un autre en cours, même d'un autre espace de PID (verrou tenu, numéro absent d'ici), ni un tout neuf.
 #  13. Les scripts shell (shellcheck) : chaque script suivi par git, crochets sans extension compris, un
 #      avertissement fait échouer ; shellcheck absent, l'étape se dit sautée, jamais verte.
 # Chaque essai ne lance que des étapes de quelques secondes, sans Internet ni compilation.
@@ -333,23 +333,39 @@ sautes_dits etape; sautes_dits vide; echo \"compte \$SAUTES_DITS\"" 2>&1)
 rm -rf "$faux"
 
 # Le dossier de travail d'un verifier.sh tué (SIGKILL) est retiré au départ suivant ; celui d'un verifier.sh en cours
-# jamais, ni un autre fichier. menage_travaux lue dans verifier.sh, dans un dossier personnel jetable.
+# jamais, ni un autre fichier. menage_travaux lue dans verifier.sh, dans un dossier personnel jetable. La preuve de
+# la mort est le verrou libre, pas le numéro du processus : « vivant-ailleurs » porte le numéro d'un mort (comme un
+# verifier.sh d'un autre espace de PID) mais son verrou est tenu (relecture 0.95, V-7).
 faux=$(mktemp -d "$HOME/.cache/vanguard-dev/essai-menage.XXXX")
-mkdir -p "$faux/.cache/vanguard-dev"
+v=$faux/.cache/vanguard-dev
+mkdir -p "$v"
 bash -c 'exit 0' &
 mort=$!
 wait "$mort"
-mkdir "$faux/.cache/vanguard-dev/verifier.$mort.abcd" "$faux/.cache/vanguard-dev/verifier.$$.abcd" \
-  "$faux/.cache/vanguard-dev/verifier.abcd" "$faux/.cache/vanguard-dev/verifier.x1.abcd"
-touch "$faux/.cache/vanguard-dev/verifier.$mort.abcd/etape.log" "$faux/.cache/vanguard-dev/verifier-0.94.log"
+mkdir "$v/verifier.$mort.mort" "$v/verifier.$mort.ailleurs" "$v/verifier.$mort.neuf" "$v/verifier.$mort.ancien" \
+  "$v/verifier.$mort.ancien-recent" "$v/verifier.$$.vivant" "$v/verifier.abcd" "$v/verifier.x1.abcd"
+touch "$v/verifier.$mort.mort/etape.log" "$v/verifier-0.94.log"
+for d in "verifier.$mort.mort" "verifier.$mort.ailleurs" "verifier.$mort.neuf" "verifier.$$.vivant"; do : >"$v/$d/verrou"; done
+# Le verrou de « ailleurs » et de « vivant » tenu ici, comme le tient leur verifier.sh.
+exec {tient1}>"$v/verifier.$mort.ailleurs/verrou" {tient2}>"$v/verifier.$$.vivant/verrou"
+flock -n "$tient1" && flock -n "$tient2" || ko "ménage des dossiers de travail : verrous de l'essai pas pris"
+# Tous vieux de dix minutes, sauf « neuf » (le verrou se prend juste après la création) ; « ancien » (sans verrou,
+# verifier.sh d'avant 0.95) d'il y a deux jours, « ancien-recent » d'il y a une heure.
+for d in mort ailleurs ancien-recent; do touch -d '-10 min' "$v/verifier.$mort.$d"; done
+touch -d '-1 hour' "$v/verifier.$mort.ancien-recent"
+touch -d '-2 days' "$v/verifier.$mort.ancien"
+touch -d '-10 min' "$v/verifier.$$.vivant"
 fonction=$(awk '/^menage_travaux\(\) \{/,/^\}/' outils/verifier.sh)
 HOME=$faux bash -c "$fonction
 menage_travaux"
-reste=$(cd "$faux/.cache/vanguard-dev" && ls -d -- * | sort | paste -sd' ')
-attendu=$(printf '%s\n' verifier-0.94.log verifier.$$.abcd verifier.abcd verifier.x1.abcd | sort | paste -sd' ')
+exec {tient1}>&- {tient2}>&-
+reste=$(cd "$v" && ls -d -- * | sort | paste -sd' ')
+attendu=$(printf '%s\n' verifier-0.94.log "verifier.$$.vivant" verifier.abcd verifier.x1.abcd "verifier.$mort.ailleurs" \
+  "verifier.$mort.neuf" "verifier.$mort.ancien-recent" | sort | paste -sd' ')
 [[ -n $fonction && ! -e /proc/$mort && $reste == "$attendu" ]] &&
   grep -q '^TRAVAIL=$(mktemp -d "$HOME/.cache/vanguard-dev/verifier.$$.XXXX")$' outils/verifier.sh &&
-  ok "dossier d'un verifier.sh tué : retiré au départ suivant, celui d'un verifier.sh en cours gardé" ||
+  grep -q '^exec {VERROU}>"$TRAVAIL/verrou"$' outils/verifier.sh &&
+  ok "dossier d'un verifier.sh tué : retiré au départ suivant ; d'un vivant, même d'un autre espace de PID, gardé" ||
   ko "ménage des dossiers de travail : reste « $reste », attendu « $attendu »"
 rm -rf "$faux"
 
