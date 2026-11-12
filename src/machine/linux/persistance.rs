@@ -3447,19 +3447,39 @@ fn cles_de_bureau(texte: &str) -> Vec<CleDeBureau> {
 }
 
 /// B-1 (revérification 7) : les formes d'une entrée de bureau que systemd-xdg-autostart-generator lit autrement qu'un
-/// autre lanceur peut la lire, chacune une fois, avec sa ligne (à partir de 0) : un retour chariot seul ou un octet
-/// nul (une fin de ligne pour systemd, mesuré sur 262.1), une marque d'ordre des octets (ôtée par systemd), une suite
-/// par « \\ » (systemd la joint, GLib non), une clé
-/// du groupe [Desktop Entry] écrite deux fois avec des valeurs différentes (systemd garde la première, GLib la
-/// dernière). Le texte de chaque forme se dit dans la langue de l'interface.
+/// autre lanceur peut la lire, chacune une fois, avec sa ligne (à partir de 0) : un retour chariot seul suivi d'autre
+/// chose ou un octet nul (une fin de ligne pour systemd, mesuré sur 262.1), une marque d'ordre des octets (ôtée par
+/// systemd), une suite par « \\ » (systemd la joint, GLib non), une clé du lancement (`CLES_DU_LANCEMENT`) du groupe
+/// [Desktop Entry] écrite deux fois avec des valeurs différentes (systemd garde la première, GLib la dernière). Le
+/// texte de chaque forme se dit dans la langue de l'interface.
 fn formes_trompeuses(texte: &str) -> Vec<(usize, String)> {
+    // C-2 (revérification 8) : une clé en double ne se dit que si elle décide du lancement (ce que lance l'entrée,
+    // d'où, si elle se lance et quand) : celles que lit systemd-xdg-autostart-generator 262.1 (relevées dans le
+    // programme) et celles des autres lanceurs ou de `lenteur` ; un nom ou une icône en double n'y change rien.
+    const CLES_DU_LANCEMENT: [&str; 13] = [
+        "Exec",
+        "TryExec",
+        "Path",
+        "Type",
+        "Hidden",
+        "OnlyShowIn",
+        "NotShowIn",
+        "X-systemd-skip",
+        "AutostartCondition",
+        "X-KDE-autostart-condition",
+        "X-GNOME-Autostart-Phase",
+        "X-GNOME-Autostart-enabled",
+        "X-GNOME-Autostart-Delay",
+    ];
     let ligne = |octet: usize| texte.get(..octet).map_or(0, |a| a.matches('\n').count());
     let octets = texte.as_bytes();
     let mut formes = Vec::new();
+    // C-2 (revérification 8) : un « \r » seul qui finit le fichier ne coupe aucune ligne qui suive ; seul celui du
+    // milieu se dit.
     let retour_seul = octets
         .iter()
         .enumerate()
-        .position(|(i, &b)| b == b'\r' && octets.get(i.saturating_add(1)) != Some(&b'\n'));
+        .position(|(i, &b)| b == b'\r' && octets.get(i.saturating_add(1)).is_some_and(|suivant| *suivant != b'\n'));
     if let Some(i) = retour_seul {
         formes.push((
             ligne(i),
@@ -3506,6 +3526,7 @@ fn formes_trompeuses(texte: &str) -> Vec<(usize, String)> {
             .iter()
             .any(|a| a.systemd == c.systemd && a.cle == c.cle && a.valeur != c.valeur)
             .then_some(c)
+            .filter(|c| CLES_DU_LANCEMENT.contains(&c.cle.as_str()))
     });
     if let Some(c) = double {
         let cle = crate::ui::affichable(&c.cle.chars().take(40).collect::<String>());
@@ -12423,9 +12444,10 @@ mod tests {
                 format!("{TETE}Comment=x\r{EXEC}"),
                 Some("retour chariot seul"),
             ),
+            ("retour chariot final", format!("{TETE}{EXEC}Comment=x\r"), None),
             (
-                "retour chariot final",
-                format!("{TETE}{EXEC}Comment=x\r"),
+                "retour chariot au milieu de la dernière ligne",
+                format!("{TETE}{EXEC}Comment=x\rName=b"),
                 Some("retour chariot seul"),
             ),
             ("octet nul", format!("{TETE}Comment=x\0{EXEC}"), Some("octet nul")),
@@ -12435,10 +12457,21 @@ mod tests {
                 format!("{TETE}Comment=a\u{FEFF}b\n{EXEC}"),
                 Some("U+FEFF"),
             ),
+            ("deux Name=", format!("{TETE}Name=autre\n{EXEC}"), None),
             (
-                "deux Name=",
-                format!("{TETE}Name=autre\n{EXEC}"),
-                Some("« Name » écrite deux fois"),
+                "deux StartupWMClass=",
+                format!("{TETE}StartupWMClass=a\nStartupWMClass=b\n{EXEC}"),
+                None,
+            ),
+            (
+                "Name= puis deux Hidden=",
+                format!("{TETE}Name=autre\nHidden=true\nHidden=false\n{EXEC}"),
+                Some("« Hidden » écrite deux fois"),
+            ),
+            (
+                "deux X-GNOME-Autostart-enabled=",
+                format!("{TETE}X-GNOME-Autostart-enabled=false\nX-GNOME-Autostart-enabled=true\n{EXEC}"),
+                Some("« X-GNOME-Autostart-enabled » écrite deux fois"),
             ),
             (
                 "deux Path=",
