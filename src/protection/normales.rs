@@ -194,11 +194,17 @@ fn verrou(dossier: &std::path::Path, ou: &'static str) -> Result<crate::socle::V
 }
 
 /// La liste remise à zéro (falsifiée ou illisible, à la demande), sous `VERROU` comme toute écriture : une
-/// déclaration qui l'a relue juste avant n'écrit pas par-dessus (correction n° 2 de la 0.94, n3). `Err` : rien écrit.
-fn remettre_a_zero_dans(dossier: &std::path::Path) -> Result<(), crate::modele::Echec> {
+/// déclaration qui l'a relue juste avant n'écrit pas par-dessus (correction n° 2 de la 0.94, n3). Relue sous le
+/// verrou : si elle se lit maintenant (un autre Vanguard l'a remise à zéro pendant la question, des déclarations ont
+/// pu suivre), rien n'est écrit, `Ok(false)` (relecture 0.94, S-3). `Err` : rien écrit.
+fn remettre_a_zero_dans(dossier: &std::path::Path) -> Result<bool, crate::modele::Echec> {
     let ou = "normales:remise-a-zero";
     let _verrou = verrou(dossier, ou)?;
-    enregistrer_vers(dossier, &Normales::default()).map_err(|e| crate::modele::Echec::ecriture(ou, &e))
+    if charger_de(dossier).is_ok() {
+        return Ok(false);
+    }
+    enregistrer_vers(dossier, &Normales::default()).map_err(|e| crate::modele::Echec::ecriture(ou, &e))?;
+    Ok(true)
 }
 
 fn raison(r: &Refus) -> &'static str {
@@ -306,7 +312,11 @@ pub(crate) fn section() {
             .oui()
             {
                 match remettre_a_zero_dans(&crate::socle::dossier_local()) {
-                    Ok(()) => trp!("  {VERT}✔{RESET} Remise à zéro.", "  {VERT}✔{RESET} Reset."),
+                    Ok(true) => trp!("  {VERT}✔{RESET} Remise à zéro.", "  {VERT}✔{RESET} Reset."),
+                    Ok(false) => trp!(
+                        "  {VERT}✔{RESET} La liste se lit de nouveau (remise à zéro ailleurs entre-temps) : rien n'est effacé.",
+                        "  {VERT}✔{RESET} The list reads again (reset elsewhere in the meantime): nothing is erased."
+                    ),
                     Err(e) => trp!("  ✖ Impossible d'enregistrer ({e}).", "  ✖ Could not save ({e})."),
                 }
             }
@@ -538,8 +548,29 @@ mod tests {
             "écrite sans le verrou"
         );
         std::fs::remove_dir(d.join(VERROU)).unwrap();
-        remettre_a_zero_dans(&d).unwrap();
+        assert!(remettre_a_zero_dans(&d).unwrap());
         assert!(charger_de(&d).unwrap().alertes.is_empty());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Relecture 0.94, S-3 : la question posée sur une liste falsifiée, un autre Vanguard la remet à zéro et une
+    /// déclaration suit (une sortie de quarantaine) ; le « o » tardif relit sous le verrou et n'efface rien.
+    #[test]
+    fn remise_a_zero_tardive_n_efface_rien() {
+        let d = crate::protection::isoler::dossier_jetable().unwrap();
+        let cle = cle_blocage("connexion:198.51.100.79");
+        declarer_dans(&d, &cle_blocage("connexion:198.51.100.80"), "blocage", "t", "x").unwrap();
+        let chemin = d.join(crate::sceau::NORMALES);
+        let mut texte = std::fs::read_to_string(&chemin).unwrap();
+        texte.push(' ');
+        std::fs::write(&chemin, &texte).unwrap();
+        assert!(charger_de(&d).is_err());
+        // L'autre Vanguard remet à zéro, puis une déclaration suit.
+        assert!(remettre_a_zero_dans(&d).unwrap());
+        declarer_dans(&d, &cle, "blocage", "t", "x").unwrap();
+        // Le « o » tardif : rien écrit, la déclaration gardée.
+        assert!(!remettre_a_zero_dans(&d).unwrap());
+        assert!(est_normale_de(&d, &cle));
         let _ = std::fs::remove_dir_all(&d);
     }
 
