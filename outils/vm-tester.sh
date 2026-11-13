@@ -37,12 +37,15 @@ PRIS_S=${VM_TESTER_PRIS_S:-300}
 FILE_S=${VM_TESTER_FILE_S:-10800}
 MARGE_S=${VM_TESTER_MARGE_S:-600}
 VIEUX_S=${VM_TESTER_VIEUX_S:-120}
-# Sources des scripts d'essai et crochet après chaque copie : seulement pour --essai-local, jamais vers la vraie VM.
+# Sources des scripts d'essai, crochet après chaque copie sur le partage, et crochet avant et après chaque fichier
+# préparé (une source remplacée en route) : seulement pour --essai-local, jamais vers la vraie VM.
 SOURCES=
 CROCHET=
+CROCHET_PREPA=
 if [[ -n ${VM_TESTER_SOURCES:-} && -n ${VANGUARD_VM_DOSSIER:-} && $VM != "$HOME/Windows/"* ]]; then
   SOURCES=$VM_TESTER_SOURCES
   CROCHET=${VM_TESTER_CROCHET:-}
+  CROCHET_PREPA=${VM_TESTER_CROCHET_PREPA:-}
 fi
 MOTIF_ID='^[0-9]{8}-[0-9]{6}-[0-9a-f]{7,12}-[0-9a-z]{4}$'
 
@@ -270,11 +273,17 @@ nettoyer_prepa() {
 
 # Prépare un fichier du travail ; un .ps1 reçoit le BOM qui lui manque (PowerShell 5.1 lirait sinon en ANSI).
 preparer_fichier() { # source nom
+  # shellcheck disable=SC2034 # lue par le crochet des essais (--essai-local), évalué juste après
+  local moment=avant
+  [[ -z $CROCHET_PREPA ]] || eval "$CROCHET_PREPA"
   if [[ $1 == *.ps1 && $(head -c3 "$1" | od -An -tx1 | tr -d ' ') != efbbbf ]]; then
     { printf '\xef\xbb\xbf'; cat "$1"; } >"$PREPA/$2"
   else
     cp -f "$1" "$PREPA/$2"
   fi || { echo "« $2 » pas préparé ($1) : rien déposé." >&2; exit 1; }
+  # shellcheck disable=SC2034 # idem
+  moment=apres
+  [[ -z $CROCHET_PREPA ]] || eval "$CROCHET_PREPA"
 }
 
 # Dépôt atomique : tout dans <id>.partiel (que la VM ignore), travail.txt en dernier, puis renommage.
@@ -697,7 +706,8 @@ EOF
   tour() { "$PWSH" -NoProfile -NonInteractive -File "$DEPOT/outils/test-windows/surveillant-essais.ps1" -EssaiLocal -Racine "$VMD" -UnTour "$@" >>"$T/tours" 2>&1; }
   vmt() { # options de vm-tester.sh… : sortie dans $T/sortie, code dans $code
     env VANGUARD_VM_DOSSIER="$VMD" VM_TESTER_SOURCES="$SRC" VM_TESTER_CLES="${CLES_VMT:-$CLES_ESSAI}" VM_TESTER_PAS=0.2 VM_TESTER_PRIS_S="${PRIS:-3}" \
-      VM_TESTER_MARGE_S=5 VM_TESTER_VIEUX_S="${VIEUX:-120}" VM_TESTER_CROCHET="${CROCHET_ESSAI:-}" bash "$DEPOT/outils/vm-tester.sh" --exe "$T/vanguard.exe" --delai 5 "$@" >"$T/sortie" 2>&1
+      VM_TESTER_MARGE_S=5 VM_TESTER_VIEUX_S="${VIEUX:-120}" VM_TESTER_CROCHET="${CROCHET_ESSAI:-}" \
+      VM_TESTER_CROCHET_PREPA="${CROCHET_PREPA_ESSAI:-}" bash "$DEPOT/outils/vm-tester.sh" --exe "$T/vanguard.exe" --delai 5 "$@" >"$T/sortie" 2>&1
     code=$?
     local n
     n=$(sed -n 's/^Travail déposé : \([^ ]*\).*/\1/p' "$T/sortie")
@@ -957,17 +967,20 @@ EOF
 
     # 15. Boucle tuée net en plein test.ps1 (VM redémarrée, réinstallation) : son témoin ne met pas la file en pause ;
     #     au tour suivant, le travail abandonné finit en erreur, ses processus sont arrêtés, et la file repart.
+    #     Il porte une fenêtre (0.96) : elle part du partage avec vanguard.exe.
     nouvelle_vm; sources 0 0 1 'OK x'
     vmt --sans-attendre
     local orphelin=$ID boucle2
+    ajouter_au_travail vanguard-fenetre.exe "$T/vanguard.exe"
     "$PWSH" -NoProfile -NonInteractive -File "$DEPOT/outils/test-windows/surveillant-essais.ps1" -EssaiLocal -Racine "$VMD" >>"$T/tours" 2>&1 &
     boucle2=$!
     for _ in $(seq 150); do [[ -f $TRACE ]] && break; sleep 0.1; done
     kill -9 "$boucle2"; wait "$boucle2" 2>/dev/null
-    voir "boucle tuée : test.ps1 orphelin en marche, témoin « file-essais » resté" eval '[[ -f $TRACE && ! -f $VMD/file-essais/$orphelin/fini.txt ]] && grep -q "^file-essais $orphelin " "$VMD/resultats/.test-en-cours.txt" && pgrep -f "travaux/$orphelin/test.ps1" >/dev/null'
+    voir "boucle tuée : test.ps1 orphelin en marche, témoin « file-essais » resté" eval '[[ -f $TRACE && ! -f $VMD/file-essais/$orphelin/fini.txt && -f $VMD/file-essais/$orphelin/vanguard-fenetre.exe ]] && grep -q "^file-essais $orphelin " "$VMD/resultats/.test-en-cours.txt" && pgrep -f "travaux/$orphelin/test.ps1" >/dev/null'
     sources 0 0 0 'OK x'
     vmt --sans-attendre; tour
-    voir "orphelin fini en erreur, test.ps1 arrêté, témoin et en-cours retirés" eval '[[ $(fini "$orphelin" code) == 4 && $(fini "$orphelin" raison) == *"arrêté en plein travail"* ]] && ! pgrep -f "travaux/$orphelin/test.ps1" >/dev/null && [[ ! -e $VMD/resultats/.test-en-cours.txt && ! -e $VMD/file-essais/en-cours.txt ]]'
+    voir "orphelin fini en erreur, test.ps1 arrêté, témoin et en-cours retirés, ses .exe partis du partage" eval '[[ $(fini "$orphelin" code) == 4 && $(fini "$orphelin" raison) == *"arrêté en plein travail"* ]] &&
+      [[ ! -e $VMD/file-essais/$orphelin/vanguard.exe && ! -e $VMD/file-essais/$orphelin/vanguard-fenetre.exe ]] && ! pgrep -f "travaux/$orphelin/test.ps1" >/dev/null && [[ ! -e $VMD/resultats/.test-en-cours.txt && ! -e $VMD/file-essais/en-cours.txt ]]'
     voir "file repartie aussitôt : le travail suivant pris et fait au même tour" eval '[[ $(fini "$ID" code) == 0 ]]'
     vmt --attendre "$orphelin"
     voir "--attendre l'orphelin : code 1, la raison dite" eval '((code == 1)) && dit "arrêté en plein travail"'
@@ -1083,6 +1096,27 @@ EOF
   rm -f "$VMD/file-essais/battement.txt"
   env VANGUARD_VM_DOSSIER="$VMD" bash "$DEPOT/outils/vm-tester.sh" --fenetre "$T/fenetre.exe" >"$T/sortie" 2>&1; code=$?
   voir "--fenetre sans --exe : refusé, code 2" eval '((code == 2)) && dit "--fenetre va avec --exe"'
+  # Une source remplacée après sa vérification (une compilation dans le même dossier cible) : la copie préparée, celle
+  # qui est hachée, signée et déposée, est vérifiée et lue elle-même, jamais la source. Le crochet remplace la source
+  # avant (ou après) la préparation d'un fichier.
+  crochet_prepa() { # fichier moment nom remplaçant source
+    printf 'if [[ $moment == %q && $2 == %q ]]; then cp -f %q %q; fi\n' "$2" "$3" "$4" "$5" >"$1"
+  }
+  cp -f "$T/fenetre.exe" "$T/changeante.exe"
+  crochet_prepa "$T/crochet-prepa-fenetre.sh" apres vanguard.exe "$T/abime.exe" "$T/changeante.exe"
+  CROCHET_PREPA_ESSAI=". '$T/crochet-prepa-fenetre.sh'" refus "fenêtre remplacée après sa vérification : la copie préparée vérifiée" \
+    "Copie de la fenêtre refusée par « vanguard deploiement verifier-binaire »" --exe "$T/avec.exe" --fenetre "$T/changeante.exe"
+  cp -f "$T/aucune.exe" "$T/changeant.exe"
+  crochet_prepa "$T/crochet-prepa-exe.sh" avant vanguard.exe "$T/abime.exe" "$T/changeant.exe"
+  CROCHET_PREPA_ESSAI=". '$T/crochet-prepa-exe.sh'" refus "vanguard.exe remplacé après sa vérification : la copie préparée vérifiée" \
+    "Copie déposée refusée par « vanguard deploiement verifier-binaire »" --exe "$T/changeant.exe"
+  cp -f "$T/avec.exe" "$T/changeant.exe"
+  crochet_prepa "$T/crochet-prepa-marque.sh" apres vanguard.exe "$T/aucune.exe" "$T/changeant.exe"
+  vider_file
+  ID=; CROCHET_PREPA_ESSAI=". '$T/crochet-prepa-marque.sh'" vmt --exe "$T/changeant.exe" --fenetre "$T/fenetre.exe" --sans-attendre
+  voir "vanguard.exe remplacé après sa préparation : sa marque lue sur la copie préparée, celle qui est déposée" \
+    eval '((code == 0)) && [[ -n $ID ]] && cmp -s "$T/avec.exe" "$VMD/file-essais/$ID/vanguard.exe" && cmp -s "$T/fenetre.exe" "$VMD/file-essais/$ID/vanguard-fenetre.exe" &&
+      cmp -s "$T/aucune.exe" "$T/changeant.exe"'
   vider_file
   ID=; vmt --exe "$T/aucune.exe" --sans-attendre
   voir "compilé sans fenêtre (AUCUNE), sans --fenetre : déposé sans fenêtre" \
