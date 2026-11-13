@@ -235,6 +235,11 @@ for p in "$CIBLES/x86_64-unknown-linux-musl/release/vanguard" "$CIBLES/x86_64-pc
     exit 1
   fi
 done
+# Les caisses de vanguard : chaque caisse nommée dans ses octets est dans l'arbre de sa cible, que cargo deny, clippy
+# et les essais jugent (ses deux cibles se compilent encore en un appel ; ronde Fable du 13 nov. 2026, décision (a)).
+bash outils/caisses-fenetre.sh --vanguard "$CIBLES/x86_64-unknown-linux-musl/release/vanguard" \
+  "$CIBLES/x86_64-pc-windows-gnu/release/vanguard.exe" ||
+  { echo "✖ vanguard compilé n'est pas celui que cargo deny, clippy et les essais jugent : aucun repère" >&2; exit 1; }
 # De même pour vanguard, avant que le repère le désigne pour la publication.
 python3 -I outils/confidentialite.py --compilation "$CIBLES_DONNEES" "${DOSSIERS_CHAINE[@]}" \
   "$CIBLES/x86_64-unknown-linux-musl/release/vanguard" "$CIBLES/x86_64-pc-windows-gnu/release/vanguard.exe" ||

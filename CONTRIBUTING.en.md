@@ -376,11 +376,13 @@ through `unknown-git = "deny"`; tests of November 13, 2026), or a replaced sourc
 a `.cargo/config.toml`, which cargo tree and cargo deny take for crates.io: any crates.io crate read from somewhere
 other than `CARGO_HOME`'s registry is refused); `--programmes`, run by `outils/compiler-version.sh` before the engraved
 fingerprint is computed, also refuses another source in the tree and checks that each crate named in the bytes of both
-windows is in its target's tree. `outils/failles-programmes.sh --fenetre` (deployment, publication) judges the programs
-as they are, whatever their recipe: before any audit, `caisses-fenetre.sh --publies` refuses another source in both
-targets' trees and any crate read in a program's bytes that is not in its target's versioned list (read from its header:
-ELF for Linux, MZ for Windows); then an advisory for an off-target crate is only set aside if none of the crates removed
-from the window (`caisses-fenetre.sh --retirees`, zbus included) can be read in the audited program;
+windows is in its target's tree; `--vanguard` gives the same proof for both vanguard programs, after their build and
+before the build marker: they are still built by a single call for both targets (splitting these calls, with a
+reproducible CI job, will come later). `outils/failles-programmes.sh --fenetre` (deployment, publication) judges the
+programs as they are, whatever their recipe: before any audit, `caisses-fenetre.sh --publies` refuses another source in
+both targets' trees and any crate read in a program's bytes that is not in its target's versioned list (read from its
+header: ELF for Linux, MZ for Windows); then an advisory for an off-target crate is only set aside if none of the crates
+removed from the window (`caisses-fenetre.sh --retirees`, zbus included) can be read in the audited program;
 `failles-programmes.sh --depot` only sets them aside if each target's tree is read and does not contain them. Nothing
 readable or an unknown header: nothing is concluded, never a pass. `outils/essais-caisses-fenetre.sh` (the "fenêtre"
 step of `outils/verifier.sh`, whose summary gives the number of crates counted for each target) tries these guards and
@@ -429,7 +431,11 @@ folder or a folder given with `--dossier` (the recipe gives the repository, `CAR
 home folder does not cover when they are on another disk or in CI), each as given (`..` included), cleaned and by its
 real path, in UTF-8 as in UTF-16. An unreadable or empty program, a missing build folder: nothing is concluded, the
 build stops. One of these folders with a single component (`/vanguard`, `/cargo`) would be read in the replaced paths:
-one refusal too many, never one pass too many.
+one refusal too many, never one pass too many. The program's complete zlib and gzip blocks (and those they contain, two
+levels deep) are decompressed and read too, 256 MiB at most in all: beyond that, nothing is concluded. Written limits,
+which the guard does not see (the Fable review of lot 096 found none in the four programs): a path cut by a null byte or
+split into 8-byte constants, a raw deflate block (without header) or a truncated one, an encoded path (`%2F`), written
+`~alice/` or in Latin-1.
 
 Rust keeps the libraries' path in the programs (`/home/<account>/.cargo/registry/…`): to publish a version, build
 with `rustflags = ["--remap-path-prefix=/home/<account>=~"]` in `~/.cargo/config.toml` (`publier-version.sh` refuses

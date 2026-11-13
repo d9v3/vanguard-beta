@@ -12,6 +12,10 @@
 #                                        messages de panique) est dans l'arbre de sa cible, et aucune caisse de cet
 #                                        arbre n'est d'une autre source que crates.io (outils/compiler-version.sh,
 #                                        après la compilation de la fenêtre)
+#   outils/caisses-fenetre.sh --vanguard <vanguard Linux> <vanguard Windows>
+#                                        la même preuve pour vanguard (Cargo.toml de la racine, cibles musl et
+#                                        Windows), qui se compile encore en un appel pour ses deux cibles
+#                                        (outils/compiler-version.sh, après sa compilation, avant le repère)
 #   outils/caisses-fenetre.sh --publies <programme>...
 #                                        aucune caisse d'une autre source dans l'arbre des deux cibles, et chaque caisse
 #                                        nommée dans les octets d'un programme dans la liste versionnée de sa cible,
@@ -40,6 +44,8 @@ export LC_ALL=C
 RACINE=$(cd "$(dirname "$0")/.." && pwd)
 MANIFESTE=$RACINE/fenetre/Cargo.toml
 CIBLES=(x86_64-unknown-linux-gnu x86_64-pc-windows-gnu)
+# Le paquet jugé, ôté de son propre arbre.
+PAQUET=vanguard-fenetre
 # La liste exacte par cible (nom et version), versionnée : elle ne change pas sans qu'on le voie dans le diff. Une
 # caisse de plus s'y ajoute (et passe à cargo deny et cargo vet), sa raison dans le message de commit : une liste n'a
 # pas de commentaire, --ecrire la récrit en entier ; une de moins s'en retire avec le code.
@@ -63,7 +69,7 @@ arbre() {
   sortie=$(sed -E 's/ \(\*\)$//; s/^([^ ]+ v[^ ]+) \(proc-macro\)/\1/
     s#^([^ ]+) v([^ ]+) \(/[^)]*\)$#\1 \2 (chemin local)#
     s#^([^ ]+) v([^ ]+) \(.*\)$#\1 \2 (autre source)#
-    s#^([^ ]+) v([^ ]+)$#\1 \2#' <<<"$sortie" | grep -v '^vanguard-fenetre ' | sort -u)
+    s#^([^ ]+) v([^ ]+)$#\1 \2#' <<<"$sortie" | grep -v "^$PAQUET " | sort -u)
   [[ -n $sortie ]] || { echo "✖ cargo tree n'a rien dit pour $1 : rien n'est conclu" >&2; return 2; }
   grep -qvE '^[A-Za-z0-9_-]+ [0-9][^ ]*( \((chemin local|autre source)\))?$' <<<"$sortie" &&
     { echo "✖ cargo tree a écrit pour $1 une ligne d'une forme inconnue : rien n'est conclu" >&2; return 2; }
@@ -172,6 +178,17 @@ if [[ ${1:-} == --caisses ]]; then
   printf '%s\n' "$vues"
   exit 0
 fi
+# Ronde Fable du 13 nov. 2026, décision (a) : vanguard se compile encore en un appel pour ses deux cibles, qui
+# partagent alors leurs options, comme la fenêtre avant ; sa preuve sur les octets est la même. Séparer ses appels
+# (avec un job reproductible dans la CI) viendra plus tard. Mesuré le 13 nov. 2026 sur les vanguard du lot 096 :
+# aucune caisse hors de l'arbre de sa cible.
+if [[ ${1:-} == --vanguard ]]; then
+  (($# == 3)) || { echo "outils/caisses-fenetre.sh --vanguard <vanguard Linux> <vanguard Windows>" >&2; exit 2; }
+  MANIFESTE=$RACINE/Cargo.toml
+  PAQUET=vanguard
+  CIBLES=(x86_64-unknown-linux-musl x86_64-pc-windows-gnu)
+  set -- --programmes "$2" "$3"
+fi
 if [[ ${1:-} == --programmes ]]; then
   (($# == 3)) || { echo "outils/caisses-fenetre.sh --programmes <fenêtre Linux> <fenêtre Windows>" >&2; exit 2; }
   PROGRAMMES=("$2" "$3")
@@ -253,7 +270,8 @@ if [[ ${1:-} == --ecrire ]]; then
 fi
 (($# == 0)) || {
   echo "outils/caisses-fenetre.sh [--ecrire | --programmes <fenêtre Linux> <fenêtre Windows> |" \
-    "--publies <programme>... | --caisses <programme> | --retirees]" >&2
+    "--vanguard <vanguard Linux> <vanguard Windows> | --publies <programme>... | --caisses <programme> |" \
+    "--retirees]" >&2
   exit 2
 }
 

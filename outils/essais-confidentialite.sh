@@ -31,7 +31,8 @@
 #      programme absent : code 2 ; et sa place dans la recette (sur les deux fenêtres avant leur empreinte, sur vanguard
 #      avant le repère, après le remplacement des chemins ; les quatre programmes nommés) et son bloc des dossiers ;
 #      --dossier (le dépôt, CARGO_HOME, RUSTUP_HOME, donnés par la recette) cherché ; un programme vide ou un dossier
-#      de compilation absent : code 2 ; « lien/../m » lu physiquement.
+#      de compilation absent : code 2 ; « lien/../m » lu physiquement ; dans un bloc zlib (petite fenêtre comprise),
+#      gzip ou zlib dans zlib : refusé ; plus de 256 Mio décompressés : code 2 ; un bloc tronqué n'est pas lu (limite).
 set -uo pipefail
 RACINE=$(cd "$(dirname "$0")/.." && pwd)
 OUTIL=$RACINE/outils/confidentialite.py
@@ -908,6 +909,39 @@ compilation "$P/srv/cibles-absentes" "$P/propre"
 sans_trace 2 "--compilation : un dossier de compilation absent, rien n'est conclu"
 compilation "$P/propre" "$P/propre"
 sans_trace 2 "--compilation : un dossier de compilation qui est un fichier, rien n'est conclu"
+# Ronde Fable du 13 nov. 2026 (C7) : un chemin dans un bloc compressé (zlib, gzip) ne se lisait pas. Le programme :
+# un en-tête ELF, un « 78 » de trop devant (en-tête possible qui chevauche le vrai), le bloc, d'autres octets.
+compresse() { # nom, forme (zlib, petite, gzip, double, tronque, bombe, deux), texte
+  python3 -I -c '
+import gzip, sys, zlib
+nom, forme, texte = sys.argv[1], sys.argv[2], sys.argv[3].encode()
+if forme == "zlib": bloc = zlib.compress(texte, 9)
+elif forme == "petite": c = zlib.compressobj(1, zlib.DEFLATED, 10); bloc = c.compress(texte) + c.flush()
+elif forme == "gzip": bloc = gzip.compress(texte, mtime=0)
+elif forme == "double": bloc = zlib.compress(b"a" * 999 + zlib.compress(texte, 1) + b"b" * 999, 6)
+elif forme == "tronque": bloc = zlib.compress(texte)[:-6]
+elif forme == "bombe": bloc = zlib.compress(b"\0" * (300 << 20) + texte, 9)
+else: bloc = zlib.compress(b"\0" * (150 << 20), 9) + b"\0" + zlib.compress(b"\0" * (150 << 20) + texte, 9)
+open(nom, "wb").write(b"\x7fELF\0octets-inventes\0\x78" + bloc + b"\0fin\0")' "$P/$1" "$2" "$3"
+}
+for forme in zlib petite gzip double; do
+  compresse "z-$forme" "$forme" '/home/alice/.cargo/registry/src/x/y.rs'
+  compilation "$CIBLES_I" "$P/z-$forme"
+  noter 1 "$(refus_dit $?)" "--compilation : le dossier personnel dans un bloc compressé ($forme) est refusé"
+done
+compresse z-propre zlib '/vanguard/target/release/build/out/egl_bindings.rs'
+compilation "$CIBLES_I" "$P/z-propre"
+noter 0 $? "--compilation : un bloc compressé aux chemins remplacés passe"
+compresse z-bombe bombe '/vanguard/target/release/build/out/egl_bindings.rs'
+compilation "$CIBLES_I" "$P/z-bombe"
+sans_trace 2 "--compilation : un bloc qui donne plus de 256 Mio, rien n'est conclu"
+compresse z-deux deux '/vanguard/target/release/build/out/egl_bindings.rs'
+compilation "$CIBLES_I" "$P/z-deux"
+sans_trace 2 "--compilation : deux blocs de 150 Mio, plus de 256 Mio en tout, rien n'est conclu"
+# Limite écrite (CONTRIBUTING) : un bloc tronqué n'est pas lu (sa somme de contrôle n'est pas vérifiée).
+compresse z-tronque tronque '/home/alice/.cargo/registry/src/x/y.rs'
+compilation "$CIBLES_I" "$P/z-tronque"
+noter 0 $? "--compilation : limite écrite, un bloc tronqué n'est pas lu"
 # Ronde Fable du 13 nov. 2026 (C3) : le dépôt, CARGO_HOME et RUSTUP_HOME hors du dossier personnel (autre disque, CI)
 # n'étaient pas cherchés. Ils se donnent par --dossier, chacun dans ses trois écritures, et n'ont pas à exister.
 compile depot '/srv/depot-invente/src/main.rs\0/cargo/registry/src/x/y.rs'

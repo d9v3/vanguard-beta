@@ -60,6 +60,7 @@ import re
 import socket
 import subprocess
 import sys
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -1023,10 +1024,10 @@ def termes_de_compilation(cibles, donnes=()):
     -ffile-prefix-map) : le dossier personnel (HOME), le nom du compte comme élément d'un chemin (« /<compte>/ »,
     « \\<compte>\\ » : /run/media/<compte>/…, C:\\Users\\<compte>, même hors de HOME) et le dossier de compilation
     (CARGO_TARGET_DIR, où cargo écrit le code qu'il génère, OUT_DIR), et les dossiers `donnes` (--dossier : le dépôt,
-    CARGO_HOME, RUSTUP_HOME, que HOME ne couvre pas quand ils sont ailleurs). Chacun tel que donné (« .. » compris), nettoyé et
-    par son vrai chemin (liens résolus). Le nom seul, hors d'un chemin, n'est pas cherché : un compte de deux lettres
-    se lit partout dans des octets. Rien d'autre de l'ordinateur (listes, identité Git, appareils) : --binaire, à la
-    publication, le fait."""
+    CARGO_HOME, RUSTUP_HOME, que HOME ne couvre pas quand ils sont ailleurs). Chacun tel que donné (« .. » compris),
+    nettoyé et par son vrai chemin (liens résolus). Le nom seul, hors d'un chemin, n'est pas cherché : un compte de
+    deux lettres se lit partout dans des octets. Rien d'autre de l'ordinateur (listes, identité Git, appareils) :
+    --binaire, à la publication, le fait."""
     liste = []
 
     def ajouter(texte, origine, motif):
@@ -1054,13 +1055,81 @@ def termes_de_compilation(cibles, donnes=()):
     return liste
 
 
+# Début possible d'un bloc compressé : en-tête zlib (méthode 8, fenêtre de 256 octets à 32 Kio ; l'octet suivant est
+# vérifié plus bas) ou gzip. Ronde Fable du 13 nov. 2026 (C7) : un chemin dans un bloc compressé ne se lisait pas.
+# Par anticipation (?=…) : deux en-têtes possibles qui se chevauchent (« 78 78 9C ») sont essayés tous les deux.
+ENTETE_COMPRESSE = re.compile(rb"(?=[\x08\x18\x28\x38\x48\x58\x68\x78][\x00-\xff]|\x1f\x8b\x08)", re.S)
+# Octets décompressés au plus, pour tous les blocs d'un programme : au-delà, rien n'est conclu (une bombe de
+# décompression n'arrête pas la machine). Mesuré le 13 nov. 2026 : 485 Kio au plus pour les quatre programmes.
+PLAFOND_DECOMPRESSE = 256 << 20
+
+
+class TropDecompresse(Exception):
+    """Plus de PLAFOND_DECOMPRESSE octets décompressés."""
+
+
+def gonfler(vue, wbits, reste):
+    """Le contenu du bloc compressé qui commence au début de `vue`, None si ce n'en est pas un complet (erreur, bloc
+    tronqué : sa somme de contrôle n'est pas vérifiée, il n'est pas lu). Par morceaux de 64 Kio, sans copier le reste
+    du programme ; TropDecompresse au-delà de `reste` octets."""
+    d = zlib.decompressobj(wbits)
+    morceaux, taille, position = [], 0, 0
+    try:
+        while not d.eof:
+            entree = d.unconsumed_tail
+            if not entree:
+                entree = vue[position : position + (1 << 16)]
+                position += 1 << 16
+                if not entree:
+                    return None
+            morceau = d.decompress(entree, reste + 1 - taille)
+            taille += len(morceau)
+            morceaux.append(morceau)
+            if taille > reste:
+                raise TropDecompresse
+    except zlib.error:
+        return None
+    return b"".join(morceaux)
+
+
+def blocs_compresses(octets, profondeur=2):
+    """Les contenus des blocs zlib et gzip complets des octets, et ceux des blocs qu'ils contiennent (`profondeur`
+    niveaux). Un bloc deflate brut, sans en-tête, ne se repère pas : limite écrite dans CONTRIBUTING."""
+    vue, budget = memoryview(octets), [PLAFOND_DECOMPRESSE]
+
+    def fouiller(vue, niveau):
+        for trouve in ENTETE_COMPRESSE.finditer(vue):
+            debut = trouve.start()
+            premier, second = vue[debut], vue[debut + 1]
+            if premier == 0x1F:
+                wbits = 31
+            elif (premier * 256 + second) % 31 or second & 0x20:  # somme de l'en-tête fausse, ou dictionnaire
+                continue
+            else:
+                wbits = 15
+            contenu = gonfler(vue[debut:], wbits, budget[0])
+            if contenu:
+                budget[0] -= len(contenu)
+                yield contenu
+                if niveau < profondeur:
+                    yield from fouiller(memoryview(contenu), niveau + 1)
+
+    yield from fouiller(vue, 1)
+
+
 def programme_compile(chemin):
-    """Les textes lisibles d'un programme de --compilation ; un fichier vide n'en est pas un (une compilation ratée,
-    un fichier tronqué) : rien n'est conclu, jamais un vert."""
+    """Les textes lisibles d'un programme de --compilation, ceux de ses blocs compressés compris ; un fichier vide
+    n'en est pas un (une compilation ratée, un fichier tronqué) : rien n'est conclu, jamais un vert."""
     octets = Path(chemin).read_bytes()
     if not octets:
         rien_conclu(f"{chemin} est vide (0 octet) : ce n'est pas un programme compilé ; rien n'est conclu.")
-    return chaines_d_octets(octets, mini=4)
+    textes = [chaines_d_octets(octets, mini=4)]
+    try:
+        textes += [chaines_d_octets(contenu, mini=4) for contenu in blocs_compresses(octets)]
+    except TropDecompresse:
+        rien_conclu(f"{chemin} : ses blocs compressés donnent plus de {PLAFOND_DECOMPRESSE >> 20} Mio ; ils ne sont "
+                    "pas tous lus, rien n'est conclu.")
+    return "\n".join(textes)
 
 
 def rapport(trouves, quoi, en_clair=True) -> int:

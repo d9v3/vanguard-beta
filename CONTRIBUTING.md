@@ -377,7 +377,9 @@ un dépôt git, que cargo deny refuse déjà par `unknown-git = "deny"` (essais 
 remplacée, `[source.crates-io] replace-with` dans un `.cargo/config.toml`, que cargo tree et cargo deny prennent pour
 crates.io : toute caisse de crates.io lue ailleurs que dans le registre de `CARGO_HOME` est refusée) ; `--programmes`,
 lancé par `outils/compiler-version.sh` avant le calcul de l'empreinte gravée, refuse aussi une autre source dans l'arbre
-et vérifie que chaque caisse nommée dans les octets des deux fenêtres est dans l'arbre de sa cible.
+et vérifie que chaque caisse nommée dans les octets des deux fenêtres est dans l'arbre de sa cible ; `--vanguard` fait
+la même preuve pour les deux vanguard, après leur compilation et avant le repère : ils se compilent encore en un seul
+appel pour leurs deux cibles (séparer ces appels, avec un job reproductible dans la CI, viendra plus tard).
 `outils/failles-programmes.sh --fenetre` (déploiement, publication) juge les programmes tels qu'ils sont, quelle que
 soit leur recette : avant tout audit, `caisses-fenetre.sh --publies` refuse une autre source dans l'arbre des deux
 cibles et chaque caisse lue dans les octets d'un programme qui n'est pas dans la liste versionnée de sa cible (lue dans
@@ -433,7 +435,11 @@ par `--dossier` (la recette donne le dépôt, `CARGO_HOME` et `RUSTUP_HOME`, que
 ils sont sur un autre disque ou dans la CI), chacun tel que donné (`..` compris), nettoyé et par son vrai chemin, en
 UTF-8 comme en UTF-16. Un programme illisible ou vide, un dossier de compilation absent : rien n'est conclu, la
 compilation s'arrête. Un de ces dossiers d'un seul élément (`/vanguard`, `/cargo`) se lirait dans les chemins remplacés
-: un refus de trop, jamais un vert de trop.
+: un refus de trop, jamais un vert de trop. Les blocs zlib et gzip complets du programme (et ceux qu'ils contiennent,
+sur deux niveaux) sont décompressés et lus aussi, 256 Mio au plus en tout : au-delà, rien n'est conclu. Limites écrites,
+que la garde ne voit pas (la relecture Fable du lot 096 n'en a trouvé aucune dans les quatre programmes) : un chemin
+coupé par un octet nul ou découpé en constantes de 8 octets, un bloc deflate brut (sans en-tête) ou tronqué, un chemin
+encodé (`%2F`), écrit `~alice/` ou en Latin-1.
 
 Rust garde le chemin des bibliothèques dans les programmes (`/home/<compte>/.cargo/registry/…`) : pour publier une
 version, compiler avec `rustflags = ["--remap-path-prefix=/home/<compte>=~"]` dans `~/.cargo/config.toml`

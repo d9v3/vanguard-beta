@@ -6,7 +6,10 @@
 #      compilées ensemble, les cibles partagent leurs options, et la fenêtre Linux emportait zbus et zvariant), puis
 #      caisses-fenetre.sh --programmes sur les deux fenêtres, avant que leur empreinte soit calculée pour être gravée
 #      dans vanguard, son échec arrêtant tout. Trois recettes abîmées (cibles jointes, garde retirée, garde après
-#      l'empreinte) sont refusées : le lecteur de la recette refuse pour de vrai.
+#      l'empreinte) sont refusées : le lecteur de la recette refuse pour de vrai. Et caisses-fenetre.sh --vanguard sur
+#      les deux vanguard, après leur compilation, avant le repère, son échec arrêtant tout (quatre recettes abîmées).
+#   2 bis. --vanguard : la même preuve, cibles musl et Windows, vanguard lui-même ôté de son arbre ; une caisse de
+#      Windows seulement dans vanguard Linux → 1 ; cargo tree en échec, un seul programme → 2.
 #   2. --programmes : tout dans l'arbre de sa cible → 0 ; une caisse hors de l'arbre, ou d'une autre source que
 #      crates.io dans l'arbre (chemin local, source remplacée) → 1 ; rien de lisible dans un programme, programme
 #      absent ou cargo tree en échec → 2 (rien n'est conclu, jamais un vert).
@@ -47,16 +50,18 @@ WINDOWS=x86_64-pc-windows-gnu
 # (« nom version » par ligne) ; absent, les deux échouent. Avec -i <caisse> : la caisse si elle est dans l'arbre, rien
 # sinon. metadata : chaque caisse de l'arbre sans source écrite est de crates.io, lue dans le registre de CARGO_HOME,
 # sauf celles de $CALE_ARBRES/<cible>.remplacees, lues dans une copie (une source remplacée : cargo garde l'identité
-# « crates.io ») ; $CALE_ARBRES/<cible>.metadata-echec le fait échouer.
+# « crates.io ») ; $CALE_ARBRES/<cible>.metadata-echec le fait échouer. La racine de l'arbre : la fenêtre, ou vanguard
+# pour le Cargo.toml du dépôt (--vanguard).
 mkdir -p "$T/bin" "$T/arbres"
 cat >"$T/bin/cargo" <<'EOF'
 #!/usr/bin/env bash
 commande=${1:-}
 [[ $commande == tree || $commande == metadata ]] || exit 101
-cible= inverse=
+cible= inverse= manifeste=
 while (($#)); do
   case $1 in
     --target | --filter-platform) cible=$2 && shift ;;
+    --manifest-path) manifeste=$2 && shift ;;
     -i) inverse=$2 && shift ;;
   esac
   shift
@@ -81,7 +86,11 @@ if [[ -n $inverse ]]; then
   awk -v n="$inverse" '$1 == n { print $1 " v" $2 }' "$f"
   exit 0
 fi
-echo "vanguard-fenetre v0.1.0 (/depot-invente/fenetre)"
+if [[ $manifeste == */fenetre/Cargo.toml ]]; then
+  echo "vanguard-fenetre v0.1.0 (/depot-invente/fenetre)"
+else
+  echo "vanguard v0.1.0 (/depot-invente)"
+fi
 # « nom version [suite] » devient « nom vversion [suite] » : la suite (« (proc-macro) », « (*) », une source autre que
 # crates.io) passe telle quelle, comme cargo tree l'écrit.
 awk '!/^#/ && NF { $2 = "v" $2; print }' "$f"
@@ -147,6 +156,25 @@ recette() {
 }
 r=$(recette outils/compiler-version.sh) && ok "compiler-version.sh : une cible par appel, garde des octets avant l'empreinte" ||
   ko "compiler-version.sh : $r"
+# Vanguard (décision (a), ronde Fable du 13 nov. 2026) : la garde de ses octets après sa compilation, avant le repère,
+# et son échec arrête tout.
+recette_vanguard() {
+  local lignes compile garde repere
+  lignes=$(logiques "$1")
+  compile=$(grep -E 'cargo +(zig)?build' <<<"$lignes" | grep -vF fenetre/Cargo.toml | tail -1 | cut -d: -f1)
+  local debut='^[0-9]+: bash outils/caisses-fenetre\.sh --vanguard '
+  debut+='"\$CIBLES/x86_64-unknown-linux-musl/release/vanguard" '
+  local fin='"\$CIBLES/x86_64-pc-windows-gnu/release/vanguard\.exe" \|\| \{.*exit 1; \}$'
+  garde=$(grep -E "$debut$fin" <<<"$lignes" | head -1 | cut -d: -f1)
+  repere=$(grep -F 'echo "commit $COMMIT"' <<<"$lignes" | head -1 | cut -d: -f1)
+  [[ -n $compile && -n $repere ]] || { echo "compilation de vanguard ou repère introuvable"; return 1; }
+  [[ -n $garde ]] || { echo "caisses-fenetre.sh --vanguard n'est pas appelé (ou son échec n'arrête rien)"; return 1; }
+  ((compile < garde && garde < repere)) ||
+    { echo "garde ligne $garde : pas entre la compilation (ligne $compile) et le repère (ligne $repere)"; return 1; }
+}
+r=$(recette_vanguard outils/compiler-version.sh) &&
+  ok "compiler-version.sh : garde des octets de vanguard après sa compilation, avant le repère" ||
+  ko "compiler-version.sh, vanguard : $r"
 # Les recettes abîmées, chacune vérifiée changée avant d'être jugée.
 abimee() { # nom, puis le programme sed
   sed "$2" outils/compiler-version.sh >"$T/$1.sh"
@@ -162,6 +190,22 @@ abimee cibles-jointes "s/--target \"\$cible\"\$/--target $LINUX --target $WINDOW
 abimee sans-garde '/caisses-fenetre.sh --programmes/,/exit 1; }/d'
 abimee garde-apres "/caisses-fenetre.sh --programmes/,/exit 1; }/d; \$a\\
 bash outils/caisses-fenetre.sh --programmes \"\$FENETRE_LINUX\" \"\$FENETRE_WINDOWS\" || exit 1"
+abimee_v() { # nom, puis le programme sed
+  sed "$2" outils/compiler-version.sh >"$T/$1.sh"
+  if cmp -s outils/compiler-version.sh "$T/$1.sh"; then
+    ko "recette « $1 » : l'abîmer n'a rien changé (recette réécrite ? adapter cet essai)"
+  elif r=$(recette_vanguard "$T/$1.sh"); then
+    ko "recette « $1 » acceptée"
+  else
+    ok "recette « $1 » refusée : $r"
+  fi
+}
+abimee_v vanguard-sans-garde '/caisses-fenetre.sh --vanguard/,/exit 1; }/d'
+abimee_v vanguard-garde-sans-arret '/caisses-fenetre.sh --vanguard/,/exit 1; }/s/exit 1; }/true; }/'
+abimee_v vanguard-sans-bash 's#^bash outils/caisses-fenetre.sh --vanguard#true outils/caisses-fenetre.sh --vanguard#'
+abimee_v vanguard-garde-apres "/caisses-fenetre.sh --vanguard/,/exit 1; }/d; \$a\\
+bash outils/caisses-fenetre.sh --vanguard \"\$CIBLES/x86_64-unknown-linux-musl/release/vanguard\" \\\\\\
+\"\$CIBLES/x86_64-pc-windows-gnu/release/vanguard.exe\" || { exit 1; }"
 
 echo "2. --programmes : chaque caisse des octets dans l'arbre de sa cible"
 arbre $LINUX "alpha 1.2.0" "beta 0.3.1" "gamma 4.0.0"
@@ -200,6 +244,35 @@ programme "$T/fenetre" alpha-1.2.0
 rm "$T/arbres/$WINDOWS.txt"
 lance outils/caisses-fenetre.sh --programmes "$T/fenetre" "$T/fenetre.exe"
 ((CODE == 2)) && ok "cargo tree en échec : code 2" || ko "cargo tree en échec : code $CODE ($SORTIE)"
+
+echo "2 bis. --vanguard : la même preuve pour vanguard, cibles musl et Windows"
+MUSL=x86_64-unknown-linux-musl
+arbre $MUSL "alpha 1.2.0" "beta 0.3.1"
+arbre $WINDOWS "alpha 1.2.0" "delta 2.0.0"
+programme "$T/vanguard" alpha-1.2.0 beta-0.3.1
+programme "$T/vanguard.exe" alpha-1.2.0 delta-2.0.0
+lance outils/caisses-fenetre.sh --vanguard "$T/vanguard" "$T/vanguard.exe"
+((CODE == 0)) && [[ $SORTIE == *"toutes dans l'arbre de $MUSL"* ]] &&
+  ok "vanguard, tout dans l'arbre de sa cible (musl, pas celui de la fenêtre) : code 0" ||
+  ko "vanguard, tout dans l'arbre : code $CODE ($SORTIE)"
+# Une caisse de l'arbre Windows seulement, compilée dans vanguard Linux (options partagées d'un appel joint).
+programme "$T/vanguard" alpha-1.2.0 delta-2.0.0
+lance outils/caisses-fenetre.sh --vanguard "$T/vanguard" "$T/vanguard.exe"
+((CODE == 1)) && [[ $SORTIE == *"delta 2.0.0"* ]] &&
+  ok "vanguard Linux avec une caisse de Windows seulement : code 1" ||
+  ko "vanguard Linux avec une caisse de Windows seulement : code $CODE ($SORTIE)"
+arbre $MUSL "alpha 1.2.0" "beta 0.3.1 (/srv/copie-inventee/beta)"
+programme "$T/vanguard" alpha-1.2.0
+lance outils/caisses-fenetre.sh --vanguard "$T/vanguard" "$T/vanguard.exe"
+((CODE == 1)) && [[ $SORTIE == *"beta 0.3.1 (chemin local)"* && $SORTIE != *"vanguard 0.1.0"* ]] &&
+  ok "vanguard, une caisse par un chemin local : code 1 (vanguard lui-même n'est pas compté)" ||
+  ko "vanguard, une caisse par un chemin local : code $CODE ($SORTIE)"
+rm "$T/arbres/$MUSL.txt"
+lance outils/caisses-fenetre.sh --vanguard "$T/vanguard" "$T/vanguard.exe"
+((CODE == 2)) && ok "vanguard, cargo tree en échec : code 2" ||
+  ko "vanguard, cargo tree en échec : code $CODE ($SORTIE)"
+lance outils/caisses-fenetre.sh --vanguard "$T/vanguard"
+((CODE == 2)) && ok "vanguard, un seul programme : code 2" || ko "vanguard, un seul programme : code $CODE ($SORTIE)"
 
 echo "3. Le cliquet : l'arbre de chaque cible comparé à sa liste de référence"
 for c in $LINUX $WINDOWS; do
