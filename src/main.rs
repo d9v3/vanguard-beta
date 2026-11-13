@@ -449,6 +449,42 @@ async fn main() {
         }
         autotest::lecture_seule::relever_avant_tout();
     }
+    // Une aide n'écrit rien (R-7, recontrôle 0.95) : « -h », « --help » (seuls ou après une commande) et « help »
+    // se montrent sous la lecture seule, comme un aperçu, avant le journal, le passage et la protection du dossier,
+    // qui créaient sinon les sceaux d'une maison vide. Une ligne qui n'est pas une aide relève l'interrupteur et suit
+    // le chemin ordinaire. args_os : un argument qui n'est pas de l'UTF-8 (un nom de fichier) ne doit pas arrêter le
+    // programme ici.
+    let lus: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    if lus
+        .iter()
+        .take_while(|a| *a != "--")
+        .any(|a| a == "-h" || a == "--help")
+        || lus.first().is_some_and(|a| a == "help")
+    {
+        autotest::lecture_seule::poser_pour_un_apercu();
+        parametres::au_lancement();
+        // « vanguard -h » ou « --help » seuls : les aides générées depuis le menu (`aide_courte`, `aide_longue`).
+        // L'aide d'une commande reste celle de clap (« vanguard bilan --help »), et « vanguard help » sa liste à plat,
+        // dans l'ordre des déclarations (outils/page-fonctions.py la lit).
+        match lus.as_slice() {
+            [h] if h == "-h" => return print!("{}", aide_courte()),
+            [h] if h == "--help" => return print!("{}", aide_longue()),
+            _ => {}
+        }
+        if let Err(e) = ligne_de_commande().try_get_matches()
+            && matches!(
+                e.kind(),
+                clap::error::ErrorKind::DisplayHelp
+                    | clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+                    | clap::error::ErrorKind::DisplayVersion
+            )
+        {
+            let _ = e.print();
+            chiffrement::oublier_session();
+            std::process::exit(e.exit_code());
+        }
+        autotest::lecture_seule::relever_avant_tout();
+    }
     // Les réglages du lancement (langue, emojis, travail sans Internet), avant tout affichage.
     parametres::au_lancement();
     journal::installer();
@@ -469,16 +505,6 @@ async fn main() {
     #[cfg(unix)]
     crate::socle::proteger_dossier_local();
     protection::cles_connues::reconnaitre_la_cle_du_programme();
-    // « vanguard -h » ou « --help » seuls : les aides générées depuis le menu (`aide_courte`, `aide_longue`). L'aide
-    // d'une commande reste celle de clap (« vanguard bilan --help »), et « vanguard help » sa liste à plat, dans
-    // l'ordre des déclarations (outils/page-fonctions.py la lit). args_os : un argument qui n'est pas de l'UTF-8
-    // (un nom de fichier) ne doit pas arrêter le programme ici.
-    let premiers: Vec<std::ffi::OsString> = std::env::args_os().skip(1).take(2).collect();
-    match premiers.as_slice() {
-        [h] if h == "-h" => return print!("{}", aide_courte()),
-        [h] if h == "--help" => return print!("{}", aide_longue()),
-        _ => {}
-    }
     let matches = ligne_de_commande().get_matches();
     let args = Args::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
     // Le lot d'amélioration en attente, dans un fil qui ne retarde jamais la sortie (rien sans relais). Ni pendant

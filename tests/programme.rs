@@ -511,6 +511,38 @@ fn aide_dans_les_deux_langues() {
     assert!(en.texte.contains("--liste") && en.texte.contains("deleting nothing"));
 }
 
+/// R-7 (recontrôle 0.95) : une aide n'écrit rien. Dans une maison vide, « --help » créait déjà sceaux.json,
+/// sceaux.temoin et sceaux.verrou (les réglages, le journal et le passage tournaient avant elle). Chaque forme
+/// d'aide (courte, longue, d'une commande, « help ») laisse la maison vide, et l'aide se montre quand même.
+#[test]
+fn une_aide_n_ecrit_rien() {
+    fn contenu(dossier: &Path, sortie: &mut Vec<PathBuf>) {
+        for e in std::fs::read_dir(dossier).into_iter().flatten().flatten() {
+            sortie.push(e.path());
+            if e.file_type().is_ok_and(|t| t.is_dir()) {
+                contenu(&e.path(), sortie);
+            }
+        }
+    }
+    let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
+    for (args, attendu) in [
+        (&["--help"][..], "bilan"),
+        (&["-h"][..], "bilan"),
+        (&["bilan", "--help"][..], "--"),
+        (&["help"][..], "bilan"),
+        (&["nettoyer", "-h"][..], "--liste"),
+    ] {
+        let maison = maison_jetable();
+        let s = vanguard_dans(programme, &maison, "fr", args, "", 30);
+        let mut ecrits = Vec::new();
+        contenu(&maison, &mut ecrits);
+        let _ = std::fs::remove_dir_all(&maison);
+        assert_eq!(s.code, Some(0), "{args:?} : {}", s.erreurs);
+        assert!(s.texte.contains(attendu), "{args:?} : {}", s.texte);
+        assert!(ecrits.is_empty(), "{args:?} a écrit : {ecrits:#?}");
+    }
+}
+
 // « defender », l'ancienne commande des blocages, mène aux Options de défense (alias) ; ailleurs que sous Windows,
 // rien à proposer et rien changé.
 #[test]
