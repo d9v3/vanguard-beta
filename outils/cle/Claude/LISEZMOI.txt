@@ -1,0 +1,60 @@
+DÉPANNER AVEC CLAUDE — Claude Code sur la clé VANGUARD
+======================================================
+English: README.txt
+
+Claude Code, l'assistant d'Anthropic, aide à trouver la cause d'une panne sur l'ordinateur d'un proche
+(lenteur, plantage, virus, réseau, démarrage). Il lit l'ordinateur, explique, et propose ; il demande avant
+chaque commande et ne change rien sans accord. Il se sert de Vanguard, sur la même clé, pour le diagnostic.
+
+Il faut : un compte Claude (abonnement Pro ou Max, ou console Anthropic), Internet, et l'accord du
+propriétaire de l'ordinateur : ce que Claude lit (journaux, réglages, noms de fichiers) part chez Anthropic.
+
+
+1. LANCER
+
+   Windows (10 version 1809 ou plus récent) : double-cliquer « Depanner avec Claude.bat » à la racine de la clé.
+   Linux : dans un terminal,   bash /run/media/$USER/VANGUARD/Claude/depanner.sh
+           (ou /media/$USER/VANGUARD/… sur Ubuntu, Debian, Mint).
+   Ordinateur qui ne démarre plus : démarrer sur SystemRescue (menu de la clé), puis la même commande que sous
+   Linux. Claude y monte le disque en lecture seule pour diagnostiquer.
+
+   La première fois, Claude donne une adresse de connexion : l'ouvrir (sur ce PC ou sur un téléphone), se
+   connecter, et recopier le code s'il en demande un.
+
+
+2. FINIR
+
+   Taper /exit dans Claude. Le lanceur déconnecte le compte et efface Claude Code, la connexion et la
+   conversation de l'ordinateur. Fenêtre fermée par sa croix : sous Windows, un gardien efface quand même ;
+   au moindre doute (ou sous Linux), relancer le lanceur une fois, puis /exit : il efface d'abord ce qui
+   était resté.
+   Après un ordinateur douteux (virus possible) : terminer aussi la session sur claude.ai (Réglages ›
+   Compte), pour que la connexion ne vaille plus rien ailleurs.
+
+
+3. CE QUI EST PROTÉGÉ
+
+   - Rien n'est installé : le programme est copié dans un dossier temporaire, lancé de là, puis effacé.
+   - La connexion à votre compte Claude n'est jamais écrite sur la clé ; elle vit seulement dans le dossier
+     temporaire de la session (accessible à votre seul compte sous Windows), effacé à la fin.
+   - Avant le lancement, le programme est vérifié : sous Windows, sa signature numérique « Anthropic, PBC »,
+     contrôlée par Windows ; sous Linux, la signature d'Anthropic sur la liste des empreintes, et l'empreinte
+     du programme.
+   - Claude reçoit des consignes de dépannage (CLAUDE.md, dans ce dossier) : diagnostiquer en lecture seule,
+     expliquer la cause avant de corriger, ne rien changer sans accord, ne jamais couper l'antivirus, le
+     pare-feu ni les mises à jour, respecter la vie privée du proche.
+   - Pas de mise à jour automatique : la version vérifiée est celle qui tourne. Vanguard met la clé à jour
+     sur l'ordinateur de son propriétaire.
+
+   Ce que vous acceptez quand même : Claude peut se tromper. Lisez chaque commande avant de dire oui.
+
+
+4. LIMITES
+
+   - Windows et Linux 64 bits (x86-64). Sous Windows ARM, la version x86-64 tourne en émulation.
+   - Sous Linux sans gpg, la signature d'Anthropic ne peut pas être vérifiée : le lanceur le dit et demande.
+   - Un virus qui tourne déjà sous le même compte peut lire la connexion pendant la session : rien ne l'en
+     empêche. Sur un ordinateur qu'on croit infecté, démarrer plutôt sur SystemRescue (menu de la clé), et
+     terminer la session sur claude.ai après.
+   - Sous Windows, Claude Code peut demander Git for Windows pour certaines commandes : l'installer seulement
+     avec l'accord du propriétaire, depuis git-scm.com ou winget.

@@ -85,6 +85,10 @@ Cette clé contient le programme pour Linux et Windows, sa base de données et s
   ISO/                  En développement, absent de certaines clés : images qui démarrent un ordinateur, par le
                         menu de Ventoy (Omarchy, Arch Linux, Debian, Fedora, SystemRescue et Windows 11).
                         Mode d'emploi : LISEZMOI.txt du dossier Linux, partie 5.
+  Claude/               En option, absent de la plupart des clés : Claude Code, l'assistant d'Anthropic, pour dépanner
+                        l'ordinateur d'un proche avec lui (« Depanner avec Claude.bat » à la racine sous Windows).
+                        Compte Claude et accord du propriétaire de l'ordinateur demandés. Mode d'emploi :
+                        Claude/LISEZMOI.txt.
   vanguard.cle          Fichier témoin qui fait reconnaître la clé : ne pas le supprimer.
 
 Mode d'emploi de chaque version, ligne de commande comprise (Terminal, PowerShell, invite de commandes) :

@@ -81,6 +81,9 @@ This USB key holds the program for Linux and Windows, its database and its sourc
   ISO/                  In development, missing from some keys: images that boot a computer, from the Ventoy
                         menu (Omarchy, Arch Linux, Debian, Fedora, SystemRescue and Windows 11).
                         How to: README.txt in the Linux folder, part 5.
+  Claude/               Optional, missing from most keys: Claude Code, Anthropic's assistant, to troubleshoot a
+                        relative's computer with it ("Depanner avec Claude.bat" at the root on Windows). A Claude
+                        account and the computer owner's consent are needed. How to: Claude/README.txt.
   vanguard.cle          Marker file that makes the key recognized: do not delete it.
 
 How to run each version, command line included (Terminal, PowerShell, Command Prompt): README.txt in the

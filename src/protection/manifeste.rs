@@ -486,6 +486,8 @@ fn depose_par_le_deploiement(chemin: &str) -> bool {
         "autorun.inf",
         "autorun.sh",
         "Lancer Vanguard.bat",
+        // Claude Code sur la clé, en option (outils/claude-cle.sh, qui a la même liste) : posé, ou retiré si coupé.
+        "Depanner avec Claude.bat",
         // Retiré par le déploiement, comme macOS/ plus bas : sa disparition d'une clé d'avant n'est pas un écart.
         "Lancer Vanguard.command",
         ".metadata_never_index",
@@ -506,6 +508,21 @@ fn depose_par_le_deploiement(chemin: &str) -> bool {
             && !chemin.starts_with("source/.claude/worktrees/"))
     {
         return true;
+    }
+    if let Some(nom) = chemin.strip_prefix("Claude/") {
+        return matches!(
+            nom,
+            "CLAUDE.md"
+                | "depanner.ps1"
+                | "depanner.sh"
+                | "LISEZMOI.txt"
+                | "README.txt"
+                | "manifest.json"
+                | "manifest.json.sig"
+                | "claude-code.asc"
+                | "Linux/claude"
+                | "Windows/claude.exe"
+        );
     }
     if let Some(nom) = chemin.strip_prefix("tldr/") {
         return matches!(nom, "tldr-pages.en.zip" | "tldr-pages.fr.zip");
@@ -2016,6 +2033,26 @@ mod tests {
         assert!(!depose_par_le_deploiement("source/.claude/worktrees/a/b"));
         assert!(!depose_par_le_deploiement("tldr/tldr-pages.piege.zip"));
         assert!(depose_par_le_deploiement("tldr/tldr-pages.en.zip"));
+        // Claude Code (outils/claude-cle.sh) : ses fichiers exacts, rien d'autre dans Claude/.
+        for pose in [
+            "Depanner avec Claude.bat",
+            "Claude/CLAUDE.md",
+            "Claude/depanner.ps1",
+            "Claude/manifest.json.sig",
+            "Claude/Linux/claude",
+            "Claude/Windows/claude.exe",
+        ] {
+            assert!(depose_par_le_deploiement(pose), "{pose}");
+        }
+        for piege in [
+            "Claude/Windows/version.dll",
+            "Claude/Linux/claude.so",
+            "Claude/autre.bat",
+            "Claude/Windows/../piege.exe",
+            "Claudex/Linux/claude",
+        ] {
+            assert!(!depose_par_le_deploiement(piege), "{piege}");
+        }
         // Une clé d'avant le retrait du Mac : ce que le déploiement en efface n'est pas un écart ; rien d'autre dans
         // macOS/.
         for efface in [

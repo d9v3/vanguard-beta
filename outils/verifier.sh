@@ -273,7 +273,7 @@ $fautes = foreach ($a in $ast.FindAll({ param($x) $x -is [System.Management.Auto
 if ($fautes) { $fautes; exit 1 }
 EOF
   )
-  for f in outils/test-windows/*.ps1 extensions/exemples/*/*.ps1; do
+  for f in outils/test-windows/*.ps1 extensions/exemples/*/*.ps1 outils/cle/Claude/*.ps1; do
     VG_PS_FICHIER=$PWD/$f VG_PS_NOM=$f "$PWSH" -NoProfile -NonInteractive -Command "$verif" || erreurs=$((erreurs + 1))
   done
   ((erreurs == 0))
@@ -647,6 +647,7 @@ if [[ $MODE != --rapide ]]; then
   etape rejeu-powershell rejeu_powershell &
   etape shell scripts_shell &
   etape essais-cle bash outils/essais-cle.sh &
+  etape essais-claude-cle bash outils/essais-claude-cle.sh &
   etape signature bash outils/essais-signature.sh &
   etape essais-confidentialite bash outils/essais-confidentialite.sh &
   etape essais-verifier bash outils/essais-verifier.sh &
@@ -864,6 +865,7 @@ if [[ $MODE != --rapide ]]; then
   ligne rejeu-powershell "PowerShell du programme rejoué"
   ligne shell "scripts shell (shellcheck)"
   ligne essais-cle "essais des outils de la clé"
+  ligne essais-claude-cle "Claude Code sur la clé"
   ligne signature "signature des versions"
   ligne essais-confidentialite "garde de confidentialité (noms, types)"
   ligne essais-verifier "essais de verifier.sh (--seulement)"
