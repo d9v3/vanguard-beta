@@ -1390,6 +1390,8 @@ pub(super) fn persistance_dans(
     let (sortes, mut illisibles) = fichiers_de_configuration(&t.r);
     // N-1 : les fichiers de session dont un DesktopNames mène uwsm hors des fichiers lus ; ce qui ne se lit pas aussi.
     let bureaux = bureaux_a_dire(&t.r, &mut illisibles);
+    // V3-1 : les fichiers d'uwsm qui changent XDG_CURRENT_DESKTOP, que relit uwsm pour chaque dossier.
+    let bureau_change = bureau_change_par_uwsm(&t.r, &mut illisibles);
     illisibles.sort();
     illisibles.dedup();
     // S-3 (re-contrôle 2 0.95) : un dossier où uwsm cherche ses fichiers de variables (XDG_CONFIG_DIRS, XDG_DATA_DIRS)
@@ -1425,6 +1427,22 @@ pub(super) fn persistance_dans(
             trf!(
                 "{ou} : un nom de bureau inhabituel dans DesktopNames : l'alerte ne se déclare pas normale tant qu'il y est ; corrigez le fichier",
                 "{ou}: an unusual desktop name in DesktopNames: the alert cannot be declared normal while it is there; fix the file"
+            ),
+        );
+    }
+    for f in bureau_change {
+        let ou = crate::ui::affichable(&t.r.montre(&f));
+        let source = format!("uwsm bureau change {}", t.r.montre(&f));
+        constat_sans_ligne(
+            &mut t,
+            &source,
+            trf!(
+                "{ou} change XDG_CURRENT_DESKTOP : uwsm relit ce nom de bureau pour chaque dossier suivant et en tire des fichiers « uwsm/env-… » que Vanguard ne suit pas (non vérifié)",
+                "{ou} changes XDG_CURRENT_DESKTOP: uwsm reads this desktop name again for each following folder and turns it into “uwsm/env-…” files that Vanguard does not follow (not verified)"
+            ),
+            trf!(
+                "{ou} change le nom de bureau d'uwsm : l'alerte ne se déclare pas normale tant qu'il le change ; retirez cette ligne du fichier",
+                "{ou} changes uwsm's desktop name: the alert cannot be declared normal while it does; remove that line from the file"
             ),
         );
     }
@@ -4672,6 +4690,8 @@ fn environnement_change_la_sauvegarde(r: &Releveur, vide: bool) -> bool {
         fichiers_du_gestionnaire(r, &configs_posees(&r.gestionnaire), &dossiers_d_uwsm(r));
     // N-1 : un fichier de session dont un DesktopNames mène uwsm hors des fichiers lus.
     let bureaux = bureaux_a_dire(r, &mut illisibles_d_uwsm);
+    // V3-1 : un fichier d'uwsm qui change XDG_CURRENT_DESKTOP, que relit uwsm pour chaque dossier.
+    let bureau_change = bureau_change_par_uwsm(r, &mut illisibles_d_uwsm);
     // V-2 : les scripts d'uwsm lus, seuls fichiers qu'une inclusion peut nommer sans lever.
     let scripts: Vec<std::path::PathBuf> = fichiers
         .iter()
@@ -4684,6 +4704,7 @@ fn environnement_change_la_sauvegarde(r: &Releveur, vide: bool) -> bool {
         || !illisibles_d_uwsm.is_empty()
         || !r.uwsm_session_joker.is_empty()
         || !bureaux.is_empty()
+        || !bureau_change.is_empty()
         || !r.gestionnaire_non_resolu.is_empty()
         || fichiers
             .iter()
@@ -5075,6 +5096,77 @@ fn bureaux_a_dire(r: &Releveur, illisibles: &mut Vec<std::path::PathBuf>) -> Vec
         .into_iter()
         .filter(|(f, _)| !programme_de_root_seul(&r.racine, f))
         .collect()
+}
+
+/// V3-1 (revérification de la ronde 3, DEP-4 de la 0.95) : les fichiers d'uwsm qui écrivent XDG_CURRENT_DESKTOP
+/// (`ecrit_le_nom_de_bureau`), quelle que soit la valeur. Uwsm relit ce nom pour chaque dossier, du moins prioritaire
+/// au plus prioritaire (prepare-env.sh, `in_each_config_dir_reversed`) : un « uwsm/env » lu tôt qui le change lui fait
+/// lire, dans les dossiers suivants, des « uwsm/env-<bureau> » que Vanguard ne suit pas, puis peut le remettre ; la
+/// valeur finale de la session ne montre rien. Le nom de bureau est une donnée hostile : plutôt que de suivre la
+/// valeur, toute écriture est dite. Chaque fichier de variables d'uwsm (env, env-*, env.d, env-*.d) de chaque dossier
+/// qu'il lit (`fichiers_du_gestionnaire`, la liste de la sauvegarde), du compte ou du système, et ses greffons que le
+/// compte peut changer (leurs « quirks » passent avant les fichiers de variables). Les greffons à root seul, non :
+/// celui de Hyprland ajoute « Hyprland », un nom fixe, et rien d'autre du système n'est jugé ainsi (R-3). Un fichier
+/// masqué (lien vers /dev/null), absent ou qui n'est pas un fichier ne compte pas ; un fichier qui ne se lit pas en
+/// entier va dans `illisibles`, jamais tu. Une seule liste pour le bilan et la sauvegarde.
+fn bureau_change_par_uwsm(r: &Releveur, illisibles: &mut Vec<std::path::PathBuf>) -> Vec<std::path::PathBuf> {
+    let (fichiers, _, _) = fichiers_du_gestionnaire(r, &configs_posees(&r.gestionnaire), &dossiers_d_uwsm(r));
+    let absent = |e: &std::io::Error| {
+        matches!(
+            e.kind(),
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+        ) || e.raw_os_error() == Some(libc::ELOOP)
+    };
+    let mut trouves = Vec::new();
+    for (f, _, sorte) in fichiers {
+        if sorte != Variables::Shell
+            || std::fs::read_link(&f).is_ok_and(|v| v == Path::new("/dev/null"))
+            || (f.parent().is_some_and(|d| d.ends_with("uwsm/plugins")) && programme_de_root_seul(&r.racine, &f))
+            || std::fs::metadata(&f).is_ok_and(|m| !m.is_file())
+        {
+            continue;
+        }
+        match temoins::lire_borne(&f, AJOUT_MAX) {
+            Err(e) if absent(&e) => {}
+            Ok(lu) if lu.entier => {
+                if ecrit_le_nom_de_bureau(&String::from_utf8_lossy(&lu.octets)) {
+                    trouves.push(f);
+                }
+            }
+            _ => illisibles.push(f),
+        }
+    }
+    trouves.sort();
+    trouves.dedup();
+    trouves
+}
+
+/// V3-1 : un texte de shell écrit XDG_CURRENT_DESKTOP ailleurs qu'en le lisant (« $X », « ${X} », « ${X:-…} ») et hors
+/// d'une ligne de commentaire du shell : « X=… », « export X », « unset X », « read X », « ${X=…} », « ${X:=…} »…
+/// Lu tel qu'écrit, ses lignes continuées par « \ » jointes, et chacun décodé (`decodee` : guillemets et « \ » retirés,
+/// « \x58 » décodé) : « XDG_CURRENT_"DESKTOP"=… » se voit aussi. Plus large que le shell : un faux positif lève, il ne
+/// tait jamais. Un nom construit (« ${n}_DESKTOP », eval) ne se voit pas ici : la sauvegarde se lève déjà pour lui
+/// (`script_cache_ce_qu_il_pose`).
+fn ecrit_le_nom_de_bureau(texte: &str) -> bool {
+    const NOM: &str = "XDG_CURRENT_DESKTOP";
+    let mot = |c: Option<char>| c.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
+    let jointe = texte.replace("\\\n", "");
+    [texte.to_string(), decodee(texte), decodee(&jointe), jointe]
+        .iter()
+        .flat_map(|t| t.lines().map(str::to_string).collect::<Vec<_>>())
+        .filter(|l| !commentaire_du_shell(l))
+        .any(|l| {
+            l.match_indices(NOM).any(|(i, _)| {
+                let avant = l.get(..i).unwrap_or_default();
+                let apres = l.get(i.saturating_add(NOM.len())..).unwrap_or_default();
+                if mot(avant.chars().next_back()) || mot(apres.chars().next()) {
+                    return false;
+                }
+                let lue = (avant.ends_with('$') && !avant.ends_with("$$"))
+                    || (avant.ends_with("${") && !apres.starts_with('=') && !apres.starts_with(":="));
+                !lue
+            })
+        })
 }
 
 /// W-2 : les bases où pyxdg cherche les données d'uwsm (ses greffons ; N-1 : ses « wayland-sessions »), plus large
@@ -17044,6 +17136,136 @@ mod tests {
             }
         }
         assert!(faux.is_empty(), "noms de bureau d'uwsm : {faux:#?}");
+    }
+
+    /// V3-1 (revérification de la ronde 3, DEP-4 de la 0.95) : uwsm relit XDG_CURRENT_DESKTOP pour chaque dossier, du
+    /// moins prioritaire au plus prioritaire. Un « uwsm/env » d'un dossier lu tôt (XDG_DATA_DIRS, XDG_CONFIG_DIRS) qui
+    /// pose « Hyprland:a/b » lui fait lire « ~/.config/uwsm/env-a/b », qui remet « Hyprland » : la valeur finale ne
+    /// montre rien, Vanguard disait « Aucun lancement automatique suspect ». Toute écriture du nom dans un fichier de
+    /// variables d'uwsm, quelle que soit la valeur, du compte ou du système, ou dans un greffon que le compte peut
+    /// changer, est dite (non vérifié, non déclarable) et lève la sauvegarde. Témoins : le lire, le commenter, et le
+    /// greffon du système à root seul (celui de Hyprland ajoute « Hyprland ») ne disent rien.
+    #[test]
+    fn nom_de_bureau_change_par_un_fichier_d_uwsm_dit() {
+        const DIT: &str = "change XDG_CURRENT_DESKTOP";
+        const CACHE: &str = "export LD_PRELOAD=/opt/inerte/a.so\nexport XDG_CURRENT_DESKTOP=Hyprland\n";
+        // (nom, variables de la session, fichiers (chemin sous la racine si « / » en tête), dit)
+        type Cas<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a [(&'a str, &'a str)], bool);
+        let cas: &[Cas<'_>] = &[
+            (
+                "XDG_DATA_DIRS du compte",
+                &[("XDG_DATA_DIRS", "/home/alice/.d:/usr/share")],
+                &[
+                    (".d/uwsm/env", "export XDG_CURRENT_DESKTOP=Hyprland:a/b\n"),
+                    (".config/uwsm/env-a/b", CACHE),
+                ],
+                true,
+            ),
+            (
+                "XDG_CONFIG_DIRS du compte",
+                &[("XDG_CONFIG_DIRS", "/home/alice/.x:/etc/xdg")],
+                &[(".x/uwsm/env.d/a", "export XDG_CURRENT_DESKTOP=Hyprland:a/b\n")],
+                true,
+            ),
+            (
+                "valeur sûre, ~/.config/uwsm/env",
+                &[],
+                &[(".config/uwsm/env", "export XDG_CURRENT_DESKTOP=Hyprland\n")],
+                true,
+            ),
+            (
+                "système à root seul",
+                &[],
+                &[(
+                    "/usr/share/uwsm/env.d/a",
+                    "XDG_CURRENT_DESKTOP=Hyprland; export XDG_CURRENT_DESKTOP\n",
+                )],
+                true,
+            ),
+            (
+                "système ouvert, XDG_DATA_DIRS",
+                &[("XDG_DATA_DIRS", "/var/tmp/x:/usr/share")],
+                &[("/var/tmp/x/uwsm/env-hyprland", "unset XDG_CURRENT_DESKTOP\n")],
+                true,
+            ),
+            (
+                "nom entre guillemets",
+                &[],
+                &[(".config/uwsm/env", "export XDG_CURRENT_\"DESKTOP\"=a/b\n")],
+                true,
+            ),
+            (
+                "forme « := »",
+                &[],
+                &[(".config/uwsm/env", ": \"${XDG_CURRENT_DESKTOP:=a/b}\"\n")],
+                true,
+            ),
+            (
+                "greffon du compte",
+                &[],
+                &[(
+                    ".local/share/uwsm/plugins/hyprland.sh",
+                    "quirks_hyprland() {\n\texport XDG_CURRENT_DESKTOP=\"${XDG_CURRENT_DESKTOP}:a/b\"\n}\n",
+                )],
+                true,
+            ),
+            (
+                "témoin : lu, commenté",
+                &[],
+                &[(
+                    ".config/uwsm/env",
+                    "case \"$XDG_CURRENT_DESKTOP\" in *) ;; esac\nexport X=\"${XDG_CURRENT_DESKTOP:-a}\"\n# export XDG_CURRENT_DESKTOP=a/b\nexport OLD_XDG_CURRENT_DESKTOP=x\n",
+                )],
+                false,
+            ),
+            (
+                "témoin : greffon du système à root seul",
+                &[],
+                &[(
+                    "/usr/share/uwsm/plugins/hyprland.sh",
+                    "quirks_hyprland() {\n\texport XDG_CURRENT_DESKTOP=\"${XDG_CURRENT_DESKTOP}:Hyprland\"\n}\n",
+                )],
+                false,
+            ),
+        ];
+        let mut faux = Vec::new();
+        for (i, (nom, variables, fichiers, dit)) in cas.iter().enumerate() {
+            let m = Maison::nouvelle(&format!("uwsm-bureau-change-{i}"));
+            for (f, texte) in *fichiers {
+                let p = f.strip_prefix('/').map_or_else(|| m.chemin(f), |s| m.racine.join(s));
+                std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+                std::fs::write(p, texte).unwrap();
+            }
+            let mut variables = variables.to_vec();
+            variables.push(("XDG_CURRENT_DESKTOP", "Hyprland"));
+            let c = m.lancements_avec(&variables);
+            let vu = c.message.contains(DIT);
+            if vu != *dit
+                || (*dit && !(c.probleme >= Some(Niveau::Eleve) && crate::apprentissage::declarable(&c).is_err()))
+            {
+                faux.push(format!("{nom} : {:?} {}", c.probleme, c.message));
+            }
+        }
+        for vide in [false, true] {
+            for (f, texte) in [
+                (".config/uwsm/env", "export XDG_CURRENT_DESKTOP=Hyprland\n"),
+                ("/usr/share/uwsm/env.d/a", "export XDG_CURRENT_DESKTOP=Hyprland\n"),
+            ] {
+                let nom = format!("uwsm-bureau-change-sauvegarde-{vide}-{}", f.starts_with('/'));
+                let (m, _) = sauvegarde_d_essai(&nom, vide);
+                let p = f.strip_prefix('/').map_or_else(|| m.chemin(f), |s| m.racine.join(s));
+                std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+                std::fs::write(p, texte).unwrap();
+                let c = m.lancements_avec(&[("XDG_CURRENT_DESKTOP", "Hyprland")]);
+                if !(c.probleme == Some(Niveau::Eleve) && c.message.contains(crate::sauvegarde::SERVICE)) {
+                    faux.push(format!(
+                        "sauvegarde, {f}, env -i {vide} : {:?} {}",
+                        c.probleme, c.message
+                    ));
+                }
+            }
+        }
+        assert!(faux.is_empty(), "nom de bureau changé par uwsm : {faux:#?}");
     }
 
     /// R-2 (relecture DEP-4 de la 0.95) : un XDG_DATA_HOME posé au gestionnaire par un fichier (environment.d), absolu
