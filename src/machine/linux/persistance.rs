@@ -5534,11 +5534,19 @@ fn chemins_poses(
     // U-2, U-3 (relecture DEP-4 de la 0.95) : « XDG_DATA_HOME=/var/tmp/a:b » est le dossier « /var/tmp/a:b » pour systemd
     // et pyxdg. Avant, la valeur était coupée comme une liste : Vanguard lisait /var/tmp/a et ~/b, absents, et taisait
     // le greffon d'uwsm ou l'unité rangés sous le vrai dossier (« Aucun lancement automatique suspect »). Les lecteurs
-    // ne s'accordent pas (uwsm coupe XDG_CONFIG_HOME) : ne se résout pas, même sous « ${nom:-défaut} ».
-    if UN_SEUL_DOSSIER.contains(&nom) && valeur.contains(':') {
-        return None;
-    }
-    let valeur = if defauts {
+    // ne s'accordent pas (uwsm coupe XDG_CONFIG_HOME) : ne se résout pas.
+    //
+    // N-4 (revérification de la ronde 2, DEP-4 de la 0.95) : le « : » de « ${nom:-défaut} » est celui de la forme, pas
+    // de la valeur. Dans un fichier à root seul (`defauts`), la valeur entière « ${nom:-D} » se lit comme systemd la
+    // lit : la valeur d'avant (déjà lue) ou D, un seul dossier chacun ; « ${nom:+T} » entière : T. Avant, elle était
+    // dite non résolue, et levait la sauvegarde (faux ÉLEVÉ). Un « : » dans D ou T, ou toute autre forme : non résolu.
+    let valeur = if UN_SEUL_DOSSIER.contains(&nom) {
+        match un_seul_dossier_a_defaut(valeur, nom) {
+            Some(lue) if defauts => lue,
+            _ if valeur.contains(':') => return None,
+            _ => valeur.to_string(),
+        }
+    } else if defauts {
         defauts_lus(valeur, nom)
     } else {
         valeur.to_string()
@@ -5593,6 +5601,22 @@ fn depuis_la_maison(maison: &Path, p: &Path) -> std::path::PathBuf {
     let mut d = maison.to_path_buf();
     d.extend(p.components().filter(|c| !matches!(c, std::path::Component::CurDir)));
     d
+}
+
+/// N-4 : une valeur entière « ${nom:-D} » rendue « ${nom}:D » (la valeur d'avant, passée par `chemins_poses`, et D),
+/// ou « ${nom:+T} » rendue T ; D et T sans « : », « $ », « { » ni « } ». `None` : une autre forme.
+fn un_seul_dossier_a_defaut(valeur: &str, nom: &str) -> Option<String> {
+    let propre = |x: &str| !x.contains([':', '$', '{', '}']);
+    let dedans = |forme: &str| {
+        valeur
+            .strip_prefix(&format!("${{{nom}:{forme}"))
+            .and_then(|x| x.strip_suffix('}'))
+            .filter(|x| propre(x))
+    };
+    if let Some(d) = dedans("-") {
+        return Some(format!("${{{nom}}}:{d}"));
+    }
+    dedans("+").map(str::to_string)
 }
 
 /// W-4 : « ${nom:-défaut} » devient « ${nom}:défaut » (la valeur d'avant, déjà lue, et le défaut : plus large que
@@ -11964,6 +11988,7 @@ mod tests {
             "/var/lib/snapd/desktop/systemd/user/{}.d/x.conf",
             crate::sauvegarde::SERVICE
         );
+        let complement_opt = format!("/opt/share/systemd/user/{}.d/x.conf", crate::sauvegarde::SERVICE);
         // (nom, fichier, texte, complément posé, levée)
         let cas: &[(&str, &str, &str, Option<&str>, bool)] = &[
             ("snapd à root seul", ROOT, SNAPD, None, false),
@@ -12013,6 +12038,49 @@ mod tests {
                 "défaut imbriqué",
                 ROOT,
                 "XDG_DATA_DIRS=${XDG_DATA_DIRS:-${TRUC}}\n",
+                None,
+                true,
+            ),
+            // N-4 : un seul dossier, sous la forme à défaut.
+            (
+                "XDG_DATA_HOME à défaut, à root seul",
+                ROOT,
+                "XDG_DATA_HOME=${XDG_DATA_HOME:-/opt/share}\n",
+                None,
+                false,
+            ),
+            (
+                "XDG_CONFIG_HOME à « :+ », à root seul",
+                ROOT,
+                "XDG_CONFIG_HOME=${XDG_CONFIG_HOME:+/opt/config}\n",
+                None,
+                false,
+            ),
+            (
+                "XDG_DATA_HOME à défaut, à root seul, complément posé",
+                ROOT,
+                "XDG_DATA_HOME=${XDG_DATA_HOME:-/opt/share}\n",
+                Some(&complement_opt),
+                true,
+            ),
+            (
+                "XDG_DATA_HOME à défaut avec « : » dans le défaut",
+                ROOT,
+                "XDG_DATA_HOME=${XDG_DATA_HOME:-/opt/a:b}\n",
+                None,
+                true,
+            ),
+            (
+                "XDG_DATA_HOME : la valeur d'avant suivie d'un « : »",
+                ROOT,
+                "XDG_DATA_HOME=${XDG_DATA_HOME}:/opt/share\n",
+                None,
+                true,
+            ),
+            (
+                "XDG_DATA_HOME à défaut, du compte",
+                ".config/environment.d/10-x.conf",
+                "XDG_DATA_HOME=${XDG_DATA_HOME:-/opt/share}\n",
                 None,
                 true,
             ),
