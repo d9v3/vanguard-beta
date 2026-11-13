@@ -704,10 +704,12 @@ enum Tenue {
     /// contenu étranger était dit « l'ancienne copie est remise en place ».
     #[cfg(unix)]
     Fichier(std::fs::File, blake3::Hash),
-    /// Un lien symbolique : ce qu'il désigne, qui est tout son contenu (deux liens qui désignent la même chose se
-    /// valent).
+    /// Un lien symbolique : ce qu'il désigne (deux liens qui désignent la même chose se valent), et le fichier ordinaire
+    /// au bout, tenu ouvert avec son empreinte comme `Fichier`. M-1 (relecture DEP-4 de la 0.95) : c'est ce fichier qui
+    /// est lancé. Avant, seul le texte du lien était retenu : ce fichier réécrit (ou remplacé) pendant la mise à jour,
+    /// le lien était encore dit « l'ancienne copie est remise en place » ou « reste en place ».
     #[cfg(unix)]
-    Lien(PathBuf),
+    Lien(PathBuf, std::fs::File, blake3::Hash),
     /// Ailleurs (Windows) : ses octets (l'identité du fichier demanderait l'API de Windows).
     #[cfg(not(unix))]
     Octets(Vec<u8>),
@@ -719,26 +721,25 @@ impl Tenue {
         #[cfg(unix)]
         {
             if m.file_type().is_symlink() {
-                return std::fs::read_link(cible).map(Tenue::Lien);
+                let vers = std::fs::read_link(cible)?;
+                // Le fichier au bout, en suivant le lien ; puis le lien relu : changé entre-temps (un autre programme),
+                // ce fichier n'est peut-être pas celui qu'il désigne.
+                let f = ouvrir_ordinaire(cible, 0)?;
+                if std::fs::read_link(cible)? != vers {
+                    return Err(std::io::Error::other(tr!(
+                        "le lien a changé pendant sa mise de côté",
+                        "the link changed while being set aside"
+                    )));
+                }
+                let empreinte = empreinte_tenue(&f)?;
+                return Ok(Tenue::Lien(vers, f, empreinte));
             }
-            let pas_un_fichier = || {
-                std::io::Error::other(tr!(
-                    "la copie en place n'est pas un fichier (un dossier ?)",
-                    "the copy in place is not a file (a folder?)"
-                ))
-            };
             if !m.is_file() {
                 return Err(pas_un_fichier());
             }
-            // Sans suivre de lien (posé entre-temps) ni attendre (un tube nommé posé entre-temps).
-            let mut options = std::fs::OpenOptions::new();
-            options.read(true);
-            std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NOFOLLOW | libc::O_NONBLOCK);
-            let f = options.open(cible)?;
-            if !f.metadata()?.is_file() {
-                return Err(pas_un_fichier());
-            }
-            let empreinte = blake3::hash(&relire(&f)?);
+            // Sans suivre de lien (posé entre-temps).
+            let f = ouvrir_ordinaire(cible, libc::O_NOFOLLOW)?;
+            let empreinte = empreinte_tenue(&f)?;
             Ok(Tenue::Fichier(f, empreinte))
         }
         #[cfg(not(unix))]
@@ -752,19 +753,14 @@ impl Tenue {
 
     /// `chemin` est-il elle, à l'instant ? Sous Unix, un fichier ordinaire du même appareil et du même inode que le
     /// descripteur tenu (ce numéro ne peut être celui d'aucun autre fichier tant qu'il est tenu), ou un lien qui désigne
-    /// la même chose. Ailleurs, les mêmes octets. Faux si `chemin` ne se lit pas.
+    /// la même chose (le fichier au bout est vérifié par `intacte`). Ailleurs, les mêmes octets. Faux si `chemin` ne se
+    /// lit pas.
     fn est(&self, chemin: &Path) -> bool {
         match self {
             #[cfg(unix)]
-            Tenue::Fichier(f, _) => {
-                use std::os::unix::fs::MetadataExt;
-                match (f.metadata(), std::fs::symlink_metadata(chemin)) {
-                    (Ok(a), Ok(b)) => b.is_file() && a.dev() == b.dev() && a.ino() == b.ino(),
-                    _ => false,
-                }
-            }
+            Tenue::Fichier(f, _) => std::fs::symlink_metadata(chemin).is_ok_and(|b| b.is_file()) && tenu_est(f, chemin),
             #[cfg(unix)]
-            Tenue::Lien(vers) => {
+            Tenue::Lien(vers, _, _) => {
                 std::fs::symlink_metadata(chemin).is_ok_and(|m| m.file_type().is_symlink())
                     && std::fs::read_link(chemin).ok().as_ref() == Some(vers)
             }
@@ -775,7 +771,7 @@ impl Tenue {
 
     /// Ce qu'elle contient : ses octets, relus depuis le début par ce qui la tient (même si plus aucun nom ne la
     /// désigne), jamais plus de `TAILLE_MAX`, et seulement s'ils sont encore ceux mis de côté (C-1) ; ou, lien
-    /// symbolique, ce qu'il désigne.
+    /// symbolique, ce qu'il désigne, seulement si le fichier tenu au bout n'a pas changé (M-1).
     #[cfg_attr(not(unix), allow(clippy::unnecessary_wraps))] // même signature que sous Unix, où la relecture peut échouer
     fn contenu(&self) -> std::io::Result<Contenu> {
         match self {
@@ -788,24 +784,117 @@ impl Tenue {
                 Ok(Contenu::Octets(o))
             }
             #[cfg(unix)]
-            Tenue::Lien(vers) => Ok(Contenu::Lien(vers.clone())),
+            Tenue::Lien(vers, f, e) => {
+                if empreinte_tenue(f)? != *e {
+                    return Err(std::io::Error::other(designe_change()));
+                }
+                Ok(Contenu::Lien(vers.clone()))
+            }
             #[cfg(not(unix))]
             Tenue::Octets(o) => Ok(Contenu::Octets(o.clone())),
         }
     }
 
-    /// Ses octets sont-ils encore ceux mis de côté (C-1) ? Relus par ce qui la tient ; faux s'ils ne se relisent pas. Un
-    /// lien (ce qu'il désigne est vérifié par `est`) ou, ailleurs, des octets gardés en mémoire ne changent pas.
-    fn intacte(&self) -> bool {
+    /// Ce qui est lancé à `ou` (où `est` l'a reconnue) est-il encore ce qu'elle était à sa mise de côté (C-1) ? Un
+    /// fichier : ses octets, relus par ce qui le tient. Un lien (M-1) : le fichier qu'il désigne à `ou`, à l'instant, est
+    /// celui tenu, et ses octets n'ont pas changé. Faux s'ils ne se relisent pas. Ailleurs, des octets gardés en mémoire
+    /// ne changent pas.
+    fn intacte(&self, ou: &Path) -> bool {
         match self {
             #[cfg(unix)]
-            Tenue::Fichier(f, empreinte) => relire(f).is_ok_and(|o| blake3::hash(&o) == *empreinte),
+            Tenue::Fichier(f, e) => empreinte_tenue(f).is_ok_and(|lu| lu == *e),
             #[cfg(unix)]
-            Tenue::Lien(_) => true,
+            Tenue::Lien(_, f, e) => {
+                std::fs::metadata(ou).is_ok_and(|b| b.is_file())
+                    && tenu_designe(f, ou)
+                    && empreinte_tenue(f).is_ok_and(|lu| lu == *e)
+            }
             #[cfg(not(unix))]
-            Tenue::Octets(_) => true,
+            Tenue::Octets(_) => {
+                let _ = ou;
+                true
+            }
         }
     }
+
+    /// Un lien symbolique ? (Réécrit à sa place, il ne désigne le fichier tenu que par son texte : `intacte` le revoit.)
+    fn est_un_lien(&self) -> bool {
+        #[cfg(unix)]
+        {
+            matches!(self, Tenue::Lien(..))
+        }
+        #[cfg(not(unix))]
+        {
+            false
+        }
+    }
+
+    /// `ou` est elle (`est`), mais ce qui y est lancé a changé (`intacte`) : ce qui est dit, sans le conseil.
+    fn changee(&self, ou: &Path) -> String {
+        let ou = affichable(&ou.display().to_string());
+        if self.est_un_lien() {
+            trf!(
+                "{ou} est le lien de l'ancienne copie, mais {} ; ne le lancez pas",
+                "{ou} is the old copy's link, but {}; do not run it",
+                designe_change()
+            )
+        } else {
+            trf!(
+                "{ou} est le fichier de l'ancienne copie, mais {} ; ne le lancez pas",
+                "{ou} is the old copy's file, but {}; do not run it",
+                contenu_change()
+            )
+        }
+    }
+}
+
+/// La copie en place n'est pas un fichier ordinaire.
+#[cfg(unix)]
+fn pas_un_fichier() -> std::io::Error {
+    std::io::Error::other(tr!(
+        "la copie en place n'est pas un fichier (un dossier ?)",
+        "the copy in place is not a file (a folder?)"
+    ))
+}
+
+/// `chemin` ouvert en lecture sans attendre (un tube nommé posé entre-temps), avec `drapeaux` en plus ; un fichier
+/// ordinaire, ou une erreur.
+#[cfg(unix)]
+fn ouvrir_ordinaire(chemin: &Path, drapeaux: libc::c_int) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NONBLOCK | drapeaux);
+    let f = options.open(chemin)?;
+    if !f.metadata()?.is_file() {
+        return Err(pas_un_fichier());
+    }
+    Ok(f)
+}
+
+/// Le fichier tenu par `f` est-il celui de `chemin` (même appareil, même inode), sans suivre de lien ?
+#[cfg(unix)]
+fn tenu_est(f: &std::fs::File, chemin: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (f.metadata(), std::fs::symlink_metadata(chemin)) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+        _ => false,
+    }
+}
+
+/// Le fichier tenu par `f` est-il celui que désigne `chemin`, en suivant les liens ?
+#[cfg(unix)]
+fn tenu_designe(f: &std::fs::File, chemin: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (f.metadata(), std::fs::metadata(chemin)) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+        _ => false,
+    }
+}
+
+/// Plus de `TAILLE_MAX` (R-9, relecture DEP-4 de la 0.95 : la cause dite, pour la refuser en connaissance).
+#[cfg(unix)]
+fn trop_grosse() -> std::io::Error {
+    std::io::Error::other(tr!("elle dépasse 512 Mio", "it exceeds 512 MiB"))
 }
 
 /// Les octets du fichier tenu par `f`, relus depuis le début, jamais plus de `TAILLE_MAX`.
@@ -817,9 +906,36 @@ fn relire(f: &std::fs::File) -> std::io::Result<Vec<u8>> {
     let mut o = Vec::new();
     f.take(TAILLE_MAX.saturating_add(1)).read_to_end(&mut o)?;
     if u64::try_from(o.len()).unwrap_or(u64::MAX) > TAILLE_MAX {
-        return Err(std::io::Error::other(tr!("trop grosse", "too large")));
+        return Err(trop_grosse());
     }
     Ok(o)
+}
+
+/// L'empreinte BLAKE3 des octets du fichier tenu par `f`, relus depuis le début par morceaux, jamais plus de
+/// `TAILLE_MAX`. R-9 (relecture DEP-4 de la 0.95) : à la mise de côté et à chaque vérification, sans tenir la copie
+/// entière en mémoire (jusqu'à 512 Mio) ; seule la réécriture (`contenu`) la relit en entier, pour l'écrire.
+#[cfg(unix)]
+fn empreinte_tenue(f: &std::fs::File) -> std::io::Result<blake3::Hash> {
+    use std::io::{Read, Seek};
+    let mut f = f;
+    f.seek(std::io::SeekFrom::Start(0))?;
+    let mut hache = blake3::Hasher::new();
+    let mut tampon = vec![0_u8; 1 << 16];
+    let mut lu: u64 = 0;
+    loop {
+        let n = match f.read(&mut tampon) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        lu = lu.saturating_add(u64::try_from(n).unwrap_or(u64::MAX));
+        if lu > TAILLE_MAX {
+            return Err(trop_grosse());
+        }
+        hache.update(tampon.get(..n).unwrap_or_default());
+    }
+    Ok(hache.finalize())
 }
 
 /// Pourquoi le fichier de l'ancienne copie n'est plus elle (C-1).
@@ -827,6 +943,14 @@ fn contenu_change() -> &'static str {
     tr!(
         "son contenu a changé pendant la mise à jour (un autre programme l'a réécrit) : ce n'est plus sûrement l'ancienne copie",
         "its content changed during the update (another program rewrote it), so it is no longer surely the old copy"
+    )
+}
+
+/// Pourquoi le lien de l'ancienne copie ne lance plus elle (M-1).
+fn designe_change() -> &'static str {
+    tr!(
+        "le fichier qu'il désigne a changé pendant la mise à jour (réécrit ou remplacé par un autre programme) : ce n'est plus sûrement l'ancienne copie",
+        "the file it points to changed during the update (rewritten or replaced by another program), so it is no longer surely the old copy"
     )
 }
 
@@ -915,7 +1039,15 @@ impl Precedente {
                 )));
             }
             Ok(m) => {
-                let tenue = Tenue::de(cible, &m).map_err(|e| pas_de_cote(&e))?;
+                // R-9 (relecture DEP-4 de la 0.95) : la copie en place nommée, avec le geste à faire. Avant, le
+                // message nommait le nom de côté, alors que c'est elle qui ne se lit pas (ou dépasse 512 Mio).
+                let tenue = Tenue::de(cible, &m).map_err(|e| {
+                    refus(trf!(
+                        "la copie en place, {}, ne se met pas de côté ({e}) et ne pourrait donc pas être remise : mettez-la à l'abri ou retirez-la, puis relancez la mise à jour",
+                        "the copy in place, {}, cannot be set aside ({e}), so it could not be put back: move it somewhere safe or remove it, then run the update again",
+                        affichable(&cible.display().to_string())
+                    ))
+                })?;
                 // V-1 (relecture du recontrôle 2, 0.95) : ce nom n'est effacé que s'il est un second nom de la copie en
                 // place (le reste d'une mise à jour interrompue avant le renommage : rien ne s'y perd). Avant, il
                 // l'était toujours, avant même de savoir si le lien se ferait : l'ancienne copie gardée là après une
@@ -970,13 +1102,17 @@ impl Precedente {
         };
         // C-1 (contrôle 2 du sous-lot c2 de la 0.95) : le fichier de l'ancienne copie est à `ou`, mais ses octets ne
         // sont plus ceux mis de côté (réécrit sur place par un autre programme). Avant, il était dit « l'ancienne
-        // copie », remise ou restée en place.
-        let changee = |ou: &Path| {
+        // copie », remise ou restée en place. M-1 : de même pour un lien dont le fichier au bout a changé.
+        let changee =
+            |tenue: &Tenue, ou: &Path| trf!("{}, refaites la mise à jour", "{}, redo the update", tenue.changee(ou));
+        // R-5 (relecture DEP-4 de la 0.95) : l'ancienne copie changée, laissée sous son nom de côté (jamais posée à
+        // la cible) : la mise à jour suivante refuse tant qu'elle y est, d'où le geste dit d'abord.
+        let laissee = |tenue: &Tenue, pourquoi: String| {
             trf!(
-                "{} est le fichier de l'ancienne copie, mais {} ; ne le lancez pas, refaites la mise à jour",
-                "{} is the old copy's file, but {}; do not run it, redo the update",
-                affichable(&ou.display().to_string()),
-                contenu_change()
+                "l'ancienne copie n'est pas remise{pourquoi} ; {} ; déplacez-la ailleurs avant de refaire la mise à jour, qui refuse tant qu'elle y est ; {}",
+                "the old copy is not put back{pourquoi}; {}; move it elsewhere before redoing the update, which refuses while it is there; {}",
+                tenue.changee(&self.de_cote),
+                ni_l_une_ni_l_autre()
             )
         };
         match self.etat {
@@ -987,8 +1123,8 @@ impl Precedente {
                     if tenue.est(&self.de_cote) {
                         let _ = std::fs::remove_file(&self.de_cote);
                     }
-                    if !tenue.intacte() {
-                        return changee(cible);
+                    if !tenue.intacte(cible) {
+                        return changee(&tenue, cible);
                     }
                     return tr!("l'ancienne copie reste en place", "the old copy stays in place").into();
                 }
@@ -999,14 +1135,20 @@ impl Precedente {
                 // nom effacé pendant la mise à jour (un autre programme), la copie étrangère restait installée, et le
                 // message la disait « gardée sous » un nom vide (ou un fichier étranger).
                 if tenue.est(&self.de_cote) {
+                    // R-5 : vérifiée avant d'être renommée à la cible. Avant, elle l'était seulement après : un contenu
+                    // changé était posé à la place du programme par Vanguard lui-même, puis dit « changé ».
+                    if !tenue.intacte(&self.de_cote) {
+                        return laissee(&tenue, String::new());
+                    }
                     match std::fs::rename(&self.de_cote, cible) {
                         Ok(()) if tenue.est(cible) => {
                             // Deux noms d'un même fichier : le renommage ne fait rien (POSIX) et le second nom reste.
                             if tenue.est(&self.de_cote) {
                                 let _ = std::fs::remove_file(&self.de_cote);
                             }
-                            if !tenue.intacte() {
-                                return changee(cible);
+                            // Revérifiée : son contenu a pu changer entre les deux.
+                            if !tenue.intacte(cible) {
+                                return changee(&tenue, cible);
                             }
                             return tr!(
                                 "l'ancienne copie est remise en place",
@@ -1014,13 +1156,8 @@ impl Precedente {
                             )
                             .into();
                         }
-                        Err(e) if tenue.est(&self.de_cote) && !tenue.intacte() => {
-                            return trf!(
-                                "l'ancienne copie n'est pas remise ({e}) ; {} ; {}",
-                                "the old copy is not put back ({e}); {}; {}",
-                                changee(&self.de_cote),
-                                ni_l_une_ni_l_autre()
-                            );
+                        Err(e) if tenue.est(&self.de_cote) && !tenue.intacte(&self.de_cote) => {
+                            return laissee(&tenue, format!(" ({e})"));
                         }
                         // La mise à jour suivante refuse tant que ce nom est pris (V-1) : à mettre à l'abri avant.
                         Err(e) if tenue.est(&self.de_cote) => {
@@ -1047,6 +1184,8 @@ impl Precedente {
                     String::new()
                 };
                 match reecrire(&tenue, cible) {
+                    // M-1 : un lien réécrit ne désigne le fichier tenu que par son texte : revu à la cible.
+                    Reecrite::Faite if tenue.est_un_lien() && !tenue.intacte(cible) => changee(&tenue, cible),
                     Reecrite::Faite => trf!(
                         "l'ancienne copie est réécrite à sa place, depuis ce que Vanguard en tenait (un autre programme a changé ses noms pendant la mise à jour){etranger}",
                         "the old copy is rewritten in its place, from what Vanguard held of it (another program changed its names during the update){etranger}",
@@ -2282,9 +2421,14 @@ mod tests {
                 dit.contains("ne le lancez pas") || dit.contains("ne la lancez pas"),
                 "{cas} : {dit}"
             );
-            if perdu {
-                // Rien d'étranger réécrit à sa place : la copie posée y est encore.
+            if perdu || renomme {
+                // Rien d'étranger réécrit ni renommé à sa place (R-5) : la copie posée y est encore.
                 assert_ne!(std::fs::read(&cible).ok(), Some(etranger.clone()), "{cas} : {dit}");
+            }
+            if (renomme || bloquee) && !perdu {
+                // R-5 : laissée sous son nom de côté, avec le geste à faire avant la mise à jour suivante.
+                assert_eq!(std::fs::read(&de_cote).ok(), Some(etranger.clone()), "{cas} : {dit}");
+                assert!(dit.contains("avant de refaire la mise à jour"), "{cas} : {dit}");
             }
         }
         assert_eq!(remise(false, false, false, false), "l'ancienne copie reste en place");
@@ -2298,6 +2442,133 @@ mod tests {
             "{dit}"
         );
         assert!(!dit.contains(" : ") && !dit.contains(" ; "), "{dit}");
+        let _ = std::fs::remove_dir_all(&racine);
+    }
+
+    /// M-1 (relecture DEP-4 de la 0.95) : la copie en place est un lien symbolique, et le fichier qu'il désigne est
+    /// réécrit sur place, ou remplacé par un autre, pendant la mise à jour (un autre programme). Avant, seul le texte du
+    /// lien était retenu : « l'ancienne copie est remise en place » (L1), « reste en place » (L2) ou « réécrite », alors
+    /// que ce qui serait lancé était le contenu étranger. Maintenant le fichier au bout est tenu ouvert avec son
+    /// empreinte, et revu à la fin. Témoins : sans changement, les trois sont dits.
+    #[cfg(unix)]
+    #[test]
+    fn lien_vers_un_fichier_change_jamais_dit_l_ancienne() {
+        let racine = crate::socle::dossier_local().join("essai-lien-change");
+        let cible = racine.join("bin").join(NOM);
+        let de_cote = cible.with_file_name(format!("{NOM}.precedent"));
+        let reel = racine.join("ailleurs").join("vanguard-reel");
+        let etranger = avec_entete("faux ", "0.80.0; etranger");
+        // `renomme` : la copie posée a pris la place ; `perdu` : le second nom effacé ensuite ; `change` : le fichier
+        // désigné réécrit sur place ; `remplace` : remplacé par un autre fichier, sous le même nom. Rend ce qui est dit
+        // et ce que lancerait la cible.
+        let remise = |renomme: bool, perdu: bool, change: bool, remplace: bool| {
+            let _ = std::fs::remove_dir_all(&racine);
+            faux_programme(&reel, Some("0.79.0"));
+            std::fs::create_dir_all(racine.join("bin")).unwrap();
+            std::os::unix::fs::symlink(&reel, &cible).unwrap();
+            let precedente = Precedente::retenir(&cible).expect("mise de côté");
+            if change {
+                std::fs::write(&reel, &etranger).unwrap();
+            }
+            if remplace {
+                std::fs::remove_file(&reel).unwrap();
+                std::fs::write(&reel, &etranger).unwrap();
+            }
+            if perdu {
+                std::fs::remove_file(&de_cote).unwrap();
+            }
+            if renomme {
+                std::fs::remove_file(&cible).unwrap();
+                faux_programme(&cible, Some("0.80.0"));
+            }
+            let dit = precedente.remettre(&cible);
+            (dit, std::fs::read(&cible).ok())
+        };
+        for (renomme, perdu) in [(false, false), (true, false), (true, true)] {
+            for (change, remplace) in [(true, false), (false, true)] {
+                let cas =
+                    format!("renommée {renomme}, second nom perdu {perdu}, réécrit {change}, remplacé {remplace}");
+                let (dit, lance) = remise(renomme, perdu, change, remplace);
+                for faux in ["reste en place", "remise en place", "réécrite", "gardée sous"] {
+                    assert!(
+                        !dit.contains(faux),
+                        "{cas}, « {faux} » d'un lien vers un contenu changé : {dit}"
+                    );
+                }
+                assert!(dit.contains("le fichier qu'il désigne a changé"), "{cas} : {dit}");
+                assert!(
+                    dit.contains("ne le lancez pas") || dit.contains("ne la lancez pas"),
+                    "{cas} : {dit}"
+                );
+                if renomme && !perdu {
+                    // R-5 : le lien laissé de côté, jamais posé à la cible.
+                    assert_ne!(lance, Some(etranger.clone()), "{cas} : {dit}");
+                    assert!(dit.contains("avant de refaire la mise à jour"), "{cas} : {dit}");
+                }
+            }
+        }
+        let ancienne = Some(avec_entete("prog ", "0.79.0; fin"));
+        let temoins = [
+            ((false, false), "l'ancienne copie reste en place"),
+            ((true, false), "l'ancienne copie est remise en place"),
+        ];
+        for ((renomme, perdu), attendu) in temoins {
+            assert_eq!(
+                remise(renomme, perdu, false, false),
+                (attendu.to_string(), ancienne.clone())
+            );
+        }
+        let (dit, lance) = remise(true, true, false, false);
+        assert!(dit.starts_with("l'ancienne copie est réécrite à sa place"), "{dit}");
+        assert_eq!(lance, ancienne, "{dit}");
+        let (dit, _) = crate::langue::en_anglais(|| remise(true, false, false, true));
+        assert!(dit.contains("the file it points to changed"), "{dit}");
+        assert!(!dit.contains(" : ") && !dit.contains(" ; "), "{dit}");
+        let _ = std::fs::remove_dir_all(&racine);
+    }
+
+    /// R-9 (relecture DEP-4 de la 0.95) : une copie en place qui ne se tient pas (plus de 512 Mio, ou un lien vers
+    /// rien) arrête la mise à jour avant de rien remplacer. Avant, le message nommait le nom de côté (`…precedent`),
+    /// sans geste à faire ; maintenant il nomme la copie en place, la cause, et dit de la mettre à l'abri.
+    #[cfg(unix)]
+    #[test]
+    fn copie_qui_ne_se_tient_pas_nommee_avec_le_geste() {
+        let racine = crate::socle::dossier_local().join("essai-copie-pas-tenue");
+        let _ = std::fs::remove_dir_all(&racine);
+        let cible = racine.join("bin").join(NOM);
+        let de_cote = cible.with_file_name(format!("{NOM}.precedent"));
+        // Un fichier creux : 512 Mio et un octet, sans les écrire sur le disque.
+        faux_programme(&cible, Some("0.79.0"));
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&cible)
+            .unwrap()
+            .set_len(TAILLE_MAX + 1)
+            .unwrap();
+        let gros = Precedente::retenir(&cible)
+            .err()
+            .expect("une copie de plus de 512 Mio retenue")
+            .to_string();
+        std::fs::remove_file(&cible).unwrap();
+        std::os::unix::fs::symlink(racine.join("rien"), &cible).unwrap();
+        let vers_rien = Precedente::retenir(&cible)
+            .err()
+            .expect("un lien vers rien retenu")
+            .to_string();
+        for (cas, dit) in [("plus de 512 Mio", &gros), ("lien vers rien", &vers_rien)] {
+            assert!(
+                dit.contains(&format!("la copie en place, {},", cible.display())),
+                "{cas} : {dit}"
+            );
+            assert!(
+                dit.contains("à l'abri") && !dit.contains(&format!("{NOM}.precedent")),
+                "{cas} : {dit}"
+            );
+        }
+        assert!(gros.contains("512 Mio"), "{gros}");
+        assert!(std::fs::symlink_metadata(&de_cote).is_err(), "{vers_rien}");
+        let en = crate::langue::en_anglais(|| Precedente::retenir(&cible).err().unwrap().to_string());
+        assert!(en.contains("somewhere safe") && !en.contains(" : "), "{en}");
         let _ = std::fs::remove_dir_all(&racine);
     }
 
