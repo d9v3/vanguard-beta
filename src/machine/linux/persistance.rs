@@ -1331,7 +1331,25 @@ pub(super) fn persistance_dans(
             ),
         );
     }
-    let sortes = fichiers_de_configuration(&t.r);
+    let (sortes, illisibles) = fichiers_de_configuration(&t.r);
+    // S-3 (re-contrôle 2 0.95) : un dossier où uwsm cherche ses fichiers de variables (XDG_CONFIG_DIRS, XDG_DATA_DIRS)
+    // qui ne se lit pas : ce qu'il y poserait n'est pas jugé, c'est dit (non vérifié), jamais compté comme sain.
+    for d in illisibles {
+        let ou = crate::ui::affichable(&t.r.montre(&d));
+        let source = format!("uwsm illisible {}", t.r.montre(&d));
+        constat_sans_ligne(
+            &mut t,
+            &source,
+            trf!(
+                "{ou} ne se lit pas : les fichiers de variables qu'uwsm y lirait ne sont pas jugés (non vérifié)",
+                "{ou} cannot be read: the variable files uwsm would read there are not checked (not verified)"
+            ),
+            trf!(
+                "{ou} ne se lit pas : l'alerte ne se déclare pas normale tant qu'il ne se lit pas",
+                "{ou} cannot be read: the alert cannot be declared normal while it cannot be read"
+            ),
+        );
+    }
     let mut configuration: Vec<std::path::PathBuf> = sortes.iter().map(|(f, _)| f.clone()).collect();
     let sortes_lues = sortes.clone();
     let (environnement, hypr_lus, hypr_non_suivies, shell_inclus) = environnement(&t.r, sortes, hypr.clone());
@@ -5332,8 +5350,9 @@ fn lire_prechargement(
 }
 
 /// Les fichiers de configuration des sessions (environnement, profils des shells, uwsm), du système puis du compte,
-/// chacun avec sa sorte, qui vient du lieu où il est trouvé (X-1).
-fn fichiers_de_configuration(r: &Releveur) -> Vec<(std::path::PathBuf, Variables)> {
+/// chacun avec sa sorte, qui vient du lieu où il est trouvé (X-1) ; et les dossiers où leurs lecteurs cherchent qui
+/// ne se lisent pas, que le bilan ne dit pas déjà (S-3).
+fn fichiers_de_configuration(r: &Releveur) -> (Vec<(std::path::PathBuf, Variables)>, Vec<std::path::PathBuf>) {
     let h = &r.maison;
     let etc = |chemin: &str| r.racine.join(chemin);
     let shell = |f: std::path::PathBuf| (f, Variables::Shell);
@@ -5456,16 +5475,16 @@ fn fichiers_de_configuration(r: &Releveur) -> Vec<(std::path::PathBuf, Variables
     // R-4 (re-contrôle 0.95, angle lecture) : les mêmes lecteurs cherchent ailleurs que dans ~/.config : sous le
     // XDG_CONFIG_HOME de la session, sous un XDG_CONFIG_HOME ou XDG_CONFIG_DIRS posé au gestionnaire de systemd du
     // compte, et uwsm sous chaque XDG_CONFIG_DIRS et XDG_DATA_DIRS (uwsm 0.27, prepare-env.sh). La liste est celle de
-    // la sauvegarde (`fichiers_du_gestionnaire`) : ses fichiers du compte qui ne sont pas déjà jugés, chacun selon le
-    // format du dossier où il est trouvé (X-1). ~/.config garde sa liste d'avant ; ~/.pam_environment ne se juge pas
-    // ici (comme avant).
+    // la sauvegarde (`fichiers_du_gestionnaire`) : ses fichiers que le compte peut changer (S-3 plus bas) qui ne sont
+    // pas déjà jugés, chacun selon le format du dossier où il est trouvé (X-1). ~/.config garde sa liste d'avant ;
+    // ~/.pam_environment ne se juge pas ici (comme avant).
     let mut donnees: Vec<std::path::PathBuf> = r.config_systeme.iter().chain(&r.donnees_systeme).cloned().collect();
     for (v, d) in &r.gestionnaire {
         if ["XDG_DATA_DIRS", "XDG_CONFIG_DIRS"].contains(v) && !donnees.contains(d) {
             donnees.push(d.clone());
         }
     }
-    let (ailleurs, _) = fichiers_du_gestionnaire(r, &configs_posees(&r.gestionnaire), &donnees);
+    let (ailleurs, illisibles) = fichiers_du_gestionnaire(r, &configs_posees(&r.gestionnaire), &donnees);
     let deja_lus = [
         ".config/uwsm",
         ".config/environment.d",
@@ -5473,9 +5492,15 @@ fn fichiers_de_configuration(r: &Releveur) -> Vec<(std::path::PathBuf, Variables
         ".pam_environment",
     ]
     .map(|d| h.join(d));
+    // S-3 (re-contrôle 2 0.95, angle lecture) : « du compte » veut dire « que le compte peut changer », pas « sous son
+    // dossier personnel ». Un fichier lu ailleurs (un XDG_DATA_DIRS dans /var/tmp, un disque amovible, un dossier du
+    // système ouvert à tous) se juge aussi dès que root n'est pas seul à pouvoir le changer, lui ou un dossier de son
+    // chemin réel, ou que ses droits ne se jugent pas (`programme_de_root_seul`, la même règle que la sauvegarde).
     let mut ailleurs: Vec<(std::path::PathBuf, Variables)> = ailleurs
         .into_iter()
-        .filter(|(f, du_compte, _)| *du_compte && !deja_lus.iter().any(|d| f.starts_with(d)))
+        .filter(|(f, du_compte, _)| {
+            (*du_compte || !programme_de_root_seul(&r.racine, f)) && !deja_lus.iter().any(|d| f.starts_with(d))
+        })
         .map(|(f, _, sorte)| (f, sorte))
         .collect();
     // Dans l'ordre des noms, comme plus haut.
@@ -5485,7 +5510,13 @@ fn fichiers_de_configuration(r: &Releveur) -> Vec<(std::path::PathBuf, Variables
             configuration.push((f, sorte));
         }
     }
-    configuration
+    // Les dossiers de cette liste qui ne se lisent pas, sauf ceux que le bilan dit déjà (`gestionnaire_non_resolu`) :
+    // ce qu'ils posent n'est pas jugé, c'est dit (non vérifié), jamais tu.
+    let illisibles = illisibles
+        .into_iter()
+        .filter(|d| !r.gestionnaire_non_resolu.iter().any(|(x, _)| x == d))
+        .collect();
+    (configuration, illisibles)
 }
 
 /// L'identité du compte qui lit (celle de /proc/self) ; dans les essais, celle qu'ils choisissent (1000 sinon).
@@ -15328,6 +15359,85 @@ mod tests {
         m.ecrire(".c/uwsm/env", "export EDITOR=nvim\n");
         let c = m.lancements_avec(&session);
         assert!(!c.message.contains(":1 précharge"), "{}", c.message);
+    }
+
+    /// S-3 (re-contrôle 2 0.95, angle lecture) : uwsm lit « uwsm/env… » sous chaque XDG_CONFIG_DIRS et XDG_DATA_DIRS
+    /// (uwsm 0.27, prepare-env.sh, `get_all_config_dirs_extended`). Un tel dossier que le compte peut changer hors de
+    /// son dossier personnel (ici /var/tmp/x, à lui), de la session ou posé par environment.d, se juge comme ceux du
+    /// dossier personnel : la pose en clair se lève à sa ligne. De même un fichier du gestionnaire rangé dans un
+    /// dossier du système que root n'est pas seul à pouvoir changer (/run/environment.d). Témoins : hors de « uwsm »,
+    /// rien ; sous /usr/share, que la racine d'essai tient pour à root seul (`programme_de_root_seul`), rien non plus.
+    #[test]
+    fn fichiers_de_variables_que_le_compte_change_hors_de_la_maison_juges() {
+        // Sans « export » : valable dans les deux formats (uwsm lit ses fichiers sous « set -a »).
+        const POSE: &str = "LD_PRELOAD=/opt/inerte/a.so\n";
+        // Les dossiers nommés par la session.
+        const DONNEES: &[(&str, &str)] = &[("XDG_DATA_DIRS", "/var/tmp/x:/usr/share")];
+        const CONFIG: &[(&str, &str)] = &[("XDG_CONFIG_DIRS", "/var/tmp/x:/etc/xdg")];
+        const CONFIG_SEUL: &[(&str, &str)] = &[("XDG_CONFIG_DIRS", "/var/tmp/x")];
+        // Les mêmes, posés par une ligne de ~/.config/environment.d.
+        const POSE_DONNEES: Option<&str> = Some("XDG_DATA_DIRS=/var/tmp/x:/usr/share\n");
+        const POSE_CONFIG: Option<&str> = Some("XDG_CONFIG_DIRS=/var/tmp/x\n");
+        // (variables de la session, ligne de ~/.config/environment.d, fichier sous la racine, levé)
+        type Cas = (
+            &'static [(&'static str, &'static str)],
+            Option<&'static str>,
+            &'static str,
+            bool,
+        );
+        let cas: &[Cas] = &[
+            (DONNEES, None, "var/tmp/x/uwsm/env", true),
+            (DONNEES, None, "var/tmp/x/uwsm/env.d/a", true),
+            (CONFIG, None, "var/tmp/x/uwsm/env", true),
+            (CONFIG_SEUL, None, "var/tmp/x/uwsm/env-hyprland.d/b", true),
+            (&[], POSE_DONNEES, "var/tmp/x/uwsm/env", true),
+            (&[], POSE_DONNEES, "var/tmp/x/uwsm/env.d/a", true),
+            (&[], POSE_CONFIG, "var/tmp/x/uwsm/env.d/a", true),
+            (&[], None, "run/environment.d/50-x.conf", true),
+            (DONNEES, None, "var/tmp/x/autre/env", false),
+            (&[], None, "usr/share/uwsm/env.d/10-x", false),
+        ];
+        let mut faux = Vec::new();
+        for (i, (session, pose, fichier, leve)) in cas.iter().enumerate() {
+            let m = Maison::nouvelle(&format!("xdg-du-compte-{i}"));
+            if let Some(p) = pose {
+                m.ecrire(".config/environment.d/10-x.conf", p);
+            }
+            let f = m.racine.join(fichier);
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(&f, POSE).unwrap();
+            let c = m.lancements_avec(session);
+            let dit = c.probleme >= Some(Niveau::Eleve) && c.message.contains(&format!("{fichier}:1 précharge"));
+            if dit != *leve {
+                faux.push(format!(
+                    "{fichier} ({session:?}, {pose:?}) : {:?} {}",
+                    c.probleme, c.message
+                ));
+            }
+        }
+        assert!(faux.is_empty(), "que le compte change : {faux:#?}");
+    }
+
+    /// S-3 : un dossier d'uwsm d'un XDG_DATA_DIRS hors du dossier personnel qui ne se lit pas est dit (non vérifié),
+    /// jamais tu, et l'alerte ne se déclare pas normale.
+    #[cfg(unix)]
+    #[test]
+    fn dossier_d_uwsm_illisible_hors_de_la_maison_dit() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let m = Maison::nouvelle("xdg-illisible");
+        let d = m.racine.join("var/tmp/x/uwsm");
+        std::fs::create_dir_all(d.join("env.d")).unwrap();
+        std::fs::write(d.join("env.d/a"), "export EDITOR=nvim\n").unwrap();
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read_dir(&d).is_ok() {
+            std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
+            return crate::essais::saute("le compte lit un dossier sans droit de lecture (root, ou espace de noms)");
+        }
+        let c = m.lancements_avec(&[("XDG_DATA_DIRS", "/var/tmp/x:/usr/share")]);
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(c.probleme >= Some(Niveau::Eleve), "{:?} {}", c.probleme, c.message);
+        assert!(c.message.contains("var/tmp/x/uwsm ne se lit pas"), "{}", c.message);
+        assert!(crate::apprentissage::declarable(&c).is_err());
     }
 
     /// R-6 (re-contrôle 0.95, angle lecture) : un fichier qu'un fichier de variables lit par « . » ou « source » (un
