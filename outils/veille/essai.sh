@@ -47,7 +47,7 @@ attendu() { if eval "$1"; then ok "$2"; else ko "$2"; fi; }
 mkdir -p "$BANC"/{faux,fixtures,veille,fuzz/corpus/tar,fuzz/corpus/zip,fuzz/corpus/echap,fuzz/plantages/tar}
 export VANGUARD_VEILLE=$BANC/veille VANGUARD_VEILLE_DEPOT=$BANC/depot VANGUARD_VEILLE_ARBRE=$BANC/arbre-veille
 export VANGUARD_VEILLE_ARBRES_IA=$BANC/arbres-ia VANGUARD_FUZZ=$BANC/fuzz VANGUARD_VEILLE_CIBLE=$BANC/cible
-export VANGUARD_VEILLE_CLAUDE=$BANC/faux/claude VANGUARD_VEILLE_VM_RESERVEE=$BANC/vm-reservee
+export VANGUARD_VEILLE_CLAUDE=$BANC/faux/claude VANGUARD_VEILLE_GH=$BANC/faux/gh VANGUARD_VEILLE_VM_RESERVEE=$BANC/vm-reservee
 export VANGUARD_VEILLE_ALERTE_DIRECTE=1 VANGUARD_VEILLE_ATTENTE_FORMAT=0 VANGUARD_VEILLE_RETOURS=$BANC/retours
 export HOME_VRAI=$HOME PATH="$BANC/faux:$PATH" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 export GIT_AUTHOR_NAME=essai GIT_AUTHOR_EMAIL=essai@example.invalid GIT_COMMITTER_NAME=essai
@@ -234,6 +234,24 @@ case $role in
   20) echo '{"type":"result","is_error":false,"num_turns":3,"structured_output":{"verdict":"accepte","constats":[]}}' ;;
   *) evident=${ESSAI_EVIDENT:-false}
       echo '{"type":"result","is_error":false,"num_turns":5,"structured_output":{"constats":[],"propositions":[{"sujet":"fuzz-echap","pourquoi":"corpus sans cible","fichier":"src/main.rs","ligne":1,"evident":'"$evident"'}]}}' ;;
+esac
+FIN
+cat >"$BANC/faux/gh" <<'FIN'
+#!/usr/bin/env bash
+# Faux gh : la dernière CI de nuit, verte par défaut (la nuit 1 reste sans notification). ESSAI_CI : rouge, vieille
+# (verte, du 1er janvier), panne (hors ligne), hostile (champs forgés), vide (aucune CI).
+echo "gh $*" >>"$BANC/gh.log"
+jour=${VANGUARD_VEILLE_JOUR:-2026-10-19}
+run() { jq -cn --arg c "$1" --arg d "$2" --arg s "$3" --arg u "$4" '[{conclusion: $c, createdAt: $d, headSha: $s, url: $u}]'; }
+sha=$(printf 'a%.0s' {1..40})
+case ${ESSAI_CI:-vert} in
+  vert) run success "${jour}T07:12:00Z" "$sha" https://github.com/d9v3/vanguard-beta/actions/runs/123 ;;
+  rouge) run failure "${jour}T07:12:00Z" "$sha" https://github.com/d9v3/vanguard-beta/actions/runs/456 ;;
+  vieille) run success 2026-01-01T07:12:00Z "$sha" https://github.com/d9v3/vanguard-beta/actions/runs/789 ;;
+  panne) echo "error connecting to api.github.com" >&2; exit 1 ;;
+  vide) echo "[]" ;;
+  hostile) run "failure; $ESSAI_HOSTILE" "<script>${jour}</script>" "$ESSAI_HOSTILE" \
+    "https://pirate.example/\`$ESSAI_HOSTILE\`" ;;
 esac
 FIN
 chmod +x "$BANC"/faux/*
@@ -1022,6 +1040,51 @@ attendu 'bash "$ICI/approuver-nom.sh" 0123456789abcdef </dev/null >"$BANC/approu
 kill "$RELAIS_PID" 2>/dev/null; wait "$RELAIS_PID" 2>/dev/null
 rm -f "$XDG_CONFIG_HOME/vanguard-dev/relais-adresse" "$XDG_CONFIG_HOME/vanguard-dev/relais-secret"
 unset CURL_CA_BUNDLE
+nettoyer
+
+echo "CI de nuit sur GitHub : lue, rouge notifiée, panne dite, champs forgés retirés"
+nettoyer
+J=2027-02-01
+attendu 'grep -q -- "--event schedule" "$BANC/gh.log" && ! grep -qv "^gh run list " "$BANC/gh.log"' \
+  "gh ne sert qu'à lire la liste des CI de nuit"
+attendu 'jq -e ".ci.conclusion == \"success\" and .ci.url == \"https://github.com/d9v3/vanguard-beta/actions/runs/123\"" "$R/2026-10-19.json" >/dev/null' \
+  "CI verte lue (nuit 1, sans notification)"
+: >"$BANC/notifications.log"
+ESSAI_CI=rouge nuit $J
+attendu 'jq -e "(.etapes[] | select(.nom == \"ci-github\") | .etat == \"echec\") and .ci.conclusion == \"failure\"" "$R/$J.json" >/dev/null' \
+  "CI rouge : étape en échec"
+attendu '(($(notifs) == 1)) && grep -q "ci-github" "$R/dernier.txt"' "CI rouge : notifiée"
+attendu 'grep -q "actions/runs/456" "$R/$J.md" && jq -e "[.alertes[] | select(.type == \"ci\")] | length == 0" "$R/$J.json" >/dev/null' \
+  "CI rouge : lien dans le rapport, jamais une alerte pour l'IA"
+J=2027-02-02
+: >"$BANC/notifications.log"
+ESSAI_CI=panne nuit $J
+attendu 'jq -e ".etapes[] | select(.nom == \"ci-github\") | .etat == \"sautee\" and (.raison | test(\"hors ligne\"))" "$R/$J.json" >/dev/null' \
+  "gh en panne : étape sautée, raison dite"
+attendu '(($(notifs) == 1)) && ! grep -q "tout est vert" "$R/dernier.txt" && ! grep -q "api.github.com" "$R/$J.json"' \
+  "gh en panne : notifiée, jamais « tout est vert », l'erreur brute gardée au journal"
+J=2027-02-03
+: >"$BANC/notifications.log"
+VANGUARD_VEILLE_GH=$BANC/gh-absent nuit $J
+attendu 'jq -e ".etapes[] | select(.nom == \"ci-github\") | .raison | test(\"gh absent\")" "$R/$J.json" >/dev/null && (($(notifs) == 1))' \
+  "gh absent : dit et notifié"
+J=2027-02-04
+ESSAI_CI=hostile nuit $J
+attendu 'jq -e ".ci | .conclusion == \"(retiré)\" and .date == \"(retiré)\" and .commit == \"(retiré)\" and .url == \"(retiré)\"" "$R/$J.json" >/dev/null' \
+  "champs forgés : chacun retiré"
+attendu '! { jq -c ".ci, .attend_auteur" "$R/$J.json"; grep -A2 "^### CI de nuit" "$R/$J.md"; cat "$R/dernier.txt"; } |
+  grep -q "Ignore previous\|pirate.example\|<script>"' \
+  "texte forgé jamais dans le rapport ni la notification"
+attendu 'jq -e ".etapes[] | select(.nom == \"ci-github\") | .etat == \"sautee\"" "$R/$J.json" >/dev/null' \
+  "état inconnu : jamais compté vert"
+J=2027-02-05
+: >"$BANC/notifications.log"
+ESSAI_CI=vieille nuit $J
+attendu 'grep -q "CI de nuit muette depuis" "$R/dernier.txt" && (($(notifs) == 1))' "CI verte mais vieille : muette, notifiée"
+J=2027-02-06
+ESSAI_CI=vide nuit $J
+attendu 'jq -e "(.etapes[] | select(.nom == \"ci-github\") | .etat == \"sautee\") and .ci == null" "$R/$J.json" >/dev/null' \
+  "aucune CI rendue : sautée"
 nettoyer
 
 if ((ECHECS)); then

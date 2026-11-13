@@ -320,6 +320,32 @@ def lire_liens(t, veille, jour):
     return resultat
 
 
+CI_CONCLUSIONS = {"success", "failure", "timed_out", "startup_failure", "action_required", "cancelled", "skipped",
+                  "neutral", "stale"}
+CI_URL = r"https://github\.com/d9v3/vanguard-beta/actions/runs/\d{1,20}"
+
+
+def lire_ci(t, jour):
+    """La dernière CI de nuit terminée, telle que gh l'a rendue (étape ci-github de nuit.sh). Une donnée de GitHub :
+    chaque champ n'est gardé que s'il a exactement la forme attendue, sinon « (retiré) » ; rien n'en va à l'IA."""
+    brut = lire_json(t / "ci-github.json")
+    if not isinstance(brut, list) or len(brut) != 1 or not isinstance(brut[0], dict):
+        return None
+    run = brut[0]
+    conclusion = run.get("conclusion")
+    date = run.get("createdAt")
+    date = date[:10] if isinstance(date, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", date) else None
+    try:
+        age = (datetime.date.fromisoformat(jour) - datetime.date.fromisoformat(date)).days if date else None
+    except ValueError:
+        date, age = None, None
+    url = run.get("url")
+    return {"conclusion": conclusion if conclusion in CI_CONCLUSIONS else RETIRE,
+            "date": date or RETIRE, "jours": age,
+            "commit": sur("git", run.get("headSha")),
+            "url": url if isinstance(url, str) and re.fullmatch(CI_URL, url) else RETIRE}
+
+
 def canaris_precedents(veille, jour):
     for d in sorted((Path(veille) / "canaris").glob("*"), reverse=True):
         if d.name < jour and (d / "canaris.json").exists():
@@ -724,6 +750,7 @@ def nuit(a):
         "rustsec": lire_audit(t, veille, set(a.exceptions or [])),
         "canaris": lire_canaris(veille, a.jour),
         "liens": lire_liens(t, veille, a.jour),
+        "ci": lire_ci(t, a.jour),
         "journal": lire_journal(t, etapes, a.arbre),
         "flotte": lire_flotte(t, etapes),
     }
@@ -782,6 +809,12 @@ def attend_auteur(r):
             attend.append(f"étape sautée : {e['nom']} ({e.get('raison', '')})")
         elif e["etat"] == "echec":
             attend.append(f"étape en échec : {e['nom']}")
+    ci = r.get("ci")
+    if ci and ci["conclusion"] != "success":
+        attend.append(f"CI de nuit sur GitHub : {ci['conclusion']} le {ci['date']} ({ci['url']}) ; "
+                      "gh run view --log-failed pour la cause")
+    elif ci_muette(r):
+        attend.append(f"CI de nuit sur GitHub : la dernière terminée date du {ci['date']} ({ci['jours']} jours)")
     if any(relais_absent(e) for e in r["etapes"]):
         attend.append("relais des envois pas encore configuré : rien à relever (LISEZMOI.md, « Envois »)")
     fl = r.get("flotte") or {}
@@ -811,6 +844,16 @@ def attend_auteur(r):
 
 
 RELAIS_ABSENT = "relais pas configuré"
+
+
+# GitHub lance la nuit avec des heures de retard, parfois pas du tout : au-delà, son silence se dit.
+CI_JOURS_MAX = 2
+
+
+def ci_muette(r):
+    """Une CI de nuit verte mais vieille : GitHub ne la lance plus (workflow coupé après 60 jours sans activité…)."""
+    ci = r.get("ci") or {}
+    return ci.get("conclusion") == "success" and ci.get("jours") is not None and ci["jours"] > CI_JOURS_MAX
 
 
 def relais_absent(e):
@@ -857,6 +900,8 @@ def resume(r):
         morceaux.append("journal des erreurs illisible")
     elif j.get("trop"):
         morceaux.append(f"journal : {j['nouvelles']} causes nouvelles, à regarder")
+    if ci_muette(r):
+        morceaux.append(f"CI de nuit muette depuis {r['ci']['jours']} jours")
     if r["alertes"]:
         noms = [f"{al['type']} {al['cle'].split(':')[0]}" for al in r["alertes"][:3]]
         morceaux.append(f"{len(r['alertes'])} alerte(s) ({', '.join(noms)})")
@@ -876,7 +921,7 @@ def a_notifier(r):
     _, imprevues, canaris = pas_verts(r)
     j = r.get("journal") or {}
     return bool([e for e in r["etapes"] if e["etat"] == "echec"] or r["alertes"] or r.get("propositions")
-                or r["ia"].get("branche") or imprevues or canaris or (j and (not j["lu"] or j["trop"])))
+                or r["ia"].get("branche") or imprevues or canaris or ci_muette(r) or (j and (not j["lu"] or j["trop"])))
 
 
 def markdown(chemin_json, kev_humain=None):
@@ -1006,6 +1051,10 @@ def markdown(chemin_json, kev_humain=None):
                 md.append(f"- {affichable(x['signal'], 20)} `{affichable(x['cle'], 190)}` : {x['sources']} source(s) "
                           f"dans {x['larges']} réseau(x) /16, sur {x['sur']}{avant} ({suite}"
                           + (f", ticket {affichable(x['ticket'], 220)}" if x["ticket"] else "") + ")")
+    ci = r.get("ci")
+    if ci:
+        md += ["", "### CI de nuit sur GitHub", ""]
+        md.append(f"- {ci['conclusion']} le {ci['date']}, commit `{ci['commit']}` : {ci['url']}")
     if r.get("liens"):
         md += ["", "### Liens morts", ""]
         md += [f"- {affichable(x['url'], 200)} ({x['nuits']} nuit(s) de suite)" for x in r["liens"]]

@@ -15,6 +15,8 @@ BASE=${VANGUARD_VEILLE_BASE:-master}
 # venues d'Internet, rapports), mais doit lire son arbre.
 ARBRES_IA=${VANGUARD_VEILLE_ARBRES_IA:-$HOME/.cache/vanguard-dev/veille-arbres}
 CLAUDE=${VANGUARD_VEILLE_CLAUDE:-claude}
+# gh, pour lire la CI de nuit (nuit.sh) ; un faux dans le banc (essai.sh), qui ne touche jamais le vrai.
+GH=${VANGUARD_VEILLE_GH:-gh}
 FUZZ=${VANGUARD_FUZZ:-$HOME/.cache/vanguard-dev/fuzz}
 # Le journal des erreurs rapatrié par deployer.sh (lu par la nuit, jamais par l'IA : REFUS_CLAUDE plus bas).
 RETOURS=${VANGUARD_VEILLE_RETOURS:-${XDG_DATA_HOME:-$HOME/.local/share}/vanguard/retours}

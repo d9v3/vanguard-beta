@@ -307,6 +307,45 @@ if [[ -n $ARBRE_OK ]]; then
     etape liens "$TRAVAIL/liens.log" liens
   fi
 
+  # ── 7 bis. La dernière CI de nuit sur GitHub, en lecture seule. ──
+  # Restée rouge quatre nuits de suite sans que personne ne le voie (nov. 2026) : la veille la lit et le dit. Ce que
+  # GitHub rend est une donnée : seul l'état, comparé à une liste fermée, décide de l'étape ; rapport.py revalide
+  # chaque champ avant de l'écrire. Sans gh, sans Internet ou sans jeton valide : sautée, avec la raison (notifiée).
+  if [[ -n $SANS_RESEAU ]]; then
+    sauter ci-github "--sans-reseau"
+  elif ! command -v "$GH" >/dev/null; then
+    sauter ci-github "gh absent : CI de nuit pas lue"
+  else
+    ci_github() {
+      local conclusion
+      if ! timeout 60 "$GH" run list -R d9v3/vanguard-beta --workflow ci.yml --event schedule --status completed -L 1 \
+        --json conclusion,createdAt,headSha,url >"$TRAVAIL/ci-github.json" 2>"$TRAVAIL/ci-github.err"; then
+        # La première ligne devient la raison de l'étape sautée ; l'erreur de gh suit, dans ci-github.log seulement.
+        echo "gh n'a pas pu lire la CI de nuit (hors ligne ou jeton)"
+        tail -n 5 "$TRAVAIL/ci-github.err"
+        return 77
+      fi
+      conclusion=$(jq -r 'if type == "array" and length == 1 and (.[0].conclusion | type) == "string"
+        then .[0].conclusion else "" end' "$TRAVAIL/ci-github.json" 2>/dev/null) || conclusion=""
+      case $conclusion in
+        success) echo "dernière CI de nuit : verte" ;;
+        failure | timed_out | startup_failure | action_required)
+          echo "dernière CI de nuit : rouge ($conclusion)"
+          return 1
+          ;;
+        cancelled | skipped | neutral | stale)
+          echo "dernière CI de nuit non conclue ($conclusion)"
+          return 77
+          ;;
+        *)
+          echo "dernière CI de nuit introuvable ou illisible"
+          return 77
+          ;;
+      esac
+    }
+    etape ci-github "$TRAVAIL/ci-github.log" ci_github
+  fi
+
   # ── 8. La VM, par vm-tester.sh s'il existe (il respecte la réservation ; jamais xfreerdp3 tué). ──
   if [[ -n $SANS_VM ]]; then
     sauter vm "--sans-vm"

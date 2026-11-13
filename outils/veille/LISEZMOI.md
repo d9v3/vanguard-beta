@@ -54,6 +54,9 @@ manquée (ordinateur éteint) n'est pas rattrapée en journée (`Persistent=fals
    failles exploitées (KEV) avec le logiciel suivi qui les couvre, ou rien (écart de couverture). abuse.ch est
    sauté : la clé de l'auteur ne passe jamais par la veille.
 7. `outils/liens.py` complet ; un lien mort trois nuits de suite devient une alerte.
+   Puis la dernière CI de nuit terminée sur GitHub (`gh run list`, lecture seule) : rouge, l'étape `ci-github` est
+   en échec et notifiée, avec son lien ; sans gh, sans Internet ou sans jeton, sautée et dite ; verte mais vieille de
+   plus de deux jours, « muette », notifiée. Ses champs sont revalidés (liste fermée), jamais donnés à l'IA.
 8. `outils/vm-tester.sh --delai 30` s'il existe (sinon « sautée »), borné à 50 min : au-delà, le travail reste dans la
    file de la VM (`vm-tester.sh --attendre <id>`) et la nuit écrit quand même son rapport.
 9. Rapport `~/.cache/vanguard-dev/veille/AAAA-MM-JJ.json` et `.md`, `dernier.txt` (une ligne), **une** notification
