@@ -225,7 +225,8 @@ pub(crate) fn retrait(nom: &str, cle_privee: bool) -> bool {
 
 /// Windows (D6c) : le bilan propose-t-il de retirer cette racine quand la personne le demande ? Toute racine qu'il
 /// montre : dangereuse (`retrait`), à clé privée (« localhost » compris), d'inspection du HTTPS ou de développement.
-/// Une racine « Autre » sans clé privée n'est pas montrée sous Windows (il met à jour ses racines lui-même). Rejugé
+/// Une racine « Autre » sans clé privée de l'ordinateur n'est pas montrée (Windows met à jour ses racines lui-même) ;
+/// celle du registre du compte l'est (`juger_racines`), avec sa commande à faire soi-même. Rejugé
 /// par le processus élevé ; une racine qui n'est pas dangereuse y demande d'abord un oui dans sa console.
 #[cfg(any(windows, test))]
 pub(crate) fn retrait_sur_demande(nom: &str, cle_privee: bool) -> bool {
@@ -451,28 +452,82 @@ fn ancres(trouves: Vec<std::path::PathBuf>, illisibles: &[std::path::PathBuf]) -
 
 /// Racines des magasins de la machine et de l'utilisateur : « CERT|magasin|clé privée|empreinte|sujet ».
 /// Le magasin de l'utilisateur montre aussi ceux de la machine : un certificat présent dans les deux est de la
-/// machine. Windows met à jour lui-même ses racines : seules les marques d'un ajout sont examinées.
+/// machine. Windows met à jour lui-même ses racines : seules les marques d'un ajout sont examinées, et toute racine du
+/// registre du compte, lu à part (`juger_racines`).
 #[cfg(windows)]
 pub fn certificats() -> Vec<Constat> {
     // Lus par crypt32 ; PowerShell seulement si le magasin de l'ordinateur ne s'ouvre pas.
     let Some(sortie) = super::windows::magasins::racines().or_else(|| {
         super::windows::ps(
-        // Module du lecteur Cert: chargé d'office (voir windows::powershell pour la cause de la panne vue en VM).
+        // Module du lecteur Cert: chargé d'office (voir windows::powershell pour la cause de la panne vue en VM). Les
+        // retours de ligne du nom, choisi par qui fabrique le certificat, sont retirés comme dans `magasins::ligne` :
+        // sinon ils y fabriqueraient une ligne entière, magasin et empreinte compris.
         "Import-Module Microsoft.PowerShell.Security -ErrorAction SilentlyContinue; \
          foreach ($m in 'LocalMachine', 'CurrentUser') { Get-ChildItem \"Cert:\\$m\\Root\" | ForEach-Object { $c = $_; \
          $nom = try { $c.GetNameInfo([Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false) } catch { $c.Subject }; \
+         $nom = \"$nom\" -replace '[\\r\\n]', ' '; \
          \"CERT|$m|$($c.HasPrivateKey)|$($c.Thumbprint)|$nom\" } }",
         )
     }) else {
         return vec![super::windows::illisible(CAT)];
     };
-    let (racines, total) = racines_ajoutees(&sortie);
+    juger_racines(&sortie, super::windows::magasins::racines_du_compte().as_deref())
+}
+
+/// Les constats des racines de Windows : `sortie`, les magasins logiques (ordinateur puis compte) ; `du_compte`, le seul
+/// magasin physique du compte (registre HKCU), `None` s'il n'a pas pu être lu. Une racine de l'ordinateur au nom
+/// quelconque est tue (Windows les tient à jour lui-même) ; une racine du compte, elle, n'y est jamais posée par
+/// Windows : c'est un ajout fait sous ce compte, sans droits administrateur, montré quel que soit son nom. Le registre
+/// du compte est lu à part, chaque entrée dite, sans dédoublonner : l'empreinte vient de crypt32, qui peut rendre celle
+/// que l'entrée déclare (vu sous Wine). Une entrée du compte qui porte l'empreinte d'une racine de l'ordinateur ne passe
+/// donc pas pour elle, et ne la cache pas non plus : le compte, sans droits, ne décide pas de ce qui est dit de
+/// l'ordinateur.
+#[cfg(any(windows, test))]
+fn juger_racines(sortie: &str, du_compte: Option<&str>) -> Vec<Constat> {
+    let (racines, total) = racines_ajoutees(sortie);
+    let propres: Vec<RacineAjoutee> = du_compte.map(|t| lignes_de_racines(t).collect()).unwrap_or_default();
+    // Une empreinte illisible (champ vide) ne désigne aucune racine : elle ne fait sauter aucune ligne.
+    let dites: std::collections::HashSet<String> = propres
+        .iter()
+        .filter(|r| !r.empreinte.is_empty())
+        .map(|r| r.empreinte.to_ascii_uppercase())
+        .collect();
     let mut constats = Vec::new();
-    for r in racines {
-        if famille(r.nom) == Famille::Autre && !r.cle_privee {
-            continue;
+    if du_compte.is_none() {
+        constats.push(super::impossible(
+            CAT,
+            tr!(
+                "magasin des certificats racine du compte illisible",
+                "unreadable root certificate store of the account"
+            ),
+        ));
+    }
+    // Une entrée dont crypt32 ne rend pas une empreinte SHA-1 (illisible, ou celle, d'une autre taille, que déclare une
+    // entrée du registre) est dite non vérifiée, où qu'elle soit, et le reste se lit : arrêter toute la lecture lui
+    // donnerait, à elle seule, le pouvoir de faire refuser tout retrait par le processus élevé.
+    for r in racines
+        .iter()
+        .chain(&propres)
+        .filter(|r| !empreinte_valide(r.empreinte))
+    {
+        constats.push(empreinte_illisible(r));
+    }
+    for r in &racines {
+        let de_l_ordinateur = r.magasin == "LocalMachine";
+        // Une ligne du compte (après dédoublonnage, absente de l'ordinateur) n'est jamais tue par son nom, même si le
+        // registre lu à part ne la rend pas (stratégie du compte, carte à puce, fournisseur qui rendrait autre chose
+        // sur un vrai Windows) ; seulement sautée quand ce registre l'a déjà dite.
+        let tue = if de_l_ordinateur {
+            famille(r.nom) == Famille::Autre && !r.cle_privee
+        } else {
+            dites.contains(&r.empreinte.to_ascii_uppercase())
+        };
+        if !tue {
+            constats.push(racine_dite(r, &racines, !de_l_ordinateur));
         }
-        constats.push(juger(r.nom, r.ou(), r.cle_privee, &commandes_de_retrait(&r), true));
+    }
+    for r in &propres {
+        constats.push(racine_dite(r, &racines, true));
     }
     if constats.is_empty() {
         constats.push(ok(
@@ -484,6 +539,59 @@ pub fn certificats() -> Vec<Constat> {
         ));
     }
     constats
+}
+
+/// Une empreinte SHA-1 de Windows : 40 chiffres hexadécimaux. Seule cette forme entre dans une commande : les lignes
+/// viennent aussi du secours PowerShell, où un nom à retour de ligne peut fabriquer une ligne entière.
+#[cfg(any(windows, test))]
+fn empreinte_valide(empreinte: &str) -> bool {
+    empreinte.len() == 40 && empreinte.bytes().all(|o| o.is_ascii_hexdigit())
+}
+
+/// Le « non vérifié » d'une racine dont l'empreinte n'a pas sa forme : nommée, sans commande.
+#[cfg(any(windows, test))]
+fn empreinte_illisible(r: &RacineAjoutee) -> Constat {
+    let (nom, ou) = (crate::ui::affichable(r.nom), r.ou());
+    super::impossible(
+        CAT,
+        &trf!(
+            "racine « {nom} » du {ou}, empreinte illisible",
+            "root “{nom}” of the {ou}, unreadable thumbprint"
+        ),
+    )
+}
+
+/// Le constat d'une racine de Windows. `du_compte` : posée sous ce compte, où son nom est choisi par qui la pose ; un
+/// nom de la liste (antivirus, mkcert) ne la fait donc pas descendre sous Moyen, et son texte ne dit pas ce que le nom
+/// seul affirme (« un antivirus inspecte », « normal pour un développeur »). La ligne du processus élevé n'est
+/// proposée que s'il la retrouve dans `logiques` : il rejuge sur les magasins logiques dédoublonnés, même magasin et
+/// même empreinte, puis sur le nom qu'il y lit (`certificats_ecriture::retirer`). Une entrée du registre du compte dont
+/// l'empreinte est aussi dans l'ordinateur y passe pour celle de l'ordinateur : sa ligne « cu » serait refusée.
+#[cfg(any(windows, test))]
+fn racine_dite(r: &RacineAjoutee, logiques: &[RacineAjoutee], du_compte: bool) -> Constat {
+    let retrouvee = logiques.iter().any(|l| {
+        l.magasin == r.magasin
+            && l.empreinte.eq_ignore_ascii_case(r.empreinte)
+            && retrait_sur_demande(l.nom, l.cle_privee)
+    });
+    let retirer = if retrouvee || !retrait_sur_demande(r.nom, r.cle_privee) {
+        commandes_de_retrait(r)
+    } else {
+        Vec::new()
+    };
+    let mut c = juger(r.nom, r.ou(), r.cle_privee, &retirer, true);
+    if du_compte && c.probleme < Some(Niveau::Moyen) {
+        c.probleme = Some(Niveau::Moyen);
+        // « localhost » à clé privée garde son texte, qui dit déjà qu'un nom ne prouve rien, et la clé.
+        if !r.cle_privee {
+            let (nom, ou) = (crate::ui::affichable(r.nom), r.ou());
+            c.message = trf!(
+                "Certificat racine « {nom} » ({ou}) : n'importe quel programme lancé sous votre compte peut en ajouter un ici, sans droits administrateur et sous le nom de son choix. Normal si vous l'avez installé (antivirus, outil de développement, entreprise, école) ; sinon, retirez-le.",
+                "Root certificate “{nom}” ({ou}): any program run under your account can add one here, without administrator rights and under any name it likes. Normal if you installed it (antivirus, development tool, work, school); otherwise remove it."
+            );
+        }
+    }
+    c
 }
 
 /// Une racine lue dans les lignes « CERT|magasin|clé privée|empreinte|sujet » de Windows (`magasins::racines`).
@@ -506,27 +614,32 @@ impl RacineAjoutee<'_> {
     }
 }
 
+/// Chaque racine des lignes de Windows, telle quelle : deux lignes de la même empreinte en font deux.
+#[cfg(any(windows, test))]
+fn lignes_de_racines(sortie: &str) -> impl Iterator<Item = RacineAjoutee<'_>> {
+    sortie.lines().filter_map(|l| {
+        let c: Vec<&str> = l.trim().splitn(5, '|').collect();
+        let ["CERT", magasin, cle, empreinte, nom] = c[..] else {
+            return None;
+        };
+        Some(RacineAjoutee {
+            magasin,
+            cle_privee: cle.eq_ignore_ascii_case("true"),
+            empreinte,
+            nom,
+        })
+    })
+}
+
 /// Les racines des lignes de Windows, chacune une seule fois par empreinte : le magasin du compte montre aussi ceux de
 /// l'ordinateur, lu d'abord, et une racine présente dans les deux est de l'ordinateur. Avec le nombre de racines.
 #[cfg(any(windows, test))]
 pub(crate) fn racines_ajoutees(sortie: &str) -> (Vec<RacineAjoutee<'_>>, usize) {
     let mut vus = std::collections::HashSet::new();
-    let mut racines = Vec::new();
-    for l in sortie.lines() {
-        let c: Vec<&str> = l.trim().splitn(5, '|').collect();
-        let ["CERT", magasin, cle, empreinte, nom] = c[..] else {
-            continue;
-        };
-        if !vus.insert(empreinte.to_ascii_uppercase()) {
-            continue;
-        }
-        racines.push(RacineAjoutee {
-            magasin,
-            cle_privee: cle.eq_ignore_ascii_case("true"),
-            empreinte,
-            nom,
-        });
-    }
+    let racines: Vec<RacineAjoutee> = lignes_de_racines(sortie)
+        // Une empreinte illisible (champ vide) ne désigne aucune racine : deux entrées illisibles restent deux.
+        .filter(|r| r.empreinte.is_empty() || vus.insert(r.empreinte.to_ascii_uppercase()))
+        .collect();
     let total = racines.len();
     (racines, total)
 }
@@ -534,13 +647,17 @@ pub(crate) fn racines_ajoutees(sortie: &str) -> (Vec<RacineAjoutee<'_>>, usize) 
 /// Retirer une racine : la ligne du processus élevé quand le bilan propose le retrait, de lui-même ou sur demande (il
 /// la rejuge, demande un oui pour une racine qui n'est pas dangereuse, l'exporte dans la quarantaine, la retire, puis
 /// la cherche de nouveau) ; sinon la commande montrée, à faire soi-même. Jamais de PowerShell à exécuter : une racine
-/// à retirer dont la ligne ne se forme pas n'a pas de correction.
+/// à retirer dont la ligne ne se forme pas n'a pas de correction. La commande montrée sera collée telle quelle, peut-être
+/// dans un PowerShell administrateur : seuls un magasin connu et une empreinte de sa forme y entrent, comme dans la
+/// ligne du processus élevé, sinon aucune commande.
 #[cfg(any(windows, test))]
 fn commandes_de_retrait(r: &RacineAjoutee) -> Vec<String> {
     if retrait_sur_demande(r.nom, r.cle_privee) {
         super::gestes::ligne_certificat_retirer(r.magasin, r.empreinte)
             .into_iter()
             .collect()
+    } else if !matches!(r.magasin, "LocalMachine" | "CurrentUser") || !empreinte_valide(r.empreinte) {
+        Vec::new()
     } else {
         vec![format!(
             "Remove-Item -Path 'Cert:\\{}\\Root\\{}'",
@@ -855,5 +972,392 @@ xo1zjuQ=
             juger("LOCALHOST", "/x", false, &retirer, false).probleme,
             Some(Niveau::Info)
         );
+    }
+
+    /// Relecture du 12 nov. (racine du compte) : une racine du magasin physique du compte (registre HKCU) est toujours
+    /// montrée, quel que soit son nom, même quand la même empreinte est dans le magasin de l'ordinateur ; une lecture
+    /// ratée de ce magasin est « non vérifié », jamais « aucune racine ajoutée ».
+    #[test]
+    fn racine_du_compte_jamais_tue() {
+        let e = "A".repeat(40);
+        let lm = format!(
+            "CERT|LocalMachine|False|{}|Microsoft Root\nCERT|LocalMachine|False|{e}|Banque Root",
+            "B".repeat(40)
+        );
+        let logiques = format!(
+            "{lm}\nCERT|CurrentUser|False|{}|Global Secure Root CA\nCERT|CurrentUser|False|{e}|Banque Root",
+            "C".repeat(40)
+        );
+        let du_compte = format!(
+            "CERT|CurrentUser|False|{}|Global Secure Root CA\nCERT|CurrentUser|False|{e}|Banque Root",
+            "C".repeat(40)
+        );
+        let constats = juger_racines(&logiques, Some(&du_compte));
+        let messages: Vec<&str> = constats.iter().map(|c| c.message.as_str()).collect();
+        assert_eq!(constats.len(), 2, "{messages:?}");
+        for nom in ["Global Secure Root CA", "Banque Root"] {
+            assert!(
+                constats.iter().any(|c| c.probleme == Some(Niveau::Moyen)
+                    && c.verifie
+                    && c.message.contains(nom)
+                    && c.message.contains("magasin de l'utilisateur")),
+                "{nom} : {messages:?}"
+            );
+        }
+        // Le retrait reste la commande montrée : le processus élevé ne retire pas une racine « Autre » sans clé.
+        assert!(
+            constats
+                .iter()
+                .all(|c| c.correctif.as_ref().is_some_and(|k| !k.automatique))
+        );
+        // Une racine connue du compte n'est dite qu'une fois, avec son propre niveau.
+        let fiddler = format!("CERT|CurrentUser|False|{}|Fiddler Root", "D".repeat(40));
+        let constats = juger_racines(&format!("{lm}\n{fiddler}"), Some(&fiddler));
+        assert!(
+            constats.len() == 1 && constats[0].message.contains("Fiddler"),
+            "{:?}",
+            constats[0].message
+        );
+        // Rien dans le compte : ok, comme avant.
+        let constats = juger_racines(&lm, Some(""));
+        assert!(constats.len() == 1 && constats[0].probleme.is_none() && constats[0].verifie);
+        // Magasin du compte illisible : non vérifié, jamais ok ; les racines connues restent dites.
+        let constats = juger_racines(&format!("{lm}\n{fiddler}"), None);
+        assert!(
+            constats.iter().any(|c| !c.verifie),
+            "{:?}",
+            constats.iter().map(|c| &c.message).collect::<Vec<_>>()
+        );
+        assert!(constats.iter().all(|c| c.probleme.is_some()));
+        assert!(constats.iter().any(|c| c.message.contains("Fiddler")));
+    }
+
+    /// Les lignes « vanguard:certificat-retirer » proposées, chacune acceptée par le processus élevé : il rejuge sur les
+    /// magasins logiques dédoublonnés (`certificats_ecriture::retirer`), même magasin et même empreinte.
+    fn lignes_refusees(constats: &[Constat], logiques: &str) -> Vec<String> {
+        let (rejugees, _) = racines_ajoutees(logiques);
+        let mut refusees = Vec::new();
+        for k in constats
+            .iter()
+            .filter_map(|c| c.correctif.as_ref())
+            .filter(|k| k.automatique)
+        {
+            for l in &k.commandes {
+                let mots: Vec<&str> = l.split(' ').collect();
+                let acceptee = match mots[..] {
+                    ["vanguard:certificat-retirer", m, emp] => rejugees.iter().any(|r| {
+                        r.magasin == if m == "lm" { "LocalMachine" } else { "CurrentUser" }
+                            && r.empreinte.eq_ignore_ascii_case(emp)
+                            && retrait_sur_demande(r.nom, r.cle_privee)
+                    }),
+                    _ => false,
+                };
+                if !acceptee {
+                    refusees.push(l.clone());
+                }
+            }
+        }
+        refusees
+    }
+
+    /// Relecture adverse de la racine du compte : une entrée du registre du compte (écrite sans droits) ne cache jamais
+    /// la racine de l'ordinateur qui porte la même empreinte, et le bilan ne propose pas de ligne que le processus élevé
+    /// refuserait.
+    #[test]
+    fn racine_de_l_ordinateur_jamais_cachee_par_le_compte() {
+        let e = "A".repeat(40);
+        let ms = format!("CERT|LocalMachine|False|{}|Microsoft Root", "B".repeat(40));
+        let messages = |c: &[Constat]| c.iter().map(|c| c.message.clone()).collect::<Vec<_>>();
+        // Racine à clé privée de l'ordinateur ; un programme du compte en pose une copie sans clé dans son registre.
+        let logiques = format!(
+            "{ms}\nCERT|LocalMachine|True|{e}|Global Secure Root CA\nCERT|CurrentUser|True|{e}|Global Secure Root CA"
+        );
+        let constats = juger_racines(
+            &logiques,
+            Some(&format!("CERT|CurrentUser|False|{e}|Global Secure Root CA")),
+        );
+        assert!(
+            constats
+                .iter()
+                .any(|c| c.probleme == Some(Niveau::Eleve) && c.message.contains("magasin de l'ordinateur")),
+            "{:?}",
+            messages(&constats)
+        );
+        // Racine dangereuse de l'ordinateur ; une entrée du compte déclare la même empreinte sous un autre nom.
+        let logiques = format!("{ms}\nCERT|LocalMachine|False|{e}|Superfish, Inc.");
+        let constats = juger_racines(&logiques, Some(&format!("CERT|CurrentUser|False|{e}|Ecole Root CA")));
+        let lm = format!("vanguard:certificat-retirer lm {}", e.to_lowercase());
+        assert!(
+            constats.iter().any(|c| c.probleme == Some(Niveau::Critique)
+                && c.correctif
+                    .as_ref()
+                    .is_some_and(|k| k.automatique && k.commandes == [lm.clone()])),
+            "{:?}",
+            messages(&constats)
+        );
+        assert!(constats.iter().any(|c| c.message.contains("Ecole Root CA")));
+        // Racine connue dans les deux magasins (Fiddler propose les deux), ou absente du magasin logique du compte :
+        // dite pour le compte, sans ligne que le processus élevé refuserait.
+        let fiddler = format!("CERT|CurrentUser|False|{e}|Fiddler Root");
+        for logiques in [
+            format!("{ms}\nCERT|LocalMachine|True|{e}|Fiddler Root\n{fiddler}"),
+            format!("{ms}\nCERT|LocalMachine|False|{e}|Superfish, Inc."),
+            ms.clone(),
+            // Le magasin logique du compte rend, pour cette empreinte, un autre nom que le processus élevé ne retire pas.
+            format!("{ms}\nCERT|CurrentUser|False|{e}|Mon entreprise"),
+        ] {
+            let constats = juger_racines(&logiques, Some(&fiddler));
+            assert!(
+                constats
+                    .iter()
+                    .any(|c| c.message.contains("Fiddler Root") && c.message.contains("magasin de l'utilisateur")),
+                "{:?}",
+                messages(&constats)
+            );
+            assert_eq!(lignes_refusees(&constats, &logiques), [] as [String; 0], "{logiques}");
+        }
+        // Racine du compte seule : sa ligne « cu » reste proposée.
+        let logiques = format!("{ms}\n{fiddler}");
+        let constats = juger_racines(&logiques, Some(&fiddler));
+        let cu = format!("vanguard:certificat-retirer cu {}", e.to_lowercase());
+        assert!(constats.iter().any(|c| {
+            c.correctif
+                .as_ref()
+                .is_some_and(|k| k.automatique && k.commandes == [cu.clone()])
+        }));
+        assert_eq!(lignes_refusees(&constats, &logiques), [] as [String; 0]);
+    }
+
+    /// Une racine que le magasin logique du compte montre sans l'ordinateur, absente du registre lu à part (stratégie du
+    /// compte, carte à puce, ou un fournisseur du registre qui rendrait autre chose sur un vrai Windows) : dite aussi,
+    /// quel que soit son nom.
+    #[test]
+    fn racine_du_compte_hors_registre_jamais_tue() {
+        let logiques = format!(
+            "CERT|LocalMachine|False|{}|Microsoft Root\nCERT|CurrentUser|False|{}|Global Secure Root CA",
+            "B".repeat(40),
+            "C".repeat(40)
+        );
+        let constats = juger_racines(&logiques, Some(""));
+        assert!(
+            constats
+                .iter()
+                .any(|c| c.probleme == Some(Niveau::Moyen) && c.verifie && c.message.contains("Global Secure Root CA")),
+            "{:?}",
+            constats.iter().map(|c| &c.message).collect::<Vec<_>>()
+        );
+    }
+
+    /// Deux entrées du registre du compte qui déclarent la même empreinte : deux racines, chacune dite.
+    #[test]
+    fn deux_racines_du_compte_a_la_meme_empreinte_sont_dites() {
+        let e = "C".repeat(40);
+        let lm = format!("CERT|LocalMachine|False|{}|Microsoft Root", "B".repeat(40));
+        let cu = format!("CERT|CurrentUser|False|{e}|Ecole Root CA\nCERT|CurrentUser|False|{e}|Global Secure Root CA");
+        let constats = juger_racines(&format!("{lm}\n{cu}"), Some(&cu));
+        for nom in ["Ecole Root CA", "Global Secure Root CA"] {
+            assert!(constats.iter().any(|c| c.message.contains(nom)), "{nom}");
+        }
+    }
+
+    /// Contrôle de MC-4 : une entrée dont l'empreinte n'a pas sa forme (déclarée de 19 octets, ou illisible : champ
+    /// vide) ne rend pas toute la lecture nulle. Elle est dite « non vérifiée », nommée, où qu'elle soit, sans commande
+    /// formée de son empreinte ; le reste se lit et garde sa ligne de retrait.
+    #[test]
+    fn entree_a_empreinte_illisible_dite_et_le_reste_lu() {
+        let e = "A".repeat(40);
+        let lm = format!(
+            "CERT|LocalMachine|False|{}|Microsoft Root\nCERT|LocalMachine|False|{e}|Superfish, Inc.\n\
+             CERT|LocalMachine|False|{}|Bizarre Root",
+            "B".repeat(40),
+            "F".repeat(38)
+        );
+        let cu = format!(
+            "CERT|CurrentUser|False|{}|Ecole Root CA\nCERT|CurrentUser|False||Global Secure Root CA",
+            "C".repeat(38)
+        );
+        // Deux entrées illisibles du magasin logique : un champ vide ne dédoublonne jamais.
+        let logiques = format!("{lm}\n{cu}\nCERT|CurrentUser|False||Autre Root");
+        let constats = juger_racines(&logiques, Some(&cu));
+        let messages: Vec<&str> = constats.iter().map(|c| c.message.as_str()).collect();
+        for nom in ["Bizarre Root", "Ecole Root CA", "Global Secure Root CA", "Autre Root"] {
+            assert!(
+                constats.iter().any(|c| !c.verifie && c.message.contains(nom)),
+                "{nom} : {messages:?}"
+            );
+        }
+        // Absente du registre lu à part, elle y garde aussi son constat de racine du compte (un champ vide ne la fait
+        // pas passer pour déjà dite).
+        assert!(
+            constats
+                .iter()
+                .any(|c| c.verifie && c.probleme == Some(Niveau::Moyen) && c.message.contains("Autre Root")),
+            "{messages:?}"
+        );
+        let ligne_lm = format!("vanguard:certificat-retirer lm {}", e.to_lowercase());
+        assert!(
+            constats.iter().any(|c| c.probleme == Some(Niveau::Critique)
+                && c.correctif
+                    .as_ref()
+                    .is_some_and(|k| k.automatique && k.commandes == [ligne_lm.clone()])),
+            "{messages:?}"
+        );
+        assert!(
+            constats.iter().filter_map(|c| c.correctif.as_ref()).all(|k| k
+                .commandes
+                .iter()
+                .all(|l| !l.contains(&"C".repeat(38)) && !l.ends_with("\\'"))),
+            "{messages:?}"
+        );
+    }
+
+    /// Contrôle de MC-4 : la commande montrée, à copier soi-même, n'est formée que d'un magasin connu et d'une empreinte
+    /// de 40 chiffres hexadécimaux, même si une ligne fabriquée (un retour de ligne dans un nom, par le secours
+    /// PowerShell) apporte un magasin et une empreinte choisis.
+    #[test]
+    fn commande_montree_sans_champ_hostile() {
+        let sortie = format!(
+            "CERT|LocalMachine|False|{}|Microsoft Root\nCERT|CurrentUser|False|AB'; Start-Process calc; '|Ecole Root CA\n\
+             CERT|CurrentUser'; Start-Process calc; '|False|{}|Mon entreprise",
+            "B".repeat(40),
+            "C".repeat(40)
+        );
+        let constats = juger_racines(&sortie, None);
+        assert!(constats.iter().any(|c| c.message.contains("Ecole Root CA")));
+        assert!(
+            constats
+                .iter()
+                .filter_map(|c| c.correctif.as_ref())
+                .all(|k| k.commandes.iter().all(|l| !l.contains("Start-Process"))),
+            "{:?}",
+            constats
+                .iter()
+                .filter_map(|c| c.correctif.as_ref().map(|k| &k.commandes))
+                .collect::<Vec<_>>()
+        );
+        // Les deux champs, chacun seul ; la forme attendue garde sa commande.
+        let (racines, _) = racines_ajoutees(&sortie);
+        assert!(racines[1..].iter().all(|r| commandes_de_retrait(r).is_empty()));
+        let saine = RacineAjoutee {
+            magasin: "CurrentUser",
+            cle_privee: false,
+            empreinte: &"d".repeat(40),
+            nom: "Mon entreprise",
+        };
+        assert_eq!(
+            commandes_de_retrait(&saine),
+            [format!(
+                "Remove-Item -Path 'Cert:\\CurrentUser\\Root\\{}'",
+                "d".repeat(40)
+            )]
+        );
+    }
+
+    /// Contrôle de MC-4 : une racine du compte montée à Moyen ne garde pas le texte rassurant tiré de son nom (« un
+    /// antivirus inspecte », « normal pour un développeur ») : ce nom est choisi par qui la pose. La même racine dans
+    /// l'ordinateur garde son niveau et son texte.
+    #[test]
+    fn racine_du_compte_sans_texte_tire_du_nom() {
+        let lm = format!(
+            "CERT|LocalMachine|False|{}|Microsoft Root\nCERT|LocalMachine|False|{}|Avast Web/Mail Shield Root",
+            "B".repeat(40),
+            "F".repeat(40)
+        );
+        let avast = format!("CERT|CurrentUser|False|{}|Avast trusted CA", "D".repeat(40));
+        let mkcert = format!("CERT|CurrentUser|False|{}|mkcert alice@portable", "E".repeat(40));
+        let constats = juger_racines(&format!("{lm}\n{avast}\n{mkcert}"), Some(&avast));
+        let de = |nom: &str| constats.iter().find(|c| c.message.contains(nom)).unwrap();
+        for nom in ["Avast trusted CA", "mkcert alice@portable"] {
+            let c = de(nom);
+            assert_eq!(c.probleme, Some(Niveau::Moyen), "{}", c.message);
+            assert!(
+                !c.message.contains("un antivirus ou un filtre inspecte")
+                    && !c.message.contains("Normal pour un développeur")
+                    && c.message.contains("nom de son choix"),
+                "{}",
+                c.message
+            );
+        }
+        let ordinateur = de("Avast Web/Mail Shield Root");
+        assert_eq!(ordinateur.probleme, Some(Niveau::Info));
+        assert!(ordinateur.message.contains("un antivirus ou un filtre inspecte"));
+    }
+
+    /// Dans le compte, le nom est choisi par qui pose la racine : un nom de la liste (antivirus, mkcert) ne la fait pas
+    /// descendre sous le niveau d'un nom inconnu.
+    #[test]
+    fn nom_choisi_ne_baisse_pas_le_niveau_dans_le_compte() {
+        let lm = format!("CERT|LocalMachine|False|{}|Microsoft Root", "B".repeat(40));
+        let avast = format!("CERT|CurrentUser|False|{}|Avast trusted CA", "D".repeat(40));
+        let mkcert = format!("CERT|CurrentUser|False|{}|mkcert alice@portable", "E".repeat(40));
+        let constats = juger_racines(&format!("{lm}\n{avast}\n{mkcert}"), Some(&avast));
+        assert_eq!(constats.len(), 2);
+        assert!(
+            constats.iter().all(|c| c.probleme >= Some(Niveau::Moyen)),
+            "{:?}",
+            constats.iter().map(|c| (&c.message, c.probleme)).collect::<Vec<_>>()
+        );
+    }
+
+    /// La même chose avec la vraie crypt32 de Wine : une racine écrite dans le registre du compte, sans la fenêtre
+    /// d'avertissement de Windows, comme le ferait un programme lancé sous ce compte. Seulement sous Wine : sur un vrai
+    /// Windows, l'essai écrirait dans le vrai magasin du compte.
+    #[cfg(windows)]
+    #[test]
+    fn racine_ecrite_au_registre_du_compte_sous_wine() {
+        if !crate::commande::sous_wine() {
+            return crate::essais::saute(
+                "écrit dans le registre du compte : seulement dans le préfixe jetable de Wine",
+            );
+        }
+        // Le nom de l'entrée est l'empreinte SHA-1 du certificat d'essai, comme Windows l'écrit.
+        let cle =
+            r"HKCU\Software\Microsoft\SystemCertificates\Root\Certificates\CF900CB84BE4B0536E1D92D55785FE6F831B59C0";
+        let corps: String = PEM.lines().filter(|l| !l.starts_with("-----")).collect();
+        let der = base64(&corps).unwrap();
+        // Un élément sérialisé : propriété 32 (le certificat), encodage 1, longueur, puis le DER.
+        let mut blob = Vec::new();
+        for n in [32u32, 1, u32::try_from(der.len()).unwrap()] {
+            blob.extend_from_slice(&n.to_le_bytes());
+        }
+        blob.extend_from_slice(&der);
+        let hex = blob.iter().fold(String::new(), |mut t, o| {
+            use std::fmt::Write as _;
+            let _ = write!(t, "{o:02X}");
+            t
+        });
+        let reg = |args: &[&str]| {
+            std::process::Command::new("reg")
+                .args(args)
+                .output()
+                .is_ok_and(|s| s.status.success())
+        };
+        assert!(reg(&["add", cle, "/v", "Blob", "/t", "REG_BINARY", "/d", &hex, "/f"]));
+        let constats = certificats();
+        let du_compte = crate::machine::windows::magasins::racines_du_compte();
+        let ordinateur = crate::machine::windows::magasins::racines();
+        let _ = reg(&["delete", cle, "/f"]);
+        let messages: Vec<&str> = constats.iter().map(|c| c.message.as_str()).collect();
+        assert!(
+            constats
+                .iter()
+                .any(|c| c.probleme == Some(Niveau::Moyen) && c.message.contains("Vanguard Test CA")),
+            "{messages:?}"
+        );
+        // Le magasin physique seul : la racine écrite y est, aucune de celles de l'ordinateur (le magasin logique du
+        // compte les montrerait toutes, et chacune y serait dite ajoutée).
+        let du_compte = du_compte.expect("magasin du registre du compte");
+        assert!(
+            du_compte.contains("CF900CB84BE4B0536E1D92D55785FE6F831B59C0"),
+            "{du_compte}"
+        );
+        let ordinateur = ordinateur.expect("magasins logiques");
+        let de_l_ordinateur: Vec<&str> = ordinateur
+            .lines()
+            .filter(|l| l.starts_with("CERT|LocalMachine|"))
+            .filter_map(|l| l.split('|').nth(3))
+            .collect();
+        assert_ne!(de_l_ordinateur, [] as [&str; 0]);
+        assert!(de_l_ordinateur.iter().all(|e| !du_compte.contains(e)), "{du_compte}");
     }
 }
