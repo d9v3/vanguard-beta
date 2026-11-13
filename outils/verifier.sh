@@ -84,6 +84,10 @@ PWSH=${VANGUARD_PWSH:-$HOME/.cache/vanguard-dev/pwsh/pwsh}
 mkdir -p "$HOME/.cache/vanguard-dev"
 TRAVAIL=$(mktemp -d "$HOME/.cache/vanguard-dev/verifier.XXXX")
 trap 'rm -rf "$TRAVAIL"' EXIT
+# Journal entier de chaque étape en échec, gardé après la fin (TRAVAIL est effacé) : la fin seule cache souvent la
+# cause (zizmor écrit ses constats d'abord, son total ensuite). Vidé à chaque passe : il ne parle que de la dernière.
+ECHECS_GARDES=$HOME/.cache/vanguard-dev/verifier-echecs
+rm -rf "$ECHECS_GARDES" && mkdir -p "$ECHECS_GARDES"
 DEBUT=$SECONDS
 
 # Une étape qui ne peut pas tourner ici (outil absent) sort avec ce code et dit pourquoi en première ligne : elle est
@@ -403,7 +407,7 @@ textes() {
   python3 outils/textes.py
 }
 
-# Les workflows de GitHub (.github/workflows) relus par zizmor : actions non épinglées, permissions trop larges,
+# Le dossier .github (workflows et dependabot.yml) relu par zizmor : actions non épinglées, permissions trop larges,
 # texte d'un ticket ou d'un nom de branche collé dans un script, jeton laissé dans .git/config, cache empoisonnable…
 # Tout constat fait échouer ; une exception se justifie sur sa ligne (`# zizmor: ignore[règle] raison`). Hors ligne
 # et sans jeton : sinon zizmor interroge GitHub de lui-même, et son verdict changerait avec le réseau. Sautée sans
@@ -416,7 +420,7 @@ workflows() {
     return "$SAUTEE"
   fi
   zizmor --version
-  env -u GH_TOKEN -u GITHUB_TOKEN -u ZIZMOR_GITHUB_TOKEN zizmor --offline --no-progress --format plain .github/workflows
+  env -u GH_TOKEN -u GITHUB_TOKEN -u ZIZMOR_GITHUB_TOKEN zizmor --offline --no-progress --format plain .github
 }
 
 # Les dépendances relues selon cargo vet (supply-chain/, et fenetre/supply-chain/ pour la fenêtre) : chaque version
@@ -637,7 +641,13 @@ ligne() {
   else
     ECHECS=$((ECHECS + 1))
     printf '  ✖ %-34s %4s s\n' "$libelle" "$duree" | tee -a "$RESUME"
-    tail -n 25 "$TRAVAIL/$nom.log" | sed 's/^/      /'
+    cp "$TRAVAIL/$nom.log" "$ECHECS_GARDES/$nom.log"
+    if [[ $MODE == --ci ]]; then
+      sed 's/^/      /' "$TRAVAIL/$nom.log" # en CI, le journal de GitHub est le seul endroit lisible : tout
+    else
+      tail -n 60 "$TRAVAIL/$nom.log" | sed 's/^/      /'
+      echo "      journal entier : $ECHECS_GARDES/$nom.log"
+    fi
   fi
 }
 
