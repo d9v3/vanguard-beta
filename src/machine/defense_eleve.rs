@@ -1926,6 +1926,9 @@ fn fichier_de_ligne(c: &CheminDesigne, a: &dyn Acces) -> Result<(PathBuf, Fiche,
     Ok((p, f, contenu))
 }
 
+/// Combien de noms réveillés un refus de retrait montre au plus (ronde 3 du lot 096, N3) ; les autres sont comptés.
+const NOMS_REVEILLES_MONTRES: usize = 5;
+
 fn juger_ligne(e: Empreinte, c: &CheminDesigne, a: &mut dyn Acces) -> Jugement {
     let (p, f, contenu) = fichier_de_ligne(c, a)?;
     let vu = lisible(&p);
@@ -1952,16 +1955,16 @@ fn juger_ligne(e: Empreinte, c: &CheminDesigne, a: &mut dyn Acces) -> Jugement {
     // au moins une bibliothèque chargée, et les emporte toutes ; une ligne qui n'en porte aucune (commentaire vrai,
     // ligne vide, « : # x ») est refusée.
     let preload = fichier == "/etc/ld.so.preload";
-    let bibliotheques = if preload {
-        let chargees = crate::machine::prechargement::bibliotheques(&contenu);
-        numeros
-            .iter()
-            .map(|n| chargees.iter().filter(|b| b.ligne == *n).count())
-            .max()
-            .unwrap_or(0)
+    let chargees = if preload {
+        crate::machine::prechargement::bibliotheques(&contenu)
     } else {
-        0
+        Vec::new()
     };
+    let bibliotheques = numeros
+        .iter()
+        .map(|n| chargees.iter().filter(|b| b.ligne == *n).count())
+        .max()
+        .unwrap_or(0);
     // Seule une ligne que Vanguard sait suspecte part : une liste qui désignerait une autre ligne (un réglage de
     // sécurité) est refusée ici, quoi qu'elle dise.
     let suspecte = if preload {
@@ -1974,6 +1977,42 @@ fn juger_ligne(e: Empreinte, c: &CheminDesigne, a: &mut dyn Acces) -> Jugement {
             "la ligne désignée dans {vu} n'est pas de celles que Vanguard retire : rien n'est fait",
             "the line named in {vu} is not one Vanguard removes: nothing is done"
         )));
+    }
+    // Ronde 3 du lot 096 (N3) : ce que le chargeur efface d'un « # » dépend de la taille du reste du fichier ; retirer
+    // une ligne peut donc lui faire lire une ligne « # … » qu'il effaçait jusque-là. Le fichier d'après est relu comme
+    // il le lit : s'il chargerait un nom que les lignes gardées ne chargeaient pas déjà, rien n'est fait. Retirer aussi
+    // la ligne réveillée n'est pas offert : un fichier piégé pourrait ainsi faire retirer, sans le dire, une ligne
+    // légitime (une bibliothèque de durcissement). À corriger à la main.
+    if preload {
+        let restent: std::collections::BTreeSet<&[u8]> = chargees
+            .iter()
+            .filter(|b| !numeros.contains(&b.ligne))
+            .map(|b| b.nom.as_slice())
+            .collect();
+        let reveilles: Vec<Vec<u8>> = crate::machine::prechargement::bibliotheques(&garde)
+            .into_iter()
+            .map(|b| b.nom)
+            .filter(|n| !restent.contains(n.as_slice()))
+            .collect();
+        if !reveilles.is_empty() {
+            let mut noms: Vec<String> = reveilles
+                .iter()
+                .take(NOMS_REVEILLES_MONTRES)
+                .map(|n| echappe(n))
+                .collect();
+            if reveilles.len() > NOMS_REVEILLES_MONTRES {
+                noms.push(trf!(
+                    "et {} autre(s)",
+                    "and {} more",
+                    reveilles.len() - NOMS_REVEILLES_MONTRES
+                ));
+            }
+            return Err(refus(trf!(
+                "retirer cette ligne de {vu} ferait charger au chargeur ce qu'il ne chargeait pas : {} (une ligne « # » qu'il effaçait jusqu'ici, selon la taille du fichier) ; rien n'est fait : corrigez ce fichier à la main, en relisant chaque ligne",
+                "removing this line from {vu} would make the loader load what it did not load: {} (a \"#\" line it used to blank, depending on the file size); nothing is done: fix this file by hand, reading every line",
+                noms.join(", ")
+            )));
+        }
     }
     let apres: [u8; 32] = Sha256::digest(&garde).into();
     // ld.so.preload : une ligne peut nommer plusieurs bibliothèques ; toutes partent avec elle. Comptées comme le
@@ -4151,6 +4190,41 @@ mod tests {
             assert_eq!(questions, 0, "{:?}", String::from_utf8_lossy(ligne));
             assert_eq!(apres, contenu);
         }
+    }
+
+    /// Ronde 3 du lot 096 (N3) : ce que le chargeur efface d'un « # » dépend de la taille du reste du fichier.
+    /// Fichier de trois lignes : une longue note, « # /opt/x/evil.so », un long leurre. Le vrai chargeur (glibc 2.44,
+    /// bac à sable, faux /etc) ne charge que le leurre ; le leurre retiré, il charge « # » et /opt/x/evil.so. Retirer
+    /// le leurre réveillerait donc une ligne cachée : refusé, sans question, fichier inchangé, et les noms réveillés
+    /// dits.
+    #[test]
+    fn retrait_qui_reveille_une_ligne_cachee_refuse() {
+        let note = [b"#".as_slice(), &[b'n'; 61]].concat();
+        let cachee = b"# /opt/x/evil.so".to_vec();
+        let leurre = [b"/tmp/.x/".as_slice(), &[b'a'; 60], b".so"].concat();
+        let contenu = [&note[..], b"\n", &cachee, b"\n", &leurre, b"\n"].concat();
+        // Ce que le chargeur lit avant, puis après le retrait du leurre (comparé au vrai chargeur, voir plus haut).
+        let noms = |f: &[u8]| -> Vec<Vec<u8>> {
+            crate::machine::prechargement::bibliotheques(f)
+                .into_iter()
+                .map(|b| b.nom)
+                .collect()
+        };
+        assert_eq!(noms(&contenu), vec![leurre.clone()]);
+        let sans_leurre = [&note[..], b"\n", &cachee, b"\n"].concat();
+        assert_eq!(noms(&sans_leurre), vec![b"#".to_vec(), b"/opt/x/evil.so".to_vec()]);
+        let mut a = Faux::nouveau().repondre("o");
+        a.poser("/etc/ld.so.preload", &contenu, 0o644);
+        let c = CheminDesigne::nouveau(b"/etc/ld.so.preload").unwrap();
+        let r = faire_avec(
+            Defense::RetirerLigne(empreinte_de_ligne(&leurre), c),
+            &mut a,
+            &mut FauxServices::nouveau(),
+        );
+        assert!(!r.reussi, "{}", r.raison);
+        assert_eq!(a.questions.len(), 0);
+        assert!(r.raison.contains("/opt/x/evil.so"), "{}", r.raison);
+        assert_eq!(a.fichiers[Path::new("/etc/ld.so.preload")].contenu, contenu);
     }
 
     /// Une ligne de ld.so.preload qui nomme plusieurs bibliothèques part en entier : c'est dit avant la question.
