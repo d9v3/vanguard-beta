@@ -669,7 +669,7 @@ struct Precedente {
 
 enum EtatPrecedente {
     Aucune,
-    Retenue(Identite),
+    Retenue(Tenue),
 }
 
 /// Un nom dont Vanguard a besoin, pris par quelque chose qu'il n'efface pas (R-4 et N-1, recontrôles 0.95) : le chemin
@@ -693,29 +693,80 @@ fn nom_garde(chemin: &Path) -> String {
     )
 }
 
-/// `a` et `b` sont-ils deux noms d'un même fichier (sous Unix, même appareil et même inode, lus tous deux à l'instant :
-/// deux noms présents ne partagent un inode que s'ils sont le même fichier) ? Ailleurs, les mêmes octets : effacer l'un
-/// ne perd rien. Faux si l'un ne se lit pas.
-fn second_nom(a: &Path, b: &Path) -> bool {
-    matches!((identite(a), identite(b)), (Some(x), Some(y)) if x == y)
+/// L'ancienne copie, tenue de sa mise de côté jusqu'à la fin de la mise à jour (V-3, relecture du recontrôle 2 0.95).
+/// Avant, elle n'était reconnue que par son appareil et son inode, notés sans rien tenir d'ouvert : ses noms effacés,
+/// ext4 redonne aussitôt ce numéro au fichier suivant, et un fichier étranger (ou un dossier) posé à la cible était dit
+/// « l'ancienne copie ».
+enum Tenue {
+    /// Sous Unix, un fichier ordinaire tenu par un descripteur ouvert : un inode tenu ouvert n'est jamais redonné.
+    #[cfg(unix)]
+    Fichier(std::fs::File),
+    /// Un lien symbolique : ce qu'il désigne, qui est tout son contenu (deux liens qui désignent la même chose se
+    /// valent).
+    #[cfg(unix)]
+    Lien(PathBuf),
+    /// Ailleurs (Windows) : ses octets (l'identité du fichier demanderait l'API de Windows).
+    #[cfg(not(unix))]
+    Octets(Vec<u8>),
 }
 
-/// Ce qui reconnaît un fichier : appareil et inode sous Unix ; ses octets ailleurs (Windows : l'identité du fichier
-/// demanderait l'API de Windows).
-#[derive(PartialEq, Eq)]
-struct Identite(#[cfg(unix)] (u64, u64), #[cfg(not(unix))] Vec<u8>);
-
-fn identite(chemin: &Path) -> Option<Identite> {
-    let m = std::fs::symlink_metadata(chemin).ok()?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        Some(Identite((m.dev(), m.ino())))
+impl Tenue {
+    /// La copie à `cible` (`m` : ce qu'en dit `symlink_metadata`), tenue ; ou pourquoi elle ne peut pas l'être.
+    fn de(cible: &Path, m: &std::fs::Metadata) -> std::io::Result<Self> {
+        #[cfg(unix)]
+        {
+            if m.file_type().is_symlink() {
+                return std::fs::read_link(cible).map(Tenue::Lien);
+            }
+            let pas_un_fichier = || {
+                std::io::Error::other(tr!(
+                    "la copie en place n'est pas un fichier (un dossier ?)",
+                    "the copy in place is not a file (a folder?)"
+                ))
+            };
+            if !m.is_file() {
+                return Err(pas_un_fichier());
+            }
+            // Sans suivre de lien (posé entre-temps) ni attendre (un tube nommé posé entre-temps).
+            let mut options = std::fs::OpenOptions::new();
+            options.read(true);
+            std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NOFOLLOW | libc::O_NONBLOCK);
+            let f = options.open(cible)?;
+            if !f.metadata()?.is_file() {
+                return Err(pas_un_fichier());
+            }
+            Ok(Tenue::Fichier(f))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = m;
+            lire_octets(cible, TAILLE_MAX)
+                .map(Tenue::Octets)
+                .map_err(std::io::Error::other)
+        }
     }
-    #[cfg(not(unix))]
-    {
-        let _ = m;
-        lire_octets(chemin, TAILLE_MAX).ok().map(Identite)
+
+    /// `chemin` est-il elle, à l'instant ? Sous Unix, un fichier ordinaire du même appareil et du même inode que le
+    /// descripteur tenu (ce numéro ne peut être celui d'aucun autre fichier tant qu'il est tenu), ou un lien qui désigne
+    /// la même chose. Ailleurs, les mêmes octets. Faux si `chemin` ne se lit pas.
+    fn est(&self, chemin: &Path) -> bool {
+        match self {
+            #[cfg(unix)]
+            Tenue::Fichier(f) => {
+                use std::os::unix::fs::MetadataExt;
+                match (f.metadata(), std::fs::symlink_metadata(chemin)) {
+                    (Ok(a), Ok(b)) => b.is_file() && a.dev() == b.dev() && a.ino() == b.ino(),
+                    _ => false,
+                }
+            }
+            #[cfg(unix)]
+            Tenue::Lien(vers) => {
+                std::fs::symlink_metadata(chemin).is_ok_and(|m| m.file_type().is_symlink())
+                    && std::fs::read_link(chemin).ok().as_ref() == Some(vers)
+            }
+            #[cfg(not(unix))]
+            Tenue::Octets(o) => lire_octets(chemin, TAILLE_MAX).ok().as_ref() == Some(o),
+        }
     }
 }
 
@@ -740,7 +791,8 @@ impl Precedente {
                     affichable(&cible.display().to_string())
                 ));
             }
-            Ok(_) => {
+            Ok(m) => {
+                let tenue = Tenue::de(cible, &m).map_err(|e| pas_de_cote(&e))?;
                 // V-1 (relecture du recontrôle 2, 0.95) : ce nom n'est effacé que s'il est un second nom de la copie en
                 // place (le reste d'une mise à jour interrompue avant le renommage : rien ne s'y perd). Avant, il
                 // l'était toujours, avant même de savoir si le lien se ferait : l'ancienne copie gardée là après une
@@ -748,19 +800,16 @@ impl Precedente {
                 match std::fs::symlink_metadata(&de_cote) {
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                     Err(e) => return Err(pas_de_cote(&e)),
-                    Ok(_) if second_nom(&de_cote, cible) => {
+                    Ok(_) if tenue.est(&de_cote) => {
                         std::fs::remove_file(&de_cote).map_err(|e| pas_de_cote(&e))?;
                     }
                     Ok(_) => return Err(nom_garde(&de_cote)),
                 }
                 match std::fs::hard_link(cible, &de_cote) {
-                    Ok(()) => {
-                        let Some(i) = identite(&de_cote) else {
-                            let _ = std::fs::remove_file(&de_cote);
-                            return Err(pas_de_cote(&tr!("pas relue", "not read back")));
-                        };
-                        EtatPrecedente::Retenue(i)
-                    }
+                    // La cible ou ce nom changés entre-temps (un autre programme) : refus ; ce qui est à ce nom n'est
+                    // pas sûrement à Vanguard, il n'est pas effacé (la tentative suivante le dira, V-1).
+                    Ok(()) if !tenue.est(&de_cote) => return Err(pas_de_cote(&tr!("pas relue", "not read back"))),
+                    Ok(()) => EtatPrecedente::Retenue(tenue),
                     // Posé entre le regard et le lien (un autre programme) : jamais effacé non plus.
                     Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Err(nom_garde(&de_cote)),
                     Err(e) => return Err(pas_de_cote(&e)),
@@ -770,9 +819,12 @@ impl Precedente {
         Ok(Self { de_cote, etat })
     }
 
-    /// La mise à jour est faite : le second nom part (l'ancienne copie, elle, n'existe plus que là).
+    /// La mise à jour est faite : le second nom part (l'ancienne copie, elle, n'existe plus que là), s'il est encore
+    /// elle : ce qu'un autre programme a mis à ce nom n'est pas effacé.
     fn oublier(self) {
-        if matches!(self.etat, EtatPrecedente::Retenue(_)) {
+        if let EtatPrecedente::Retenue(tenue) = &self.etat
+            && tenue.est(&self.de_cote)
+        {
             let _ = std::fs::remove_file(&self.de_cote);
         }
     }
@@ -792,18 +844,21 @@ impl Precedente {
             )
         };
         match self.etat {
-            EtatPrecedente::Retenue(avant) => {
-                // Le renommage a échoué sans rien toucher : l'ancienne n'a pas bougé.
-                if identite(cible).as_ref() == Some(&avant) {
-                    let _ = std::fs::remove_file(&self.de_cote);
+            EtatPrecedente::Retenue(tenue) => {
+                // Le renommage a échoué sans rien toucher : l'ancienne n'a pas bougé (reconnue par ce qui la tient,
+                // V-3 : jamais par un numéro que le système a pu redonner).
+                if tenue.est(cible) {
+                    if tenue.est(&self.de_cote) {
+                        let _ = std::fs::remove_file(&self.de_cote);
+                    }
                     return tr!("l'ancienne copie reste en place", "the old copy stays in place").into();
                 }
                 // N-3 (recontrôle 2, 0.95) : le second nom n'est effacé qu'une fois l'ancienne reconnue à `cible`.
                 // Avant, il l'était même si la remise avait échoué : la seule ancienne copie qui restait était perdue.
                 match std::fs::rename(&self.de_cote, cible) {
-                    Ok(()) if identite(cible).as_ref() == Some(&avant) => {
+                    Ok(()) if tenue.est(cible) => {
                         // Deux noms d'un même fichier : le renommage ne fait rien (POSIX) et le second nom reste.
-                        if identite(&self.de_cote).as_ref() == Some(&avant) {
+                        if tenue.est(&self.de_cote) {
                             let _ = std::fs::remove_file(&self.de_cote);
                         }
                         tr!(
@@ -1781,7 +1836,9 @@ mod tests {
             faux_programme(&de_cote, Some("0.79.0"));
             let precedente = Precedente {
                 de_cote: de_cote.clone(),
-                etat: EtatPrecedente::Retenue(identite(&de_cote).unwrap()),
+                etat: EtatPrecedente::Retenue(
+                    Tenue::de(&de_cote, &std::fs::symlink_metadata(&de_cote).unwrap()).unwrap(),
+                ),
             };
             precedente.remettre(&cible)
         });
@@ -1842,6 +1899,56 @@ mod tests {
         remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, SANS_ESSAI).unwrap();
         assert_eq!(std::fs::read(&cible).unwrap(), std::fs::read(&source).unwrap());
         assert!(std::fs::symlink_metadata(&de_cote).is_err(), "reste laissé");
+        let _ = std::fs::remove_dir_all(&racine);
+    }
+
+    /// V-3 (relecture du recontrôle 2, 0.95) : l'ancienne copie était reconnue par son appareil et son inode seuls,
+    /// sans rien tenir d'ouvert. Son second nom effacé, puis elle-même remplacée, ext4 redonne aussitôt son numéro au
+    /// fichier suivant : un fichier étranger (ou un dossier) posé à la cible était pris pour elle, « l'ancienne copie
+    /// reste en place ». Maintenant elle est tenue ouverte jusqu'à la fin : son numéro n'est pas redonné, et seul un
+    /// fichier ordinaire peut être elle. (btrfs et tmpfs ne redonnent pas un numéro tout de suite : l'essai n'y tombe
+    /// pas ; les essais tournent sous la cible de compilation, sur ext4 ici.)
+    #[cfg(unix)]
+    #[test]
+    fn inode_repris_jamais_pris_pour_l_ancienne() {
+        use std::os::unix::fs::MetadataExt;
+        let racine = crate::socle::dossier_local().join("essai-inode-repris");
+        let _ = std::fs::remove_dir_all(&racine);
+        let cible = racine.join("bin").join(NOM);
+        let de_cote = cible.with_file_name(format!("{NOM}.precedent"));
+        let mut repris = 0;
+        for tour in 0..40 {
+            faux_programme(&cible, Some("0.79.0"));
+            let ancienne = std::fs::read(&cible).unwrap();
+            let numero = std::fs::metadata(&cible).unwrap().ino();
+            let precedente = Precedente::retenir(&cible).expect("mise de côté");
+            std::fs::remove_file(&de_cote).unwrap();
+            std::fs::remove_file(&cible).unwrap();
+            if tour % 2 == 0 {
+                std::fs::write(&cible, avec_entete("faux ", "0.80.0; etranger")).unwrap();
+            } else {
+                std::fs::create_dir(&cible).unwrap();
+            }
+            repris += usize::from(std::fs::symlink_metadata(&cible).unwrap().ino() == numero);
+            let dit = precedente.remettre(&cible);
+            // Ce qui est dit « l'ancienne » à la cible doit l'être : un fichier ordinaire, avec ses octets.
+            if dit.contains("reste en place") || dit.contains("remise en place") {
+                assert_eq!(
+                    std::fs::read(&cible).ok(),
+                    Some(ancienne),
+                    "tour {tour}, pris pour l'ancienne : {dit}"
+                );
+            }
+            if cible.is_dir() {
+                std::fs::remove_dir_all(&cible).unwrap();
+            } else {
+                std::fs::remove_file(&cible).unwrap();
+            }
+            for reste in std::fs::read_dir(racine.join("bin")).unwrap() {
+                let _ = std::fs::remove_file(reste.unwrap().path());
+            }
+        }
+        eprintln!("numéro repris par ce qui a pris la place : {repris} sur 40");
         let _ = std::fs::remove_dir_all(&racine);
     }
 
