@@ -1152,6 +1152,22 @@ EOF2
     sauter "test.ps1 et la fenêtre"
   fi
 
+  # 28. « Ouvrir Vanguard » du menu (choix 3, sans droits administrateur, devant l'écran) : le seul endroit de la VM
+  #     où la fenêtre s'ouvre pour de vrai. Sa copie locale est celle de test.ps1, au caractère près.
+  python3 -I - "$DEPOT/outils/test-windows/test.ps1" "$DEPOT/outils/test-windows/menu.ps1" >"$T/sortie" 2>&1 <<'EOF2'
+import re, sys
+def fonction(chemin, nom):
+    m = re.search(r'(?ms)^function ' + nom + r'\b.*?^\}$', open(chemin, encoding='utf-8-sig').read())
+    assert m, nom + ' absente de ' + chemin
+    return m.group(0)
+assert fonction(sys.argv[1], 'Copier-Programme') == fonction(sys.argv[2], 'Copier-Programme'), 'copies différentes'
+ouvrir = fonction(sys.argv[2], 'Ouvrir-Vanguard')
+assert re.search(r'^\s*\$\w+ = Copier-Programme \$programme \$local$', ouvrir, re.M), 'Ouvrir-Vanguard sans Copier-Programme'
+assert 'Copy-Item' not in ouvrir, 'Ouvrir-Vanguard copie encore à sa façon'
+EOF2
+  local menu=$?
+  voir "menu.ps1 (Ouvrir Vanguard) : la même copie que test.ps1, fenêtre comprise" test "$menu" -eq 0
+
   # 23. Sans le secret ici, ou face au surveillant d'avant la signature : rien déposé, la raison dite.
   nouvelle_vm; sources 0 0 0 'OK x'
   ID=

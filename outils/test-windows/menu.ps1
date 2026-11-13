@@ -1,6 +1,6 @@
 ﻿# Menu des tests de Vanguard dans la machine virtuelle Windows : double-clic sur TESTER-VANGUARD.bat.
-# Le dossier « programme » (vanguard.exe, ce menu, test.ps1, version.txt) est remplacé à chaque déploiement depuis
-# Linux (outils/deployer.sh) ; les résultats de chaque passe vont dans « resultats » et y restent.
+# Le dossier « programme » (vanguard.exe et sa fenêtre, ce menu, test.ps1, version.txt) est remplacé à chaque
+# déploiement depuis Linux (outils/deployer.sh) ; les résultats de chaque passe vont dans « resultats » et y restent.
 # -Surveiller : lancé par la tâche planifiée (choix 6) ; teste en arrière-plan chaque nouvelle version déposée, une
 # seule fois, puis prévient par une notification. Avec le choix 7, lance aussi les scripts déposés depuis Linux dans
 # « a-lancer » (sans droits administrateur), pour que Claude fasse une passe sans qu'on ait à cliquer.
@@ -198,13 +198,32 @@ function Basculer-Scripts {
     if (-not (Surveillance-Active)) { Basculer-Surveillance }
 }
 
+# La même que celle de test.ps1, au caractère près (vm-tester.sh --essai-local le vérifie) : vanguard.exe ne lance que
+# la fenêtre dont il porte l'empreinte, posée à côté de lui ; rend '' ou ce qui a raté.
+function Copier-Programme([string]$source, [string]$dossier) {
+    New-Item -ItemType Directory -Force $dossier | Out-Null
+    Copy-Item -LiteralPath (Join-Path $source 'vanguard.exe') $dossier -Force
+    $fenetre = Join-Path $source 'vanguard-fenetre.exe'
+    $copie = Join-Path $dossier 'vanguard-fenetre.exe'
+    if (Test-Path -LiteralPath $fenetre -PathType Leaf) {
+        Copy-Item -LiteralPath $fenetre $dossier -Force
+    } elseif (Test-Path -LiteralPath $copie) {
+        Remove-Item -LiteralPath $copie -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $copie) { return "la fenêtre d'une passe d'avant n'a pas pu être retirée de $dossier" }
+    }
+    return ''
+}
+
 function Ouvrir-Vanguard {
-    # Une copie locale, comme pour le test : un .exe sur un partage réseau déclenche des avertissements.
+    # Une copie locale, comme pour le test : un .exe sur un partage réseau déclenche des avertissements. Sans droits
+    # administrateur et devant l'écran, vanguard.exe y ouvre sa fenêtre (0.96) ; sans elle, son menu.
     $local = Join-Path $env:LOCALAPPDATA 'vanguard-test'
-    New-Item -ItemType Directory -Force $local | Out-Null
-    Copy-Item (Join-Path $programme 'vanguard.exe') $local -Force
+    $rate = Copier-Programme $programme $local
+    if ($rate) { Write-Host "  Copie locale : $rate (vanguard gardera son menu si elle n'est pas la sienne)." -ForegroundColor Yellow }
     $exe = Join-Path $local 'vanguard.exe'
+    $fenetre = Join-Path $local 'vanguard-fenetre.exe'
     Unblock-File $exe -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $fenetre) { Unblock-File $fenetre -ErrorAction SilentlyContinue }
     Start-Process $exe
 }
 
