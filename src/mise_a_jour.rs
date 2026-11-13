@@ -839,7 +839,8 @@ fn posee_est_la_montree(f: &std::fs::File, cible: &Path, octets: &[u8]) -> std::
 /// Lance la nouvelle copie, encore à côté, avec « --version » : la surveillance, l'entretien et le veilleur la
 /// relanceront sans personne devant l'écran, et une copie qui ne démarre pas sur ce système (programme abîmé, mauvaise
 /// architecture) arrêterait la défense sans bruit. Elle doit finir, sans erreur, en disant la version attendue ;
-/// sinon l'ancienne reste en place. Sous Windows, pas d'essai : le fichier provisoire n'a pas l'extension .exe, et
+/// sinon rien n'est remplacé (l'ancienne copie, s'il y en a une, n'est pas touchée : N-5, recontrôle 2 0.95, à la
+/// première pose il n'y en a pas). Sous Windows, pas d'essai : le fichier provisoire n'a pas l'extension .exe, et
 /// son lancement par ce nom n'a pas été vérifié sur un vrai Windows.
 fn essayer(programme: &Path, attendue: Version) -> Result<(), String> {
     if cfg!(windows) {
@@ -854,13 +855,13 @@ fn essayer(programme: &Path, attendue: Version) -> Result<(), String> {
         Ok(r) if r.code == Some(0) && r.sortie.split_whitespace().any(|m| m == ecrire(attendue)) => Ok(()),
         // R-3 (recontrôle 0.95) : l'ordinateur n'y est pour rien, c'est dit.
         Err(Some(e)) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => Err(tr!(
-            "la nouvelle copie est tenue ouverte en écriture par un autre programme (« Text file busy ») : elle ne se lance pas, l'ancienne reste en place ; relancez la mise à jour quand ce programme l'aura lâchée",
-            "the new copy is held open for writing by another program (“Text file busy”): it does not start, the old one stays in place; run the update again once that program lets go of it"
+            "la nouvelle copie est tenue ouverte en écriture par un autre programme (« Text file busy ») : elle ne se lance pas, rien n'est remplacé ; réessayez quand ce programme l'aura lâchée",
+            "the new copy is held open for writing by another program (“Text file busy”): it does not start, nothing is replaced; try again once that program lets go of it"
         )
         .into()),
         _ => Err(tr!(
-            "la nouvelle copie ne démarre pas sur cet ordinateur : l'ancienne reste en place",
-            "the new copy does not start on this computer: the old one stays in place"
+            "la nouvelle copie ne démarre pas sur cet ordinateur : rien n'est remplacé",
+            "the new copy does not start on this computer: nothing is replaced"
         )
         .into()),
     }
@@ -1869,7 +1870,43 @@ mod tests {
         let e = essayer(&copie, (0, 80, 0, 5)).unwrap_err();
         assert!(e.contains("un autre programme"), "{e}");
         assert!(!e.contains("ne démarre pas sur cet ordinateur"), "{e}");
+        assert!(!e.contains("reste en place"), "{e}");
+        assert!(e.contains("rien n'est remplacé"), "{e}");
         drop(tenue);
+        let _ = std::fs::remove_dir_all(&racine);
+    }
+
+    /// N-5 (recontrôle 2, 0.95) : à la première pose (aucune copie avant), une nouvelle copie qui ne démarre pas ne
+    /// dit pas « l'ancienne reste en place » : il n'y en a pas. Rien n'est remplacé, et rien n'est laissé à la place.
+    #[cfg(unix)]
+    #[test]
+    fn premiere_pose_ratee_ne_parle_pas_d_une_ancienne() {
+        let racine = crate::socle::dossier_local().join("essai-premiere-pose");
+        let _ = std::fs::remove_dir_all(&racine);
+        let source = racine.join("cle").join(NOM);
+        let cible = racine.join("bin").join(NOM);
+        faux_programme(&source, Some("0.80.0"));
+        for anglais in [false, true] {
+            let pose = || poser_copie_dans(&source, &cible, essayer);
+            let e = if anglais {
+                crate::langue::en_anglais(pose)
+            } else {
+                pose()
+            }
+            .unwrap_err();
+            assert!(!e.contains("reste en place") && !e.contains("stays in place"), "{e}");
+            assert!(
+                e.contains(if anglais {
+                    "nothing is replaced"
+                } else {
+                    "rien n'est remplacé"
+                }),
+                "{e}"
+            );
+            assert!(std::fs::symlink_metadata(&cible).is_err(), "{e}");
+            let provisoire = cible.with_file_name(format!("{NOM}.nouveau"));
+            assert!(std::fs::symlink_metadata(provisoire).is_err(), "{e}");
+        }
         let _ = std::fs::remove_dir_all(&racine);
     }
 }
