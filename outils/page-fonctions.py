@@ -17,9 +17,11 @@ la page prête. Rien n'est envoyé d'ici.
   - vérifications sur le vrai Windows : la dernière passe réussie de la VM (son menu ou la file d'essais) ;
   - captures : celles du README (assets/captures, déjà masquées par outils/captures.py), en WebP sans perte et
     intégrées à la page (data:) : une seule page, sans fichier à côté, pour GitHub Pages comme pour claude.ai. Il y
-    faut Pillow (python-pillow).
+    faut Pillow (python-pillow) ;
+  - visite guidée de la fenêtre : les captures de outils/captures-fenetre.sh (données inventées), prises dans
+    --captures (défaut ~/.cache/vanguard-dev/captures-fenetre) ; une capture manquante arrête le rendu.
 
-    python3 -I outils/page-fonctions.py [--complet] [--programme VANGUARD] [--sortie PAGE]
+    python3 -I outils/page-fonctions.py [--complet] [--programme VANGUARD] [--sortie PAGE] [--captures DOSSIER]
     python3 -I outils/page-fonctions.py --verifier SORTIE --tests-linux 693 --tests-wine 613 --version 0.82.0
 
 --complet : un document HTML entier (doctype, head, body), pour GitHub Pages ; sans lui, le fragment que
@@ -207,23 +209,61 @@ CAPTURES = {
 }
 
 
-def captures() -> dict[str, str]:
-    """Chaque capture en data: URI (WebP sans perte : le texte du terminal reste net, quatre fois plus léger que le
-    PNG), avec sa largeur et sa hauteur pour que la page ne saute pas au chargement."""
+# La visite guidée de la fenêtre (section « Prise en main ») : une capture par étape, rendue par
+# outils/captures-fenetre.sh avec des données inventées (alice, Salon, adresses de documentation), hors du dépôt.
+# Thème sombre seulement : les deux thèmes doubleraient le poids de la page (plus de 2 Mo, au lieu d'environ 1,3).
+CAPTURES_FENETRE = Path.home() / ".cache/vanguard-dev/captures-fenetre"
+VISITE = {
+    "ACCUEIL": "accueil-fr-sombre-1280x800.png",
+    "BILAN": "bilan-fr-sombre-1280x800.png",
+    "APERCU": "gestes/apercu-lu-fr-sombre-1280x800.png",
+    "FAIT": "gestes/fait-fr-sombre-1280x800.png",
+    "REMETTRE": "gestes/remettre-fr-sombre-1280x800.png",
+    "ALERTES": "alertes-fr-sombre-1280x800.png",
+    "APPAREILS": "appareils-fr-sombre-1280x800.png",
+    "ORDINATEUR": "rubrique-cet-ordinateur-fr-sombre-1280x800.png",
+    "RESEAU": "rubrique-reseau-et-internet-fr-sombre-1280x800.png",
+    "VIRUS": "rubrique-virus-et-logiciels-espions-fr-sombre-1280x800.png",
+    "ARNAQUES": "rubrique-arnaques-et-vie-privee-fr-sombre-1280x800.png",
+    "BLOQUER": "rubrique-bloquer-et-reagir-fr-sombre-1280x800.png",
+    "OPTIMISER": "rubrique-optimiser-et-installer-fr-sombre-1280x800.png",
+    "VANGUARD": "rubrique-vanguard-fr-sombre-1280x800.png",
+    "GUIDE": "guide-fr-sombre-1280x800.png",
+    "COMMANDE": "commande-connexions-sortantes-fr-sombre-1280x800.png",
+    "CONSOLE": "console/suggestion-sombre.png",
+    "RECHERCHE": "console/recherche-ssh-sombre.png",
+}
+
+
+def _webp(image, prefixe: str) -> dict[str, str]:
+    """Une image en data: URI (WebP sans perte : le texte reste net, quatre fois plus léger que le PNG), avec sa
+    largeur et sa hauteur pour que la page ne saute pas au chargement."""
+    image = image.convert("RGB")
+    tampon = io.BytesIO()
+    image.save(tampon, "WEBP", lossless=True, method=6)
+    return {prefixe: "data:image/webp;base64," + base64.b64encode(tampon.getvalue()).decode("ascii"),
+            f"{prefixe}_L": str(image.width), f"{prefixe}_H": str(image.height)}
+
+
+def captures(dossier_fenetre: Path = CAPTURES_FENETRE) -> dict[str, str]:
+    """Les captures du README (CAPTURE_*) et celles de la visite guidée (VISITE_*), prises dans dossier_fenetre.
+    Une capture de la visite qui manque arrête tout : jamais une page à trous."""
     try:
         from PIL import Image
     except ImportError:
         sys.exit("✖ Pillow manque pour intégrer les captures (python-pillow, ou pip install pillow)")
+    manquantes = [nom for nom in VISITE.values() if not (dossier_fenetre / nom).is_file()]
+    if manquantes:
+        sys.exit(f"✖ {len(manquantes)} capture(s) de la fenêtre manquent dans {dossier_fenetre} "
+                 f"({', '.join(manquantes[:3])}{' …' if len(manquantes) > 3 else ''}) : lancez "
+                 "outils/captures-fenetre.sh (ou donnez le bon dossier par --captures)")
     valeurs = {}
     for cle, (nom, partie) in CAPTURES.items():
         with Image.open(RACINE / "assets/captures" / nom) as image:
-            image = image.convert("RGB")
-            if partie:
-                image = image.crop(partie)
-            tampon = io.BytesIO()
-            image.save(tampon, "WEBP", lossless=True, method=6)
-        valeurs[f"CAPTURE_{cle}"] = "data:image/webp;base64," + base64.b64encode(tampon.getvalue()).decode("ascii")
-        valeurs[f"CAPTURE_{cle}_L"], valeurs[f"CAPTURE_{cle}_H"] = str(image.width), str(image.height)
+            valeurs |= _webp(image.crop(partie) if partie else image, f"CAPTURE_{cle}")
+    for cle, nom in VISITE.items():
+        with Image.open(dossier_fenetre / nom) as image:
+            valeurs |= _webp(image, f"VISITE_{cle}")
     return valeurs
 
 
@@ -488,6 +528,8 @@ def main():
     a.add_argument("--sortie", type=Path, default=Path.home() / ".cache/vanguard-dev/page-fonctions.html")
     a.add_argument("--version", help="la version à montrer, avant que Cargo.toml la porte (un aperçu)")
     a.add_argument("--complet", action="store_true", help="un document HTML entier (GitHub Pages)")
+    a.add_argument("--captures", type=Path, default=CAPTURES_FENETRE,
+                   help="dossier des captures de la fenêtre (outils/captures-fenetre.sh) ; défaut : %(default)s")
     a.add_argument("--ticket", type=Path, help="le texte du ticket n° 1 lu dans ce fichier (aperçu, essais) ; "
                    "sinon par gh, ou la section dit qu'il n'est pas disponible")
     args = a.parse_args()
@@ -516,7 +558,7 @@ def main():
     valeurs.update(jetons((RACINE / "fenetre/src/couleurs.rs").read_text(encoding="utf-8"),
                           (RACINE / "fenetre/src/dessin/mod.rs").read_text(encoding="utf-8")))
     valeurs["A_VENIR"] = a_venir(args.ticket)
-    images = captures()
+    images = captures(args.captures)
     page = remplir((RACINE / "outils/page-fonctions.html").read_text(encoding="utf-8"), valeurs | images)
     # Un « � », un invisible ou un caractère de contrôle écrit tel quel : l'outil Artifact refuse la page (0.94, U+FFFD
     # de « Textes piégés »), et un invisible dans une page publique trompe le lecteur. Ils s'écrivent en entité (&#xFFFD;).
@@ -534,7 +576,7 @@ def main():
                 "COMMANDES_CLI", "COMMANDES", "TESTS_LINUX", "TESTS_WINE", "VM"):
         print(f"  {cle.lower():<13} {valeurs[cle]}")
     poids = sum(len(v) for c, v in images.items() if not c.endswith(("_L", "_H")))
-    print(f"  {'captures':<13} {len(CAPTURES)}, {poids // 1024} Ko ; page {len(page.encode()) // 1024} Ko")
+    print(f"  {'captures':<13} {len(CAPTURES) + len(VISITE)}, {poids // 1024} Ko ; page {len(page.encode()) // 1024} Ko")
 
 
 if __name__ == "__main__":

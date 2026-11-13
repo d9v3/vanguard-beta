@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Essais de outils/page-fonctions.py : les couleurs lues dans la fenêtre (et l'échec clair si elles ne se lisent
 plus), la section « À venir » tirée d'un faux ticket (texte échappé, cases cochées écartées, refus de confidentialité,
-hors ligne) et le remplissage du gabarit en un seul passage. Aucun réseau : le ticket est un fichier inventé.
+hors ligne), le remplissage du gabarit en un seul passage, et la visite guidée (capture manquante = échec clair,
+chaque image décrite et dimensionnée, section et onglet présents). Aucun réseau : le ticket est un fichier inventé.
 
     python3 outils/essais-page-fonctions.py
 """
@@ -156,6 +157,38 @@ class Remplir(unittest.TestCase):
         trous = set(re.findall(r"\{\{([A-Z_]+)\}\}", re.sub(r"<!--.*?-->", "", gabarit, count=1, flags=re.S)))
         self.assertTrue({"JETONS", "A_VENIR", "FOND_CLAIR", "FOND_SOMBRE"} <= trous)
         self.assertIn('<header class="barre-app"', gabarit)
+
+
+class Visite(unittest.TestCase):
+    GABARIT = (RACINE / "outils/page-fonctions.html").read_text(encoding="utf-8")
+
+    def test_capture_manquante_echec_clair(self):
+        with tempfile.TemporaryDirectory() as vide, self.assertRaises(SystemExit) as e:
+            pf.captures(Path(vide))
+        message = str(e.exception.code)
+        self.assertIn("captures-fenetre.sh", message)
+        self.assertIn(vide, message)
+
+    def test_chaque_image_decrite_et_dimensionnee(self):
+        images = re.findall(r"<img\b[^>]*>", self.GABARIT)
+        self.assertGreaterEqual(len(images), 3 + len(pf.VISITE))
+        for img in images:
+            with self.subTest(img=img[:60]):
+                self.assertRegex(img, r'\balt="[^"]{12,}"')
+                self.assertRegex(img, r'\bwidth="\{\{[A-Z_]+_L\}\}"')
+                self.assertRegex(img, r'\bheight="\{\{[A-Z_]+_H\}\}"')
+
+    def test_chaque_capture_de_la_visite_servie(self):
+        """Chaque capture de VISITE a sa place dans la page, et la page n'en attend aucune autre."""
+        attendues = {f"VISITE_{cle}" for cle in pf.VISITE}
+        self.assertEqual(set(re.findall(r'src="\{\{(VISITE_[A-Z_]+)\}\}"', self.GABARIT)), attendues)
+
+    def test_section_dans_main_et_son_onglet(self):
+        main = self.GABARIT[self.GABARIT.index('<main class="cadre" id="contenu">'):self.GABARIT.index("</main>")]
+        self.assertIn('\n  <section id="prise-en-main">', main)  # main > section : la recherche de la console la lit
+        onglets = self.GABARIT[self.GABARIT.index('<nav class="onglets"'):self.GABARIT.index("</nav>")]
+        self.assertIn('<a href="#prise-en-main">Prise en main</a>', onglets)
+        self.assertIn('lang="en"', main[main.index('id="prise-en-main"'):main.index('id="securite"')])
 
 
 if __name__ == "__main__":

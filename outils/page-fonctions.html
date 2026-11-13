@@ -209,6 +209,26 @@ details[open] > summary::after { transform: translateY(15%) rotate(-135deg); }
 .capture img { display: block; width: 100%; height: auto; border-radius: var(--rayon); border: 1px solid var(--trait); box-shadow: var(--ombre); background: #0a0d0e; }
 .capture figcaption { margin-top: .65rem; font-size: .875rem; line-height: 1.5; color: var(--doux); }
 .capture figcaption span { display: block; color: var(--discret); }
+/* Prise en main : une étape = la capture de la fenêtre, puis ce qu'on y voit et ce qu'on y fait. */
+.visite { list-style: none; margin: 2.5rem 0 0; padding: 0; display: grid; gap: 3rem; counter-reset: pas; }
+.visite-suite { counter-reset: pas 7; }
+.pas { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 1.25rem 2rem; align-items: start; counter-increment: pas; }
+.pas-texte { min-width: 0; display: grid; gap: .55rem; font-size: .9375rem; color: var(--doux); }
+.pas-texte p, .pas-texte ul { margin: 0; }
+.pas-texte ul { padding-left: 1.1rem; display: grid; gap: .3rem; }
+.pas-texte b { color: var(--encre); font-weight: 500; }
+.pas-texte h3 { font-size: 1.125rem; color: var(--encre); text-wrap: balance; }
+.pas-texte h3::before { content: counter(pas, decimal-leading-zero); display: block; margin-bottom: .2rem; font-family: var(--mono); font-size: .8125rem; font-weight: 400; color: var(--discret); }
+.pas-texte .libelle { margin-top: .35rem; font-size: .75rem; letter-spacing: .06em; text-transform: uppercase; color: var(--discret); }
+.pas-texte .touches { margin-top: .35rem; padding: .6rem .8rem; border-radius: var(--rayon); background: var(--surface-2); font-size: .875rem; }
+.pas-texte .plus { margin-top: .35rem; }
+.pas-texte .plus > :not(summary) { margin-top: .6rem; }
+kbd { font-family: var(--mono); font-size: .8em; color: var(--encre); background: var(--surface); border: 1px solid var(--trait); border-bottom-width: 2px; border-radius: 4px; padding: .05rem .35rem; white-space: nowrap; }
+.rubriques { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; align-items: start; margin-top: 1.25rem; }
+.rubriques > .replie { margin-top: 0; min-width: 0; }
+.replie .capture { margin-bottom: .9rem; }
+.replie > div > p { margin: 0; color: var(--doux); font-size: .9375rem; }
+.visite-suite { margin-top: 3rem; }
 
 .specs { margin: 0; padding: .25rem 1.3rem; background: var(--surface); border: 1px solid var(--trait); border-radius: var(--rayon); box-shadow: var(--ombre); }
 .specs div { display: grid; grid-template-columns: 11rem minmax(0, 1fr); gap: .25rem 1.5rem; padding: .85rem 0; border-bottom: 1px solid var(--trait); min-width: 0; }
@@ -264,6 +284,8 @@ footer a:hover { color: var(--encre); }
   :root { --barre: 101px; }
 }
 @media (max-width: 960px) {
+  .pas { grid-template-columns: minmax(0, 1fr); }
+  .rubriques { grid-template-columns: minmax(0, 1fr); }
   .chiffres { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .audit { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .stats { grid-template-columns: 1fr; }
@@ -314,6 +336,7 @@ footer a:hover { color: var(--encre); }
     <a class="marque" href="#haut" aria-label="Vanguard, haut de la page"><span class="v" aria-hidden="true">V</span><span class="mot">VANGUARD</span></a>
     <nav class="onglets" aria-label="Sections">
       <a href="#haut">Vue d'ensemble</a>
+      <a href="#prise-en-main">Prise en main</a>
       <a href="#securite">Sécurité</a>
       <a href="#menaces">Menaces</a>
       <a href="#audit">Audit du réseau</a>
@@ -385,6 +408,266 @@ footer a:hover { color: var(--encre); }
 </div>
 
 <main class="cadre" id="contenu">
+  <section id="prise-en-main">
+    <div class="tete-section">
+      <p class="surtitre">Prise en main · visite guidée de la fenêtre</p>
+      <h2>La fenêtre de Vanguard, écran par écran</h2>
+      <p>Dans l'ordre d'un premier usage : ce que vous voyez, ce que vous pouvez faire, et les touches. Les images sont celles de la fenêtre, rendues avec des données inventées (le compte « alice », le réseau « Salon », des adresses de documentation).</p>
+    </div>
+    <!-- Captures de outils/captures-fenetre.sh, intégrées par outils/page-fonctions.py (VISITE) ; libellés recopiés
+         tels quels de fenetre/src (tr!). Thème sombre seulement : les deux thèmes doubleraient le poids de la page. -->
+    <p class="note">Partout dans la fenêtre : <kbd>Alt</kbd>+<kbd>←</kbd>, le bouton « précédent » de la souris, ou <kbd>Échap</kbd> quand rien n'a le focus, reviennent à l'écran d'avant ; <kbd>Tab</kbd> et <kbd>Maj</kbd>+<kbd>Tab</kbd> (ou les flèches) passent d'un élément à l'autre, avec un anneau bien visible, et <kbd>Entrée</kbd> ou <kbd>Espace</kbd> ouvre la carte choisie.</p>
+
+    <ol class="visite">
+      <li class="pas" id="visite-accueil">
+        <figure class="capture"><img src="{{VISITE_ACCUEIL}}" width="{{VISITE_ACCUEIL_L}}" height="{{VISITE_ACCUEIL_H}}" loading="lazy" decoding="async" alt="Fenêtre de Vanguard, écran Vue d'ensemble : la barre d'onglets en haut, la console dessous, le rail des rubriques à gauche, et trois cartes Bilan 82/100, Protection 3 allumés, Journal 1 alerte"></figure>
+        <div class="pas-texte">
+          <h3>Ouvrir la fenêtre : la Vue d'ensemble</h3>
+          <p class="libelle">Ce que vous voyez</p>
+          <p>Une courte ouverture (moins d'une seconde : un grand V qui s'ouvre comme deux portes), puis la <b>Vue d'ensemble</b> : « Ce que Vanguard a lu sur cet ordinateur. Rien n'est changé d'ici. » Trois cartes : <b>Bilan</b> (la note sur 100), <b>Protection</b> (ce qui est allumé ou éteint) et <b>Journal</b> (les alertes, et si le journal est intact). En haut, les onglets <b>Vue d'ensemble · Bilan · Alertes · Appareils · Connexions · Toutes les fonctions</b>, l'état de la veille (« En veille », « Veille éteinte » ou « Protection pas lue ») et le bouton <b>Voir les alertes</b>. À gauche, le rail des rubriques ; sous les onglets, la console.</p>
+          <p class="libelle">Ce que vous pouvez faire</p>
+          <ul>
+            <li>Cliquer une carte (« Ouvrir → ») pour l'écran complet.</li>
+            <li>Relancer une lecture d'un clic, sous <b>Relire</b> : Bilan de cet ordinateur, Protection, Alertes et événements, Diagnostic du réseau.</li>
+          </ul>
+          <p class="touches">Un clic ou une touche saute l'ouverture. Dans la rubrique Vanguard, Animations « Réduites » la retire pour de bon.</p>
+          <details class="plus"><summary>Pourquoi rien ne se lance pas tout seul ?</summary>
+            <p>Les premières lectures sont déjà parties quand la fenêtre s'affiche : leurs réponses arrivent pendant l'ouverture. Ce qui changerait l'ordinateur (corrections, réglages, quarantaine) n'est jamais lancé sans être montré puis accepté ; la fenêtre le dit en bas de la Vue d'ensemble : « Ce qui change l'ordinateur (corrections, réglages, quarantaine) reste dans le menu de Vanguard pour l'instant : il arrive ici lot par lot, toujours montré puis accepté. »</p>
+          </details>
+        </div>
+      </li>
+
+      <li class="pas" id="visite-bilan">
+        <figure class="capture"><img src="{{VISITE_BILAN}}" width="{{VISITE_BILAN_L}}" height="{{VISITE_BILAN_H}}" loading="lazy" decoding="async" alt="Écran Bilan de cet ordinateur : la note 82 sur 100, un point pas pu vérifier, et des barres par sujet (pare-feu, SSH, mises à jour, comptes, chiffrement, partage, démarrage, navigateur)"></figure>
+        <div class="pas-texte">
+          <h3>Le bilan de l'ordinateur</h3>
+          <p class="libelle">Ce que vous voyez</p>
+          <p><b>Bilan de cet ordinateur</b> : la note sur 100, le nombre de vérifications et leur durée (« rien n'est envoyé, tout se lit sur cet ordinateur »), et une barre par sujet, colorée selon le résultat : à corriger, bon à savoir, sains, sans objet ici, pas pu vérifier. Dessous, les listes <b>À corriger</b>, <b>Ce qui va bien</b>, <b>Bon à savoir</b>, <b>Pas pu vérifier</b> et <b>Couverture</b>.</p>
+          <p class="libelle">Ce que vous pouvez faire</p>
+          <ul>
+            <li><b>Refaire le bilan</b> (ou <b>Lancer le bilan</b> la première fois) ; <b>Arrêter</b> pendant qu'il tourne.</li>
+            <li>Survoler une barre pour le nom de son sujet (« Survolez un groupe pour son nom »).</li>
+            <li>Sur un point à corriger : <b>Voir la correction</b> (l'étape suivante).</li>
+          </ul>
+          <p class="touches"><b>← Retour</b>, ou <kbd>Alt</kbd>+<kbd>←</kbd>, revient à l'écran d'avant.</p>
+          <details class="plus"><summary>« Pas pu vérifier » ne veut pas dire « sain »</summary>
+            <p>Une vérification qui n'a pas pu se faire est montrée à part, hachurée dans les barres : elle ne compte pas comme saine. La fenêtre le dit sous la note, par exemple « Une vérification n'a pas pu se faire : elle ne compte pas comme saine. »</p>
+          </details>
+        </div>
+      </li>
+
+      <li class="pas" id="visite-correction">
+        <figure class="capture"><img src="{{VISITE_APERCU}}" width="{{VISITE_APERCU_L}}" height="{{VISITE_APERCU_H}}" loading="lazy" decoding="async" alt="Feuille Voir la correction : aperçu d'une clé SSH lisible par d'autres, avec ce que Vanguard va faire, la commande exacte, la valeur d'avant notée (0644), et les boutons Annuler et Appliquer cette correction"></figure>
+        <div class="pas-texte">
+          <h3>Une correction : montrée avant, appliquée après votre accord</h3>
+          <p class="libelle">Ce que vous voyez</p>
+          <p>La feuille <b>Voir la correction</b> s'ouvre sur « Aperçu : rien n'a changé sur l'ordinateur. » Elle dit le problème, <b>Ce que Vanguard va faire</b>, <b>À savoir</b> (si ça s'annule, avec quels droits), les <b>Commandes</b> exactes et les <b>Valeurs d'avant, notées</b>.</p>
+          <p class="libelle">Ce que vous pouvez faire</p>
+          <ul>
+            <li><b>Annuler</b> : rien ne change.</li>
+            <li><b>Appliquer cette correction</b> : le bouton s'active après deux secondes d'aperçu, le temps de lire. Puis « En cours : Vanguard rejuge tout, puis agit. Ça ne s'interrompt pas. »</li>
+          </ul>
+          <p class="touches"><kbd>Échap</kbd> ferme la feuille sans rien changer.</p>
+          <details class="plus"><summary>Et si la correction demande les droits d'administrateur ?</summary>
+            <p>Elle ne s'applique pas encore depuis la fenêtre : la feuille le dit (« Elle ne s'applique pas d'ici : vanguard corriger dans un terminal. ») et offre <b>Copier la commande</b> à la place du bouton d'accord.</p>
+          </details>
+        </div>
+      </li>
+
+      <li class="pas" id="visite-fait">
+        <figure class="capture"><img src="{{VISITE_FAIT}}" width="{{VISITE_FAIT_L}}" height="{{VISITE_FAIT_H}}" loading="lazy" decoding="async" alt="Feuille Voir la correction après l'accord : Fait. Vanguard a relu : corrigé. Boutons Fermer et Annuler cette correction"></figure>
+        <div class="pas-texte">
+          <h3>Fait, et relu</h3>
+          <p class="libelle">Ce que vous voyez</p>
+          <p>« <b>Fait.</b> » puis « Vanguard a relu : corrigé. » : le résultat n'est pas supposé, il est relu sur l'ordinateur. « Elle s'annule ici, ou depuis « Ce que Vanguard a changé ». »</p>
+          <p class="libelle">Ce que vous pouvez faire</p>
+          <ul>
+            <li><b>Fermer</b>, ou <b>Annuler cette correction</b> tout de suite.</li>
+          </ul>
+        </div>
+      </li>
+
+      <li class="pas" id="visite-remettre">
+        <figure class="capture"><img src="{{VISITE_REMETTRE}}" width="{{VISITE_REMETTRE_L}}" height="{{VISITE_REMETTRE_H}}" loading="lazy" decoding="async" alt="Feuille Remettre comme avant : ce qui sera remis, fichier par fichier, avec les droits d'aujourd'hui et ceux remis, un avertissement si le fichier a changé depuis, et les boutons Annuler et Remettre comme avant"></figure>
+        <div class="pas-texte">
+          <h3>Remettre comme avant</h3>
+          <p class="libelle">Ce que vous voyez</p>
+          <p>Dans la rubrique <b>Bloquer et réagir</b>, l'écran <b>Ce que Vanguard a changé</b> : « Chaque correction lancée sur cet ordinateur, sa date et son résultat », avec son état (en place, interrompue, remise comme avant…). La feuille <b>Remettre comme avant</b> montre d'abord <b>Ce qui sera remis</b> : pour chaque fichier, les droits d'aujourd'hui et ceux qui seront remis, et ce qui a changé depuis.</p>
+          <p class="libelle">Ce que vous pouvez faire</p>
+          <ul>
+            <li><b>Remettre comme avant</b> sur une ligne, lire l'aperçu, puis accepter ; ou <b>Annuler</b>.</li>
+            <li>Le résultat est relu lui aussi : « Vanguard a relu : revenu comme avant. »</li>
+          </ul>
+          <p class="touches"><kbd>Échap</kbd> ferme la feuille.</p>
+        </div>
+      </li>
+
+      <li class="pas" id="visite-alertes">
+        <figure class="capture"><img src="{{VISITE_ALERTES}}" width="{{VISITE_ALERTES_L}}" height="{{VISITE_ALERTES_H}}" loading="lazy" decoding="async" alt="Écran Alertes et événements : journal intact, une alerte Connexion suspecte vers 203.0.113.7, puis les autres événements"></figure>
+        <div class="pas-texte">
+          <h3>Les alertes</h3>
+          <p class="libelle">Ce que vous voyez</p>
+          <p><b>Alertes et événements</b> : « Le journal de Vanguard : alertes, preuves, actions, et s'il est intact. » En tête, l'état du journal (« journal intact : chaîne et tête scellée d'accord »), puis <b>Alertes</b> et <b>Autres événements</b>, chacun avec son âge et sa source.</p>
+          <p class="libelle">Ce que vous pouvez faire</p>
+          <ul>
+            <li>Y venir par l'onglet <b>Alertes</b> ou le bouton <b>Voir les alertes</b>, toujours en haut à droite.</li>
+            <li><b>Relancer</b> la lecture. Sinon, l'écran est « Relu toutes les 60 s quand rien d'autre ne tourne ; une alerte nouvelle se dit dans la console. »</li>
+          </ul>
+        </div>
+      </li>
+
+      <li class="pas" id="visite-appareils">
+        <figure class="capture"><img src="{{VISITE_APPAREILS}}" width="{{VISITE_APPAREILS_L}}" height="{{VISITE_APPAREILS_H}}" loading="lazy" decoding="async" alt="Écran Appareils du réseau : 3 appareils, 1 nouveau, 1 à risque sur le réseau Salon, l'état de l'UPnP de la box et des faux noms, puis la box et ses ports ouverts"></figure>
+        <div class="pas-texte">
+          <h3>Les appareils du réseau</h3>
+          <p class="libelle">Ce que vous voyez</p>
+          <p><b>Appareils du réseau</b> : « Les appareils du réseau local, leurs ports ouverts et leurs risques, et ce qui est nouveau depuis le dernier scan. » Un résumé (appareils, nouveaux, à risque, pas pu vérifier), le nom du réseau, l'UPnP de la box et les ports qu'elle ouvre vers Internet, les faux noms, puis chaque appareil avec ses ports ouverts et ce qui pose problème.</p>
+          <p class="libelle">Ce que vous pouvez faire</p>
+          <ul>
+            <li>Y venir par l'onglet <b>Appareils</b> ; <b>Relancer</b> le scan.</li>
+            <li>Un appareil nouveau ou à risque se signale aussi dans la console.</li>
+          </ul>
+        </div>
+      </li>
+    </ol>
+
+    <h3 class="sous-titre">Les rubriques du rail</h3>
+    <p class="note">Le rail de gauche range les commandes par sujet. Chaque rubrique montre des cartes : le nom de la commande, ce qu'elle fait, « Pas encore lancée » ou « Fini à … en … », et « Ouvrir → ». Survoler une rubrique du rail en donne le contenu. Selon le système, une commande peut manquer (les journaux de Windows ne se lisent que sous Windows).</p>
+    <div class="rubriques">
+      <details class="replie">
+        <summary><span><h3>Menu principal</h3><span class="resume">La Vue d'ensemble : « Le bilan, la protection et le journal, d'un coup d'œil. »</span></span></summary>
+        <div><p>C'est l'écran d'accueil décrit plus haut (<a href="#visite-accueil">étape 1</a>).</p></div>
+      </details>
+      <details class="replie">
+        <summary><span><h3>Cet ordinateur</h3><span class="resume">Le bilan, la lenteur, la fiche de l'ordinateur et plus.</span></span></summary>
+        <div>
+          <figure class="capture"><img src="{{VISITE_ORDINATEUR}}" width="{{VISITE_ORDINATEUR_L}}" height="{{VISITE_ORDINATEUR_H}}" loading="lazy" decoding="async" alt="Rubrique Cet ordinateur : des cartes Bilan de cet ordinateur, Pourquoi c'est lent, Fiche de l'ordinateur, chacune avec Ouvrir"></figure>
+          <p>Bilan de cet ordinateur · Pourquoi c'est lent · Fiche de l'ordinateur · Fichiers critiques · Dernières failles exploitées · Mises à jour en attente · Images de conteneurs · Secrets dans git.</p>
+        </div>
+      </details>
+      <details class="replie">
+        <summary><span><h3>Réseau et Internet</h3><span class="resume">Le diagnostic, la connexion, qui parle à Internet, les appareils.</span></span></summary>
+        <div>
+          <figure class="capture"><img src="{{VISITE_RESEAU}}" width="{{VISITE_RESEAU_L}}" height="{{VISITE_RESEAU_H}}" loading="lazy" decoding="async" alt="Rubrique Réseau et Internet : des cartes Diagnostic du réseau, Test de la connexion, Connexions sortantes"></figure>
+          <p>Diagnostic du réseau · Test de la connexion · Connexions sortantes · Accès à distance · Routeur et objets connectés · Appareils du réseau · Audit du réseau · Caméras cachées.</p>
+        </div>
+      </details>
+      <details class="replie">
+        <summary><span><h3>Virus et logiciels espions</h3><span class="resume">Logiciels espions, antivirus, YARA, mémoire des programmes.</span></span></summary>
+        <div>
+          <figure class="capture"><img src="{{VISITE_VIRUS}}" width="{{VISITE_VIRUS_L}}" height="{{VISITE_VIRUS_H}}" loading="lazy" decoding="async" alt="Rubrique Virus et logiciels espions : des cartes Logiciels espions, Antivirus analyse rapide, État de l'antivirus"></figure>
+          <p>Logiciels espions · Antivirus, analyse rapide · État de l'antivirus · Analyse YARA · Mémoire des programmes.</p>
+        </div>
+      </details>
+      <details class="replie">
+        <summary><span><h3>Arnaques et vie privée</h3><span class="resume">Le bilan de confidentialité.</span></span></summary>
+        <div>
+          <figure class="capture"><img src="{{VISITE_ARNAQUES}}" width="{{VISITE_ARNAQUES_L}}" height="{{VISITE_ARNAQUES_H}}" loading="lazy" decoding="async" alt="Rubrique Arnaques et vie privée : la carte Bilan de confidentialité"></figure>
+          <p>Bilan de confidentialité.</p>
+        </div>
+      </details>
+      <details class="replie">
+        <summary><span><h3>Bloquer et réagir</h3><span class="resume">La protection, les alertes, les défenses, ce que Vanguard a changé.</span></span></summary>
+        <div>
+          <figure class="capture"><img src="{{VISITE_BLOQUER}}" width="{{VISITE_BLOQUER_L}}" height="{{VISITE_BLOQUER_H}}" loading="lazy" decoding="async" alt="Rubrique Bloquer et réagir : des cartes Protection, Alertes et événements, Options de défense, Ce que Vanguard a changé"></figure>
+          <p>Protection · Alertes et événements · Options de défense · Journaux de Windows (sous Windows) · Ce que Vanguard a changé (<a href="#visite-remettre">remettre comme avant</a>).</p>
+        </div>
+      </details>
+      <details class="replie">
+        <summary><span><h3>Données et sauvegardes</h3><span class="resume">Pas encore dans la fenêtre.</span></span></summary>
+        <div><p>La fenêtre le dit : « Cette rubrique arrive dans un prochain lot. Pour l'instant : le menu de Vanguard. »</p></div>
+      </details>
+      <details class="replie">
+        <summary><span><h3>Guide des commandes</h3><span class="resume">« Toutes les commandes que la fenêtre sait lancer, et ce que chacune fait. »</span></span></summary>
+        <div><p>Le même écran que l'onglet <b>Toutes les fonctions</b> (<a href="#visite-guide">plus bas</a>).</p></div>
+      </details>
+      <details class="replie">
+        <summary><span><h3>Dépanner pas à pas</h3><span class="resume">Pas encore dans la fenêtre.</span></span></summary>
+        <div><p>« Cette rubrique arrive dans un prochain lot. Pour l'instant : le menu de Vanguard. »</p></div>
+      </details>
+      <details class="replie">
+        <summary><span><h3>Optimiser et installer</h3><span class="resume">Logiciels périmés, démarrage, NAT, canaux Wi-Fi.</span></span></summary>
+        <div>
+          <figure class="capture"><img src="{{VISITE_OPTIMISER}}" width="{{VISITE_OPTIMISER_L}}" height="{{VISITE_OPTIMISER_H}}" loading="lazy" decoding="async" alt="Rubrique Optimiser et installer : des cartes Logiciels périmés, Programmes au démarrage, Type de NAT"></figure>
+          <p>Logiciels périmés · Programmes au démarrage · Type de NAT · Canaux Wi-Fi. Dans Programmes au démarrage : « Un programme ordinaire se retire d'un clic, après confirmation ; il reste installé. »</p>
+        </div>
+      </details>
+      <details class="replie">
+        <summary><span><h3>Vanguard</h3><span class="resume">Vanguard lui-même, et les réglages de la fenêtre.</span></span></summary>
+        <div>
+          <figure class="capture"><img src="{{VISITE_VANGUARD}}" width="{{VISITE_VANGUARD_L}}" height="{{VISITE_VANGUARD_H}}" loading="lazy" decoding="async" alt="Rubrique Vanguard : les réglages Thème (Sombre, Clair), Langue (Français, English) et Animations (Toutes, Réduites), puis les Couleurs"></figure>
+          <p>Les réglages de la fenêtre : <b>Thème</b> (Sombre, Clair), <b>Langue</b> (Français, English), <b>Animations</b> (Toutes, Réduites), puis <b>Couleurs</b>. Dessous, les cartes : Autodiagnostic de Vanguard · Vérifier cette copie de Vanguard · Règles du bilan. « Le thème et la langue valent pour cette fois : à la prochaine ouverture, la fenêtre reprend le thème du système et la langue de Vanguard. Les animations, elles, sont gardées par Vanguard. »</p>
+        </div>
+      </details>
+    </div>
+
+    <ol class="visite visite-suite">
+      <li class="pas" id="visite-guide">
+        <figure class="capture"><img src="{{VISITE_GUIDE}}" width="{{VISITE_GUIDE_L}}" height="{{VISITE_GUIDE_H}}" loading="lazy" decoding="async" alt="Écran Toutes les fonctions de cette fenêtre : la liste fermée des commandes, chacune avec son nom français, son nom anglais et ce qu'elle fait"></figure>
+        <div class="pas-texte">
+          <h3>Le guide : toutes les fonctions</h3>
+          <p class="libelle">Ce que vous voyez</p>
+          <p><b>Toutes les fonctions de cette fenêtre</b> : « La liste fermée : les seules commandes que la fenêtre sait lancer, à cliquer ou à taper dans la console (nom français ou anglais). » Chaque ligne : le titre, le nom à taper en français et en anglais, et ce que fait la commande.</p>
+          <p class="libelle">Ce que vous pouvez faire</p>
+          <ul>
+            <li>Y venir par l'onglet <b>Toutes les fonctions</b> ou la rubrique <b>Guide des commandes</b>.</li>
+            <li>Cliquer une commande pour ouvrir sa page.</li>
+          </ul>
+        </div>
+      </li>
+
+      <li class="pas" id="visite-commande">
+        <figure class="capture"><img src="{{VISITE_COMMANDE}}" width="{{VISITE_COMMANDE_L}}" height="{{VISITE_COMMANDE_H}}" loading="lazy" decoding="async" alt="Page de la commande Connexions sortantes : les programmes qui parlent à Internet, un point à corriger vers 203.0.113.7, et le bouton Relancer"></figure>
+        <div class="pas-texte">
+          <h3>La page d'une commande</h3>
+          <p class="libelle">Ce que vous voyez</p>
+          <p>Chaque commande a sa page, ici <b>Connexions sortantes</b> (l'onglet <b>Connexions</b>) : « Les programmes qui parlent à Internet en ce moment. » Le résultat est rangé comme le bilan : <b>À corriger</b>, <b>Pas pu vérifier</b>, <b>Bon à savoir</b>, <b>Ce qui va bien</b>.</p>
+          <p class="libelle">Ce que vous pouvez faire</p>
+          <ul>
+            <li><b>Relancer</b> la lecture ; <b>← Retour</b> pour revenir.</li>
+          </ul>
+        </div>
+      </li>
+
+      <li class="pas" id="visite-console">
+        <figure class="capture"><img src="{{VISITE_CONSOLE}}" width="{{VISITE_CONSOLE_L}}" height="{{VISITE_CONSOLE_H}}" loading="lazy" decoding="async" alt="La console de la fenêtre : « bilna » tapé à l'invite vanguard, et la suggestion bilan proposée dessous avec ses touches"></figure>
+        <div class="pas-texte">
+          <h3>La console</h3>
+          <p class="libelle">Ce que vous voyez</p>
+          <p>La bande sous les onglets : chaque commande lancée, son résultat en une ligne, et l'invite <code>vanguard ›</code> (« Tapez une commande de Vanguard (bilan, aide…) »). Les filtres <b>Tout · Problèmes · Ce PC · Réseau</b>, <b>Coulisses</b> et <b>Déplier</b>. Une faute de frappe propose la bonne commande.</p>
+          <p class="libelle">Ce que vous pouvez faire</p>
+          <ul>
+            <li>Taper une commande du guide (nom français ou anglais), ou « aide » ; « aide &lt;commande&gt; » la décrit sans la lancer.</li>
+            <li>Sur chaque ligne : <b>Voir dans l'écran</b>, <b>Relancer</b>, <b>Copier</b>.</li>
+            <li><b>Déplier</b> montre plus de lignes (ou tirez son bord du bas) ; <b>Coulisses</b> ouvre une fenêtre qui montre, en lecture seule, chaque commande lancée, ses arguments exacts, son bac à sable, sa durée.</li>
+          </ul>
+          <p class="touches"><kbd>Entrée</kbd> lance · <kbd>Tab</kbd> complète ou prend la suggestion · <kbd>↑</kbd> <kbd>↓</kbd> rappellent les saisies d'avant, ou choisissent une suggestion · <kbd>Ctrl</kbd>+<kbd>R</kbd> cherche dans vos saisies · <kbd>Ctrl</kbd>+<kbd>F</kbd> cherche dans la console · <kbd>Échap</kbd> ferme la liste, puis arrête la commande en cours, puis sort de la saisie.</p>
+          <details class="plus"><summary>Ce que la console refuse</summary>
+            <p>Seules les commandes de la liste fermée du guide se lancent : un seul mot, sans option ni argument (« un seul mot permis : ni option, ni argument »), et les signes qui pourraient être confiés à un shell sont refusés (« rien n'est découpé ni confié à un shell »). <b>Arrêter</b> arrête la commande en cours et vide la file ; un changement, lui, ne s'interrompt pas.</p>
+            <figure class="capture"><img src="{{VISITE_RECHERCHE}}" width="{{VISITE_RECHERCHE_L}}" height="{{VISITE_RECHERCHE_H}}" loading="lazy" decoding="async" alt="Recherche dans la console avec Ctrl+F : le mot ssh cherché et surligné dans les lignes"></figure>
+          </details>
+        </div>
+      </li>
+    </ol>
+
+    <details class="replie" lang="en">
+      <summary><span><h3>In English: a guided tour of the window</h3><span class="resume">The same steps, with the window's English labels.</span></span></summary>
+      <div>
+      <ol class="chaine">
+        <li><b>Overview</b>After a short opening (a click or a key skips it): three cards, Check, Protection and Journal, and “Read again” chips. Tabs: Overview · Check · Alerts · Devices · Connections · All features; the watch state (“Watching”, “Watch off”, “Protection not read”) and the “See alerts” button.</li>
+        <li><b>The check</b>“Check of this computer”: a score out of 100 and a bar per topic. “Run the check again”, then “See the fix” on an item to fix. “Could not check” never counts as fine.</li>
+        <li><b>A fix, shown first</b>The “See the fix” sheet opens on “Preview: nothing changed on the computer.”: what Vanguard will do, good to know, the exact commands, the values before, noted. “Cancel”, or “Apply this fix” (active after two seconds). Then “Done.” and “Vanguard read it again: fixed.”, with “Undo this fix”.</li>
+        <li><b>Restore as before</b>In Block and respond, “What Vanguard changed” lists every fix; “Restore as before” shows what will be restored before anything changes. Esc closes the sheet.</li>
+        <li><b>Alerts</b>“Alerts and events”: whether the journal is intact, alerts, other events; “Run again”.</li>
+        <li><b>Network devices</b>Devices, their open ports, their risks and what is new since the last scan; the router's UPnP.</li>
+        <li><b>Rubrics</b>The left rail: This computer, Network and Internet, Viruses and spyware, Scams and privacy, Block and respond, Data and backups, Command guide, Step-by-step help, Optimize and install, Vanguard (theme, language, animations, colors).</li>
+        <li><b>Guide and command pages</b>“All features of this window”: the closed list of commands, French and English names. Each command has its page, with “Run again” and “← Back”.</li>
+        <li><b>The console</b>Type a command or “help”. Enter runs, Tab completes, ↑ ↓ recall past entries, Ctrl+R searches them, Ctrl+F searches the console, Esc closes the list or stops the running command. “Behind the scenes” shows each command run, read-only. Alt+← or Esc (nothing focused) goes back.</li>
+      </ol>
+      </div>
+    </details>
+  </section>
+
   <section id="securite">
     <div class="tete-section">
       <p class="surtitre">Sécurité de Vanguard lui-même</p>
