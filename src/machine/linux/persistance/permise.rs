@@ -3100,9 +3100,8 @@ fn variables_d_un_fichier(s: &Systeme, valeur: &str) -> Result<Vec<(String, Stri
     lire_variables(&s.sous(&chemin_simplifie(chemin)))
 }
 
-/// Les variables d'un fichier de variables d'unité, lu sous la racine, comme systemd le lit : une ligne finie par
-/// « \ » recollée à la suivante, commentaires (« # », « ; ») sautés, « export » ôté, guillemets autour de la valeur
-/// ôtés. Absent : aucune. Illisible ou plus gros que `VARIABLES_MAX` : `Ecart::Fichier`.
+/// Les variables d'un fichier de variables d'unité, lu sous la racine, comme systemd le lit (`variables_de_texte`).
+/// Absent : aucune. Illisible ou plus gros que `VARIABLES_MAX` : `Ecart::Fichier`.
 pub(super) fn lire_variables(chemin: &Path) -> Result<Vec<(String, String)>, Ecart> {
     let lu = match temoins::lire_borne(chemin, VARIABLES_MAX) {
         Ok(lu) => lu,
@@ -3116,10 +3115,11 @@ pub(super) fn lire_variables(chemin: &Path) -> Result<Vec<(String, String)>, Eca
 }
 
 /// `lire_variables` sur un texte déjà lu. On réunit deux lectures pour ne jamais voir MOINS de variables qu'avant
-/// (R-3, lot 096) : celle, fidèle à systemd (`variables_comme_systemd`), qui ferme le commentaire sur sa ligne, et
-/// l'ancienne (`variables_recollees`), gardée telle quelle. L'ancienne recollait un commentaire fini par « \ » à la
-/// ligne suivante, puis la jugeait commentaire en entier : un « LD_PRELOAD=… » caché derrière « # …\ » (ou après un
-/// « \r » nu) échappait au juge des unités permises, et l'unité passait pour sûre à tort. La lecture fidèle le voit.
+/// (R-3, lot 096) : celle, fidèle à systemd (`variables_comme_systemd`), et l'ancienne (`variables_recollees`),
+/// gardée telle quelle. L'ancienne recollait toute ligne finie par « \ » à la suivante, commentaire ou clé sans « = »
+/// compris : un « LD_PRELOAD=… » caché derrière « # …\ », derrière une ligne de remplissage « FOO\ » (ronde 3, N1)
+/// ou après un « \r » nu échappait au juge des unités permises, et l'unité passait pour sûre à tort. Elle ne
+/// défaisait pas non plus les « \x » d'une valeur (N2). La lecture fidèle voit tout cela.
 pub(super) fn variables_de_texte(texte: &str) -> Vec<(String, String)> {
     let mut variables = variables_comme_systemd(texte);
     for v in variables_recollees(texte) {
@@ -3136,51 +3136,187 @@ fn affectation_de_variable(ligne: &str) -> Option<(String, String)> {
     let l = ligne.trim();
     let l = l.strip_prefix("export ").unwrap_or(l).trim_start();
     let (nom, valeur) = l.split_once('=')?;
-    let valeur = valeur.trim();
-    let valeur = valeur
+    Some((nom.trim().to_string(), sans_guillemets(valeur.trim()).to_string()))
+}
+
+/// Une valeur sans les guillemets simples ou doubles qui l'entourent, s'il y en a une paire.
+fn sans_guillemets(valeur: &str) -> &str {
+    valeur
         .strip_prefix('"')
         .and_then(|v| v.strip_suffix('"'))
         .or_else(|| valeur.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')))
-        .unwrap_or(valeur);
-    Some((nom.trim().to_string(), valeur.to_string()))
+        .unwrap_or(valeur)
 }
 
-/// Un suffixe « \ » de continuation : la ligne finit par un nombre IMPAIR de « \ » (le dernier recolle la ligne
-/// suivante ; « \\ » est un antislash échappé, pas une continuation). Rend la ligne sans ce dernier « \ ».
-fn continuation_de_valeur(ligne: &str) -> Option<&str> {
-    let finaux = ligne.len().saturating_sub(ligne.trim_end_matches('\\').len());
-    (finaux % 2 == 1).then(|| ligne.strip_suffix('\\').unwrap_or(ligne))
+/// Où en est la lecture d'un fichier de variables, état pour état comme `parse_env_file_internal` de systemd.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EtatDeVariables {
+    /// Début de ligne : blancs sautés ; « # » ou « ; » ouvre un commentaire.
+    AvantCle,
+    /// Dans le nom : « \ » y est un caractère ordinaire ; une fin de ligne sans « = » oublie tout.
+    Cle,
+    /// Après « = », avant le premier caractère de la valeur (ou après un morceau entre guillemets).
+    AvantValeur,
+    /// Valeur sans guillemets.
+    Valeur,
+    /// Juste après un « \ » d'une valeur sans guillemets.
+    ValeurEchappee,
+    /// Entre guillemets simples : rien n'est défait.
+    Simples,
+    /// Entre guillemets doubles.
+    Doubles,
+    /// Juste après un « \ » entre guillemets doubles.
+    DoublesEchappes,
+    /// Commentaire : finit à la première fin de ligne, même après un « \ » (systemd 254 et suivants).
+    Commentaire,
 }
 
-/// Les variables lues comme systemd lit un fichier de variables (`src/basic/env-file.c`) : « \r » comme « \n »
-/// finit une ligne ; un commentaire (« # » ou « ; » en tête, après les seuls blancs de systemd) tient sur SA ligne
-/// et ne se recolle jamais à la suivante, même fini par « \ » ; seule une ligne de valeur finie par « \ » se recolle.
+/// Fins de ligne de systemd (`NEWLINE`) : « \r » nu compte.
+const FINS_DE_SYSTEMD: [char; 2] = ['\n', '\r'];
+
+/// Les variables lues comme systemd lit un fichier de variables (« EnvironmentFile= ») : la machine à états de
+/// `parse_env_file_internal` (`src/basic/env-file.c`), portée état pour état et comparée au vrai lecteur de systemd
+/// 262.1 (ronde 3 du lot 096, bac à sable). La continuation (« \ » en fin de ligne) n'existe QUE dans une valeur :
+/// avant le premier « = », « \ » est un caractère ordinaire et la fin de ligne remet tout à zéro (N1). Les
+/// échappements d'une valeur sont défaits selon l'état : hors guillemets « \x » vaut « x » ; entre guillemets doubles,
+/// seuls « \" \\ \` \$ » perdent leur « \ » ; entre guillemets simples, rien (N2). Chaque variable sort sous sa forme
+/// défaite (celle que le service reçoit) et, si elle diffère, sous sa forme brute (texte écrit, continuations
+/// recollées, guillemets d'autour ôtés) : les deux se jugent. systemd rejette ensuite les noms invalides et un fichier
+/// hors UTF-8 ; ici on garde tout (lecture avec pertes) : on voit plus, jamais moins.
 fn variables_comme_systemd(texte: &str) -> Vec<(String, String)> {
+    use EtatDeVariables::{
+        AvantCle, AvantValeur, Cle, Commentaire, Doubles, DoublesEchappes, Simples, Valeur, ValeurEchappee,
+    };
+    let blanc = |c: char| matches!(c, ' ' | '\t' | '\n' | '\r');
     let mut out = Vec::new();
-    // La valeur en cours quand une ligne de valeur a fini par « \ » ; `None` : on est en début de ligne.
-    let mut suite: Option<String> = None;
-    for ligne in texte.split(['\n', '\r']) {
-        if let Some(mut buf) = suite.take() {
-            if let Some(debut) = continuation_de_valeur(ligne) {
-                buf.push_str(debut);
-                suite = Some(buf);
-            } else {
-                buf.push_str(ligne);
-                out.extend(affectation_de_variable(&buf));
+    let mut etat = AvantCle;
+    let (mut cle, mut valeur, mut brut) = (String::new(), String::new(), String::new());
+    // Où couper les blancs de fin du nom et de la valeur (`last_key_whitespace`, `last_value_whitespace`).
+    let (mut fin_de_cle, mut fin_de_valeur): (Option<usize>, Option<usize>) = (None, None);
+    let mut pousser =
+        |cle: &mut String, valeur: &mut String, brut: &mut String, fin_de_cle: Option<usize>, coupe: Option<usize>| {
+            if let Some(n) = fin_de_cle {
+                cle.truncate(n);
             }
-            continue;
-        }
-        if commentaire_de_systemd(ligne) {
-            continue;
-        }
-        if let Some(debut) = continuation_de_valeur(ligne) {
-            suite = Some(debut.to_string());
-        } else {
-            out.extend(affectation_de_variable(ligne));
+            if let Some(n) = coupe {
+                valeur.truncate(n);
+            }
+            let brute = sans_guillemets(brut.trim_matches(blanc)).to_string();
+            let defaite = std::mem::take(valeur);
+            if brute != defaite {
+                out.push((cle.clone(), brute));
+            }
+            out.push((std::mem::take(cle), defaite));
+            brut.clear();
+        };
+    for c in texte.chars() {
+        match etat {
+            AvantCle if c == '#' || c == ';' => etat = Commentaire,
+            AvantCle if !blanc(c) => {
+                etat = Cle;
+                fin_de_cle = None;
+                cle.push(c);
+            }
+            AvantCle => {}
+            Cle if FINS_DE_SYSTEMD.contains(&c) => {
+                etat = AvantCle;
+                cle.clear();
+            }
+            Cle if c == '=' => {
+                etat = AvantValeur;
+                fin_de_valeur = None;
+            }
+            Cle => {
+                if !blanc(c) {
+                    fin_de_cle = None;
+                } else if fin_de_cle.is_none() {
+                    fin_de_cle = Some(cle.len());
+                }
+                cle.push(c);
+            }
+            AvantValeur if FINS_DE_SYSTEMD.contains(&c) => {
+                etat = AvantCle;
+                pousser(&mut cle, &mut valeur, &mut brut, fin_de_cle, None);
+            }
+            AvantValeur => {
+                brut.push(c);
+                match c {
+                    '\'' => etat = Simples,
+                    '"' => etat = Doubles,
+                    '\\' => etat = ValeurEchappee,
+                    _ if !blanc(c) => {
+                        etat = Valeur;
+                        valeur.push(c);
+                    }
+                    _ => {}
+                }
+            }
+            Valeur if FINS_DE_SYSTEMD.contains(&c) => {
+                etat = AvantCle;
+                pousser(&mut cle, &mut valeur, &mut brut, fin_de_cle, fin_de_valeur);
+            }
+            Valeur if c == '\\' => {
+                brut.push(c);
+                etat = ValeurEchappee;
+                fin_de_valeur = None;
+            }
+            Valeur => {
+                brut.push(c);
+                if !blanc(c) {
+                    fin_de_valeur = None;
+                } else if fin_de_valeur.is_none() {
+                    fin_de_valeur = Some(valeur.len());
+                }
+                valeur.push(c);
+            }
+            ValeurEchappee => {
+                etat = Valeur;
+                if FINS_DE_SYSTEMD.contains(&c) {
+                    // Une continuation : le « \ » et la fin de ligne disparaissent, dans les deux formes.
+                    brut.pop();
+                } else {
+                    brut.push(c);
+                    valeur.push(c);
+                }
+            }
+            Simples => {
+                brut.push(c);
+                if c == '\'' {
+                    etat = AvantValeur;
+                } else {
+                    valeur.push(c);
+                }
+            }
+            Doubles => {
+                brut.push(c);
+                match c {
+                    '"' => etat = AvantValeur,
+                    '\\' => etat = DoublesEchappes,
+                    _ => valeur.push(c),
+                }
+            }
+            DoublesEchappes => {
+                etat = Doubles;
+                if matches!(c, '"' | '\\' | '`' | '$') {
+                    brut.push(c);
+                    valeur.push(c);
+                } else if c == '\n' {
+                    brut.pop();
+                } else {
+                    brut.push(c);
+                    valeur.push('\\');
+                    valeur.push(c);
+                }
+            }
+            Commentaire if FINS_DE_SYSTEMD.contains(&c) => etat = AvantCle,
+            Commentaire => {}
         }
     }
-    if let Some(buf) = suite {
-        out.extend(affectation_de_variable(&buf));
+    // Fin du fichier dans une valeur : elle compte (les blancs de fin ne s'ôtent que hors guillemets) ; dans un nom
+    // sans « = » ou un commentaire : rien.
+    if !matches!(etat, AvantCle | Cle | Commentaire) {
+        let coupe = if etat == Valeur { fin_de_valeur } else { None };
+        pousser(&mut cle, &mut valeur, &mut brut, fin_de_cle, coupe);
     }
     out
 }
@@ -3281,6 +3417,68 @@ mod tests {
         assert_eq!(
             variables_de_texte("FOO=a\\\nbar\n"),
             vec![("FOO".to_string(), "abar".to_string())]
+        );
+    }
+
+    /// Ronde 3 du lot 096 (N1) : avant le premier « = » d'une ligne, « \ » est un caractère comme un autre pour
+    /// systemd (`env-file.c`, état « clé ») et la fin de ligne remet tout à zéro : une ligne de remplissage sans « = »
+    /// finie par « \ » n'avale PAS la ligne suivante. Vanguard la recollait, et « LD_PRELOAD=… » devenait la clé
+    /// « FOOLD_PRELOAD » : l'unité se taisait. Mesuré sur le lecteur de systemd 262.1 (bac à sable, faux /etc).
+    #[test]
+    fn continuation_seulement_dans_une_valeur() {
+        use super::variables_de_texte;
+        let cle = ("LD_PRELOAD".to_string(), "/usr/lib/x.so".to_string());
+        for devant in [
+            "FOO\\\n",
+            "un mot\\\\\\\n",
+            "\\\n",
+            "  FOO \\\n",
+            "FOO\\\r\n",
+            "FOO\\\r",
+        ] {
+            let texte = format!("{devant}LD_PRELOAD=/usr/lib/x.so\n");
+            assert!(variables_de_texte(&texte).contains(&cle), "{texte:?}");
+        }
+        // Témoin : dans une valeur, la continuation existe bien (la ligne d'après fait partie de la valeur).
+        let v = variables_de_texte("FOO=a\\\nLD_PRELOAD=/usr/lib/x.so\n");
+        assert!(
+            v.contains(&("FOO".to_string(), "aLD_PRELOAD=/usr/lib/x.so".to_string())),
+            "{v:?}"
+        );
+    }
+
+    /// Ronde 3 du lot 096 (N2) : les échappements d'une valeur sont défaits comme systemd les défait, selon l'état :
+    /// hors guillemets, « \x » vaut « x » ; entre guillemets doubles, seuls « \" \\ \` \$ » perdent leur « \ » ; entre
+    /// guillemets simples, rien. La forme défaite (celle que le service reçoit) ET la forme brute sont rendues : un
+    /// juge qui ne voyait que « /home/alice/\.x » ne voyait pas le dossier caché « /home/alice/.x ».
+    #[test]
+    fn echappements_defaits_comme_systemd() {
+        use super::variables_de_texte;
+        let paire = |n: &str, v: &str| (n.to_string(), v.to_string());
+        let v = variables_de_texte("PATH=/home/alice/\\.x:/usr/bin\n");
+        assert!(v.contains(&paire("PATH", "/home/alice/.x:/usr/bin")), "{v:?}");
+        assert!(v.contains(&paire("PATH", "/home/alice/\\.x:/usr/bin")), "{v:?}");
+        let v = variables_de_texte("LD_LIBRARY_PATH=/tm\\p/.x\n");
+        assert!(v.contains(&paire("LD_LIBRARY_PATH", "/tmp/.x")), "{v:?}");
+        // Entre guillemets doubles, « \. » reste tel quel ; « \" » et « \$ » perdent leur « \ ».
+        let v = variables_de_texte("A=\"/home/alice/\\.x\"\nB=\"x\\\"y\\$z\"\n");
+        assert!(v.contains(&paire("A", "/home/alice/\\.x")), "{v:?}");
+        assert!(v.contains(&paire("B", "x\"y$z")), "{v:?}");
+        // Entre guillemets simples, rien n'est défait ; deux morceaux entre guillemets se collent.
+        let v = variables_de_texte("A='\\.x'\nB=\"a\" 'b'\n");
+        assert!(v.contains(&paire("A", "\\.x")), "{v:?}");
+        assert!(v.contains(&paire("B", "ab")), "{v:?}");
+        // Blancs de fin ôtés hors guillemets, gardés dedans ; nom rogné ; « \ » + espace garde l'espace.
+        let v = variables_de_texte("  A  =  x y  \nB=' x '\nC=x\\ \n");
+        assert!(v.contains(&paire("A", "x y")), "{v:?}");
+        assert!(v.contains(&paire("B", " x ")), "{v:?}");
+        assert!(v.contains(&paire("C", "x ")), "{v:?}");
+        // « \ » à la toute fin du fichier : la valeur sans lui.
+        assert!(variables_de_texte("A=x\\").contains(&paire("A", "x")));
+        // Un fichier ordinaire, sans « \ » ni guillemets : une seule paire par variable, les deux formes égales.
+        assert_eq!(
+            variables_de_texte("LANG=C\n# note\nTZ=America/Montreal\n"),
+            vec![paire("LANG", "C"), paire("TZ", "America/Montreal")]
         );
     }
 }

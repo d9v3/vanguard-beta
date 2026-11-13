@@ -11529,9 +11529,9 @@ fn reglage_suspect(ligne: &str, r: &Releveur) -> Option<&'static str> {
             if cache(fichier.rsplit_once('/').map_or("", |(d, _)| d)) {
                 return Some(lu_ailleurs);
             }
-            // Son contenu, lu comme systemd le lit (lignes recollées, guillemets ôtés : vérification 3, P5) : les
-            // variables qu'il pose se jugent comme celles d'« Environment= ». Illisible ou trop gros : la liste
-            // permise (`permise::directive`) le dit.
+            // Son contenu, lu comme systemd le lit (`permise::variables_de_texte` : forme défaite et forme brute,
+            // vérification 3, P5 ; ronde 3 du lot 096) : les variables qu'il pose se jugent comme celles
+            // d'« Environment= ». Illisible ou trop gros : la liste permise (`permise::directive`) le dit.
             let lues = permise::lire_variables(&r.sous(Path::new(fichier))).ok()?;
             variables(lues.into_iter().map(|(n, v)| format!("{n}={v}")).collect())
         }
@@ -19399,6 +19399,43 @@ mod tests {
                 leve(&c, contenu);
             } else {
                 assert_eq!(c.probleme, None, "{contenu:?} : {}", c.message);
+            }
+        }
+    }
+
+    /// Ronde 3 du lot 096 (N1, N2), bout en bout : le fichier de variables d'une unité du compte, lu comme systemd le
+    /// lit. Une ligne de remplissage sans « = » finie par « \ » n'avale pas « LD_PRELOAD=… » (N1) ; un « \ » dans un
+    /// chemin ne cache plus le dossier caché que le service reçoit (N2). Le fichier est sous /etc puis sous la maison
+    /// (« %h »). Une valeur continuée ordinaire et des guillemets ordinaires restent muets.
+    #[test]
+    fn environmentfile_lu_comme_systemd() {
+        for (i, (contenu, piege)) in [
+            ("FOO\\\nLD_PRELOAD=/usr/lib/x.so\n", true),
+            ("un mot\\\\\\\nLD_PRELOAD=/usr/lib/x.so\n", true),
+            ("PATH=/home/alice/\\.x:/usr/bin\n", true),
+            ("LD_LIBRARY_PATH=/home/alice/\\.x\n", true),
+            ("PATH=/home/alice/.x:/usr/bin\n", true),
+            ("LANG=\"fr_CA.UTF-8\"\nTZ=America/\\\nMontreal\n", false),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            for (j, lieu) in ["/etc/rappel-env", "%h/lib/v.env"].into_iter().enumerate() {
+                let m = Maison::nouvelle(&format!("env-systemd-{i}-{j}"));
+                m.ecrire(
+                    ".config/systemd/user/a.service",
+                    &format!("[Service]\nEnvironmentFile={lieu}\nExecStart=/usr/bin/sleep 60\n"),
+                );
+                match lieu.strip_prefix("%h/") {
+                    Some(dans) => m.ecrire(dans, contenu),
+                    None => m.ecrire_hors(lieu, contenu),
+                }
+                let c = m.lancements();
+                if piege {
+                    leve(&c, contenu);
+                } else {
+                    assert_eq!(c.probleme, None, "{contenu:?} ({lieu}) : {}", c.message);
+                }
             }
         }
     }
