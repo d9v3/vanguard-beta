@@ -171,7 +171,7 @@ class Visite(unittest.TestCase):
 
     def test_chaque_image_decrite_et_dimensionnee(self):
         images = re.findall(r"<img\b[^>]*>", self.GABARIT)
-        self.assertGreaterEqual(len(images), 3 + len(pf.VISITE))
+        self.assertGreaterEqual(len(images), len(pf.CAPTURES) + len(pf.VISITE))
         for img in images:
             with self.subTest(img=img[:60]):
                 self.assertRegex(img, r'\balt="[^"]{12,}"')
@@ -182,6 +182,12 @@ class Visite(unittest.TestCase):
         """Chaque capture de VISITE a sa place dans la page, et la page n'en attend aucune autre."""
         attendues = {f"VISITE_{cle}" for cle in pf.VISITE}
         self.assertEqual(set(re.findall(r'src="\{\{(VISITE_[A-Z_]+)\}\}"', self.GABARIT)), attendues)
+
+    def test_aucune_capture_du_terminal(self):
+        """L'ancienne interface en terminal ne revient plus sur la page : seule la fenêtre est montrée."""
+        self.assertFalse({"bilan.png", "reseau.png"} & {nom for nom, _ in pf.CAPTURES.values()})
+        self.assertNotRegex(self.GABARIT, r"\{\{CAPTURE_(BILAN|RESEAU)\}\}")
+        self.assertNotIn("dans le terminal :", self.GABARIT)
 
     def test_section_dans_main_et_son_onglet(self):
         main = self.GABARIT[self.GABARIT.index('<main class="cadre" id="contenu">'):self.GABARIT.index("</main>")]

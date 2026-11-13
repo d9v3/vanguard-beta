@@ -199,13 +199,10 @@ def verifications_vm() -> str:
     return max(passes)[1]
 
 
-# Les captures de la page : nom dans assets/captures, et la partie gardée (gauche, haut, droite, bas), None pour toute.
-# Celle du réseau s'arrête après le premier appareil « À REGARDER », sur une ligne vide (captures.py : 22 px de marge
-# en haut, puis 20 px par ligne de terminal).
+# Les captures du README gardées sur la page : nom dans assets/captures, et la partie gardée (gauche, haut, droite,
+# bas), None pour toute. Plus aucune de l'ancienne interface en terminal : le bilan et le réseau montrent la fenêtre.
 CAPTURES = {
-    "BILAN": ("bilan.png", None),
     "RAPPORT": ("rapport.png", None),
-    "RESEAU": ("reseau.png", (0, 0, 780, 22 + 36 * 20)),
 }
 
 
