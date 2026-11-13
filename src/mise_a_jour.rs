@@ -768,16 +768,27 @@ impl Precedente {
                     let _ = std::fs::remove_file(&self.de_cote);
                     return tr!("l'ancienne copie reste en place", "the old copy stays in place").into();
                 }
-                let _ = std::fs::rename(&self.de_cote, cible);
-                let _ = std::fs::remove_file(&self.de_cote);
-                if identite(cible).as_ref() == Some(&avant) {
-                    tr!(
-                        "l'ancienne copie est remise en place",
-                        "the old copy is put back in place"
-                    )
-                    .into()
-                } else {
-                    ni_l_une_ni_l_autre()
+                // N-3 (recontrôle 2, 0.95) : le second nom n'est effacé qu'une fois l'ancienne reconnue à `cible`.
+                // Avant, il l'était même si la remise avait échoué : la seule ancienne copie qui restait était perdue.
+                match std::fs::rename(&self.de_cote, cible) {
+                    Ok(()) if identite(cible).as_ref() == Some(&avant) => {
+                        // Deux noms d'un même fichier : le renommage ne fait rien (POSIX) et le second nom reste.
+                        if identite(&self.de_cote).as_ref() == Some(&avant) {
+                            let _ = std::fs::remove_file(&self.de_cote);
+                        }
+                        tr!(
+                            "l'ancienne copie est remise en place",
+                            "the old copy is put back in place"
+                        )
+                        .into()
+                    }
+                    Ok(()) => ni_l_une_ni_l_autre(),
+                    Err(e) => trf!(
+                        "l'ancienne copie n'est pas remise ({e}), elle est gardée sous {} ; {}",
+                        "the old copy is not put back ({e}), it is kept as {}; {}",
+                        affichable(&self.de_cote.display().to_string()),
+                        ni_l_une_ni_l_autre()
+                    ),
                 }
             }
             EtatPrecedente::Aucune => {
@@ -1701,6 +1712,36 @@ mod tests {
         remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, SANS_ESSAI).unwrap();
         assert_eq!(std::fs::read(&cible).unwrap(), std::fs::read(&source).unwrap());
         assert!(std::fs::symlink_metadata(&de_cote).is_err(), "reste laissé");
+        let _ = std::fs::remove_dir_all(&racine);
+    }
+
+    /// N-3 (recontrôle 2, 0.95) : la remise de l'ancienne copie échoue (ce qui a pris sa place est un dossier plein,
+    /// où le renommage ne passe pas). Avant, le second nom était effacé quand même : la seule ancienne copie qui
+    /// restait était perdue. Maintenant elle est gardée, et son chemin est dit.
+    #[test]
+    fn remise_ratee_garde_la_copie_de_cote() {
+        let racine = crate::socle::dossier_local().join("essai-remise-ratee");
+        let _ = std::fs::remove_dir_all(&racine);
+        let cible = racine.join("bin").join(NOM);
+        let de_cote = cible.with_file_name(format!("{NOM}.precedent"));
+        faux_programme(&cible, Some("0.79.0"));
+        let ancienne = std::fs::read(&cible).unwrap();
+        let precedente = Precedente::retenir(&cible).expect("mise de côté");
+        std::fs::remove_file(&cible).unwrap();
+        std::fs::create_dir_all(cible.join("occupe")).unwrap();
+        let dit = precedente.remettre(&cible);
+        assert_eq!(
+            std::fs::read(&de_cote).ok(),
+            Some(ancienne),
+            "l'ancienne copie est perdue : {dit}"
+        );
+        assert!(dit.contains(&format!("{NOM}.precedent")), "{dit}");
+        assert!(dit.contains("ne la lancez pas"), "{dit}");
+        assert!(
+            !dit.contains("remise en place") && !dit.contains("reste en place"),
+            "{dit}"
+        );
+        assert!(cible.join("occupe").is_dir(), "{dit}");
         let _ = std::fs::remove_dir_all(&racine);
     }
 
