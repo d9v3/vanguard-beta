@@ -12,8 +12,8 @@
 #   3. Sans argument (le cliquet de outils/verifier.sh) : l'arbre de chaque cible est comparé à sa LISTE de référence
 #      (outils/caisses-fenetre/<cible>.txt, noms et versions), jamais à un nombre : une caisse remplacée par une autre
 #      à nombre égal, une de plus, une de moins, une retirée revenue ou la même caisse d'une autre source que
-#      crates.io (chemin local, dépôt git) → 1, la différence montrée ; cargo tree en échec ou une ligne d'une forme
-#      inconnue → 2.
+#      crates.io (chemin local, dépôt git, source remplacée) → 1, la différence montrée ; cargo tree ou cargo metadata
+#      en échec, ou une ligne d'une forme inconnue → 2.
 #   4. outils/failles-programmes.sh --fenetre n'écarte les avis de zbus et zvariant (HORS_CIBLES) que si aucune des
 #      caisses retirées de la fenêtre (RETIREES de caisses-fenetre.sh, HORS_CIBLES comprises) ne se lit dans les
 #      octets du programme audité (même lecture que --programmes) : un faux programme qui porte zvariant, ou zbus sans
@@ -31,22 +31,40 @@ trap 'rm -rf "$T"' EXIT
 LINUX=x86_64-unknown-linux-gnu
 WINDOWS=x86_64-pc-windows-gnu
 
-# La cale cargo : « cargo tree » seulement, l'arbre de chaque cible lu dans $CALE_ARBRES/<cible>.txt (« nom version »
-# par ligne) ; absent, cargo tree échoue. Avec -i <caisse> : la caisse si elle est dans l'arbre, rien sinon.
+# La cale cargo : « cargo tree » et « cargo metadata », l'arbre de chaque cible lu dans $CALE_ARBRES/<cible>.txt
+# (« nom version » par ligne) ; absent, les deux échouent. Avec -i <caisse> : la caisse si elle est dans l'arbre, rien
+# sinon. metadata : chaque caisse de l'arbre sans source écrite est de crates.io, lue dans le registre de CARGO_HOME,
+# sauf celles de $CALE_ARBRES/<cible>.remplacees, lues dans une copie (une source remplacée : cargo garde l'identité
+# « crates.io ») ; $CALE_ARBRES/<cible>.metadata-echec le fait échouer.
 mkdir -p "$T/bin" "$T/arbres"
 cat >"$T/bin/cargo" <<'EOF'
 #!/usr/bin/env bash
-[[ ${1:-} == tree ]] || exit 101
+commande=${1:-}
+[[ $commande == tree || $commande == metadata ]] || exit 101
 cible= inverse=
 while (($#)); do
   case $1 in
-    --target) cible=$2 && shift ;;
+    --target | --filter-platform) cible=$2 && shift ;;
     -i) inverse=$2 && shift ;;
   esac
   shift
 done
 f=$CALE_ARBRES/$cible.txt
 [[ -f $f ]] || { echo "error: cale : pas d'arbre pour « $cible »" >&2; exit 101; }
+if [[ $commande == metadata ]]; then
+  [[ ! -e $CALE_ARBRES/$cible.metadata-echec ]] || { echo "error: cale : metadata en échec" >&2; exit 101; }
+  touch "$CALE_ARBRES/$cible.remplacees"
+  awk -v maison="$CARGO_HOME" 'NR == FNR { r[$1 " " $2] = 1; next }
+    /^#/ || !NF { next }
+    { s = "\"registry+https://github.com/rust-lang/crates.io-index\""
+      m = maison "/registry/src/index.crates.io-0123456789abcdef/" $1 "-" $2 "/Cargo.toml"
+      if ($0 ~ /\(\//) { s = "null"; m = "/depot-invente/copie/Cargo.toml" }
+      else if ($0 ~ /\(http/) { s = "\"git+https://example.com/depot-invente\""; m = maison "/git/checkouts/x/Cargo.toml" }
+      else if (r[$1 " " $2]) m = "/srv/copie-inventee/" $1 "-" $2 "/Cargo.toml"
+      p = p (p ? "," : "") "{\"name\":\"" $1 "\",\"version\":\"" $2 "\",\"source\":" s ",\"manifest_path\":\"" m "\"}" }
+    END { print "{\"packages\":[" p "]}" }' "$CALE_ARBRES/$cible.remplacees" "$f"
+  exit 0
+fi
 if [[ -n $inverse ]]; then
   awk -v n="$inverse" '$1 == n { print $1 " v" $2 }' "$f"
   exit 0
@@ -69,7 +87,7 @@ done
 exit 0
 EOF
 chmod +x "$T/bin/cargo" "$T/bin/cargo-audit"
-export CALE_ARBRES=$T/arbres PATH="$T/bin:$PATH" VANGUARD_HORS_LIGNE=1
+export CALE_ARBRES=$T/arbres PATH="$T/bin:$PATH" VANGUARD_HORS_LIGNE=1 CARGO_HOME=/srv/cargo-invente
 
 # Un faux programme : des octets quelconques, puis les chemins de panique des caisses données (« nom-version »).
 programme() {
@@ -195,6 +213,20 @@ if [[ -s $T/ref-$LINUX.txt && -s $T/ref-$WINDOWS.txt ]]; then
   lance outils/caisses-fenetre.sh
   ((CODE == 1)) && [[ $SORTIE == *"$premiere (autre source)"* && $SORTIE != *example.com* ]] &&
     ok "même caisse par un dépôt git : code 1, dite" || ko "même caisse par un dépôt git : code $CODE ($SORTIE)"
+  # Une source remplacée ([source.crates-io] replace-with vers un dossier, dans un .cargo/config.toml) : cargo garde
+  # l'identité « crates.io », cargo tree n'écrit aucune source, cargo deny ne voit rien (relecture du 12 nov. 2026).
+  # La caisse n'est pas lue dans le registre de CARGO_HOME : refusée, sans le chemin.
+  remet && echo "$premiere" >"$T/arbres/$LINUX.remplacees"
+  lance outils/caisses-fenetre.sh
+  ((CODE == 1)) && [[ $SORTIE == *"autre source que crates.io"*"$premiere (autre source)"* &&
+    $SORTIE != *copie-inventee* ]] && ok "même caisse par une source remplacée : code 1, dite, sans le chemin" ||
+    ko "même caisse par une source remplacée : code $CODE ($SORTIE)"
+  rm "$T/arbres/$LINUX.remplacees"
+  remet && touch "$T/arbres/$WINDOWS.metadata-echec"
+  lance outils/caisses-fenetre.sh
+  ((CODE == 2)) && [[ $SORTIE == *"rien n'est conclu"* ]] && ok "cargo metadata en échec : code 2" ||
+    ko "cargo metadata en échec : code $CODE ($SORTIE)"
+  rm "$T/arbres/$WINDOWS.metadata-echec"
   # Ce que cargo tree ajoute sans changer la source : « (proc-macro) », « (*) » (déjà montrée plus haut).
   remet && { echo "$premiere (proc-macro) (*)"; echo "$premiere (*)"; echo "$premiere (proc-macro)"
     tail -n +2 "$T/ref-$LINUX.txt"; } >"$T/arbres/$LINUX.txt"

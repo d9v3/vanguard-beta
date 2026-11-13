@@ -369,7 +369,9 @@ and the tests, run target by target, did not see (measured on November 12, 2026:
 `outils/caisses-fenetre.sh` compares each target's tree to its versioned list (`outils/caisses-fenetre/<target>.txt`,
 names and versions: one more crate shows in the diff and goes through cargo deny and cargo vet; `--ecrire` rewrites
 the lists) and refuses the same crate coming from a source other than crates.io (a `[patch.crates-io]` to a local copy
-or a git repository, which cargo deny and cargo vet let through); `--programmes`, run by `outils/compiler-version.sh`
+or a git repository, which cargo deny and cargo vet let through, or a replaced source, `[source.crates-io]
+replace-with` in a `.cargo/config.toml`, which cargo tree and cargo deny take for crates.io: any crates.io crate read
+from somewhere other than `CARGO_HOME`'s registry is refused); `--programmes`, run by `outils/compiler-version.sh`
 before the engraved fingerprint is computed, checks that each crate named in the bytes of both windows is in its
 target's tree, and `outils/failles-programmes.sh --fenetre` only sets aside an advisory for an off-target crate if none
 of the crates removed from the window (`caisses-fenetre.sh --retirees`, zbus included) can be read in the audited

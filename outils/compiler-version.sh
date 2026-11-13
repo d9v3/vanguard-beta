@@ -91,11 +91,9 @@ case $AUDITABLE in
     ;;
 esac
 # La chaîne C : zig et cargo-zigbuild épinglés, vérifiés à chaque compilation (outils/chaine-zig.sh), en tête du
-# PATH, devant le dossier des programmes de cargo (que cargo, sinon, regarde en premier pour ses sous-commandes).
+# PATH, devant le dossier des programmes de cargo (la garde est plus bas, une fois CARGO_HOME posé).
 ZIG_BIN=$(bash outils/chaine-zig.sh)
 export PATH="$ZIG_BIN:$CARGO_DOSSIER/bin:$PATH"
-[[ $(command -v cargo-zigbuild) == "$ZIG_BIN/cargo-zigbuild" && $(command -v zig) == "$ZIG_BIN/zig" ]] ||
-  { echo "zig ou cargo-zigbuild pris ailleurs que dans $ZIG_BIN" >&2; exit 1; }
 # Ce zig-là et aucun autre : la commande donnée tout de suite (cargo-zigbuild ne cherche alors ni Python ni le PATH).
 export CARGO_ZIGBUILD_ZIG_COMMAND=$ZIG_BIN/zig CARGO_ZIGBUILD_ZIG_PATH=$ZIG_BIN/zig
 export CARGO_ZIGBUILD_PYTHON_PATH=/nonexistent/python3
@@ -123,6 +121,15 @@ CARGO_LIEN=$CIBLES/.cargo-home
   { echo "$CARGO_LIEN existe et n'est pas un lien : la recette y pose celui de CARGO_HOME" >&2; exit 1; }
 ln -sfn "$(cd "$CARGO_DOSSIER" && pwd -P)" "$CARGO_LIEN"
 export CARGO_HOME=$CARGO_LIEN
+# cargo cherche ses sous-commandes (cargo zigbuild) dans $CARGO_HOME/bin avant le PATH, sauf si ce chemin, écrit pareil
+# (cargo compare le texte, sans résoudre les liens), est déjà dans le PATH. Sans lui, un cargo-zigbuild posé dans
+# ~/.cargo/bin (cargo install), atteint par le lien, passait devant celui de ZIG_BIN, la garde passée quand même
+# (relecture du 12 nov. 2026). Mis en dernier : le PATH, ZIG_BIN en tête, décide seul, et rien d'autre n'y change.
+export PATH="$PATH:$CARGO_LIEN/bin"
+# La garde : ce que le PATH donne, cargo le prend (son dossier y est, écrit comme cargo l'écrit).
+[[ :$PATH: == *":$CARGO_HOME/bin:"* && $(command -v cargo-zigbuild) == "$ZIG_BIN/cargo-zigbuild" &&
+  $(command -v zig) == "$ZIG_BIN/zig" ]] ||
+  { echo "zig ou cargo-zigbuild pris ailleurs que dans $ZIG_BIN" >&2; exit 1; }
 # Le dépôt devient /vanguard, cargo /cargo, le dossier de compilation /vanguard/target, la forme qu'il a déjà dans la
 # CI (target/ du dépôt, sous /vanguard). rustc comme zig cc appliquent la dernière correspondance : un target/ dans le
 # dépôt donne les mêmes octets qu'avant, et le lien de CARGO_HOME, sous le dossier de compilation, redevient /cargo.

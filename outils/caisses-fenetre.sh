@@ -46,10 +46,11 @@ RETIREES=(accesskit_unix accesskit_atspi_common atspi atspi-common atspi-proxies
 # « nom vversion [(proc-macro)] [(source)] [(*)] » : la source n'y est que si elle n'est pas crates.io. Elle est
 # gardée, sous une forme qui ne dit aucun chemin de cet ordinateur : « (chemin local) » ou « (autre source) ». Sans
 # elle, un [patch.crates-io] vers une copie modifiée, de même nom et de même version, passait ici comme cargo deny et
-# cargo vet (relecture du 12 nov. 2026). Code 2 si cargo tree échoue, ne dit rien ou écrit une ligne d'une forme
-# inconnue : un arbre vide ou mal lu n'est pas un arbre sain.
+# cargo vet (relecture du 12 nov. 2026). Une caisse d'une source remplacée (remplacees, plus bas) devient
+# « (autre source) » elle aussi. Code 2 si cargo tree ou cargo metadata échoue, ne dit rien ou écrit une ligne d'une
+# forme inconnue : un arbre vide ou mal lu n'est pas un arbre sain.
 arbre() {
-  local sortie
+  local sortie remplacees
   sortie=$(cargo tree -q --locked --manifest-path "$MANIFESTE" --target "$1" -e normal,build --prefix none \
     --format '{p}') || { echo "✖ cargo tree a échoué pour $1 : rien n'est conclu" >&2; return 2; }
   sortie=$(sed -E 's/ \(\*\)$//; s/^([^ ]+ v[^ ]+) \(proc-macro\)/\1/
@@ -59,7 +60,33 @@ arbre() {
   [[ -n $sortie ]] || { echo "✖ cargo tree n'a rien dit pour $1 : rien n'est conclu" >&2; return 2; }
   grep -qvE '^[A-Za-z0-9_-]+ [0-9][^ ]*( \((chemin local|autre source)\))?$' <<<"$sortie" &&
     { echo "✖ cargo tree a écrit pour $1 une ligne d'une forme inconnue : rien n'est conclu" >&2; return 2; }
+  remplacees=$(remplacees "$1") || { echo "✖ cargo metadata a échoué pour $1 : rien n'est conclu" >&2; return 2; }
+  if [[ -n $remplacees ]]; then
+    sortie=$(awk 'NR == FNR { r[$0] = 1; next } { print (r[$0] ? $0 " (autre source)" : $0) }' \
+      <(printf '%s\n' "$remplacees") <(printf '%s\n' "$sortie") | sort -u)
+  fi
   printf '%s\n' "$sortie"
+}
+
+# Les caisses que cargo dit de crates.io mais qu'il lit ailleurs que dans son registre, « nom version » par ligne. Une
+# source remplacée ([source.crates-io] replace-with vers un dossier, dans un .cargo/config.toml du dépôt, d'un dossier
+# parent ou de CARGO_HOME) garde l'identité « crates.io » : cargo tree n'écrit alors aucune source, et cargo deny ne
+# voit rien (relecture du 12 nov. 2026). Une caisse de crates.io se lit dans
+# $CARGO_HOME/registry/src/index.crates.io-<16 chiffres hexadécimaux>/<nom>-<version>/, le chemin tel que cargo l'écrit
+# (CARGO_HOME tel qu'il est donné, joint au dossier courant, « .. » retiré sur le texte, mais aucun lien résolu), et
+# nulle part ailleurs. Une source se remplace en entier : toutes les caisses de crates.io de l'arbre sont alors dites.
+# Code non nul si cargo metadata échoue ou se lit mal.
+remplacees() {
+  cargo metadata -q --locked --format-version 1 --manifest-path "$MANIFESTE" --filter-platform "$1" |
+    python3 -I -c '
+import json, os, re, sys
+maison = os.path.normpath(os.path.join(os.getcwd(), sys.argv[1]))
+registre = re.escape(maison.rstrip("/") + "/registry/src/") + r"index\.crates\.io-[0-9a-f]{16}/"
+for p in json.load(sys.stdin)["packages"]:
+    if re.match(r"(registry|sparse)\+", p["source"] or "") and not re.fullmatch(
+        registre + re.escape(p["name"] + "-" + p["version"]) + "/Cargo.toml", p["manifest_path"]):
+        print(p["name"], p["version"])
+' "${CARGO_HOME:-$HOME/.cargo}"
 }
 
 # Les caisses d'une autre source que crates.io dans une liste (« nom version (source) » par ligne).

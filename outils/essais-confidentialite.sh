@@ -925,13 +925,28 @@ fi
 # Les dossiers de la recette, rejoués pour de vrai (le bloc entre ses deux repères, sans rien compiler) : une seule
 # écriture, physique, du dossier de compilation (lien et « .. » dans celui qui est donné), CARGO_HOME par le lien de
 # nom fixe sous lui, et les remplacements, celui de ce lien après celui du dossier (la dernière correspondance gagne).
+# Ce que le bloc donne à cargo est lu par un processus enfant, qui ne voit que ce qui est exporté (une variable
+# affectée sans « export » passait, relecture du 12 nov. 2026), et le bloc est lancé sans CARGO_HOME ni
+# CARGO_TARGET_DIR hérités (hérités, ils restaient exportés quand même).
 DOSSIERS=$(sed -n '/^# >>> dossiers de la compilation/,/^# <<< dossiers de la compilation/p' "$R")
-dossiers() { # CARGO_TARGET_DIR donné ; écrit dans SORTIE ce que le bloc exporte
-  SORTIE=$(cd "$P" && CARGO_TARGET_DIR=$1 RACINE=/srv/depot-invente CARGO_DOSSIER=$P/cargo-invente bash -c \
-    "set -euo pipefail; $DOSSIERS"$'\nprintf "%s\\n" "$CARGO_TARGET_DIR" "$CARGO_HOME" "$(readlink "$CARGO_HOME")" '\
-'"$RUSTFLAGS" "$CFLAGS_x86_64_unknown_linux_musl" "$CFLAGS_x86_64_unknown_linux_gnu" "$CFLAGS_x86_64_pc_windows_gnu"' 2>&1)
+MONTRE='printf "%s\n" "$CARGO_TARGET_DIR" "$CARGO_HOME" "$(readlink "$CARGO_HOME")" "$RUSTFLAGS" \
+  "$CFLAGS_x86_64_unknown_linux_musl" "$CFLAGS_x86_64_unknown_linux_gnu" "$CFLAGS_x86_64_pc_windows_gnu"'
+# dossiers <CARGO_TARGET_DIR donné, « - » s'il ne l'est pas (la forme de outils/deployer.sh)> [<lancé après le bloc,
+# dans un processus enfant (MONTRE par défaut)>] : la sortie dans SORTIE. Le PATH de la recette : ZIG_BIN (un zig et
+# un cargo-zigbuild inventés), puis le dossier des programmes de cargo, ou CHEMINS s'il est donné.
+dossiers() {
+  local donne=("CARGO_TARGET_DIR=$1")
+  [[ $1 != - ]] || donne=()
+  SORTIE=$(cd "$P" && env -u CARGO_HOME -u CARGO_TARGET_DIR "${donne[@]}" RACINE=/srv/depot-invente \
+    CARGO_DOSSIER="$P/cargo-invente" ZIG_BIN="$P/zig-invente" \
+    PATH="${CHEMINS:-$P/zig-invente:$P/cargo-invente/bin}:$PATH" APRES="${2:-$MONTRE}" \
+    bash -c "set -euo pipefail; $DOSSIERS"$'\nbash -c "$APRES"' 2>&1)
 }
-mkdir -p "$P/vraies-cibles" "$P/cargo-invente" && ln -sfn vraies-cibles "$P/lien-cibles"
+# Un programme inventé qui dit qui il est.
+qui() { mkdir -p "$(dirname "$1")" && printf '#!/bin/sh\necho "%s"\n' "$2" >"$1" && chmod +x "$1"; }
+mkdir -p "$P/vraies-cibles" "$P/cargo-invente/bin" && ln -sfn vraies-cibles "$P/lien-cibles"
+qui "$P/zig-invente/zig" "zig épinglé"
+qui "$P/zig-invente/cargo-zigbuild" "cargo-zigbuild épinglé"
 V=$P/vraies-cibles
 attendu=$(printf '%s\n' "$V" "$V/.cargo-home" "$P/cargo-invente" \
   "--remap-path-prefix=/srv/depot-invente=/vanguard --remap-path-prefix=$P/cargo-invente=/cargo --remap-path-prefix=$V=/vanguard/target --remap-path-prefix=$V/.cargo-home=/cargo")
@@ -942,6 +957,22 @@ if [[ -n $DOSSIERS ]]; then
   noter "$attendu" "$SORTIE" "recette : CARGO_TARGET_DIR physique (lien et « .. » retirés), CARGO_HOME par son lien fixe, remplacements dans l'ordre"
   dossiers lien-cibles
   noter "$attendu" "$SORTIE" "recette : un dossier de compilation relatif devient le même chemin physique"
+  # Sans CARGO_TARGET_DIR (outils/deployer.sh) : le target/ du dépôt, ici un lien vers l'autre disque.
+  ln -sfn vraies-cibles "$P/target"
+  dossiers -
+  noter "$attendu" "$SORTIE" "recette : sans CARGO_TARGET_DIR, target/ (un lien) devient le chemin physique, exporté"
+  rm "$P/target"
+  # Les sous-commandes : cargo regarde dans $CARGO_HOME/bin avant le PATH, sauf si ce chemin, écrit pareil, est dans
+  # le PATH. Un cargo-zigbuild de ~/.cargo/bin, par le lien de CARGO_HOME, passait devant celui de ZIG_BIN, garde
+  # passée (relecture du 12 nov. 2026). Le vrai cargo, la chaîne de rust-toolchain.toml, rien n'est compilé.
+  cp "$RACINE/rust-toolchain.toml" "$P/"
+  qui "$P/cargo-invente/bin/cargo-zigbuild" "cargo-zigbuild de CARGO_HOME, non vérifié"
+  dossiers "$V" 'cargo zigbuild'
+  noter "cargo-zigbuild épinglé" "$SORTIE" "recette : cargo zigbuild lance celui de ZIG_BIN, pas celui de CARGO_HOME/bin"
+  rm "$P/cargo-invente/bin/cargo-zigbuild"
+  qui "$P/ailleurs/cargo-zigbuild" "cargo-zigbuild d'ailleurs"
+  CHEMINS="$P/ailleurs:$P/zig-invente:$P/cargo-invente/bin" dossiers "$V" 'cargo zigbuild'
+  noter "1 1" "$? $(grep -c 'pris ailleurs que dans' <<<"$SORTIE")" "recette : un cargo-zigbuild devant ZIG_BIN dans le PATH est refusé"
   rm "$V/.cargo-home" && mkdir "$V/.cargo-home"
   dossiers "$V"
   noter "1 1" "$? $(grep -c 'pas un lien' <<<"$SORTIE")" "recette : un vrai dossier à la place du lien de CARGO_HOME est refusé"
