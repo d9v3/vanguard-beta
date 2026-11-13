@@ -4,7 +4,10 @@
 
 # Les cibles de la fenêtre : Linux avec la libc du système (ses bibliothèques d'affichage sont chargées à
 # l'exécution) et Windows. verifier.sh passe chacune à part (--target) : sur les deux d'un coup, cargo deny unit les
-# options des deux, et compterait sous Linux l'accessibilité de Windows (accesskit_unix, voir Cargo.toml).
+# options des deux, et compterait sous Linux l'accessibilité de Windows (accesskit_unix, voir Cargo.toml). C'est ce
+# que faisait la compilation des programmes publiés jusqu'au 12 nov. 2026 (les deux cibles dans un seul appel de
+# cargo) : outils/compiler-version.sh compile désormais une cible à la fois, et outils/caisses-fenetre.sh vérifie sur
+# leurs octets que chaque programme ne contient que l'arbre jugé ici.
 [graph]
 targets = [
     "x86_64-unknown-linux-gnu",

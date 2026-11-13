@@ -149,8 +149,16 @@ FENETRE_CIBLES=$CIBLES/fenetre
 FENETRE_LINUX=$FENETRE_CIBLES/x86_64-unknown-linux-gnu/release/vanguard-fenetre
 FENETRE_WINDOWS=$FENETRE_CIBLES/x86_64-pc-windows-gnu/release/vanguard-fenetre.exe
 rm -f "$FENETRE_LINUX" "$FENETRE_WINDOWS"
-CARGO_TARGET_DIR=$FENETRE_CIBLES auditable cargo zigbuild --release --locked --manifest-path fenetre/Cargo.toml \
-  --target x86_64-unknown-linux-gnu --target x86_64-pc-windows-gnu
+# Une cible par appel : compilées ensemble, les deux cibles partagent leurs options, et l'option accesskit d'eframe,
+# prise pour Windows seulement (fenetre/Cargo.toml), mettait accesskit_unix, zbus et zvariant dans la fenêtre Linux
+# (2,8 Mo, une cinquantaine de caisses que cargo deny, clippy et les essais, cible par cible, ne voyaient pas ; mesuré
+# le 12 nov. 2026). Puis la preuve sur les octets : chaque caisse nommée dans un programme est dans l'arbre de sa cible.
+for cible in x86_64-unknown-linux-gnu x86_64-pc-windows-gnu; do
+  CARGO_TARGET_DIR=$FENETRE_CIBLES auditable cargo zigbuild --release --locked --manifest-path fenetre/Cargo.toml \
+    --target "$cible"
+done
+bash outils/caisses-fenetre.sh --programmes "$FENETRE_LINUX" "$FENETRE_WINDOWS" ||
+  { echo "✖ la fenêtre compilée n'est pas celle que cargo deny, clippy et les essais jugent" >&2; exit 1; }
 VANGUARD_FENETRE_SHA256_LINUX=$(sha256sum "$FENETRE_LINUX" | cut -d' ' -f1)
 VANGUARD_FENETRE_SHA256_WINDOWS=$(sha256sum "$FENETRE_WINDOWS" | cut -d' ' -f1)
 export VANGUARD_FENETRE_SHA256_LINUX VANGUARD_FENETRE_SHA256_WINDOWS

@@ -333,6 +333,8 @@ extensions() {
 fenetre() {
   local cible=${CARGO_TARGET_DIR:-$PWD/target}/fenetre m=fenetre/Cargo.toml t code=0
   cargo fmt --check --manifest-path "$m" || return 1
+  # Ses caisses, cible par cible : le compte exact et aucune retirée revenue (outils/caisses-fenetre.sh).
+  bash outils/caisses-fenetre.sh || return 1
   for t in x86_64-unknown-linux-gnu x86_64-pc-windows-gnu; do
     CARGO_TARGET_DIR=$cible cargo clippy -q --locked --all-targets --manifest-path "$m" --target "$t" -- -D warnings ||
       return 1
@@ -409,8 +411,9 @@ dependances() {
     sortie+=$'\n'"$m :"$'\n'$(cargo deny "${options[@]}" --manifest-path "$m" --config extensions/deny.toml check \
       --hide-inclusion-graph "${verifications[@]}" 2>&1) || code=1
   done
-  # La fenêtre (fenetre/deny.toml), une cible à la fois : passées ensemble, cargo deny unifierait leurs fonctions
-  # (features) et jugerait des bibliothèques qu'aucune des deux ne compile.
+  # La fenêtre (fenetre/deny.toml), une cible à la fois, comme outils/compiler-version.sh la compile : passées
+  # ensemble, cargo deny unifierait leurs fonctions (features) et jugerait des bibliothèques qu'aucune des deux ne
+  # compile (outils/caisses-fenetre.sh le vérifie sur les octets des programmes publiés).
   local t
   for t in x86_64-unknown-linux-gnu x86_64-pc-windows-gnu; do
     sortie+=$'\n'"fenetre/Cargo.toml ($t) :"$'\n'$(cargo deny "${options[@]}" --manifest-path fenetre/Cargo.toml \
@@ -852,7 +855,7 @@ if [[ $MODE != --rapide ]]; then
   ligne constructeurs "constructeurs avant main (deny)"
   ligne masque "mots d'attaque masqués"
   ligne extensions "extensions (sdk, exemple Rust)"
-  ligne fenetre "fenêtre (clippy ×2, tests Linux : $(passes fenetre), protections ×2)"
+  ligne fenetre "fenêtre (caisses ×2, clippy ×2, tests Linux : $(passes fenetre), protections ×2)"
   raisons_des_sautes fenetre
   ligne python "scripts Python"
   ligne relais "relais des lots ($(grep -m1 -oE '^ℹ pass [0-9]+' "$TRAVAIL/relais.log" 2>/dev/null | cut -d' ' -f3) essais)"
