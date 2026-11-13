@@ -4589,6 +4589,53 @@ fn commandes_shell(texte: &str) -> Vec<Vec<String>> {
     commandes
 }
 
+/// Les fichiers qu'uwsm peut lire dans un de ses dossiers « uwsm » : tous ceux du dossier (« env », « env-<bureau> »
+/// et ce qu'ils peuvent inclure : relecture 0.95, V-2), puis ceux de ses sous-dossiers « env.d » et « env-<bureau>.d »,
+/// qu'uwsm lit après le fichier du même nom (uwsm 0.27, prepare-env.sh, `source_dir` : relecture 0.95, W-2) ; pas plus
+/// bas. Plus large qu'uwsm (ses « *.bak », « *~ »… passés, ses fichiers cachés) : un fichier de trop se lit. Une seule
+/// liste pour ~/.config/uwsm et pour tout autre dossier où uwsm cherche (S-4, re-contrôle 2 0.95) : un lien se suit
+/// comme uwsm le suit, « [ -d ] » et « [ -f ] » ; un « env.d » qui est un lien vers un dossier se descend, un lien
+/// vers un dossier n'est pas un fichier. Les dossiers qui ne se lisent pas vont dans `illisibles`, jamais tus. Dans
+/// l'ordre des noms : le verdict ne dépend pas du système de fichiers.
+fn fichiers_d_uwsm(dossier: &Path, illisibles: &mut Vec<std::path::PathBuf>) -> Vec<std::path::PathBuf> {
+    let mut fichiers = Vec::new();
+    let mut a_lire = vec![(dossier.to_path_buf(), true)];
+    while let Some((d, haut)) = a_lire.pop() {
+        match std::fs::symlink_metadata(&d) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => {
+                illisibles.push(d);
+                continue;
+            }
+            Ok(_) => {}
+        }
+        let Ok(entrees) = std::fs::read_dir(&d) else {
+            illisibles.push(d);
+            continue;
+        };
+        for e in entrees {
+            let Ok(e) = e else {
+                illisibles.push(d.clone());
+                break;
+            };
+            let p = e.path();
+            // `metadata` suit le lien, comme « [ -d ] » ; un lien cassé n'est pas un dossier (il se lit, et manque).
+            let est_dossier = std::fs::metadata(&p).is_ok_and(|m| m.is_dir());
+            let nom = e.file_name();
+            let nom = nom.to_string_lossy();
+            if est_dossier {
+                if haut && (nom == "env.d" || (nom.starts_with("env-") && nom.ends_with(".d"))) {
+                    a_lire.push((p, false));
+                }
+                continue;
+            }
+            fichiers.push(p);
+        }
+    }
+    fichiers.sort();
+    fichiers
+}
+
 /// Les fichiers qui posent des variables au gestionnaire de systemd du compte : (fichier, du compte). Ceux du compte
 /// (environment.d, user.conf et user.conf.d, tout ~/.config/uwsm, et ceux d'un XDG_CONFIG_HOME déplacé,
 /// ~/.pam_environment), et ceux du système (/etc/environment, pam_env.conf, environment.d, user.conf et user.conf.d).
@@ -4604,46 +4651,36 @@ fn fichiers_du_gestionnaire(
     let s = |c: &str| r.sous(Path::new(c));
     let mut fichiers: Vec<(std::path::PathBuf, bool, Variables)> = Vec::new();
     let mut illisibles = Vec::new();
-    // Les fichiers d'un dossier : ceux en « .conf », ou tous ceux de uwsm (« env », « env-<bureau> » et ce qu'ils
-    // peuvent inclure : relecture 0.95, V-2), et ceux de ses sous-dossiers « env.d » et « env-<bureau>.d », qu'uwsm
-    // lit après le fichier du même nom (uwsm 0.27, prepare-env.sh, `source_dir` : relecture 0.95, W-2) ; pas plus
-    // bas. Plus large qu'uwsm (ses « *.bak », « *~ »… passés, ses fichiers cachés) : un fichier de trop se lit.
+    // Les fichiers d'un dossier : ceux en « .conf », ou ceux qu'uwsm peut lire (`fichiers_d_uwsm`, S-4).
     let mut dossier = |d: std::path::PathBuf,
                        du_compte: bool,
                        sorte: Variables,
                        fichiers: &mut Vec<(std::path::PathBuf, bool, Variables)>| {
-        let uwsm = sorte == Variables::Shell;
-        let mut a_lire = vec![(d, true)];
-        while let Some((d, haut)) = a_lire.pop() {
-            match std::fs::symlink_metadata(&d) {
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(_) => {
-                    illisibles.push(d.clone());
-                    continue;
-                }
-                Ok(_) => {}
+        if sorte == Variables::Shell {
+            let trouves = fichiers_d_uwsm(&d, &mut illisibles);
+            fichiers.extend(trouves.into_iter().map(|f| (f, du_compte, sorte)));
+            return;
+        }
+        match std::fs::symlink_metadata(&d) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(_) => {
+                illisibles.push(d);
+                return;
             }
-            let Ok(entrees) = std::fs::read_dir(&d) else {
+            Ok(_) => {}
+        }
+        let Ok(entrees) = std::fs::read_dir(&d) else {
+            illisibles.push(d);
+            return;
+        };
+        for e in entrees {
+            let Ok(e) = e else {
                 illisibles.push(d.clone());
-                continue;
+                break;
             };
-            for e in entrees {
-                let Ok(e) = e else {
-                    illisibles.push(d.clone());
-                    break;
-                };
-                let p = e.path();
-                let est_dossier = std::fs::symlink_metadata(&p).is_ok_and(|m| m.is_dir());
-                let nom = e.file_name();
-                let nom = nom.to_string_lossy();
-                if uwsm && haut && est_dossier && (nom == "env.d" || (nom.starts_with("env-") && nom.ends_with(".d"))) {
-                    a_lire.push((p, false));
-                    continue;
-                }
-                let pris = if uwsm { !est_dossier } else { a_l_extension(&p, "conf") };
-                if pris {
-                    fichiers.push((p, du_compte, sorte));
-                }
+            let p = e.path();
+            if a_l_extension(&p, "conf") {
+                fichiers.push((p, du_compte, sorte));
             }
         }
     };
@@ -5440,38 +5477,18 @@ fn fichiers_de_configuration(r: &Releveur) -> (Vec<(std::path::PathBuf, Variable
             .into_iter()
             .map(shell),
     );
-    let mut env: Vec<std::path::PathBuf> = std::fs::read_dir(h.join(".config/uwsm"))
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|f| f.file_name().to_string_lossy().starts_with("env") && f.path().is_file())
-        .map(|f| f.path())
-        .collect();
     // L-2 (campagne 0.95, angle lecture) : uwsm lit aussi chaque fichier de « env.d » et « env-<bureau>.d », quelle
     // que soit son extension (uwsm 0.27, prepare-env.sh, `source_dir` : sauf « *.bak », « *~ »…, lus ici quand même :
-    // un fichier de trop se lit). Ceux en « .sh » ou « .conf », déjà pris plus haut, ne se jugent qu'une fois.
-    for d in std::fs::read_dir(h.join(".config/uwsm"))
-        .into_iter()
-        .flatten()
-        .flatten()
-    {
-        let nom = d.file_name();
-        let nom = nom.to_string_lossy();
-        // Un lien vers un dossier se suit, comme le suit uwsm (« [ -d ] »).
-        if d.path().is_dir() && (nom == "env.d" || (nom.starts_with("env-") && nom.ends_with(".d"))) {
-            env.extend(
-                std::fs::read_dir(d.path())
-                    .into_iter()
-                    .flatten()
-                    .flatten()
-                    .map(|f| f.path())
-                    .filter(|f| f.is_file()),
-            );
+    // un fichier de trop se lit). S-4 (re-contrôle 2 0.95) : par la même liste que sous tout autre dossier où uwsm
+    // cherche (`fichiers_d_uwsm`, liens suivis comme uwsm les suit), et ses dossiers qui ne se lisent pas sont dits
+    // (avant, une lecture ratée ici se taisait). Ceux en « .sh » ou « .conf », déjà pris plus haut, ne se jugent
+    // qu'une fois.
+    let mut illisibles_ici = Vec::new();
+    for f in fichiers_d_uwsm(&h.join(".config/uwsm"), &mut illisibles_ici) {
+        if !configuration.iter().any(|(c, _)| *c == f) {
+            configuration.push(shell(f));
         }
     }
-    // Dans l'ordre des noms, comme `fichiers_sous` : le verdict ne dépend pas du système de fichiers.
-    env.sort();
-    configuration.extend(env.into_iter().map(shell));
     // R-4 (re-contrôle 0.95, angle lecture) : les mêmes lecteurs cherchent ailleurs que dans ~/.config : sous le
     // XDG_CONFIG_HOME de la session, sous un XDG_CONFIG_HOME ou XDG_CONFIG_DIRS posé au gestionnaire de systemd du
     // compte, et uwsm sous chaque XDG_CONFIG_DIRS et XDG_DATA_DIRS (uwsm 0.27, prepare-env.sh). La liste est celle de
@@ -5512,10 +5529,13 @@ fn fichiers_de_configuration(r: &Releveur) -> (Vec<(std::path::PathBuf, Variable
     }
     // Les dossiers de cette liste qui ne se lisent pas, sauf ceux que le bilan dit déjà (`gestionnaire_non_resolu`) :
     // ce qu'ils posent n'est pas jugé, c'est dit (non vérifié), jamais tu.
-    let illisibles = illisibles
+    let mut illisibles: Vec<std::path::PathBuf> = illisibles_ici
         .into_iter()
+        .chain(illisibles)
         .filter(|d| !r.gestionnaire_non_resolu.iter().any(|(x, _)| x == d))
         .collect();
+    illisibles.sort();
+    illisibles.dedup();
     (configuration, illisibles)
 }
 
@@ -15509,6 +15529,126 @@ mod tests {
                 None => assert_eq!(c.probleme, None, "{fichier} : {}", c.message),
             }
         }
+    }
+
+    /// S-4 (re-contrôle 2 0.95, angle lecture) : uwsm suit un « env.d » ou « env-<bureau>.d » qui est un lien vers un
+    /// dossier (« [ -d ] », prepare-env.sh, `source_dir`), sous ~/.config/uwsm comme sous tout autre dossier où il
+    /// cherche (XDG_CONFIG_HOME de la session ou posé par environment.d, XDG_DATA_DIRS). Vanguard le suit partout, par
+    /// la même liste (`fichiers_d_uwsm`) : la pose en clair du dossier visé se lève à sa ligne, une fois. Témoin : un
+    /// lien vers le même dossier sous un autre nom, qu'uwsm ne lit pas, reste muet.
+    #[test]
+    fn uwsm_env_d_en_lien_suivi_partout() {
+        const POSE: &str = "LD_PRELOAD=/opt/inerte/a.so\n";
+        const C: &[(&str, &str)] = &[("XDG_CONFIG_HOME", "/home/alice/.c")];
+        const D: &[(&str, &str)] = &[("XDG_DATA_DIRS", "/home/alice/.d:/usr/share")];
+        const POSE_Y: Option<&str> = Some("XDG_CONFIG_HOME=/home/alice/.y\n");
+        // (dossier d'uwsm sous la maison, nom du lien, variables de la session, ligne de ~/.config/environment.d, levé)
+        type Cas = (
+            &'static str,
+            &'static str,
+            &'static [(&'static str, &'static str)],
+            Option<&'static str>,
+            bool,
+        );
+        let cas: &[Cas] = &[
+            (".config/uwsm", "env.d", &[], None, true),
+            (".c/uwsm", "env.d", C, None, true),
+            (".c/uwsm", "env-hyprland.d", C, None, true),
+            (".y/uwsm", "env.d", &[], POSE_Y, true),
+            (".d/uwsm", "env.d", D, None, true),
+            (".c/uwsm", "autre", C, None, false),
+        ];
+        let mut faux = Vec::new();
+        for (i, (uwsm, lien, session, pose, leve)) in cas.iter().enumerate() {
+            let m = Maison::nouvelle(&format!("uwsm-lien-{i}"));
+            if let Some(p) = pose {
+                m.ecrire(".config/environment.d/10-x.conf", p);
+            }
+            m.ecrire(".cible/a", POSE);
+            std::fs::create_dir_all(m.chemin(uwsm)).unwrap();
+            std::os::unix::fs::symlink(m.chemin(".cible"), m.chemin(&format!("{uwsm}/{lien}"))).unwrap();
+            let c = m.lancements_avec(session);
+            let attendu = format!("~/{uwsm}/{lien}/a:1 précharge");
+            let dit = if *leve {
+                c.probleme >= Some(Niveau::Eleve) && c.message.matches(&attendu).count() == 1
+            } else {
+                !c.message.contains("/a:1 précharge")
+            };
+            if !dit {
+                faux.push(format!(
+                    "{uwsm}/{lien} ({session:?}, {pose:?}) : {:?} {}",
+                    c.probleme, c.message
+                ));
+            }
+        }
+        assert!(faux.is_empty(), "env.d en lien : {faux:#?}");
+    }
+
+    /// S-4 : la liste unique d'uwsm (`fichiers_d_uwsm`) prend, sous ~/.config/uwsm aussi, chaque fichier du dossier,
+    /// quel que soit son nom, comme la sauvegarde le faisait déjà : « ~/.config/uwsm/default », qu'un fichier d'uwsm
+    /// du système d'Omarchy inclut, se juge ; sain, il reste muet.
+    #[test]
+    fn fichier_d_uwsm_de_tout_nom_juge() {
+        for (i, (texte, attendu)) in [
+            (
+                "export LD_PRELOAD=/opt/inerte/a.so\n",
+                Some("~/.config/uwsm/default:1 précharge"),
+            ),
+            ("export EDITOR=nvim\n", None),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("uwsm-tout-nom-{i}"));
+            m.ecrire(".config/uwsm/default", texte);
+            let c = m.lancements();
+            match attendu {
+                Some(attendu) => {
+                    assert!(c.probleme >= Some(Niveau::Eleve), "{}", c.message);
+                    assert_eq!(c.message.matches(attendu).count(), 1, "{}", c.message);
+                }
+                None => assert_eq!(c.probleme, None, "{}", c.message),
+            }
+        }
+    }
+
+    /// S-4 : la sauvegarde lit la même liste. Un « env.d » en lien sous un dossier de XDG_DATA_DIRS posé par
+    /// environment.d se juge par ce qu'il contient, ses deux formes : sain, il ne lève plus la sauvegarde (il la levait
+    /// comme un fichier qui ne se lit pas) ; avec un préchargement, il la lève (élevé, ExecStart nommé, non déclarable).
+    #[test]
+    fn uwsm_env_d_en_lien_juge_par_la_sauvegarde() {
+        let mut faux = Vec::new();
+        for vide in [false, true] {
+            for (texte, leve) in [
+                ("export EDITOR=nvim\n", false),
+                ("export LD_PRELOAD=/opt/inerte/a.so\n", true),
+            ] {
+                let (m, service) = sauvegarde_d_essai(&format!("uwsm-lien-sauvegarde-{vide}-{leve}"), vide);
+                m.ecrire(
+                    ".config/environment.d/50-x.conf",
+                    "XDG_DATA_DIRS=/home/alice/.d:/usr/share\n",
+                );
+                m.ecrire(".cible/a", texte);
+                std::fs::create_dir_all(m.chemin(".d/uwsm")).unwrap();
+                std::os::unix::fs::symlink(m.chemin(".cible"), m.chemin(".d/uwsm/env.d")).unwrap();
+                let c = m.lancements();
+                let nommee = service
+                    .lines()
+                    .position(|l| l.starts_with("ExecStart="))
+                    .map(|n| format!("~/.config/systemd/user/{}:{} : ", crate::sauvegarde::SERVICE, n + 1))
+                    .is_some_and(|e| c.message.contains(&e));
+                let juste = if leve {
+                    c.probleme == Some(Niveau::Eleve) && nommee && crate::apprentissage::declarable(&c).is_err()
+                } else {
+                    // La forme de la 0.94 garde son « À savoir » (information), qui n'est pas une levée.
+                    c.probleme < Some(Niveau::Eleve)
+                };
+                if !juste {
+                    faux.push(format!("env -i {vide}, {texte:?} : {:?} {}", c.probleme, c.message));
+                }
+            }
+        }
+        assert!(faux.is_empty(), "sauvegarde, env.d en lien : {faux:#?}");
     }
 
     /// Quatrième vérification : une variable de Hyprland se remplace avant de juger la ligne ; une variable sans
