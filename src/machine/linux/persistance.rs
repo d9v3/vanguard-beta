@@ -19636,8 +19636,13 @@ mod tests {
     /// la cherche par l'empreinte de ses octets, et la ligne lue avec pertes n'a plus ces octets-là) : la correction
     /// reste à la main, et c'est dit. Avant, « Retirer ces lignes » était offert, le fils ne trouvait rien et
     /// répondait « déjà fait ». Témoin : la même ligne en UTF-8 se retire par geste.
+    ///
+    /// Dans la maison d'essai, le fichier est sous la racine jetable, qu'aucun geste n'a le droit de toucher
+    /// (`fichier_de_ligne_admis` : chemins exacts de /etc) : le bilan entier y est donc toujours « à la main ». Le
+    /// choix du geste se juge sur les retraits relevés, ramenés à leur vrai chemin de /etc.
     #[test]
     fn ligne_hors_utf8_a_la_main() {
+        let phrase = "n'est pas du texte UTF-8";
         for (i, (lieu, octets, designable)) in [
             ("etc/ld.so.preload", &b"/tmp/.x/\xff.so\n"[..], false),
             ("etc/ld.so.preload", b"/tmp/.x/l.so\n", true),
@@ -19659,11 +19664,37 @@ mod tests {
             let f = m.racine.join(lieu);
             std::fs::create_dir_all(f.parent().unwrap()).unwrap();
             std::fs::write(&f, octets).unwrap();
+            // Le bilan entier : la ligne est levée, et la phrase « à la main » ne vient que hors UTF-8.
             let c = m.lancements();
             leve(&c, lieu);
+            assert_eq!(
+                c.message.contains(phrase),
+                !designable,
+                "{lieu} {octets:?} : {}",
+                c.message
+            );
+            // Le relevé seul, puis le choix du geste avec le vrai chemin.
+            let variable = |_: &str| -> Option<std::ffi::OsString> { None };
+            let mut t = Lancements {
+                r: releveur(&m.racine, &m.racine.join("home/alice"), &variable),
+                ..Lancements::default()
+            };
+            if lieu == "etc/ld.so.preload" {
+                lire_prechargement(&m.racine, &variable, &|_: &Path| false, &mut t);
+            } else {
+                juger_cron(&m.racine, None, &mut t);
+            }
+            assert_eq!(t.hors_utf8, !designable, "{lieu} {octets:?}");
+            assert_eq!(t.retraits.len(), 1, "{lieu} {octets:?}");
+            assert_eq!(t.retraits[0].is_some(), designable, "{lieu} {octets:?}");
+            let racine = m.racine.to_str().unwrap().to_string();
+            for r in t.retraits.iter_mut().flatten() {
+                r.0 = r.0.strip_prefix(&racine).unwrap().to_string();
+            }
+            let c = constat_des_lancements(t);
             let auto = c.correctif.as_ref().is_some_and(|k| k.automatique);
             assert_eq!(auto, designable, "{lieu} {octets:?} : {}", c.message);
-            assert!(designable || c.message.contains("à la main"), "{}", c.message);
+            assert_eq!(c.message.contains(phrase), !designable, "{}", c.message);
         }
     }
 

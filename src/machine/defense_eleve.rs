@@ -362,7 +362,18 @@ pub(crate) fn faire(d: Defense, id: IdNote, a: &mut dyn Acces, s: &mut dyn Servi
     let phrase = dit(g.phrase());
     let p1 = match juger(d, a, s) {
         Ok(Some(p)) => p,
+        // Ronde 3 du lot 096 (N4) : pour un geste qui désigne une ligne par son empreinte, « ligne absente » est
+        // l'état visé, ce que la relecture d'après le geste doit voir ; avant le geste, c'est une ligne que le fils
+        // ne retrouve pas (empreinte faite sur un texte lu avec pertes, fichier changé depuis le bilan) : rien n'a
+        // été fait, ce n'est pas « déjà fait ».
         Ok(None) => {
+            if let Some(c) = ligne_par_empreinte(&d) {
+                let vu = lisible(&chemin_de(c));
+                return Resultat::echec(trf!(
+                    "{phrase} : pas fait (la ligne désignée ne se retrouve pas dans {vu} : changée depuis le bilan, ou pas du texte UTF-8) ; rien n'est fait : relancez le bilan, ou corrigez ce fichier à la main",
+                    "{phrase}: not done (the named line cannot be found in {vu}: changed since the check, or not UTF-8 text); nothing is done: run the check again, or fix this file by hand"
+                ));
+            }
             return Resultat::ok_note(trf!(
                 "{phrase} : déjà fait, rien à changer",
                 "{phrase}: already done, nothing to change"
@@ -433,6 +444,15 @@ pub(crate) fn faire(d: Defense, id: IdNote, a: &mut dyn Acces, s: &mut dyn Servi
             });
             Resultat::echec(trf!("{phrase} : pas fait ({r})", "{phrase}: not done ({r})"))
         }
+    }
+}
+
+/// Le fichier d'un geste qui désigne une ligne par l'empreinte de ses octets (`RetirerLigne`, `CommenterProxy`) :
+/// juger rend « rien à faire » quand la ligne n'y est pas, que ce soit avant le geste ou après lui.
+fn ligne_par_empreinte(d: &Defense) -> Option<&CheminDesigne> {
+    match d {
+        Defense::RetirerLigne(_, c) | Defense::CommenterProxy(_, c) => Some(c),
+        _ => None,
     }
 }
 
@@ -4243,6 +4263,7 @@ mod tests {
             &mut FauxServices::nouveau(),
         );
         assert!(!r.reussi, "{}", r.raison);
+        assert!(r.raison.contains("ne se retrouve pas"), "{}", r.raison);
         assert_eq!(a.questions.len(), 0);
         assert_eq!(a.fichiers[Path::new("/etc/ld.so.preload")].contenu, contenu);
     }

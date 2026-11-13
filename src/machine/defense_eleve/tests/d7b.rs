@@ -534,6 +534,25 @@ fn proxy_commente() {
     assert!(a.questions[0].contains("non annulable"));
 }
 
+/// Ronde 3 du lot 096 (N4), la même cause que pour `RetirerLigne` : une ligne de proxy désignée qui n'est pas dans le
+/// fichier (empreinte d'un texte lu avec pertes) n'est pas « déjà commentée ». Échec, sans question, rien d'écrit.
+#[test]
+fn proxy_introuvable_n_est_pas_un_succes() {
+    let mut a = Faux::nouveau().repondre("o");
+    a.poser("/etc/environment", b"export HTTPS_PROXY=http://\xff/\n", 0o644);
+    let avant = a.fichiers.clone();
+    let lue = String::from_utf8_lossy(b"export HTTPS_PROXY=http://\xff/").into_owned();
+    let r = faire_avec(
+        Defense::CommenterProxy(empreinte_de_ligne(lue.as_bytes()), chemin("/etc/environment")),
+        &mut a,
+        &mut FauxServices::nouveau(),
+    );
+    assert!(!r.reussi, "{}", r.raison);
+    assert!(r.raison.contains("ne se retrouve pas"), "{}", r.raison);
+    assert_eq!(a.questions, Vec::<String>::new());
+    rien_ecrit(&a, &avant);
+}
+
 #[test]
 fn proxy_autre_ligne_refusee() {
     for ligne in [
