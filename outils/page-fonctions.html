@@ -81,6 +81,17 @@ code { background: var(--surface-2); color: var(--encre); border-radius: var(--r
 .invite { display: flex; gap: .9rem; align-items: baseline; padding-block: .6rem .7rem; border-top: 1px solid var(--trait); font-family: var(--mono); color: var(--discret); white-space: nowrap; overflow: hidden; }
 .invite b { color: var(--lien); font-weight: 400; }
 .invite span { overflow: hidden; text-overflow: ellipsis; }
+.recherche { align-items: center; white-space: normal; }
+.recherche label { flex: none; color: var(--lien); }
+.recherche input { flex: 1; min-width: 0; font: inherit; color: var(--encre); background: transparent; border: 0; border-bottom: 1px solid var(--trait); padding: .2rem 0; }
+.recherche input::placeholder { color: var(--discret); }
+.recherche input:focus-visible { outline: none; border-bottom-color: var(--accent); }
+.recherche output { flex: none; font-size: .75rem; color: var(--doux); }
+.invite[hidden] { display: none; }
+.cache-lecteur { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+::highlight(recherche) { background: color-mix(in srgb, var(--accent) 38%, transparent); color: var(--encre); }
+::highlight(recherche-actif) { background: var(--accent); color: var(--sur-accent); }
+@media screen { .hors-recherche { display: none !important; } }
 
 /* Ouverture : comme l'écran Vue d'ensemble. */
 .ouverture { padding-block: 3rem 1rem; display: grid; gap: 2rem; }
@@ -318,7 +329,12 @@ footer a:hover { color: var(--encre); }
 <div class="console" role="note" aria-label="État de la version">
   <div class="cadre">
     <p class="console-etat"><span>Version <b>{{VERSION}}</b></span><span>publiée le <b>{{DATE}}</b></span><span><b>{{TESTS_LINUX}}</b> tests sous Linux · <b>{{TESTS_WINE}}</b> sous Windows</span><span><b>{{HOTES}}</b> hôtes joints, liste fermée</span></p>
-    <p class="invite"><b>vanguard ›</b><span>bilan · audit-reseau · blocage · verifier-moi · {{COMMANDES_CLI}} commandes, ou le menu</span></p>
+    <form class="invite recherche" id="recherche" role="search" hidden>
+      <label for="cherche"><b>vanguard ›</b><span class="cache-lecteur"> Chercher dans la page / Search this page</span></label>
+      <input id="cherche" type="search" placeholder="chercher : rançongiciel, Wi-Fi, clé…  ( / )" autocomplete="off" spellcheck="false" enterkeyhint="search" aria-describedby="cherche-etat">
+      <output id="cherche-etat" aria-live="polite"></output>
+    </form>
+    <p class="invite" id="invite"><b>vanguard ›</b><span>bilan · audit-reseau · blocage · verifier-moi · {{COMMANDES_CLI}} commandes, ou le menu</span></p>
   </div>
 </div>
 
@@ -926,5 +942,75 @@ vanguard yara --complet</pre>
     document.querySelectorAll('details:not([open])').forEach(function (d) { d.open = true; ouverts.push(d); });
   });
   window.addEventListener('afterprint', function () { ouverts.forEach(function (d) { d.open = false; }); });
+})();
+// La console cherche : chaque section sans le mot est masquée, les mots trouvés surlignés, leurs menus ouverts.
+// Rien ne sort de la page ; le texte lu n'est jamais réinjecté comme du HTML.
+(function () {
+  var forme = document.getElementById('recherche'), champ = document.getElementById('cherche');
+  var etat = document.getElementById('cherche-etat'), principal = document.getElementById('contenu');
+  if (!forme || !principal || !document.createTreeWalker) return;
+  document.getElementById('invite').hidden = true;
+  forme.hidden = false;
+  var surligne = window.CSS && CSS.highlights && window.Highlight;
+  var plier = function (s) {
+    var r = '';
+    for (var i = 0; i < s.length; i++) {
+      var c = s[i], b = c.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+      r += b.length === 1 ? b : c;
+    }
+    return r;
+  };
+  var ouverts = [], trouves = [], courant = -1, minuterie = 0;
+  var effacer = function () {
+    ouverts.forEach(function (d) { d.open = false; }); ouverts = [];
+    principal.querySelectorAll('.hors-recherche').forEach(function (s) { s.classList.remove('hors-recherche'); });
+    if (surligne) { CSS.highlights.delete('recherche'); CSS.highlights.delete('recherche-actif'); }
+    trouves = []; courant = -1; etat.textContent = '';
+  };
+  var montrer = function (i) {
+    if (!trouves.length) return;
+    courant = (i + trouves.length) % trouves.length;
+    var r = trouves[courant];
+    if (surligne) CSS.highlights.set('recherche-actif', new Highlight(r));
+    var el = r.startContainer.parentElement;
+    if (el) el.scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+    etat.textContent = (courant + 1) + ' / ' + trouves.length;
+  };
+  var chercher = function () {
+    effacer();
+    var q = plier(champ.value.trim());
+    if (q.length < 2) return;
+    var sections = new Set(), marche = document.createTreeWalker(principal, NodeFilter.SHOW_TEXT), n;
+    while ((n = marche.nextNode())) {
+      var texte = plier(n.data), i = texte.indexOf(q);
+      if (i < 0 || !n.parentElement || n.parentElement.closest('script,style')) continue;
+      for (; i >= 0; i = texte.indexOf(q, i + q.length)) {
+        var r = document.createRange(); r.setStart(n, i); r.setEnd(n, i + q.length); trouves.push(r);
+      }
+      var s = n.parentElement.closest('main > section'); if (s) sections.add(s);
+      for (var d = n.parentElement.closest('details'); d; d = d.parentElement.closest('details')) {
+        if (!d.open) { d.open = true; ouverts.push(d); }
+      }
+    }
+    principal.querySelectorAll(':scope > section').forEach(function (s) { if (!sections.has(s)) s.classList.add('hors-recherche'); });
+    if (!trouves.length) { etat.textContent = 'Aucun résultat / No result'; return; }
+    if (surligne) CSS.highlights.set('recherche', new Highlight(...trouves));
+    etat.textContent = trouves.length + (trouves.length > 1 ? ' résultats' : ' résultat');
+  };
+  champ.addEventListener('input', function () { clearTimeout(minuterie); minuterie = setTimeout(chercher, 150); });
+  forme.addEventListener('submit', function (e) {
+    e.preventDefault(); clearTimeout(minuterie);
+    if (courant < 0 && !trouves.length) chercher();
+    montrer(courant + 1);
+  });
+  champ.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && e.shiftKey) { e.preventDefault(); montrer(courant - 1); }
+    if (e.key === 'Escape') { champ.value = ''; effacer(); }
+  });
+  document.addEventListener('keydown', function (e) {
+    var cible = e.target, saisie = cible.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(cible.tagName);
+    if (e.key === '/' && !saisie && !e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); champ.focus(); }
+  });
+  window.addEventListener('beforeprint', function () { if (champ.value) { champ.value = ''; effacer(); } });
 })();
 </script>
