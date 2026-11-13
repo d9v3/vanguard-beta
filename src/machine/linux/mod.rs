@@ -2982,6 +2982,12 @@ mod tests {
             (format!("X=$(echo\n{p}\n)\n"), 1),
             (format!("X=${{Y:-\n{p}\n}}\n"), 1),
             (format!("(( 1 +\n{p}\n))\n"), 1),
+            // « ' » ouvre un guillemet dans « $( » même entre doubles : la ligne d'après est du texte (bash : la
+            // retirer change la valeur de X).
+            (format!("X=\"$(echo ')\"\n{p}\n: ')\"\n"), 1),
+            // Ligne d'avant finie par un mot de bloc, ligne d'après ordinaire : prudence (bash n'y change rien ici,
+            // mais la règle ne dépend pas de ce que le corps garde).
+            (format!("while false; do\n{p}\necho a\ndone\n"), 1),
             (format!("until {p}\ndo :; done\n"), 0),
             (format!("{p} &&\n: \n"), 0),
             (format!("eval {p}\n"), 0),
