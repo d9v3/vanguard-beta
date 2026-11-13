@@ -522,11 +522,7 @@ fn installer(octets: &[u8], cible: &Path, attendue: Version, essai: Essai) -> Re
             // R-4 (recontrôle 0.95) : un dossier (ou autre chose qui ne s'efface pas) sous ce nom ; dit avec le chemin
             // à retirer, jamais « File exists » seul.
             if e.kind() == std::io::ErrorKind::AlreadyExists {
-                rien(trf!(
-                    "{} existe déjà et Vanguard ne l'efface pas (un dossier ?) : retirez-le, puis relancez la mise à jour",
-                    "{} already exists and Vanguard does not delete it (a folder?): remove it, then run the update again",
-                    affichable(&provisoire.display().to_string())
-                ))
+                rien(nom_occupe(&provisoire))
             } else {
                 rien(e.to_string())
             }
@@ -546,8 +542,11 @@ fn installer(octets: &[u8], cible: &Path, attendue: Version, essai: Essai) -> Re
         }
         // R-1 (recontrôle 0.95) : l'ancienne copie est mise de côté avant le renommage (un second nom, sans copie),
         // pour être remise si la copie posée n'est pas la montrée. Avant, l'échec laissait le fichier inconnu en place
-        // et l'appelant disait « l'ancien reste en place ».
-        let precedente = Precedente::retenir(cible);
+        // et l'appelant disait « l'ancien reste en place ». N-1 (recontrôle 2, 0.95) : une ancienne copie qui ne se met
+        // pas de côté arrête tout ici, avant le renommage ; avant, la mise à jour continuait sans rien à remettre, et
+        // un nom de côté pris par un dossier suffisait à laisser installée la copie échangée (que l'entretien du mois
+        // lance seul).
+        let precedente = Precedente::retenir(cible).map_err(rien)?;
         let posee = mettre_en_place(&provisoire, cible)
             .map_err(|e| e.to_string())
             .and_then(|()| match posee_est_la_montree(&f, cible, octets) {
@@ -662,14 +661,24 @@ fn meme_contenu(mut f: &std::fs::File, octets: &[u8]) -> std::io::Result<bool> {
 /// le renommage, avec ce qui la reconnaît : remise si la copie posée n'est pas la montrée (R-1, recontrôle 0.95).
 struct Precedente {
     de_cote: PathBuf,
-    /// `Aucune` : pas de copie avant. `Inconnue` : il y en avait une (ou ça ne se lit pas), pas mise de côté.
+    /// `Aucune` : pas de copie avant. `Retenue` : mise de côté, avec ce qui la reconnaît. Il n'y a pas d'entre-deux :
+    /// une copie qui ne se met pas de côté arrête la mise à jour (`retenir`).
     etat: EtatPrecedente,
 }
 
 enum EtatPrecedente {
     Aucune,
-    Inconnue,
     Retenue(Identite),
+}
+
+/// Un nom dont Vanguard a besoin, pris par quelque chose qu'il n'efface pas (R-4 et N-1, recontrôles 0.95) : le chemin
+/// à retirer et quoi faire, jamais « File exists » seul.
+fn nom_occupe(chemin: &Path) -> String {
+    trf!(
+        "{} existe déjà et Vanguard ne l'efface pas (un dossier ?) : retirez-le, puis relancez la mise à jour",
+        "{} already exists and Vanguard does not delete it (a folder?): remove it, then run the update again",
+        affichable(&chemin.display().to_string())
+    )
 }
 
 /// Ce qui reconnaît un fichier : appareil et inode sous Unix ; ses octets ailleurs (Windows : l'identité du fichier
@@ -692,21 +701,43 @@ fn identite(chemin: &Path) -> Option<Identite> {
 }
 
 impl Precedente {
-    fn retenir(cible: &Path) -> Self {
+    /// L'ancienne copie mise de côté, ou pourquoi elle ne peut pas l'être : l'appelant refuse alors avant le
+    /// renommage (N-1, recontrôle 2 0.95), jamais un remplacement sans copie à remettre.
+    fn retenir(cible: &Path) -> Result<Self, String> {
         let de_cote = cible.with_file_name(format!("{NOM}.precedent"));
+        let pas_de_cote = |pourquoi: &dyn std::fmt::Display| {
+            trf!(
+                "l'ancienne copie ne se met pas de côté sous {} ({pourquoi}), et ne pourrait donc pas être remise",
+                "the old copy cannot be set aside as {} ({pourquoi}), so it could not be put back",
+                affichable(&de_cote.display().to_string())
+            )
+        };
         let etat = match std::fs::symlink_metadata(cible) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => EtatPrecedente::Aucune,
-            Err(_) => EtatPrecedente::Inconnue,
+            Err(e) => {
+                return Err(trf!(
+                    "la copie en place ne se lit pas ({}) : {e}",
+                    "the copy in place cannot be read ({}): {e}",
+                    affichable(&cible.display().to_string())
+                ));
+            }
             Ok(_) => {
                 // Le reste d'une mise à jour interrompue ; un dossier à ce nom ne s'efface pas, et le lien échoue.
                 let _ = std::fs::remove_file(&de_cote);
                 match std::fs::hard_link(cible, &de_cote) {
-                    Ok(()) => identite(&de_cote).map_or(EtatPrecedente::Inconnue, EtatPrecedente::Retenue),
-                    Err(_) => EtatPrecedente::Inconnue,
+                    Ok(()) => match identite(&de_cote) {
+                        Some(i) => EtatPrecedente::Retenue(i),
+                        None => {
+                            let _ = std::fs::remove_file(&de_cote);
+                            return Err(pas_de_cote(&tr!("pas relue", "not read back")));
+                        }
+                    },
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Err(nom_occupe(&de_cote)),
+                    Err(e) => return Err(pas_de_cote(&e)),
                 }
             }
         };
-        Self { de_cote, etat }
+        Ok(Self { de_cote, etat })
     }
 
     /// La mise à jour est faite : le second nom part (l'ancienne copie, elle, n'existe plus que là).
@@ -760,7 +791,6 @@ impl Precedente {
                     _ => ni_l_une_ni_l_autre(),
                 }
             }
-            EtatPrecedente::Inconnue => ni_l_une_ni_l_autre(),
         }
     }
 }
@@ -1597,9 +1627,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&racine);
     }
 
-    /// R-1 (recontrôle 0.95) : sans ancienne copie, le faux posé à la place est retiré ; et si l'ancienne ne peut
-    /// être mise de côté (un dossier à son nom), l'échec dit que la copie en place n'est ni l'une ni l'autre, jamais
-    /// « l'ancienne reste en place ».
+    /// R-1 (recontrôle 0.95) : sans ancienne copie, le faux posé à la place est retiré, jamais « l'ancienne reste en
+    /// place ». (Une ancienne qui ne peut être mise de côté arrête la mise à jour avant : essai suivant.)
     #[test]
     fn copie_echangee_jamais_laissee_comme_l_ancienne() {
         let racine = crate::socle::dossier_local().join("essai-echange-remise");
@@ -1617,19 +1646,61 @@ mod tests {
             let e = r.expect_err("échangée par son nom, et dite faite");
             assert!(std::fs::symlink_metadata(&cible).is_err(), "le faux reste posé : {e}");
             assert!(e.contains("aucune copie"), "{e}");
-        }
-
-        let de_cote = racine.join("bin").join(format!("{NOM}.precedent"));
-        std::fs::create_dir_all(de_cote.join("occupe")).unwrap();
-        faux_programme(&cible, Some("0.79.0"));
-        REECRITE.store(false, std::sync::atomic::Ordering::SeqCst);
-        let r = remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, ECHANGE_PAR_LE_NOM);
-        if REECRITE.load(std::sync::atomic::Ordering::SeqCst) {
-            let e = r.expect_err("échangée par son nom, et dite faite");
-            assert!(e.contains("ne la lancez pas"), "{e}");
             assert!(!e.contains("reste en place"), "{e}");
         }
         *ECHANGE.lock().unwrap() = None;
+        let _ = std::fs::remove_dir_all(&racine);
+    }
+
+    /// N-1 (recontrôle 2, 0.95) : le nom de côté (`<NOM>.precedent`) pris par un dossier, qui ne s'efface pas. Avant,
+    /// l'ancienne copie n'était pas mise de côté et la mise à jour continuait : avec l'échange de R-1, la copie
+    /// étrangère restait installée (« ne la lancez pas »), et l'entretien du mois la lance seul. Maintenant, refus
+    /// avant le renommage, avec ou sans échange : rien n'est remplacé, le chemin à retirer est dit, le dossier n'est
+    /// pas touché ; retiré, la mise à jour se fait.
+    #[test]
+    fn nom_de_cote_occupe_refuse_avant_de_remplacer() {
+        let racine = crate::socle::dossier_local().join("essai-nom-de-cote");
+        let _ = std::fs::remove_dir_all(&racine);
+        let source = racine.join("cle").join(NOM);
+        let cible = racine.join("bin").join(NOM);
+        let provisoire = racine.join("bin").join(format!("{NOM}.nouveau"));
+        let de_cote = racine.join("bin").join(format!("{NOM}.precedent"));
+        faux_programme(&source, Some("0.80.0"));
+        faux_programme(&cible, Some("0.79.0"));
+        let avant = std::fs::read(&cible).unwrap();
+        std::fs::create_dir_all(de_cote.join("occupe")).unwrap();
+        let _seul = UN_A_LA_FOIS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        *ECHANGE.lock().unwrap() = Some(racine.join("bin"));
+        for essai in [ECHANGE_PAR_LE_NOM, SANS_ESSAI] {
+            let e = remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, essai).unwrap_err();
+            assert_eq!(
+                std::fs::read(&cible).unwrap(),
+                avant,
+                "la copie en place a changé : {e}"
+            );
+            assert!(e.contains("rien n'est remplacé"), "{e}");
+            assert!(e.contains("retirez"), "{e}");
+            assert!(e.contains(&format!("{NOM}.precedent")), "{e}");
+            assert!(de_cote.join("occupe").is_dir(), "le dossier à ce nom est touché : {e}");
+            assert!(
+                std::fs::symlink_metadata(&provisoire).is_err(),
+                "copie provisoire laissée : {e}"
+            );
+        }
+        *ECHANGE.lock().unwrap() = None;
+
+        // Une ancienne copie qui ne se met pas de côté pour une autre raison (ici, un dossier ne prend pas de lien
+        // physique) : refus aussi, jamais un renommage sans copie à remettre.
+        let autre = racine.join("ailleurs").join(NOM);
+        std::fs::create_dir_all(autre.join("dedans")).unwrap();
+        let e = remplacer(&source, &autre, (0, 80, 0, 0), TAILLE_MAX, SANS_ESSAI).unwrap_err();
+        assert!(e.contains("rien n'est remplacé"), "{e}");
+        assert!(autre.join("dedans").is_dir(), "{e}");
+
+        std::fs::remove_dir_all(&de_cote).unwrap();
+        remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, SANS_ESSAI).unwrap();
+        assert_eq!(std::fs::read(&cible).unwrap(), std::fs::read(&source).unwrap());
+        assert!(std::fs::symlink_metadata(&de_cote).is_err(), "reste laissé");
         let _ = std::fs::remove_dir_all(&racine);
     }
 
