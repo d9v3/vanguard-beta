@@ -456,13 +456,19 @@ Lancer 'aide' @('--help')
 # version livrée n'est pas celle essayée : un problème, jamais une étape sautée. Son ouverture pour de vrai (double-clic
 # devant l'écran, sans droits d'administrateur) ne se fait pas ici : en administrateur, vanguard garde le menu.
 # Dans une fonction, pour que vm-tester.sh --essai-local la joue telle quelle sur de faux programmes.
-function Essai-Fenetre([string]$exe, [string]$fenetre, [string]$copieRatee, [string]$res, [int]$delaiS = 30) {
+function Essai-Fenetre([string]$exe, [string]$fenetre, [string]$copieRatee, [string]$numero, [string]$res, [int]$delaiS = 30) {
     $gravee = Fenetre-Gravee $exe
     $aCote = Test-Path -LiteralPath $fenetre -PathType Leaf
+    # Sans marque, seule la version (lue par --version, comparée en nombres : 0.100 vient après 0.96) dit que c'est
+    # normal : une 0.96 ou plus, ou une version illisible, qui n'en porte pas a perdu sa marque, et sans sa fenêtre la
+    # version livrée n'est pas celle essayée.
+    $avant096 = $numero -match '^\d+\.\d+\.\d+$' -and [version]$numero -lt [version]'0.96.0'
     if ($copieRatee) {
         Bug "Copie locale du programme : $copieRatee"
     } elseif ($null -eq $gravee) {
         Bug 'Marque de fenêtre de vanguard.exe illisible, ou deux marques qui se contredisent'
+    } elseif ($gravee -eq '' -and -not $avant096) {
+        Bug "vanguard.exe (version $numero) sans marque de fenêtre : seule une version d'avant la 0.96 n'en porte pas (marque perdue ?)"
     } elseif ($gravee -eq '' -or $gravee -eq 'AUCUNE') {
         $pourquoi = if ($gravee -eq '') { 'sans marque de fenêtre (d''avant la 0.96)' } else { 'compilé sans fenêtre (« AUCUNE »)' }
         if ($aCote) { Bug "vanguard.exe $pourquoi, mais une fenêtre est posée à côté : il ne la lancera pas" }
@@ -510,7 +516,7 @@ function Essai-Fenetre([string]$exe, [string]$fenetre, [string]$copieRatee, [str
 }
 
 Etape 'Fenêtre (0.96) : celle que vanguard.exe lance, à côté de lui, chargée par Windows'
-Essai-Fenetre $exe $fenetre $copieRatee $res
+Essai-Fenetre $exe $fenetre $copieRatee $numero $res
 
 Etape 'Audit de la machine (texte et JSON)'
 Lancer 'machine' @('audit')

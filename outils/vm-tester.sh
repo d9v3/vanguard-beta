@@ -298,6 +298,8 @@ deposer() {
   # Sa fenêtre (0.96) : vanguard.exe ne lance que celle dont il porte l'empreinte gravée
   # (src/demarrage/empreinte_fenetre.rs), lue ici sur la copie préparée. Le travail porte une fenêtre si et seulement
   # si une empreinte y est gravée, et c'est celle-là : jamais un essai vert d'une version sans la fenêtre qu'elle livre.
+  # Un vanguard.exe sans marque passe ici (sa version ne se lit qu'en le lançant) : test.ps1, qui la lit, dit un
+  # problème s'il est de la 0.96 ou plus, ou d'une version illisible (marque perdue).
   local lues gravee='' sha v
   lues=$(LC_ALL=C grep -aoE 'VANGUARD-FENETRE:([0-9a-f]{64}|AUCUNE);' "$PREPA/vanguard.exe")
   (($? <= 1)) || { echo "Marque de fenêtre de vanguard.exe illisible : rien déposé." >&2; exit 1; }
@@ -316,8 +318,8 @@ deposer() {
     echo "Ce vanguard.exe est compilé sans fenêtre (« AUCUNE ») : il ne lancerait pas celle de --fenetre. Rien déposé." >&2
     exit 1
   elif [[ -n $FENETRE && -z $gravee ]]; then
-    echo "Ce vanguard.exe ne porte aucune marque de fenêtre (d'avant la 0.96) : il ne lancerait pas celle de --fenetre." >&2
-    echo "  Rien déposé." >&2
+    echo "Ce vanguard.exe ne porte aucune marque de fenêtre (d'avant la 0.96, ou marque perdue) : il ne lancerait pas" >&2
+    echo "  celle de --fenetre. Rien déposé." >&2
     exit 1
   fi
   if [[ -n $FENETRE ]]; then
@@ -1190,6 +1192,7 @@ EOF2
     sha_bonne=$(sha_de bonne)
     cas_fenetre bonne bonne "$sha_bonne"; cas_fenetre autre autre "$sha_bonne"; cas_fenetre absente - "$sha_bonne"
     cas_fenetre aucune-posee bonne AUCUNE; cas_fenetre aucune - AUCUNE; cas_fenetre sans-posee bonne; cas_fenetre sans -
+    cas_fenetre sans-096 -; cas_fenetre sans-0100 -; cas_fenetre sans-inconnue -
     cas_fenetre deux bonne "$sha_bonne" "$(printf '%064d' 0)"; cas_fenetre copie bonne "$sha_bonne"
     cas_fenetre bavarde bavarde "$(sha_de bavarde)"; cas_fenetre erreur erreur "$(sha_de erreur)"; cas_fenetre lente lente "$(sha_de lente)"
     python3 -I - "$DEPOT/outils/test-windows/test.ps1" "$T/fonctions-fenetre.ps1" >"$T/sortie" 2>&1 <<'EOF2'
@@ -1204,7 +1207,7 @@ for nom in ('Fenetre-Gravee', 'Essai-Fenetre'):
 m = re.search(r"(?ms)^Etape 'Fenêtre \(0\.96\)[^\n]*\n(.*?)^Etape ", s)
 assert m, "étape « Fenêtre (0.96) » absente de test.ps1"
 corps = [l for l in m.group(1).splitlines() if l.strip() and not l.lstrip().startswith('#')]
-assert corps == ['Essai-Fenetre $exe $fenetre $copieRatee $res'], corps
+assert corps == ['Essai-Fenetre $exe $fenetre $copieRatee $numero $res'], corps
 open(sys.argv[2], 'w', encoding='utf-8-sig').write('\n'.join(morceaux) + '\n')
 EOF2
     local extrait_fen=$?
@@ -1216,14 +1219,15 @@ function Ok($texte) { [void]$script:vu.Add("OK $texte") }
 function Bug($texte) { [void]$script:vu.Add("BUG $texte") }
 function Info($texte) { [void]$script:vu.Add("INFO $texte") }
 function Sautee($texte) { [void]$script:vu.Add("SAUTE $texte") }
-function Jouer([string]$nom, [string]$copieRatee = '', [int]$delaiS = 30) {
+function Jouer([string]$nom, [string]$numero = '0.96.0', [string]$copieRatee = '', [int]$delaiS = 30) {
     $script:vu.Clear()
     $d = Join-Path (Join-Path $T 'fen') $nom
-    Essai-Fenetre -exe (Join-Path $d 'vanguard.exe') -fenetre (Join-Path $d 'vanguard-fenetre.exe') -copieRatee $copieRatee -res (Join-Path $d 'res') -delaiS $delaiS
+    Essai-Fenetre -exe (Join-Path $d 'vanguard.exe') -fenetre (Join-Path $d 'vanguard-fenetre.exe') -copieRatee $copieRatee -numero $numero -res (Join-Path $d 'res') -delaiS $delaiS
     "cas $nom : $(($script:vu -join ' | ') -replace '\r?\n', '⏎')"
 }
-Jouer bonne; Jouer autre; Jouer absente; Jouer aucune-posee; Jouer aucune; Jouer sans-posee
-Jouer sans; Jouer deux; Jouer copie -copieRatee 'vanguard.exe pas copié (essai)'; Jouer bavarde; Jouer erreur
+Jouer bonne; Jouer autre; Jouer absente; Jouer aucune-posee; Jouer aucune; Jouer sans-posee -numero 0.95.0
+Jouer sans -numero 0.95.0; Jouer sans-096 -numero 0.96.0; Jouer sans-0100 -numero 0.100.0; Jouer sans-inconnue -numero inconnue
+Jouer deux; Jouer copie -copieRatee 'vanguard.exe pas copié (essai)'; Jouer bavarde; Jouer erreur
 Jouer lente -delaiS 1
 EOF2
     ((extrait_fen == 0)) && "$PWSH" -NoProfile -NonInteractive -File "$T/essai-fenetre.ps1" -T "$T" >>"$T/sortie" 2>&1
@@ -1245,6 +1249,11 @@ EOF2
     voir "étape Fenêtre : sautée seulement pour un vanguard qui n'en lance aucune (AUCUNE, ou d'avant la 0.96)" \
       eval '((extrait_fen == 0)) && vu_fen aucune "SAUTE vanguard.exe compilé sans fenêtre (« AUCUNE ») : il n.en lance aucune, rien à essayer." &&
         vu_fen sans "SAUTE vanguard.exe sans marque de fenêtre (d.avant la 0.96) : il n.en lance aucune, rien à essayer."'
+    # Sans marque, la version dit si c'est normal : une 0.96 ou plus (comparée en nombres : 0.100 vient après 0.96), ou
+    # une version illisible, qui n'en porte pas a perdu sa marque ; son essai sans fenêtre n'est jamais un vert.
+    voir "étape Fenêtre : sans marque, une 0.96 ou plus, ou une version inconnue, est un problème" \
+      eval '((extrait_fen == 0)) && vu_fen sans-096 "BUG vanguard.exe (version 0.96.0) sans marque de fenêtre : seule une version d.avant la 0.96 n.en porte pas (marque perdue ?)" &&
+        vu_fen sans-0100 "BUG vanguard.exe (version 0.100.0) sans marque de fenêtre : .*" && vu_fen sans-inconnue "BUG vanguard.exe (version inconnue) sans marque de fenêtre : .*"'
     voir "étape Fenêtre : marques contradictoires ou copie locale ratée : un problème, rien lancé" \
       eval '((extrait_fen == 0)) && vu_fen deux "BUG Marque de fenêtre de vanguard.exe illisible, ou deux marques qui se contredisent" &&
         vu_fen copie "BUG Copie locale du programme : vanguard.exe pas copié (essai)" && [[ ! -e $F/deux/lancee && ! -e $F/copie/lancee ]]'
