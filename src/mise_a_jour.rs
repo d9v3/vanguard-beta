@@ -835,9 +835,8 @@ impl Tenue {
         let ou = affichable(&ou.display().to_string());
         if self.est_un_lien() {
             trf!(
-                "{ou} est le lien de l'ancienne copie, mais {} ; ne le lancez pas",
-                "{ou} is the old copy's link, but {}; do not run it",
-                designe_change()
+                "{ou} est le lien de l'ancienne copie, mais le fichier qu'il désigne a changé pendant la mise à jour (réécrit ou remplacé par un autre programme) : ce n'est plus sûrement l'ancienne copie ; ne le lancez pas",
+                "{ou} is the old copy's link, but the file it points to changed during the update (rewritten or replaced by another program), so it is no longer surely the old copy; do not run it",
             )
         } else {
             trf!(
@@ -947,11 +946,11 @@ fn contenu_change() -> &'static str {
     )
 }
 
-/// Pourquoi le lien de l'ancienne copie ne lance plus elle (M-1).
+/// Pourquoi le lien de l'ancienne copie ne lance plus elle (M-1), dit sans sujet autour (raison d'un échec).
 fn designe_change() -> &'static str {
     tr!(
-        "le fichier qu'il désigne a changé pendant la mise à jour (réécrit ou remplacé par un autre programme) : ce n'est plus sûrement l'ancienne copie",
-        "the file it points to changed during the update (rewritten or replaced by another program), so it is no longer surely the old copy"
+        "le fichier que désigne son lien a changé pendant la mise à jour (réécrit ou remplacé par un autre programme) : ce n'est plus sûrement l'ancienne copie",
+        "the file its link points to changed during the update (rewritten or replaced by another program), so it is no longer surely the old copy"
     )
 }
 
@@ -1126,7 +1125,7 @@ impl Precedente {
         // la cible) : la mise à jour suivante refuse tant qu'elle y est, d'où le geste dit d'abord.
         let laissee = |tenue: &Tenue, pourquoi: String| {
             trf!(
-                "l'ancienne copie n'est pas remise{pourquoi} ; {} ; déplacez-la ailleurs avant de refaire la mise à jour, qui refuse tant qu'elle y est ; {}",
+                "l'ancienne copie n'est pas remise{pourquoi} ; {} ; déplacez-le ailleurs avant de refaire la mise à jour, qui refuse tant qu'il y est ; {}",
                 "the old copy is not put back{pourquoi}; {}; move it elsewhere before redoing the update, which refuses while it is there; {}",
                 tenue.changee(&self.de_cote),
                 ni_l_une_ni_l_autre()
@@ -2530,7 +2529,11 @@ mod tests {
                         "{cas}, « {faux} » d'un lien vers un contenu changé : {dit}"
                     );
                 }
-                assert!(dit.contains("le fichier qu'il désigne a changé"), "{cas} : {dit}");
+                assert!(
+                    dit.contains("le fichier qu'il désigne a changé")
+                        || dit.contains("le fichier que désigne son lien a changé"),
+                    "{cas} : {dit}"
+                );
                 assert!(
                     dit.contains("ne le lancez pas") || dit.contains("ne la lancez pas"),
                     "{cas} : {dit}"

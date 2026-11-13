@@ -116,22 +116,26 @@ recompilée au besoin.
   qu'uwsm peut retirer en fin de valeur. XDG_DATA_HOME de la session est lu tel quel, comme uwsm le lit. Un morceau posé
   au gestionnaire qui commence ou finit par un blanc ne se résout pas (dit, non vérifié), ni un XDG_CONFIG_HOME ou un
   XDG_DATA_HOME posé qui contient « : » (systemd le prend en entier, uwsm peut le couper), sauf la forme entière
-  « ${XDG_DATA_HOME:-/dossier} » d'un fichier à root seul, lue comme systemd la lit ; « ~/x » ou « $HOME/x » posé se lit
-  des deux façons : remplacé par le dossier personnel et tel quel, depuis le dossier personnel. Chaque fichier du
-  dossier d'uwsm et de ses « env.d » et « env-<bureau>.d » compte, quels que soient son nom et son extension ; un nom de
-  bureau hors lettres, chiffres, « _ », « . » et « - », dans XDG_CURRENT_DESKTOP de la session ou dans le DesktopNames
-  d'une session d'uwsm (wayland-sessions), est dit, non vérifié (uwsm en tire un fichier « env-… » ailleurs, que
-  Vanguard ne lit pas), ne se déclare pas normal et lève la sauvegarde ; et un « env.d » qui est un lien vers un dossier
-  se suit partout, comme uwsm le suit : la sauvegarde juge ce qu'il contient au lieu de se lever parce qu'il ne se lit
-  pas comme un fichier. Les lignes « exec » des réglages de popt (~/.popt, /etc/popt) se jugent comme des lancements. Un
-  fichier qu'un profil ou un fichier d'uwsm lit par « . » ou « source » se juge ligne à ligne, avec la même règle que
-  ~/.bashrc (une ligne qui nomme LD_PRELOAD se signale, même si elle ne fait que le lire), quand l'inclusion est écrite
-  en toutes lettres en position de commande et que son chemin est absolu ou sous « ~/ » ou « $HOME/ », jusqu'à 64
-  fichiers inclus. Limites : une inclusion écrite autrement (chemin relatif ou calculé par une variable, boucle sur un
-  dossier, eval) n'est pas suivie, et le bilan ne le signale pas ; un fichier inclus illisible, trop gros ou qui n'est
-  pas en UTF-8 n'est pas jugé ; une valeur entre guillemets écrite sur plusieurs lignes n'est pas suivie d'une ligne à
-  l'autre, et peut cacher la ligne qui la suit. Une variable posée en cours de session, par une ligne « env = » de
-  Hyprland, ou un dossier déplacé par un profil de shell n'est pas vérifié.
+  « ${XDG_DATA_HOME:-/dossier} » d'un fichier d'environment.d à root seul, lue comme systemd la lit (dans user.conf,
+  /etc/environment ou pam_env.conf, qui ne la développent pas, elle reste non résolue, dite) ; « ~/x » ou « $HOME/x »
+  posé se lit des deux façons : remplacé par le dossier personnel et tel quel, depuis le dossier personnel. Chaque
+  fichier du dossier d'uwsm et de ses « env.d » et « env-<bureau>.d » compte, quels que soient son nom et son
+  extension ; un nom de bureau hors lettres, chiffres, « _ », « . » et « - », dans XDG_CURRENT_DESKTOP de la session ou
+  dans le DesktopNames d'une session d'uwsm (wayland-sessions), ou une ligne DesktopNames avec un octet de contrôle ou
+  non ASCII, est dit, non vérifié (uwsm en tire un fichier « env-… » ailleurs, que Vanguard ne lit pas), ne se déclare
+  pas normal et lève la sauvegarde ; de même pour un fichier de variables d'uwsm (de chaque dossier qu'il lit, du compte
+  ou du système) ou un greffon que le compte peut changer qui écrit XDG_CURRENT_DESKTOP, quelle que soit la valeur, car
+  uwsm relit ce nom pour chaque dossier suivant ; et un « env.d » qui est un lien vers un dossier se suit partout, comme
+  uwsm le suit : la sauvegarde juge ce qu'il contient au lieu de se lever parce qu'il ne se lit pas comme un fichier.
+  Les lignes « exec » des réglages de popt (~/.popt, /etc/popt) se jugent comme des lancements. Un fichier qu'un profil
+  ou un fichier d'uwsm lit par « . » ou « source » se juge ligne à ligne, avec la même règle que ~/.bashrc (une ligne
+  qui nomme LD_PRELOAD se signale, même si elle ne fait que le lire), quand l'inclusion est écrite en toutes lettres en
+  position de commande et que son chemin est absolu ou sous « ~/ » ou « $HOME/ », jusqu'à 64 fichiers inclus. Limites :
+  une inclusion écrite autrement (chemin relatif ou calculé par une variable, boucle sur un dossier, eval) n'est pas
+  suivie, et le bilan ne le signale pas ; un fichier inclus illisible, trop gros ou qui n'est pas en UTF-8 n'est pas
+  jugé ; une valeur entre guillemets écrite sur plusieurs lignes n'est pas suivie d'une ligne à l'autre, et peut cacher
+  la ligne qui la suit. Une variable posée en cours de session, par une ligne « env = » de Hyprland, ou un dossier
+  déplacé par un profil de shell n'est pas vérifié.
 - **Les programmes du système, pris par leur chemin.** Le bilan, les traces, la surveillance, la sauvegarde et les
   autres lectures de la machine lancent pacman, systemctl, journalctl, ss, crontab, ping et les autres depuis les
   dossiers du système, jamais par le PATH du compte : un faux programme posé dans ~/.local/bin ne peut plus cacher une
