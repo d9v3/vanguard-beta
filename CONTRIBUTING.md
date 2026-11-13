@@ -373,9 +373,10 @@ et cargo vet ; `--ecrire` refait les listes) et refuse la même caisse venue d'u
 `[patch.crates-io]` vers une copie locale ou un dépôt git, que cargo deny et cargo vet laissaient passer) ;
 `--programmes`, lancé par `outils/compiler-version.sh` avant le calcul de l'empreinte gravée, vérifie que chaque caisse
 nommée dans les octets des deux fenêtres est dans l'arbre de sa cible, et `outils/failles-programmes.sh --fenetre`
-n'écarte un avis d'une caisse hors cible que si elle ne se lit pas dans le programme audité. Rien de lisible : rien
-n'est conclu, jamais un vert. `outils/essais-caisses-fenetre.sh` (étape « fenêtre » de `outils/verifier.sh`) essaie ces
-gardes et la recette avec des cales et des valeurs inventées.
+n'écarte un avis d'une caisse hors cible que si aucune des caisses retirées de la fenêtre (`caisses-fenetre.sh
+--retirees`, zbus compris) ne se lit dans le programme audité. Rien de lisible : rien n'est conclu, jamais un vert.
+`outils/essais-caisses-fenetre.sh` (étape « fenêtre » de `outils/verifier.sh`) essaie ces gardes et la recette avec des
+cales et des valeurs inventées.
 
 ## Captures d'écran et image de partage
 

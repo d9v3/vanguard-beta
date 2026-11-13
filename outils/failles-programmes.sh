@@ -13,8 +13,8 @@
 #   outils/failles-programmes.sh <programme>...
 #   outils/failles-programmes.sh --fenetre <programme>...   la fenêtre (vanguard-fenetre) : sans les exceptions de
 #                                          Vanguard (fenetre/deny.toml n'en a aucune) ; seulement HORS_CIBLES, prouvées
-#                                          par cargo tree et absentes des octets du programme (sinon : refusé, ou non
-#                                          vérifié si rien ne s'y lit)
+#                                          par cargo tree, et si aucune caisse retirée de la fenêtre ne se lit dans les
+#                                          octets du programme (sinon : refusé, ou non vérifié si rien ne s'y lit)
 #   outils/failles-programmes.sh --outil   cargo-audit seulement (présent, version de la CI), avant une compilation
 #   outils/failles-programmes.sh --depot   Cargo.lock du dépôt, de la fenêtre et des crates à part (fuzz, extensions,
 #                                          preuves Kani), jugés de même (étape « failles connues » de
@@ -67,7 +67,8 @@ OPTIONS=(--color never --deny unmaintained --deny unsound)
 # que ni Linux ni Windows ne compilent (zvariant, zbus_names, zvariant_derive, abandonnées : sous accesskit_unix,
 # que la fenêtre ne prend pas sous Linux, fenetre/Cargo.toml). Leur avis n'est écarté ici que si `cargo tree` dit,
 # pour chacune des deux cibles, que la bibliothèque n'y est pas (cargo deny, cible par cible, les refuse sinon) et,
-# avec --fenetre, qu'elle ne se lit pas non plus dans les octets du programme audité (hors_cibles_absentes_des_octets).
+# avec --fenetre, qu'aucune caisse retirée de la fenêtre ne se lit dans les octets du programme audité
+# (hors_cibles_absentes_des_octets).
 OPTIONS_FENETRE=("${OPTIONS[@]}")
 # Les crates à part, chacune avec son Cargo.lock : le banc de fuzzing (fuzz/deny.toml), la bibliothèque des
 # extensions et l'exemple en Rust (extensions/deny.toml), les preuves Kani (outils/preuves). Aucune exception
@@ -85,7 +86,7 @@ EXCEPTIONS=$(python3 -I "$RACINE/outils/exceptions-rustsec.py")
 # était aussi compilé (les deux cibles dans un seul appel de cargo) ; outils/compiler-version.sh les compile
 # désormais une à la fois, et outils/caisses-fenetre.sh --programmes prouve sur les octets que la preuve par cargo
 # tree vaut pour le programme. Seules les HORS_CIBLES s'écartent, par la même preuve que pour --depot (plus bas), et
-# seulement si elles ne se lisent pas dans les octets du programme audité.
+# seulement si aucune caisse retirée de la fenêtre ne se lit dans les octets du programme audité.
 [[ -z $FENETRE ]] || EXCEPTIONS=
 for id in $EXCEPTIONS; do
   OPTIONS+=(--ignore "$id")
@@ -145,27 +146,37 @@ hors_cibles_prouvees() {
   return "$code"
 }
 
-# Les HORS_CIBLES lues dans les octets de chaque programme (outils/caisses-fenetre.sh --caisses : la même lecture que
-# la garde de outils/compiler-version.sh). cargo tree juge l'arbre, pas le programme : compilé autrement (les deux
-# cibles dans un seul appel de cargo), le programme a déjà emporté zvariant, et son avis ne s'écarte alors pas. Les
-# octets ne prouvent qu'une présence (une caisse qui ne panique jamais n'y laisse pas de chemin) : l'absence, elle,
-# tient à cargo tree et à la recette (outils/essais-caisses-fenetre.sh). Code 1 si l'une y est, ou si rien ne se lit
-# dans un programme (non vérifié, jamais compté comme sain).
+# Les caisses retirées de la fenêtre lues dans les octets de chaque programme (outils/caisses-fenetre.sh --caisses : la
+# même lecture que la garde de outils/compiler-version.sh). cargo tree juge l'arbre, pas le programme : compilé
+# autrement (les deux cibles dans un seul appel de cargo), le programme a déjà emporté zvariant, et son avis ne s'écarte
+# alors pas. Toutes les RETIREES (caisses-fenetre.sh --retirees, HORS_CIBLES comprises), pas seulement les trois
+# HORS_CIBLES : zbus ne se compile pas sans zvariant, et un programme où zbus se lit mais pas zvariant (aucun chemin de
+# panique, ou des chemins changés) écartait l'avis à tort (relecture du 12 nov. 2026). Les octets ne prouvent qu'une
+# présence (une caisse qui ne panique jamais n'y laisse pas de chemin) : l'absence, elle, tient à cargo tree et à la
+# recette (outils/essais-caisses-fenetre.sh). Code 1 si l'une y est, ou si rien ne se lit dans un programme ou dans la
+# liste des retirées (non vérifié, jamais compté comme sain).
 hors_cibles_absentes_des_octets() {
-  local code=0 programme vues exception
+  local code=0 programme vues retirees lues avis=${HORS_CIBLES[*]%%:*}
+  if ! retirees=$(bash "$RACINE/outils/caisses-fenetre.sh" --retirees 2>&1) || [[ -z $retirees ]]; then
+    echo "✖ fenêtre : liste des caisses retirées illisible ($(tail -n 1 <<<"$retirees")) : $avis non vérifiées," \
+      "pas écartées"
+    return 1
+  fi
+  retirees+=$'\n'$(printf '%s\n' "${HORS_CIBLES[@]#*:}")
   for programme in "$@"; do
     if ! vues=$(bash "$RACINE/outils/caisses-fenetre.sh" --caisses "$programme" 2>&1); then
       echo "✖ fenêtre : $programme, caisses illisibles dans ses octets ($(tail -n 1 <<<"$vues")) :" \
-        "${HORS_CIBLES[*]%%:*} non vérifiées, pas écartées"
+        "$avis non vérifiées, pas écartées"
       code=1
       continue
     fi
-    for exception in "${HORS_CIBLES[@]}"; do
-      if awk -v n="${exception#*:}" '$1 == n { t = 1 } END { exit !t }' <<<"$vues"; then
-        echo "✖ fenêtre : ${exception#*:} dans les octets de $programme, ${exception%%:*} n'est pas écartée"
-        code=1
-      fi
-    done
+    lues=$(awk 'NR == FNR { r[$1] = 1; next } r[$1] { print $1 " " $2 }' <(printf '%s\n' "$retirees") \
+      <(printf '%s\n' "$vues"))
+    if [[ -n $lues ]]; then
+      echo "✖ fenêtre : caisses retirées de la fenêtre dans les octets de $programme ($(paste -sd, - <<<"$lues" |
+        sed 's/,/, /g')) : $avis pas écartées"
+      code=1
+    fi
   done
   return "$code"
 }
@@ -194,8 +205,8 @@ if [[ $1 == --depot ]]; then
   exit "$CODE"
 fi
 
-# La fenêtre : ses avis HORS_CIBLES écartés seulement s'ils sont prouvés hors de ses deux cibles et ne se lisent pas
-# dans ses octets ; sinon, rien ne part.
+# La fenêtre : ses avis HORS_CIBLES écartés seulement s'ils sont prouvés hors de ses deux cibles et qu'aucune caisse
+# retirée ne se lit dans ses octets ; sinon, rien ne part.
 if [[ -n $FENETRE ]]; then
   OPTIONS_FENETRE=("${OPTIONS[@]}")
   PROUVE=0
@@ -203,7 +214,7 @@ if [[ -n $FENETRE ]]; then
   hors_cibles_absentes_des_octets "$@" || PROUVE=1
   ((PROUVE == 0)) || { montrer_erreurs_arbre; echo "Ces programmes ne partent nulle part."; exit 1; }
   OPTIONS=("${OPTIONS_FENETRE[@]}")
-  echo "fenêtre : écartées car compilées par aucune de ses deux cibles et absentes des octets lus :" \
+  echo "fenêtre : écartées car compilées par aucune de ses deux cibles, et aucune caisse retirée dans les octets lus :" \
     "${HORS_CIBLES[*]%%:*}"
 fi
 

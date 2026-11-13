@@ -14,6 +14,7 @@
 #   outils/caisses-fenetre.sh --caisses <programme>
 #                                        les caisses nommées dans ses octets, « nom version » par ligne (la même
 #                                        lecture, pour outils/failles-programmes.sh --fenetre)
+#   outils/caisses-fenetre.sh --retirees les RETIREES, une par ligne (une seule liste, pour failles-programmes.sh)
 # Code 0 : conforme ; 1 : une caisse de trop, une retirée revenue, une caisse d'une autre source que crates.io ou une
 # liste changée ; 2 : rien n'est conclu (cargo tree en échec ou mal lu, liste de référence absente ou vide, aucune
 # caisse lue dans un programme), jamais un vert.
@@ -94,6 +95,11 @@ dans_programme() {
 }
 
 CODE=0
+if [[ ${1:-} == --retirees ]]; then
+  (($# == 1)) || { echo "outils/caisses-fenetre.sh --retirees" >&2; exit 2; }
+  printf '%s\n' "${RETIREES[@]}"
+  exit 0
+fi
 if [[ ${1:-} == --caisses ]]; then
   (($# == 2)) || { echo "outils/caisses-fenetre.sh --caisses <programme>" >&2; exit 2; }
   [[ -f $2 && -r $2 ]] || { echo "✖ $2 : introuvable ou illisible, rien n'est conclu" >&2; exit 2; }
@@ -149,7 +155,8 @@ if [[ ${1:-} == --ecrire ]]; then
   exit "$CODE"
 fi
 (($# == 0)) || {
-  echo "outils/caisses-fenetre.sh [--ecrire | --programmes <fenêtre Linux> <fenêtre Windows> | --caisses <programme>]" >&2
+  echo "outils/caisses-fenetre.sh [--ecrire | --programmes <fenêtre Linux> <fenêtre Windows> | --caisses <programme> |" \
+    "--retirees]" >&2
   exit 2
 }
 

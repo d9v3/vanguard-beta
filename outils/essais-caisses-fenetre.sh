@@ -14,9 +14,10 @@
 #      à nombre égal, une de plus, une de moins, une retirée revenue ou la même caisse d'une autre source que
 #      crates.io (chemin local, dépôt git) → 1, la différence montrée ; cargo tree en échec ou une ligne d'une forme
 #      inconnue → 2.
-#   4. outils/failles-programmes.sh --fenetre n'écarte les avis de zbus et zvariant (HORS_CIBLES) que si ces caisses
-#      ne se lisent pas dans les octets du programme audité (même lecture que --programmes) : un faux programme qui
-#      porte zvariant est refusé ; un programme où rien ne se lit est « non vérifié », jamais vert ; un programme sain
+#   4. outils/failles-programmes.sh --fenetre n'écarte les avis de zbus et zvariant (HORS_CIBLES) que si aucune des
+#      caisses retirées de la fenêtre (RETIREES de caisses-fenetre.sh, HORS_CIBLES comprises) ne se lit dans les
+#      octets du programme audité (même lecture que --programmes) : un faux programme qui porte zvariant, ou zbus sans
+#      zvariant, est refusé ; un programme où rien ne se lit est « non vérifié », jamais vert ; un programme sain
 #      passe (cale cargo-audit à la version de la CI).
 # Lancé par outils/verifier.sh (étape « fenêtre »).
 #   outils/essais-caisses-fenetre.sh
@@ -218,6 +219,14 @@ lance outils/failles-programmes.sh --fenetre "$T/fenetre" "$T/fenetre.exe"
 ((CODE != 0)) && [[ $SORTIE == *zvariant*RUSTSEC-2026-0370* && $SORTIE != *"✔"* ]] &&
   ok "zvariant dans les octets : RUSTSEC-2026-0370 pas écarté, refusé (code $CODE)" ||
   ko "zvariant dans les octets : code $CODE ($SORTIE)"
+# zbus lu, zvariant non lu (relecture du 12 nov. 2026) : zbus ne se compile pas sans zvariant, et une lecture des
+# octets qui ne voit pas zvariant ne prouve pas qu'il manque. Toute caisse retirée de la fenêtre lue dans les octets
+# refuse.
+programme "$T/fenetre" alpha-1.2.0 zbus-5.19.0 accesskit_unix-0.24.1
+lance outils/failles-programmes.sh --fenetre "$T/fenetre" "$T/fenetre.exe"
+((CODE != 0)) && [[ $SORTIE == *"zbus 5.19.0"*RUSTSEC-2026-0370* && $SORTIE != *"✔"* ]] &&
+  ok "zbus dans les octets sans zvariant : avis pas écartés, refusé (code $CODE)" ||
+  ko "zbus dans les octets sans zvariant : code $CODE ($SORTIE)"
 programme "$T/fenetre"
 lance outils/failles-programmes.sh --fenetre "$T/fenetre" "$T/fenetre.exe"
 ((CODE != 0)) && [[ $SORTIE == *"non vérifié"* && $SORTIE != *"✔"* ]] &&
