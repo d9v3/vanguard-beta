@@ -3103,15 +3103,37 @@ fn variables_d_un_fichier(s: &Systeme, valeur: &str) -> Result<Vec<(String, Stri
 /// Les variables d'un fichier de variables d'unité, lu sous la racine, comme systemd le lit (`variables_de_texte`).
 /// Absent : aucune. Illisible ou plus gros que `VARIABLES_MAX` : `Ecart::Fichier`.
 pub(super) fn lire_variables(chemin: &Path) -> Result<Vec<(String, String)>, Ecart> {
+    Ok(texte_de_variables(chemin)?.map_or_else(Vec::new, |t| variables_de_texte(&t)))
+}
+
+/// Les seules variables que systemd pose d'un fichier de variables (forme défaite de `variables_marquees`, une
+/// valeur par ligne), pour développer les « $VAR » des lignes Exec d'une unité. Les formes que `lire_variables` y
+/// ajoute pour le juge (brute, ancienne lecture) n'y vont pas : deux valeurs pour un même nom rendaient la variable
+/// inconnue, et une valeur saine écrite avec un « \ » levait la ligne qui l'emploie (ronde 4 du lot 096, G5-2).
+pub(super) fn lire_variables_posees(chemin: &Path) -> Result<Vec<(String, String)>, Ecart> {
+    Ok(texte_de_variables(chemin)?.map_or_else(Vec::new, |t| variables_posees(&t)))
+}
+
+/// Le texte d'un fichier de variables lu sous la racine, avec pertes hors UTF-8 ; `None` s'il est absent.
+fn texte_de_variables(chemin: &Path) -> Result<Option<String>, Ecart> {
     let lu = match temoins::lire_borne(chemin, VARIABLES_MAX) {
         Ok(lu) => lu,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err(Ecart::Fichier),
     };
     if !lu.entier {
         return Err(Ecart::Fichier);
     }
-    Ok(variables_de_texte(&String::from_utf8_lossy(&lu.octets)))
+    Ok(Some(String::from_utf8_lossy(&lu.octets).into_owned()))
+}
+
+/// La forme défaite de chaque variable lue comme systemd : la valeur que le service reçoit.
+fn variables_posees(texte: &str) -> Vec<(String, String)> {
+    variables_marquees(texte)
+        .into_iter()
+        .filter(|(_, _, posee)| *posee)
+        .map(|(cle, valeur, _)| (cle, valeur))
+        .collect()
 }
 
 /// `lire_variables` sur un texte déjà lu. On réunit deux lectures pour ne jamais voir MOINS de variables qu'avant
@@ -3120,10 +3142,15 @@ pub(super) fn lire_variables(chemin: &Path) -> Result<Vec<(String, String)>, Eca
 /// compris : un « LD_PRELOAD=… » caché derrière « # …\ », derrière une ligne de remplissage « FOO\ » (ronde 3, N1)
 /// ou après un « \r » nu échappait au juge des unités permises, et l'unité passait pour sûre à tort. Elle ne
 /// défaisait pas non plus les « \x » d'une valeur (N2). La lecture fidèle voit tout cela.
+///
+/// Les paires déjà vues se cherchent dans un ensemble (ronde 4, R3-G1-1) : chercher chacune dans la liste coûtait
+/// un passage par paire, soit 11 s pour un fichier de 1 Mio fait de petites variables, et ce fichier se relit pour
+/// chaque ligne « EnvironmentFile= » d'une unité que le compte écrit.
 pub(super) fn variables_de_texte(texte: &str) -> Vec<(String, String)> {
     let mut variables = variables_comme_systemd(texte);
+    let mut vues: std::collections::HashSet<(String, String)> = variables.iter().cloned().collect();
     for v in variables_recollees(texte) {
-        if !variables.contains(&v) {
+        if vues.insert(v.clone()) {
             variables.push(v);
         }
     }
@@ -3184,6 +3211,15 @@ const FINS_DE_SYSTEMD: [char; 2] = ['\n', '\r'];
 /// recollées, guillemets d'autour ôtés) : les deux se jugent. systemd rejette ensuite les noms invalides et un fichier
 /// hors UTF-8 ; ici on garde tout (lecture avec pertes) : on voit plus, jamais moins.
 fn variables_comme_systemd(texte: &str) -> Vec<(String, String)> {
+    variables_marquees(texte)
+        .into_iter()
+        .map(|(cle, valeur, _)| (cle, valeur))
+        .collect()
+}
+
+/// `variables_comme_systemd`, chaque paire marquée : vrai pour la forme défaite (celle que systemd pose), faux pour
+/// la forme brute, gardée pour le seul juge.
+fn variables_marquees(texte: &str) -> Vec<(String, String, bool)> {
     use EtatDeVariables::{
         AvantCle, AvantValeur, Cle, Commentaire, Doubles, DoublesEchappes, Simples, Valeur, ValeurEchappee,
     };
@@ -3204,9 +3240,9 @@ fn variables_comme_systemd(texte: &str) -> Vec<(String, String)> {
             let brute = sans_guillemets(brut.trim_matches(blanc)).to_string();
             let defaite = std::mem::take(valeur);
             if brute != defaite {
-                out.push((cle.clone(), brute));
+                out.push((cle.clone(), brute, false));
             }
-            out.push((std::mem::take(cle), defaite));
+            out.push((std::mem::take(cle), defaite, true));
             brut.clear();
         };
     for c in texte.chars() {
@@ -3492,5 +3528,53 @@ mod tests {
         for texte in ["LD_PRE\\\nLOAD=/tmp/x.so\n", "export LD_PRELOAD=/tmp/x.so\n"] {
             assert!(variables_de_texte(texte).contains(&cle), "{texte:?}");
         }
+    }
+
+    /// Ronde 4 du lot 096 (R3-G1-1) : la réunion des deux lectures se fait en temps linéaire. Un fichier de 1 Mio
+    /// (`VARIABLES_MAX`, la borne de lecture) fait de petites variables toutes différentes, avec un « \ » pour que
+    /// chacune ait deux formes : la recherche dans la liste prenait 11 à 14 s en version optimisée (bien plus ici,
+    /// sans optimisation) ; avec l'ensemble, une fraction de seconde. La borne de 10 s laisse de la marge à une
+    /// machine chargée, sans laisser passer le quadratique.
+    #[test]
+    fn la_reunion_d_un_gros_fichier_est_lineaire() {
+        use super::{VARIABLES_MAX, variables_de_texte};
+        use std::fmt::Write as _;
+        let mut texte = String::new();
+        let mut n = 0usize;
+        while u64::try_from(texte.len()).unwrap_or(u64::MAX) < VARIABLES_MAX.saturating_sub(32) {
+            let _ = writeln!(texte, "V{n}=\\{n}");
+            n += 1;
+        }
+        assert!(n > 60_000, "{n} variables seulement");
+        // Lu dans un fil à part : au-delà de la borne, l'essai échoue tout de suite au lieu d'attendre la fin.
+        let (envoi, reception) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = envoi.send(variables_de_texte(&texte).len());
+        });
+        let lues = reception
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap_or_else(|_| panic!("{n} variables : pas lues en 10 s"));
+        assert_eq!(lues, 2 * n, "deux formes par variable");
+    }
+
+    /// Ronde 4 du lot 096 (G5-2) : pour développer les « $VAR » d'une unité, une seule valeur par ligne, celle que
+    /// systemd pose ; la forme brute et l'ancienne lecture restent au seul juge (`variables_de_texte`).
+    #[test]
+    fn seule_la_forme_posee_se_developpe() {
+        use super::{variables_de_texte, variables_posees};
+        let paire = |c: &str, v: &str| (c.to_string(), v.to_string());
+        let texte = "A=x\\ y\nB=\"a\" 'b'\nC=\"/srv/\\$d\"\nD=simple\n";
+        assert_eq!(
+            variables_posees(texte),
+            vec![
+                paire("A", "x y"),
+                paire("B", "ab"),
+                paire("C", "/srv/$d"),
+                paire("D", "simple")
+            ]
+        );
+        let jugees = variables_de_texte(texte);
+        assert!(jugees.contains(&paire("A", "x\\ y")), "{jugees:?}");
+        assert!(jugees.contains(&paire("A", "x y")), "{jugees:?}");
     }
 }
