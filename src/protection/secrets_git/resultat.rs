@@ -98,6 +98,15 @@ pub(crate) fn resultat(r: &Recherche, debut: Debut) -> Resultat {
                     "gitleaks is installed: its rules were added to Vanguard's."
                 ),
             )
+        } else if r.gitleaks_ecarte {
+            sans_objet(
+                CAT,
+                Absence::Plateforme,
+                tr!(
+                    "gitleaks est installé mais pas lancé : ce git, plus ancien que la version 2.31, ne peut pas l'empêcher de lancer un programme choisi par un projet reçu. Seules les règles de Vanguard ont relu l'historique.",
+                    "gitleaks is installed but not run: this git, older than version 2.31, cannot stop it from starting a program chosen by a received project. Only Vanguard's rules read the history."
+                ),
+            )
         } else {
             sans_objet(
                 CAT,
@@ -185,6 +194,17 @@ mod tests {
         assert_eq!(res.verdict(), "sain");
         assert_eq!(res.outil, ID);
         assert!(res.constats.iter().any(|c| c.message.contains("gitleaks")));
+        // gitleaks écarté (git trop ancien) : dit, sans « pas installé », et le reste relu reste sain.
+        r.gitleaks_ecarte = true;
+        let res = resultat(&r, debut());
+        assert_eq!(res.verdict(), "sain");
+        assert!(res.constats.iter().any(|c| c.message.contains("2.31")));
+        assert!(
+            !res.constats
+                .iter()
+                .any(|c| c.message.contains("pas installé") || c.message.contains("not installed"))
+        );
+        r.gitleaks_ecarte = false;
         r.tronques.push("~/projet".into());
         let res = resultat(&r, debut());
         assert_eq!(res.verdict(), "non-verifie");

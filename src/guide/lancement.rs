@@ -1,6 +1,8 @@
 //! Lancer ici une commande du guide qui ne fait que lire : sa sortie défile dans Vanguard comme dans un terminal, et
 //! Échap l'arrête. Jamais une commande marquée ⚠, ni une qui ouvre une fenêtre, occupe tout le terminal, écrit un
-//! fichier ou demande les droits d'administrateur : celles-là se tapent dans un terminal (`pourquoi_pas`).
+//! fichier, demande les droits d'administrateur ou lance un programme choisi ailleurs (git et la configuration du
+//! projet courant, même lancé par yay ; les serveurs MCP de claude) : celles-là se tapent dans un terminal
+//! (`pourquoi_pas`).
 
 // Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
@@ -24,6 +26,64 @@ const DELAI: Duration = Duration::from_secs(120);
 
 /// Au-delà, les lignes sont comptées sans être montrées : l'écran ne se noie pas sous un journal entier.
 const LIGNES_MONTREES: usize = 1000;
+
+/// Elle lance git ou claude, directement ou par un autre programme (yay), qui suivent des réglages choisis ailleurs
+/// (le projet du dossier courant, les serveurs MCP configurés) et peuvent ainsi lancer un programme : Vanguard ne la
+/// lance pas (`obstacle`), et ne la dit pas sans effet (`super::etat`).
+pub(super) fn lance_ailleurs(c: &Commande) -> bool {
+    choisi_ailleurs(c).is_some()
+}
+
+/// Pourquoi elle peut lancer un programme choisi ailleurs que dans sa ligne ; `None` : rien de tel n'est connu. La
+/// règle suit l'effet (git qui lit le dossier courant), pas seulement le premier mot : un programme peut lancer git
+/// lui-même.
+fn choisi_ailleurs(c: &Commande) -> Option<&'static str> {
+    // Lancée ici, elle tournerait dans le dossier courant, que Vanguard ne connaît pas : git y lit la configuration du
+    // projet, qui peut lancer un programme (surveillance de fichiers, différence externe, vérification de signature,
+    // filtres, url.insteadOf vers un transport ext::), et un dépôt reçu dans une archive la choisit ; « claude mcp
+    // list » démarre chaque serveur MCP configuré.
+    let mots = || c.ligne.split_whitespace();
+    if mots().any(|m| m == "git") {
+        return Some(tr!(
+            "git lit les réglages du projet du dossier courant, qui peuvent lancer un programme : à taper dans un terminal, dans un projet que vous connaissez.",
+            "git reads the settings of the project in the current folder, which can start a program: type it in a terminal, in a project you know."
+        ));
+    }
+    if yay_lance_git(c.ligne) {
+        return Some(tr!(
+            "Pour les paquets « -git » (option devel), yay lance git dans le dossier courant, dont le projet peut lancer un programme : à taper dans un terminal, dans un dossier que vous connaissez.",
+            "For \"-git\" packages (devel option), yay runs git in the current folder, whose project can start a program: type it in a terminal, in a folder you know."
+        ));
+    }
+    if mots().any(|m| m == "claude") {
+        return Some(tr!(
+            "Elle démarre les serveurs MCP configurés, donc leur code : à taper dans un terminal, en sachant ce qu'ils lancent.",
+            "It starts the configured MCP servers, so their code: type it in a terminal, knowing what they run."
+        ));
+    }
+    None
+}
+
+/// yay cherche-t-il ici les mises à jour ? Avec l'option devel (réglage de yay, éteint au départ, que Vanguard ne lit
+/// pas), chaque recherche de mises à jour demande le dernier commit des paquets « -git » par « git ls-remote », sans
+/// changer de dossier. Essayé avec yay 13.0.1 et un faux AUR, sans réseau : -Qua, -Qu et -Qum lancent git dans le
+/// dossier courant, -Ps, -Pw et -Qa non. -Pu, -Syu et yay seul passent par la même recherche (sources de yay, sans
+/// essai) ; --gendb, qui relit ces commits, est compté par prudence, sans essai.
+fn yay_lance_git(ligne: &str) -> bool {
+    ligne.split(['|', ';', '&']).any(|morceau| {
+        let mut mots = morceau.split_whitespace().skip_while(|m| *m != "yay");
+        if mots.next().is_none() {
+            return false;
+        }
+        let options: Vec<&str> = mots.filter(|m| m.starts_with('-')).collect();
+        // yay seul : mise à jour de tout le système, paquets « -git » compris.
+        options.is_empty()
+            || options.iter().any(|o| match o.strip_prefix("--") {
+                Some(longue) => matches!(longue, "upgrades" | "sysupgrade" | "gendb"),
+                None => o.contains('u'),
+            })
+    })
+}
 
 /// Pourquoi Vanguard ne lance cette commande sur aucun ordinateur ; `None` : rien ne l'en empêche.
 pub(super) fn obstacle(c: &Commande) -> Option<&'static str> {
@@ -50,6 +110,9 @@ pub(super) fn obstacle(c: &Commande) -> Option<&'static str> {
             "C'est Vanguard lui-même : son menu fait la même chose.",
             "It is Vanguard itself: its menu does the same."
         ));
+    }
+    if let Some(raison) = choisi_ailleurs(c) {
+        return Some(raison);
     }
     let obstacle = if c.ligne.split_whitespace().any(|m| m == "sudo") {
         Obstacle::Administrateur
@@ -410,6 +473,67 @@ mod tests {
         // Les tabulations suivent les colonnes, accents et émojis compris.
         assert_eq!(nettoyer("é\tx"), "é       x");
         assert_eq!(nettoyer("💾\tx"), "💾      x");
+    }
+
+    /// git lit la configuration du projet du dossier courant, qui peut lancer un programme (surveillance de fichiers,
+    /// différence externe, vérification de signature) ; « claude mcp list » démarre chaque serveur MCP configuré pour
+    /// savoir s'il répond. Aucune ne se lance d'ici, même ajoutée plus tard.
+    #[test]
+    fn ni_git_ni_claude_ne_se_lancent_ici() {
+        let commandes: Vec<&Commande> = super::super::tous::PROGRAMMES
+            .iter()
+            .chain(super::super::tous::PAS_A_PAS)
+            .flat_map(|p| p.commandes)
+            .collect();
+        for l in ["git status", "git diff", "git log --oneline -10", "claude mcp list"] {
+            assert!(commandes.iter().any(|c| c.ligne == l), "{l} : plus dans le guide");
+        }
+        for c in commandes {
+            if c.ligne.split_whitespace().any(|m| m == "git" || m == "claude") {
+                assert!(lance_ailleurs(c), "{}", c.ligne);
+                assert!(obstacle(c).is_some(), "{}", c.ligne);
+                // La page de la commande ne la dit pas sans effet : ce qu'elle lance, Vanguard ne le sait pas.
+                assert!(!super::super::etat(c).contains('✔'), "{} : dite sans effet", c.ligne);
+            }
+        }
+    }
+
+    /// yay cherche les mises à jour des paquets « -git » (option devel) par « git ls-remote », lancé dans le dossier
+    /// courant : git y lit les réglages du projet, qui peuvent lancer un programme (essai réel avec yay 13.0.1 : un
+    /// dépôt piégé par url.insteadOf a fait lancer son programme). La règle suit l'effet, pas le premier mot.
+    #[test]
+    fn yay_qui_cherche_les_mises_a_jour_ne_se_lance_pas_ici() {
+        // Les pages de chaque système : yay est dans celles d'Arch et d'Omarchy, pas dans les communes.
+        let qua = super::super::SYSTEMES
+            .into_iter()
+            .chain([Systeme::Linux])
+            .flat_map(|s| s.propres().iter().chain(s.pas_a_pas()))
+            .flat_map(|p| p.commandes)
+            .find(|c| c.ligne == "yay -Qua")
+            .expect("yay -Qua : plus dans le guide");
+        assert!(lance_ailleurs(qua));
+        assert!(obstacle(qua).is_some());
+        assert!(!super::super::etat(qua).contains('✔'), "yay -Qua : dite sans effet");
+        // Toute recherche de mises à jour, quelle qu'en soit l'écriture, même ajoutée plus tard au guide.
+        for l in [
+            "yay",
+            "yay -Qu",
+            "yay -Pu",
+            "yay -Syu",
+            "yay -Q --upgrades",
+            "yay -Y --gendb",
+            "LANG=C yay -Qua | wc -l",
+        ] {
+            let c = super::super::voir(l, "", "");
+            assert!(lance_ailleurs(&c), "{l}");
+            assert!(obstacle(&c).is_some(), "{l}");
+        }
+        // yay qui ne cherche pas de mises à jour (-Ps, -Pw : essayés, pas de git), ou pas de yay : lançables ici.
+        for l in ["yay -Ps", "yay -Pw", "pacman -Qu", "checkupdates"] {
+            let c = super::super::voir(l, "", "");
+            assert!(!lance_ailleurs(&c), "{l}");
+            assert_eq!(obstacle(&c), None, "{l}");
+        }
     }
 
     #[test]

@@ -912,6 +912,46 @@ fn revenir(choix: &str) -> bool {
     choix.is_empty() || choix == "↵" || choix.eq_ignore_ascii_case("q")
 }
 
+/// La ligne d'état d'une commande, sous son texte : ce que Vanguard sait de ce qu'elle change.
+fn etat(c: &Commande) -> String {
+    if c.obstacle == Obstacle::NonVerifiee {
+        format!(
+            "  {}●{RESET} {}",
+            couleur(Niveau::Moyen),
+            tr!(
+                "Exemple de tldr-pages : Vanguard ne sait pas ce qu'il change.",
+                "A tldr-pages example: Vanguard does not know what it changes."
+            )
+        )
+    } else if c.modifie {
+        format!(
+            "  {}⚠{RESET} {}",
+            couleur(Niveau::Moyen),
+            tr!(
+                "Elle change quelque chose, souvent avec les droits d'administrateur.",
+                "It changes something, often with administrator rights."
+            )
+        )
+    } else if lancement::lance_ailleurs(c) {
+        format!(
+            "  {}●{RESET} {}",
+            couleur(Niveau::Moyen),
+            tr!(
+                "Elle lit, mais peut lancer d'autres programmes, choisis ailleurs (réglages du projet, serveurs MCP) : Vanguard ne sait pas ce qu'ils font.",
+                "It reads, but can start other programs chosen elsewhere (project settings, MCP servers): Vanguard does not know what they do."
+            )
+        )
+    } else {
+        format!(
+            "  {VERT}✔{RESET} {}",
+            tr!(
+                "Elle ne fait que lire : rien ne change.",
+                "It only reads: nothing changes."
+            )
+        )
+    }
+}
+
 /// Une commande seule : ce qu'elle fait, puis la copier, ou la lancer ici quand elle ne fait que lire.
 fn montrer_commande(s: Systeme, p: &Programme, c: &Commande) {
     let raison = lancement::pourquoi_pas(s, p, c);
@@ -944,33 +984,7 @@ fn montrer_commande(s: Systeme, p: &Programme, c: &Commande) {
                 .map(|l| Ligne::Texte(format!("  {l}"))),
         );
         lignes.push(Ligne::Texte(String::new()));
-        lignes.push(Ligne::Texte(if c.obstacle == Obstacle::NonVerifiee {
-            format!(
-                "  {}●{RESET} {}",
-                couleur(Niveau::Moyen),
-                tr!(
-                    "Exemple de tldr-pages : Vanguard ne sait pas ce qu'il change.",
-                    "A tldr-pages example: Vanguard does not know what it changes."
-                )
-            )
-        } else if c.modifie {
-            format!(
-                "  {}⚠{RESET} {}",
-                couleur(Niveau::Moyen),
-                tr!(
-                    "Elle change quelque chose, souvent avec les droits d'administrateur.",
-                    "It changes something, often with administrator rights."
-                )
-            )
-        } else {
-            format!(
-                "  {VERT}✔{RESET} {}",
-                tr!(
-                    "Elle ne fait que lire : rien ne change.",
-                    "It only reads: nothing changes."
-                )
-            )
-        }));
+        lignes.push(Ligne::Texte(etat(c)));
         lignes.extend(lignes_grises(s.terminal(), 2));
         if let Some(r) = &raison {
             lignes.extend(lignes_grises(

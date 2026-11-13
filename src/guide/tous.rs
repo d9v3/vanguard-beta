@@ -445,8 +445,8 @@ pub const PROGRAMMES: &[Programme] = &[
         commandes: &[
             voir(
                 "claude mcp list",
-                "Les serveurs MCP branchés à Claude Code, et s'ils répondent.",
-                "The MCP servers plugged into Claude Code, and whether they answer.",
+                "Les serveurs MCP branchés à Claude Code : les démarre pour savoir s'ils répondent.",
+                "The MCP servers plugged into Claude Code: starts them to see whether they answer.",
             ),
             voir(
                 "claude mcp get <nom>",

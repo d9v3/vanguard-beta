@@ -78,9 +78,19 @@ pub(crate) fn depots(racine: &Path) -> Vec<PathBuf> {
     trouves
 }
 
+/// Les options du `git log -p -U0` de gitleaks : les siennes par défaut (« --full-history --all », plus
+/// « --diff-filter=tuxdb » dans les versions récentes), et ce qui ferme la conversion de texte et la différence d'un
+/// pilote, que la configuration du dépôt choisirait (`CONFIG_GARDEE` ne peut pas les nommer). gitleaks ne donne pas de
+/// format à son `git log` : « --pretty=medium », le format de git par défaut, passe devant celui du dépôt
+/// (`format.pretty`, qui peut demander la signature), en double de `CONFIG_GARDEE`. `--log-opts` remplace ses options
+/// par défaut, coupé sur les espaces (lu dans ses sources, en 8.16 comme dans la dernière).
+const OPTIONS_LOG: &str =
+    "--log-opts=--full-history --all --diff-filter=tuxdb --no-textconv --no-ext-diff --pretty=medium";
+
 /// Les arguments de gitleaks pour un dépôt : la commande « git » depuis la 8.19, « detect --source » avant (Debian 12
 /// et Ubuntu 24.04 ont la 8.16), reconnue dans son aide. Le rapport en JSON, les secrets masqués, le code de retour à 0
-/// même quand il trouve : seul un vrai échec (pas un dépôt, git absent) laisse le rapport vide.
+/// même quand il trouve : tout autre code est un échec ou une lecture partielle, et son rapport ne compte pas
+/// (`par_gitleaks`).
 pub(crate) fn arguments(aide: &str, depot: &Path, rapport: &Path) -> Vec<OsString> {
     let recent = aide.lines().any(|l| l.trim_start().starts_with("git "));
     let mut a: Vec<OsString> = if recent {
@@ -98,6 +108,7 @@ pub(crate) fn arguments(aide: &str, depot: &Path, rapport: &Path) -> Vec<OsStrin
             "error",
             "--exit-code",
             "0",
+            OPTIONS_LOG,
             "--report-path",
         ]
         .map(OsString::from),
@@ -398,38 +409,119 @@ pub(crate) fn lire_historique(sortie: &str) -> Vec<Fuite> {
     fuites
 }
 
-/// L'historique d'un dépôt, relu par git sans rien qu'un dépôt piégé puisse faire exécuter : ni programme de
-/// différence externe, ni conversion de texte, ni surveillance de fichiers, ni pager. Les 2 000 derniers commits de
-/// toutes les branches. `None` si git ne l'a pas lu (dépôt d'un autre compte, abîmé) ; un dépôt sans commit est sain.
-/// Le booléen dit si la borne est atteinte : les commits plus anciens n'ont pas été relus.
+/// La configuration qu'un dépôt ne choisit plus, pour `log -p` : chaque réglage qui y lancerait un programme ou irait
+/// chercher sur le réseau (relevés dans « git help config » de git 2.56). Passée par l'environnement
+/// (`GIT_CONFIG_COUNT`, depuis git 2.31) : elle passe avant la configuration du dépôt (et ses `include`), et le git que
+/// lance gitleaks, ou celui qu'un git lance dans un sous-module, en hérite. Le git de Vanguard la reçoit aussi par
+/// « -c » (`commande_historique`), que toute version de git lit ; gitleaks n'est lancé qu'avec un git qui lit
+/// l'environnement (`garde_par_l_environnement`).
+/// - `log.showSignature` : vérifier la signature d'un commit lance `gpg.program`, choisi par le dépôt.
+/// - `format.pretty` : le format d'affichage par défaut, pour un `log` sans format (celui de gitleaks) ; le dépôt peut
+///   y demander l'état de la signature (« %G? »), donc la vérifier. Un format intégré ne se redéfinit pas par un alias
+///   `pretty.<nom>`.
+/// - `gpg.*program` : vides, git refuse de vérifier au lieu de lancer le programme du dépôt, si un affichage demandait
+///   encore la signature ; une configuration lue plus tard passe devant, d'où les quatre noms (`gpg.program` et
+///   `gpg.openpgp.program` sont le même réglage).
+/// - `core.fsmonitor` : le programme de surveillance des fichiers, lancé par un git qui lit l'index (pas `log`).
+/// - `core.pager` : « cat » veut dire aucun pager pour git.
+/// - `diff.submodule` : en « diff », git lance un second git (`git diff`) dans le sous-module, sans `--no-textconv`.
+/// - `diff.external` : vide, git refuse au lieu de lancer ; `log` ne s'en sert pas, ce second `git diff` si.
+/// - `protocol.*` : un clone partiel cherche les objets manquants chez son distant, par un transport que le dépôt
+///   permet (« ext:: » lance une commande) ; chaque transport de git est fermé, et `GIT_NO_LAZY_FETCH` (documentée
+///   depuis git 2.45) n'y va même pas.
+///
+/// Laissés : la conversion de texte (`diff.<pilote>.textconv`) et la différence d'un pilote (`diff.<pilote>.command`),
+/// dont le dépôt choisit le nom : fermées par `--no-textconv` et `--no-ext-diff`, données aussi à gitleaks
+/// (`arguments`). Les crochets (`core.hooksPath`, `hook.*`), la maintenance et les aides de connexion ne servent qu'à
+/// un envoi, une récupération ou un commit : aucun n'a lieu. La configuration du système et celle du compte restent
+/// lues : celles-là ne viennent pas du dépôt, et `safe.directory` (les dépôts d'un autre compte permis par la
+/// personne) n'est lu que là.
+const CONFIG_GARDEE: &[(&str, &str)] = &[
+    ("log.showSignature", "false"),
+    ("format.pretty", "medium"),
+    ("gpg.program", ""),
+    ("gpg.openpgp.program", ""),
+    ("gpg.x509.program", ""),
+    ("gpg.ssh.program", ""),
+    ("core.fsmonitor", "false"),
+    ("core.pager", "cat"),
+    ("diff.external", ""),
+    ("diff.submodule", "short"),
+    ("protocol.allow", "never"),
+    ("protocol.file.allow", "never"),
+    ("protocol.git.allow", "never"),
+    ("protocol.ssh.allow", "never"),
+    ("protocol.http.allow", "never"),
+    ("protocol.https.allow", "never"),
+    ("protocol.ftp.allow", "never"),
+    ("protocol.ftps.allow", "never"),
+    ("protocol.ext.allow", "never"),
+];
+
+/// Les variables par lesquelles l'environnement désigne un autre dépôt que celui qu'on nomme, ou en change les
+/// objets et les références (« git rev-parse --local-env-vars » de git 2.56, plus `GIT_NAMESPACE`). Lancé depuis un
+/// crochet, un alias « ! » ou « git rebase -x », Vanguard en hérite, et « -C <dépôt> » ne passe pas devant `GIT_DIR` :
+/// chaque dépôt relirait le même.
+const VARIABLES_DU_DEPOT: &[&str] = &[
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_GRAFT_FILE",
+    "GIT_SHALLOW_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_PREFIX",
+    "GIT_NAMESPACE",
+    "GIT_CONFIG",
+];
+
+/// git (ou gitleaks, qui lance git) prêt à relire un dépôt qu'il ne faut pas croire : `CONFIG_GARDEE` par
+/// l'environnement, rien à aller chercher, aucune question ni pager. Les variables du compte qui passeraient
+/// par-dessus sont retirées : `GIT_CONFIG_PARAMETERS` (lue après `GIT_CONFIG_COUNT`), `GIT_ALLOW_PROTOCOL` (passe
+/// avant `protocol.*`), `GIT_EXTERNAL_DIFF`, et celles qui désigneraient un autre dépôt (`VARIABLES_DU_DEPOT`).
+fn garder(c: &mut Command) -> &mut Command {
+    for v in VARIABLES_DU_DEPOT {
+        c.env_remove(v);
+    }
+    c.env_remove("GIT_CONFIG_PARAMETERS")
+        .env_remove("GIT_ALLOW_PROTOCOL")
+        .env_remove("GIT_EXTERNAL_DIFF")
+        .env("GIT_CONFIG_COUNT", CONFIG_GARDEE.len().to_string())
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .env("GIT_PROTOCOL_FROM_USER", "0")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_PAGER", "cat");
+    for (n, (cle, valeur)) in CONFIG_GARDEE.iter().enumerate() {
+        c.env(format!("GIT_CONFIG_KEY_{n}"), cle)
+            .env(format!("GIT_CONFIG_VALUE_{n}"), valeur);
+    }
+    c
+}
+
+/// Vrai si ce git (la sortie de « git --version ») lit `CONFIG_GARDEE` passée par l'environnement : `GIT_CONFIG_COUNT`
+/// date de git 2.31, et gitleaks ne peut rien recevoir d'autre. Une version qui ne se lit pas compte pour trop
+/// ancienne : ce qui ne peut pas être gardé ne tourne pas.
+fn garde_par_l_environnement(version: &str) -> bool {
+    let Some(numero) = version.trim().strip_prefix("git version ") else {
+        return false;
+    };
+    let mut parties = numero.split('.').map(|p| p.parse::<u32>().ok());
+    match (parties.next().flatten(), parties.next().flatten()) {
+        (Some(majeur), Some(mineur)) => (majeur, mineur) >= (2, 31),
+        _ => false,
+    }
+}
+
+/// L'historique d'un dépôt, relu par git sans rien qu'un dépôt piégé puisse faire exécuter (`garder`) : ni programme
+/// de différence externe, ni conversion de texte, ni pager. Les 2 000 derniers commits de toutes les branches. `None`
+/// si git ne l'a pas lu (dépôt d'un autre compte, abîmé, clone partiel dont il manque des objets) ; un dépôt sans
+/// commit est sain. Le booléen dit si la borne est atteinte : les commits plus anciens n'ont pas été relus.
 fn historique(git: &Path, depot: &Path) -> Option<(Vec<Fuite>, bool)> {
-    // En anglais, sur les trois systèmes : le message d'un dépôt sans commit est lu tel quel.
-    let r = crate::commande::lancer(
-        Command::new(git)
-            .env("LC_ALL", "C.UTF-8")
-            .env_remove("LANGUAGE")
-            .args([
-                "--no-pager",
-                "-c",
-                "core.quotePath=false",
-                "-c",
-                "core.fsmonitor=false",
-                "-C",
-            ])
-            .arg(depot)
-            .args([
-                "log",
-                "--all",
-                "-p",
-                "--no-color",
-                "--no-ext-diff",
-                "--no-textconv",
-                "--unified=0",
-                "--format=%x1e%H",
-            ])
-            .arg(format!("--max-count={COMMITS_MAX}")),
-        120,
-    )?;
+    let r = crate::commande::lancer(&mut commande_historique(git, depot), 120)?;
     if r.code == Some(0) {
         // Chaque commit commence par le séparateur \x1e (« --format=%x1e%H »).
         let commits = r.sortie.lines().filter(|l| l.starts_with('\u{1e}')).count();
@@ -439,6 +531,34 @@ fn historique(git: &Path, depot: &Path) -> Option<(Vec<Fuite>, bool)> {
     } else {
         None
     }
+}
+
+/// Le `git log` de `historique`. `CONFIG_GARDEE` aussi par « -c » : un git plus ancien que 2.31 ignore
+/// `GIT_CONFIG_COUNT` en silence, pas la ligne de commande, qu'il passe aussi aux git qu'il lance.
+fn commande_historique(git: &Path, depot: &Path) -> Command {
+    let mut c = Command::new(git);
+    // En anglais, sur les trois systèmes : le message d'un dépôt sans commit est lu tel quel.
+    garder(&mut c)
+        .env("LC_ALL", "C.UTF-8")
+        .env_remove("LANGUAGE")
+        .arg("--no-pager");
+    for (cle, valeur) in CONFIG_GARDEE {
+        c.arg("-c").arg(format!("{cle}={valeur}"));
+    }
+    c.args(["-c", "core.quotePath=false", "-C"])
+        .arg(depot)
+        .args([
+            "log",
+            "--all",
+            "-p",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--unified=0",
+            "--format=%x1e%H",
+        ])
+        .arg(format!("--max-count={COMMITS_MAX}"));
+    c
 }
 
 /// Un secret trouvé : son genre, le fichier et la ligne, le commit abrégé.
@@ -499,10 +619,16 @@ enum Partiel {
 }
 
 fn par_gitleaks(c: &Complement, depot: &Path, rapport: &Path) -> Option<Vec<Fuite>> {
-    let lance = crate::commande::lancer(Command::new(&c.gitleaks).args(arguments(&c.aide, depot, rapport)), 300);
+    // gitleaks lance lui-même git sur le dépôt, avec l'environnement qu'il reçoit : la même garde que `historique`.
+    let lance = crate::commande::lancer(
+        garder(&mut Command::new(&c.gitleaks)).args(arguments(&c.aide, depot, rapport)),
+        300,
+    );
     let lu = std::fs::read_to_string(rapport).ok().and_then(|t| lire_rapport(&t));
     let _ = std::fs::remove_file(rapport);
-    lance.and(lu)
+    // Son rapport s'écrit même quand son git a échoué (lecture partielle), avec le code 1 : seul le 0 (« --exit-code
+    // 0 », même quand il trouve) dit qu'il a tout lu.
+    lance.filter(|r| r.code == Some(0)).and(lu)
 }
 
 /// Les deux recherches réunies : ce que gitleaks trouve en plus s'ajoute (même commit, fichier et ligne : un seul).
@@ -554,6 +680,9 @@ pub(crate) struct Recherche {
     pub plafond: bool,
     /// gitleaks a ajouté ses règles.
     pub gitleaks: bool,
+    /// gitleaks est installé mais n'a pas été lancé : ce git, plus ancien que 2.31, ne le garderait pas d'un dépôt
+    /// piégé (`garde_par_l_environnement`).
+    pub gitleaks_ecarte: bool,
     pub sains: usize,
     pub illisibles: Vec<String>,
     pub avec: Vec<(String, Vec<Fuite>)>,
@@ -592,7 +721,12 @@ pub(crate) fn chercher(git: &Path, maison: &Path, trouves: &[PathBuf], compteur:
     if trouves.is_empty() {
         return r;
     }
-    let complement = outil::trouver("gitleaks").and_then(|gitleaks| {
+    // gitleaks lance le git du PATH, celui-ci : sa version dit si la garde par l'environnement lui parvient.
+    let gitleaks = outil::trouver("gitleaks");
+    r.gitleaks_ecarte = gitleaks.is_some()
+        && !crate::commande::lancer(garder(&mut Command::new(git)).arg("--version"), 10)
+            .is_some_and(|v| garde_par_l_environnement(&v.sortie));
+    let complement = gitleaks.filter(|_| !r.gitleaks_ecarte).and_then(|gitleaks| {
         let aide = crate::commande::lancer(Command::new(&gitleaks).arg("--help"), 10)
             .map(|r| r.sortie + &r.erreurs)
             .unwrap_or_default();
@@ -674,6 +808,12 @@ pub fn analyser() {
         trp!(
             "  gitleaks est installé : ses règles s'ajoutent à celles de Vanguard.",
             "  gitleaks is installed: its rules add to Vanguard's."
+        );
+    }
+    if r.gitleaks_ecarte {
+        trp!(
+            "  gitleaks est installé mais pas lancé : ce git, plus ancien que la version 2.31, ne peut pas l'empêcher de lancer un programme choisi par un projet reçu. Seules les règles de Vanguard relisent l'historique.",
+            "  gitleaks is installed but not run: this git, older than version 2.31, cannot stop it from starting a program chosen by a received project. Only Vanguard's rules read the history."
         );
     }
     for depot in &r.illisibles {
@@ -866,10 +1006,12 @@ mod tests {
         let a = arguments(ancienne, depot, rapport);
         assert_eq!(a[..3], ["detect", "--source", "/home/alice/projet"].map(OsString::from));
         assert!(a.contains(&"--redact".into()) && a.last() == Some(&OsString::from("/tmp/r.json")));
+        assert!(a.contains(&OPTIONS_LOG.into()));
         let recente = "Available Commands:\n  dir         scan directories or files for secrets\n  git         scan git repositories for secrets\n";
         let a = arguments(recente, depot, rapport);
         assert_eq!(a[0], "git");
         assert_eq!(a.last(), Some(&OsString::from("/home/alice/projet")));
+        assert!(a.contains(&OPTIONS_LOG.into()));
     }
 
     #[test]
@@ -1004,7 +1146,7 @@ mod tests {
         };
         let depot = crate::protection::isoler::dossier_jetable().unwrap();
         let git_ici = |args: &[&str]| {
-            Command::new(&git)
+            git_d_essai(&git)
                 .args([
                     "-c",
                     "user.name=alice",
@@ -1040,5 +1182,392 @@ mod tests {
         assert_eq!(fuites.len(), 1);
         assert!(fuites[0].fichier == "config.env" && fuites[0].ligne == 1 && fuites[0].commit.len() == 7);
         let _ = std::fs::remove_dir_all(&depot);
+    }
+
+    /// git, pour un essai : sans les variables qui désigneraient un autre dépôt (`VARIABLES_DU_DEPOT`) ni la
+    /// configuration passée par ce qui lance les essais. Lancés depuis un crochet ou « git rebase -x », les essais
+    /// écriraient sinon dans le dépôt de Vanguard lui-même (son HEAD, sa configuration).
+    fn git_d_essai(git: &Path) -> Command {
+        let mut c = Command::new(git);
+        for v in VARIABLES_DU_DEPOT
+            .iter()
+            .chain(&["GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT"])
+        {
+            c.env_remove(v);
+        }
+        c
+    }
+
+    /// Les variables qui désigneraient un autre dépôt ne passent ni au git de Vanguard ni à gitleaks.
+    #[test]
+    fn garder_retire_le_depot_impose_par_l_environnement() {
+        let mut c = Command::new("git");
+        garder(&mut c);
+        for v in VARIABLES_DU_DEPOT {
+            assert!(
+                c.get_envs().any(|(k, valeur)| k == *v && valeur.is_none()),
+                "{v} : pas retirée"
+            );
+        }
+        assert!(VARIABLES_DU_DEPOT.contains(&"GIT_DIR"));
+    }
+
+    /// `GIT_CONFIG_COUNT` date de git 2.31 : avant, ou si la version ne se lit pas, gitleaks ne serait pas gardé.
+    #[test]
+    fn version_de_git_lue() {
+        for (sortie, gardee) in [
+            ("git version 2.56.0\n", true),
+            ("git version 2.31.0", true),
+            ("git version 2.39.2.windows.1", true),
+            ("git version 2.39.5 (Apple Git-154)", true),
+            ("git version 3.0.1", true),
+            ("git version 2.30.2", false),
+            ("git version 2.25.1", false),
+            ("git version 1.99.0", false),
+            ("git version 2", false),
+            ("version 2.56.0", false),
+            ("", false),
+        ] {
+            assert_eq!(garde_par_l_environnement(sortie), gardee, "{sortie}");
+        }
+    }
+
+    /// Le git de Vanguard reçoit aussi `CONFIG_GARDEE` par « -c » : un git plus ancien que 2.31 ignore
+    /// `GIT_CONFIG_COUNT`, pas la ligne de commande.
+    #[test]
+    fn le_git_de_vanguard_est_garde_aussi_par_la_ligne_de_commande() {
+        let c = commande_historique(Path::new("git"), Path::new("projet"));
+        let args: Vec<String> = c.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        let sous_commande = args.iter().position(|a| a == "log").unwrap();
+        for (cle, valeur) in CONFIG_GARDEE {
+            assert!(
+                args[..sous_commande]
+                    .windows(2)
+                    .any(|p| p[0] == "-c" && p[1] == format!("{cle}={valeur}")),
+                "{cle} : absent de la ligne de commande"
+            );
+        }
+    }
+
+    /// git, pour préparer un dépôt d'essai : ni la configuration du système ni celle du compte (aucune donnée du
+    /// compte, aucune signature ni crochet de sa configuration), un auteur inventé, file:// permis pour le sous-module.
+    #[cfg(unix)]
+    fn preparer(git: &Path, dossier: &Path, args: &[&str]) {
+        let sortie = git_d_essai(git)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .args([
+                "-c",
+                "user.name=alice",
+                "-c",
+                "user.email=alice@exemple.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "protocol.file.allow=always",
+                "-C",
+            ])
+            .arg(dossier)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            sortie.status.success(),
+            "git {args:?} : {}",
+            String::from_utf8_lossy(&sortie.stderr)
+        );
+    }
+
+    /// Un script qui laisse une trace (son nom) dans `traces` s'il est lancé.
+    #[cfg(unix)]
+    fn piege(dossier: &Path, nom: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let script = dossier.join(nom);
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\necho {nom} >> '{}'\ncat >/dev/null\nexit 1\n",
+                dossier.join("traces").display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        script
+    }
+
+    /// Un faux gitleaks qui relit le dépôt comme le vrai (sources/git.go, 8.16 à 8.30) : « git -C <dépôt> log -p
+    /// -U0 », puis ses --log-opts, sinon « --full-history --all » ; puis un rapport vide, écrit même si git a échoué
+    /// ou s'est plaint, et alors le code 1 (lecture partielle, d'après cmd/detect.go de la relecture).
+    #[cfg(unix)]
+    fn faux_gitleaks(dossier: &Path) -> Complement {
+        use std::os::unix::fs::PermissionsExt;
+        let gitleaks = dossier.join("gitleaks");
+        std::fs::write(
+            &gitleaks,
+            "#!/bin/sh\nopts='--full-history --all'; rapport=''; prec=''\n\
+             for a in \"$@\"; do\n  case \"$a\" in --log-opts=*) opts=\"${a#--log-opts=}\" ;; esac\n\
+             \x20 [ \"$prec\" = --report-path ] && rapport=\"$a\"\n  prec=\"$a\"; depot=\"$a\"\ndone\n\
+             erreurs=$(git -C \"$depot\" log -p -U0 $opts 2>&1 >/dev/null); code=$?\n\
+             echo '[]' > \"$rapport\"\n[ $code = 0 ] && [ -z \"$erreurs\" ] || exit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&gitleaks, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let rapports = dossier.join("rapports");
+        std::fs::create_dir(&rapports).unwrap();
+        Complement {
+            gitleaks,
+            aide: "Available Commands:\n  git         scan git repositories for secrets\n".into(),
+            rapports,
+        }
+    }
+
+    /// Les scripts lancés pendant la relecture d'un dépôt piégé, par git puis par gitleaks.
+    #[cfg(unix)]
+    fn lances(git: &Path, jetable: &Path, depot: &Path) -> String {
+        let _ = historique(git, depot);
+        let complement = faux_gitleaks(jetable);
+        let rapport = complement.rapports.join("0.json");
+        let _ = par_gitleaks(&complement, depot, &rapport);
+        std::fs::read_to_string(jetable.join("traces")).unwrap_or_default()
+    }
+
+    /// Un dépôt reçu dont l'historique a deux commits « signés » écrits à la main, l'un par OpenPGP, l'autre par SSH :
+    /// seul l'en-tête gpgsig compte, git veut alors vérifier la signature par le programme que le dépôt choisit.
+    #[cfg(unix)]
+    fn depot_signe(git: &Path, jetable: &Path) -> PathBuf {
+        let depot = jetable.join("recu");
+        std::fs::create_dir(&depot).unwrap();
+        preparer(git, &depot, &["init", "-q"]);
+        std::fs::write(depot.join("notes.txt"), "a=1\n").unwrap();
+        preparer(git, &depot, &["add", "notes.txt"]);
+        let sortie = |args: &[&str]| {
+            let s = git_d_essai(git).arg("-C").arg(&depot).args(args).output().unwrap();
+            assert!(s.status.success(), "git {args:?}");
+            String::from_utf8_lossy(&s.stdout).trim().to_string()
+        };
+        let arbre = sortie(&["write-tree"]);
+        let mut parent = String::new();
+        for (n, signature) in [
+            "-----BEGIN PGP SIGNATURE-----\n \n iQEzBAABCAAdFiEE\n -----END PGP SIGNATURE-----",
+            "-----BEGIN SSH SIGNATURE-----\n U1NIU0lHAAAAAQ\n -----END SSH SIGNATURE-----",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let texte = jetable.join(format!("commit{n}.txt"));
+            std::fs::write(
+                &texte,
+                format!(
+                    "tree {arbre}\n{parent}author alice <alice@exemple.invalid> 170000000{n} +0000\n\
+                     committer alice <alice@exemple.invalid> 170000000{n} +0000\ngpgsig {signature}\n\nsigne\n"
+                ),
+            )
+            .unwrap();
+            let commit = sortie(&["hash-object", "-t", "commit", "-w", &texte.display().to_string()]);
+            parent = format!("parent {commit}\n");
+            preparer(git, &depot, &["update-ref", "HEAD", &commit]);
+        }
+        depot
+    }
+
+    /// Un dépôt reçu (archive décompressée) choisit sa configuration : vérifier une signature par son propre
+    /// programme, convertir le texte par un programme, montrer le détail d'un sous-module. Ni git ni gitleaks ne
+    /// doivent rien en lancer.
+    #[cfg(unix)]
+    #[test]
+    fn depot_piege_rien_n_est_lance() {
+        let Some(git) = outil::trouver("git") else {
+            return crate::essais::saute("git absent");
+        };
+        let jetable = crate::protection::isoler::dossier_jetable().unwrap();
+        let depot = depot_signe(&git, &jetable);
+        let gpg = piege(&jetable, "gpg");
+        let textconv = piege(&jetable, "textconv");
+        std::fs::create_dir_all(depot.join(".git/info")).unwrap();
+        std::fs::write(depot.join(".git/info/attributes"), "* diff=x\n").unwrap();
+        for (cle, valeur) in [
+            ("log.showSignature", "true".into()),
+            ("gpg.program", gpg.display().to_string()),
+            ("diff.x.textconv", textconv.display().to_string()),
+        ] {
+            preparer(&git, &depot, &["config", cle, &valeur]);
+        }
+        assert_eq!(lances(&git, &jetable, &depot), "", "programmes lancés");
+        // Gardé, le dépôt se relit quand même : seule la vérification de signature est sautée.
+        assert_eq!(historique(&git, &depot), Some((Vec::new(), false)));
+        let _ = std::fs::remove_dir_all(&jetable);
+    }
+
+    /// Les programmes de vérification que le dépôt choisit, pour OpenPGP et pour SSH (avec la liste des signataires
+    /// sans laquelle git ne vérifie pas une signature SSH).
+    #[cfg(unix)]
+    fn verification_piegee(git: &Path, jetable: &Path, depot: &Path) {
+        let (gpg, ssh) = (piege(jetable, "gpg"), piege(jetable, "ssh"));
+        let signataires = jetable.join("signataires");
+        std::fs::write(&signataires, "").unwrap();
+        for (cle, valeur) in [
+            ("gpg.program", gpg),
+            ("gpg.ssh.program", ssh),
+            ("gpg.ssh.allowedSignersFile", signataires),
+        ] {
+            preparer(git, depot, &["config", cle, &valeur.display().to_string()]);
+        }
+    }
+
+    /// Le format d'affichage par défaut du dépôt (format.pretty, ici par un alias pretty.x) demande l'état de la
+    /// signature (%G?) : gitleaks ne donne pas de format à son « git log », git suivrait celui du dépôt et lancerait
+    /// le programme de vérification.
+    #[cfg(unix)]
+    #[test]
+    fn format_du_depot_ne_lance_rien() {
+        let Some(git) = outil::trouver("git") else {
+            return crate::essais::saute("git absent");
+        };
+        let jetable = crate::protection::isoler::dossier_jetable().unwrap();
+        let depot = depot_signe(&git, &jetable);
+        verification_piegee(&git, &jetable, &depot);
+        preparer(&git, &depot, &["config", "pretty.x", "format:commit %H%n%G?"]);
+        preparer(&git, &depot, &["config", "format.pretty", "x"]);
+        assert_eq!(lances(&git, &jetable, &depot), "", "programmes lancés");
+        assert_eq!(historique(&git, &depot), Some((Vec::new(), false)));
+        let _ = std::fs::remove_dir_all(&jetable);
+    }
+
+    /// Même quand un affichage demande la signature (un chemin que git ajouterait un jour), les programmes de
+    /// vérification sont vides par `garder` : git refuse au lieu de lancer celui du dépôt.
+    #[cfg(unix)]
+    #[test]
+    fn signature_demandee_rien_n_est_lance() {
+        let Some(git) = outil::trouver("git") else {
+            return crate::essais::saute("git absent");
+        };
+        let jetable = crate::protection::isoler::dossier_jetable().unwrap();
+        let depot = depot_signe(&git, &jetable);
+        verification_piegee(&git, &jetable, &depot);
+        let r = crate::commande::lancer(
+            garder(&mut Command::new(&git))
+                .arg("-C")
+                .arg(&depot)
+                .args(["log", "--all", "--format=%G?"]),
+            60,
+        )
+        .unwrap();
+        assert_eq!(r.code, Some(0), "{}", r.erreurs);
+        let traces = std::fs::read_to_string(jetable.join("traces")).unwrap_or_default();
+        assert_eq!(traces, "", "programmes lancés");
+        let _ = std::fs::remove_dir_all(&jetable);
+    }
+
+    /// Le vrai gitleaks écrit son rapport même quand son git a échoué, puis sort avec le code 1 : ce rapport vide ne
+    /// dit pas que le dépôt est sain.
+    #[cfg(unix)]
+    #[test]
+    fn gitleaks_en_echec_n_a_rien_lu() {
+        use std::os::unix::fs::PermissionsExt;
+        let jetable = crate::protection::isoler::dossier_jetable().unwrap();
+        let gitleaks = jetable.join("gitleaks");
+        std::fs::write(
+            &gitleaks,
+            "#!/bin/sh\nprec=''\nfor a in \"$@\"; do\n  [ \"$prec\" = --report-path ] && echo '[]' > \"$a\"\n  \
+             prec=\"$a\"\ndone\nexit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&gitleaks, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let rapports = jetable.join("rapports");
+        std::fs::create_dir(&rapports).unwrap();
+        let complement = Complement {
+            gitleaks,
+            aide: "Available Commands:\n  git         scan git repositories for secrets\n".into(),
+            rapports,
+        };
+        let rapport = complement.rapports.join("0.json");
+        assert_eq!(par_gitleaks(&complement, &jetable, &rapport), None);
+        drop(complement);
+        let _ = std::fs::remove_dir_all(&jetable);
+    }
+
+    /// Un sous-module montré « en détail » (diff.submodule=diff) : git lance un second git dans le sous-module, qui
+    /// ne reçoit pas --no-textconv ; la conversion de texte du sous-module ne doit pas être lancée.
+    #[cfg(unix)]
+    #[test]
+    fn sous_module_piege_rien_n_est_lance() {
+        let Some(git) = outil::trouver("git") else {
+            return crate::essais::saute("git absent");
+        };
+        let jetable = crate::protection::isoler::dossier_jetable().unwrap();
+        let (source, depot) = (jetable.join("source"), jetable.join("recu"));
+        for d in [&source, &depot] {
+            std::fs::create_dir(d).unwrap();
+            preparer(&git, d, &["init", "-q"]);
+        }
+        std::fs::write(source.join("s.txt"), "x1\n").unwrap();
+        preparer(&git, &source, &["add", "s.txt"]);
+        preparer(&git, &source, &["commit", "-qm", "un"]);
+        preparer(
+            &git,
+            &depot,
+            &["submodule", "add", "-q", &source.display().to_string(), "sm"],
+        );
+        preparer(&git, &depot, &["commit", "-qm", "ajout"]);
+        std::fs::write(depot.join("sm/s.txt"), "x2\n").unwrap();
+        preparer(&git, &depot.join("sm"), &["commit", "-qam", "deux"]);
+        preparer(&git, &depot, &["commit", "-qam", "suivi"]);
+        let textconv = piege(&jetable, "textconv");
+        std::fs::create_dir_all(depot.join(".git/modules/sm/info")).unwrap();
+        std::fs::write(depot.join(".git/modules/sm/info/attributes"), "* diff=x\n").unwrap();
+        preparer(
+            &git,
+            &depot.join("sm"),
+            &["config", "diff.x.textconv", &textconv.display().to_string()],
+        );
+        preparer(&git, &depot, &["config", "diff.submodule", "diff"]);
+        assert_eq!(lances(&git, &jetable, &depot), "", "programmes lancés");
+        let _ = std::fs::remove_dir_all(&jetable);
+    }
+
+    /// Un clone partiel va chercher les objets qui lui manquent chez son distant « promisor », par un transport que
+    /// le dépôt choisit : « ext:: » lance une commande. Ni git ni gitleaks ne doivent aller les chercher.
+    #[cfg(unix)]
+    #[test]
+    fn clone_partiel_rien_n_est_cherche() {
+        let Some(git) = outil::trouver("git") else {
+            return crate::essais::saute("git absent");
+        };
+        let jetable = crate::protection::isoler::dossier_jetable().unwrap();
+        let (source, depot) = (jetable.join("source"), jetable.join("recu"));
+        std::fs::create_dir(&source).unwrap();
+        preparer(&git, &source, &["init", "-q"]);
+        std::fs::write(source.join("f.txt"), "k=1\n").unwrap();
+        preparer(&git, &source, &["add", "f.txt"]);
+        preparer(&git, &source, &["commit", "-qm", "un"]);
+        preparer(&git, &source, &["config", "uploadpack.allowFilter", "true"]);
+        preparer(
+            &git,
+            &jetable,
+            &[
+                "clone",
+                "-q",
+                "--no-checkout",
+                "--filter=blob:none",
+                &format!("file://{}", source.display()),
+                "recu",
+            ],
+        );
+        // « % » échappe l'espace dans une adresse ext:: ; la commande laisse une trace.
+        let traces = jetable.join("traces").display().to_string().replace(' ', "% ");
+        let adresse = format!("ext::sh -c echo% ext% >>% {traces}");
+        preparer(&git, &depot, &["config", "remote.origin.url", &adresse]);
+        preparer(&git, &depot, &["config", "protocol.ext.allow", "always"]);
+        assert_eq!(lances(&git, &jetable, &depot), "", "programmes lancés");
+        // Ni git ni gitleaks n'ont pu le lire : il n'est pas compté sain.
+        std::fs::create_dir(jetable.join("second")).unwrap();
+        let complement = faux_gitleaks(&jetable.join("second"));
+        let rapport = complement.rapports.join("0.json");
+        assert!(matches!(
+            examiner(&git, Some(&complement), &depot, &rapport).0,
+            Issue::Illisible
+        ));
+        drop(complement);
+        let _ = std::fs::remove_dir_all(&jetable);
     }
 }
