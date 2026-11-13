@@ -908,7 +908,9 @@ list of its dependencies, versions included (cargo auditable), which cargo audit
 vulnerabilities of the RustSec database: `cargo audit bin <program>`. Up to 0.86, the program carried YARA-X, and with
 it rsa (no fixed version) and bincode (unmaintained), two advisories accepted with their proof in
 [deny.toml](deny.toml): for those versions, add `--ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2025-0141`. The check run
-before each release, advisories handled as cargo deny does: `outils/failles-programmes.sh <program>`, from the source.
+before each release, advisories handled as cargo deny does: `outils/failles-programmes.sh <program>`, from the source;
+for the window, `outils/failles-programmes.sh --fenetre <program>`, which also reads its bytes before setting an
+advisory aside.
 
 ## License
 

@@ -353,6 +353,17 @@ publish: it needs the override
 signed version history (`historique.txt`, line `passe-droit-sans-empreintes-ci`, likewise `passe-droit-sans-vm` for
 `VANGUARD_PUBLIER_SANS_VM=1`); a version published that way was not checked against CI.
 
+The window is built one target at a time: built by a single cargo call, both targets shared their features, and
+eframe's accesskit feature, taken for Windows only, brought zbus and zvariant into Linux, which cargo tree, cargo deny
+and the tests, run target by target, did not see (measured on November 12, 2026: 13.4 MB before, 10.5 MB after).
+`outils/caisses-fenetre.sh` compares each target's tree to its versioned list (`outils/caisses-fenetre/<target>.txt`,
+names and versions: one more crate shows in the diff and goes through cargo deny and cargo vet; `--ecrire` rewrites
+the lists); `--programmes`, run by `outils/compiler-version.sh` before the engraved fingerprint is computed, checks
+that each crate named in the bytes of both windows is in its target's tree, and `outils/failles-programmes.sh
+--fenetre` only sets aside an advisory for an off-target crate if it cannot be read in the audited program. Nothing
+readable: nothing is concluded, never a pass. `outils/essais-caisses-fenetre.sh` (the "fenêtre" step of
+`outils/verifier.sh`) tries these guards and the recipe with shims and made-up values.
+
 ## Screenshots and social preview
 
 `outils/captures.py` retakes the README screenshots (`assets/captures/`, in French and English) and the repository's
@@ -389,6 +400,10 @@ each push and each pull request (`--generique --plage`): only data recognized by
 machine running it. `python3 -I outils/confidentialite.py --depot`
 rereads the whole repository and its history. In tests, made-up values: MAC addresses keeping the vendor prefix,
 network “Salon”, accounts “alice”, “bob”, “Zoé”, “Jean Dupont”, emails `@example.com`.
+The build folder (`CARGO_TARGET_DIR`) also becomes `/vanguard/target` in the programs, and
+`python3 outils/confidentialite.py --compilation <build folder> <programs…>`, run by `outils/compiler-version.sh`
+before the fingerprint and the build marker, refuses a program that contains the home folder, the account name or the
+build folder, in UTF-8 as in UTF-16; an unreadable program: nothing is concluded, the build stops.
 
 Rust keeps the libraries' path in the programs (`/home/<account>/.cargo/registry/…`): to publish a version, build
 with `rustflags = ["--remap-path-prefix=/home/<account>=~"]` in `~/.cargo/config.toml` (`publier-version.sh` refuses

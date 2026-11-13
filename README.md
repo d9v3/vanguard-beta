@@ -956,7 +956,8 @@ liste de ses dépendances, versions comprises (cargo auditable), que cargo audit
 RustSec : `cargo audit bin <programme>`. Jusqu'à la 0.86, le programme portait YARA-X, et avec lui rsa (sans version
 corrigée) et bincode (abandonné), deux avis admis avec leur preuve dans [deny.toml](deny.toml) : pour ces versions,
 ajouter `--ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2025-0141`. La vérification de chaque publication, avis traités
-comme par cargo deny : `outils/failles-programmes.sh <programme>`, depuis le code.
+comme par cargo deny : `outils/failles-programmes.sh <programme>`, depuis le code ; pour la fenêtre,
+`outils/failles-programmes.sh --fenetre <programme>`, qui lit aussi ses octets avant d'écarter un avis.
 
 ## Licence
 

@@ -354,6 +354,17 @@ l'auteur, `outils/publier-version.sh` refuse de publier : il faut le passe-droit
 dans l'historique signé des versions (`historique.txt`, ligne `passe-droit-sans-empreintes-ci`, de même
 `passe-droit-sans-vm` pour `VANGUARD_PUBLIER_SANS_VM=1`) ; une version publiée ainsi n'a pas été confrontée à la CI.
 
+La fenêtre est compilée une cible à la fois : compilées par un seul appel de cargo, les deux cibles partageaient leurs
+options, et l'option accesskit d'eframe, prise pour Windows seulement, emportait sous Linux zbus et zvariant, que
+cargo tree, cargo deny et les essais, lancés cible par cible, ne voyaient pas (mesuré le 12 novembre 2026 : 13,4 Mo
+avant, 10,5 Mo après). `outils/caisses-fenetre.sh` compare l'arbre de chaque cible à sa liste versionnée
+(`outils/caisses-fenetre/<cible>.txt`, noms et versions : une caisse de plus se voit dans le diff et passe à cargo deny
+et cargo vet ; `--ecrire` refait les listes) ; `--programmes`, lancé par `outils/compiler-version.sh` avant le calcul
+de l'empreinte gravée, vérifie que chaque caisse nommée dans les octets des deux fenêtres est dans l'arbre de sa cible,
+et `outils/failles-programmes.sh --fenetre` n'écarte un avis d'une caisse hors cible que si elle ne se lit pas dans le
+programme audité. Rien de lisible : rien n'est conclu, jamais un vert. `outils/essais-caisses-fenetre.sh` (étape
+« fenêtre » de `outils/verifier.sh`) essaie ces gardes et la recette avec des cales et des valeurs inventées.
+
 ## Captures d'écran et image de partage
 
 `outils/captures.py` refait les captures du README (`assets/captures/`, en français et en anglais) et l'image de
@@ -392,6 +403,10 @@ reconnues à leur forme, sans l'identité de la machine qui le lance.
 `python3 -I outils/confidentialite.py --depot` relit tout le dépôt et son historique. Dans les tests, des valeurs
 inventées : adresses MAC au préfixe du fabricant gardé, réseau « Salon », comptes « alice », « bob », « Zoé »,
 « Jean Dupont », courriels `@example.com`.
+Le dossier de compilation (`CARGO_TARGET_DIR`) devient lui aussi `/vanguard/target` dans les programmes, et
+`python3 outils/confidentialite.py --compilation <dossier de compilation> <programmes…>`, lancé par
+`outils/compiler-version.sh` avant l'empreinte et le repère, refuse un programme qui contient le dossier personnel, le
+nom du compte ou le dossier de compilation, en UTF-8 comme en UTF-16 ; un programme illisible : rien n'est conclu, la compilation s'arrête.
 
 Rust garde le chemin des bibliothèques dans les programmes (`/home/<compte>/.cargo/registry/…`) : pour publier une
 version, compiler avec `rustflags = ["--remap-path-prefix=/home/<compte>=~"]` dans `~/.cargo/config.toml`
