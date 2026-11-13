@@ -364,8 +364,10 @@ FAUX
 printf '#!/bin/sh\nexit 0\n' >"$faux/curl"
 printf '#!/bin/sh\n[ "$1" = tree ] || exit 9\n[ -e "%s/compilee" ] && echo "zvariant v0.0.0"\nexit 0\n' "$faux" >"$faux/cargo"
 chmod +x "$faux/cargo-audit" "$faux/curl" "$faux/cargo"
-printf 'ELF' >"$faux/fenetre-linux"
-printf 'MZ' >"$faux/fenetre.exe"
+# Des octets où se lit une caisse inventée (chemin de panique), comme dans une vraie fenêtre : sans rien de lisible,
+# --fenetre dirait « non vérifié » (outils/essais-caisses-fenetre.sh l'essaie).
+printf 'ELF\0/cargo/registry/src/index.crates.io-0123456789abcdef/alpha-1.2.0/src/lib.rs\0' >"$faux/fenetre-linux"
+printf 'MZ\0/cargo/registry/src/index.crates.io-0123456789abcdef/alpha-1.2.0/src/lib.rs\0' >"$faux/fenetre.exe"
 auditer_fenetre() {
   : >"$faux/appels"
   SORTIE=$(env -u VANGUARD_HORS_LIGNE PATH="$faux:$PATH" bash outils/failles-programmes.sh --fenetre \

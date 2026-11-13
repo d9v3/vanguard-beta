@@ -11,6 +11,9 @@
 #                                        chaque caisse nommée dans les octets d'un programme (les chemins de ses
 #                                        messages de panique) est dans l'arbre de sa cible (outils/compiler-version.sh,
 #                                        après la compilation de la fenêtre)
+#   outils/caisses-fenetre.sh --caisses <programme>
+#                                        les caisses nommées dans ses octets, « nom version » par ligne (la même
+#                                        lecture, pour outils/failles-programmes.sh --fenetre)
 # Code 0 : conforme ; 1 : une caisse de trop, une retirée revenue ou une liste changée ; 2 : rien n'est conclu (cargo
 # tree en échec, liste de référence absente ou vide, aucune caisse lue dans un programme), jamais un vert.
 # Essais : outils/essais-caisses-fenetre.sh.
@@ -65,13 +68,25 @@ revenues() {
 # Les caisses nommées dans les octets d'un programme, « nom version » par ligne : les chemins de leurs sources
 # (…/registry/src/<index>/<nom>-<version>/…), gardés par les messages de panique, même allégé (strip) et chemins
 # retirés (/cargo/registry/…). Seulement celles qui peuvent paniquer : une preuve qu'une caisse est là, jamais qu'elle
-# n'y est pas ; d'où la comparaison dans ce sens-là seulement.
+# n'y est pas ; d'où la comparaison dans ce sens-là seulement. Code 2 si le programme ne se lit pas (grep : 2) ;
+# rien de trouvé n'est pas une erreur ici (grep : 1), c'est à l'appelant de refuser une liste vide.
 dans_programme() {
-  LC_ALL=C grep -aoE 'registry/src/[^/[:space:]]+/[A-Za-z0-9_-]+-[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.+-]*/' "$1" |
-    sed -E 's#^registry/src/[^/]+/##; s#/$##; s#^(.*)-([0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.+-]*)$#\1 \2#' | sort -u
+  local brut
+  brut=$(LC_ALL=C grep -aoE 'registry/src/[^/[:space:]]+/[A-Za-z0-9_-]+-[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.+-]*/' "$1")
+  (($? <= 1)) || return 2
+  [[ -n $brut ]] || return 0
+  sed -E 's#^registry/src/[^/]+/##; s#/$##; s#^(.*)-([0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.+-]*)$#\1 \2#' <<<"$brut" | sort -u
 }
 
 CODE=0
+if [[ ${1:-} == --caisses ]]; then
+  (($# == 2)) || { echo "outils/caisses-fenetre.sh --caisses <programme>" >&2; exit 2; }
+  [[ -f $2 && -r $2 ]] || { echo "✖ $2 : introuvable ou illisible, rien n'est conclu" >&2; exit 2; }
+  vues=$(dans_programme "$2") || { echo "✖ $2 : lecture impossible, rien n'est conclu" >&2; exit 2; }
+  [[ -n $vues ]] || { echo "✖ $2 : aucune caisse lue dans ses octets, rien n'est conclu" >&2; exit 2; }
+  printf '%s\n' "$vues"
+  exit 0
+fi
 if [[ ${1:-} == --programmes ]]; then
   (($# == 3)) || { echo "outils/caisses-fenetre.sh --programmes <fenêtre Linux> <fenêtre Windows>" >&2; exit 2; }
   PROGRAMMES=("$2" "$3")
@@ -79,7 +94,7 @@ if [[ ${1:-} == --programmes ]]; then
     cible=${CIBLES[i]} programme=${PROGRAMMES[i]}
     [[ -f $programme ]] || { echo "✖ $programme : introuvable, rien n'est conclu" >&2; exit 2; }
     attendues=$(arbre "$cible") || exit 2
-    vues=$(dans_programme "$programme")
+    vues=$(dans_programme "$programme") || { echo "✖ $programme : lecture impossible, rien n'est conclu" >&2; exit 2; }
     if [[ -z $vues ]]; then
       echo "✖ $programme : aucune caisse lue dans ses octets, rien n'est conclu" >&2
       exit 2
@@ -112,7 +127,10 @@ if [[ ${1:-} == --ecrire ]]; then
   done
   exit "$CODE"
 fi
-(($# == 0)) || { echo "outils/caisses-fenetre.sh [--ecrire | --programmes <fenêtre Linux> <fenêtre Windows>]" >&2; exit 2; }
+(($# == 0)) || {
+  echo "outils/caisses-fenetre.sh [--ecrire | --programmes <fenêtre Linux> <fenêtre Windows> | --caisses <programme>]" >&2
+  exit 2
+}
 
 # Une différence montrée ligne à ligne (40 au plus par sens), « + » dans l'arbre seulement, « - » dans la liste seulement.
 montrer() {

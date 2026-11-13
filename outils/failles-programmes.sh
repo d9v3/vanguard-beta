@@ -13,6 +13,8 @@
 #   outils/failles-programmes.sh <programme>...
 #   outils/failles-programmes.sh --fenetre <programme>...   la fenêtre (vanguard-fenetre) : sans les exceptions de
 #                                          Vanguard (fenetre/deny.toml n'en a aucune) ; seulement HORS_CIBLES, prouvées
+#                                          par cargo tree et absentes des octets du programme (sinon : refusé, ou non
+#                                          vérifié si rien ne s'y lit)
 #   outils/failles-programmes.sh --outil   cargo-audit seulement (présent, version de la CI), avant une compilation
 #   outils/failles-programmes.sh --depot   Cargo.lock du dépôt, de la fenêtre et des crates à part (fuzz, extensions,
 #                                          preuves Kani), jugés de même (étape « failles connues » de
@@ -64,7 +66,8 @@ OPTIONS=(--color never --deny unmaintained --deny unsound)
 # venues de YARA-X, ne la couvrent pas. Mais cargo audit lit Cargo.lock sans cible, et il y trouve des bibliothèques
 # que ni Linux ni Windows ne compilent (zvariant, zbus_names, zvariant_derive, abandonnées : sous accesskit_unix,
 # que la fenêtre ne prend pas sous Linux, fenetre/Cargo.toml). Leur avis n'est écarté ici que si `cargo tree` dit,
-# pour chacune des deux cibles, que la bibliothèque n'y est pas ; cargo deny, cible par cible, les refuse sinon.
+# pour chacune des deux cibles, que la bibliothèque n'y est pas (cargo deny, cible par cible, les refuse sinon) et,
+# avec --fenetre, qu'elle ne se lit pas non plus dans les octets du programme audité (hors_cibles_absentes_des_octets).
 OPTIONS_FENETRE=("${OPTIONS[@]}")
 # Les crates à part, chacune avec son Cargo.lock : le banc de fuzzing (fuzz/deny.toml), la bibliothèque des
 # extensions et l'exemple en Rust (extensions/deny.toml), les preuves Kani (outils/preuves). Aucune exception
@@ -81,7 +84,8 @@ EXCEPTIONS=$(python3 -I "$RACINE/outils/exceptions-rustsec.py")
 # fenêtre Linux de la 0.96 ; 243 caisses listées pour 152 dans son arbre le 12 nov. 2026). Jusque-là, ce code y
 # était aussi compilé (les deux cibles dans un seul appel de cargo) ; outils/compiler-version.sh les compile
 # désormais une à la fois, et outils/caisses-fenetre.sh --programmes prouve sur les octets que la preuve par cargo
-# tree vaut pour le programme. Seules les HORS_CIBLES s'écartent, par la même preuve que pour --depot (plus bas).
+# tree vaut pour le programme. Seules les HORS_CIBLES s'écartent, par la même preuve que pour --depot (plus bas), et
+# seulement si elles ne se lisent pas dans les octets du programme audité.
 [[ -z $FENETRE ]] || EXCEPTIONS=
 for id in $EXCEPTIONS; do
   OPTIONS+=(--ignore "$id")
@@ -141,6 +145,31 @@ hors_cibles_prouvees() {
   return "$code"
 }
 
+# Les HORS_CIBLES lues dans les octets de chaque programme (outils/caisses-fenetre.sh --caisses : la même lecture que
+# la garde de outils/compiler-version.sh). cargo tree juge l'arbre, pas le programme : compilé autrement (les deux
+# cibles dans un seul appel de cargo), le programme a déjà emporté zvariant, et son avis ne s'écarte alors pas. Les
+# octets ne prouvent qu'une présence (une caisse qui ne panique jamais n'y laisse pas de chemin) : l'absence, elle,
+# tient à cargo tree et à la recette (outils/essais-caisses-fenetre.sh). Code 1 si l'une y est, ou si rien ne se lit
+# dans un programme (non vérifié, jamais compté comme sain).
+hors_cibles_absentes_des_octets() {
+  local code=0 programme vues exception
+  for programme in "$@"; do
+    if ! vues=$(bash "$RACINE/outils/caisses-fenetre.sh" --caisses "$programme" 2>&1); then
+      echo "✖ fenêtre : $programme, caisses illisibles dans ses octets ($(tail -n 1 <<<"$vues")) :" \
+        "${HORS_CIBLES[*]%%:*} non vérifiées, pas écartées"
+      code=1
+      continue
+    fi
+    for exception in "${HORS_CIBLES[@]}"; do
+      if awk -v n="${exception#*:}" '$1 == n { t = 1 } END { exit !t }' <<<"$vues"; then
+        echo "✖ fenêtre : ${exception#*:} dans les octets de $programme, ${exception%%:*} n'est pas écartée"
+        code=1
+      fi
+    done
+  done
+  return "$code"
+}
+
 # Le Cargo.lock du dépôt, lu depuis ce dossier-là (son audit.toml vide) : même jugement que pour les programmes.
 if [[ $1 == --depot ]]; then
   CODE=0
@@ -165,12 +194,17 @@ if [[ $1 == --depot ]]; then
   exit "$CODE"
 fi
 
-# La fenêtre : ses avis HORS_CIBLES écartés seulement s'ils sont prouvés hors de ses deux cibles ; sinon, rien ne part.
+# La fenêtre : ses avis HORS_CIBLES écartés seulement s'ils sont prouvés hors de ses deux cibles et ne se lisent pas
+# dans ses octets ; sinon, rien ne part.
 if [[ -n $FENETRE ]]; then
   OPTIONS_FENETRE=("${OPTIONS[@]}")
-  hors_cibles_prouvees || { montrer_erreurs_arbre; echo "Ces programmes ne partent nulle part."; exit 1; }
+  PROUVE=0
+  hors_cibles_prouvees || PROUVE=1
+  hors_cibles_absentes_des_octets "$@" || PROUVE=1
+  ((PROUVE == 0)) || { montrer_erreurs_arbre; echo "Ces programmes ne partent nulle part."; exit 1; }
   OPTIONS=("${OPTIONS_FENETRE[@]}")
-  echo "fenêtre : écartées car compilées par aucune de ses deux cibles : ${HORS_CIBLES[*]%%:*}"
+  echo "fenêtre : écartées car compilées par aucune de ses deux cibles et absentes des octets lus :" \
+    "${HORS_CIBLES[*]%%:*}"
 fi
 
 # Chaque programme par son chemin complet (cargo audit tourne dans son dossier à lui), sous son nom pour l'affichage.

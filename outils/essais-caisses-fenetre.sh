@@ -13,6 +13,10 @@
 #      (outils/caisses-fenetre/<cible>.txt, noms et versions), jamais à un nombre : une caisse remplacée par une autre
 #      à nombre égal, une de plus, une de moins ou une retirée revenue → 1, la différence montrée ; cargo tree en
 #      échec → 2.
+#   4. outils/failles-programmes.sh --fenetre n'écarte les avis de zbus et zvariant (HORS_CIBLES) que si ces caisses
+#      ne se lisent pas dans les octets du programme audité (même lecture que --programmes) : un faux programme qui
+#      porte zvariant est refusé ; un programme où rien ne se lit est « non vérifié », jamais vert ; un programme sain
+#      passe (cale cargo-audit à la version de la CI).
 # Lancé par outils/verifier.sh (étape « fenêtre »).
 #   outils/essais-caisses-fenetre.sh
 set -uo pipefail
@@ -180,5 +184,24 @@ if [[ -s $T/ref-$LINUX.txt && -s $T/ref-$WINDOWS.txt ]]; then
   ((CODE == 2)) && ok "cargo tree en échec : code 2" || ko "cargo tree en échec : code $CODE ($SORTIE)"
 fi
 
+echo "4. failles-programmes.sh --fenetre : zbus et zvariant écartés seulement s'ils ne sont pas dans les octets"
+arbre $LINUX "alpha 1.2.0" "beta 0.3.1"
+arbre $WINDOWS "alpha 1.2.0" "delta 2.0.0"
+programme "$T/fenetre" alpha-1.2.0 zvariant-5.15.1
+programme "$T/fenetre.exe" alpha-1.2.0 delta-2.0.0
+lance outils/failles-programmes.sh --fenetre "$T/fenetre" "$T/fenetre.exe"
+((CODE != 0)) && [[ $SORTIE == *zvariant*RUSTSEC-2026-0370* && $SORTIE != *"✔"* ]] &&
+  ok "zvariant dans les octets : RUSTSEC-2026-0370 pas écarté, refusé (code $CODE)" ||
+  ko "zvariant dans les octets : code $CODE ($SORTIE)"
+programme "$T/fenetre"
+lance outils/failles-programmes.sh --fenetre "$T/fenetre" "$T/fenetre.exe"
+((CODE != 0)) && [[ $SORTIE == *"non vérifié"* && $SORTIE != *"✔"* ]] &&
+  ok "rien de lisible dans les octets : « non vérifié », code $CODE" || ko "rien de lisible : code $CODE ($SORTIE)"
+rm -f "$T/audit-lance"
+programme "$T/fenetre" alpha-1.2.0 beta-0.3.1
+lance outils/failles-programmes.sh --fenetre "$T/fenetre" "$T/fenetre.exe"
+((CODE == 0)) && [[ -e $T/audit-lance && $SORTIE == *"✔"* ]] && ok "programme sain : audité, code 0" ||
+  ko "programme sain : code $CODE ($SORTIE)"
+
 ((ECHECS == 0)) || { echo "$ECHECS essai(s) en échec."; exit 1; }
-echo "Caisses de la fenêtre : recette, octets et listes, tout refuse ce qu'il doit."
+echo "Caisses de la fenêtre : recette, octets, listes et failles, tout refuse ce qu'il doit."
