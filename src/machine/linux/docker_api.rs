@@ -17,13 +17,13 @@ pub(crate) const PRISE: &str = "/var/run/docker.sock";
 
 /// Ce qui désigne un autre démon que celui de la prise par défaut, nommé dans le non vérifié : une variable de Vanguard
 /// (DOCKER_HOST ; DOCKER_CONTEXT autre que « default » ; DOCKER_CONFIG dont le config.json choisit un autre contexte,
-/// est illisible ou relatif) ou, sans DOCKER_CONTEXT ni DOCKER_CONFIG, le config.json de la maison
+/// est illisible, relatif ou passe par « .. ») ou, sans DOCKER_CONTEXT ni DOCKER_CONFIG, le config.json de la maison
 /// (`CONFIG_DE_LA_MAISON` : un `currentContext`, clé lue sans la casse comme la CLI, autre que « default », un fichier
-/// illisible, ou pas de maison connue : HOME relatif, ou base des comptes muette). La CLI de la personne lirait ce
-/// démon-là. Vanguard ne le suit pas, c'est voulu : une variable ou un fichier que le compte écrit choisirait le démon
-/// qui répond, et un faux démon dirait « rien d'exposé » (G-1). Il est dit non vérifié, jamais remplacé par la lecture
-/// d'un autre démon (E-4, recontrôle 0.95). Le fichier de la maison passait par la CLI, qui suivait son contexte : la
-/// même porte que les variables (N-2, recontrôle 2 de la 0.95).
+/// illisible, ou pas de maison connue : HOME relatif ou qui passe par « .. », ou base des comptes muette). La CLI de
+/// la personne lirait ce démon-là. Vanguard ne le suit pas, c'est voulu : une variable ou un fichier que le compte
+/// écrit choisirait le démon qui répond, et un faux démon dirait « rien d'exposé » (G-1). Il est dit non vérifié,
+/// jamais remplacé par la lecture d'un autre démon (E-4, recontrôle 0.95). Le fichier de la maison passait par la
+/// CLI, qui suivait son contexte : la même porte que les variables (N-2, recontrôle 2 de la 0.95).
 pub(crate) fn demon_designe() -> Option<&'static str> {
     demon_designe_dans(
         &|n| std::env::var_os(n),
@@ -52,13 +52,25 @@ fn demon_designe_dans(lire: Lire<'_>, compte: Option<PathBuf>) -> Option<&'stati
 /// La maison où la CLI de la personne cherche ~/.docker : HOME tel qu'il est dès qu'il n'est pas vide
 /// (`os.UserHomeDir`), sinon celle de la base des comptes (`user.Current`). Un HOME relatif se lit depuis le dossier
 /// courant de la CLI, inconnu ici : aucune maison connue. `dossier_personnel` prenait alors la base des comptes, et
-/// Vanguard lisait un autre config.json que la CLI (V-1, relecture du sous-lot c2 de la 0.95).
+/// Vanguard lisait un autre config.json que la CLI (V-1, relecture du sous-lot c2 de la 0.95). Un « .. » : aucune
+/// maison connue non plus (`lu_comme_la_cli`).
 fn maison_de_la_cli(lire: Lire<'_>, compte: Option<PathBuf>) -> Option<PathBuf> {
     match reglee(lire, "HOME") {
         Some(home) => Some(PathBuf::from(home)),
         None => compte,
     }
-    .filter(|m| m.is_absolute())
+    .filter(|m| lu_comme_la_cli(m))
+}
+
+/// Un dossier que la CLI et le noyau lisent au même endroit : absolu, sans composant « .. ». La CLI (Go) défait
+/// « .. » par le texte avant d'ouvrir (`filepath.Join` nettoie le chemin : « …/a/lien/.. » devient « …/a ») ; le
+/// noyau, lui, suit d'abord le lien, puis remonte depuis le dossier où il mène. Vanguard lisait alors un autre
+/// dossier, sans config.json, et croyait le contexte par défaut : « sain » là où la CLI lit un autre démon (C-1,
+/// contrôle 2 du sous-lot c2 de la 0.95). Refaire le nettoyage de Go serait une imitation de plus à tenir juste : un
+/// « .. » rend le démon désigné, dit non vérifié. Un « . » ne change rien (le noyau et Go s'y arrêtent au même
+/// dossier) ; `components` le passe de toute façon.
+fn lu_comme_la_cli(dossier: &Path) -> bool {
+    dossier.is_absolute() && !dossier.components().any(|c| c == std::path::Component::ParentDir)
 }
 
 /// Une variable de Docker lue par `lire` (l'environnement, ou celui d'un essai).
@@ -73,9 +85,10 @@ fn reglee(lire: Lire<'_>, nom: &str) -> Option<OsString> {
 
 /// Le config.json du dossier que nomme DOCKER_CONFIG laisse-t-il le contexte par défaut ? Un chemin relatif (des
 /// blancs, « docker-conf ») se lit depuis le dossier courant de la CLI de la personne, qu'on ne connaît pas : non plus.
+/// Un « .. » non plus (`lu_comme_la_cli`, C-1).
 fn config_reglee_par_defaut(config: &OsString) -> bool {
     let config = Path::new(config);
-    config.is_absolute() && config_par_defaut(config)
+    lu_comme_la_cli(config) && config_par_defaut(config)
 }
 
 /// La variable de Docker qui désigne un autre démon (`demon_designe`), lue par `lire`.
@@ -564,6 +577,33 @@ mod tests {
         assert_eq!(
             demon_designe_dans(&avec_home(OsString::new()), compte(&choisie)),
             Some(CONFIG_DE_LA_MAISON)
+        );
+        // C-1 (contrôle 2 du sous-lot c2 de la 0.95) : un « .. » derrière un lien. La CLI nettoie le chemin par le
+        // texte (« choisie/lien/.. » devient « choisie », où est le contexte « temoin ») ; le noyau suit le lien, puis
+        // remonte dans « vide », sans config.json. Vanguard disait le contexte par défaut, donc sain. Même chose pour
+        // DOCKER_CONFIG. Un « .. » rend le démon désigné (non vérifié), quel que soit le dossier où le noyau arrive.
+        std::fs::create_dir(vide.join("sous")).unwrap();
+        std::os::unix::fs::symlink(vide.join("sous"), choisie.join("lien")).unwrap();
+        std::os::unix::fs::symlink(vide.join("sous"), choisie.join(".docker").join("lien")).unwrap();
+        let par_le_lien = |d: &Path| d.join("lien").join("..").into_os_string();
+        assert_eq!(
+            demon_designe_dans(&avec_home(par_le_lien(&choisie)), compte(&vide)),
+            Some(CONFIG_DE_LA_MAISON)
+        );
+        let config = |c: OsString| move |n: &str| (n == "DOCKER_CONFIG").then(|| c.clone());
+        assert_eq!(
+            demon_designe_dans(&config(par_le_lien(&choisie.join(".docker"))), compte(&vide)),
+            Some("DOCKER_CONFIG")
+        );
+        // Témoins : le même dossier nommé sans « .. » se lit (« temoin » : désigné), et un dossier sain, même atteint
+        // par un lien, reste sain.
+        assert_eq!(
+            demon_designe_dans(&config(choisie.join(".docker").into_os_string()), compte(&vide)),
+            Some("DOCKER_CONFIG")
+        );
+        assert_eq!(
+            demon_designe_dans(&avec_home(choisie.join("lien").into_os_string()), compte(&choisie)),
+            None
         );
     }
 
