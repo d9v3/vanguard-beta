@@ -547,7 +547,7 @@ fn installer(octets: &[u8], cible: &Path, attendue: Version, essai: Essai) -> Re
         // pas de côté arrête tout ici, avant le renommage ; avant, la mise à jour continuait sans rien à remettre, et
         // un nom de côté pris par un dossier suffisait à laisser installée la copie échangée (que l'entretien du mois
         // lance seul).
-        let precedente = Precedente::retenir(cible).map_err(rien)?;
+        let precedente = Precedente::retenir(cible).map_err(|e| rien(e.to_string()))?;
         let posee = mettre_en_place(&provisoire, cible)
             .map_err(|e| e.to_string())
             .and_then(|()| match posee_est_la_montree(&f, cible, octets) {
@@ -858,23 +858,25 @@ fn reecrire(tenue: &Tenue, cible: &Path) -> Reecrite {
 impl Precedente {
     /// L'ancienne copie mise de côté, ou pourquoi elle ne peut pas l'être : l'appelant refuse alors avant le
     /// renommage (N-1, recontrôle 2 0.95), jamais un remplacement sans copie à remettre.
-    fn retenir(cible: &Path) -> Result<Self, String> {
+    fn retenir(cible: &Path) -> Result<Self, crate::modele::Echec> {
+        // La phrase telle quelle (le canal d'erreur commun : un refus se rend par sa seule phrase).
+        let refus = |phrase: String| crate::modele::Echec::refuse("mise_a_jour/precedente", phrase);
         let de_cote = cible.with_file_name(format!("{NOM}.precedent"));
         let pas_de_cote = |pourquoi: &dyn std::fmt::Display| {
-            trf!(
+            refus(trf!(
                 "l'ancienne copie ne se met pas de côté sous {} ({pourquoi}), et ne pourrait donc pas être remise",
                 "the old copy cannot be set aside as {} ({pourquoi}), so it could not be put back",
                 affichable(&de_cote.display().to_string())
-            )
+            ))
         };
         let etat = match std::fs::symlink_metadata(cible) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => EtatPrecedente::Aucune,
             Err(e) => {
-                return Err(trf!(
+                return Err(refus(trf!(
                     "la copie en place ne se lit pas ({}) : {e}",
                     "the copy in place cannot be read ({}): {e}",
                     affichable(&cible.display().to_string())
-                ));
+                )));
             }
             Ok(m) => {
                 let tenue = Tenue::de(cible, &m).map_err(|e| pas_de_cote(&e))?;
@@ -888,7 +890,7 @@ impl Precedente {
                     Ok(_) if tenue.est(&de_cote) => {
                         std::fs::remove_file(&de_cote).map_err(|e| pas_de_cote(&e))?;
                     }
-                    Ok(_) => return Err(nom_garde(&de_cote)),
+                    Ok(_) => return Err(refus(nom_garde(&de_cote))),
                 }
                 match std::fs::hard_link(cible, &de_cote) {
                     // La cible ou ce nom changés entre-temps (un autre programme) : refus ; ce qui est à ce nom n'est
@@ -896,7 +898,9 @@ impl Precedente {
                     Ok(()) if !tenue.est(&de_cote) => return Err(pas_de_cote(&tr!("pas relue", "not read back"))),
                     Ok(()) => EtatPrecedente::Retenue(tenue),
                     // Posé entre le regard et le lien (un autre programme) : jamais effacé non plus.
-                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Err(nom_garde(&de_cote)),
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                        return Err(refus(nom_garde(&de_cote)));
+                    }
                     Err(e) => return Err(pas_de_cote(&e)),
                 }
             }
