@@ -2011,11 +2011,15 @@ fn juger_ligne(e: Empreinte, c: &CheminDesigne, a: &mut dyn Acces) -> Jugement {
     } else {
         Vec::new()
     };
-    let bibliotheques = numeros
-        .iter()
-        .map(|n| chargees.iter().filter(|b| b.ligne == *n).count())
-        .max()
-        .unwrap_or(0);
+    // Ronde 6 du lot 096 (R6-6) : comptées en un passage (numéros × bibliothèques coûtait N² : 512 Kio de « /a »,
+    // 170 000 lignes pareilles, occupaient le fils root des secondes, voire des minutes).
+    let numeros_vus: std::collections::HashSet<usize> = numeros.iter().copied().collect();
+    let mut par_ligne: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    for b in chargees.iter().filter(|b| numeros_vus.contains(&b.ligne)) {
+        let n = par_ligne.entry(b.ligne).or_insert(0);
+        *n = n.saturating_add(1);
+    }
+    let bibliotheques = par_ligne.values().copied().max().unwrap_or(0);
     // Seule une ligne que Vanguard sait suspecte part : une liste qui désignerait une autre ligne (un réglage de
     // sécurité) est refusée ici, quoi qu'elle dise.
     let suspecte = if preload {
@@ -2033,7 +2037,8 @@ fn juger_ligne(e: Empreinte, c: &CheminDesigne, a: &mut dyn Acces) -> Jugement {
     // autre ligne : un « \ » final la joint à la suivante (shell, systemd, pam_env) ; dans un fichier lu par un
     // shell, un guillemet ouvert, un heredoc, un bloc ou une suite par « | » ou « && » relie aussi des lignes. La
     // question ne montrerait pas cette autre ligne : rien n'est fait, la correction est à la main (le bilan ne
-    // l'offre pas non plus : `linux::retrait_decoupe`).
+    // l'offre pas non plus : `linux::retrait_decoupe`). Ronde 6 : dans un fichier lu par un shell, seule une ligne
+    // « [export ]NOM=valeur » de la forme la plus simple, dans un voisinage qui ne la relie à rien, se retire seule.
     if !preload {
         match crate::machine::linux::retrait_decoupe(fichier, &contenu, &numeros) {
             Some(crate::machine::linux::Decoupe::Barre) => {
@@ -2044,15 +2049,16 @@ fn juger_ligne(e: Empreinte, c: &CheminDesigne, a: &mut dyn Acces) -> Jugement {
             }
             Some(crate::machine::linux::Decoupe::Shell) => {
                 return Err(refus(trf!(
-                    "dans {vu}, la ligne désignée n'est pas une commande simple du shell, ou touche une construction sur plusieurs lignes (guillemet ouvert, heredoc « << », bloc if, for ou fonction, suite par « | » ou « && ») : la retirer seule pourrait changer ce que font les autres lignes ; par prudence, rien n'est fait : corrigez ce fichier à la main",
-                    "in {vu}, the line named is not a simple shell command, or touches a construct spanning several lines (open quote, \"<<\" heredoc, if, for or function block, continuation with \"|\" or \"&&\"): removing it alone could change what the other lines do; to be safe, nothing is done: fix this file by hand"
+                    "dans {vu}, la ligne désignée n'est pas de la forme la plus simple « export NOM=valeur » (sans « $ », guillemet ouvert, « ; », « & », « | » ni « \\ »), ou elle touche les lignes voisines ou d'autres lignes du fichier (bloc, heredoc « << », suite par « | » ou « && », « $? », même NOM lu ailleurs, alias, readonly, trap…) : la retirer seule pourrait changer ce que font les autres lignes ; par prudence, rien n'est fait : corrigez ce fichier à la main",
+                    "in {vu}, the line named is not of the simplest form \"export NAME=value\" (no \"$\", open quote, \";\", \"&\", \"|\" or \"\\\\\"), or it touches the nearby lines or other lines of the file (block, \"<<\" heredoc, continuation with \"|\" or \"&&\", \"$?\", the same NAME read elsewhere, alias, readonly, trap…): removing it alone could change what the other lines do; to be safe, nothing is done: fix this file by hand"
                 )));
             }
             Some(crate::machine::linux::Decoupe::Trop) => {
                 return Err(refus(trf!(
-                    "{vu} a plus de {} lignes : Vanguard ne vérifie pas qu'en retirer une seule ne change rien d'autre ; rien n'est fait : corrigez ce fichier à la main",
-                    "{vu} has more than {} lines: Vanguard does not check that removing one alone changes nothing else; nothing is done: fix this file by hand",
-                    crate::machine::linux::RETRAIT_LIGNES_MAX
+                    "{vu} a plus de {} lignes ou de {} Mio : Vanguard ne vérifie pas qu'en retirer une seule ne change rien d'autre ; rien n'est fait : corrigez ce fichier à la main",
+                    "{vu} has more than {} lines or {} MiB: Vanguard does not check that removing one alone changes nothing else; nothing is done: fix this file by hand",
+                    crate::machine::linux::RETRAIT_LIGNES_MAX,
+                    crate::machine::linux::RETRAIT_OCTETS_MAX / (1024 * 1024)
                 )));
             }
             None => {}
@@ -2066,7 +2072,7 @@ fn juger_ligne(e: Empreinte, c: &CheminDesigne, a: &mut dyn Acces) -> Jugement {
     if preload {
         let restent: std::collections::BTreeSet<&[u8]> = chargees
             .iter()
-            .filter(|b| !numeros.contains(&b.ligne))
+            .filter(|b| !numeros_vus.contains(&b.ligne))
             .map(|b| b.nom.as_slice())
             .collect();
         let reveilles: Vec<Vec<u8>> = crate::machine::prechargement::bibliotheques(&garde)
@@ -2086,7 +2092,9 @@ fn juger_ligne(e: Empreinte, c: &CheminDesigne, a: &mut dyn Acces) -> Jugement {
     // le vrai chargeur ne chargeait pas (une ligne avec un NUL l'arrêtait), sera chargé après le retrait. Pas un refus
     // (l'état d'après n'est jamais pire que ce que le bilan montre), mais c'est dit avant la question.
     let gagnes: Vec<Vec<u8>> = if preload {
-        let avant = crate::machine::prechargement::noms_du_chargeur(&contenu);
+        let avant: std::collections::HashSet<Vec<u8>> = crate::machine::prechargement::noms_du_chargeur(&contenu)
+            .into_iter()
+            .collect();
         crate::machine::prechargement::noms_du_chargeur(&garde)
             .into_iter()
             .filter(|n| !avant.contains(n))
@@ -4466,6 +4474,29 @@ mod tests {
         assert_eq!(a.fichiers[Path::new("/etc/ld.so.preload")].contenu, contenu);
     }
 
+    /// Ronde 6 du lot 096 (R6-6) : le retrait dans ld.so.preload est linéaire. Avant, chaque numéro recomptait toutes
+    /// les bibliothèques : 2 000, 4 000 et 8 000 lignes « /a » prenaient 38, 129 et 497 ms (essai non optimisé), N² ;
+    /// 512 Kio (ce que lit le fils root) en font 170 000. Le temps est borné large, pour une machine lente.
+    #[test]
+    fn retrait_de_ld_so_preload_lineaire() {
+        for n in [8_000usize, 170_000] {
+            let mut a = Faux::nouveau().repondre("");
+            a.poser("/etc/ld.so.preload", &b"/a\n".repeat(n), 0o644);
+            let c = CheminDesigne::nouveau(b"/etc/ld.so.preload").unwrap();
+            let debut = std::time::Instant::now();
+            let fait = faire_avec(
+                Defense::RetirerLigne(empreinte_de_ligne(b"/a"), c),
+                &mut a,
+                &mut FauxServices::nouveau(),
+            );
+            let duree = debut.elapsed();
+            eprintln!("{n} lignes : {duree:?}, {fait:?}");
+            assert!(duree < std::time::Duration::from_secs(20), "{n} lignes : {duree:?}");
+            // Le jugement est allé jusqu'à la question (le faux répond non), pas arrêté avant.
+            assert!(fait.raison.contains("vous n'avez pas dit oui"), "{n} lignes : {fait:?}");
+        }
+    }
+
     /// Une ligne de ld.so.preload qui nomme plusieurs bibliothèques part en entier : c'est dit avant la question.
     #[test]
     fn ligne_de_plusieurs_bibliotheques_dite() {
@@ -4552,7 +4583,7 @@ mod tests {
             let (r, questions, apres) = essai(&contenu, ligne);
             assert!(!r.reussi, "{contenu:?}");
             assert!(
-                r.raison.contains("plusieurs lignes") && r.raison.contains("à la main"),
+                r.raison.contains("lignes voisines") && r.raison.contains("à la main"),
                 "{}",
                 r.raison
             );

@@ -2106,11 +2106,12 @@ struct Lancements {
     /// par l'empreinte de ses octets, que la ligne lue n'a plus), elle reste à la main et c'est dit (lot 096, N4).
     hors_utf8: bool,
     /// Une ligne signalée qui finit par « \ », ou suit une telle ligne, ou, dans un fichier lu par un shell, n'est pas
-    /// une commande simple ou touche une construction sur plusieurs lignes : la retirer seule pourrait changer le sens
-    /// d'une autre ligne (ronde 4 du lot
-    /// 096, G34-1 et R4-3 : `linux::retrait_decoupe`). Un geste ne la désigne pas, et c'est dit.
+    /// de la forme « [export ]NOM=valeur » la plus simple ou touche d'autres lignes : la retirer seule pourrait
+    /// changer le sens d'une autre ligne (ronde 4 du lot 096, G34-1 et R4-3, et ronde 6 : `linux::retrait_decoupe`).
+    /// Un geste ne la désigne pas, et c'est dit.
     jointes: bool,
-    /// Une ligne signalée dans un fichier de plus de `linux::RETRAIT_LIGNES_MAX` lignes : son retrait seul n'est pas
+    /// Une ligne signalée dans un fichier de plus de `linux::RETRAIT_LIGNES_MAX` lignes ou de
+    /// `linux::RETRAIT_OCTETS_MAX` octets : son retrait seul n'est pas
     /// jugé, donc pas offert (ronde 5 du lot 096, N1), et c'est dit.
     trop_long: bool,
     r: Releveur,
@@ -7232,7 +7233,7 @@ impl IndexDeRetrait {
 /// Le fichier et la ligne à retirer, pour `Lancements::retraits` ; `None` (à la main) pour une ligne qu'un geste ne
 /// désigne pas : hors UTF-8 (`Lancements::hors_utf8`), liée à une autre (`Lancements::jointes`, même règle que le
 /// fils root : `linux::AnalyseDeRetrait`) par un « \ » final, la sienne ou celle d'avant, ou, dans un fichier lu par
-/// un shell, qui n'est pas une commande simple ou touche une construction sur plusieurs lignes ; ou dans un fichier
+/// un shell, qui n'est pas de la forme « [export ]NOM=valeur » la plus simple ou touche d'autres lignes ; ou dans un fichier
 /// trop long pour être jugé (`Lancements::trop_long`). Calculé une fois par fichier et par ligne lue
 /// (`IndexDeRetrait`).
 fn retrait(t: &mut Lancements, f: &Path, lu: &Lecture, l: &str) -> Option<(String, String)> {
@@ -14117,15 +14118,16 @@ fn constat_des_lancements(t: Lancements) -> Constat {
     }
     if jointes {
         message.push_str(tr!(
-            " Une ligne signalée finit par « \\ », ou suit une telle ligne, ou, dans un fichier lu par un shell, n'est pas une commande simple ou touche une construction sur plusieurs lignes (guillemet ouvert, heredoc, bloc, suite par « | » ou « && ») : la retirer seule pourrait changer le sens d'une autre ligne. Une seule ligne ainsi suffit : tout est à corriger à la main.",
-            " A reported line ends with \"\\\", or follows such a line, or, in a file read by a shell, is not a simple command or touches a construct spanning several lines (open quote, heredoc, block, continuation with \"|\" or \"&&\"): removing it alone could change what another line does. One such line is enough: everything is to be fixed by hand."
+            " Une ligne signalée finit par « \\ », ou suit une telle ligne, ou, dans un fichier lu par un shell, n'est pas de la forme la plus simple « export NOM=valeur » (sans « $ », guillemet ouvert, « ; », « & » ni « | »), ou touche d'autres lignes (bloc, heredoc, suite par « | » ou « && », « $? », même NOM lu ailleurs, alias, readonly, trap…) : la retirer seule pourrait changer le sens d'une autre ligne. Une seule ligne ainsi suffit : tout est à corriger à la main.",
+            " A reported line ends with \"\\\", or follows such a line, or, in a file read by a shell, is not of the simplest form \"export NAME=value\" (no \"$\", open quote, \";\", \"&\" or \"|\"), or touches other lines (block, heredoc, continuation with \"|\" or \"&&\", \"$?\", the same NAME read elsewhere, alias, readonly, trap…): removing it alone could change what another line does. One such line is enough: everything is to be fixed by hand."
         ));
     }
     if trop_long {
         message.push_str(&trf!(
-            " Une ligne signalée est dans un fichier de plus de {} lignes : Vanguard ne vérifie pas que la retirer seule ne change rien d'autre ; tout est à corriger à la main.",
-            " A reported line is in a file of more than {} lines: Vanguard does not check that removing it alone changes nothing else; everything is to be fixed by hand.",
-            crate::machine::linux::RETRAIT_LIGNES_MAX
+            " Une ligne signalée est dans un fichier de plus de {} lignes ou de {} Mio : Vanguard ne vérifie pas que la retirer seule ne change rien d'autre ; tout est à corriger à la main.",
+            " A reported line is in a file of more than {} lines or {} MiB: Vanguard does not check that removing it alone changes nothing else; everything is to be fixed by hand.",
+            crate::machine::linux::RETRAIT_LIGNES_MAX,
+            crate::machine::linux::RETRAIT_OCTETS_MAX / (1024 * 1024)
         ));
     }
     if let Some(a) = a_savoir {
@@ -14959,7 +14961,9 @@ mod tests {
                 utf8: true,
                 index: std::cell::OnceCell::new(),
             };
-            let index = IndexDeRetrait::de(Path::new("/etc/profile.d/x.sh"), &lu);
+            // Lu ligne par ligne : la règle du shell (ronde 6 du lot 096) refuserait ces lignes, ce n'est pas ce
+            // que l'essai regarde.
+            let index = IndexDeRetrait::de(Path::new("/etc/xdg/autostart/a.desktop"), &lu);
             assert!(
                 matches!(index.rendu(&lu, l), Rendu::Ecrite(e) if e == ecrite),
                 "{texte:?} {l:?}"
@@ -20241,9 +20245,12 @@ mod tests {
                     &m.racine.join("home/alice"),
                     &mut t,
                 );
-                assert!(!t.jointes && !t.trop_long);
+                // Des lignes toutes différentes qui posent le même NOM se refusent l'une l'autre (ronde 6 du lot
+                // 096 : un NOM qui paraît ailleurs dans le fichier) : le jugement reste linéaire, à la main.
+                assert_eq!(t.jointes, !pareilles);
+                assert!(!t.trop_long);
                 assert_eq!(t.retraits.len(), n);
-                assert!(t.retraits.iter().all(Option::is_some));
+                assert!(t.retraits.iter().all(|r| r.is_some() == pareilles));
                 let c = constat_des_lancements(t);
                 let duree = debut.elapsed();
                 let pas = crate::machine::linux::PAS_DE_RETRAIT.with(std::cell::Cell::get);

