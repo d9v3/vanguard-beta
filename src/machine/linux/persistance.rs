@@ -15175,7 +15175,7 @@ mod tests {
         }
         assert!(!chemin_tenu(&d.join("m"), &|p, _| p != d.join("l")));
         assert!(chemin_tenu(&d.join("l/../b/f"), &note));
-        assert!(vus.take().last() == Some(&d.join("a/b/f")));
+        assert_eq!(vus.take().last(), Some(&d.join("a/b/f")));
         assert!(!chemin_tenu(Path::new("a/b/f"), &|_, _| true));
         assert!(!chemin_tenu(&d.join("absent"), &|_, _| true));
         assert!(!chemin_tenu(&d.join("boucle"), &|_, _| true));
