@@ -1451,8 +1451,16 @@ const OMARCHY: &str = "/usr/share/omarchy";
 /// même contenu entier (SHA-256), l'original à root seul. Une telle copie fait ce que fait l'original, que Vanguard
 /// ne lit pas (il vient du paquet) : ses lignes ne se comptent pas, la copie se dit (deuxième vérification, les
 /// 62 lignes « non lue » de la bibliothèque recopiée).
+#[cfg(not(test))]
 fn copie_d_omarchy(r: &Releveur, f: &Path) -> Option<std::path::PathBuf> {
     copie_d_omarchy_selon(r, f, &de_root_seul)
+}
+
+/// Essais : le jugement « à root seul » posé sur ce fil (`tests::ROOT_D_OMARCHY`), sinon le vrai (`de_root_seul`).
+/// Sous `unshare -r`, rien n'est à root seul : l'essai de bout en bout des copies le remplace, comme H5.
+#[cfg(test)]
+fn copie_d_omarchy(r: &Releveur, f: &Path) -> Option<std::path::PathBuf> {
+    tests::ROOT_D_OMARCHY.with_borrow(|j| copie_d_omarchy_selon(r, f, j.as_deref().unwrap_or(&de_root_seul)))
 }
 
 /// `copie_d_omarchy`, le jugement « à root seul » passé en paramètre (vérification 3, H5) : l'essai le remplace,
@@ -9615,6 +9623,28 @@ mod tests {
             const { std::cell::RefCell::new(None) };
         /// L'uid du compte que voit `uid_du_compte` sur ce fil d'essai (valeur inventée).
         pub(super) static UID_DU_COMPTE: std::cell::Cell<u32> = const { std::cell::Cell::new(1000) };
+        /// Le jugement « à root seul » des originaux d'Omarchy que voit `copie_d_omarchy` sur ce fil d'essai ;
+        /// `None` : le vrai, `de_root_seul` (`JugementDOmarchy`).
+        pub(super) static ROOT_D_OMARCHY: std::cell::RefCell<Option<Jugement>> = const { std::cell::RefCell::new(None) };
+    }
+
+    /// Un jugement « à root seul » remplacé, pour un essai.
+    pub(super) type Jugement = Box<dyn Fn(&Path) -> bool>;
+
+    /// Le jugement « à root seul » d'Omarchy remplacé sur ce fil, remis au vrai à la fin, même si l'essai tombe.
+    struct JugementDOmarchy;
+
+    impl JugementDOmarchy {
+        fn poser(j: impl Fn(&Path) -> bool + 'static) -> JugementDOmarchy {
+            ROOT_D_OMARCHY.with_borrow_mut(|r| *r = Some(Box::new(j)));
+            JugementDOmarchy
+        }
+    }
+
+    impl Drop for JugementDOmarchy {
+        fn drop(&mut self) {
+            ROOT_D_OMARCHY.with_borrow_mut(|r| *r = None);
+        }
     }
 
     /// D7a : les lignes suspectes des fichiers du système partent par des gestes de défense (une par ligne, sans
@@ -17496,9 +17526,11 @@ mod tests {
     }
 
     /// Point 8 : la bibliothèque d'Omarchy du paquet (/usr/share/omarchy/default/hypr, à root) recopiée telle quelle
-    /// dans ~/.config/hypr se dit en une ligne d'information, sans alerte ; un seul fichier changé se juge à
-    /// nouveau. Demande la vraie bibliothèque, vue hors d'un espace de noms d'utilisateurs (le root qu'on y voit
-    /// n'est pas celui du système).
+    /// dans ~/.config/hypr est une copie conforme pour le vrai jugement (`de_root_seul`) ; un seul fichier changé ne
+    /// l'est plus. Demande la vraie bibliothèque, vue hors d'un espace de noms d'utilisateurs (le root qu'on y voit
+    /// n'est pas celui du système), lue à la vraie racine : depuis V-2 (relecture du lot c2-uwsm, 0.95), un lien posé
+    /// au compte vers /usr/share/omarchy ne passe plus pour à root, avec raison. Le bilan de bout en bout (une ligne
+    /// d'information, rien de compté) : `copie_conforme_dite_en_information`.
     #[test]
     fn copie_conforme_de_la_bibliotheque_d_omarchy_dite() {
         let original = Path::new("/usr/share/omarchy/default/hypr");
@@ -17511,8 +17543,11 @@ mod tests {
             );
         }
         let m = Maison::nouvelle("relecture2-copie-root");
-        std::fs::create_dir_all(m.racine.join("usr/share")).unwrap();
-        std::os::unix::fs::symlink("/usr/share/omarchy", m.racine.join("usr/share/omarchy")).unwrap();
+        let r = Releveur {
+            racine: std::path::PathBuf::from("/"),
+            maison: m.chemin(""),
+            ..Releveur::default()
+        };
         let mut lus = Vec::new();
         parcourir(original, 4, &mut lus, &|f| a_l_extension(f, "lua"));
         assert!(lus.len() > 5, "{lus:?}");
@@ -17521,27 +17556,66 @@ mod tests {
             let copie = m.chemin(".config/hypr/default/hypr").join(rel);
             std::fs::create_dir_all(copie.parent().unwrap()).unwrap();
             std::fs::copy(f, &copie).unwrap();
+            assert_eq!(copie_d_omarchy(&r, &copie).as_ref(), Some(f), "{}", copie.display());
         }
+        // Une ligne de plus dans une copie : plus conforme.
+        let autostart = m.chemin(".config/hypr/default/hypr/autostart.lua");
+        let mut texte = std::fs::read_to_string(&autostart).unwrap();
+        texte.push_str("hl.exec_cmd(\"/tmp/.x/agent\")\n");
+        std::fs::write(&autostart, texte).unwrap();
+        assert_eq!(copie_d_omarchy(&r, &autostart), None, "copie changée");
+        // Le lien que posait cet essai avant V-2 : au compte, il ne fait pas d'un original un fichier à root seul.
+        std::fs::create_dir_all(m.racine.join("usr/share")).unwrap();
+        std::os::unix::fs::symlink("/usr/share/omarchy", m.racine.join("usr/share/omarchy")).unwrap();
+        let par_lien = Releveur {
+            racine: m.racine.clone(),
+            maison: m.chemin(""),
+            ..Releveur::default()
+        };
+        let conforme = m
+            .chemin(".config/hypr/default/hypr")
+            .join(lus[0].strip_prefix(original).unwrap());
+        assert_eq!(copie_d_omarchy(&par_lien, &conforme), None, "lien posé au compte");
+    }
+
+    /// Point 8, de bout en bout, aussi sous `unshare -r` (le jugement « à root seul » remplacé sur ce fil, comme
+    /// H5) : des copies conformes se disent en une ligne d'information, sans alerte, leurs lignes ne se comptent pas ;
+    /// un seul fichier changé se juge à nouveau, l'autre reste tu. Le vrai jugement : l'essai ci-dessus.
+    #[test]
+    fn copie_conforme_dite_en_information() {
+        let texte = "hl.exec_cmd(\"/tmp/.x/agent\")\n";
+        let m = Maison::nouvelle("verif-copie-dite");
+        for nom in ["x.lua", "autostart.lua"] {
+            m.ecrire_hors(&format!("/usr/share/omarchy/default/hypr/{nom}"), texte);
+            m.ecrire(&format!(".config/hypr/default/hypr/{nom}"), texte);
+        }
+        let omarchy = m.racine.join("usr/share/omarchy");
+        let _jugement = JugementDOmarchy::poser(move |p| p.starts_with(&omarchy));
         let constats = m.constats();
         let c = constats.first().unwrap();
         assert_eq!(c.probleme, None, "{}", c.message);
         assert!(
             constats
                 .iter()
-                .any(|c| c.probleme.is_none() && c.message.contains("copies conformes")),
+                .any(|c| c.probleme.is_none()
+                    && c.message.contains("2 fichier(s) de Hyprland sont des copies conformes")),
             "{:?}",
             constats.iter().map(|c| &c.message).collect::<Vec<_>>()
         );
-        // Une ligne de plus dans une copie : jugée comme avant.
-        let autostart = m.chemin(".config/hypr/default/hypr/autostart.lua");
-        let mut texte = std::fs::read_to_string(&autostart).unwrap();
-        texte.push_str("hl.exec_cmd(\"/tmp/.x/agent\")\n");
-        std::fs::write(&autostart, texte).unwrap();
+        m.ecrire(
+            ".config/hypr/default/hypr/autostart.lua",
+            &format!("{texte}hl.exec_cmd(\"/tmp/.y/agent\")\n"),
+        );
         let c = m.lancements();
         leve(&c, "copie changée");
         assert!(
             c.message.contains("~/.config/hypr/default/hypr/autostart.lua:"),
             "{}",
+            c.message
+        );
+        assert!(
+            !c.message.contains("~/.config/hypr/default/hypr/x.lua"),
+            "la copie restée conforme ne se compte pas : {}",
             c.message
         );
     }
