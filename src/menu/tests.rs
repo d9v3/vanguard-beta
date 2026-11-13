@@ -1410,6 +1410,7 @@ fn les_essais_n_ecrivent_pas_dans_le_dossier_temporaire() {
         ("src/protection/sortantes.rs", 2),
         // Des prises Unix d'essai : leur chemin tient en 108 octets, que le dépôt peut dépasser.
         ("src/machine/linux/http_unix.rs", 1),
+        ("src/machine/linux/docker_api.rs", 1),
         ("src/machine/linux/dbus/actions.rs", 1),
         // La liste permise de la détection : TMPDIR parmi les variables qui changent ce qu'un programme lancé lit.
         ("src/machine/linux/persistance/permise.rs", 1),

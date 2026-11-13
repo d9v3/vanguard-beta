@@ -514,6 +514,11 @@ mod tests {
                 "module d'essais (cfg(test)) : retire la prise Unix d'un faux démon laissée par un ancien processus",
             ),
             (
+                "machine/linux/docker_api.rs",
+                3,
+                "module d'essais (cfg(test)) : le faux démon Docker (sa prise retirée avant la pose et à l'arrêt) et le contexte témoin écrit dans le dossier jetable",
+            ),
+            (
                 "machine/mod.rs",
                 1,
                 "ports bloqués : après une correction acceptée, hors bilan",
