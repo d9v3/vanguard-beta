@@ -2020,12 +2020,9 @@ fn juger_ligne(e: Empreinte, c: &CheminDesigne, a: &mut dyn Acces) -> Jugement {
                 .take(NOMS_REVEILLES_MONTRES)
                 .map(|n| echappe(n))
                 .collect();
-            if reveilles.len() > NOMS_REVEILLES_MONTRES {
-                noms.push(trf!(
-                    "et {} autre(s)",
-                    "and {} more",
-                    reveilles.len() - NOMS_REVEILLES_MONTRES
-                ));
+            let autres = reveilles.len().saturating_sub(NOMS_REVEILLES_MONTRES);
+            if autres > 0 {
+                noms.push(trf!("et {autres} autre(s)", "and {autres} more"));
             }
             return Err(refus(trf!(
                 "retirer cette ligne de {vu} ferait charger au chargeur ce qu'il ne chargeait pas : {} (une ligne « # » qu'il effaçait jusqu'ici, selon la taille du fichier) ; rien n'est fait : corrigez ce fichier à la main, en relisant chaque ligne",
@@ -4245,6 +4242,45 @@ mod tests {
         assert_eq!(a.questions.len(), 0);
         assert!(r.raison.contains("/opt/x/evil.so"), "{}", r.raison);
         assert_eq!(a.fichiers[Path::new("/etc/ld.so.preload")].contenu, contenu);
+    }
+
+    /// N3, le compte des noms réveillés : cinq au plus sont nommés, les autres comptés (« et 3 autre(s) ») ; cinq
+    /// pile, aucun « autre ». Le même piège que plus haut : sans le leurre, le fichier tient en moins de 126 octets et
+    /// le chargeur ne cherche plus le « # » de la deuxième ligne.
+    #[test]
+    fn retrait_qui_reveille_beaucoup_de_noms_les_compte() {
+        let note = [b"#".as_slice(), &[b'n'; 61]].concat();
+        let leurre = [b"/tmp/.x/".as_slice(), &[b'a'; 60], b".so"].concat();
+        for (n, montre, cache, compte) in [
+            (7, "/a/4.so", "/a/5.so", Some("et 3 autre(s)")),
+            (4, "/a/4.so", "/a/5.so", None),
+        ] {
+            let mut cachee = b"#".to_vec();
+            for i in 1..=n {
+                cachee.extend_from_slice(format!(" /a/{i}.so").as_bytes());
+            }
+            let contenu = [&note[..], b"\n", &cachee, b"\n", &leurre, b"\n"].concat();
+            let mut a = Faux::nouveau().repondre("o");
+            a.poser("/etc/ld.so.preload", &contenu, 0o644);
+            let c = CheminDesigne::nouveau(b"/etc/ld.so.preload").unwrap();
+            let r = faire_avec(
+                Defense::RetirerLigne(empreinte_de_ligne(&leurre), c),
+                &mut a,
+                &mut FauxServices::nouveau(),
+            );
+            assert!(!r.reussi, "{}", r.raison);
+            assert!(
+                r.raison.contains(montre) && !r.raison.contains(cache),
+                "{n} : {}",
+                r.raison
+            );
+            match compte {
+                Some(k) => assert!(r.raison.contains(k), "{n} : {}", r.raison),
+                None => assert!(!r.raison.contains("autre(s)"), "{n} : {}", r.raison),
+            }
+            assert_eq!(a.questions.len(), 0);
+            assert_eq!(a.fichiers[Path::new("/etc/ld.so.preload")].contenu, contenu);
+        }
     }
 
     /// Ronde 3 du lot 096 (N4) : une ligne désignée qui n'est pas dans le fichier (une empreinte faite sur une ligne

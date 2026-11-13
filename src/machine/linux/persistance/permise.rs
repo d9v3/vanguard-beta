@@ -3217,7 +3217,6 @@ fn variables_comme_systemd(texte: &str) -> Vec<(String, String)> {
                 fin_de_cle = None;
                 cle.push(c);
             }
-            AvantCle => {}
             Cle if FINS_DE_SYSTEMD.contains(&c) => {
                 etat = AvantCle;
                 cle.clear();
@@ -3309,7 +3308,8 @@ fn variables_comme_systemd(texte: &str) -> Vec<(String, String)> {
                 }
             }
             Commentaire if FINS_DE_SYSTEMD.contains(&c) => etat = AvantCle,
-            Commentaire => {}
+            // Un blanc avant une clé, ou le reste d'un commentaire : rien à garder.
+            AvantCle | Commentaire => {}
         }
     }
     // Fin du fichier dans une valeur : elle compte (les blancs de fin ne s'ôtent que hors guillemets) ; dans un nom
