@@ -904,7 +904,7 @@ struct Trouvailles<'b, 'a> {
 /// Le menu se choisit-il au clavier ? Il est redessiné depuis le haut de la fenêtre, sans retour à la ligne : il faut
 /// un terminal des deux côtés, assez large pour ses lignes (s'il est plus haut que la fenêtre, il défile).
 fn au_clavier(des_lignes_visibles: bool) -> bool {
-    let tient = terminal::size()
+    let tient = crate::ui::taille_terminal()
         .is_ok_and(|(largeur, rangees)| usize::from(largeur) > LARGEUR && usize::from(rangees) >= RANGEES_MINIMUM);
     std::io::stdin().is_terminal() && std::io::stdout().is_terminal() && tient && des_lignes_visibles
 }
@@ -943,7 +943,7 @@ fn choisir_ou(lignes: &[Ligne], invite: &str, depart: &str, echap: &str, gauche_
     let _ = sortie.write_all(b"\x1b[2J");
     loop {
         // La grille avant de dessiner : si elle change ensuite, sans que le terminal le dise, le menu se redessine.
-        let grille = terminal::size().ok();
+        let grille = crate::ui::taille_terminal().ok();
         // Le cadre de tête suit la largeur de la fenêtre, redessiné avec le reste.
         let colonnes = grille.map(|(colonnes, _)| usize::from(colonnes));
         let recherche = est_une_recherche(&etat.tape, &touches);
@@ -1080,7 +1080,7 @@ fn ecran_de_recherche(
 ) -> String {
     zones.clear();
     let mut ecran: Vec<String> = Vec::new();
-    let rangees = terminal::size().map_or(24, |(_, r)| usize::from(r));
+    let rangees = crate::ui::taille_terminal().map_or(24, |(_, r)| usize::from(r));
     let montre_entete = hauteur_entete.saturating_add(7) <= rangees;
     if montre_entete {
         for l in entete {
@@ -1236,7 +1236,9 @@ fn ecran_du_menu(
         trois.clone_from_slice(&lignes_cadre_sur(gauche, droite, borne));
     }
     etirer_filets(&mut rangees, largeur_des_filets(borne, panneau.is_some()));
-    let place = terminal::size().map_or(24, |(_, r)| usize::from(r)).saturating_sub(2);
+    let place = crate::ui::taille_terminal()
+        .map_or(24, |(_, r)| usize::from(r))
+        .saturating_sub(2);
     // Des rangées vides pour l'aperçu, jamais au point de faire défiler le menu.
     if voulues > rangees.len() {
         rangees.resize(voulues.min(place.max(rangees.len())), String::new());
@@ -1390,7 +1392,7 @@ fn evenement(grille: Option<(u16, u16)>) -> Option<Event> {
         match event::poll(std::time::Duration::from_millis(150)) {
             Ok(true) => return event::read().ok(),
             // Une retouche de la fenêtre finie : le cadre, borné pendant qu'elle courait, reprend la largeur.
-            Ok(false) if terminal::size().ok() == grille && !crate::fenetre::a_fini() => {}
+            Ok(false) if crate::ui::taille_terminal().ok() == grille && !crate::fenetre::a_fini() => {}
             Ok(false) => return None,
             // Un terminal qui ne répond plus : le menu se redessine, sans tourner à vide.
             Err(_) => {
@@ -1687,7 +1689,7 @@ fn cocher_ou_revenir(titre: &[String], cases: &[Case]) -> Option<Vec<bool>> {
             .collect(),
     };
     // Une liste plus haute que la fenêtre défile ; une fenêtre minuscule lit la réponse ligne par ligne.
-    let tient = terminal::size().is_ok_and(|(largeur, rangees)| {
+    let tient = crate::ui::taille_terminal().is_ok_and(|(largeur, rangees)| {
         usize::from(largeur) > LARGEUR && usize::from(rangees) >= RANGEES_MINIMUM + DESSOUS_LISTE - 2
     });
     let clavier = std::io::stdin().is_terminal() && std::io::stdout().is_terminal() && tient;
@@ -1723,7 +1725,7 @@ fn cocher_ou_revenir(titre: &[String], cases: &[Case]) -> Option<Vec<bool>> {
     let mut sortie = std::io::stdout();
     let _ = sortie.write_all(b"\x1b[2J");
     loop {
-        let grille = terminal::size().ok();
+        let grille = crate::ui::taille_terminal().ok();
         let montrees: Vec<usize> = etat
             .recherche
             .as_deref()
@@ -1905,12 +1907,12 @@ fn ecran_de_la_liste(
         crate::fenetre::epouser(rangees.len().saturating_add(DESSOUS_LISTE));
     }
     // Après `epouser` : une taille que Vanguard vient de demander borne déjà les titres.
-    let colonnes = terminal::size().ok().map(|(c, _)| usize::from(c));
+    let colonnes = crate::ui::taille_terminal().ok().map(|(c, _)| usize::from(c));
     if let Some(titre) = rangees.get_mut(..entete) {
         etirer_filets(titre, largeur_de_cadre(colonnes));
     }
     // Pendant une recherche, la saisie prend une ligne de plus sous l'aide.
-    let place = terminal::size()
+    let place = crate::ui::taille_terminal()
         .map_or(24, |(_, r)| usize::from(r))
         .saturating_sub(DESSOUS_LISTE.saturating_add(usize::from(etat.recherche.is_some())));
     let (vues, sources) = fenetre_indexee(

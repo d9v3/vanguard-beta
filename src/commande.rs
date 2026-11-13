@@ -1104,6 +1104,30 @@ mod tests {
         assert!(par_le_nom.is_empty(), "{par_le_nom:#?}");
     }
 
+    /// E-5 (recontrôle 0.95) : la taille du terminal ne se lit que par `ui::taille_terminal`. Sans terminal,
+    /// `crossterm::terminal::size` lance `tput` cherché dans le PATH du compte ; seul le cas non Unix de
+    /// `taille_terminal` l'appelle encore. L'essai du programme `sans_terminal_aucun_tput_du_compte_lance` le prouve
+    /// en vrai pour une commande ; celui-ci garde les autres appels.
+    #[test]
+    fn taille_du_terminal_jamais_par_le_repli_tput() {
+        let base = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
+        let mut fichiers = Vec::new();
+        super::tests_sh_chaine::sources(base, base, &mut fichiers);
+        // Coupé en deux pour que cette ligne-ci ne se compte pas elle-même.
+        let motif = concat!("terminal::", "size()");
+        let mut appels = Vec::new();
+        for (fichier, source) in &fichiers {
+            for (n, l) in source.lines().enumerate() {
+                let code = l.split("//").next().unwrap_or(l);
+                if code.contains(motif) {
+                    appels.push(format!("{fichier}:{} {}", n + 1, l.trim()));
+                }
+            }
+        }
+        assert_eq!(appels.len(), 1, "{appels:#?}");
+        assert!(appels[0].starts_with("ui.rs:"), "{appels:#?}");
+    }
+
     /// V-6 (relecture 0.95) : dans tout src/, hors des essais, aucun outil n'est lancé par un nom nu
     /// (`Command::new("nom")`) ni par un nom reçu (`Command::new(cmd)`, `outil`, `programme`) : `par_le_systeme`.
     /// Les exceptions sont écrites ici, chacune avec sa raison ; une nouvelle ligne fait échouer l'essai. Un repli

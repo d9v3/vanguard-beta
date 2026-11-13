@@ -4065,6 +4065,52 @@ fn demarrage_sans_rien_changer() {
     );
 }
 
+/// E-5 (recontrôle 0.95) : sans terminal (sortie dans un tuyau, aucun terminal de contrôle), la taille de la fenêtre
+/// se lit sans jamais lancer `tput`. Le repli de crossterm (`terminal::size`) le cherchait dans le PATH du compte :
+/// un faux `tput` posé dans ~/.local/bin tournait à chaque liste. `setsid` retire le terminal de contrôle, sans quoi
+/// /dev/tty répondrait et l'essai ne prouverait rien.
+#[cfg(target_os = "linux")]
+#[test]
+fn sans_terminal_aucun_tput_du_compte_lance() {
+    use std::os::unix::fs::PermissionsExt;
+    if optimiser_refuse_ici() {
+        return essais::saute(REFUS_OPTIMISER);
+    }
+    let Some(setsid) = ["/usr/bin/setsid", "/bin/setsid"]
+        .into_iter()
+        .map(Path::new)
+        .find(|p| p.is_file())
+    else {
+        return essais::saute("setsid absent");
+    };
+    let maison = maison_jetable();
+    let faux = maison.join("faux-bin");
+    std::fs::create_dir_all(&faux).expect("dossier du faux tput");
+    let temoin = maison.join("tput-lance");
+    let script = faux.join("tput");
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\necho \"$@\" >> '{}'\necho 80\n", temoin.display()),
+    )
+    .expect("faux tput");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("droits du faux tput");
+    let chemin = format!("{}:/usr/bin:/bin", faux.display());
+    let programme = env!("CARGO_BIN_EXE_vanguard");
+    let s = vanguard_dans_env(
+        setsid,
+        &maison,
+        "fr",
+        &["--wait", programme, "demarrage"],
+        "\n",
+        60,
+        &[("PATH", &chemin)],
+    );
+    let lance = std::fs::read_to_string(&temoin).ok();
+    let _ = std::fs::remove_dir_all(&maison);
+    assert_eq!(s.code, Some(0), "{}", s.erreurs);
+    assert_eq!(lance, None, "tput du compte lancé sans terminal");
+}
+
 /// Retirer ou remettre au démarrage d'après une empreinte inventée ou mal formée, ou sans accord : refusé, dit en une
 /// ligne JSON (la dernière), code non nul, rien de changé. Une empreinte inventée ne répond à aucun programme réel.
 #[test]

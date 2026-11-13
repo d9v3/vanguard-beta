@@ -635,7 +635,22 @@ pub fn colonnes_du_terminal() -> Option<usize> {
     if cfg!(test) || !std::io::stdout().is_terminal() {
         return None;
     }
-    crossterm::terminal::size().ok().map(|(c, _)| usize::from(c))
+    taille_terminal().ok().map(|(c, _)| usize::from(c))
+}
+
+/// La taille de la fenêtre (colonnes, rangées), lue par le terminal seul. Sous Unix, jamais `crossterm::terminal::size`
+/// : sans terminal, son repli lance `tput` cherché dans le PATH, que le compte choisit (~/.local/bin en tête), et un
+/// faux `tput` y tournerait à chaque liste (E-5, recontrôle 0.95). Sans terminal, c'est une erreur, comme sans repli.
+pub fn taille_terminal() -> std::io::Result<(u16, u16)> {
+    #[cfg(unix)]
+    {
+        crossterm::terminal::window_size().map(|t| (t.columns, t.rows))
+    }
+    // Sous Windows, crossterm lit la console sans lancer de programme ; window_size n'y est pas écrit.
+    #[cfg(not(unix))]
+    {
+        crossterm::terminal::size()
+    }
 }
 
 /// Les trois lignes du cadre de tête, chacune de `largeur` colonnes exactement. Trop étroit pour les deux textes, la

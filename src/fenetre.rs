@@ -21,8 +21,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use crossterm::terminal;
-
 /// Les colonnes voulues : les lignes du menu (`ui::LARGEUR`) et le panneau d'aperçu à leur droite
 /// (`selection::COLONNES_AVEC_APERCU`). Un écran trop étroit borne la fenêtre (`placement`) : le panneau ne se montre
 /// pas, le menu reste lisible.
@@ -309,7 +307,7 @@ fn attendre_la_grille(avant: (u16, u16)) {
     let (mut derniere, mut egales, mut changee) = (avant, 0usize, false);
     while debut.elapsed() < Duration::from_millis(1500) {
         std::thread::sleep(Duration::from_millis(40));
-        let Ok(taille) = terminal::size() else {
+        let Ok(taille) = crate::ui::taille_terminal() else {
             return;
         };
         changee |= taille != avant;
@@ -328,7 +326,7 @@ fn attendre_la_grille(avant: (u16, u16)) {
 /// La grille du terminal, avec la place de la fenêtre et la zone de son écran.
 #[cfg(any(target_os = "linux", windows))]
 fn mesure(place: Place) -> Option<Mesure> {
-    let (colonnes, rangees) = terminal::size().ok()?;
+    let (colonnes, rangees) = crate::ui::taille_terminal().ok()?;
     (place.2 > 0 && place.3 > 0 && colonnes > 0 && rangees > 0).then_some(Mesure {
         x: place.0,
         y: place.1,

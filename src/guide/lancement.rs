@@ -127,7 +127,7 @@ fn processus(ligne: &str) -> Command {
         c.env("PAGER", "cat")
             .env("GIT_PAGER", "cat")
             .env("SYSTEMD_PAGER", "cat");
-        if let Ok((largeur, _)) = crossterm::terminal::size() {
+        if let Ok((largeur, _)) = crate::ui::taille_terminal() {
             c.env("COLUMNS", largeur.saturating_sub(2).to_string());
         }
         c
