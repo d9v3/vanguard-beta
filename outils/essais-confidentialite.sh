@@ -26,9 +26,10 @@
 #      base des appareils, nmcli, l'identité Git ; une source présente mais illisible ou en panne : code 2.
 #  14. cliquet : chaque Python lancé par le dépôt (scripts, crochets, CI, programmes Python) l'est isolé, en -I.
 #  15. --compilation (outils/compiler-version.sh, avant l'empreinte) : un dossier personnel, un nom de compte dans un
-#      chemin (UTF-16 compris) ou le dossier de compilation refusés ; le nom seul hors d'un chemin, un HOME « / » et
-#      un programme propre passent ; sans git ; usage faux ou programme absent : code 2 ; et sa place dans la recette
-#      (sur les deux fenêtres avant leur empreinte, sur vanguard avant le repère, après le remplacement des chemins).
+#      chemin (UTF-16 et autre casse compris) ou le dossier de compilation (forme brute, nettoyée, par un lien)
+#      refusés ; le nom seul hors d'un chemin, un HOME « / » et un programme propre passent ; sans git ; usage faux ou
+#      programme absent : code 2 ; et sa place dans la recette (sur les deux fenêtres avant leur empreinte, sur vanguard
+#      avant le repère, après le remplacement des chemins ; les quatre programmes nommés) et son bloc des dossiers.
 set -uo pipefail
 RACINE=$(cd "$(dirname "$0")/.." && pwd)
 OUTIL=$RACINE/outils/confidentialite.py
@@ -867,6 +868,18 @@ noter 1 "$(refus_dit $?)" "--compilation : le dossier de compilation dans sa for
 mkdir -p "$P/rel" && compile relatif "$P/rel/../cibles-rel/release/build/out/glx_bindings.rs"
 compilation rel/../cibles-rel "$P/relatif"
 noter 1 "$(refus_dit $?)" "--compilation : un dossier relatif avec « .. », joint au dossier courant, est refusé"
+# Par un lien : le programme garde le chemin physique, que seul le vrai chemin (realpath) du dossier donné écrit.
+mkdir -p "$P/physique" && ln -sfn physique "$P/logique"
+compile par-lien "$(cd "$P/physique" && pwd -P)/release/build/out/glx_bindings.rs"
+compilation "$P/logique" "$P/par-lien"
+noter 1 "$(refus_dit $?)" "--compilation : le dossier de compilation par un lien, lu par son vrai chemin, est refusé"
+# Majuscules : un système de fichiers qui les ignore (Windows, macOS) garde le même dossier sous une autre casse.
+compile casse '/HOME/ALICE/.cargo/registry/src/x/y.rs'
+compilation "$CIBLES_I" "$P/casse"
+noter 1 "$(refus_dit $?)" "--compilation : le dossier personnel en majuscules est refusé"
+compile casse-w 'C:\\USERS\\Alice\\cibles\\release'
+compilation "$CIBLES_I" "$P/casse-w"
+noter 1 "$(refus_dit $?)" "--compilation : le nom du compte dans un chemin Windows d'une autre casse est refusé"
 compile mot 'chez alice, aliceville et /srv/cibles-inventees/vg2/x et /opt/alice.txt'
 compilation "$CIBLES_I" "$P/mot"
 noter 0 $? "--compilation : le nom seul, un dossier voisin et un fichier du même nom passent"
@@ -895,6 +908,19 @@ if [[ $(wc -w <<<"$ordre") == 8 && $(tr ' ' '\n' <<<"$ordre" | sort -n | paste -
   noter 0 0 "--compilation dans la recette : chemins remplacés, puis fenêtres avant l'empreinte, vanguard avant le repère"
 else
   noter 0 1 "--compilation dans la recette : absente, mal placée ou sans arrêt (lignes : $ordre)"
+fi
+# Les quatre programmes publiés, chacun nommé dans un des deux appels de la garde (lignes continuées par « \ »
+# jointes, commentaires retirés) : un programme oublié partirait sans être relu.
+appels=$(awk '/^[[:space:]]*#/ { next } { if (sub(/\\$/, "")) { l = l $0; next } print l $0; l = "" }' "$R" |
+  grep -F 'confidentialite.py --compilation')
+appel_f=$(sed -n 1p <<<"$appels")
+appel_v=$(sed -n 2p <<<"$appels")
+if [[ $(wc -l <<<"$appels") == 2 && $appel_f == *'"$FENETRE_LINUX" "$FENETRE_WINDOWS"'* &&
+  $appel_v == *'"$CIBLES/x86_64-unknown-linux-musl/release/vanguard"'* &&
+  $appel_v == *'"$CIBLES/x86_64-pc-windows-gnu/release/vanguard.exe"'* ]]; then
+  noter 0 0 "--compilation dans la recette : les quatre programmes publiés sont relus"
+else
+  noter 0 1 "--compilation dans la recette : un des quatre programmes n'est pas relu ($(wc -l <<<"$appels") appel(s))"
 fi
 # Les dossiers de la recette, rejoués pour de vrai (le bloc entre ses deux repères, sans rien compiler) : une seule
 # écriture, physique, du dossier de compilation (lien et « .. » dans celui qui est donné), CARGO_HOME par le lien de
