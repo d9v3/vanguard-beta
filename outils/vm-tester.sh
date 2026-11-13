@@ -1169,6 +1169,91 @@ EOF2
     sauter "test.ps1 et la fenêtre"
   fi
 
+  # 27b. L'étape « Fenêtre (0.96) » de test.ps1 jouée telle quelle : la fonction Essai-Fenetre extraite du vrai test.ps1,
+  #      Ok/Bug/Sautee/Info remplacés par des fonctions qui notent, sur de faux programmes. Les fausses fenêtres sont
+  #      de petits scripts sh (jamais un .exe), qui notent chaque lancement à côté d'eux.
+  if [[ -n $avec_pwsh ]]; then
+    local F=$T/fen sha_bonne
+    mkdir -p "$F/modeles"
+    ecrire_fenetre() { # nom corps
+      printf '#!/bin/sh\necho "lancée $*" >>"$(dirname "$0")/lancee"\n%s\n' "$2" >"$F/modeles/$1" && chmod +x "$F/modeles/$1"
+    }
+    sha_de() { sha256sum "$F/modeles/$1" | cut -d' ' -f1; }
+    cas_fenetre() { # nom fenêtre-posée(modèle, ou -) marque… : vanguard.exe gravé de ces marques, sa fenêtre à côté
+      mkdir -p "$F/$1/res" && grave "$F/$1/vanguard.exe" "${@:3}" && { [[ $2 == - ]] || cp -p "$F/modeles/$2" "$F/$1/vanguard-fenetre.exe"; }
+    }
+    ecrire_fenetre bonne "echo 'vanguard-fenetre 0.96.0'"
+    ecrire_fenetre autre "echo 'vanguard-fenetre 0.96.0' # une autre"
+    ecrire_fenetre bavarde "echo 'vanguard-fenetre 0.96.0'; echo 'en plus'"
+    ecrire_fenetre erreur "echo 'vanguard-fenetre 0.96.0'; exit 3"
+    ecrire_fenetre lente 'echo $$ >"$(dirname "$0")/pid"; exec sleep 20'
+    sha_bonne=$(sha_de bonne)
+    cas_fenetre bonne bonne "$sha_bonne"; cas_fenetre autre autre "$sha_bonne"; cas_fenetre absente - "$sha_bonne"
+    cas_fenetre aucune-posee bonne AUCUNE; cas_fenetre aucune - AUCUNE; cas_fenetre sans-posee bonne; cas_fenetre sans -
+    cas_fenetre deux bonne "$sha_bonne" "$(printf '%064d' 0)"; cas_fenetre copie bonne "$sha_bonne"
+    cas_fenetre bavarde bavarde "$(sha_de bavarde)"; cas_fenetre erreur erreur "$(sha_de erreur)"; cas_fenetre lente lente "$(sha_de lente)"
+    python3 -I - "$DEPOT/outils/test-windows/test.ps1" "$T/fonctions-fenetre.ps1" >"$T/sortie" 2>&1 <<'EOF2'
+import re, sys
+s = open(sys.argv[1], encoding='utf-8-sig').read()
+morceaux = []
+for nom in ('Fenetre-Gravee', 'Essai-Fenetre'):
+    m = re.search(r'(?ms)^function ' + nom + r'\b.*?^\}$', s)
+    assert m, nom + ' absente de test.ps1'
+    morceaux.append(m.group(0))
+# L'étape appelle la fonction, sans rien faire d'autre (sinon c'est autre chose qui serait essayé ici).
+m = re.search(r"(?ms)^Etape 'Fenêtre \(0\.96\)[^\n]*\n(.*?)^Etape ", s)
+assert m, "étape « Fenêtre (0.96) » absente de test.ps1"
+corps = [l for l in m.group(1).splitlines() if l.strip() and not l.lstrip().startswith('#')]
+assert corps == ['Essai-Fenetre $exe $fenetre $copieRatee $res'], corps
+open(sys.argv[2], 'w', encoding='utf-8-sig').write('\n'.join(morceaux) + '\n')
+EOF2
+    local extrait_fen=$?
+    cat >"$T/essai-fenetre.ps1" <<'EOF2'
+param([string]$T)
+. (Join-Path $T 'fonctions-fenetre.ps1')
+$script:vu = New-Object System.Collections.ArrayList
+function Ok($texte) { [void]$script:vu.Add("OK $texte") }
+function Bug($texte) { [void]$script:vu.Add("BUG $texte") }
+function Info($texte) { [void]$script:vu.Add("INFO $texte") }
+function Sautee($texte) { [void]$script:vu.Add("SAUTE $texte") }
+function Jouer([string]$nom, [string]$copieRatee = '', [int]$delaiS = 30) {
+    $script:vu.Clear()
+    $d = Join-Path (Join-Path $T 'fen') $nom
+    Essai-Fenetre -exe (Join-Path $d 'vanguard.exe') -fenetre (Join-Path $d 'vanguard-fenetre.exe') -copieRatee $copieRatee -res (Join-Path $d 'res') -delaiS $delaiS
+    "cas $nom : $(($script:vu -join ' | ') -replace '\r?\n', '⏎')"
+}
+Jouer bonne; Jouer autre; Jouer absente; Jouer aucune-posee; Jouer aucune; Jouer sans-posee
+Jouer sans; Jouer deux; Jouer copie -copieRatee 'vanguard.exe pas copié (essai)'; Jouer bavarde; Jouer erreur
+Jouer lente -delaiS 1
+EOF2
+    ((extrait_fen == 0)) && "$PWSH" -NoProfile -NonInteractive -File "$T/essai-fenetre.ps1" -T "$T" >>"$T/sortie" 2>&1
+    # shellcheck disable=SC2034 # lue par les conditions entre apostrophes, évaluées dans voir
+    local gb=${sha_bonne:0:12}
+    vu_fen() { grep -qx -- "cas $1 : $2" "$T/sortie"; }
+    voir "étape Fenêtre : la bonne fenêtre, lancée (--version), son empreinte notée" \
+      eval '((extrait_fen == 0)) && vu_fen bonne "OK Fenêtre à côté de vanguard.exe : celle dont il porte l.empreinte ($gb…) | OK vanguard-fenetre --version : « vanguard-fenetre 0.96.0 »" &&
+        [[ $(cat "$F/bonne/res/fenetre.sha256") == "$sha_bonne" && $(cat "$F/bonne/lancee") == "lancée --version" ]]'
+    voir "étape Fenêtre : une autre fenêtre est un problème" \
+      eval '((extrait_fen == 0)) && vu_fen autre "BUG Fenêtre à côté de vanguard.exe (.*) : pas celle qu.il lance ($gb…).*" && [[ ! -e $F/autre/res/fenetre.sha256 ]]'
+    voir "étape Fenêtre : fenêtre absente, ou posée à côté d'un vanguard qui n'en lance aucune : un problème, rien lancé" \
+      eval '((extrait_fen == 0)) && vu_fen absente "BUG vanguard.exe lance la fenêtre $gb…, absente à côté de lui (déposé sans elle)" &&
+        vu_fen aucune-posee "BUG vanguard.exe compilé sans fenêtre (« AUCUNE »), mais une fenêtre est posée à côté : il ne la lancera pas" &&
+        vu_fen sans-posee "BUG vanguard.exe sans marque de fenêtre (d.avant la 0.96), mais une fenêtre est posée à côté : il ne la lancera pas" &&
+        [[ ! -e $F/aucune-posee/lancee && ! -e $F/sans-posee/lancee ]]'
+    voir "étape Fenêtre : sautée seulement pour un vanguard qui n'en lance aucune (AUCUNE, ou d'avant la 0.96)" \
+      eval '((extrait_fen == 0)) && vu_fen aucune "SAUTE vanguard.exe compilé sans fenêtre (« AUCUNE ») : il n.en lance aucune, rien à essayer." &&
+        vu_fen sans "SAUTE vanguard.exe sans marque de fenêtre (d.avant la 0.96) : il n.en lance aucune, rien à essayer."'
+    voir "étape Fenêtre : marques contradictoires ou copie locale ratée : un problème, rien lancé" \
+      eval '((extrait_fen == 0)) && vu_fen deux "BUG Marque de fenêtre de vanguard.exe illisible, ou deux marques qui se contredisent" &&
+        vu_fen copie "BUG Copie locale du programme : vanguard.exe pas copié (essai)" && [[ ! -e $F/deux/lancee && ! -e $F/copie/lancee ]]'
+    voir "étape Fenêtre : --version bavarde, en erreur, ou qui ne finit pas : un problème" \
+      eval '((extrait_fen == 0)) && vu_fen bavarde "OK .* | BUG vanguard-fenetre --version : code 0, « vanguard-fenetre 0.96.0⏎en plus »" &&
+        vu_fen erreur "OK .* | BUG vanguard-fenetre --version : code 3, « vanguard-fenetre 0.96.0 »" &&
+        vu_fen lente "OK .* | BUG vanguard-fenetre --version : pas fini en 1 s (arrêté)" && [[ -s $F/lente/pid ]] && ! kill -0 "$(cat "$F/lente/pid")" 2>/dev/null'
+  else
+    sauter "étape Fenêtre de test.ps1 jouée"
+  fi
+
   # 28. « Ouvrir Vanguard » du menu (choix 3, sans droits administrateur, devant l'écran) : le seul endroit de la VM
   #     où la fenêtre s'ouvre pour de vrai. Sa copie locale est celle de test.ps1, au caractère près.
   python3 -I - "$DEPOT/outils/test-windows/test.ps1" "$DEPOT/outils/test-windows/menu.ps1" "$T/fonctions-menu.ps1" >"$T/sortie" 2>&1 <<'EOF2'

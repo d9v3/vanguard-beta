@@ -452,56 +452,61 @@ Etape 'Version et aide'
 Lancer 'version' @('--version')
 Lancer 'aide' @('--help')
 
-Etape 'Fenêtre (0.96) : celle que vanguard.exe lance, à côté de lui, chargée par Windows'
 # vanguard.exe ne lance que la fenêtre dont il porte l'empreinte gravée. Déposé sans elle, ou avec une autre, la
 # version livrée n'est pas celle essayée : un problème, jamais une étape sautée. Son ouverture pour de vrai (double-clic
 # devant l'écran, sans droits d'administrateur) ne se fait pas ici : en administrateur, vanguard garde le menu.
-$gravee = Fenetre-Gravee $exe
-$aCote = Test-Path -LiteralPath $fenetre -PathType Leaf
-if ($copieRatee) {
-    Bug "Copie locale du programme : $copieRatee"
-} elseif ($null -eq $gravee) {
-    Bug 'Marque de fenêtre de vanguard.exe illisible, ou deux marques qui se contredisent'
-} elseif ($gravee -eq '' -or $gravee -eq 'AUCUNE') {
-    $pourquoi = if ($gravee -eq '') { 'sans marque de fenêtre (d''avant la 0.96)' } else { 'compilé sans fenêtre (« AUCUNE »)' }
-    if ($aCote) { Bug "vanguard.exe $pourquoi, mais une fenêtre est posée à côté : il ne la lancera pas" }
-    else { Sautee "vanguard.exe $pourquoi : il n'en lance aucune, rien à essayer." }
-} elseif (-not $aCote) {
-    Bug "vanguard.exe lance la fenêtre $($gravee.Substring(0, 12))…, absente à côté de lui (déposé sans elle)"
-} else {
-    # Une lecture ratée est dite (jamais une erreur sans vérification notée) : de même pour le lancement plus bas.
-    $h = Get-FileHash -LiteralPath $fenetre -Algorithm SHA256 -ErrorAction SilentlyContinue
-    $empreinteFenetre = if ($h) { $h.Hash.ToLower() } else { '' }
-    if ($empreinteFenetre -eq $gravee) {
-        Set-Content -LiteralPath (Join-Path $res 'fenetre.sha256') -Value $empreinteFenetre -Encoding ASCII
-        Ok "Fenêtre à côté de vanguard.exe : celle dont il porte l'empreinte ($($gravee.Substring(0, 12))…)"
-    } elseif ($empreinteFenetre -eq '') {
-        Bug 'Fenêtre à côté de vanguard.exe : empreinte illisible'
+# Dans une fonction, pour que vm-tester.sh --essai-local la joue telle quelle sur de faux programmes.
+function Essai-Fenetre([string]$exe, [string]$fenetre, [string]$copieRatee, [string]$res, [int]$delaiS = 30) {
+    $gravee = Fenetre-Gravee $exe
+    $aCote = Test-Path -LiteralPath $fenetre -PathType Leaf
+    if ($copieRatee) {
+        Bug "Copie locale du programme : $copieRatee"
+    } elseif ($null -eq $gravee) {
+        Bug 'Marque de fenêtre de vanguard.exe illisible, ou deux marques qui se contredisent'
+    } elseif ($gravee -eq '' -or $gravee -eq 'AUCUNE') {
+        $pourquoi = if ($gravee -eq '') { 'sans marque de fenêtre (d''avant la 0.96)' } else { 'compilé sans fenêtre (« AUCUNE »)' }
+        if ($aCote) { Bug "vanguard.exe $pourquoi, mais une fenêtre est posée à côté : il ne la lancera pas" }
+        else { Sautee "vanguard.exe $pourquoi : il n'en lance aucune, rien à essayer." }
+    } elseif (-not $aCote) {
+        Bug "vanguard.exe lance la fenêtre $($gravee.Substring(0, 12))…, absente à côté de lui (déposé sans elle)"
     } else {
-        Bug "Fenêtre à côté de vanguard.exe ($($empreinteFenetre.Substring(0, 12))…) : pas celle qu'il lance ($($gravee.Substring(0, 12))…)"
-    }
-    # Lancée pour de vrai, sans rien ouvrir : Windows la charge (ses DLL comprises) et elle répond. 30 s au plus : un
-    # message d'erreur à l'écran la ferait attendre un clic.
-    $sortieFenetre = Join-Path $res 'fenetre-version.out.txt'
-    $pf = $null
-    $erreurFenetre = ''
-    try {
-        $pf = Start-Process -FilePath $fenetre -ArgumentList '--version' -NoNewWindow -PassThru -ErrorAction Stop `
-            -RedirectStandardOutput $sortieFenetre -RedirectStandardError (Join-Path $res 'fenetre-version.err.txt')
-        # Le handle lu tout de suite : sans lui, ExitCode reste vide une fois le processus fini.
-        $null = $pf.Handle
-    } catch { $erreurFenetre = $_.Exception.Message }
-    if (-not $pf) {
-        Bug "vanguard-fenetre --version : pas lancée ($erreurFenetre)"
-    } elseif (-not $pf.WaitForExit(30000)) {
-        Stop-Process -Id $pf.Id -Force -ErrorAction SilentlyContinue
-        Bug 'vanguard-fenetre --version : pas fini en 30 s (arrêté)'
-    } else {
-        $luFenetre = "$(Get-Content -LiteralPath $sortieFenetre -Raw -ErrorAction SilentlyContinue)".Trim()
-        if ($pf.ExitCode -eq 0 -and $luFenetre -match '^vanguard-fenetre \d+\.\d+\.\d+$') { Ok "vanguard-fenetre --version : « $luFenetre »" }
-        else { Bug "vanguard-fenetre --version : code $($pf.ExitCode), « $luFenetre »" }
+        # Une lecture ratée est dite (jamais une erreur sans vérification notée) : de même pour le lancement plus bas.
+        $h = Get-FileHash -LiteralPath $fenetre -Algorithm SHA256 -ErrorAction SilentlyContinue
+        $empreinteFenetre = if ($h) { $h.Hash.ToLower() } else { '' }
+        if ($empreinteFenetre -eq $gravee) {
+            Set-Content -LiteralPath (Join-Path $res 'fenetre.sha256') -Value $empreinteFenetre -Encoding ASCII
+            Ok "Fenêtre à côté de vanguard.exe : celle dont il porte l'empreinte ($($gravee.Substring(0, 12))…)"
+        } elseif ($empreinteFenetre -eq '') {
+            Bug 'Fenêtre à côté de vanguard.exe : empreinte illisible'
+        } else {
+            Bug "Fenêtre à côté de vanguard.exe ($($empreinteFenetre.Substring(0, 12))…) : pas celle qu'il lance ($($gravee.Substring(0, 12))…)"
+        }
+        # Lancée pour de vrai, sans rien ouvrir : Windows la charge (ses DLL comprises) et elle répond. $delaiS secondes
+        # au plus (30 dans test.ps1) : un message d'erreur à l'écran la ferait attendre un clic.
+        $sortieFenetre = Join-Path $res 'fenetre-version.out.txt'
+        $pf = $null
+        $erreurFenetre = ''
+        try {
+            $pf = Start-Process -FilePath $fenetre -ArgumentList '--version' -NoNewWindow -PassThru -ErrorAction Stop `
+                -RedirectStandardOutput $sortieFenetre -RedirectStandardError (Join-Path $res 'fenetre-version.err.txt')
+            # Le handle lu tout de suite : sans lui, ExitCode reste vide une fois le processus fini.
+            $null = $pf.Handle
+        } catch { $erreurFenetre = $_.Exception.Message }
+        if (-not $pf) {
+            Bug "vanguard-fenetre --version : pas lancée ($erreurFenetre)"
+        } elseif (-not $pf.WaitForExit($delaiS * 1000)) {
+            Stop-Process -Id $pf.Id -Force -ErrorAction SilentlyContinue
+            Bug "vanguard-fenetre --version : pas fini en $delaiS s (arrêté)"
+        } else {
+            $luFenetre = "$(Get-Content -LiteralPath $sortieFenetre -Raw -ErrorAction SilentlyContinue)".Trim()
+            if ($pf.ExitCode -eq 0 -and $luFenetre -match '^vanguard-fenetre \d+\.\d+\.\d+$') { Ok "vanguard-fenetre --version : « $luFenetre »" }
+            else { Bug "vanguard-fenetre --version : code $($pf.ExitCode), « $luFenetre »" }
+        }
     }
 }
+
+Etape 'Fenêtre (0.96) : celle que vanguard.exe lance, à côté de lui, chargée par Windows'
+Essai-Fenetre $exe $fenetre $copieRatee $res
 
 Etape 'Audit de la machine (texte et JSON)'
 Lancer 'machine' @('audit')
