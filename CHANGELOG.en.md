@@ -35,14 +35,17 @@ repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
 - **A more honest update.** A copy swapped by another program during the update is no longer left in place: the old
   copy is put back (rewritten from what Vanguard holds of it if its second name was deleted in the meantime), or
   Vanguard says exactly what is in place ("do not run it"). The old copy is recognised by what Vanguard holds open,
-  no longer by a file number the system can give to another file. If it cannot be set aside before the replacement
-  (for example, its set-aside name, `vanguard.precedent`, is taken by a folder or by another file), the update of that
-  copy is refused before anything is replaced, and the path at fault is given; what is under that name is never
-  deleted, except a second name of the copy in place. If putting it back fails, the old copy is kept under a name the
-  message gives, to be moved somewhere safe (or, if even that fails, the message says it is lost). A new copy held
-  open for writing ("Text file busy") is reported as such; a provisional name already taken (a folder) is reported
-  with the path to remove. Every refusal of the installation says "nothing is replaced", also when the copy for this
-  computer is first set up. Limit: on a file system without hard links (FAT, exFAT), or for a copy owned by another
+  no longer by a file number the system can give to another file, and it is said to be "put back" or to "stay in
+  place" only if its bytes are still the ones Vanguard read when setting it aside (BLAKE3 fingerprint): rewritten in
+  the meantime by another program, it is reported as changed, not to be run ("redo the update"), and that content is
+  never rewritten in its place. If it cannot be set aside before the replacement (for example, its set-aside name,
+  `vanguard.precedent`, is taken by a folder or by another file), the update of that copy is refused before anything is
+  replaced, and the path at fault is given; what is under that name is never deleted, except a second name of the copy
+  in place. If putting it back fails, the old copy is kept under a name the message gives, to be moved somewhere safe
+  (or, if even that fails, the message says it is lost). A new copy held open for writing ("Text file busy") is reported
+  as such; a provisional name already taken (a folder) is reported with the path to remove. Every refusal of the
+  installation says "nothing is replaced", also when the copy for this computer is first set up. Limits: a change made
+  after this last check is not seen; on a file system without hard links (FAT, exFAT), or for a copy owned by another
   account when the system forbids them (fs.protected_hardlinks), the old copy cannot be set aside: the update of that
   copy is refused ("Operation not permitted").
 - **Undo without touching another file.** "What Vanguard changed" no longer puts wider permissions back on a file
@@ -92,17 +95,25 @@ repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
   XDG_CONFIG_HOME, XDG_CONFIG_DIRS and XDG_DATA_DIRS folder, from the session or set for the manager, that the account
   can change, even outside the home folder; a relative folder is read from the home folder, as uwsm reads it), by the
   check and by the backup alike. An uwsm file is skipped only if only root can change every entry crossed to reach
-  it, links included; an uwsm folder or entry that cannot be read is reported, not checked. Every file in the uwsm
-  folder and in its "env.d" and "env-<desktop>.d" counts, whatever its name and extension, and an "env.d" that is a
-  link to a folder is followed everywhere, as uwsm follows it: the backup judges what it holds instead of being raised
-  because it cannot be read as a file. The "exec" lines of popt settings (~/.popt, /etc/popt) are judged as launches.
-  A file that a profile or an uwsm file reads with "." or "source" is judged line by line, with the same rule as
-  ~/.bashrc (a line that names LD_PRELOAD is reported, even if it only reads it), when the inclusion is spelled out in
-  command position and its path is absolute or under "~/" or "$HOME/", up to 64 included files. Limits: an inclusion
-  written another way (relative path or one computed from a variable, loop over a folder, eval) is not followed, and
-  the check does not report it; an included file that cannot be read, is too large or is not UTF-8 is not judged; a
-  quoted value written over several lines is not followed from one line to the next, and can hide the line after it.
-  A variable set during the session, by a Hyprland "env =" line, or a folder moved by a shell profile is not checked.
+  it, links included; an uwsm folder, entry or file that cannot be read is reported, not checked, by the check as by the
+  backup. An uwsm folder placed under a folder the check already reads for something else (~/.config/systemd, for
+  example) is judged too. uwsm plugins ("uwsm/plugins/*.sh" under ~/.local/share, /usr/local/share, /usr/share and every
+  XDG_DATA_HOME and XDG_DATA_DIRS of the session or set for the manager) are judged like its files, by the check and by
+  the backup alike; every ".sh" counts, even those uwsm will not load for your desktop. A wildcard ("*", "?", "[") in
+  one of these session variables is not expanded: the check reports it, not checked, it cannot be declared normal, and
+  it raises the backup. A piece set for the manager that starts or ends with a blank does not resolve (reported, not
+  checked); "~/x" or "$HOME/x" set there is read both ways: replaced by the home folder, and as written, from the home
+  folder. Every file in the uwsm folder and in its "env.d" and "env-<desktop>.d" counts, whatever its name and
+  extension, and an "env.d" that is a link to a folder is followed everywhere, as uwsm follows it: the backup judges
+  what it holds instead of being raised because it cannot be read as a file. The "exec" lines of popt settings (~/.popt,
+  /etc/popt) are judged as launches. A file that a profile or an uwsm file reads with "." or "source" is judged line by
+  line, with the same rule as ~/.bashrc (a line that names LD_PRELOAD is reported, even if it only reads it), when the
+  inclusion is spelled out in command position and its path is absolute or under "~/" or "$HOME/", up to 64 included
+  files. Limits: an inclusion written another way (relative path or one computed from a variable, loop over a folder,
+  eval) is not followed, and the check does not report it; an included file that cannot be read, is too large or is not
+  UTF-8 is not judged; a quoted value written over several lines is not followed from one line to the next, and can hide
+  the line after it. A variable set during the session, by a Hyprland "env =" line, or a folder moved by a shell profile
+  is not checked.
 - **System programs, taken by their path.** The check, traces, monitoring, the backup and the other machine readings
   start pacman, systemctl, journalctl, ss, crontab, ping and the rest from the system folders, never through the
   account's PATH: a fake program placed in ~/.local/bin can no longer hide a connection or a journal line. The
@@ -119,11 +130,12 @@ repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
   by a context chosen in ~/.docker/config.json, is reported as not checked instead of being read, for published ports
   as for image flaws; a container port exposed to the network, already seen by the system daemon or through the
   processes, is still reported. config.json is read the way the Docker CLI reads it: the context key regardless of
-  case, every duplicate included, a linked file (stow, home-manager) followed; a relative HOME makes the daemon not
-  checked. When the Docker API does not answer, the CLI that Vanguard starts targets the system socket, without the
-  home folder's settings, for ports as for images. Limit: a daemon chosen for real (Docker Desktop, rootless Docker,
-  colima, remote host) is no longer read at all; a port it publishes is no longer reported, only said to be not
-  checked.
+  case, every duplicate included, a linked file (stow, home-manager) followed; a HOME or DOCKER_CONFIG that is relative
+  or contains ".." makes the daemon not checked (the CLI removes ".." from the path text, the system follows it after
+  a link: it would not always be the same folder). When the Docker API does not answer, the CLI that Vanguard starts
+  targets the system socket, without the home folder's settings, for ports as for images. Limit: a daemon chosen for
+  real (Docker Desktop, rootless Docker, colima, remote host) is no longer read at all; a port it publishes is no longer
+  reported, only said to be not checked.
 - **The window size without an account program.** Without a terminal, Vanguard no longer runs `tput` (looked up in
   the account's PATH) to learn the screen size.
 - **Sturdier.** Every Unicode format character (those that change reading direction or hide text) is shown as "�",
