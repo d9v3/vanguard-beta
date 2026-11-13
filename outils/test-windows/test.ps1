@@ -26,20 +26,31 @@ $resultats = Join-Path $racine 'resultats'
 
 # La copie locale du programme, et de sa fenêtre (0.96) : vanguard.exe ne lance que celle dont il porte l'empreinte
 # gravée, posée à côté de lui. Venu sans elle, celle d'une passe d'avant est retirée : elle serait prise pour la sienne.
-# Rend '' quand la copie locale porte ce que le partage porte, sinon ce qui a raté (dit par l'étape de la fenêtre) :
-# une fenêtre d'une passe d'avant restée là ne passe jamais pour celle du déploiement.
+# Rend '' quand la copie locale porte ce que le partage porte (empreintes comparées après chaque copie), sinon ce qui a
+# raté (dit par l'étape de la fenêtre) : sous Windows, un programme encore ouvert (choix 3 du menu) garde son fichier ;
+# un ancien vanguard.exe ou une fenêtre d'une passe d'avant restés là ne passent jamais pour ceux du déploiement.
 function Copier-Programme([string]$source, [string]$dossier) {
-    New-Item -ItemType Directory -Force $dossier | Out-Null
-    Copy-Item -LiteralPath (Join-Path $source 'vanguard.exe') $dossier -Force
-    $fenetre = Join-Path $source 'vanguard-fenetre.exe'
-    $copie = Join-Path $dossier 'vanguard-fenetre.exe'
-    if (Test-Path -LiteralPath $fenetre -PathType Leaf) {
-        Copy-Item -LiteralPath $fenetre $dossier -Force
-    } elseif (Test-Path -LiteralPath $copie) {
-        Remove-Item -LiteralPath $copie -Force -ErrorAction SilentlyContinue
-        if (Test-Path -LiteralPath $copie) { return "la fenêtre d'une passe d'avant n'a pas pu être retirée de $dossier" }
+    $rate = New-Object System.Collections.ArrayList
+    try { New-Item -ItemType Directory -Force $dossier -ErrorAction Stop | Out-Null }
+    catch { return "dossier $dossier pas créé ($($_.Exception.Message))" }
+    foreach ($nom in 'vanguard.exe', 'vanguard-fenetre.exe') {
+        $de = Join-Path $source $nom
+        $vers = Join-Path $dossier $nom
+        if (Test-Path -LiteralPath $de -PathType Leaf) {
+            $erreur = 'copie différente de l''original'
+            try { Copy-Item -LiteralPath $de -Destination $vers -Force -ErrorAction Stop } catch { $erreur = $_.Exception.Message }
+            # Comparée après coup, octet pour octet : une erreur tue laisserait l'ancien fichier passer pour le nouveau.
+            $a = Get-FileHash -LiteralPath $de -Algorithm SHA256 -ErrorAction SilentlyContinue
+            $b = Get-FileHash -LiteralPath $vers -Algorithm SHA256 -ErrorAction SilentlyContinue
+            if (-not $a -or -not $b -or $a.Hash -ne $b.Hash) { [void]$rate.Add("$nom pas copié dans $dossier, encore ouvert ? ($erreur)") }
+        } elseif ($nom -eq 'vanguard.exe') {
+            [void]$rate.Add("vanguard.exe absent de $source")
+        } elseif (Test-Path -LiteralPath $vers) {
+            Remove-Item -LiteralPath $vers -Force -ErrorAction SilentlyContinue
+            if (Test-Path -LiteralPath $vers) { [void]$rate.Add("la fenêtre d'une passe d'avant n'a pas pu être retirée de $dossier") }
+        }
     }
-    return ''
+    return ($rate -join ' ; ')
 }
 
 # L'empreinte de fenêtre gravée dans un programme, lue comme vanguard la lit (src/demarrage/empreinte_fenetre.rs) :

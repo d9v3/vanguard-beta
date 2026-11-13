@@ -1139,6 +1139,21 @@ $bloque = New-Item -ItemType Directory -Force (Join-Path $loc 'vanguard-fenetre.
 Set-Content -LiteralPath (Join-Path $bloque 'dedans') -Value 'x'
 $r = Copier-Programme $src $loc
 "copie 3 : $(if ($r -like '*passe d''avant*') { 'dit' } else { "tu [$r]" })"
+# Une copie impossible, la source présente (ici un dossier plein à sa place, sous Windows un programme encore
+# ouvert) : dite, jamais tue, pour la fenêtre comme pour vanguard.exe ; l'ancien fichier ne passe pas pour le nouveau.
+Copy-Item -LiteralPath (Join-Path $T 'fenetre.exe') (Join-Path $src 'vanguard-fenetre.exe')
+$r = Copier-Programme $src $loc
+"copie 4 : $(if ($r -like '*vanguard-fenetre.exe pas copié*' -and $r -notlike '*vanguard.exe*') { 'dit' } else { "tu [$r]" })"
+Remove-Item -LiteralPath $bloque -Recurse -Force
+Remove-Item -LiteralPath (Join-Path $loc 'vanguard.exe') -Force
+$bloque = New-Item -ItemType Directory -Force (Join-Path $loc 'vanguard.exe')
+Set-Content -LiteralPath (Join-Path $bloque 'dedans') -Value 'x'
+$r = Copier-Programme $src $loc
+"copie 5 : $(if ($r -like '*vanguard.exe pas copié*' -and $r -notlike '*vanguard-fenetre.exe*') { 'dit' } else { "tu [$r]" })"
+Remove-Item -LiteralPath $bloque -Recurse -Force
+Remove-Item -LiteralPath (Join-Path $src 'vanguard.exe')
+$r = Copier-Programme $src $loc
+"copie 6 : $(if ($r -like '*vanguard.exe absent*') { 'dit' } else { "tu [$r]" })"
 EOF2
     ((extrait == 0)) && "$PWSH" -NoProfile -NonInteractive -File "$T/essai-fonctions.ps1" -T "$T" >>"$T/sortie" 2>&1
     voir "test.ps1 lit l'empreinte gravée comme vanguard (64 chiffres, AUCUNE, sans marque, contradiction, majuscules, illisible)" \
@@ -1148,25 +1163,64 @@ EOF2
     voir "test.ps1 : la copie locale emporte la fenêtre, retire celle d'une passe d'avant, et dit quand elle reste" \
       eval '((extrait == 0)) && grep -qx "copie 1 : \[\] True $sha_fen2" "$T/sortie" && grep -qx "copie 2 : \[\] True False" "$T/sortie" &&
         grep -qx "copie 3 : dit" "$T/sortie"'
+    voir "test.ps1 : une copie impossible (fenêtre, vanguard.exe) ou un vanguard.exe absent du partage est dit" \
+      eval '((extrait == 0)) && grep -qx "copie 4 : dit" "$T/sortie" && grep -qx "copie 5 : dit" "$T/sortie" && grep -qx "copie 6 : dit" "$T/sortie"'
   else
     sauter "test.ps1 et la fenêtre"
   fi
 
   # 28. « Ouvrir Vanguard » du menu (choix 3, sans droits administrateur, devant l'écran) : le seul endroit de la VM
   #     où la fenêtre s'ouvre pour de vrai. Sa copie locale est celle de test.ps1, au caractère près.
-  python3 -I - "$DEPOT/outils/test-windows/test.ps1" "$DEPOT/outils/test-windows/menu.ps1" >"$T/sortie" 2>&1 <<'EOF2'
+  python3 -I - "$DEPOT/outils/test-windows/test.ps1" "$DEPOT/outils/test-windows/menu.ps1" "$T/fonctions-menu.ps1" >"$T/sortie" 2>&1 <<'EOF2'
 import re, sys
 def fonction(chemin, nom):
     m = re.search(r'(?ms)^function ' + nom + r'\b.*?^\}$', open(chemin, encoding='utf-8-sig').read())
     assert m, nom + ' absente de ' + chemin
     return m.group(0)
-assert fonction(sys.argv[1], 'Copier-Programme') == fonction(sys.argv[2], 'Copier-Programme'), 'copies différentes'
+copie = fonction(sys.argv[2], 'Copier-Programme')
+assert fonction(sys.argv[1], 'Copier-Programme') == copie, 'copies différentes'
 ouvrir = fonction(sys.argv[2], 'Ouvrir-Vanguard')
 assert re.search(r'^\s*\$\w+ = Copier-Programme \$programme \$local$', ouvrir, re.M), 'Ouvrir-Vanguard sans Copier-Programme'
 assert 'Copy-Item' not in ouvrir, 'Ouvrir-Vanguard copie encore à sa façon'
+open(sys.argv[3], 'w', encoding='utf-8-sig').write(copie + '\n' + ouvrir + '\n')
 EOF2
   local menu=$?
   voir "menu.ps1 (Ouvrir Vanguard) : la même copie que test.ps1, fenêtre comprise" test "$menu" -eq 0
+  # Ouvrir-Vanguard joué pour de vrai, les gestes de Windows remplacés par des fonctions (une fonction passe avant la
+  # commande du même nom) qui les notent : rien n'est lancé. Copie réussie : vanguard.exe et sa fenêtre débloqués,
+  # vanguard.exe lancé depuis la copie locale. Copie ratée (sous Windows, un Vanguard encore ouvert) : rien lancé, la
+  # raison dite et le menu attend qu'on l'ait lue.
+  if [[ -n $avec_pwsh ]]; then
+    mkdir -p "$T/menu/programme"
+    cp -f "$T/avec.exe" "$T/menu/programme/vanguard.exe" && cp -f "$T/fenetre.exe" "$T/menu/programme/vanguard-fenetre.exe"
+    cat >"$T/essai-menu.ps1" <<'EOF2'
+param([string]$T)
+. (Join-Path $T 'fonctions-menu.ps1')
+$gestes = Join-Path $T 'menu/gestes'
+function Unblock-File { [CmdletBinding()] param([Parameter(Position = 0)][string]$Path) Add-Content -LiteralPath $gestes -Value "débloque $Path" }
+function Start-Process { [CmdletBinding()] param([Parameter(Position = 0)][string]$FilePath) Add-Content -LiteralPath $gestes -Value "lance $FilePath" }
+function Pause-Menu { Add-Content -LiteralPath $gestes -Value 'attend' }
+$programme = Join-Path $T 'menu/programme'
+$env:LOCALAPPDATA = Join-Path $T 'menu/local'
+$copie = Join-Path $env:LOCALAPPDATA 'vanguard-test'
+Ouvrir-Vanguard
+"ouvrir 1 : $((Get-Content -LiteralPath $gestes) -join ' | ')"
+Remove-Item -LiteralPath $gestes, (Join-Path $copie 'vanguard-fenetre.exe')
+$bloque = New-Item -ItemType Directory -Force (Join-Path $copie 'vanguard-fenetre.exe')
+Set-Content -LiteralPath (Join-Path $bloque 'dedans') -Value 'x'
+Ouvrir-Vanguard
+"ouvrir 2 : $((Get-Content -LiteralPath $gestes) -join ' | ')"
+EOF2
+    ((menu == 0)) && "$PWSH" -NoProfile -NonInteractive -File "$T/essai-menu.ps1" -T "$T" >>"$T/sortie" 2>&1
+    # shellcheck disable=SC2034 # lue par la condition entre apostrophes, évaluée dans voir
+    local copie_menu=$T/menu/local/vanguard-test
+    voir "menu.ps1 (Ouvrir Vanguard) : copie réussie, vanguard.exe et sa fenêtre débloqués, lancé depuis la copie locale" \
+      eval '((menu == 0)) && grep -qxF "ouvrir 1 : débloque $copie_menu/vanguard.exe | débloque $copie_menu/vanguard-fenetre.exe | lance $copie_menu/vanguard.exe" "$T/sortie"'
+    voir "menu.ps1 (Ouvrir Vanguard) : copie ratée, rien lancé, la raison dite" \
+      eval '((menu == 0)) && grep -qx "ouvrir 2 : attend" "$T/sortie" && grep -q "vanguard-fenetre.exe pas copié" "$T/sortie"'
+  else
+    sauter "menu.ps1 (Ouvrir Vanguard) joué"
+  fi
 
   # 23. Sans le secret ici, ou face au surveillant d'avant la signature : rien déposé, la raison dite.
   nouvelle_vm; sources 0 0 0 'OK x'

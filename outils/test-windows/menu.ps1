@@ -201,17 +201,27 @@ function Basculer-Scripts {
 # La même que celle de test.ps1, au caractère près (vm-tester.sh --essai-local le vérifie) : vanguard.exe ne lance que
 # la fenêtre dont il porte l'empreinte, posée à côté de lui ; rend '' ou ce qui a raté.
 function Copier-Programme([string]$source, [string]$dossier) {
-    New-Item -ItemType Directory -Force $dossier | Out-Null
-    Copy-Item -LiteralPath (Join-Path $source 'vanguard.exe') $dossier -Force
-    $fenetre = Join-Path $source 'vanguard-fenetre.exe'
-    $copie = Join-Path $dossier 'vanguard-fenetre.exe'
-    if (Test-Path -LiteralPath $fenetre -PathType Leaf) {
-        Copy-Item -LiteralPath $fenetre $dossier -Force
-    } elseif (Test-Path -LiteralPath $copie) {
-        Remove-Item -LiteralPath $copie -Force -ErrorAction SilentlyContinue
-        if (Test-Path -LiteralPath $copie) { return "la fenêtre d'une passe d'avant n'a pas pu être retirée de $dossier" }
+    $rate = New-Object System.Collections.ArrayList
+    try { New-Item -ItemType Directory -Force $dossier -ErrorAction Stop | Out-Null }
+    catch { return "dossier $dossier pas créé ($($_.Exception.Message))" }
+    foreach ($nom in 'vanguard.exe', 'vanguard-fenetre.exe') {
+        $de = Join-Path $source $nom
+        $vers = Join-Path $dossier $nom
+        if (Test-Path -LiteralPath $de -PathType Leaf) {
+            $erreur = 'copie différente de l''original'
+            try { Copy-Item -LiteralPath $de -Destination $vers -Force -ErrorAction Stop } catch { $erreur = $_.Exception.Message }
+            # Comparée après coup, octet pour octet : une erreur tue laisserait l'ancien fichier passer pour le nouveau.
+            $a = Get-FileHash -LiteralPath $de -Algorithm SHA256 -ErrorAction SilentlyContinue
+            $b = Get-FileHash -LiteralPath $vers -Algorithm SHA256 -ErrorAction SilentlyContinue
+            if (-not $a -or -not $b -or $a.Hash -ne $b.Hash) { [void]$rate.Add("$nom pas copié dans $dossier, encore ouvert ? ($erreur)") }
+        } elseif ($nom -eq 'vanguard.exe') {
+            [void]$rate.Add("vanguard.exe absent de $source")
+        } elseif (Test-Path -LiteralPath $vers) {
+            Remove-Item -LiteralPath $vers -Force -ErrorAction SilentlyContinue
+            if (Test-Path -LiteralPath $vers) { [void]$rate.Add("la fenêtre d'une passe d'avant n'a pas pu être retirée de $dossier") }
+        }
     }
-    return ''
+    return ($rate -join ' ; ')
 }
 
 function Ouvrir-Vanguard {
@@ -219,7 +229,13 @@ function Ouvrir-Vanguard {
     # administrateur et devant l'écran, vanguard.exe y ouvre sa fenêtre (0.96) ; sans elle, son menu.
     $local = Join-Path $env:LOCALAPPDATA 'vanguard-test'
     $rate = Copier-Programme $programme $local
-    if ($rate) { Write-Host "  Copie locale : $rate (vanguard gardera son menu si elle n'est pas la sienne)." -ForegroundColor Yellow }
+    if ($rate) {
+        # Jamais l'ancienne copie lancée à la place de la nouvelle : rien n'est ouvert, la raison reste à l'écran.
+        Write-Host "  Copie locale ratée : $rate." -ForegroundColor Red
+        Write-Host '  Rien ouvert : fermer Vanguard (et sa fenêtre) s''il tourne encore, puis refaire 3.' -ForegroundColor Yellow
+        Pause-Menu
+        return
+    }
     $exe = Join-Path $local 'vanguard.exe'
     $fenetre = Join-Path $local 'vanguard-fenetre.exe'
     Unblock-File $exe -ErrorAction SilentlyContinue
