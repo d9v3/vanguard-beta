@@ -726,13 +726,13 @@ impl Precedente {
                 // Le reste d'une mise à jour interrompue ; un dossier à ce nom ne s'efface pas, et le lien échoue.
                 let _ = std::fs::remove_file(&de_cote);
                 match std::fs::hard_link(cible, &de_cote) {
-                    Ok(()) => match identite(&de_cote) {
-                        Some(i) => EtatPrecedente::Retenue(i),
-                        None => {
+                    Ok(()) => {
+                        let Some(i) = identite(&de_cote) else {
                             let _ = std::fs::remove_file(&de_cote);
                             return Err(pas_de_cote(&tr!("pas relue", "not read back")));
-                        }
-                    },
+                        };
+                        EtatPrecedente::Retenue(i)
+                    }
                     Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Err(nom_occupe(&de_cote)),
                     Err(e) => return Err(pas_de_cote(&e)),
                 }
