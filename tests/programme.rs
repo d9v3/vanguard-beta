@@ -3884,9 +3884,10 @@ fn verifier_fichier_en_json() {
     assert!(v["moteur"].is_null(), "{v}");
 }
 
-/// ClamAV absent (un PATH vide) et aucune réponse : depuis AV5 (P16), Vanguard ne propose plus de l'installer, ni
-/// commande ni question ; clamscan n'est qu'un second avis facultatif. Son absence reste dite, et la vérification
-/// incomplète : ce qui n'a pas pu être vérifié n'est jamais compté sain.
+/// ClamAV absent (`VANGUARD_ESSAI_ABSENT`, binaire de débogage : un PATH vide ne suffit plus depuis E-1, clamscan
+/// étant pris dans les dossiers du système) et aucune réponse : depuis AV5 (P16), Vanguard ne propose plus de
+/// l'installer, ni commande ni question ; clamscan n'est qu'un second avis facultatif. Son absence reste dite, et la
+/// vérification incomplète : ce qui n'a pas pu être vérifié n'est jamais compté sain.
 #[cfg(unix)]
 #[test]
 fn verifier_fichier_sans_clamav_ni_reponse() {
@@ -3902,7 +3903,7 @@ fn verifier_fichier_sans_clamav_ni_reponse() {
         &["verifier-fichier", notes.to_str().unwrap()],
         "",
         DELAI_BASES_CLAMAV,
-        &[("PATH", vide.to_str().unwrap())],
+        &[("PATH", vide.to_str().unwrap()), ("VANGUARD_ESSAI_ABSENT", "clamscan")],
     );
     assert_eq!(s.code, Some(0), "{}", s.erreurs);
     let t = sans_couleurs(&s.texte).split_whitespace().collect::<Vec<_>>().join(" ");

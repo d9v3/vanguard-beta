@@ -385,10 +385,23 @@ pub fn lancer_en_anglais(commande: &mut Command, secondes: u64) -> Option<Result
     lancer(commande.env("LC_ALL", "C.UTF-8").env_remove("LANGUAGE"), secondes)
 }
 
+/// Essais seulement (binaire de débogage, comme `VANGUARD_ESSAI_ARRET`) : `VANGUARD_ESSAI_ABSENT=clamscan,upnpc` fait
+/// dire absents ces outils du système. Un PATH vide ne le simule plus, puisque `outil_systeme` ne lit pas le PATH
+/// (E-1, recontrôle 0.95). La variable ne fait que retirer : `par_le_systeme` lance alors un chemin qui n'existe pas,
+/// jamais le vrai outil. Le programme publié (sans `debug_assertions`) ne la lit pas.
+#[cfg(all(unix, debug_assertions))]
+fn absent_pour_essai(nom: &str) -> bool {
+    std::env::var("VANGUARD_ESSAI_ABSENT").is_ok_and(|v| v.split(',').any(|n| n.trim() == nom))
+}
+
 /// Un programme du système par son chemin, jamais par le PATH du compte (qui choisirait un faux « sudo » posé dans un
 /// dossier à lui). NixOS met ses programmes setuid dans /run/wrappers/bin.
 #[cfg(unix)]
 pub(crate) fn outil_systeme(nom: &str) -> Option<std::path::PathBuf> {
+    #[cfg(debug_assertions)]
+    if absent_pour_essai(nom) {
+        return None;
+    }
     [
         "/run/wrappers/bin",
         "/usr/bin",
@@ -412,7 +425,14 @@ pub(crate) fn outil_systeme(nom: &str) -> Option<std::path::PathBuf> {
 /// « Système à jour » sans rien vérifier (G-1, campagne 0.95). D'où l'`environnement_lecture`, ici, pour tous.
 #[cfg(unix)]
 pub(crate) fn par_le_systeme(nom: &str) -> Command {
-    let mut c = Command::new(outil_systeme(nom).unwrap_or_else(|| std::path::Path::new("/usr/bin").join(nom)));
+    let defaut = std::path::Path::new("/usr/bin").join(nom);
+    #[cfg(debug_assertions)]
+    let defaut = if absent_pour_essai(nom) {
+        std::path::Path::new("/nonexistent/vanguard-essai-absent").join(nom)
+    } else {
+        defaut
+    };
+    let mut c = Command::new(outil_systeme(nom).unwrap_or(defaut));
     environnement_lecture(&mut c, std::env::vars_os());
     c
 }

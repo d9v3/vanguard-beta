@@ -355,7 +355,8 @@ gardes :
   sa ligne « annulation interrompue, à reprendre », notée avant de rien remettre, jamais « annulable » comme si rien
   n'avait bougé ; une seconde annulation la finit. Finie, la ligne est dite défaite avant que la note soit oubliée :
   tuée entre les deux, elle dit « défaite », jamais « fait ». Le point d'arrêt des essais
-  (`VANGUARD_ESSAI_ARRET`) n'existe que dans un programme de débogage, jamais dans celui publié. Essais
+  (`VANGUARD_ESSAI_ARRET`), comme l'outil dit absent des essais (`VANGUARD_ESSAI_ABSENT`, qui ne fait que retirer),
+  n'existe que dans un programme de débogage, jamais dans celui publié. Essais
   (`tests/programme.rs`, dossier personnel jetable) : `appliquer_une_correction_du_compte_une_seule_fois`,
   `appliquer_refuse_un_etat_change_depuis_l_apercu`, `carnet_falsifie_ou_note_impossible_rien_n_est_applique`,
   `remettre_comme_avant_exactement_une_seule_fois`, `remettre_dans_l_ordre_et_sur_l_etat_montre`,

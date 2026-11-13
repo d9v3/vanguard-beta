@@ -337,7 +337,8 @@ safeguards:
   likewise leaves its line “undo interrupted, to resume”, written before anything is restored, never “undoable” as if
   nothing had moved; a second undo finishes it. Once finished, the line is said undone before the note is dropped:
   killed in between, it says “undone”, never “done”. The test stop point
-  (`VANGUARD_ESSAI_ARRET`) only exists in a debug build, never in the published one. Tests (`tests/programme.rs`,
+  (`VANGUARD_ESSAI_ARRET`), like the tests' tool reported absent (`VANGUARD_ESSAI_ABSENT`, which only removes),
+  only exists in a debug build, never in the published one. Tests (`tests/programme.rs`,
   throwaway home folder): `appliquer_une_correction_du_compte_une_seule_fois`,
   `appliquer_refuse_un_etat_change_depuis_l_apercu`, `carnet_falsifie_ou_note_impossible_rien_n_est_applique`,
   `remettre_comme_avant_exactement_une_seule_fois`, `remettre_dans_l_ordre_et_sur_l_etat_montre`,

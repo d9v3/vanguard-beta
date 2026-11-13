@@ -67,7 +67,7 @@ pub(super) fn liste_mises_a_jour(gestion: Paquets) -> Option<Vec<String>> {
 }
 
 /// La base de travail de checkupdates (E-2, recontrôle 0.95). Sans CHECKUPDATES_DB, il prend
-/// « ${TMPDIR:-/tmp}/checkup-db-<UID> », un nom connu d'avance, y fait `mkdir -p` puis un lien `local` vers la base
+/// `${TMPDIR:-/tmp}/checkup-db-<UID>`, un nom connu d'avance, y fait `mkdir -p` puis un lien `local` vers la base
 /// des paquets installés qui n'écrase pas un `local` déjà là (/usr/bin/checkupdates) : un programme du compte qui y
 /// posait une base locale vide faisait dire « rien à mettre à jour ». Ici, un dossier neuf, au nom tiré au hasard,
 /// créé seul (un dossier ou un lien déjà là au même nom fait échouer, jamais suivi), 0700, effacé ensuite.
