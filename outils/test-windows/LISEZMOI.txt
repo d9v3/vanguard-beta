@@ -99,9 +99,9 @@ Les résultats restent.
 
 CE QU'IL Y A ICI
 ----------------
-programme\    vanguard.exe et les scripts de test. Remplacé à chaque mise à
-              jour de Vanguard (outils/deployer.sh, côté Linux) : ne rien y
-              mettre.
+programme\    vanguard.exe, sa fenêtre (vanguard-fenetre.exe) et les scripts
+              de test. Remplacé à chaque mise à jour de Vanguard
+              (outils/deployer.sh, côté Linux) : ne rien y mettre.
 a-lancer\     les scripts déposés depuis Linux qui attendent (choix 7).
 file-essais\  les essais sans clic : un dossier par essai (travail.txt,
               fini.txt, resultats\ avec le rapport et les écrans de la

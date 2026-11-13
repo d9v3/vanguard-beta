@@ -1101,6 +1101,57 @@ EOF
     sauter "fenêtre portée, copiée par le surveillant"
   fi
 
+  # 27. test.ps1 (0.96) : la copie locale du programme (passes du menu, sans -SurPlace) emporte sa fenêtre, ou retire
+  #     celle d'une passe d'avant ; l'empreinte gravée dans vanguard.exe y est lue comme vanguard la lit
+  #     (src/demarrage/empreinte_fenetre.rs). Les deux fonctions du vrai test.ps1, sur les faux programmes de 26.
+  if [[ -n $avec_pwsh ]]; then
+    grave "$T/majuscules.exe" "${sha_fen2^^}"
+    mkdir -p "$T/copie/source" "$T/copie/local"
+    cp -f "$T/avec.exe" "$T/copie/source/vanguard.exe" && cp -f "$T/fenetre.exe" "$T/copie/source/vanguard-fenetre.exe"
+    python3 -I - "$DEPOT/outils/test-windows/test.ps1" "$T/fonctions-test.ps1" >"$T/sortie" 2>&1 <<'EOF2'
+import re, sys
+s = open(sys.argv[1], encoding='utf-8-sig').read()
+morceaux = []
+for nom in ('Copier-Programme', 'Fenetre-Gravee'):
+    m = re.search(r'(?ms)^function ' + nom + r'\b.*?^\}$', s)
+    assert m, nom + ' absente de test.ps1'
+    morceaux.append(m.group(0))
+open(sys.argv[2], 'w', encoding='utf-8-sig').write('\n'.join(morceaux) + '\n')
+EOF2
+    local extrait=$?
+    cat >"$T/essai-fonctions.ps1" <<'EOF2'
+param([string]$T)
+. (Join-Path $T 'fonctions-test.ps1')
+foreach ($n in 'avec', 'aucune', 'vanguard', 'deux', 'majuscules', 'absent') {
+    $g = Fenetre-Gravee (Join-Path $T "$n.exe")
+    $v = if ($null -eq $g) { 'NUL' } elseif ($g -eq '') { 'VIDE' } else { $g }
+    "gravee $n $v"
+}
+$src = Join-Path $T 'copie/source'
+$loc = Join-Path $T 'copie/local'
+$r = Copier-Programme $src $loc
+"copie 1 : [$r] $(Test-Path (Join-Path $loc 'vanguard.exe')) $((Get-FileHash (Join-Path $loc 'vanguard-fenetre.exe') -Algorithm SHA256).Hash.ToLower())"
+Remove-Item -LiteralPath (Join-Path $src 'vanguard-fenetre.exe')
+$r = Copier-Programme $src $loc
+"copie 2 : [$r] $(Test-Path (Join-Path $loc 'vanguard.exe')) $(Test-Path (Join-Path $loc 'vanguard-fenetre.exe'))"
+# Une ancienne fenêtre qui ne s'efface pas (ici un dossier plein, sous Windows un fichier ouvert) : dit, pas tu.
+$bloque = New-Item -ItemType Directory -Force (Join-Path $loc 'vanguard-fenetre.exe')
+Set-Content -LiteralPath (Join-Path $bloque 'dedans') -Value 'x'
+$r = Copier-Programme $src $loc
+"copie 3 : $(if ($r -like '*passe d''avant*') { 'dit' } else { "tu [$r]" })"
+EOF2
+    ((extrait == 0)) && "$PWSH" -NoProfile -NonInteractive -File "$T/essai-fonctions.ps1" -T "$T" >>"$T/sortie" 2>&1
+    voir "test.ps1 lit l'empreinte gravée comme vanguard (64 chiffres, AUCUNE, sans marque, contradiction, majuscules, illisible)" \
+      eval '((extrait == 0)) && grep -qx "gravee avec $sha_fen2" "$T/sortie" && grep -qx "gravee aucune AUCUNE" "$T/sortie" &&
+        grep -qx "gravee vanguard VIDE" "$T/sortie" && grep -qx "gravee deux NUL" "$T/sortie" && grep -qx "gravee majuscules VIDE" "$T/sortie" &&
+        grep -qx "gravee absent NUL" "$T/sortie"'
+    voir "test.ps1 : la copie locale emporte la fenêtre, retire celle d'une passe d'avant, et dit quand elle reste" \
+      eval '((extrait == 0)) && grep -qx "copie 1 : \[\] True $sha_fen2" "$T/sortie" && grep -qx "copie 2 : \[\] True False" "$T/sortie" &&
+        grep -qx "copie 3 : dit" "$T/sortie"'
+  else
+    sauter "test.ps1 et la fenêtre"
+  fi
+
   # 23. Sans le secret ici, ou face au surveillant d'avant la signature : rien déposé, la raison dite.
   nouvelle_vm; sources 0 0 0 'OK x'
   ID=

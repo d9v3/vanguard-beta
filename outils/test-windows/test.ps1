@@ -2,9 +2,10 @@
 # 1) relève l'état réel du système (référence), 2) lance Vanguard, 3) vérifie ses réponses.
 # Pendant le test : une ligne par commande et par vérification, sans les sorties brutes. À la fin : un rapport HTML
 # (rapport-test.html, ouvert dans le navigateur), avec la sortie de chaque commande à déplier.
-# Rangement du dossier partagé : ce script et vanguard.exe dans « programme » (remplacés à chaque déploiement),
-# chaque passe dans « resultats\AAAA-MM-JJ_HH-MM-SS_vX.Y.Z », une ligne par passe dans « resultats\historique.txt »
-# et le dernier rapport dans « resultats\dernier-rapport.html ». Lancé par le menu (TESTER-VANGUARD.bat).
+# Rangement du dossier partagé : ce script, vanguard.exe et sa fenêtre (vanguard-fenetre.exe) dans « programme »
+# (remplacés à chaque déploiement), chaque passe dans « resultats\AAAA-MM-JJ_HH-MM-SS_vX.Y.Z », une ligne par passe
+# dans « resultats\historique.txt » et le dernier rapport dans « resultats\dernier-rapport.html ». Lancé par le menu
+# (TESTER-VANGUARD.bat).
 
 # -Auto : aucune question ; les étapes qui demandent de taper ou une fenêtre UAC sont sautées.
 # -SansOuvrir : rien ne s'ouvre à l'écran (test lancé en arrière-plan par la tâche planifiée du menu).
@@ -23,18 +24,51 @@ $ici = Split-Path -Parent $MyInvocation.MyCommand.Path
 $racine = if ((Split-Path -Leaf $ici) -eq 'programme') { Split-Path -Parent $ici } else { $ici }
 $resultats = Join-Path $racine 'resultats'
 
+# La copie locale du programme, et de sa fenêtre (0.96) : vanguard.exe ne lance que celle dont il porte l'empreinte
+# gravée, posée à côté de lui. Venu sans elle, celle d'une passe d'avant est retirée : elle serait prise pour la sienne.
+# Rend '' quand la copie locale porte ce que le partage porte, sinon ce qui a raté (dit par l'étape de la fenêtre) :
+# une fenêtre d'une passe d'avant restée là ne passe jamais pour celle du déploiement.
+function Copier-Programme([string]$source, [string]$dossier) {
+    New-Item -ItemType Directory -Force $dossier | Out-Null
+    Copy-Item -LiteralPath (Join-Path $source 'vanguard.exe') $dossier -Force
+    $fenetre = Join-Path $source 'vanguard-fenetre.exe'
+    $copie = Join-Path $dossier 'vanguard-fenetre.exe'
+    if (Test-Path -LiteralPath $fenetre -PathType Leaf) {
+        Copy-Item -LiteralPath $fenetre $dossier -Force
+    } elseif (Test-Path -LiteralPath $copie) {
+        Remove-Item -LiteralPath $copie -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $copie) { return "la fenêtre d'une passe d'avant n'a pas pu être retirée de $dossier" }
+    }
+    return ''
+}
+
+# L'empreinte de fenêtre gravée dans un programme, lue comme vanguard la lit (src/demarrage/empreinte_fenetre.rs) :
+# 64 chiffres hexadécimaux minuscules, 'AUCUNE' (compilé sans fenêtre), '' (aucune marque : d'avant la 0.96), ou $null
+# (fichier illisible, marques qui se contredisent).
+function Fenetre-Gravee([string]$programme) {
+    try { $octets = [IO.File]::ReadAllBytes($programme) } catch { return $null }
+    # Latin-1 : un caractère par octet, rien de perdu ni d'inventé.
+    $texte = [Text.Encoding]::GetEncoding(28591).GetString($octets)
+    $vues = @([regex]::Matches($texte, 'VANGUARD-FENETRE:([0-9a-f]{64}|AUCUNE);') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+    if ($vues.Count -eq 0) { return '' }
+    if ($vues.Count -gt 1) { return $null }
+    return $vues[0]
+}
+
+$copieRatee = ''
 if ($SurPlace) {
     $exe = Join-Path $ici 'vanguard.exe'
     $lieuEssais = $ici
 } else {
     # On lance une copie locale : un .exe sur un partage réseau déclenche des avertissements de sécurité.
     $local = Join-Path $env:LOCALAPPDATA 'vanguard-test'
-    New-Item -ItemType Directory -Force $local | Out-Null
-    Copy-Item (Join-Path $ici 'vanguard.exe') $local -Force
+    $copieRatee = Copier-Programme $ici $local
     $exe = Join-Path $local 'vanguard.exe'
     $lieuEssais = $env:TEMP
 }
+$fenetre = Join-Path (Split-Path -Parent $exe) 'vanguard-fenetre.exe'
 Unblock-File $exe -ErrorAction SilentlyContinue
+if (Test-Path -LiteralPath $fenetre) { Unblock-File $fenetre -ErrorAction SilentlyContinue }
 $version = (& $exe --version 2>$null | Out-String).Trim()
 $numero = if ($version -match '\d+\.\d+\.\d+') { $Matches[0] } else { 'inconnue' }
 $res = Join-Path $resultats ((Get-Date -Format 'yyyy-MM-dd_HH-mm-ss') + "_v$numero")
@@ -406,6 +440,57 @@ Info 'Référence enregistrée (reference.txt) : état lu directement dans Windo
 Etape 'Version et aide'
 Lancer 'version' @('--version')
 Lancer 'aide' @('--help')
+
+Etape 'Fenêtre (0.96) : celle que vanguard.exe lance, à côté de lui, chargée par Windows'
+# vanguard.exe ne lance que la fenêtre dont il porte l'empreinte gravée. Déposé sans elle, ou avec une autre, la
+# version livrée n'est pas celle essayée : un problème, jamais une étape sautée. Son ouverture pour de vrai (double-clic
+# devant l'écran, sans droits d'administrateur) ne se fait pas ici : en administrateur, vanguard garde le menu.
+$gravee = Fenetre-Gravee $exe
+$aCote = Test-Path -LiteralPath $fenetre -PathType Leaf
+if ($copieRatee) {
+    Bug "Copie locale du programme : $copieRatee"
+} elseif ($null -eq $gravee) {
+    Bug 'Marque de fenêtre de vanguard.exe illisible, ou deux marques qui se contredisent'
+} elseif ($gravee -eq '' -or $gravee -eq 'AUCUNE') {
+    $pourquoi = if ($gravee -eq '') { 'sans marque de fenêtre (d''avant la 0.96)' } else { 'compilé sans fenêtre (« AUCUNE »)' }
+    if ($aCote) { Bug "vanguard.exe $pourquoi, mais une fenêtre est posée à côté : il ne la lancera pas" }
+    else { Sautee "vanguard.exe $pourquoi : il n'en lance aucune, rien à essayer." }
+} elseif (-not $aCote) {
+    Bug "vanguard.exe lance la fenêtre $($gravee.Substring(0, 12))…, absente à côté de lui (déposé sans elle)"
+} else {
+    # Une lecture ratée est dite (jamais une erreur sans vérification notée) : de même pour le lancement plus bas.
+    $h = Get-FileHash -LiteralPath $fenetre -Algorithm SHA256 -ErrorAction SilentlyContinue
+    $empreinteFenetre = if ($h) { $h.Hash.ToLower() } else { '' }
+    if ($empreinteFenetre -eq $gravee) {
+        Set-Content -LiteralPath (Join-Path $res 'fenetre.sha256') -Value $empreinteFenetre -Encoding ASCII
+        Ok "Fenêtre à côté de vanguard.exe : celle dont il porte l'empreinte ($($gravee.Substring(0, 12))…)"
+    } elseif ($empreinteFenetre -eq '') {
+        Bug 'Fenêtre à côté de vanguard.exe : empreinte illisible'
+    } else {
+        Bug "Fenêtre à côté de vanguard.exe ($($empreinteFenetre.Substring(0, 12))…) : pas celle qu'il lance ($($gravee.Substring(0, 12))…)"
+    }
+    # Lancée pour de vrai, sans rien ouvrir : Windows la charge (ses DLL comprises) et elle répond. 30 s au plus : un
+    # message d'erreur à l'écran la ferait attendre un clic.
+    $sortieFenetre = Join-Path $res 'fenetre-version.out.txt'
+    $pf = $null
+    $erreurFenetre = ''
+    try {
+        $pf = Start-Process -FilePath $fenetre -ArgumentList '--version' -NoNewWindow -PassThru -ErrorAction Stop `
+            -RedirectStandardOutput $sortieFenetre -RedirectStandardError (Join-Path $res 'fenetre-version.err.txt')
+        # Le handle lu tout de suite : sans lui, ExitCode reste vide une fois le processus fini.
+        $null = $pf.Handle
+    } catch { $erreurFenetre = $_.Exception.Message }
+    if (-not $pf) {
+        Bug "vanguard-fenetre --version : pas lancée ($erreurFenetre)"
+    } elseif (-not $pf.WaitForExit(30000)) {
+        Stop-Process -Id $pf.Id -Force -ErrorAction SilentlyContinue
+        Bug 'vanguard-fenetre --version : pas fini en 30 s (arrêté)'
+    } else {
+        $luFenetre = "$(Get-Content -LiteralPath $sortieFenetre -Raw -ErrorAction SilentlyContinue)".Trim()
+        if ($pf.ExitCode -eq 0 -and $luFenetre -match '^vanguard-fenetre \d+\.\d+\.\d+$') { Ok "vanguard-fenetre --version : « $luFenetre »" }
+        else { Bug "vanguard-fenetre --version : code $($pf.ExitCode), « $luFenetre »" }
+    }
+}
 
 Etape 'Audit de la machine (texte et JSON)'
 Lancer 'machine' @('audit')
