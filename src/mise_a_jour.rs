@@ -518,7 +518,19 @@ fn installer(octets: &[u8], cible: &Path, attendue: Version, essai: Essai) -> Re
         // Avant le renommage, rien n'est remplacé : chaque échec le dit (l'appelant ne dit plus « l'ancien reste »).
         let rien = |e: String| format!("{e} : {}", tr!("rien n'est remplacé", "nothing is replaced"));
         let _ = std::fs::remove_file(&provisoire);
-        let f = ecrire_provisoire(&provisoire, octets).map_err(|e| rien(e.to_string()))?;
+        let f = ecrire_provisoire(&provisoire, octets).map_err(|e| {
+            // R-4 (recontrôle 0.95) : un dossier (ou autre chose qui ne s'efface pas) sous ce nom ; dit avec le chemin
+            // à retirer, jamais « File exists » seul.
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                rien(trf!(
+                    "{} existe déjà et Vanguard ne l'efface pas (un dossier ?) : retirez-le, puis relancez la mise à jour",
+                    "{} already exists and Vanguard does not delete it (a folder?): remove it, then run the update again",
+                    affichable(&provisoire.display().to_string())
+                ))
+            } else {
+                rien(e.to_string())
+            }
+        })?;
         if !meme_contenu(&f, octets).map_err(|e| rien(e.to_string()))? {
             return Err(rien(
                 tr!("la copie relue ne correspond pas", "the copy read back does not match").into(),
@@ -1673,6 +1685,28 @@ mod tests {
         let texte = racine.join("pas-un-programme");
         std::fs::write(&texte, "rien").unwrap();
         assert!(essayer(&texte, (0, 80, 0, 5)).is_err());
+        let _ = std::fs::remove_dir_all(&racine);
+    }
+
+    /// R-4 (recontrôle 0.95) : un dossier au nom de la copie provisoire bloque la mise à jour ; l'échec dit lequel,
+    /// et quoi faire, au lieu de « File exists (os error 17) ». Retiré, la mise à jour se fait.
+    #[test]
+    fn nom_provisoire_occupe_dit_comment_le_liberer() {
+        let racine = crate::socle::dossier_local().join("essai-nom-provisoire");
+        let _ = std::fs::remove_dir_all(&racine);
+        let source = racine.join("cle").join(NOM);
+        let cible = racine.join("bin").join(NOM);
+        faux_programme(&source, Some("0.80.0"));
+        faux_programme(&cible, Some("0.79.0"));
+        let avant = std::fs::read(&cible).unwrap();
+        let provisoire = racine.join("bin").join(format!("{NOM}.nouveau"));
+        std::fs::create_dir_all(provisoire.join("dedans")).unwrap();
+        let e = remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, SANS_ESSAI).unwrap_err();
+        assert!(e.contains("retirez"), "{e}");
+        assert!(e.contains(&format!("{NOM}.nouveau")), "{e}");
+        assert_eq!(std::fs::read(&cible).unwrap(), avant);
+        std::fs::remove_dir_all(&provisoire).unwrap();
+        remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, SANS_ESSAI).unwrap();
         let _ = std::fs::remove_dir_all(&racine);
     }
 
