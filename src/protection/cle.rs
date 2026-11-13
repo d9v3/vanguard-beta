@@ -17,7 +17,11 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::modele::Echec;
 use crate::ui::*;
+
+/// Le contexte des échecs de la copie du programme hors de la clé.
+const OU_COPIE: &str = "cle/copie";
 
 /// Variable posée par la copie temporaire : chemin du programme d'origine, sur la clé.
 const ORIGINE: &str = "VANGUARD_ORIGINE";
@@ -437,7 +441,7 @@ pub fn se_detacher_de_la_cle() {
                 "copie sur cet ordinateur impossible",
                 "copy to this computer impossible"
             ),
-            &[e],
+            &[e.to_string()],
         ),
     }
 }
@@ -628,16 +632,18 @@ fn preparer_copie(exe: &Path, base: &Path, nom: &str) -> std::io::Result<PathBuf
 }
 
 /// La copie a-t-elle exactement les octets du programme qui tourne (`soi` : leur empreinte) ? Sinon pourquoi.
-fn verifier_copie(copie: &Path, soi: &str) -> Result<(), String> {
+fn verifier_copie(copie: &Path, soi: &str) -> Result<(), Echec> {
     let lu = crate::programmes_poses::empreinte_de(copie)?;
     if lu == soi {
         Ok(())
     } else {
-        Err(tr!(
-            "la copie n'a pas les octets du programme qui tourne",
-            "the copy does not have the running program's bytes"
-        )
-        .to_string())
+        Err(Echec::refuse(
+            OU_COPIE,
+            tr!(
+                "la copie n'a pas les octets du programme qui tourne",
+                "the copy does not have the running program's bytes"
+            ),
+        ))
     }
 }
 
@@ -681,7 +687,7 @@ fn relancer_depuis_une_copie(exe: &Path) -> Vec<String> {
                 effacer_copie(&copie);
                 e
             }
-            Err(e) => e,
+            Err(e) => e.to_string(),
         };
         erreurs.push(format!("{} : {erreur}", base.display()));
     }
@@ -690,8 +696,8 @@ fn relancer_depuis_une_copie(exe: &Path) -> Vec<String> {
 
 /// `preparer_copie` puis `verifier_copie` ; une copie refusée est effacée.
 #[cfg(unix)]
-fn copie_verifiee(exe: &Path, base: &Path, nom: &str, soi: &str) -> Result<PathBuf, String> {
-    let copie = preparer_copie(exe, base, nom).map_err(|e| e.to_string())?;
+fn copie_verifiee(exe: &Path, base: &Path, nom: &str, soi: &str) -> Result<PathBuf, Echec> {
+    let copie = preparer_copie(exe, base, nom).map_err(|e| Echec::ecriture(OU_COPIE, &e))?;
     if let Err(e) = verifier_copie(&copie, soi) {
         effacer_copie(&copie);
         return Err(e);
@@ -712,11 +718,11 @@ fn lancer_une_copie(
     args: Vec<std::ffi::OsString>,
     origine: &Path,
     avant_d_attendre: impl FnOnce(),
-) -> Result<i32, String> {
+) -> Result<i32, Echec> {
     use std::os::windows::fs::OpenOptionsExt;
-    std::fs::create_dir_all(base).map_err(|e| e.to_string())?;
-    let copie = preparer_copie(source, base, &nom_de_copie()).map_err(|e| e.to_string())?;
-    let refus = |e: String| {
+    std::fs::create_dir_all(base).map_err(|e| Echec::ecriture(OU_COPIE, &e))?;
+    let copie = preparer_copie(source, base, &nom_de_copie()).map_err(|e| Echec::ecriture(OU_COPIE, &e))?;
+    let refus = |e: Echec| {
         effacer_copie(&copie);
         Err(e)
     };
@@ -726,21 +732,20 @@ fn lancer_une_copie(
         .open(&copie)
     {
         Ok(v) => v,
-        Err(e) => return refus(e.to_string()),
+        Err(e) => return refus(Echec::io(OU_COPIE, &e)),
     };
     if let Err(e) = verifier_copie(&copie, soi) {
         drop(verrou);
         return refus(e);
     }
-    let mut fils = match std::process::Command::new(&copie)
-        .args(args)
-        .env(ORIGINE, origine)
-        .spawn()
-    {
+    // Suivi par les coulisses jusqu'à sa fin : la copie lancée s'y voit, avec son code.
+    let (lance, mut suivi) =
+        crate::coulisses::Suivie::spawn_et_suivre(std::process::Command::new(&copie).args(args).env(ORIGINE, origine));
+    let mut fils = match lance {
         Ok(f) => f,
         Err(e) => {
             drop(verrou);
-            return refus(e.to_string());
+            return refus(Echec::echoue(OU_COPIE, e.to_string()));
         }
     };
     // La console fermée par le X, la fin de session : Windows ne laisse que le gestionnaire (`effacer_a_la_fermeture`)
@@ -751,6 +756,10 @@ fn lancer_une_copie(
     // Après le lancement : ce que pose `avant_d_attendre` (mode d'erreur) ne doit pas passer au fils.
     avant_d_attendre();
     let statut = fils.wait();
+    if let Ok(s) = &statut {
+        suivi.fin(crate::coulisses::Issue::Code(s.code()));
+    }
+    drop(suivi);
     if let Ok(mut en_cours) = COPIE_EN_COURS.lock() {
         en_cours.take();
     }
@@ -762,7 +771,7 @@ fn lancer_une_copie(
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
     effacer_copie(&copie);
-    let statut = statut.map_err(|e| e.to_string())?;
+    let statut = statut.map_err(|e| Echec::echoue(OU_COPIE, e.to_string()))?;
     Ok(statut.code().unwrap_or(1))
 }
 

@@ -172,6 +172,8 @@ pub(crate) const INVENTAIRE: &[FichierEtat] = &[
     local("reprise-version-d-avant", "passage"),
     local("menu-0.87", "menu::lancer"),
     local("bin", "mise_a_jour"),
+    // Windows : la copie du programme lancé depuis la clé, le temps de ce lancement (effacée à sa fin).
+    local("copies", "protection::cle"),
     local("versions", "mise_a_jour::github, protection::perimes"),
     local("raccourci-retrait", "raccourci"),
     // L'état de l'entretien du mois d'avant et la note de la sauvegarde mise en place : une alerte inscrite d'avance ne
@@ -610,6 +612,11 @@ mod tests {
              plugins/approuves.json)",
         ),
         ("tldr", "exemples du guide des commandes : du texte montré"),
+        (
+            "copies",
+            "copie passagère du programme lancé depuis la clé (Windows) : ses octets sont vérifiés contre ceux du \
+             programme qui tourne avant son lancement, son fichier tenu en lecture seule jusqu'à sa fin, puis effacé",
+        ),
         (
             "corrections",
             "scripts et résultats des corrections de Windows : le script est vérifié par son empreinte avant de tourner ; \
