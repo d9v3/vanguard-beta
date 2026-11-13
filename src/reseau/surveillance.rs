@@ -51,10 +51,29 @@ pub(crate) fn executable() -> Option<String> {
     let Some(exe) = exe else {
         return Some("vanguard".into());
     };
-    if !reseau::cle_usb().is_some_and(|cle| sous(&exe, &cle)) {
+    let ephemere = crate::protection::cle::programme_ephemere(&exe);
+    executable_depuis(&exe, ephemere, crate::mise_a_jour::poser_copie)
+}
+
+/// `executable` pour le programme `exe` ; `ephemere` : sur la clé (même retirée depuis) ou copie temporaire, il ne se
+/// pose jamais tel quel, seulement sa copie locale faite par `poser`. Retirée, la clé ne peut plus la donner : refusé
+/// et dit, jamais un chemin mort rendu à la place.
+fn executable_depuis(
+    exe: &Path,
+    ephemere: bool,
+    poser: impl FnOnce(&Path) -> Result<PathBuf, String>,
+) -> Option<String> {
+    if !ephemere {
         return Some(exe.display().to_string());
     }
-    match crate::mise_a_jour::poser_copie(&exe) {
+    if !exe.is_file() {
+        trp!(
+            "  ✖ Le programme de la clé n'est plus là (clé retirée ?) : rien n'est posé.\n    {GRIS}Rebranchez la clé et relancez Vanguard depuis elle, ou installez-le sur cet ordinateur.{RESET}",
+            "  ✖ The key's program is no longer there (key removed?): nothing is set up.\n    {GRIS}Plug the key back in and start Vanguard from it, or install it on this computer.{RESET}"
+        );
+        return None;
+    }
+    match poser(exe) {
         Ok(dest) => {
             trp!(
                 "  {GRIS}Copie locale pour la surveillance : {}{RESET}",
@@ -2077,6 +2096,41 @@ pub(crate) fn corpus_audit(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// HAUTE (relecture) : clé retirée pendant la session, son programme n'est jamais rendu comme programme à poser
+    /// (minuteries, garde, veilleur, raccourci, reprise) : la clé du lancement, fixée au démarrage, le dit encore sur
+    /// la clé alors que `cle_usb` ne la voit plus ; la copie locale ne peut plus se faire, refusée et dite.
+    #[test]
+    fn cle_retiree_jamais_un_chemin_mort() {
+        let cle = crate::essais::temporaire().join(format!("vanguard-cle-retiree-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&cle);
+        std::fs::create_dir_all(cle.join("Linux")).unwrap();
+        std::fs::write(cle.join(crate::reseau::TEMOIN_CLE), "").unwrap();
+        let exe = cle.join("Linux").join("vanguard");
+        std::fs::write(&exe, "programme").unwrap();
+        // Au démarrage, la clé se lit : c'est elle, la clé du lancement.
+        let de_lancement = crate::reseau::cle_de(&exe);
+        assert_eq!(de_lancement.as_deref(), Some(cle.as_path()));
+        // Branchée : la copie locale est posée, jamais la clé.
+        let ephemere = crate::protection::cle::ephemere_parmi(&exe, Some(&cle), de_lancement.as_deref());
+        assert!(ephemere);
+        let pose = executable_depuis(&exe, ephemere, |_| Ok(PathBuf::from("/copie/locale")));
+        assert_eq!(pose.as_deref(), Some("/copie/locale"));
+        // Retirée : plus de témoin, `cle_usb` ne la voit plus.
+        std::fs::remove_dir_all(&cle).unwrap();
+        assert!(crate::reseau::cle_de(&exe).is_none());
+        let ephemere = crate::protection::cle::ephemere_parmi(&exe, None, de_lancement.as_deref());
+        assert!(ephemere, "clé retirée : son programme pris pour un programme qui reste");
+        let pose = executable_depuis(&exe, ephemere, |_| Err("clé retirée".into()));
+        assert_eq!(pose, None, "chemin de la clé retirée rendu comme programme à poser");
+        // Un programme qui reste (installé) : rendu tel quel.
+        let installe = Path::new("/usr/bin/vanguard");
+        assert!(!crate::protection::cle::ephemere_parmi(
+            installe,
+            None,
+            de_lancement.as_deref()
+        ));
+    }
 
     /// Coupée hors de Vanguard, avec son jour ou avec la note modifiée hors de Vanguard : élevé, jamais muet.
     #[test]

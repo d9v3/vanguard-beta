@@ -1514,6 +1514,64 @@ fn copie_en_marche_sous(d: &Path) -> Option<PathBuf> {
     (crate::protection::cle::est_une_copie(&exe) && d.canonicalize().is_ok_and(|d| exe.starts_with(d))).then_some(exe)
 }
 
+/// Le lanceur de la copie (le premier processus, qui l'efface à sa fin) tourne-t-il encore ?
+fn lanceur_vivant(copie: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        crate::protection::cle::lanceur_de_la_copie_vivant(copie)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = copie;
+        false
+    }
+}
+
+/// Ce qui suit le résultat quand la copie en marche reste : effacée par son lanceur s'il vit, sinon le chemin exact
+/// à effacer soi-même (un prochain lancement de Vanguard sur cet ordinateur la balaie aussi).
+fn note_de_la_copie(copie: &Path, vivant: bool) -> String {
+    if vivant {
+        return tr!(
+            " ; sauf la copie de Vanguard en marche, effacée quand il se ferme",
+            "; except the running Vanguard copy, erased when it closes"
+        )
+        .to_string();
+    }
+    let dossier = copie.parent().unwrap_or(copie);
+    trf!(
+        " ; sauf la copie de Vanguard en marche : rien ne l'effacera seul, effacez {} après avoir quitté Vanguard",
+        "; except the running Vanguard copy: nothing will erase it by itself, erase {} after quitting Vanguard",
+        chemin_affichable(dossier)
+    )
+}
+
+/// Le dossier `d` ne garde-t-il que la copie en marche et les dossiers qui la contiennent ? Autre chose (une passe
+/// qui y a réécrit) : le dossier est revenu. Illisible : compté comme revenu, jamais comme vide.
+fn seulement_la_copie(d: &Path, copie: &Path) -> bool {
+    let Ok(d) = d.canonicalize() else {
+        return false;
+    };
+    let mut a_voir = vec![d];
+    while let Some(dossier) = a_voir.pop() {
+        let Ok(entrees) = std::fs::read_dir(&dossier) else {
+            return false;
+        };
+        for entree in entrees {
+            let Ok(entree) = entree else {
+                return false;
+            };
+            let p = entree.path();
+            if !copie.starts_with(&p) {
+                return false;
+            }
+            if p != copie {
+                a_voir.push(p);
+            }
+        }
+    }
+    true
+}
+
 fn retirer_dossier(e: &Element, d: &Path, x: &Execution) -> Result<String, Echec> {
     let lien = lien_vers(d);
     let gardes: Vec<&(PathBuf, String)> = x.gardes.iter().filter(|(p, _)| surveillance::sous(p, d)).collect();
@@ -1536,24 +1594,27 @@ fn retirer_dossier(e: &Element, d: &Path, x: &Execution) -> Result<String, Echec
             chemin_affichable(p)
         )));
     }
+    // La copie en marche n'est promise effacée que si son lanceur vit encore pour le faire ; sinon, son chemin exact.
+    let note_copie = copie
+        .as_deref()
+        .map(|c| note_de_la_copie(c, lanceur_vivant(c)))
+        .unwrap_or_default();
     if !gardes.is_empty() {
         let liste: Vec<String> = gardes
             .iter()
             .map(|(p, pour)| format!("{} ({pour})", chemin_affichable(p)))
             .collect();
         return Ok(trf!(
-            "{} ; gardé, pour ce que vous gardez : {}",
-            "{}; kept, for what you keep: {}",
+            "{} ; gardé, pour ce que vous gardez : {}{note_copie}",
+            "{}; kept, for what you keep: {}{note_copie}",
             e.texte,
             liste.join(", ")
         ));
     }
-    if copie.is_some() && std::fs::symlink_metadata(d).is_ok() {
-        return Ok(trf!(
-            "{} ; sauf la copie de Vanguard en marche, effacée quand il se ferme",
-            "{}; except the running Vanguard copy, erased when it closes",
-            e.texte
-        ));
+    if let Some(c) = &copie
+        && seulement_la_copie(d, c)
+    {
+        return Ok(format!("{}{note_copie}", e.texte));
     }
     // Une passe déjà lancée a pu écrire de nouveau pendant l'effacement : un dossier revenu n'est pas retiré.
     if std::fs::symlink_metadata(d).is_ok() {
@@ -2112,6 +2173,33 @@ fn retirer_et_conclure(
 )]
 #[cfg(test)]
 mod tests {
+    /// Relecture : la copie en marche n'est promise effacée que si son lanceur vit ; sinon son dossier exact est
+    /// donné. Un dossier où une passe a réécrit à côté de la copie reste « revenu ».
+    #[test]
+    fn copie_restante_dite_honnetement() {
+        let d = crate::essais::temporaire().join(format!("vanguard-desinst-copie-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let dossier_copie = d.join("copies").join("vanguard-4242-essai");
+        std::fs::create_dir_all(&dossier_copie).unwrap();
+        std::fs::write(dossier_copie.join("vanguard.exe"), "copie").unwrap();
+        let copie = dossier_copie.join("vanguard.exe").canonicalize().unwrap();
+        assert!(super::seulement_la_copie(&d, &copie));
+        std::fs::write(d.join("journal.txt"), "réécrit").unwrap();
+        assert!(
+            !super::seulement_la_copie(&d, &copie),
+            "un fichier réécrit à côté de la copie compté comme vide"
+        );
+        let vivant = super::note_de_la_copie(&copie, true);
+        assert!(vivant.contains("effacée quand il se ferme") || vivant.contains("erased when it closes"));
+        let mort = super::note_de_la_copie(&copie, false);
+        assert!(
+            !mort.contains("quand il se ferme") && !mort.contains("when it closes"),
+            "{mort}"
+        );
+        assert!(mort.contains("vanguard-4242-essai"), "{mort}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     use super::*;
 
     fn racine(nom: &str) -> PathBuf {

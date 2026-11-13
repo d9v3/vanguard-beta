@@ -50,7 +50,11 @@ pub fn exe_d_origine() -> Option<PathBuf> {
                 // Hors de la copie temporaire, la variable n'est qu'héritée (un Vanguard lancé par celui de la clé) ou
                 // posée par un autre programme : ignorée sans bruit, elle ne sert à rien. Dans la copie, l'écart se dit.
                 Err(_) if !std::env::current_exe().is_ok_and(|e| est_une_copie(&e)) => courant(),
-                Err(raison) => {
+                // Le fichier désigné n'est plus là : la clé a été retirée avant ce lancement (un Vanguard relancé par
+                // la copie, l'autotest). Ce n'est pas un programme étranger : rien à signaler, il n'est pas cru non
+                // plus.
+                Err(Refus::Absente) => courant(),
+                Err(Refus::Autre(raison)) => {
                     tre!(
                         "Attention : VANGUARD_ORIGINE désigne {}, qui n'est pas le programme qui tourne ({raison}) : ignorée.",
                         "Warning: VANGUARD_ORIGINE points to {}, which is not the running program ({raison}): ignored.",
@@ -91,34 +95,140 @@ fn image_qui_tourne() -> Option<String> {
     if let Some(soi) = crate::programmes_poses::soi() {
         return Some(soi.to_string());
     }
-    #[cfg(target_os = "linux")]
-    let image = PathBuf::from("/proc/self/exe");
-    #[cfg(not(target_os = "linux"))]
-    let image = std::env::current_exe().ok()?;
-    crate::programmes_poses::empreinte_de(&image).ok()
+    #[cfg(windows)]
+    {
+        soi_au_depart().map(str::to_string)
+    }
+    #[cfg(not(windows))]
+    {
+        #[cfg(target_os = "linux")]
+        let image = PathBuf::from("/proc/self/exe");
+        #[cfg(not(target_os = "linux"))]
+        let image = std::env::current_exe().ok()?;
+        crate::programmes_poses::empreinte_de(&image).ok()
+    }
+}
+
+/// Pourquoi `VANGUARD_ORIGINE` n'est pas crue.
+#[derive(Debug)]
+enum Refus {
+    /// Le fichier désigné n'existe plus (clé retirée, lecteur disparu).
+    Absente,
+    /// Présent mais pas le programme qui tourne, ou illisible : un écart à dire.
+    Autre(crate::modele::Echec),
 }
 
 /// Le fichier `designee`, s'il a exactement les octets du programme qui tourne (`soi` : leur empreinte) ; sinon
 /// pourquoi il n'est pas cru.
-fn origine_crue(designee: &Path, soi: Option<String>) -> Result<PathBuf, crate::modele::Echec> {
+fn origine_crue(designee: &Path, soi: Option<String>) -> Result<PathBuf, Refus> {
     const OU: &str = "cle/origine";
-    let chemin = designee.canonicalize().map_err(|e| crate::modele::Echec::io(OU, &e))?;
-    let lu = crate::programmes_poses::empreinte_de(&chemin).map_err(|e| crate::modele::Echec::refuse(OU, e))?;
+    let chemin = designee.canonicalize().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            Refus::Absente
+        } else {
+            Refus::Autre(crate::modele::Echec::io(OU, &e))
+        }
+    })?;
+    let lu = crate::programmes_poses::empreinte_de(&chemin)
+        .map_err(|e| Refus::Autre(crate::modele::Echec::refuse(OU, e)))?;
     let soi = soi.ok_or_else(|| {
-        crate::modele::Echec::refuse(OU, tr!("programme qui tourne illisible", "running program unreadable"))
+        Refus::Autre(crate::modele::Echec::refuse(
+            OU,
+            tr!("programme qui tourne illisible", "running program unreadable"),
+        ))
     })?;
     if lu == soi {
         Ok(chemin)
     } else {
-        Err(crate::modele::Echec::refuse(
+        Err(Refus::Autre(crate::modele::Echec::refuse(
             OU,
             tr!(
                 "ses octets ne sont pas ceux du programme qui tourne",
                 "its bytes are not those of the running program"
             ),
-        ))
+        )))
     }
 }
+
+/// La clé d'où ce lancement est parti, fixée au démarrage, pendant que son témoin se lit encore. Une fois la clé
+/// retirée, `reseau::cle_usb` ne la voit plus, mais le programme d'origine reste un chemin de la clé : il ne doit
+/// jamais être posé en tâche, en raccourci ni remplacé par une mise à jour (`programme_ephemere`).
+pub(crate) fn cle_de_lancement() -> Option<&'static Path> {
+    static CLE: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    CLE.get_or_init(|| exe_d_origine().as_deref().and_then(crate::reseau::cle_de))
+        .as_deref()
+}
+
+/// `exe` ne restera pas sur cet ordinateur : sur la clé (branchée, ou celle du lancement, même retirée) ou copie
+/// temporaire. Ce qui le lancerait plus tard doit lancer une copie locale à la place.
+pub(crate) fn programme_ephemere(exe: &Path) -> bool {
+    ephemere_parmi(exe, crate::reseau::cle_usb().as_deref(), cle_de_lancement())
+}
+
+/// `programme_ephemere`, la clé branchée (`branchee`) et celle du lancement (`de_lancement`) données.
+pub(crate) fn ephemere_parmi(exe: &Path, branchee: Option<&Path>, de_lancement: Option<&Path>) -> bool {
+    [branchee, de_lancement]
+        .into_iter()
+        .flatten()
+        .any(|cle| crate::reseau::surveillance::sous(exe, cle))
+        || est_une_copie(exe)
+}
+
+/// Le programme à relancer pour un Vanguard à part (l'autotest du menu). Sous Linux, l'image qui tourne : la copie
+/// temporaire s'est déjà effacée, et `current_exe` rendrait « …/vanguard (deleted) », qui ne se lance pas.
+#[cfg_attr(target_os = "linux", allow(clippy::unnecessary_wraps))] // même signature que sous Windows, où le chemin peut manquer
+pub(crate) fn programme_a_relancer() -> std::io::Result<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        Ok(PathBuf::from("/proc/self/exe"))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        std::env::current_exe()
+    }
+}
+
+/// Windows : l'empreinte du programme qui tourne, prise au démarrage (`se_detacher_de_la_cle`), avant qu'un autre
+/// programme du compte n'ait pu changer le fichier. Dans une copie temporaire, son fichier reste ouvert en lecture
+/// seule partagée toute la vie du processus : ni renommé, ni remplacé, ni effacé, même si le premier processus (qui le
+/// tenait aussi) meurt avec la clé ; l'empreinte est lue par cette poignée-là.
+#[cfg(windows)]
+pub(crate) fn soi_au_depart() -> Option<&'static str> {
+    use std::os::windows::fs::OpenOptionsExt;
+    static SOI: std::sync::OnceLock<Option<(Option<std::fs::File>, String)>> = std::sync::OnceLock::new();
+    SOI.get_or_init(|| {
+        let exe = std::env::current_exe().ok()?;
+        if est_une_copie(&exe) {
+            let tenu = std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(PARTAGE_LECTURE)
+                .open(&exe)
+                .ok()?;
+            let empreinte = crate::programmes_poses::empreinte_du_fichier(&tenu).ok()?;
+            return Some((Some(tenu), empreinte));
+        }
+        Some((None, crate::programmes_poses::empreinte_de(&exe).ok()?))
+    })
+    .as_ref()
+    .map(|(_, empreinte)| empreinte.as_str())
+}
+
+/// Windows : le fichier ouvert `f` a-t-il les octets du programme qui tourne (`soi_au_depart`) ? La relance en
+/// administrateur le demande au fichier qu'elle a verrouillé, juste avant de le lancer.
+#[cfg(windows)]
+pub(crate) fn meme_que_soi(f: &std::fs::File) -> bool {
+    memes_octets(f, soi_au_depart())
+}
+
+#[cfg(windows)]
+fn memes_octets(f: &std::fs::File, soi: Option<&str>) -> bool {
+    soi.is_some_and(|soi| crate::programmes_poses::empreinte_du_fichier(f).is_ok_and(|lu| lu == soi))
+}
+
+/// FILE_SHARE_READ seul : Windows refuse alors toute ouverture en écriture ou en effacement (renommage compris), pas
+/// la lecture ni l'exécution.
+#[cfg(windows)]
+const PARTAGE_LECTURE: u32 = 1;
 
 /// Périphérique et état (lecture seule ou non) du point de montage `dossier`, d'après /proc/self/mountinfo.
 #[cfg(target_os = "linux")]
@@ -179,23 +289,37 @@ fn empreinte_attendue(cle: &Path) -> String {
 /// ordinateur qui n'est pas celui du propriétaire, remonter la clé en lecture seule.
 #[cfg(target_os = "linux")]
 pub fn proteger_cle() {
-    // L'origine se décide avant que la copie temporaire ne s'efface : sans elle, rien ne se compare plus.
+    // L'origine et sa clé se décident avant que la copie temporaire ne s'efface et tant que la clé se lit : sans
+    // elles, rien ne se compare plus.
     let _ = exe_d_origine();
+    let _ = cle_de_lancement();
     // Copie temporaire relancée : elle supprime son fichier (Linux le garde lisible jusqu'à la fin du programme).
     if std::env::var_os(ORIGINE).is_some()
         && let Ok(copie) = std::env::current_exe()
-        && est_une_copie(&copie)
+        && est_ma_copie(&copie)
     {
         effacer_copie(&copie);
+        sortir_de_la_cle();
     }
-    // Lancé depuis la clé, chez le propriétaire comme ailleurs : relancé depuis une copie, la clé peut partir.
+    // Les copies d'un lancement tué avant de s'effacer (Ctrl+C au démarrage, arrêt).
+    for base in bases_des_copies() {
+        effacer_les_copies_orphelines(&base);
+    }
+    // Lancé depuis la clé, chez le propriétaire comme ailleurs : relancé depuis une copie, la clé peut partir. La clé
+    // se lit au programme qui tourne, pas à VANGUARD_ORIGINE, que tout programme du compte peut poser.
     if let Some(exe) = exe_courant()
-        && doit_se_recopier(&exe, crate::reseau::cle_du_programme().as_deref())
+        && doit_se_recopier(&exe, crate::reseau::cle_de(&exe).as_deref())
     {
         let erreurs = relancer_depuis_une_copie(&exe);
         // Revenu : aucune copie n'a pu être lancée. Ailleurs que chez le propriétaire, la clé ne pourrait pas non
         // plus être démontée (le programme s'y lit) : rien de plus à essayer.
-        sans_copie(&erreurs);
+        sans_copie(
+            tr!(
+                "copie sur cet ordinateur impossible",
+                "copy to this computer impossible"
+            ),
+            &erreurs,
+        );
         return;
     }
     let Some(cle) = crate::reseau::cle_usb() else {
@@ -253,31 +377,45 @@ pub fn proteger_cle() {
 }
 
 /// Au démarrage, sous Windows : lancé depuis la clé, se relancer depuis une copie de `copies/` du dossier local et
-/// attendre sa fin (`lancer_une_copie`) ; ce processus ne revient alors jamais. Dans une copie : effacer celles
-/// d'avant dont le programme ne tourne plus.
+/// attendre sa fin (`lancer_une_copie`) ; ce processus ne revient alors jamais. À chaque lancement hors
+/// administrateur : effacer les copies d'avant dont le lanceur ne tourne plus (clé retirée, fenêtre fermée de force).
 #[cfg(windows)]
 pub fn se_detacher_de_la_cle() {
     let _ = exe_d_origine();
+    let _ = cle_de_lancement();
+    // Pris maintenant, avant qu'un autre programme du compte n'ait pu changer le fichier ; dans une copie, celui-ci
+    // reste tenu jusqu'à la fin.
+    let _ = soi_au_depart();
+    let eleve = crate::machine::windows::processus::eleve_ou_inconnu();
+    let base = bases_des_copies().into_iter().next();
+    // Jamais en administrateur : effacer dans un dossier que le compte peut changer sous ses pieds (jonction posée
+    // entre la vérification et l'effacement) ferait effacer ailleurs avec des droits qu'il n'a pas.
+    if !eleve && let Some(base) = &base {
+        effacer_les_copies_orphelines(base);
+    }
     let Some(exe) = exe_courant() else {
         return;
     };
-    let base = crate::socle::dossier_local().join("copies");
     if est_une_copie(&exe) {
-        // Jamais en administrateur : effacer dans un dossier que le compte peut changer sous ses pieds (jonction posée
-        // entre la vérification et l'effacement) ferait effacer ailleurs avec des droits qu'il n'a pas.
-        if !crate::machine::windows::processus::eleve_ou_inconnu() {
-            effacer_les_copies_orphelines(&base);
+        sortir_de_la_cle();
+        return;
+    }
+    let base = match depart(&exe, crate::reseau::cle_de(&exe).as_deref(), eleve, base) {
+        Depart::Rester => return,
+        Depart::SansCopie(pourquoi) => {
+            sans_copie(pourquoi, &[]);
+            return;
         }
-        return;
-    }
-    if !doit_se_recopier(&exe, crate::reseau::cle_du_programme().as_deref()) {
-        return;
-    }
-    if !crate::machine::windows::processus::eleve_ou_inconnu() {
-        effacer_les_copies_orphelines(&base);
-    }
+        Depart::Copier(base) => base,
+    };
     let Some(soi) = image_qui_tourne() else {
-        sans_copie(&[tr!("programme qui tourne illisible", "running program unreadable").to_string()]);
+        sans_copie(
+            tr!(
+                "copie sur cet ordinateur impossible",
+                "copy to this computer impossible"
+            ),
+            &[tr!("programme qui tourne illisible", "running program unreadable").to_string()],
+        );
         return;
     };
     match lancer_une_copie(
@@ -294,20 +432,74 @@ pub fn se_detacher_de_la_cle() {
             let _ = std::fs::remove_dir(crate::socle::dossier_local());
             std::process::exit(code)
         }
-        Err(e) => sans_copie(&[e]),
+        Err(e) => sans_copie(
+            tr!(
+                "copie sur cet ordinateur impossible",
+                "copy to this computer impossible"
+            ),
+            &[e],
+        ),
     }
 }
 
-/// Le programme continue depuis la clé : dit en une ligne et noté au journal.
-fn sans_copie(erreurs: &[String]) {
+/// Ce que fait au démarrage un Vanguard lancé sous Windows.
+#[cfg(windows)]
+#[derive(Debug, PartialEq)]
+enum Depart {
+    /// Pas sur la clé, ou déjà une copie : rien à faire.
+    Rester,
+    /// Sur la clé, mais rester sur elle, pour la raison donnée.
+    SansCopie(&'static str),
+    /// Se recopier dans ce dossier.
+    Copier(PathBuf),
+}
+
+/// `exe` lancé depuis la clé `cle` (élevé ou non, `base` : où copier) : se recopier ? Jamais en administrateur : la
+/// copie se ferait dans le dossier du compte, que tout programme non élevé de ce compte peut changer (une jonction
+/// posée sur `copies/` entre la vérification et le lancement), et Windows lancerait alors un autre programme avec les
+/// droits d'administrateur. Vanguard reste alors sur la clé, comme avant, et le dit.
+#[cfg(windows)]
+fn depart(exe: &Path, cle: Option<&Path>, eleve: bool, base: Option<PathBuf>) -> Depart {
+    if !doit_se_recopier(exe, cle) {
+        return Depart::Rester;
+    }
+    if eleve {
+        return Depart::SansCopie(tr!("lancé en administrateur", "started as administrator"));
+    }
+    match base {
+        Some(base) => Depart::Copier(base),
+        None => Depart::SansCopie(tr!(
+            "dossier de Vanguard de cet ordinateur inconnu",
+            "Vanguard's folder on this computer unknown"
+        )),
+    }
+}
+
+/// Le programme continue depuis la clé, pour la raison `pourquoi` : dit en une ligne ; une erreur est notée au
+/// journal.
+fn sans_copie(pourquoi: &str, erreurs: &[String]) {
     trp!(
-        "  ⚠ Vanguard tourne depuis la clé (copie sur cet ordinateur impossible) : ne la retirez pas avant de le quitter.",
-        "  ⚠ Vanguard is running from the key (copy to this computer impossible): do not remove it before quitting."
+        "  ⚠ Vanguard tourne depuis la clé ({pourquoi}) : ne la retirez pas avant de le quitter.",
+        "  ⚠ Vanguard is running from the key ({pourquoi}): do not remove it before quitting."
     );
-    crate::journal::erreur(
-        crate::compte_rendu::Contexte::ProtectionCle,
-        &format!("relance depuis une copie impossible : {}", erreurs.join(" ; ")),
-    );
+    if !erreurs.is_empty() {
+        crate::journal::erreur(
+            crate::compte_rendu::Contexte::ProtectionCle,
+            &format!("relance depuis une copie impossible : {}", erreurs.join(" ; ")),
+        );
+    }
+}
+
+/// La copie a démarré avec le dossier courant de celui qui l'a lancée, souvent dans la clé (terminal ouvert dans
+/// Linux/ ou Windows\, gestionnaire de fichiers) : elle en sort pour ne pas tenir la clé occupée (éjection refusée).
+/// Seulement dans ce cas, pour ne pas changer le sens d'un chemin relatif donné depuis un autre dossier.
+fn sortir_de_la_cle() {
+    if let Some(cle) = cle_de_lancement()
+        && std::env::current_dir().is_ok_and(|d| crate::reseau::surveillance::sous(&d, cle))
+        && let Some(maison) = crate::socle::personnel::dossier_personnel()
+    {
+        let _ = std::env::set_current_dir(maison);
+    }
 }
 
 /// Se relancer depuis une copie ? Oui pour le programme `exe` posé sur la clé `cle` (chez le propriétaire comme
@@ -318,21 +510,40 @@ fn doit_se_recopier(exe: &Path, cle: Option<&Path>) -> bool {
 }
 
 /// Où faire la copie, dans l'ordre essayé. Linux : d'abord `/run/user/<uid>`, réservé à la personne (/tmp est partagé
-/// par tous les comptes de l'ordinateur). Windows : `copies/` du dossier local, celui du compte.
+/// par tous les comptes de l'ordinateur). Windows : `copies/` du dossier local, celui du compte. Jamais un chemin
+/// relatif (variable absente ou vide) : il se lirait depuis le dossier courant, peut-être la clé elle-même.
 fn bases_des_copies() -> Vec<PathBuf> {
     #[cfg(unix)]
     {
         std::env::var_os("XDG_RUNTIME_DIR")
             .map(PathBuf::from)
-            .filter(|d| d.is_dir())
             .into_iter()
             .chain([std::env::temp_dir()])
+            .filter(|d| base_sure(d))
             .collect()
     }
     #[cfg(windows)]
     {
-        vec![crate::socle::dossier_local().join("copies")]
+        Some(crate::socle::dossier_local().join("copies"))
+            .filter(|d| d.is_absolute())
+            .into_iter()
+            .collect()
     }
+}
+
+/// Unix : un vrai dossier (pas un lien), absolu, à ce compte et que ni son groupe ni les autres ne peuvent changer ;
+/// ou à root avec le bit collant (/tmp), où personne ne renomme ce qu'un autre y a créé. Sinon (root qui a gardé
+/// l'environnement du compte : `/run/user/<uid>` du compte), un autre pourrait remplacer la copie entre sa
+/// vérification et son lancement.
+#[cfg(unix)]
+fn base_sure(d: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    d.is_absolute()
+        && std::fs::symlink_metadata(d).is_ok_and(|m| {
+            m.is_dir()
+                && ((m.uid() == crate::socle::euid() && m.mode() & 0o022 == 0)
+                    || (m.uid() == 0 && m.mode() & 0o1000 != 0))
+        })
 }
 
 /// `exe` est-il une copie faite ici (`<base>/vanguard-<…>/vanguard`, `vanguard.exe` sous Windows) ?
@@ -352,6 +563,24 @@ pub(crate) fn est_une_copie(exe: &Path) -> bool {
                 .iter()
                 .any(|t| t.canonicalize().is_ok_and(|t| t == b))
         })
+}
+
+/// `copie` est-elle la copie de ce processus-ci, à effacer à son départ ? Une copie (`est_une_copie`), dans le dossier
+/// que ce processus a créé avant son exec (même numéro), à ce compte et réservé à lui. Pas seulement la place et
+/// VANGUARD_ORIGINE héritée : un autre Vanguard posé là effacerait sinon son propre programme.
+#[cfg(unix)]
+fn est_ma_copie(copie: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Some(dossier) = copie.parent() else {
+        return false;
+    };
+    est_une_copie(copie)
+        && dossier.file_name().is_some_and(|n| {
+            n.to_string_lossy()
+                .starts_with(&format!("vanguard-{}-", std::process::id()))
+        })
+        && std::fs::symlink_metadata(dossier)
+            .is_ok_and(|m| m.is_dir() && m.uid() == crate::socle::euid() && m.mode() & 0o777 == 0o700)
 }
 
 /// Un nom de dossier imprévisible (numéro du processus, nanosecondes) : `vanguard-<pid>-<nanos>`.
@@ -382,6 +611,9 @@ fn preparer_copie(exe: &Path, base: &Path, nom: &str) -> std::io::Result<PathBuf
         options.write(true).create_new(true);
         #[cfg(unix)]
         std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o700);
+        // Windows : personne d'autre ne l'ouvre pendant qu'elle s'écrit.
+        #[cfg(windows)]
+        std::os::windows::fs::OpenOptionsExt::share_mode(&mut options, 0);
         let mut f = options.open(&copie)?;
         std::io::copy(&mut std::fs::File::open(exe)?, &mut f)?;
         f.sync_all()
@@ -427,7 +659,17 @@ fn relancer_depuis_une_copie(exe: &Path) -> Vec<String> {
         return vec![tr!("programme qui tourne illisible", "running program unreadable").to_string()];
     };
     let mut erreurs = Vec::new();
-    for base in bases_des_copies() {
+    let bases = bases_des_copies();
+    if bases.is_empty() {
+        erreurs.push(
+            tr!(
+                "aucun dossier temporaire sûr pour la copie",
+                "no safe temporary folder for the copy"
+            )
+            .to_string(),
+        );
+    }
+    for base in bases {
         // exec ne revient qu'en cas d'échec (dossier monté sans droit d'exécution…) : on essaie le suivant.
         let erreur = match copie_verifiee(exe, &base, &nom, &soi) {
             Ok(copie) => {
@@ -457,10 +699,11 @@ fn copie_verifiee(exe: &Path, base: &Path, nom: &str, soi: &str) -> Result<PathB
     Ok(copie)
 }
 
-/// Copie `source` dans `base`, la tient ouverte en lecture seule partagée (ni écriture, ni renommage, ni effacement
-/// jusqu'à la fin du fils), vérifie qu'elle a les octets `soi` du programme qui tourne, la lance avec `args` et
-/// `VANGUARD_ORIGINE=origine` dans la même console, appelle `avant_d_attendre`, attend sa fin, l'efface et rend son
-/// code de sortie. Un échec avant le lancement efface la copie et dit pourquoi.
+/// Copie `source` dans `base`, tient le fichier de la copie ouvert en lecture seule partagée (ni écriture, ni
+/// renommage, ni effacement du fichier jusqu'à la fin du fils ; les dossiers du chemin, eux, ne sont pas tenus : c'est
+/// pourquoi elle n'est jamais faite en administrateur, voir `depart`), vérifie qu'elle a les octets `soi` du programme
+/// qui tourne, la lance avec `args` et `VANGUARD_ORIGINE=origine` dans la même console, appelle `avant_d_attendre`,
+/// attend sa fin, l'efface et rend son code de sortie. Un échec avant le lancement efface la copie et dit pourquoi.
 #[cfg(windows)]
 fn lancer_une_copie(
     source: &Path,
@@ -471,8 +714,6 @@ fn lancer_une_copie(
     avant_d_attendre: impl FnOnce(),
 ) -> Result<i32, String> {
     use std::os::windows::fs::OpenOptionsExt;
-    // FILE_SHARE_READ seul : Windows refuse alors toute ouverture en écriture ou en effacement, pas l'exécution.
-    const PARTAGE_LECTURE: u32 = 1;
     std::fs::create_dir_all(base).map_err(|e| e.to_string())?;
     let copie = preparer_copie(source, base, &nom_de_copie()).map_err(|e| e.to_string())?;
     let refus = |e: String| {
@@ -502,10 +743,17 @@ fn lancer_une_copie(
             return refus(e.to_string());
         }
     };
+    // La console fermée par le X, la fin de session : Windows ne laisse que le gestionnaire (`effacer_a_la_fermeture`)
+    // agir avant d'arrêter ce processus ; il retrouve ici la copie et son verrou.
+    if let Ok(mut en_cours) = COPIE_EN_COURS.lock() {
+        *en_cours = Some((copie.clone(), Some(verrou)));
+    }
     // Après le lancement : ce que pose `avant_d_attendre` (mode d'erreur) ne doit pas passer au fils.
     avant_d_attendre();
     let statut = fils.wait();
-    drop(verrou);
+    if let Ok(mut en_cours) = COPIE_EN_COURS.lock() {
+        en_cours.take();
+    }
     // L'image du fils peut rester projetée un court instant après sa fin.
     for _ in 0..20 {
         if std::fs::remove_file(&copie).is_ok() || std::fs::symlink_metadata(&copie).is_err() {
@@ -516,6 +764,29 @@ fn lancer_une_copie(
     effacer_copie(&copie);
     let statut = statut.map_err(|e| e.to_string())?;
     Ok(statut.code().unwrap_or(1))
+}
+
+/// La copie lancée par ce processus et le verrou de son fichier, le temps de l'attendre.
+#[cfg(windows)]
+static COPIE_EN_COURS: std::sync::Mutex<Option<(PathBuf, Option<std::fs::File>)>> = std::sync::Mutex::new(None);
+
+/// Console fermée par le X, fin de session ou arrêt : la copie reçoit le même événement et s'arrête ; Windows laisse
+/// environ 5 s avant d'arrêter ce processus-ci. On lâche le verrou et on efface la copie dès qu'elle est finie (une
+/// image en marche ne s'efface pas). Coupé avant (clé retirée, arrêt forcé) : `effacer_les_copies_orphelines` la
+/// retrouve au prochain lancement de Vanguard sur cet ordinateur.
+#[cfg(windows)]
+fn effacer_a_la_fermeture() {
+    let Some((copie, verrou)) = COPIE_EN_COURS.lock().ok().and_then(|mut e| e.take()) else {
+        return;
+    };
+    drop(verrou);
+    for _ in 0..40 {
+        if std::fs::remove_file(&copie).is_ok() || std::fs::symlink_metadata(&copie).is_err() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    effacer_copie(&copie);
 }
 
 /// Pendant l'attente, le processus lancé depuis la clé ne doit ni montrer de fenêtre d'erreur (clé retirée : sa
@@ -533,9 +804,14 @@ fn attendre_sans_bruit() {
         fn SetErrorMode(mode: u32) -> u32;
         fn SetConsoleCtrlHandler(routine: Option<unsafe extern "system" fn(u32) -> i32>, ajouter: i32) -> i32;
     }
-    /// Ctrl+C (0) et Ctrl+Pause (1) : gardés ; fermeture de la console, fin de session : le traitement de Windows.
+    /// Ctrl+C (0) et Ctrl+Pause (1) : gardés ; fermeture de la console, fin de session, arrêt : la copie effacée
+    /// une fois finie, puis le traitement de Windows (fin du processus).
     unsafe extern "system" fn ignorer(evenement: u32) -> i32 {
-        i32::from(evenement <= 1)
+        if evenement <= 1 {
+            return 1;
+        }
+        effacer_a_la_fermeture();
+        0
     }
     // SAFETY: SetErrorMode ne prend qu'un entier et ne touche à aucune mémoire de Vanguard.
     unsafe { SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX) };
@@ -543,26 +819,31 @@ fn attendre_sans_bruit() {
     unsafe { SetConsoleCtrlHandler(Some(ignorer), 1) };
 }
 
-/// Efface les copies d'avant (`<base>/vanguard-*/vanguard.exe` et leur dossier) dont le programme ne tourne plus :
-/// celui qui les a lancées a disparu (clé retirée, fenêtre fermée). Jamais un lien ni une jonction, jamais hors de
-/// `base`, jamais le dossier d'un processus encore là (il a pu créer son dossier sans encore tenir sa copie) ; un
-/// programme en marche ne s'efface pas : sauté.
-#[cfg(windows)]
+/// Efface les copies d'avant (`<base>/vanguard-*/<NOM_COPIE>` et leur dossier) dont le lanceur ne tourne plus : clé
+/// retirée, fenêtre fermée de force, programme tué avant de s'effacer. Jamais un lien ni une jonction, jamais hors de
+/// `base`, jamais le dossier d'un autre compte (Unix), jamais celui d'un processus encore là (il a pu créer son dossier
+/// sans encore tenir sa copie) ; un programme en marche ne s'efface pas : sauté.
 fn effacer_les_copies_orphelines(base: &Path) {
     let Ok(entrees) = std::fs::read_dir(base) else {
         return;
     };
     for entree in entrees.flatten() {
         let nom = entree.file_name().to_string_lossy().into_owned();
-        let Some(reste) = nom.strip_prefix("vanguard-") else {
-            continue;
-        };
-        let dossier = base.join(&nom);
-        if !std::fs::symlink_metadata(&dossier).is_ok_and(|m| m.is_dir() && !m.is_symlink()) {
+        if !nom.starts_with("vanguard-") {
             continue;
         }
-        let pid = reste.split('-').next().and_then(|p| p.parse::<u32>().ok());
-        if pid.is_some_and(|p| p == std::process::id() || crate::machine::windows::processus::creation(p).is_some()) {
+        let dossier = base.join(&nom);
+        let Ok(meta) = std::fs::symlink_metadata(&dossier) else {
+            continue;
+        };
+        if !meta.is_dir() || meta.is_symlink() {
+            continue;
+        }
+        #[cfg(unix)]
+        if std::os::unix::fs::MetadataExt::uid(&meta) != crate::socle::euid() {
+            continue;
+        }
+        if lanceur_vivant(&nom) {
             continue;
         }
         let copie = dossier.join(NOM_COPIE);
@@ -571,6 +852,61 @@ fn effacer_les_copies_orphelines(base: &Path) {
         }
         effacer_copie(&copie);
     }
+}
+
+/// Le numéro du processus qui a créé la copie `vanguard-<pid>-<nanos>` et l'heure de création (ns depuis 1970).
+fn lanceur_de(nom: &str) -> (Option<u32>, Option<u128>) {
+    let mut parts = nom.strip_prefix("vanguard-").unwrap_or_default().split('-');
+    (
+        parts.next().and_then(|p| p.parse().ok()),
+        parts.next().and_then(|n| n.parse().ok()),
+    )
+}
+
+/// Le lanceur du dossier de copie `nom` tourne-t-il encore ? Ce processus-ci, oui. Un nom sans numéro n'est pas de
+/// Vanguard : non.
+fn lanceur_vivant(nom: &str) -> bool {
+    let (pid, nanos) = lanceur_de(nom);
+    let Some(pid) = pid else {
+        return false;
+    };
+    if pid == std::process::id() {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        // Un numéro repris par un autre programme garde la copie jusqu'à la fin de la session (/run/user est vidé) :
+        // jamais celle d'un lancement en cours.
+        let _ = nanos;
+        Path::new("/proc").join(pid.to_string()).exists()
+    }
+    #[cfg(windows)]
+    {
+        crate::machine::windows::processus::creation(pid).is_some_and(|c| cree_avant(c, nanos))
+    }
+}
+
+/// Windows : un processus créé à `creation` (FILETIME, centaines de ns depuis 1601) peut-il avoir créé une copie à
+/// `nanos` (ns depuis 1970) ? Non s'il est né après (le numéro a été repris : la copie est orpheline). Deux secondes
+/// de marge pour les horloges ; sans heure lisible dans le nom, on le croit vivant.
+#[cfg(windows)]
+fn cree_avant(creation: u64, nanos: Option<u128>) -> bool {
+    /// 1601 → 1970, en centaines de nanosecondes.
+    const DECALAGE: u64 = 116_444_736_000_000_000;
+    let Some(nanos) = nanos else {
+        return true;
+    };
+    let creation_ns = u128::from(creation.saturating_sub(DECALAGE)) * 100;
+    creation_ns <= nanos + 2_000_000_000
+}
+
+/// Windows : le lanceur de la copie `copie` (le premier processus, qui l'efface à sa fin) tourne-t-il encore ?
+#[cfg(windows)]
+pub(crate) fn lanceur_de_la_copie_vivant(copie: &Path) -> bool {
+    copie
+        .parent()
+        .and_then(Path::file_name)
+        .is_some_and(|n| lanceur_vivant(&n.to_string_lossy()))
 }
 
 #[cfg(test)]
@@ -593,9 +929,11 @@ mod tests {
             origine_crue(&vrai, soi.clone()).ok(),
             Some(vrai.canonicalize().unwrap())
         );
-        assert!(origine_crue(&autre, soi.clone()).is_err());
-        assert!(origine_crue(&d.join("absent"), soi).is_err());
-        assert!(origine_crue(&vrai, None).is_err());
+        // Un autre programme, un programme qui tourne illisible : un écart, dit. Un fichier qui n'est plus là (clé
+        // retirée) : ignoré sans fausse alerte, et jamais cru.
+        assert!(matches!(origine_crue(&autre, soi.clone()), Err(Refus::Autre(_))));
+        assert!(matches!(origine_crue(&d.join("absent"), soi), Err(Refus::Absente)));
+        assert!(matches!(origine_crue(&vrai, None), Err(Refus::Autre(_))));
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -622,7 +960,7 @@ mod tests {
     #[test]
     fn seule_la_copie_temporaire_s_efface() {
         let base = bases_des_copies().remove(0);
-        let dossier = base.join(format!("vanguard-test-{}", std::process::id()));
+        let dossier = base.join(format!("vanguard-{}-essai", std::process::id()));
         std::fs::create_dir_all(&dossier).unwrap();
         let copie = dossier.join(NOM_COPIE);
         std::fs::write(&copie, "").unwrap();
@@ -630,8 +968,91 @@ mod tests {
         // Le programme installé, ou un « Vanguard » posé ailleurs : jamais effacés.
         assert!(!est_une_copie(Path::new("/usr/bin/vanguard")));
         assert!(!est_une_copie(&base.join(NOM_COPIE)));
+        // Unix : seule la copie de ce processus (son numéro, dossier à lui en 0700) s'efface d'elle-même ; celle d'un
+        // autre numéro, ou un dossier ouvert aux autres, non.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert!(!est_ma_copie(&copie), "dossier 0755 pris pour le sien");
+            std::fs::set_permissions(&dossier, std::fs::Permissions::from_mode(0o700)).unwrap();
+            assert!(est_ma_copie(&copie));
+            let autre = base.join("vanguard-1-essai");
+            std::fs::create_dir_all(&autre).unwrap();
+            std::fs::set_permissions(&autre, std::fs::Permissions::from_mode(0o700)).unwrap();
+            std::fs::write(autre.join(NOM_COPIE), "").unwrap();
+            assert!(est_une_copie(&autre.join(NOM_COPIE)) && !est_ma_copie(&autre.join(NOM_COPIE)));
+            effacer_copie(&autre.join(NOM_COPIE));
+        }
         effacer_copie(&copie);
         assert!(!dossier.exists());
+    }
+
+    /// Unix : une base de copies n'est acceptée que réservée à ce compte (ou /tmp, collant à root) ; relative, liée,
+    /// ouverte aux autres sans bit collant, ou à un autre compte : refusée.
+    #[cfg(unix)]
+    #[test]
+    fn base_des_copies_sure_seulement() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = crate::essais::temporaire().join(format!("vanguard-base-sure-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(base_sure(&d));
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(!base_sure(&d), "ouverte à tous sans bit collant");
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let lien = d.with_extension("lien");
+        let _ = std::fs::remove_file(&lien);
+        std::os::unix::fs::symlink(&d, &lien).unwrap();
+        assert!(!base_sure(&lien), "lien");
+        assert!(!base_sure(Path::new("relatif")), "relatif");
+        if crate::socle::euid() != 0 {
+            assert!(!base_sure(Path::new("/usr")), "à un autre compte");
+        }
+        let _ = std::fs::remove_file(&lien);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Unix : les copies d'un lancement tué avant de s'effacer partent au lancement suivant ; pas celle d'un
+    /// processus vivant (ici le nôtre), ni un lien, ni ce qui n'est pas `vanguard-*`, ni un autre fichier du dossier.
+    #[cfg(unix)]
+    #[test]
+    fn copies_orphelines_effacees_sous_unix() {
+        let base = crate::essais::temporaire().join(format!("vanguard-orph-unix-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let poser = |chemin: &Path| {
+            std::fs::create_dir_all(chemin.parent().unwrap()).unwrap();
+            std::fs::write(chemin, "programme").unwrap();
+        };
+        let morte = base.join("vanguard-4294967295-1").join(NOM_COPIE);
+        let la_mienne = base.join(format!("vanguard-{}-2", std::process::id())).join(NOM_COPIE);
+        let autre_nom = base.join("autre-3").join(NOM_COPIE);
+        let avec_autre = base.join("vanguard-4294967294-4");
+        for f in [&morte, &la_mienne, &autre_nom] {
+            poser(f);
+        }
+        poser(&avec_autre.join(NOM_COPIE));
+        poser(&avec_autre.join("autre.txt"));
+        let cible = base.join("ailleurs");
+        poser(&cible.join(NOM_COPIE));
+        std::os::unix::fs::symlink(&cible, base.join("vanguard-4294967293-5")).unwrap();
+        effacer_les_copies_orphelines(&base);
+        assert!(!morte.parent().unwrap().exists());
+        assert!(la_mienne.exists() && autre_nom.exists() && cible.join(NOM_COPIE).exists());
+        assert!(avec_autre.join("autre.txt").exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Le dossier d'une copie dit qui l'a lancée et quand.
+    #[test]
+    fn lanceur_lu_dans_le_nom() {
+        assert_eq!(
+            lanceur_de("vanguard-42-1700000000000000000"),
+            (Some(42), Some(1_700_000_000_000_000_000))
+        );
+        assert_eq!(lanceur_de("vanguard-x-1"), (None, Some(1)));
+        assert!(lanceur_vivant(&format!("vanguard-{}-1", std::process::id())));
+        assert!(!lanceur_vivant("vanguard-x-1"));
     }
 
     /// Une fausse clé (témoin `vanguard.cle`, programme dans Linux/ ou Windows/), au témoin `temoin`.
@@ -703,6 +1124,72 @@ mod tests {
     #[cfg(windows)]
     fn cmd() -> Option<PathBuf> {
         Some(crate::commande::dossier_systeme().join("cmd.exe")).filter(|c| c.is_file())
+    }
+
+    /// HAUTE (relecture) : en administrateur, jamais de copie. Elle se ferait dans le dossier du compte, qu'un programme
+    /// non élevé peut détourner (jonction sur copies/) pour faire lancer le sien avec le jeton administrateur. Vanguard
+    /// reste sur la clé et le dit ; hors administrateur, il se recopie ; sans dossier local sûr, il reste aussi.
+    #[cfg(windows)]
+    #[test]
+    fn jamais_de_copie_en_administrateur() {
+        let cle = fausse_cle("eleve", "");
+        let exe = cle.join("Linux").join(NOM_COPIE);
+        let base = crate::essais::temporaire().join("copies");
+        assert!(matches!(
+            depart(&exe, Some(&cle), true, Some(base.clone())),
+            Depart::SansCopie(_)
+        ));
+        assert_eq!(
+            depart(&exe, Some(&cle), false, Some(base.clone())),
+            Depart::Copier(base.clone())
+        );
+        assert!(matches!(depart(&exe, Some(&cle), false, None), Depart::SansCopie(_)));
+        assert_eq!(
+            depart(
+                Path::new(r"C:\Program Files\vanguard.exe"),
+                Some(&cle),
+                true,
+                Some(base)
+            ),
+            Depart::Rester
+        );
+        let _ = std::fs::remove_dir_all(&cle);
+    }
+
+    /// Windows : la relance en administrateur ne lance que le fichier aux octets du programme qui tourne (empreinte
+    /// prise au démarrage) ; un autre, ou sans empreinte, non.
+    #[cfg(windows)]
+    #[test]
+    fn relance_seulement_aux_octets_de_soi() {
+        let d = crate::essais::temporaire().join(format!("vanguard-soi-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let (vrai, autre) = (d.join("vrai.exe"), d.join("autre.exe"));
+        std::fs::write(&vrai, b"programme de vanguard").unwrap();
+        std::fs::write(&autre, b"programme d'un autre").unwrap();
+        let soi = crate::programmes_poses::empreinte_de(&vrai).unwrap();
+        assert!(memes_octets(&std::fs::File::open(&vrai).unwrap(), Some(&soi)));
+        assert!(!memes_octets(&std::fs::File::open(&autre).unwrap(), Some(&soi)));
+        assert!(!memes_octets(&std::fs::File::open(&vrai).unwrap(), None));
+        // Le programme des essais se reconnaît lui-même : la vraie relance ne refuserait pas Vanguard.
+        let exe = std::env::current_exe().unwrap();
+        assert!(meme_que_soi(&std::fs::File::open(&exe).unwrap()));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Windows : un numéro de processus repris par un programme né après la copie ne la garde pas.
+    #[cfg(windows)]
+    #[test]
+    fn numero_repris_ne_garde_pas_la_copie() {
+        // 2023-11-14 22:13:20 UTC en FILETIME, et la même heure en ns depuis 1970.
+        let creation = 116_444_736_000_000_000 + 17_000_000_000_000_000;
+        let nanos = 1_700_000_000_000_000_000u128;
+        assert!(cree_avant(creation, Some(nanos)));
+        assert!(cree_avant(creation, Some(nanos - 1_000_000_000)), "marge des horloges");
+        assert!(
+            !cree_avant(creation, Some(nanos - 60_000_000_000)),
+            "né une minute après la copie"
+        );
+        assert!(cree_avant(creation, None));
     }
 
     /// Windows : la copie est créée dans copies/, vérifiée, lancée avec les arguments et VANGUARD_ORIGINE ; son code

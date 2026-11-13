@@ -18,7 +18,7 @@ pub mod wifi_public;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::Ipv4Addr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use futures_util::future::join_all;
@@ -930,9 +930,15 @@ pub fn etat_de_la_cle() -> EtatCle {
 pub(crate) fn cle_du_programme() -> Option<PathBuf> {
     // Le programme peut tourner depuis sa copie sur cet ordinateur (protection::cle) : on part du programme
     // d'origine.
-    let exe = crate::protection::cle::exe_d_origine();
-    exe.iter()
-        .flat_map(|e| e.ancestors().skip(1).take(2).map(PathBuf::from))
+    crate::protection::cle::exe_d_origine().as_deref().and_then(cle_de)
+}
+
+/// La clé où est posé le programme `exe` (<clé>/Linux/vanguard, <clé>/Windows/vanguard.exe…), d'après son témoin.
+pub(crate) fn cle_de(exe: &std::path::Path) -> Option<PathBuf> {
+    exe.ancestors()
+        .skip(1)
+        .take(2)
+        .map(PathBuf::from)
         .find(|d| est_une_cle(d))
 }
 
@@ -1016,11 +1022,28 @@ pub fn dossier_donnees() -> PathBuf {
 /// (`socle::ecrire_atomique`). Si la clé ne les prend pas (retirée, port USB coupé, pleine), ils vont dans le dossier
 /// de cet ordinateur, et c'est dit avec le chemin. Rend le dossier où ils sont.
 pub(crate) fn ecrire_donnees(fichiers: &[(&str, &[u8])]) -> std::io::Result<PathBuf> {
-    let (dossier, repli) = ecrire_avec_repli(&dossier_donnees(), &dossier_local(), fichiers)?;
+    let local = dossier_local();
+    let (dossier, repli) = ecrire_avec_repli(&dossier_donnees(), &local, fichiers)?;
     if let Some(e) = repli {
         crate::ui::imprimer(&repli_dit(&e, &dossier));
+    } else if let Some(dit) = cle_partie_dit(crate::protection::cle::cle_de_lancement(), &dossier, &local) {
+        crate::ui::imprimer(&dit);
     }
     Ok(dossier)
+}
+
+/// La clé du lancement (`de_lancement`, fixée au démarrage) n'est plus là et l'écriture est allée sur cet ordinateur :
+/// ce qui le dit, avec le chemin. Sans cela, le retrait passe sans un mot (le dossier de la clé n'est plus choisi du
+/// tout, il n'y a pas d'erreur d'écriture à dire).
+fn cle_partie_dit(de_lancement: Option<&Path>, dossier: &Path, local: &Path) -> Option<String> {
+    let cle = de_lancement?;
+    (dossier == local && !est_une_cle(cle)).then(|| {
+        trf!(
+            "  ⚠ La clé n'est plus là : enregistré sur cet ordinateur, dans {}",
+            "  ⚠ The key is no longer there: saved on this computer, in {}",
+            crate::ui::chemin_affichable(dossier)
+        )
+    })
 }
 
 /// Ce qui est dit quand la clé n'a pas pris l'écriture : pourquoi, et où elle est allée.
@@ -2236,6 +2259,20 @@ mod tests {
         let (reseaux, appareils) = noms_des_bases(&[base]);
         assert_eq!(reseaux, [piege, vu]);
         assert_eq!(appareils, [piege, piege, piege, vu]);
+    }
+
+    /// Relecture : la clé du lancement retirée, l'écriture allée sur cet ordinateur est dite, avec le chemin ; rien
+    /// quand la clé est encore là, ni quand Vanguard n'est pas parti d'une clé.
+    #[test]
+    fn cle_retiree_ecriture_locale_dite() {
+        let cle = fausse_cle("partie", None);
+        let local = cle.with_extension("local");
+        assert_eq!(cle_partie_dit(Some(&cle), &local, &local), None, "clé encore là");
+        assert_eq!(cle_partie_dit(None, &local, &local), None, "pas parti d'une clé");
+        std::fs::remove_dir_all(&cle).unwrap();
+        let dit = cle_partie_dit(Some(&cle), &local, &local).expect("clé retirée : écriture locale non dite");
+        assert!(dit.contains(&crate::ui::chemin_affichable(&local)), "{dit}");
+        assert_eq!(cle_partie_dit(Some(&cle), &cle.join("donnees"), &local), None);
     }
 
     fn fausse_cle(nom: &str, jeton: Option<&str>) -> PathBuf {

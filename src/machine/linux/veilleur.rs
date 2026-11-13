@@ -2781,10 +2781,11 @@ pub(crate) fn notre_unite(texte: &str) -> bool {
 }
 
 /// Le programme que l'unité lancera : la copie locale si Vanguard tourne depuis la clé (`surveillance::executable`
-/// la fait, mais seulement après l'accord).
+/// la fait, mais seulement après l'accord). La clé du lancement compte même retirée : son chemin mort n'est jamais
+/// prévu.
 fn exe_prevu() -> Option<String> {
     let exe = crate::protection::cle::exe_d_origine()?;
-    if crate::reseau::cle_usb().is_some_and(|cle| exe.starts_with(&cle)) {
+    if crate::protection::cle::programme_ephemere(&exe) {
         return Some(crate::mise_a_jour::copie_de_cet_ordinateur().display().to_string());
     }
     Some(exe.display().to_string())

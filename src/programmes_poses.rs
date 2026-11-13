@@ -101,6 +101,12 @@ pub(crate) fn empreinte_de(chemin: &Path) -> Result<String, String> {
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NONBLOCK);
     let f = options.open(chemin).map_err(|e| e.to_string())?;
+    empreinte_du_fichier(&f)
+}
+
+/// L'empreinte du fichier déjà ouvert `f`, lue depuis sa poignée (pas par un chemin qu'on pourrait changer entre
+/// l'ouverture et la lecture) : un simple fichier, de taille raisonnable.
+pub(crate) fn empreinte_du_fichier(f: &std::fs::File) -> Result<String, String> {
     let m = f.metadata().map_err(|e| e.to_string())?;
     if !m.is_file() {
         return Err(tr!("pas un simple fichier", "not a plain file").into());

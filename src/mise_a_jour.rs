@@ -331,7 +331,8 @@ fn cibles_github() -> Vec<PathBuf> {
         cibles.push(copie.clone());
     }
     if let Some(exe) = programme() {
-        let sur_la_cle = crate::reseau::cle_du_programme().is_some_and(|c| exe.starts_with(c));
+        // La clé du lancement compte même retirée : son programme n'est jamais une cible à remplacer.
+        let sur_la_cle = crate::protection::cle::programme_ephemere(&exe);
         if !sur_la_cle && !meme_fichier(&exe, &copie) && remplacable_ici(&exe) {
             cibles.push(exe);
         }

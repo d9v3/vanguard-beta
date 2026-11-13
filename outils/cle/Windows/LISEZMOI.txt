@@ -65,6 +65,9 @@ Le programme : « vanguard.exe », dans ce dossier. Windows 10 et 11 (64 bits), 
      commande.
    - La clé peut être retirée pendant que Vanguard tourne : il s'est recopié sur cet ordinateur, et ce
      qui devait aller sur la clé va dans le dossier de Vanguard de cet ordinateur (le chemin est dit).
+     Sauf lancé en administrateur : il tourne alors depuis la clé (il le dit), ne la retire pas avant
+     de le quitter. Une copie laissée par une fenêtre fermée de force ou une clé arrachée s'efface au
+     prochain lancement de Vanguard sur cet ordinateur (%LOCALAPPDATA%\vanguard\copies).
    - Quitter : q dans le menu, ou Ctrl+C.
 
 6. ORDINATEUR ISOLÉ DU RÉSEAU PAR VANGUARD

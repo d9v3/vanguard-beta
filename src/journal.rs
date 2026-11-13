@@ -915,12 +915,6 @@ pub(crate) fn noter(champs: &Champs, detail: &str) {
     let Some(dossier) = essai.as_ref().or_else(|| dossier()) else {
         return;
     };
-    let chemin = dossier.join(FICHIER);
-    // Le fichier lui-même : jamais la cible d'un lien, jamais un tube (ouvert en écriture, il attendait un lecteur
-    // pour toujours, et chaque erreur notée figeait Vanguard).
-    if std::fs::symlink_metadata(&chemin).is_ok_and(|m| !m.file_type().is_file() || m.len() > TAILLE_MAX) {
-        return;
-    }
     let commande = commande_anonyme(&arguments_lisibles(std::env::args_os().skip(1)));
     let mut detail = anonymiser(detail.trim());
     if detail.len() > DETAIL_MAX {
@@ -944,16 +938,58 @@ pub(crate) fn noter(champs: &Champs, detail: &str) {
         champs,
         &detail,
     );
+    // La clé retirée en cours de route : son journal ne s'écrit plus ; l'entrée va dans le dossier de cet ordinateur,
+    // et c'est dit une fois (sinon les erreurs causées par le retrait se perdraient sans un mot).
+    let local = essai.is_none().then(crate::socle::dossier_local);
+    if ecrire_avec_repli(dossier, local.as_deref(), &entree) == Ecrit::Repli {
+        static DIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !DIT.swap(true, std::sync::atomic::Ordering::Relaxed)
+            && let Some(local) = &local
+        {
+            crate::tre!(
+                "  ⚠ Le journal de la clé ne s'écrit plus (clé retirée ?) : il continue sur cet ordinateur, dans {}",
+                "  ⚠ The key's log can no longer be written (key removed?): it continues on this computer, in {}",
+                crate::ui::chemin_affichable(local)
+            );
+        }
+    }
+}
+
+/// Où l'entrée du journal est allée.
+#[derive(Debug, PartialEq)]
+enum Ecrit {
+    Ici,
+    Repli,
+    Nulle,
+}
+
+/// Ajoute `entree` au journal de `dossier`, sinon (écriture impossible) à celui de `local` s'il est un autre dossier.
+fn ecrire_avec_repli(dossier: &std::path::Path, local: Option<&std::path::Path>, entree: &str) -> Ecrit {
+    if ajouter(&dossier.join(FICHIER), entree).is_ok() {
+        return Ecrit::Ici;
+    }
+    match local {
+        Some(l) if l != dossier && ajouter(&l.join(FICHIER), entree).is_ok() => Ecrit::Repli,
+        _ => Ecrit::Nulle,
+    }
+}
+
+/// Ajoute `entree` au fichier `chemin`. Le fichier lui-même : jamais la cible d'un lien, jamais un tube (ouvert en
+/// écriture, il attendait un lecteur pour toujours, et chaque erreur notée figeait Vanguard), jamais au-delà de
+/// `TAILLE_MAX` ; un tel fichier est laissé en silence (Ok), pas remplacé ailleurs.
+fn ajouter(chemin: &std::path::Path, entree: &str) -> std::io::Result<()> {
+    if std::fs::symlink_metadata(chemin).is_ok_and(|m| !m.file_type().is_file() || m.len() > TAILLE_MAX) {
+        return Ok(());
+    }
     let mut options = std::fs::OpenOptions::new();
     options.create(true).append(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    let _ = options.open(&chemin).and_then(|mut f| {
-        if !f.metadata()?.file_type().is_file() {
-            return Ok(());
-        }
-        f.write_all(entree.as_bytes())
-    });
+    let mut f = options.open(chemin)?;
+    if !f.metadata()?.file_type().is_file() {
+        return Ok(());
+    }
+    f.write_all(entree.as_bytes())
 }
 
 /// Une sortie coupée par celui qui la lit (`vanguard regles | head`) : println! panique sur le tube fermé. Ce n'est pas
@@ -1049,6 +1085,24 @@ fn lieu_de(l: &std::panic::Location<'_>) -> Option<Lieu> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Relecture : le journal de la clé retirée ne s'écrit plus ; l'entrée va dans le dossier local, jamais perdue
+    /// sans un mot. Un journal qui est un lien n'est jamais suivi, ni remplacé ailleurs.
+    #[test]
+    fn journal_de_la_cle_retiree_continue_ici() {
+        let d = crate::essais::temporaire().join(format!("vanguard-journal-repli-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let (cle, local) = (d.join("cle"), d.join("local"));
+        std::fs::create_dir_all(&cle).unwrap();
+        std::fs::create_dir_all(&local).unwrap();
+        assert_eq!(ecrire_avec_repli(&cle, Some(&local), "une\n"), Ecrit::Ici);
+        std::fs::remove_dir_all(&cle).unwrap();
+        assert_eq!(ecrire_avec_repli(&cle, Some(&local), "deux\n"), Ecrit::Repli);
+        assert_eq!(std::fs::read_to_string(local.join(FICHIER)).unwrap(), "deux\n");
+        assert_eq!(ecrire_avec_repli(&cle, None, "trois\n"), Ecrit::Nulle);
+        assert_eq!(ecrire_avec_repli(&local, Some(&local), "quatre\n"), Ecrit::Ici);
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     /// L'emplacement d'une panique : celui du code de Vanguard, jamais un chemin d'ailleurs.
     #[test]
