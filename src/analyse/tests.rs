@@ -855,8 +855,9 @@ fn regressions_du_fuzzing() {
         include_bytes!("../../fuzz/graines/analyse_fichier/regression-source-multioctet.bin"),
         "f",
     );
-    // Des zips imbriqués jusqu'à la profondeur maximale, dont le dernier a des entrées non lues : elles restaient
-    // ajoutées un cran plus bas (CI de nuit, 13 nov.). Les bornes de la cible fuzz/fuzz_targets/analyse_fichier.rs.
+    // Une graine de la CI de nuit (13 nov.) : sous une partie déjà à la profondeur maximale, une partie non lue (un
+    // gzip au budget épuisé, un flux OLE illisible) restait ajoutée un cran plus bas. Les bornes de la cible
+    // fuzz/fuzz_targets/analyse_fichier.rs.
     let bornes = Bornes {
         parties: 300,
         taille_partie: 1 << 20,
@@ -875,6 +876,44 @@ fn regressions_du_fuzzing() {
     assert!(a.manques().any(|(_, r)| *r == Raison::Profondeur));
     for p in &a.parties {
         assert!(p.profondeur <= bornes.profondeur, "{} à {}", p.chemin, p.profondeur);
+    }
+}
+
+/// Des gzip imbriqués plus profond que la borne, le budget des octets produits épuisé pile à la dernière partie
+/// gardée, juste après, ou jamais : aucune partie sous la borne, et la partie à la borne dit `Profondeur`.
+#[test]
+fn gzip_imbriques_arretes_a_la_profondeur() {
+    let gz = |g: &[u8]| {
+        let mut membre = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3];
+        membre.extend(miniz_oxide::deflate::compress_to_vec(g, 6));
+        membre.extend(crate::archives::crc32::crc32(g).to_le_bytes());
+        membre.extend(u32::try_from(g.len()).unwrap().to_le_bytes());
+        membre
+    };
+    let mut couches = vec![b"fin".to_vec()];
+    for _ in 0..10 {
+        let g = gz(couches.last().unwrap());
+        couches.push(g);
+    }
+    let p = Bornes::default().profondeur;
+    // Ce que produisent les parties de profondeur 0 à p - 1 en se décompressant.
+    let jusqu_a_la_borne: u64 = couches.iter().rev().skip(1).take(p).map(|c| c.len() as u64).sum();
+    for produits in [jusqu_a_la_borne, jusqu_a_la_borne + 1, Bornes::default().produits] {
+        let bornes = Bornes {
+            produits,
+            ..Bornes::default()
+        };
+        let a = analyser(couches.last().unwrap(), "x.gz", &bornes, &mut |_, _| {});
+        for x in &a.parties {
+            assert!(x.profondeur <= p, "{produits} : {} à {}", x.chemin, x.profondeur);
+        }
+        assert!(
+            a.parties
+                .iter()
+                .any(|x| x.profondeur == p && x.manques.contains(&Raison::Profondeur)),
+            "{produits} : {:?}",
+            a.manques().collect::<Vec<_>>()
+        );
     }
 }
 

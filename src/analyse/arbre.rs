@@ -216,12 +216,15 @@ impl Etat<'_> {
             self.manque(p, Raison::TropDeParties);
             return None;
         }
-        // La même borne que `enfant` : une partie non lue reste une partie de l'arbre. Sans elle, une entrée zip aux
-        // données partagées, un budget épuisé ou un flux OLE illisible sous une partie déjà à la profondeur maximale
-        // descendaient d'un cran de plus (trouvé par le fuzzing de nuit, le 13 nov.).
+        // La même borne que `enfant` : une partie non lue reste une partie de l'arbre. Sans elle, un gzip au budget
+        // épuisé ou un flux OLE illisible sous une partie déjà à la profondeur maximale descendaient d'un cran de plus
+        // (trouvé par le fuzzing de nuit, le 13 nov.). Ce qui manquait à la partie non créée reste dit, sur le parent.
         if let Some(p) = parent
             && self.trop_profond(p)
         {
+            for r in manques {
+                self.manque(p, r);
+            }
             self.manque(p, Raison::Profondeur);
             return None;
         }
@@ -845,6 +848,11 @@ impl Etat<'_> {
     }
 
     fn gzip(&mut self, i: usize, octets: &[u8]) {
+        // Déjà à la profondeur maximale : rien n'est décompressé pour une partie qui ne serait pas gardée.
+        if self.trop_profond(i) {
+            self.manque(i, Raison::Profondeur);
+            return;
+        }
         let nom = nom_gzip(octets).unwrap_or_else(|| "#contenu".to_string());
         let limite = match self.budget() {
             Ok(l) => l,
