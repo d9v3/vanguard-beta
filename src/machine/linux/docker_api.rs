@@ -18,20 +18,24 @@ pub(crate) const PRISE: &str = "/var/run/docker.sock";
 /// Ce qui désigne un autre démon que celui de la prise par défaut, nommé dans le non vérifié : une variable de
 /// Vanguard (DOCKER_HOST ; DOCKER_CONTEXT autre que « default » ; DOCKER_CONFIG dont le config.json choisit un autre
 /// contexte, est illisible ou relatif) ou, sans DOCKER_CONFIG, le config.json de la maison (`CONFIG_DE_LA_MAISON` :
-/// un `currentContext` autre que « default », un fichier illisible, ou pas de maison connue). La CLI de la personne
-/// lirait ce démon-là. Vanguard ne le suit pas, c'est voulu : une variable ou un fichier que le compte écrit
-/// choisirait le démon qui répond, et un faux démon dirait « rien d'exposé » (G-1). Il est dit non vérifié, jamais
-/// remplacé par la lecture d'un autre démon (E-4, recontrôle 0.95). Le fichier de la maison passait par la CLI, qui
-/// suivait son contexte : la même porte que les variables (N-2, recontrôle 2 de la 0.95).
+/// un `currentContext`, clé lue sans la casse comme la CLI, autre que « default », un fichier illisible, ou pas de
+/// maison connue : HOME relatif, ou base des comptes muette). La CLI de la personne lirait ce démon-là. Vanguard ne
+/// le suit pas, c'est voulu : une variable ou un fichier que le compte écrit choisirait le démon qui répond, et un faux
+/// démon dirait « rien d'exposé » (G-1). Il est dit non vérifié, jamais remplacé par la lecture d'un autre démon
+/// (E-4, recontrôle 0.95). Le fichier de la maison passait par la CLI, qui suivait son contexte : la même porte que
+/// les variables (N-2, recontrôle 2 de la 0.95).
 pub(crate) fn demon_designe() -> Option<&'static str> {
-    demon_designe_dans(&|n| std::env::var_os(n), crate::socle::personnel::dossier_personnel())
+    demon_designe_dans(
+        &|n| std::env::var_os(n),
+        crate::socle::personnel::dossier_personnel_de(crate::socle::uid()),
+    )
 }
 
 /// Le config.json de la maison, tel que le non vérifié le nomme.
 pub(crate) const CONFIG_DE_LA_MAISON: &str = "~/.docker/config.json";
 
-/// `demon_designe`, les variables lues par `lire`, `maison` le dossier personnel.
-fn demon_designe_dans(lire: Lire<'_>, maison: Option<PathBuf>) -> Option<&'static str> {
+/// `demon_designe`, les variables lues par `lire` (HOME compris), `compte` la maison de la base des comptes.
+fn demon_designe_dans(lire: Lire<'_>, compte: Option<PathBuf>) -> Option<&'static str> {
     if let Some(variable) = designe_par_variable(lire) {
         return Some(variable);
     }
@@ -40,9 +44,21 @@ fn demon_designe_dans(lire: Lire<'_>, maison: Option<PathBuf>) -> Option<&'stati
         // celui de la maison.
         return None;
     }
-    maison
+    maison_de_la_cli(lire, compte)
         .is_none_or(|m| !config_par_defaut(&m.join(".docker")))
         .then_some(CONFIG_DE_LA_MAISON)
+}
+
+/// La maison où la CLI de la personne cherche ~/.docker : HOME tel qu'il est dès qu'il n'est pas vide
+/// (`os.UserHomeDir`), sinon celle de la base des comptes (`user.Current`). Un HOME relatif se lit depuis le dossier
+/// courant de la CLI, inconnu ici : aucune maison connue. `dossier_personnel` prenait alors la base des comptes, et
+/// Vanguard lisait un autre config.json que la CLI (V-1, relecture du sous-lot c2 de la 0.95).
+fn maison_de_la_cli(lire: Lire<'_>, compte: Option<PathBuf>) -> Option<PathBuf> {
+    match reglee(lire, "HOME") {
+        Some(home) => Some(PathBuf::from(home)),
+        None => compte,
+    }
+    .filter(|m| m.is_absolute())
 }
 
 /// Une variable de Docker lue par `lire` (l'environnement, ou celui d'un essai).
@@ -91,14 +107,46 @@ fn config_par_defaut(config: &std::path::Path) -> bool {
     }
 }
 
-/// config.json sans contexte courant, ou avec « default ».
+/// config.json sans contexte courant, ou avec « default ». La CLI (Go, `encoding/json`) prend la clé sans tenir compte
+/// de la casse (« currentcontext », « CURRENTCONTEXT »), garde la dernière valeur texte d'un doublon et passe un
+/// `null` ; serde_json, lui, ne garde que la dernière clé exacte. Chaque clé, doublons compris, est donc lue : une
+/// seule qui ne vaut ni `null`, ni « », ni « default » (un autre type compris : on ne sait pas ce que la CLI en
+/// garde) désigne le démon (V-1, relecture du sous-lot c2 de la 0.95). Les lettres de « currentcontext » n'ont pas
+/// d'équivalent hors ASCII dans le pliage de Go (seuls k, s et i en ont) : la casse ASCII suffit. JSON illisible : on
+/// ne sait pas, non ; un JSON qui n'est pas un objet, la CLI le refuse et garde le contexte par défaut.
 fn contexte_par_defaut(config: &str) -> bool {
     match serde_json::from_str::<serde_json::Value>(config) {
-        Ok(v) => v
-            .get("currentContext")
-            .and_then(serde_json::Value::as_str)
-            .is_none_or(|c| c.is_empty() || c == "default"),
+        Ok(v) if !v.is_object() => true,
+        Ok(_) => serde_json::from_str::<Paires>(config).is_ok_and(|Paires(paires)| {
+            paires
+                .iter()
+                .filter(|(cle, _)| cle.eq_ignore_ascii_case("currentContext"))
+                .all(|(_, c)| c.is_null() || c.as_str().is_some_and(|c| c.is_empty() || c == "default"))
+        }),
         Err(_) => false,
+    }
+}
+
+/// Les paires d'un objet JSON dans l'ordre, doublons compris, que `serde_json::Value` fond en une seule.
+struct Paires(Vec<(String, serde_json::Value)>);
+
+impl<'de> serde::Deserialize<'de> for Paires {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct Visiteur;
+        impl<'de> serde::de::Visitor<'de> for Visiteur {
+            type Value = Paires;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("un objet JSON")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, mut objet: A) -> Result<Paires, A::Error> {
+                let mut paires = Vec::new();
+                while let Some(paire) = objet.next_entry()? {
+                    paires.push(paire);
+                }
+                Ok(Paires(paires))
+            }
+        }
+        d.deserialize_map(Visiteur)
     }
 }
 
@@ -349,6 +397,60 @@ mod tests {
         std::fs::remove_file(&config).unwrap();
         crate::essais::tube_nomme(&config).unwrap();
         assert_eq!(demon_designe_dans(&rien, maison()), Some(CONFIG_DE_LA_MAISON));
+    }
+
+    /// V-1 (relecture du sous-lot c2 de la 0.95) : la CLI (Go, `encoding/json`) prend la clé du contexte sans la casse,
+    /// garde la dernière valeur texte et passe un `null` ; elle cherche ~/.docker dans HOME tel qu'il est, même
+    /// relatif (depuis son dossier courant). Vanguard lisait la seule clé exacte, la dernière d'un doublon, et la
+    /// maison de la base des comptes : il croyait le contexte par défaut, et le démon de la personne était lu comme sain.
+    #[test]
+    fn cle_et_maison_lues_comme_la_cli() {
+        for (texte, defaut) in [
+            // Ce que la CLI 29.9 lit « temoin » (rejoué à la main avec `docker context show`).
+            (r#"{"currentcontext":"temoin"}"#, false),
+            (r#"{"currentContext":"default","CURRENTCONTEXT":"temoin"}"#, false),
+            (r#"{"currentContext":"temoin","currentContext":null}"#, false),
+            (r#"{"currentContext":5,"CurrentContext":"temoin"}"#, false),
+            (r#"{"currentContext":"temoin"}"#, false),
+            // Une valeur qui n'est pas du texte : on ne sait pas ce que la CLI en garde.
+            (r#"{"CurrentContext":["temoin"]}"#, false),
+            // Ce qu'elle lit « default ».
+            (r#"{"currentContext":null}"#, true),
+            (r#"{"CURRENTCONTEXT":"default","currentcontext":""}"#, true),
+            (r#"{"autre":"temoin","currentContextX":"temoin"}"#, true),
+        ] {
+            assert_eq!(contexte_par_defaut(texte), defaut, "{texte}");
+        }
+        let vide = crate::essais::Jetable::nouveau("v1-docker-compte");
+        let choisie = crate::essais::Jetable::nouveau("v1-docker-home");
+        std::fs::create_dir(choisie.join(".docker")).unwrap();
+        std::fs::write(
+            choisie.join(".docker").join("config.json"),
+            br#"{"currentContext":"temoin"}"#,
+        )
+        .unwrap();
+        let avec_home = |home: OsString| move |n: &str| (n == "HOME").then(|| home.clone());
+        let compte = |d: &crate::essais::Jetable| Some(d.to_path_buf());
+        // HOME relatif : la CLI lit « rel/.docker » depuis un dossier courant inconnu ici, jamais la base des comptes.
+        assert_eq!(
+            demon_designe_dans(&avec_home("rel".into()), compte(&vide)),
+            Some(CONFIG_DE_LA_MAISON)
+        );
+        // HOME complet : c'est lui que la CLI lit, pas la maison de la base des comptes.
+        assert_eq!(
+            demon_designe_dans(&avec_home(choisie.as_os_str().to_os_string()), compte(&vide)),
+            Some(CONFIG_DE_LA_MAISON)
+        );
+        assert_eq!(
+            demon_designe_dans(&avec_home(vide.as_os_str().to_os_string()), compte(&choisie)),
+            None
+        );
+        // HOME vide ou absent : la CLI prend la maison de la base des comptes, comme ici.
+        assert_eq!(demon_designe_dans(&avec_home(OsString::new()), compte(&vide)), None);
+        assert_eq!(
+            demon_designe_dans(&avec_home(OsString::new()), compte(&choisie)),
+            Some(CONFIG_DE_LA_MAISON)
+        );
     }
 
     #[test]

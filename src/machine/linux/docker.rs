@@ -575,6 +575,9 @@ mod tests {
     /// mène à un faux démon. La CLI de Vanguard, qui garde HOME, suivait ce contexte : le faux démon disait « aucun
     /// conteneur », et Vanguard « Aucun port de conteneur exposé », vérifié. Le démon désigné par le fichier est dit
     /// non vérifié, comme pour une variable ; ni les constats ni la CLI de Vanguard ne joignent le faux démon.
+    ///
+    /// V-1 (relecture du sous-lot c2 de la 0.95) : la clé écrite sans sa casse, ou en double avec un `null`, la CLI la
+    /// suit encore ; Vanguard croyait le contexte par défaut. Chaque forme est essayée, avec la CLI pour témoin.
     #[test]
     fn contexte_de_la_maison_dit_non_verifie() {
         match std::env::var(RELANCE_N2).as_deref() {
@@ -607,7 +610,6 @@ mod tests {
             .join("meta")
             .join("9cf95f8768a2401fd50a768785ab7614dbe46a03d238d9a80f14e4d641563fa6");
         std::fs::create_dir_all(&meta).unwrap();
-        std::fs::write(reglages.join("config.json"), r#"{"currentContext":"temoin"}"#).unwrap();
         let hote = format!("unix://{}", demon.chemin.display());
         let contexte = serde_json::json!({
             "Name": "temoin",
@@ -615,20 +617,34 @@ mod tests {
             "Endpoints": {"docker": {"Host": hote, "SkipTLSVerify": false}},
         });
         std::fs::write(meta.join("meta.json"), contexte.to_string()).unwrap();
+        for config in [
+            r#"{"currentContext":"temoin"}"#,
+            r#"{"currentcontext":"temoin"}"#,
+            r#"{"currentContext":"temoin","currentContext":null}"#,
+        ] {
+            std::fs::write(reglages.join("config.json"), config).unwrap();
+            contexte_suivi_par_la_cli_seulement(&cli, &maison, &demon, config);
+        }
+    }
+
+    /// `contexte_de_la_maison_dit_non_verifie`, pour un config.json : la CLI de la personne (`cli`, HOME=`maison`)
+    /// joint le faux démon ; ni les constats ni la CLI de Vanguard ne le joignent, et le démon est dit non vérifié.
+    fn contexte_suivi_par_la_cli_seulement(cli: &Path, maison: &Path, demon: &FauxDemon, config: &str) {
         let lancer = |c: &mut std::process::Command| {
             c.env_remove("DOCKER_HOST")
                 .env_remove("DOCKER_CONTEXT")
                 .env_remove("DOCKER_CONFIG")
-                .env("HOME", &*maison)
+                .env("HOME", maison)
                 .output()
                 .unwrap()
         };
         // Témoin : la CLI de la personne, elle, suit ce contexte jusqu'au faux démon. Sans lui, « jamais joint » ne
         // prouverait rien.
-        let s = lancer(std::process::Command::new(&cli).arg("ps"));
+        let avant = demon.connexions();
+        let s = lancer(std::process::Command::new(cli).arg("ps"));
         assert!(
-            demon.connexions() > 0,
-            "contexte témoin pas suivi : {}",
+            demon.connexions() > avant,
+            "{config} : contexte témoin pas suivi : {}",
             String::from_utf8_lossy(&s.stderr)
         );
         let avant = demon.connexions();
@@ -650,25 +666,25 @@ mod tests {
         let constats: Vec<&str> = texte.lines().filter_map(|l| l.strip_prefix("constat-n2:")).collect();
         assert!(
             !constats.iter().any(|c| c.starts_with("true|false|")),
-            "« sain » sur le démon d'un contexte de la maison : {constats:#?}"
+            "{config} : « sain » sur le démon d'un contexte de la maison : {constats:#?}"
         );
         assert!(
             constats
                 .iter()
                 .any(|c| c.starts_with("false|") && c.contains(docker_api::CONFIG_DE_LA_MAISON)),
-            "démon du config.json de la maison pas dit non vérifié : {constats:#?}"
+            "{config} : démon du config.json de la maison pas dit non vérifié : {constats:#?}"
         );
         assert_eq!(
             demon.connexions(),
             avant,
-            "constats lus sur le faux démon : {constats:#?}"
+            "{config} : constats lus sur le faux démon : {constats:#?}"
         );
         let texte = relancer("cli");
         assert!(texte.contains("cli-n2:"), "{texte}");
         assert_eq!(
             demon.connexions(),
             avant,
-            "la CLI de Vanguard a suivi le contexte de la maison"
+            "{config} : la CLI de Vanguard a suivi le contexte de la maison"
         );
     }
 }
