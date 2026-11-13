@@ -202,6 +202,9 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   se lit intact. Les deux contenus sont de Vanguard, et forger une attente demande de réécrire ses sceaux (voir plus
   haut). Une version plus ancienne de Vanguard, remise après une mise à jour, ne connaît pas ces attentes : elle dit
   falsifié un fichier laissé entre les deux temps (sens sûr).
+  Les mises à jour sous Arch (checkupdates) se lisent avec une base à part, dans un dossier au nom tiré au hasard,
+  fermé aux autres comptes, sous le dossier temporaire : un programme du compte qui guette sa création peut y poser
+  sa propre liste des paquets installés avant checkupdates, et la lecture peut alors dire « à jour ». Ce n'est pas vu.
   La vraie parade, un service qui tourne sous un autre compte que le vôtre (administrateur), est prévue pour une
   version à venir.
 - **La personne décide.** Rien n'est modifié sans son accord. Ce qu'elle accepte s'annule une correction à la fois,
