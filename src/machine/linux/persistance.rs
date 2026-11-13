@@ -5453,8 +5453,14 @@ fn dossiers_du_gestionnaire_lus(
     let mut dossiers = Vec::new();
     let mut non_resolus: Vec<(std::path::PathBuf, String)> = illisibles.into_iter().map(|d| (d, "?".into())).collect();
     for (f, du_compte, sorte) in fichiers {
-        // W-4 : la forme « valeur par défaut » ne se résout que dans un fichier du système à root seul.
-        let defauts = !du_compte && programme_de_root_seul(&r.racine, &f);
+        // W-4 : la forme « valeur par défaut » ne se résout que dans un fichier du système à root seul. V3-3
+        // (revérification de la ronde 3) : et seulement d'environment.d, le seul que systemd développe ainsi
+        // (environment-d-generator) ; user.conf et ses compléments, /etc/environment et pam_env.conf la gardent
+        // littérale : un « ${ » y reste non résolu, dit (non vérifié), comme avant la ronde 3.
+        let defauts = !du_compte
+            && sorte == Variables::Cles
+            && f.parent().is_some_and(|d| d.ends_with("environment.d"))
+            && programme_de_root_seul(&r.racine, &f);
         if sorte == Variables::Shell || std::fs::read_link(&f).is_ok_and(|v| v == Path::new("/dev/null")) {
             continue;
         }
@@ -5624,6 +5630,8 @@ fn mots_cites(texte: &str) -> Vec<String> {
 /// « XDG_DATA_DIRS=${XDG_DATA_DIRS:-/usr/local/share:/usr/share}:/var/lib/snapd/desktop ») : les formes
 /// « ${nom:-défaut} » et « ${nom:+texte} » de la même variable se lisent (`defauts_lus`), sans quoi ce fichier levait
 /// la sauvegarde à chaque bilan. Pas pour un fichier du compte, ni pour une autre forme : non résolu, comme avant.
+/// V3-3 (revérification de la ronde 3) : seulement un fichier d'environment.d (`dossiers_du_gestionnaire_lus`) ;
+/// user.conf, /etc/environment et pam_env.conf gardent « ${ » tel quel : non résolu.
 ///
 /// W-4 (contrôle 2 du sous-lot c2-uwsm, 0.95) : un morceau n'est plus rogné. Systemd et uwsm gardent ses blancs :
 /// « / x » ou « /x » suivi d'un blanc n'est pas « /x » (avant, Vanguard lisait « /x », uwsm « ~/ x »…) : un morceau
@@ -5643,9 +5651,10 @@ fn chemins_poses(
     // ne s'accordent pas (uwsm coupe XDG_CONFIG_HOME) : ne se résout pas.
     //
     // N-4 (revérification de la ronde 2, DEP-4 de la 0.95) : le « : » de « ${nom:-défaut} » est celui de la forme, pas
-    // de la valeur. Dans un fichier à root seul (`defauts`), la valeur entière « ${nom:-D} » se lit comme systemd la
-    // lit : la valeur d'avant (déjà lue) ou D, un seul dossier chacun ; « ${nom:+T} » entière : T. Avant, elle était
-    // dite non résolue, et levait la sauvegarde (faux ÉLEVÉ). Un « : » dans D ou T, ou toute autre forme : non résolu.
+    // de la valeur. Dans un fichier d'environment.d à root seul (`defauts`), la valeur entière « ${nom:-D} » se lit
+    // comme son générateur la lit : la valeur d'avant (déjà lue) ou D, un seul dossier chacun ; « ${nom:+T} »
+    // entière : T. Avant, elle était dite non résolue, et levait la sauvegarde (faux ÉLEVÉ). Un « : » dans D ou T, ou
+    // toute autre forme : non résolu.
     let valeur = if UN_SEUL_DOSSIER.contains(&nom) {
         match un_seul_dossier_a_defaut(valeur, nom) {
             Some(lue) if defauts => lue,
@@ -12144,6 +12153,28 @@ mod tests {
                 "défaut imbriqué",
                 ROOT,
                 "XDG_DATA_DIRS=${XDG_DATA_DIRS:-${TRUC}}\n",
+                None,
+                true,
+            ),
+            // V3-3 : user.conf et ses compléments gardent « ${ » tel quel : à root seul aussi, non résolu, levé.
+            (
+                "XDG_DATA_HOME à défaut, user.conf.d à root seul",
+                "/usr/lib/systemd/user.conf.d/x.conf",
+                "[Manager]\nDefaultEnvironment=XDG_DATA_HOME=${XDG_DATA_HOME:-/opt/share}\n",
+                None,
+                true,
+            ),
+            (
+                "XDG_DATA_HOME à défaut, user.conf à root seul",
+                "/usr/lib/systemd/user.conf",
+                "[Manager]\nDefaultEnvironment=XDG_DATA_HOME=${XDG_DATA_HOME:-/opt/share}\n",
+                None,
+                true,
+            ),
+            (
+                "snapd dans user.conf.d à root seul",
+                "/usr/lib/systemd/user.conf.d/x.conf",
+                "[Manager]\nDefaultEnvironment=XDG_DATA_DIRS=${XDG_DATA_DIRS:-/usr/local/share:/usr/share}:/opt/d\n",
                 None,
                 true,
             ),
