@@ -243,6 +243,114 @@ pub(crate) fn images_sur(prise: &Path) -> Result<Vec<String>, Echec> {
     Ok(images)
 }
 
+/// Pour les essais de `docker` et de `protection::conteneurs` : un faux démon du compte, et le contexte de la maison
+/// qui y mène.
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
+#[cfg(test)]
+pub(crate) mod essais {
+    use std::path::{Path, PathBuf};
+
+    /// Un faux démon Docker sur une prise Unix du dossier temporaire (pas sous `essais::temporaire()` : le chemin
+    /// d'une prise tient en 108 octets, comme pour `http_unix::essais::faux_demon`). Il compte les connexions et répond
+    /// comme un démon sans conteneur ni image : ce qu'un faux démon du compte dirait pour faire croire à « rien
+    /// d'exposé » ou à « aucune image ». Arrêté et retiré quand l'essai le lâche.
+    pub(crate) struct FauxDemon {
+        pub(crate) chemin: PathBuf,
+        connexions: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        arret: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        fil: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl FauxDemon {
+        pub(crate) fn nouveau(nom: &str) -> FauxDemon {
+            use std::io::{Read, Write};
+            use std::sync::atomic::Ordering::SeqCst;
+            let chemin = std::env::temp_dir().join(format!("vanguard-{nom}-{}.sock", std::process::id()));
+            let _ = std::fs::remove_file(&chemin);
+            let ecoute = std::os::unix::net::UnixListener::bind(&chemin).unwrap();
+            ecoute.set_nonblocking(true).unwrap();
+            let connexions = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let arret = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let (compte, fin) = (connexions.clone(), arret.clone());
+            let fil = std::thread::spawn(move || {
+                while !fin.load(SeqCst) {
+                    let Ok((mut s, _)) = ecoute.accept() else {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                        continue;
+                    };
+                    compte.fetch_add(1, SeqCst);
+                    let _ = s.set_nonblocking(false);
+                    let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+                    let mut demande = Vec::new();
+                    let mut o = [0u8; 1];
+                    while !demande.ends_with(b"\r\n\r\n") && matches!(s.read(&mut o), Ok(1)) {
+                        demande.push(o[0]);
+                    }
+                    let demande = String::from_utf8_lossy(&demande);
+                    let corps = if demande.starts_with("HEAD ") {
+                        ""
+                    } else if demande.contains("/_ping") {
+                        "OK"
+                    } else if demande.contains("/containers/json") || demande.contains("/images/json") {
+                        "[]"
+                    } else {
+                        "{}"
+                    };
+                    let _ = write!(
+                        s,
+                        "HTTP/1.1 200 OK\r\nApi-Version: 1.47\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{corps}",
+                        corps.len()
+                    );
+                }
+            });
+            FauxDemon {
+                chemin,
+                connexions,
+                arret,
+                fil: Some(fil),
+            }
+        }
+
+        pub(crate) fn connexions(&self) -> usize {
+            self.connexions.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    impl Drop for FauxDemon {
+        fn drop(&mut self) {
+            self.arret.store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Some(fil) = self.fil.take() {
+                let _ = fil.join();
+            }
+            let _ = std::fs::remove_file(&self.chemin);
+        }
+    }
+
+    /// Le contexte « temoin » du compte, mené au faux démon et rangé où la CLI le cherche dans la maison
+    /// (`.docker/contexts/meta/<sha256 du nom>/meta.json`). Le config.json qui le choisit reste à écrire ; rend le
+    /// dossier `.docker`.
+    pub(crate) fn contexte_temoin(maison: &Path, demon: &FauxDemon) -> PathBuf {
+        let reglages = maison.join(".docker");
+        let meta = reglages
+            .join("contexts")
+            .join("meta")
+            .join("9cf95f8768a2401fd50a768785ab7614dbe46a03d238d9a80f14e4d641563fa6");
+        std::fs::create_dir_all(&meta).unwrap();
+        let hote = format!("unix://{}", demon.chemin.display());
+        let contexte = serde_json::json!({
+            "Name": "temoin",
+            "Metadata": {},
+            "Endpoints": {"docker": {"Host": hote, "SkipTLSVerify": false}},
+        });
+        std::fs::write(meta.join("meta.json"), contexte.to_string()).unwrap();
+        reglages
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::http_unix::essais::faux_demon;

@@ -77,7 +77,7 @@ pub(crate) fn lire_rapport(json: &str) -> Option<Vec<Faille>> {
 }
 
 /// Les images de Docker par son API (/var/run/docker.sock), une par ligne comme la CLI les écrit ; `None` : Podman,
-/// un autre hôte ou contexte réglé, ou le démon injoignable (la CLI dira).
+/// un démon désigné (jamais lu : `demon_designe`), ou le démon injoignable (la CLI dira).
 #[cfg(target_os = "linux")]
 fn images_par_l_api(source: &str) -> Option<String> {
     use crate::machine::linux::docker_api;
@@ -94,6 +94,21 @@ fn images_par_l_api(_: &str) -> Option<String> {
     None
 }
 
+/// Ce qui désigne le démon que la CLI de la personne lirait (`docker_api::demon_designe` : DOCKER_HOST…, ou le
+/// config.json de la maison), pour Docker sous Linux. Ses images ne sont pas lues : la CLI de Vanguard suivait ce
+/// contexte, et un faux démon du compte disait « aucune image », vérifié (V-3, relecture du sous-lot c2 de la 0.95).
+#[cfg(target_os = "linux")]
+fn demon_designe(source: &str) -> Option<&'static str> {
+    (source == "docker")
+        .then(crate::machine::linux::docker_api::demon_designe)
+        .flatten()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn demon_designe(_: &str) -> Option<&'static str> {
+    None
+}
+
 /// Le moteur de conteneurs de cet ordinateur : Docker, sinon Podman.
 fn moteur() -> Option<(&'static str, PathBuf)> {
     ["docker", "podman"]
@@ -103,15 +118,40 @@ fn moteur() -> Option<(&'static str, PathBuf)> {
 
 /// Les images de Docker ou de Podman, une par ligne ; `None` : liste illisible.
 fn lister(source: &str, moteur: &Path) -> Option<String> {
-    // Docker : son API locale d'abord (lecture seule), la CLI quand un autre hôte ou un contexte est réglé.
-    images_par_l_api(source).or_else(|| {
-        crate::commande::lancer(
-            Command::new(moteur).args(["image", "ls", "--format", "{{.Repository}}:{{.Tag}}"]),
-            30,
-        )
-        .filter(|r| r.code == Some(0))
-        .map(|r| r.sortie)
-    })
+    // Docker : son API locale d'abord (lecture seule), sa CLI sur la même prise si l'API ne répond pas. Un démon
+    // désigné n'arrive pas jusqu'ici (`demon_designe`).
+    images_par_l_api(source).or_else(|| images_par_la_cli(source, moteur))
+}
+
+/// `image ls` par la CLI du moteur (`cli_des_images`).
+fn images_par_la_cli(source: &str, moteur: &Path) -> Option<String> {
+    crate::commande::lancer(
+        cli_des_images(source, moteur).args(["image", "ls", "--format", "{{.Repository}}:{{.Tag}}"]),
+        30,
+    )
+    .filter(|r| r.code == Some(0))
+    .map(|r| r.sortie)
+}
+
+/// La CLI qui liste les images : le moteur trouvé par le PATH (un outil que la personne installe elle-même, cherché
+/// là exprès, comme le dit le CHANGELOG de la 0.95). Docker sous Linux : sur la prise par défaut et sans rien de la
+/// maison (`-H`, et `--config` vers un dossier qui n'existe pas), comme `docker ps` du bilan. Sans eux, elle suivait le
+/// contexte d'un config.json écrit par le compte (après `demon_designe`, ou à côté d'un DOCKER_CONFIG) jusqu'à un faux
+/// démon, qui disait « aucune image », vérifié (V-3, relecture du sous-lot c2 de la 0.95). Podman, et Docker ailleurs
+/// que sous Linux : inchangés.
+#[cfg(target_os = "linux")]
+fn cli_des_images(source: &str, moteur: &Path) -> Command {
+    let mut commande = Command::new(moteur);
+    if source == "docker" {
+        let hote = format!("unix://{}", crate::machine::linux::docker_api::PRISE);
+        commande.args(["--config", "/nonexistent/vanguard-docker", "-H", &hote]);
+    }
+    commande
+}
+
+#[cfg(not(target_os = "linux"))]
+fn cli_des_images(_: &str, moteur: &Path) -> Command {
+    Command::new(moteur)
 }
 
 /// `hors_ligne` (pour `--json`) : rien ne se télécharge (ni la base Java, ni les dépendances en ligne), rien ne
@@ -165,6 +205,9 @@ fn relever() -> resultat::Releve {
     let Some((source, moteur)) = moteur() else {
         return Releve::SansMoteur;
     };
+    if let Some(origine) = demon_designe(source) {
+        return Releve::DemonDesigne(origine);
+    }
     let Some(sortie) = lister(source, &moteur) else {
         return Releve::ListeIllisible;
     };
@@ -216,6 +259,10 @@ pub fn analyser() {
         );
         return;
     };
+    if let Some(origine) = demon_designe(source) {
+        println!("  ✖ {}", resultat::demon_non_lu(origine));
+        return;
+    }
     let Some(sortie) = lister(source, &moteur) else {
         // Le plus souvent, le démon de Docker réservé à root et au groupe docker (qui vaut root : le bilan le dit).
         trp!(
@@ -328,5 +375,96 @@ mod tests {
         assert_eq!(lire_rapport(r#"{"SchemaVersion":2,"ArtifactName":"x"}"#).unwrap(), []);
         assert_eq!(lire_rapport(r#"{"Results":[{"Target":"x"}]}"#).unwrap(), []);
         assert!(lire_rapport("").is_none() && lire_rapport(r#"{"Results":3}"#).is_none());
+    }
+
+    /// Posée dans le processus relancé par l'essai V-3 : « releve » (`relever`) ou « cli » (`images_par_la_cli`).
+    #[cfg(target_os = "linux")]
+    const RELANCE_V3: &str = "VANGUARD_ESSAI_V3_RELANCE";
+
+    /// V-3 (relecture du sous-lot c2 de la 0.95) : la porte de N-2, restée ouverte pour les images. Un contexte choisi
+    /// dans ~/.docker/config.json (un fichier que le compte écrit) mène à un faux démon ; la CLI de Vanguard, lancée
+    /// avec l'environnement du compte, suivait ce contexte : le faux démon disait « aucune image », et Vanguard
+    /// « Aucune image sur cet ordinateur », vérifié. Le démon désigné est dit non vérifié, comme pour les ports ; la
+    /// CLI de Vanguard ne suit pas le contexte.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn contexte_de_la_maison_images_non_verifiees() {
+        use crate::machine::linux::docker_api::essais::{FauxDemon, contexte_temoin};
+        use std::process::Command;
+        match std::env::var(RELANCE_V3).as_deref() {
+            Ok("releve") => {
+                println!("releve-v3:{:?}", relever());
+                return;
+            }
+            Ok(_) => {
+                let lu = moteur().map(|(source, chemin)| images_par_la_cli(source, &chemin));
+                println!("cli-v3:{lu:?}");
+                return;
+            }
+            Err(_) => {}
+        }
+        let Some(cli) = crate::commande::outil_systeme("docker") else {
+            return crate::essais::saute("docker absent");
+        };
+        let maison = crate::essais::Jetable::nouveau("v3-docker-images");
+        let demon = FauxDemon::nouveau("v3-docker");
+        let reglages = contexte_temoin(&maison, &demon);
+        std::fs::write(reglages.join("config.json"), br#"{"currentContext":"temoin"}"#).unwrap();
+        let systeme = "/usr/bin:/bin".to_string();
+        let lancer = |c: &mut Command, path: &str| {
+            c.env_remove("DOCKER_HOST")
+                .env_remove("DOCKER_CONTEXT")
+                .env_remove("DOCKER_CONFIG")
+                .env("HOME", &*maison)
+                .env("PATH", path)
+                .output()
+                .unwrap()
+        };
+        // Témoin : la CLI de la personne suit ce contexte jusqu'au faux démon. Sans lui, « jamais joint » ne prouverait
+        // rien.
+        let avant = demon.connexions();
+        let s = lancer(Command::new(&cli).args(["image", "ls"]), &systeme);
+        assert!(
+            demon.connexions() > avant,
+            "contexte témoin pas suivi : {}",
+            String::from_utf8_lossy(&s.stderr)
+        );
+        let relancer = |mode: &str| {
+            let s = lancer(
+                Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "protection::conteneurs::tests::contexte_de_la_maison_images_non_verifiees",
+                        "--nocapture",
+                    ])
+                    .env(RELANCE_V3, mode),
+                &systeme,
+            );
+            let texte = String::from_utf8_lossy(&s.stdout).into_owned();
+            assert!(s.status.success() && texte.contains("1 passed"), "{texte}");
+            texte
+        };
+        let avant = demon.connexions();
+        let texte = relancer("releve");
+        let releve = texte
+            .lines()
+            .find_map(|l| l.strip_prefix("releve-v3:"))
+            .unwrap_or_default();
+        assert_eq!(
+            releve,
+            format!(
+                "DemonDesigne({:?})",
+                crate::machine::linux::docker_api::CONFIG_DE_LA_MAISON
+            ),
+            "{texte}"
+        );
+        assert_eq!(demon.connexions(), avant, "images lues sur le faux démon : {texte}");
+        let texte = relancer("cli");
+        assert!(texte.contains("cli-v3:Some("), "{texte}");
+        assert_eq!(
+            demon.connexions(),
+            avant,
+            "la CLI de Vanguard a suivi le contexte de la maison : {texte}"
+        );
     }
 }

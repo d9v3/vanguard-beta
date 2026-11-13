@@ -294,6 +294,7 @@ pub(super) fn docker_sans_acces(procs: &[(String, Vec<String>)], autres_visibles
 )]
 #[cfg(test)]
 mod tests {
+    use super::docker_api::essais::{FauxDemon, contexte_temoin};
     use super::*;
 
     #[test]
@@ -492,82 +493,6 @@ mod tests {
         );
     }
 
-    /// Un faux démon Docker sur une prise Unix du dossier temporaire (pas sous `essais::temporaire()` : le chemin
-    /// d'une prise tient en 108 octets, comme pour `http_unix::essais::faux_demon`). Il compte les connexions et répond
-    /// comme un démon sans conteneur : ce qu'un faux démon du compte dirait pour faire croire à « rien d'exposé ».
-    /// Arrêté et retiré quand l'essai le lâche.
-    struct FauxDemon {
-        chemin: std::path::PathBuf,
-        connexions: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-        arret: std::sync::Arc<std::sync::atomic::AtomicBool>,
-        fil: Option<std::thread::JoinHandle<()>>,
-    }
-
-    impl FauxDemon {
-        fn nouveau(nom: &str) -> FauxDemon {
-            use std::io::{Read, Write};
-            use std::sync::atomic::Ordering::SeqCst;
-            let chemin = std::env::temp_dir().join(format!("vanguard-{nom}-{}.sock", std::process::id()));
-            let _ = std::fs::remove_file(&chemin);
-            let ecoute = std::os::unix::net::UnixListener::bind(&chemin).unwrap();
-            ecoute.set_nonblocking(true).unwrap();
-            let connexions = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-            let arret = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let (compte, fin) = (connexions.clone(), arret.clone());
-            let fil = std::thread::spawn(move || {
-                while !fin.load(SeqCst) {
-                    let Ok((mut s, _)) = ecoute.accept() else {
-                        std::thread::sleep(std::time::Duration::from_millis(10));
-                        continue;
-                    };
-                    compte.fetch_add(1, SeqCst);
-                    let _ = s.set_nonblocking(false);
-                    let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(5)));
-                    let mut demande = Vec::new();
-                    let mut o = [0u8; 1];
-                    while !demande.ends_with(b"\r\n\r\n") && matches!(s.read(&mut o), Ok(1)) {
-                        demande.push(o[0]);
-                    }
-                    let demande = String::from_utf8_lossy(&demande);
-                    let corps = if demande.starts_with("HEAD ") {
-                        ""
-                    } else if demande.contains("/_ping") {
-                        "OK"
-                    } else if demande.contains("/containers/json") {
-                        "[]"
-                    } else {
-                        "{}"
-                    };
-                    let _ = write!(
-                        s,
-                        "HTTP/1.1 200 OK\r\nApi-Version: 1.47\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{corps}",
-                        corps.len()
-                    );
-                }
-            });
-            FauxDemon {
-                chemin,
-                connexions,
-                arret,
-                fil: Some(fil),
-            }
-        }
-
-        fn connexions(&self) -> usize {
-            self.connexions.load(std::sync::atomic::Ordering::SeqCst)
-        }
-    }
-
-    impl Drop for FauxDemon {
-        fn drop(&mut self) {
-            self.arret.store(true, std::sync::atomic::Ordering::SeqCst);
-            if let Some(fil) = self.fil.take() {
-                let _ = fil.join();
-            }
-            let _ = std::fs::remove_file(&self.chemin);
-        }
-    }
-
     /// Posée dans le processus relancé par l'essai N-2 : « docker » (les constats) ou « cli » (`ps_par_la_cli`).
     const RELANCE_N2: &str = "VANGUARD_ESSAI_N2_RELANCE";
 
@@ -603,20 +528,7 @@ mod tests {
         };
         let maison = crate::essais::Jetable::nouveau("n2-docker-contexte");
         let demon = FauxDemon::nouveau("n2-docker");
-        // Le contexte « temoin » du compte, rangé où la CLI le cherche : contexts/meta/<sha256 du nom>/meta.json.
-        let reglages = maison.join(".docker");
-        let meta = reglages
-            .join("contexts")
-            .join("meta")
-            .join("9cf95f8768a2401fd50a768785ab7614dbe46a03d238d9a80f14e4d641563fa6");
-        std::fs::create_dir_all(&meta).unwrap();
-        let hote = format!("unix://{}", demon.chemin.display());
-        let contexte = serde_json::json!({
-            "Name": "temoin",
-            "Metadata": {},
-            "Endpoints": {"docker": {"Host": hote, "SkipTLSVerify": false}},
-        });
-        std::fs::write(meta.join("meta.json"), contexte.to_string()).unwrap();
+        let reglages = contexte_temoin(&maison, &demon);
         for config in [
             r#"{"currentContext":"temoin"}"#,
             r#"{"currentcontext":"temoin"}"#,

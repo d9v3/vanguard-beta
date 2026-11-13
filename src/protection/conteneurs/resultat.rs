@@ -33,6 +33,9 @@ type Debut = (DateTime<Utc>, std::time::Instant);
 #[derive(Debug)]
 pub(super) enum Releve {
     SansMoteur,
+    /// Le démon que la CLI de la personne lirait est désigné par cette origine (DOCKER_HOST…, ou le config.json de la
+    /// maison) : ses images ne sont pas lues (`super::demon_designe`).
+    DemonDesigne(&'static str),
     ListeIllisible,
     SansImage,
     SansTrivy {
@@ -62,6 +65,14 @@ pub(super) fn resultat(r: &Releve, debut: Debut) -> Resultat {
     Resultat::nouveau(ID, debut, &constats, couverture)
 }
 
+/// Le non vérifié d'un démon désigné, à l'écran comme dans le résultat.
+pub(super) fn demon_non_lu(origine: &str) -> String {
+    trf!(
+        "Non vérifié : le démon désigné par {origine} n'est pas lu : Vanguard ne suit pas un démon choisi par le compte (variable ou fichier de réglage), et ses images ne sont pas analysées.",
+        "Not checked: the daemon set by {origine} is not read: Vanguard does not follow a daemon chosen by the account (variable or settings file), and its images are not scanned."
+    )
+}
+
 fn non_analysees(n: usize) -> String {
     match n {
         1 => tr!("1 image non analysée", "1 image not scanned").to_string(),
@@ -88,6 +99,14 @@ fn juger(r: &Releve, maintenant: DateTime<Utc>) -> (Vec<Constat>, Couverture) {
                 "Neither Docker nor Podman on this computer: nothing to scan."
             ),
         )),
+        Releve::DemonDesigne(origine) => {
+            let pourquoi = trf!(
+                "images du démon désigné par {origine} non lues",
+                "images of the daemon set by {origine} not read"
+            );
+            let c = impossible_par(CAT, Raison::Echoue(pourquoi.clone()), demon_non_lu(origine));
+            manque(c, pourquoi, &mut constats, &mut non_verifies);
+        }
         Releve::ListeIllisible => {
             let raison = tr!(
                 "liste des images illisible : Docker est peut-être réservé à root et au groupe docker, ou arrêté",
@@ -246,6 +265,7 @@ mod tests {
     fn etapes_non_verifiees() {
         for r in [
             Releve::SansMoteur,
+            Releve::DemonDesigne("DOCKER_HOST"),
             Releve::ListeIllisible,
             Releve::SansTrivy { images: 3 },
             Releve::SansBase { images: 1 },
@@ -255,6 +275,10 @@ mod tests {
         assert_eq!(verdict(&Releve::SansImage), "sain");
         let c = ecrit(&Releve::SansTrivy { images: 2 }).constats;
         assert_eq!(c[0].raison.as_deref(), Some("absente"));
+        // Le démon désigné : nommé, jamais vérifié.
+        let r = ecrit(&Releve::DemonDesigne("~/.docker/config.json"));
+        assert!(r.couverture.verifies == 0 && r.couverture.non_verifies.len() == 1);
+        assert!(r.constats.len() == 1 && r.constats[0].message.contains("~/.docker/config.json"));
     }
 
     /// Une image critique, une grave, une saine, une en échec, et deux au-delà des bornes.
