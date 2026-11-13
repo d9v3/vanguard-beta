@@ -6974,38 +6974,44 @@ fn lire_prechargement(
     let preload = racine.join("etc/ld.so.preload");
     let h = t.r.maison.clone();
     if let Some(lu) = lire(&preload, &h, t) {
-        // Coupée comme la coupe le chargeur : espace, tabulation, « : ». Commentaire propre au format (« # »
-        // seulement, jusqu'au bout de la ligne) : « --… », « ;… » et « //… » sont des bibliothèques, pas des
-        // commentaires (R-3, lot 096).
-        let libs: Vec<(usize, &str, &str)> = lu
-            .texte
-            .lines()
-            .enumerate()
-            .filter(|(_, l)| !commentaire_de_ldso(l))
-            .flat_map(|(n, l)| {
-                l.split([' ', '\t', ':'])
-                    .filter(|m| !m.is_empty())
-                    .map(move |lib| (n, l, lib))
-            })
-            .collect();
-        for (n, ligne, lib) in libs {
-            let connue = gestion.is_some_and(|g| g.possede(Path::new(lib)));
-            t.sources.push(source_de("preload", lib));
-            t.retraits.push(retrait(&preload, &lu.texte, ligne));
-            let d = designes::bibliotheques(lib, designes::Liste::Fichier);
-            let temoin = temoin_de_ligne(t, &preload, n, &lu, ligne, d, false, Sorte::Shell);
+        use std::os::unix::ffi::OsStrExt as _;
+        // Lu sur les octets comme le lit le chargeur de glibc, sa boucle de commentaires comprise (un « # » ne ferme
+        // pas toujours sa ligne : relecture adverse du lot 096, C1), réuni avec la lecture « un # ferme sa ligne »
+        // (`machine::prechargement`). Le nom garde ses octets, un « \r » final compris : c'est ce fichier-là que le
+        // chargeur ouvre, et que la base des paquets doit connaître (C2). La ligne, coupée au seul « \n », est celle
+        // que relit le fils root pour la retirer.
+        let lignes: Vec<&str> = lu.texte.split('\n').collect();
+        for p in crate::machine::prechargement::bibliotheques(&lu.octets) {
+            let ligne = lignes.get(p.ligne).copied().unwrap_or("");
+            let connue = gestion.is_some_and(|g| g.possede(Path::new(std::ffi::OsStr::from_bytes(&p.nom))));
+            let lib = String::from_utf8_lossy(&p.nom);
+            t.sources.push(source_de("preload", &lib));
+            t.retraits
+                .push(preload.to_str().map(|f| (f.to_string(), ligne.to_string())));
+            let d = designes::bibliotheques(&lib, designes::Liste::Fichier);
+            let temoin = temoin_de_ligne(t, &preload, p.ligne, &lu, ligne, d, false, Sorte::Shell);
             t.temoins.push(temoin);
             // Écrit par qui a posé le préchargement (un rootkit, souvent) : montré rendu inoffensif.
-            let lib = crate::ui::affichable(lib);
+            let lib = crate::ui::affichable(&lib);
+            // Une ligne qui semble en commentaire mais que le chargeur lit quand même : dit, pour qu'on ne la
+            // croie pas éteinte.
+            let diese = if p.apres_un_diese {
+                tr!(
+                    " (après un « # » : le chargeur le lit quand même)",
+                    " (after a \"#\": the loader still reads it)"
+                )
+            } else {
+                ""
+            };
             if connue {
                 t.suspects.push(trf!(
-                    "/etc/ld.so.preload charge {lib} dans tous les programmes",
-                    "/etc/ld.so.preload loads {lib} into every program"
+                    "/etc/ld.so.preload charge {lib} dans tous les programmes{diese}",
+                    "/etc/ld.so.preload loads {lib} into every program{diese}"
                 ));
             } else {
                 t.critiques.push(trf!(
-                    "/etc/ld.so.preload charge {lib} (hors paquet) dans tous les programmes",
-                    "/etc/ld.so.preload loads {lib} (not from a package) into every program"
+                    "/etc/ld.so.preload charge {lib} (hors paquet) dans tous les programmes{diese}",
+                    "/etc/ld.so.preload loads {lib} (not from a package) into every program{diese}"
                 ));
             }
         }
@@ -14783,6 +14789,59 @@ mod tests {
         let c = m.lancements();
         assert_eq!(c.probleme, Some(Niveau::Critique), "{}", c.message);
         assert!(c.message.contains("libhook.so"), "{}", c.message);
+    }
+
+    /// Relecture adverse du lot 096 (C1 à C3), bout en bout : /etc/ld.so.preload lu comme le lit le vrai chargeur
+    /// (glibc 2.44, relevé dans un bac à sable : `machine::prechargement`). C1 : dès le deuxième « # », la boucle du
+    /// chargeur n'efface plus assez, et une ligne « # /opt/x/evil.so » est chargée ; la règle « un # ferme sa ligne »
+    /// la taisait. C2 : le « \r » d'une fin de ligne « \r\n » fait partie du nom chargé ; il était ôté, et c'est un
+    /// autre fichier qui était jugé (connu d'un paquet, l'alerte baissait). C3 : un commentaire en fin de ligne ne
+    /// compte plus comme des bibliothèques « # » et « note ». Rien à charger : muet.
+    #[test]
+    fn preload_lu_comme_le_chargeur() {
+        let bilan = |nom: &str, contenu: &[u8]| {
+            let m = Maison::nouvelle(nom);
+            let preload = m.racine.join("etc/ld.so.preload");
+            std::fs::create_dir_all(preload.parent().unwrap()).unwrap();
+            std::fs::write(&preload, contenu).unwrap();
+            m.lancements()
+        };
+        let c = bilan(
+            "preload-c1",
+            b"# une note anodine assez longue pour couvrir la suite du fichier\n# /opt/x/evil.so\n",
+        );
+        assert_eq!(c.probleme, Some(Niveau::Critique), "{}", c.message);
+        assert!(
+            c.message.contains("charge /opt/x/evil.so (hors paquet)"),
+            "{}",
+            c.message
+        );
+        assert!(c.message.contains("le chargeur le lit quand même"), "{}", c.message);
+        let c = bilan("preload-c1-court", b"# c\n# /tmp/evil2.so\n");
+        assert_eq!(c.probleme, Some(Niveau::Critique), "{}", c.message);
+        assert!(c.message.contains("charge so (hors paquet)"), "{}", c.message);
+        let c = bilan("preload-c2", b"/usr/lib/libz.so.1\r\n");
+        assert!(
+            c.message.contains("charge /usr/lib/libz.so.1\u{fffd} (hors paquet)"),
+            "{}",
+            c.message
+        );
+        let c = bilan("preload-c3", b"/usr/lib/a.so # note /tmp/c.so\n");
+        assert!(
+            c.message.contains("charge /usr/lib/a.so (hors paquet)"),
+            "{}",
+            c.message
+        );
+        for faux in ["charge # ", "charge note", "/tmp/c.so"] {
+            assert!(!c.message.contains(faux), "{faux} : {}", c.message);
+        }
+        for (i, vide) in [&b"# tout en commentaire\n"[..], b": # x\n", b"\n\n", b""]
+            .into_iter()
+            .enumerate()
+        {
+            let c = bilan(&format!("preload-vide-{i}"), vide);
+            assert_eq!(c.probleme, None, "{vide:?} : {}", c.message);
+        }
     }
 
     /// Une arborescence jetable (racine, dossier personnel d'alice), et la lecture de sa persistance : le constat des

@@ -42,6 +42,9 @@ mod navigateur;
 mod navigation_detournee;
 mod partages;
 mod post_quantique;
+// Ce que /etc/ld.so.preload fait charger : une seule lecture pour le bilan, le fils root et l'avis du démarrage.
+#[cfg(any(target_os = "linux", test))]
+pub(crate) mod prechargement;
 pub(crate) mod regles;
 mod regles_communes;
 mod sante;
