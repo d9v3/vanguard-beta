@@ -863,6 +863,45 @@ noter 1 "$(refus_dit $?)" "--compilation : le nom du compte dans un chemin hors 
 SORTIE=$(env -u USER -u LOGNAME -u LNAME -u USERNAME HOME=/home/alice python3 "$OUTIL" --compilation "$CIBLES_I" \
   "$P/disque" 2>&1)
 noter 1 "$(refus_dit $?)" "--compilation : sans USER, le compte lu dans le HOME est cherché hors de HOME"
+# Relecture adverse du lot 097 (C3) : la même lecture du HOME vaut pour la garde ordinaire (--texte, commits, --depot)
+# et pour la clé branchée (/run/media/<compte>), sans essai jusqu'ici. Rien de cet ordinateur : config et données
+# vides, aucun nmcli, et sans USER le système répond « root » (sous unshare -r) ou un autre compte qu'« alice ».
+VIDE_J=$TRAVAIL/sans-user
+mkdir -p "$VIDE_J/config" "$VIDE_J/donnees" "$VIDE_J/chemin"
+for programme in python3 git grep; do ln -sf "$(command -v "$programme")" "$VIDE_J/chemin/$programme"; done
+sans_user() { # HOME, texte
+  printf '%s\n' "$2" | (cd "$TRAVAIL/sources-machine" || exit 9
+    unset USER LOGNAME LNAME USERNAME
+    HOME=$1 XDG_CONFIG_HOME=$VIDE_J/config XDG_DATA_HOME=$VIDE_J/donnees PATH=$VIDE_J/chemin \
+      GIT_CONFIG_GLOBAL=$GLOBAL_J garde --texte)
+}
+SORTIE=$(sans_user /srv/maison/alice "/run/media/alice/disque/x.rs" 2>&1)
+noter 1 "$(refus_dit $?)" "--texte : sans USER, le compte lu dans le HOME est cherché hors de HOME"
+sans_user /srv/maison/bob "/run/media/alice/disque/x.rs" >/dev/null 2>&1
+noter 0 $? "--texte : témoin, sans USER, un autre compte que celui du HOME passe"
+# La clé branchée, sous /run/media/<compte> : un /run jetable (tmpfs) dans un espace de noms à part. Sans espace de
+# noms d'utilisateur, l'essai échoue (jamais sauté sans le dire).
+MONTE=$(command -v mount)
+if unshare -rm true 2>/dev/null && [[ -n $MONTE ]]; then
+  cle_sans_user() { # HOME
+    printf '%s\n' "réseau Chez Gaspard" | (cd "$TRAVAIL/sources-machine" &&
+      unshare -rm env -u USER -u LOGNAME -u LNAME -u USERNAME HOME="$1" XDG_CONFIG_HOME="$VIDE_J/config" \
+      XDG_DATA_HOME="$VIDE_J/donnees" CHEMIN="$VIDE_J/chemin" GIT_CONFIG_GLOBAL="$GLOBAL_J" OUTIL="$OUTIL" \
+      MONTE="$MONTE" "$(command -v bash)" -c '"$MONTE" -t tmpfs vide /run &&
+      mkdir -p /run/media/alice/cle-inventee/donnees && : >/run/media/alice/cle-inventee/vanguard.cle &&
+      printf "{\"reseaux\": {\"r1\": {\"nom\": \"Chez Gaspard\", \"appareils\": {}}}}\n" \
+        >/run/media/alice/cle-inventee/donnees/appareils.json && export PATH=$CHEMIN &&
+      exec python3 "$OUTIL" --texte')
+  }
+  SORTIE=$(cle_sans_user /srv/maison/alice 2>&1)
+  code=$?
+  [[ $SORTIE == *"Chez Gaspard"* ]] || code="$code, rien de dit"
+  noter 1 "$code" "--texte : sans USER, la clé branchée sous /run/media/<compte du HOME> est lue"
+  cle_sans_user /srv/maison/bob >/dev/null 2>&1
+  noter 0 $? "--texte : témoin, sans USER, la clé d'un autre compte que celui du HOME n'est pas lue"
+else
+  noter 0 1 "--texte : clé branchée sans USER pas essayée (espaces de noms d'utilisateur indisponibles)"
+fi
 printf '\177ELF\0' >"$P/large" && printf 'C:\\Users\\alice\\cibles\0' | iconv -t UTF-16LE >>"$P/large"
 compilation "$CIBLES_I" "$P/large"
 noter 1 "$(refus_dit $?)" "--compilation : le nom du compte dans un chemin Windows en UTF-16 est refusé"
@@ -954,6 +993,13 @@ noter 1 "$(refus_dit $?)" "--compilation : un dossier donné par --dossier (le d
 compile chaine '/srv/rustup-invente/toolchains/x/lib/rustlib/src/rust/library/core/src/lib.rs'
 compilation "$CIBLES_I" --dossier /srv/depot-invente --dossier /srv/rustup-invente "$P/propre" "$P/chaine"
 noter 1 "$(refus_dit $?)" "--compilation : chaque --dossier est cherché (le deuxième, RUSTUP_HOME)"
+# Relecture adverse du lot 097 (C1) : le dossier attendu était toujours le dernier donné ; une garde qui ne gardait
+# que le dernier --dossier restait verte. Le premier de deux, puis celui du milieu de trois (la recette en donne trois).
+compilation "$CIBLES_I" --dossier /srv/rustup-invente --dossier /srv/depot-invente "$P/propre" "$P/chaine"
+noter 1 "$(refus_dit $?)" "--compilation : chaque --dossier est cherché (le premier de deux)"
+compilation "$CIBLES_I" --dossier /srv/depot-invente --dossier /srv/rustup-invente --dossier /srv/cargo-invente \
+  "$P/chaine"
+noter 1 "$(refus_dit $?)" "--compilation : chaque --dossier est cherché (celui du milieu de trois)"
 compilation "$CIBLES_I" "$P/propre" --dossier
 sans_trace 2 "--compilation : --dossier sans valeur, rien n'est conclu"
 compilation "$CIBLES_I" --dossier /srv/depot-invente
@@ -1014,10 +1060,13 @@ MONTRE='printf "%s\n" "$CARGO_TARGET_DIR" "$CARGO_HOME" "$(readlink "$CARGO_HOME
 dossiers() {
   local donne=("CARGO_TARGET_DIR=$1")
   [[ $1 != - ]] || donne=()
-  SORTIE=$(cd "$P" && env -u CARGO_HOME -u CARGO_TARGET_DIR "${donne[@]}" RACINE=/srv/depot-invente \
+  [[ -z ${RUSTUP_DONNE:-} ]] || donne+=("RUSTUP_HOME=$RUSTUP_DONNE")
+  [[ -z ${MAISON_DONNEE:-} ]] || donne+=("HOME=$MAISON_DONNEE")
+  SORTIE=$(cd "$P" && env -u CARGO_HOME -u CARGO_TARGET_DIR -u RUSTUP_HOME "${donne[@]}" RACINE=/srv/depot-invente \
     CARGO_DOSSIER="$P/cargo-invente" ZIG_BIN="$P/zig-invente" \
     PATH="${CHEMINS:-$P/zig-invente:$P/cargo-invente/bin}:$PATH" APRES="${2:-$MONTRE}" \
-    bash -c "set -euo pipefail; $DOSSIERS"$'\nbash -c "$APRES"' 2>&1)
+    bash -c "set -euo pipefail; $DOSSIERS"$'\nCHAINE_VUE=$(printf "%s|" "${DOSSIERS_CHAINE[@]}")'\
+$' && export CHAINE_VUE\nbash -c "$APRES"' 2>&1)
 }
 # Un programme inventé qui dit qui il est.
 qui() { mkdir -p "$(dirname "$1")" && printf '#!/bin/sh\necho "%s"\n' "$2" >"$1" && chmod +x "$1"; }
@@ -1061,6 +1110,23 @@ if [[ -n $DOSSIERS ]]; then
   dossiers "$V"
   noter "1 1" "$? $(grep -c 'pas un lien' <<<"$SORTIE")" "recette : un vrai dossier à la place du lien de CARGO_HOME est refusé"
   rmdir "$V/.cargo-home"
+  # Relecture adverse du lot 097 (C2) : les dossiers de la chaîne (--dossier) n'étaient posés qu'après le bloc, jamais
+  # rejoués ; une ligne plus bas qui les vidait laissait le banc vert. Rejoués ici, et posés une seule fois.
+  RUSTUP_DONNE=/srv/rustup-invente dossiers "$V" 'printf "%s\n" "$CHAINE_VUE"'
+  noter "--dossier|/srv/depot-invente|--dossier|$P/cargo-invente|--dossier|/srv/rustup-invente|" "$SORTIE" \
+    "recette : le dépôt, CARGO_HOME et RUSTUP_HOME donnés à la garde (--dossier), tels que le bloc les pose"
+  MAISON_DONNEE=/srv/maison-inventee dossiers "$V" 'printf "%s\n" "$CHAINE_VUE"'
+  noter "--dossier|/srv/depot-invente|--dossier|$P/cargo-invente|--dossier|/srv/maison-inventee/.rustup|" "$SORTIE" \
+    "recette : sans RUSTUP_HOME, ~/.rustup donné à la garde (--dossier)"
+  debut=$(grep -n '^# >>> dossiers de la compilation' "$R" | head -1 | cut -d: -f1)
+  fin=$(grep -n '^# <<< dossiers de la compilation' "$R" | head -1 | cut -d: -f1)
+  poses=$(grep -n 'DOSSIERS_CHAINE' "$R" | grep -v '^[0-9]*:[[:space:]]*#' |
+    sed 's/"\${DOSSIERS_CHAINE\[@\]}"//g' | grep 'DOSSIERS_CHAINE')
+  if [[ $(wc -l <<<"$poses") == 1 && ${poses%%:*} -gt $debut && ${poses%%:*} -lt $fin ]]; then
+    noter 0 0 "recette : DOSSIERS_CHAINE posé une seule fois, dans le bloc rejoué"
+  else
+    noter 0 1 "recette : DOSSIERS_CHAINE posé ailleurs ou plus d'une fois (${poses//$'\n'/ ; })"
+  fi
   mkdir -p "$P/a b"
   dossiers "$P/a b"
   noter "1 1" "$? $(grep -c 'un blanc' <<<"$SORTIE")" "recette : un blanc dans le dossier de compilation est refusé"

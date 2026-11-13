@@ -25,13 +25,14 @@
 #      passe (cale cargo-audit à la version de la CI). Et rien n'est audité si une caisse d'une autre source que
 #      crates.io est dans l'arbre d'une cible, ou si une caisse lue dans les octets n'est pas dans la liste de la cible
 #      du programme (lue dans son en-tête, ELF ou MZ : une fenêtre Linux qui porte une caisse de Windows seulement est
-#      refusée) ; en-tête inconnu ou liste absente : non vérifié.
+#      refusée ; la liste versionnée fait foi, pas l'arbre du moment) ; en-tête inconnu : non vérifié.
 #   5. failles-programmes.sh --depot (Internet simulé par une cale curl) : les avis HORS_CIBLES écartés et dits
 #      écartés seulement si cargo tree prouve leur absence des deux cibles ; compilée ou cargo tree en échec : code 1,
 #      aucun --ignore posé, « pas écartées ».
 #   6. Dans une copie du dépôt (jamais les vraies listes) : --ecrire écrit des arbres sains, mais jamais une autre
 #      source ni une retirée ; une autre source inscrite à la main dans la liste reste refusée, sans coche ✔ ; la
-#      liste des retirées illisible (--retirees en échec) rend failles-programmes.sh --fenetre « non vérifié ».
+#      liste des retirées illisible (--retirees en échec), la liste d'une cible absente ou d'une forme inconnue
+#      (« # raison ») rendent failles-programmes.sh --fenetre « non vérifié ».
 # Lancé par outils/verifier.sh (étape « fenêtre »).
 #   outils/essais-caisses-fenetre.sh
 set -uo pipefail
@@ -395,6 +396,11 @@ if [[ -s $T/ref-$LINUX.txt && -s $T/ref-$WINDOWS.txt ]]; then
   }
   programme "$T/fenetre" "$L1" caisse-inventee-9.9.9
   refuse "une caisse hors de la liste de sa cible dans les octets" "caisse-inventee 9.9.9"
+  # Relecture adverse du lot 097 (C1) : la comparaison se fait à la liste versionnée, pas à l'arbre du moment.
+  # Partout ailleurs l'arbre de la cale est la liste : comparer à l'arbre restait vert. Ici l'arbre a la caisse de plus.
+  echo "caisse-inventee 9.9.9" >>"$T/arbres/$LINUX.txt"
+  refuse "une caisse de l'arbre du moment, absente de la liste versionnée" "caisse-inventee 9.9.9"
+  remet
   wseule=$(LC_ALL=C comm -13 <(LC_ALL=C sort "$T/ref-$LINUX.txt") <(LC_ALL=C sort "$T/ref-$WINDOWS.txt") | head -1)
   programme "$T/fenetre" "$L1" "${wseule/ /-}"
   refuse "une caisse de Windows seulement dans la fenêtre Linux ($wseule)" "$wseule"
@@ -520,6 +526,20 @@ EOF
   lance "$D/outils/failles-programmes.sh" --fenetre "$T/fenetre" "$T/fenetre.exe"
   ((CODE == 0)) && [[ -e $T/audit-lance ]] && ok "la même copie, --retirees lisible : audité, code 0" ||
     ko "la même copie, --retirees lisible : code $CODE ($SORTIE)"
+  # Relecture adverse du lot 097 (C2) : la liste de la cible absente, ou d'une forme inconnue (« # raison »), n'était
+  # essayée que dans le mode sans argument. failles --fenetre (par --publies) : non vérifié, rien d'audité.
+  sans_liste() { # nom de l'essai
+    rm -f "$T/audit-lance"
+    lance "$D/outils/failles-programmes.sh" --fenetre "$T/fenetre" "$T/fenetre.exe"
+    ((CODE != 0)) && [[ ! -e $T/audit-lance && $SORTIE == *"caisses des programmes non vérifiées"* &&
+      $SORTIE != *"dépendances listées"* ]] && ok "$1 : non vérifié, rien d'audité (code $CODE)" ||
+      ko "$1 : code $CODE ($SORTIE)"
+  }
+  rm "$D/outils/caisses-fenetre/$LINUX.txt"
+  sans_liste "failles --fenetre, liste de la cible absente"
+  { echo "# raison inventée d'une caisse"; cat "$T/ref-$LINUX.txt"; } >"$D/outils/caisses-fenetre/$LINUX.txt"
+  sans_liste "failles --fenetre, une ligne « # raison » dans la liste de la cible"
+  ecrites
 else
   ko "listes de référence illisibles : --ecrire pas essayé"
 fi

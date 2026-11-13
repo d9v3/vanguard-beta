@@ -144,13 +144,14 @@ export RUSTFLAGS=$REMPLACE_RUST
 for cible in x86_64_unknown_linux_musl x86_64_unknown_linux_gnu x86_64_pc_windows_gnu; do
   export "CFLAGS_$cible=$REMPLACE_C"
 done
-# <<< dossiers de la compilation
 # Les dossiers de la chaîne que la garde de confidentialité cherche aussi dans les programmes (--dossier) : le dépôt,
 # CARGO_HOME et RUSTUP_HOME, hors du dossier personnel sur un autre disque ou dans la CI, où HOME ne les couvre pas
 # (relecture Fable du 13 nov. 2026, C3). Un dossier d'un seul élément (/vanguard, /cargo) se lirait dans les chemins
-# remplacés : un refus de trop, jamais un vert de trop.
+# remplacés : un refus de trop, jamais un vert de trop. Dans ce bloc, rejoué par les essais (relecture adverse
+# du lot 097, C2), et posés une seule fois dans tout le script.
 RUSTUP_DOSSIER=${RUSTUP_HOME:-$HOME/.rustup}
 DOSSIERS_CHAINE=(--dossier "$RACINE" --dossier "$CARGO_DOSSIER" --dossier "$RUSTUP_DOSSIER")
+# <<< dossiers de la compilation
 ZIG_CACHE=$(mktemp -d "$CIBLES/cache-zig.XXXXXX")
 trap 'rm -rf "$ZIG_CACHE"' EXIT
 export ZIG_GLOBAL_CACHE_DIR=$ZIG_CACHE/global ZIG_LOCAL_CACHE_DIR=$ZIG_CACHE/local
