@@ -78,7 +78,10 @@ EXCEPTIONS=$(python3 -I "$RACINE/outils/exceptions-rustsec.py")
 # La fenêtre : aucune des exceptions de Vanguard. Sa liste de dépendances gravée en compte pourtant plus qu'elle n'en
 # compile : cargo auditable la tire de `cargo metadata`, qui unit les options de toutes les plateformes (l'option
 # accesskit d'eframe, prise pour Windows seulement, y amène accesskit_unix et zvariant sous Linux aussi ; vu sur la
-# fenêtre Linux de la 0.96). Seules les HORS_CIBLES s'écartent, par la même preuve que pour --depot (plus bas).
+# fenêtre Linux de la 0.96 ; 243 caisses listées pour 152 dans son arbre le 12 nov. 2026). Jusque-là, ce code y
+# était aussi compilé (les deux cibles dans un seul appel de cargo) ; outils/compiler-version.sh les compile
+# désormais une à la fois, et outils/caisses-fenetre.sh --programmes prouve sur les octets que la preuve par cargo
+# tree vaut pour le programme. Seules les HORS_CIBLES s'écartent, par la même preuve que pour --depot (plus bas).
 [[ -z $FENETRE ]] || EXCEPTIONS=
 for id in $EXCEPTIONS; do
   OPTIONS+=(--ignore "$id")
