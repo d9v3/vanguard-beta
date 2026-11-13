@@ -473,14 +473,18 @@ function Essai-Fenetre([string]$exe, [string]$fenetre, [string]$copieRatee, [str
         # Une lecture ratée est dite (jamais une erreur sans vérification notée) : de même pour le lancement plus bas.
         $h = Get-FileHash -LiteralPath $fenetre -Algorithm SHA256 -ErrorAction SilentlyContinue
         $empreinteFenetre = if ($h) { $h.Hash.ToLower() } else { '' }
-        if ($empreinteFenetre -eq $gravee) {
-            Set-Content -LiteralPath (Join-Path $res 'fenetre.sha256') -Value $empreinteFenetre -Encoding ASCII
-            Ok "Fenêtre à côté de vanguard.exe : celle dont il porte l'empreinte ($($gravee.Substring(0, 12))…)"
-        } elseif ($empreinteFenetre -eq '') {
+        # Une autre fenêtre n'est jamais lancée : vanguard.exe ne la lancerait pas, et par le menu ce serait un fichier
+        # du partage que rien n'a vérifié.
+        if ($empreinteFenetre -eq '') {
             Bug 'Fenêtre à côté de vanguard.exe : empreinte illisible'
-        } else {
-            Bug "Fenêtre à côté de vanguard.exe ($($empreinteFenetre.Substring(0, 12))…) : pas celle qu'il lance ($($gravee.Substring(0, 12))…)"
+            return
         }
+        if ($empreinteFenetre -ne $gravee) {
+            Bug "Fenêtre à côté de vanguard.exe ($($empreinteFenetre.Substring(0, 12))…) : pas celle qu'il lance ($($gravee.Substring(0, 12))…)"
+            return
+        }
+        Set-Content -LiteralPath (Join-Path $res 'fenetre.sha256') -Value $empreinteFenetre -Encoding ASCII
+        Ok "Fenêtre à côté de vanguard.exe : celle dont il porte l'empreinte ($($gravee.Substring(0, 12))…)"
         # Lancée pour de vrai, sans rien ouvrir : Windows la charge (ses DLL comprises) et elle répond. $delaiS secondes
         # au plus (30 dans test.ps1) : un message d'erreur à l'écran la ferait attendre un clic.
         $sortieFenetre = Join-Path $res 'fenetre-version.out.txt'

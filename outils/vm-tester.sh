@@ -1233,8 +1233,10 @@ EOF2
     voir "étape Fenêtre : la bonne fenêtre, lancée (--version), son empreinte notée" \
       eval '((extrait_fen == 0)) && vu_fen bonne "OK Fenêtre à côté de vanguard.exe : celle dont il porte l.empreinte ($gb…) | OK vanguard-fenetre --version : « vanguard-fenetre 0.96.0 »" &&
         [[ $(cat "$F/bonne/res/fenetre.sha256") == "$sha_bonne" && $(cat "$F/bonne/lancee") == "lancée --version" ]]'
-    voir "étape Fenêtre : une autre fenêtre est un problème" \
-      eval '((extrait_fen == 0)) && vu_fen autre "BUG Fenêtre à côté de vanguard.exe (.*) : pas celle qu.il lance ($gb…).*" && [[ ! -e $F/autre/res/fenetre.sha256 ]]'
+    # Jamais lancée : vanguard.exe ne la lancerait pas, et par le menu ce serait un fichier du partage non vérifié.
+    voir "étape Fenêtre : une autre fenêtre est un problème, jamais lancée" \
+      eval '((extrait_fen == 0)) && vu_fen autre "BUG Fenêtre à côté de vanguard.exe (.*) : pas celle qu.il lance ($gb…)" &&
+        [[ ! -e $F/autre/res/fenetre.sha256 && ! -e $F/autre/lancee ]]'
     voir "étape Fenêtre : fenêtre absente, ou posée à côté d'un vanguard qui n'en lance aucune : un problème, rien lancé" \
       eval '((extrait_fen == 0)) && vu_fen absente "BUG vanguard.exe lance la fenêtre $gb…, absente à côté de lui (déposé sans elle)" &&
         vu_fen aucune-posee "BUG vanguard.exe compilé sans fenêtre (« AUCUNE »), mais une fenêtre est posée à côté : il ne la lancera pas" &&
