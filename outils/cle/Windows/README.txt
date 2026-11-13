@@ -65,6 +65,9 @@ The program: "vanguard.exe", in this folder. Windows 10 and 11 (64-bit), nothing
      command.
    - The key can be removed while Vanguard is running: it copied itself to this computer, and what
      should have gone to the key goes into Vanguard's folder on this computer (the path is shown).
+     Except when started as administrator: it then runs from the key (it says so); do not remove it
+     before quitting. A copy left by a force-closed window or a pulled key is erased the next time
+     Vanguard starts on this computer (%LOCALAPPDATA%\vanguard\copies).
    - Quit: q in the menu, or Ctrl+C.
 
 6. COMPUTER ISOLATED FROM THE NETWORK BY VANGUARD

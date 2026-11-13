@@ -43,7 +43,8 @@ pub(crate) fn nommer(appareil: &str, surnom: &str) {
 /// sans Internet, et n'arrête une règle bloquée qu'en sortant. Lancé ici, la suite de la session n'écrirait plus rien
 /// (corrections non notées, donc impossibles à défaire) et se croirait hors ligne.
 fn autotest_a_part() {
-    let lance = std::env::current_exe()
+    // Sous Linux, la copie temporaire s'est effacée : `current_exe` rendrait un chemin « (deleted) ».
+    let lance = crate::protection::cle::programme_a_relancer()
         .and_then(|exe| crate::coulisses::Suivie::status_suivi(std::process::Command::new(exe).arg("autotest")));
     if let Err(e) = lance {
         trp!(

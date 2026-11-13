@@ -770,7 +770,10 @@ fn mettre_a_jour() {
         return;
     }
     // Le garde relit les listes de lui-même ; seul un autre programme demande l'assistant root.
-    let ici = std::env::current_exe().ok().and_then(|c| empreinte_de_fichier(&c));
+    // L'image qui tourne, même lancée d'une copie temporaire déjà effacée.
+    let ici = crate::protection::cle::programme_a_relancer()
+        .ok()
+        .and_then(|c| empreinte_de_fichier(&c));
     let pose_la = empreinte_de_fichier(Path::new(PROGRAMME));
     // Le garde garde l'union de ce qu'il a reçu : des listes du compte plus courtes n'y retirent rien. Seul l'ordre
     // root (mettre à jour) l'efface et repart des listes du compte.

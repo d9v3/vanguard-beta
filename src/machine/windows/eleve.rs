@@ -412,12 +412,22 @@ pub(crate) fn appliquer(lignes: &[String]) -> Option<Vec<Reponse>> {
         return None;
     }
     // Ouvert sans partage de suppression tant que le fils n'a pas répondu : ni renommage ni remplacement possibles.
-    let Ok(_verrou) = ({
+    let Ok(verrou) = ({
         use std::os::windows::fs::OpenOptionsExt;
         std::fs::OpenOptions::new().read(true).share_mode(1).open(&exe)
     }) else {
         return relance_impossible("verrou du programme", "program lock");
     };
+    // Le fichier verrouillé doit être le programme qui tourne (empreinte prise au démarrage) : un autre programme du
+    // compte a pu le remplacer avant le verrou, et c'est lui qui recevrait les droits d'administrateur.
+    if !crate::protection::cle::meme_que_soi(&verrou) {
+        trp!(
+            "    ✖ Le fichier de Vanguard n'est plus le programme qui tourne ({}) : rien n'est fait en administrateur. Relancez Vanguard, puis recommencez.",
+            "    ✖ Vanguard's file is no longer the running program ({}): nothing is done as administrator. Restart Vanguard, then try again.",
+            exe.display()
+        );
+        return None;
+    }
     trp!(
         "    {GRIS}Une fenêtre Vanguard administrateur s'ouvre, montre la liste et attend Entrée ; attendez qu'elle se ferme.{RESET}",
         "    {GRIS}A Vanguard administrator window opens, shows the list and waits for Enter; wait for it to close.{RESET}"
