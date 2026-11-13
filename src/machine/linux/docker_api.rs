@@ -15,15 +15,15 @@ use crate::modele::Echec;
 
 pub(crate) const PRISE: &str = "/var/run/docker.sock";
 
-/// Ce qui désigne un autre démon que celui de la prise par défaut, nommé dans le non vérifié : une variable de
-/// Vanguard (DOCKER_HOST ; DOCKER_CONTEXT autre que « default » ; DOCKER_CONFIG dont le config.json choisit un autre
-/// contexte, est illisible ou relatif) ou, sans DOCKER_CONFIG, le config.json de la maison (`CONFIG_DE_LA_MAISON` :
-/// un `currentContext`, clé lue sans la casse comme la CLI, autre que « default », un fichier illisible, ou pas de
-/// maison connue : HOME relatif, ou base des comptes muette). La CLI de la personne lirait ce démon-là. Vanguard ne
-/// le suit pas, c'est voulu : une variable ou un fichier que le compte écrit choisirait le démon qui répond, et un faux
-/// démon dirait « rien d'exposé » (G-1). Il est dit non vérifié, jamais remplacé par la lecture d'un autre démon
-/// (E-4, recontrôle 0.95). Le fichier de la maison passait par la CLI, qui suivait son contexte : la même porte que
-/// les variables (N-2, recontrôle 2 de la 0.95).
+/// Ce qui désigne un autre démon que celui de la prise par défaut, nommé dans le non vérifié : une variable de Vanguard
+/// (DOCKER_HOST ; DOCKER_CONTEXT autre que « default » ; DOCKER_CONFIG dont le config.json choisit un autre contexte,
+/// est illisible ou relatif) ou, sans DOCKER_CONTEXT ni DOCKER_CONFIG, le config.json de la maison
+/// (`CONFIG_DE_LA_MAISON` : un `currentContext`, clé lue sans la casse comme la CLI, autre que « default », un fichier
+/// illisible, ou pas de maison connue : HOME relatif, ou base des comptes muette). La CLI de la personne lirait ce
+/// démon-là. Vanguard ne le suit pas, c'est voulu : une variable ou un fichier que le compte écrit choisirait le démon
+/// qui répond, et un faux démon dirait « rien d'exposé » (G-1). Il est dit non vérifié, jamais remplacé par la lecture
+/// d'un autre démon (E-4, recontrôle 0.95). Le fichier de la maison passait par la CLI, qui suivait son contexte : la
+/// même porte que les variables (N-2, recontrôle 2 de la 0.95).
 pub(crate) fn demon_designe() -> Option<&'static str> {
     demon_designe_dans(
         &|n| std::env::var_os(n),
@@ -39,9 +39,9 @@ fn demon_designe_dans(lire: Lire<'_>, compte: Option<PathBuf>) -> Option<&'stati
     if let Some(variable) = designe_par_variable(lire) {
         return Some(variable);
     }
-    if reglee(lire, "DOCKER_CONFIG").is_some() {
-        // Son config.json laisse le contexte par défaut (`designe_par_variable`) : la CLI de la personne ne lit pas
-        // celui de la maison.
+    if reglee(lire, "DOCKER_CONTEXT").is_some() || reglee(lire, "DOCKER_CONFIG").is_some() {
+        // DOCKER_CONTEXT vaut « default », ou le config.json de DOCKER_CONFIG laisse le contexte par défaut
+        // (`designe_par_variable`) : la CLI de la personne ne lit pas celui de la maison.
         return None;
     }
     maison_de_la_cli(lire, compte)
@@ -83,8 +83,11 @@ fn designe_par_variable(lire: Lire<'_>) -> Option<&'static str> {
     if reglee(lire, "DOCKER_HOST").is_some() {
         return Some("DOCKER_HOST");
     }
-    if reglee(lire, "DOCKER_CONTEXT").is_some_and(|c| c != "default") {
-        return Some("DOCKER_CONTEXT");
+    if let Some(contexte) = reglee(lire, "DOCKER_CONTEXT") {
+        // « default » : la CLI vise la prise par défaut sans lire aucun config.json, ni celui de DOCKER_CONFIG ni
+        // celui de la maison (`resolveContextName`). Vanguard lisait le fichier quand même et disait « non vérifié »
+        // (V-4, relecture du sous-lot c2 de la 0.95).
+        return (contexte != "default").then_some("DOCKER_CONTEXT");
     }
     reglee(lire, "DOCKER_CONFIG")
         .is_some_and(|c| !config_reglee_par_defaut(&c))
@@ -97,13 +100,16 @@ pub(crate) fn hote_par_defaut() -> bool {
     demon_designe().is_none()
 }
 
-/// Le config.json du dossier `config` laisse-t-il le contexte par défaut ? Absent : oui. Lu comme un simple fichier,
-/// borné : un tube nommé posé à sa place figeait la lecture ; illisible, c'est « on ne sait pas ».
+/// Le config.json du dossier `config` laisse-t-il le contexte par défaut ? Absent (lien pendant compris, comme pour la
+/// CLI) : oui. Un lien est suivi comme le fait la CLI (dotfiles liés par stow ou home-manager ; le fichier est au
+/// compte de toute façon) : refusé, un lien vers un fichier sain disait « non vérifié » pour toujours (V-4, relecture
+/// du sous-lot c2 de la 0.95). Ce qui est au bout doit être un simple fichier, borné : un tube nommé figeait la
+/// lecture ; illisible ou non UTF-8, c'est « on ne sait pas ».
 fn config_par_defaut(config: &std::path::Path) -> bool {
-    match crate::socle::lire_texte_ordinaire(&config.join("config.json"), 1 << 20) {
+    match crate::socle::lire_ordinaire_au_bout(&config.join("config.json"), 1 << 20) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
         Err(_) => false,
-        Ok(t) => contexte_par_defaut(&t),
+        Ok(octets) => String::from_utf8(octets).is_ok_and(|t| contexte_par_defaut(&t)),
     }
 }
 
@@ -451,6 +457,56 @@ mod tests {
             demon_designe_dans(&avec_home(OsString::new()), compte(&choisie)),
             Some(CONFIG_DE_LA_MAISON)
         );
+    }
+
+    /// V-4 (relecture du sous-lot c2 de la 0.95) : la CLI ouvre config.json en suivant un lien (dotfiles liés par stow
+    /// ou home-manager), et DOCKER_CONTEXT=default l'emporte sur tout config.json (`resolveContextName`). Vanguard
+    /// refusait le lien et lisait le fichier quand même : « non vérifié » en permanence là où la CLI vise la prise par
+    /// défaut. Rejoué à la main avec `docker context show` (29.9) pour chaque cas.
+    #[test]
+    fn lien_et_contexte_default_comme_la_cli() {
+        use std::os::unix::fs::symlink;
+        let rien = |_: &str| None;
+        let m = crate::essais::Jetable::nouveau("v4-docker-maison");
+        let fichiers = crate::essais::Jetable::nouveau("v4-docker-fichiers");
+        let maison = || Some(m.to_path_buf());
+        std::fs::create_dir(m.join(".docker")).unwrap();
+        let config = m.join(".docker").join("config.json");
+        let temoin = fichiers.join("temoin.json");
+        std::fs::write(&temoin, br#"{"currentContext":"temoin"}"#).unwrap();
+        std::fs::write(fichiers.join("sain.json"), b"{}").unwrap();
+        crate::essais::tube_nomme(&fichiers.join("tube")).unwrap();
+        for (cible, attendu) in [
+            ("sain.json", None),
+            ("temoin.json", Some(CONFIG_DE_LA_MAISON)),
+            // Lien pendant : la CLI le voit absent et garde le contexte par défaut.
+            ("absent.json", None),
+            // Un tube nommé au bout : jamais ouvert pour attendre, et on ne sait pas.
+            ("tube", Some(CONFIG_DE_LA_MAISON)),
+        ] {
+            let _ = std::fs::remove_file(&config);
+            symlink(fichiers.join(cible), &config).unwrap();
+            assert_eq!(demon_designe_dans(&rien, maison()), attendu, "lien vers {cible}");
+        }
+        // DOCKER_CONTEXT=default : ni le config.json de la maison, ni celui de DOCKER_CONFIG (même relatif) ne comptent.
+        std::fs::remove_file(&config).unwrap();
+        symlink(&temoin, &config).unwrap();
+        let conf = crate::essais::Jetable::nouveau("v4-docker-config");
+        std::fs::write(conf.join("config.json"), br#"{"currentContext":"temoin"}"#).unwrap();
+        let env = |paires: Vec<(&'static str, OsString)>| {
+            move |n: &str| paires.iter().find(|(k, _)| *k == n).map(|(_, v)| v.clone())
+        };
+        let defaut = || ("DOCKER_CONTEXT", OsString::from("default"));
+        assert_eq!(demon_designe_dans(&env(vec![defaut()]), maison()), None);
+        for dossier in [conf.as_os_str().to_os_string(), "conf".into()] {
+            let lire = env(vec![defaut(), ("DOCKER_CONFIG", dossier.clone())]);
+            assert_eq!(demon_designe_dans(&lire, maison()), None, "{dossier:?}");
+        }
+        // DOCKER_HOST passe toujours avant ; un autre nom de contexte reste désigné.
+        let hote = env(vec![defaut(), ("DOCKER_HOST", "unix:///run/temoin.sock".into())]);
+        assert_eq!(demon_designe_dans(&hote, maison()), Some("DOCKER_HOST"));
+        let casse = env(vec![("DOCKER_CONTEXT", "Default".into())]);
+        assert_eq!(demon_designe_dans(&casse, maison()), Some("DOCKER_CONTEXT"));
     }
 
     #[test]
