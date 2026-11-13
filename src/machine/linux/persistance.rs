@@ -4671,21 +4671,35 @@ fn commandes_shell(texte: &str) -> Vec<Vec<String>> {
 /// comme uwsm le suit, « [ -d ] » et « [ -f ] » ; un « env.d » qui est un lien vers un dossier se descend, un lien
 /// vers un dossier n'est pas un fichier. Les dossiers qui ne se lisent pas vont dans `illisibles`, jamais tus. Dans
 /// l'ordre des noms : le verdict ne dépend pas du système de fichiers.
+///
+/// V-4 (relecture du lot c2-uwsm, 0.95) : un dossier qui n'en est pas un (absent, un fichier, un lien cassé ou vers
+/// un fichier, « n'est pas un dossier » plus haut dans son chemin) est absent, comme pour uwsm, qui n'y lit rien ;
+/// seule une autre erreur le dit illisible.
 fn fichiers_d_uwsm(dossier: &Path, illisibles: &mut Vec<std::path::PathBuf>) -> Vec<std::path::PathBuf> {
+    let absent = |e: &std::io::Error| {
+        matches!(
+            e.kind(),
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+        )
+    };
     let mut fichiers = Vec::new();
     let mut a_lire = vec![(dossier.to_path_buf(), true)];
     while let Some((d, haut)) = a_lire.pop() {
         match std::fs::symlink_metadata(&d) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) if absent(&e) => continue,
             Err(_) => {
                 illisibles.push(d);
                 continue;
             }
             Ok(_) => {}
         }
-        let Ok(entrees) = std::fs::read_dir(&d) else {
-            illisibles.push(d);
-            continue;
+        let entrees = match std::fs::read_dir(&d) {
+            Ok(entrees) => entrees,
+            Err(e) if absent(&e) => continue,
+            Err(_) => {
+                illisibles.push(d);
+                continue;
+            }
         };
         for e in entrees {
             let Ok(e) = e else {
@@ -15667,6 +15681,53 @@ mod tests {
         assert!(c.probleme >= Some(Niveau::Eleve), "{:?} {}", c.probleme, c.message);
         assert!(c.message.contains("var/tmp/x/uwsm ne se lit pas"), "{}", c.message);
         assert!(crate::apprentissage::declarable(&c).is_err());
+    }
+
+    /// V-4 (relecture du lot c2-uwsm, 0.95) : un dossier d'uwsm qui n'en est pas un (une entrée de XDG_DATA_DIRS qui
+    /// est un fichier, « uwsm » qui est un fichier, un lien cassé ou un lien vers un fichier) : uwsm n'y lit rien
+    /// (« [ -f …/uwsm/env ] » échoue), Vanguard non plus. Absent, pas « ne se lit pas » : rien n'est levé.
+    #[test]
+    fn dossier_d_uwsm_qui_n_en_est_pas_un_absent() {
+        // (fichier posé, lien posé (lien, cible), XDG_DATA_DIRS de la session)
+        type Cas = (Option<&'static str>, Option<(&'static str, &'static str)>, &'static str);
+        let cas: &[Cas] = &[
+            (Some("var/tmp/f"), None, "/var/tmp/f:/usr/share"),
+            (Some("var/tmp/x/uwsm"), None, "/var/tmp/x:/usr/share"),
+            (
+                None,
+                Some(("var/tmp/x/uwsm", "var/tmp/absent")),
+                "/var/tmp/x:/usr/share",
+            ),
+            (
+                Some("var/tmp/f"),
+                Some(("var/tmp/x/uwsm", "var/tmp/f")),
+                "/var/tmp/x:/usr/share",
+            ),
+            // Témoin : une boucle de liens dans le dossier n'en fait pas un dossier illisible (comme avant).
+            (
+                Some("var/tmp/x/uwsm/a"),
+                Some(("var/tmp/x/uwsm/env.d", "var/tmp/x/uwsm/env.d")),
+                "/var/tmp/x:/usr/share",
+            ),
+        ];
+        let mut faux = Vec::new();
+        for (i, (fichier, lien, donnees)) in cas.iter().enumerate() {
+            let m = Maison::nouvelle(&format!("uwsm-pas-un-dossier-{i}"));
+            std::fs::create_dir_all(m.racine.join("var/tmp/x")).unwrap();
+            if let Some(f) = fichier {
+                let f = m.racine.join(f);
+                std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+                std::fs::write(f, "EDITOR=nvim\n").unwrap();
+            }
+            if let Some((l, cible)) = lien {
+                std::os::unix::fs::symlink(m.racine.join(cible), m.racine.join(l)).unwrap();
+            }
+            let c = m.lancements_avec(&[("XDG_DATA_DIRS", donnees)]);
+            if c.probleme.is_some() || c.message.contains("ne se lit pas") {
+                faux.push(format!("{fichier:?} {lien:?} : {:?} {}", c.probleme, c.message));
+            }
+        }
+        assert!(faux.is_empty(), "pas un dossier : {faux:#?}");
     }
 
     /// R-6 (re-contrôle 0.95, angle lecture) : un fichier qu'un fichier de variables lit par « . » ou « source » (un
