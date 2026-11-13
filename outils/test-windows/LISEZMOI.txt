@@ -81,9 +81,10 @@ devenir administrateur de la VM. À n'installer que
 dans la VM de test, jamais sur un vrai PC : l'installateur et la tâche ne font
 rien sans \\host.lan\Data. L'empreinte SHA-256 est vérifiée sur la copie
 locale, juste avant le lancement. Seuls les fichiers
-nommés dans travail.txt (vanguard.exe, test.ps1, essais-console.ps1, le
-lanceur de la clé) sont copiés. Un lien symbolique de Linux, Samba le suit
-sans que Windows le voie : outils/vm-tester.sh refuse d'en déposer.
+nommés dans travail.txt (vanguard.exe, vanguard-fenetre.exe, test.ps1,
+essais-console.ps1, le lanceur de la clé) sont copiés, à la casse près. Un
+lien symbolique de Linux, Samba le suit sans que Windows le voie :
+outils/vm-tester.sh refuse d'en déposer.
 Le surveillant et les travaux vivent dans %ProgramData%\Vanguard-File-Essais
 (créé par l'installation, modifiable seulement par un administrateur ; un
 dossier déjà là sans ces droits est écarté, et la tâche ne lance rien si ses

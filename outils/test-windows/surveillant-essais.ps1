@@ -10,12 +10,12 @@
 # Linux, ~/.config/vanguard/file-essais/secret, hors du partage). Sans secret, rien n'est lancé ; un id déjà fait ne
 # l'est pas deux fois. fini.txt porte à son tour le HMAC du surveillant : Linux ne croit que lui (campagne d'attaque
 # n° 3). Tout programme du compte Linux, qui lit ce secret, peut encore devenir administrateur de la VM. À n'installer
-# que dans la VM de test : sans \\host.lan\Data, rien n'est jamais lancé. Seuls les fichiers nommés dans travail.txt (liste
-# fermée) sont lus, sans suivre de lien Windows ; un lien symbolique de Linux, Samba le suit lui-même et il ne se voit
-# pas d'ici : outils/vm-tester.sh refuse d'en déposer. Ils sont copiés dans %ProgramData%\Vanguard-File-Essais\travaux,
-# que seuls les administrateurs modifient, et tout ce qui est lancé l'est de là (test.ps1 -SurPlace) : un programme
-# sans droits dans la VM ne peut rien y remplacer. Ce fichier vit dans %ProgramData%\Vanguard-File-Essais (dossier
-# vérifié à chaque démarrage) et ne se met jamais à jour lui-même.
+# que dans la VM de test : sans \\host.lan\Data, rien n'est jamais lancé. Seuls les fichiers nommés dans travail.txt
+# (liste fermée, vanguard-fenetre.exe comprise) sont lus, sans suivre de lien Windows ; un lien symbolique de Linux,
+# Samba le suit lui-même et il ne se voit pas d'ici : outils/vm-tester.sh refuse d'en déposer. Ils sont copiés dans
+# %ProgramData%\Vanguard-File-Essais\travaux, que seuls les administrateurs modifient, et tout ce qui est lancé l'est
+# de là (test.ps1 -SurPlace) : un programme sans droits dans la VM ne peut rien y remplacer. Ce fichier vit dans
+# %ProgramData%\Vanguard-File-Essais (dossier vérifié à chaque démarrage) et ne se met jamais à jour lui-même.
 #
 # -EssaiLocal (Linux, pwsh, outils/vm-tester.sh --essai-local) : la même logique de fichiers sur un dossier jetable
 # (-Racine) : ni tâche, ni droits, ni processus de Windows ; -UnTour fait un seul tour.
@@ -27,10 +27,12 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
-$VersionSurveillant = 2
+# 3 : vanguard-fenetre.exe dans la liste fermée (0.96). Linux ne dépose une fenêtre qu'à un surveillant 3 ou plus.
+$VersionSurveillant = 3
 $MotifId = '^\d{8}-\d{6}-[0-9a-f]{7,12}-[0-9a-z]{4}$'
-# Les seuls fichiers qu'un travail peut nommer : rien d'autre n'est copié ni lancé.
-$FichiersPermis = @('vanguard.exe', 'test.ps1', 'essais-console.ps1', 'Lancer Vanguard.bat')
+# Les seuls fichiers qu'un travail peut nommer, à la casse près : rien d'autre n'est copié ni lancé. La fenêtre de
+# Vanguard (vanguard-fenetre.exe) est copiée à côté de vanguard.exe, là où il la cherche.
+$FichiersPermis = @('vanguard.exe', 'vanguard-fenetre.exe', 'test.ps1', 'essais-console.ps1', 'Lancer Vanguard.bat')
 $ClesConnues = @('format', 'id', 'commit', 'branche', 'modifie', 'cree', 'test', 'console', 'langues', 'delai_minutes', 'hmac')
 # Les domaines des HMAC : un travail signé ne vaut jamais pour un verdict, ni l'inverse (le même texte en vm-tester.sh).
 $DomaineTravail = 'vanguard-file-essais travail 1'
@@ -321,7 +323,11 @@ function Copier-Verifier($dossier, $travail, [string]$localTravail) {
         $vue = (Get-FileHash -LiteralPath $copie -Algorithm SHA256).Hash.ToLower()
         if ($vue -ne $travail.Fichiers[$nom]) { throw "REFUS: empreinte de « $nom » différente ($($vue.Substring(0, 16))… au lieu de $($travail.Fichiers[$nom].Substring(0, 16))…)" }
     }
-    if (-not $EssaiLocal) { Unblock-File -LiteralPath (Join-Path $localTravail 'vanguard.exe') -ErrorAction SilentlyContinue }
+    if (-not $EssaiLocal) {
+        foreach ($exe in (@('vanguard.exe', 'vanguard-fenetre.exe') | Where-Object { $travail.Fichiers.Contains($_) })) {
+            Unblock-File -LiteralPath (Join-Path $localTravail $exe) -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 function Lancer-PowerShell([string]$script, [string[]]$arguments, [string]$sortie, [string]$dossier) {
@@ -437,7 +443,7 @@ function Faire-Travail($dossier) {
         try { [IO.File]::WriteAllLines((Join-Path $resultatsPartage 'surveillant.txt'), [string[]]$script:journalTravail, $Utf8) } catch { }
         $script:journalTravail = $null
         # Les .exe ne s'accumulent pas sur le partage ; le reste du dossier est gardé (14 jours).
-        Remove-Item -LiteralPath (Join-Path $dossier.FullName 'vanguard.exe') -Force -ErrorAction SilentlyContinue
+        foreach ($exe in 'vanguard.exe', 'vanguard-fenetre.exe') { Remove-Item -LiteralPath (Join-Path $dossier.FullName $exe) -Force -ErrorAction SilentlyContinue }
         if (Test-Path -LiteralPath $localTravail) { Remove-Item -LiteralPath $localTravail -Recurse -Force -ErrorAction SilentlyContinue }
         Remove-Item -LiteralPath $EnCours -Force -ErrorAction SilentlyContinue
         # Seulement le sien : celui d'une passe du menu lancée entre-temps reste.
@@ -467,7 +473,7 @@ function Reprendre-Orphelins {
             }
             Copier-Resultats $localTravail (Join-Path $d.FullName 'resultats')
         } catch { Journal "restes du travail $id : $($_.Exception.Message)" }
-        Remove-Item -LiteralPath (Join-Path $d.FullName 'vanguard.exe') -Force -ErrorAction SilentlyContinue
+        foreach ($exe in 'vanguard.exe', 'vanguard-fenetre.exe') { Remove-Item -LiteralPath (Join-Path $d.FullName $exe) -Force -ErrorAction SilentlyContinue }
         if (Test-Path -LiteralPath $localTravail) { Remove-Item -LiteralPath $localTravail -Recurse -Force -ErrorAction SilentlyContinue }
         $pris = try { Lire-Cles (Join-Path $d.FullName 'pris.txt') } catch { @{} }
         Ecrire-Fini $d.FullName ([ordered]@{ format = 1; id = $id; code = 4; etat = 'erreur'

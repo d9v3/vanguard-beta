@@ -606,7 +606,7 @@ EOF2
     cat >"$SRC/test.ps1" <<EOF
 \$r = Join-Path (Join-Path \$PSScriptRoot 'resultats') '2026-10-23_14-25-30_vtest'
 New-Item -ItemType Directory -Force -Path \$r | Out-Null
-Add-Content -LiteralPath '$T/trace-$N' -Value "lancé ; extra copié : \$(Test-Path (Join-Path \$PSScriptRoot 'extra.ps1')) ; arguments : \$args"
+Add-Content -LiteralPath '$T/trace-$N' -Value "lancé ; extra copié : \$(Test-Path (Join-Path \$PSScriptRoot 'extra.ps1')) ; fenêtre : \$(if (Test-Path (Join-Path \$PSScriptRoot 'vanguard-fenetre.exe')) { (Get-FileHash (Join-Path \$PSScriptRoot 'vanguard-fenetre.exe') -Algorithm SHA256).Hash.ToLower() } else { 'absente' }) ; arguments : \$args"
 if ($3) { Start-Sleep -Seconds 600 }
 Set-Content -LiteralPath (Join-Path \$r 'bilan.txt') -Value "ok=212\`r\`nbugs=$1\`r\`nechecs=0\`r\`nsautees=$2\`r\`nversion=0.0.0"
 Set-Content -LiteralPath (Join-Path \$r 'rapport-test.html') -Value '<html></html>'
@@ -631,6 +631,13 @@ EOF
     [[ -z $n ]] || ID=$n
   }
   fini() { cle "$VMD/file-essais/$1/fini.txt" "$2"; }
+  # Un fichier ajouté au travail $ID déjà déposé, nommé dans travail.txt (empreinte juste ou donnée), signé de nouveau.
+  ajouter_au_travail() { # nom source [empreinte]
+    local d=$VMD/file-essais/$ID e
+    cp -f "$2" "$d/$1" && e=${3:-$(sha256sum "$d/$1" | cut -d' ' -f1)} &&
+      { head -c $(($(stat -c %s "$d/travail.txt") - 71)) "$d/travail.txt"; printf 'sha256.%s=%s\r\n' "$1" "$e"; tail -c 71 "$d/travail.txt"; } >"$d/travail.txt.n" &&
+      mv "$d/travail.txt.n" "$d/travail.txt" && resigner "$d/travail.txt"
+  }
   local N=0 TRACE
 
   # Le pilote des essais de console, sur une fausse console (la classe PiloteConsoleVg remplacée par une copie qui
@@ -738,6 +745,27 @@ EOF2
     voir "nom « .. » : refusé" eval '[[ $(fini "$ID" code) == 2 && ! -e $TRACE ]]'
     vmt --sans-attendre; printf 'Write-Host x\n' >"$VMD/file-essais/$ID/extra.ps1"; tour
     voir "fichier en plus non listé : ignoré (pas copié), travail fait" eval '[[ $(fini "$ID" code) == 0 ]] && grep -q "extra copié : False" "$TRACE"'
+
+    # 25. La fenêtre (vanguard-fenetre.exe, 0.96) : seul ce nom-là s'ajoute à la liste fermée. Nommée dans travail.txt,
+    #     elle est copiée à côté de vanguard.exe dans le dossier protégé, son empreinte vérifiée sur la copie, puis
+    #     retirée du partage ; une empreinte fausse est refusée ; un nom voisin reste hors de la liste.
+    printf 'MZ fausse fenêtre pour les essais\n' >"$T/vanguard-fenetre.exe"
+    local sha_fen nom
+    # shellcheck disable=SC2034 # lue par une condition entre apostrophes, évaluée plus bas
+    sha_fen=$(sha256sum "$T/vanguard-fenetre.exe" | cut -d' ' -f1)
+    nouvelle_vm; sources 0 0 0 'OK x'
+    vmt --sans-attendre; ajouter_au_travail vanguard-fenetre.exe "$T/vanguard-fenetre.exe"; tour
+    voir "fenêtre nommée : copiée à côté de vanguard.exe (empreinte juste), travail fait, retirée du partage" \
+      eval '[[ $(fini "$ID" code) == 0 && ! -e $VMD/file-essais/$ID/vanguard-fenetre.exe ]] && grep -q "fenêtre : $sha_fen ;" "$TRACE" ||
+        { cp "$VMD/file-essais/$ID/fini.txt" "$T/sortie" 2>/dev/null; false; }'
+    rm -f "$TRACE"; vmt --sans-attendre; ajouter_au_travail vanguard-fenetre.exe "$T/vanguard-fenetre.exe" "$(printf '%064d' 0)"; tour
+    voir "fenêtre à l'empreinte fausse : refusée, rien lancé" \
+      eval '[[ $(fini "$ID" code) == 2 && $(fini "$ID" raison) == *"empreinte de « vanguard-fenetre.exe » différente"* && ! -e $TRACE ]]'
+    for nom in Vanguard-Fenetre.exe vanguard-fenetre.exe.bak vanguard-fenetre.dll; do
+      rm -f "$TRACE"; vmt --sans-attendre; ajouter_au_travail "$nom" "$T/vanguard-fenetre.exe"; tour
+      voir "nom voisin « $nom » : hors de la liste, refusé, rien lancé" \
+        eval '[[ $(fini "$ID" code) == 2 && $(fini "$ID" raison) == *"hors de la liste"* && ! -e $TRACE ]]'
+    done
 
     # 21. Provenance (campagne d'attaque n° 3) : un travail écrit par un autre que Linux (un programme sans droits de la
     #     VM, qui écrit dans le partage) n'est jamais fait ; un verdict écrit par un autre que le surveillant n'est
