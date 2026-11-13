@@ -768,6 +768,91 @@ impl Tenue {
             Tenue::Octets(o) => lire_octets(chemin, TAILLE_MAX).ok().as_ref() == Some(o),
         }
     }
+
+    /// Ce qu'elle contient : ses octets, relus depuis le début par ce qui la tient (même si plus aucun nom ne la
+    /// désigne), jamais plus de `TAILLE_MAX` ; ou, lien symbolique, ce qu'il désigne.
+    #[cfg_attr(not(unix), allow(clippy::unnecessary_wraps))] // même signature que sous Unix, où la relecture peut échouer
+    fn contenu(&self) -> std::io::Result<Contenu> {
+        match self {
+            #[cfg(unix)]
+            Tenue::Fichier(f) => {
+                use std::io::{Read, Seek};
+                let mut f = f;
+                f.seek(std::io::SeekFrom::Start(0))?;
+                let mut o = Vec::new();
+                f.take(TAILLE_MAX.saturating_add(1)).read_to_end(&mut o)?;
+                if u64::try_from(o.len()).unwrap_or(u64::MAX) > TAILLE_MAX {
+                    return Err(std::io::Error::other(tr!("trop grosse", "too large")));
+                }
+                Ok(Contenu::Octets(o))
+            }
+            #[cfg(unix)]
+            Tenue::Lien(vers) => Ok(Contenu::Lien(vers.clone())),
+            #[cfg(not(unix))]
+            Tenue::Octets(o) => Ok(Contenu::Octets(o.clone())),
+        }
+    }
+}
+
+/// Ce que contient l'ancienne copie tenue (`Tenue::contenu`).
+enum Contenu {
+    Octets(Vec<u8>),
+    #[cfg(unix)]
+    Lien(PathBuf),
+}
+
+/// Ce qu'a donné la réécriture de l'ancienne copie à sa place (V-2).
+enum Reecrite {
+    Faite,
+    /// Écrite et relue sous ce nom neuf, mais pas posée à sa place (pourquoi) : gardée là.
+    Gardee(PathBuf, std::io::Error),
+    Ratee(String),
+}
+
+/// V-2 (relecture du recontrôle 2, 0.95) : l'ancienne copie réécrite à `cible` depuis ce qui la tient, quand son
+/// second nom a disparu ou changé pendant la mise à jour (un autre programme). Écrite sous un nom neuf, créé exprès
+/// (jamais un nom déjà pris, qui n'est donc jamais effacé), relue, puis renommée d'un coup ; à sa place, elle doit être
+/// ce même fichier avec ces mêmes octets. La place reprise après le renommage : réessayé, trois fois au plus.
+fn reecrire(tenue: &Tenue, cible: &Path) -> Reecrite {
+    let contenu = match tenue.contenu() {
+        Ok(c) => c,
+        Err(e) => return Reecrite::Ratee(e.to_string()),
+    };
+    for _ in 0..3 {
+        let neuf = cible.with_file_name(format!("{NOM}.remise-{}", crate::changements::nouvel_id()));
+        // Le fichier écrit (relu ensuite par son descripteur) et ses octets ; rien pour un lien.
+        let ecrite = match &contenu {
+            Contenu::Octets(o) => ecrire_provisoire(&neuf, o).map(|f| Some((f, o))),
+            #[cfg(unix)]
+            Contenu::Lien(vers) => std::os::unix::fs::symlink(vers, &neuf).map(|()| None),
+        };
+        let ecrite = match ecrite {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                // Créé à l'instant sous ce nom neuf, mais son écriture (ou sa réouverture) a raté : retiré.
+                let _ = std::fs::remove_file(&neuf);
+                return Reecrite::Ratee(e.to_string());
+            }
+        };
+        let est = |chemin: &Path| match &ecrite {
+            Some((f, o)) => posee_est_la_montree(f, chemin, o).unwrap_or(false),
+            None => tenue.est(chemin),
+        };
+        match std::fs::rename(&neuf, cible) {
+            Ok(()) if est(cible) => return Reecrite::Faite,
+            Err(e) if est(&neuf) => return Reecrite::Gardee(neuf, e),
+            // Sa place reprise par un autre programme juste après le renommage, ou le nom neuf changé avant : réessayé.
+            Ok(()) | Err(_) => {}
+        }
+    }
+    Reecrite::Ratee(
+        tr!(
+            "sa place est reprise à chaque essai par un autre programme",
+            "its place is taken again at each attempt by another program"
+        )
+        .into(),
+    )
 }
 
 impl Precedente {
@@ -855,24 +940,61 @@ impl Precedente {
                 }
                 // N-3 (recontrôle 2, 0.95) : le second nom n'est effacé qu'une fois l'ancienne reconnue à `cible`.
                 // Avant, il l'était même si la remise avait échoué : la seule ancienne copie qui restait était perdue.
-                match std::fs::rename(&self.de_cote, cible) {
-                    Ok(()) if tenue.est(cible) => {
-                        // Deux noms d'un même fichier : le renommage ne fait rien (POSIX) et le second nom reste.
-                        if tenue.est(&self.de_cote) {
-                            let _ = std::fs::remove_file(&self.de_cote);
+                // V-2 (relecture du recontrôle 2, 0.95) : renommé seulement s'il est encore elle, et « gardée sous » ce
+                // nom seulement s'il l'est encore après l'échec. Avant, le renommage était tenté quoi qu'il y ait : ce
+                // nom effacé pendant la mise à jour (un autre programme), la copie étrangère restait installée, et le
+                // message la disait « gardée sous » un nom vide (ou un fichier étranger).
+                if tenue.est(&self.de_cote) {
+                    match std::fs::rename(&self.de_cote, cible) {
+                        Ok(()) if tenue.est(cible) => {
+                            // Deux noms d'un même fichier : le renommage ne fait rien (POSIX) et le second nom reste.
+                            if tenue.est(&self.de_cote) {
+                                let _ = std::fs::remove_file(&self.de_cote);
+                            }
+                            return tr!(
+                                "l'ancienne copie est remise en place",
+                                "the old copy is put back in place"
+                            )
+                            .into();
                         }
-                        tr!(
-                            "l'ancienne copie est remise en place",
-                            "the old copy is put back in place"
-                        )
-                        .into()
+                        // La mise à jour suivante refuse tant que ce nom est pris (V-1) : à mettre à l'abri avant.
+                        Err(e) if tenue.est(&self.de_cote) => {
+                            return trf!(
+                                "l'ancienne copie n'est pas remise ({e}), elle est gardée sous {} : copiez-la ailleurs avant de refaire la mise à jour, qui refuse tant qu'elle y est ; {}",
+                                "the old copy is not put back ({e}), it is kept as {}: copy it elsewhere before redoing the update, which refuses while it is there; {}",
+                                affichable(&self.de_cote.display().to_string()),
+                                ni_l_une_ni_l_autre()
+                            );
+                        }
+                        // Sa place reprise juste après, ou ce nom changé juste avant (un autre programme) : réécrite,
+                        // ci-dessous.
+                        Ok(()) | Err(_) => {}
                     }
-                    Ok(()) => ni_l_une_ni_l_autre(),
-                    // La mise à jour suivante refuse tant que ce nom est pris (V-1) : à mettre à l'abri avant.
-                    Err(e) => trf!(
-                        "l'ancienne copie n'est pas remise ({e}), elle est gardée sous {} : copiez-la ailleurs avant de refaire la mise à jour, qui refuse tant qu'elle y est ; {}",
-                        "the old copy is not put back ({e}), it is kept as {}: copy it elsewhere before redoing the update, which refuses while it is there; {}",
-                        affichable(&self.de_cote.display().to_string()),
+                }
+                // Ce qui est à ce nom, s'il y a quelque chose, n'est pas elle : ni effacé, ni dit « l'ancienne ».
+                let etranger = if std::fs::symlink_metadata(&self.de_cote).is_ok() && !tenue.est(&self.de_cote) {
+                    trf!(
+                        " ({} n'est pas l'ancienne copie : un autre programme l'a mis là, Vanguard ne l'efface pas, ne le lancez pas)",
+                        " ({} is not the old copy: another program put it there, Vanguard does not delete it, do not run it)",
+                        affichable(&self.de_cote.display().to_string())
+                    )
+                } else {
+                    String::new()
+                };
+                match reecrire(&tenue, cible) {
+                    Reecrite::Faite => trf!(
+                        "l'ancienne copie est réécrite à sa place, depuis ce que Vanguard en tenait (un autre programme a changé ses noms pendant la mise à jour){etranger}",
+                        "the old copy is rewritten in its place, from what Vanguard held of it (another program changed its names during the update){etranger}",
+                    ),
+                    Reecrite::Gardee(neuf, e) => trf!(
+                        "l'ancienne copie n'est pas remise ({e}), elle est gardée sous {} : mettez-la à l'abri{etranger} ; {}",
+                        "the old copy is not put back ({e}), it is kept as {}: move it somewhere safe{etranger}; {}",
+                        affichable(&neuf.display().to_string()),
+                        ni_l_une_ni_l_autre()
+                    ),
+                    Reecrite::Ratee(e) => trf!(
+                        "l'ancienne copie est perdue, ni remise ni gardée ({e}){etranger} ; {}",
+                        "the old copy is lost, neither put back nor kept ({e}){etranger}; {}",
                         ni_l_une_ni_l_autre()
                     ),
                 }
@@ -1932,7 +2054,7 @@ mod tests {
             repris += usize::from(std::fs::symlink_metadata(&cible).unwrap().ino() == numero);
             let dit = precedente.remettre(&cible);
             // Ce qui est dit « l'ancienne » à la cible doit l'être : un fichier ordinaire, avec ses octets.
-            if dit.contains("reste en place") || dit.contains("remise en place") {
+            if dit.contains("reste en place") || dit.contains("remise en place") || dit.contains("réécrite") {
                 assert_eq!(
                     std::fs::read(&cible).ok(),
                     Some(ancienne),
@@ -1950,6 +2072,164 @@ mod tests {
         }
         eprintln!("numéro repris par ce qui a pris la place : {repris} sur 40");
         let _ = std::fs::remove_dir_all(&racine);
+    }
+
+    /// V-2 (relecture du recontrôle 2, 0.95) : le second nom de l'ancienne copie (`<NOM>.precedent`) effacé, ou
+    /// remplacé par un fichier étranger, pendant la mise à jour (un programme du compte). Avant, la remise échouait
+    /// (« No such file or directory ») : la copie étrangère restait installée, et le message disait « elle est gardée
+    /// sous …precedent », où il n'y avait rien, ou le fichier étranger. Maintenant, l'ancienne copie est réécrite à sa
+    /// place depuis ce qui la tient ; si sa place est bloquée (un dossier plein), elle est gardée sous un nom neuf,
+    /// dit, qui a ses octets. Jamais un fichier étranger dit « l'ancienne », et il n'est pas effacé.
+    #[cfg(unix)]
+    #[test]
+    fn second_nom_perdu_l_ancienne_reecrite_depuis_ce_qui_la_tient() {
+        let racine = crate::socle::dossier_local().join("essai-second-nom-perdu");
+        let _ = std::fs::remove_dir_all(&racine);
+        let bin = racine.join("bin");
+        let cible = bin.join(NOM);
+        let de_cote = cible.with_file_name(format!("{NOM}.precedent"));
+        let etranger = avec_entete("faux ", "0.80.0; etranger");
+        let vider = || {
+            for reste in std::fs::read_dir(&bin).unwrap() {
+                let reste = reste.unwrap().path();
+                if reste.is_dir() {
+                    std::fs::remove_dir_all(&reste).unwrap();
+                } else {
+                    std::fs::remove_file(&reste).unwrap();
+                }
+            }
+        };
+        // Le second nom effacé (ou remplacé par un fichier étranger), et la place prise par un fichier étranger (ou
+        // bloquée par un dossier plein) : ce qui est dit, et les noms du dossier qui ont les octets de l'ancienne.
+        let remise = |de_cote_etranger: bool, place_bloquee: bool| {
+            faux_programme(&cible, Some("0.79.0"));
+            let ancienne = std::fs::read(&cible).unwrap();
+            let precedente = Precedente::retenir(&cible).expect("mise de côté");
+            std::fs::remove_file(&de_cote).unwrap();
+            if de_cote_etranger {
+                std::fs::write(&de_cote, &etranger).unwrap();
+            }
+            std::fs::remove_file(&cible).unwrap();
+            if place_bloquee {
+                std::fs::create_dir_all(cible.join("occupe")).unwrap();
+            } else {
+                std::fs::write(&cible, &etranger).unwrap();
+            }
+            let dit = precedente.remettre(&cible);
+            let ont: Vec<PathBuf> = std::fs::read_dir(&bin)
+                .unwrap()
+                .map(|n| n.unwrap().path())
+                .filter(|n| std::fs::symlink_metadata(n).unwrap().is_file())
+                .filter(|n| std::fs::read(n).unwrap() == ancienne)
+                .collect();
+            (dit, ont)
+        };
+        for (de_cote_etranger, place_bloquee) in [(false, false), (true, false), (false, true), (true, true)] {
+            let cas = format!("second nom étranger {de_cote_etranger}, place bloquée {place_bloquee}");
+            let (dit, ont) = remise(de_cote_etranger, place_bloquee);
+            assert_eq!(ont.len(), 1, "{cas} : l'ancienne copie perdue, ou en double : {dit}");
+            if place_bloquee {
+                assert!(
+                    dit.contains("gardée sous") && dit.contains(&ont[0].display().to_string()),
+                    "{cas} : {dit}"
+                );
+                assert!(dit.contains("ne la lancez pas"), "{cas} : {dit}");
+            } else {
+                assert_eq!(ont[0], cible, "{cas}, la copie étrangère reste installée : {dit}");
+                assert!(dit.contains("réécrite"), "{cas} : {dit}");
+                assert!(!dit.contains("gardée sous"), "{cas} : {dit}");
+            }
+            assert!(
+                !dit.contains(&format!("gardée sous {}", de_cote.display())),
+                "{cas}, « gardée » sous un nom qui n'a pas l'ancienne copie : {dit}"
+            );
+            if de_cote_etranger {
+                assert_eq!(
+                    std::fs::read(&de_cote).unwrap(),
+                    etranger,
+                    "{cas}, le fichier étranger est touché"
+                );
+                assert!(dit.contains("n'est pas l'ancienne copie"), "{cas} : {dit}");
+            }
+            vider();
+        }
+        for place_bloquee in [false, true] {
+            let (dit, ont) = crate::langue::en_anglais(|| remise(false, place_bloquee));
+            assert_eq!(ont.len(), 1, "{dit}");
+            assert!(
+                dit.contains(if place_bloquee { "kept as" } else { "rewritten" }),
+                "{dit}"
+            );
+            assert!(!dit.contains(" : ") && !dit.contains(" ; "), "{dit}");
+            vider();
+        }
+        let _ = std::fs::remove_dir_all(&racine);
+    }
+
+    /// V-2 (relecture du recontrôle 2, 0.95), par la mise à jour entière : la copie provisoire échangée par son nom
+    /// (R-1) et un fil qui efface le second nom de l'ancienne copie dès qu'il paraît. Avant, environ une fois sur cinq,
+    /// la copie étrangère restait installée (le message disait « gardée sous » un nom où il n'y avait rien).
+    /// Maintenant, à chaque tour, l'ancienne copie est à sa place à la fin : refus avant le renommage, remise, ou
+    /// réécrite ; et aucun nom provisoire de la remise ne traîne.
+    #[cfg(unix)]
+    #[test]
+    fn second_nom_efface_pendant_la_mise_a_jour_jamais_l_etrangere_installee() {
+        use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+        let racine = crate::socle::dossier_local().join("essai-second-nom-efface");
+        let _ = std::fs::remove_dir_all(&racine);
+        let source = racine.join("cle").join(NOM);
+        let cible = racine.join("bin").join(NOM);
+        let de_cote = cible.with_file_name(format!("{NOM}.precedent"));
+        faux_programme(&source, Some("0.80.0"));
+        let _seul = UN_A_LA_FOIS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        *ECHANGE.lock().unwrap() = Some(racine.join("bin"));
+        let fin = std::sync::Arc::new(AtomicBool::new(false));
+        let fil = {
+            let (fin, de_cote) = (fin.clone(), de_cote.clone());
+            std::thread::spawn(move || {
+                while !fin.load(SeqCst) {
+                    let _ = std::fs::remove_file(&de_cote);
+                }
+            })
+        };
+        let (mut refus, mut remises, mut reecrites) = (0, 0, 0);
+        let mut echec = None;
+        for tour in 0..200 {
+            faux_programme(&cible, Some("0.79.0"));
+            let avant = std::fs::read(&cible).unwrap();
+            let e = match remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, ECHANGE_PAR_LE_NOM) {
+                Ok(()) => {
+                    echec = Some(format!("tour {tour} : échangée, et dite faite"));
+                    break;
+                }
+                Err(e) => e,
+            };
+            if std::fs::read(&cible).ok().as_ref() != Some(&avant) {
+                echec = Some(format!("tour {tour}, l'ancienne copie n'est pas à sa place : {e}"));
+                break;
+            }
+            let traine = std::fs::read_dir(racine.join("bin"))
+                .unwrap()
+                .map(|n| n.unwrap().file_name().to_string_lossy().into_owned())
+                .find(|n| n.contains("remise"));
+            if let Some(n) = traine {
+                echec = Some(format!("tour {tour}, {n} traîne : {e}"));
+                break;
+            }
+            if e.contains("rien n'est remplacé") {
+                refus += 1;
+            } else if e.contains("réécrite") {
+                reecrites += 1;
+            } else {
+                remises += 1;
+            }
+        }
+        fin.store(true, SeqCst);
+        fil.join().unwrap();
+        *ECHANGE.lock().unwrap() = None;
+        eprintln!("refus avant le renommage {refus}, remises {remises}, réécrites {reecrites}");
+        let _ = std::fs::remove_dir_all(&racine);
+        assert_eq!(echec, None);
     }
 
     /// L'essai d'un programme passe par son descripteur, pas par le nom de la copie provisoire : ce qu'il lance est
