@@ -10674,6 +10674,13 @@ mod tests {
             self.racine.join("home/alice").join(relatif)
         }
 
+        /// Le dossier personnel de la maison, sans « / » final (V3-4, revérification de la ronde 3) : `chemin("")` en
+        /// a un, et le bilan ne reconnaissait plus alors cette maison dans un chemin écrit en entier ; il le lisait
+        /// sous le dossier personnel de la session, caché dès que le dossier de compilation l'est (« ~/.cache/… »).
+        fn maison(&self) -> std::path::PathBuf {
+            self.racine.join("home/alice")
+        }
+
         /// Le disque d'essai de la sauvegarde monté (« /run/media/alice/Mon disque », type `systeme`) dans le
         /// /proc/self/mountinfo de la racine, après la racine du système ; `None` : rien de monté là.
         fn monter_le_disque(&self, systeme: Option<&str>) {
@@ -12697,7 +12704,7 @@ mod tests {
             );
             let constats = persistance_dans(
                 &m.racine,
-                &m.chemin(""),
+                &m.maison(),
                 |v| (v == "XDG_RUNTIME_DIR").then(|| "/run/user/1000".into()),
                 None,
                 None,
@@ -13333,7 +13340,7 @@ mod tests {
             }
             let constats = persistance_dans(
                 &m.racine,
-                &m.chemin(""),
+                &m.maison(),
                 |v| (v == "XDG_RUNTIME_DIR").then(|| "/run/user/1000".into()),
                 None,
                 None,
@@ -13677,7 +13684,7 @@ mod tests {
                 ".config/autostart/essai.desktop",
                 &format!("{TETE}Exec={}\n", exec.replace('H', &h)),
             );
-            let leve: Vec<String> = persistance_dans(&m.racine, &m.chemin(""), |_| None, None, None)
+            let leve: Vec<String> = persistance_dans(&m.racine, &m.maison(), |_| None, None, None)
                 .into_iter()
                 .filter(|c| c.probleme.is_some())
                 .map(|c| c.message)
@@ -13745,7 +13752,7 @@ mod tests {
             let h = m.chemin("").to_string_lossy().trim_end_matches('/').to_string();
             let unite = format!("[Service]\nExecStart={}\n", exec.replace('H', &h));
             m.ecrire(".config/systemd/user/essai.service", &unite);
-            let leve: Vec<String> = persistance_dans(&m.racine, &m.chemin(""), |_| None, None, None)
+            let leve: Vec<String> = persistance_dans(&m.racine, &m.maison(), |_| None, None, None)
                 .into_iter()
                 .filter(|c| c.probleme.is_some())
                 .map(|c| c.message)
@@ -13880,7 +13887,7 @@ mod tests {
             let h = m.chemin("").to_string_lossy().trim_end_matches('/').to_string();
             let unite = format!("[Service]\nExecStart={}\n", exec.replace('H', &h));
             m.ecrire(".config/systemd/user/essai.service", &unite);
-            let leve: Vec<String> = persistance_dans(&m.racine, &m.chemin(""), |_| None, None, None)
+            let leve: Vec<String> = persistance_dans(&m.racine, &m.maison(), |_| None, None, None)
                 .into_iter()
                 .filter(|c| c.probleme.is_some())
                 .map(|c| c.message)
@@ -14033,7 +14040,7 @@ mod tests {
             ecrit.extend(format!("Exec={}\n", exec.replace('H', &h)).into_bytes());
             m.ecrire(".config/autostart/essai.desktop", "");
             std::fs::write(m.chemin(".config/autostart/essai.desktop"), ecrit).unwrap();
-            let leve: Vec<String> = persistance_dans(&m.racine, &m.chemin(""), |_| None, None, None)
+            let leve: Vec<String> = persistance_dans(&m.racine, &m.maison(), |_| None, None, None)
                 .into_iter()
                 .filter(|c| c.probleme.is_some())
                 .map(|c| c.message)
