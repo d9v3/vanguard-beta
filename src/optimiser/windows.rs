@@ -534,9 +534,9 @@ impl Changement {
         })
     }
 
-    /// Ce qui est écrit, en clair : « HKCU\…\HideFileExt = 0 », « … : retirée », « service DiagTrack : Disabled ».
     /// Pourquoi cette valeur d'avant ne se remet pas, dit avant tout geste : rien de tel sous Windows (les droits d'un
     /// fichier ne s'y remettent pas d'ici).
+    #[allow(clippy::unused_self)] // même signature que sous Linux, où l'entrée compte
     pub fn refus_de_remise(&self) -> Option<String> {
         None
     }
@@ -546,6 +546,7 @@ impl Changement {
         self.decrire(v)
     }
 
+    /// Ce qui est écrit, en clair : « HKCU\…\HideFileExt = 0 », « … : retirée », « service DiagTrack : Disabled ».
     pub fn decrire(&self, v: Option<&str>) -> String {
         match self {
             Changement::Registre {
