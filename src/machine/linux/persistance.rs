@@ -2105,9 +2105,10 @@ struct Lancements {
     /// Une ligne signalée lue avec pertes (octet hors UTF-8) : un geste ne la désigne pas (le fils root la cherche
     /// par l'empreinte de ses octets, que la ligne lue n'a plus), elle reste à la main et c'est dit (lot 096, N4).
     hors_utf8: bool,
-    /// Une ligne signalée qui finit par « \ », ou suit une telle ligne, ou, dans un fichier lu par un shell, n'est pas
-    /// de la forme « [export ]NOM=valeur » la plus simple ou touche d'autres lignes : la retirer seule pourrait
-    /// changer le sens d'une autre ligne (ronde 4 du lot 096, G34-1 et R4-3, et ronde 6 : `linux::retrait_decoupe`).
+    /// Une ligne signalée qui finit par « \ », ou suit une telle ligne, ou est dans un fichier lu par un shell qui
+    /// n'est pas fait que de lignes vides, de commentaires et d'affectations de la forme la plus simple : la retirer
+    /// seule pourrait changer le sens d'une autre ligne (ronde 4 du lot 096, G34-1 et R4-3, ronde 7 :
+    /// `linux::retrait_decoupe`).
     /// Un geste ne la désigne pas, et c'est dit.
     jointes: bool,
     /// Une ligne signalée dans un fichier de plus de `linux::RETRAIT_LIGNES_MAX` lignes ou de
@@ -7233,7 +7234,7 @@ impl IndexDeRetrait {
 /// Le fichier et la ligne à retirer, pour `Lancements::retraits` ; `None` (à la main) pour une ligne qu'un geste ne
 /// désigne pas : hors UTF-8 (`Lancements::hors_utf8`), liée à une autre (`Lancements::jointes`, même règle que le
 /// fils root : `linux::AnalyseDeRetrait`) par un « \ » final, la sienne ou celle d'avant, ou, dans un fichier lu par
-/// un shell, qui n'est pas de la forme « [export ]NOM=valeur » la plus simple ou touche d'autres lignes ; ou dans un fichier
+/// un shell qui n'est pas fait que de lignes vides, de commentaires et d'affectations de la forme la plus simple ; ou dans un fichier
 /// trop long pour être jugé (`Lancements::trop_long`). Calculé une fois par fichier et par ligne lue
 /// (`IndexDeRetrait`).
 fn retrait(t: &mut Lancements, f: &Path, lu: &Lecture, l: &str) -> Option<(String, String)> {
@@ -14118,8 +14119,8 @@ fn constat_des_lancements(t: Lancements) -> Constat {
     }
     if jointes {
         message.push_str(tr!(
-            " Une ligne signalée finit par « \\ », ou suit une telle ligne, ou, dans un fichier lu par un shell, n'est pas de la forme la plus simple « export NOM=valeur » (sans « $ », guillemet ouvert, « ; », « & » ni « | »), ou touche d'autres lignes (bloc, heredoc, suite par « | » ou « && », « $? », même NOM lu ailleurs, alias, readonly, trap…) : la retirer seule pourrait changer le sens d'une autre ligne. Une seule ligne ainsi suffit : tout est à corriger à la main.",
-            " A reported line ends with \"\\\", or follows such a line, or, in a file read by a shell, is not of the simplest form \"export NAME=value\" (no \"$\", open quote, \";\", \"&\" or \"|\"), or touches other lines (block, heredoc, continuation with \"|\" or \"&&\", \"$?\", the same NAME read elsewhere, alias, readonly, trap…): removing it alone could change what another line does. One such line is enough: everything is to be fixed by hand."
+            " Une ligne signalée finit par « \\ », ou suit une telle ligne, ou est dans un fichier lu par un shell qui n'est pas fait que de lignes vides, de commentaires et d'affectations simples « export NOM=valeur » (valeur sans « $ », guillemet double, « ; », « & », « | » ni « # », chaque NOM une seule fois, aucune variable du shell comme PATH ou UID) : Vanguard ne lit pas le shell, et la retirer seule pourrait changer le sens d'une autre ligne. Une seule ligne ainsi suffit : tout est à corriger à la main.",
+            " A reported line ends with \"\\\", or follows such a line, or is in a file read by a shell that is not made only of empty lines, comments and simple assignments \"export NAME=value\" (a value without \"$\", double quote, \";\", \"&\", \"|\" or \"#\", each NAME only once, no shell variable such as PATH or UID): Vanguard does not read shell code, and removing it alone could change what another line does. One such line is enough: everything is to be fixed by hand."
         ));
     }
     if trop_long {
@@ -20224,7 +20225,7 @@ mod tests {
                 let contenu = (0..n)
                     .map(|k| {
                         let nom = if pareilles { 0 } else { k };
-                        format!("export LD_PRELOAD=/tmp/.x/a{nom}.so\n")
+                        format!("export LD_X{nom}=/tmp/.x/LD_PRELOAD{k}.so\n")
                     })
                     .collect::<Vec<_>>()
                     .concat();
@@ -20245,12 +20246,12 @@ mod tests {
                     &m.racine.join("home/alice"),
                     &mut t,
                 );
-                // Des lignes toutes différentes qui posent le même NOM se refusent l'une l'autre (ronde 6 du lot
-                // 096 : un NOM qui paraît ailleurs dans le fichier) : le jugement reste linéaire, à la main.
-                assert_eq!(t.jointes, !pareilles);
+                // Des lignes qui posent le même NOM font refuser tout retrait du fichier (ronde 7 du lot 096 : chaque
+                // NOM une fois) : le jugement reste linéaire, à la main. Des NOMS tous différents partent.
+                assert_eq!(t.jointes, pareilles);
                 assert!(!t.trop_long);
                 assert_eq!(t.retraits.len(), n);
-                assert!(t.retraits.iter().all(|r| r.is_some() == pareilles));
+                assert!(t.retraits.iter().all(|r| r.is_some() != pareilles));
                 let c = constat_des_lancements(t);
                 let duree = debut.elapsed();
                 let pas = crate::machine::linux::PAS_DE_RETRAIT.with(std::cell::Cell::get);
@@ -20267,7 +20268,7 @@ mod tests {
     /// Ronde 4 du lot 096 (G34-1, R4-3), côté bilan : une ligne signalée qui finit par « \ », ou suit une telle
     /// ligne, ou ouvre un heredoc, se lit liée à une autre ; le bilan n'en offre pas le retrait seul (le fils root le
     /// refuserait aussi : `linux::retrait_decoupe`), le geste automatique tombe et la phrase « à la main » le dit.
-    /// Témoin : la même ligne sans « \ » garde son retrait.
+    /// Témoin : la même ligne sans « \ », dans un fichier d'affectations simples, garde son retrait (ronde 7).
     #[test]
     fn ligne_jointe_a_la_main() {
         let phrase = "finit par « \\ »";
@@ -20276,7 +20277,9 @@ mod tests {
             (format!("{piege} \\\n/usr/local/bin/aide --installer\n"), true),
             (format!("A=1 \\\n{piege}\n"), true),
             (format!("{piege}; cat >/dev/null <<EOF\necho REVEILLEE\nEOF\n"), true),
-            (format!("{piege}\n/usr/local/bin/aide --installer\n"), false),
+            // Ronde 7 : à côté d'une commande, la ligne reste à la main ; dans un fichier d'affectations, elle part.
+            (format!("{piege}\n/usr/local/bin/aide --installer\n"), true),
+            (format!("{piege}\nAIDE=/usr/local/bin/aide\n"), false),
         ]
         .into_iter()
         .enumerate()

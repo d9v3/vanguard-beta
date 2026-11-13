@@ -2037,8 +2037,9 @@ fn juger_ligne(e: Empreinte, c: &CheminDesigne, a: &mut dyn Acces) -> Jugement {
     // autre ligne : un « \ » final la joint à la suivante (shell, systemd, pam_env) ; dans un fichier lu par un
     // shell, un guillemet ouvert, un heredoc, un bloc ou une suite par « | » ou « && » relie aussi des lignes. La
     // question ne montrerait pas cette autre ligne : rien n'est fait, la correction est à la main (le bilan ne
-    // l'offre pas non plus : `linux::retrait_decoupe`). Ronde 6 : dans un fichier lu par un shell, seule une ligne
-    // « [export ]NOM=valeur » de la forme la plus simple, dans un voisinage qui ne la relie à rien, se retire seule.
+    // l'offre pas non plus : `linux::retrait_decoupe`). Ronde 7 : Vanguard ne lit plus de shell ; dans un fichier lu
+    // par un shell, une ligne ne se retire seule que si tout le fichier n'est fait que de lignes vides, de
+    // commentaires entiers et d'affectations « [export ]NOM=valeur » de la forme la plus simple, chaque NOM une fois.
     if !preload {
         match crate::machine::linux::retrait_decoupe(fichier, &contenu, &numeros) {
             Some(crate::machine::linux::Decoupe::Barre) => {
@@ -2049,8 +2050,8 @@ fn juger_ligne(e: Empreinte, c: &CheminDesigne, a: &mut dyn Acces) -> Jugement {
             }
             Some(crate::machine::linux::Decoupe::Shell) => {
                 return Err(refus(trf!(
-                    "dans {vu}, la ligne désignée n'est pas de la forme la plus simple « export NOM=valeur » (sans « $ », guillemet ouvert, « ; », « & », « | » ni « \\ »), ou elle touche les lignes voisines ou d'autres lignes du fichier (bloc, heredoc « << », suite par « | » ou « && », « $? », même NOM lu ailleurs, alias, readonly, trap…) : la retirer seule pourrait changer ce que font les autres lignes ; par prudence, rien n'est fait : corrigez ce fichier à la main",
-                    "in {vu}, the line named is not of the simplest form \"export NAME=value\" (no \"$\", open quote, \";\", \"&\", \"|\" or \"\\\\\"), or it touches the nearby lines or other lines of the file (block, \"<<\" heredoc, continuation with \"|\" or \"&&\", \"$?\", the same NAME read elsewhere, alias, readonly, trap…): removing it alone could change what the other lines do; to be safe, nothing is done: fix this file by hand"
+                    "dans {vu}, le fichier n'est pas fait que de lignes vides, de commentaires et d'affectations simples « export NOM=valeur » (valeur sans « $ », guillemet double, « ; », « & », « | », « # » ni « \\ », chaque NOM une seule fois, aucune variable du shell comme PATH ou UID), ou la ligne désignée n'en est pas une : Vanguard ne lit pas le shell, et la retirer seule pourrait changer ce que font d'autres lignes ; par prudence, rien n'est fait : corrigez ce fichier à la main",
+                    "in {vu}, the file is not made only of empty lines, comments and simple assignments \"export NAME=value\" (a value without \"$\", double quote, \";\", \"&\", \"|\", \"#\" or \"\\\\\", each NAME only once, no shell variable such as PATH or UID), or the line named is not one of them: Vanguard does not read shell code, and removing it alone could change what other lines do; to be safe, nothing is done: fix this file by hand"
                 )));
             }
             Some(crate::machine::linux::Decoupe::Trop) => {
@@ -4583,16 +4584,22 @@ mod tests {
             let (r, questions, apres) = essai(&contenu, ligne);
             assert!(!r.reussi, "{contenu:?}");
             assert!(
-                r.raison.contains("lignes voisines") && r.raison.contains("à la main"),
+                r.raison.contains("ne lit pas le shell") && r.raison.contains("à la main"),
                 "{}",
                 r.raison
             );
             assert_eq!(questions, 0, "{contenu:?}");
             assert_eq!(apres, contenu);
         }
-        let (r, _, apres) = essai(&format!("{piege}\n/usr/local/bin/aide --installer\n"), piege);
+        // Ronde 7 : sans « \\ », dans un fichier d'affectations simples, la même ligne part ; à côté d'une commande,
+        // elle reste à la main.
+        let (r, _, apres) = essai(&format!("{piege}\nAIDE=/usr/local/bin/aide\n"), piege);
         assert!(r.reussi, "{}", r.raison);
-        assert_eq!(apres, "/usr/local/bin/aide --installer\n");
+        assert_eq!(apres, "AIDE=/usr/local/bin/aide\n");
+        let contenu = format!("{piege}\n/usr/local/bin/aide --installer\n");
+        let (r, questions, apres) = essai(&contenu, piege);
+        assert!(!r.reussi && r.raison.contains("ne lit pas le shell"), "{}", r.raison);
+        assert_eq!((questions, apres), (0, contenu));
     }
 
     #[test]
