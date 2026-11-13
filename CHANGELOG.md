@@ -41,18 +41,21 @@ recompilée au besoin.
   dite « remise » ou « restée en place » que si ses octets sont encore ceux que Vanguard a lus en la mettant de côté
   (empreinte BLAKE3) ; une copie qui est un lien symbolique est reconnue à ce qu'il désigne et au fichier au bout, tenu
   ouvert de même. Réécrite (ou, au bout d'un lien, remplacée) entre-temps par un autre programme, elle est dite changée,
-  à ne pas lancer, et Vanguard ne pose jamais ce contenu à sa place : laissée sous son nom de côté, elle est à déplacer
-  avant de refaire la mise à jour. Si elle ne peut pas être mise de côté avant le remplacement (par exemple, elle ne se
-  lit pas, dépasse 512 Mio ou est un lien vers rien, ou son nom de côté, `vanguard.precedent`, est pris par un dossier
-  ou par un autre fichier), la mise à jour de cette copie est refusée avant de rien remplacer, et le chemin en cause est
-  dit, avec le geste à faire ; ce qui est à ce nom n'est jamais effacé, sauf un second nom de la copie en place. Si la
-  remise échoue, l'ancienne copie est gardée sous un nom que le message donne, à mettre à l'abri (ou, si même cela rate,
-  le message dit qu'elle est perdue). Une nouvelle copie tenue ouverte en écriture (« Text file busy ») est dite comme
-  telle ; un nom provisoire occupé (un dossier) est dit avec le chemin à retirer. Chaque refus de la mise en place dit
-  « rien n'est remplacé », aussi à la première pose de la copie de cet ordinateur. Limites : un changement fait après
-  cette dernière vérification n'est pas vu ; sur un système de fichiers sans liens physiques (FAT, exFAT), ou pour une
-  copie d'un autre compte quand le système les interdit (fs.protected_hardlinks), l'ancienne copie ne peut pas être mise
-  de côté : la mise à jour de cette copie est refusée (« Operation not permitted »).
+  à ne pas lancer : Vanguard la revoit juste avant de la poser à sa place, et ne la pose pas s'il la voit changée
+  (laissée sous son nom de côté, elle est à déplacer avant de refaire la mise à jour) ; un changement fait dans
+  l'instant entre ce contrôle et la pose n'est vu qu'après, et dit de même. Si elle ne peut pas être mise de côté avant
+  le remplacement (par exemple, elle ne se lit pas, dépasse 512 Mio ou est un lien vers rien, ou son nom de côté,
+  `vanguard.precedent`, est pris par un dossier ou par un autre fichier), la mise à jour de cette copie est refusée
+  avant de rien remplacer, et le chemin en cause est dit, avec le geste à faire ; ce qui est à ce nom n'est jamais
+  effacé, sauf un second nom de la copie en place. Si la remise échoue, l'ancienne copie est gardée sous un nom que le
+  message donne, à mettre à l'abri, seulement si elle y est encore inchangée (pour un lien, le fichier au bout aussi) ;
+  sinon, ou si même cela rate, le message dit qu'elle est perdue. Une nouvelle copie tenue ouverte en écriture (« Text
+  file busy ») est dite comme telle ; un nom provisoire occupé (un dossier) est dit avec le chemin à retirer. Chaque
+  refus de la mise en place dit « rien n'est remplacé », aussi à la première pose de la copie de cet ordinateur.
+  Limites : un changement fait après cette dernière vérification n'est pas vu ; sur un système de fichiers sans liens
+  physiques (FAT, exFAT), ou pour une copie d'un autre compte quand le système les interdit (fs.protected_hardlinks),
+  l'ancienne copie ne peut pas être mise de côté : la mise à jour de cette copie est refusée (« Operation not
+  permitted »).
 - **Annuler sans toucher un autre fichier.** « Ce que Vanguard a changé » ne remet plus des droits plus larges sur un
   fichier qui n'est plus celui que Vanguard a corrigé (remplacé, autre inode) : la remise est refusée, avec sa raison,
   et la ligne montre les droits d'aujourd'hui et ceux qui seraient remis.
@@ -112,19 +115,23 @@ recompilée au besoin.
   il est dit au bilan, non vérifié, ne se déclare pas normal et lève la sauvegarde ; de même pour un saut de ligne,
   qu'uwsm peut retirer en fin de valeur. XDG_DATA_HOME de la session est lu tel quel, comme uwsm le lit. Un morceau posé
   au gestionnaire qui commence ou finit par un blanc ne se résout pas (dit, non vérifié), ni un XDG_CONFIG_HOME ou un
-  XDG_DATA_HOME posé qui contient « : » (systemd le prend en entier, uwsm peut le couper) ; « ~/x » ou « $HOME/x » posé
-  se lit des deux façons : remplacé par le dossier personnel et tel quel, depuis le dossier personnel. Chaque fichier du
-  dossier d'uwsm et de ses « env.d » et « env-<bureau>.d » compte, quels que soient son nom et son extension, et un
-  « env.d » qui est un lien vers un dossier se suit partout, comme uwsm le suit : la sauvegarde juge ce qu'il contient
-  au lieu de se lever parce qu'il ne se lit pas comme un fichier. Les lignes « exec » des réglages de popt (~/.popt,
-  /etc/popt) se jugent comme des lancements. Un fichier qu'un profil ou un fichier d'uwsm lit par « . » ou « source » se
-  juge ligne à ligne, avec la même règle que ~/.bashrc (une ligne qui nomme LD_PRELOAD se signale, même si elle ne fait
-  que le lire), quand l'inclusion est écrite en toutes lettres en position de commande et que son chemin est absolu ou
-  sous « ~/ » ou « $HOME/ », jusqu'à 64 fichiers inclus. Limites : une inclusion écrite autrement (chemin relatif ou
-  calculé par une variable, boucle sur un dossier, eval) n'est pas suivie, et le bilan ne le signale pas ; un fichier
-  inclus illisible, trop gros ou qui n'est pas en UTF-8 n'est pas jugé ; une valeur entre guillemets écrite sur
-  plusieurs lignes n'est pas suivie d'une ligne à l'autre, et peut cacher la ligne qui la suit. Une variable posée en
-  cours de session, par une ligne « env = » de Hyprland, ou un dossier déplacé par un profil de shell n'est pas vérifié.
+  XDG_DATA_HOME posé qui contient « : » (systemd le prend en entier, uwsm peut le couper), sauf la forme entière
+  « ${XDG_DATA_HOME:-/dossier} » d'un fichier à root seul, lue comme systemd la lit ; « ~/x » ou « $HOME/x » posé se lit
+  des deux façons : remplacé par le dossier personnel et tel quel, depuis le dossier personnel. Chaque fichier du
+  dossier d'uwsm et de ses « env.d » et « env-<bureau>.d » compte, quels que soient son nom et son extension ; un nom de
+  bureau hors lettres, chiffres, « _ », « . » et « - », dans XDG_CURRENT_DESKTOP de la session ou dans le DesktopNames
+  d'une session d'uwsm (wayland-sessions), est dit, non vérifié (uwsm en tire un fichier « env-… » ailleurs, que
+  Vanguard ne lit pas), ne se déclare pas normal et lève la sauvegarde ; et un « env.d » qui est un lien vers un dossier
+  se suit partout, comme uwsm le suit : la sauvegarde juge ce qu'il contient au lieu de se lever parce qu'il ne se lit
+  pas comme un fichier. Les lignes « exec » des réglages de popt (~/.popt, /etc/popt) se jugent comme des lancements. Un
+  fichier qu'un profil ou un fichier d'uwsm lit par « . » ou « source » se juge ligne à ligne, avec la même règle que
+  ~/.bashrc (une ligne qui nomme LD_PRELOAD se signale, même si elle ne fait que le lire), quand l'inclusion est écrite
+  en toutes lettres en position de commande et que son chemin est absolu ou sous « ~/ » ou « $HOME/ », jusqu'à 64
+  fichiers inclus. Limites : une inclusion écrite autrement (chemin relatif ou calculé par une variable, boucle sur un
+  dossier, eval) n'est pas suivie, et le bilan ne le signale pas ; un fichier inclus illisible, trop gros ou qui n'est
+  pas en UTF-8 n'est pas jugé ; une valeur entre guillemets écrite sur plusieurs lignes n'est pas suivie d'une ligne à
+  l'autre, et peut cacher la ligne qui la suit. Une variable posée en cours de session, par une ligne « env = » de
+  Hyprland, ou un dossier déplacé par un profil de shell n'est pas vérifié.
 - **Les programmes du système, pris par leur chemin.** Le bilan, les traces, la surveillance, la sauvegarde et les
   autres lectures de la machine lancent pacman, systemctl, journalctl, ss, crontab, ping et les autres depuis les
   dossiers du système, jamais par le PATH du compte : un faux programme posé dans ~/.local/bin ne peut plus cacher une

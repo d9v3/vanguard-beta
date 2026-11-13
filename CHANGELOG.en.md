@@ -38,18 +38,20 @@ repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
   a file number the system can give to another file, and it is said to be "put back" or to "stay in place" only if its
   bytes are still the ones Vanguard read when setting it aside (BLAKE3 fingerprint); a copy that is a symbolic link is
   recognised by what it points to and by the file at its end, held open the same way. Rewritten (or, at the end of a
-  link, replaced) in the meantime by another program, it is reported as changed, not to be run, and Vanguard never puts
-  that content in its place: left under its set-aside name, it is to be moved before redoing the update. If it cannot be
-  set aside before the replacement (for example, it cannot be read, exceeds 512 MiB or is a link to nothing, or its
-  set-aside name, `vanguard.precedent`, is taken by a folder or by another file), the update of that copy is refused
-  before anything is replaced, and the path at fault is given, with what to do; what is under that name is never
-  deleted, except a second name of the copy in place. If putting it back fails, the old copy is kept under a name the
-  message gives, to be moved somewhere safe (or, if even that fails, the message says it is lost). A new copy held open
-  for writing ("Text file busy") is reported as such; a provisional name already taken (a folder) is reported with the
-  path to remove. Every refusal of the installation says "nothing is replaced", also when the copy for this computer is
-  first set up. Limits: a change made after this last check is not seen; on a file system without hard links (FAT,
-  exFAT), or for a copy owned by another account when the system forbids them (fs.protected_hardlinks), the old copy
-  cannot be set aside: the update of that copy is refused ("Operation not permitted").
+  link, replaced) in the meantime by another program, it is reported as changed, not to be run: Vanguard checks it again
+  just before putting it in its place, and does not put it there if it sees it changed (left under its set-aside name,
+  it is to be moved before redoing the update); a change made in the instant between that check and the move is only
+  seen afterwards, and reported the same way. If it cannot be set aside before the replacement (for example, it cannot
+  be read, exceeds 512 MiB or is a link to nothing, or its set-aside name, `vanguard.precedent`, is taken by a folder or
+  by another file), the update of that copy is refused before anything is replaced, and the path at fault is given, with
+  what to do; what is under that name is never deleted, except a second name of the copy in place. If putting it back
+  fails, the old copy is kept under a name the message gives, to be moved somewhere safe, only if it is still unchanged
+  there (for a link, the file at its end too); otherwise, or if even that fails, the message says it is lost. A new copy
+  held open for writing ("Text file busy") is reported as such; a provisional name already taken (a folder) is reported
+  with the path to remove. Every refusal of the installation says "nothing is replaced", also when the copy for this
+  computer is first set up. Limits: a change made after this last check is not seen; on a file system without hard links
+  (FAT, exFAT), or for a copy owned by another account when the system forbids them (fs.protected_hardlinks), the old
+  copy cannot be set aside: the update of that copy is refused ("Operation not permitted").
 - **Undo without touching another file.** "What Vanguard changed" no longer puts wider permissions back on a file
   that is no longer the one Vanguard fixed (replaced, other inode): the restore is refused, with its reason, and the
   line shows today's permissions and those that would be restored.
@@ -107,18 +109,21 @@ repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
   it raises the backup; the same goes for a line break, which uwsm may remove at the end of a value. The session's
   XDG_DATA_HOME is read as is, as uwsm reads it. A piece set for the manager that starts or ends with a blank does not
   resolve (reported, not checked), nor does an XDG_CONFIG_HOME or XDG_DATA_HOME set there that contains ":" (systemd
-  takes it whole, uwsm may split it); "~/x" or "$HOME/x" set there is read both ways: replaced by the home folder, and
-  as written, from the home folder. Every file in the uwsm folder and in its "env.d" and "env-<desktop>.d" counts,
-  whatever its name and extension, and an "env.d" that is a link to a folder is followed everywhere, as uwsm follows it:
-  the backup judges what it holds instead of being raised because it cannot be read as a file. The "exec" lines of popt
-  settings (~/.popt, /etc/popt) are judged as launches. A file that a profile or an uwsm file reads with "." or "source"
-  is judged line by line, with the same rule as ~/.bashrc (a line that names LD_PRELOAD is reported, even if it only
-  reads it), when the inclusion is spelled out in command position and its path is absolute or under "~/" or "$HOME/",
-  up to 64 included files. Limits: an inclusion written another way (relative path or one computed from a variable, loop
-  over a folder, eval) is not followed, and the check does not report it; an included file that cannot be read, is too
-  large or is not UTF-8 is not judged; a quoted value written over several lines is not followed from one line to the
-  next, and can hide the line after it. A variable set during the session, by a Hyprland "env =" line, or a folder moved
-  by a shell profile is not checked.
+  takes it whole, uwsm may split it), except the whole form "${XDG_DATA_HOME:-/folder}" in a root-only file, read as
+  systemd reads it; "~/x" or "$HOME/x" set there is read both ways: replaced by the home folder, and as written, from
+  the home folder. Every file in the uwsm folder and in its "env.d" and "env-<desktop>.d" counts, whatever its name and
+  extension; a desktop name outside letters, digits, "_", "." and "-", in the session's XDG_CURRENT_DESKTOP or in the
+  DesktopNames of an uwsm session (wayland-sessions), is reported, not checked (uwsm derives from it an "env-…" file
+  elsewhere, which Vanguard does not read), cannot be declared normal and raises the backup; and an "env.d" that is a
+  link to a folder is followed everywhere, as uwsm follows it: the backup judges what it holds instead of being raised
+  because it cannot be read as a file. The "exec" lines of popt settings (~/.popt, /etc/popt) are judged as launches. A
+  file that a profile or an uwsm file reads with "." or "source" is judged line by line, with the same rule as ~/.bashrc
+  (a line that names LD_PRELOAD is reported, even if it only reads it), when the inclusion is spelled out in command
+  position and its path is absolute or under "~/" or "$HOME/", up to 64 included files. Limits: an inclusion written
+  another way (relative path or one computed from a variable, loop over a folder, eval) is not followed, and the check
+  does not report it; an included file that cannot be read, is too large or is not UTF-8 is not judged; a quoted value
+  written over several lines is not followed from one line to the next, and can hide the line after it. A variable set
+  during the session, by a Hyprland "env =" line, or a folder moved by a shell profile is not checked.
 - **System programs, taken by their path.** The check, traces, monitoring, the backup and the other machine readings
   start pacman, systemctl, journalctl, ss, crontab, ping and the rest from the system folders, never through the
   account's PATH: a fake program placed in ~/.local/bin can no longer hide a connection or a journal line. The
