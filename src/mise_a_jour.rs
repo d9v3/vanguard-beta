@@ -516,7 +516,8 @@ fn installer(octets: &[u8], cible: &Path, attendue: Version, essai: Essai) -> Re
     // même fichier, avec ces mêmes octets.
     let ecrite = (|| -> Result<(), String> {
         // Avant le renommage, rien n'est remplacé : chaque échec le dit (l'appelant ne dit plus « l'ancien reste »).
-        let rien = |e: String| format!("{e} : {}", tr!("rien n'est remplacé", "nothing is replaced"));
+        // N-5 (recontrôle 2, 0.95) : « x: y » en anglais, jamais le « : » à la française.
+        let rien = |e: String| trf!("{e} : rien n'est remplacé", "{e}: nothing is replaced");
         let _ = std::fs::remove_file(&provisoire);
         let f = ecrire_provisoire(&provisoire, octets).map_err(|e| {
             // R-4 (recontrôle 0.95) : un dossier (ou autre chose qui ne s'efface pas) sous ce nom ; dit avec le chemin
@@ -563,7 +564,7 @@ fn installer(octets: &[u8], cible: &Path, attendue: Version, essai: Essai) -> Re
                 precedente.oublier();
                 Ok(())
             }
-            Err(e) => Err(format!("{e} : {}", precedente.remettre(cible))),
+            Err(e) => Err(trf!("{e} : {}", "{e}: {}", precedente.remettre(cible))),
         }
     })();
     if ecrite.is_err() {
@@ -1819,6 +1820,37 @@ mod tests {
         assert_eq!(std::fs::read(&cible).unwrap(), avant);
         std::fs::remove_dir_all(&provisoire).unwrap();
         remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, SANS_ESSAI).unwrap();
+        let _ = std::fs::remove_dir_all(&racine);
+    }
+
+    /// N-5 (recontrôle 2, 0.95) : en anglais, un échec de la mise à jour se lit « x: y », jamais avec le « : » à la
+    /// française : quand rien n'est remplacé (ici R-4) comme quand l'ancienne copie est remise (R-1).
+    #[test]
+    fn echecs_en_anglais_sans_deux_points_a_la_francaise() {
+        let racine = crate::socle::dossier_local().join("essai-anglais-deux-points");
+        let _ = std::fs::remove_dir_all(&racine);
+        let source = racine.join("cle").join(NOM);
+        let cible = racine.join("bin").join(NOM);
+        faux_programme(&source, Some("0.80.0"));
+        faux_programme(&cible, Some("0.79.0"));
+        let provisoire = racine.join("bin").join(format!("{NOM}.nouveau"));
+        std::fs::create_dir_all(provisoire.join("dedans")).unwrap();
+        let r = crate::langue::en_anglais(|| remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, SANS_ESSAI));
+        let e = r.unwrap_err();
+        assert!(e.contains("again: nothing is replaced"), "{e}");
+        assert!(!e.contains(" : "), "{e}");
+        std::fs::remove_dir_all(&provisoire).unwrap();
+
+        let _seul = UN_A_LA_FOIS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        *ECHANGE.lock().unwrap() = Some(racine.join("bin"));
+        REECRITE.store(false, std::sync::atomic::Ordering::SeqCst);
+        let r = crate::langue::en_anglais(|| remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, ECHANGE_PAR_LE_NOM));
+        if REECRITE.load(std::sync::atomic::Ordering::SeqCst) {
+            let e = r.expect_err("échangée par son nom, et dite faite");
+            assert!(e.contains("another program): the old copy is put back"), "{e}");
+            assert!(!e.contains(" : "), "{e}");
+        }
+        *ECHANGE.lock().unwrap() = None;
         let _ = std::fs::remove_dir_all(&racine);
     }
 
