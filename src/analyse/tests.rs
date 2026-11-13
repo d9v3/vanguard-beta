@@ -855,6 +855,27 @@ fn regressions_du_fuzzing() {
         include_bytes!("../../fuzz/graines/analyse_fichier/regression-source-multioctet.bin"),
         "f",
     );
+    // Des zips imbriqués jusqu'à la profondeur maximale, dont le dernier a des entrées non lues : elles restaient
+    // ajoutées un cran plus bas (CI de nuit, 13 nov.). Les bornes de la cible fuzz/fuzz_targets/analyse_fichier.rs.
+    let bornes = Bornes {
+        parties: 300,
+        taille_partie: 1 << 20,
+        produits: 4 << 20,
+        seuil_taux: 1 << 20,
+        entrees: 500,
+        texte: 1 << 16,
+        ..Bornes::default()
+    };
+    let a = super::analyser(
+        include_bytes!("../../fuzz/graines/analyse_fichier/regression-profondeur-non-lue.bin"),
+        "f",
+        &bornes,
+        &mut |_, _| {},
+    );
+    assert!(a.manques().any(|(_, r)| *r == Raison::Profondeur));
+    for p in &a.parties {
+        assert!(p.profondeur <= bornes.profondeur, "{} à {}", p.chemin, p.profondeur);
+    }
 }
 
 /// Les fichiers du socle d'analyse n'importent pas l'interface : aucun verdict ni affichage ici.

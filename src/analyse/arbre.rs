@@ -216,6 +216,15 @@ impl Etat<'_> {
             self.manque(p, Raison::TropDeParties);
             return None;
         }
+        // La même borne que `enfant` : une partie non lue reste une partie de l'arbre. Sans elle, une entrée zip aux
+        // données partagées, un budget épuisé ou un flux OLE illisible sous une partie déjà à la profondeur maximale
+        // descendaient d'un cran de plus (trouvé par le fuzzing de nuit, le 13 nov.).
+        if let Some(p) = parent
+            && self.trop_profond(p)
+        {
+            self.manque(p, Raison::Profondeur);
+            return None;
+        }
         faits.extend(nom::examiner(&chemin).into_iter().map(Fait::Nom));
         let profondeur = self.profondeur_enfant(parent)?;
         self.parties.push(Partie {

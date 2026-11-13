@@ -5553,6 +5553,9 @@ pub(crate) fn est_un_acte(ligne: &str) -> bool {
         || ligne.starts_with(DEFENDER_MENACES_RETIRER)
         || ligne.starts_with(DEFENDER_CHOIX)
         || ligne.starts_with(DEFENDER_ASR_CHOIX)
+        || ligne.starts_with(DEFENDER_EXCLUSION_AJOUTER)
+        || ligne.starts_with(DEFENDER_DOSSIERS_AUTORISER)
+        || ligne.starts_with(CHOIX_NOTER)
         || ligne.starts_with(RALLUMER)
         || ligne.starts_with(HOSTS_ECRIRE)
         || ligne.starts_with(DNS_AUTO)
@@ -9528,6 +9531,38 @@ mod tests {
             "vanguard:defender-choix pua coupe,vanguard:defender-choix maps coupe",
         ] {
             assert!(analyser_acte(l).is_none() && est_un_acte(l), "{l}");
+        }
+    }
+
+    /// Les actes des Options de défense (exclusion ajoutée, programme permis, « C'est moi ») sont des actes pour
+    /// `valider` : bien formés, la liste passe sans rien demander à `autre` ; abîmés, ils ne sont jamais confiés à
+    /// `autre`, même à un `autre` qui accepterait tout (trouvé par le fuzzing de nuit, le 13 nov. : ces trois verbes
+    /// manquaient à `est_un_acte`, et la liste de chacune de ces options était refusée).
+    #[test]
+    fn actes_des_options_de_defense_passent_la_liste() {
+        let mut bonnes = vec![
+            ligne_autoriser_dossiers(r"C:\Outils\sauve.exe").unwrap(),
+            ligne_noter(IdChoix::Defender(ReglageDefender::TempsReel)),
+        ];
+        for g in GenreExclusion::TOUS {
+            let texte = match g.mot() {
+                "extension" => ".jeu",
+                "processus" => "jeu.exe",
+                _ => r"C:\Jeux\Salon",
+            };
+            bonnes.push(ligne_ajout_exclusion(g, texte).unwrap_or_else(|| panic!("{}", g.mot())));
+        }
+        for l in &bonnes {
+            assert!(est_un_acte(l), "{l}");
+            assert!(analyser_acte(l).is_some(), "{l}");
+            assert!(valider(std::slice::from_ref(l), |_| None::<()>).is_some(), "{l}");
+        }
+        for verbe in [DEFENDER_EXCLUSION_AJOUTER, DEFENDER_DOSSIERS_AUTORISER, CHOIX_NOTER] {
+            for reste in ["", "zz", "4300 4300", "chemin 4300 x"] {
+                let l = format!("{verbe}{reste}");
+                assert!(est_un_acte(&l), "{l}");
+                assert!(valider(std::slice::from_ref(&l), |_| Some(())).is_none(), "{l}");
+            }
         }
     }
 
