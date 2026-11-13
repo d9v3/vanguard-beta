@@ -4674,7 +4674,8 @@ fn commandes_shell(texte: &str) -> Vec<Vec<String>> {
 ///
 /// V-4 (relecture du lot c2-uwsm, 0.95) : un dossier qui n'en est pas un (absent, un fichier, un lien cassé ou vers
 /// un fichier, « n'est pas un dossier » plus haut dans son chemin) est absent, comme pour uwsm, qui n'y lit rien ;
-/// seule une autre erreur le dit illisible.
+/// seule une autre erreur le dit illisible. V-5 : une entrée dont la nature ne se lit pas (un lien vers un dossier
+/// fermé) va dans `illisibles`, au lieu de passer pour un fichier puis de se taire.
 fn fichiers_d_uwsm(dossier: &Path, illisibles: &mut Vec<std::path::PathBuf>) -> Vec<std::path::PathBuf> {
     let absent = |e: &std::io::Error| {
         matches!(
@@ -4707,8 +4708,16 @@ fn fichiers_d_uwsm(dossier: &Path, illisibles: &mut Vec<std::path::PathBuf>) -> 
                 break;
             };
             let p = e.path();
-            // `metadata` suit le lien, comme « [ -d ] » ; un lien cassé n'est pas un dossier (il se lit, et manque).
-            let est_dossier = std::fs::metadata(&p).is_ok_and(|m| m.is_dir());
+            // `metadata` suit le lien, comme « [ -d ] » ; un lien cassé, ou une boucle de liens, n'est pas un dossier
+            // (il se lit, et manque). Toute autre erreur : sa nature ne se juge pas, c'est dit (V-5).
+            let est_dossier = match std::fs::metadata(&p) {
+                Ok(m) => m.is_dir(),
+                Err(e) if absent(&e) || e.raw_os_error() == Some(libc::ELOOP) => false,
+                Err(_) => {
+                    illisibles.push(p);
+                    continue;
+                }
+            };
             let nom = e.file_name();
             let nom = nom.to_string_lossy();
             if est_dossier {
@@ -15728,6 +15737,41 @@ mod tests {
             }
         }
         assert!(faux.is_empty(), "pas un dossier : {faux:#?}");
+    }
+
+    /// V-5 (relecture du lot c2-uwsm, 0.95) : une entrée d'un dossier d'uwsm dont la nature ne se lit pas (« env.d » en
+    /// lien vers un dossier dont le parent est fermé) est dite (non vérifié), jamais prise pour un fichier puis tue.
+    /// Sous ~/.config/uwsm comme sous un XDG_DATA_DIRS hors du dossier personnel.
+    #[cfg(unix)]
+    #[test]
+    fn entree_d_uwsm_dont_la_nature_ne_se_lit_pas_dite() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut faux = Vec::new();
+        for (i, lien) in ["var/tmp/x/uwsm/env.d", "home/alice/.config/uwsm/env.d"]
+            .iter()
+            .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("uwsm-nature-illisible-{i}"));
+            let ferme = m.racine.join("var/tmp/ferme");
+            std::fs::create_dir_all(ferme.join("d")).unwrap();
+            std::fs::write(ferme.join("d/a"), "LD_PRELOAD=/opt/inerte/a.so\n").unwrap();
+            let l = m.racine.join(lien);
+            std::fs::create_dir_all(l.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(ferme.join("d"), &l).unwrap();
+            std::fs::set_permissions(&ferme, std::fs::Permissions::from_mode(0o000)).unwrap();
+            if std::fs::metadata(&l).is_ok() {
+                std::fs::set_permissions(&ferme, std::fs::Permissions::from_mode(0o755)).unwrap();
+                return crate::essais::saute("le compte traverse un dossier sans droits (root, ou espace de noms)");
+            }
+            let c = m.lancements_avec(&[("XDG_DATA_DIRS", "/var/tmp/x:/usr/share")]);
+            std::fs::set_permissions(&ferme, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let montre = lien.replace("home/alice/", "~/");
+            let dit = c.probleme >= Some(Niveau::Eleve) && c.message.contains(&format!("{montre} ne se lit pas"));
+            if !dit || crate::apprentissage::declarable(&c).is_ok() {
+                faux.push(format!("{lien} : {:?} {}", c.probleme, c.message));
+            }
+        }
+        assert!(faux.is_empty(), "nature illisible : {faux:#?}");
     }
 
     /// R-6 (re-contrôle 0.95, angle lecture) : un fichier qu'un fichier de variables lit par « . » ou « source » (un
