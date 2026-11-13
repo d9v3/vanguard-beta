@@ -535,7 +535,7 @@ EN_COURS="$VM/resultats/.test-en-cours.txt"
 # attend sa fin. Seulement la file réinstallée (secret ici).
 if [[ -z ${VANGUARD_INTERMEDIAIRE:-} && -n $A_PUBLIER && -f $WINDOWS && -d $HOME/Windows ]]; then
   if [[ -s ${XDG_CONFIG_HOME:-$HOME/.config}/vanguard/file-essais/secret ]]; then
-    bash outils/vm-tester.sh --exe "$WINDOWS" --sans-console --sans-attendre ||
+    bash outils/vm-tester.sh --exe "$WINDOWS" --fenetre "$FENETRE_WINDOWS" --sans-console --sans-attendre ||
       echo "VM Windows : essai de la file pas déposé (voir ci-dessus) : sans son verdict signé, pas de page."
   else
     echo "VM Windows : file d'essais pas réinstallée (pas de secret) : la page se fiera à historique.txt, non authentifié."
@@ -548,6 +548,13 @@ elif [[ -n $(find "$EN_COURS" -mmin -180 2>/dev/null) ]]; then
 elif [[ -d $HOME/Windows && -f $WINDOWS ]]; then
   mkdir -p "$VM/programme" "$VM/resultats" "$VM/a-lancer"
   cp -f "$WINDOWS" "$VM/programme/vanguard.exe"
+  # Sa fenêtre à côté de lui : l'étape « Fenêtre (0.96) » de test.ps1 et le choix 3 du menu la cherchent là. Jamais
+  # une ancienne laissée en place : ce ne serait pas celle dont il porte l'empreinte gravée.
+  if [[ -f $FENETRE_WINDOWS ]]; then
+    cp -f "$FENETRE_WINDOWS" "$VM/programme/vanguard-fenetre.exe"
+  else
+    rm -f "$VM/programme/vanguard-fenetre.exe"
+  fi
   # Le lanceur de la clé aussi : test.ps1 l'essaie dans un dossier sans programme (Vanguard bloqué par Defender).
   cp -f outils/test-windows/test.ps1 outils/test-windows/menu.ps1 "outils/cle/Lancer Vanguard.bat" "$VM/programme/"
   cp -f outils/test-windows/TESTER-VANGUARD.bat outils/test-windows/ESSAI-ISOLEMENT.bat outils/test-windows/LISEZMOI.txt "$VM/"
