@@ -64,18 +64,39 @@ pub(super) fn docker() -> Vec<Constat> {
 
 /// Le démon de la personne est désigné par `variable` (DOCKER_HOST…) : la CLI, lancée sans les variables du compte,
 /// en lirait un autre, et son « aucun port exposé » serait faux (E-4, recontrôle 0.95). Il est dit non vérifié, avec
-/// la variable. Le démon du système (la prise par défaut) est lu quand même s'il répond, mais seuls ses ports exposés
-/// sont gardés : son « rien d'exposé » ne dit rien du démon désigné.
+/// la variable. Le démon du système (la prise par défaut) est lu quand même s'il répond, sinon les processus ; seuls
+/// les ports exposés vus ainsi sont gardés (`constats_demon_designe`) : leur « rien d'exposé » ne dit rien du démon
+/// désigné.
 fn demon_designe_non_lu(variable: &str) -> Vec<Constat> {
     let prise = Path::new(docker_api::PRISE);
-    let mut constats: Vec<Constat> = match prise.exists().then(|| docker_api::conteneurs_sur(prise)) {
-        Some(Ok(liste)) => constats_docker(liste)
-            .into_iter()
-            .filter(|c| c.probleme.is_some())
-            .collect(),
-        // Prise absente, refusée ou muette : rien de plus à dire que le constat non vérifié ci-dessous.
-        None | Some(Err(_)) => Vec::new(),
+    constats_demon_designe(
+        variable,
+        prise.exists().then(|| docker_api::conteneurs_sur(prise)),
+        || docker_sans_acces(&processus(), autres_visibles()),
+    )
+}
+
+/// Les conteneurs actifs lus sur une prise : (nom prêt à montrer, ports exposés au réseau).
+type Conteneurs = Vec<(String, Vec<String>)>;
+
+/// `demon_designe_non_lu`, sans rien lire : `systeme`, la lecture de la prise par défaut (`None` : absente) ;
+/// `par_processus`, la lecture par les processus, faite seulement si la prise ne répond pas.
+///
+/// Prise absente, refusée (hors du groupe docker : le cas courant) ou muette : les processus se lisent quand même, et
+/// la variable n'y change rien. Seule leur alerte vérifiée (un port publié hors de la boucle locale) est gardée : le
+/// non vérifié ci-dessous l'aurait sinon remplacée, et une variable du compte aurait caché un signal déjà vu (N-3,
+/// recontrôle 2 de la 0.95). Leur « sain », leur « aucun conteneur » ou leur propre non vérifié ne disent rien du
+/// démon désigné : jamais gardés.
+fn constats_demon_designe(
+    variable: &str,
+    systeme: Option<Result<Conteneurs, crate::modele::Echec>>,
+    par_processus: impl FnOnce() -> Constat,
+) -> Vec<Constat> {
+    let vus = match systeme {
+        Some(Ok(liste)) => constats_docker(liste),
+        None | Some(Err(_)) => vec![par_processus()],
     };
+    let mut constats: Vec<Constat> = vus.into_iter().filter(|c| c.verifie && c.probleme.is_some()).collect();
     constats.push(impossible(
         "Docker",
         &trf!(
@@ -324,6 +345,81 @@ mod tests {
         }
         // Le dockerd vu suffit, même si le PID 1 ne se lit pas.
         assert!(docker_sans_acces(std::slice::from_ref(&dockerd), false).verifie);
+    }
+
+    /// N-3 (recontrôle 2 de la 0.95) : un démon désigné par une variable (DOCKER_HOST…) n'est pas lu, mais la lecture
+    /// par les processus ne dépend pas de la variable. Hors du groupe docker (la prise refusée, le cas courant), son
+    /// alerte « port publié hors de la boucle locale » disparaissait : une simple variable du compte cachait un signal
+    /// vu, et le score montait. Son alerte reste, avec le non vérifié ; son « sain » ou son « aucun conteneur », qui ne
+    /// disent rien du démon désigné, jamais.
+    #[test]
+    fn demon_designe_garde_l_alerte_des_processus() {
+        let p = |nom: &str, args: &str| (nom.to_string(), args.split(' ').map(str::to_string).collect::<Vec<_>>());
+        let dockerd = p("dockerd", "/usr/bin/dockerd -H fd://");
+        let shim = p("containerd-shim", "/usr/bin/containerd-shim-runc-v2 -namespace moby");
+        let ouvert = p(
+            "docker-proxy",
+            "/usr/bin/docker-proxy -proto tcp -host-ip 0.0.0.0 -host-port 8080 -container-ip 172.17.0.2 -container-port 80",
+        );
+        let resume = |c: &[Constat]| {
+            c.iter()
+                .map(|c| format!("{}|{:?}|{}", c.verifie, c.probleme, c.message))
+                .collect::<Vec<_>>()
+        };
+        let non_verifie = |c: &Constat, variable: &str| !c.verifie && c.message.contains(variable);
+        let refusee = || Some(Err(crate::modele::Echec::new("docker", crate::modele::Raison::Droits)));
+        // Prise refusée ou absente, port publié vu par les processus : l'alerte ET le non vérifié.
+        for systeme in [refusee(), None] {
+            let procs = [dockerd.clone(), shim.clone(), ouvert.clone()];
+            let c = constats_demon_designe("DOCKER_HOST", systeme, || docker_sans_acces(&procs, true));
+            assert!(
+                c.iter()
+                    .any(|c| c.verifie && c.probleme == Some(Niveau::Eleve) && c.message.contains("8080/tcp")),
+                "alerte des processus perdue : {:#?}",
+                resume(&c)
+            );
+            assert!(c.iter().any(|c| non_verifie(c, "DOCKER_HOST")), "{:#?}", resume(&c));
+            assert!(
+                !c.iter().any(|c| c.verifie && c.probleme.is_none()),
+                "{:#?}",
+                resume(&c)
+            );
+        }
+        // Rien de publié, démon arrêté ou processus masqués : ni « sain », ni « aucun conteneur », ni un second
+        // non vérifié ; seulement celui du démon désigné.
+        for (procs, visibles) in [
+            (vec![dockerd.clone()], true),
+            (vec![dockerd.clone(), shim.clone()], true),
+            (vec![], true),
+            (vec![shim.clone()], true),
+            (vec![], false),
+        ] {
+            let c = constats_demon_designe("DOCKER_CONTEXT", refusee(), || docker_sans_acces(&procs, visibles));
+            assert!(
+                c.len() == 1 && non_verifie(&c[0], "DOCKER_CONTEXT"),
+                "{:#?}",
+                resume(&c)
+            );
+        }
+        // La prise du système répond : ses ports exposés sont gardés, son « rien d'exposé » non ; les processus, qui
+        // diraient la même chose de ce démon-là, ne sont pas relus.
+        let sans_processus = || -> Constat { panic!("processus lus alors que la prise répond") };
+        let c = constats_demon_designe(
+            "DOCKER_CONFIG",
+            Some(Ok(vec![("salon".into(), vec!["8080/tcp".into()])])),
+            sans_processus,
+        );
+        assert!(
+            c.len() == 2 && c[0].probleme == Some(Niveau::Eleve) && non_verifie(&c[1], "DOCKER_CONFIG"),
+            "{:#?}",
+            resume(&c)
+        );
+        let c = constats_demon_designe(
+            "DOCKER_CONFIG",
+            Some(Ok(vec![("salon".into(), vec![])])),
+            sans_processus,
+        );
+        assert!(c.len() == 1 && non_verifie(&c[0], "DOCKER_CONFIG"), "{:#?}", resume(&c));
     }
 
     /// Posée dans le processus relancé par l'essai E-4.
