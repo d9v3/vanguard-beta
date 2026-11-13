@@ -388,9 +388,12 @@ jobs:
       # Les tests qui ne peuvent pas tourner ici (registre inaccessible…) le notent dans VANGUARD_TESTS_SAUTES
       # (src/essais.rs) : sans lui, libtest avale leur message et les compte réussis. Comptés et montrés au résumé,
       # même si les tests échouent : non vérifié n'est jamais compté sain, comme dans outils/verifier.sh.
+      # VANGUARD_ESSAI_CLASSES_DU_COMPTE : machine jetable, le piège sous HKCU\Software\Classes (eleve.rs,
+      # runas_ignore_les_classes_du_compte) peut y être posé puis retiré ; jamais sur un ordinateur à quelqu'un.
       - name: Tests sur un vrai Windows
         env:
           VANGUARD_TESTS_SAUTES: ${{ runner.temp }}\sautes.txt
+          VANGUARD_ESSAI_CLASSES_DU_COMPTE: "1"
         run: cargo test --locked --target x86_64-pc-windows-msvc
       - name: Tests sautés sur le vrai Windows
         if: always()

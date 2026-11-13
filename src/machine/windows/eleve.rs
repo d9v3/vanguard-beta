@@ -15,12 +15,22 @@
 //! et à la DACL explicite. Le parent n'accepte que le client dont le PID est celui du processus qu'il vient de lancer ;
 //! le fils n'accepte qu'un serveur dont le PID est celui annoncé et dont le programme a la même empreinte SHA-256 que
 //! le sien. Un tube anonyme hérité ne marcherait pas : un processus « runas » est créé par le service AppInfo, il
-//! n'hérite rien de nous. Pendant que la demande d'administrateur attend, le parent tient le chemin qu'elle va relire
-//! (`tenir_le_programme`) : chaque dossier vérifié sans point d'analyse (jonction, lien) et ouvert sans partage de
+//! n'hérite rien de nous. Avant « runas », le parent tient le chemin que la demande va relire (`tenir_le_programme`,
+//! par son nom long) : chaque dossier vérifié sans point d'analyse (jonction, lien) et ouvert sans partage de
 //! suppression, puis son fichier, aux octets du programme qui tourne, chacun à l'endroit nommé pour Windows (une
-//! lettre de lecteur redéfinie par le compte est refusée) ; ni renommage, ni remplacement, ni jonction possibles avant
-//! la réponse (même dans une copie sous le dossier du compte, même sur une clé USB), revu juste avant « runas ». La
-//! commande de « runas » est prise dans la classe des programmes de la machine (HKLM), jamais dans celle du compte.
+//! lettre de lecteur qui mène ailleurs à ce moment est refusée) ; tant que les poignées vivent, ni renommage, ni
+//! remplacement des octets, ni jonction. Tout est revu une dernière fois juste avant « runas » (`preparer_la_relance`).
+//!
+//! Ce qui n'est PAS tenu, faute de signature ou d'élévation sans chemin (décision de l'auteur) : « runas » reçoit un
+//! chemin en texte, que Windows résout de nouveau pendant la demande d'administrateur, qui dure des secondes. Un
+//! programme du compte peut, dans ce temps, redéfinir la lettre du lecteur pour sa session, ou faire du fichier tenu
+//! un lien symbolique (s'il en a le droit : l'accès « écrire les attributs » n'est pas bloqué par la poignée). La
+//! fenêtre UAC montrerait alors le même chemin pour un autre programme. Ce cas n'est pas empêché, il est vu après coup
+//! (`verifier_le_fils`) : dès le retour de « runas », avant d'envoyer quoi que ce soit au fils, l'image du processus
+//! élevé est comparée au fichier tenu (chemins NT) et la revue est refaite ; un écart ou une lecture impossible :
+//! rien n'est envoyé, le fils est arrêté si Windows le permet, alerte à l'écran et au journal. L'empreinte que le fils
+//! compare au parent ne protège qu'un vrai Vanguard contre un faux serveur, pas l'inverse. La commande de « runas »
+//! est prise dans la classe des programmes de la machine (HKLM), jamais dans celle du compte.
 //! Le processus élevé n'écrit aucun fichier dans un dossier du compte : ses réponses passent par le tube.
 
 // FFI de Windows (kernel32, advapi32, shell32) : tube nommé, élévation.
@@ -72,6 +82,13 @@ unsafe extern "system" {
     fn GetConsoleMode(console: *mut c_void, mode: *mut u32) -> i32;
     fn GetFinalPathNameByHandleW(fichier: *mut c_void, tampon: *mut u16, taille: u32, drapeaux: u32) -> u32;
     fn GetFileInformationByHandleEx(fichier: *mut c_void, classe: u32, tampon: *mut c_void, taille: u32) -> i32;
+    fn GetLongPathNameW(court: *const u16, long: *mut u16, taille: u32) -> u32;
+    fn QueryFullProcessImageNameW(processus: *mut c_void, drapeaux: u32, nom: *mut u16, taille: *mut u32) -> i32;
+    fn TerminateProcess(processus: *mut c_void, code: u32) -> i32;
+    #[cfg(test)]
+    fn GetCurrentProcess() -> *mut c_void;
+    #[cfg(test)]
+    fn GetShortPathNameW(long: *const u16, court: *mut u16, taille: u32) -> u32;
     #[cfg(test)]
     fn DefineDosDeviceW(drapeaux: u32, nom: *const u16, cible: *const u16) -> i32;
     #[cfg(test)]
@@ -421,42 +438,21 @@ pub(crate) fn appliquer(lignes: &[String]) -> Option<Vec<Reponse>> {
     let Ok(exe) = std::env::current_exe() else {
         return relance_impossible("chemin du programme", "program path");
     };
-    // Chaque dossier du chemin, puis le fichier, tenus jusqu'à la réponse du fils : le chemin que « runas » relira est
-    // celui qui a été vérifié.
-    let tenu = match tenir_le_programme(&exe) {
+    // Chaque dossier du chemin, puis le fichier, tenus jusqu'à la réponse du fils (`drop(tenu)` tout en bas), chaque
+    // contrôle revu en dernier : le chemin donné à « runas » (`tenu.chemin`, le nom long) est celui qui a été vérifié.
+    let tenu = match preparer_la_relance(&exe, crate::protection::cle::meme_que_soi, |_| {}) {
         Ok(t) => t,
-        Err(ecart) => return chemin_refuse(&exe, &ecart),
+        Err(refus) => {
+            refus.montrer(&exe);
+            return None;
+        }
     };
-    // La vraie garde contre une DLL posée à côté du programme est dans le PE lui-même (chargement.rs : imports pris
-    // dans System32 seulement). Elle n'existe qu'à partir de Windows 10 1607 : en plus, une DLL déjà là arrête tout,
-    // sans autre demande d'administrateur.
-    if let Some(dll) = exe.parent().and_then(dll_a_cote) {
-        trp!(
-            "    {dll} est à côté de Vanguard : par prudence, rien n'est fait en administrateur. Placez vanguard.exe seul dans un dossier à lui, puis recommencez.",
-            "    {dll} sits next to Vanguard: to be safe, nothing is done as administrator. Put vanguard.exe alone in a folder of its own, then try again."
-        );
-        return None;
-    }
-    // Le fichier tenu doit être le programme qui tourne (empreinte prise au démarrage) : un autre programme du compte
-    // a pu le remplacer avant qu'il soit tenu, et c'est lui qui recevrait les droits d'administrateur.
-    if !crate::protection::cle::meme_que_soi(&tenu.fichier) {
-        trp!(
-            "    ✖ Le fichier de Vanguard n'est plus le programme qui tourne ({}) : rien n'est fait en administrateur. Relancez Vanguard, puis recommencez.",
-            "    ✖ Vanguard's file is no longer the running program ({}): nothing is done as administrator. Restart Vanguard, then try again.",
-            exe.display()
-        );
-        return None;
-    }
-    // Revu juste avant « runas » : le fichier a pu devenir un point d'analyse malgré la poignée.
-    if let Err(ecart) = tenu.encore_sur() {
-        return chemin_refuse(&exe, &ecart);
-    }
     trp!(
         "    {GRIS}Une fenêtre Vanguard administrateur s'ouvre, montre la liste et attend Entrée ; attendez qu'elle se ferme.{RESET}",
         "    {GRIS}A Vanguard administrator window opens, shows the list and waits for Enter; wait for it to close.{RESET}"
     );
     let parametres = format!("appliquer-eleve --canal {canal} --parent {}", std::process::id());
-    let fils = match relancer_eleve(&exe, &parametres) {
+    let fils = match relancer_eleve(&tenu.chemin, &parametres) {
         Ok(f) => f,
         Err(1223) => {
             trp!(
@@ -473,6 +469,15 @@ pub(crate) fn appliquer(lignes: &[String]) -> Option<Vec<Reponse>> {
             return None;
         }
     };
+    // Après coup, AVANT tout envoi : le processus élevé est-il bien le fichier tenu ? Pendant la demande, la lettre ou
+    // le fichier ont pu mener ailleurs (voir la doc du module). Au moindre doute, rien ne part dans le tube.
+    if let Err(imposteur) = verifier_le_fils(&tenu, fils.0.as_raw_handle()) {
+        let arrete = fils.arreter();
+        imposteur.alerter(arrete);
+        drop(serveur);
+        drop(tenu);
+        return None;
+    }
     let pid = fils.pid();
     // Si le fils meurt sans s'être branché, l'attente du serveur ne finirait jamais : un fil le surveille et, à sa
     // mort, se branche lui-même pour la débloquer (le serveur reconnaît alors son propre PID).
@@ -484,6 +489,8 @@ pub(crate) fn appliquer(lignes: &[String]) -> Option<Vec<Reponse>> {
     let reponses = serveur.dialoguer(pid, &envoi, ordre.len());
     drop(serveur);
     let _ = veilleur.join();
+    // Lâché seulement ici, le fils fini : jusque-là, ni dossier renommé ni octets du programme changés.
+    drop(tenu);
     Some(reponses.map_or_else(|| lignes.iter().map(|_| non_faite()).collect(), remettre))
 }
 
@@ -502,6 +509,165 @@ fn chemin_refuse(exe: &std::path::Path, ecart: &Ecart) -> Option<Vec<Reponse>> {
         &format!("relance refusée : chemin du programme non sûr ({})", ecart.genre()),
     );
     None
+}
+
+/// Pourquoi la relance administrateur est refusée avant « runas ».
+#[derive(Debug)]
+enum Refus {
+    Chemin(Ecart),
+    /// Une bibliothèque (son nom) à côté du programme.
+    Dll(String),
+    /// Le fichier tenu n'a plus les octets du programme qui tourne.
+    PasSoi,
+}
+
+impl Refus {
+    fn montrer(&self, exe: &std::path::Path) {
+        match self {
+            Self::Chemin(ecart) => {
+                chemin_refuse(exe, ecart);
+            }
+            Self::Dll(dll) => trp!(
+                "    {dll} est à côté de Vanguard : par prudence, rien n'est fait en administrateur. Placez vanguard.exe seul dans un dossier à lui, puis recommencez.",
+                "    {dll} sits next to Vanguard: to be safe, nothing is done as administrator. Put vanguard.exe alone in a folder of its own, then try again."
+            ),
+            Self::PasSoi => trp!(
+                "    ✖ Le fichier de Vanguard n'est plus le programme qui tourne ({}) : rien n'est fait en administrateur. Relancez Vanguard, puis recommencez.",
+                "    ✖ Vanguard's file is no longer the running program ({}): nothing is done as administrator. Restart Vanguard, then try again.",
+                exe.display()
+            ),
+        }
+    }
+}
+
+/// Tout ce qui se vérifie avant « runas », sans rien afficher : le chemin tenu (`tenir_le_programme`), ses octets
+/// (`est_soi`, `meme_que_soi` hors des essais : un autre programme du compte a pu remplacer le fichier avant qu'il soit
+/// tenu), puis LA REVUE, en dernier : chaque élément encore à sa place (`encore_sur`) et aucune bibliothèque à côté.
+/// `entre_temps` passe juste avant la revue (rien hors des essais, qui y changent le fichier ou le dossier : une revue
+/// retirée ou remontée plus haut se voit).
+///
+/// La bibliothèque à côté : la vraie garde est dans le PE lui-même (chargement.rs : imports pris dans System32
+/// seulement), à partir de Windows 10 1607. Avant, ce contrôle n'est qu'un instantané : une DLL posée pendant la
+/// demande d'administrateur n'est pas vue (une poignée sur le dossier n'empêche pas d'y créer un fichier).
+fn preparer_la_relance(
+    exe: &std::path::Path,
+    est_soi: impl Fn(&std::fs::File) -> bool,
+    entre_temps: impl FnOnce(&ProgrammeTenu),
+) -> Result<ProgrammeTenu, Refus> {
+    let tenu = tenir_le_programme(exe).map_err(Refus::Chemin)?;
+    if !est_soi(&tenu.fichier) {
+        return Err(Refus::PasSoi);
+    }
+    entre_temps(&tenu);
+    tenu.encore_sur().map_err(Refus::Chemin)?;
+    if let Some(dll) = tenu.chemin.parent().and_then(dll_a_cote) {
+        return Err(Refus::Dll(dll));
+    }
+    Ok(tenu)
+}
+
+/// Pourquoi le processus élevé n'est pas tenu pour le Vanguard vérifié.
+#[derive(Debug)]
+enum Imposteur {
+    /// Son image ou le chemin NT du fichier tenu n'a pas pu être lu (erreur Windows) : rien n'est prouvé, donc refusé.
+    Illisible(Option<i32>),
+    /// Son image n'est pas le fichier tenu.
+    Autre,
+    /// Le chemin tenu n'est plus sûr après la demande (lettre, lien…).
+    Revue(Ecart),
+}
+
+impl Imposteur {
+    /// L'alerte à l'écran et au journal (sans chemin : il porterait le nom du compte).
+    fn alerter(&self, arrete: bool) {
+        let rouge = crate::ui::couleur(crate::risk::Niveau::Critique);
+        let cause = match self {
+            Self::Illisible(Some(code)) => trf!(
+                "Vanguard n'a pas pu vérifier quel programme Windows a lancé en administrateur (erreur Windows {})",
+                "Vanguard could not check which program Windows started as administrator (Windows error {})",
+                code
+            ),
+            Self::Illisible(None) => tr!(
+                "Vanguard n'a pas pu vérifier quel programme Windows a lancé en administrateur",
+                "Vanguard could not check which program Windows started as administrator"
+            )
+            .to_string(),
+            Self::Autre => tr!(
+                "Le programme que Windows a lancé en administrateur n'est PAS le Vanguard vérifié : un autre programme a pris sa place pendant la demande d'administrateur",
+                "The program Windows started as administrator is NOT the checked Vanguard: another program took its place during the administrator prompt"
+            )
+            .to_string(),
+            Self::Revue(ecart) => trf!(
+                "Pendant la demande d'administrateur, le chemin de Vanguard a changé : il {}",
+                "During the administrator prompt, Vanguard's path changed: it {}",
+                ecart.dire()
+            ),
+        };
+        let suite = if arrete {
+            tr!(
+                "Rien ne lui a été envoyé et il a été arrêté.",
+                "Nothing was sent to it and it was stopped."
+            )
+        } else {
+            tr!(
+                "Rien ne lui a été envoyé, mais Windows n'a pas permis de l'arrêter : fermez toute fenêtre administrateur qui vient de s'ouvrir, sans y appuyer sur Entrée.",
+                "Nothing was sent to it, but Windows did not allow stopping it: close any administrator window that just opened, without pressing Enter in it."
+            )
+        };
+        trp!(
+            "    {rouge}✖ ALERTE : {cause}.{RESET} {suite} Si vous avez accepté la demande, ce programme a reçu les droits d'administrateur : faites une analyse antivirus complète, puis relancez Vanguard depuis un dossier à vous.",
+            "    {rouge}✖ ALERT: {cause}.{RESET} {suite} If you accepted the prompt, that program got administrator rights: run a full antivirus scan, then restart Vanguard from a folder of your own."
+        );
+        let genre = match self {
+            Self::Illisible(Some(code)) => format!("image du processus élevé illisible, erreur {code}"),
+            Self::Illisible(None) => "image du processus élevé illisible".to_string(),
+            Self::Autre => "processus élevé différent du programme tenu".to_string(),
+            Self::Revue(ecart) => format!("chemin changé pendant la demande ({})", ecart.genre()),
+        };
+        crate::journal::erreur(
+            crate::compte_rendu::Contexte::VanguardAdministrateur,
+            &format!(
+                "ALERTE relance : {genre} ; rien envoyé ; {}",
+                if arrete { "arrêté" } else { "non arrêté" }
+            ),
+        );
+    }
+}
+
+/// L'image du processus (QueryFullProcessImageNameW, PROCESS_NAME_NATIVE : `\Device\HarddiskVolumeN\…`, sans lettre
+/// de lecteur du compte), ou l'erreur Windows.
+fn image_du_processus(processus: *mut c_void) -> Result<std::ffi::OsString, Option<i32>> {
+    use std::os::windows::ffi::OsStringExt;
+    const NOM_NATIF: u32 = 0x1;
+    let mut tampon = vec![0u16; 32_768];
+    let mut taille = u32::try_from(tampon.len()).map_err(|_| None)?;
+    // SAFETY: la poignée est celle d'un processus (ou l'appel échoue et l'erreur est rendue) ; Windows écrit au plus
+    // `taille` caractères dans le tampon et y met le nombre écrit.
+    if unsafe { QueryFullProcessImageNameW(processus, NOM_NATIF, tampon.as_mut_ptr(), &raw mut taille) } == 0 {
+        return Err(derniere_erreur());
+    }
+    let n = usize::try_from(taille).map_err(|_| None)?;
+    tampon.get(..n).map(std::ffi::OsString::from_wide).ok_or(None)
+}
+
+/// Le processus a-t-il pour image le fichier ouvert `fichier` ? Les deux chemins NT (sans lettre), comparés sans la
+/// casse ; une lecture impossible est un refus, jamais un accord.
+fn image_est_le_fichier(processus: *mut c_void, fichier: &std::fs::File) -> Result<(), Imposteur> {
+    let image = image_du_processus(processus).map_err(Imposteur::Illisible)?;
+    let attendu = chemin_final(fichier, VOLUME_NT).map_err(Imposteur::Illisible)?;
+    if image.is_empty() || !meme_chemin(&image, &attendu) {
+        return Err(Imposteur::Autre);
+    }
+    Ok(())
+}
+
+/// Juste après « runas », avant tout envoi : le processus élevé a pour image le fichier tenu, et le chemin tenu est
+/// encore sûr. Une lettre redéfinie ou un lien posé pendant la demande ferait élever un autre fichier, au même chemin
+/// affiché : l'image le montre. Cela ne défait pas l'élévation, mais elle ne passe plus en silence et le fils ne
+/// reçoit rien.
+fn verifier_le_fils(tenu: &ProgrammeTenu, processus: *mut c_void) -> Result<(), Imposteur> {
+    image_est_le_fichier(processus, &tenu.fichier)?;
+    tenu.encore_sur().map_err(Imposteur::Revue)
 }
 
 /// La relance élevée ne peut pas se préparer : on le dit, rien n'est fait, et aucune autre demande d'administrateur ne
@@ -813,6 +979,11 @@ impl Fils {
         // SAFETY: idem ; INFINITE, la fenêtre est visible et c'est la personne qui la ferme.
         unsafe { WaitForSingleObject(self.0.as_raw_handle(), u32::MAX) };
     }
+    /// Arrête le processus, si Windows le permet (une poignée sur un processus élevé peut ne pas en avoir le droit).
+    fn arreter(&self) -> bool {
+        // SAFETY: la poignée est valide tant que `self` vit ; un refus est rendu, pas une faute.
+        unsafe { TerminateProcess(self.0.as_raw_handle(), u32::try_from(CANAL_REFUSE).unwrap_or(1)) != 0 }
+    }
 }
 
 /// Pourquoi le chemin du programme ne peut pas être tenu.
@@ -821,8 +992,12 @@ enum Ecart {
     /// Pas `X:\…` sans `..` : partage `\\serveur\…`, chemin relatif ou forme que le processus élevé relirait autrement.
     PasUnDisque,
     /// L'élément tenu n'est pas, pour Windows, à l'endroit nommé : la lettre du lecteur mène ailleurs pour ce compte
-    /// (lecteur réseau, `subst`, lettre redéfinie par un programme du compte) ou le chemin a un nom court.
+    /// (lecteur réseau, `subst`, lettre redéfinie par un programme du compte). Un nom court (8.3) n'en est pas un :
+    /// le chemin est d'abord pris par son nom long (`tenir_le_programme`).
     Ailleurs(std::path::PathBuf),
+    /// Windows ne dit pas où est l'élément tenu (GetFinalPathNameByHandleW en échec), avec son erreur : refusé, sans
+    /// prétendre que la lettre mène ailleurs.
+    SansEndroit(std::path::PathBuf, Option<i32>),
     /// Un dossier ou le fichier est un point d'analyse, avec son étiquette (jonction, lien, dossier du nuage…).
     PointDAnalyse(std::path::PathBuf, u32),
     /// Un élément n'a pas le genre attendu (un fichier au milieu, un dossier au bout).
@@ -851,8 +1026,19 @@ impl Ecart {
             )
             .to_string(),
             Self::Ailleurs(c) => trf!(
-                "ne mène pas où il le dit : pour Windows, {} est ailleurs (lecteur réseau, lecteur créé par subst, lettre redéfinie pour ce compte ou nom court)",
-                "does not lead where it says: for Windows, {} is elsewhere (network drive, drive made by subst, letter redefined for this account or short name)",
+                "ne mène pas où il le dit : pour Windows, {} est ailleurs (lecteur réseau, lecteur créé par subst ou lettre redéfinie pour ce compte)",
+                "does not lead where it says: for Windows, {} is elsewhere (network drive, drive made by subst or letter redefined for this account)",
+                c.display()
+            ),
+            Self::SansEndroit(c, Some(code)) => trf!(
+                "ne peut pas être situé : Windows ne dit pas où est {} (erreur Windows {})",
+                "cannot be located: Windows does not say where {} is (Windows error {})",
+                c.display(),
+                code
+            ),
+            Self::SansEndroit(c, None) => trf!(
+                "ne peut pas être situé : Windows ne dit pas où est {}",
+                "cannot be located: Windows does not say where {} is",
                 c.display()
             ),
             Self::PointDAnalyse(c, ETIQUETTE_JONCTION) => trf!(
@@ -913,9 +1099,21 @@ impl Ecart {
                 "Placez vanguard.exe dans un dossier hors du nuage (par exemple C:\\Outils\\Vanguard), puis recommencez.",
                 "Put vanguard.exe in a folder outside the cloud (for example C:\\Tools\\Vanguard), then try again."
             ),
+            Self::Inouvrable(_, Some(2 | 3)) => tr!(
+                "Vanguard n'est plus à cet endroit (déplacé, effacé ou clé retirée) : remettez-le ou rebranchez la clé, relancez Vanguard, puis recommencez.",
+                "Vanguard is no longer at this place (moved, deleted or drive removed): put it back or plug the drive in again, restart Vanguard, then try again."
+            ),
             Self::Inouvrable(_, Some(32 | 33)) => tr!(
-                "Fermez le programme qui tient ce dossier ouvert (ou redémarrez l'ordinateur), puis recommencez.",
-                "Close the program holding this folder open (or restart the computer), then try again."
+                "Fermez le programme qui tient cet élément ouvert (ou redémarrez l'ordinateur), puis recommencez.",
+                "Close the program holding this item open (or restart the computer), then try again."
+            ),
+            Self::Ailleurs(_) => tr!(
+                "Lancez vanguard.exe depuis un disque de ce PC par sa vraie lettre (pas un lecteur réseau ni une lettre créée par subst), puis recommencez.",
+                "Start vanguard.exe from a disk of this PC by its real letter (not a network drive or a letter made by subst), then try again."
+            ),
+            Self::SansEndroit(..) => tr!(
+                "Placez vanguard.exe sur un disque ordinaire de ce PC, puis recommencez.",
+                "Put vanguard.exe on an ordinary disk of this PC, then try again."
             ),
             Self::Inouvrable(_, Some(5)) => tr!(
                 "Placez vanguard.exe dans un dossier que ce compte peut lire, puis recommencez.",
@@ -933,6 +1131,8 @@ impl Ecart {
         match self {
             Self::PasUnDisque => "pas un disque".to_string(),
             Self::Ailleurs(_) => "lecteur qui mène ailleurs".to_string(),
+            Self::SansEndroit(_, Some(code)) => format!("endroit illisible, erreur {code}"),
+            Self::SansEndroit(_, None) => "endroit illisible".to_string(),
             Self::PointDAnalyse(_, e) => format!("point d'analyse {e:#010x}"),
             Self::Genre(_) => "genre inattendu".to_string(),
             Self::Inouvrable(_, Some(code)) => format!("non tenable, erreur {code}"),
@@ -942,6 +1142,7 @@ impl Ecart {
 }
 
 /// Le programme à relancer en administrateur, tenu jusqu'à la réponse du fils.
+#[derive(Debug)]
 struct ProgrammeTenu {
     /// Chaque dossier du chemin, de la racine exclue au dossier du programme, avec le chemin qui l'a nommé.
     dossiers: Vec<(std::path::PathBuf, std::fs::File)>,
@@ -950,8 +1151,10 @@ struct ProgrammeTenu {
 }
 
 impl ProgrammeTenu {
-    /// Juste avant « runas » : chaque élément tenu est encore à l'endroit nommé, sans point d'analyse. Le fichier peut
-    /// en devenir un malgré la poignée (il suffit de l'accès « écrire les attributs », que le partage ne compare pas).
+    /// Juste avant « runas », puis de nouveau après (`verifier_le_fils`) : chaque élément tenu est encore à l'endroit
+    /// nommé, sans point d'analyse. Le fichier peut en devenir un malgré la poignée (il suffit de l'accès « écrire les
+    /// attributs », que le partage ne compare pas). Ce n'est qu'un instantané : entre la revue et la lecture par
+    /// AppInfo, cela reste possible ; seule la vérification d'après le lancement le voit.
     fn encore_sur(&self) -> Result<(), Ecart> {
         for (chemin, f) in self
             .dossiers
@@ -982,27 +1185,38 @@ fn attributs_et_etiquette(f: &std::fs::File) -> Option<(u32, u32)> {
     (ok != 0).then_some((info[0], info[1]))
 }
 
-/// Le chemin où Windows place l'élément ouvert, lettre comprise (`\\?\` retiré), lu par la poignée et non par un nom :
-/// la lettre vient du gestionnaire des volumes, pas de la table des lecteurs du compte.
-fn chemin_final(f: &std::fs::File) -> Option<std::ffi::OsString> {
+/// GetFinalPathNameByHandleW, drapeaux 0 : nom normalisé, volume nommé par sa lettre (VOLUME_NAME_DOS).
+const VOLUME_PAR_LETTRE: u32 = 0x0;
+/// VOLUME_NAME_NT : `\Device\HarddiskVolumeN\…`, la forme de l'image d'un processus.
+const VOLUME_NT: u32 = 0x2;
+
+/// La dernière erreur de Windows, gardée pour le message et le journal.
+fn derniere_erreur() -> Option<i32> {
+    // SAFETY: GetLastError ne prend rien.
+    i32::try_from(unsafe { GetLastError() }).ok()
+}
+
+/// Le chemin où Windows place l'élément ouvert (`\\?\` retiré), lu par la poignée et non par un nom : avec
+/// `VOLUME_PAR_LETTRE`, la lettre vient du gestionnaire des volumes, pas de la table des lecteurs du compte. L'erreur
+/// Windows si Windows ne le dit pas.
+fn chemin_final(f: &std::fs::File, drapeaux: u32) -> Result<std::ffi::OsString, Option<i32>> {
     use std::os::windows::ffi::OsStringExt;
     let mut tampon = vec![0u16; 1024];
     for _ in 0..2 {
-        let taille = u32::try_from(tampon.len()).ok()?;
+        let taille = u32::try_from(tampon.len()).map_err(|_| None)?;
         // SAFETY: la poignée vit pendant l'appel ; Windows écrit au plus `taille` caractères dans le tampon.
-        // Drapeaux 0 : nom normalisé, volume nommé par sa lettre (VOLUME_NAME_DOS).
-        let n = unsafe { GetFinalPathNameByHandleW(f.as_raw_handle(), tampon.as_mut_ptr(), taille, 0) };
-        let n = usize::try_from(n).ok()?;
+        let n = unsafe { GetFinalPathNameByHandleW(f.as_raw_handle(), tampon.as_mut_ptr(), taille, drapeaux) };
         if n == 0 {
-            return None;
+            return Err(derniere_erreur());
         }
+        let n = usize::try_from(n).map_err(|_| None)?;
         if let Some(texte) = tampon.get(..n).filter(|_| n < tampon.len()) {
             let sans = texte.strip_prefix(&[u16::from(b'\\'), u16::from(b'\\'), u16::from(b'?'), u16::from(b'\\')][..]);
-            return Some(std::ffi::OsString::from_wide(sans.unwrap_or(texte)));
+            return Ok(std::ffi::OsString::from_wide(sans.unwrap_or(texte)));
         }
         tampon = vec![0u16; n + 1];
     }
-    None
+    Err(None)
 }
 
 /// Deux chemins de Windows égaux à la casse près.
@@ -1015,15 +1229,56 @@ fn meme_chemin(a: &std::ffi::OsStr, b: &std::ffi::OsStr) -> bool {
 fn verifier_l_element(chemin: &std::path::Path, f: &std::fs::File) -> Result<(), Ecart> {
     const POINT_D_ANALYSE: u32 = 0x400;
     let Some((attributs, etiquette)) = attributs_et_etiquette(f) else {
-        return Err(Ecart::Inouvrable(chemin.to_path_buf(), None));
+        return Err(Ecart::Inouvrable(chemin.to_path_buf(), derniere_erreur()));
     };
     if attributs & POINT_D_ANALYSE != 0 {
         return Err(Ecart::PointDAnalyse(chemin.to_path_buf(), etiquette));
     }
-    if !chemin_final(f).is_some_and(|c| meme_chemin(&c, chemin.as_os_str())) {
-        return Err(Ecart::Ailleurs(chemin.to_path_buf()));
+    juger_l_endroit(chemin, chemin_final(f, VOLUME_PAR_LETTRE))
+}
+
+/// `chemin` contre l'endroit que Windows donne (`chemin_final`) : ailleurs, ou inconnu avec l'erreur Windows (un
+/// échec de lecture n'est pas « un lecteur qui mène ailleurs », mais il refuse aussi).
+fn juger_l_endroit(chemin: &std::path::Path, endroit: Result<std::ffi::OsString, Option<i32>>) -> Result<(), Ecart> {
+    match endroit {
+        Err(code) => Err(Ecart::SansEndroit(chemin.to_path_buf(), code)),
+        Ok(c) if !meme_chemin(&c, chemin.as_os_str()) => Err(Ecart::Ailleurs(chemin.to_path_buf())),
+        Ok(_) => Ok(()),
     }
-    Ok(())
+}
+
+/// `X:\a\b…` : la lettre et les éléments, si le chemin est complet sur un disque, sans `..` ni forme `\\?\`.
+fn disque_et_reste(p: &std::path::Path) -> Option<(std::path::PrefixComponent<'_>, Vec<std::path::Component<'_>>)> {
+    use std::path::{Component, Prefix};
+    let mut composants = p.components();
+    let (Some(Component::Prefix(lecteur)), Some(Component::RootDir)) = (composants.next(), composants.next()) else {
+        return None;
+    };
+    let reste: Vec<Component> = composants.collect();
+    (matches!(lecteur.kind(), Prefix::Disk(_))
+        && !reste.is_empty()
+        && reste.iter().all(|c| matches!(c, Component::Normal(_))))
+    .then_some((lecteur, reste))
+}
+
+/// Le nom long (GetLongPathNameW) de `p`, sans nom court (8.3) ; `None` si Windows ne le donne pas.
+fn nom_long(p: &std::path::Path) -> Option<std::path::PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    let court: Vec<u16> = p.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut tampon = vec![0u16; 1024];
+    for _ in 0..2 {
+        let taille = u32::try_from(tampon.len()).ok()?;
+        // SAFETY: `court` est terminé par un zéro et vit pendant l'appel ; Windows écrit au plus `taille` caractères.
+        let n = usize::try_from(unsafe { GetLongPathNameW(court.as_ptr(), tampon.as_mut_ptr(), taille) }).ok()?;
+        if n == 0 {
+            return None;
+        }
+        if let Some(texte) = tampon.get(..n).filter(|_| n < tampon.len()) {
+            return Some(std::ffi::OsString::from_wide(texte).into());
+        }
+        tampon = vec![0u16; n + 1];
+    }
+    None
 }
 
 /// Tient le chemin `exe` que « runas » va relire : chaque dossier, de haut en bas, ouvert sans suivre de point
@@ -1031,31 +1286,38 @@ fn verifier_l_element(chemin: &std::path::Path, f: &std::fs::File) -> Result<(),
 /// en lecture partagée seule. Tant que les poignées vivent, aucun dossier ne peut être renommé ni effacé (il faut
 /// l'accès « suppression », que la poignée refuse de partager), ni devenir une jonction (un dossier doit être vide
 /// pour cela, et chacun contient le suivant) ; le fichier ne peut être ni changé, ni renommé, mais il pourrait devenir
-/// un point d'analyse : `ProgrammeTenu::encore_sur` le revoit juste avant « runas ». Le processus élevé ne fait pas
-/// ce contrôle lui-même : un programme substitué ne le ferait pas.
+/// un point d'analyse (lien symbolique) : `ProgrammeTenu::encore_sur` le revoit juste avant « runas ». Le processus
+/// élevé ne fait pas ce contrôle lui-même : un programme substitué ne le ferait pas.
 ///
 /// La lettre du lecteur se résout par la table des lecteurs du compte, qu'un programme du compte peut changer sans
 /// droits (DefineDosDevice, subst) ; elle n'est donc pas crue : chaque élément tenu doit être, pour Windows, à
 /// l'endroit nommé, lettre comprise (`chemin_final`, lu par la poignée). Un lecteur réseau, un subst ou une lettre
-/// redéfinie qui mène ailleurs est refusé.
+/// redéfinie qui mène ailleurs AU MOMENT DE LA REVUE est refusé.
+///
+/// Jusqu'où cela tient : jusqu'à la dernière revue (`preparer_la_relance`), pas jusqu'à la lecture du chemin par
+/// AppInfo, qui a lieu pendant la demande d'administrateur. Dans ce temps, la lettre peut encore être redéfinie et le
+/// fichier devenir un lien ; c'est vu après coup par `verifier_le_fils`, pas empêché (voir la doc du module).
+///
+/// Le chemin tenu est le nom long de `exe` (GetLongPathNameW), même lettre : un dossier écrit en nom court (8.3,
+/// `C:\Users\alice\TELECH~1\…`, courant pour un zip ouvert par l'Explorateur) serait sinon refusé à tort, puisque Windows
+/// rend le nom long. Ce nom n'est qu'un candidat : chaque élément est tenu et vérifié comme les autres, et c'est lui,
+/// jamais `exe`, que « runas » reçoit.
 fn tenir_le_programme(exe: &std::path::Path) -> Result<ProgrammeTenu, Ecart> {
+    let (lecteur, _) = disque_et_reste(exe).ok_or(Ecart::PasUnDisque)?;
+    let long = nom_long(exe)
+        .filter(|l| disque_et_reste(l).is_some_and(|(autre, _)| meme_chemin(autre.as_os_str(), lecteur.as_os_str())));
+    tenir_tel_quel(long.as_deref().unwrap_or(exe))
+}
+
+/// `tenir_le_programme` sur ce chemin-là, sans le convertir.
+fn tenir_tel_quel(exe: &std::path::Path) -> Result<ProgrammeTenu, Ecart> {
     use std::os::windows::fs::OpenOptionsExt;
-    use std::path::{Component, Prefix};
+    use std::path::Component;
     const PARTAGE_LECTURE: u32 = 0x1;
     const PARTAGE_ECRITURE: u32 = 0x2;
     const SEMANTIQUE_DE_SAUVEGARDE: u32 = 0x0200_0000;
     const OUVRIR_LE_POINT: u32 = 0x0020_0000;
-    let mut composants = exe.components();
-    let (Some(Component::Prefix(lecteur)), Some(Component::RootDir)) = (composants.next(), composants.next()) else {
-        return Err(Ecart::PasUnDisque);
-    };
-    let reste: Vec<Component> = composants.collect();
-    if !matches!(lecteur.kind(), Prefix::Disk(_))
-        || reste.is_empty()
-        || reste.iter().any(|c| !matches!(c, Component::Normal(_)))
-    {
-        return Err(Ecart::PasUnDisque);
-    }
+    let (lecteur, reste) = disque_et_reste(exe).ok_or(Ecart::PasUnDisque)?;
     let mut chemin = std::path::PathBuf::from(lecteur.as_os_str());
     chemin.push(Component::RootDir);
     let mut dossiers = Vec::with_capacity(reste.len());
@@ -2121,7 +2383,7 @@ mod tests {
         for ((chemin, f), attendu) in tenu.dossiers.iter().zip(attendus.iter().rev()) {
             assert_eq!(chemin, attendu);
             assert!(
-                chemin_final(f).is_some_and(|c| meme_chemin(&c, attendu.as_os_str())),
+                chemin_final(f, VOLUME_PAR_LETTRE).is_ok_and(|c| meme_chemin(&c, attendu.as_os_str())),
                 "{chemin:?}"
             );
         }
@@ -2174,24 +2436,19 @@ mod tests {
         drop(lettre);
     }
 
-    /// Constat 9 : le fichier tenu devient un lien symbolique après son ouverture (l'accès « écrire les attributs »
-    /// passe malgré la poignée) : la revue d'avant « runas » le refuse.
-    #[test]
-    fn un_fichier_devenu_lien_est_refuse() {
+    /// Fait du fichier `exe`, tenu ou non, un lien symbolique relatif vers « autre.exe », par l'accès « écrire les
+    /// attributs » (que la poignée de `tenir_le_programme` ne bloque pas). `Err` : la raison du saut.
+    fn poser_un_lien(exe: &std::path::Path) -> Result<(), &'static str> {
         use std::os::windows::fs::OpenOptionsExt;
         const ECRIRE_ATTRIBUTS: u32 = 0x100;
         const POSER_UN_POINT: u32 = 0x0009_00A4;
-        let (_d, vrai) = programme_jetable("eleve-devenu-lien");
-        let exe = vrai.join("vanguard.exe");
-        let tenu = tenir_le_programme(&exe).unwrap();
-        assert!(tenu.encore_sur().is_ok());
         let Ok(autre) = std::fs::OpenOptions::new()
             .access_mode(ECRIRE_ATTRIBUTS)
             .share_mode(0x7)
             .custom_flags(0x0020_0000)
-            .open(&exe)
+            .open(exe)
         else {
-            return crate::essais::saute("ouverture pour écrire les attributs impossible ici");
+            return Err("ouverture pour écrire les attributs impossible ici");
         };
         // REPARSE_DATA_BUFFER d'un lien symbolique relatif vers « autre.exe » (nom de substitution puis d'affichage).
         let cible: Vec<u16> = "autre.exe".encode_utf16().collect();
@@ -2222,9 +2479,22 @@ mod tests {
             )
         };
         if ok == 0 {
-            return crate::essais::saute("poser un point d'analyse sur un fichier est impossible ici");
+            return Err("poser un point d'analyse sur un fichier est impossible ici");
         }
-        drop(autre);
+        Ok(())
+    }
+
+    /// Constat 9 : le fichier tenu devient un lien symbolique après son ouverture (l'accès « écrire les attributs »
+    /// passe malgré la poignée) : la revue d'avant « runas » le refuse.
+    #[test]
+    fn un_fichier_devenu_lien_est_refuse() {
+        let (_d, vrai) = programme_jetable("eleve-devenu-lien");
+        let exe = vrai.join("vanguard.exe");
+        let tenu = tenir_le_programme(&exe).unwrap();
+        assert!(tenu.encore_sur().is_ok());
+        if let Err(raison) = poser_un_lien(&exe) {
+            return crate::essais::saute(raison);
+        }
         assert!(
             matches!(tenu.encore_sur(), Err(Ecart::PointDAnalyse(c, _)) if c == exe),
             "fichier devenu lien accepté"
@@ -2245,6 +2515,13 @@ mod tests {
                     "{}",
                     e.dire()
                 );
+                let conseil = e.conseil();
+                assert!(!conseil.contains("lien") && !conseil.contains("jonction"), "{conseil}");
+                assert!(!conseil.contains("link") && !conseil.contains("junction"), "{conseil}");
+                assert!(
+                    conseil.contains("plus à cet endroit") || conseil.contains("no longer"),
+                    "{conseil}"
+                );
             }
             autre => panic!("absent mal dit : {:?}", autre.map(|_| ())),
         }
@@ -2262,6 +2539,7 @@ mod tests {
                 assert!(dit.contains("déjà ouvert") || dit.contains("already open"), "{dit}");
                 assert!(!dit.contains("absent") && !dit.contains("missing"), "{dit}");
                 assert!(e.conseil().contains("Fermez") || e.conseil().contains("Close"));
+                assert!(e.conseil().contains("élément") || e.conseil().contains("item"));
                 assert_eq!(e.genre(), "non tenable, erreur 32");
             }
             autre => panic!("dossier bloqué mal dit : {:?}", autre.map(|_| ())),
@@ -2288,25 +2566,39 @@ mod tests {
 
     /// Constat 8 : « runas » prend sa commande dans la clé de la machine (SEE_MASK_CLASSKEY), jamais dans la vue
     /// fusionnée où une association posée sous HKCU\Software\Classes par un programme du compte passerait avant.
+    /// Contrôle de la structure seulement, jamais sauté : masque, classe nulle, clé donnée. Que ShellExecuteExW lise
+    /// bien cette clé et ignore HKCU ne se prouve que sur un vrai Windows, par une vraie élévation (VM, non prouvé).
     #[test]
     fn runas_lit_la_classe_de_la_machine() {
-        use winreg::enums::{HKEY_CLASSES_ROOT, HKEY_CURRENT_USER};
-        let Ok(classe) = cle_des_programmes() else {
-            return crate::essais::saute("pas de classe exefile sous HKLM ici");
-        };
+        let classe = cle_des_programmes().expect("classe exefile de la machine illisible");
         let rien = [0u16];
         let info = info_de_lancement(&rien, &rien, &rien, &rien, &classe).unwrap();
         assert_eq!(info.masque & 0xF, 0x3, "SEE_MASK_CLASSKEY absent");
-        assert_eq!(
-            info.cle,
-            classe.raw_handle().cast(),
-            "la clé passée n'est pas celle de la machine"
-        );
         assert!(info.classe.is_null());
-        // Une sous-clé posée sous HKCU (dans le préfixe jetable de Wine seulement : jamais sur un vrai Windows) se
-        // voit dans la vue fusionnée, pas dans la clé lue.
-        if !crate::commande::sous_wine() {
-            return crate::essais::saute("piège sous HKCU\\Software\\Classes posé sous Wine seulement");
+        assert!(!info.cle.is_null());
+        // advapi32 marque d'un bit 0x2 les poignées de la vue fusionnée des classes (HKEY_CLASSES_ROOT et ses
+        // sous-clés) ; une vraie poignée du noyau est un multiple de 4. Sur un vrai Windows, HKCR à la place de HKLM
+        // se verrait ici (à confirmer sur la VM) ; sous Wine, qui ne marque rien, ce contrôle ne prouve rien.
+        assert_eq!(
+            classe.raw_handle() as usize & 0x2,
+            0,
+            "poignée de la vue fusionnée des classes"
+        );
+    }
+
+    /// Constat 8, sur un Windows jetable seulement (la CI windows-latest pose VANGUARD_ESSAI_CLASSES_DU_COMPTE=1) : une
+    /// sous-clé posée sous HKCU\Software\Classes\exefile se voit dans la vue fusionnée (HKCR), pas dans la clé que
+    /// « runas » reçoit. Prouve que `cle_des_programmes` lit la machine, pas ce que ShellExecuteExW en fait.
+    #[test]
+    fn runas_ignore_les_classes_du_compte() {
+        use winreg::enums::{HKEY_CLASSES_ROOT, HKEY_CURRENT_USER};
+        if crate::commande::sous_wine() {
+            return crate::essais::saute("Wine ne fusionne pas HKCU dans les classes : le piège ne prouverait rien");
+        }
+        if std::env::var_os("VANGUARD_ESSAI_CLASSES_DU_COMPTE").is_none_or(|v| v != "1") {
+            return crate::essais::saute(
+                "piège sous HKCU\\Software\\Classes posé sur un Windows jetable seulement (CI : VANGUARD_ESSAI_CLASSES_DU_COMPTE=1)",
+            );
         }
         let marque = crate::essais::nom_unique("vanguard-essai");
         let piege = format!(r"Software\Classes\exefile\{marque}");
@@ -2317,10 +2609,169 @@ mod tests {
             .is_ok();
         let machine_le_voit = cle_des_programmes().unwrap().open_subkey(&marque).is_ok();
         let _ = compte.delete_subkey_all(&piege);
-        if !fusion_le_voit {
-            return crate::essais::saute("Wine ne fusionne pas HKCU dans les classes : le piège ne prouverait rien");
-        }
+        assert!(
+            fusion_le_voit,
+            "la vue fusionnée ne voit pas HKCU : le piège ne prouve rien"
+        );
         assert!(!machine_le_voit, "la clé lue voit l'association du compte");
+    }
+
+    /// Constat du nom court : lancé par un chemin en nom court (8.3), Vanguard est tenu, et relancé, par son nom long ;
+    /// une installation saine n'est plus refusée.
+    #[test]
+    fn le_nom_court_est_tenu_par_son_nom_long() {
+        use std::os::windows::ffi::OsStringExt;
+        let (_d, vrai) = programme_jetable("eleve-nom-court-long");
+        let long = vrai.join("vanguard.exe");
+        let large_long: Vec<u16> = long.as_os_str().encode_wide().chain(Some(0)).collect();
+        let mut tampon = vec![0u16; 1024];
+        // SAFETY: chaîne terminée par un zéro ; Windows écrit au plus 1024 caractères.
+        let n = unsafe { GetShortPathNameW(large_long.as_ptr(), tampon.as_mut_ptr(), 1024) } as usize;
+        if n == 0 || n >= tampon.len() {
+            return crate::essais::saute("nom court illisible ici");
+        }
+        let court = std::path::PathBuf::from(std::ffi::OsString::from_wide(&tampon[..n]));
+        if meme_chemin(court.as_os_str(), long.as_os_str()) {
+            return crate::essais::saute("pas de nom court sur ce volume");
+        }
+        let tenu = tenir_le_programme(&court).unwrap_or_else(|e| panic!("nom court refusé : {e:?}"));
+        assert!(
+            meme_chemin(tenu.chemin.as_os_str(), long.as_os_str()),
+            "{:?}",
+            tenu.chemin
+        );
+        for (chemin, _) in &tenu.dossiers {
+            assert!(!chemin.to_string_lossy().contains('~'), "{chemin:?}");
+        }
+    }
+
+    /// Constat 7 (relecture 2) : `preparer_la_relance`, que suit `appliquer`, revoit tout EN DERNIER. Un fichier qui
+    /// devient un lien, ou une DLL posée, après les autres contrôles est refusé ; des octets qui ne sont pas ceux du
+    /// programme aussi ; un dossier sain passe.
+    #[test]
+    fn la_relance_revoit_tout_en_dernier() {
+        let (_d, vrai) = programme_jetable("eleve-preparer");
+        let exe = vrai.join("vanguard.exe");
+        let tenu = preparer_la_relance(&exe, |_| true, |_| {}).unwrap();
+        assert!(meme_chemin(tenu.chemin.as_os_str(), exe.as_os_str()));
+        drop(tenu);
+        assert!(matches!(
+            preparer_la_relance(&exe, |_| false, |_| {}),
+            Err(Refus::PasSoi)
+        ));
+        let r = preparer_la_relance(
+            &exe,
+            |_| true,
+            |_| std::fs::write(vrai.join("piege.dll"), b"MZ").unwrap(),
+        );
+        assert!(matches!(&r, Err(Refus::Dll(nom)) if nom == "piege.dll"), "{r:?}");
+        std::fs::remove_file(vrai.join("piege.dll")).unwrap();
+        let mut saut = None;
+        let r = preparer_la_relance(
+            &exe,
+            |_| true,
+            |t| {
+                saut = poser_un_lien(&t.chemin).err();
+            },
+        );
+        if let Some(raison) = saut {
+            return crate::essais::saute(raison);
+        }
+        assert!(
+            matches!(&r, Err(Refus::Chemin(Ecart::PointDAnalyse(c, _))) if *c == exe),
+            "fichier devenu lien accepté : {r:?}"
+        );
+    }
+
+    /// `appliquer` prépare par `preparer_la_relance`, donne le chemin tenu à « runas », vérifie le fils avant tout
+    /// envoi et garde les poignées jusqu'à la fin, dans cet ordre (la demande UAC ne se lance pas dans un essai : le
+    /// texte de la fonction est lu).
+    #[test]
+    fn appliquer_prepare_puis_verifie_le_fils_avant_tout_envoi() {
+        let source = include_str!("eleve.rs");
+        let debut = source.find("pub(crate) fn appliquer(").unwrap();
+        let corps = &source[debut..debut + source[debut..].find("\n}\n").unwrap()];
+        let ou = |motif: &str| {
+            assert_eq!(corps.matches(motif).count(), 1, "{motif}");
+            corps.find(motif).unwrap()
+        };
+        let etapes = [
+            "preparer_la_relance(&exe, crate::protection::cle::meme_que_soi, |_| {})",
+            "relancer_eleve(&tenu.chemin, &parametres)",
+            "verifier_le_fils(&tenu, fils.0.as_raw_handle())",
+            "serveur.dialoguer(",
+            "drop(tenu);\n    Some(",
+        ];
+        let places: Vec<usize> = etapes.iter().map(|e| ou(e)).collect();
+        assert!(places.windows(2).all(|p| p[0] < p[1]), "ordre : {places:?}");
+        assert!(!corps.contains("relancer_eleve(&exe"));
+    }
+
+    /// Détection après coup : l'image d'un vrai processus fils (cmd.exe de System32, qui attend sur son entrée) est
+    /// comparée au fichier tenu par leurs chemins NT ; un autre fichier est un écart, une poignée illisible est un
+    /// refus, jamais un accord ; le fils écarté s'arrête.
+    #[test]
+    fn l_image_du_fils_est_comparee_au_fichier_tenu() {
+        let cmd = crate::commande::dossier_systeme().join("cmd.exe");
+        let lui = std::fs::File::open(&cmd).unwrap();
+        let (_d, vrai) = programme_jetable("eleve-image");
+        let tenu = tenir_le_programme(&vrai.join("vanguard.exe")).unwrap();
+        let enfant = std::process::Command::new(&cmd)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let fils = Fils(OwnedHandle::from(enfant));
+        let poignee = fils.0.as_raw_handle();
+        let bon = image_est_le_fichier(poignee, &lui);
+        // Le cas honnête de bout en bout : cmd.exe tenu comme le serait Vanguard, puis son fils vérifié.
+        let tenu_cmd = tenir_le_programme(&cmd).map(|t| verifier_le_fils(&t, poignee));
+        let ecart = verifier_le_fils(&tenu, poignee);
+        assert!(fils.arreter(), "le fils ne s'arrête pas");
+        fils.attendre();
+        assert!(bon.is_ok(), "le programme lancé lui-même refusé : {bon:?}");
+        assert!(matches!(tenu_cmd, Ok(Ok(()))), "fils honnête refusé : {tenu_cmd:?}");
+        assert!(matches!(ecart, Err(Imposteur::Autre)), "{ecart:?}");
+        assert!(matches!(
+            image_est_le_fichier(std::ptr::null_mut(), &lui),
+            Err(Imposteur::Illisible(Some(_)))
+        ));
+        // Un fichier dont Windows ne donne pas le chemin NT (un tube) : refus, pas accord.
+        let (lecteur, _ecrivain) = std::io::pipe().unwrap();
+        let tube = std::fs::File::from(OwnedHandle::from(lecteur));
+        // SAFETY: GetCurrentProcess ne prend rien et rend une pseudo-poignée, sans rien à fermer.
+        let soi = unsafe { GetCurrentProcess() };
+        assert!(matches!(image_est_le_fichier(soi, &tube), Err(Imposteur::Illisible(_))));
+    }
+
+    /// Basse 4 : Windows qui ne dit pas où est l'élément n'est pas « un lecteur qui mène ailleurs » : sa propre cause,
+    /// son code au journal, un conseil sans subst.
+    #[test]
+    fn un_endroit_illisible_se_dit_avec_son_code() {
+        let c = std::path::PathBuf::from(r"C:\Outils\Vanguard");
+        let e = Ecart::SansEndroit(c, Some(87));
+        assert!(e.dire().contains("87"), "{}", e.dire());
+        assert!(
+            !e.dire().contains("ailleurs") && !e.dire().contains("elsewhere"),
+            "{}",
+            e.dire()
+        );
+        assert!(!e.conseil().contains("subst"));
+        assert_eq!(e.genre(), "endroit illisible, erreur 87");
+        // Une poignée qui n'est pas un fichier de disque (un tube) : GetFinalPathNameByHandleW échoue, avec un code.
+        let (lecteur, _ecrivain) = std::io::pipe().unwrap();
+        let tube = std::fs::File::from(OwnedHandle::from(lecteur));
+        assert!(matches!(chemin_final(&tube, VOLUME_PAR_LETTRE), Err(Some(_))));
+        let nomme = std::path::Path::new(r"C:\Outils\vanguard.exe");
+        assert!(matches!(
+            juger_l_endroit(nomme, Err(Some(87))),
+            Err(Ecart::SansEndroit(_, Some(87)))
+        ));
+        assert!(matches!(
+            juger_l_endroit(nomme, Ok(r"D:\Outils\vanguard.exe".into())),
+            Err(Ecart::Ailleurs(_))
+        ));
+        assert!(juger_l_endroit(nomme, Ok(r"c:\outils\VANGUARD.EXE".into())).is_ok());
     }
 
     /// #22 : seul un chemin complet d'un disque, sans `..`, est relancé : un partage `\\serveur\…`, un chemin relatif
