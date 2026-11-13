@@ -4669,14 +4669,14 @@ fn commandes_shell(texte: &str) -> Vec<Vec<String>> {
     commandes
 }
 
-/// Les fichiers qu'uwsm peut lire dans un de ses dossiers « uwsm » : tous ceux du dossier (« env », « env-<bureau> »
-/// et ce qu'ils peuvent inclure : relecture 0.95, V-2), puis ceux de ses sous-dossiers « env.d » et « env-<bureau>.d »,
+/// Les fichiers qu'uwsm peut lire dans un de ses dossiers « uwsm » : tous ceux du dossier (« env », `env-<bureau>` et
+/// ce qu'ils peuvent inclure : relecture 0.95, V-2), puis ceux de ses sous-dossiers « env.d » et `env-<bureau>.d`,
 /// qu'uwsm lit après le fichier du même nom (uwsm 0.27, prepare-env.sh, `source_dir` : relecture 0.95, W-2) ; pas plus
 /// bas. Plus large qu'uwsm (ses « *.bak », « *~ »… passés, ses fichiers cachés) : un fichier de trop se lit. Une seule
 /// liste pour ~/.config/uwsm et pour tout autre dossier où uwsm cherche (S-4, re-contrôle 2 0.95) : un lien se suit
-/// comme uwsm le suit, « [ -d ] » et « [ -f ] » ; un « env.d » qui est un lien vers un dossier se descend, un lien
-/// vers un dossier n'est pas un fichier. Les dossiers qui ne se lisent pas vont dans `illisibles`, jamais tus. Dans
-/// l'ordre des noms : le verdict ne dépend pas du système de fichiers.
+/// comme uwsm le suit, « [ -d ] » et « [ -f ] » ; un « env.d » qui est un lien vers un dossier se descend, un lien vers
+/// un dossier n'est pas un fichier. Les dossiers qui ne se lisent pas vont dans `illisibles`, jamais tus. Dans l'ordre
+/// des noms : le verdict ne dépend pas du système de fichiers.
 ///
 /// V-4 (relecture du lot c2-uwsm, 0.95) : un dossier qui n'en est pas un (absent, un fichier, un lien cassé ou vers
 /// un fichier, « n'est pas un dossier » plus haut dans son chemin) est absent, comme pour uwsm, qui n'y lit rien ;
