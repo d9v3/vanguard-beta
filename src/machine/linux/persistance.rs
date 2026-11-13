@@ -1416,13 +1416,13 @@ pub(super) fn persistance_dans(
     for (f, valeur) in bureaux {
         let ou = crate::ui::affichable(&t.r.montre(&f));
         let vu = crate::ui::couper(&crate::ui::affichable(&valeur), 90);
-        let source = format!("uwsm bureau {} {valeur}", t.r.montre(&f));
+        let source = format!("uwsm bureau {} {vu}", t.r.montre(&f));
         constat_sans_ligne(
             &mut t,
             &source,
             trf!(
-                "{ou} : DesktopNames vaut « {vu} », un nom de bureau hors lettres, chiffres, « _ », « . » et « - » : uwsm le met dans XDG_CURRENT_DESKTOP et en tire un fichier « uwsm/env-… » que Vanguard ne lit pas (non vérifié)",
-                "{ou}: DesktopNames is “{vu}”, a desktop name outside letters, digits, “_”, “.” and “-”: uwsm puts it in XDG_CURRENT_DESKTOP and turns it into a “uwsm/env-…” file that Vanguard does not read (not verified)"
+                "{ou} : DesktopNames vaut « {vu} », un nom de bureau hors lettres, chiffres, « _ », « . » et « - », ou une ligne avec un octet de contrôle ou non ASCII : uwsm peut la lire autrement que Vanguard, mettre ce nom dans XDG_CURRENT_DESKTOP et en tirer un fichier « uwsm/env-… » que Vanguard ne lit pas (non vérifié)",
+                "{ou}: DesktopNames is “{vu}”, a desktop name outside letters, digits, “_”, “.” and “-”, or a line with a control or non-ASCII byte: uwsm may read it differently from Vanguard, put this name in XDG_CURRENT_DESKTOP and turn it into a “uwsm/env-…” file that Vanguard does not read (not verified)"
             ),
             trf!(
                 "{ou} : un nom de bureau inhabituel dans DesktopNames : l'alerte ne se déclare pas normale tant qu'il y est ; corrigez le fichier",
@@ -5060,12 +5060,26 @@ fn bureaux_d_uwsm(
 }
 
 /// N-1 : les valeurs des clés « DesktopNames… » d'un fichier .desktop qui ont un nom hors de `nom_de_bureau_sur`.
-/// Coupées à « ; » (la liste du .desktop) et à « : » (uwsm les joint à XDG_CURRENT_DESKTOP par « : » et les recoupe
-/// là) ; les blancs autour de la clé et de la valeur retirés, comme pyxdg ; tout autre octet (blanc au milieu, « \ »,
-/// non ASCII) rend la valeur suspecte.
+/// Coupées à « ; » (la liste du .desktop) ; « : » rend la valeur suspecte (uwsm joint les noms à XDG_CURRENT_DESKTOP
+/// par « : » et les recoupe là : un « : » y glisse un nom de plus) ; les blancs ASCII autour de la clé et de la valeur
+/// retirés ; tout autre octet (blanc au milieu, « \ », non ASCII) rend la valeur suspecte. V3-2 (revérification de la
+/// ronde 3) : pyxdg (IniFile.parse) lit le fichier en texte (fins de ligne « \n », « \r » et « \r\n », octets invalides
+/// remplacés) et retire de la ligne, de la clé et de la valeur tout blanc Unicode (str.strip : tabulation verticale,
+/// « \x1c », espace insécable…). Une ligne qui contient « DesktopNames » (sans égard à la casse) avec un octet de
+/// contrôle autre que la tabulation ou un octet non ASCII est donc suspecte entière, sans chercher comment pyxdg la
+/// lirait : la valeur montrée est la ligne.
 fn desktop_names_suspects(octets: &[u8]) -> Vec<String> {
     let mut suspects = Vec::new();
-    for ligne in octets.split(|o| *o == b'\n') {
+    for ligne in octets.split(|o| matches!(o, b'\n' | b'\r')) {
+        let nomme = ligne.windows(12).any(|m| m.eq_ignore_ascii_case(b"DesktopNames"));
+        if nomme
+            && ligne
+                .iter()
+                .any(|o| (o.is_ascii_control() && *o != b'\t') || !o.is_ascii())
+        {
+            suspects.push(String::from_utf8_lossy(ligne).into_owned());
+            continue;
+        }
         let Some(egal) = ligne.iter().position(|o| *o == b'=') else {
             continue;
         };
@@ -5081,7 +5095,7 @@ fn desktop_names_suspects(octets: &[u8]) -> Vec<String> {
         {
             continue;
         }
-        if !valeur.split(|o| matches!(o, b';' | b':')).all(nom_de_bureau_sur) {
+        if !valeur.split(|o| *o == b';').all(nom_de_bureau_sur) {
             suspects.push(String::from_utf8_lossy(valeur).into_owned());
         }
     }
@@ -17086,6 +17100,22 @@ mod tests {
             ),
             ("Hyprland", Some("[Desktop Entry]\nDesktopNames = Hyprland;a/b\n"), true),
             ("Hyprland", Some("[Desktop Entry]\nDesktopNames=x:../../y\n"), true),
+            // V3-2 : « : » ; fins de ligne « \r » ; octets de contrôle et non ASCII que pyxdg retire comme blancs.
+            ("Hyprland", Some("[Desktop Entry]\nDesktopNames=Hyprland:GNOME\n"), true),
+            (
+                "Hyprland",
+                Some("[Desktop Entry]\nX=1\rDesktopNames=Hyprland;a/b\n"),
+                true,
+            ),
+            ("Hyprland", Some("[Desktop Entry]\n\x0bDesktopNames=Hyprland\n"), true),
+            ("Hyprland", Some("[Desktop Entry]\n\u{a0}DesktopNames=Hyprland\n"), true),
+            ("Hyprland", Some("[Desktop Entry]\n\x1cDesktopNames=Hyprland\n"), true),
+            ("Hyprland", Some("[Desktop Entry]\nDesktopNames=Hyprland;\x1c\n"), true),
+            (
+                "Hyprland",
+                Some("[Desktop Entry]\r\nName=Café\r\nDesktopNames = Hyprland;GNOME-Classic\t\r\n"),
+                false,
+            ),
         ]
         .iter()
         .enumerate()
@@ -17131,6 +17161,18 @@ mod tests {
             if !(c.probleme == Some(Niveau::Eleve) && c.message.contains(crate::sauvegarde::SERVICE)) {
                 faux.push(format!(
                     "sauvegarde, DesktopNames, env -i {vide} : {:?} {}",
+                    c.probleme, c.message
+                ));
+            }
+            let (m, _) = sauvegarde_d_essai(&format!("uwsm-bureau-sauvegarde-controle-{vide}"), vide);
+            m.ecrire(
+                ".local/share/wayland-sessions/x.desktop",
+                "[Desktop Entry]\n\x0bDesktopNames=Hyprland\n",
+            );
+            let c = m.lancements_avec(&[("XDG_CURRENT_DESKTOP", "Hyprland")]);
+            if !(c.probleme == Some(Niveau::Eleve) && c.message.contains(crate::sauvegarde::SERVICE)) {
+                faux.push(format!(
+                    "sauvegarde, DesktopNames et contrôle, env -i {vide} : {:?} {}",
                     c.probleme, c.message
                 ));
             }
