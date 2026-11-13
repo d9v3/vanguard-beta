@@ -394,6 +394,7 @@ pub(crate) const CONTEXTES_ECHEC: &[&str] = &[
     "manifeste/image",
     "manifeste/relire",
     "mise_a_jour/historique",
+    "mise_a_jour/precedente",
     "mise_a_jour/remise",
     "networkmanager",
     "partages/retirer",
