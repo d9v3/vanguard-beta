@@ -30,7 +30,7 @@ $ProgressPreference = 'SilentlyContinue'
 # 3 : vanguard-fenetre.exe dans la liste fermée (0.96). Linux ne dépose une fenêtre qu'à un surveillant 3 ou plus.
 $VersionSurveillant = 3
 $MotifId = '^\d{8}-\d{6}-[0-9a-f]{7,12}-[0-9a-z]{4}$'
-# Les seuls fichiers qu'un travail peut nommer, à la casse près : rien d'autre n'est copié ni lancé. La fenêtre de
+# Les seuls fichiers qu'un travail peut nommer, casse exacte : rien d'autre n'est copié ni lancé. La fenêtre de
 # Vanguard (vanguard-fenetre.exe) est copiée à côté de vanguard.exe, là où il la cherche.
 $FichiersPermis = @('vanguard.exe', 'vanguard-fenetre.exe', 'test.ps1', 'essais-console.ps1', 'Lancer Vanguard.bat')
 $ClesConnues = @('format', 'id', 'commit', 'branche', 'modifie', 'cree', 'test', 'console', 'langues', 'delai_minutes', 'hmac')
