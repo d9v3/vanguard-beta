@@ -338,7 +338,17 @@ targets with `cargo zigbuild`, which makes zig the C compiler (ring, blake3) and
 Linux and its own mingw-w64 for Windows. The .exe imports the UCRT C runtime (`api-ms-win-crt-*`), shipped with
 Windows 10 and 11 without a redistributable, rather than `msvcrt.dll`, the old runtime kept for compatibility.
 Measured on November 8, 2026: the same commit built this way in two different folders, with two zig installations,
-gives two identical programs, Linux and Windows alike. The .exe's resources (icon, version information, manifest) go
+gives two identical programs, Linux and Windows alike. Those two folders were neighbours: the review of November 12,
+2026 showed that both .exe files changed with a build folder under `~/.cache` (same size, only the order of the
+imported DLLs differed, no path in the file). A path can change a program without being written in it: zig's linker
+(lld, in MinGW mode) sorts the import table by the path of the GNU-style import libraries, the standard library's,
+which rustc copies under `CARGO_TARGET_DIR`, and `libwindows.0.52.0.a` (windows_x86_64_gnu), under `CARGO_HOME`; the
+build folder sorted before or after `~/.cargo`, and the order flipped. Since then, the recipe gives cargo a single
+spelling of the build folder, the physical one (links and `..` resolved), and `CARGO_HOME` through a link with a fixed
+name under it (`.cargo-home`, replaced by `/cargo` in the programs), which always sorts first: measured the same day,
+the same Windows window under `~/.cache` (real folder or link), `~/Projects`, `/run/media` and through a path with
+`..`. CI follows the same rule; its .exe being equal to the one built here is likely, not proven yet. The .exe's
+resources (icon, version information, manifest) go
 through `zig rc` (`build.rs`) and its import libraries through `zig dlltool`: nothing from the distribution any more,
 neither windres, nor its preprocessor, nor dlltool. These tools (rustc, zig, cargo-zigbuild, cargo-auditable) are
 recorded on both sides by
@@ -403,7 +413,8 @@ network “Salon”, accounts “alice”, “bob”, “Zoé”, “Jean Dupont
 The build folder (`CARGO_TARGET_DIR`) also becomes `/vanguard/target` in the programs, and
 `python3 outils/confidentialite.py --compilation <build folder> <programs…>`, run by `outils/compiler-version.sh`
 before the fingerprint and the build marker, refuses a program that contains the home folder, the account name or the
-build folder, in UTF-8 as in UTF-16; an unreadable program: nothing is concluded, the build stops.
+build folder (as given, `..` included, cleaned and by its real path), in UTF-8 as in UTF-16; an unreadable program:
+nothing is concluded, the build stops.
 
 Rust keeps the libraries' path in the programs (`/home/<account>/.cargo/registry/…`): to publish a version, build
 with `rustflags = ["--remap-path-prefix=/home/<account>=~"]` in `~/.cargo/config.toml` (`publier-version.sh` refuses

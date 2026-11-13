@@ -860,6 +860,13 @@ compilation "$CIBLES_I" "$P/cibles"
 noter 1 "$(refus_dit $?)" "--compilation : le dossier de compilation (CARGO_TARGET_DIR) est refusé"
 compilation "$CIBLES_I/" "$P/cibles"
 noter 1 "$(refus_dit $?)" "--compilation : le dossier de compilation donné avec « / » final est refusé aussi"
+# Trois écritures d'un même dossier : brute (avec « .. », telle que cargo la passe à rustc), logique, physique.
+compile brut '/srv/cibles-inventees/x/../vg/fenetre/x86_64-unknown-linux-gnu/release/build/out/glx_bindings.rs'
+compilation /srv/cibles-inventees/x/../vg "$P/brut"
+noter 1 "$(refus_dit $?)" "--compilation : le dossier de compilation dans sa forme brute (avec « .. ») est refusé"
+mkdir -p "$P/rel" && compile relatif "$P/rel/../cibles-rel/release/build/out/glx_bindings.rs"
+compilation rel/../cibles-rel "$P/relatif"
+noter 1 "$(refus_dit $?)" "--compilation : un dossier relatif avec « .. », joint au dossier courant, est refusé"
 compile mot 'chez alice, aliceville et /srv/cibles-inventees/vg2/x et /opt/alice.txt'
 compilation "$CIBLES_I" "$P/mot"
 noter 0 $? "--compilation : le nom seul, un dossier voisin et un fichier du même nom passent"
@@ -874,13 +881,13 @@ sans_trace 2 "--compilation : sans programme, rien n'est conclu"
 # Sa place dans la recette : les lignes (hors commentaires) qui comptent, dans l'ordre.
 R=$RACINE/outils/compiler-version.sh
 ligne_de() { grep -nF -- "$1" "$R" | grep -v '^[0-9]*:[[:space:]]*#' | head -1 | cut -d: -f1; }
-remplace=$(ligne_de 'REMPLACE_RUST+=" --remap-path-prefix=$forme=/vanguard/target"')
+remplace=$(ligne_de 'REMPLACE_RUST+=" --remap-path-prefix=$CIBLES=/vanguard/target')
 exporte=$(ligne_de 'export RUSTFLAGS=$REMPLACE_RUST')
 fenetre=$(ligne_de 'manifest-path fenetre/Cargo.toml')
-garde_f=$(ligne_de 'confidentialite.py --compilation "$CIBLES" "$FENETRE_LINUX" "$FENETRE_WINDOWS" ||')
+garde_f=$(ligne_de 'confidentialite.py --compilation "$CIBLES_DONNEES" "$FENETRE_LINUX" "$FENETRE_WINDOWS" ||')
 empreinte=$(ligne_de 'VANGUARD_FENETRE_SHA256_LINUX=$(sha256sum')
 vanguard=$(ligne_de '--target x86_64-unknown-linux-musl --target x86_64-pc-windows-gnu "$@"')
-garde_v=$(ligne_de 'confidentialite.py --compilation "$CIBLES" "$CIBLES/x86_64-unknown-linux-musl/release/vanguard"')
+garde_v=$(ligne_de 'confidentialite.py --compilation "$CIBLES_DONNEES" "$CIBLES/x86_64-unknown-linux-musl/release/vanguard"')
 repere=$(ligne_de '>"$REPERE.nouveau"')
 ordre="$remplace $exporte $fenetre $garde_f $empreinte $vanguard $garde_v $repere"
 if [[ $(wc -w <<<"$ordre") == 8 && $(tr ' ' '\n' <<<"$ordre" | sort -n | paste -sd' ') == "$ordre" ]] &&
@@ -888,6 +895,36 @@ if [[ $(wc -w <<<"$ordre") == 8 && $(tr ' ' '\n' <<<"$ordre" | sort -n | paste -
   noter 0 0 "--compilation dans la recette : chemins remplacés, puis fenêtres avant l'empreinte, vanguard avant le repère"
 else
   noter 0 1 "--compilation dans la recette : absente, mal placée ou sans arrêt (lignes : $ordre)"
+fi
+# Les dossiers de la recette, rejoués pour de vrai (le bloc entre ses deux repères, sans rien compiler) : une seule
+# écriture, physique, du dossier de compilation (lien et « .. » dans celui qui est donné), CARGO_HOME par le lien de
+# nom fixe sous lui, et les remplacements, celui de ce lien après celui du dossier (la dernière correspondance gagne).
+DOSSIERS=$(sed -n '/^# >>> dossiers de la compilation/,/^# <<< dossiers de la compilation/p' "$R")
+dossiers() { # CARGO_TARGET_DIR donné ; écrit dans SORTIE ce que le bloc exporte
+  SORTIE=$(cd "$P" && CARGO_TARGET_DIR=$1 RACINE=/srv/depot-invente CARGO_DOSSIER=$P/cargo-invente bash -c \
+    "set -euo pipefail; $DOSSIERS"$'\nprintf "%s\\n" "$CARGO_TARGET_DIR" "$CARGO_HOME" "$(readlink "$CARGO_HOME")" '\
+'"$RUSTFLAGS" "$CFLAGS_x86_64_unknown_linux_musl" "$CFLAGS_x86_64_unknown_linux_gnu" "$CFLAGS_x86_64_pc_windows_gnu"' 2>&1)
+}
+mkdir -p "$P/vraies-cibles" "$P/cargo-invente" && ln -sfn vraies-cibles "$P/lien-cibles"
+V=$P/vraies-cibles
+attendu=$(printf '%s\n' "$V" "$V/.cargo-home" "$P/cargo-invente" \
+  "--remap-path-prefix=/srv/depot-invente=/vanguard --remap-path-prefix=$P/cargo-invente=/cargo --remap-path-prefix=$V=/vanguard/target --remap-path-prefix=$V/.cargo-home=/cargo")
+c="-ffile-prefix-map=/srv/depot-invente=/vanguard -ffile-prefix-map=$P/cargo-invente=/cargo -ffile-prefix-map=$V=/vanguard/target -ffile-prefix-map=$V/.cargo-home=/cargo"
+attendu+=$'\n'"$c"$'\n'"$c"$'\n'"$c"
+if [[ -n $DOSSIERS ]]; then
+  dossiers "$P/lien-cibles/../lien-cibles"
+  noter "$attendu" "$SORTIE" "recette : CARGO_TARGET_DIR physique (lien et « .. » retirés), CARGO_HOME par son lien fixe, remplacements dans l'ordre"
+  dossiers lien-cibles
+  noter "$attendu" "$SORTIE" "recette : un dossier de compilation relatif devient le même chemin physique"
+  rm "$V/.cargo-home" && mkdir "$V/.cargo-home"
+  dossiers "$V"
+  noter "1 1" "$? $(grep -c 'pas un lien' <<<"$SORTIE")" "recette : un vrai dossier à la place du lien de CARGO_HOME est refusé"
+  rmdir "$V/.cargo-home"
+  mkdir -p "$P/a b"
+  dossiers "$P/a b"
+  noter "1 1" "$? $(grep -c 'un blanc' <<<"$SORTIE")" "recette : un blanc dans le dossier de compilation est refusé"
+else
+  noter 0 1 "recette : le bloc des dossiers de la compilation (repères « >>> » et « <<< ») est introuvable"
 fi
 cd "$TRAVAIL" || exit 1
 

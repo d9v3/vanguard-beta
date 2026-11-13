@@ -339,7 +339,17 @@ fait de zig le compilateur C (ring, blake3) et l'éditeur de liens, avec sa prop
 mingw-w64 pour Windows. Le .exe importe le runtime C UCRT (`api-ms-win-crt-*`), fourni par Windows 10 et 11 sans
 redistribuable, plutôt que `msvcrt.dll`, l'ancien runtime gardé pour la compatibilité. Mesuré le 8 novembre 2026 : le
 même commit compilé ainsi dans deux dossiers différents, avec deux installations de zig, donne deux programmes
-identiques, Linux comme Windows. Les ressources du .exe (icône, fiche de version, manifeste) passent par `zig rc`
+identiques, Linux comme Windows. Ces deux dossiers étaient voisins : la relecture du 12 novembre 2026 a montré que les
+deux .exe changeaient avec un dossier de compilation sous `~/.cache` (même taille, seul l'ordre des DLL importées
+différait, aucun chemin dans le fichier). Un chemin peut changer un programme sans y être écrit : l'éditeur de liens de
+zig (lld, en mode MinGW) range la table des imports par le chemin des bibliothèques d'import de style GNU, celle de la
+bibliothèque standard, que rustc recopie sous `CARGO_TARGET_DIR`, et `libwindows.0.52.0.a` (windows_x86_64_gnu), sous
+`CARGO_HOME` ; le dossier de compilation se classait avant ou après `~/.cargo`, et l'ordre basculait. Depuis, la recette
+donne à cargo une seule écriture du dossier de compilation, physique (liens et `..` résolus), et `CARGO_HOME` par un
+lien de nom fixe sous lui (`.cargo-home`, remplacé par `/cargo` dans les programmes), qui se classe toujours avant :
+mesuré le même jour, la même fenêtre Windows sous `~/.cache` (vrai dossier ou lien), `~/Projects`, `/run/media` et par
+un chemin avec `..`. La CI suit la même règle ; l'égalité de son .exe avec celui d'ici est probable, pas encore
+prouvée. Les ressources du .exe (icône, fiche de version, manifeste) passent par `zig rc`
 (`build.rs`) et ses bibliothèques d'import par `zig dlltool` : plus rien de la distribution, ni windres, ni son
 préprocesseur, ni dlltool. Ces outils (rustc, zig, cargo-zigbuild, cargo-auditable) sont relevés des deux côtés par
 `outils/chaine-c.sh`
@@ -406,7 +416,8 @@ inventées : adresses MAC au préfixe du fabricant gardé, réseau « Salon », 
 Le dossier de compilation (`CARGO_TARGET_DIR`) devient lui aussi `/vanguard/target` dans les programmes, et
 `python3 outils/confidentialite.py --compilation <dossier de compilation> <programmes…>`, lancé par
 `outils/compiler-version.sh` avant l'empreinte et le repère, refuse un programme qui contient le dossier personnel, le
-nom du compte ou le dossier de compilation, en UTF-8 comme en UTF-16 ; un programme illisible : rien n'est conclu, la compilation s'arrête.
+nom du compte ou le dossier de compilation (tel que donné, `..` compris, nettoyé et par son vrai chemin), en UTF-8
+comme en UTF-16 ; un programme illisible : rien n'est conclu, la compilation s'arrête.
 
 Rust garde le chemin des bibliothèques dans les programmes (`/home/<compte>/.cargo/registry/…`) : pour publier une
 version, compiler avec `rustflags = ["--remap-path-prefix=/home/<compte>=~"]` dans `~/.cargo/config.toml`

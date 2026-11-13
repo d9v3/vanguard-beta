@@ -1014,9 +1014,10 @@ def termes_de_compilation(cibles):
     """Ce qu'une compilation laisse d'elle dans un programme quand un chemin n'est pas remplacé (--remap-path-prefix,
     -ffile-prefix-map) : le dossier personnel (HOME), le nom du compte comme élément d'un chemin (« /<compte>/ »,
     « \\<compte>\\ » : /run/media/<compte>/…, C:\\Users\\<compte>, même hors de HOME) et le dossier de compilation
-    (CARGO_TARGET_DIR, où cargo écrit le code qu'il génère, OUT_DIR). Chacun tel que donné et par son vrai chemin (liens
-    résolus). Le nom seul, hors d'un chemin, n'est pas cherché : un compte de deux lettres se lit partout dans des
-    octets. Rien d'autre de l'ordinateur (listes, identité Git, appareils) : --binaire, à la publication, le fait."""
+    (CARGO_TARGET_DIR, où cargo écrit le code qu'il génère, OUT_DIR). Chacun tel que donné (« .. » compris), nettoyé et
+    par son vrai chemin (liens résolus). Le nom seul, hors d'un chemin, n'est pas cherché : un compte de deux lettres
+    se lit partout dans des octets. Rien d'autre de l'ordinateur (listes, identité Git, appareils) : --binaire, à la
+    publication, le fait."""
     liste = []
 
     def ajouter(texte, origine, motif):
@@ -1024,7 +1025,10 @@ def termes_de_compilation(cibles):
             liste.append(Terme(texte, origine, motif))
 
     def dossier(chemin, origine):
-        for forme in dict.fromkeys((os.path.abspath(chemin), os.path.realpath(chemin))):
+        # Trois écritures du même dossier : brute (« x/../m4 », que cargo passe telle quelle à rustc, jointe au dossier
+        # courant si elle est relative), logique (abspath) et physique (realpath, liens résolus).
+        brute = os.path.join(os.getcwd(), chemin)
+        for forme in dict.fromkeys((brute, os.path.abspath(chemin), os.path.realpath(chemin))):
             forme = forme.rstrip("/\\")
             # « / » (ou une racine de Windows) : tout chemin le contient ; rien à chercher.
             if forme and not re.fullmatch(r"[A-Za-z]:", forme):
