@@ -176,6 +176,16 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
 - **Les listes et les outils tiers sont justes.** Les listes de menaces, de versions et de failles (abuse.ch, CISA,
   éditeurs) et les outils que Vanguard lance sans les avoir écrits (ClamAV, trivy, gitleaks) sont crus tels quels ;
   une liste trop vieille est dite non vérifiée.
+- **Les variables du compte que gardent les lectures.** Un outil du système lancé pour lire tourne sous votre compte,
+  avec un environnement vidé sauf une courte liste (la langue, le terminal, le bureau, HOME, TMPDIR, TZ, les dossiers
+  XDG, le proxy). Ce qu'un programme de votre compte peut encore y changer : le proxy (http_proxy…) peut faire échouer
+  ou détourner une lecture par le réseau : par https, elle est alors dite non vérifiée, pas saine (relu au recontrôle
+  de la 0.95) ; par un miroir en http, ce n'est pas vérifié ; XDG_DATA_DIRS change les valeurs par défaut que
+  gsettings lit ; XDG_DATA_HOME est gardé mais FLATPAK_USER_DIR retiré, si bien que des applications Flatpak du compte
+  installées ailleurs par cette variable ne sont pas vues ; DBUS_SESSION_BUS_ADDRESS et XDG_RUNTIME_DIR désignent le
+  bus de session, qu'un faux bus servi par un programme du compte peut remplacer pour ce qui se lit par lui
+  (gsettings, systemctl --user). Ces lectures portent sur l'état du compte lui-même, qu'un tel programme peut de toute
+  façon changer (voir le point suivant).
 - **Les programmes de votre compte ne visent pas Vanguard lui-même.** Vanguard garde son état (ce qu'il a déjà vu, ce
   que vous avez réglé, les défenses que vous avez allumées) dans un dossier de votre compte. Un programme malveillant
   qui tourne sous votre compte peut donc fausser cet état. Vanguard voit et dit la falsification simple (un fichier

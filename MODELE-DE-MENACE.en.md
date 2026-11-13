@@ -168,6 +168,15 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
 - **The lists and third-party tools are right.** The threat, version and vulnerability lists (abuse.ch, CISA,
   vendors) and the tools Vanguard runs without having written them (ClamAV, trivy, gitleaks) are trusted as they
   are; a list that is too old is reported as not checked.
+- **The account variables that readings keep.** A system tool run to read runs under your account, with an environment
+  emptied except for a short list (language, terminal, desktop, HOME, TMPDIR, TZ, the XDG folders, the proxy). What a
+  program of your account can still change there: the proxy (http_proxy…) can make a network reading fail or detour
+  it: over https, it is then reported as not checked, not healthy (re-read at the 0.95 re-check); through an http
+  mirror, this is not verified; XDG_DATA_DIRS changes the default values gsettings reads; XDG_DATA_HOME is kept but
+  FLATPAK_USER_DIR removed, so account Flatpak applications installed elsewhere through that variable are not seen;
+  DBUS_SESSION_BUS_ADDRESS and XDG_RUNTIME_DIR name the session bus, which a fake bus served by an account program can
+  replace for what is read through it (gsettings, systemctl --user). These readings concern the account's own state,
+  which such a program can change anyway (see the next point).
 - **The programs of your account do not target Vanguard itself.** Vanguard keeps its state (what it has already seen,
   what you have set, the defenses you have turned on) in a folder of your account. A malicious program running under
   your account can therefore tamper with that state. Vanguard sees and reports simple tampering (a file changed,
