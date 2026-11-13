@@ -15,9 +15,11 @@
 #     manifeste) passent par zig rc (build.rs) et ses bibliothèques d'import (raw-dylib) par zig dlltool : plus rien
 #     de MinGW ni de binutils de la distribution ;
 #   - Cargo.lock tel quel (--locked) ;
-#   - les chemins de la compilation retirés des programmes : le dossier du dépôt devient /vanguard et celui de cargo
-#     (CARGO_HOME, bibliothèques téléchargées) /cargo. Sans cela, ils gardent /home/<compte>/… ou /home/runner/…, et
-#     le même code compilé dans deux dossiers donne deux programmes (et un nom de compte publié avec chaque version).
+#   - les chemins de la compilation retirés des programmes : le dossier du dépôt devient /vanguard, celui de cargo
+#     (CARGO_HOME, bibliothèques téléchargées) /cargo et celui de la compilation (CARGO_TARGET_DIR) /vanguard/target.
+#     Sans cela, ils gardent /home/<compte>/… ou /home/runner/…, et le même code compilé dans deux dossiers donne deux
+#     programmes (et un nom de compte publié avec chaque version). Puis chaque programme est relu
+#     (outils/confidentialite.py --compilation) : un chemin de cet ordinateur qui y resterait arrête tout ;
 #     RUSTFLAGS remplace les rustflags d'un ~/.cargo/config.toml personnel : seuls ceux-ci comptent ;
 #   - la date gravée est celle du code (outils/date-du-code.sh, par SOURCE_DATE_EPOCH que lit build.rs), jamais
 #     l'heure de la compilation ; l'éditeur de liens de zig n'écrit pas l'heure dans l'en-tête PE (-Brepro,
@@ -112,10 +114,25 @@ ln -s "$ZIG_BIN/cargo-zigbuild" "$ZIG_CACHE/outils/x86_64-w64-mingw32-dlltool"
 export PATH="$ZIG_CACHE/outils:$PATH"
 [[ $(command -v x86_64-w64-mingw32-dlltool) == "$ZIG_CACHE/outils/x86_64-w64-mingw32-dlltool" ]] ||
   { echo "dlltool pris ailleurs que dans $ZIG_CACHE/outils" >&2; exit 1; }
-export RUSTFLAGS="--remap-path-prefix=$RACINE=/vanguard --remap-path-prefix=$CARGO_DOSSIER=/cargo"
+# Le dossier de compilation (CARGO_TARGET_DIR, sur un autre disque peut-être : /run/media/<compte>/…) : cargo y écrit
+# le code que des bibliothèques génèrent (OUT_DIR, inclus par glutin_egl_sys, glutin_glx_sys et glutin_wgl_sys dans la
+# fenêtre), et son chemin restait dans le programme (3 fois sous Linux, 2 dans le .exe, le 12 nov. 2026). Il devient
+# /vanguard/target, la forme qu'il a déjà dans la CI (target/ du dépôt, sous /vanguard) : rustc comme zig cc
+# appliquent la dernière correspondance, si bien qu'un target/ dans le dépôt donne les mêmes octets qu'avant. Tel que
+# donné et par son vrai chemin (liens résolus : cargo prend l'un ou l'autre). Un blanc couperait RUSTFLAGS : refusé.
+CIBLES_FORMES=$(cd "${CARGO_TARGET_DIR:-target}" && { pwd; pwd -P; } | sort -u)
+[[ $RACINE$CARGO_DOSSIER$CIBLES_FORMES != *[[:blank:]]* ]] ||
+  { echo "un blanc dans le chemin du dépôt, de CARGO_HOME ou de CARGO_TARGET_DIR : RUSTFLAGS le couperait" >&2; exit 1; }
+REMPLACE_RUST="--remap-path-prefix=$RACINE=/vanguard --remap-path-prefix=$CARGO_DOSSIER=/cargo"
+REMPLACE_C="-ffile-prefix-map=$RACINE=/vanguard -ffile-prefix-map=$CARGO_DOSSIER=/cargo"
+while read -r forme; do
+  REMPLACE_RUST+=" --remap-path-prefix=$forme=/vanguard/target"
+  REMPLACE_C+=" -ffile-prefix-map=$forme=/vanguard/target"
+done <<<"$CIBLES_FORMES"
+export RUSTFLAGS=$REMPLACE_RUST
 # Le C (ring) : ses chemins aussi, pour les messages d'assertion qu'il garde même dans un programme allégé.
 for cible in x86_64_unknown_linux_musl x86_64_unknown_linux_gnu x86_64_pc_windows_gnu; do
-  export "CFLAGS_$cible=-ffile-prefix-map=$RACINE=/vanguard -ffile-prefix-map=$CARGO_DOSSIER=/cargo"
+  export "CFLAGS_$cible=$REMPLACE_C"
 done
 # La date gravée : celle du code (outils/date-du-code.sh), pas du dernier commit, pour que les commits des captures et
 # de la page des fonctions ne la changent pas et que les nomenclatures de GitHub portent la même. Une date déjà donnée
@@ -159,6 +176,10 @@ for cible in x86_64-unknown-linux-gnu x86_64-pc-windows-gnu; do
 done
 bash outils/caisses-fenetre.sh --programmes "$FENETRE_LINUX" "$FENETRE_WINDOWS" ||
   { echo "✖ la fenêtre compilée n'est pas celle que cargo deny, clippy et les essais jugent" >&2; exit 1; }
+# Aucun chemin de cet ordinateur dans ce qui est publié (dossier personnel, nom du compte dans un chemin, dossier de
+# compilation) : un remplacement manqué (ci-dessus) est refusé avant que l'empreinte soit gravée dans vanguard.
+python3 -I outils/confidentialite.py --compilation "$CIBLES" "$FENETRE_LINUX" "$FENETRE_WINDOWS" ||
+  { echo "✖ la fenêtre compilée garde un chemin de cet ordinateur : rien n'est gravé ni publié" >&2; exit 1; }
 VANGUARD_FENETRE_SHA256_LINUX=$(sha256sum "$FENETRE_LINUX" | cut -d' ' -f1)
 VANGUARD_FENETRE_SHA256_WINDOWS=$(sha256sum "$FENETRE_WINDOWS" | cut -d' ' -f1)
 export VANGUARD_FENETRE_SHA256_LINUX VANGUARD_FENETRE_SHA256_WINDOWS
@@ -183,6 +204,10 @@ for p in "$CIBLES/x86_64-unknown-linux-musl/release/vanguard" "$CIBLES/x86_64-pc
     exit 1
   fi
 done
+# De même pour vanguard, avant que le repère le désigne pour la publication.
+python3 -I outils/confidentialite.py --compilation "$CIBLES" "$CIBLES/x86_64-unknown-linux-musl/release/vanguard" \
+  "$CIBLES/x86_64-pc-windows-gnu/release/vanguard.exe" ||
+  { echo "✖ vanguard compilé garde un chemin de cet ordinateur : aucun repère, rien n'est publié" >&2; exit 1; }
 # Relu après : un fichier changé pendant la compilation la rend douteuse.
 [[ $PROPRE == oui && $(git rev-parse HEAD) == "$COMMIT" && -z $(git status --porcelain -- "${ARBRE[@]}" 2>/dev/null) ]] ||
   PROPRE=non

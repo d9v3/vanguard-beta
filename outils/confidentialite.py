@@ -26,6 +26,12 @@ Depuis la racine du dépôt :
     python3 -I outils/confidentialite.py --envoi            les commits pas encore sur GitHub
     python3 -I outils/confidentialite.py --texte < FICHIER  un texte à publier
     python3 -I outils/confidentialite.py --binaire FICHIER… des programmes compilés (textes lisibles, métadonnées)
+    python3 -I outils/confidentialite.py --compilation CIBLES FICHIER…
+                                                         des programmes à l'instant compilés (outils/compiler-version.sh,
+                                                         avant leur empreinte) : ni le dossier personnel (HOME), ni le
+                                                         nom du compte dans un chemin, ni le dossier de compilation
+                                                         CIBLES (CARGO_TARGET_DIR) ; rien d'autre de l'ordinateur n'est
+                                                         lu, ni git : le même jugement ici et dans la CI
     python3 -I outils/confidentialite.py --depot            les fichiers et tout l'historique (avant de rendre le dépôt
                                                          public)
     python3 -I outils/confidentialite.py --plage AVANT APRÈS [REF]
@@ -1004,6 +1010,36 @@ def chaines(chemin):
     return chaines_d_octets(Path(chemin).read_bytes(), mini=4)
 
 
+def termes_de_compilation(cibles):
+    """Ce qu'une compilation laisse d'elle dans un programme quand un chemin n'est pas remplacé (--remap-path-prefix,
+    -ffile-prefix-map) : le dossier personnel (HOME), le nom du compte comme élément d'un chemin (« /<compte>/ »,
+    « \\<compte>\\ » : /run/media/<compte>/…, C:\\Users\\<compte>, même hors de HOME) et le dossier de compilation
+    (CARGO_TARGET_DIR, où cargo écrit le code qu'il génère, OUT_DIR). Chacun tel que donné et par son vrai chemin (liens
+    résolus). Le nom seul, hors d'un chemin, n'est pas cherché : un compte de deux lettres se lit partout dans des
+    octets. Rien d'autre de l'ordinateur (listes, identité Git, appareils) : --binaire, à la publication, le fait."""
+    liste = []
+
+    def ajouter(texte, origine, motif):
+        if texte and not any(t.motif == motif for t in liste):
+            liste.append(Terme(texte, origine, motif))
+
+    def dossier(chemin, origine):
+        for forme in dict.fromkeys((os.path.abspath(chemin), os.path.realpath(chemin))):
+            forme = forme.rstrip("/\\")
+            # « / » (ou une racine de Windows) : tout chemin le contient ; rien à chercher.
+            if forme and not re.fullmatch(r"[A-Za-z]:", forme):
+                ajouter(forme, origine, re.escape(forme) + r"(?![\w.-])")
+
+    maison = os.environ.get("HOME", "")
+    if maison:
+        dossier(maison, "dossier personnel (HOME)")
+    moi = compte()
+    if moi:
+        ajouter(moi, "nom du compte, dans un chemin", rf"[/\\]{re.escape(moi)}(?![\w.-])")
+    dossier(cibles, "dossier de compilation (CARGO_TARGET_DIR)")
+    return liste
+
+
 def rapport(trouves, quoi, en_clair=True) -> int:
     """Dit ce qui a été trouvé et où. Sans `en_clair` (CI : son journal est lisible sur GitHub, même après que
     l'historique a été réécrit), seulement le début de chaque valeur."""
@@ -1033,6 +1069,14 @@ def rapport(trouves, quoi, en_clair=True) -> int:
 
 def main():
     args = sys.argv[1:]
+    if args[:1] == ["--compilation"]:
+        # Avant tout le reste : ni git (une source sans dépôt se compile aussi), ni les sources de cet ordinateur.
+        if len(args) < 3:
+            rien_conclu("usage : --compilation CIBLES FICHIER…")
+        detecteur = Detecteur(termes_de_compilation(args[1]))
+        trouves = [(f, t) for f in args[2:] for t, _ in detecteur.trouver(chaines(f), False)]
+        sys.exit(rapport(trouves, "les programmes compilés (un chemin de la compilation n'est pas remplacé : "
+                                  "--remap-path-prefix et -ffile-prefix-map de outils/compiler-version.sh)"))
     if args[:1] in (["--message"], ["--binaire"]):
         args[1:] = [os.path.abspath(a) for a in args[1:]]
     os.chdir(git("rev-parse", "--show-toplevel").strip())

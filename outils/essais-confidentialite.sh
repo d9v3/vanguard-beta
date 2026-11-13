@@ -25,6 +25,10 @@
 #  13. les sources de cet ordinateur, dans une maison jetable : les deux listes privées (commune et de Vanguard), la
 #      base des appareils, nmcli, l'identité Git ; une source présente mais illisible ou en panne : code 2.
 #  14. cliquet : chaque Python lancé par le dépôt (scripts, crochets, CI, programmes Python) l'est isolé, en -I.
+#  15. --compilation (outils/compiler-version.sh, avant l'empreinte) : un dossier personnel, un nom de compte dans un
+#      chemin (UTF-16 compris) ou le dossier de compilation refusés ; le nom seul hors d'un chemin, un HOME « / » et
+#      un programme propre passent ; sans git ; usage faux ou programme absent : code 2 ; et sa place dans la recette
+#      (sur les deux fenêtres avant leur empreinte, sur vanguard avant le repère, après le remplacement des chemins).
 set -uo pipefail
 RACINE=$(cd "$(dirname "$0")/.." && pwd)
 OUTIL=$RACINE/outils/confidentialite.py
@@ -830,6 +834,61 @@ printf 'r = subprocess.run([sys.executable, "-I", %s])\n' '"x.py"' >b.py
 printf '%s %s  # sans -I : voulu\n' "python3" "outils/y.py" >>a.sh && git add a.sh b.py
 cliquet_isole "$D" 2>/dev/null
 noter 0 $? "témoin : le cliquet laisse passer -I et une exception dite"
+# --compilation : compte, maison et dossier de compilation inventés ; lancé hors de tout dépôt git.
+P=$TRAVAIL/compilation && mkdir -p "$P" && cd "$P" || exit 1
+CIBLES_I=/srv/cibles-inventees/vg
+compile() { # nom, puis le texte des octets (printf)
+  local f=$P/$1
+  shift
+  { printf '\177ELF\0octets-inventes\0'; printf "$@"; printf '\0'; } >"$f"
+}
+compilation() { SORTIE=$(HOME=/home/alice USER=alice garde --compilation "$@" 2>&1); }
+compile propre '/vanguard/target/release/build/glutin_egl_sys-0123/out/egl_bindings.rs\0/cargo/registry/src/x/y.rs'
+compilation "$CIBLES_I" "$P/propre"
+noter 0 $? "--compilation : un programme aux chemins remplacés passe"
+compile maison '/home/alice/.cargo/registry/src/x/y.rs'
+compilation "$CIBLES_I" "$P/maison"
+noter 1 "$(refus_dit $?)" "--compilation : le dossier personnel (HOME) est refusé"
+compile disque '/run/media/alice/disque/cibles/release/build/out/egl_bindings.rs'
+compilation "$CIBLES_I" "$P/disque"
+noter 1 "$(refus_dit $?)" "--compilation : le nom du compte dans un chemin hors de HOME est refusé"
+printf '\177ELF\0' >"$P/large" && printf 'C:\\Users\\alice\\cibles\0' | iconv -t UTF-16LE >>"$P/large"
+compilation "$CIBLES_I" "$P/large"
+noter 1 "$(refus_dit $?)" "--compilation : le nom du compte dans un chemin Windows en UTF-16 est refusé"
+compile cibles '/srv/cibles-inventees/vg/fenetre/x86_64-unknown-linux-gnu/release/build/out/glx_bindings.rs'
+compilation "$CIBLES_I" "$P/cibles"
+noter 1 "$(refus_dit $?)" "--compilation : le dossier de compilation (CARGO_TARGET_DIR) est refusé"
+compilation "$CIBLES_I/" "$P/cibles"
+noter 1 "$(refus_dit $?)" "--compilation : le dossier de compilation donné avec « / » final est refusé aussi"
+compile mot 'chez alice, aliceville et /srv/cibles-inventees/vg2/x et /opt/alice.txt'
+compilation "$CIBLES_I" "$P/mot"
+noter 0 $? "--compilation : le nom seul, un dossier voisin et un fichier du même nom passent"
+# Des « / » suivis de rien ou d'un blanc : un motif « / » tout seul les prendrait.
+compile racine '/usr/lib/ et / puis C:/'
+SORTIE=$(HOME=/ USER=alice garde --compilation / "$P/racine" 2>&1)
+noter 0 $? "--compilation : HOME et dossier de compilation « / » ne cherchent pas tout chemin"
+compilation "$CIBLES_I" "$P/propre" "$P/absent"
+sans_trace 2 "--compilation : un programme absent, rien n'est conclu"
+compilation "$CIBLES_I"
+sans_trace 2 "--compilation : sans programme, rien n'est conclu"
+# Sa place dans la recette : les lignes (hors commentaires) qui comptent, dans l'ordre.
+R=$RACINE/outils/compiler-version.sh
+ligne_de() { grep -nF -- "$1" "$R" | grep -v '^[0-9]*:[[:space:]]*#' | head -1 | cut -d: -f1; }
+remplace=$(ligne_de 'REMPLACE_RUST+=" --remap-path-prefix=$forme=/vanguard/target"')
+exporte=$(ligne_de 'export RUSTFLAGS=$REMPLACE_RUST')
+fenetre=$(ligne_de 'manifest-path fenetre/Cargo.toml')
+garde_f=$(ligne_de 'confidentialite.py --compilation "$CIBLES" "$FENETRE_LINUX" "$FENETRE_WINDOWS" ||')
+empreinte=$(ligne_de 'VANGUARD_FENETRE_SHA256_LINUX=$(sha256sum')
+vanguard=$(ligne_de '--target x86_64-unknown-linux-musl --target x86_64-pc-windows-gnu "$@"')
+garde_v=$(ligne_de 'confidentialite.py --compilation "$CIBLES" "$CIBLES/x86_64-unknown-linux-musl/release/vanguard"')
+repere=$(ligne_de '>"$REPERE.nouveau"')
+ordre="$remplace $exporte $fenetre $garde_f $empreinte $vanguard $garde_v $repere"
+if [[ $(wc -w <<<"$ordre") == 8 && $(tr ' ' '\n' <<<"$ordre" | sort -n | paste -sd' ') == "$ordre" ]] &&
+  sed -n "$((garde_f + 1))p;$((garde_v + 2))p" "$R" | grep -c 'exit 1; }' | grep -qx 2; then
+  noter 0 0 "--compilation dans la recette : chemins remplacés, puis fenêtres avant l'empreinte, vanguard avant le repère"
+else
+  noter 0 1 "--compilation dans la recette : absente, mal placée ou sans arrêt (lignes : $ordre)"
+fi
 cd "$TRAVAIL" || exit 1
 
 if ((ECHECS)); then
