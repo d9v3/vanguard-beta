@@ -988,6 +988,9 @@ fn releveur(racine: &Path, maison: &Path, variable: &impl Fn(&str) -> Option<std
     // W-3 (contrôle 2 du sous-lot c2-uwsm, 0.95) : uwsm coupe ces variables sans guillemets (prepare-env.sh,
     // « for __item__ in $1 ») : le shell développe un morceau à joker (« * », « ? », « [ ») en dossiers que Vanguard
     // ne recalcule pas. Pas lu comme un chemin : dit (non vérifié), et la sauvegarde exacte se lève.
+    // U-1 (relecture DEP-4 de la 0.95) : un saut de ligne aussi. uwsm bâtit sa liste par « $(…) », qui retire ceux de
+    // la fin (prepare-env.sh) : « /var/tmp/x⏎ » en dernier morceau de XDG_DATA_DIRS (ou au bout de XDG_CONFIG_HOME)
+    // fait lire /var/tmp/x à uwsm ; Vanguard lisait « /var/tmp/x⏎ », absent, et taisait son « uwsm/env ».
     let mut uwsm_session = Vec::new();
     let mut uwsm_session_joker = Vec::new();
     for nom in VARIABLES_D_UWSM {
@@ -999,7 +1002,7 @@ fn releveur(racine: &Path, maison: &Path, variable: &impl Fn(&str) -> Option<std
             if p.as_os_str()
                 .as_encoded_bytes()
                 .iter()
-                .any(|o| matches!(o, b'*' | b'?' | b'['))
+                .any(|o| matches!(o, b'*' | b'?' | b'[' | b'\n'))
             {
                 uwsm_session_joker.push((nom, p.into_os_string()));
                 continue;
@@ -1199,6 +1202,18 @@ pub(super) fn persistance_dans(
                     "{ou} sets {nom} for the manager: the alert cannot be declared normal while this line is there; to clear it, remove {nom} from {ou} (a system file is changed with admin rights), then restart the session"
                 ),
             )
+        } else if UN_SEUL_DOSSIER.contains(&nom.as_str()) {
+            // U-2, U-3 : un seul dossier, pas une liste.
+            (
+                trf!(
+                    "{ou} pose {nom} au gestionnaire de systemd du compte sous une forme que Vanguard ne résout pas : ce que systemd et uwsm lisent sous ce dossier (unités, greffons, réglages) n'est pas relevé (non vérifié)",
+                    "{ou} sets {nom} for the account's systemd manager in a form Vanguard does not resolve: what systemd and uwsm read under this folder (units, plugins, settings) is not checked (not verified)"
+                ),
+                trf!(
+                    "{ou} : {nom} ne se résout pas en un dossier ; l'alerte ne se déclare pas normale tant que la valeur n'est pas un seul chemin absolu sans « : » (ou « $HOME/… »)",
+                    "{ou}: {nom} does not resolve to one folder; the alert cannot be declared normal until the value is a single absolute path without “:” (or “$HOME/…”)"
+                ),
+            )
         } else {
             (
                 trf!(
@@ -1382,6 +1397,23 @@ pub(super) fn persistance_dans(
     // W-3 : un morceau à joker d'une variable de la session qu'uwsm coupe : les dossiers qu'il en tire ne sont pas lus.
     for (nom, morceau) in t.r.uwsm_session_joker.clone() {
         let vu = crate::ui::couper(&crate::ui::affichable(&morceau.to_string_lossy()), 90);
+        // U-1 : un saut de ligne, que le shell d'uwsm peut retirer.
+        if morceau.as_encoded_bytes().contains(&b'\n') {
+            let source = format!("uwsm saut de ligne {nom} {}", morceau.to_string_lossy());
+            constat_sans_ligne(
+                &mut t,
+                &source,
+                trf!(
+                    "{nom} de la session contient « {vu} », avec un saut de ligne : uwsm peut le retirer (son shell le fait en fin de valeur) et lire « uwsm/env… » dans un autre dossier que Vanguard (non vérifié)",
+                    "the session's {nom} contains “{vu}”, with a line break: uwsm can drop it (its shell does so at the end of the value) and read “uwsm/env…” in another folder than Vanguard (not verified)"
+                ),
+                trf!(
+                    "un saut de ligne dans {nom} de la session : l'alerte ne se déclare pas normale tant qu'il y est ; retirez-le de la variable",
+                    "a line break in the session's {nom}: the alert cannot be declared normal while it is there; remove it from the variable"
+                ),
+            );
+            continue;
+        }
         let source = format!("uwsm joker {nom} {}", morceau.to_string_lossy());
         constat_sans_ligne(
             &mut t,
@@ -1671,7 +1703,8 @@ struct Releveur {
     /// relatif joint au dossier personnel (`depuis_la_maison`), que systemd, lui, ignore.
     uwsm_session: Vec<std::path::PathBuf>,
     /// W-3 (contrôle 2 du sous-lot c2-uwsm, 0.95) : les morceaux de ces variables de la session qui ont un joker du
-    /// shell : (variable, morceau). Uwsm les développe ; Vanguard ne les lit pas, il les dit (non vérifié).
+    /// shell : (variable, morceau). Uwsm les développe ; Vanguard ne les lit pas, il les dit (non vérifié). U-1 : ceux
+    /// qui ont un saut de ligne aussi.
     uwsm_session_joker: Vec<(&'static str, std::ffi::OsString)>,
     /// W-2 (contrôle 2 du sous-lot c2-uwsm, 0.95) : XDG_DATA_HOME de la session, tel que pyxdg le lit pour trouver les
     /// greffons d'uwsm (« uwsm/plugins/<compositeur>.sh ») : entier, relatif joint au dossier personnel.
@@ -4584,7 +4617,8 @@ fn noms_ecrits(texte: &str, cible: impl Fn(&str) -> bool) -> std::collections::B
 /// lève : non vérifié, jamais tu. Pas lus : les profils des shells (que uwsm lit aussi) et l'environnement posé en
 /// cours de session (`systemctl --user set-environment`), qui ne laissent pas de fichier.
 fn environnement_change_la_sauvegarde(r: &Releveur, vide: bool) -> bool {
-    let (fichiers, illisibles) = fichiers_du_gestionnaire(r, &configs_posees(&r.gestionnaire), &dossiers_d_uwsm(r));
+    let (fichiers, illisibles, illisibles_d_uwsm) =
+        fichiers_du_gestionnaire(r, &configs_posees(&r.gestionnaire), &dossiers_d_uwsm(r));
     // V-2 : les scripts d'uwsm lus, seuls fichiers qu'une inclusion peut nommer sans lever.
     let scripts: Vec<std::path::PathBuf> = fichiers
         .iter()
@@ -4594,26 +4628,42 @@ fn environnement_change_la_sauvegarde(r: &Releveur, vide: bool) -> bool {
     // V-1 : un dossier d'unités posé au gestionnaire sous une forme qui ne se résout pas.
     // W-3 : un morceau à joker d'une variable de la session qu'uwsm coupe : ses dossiers ne sont pas lus.
     !illisibles.is_empty()
+        || !illisibles_d_uwsm.is_empty()
         || !r.uwsm_session_joker.is_empty()
         || !r.gestionnaire_non_resolu.is_empty()
-        || fichiers.iter().any(|(f, du_compte, sorte)| {
-            if std::fs::read_link(f).is_ok_and(|v| v == Path::new("/dev/null")) {
-                return false;
-            }
-            if !du_compte && de_root_seul(f) {
-                return false;
-            }
-            match temoins::lire_borne(f, AJOUT_MAX) {
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-                Err(_) => true,
-                Ok(lu) => {
-                    let texte = coupe_comme_systemd(&String::from_utf8_lossy(&lu.octets), *sorte);
-                    !lu.entier
-                        || nomme_une_variable_de_la_sauvegarde(&texte, vide)
-                        || (*sorte == Variables::Shell && script_cache_ce_qu_il_pose(&texte, &r.maison, &scripts))
-                }
-            }
-        })
+        || fichiers
+            .iter()
+            .any(|(f, du_compte, sorte)| fichier_leve_la_sauvegarde(r, f, *du_compte, *sorte, vide, &scripts))
+}
+
+/// Un fichier de `environnement_change_la_sauvegarde` la lève-t-il ? Masqué (lien vers /dev/null), absent, ou du système
+/// à root seul (`de_root_seul`) : non. Illisible, trop gros, qui nomme une variable de la sauvegarde ou (script d'uwsm)
+/// qui cache ce qu'il pose : oui. R-3 (relecture DEP-4 de la 0.95) : à part pour s'essayer sur les vrais greffons du
+/// système, que rien ne doit lever.
+fn fichier_leve_la_sauvegarde(
+    r: &Releveur,
+    f: &Path,
+    du_compte: bool,
+    sorte: Variables,
+    vide: bool,
+    scripts: &[std::path::PathBuf],
+) -> bool {
+    if std::fs::read_link(f).is_ok_and(|v| v == Path::new("/dev/null")) {
+        return false;
+    }
+    if !du_compte && de_root_seul(f) {
+        return false;
+    }
+    match temoins::lire_borne(f, AJOUT_MAX) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(_) => true,
+        Ok(lu) => {
+            let texte = coupe_comme_systemd(&String::from_utf8_lossy(&lu.octets), sorte);
+            !lu.entier
+                || nomme_une_variable_de_la_sauvegarde(&texte, vide)
+                || (sorte == Variables::Shell && script_cache_ce_qu_il_pose(&texte, &r.maison, scripts))
+        }
+    }
 }
 
 /// V-2 (relecture 0.95) : un script de variables (~/.config/uwsm/env…) cache ce qu'il pose au gestionnaire : une
@@ -4863,25 +4913,33 @@ fn dossiers_d_uwsm(r: &Releveur) -> Vec<std::path::PathBuf> {
 /// Les fichiers qui posent des variables au gestionnaire de systemd du compte : (fichier, du compte). Ceux du compte
 /// (environment.d, user.conf et user.conf.d, tout ~/.config/uwsm, et ceux d'un XDG_CONFIG_HOME déplacé,
 /// ~/.pam_environment), et ceux du système (/etc/environment, pam_env.conf, environment.d, user.conf et user.conf.d).
-/// Avec les dossiers qui ne se lisent pas. `posees` : les XDG_CONFIG_HOME et XDG_CONFIG_DIRS que ces fichiers posent
-/// eux-mêmes au gestionnaire (`configs_posees`), lus comme ~/.config : le user.conf d'un dossier déplacé par
-/// ~/.pam_environment pose à son tour des dossiers d'unités (relecture 0.95, W-1, chaîne à deux niveaux).
+/// Avec les dossiers qui ne se lisent pas : ceux du gestionnaire, puis ceux d'uwsm (R-7, relecture DEP-4 de la 0.95 :
+/// un dossier de greffons illisible était dit comme un fichier du gestionnaire, « les dossiers d'unités qu'il peut
+/// ajouter… », faux pour du shell qu'uwsm lit ; il a maintenant le texte d'uwsm). `posees` : les XDG_CONFIG_HOME et
+/// XDG_CONFIG_DIRS que ces fichiers posent eux-mêmes au gestionnaire (`configs_posees`), lus comme ~/.config : le
+/// user.conf d'un dossier déplacé par ~/.pam_environment pose à son tour des dossiers d'unités (relecture 0.95, W-1,
+/// chaîne à deux niveaux).
 #[allow(clippy::type_complexity)]
 fn fichiers_du_gestionnaire(
     r: &Releveur,
     posees: &[std::path::PathBuf],
     donnees: &[std::path::PathBuf],
-) -> (Vec<(std::path::PathBuf, bool, Variables)>, Vec<std::path::PathBuf>) {
+) -> (
+    Vec<(std::path::PathBuf, bool, Variables)>,
+    Vec<std::path::PathBuf>,
+    Vec<std::path::PathBuf>,
+) {
     let s = |c: &str| r.sous(Path::new(c));
     let mut fichiers: Vec<(std::path::PathBuf, bool, Variables)> = Vec::new();
     let mut illisibles = Vec::new();
+    let mut illisibles_d_uwsm = Vec::new();
     // Les fichiers d'un dossier : ceux en « .conf », ou ceux qu'uwsm peut lire (`fichiers_d_uwsm`, S-4).
     let mut dossier = |d: std::path::PathBuf,
                        du_compte: bool,
                        sorte: Variables,
                        fichiers: &mut Vec<(std::path::PathBuf, bool, Variables)>| {
         if sorte == Variables::Shell {
-            let trouves = fichiers_d_uwsm(&d, &mut illisibles);
+            let trouves = fichiers_d_uwsm(&d, &mut illisibles_d_uwsm);
             fichiers.extend(trouves.into_iter().map(|f| (f, du_compte, sorte)));
             return;
         }
@@ -4978,7 +5036,7 @@ fn fichiers_du_gestionnaire(
     }
     for b in bases_des_greffons {
         let du_compte = b.starts_with(&r.maison);
-        for f in greffons_d_uwsm(&b, &mut illisibles) {
+        for f in greffons_d_uwsm(&b, &mut illisibles_d_uwsm) {
             fichiers.push((f, du_compte, Variables::Shell));
         }
     }
@@ -4992,7 +5050,7 @@ fn fichiers_du_gestionnaire(
     ] {
         fichiers.push((s(f), false, sorte));
     }
-    (fichiers, illisibles)
+    (fichiers, illisibles, illisibles_d_uwsm)
 }
 
 /// Les variables par lesquelles systemd du compte calcule les dossiers où il cherche ses unités (relecture 0.95, V-1).
@@ -5007,6 +5065,11 @@ const VARIABLES_DES_DOSSIERS: [&str; 5] = [
 /// V-1 (relecture du lot c2-uwsm, 0.95) : les variables dont uwsm lit chaque morceau (coupé à « : ») comme un dossier où
 /// chercher « uwsm/env… » (uwsm 0.27, prepare-env.sh, `get_all_config_dirs_extended`), un morceau relatif compris.
 const VARIABLES_D_UWSM: [&str; 3] = ["XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "XDG_DATA_DIRS"];
+
+/// U-2, U-3 (relecture DEP-4 de la 0.95) : les variables qui désignent UN dossier, pas une liste : systemd (« systemd-analyze
+/// --user unit-paths ») et pyxdg (les greffons d'uwsm) prennent leur valeur en entier, « : » compris ; uwsm, lui, coupe
+/// XDG_CONFIG_HOME à « : » (prepare-env.sh). Posée au gestionnaire avec un « : », elle ne se résout pas (`chemins_poses`).
+const UN_SEUL_DOSSIER: [&str; 2] = ["XDG_CONFIG_HOME", "XDG_DATA_HOME"];
 
 /// L'étiquette, dans `Releveur::gestionnaire`, d'un morceau relatif d'une `VARIABLES_D_UWSM` posé au gestionnaire
 /// (V-1) : systemd l'ignore (aucun dossier d'unités n'en vient), seul `dossiers_d_uwsm` le lit.
@@ -5082,7 +5145,8 @@ fn dossiers_du_gestionnaire_lus(
     Vec<(&'static str, std::path::PathBuf)>,
     Vec<(std::path::PathBuf, String)>,
 ) {
-    let (fichiers, illisibles) = fichiers_du_gestionnaire(r, posees, &[]);
+    // R-7 : ceux d'uwsm ne posent rien au gestionnaire : dits par le bilan d'uwsm (`fichiers_de_configuration`).
+    let (fichiers, illisibles, _) = fichiers_du_gestionnaire(r, posees, &[]);
     let mut dossiers = Vec::new();
     let mut non_resolus: Vec<(std::path::PathBuf, String)> = illisibles.into_iter().map(|d| (d, "?".into())).collect();
     for (f, du_compte, sorte) in fichiers {
@@ -5270,6 +5334,13 @@ fn chemins_poses(
     maison: &Path,
     defauts: bool,
 ) -> Option<(Vec<std::path::PathBuf>, Vec<std::path::PathBuf>)> {
+    // U-2, U-3 (relecture DEP-4 de la 0.95) : « XDG_DATA_HOME=/var/tmp/a:b » est le dossier « /var/tmp/a:b » pour systemd
+    // et pyxdg. Avant, la valeur était coupée comme une liste : Vanguard lisait /var/tmp/a et ~/b, absents, et taisait
+    // le greffon d'uwsm ou l'unité rangés sous le vrai dossier (« Aucun lancement automatique suspect »). Les lecteurs
+    // ne s'accordent pas (uwsm coupe XDG_CONFIG_HOME) : ne se résout pas, même sous « ${nom:-défaut} ».
+    if UN_SEUL_DOSSIER.contains(&nom) && valeur.contains(':') {
+        return None;
+    }
     let valeur = if defauts {
         defauts_lus(valeur, nom)
     } else {
@@ -5808,7 +5879,8 @@ fn fichiers_de_configuration(r: &Releveur) -> (Vec<(std::path::PathBuf, Variable
     // chemin exact. Avant, tout fichier sous ~/.config/uwsm, ~/.config/environment.d ou ~/.config/systemd était passé :
     // un XDG_DATA_DIRS de la session qui nomme ~/.config/systemd faisait lire ~/.config/systemd/uwsm/env à uwsm, jamais
     // jugé ici.
-    let (ailleurs, illisibles) = fichiers_du_gestionnaire(r, &configs_posees(&r.gestionnaire), &dossiers_d_uwsm(r));
+    let (ailleurs, illisibles, illisibles_d_uwsm_ailleurs) =
+        fichiers_du_gestionnaire(r, &configs_posees(&r.gestionnaire), &dossiers_d_uwsm(r));
     let pam = h.join(".pam_environment");
     // S-3 (re-contrôle 2 0.95, angle lecture) : « du compte » veut dire « que le compte peut changer », pas « sous son
     // dossier personnel ». Un fichier lu ailleurs (un XDG_DATA_DIRS dans /var/tmp, un disque amovible, un dossier du
@@ -5839,6 +5911,7 @@ fn fichiers_de_configuration(r: &Releveur) -> (Vec<(std::path::PathBuf, Variable
     let mut illisibles: Vec<std::path::PathBuf> = illisibles_ici
         .into_iter()
         .chain(illisibles)
+        .chain(illisibles_d_uwsm_ailleurs)
         .chain(illisibles_d_uwsm)
         .filter(|d| !r.gestionnaire_non_resolu.iter().any(|(x, _)| x == d))
         .collect();
@@ -16473,6 +16546,307 @@ mod tests {
             }
         }
         assert!(faux.is_empty(), "greffons d'uwsm : {faux:#?}");
+    }
+
+    /// U-2, U-3 (relecture DEP-4 de la 0.95) : XDG_DATA_HOME ou XDG_CONFIG_HOME posé au gestionnaire avec un « : » est
+    /// UN dossier pour systemd et pyxdg (« /var/tmp/a:b »). Avant, la valeur était coupée : Vanguard lisait /var/tmp/a
+    /// et ~/b, et taisait le greffon d'uwsm ou l'unité rangés sous le vrai dossier (« Aucun lancement automatique
+    /// suspect »). Maintenant : ne se résout pas, dit (non vérifié, jamais déclarable), et la sauvegarde se lève.
+    /// Témoins : la même valeur sans « : » se suit, le greffon ou l'unité sont nommés.
+    #[test]
+    fn variable_d_un_seul_dossier_jamais_coupee() {
+        const CONF: &str = ".config/systemd/user.conf";
+        const ENV: &str = ".config/environment.d/10-x.conf";
+        const UNITE: &str = "[Service]\nExecStart=%h/.x/agent\n[Install]\nWantedBy=default.target\n";
+        const GREFFON: &str = "export LD_PRELOAD=/opt/inerte/a.so\n";
+        // (fichier qui pose, son texte, ce qui est rangé (depuis la racine), son contenu, ce qui doit se lire au bilan)
+        let cas: &[(&str, &str, &str, &str, &str)] = &[
+            (
+                ENV,
+                "XDG_DATA_HOME=/var/tmp/a\n",
+                "var/tmp/a/uwsm/plugins/hyprland.sh",
+                GREFFON,
+                "/var/tmp/a/uwsm/plugins/hyprland.sh:1 précharge",
+            ),
+            (
+                ENV,
+                "XDG_DATA_HOME=/var/tmp/a:b\n",
+                "var/tmp/a:b/uwsm/plugins/hyprland.sh",
+                GREFFON,
+                "ce que systemd et uwsm lisent sous ce dossier",
+            ),
+            (
+                ENV,
+                "XDG_DATA_HOME=/home/alice/.cache/a:b\n",
+                "home/alice/.cache/a:b/uwsm/plugins/hyprland.sh",
+                GREFFON,
+                "ce que systemd et uwsm lisent sous ce dossier",
+            ),
+            (
+                CONF,
+                "[Manager]\nManagerEnvironment=XDG_CONFIG_HOME=/home/alice/.x\n",
+                "home/alice/.x/systemd/user/agent.service",
+                UNITE,
+                "agent.service",
+            ),
+            (
+                CONF,
+                "[Manager]\nManagerEnvironment=XDG_CONFIG_HOME=/home/alice/.x:y\n",
+                "home/alice/.x:y/systemd/user/agent.service",
+                UNITE,
+                "ce que systemd et uwsm lisent sous ce dossier",
+            ),
+            (
+                CONF,
+                "[Manager]\nManagerEnvironment=XDG_DATA_HOME=/home/alice/.x\n",
+                "home/alice/.x/systemd/user/agent.service",
+                UNITE,
+                "agent.service",
+            ),
+            (
+                CONF,
+                "[Manager]\nManagerEnvironment=XDG_DATA_HOME=/home/alice/.x:y\n",
+                "home/alice/.x:y/systemd/user/agent.service",
+                UNITE,
+                "ce que systemd et uwsm lisent sous ce dossier",
+            ),
+            (
+                ".pam_environment",
+                "XDG_CONFIG_HOME DEFAULT=/home/alice/.x\n",
+                "home/alice/.x/systemd/user/agent.service",
+                UNITE,
+                "agent.service",
+            ),
+            (
+                ".pam_environment",
+                "XDG_CONFIG_HOME DEFAULT=/home/alice/.x:y\n",
+                "home/alice/.x:y/systemd/user/agent.service",
+                UNITE,
+                "ce que systemd et uwsm lisent sous ce dossier",
+            ),
+            (
+                ENV,
+                "XDG_CONFIG_HOME=/home/alice/.x:y\n",
+                "home/alice/.x:y/systemd/user/agent.service",
+                UNITE,
+                "ce que systemd et uwsm lisent sous ce dossier",
+            ),
+        ];
+        let mut faux = Vec::new();
+        for (i, (fichier, texte, range, contenu, attendu)) in cas.iter().enumerate() {
+            let m = Maison::nouvelle(&format!("un-seul-dossier-{i}"));
+            m.ecrire(fichier, texte);
+            let f = m.racine.join(range);
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(&f, contenu).unwrap();
+            let c = m.lancements();
+            if !(c.probleme >= Some(Niveau::Eleve)
+                && c.message.contains(attendu)
+                && crate::apprentissage::declarable(&c).is_err())
+            {
+                faux.push(format!("{fichier} {texte:?} : {:?} {}", c.probleme, c.message));
+            }
+        }
+        // La sauvegarde exacte se lève (ses deux formes) : ce qui est rangé sous ce dossier n'est pas relevé.
+        for vide in [false, true] {
+            let (m, _) = sauvegarde_d_essai(&format!("un-seul-dossier-sauvegarde-{vide}"), vide);
+            m.ecrire(ENV, "XDG_DATA_HOME=/var/tmp/a:b\n");
+            let c = m.lancements();
+            if !(c.probleme == Some(Niveau::Eleve) && c.message.contains(crate::sauvegarde::SERVICE)) {
+                faux.push(format!("sauvegarde, env -i {vide} : {:?} {}", c.probleme, c.message));
+            }
+        }
+        assert!(faux.is_empty(), "variables d'un seul dossier : {faux:#?}");
+    }
+
+    /// U-1 (relecture DEP-4 de la 0.95) : un morceau d'une variable de la session qu'uwsm coupe, avec un saut de ligne
+    /// (« /var/tmp/x⏎ » au bout de XDG_DATA_DIRS ou de XDG_CONFIG_HOME) : le « $(…) » d'uwsm le retire et lit
+    /// /var/tmp/x. Dit (non vérifié, jamais déclarable), et la sauvegarde exacte se lève. Avant, Vanguard lisait
+    /// « /var/tmp/x⏎ », absent : rien n'était dit. Témoin : sans saut de ligne, le fichier est jugé.
+    #[test]
+    fn saut_de_ligne_d_uwsm_dans_la_session_dit() {
+        let mut faux = Vec::new();
+        for (i, (var, val, attendu)) in [
+            (
+                "XDG_DATA_DIRS",
+                "/usr/share:/var/tmp/x",
+                "/var/tmp/x/uwsm/env:1 précharge",
+            ),
+            ("XDG_DATA_DIRS", "/usr/share:/var/tmp/x\n", "un saut de ligne"),
+            ("XDG_CONFIG_HOME", "/var/tmp/x", "/var/tmp/x/uwsm/env:1 précharge"),
+            ("XDG_CONFIG_HOME", "/var/tmp/x\n", "un saut de ligne"),
+            ("XDG_CONFIG_HOME", "rel\n", "un saut de ligne"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("uwsm-saut-{i}"));
+            m.ecrire("../../var/tmp/x/uwsm/env", "LD_PRELOAD=/opt/inerte/a.so\n");
+            m.ecrire("rel/uwsm/env", "LD_PRELOAD=/opt/inerte/a.so\n");
+            let c = m.lancements_avec(&[(var, val)]);
+            if !(c.probleme >= Some(Niveau::Eleve)
+                && c.message.contains(attendu)
+                && crate::apprentissage::declarable(&c).is_err())
+            {
+                faux.push(format!("{var}={val:?} : {:?} {}", c.probleme, c.message));
+            }
+        }
+        for vide in [false, true] {
+            let (m, _) = sauvegarde_d_essai(&format!("uwsm-saut-sauvegarde-{vide}"), vide);
+            let c = m.lancements_avec(&[("XDG_DATA_DIRS", "/usr/share:/var/tmp/x\n")]);
+            if !(c.probleme == Some(Niveau::Eleve) && c.message.contains(crate::sauvegarde::SERVICE)) {
+                faux.push(format!("sauvegarde, env -i {vide} : {:?} {}", c.probleme, c.message));
+            }
+            // Témoin : sans saut de ligne, la sauvegarde exacte n'est pas levée.
+            let c = m.lancements_avec(&[("XDG_DATA_DIRS", "/usr/share:/var/tmp/x")]);
+            if c.probleme > Some(Niveau::Info) || (vide && c.probleme.is_some()) {
+                faux.push(format!("témoin, env -i {vide} : {:?} {}", c.probleme, c.message));
+            }
+        }
+        assert!(faux.is_empty(), "sauts de ligne de la session : {faux:#?}");
+    }
+
+    /// R-2 (relecture DEP-4 de la 0.95) : un XDG_DATA_HOME posé au gestionnaire par un fichier (environment.d), absolu
+    /// ou relatif (lu depuis le dossier personnel, comme pyxdg sous uwsm) : ses greffons d'uwsm se jugent, au bilan et
+    /// à la sauvegarde (ses deux formes). Avant cet essai, rien ne tenait ce chemin (seule la session était essayée).
+    #[test]
+    fn greffons_d_un_xdg_data_home_pose_juges() {
+        let mut faux = Vec::new();
+        for (i, (valeur, greffon, montre)) in [
+            (
+                "/var/tmp/d",
+                "var/tmp/d/uwsm/plugins/x.sh",
+                "/var/tmp/d/uwsm/plugins/x.sh",
+            ),
+            ("rel", "home/alice/rel/uwsm/plugins/x.sh", "~/rel/uwsm/plugins/x.sh"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("uwsm-greffon-pose-{i}"));
+            m.ecrire(".config/environment.d/10-x.conf", &format!("XDG_DATA_HOME={valeur}\n"));
+            let f = m.racine.join(greffon);
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(&f, "export LD_PRELOAD=/opt/inerte/a.so\n").unwrap();
+            let c = m.lancements();
+            if !(c.probleme >= Some(Niveau::Eleve) && c.message.contains(&format!("{montre}:1 précharge"))) {
+                faux.push(format!("bilan {valeur} : {:?} {}", c.probleme, c.message));
+            }
+            for vide in [false, true] {
+                let (m, _) = sauvegarde_d_essai(&format!("uwsm-greffon-pose-sauvegarde-{i}-{vide}"), vide);
+                m.ecrire(".config/environment.d/10-x.conf", &format!("XDG_DATA_HOME={valeur}\n"));
+                let f = m.racine.join(greffon);
+                std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+                std::fs::write(&f, "export LD_LIBRARY_PATH=/opt/inerte\n").unwrap();
+                let c = m.lancements();
+                if !(c.probleme == Some(Niveau::Eleve) && c.message.contains(crate::sauvegarde::SERVICE)) {
+                    faux.push(format!(
+                        "sauvegarde {valeur}, env -i {vide} : {:?} {}",
+                        c.probleme, c.message
+                    ));
+                }
+            }
+        }
+        assert!(faux.is_empty(), "greffons sous un XDG_DATA_HOME posé : {faux:#?}");
+    }
+
+    /// R-3 (relecture DEP-4 de la 0.95) : les vrais greffons du système (/usr/share/uwsm/plugins, à root seul) ne lèvent
+    /// pas la sauvegarde : sans le filtre de root, chacun la lèverait à chaque bilan d'une machine saine (ils contiennent
+    /// « . », « eval »…). Sauté dans un espace de noms d'utilisateurs (rien n'y est « à root seul ») ou sans greffon ;
+    /// sauté aussi si aucun ne lèverait même du compte (l'essai ne mordrait pas).
+    #[test]
+    fn greffons_du_systeme_ne_levent_pas_la_sauvegarde_en_vrai() {
+        if !uid_sans_traduction(&std::fs::read_to_string("/proc/self/uid_map").unwrap_or_default()) {
+            return crate::essais::saute(
+                "dans un espace de noms d'utilisateurs (unshare -r), rien n'est « à root seul » : à lancer hors de lui",
+            );
+        }
+        let mut greffons = Vec::new();
+        let mut illisibles = Vec::new();
+        for base in ["/usr/local/share", "/usr/share"] {
+            greffons.extend(greffons_d_uwsm(Path::new(base), &mut illisibles));
+        }
+        if greffons.is_empty() {
+            return crate::essais::saute("aucun greffon d'uwsm dans /usr/share ni /usr/local/share ici");
+        }
+        let maison = crate::essais::temporaire().join(format!("vanguard-greffons-vrais-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&maison);
+        std::fs::create_dir_all(&maison).unwrap();
+        let r = Releveur {
+            racine: "/".into(),
+            maison: maison.clone(),
+            ..Releveur::default()
+        };
+        let mordant = greffons
+            .iter()
+            .any(|f| fichier_leve_la_sauvegarde(&r, f, true, Variables::Shell, false, &[]));
+        let mut faux = Vec::new();
+        for f in &greffons {
+            for vide in [false, true] {
+                if !de_root_seul(f) || fichier_leve_la_sauvegarde(&r, f, false, Variables::Shell, vide, &[]) {
+                    faux.push(format!("{} (env -i {vide})", f.display()));
+                }
+            }
+        }
+        std::fs::remove_dir_all(&maison).unwrap();
+        assert!(
+            faux.is_empty(),
+            "greffons du système qui lèvent la sauvegarde : {faux:#?}"
+        );
+        if !mordant {
+            return crate::essais::saute(
+                "aucun greffon du système ne lèverait la sauvegarde même du compte : le filtre de root n'est pas essayé",
+            );
+        }
+    }
+
+    /// R-7 (relecture DEP-4 de la 0.95) : un dossier de greffons d'uwsm qui ne se lit pas est dit avec le texte d'uwsm
+    /// (« ce qu'uwsm y lirait n'est pas jugé »), plus avec celui du gestionnaire (« les dossiers d'unités qu'il peut
+    /// ajouter… », faux pour du shell) ; toujours non vérifié, jamais déclarable, et la sauvegarde se lève. Témoin :
+    /// lisible et sain, rien.
+    #[cfg(unix)]
+    #[test]
+    fn dossier_de_greffons_illisible_dit_par_uwsm() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut faux = Vec::new();
+        let poser = |m: &Maison| -> std::path::PathBuf {
+            let d = m.racine.join("home/alice/.local/share/uwsm/plugins");
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("hyprland.sh"), "export EDITOR=nvim\n").unwrap();
+            d
+        };
+        let m = Maison::nouvelle("uwsm-greffons-illisibles");
+        let d = poser(&m);
+        let c = m.lancements();
+        if c.probleme.is_some() {
+            faux.push(format!("témoin : {:?} {}", c.probleme, c.message));
+        }
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read_dir(&d).is_ok() {
+            std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
+            return crate::essais::saute("le compte lit un dossier sans droit de lecture (root, ou espace de noms)");
+        }
+        let c = m.lancements();
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if !(c.probleme >= Some(Niveau::Eleve)
+            && c.message
+                .contains("~/.local/share/uwsm/plugins ne se lit pas : ce qu'uwsm y lirait n'est pas jugé")
+            && !c.message.contains("dossiers d'unités")
+            && crate::apprentissage::declarable(&c).is_err())
+        {
+            faux.push(format!("bilan : {:?} {}", c.probleme, c.message));
+        }
+        for vide in [false, true] {
+            let (m, _) = sauvegarde_d_essai(&format!("uwsm-greffons-illisibles-sauvegarde-{vide}"), vide);
+            let d = poser(&m);
+            std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o000)).unwrap();
+            let c = m.lancements();
+            std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
+            if !(c.probleme == Some(Niveau::Eleve) && c.message.contains(crate::sauvegarde::SERVICE)) {
+                faux.push(format!("sauvegarde, env -i {vide} : {:?} {}", c.probleme, c.message));
+            }
+        }
+        assert!(faux.is_empty(), "dossier de greffons illisible : {faux:#?}");
     }
 
     /// W-3 (contrôle 2 du sous-lot c2-uwsm, 0.95) : un morceau à joker d'une variable de la session qu'uwsm coupe
