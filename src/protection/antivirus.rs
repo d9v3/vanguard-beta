@@ -224,6 +224,28 @@ fn ajouter_second_avis(r: &mut crate::protection::yara::resultat::Releve, avis: 
                 "ClamAV second opinion: {} file(s) scanned.",
                 bilan.analyses
             ));
+            // Ni trouvaille (rien n'a confirmé l'infection), ni sain : non vérifié.
+            r.manques.extend(bilan.non_verifies.iter().map(|(f, raison)| {
+                trf!(
+                    "Second avis ClamAV : {} signalé, non vérifié : {raison}.",
+                    "ClamAV second opinion: {} reported, not verified: {raison}.",
+                    affichable(f)
+                )
+            }));
+            // Fichiers récents de /tmp que clamscan n'a pas reçus : dits, jamais comptés sains.
+            r.manques.extend(bilan.non_analyses.iter().map(|(n, raison)| {
+                trf!(
+                    "Second avis ClamAV : {n} fichier(s) récent(s) de /tmp non analysé(s) : {raison}.",
+                    "ClamAV second opinion: {n} recent file(s) in /tmp not scanned: {raison}."
+                )
+            }));
+            if !bilan.lignes_inconnues.is_empty() {
+                r.manques.push(trf!(
+                    "Second avis ClamAV : lignes qu'aucun fichier n'explique ({}), sans doute un nom de fichier à saut de ligne : non vérifié.",
+                    "ClamAV second opinion: lines that no file explains ({}), probably a file name with a line break: not verified.",
+                    bilan.lignes_inconnues.join(", ")
+                ));
+            }
             r.trouves.extend(bilan.infectes.iter().map(|(f, menace)| {
                 (
                     Niveau::Critique,
@@ -2093,12 +2115,27 @@ pub(crate) fn examiner(fichier: &std::path::Path) -> Examen {
     ) else {
         return Examen::Impossible(tr!("ClamAV n'a pas pu aller au bout", "ClamAV could not finish").into());
     };
-    match lire_resultat(r.code, &r.sortie) {
+    examen_du_resultat(r.code, &r.sortie)
+}
+
+/// L'examen d'un seul fichier, d'après la sortie de clamscan.
+#[cfg(unix)]
+fn examen_du_resultat(code: Option<i32>, sortie: &str) -> Examen {
+    match lire_resultat(code, sortie) {
         Some(b) if b.analyses == 0 => {
             Examen::Impossible(tr!("fichier illisible pour ClamAV", "file unreadable for ClamAV").into())
         }
         Some(b) if b.infectes.is_empty() => Examen::Sain,
-        Some(b) => Examen::Trouve(b.infectes.into_iter().map(|(_, menace)| menace).collect()),
+        // Un seul fichier analysé : sa vraie ligne est la dernière avant le bilan. Les autres viennent de la tête de
+        // son nom (« x: Menace FOUND⏎… ») et ne montrent jamais une menace choisie par qui a nommé le fichier.
+        Some(b) => Examen::Trouve(
+            b.infectes
+                .into_iter()
+                .last()
+                .map(|(_, menace)| menace)
+                .into_iter()
+                .collect(),
+        ),
         None => Examen::Impossible(tr!("l'analyse de ClamAV a échoué", "the ClamAV scan failed").into()),
     }
 }
@@ -2271,6 +2308,7 @@ pub(crate) const ENDROITS_A_RISQUE: [&str; 6] = [
 /// Ce que le second avis de ClamAV a donné, sans l'écran : l'analyse antivirus le montre et propose la quarantaine,
 /// `vanguard antivirus --json` le rend tel quel.
 #[cfg(unix)]
+#[derive(Debug)]
 enum SecondAvis {
     /// Pas lancé : coupé dans les Paramètres, clamscan absent, ou ses signatures absentes.
     NonLance(&'static str),
@@ -2278,8 +2316,9 @@ enum SecondAvis {
     PasDemarre,
     /// L'analyse a échoué (résultat pas fiable) : ses lignes d'erreur, rendues affichables (au plus 5).
     Echoue(Vec<String>),
-    /// L'analyse a eu lieu ; chaque fichier infecté n'y figure qu'une fois.
-    Fait(Bilan),
+    /// L'analyse a eu lieu ; chaque fichier infecté n'y figure qu'une fois. En boîte : les fonctions qui lancent
+    /// clamscan rendent leurs échecs dans ce type, qui serait sinon aussi gros qu'un bilan (`result_large_err`).
+    Fait(Box<Bilan>),
 }
 
 /// Lance le second avis de ClamAV. `ecran` faux (`--json`) : aucune question, rien de montré, rien de téléchargé.
@@ -2304,35 +2343,24 @@ fn second_avis(portee: &Portee, ecran: bool) -> SecondAvis {
     let cibles = sans_doublons(cibles);
     // /tmp : seulement les fichiers récents (7 jours), où atterrit un téléchargement en cours ou un script lancé ;
     // le reste peut peser des gigaoctets (caches de compilation, préfixes Wine) sans rien apprendre.
-    let liste_tmp = if matches!(portee, Portee::Rapide) {
-        let fichiers = fichiers_recents(std::path::Path::new("/tmp"), 7, 5000);
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.subsec_nanos());
-        let chemin = std::env::temp_dir().join(format!("vanguard-clamav-{}-{nanos}.txt", std::process::id()));
-        let texte = fichiers
-            .iter()
-            .map(|f| f.display().to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
-        // Création exclusive : jamais un fichier ou un lien posé d'avance par un autre compte dans /tmp.
-        let ecrit = !fichiers.is_empty()
-            && std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&chemin)
-                .and_then(|mut f| std::io::Write::write_all(&mut f, texte.as_bytes()))
-                .is_ok();
-        ecrit.then_some((chemin, fichiers.len()))
+    let tmp = if matches!(portee, Portee::Rapide) {
+        fichiers_recents(std::path::Path::new("/tmp"), 7, 5000)
     } else {
-        None
+        Vec::new()
     };
+    let lancement = preparer_lancement(cibles, tmp, &std::env::temp_dir());
     // Sans aucun chemin, clamscan analyserait le dossier courant : rien n'y est lancé.
-    if cibles.is_empty() && liste_tmp.is_none() {
-        return SecondAvis::NonLance(tr!(
-            "rien à analyser (aucun endroit à risque, aucun fichier récent dans /tmp)",
-            "nothing to scan (no risky place, no recent file in /tmp)"
-        ));
+    if lancement.liste.is_none() && lancement.arguments.is_empty() {
+        if lancement.non_analyses.is_empty() {
+            return SecondAvis::NonLance(tr!(
+                "rien à analyser (aucun endroit à risque, aucun fichier récent dans /tmp)",
+                "nothing to scan (no risky place, no recent file in /tmp)"
+            ));
+        }
+        return SecondAvis::Fait(Box::new(Bilan {
+            non_analyses: lancement.non_analyses,
+            ..Bilan::default()
+        }));
     }
     // Jeux, caches et préfixes Wine sont énormes et produisent des faux positifs (cracks, outils anti-triche).
     // Un dossier choisi est analysé en entier : seules les quarantaines restent à l'écart.
@@ -2358,25 +2386,18 @@ fn second_avis(portee: &Portee, ecran: bool) -> SecondAvis {
     } else {
         &tout
     };
-    let mut cmd = crate::commande::par_le_systeme("clamscan");
-    // Le bilan final (fichiers analysés, infectés, erreurs) sert à juger si l'analyse a vraiment eu lieu.
-    cmd.args(["-r", "-i", "--max-filesize=200M", "--max-scansize=400M"]);
-    cmd.args(option_base());
-    cmd.args(option_pua());
-    for e in exclusions {
-        cmd.arg(format!("--exclude-dir={}", regex_echappe(e)));
-    }
-    if let Some((chemin, _)) = &liste_tmp {
-        cmd.arg(format!("--file-list={}", chemin.display()));
-    }
-    // Un chemin qui commence par « - » reste un chemin, jamais une option.
-    cmd.arg("--");
-    cmd.args(&cibles);
-    let mut decrites: Vec<String> = cibles.iter().map(|p| chemin_affichable(p)).collect();
-    if let Some((_, n)) = &liste_tmp {
+    let mut decrites: Vec<String> = lancement
+        .perimetre
+        .cibles
+        .iter()
+        .map(|p| chemin_affichable(p))
+        .collect();
+    // Ne compte que ce que clamscan lira vraiment : ni une liste qui n'a pas pu s'écrire, ni ce qui reste à part.
+    let n_tmp = lancement.perimetre.fichiers.len();
+    if n_tmp > 0 {
         decrites.push(trf!(
-            "/tmp ({n} fichier(s) de moins de 7 jours)",
-            "/tmp ({n} file(s) under 7 days old)"
+            "/tmp ({n_tmp} fichier(s) de moins de 7 jours)",
+            "/tmp ({n_tmp} file(s) under 7 days old)"
         ));
     }
     if ecran {
@@ -2390,30 +2411,19 @@ fn second_avis(portee: &Portee, ecran: bool) -> SecondAvis {
             "  {GRIS}This can take from a few seconds to several minutes…{RESET}"
         );
     }
-
-    let sortie = crate::coulisses::Suivie::output_suivi(&mut cmd);
-    if let Some((chemin, _)) = &liste_tmp {
-        let _ = std::fs::remove_file(chemin);
+    // La seconde analyse des fichiers signalés recharge les signatures à chaque lancement : dite à l'écran seulement.
+    let revu = analyser_et_revoir(&lancement, option_base().as_ref(), exclusions, |n| {
+        if ecran {
+            trp!(
+                "  {GRIS}{n} fichier(s) signalé(s), analysé(s) à nouveau avant tout geste…{RESET}",
+                "  {GRIS}{n} reported file(s), scanned again before anything is done…{RESET}"
+            );
+        }
+    });
+    match revu {
+        Ok(bilan) => SecondAvis::Fait(Box::new(bilan)),
+        Err(echec) => echec,
     }
-    let Ok(sortie) = sortie else {
-        return SecondAvis::PasDemarre;
-    };
-    let Some(mut bilan) = lire_resultat(sortie.status.code(), &String::from_utf8_lossy(&sortie.stdout)) else {
-        // Les erreurs de ClamAV citent souvent un fichier, au nom choisi par n'importe qui.
-        let erreur = String::from_utf8_lossy(&sortie.stderr);
-        return SecondAvis::Echoue(
-            erreur
-                .lines()
-                .filter(|l| l.contains("ERROR"))
-                .take(5)
-                .map(affichable)
-                .collect(),
-        );
-    };
-    // Ceinture et bretelles : un même fichier n'est proposé qu'une fois (sinon la 2e mise en quarantaine échoue).
-    let mut vus = std::collections::HashSet::new();
-    bilan.infectes.retain(|(f, _)| vus.insert(f.clone()));
-    SecondAvis::Fait(bilan)
 }
 
 /// Le second avis de ClamAV à l'écran, puis la quarantaine proposée pour ce qu'il a trouvé.
@@ -2447,7 +2457,7 @@ fn clamav(portee: &Portee) {
             }
             return;
         }
-        SecondAvis::Fait(bilan) => bilan,
+        SecondAvis::Fait(bilan) => *bilan,
     };
 
     let illisibles = if bilan.illisibles > 0 {
@@ -2464,12 +2474,55 @@ fn clamav(portee: &Portee) {
         "  {GRIS}{} file(s) scanned{illisibles}.{RESET}",
         bilan.analyses
     );
+    // Signalé sans être confirmé : montré, jamais compté sain, et aucun geste ne lui est proposé.
+    for (f, raison) in &bilan.non_verifies {
+        afficher_aligne(
+            "  ",
+            &trf!(
+                "? Non vérifié : {} : signalé par l'analyse, mais {raison} ; rien n'y est fait.",
+                "? Not verified: {}: reported by the scan, but {raison}; nothing is done to it.",
+                affichable(f)
+            ),
+            4,
+            couleur(Niveau::Moyen),
+        );
+    }
+    if !bilan.lignes_inconnues.is_empty() {
+        afficher_aligne(
+            "  ",
+            &trf!(
+                "? Non vérifié : clamscan a écrit des lignes qu'aucun fichier n'explique ({}) : sans doute un nom de fichier à saut de ligne, que Vanguard ne peut pas désigner sans risque d'en viser un autre ; rien n'y est fait.",
+                "? Not verified: clamscan wrote lines that no file explains ({}): probably a file name with a line break, which Vanguard cannot point to without risking another file; nothing is done to it.",
+                bilan.lignes_inconnues.join(", ")
+            ),
+            4,
+            couleur(Niveau::Moyen),
+        );
+    }
+    for (n, raison) in &bilan.non_analyses {
+        afficher_aligne(
+            "  ",
+            &trf!(
+                "? Non analysé : {n} fichier(s) récent(s) de /tmp : {raison}.",
+                "? Not scanned: {n} recent file(s) in /tmp: {raison}.",
+            ),
+            4,
+            couleur(Niveau::Moyen),
+        );
+    }
     let infectes = bilan.infectes;
     if infectes.is_empty() {
-        trp!(
-            "  {VERT}✔ Aucun malware trouvé.{RESET}",
-            "  {VERT}✔ No malware found.{RESET}"
-        );
+        if bilan.non_verifies.is_empty() && bilan.lignes_inconnues.is_empty() && bilan.non_analyses.is_empty() {
+            trp!(
+                "  {VERT}✔ Aucun malware trouvé.{RESET}",
+                "  {VERT}✔ No malware found.{RESET}"
+            );
+        } else {
+            trp!(
+                "  Aucun fichier confirmé infecté ; ce qui est signalé ci-dessus reste non vérifié.",
+                "  No file confirmed infected; what is reported above remains unverified."
+            );
+        }
         return;
     }
     // Le chemin reste tel quel pour la quarantaine ; montré, il est rendu inoffensif.
@@ -2487,26 +2540,19 @@ fn clamav(portee: &Portee) {
     ))
     .to_lowercase();
     for (f, detection) in &infectes {
-        let chemin = std::path::Path::new(f);
-        let resultat = match rep.as_str() {
-            // Le seul chemin vers la quarantaine : relevé d'abord, puis noté dans « Ce que Vanguard a changé ».
-            "q" => crate::protection::quarantaine::isoler(
-                chemin,
-                detection,
-                crate::protection::quarantaine::demande_d_analyse(chemin, detection),
-            )
-            .map(|_| ()),
-            // Relevé et noté aussi : supprimé, le fichier n'a plus d'empreinte à chercher ni à comparer.
-            "s" | "d" => crate::protection::quarantaine::supprimer_apres_analyse(chemin, detection),
-            _ => continue,
+        let Some(resultat) = geste_clamav(&rep, f, detection, bilan.identites.get(f)) else {
+            continue;
         };
         let f = affichable(f);
         match resultat {
             Ok(()) => println!("  {VERT}✔{RESET} {f}"),
-            Err(e) => trp!(
+            // sudo seulement pour un refus de droits : un fichier qui a changé depuis son examen ne se touche pas,
+            // root ou non.
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => trp!(
                 "  ✖ {f} : {e} (fichier système ? relancer avec sudo)",
                 "  ✖ {f}: {e} (system file? run again with sudo)"
             ),
+            Err(e) => trp!("  ✖ {f} : {e}", "  ✖ {f}: {e}"),
         }
     }
     if !matches!(rep.as_str(), "q" | "s" | "d") {
@@ -2522,6 +2568,46 @@ fn clamav(portee: &Portee) {
             crate::protection::quarantaine::dossier().display()
         );
     }
+}
+
+/// Le geste choisi (« q », « s ») sur un fichier confirmé par sa seconde analyse ; `None` : rien à faire. Il ne vise que
+/// l'inode revu (`identite`, PA-1) : entre l'examen et la réponse, un dossier du chemin changé en lien vers celui d'un
+/// autre faisait isoler ou effacer le fichier de même nom qui s'y trouve.
+#[cfg(unix)]
+fn geste_clamav(
+    rep: &str,
+    f: &str,
+    detection: &str,
+    identite: Option<&crate::protection::quarantaine::Identite>,
+) -> Option<std::io::Result<()>> {
+    use crate::protection::quarantaine;
+    if !matches!(rep, "q" | "s" | "d") {
+        return None;
+    }
+    let chemin = std::path::Path::new(f);
+    let change = || {
+        std::io::Error::other(tr!(
+            "le fichier a changé depuis son examen : rien n'y est fait",
+            "the file changed since it was scanned: nothing is done to it"
+        ))
+    };
+    // Sans identité relevée, rien ne dit que ce nom désigne le fichier revu.
+    let Some(identite) = identite else {
+        return Some(Err(change()));
+    };
+    Some(if rep == "q" {
+        // Vu avant le relevé : un autre fichier sous ce nom n'est ni relevé ni noté. isoler_dans le relit ensuite.
+        if !etat_de(chemin).is_ok_and(|e| e.identite.meme_fichier(identite)) {
+            return Some(Err(change()));
+        }
+        // Le seul chemin vers la quarantaine : relevé d'abord, puis noté dans « Ce que Vanguard a changé ».
+        let mut demande = quarantaine::demande_d_analyse(chemin, detection);
+        demande.identite = Some(*identite);
+        quarantaine::isoler(chemin, detection, demande).map(|_| ())
+    } else {
+        // Relevé et noté aussi : supprimé, le fichier n'a plus d'empreinte à chercher ni à comparer.
+        quarantaine::supprimer_apres_analyse(chemin, detection, identite)
+    })
 }
 
 /// Fichiers modifiés depuis moins de `jours` jours sous `dossier`, au plus `max` (les dossiers illisibles sont
@@ -2570,12 +2656,33 @@ fn sans_doublons(cibles: Vec<PathBuf>) -> Vec<PathBuf> {
 
 /// Bilan d'une analyse ClamAV qui a vraiment eu lieu.
 #[cfg(unix)]
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Default, PartialEq)]
 struct Bilan {
     infectes: Vec<(String, String)>,
+    /// Signalés, mais pas confirmés par une analyse d'eux seuls (`revoir_un_a_un`) : (chemin, raison). Rien n'y est
+    /// fait, et ils ne comptent jamais pour sains.
+    non_verifies: Vec<(String, &'static str)>,
+    /// Lignes de clamscan qu'aucun fichier n'explique, rendues affichables : la tête d'un nom coupé par un saut de
+    /// ligne. Le fichier en cause n'est pas désigné : non vérifié.
+    lignes_inconnues: Vec<String>,
     analyses: u64,
     /// Fichiers illisibles sans droits root (ignorés) : ClamAV renvoie alors le code 2 même si tout s'est bien passé.
     illisibles: u64,
+    /// L'inode de chaque fichier confirmé, relevé à sa seconde analyse : le geste ne vise que lui (PA-1).
+    identites: std::collections::HashMap<String, crate::protection::quarantaine::Identite>,
+    /// Fichiers récents de /tmp que clamscan n'a pas reçus : (nombre, pourquoi). Dits, jamais comptés sains.
+    non_analyses: Vec<(u64, &'static str)>,
+}
+
+#[cfg(unix)]
+impl Bilan {
+    /// Le bilan d'un second lancement s'ajoute au premier : l'analyse est l'ensemble des deux.
+    fn ajouter(&mut self, autre: Bilan) {
+        self.infectes.extend(autre.infectes);
+        self.lignes_inconnues.extend(autre.lignes_inconnues);
+        self.analyses = self.analyses.saturating_add(autre.analyses);
+        self.illisibles = self.illisibles.saturating_add(autre.illisibles);
+    }
 }
 
 /// Résultat de clamscan, `None` si l'analyse n'a pas eu lieu (base absente, plantage…).
@@ -2583,31 +2690,606 @@ struct Bilan {
 /// appartiennent à root, et ClamAV répond « erreur » (code 2) après avoir analysé tout le reste (vu en réel).
 #[cfg(unix)]
 fn lire_resultat(code: Option<i32>, sortie: &str) -> Option<Bilan> {
-    // Le chemin reste tel quel : c'est lui qu'on isole ou qu'on efface. Le nom de la menace est seulement montré.
-    let infectes: Vec<(String, String)> = sortie
-        .lines()
-        .filter_map(|l| {
-            let (fichier, menace) = l.strip_suffix(" FOUND")?.rsplit_once(": ")?;
-            Some((fichier.to_string(), affichable(menace)))
-        })
-        .collect();
+    // Le vrai bilan est écrit en dernier : un nom de fichier qui l'imite (sauts de ligne compris) passe avant lui.
+    let (avant, apres) = sortie.rsplit_once(ENTETE_BILAN)?;
+    let mut infectes = Vec::new();
+    let mut lignes_inconnues = Vec::new();
+    for l in avant.lines().filter(|l| !l.is_empty()) {
+        match l.strip_suffix(" FOUND").and_then(|l| l.rsplit_once(": ")) {
+            // Le chemin reste tel quel : c'est lui qu'on revoit, puis qu'on isole ou qu'on efface. La menace est
+            // seulement montrée.
+            Some((fichier, menace)) => infectes.push((fichier.to_string(), affichable(menace))),
+            // Avec « -i », clamscan n'écrit rien d'autre avant le bilan (vu en réel, même pour un dossier
+            // illisible) : une autre ligne est la tête d'un nom coupé par un saut de ligne.
+            None => lignes_inconnues.push(affichable(l)),
+        }
+    }
+    // Un fichier signalé après le bilan : la sortie n'a pas la forme connue, rien n'est conclu.
+    if apres.lines().any(|l| l.ends_with(" FOUND")) {
+        return None;
+    }
     let champ = |nom: &str| {
-        sortie
+        apres
             .lines()
             .find_map(|l| l.strip_prefix(nom)?.trim().parse::<u64>().ok())
     };
     let analyses = champ("Scanned files:")?;
     let annonces = champ("Infected files:")?;
     let illisibles = champ("Total errors:").unwrap_or(0);
-    // Le nombre de fichiers infectés annoncé doit correspondre aux lignes lues, sinon on ne sait pas quoi isoler.
-    if !matches!(code, Some(0..=2)) || annonces != u64::try_from(infectes.len()).unwrap_or(u64::MAX) {
+    let lues = u64::try_from(infectes.len()).unwrap_or(u64::MAX);
+    // Moins de lignes que de fichiers annoncés : un infecté manquerait, on ne sait pas quoi isoler. Plus de lignes :
+    // un nom piégé (« x: y FOUND⏎z ») en ajoute de fausses, et jeter toute l'analyse cachait les vrais fichiers ;
+    // chaque ligne est revue seule ensuite (`revoir_un_a_un`), les fausses y restent « non vérifié ».
+    if !matches!(code, Some(0..=2)) || lues < annonces || (annonces == 0 && lues > 0) {
         return None;
     }
     Some(Bilan {
         infectes,
+        lignes_inconnues,
         analyses,
         illisibles,
+        ..Bilan::default()
     })
+}
+
+/// L'en-tête du bilan de clamscan, écrit après tous les fichiers.
+#[cfg(unix)]
+const ENTETE_BILAN: &str = "----------- SCAN SUMMARY -----------";
+
+/// Une ligne de la liste `--file-list` tient-elle ce chemin tel quel ? La liste est jointe par « \n », et clamscan la
+/// lit par morceaux de 1023 octets (vu avec 1.5.4 : 1022 octets lus, 1024 coupés) : un nom à caractère de contrôle
+/// (saut de ligne surtout) ou trop long y serait coupé en deux, la moitié désignant un autre fichier ou dossier, et
+/// le vrai ne serait jamais lu. Un nom qui n'est pas de l'UTF-8 y serait écrit changé (`display`).
+#[cfg(unix)]
+fn se_lit_dans_la_liste(f: &std::path::Path) -> bool {
+    f.to_str()
+        .is_some_and(|t| t.len() <= 1022 && !t.chars().any(char::is_control))
+}
+
+/// Au plus tant d'octets de chemins donnés en argument à un lancement de clamscan : loin de la limite du système
+/// (`ARG_MAX`, 2 Mio ici), qu'un « Argument list too long » ferait échouer en entier.
+#[cfg(unix)]
+const OCTETS_EN_ARGUMENT: usize = 128 * 1024;
+
+/// Au plus tant de fichiers de /tmp donnés à part : chacun signalé se revoit seul s'il a un saut de ligne (cinq
+/// secondes environ), et /tmp est ouvert à tous les comptes.
+#[cfg(unix)]
+const TMP_A_PART: usize = 200;
+
+/// Les fichiers récents de /tmp : ceux de la liste `--file-list`, ceux à donner en argument (bornés), et le nombre de
+/// ceux qui restent, non analysés (dits).
+#[cfg(unix)]
+fn a_part_de_la_liste(fichiers: Vec<PathBuf>) -> (Vec<PathBuf>, Vec<PathBuf>, usize) {
+    let (mut liste, mut a_part, mut laisses, mut octets) = (Vec::new(), Vec::new(), 0usize, 0usize);
+    for f in fichiers {
+        if se_lit_dans_la_liste(&f) {
+            liste.push(f);
+            continue;
+        }
+        let n = f.as_os_str().len().saturating_add(1);
+        if a_part.len() < TMP_A_PART && octets.saturating_add(n) <= OCTETS_EN_ARGUMENT {
+            octets = octets.saturating_add(n);
+            a_part.push(f);
+        } else {
+            laisses = laisses.saturating_add(1);
+        }
+    }
+    (liste, a_part, laisses)
+}
+
+/// Ce qui a été donné à clamscan : un chemin signalé hors de là (un nom piégé « a⏎<autre chemin> », un chemin relatif)
+/// n'a pas été demandé, et ne se propose jamais à un geste.
+#[cfg(unix)]
+#[derive(Debug, Default)]
+struct Perimetre {
+    /// Les dossiers (ou fichiers) analysés, sans doublons, tels que donnés à clamscan : canoniques (`sans_doublons`,
+    /// `analyser`), donc clamscan écrit le vrai chemin de chaque fichier qu'il y lit.
+    cibles: Vec<PathBuf>,
+    /// Les fichiers de /tmp vraiment donnés à clamscan.
+    fichiers: std::collections::HashSet<PathBuf>,
+}
+
+#[cfg(unix)]
+impl Perimetre {
+    fn contient(&self, chemin: &std::path::Path) -> bool {
+        use std::path::Component;
+        chemin.is_absolute()
+            && chemin
+                .components()
+                .all(|c| matches!(c, Component::RootDir | Component::Normal(_)))
+            && (self.fichiers.contains(chemin) || self.cibles.iter().any(|c| chemin.starts_with(c)))
+    }
+}
+
+/// La liste `--file-list`, effacée quand l'analyse est finie.
+#[cfg(unix)]
+#[derive(Debug)]
+struct ListeEcrite(PathBuf);
+
+#[cfg(unix)]
+impl Drop for ListeEcrite {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Ce que le second avis donne à lire à clamscan.
+#[cfg(unix)]
+#[derive(Debug)]
+struct Lancement {
+    liste: Option<ListeEcrite>,
+    /// Pour un lancement à part, sans `--file-list` : clamscan ignore tout chemin en argument dès qu'il a une liste.
+    arguments: Vec<PathBuf>,
+    perimetre: Perimetre,
+    non_analyses: Vec<(u64, &'static str)>,
+}
+
+/// Répartit les cibles et les fichiers récents de /tmp entre la liste (écrite dans `dossier_liste`) et les arguments.
+/// Avec `--file-list`, clamscan ignore tout chemin donné en argument (vu avec 1.5.4 : « Only scanning files from
+/// --file-list ») : mêlés, Téléchargements et les autres endroits à risque n'étaient jamais lus dès qu'un fichier
+/// récent était dans /tmp. Un dossier écrit dans la liste, lui, est bien parcouru (-r, --exclude-dir compris).
+#[cfg(unix)]
+fn preparer_lancement(cibles: Vec<PathBuf>, tmp: Vec<PathBuf>, dossier_liste: &std::path::Path) -> Lancement {
+    let (tmp_liste, tmp_a_part, laisses) = a_part_de_la_liste(tmp);
+    let (cibles_liste, mut arguments): (Vec<PathBuf>, Vec<PathBuf>) =
+        cibles.iter().cloned().partition(|c| se_lit_dans_la_liste(c));
+    let mut non_analyses = Vec::new();
+    if laisses > 0 {
+        non_analyses.push((
+            u64::try_from(laisses).unwrap_or(u64::MAX),
+            tr!(
+                "trop nombreux à donner à part (noms à caractère de contrôle ou très longs, qui ne tiennent pas dans la liste de clamscan)",
+                "too many to give separately (names with control characters or very long, which do not fit in the clamscan list)"
+            ),
+        ));
+    }
+    let lignes: Vec<&PathBuf> = cibles_liste.iter().chain(&tmp_liste).collect();
+    let liste = if lignes.is_empty() {
+        None
+    } else {
+        ecrire_liste(&lignes, dossier_liste)
+    };
+    let mut fichiers: std::collections::HashSet<PathBuf> = tmp_a_part.iter().cloned().collect();
+    if liste.is_some() {
+        fichiers.extend(tmp_liste);
+    } else {
+        // Pas de liste : les cibles passent en argument ; les fichiers de /tmp qui devaient y être ne sont pas
+        // analysés, et c'est dit (avant, /tmp était sauté sans un mot).
+        arguments.extend(cibles_liste);
+        if !tmp_liste.is_empty() {
+            non_analyses.push((
+                u64::try_from(tmp_liste.len()).unwrap_or(u64::MAX),
+                tr!(
+                    "la liste à donner à clamscan n'a pas pu s'écrire",
+                    "the list to give to clamscan could not be written"
+                ),
+            ));
+        }
+    }
+    arguments.extend(tmp_a_part);
+    Lancement {
+        liste,
+        arguments,
+        perimetre: Perimetre { cibles, fichiers },
+        non_analyses,
+    }
+}
+
+/// La liste `--file-list`, créée de façon exclusive : jamais un fichier ou un lien posé d'avance par un autre compte
+/// dans /tmp. `None` si elle n'a pas pu s'écrire.
+#[cfg(unix)]
+fn ecrire_liste(lignes: &[&PathBuf], dossier: &std::path::Path) -> Option<ListeEcrite> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    let chemin = dossier.join(format!("vanguard-clamav-{}-{nanos}.txt", std::process::id()));
+    // Chaque ligne a passé `se_lit_dans_la_liste` : de l'UTF-8 sans caractère de contrôle.
+    let texte = lignes.iter().filter_map(|f| f.to_str()).collect::<Vec<_>>().join("\n");
+    // Lisible par soi seul : elle nomme des fichiers du dossier personnel.
+    let mut f =
+        std::os::unix::fs::OpenOptionsExt::mode(std::fs::OpenOptions::new().write(true).create_new(true), 0o600)
+            .open(&chemin)
+            .ok()?;
+    // Créée : effacée même si l'écriture échoue.
+    let liste = ListeEcrite(chemin);
+    std::io::Write::write_all(&mut f, texte.as_bytes()).ok()?;
+    Some(liste)
+}
+
+/// Lance clamscan sur ce que `l` lui donne (la liste, puis les arguments, à part), et rend le bilan des deux, chaque
+/// fichier infecté une seule fois.
+#[cfg(unix)]
+fn analyser_le_lancement(l: &Lancement, base: Option<&String>, exclusions: &[&str]) -> Result<Bilan, SecondAvis> {
+    let commande = || {
+        let mut cmd = crate::commande::par_le_systeme("clamscan");
+        // Le bilan final (fichiers analysés, infectés, erreurs) sert à juger si l'analyse a vraiment eu lieu.
+        cmd.args(["-r", "-i", "--max-filesize=200M", "--max-scansize=400M"]);
+        cmd.args(base);
+        cmd.args(option_pua());
+        for e in exclusions {
+            cmd.arg(format!("--exclude-dir={}", regex_echappe(e)));
+        }
+        cmd
+    };
+    let mut bilan = Bilan::default();
+    if let Some(liste) = &l.liste {
+        let mut option = std::ffi::OsString::from("--file-list=");
+        option.push(&liste.0);
+        bilan.ajouter(un_lancement(commande().arg(option))?);
+    }
+    if !l.arguments.is_empty() {
+        // Un chemin qui commence par « - » reste un chemin, jamais une option.
+        bilan.ajouter(un_lancement(commande().arg("--").args(&l.arguments))?);
+    }
+    // Un même fichier n'est proposé qu'une fois (sinon la 2e mise en quarantaine échoue).
+    let mut vus = std::collections::HashSet::new();
+    bilan.infectes.retain(|(f, _)| vus.insert(f.clone()));
+    Ok(bilan)
+}
+
+/// Un lancement de clamscan et son bilan ; l'échec dit avec les lignes d'erreur de ClamAV.
+#[cfg(unix)]
+fn un_lancement(cmd: &mut std::process::Command) -> Result<Bilan, SecondAvis> {
+    let Ok(sortie) = crate::coulisses::Suivie::output_suivi(cmd) else {
+        return Err(SecondAvis::PasDemarre);
+    };
+    lire_resultat(sortie.status.code(), &String::from_utf8_lossy(&sortie.stdout)).ok_or_else(|| {
+        // Les erreurs de ClamAV citent souvent un fichier, au nom choisi par n'importe qui.
+        SecondAvis::Echoue(
+            String::from_utf8_lossy(&sortie.stderr)
+                .lines()
+                .filter(|l| l.contains("ERROR"))
+                .take(5)
+                .map(affichable)
+                .collect(),
+        )
+    })
+}
+
+/// L'analyse de `l`, puis chaque fichier signalé revu à part (`annoncer` reçoit leur nombre avant) : ce que le second
+/// avis montre et rend.
+#[cfg(unix)]
+fn analyser_et_revoir(
+    l: &Lancement,
+    base: Option<&String>,
+    exclusions: &[&str],
+    annoncer: impl FnOnce(usize),
+) -> Result<Bilan, SecondAvis> {
+    let mut bilan = analyser_le_lancement(l, base, exclusions)?;
+    if !bilan.infectes.is_empty() {
+        annoncer(bilan.infectes.len());
+    }
+    revoir_un_a_un(&mut bilan, &l.perimetre, |lot| analyser_ensemble(lot, base));
+    bilan.non_analyses.clone_from(&l.non_analyses);
+    Ok(bilan)
+}
+
+/// Ce qu'on sait d'un fichier avant sa seconde analyse, relu après : le même inode, la même taille, les mêmes dates
+/// (un fichier échangé puis remis change de ctime).
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Etat {
+    identite: crate::protection::quarantaine::Identite,
+    taille: u64,
+    modifie: (i64, i64),
+    change: (i64, i64),
+}
+
+/// L'état d'un fichier ordinaire qui est vraiment à `chemin`, lu sur un seul descripteur : ouvert sans suivre le
+/// dernier nom (O_PATH|O_NOFOLLOW), l'inode est lu sur ce descripteur, puis le noyau dit où est ce fichier ouvert
+/// (/proc/self/fd/N). Un chemin qui passe par un lien vers un dossier y montre un autre chemin : refusé, comme un
+/// absent, un lien ou un dossier. L'état lu par lstat (qui suit le lien d'un dossier du milieu) puis le chemin jugé
+/// par un autre appel laissaient un dossier échangé entre les deux faire garder l'inode du fichier d'un autre, ensuite
+/// effacé ou isolé (PA-1, contrôle de la ronde 2).
+#[cfg(unix)]
+fn etat_de(chemin: &std::path::Path) -> Result<Etat, &'static str> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let absent = || {
+        tr!(
+            "absent, ou pas un fichier ordinaire (lien, dossier…)",
+            "missing, or not a regular file (link, folder…)"
+        )
+    };
+    let f = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_PATH | libc::O_NOFOLLOW)
+        .open(chemin)
+        .map_err(|_| absent())?;
+    let m = f.metadata().map_err(|_| absent())?;
+    if !m.file_type().is_file() {
+        return Err(absent());
+    }
+    // Les cibles sont canoniques et clamscan ne suit pas un lien trouvé en parcourant : un fichier qu'il a lu est à
+    // son vrai chemin. Ailleurs, il vient d'ailleurs (un nom piégé, un dossier échangé entre-temps).
+    if !std::fs::read_link(format!("/proc/self/fd/{}", f.as_raw_fd())).is_ok_and(|lieu| lieu == chemin) {
+        return Err(tr!(
+            "son chemin passe par un lien vers un dossier",
+            "its path goes through a link to a folder"
+        ));
+    }
+    Ok(Etat {
+        identite: crate::protection::quarantaine::Identite::de(&m),
+        taille: m.len(),
+        modifie: (m.mtime(), m.mtime_nsec()),
+        change: (m.ctime(), m.ctime_nsec()),
+    })
+}
+
+/// Raison d'un fichier non vérifié : sa seconde analyse n'a pas pu aller au bout.
+#[cfg(unix)]
+fn pas_au_bout() -> &'static str {
+    tr!(
+        "son analyse à part n'a pas pu aller au bout",
+        "scanning it on its own could not finish"
+    )
+}
+
+/// Revoit à part les fichiers signalés, avant tout geste et avant le rapport (PA-1, relecture du 12 nov.). La
+/// sortie de clamscan se lit par lignes, et un nom de fichier peut en contenir : « a⏎$HOME/.bashrc » infecté faisait
+/// lire « $HOME/.bashrc: … FOUND », et la personne était invitée à isoler ou à effacer ce fichier-là. Ne reste
+/// infecté qu'un fichier ordinaire (lu sans suivre un lien), dans ce qui a été donné à clamscan (`perimetre`), dont
+/// la seconde analyse redit exactement « <ce chemin>: … FOUND », et qui n'a pas changé pendant ce temps ; son inode
+/// est gardé pour le geste. Le reste passe dans `non_verifies`, avec sa raison : jamais compté sain, jamais proposé
+/// à un geste. `analyser` reçoit des lots (un seul lancement de clamscan pour beaucoup de fichiers : il recharge ses
+/// signatures à chaque fois, cinq secondes environ) ; un nom à saut de ligne est revu seul.
+#[cfg(unix)]
+fn revoir_un_a_un(
+    bilan: &mut Bilan,
+    perimetre: &Perimetre,
+    mut analyser: impl FnMut(&[&std::path::Path]) -> Option<(Option<i32>, String)>,
+) {
+    let mut vus = std::collections::HashSet::new();
+    let signales: Vec<String> = std::mem::take(&mut bilan.infectes)
+        .into_iter()
+        .map(|(f, _)| f)
+        .filter(|f| vus.insert(f.clone()))
+        .collect();
+    let mut avant = std::collections::HashMap::new();
+    let mut verdicts: std::collections::HashMap<String, Result<String, &'static str>> =
+        std::collections::HashMap::new();
+    for f in &signales {
+        match etat_avant(f, perimetre) {
+            Ok(etat) => {
+                avant.insert(f.clone(), etat);
+            }
+            Err(raison) => {
+                verdicts.insert(f.clone(), Err(raison));
+            }
+        }
+    }
+    let (seuls, par_lot): (Vec<&str>, Vec<&str>) = signales
+        .iter()
+        .map(String::as_str)
+        .filter(|f| avant.contains_key(*f))
+        .partition(|f| f.contains('\n'));
+    // Un lancement par lot ou par fichier seul, plus `RELANCES` : au-delà, `None`, et le reste est « non vérifié ».
+    let mut permis = en_lots(&par_lot)
+        .len()
+        .saturating_add(seuls.len())
+        .saturating_add(RELANCES);
+    let mut analyser = |lot: &[&std::path::Path]| {
+        permis = permis.checked_sub(1)?;
+        analyser(lot)
+    };
+    let le_meme = |f: &str| avant.get(f).is_some_and(|e| etat_de(std::path::Path::new(f)) == Ok(*e));
+    for lot in en_lots(&par_lot) {
+        for (f, v) in lot.iter().zip(verdicts_du_lot(&lot, &mut analyser, &le_meme)) {
+            verdicts.insert((*f).to_string(), v);
+        }
+    }
+    for f in seuls {
+        verdicts.insert(f.to_string(), verdict_seul(f, &mut analyser));
+    }
+    for f in signales {
+        let verdict = verdicts.remove(&f).unwrap_or(Err(pas_au_bout()));
+        let etat = avant.get(&f).copied();
+        // Relu après : un fichier échangé pendant l'analyse n'est pas celui qu'elle a vu.
+        let verdict = verdict.and_then(|menace| match etat {
+            Some(e) if etat_de(std::path::Path::new(&f)) == Ok(e) => Ok((menace, e)),
+            _ => Err(change_pendant()),
+        });
+        match verdict {
+            Ok((menace, e)) => {
+                bilan.identites.insert(f.clone(), e.identite);
+                bilan.infectes.push((f, menace));
+            }
+            Err(raison) => bilan.non_verifies.push((f, raison)),
+        }
+    }
+}
+
+/// L'état d'un fichier signalé avant sa seconde analyse, sinon pourquoi il reste non vérifié sans être relancé.
+#[cfg(unix)]
+fn etat_avant(fichier: &str, perimetre: &Perimetre) -> Result<Etat, &'static str> {
+    let chemin = std::path::Path::new(fichier);
+    if !perimetre.contient(chemin) {
+        return Err(tr!(
+            "hors de ce qui a été analysé (nom de fichier à saut de ligne ?)",
+            "outside what was scanned (file name with a line break?)"
+        ));
+    }
+    // Lu sans suivre un lien : clamscan, lui, le suivrait, et c'est la cible qui serait isolée ou effacée.
+    etat_de(chemin)
+}
+
+/// Les chemins (sans saut de ligne) en lots d'au plus `OCTETS_EN_ARGUMENT` octets.
+#[cfg(unix)]
+fn en_lots<'a>(chemins: &[&'a str]) -> Vec<Vec<&'a str>> {
+    let mut lots: Vec<Vec<&str>> = Vec::new();
+    let mut octets = 0usize;
+    for f in chemins {
+        let n = f.len().saturating_add(1);
+        match lots.last_mut() {
+            Some(lot) if octets.saturating_add(n) <= OCTETS_EN_ARGUMENT => {
+                octets = octets.saturating_add(n);
+                lot.push(f);
+            }
+            _ => {
+                octets = n;
+                lots.push(vec![f]);
+            }
+        }
+    }
+    lots
+}
+
+/// Raison d'un fichier non vérifié : il n'est plus celui qui a été relevé avant sa seconde analyse.
+#[cfg(unix)]
+fn change_pendant() -> &'static str {
+    tr!(
+        "il a changé pendant son analyse à part",
+        "it changed while it was scanned on its own"
+    )
+}
+
+/// Le verdict de chaque fichier d'un lot, dans l'ordre, en un lancement si sa sortie a la forme exacte attendue.
+/// Sinon, un fichier parti ou changé entre-temps (`le_meme` faux) n'écrit rien ou autre chose : il est écarté sans
+/// être relancé, et le reste est revu en un lancement. Un autre compte qui efface ses fichiers de /tmp juste après
+/// leur relevé ferait sinon couper le lot en deux jusqu'au fichier seul : un lancement de cinq secondes par fichier.
+/// Si rien n'a changé, chaque moitié est revue à part.
+#[cfg(unix)]
+fn verdicts_du_lot(
+    lot: &[&str],
+    analyser: &mut impl FnMut(&[&std::path::Path]) -> Option<(Option<i32>, String)>,
+    le_meme: &impl Fn(&str) -> bool,
+) -> Vec<Result<String, &'static str>> {
+    match lot {
+        [] => Vec::new(),
+        [seul] => vec![verdict_seul(seul, analyser)],
+        _ => {
+            let chemins: Vec<&std::path::Path> = lot.iter().map(std::path::Path::new).collect();
+            let Some((code, sortie)) = analyser(&chemins) else {
+                return lot.iter().map(|_| Err(pas_au_bout())).collect();
+            };
+            if let Some(v) = lire_le_lot(code, &sortie, lot) {
+                return v;
+            }
+            let restes: Vec<bool> = lot.iter().map(|f| le_meme(f)).collect();
+            if restes.contains(&false) {
+                let gardes: Vec<&str> = lot.iter().zip(&restes).filter(|(_, r)| **r).map(|(f, _)| *f).collect();
+                let mut v = verdicts_du_lot(&gardes, analyser, le_meme).into_iter();
+                return restes
+                    .iter()
+                    .map(|r| {
+                        if *r {
+                            v.next().unwrap_or(Err(pas_au_bout()))
+                        } else {
+                            Err(change_pendant())
+                        }
+                    })
+                    .collect();
+            }
+            let (a, b) = lot.split_at(lot.len() / 2);
+            let mut v = verdicts_du_lot(a, analyser, le_meme);
+            v.extend(verdicts_du_lot(b, analyser, le_meme));
+            v
+        }
+    }
+}
+
+/// La sortie de « clamscan --no-summary -- f1 f2 … » : exactement une ligne par fichier, dans l'ordre des arguments
+/// (vu avec 1.5.4), chacune « <fi>: OK », « <fi>: <menace> FOUND » ou une autre réponse sur ce fichier (« Empty
+/// file », « Access denied »), qui ne conclut rien pour lui seul. Aucun chemin du lot n'a de saut de ligne : chaque
+/// ligne se rattache sans doute possible à son fichier. Autre forme : `None`, rien n'est conclu.
+#[cfg(unix)]
+fn lire_le_lot(code: Option<i32>, sortie: &str, lot: &[&str]) -> Option<Vec<Result<String, &'static str>>> {
+    if !matches!(code, Some(0..=2)) {
+        return None;
+    }
+    let lignes: Vec<&str> = sortie.strip_suffix('\n')?.split('\n').collect();
+    if lignes.len() != lot.len() {
+        return None;
+    }
+    let mut trouve = false;
+    let mut verdicts = Vec::with_capacity(lot.len());
+    for (ligne, f) in lignes.iter().zip(lot) {
+        let verdict = ligne.strip_prefix(f)?.strip_prefix(": ")?;
+        if verdict == "OK" {
+            verdicts.push(Err(pas_infecte()));
+            continue;
+        }
+        let Some(menace) = verdict.strip_suffix(" FOUND") else {
+            // « Empty file », « Access denied » (vus avec 1.5.4) : la ligne est bien la sienne, sans rien de net. Lui
+            // seul reste non vérifié ; rejeter le lot le faisait couper en deux jusqu'au fichier seul, un lancement
+            // par fichier piégé simplement posé.
+            verdicts.push(Err(rien_de_net()));
+            continue;
+        };
+        // Une menace vient des signatures : sans « : ». Autre chose ne se rattache pas sans doute.
+        let menace = Some(menace).filter(|m| !m.is_empty() && !m.contains(": "))?;
+        trouve = true;
+        verdicts.push(Ok(affichable(menace)));
+    }
+    // Le code dit s'il y a eu une trouvaille (1, même avec un fichier illisible ; sinon 0, ou 2 pour un illisible) :
+    // s'il contredit les lignes, rien n'est conclu.
+    (trouve == (code == Some(1))).then_some(verdicts)
+}
+
+/// Raison d'un fichier non vérifié : analysé à part, il n'est pas trouvé infecté.
+#[cfg(unix)]
+fn pas_infecte() -> &'static str {
+    tr!(
+        "analysé à part, il n'est pas trouvé infecté (nom à saut de ligne, ou fichier changé depuis)",
+        "scanned on its own, it is not found infected (name with a line break, or file changed since)"
+    )
+}
+
+/// La menace que l'analyse de ce seul fichier redit, sinon pourquoi il reste non vérifié.
+#[cfg(unix)]
+fn verdict_seul(
+    fichier: &str,
+    analyser: &mut impl FnMut(&[&std::path::Path]) -> Option<(Option<i32>, String)>,
+) -> Result<String, &'static str> {
+    let Some((code, sortie)) = analyser(&[std::path::Path::new(fichier)]) else {
+        return Err(pas_au_bout());
+    };
+    // Toute la sortie, d'un seul fichier : le chemin est connu en entier, saut de ligne compris, donc rien ne se lit
+    // de travers ; la menace, elle, vient des signatures et tient sur une ligne.
+    let verdict = sortie
+        .strip_prefix(fichier)
+        .and_then(|r| r.strip_prefix(": "))
+        .and_then(|r| r.strip_suffix('\n'))
+        .filter(|v| !v.contains('\n'));
+    let menace = verdict.and_then(|v| v.strip_suffix(" FOUND")).filter(|m| !m.is_empty());
+    match (code, menace, verdict) {
+        (Some(1), Some(menace), _) => Ok(affichable(menace)),
+        (Some(0), _, Some("OK")) => Err(pas_infecte()),
+        _ => Err(rien_de_net()),
+    }
+}
+
+/// Raison d'un fichier non vérifié : clamscan a parlé de lui sans dire ni « OK » ni une menace (fichier vide,
+/// illisible, sortie inattendue).
+#[cfg(unix)]
+fn rien_de_net() -> &'static str {
+    tr!(
+        "son analyse à part n'a rien dit de net",
+        "scanning it on its own gave no clear answer"
+    )
+}
+
+/// Lancements de clamscan permis en plus d'un par lot pour revoir les fichiers signalés : une sortie d'une forme
+/// inattendue fait couper un lot en deux, et des noms piégés posés feraient sinon un lancement de cinq secondes par
+/// fichier. Au-delà, ce qui reste est « non vérifié ».
+#[cfg(unix)]
+const RELANCES: usize = 16;
+
+/// clamscan sur ces seuls fichiers, avec les mêmes limites et options que l'analyse : (code, sortie). Sans « -i », un
+/// fichier sain s'écrit « <chemin>: OK », jamais un silence ; sans bilan, la sortie ne parle que d'eux.
+#[cfg(unix)]
+fn analyser_ensemble(chemins: &[&std::path::Path], base: Option<&String>) -> Option<(Option<i32>, String)> {
+    let r = crate::commande::lancer(
+        crate::commande::par_le_systeme("clamscan")
+            .args(["--no-summary", "--max-filesize=200M", "--max-scansize=400M"])
+            .args(base)
+            .args(option_pua())
+            // Un nom qui commence par « - » reste un fichier, jamais une option.
+            .arg("--")
+            .args(chemins),
+        900,
+    )?;
+    Some((r.code, r.sortie))
 }
 
 /// --exclude-dir attend une expression régulière : on échappe les points.
@@ -4115,6 +4797,11 @@ mod tests_cle {
     }
 }
 
+#[allow(
+    clippy::unwrap_used,
+    clippy::as_conversions,
+    reason = "essais : un échec y fait échouer l'essai, aides comprises"
+)]
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
@@ -4143,6 +4830,717 @@ mod tests {
         assert!(lire_resultat(None, &bilan(0, 0)).is_none());
         // Infectés annoncés mais lignes illisibles : pas fiable.
         assert!(lire_resultat(Some(1), &bilan(1, 0)).is_none());
+    }
+
+    /// PA-1 (relecture du 12 nov.) : clamscan écrit un nom de fichier tel quel, saut de ligne compris. Sortie réelle
+    /// de clamscan 1.5.4 (chemins changés) pour « s/a⏎/maison/essai/leurre/bashrc » infecté : la moitié de nom
+    /// « s/a » est signalée comme une ligne qu'aucun fichier n'explique, et un faux bilan glissé dans un nom ne
+    /// remplace jamais le vrai, écrit en dernier.
+    #[test]
+    fn nom_a_saut_de_ligne_signale() {
+        let sortie = "/maison/essai/s/b: Essai.Faux-1.UNOFFICIAL FOUND\n/maison/essai/s/a\n/maison/essai/leurre/bashrc: Essai.Faux-1.UNOFFICIAL FOUND\n\n----------- SCAN SUMMARY -----------\nKnown viruses: 1\nEngine version: 1.5.4\nScanned directories: 9\nScanned files: 2\nInfected files: 2\nTotal errors: 1\nData scanned: 58 B\n";
+        let r = lire_resultat(Some(1), sortie).unwrap();
+        assert_eq!(r.lignes_inconnues, vec!["/maison/essai/s/a".to_string()]);
+        assert_eq!((r.infectes.len(), r.analyses, r.illisibles), (2, 2, 1));
+        // Un nom piégé qui imite le bilan : le vrai bilan (le dernier) compte, ses lignes sont inconnues.
+        let piege = "/m/x\n----------- SCAN SUMMARY -----------\nScanned files: 99\nInfected files: 0\nTotal errors: 0\n/m/y: Essai.Faux-1 FOUND\n\n----------- SCAN SUMMARY -----------\nScanned files: 3\nInfected files: 1\nTotal errors: 4\n";
+        let r = lire_resultat(Some(1), piege).unwrap();
+        assert_eq!((r.analyses, r.illisibles, r.infectes.len()), (3, 4, 1));
+        assert_eq!(r.lignes_inconnues.len(), 5, "{:?}", r.lignes_inconnues);
+        // Un « FOUND » après le dernier bilan : la sortie n'a pas la forme connue, rien n'est conclu.
+        assert!(lire_resultat(Some(1), &format!("{piege}/m/z: Essai FOUND\n")).is_none());
+        // Montrées, les lignes inconnues sont rendues inoffensives.
+        let r = lire_resultat(
+            Some(0),
+            "/m/\u{1b}[2Ja\n\n----------- SCAN SUMMARY -----------\nScanned files: 1\nInfected files: 0\n",
+        )
+        .unwrap();
+        assert!(!r.lignes_inconnues[0].contains('\u{1b}'), "{:?}", r.lignes_inconnues);
+    }
+
+    /// Un dossier jetable au chemin canonique : `target` est un lien, et un chemin qui passe par un lien vers un
+    /// dossier n'est jamais confirmé (PA-1).
+    fn jetable(nom: &str) -> PathBuf {
+        let d = crate::essais::temporaire().join(format!("{nom}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d.canonicalize().unwrap()
+    }
+
+    /// Ce que rend un lancement de clamscan : son code de sortie et sa sortie standard.
+    type Sortie = Option<(Option<i32>, String)>;
+
+    /// Ce que clamscan répondrait pour un lot, d'après sa réponse pour chaque fichier seul : une ligne par fichier,
+    /// dans l'ordre, rien pour un fichier muet, le pire code.
+    fn faux_lot(lot: &[&std::path::Path], seul: &dyn Fn(&str) -> Sortie) -> Sortie {
+        if let [p] = lot {
+            return seul(p.to_str().unwrap());
+        }
+        let (mut code, mut sortie) = (0, String::new());
+        for p in lot {
+            if let Some((Some(c), s)) = seul(p.to_str().unwrap()) {
+                code = code.max(c);
+                sortie.push_str(&s);
+            }
+        }
+        Some((Some(code), sortie))
+    }
+
+    fn perimetre(cibles: &[&std::path::Path]) -> Perimetre {
+        Perimetre {
+            cibles: cibles.iter().map(|c| c.to_path_buf()).collect(),
+            fichiers: std::collections::HashSet::new(),
+        }
+    }
+
+    fn signales(chemins: &[String]) -> Bilan {
+        Bilan {
+            infectes: chemins
+                .iter()
+                .map(|f| (f.clone(), "Essai.Faux-1".to_string()))
+                .collect(),
+            analyses: 10,
+            ..Bilan::default()
+        }
+    }
+
+    /// PA-1 : avant tout geste et avant le rapport, chaque fichier signalé est revu. Ne reste infecté qu'un fichier
+    /// ordinaire, dans ce qui a été analysé, dont l'analyse redit « <ce chemin>: … FOUND » et qui n'a pas changé
+    /// entre-temps ; le reste est « non vérifié », jamais sain, et un lien, un dossier, un absent ou un chemin venu
+    /// d'ailleurs n'est même pas relancé.
+    #[test]
+    fn seconde_analyse_avant_tout_geste() {
+        let d = jetable("vanguard-pa1");
+        let c = d.join("c");
+        std::fs::create_dir_all(c.join("dossier")).unwrap();
+        std::fs::create_dir_all(d.join("hors")).unwrap();
+        for nom in ["vrai", "leurre", "muet", "autre", "a\nb", "rate", "code2", "change"] {
+            std::fs::write(c.join(nom), b"contenu invente").unwrap();
+        }
+        std::fs::write(d.join("hors/x"), b"contenu invente").unwrap();
+        std::os::unix::fs::symlink(c.join("vrai"), c.join("lien")).unwrap();
+        // Un lien vers un dossier hors de la cible : clamscan n'y descend pas, un chemin qui le traverse vient d'ailleurs.
+        std::os::unix::fs::symlink(d.join("hors"), c.join("rep")).unwrap();
+        let chemin = |nom: &str| c.join(nom).to_str().unwrap().to_string();
+        let mut tous: Vec<String> = [
+            "vrai", "leurre", "lien", "absent", "dossier", "muet", "autre", "a\nb", "rate", "code2", "change", "rep/x",
+        ]
+        .iter()
+        .map(|n| chemin(n))
+        .collect();
+        // Hors de la cible, et un chemin relatif (« b » d'un nom « …/a⏎b ») : jamais relancés.
+        tous.push(d.join("hors/x").to_str().unwrap().to_string());
+        tous.push("c/vrai".to_string());
+        let mut bilan = signales(&tous);
+        let lances = std::cell::RefCell::new(Vec::new());
+        let seul = |p: &str| -> Option<(Option<i32>, String)> {
+            lances.borrow_mut().push(p.to_string());
+            match p.rsplit('/').next().unwrap() {
+                "vrai" | "a\nb" => Some((Some(1), format!("{p}: Essai.Faux-2 FOUND\n"))),
+                // clamscan en erreur (code 2) : même une ligne « FOUND » ne conclut rien.
+                "code2" => Some((Some(2), format!("{p}: Essai.Faux-1 FOUND\n"))),
+                "leurre" => Some((Some(0), format!("{p}: OK\n"))),
+                "autre" => Some((Some(1), format!("{}: Essai.Faux-1 FOUND\n", chemin("vrai")))),
+                "rate" => Some((Some(1), format!("{p}: Essai.Faux-1 FOUND\n{p}: Essai.Faux-1 FOUND\n"))),
+                "change" => {
+                    // Le fichier est changé pendant son analyse : ce n'est plus celui qu'elle a vu.
+                    let mut f = std::fs::OpenOptions::new().append(true).open(p).unwrap();
+                    std::io::Write::write_all(&mut f, b"+").unwrap();
+                    Some((Some(1), format!("{p}: Essai.Faux-1 FOUND\n")))
+                }
+                _ => None,
+            }
+        };
+        revoir_un_a_un(&mut bilan, &perimetre(&[&c]), |lot| faux_lot(lot, &seul));
+        // Une cible qui est elle-même un lien (« Téléchargements » ailleurs, /home sur Silverblue) : elle est donnée
+        // à clamscan par son vrai chemin (`sans_doublons`), et ses fichiers se confirment.
+        std::os::unix::fs::symlink(&c, d.join("cible-lien")).unwrap();
+        let cibles = sans_doublons(vec![d.join("cible-lien")]);
+        let par_le_lien = cibles[0].join("vrai").to_str().unwrap().to_string();
+        let mut autre = signales(std::slice::from_ref(&par_le_lien));
+        let reel = Perimetre {
+            cibles,
+            fichiers: std::collections::HashSet::new(),
+        };
+        revoir_un_a_un(&mut autre, &reel, |lot| faux_lot(lot, &seul));
+        assert_eq!(autre.infectes.len(), 1, "{autre:?}");
+        assert_eq!(
+            bilan.infectes,
+            vec![
+                (chemin("vrai"), "Essai.Faux-2".to_string()),
+                (chemin("a\nb"), "Essai.Faux-2".to_string())
+            ]
+        );
+        // L'inode relevé à la seconde analyse, pour le geste.
+        let m = std::fs::symlink_metadata(c.join("vrai")).unwrap();
+        assert!(bilan.identites[&chemin("vrai")].meme_fichier(&crate::protection::quarantaine::Identite::de(&m)));
+        assert_eq!(bilan.identites.len(), 2);
+        let ecartes: Vec<&str> = bilan.non_verifies.iter().map(|(f, _)| f.as_str()).collect();
+        let attendus: Vec<&str> = tous
+            .iter()
+            .map(String::as_str)
+            .filter(|f| *f != chemin("vrai") && *f != chemin("a\nb"))
+            .collect();
+        assert_eq!(ecartes, attendus);
+        assert!(bilan.non_verifies.iter().all(|(_, raison)| !raison.is_empty()));
+        // Ni le lien, ni le dossier, ni l'absent, ni ce qui vient d'ailleurs ne sont relancés.
+        for n in &tous[tous.len() - 3..] {
+            assert!(!lances.borrow().contains(n), "{n:?}");
+        }
+        for n in ["lien", "absent", "dossier", "rep/x"] {
+            assert!(!lances.borrow().contains(&chemin(n)), "{n}");
+        }
+        // Hors de la cible, ou relatif : dit comme tel, avant même d'être lu, et non comme un lien ou un absent.
+        let raison = |f: &str| {
+            bilan
+                .non_verifies
+                .iter()
+                .find(|(g, _)| g == f)
+                .map(|(_, r)| *r)
+                .unwrap()
+        };
+        let hors = d.join("hors/x").to_str().unwrap().to_string();
+        assert_eq!(raison(&hors), raison("c/vrai"));
+        assert_ne!(raison(&hors), raison(&chemin("rep/x")));
+        // Changé pendant un lot qui se lit bien : relu après, il n'est pas le fichier que clamscan a vu.
+        let mut relu = signales(&[chemin("change"), chemin("vrai")]);
+        revoir_un_a_un(&mut relu, &perimetre(&[&c]), |lot| faux_lot(lot, &seul));
+        assert_eq!(relu.infectes, vec![(chemin("vrai"), "Essai.Faux-2".to_string())]);
+        assert_eq!(
+            relu.non_verifies.iter().map(|(f, _)| f.clone()).collect::<Vec<_>>(),
+            vec![chemin("change")]
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// PA-1 (A4 de la relecture) : clamscan recharge ses signatures à chaque lancement (cinq secondes environ) ;
+    /// quarante fichiers signalés se revoient en un seul lancement, et un fichier qui ne répond pas ne fait revoir à
+    /// part que la moitié qui le contient, jusqu'à lui seul.
+    #[test]
+    fn seconde_analyse_par_lots() {
+        let d = jetable("vanguard-pa1-lots");
+        let noms: Vec<String> = (0..40).map(|i| format!("f{i:02}")).collect();
+        for n in &noms {
+            std::fs::write(d.join(n), b"contenu invente").unwrap();
+        }
+        let tous: Vec<String> = noms.iter().map(|n| d.join(n).to_str().unwrap().to_string()).collect();
+        let lancements = std::cell::Cell::new(0);
+        let mut bilan = signales(&tous);
+        revoir_un_a_un(&mut bilan, &perimetre(&[&d]), |lot| {
+            lancements.set(lancements.get() + 1);
+            faux_lot(lot, &|p| Some((Some(1), format!("{p}: Essai.Faux-1 FOUND\n"))))
+        });
+        assert_eq!((bilan.infectes.len(), lancements.get()), (40, 1));
+        assert_eq!(bilan.infectes.iter().map(|(f, _)| f.clone()).collect::<Vec<_>>(), tous);
+        // Huit fichiers, dont un muet : 1 lancement du lot, puis les moitiés (2 + 2 + 2), jamais un par fichier.
+        let huit = &tous[..8];
+        let muet = huit[5].clone();
+        lancements.set(0);
+        let mut bilan = signales(huit);
+        revoir_un_a_un(&mut bilan, &perimetre(&[&d]), |lot| {
+            lancements.set(lancements.get() + 1);
+            faux_lot(lot, &|p| {
+                (p != muet).then(|| (Some(1), format!("{p}: Essai.Faux-1 FOUND\n")))
+            })
+        });
+        assert_eq!(bilan.infectes.len(), 7);
+        assert_eq!(
+            bilan.non_verifies.iter().map(|(f, _)| f.clone()).collect::<Vec<_>>(),
+            vec![muet]
+        );
+        assert_eq!(lancements.get(), 7);
+        // Une sortie à une ligne près de la forme attendue ne conclut rien : un nom de menace à « : », un préfixe
+        // qui n'est pas le chemin, un code qui contredit les lignes.
+        let lot = ["/m/a", "/m/b"];
+        assert!(lire_le_lot(Some(1), "/m/a: OK\n/m/b: X FOUND\n", &lot).is_some());
+        for (code, sortie) in [
+            (Some(1), "/m/a: OK\n/m/b: x: y FOUND\n"),
+            (Some(1), "/m/a: OK\n/m/bb: X FOUND\n"),
+            (Some(0), "/m/a: OK\n/m/b: X FOUND\n"),
+            (Some(1), "/m/a: OK\n/m/b: OK\n"),
+            (Some(1), "/m/a: OK\n/m/b: X FOUND"),
+            (Some(2), "/m/a: OK\n/m/b: X FOUND\n"),
+            (Some(1), "/m/a: OK\n/m/b:  FOUND\n"),
+        ] {
+            assert!(lire_le_lot(code, sortie, &lot).is_none(), "{sortie:?}");
+        }
+        // Les lots restent sous la borne des arguments.
+        let longs: Vec<String> = (0..300).map(|i| format!("/m/{}{i:03}", "x".repeat(1000))).collect();
+        let longs: Vec<&str> = longs.iter().map(String::as_str).collect();
+        let lots = en_lots(&longs);
+        assert!(lots.len() > 1);
+        assert!(
+            lots.iter()
+                .all(|l| l.iter().map(|f| f.len() + 1).sum::<usize>() <= OCTETS_EN_ARGUMENT)
+        );
+        assert_eq!(lots.concat(), longs);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// PA-1 (A4 de la relecture, cas hostile) : un autre compte efface ses fichiers de /tmp juste après leur relevé ;
+    /// le lot n'a plus la forme attendue. Les fichiers partis sont écartés sans être relancés (« changé »), le reste
+    /// est revu en un lancement : jamais un lancement de cinq secondes par fichier effacé.
+    #[test]
+    fn lot_aux_fichiers_effaces() {
+        let d = jetable("vanguard-pa1-effaces");
+        let tous: Vec<String> = (0..8)
+            .map(|i| {
+                let f = d.join(format!("f{i}"));
+                std::fs::write(&f, b"contenu invente").unwrap();
+                f.to_str().unwrap().to_string()
+            })
+            .collect();
+        let lancements = std::cell::Cell::new(0);
+        let seul = |p: &str| {
+            std::path::Path::new(p)
+                .exists()
+                .then(|| (Some(1), format!("{p}: Essai.Faux-1 FOUND\n")))
+        };
+        let mut bilan = signales(&tous);
+        revoir_un_a_un(&mut bilan, &perimetre(&[&d]), |lot| {
+            if lancements.get() == 0 {
+                for f in &tous[..3] {
+                    std::fs::remove_file(f).unwrap();
+                }
+            }
+            lancements.set(lancements.get() + 1);
+            faux_lot(lot, &seul)
+        });
+        assert_eq!(lancements.get(), 2, "{bilan:?}");
+        assert_eq!(
+            bilan.infectes.iter().map(|(f, _)| f.clone()).collect::<Vec<_>>(),
+            tous[3..]
+        );
+        assert_eq!(
+            bilan.non_verifies.iter().map(|(f, _)| f.clone()).collect::<Vec<_>>(),
+            tous[..3]
+        );
+        // Tous partis : un seul lancement, rien d'autre.
+        lancements.set(0);
+        let mut bilan = signales(&tous[3..]);
+        revoir_un_a_un(&mut bilan, &perimetre(&[&d]), |lot| {
+            for f in &tous[3..] {
+                let _ = std::fs::remove_file(f);
+            }
+            lancements.set(lancements.get() + 1);
+            faux_lot(lot, &seul)
+        });
+        assert_eq!(
+            (lancements.get(), bilan.infectes.len(), bilan.non_verifies.len()),
+            (1, 0, 5)
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// PA-1 (A1 de la relecture) : entre la seconde analyse et la réponse, le dossier du fichier est changé en lien
+    /// vers celui d'un autre, qui a un fichier de même nom. Isoler ou effacer ne vise que l'inode revu : l'autre
+    /// fichier reste intact.
+    #[test]
+    fn geste_sur_le_fichier_revu_seulement() {
+        let d = jetable("vanguard-pa1-course");
+        std::fs::create_dir_all(d.join("tmp/e")).unwrap();
+        std::fs::create_dir_all(d.join("victime")).unwrap();
+        std::fs::write(d.join("tmp/e/bashrc"), b"contenu invente").unwrap();
+        std::fs::write(d.join("victime/bashrc"), b"export ESSAI=1\n").unwrap();
+        let p = d.join("tmp/e/bashrc").to_str().unwrap().to_string();
+        let mut bilan = signales(std::slice::from_ref(&p));
+        revoir_un_a_un(&mut bilan, &perimetre(&[&d.join("tmp")]), |lot| {
+            faux_lot(lot, &|c| Some((Some(1), format!("{c}: Essai.Faux-1 FOUND\n"))))
+        });
+        assert_eq!(bilan.infectes.len(), 1);
+        std::fs::rename(d.join("tmp/e"), d.join("tmp/e.cache")).unwrap();
+        std::os::unix::fs::symlink(d.join("victime"), d.join("tmp/e")).unwrap();
+        let (f, detection) = &bilan.infectes[0];
+        for rep in ["s", "d", "q"] {
+            let r = geste_clamav(rep, f, detection, bilan.identites.get(f));
+            assert!(matches!(r, Some(Err(_))), "{rep} : {r:?}");
+            assert_eq!(
+                std::fs::read(d.join("victime/bashrc")).unwrap(),
+                b"export ESSAI=1\n",
+                "{rep}"
+            );
+            assert!(d.join("tmp/e.cache/bashrc").exists(), "{rep}");
+        }
+        // Sans inode relevé, rien n'est fait ; une autre réponse ne fait rien du tout.
+        assert!(matches!(geste_clamav("s", f, detection, None), Some(Err(_))));
+        assert!(geste_clamav("n", f, detection, bilan.identites.get(f)).is_none());
+        // Le même fichier, à sa place : il est bien effacé.
+        std::fs::remove_file(d.join("tmp/e")).unwrap();
+        std::fs::rename(d.join("tmp/e.cache"), d.join("tmp/e")).unwrap();
+        assert!(matches!(
+            geste_clamav("s", f, detection, bilan.identites.get(f)),
+            Some(Ok(()))
+        ));
+        assert!(!d.join("tmp/e/bashrc").exists());
+        assert!(d.join("victime/bashrc").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// PA-1 (contrôle de la ronde 2, C1) : au relevé de l'état, un dossier du chemin est un lien vers celui d'un autre ;
+    /// pendant la seconde analyse, le vrai dossier ; après, le lien de nouveau. Relevé par lstat puis jugé par un autre
+    /// appel, c'est l'inode du fichier de l'autre qui était gardé, puis effacé ou isolé. Cible donnée : le fichier
+    /// lui-même (aucun contrôle de lien avant), puis son dossier.
+    #[test]
+    fn identite_relevee_a_travers_un_lien() {
+        let d = jetable("vanguard-pa1-lien-au-releve");
+        std::fs::create_dir_all(d.join("tmp/e.vrai")).unwrap();
+        std::fs::create_dir_all(d.join("victime")).unwrap();
+        std::fs::write(d.join("tmp/e.vrai/bashrc"), b"contenu invente").unwrap();
+        std::fs::write(d.join("victime/bashrc"), b"export ESSAI=1\n").unwrap();
+        std::os::unix::fs::symlink(d.join("victime"), d.join("tmp/e")).unwrap();
+        let f = d.join("tmp/e/bashrc");
+        let p = f.to_str().unwrap().to_string();
+        let echanger = |de: &str, vers: &str| std::fs::rename(d.join(de), d.join(vers)).unwrap();
+        for cible in [f.clone(), d.join("tmp")] {
+            let mut bilan = signales(std::slice::from_ref(&p));
+            revoir_un_a_un(&mut bilan, &perimetre(&[&cible]), |lot| {
+                echanger("tmp/e", "tmp/e.lien");
+                echanger("tmp/e.vrai", "tmp/e");
+                let r = faux_lot(lot, &|c| Some((Some(1), format!("{c}: Essai.Faux-1 FOUND\n"))));
+                echanger("tmp/e", "tmp/e.vrai");
+                echanger("tmp/e.lien", "tmp/e");
+                r
+            });
+            for (g, detection) in &bilan.infectes {
+                for rep in ["s", "q"] {
+                    let _ = geste_clamav(rep, g, detection, bilan.identites.get(g));
+                }
+            }
+            assert_eq!(
+                std::fs::read(d.join("victime/bashrc")).ok().as_deref(),
+                Some(&b"export ESSAI=1\n"[..]),
+                "{cible:?}"
+            );
+            assert!(
+                bilan.infectes.is_empty() && bilan.identites.is_empty(),
+                "{cible:?} : {bilan:?}"
+            );
+            assert_eq!(bilan.non_verifies.len(), 1);
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// PA-1 (contrôle de la ronde 2, C1, la course elle-même) : un autre fil échange sans arrêt le vrai dossier et un
+    /// lien vers celui d'un autre. Aucun relevé ne porte l'inode du fichier de l'autre : l'état et le lieu se lisent
+    /// sur un même descripteur. Lus par deux appels, l'essai du contrôle gagnait environ un tour sur trois.
+    #[test]
+    fn releve_pendant_un_echange_de_dossiers() {
+        let d = jetable("vanguard-pa1-course-au-releve");
+        std::fs::create_dir_all(d.join("tmp/e.v")).unwrap();
+        std::fs::create_dir_all(d.join("victime")).unwrap();
+        std::fs::write(d.join("tmp/e.v/bashrc"), b"contenu invente").unwrap();
+        std::fs::write(d.join("victime/bashrc"), b"export ESSAI=1\n").unwrap();
+        std::os::unix::fs::symlink(d.join("victime"), d.join("tmp/e")).unwrap();
+        let victime =
+            crate::protection::quarantaine::Identite::de(&std::fs::metadata(d.join("victime/bashrc")).unwrap());
+        let p = d.join("tmp/e/bashrc").to_str().unwrap().to_string();
+        let fin = std::sync::atomic::AtomicBool::new(false);
+        let (vus, lien) = std::thread::scope(|s| {
+            s.spawn(|| {
+                let r = |de: &str, vers: &str| {
+                    let _ = std::fs::rename(d.join(de), d.join(vers));
+                };
+                while !fin.load(std::sync::atomic::Ordering::Relaxed) {
+                    r("tmp/e", "tmp/e.l");
+                    r("tmp/e.v", "tmp/e");
+                    r("tmp/e", "tmp/e.v");
+                    r("tmp/e.l", "tmp/e");
+                }
+            });
+            let (mut vus, mut lien) = (0u32, 0u32);
+            let perimetre = perimetre(&[&d.join("tmp")]);
+            for _ in 0..20_000 {
+                match etat_avant(&p, &perimetre) {
+                    Ok(e) if e.identite.meme_fichier(&victime) => vus += 1,
+                    Err(r) if r.contains("lien") || r.contains("link") => lien += 1,
+                    _ => {}
+                }
+            }
+            fin.store(true, std::sync::atomic::Ordering::Relaxed);
+            (vus, lien)
+        });
+        assert_eq!(vus, 0, "{lien} relevés à travers le lien refusés");
+        // L'échange a bien eu lieu pendant les relevés.
+        assert!(lien > 0);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// PA-1 (contrôle de la ronde 2, C2) : clamscan écrit aussi « <f>: Empty file » (fichier vide, code 0) et
+    /// « <f>: Access denied » (illisible : code 2, ou 1 si un autre fichier est trouvé), vu avec 1.5.4. Seul ce fichier
+    /// reste « non vérifié », le lot se lit en un lancement. Rejeter tout le lot le faisait couper en deux jusqu'au
+    /// fichier seul : des noms piégés simplement posés (une archive décompressée) coûtaient un lancement chacun.
+    #[test]
+    fn lot_aux_lignes_ni_ok_ni_found() {
+        let d = jetable("vanguard-pa1-vides");
+        let tous: Vec<String> = (0..16)
+            .map(|i| {
+                let f = d.join(format!("f{i:02}"));
+                std::fs::write(&f, b"x").unwrap();
+                f.to_str().unwrap().to_string()
+            })
+            .collect();
+        let lancements = std::cell::Cell::new(0);
+        let mut bilan = signales(&tous);
+        revoir_un_a_un(&mut bilan, &perimetre(&[&d]), |lot| {
+            lancements.set(lancements.get() + 1);
+            faux_lot(lot, &|p| Some((Some(0), format!("{p}: Empty file\n"))))
+        });
+        assert_eq!((bilan.infectes.len(), bilan.non_verifies.len()), (0, 16));
+        assert_eq!(lancements.get(), 1);
+        let (sans_droit, trouve, sain) = ("/t/a", "/t/b", "/t/c");
+        assert_eq!(
+            lire_le_lot(
+                Some(1),
+                "/t/a: Access denied\n/t/b: Essai.X FOUND\n/t/c: OK\n",
+                &[sans_droit, trouve, sain]
+            ),
+            Some(vec![Err(rien_de_net()), Ok("Essai.X".to_string()), Err(pas_infecte())])
+        );
+        assert_eq!(
+            lire_le_lot(Some(2), "/t/a: Access denied\n/t/c: OK\n", &[sans_droit, sain]),
+            Some(vec![Err(rien_de_net()), Err(pas_infecte())])
+        );
+        // Une trouvaille donne le code 1 : avec le code 2, ou une menace qui ne vient pas des signatures, rien n'est
+        // conclu, comme avant.
+        assert_eq!(
+            lire_le_lot(
+                Some(2),
+                "/t/a: Access denied\n/t/b: Essai.X FOUND\n",
+                &[sans_droit, trouve]
+            ),
+            None
+        );
+        assert_eq!(
+            lire_le_lot(
+                Some(1),
+                "/t/a: Empty file\n/t/b: x: Essai.X FOUND\n",
+                &[sans_droit, trouve]
+            ),
+            None
+        );
+        assert_eq!(lire_le_lot(Some(0), "/t/b: Essai.X FOUND\n", &[trouve]), None);
+        assert_eq!(lire_le_lot(Some(1), "/t/a: Empty file\n", &[sans_droit]), None);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// PA-1 (contrôle de la ronde 2, C2, toute la classe) : une sortie d'une forme encore inconnue fait couper un lot
+    /// en deux, puis encore ; le nombre de lancements reste borné, et ce qui n'a pas été revu est « non vérifié ».
+    #[test]
+    fn relances_bornees() {
+        let d = jetable("vanguard-pa1-relances");
+        let tous: Vec<String> = (0..64)
+            .map(|i| {
+                let f = d.join(format!("f{i:02}"));
+                std::fs::write(&f, b"x").unwrap();
+                f.to_str().unwrap().to_string()
+            })
+            .collect();
+        let n = std::cell::Cell::new(0usize);
+        let mut bilan = signales(&tous);
+        revoir_un_a_un(&mut bilan, &perimetre(&[&d]), |lot| {
+            n.set(n.get() + 1);
+            Some((Some(1), "forme inconnue\n".repeat(lot.len())))
+        });
+        assert!(n.get() <= 1 + RELANCES, "{} lancements", n.get());
+        assert_eq!((bilan.infectes.len(), bilan.non_verifies.len()), (0, 64));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// PA-1 (A2 de la relecture) : un nom « x: y FOUND⏎z » ajoute une fausse ligne ; jeter toute l'analyse cachait
+    /// les vrais fichiers. Plus de lignes que d'infectés annoncés se lit (chaque ligne est revue ensuite) ; moins, ou
+    /// des lignes sans aucun infecté annoncé, ne conclut rien. L'examen d'un seul fichier ne montre que sa vraie
+    /// menace, la dernière.
+    #[test]
+    fn fausse_ligne_found_dans_un_nom() {
+        let resume =
+            |n: u64| format!("\n----------- SCAN SUMMARY -----------\nScanned files: 2\nInfected files: {n}\n");
+        let lignes = "/m/s/vrai.bin: Essai.Faux-1 FOUND\n/m/s/x: y FOUND\nz: Essai.Faux-1 FOUND\n";
+        let r = lire_resultat(Some(1), &format!("{lignes}{}", resume(2))).unwrap();
+        assert_eq!(r.infectes.len(), 3);
+        assert!(r.infectes.iter().any(|(f, _)| f == "/m/s/vrai.bin"));
+        assert!(lire_resultat(Some(1), &format!("{lignes}{}", resume(4))).is_none());
+        assert!(lire_resultat(Some(0), &format!("{lignes}{}", resume(0))).is_none());
+        let seul = format!("/m/x: Menace.Choisie FOUND\nz: Essai.Faux-1 FOUND\n{}", resume(1));
+        assert_eq!(
+            examen_du_resultat(Some(1), &seul),
+            Examen::Trouve(vec!["Essai.Faux-1".to_string()])
+        );
+    }
+
+    /// PA-1 : la liste --file-list est jointe par « \n » et lue par morceaux de 1023 octets ; un nom à caractère de
+    /// contrôle ou trop long (il y serait coupé en deux), ou qui n'est pas de l'UTF-8 (il y serait changé), n'y entre
+    /// pas : il est donné à part, en argument, dans une borne (A3, J8 et J9 de la relecture) ; au-delà, il est compté
+    /// non analysé, jamais sain.
+    #[test]
+    fn nom_a_controle_hors_de_la_liste() {
+        use std::os::unix::ffi::OsStringExt;
+        let tient = PathBuf::from(format!("/tmp/{}", "b/".repeat(508) + "b"));
+        let trop_long = PathBuf::from(format!("/tmp/{}", "a/".repeat(509)));
+        assert_eq!((tient.as_os_str().len(), trop_long.as_os_str().len()), (1022, 1023));
+        let fichiers = vec![
+            PathBuf::from("/tmp/ordinaire"),
+            PathBuf::from("/tmp/a\n/maison/essai/.bashrc"),
+            PathBuf::from("/tmp/retour\r"),
+            PathBuf::from("/tmp/accentué é"),
+            PathBuf::from(std::ffi::OsString::from_vec(b"/tmp/pas-utf8-\xff".to_vec())),
+            tient.clone(),
+            trop_long.clone(),
+        ];
+        let (liste, a_part, laisses) = a_part_de_la_liste(fichiers);
+        assert_eq!(
+            liste,
+            vec![PathBuf::from("/tmp/ordinaire"), PathBuf::from("/tmp/accentué é"), tient]
+        );
+        assert_eq!(
+            a_part,
+            vec![
+                PathBuf::from("/tmp/a\n/maison/essai/.bashrc"),
+                PathBuf::from("/tmp/retour\r"),
+                PathBuf::from(std::ffi::OsString::from_vec(b"/tmp/pas-utf8-\xff".to_vec())),
+                trop_long,
+            ]
+        );
+        assert_eq!(laisses, 0);
+        // Des milliers de noms piégés dans /tmp : jamais assez d'arguments pour faire échouer clamscan en entier.
+        let pieges: Vec<PathBuf> = (0..5000)
+            .map(|i| PathBuf::from(format!("/tmp/{}/{i:04}\u{1}", "d".repeat(500))))
+            .collect();
+        let (_, a_part, laisses) = a_part_de_la_liste(pieges.clone());
+        let octets: usize = a_part.iter().map(|p| p.as_os_str().len() + 1).sum();
+        assert!(octets <= OCTETS_EN_ARGUMENT && a_part.len() <= TMP_A_PART, "{octets}");
+        assert_eq!(a_part.len() + laisses, 5000);
+        let l = preparer_lancement(Vec::new(), pieges, std::path::Path::new("/nulle-part"));
+        assert_eq!(
+            l.non_analyses.iter().map(|(n, _)| *n).sum::<u64>(),
+            5000 - a_part.len() as u64
+        );
+        assert_eq!(l.perimetre.fichiers.len(), a_part.len());
+    }
+
+    /// PA-1 (A11 de la relecture) : la liste n'a pas pu s'écrire. Les endroits à risque passent en argument, et les
+    /// fichiers récents de /tmp qui devaient y être sont dits non analysés (avant, sautés sans un mot).
+    #[test]
+    fn liste_non_ecrite_dite() {
+        let cibles = vec![
+            PathBuf::from("/maison/essai/Téléchargements"),
+            PathBuf::from("/maison/essai/Bureau"),
+        ];
+        let tmp = vec![
+            PathBuf::from("/tmp/a"),
+            PathBuf::from("/tmp/b"),
+            PathBuf::from("/tmp/c\nd"),
+        ];
+        let d = jetable("vanguard-pa1-liste");
+        let l = preparer_lancement(cibles.clone(), tmp.clone(), &d.join("absent"));
+        assert!(l.liste.is_none());
+        let mut attendus = cibles.clone();
+        attendus.push(tmp[2].clone());
+        assert_eq!(l.arguments, attendus);
+        assert_eq!(l.non_analyses.iter().map(|(n, _)| *n).collect::<Vec<_>>(), vec![2]);
+        assert_eq!(l.perimetre.fichiers, std::iter::once(tmp[2].clone()).collect());
+        // Écrite : tout y est sauf le nom à saut de ligne, et elle s'efface quand l'analyse est finie.
+        let l = preparer_lancement(cibles, tmp, &d);
+        let chemin = l.liste.as_ref().unwrap().0.clone();
+        assert_eq!(
+            std::fs::read_to_string(&chemin).unwrap(),
+            "/maison/essai/Téléchargements\n/maison/essai/Bureau\n/tmp/a\n/tmp/b"
+        );
+        assert_eq!(l.arguments, vec![PathBuf::from("/tmp/c\nd")]);
+        assert_eq!(l.non_analyses, []);
+        assert_eq!(l.perimetre.fichiers.len(), 3);
+        drop(l);
+        assert!(!chemin.exists());
+        let l = preparer_lancement(vec![PathBuf::from("/m")], Vec::new(), &d);
+        let m = std::fs::metadata(&l.liste.as_ref().unwrap().0).unwrap();
+        assert_eq!(std::os::unix::fs::PermissionsExt::mode(&m.permissions()) & 0o777, 0o600);
+        drop(l);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// PA-1, avec le vrai clamscan et une base jetable d'une seule empreinte (un contenu inventé, jamais une vraie
+    /// signature) : le fichier piégé « s/a⏎<jetable>/leurre/bashrc » fait signaler le leurre ; revu, le leurre n'est
+    /// pas confirmé, rien ne lui est proposé, et la moitié de nom est signalée.
+    #[test]
+    fn seconde_analyse_du_vrai_clamscan() {
+        let Some(base) = base_jetable("vanguard-pa1-clam") else {
+            crate::essais::saute("clamscan absent des dossiers du système");
+            return;
+        };
+        let (d, base, contenu) = base;
+        let leurre = d.join("leurre/bashrc");
+        std::fs::create_dir_all(leurre.parent().unwrap()).unwrap();
+        std::fs::write(&leurre, b"export ESSAI=1\n").unwrap();
+        let piege = PathBuf::from(format!("{}/s/a\n{}", d.display(), leurre.display()));
+        std::fs::create_dir_all(piege.parent().unwrap()).unwrap();
+        std::fs::write(&piege, contenu).unwrap();
+        std::fs::write(d.join("s/b"), contenu).unwrap();
+        // Le leurre est dans ce qui est analysé : seule la seconde analyse l'écarte.
+        let l = preparer_lancement(vec![d.join("s"), d.join("leurre")], Vec::new(), &d);
+        let leurre = leurre.to_str().unwrap().to_string();
+        // Sans seconde analyse, le leurre passe pour infecté : c'est le défaut.
+        let brut = analyser_le_lancement(&l, Some(&base), &[]).unwrap();
+        assert!(brut.infectes.iter().any(|(f, _)| *f == leurre), "{brut:?}");
+        let bilan = analyser_et_revoir(&l, Some(&base), &[], |_| ()).unwrap();
+        let b = d.join("s/b").to_str().unwrap().to_string();
+        assert_eq!(bilan.infectes, vec![(b, "Essai.Faux-1.UNOFFICIAL".to_string())]);
+        assert_eq!(
+            bilan.non_verifies.iter().map(|(f, _)| f.as_str()).collect::<Vec<_>>(),
+            vec![leurre.as_str()]
+        );
+        assert_eq!(bilan.lignes_inconnues, vec![format!("{}/s/a", d.display())]);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// PA-1 (J1 et J2 de la relecture), avec le vrai clamscan : dès qu'il a une liste, clamscan ignore tout chemin
+    /// en argument. Les endroits et fichiers de la liste, comme ceux donnés à part (nom à caractère de contrôle),
+    /// sont tous analysés, et chaque infecté est confirmé.
+    #[test]
+    fn liste_et_arguments_tous_analyses() {
+        let Some((d, base, contenu)) = base_jetable("vanguard-pa1-j1") else {
+            crate::essais::saute("clamscan absent des dossiers du système");
+            return;
+        };
+        let (c1, c2, t) = (d.join("c1"), d.join("c\u{1}2"), d.join("t"));
+        for r in [&c1, &c2, &t] {
+            std::fs::create_dir_all(r).unwrap();
+        }
+        let infectes = [c1.join("f1"), c2.join("f2"), t.join("ordinaire"), t.join("x\u{1}y")];
+        for f in &infectes {
+            std::fs::write(f, contenu).unwrap();
+        }
+        let l = preparer_lancement(vec![c1, c2.clone()], vec![infectes[2].clone(), infectes[3].clone()], &d);
+        assert!(l.liste.is_some());
+        assert_eq!(l.arguments, vec![c2, infectes[3].clone()]);
+        let bilan = analyser_et_revoir(&l, Some(&base), &[], |_| ()).unwrap();
+        let mut trouves: Vec<PathBuf> = bilan.infectes.iter().map(|(f, _)| PathBuf::from(f)).collect();
+        trouves.sort();
+        let mut attendus = infectes.to_vec();
+        attendus.sort();
+        assert_eq!(trouves, attendus, "{bilan:?}");
+        assert!(bilan.non_verifies.is_empty() && bilan.analyses >= 4, "{bilan:?}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Un dossier jetable et une base ClamAV d'une seule empreinte, celle d'un contenu inventé : (dossier, option
+    /// « --database= », contenu). `None` sans clamscan dans les dossiers du système.
+    fn base_jetable(nom: &str) -> Option<(PathBuf, String, &'static [u8])> {
+        crate::commande::outil_systeme("clamscan")?;
+        let d = jetable(nom);
+        let contenu: &'static [u8] = b"contenu-invente-vanguard-pa1\n";
+        std::fs::create_dir_all(d.join("base")).unwrap();
+        std::fs::write(
+            d.join("base/essai.hdb"),
+            format!("{}:{}:Essai.Faux-1\n", md5_hex(contenu), contenu.len()),
+        )
+        .unwrap();
+        let base = format!("--database={}", d.join("base").display());
+        Some((d, base, contenu))
+    }
+
+    /// MD5 en hexadécimal, pour l'empreinte .hdb de la base jetable (format de ClamAV).
+    fn md5_hex(octets: &[u8]) -> String {
+        use md5::Digest;
+        crate::socle::hachage::hexa(&md5::Md5::digest(octets))
     }
 
     #[test]
@@ -4260,11 +5658,14 @@ mod tests_json {
     #[test]
     fn second_avis_trouve_rien_et_partiel() {
         let fait = |infectes: Vec<(String, String)>, illisibles| {
-            SecondAvis::Fait(Bilan {
+            SecondAvis::Fait(Box::new(Bilan {
                 infectes,
+                non_verifies: Vec::new(),
+                lignes_inconnues: Vec::new(),
                 analyses: 40,
                 illisibles,
-            })
+                ..Bilan::default()
+            }))
         };
         let mut r = lu();
         ajouter_second_avis(&mut r, fait(Vec::new(), 0));
@@ -4304,6 +5705,62 @@ mod tests_json {
         assert!(
             json.contains("à isoler depuis le menu") && !json.contains('\u{202e}'),
             "{json}"
+        );
+    }
+
+    /// PA-1 : un fichier signalé que sa seconde analyse ne confirme pas, ou une moitié de nom coupé, n'est ni une
+    /// trouvaille critique ni « sain » : « non vérifié », avec le chemin rendu inoffensif.
+    #[test]
+    fn second_avis_non_confirme_jamais_sain() {
+        let avis = |non_verifies: Vec<(String, &'static str)>, lignes_inconnues: Vec<String>| {
+            SecondAvis::Fait(Box::new(Bilan {
+                infectes: Vec::new(),
+                non_verifies,
+                lignes_inconnues,
+                analyses: 40,
+                illisibles: 0,
+                ..Bilan::default()
+            }))
+        };
+        let mut r = lu();
+        ajouter_second_avis(
+            &mut r,
+            avis(vec![("/maison/essai/.bash\u{1b}rc".into(), "pas confirmé")], Vec::new()),
+        );
+        assert_eq!(verdict(&r), "non-verifie", "{:?}", r.manques);
+        assert_eq!(r.trouves.len(), 0, "{:?}", r.trouves);
+        assert!(
+            r.manques
+                .iter()
+                .any(|m| m.contains("/maison/essai/.bash") && m.contains("pas confirmé") && !m.contains('\u{1b}')),
+            "{:?}",
+            r.manques
+        );
+        let mut r = lu();
+        ajouter_second_avis(&mut r, avis(Vec::new(), vec!["/maison/essai/s/a".into()]));
+        assert_eq!(verdict(&r), "non-verifie", "{:?}", r.manques);
+        assert!(
+            r.manques.iter().any(|m| m.contains("/maison/essai/s/a")),
+            "{:?}",
+            r.manques
+        );
+        // Des fichiers récents de /tmp que clamscan n'a pas reçus (A11 de la relecture) : dits, jamais sains.
+        let mut r = lu();
+        ajouter_second_avis(
+            &mut r,
+            SecondAvis::Fait(Box::new(Bilan {
+                analyses: 40,
+                non_analyses: vec![(3, "liste non écrite")],
+                ..Bilan::default()
+            })),
+        );
+        assert_eq!(verdict(&r), "non-verifie", "{:?}", r.manques);
+        assert!(
+            r.manques
+                .iter()
+                .any(|m| m.contains('3') && m.contains("liste non écrite")),
+            "{:?}",
+            r.manques
         );
     }
 }

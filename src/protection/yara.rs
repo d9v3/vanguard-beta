@@ -394,10 +394,12 @@ fn niveau(t: &Trouve) -> crate::risk::Niveau {
     }
 }
 
-/// Les endroits d'une portée.
+/// Les endroits d'une portée. Un dossier tapé (« vanguard yara . », un nom relatif au menu) devient son chemin réel,
+/// comme dans l'antivirus : les fichiers trouvés y portent un chemin complet, sans lequel la quarantaine refuse de les
+/// isoler (elle ne saurait pas où les remettre). Introuvable : tel quel, et la lecture le dira illisible.
 fn cibles(portee: &Portee) -> Vec<PathBuf> {
     match portee {
-        Portee::Dossier(d) => vec![d.clone()],
+        Portee::Dossier(d) => vec![d.canonicalize().unwrap_or_else(|_| d.clone())],
         Portee::Complete => vec![crate::socle::maison()],
         Portee::Rapide => endroits_a_risque(),
     }
@@ -466,6 +468,12 @@ pub(crate) fn json() {
 
 pub fn analyser(portee: &Portee) {
     titre(tr!("Analyse YARA", "YARA scan"));
+    if let Portee::Dossier(d) = portee
+        && d.canonicalize().is_err()
+    {
+        trp!("  ✖ Introuvable : {}", "  ✖ Not found: {}", chemin_affichable(d));
+        return;
+    }
     analyser_sans_titre(portee, true);
 }
 
@@ -978,6 +986,16 @@ mod tests {
         assert_eq!(r.nombre(), 1);
         let texte = non_verifiees(&r).unwrap();
         assert!(texte.contains("Mauvaise") && texte.contains("xor"), "{texte}");
+    }
+
+    /// Un dossier tapé tel quel (« vanguard yara . », un nom relatif au menu) devient son chemin complet : les fichiers
+    /// trouvés en portent un, que la quarantaine exige pour pouvoir les remettre (contrôle de PA-4, ronde 2).
+    #[test]
+    fn dossier_tape_rend_des_chemins_complets() {
+        // « src » : relatif au dossier du paquet, où cargo lance les essais.
+        let c = cibles(&Portee::Dossier(PathBuf::from("src")));
+        assert!(!c.is_empty() && c.iter().all(|p| p.is_absolute()), "{c:?}");
+        assert!(c.iter().all(|p| p.ends_with("src")), "{c:?}");
     }
 
     /// Un dossier d'essai : un faux programme qui remplit une règle d'essai de même forme que celles de ReversingLabs

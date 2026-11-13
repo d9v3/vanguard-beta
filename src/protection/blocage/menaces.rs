@@ -222,7 +222,8 @@ fn menace_programme(p: &EnMarche, j: Jugement) -> Menace {
     let nom = affichable(&p.nom);
     let raison = j.raison;
     let dossier = dossier_de_travail(p.pid);
-    let fichier = a_isoler(p, j.script.as_deref(), dossier.as_deref(), Path::is_file);
+    let fichier = a_isoler(p, j.script.as_deref(), dossier.as_deref(), Path::is_file)
+        .map(crate::protection::quarantaine::chemin_direct);
     Menace {
         categorie: Categorie::Programmes,
         certaine: j.certaine,
@@ -1437,6 +1438,27 @@ mod tests {
             Some(PathBuf::from("/home/alice/outils/./laZagne.py"))
         );
         assert_eq!(a_isoler(&relatif, Some("./laZagne.py"), None, partout), None);
+        // Le chemin isolé est direct (relecture de PA-4) : « ../outils/x.py » depuis un autre dossier devient le
+        // chemin du fichier lui-même, que la quarantaine accepte et sait remettre.
+        let d = crate::essais::Jetable::nouveau("menaces-detour");
+        std::fs::create_dir_all(d.join("x")).unwrap();
+        std::fs::create_dir_all(d.join("outils")).unwrap();
+        std::fs::write(d.join("outils").join("outil.py"), b"print(1)").unwrap();
+        let remonte = a_isoler(
+            &programme("python3", pyenv, "python3 ../outils/outil.py"),
+            Some("../outils/outil.py"),
+            Some(&d.join("x")),
+            Path::is_file,
+        )
+        .unwrap();
+        assert!(remonte.to_string_lossy().contains(".."));
+        let direct = crate::protection::quarantaine::chemin_direct(remonte);
+        assert!(
+            direct.components().all(|c| c != std::path::Component::ParentDir),
+            "{direct:?}"
+        );
+        assert_eq!(std::fs::read(&direct).unwrap(), b"print(1)");
+        assert_eq!(direct.file_name(), Some(std::ffi::OsStr::new("outil.py")));
         // Script introuvable, code passé en ligne, ou un autre interpréteur en argument : l'arrêt seul.
         assert_eq!(a_isoler(&lazagne, j.script.as_deref(), None, |_: &Path| false), None);
         assert_eq!(

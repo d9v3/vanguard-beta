@@ -994,7 +994,10 @@ pub(crate) fn defaire(b: &Blocage) -> Result<String, Echec> {
             }
         }
         Annulation::Quarantaine { nom } => {
-            let r = crate::protection::quarantaine::remettre(nom);
+            // La preuve de ce blocage, relue sous son sceau (`refus_d_origine`) : le chemin et l'empreinte que le
+            // fichier avait à son isolement. Le registre de la quarantaine, lui, s'écrit depuis le compte.
+            let scelle = b.preuve.as_ref().and_then(|p| p.fichier.as_ref());
+            let r = crate::protection::quarantaine::remettre(nom, scelle);
             changements::noter(&[vec![format!("quarantaine : remettre {nom}")]], &[r.is_ok()]);
             r
         }
@@ -1854,6 +1857,54 @@ mod tests {
         assert!(matches!(b.annulation, Some(Annulation::Quarantaine { .. })));
         defaire(&b).unwrap();
         assert_eq!(std::fs::read(&fichier).unwrap(), b"MZ essai");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// « Tout remettre comme avant » ne sort pas de la quarantaine un contenu changé depuis le blocage (PA-4) : le
+    /// dossier est celui du compte, un programme de ce compte a pu y remplacer le fichier isolé ; l'empreinte relue
+    /// doit être celle du relevé scellé.
+    #[test]
+    fn quarantaine_changee_jamais_remise() {
+        let d = crate::essais::temporaire().join(format!("vanguard-gestes-changee-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let fichier = d.join("bulletin.pdf.exe");
+        std::fs::write(&fichier, b"MZ releve").unwrap();
+        let cle = format!("fichier:{}", fichier.display());
+        let m = Menace {
+            cle: cle.clone(),
+            categorie: super::super::parametres::Categorie::Programmes,
+            ..menace(Geste::Programme {
+                pid: None,
+                nom: "bulletin.pdf.exe".into(),
+                chemin: Some(fichier.clone()),
+                fichier: Some(fichier.clone()),
+                detection: "essai".into(),
+            })
+        };
+        let pret = preparer(&m, &contexte(true, true), true).unwrap();
+        faire(&m, pret, true).unwrap();
+        let (_, _, b) = changements::blocages()
+            .into_iter()
+            .rev()
+            .find(|(_, _, b)| b.cle == cle)
+            .unwrap();
+        let Some(Annulation::Quarantaine { nom }) = &b.annulation else {
+            panic!("pas une quarantaine : {:?}", b.annulation);
+        };
+        let isole = crate::protection::quarantaine::dossier().join(nom);
+        #[cfg(unix)]
+        std::fs::set_permissions(&isole, std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
+        #[cfg(windows)]
+        {
+            let mut p = std::fs::metadata(&isole).unwrap().permissions();
+            #[allow(clippy::permissions_set_readonly_false)] // l'essai joue le programme qui le remplace
+            p.set_readonly(false);
+            std::fs::set_permissions(&isole, p).unwrap();
+        }
+        std::fs::write(&isole, b"MZ remplace").unwrap();
+        assert!(defaire(&b).is_err());
+        assert!(!fichier.exists(), "un contenu changé est sorti de la quarantaine");
         let _ = std::fs::remove_dir_all(&d);
     }
     /// Le numéro du processus repris par un autre programme entre la question et le geste : la preuve ne décrit pas
