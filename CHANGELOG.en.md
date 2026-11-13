@@ -32,22 +32,24 @@ repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
   the file's identity, is not put back on its own: the value to put back by hand is given. Account file permissions are
   read, set and put back without a shell or a followed link (putting back used `chmod`, which follows links). The event
   log keeps no file name and no command; each sealed file is written in two steps, like the settings seal.
-- **A more honest update.** A copy swapped by another program during the update is no longer left in place: the old
-  copy is put back (rewritten from what Vanguard holds of it if its second name was deleted in the meantime), or
-  Vanguard says exactly what is in place ("do not run it"). The old copy is recognised by what Vanguard holds open,
-  no longer by a file number the system can give to another file, and it is said to be "put back" or to "stay in
-  place" only if its bytes are still the ones Vanguard read when setting it aside (BLAKE3 fingerprint): rewritten in
-  the meantime by another program, it is reported as changed, not to be run ("redo the update"), and that content is
-  never rewritten in its place. If it cannot be set aside before the replacement (for example, its set-aside name,
-  `vanguard.precedent`, is taken by a folder or by another file), the update of that copy is refused before anything is
-  replaced, and the path at fault is given; what is under that name is never deleted, except a second name of the copy
-  in place. If putting it back fails, the old copy is kept under a name the message gives, to be moved somewhere safe
-  (or, if even that fails, the message says it is lost). A new copy held open for writing ("Text file busy") is reported
-  as such; a provisional name already taken (a folder) is reported with the path to remove. Every refusal of the
-  installation says "nothing is replaced", also when the copy for this computer is first set up. Limits: a change made
-  after this last check is not seen; on a file system without hard links (FAT, exFAT), or for a copy owned by another
-  account when the system forbids them (fs.protected_hardlinks), the old copy cannot be set aside: the update of that
-  copy is refused ("Operation not permitted").
+- **A more honest update.** A copy swapped by another program during the update is no longer left in place: the old copy
+  is put back (rewritten from what Vanguard holds of it if its second name was deleted in the meantime), or Vanguard
+  says exactly what is in place ("do not run it"). The old copy is recognised by what Vanguard holds open, no longer by
+  a file number the system can give to another file, and it is said to be "put back" or to "stay in place" only if its
+  bytes are still the ones Vanguard read when setting it aside (BLAKE3 fingerprint); a copy that is a symbolic link is
+  recognised by what it points to and by the file at its end, held open the same way. Rewritten (or, at the end of a
+  link, replaced) in the meantime by another program, it is reported as changed, not to be run, and Vanguard never puts
+  that content in its place: left under its set-aside name, it is to be moved before redoing the update. If it cannot be
+  set aside before the replacement (for example, it cannot be read, exceeds 512 MiB or is a link to nothing, or its
+  set-aside name, `vanguard.precedent`, is taken by a folder or by another file), the update of that copy is refused
+  before anything is replaced, and the path at fault is given, with what to do; what is under that name is never
+  deleted, except a second name of the copy in place. If putting it back fails, the old copy is kept under a name the
+  message gives, to be moved somewhere safe (or, if even that fails, the message says it is lost). A new copy held open
+  for writing ("Text file busy") is reported as such; a provisional name already taken (a folder) is reported with the
+  path to remove. Every refusal of the installation says "nothing is replaced", also when the copy for this computer is
+  first set up. Limits: a change made after this last check is not seen; on a file system without hard links (FAT,
+  exFAT), or for a copy owned by another account when the system forbids them (fs.protected_hardlinks), the old copy
+  cannot be set aside: the update of that copy is refused ("Operation not permitted").
 - **Undo without touching another file.** "What Vanguard changed" no longer puts wider permissions back on a file
   that is no longer the one Vanguard fixed (replaced, other inode): the restore is refused, with its reason, and the
   line shows today's permissions and those that would be restored.
@@ -86,34 +88,37 @@ repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
   owned by the account, or missing from /sys (not verified), and when declaring it normal is refused, the message says
   what changes it and how to remove that.
 - **Variables and settings that change what a program starts.** The check reads the session manager's variable files
-  (environment.d, user.conf and user.conf.d, ~/.pam_environment, uwsm): HOME, LD_*, RSYNC_* or XDG_RUNTIME_DIR set
-  there raise the backup, and a moved unit folder is read again. environment.d and user.conf are read as systemd reads
-  them: a lone carriage return or a NUL byte splits a line, a "\" line continuation also joins with CRLF, and only
-  space, tab and line ends may come before a comment ("#" or ";"). In a shell profile and in uwsm files, only "#"
-  starts a comment: a line that begins with "//", "--" or ";" is no longer one. These files are also read where their
-  readers look outside ~/.config (the session's XDG_CONFIG_HOME or one set for the manager, and for uwsm every
-  XDG_CONFIG_HOME, XDG_CONFIG_DIRS and XDG_DATA_DIRS folder, from the session or set for the manager, that the account
-  can change, even outside the home folder; a relative folder is read from the home folder, as uwsm reads it), by the
-  check and by the backup alike. An uwsm file is skipped only if only root can change every entry crossed to reach
-  it, links included; an uwsm folder, entry or file that cannot be read is reported, not checked, by the check as by the
-  backup. An uwsm folder placed under a folder the check already reads for something else (~/.config/systemd, for
-  example) is judged too. uwsm plugins ("uwsm/plugins/*.sh" under ~/.local/share, /usr/local/share, /usr/share and every
-  XDG_DATA_HOME and XDG_DATA_DIRS of the session or set for the manager) are judged like its files, by the check and by
-  the backup alike; every ".sh" counts, even those uwsm will not load for your desktop. A wildcard ("*", "?", "[") in
-  one of these session variables is not expanded: the check reports it, not checked, it cannot be declared normal, and
-  it raises the backup. A piece set for the manager that starts or ends with a blank does not resolve (reported, not
-  checked); "~/x" or "$HOME/x" set there is read both ways: replaced by the home folder, and as written, from the home
-  folder. Every file in the uwsm folder and in its "env.d" and "env-<desktop>.d" counts, whatever its name and
-  extension, and an "env.d" that is a link to a folder is followed everywhere, as uwsm follows it: the backup judges
-  what it holds instead of being raised because it cannot be read as a file. The "exec" lines of popt settings (~/.popt,
-  /etc/popt) are judged as launches. A file that a profile or an uwsm file reads with "." or "source" is judged line by
-  line, with the same rule as ~/.bashrc (a line that names LD_PRELOAD is reported, even if it only reads it), when the
-  inclusion is spelled out in command position and its path is absolute or under "~/" or "$HOME/", up to 64 included
-  files. Limits: an inclusion written another way (relative path or one computed from a variable, loop over a folder,
-  eval) is not followed, and the check does not report it; an included file that cannot be read, is too large or is not
-  UTF-8 is not judged; a quoted value written over several lines is not followed from one line to the next, and can hide
-  the line after it. A variable set during the session, by a Hyprland "env =" line, or a folder moved by a shell profile
-  is not checked.
+  (environment.d, user.conf and user.conf.d, ~/.pam_environment, uwsm): HOME, LD_*, RSYNC_* or XDG_RUNTIME_DIR set there
+  raise the backup, and a moved unit folder is read again. environment.d and user.conf are read as systemd reads them: a
+  lone carriage return or a NUL byte splits a line, a "\" line continuation also joins with CRLF, and only space, tab
+  and line ends may come before a comment ("#" or ";"). In a shell profile and in uwsm files, only "#" starts a comment:
+  a line that begins with "//", "--" or ";" is no longer one. These files are also read where their readers look outside
+  ~/.config (the session's XDG_CONFIG_HOME or one set for the manager, and for uwsm every XDG_CONFIG_HOME,
+  XDG_CONFIG_DIRS and XDG_DATA_DIRS folder, from the session or set for the manager, that the account can change, even
+  outside the home folder; a relative folder is read from the home folder, as uwsm reads it), by the check and by the
+  backup alike. An uwsm file is skipped only if only root can change every entry crossed to reach it, links included; an
+  uwsm folder, entry or file that cannot be read is reported, not checked, by the check as by the backup. An uwsm folder
+  placed under a folder the check already reads for something else (~/.config/systemd, for example) is judged too. uwsm
+  plugins ("uwsm/plugins/*.sh" under ~/.local/share, /usr/local/share, /usr/share and every XDG_DATA_HOME and
+  XDG_DATA_DIRS of the session or set for the manager) are judged like its files, by the check and by the backup alike;
+  a plugin folder that cannot be read is reported as such, not checked, and raises the backup; every ".sh" counts, even
+  those uwsm will not load for your desktop. A wildcard ("*", "?", "[") in the session's XDG_CONFIG_HOME,
+  XDG_CONFIG_DIRS or XDG_DATA_DIRS is not expanded: the check reports it, not checked, it cannot be declared normal, and
+  it raises the backup; the same goes for a line break, which uwsm may remove at the end of a value. The session's
+  XDG_DATA_HOME is read as is, as uwsm reads it. A piece set for the manager that starts or ends with a blank does not
+  resolve (reported, not checked), nor does an XDG_CONFIG_HOME or XDG_DATA_HOME set there that contains ":" (systemd
+  takes it whole, uwsm may split it); "~/x" or "$HOME/x" set there is read both ways: replaced by the home folder, and
+  as written, from the home folder. Every file in the uwsm folder and in its "env.d" and "env-<desktop>.d" counts,
+  whatever its name and extension, and an "env.d" that is a link to a folder is followed everywhere, as uwsm follows it:
+  the backup judges what it holds instead of being raised because it cannot be read as a file. The "exec" lines of popt
+  settings (~/.popt, /etc/popt) are judged as launches. A file that a profile or an uwsm file reads with "." or "source"
+  is judged line by line, with the same rule as ~/.bashrc (a line that names LD_PRELOAD is reported, even if it only
+  reads it), when the inclusion is spelled out in command position and its path is absolute or under "~/" or "$HOME/",
+  up to 64 included files. Limits: an inclusion written another way (relative path or one computed from a variable, loop
+  over a folder, eval) is not followed, and the check does not report it; an included file that cannot be read, is too
+  large or is not UTF-8 is not judged; a quoted value written over several lines is not followed from one line to the
+  next, and can hide the line after it. A variable set during the session, by a Hyprland "env =" line, or a folder moved
+  by a shell profile is not checked.
 - **System programs, taken by their path.** The check, traces, monitoring, the backup and the other machine readings
   start pacman, systemctl, journalctl, ss, crontab, ping and the rest from the system folders, never through the
   account's PATH: a fake program placed in ~/.local/bin can no longer hide a connection or a journal line. The
@@ -122,20 +127,21 @@ repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
   no longer starts a fake pacman placed in ~/.local/bin, and "System up to date" is no longer said without checking.
   Tools you install yourself (docker, podman, git, nmap, trivy, gitleaks) are still looked up in the PATH, on purpose,
   like xdg-open, which opens a page or a file with the application your account chose.
-- **Machine readings, taken from the system.** clamscan and upnpc are run and reported present from the system
-  folders, never through the account's PATH. checkupdates works in a new private folder, deleted afterwards: a
-  database planted in advance under the known name no longer makes it say "up to date". A system tool written in
-  Python (ufw, firewall-cmd, dnf) no longer loads the account's Python packages. A Docker daemon named by a variable
-  (DOCKER_HOST, DOCKER_CONTEXT other than "default", DOCKER_CONFIG), even one set to blanks or to non-UTF-8 bytes, or
-  by a context chosen in ~/.docker/config.json, is reported as not checked instead of being read, for published ports
-  as for image flaws; a container port exposed to the network, already seen by the system daemon or through the
-  processes, is still reported. config.json is read the way the Docker CLI reads it: the context key regardless of
-  case, every duplicate included, a linked file (stow, home-manager) followed; a HOME or DOCKER_CONFIG that is relative
-  or contains ".." makes the daemon not checked (the CLI removes ".." from the path text, the system follows it after
-  a link: it would not always be the same folder). When the Docker API does not answer, the CLI that Vanguard starts
-  targets the system socket, without the home folder's settings, for ports as for images. Limit: a daemon chosen for
-  real (Docker Desktop, rootless Docker, colima, remote host) is no longer read at all; a port it publishes is no longer
-  reported, only said to be not checked.
+- **Machine readings, taken from the system.** clamscan and upnpc are run and reported present from the system folders,
+  never through the account's PATH. checkupdates works in a new private folder, deleted afterwards: a database planted
+  in advance under the known name no longer makes it say "up to date". A system tool written in Python (ufw,
+  firewall-cmd, dnf) no longer loads the account's Python packages. A Docker daemon named by a variable (DOCKER_HOST,
+  DOCKER_CONTEXT other than "default", DOCKER_CONFIG), even one set to blanks or to non-UTF-8 bytes, or by a context
+  chosen in ~/.docker/config.json, is reported as not checked instead of being read, for published ports as for image
+  flaws; a container port exposed to the network, already seen by the system daemon or through the processes, is still
+  reported. config.json is read almost the way the Docker CLI reads it (what differs is reported as not checked): empty
+  or made of blanks, it leaves the default context, as for the CLI; the context key regardless of case, every duplicate
+  included, a linked file (stow, home-manager) followed; a HOME or DOCKER_CONFIG that is relative or contains ".." makes
+  the daemon not checked (the CLI removes ".." from the path text, the system follows it after a link: it would not
+  always be the same folder). When the Docker API does not answer, the CLI that Vanguard starts targets the system
+  socket, without the home folder's settings, for ports as for images. Limit: a daemon chosen for real (Docker Desktop,
+  rootless Docker, colima, remote host) is no longer read at all; a port it publishes is no longer reported, only said
+  to be not checked.
 - **The window size without an account program.** Without a terminal, Vanguard no longer runs `tput` (looked up in
   the account's PATH) to learn the screen size.
 - **Sturdier.** Every Unicode format character (those that change reading direction or hide text) is shown as "�",
