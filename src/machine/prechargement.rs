@@ -54,6 +54,16 @@ pub(crate) fn bibliotheques(octets: &[u8]) -> Vec<Prechargee> {
     sortie
 }
 
+/// Les seuls noms que le chargeur de glibc 2.44 essaie de charger (`comme_le_chargeur`), sans la lecture idéale : pour
+/// voir ce qu'un retrait lui fait VRAIMENT charger en plus (ronde 4 du lot 096, G34-2 : une ligne qui porte un NUL
+/// l'arrête, et les lignes suivantes, montrées au bilan par la lecture idéale, ne sont chargées qu'après son retrait).
+pub(crate) fn noms_du_chargeur(octets: &[u8]) -> Vec<Vec<u8>> {
+    comme_le_chargeur(octets)
+        .into_iter()
+        .map(|(debut, fin)| octets.get(debut..fin).unwrap_or_default().to_vec())
+        .collect()
+}
+
 /// Les mots de `f[debut..fin]` qui ne contiennent aucun octet `coupe`, en (début, fin) dans `f`.
 fn mots(f: &[u8], debut: usize, fin: usize, coupe: impl Fn(u8) -> bool, sortie: &mut Vec<(usize, usize)>) {
     let mut mot: Option<usize> = None;
@@ -283,6 +293,16 @@ mod tests {
             vec![b"/a.so".to_vec()]
         );
         assert_eq!(tous(b"/a.so\0/b.so\n"), vec![b"/a.so".to_vec(), b"/b.so".to_vec()]);
+    }
+
+    /// `noms_du_chargeur` rend les seuls noms du chargeur, sans la lecture idéale : une ligne qui porte un NUL cache
+    /// au chargeur les lignes suivantes, qu'il charge une fois cette ligne retirée (ronde 4 du lot 096, G34-2). Cet
+    /// essai la tient aussi dans la compilation des essais pour Windows, où le seul code qui s'en sert (Linux) manque.
+    #[test]
+    fn noms_du_chargeur_sans_la_lecture_ideale() {
+        assert_eq!(noms_du_chargeur(b"/a.so\0\n/b.so\n"), vec![b"/a.so".to_vec()]);
+        assert_eq!(noms_du_chargeur(b"/b.so\n"), vec![b"/b.so".to_vec()]);
+        assert_eq!(noms_du_chargeur(b""), Vec::<Vec<u8>>::new());
     }
 
     /// Sur des fichiers tirés au hasard (graine fixe) : jamais de panique, chaque nom est non vide, sans séparateur,

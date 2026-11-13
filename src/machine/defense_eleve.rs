@@ -1949,6 +1949,37 @@ fn fichier_de_ligne(c: &CheminDesigne, a: &dyn Acces) -> Result<(PathBuf, Fiche,
 /// Combien de noms réveillés un refus de retrait montre au plus (ronde 3 du lot 096, N3) ; les autres sont comptés.
 const NOMS_REVEILLES_MONTRES: usize = 5;
 
+/// Des noms de /etc/ld.so.preload à montrer : chacun une fois, ceux qui ont un « / » d'abord (un vrai chemin), le
+/// « # » seul compté à part (un reste de commentaire que le chargeur essaie aussi), `NOMS_REVEILLES_MONTRES` au plus,
+/// les autres comptés. Ronde 4 du lot 096 (G34-3) : avant, dans l'ordre brut, cinq « # » ou cinq répétitions du même
+/// nom remplissaient les places, et la bibliothèque réveillée n'était jamais nommée.
+fn noms_montres(noms: &[Vec<u8>]) -> String {
+    let mut uniques: Vec<&[u8]> = Vec::new();
+    let mut dieses = 0usize;
+    for n in noms {
+        if n.as_slice() == b"#" {
+            dieses = dieses.saturating_add(1);
+        } else if !uniques.contains(&n.as_slice()) {
+            uniques.push(n);
+        }
+    }
+    // Tri stable : l'ordre du fichier reste, à rang égal.
+    uniques.sort_by_key(|n| !n.contains(&b'/'));
+    let mut montres: Vec<String> = uniques
+        .iter()
+        .take(NOMS_REVEILLES_MONTRES)
+        .map(|n| echappe(n))
+        .collect();
+    let autres = uniques.len().saturating_sub(NOMS_REVEILLES_MONTRES);
+    if autres > 0 {
+        montres.push(trf!("et {autres} autre(s)", "and {autres} more"));
+    }
+    if dieses > 0 {
+        montres.push(trf!("« # » seul ({dieses} fois)", "\"#\" alone ({dieses} time(s))"));
+    }
+    montres.join(", ")
+}
+
 fn juger_ligne(e: Empreinte, c: &CheminDesigne, a: &mut dyn Acces) -> Jugement {
     let (p, f, contenu) = fichier_de_ligne(c, a)?;
     let vu = lisible(&p);
@@ -1998,6 +2029,28 @@ fn juger_ligne(e: Empreinte, c: &CheminDesigne, a: &mut dyn Acces) -> Jugement {
             "the line named in {vu} is not one Vanguard removes: nothing is done"
         )));
     }
+    // Ronde 4 du lot 096 (G34-1, R4-3) : hors de ld.so.preload, retirer une ligne seule peut changer le sens d'une
+    // autre ligne : un « \ » final la joint à la suivante (shell, systemd, pam_env) ; dans un fichier lu par un
+    // shell, un guillemet ouvert, un heredoc, un bloc ou une suite par « | » ou « && » relie aussi des lignes. La
+    // question ne montrerait pas cette autre ligne : rien n'est fait, la correction est à la main (le bilan ne
+    // l'offre pas non plus : `linux::retrait_decoupe`).
+    if !preload {
+        match crate::machine::linux::retrait_decoupe(fichier, &contenu, &numeros) {
+            Some(crate::machine::linux::Decoupe::Barre) => {
+                return Err(refus(trf!(
+                    "dans {vu}, la ligne désignée ou celle d'avant finit par « \\ » : un lecteur comme le shell ou systemd la joindrait à la suivante, et la retirer seule ferait lire autre chose à la ligne d'après ; par prudence, rien n'est fait : corrigez ce fichier à la main",
+                    "in {vu}, the line named or the one before it ends with \"\\\": a reader such as the shell or systemd would join it to the next one, and removing it alone would change what the next line does; to be safe, nothing is done: fix this file by hand"
+                )));
+            }
+            Some(crate::machine::linux::Decoupe::Shell) => {
+                return Err(refus(trf!(
+                    "dans {vu}, la ligne désignée fait partie d'une construction du shell sur plusieurs lignes (guillemet ouvert, heredoc « << », bloc if, for ou fonction, suite par « | » ou « && ») : la retirer seule changerait ce que font les autres lignes ; rien n'est fait : corrigez ce fichier à la main",
+                    "in {vu}, the line named is part of a shell construct spanning several lines (open quote, \"<<\" heredoc, if, for or function block, continuation with \"|\" or \"&&\"): removing it alone would change what the other lines do; nothing is done: fix this file by hand"
+                )));
+            }
+            None => {}
+        }
+    }
     // Ronde 3 du lot 096 (N3) : ce que le chargeur efface d'un « # » dépend de la taille du reste du fichier ; retirer
     // une ligne peut donc lui faire lire une ligne « # … » qu'il effaçait jusque-là. Le fichier d'après est relu comme
     // il le lit : s'il chargerait un nom que les lignes gardées ne chargeaient pas déjà, rien n'est fait. Retirer aussi
@@ -2015,22 +2068,32 @@ fn juger_ligne(e: Empreinte, c: &CheminDesigne, a: &mut dyn Acces) -> Jugement {
             .filter(|n| !restent.contains(n.as_slice()))
             .collect();
         if !reveilles.is_empty() {
-            let mut noms: Vec<String> = reveilles
-                .iter()
-                .take(NOMS_REVEILLES_MONTRES)
-                .map(|n| echappe(n))
-                .collect();
-            let autres = reveilles.len().saturating_sub(NOMS_REVEILLES_MONTRES);
-            if autres > 0 {
-                noms.push(trf!("et {autres} autre(s)", "and {autres} more"));
-            }
             return Err(refus(trf!(
                 "retirer cette ligne de {vu} ferait charger au chargeur ce qu'il ne chargeait pas : {} (une ligne « # » qu'il effaçait jusqu'ici, selon la taille du fichier) ; rien n'est fait : corrigez ce fichier à la main, en relisant chaque ligne",
                 "removing this line from {vu} would make the loader load what it did not load: {} (a \"#\" line it used to blank, depending on the file size); nothing is done: fix this file by hand, reading every line",
-                noms.join(", ")
+                noms_montres(&reveilles)
             )));
         }
     }
+    // Ronde 4 du lot 096 (G34-2) : un nom que le bilan montrait déjà (lecture idéale, avec sa propre ligne), mais que
+    // le vrai chargeur ne chargeait pas (une ligne avec un NUL l'arrêtait), sera chargé après le retrait. Pas un refus
+    // (l'état d'après n'est jamais pire que ce que le bilan montre), mais c'est dit avant la question.
+    let gagnes: Vec<Vec<u8>> = if preload {
+        let avant = crate::machine::prechargement::noms_du_chargeur(&contenu);
+        crate::machine::prechargement::noms_du_chargeur(&garde)
+            .into_iter()
+            .filter(|n| !avant.contains(n))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let avertissement = (!gagnes.is_empty()).then(|| {
+        trf!(
+            "cette ligne arrêtait le chargeur de glibc (un octet nul, par exemple) : sans elle, il chargera aussi {}, déjà montré(s) au bilan, chacun avec sa ligne à retirer",
+            "this line stopped the glibc loader (a NUL byte, for example): without it, the loader will also load {}, already shown in the scan, each with its own line to remove",
+            noms_montres(&gagnes)
+        )
+    });
     let apres: [u8; 32] = Sha256::digest(&garde).into();
     // ld.so.preload : une ligne peut nommer plusieurs bibliothèques ; toutes partent avec elle. Comptées comme le
     // chargeur les coupe (espace, tabulation, « : » ; pas « \r » ni le saut de page : C7).
@@ -2049,7 +2112,7 @@ fn juger_ligne(e: Empreinte, c: &CheminDesigne, a: &mut dyn Acces) -> Jugement {
     };
     Ok(Some(Plan {
         texte,
-        avertissement: None,
+        avertissement,
         non_annulable: false,
         seconde: None,
         champs: vec![
@@ -4244,22 +4307,49 @@ mod tests {
         assert_eq!(a.fichiers[Path::new("/etc/ld.so.preload")].contenu, contenu);
     }
 
-    /// N3, le compte des noms réveillés : cinq au plus sont nommés, les autres comptés (« et 3 autre(s) ») ; cinq
+    /// N3, le compte des noms réveillés : cinq au plus sont nommés, les autres comptés (« et 2 autre(s) ») ; cinq
     /// pile, aucun « autre ». Le même piège que plus haut : sans le leurre, le fichier tient en moins de 126 octets et
-    /// le chargeur ne cherche plus le « # » de la deuxième ligne.
+    /// le chargeur ne cherche plus le « # » de la deuxième ligne. Ronde 4 (G34-3) : le « # » seul est compté à part,
+    /// chaque nom une fois, les chemins d'abord : ni cinq « # », ni cinq répétitions, ni cinq noms sans « / » écrits
+    /// avant lui ne cachent /opt/x/evil.so.
     #[test]
     fn retrait_qui_reveille_beaucoup_de_noms_les_compte() {
         let note = [b"#".as_slice(), &[b'n'; 61]].concat();
         let leurre = [b"/tmp/.x/".as_slice(), &[b'a'; 60], b".so"].concat();
-        for (n, montre, cache, compte) in [
-            (7, "/a/4.so", "/a/5.so", Some("et 3 autre(s)")),
-            (4, "/a/4.so", "/a/5.so", None),
-        ] {
+        let suite = |n: usize| {
             let mut cachee = b"#".to_vec();
             for i in 1..=n {
                 cachee.extend_from_slice(format!(" /a/{i}.so").as_bytes());
             }
+            cachee
+        };
+        for (cachee, montre, cache, compte) in [
+            (suite(7), "/a/5.so", "/a/6.so", Some("et 2 autre(s)")),
+            (suite(5), "/a/5.so", "/a/6.so", None),
+            (b"# # # # # /opt/x/evil.so".to_vec(), "/opt/x/evil.so", "#, #", None),
+            (
+                b"# /a.so /a.so /a.so /a.so /a.so /opt/x/evil.so".to_vec(),
+                "/opt/x/evil.so",
+                "/a.so, /a.so",
+                None,
+            ),
+            (
+                b"# aa1 aa2 aa3 aa4 aa5 /opt/x/evil.so".to_vec(),
+                "/opt/x/evil.so",
+                "aa5",
+                Some("et 1 autre(s)"),
+            ),
+        ] {
+            let n = String::from_utf8_lossy(&cachee).into_owned();
             let contenu = [&note[..], b"\n", &cachee, b"\n", &leurre, b"\n"].concat();
+            // Le chargeur ne lit que le leurre avant ; la ligne cachée s'éveille après.
+            let noms = |f: &[u8]| -> Vec<Vec<u8>> {
+                crate::machine::prechargement::bibliotheques(f)
+                    .into_iter()
+                    .map(|b| b.nom)
+                    .collect()
+            };
+            assert_eq!(noms(&contenu), vec![leurre.clone()], "{n}");
             let mut a = Faux::nouveau().repondre("o");
             a.poser("/etc/ld.so.preload", &contenu, 0o644);
             let c = CheminDesigne::nouveau(b"/etc/ld.so.preload").unwrap();
@@ -4278,8 +4368,73 @@ mod tests {
                 Some(k) => assert!(r.raison.contains(k), "{n} : {}", r.raison),
                 None => assert!(!r.raison.contains("autre(s)"), "{n} : {}", r.raison),
             }
+            assert!(
+                r.raison.contains("« # » seul (1 fois)") || n.starts_with("# #"),
+                "{n} : {}",
+                r.raison
+            );
             assert_eq!(a.questions.len(), 0);
             assert_eq!(a.fichiers[Path::new("/etc/ld.so.preload")].contenu, contenu);
+        }
+    }
+
+    /// Ronde 4 du lot 096 (G34-5) : les noms des lignes retirées ne comptent pas comme gardés. Ici, la ligne cachée
+    /// s'éveille avec le nom même de la ligne retirée (« so » : l'effacement du chargeur s'arrête trop tôt, voir
+    /// `machine::prechargement`) : sans ce filtre, « so » passerait pour déjà chargé par une ligne gardée, le retrait
+    /// réussirait, et le chargeur chargerait encore « so » après. Refus, sans question, fichier inchangé.
+    #[test]
+    fn retrait_qui_reveille_le_meme_nom_refuse() {
+        let contenu = b"# c\n# /tmp/evil2.so\nso\n".to_vec();
+        let noms = |f: &[u8]| -> Vec<(Vec<u8>, usize)> {
+            crate::machine::prechargement::bibliotheques(f)
+                .into_iter()
+                .map(|b| (b.nom, b.ligne))
+                .collect()
+        };
+        // Avant : seule la ligne 2 charge « so » ; après son retrait, la ligne 1 le fait charger.
+        assert_eq!(noms(&contenu), vec![(b"so".to_vec(), 2)]);
+        assert_eq!(noms(b"# c\n# /tmp/evil2.so\n"), vec![(b"so".to_vec(), 1)]);
+        let mut a = Faux::nouveau().repondre("o");
+        a.poser("/etc/ld.so.preload", &contenu, 0o644);
+        let c = CheminDesigne::nouveau(b"/etc/ld.so.preload").unwrap();
+        let r = faire_avec(
+            Defense::RetirerLigne(empreinte_de_ligne(b"so"), c),
+            &mut a,
+            &mut FauxServices::nouveau(),
+        );
+        assert!(!r.reussi, "{}", r.raison);
+        assert!(r.raison.contains("ferait charger"), "{}", r.raison);
+        assert_eq!(a.questions.len(), 0);
+        assert_eq!(a.fichiers[Path::new("/etc/ld.so.preload")].contenu, contenu);
+    }
+
+    /// Ronde 4 du lot 096 (G34-2) : une ligne qui porte un NUL arrête le vrai chargeur ; les lignes d'après, montrées
+    /// au bilan (lecture idéale), ne sont chargées qu'après son retrait. Le retrait reste offert (l'état d'après n'est
+    /// jamais pire que ce que le bilan montre), mais la question le dit, avec le nom. Témoin : sans NUL, rien à dire.
+    #[test]
+    fn retrait_qui_libere_le_chargeur_le_dit() {
+        for (contenu, averti) in [
+            (b"/tmp/.x/a.so\0\n/opt/x/evil.so\n".to_vec(), true),
+            (b"/tmp/.x/a.so\n/opt/x/evil.so\n".to_vec(), false),
+        ] {
+            let ligne: &[u8] = if averti { b"/tmp/.x/a.so\0" } else { b"/tmp/.x/a.so" };
+            let mut a = Faux::nouveau().repondre("o");
+            a.poser("/etc/ld.so.preload", &contenu, 0o644);
+            let c = CheminDesigne::nouveau(b"/etc/ld.so.preload").unwrap();
+            let r = faire_avec(
+                Defense::RetirerLigne(empreinte_de_ligne(ligne), c),
+                &mut a,
+                &mut FauxServices::nouveau(),
+            );
+            assert!(r.reussi, "{}", r.raison);
+            assert_eq!(a.questions.len(), 1);
+            let q = &a.questions[0];
+            assert_eq!(
+                q.contains("AVERTISSEMENT : cette ligne arrêtait le chargeur") && q.contains("/opt/x/evil.so"),
+                averti,
+                "{q}"
+            );
+            assert_eq!(a.texte("/etc/ld.so.preload"), "/opt/x/evil.so\n");
         }
     }
 
@@ -4346,6 +4501,60 @@ mod tests {
         assert!(!r.reussi);
         assert_eq!(a.questions.len(), 0);
         assert_eq!(a.texte("/etc/profile"), "umask 077\nexport PATH=/usr/bin\n");
+    }
+
+    /// Ronde 4 du lot 096 (G34-1, R4-3) : le shell joint une ligne finie par « \ » à la suivante. Retirer seule
+    /// « export LD_PRELOAD=… \ » ferait lancer la ligne d'après, qui n'était qu'un argument d'export ; retirer la
+    /// ligne qui suit « A=1 \ » changerait aussi ce que lit la ligne d'avant. Refusé, sans question, fichier
+    /// inchangé, et la raison le dit. Témoin : sans « \ », la même ligne part.
+    #[test]
+    fn ligne_jointe_par_une_barre_refusee() {
+        let essai = |contenu: &str, ligne: &str| {
+            let mut a = Faux::nouveau().repondre("o");
+            a.poser("/etc/profile.d/x.sh", contenu.as_bytes(), 0o644);
+            let r = faire_avec(
+                Defense::RetirerLigne(
+                    empreinte_de_ligne(ligne.as_bytes()),
+                    CheminDesigne::nouveau(b"/etc/profile.d/x.sh").unwrap(),
+                ),
+                &mut a,
+                &mut FauxServices::nouveau(),
+            );
+            (r, a.questions.len(), a.texte("/etc/profile.d/x.sh"))
+        };
+        let piege = "export LD_PRELOAD=/tmp/.x/evil.so";
+        for contenu in [
+            format!("{piege} \\\n/usr/local/bin/aide --installer\n"),
+            format!("{piege} \\  \n/usr/local/bin/aide --installer\n"),
+            format!("A=1 \\\n{piege}\n/usr/local/bin/aide --installer\n"),
+        ] {
+            let ligne = contenu.lines().find(|l| l.starts_with(piege)).unwrap();
+            let (r, questions, apres) = essai(&contenu, ligne);
+            assert!(!r.reussi, "{contenu:?}");
+            assert!(r.raison.contains("à la main"), "{}", r.raison);
+            assert_eq!(questions, 0, "{contenu:?}");
+            assert_eq!(apres, contenu);
+        }
+        // R4-3 : un heredoc ou un guillemet ouvert relie aussi des lignes ; retirer la ligne qui l'ouvre ferait lancer
+        // ce qui n'était que du texte (rejoué avec bash : « REVEILLEE » s'affiche après le retrait).
+        for contenu in [
+            format!("{piege}; cat >/dev/null <<EOF\necho REVEILLEE\nEOF\n"),
+            format!("{piege}; X=\"a\necho REVEILLEE\n\"\n"),
+        ] {
+            let ligne = contenu.lines().find(|l| l.starts_with(piege)).unwrap();
+            let (r, questions, apres) = essai(&contenu, ligne);
+            assert!(!r.reussi, "{contenu:?}");
+            assert!(
+                r.raison.contains("plusieurs lignes") && r.raison.contains("à la main"),
+                "{}",
+                r.raison
+            );
+            assert_eq!(questions, 0, "{contenu:?}");
+            assert_eq!(apres, contenu);
+        }
+        let (r, _, apres) = essai(&format!("{piege}\n/usr/local/bin/aide --installer\n"), piege);
+        assert!(r.reussi, "{}", r.raison);
+        assert_eq!(apres, "/usr/local/bin/aide --installer\n");
     }
 
     #[test]

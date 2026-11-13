@@ -1560,6 +1560,256 @@ pub(crate) fn ligne_suspecte(fichier: &str, ligne: &str) -> bool {
         || commande_lancee(ligne).is_some_and(|c| commande_suspecte(&c, true).is_some() || cachee(&c))
 }
 
+/// Retirer de `contenu` ses lignes `numeros` (depuis 0, coupées au seul « \n », comme les relit le fils root)
+/// changerait-il le sens d'une AUTRE ligne : l'une d'elles, ou celle d'avant, finit par « \ » (blancs et « \r » de
+/// fin ôtés). Le shell, systemd et pam_env joignent une telle ligne à la suivante : retirer « export LD_PRELOAD=… \ »
+/// ferait lancer la ligne d'après, qui n'était qu'un argument (ronde 4 du lot 096, G34-1). Jugé pour tout fichier,
+/// même ceux dont le lecteur ne joint rien (cron, fichiers à clés) : un refus de trop laisse le geste à la main,
+/// jamais un sens changé sans le montrer.
+pub(crate) fn retrait_joint(contenu: &[u8], numeros: &[usize]) -> bool {
+    let suite = |l: &&[u8]| l.trim_ascii_end().ends_with(b"\\");
+    let lignes: Vec<&[u8]> = contenu.split(|o| *o == b'\n').collect();
+    numeros.iter().any(|n| {
+        lignes.get(*n).is_some_and(suite) || n.checked_sub(1).and_then(|avant| lignes.get(avant)).is_some_and(suite)
+    })
+}
+
+/// Pourquoi une ligne ne se retire pas seule (`retrait_decoupe`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Decoupe {
+    /// Elle, ou celle d'avant, finit par « \ » (`retrait_joint`).
+    Barre,
+    /// Dans un fichier lu par un shell : elle fait partie d'une construction sur plusieurs lignes
+    /// (`retrait_change_le_shell`).
+    Shell,
+}
+
+/// Retirer de `fichier`, de contenu `contenu`, ses lignes `numeros` (depuis 0, coupées au seul « \n ») changerait-il
+/// le sens d'une AUTRE ligne ? Une ligne finie par « \ » se juge pour tout fichier (`retrait_joint`) ; le reste
+/// (guillemet ouvert, heredoc, bloc, suite par « | » ou « && ») seulement pour un fichier qu'un shell, pam_env ou
+/// systemd lit comme des variables, c'est-à-dire tout fichier admis sauf ceux dont le lecteur coupe strictement ligne
+/// par ligne (`lu_ligne_par_ligne` : cron, .desktop, unités systemd, GDM, SDDM, LightDM). Un fichier qu'on n'y range
+/// pas est jugé comme du shell : un refus de trop laisse le geste à la main, jamais un sens changé sans le montrer.
+/// Même règle au bilan (le retrait n'est pas offert) et au fils root (refusé, rien d'écrit).
+pub(crate) fn retrait_decoupe(fichier: &str, contenu: &[u8], numeros: &[usize]) -> Option<Decoupe> {
+    if retrait_joint(contenu, numeros) {
+        return Some(Decoupe::Barre);
+    }
+    (!lu_ligne_par_ligne(fichier) && retrait_change_le_shell(contenu, numeros)).then_some(Decoupe::Shell)
+}
+
+/// Les fichiers admis dont le lecteur coupe strictement ligne par ligne (hors « \ » final) : un guillemet ou un « << »
+/// n'y relie pas deux lignes. Jugé sur la fin du chemin, pour valoir aussi sous la racine d'un essai.
+fn lu_ligne_par_ligne(fichier: &str) -> bool {
+    let nom = fichier.rsplit('/').next().unwrap_or(fichier);
+    ["crontab", "anacrontab", "sddm.conf"].contains(&nom)
+        || [".desktop", ".service", ".timer", ".socket", ".path"]
+            .iter()
+            .any(|f| nom.ends_with(f))
+        || [
+            "/cron.d/",
+            "/systemd/system/",
+            "/gdm/",
+            "/gdm3/",
+            "/sddm.conf.d/",
+            "/lightdm/",
+        ]
+        .iter()
+        .any(|d| fichier.contains(d))
+}
+
+/// Une ligne écrite, lue comme le shell la découpe (`decoupe_de_shell`).
+struct LigneDeShell {
+    /// Elle commence dans un guillemet ouvert plus haut.
+    commence_dedans: bool,
+    /// Elle finit dans un guillemet (ouvert par elle ou plus haut).
+    finit_dedans: bool,
+    /// Ce qu'elle a hors guillemets et hors commentaire ; chaque guillemet ouvert laisse un « x » à sa place, pour
+    /// qu'un mot entre guillemets ne passe ni pour un mot réservé ni pour un opérateur.
+    code: Vec<u8>,
+}
+
+/// Les mots qui ouvrent ou ferment un bloc du shell (bash, zsh) : une ligne qui en porte un ne se retire pas seule.
+const MOTS_DE_BLOC: [&[u8]; 17] = [
+    b"if",
+    b"then",
+    b"elif",
+    b"else",
+    b"fi",
+    b"do",
+    b"done",
+    b"case",
+    b"esac",
+    b"while",
+    b"until",
+    b"for",
+    b"select",
+    b"function",
+    b"foreach",
+    b"repeat",
+    b"end",
+];
+
+/// Les lignes de `contenu` (coupées au seul « \n »), lues comme le shell : guillemets simples, doubles, « $'…' » et
+/// accents graves suivis d'une ligne à l'autre, « \ » qui protège l'octet suivant, « # » en début de mot qui ouvre
+/// un commentaire jusqu'au bout de la ligne. Lecture prudente, pas un shell : un doute se lit comme un guillemet
+/// ouvert, donc comme un refus.
+fn decoupe_de_shell(contenu: &[u8]) -> Vec<LigneDeShell> {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Etat {
+        Hors,
+        Simple,
+        AnsiC,
+        Double,
+        Accent,
+    }
+    let mut etat = Etat::Hors;
+    let mut lignes = Vec::new();
+    for ligne in contenu.split(|o| *o == b'\n') {
+        let commence_dedans = etat != Etat::Hors;
+        let mut code = Vec::new();
+        // Un « \ » final protège la fin de ligne : la ligne suivante repart sans échappement.
+        let mut echappe = false;
+        let mut avant = b'\n';
+        for &o in ligne {
+            if echappe {
+                echappe = false;
+                if etat == Etat::Hors {
+                    code.push(b'x');
+                }
+                avant = b'x';
+                continue;
+            }
+            match etat {
+                Etat::Hors => match o {
+                    b'\\' => echappe = true,
+                    b'\'' | b'"' | b'`' => {
+                        etat = match o {
+                            b'\'' if avant == b'$' => Etat::AnsiC,
+                            b'\'' => Etat::Simple,
+                            b'"' => Etat::Double,
+                            _ => Etat::Accent,
+                        };
+                        code.push(b'x');
+                    }
+                    b'#' if avant.is_ascii_whitespace() || b";&|()<>".contains(&avant) => break,
+                    _ => code.push(o),
+                },
+                Etat::Simple => {
+                    if o == b'\'' {
+                        etat = Etat::Hors;
+                    }
+                }
+                Etat::AnsiC | Etat::Double | Etat::Accent => {
+                    let fermant = match etat {
+                        Etat::AnsiC => b'\'',
+                        Etat::Double => b'"',
+                        _ => b'`',
+                    };
+                    if o == b'\\' {
+                        echappe = true;
+                    } else if o == fermant {
+                        etat = Etat::Hors;
+                    }
+                }
+            }
+            avant = o;
+        }
+        lignes.push(LigneDeShell {
+            commence_dedans,
+            finit_dedans: etat != Etat::Hors,
+            code,
+        });
+    }
+    lignes
+}
+
+/// Retirer les lignes `numeros` d'un fichier lu par un shell changerait-il la lecture d'une autre ligne ? Oui (ronde 4
+/// du lot 096, R4-3) si l'une d'elles :
+/// - commence ou finit dans un guillemet : « export X="a » ouvre un guillemet que ferme une ligne plus bas ; la
+///   retirer fait lancer les lignes d'entre les deux, qui n'étaient que du texte ;
+/// - suit un heredoc (« << », même plus haut) : retirer « cat >/dev/null <<EOF » fait lancer son corps ; retirer une
+///   ligne du corps change ce qu'il écrit ;
+/// - finit par « | », « |& » ou « && », ou suit une telle ligne (lignes vides et commentaires sautés, comme le shell
+///   les saute) : la ligne d'après changerait de condition ;
+/// - porte un mot de bloc (`MOTS_DE_BLOC`), « { » ou « } » seul, ou des parenthèses ou accolades non appariées : « if false; then » retiré
+///   fait lancer le corps ;
+/// - est seule entre l'ouverture d'un bloc (« then », « do », « else », « { », « ( » en fin de ligne) et sa fermeture
+///   (« fi », « done », « elif », « else », « esac », « } », « ) » en début de ligne) : le bloc vide est une erreur
+///   de syntaxe, et bash cesse alors de lire le fichier (« . /etc/profile » perdrait la suite, réglages de sécurité
+///   compris).
+fn retrait_change_le_shell(contenu: &[u8], numeros: &[usize]) -> bool {
+    let lignes = decoupe_de_shell(contenu);
+    let mots = |code: &[u8]| -> Vec<Vec<u8>> {
+        code.split(|o| o.is_ascii_whitespace() || b";&|<>".contains(o))
+            .filter(|m| !m.is_empty())
+            .map(<[u8]>::to_vec)
+            .collect()
+    };
+    let suite = |l: &LigneDeShell| {
+        let fin = l.code.trim_ascii_end();
+        fin.ends_with(b"|") || fin.ends_with(b"&&") || fin.ends_with(b"|&")
+    };
+    let bloc = |l: &LigneDeShell| {
+        let compte = |c: u8| {
+            l.code
+                .iter()
+                .fold(0usize, |n, o| n.saturating_add(usize::from(*o == c)))
+        };
+        compte(b'(') != compte(b')')
+            || compte(b'{') != compte(b'}')
+            || mots(&l.code)
+                .iter()
+                .any(|m| m.as_slice() == b"{" || m.as_slice() == b"}" || MOTS_DE_BLOC.contains(&m.as_slice()))
+    };
+    let heredoc = |l: &LigneDeShell| l.code.windows(2).any(|w| w == b"<<");
+    let ouvre = |l: &LigneDeShell| {
+        let fin = l.code.trim_ascii_end();
+        fin.ends_with(b"{")
+            || fin.ends_with(b"(")
+            || mots(fin)
+                .last()
+                .is_some_and(|m| [&b"then"[..], b"do", b"else"].contains(&m.as_slice()))
+    };
+    let ferme = |l: &LigneDeShell| {
+        let debut = l.code.trim_ascii_start();
+        debut.starts_with(b"}")
+            || debut.starts_with(b")")
+            || mots(debut)
+                .first()
+                .is_some_and(|m| [&b"fi"[..], b"done", b"elif", b"else", b"esac"].contains(&m.as_slice()))
+    };
+    let gardee = |i: &usize| !numeros.contains(i);
+    let pleine = |l: &&LigneDeShell| !l.code.trim_ascii().is_empty() || l.commence_dedans;
+    numeros.iter().any(|n| {
+        let Some(l) = lignes.get(*n) else {
+            return false;
+        };
+        let avant = lignes.get(..*n).unwrap_or_default();
+        let precedente = avant
+            .iter()
+            .enumerate()
+            .rev()
+            .filter(|(i, _)| gardee(i))
+            .map(|(_, l)| l)
+            .find(pleine);
+        let suivante = lignes
+            .iter()
+            .enumerate()
+            .skip(n.saturating_add(1))
+            .filter(|(i, _)| gardee(i))
+            .map(|(_, l)| l)
+            .find(pleine);
+        l.commence_dedans
+            || l.finit_dedans
+            || suite(l)
+            || bloc(l)
+            || avant.iter().chain(std::iter::once(l)).any(heredoc)
+            || avant.iter().rev().find(pleine).is_some_and(suite)
+            || (precedente.is_some_and(ouvre) && suivante.is_some_and(ferme))
+    })
+}
+
 /// La ligne ouvre-t-elle une session toute seule, d'après le gestionnaire de connexion du fichier (comme
 /// `ouverture_automatique_de`) : GDM « AutomaticLoginEnable » ou « TimedLoginEnable » à vrai, SDDM « User= » d'un
 /// compte, LightDM « autologin-user= » d'un compte.
@@ -2417,6 +2667,67 @@ pub fn auditer() -> Audit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Ronde 4 du lot 096 (R4-3) : retirer seule une ligne d'un fichier lu par un shell ne doit jamais faire lancer
+    /// une autre ligne ni casser la lecture du reste. Chaque cas refusé a été rejoué avec bash (« . fichier » avant et
+    /// après le retrait) : le corps d'un heredoc, le texte d'un guillemet, la suite d'un « && » ou le corps d'un bloc
+    /// est lancé, ou une erreur de syntaxe arrête la lecture (« umask » d'après perdu). Témoins : une ligne ordinaire,
+    /// une ligne d'un bloc qui garde un corps, une apostrophe en commentaire ou entre guillemets ; et un fichier lu
+    /// ligne par ligne (.desktop) qu'une apostrophe ne bloque pas.
+    #[test]
+    fn retrait_qui_change_le_shell_refuse() {
+        let p = "export LD_PRELOAD=/tmp/.x/a.so";
+        let sh = "/etc/profile.d/x.sh";
+        for (contenu, n) in [
+            (format!("{p}; cat >/dev/null <<EOF\necho REVEILLEE\nEOF\necho fin\n"), 0),
+            (format!("cat >/dev/null <<EOF\n{p}\nEOF\n"), 1),
+            (format!("export X=\"a {p}\necho REVEILLEE\n\"\necho fin\n"), 0),
+            (format!("export X='a\n{p}\n'\n"), 1),
+            (format!("false &&\n{p}\necho apres\n"), 1),
+            (format!("false &&\n\n# note\n{p}\necho apres\n"), 3),
+            (format!("{p}; false &&\necho REVEILLEE\n"), 0),
+            (format!("{p} |\ncat\n"), 0),
+            (format!("{p}; if false; then\necho REVEILLEE\nfi\n"), 0),
+            (format!("if true; then\n{p}\nfi\numask 077\n"), 1),
+            (format!("{p}; f() {{\necho REVEILLEE\n}}\n"), 0),
+            (format!("{p}; ( false\n"), 0),
+        ] {
+            assert_eq!(
+                retrait_decoupe(sh, contenu.as_bytes(), &[n]),
+                Some(Decoupe::Shell),
+                "{contenu:?} ligne {n}"
+            );
+        }
+        for (contenu, n) in [
+            (format!("umask 077\n{p}\necho fin\n"), 1),
+            (format!("if true; then\n  echo a\n  {p}\nfi\n"), 2),
+            (format!("# Don't touch\n{p}\n"), 1),
+            (format!("echo \"l'été\"\n{p}\n"), 1),
+            (format!("A='x # y'\n{p} # l'agent\n"), 1),
+            (format!("[ -x /tmp/.x/a ] && /tmp/.x/a\n{p}\n"), 1),
+            (format!("echo ${{HOME}}\n{p}\n"), 1),
+        ] {
+            assert_eq!(
+                retrait_decoupe(sh, contenu.as_bytes(), &[n]),
+                None,
+                "{contenu:?} ligne {n}"
+            );
+        }
+        // Une apostrophe dans un fichier lu ligne par ligne ne relie rien ; jugé comme du shell, le même texte est
+        // refusé (prudence par défaut). Le « \ » final se juge partout.
+        let bureau = b"[Desktop Entry]\nName=L'agent\nExec=/tmp/.x/a\n";
+        assert_eq!(retrait_decoupe("/etc/xdg/autostart/a.desktop", bureau, &[2]), None);
+        assert_eq!(retrait_decoupe(sh, bureau, &[2]), Some(Decoupe::Shell));
+        assert_eq!(
+            retrait_decoupe("/etc/cron.d/x", b"* * * * * root /tmp/.x/a \\\n", &[0]),
+            Some(Decoupe::Barre)
+        );
+        // Sous la racine d'un essai, le chemin se juge par sa fin.
+        assert_eq!(
+            retrait_decoupe("/tmp/essai/etc/xdg/autostart/a.desktop", bureau, &[2]),
+            None
+        );
+    }
 
     /// Sans lecture du Wi-Fi, la règle ne disparaît pas : sans carte, rien à juger ; avec une carte, non vérifié,
     /// jamais un silence.
