@@ -23,6 +23,9 @@
 #      crates.io est dans l'arbre d'une cible, ou si une caisse lue dans les octets n'est pas dans la liste de la cible
 #      du programme (lue dans son en-tête, ELF ou MZ : une fenêtre Linux qui porte une caisse de Windows seulement est
 #      refusée) ; en-tête inconnu ou liste absente : non vérifié.
+#   5. Dans une copie du dépôt (jamais les vraies listes) : --ecrire écrit des arbres sains, mais jamais une autre
+#      source ni une retirée ; une autre source inscrite à la main dans la liste reste refusée, sans coche ✔ ; la
+#      liste des retirées illisible (--retirees en échec) rend failles-programmes.sh --fenetre « non vérifié ».
 # Lancé par outils/verifier.sh (étape « fenêtre »).
 #   outils/essais-caisses-fenetre.sh
 set -uo pipefail
@@ -321,6 +324,68 @@ if [[ -s $T/ref-$LINUX.txt && -s $T/ref-$WINDOWS.txt ]]; then
   rm "$T/arbres/$WINDOWS.remplacees"
 else
   ko "listes de référence illisibles : failles-programmes.sh --fenetre pas essayé"
+fi
+
+echo "5. Dans une copie du dépôt : --ecrire, la coche d'une cible refusée, la liste des retirées illisible"
+# Ronde 2 du 13 nov. 2026 : trois mutations laissaient ce banc vert (le refus de --ecrire retiré, une coche ✔ à côté
+# d'un ✖, l'échec de --retirees ignoré). Une copie, parce que --ecrire écrit les listes : jamais celles du dépôt.
+if [[ -s $T/ref-$LINUX.txt && -s $T/ref-$WINDOWS.txt ]]; then
+  D=$T/depot
+  mkdir -p "$D/outils/caisses-fenetre" "$D/.github/workflows"
+  cp outils/caisses-fenetre.sh outils/failles-programmes.sh outils/exceptions-rustsec.py "$D/outils/"
+  cp deny.toml "$D/" && cp .github/workflows/ci.yml "$D/.github/workflows/"
+  ecrites() { cp "$T/ref-$LINUX.txt" "$D/outils/caisses-fenetre/$LINUX.txt"
+    cp "$T/ref-$WINDOWS.txt" "$D/outils/caisses-fenetre/$WINDOWS.txt"; }
+  ecrites && remet
+  lance "$D/outils/caisses-fenetre.sh" --ecrire
+  ((CODE == 0)) && cmp -s "$T/ref-$LINUX.txt" "$D/outils/caisses-fenetre/$LINUX.txt" &&
+    ok "--ecrire sur des arbres sains : code 0, listes écrites" ||
+    ko "--ecrire sur des arbres sains : code $CODE ($SORTIE)"
+  # Une autre source dans l'arbre : --ecrire ne l'inscrit jamais dans la liste versionnée.
+  ecrites && { echo "$premiere (/srv/copie-inventee/caisse)"; tail -n +2 "$T/ref-$LINUX.txt"; } >"$T/arbres/$LINUX.txt"
+  lance "$D/outils/caisses-fenetre.sh" --ecrire
+  ((CODE == 1)) && [[ $SORTIE == *"$LINUX : caisses d'une autre source"*"liste non écrite"* ]] &&
+    cmp -s "$T/ref-$LINUX.txt" "$D/outils/caisses-fenetre/$LINUX.txt" &&
+    ! grep -q 'chemin local' "$D/outils/caisses-fenetre/$LINUX.txt" &&
+    ok "--ecrire avec une caisse par un chemin local : code 1, liste pas écrite" ||
+    ko "--ecrire avec une caisse par un chemin local : code $CODE ($SORTIE)"
+  ecrites && remet && echo "zbus 5.15.0" >>"$T/arbres/$WINDOWS.txt"
+  lance "$D/outils/caisses-fenetre.sh" --ecrire
+  ((CODE == 1)) && [[ $SORTIE == *"retirées revenues, liste non écrite"* ]] &&
+    cmp -s "$T/ref-$WINDOWS.txt" "$D/outils/caisses-fenetre/$WINDOWS.txt" &&
+    ok "--ecrire avec une retirée revenue : code 1, liste pas écrite" ||
+    ko "--ecrire avec une retirée revenue : code $CODE ($SORTIE)"
+  # Une autre source inscrite à la main dans la liste ET dans l'arbre : listes égales, mais refusée, sans coche ✔.
+  ecrites && remet
+  { echo "$premiere (chemin local)"; tail -n +2 "$T/ref-$LINUX.txt"; } >"$D/outils/caisses-fenetre/$LINUX.txt"
+  { echo "$premiere (/srv/copie-inventee/caisse)"; tail -n +2 "$T/ref-$LINUX.txt"; } >"$T/arbres/$LINUX.txt"
+  lance "$D/outils/caisses-fenetre.sh"
+  ((CODE == 1)) && [[ $SORTIE == *"✖ $LINUX : caisses d'une autre source"* && $SORTIE != *"✔ $LINUX"* &&
+    $SORTIE == *"✔ $WINDOWS"* ]] && ok "autre source inscrite dans la liste : code 1, aucune coche ✔ pour $LINUX" ||
+    ko "autre source inscrite dans la liste : code $CODE ($SORTIE)"
+  # La liste des retirées illisible (caisses-fenetre.sh --retirees en échec) : rien ne retombe sur les trois
+  # HORS_CIBLES seules ; non vérifié, rien d'audité, même pour un programme sain.
+  ecrites && remet
+  mv "$D/outils/caisses-fenetre.sh" "$D/outils/caisses-fenetre-vraie.sh"
+  cat >"$D/outils/caisses-fenetre.sh" <<'EOF'
+#!/usr/bin/env bash
+[[ ${1:-} != --retirees ]] || { echo "cale : --retirees en échec" >&2; exit 2; }
+exec bash "$(dirname "$0")/caisses-fenetre-vraie.sh" "$@"
+EOF
+  programme "$T/fenetre" "$L1" "$L2"
+  programme "$T/fenetre.exe" "$W1" "$W2"
+  rm -f "$T/audit-lance"
+  lance "$D/outils/failles-programmes.sh" --fenetre "$T/fenetre" "$T/fenetre.exe"
+  ((CODE != 0)) && [[ ! -e $T/audit-lance && $SORTIE == *"liste des caisses retirées illisible"* &&
+    $SORTIE != *"dépendances listées"* ]] && ok "--retirees en échec : non vérifié, rien d'audité (code $CODE)" ||
+    ko "--retirees en échec : code $CODE ($SORTIE)"
+  mv "$D/outils/caisses-fenetre-vraie.sh" "$D/outils/caisses-fenetre.sh"
+  rm -f "$T/audit-lance"
+  lance "$D/outils/failles-programmes.sh" --fenetre "$T/fenetre" "$T/fenetre.exe"
+  ((CODE == 0)) && [[ -e $T/audit-lance ]] && ok "la même copie, --retirees lisible : audité, code 0" ||
+    ko "la même copie, --retirees lisible : code $CODE ($SORTIE)"
+else
+  ko "listes de référence illisibles : --ecrire pas essayé"
 fi
 
 ((ECHECS == 0)) || { echo "$ECHECS essai(s) en échec."; exit 1; }
