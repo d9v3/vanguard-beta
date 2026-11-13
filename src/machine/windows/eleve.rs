@@ -15,10 +15,11 @@
 //! et à la DACL explicite. Le parent n'accepte que le client dont le PID est celui du processus qu'il vient de lancer ;
 //! le fils n'accepte qu'un serveur dont le PID est celui annoncé et dont le programme a la même empreinte SHA-256 que
 //! le sien. Un tube anonyme hérité ne marcherait pas : un processus « runas » est créé par le service AppInfo, il
-//! n'hérite rien de nous. Pendant que la demande d'administrateur attend, le parent garde son propre fichier ouvert
-//! sans partage de suppression : ni lui ni ses dossiers parents ne peuvent être renommés ou remplacés (même sur une
-//! clé USB), et son contenu est déjà verrouillé par l'image chargée. Le processus élevé n'écrit aucun fichier dans
-//! un dossier du compte : ses réponses passent par le tube.
+//! n'hérite rien de nous. Pendant que la demande d'administrateur attend, le parent tient le chemin qu'elle va relire
+//! (`tenir_le_programme`) : chaque dossier vérifié sans point d'analyse (jonction, lien) et ouvert sans partage de
+//! suppression, puis son fichier, aux octets du programme qui tourne ; ni renommage, ni remplacement, ni jonction
+//! possibles avant la réponse (même dans une copie sous le dossier du compte, même sur une clé USB). Le processus
+//! élevé n'écrit aucun fichier dans un dossier du compte : ses réponses passent par le tube.
 
 // FFI de Windows (kernel32, advapi32, shell32) : tube nommé, élévation.
 #![allow(unsafe_code)]
@@ -401,6 +402,24 @@ pub(crate) fn appliquer(lignes: &[String]) -> Option<Vec<Reponse>> {
     let Ok(exe) = std::env::current_exe() else {
         return relance_impossible("chemin du programme", "program path");
     };
+    // Chaque dossier du chemin, puis le fichier, tenus jusqu'à la réponse du fils : le chemin que « runas » relira est
+    // celui qui a été vérifié.
+    let tenu = match tenir_le_programme(&exe) {
+        Ok(t) => t,
+        Err(ecart) => {
+            trp!(
+                "    ✖ Le chemin de Vanguard ({}) {} : un autre programme du compte pourrait le détourner vers le sien, qui recevrait les droits d'administrateur. Rien n'est fait en administrateur. Placez vanguard.exe dans un dossier ordinaire d'un disque de ce PC (sans lien ni jonction), puis recommencez.",
+                "    ✖ Vanguard's path ({}) {}: another program of this account could redirect it to its own, which would get administrator rights. Nothing is done as administrator. Put vanguard.exe in a plain folder on a disk of this PC (no link or junction), then try again.",
+                exe.display(),
+                ecart.dire()
+            );
+            crate::journal::erreur(
+                crate::compte_rendu::Contexte::VanguardAdministrateur,
+                &format!("relance refusée : chemin du programme non sûr ({})", ecart.genre()),
+            );
+            return None;
+        }
+    };
     // La vraie garde contre une DLL posée à côté du programme est dans le PE lui-même (chargement.rs : imports pris
     // dans System32 seulement). Elle n'existe qu'à partir de Windows 10 1607 : en plus, une DLL déjà là arrête tout,
     // sans autre demande d'administrateur.
@@ -411,16 +430,9 @@ pub(crate) fn appliquer(lignes: &[String]) -> Option<Vec<Reponse>> {
         );
         return None;
     }
-    // Ouvert sans partage de suppression tant que le fils n'a pas répondu : ni renommage ni remplacement possibles.
-    let Ok(verrou) = ({
-        use std::os::windows::fs::OpenOptionsExt;
-        std::fs::OpenOptions::new().read(true).share_mode(1).open(&exe)
-    }) else {
-        return relance_impossible("verrou du programme", "program lock");
-    };
-    // Le fichier verrouillé doit être le programme qui tourne (empreinte prise au démarrage) : un autre programme du
-    // compte a pu le remplacer avant le verrou, et c'est lui qui recevrait les droits d'administrateur.
-    if !crate::protection::cle::meme_que_soi(&verrou) {
+    // Le fichier tenu doit être le programme qui tourne (empreinte prise au démarrage) : un autre programme du compte
+    // a pu le remplacer avant qu'il soit tenu, et c'est lui qui recevrait les droits d'administrateur.
+    if !crate::protection::cle::meme_que_soi(&tenu.fichier) {
         trp!(
             "    ✖ Le fichier de Vanguard n'est plus le programme qui tourne ({}) : rien n'est fait en administrateur. Relancez Vanguard, puis recommencez.",
             "    ✖ Vanguard's file is no longer the running program ({}): nothing is done as administrator. Restart Vanguard, then try again.",
@@ -773,6 +785,123 @@ impl Fils {
         // SAFETY: idem ; INFINITE, la fenêtre est visible et c'est la personne qui la ferme.
         unsafe { WaitForSingleObject(self.0.as_raw_handle(), u32::MAX) };
     }
+}
+
+/// Pourquoi le chemin du programme ne peut pas être tenu.
+#[derive(Debug)]
+enum Ecart {
+    /// Pas `X:\…` sans `..` : partage réseau, chemin relatif ou forme que le processus élevé relirait autrement.
+    PasUnDisque,
+    /// Un dossier ou le fichier est un point d'analyse (jonction, lien symbolique, point de montage…).
+    PointDAnalyse(std::path::PathBuf),
+    /// Un élément n'a pas le genre attendu (un fichier au milieu, un dossier au bout).
+    Genre(std::path::PathBuf),
+    /// Un élément ne s'ouvre pas sans partage de suppression : absent, illisible, ou déjà ouvert par un autre en vue
+    /// d'un renommage.
+    Inouvrable(std::path::PathBuf),
+}
+
+impl Ecart {
+    fn dire(&self) -> String {
+        match self {
+            Self::PasUnDisque => tr!(
+                "n'est pas un chemin complet sur un disque de ce PC",
+                "is not a full path on a disk of this PC"
+            )
+            .to_string(),
+            Self::PointDAnalyse(c) => trf!(
+                "passe par {} : une jonction ou un lien",
+                "goes through {}: a junction or a link",
+                c.display()
+            ),
+            Self::Genre(c) => trf!("a un élément inattendu : {}", "has an unexpected item: {}", c.display()),
+            Self::Inouvrable(c) => trf!(
+                "ne peut pas être tenu : {} est absent ou déjà ouvert par un autre programme",
+                "cannot be held: {} is missing or already open in another program",
+                c.display()
+            ),
+        }
+    }
+
+    /// Pour le journal, sans chemin (il porterait le nom du compte).
+    fn genre(&self) -> &'static str {
+        match self {
+            Self::PasUnDisque => "pas un disque",
+            Self::PointDAnalyse(_) => "point d'analyse",
+            Self::Genre(_) => "genre inattendu",
+            Self::Inouvrable(_) => "non tenable",
+        }
+    }
+}
+
+/// Le programme à relancer en administrateur, tenu jusqu'à la réponse du fils.
+struct ProgrammeTenu {
+    /// Chaque dossier du chemin, de la racine exclue au dossier du programme ; seulement gardés ouverts.
+    _dossiers: Vec<std::fs::File>,
+    fichier: std::fs::File,
+}
+
+/// Tient le chemin `exe` que « runas » va relire : chaque dossier, de haut en bas, ouvert sans suivre de point
+/// d'analyse (FILE_FLAG_OPEN_REPARSE_POINT) et vérifié par sa poignée, sans partage de suppression ; puis le fichier,
+/// en lecture partagée seule. Tant que les poignées vivent, aucun dossier ne peut être renommé ni effacé (il faut
+/// l'accès « suppression », que la poignée refuse de partager), ni devenir une jonction (un dossier doit être vide
+/// pour cela, et chacun contient le suivant) ; le fichier ne peut être ni changé, ni renommé. Le processus élevé ne
+/// fait pas ce contrôle lui-même : un programme substitué ne le ferait pas. La lettre du lecteur n'est pas un fichier :
+/// la redéfinir pour le processus élevé dépasse les droits d'un compte ordinaire.
+fn tenir_le_programme(exe: &std::path::Path) -> Result<ProgrammeTenu, Ecart> {
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    use std::path::{Component, Prefix};
+    const PARTAGE_LECTURE: u32 = 0x1;
+    const PARTAGE_ECRITURE: u32 = 0x2;
+    const SEMANTIQUE_DE_SAUVEGARDE: u32 = 0x0200_0000;
+    const OUVRIR_LE_POINT: u32 = 0x0020_0000;
+    const POINT_D_ANALYSE: u32 = 0x400;
+    let mut composants = exe.components();
+    let (Some(Component::Prefix(lecteur)), Some(Component::RootDir)) = (composants.next(), composants.next()) else {
+        return Err(Ecart::PasUnDisque);
+    };
+    let reste: Vec<Component> = composants.collect();
+    if !matches!(lecteur.kind(), Prefix::Disk(_))
+        || reste.is_empty()
+        || reste.iter().any(|c| !matches!(c, Component::Normal(_)))
+    {
+        return Err(Ecart::PasUnDisque);
+    }
+    let mut chemin = std::path::PathBuf::from(lecteur.as_os_str());
+    chemin.push(Component::RootDir);
+    let mut dossiers = Vec::with_capacity(reste.len());
+    for (i, c) in reste.iter().enumerate() {
+        chemin.push(c);
+        let dossier = i + 1 < reste.len();
+        // Lecture (lister un dossier) : un accès que Windows compare aux partages, au contraire d'une simple lecture
+        // des attributs, qui n'empêcherait aucun renommage.
+        let f = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(if dossier {
+                PARTAGE_LECTURE | PARTAGE_ECRITURE
+            } else {
+                PARTAGE_LECTURE
+            })
+            .custom_flags(OUVRIR_LE_POINT | SEMANTIQUE_DE_SAUVEGARDE)
+            .open(&chemin)
+            .map_err(|_| Ecart::Inouvrable(chemin.clone()))?;
+        let m = f.metadata().map_err(|_| Ecart::Inouvrable(chemin.clone()))?;
+        if m.file_attributes() & POINT_D_ANALYSE != 0 {
+            return Err(Ecart::PointDAnalyse(chemin));
+        }
+        if dossier != m.is_dir() || (!dossier && !m.is_file()) {
+            return Err(Ecart::Genre(chemin));
+        }
+        if dossier {
+            dossiers.push(f);
+        } else {
+            return Ok(ProgrammeTenu {
+                _dossiers: dossiers,
+                fichier: f,
+            });
+        }
+    }
+    Err(Ecart::PasUnDisque)
 }
 
 /// Relance ce programme avec « runas » (la demande d'administrateur) et rend le processus ; l'erreur Windows sinon
@@ -1714,6 +1843,82 @@ const CONTEXTE_POINT: &str = "restauration/point";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Un dossier `vrai` avec un programme (de faux octets suffisent : seul le chemin est jugé ici). Dans le dossier
+    /// temporaire de Windows, pas sous `essais::temporaire` : sous Wine, celui-ci passe par Z:, où chaque point de
+    /// montage de Linux (/home) se montre en point d'analyse et serait refusé à juste titre.
+    fn programme_jetable(nom: &str) -> (crate::essais::Jetable, std::path::PathBuf) {
+        let d = crate::essais::Jetable::garder(std::env::temp_dir().join(crate::essais::nom_unique(nom)));
+        let vrai = d.join("vrai");
+        std::fs::create_dir_all(&vrai).unwrap();
+        std::fs::write(vrai.join("vanguard.exe"), b"MZ").unwrap();
+        (d, vrai)
+    }
+
+    /// Le lien `lien` est-il vu comme un point d'analyse ? Sinon (Wine qui ne le montrerait pas), l'essai ne prouve rien.
+    fn lien_vu(lien: &std::path::Path) -> bool {
+        use std::os::windows::fs::MetadataExt;
+        std::fs::symlink_metadata(lien).is_ok_and(|m| m.file_attributes() & 0x400 != 0)
+    }
+
+    /// #22 : un dossier du chemin qui est un lien (comme une jonction) ferait relire à « runas » un autre dossier que
+    /// celui vérifié : refusé, le lien nommé ; le même programme par son vrai chemin est tenu.
+    #[test]
+    fn dossier_par_un_lien_refuse() {
+        let (d, vrai) = programme_jetable("eleve-lien-dossier");
+        let lien = d.join("lien");
+        if std::os::windows::fs::symlink_dir(&vrai, &lien).is_err() || !lien_vu(&lien) {
+            return crate::essais::saute("lien symbolique de dossier impossible ou invisible ici");
+        }
+        match tenir_le_programme(&lien.join("vanguard.exe")) {
+            Err(Ecart::PointDAnalyse(c)) => assert_eq!(c, lien),
+            autre => panic!("lien de dossier accepté : {:?}", autre.map(|_| ())),
+        }
+        assert!(tenir_le_programme(&vrai.join("vanguard.exe")).is_ok());
+    }
+
+    /// #22 : le programme lui-même par un lien symbolique : refusé.
+    #[test]
+    fn fichier_par_un_lien_refuse() {
+        let (_d, vrai) = programme_jetable("eleve-lien-fichier");
+        let lien = vrai.join("autre.exe");
+        if std::os::windows::fs::symlink_file(vrai.join("vanguard.exe"), &lien).is_err() || !lien_vu(&lien) {
+            return crate::essais::saute("lien symbolique de fichier impossible ou invisible ici");
+        }
+        assert!(matches!(tenir_le_programme(&lien), Err(Ecart::PointDAnalyse(c)) if c == lien));
+    }
+
+    /// #22 : tant que le chemin est tenu, son dossier ne se renomme pas (un autre programme ne peut pas mettre une
+    /// jonction à sa place) ; lâché, il se renomme.
+    #[test]
+    fn dossier_tenu_ne_se_renomme_pas() {
+        let (d, vrai) = programme_jetable("eleve-tenu");
+        let tenu = tenir_le_programme(&vrai.join("vanguard.exe")).unwrap();
+        assert!(std::fs::rename(&vrai, d.join("ailleurs")).is_err());
+        drop(tenu);
+        assert!(std::fs::rename(&vrai, d.join("ailleurs")).is_ok());
+    }
+
+    /// #22 : seul un chemin complet d'un disque, sans `..`, est relancé : un partage réseau, un chemin relatif
+    /// ou une forme `\\?\` seraient relus autrement par le processus élevé.
+    #[test]
+    fn chemin_hors_disque_refuse() {
+        for c in [
+            r"\\serveur\partage\vanguard.exe",
+            r"vanguard.exe",
+            r"C:vanguard.exe",
+            r"\vanguard.exe",
+            r"C:\Outils\..\vanguard.exe",
+            r"\\?\C:\Outils\vanguard.exe",
+            r"\\.\C:\Outils\vanguard.exe",
+            r"C:\",
+        ] {
+            assert!(
+                matches!(tenir_le_programme(std::path::Path::new(c)), Err(Ecart::PasUnDisque)),
+                "{c}"
+            );
+        }
+    }
 
     /// R8 : permettre un interpréteur ou un joker malgré l'accès contrôlé aux dossiers est large, comme une exclusion
     /// large ; un programme précis ne l'est pas.
