@@ -2869,21 +2869,87 @@ fn texte_joint(texte: &str) -> String {
     sortie
 }
 
-/// Un fichier que seul root peut changer : lui et chaque dossier de son chemin réel appartiennent à root, sans
-/// écriture pour le groupe ni les autres. Un programme du compte, sans root, n'y pose rien.
-/// Dans un espace de noms d'utilisateurs (« unshare -r »), le propriétaire 0 vu peut être le compte lui-même : rien
-/// n'y est « de root seul ».
+/// Un fichier que seul root peut changer : chaque entrée que la lecture de `f` traverse (`chemin_tenu`) appartient à
+/// root, et chaque dossier et le fichier lui-même sont sans écriture pour le groupe ni les autres. Un programme du
+/// compte, sans root, n'y pose rien, ni ne change où mène un lien du chemin. Dans un espace de noms d'utilisateurs
+/// (« unshare -r »), le propriétaire 0 vu peut être le compte lui-même : rien n'y est « de root seul ».
+///
+/// V-2 (relecture du lot c2-uwsm, 0.95) : avant, seul le chemin réel (`canonicalize`) se jugeait. Un lien que le
+/// compte pose dans son dossier (/var/tmp/x/uwsm/env vers un fichier de /usr) passait pour à root seul : le compte
+/// choisissait quel fichier de root uwsm lit comme un script. Le dossier de chaque lien du milieu (W-7) compte aussi.
 fn de_root_seul(f: &Path) -> bool {
     use std::os::unix::fs::MetadataExt as _;
     let carte = std::fs::read_to_string("/proc/self/uid_map").unwrap_or_default();
     if !uid_sans_traduction(&carte) {
         return false;
     }
-    let Ok(reel) = std::fs::canonicalize(f) else {
+    // Un lien n'a pas de droits à lui (toujours 0777) et ne se change pas : il se remplace, par qui écrit dans son
+    // dossier, jugé comme toute autre entrée.
+    chemin_tenu(f, &|_, m| {
+        m.uid() == 0 && (m.file_type().is_symlink() || m.mode() & 0o022 == 0)
+    })
+}
+
+/// Au plus autant de liens suivis pour un chemin, la limite du noyau (MAXSYMLINKS).
+const LIENS_SUIVIS_MAX: usize = 40;
+
+/// `tenue` est vraie de chaque entrée que le noyau traverse pour ouvrir `f`, dans l'ordre où il la traverse : « / »,
+/// chaque entrée du chemin tel que nommé, chaque lien (lui-même, sans le suivre) puis chaque entrée de sa cible, « .. »
+/// défait sur le dossier déjà atteint (comme le noyau, pas sur le texte), jusqu'au fichier final. Faux au premier
+/// refus, et sur ce qui ne se juge pas : un chemin relatif, une entrée qui ne se lit pas, un lien qui ne se lit pas,
+/// plus de `LIENS_SUIVIS_MAX` liens. Jamais « tenu » par défaut.
+fn chemin_tenu(f: &Path, tenue: &dyn Fn(&Path, &std::fs::Metadata) -> bool) -> bool {
+    use std::path::{Component, PathBuf};
+    if !f.is_absolute() {
         return false;
+    }
+    // Les parties qui restent à traverser, la prochaine à la fin.
+    let empiler = |pile: &mut Vec<std::ffi::OsString>, p: &Path| {
+        for c in p.components().rev() {
+            match c {
+                Component::Normal(x) => pile.push(x.to_os_string()),
+                Component::ParentDir => pile.push("..".into()),
+                Component::RootDir | Component::CurDir | Component::Prefix(_) => {}
+            }
+        }
     };
-    reel.ancestors()
-        .all(|a| std::fs::metadata(a).is_ok_and(|m| m.uid() == 0 && m.mode() & 0o022 == 0))
+    let racine = PathBuf::from("/");
+    if !std::fs::symlink_metadata(&racine).is_ok_and(|m| tenue(&racine, &m)) {
+        return false;
+    }
+    let mut pile = Vec::new();
+    empiler(&mut pile, f);
+    let mut fait = racine;
+    let mut liens = 0usize;
+    while let Some(partie) = pile.pop() {
+        if partie == ".." {
+            fait.pop();
+            continue;
+        }
+        let suivant = fait.join(&partie);
+        let Ok(m) = std::fs::symlink_metadata(&suivant) else {
+            return false;
+        };
+        if !tenue(&suivant, &m) {
+            return false;
+        }
+        if !m.file_type().is_symlink() {
+            fait = suivant;
+            continue;
+        }
+        liens = liens.saturating_add(1);
+        let Ok(vers) = std::fs::read_link(&suivant) else {
+            return false;
+        };
+        if liens > LIENS_SUIVIS_MAX {
+            return false;
+        }
+        if vers.is_absolute() {
+            fait = PathBuf::from("/");
+        }
+        empiler(&mut pile, &vers);
+    }
+    true
 }
 
 /// Un programme de la sauvegarde de Vanguard (env, findmnt, rsync), `f` lu sous `racine` : que seul root peut changer
@@ -2891,10 +2957,11 @@ fn de_root_seul(f: &Path) -> bool {
 /// jamais pour le vrai.
 ///
 /// Dans les essais, qui tournent sous « unshare -r » où rien n'est à root seul, la racine d'essai tient lieu de
-/// système : un fichier dont le chemin réel est sous son /usr compte pour à root, tout autre non. `de_root_seul`
-/// lui-même a ses propres essais. Limite dite (W-7, relecture 0.95) : la vraie branche (`de_root_seul` sur un
-/// programme de la sauvegarde) n'a pas d'essai de bout en bout, et seuls les dossiers au-dessus de la cible finale
-/// sont contrôlés, pas le dossier de chaque lien du milieu.
+/// système : un fichier dont le chemin réel est sous son /usr compte pour à root, à condition que chaque entrée
+/// traversée (`chemin_tenu`, V-2) le soit aussi : les dossiers au-dessus de la racine, son /usr et ce qui est dessous,
+/// et un lien posé à même la racine (« bin » vers « usr/bin ») ; tout autre non. `de_root_seul` lui-même a ses propres
+/// essais, dont un sur la vraie machine (`de_root_seul_juge_chaque_lien_en_vrai`). Limite dite (W-7, relecture 0.95) :
+/// la vraie branche sur un programme de la sauvegarde n'a pas d'essai de bout en bout.
 #[cfg(not(test))]
 pub(super) fn programme_de_root_seul(_racine: &Path, f: &Path) -> bool {
     de_root_seul(f)
@@ -2902,10 +2969,17 @@ pub(super) fn programme_de_root_seul(_racine: &Path, f: &Path) -> bool {
 
 #[cfg(test)]
 pub(super) fn programme_de_root_seul(racine: &Path, f: &Path) -> bool {
-    let (Ok(racine), Ok(reel)) = (std::fs::canonicalize(racine), std::fs::canonicalize(f)) else {
+    let (Ok(canonique), Ok(reel)) = (std::fs::canonicalize(racine), std::fs::canonicalize(f)) else {
         return false;
     };
-    reel.starts_with(racine.join("usr"))
+    let usr = canonique.join("usr");
+    let tenue = |p: &Path, m: &std::fs::Metadata| {
+        racine.starts_with(p)
+            || canonique.starts_with(p)
+            || p.starts_with(&usr)
+            || (m.file_type().is_symlink() && p.parent() == Some(canonique.as_path()))
+    };
+    reel.starts_with(&usr) && chemin_tenu(f, &tenue)
 }
 
 /// La carte des identités de ce processus (/proc/self/uid_map) est celle du système, sans traduction : une seule
@@ -14994,6 +15068,67 @@ mod tests {
         std::fs::remove_dir_all(&d).unwrap();
     }
 
+    /// V-2 (relecture du lot c2-uwsm, 0.95) : `chemin_tenu` traverse chaque entrée comme le noyau : le lien nommé, le
+    /// lien du milieu, puis la cible ; refuser le seul lien du milieu suffit ; « .. » se défait sur le dossier atteint
+    /// (« l/.. » est le parent de la cible de « l », pas le dossier de « l ») ; relatif, absent, boucle : jamais tenu.
+    #[test]
+    fn chemin_tenu_traverse_chaque_entree() {
+        let d = crate::essais::temporaire().join(format!("vanguard-chemin-tenu-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("a/b")).unwrap();
+        let d = std::fs::canonicalize(&d).unwrap();
+        std::fs::write(d.join("a/b/f"), "x").unwrap();
+        std::os::unix::fs::symlink("a/b", d.join("l")).unwrap();
+        std::os::unix::fs::symlink(d.join("l/f"), d.join("m")).unwrap();
+        std::os::unix::fs::symlink("boucle", d.join("boucle")).unwrap();
+        let vus = std::cell::RefCell::new(Vec::new());
+        let note = |p: &Path, _: &std::fs::Metadata| {
+            vus.borrow_mut().push(p.to_path_buf());
+            true
+        };
+        assert!(chemin_tenu(&d.join("m"), &note));
+        let traverses = vus.take();
+        for attendu in ["m", "l", "a/b", "a/b/f"] {
+            assert!(traverses.contains(&d.join(attendu)), "{attendu} : {traverses:#?}");
+        }
+        assert!(!chemin_tenu(&d.join("m"), &|p, _| p != d.join("l")));
+        assert!(chemin_tenu(&d.join("l/../b/f"), &note));
+        assert!(vus.take().last() == Some(&d.join("a/b/f")));
+        assert!(!chemin_tenu(Path::new("a/b/f"), &|_, _| true));
+        assert!(!chemin_tenu(&d.join("absent"), &|_, _| true));
+        assert!(!chemin_tenu(&d.join("boucle"), &|_, _| true));
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// V-2, sur le vrai système, hors d'un espace de noms d'utilisateurs : le vrai env est à root seul, par son chemin
+    /// et par un détour de root (« bin/../bin/env ») ; un lien du compte vers lui, ou un chemin qui passe par un lien
+    /// du compte vers son dossier, non : le compte choisit où mène le lien.
+    #[test]
+    fn de_root_seul_juge_chaque_lien_en_vrai() {
+        if !uid_sans_traduction(&std::fs::read_to_string("/proc/self/uid_map").unwrap_or_default()) {
+            return crate::essais::saute(
+                "dans un espace de noms d'utilisateurs (unshare -r), rien n'est « à root seul » : à lancer hors de lui",
+            );
+        }
+        let Some(vrai) = crate::commande::outil_systeme("env") else {
+            return crate::essais::saute("env absent");
+        };
+        let (Some(dossier), Some(nom)) = (vrai.parent(), vrai.file_name()) else {
+            panic!("{}", vrai.display());
+        };
+        let d = crate::essais::temporaire().join(format!("vanguard-liens-root-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::os::unix::fs::symlink(&vrai, d.join("env")).unwrap();
+        std::os::unix::fs::symlink(dossier, d.join("bin")).unwrap();
+        assert!(de_root_seul(&vrai), "{}", vrai.display());
+        let detour = dossier.join("..").join(dossier.file_name().unwrap()).join(nom);
+        assert!(de_root_seul(&detour), "{}", detour.display());
+        assert!(!de_root_seul(&d.join("env")));
+        assert!(!de_root_seul(&d.join("bin").join(nom)));
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
     /// Le côté permis de la règle : un fichier de root seul, sur le vrai système, passe la porte du périmètre.
     #[test]
     fn unite_de_root_seul_dans_le_perimetre() {
@@ -15436,6 +15571,80 @@ mod tests {
             }
         }
         assert!(faux.is_empty(), "que le compte change : {faux:#?}");
+    }
+
+    /// V-2 (relecture du lot c2-uwsm, 0.95) : « à root seul » se juge sur chaque entrée que la lecture traverse, pas
+    /// sur le seul chemin réel. Dans un dossier d'uwsm que le compte change (/var/tmp/x, à lui), « env » en lien vers
+    /// un fichier de root, ou « env.d » en lien vers un dossier de root : le compte choisit quel fichier de root uwsm
+    /// lit comme un script ; il se juge, la pose en clair se lève à sa ligne. De même un lien de root dont la cible
+    /// passe par un lien du compte (le lien du milieu, W-7). Témoins : le même fichier lu par un chemin de root (en
+    /// lien de root ou non) reste muet ; le même lien sous ~/.config/uwsm se lève, comme avant.
+    #[test]
+    fn lien_du_compte_vers_un_fichier_de_root_juge() {
+        // (liens posés sous la racine : (lien, cible), XDG_DATA_DIRS de la session, ce qui se montre, levé)
+        type Cas = (
+            &'static [(&'static str, &'static str)],
+            &'static str,
+            &'static str,
+            bool,
+        );
+        const ROOT: &str = "usr/share/inerte/uwsm/env";
+        let cas: &[Cas] = &[
+            (
+                &[("var/tmp/x/uwsm/env", ROOT)],
+                "/var/tmp/x:/usr/share",
+                "/var/tmp/x/uwsm/env:1",
+                true,
+            ),
+            (
+                &[("var/tmp/x/uwsm/env.d", "usr/share/inerte/uwsm")],
+                "/var/tmp/x:/usr/share",
+                "/var/tmp/x/uwsm/env.d/env:1",
+                true,
+            ),
+            (
+                &[("usr/share/uwsm/env", "var/tmp/l"), ("var/tmp/l", ROOT)],
+                "/usr/share",
+                "/usr/share/uwsm/env:1",
+                true,
+            ),
+            (
+                &[("home/alice/.config/uwsm/env", ROOT)],
+                "/usr/share",
+                "~/.config/uwsm/env:1",
+                true,
+            ),
+            (
+                &[("usr/share/uwsm/env", ROOT)],
+                "/usr/share",
+                "/usr/share/uwsm/env:1",
+                false,
+            ),
+            (
+                &[],
+                "/usr/share/inerte:/usr/share",
+                "/usr/share/inerte/uwsm/env:1",
+                false,
+            ),
+        ];
+        let mut faux = Vec::new();
+        for (i, (liens, donnees, montre, leve)) in cas.iter().enumerate() {
+            let m = Maison::nouvelle(&format!("lien-vers-root-{i}"));
+            let f = m.racine.join(ROOT);
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(&f, "LD_PRELOAD=/opt/inerte/a.so\n").unwrap();
+            for (lien, cible) in *liens {
+                let l = m.racine.join(lien);
+                std::fs::create_dir_all(l.parent().unwrap()).unwrap();
+                std::os::unix::fs::symlink(m.racine.join(cible), &l).unwrap();
+            }
+            let c = m.lancements_avec(&[("XDG_DATA_DIRS", donnees)]);
+            let dit = c.probleme >= Some(Niveau::Eleve) && c.message.contains(&format!("{montre} précharge"));
+            if dit != *leve {
+                faux.push(format!("{liens:?} ({donnees}) : {:?} {}", c.probleme, c.message));
+            }
+        }
+        assert!(faux.is_empty(), "liens vers root : {faux:#?}");
     }
 
     /// S-3 : un dossier d'uwsm d'un XDG_DATA_DIRS hors du dossier personnel qui ne se lit pas est dit (non vérifié),
