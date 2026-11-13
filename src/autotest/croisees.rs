@@ -230,21 +230,17 @@ pub(crate) fn lancer(ligne: &'static str, en_plus: &[&str]) -> Result<String, Ra
         .map(|a| a.replace("\\n", "\n"))
         .chain(en_plus.iter().map(|a| (*a).to_string()))
         .collect();
-    // sshd n'est pas toujours dans le PATH d'un compte (/usr/sbin).
-    let chemin = if programme == "sshd" {
-        ["/usr/sbin/sshd", "/usr/bin/sshd", "/sbin/sshd"]
-            .into_iter()
-            .map(std::path::PathBuf::from)
-            .find(|p| p.is_file())
-    } else {
-        crate::machine::linux::natif::chemin(programme)
-    };
-    let Some(chemin) = chemin else {
+    // Par son chemin dans les dossiers du système (`commande::outil_systeme`, /usr/sbin compris pour sshd), jamais par
+    // le PATH du compte : un faux outil posé en tête (~/.local/bin) répondait à la place du vrai, et la comparaison
+    // disait « disent la même chose » sans rien comparer (N-1, recontrôle 2 de la 0.95). Absent de ces dossiers :
+    // sauté, et dit.
+    let Some(chemin) = crate::commande::outil_systeme(programme) else {
         return Err(Raison::Absente(programme.to_string()));
     };
     let mut commande = std::process::Command::new(chemin);
     commande.args(&args);
-    // Comme `commande::par_le_systeme` : ni le PATH ni les variables du compte (LD_PRELOAD…) ne choisissent la réponse.
+    // Comme `commande::par_le_systeme` : le programme vient des dossiers du système, et l'environnement du compte
+    // (PATH, LD_PRELOAD…) est remplacé ; ni l'un ni l'autre ne choisit la réponse.
     crate::commande::environnement_lecture(&mut commande, std::env::vars_os());
     let Some(r) = crate::commande::lancer_en_anglais(&mut commande, 60) else {
         return Err(Raison::Delai);
@@ -414,5 +410,68 @@ mod tests {
         assert!(matches!(lancer("pacman -Q", &["--noconfirm"]), Err(Raison::Refuse(_))));
         // Une chaîne égale mais d'un autre endroit passe : seule la valeur compte (c'est une &'static str).
         assert!(!LECTURES.contains(&"pacman -Syu"));
+    }
+
+    /// Posée dans le processus relancé par l'essai N-1.
+    #[cfg(target_os = "linux")]
+    const RELANCE_N1: &str = "VANGUARD_ESSAI_N1_RELANCE";
+
+    /// N-1 (recontrôle 2 de la 0.95) : l'autotest choisissait ses outils par le PATH du compte (`natif::chemin`).
+    /// Vider leur environnement ne servait à rien : le programme lancé était déjà le faux, posé en tête du PATH, et un
+    /// faux outil qui répond comme le lecteur natif faisait dire « disent la même chose » sans rien comparer. Un faux
+    /// `id` et un faux `dpkg-query` en tête du PATH, l'outil du système présent ou dit absent : jamais lancés.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn outils_jamais_choisis_par_le_path() {
+        use std::os::unix::fs::PermissionsExt;
+        const LIGNES: [&str; 2] = [
+            "id -nG",
+            "dpkg-query -W -f=${db:Status-Status} ${Package} ${Version}\\n",
+        ];
+        if std::env::var_os(RELANCE_N1).is_some() {
+            for l in LIGNES {
+                println!("lecture-n1:{l} => {:?}", lancer(l, &[]));
+            }
+            return;
+        }
+        let faux = crate::essais::Jetable::nouveau("n1-path");
+        for nom in ["id", "dpkg-query"] {
+            let f = faux.join(nom);
+            std::fs::write(&f, "#!/bin/sh\n: > \"$0.lance\"\necho faux-outil-du-compte\n").unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+            // Témoin : lancé, le faux laisse sa trace. Sans lui, « jamais lancé » ne prouverait rien.
+            assert!(std::process::Command::new(&f).status().unwrap().success());
+            let trace = faux.join(format!("{nom}.lance"));
+            assert!(trace.exists(), "le faux {nom} ne laisse pas de trace");
+            std::fs::remove_file(&trace).unwrap();
+        }
+        let path = std::env::join_paths(
+            std::iter::once(faux.to_path_buf())
+                .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())),
+        )
+        .unwrap();
+        for absents in ["", "id,dpkg-query"] {
+            let s = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "autotest::croisees::tests::outils_jamais_choisis_par_le_path",
+                    "--nocapture",
+                ])
+                .env(RELANCE_N1, "1")
+                .env("PATH", &path)
+                .env("VANGUARD_ESSAI_ABSENT", absents)
+                .output()
+                .unwrap();
+            let texte = String::from_utf8_lossy(&s.stdout);
+            assert!(s.status.success() && texte.contains("1 passed"), "{texte}");
+            assert_eq!(texte.matches("lecture-n1:").count(), 2, "{texte}");
+            for nom in ["id", "dpkg-query"] {
+                assert!(
+                    !faux.join(format!("{nom}.lance")).exists(),
+                    "faux {nom} du PATH lancé (absents des dossiers du système : {absents:?}) : {texte}"
+                );
+            }
+            assert!(!texte.contains("faux-outil-du-compte"), "{texte}");
+        }
     }
 }
