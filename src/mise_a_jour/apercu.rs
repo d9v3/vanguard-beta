@@ -299,6 +299,8 @@ struct Plan {
     source: Source,
     cibles: Vec<(PathBuf, Version)>,
     fenetres: Vec<Option<PathBuf>>,
+    /// Chaque fenêtre telle que relue pour ce plan : la pose la compare à ce qui est là (C-7, relecture 0.96).
+    vues: Vec<sa_fenetre::Vue>,
 }
 
 fn sha256_hex(octets: &[u8]) -> String {
@@ -440,6 +442,7 @@ fn plan(m: &dyn Monde, pour: Pour) -> Result<Plan, Refus> {
                 .zip(sa_fenetre::pour(&copie))
                 .unzip();
             let cibles = vec![(copie, cle)];
+            let vues = vec![sa_fenetre::Vue::de(chemin.clone())];
             let fenetres = vec![chemin];
             let taille = u64::try_from(octets.len()).unwrap_or(u64::MAX);
             Ok(Plan {
@@ -447,6 +450,7 @@ fn plan(m: &dyn Monde, pour: Pour) -> Result<Plan, Refus> {
                 source: Source::Cle { octets, fenetre },
                 cibles,
                 fenetres,
+                vues,
             })
         }
         Etat::Illisible(e) => Err(Refus::NonVerifie(trf!(
@@ -532,11 +536,13 @@ fn plan_github(m: &dyn Monde, pour: Pour) -> Result<Plan, Refus> {
     }
     // La fenêtre posée à côté d'un programme remplacé le suit (`sa_fenetre::installer_avec_sa_fenetre`).
     let fenetres: Vec<Option<PathBuf>> = a_remplacer.iter().map(|(c, _)| sa_fenetre::a_cote(c)).collect();
+    let vues = fenetres.iter().cloned().map(sa_fenetre::Vue::de).collect();
     Ok(Plan {
         apercu: apercu("github", p.version, p.sha256_hex(), p.taille(), &a_remplacer, &fenetres),
         source: Source::Github(p),
         cibles: a_remplacer,
         fenetres,
+        vues,
     })
 }
 
@@ -654,9 +660,9 @@ fn agir(m: &dyn Monde, accord: &str, consommer: impl FnOnce() -> Result<(), carn
     let mut faites = Vec::with_capacity(plan.apercu.cibles.len());
     match plan.source {
         Source::Cle { octets, fenetre } => {
-            for ((chemin, visee), f) in plan.cibles.iter().zip(&plan.fenetres) {
+            for (((chemin, visee), f), vue) in plan.cibles.iter().zip(&plan.fenetres).zip(&plan.vues) {
                 let r = match (&fenetre, f) {
-                    (Some(o), Some(f)) => sa_fenetre::installer_avec(&octets, chemin, *visee, essai, o, f),
+                    (Some(o), Some(f)) => sa_fenetre::installer_avec(&octets, chemin, *visee, essai, o, f, vue),
                     _ => installer(&octets, chemin, *visee, essai),
                 };
                 noter_la_pose(&mut faites, &octets, chemin, f.as_deref(), r);
@@ -680,8 +686,8 @@ fn agir(m: &dyn Monde, accord: &str, consommer: impl FnOnce() -> Result<(), carn
                 recue = Some(f.clone());
                 Ok(f)
             };
-            for ((chemin, visee), f) in plan.cibles.iter().zip(&plan.fenetres) {
-                let r = sa_fenetre::installer_avec_sa_fenetre(&octets, chemin, *visee, essai, &mut recevoir);
+            for (((chemin, visee), f), vue) in plan.cibles.iter().zip(&plan.fenetres).zip(&plan.vues) {
+                let r = sa_fenetre::installer_avec_sa_fenetre(&octets, chemin, *visee, essai, vue, &mut recevoir);
                 noter_la_pose(&mut faites, &octets, chemin, f.as_deref(), r);
             }
         }
@@ -870,6 +876,8 @@ mod tests {
         /// Les manifestes retenus pendant un aperçu (`retenir_la_vue`).
         vus: Cell<u32>,
         telecharges: Cell<u32>,
+        /// Une fenêtre posée là pendant le téléchargement du programme (un autre programme du compte).
+        apparait: Option<PathBuf>,
     }
 
     impl Faux {
@@ -889,6 +897,7 @@ mod tests {
                 retenus: Cell::new(0),
                 vus: Cell::new(0),
                 telecharges: Cell::new(0),
+                apparait: None,
             }
         }
     }
@@ -931,6 +940,9 @@ mod tests {
         }
         fn telecharger(&self, _: &Publiee) -> Result<Vec<u8>, Echec> {
             self.telecharges.set(self.telecharges.get().saturating_add(1));
+            if let Some(f) = &self.apparait {
+                std::fs::write(f, b"fenetre apparue").map_err(|e| Echec::echoue("essai", e.to_string()))?;
+            }
             Ok(self.recus.clone())
         }
         fn telecharger_fenetre(&self) -> Result<Vec<u8>, String> {
@@ -1125,6 +1137,41 @@ mod tests {
         std::fs::remove_file(&fenetre_ici).unwrap();
         let a = plan(&f, Pour::Voir).unwrap().apercu;
         assert_eq!(a.cibles[1].version, "sa fenêtre, nouvelle ici");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// C-7 (relecture 0.96) : une fenêtre apparue à côté d'un programme pendant son téléchargement, après l'accord,
+    /// était remplacée sans avoir été montrée. Rien n'est remplacé pour lui, la ligne le dit, rien n'est téléchargé.
+    #[test]
+    fn github_ne_remplace_pas_une_fenetre_apparue_apres_l_accord() {
+        let d = dossier("github-fenetre-apparue");
+        let mut f = Faux::nouveau(&d);
+        let ici = d.join("a").join(NOM);
+        let fenetre = sa_fenetre::pour(&ici).unwrap();
+        std::fs::create_dir_all(ici.parent().unwrap()).unwrap();
+        let ancien = programme("0.94.0+1780000000", "ici");
+        std::fs::write(&ici, &ancien).unwrap();
+        f.cibles = vec![ici.clone()];
+        let neuve = b"fenetre 0.95".to_vec();
+        let publie = lancant("0.95.0+1790000000", &neuve);
+        f.derniere = Ok(Publiee::d_essai(version("0.95.0+1790000000"), &publie));
+        f.recus = publie;
+        f.fenetre = Ok(neuve);
+        let vu = plan(&f, Pour::Voir).unwrap().apercu;
+        assert_eq!(vu.cibles.len(), 1, "aucune fenêtre montrée");
+        f.apparait = Some(fenetre.clone());
+        let Issue::Fait(c) = agir(&f, &vu.accord(), CONSOMME) else {
+            panic!("pas fait")
+        };
+        assert_eq!(c.len(), 1, "{c:?}");
+        let raison = c[0].1.clone().expect_err("remplacé sans avoir été montré");
+        assert!(
+            raison.contains("depuis ce qui a été montré") || raison.contains("since what was shown"),
+            "{raison}"
+        );
+        assert_eq!(std::fs::read(&ici).unwrap(), ancien);
+        assert_eq!(std::fs::read(&fenetre).unwrap(), b"fenetre apparue");
+        assert_eq!(f.fenetres_telechargees.get(), 0);
         let _ = std::fs::remove_dir_all(&d);
     }
 

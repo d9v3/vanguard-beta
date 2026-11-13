@@ -49,13 +49,18 @@ fn sans_marque() -> String {
 /// version, que `recevoir` donne (appelé seulement s'il en faut une). Tout ou rien : une fenêtre qui ne vient pas, ou
 /// qui n'est pas celle gravée, et rien n'est remplacé. Un nouveau programme qui ne lance aucune fenêtre se pose seul :
 /// celle d'ici reste, il ne la lancera pas.
+///
+/// `vue` : la fenêtre que l'aperçu a montrée à côté de `cible` (C-7, relecture 0.96). Apparue, partie ou changée
+/// depuis, rien n'est remplacé, le programme non plus : jamais une fenêtre remplacée sans avoir été montrée.
 pub(super) fn installer_avec_sa_fenetre(
     octets: &[u8],
     cible: &Path,
     attendue: Version,
     essai: Essai,
+    vue: &Vue,
     recevoir: &mut dyn FnMut() -> Result<Vec<u8>, String>,
 ) -> Result<(), String> {
+    vue.dite(a_cote(cible).as_deref())?;
     let Some(chemin) = a_cote(cible) else {
         return installer(octets, cible, attendue, essai);
     };
@@ -66,7 +71,73 @@ pub(super) fn installer_avec_sa_fenetre(
         Some(Gravee::Empreinte(_)) => {}
     }
     let fenetre = recevoir()?;
-    installer_avec(octets, cible, attendue, essai, &fenetre, &chemin)
+    // Le téléchargement a pris du temps : une fenêtre a pu apparaître sous un autre nom que le lancement cherche.
+    vue.dite(a_cote(cible).as_deref())?;
+    installer_avec(octets, cible, attendue, essai, &fenetre, &chemin, vue)
+}
+
+/// La fenêtre telle que l'aperçu (ou la question du terminal) l'a montrée : le chemin que la mise à jour remplacera,
+/// s'il y en a un, et ce qui y était (C-7, relecture 0.96). La pose la compare à ce qui y est maintenant ; sinon une
+/// fenêtre apparue pendant le téléchargement était remplacée sans avoir été montrée.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Vue {
+    chemin: Option<PathBuf>,
+    etat: Montree,
+}
+
+/// Ce qui était au chemin montré : rien, un fichier (son empreinte SHA-256), ou quelque chose d'illisible.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Montree {
+    Absente,
+    Empreinte([u8; 32]),
+    Illisible,
+}
+
+impl Montree {
+    fn de(avant: &Avant) -> Montree {
+        match avant {
+            Avant::Absente => Montree::Absente,
+            Avant::Lue(o) => Montree::Empreinte(Sha256::digest(o).into()),
+            Avant::Illisible => Montree::Illisible,
+        }
+    }
+}
+
+impl Vue {
+    /// La fenêtre montrée à `chemin` (`None` : aucune ne sera touchée), relue maintenant.
+    pub(super) fn de(chemin: Option<PathBuf>) -> Vue {
+        let etat = chemin
+            .as_deref()
+            .map_or(Montree::Absente, |c| Montree::de(&Avant::de(c, TAILLE_MAX)));
+        Vue { chemin, etat }
+    }
+
+    /// La fenêtre que la pose toucherait est-elle encore à ce chemin montré (ou aucune, si aucune n'a été montrée) ?
+    pub(super) fn dite(&self, maintenant: Option<&Path>) -> Result<(), String> {
+        if self.chemin.as_deref() == maintenant {
+            Ok(())
+        } else {
+            Err(changee_depuis_l_apercu())
+        }
+    }
+
+    /// Ce qui est à `chemin` juste avant la pose (`avant`) est-il ce qui a été montré ?
+    fn meme_etat(&self, chemin: &Path, avant: &Avant) -> Result<(), String> {
+        self.dite(Some(chemin))?;
+        if self.etat == Montree::de(avant) {
+            Ok(())
+        } else {
+            Err(changee_depuis_l_apercu())
+        }
+    }
+}
+
+fn changee_depuis_l_apercu() -> String {
+    tr!(
+        "la fenêtre à côté de ce programme a changé depuis ce qui a été montré (apparue, partie ou modifiée) : rien n'est remplacé ; relancez la mise à jour pour la voir",
+        "the window next to this program changed since what was shown (appeared, gone or modified): nothing is replaced; run the update again to see it"
+    )
+    .into()
 }
 
 /// La fenêtre posée à côté du programme `source` (la clé), si c'est bien celle que gravent ses `octets`. Sinon
@@ -136,8 +207,9 @@ pub(super) fn installer_avec(
     essai: Essai,
     fenetre: &[u8],
     chemin: &Path,
+    vue: &Vue,
 ) -> Result<(), String> {
-    installer_avec_repli(octets, cible, attendue, essai, fenetre, chemin, false).map(|_| ())
+    installer_avec_repli(octets, cible, attendue, essai, fenetre, chemin, Some(vue)).map(|_| ())
 }
 
 /// `installer_avec` pour la copie depuis la clé (C-4, relecture 0.96) : une fenêtre qui ne peut pas être posée (un
@@ -151,7 +223,7 @@ pub(super) fn installer_avec_sinon_seul(
     fenetre: &[u8],
     chemin: &Path,
 ) -> Result<Option<String>, String> {
-    installer_avec_repli(octets, cible, attendue, essai, fenetre, chemin, true)
+    installer_avec_repli(octets, cible, attendue, essai, fenetre, chemin, None)
 }
 
 fn installer_avec_repli(
@@ -161,10 +233,19 @@ fn installer_avec_repli(
     essai: Essai,
     fenetre: &[u8],
     chemin: &Path,
-    seul_sinon: bool,
+    vue: Option<&Vue>,
 ) -> Result<Option<String>, String> {
     juste(octets, fenetre)?;
     let avant = Avant::de(chemin, TAILLE_MAX);
+    // Avec un aperçu (`vue`) : ce qui est là doit être ce qu'il a montré, et tout ou rien. Sans (la copie depuis la
+    // clé, C-4) : une fenêtre qui ne se pose pas laisse le programme se poser seul.
+    let seul_sinon = match vue {
+        Some(v) => {
+            v.meme_etat(chemin, &avant)?;
+            false
+        }
+        None => true,
+    };
     // Le programme d'avant, relu après un échec (C-2) : l'ancienne fenêtre ne revient qu'à côté de lui.
     let programme_avant = Avant::de(cible, TAILLE_PROGRAMME);
     let changee = !matches!(&avant, Avant::Lue(o) if o == fenetre);
@@ -386,6 +467,11 @@ mod tests {
         d
     }
 
+    /// La fenêtre à côté de `cible` telle qu'un aperçu la montrerait maintenant.
+    fn montree(cible: &Path) -> Vue {
+        Vue::de(a_cote(cible))
+    }
+
     fn rien_a_cote(d: &Path) -> bool {
         std::fs::read_dir(d)
             .unwrap()
@@ -416,40 +502,43 @@ mod tests {
             appels.set(appels.get() + 1);
             Ok(neuve.clone())
         };
-        installer_avec_sa_fenetre(&nouveau, &cible, V, SANS_ESSAI, &mut recevoir).unwrap();
+        installer_avec_sa_fenetre(&nouveau, &cible, V, SANS_ESSAI, &montree(&cible), &mut recevoir).unwrap();
         assert_eq!(std::fs::read(&cible).unwrap(), nouveau);
         assert_eq!(std::fs::read(&fenetre).unwrap(), neuve);
         assert!(rien_a_cote(&d));
         // Une autre fenêtre que celle gravée, ou aucune reçue : rien n'est remplacé.
         remettre();
         let mut autre = || -> Result<Vec<u8>, String> { Ok(b"fenetre plantee".to_vec()) };
-        assert!(installer_avec_sa_fenetre(&nouveau, &cible, V, SANS_ESSAI, &mut autre).is_err());
+        assert!(installer_avec_sa_fenetre(&nouveau, &cible, V, SANS_ESSAI, &montree(&cible), &mut autre).is_err());
         assert!(inchange());
         let mut panne = || -> Result<Vec<u8>, String> { Err("téléchargement interrompu".into()) };
-        assert!(installer_avec_sa_fenetre(&nouveau, &cible, V, SANS_ESSAI, &mut panne).is_err());
+        assert!(installer_avec_sa_fenetre(&nouveau, &cible, V, SANS_ESSAI, &montree(&cible), &mut panne).is_err());
         assert!(inchange());
         // Le programme ne se pose pas : l'ancienne fenêtre est remise.
-        assert!(installer_avec_sa_fenetre(&nouveau, &cible, V, ESSAI_RATE, &mut recevoir).is_err());
+        assert!(installer_avec_sa_fenetre(&nouveau, &cible, V, ESSAI_RATE, &montree(&cible), &mut recevoir).is_err());
         assert!(inchange());
         assert!(rien_a_cote(&d));
         // Un programme sans marque : refusé sans rien télécharger. Un qui ne lance aucune fenêtre : posé seul.
         let avant = appels.get();
-        assert!(installer_avec_sa_fenetre(&programme(None), &cible, V, SANS_ESSAI, &mut recevoir).is_err());
+        assert!(
+            installer_avec_sa_fenetre(&programme(None), &cible, V, SANS_ESSAI, &montree(&cible), &mut recevoir)
+                .is_err()
+        );
         assert!(inchange());
         let sans_fenetre = programme(Some(&[&marque_d_essai(&[0; 32])[..17], b"AUCUNE;"].concat()));
-        installer_avec_sa_fenetre(&sans_fenetre, &cible, V, SANS_ESSAI, &mut recevoir).unwrap();
+        installer_avec_sa_fenetre(&sans_fenetre, &cible, V, SANS_ESSAI, &montree(&cible), &mut recevoir).unwrap();
         assert_eq!(std::fs::read(&cible).unwrap(), sans_fenetre);
         assert_eq!(std::fs::read(&fenetre).unwrap(), b"ancienne fenetre");
         // Pas de fenêtre à côté : le programme seul, rien n'est téléchargé.
         std::fs::remove_file(&fenetre).unwrap();
-        installer_avec_sa_fenetre(&nouveau, &cible, V, SANS_ESSAI, &mut recevoir).unwrap();
+        installer_avec_sa_fenetre(&nouveau, &cible, V, SANS_ESSAI, &montree(&cible), &mut recevoir).unwrap();
         assert_eq!(std::fs::read(&cible).unwrap(), nouveau);
         assert!(std::fs::symlink_metadata(&fenetre).is_err());
         assert_eq!(appels.get(), avant);
         // Posée sous le nom de la page de la version : c'est elle qui est remplacée.
         let page = d.join(lancer_fenetre::NOM_PAGE);
         std::fs::write(&page, b"ancienne fenetre").unwrap();
-        installer_avec_sa_fenetre(&nouveau, &cible, V, SANS_ESSAI, &mut recevoir).unwrap();
+        installer_avec_sa_fenetre(&nouveau, &cible, V, SANS_ESSAI, &montree(&cible), &mut recevoir).unwrap();
         assert_eq!(std::fs::read(&page).unwrap(), neuve);
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -502,7 +591,14 @@ mod tests {
         std::fs::write(&fenetre, b"ancienne fenetre").unwrap();
         let neuve = b"fenetre 0.96".to_vec();
         let mut recevoir = || -> Result<Vec<u8>, String> { Ok(neuve.clone()) };
-        let r = installer_avec_sa_fenetre(&lancant(&neuve), &cible, V, CHANGE_PUIS_RATE, &mut recevoir);
+        let r = installer_avec_sa_fenetre(
+            &lancant(&neuve),
+            &cible,
+            V,
+            CHANGE_PUIS_RATE,
+            &montree(&cible),
+            &mut recevoir,
+        );
         let e = r.expect_err("un échec");
         assert!(
             e.contains("n'est plus celui d'avant") || e.contains("no longer the previous"),
@@ -513,6 +609,120 @@ mod tests {
             b"ancienne fenetre",
             "remise à côté d'un inconnu"
         );
+        assert!(rien_a_cote(&d));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// C-7 (relecture 0.96) : la présence de la fenêtre était recalculée à la pose ; une fenêtre apparue pendant le
+    /// téléchargement était remplacée sans avoir été montrée. Ce qui se pose est ce qui a été montré, sinon rien, le
+    /// programme non plus, et c'est dit.
+    #[test]
+    fn une_fenetre_changee_depuis_l_apercu_n_est_jamais_remplacee() {
+        let d = dossier("essai-sa-fenetre-apercu");
+        let cible = d.join(NOM);
+        let fenetre = pour(&cible).unwrap();
+        let page = d.join(lancer_fenetre::NOM_PAGE);
+        let neuve = b"fenetre 0.96".to_vec();
+        let nouveau = lancant(&neuve);
+        let dit = |r: Result<(), String>| {
+            let e = r.expect_err("posé sans avoir été montré");
+            assert!(
+                e.contains("depuis ce qui a été montré") || e.contains("since what was shown"),
+                "{e}"
+            );
+        };
+        let programme_inchange = || std::fs::read(&cible).unwrap() == b"ancien programme";
+        std::fs::write(&cible, b"ancien programme").unwrap();
+        // GitHub. Aucune fenêtre montrée, une apparaît pendant le téléchargement du programme : rien, rien téléchargé.
+        let appels = std::cell::Cell::new(0);
+        let mut recevoir = || -> Result<Vec<u8>, String> {
+            appels.set(appels.get() + 1);
+            Ok(neuve.clone())
+        };
+        let aucune = montree(&cible);
+        std::fs::write(&fenetre, b"fenetre apparue").unwrap();
+        dit(installer_avec_sa_fenetre(
+            &nouveau,
+            &cible,
+            V,
+            SANS_ESSAI,
+            &aucune,
+            &mut recevoir,
+        ));
+        assert!(programme_inchange());
+        assert_eq!(std::fs::read(&fenetre).unwrap(), b"fenetre apparue");
+        assert_eq!(appels.get(), 0);
+        // Montrée, puis changée pendant le téléchargement de la nouvelle fenêtre.
+        std::fs::write(&fenetre, b"ancienne fenetre").unwrap();
+        let vue = montree(&cible);
+        let mut changer = || -> Result<Vec<u8>, String> {
+            std::fs::write(&fenetre, b"fenetre changee").unwrap();
+            Ok(neuve.clone())
+        };
+        dit(installer_avec_sa_fenetre(
+            &nouveau,
+            &cible,
+            V,
+            SANS_ESSAI,
+            &vue,
+            &mut changer,
+        ));
+        assert!(programme_inchange());
+        assert_eq!(std::fs::read(&fenetre).unwrap(), b"fenetre changee");
+        // Montrée, puis partie.
+        let vue = montree(&cible);
+        std::fs::remove_file(&fenetre).unwrap();
+        dit(installer_avec_sa_fenetre(
+            &nouveau,
+            &cible,
+            V,
+            SANS_ESSAI,
+            &vue,
+            &mut recevoir,
+        ));
+        assert!(programme_inchange());
+        assert!(std::fs::symlink_metadata(&fenetre).is_err());
+        // Montrée sous le nom de la page ; une autre apparaît sous le premier nom pendant le téléchargement.
+        std::fs::write(&page, b"ancienne fenetre").unwrap();
+        let vue = montree(&cible);
+        let mut apparait = || -> Result<Vec<u8>, String> {
+            std::fs::write(&fenetre, b"fenetre apparue").unwrap();
+            Ok(neuve.clone())
+        };
+        dit(installer_avec_sa_fenetre(
+            &nouveau,
+            &cible,
+            V,
+            SANS_ESSAI,
+            &vue,
+            &mut apparait,
+        ));
+        assert!(programme_inchange());
+        assert_eq!(std::fs::read(&page).unwrap(), b"ancienne fenetre");
+        assert_eq!(std::fs::read(&fenetre).unwrap(), b"fenetre apparue");
+        std::fs::remove_file(&page).unwrap();
+        // Rien n'a changé depuis l'aperçu : les deux posés.
+        std::fs::write(&fenetre, b"ancienne fenetre").unwrap();
+        let vue = montree(&cible);
+        installer_avec_sa_fenetre(&nouveau, &cible, V, SANS_ESSAI, &vue, &mut recevoir).unwrap();
+        assert_eq!(std::fs::read(&cible).unwrap(), nouveau);
+        assert_eq!(std::fs::read(&fenetre).unwrap(), neuve);
+        // La clé (`installer_avec`) : la fenêtre d'ici changée, ou apparue, depuis la question.
+        for (avant, apres) in [
+            (Some(b"ancienne fenetre"), b"fenetre changee"),
+            (None, b"fenetre apparue"),
+        ] {
+            std::fs::write(&cible, b"ancien programme").unwrap();
+            match avant {
+                Some(o) => std::fs::write(&fenetre, o).unwrap(),
+                None => std::fs::remove_file(&fenetre).unwrap(),
+            }
+            let vue = Vue::de(Some(fenetre.clone()));
+            std::fs::write(&fenetre, apres).unwrap();
+            dit(installer_avec(&nouveau, &cible, V, SANS_ESSAI, &neuve, &fenetre, &vue));
+            assert!(programme_inchange());
+            assert_eq!(std::fs::read(&fenetre).unwrap(), apres);
+        }
         assert!(rien_a_cote(&d));
         let _ = std::fs::remove_dir_all(&d);
     }

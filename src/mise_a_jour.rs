@@ -495,10 +495,21 @@ pub(crate) fn programme_signe_a_remettre() -> Result<(String, Vec<u8>), crate::m
 /// s'installe : la clé a pu changer depuis l'affichage), relue et comparée, puis renommée d'un coup ; une copie
 /// interrompue ou abîmée ne remplace jamais celle qui marche, et ne reste pas sur le disque. La fenêtre posée à côté
 /// du programme de la clé suit, si c'est bien la sienne (`sa_fenetre::de_la_source`), comme pour `poser_copie_dans`.
-fn remplacer(source: &Path, cible: &Path, attendue: Version, max: u64, essai: Essai) -> Result<(), String> {
+/// `vue` : la fenêtre dite avant la question (C-7, relecture 0.96) ; avec ou sans fenêtre, ce qui se pose est ce qui
+/// a été dit, sinon rien.
+fn remplacer(
+    source: &Path,
+    cible: &Path,
+    attendue: Version,
+    max: u64,
+    essai: Essai,
+    vue: &sa_fenetre::Vue,
+) -> Result<(), String> {
     let octets = lire_octets(source, max)?;
-    match sa_fenetre::de_la_source(source, &octets).zip(sa_fenetre::pour(cible)) {
-        Some((f, chemin)) => sa_fenetre::installer_avec(&octets, cible, attendue, essai, &f, &chemin),
+    let fenetre = sa_fenetre::de_la_source(source, &octets).zip(sa_fenetre::pour(cible));
+    vue.dite(fenetre.as_ref().map(|(_, chemin)| chemin.as_path()))?;
+    match fenetre {
+        Some((f, chemin)) => sa_fenetre::installer_avec(&octets, cible, attendue, essai, &f, &chemin, vue),
         None => installer(&octets, cible, attendue, essai),
     }
 }
@@ -1514,6 +1525,8 @@ fn depuis_github() {
         "  Vanguard {} is published, signed by its author (signature checked).\n  It would replace:",
         ecrire(publiee.version)
     );
+    // Chaque fenêtre telle que montrée : la pose la compare à ce qui est là (C-7, relecture 0.96).
+    let mut vues = Vec::with_capacity(a_remplacer.len());
     for c in &a_remplacer {
         let v = match lire_programme(c, TAILLE_MAX) {
             Lu::Version(v) => ecrire(v),
@@ -1521,13 +1534,15 @@ fn depuis_github() {
         };
         println!("    {} {GRIS}({v}){RESET}", affichable(&c.display().to_string()));
         // Sa fenêtre : remplacée par celle de la nouvelle version, vérifiée contre l'empreinte qu'elle grave.
-        if let Some(f) = sa_fenetre::a_cote(c) {
+        let vue = sa_fenetre::a_cote(c);
+        if let Some(f) = &vue {
             trp!(
                 "    {} {GRIS}(sa fenêtre){RESET}",
                 "    {} {GRIS}(its window){RESET}",
                 affichable(&f.display().to_string())
             );
         }
+        vues.push(sa_fenetre::Vue::de(vue));
     }
     if !demander(tr!(
         "  Le télécharger et l'installer ? [o/N] : ",
@@ -1555,8 +1570,8 @@ fn depuis_github() {
         recue = Some(f.clone());
         Ok(f)
     };
-    for c in &a_remplacer {
-        match sa_fenetre::installer_avec_sa_fenetre(&octets, c, publiee.version, essayer, &mut recevoir) {
+    for (c, vue) in a_remplacer.iter().zip(&vues) {
+        match sa_fenetre::installer_avec_sa_fenetre(&octets, c, publiee.version, essayer, vue, &mut recevoir) {
             Ok(()) => trp!(
                 "  {VERT}✔{RESET} {} : Vanguard {}.",
                 "  {VERT}✔{RESET} {}: Vanguard {}.",
@@ -1634,6 +1649,15 @@ fn dire_a_jour(publiee: Version, ici: &[Version], maintenant: u64) {
     }
 }
 
+/// Où la fenêtre de la clé serait posée à côté de `cible`, si c'est bien celle du programme de la clé : ce que
+/// `proposer` dit avant la question.
+fn fenetre_de_la_cle(source: &Path, cible: &Path) -> Option<PathBuf> {
+    lire_octets(source, TAILLE_MAX)
+        .ok()
+        .and_then(|o| sa_fenetre::de_la_source(source, &o))
+        .and(sa_fenetre::pour(cible))
+}
+
 /// Montre les deux versions et d'où vient la nouvelle, puis remplace la copie après un « o ».
 fn proposer(source: &Path, cible: &Path, copie: Option<Version>, cle: Version) {
     let (ici, sur_la_cle) = match copie {
@@ -1646,17 +1670,15 @@ fn proposer(source: &Path, cible: &Path, copie: Option<Version>, cle: Version) {
         affichable(&source.display().to_string())
     );
     // Sa fenêtre suit, si celle de la clé est la sienne : dite avant la question (`remplacer` la revérifie).
-    let fenetre = lire_octets(source, TAILLE_MAX)
-        .ok()
-        .and_then(|o| sa_fenetre::de_la_source(source, &o))
-        .and(sa_fenetre::pour(cible));
-    if let Some(f) = fenetre {
+    let fenetre = fenetre_de_la_cle(source, cible);
+    if let Some(f) = &fenetre {
         trp!(
             "  Sa fenêtre aussi, vérifiée : {}\n",
             "  Its window too, verified: {}\n",
             affichable(&f.display().to_string())
         );
     }
+    let vue = sa_fenetre::Vue::de(fenetre);
     if !demander(tr!(
         "  La remplacer par celle de la clé ? [o/N] : ",
         "  Replace it with the key's? [y/N]: "
@@ -1665,7 +1687,7 @@ fn proposer(source: &Path, cible: &Path, copie: Option<Version>, cle: Version) {
     {
         return;
     }
-    match remplacer(source, cible, cle, TAILLE_MAX, essayer) {
+    match remplacer(source, cible, cle, TAILLE_MAX, essayer, &vue) {
         Ok(()) => trp!(
             "  {VERT}✔{RESET} Copie de cet ordinateur mise à jour : Vanguard {}.\n    La surveillance, l'entretien et le raccourci lancent cette version.",
             "  {VERT}✔{RESET} Copy on this computer updated: Vanguard {}.\n    Monitoring, maintenance and the shortcut start this version.",
@@ -1968,7 +1990,15 @@ mod tests {
         let cible = racine.join("bin").join(NOM);
         faux_programme(&source, Some("0.80.0"));
         faux_programme(&cible, None);
-        remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, SANS_ESSAI).unwrap();
+        remplacer(
+            &source,
+            &cible,
+            (0, 80, 0, 0),
+            TAILLE_MAX,
+            SANS_ESSAI,
+            &dite(&source, &cible),
+        )
+        .unwrap();
         assert_eq!(std::fs::read(&cible).unwrap(), std::fs::read(&source).unwrap());
         assert!(!cible.with_file_name(format!("{NOM}.nouveau")).exists());
         #[cfg(unix)]
@@ -1979,12 +2009,32 @@ mod tests {
         // La clé a changé depuis l'affichage (une autre version) : rien n'est remplacé.
         faux_programme(&cible, Some("0.70.0"));
         faux_programme(&source, Some("0.69.0"));
-        assert!(remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, SANS_ESSAI).is_err());
+        assert!(
+            remplacer(
+                &source,
+                &cible,
+                (0, 80, 0, 0),
+                TAILLE_MAX,
+                SANS_ESSAI,
+                &dite(&source, &cible)
+            )
+            .is_err()
+        );
         assert_eq!(lire_programme(&cible, TAILLE_MAX), Lu::Version((0, 70, 0, 0)));
         // Une source absente ou démesurée : l'ancienne copie reste, rien ne traîne à côté.
-        assert!(remplacer(&racine.join("absente"), &cible, (0, 80, 0, 0), TAILLE_MAX, SANS_ESSAI).is_err());
+        assert!(
+            remplacer(
+                &racine.join("absente"),
+                &cible,
+                (0, 80, 0, 0),
+                TAILLE_MAX,
+                SANS_ESSAI,
+                &dite(&racine.join("absente"), &cible)
+            )
+            .is_err()
+        );
         faux_programme(&source, Some("0.80.0"));
-        assert!(remplacer(&source, &cible, (0, 80, 0, 0), 4, SANS_ESSAI).is_err());
+        assert!(remplacer(&source, &cible, (0, 80, 0, 0), 4, SANS_ESSAI, &dite(&source, &cible)).is_err());
         assert_eq!(lire_programme(&cible, TAILLE_MAX), Lu::Version((0, 70, 0, 0)));
         assert!(!cible.with_file_name(format!("{NOM}.nouveau")).exists());
         let _ = std::fs::remove_dir_all(&racine);
@@ -2010,16 +2060,60 @@ mod tests {
         std::fs::write(&fenetre_ici, b"ancienne fenetre").unwrap();
         // Une autre fenêtre à la clé : le programme seul.
         std::fs::write(&fenetre_cle, b"fenetre plantee").unwrap();
-        remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, SANS_ESSAI).unwrap();
+        remplacer(
+            &source,
+            &cible,
+            (0, 80, 0, 0),
+            TAILLE_MAX,
+            SANS_ESSAI,
+            &dite(&source, &cible),
+        )
+        .unwrap();
         assert_eq!(std::fs::read(&cible).unwrap(), neuf);
         assert_eq!(std::fs::read(&fenetre_ici).unwrap(), b"ancienne fenetre");
         // La sienne : posée avec le programme.
         faux_programme(&cible, None);
         std::fs::write(&fenetre_cle, &neuve).unwrap();
-        remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, SANS_ESSAI).unwrap();
+        remplacer(
+            &source,
+            &cible,
+            (0, 80, 0, 0),
+            TAILLE_MAX,
+            SANS_ESSAI,
+            &dite(&source, &cible),
+        )
+        .unwrap();
         assert_eq!(std::fs::read(&cible).unwrap(), neuf);
         assert_eq!(std::fs::read(&fenetre_ici).unwrap(), neuve);
+        // C-7 : dite sans fenêtre (celle de la clé n'était pas la sienne), devenue la sienne avant la pose : rien.
+        faux_programme(&cible, None);
+        let ancien = std::fs::read(&cible).unwrap();
+        std::fs::write(&fenetre_ici, b"ancienne fenetre").unwrap();
+        std::fs::write(&fenetre_cle, b"fenetre plantee").unwrap();
+        let vue = dite(&source, &cible);
+        std::fs::write(&fenetre_cle, &neuve).unwrap();
+        let e = remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, SANS_ESSAI, &vue).expect_err("pas dite");
+        assert!(
+            e.contains("depuis ce qui a été montré") || e.contains("since what was shown"),
+            "{e}"
+        );
+        assert_eq!(std::fs::read(&cible).unwrap(), ancien);
+        assert_eq!(std::fs::read(&fenetre_ici).unwrap(), b"ancienne fenetre");
+        // Dite avec sa fenêtre, qui n'est plus la sienne avant la pose : pas le programme seul non plus.
+        let vue = dite(&source, &cible);
+        std::fs::write(&fenetre_cle, b"fenetre plantee").unwrap();
+        let e = remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, SANS_ESSAI, &vue).expect_err("pas dit");
+        assert!(
+            e.contains("depuis ce qui a été montré") || e.contains("since what was shown"),
+            "{e}"
+        );
+        assert_eq!(std::fs::read(&cible).unwrap(), ancien);
         let _ = std::fs::remove_dir_all(&racine);
+    }
+
+    /// La fenêtre telle que `proposer` la dirait maintenant.
+    fn dite(source: &Path, cible: &Path) -> sa_fenetre::Vue {
+        sa_fenetre::Vue::de(fenetre_de_la_cle(source, cible))
     }
 
     /// Les faux programmes des tests ne se lancent pas : l'essai réel a son propre test.
