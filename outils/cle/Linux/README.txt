@@ -51,6 +51,8 @@ The program: "vanguard", in this folder. Any 64-bit distribution (x86_64), nothi
    - To install it on this computer: copy "vanguard" to ~/.local/bin, then just type "vanguard" in any
      terminal.
    - In French:  VANGUARD_LANG=fr /run/media/$USER/VANGUARD/Linux/vanguard
+   - The key can be removed while Vanguard is running: it copied itself to this computer, and what
+     should have gone to the key goes into Vanguard's folder on this computer (the path is shown).
    - Quit: q in the menu, or Ctrl+C.
 
 

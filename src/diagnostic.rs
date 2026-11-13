@@ -1031,18 +1031,18 @@ pub fn diagnostic() {
             println!("{t}");
         }
     }
-    let fichier = crate::reseau::dossier_donnees().join(format!(
-        "diagnostic-{}.txt",
-        chrono::Local::now().format("%Y-%m-%d-%H%M")
-    ));
-    let enregistre = std::fs::create_dir_all(fichier.parent().unwrap_or(&fichier)).is_ok()
-        && std::fs::write(&fichier, en_texte(&sections)).is_ok();
-    if enregistre {
-        trp!(
+    let nom = format!("diagnostic-{}.txt", chrono::Local::now().format("%Y-%m-%d-%H%M"));
+    // Clé retirée : la copie va sur cet ordinateur, et c'est dit.
+    match crate::reseau::ecrire_donnees(&[(&nom, en_texte(&sections).as_bytes())]) {
+        Ok(dossier) => trp!(
             "\n  {DISCRET}Copie texte : {}{RESET}",
             "\n  {DISCRET}Text copy: {}{RESET}",
-            fichier.display()
-        );
+            dossier.join(&nom).display()
+        ),
+        Err(e) => trp!(
+            "\n  ⚠ Copie texte impossible à enregistrer : {e}",
+            "\n  ⚠ Text copy could not be saved: {e}"
+        ),
     }
 }
 

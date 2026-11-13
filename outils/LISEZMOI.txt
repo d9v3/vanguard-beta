@@ -20,6 +20,8 @@ Sécurité de Vanguard et de la clé
     ordinateurs.json (Mes ordinateurs : note et catégories des problèmes de chaque ordinateur, sans nom), qui ne
     part jamais sur GitHub. Windows ne lance rien tout seul depuis une clé USB (protection contre les virus depuis
     Windows 7) : il faut double-cliquer.
+  - Clé retirée pendant que Vanguard tourne : rien ne plante. Il se recopie sur cet ordinateur au lancement, et
+    ce qui devait aller sur la clé va dans le dossier de Vanguard de cet ordinateur (le chemin est dit).
   - Données protégées : si le propriétaire a protégé les données de la clé (menu Vanguard), Vanguard demande sa
     phrase sur un autre ordinateur pour lire le carnet des appareils ; Entrée sans rien, il continue sans le
     carnet.

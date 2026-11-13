@@ -3,7 +3,7 @@
 //! technicien), logiciels espions (`espions`), logiciels pas à jour sous Windows (`perimes`), liens, courriels
 //! suspects et fichiers téléchargés, caméra et micro, bilan de confidentialité (`acces`), blocage des menaces, d'un
 //! clic ou tout seul pour le certain (`blocage`), l'interrupteur de la protection en temps réel (`temps_reel`) ; et,
-//! sous Linux, la protection de la clé USB (`cle`).
+//! Vanguard indépendant de sa clé USB et, sous Linux, la protection de la clé (`cle`).
 
 pub(crate) mod abuse_ch;
 pub mod acces;
@@ -13,7 +13,6 @@ pub mod camera;
 // Le moteur commun (AV4) s'en sert ; l'interface par empreinte reste prête pour le garde et le veilleur (AV5).
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod clamav;
-#[cfg(unix)]
 pub mod cle;
 pub mod cles_connues;
 pub mod conteneurs;

@@ -123,12 +123,13 @@ pub fn generer(
     reseau: Option<&Rapport>,
     audit_reseau: Option<&AuditReseau>,
 ) -> std::io::Result<PathBuf> {
-    let chemin = crate::reseau::dossier_donnees().join("rapport.html");
-    std::fs::create_dir_all(chemin.parent().unwrap_or(&chemin))?;
-    std::fs::write(&chemin, html(audit, reseau, audit_reseau))?;
-    // Version texte à côté : lisible sans navigateur ni affichage graphique (mode urgence).
-    std::fs::write(chemin.with_extension("md"), markdown(audit, reseau, audit_reseau))?;
-    Ok(chemin)
+    // Version texte à côté : lisible sans navigateur ni affichage graphique (mode urgence). Clé retirée : les deux
+    // vont sur cet ordinateur, et c'est dit.
+    let dossier = crate::reseau::ecrire_donnees(&[
+        ("rapport.html", html(audit, reseau, audit_reseau).as_bytes()),
+        ("rapport.md", markdown(audit, reseau, audit_reseau).as_bytes()),
+    ])?;
+    Ok(dossier.join("rapport.html"))
 }
 
 /// Les notes d'un domaine de l'audit en Markdown : « **B** (80/100) », ou « incomplet (2 non vérifiés) ».
@@ -1174,9 +1175,18 @@ fn absents_html(h: &mut String, r: &Rapport) {
 
 /// Le rapport écrit par le dernier bilan, s'il a moins de `age_max` : `vanguard rapport` le rouvre sans refaire le bilan.
 pub fn recent(age_max: std::time::Duration) -> Option<PathBuf> {
-    let chemin = crate::reseau::dossier_donnees().join("rapport.html");
-    let age = std::fs::metadata(&chemin).ok()?.modified().ok()?.elapsed().ok()?;
-    (age <= age_max).then_some(chemin)
+    // Celui de la clé, ou celui écrit sur cet ordinateur quand la clé n'a pas pu le prendre.
+    [crate::reseau::dossier_donnees(), crate::socle::dossier_local()]
+        .into_iter()
+        .map(|d| d.join("rapport.html"))
+        .filter(|c| {
+            std::fs::metadata(c)
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|m| m.elapsed().ok())
+                .is_some_and(|age| age <= age_max)
+        })
+        .max_by_key(|c| std::fs::metadata(c).and_then(|m| m.modified()).ok())
 }
 
 pub fn ouvrir(audit: Option<&Audit>, reseau: Option<&Rapport>, audit_reseau: Option<&AuditReseau>) {
