@@ -4512,20 +4512,14 @@ fn noms_ecrits(texte: &str, cible: impl Fn(&str) -> bool) -> std::collections::B
 /// F-1 (relecture 0.94) : un fichier qui pose des variables au gestionnaire de systemd du compte, donc à la sauvegarde
 /// de Vanguard, nomme une `variable_de_la_sauvegarde` ou ne se lit pas en entier, ou, pour un script d'uwsm, cache ce
 /// qu'il pose (`script_cache_ce_qu_il_pose`, V-2). Ceux du compte (environment.d, user.conf et user.conf.d,
-/// ~/.pam_environment, tout ~/.config/uwsm, et ceux d'un XDG_CONFIG_HOME déplacé), et ceux du
-/// système (/etc/environment, pam_env.conf, environment.d, user.conf et user.conf.d) qui ne sont pas à root seul
-/// (`de_root_seul`). Un fichier masqué (lien vers /dev/null) ne compte pas. Un dossier qui ne se lit pas, ou un
-/// fichier qui n'est pas ordinaire, lève : non vérifié, jamais tu. Pas lus : les profils des shells (que uwsm lit
-/// aussi) et l'environnement posé en cours de session (`systemctl --user set-environment`), qui ne laissent pas de
-/// fichier.
+/// ~/.pam_environment, tout ~/.config/uwsm, et ceux d'un XDG_CONFIG_HOME déplacé), ceux d'uwsm sous chacun de ses
+/// autres dossiers (`dossiers_d_uwsm`, les mêmes que le bilan : V-3), et ceux du système (/etc/environment,
+/// pam_env.conf, environment.d, user.conf et user.conf.d) qui ne sont pas à root seul (`de_root_seul`). Un fichier
+/// masqué (lien vers /dev/null) ne compte pas. Un dossier qui ne se lit pas, ou un fichier qui n'est pas ordinaire,
+/// lève : non vérifié, jamais tu. Pas lus : les profils des shells (que uwsm lit aussi) et l'environnement posé en
+/// cours de session (`systemctl --user set-environment`), qui ne laissent pas de fichier.
 fn environnement_change_la_sauvegarde(r: &Releveur, vide: bool) -> bool {
-    let donnees: Vec<std::path::PathBuf> = r
-        .gestionnaire
-        .iter()
-        .filter(|(v, _)| *v == "XDG_DATA_DIRS")
-        .map(|(_, d)| d.clone())
-        .collect();
-    let (fichiers, illisibles) = fichiers_du_gestionnaire(r, &configs_posees(&r.gestionnaire), &donnees);
+    let (fichiers, illisibles) = fichiers_du_gestionnaire(r, &configs_posees(&r.gestionnaire), &dossiers_d_uwsm(r));
     // V-2 : les scripts d'uwsm lus, seuls fichiers qu'une inclusion peut nommer sans lever.
     let scripts: Vec<std::path::PathBuf> = fichiers
         .iter()
@@ -4731,6 +4725,22 @@ fn fichiers_d_uwsm(dossier: &Path, illisibles: &mut Vec<std::path::PathBuf>) -> 
     }
     fichiers.sort();
     fichiers
+}
+
+/// Les dossiers où uwsm cherche aussi « uwsm/env… », en plus de ceux de configuration et de ses valeurs par défaut
+/// (uwsm 0.27, prepare-env.sh, `get_all_config_dirs_extended`) : chaque XDG_CONFIG_DIRS et XDG_DATA_DIRS de la
+/// session, et ceux posés au gestionnaire de systemd du compte. V-3 (relecture du lot c2-uwsm, 0.95) : une seule
+/// liste pour le bilan (`fichiers_de_configuration`) et la sauvegarde (`environnement_change_la_sauvegarde`), qui ne
+/// lisait que les XDG_DATA_DIRS posés au gestionnaire : un « uwsm/env » d'un dossier de la session qui pose
+/// LD_LIBRARY_PATH ne la levait pas.
+fn dossiers_d_uwsm(r: &Releveur) -> Vec<std::path::PathBuf> {
+    let mut dossiers: Vec<std::path::PathBuf> = r.config_systeme.iter().chain(&r.donnees_systeme).cloned().collect();
+    for (v, d) in &r.gestionnaire {
+        if ["XDG_DATA_DIRS", "XDG_CONFIG_DIRS"].contains(v) && !dossiers.contains(d) {
+            dossiers.push(d.clone());
+        }
+    }
+    dossiers
 }
 
 /// Les fichiers qui posent des variables au gestionnaire de systemd du compte : (fichier, du compte). Ceux du compte
@@ -5591,14 +5601,9 @@ fn fichiers_de_configuration(r: &Releveur) -> (Vec<(std::path::PathBuf, Variable
     // compte, et uwsm sous chaque XDG_CONFIG_DIRS et XDG_DATA_DIRS (uwsm 0.27, prepare-env.sh). La liste est celle de
     // la sauvegarde (`fichiers_du_gestionnaire`) : ses fichiers que le compte peut changer (S-3 plus bas) qui ne sont
     // pas déjà jugés, chacun selon le format du dossier où il est trouvé (X-1). ~/.config garde sa liste d'avant ;
-    // ~/.pam_environment ne se juge pas ici (comme avant).
-    let mut donnees: Vec<std::path::PathBuf> = r.config_systeme.iter().chain(&r.donnees_systeme).cloned().collect();
-    for (v, d) in &r.gestionnaire {
-        if ["XDG_DATA_DIRS", "XDG_CONFIG_DIRS"].contains(v) && !donnees.contains(d) {
-            donnees.push(d.clone());
-        }
-    }
-    let (ailleurs, illisibles) = fichiers_du_gestionnaire(r, &configs_posees(&r.gestionnaire), &donnees);
+    // ~/.pam_environment ne se juge pas ici (comme avant). Les dossiers d'uwsm : `dossiers_d_uwsm`, les mêmes que la
+    // sauvegarde (V-3).
+    let (ailleurs, illisibles) = fichiers_du_gestionnaire(r, &configs_posees(&r.gestionnaire), &dossiers_d_uwsm(r));
     let deja_lus = [
         ".config/uwsm",
         ".config/environment.d",
@@ -15963,6 +15968,70 @@ mod tests {
             }
         }
         assert!(faux.is_empty(), "sauvegarde, env.d en lien : {faux:#?}");
+    }
+
+    /// V-3 (relecture du lot c2-uwsm, 0.95) : la sauvegarde lit les mêmes dossiers d'uwsm que le bilan
+    /// (`dossiers_d_uwsm`) : un « uwsm/env » sous un XDG_DATA_DIRS ou XDG_CONFIG_DIRS de la session (hors du dossier
+    /// personnel ou dedans) qui pose une variable que lit le chargeur la lève, ses deux formes (élevé, ExecStart
+    /// nommé, non déclarable). Témoin : le même fichier sans telle variable ne la lève pas.
+    #[test]
+    fn uwsm_des_dossiers_de_la_session_juge_par_la_sauvegarde() {
+        // (variable de la session, sa valeur, fichier sous la racine d'essai, texte, levé)
+        type Cas = (&'static str, &'static str, &'static str, &'static str, bool);
+        let cas: &[Cas] = &[
+            (
+                "XDG_DATA_DIRS",
+                "/var/tmp/x:/usr/share",
+                "var/tmp/x/uwsm/env",
+                "LD_LIBRARY_PATH=/opt/inerte\n",
+                true,
+            ),
+            (
+                "XDG_CONFIG_DIRS",
+                "/var/tmp/x",
+                "var/tmp/x/uwsm/env",
+                "GLIBC_TUNABLES=glibc.inerte=1\n",
+                true,
+            ),
+            (
+                "XDG_DATA_DIRS",
+                "/home/alice/.d:/usr/share",
+                "home/alice/.d/uwsm/env.d/a",
+                "export LD_LIBRARY_PATH=/opt/inerte\n",
+                true,
+            ),
+            (
+                "XDG_DATA_DIRS",
+                "/var/tmp/x:/usr/share",
+                "var/tmp/x/uwsm/env",
+                "EDITOR=nvim\n",
+                false,
+            ),
+        ];
+        let mut faux = Vec::new();
+        for vide in [false, true] {
+            for (i, (variable, valeur, fichier, texte, leve)) in cas.iter().enumerate() {
+                let (m, service) = sauvegarde_d_essai(&format!("uwsm-session-sauvegarde-{vide}-{i}"), vide);
+                let f = m.racine.join(fichier);
+                std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+                std::fs::write(&f, texte).unwrap();
+                let c = m.lancements_avec(&[(variable, valeur)]);
+                let nommee = service
+                    .lines()
+                    .position(|l| l.starts_with("ExecStart="))
+                    .map(|n| format!("~/.config/systemd/user/{}:{} : ", crate::sauvegarde::SERVICE, n + 1))
+                    .is_some_and(|e| c.message.contains(&e));
+                let juste = if *leve {
+                    c.probleme == Some(Niveau::Eleve) && nommee && crate::apprentissage::declarable(&c).is_err()
+                } else {
+                    c.probleme < Some(Niveau::Eleve)
+                };
+                if !juste {
+                    faux.push(format!("env -i {vide}, {fichier} : {:?} {}", c.probleme, c.message));
+                }
+            }
+        }
+        assert!(faux.is_empty(), "sauvegarde, dossiers d'uwsm de la session : {faux:#?}");
     }
 
     /// Quatrième vérification : une variable de Hyprland se remplace avant de juger la ligne ; une variable sans
