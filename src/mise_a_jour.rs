@@ -1000,8 +1000,24 @@ fn reecrire(tenue: &Tenue, cible: &Path) -> Reecrite {
             Some((f, o)) => posee_est_la_montree(f, chemin, o).unwrap_or(false),
             None => tenue.est(chemin),
         };
+        // M-1, N-2, N-3 (revérification de la ronde 2, DEP-4 de la 0.95) : un lien ne désigne le fichier tenu que par
+        // son texte. Le fichier au bout remplacé pendant la mise à jour (un autre programme), le lien neuf lance ce
+        // contenu étranger : avant, Vanguard le posait quand même à la cible (puis le disait changé), ou le disait
+        // « gardé sous » son nom neuf. Revu avant d'être posé, et après un renommage raté : sinon retiré (s'il est
+        // encore le lien créé à l'instant), jamais posé ni dit gardé.
+        let lien_change = |chemin: &Path| ecrite.is_none() && !tenue.intacte(chemin);
+        if lien_change(&neuf) {
+            if tenue.est(&neuf) {
+                let _ = std::fs::remove_file(&neuf);
+            }
+            return Reecrite::Ratee(designe_change().into());
+        }
         match std::fs::rename(&neuf, cible) {
             Ok(()) if est(cible) => return Reecrite::Faite,
+            Err(_) if est(&neuf) && lien_change(&neuf) => {
+                let _ = std::fs::remove_file(&neuf);
+                return Reecrite::Ratee(designe_change().into());
+            }
             Err(e) if est(&neuf) => return Reecrite::Gardee(neuf, e),
             // Sa place reprise par un autre programme juste après le renommage, ou le nom neuf changé avant : réessayé.
             Ok(()) | Err(_) => {}
@@ -1137,7 +1153,10 @@ impl Precedente {
                 // message la disait « gardée sous » un nom vide (ou un fichier étranger).
                 if tenue.est(&self.de_cote) {
                     // R-5 : vérifiée avant d'être renommée à la cible. Avant, elle l'était seulement après : un contenu
-                    // changé était posé à la place du programme par Vanguard lui-même, puis dit « changé ».
+                    // changé était posé à la place du programme par Vanguard lui-même, puis dit « changé ». Limite
+                    // (revérification de la ronde 2) : un fichier que le compte peut écrire peut changer dans l'instant
+                    // entre ce contrôle et le renommage ; ce changement-là n'est vu qu'après (`changee`, plus bas), dit
+                    // comme tel, jamais « remise ».
                     if !tenue.intacte(&self.de_cote) {
                         return laissee(&tenue, String::new());
                     }
@@ -2451,6 +2470,10 @@ mod tests {
     /// lien était retenu : « l'ancienne copie est remise en place » (L1), « reste en place » (L2) ou « réécrite », alors
     /// que ce qui serait lancé était le contenu étranger. Maintenant le fichier au bout est tenu ouvert avec son
     /// empreinte, et revu à la fin. Témoins : sans changement, les trois sont dits.
+    ///
+    /// M-1, N-2, N-3 (revérification de la ronde 2) : le second nom perdu et le fichier au bout remplacé, le lien réécrit
+    /// était posé à la cible (lançant le contenu étranger), ou, la cible prise par un dossier (`bloquee`), « gardé sous »
+    /// son nom neuf. Maintenant, ni la cible ni aucun nom de remise ne lance le contenu étranger.
     #[cfg(unix)]
     #[test]
     fn lien_vers_un_fichier_change_jamais_dit_l_ancienne() {
@@ -2460,9 +2483,10 @@ mod tests {
         let reel = racine.join("ailleurs").join("vanguard-reel");
         let etranger = avec_entete("faux ", "0.80.0; etranger");
         // `renomme` : la copie posée a pris la place ; `perdu` : le second nom effacé ensuite ; `change` : le fichier
-        // désigné réécrit sur place ; `remplace` : remplacé par un autre fichier, sous le même nom. Rend ce qui est dit
-        // et ce que lancerait la cible.
-        let remise = |renomme: bool, perdu: bool, change: bool, remplace: bool| {
+        // désigné réécrit sur place ; `remplace` : remplacé par un autre fichier, sous le même nom ; `bloquee` : la
+        // cible prise par un dossier non vide (le renommage à la cible échoue). Rend ce qui est dit et ce que lancerait
+        // la cible.
+        let remise = |renomme: bool, perdu: bool, change: bool, remplace: bool, bloquee: bool| {
             let _ = std::fs::remove_dir_all(&racine);
             faux_programme(&reel, Some("0.79.0"));
             std::fs::create_dir_all(racine.join("bin")).unwrap();
@@ -2482,14 +2506,24 @@ mod tests {
                 std::fs::remove_file(&cible).unwrap();
                 faux_programme(&cible, Some("0.80.0"));
             }
+            if bloquee {
+                std::fs::remove_file(&cible).unwrap();
+                faux_programme(&cible.join("dedans"), Some("0.80.0"));
+            }
             let dit = precedente.remettre(&cible);
             (dit, std::fs::read(&cible).ok())
         };
-        for (renomme, perdu) in [(false, false), (true, false), (true, true)] {
+        for (renomme, perdu, bloquee) in [
+            (false, false, false),
+            (true, false, false),
+            (true, true, false),
+            (false, true, true),
+        ] {
             for (change, remplace) in [(true, false), (false, true)] {
-                let cas =
-                    format!("renommée {renomme}, second nom perdu {perdu}, réécrit {change}, remplacé {remplace}");
-                let (dit, lance) = remise(renomme, perdu, change, remplace);
+                let cas = format!(
+                    "renommée {renomme}, second nom perdu {perdu}, bloquée {bloquee}, réécrit {change}, remplacé {remplace}"
+                );
+                let (dit, lance) = remise(renomme, perdu, change, remplace, bloquee);
                 for faux in ["reste en place", "remise en place", "réécrite", "gardée sous"] {
                     assert!(
                         !dit.contains(faux),
@@ -2501,9 +2535,23 @@ mod tests {
                     dit.contains("ne le lancez pas") || dit.contains("ne la lancez pas"),
                     "{cas} : {dit}"
                 );
+                // R-5, N-3 : jamais posé à la cible par Vanguard (sans renommage, la cible est le lien d'origine, que
+                // l'autre programme a changé : dit, ci-dessus) ; N-2 : jamais gardé sous un nom de remise.
+                if renomme || bloquee {
+                    assert_ne!(lance, Some(etranger.clone()), "{cas} : {dit}");
+                }
+                let remises: Vec<_> = std::fs::read_dir(racine.join("bin"))
+                    .unwrap()
+                    .flatten()
+                    .filter(|e| e.file_name().to_string_lossy().starts_with(&format!("{NOM}.remise-")))
+                    .map(|e| e.path())
+                    .collect();
+                assert!(
+                    remises.iter().all(|r| std::fs::read(r).ok() != Some(etranger.clone())),
+                    "{cas} : {remises:?} ; {dit}"
+                );
                 if renomme && !perdu {
                     // R-5 : le lien laissé de côté, jamais posé à la cible.
-                    assert_ne!(lance, Some(etranger.clone()), "{cas} : {dit}");
                     assert!(dit.contains("avant de refaire la mise à jour"), "{cas} : {dit}");
                 }
             }
@@ -2515,14 +2563,14 @@ mod tests {
         ];
         for ((renomme, perdu), attendu) in temoins {
             assert_eq!(
-                remise(renomme, perdu, false, false),
+                remise(renomme, perdu, false, false, false),
                 (attendu.to_string(), ancienne.clone())
             );
         }
-        let (dit, lance) = remise(true, true, false, false);
+        let (dit, lance) = remise(true, true, false, false, false);
         assert!(dit.starts_with("l'ancienne copie est réécrite à sa place"), "{dit}");
         assert_eq!(lance, ancienne, "{dit}");
-        let (dit, _) = crate::langue::en_anglais(|| remise(true, false, false, true));
+        let (dit, _) = crate::langue::en_anglais(|| remise(true, false, false, true, false));
         assert!(dit.contains("the file it points to changed"), "{dit}");
         assert!(!dit.contains(" : ") && !dit.contains(" ; "), "{dit}");
         let _ = std::fs::remove_dir_all(&racine);
