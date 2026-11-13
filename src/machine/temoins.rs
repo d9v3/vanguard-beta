@@ -711,6 +711,18 @@ pub(crate) fn lire_borne(chemin: &std::path::Path, max: u64) -> std::io::Result<
     Ok(Lu { octets, entier })
 }
 
+/// L'erreur `e` d'une lecture de `chemin`, où « absent » n'est pas dit d'un lien vers une cible absente : un tel lien
+/// à la place de /etc/ld.so.preload n'est jamais sain (le chargeur le suit ; si sa cible est dans un dossier que le
+/// compte écrit, le compte l'arme plus tard sans root, puis la retire entre deux bilans). Ronde 4 du lot 096, G5-5 :
+/// avant, il passait pour absent, au bilan comme à l'avis du démarrage.
+#[cfg(unix)]
+pub(crate) fn sauf_lien_mort(chemin: &std::path::Path, e: std::io::Error) -> std::io::Error {
+    if e.kind() == std::io::ErrorKind::NotFound && std::fs::symlink_metadata(chemin).is_ok_and(|m| m.is_symlink()) {
+        return std::io::Error::other(tr!("lien vers une cible absente", "link to a missing target"));
+    }
+    e
+}
+
 /// L'état du fichier `f` qui porte une ligne, dont `octets` est le contenu déjà lu : ce contenu, et s'il est un lien,
 /// vers où il pointe (un fichier remplacé par un lien vers un autre au même contenu se voit aussi). `Err` : un lien
 /// vers un chemin qui n'est pas de l'UTF-8 (deux tels chemins se montreraient pareil).

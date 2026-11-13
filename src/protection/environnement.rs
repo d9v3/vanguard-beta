@@ -110,9 +110,17 @@ fn avis() -> Vec<Avis> {
             .unwrap_or(Niveau::Info);
         liste.push(avis_variable(var, &v, niveau));
     }
-    let lu = crate::machine::temoins::lire_borne(Path::new("/etc/ld.so.preload"), PRECHARGEMENT_MAX);
-    liste.extend(avis_preload(lu.map(|lu| (lu.octets, lu.entier)), &du_systeme));
+    liste.extend(avis_preload(lire_preload(Path::new("/etc/ld.so.preload")), &du_systeme));
     liste
+}
+
+/// /etc/ld.so.preload lu pour `avis_preload` : ses octets, et s'ils sont le fichier entier. Un lien vers une cible
+/// absente n'est pas « absent » (ronde 4 du lot 096, G5-5 : `temoins::sauf_lien_mort`).
+#[cfg(target_os = "linux")]
+fn lire_preload(chemin: &std::path::Path) -> std::io::Result<(Vec<u8>, bool)> {
+    crate::machine::temoins::lire_borne(chemin, PRECHARGEMENT_MAX)
+        .map(|lu| (lu.octets, lu.entier))
+        .map_err(|e| crate::machine::temoins::sauf_lien_mort(chemin, e))
 }
 
 /// Au plus autant d'octets lus dans /etc/ld.so.preload, comme le bilan pour un fichier de configuration.
@@ -314,5 +322,28 @@ mod tests {
         assert_eq!(a.as_ref().map(|a| a.niveau), Some(Niveau::Moyen));
         assert!(a.is_some_and(|a| a.texte.contains("entier") || a.texte.contains("full")));
         assert_eq!(avis(b"# rien\n", false).map(|a| a.niveau), Some(Niveau::Moyen));
+    }
+
+    /// Ronde 4 du lot 096 (G5-5) : un /etc/ld.so.preload qui est un lien vers une cible absente n'est pas « absent » à
+    /// l'avis du démarrage : « illisible (lien vers une cible absente) », non vérifié. Témoin : vraiment absent, rien.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn preload_en_lien_mort_au_demarrage() {
+        let d = crate::essais::Jetable::nouveau("preload-lien-mort");
+        let p = d.join("ld.so.preload");
+        let systeme = |_: &str| false;
+        assert!(
+            avis_preload(lire_preload(&p), &systeme).is_none(),
+            "absent : rien à dire"
+        );
+        std::os::unix::fs::symlink(d.join("rien-ici"), &p).unwrap();
+        let a = avis_preload(lire_preload(&p), &systeme);
+        assert_eq!(a.as_ref().map(|a| a.niveau), Some(Niveau::Moyen));
+        assert!(
+            a.as_ref()
+                .is_some_and(|a| a.texte.contains("lien vers une cible absente") || a.texte.contains("missing target")),
+            "{:?}",
+            a.map(|a| a.texte)
+        );
     }
 }
