@@ -144,8 +144,8 @@ impl Refus {
             .to_string(),
             Refus::LectureSeule => crate::machine::appliquer::lecture_seule(),
             Refus::Change => tr!(
-                "ça a changé depuis l'aperçu (nouvelle version, clé ou copie changée) : rien n'a été fait, refaites l'aperçu",
-                "it changed since the preview (new version, key or copy changed): nothing was done, show the preview again"
+                "ça a changé depuis l'aperçu (nouvelle version, clé ou copie changée), ou il a été fait dans une autre langue (VANGUARD_LANG, langue du système) : rien n'a été fait, refaites l'aperçu dans la langue du geste",
+                "it changed since the preview (new version, key or copy changed), or the preview was made in another language (VANGUARD_LANG, system language): nothing was done, show the preview again in the language of the action"
             )
             .to_string(),
             Refus::Carnet(r) => r.raison(),
@@ -739,6 +739,16 @@ mod tests {
 
     use super::super::NOM;
     use super::*;
+
+    /// R-6 (recontrôle 0.95) : l'accord couvre la langue de l'aperçu ; un geste lancé dans une autre langue est
+    /// refusé, et le refus le dit, avec la variable qui la choisit.
+    #[test]
+    fn refus_change_nomme_la_langue() {
+        let fr = Refus::Change.raison();
+        assert!(fr.contains("autre langue") && fr.contains("VANGUARD_LANG"), "{fr}");
+        let en = crate::langue::en_anglais(|| Refus::Change.raison());
+        assert!(en.contains("another language") && en.contains("VANGUARD_LANG"), "{en}");
+    }
 
     /// Un faux programme qui porte la version `v` (« 0.95.0+1790000000 ») ; `reste` le distingue d'un autre.
     fn programme(v: &str, reste: &str) -> Vec<u8> {

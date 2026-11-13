@@ -79,8 +79,8 @@ impl Refus {
             Refus::Apercu(r) => r.raison(),
             Refus::Politique(r) => r.clone(),
             Refus::Change => tr!(
-                "ça a changé depuis l'aperçu : rien n'a été fait, refaites l'aperçu",
-                "it changed since the preview: nothing was done, show the preview again"
+                "ça a changé depuis l'aperçu, ou il a été fait dans une autre langue (VANGUARD_LANG, langue du système) : rien n'a été fait, refaites l'aperçu dans la langue du geste",
+                "it changed since the preview, or the preview was made in another language (VANGUARD_LANG, system language): nothing was done, show the preview again in the language of the action"
             )
             .to_string(),
             Refus::Carnet(r) => r.raison(),
@@ -491,6 +491,17 @@ fn noter_au_journal(jeton: &str, regle: Option<&str>, issue: &Issue) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R-6 (recontrôle 0.95) : l'accord couvre le texte montré, qui suit la langue ; un aperçu fait dans une langue et
+    /// un geste lancé dans une autre sont refusés. Le refus le dit, dans les deux langues, avec la variable qui la
+    /// choisit, au lieu de laisser croire que la machine a changé.
+    #[test]
+    fn refus_change_nomme_la_langue() {
+        let fr = Refus::Change.raison();
+        assert!(fr.contains("autre langue") && fr.contains("VANGUARD_LANG"), "{fr}");
+        let en = crate::langue::en_anglais(|| Refus::Change.raison());
+        assert!(en.contains("another language") && en.contains("VANGUARD_LANG"), "{en}");
+    }
 
     /// En lecture seule, le geste est refusé net, code 2, avant toute lecture (ni verrou, ni carnet, ni note).
     #[test]
