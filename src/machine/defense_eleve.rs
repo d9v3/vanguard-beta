@@ -2044,8 +2044,15 @@ fn juger_ligne(e: Empreinte, c: &CheminDesigne, a: &mut dyn Acces) -> Jugement {
             }
             Some(crate::machine::linux::Decoupe::Shell) => {
                 return Err(refus(trf!(
-                    "dans {vu}, la ligne désignée fait partie d'une construction du shell sur plusieurs lignes (guillemet ouvert, heredoc « << », bloc if, for ou fonction, suite par « | » ou « && ») : la retirer seule changerait ce que font les autres lignes ; rien n'est fait : corrigez ce fichier à la main",
-                    "in {vu}, the line named is part of a shell construct spanning several lines (open quote, \"<<\" heredoc, if, for or function block, continuation with \"|\" or \"&&\"): removing it alone would change what the other lines do; nothing is done: fix this file by hand"
+                    "dans {vu}, la ligne désignée n'est pas une commande simple du shell, ou touche une construction sur plusieurs lignes (guillemet ouvert, heredoc « << », bloc if, for ou fonction, suite par « | » ou « && ») : la retirer seule pourrait changer ce que font les autres lignes ; par prudence, rien n'est fait : corrigez ce fichier à la main",
+                    "in {vu}, the line named is not a simple shell command, or touches a construct spanning several lines (open quote, \"<<\" heredoc, if, for or function block, continuation with \"|\" or \"&&\"): removing it alone could change what the other lines do; to be safe, nothing is done: fix this file by hand"
+                )));
+            }
+            Some(crate::machine::linux::Decoupe::Trop) => {
+                return Err(refus(trf!(
+                    "{vu} a plus de {} lignes : Vanguard ne vérifie pas qu'en retirer une seule ne change rien d'autre ; rien n'est fait : corrigez ce fichier à la main",
+                    "{vu} has more than {} lines: Vanguard does not check that removing one alone changes nothing else; nothing is done: fix this file by hand",
+                    crate::machine::linux::RETRAIT_LIGNES_MAX
                 )));
             }
             None => {}

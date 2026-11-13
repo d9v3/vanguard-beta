@@ -2105,10 +2105,14 @@ struct Lancements {
     /// Une ligne signalée lue avec pertes (octet hors UTF-8) : un geste ne la désigne pas (le fils root la cherche
     /// par l'empreinte de ses octets, que la ligne lue n'a plus), elle reste à la main et c'est dit (lot 096, N4).
     hors_utf8: bool,
-    /// Une ligne signalée qui finit par « \ », ou suit une telle ligne, ou, dans un fichier lu par un shell, fait partie
-    /// d'une construction sur plusieurs lignes : la retirer seule changerait le sens d'une autre ligne (ronde 4 du lot
+    /// Une ligne signalée qui finit par « \ », ou suit une telle ligne, ou, dans un fichier lu par un shell, n'est pas
+    /// une commande simple ou touche une construction sur plusieurs lignes : la retirer seule pourrait changer le sens
+    /// d'une autre ligne (ronde 4 du lot
     /// 096, G34-1 et R4-3 : `linux::retrait_decoupe`). Un geste ne la désigne pas, et c'est dit.
     jointes: bool,
+    /// Une ligne signalée dans un fichier de plus de `linux::RETRAIT_LIGNES_MAX` lignes : son retrait seul n'est pas
+    /// jugé, donc pas offert (ronde 5 du lot 096, N1), et c'est dit.
+    trop_long: bool,
     r: Releveur,
 }
 
@@ -2580,6 +2584,8 @@ struct Lecture {
     entier: bool,
     /// Le fichier est du texte UTF-8 : `texte` a les mêmes octets que `octets`.
     utf8: bool,
+    /// Ce que `retrait` calcule une fois pour tout le fichier (`IndexDeRetrait`), au premier besoin.
+    index: std::cell::OnceCell<IndexDeRetrait>,
 }
 
 impl Lecture {
@@ -2624,6 +2630,7 @@ fn lire_sinon(
                 texte,
                 entier: lu.entier,
                 octets: lu.octets,
+                index: std::cell::OnceCell::new(),
             })
         }
         Err(_) if std::fs::metadata(f).is_ok_and(|m| std::os::unix::fs::FileTypeExt::is_fifo(&m.file_type())) => {
@@ -7103,38 +7110,148 @@ fn maison_texte(t: &Lancements) -> String {
     t.r.maison.to_string_lossy().into_owned()
 }
 
-/// La ligne `l` (lue par `lines()`) telle qu'écrite dans `texte`, coupée au seul « \n » comme la relit le fils root.
-fn telle_qu_ecrite(texte: &str, l: &str) -> String {
-    texte
-        .split('\n')
-        .find(|r| r.strip_suffix('\r').unwrap_or(r) == l)
-        .unwrap_or(l)
-        .to_string()
+/// Ce que `retrait` rend pour une ligne lue.
+#[derive(Clone)]
+enum Rendu {
+    /// Hors UTF-8 (`Lancements::hors_utf8`).
+    HorsUtf8,
+    /// Liée à une autre, ou fichier trop long (`linux::Decoupe`).
+    Decoupe(crate::machine::linux::Decoupe),
+    /// La ligne telle qu'écrite (fin « \r » comprise), que le fils root retirera avec ses pareilles.
+    Ecrite(String),
+}
+
+/// Ce que `retrait` calcule une fois par fichier lu (ronde 5 du lot 096, N1) : avant, chaque ligne signalée relisait
+/// tout le fichier (sa forme écrite, ses pareilles, la découpe du shell), et un fichier de lignes pareilles, qu'un
+/// programme du compte peut écrire, gelait le bilan (800 lignes : 30 s ; 1 600 : 8 min). Ici, un passage par
+/// fichier, puis une recherche par ligne, et une seule réponse par ligne lue, quel que soit son nombre de pareilles.
+struct IndexDeRetrait {
+    analyse: crate::machine::linux::AnalyseDeRetrait,
+    cles: std::collections::hash_map::RandomState,
+    /// Le début et la fin de chaque ligne écrite (coupée au seul « \n ») dans `Lecture::texte`, et dans
+    /// `Lecture::octets`.
+    bornes_texte: Vec<(usize, usize)>,
+    bornes_octets: Vec<(usize, usize)>,
+    /// Les numéros des lignes de `texte`, « \r » final ôté (comme `lines()` les lit), par l'empreinte de ce texte.
+    lues: HashMap<u64, Vec<usize>>,
+    /// Les numéros des lignes de `octets`, par l'empreinte de leurs octets.
+    ecrites: HashMap<u64, Vec<usize>>,
+    /// Ce qui a déjà été rendu pour une ligne lue.
+    rendus: std::cell::RefCell<HashMap<String, Rendu>>,
+}
+
+impl IndexDeRetrait {
+    fn de(f: &Path, lu: &Lecture) -> Self {
+        use std::hash::BuildHasher;
+        let cles = std::collections::hash_map::RandomState::new();
+        let bornes = |octets: &[u8]| {
+            let mut b = Vec::new();
+            let mut debut = 0usize;
+            for (i, o) in octets.iter().enumerate() {
+                if *o == b'\n' {
+                    b.push((debut, i));
+                    debut = i.saturating_add(1);
+                }
+            }
+            b.push((debut, octets.len()));
+            b
+        };
+        let bornes_texte = bornes(lu.texte.as_bytes());
+        let bornes_octets = bornes(&lu.octets);
+        let mut lues: HashMap<u64, Vec<usize>> = HashMap::new();
+        for (n, (d, f)) in bornes_texte.iter().enumerate() {
+            let l = lu.texte.as_bytes().get(*d..*f).unwrap_or_default();
+            let l = l.strip_suffix(b"\r").unwrap_or(l);
+            lues.entry(cles.hash_one(l)).or_default().push(n);
+        }
+        let mut ecrites: HashMap<u64, Vec<usize>> = HashMap::new();
+        for (n, (d, f)) in bornes_octets.iter().enumerate() {
+            let l = lu.octets.get(*d..*f).unwrap_or_default();
+            ecrites.entry(cles.hash_one(l)).or_default().push(n);
+        }
+        Self {
+            analyse: crate::machine::linux::AnalyseDeRetrait::de(&f.to_string_lossy(), &lu.octets),
+            cles,
+            bornes_texte,
+            bornes_octets,
+            lues,
+            ecrites,
+            rendus: std::cell::RefCell::new(HashMap::new()),
+        }
+    }
+
+    /// Le rendu de la ligne lue `l`, calculé une fois.
+    fn rendu(&self, lu: &Lecture, l: &str) -> Rendu {
+        use std::hash::BuildHasher;
+        if let Some(r) = self.rendus.borrow().get(l) {
+            return r.clone();
+        }
+        // La ligne telle qu'écrite : la première ligne du texte qui se lit `l`, « \r » final compris.
+        let ligne_texte = |n: usize| {
+            self.bornes_texte
+                .get(n)
+                .and_then(|(d, f)| lu.texte.get(*d..*f))
+                .unwrap_or_default()
+        };
+        let ecrite = self
+            .lues
+            .get(&self.cles.hash_one(l.as_bytes()))
+            .into_iter()
+            .flatten()
+            .map(|n| ligne_texte(*n))
+            .find(|r| r.strip_suffix('\r').unwrap_or(r) == l)
+            .unwrap_or(l)
+            .to_string();
+        let rendu = if lu.designable(&ecrite) {
+            // Chaque ligne écrite pareille : le fils root les retire toutes.
+            let numeros: Vec<usize> = self
+                .ecrites
+                .get(&self.cles.hash_one(ecrite.as_bytes()))
+                .into_iter()
+                .flatten()
+                .copied()
+                .filter(|n| {
+                    self.bornes_octets
+                        .get(*n)
+                        .and_then(|(d, f)| lu.octets.get(*d..*f))
+                        .is_some_and(|o| o == ecrite.as_bytes())
+                })
+                .collect();
+            match self.analyse.decoupe(&numeros) {
+                Some(d) => Rendu::Decoupe(d),
+                None => Rendu::Ecrite(ecrite),
+            }
+        } else {
+            Rendu::HorsUtf8
+        };
+        self.rendus.borrow_mut().insert(l.to_string(), rendu.clone());
+        rendu
+    }
 }
 
 /// Le fichier et la ligne à retirer, pour `Lancements::retraits` ; `None` (à la main) pour une ligne qu'un geste ne
-/// désigne pas : hors UTF-8 (`Lancements::hors_utf8`), ou liée à une autre (`Lancements::jointes`, même règle que le
-/// fils root : `linux::retrait_decoupe`) par un « \ » final, la sienne ou celle d'avant, ou, dans un fichier lu par un
-/// shell, par un guillemet, un heredoc, un bloc ou une suite par « | » ou « && ».
+/// désigne pas : hors UTF-8 (`Lancements::hors_utf8`), liée à une autre (`Lancements::jointes`, même règle que le
+/// fils root : `linux::AnalyseDeRetrait`) par un « \ » final, la sienne ou celle d'avant, ou, dans un fichier lu par
+/// un shell, qui n'est pas une commande simple ou touche une construction sur plusieurs lignes ; ou dans un fichier
+/// trop long pour être jugé (`Lancements::trop_long`). Calculé une fois par fichier et par ligne lue
+/// (`IndexDeRetrait`).
 fn retrait(t: &mut Lancements, f: &Path, lu: &Lecture, l: &str) -> Option<(String, String)> {
-    let ecrite = telle_qu_ecrite(&lu.texte, l);
-    if !lu.designable(&ecrite) {
-        t.hors_utf8 = true;
-        return None;
+    let index = lu.index.get_or_init(|| IndexDeRetrait::de(f, lu));
+    match index.rendu(lu, l) {
+        Rendu::HorsUtf8 => {
+            t.hors_utf8 = true;
+            None
+        }
+        Rendu::Decoupe(crate::machine::linux::Decoupe::Trop) => {
+            t.trop_long = true;
+            None
+        }
+        Rendu::Decoupe(_) => {
+            t.jointes = true;
+            None
+        }
+        Rendu::Ecrite(ecrite) => Some((f.to_str()?.to_string(), ecrite)),
     }
-    // Chaque ligne écrite pareille : le fils root les retire toutes.
-    let numeros: Vec<usize> = lu
-        .octets
-        .split(|o| *o == b'\n')
-        .enumerate()
-        .filter(|(_, e)| *e == ecrite.as_bytes())
-        .map(|(n, _)| n)
-        .collect();
-    if crate::machine::linux::retrait_decoupe(&f.to_string_lossy(), &lu.octets, &numeros).is_some() {
-        t.jointes = true;
-        return None;
-    }
-    Some((f.to_str()?.to_string(), ecrite))
 }
 
 /// /etc/ld.so.preload : chaque bibliothèque listée est chargée dans TOUS les programmes, root compris. Technique
@@ -8604,6 +8721,7 @@ fn juger_caches_d_uwsm(caches: &[std::path::PathBuf], h: &Path, t: &mut Lancemen
             texte: cache.texte,
             entier: true,
             utf8: fidele,
+            index: std::cell::OnceCell::new(),
         };
         let avant = t.suspects.len();
         let non_verifies_avant = t.non_verifies.len();
@@ -13936,6 +14054,7 @@ fn constat_des_lancements(t: Lancements) -> Constat {
         mut notes,
         hors_utf8,
         jointes,
+        trop_long,
         ..
     } = t;
     suspects.sort();
@@ -13998,8 +14117,15 @@ fn constat_des_lancements(t: Lancements) -> Constat {
     }
     if jointes {
         message.push_str(tr!(
-            " Une ligne signalée finit par « \\ », ou suit une telle ligne, ou fait partie d'une construction du shell sur plusieurs lignes (guillemet ouvert, heredoc, bloc, suite par « | » ou « && ») : la retirer seule changerait le sens d'une autre ligne ; tout est à corriger à la main.",
-            " A reported line ends with \"\\\", or follows such a line, or is part of a shell construct spanning several lines (open quote, heredoc, block, continuation with \"|\" or \"&&\"): removing it alone would change what another line does; everything is to be fixed by hand."
+            " Une ligne signalée finit par « \\ », ou suit une telle ligne, ou, dans un fichier lu par un shell, n'est pas une commande simple ou touche une construction sur plusieurs lignes (guillemet ouvert, heredoc, bloc, suite par « | » ou « && ») : la retirer seule pourrait changer le sens d'une autre ligne. Une seule ligne ainsi suffit : tout est à corriger à la main.",
+            " A reported line ends with \"\\\", or follows such a line, or, in a file read by a shell, is not a simple command or touches a construct spanning several lines (open quote, heredoc, block, continuation with \"|\" or \"&&\"): removing it alone could change what another line does. One such line is enough: everything is to be fixed by hand."
+        ));
+    }
+    if trop_long {
+        message.push_str(&trf!(
+            " Une ligne signalée est dans un fichier de plus de {} lignes : Vanguard ne vérifie pas que la retirer seule ne change rien d'autre ; tout est à corriger à la main.",
+            " A reported line is in a file of more than {} lines: Vanguard does not check that removing it alone changes nothing else; everything is to be fixed by hand.",
+            crate::machine::linux::RETRAIT_LIGNES_MAX
         ));
     }
     if let Some(a) = a_savoir {
@@ -14013,11 +14139,14 @@ fn constat_des_lancements(t: Lancements) -> Constat {
     // droit de modifier : une ligne du dossier personnel, de la crontab du compte ou une variable de la session
     // laisse tout à la main (une correction qui en ferait une partie se croirait complète).
     retraits.dedup();
+    // Chaque retrait une fois, dans l'ordre : un ensemble des vus, pas une recherche dans la liste (ronde 5 du lot
+    // 096, N1 : des milliers de lignes signalées toutes différentes coûtaient leur carré).
     let mut vus: Vec<&(String, String)> = Vec::new();
+    let mut deja: std::collections::HashSet<&(String, String)> = std::collections::HashSet::new();
     let mut a_la_main = false;
     for r in &retraits {
         match r {
-            Some(r) if !vus.contains(&r) => vus.push(r),
+            Some(r) if deja.insert(r) => vus.push(r),
             Some(_) => {}
             None => a_la_main = true,
         }
@@ -14818,8 +14947,24 @@ mod tests {
     /// La ligne retirée est celle du fichier, fin « \r » comprise : l'empreinte que le fils root recalcule.
     #[test]
     fn ligne_telle_qu_ecrite() {
-        assert_eq!(telle_qu_ecrite("a\r\nb\n", "a"), "a\r");
-        assert_eq!(telle_qu_ecrite("a\nb", "b"), "b");
+        for (texte, l, ecrite) in [
+            ("a\r\nb\n", "a", "a\r"),
+            ("a\nb", "b", "b"),
+            ("x\na\r\na\n", "a", "a\r"),
+        ] {
+            let lu = Lecture {
+                octets: texte.as_bytes().to_vec(),
+                texte: texte.to_string(),
+                entier: true,
+                utf8: true,
+                index: std::cell::OnceCell::new(),
+            };
+            let index = IndexDeRetrait::de(Path::new("/etc/profile.d/x.sh"), &lu);
+            assert!(
+                matches!(index.rendu(&lu, l), Rendu::Ecrite(e) if e == ecrite),
+                "{texte:?} {l:?}"
+            );
+        }
     }
 
     /// Le bilan lit la persistance depuis la vraie racine « / » : une autre (relative, ou absolue comme « /x »), le
@@ -20061,6 +20206,54 @@ mod tests {
             let auto = c.correctif.as_ref().is_some_and(|k| k.automatique);
             assert_eq!(auto, designable, "{lieu} {octets:?} : {}", c.message);
             assert_eq!(c.message.contains(phrase), !designable, "{}", c.message);
+        }
+    }
+
+    /// Ronde 5 du lot 096 (N1), côté bilan : un fichier de lignes signalées, pareilles ou toutes différentes, se
+    /// juge en un temps linéaire. Avant, chaque ligne relisait tout le fichier, et 800 lignes pareilles dans un
+    /// fichier que le compte écrit coûtaient 30 s (1 600 : 8 min) : le bilan ne finissait pas, et rien ne
+    /// s'affichait. Tenu par le compte des pas du jugement (`linux::PAS_DE_RETRAIT`), et par une durée large.
+    #[test]
+    fn bilan_de_lignes_pareilles_lineaire() {
+        for (i, n) in [800usize, 8000].into_iter().enumerate() {
+            for (j, pareilles) in [true, false].into_iter().enumerate() {
+                let contenu = (0..n)
+                    .map(|k| {
+                        let nom = if pareilles { 0 } else { k };
+                        format!("export LD_PRELOAD=/tmp/.x/a{nom}.so\n")
+                    })
+                    .collect::<Vec<_>>()
+                    .concat();
+                let m = Maison::nouvelle(&format!("lineaire-{i}-{j}"));
+                m.ecrire_hors("/etc/profile.d/x.sh", &contenu);
+                let variable = |_: &str| -> Option<std::ffi::OsString> { None };
+                let mut t = Lancements {
+                    r: releveur(&m.racine, &m.racine.join("home/alice"), &variable),
+                    ..Lancements::default()
+                };
+                let f = m.racine.join("etc/profile.d/x.sh");
+                crate::machine::linux::PAS_DE_RETRAIT.with(|c| c.set(0));
+                let debut = std::time::Instant::now();
+                juger_configuration(
+                    std::slice::from_ref(&f),
+                    &[(f.clone(), Variables::Shell)],
+                    &[],
+                    &m.racine.join("home/alice"),
+                    &mut t,
+                );
+                assert!(!t.jointes && !t.trop_long);
+                assert_eq!(t.retraits.len(), n);
+                assert!(t.retraits.iter().all(Option::is_some));
+                let c = constat_des_lancements(t);
+                let duree = debut.elapsed();
+                let pas = crate::machine::linux::PAS_DE_RETRAIT.with(std::cell::Cell::get);
+                assert!(
+                    pas <= 8 * (n as u64 + 3),
+                    "{n} lignes, pareilles {pareilles} : {pas} pas"
+                );
+                assert!(duree < std::time::Duration::from_secs(20), "{n} lignes : {duree:?}");
+                assert!(c.message.contains("LD_PRELOAD"), "{}", c.message);
+            }
         }
     }
 
