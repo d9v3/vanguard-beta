@@ -239,7 +239,8 @@ FIN
 cat >"$BANC/faux/gh" <<'FIN'
 #!/usr/bin/env bash
 # Faux gh : la dernière CI de nuit, verte par défaut (la nuit 1 reste sans notification). ESSAI_CI : rouge, vieille
-# (verte, du 1er janvier), panne (hors ligne), hostile (champs forgés), vide (aucune CI).
+# (verte, du 1er janvier), futur (verte, datée de 2099), datefausse (verte, au 31 février), panne (hors ligne),
+# hostile (champs forgés), vide (aucune CI), utf8 (verte, mais un octet invalide que jq passe et Python refuse).
 echo "gh $*" >>"$BANC/gh.log"
 jour=${VANGUARD_VEILLE_JOUR:-2026-10-19}
 run() { jq -cn --arg c "$1" --arg d "$2" --arg s "$3" --arg u "$4" '[{conclusion: $c, createdAt: $d, headSha: $s, url: $u}]'; }
@@ -249,6 +250,9 @@ case ${ESSAI_CI:-vert} in
   rouge) run failure "${jour}T07:12:00Z" "$sha" https://github.com/d9v3/vanguard-beta/actions/runs/456 ;;
   vieille) run success 2026-01-01T07:12:00Z "$sha" https://github.com/d9v3/vanguard-beta/actions/runs/789 ;;
   panne) echo "error connecting to api.github.com" >&2; exit 1 ;;
+  futur) run success 2099-01-01T07:12:00Z "$sha" https://github.com/d9v3/vanguard-beta/actions/runs/790 ;;
+  datefausse) run success 2027-02-31T07:12:00Z "$sha" https://github.com/d9v3/vanguard-beta/actions/runs/791 ;;
+  utf8) printf '[{"conclusion":"success","createdAt":"\xff"}]\n' ;;
   vide) echo "[]" ;;
   hostile) run "failure; $ESSAI_HOSTILE" "<script>${jour}</script>" "$ESSAI_HOSTILE" \
     "https://pirate.example/\`$ESSAI_HOSTILE\`" ;;
@@ -1085,6 +1089,18 @@ J=2027-02-06
 ESSAI_CI=vide nuit $J
 attendu 'jq -e "(.etapes[] | select(.nom == \"ci-github\") | .etat == \"sautee\") and .ci == null" "$R/$J.json" >/dev/null' \
   "aucune CI rendue : sautée"
+for cas in futur datefausse; do
+  J=$(date -d "$J + 1 day" +%F)
+  : >"$BANC/notifications.log"
+  ESSAI_CI=$cas nuit $J
+  attendu 'grep -q "CI de nuit : date illisible, fraîcheur non vérifiée" "$R/dernier.txt" && (($(notifs) == 1))' \
+    "CI verte à la date $cas : fraîcheur non vérifiée, notifiée, jamais « tout est vert »"
+done
+J=2027-02-10
+: >"$BANC/notifications.log"
+ESSAI_CI=utf8 nuit $J
+attendu 'grep -q "réponse de GitHub refusée" "$R/dernier.txt" && (($(notifs) == 1))' \
+  "CI verte pour jq, illisible pour rapport.py : refusée, notifiée"
 nettoyer
 
 if ((ECHECS)); then

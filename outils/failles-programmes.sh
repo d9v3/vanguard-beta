@@ -81,14 +81,26 @@ echo "# outils/failles-programmes.sh : aucune exception ici, seulement celles de
 if [[ $1 == --depot ]]; then
   CODE=0
   SORTIE=$(cd "$TRAVAIL" && cargo-audit audit "${OPTIONS[@]}" --file "$RACINE/Cargo.lock" 2>&1) || CODE=$?
+  # Les erreurs de cargo tree, gardées pour la fin : écrites après la sortie de cargo audit, juste avant le code de
+  # retour, elles restent dans les dernières lignes que montre outils/verifier.sh. Une erreur identique pour plusieurs
+  # cibles ou crates n'est écrite qu'une fois, sous tous ses titres.
+  declare -A ERREURS_ARBRE=()
+  ORDRE_ERREURS=()
   for exception in "${HORS_CIBLES[@]}"; do
     for cible in x86_64-unknown-linux-gnu x86_64-pc-windows-gnu; do
       # Un cargo tree qui échoue (sources pas encore téléchargées…) ne dit rien : refusé, jamais lu comme absente.
       # Son erreur est montrée : jetée, elle laissait la CI de nuit rouge quatre nuits sans cause écrite.
       if ! arbre=$(cargo tree -q --locked --manifest-path "$RACINE/fenetre/Cargo.toml" --target "$cible" \
         -e normal,build -i "${exception#*:}" 2>"$TRAVAIL/arbre.err"); then
-        echo "✖ fenêtre : cargo tree a échoué pour $cible, ${exception%%:*} pas écartée"
-        tail -n 5 "$TRAVAIL/arbre.err" | sed 's/^/    /'
+        erreur=$(tail -n 5 "$TRAVAIL/arbre.err" | sed 's/^/    /')
+        [[ -n $erreur ]] || erreur="    (cargo tree n'a rien écrit)"
+        titre="✖ fenêtre : cargo tree a échoué pour $cible, ${exception%%:*} pas écartée"
+        if [[ -v ERREURS_ARBRE["$erreur"] ]]; then
+          ERREURS_ARBRE["$erreur"]+=$'\n'"$titre"
+        else
+          ERREURS_ARBRE["$erreur"]=$titre
+          ORDRE_ERREURS+=("$erreur")
+        fi
         CODE=1
       elif [[ -n $arbre ]]; then
         echo "✖ fenêtre : ${exception#*:} compilée pour $cible, ${exception%%:*} ne s'écarte plus"
@@ -108,6 +120,9 @@ if [[ $1 == --depot ]]; then
   fi
   [[ -z $EXCEPTIONS ]] || echo "exceptions de deny.toml : $(printf '%s\n' "$EXCEPTIONS" | paste -sd, - | sed 's/,/, /g')"
   echo "fenêtre : écartées car compilées par aucune de ses deux cibles : ${HORS_CIBLES[*]%%:*}"
+  for erreur in "${ORDRE_ERREURS[@]}"; do
+    printf '%s\n%s\n' "${ERREURS_ARBRE["$erreur"]}" "$erreur"
+  done
   exit "$CODE"
 fi
 

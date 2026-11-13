@@ -23,9 +23,9 @@ on:
   pull_request:
   workflow_dispatch:
   schedule:
-    # 3 h 43, heure de Montréal. GitHub la lance souvent bien plus tard (4 h 30 de retard le
-    # 18 oct. 2026, 7 h 15 le 19) : regarder `gh run list --workflow ci.yml --event schedule` avant de la croire
-    # absente.
+    # 3 h 43, heure de Montréal en été (2 h 43 en hiver : le cron est en UTC). GitHub la lance souvent bien plus
+    # tard (4 h 30 de retard le 18 oct. 2026, 7 h 15 le 19) : regarder `gh run list --workflow ci.yml --event
+    # schedule` avant de la croire absente.
     - cron: "43 7 * * *"
 
 # Le jeton par défaut du dépôt ne lit que le code : la vérification de nuit lit aussi les exécutions passées
@@ -68,9 +68,11 @@ jobs:
       # de noms d'utilisateur, qu'AppArmor refuse par défaut sur Ubuntu 24.04.
       - name: Espaces de noms d'utilisateur
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
-      # Actions venues d'autres que GitHub : épinglées par leur commit. Une étiquette (v2) se déplace ; si leur dépôt était
-      # piraté, une version piégée toucherait ce que compile ce travail. À mettre à jour à la main (le commentaire dit la
-      # version). Les outils dans la version épinglée ici, tels que leurs auteurs les publient (empreintes vérifiées).
+      # Actions venues d'autres que GitHub : épinglées par leur commit. Une étiquette (v2) se déplace ; si leur dépôt
+      # était piraté, une version piégée toucherait ce que compile ce travail. Nouveau SHA proposé par Dependabot
+      # (.github/dependabot.yml), relu et approuvé à la main ; les versions des outils (tool: …@X) restent à mettre
+      # à jour à la main. Les outils dans la version épinglée ici, tels que leurs auteurs les publient (empreintes
+      # vérifiées).
       - uses: taiki-e/install-action@645d1ab48b3cb8591684a8b730b2ccf4cb3f9568 # v2.87.33
         with:
           tool: cargo-audit@0.22.2,cargo-deny@0.20.2,zizmor@1.31.1,cargo-vet@0.10.3

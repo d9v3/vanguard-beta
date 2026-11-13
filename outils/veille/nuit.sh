@@ -328,7 +328,16 @@ if [[ -n $ARBRE_OK ]]; then
       conclusion=$(jq -r 'if type == "array" and length == 1 and (.[0].conclusion | type) == "string"
         then .[0].conclusion else "" end' "$TRAVAIL/ci-github.json" 2>/dev/null) || conclusion=""
       case $conclusion in
-        success) echo "dernière CI de nuit : verte" ;;
+        success)
+          # Le vert se redit par jq -e, qui échoue sur toute autre réponse : jamais un vert par défaut. rapport.py
+          # revalide ensuite chaque champ ; s'il ne la lit pas verte, la réponse est dite refusée (ci_refusee).
+          if ! jq -e 'type == "array" and length == 1 and .[0].conclusion == "success"' \
+            "$TRAVAIL/ci-github.json" >/dev/null 2>&1; then
+            echo "dernière CI de nuit introuvable ou illisible"
+            return 77
+          fi
+          echo "dernière CI de nuit : verte"
+          ;;
         failure | timed_out | startup_failure | action_required)
           echo "dernière CI de nuit : rouge ($conclusion)"
           return 1

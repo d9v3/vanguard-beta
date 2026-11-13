@@ -35,6 +35,10 @@ Réponses à l'utilisateur en français, claires, avec le pourquoi.
   `cargo vet` (Internet), puis pour chaque crate manquant `cargo vet add-exemption <crate> <version> --criteria …
   --notes "<pourquoi>"`, nommément (jamais `regenerate exemptions`, qui exempterait d'un coup tout ce qui est
   nouveau) ; `cargo vet prune` ne fait que retirer ; le diff de `supply-chain/` relu.
+- Actions de GitHub : Dependabot propose les nouveaux SHA (`.github/dependabot.yml`), jamais fusionnés seuls. La CI
+  d'une demande ne lance ni le travail de nuit, ni l'attestation, ni `claude.yml` : pour actions/cache,
+  download-artifact, attest et claude-code-action, lire le diff amont puis `gh workflow run ci.yml --ref <branche de
+  Dependabot>` avant d'approuver.
 - Failles connues : `cargo audit`, second avis, jugé comme `outils/failles-programmes.sh` (abandon, code défaillant,
   notice refusés) ; seules exceptions celles de deny.toml (`outils/exceptions-rustsec.py`), que `.cargo/audit.toml`
   recopie à l'identique ; étape de verifier.sh, sautée sans `cargo-audit` ou sans Internet.

@@ -322,7 +322,7 @@ def lire_liens(t, veille, jour):
 
 CI_CONCLUSIONS = {"success", "failure", "timed_out", "startup_failure", "action_required", "cancelled", "skipped",
                   "neutral", "stale"}
-CI_URL = r"https://github\.com/d9v3/vanguard-beta/actions/runs/\d{1,20}"
+CI_URL = r"(?a)https://github\.com/d9v3/vanguard-beta/actions/runs/\d{1,20}"
 
 
 def lire_ci(t, jour):
@@ -334,7 +334,8 @@ def lire_ci(t, jour):
     run = brut[0]
     conclusion = run.get("conclusion")
     date = run.get("createdAt")
-    date = date[:10] if isinstance(date, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", date) else None
+    forme = r"(?a)\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"  # (?a) : des chiffres ASCII seulement, pas « ٢٠٢٦ »
+    date = date[:10] if isinstance(date, str) and re.fullmatch(forme, date) else None
     try:
         age = (datetime.date.fromisoformat(jour) - datetime.date.fromisoformat(date)).days if date else None
     except ValueError:
@@ -810,11 +811,20 @@ def attend_auteur(r):
         elif e["etat"] == "echec":
             attend.append(f"étape en échec : {e['nom']}")
     ci = r.get("ci")
-    if ci and ci["conclusion"] != "success":
-        attend.append(f"CI de nuit sur GitHub : {ci['conclusion']} le {ci['date']} ({ci['url']}) ; "
+    if ci_refusee(r):
+        attend.append("CI de nuit : réponse de GitHub refusée (verte pour nuit.sh, illisible pour rapport.py : "
+                      "ci-github.log et ci-github.json de la nuit)")
+    elif ci and ci["conclusion"] != "success":
+        tete = r.get("tete_prochaine")
+        autre = (f" ; sur le commit {ci['commit']}, la tête est maintenant {tete} : la cause est peut-être déjà "
+                 "corrigée" if tete and ci["commit"] not in (tete, RETIRE) else "")
+        attend.append(f"CI de nuit sur GitHub : {ci['conclusion']} le {ci['date']} ({ci['url']}){autre} ; "
                       "gh run view --log-failed pour la cause")
     elif ci_muette(r):
-        attend.append(f"CI de nuit sur GitHub : la dernière terminée date du {ci['date']} ({ci['jours']} jours)")
+        if ci_date_douteuse(ci):
+            attend.append(f"CI de nuit sur GitHub : date illisible ({ci['date']}), fraîcheur non vérifiée")
+        else:
+            attend.append(f"CI de nuit sur GitHub : la dernière terminée date du {ci['date']} ({ci['jours']} jours)")
     if any(relais_absent(e) for e in r["etapes"]):
         attend.append("relais des envois pas encore configuré : rien à relever (LISEZMOI.md, « Envois »)")
     fl = r.get("flotte") or {}
@@ -850,10 +860,24 @@ RELAIS_ABSENT = "relais pas configuré"
 CI_JOURS_MAX = 2
 
 
+def ci_date_douteuse(ci):
+    """Une date de CI illisible ou dans le futur : sa fraîcheur n'est pas vérifiée, jamais comptée fraîche."""
+    return ci.get("jours") is None or ci["jours"] < 0
+
+
 def ci_muette(r):
-    """Une CI de nuit verte mais vieille : GitHub ne la lance plus (workflow coupé après 60 jours sans activité…)."""
+    """Une CI de nuit verte mais vieille (GitHub ne la lance plus : workflow coupé après 60 jours sans activité…), ou
+    à la date illisible : verte sans fraîcheur vérifiée, jamais comptée verte."""
     ci = r.get("ci") or {}
-    return ci.get("conclusion") == "success" and ci.get("jours") is not None and ci["jours"] > CI_JOURS_MAX
+    return ci.get("conclusion") == "success" and (ci_date_douteuse(ci) or ci["jours"] > CI_JOURS_MAX)
+
+
+def ci_refusee(r):
+    """nuit.sh a vu la CI verte (étape ci-github réussie), mais rapport.py, qui revalide chaque champ, ne la lit pas
+    verte : la réponse de GitHub est refusée, jamais comptée verte."""
+    ok = any(e.get("nom") == "ci-github" and e.get("etat") == "ok" for e in r["etapes"])
+    ci = r.get("ci")
+    return ok and (not ci or ci.get("conclusion") != "success")
 
 
 def relais_absent(e):
@@ -900,8 +924,15 @@ def resume(r):
         morceaux.append("journal des erreurs illisible")
     elif j.get("trop"):
         morceaux.append(f"journal : {j['nouvelles']} causes nouvelles, à regarder")
-    if ci_muette(r):
-        morceaux.append(f"CI de nuit muette depuis {r['ci']['jours']} jours")
+    ci = r.get("ci")
+    if ci_refusee(r):
+        morceaux.append("CI de nuit : réponse de GitHub refusée")
+    elif ci_muette(r):
+        morceaux.append("CI de nuit : date illisible, fraîcheur non vérifiée" if ci_date_douteuse(ci)
+                        else f"CI de nuit muette depuis {ci['jours']} jours")
+    elif ci and ci["conclusion"] != "success" and any(e["nom"] == "ci-github" and e["etat"] == "echec"
+                                                      for e in r["etapes"]):
+        morceaux.append(f"CI de nuit rouge le {ci['date']}")
     if r["alertes"]:
         noms = [f"{al['type']} {al['cle'].split(':')[0]}" for al in r["alertes"][:3]]
         morceaux.append(f"{len(r['alertes'])} alerte(s) ({', '.join(noms)})")
@@ -921,7 +952,7 @@ def a_notifier(r):
     _, imprevues, canaris = pas_verts(r)
     j = r.get("journal") or {}
     return bool([e for e in r["etapes"] if e["etat"] == "echec"] or r["alertes"] or r.get("propositions")
-                or r["ia"].get("branche") or imprevues or canaris or ci_muette(r) or (j and (not j["lu"] or j["trop"])))
+                or r["ia"].get("branche") or imprevues or canaris or ci_muette(r) or ci_refusee(r) or (j and (not j["lu"] or j["trop"])))
 
 
 def markdown(chemin_json, kev_humain=None):

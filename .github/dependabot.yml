@@ -1,9 +1,11 @@
 # Les actions de GitHub des workflows (.github/workflows), seulement : Dependabot propose une demande de fusion quand
 # une action épinglée a une nouvelle version, avec le nouveau SHA complet (l'épinglage par SHA est gardé, le
 # commentaire de version suit). Les crates restent à la main : cargo update, puis cargo vet et cargo deny relus
-# (CLAUDE.md, « Dépendances »). Jamais de fusion automatique : chaque demande se relit et passe la CI comme une autre.
-# Le délai de 7 jours laisse à une version piégée le temps d'être découverte et retirée avant d'être proposée
-# (exigé par zizmor, règle dependabot-cooldown).
+# (CLAUDE.md, « Dépendances »). Jamais de fusion automatique : chaque demande se relit comme une autre. La CI d'une
+# demande ne lance ni le travail de nuit, ni l'attestation, ni claude.yml : pour actions/cache, download-artifact,
+# attest et claude-code-action, lire le diff amont puis lancer `gh workflow run ci.yml --ref <branche de Dependabot>`
+# avant d'approuver. Le délai de 7 jours laisse à une version piégée le temps d'être découverte et retirée avant
+# d'être proposée (règle dependabot-cooldown de zizmor, que outils/verifier.sh ne lui fait pas encore lire ici).
 version: 2
 updates:
   - package-ecosystem: github-actions
