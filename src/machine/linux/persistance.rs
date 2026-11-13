@@ -87,21 +87,6 @@ pub(super) fn commentaire_de_systemd(ligne: &str) -> bool {
     ligne.trim_start_matches(BLANCS_DE_SYSTEMD).starts_with(['#', ';'])
 }
 
-/// Ligne de /etc/ld.so.preload qui ne précharge aucune bibliothèque, comme la lit le chargeur (glibc, `elf/rtld.c`,
-/// `dl_main`) : le commentaire va du premier « # » à la fin de la ligne (le chargeur remplace « #…\n » par des
-/// espaces), et ce qui reste, coupé sur l'espace, la tabulation et « : », ne nomme aucune bibliothèque. Contrairement
-/// au commentaire générique (`commentaire`), « --… », « ;… » et « //… » NE sont PAS des commentaires ici : le
-/// chargeur les précharge comme des chemins. Règle propre au format, suite de R-3 (lot 096) ; vérifiée contre le vrai
-/// chargeur.
-pub(super) fn commentaire_de_ldso(ligne: &str) -> bool {
-    ligne
-        .split('#')
-        .next()
-        .unwrap_or("")
-        .split([' ', '\t', ':'])
-        .all(str::is_empty)
-}
-
 /// Dossiers cachés du dossier personnel où vivent normalement des programmes.
 pub(super) const DOSSIERS_CACHES_NORMAUX: [&str; 10] = [
     ".local",
@@ -14745,41 +14730,9 @@ mod tests {
         assert!(!definit_prechargement("# LD_PRELOAD=/x"));
     }
 
-    /// R-3 (lot 096) : le commentaire de /etc/ld.so.preload n'est que « # » (jusqu'au bout de la ligne), comme le
-    /// vrai chargeur. Les lignes « --… », « ;… » et « //… », que le commentaire générique prend pour des
-    /// commentaires, nomment en fait des bibliothèques préchargées : elles ne sont PAS des commentaires ici.
-    #[test]
-    fn commentaire_de_ldso_colle_au_chargeur() {
-        // Sans bibliothèque à charger : commentaire ou ligne vide.
-        for vide in ["", "   ", "\t", "# tout en commentaire", "   # décalé", ":"] {
-            assert!(commentaire_de_ldso(vide), "{vide:?} devrait être sans bibliothèque");
-        }
-        // Une bibliothèque réelle : jamais un commentaire. « --/;//  » sont des chemins pour le chargeur.
-        for lib in [
-            "/usr/lib/libz.so",
-            "//tmp/l.so",
-            "-- /tmp/l.so",
-            "--/tmp/l.so",
-            "; /tmp/l.so",
-            ";/tmp/l.so",
-            "//tmp/l.so",
-            "/usr/lib/a.so:/tmp/.x/b.so",
-            "/usr/lib/a.so # note après",
-        ] {
-            assert!(!commentaire_de_ldso(lib), "{lib:?} nomme une bibliothèque");
-        }
-        // Le commentaire générique, lui, saute à tort « --/;// » : c'est l'écart que R-3 corrige.
-        for lib in ["-- /tmp/l.so", "; /tmp/l.so", "//tmp/l.so"] {
-            assert!(
-                commentaire(lib),
-                "le commentaire générique saute {lib:?} (écart corrigé)"
-            );
-        }
-    }
-
     /// R-3 (lot 096), bout en bout : une bibliothèque préchargée par une ligne « //tmp/… » de /etc/ld.so.preload est
     /// vue dans le bilan. Avec le commentaire générique (« // » pris pour un commentaire) la ligne était sautée et la
-    /// bibliothèque passait inaperçue ; le commentaire propre au format la détecte.
+    /// bibliothèque passait inaperçue ; la lecture du chargeur (`machine::prechargement`) la détecte.
     #[test]
     fn preload_double_barre_vu_dans_le_bilan() {
         let m = Maison::nouvelle("preload-double-barre");

@@ -1532,15 +1532,15 @@ fn lecture_rpm(code: Option<i32>, sortie: &str, erreurs: &str) -> Result<Option<
 }
 
 /// La ligne de ce fichier du système (`gestes_unix::fichier_de_ligne_admis`) est-elle de celles qu'un geste de
-/// défense retire : un préchargement (toute ligne de /etc/ld.so.preload, LD_PRELOAD, LD_AUDIT), une commande lancée
+/// défense retire : un préchargement (LD_PRELOAD, LD_AUDIT ; /etc/ld.so.preload se juge à part), une commande lancée
 /// suspecte (`commande_suspecte`), ou l'ouverture automatique d'une session (`ouvre_une_session`) ? Revu par le fils
 /// root avant de la retirer : seule une telle ligne part, jamais une autre que la liste lui aurait désignée.
 pub(crate) fn ligne_suspecte(fichier: &str, ligne: &str) -> bool {
-    // /etc/ld.so.preload a son propre commentaire (« # » seulement) : « --/tmp/l.so », « ;/tmp/l.so » ou
-    // « //tmp/l.so » sont des bibliothèques préchargées, pas des commentaires, et un geste peut les retirer (R-3,
-    // lot 096). Les autres fichiers gardent le commentaire générique.
+    // /etc/ld.so.preload ne se juge pas sur une ligne seule : ce que le chargeur en lit dépend de tout ce qui la
+    // précède (relecture adverse du lot 096, C1). Le fils root le juge sur le fichier entier
+    // (`defense_eleve::juger_ligne`, `machine::prechargement`) ; ici, sans le fichier, la réponse est non.
     if fichier == "/etc/ld.so.preload" {
-        return !commentaire_de_ldso(ligne);
+        return false;
     }
     if commentaire(ligne) {
         return false;

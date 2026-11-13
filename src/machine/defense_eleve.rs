@@ -1931,10 +1931,13 @@ fn juger_ligne(e: Empreinte, c: &CheminDesigne, a: &mut dyn Acces) -> Jugement {
     let vu = lisible(&p);
     let mut garde = Vec::with_capacity(contenu.len());
     let mut retiree: Option<&[u8]> = None;
-    for morceau in contenu.split_inclusive(|o| *o == b'\n') {
+    // Les numéros (depuis 0, coupés au seul « \n ») des lignes qui partent.
+    let mut numeros: Vec<usize> = Vec::new();
+    for (n, morceau) in contenu.split_inclusive(|o| *o == b'\n').enumerate() {
         let ligne = morceau.strip_suffix(b"\n").unwrap_or(morceau);
         if empreinte_de_ligne(ligne) == e {
             retiree = Some(ligne);
+            numeros.push(n);
         } else {
             garde.extend_from_slice(morceau);
         }
@@ -1942,22 +1945,40 @@ fn juger_ligne(e: Empreinte, c: &CheminDesigne, a: &mut dyn Acces) -> Jugement {
     let Some(ligne) = retiree else {
         return Ok(None);
     };
+    let fichier = std::str::from_utf8(c.octets()).unwrap_or_default();
+    // /etc/ld.so.preload ne se juge pas ligne par ligne : ce que le chargeur lit d'une ligne dépend de tout ce qui la
+    // précède (sa boucle de commentaires s'arrête trop tôt dès le deuxième « # » : relecture adverse du lot 096, C1).
+    // Le fichier entier est relu comme le lit le chargeur (`machine::prechargement`) : une ligne part si elle porte
+    // au moins une bibliothèque chargée, et les emporte toutes ; une ligne qui n'en porte aucune (commentaire vrai,
+    // ligne vide, « : # x ») est refusée.
+    let preload = fichier == "/etc/ld.so.preload";
+    let bibliotheques = if preload {
+        let chargees = crate::machine::prechargement::bibliotheques(&contenu);
+        numeros
+            .iter()
+            .map(|n| chargees.iter().filter(|b| b.ligne == *n).count())
+            .max()
+            .unwrap_or(0)
+    } else {
+        0
+    };
     // Seule une ligne que Vanguard sait suspecte part : une liste qui désignerait une autre ligne (un réglage de
     // sécurité) est refusée ici, quoi qu'elle dise.
-    let fichier = std::str::from_utf8(c.octets()).unwrap_or_default();
-    if !std::str::from_utf8(ligne).is_ok_and(|l| crate::machine::linux::ligne_suspecte(fichier, l)) {
+    let suspecte = if preload {
+        bibliotheques > 0
+    } else {
+        std::str::from_utf8(ligne).is_ok_and(|l| crate::machine::linux::ligne_suspecte(fichier, l))
+    };
+    if !suspecte {
         return Err(refus(trf!(
             "la ligne désignée dans {vu} n'est pas de celles que Vanguard retire : rien n'est fait",
             "the line named in {vu} is not one Vanguard removes: nothing is done"
         )));
     }
     let apres: [u8; 32] = Sha256::digest(&garde).into();
-    // ld.so.preload : une ligne peut nommer plusieurs bibliothèques (espaces ou « : ») ; toutes partent avec elle.
-    let bibliotheques = ligne
-        .split(|o| o.is_ascii_whitespace() || *o == b':')
-        .filter(|m| !m.is_empty())
-        .count();
-    let texte = if fichier == "/etc/ld.so.preload" && bibliotheques > 1 {
+    // ld.so.preload : une ligne peut nommer plusieurs bibliothèques ; toutes partent avec elle. Comptées comme le
+    // chargeur les coupe (espace, tabulation, « : » ; pas « \r » ni le saut de page : C7).
+    let texte = if preload && bibliotheques > 1 {
         trf!(
             "Fichier {vu}, ligne retirée en entier, avec les {bibliotheques} bibliothèques qu'elle nomme (remettez à la main celles que vous reconnaissez, ou Défaire) : {}",
             "File {vu}, line removed whole, with the {bibliotheques} libraries it names (put back by hand the ones you recognize, or Undo): {}",
@@ -4095,6 +4116,43 @@ mod tests {
         assert_eq!(a.texte("/etc/ld.so.preload"), "# rien\n");
     }
 
+    /// Relecture adverse du lot 096 (C1, C5) : /etc/ld.so.preload se juge sur le fichier entier, comme le lit le
+    /// chargeur. Une ligne « # … » qu'il charge quand même (après une longue note) se retire ; la même ligne
+    /// « # note » part d'un fichier où le chargeur la lit, et se refuse (fichier inchangé, aucune question) dans un
+    /// fichier où c'est un vrai commentaire. Une ligne vide, ou « : # x », ne nomme rien : refusée.
+    #[test]
+    fn ligne_ldso_jugee_sur_le_fichier_entier() {
+        let essai = |contenu: &[u8], ligne: &[u8]| {
+            let mut a = Faux::nouveau().repondre("o");
+            a.poser("/etc/ld.so.preload", contenu, 0o644);
+            let c = CheminDesigne::nouveau(b"/etc/ld.so.preload").unwrap();
+            let r = faire_avec(
+                Defense::RetirerLigne(empreinte_de_ligne(ligne), c),
+                &mut a,
+                &mut FauxServices::nouveau(),
+            );
+            let apres = a.fichiers[Path::new("/etc/ld.so.preload")].contenu.clone();
+            (r.reussi, a.questions.len(), apres)
+        };
+        let note = b"# une note anodine assez longue pour couvrir la suite du fichier\n";
+        let (ok, _, apres) = essai(&[&note[..], b"# /opt/x/evil.so\n"].concat(), b"# /opt/x/evil.so");
+        assert!(ok);
+        assert_eq!(apres, note);
+        let (ok, _, apres) = essai(b"# rien\n# note\n", b"# note");
+        assert!(ok);
+        assert_eq!(apres, b"# rien\n");
+        for (contenu, ligne) in [
+            (&b"/tmp/.x/libhook.so\n# note\n"[..], &b"# note"[..]),
+            (b"/tmp/.x/libhook.so\n\n", b""),
+            (b"/tmp/.x/libhook.so\n: # x\n", b": # x"),
+        ] {
+            let (ok, questions, apres) = essai(contenu, ligne);
+            assert!(!ok, "{:?}", String::from_utf8_lossy(ligne));
+            assert_eq!(questions, 0, "{:?}", String::from_utf8_lossy(ligne));
+            assert_eq!(apres, contenu);
+        }
+    }
+
     /// Une ligne de ld.so.preload qui nomme plusieurs bibliothèques part en entier : c'est dit avant la question.
     #[test]
     fn ligne_de_plusieurs_bibliotheques_dite() {
@@ -4102,6 +4160,8 @@ mod tests {
             (&b"/usr/lib/libalice.so /tmp/.x/libhook.so"[..], true),
             (b"/usr/lib/libalice.so:/tmp/.x/libhook.so", true),
             (b"/tmp/.x/libhook.so", false),
+            // C7 : le saut de page ne coupe pas pour le chargeur : un seul nom.
+            (b"/tmp/.x/a.so\x0c/tmp/.x/b.so", false),
         ] {
             let mut a = Faux::nouveau().repondre("");
             let mut contenu = ligne.to_vec();
