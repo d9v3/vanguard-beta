@@ -1,271 +1,270 @@
 <!-- Page de présentation de Vanguard : publiée sur GitHub Pages (docs/index.html, refaite par outils/deployer.sh à chaque
-     version) et sur claude.ai (skill /livrer). Les {{…}} sont remplis par outils/page-fonctions.py (version, date,
-     nombres de règles, de commandes et de tests, liste des commandes) ; les fonctions et les nouveautés se tiennent à
-     la main, dans l'ordre des README : la sécurité de Vanguard lui-même d'abord, puis les fonctions de sécurité menace
-     par menace (ce qu'il lit, juge et fait), « En plus » (dépannage, optimisation, données, suivi), les systèmes, et
-     l'installation en bas. Les deux tableaux du haut reprennent ceux du README.md, nombres compris (remplis ici depuis
-     le code). Rien de personnel : ni nom, ni réseau, ni adresse Internet publique. -->
+     version) et sur claude.ai (skill /livrer). Elle imite la fenêtre de Vanguard (vanguard-fenetre) : barre du haut
+     à onglets, bande de console, titres à phrase grise, cartes. Les {{…}} sont remplis par outils/page-fonctions.py :
+     version, date, nombres de règles, de commandes et de tests, liste des commandes, les couleurs (lues dans
+     fenetre/src/couleurs.rs et dessin/mod.rs) et « À venir » (lu dans le ticket public n° 1). Les fonctions et les
+     nouveautés se tiennent à la main, dans l'ordre des README : la sécurité de Vanguard lui-même d'abord, puis les
+     fonctions de sécurité menace par menace, « En plus », les systèmes, et l'installation en bas. Le long détail est
+     dans des menus déroulants (<details>) : replié à l'écran, trouvé quand même par la recherche du navigateur,
+     déplié à l'impression. Rien de personnel : ni nom, ni réseau, ni adresse Internet publique. -->
 <title>Vanguard {{VERSION_COURTE}}</title>
 <meta name="description" content="Vanguard : cyberdéfense portable des postes et des réseaux, depuis une clé USB. Un exécutable Rust par système (Linux, Windows), versions signées en Ed25519, une liste fermée d'hôtes joints en HTTPS ; bilan noté de A à F, audit du réseau, détection et blocage, après accord. Logiciel libre, GPL-3.0-or-later.">
-<meta name="theme-color" content="#f2f5f7" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="{{FOND_CLAIR}}" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="{{FOND_SOMBRE}}" media="(prefers-color-scheme: dark)">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Vanguard {{VERSION_COURTE}}">
+<meta property="og:description" content="Cyberdéfense portable des postes et des réseaux, depuis une clé USB : bilan noté de A à F, audit du réseau, détection et blocage, après accord. Logiciel libre, Rust.">
+<meta property="og:url" content="https://d9v3.github.io/vanguard-beta/">
 <meta name="claude:viewport-fit-sides" content="cover">
 <style>
-/* Mise en page : une ouverture (le message à gauche, la vraie fenêtre du programme à droite), puis les sections sur
-   une colonne de 72 rem ; tout passe sur une colonne sur téléphone. Claire en mode clair, la fenêtre du terminal
-   seule sombre ; toute sombre en mode sombre. Polices du système seulement : aucune requête vers un tiers.
-   Couleurs du thème « Vanguard » de la fenêtre (fenetre/src/couleurs.rs, sombre et clair) ; en clair, l'accent, le
-   vert et le gris discret un cran plus foncés pour tenir le contraste sur le fond. Le bleu ne sert qu'aux liens, au
-   focus et à la fenêtre du programme ; le reste est neutre. Contrastes AA (4,5:1 pour le texte) dans les deux modes. */
+{{JETONS}}
+/* Mise en page : celle de la fenêtre de Vanguard (vanguard-fenetre) — barre du haut avec le V, le mot VANGUARD
+   espacé, des onglets soulignés en accent, la pastille d'état et le bouton plein ; une bande de console en chasse
+   fixe ; puis de grands titres à phrase grise et des cartes (surface, trait fin, coins ronds, ombre douce). Une
+   colonne de 72 rem, une seule sur téléphone. Les couleurs ci-dessus viennent du préréglage « Vanguard » de la
+   fenêtre (fenetre/src/couleurs.rs et dessin/mod.rs), lues par outils/page-fonctions.py à chaque rendu ; les gris et
+   l'accent écrits en texte y sont rapprochés de l'encre juste assez pour tenir 4,5:1 (AA). Polices : Inter et
+   JetBrains Mono, celles de la fenêtre, si l'appareil les a ; sinon celles du système. Aucune requête vers un tiers. */
 :root {
-  --fond: #f2f5f7;
-  --surface: #ffffff;
-  --surface-2: #ecf1f3;
-  --encre: #0a151b;
-  --doux: #495860;
-  --discret: #5f6c73;
-  --trait: #e1e7eb;
-  --trait-fort: #cdd6db;
-  --accent: #06729a;
-  --accent-fort: #055d7e;
-  --sur-accent: #ffffff;
-  --bon: #017a30;
-  --ombre: 0 1px 2px rgba(10, 21, 27, .06), 0 16px 40px -20px rgba(10, 21, 27, .35);
-  /* La fenêtre du programme, sombre dans les deux modes, comme le vrai terminal. */
-  --term-fond: #0a0d0e;
-  --term-trait: #232b30;
-  --term-texte: #e8eef1;
-  --term-doux: #9aa7ae;
-  --term-accent: #3fbef7;
-  --texte: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Liberation Sans", Arial, sans-serif;
-  --mono: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Cascadia Mono", "DejaVu Sans Mono", "Liberation Mono", monospace;
+  --texte: Inter, "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Liberation Sans", Arial, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Cascadia Mono", "DejaVu Sans Mono", "Liberation Mono", monospace;
+  --rayon-bouton: 10px;
+  --rayon-pastille: 8px;
   --rayon-code: 4px;
-  --rayon-bouton: 8px;
-  --rayon: 12px;
-  --rayon-fenetre: 14px;
+  --barre: 64px;
   --sortie: cubic-bezier(.22, 1, .36, 1);
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --fond: #000000; --surface: #0a0d0e; --surface-2: #101417; --encre: #e8eef1; --doux: #9aa7ae; --discret: #7b878e;
-    --trait: #171d20; --trait-fort: #232b30; --accent: #3fbef7; --accent-fort: #7dd3fa; --sur-accent: #02131c;
-    --bon: #45b45e; --ombre: none; --term-trait: #232b30;
-    color-scheme: dark;
-  }
-}
-:root[data-theme="dark"] {
-  --fond: #000000; --surface: #0a0d0e; --surface-2: #101417; --encre: #e8eef1; --doux: #9aa7ae; --discret: #7b878e;
-  --trait: #171d20; --trait-fort: #232b30; --accent: #3fbef7; --accent-fort: #7dd3fa; --sur-accent: #02131c;
-  --bon: #45b45e; --ombre: none; --term-trait: #232b30;
-  color-scheme: dark;
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--fond); color: var(--encre); font-family: var(--texte); font-size: 1rem; line-height: 1.6; -webkit-text-size-adjust: 100%; }
-a { color: var(--accent); text-underline-offset: .18em; }
-a:hover { color: var(--accent-fort); }
-:where(a, summary, .bouton):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--rayon-code); }
-.cadre {
-  max-width: 72rem; margin: 0 auto;
-  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
-}
-h1, h2, h3, h4 { font-family: var(--texte); font-weight: 600; text-wrap: balance; margin: 0; }
-.surtitre { font-family: var(--mono); font-size: .8125rem; line-height: 1.4; color: var(--discret); margin: 0; }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--fond); }
+a { color: var(--lien); text-underline-offset: .18em; }
+a:hover { color: var(--encre); }
+:where(a, summary, button):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--rayon-pastille); }
+[id] { scroll-margin-top: calc(var(--barre) + 1.5rem); }
+.cadre { max-width: 72rem; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+h1, h2, h3, h4 { font-weight: 500; text-wrap: balance; margin: 0; }
+code, .k { font-family: var(--mono); font-size: .875em; }
+code { background: var(--surface-2); color: var(--encre); border-radius: var(--rayon-code); padding: .05rem .25rem; overflow-wrap: anywhere; }
+.carte { background: var(--surface); border: 1px solid var(--trait); border-radius: var(--rayon); box-shadow: var(--ombre); }
 
-/* Ouverture */
-.ouverture { background: var(--fond); border-bottom: 1px solid var(--trait); }
-.barre { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding-block: 1.1rem; }
-.marque { display: flex; align-items: center; gap: .7rem; color: var(--encre); text-decoration: none; }
+/* Barre du haut, comme celle de la fenêtre. */
+.barre-app { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--fond); border-bottom: 1px solid var(--trait); }
+.barre-dedans { display: flex; align-items: center; gap: 1.25rem; min-height: var(--barre); max-width: 90rem; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.marque { display: flex; align-items: center; gap: 1.1rem; color: var(--encre); text-decoration: none; flex: none; }
 .marque:hover { color: var(--encre); }
-.plaque { width: 2.25rem; height: 2.25rem; border-radius: var(--rayon-bouton); background: #0a0d0e; display: grid; place-items: center; box-shadow: 0 0 0 1px var(--trait-fort); flex: none; }
-.plaque svg { width: 64%; height: auto; }
-.marque b { font-size: 1.125rem; font-weight: 700; }
-.version { font-family: var(--mono); font-size: .75rem; color: var(--discret); border: 1px solid var(--trait-fort); border-radius: var(--rayon-code); padding: .05rem .4rem; }
-.nav { display: flex; gap: 1.5rem; font-size: .9375rem; }
-.nav a { color: var(--doux); text-decoration: none; }
-.nav a:hover { color: var(--encre); }
-.heros { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.08fr); gap: 3.5rem; align-items: start; padding-block: 3rem 4.5rem; }
-.heros .surtitre { margin-bottom: 1rem; }
-.heros h1 { font-size: clamp(2.25rem, 4.2vw, 3.25rem); line-height: 1.08; letter-spacing: -.02em; }
-.heros .chapeau { color: var(--doux); font-size: 1.125rem; line-height: 1.55; margin: 1.25rem 0 0; max-width: 34rem; }
-.heros .cap { color: var(--doux); font-size: .9375rem; margin: 1rem 0 0; max-width: 34rem; }
-.heros .cap b { color: var(--encre); font-weight: 600; }
-.heros .points { color: var(--doux); margin: 1.25rem 0 0; padding-left: 1.4rem; max-width: 34rem; }
-.heros .points li { margin: .4rem 0 0; padding-left: .2rem; }
-.heros .points li::marker { font-family: var(--mono); font-size: .875em; color: var(--discret); }
-.heros .points b { color: var(--encre); font-weight: 600; }
-.systemes { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1.5rem; }
-.systeme { font-family: var(--mono); font-size: .8125rem; color: var(--encre); background: var(--surface-2); border-radius: var(--rayon-code); padding: .2rem .55rem; }
-/* Le code d'abord ; l'installation est en bas de page, à dessein. */
-.boutons { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem 1.25rem; margin-top: 1.75rem; }
-.bouton { display: inline-flex; align-items: center; justify-content: center; min-height: 2.75rem; font-size: .9375rem; font-weight: 600; text-decoration: none; border-radius: var(--rayon-bouton); padding: .6rem 1.1rem; border: 1px solid var(--accent); color: var(--sur-accent); background: var(--accent); }
-.bouton:hover { color: var(--sur-accent); background: var(--accent-fort); border-color: var(--accent-fort); }
-.lien-bas { font-size: .9375rem; font-weight: 600; text-decoration: none; padding: .6rem .2rem; }
-.lien-bas:hover { text-decoration: underline; }
-.faits { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1.25rem; margin-top: 2.25rem; padding-top: 1.5rem; border-top: 1px solid var(--trait); }
-.fait b { display: block; font-size: 1.5rem; font-weight: 600; line-height: 1.15; letter-spacing: -.01em; font-variant-numeric: tabular-nums; }
-.fait span { display: block; margin-top: .2rem; font-size: .875rem; line-height: 1.45; color: var(--doux); }
+.marque .v { font-size: 1.625rem; font-weight: 500; line-height: 1; }
+.marque .mot { font-size: .875rem; font-weight: 500; letter-spacing: .24em; }
+.onglets { display: flex; align-self: stretch; margin-left: 1rem; min-width: 0; }
+.onglets a { display: flex; align-items: center; padding: 0 .8rem; font-size: .875rem; color: var(--doux); text-decoration: none; white-space: nowrap; box-shadow: inset 0 -2px 0 transparent; }
+.onglets a:hover { color: var(--encre); }
+.onglets a[aria-current] { color: var(--encre); box-shadow: inset 0 -2px 0 var(--accent); }
+.onglets a:focus-visible { outline-offset: -4px; }
+.outils-barre { display: flex; align-items: center; gap: 1rem; margin-left: auto; flex: none; }
+.etat { display: inline-flex; align-items: center; gap: .55rem; font-size: .8125rem; color: var(--doux); white-space: nowrap; }
+.etat::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--bon); box-shadow: 0 0 0 3px color-mix(in srgb, var(--bon) 22%, transparent); }
+.theme { font: inherit; font-size: .8125rem; color: var(--encre); background: var(--surface-2); border: 1px solid var(--trait); border-radius: var(--rayon-pastille); min-height: 32px; padding: 0 .75rem; cursor: pointer; display: inline-flex; align-items: center; gap: .4rem; }
+.theme:hover { background: var(--surface-3); }
+.theme svg { width: 1em; height: 1em; }
+.bouton { display: inline-flex; align-items: center; justify-content: center; min-height: 36px; padding: 0 1rem; font-size: .8125rem; font-weight: 500; text-decoration: none; white-space: nowrap; border-radius: var(--rayon-bouton); color: var(--sur-accent); background: var(--accent); }
+.bouton:hover { color: var(--sur-accent); background: color-mix(in srgb, var(--accent) 84%, var(--encre)); }
+.bouton.grand { min-height: 44px; padding: 0 1.25rem; font-size: .9375rem; }
+.bouton.second { color: var(--encre); background: var(--surface-2); border: 1px solid var(--trait); }
+.bouton.second:hover { background: var(--surface-3); color: var(--encre); }
 
-/* La fenêtre du programme : son texte se règle sur la largeur de la boîte, pour que les lignes du menu (77 colonnes
-   au plus, dans un cadre de 78) y tiennent sans défiler ni dépasser du cadre (un caractère des polices à chasse
-   fixe du système fait de 0,55 à 0,61 em : 48,5 em laissent la marge). Au bureau, elle reste au milieu de l'écran
-   pendant le texte de l'ouverture (sticky), sans laisser de coin vide sous elle. */
-.fenetre { container-type: inline-size; background: var(--term-fond); color: var(--term-texte); border: 1px solid var(--term-trait); border-radius: var(--rayon-fenetre); box-shadow: var(--ombre); min-width: 0; position: sticky; top: max(1.5rem, calc(50vh - 13rem)); }
-.fenetre .titre-fenetre { padding: .6rem 1.1rem; border-bottom: 1px solid var(--term-trait); font-family: var(--mono); font-size: .75rem; color: var(--term-doux); }
-.fenetre :focus-visible { outline-color: var(--term-accent); }
-.fenetre pre { margin: 0; padding: 1rem 1.1rem 1.2rem; overflow-x: auto; font-family: var(--mono); font-size: min(.78rem, calc((100cqi - 2.3rem) / 48.5)); line-height: 1.55; color: var(--term-texte); }
-.fenetre pre a { color: var(--term-texte); text-decoration: none; }
-.fenetre pre a:hover, .fenetre pre a:focus-visible { color: var(--term-accent); }
-.g { color: var(--term-doux); } .c { color: var(--term-accent); }
-/* Cadre et filets en CSS, pas en caractères ╭─╮ : ceux d'une autre police, un peu plus larges, décaleraient le bord
-   droit. 1ch = un caractère du terminal ; le cadre et les filets vont jusqu'à la 78e colonne, une de plus que la
-   plus longue ligne. */
-.boite { display: inline-block; width: 78ch; padding: .45em 0; border: 1px solid var(--term-doux); border-radius: .5em; margin-bottom: .2em; }
-.filet { display: inline-flex; align-items: center; gap: 1ch; width: 76ch; color: var(--term-doux); }
-.filet::before, .filet::after { content: ""; border-top: 1px solid var(--term-doux); }
-.filet::before { width: 2ch; }
-.filet::after { flex: 1; }
-.menu-court { display: none; list-style: none; margin: 0; padding: .4rem 1.1rem 1rem; font-family: var(--mono); font-size: .875rem; }
-.menu-court li a { display: grid; grid-template-columns: 1.8rem 1fr; gap: .6rem; align-items: center; min-height: 2.75rem; padding: .35rem 0; border-top: 1px solid var(--term-trait); color: var(--term-texte); text-decoration: none; }
-.menu-court li:first-child a { border-top: 0; }
-.menu-court .n { color: var(--term-accent); text-align: right; font-variant-numeric: tabular-nums; }
+/* La bande de console, sous la barre. */
+.console { background: var(--surface); border-bottom: 1px solid var(--trait); font-size: .8125rem; }
+.console .cadre { max-width: 90rem; }
+.console p { margin: 0; }
+.console-etat { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem 1rem; padding-block: .6rem; color: var(--doux); }
+.console-etat b { color: var(--encre); font-weight: 500; }
+.console-etat span::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--discret); margin-right: .6rem; vertical-align: .12em; }
+.invite { display: flex; gap: .9rem; align-items: baseline; padding-block: .6rem .7rem; border-top: 1px solid var(--trait); font-family: var(--mono); color: var(--discret); white-space: nowrap; overflow: hidden; }
+.invite b { color: var(--lien); font-weight: 400; }
+.invite span { overflow: hidden; text-overflow: ellipsis; }
 
-/* Sections. Chacune porte son numéro et un filet, comme les rubriques du menu du programme (── BILAN DE SÉCURITÉ ──). */
-main { display: grid; gap: 5.5rem; padding-block: 4.5rem 4.5rem; counter-reset: section; }
-/* Une section, élément de grille, prendrait sinon la largeur de son plus long contenu (code, exemple) : la page déborderait sur téléphone. */
+/* Ouverture : comme l'écran Vue d'ensemble. */
+.ouverture { padding-block: 3rem 1rem; display: grid; gap: 2rem; }
+.surtitre { font-size: .8125rem; line-height: 1.4; color: var(--discret); margin: 0; }
+.ouverture h1 { font-size: clamp(2rem, 3.6vw, 2.75rem); line-height: 1.12; letter-spacing: -.015em; max-width: 52rem; margin-top: .6rem; }
+.chapeau { color: var(--doux); font-size: 1.0625rem; line-height: 1.6; margin: 1rem 0 0; max-width: 50rem; }
+.pastilles { display: flex; flex-wrap: wrap; gap: .5rem; margin: 0; padding: 0; list-style: none; }
+.pastille { display: inline-flex; align-items: center; min-height: 32px; padding: 0 .75rem; font-size: .8125rem; font-weight: 500; color: var(--encre); background: var(--surface); border: 1px solid var(--trait); border-radius: var(--rayon-pastille); text-decoration: none; }
+a.pastille:hover { color: var(--encre); background: var(--surface-2); border-color: var(--trait-fort); }
+.boutons { display: flex; flex-wrap: wrap; gap: .75rem; }
+.stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; }
+.stat { display: grid; gap: .35rem; align-content: start; padding: 1.3rem 1.3rem 1.2rem; min-width: 0; }
+.stat .etiquette { font-size: .875rem; color: var(--doux); }
+.stat .valeur { display: flex; align-items: center; gap: .55rem; font-size: 1.625rem; font-weight: 500; line-height: 1.2; font-variant-numeric: tabular-nums; }
+.stat .valeur::before { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); flex: none; }
+.stat .detail { font-size: .875rem; color: var(--doux); }
+.stat .ouvrir { margin-top: .6rem; font-size: .8125rem; color: var(--discret); text-decoration: none; justify-self: start; }
+.stat .ouvrir:hover { color: var(--lien); }
+.points { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; list-style: none; margin: 0; padding: 0; }
+.points li { padding: 1.2rem 1.3rem; color: var(--doux); font-size: .9375rem; min-width: 0; }
+.points b { display: block; color: var(--encre); font-weight: 500; font-size: 1rem; margin-bottom: .25rem; }
+.cap { color: var(--doux); font-size: .9375rem; margin: 0; max-width: 50rem; }
+.cap b { color: var(--encre); font-weight: 500; }
+.rubriques { display: grid; gap: .75rem; }
+.rubriques h2 { font-size: 1rem; }
+
+/* Sections : grand titre, phrase grise. */
+main { display: grid; gap: 5rem; padding-block: 4rem; }
 main > section { min-width: 0; }
-/* Les sections loin sous l'écran ne sont mises en page qu'en approchant : la page s'affiche plus vite sur téléphone. */
+/* Loin sous l'écran, mises en page seulement en approchant : plus rapide sur téléphone. */
 main > section + section { content-visibility: auto; contain-intrinsic-size: auto 1200px; }
-.tete-section { display: grid; gap: .75rem; margin-bottom: 2.25rem; }
-.tete-section > :not(.surtitre) { max-width: 46rem; }
-.tete-section .surtitre { display: flex; align-items: center; gap: .75rem; counter-increment: section; margin-bottom: .5rem; }
-.tete-section .surtitre::before { content: counter(section, decimal-leading-zero); color: var(--encre); }
-.tete-section .surtitre::after { content: ""; flex: 1; border-top: 1px solid var(--trait-fort); }
-.tete-section h2 { font-size: clamp(1.625rem, 2.6vw, 2rem); line-height: 1.15; letter-spacing: -.015em; }
-.tete-section p:not(.surtitre) { color: var(--doux); margin: 0; font-size: 1.0625rem; }
+.tete-section { display: grid; gap: .5rem; margin-bottom: 2rem; }
+.tete-section > * { max-width: 48rem; }
+.tete-section h2 { font-size: clamp(1.5rem, 2.4vw, 1.75rem); line-height: 1.2; letter-spacing: -.01em; }
+.tete-section p:not(.surtitre) { color: var(--doux); margin: 0; font-size: .9375rem; }
+.sous-titre { font-size: 1rem; line-height: 1.35; margin: 2.75rem 0 1rem; }
+.note { color: var(--doux); font-size: .9375rem; margin: 1rem 0 0; max-width: 48rem; }
 
-.etapes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2rem; list-style: none; padding: 0; margin: 0; counter-reset: etape; }
-.etapes li { border-top: 1px solid var(--trait-fort); padding-top: 1.1rem; counter-increment: etape; }
-.etapes li::before { content: counter(etape, decimal-leading-zero); display: block; font-family: var(--mono); font-size: .8125rem; color: var(--discret); margin-bottom: .5rem; }
-.etapes h3 { font-size: 1.125rem; margin-bottom: .35rem; }
-.etapes p { margin: 0; color: var(--doux); font-size: .9375rem; }
-
-/* Les cartes des menaces en colonnes : chacune garde sa hauteur, sans vide sous les plus courtes. */
-.domaines { columns: 3 20rem; column-gap: 1.25rem; }
-.domaine { break-inside: avoid; margin: 0 0 1.25rem; background: var(--surface); border: 1px solid var(--trait); border-radius: var(--rayon); padding: 1.4rem 1.4rem 1.5rem; display: grid; gap: .85rem; align-content: start; min-width: 0; }
+.domaines { columns: 3 20rem; column-gap: 1rem; }
+.domaine { break-inside: avoid; margin: 0 0 1rem; padding: 1.3rem 1.3rem 1.2rem; display: grid; gap: .8rem; align-content: start; min-width: 0; }
 .domaine header { display: flex; align-items: flex-start; gap: .7rem; }
-.icone { color: var(--doux); display: grid; place-items: center; flex: none; padding-top: .15rem; }
+.icone { color: var(--lien); display: grid; place-items: center; flex: none; padding-top: .15rem; }
 .icone svg { width: 1.25rem; height: 1.25rem; }
-.domaine h3 { font-size: 1.125rem; line-height: 1.35; }
-.domaine .touche { display: block; margin-top: .15rem; font-family: var(--mono); font-size: .75rem; color: var(--discret); overflow-wrap: anywhere; }
-.domaine ul { list-style: none; margin: 0; padding: 0; display: grid; gap: .6rem; }
-.domaine li { position: relative; padding-left: 1.1rem; font-size: .9375rem; color: var(--doux); }
-.domaine li::before { content: ""; position: absolute; left: 0; top: .8em; width: .5rem; border-top: 1px solid var(--trait-fort); }
-.domaine li b { color: var(--encre); font-weight: 600; }
-.nouveau { display: inline-block; font-family: var(--mono); font-size: .75rem; line-height: 1.4; color: var(--bon); border: 1px solid currentColor; border-radius: var(--rayon-code); padding: 0 .35rem; margin-left: .3rem; vertical-align: .1em; }
+.domaine h3 { font-size: 1rem; line-height: 1.35; }
+.domaine .touche { display: block; margin-top: .2rem; font-family: var(--mono); font-size: .75rem; color: var(--discret); overflow-wrap: anywhere; }
+.liste { list-style: none; margin: 0; padding: 0; display: grid; gap: .55rem; }
+.liste li, .domaine li { position: relative; padding-left: 1rem; font-size: .9375rem; color: var(--doux); }
+.liste li::before, .domaine li::before { content: ""; position: absolute; left: 0; top: .72em; width: 5px; height: 5px; border-radius: 50%; background: var(--trait-fort); }
+.domaine ul { list-style: none; margin: 0; padding: 0; display: grid; gap: .55rem; }
+.liste b, .domaine li b { color: var(--encre); font-weight: 500; }
+.nouveau { display: inline-block; font-size: .75rem; font-weight: 500; line-height: 1.5; color: var(--bon); border: 1px solid currentColor; border-radius: 999px; padding: 0 .45rem; margin-left: .3rem; vertical-align: .1em; }
 
-/* Grilles de cases (audit du réseau, systèmes, installation) : des traits entre elles ; une case seule sur sa ligne
-   ne laisse pas de vide gris derrière elle. */
-.audit { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); background: var(--surface); border: 1px solid var(--trait); border-radius: var(--rayon); overflow: hidden; }
+/* Menus déroulants : le résumé d'une ligne, le détail replié ; chevron qui tourne, accent au survol et au focus. */
+details > summary { list-style: none; cursor: pointer; }
+details > summary::-webkit-details-marker { display: none; }
+.replie > summary, .plus > summary { display: flex; align-items: center; gap: .75rem; }
+.replie > summary::after, .plus > summary::after { content: ""; flex: none; width: .5rem; height: .5rem; margin-left: auto; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: translateY(-25%) rotate(45deg); color: var(--discret); }
+details[open] > summary::after { transform: translateY(15%) rotate(-135deg); }
+.replie > summary:hover, .replie > summary:hover::after, .plus > summary:hover, .plus > summary:hover::after, summary:focus-visible::after { color: var(--lien); }
+.replie { background: var(--surface); border: 1px solid var(--trait); border-radius: var(--rayon); box-shadow: var(--ombre); }
+.replie > summary { padding: 1rem 1.25rem; min-height: 3.25rem; font-weight: 500; border-radius: var(--rayon); }
+.replie > summary h3 { font-size: 1rem; }
+.replie > summary .resume { font-weight: 400; color: var(--doux); font-size: .875rem; }
+.replie > summary .compte { font-family: var(--mono); font-size: .75rem; font-weight: 400; color: var(--discret); background: var(--surface-2); border-radius: 999px; padding: .05rem .5rem; }
+.replie[open] > summary { border-bottom: 1px solid var(--trait); border-radius: var(--rayon) var(--rayon) 0 0; }
+.replie > :not(summary) { margin: 0; padding: 1.1rem 1.25rem 1.25rem; }
+.replie > .chaine, .replie > .sources { padding-block: 0; border-top: 0; }
+.replie > .os { padding: 1rem; }
+.replie { margin-top: .75rem; }
+:not(.replie) + .replie { margin-top: 2.5rem; }
+.pistes > .replie { margin-top: 0; }
+.empile { display: grid; gap: .75rem; margin-top: 2.5rem; }
+.pistes { display: grid; gap: .75rem; margin-top: 1.25rem; }
+.plus > summary { font-size: .8125rem; color: var(--discret); padding-block: .2rem; width: fit-content; }
+.plus > summary::after { margin-left: 0; }
+.plus > ul { margin-top: .55rem; }
+
+.audit { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); overflow: hidden; background: var(--surface); border: 1px solid var(--trait); border-radius: var(--rayon); box-shadow: var(--ombre); }
 .audit.par-deux { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.audit div { padding: 1.25rem 1.3rem 1.35rem; min-width: 0; border-right: 1px solid var(--trait); border-bottom: 1px solid var(--trait); margin-right: -1px; margin-bottom: -1px; }
-.audit b { display: block; font-size: 1.0625rem; font-weight: 600; margin-bottom: .3rem; }
+.audit > div { padding: 1.2rem 1.3rem 1.3rem; min-width: 0; border-right: 1px solid var(--trait); border-bottom: 1px solid var(--trait); margin-right: -1px; margin-bottom: -1px; }
+.audit b { display: block; font-weight: 500; margin-bottom: .25rem; }
 .audit span { color: var(--doux); font-size: .9375rem; }
-.audit .k { display: block; margin-top: .6rem; color: var(--discret); font-size: .75rem; }
+.audit .k { display: block; margin-top: .55rem; color: var(--discret); font-size: .75rem; }
 
-.nouveautes { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 19rem), 1fr)); gap: 1.5rem 2rem; list-style: none; margin: 0; padding: 0; }
-.nouveautes li { border-top: 1px solid var(--trait-fort); padding-top: .9rem; }
-.nouveautes b { display: block; font-weight: 600; margin-bottom: .25rem; }
+.nouveautes { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 19rem), 1fr)); gap: 1rem; list-style: none; margin: 0; padding: 0; }
+.nouveautes li { background: var(--surface); border: 1px solid var(--trait); border-radius: var(--rayon); box-shadow: var(--ombre); padding: 1.1rem 1.25rem; }
+.nouveautes b { display: block; font-weight: 500; margin-bottom: .25rem; }
 .nouveautes span { color: var(--doux); font-size: .9375rem; }
 
 .principes { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); gap: 1.5rem 2rem; }
 .principe { display: grid; grid-template-columns: auto 1fr; gap: .75rem; align-items: start; }
 .principe svg { width: 1.25rem; height: 1.25rem; color: var(--bon); margin-top: .2rem; }
-.principe b { display: block; font-weight: 600; }
+.principe b { display: block; font-weight: 500; }
 .principe span { color: var(--doux); font-size: .9375rem; }
 
-.chiffres { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1.5rem; background: var(--surface); border: 1px solid var(--trait); border-radius: var(--rayon); padding: 1.6rem 1.75rem; }
-.chiffre b { display: block; font-size: clamp(1.75rem, 3vw, 2.25rem); font-weight: 600; line-height: 1.05; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
-.chiffre span { display: block; margin-top: .35rem; color: var(--doux); font-size: .875rem; }
-.tableau { background: var(--surface); border: 1px solid var(--trait); border-radius: var(--rayon); overflow-x: auto; }
+.chiffres { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1rem; }
+.chiffres .valeur::before { background: var(--bon); }
+
+.tableau { overflow-x: auto; background: var(--surface); border: 1px solid var(--trait); border-radius: var(--rayon); box-shadow: var(--ombre); }
 .tableau table { width: 100%; min-width: 44rem; border-collapse: collapse; font-size: .9063rem; line-height: 1.55; }
 .tableau th, .tableau td { text-align: left; vertical-align: top; padding: .9rem 1.1rem; border-bottom: 1px solid var(--trait); }
-.tableau thead th { font-family: var(--mono); font-size: .8125rem; font-weight: 400; color: var(--discret); background: var(--surface-2); padding-block: .65rem; }
-.tableau tbody th { font-size: .9375rem; font-weight: 600; width: 11rem; }
+.tableau thead th { font-size: .8125rem; font-weight: 500; color: var(--doux); background: var(--surface-2); padding-block: .65rem; }
+.tableau tbody th { font-size: .9375rem; font-weight: 500; width: 11rem; }
 .tableau td { color: var(--doux); }
-.tableau td b { color: var(--encre); font-weight: 600; }
+.tableau td b { color: var(--encre); font-weight: 500; }
 .tableau tbody tr:last-child > * { border-bottom: 0; }
-.note { color: var(--doux); font-size: .9375rem; margin: 1rem 0 0; max-width: 46rem; }
 
-/* Les vraies captures du programme (celles du README), réduites et intégrées à la page par outils/page-fonctions.py. */
-.captures { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.5rem; align-items: start; margin: 2.5rem 0 0; }
+/* Les vraies captures du programme (celles du README), intégrées à la page par outils/page-fonctions.py. */
+.captures { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.25rem; align-items: start; margin: 2.5rem 0 0; }
 .capture { margin: 0; min-width: 0; }
 .capture.seule { max-width: 40rem; margin-top: 2rem; }
-.capture img { display: block; width: 100%; height: auto; border-radius: var(--rayon); border: 1px solid var(--trait-fort); background: var(--term-fond); }
+.capture img { display: block; width: 100%; height: auto; border-radius: var(--rayon); border: 1px solid var(--trait); box-shadow: var(--ombre); background: #0a0d0e; }
 .capture figcaption { margin-top: .65rem; font-size: .875rem; line-height: 1.5; color: var(--doux); }
 .capture figcaption span { display: block; color: var(--discret); }
 
+.specs { margin: 0; padding: .25rem 1.3rem; background: var(--surface); border: 1px solid var(--trait); border-radius: var(--rayon); box-shadow: var(--ombre); }
+.specs div { display: grid; grid-template-columns: 11rem minmax(0, 1fr); gap: .25rem 1.5rem; padding: .85rem 0; border-bottom: 1px solid var(--trait); min-width: 0; }
+.specs div:last-child { border-bottom: 0; }
+.specs dt { font-size: .8125rem; line-height: 1.85; color: var(--discret); }
+.specs dd { margin: 0; font-size: .9375rem; max-width: 46rem; }
+.os { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); gap: 1rem; align-items: start; }
+.os article { background: var(--surface); border: 1px solid var(--trait); border-radius: var(--rayon); box-shadow: var(--ombre); padding: 1.2rem 1.3rem 1.3rem; min-width: 0; }
+.replie .os article { box-shadow: none; background: var(--surface-2); }
+.os h4 { font-size: 1rem; margin: 0 0 .2rem; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: .5rem; }
+.os h4 span { font-family: var(--mono); font-size: .75rem; font-weight: 400; color: var(--discret); }
+.os ul { list-style: none; margin: .8rem 0 0; padding: 0; display: grid; gap: .55rem; }
+.os li { font-size: .9375rem; color: var(--doux); padding-left: .9rem; border-left: 2px solid var(--trait-fort); }
+.os li b { color: var(--encre); font-weight: 500; }
+.sources { display: grid; }
+.source { display: grid; grid-template-columns: minmax(0, 12rem) minmax(0, 1fr) minmax(0, 13rem); gap: .3rem 1.5rem; align-items: baseline; padding: .9rem 0; border-bottom: 1px solid var(--trait); }
+.source:last-child { border-bottom: 0; }
+.source b { font-weight: 500; }
+.source span { color: var(--doux); font-size: .9375rem; }
+.source .k { color: var(--discret); font-size: .75rem; }
+/* Une chaîne d'étapes, numérotées dans la marge, lues de haut en bas : l'ordre y est l'information. */
+.chaine { list-style: none; margin: 0; padding: 0; counter-reset: maillon; max-width: 52rem; }
+.chaine li { position: relative; counter-increment: maillon; padding: .9rem 0 .95rem 3rem; border-bottom: 1px solid var(--trait); font-size: .9375rem; color: var(--doux); }
+.chaine li:last-child { border-bottom: 0; }
+.chaine li::before { content: counter(maillon, decimal-leading-zero); position: absolute; left: 0; top: .95rem; font-family: var(--mono); font-size: .8125rem; line-height: 1.6rem; color: var(--discret); }
+.chaine li b { display: block; color: var(--encre); font-weight: 500; margin-bottom: .1rem; }
+.replie > .chaine { padding-inline: 1.25rem; max-width: none; }
+.etapes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; list-style: none; padding: 0; margin: 0; counter-reset: etape; }
+.etapes li { background: var(--surface); border: 1px solid var(--trait); border-radius: var(--rayon); box-shadow: var(--ombre); padding: 1.2rem 1.3rem; counter-increment: etape; }
+.etapes li::before { content: counter(etape); display: grid; place-items: center; width: 1.75rem; height: 1.75rem; border-radius: 50%; background: var(--surface-2); font-family: var(--mono); font-size: .8125rem; color: var(--encre); margin-bottom: .75rem; }
+.etapes h3 { font-size: 1rem; margin-bottom: .3rem; }
+.etapes p { margin: 0; color: var(--doux); font-size: .9375rem; }
+/* La liste des commandes vient du programme lui-même (vanguard help) : en colonnes, chaque entrée insécable. */
+.cli-liste { columns: 3 19rem; column-gap: 2rem; }
+.cli-liste div { break-inside: avoid; padding: .3rem 0; }
+.cli-liste dt { font-family: var(--mono); font-size: .8125rem; }
+.cli-liste dt i { font-style: normal; color: var(--discret); }
+.cli-liste dd { margin: 0; font-size: .875rem; color: var(--doux); }
+.exemple { background: var(--surface); color: var(--encre); border: 1px solid var(--trait); border-radius: var(--rayon); padding: 1rem 1.25rem; font-family: var(--mono); font-size: .8125rem; line-height: 1.7; overflow-x: auto; margin: 1rem 0 0; }
+.exemple .g { color: var(--discret); }
+
 footer { border-top: 1px solid var(--trait); }
-footer .cadre { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .5rem 1.5rem; padding-block: 1.6rem 2.2rem; color: var(--discret); font-size: .875rem; font-family: var(--mono); }
+footer .cadre { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .5rem 1.5rem; padding-block: 1.5rem 2.2rem; color: var(--discret); font-size: .8125rem; }
 footer a { color: var(--discret); }
 footer a:hover { color: var(--encre); }
 
-/* Fiche technique : des lignes nom | valeur, du code en chasse fixe ; aucune table qui déborde sur téléphone. */
-.specs { margin: 0; border-top: 1px solid var(--trait); }
-.specs div { display: grid; grid-template-columns: 11rem minmax(0, 1fr); gap: .25rem 1.5rem; padding: .85rem 0; border-bottom: 1px solid var(--trait); min-width: 0; }
-.specs dt { font-family: var(--mono); font-size: .8125rem; line-height: 1.85; color: var(--discret); }
-.specs dd { margin: 0; font-size: .9375rem; max-width: 46rem; }
-code, .k { font-family: var(--mono); font-size: .875em; }
-code { background: var(--surface-2); color: var(--encre); border-radius: var(--rayon-code); padding: .05rem .2rem; overflow-wrap: anywhere; }
-.sous-titre { font-size: 1.25rem; line-height: 1.3; margin: 3rem 0 1.1rem; }
-.os { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); gap: 1.25rem; align-items: start; }
-.os article { background: var(--surface); border: 1px solid var(--trait); border-radius: var(--rayon); padding: 1.3rem 1.4rem 1.4rem; min-width: 0; }
-.os h4 { font-size: 1.0625rem; margin: 0 0 .2rem; display: flex; justify-content: space-between; align-items: baseline; gap: .5rem; }
-.os h4 span { font-family: var(--mono); font-size: .75rem; font-weight: 400; color: var(--discret); }
-.os ul { list-style: none; margin: .8rem 0 0; padding: 0; display: grid; gap: .55rem; }
-.os li { font-size: .9375rem; color: var(--doux); padding-left: .9rem; border-left: 1px solid var(--trait-fort); }
-.os li b { color: var(--encre); font-weight: 600; }
-.sources { display: grid; border-top: 1px solid var(--trait); }
-.source { display: grid; grid-template-columns: minmax(0, 12rem) minmax(0, 1fr) minmax(0, 13rem); gap: .3rem 1.5rem; align-items: baseline; padding: .9rem 0; border-bottom: 1px solid var(--trait); }
-.source b { font-weight: 600; }
-.source span { color: var(--doux); font-size: .9375rem; }
-.source .k { color: var(--discret); font-size: .75rem; }
-/* Une chaîne d'étapes : numérotées dans la marge, lues de haut en bas. */
-.chaine { list-style: none; margin: 0; padding: 0; counter-reset: maillon; max-width: 52rem; border-top: 1px solid var(--trait); }
-.chaine li { position: relative; counter-increment: maillon; padding: .9rem 0 .95rem 3rem; border-bottom: 1px solid var(--trait); font-size: .9375rem; color: var(--doux); }
-.chaine li::before { content: counter(maillon, decimal-leading-zero); position: absolute; left: 0; top: .95rem; font-family: var(--mono); font-size: .8125rem; line-height: 1.6rem; color: var(--discret); }
-.chaine li b { display: block; color: var(--encre); font-weight: 600; margin-bottom: .1rem; }
-details.cli { background: var(--surface); border: 1px solid var(--trait); border-radius: var(--rayon); margin-top: 2rem; }
-details.cli summary { cursor: pointer; padding: 1rem 1.25rem; font-weight: 600; list-style-position: inside; border-radius: var(--rayon); }
-details.cli summary span { font-weight: 400; color: var(--doux); font-size: .9375rem; }
-details.cli[open] summary { border-bottom: 1px solid var(--trait); border-radius: var(--rayon) var(--rayon) 0 0; }
-/* La liste des commandes vient du programme lui-même (vanguard --help) : en colonnes, chaque entrée insécable. */
-.cli-liste { columns: 3 19rem; column-gap: 2rem; margin: 0; padding: 1.25rem; }
-.cli-liste div { break-inside: avoid; padding: .3rem 0; }
-.cli-liste dt { font-family: var(--mono); font-size: .8438rem; }
-.cli-liste dt i { font-style: normal; color: var(--discret); }
-.cli-liste dd { margin: 0; font-size: .875rem; color: var(--doux); }
-.exemple { background: var(--surface-2); color: var(--encre); border: 1px solid var(--trait); border-radius: var(--rayon-bouton); padding: 1rem 1.2rem; font-family: var(--mono); font-size: .8125rem; line-height: 1.65; overflow-x: auto; margin: 1rem 0 0; }
-.exemple .g { color: var(--discret); }
-
+@media (max-width: 1180px) {
+  .etat { display: none; }
+  .barre-dedans { flex-wrap: wrap; gap: 0 1rem; }
+  .onglets { order: 3; flex: 1 0 100%; margin: 0 calc(-1 * max(16px, env(safe-area-inset-left, 0px))); padding: 0 max(8px, env(safe-area-inset-left, 0px)); min-height: 44px; overflow-x: auto; scrollbar-width: none; border-top: 1px solid var(--trait); }
+  .onglets::-webkit-scrollbar { display: none; }
+  .marque, .outils-barre { min-height: 56px; }
+  :root { --barre: 101px; }
+}
 @media (max-width: 960px) {
-  .heros { grid-template-columns: 1fr; gap: 2.5rem; padding-block: 1.75rem 3rem; }
-  .fenetre { position: static; }
   .chiffres { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .audit { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .stats { grid-template-columns: 1fr; }
+  .points { grid-template-columns: 1fr; }
 }
 @media (max-width: 720px) {
-  .nav { display: none; }
   .source { grid-template-columns: 1fr; }
-  .etapes { grid-template-columns: 1fr; gap: 1.5rem; }
+  .etapes { grid-template-columns: 1fr; }
   .audit, .audit.par-deux, .captures { grid-template-columns: 1fr; }
   .specs div { grid-template-columns: 1fr; }
   .specs dt { line-height: 1.5; }
   .chaine li { padding-left: 2.5rem; }
-  .fenetre pre { display: none; }
-  .menu-court { display: block; }
-  main { gap: 4rem; padding-block: 3rem; }
-  .faits { gap: .9rem; }
-  .fait b { font-size: 1.3rem; }
+  main { gap: 3.5rem; padding-block: 2.5rem; }
+  .ouverture { padding-block: 2rem .5rem; }
+  .marque .mot { display: none; }
   .tableau { overflow-x: visible; }
   .tableau table, .tableau tbody, .tableau tr, .tableau th, .tableau td { display: block; }
   .tableau table { min-width: 0; }
@@ -274,101 +273,99 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); border-radius
   .tableau tbody tr:last-child { border-bottom: 0; }
   .tableau th, .tableau td { border-bottom: 0; padding: .35rem 1rem; }
   .tableau tbody th { width: auto; font-size: 1rem; }
-  .tableau td::before { content: attr(data-col); display: block; font-family: var(--mono); font-size: .75rem; color: var(--discret); }
+  .tableau td::before { content: attr(data-col); display: block; font-size: .75rem; color: var(--discret); }
 }
 @media (max-width: 420px) {
-  .faits { grid-template-columns: 1fr 1fr; }
-  .chiffres { padding: 1.25rem; }
-  .bouton { flex: 1 1 100%; }
-  .lien-bas { flex: 1 1 100%; text-align: center; }
+  .chiffres { grid-template-columns: 1fr; }
+  .boutons .bouton { flex: 1 1 100%; }
+  .theme span { display: none; }
 }
 @media (prefers-reduced-motion: no-preference) {
   html { scroll-behavior: smooth; }
-  a, .bouton, summary { transition: color .15s var(--sortie), background-color .15s var(--sortie), border-color .15s var(--sortie); }
+  a, .bouton, .theme, summary, .onglets a { transition: color .15s var(--sortie), background-color .15s var(--sortie), border-color .15s var(--sortie), box-shadow .15s var(--sortie); }
+  .replie > summary::after, .plus > summary::after { transition: transform .2s var(--sortie), color .15s var(--sortie); }
+}
+/* À l'impression : sans la barre ni la console, chaque menu déroulant déplié (le script ouvre aussi chacun). */
+@media print {
+  .barre-app, .console, .theme, body::before { display: none; }
+  main > section + section { content-visibility: visible; }
+  details::details-content { content-visibility: visible; display: contents; }
+  details > summary::after { display: none; }
+  .carte, .replie, .os article, .nouveautes li, .etapes li { box-shadow: none; }
 }
 </style>
 
-<div class="ouverture">
+<header class="barre-app">
+  <div class="barre-dedans">
+    <a class="marque" href="#haut" aria-label="Vanguard, haut de la page"><span class="v" aria-hidden="true">V</span><span class="mot">VANGUARD</span></a>
+    <nav class="onglets" aria-label="Sections">
+      <a href="#haut">Vue d'ensemble</a>
+      <a href="#securite">Sécurité</a>
+      <a href="#menaces">Menaces</a>
+      <a href="#audit">Audit du réseau</a>
+      <a href="#technique">Technique</a>
+      <a href="#nouveautes">Nouveautés</a>
+      <a href="#a-venir">À venir</a>
+      <a href="#installer">Installer</a>
+    </nav>
+    <div class="outils-barre">
+      <span class="etat">Version {{VERSION}}</span>
+      <button class="theme" type="button" id="theme" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor"/></svg><span></span></button>
+      <a class="bouton" href="https://github.com/d9v3/vanguard-beta">Code source</a>
+    </div>
+  </div>
+</header>
+<div class="console" role="note" aria-label="État de la version">
   <div class="cadre">
-    <div class="barre">
-      <a class="marque" href="#haut" id="haut">
-        <span class="plaque" aria-hidden="true"><svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><path fill="#ffffff" d="M8 12h22l20 52 20-52h22L60 90H40z"/><path fill="#0a0d0e" d="M30 12h6l14 37 14-37h6L50 66z"/></svg></span>
-        <b>VANGUARD</b>
-        <span class="version">{{VERSION}}</span>
-      </a>
-      <nav class="nav" aria-label="Sections">
-        <a href="#securite">Sécurité</a>
-        <a href="#menaces">Menaces</a>
-        <a href="#audit">Audit du réseau</a>
-        <a href="#technique">Technique</a>
-        <a href="#nouveautes">Nouveautés</a>
-        <a href="#installer">Installer</a>
-      </nav>
-    </div>
-    <div class="heros">
-      <div>
-        <p class="surtitre">Logiciel libre · GPL-3.0-or-later · écrit en Rust</p>
-        <h1>Cyberdéfense portable des postes et des réseaux, depuis une clé USB</h1>
-        <p class="chapeau">Un seul exécutable par système (Linux x86_64 statique, Windows x86_64), rien à installer. Il lit et juge sur l'ordinateur même, avec les droits du compte : l'administrateur n'est demandé que pour un geste accepté (pkexec, run0 ou sudo ; UAC). En HTTPS, il ne joint qu'une liste fermée de {{HOTES}} hôtes. Il complète l'antivirus du système (Microsoft Defender, ClamAV) : il ne le remplace pas.</p>
-        <ol class="points">
-          <li><b>Il fait le bilan.</b> {{REGLES}} règles à identifiant stable, chacune avec sa référence (CIS, Microsoft ou ANSSI ; MITRE ATT&amp;CK), une note de A à F pour l'ordinateur ; {{FICHES}} fiches pour le réseau, en six notes.</li>
-          <li><b>Il cherche ce qui ne devrait pas être là.</b> Logiciels espions, programmes lancés en cachette, traces d'intrusion, rançongiciels ; un courriel ou un lien douteux examiné sans être ouvert.</li>
-          <li><b>Il corrige et bloque, après accord.</b> Chaque correction est montrée avant d'être faite, notée avec l'état d'avant et annulable. Une menace trouvée se bloque d'un clic, la preuve relevée avant le geste.</li>
-          <li><b>Il dépanne.</b> Pas à pas quand Internet, le son ou l'ordinateur ne marchent plus comme avant ; les sauvegardes et le ménage en plus.</li>
-        </ol>
-        <p class="cap"><b>Défensif seulement.</b> Le code est ouvert (GPL) et chaque version est signée en Ed25519 : chacun peut voir ce que fait le programme et vérifier d'où il vient. Vanguard évolue souvent : lisez ce que fait chaque correction avant de l'accepter.</p>
-        <div class="systemes">
-          <span class="systeme">Linux</span><span class="systeme">Windows 10 · 11</span><span class="systeme">Français · English</span>
-        </div>
-        <div class="boutons">
-          <a class="bouton" href="https://github.com/d9v3/vanguard-beta">Code source</a>
-          <a class="lien-bas" href="#installer">Installation ↓</a>
-        </div>
-        <div class="faits">
-          <div class="fait"><b>A → F</b><span>une note pour l'ordinateur, une par domaine du réseau</span></div>
-          <div class="fait"><b>{{REGLES}}</b><span>règles du bilan, {{FICHES}} fiches d'audit du réseau</span></div>
-          <div class="fait"><b>{{HOTES}}</b><span>hôtes joints en HTTPS, une liste fermée</span></div>
-        </div>
-      </div>
-      <div class="fenetre" role="navigation" aria-label="Menu principal de Vanguard">
-        <div class="titre-fenetre">vanguard</div>
-<pre><span class="boite">  <b>VANGUARD {{VERSION_COURTE_TERMINAL}}</b>Cyberdéfense portable des postes et des réseaux</span>
-
-  <span class="filet">BILAN DE SÉCURITÉ</span>
- <span class="c">►</span>  1  <a href="#bilan">Bilan de sécurité complet</a>            <span class="c">← commencer ici</span>
-    2  <a href="#bilan">Corriger les problèmes trouvés</a>       <span class="g">un à un, avec votre accord</span>
-    3  <a href="#bilan">Rapport détaillé</a>                     <span class="g">dans le navigateur</span>
-  <span class="filet">CYBERDÉFENSE</span>
-    4  <a href="#bilan">Cet ordinateur ›</a>                     <span class="g">failles, mises à jour, intégrité</span>
-    5  <a href="#audit">Réseau et Internet ›</a>                 <span class="g">routeur, Wi-Fi, objets connectés</span>
-    6  <a href="#infection">Virus et logiciels espions ›</a>         <span class="g">antivirus, espions, rançongiciels</span>
-    7  <a href="#arnaques">Arnaques et vie privée ›</a>             <span class="g">liens, courriels, mots de passe</span>
-    8  <a href="#infection">Bloquer et réagir ›</a>                  <span class="g">blocage, incident, tout annuler</span>
-  <span class="filet">EN PLUS</span>
-    9  <a href="#donnees">Données et sauvegardes ›</a>             <span class="g">copier, sauvegarder, vérifier</span>
-   10  <a href="#suivi">Guide des commandes ›</a>                <span class="g">Linux, Windows, pas à pas</span>
-   11  <a href="#depannage">Dépanner pas à pas ›</a>                 <span class="g">Internet, son, lenteur, réparer</span>
-   12  <a href="#optimiser">Optimiser et installer ›</a>             <span class="g">logiciels, nettoyage, réglages</span>
-   13  <a href="#suivi">Vanguard ›</a>                           <span class="g">réglages, mise à jour, extensions</span></pre>
-        <ul class="menu-court">
-          <li><a href="#bilan"><span class="n">1</span><span>Bilan de sécurité complet</span></a></li>
-          <li><a href="#bilan"><span class="n">4</span><span>Cet ordinateur</span></a></li>
-          <li><a href="#audit"><span class="n">5</span><span>Réseau et Internet</span></a></li>
-          <li><a href="#infection"><span class="n">6</span><span>Virus et logiciels espions</span></a></li>
-          <li><a href="#arnaques"><span class="n">7</span><span>Arnaques et vie privée</span></a></li>
-          <li><a href="#infection"><span class="n">8</span><span>Bloquer et réagir</span></a></li>
-          <li><a href="#donnees"><span class="n">9</span><span>Données et sauvegardes</span></a></li>
-          <li><a href="#suivi"><span class="n">10</span><span>Guide des commandes</span></a></li>
-          <li><a href="#depannage"><span class="n">11</span><span>Dépanner pas à pas</span></a></li>
-          <li><a href="#optimiser"><span class="n">12</span><span>Optimiser et installer</span></a></li>
-          <li><a href="#suivi"><span class="n">13</span><span>Vanguard</span></a></li>
-        </ul>
-      </div>
-    </div>
+    <p class="console-etat"><span>Version <b>{{VERSION}}</b></span><span>publiée le <b>{{DATE}}</b></span><span><b>{{TESTS_LINUX}}</b> tests sous Linux · <b>{{TESTS_WINE}}</b> sous Windows</span><span><b>{{HOTES}}</b> hôtes joints, liste fermée</span></p>
+    <p class="invite"><b>vanguard ›</b><span>bilan · audit-reseau · blocage · verifier-moi · {{COMMANDES_CLI}} commandes, ou le menu</span></p>
   </div>
 </div>
 
-<main class="cadre">
+<div class="cadre ouverture" id="haut">
+  <div>
+    <p class="surtitre">Logiciel libre · GPL-3.0-or-later · écrit en Rust</p>
+    <h1>Cyberdéfense portable des postes et des réseaux, depuis une clé USB</h1>
+    <p class="chapeau">Un seul exécutable par système (Linux x86_64 statique, Windows x86_64), rien à installer. Il lit et juge sur l'ordinateur même, avec les droits du compte : l'administrateur n'est demandé que pour un geste accepté (pkexec, run0 ou sudo ; UAC). En HTTPS, il ne joint qu'une liste fermée de {{HOTES}} hôtes. Il complète l'antivirus du système (Microsoft Defender, ClamAV) : il ne le remplace pas.</p>
+  </div>
+  <div class="stats">
+    <div class="carte stat"><span class="etiquette">Bilan de l'ordinateur</span><span class="valeur">A → F</span><span class="detail">une note pour l'ordinateur, une par domaine du réseau</span><a class="ouvrir" href="#bilan">Ouvrir →</a></div>
+    <div class="carte stat"><span class="etiquette">Règles du bilan</span><span class="valeur">{{REGLES}}</span><span class="detail">règles à identifiant stable, {{FICHES}} fiches d'audit du réseau</span><a class="ouvrir" href="#audit">Ouvrir →</a></div>
+    <div class="carte stat"><span class="etiquette">Ce qui sort de l'ordinateur</span><span class="valeur">{{HOTES}} hôtes</span><span class="detail">joints en HTTPS, une liste fermée</span><a class="ouvrir" href="#securite">Ouvrir →</a></div>
+  </div>
+  <ol class="points">
+    <li class="carte"><b>Il fait le bilan.</b> {{REGLES}} règles à identifiant stable, chacune avec sa référence (CIS, Microsoft ou ANSSI ; MITRE ATT&amp;CK), une note de A à F pour l'ordinateur ; {{FICHES}} fiches pour le réseau, en six notes.</li>
+    <li class="carte"><b>Il cherche ce qui ne devrait pas être là.</b> Logiciels espions, programmes lancés en cachette, traces d'intrusion, rançongiciels ; un courriel ou un lien douteux examiné sans être ouvert.</li>
+    <li class="carte"><b>Il corrige et bloque, après accord.</b> Chaque correction est montrée avant d'être faite, notée avec l'état d'avant et annulable. Une menace trouvée se bloque d'un clic, la preuve relevée avant le geste.</li>
+    <li class="carte"><b>Il dépanne.</b> Pas à pas quand Internet, le son ou l'ordinateur ne marchent plus comme avant ; les sauvegardes et le ménage en plus.</li>
+  </ol>
+  <p class="cap"><b>Défensif seulement.</b> Le code est ouvert (GPL) et chaque version est signée en Ed25519 : chacun peut voir ce que fait le programme et vérifier d'où il vient. Vanguard évolue souvent : lisez ce que fait chaque correction avant de l'accepter.</p>
+  <div class="boutons">
+    <a class="bouton grand" href="#installer">Installer</a>
+    <a class="bouton grand second" href="https://github.com/d9v3/vanguard-beta">Code source</a>
+  </div>
+  <ul class="pastilles" aria-label="Systèmes et langues">
+    <li class="pastille">Linux</li><li class="pastille">Windows 10 · 11</li><li class="pastille">Français · English</li>
+  </ul>
+  <nav class="rubriques" aria-label="Le menu de Vanguard">
+    <h2>Le menu du programme</h2>
+    <ul class="pastilles">
+      <li><a class="pastille" href="#bilan">1 · Bilan de sécurité complet</a></li>
+      <li><a class="pastille" href="#bilan">4 · Cet ordinateur</a></li>
+      <li><a class="pastille" href="#audit">5 · Réseau et Internet</a></li>
+      <li><a class="pastille" href="#infection">6 · Virus et logiciels espions</a></li>
+      <li><a class="pastille" href="#arnaques">7 · Arnaques et vie privée</a></li>
+      <li><a class="pastille" href="#infection">8 · Bloquer et réagir</a></li>
+      <li><a class="pastille" href="#donnees">9 · Données et sauvegardes</a></li>
+      <li><a class="pastille" href="#suivi">10 · Guide des commandes</a></li>
+      <li><a class="pastille" href="#depannage">11 · Dépanner pas à pas</a></li>
+      <li><a class="pastille" href="#optimiser">12 · Optimiser et installer</a></li>
+      <li><a class="pastille" href="#suivi">13 · Vanguard</a></li>
+    </ul>
+  </nav>
+</div>
+
+<main class="cadre" id="contenu">
   <section id="securite">
     <div class="tete-section">
       <p class="surtitre">Sécurité de Vanguard lui-même</p>
@@ -392,8 +389,9 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); border-radius
       </tbody>
     </table></div>
     <p class="note">Les programmes ne portent pas de signature de code d'éditeur (Authenticode) : leur empreinte SHA-256, sur la page de chaque version et dans l'historique signé, est la preuve qu'ils sont bien eux.</p>
-    <h3 class="sous-titre">Chaîne de confiance des mises à jour</h3>
-    <ol class="chaine">
+    <details class="replie">
+      <summary><span><h3>Chaîne de confiance des mises à jour</h3><span class="resume">Sept garde-fous, de la signature à l'installation.</span></span><span class="compte">7</span></summary>
+      <ol class="chaine">
       <li><b>Signée à part</b>Le manifeste (version, taille et SHA-256 de chaque programme) est signé en Ed25519 hors de GitHub.</li>
       <li><b>Clé gravée</b>La clé publique est dans le programme ; un domaine de séparation empêche de réutiliser une autre signature.</li>
       <li><b>Seconde clé de signature</b>Une clé de secours, chiffrée et gardée hors ligne, signe aussi : elle peut révoquer la principale volée, qui n'est alors plus jamais acceptée.</li>
@@ -402,13 +400,14 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); border-radius
       <li><b>Transport</b>HTTPS seulement, redirections en HTTPS, réception en mémoire bornée ; jamais installé sans accord.</li>
       <li><b>Vérifiable</b><code>vanguard verifier-moi</code> donne l'empreinte du programme, à comparer à la page de la version ; l'historique signé des versions vérifie aussi une copie plus ancienne.</li>
     </ol>
+    </details>
 
     <h3 class="sous-titre">Testé à chaque version</h3>
     <div class="chiffres">
-      <div class="chiffre"><b>≈ {{LIGNES}}</b><span>lignes de code Rust</span></div>
-      <div class="chiffre"><b>{{TESTS_LINUX}}</b><span>tests sous Linux</span></div>
-      <div class="chiffre"><b>{{TESTS_WINE}}</b><span>tests sous Windows (Wine)</span></div>
-      <div class="chiffre"><b>{{VM}}</b><span>vérifications sur un vrai Windows</span></div>
+      <div class="carte stat"><span class="valeur">≈ {{LIGNES}}</span><span class="detail">lignes de code Rust</span></div>
+      <div class="carte stat"><span class="valeur">{{TESTS_LINUX}}</span><span class="detail">tests sous Linux</span></div>
+      <div class="carte stat"><span class="valeur">{{TESTS_WINE}}</span><span class="detail">tests sous Windows (Wine)</span></div>
+      <div class="carte stat"><span class="valeur">{{VM}}</span><span class="detail">vérifications sur un vrai Windows</span></div>
     </div>
     <p class="note">Chaque version passe par <code>outils/verifier.sh</code> (formatage, clippy, tests Linux et sous Wine, fuzzing, preuves, liens), et par un vrai Windows qui se teste tout seul. Cette page est refaite par le script de publication à chaque version.</p>
   </section>
@@ -456,6 +455,9 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); border-radius
           <li><b>Les bases</b> : pare-feu, mises à jour et failles connues, chiffrement du disque, antivirus, comptes et mots de passe, heure, fin de support.</li>
           <li><b>Accès à distance</b> : SSH et ses algorithmes faibles, Bureau à distance, partages ouverts à tous, proxy détourné (WPAD) ; la configuration du client SSH lue comme SSH la lit (<code>Include</code>, portée des <code>Host</code> et <code>Match</code>), ce qu'il ne lit pas jusqu'au bout dit « non lu ». <span class="nouveau">nouveau</span></li>
           <li><b>Ce qui se cache</b> : portes dérobées de Windows, signes d'un rootkit sous Linux, journaux d'événements suspects ; sous Linux, ce qui se relance au démarrage (unités systemd du compte, Hyprland et sa configuration Lua, shell) jugé tel que le système l'exécute vraiment, et « c'est normal chez moi » lié à l'état exact des fichiers montrés. <span class="nouveau">nouveau</span></li>
+        </ul>
+        <details class="plus"><summary>7 autres points</summary>
+        <ul>
           <li><b>Failles activement exploitées en tête</b> (Linux) : les failles des paquets installés comparées au catalogue KEV de la CISA, téléchargé en entier (la liste des logiciels ne sort pas de l'ordinateur) ; une faille dans un programme qui écoute le réseau passe devant ; <code>vanguard dernieres-failles</code> donne les plus récentes, et la surveillance horaire prévient d'une faille critique nouvelle.</li>
           <li><b>Logiciels pas à jour</b> (Windows) : navigateurs, Office, Acrobat, Java, 7-Zip, PuTTY, Slack comparés à leur dernière version, d'après des listes publiques téléchargées en entier (la liste des logiciels ne sort pas de l'ordinateur) ; pour Firefox et Edge, chaque faille exploitée vérifiée contre la version installée.</li>
           <li><b>Règles nouvelles</b> : serveur OpenSSH et clés SSH sous Windows, protections de Defender relues, logiciels installés depuis le dernier bilan ; chaque règle cite sa référence (CIS, Microsoft ou ANSSI).</li>
@@ -464,6 +466,7 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); border-radius
           <li><b>Chaque correction s'annule</b>, une par une : l'état d'avant est relevé et scellé, puis remis et relu ; ce qui rallume une protection ne se défait jamais, et « Tout remettre comme avant » défait tout ce que Vanguard a changé.</li>
           <li><b>Autodiagnostic</b> : chaque règle essayée sans rien changer (lecture seule prouvée par empreintes), les lectures de Vanguard comparées aux outils du système (pacman, systemd, ss ; pare-feu, Defender, BitLocker sous Windows), la durée de chaque règle mesurée ; refait chaque semaine par la surveillance.</li>
         </ul>
+        </details>
       </article>
       <article class="domaine" id="exposition">
         <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18"/></svg></span><div><h3>Exposition vers Internet</h3><span class="touche">vanguard audit-reseau · appareils</span></div></header>
@@ -496,6 +499,9 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); border-radius
           <li><b>Analyse antivirus par le moteur de Vanguard, plus de 300 règles YARA et les empreintes</b> de logiciels malveillants connus de MalwareBazaar (clé abuse.ch gratuite ; la dernière copie sert hors ligne), avec clamscan en second avis facultatif sous Linux ou Defender sous Windows ; ClamAV n'est plus à installer ; un écran dit l'état de l'antivirus (bases, dates, ce qui n'est pas lu) ; quarantaine réversible, qui n'isole que le fichier examiné. Moteur YARA écrit pour Vanguard ; programmes, documents Office et leurs macros, raccourcis, scripts et archives lus par Vanguard lui-même, ce qu'il ne sait pas lire dit non vérifié. Un seul verdict par fichier (certain, famille, suspect, sain, non vérifié) ; les bases de ClamAV déjà installées lues par Vanguard lui-même, et des heuristiques qui ne donnent jamais plus que « suspect ».</li>
           <li><b>Que s'est-il passé ?</b> Les journaux de Windows (.evtx) lus par Vanguard lui-même, sur ce Windows ou depuis un dossier sous n'importe quel système : des règles (traces effacées, administrateur de plus, mot de passe deviné, Bureau à distance depuis Internet, tâche planifiée ou processus suspects, PowerShell malveillant, Defender désarmé, persistance WMI…) et les alertes dans l'ordre du temps ; au bilan comme au menu Bloquer et réagir.</li>
           <li><b>Blocage des menaces</b> d'un clic : programme arrêté et mis en quarantaine, connexion fermée au pare-feu, lancement retiré, tout annulable sauf l'arrêt ; ou <b>Suspendre</b>, <b>Couper son réseau</b>, <b>Surveiller de plus près</b>, <b>Faire confiance</b>, chaque type d'alerte avec sa suite de gestes ; <b>isoler l'ordinateur</b> du réseau, session à distance gardée, levée à l'identique ; la <b>protection active</b>, une fois mise en marche, bloque toute seule ce qui ne fait aucun doute et prévient.</li>
+        </ul>
+        <details class="plus"><summary>12 autres points</summary>
+        <ul>
           <li><b>Options de défense</b> en un écran : sous Windows, chaque option de Defender (logiciels indésirables, accès contrôlé aux dossiers…), ses exclusions, les règles ASR, le Pare-feu Windows par profil et ses règles ; sous Linux, le pare-feu (ufw, firewalld, nftables). Baisser reste votre choix : montré, confirmé par un oui tapé, la valeur d'avant notée, « Rallumer » la remet ; la protection contre les falsifications n'est jamais contournée.</li>
           <li><b>Gestes de défense confirmés</b>, sous Windows et sous Linux : ce que le bilan trouve de plus grave (compte caché, lancement ou service ajouté en cachette, programme setuid suspect, abonnement WMI, racine de certificat ajoutée…) défait par Vanguard en administrateur, montré puis confirmé ; un geste qui pourrait vous couper de l'ordinateur reçoit un avertissement, et la question dit non par défaut.</li>
           <li><b>La preuve avant le geste</b> : programme, ligne de commande, parent, compte, empreinte, connexions, relevés avant chaque arrêt, quarantaine ou blocage ; un <b>journal des événements</b> scellé relie l'alerte, la preuve, le geste et son annulation.</li>
@@ -509,6 +515,7 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); border-radius
           <li><b>Les traces collectées</b> avant de nettoyer, avec la <b>chronologie de l'incident</b> ; Internet coupé d'abord en cas d'urgence.</li>
           <li><b>Signaler une faille à un éditeur</b> : trié d'abord, puis un brouillon au format du programme choisi (MSRC, Google, Mozilla, Apple, avis GHSA, CERT…), ce qui est personnel retiré et compté ; la personne relit et envoie elle-même, Vanguard n'envoie jamais rien.</li>
         </ul>
+        </details>
       </article>
       <article class="domaine" id="dns">
         <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 3v5c0 4.5-3 8.2-7 10-4-1.8-7-5.5-7-10V6z"/><path d="M9.5 12.5l2 2 3.5-4"/></svg></span><div><h3>DNS et certificats détournés</h3><span class="touche">vanguard audit-reseau · dns-rapide · sites-dangereux</span></div></header>
@@ -525,9 +532,13 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); border-radius
           <li><b>Faux technicien</b> : AnyDesk, TeamViewer, RustDesk… installés, lancés ou téléchargés, retirés après accord.</li>
           <li><b>Ce courriel est-il une arnaque ?</b> Un courriel enregistré, lu sans rien ouvrir : vrai expéditeur, SPF, DKIM et DMARC du fournisseur, chaque lien, les pièces jointes passées à YARA et à l'antivirus ; le verdict n'est jamais « sûr ».</li>
           <li><b>Ce lien est-il dangereux ?</b> examiné sans l'ouvrir ; fichier téléchargé vérifié (empreinte, YARA, antivirus).</li>
+        </ul>
+        <details class="plus"><summary>2 autres points</summary>
+        <ul>
           <li><b>Anti-hameçonnage du navigateur</b> coupé par une stratégie imposée (Chrome, Edge, Brave, Firefox), comme le fait un logiciel indésirable ; un site qui distribue des logiciels malveillants, demandé par l'ordinateur, signalé.</li>
           <li><b>Mots de passe et courriels fuités</b>, compte piraté, bac à sable pour un programme inconnu.</li>
         </ul>
+        </details>
       </article>
       <article class="domaine" id="vie-privee">
         <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span><div><h3>Vie privée et secrets</h3><span class="touche">menu 6 · 7 · vanguard logiciels-espions · bilan-confidentialite · secrets</span></div></header>
@@ -593,8 +604,9 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); border-radius
       <div><dt>Licence</dt><dd>GPL-3.0-or-later · français et anglais · <a href="https://github.com/d9v3/vanguard-beta">code source</a></dd></div>
     </dl>
 
-    <h3 class="sous-titre">Lu directement dans le système, en Rust</h3>
-    <div class="os">
+    <details class="replie">
+      <summary><span><h3>Lu directement dans le système, en Rust</h3><span class="resume">Ce que Vanguard lit sous Linux et sous Windows, sans lancer de programme.</span></span></summary>
+      <div class="os">
       <article>
         <h4>Linux <span>{{REGLES_LINUX_SEULES}} + {{REGLES_COMMUNES}} communes</span></h4>
         <ul>
@@ -617,9 +629,11 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); border-radius
         </ul>
       </article>
     </div>
+    </details>
 
-    <h3 class="sous-titre">Réseau local</h3>
-    <div class="os">
+    <details class="replie">
+      <summary><span><h3>Réseau local</h3><span class="resume">Découverte, routeur, attaques sur le réseau : sans rien attaquer.</span></span></summary>
+      <div class="os">
       <article>
         <h4>Découverte et ports</h4>
         <ul>
@@ -642,9 +656,11 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); border-radius
         </ul>
       </article>
     </div>
+    </details>
 
-    <h3 class="sous-titre">Sources de menaces</h3>
-    <div class="sources">
+    <details class="replie">
+      <summary><span><h3>Sources de menaces</h3><span class="resume">Les listes publiques comparées à ce que lit Vanguard, et ce qui en sort.</span></span></summary>
+      <div class="sources">
       <div class="source"><b>MalwareBazaar</b><span>Empreintes SHA-256 de logiciels malveillants connus, comparées à chaque fichier lu par l'analyse YARA.</span><span class="k">clé abuse.ch gratuite · complète chaque semaine · 48 h chaque jour</span></div>
       <div class="source"><b>ReversingLabs</b><span>{{YARA}} règles YARA par famille (rançongiciels, voleurs, portes dérobées), appliquées par le moteur YARA de Vanguard sur 4 fils, aux fichiers et, à la demande, à la mémoire des programmes.</span><span class="k">intégrées au programme</span></div>
       <div class="source"><b>LOLDrivers</b><span>Pilotes vulnérables ou malveillants connus, comparés par empreinte aux pilotes du noyau de Windows : signés, ils servent à désarmer l'antivirus.</span><span class="k">chaque semaine · Apache-2.0</span></div>
@@ -658,9 +674,9 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); border-radius
       <div class="source"><b>Résolveurs publics</b><span>Les réponses du DNS utilisé comparées à celles de deux résolveurs publics sur des noms stables ; le Bouclier canadien de l'ACEI reconnu comme DNS qui protège.</span><span class="k">audit du réseau</span></div>
     </div>
 
-    <h3 class="sous-titre">Toutes les commandes</h3>
-    <details class="cli">
-      <summary>{{COMMANDES_CLI}} commandes en ligne <span>· le nom anglais marche aussi · sans argument, le menu · liste tirée de <code>vanguard --help</code></span></summary>
+
+    </details>    <details class="replie cli">
+      <summary><span><h3>Toutes les commandes</h3><span class="resume">{{COMMANDES_CLI}} commandes en ligne · le nom anglais marche aussi · sans argument, le menu · liste tirée de <code>vanguard --help</code></span></span></summary>
       <dl class="cli-liste">
 {{COMMANDES_LISTE}}
       </dl>
@@ -710,6 +726,9 @@ vanguard yara --complet</pre>
           <li><b>Rapport HTML</b> avec la courbe des notes, entretien du mois, apprentissage, ce que Vanguard a changé.</li>
           <li><b>Menus au clavier</b> : → entre, ← revient ; la fenêtre ouverte pour Vanguard prend la taille du menu et se centre.</li>
           <li><b>Paramètres</b> au même endroit : langue, travail sans Internet, protection en temps réel, surveillance, entretien, blocage, restrictions des extensions, second avis ClamAV, programmes indésirables, Agent Vanguard, partage avec l'auteur ; les <b>coulisses</b> montrent, si vous le voulez, chaque commande lancée par Vanguard ; « s » au menu principal.</li>
+        </ul>
+        <details class="plus"><summary>7 autres points</summary>
+        <ul>
           <li><b>Agent Vanguard (sans IA)</b> : quatre missions, chacune avec son interrupteur (délais et seconds essais, cache du passage horaire, relevé local, avis sur les corrections), entre des bornes écrites dans le code ; il ne règle que dans le sens sûr (un délai qui monte, une cache qui raccourcit ou se coupe, un second essai), chaque changement noté dans un journal scellé et annulable ; couper une mission ne retire aucune vérification ; <code>vanguard agent</code> le montre en lecture seule.</li>
           <li><b>Partage avec l'auteur</b> : un relevé local des erreurs, lenteurs et corrections de Vanguard, en comptes agrégés, sans mot de passe, contenu de fichier, site visité ni inventaire des logiciels ; « Voir ce qui serait envoyé » montre le lot exact, « Non » l'efface. Dans cette version, rien ne part : le relais de l'auteur n'est pas en service.</li>
           <li><b>Extensions personnelles</b> dans Vanguard, sans toucher à son code : un plugin (un dossier avec <code>plugin.toml</code>, ajouté depuis un dossier ou une archive .zip) ou un script du labo posé tel quel ; leurs constats à part, hors de la note.</li>
@@ -718,6 +737,7 @@ vanguard yara --complet</pre>
           <li><b>La clé USB</b> : protégée en écriture ailleurs que sur l'ordinateur du propriétaire ; Vanguard mis à jour depuis la clé ou depuis GitHub (versions signées par l'auteur, avec une seconde clé de signature, gardée hors ligne, qui peut révoquer la principale, et jamais de retour à une version plus ancienne). Une clé qui démarre aussi les ordinateurs en panne (Omarchy, SystemRescue, Windows 11…) est en développement.</li>
           <li><b>Retirer Vanguard</b> de cet ordinateur : tout ce qu'il a posé, retrouvé, montré puis coché ; les données gardées sauf accord à part, la clé jamais touchée.</li>
         </ul>
+        </details>
       </article>
     </div>
   </section>
@@ -750,6 +770,15 @@ vanguard yara --complet</pre>
       <div><b>Tout en Rust</b><span>Toutes les corrections sous Windows et Linux faites par Vanguard lui-même, sans script ; aujourd'hui, une partie passe encore par un script lisible.</span><span class="k">en cours de développement</span></div>
       <div><b>Clé qui démarre</b><span>La clé de secours (Ventoy et les images vérifiées) se prépare déjà ; son démarrage sur un vrai ordinateur n'a pas encore été essayé.</span><span class="k">en cours de développement</span></div>
     </div>
+  </section>
+
+  <section id="a-venir">
+    <div class="tete-section">
+      <p class="surtitre">À venir · Coming next</p>
+      <h2>Les pistes ouvertes</h2>
+      <p>Tirées du ticket public des pistes au moment où cette page est faite : ce qui est coché n'y est plus. Rien n'y est promis ni daté.</p>
+    </div>
+    {{A_VENIR}}
   </section>
 
   <section id="systemes">
@@ -815,16 +844,19 @@ vanguard yara --complet</pre>
     </div>
     <h3 class="sous-titre">Pour dépanner : la clé USB VANGUARD</h3>
     <p class="note">Pour l'ordinateur d'un proche ou une machine qu'on ne veut pas toucher, la clé VANGUARD porte le programme (Windows et Linux), sa base et ses rapports, et marche sans Internet (ce qui en a besoin le dit). Ailleurs que sur l'ordinateur de son propriétaire, elle est en lecture seule (Windows la monte ainsi de lui-même ; sous Linux, Vanguard la remonte ainsi en démarrant) : seule sa petite partition à part reçoit le journal des erreurs, anonymisé, et le tableau de « Mes ordinateurs ». Elle se prépare sous Linux, depuis le code source : <code>outils/preparer-cle.sh /dev/sdX</code> efface la clé, après avoir sauvegardé son contenu, puis y copie le programme déjà compilé (<code>outils/deployer.sh</code> le compile). Sur la clé : <code>Windows/vanguard.exe</code> ou <code>Linux/vanguard</code>. Par défaut, <code>outils/cle-secours.sh --ecrire /dev/sdX DOSSIER</code> en fait aussi une clé de secours : Ventoy, les images d'installation et de réparation (SystemRescue, Arch, Omarchy, Debian, Fedora), chacune vérifiée par la signature de son projet, et Windows 11 ; son démarrage sur un vrai ordinateur n'a pas encore été essayé. Une ligne <code>CLE_SECOURS=non</code> dans <code>~/.config/vanguard/images-cle.conf</code> la coupe sur un ordinateur.</p>
-    <h3 class="sous-titre">Vérifier, puis prendre en main</h3>
-    <ol class="chaine">
+    <details class="replie">
+      <summary><span><h3>Vérifier, puis prendre en main</h3><span class="resume">Empreinte, premier bilan, le clavier.</span></span><span class="compte">5</span></summary>
+      <ol class="chaine">
       <li><b>Empreinte</b>Comparer la sortie de <code>sha256sum</code> (ou <code>Get-FileHash</code>) à la page de la version.</li>
       <li><b>Vanguard lui-même</b><code>vanguard verifier-moi</code> donne sa version et son empreinte.</li>
       <li><b>Failles connues</b><code>cargo audit bin &lt;programme&gt;</code> lit la liste des dépendances gravée dedans.</li>
       <li><b>Premier bilan</b>Lancer <code>vanguard</code>, choisir 1 (bilan complet), puis 2 pour corriger, après accord.</li>
       <li><b>Au clavier</b>Flèches et Entrée pour choisir ; Échap ou Retour arrière pour revenir ; <code>--json</code> pour un script.</li>
     </ol>
-    <div lang="en">
-      <h3 class="sous-titre">In English: download, check, install</h3>
+    </details>
+    <details class="replie" lang="en">
+      <summary><span><h3>In English: download, check, install</h3><span class="resume">Download, check the checksum, keep it up to date.</span></span></summary>
+      <div>
       <ol class="chaine">
         <li><b>Download</b>From the <a href="https://github.com/d9v3/vanguard-beta/releases/latest">latest release page</a>, the program for your system: <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-windows-x86_64.exe">Windows</a> · <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-linux-x86_64">Linux</a>. A single executable, nothing to install to run it.</li>
         <li><b>Check the checksum</b>With <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/SHA256SUMS.txt">SHA256SUMS.txt</a> next to it: <code>sha256sum -c --ignore-missing SHA256SUMS.txt</code> on Linux; on Windows, <code>Get-FileHash</code>, compared to its line. A different checksum: do not run it.</li>
@@ -833,10 +865,66 @@ vanguard yara --complet</pre>
         <li><b>What protects every day</b>Installed, it can watch on its own, each feature turned on with your consent: hourly network monitoring (<code>vanguard monitor on</code>), active protection, which blocks on its own what leaves no doubt (<code>vanguard blocking auto</code>), the monthly maintenance (<code>vanguard maintenance on</code>).</li>
       </ol>
       <p class="note"><b>For troubleshooting: the VANGUARD USB key.</b> For a relative's computer or a machine you do not want to touch, the VANGUARD key carries the program (Windows and Linux), its database and its reports, and works without Internet (what needs it says so). Anywhere but its owner's computer it is read-only (Windows mounts it that way by itself; on Linux, Vanguard remounts it that way on start): only its small separate partition receives the anonymized error log and the “My computers” table. It is prepared on Linux, from the source code: <code>outils/preparer-cle.sh /dev/sdX</code> erases the key, after saving its contents, then copies the already built program onto it (<code>outils/deployer.sh</code> builds it). On the key: <code>Windows/vanguard.exe</code> or <code>Linux/vanguard</code>. By default, <code>outils/cle-secours.sh --ecrire /dev/sdX FOLDER</code> also makes it a rescue key: Ventoy, the installation and repair images (SystemRescue, Arch, Omarchy, Debian, Fedora), each checked against its project's signature, and Windows 11; booting it on a real computer has not been tried yet. A <code>CLE_SECOURS=non</code> line in <code>~/.config/vanguard/images-cle.conf</code> turns it off on a computer.</p>
-    </div>
+      </div>
+    </details>
   </section>
 </main>
 
 <footer>
   <div class="cadre"><span>Vanguard {{VERSION}} · {{DATE}}</span><span><a href="https://github.com/d9v3/vanguard-beta">Logiciel libre · GPL-3.0-or-later</a></span></div>
 </footer>
+
+<script>
+// Le bouton n'apparaît qu'avec le script : sans lui, la page suit l'appareil, comme avant.
+(function () {
+  var racine = document.documentElement, bouton = document.getElementById('theme');
+  var appareil = window.matchMedia('(prefers-color-scheme: dark)');
+  var lire = function () { try { return localStorage.getItem('vanguard-theme'); } catch (e) { return null; } };
+  var ecrire = function (t) { try { localStorage.setItem('vanguard-theme', t); } catch (e) {} };
+  var actuel = function () { return racine.dataset.theme || (appareil.matches ? 'dark' : 'light'); };
+  var montrer = function () {
+    var sombre = actuel() === 'dark';
+    bouton.lastChild.textContent = sombre ? 'Sombre' : 'Clair';
+    bouton.setAttribute('aria-label', sombre ? 'Thème sombre : passer au clair / Dark theme: switch to light'
+                                             : 'Thème clair : passer au sombre / Light theme: switch to dark');
+    document.querySelectorAll('meta[name="theme-color"]').forEach(function (m) {
+      m.content = sombre ? '{{FOND_SOMBRE}}' : '{{FOND_CLAIR}}';
+    });
+  };
+  var choisi = lire();
+  if (choisi === 'dark' || choisi === 'light') racine.dataset.theme = choisi;
+  bouton.hidden = false;
+  bouton.addEventListener('click', function () {
+    var t = actuel() === 'dark' ? 'light' : 'dark';
+    racine.dataset.theme = t; ecrire(t); montrer();
+  });
+  appareil.addEventListener('change', montrer);
+  montrer();
+})();
+// L'onglet de la section lue est marqué (aria-current), comme l'onglet actif de la fenêtre.
+(function () {
+  if (!('IntersectionObserver' in window)) return;
+  var onglets = {}, vues = new Map();
+  document.querySelectorAll('.onglets a').forEach(function (a) { onglets[a.hash.slice(1)] = a; });
+  var marquer = function (id) {
+    Object.keys(onglets).forEach(function (k) {
+      if (k === id) onglets[k].setAttribute('aria-current', 'true'); else onglets[k].removeAttribute('aria-current');
+    });
+  };
+  var observateur = new IntersectionObserver(function (entrees) {
+    entrees.forEach(function (e) { vues.set(e.target.id, e.isIntersecting); });
+    var premiere = Object.keys(onglets).filter(function (k) { return vues.get(k); })[0];
+    if (premiere) marquer(premiere);
+  }, { rootMargin: '-120px 0px -55% 0px' });
+  Object.keys(onglets).forEach(function (k) { var el = document.getElementById(k); if (el) observateur.observe(el); });
+})();
+// À l'impression, chaque menu déroulant est déplié, puis remis comme il était.
+(function () {
+  var ouverts = [];
+  window.addEventListener('beforeprint', function () {
+    ouverts = [];
+    document.querySelectorAll('details:not([open])').forEach(function (d) { d.open = true; ouverts.push(d); });
+  });
+  window.addEventListener('afterprint', function () { ouverts.forEach(function (d) { d.open = false; }); });
+})();
+</script>
