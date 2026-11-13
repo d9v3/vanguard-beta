@@ -1536,10 +1536,16 @@ fn lecture_rpm(code: Option<i32>, sortie: &str, erreurs: &str) -> Result<Option<
 /// suspecte (`commande_suspecte`), ou l'ouverture automatique d'une session (`ouvre_une_session`) ? Revu par le fils
 /// root avant de la retirer : seule une telle ligne part, jamais une autre que la liste lui aurait désignée.
 pub(crate) fn ligne_suspecte(fichier: &str, ligne: &str) -> bool {
+    // /etc/ld.so.preload a son propre commentaire (« # » seulement) : « --/tmp/l.so », « ;/tmp/l.so » ou
+    // « //tmp/l.so » sont des bibliothèques préchargées, pas des commentaires, et un geste peut les retirer (R-3,
+    // lot 096). Les autres fichiers gardent le commentaire générique.
+    if fichier == "/etc/ld.so.preload" {
+        return !commentaire_de_ldso(ligne);
+    }
     if commentaire(ligne) {
         return false;
     }
-    if fichier == "/etc/ld.so.preload" || ouvre_une_session(fichier, ligne) || definit_prechargement(ligne) {
+    if ouvre_une_session(fichier, ligne) || definit_prechargement(ligne) {
         return true;
     }
     let cachee = |c: &str| {

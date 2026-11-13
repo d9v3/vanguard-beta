@@ -4079,6 +4079,22 @@ mod tests {
         assert_eq!(a.fichiers[Path::new("/etc/ld.so.preload")].contenu, avant);
     }
 
+    /// R-3 (lot 096) : une ligne « //tmp/… » de /etc/ld.so.preload nomme une bibliothèque (le chargeur la précharge
+    /// comme un chemin), pas un commentaire. Le commentaire générique la prenait pour un commentaire et le fils root
+    /// refusait de la retirer ; avec la règle propre au format, le geste la retire.
+    #[test]
+    fn ligne_ldso_double_barre_retiree() {
+        let mut a = Faux::nouveau().repondre("o");
+        let avant = b"# rien\n//tmp/.x/libhook.so\n".to_vec();
+        a.poser("/etc/ld.so.preload", &avant, 0o644);
+        let mut s = FauxServices::nouveau();
+        let e = empreinte_de_ligne(b"//tmp/.x/libhook.so");
+        let c = CheminDesigne::nouveau(b"/etc/ld.so.preload").unwrap();
+        let r = faire_avec(Defense::RetirerLigne(e, c), &mut a, &mut s);
+        assert!(r.reussi, "{}", r.raison);
+        assert_eq!(a.texte("/etc/ld.so.preload"), "# rien\n");
+    }
+
     /// Une ligne de ld.so.preload qui nomme plusieurs bibliothèques part en entier : c'est dit avant la question.
     #[test]
     fn ligne_de_plusieurs_bibliotheques_dite() {
