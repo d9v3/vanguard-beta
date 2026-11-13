@@ -784,9 +784,10 @@ impl Precedente {
                         .into()
                     }
                     Ok(()) => ni_l_une_ni_l_autre(),
+                    // La mise à jour suivante réutilise ce nom (et l'efface) : à mettre à l'abri avant.
                     Err(e) => trf!(
-                        "l'ancienne copie n'est pas remise ({e}), elle est gardée sous {} ; {}",
-                        "the old copy is not put back ({e}), it is kept as {}; {}",
+                        "l'ancienne copie n'est pas remise ({e}), elle est gardée sous {} : copiez-la ailleurs avant de refaire la mise à jour, qui réutilise ce nom ; {}",
+                        "the old copy is not put back ({e}), it is kept as {}: copy it elsewhere before redoing the update, which reuses that name; {}",
                         affichable(&self.de_cote.display().to_string()),
                         ni_l_une_ni_l_autre()
                     ),
@@ -1739,11 +1740,25 @@ mod tests {
         );
         assert!(dit.contains(&format!("{NOM}.precedent")), "{dit}");
         assert!(dit.contains("ne la lancez pas"), "{dit}");
+        // La mise à jour suivante réutilise ce nom : le message dit de mettre la copie gardée à l'abri avant.
+        assert!(dit.contains("avant de refaire la mise à jour"), "{dit}");
         assert!(
             !dit.contains("remise en place") && !dit.contains("reste en place"),
             "{dit}"
         );
         assert!(cible.join("occupe").is_dir(), "{dit}");
+        let dit = crate::langue::en_anglais(|| {
+            std::fs::remove_file(&de_cote).unwrap();
+            faux_programme(&de_cote, Some("0.79.0"));
+            let precedente = Precedente {
+                de_cote: de_cote.clone(),
+                etat: EtatPrecedente::Retenue(identite(&de_cote).unwrap()),
+            };
+            precedente.remettre(&cible)
+        });
+        assert!(dit.contains("before redoing the update"), "{dit}");
+        assert!(!dit.contains(" : "), "{dit}");
+        assert!(de_cote.is_file(), "{dit}");
         let _ = std::fs::remove_dir_all(&racine);
     }
 
