@@ -1010,6 +1010,19 @@ fn releveur(racine: &Path, maison: &Path, variable: &impl Fn(&str) -> Option<std
             uwsm_session.push(depuis_la_maison(maison, &p));
         }
     }
+    // N-1 (revérification de la ronde 2, DEP-4 de la 0.95) : uwsm lit « uwsm/env-<bureau> » et « uwsm/env-<bureau>.d »
+    // pour chaque nom de XDG_CURRENT_DESKTOP (prepare-env.sh, `in_each_config_dir_reversed`), pris tel quel dans
+    // l'environnement : seul « -D » est validé (misc.py, `dn_colon`). Un nom avec « / » mène dans un sous-dossier que
+    // Vanguard ne visite pas, avec « .. » n'importe où ; un joker se développe (« for … in $(…) » sans guillemets). Un
+    // nom hors de la règle de « -D » est dit comme le joker : non vérifié, non déclarable, la sauvegarde se lève.
+    if let Some(v) = variable("XDG_CURRENT_DESKTOP") {
+        for nom in v.as_encoded_bytes().split(|o| *o == b':') {
+            if !nom_de_bureau_sur(nom) {
+                use std::os::unix::ffi::OsStrExt as _;
+                uwsm_session_joker.push(("XDG_CURRENT_DESKTOP", std::ffi::OsStr::from_bytes(nom).to_os_string()));
+            }
+        }
+    }
     let mut r = Releveur {
         racine: racine.to_path_buf(),
         maison: maison.to_path_buf(),
@@ -1374,7 +1387,11 @@ pub(super) fn persistance_dans(
             ),
         );
     }
-    let (sortes, illisibles) = fichiers_de_configuration(&t.r);
+    let (sortes, mut illisibles) = fichiers_de_configuration(&t.r);
+    // N-1 : les fichiers de session dont un DesktopNames mène uwsm hors des fichiers lus ; ce qui ne se lit pas aussi.
+    let bureaux = bureaux_a_dire(&t.r, &mut illisibles);
+    illisibles.sort();
+    illisibles.dedup();
     // S-3 (re-contrôle 2 0.95) : un dossier où uwsm cherche ses fichiers de variables (XDG_CONFIG_DIRS, XDG_DATA_DIRS)
     // qui ne se lit pas : ce qu'il y poserait n'est pas jugé, c'est dit (non vérifié), jamais compté comme sain. W-6 :
     // un fichier d'uwsm qui ne se lit pas aussi.
@@ -1394,9 +1411,43 @@ pub(super) fn persistance_dans(
             ),
         );
     }
+    for (f, valeur) in bureaux {
+        let ou = crate::ui::affichable(&t.r.montre(&f));
+        let vu = crate::ui::couper(&crate::ui::affichable(&valeur), 90);
+        let source = format!("uwsm bureau {} {valeur}", t.r.montre(&f));
+        constat_sans_ligne(
+            &mut t,
+            &source,
+            trf!(
+                "{ou} : DesktopNames vaut « {vu} », un nom de bureau hors lettres, chiffres, « _ », « . » et « - » : uwsm le met dans XDG_CURRENT_DESKTOP et en tire un fichier « uwsm/env-… » que Vanguard ne lit pas (non vérifié)",
+                "{ou}: DesktopNames is “{vu}”, a desktop name outside letters, digits, “_”, “.” and “-”: uwsm puts it in XDG_CURRENT_DESKTOP and turns it into a “uwsm/env-…” file that Vanguard does not read (not verified)"
+            ),
+            trf!(
+                "{ou} : un nom de bureau inhabituel dans DesktopNames : l'alerte ne se déclare pas normale tant qu'il y est ; corrigez le fichier",
+                "{ou}: an unusual desktop name in DesktopNames: the alert cannot be declared normal while it is there; fix the file"
+            ),
+        );
+    }
     // W-3 : un morceau à joker d'une variable de la session qu'uwsm coupe : les dossiers qu'il en tire ne sont pas lus.
     for (nom, morceau) in t.r.uwsm_session_joker.clone() {
         let vu = crate::ui::couper(&crate::ui::affichable(&morceau.to_string_lossy()), 90);
+        // N-1 : un nom de bureau hors de la règle de « -D ».
+        if nom == "XDG_CURRENT_DESKTOP" {
+            let source = format!("uwsm bureau {}", morceau.to_string_lossy());
+            constat_sans_ligne(
+                &mut t,
+                &source,
+                trf!(
+                    "XDG_CURRENT_DESKTOP de la session contient le nom de bureau « {vu} », hors lettres, chiffres, « _ », « . » et « - » : uwsm en tire un fichier « uwsm/env-… » que Vanguard ne lit pas (non vérifié)",
+                    "the session's XDG_CURRENT_DESKTOP contains the desktop name “{vu}”, outside letters, digits, “_”, “.” and “-”: uwsm turns it into a “uwsm/env-…” file that Vanguard does not read (not verified)"
+                ),
+                trf!(
+                    "un nom de bureau inhabituel dans XDG_CURRENT_DESKTOP de la session : l'alerte ne se déclare pas normale tant qu'il y est ; retirez-le de la variable",
+                    "an unusual desktop name in the session's XDG_CURRENT_DESKTOP: the alert cannot be declared normal while it is there; remove it from the variable"
+                ),
+            );
+            continue;
+        }
         // U-1 : un saut de ligne, que le shell d'uwsm peut retirer.
         if morceau.as_encoded_bytes().contains(&b'\n') {
             let source = format!("uwsm saut de ligne {nom} {}", morceau.to_string_lossy());
@@ -1704,7 +1755,7 @@ struct Releveur {
     uwsm_session: Vec<std::path::PathBuf>,
     /// W-3 (contrôle 2 du sous-lot c2-uwsm, 0.95) : les morceaux de ces variables de la session qui ont un joker du
     /// shell : (variable, morceau). Uwsm les développe ; Vanguard ne les lit pas, il les dit (non vérifié). U-1 : ceux
-    /// qui ont un saut de ligne aussi.
+    /// qui ont un saut de ligne aussi. N-1 : les noms de XDG_CURRENT_DESKTOP hors de `nom_de_bureau_sur`, sous ce nom.
     uwsm_session_joker: Vec<(&'static str, std::ffi::OsString)>,
     /// W-2 (contrôle 2 du sous-lot c2-uwsm, 0.95) : XDG_DATA_HOME de la session, tel que pyxdg le lit pour trouver les
     /// greffons d'uwsm (« uwsm/plugins/<compositeur>.sh ») : entier, relatif joint au dossier personnel.
@@ -4617,8 +4668,10 @@ fn noms_ecrits(texte: &str, cible: impl Fn(&str) -> bool) -> std::collections::B
 /// lève : non vérifié, jamais tu. Pas lus : les profils des shells (que uwsm lit aussi) et l'environnement posé en
 /// cours de session (`systemctl --user set-environment`), qui ne laissent pas de fichier.
 fn environnement_change_la_sauvegarde(r: &Releveur, vide: bool) -> bool {
-    let (fichiers, illisibles, illisibles_d_uwsm) =
+    let (fichiers, illisibles, mut illisibles_d_uwsm) =
         fichiers_du_gestionnaire(r, &configs_posees(&r.gestionnaire), &dossiers_d_uwsm(r));
+    // N-1 : un fichier de session dont un DesktopNames mène uwsm hors des fichiers lus.
+    let bureaux = bureaux_a_dire(r, &mut illisibles_d_uwsm);
     // V-2 : les scripts d'uwsm lus, seuls fichiers qu'une inclusion peut nommer sans lever.
     let scripts: Vec<std::path::PathBuf> = fichiers
         .iter()
@@ -4630,6 +4683,7 @@ fn environnement_change_la_sauvegarde(r: &Releveur, vide: bool) -> bool {
     !illisibles.is_empty()
         || !illisibles_d_uwsm.is_empty()
         || !r.uwsm_session_joker.is_empty()
+        || !bureaux.is_empty()
         || !r.gestionnaire_non_resolu.is_empty()
         || fichiers
             .iter()
@@ -4887,6 +4941,170 @@ fn greffons_d_uwsm(base: &Path, illisibles: &mut Vec<std::path::PathBuf>) -> Vec
     greffons
 }
 
+/// N-1 : un nom de bureau tel qu'uwsm l'accepte de « -D » (uwsm 0.27, misc.py, `dn_colon`) : lettres, chiffres, « _ »,
+/// « . », « - ». Il donne alors un seul nom de fichier, « uwsm/env-<nom> » (« env-.. » compris), que Vanguard lit
+/// (`fichiers_d_uwsm` lit chaque fichier du dossier et descend dans « env-*.d »). Un nom vide aussi (« uwsm/env- »).
+fn nom_de_bureau_sur(nom: &[u8]) -> bool {
+    nom.iter()
+        .all(|o| o.is_ascii_alphanumeric() || matches!(o, b'_' | b'.' | b'-'))
+}
+
+/// Au plus autant d'entrées vues sous les « wayland-sessions » d'une base, et autant de niveaux : au-delà, le reste
+/// n'est pas vérifié (dit).
+const BUREAUX_MAX: usize = 4096;
+const BUREAUX_PROFONDEUR: usize = 16;
+
+/// N-1 : les fichiers de session (« wayland-sessions/…/*.desktop ») des `bases` dont un DesktopNames a un nom hors de
+/// `nom_de_bureau_sur` : (fichier, valeur). Uwsm 0.27 (main.py, `find_entries`) les cherche par pyxdg dans
+/// XDG_DATA_HOME puis chaque XDG_DATA_DIRS, en descendant tout l'arbre (liens suivis), et ajoute leur DesktopNames
+/// (non validé) à XDG_CURRENT_DESKTOP, d'où il tire « uwsm/env-<bureau> ». Plus large qu'uwsm : chaque clé qui
+/// commence par « DesktopNames », dans chaque groupe, et chaque « .desktop », pas seulement celui de la session lancée.
+/// Ce qui ne se lit pas (dossier, fichier, trop gros, trop d'entrées ou de niveaux) va dans `illisibles`, jamais tu.
+fn bureaux_d_uwsm(
+    bases: &[std::path::PathBuf],
+    illisibles: &mut Vec<std::path::PathBuf>,
+) -> Vec<(std::path::PathBuf, String)> {
+    use std::os::unix::fs::MetadataExt as _;
+    let absent = |e: &std::io::Error| {
+        matches!(
+            e.kind(),
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+        ) || e.raw_os_error() == Some(libc::ELOOP)
+    };
+    let mut trouves = Vec::new();
+    for base in bases {
+        let mut vus: Vec<(u64, u64)> = Vec::new();
+        let mut entrees_vues = 0usize;
+        let mut a_lire = vec![(base.join("wayland-sessions"), 0usize)];
+        while let Some((d, niveau)) = a_lire.pop() {
+            // Un dossier déjà vu (une boucle de liens) ne se relit pas ; uwsm, lui, y tournerait.
+            match std::fs::metadata(&d) {
+                Ok(m) if m.is_dir() => {
+                    if vus.contains(&(m.dev(), m.ino())) {
+                        continue;
+                    }
+                    vus.push((m.dev(), m.ino()));
+                }
+                Ok(_) => continue,
+                Err(e) if absent(&e) => continue,
+                Err(_) => {
+                    illisibles.push(d);
+                    continue;
+                }
+            }
+            if niveau > BUREAUX_PROFONDEUR {
+                illisibles.push(d);
+                continue;
+            }
+            let entrees = match std::fs::read_dir(&d) {
+                Ok(entrees) => entrees,
+                Err(e) if absent(&e) => continue,
+                Err(_) => {
+                    illisibles.push(d);
+                    continue;
+                }
+            };
+            for e in entrees {
+                let Ok(e) = e else {
+                    illisibles.push(d.clone());
+                    break;
+                };
+                entrees_vues = entrees_vues.saturating_add(1);
+                if entrees_vues > BUREAUX_MAX {
+                    illisibles.push(d.clone());
+                    break;
+                }
+                let p = e.path();
+                match std::fs::metadata(&p) {
+                    Ok(m) if m.is_dir() => a_lire.push((p, niveau.saturating_add(1))),
+                    Ok(_) if a_l_extension(&p, "desktop") => match temoins::lire_borne(&p, AJOUT_MAX) {
+                        Ok(lu) if lu.entier => {
+                            for valeur in desktop_names_suspects(&lu.octets) {
+                                trouves.push((p.clone(), valeur));
+                            }
+                        }
+                        Err(e) if absent(&e) => {}
+                        _ => illisibles.push(p),
+                    },
+                    Ok(_) => {}
+                    Err(e) if absent(&e) => {}
+                    Err(_) => illisibles.push(p),
+                }
+            }
+        }
+    }
+    trouves.sort();
+    trouves.dedup();
+    trouves
+}
+
+/// N-1 : les valeurs des clés « DesktopNames… » d'un fichier .desktop qui ont un nom hors de `nom_de_bureau_sur`.
+/// Coupées à « ; » (la liste du .desktop) et à « : » (uwsm les joint à XDG_CURRENT_DESKTOP par « : » et les recoupe
+/// là) ; les blancs autour de la clé et de la valeur retirés, comme pyxdg ; tout autre octet (blanc au milieu, « \ »,
+/// non ASCII) rend la valeur suspecte.
+fn desktop_names_suspects(octets: &[u8]) -> Vec<String> {
+    let mut suspects = Vec::new();
+    for ligne in octets.split(|o| *o == b'\n') {
+        let Some(egal) = ligne.iter().position(|o| *o == b'=') else {
+            continue;
+        };
+        let (cle, valeur) = (
+            ligne.get(..egal).unwrap_or_default(),
+            ligne.get(egal..).unwrap_or_default(),
+        );
+        let valeur = valeur.get(1..).unwrap_or_default().trim_ascii();
+        if !cle
+            .trim_ascii()
+            .get(..12)
+            .is_some_and(|c| c.eq_ignore_ascii_case(b"DesktopNames"))
+        {
+            continue;
+        }
+        if !valeur.split(|o| matches!(o, b';' | b':')).all(nom_de_bureau_sur) {
+            suspects.push(String::from_utf8_lossy(valeur).into_owned());
+        }
+    }
+    suspects
+}
+
+/// N-1 : les fichiers de session de `bureaux_d_uwsm` sous les bases d'uwsm (`bases_des_donnees_d_uwsm`), sauf ceux que
+/// seul root peut changer (`programme_de_root_seul`, la règle des autres fichiers du système, R-3) ; une seule liste
+/// pour le bilan et la sauvegarde. Ce qui ne se lit pas s'ajoute à `illisibles`.
+fn bureaux_a_dire(r: &Releveur, illisibles: &mut Vec<std::path::PathBuf>) -> Vec<(std::path::PathBuf, String)> {
+    bureaux_d_uwsm(&bases_des_donnees_d_uwsm(r, &dossiers_d_uwsm(r)), illisibles)
+        .into_iter()
+        .filter(|(f, _)| !programme_de_root_seul(&r.racine, f))
+        .collect()
+}
+
+/// W-2 : les bases où pyxdg cherche les données d'uwsm (ses greffons ; N-1 : ses « wayland-sessions »), plus large
+/// que lui : les valeurs par défaut (et /etc/xdg), ~/.local/share, les `donnees` où uwsm cherche « uwsm/env… », les
+/// XDG_DATA_HOME de la session (déplacé et tel que pyxdg le lit) et ceux posés au gestionnaire.
+fn bases_des_donnees_d_uwsm(r: &Releveur, donnees: &[std::path::PathBuf]) -> Vec<std::path::PathBuf> {
+    let s = |c: &str| r.sous(Path::new(c));
+    let mut bases: Vec<std::path::PathBuf> =
+        vec![s("/usr/local/share"), s("/usr/share"), r.maison.join(".local/share")];
+    let gestionnaire_donnees = r
+        .gestionnaire
+        .iter()
+        .filter(|(v, _)| ["XDG_DATA_HOME", DONNEES_RELATIVES_POUR_UWSM].contains(v))
+        .map(|(_, d)| d);
+    let defauts = [s("/etc/xdg")];
+    for d in defauts
+        .iter()
+        .chain(donnees)
+        .chain(&r.donnees)
+        .chain(&r.uwsm_donnees)
+        .chain(gestionnaire_donnees)
+    {
+        let d = r.sous(d);
+        if !bases.contains(&d) {
+            bases.push(d);
+        }
+    }
+    bases
+}
+
 /// Les dossiers où uwsm cherche aussi « uwsm/env… », en plus de ceux de configuration et de ses valeurs par défaut
 /// (uwsm 0.27, prepare-env.sh, `get_all_config_dirs_extended`) : chaque XDG_CONFIG_DIRS et XDG_DATA_DIRS de la
 /// session, et ceux posés au gestionnaire de systemd du compte. V-3 (relecture du lot c2-uwsm, 0.95) : une seule
@@ -4997,27 +5215,6 @@ fn fichiers_du_gestionnaire(
             lus_par_uwsm.push((d.clone(), d.starts_with(&r.maison)));
         }
     }
-    // W-2 : les bases où pyxdg cherche les greffons, avant que `lus_par_uwsm` ne soit consommé.
-    let mut bases_des_greffons: Vec<std::path::PathBuf> =
-        vec![s("/usr/local/share"), s("/usr/share"), r.maison.join(".local/share")];
-    let gestionnaire_donnees = r
-        .gestionnaire
-        .iter()
-        .filter(|(v, _)| ["XDG_DATA_HOME", DONNEES_RELATIVES_POUR_UWSM].contains(v))
-        .map(|(_, d)| d);
-    for d in lus_par_uwsm
-        .iter()
-        .map(|(d, _)| d)
-        .chain(donnees)
-        .chain(&r.donnees)
-        .chain(&r.uwsm_donnees)
-        .chain(gestionnaire_donnees)
-    {
-        let d = r.sous(d);
-        if !bases_des_greffons.contains(&d) {
-            bases_des_greffons.push(d);
-        }
-    }
     for (d, du_compte) in lus_par_uwsm {
         dossier(d.join("uwsm"), du_compte, Variables::Shell, &mut fichiers);
     }
@@ -5034,7 +5231,7 @@ fn fichiers_du_gestionnaire(
     ] {
         dossier(s(d), false, sorte, &mut fichiers);
     }
-    for b in bases_des_greffons {
+    for b in bases_des_donnees_d_uwsm(r, donnees) {
         let du_compte = b.starts_with(&r.maison);
         for f in greffons_d_uwsm(&b, &mut illisibles_d_uwsm) {
             fichiers.push((f, du_compte, Variables::Shell));
@@ -16704,6 +16901,81 @@ mod tests {
             }
         }
         assert!(faux.is_empty(), "sauts de ligne de la session : {faux:#?}");
+    }
+
+    /// N-1 (revérification de la ronde 2, DEP-4 de la 0.95) : uwsm lit « uwsm/env-<bureau> » pour chaque nom de
+    /// XDG_CURRENT_DESKTOP, pris tel quel. « a/b » le fait lire dans un sous-dossier, « x/../.. » n'importe où, un
+    /// joker se développe : dit (non vérifié, non déclarable), et la sauvegarde exacte se lève. Même chose pour un
+    /// DesktopNames d'un fichier de session (« wayland-sessions »), qu'uwsm ajoute à XDG_CURRENT_DESKTOP. Témoins : un
+    /// nom sûr (« Hyprland », « .. », « GNOME-Classic ») ne dit rien de plus, et « env-hyprland » se juge.
+    #[test]
+    fn nom_de_bureau_d_uwsm_hors_regle_dit() {
+        const DIT: &str = "hors lettres, chiffres";
+        let mut faux = Vec::new();
+        for (i, (bureau, desktop, dit)) in [
+            ("Hyprland", None, false),
+            ("Hyprland:..:GNOME-Classic", None, false),
+            ("Hyprland:a/b", None, true),
+            ("x/../../../../var/tmp/y:Hyprland", None, true),
+            ("Hyprland:a*", None, true),
+            ("Hyprland:a b", None, true),
+            (
+                "Hyprland",
+                Some("[Desktop Entry]\nDesktopNames=Hyprland;GNOME-Classic\n"),
+                false,
+            ),
+            ("Hyprland", Some("[Desktop Entry]\nDesktopNames = Hyprland;a/b\n"), true),
+            ("Hyprland", Some("[Desktop Entry]\nDesktopNames=x:../../y\n"), true),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("uwsm-bureau-{i}"));
+            m.ecrire(".config/uwsm/env-a/b", "export LD_PRELOAD=/opt/inerte/a.so\n");
+            if let Some(d) = desktop {
+                m.ecrire(".local/share/wayland-sessions/sous/x.desktop", d);
+            }
+            let c = m.lancements_avec(&[("XDG_CURRENT_DESKTOP", bureau)]);
+            let vu = c.message.contains(DIT);
+            if vu != *dit
+                || (*dit && !(c.probleme >= Some(Niveau::Eleve) && crate::apprentissage::declarable(&c).is_err()))
+            {
+                faux.push(format!("{bureau} {desktop:?} : {:?} {}", c.probleme, c.message));
+            }
+        }
+        // Témoin : le fichier du bureau lu par Vanguard se juge.
+        let m = Maison::nouvelle("uwsm-bureau-temoin");
+        m.ecrire(".config/uwsm/env-hyprland", "export LD_PRELOAD=/opt/inerte/a.so\n");
+        let c = m.lancements_avec(&[("XDG_CURRENT_DESKTOP", "Hyprland")]);
+        if !(c.probleme >= Some(Niveau::Eleve) && c.message.contains("env-hyprland:1 précharge")) {
+            faux.push(format!("témoin env-hyprland : {:?} {}", c.probleme, c.message));
+        }
+        for vide in [false, true] {
+            let (m, _) = sauvegarde_d_essai(&format!("uwsm-bureau-sauvegarde-{vide}"), vide);
+            let c = m.lancements_avec(&[("XDG_CURRENT_DESKTOP", "Hyprland:a/b")]);
+            if !(c.probleme == Some(Niveau::Eleve) && c.message.contains(crate::sauvegarde::SERVICE)) {
+                faux.push(format!(
+                    "sauvegarde, variable, env -i {vide} : {:?} {}",
+                    c.probleme, c.message
+                ));
+            }
+            let c = m.lancements_avec(&[("XDG_CURRENT_DESKTOP", "Hyprland:..")]);
+            if c.probleme > Some(Niveau::Info) || (vide && c.probleme.is_some()) {
+                faux.push(format!("témoin, env -i {vide} : {:?} {}", c.probleme, c.message));
+            }
+            m.ecrire(
+                ".local/share/wayland-sessions/x.desktop",
+                "[Desktop Entry]\nDesktopNames=Hyprland;a/b\n",
+            );
+            let c = m.lancements_avec(&[("XDG_CURRENT_DESKTOP", "Hyprland")]);
+            if !(c.probleme == Some(Niveau::Eleve) && c.message.contains(crate::sauvegarde::SERVICE)) {
+                faux.push(format!(
+                    "sauvegarde, DesktopNames, env -i {vide} : {:?} {}",
+                    c.probleme, c.message
+                ));
+            }
+        }
+        assert!(faux.is_empty(), "noms de bureau d'uwsm : {faux:#?}");
     }
 
     /// R-2 (relecture DEP-4 de la 0.95) : un XDG_DATA_HOME posé au gestionnaire par un fichier (environment.d), absolu
