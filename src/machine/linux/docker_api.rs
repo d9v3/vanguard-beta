@@ -132,8 +132,14 @@ fn config_par_defaut(config: &std::path::Path) -> bool {
 /// seule qui ne vaut ni `null`, ni « », ni « default » (un autre type compris : on ne sait pas ce que la CLI en
 /// garde) désigne le démon (V-1, relecture du sous-lot c2 de la 0.95). Les lettres de « currentcontext » n'ont pas
 /// d'équivalent hors ASCII dans le pliage de Go (seuls k, s et i en ont) : la casse ASCII suffit. JSON illisible : on
-/// ne sait pas, non ; un JSON qui n'est pas un objet, la CLI le refuse et garde le contexte par défaut.
+/// ne sait pas, non ; un JSON qui n'est pas un objet, la CLI le refuse et garde le contexte par défaut. R-8
+/// (relecture DEP-4 de la 0.95) : un texte vide ou fait des seuls blancs de JSON, la CLI le lit sans erreur (son
+/// décodeur rend `io.EOF`, qu'elle tolère) et garde le contexte par défaut ; Vanguard le disait illisible, donc non
+/// vérifié.
 fn contexte_par_defaut(config: &str) -> bool {
+    if config.trim_matches([' ', '\t', '\n', '\r']).is_empty() {
+        return true;
+    }
     match serde_json::from_str::<serde_json::Value>(config) {
         Ok(v) if !v.is_object() => true,
         Ok(_) => serde_json::from_str::<Paires>(config).is_ok_and(|Paires(paires)| {
@@ -595,6 +601,28 @@ mod tests {
             demon_designe_dans(&config(par_le_lien(&choisie.join(".docker"))), compte(&vide)),
             Some("DOCKER_CONFIG")
         );
+        // R-1 (relecture DEP-4 de la 0.95) : le « .. » au milieu. La CLI lit « choisie/sous » (contexte « temoin »),
+        // le noyau « vide/sous », sans config.json : seul le refus du « .. », où qu'il soit, rend le démon désigné.
+        let temoin = |d: &Path| {
+            std::fs::create_dir_all(d).unwrap();
+            std::fs::write(d.join("config.json"), br#"{"currentContext":"temoin"}"#).unwrap();
+        };
+        temoin(&choisie.join("sous").join(".docker"));
+        temoin(&choisie.join(".docker").join(".docker"));
+        let au_milieu = |d: &Path, suite: &str| d.join("lien").join("..").join(suite).into_os_string();
+        assert_eq!(
+            demon_designe_dans(&avec_home(au_milieu(&choisie, "sous")), compte(&vide)),
+            Some(CONFIG_DE_LA_MAISON)
+        );
+        assert_eq!(
+            demon_designe_dans(&config(au_milieu(&choisie.join(".docker"), ".docker")), compte(&vide)),
+            Some("DOCKER_CONFIG")
+        );
+        // Témoin : là où le noyau arrive, rien ne désigne de démon.
+        assert_eq!(
+            demon_designe_dans(&avec_home(vide.join("sous").into_os_string()), compte(&vide)),
+            None
+        );
         // Témoins : le même dossier nommé sans « .. » se lit (« temoin » : désigné), et un dossier sain, même atteint
         // par un lien, reste sain.
         assert_eq!(
@@ -663,5 +691,10 @@ mod tests {
         assert!(contexte_par_defaut(r#"{"currentContext":"default"}"#));
         assert!(!contexte_par_defaut(r#"{"currentContext":"rootless"}"#));
         assert!(!contexte_par_defaut("pas du json"));
+        // R-8 (relecture DEP-4 de la 0.95) : vide, ou les seuls blancs de JSON : la CLI garde le contexte par défaut.
+        for texte in ["", " \t\r\n "] {
+            assert!(contexte_par_defaut(texte), "{texte:?}");
+        }
+        assert!(!contexte_par_defaut(" \n{\"currentContext\":\"rootless\"}\n"));
     }
 }
