@@ -19361,6 +19361,36 @@ mod tests {
         assert!(refus(&c).contains("XDG_RUNTIME_DIR"));
     }
 
+    /// R-3 (lot 096), bout en bout : une unité du compte ne se tait que si chaque clé est reconnue sûre, les
+    /// variables de son « EnvironmentFile= » comprises (`permise::directive`). Un LD_PRELOAD caché derrière un
+    /// commentaire fini par « \ », ou après un « \r » nu, est bien posé par systemd ; l'ancienne lecture recollait le
+    /// commentaire à la ligne du LD_PRELOAD et jugeait le tout commentaire : la variable échappait au juge, l'unité
+    /// se taisait. Un fichier de variables sans piège reste muet : c'est le contenu, pas le réglage, qui lève.
+    #[test]
+    fn environmentfile_cache_un_precharge() {
+        for (i, (contenu, piege)) in [
+            ("LANG=C\n# une note\n", false),
+            ("# note \\\nLD_PRELOAD=/usr/lib/x.so\n", true),
+            ("# note\rLD_PRELOAD=/usr/lib/x.so\n", true),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("env-cache-{i}"));
+            m.ecrire(
+                ".config/systemd/user/a.service",
+                "[Service]\nEnvironmentFile=/etc/rappel-env\nExecStart=/usr/bin/sleep 60\n",
+            );
+            m.ecrire_hors("/etc/rappel-env", contenu);
+            let c = m.lancements();
+            if piege {
+                leve(&c, contenu);
+            } else {
+                assert_eq!(c.probleme, None, "{contenu:?} : {}", c.message);
+            }
+        }
+    }
+
     /// Vérification 4, D1 : le parcours d'un dossier d'unités suit l'ordre des noms, pas celui du système de fichiers
     /// (l'ordre de création sur btrfs, un hachage sur ext4). Les fichiers sont créés dans un ordre mêlé ; sans le tri,
     /// ils revenaient tels que le disque les rend, et le premier refus d'une alerte changeait d'un disque à l'autre.

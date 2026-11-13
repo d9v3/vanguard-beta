@@ -3115,8 +3115,79 @@ pub(super) fn lire_variables(chemin: &Path) -> Result<Vec<(String, String)>, Eca
     Ok(variables_de_texte(&String::from_utf8_lossy(&lu.octets)))
 }
 
-/// `lire_variables` sur un texte déjà lu.
+/// `lire_variables` sur un texte déjà lu. On réunit deux lectures pour ne jamais voir MOINS de variables qu'avant
+/// (R-3, lot 096) : celle, fidèle à systemd (`variables_comme_systemd`), qui ferme le commentaire sur sa ligne, et
+/// l'ancienne (`variables_recollees`), gardée telle quelle. L'ancienne recollait un commentaire fini par « \ » à la
+/// ligne suivante, puis la jugeait commentaire en entier : un « LD_PRELOAD=… » caché derrière « # …\ » (ou après un
+/// « \r » nu) échappait au juge des unités permises, et l'unité passait pour sûre à tort. La lecture fidèle le voit.
 pub(super) fn variables_de_texte(texte: &str) -> Vec<(String, String)> {
+    let mut variables = variables_comme_systemd(texte);
+    for v in variables_recollees(texte) {
+        if !variables.contains(&v) {
+            variables.push(v);
+        }
+    }
+    variables
+}
+
+/// La variable d'une ligne « [export ] NOM=valeur » : « export » ôté, guillemets simples ou doubles autour de la
+/// valeur ôtés. Sans « = » : rien.
+fn affectation_de_variable(ligne: &str) -> Option<(String, String)> {
+    let l = ligne.trim();
+    let l = l.strip_prefix("export ").unwrap_or(l).trim_start();
+    let (nom, valeur) = l.split_once('=')?;
+    let valeur = valeur.trim();
+    let valeur = valeur
+        .strip_prefix('"')
+        .and_then(|v| v.strip_suffix('"'))
+        .or_else(|| valeur.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')))
+        .unwrap_or(valeur);
+    Some((nom.trim().to_string(), valeur.to_string()))
+}
+
+/// Un suffixe « \ » de continuation : la ligne finit par un nombre IMPAIR de « \ » (le dernier recolle la ligne
+/// suivante ; « \\ » est un antislash échappé, pas une continuation). Rend la ligne sans ce dernier « \ ».
+fn continuation_de_valeur(ligne: &str) -> Option<&str> {
+    let finaux = ligne.len().saturating_sub(ligne.trim_end_matches('\\').len());
+    (finaux % 2 == 1).then(|| ligne.strip_suffix('\\').unwrap_or(ligne))
+}
+
+/// Les variables lues comme systemd lit un fichier de variables (`src/basic/env-file.c`) : « \r » comme « \n »
+/// finit une ligne ; un commentaire (« # » ou « ; » en tête, après les seuls blancs de systemd) tient sur SA ligne
+/// et ne se recolle jamais à la suivante, même fini par « \ » ; seule une ligne de valeur finie par « \ » se recolle.
+fn variables_comme_systemd(texte: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    // La valeur en cours quand une ligne de valeur a fini par « \ » ; `None` : on est en début de ligne.
+    let mut suite: Option<String> = None;
+    for ligne in texte.split(['\n', '\r']) {
+        if let Some(mut buf) = suite.take() {
+            if let Some(debut) = continuation_de_valeur(ligne) {
+                buf.push_str(debut);
+                suite = Some(buf);
+            } else {
+                buf.push_str(ligne);
+                out.extend(affectation_de_variable(&buf));
+            }
+            continue;
+        }
+        if commentaire_de_systemd(ligne) {
+            continue;
+        }
+        if let Some(debut) = continuation_de_valeur(ligne) {
+            suite = Some(debut.to_string());
+        } else {
+            out.extend(affectation_de_variable(ligne));
+        }
+    }
+    if let Some(buf) = suite {
+        out.extend(affectation_de_variable(&buf));
+    }
+    out
+}
+
+/// L'ancienne lecture, gardée pour la réunion (ne jamais voir moins qu'avant) : toute ligne finie par « \ » est
+/// recollée à la suivante AVANT de chercher un commentaire, puis le commentaire générique saute la ligne recollée.
+fn variables_recollees(texte: &str) -> Vec<(String, String)> {
     let mut lignes: Vec<String> = Vec::new();
     let mut courante = String::new();
     for l in texte.lines() {
@@ -3134,18 +3205,7 @@ pub(super) fn variables_de_texte(texte: &str) -> Vec<(String, String)> {
     lignes
         .iter()
         .filter(|l| !commentaire(l))
-        .filter_map(|l| {
-            let l = l.trim();
-            let l = l.strip_prefix("export ").unwrap_or(l).trim_start();
-            let (nom, valeur) = l.split_once('=')?;
-            let valeur = valeur.trim();
-            let valeur = valeur
-                .strip_prefix('"')
-                .and_then(|v| v.strip_suffix('"'))
-                .or_else(|| valeur.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')))
-                .unwrap_or(valeur);
-            Some((nom.trim().to_string(), valeur.to_string()))
-        })
+        .filter_map(|l| affectation_de_variable(l))
         .collect()
 }
 
@@ -3193,5 +3253,34 @@ mod tests {
             assert!(!differents.contains(lire(Ecart::LieuDeDemarrage)));
         }
         assert!(causes.iter().all(|c| !Ecart::AutreNomNonCherche(*c).information()));
+    }
+
+    /// R-3 (lot 096) : un « LD_PRELOAD=… » caché derrière un commentaire fini par « \ », ou après un « \r » nu, est
+    /// bien lu — comme systemd lit un fichier de variables. L'ancienne lecture recollait le commentaire à la ligne
+    /// suivante et jugeait le tout commentaire, cachant la variable au juge des unités permises. Un vrai commentaire
+    /// (sans « \ ») reste sauté, « ; » aussi, et une vraie valeur continuée (« \ » en fin de ligne de valeur) se
+    /// recolle toujours.
+    #[test]
+    fn variable_cachee_derriere_un_commentaire_vue() {
+        use super::variables_de_texte;
+        let cle = ("LD_PRELOAD".to_string(), "/home/alice/.x/l.so".to_string());
+        // Commentaire fini par « \ » : systemd le ferme sur sa ligne ; la variable d'après compte.
+        assert!(variables_de_texte("# note \\\nLD_PRELOAD=/home/alice/.x/l.so\n").contains(&cle));
+        // « \r » nu comme fin de ligne : la variable après le commentaire compte.
+        assert!(variables_de_texte("# note\rLD_PRELOAD=/home/alice/.x/l.so\n").contains(&cle));
+        // Un vrai commentaire (sans « \ ») reste sauté ; seule la variable d'après est lue.
+        let v = variables_de_texte("# juste un commentaire\nLD_PRELOAD=/home/alice/.x/l.so\n");
+        assert_eq!(v, vec![cle.clone()]);
+        // « ; » est aussi un commentaire de systemd.
+        assert!(
+            !variables_de_texte("; LD_PRELOAD=/x\n")
+                .iter()
+                .any(|(n, _)| n == "LD_PRELOAD")
+        );
+        // Une vraie valeur finie par « \ » se recolle à la suivante.
+        assert_eq!(
+            variables_de_texte("FOO=a\\\nbar\n"),
+            vec![("FOO".to_string(), "abar".to_string())]
+        );
     }
 }
