@@ -1000,6 +1000,13 @@ fn releveur(racine: &Path, maison: &Path, variable: &impl Fn(&str) -> Option<std
         session_de_systemd,
         donnees_systeme: liste("XDG_DATA_DIRS"),
         config_systeme: liste("XDG_CONFIG_DIRS"),
+        uwsm_session: VARIABLES_D_UWSM
+            .iter()
+            .filter_map(|nom| variable(nom))
+            .flat_map(|v| std::env::split_paths(&v).collect::<Vec<_>>())
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(|p| depuis_la_maison(maison, &p))
+            .collect(),
         environnement: None,
         budget: temoins::Budget::default(),
         dbus: std::cell::OnceCell::new(),
@@ -1612,8 +1619,13 @@ struct Releveur {
     /// XDG_DATA_DIRS et XDG_CONFIG_DIRS (chemins absolus seulement), où systemd cherche aussi des unités.
     donnees_systeme: Vec<std::path::PathBuf>,
     config_systeme: Vec<std::path::PathBuf>,
+    /// V-1 (relecture du lot c2-uwsm, 0.95) : les dossiers de la session où uwsm cherche « uwsm/env… », coupés comme il
+    /// les coupe (XDG_CONFIG_HOME, XDG_CONFIG_DIRS et XDG_DATA_DIRS, à chaque « : », morceaux vides passés), un morceau
+    /// relatif joint au dossier personnel (`depuis_la_maison`), que systemd, lui, ignore.
+    uwsm_session: Vec<std::path::PathBuf>,
     /// Les dossiers que les fichiers du gestionnaire de systemd du compte posent par une `VARIABLES_DES_DOSSIERS`
     /// (relecture 0.95, V-1) : (variable, dossier), où systemd cherche aussi des unités (`dossiers_du_gestionnaire`).
+    /// Étiquette `RELATIF_POUR_UWSM` : un morceau relatif, que systemd ignore et que seul `dossiers_d_uwsm` lit.
     gestionnaire: Vec<(&'static str, std::path::PathBuf)>,
     /// Ce qui ne s'y résout pas : (fichier ou dossier, variable) ; « ? » : il ne se lit pas en entier.
     gestionnaire_non_resolu: Vec<(std::path::PathBuf, String)>,
@@ -4732,11 +4744,18 @@ fn fichiers_d_uwsm(dossier: &Path, illisibles: &mut Vec<std::path::PathBuf>) -> 
 /// session, et ceux posés au gestionnaire de systemd du compte. V-3 (relecture du lot c2-uwsm, 0.95) : une seule
 /// liste pour le bilan (`fichiers_de_configuration`) et la sauvegarde (`environnement_change_la_sauvegarde`), qui ne
 /// lisait que les XDG_DATA_DIRS posés au gestionnaire : un « uwsm/env » d'un dossier de la session qui pose
-/// LD_LIBRARY_PATH ne la levait pas.
+/// LD_LIBRARY_PATH ne la levait pas. V-1 : avec les morceaux relatifs (de la session, `Releveur::uwsm_session`, ou
+/// posés au gestionnaire, `RELATIF_POUR_UWSM`), joints au dossier personnel, et chaque morceau d'un XDG_CONFIG_HOME
+/// de la session.
 fn dossiers_d_uwsm(r: &Releveur) -> Vec<std::path::PathBuf> {
-    let mut dossiers: Vec<std::path::PathBuf> = r.config_systeme.iter().chain(&r.donnees_systeme).cloned().collect();
+    let mut dossiers: Vec<std::path::PathBuf> = Vec::new();
+    for d in r.config_systeme.iter().chain(&r.donnees_systeme).chain(&r.uwsm_session) {
+        if !dossiers.contains(d) {
+            dossiers.push(d.clone());
+        }
+    }
     for (v, d) in &r.gestionnaire {
-        if ["XDG_DATA_DIRS", "XDG_CONFIG_DIRS"].contains(v) && !dossiers.contains(d) {
+        if ["XDG_DATA_DIRS", "XDG_CONFIG_DIRS", RELATIF_POUR_UWSM].contains(v) && !dossiers.contains(d) {
             dossiers.push(d.clone());
         }
     }
@@ -4860,6 +4879,14 @@ const VARIABLES_DES_DOSSIERS: [&str; 5] = [
     "SYSTEMD_UNIT_PATH",
 ];
 
+/// V-1 (relecture du lot c2-uwsm, 0.95) : les variables dont uwsm lit chaque morceau (coupé à « : ») comme un dossier où
+/// chercher « uwsm/env… » (uwsm 0.27, prepare-env.sh, `get_all_config_dirs_extended`), un morceau relatif compris.
+const VARIABLES_D_UWSM: [&str; 3] = ["XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "XDG_DATA_DIRS"];
+
+/// L'étiquette, dans `Releveur::gestionnaire`, d'un morceau relatif d'une `VARIABLES_D_UWSM` posé au gestionnaire
+/// (V-1) : systemd l'ignore (aucun dossier d'unités n'en vient), seul `dossiers_d_uwsm` le lit.
+const RELATIF_POUR_UWSM: &str = "relatif (uwsm)";
+
 /// W-1 (relecture 0.95) : les variables par lesquelles systemd du compte place ailleurs tous ses dossiers d'unités
 /// (HOME pour ~/.config et ~/.local/share quand les XDG_* manquent, XDG_RUNTIME_DIR pour ceux de la session) ou
 /// lance d'autres générateurs (de qui viennent des unités, ou l'environnement de chacune, celui d'« env » compris).
@@ -4958,7 +4985,13 @@ fn dossiers_du_gestionnaire_lus(
                 continue;
             };
             match chemins_poses(&valeur, v, &r.maison, defauts) {
-                Some(chemins) => dossiers.extend(chemins.into_iter().map(|c| (*v, c))),
+                Some((chemins, relatifs)) => {
+                    dossiers.extend(chemins.into_iter().map(|c| (*v, c)));
+                    // V-1 : un morceau relatif, que systemd ignore, uwsm le lit depuis le dossier personnel.
+                    if VARIABLES_D_UWSM.contains(v) {
+                        dossiers.extend(relatifs.into_iter().map(|c| (RELATIF_POUR_UWSM, c)));
+                    }
+                }
                 None => non_resolus.push((f.clone(), nom.clone())),
             }
             lues.insert(nom);
@@ -5085,20 +5118,28 @@ fn mots_cites(texte: &str) -> Vec<String> {
 /// Les dossiers absolus d'une valeur posée à `nom` (liste séparée par « : »), « $HOME », « ${HOME} », « @{HOME} » et
 /// « ~ » en tête remplacés par le dossier personnel `maison`. La valeur d'avant (« $nom », « ${nom} ») est déjà lue
 /// (celle de Vanguard, ou les dossiers par défaut) : passée. Un morceau relatif est ignoré par systemd pour une
-/// variable XDG (spécification XDG), refusé pour SYSTEMD_UNIT_PATH. `None` : un morceau ne se résout pas (autre
-/// variable, code « % », guillemet, échappement, joker).
+/// variable XDG (spécification XDG), refusé pour SYSTEMD_UNIT_PATH ; rendu à part, joint au dossier personnel
+/// (`depuis_la_maison`), pour uwsm, qui le lit depuis là (V-1, relecture du lot c2-uwsm, 0.95). `None` : un morceau
+/// ne se résout pas (autre variable, code « % », guillemet, échappement, joker).
 ///
 /// `defauts` (relecture 0.95, W-4) : un fichier du système à root seul (snapd pose
 /// « XDG_DATA_DIRS=${XDG_DATA_DIRS:-/usr/local/share:/usr/share}:/var/lib/snapd/desktop ») : les formes
 /// « ${nom:-défaut} » et « ${nom:+texte} » de la même variable se lisent (`defauts_lus`), sans quoi ce fichier levait
 /// la sauvegarde à chaque bilan. Pas pour un fichier du compte, ni pour une autre forme : non résolu, comme avant.
-fn chemins_poses(valeur: &str, nom: &str, maison: &Path, defauts: bool) -> Option<Vec<std::path::PathBuf>> {
+#[allow(clippy::type_complexity)]
+fn chemins_poses(
+    valeur: &str,
+    nom: &str,
+    maison: &Path,
+    defauts: bool,
+) -> Option<(Vec<std::path::PathBuf>, Vec<std::path::PathBuf>)> {
     let valeur = if defauts {
         defauts_lus(valeur, nom)
     } else {
         valeur.to_string()
     };
     let mut sortie = Vec::new();
+    let mut relatifs = Vec::new();
     for morceau in valeur.split(':') {
         let m = morceau.trim_matches([' ', '\t']);
         if m.is_empty() || [format!("${nom}"), format!("${{{nom}}}"), format!("@{{{nom}}}")].contains(&m.to_string()) {
@@ -5120,11 +5161,24 @@ fn chemins_poses(valeur: &str, nom: &str, maison: &Path, defauts: bool) -> Optio
             if nom == "SYSTEMD_UNIT_PATH" {
                 return None;
             }
+            relatifs.push(depuis_la_maison(maison, &p));
             continue;
         }
         sortie.push(p);
     }
-    Some(sortie)
+    Some((sortie, relatifs))
+}
+
+/// Un dossier tel qu'uwsm le lit depuis son dossier courant : le dossier personnel (le service du compte qui lit ses
+/// fichiers, wayland-wm-env@, ne nomme pas de WorkingDirectory=, et systemd lance un service du compte dans le dossier
+/// personnel : systemd.exec). Un chemin absolu reste tel quel ; les « . » sont passés.
+fn depuis_la_maison(maison: &Path, p: &Path) -> std::path::PathBuf {
+    if p.is_absolute() {
+        return p.to_path_buf();
+    }
+    let mut d = maison.to_path_buf();
+    d.extend(p.components().filter(|c| !matches!(c, std::path::Component::CurDir)));
+    d
 }
 
 /// W-4 : « ${nom:-défaut} » devient « ${nom}:défaut » (la valeur d'avant, déjà lue, et le défaut : plus large que
@@ -16032,6 +16086,59 @@ mod tests {
             }
         }
         assert!(faux.is_empty(), "sauvegarde, dossiers d'uwsm de la session : {faux:#?}");
+    }
+
+    /// V-1 (relecture du lot c2-uwsm, 0.95) : uwsm lit aussi un morceau relatif de XDG_CONFIG_HOME, XDG_CONFIG_DIRS ou
+    /// XDG_DATA_DIRS (prepare-env.sh, « ${1}/uwsm/env »), depuis son dossier courant : le dossier personnel pour le
+    /// service du compte. De la session ou posé par ~/.config/environment.d, « rel/uwsm/env » se juge comme
+    /// ~/rel/uwsm/env : la pose en clair se lève à sa ligne ; la sauvegarde aussi, ses deux formes. Témoin : hors de
+    /// « uwsm », rien.
+    #[test]
+    fn dossier_relatif_d_uwsm_juge_depuis_la_maison() {
+        // (variables de la session, ligne de ~/.config/environment.d, fichier sous la maison, levé)
+        type Cas = (
+            &'static [(&'static str, &'static str)],
+            Option<&'static str>,
+            &'static str,
+            bool,
+        );
+        let cas: &[Cas] = &[
+            (&[("XDG_DATA_DIRS", "rel:/usr/share")], None, "rel/uwsm/env", true),
+            (&[("XDG_CONFIG_DIRS", "./rel")], None, "rel/uwsm/env.d/a", true),
+            (&[("XDG_CONFIG_HOME", "rel")], None, "rel/uwsm/env", true),
+            (&[], Some("XDG_DATA_DIRS=rel:/usr/share\n"), "rel/uwsm/env", true),
+            (&[], Some("XDG_CONFIG_DIRS=rel\n"), "rel/uwsm/env-hyprland.d/b", true),
+            (&[], Some("XDG_CONFIG_HOME=rel\n"), "rel/uwsm/env", true),
+            (&[("XDG_DATA_DIRS", "rel:/usr/share")], None, "rel/autre/env", false),
+        ];
+        let mut faux = Vec::new();
+        for (i, (session, pose, fichier, leve)) in cas.iter().enumerate() {
+            let m = Maison::nouvelle(&format!("uwsm-relatif-{i}"));
+            if let Some(p) = pose {
+                m.ecrire(".config/environment.d/10-x.conf", p);
+            }
+            m.ecrire(fichier, "LD_PRELOAD=/opt/inerte/a.so\n");
+            let c = m.lancements_avec(session);
+            let dit = c.probleme >= Some(Niveau::Eleve) && c.message.contains(&format!("~/{fichier}:1 précharge"));
+            if dit != *leve {
+                faux.push(format!(
+                    "{fichier} ({session:?}, {pose:?}) : {:?} {}",
+                    c.probleme, c.message
+                ));
+            }
+        }
+        for vide in [false, true] {
+            let (m, _) = sauvegarde_d_essai(&format!("uwsm-relatif-sauvegarde-{vide}"), vide);
+            m.ecrire("rel/uwsm/env", "LD_LIBRARY_PATH=/opt/inerte\n");
+            let c = m.lancements_avec(&[("XDG_DATA_DIRS", "rel:/usr/share")]);
+            if !(c.probleme == Some(Niveau::Eleve)
+                && c.message.contains(crate::sauvegarde::SERVICE)
+                && crate::apprentissage::declarable(&c).is_err())
+            {
+                faux.push(format!("sauvegarde, env -i {vide} : {:?} {}", c.probleme, c.message));
+            }
+        }
+        assert!(faux.is_empty(), "dossiers relatifs : {faux:#?}");
     }
 
     /// Quatrième vérification : une variable de Hyprland se remplace avant de juger la ligne ; une variable sans
