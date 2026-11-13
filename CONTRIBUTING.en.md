@@ -375,8 +375,8 @@ from somewhere other than `CARGO_HOME`'s registry is refused); `--programmes`, r
 before the engraved fingerprint is computed, checks that each crate named in the bytes of both windows is in its
 target's tree, and `outils/failles-programmes.sh --fenetre` only sets aside an advisory for an off-target crate if none
 of the crates removed from the window (`caisses-fenetre.sh --retirees`, zbus included) can be read in the audited
-program. Nothing readable: nothing is concluded, never a pass. `outils/essais-caisses-fenetre.sh` (the "fenêtre" step of
-`outils/verifier.sh`) tries these guards and the recipe with shims and made-up values.
+program. Nothing readable: nothing is concluded, never a pass. `outils/essais-caisses-fenetre.sh` (the "fenêtre" step
+of `outils/verifier.sh`) tries these guards and the recipe with shims and made-up values.
 
 ## Screenshots and social preview
 

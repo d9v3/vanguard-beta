@@ -344,7 +344,7 @@ deux .exe changeaient avec un dossier de compilation sous `~/.cache` (même tail
 différait, aucun chemin dans le fichier). Un chemin peut changer un programme sans y être écrit : l'éditeur de liens de
 zig (lld, en mode MinGW) range la table des imports par le chemin des bibliothèques d'import de style GNU, celle de la
 bibliothèque standard, que rustc recopie sous `CARGO_TARGET_DIR`, et `libwindows.0.52.0.a` (windows_x86_64_gnu), sous
-`CARGO_HOME` ; le dossier de compilation se classait avant ou après `~/.cargo`, et l'ordre basculait. Depuis, la recette
+`CARGO_HOME` ; le dossier de compilation passait avant ou après `~/.cargo`, et l'ordre basculait. Depuis, la recette
 donne à cargo une seule écriture du dossier de compilation, physique (liens et `..` résolus), et `CARGO_HOME` par un
 lien de nom fixe sous lui (`.cargo-home`, remplacé par `/cargo` dans les programmes), qui se classe toujours avant :
 mesuré le même jour, la même fenêtre Windows sous `~/.cache` (vrai dossier ou lien), `~/Projects`, `/run/media` et par
