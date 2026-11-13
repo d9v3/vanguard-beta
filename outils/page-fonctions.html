@@ -88,6 +88,9 @@ code { background: var(--surface-2); color: var(--encre); border-radius: var(--r
 .recherche input:focus-visible { outline: none; border-bottom-color: var(--accent); }
 .recherche output { flex: none; font-size: .75rem; color: var(--doux); }
 .invite[hidden] { display: none; }
+.console.en-recherche { position: sticky; z-index: 4; box-shadow: 0 6px 12px -8px rgb(0 0 0 / .35); }
+.console.en-recherche .console-etat { display: none; }
+.console.en-recherche .invite { border-top: 0; }
 .cache-lecteur { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 ::highlight(recherche) { background: color-mix(in srgb, var(--accent) 38%, transparent); color: var(--encre); }
 ::highlight(recherche-actif) { background: var(--accent); color: var(--sur-accent); }
@@ -960,12 +963,18 @@ vanguard yara --complet</pre>
     }
     return r;
   };
+  var bande = forme.closest('.console'), barre = document.querySelector('.barre-app');
+  var coller = function (oui) {
+    if (!bande) return;
+    bande.classList.toggle('en-recherche', oui);
+    bande.style.top = oui && barre ? barre.getBoundingClientRect().height + 'px' : '';
+  };
   var ouverts = [], trouves = [], courant = -1, minuterie = 0;
   var effacer = function () {
     ouverts.forEach(function (d) { d.open = false; }); ouverts = [];
     principal.querySelectorAll('.hors-recherche').forEach(function (s) { s.classList.remove('hors-recherche'); });
     if (surligne) { CSS.highlights.delete('recherche'); CSS.highlights.delete('recherche-actif'); }
-    trouves = []; courant = -1; etat.textContent = '';
+    trouves = []; courant = -1; etat.textContent = ''; coller(false);
   };
   var montrer = function (i) {
     if (!trouves.length) return;
@@ -980,6 +989,7 @@ vanguard yara --complet</pre>
     effacer();
     var q = plier(champ.value.trim());
     if (q.length < 2) return;
+    coller(true);
     var sections = new Set(), marche = document.createTreeWalker(principal, NodeFilter.SHOW_TEXT), n;
     while ((n = marche.nextNode())) {
       var texte = plier(n.data), i = texte.indexOf(q);
