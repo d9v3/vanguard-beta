@@ -11,8 +11,9 @@
 #      programme, programme absent ou cargo tree en échec → 2 (rien n'est conclu, jamais un vert).
 #   3. Sans argument (le cliquet de outils/verifier.sh) : l'arbre de chaque cible est comparé à sa LISTE de référence
 #      (outils/caisses-fenetre/<cible>.txt, noms et versions), jamais à un nombre : une caisse remplacée par une autre
-#      à nombre égal, une de plus, une de moins ou une retirée revenue → 1, la différence montrée ; cargo tree en
-#      échec → 2.
+#      à nombre égal, une de plus, une de moins, une retirée revenue ou la même caisse d'une autre source que
+#      crates.io (chemin local, dépôt git) → 1, la différence montrée ; cargo tree en échec ou une ligne d'une forme
+#      inconnue → 2.
 #   4. outils/failles-programmes.sh --fenetre n'écarte les avis de zbus et zvariant (HORS_CIBLES) que si ces caisses
 #      ne se lisent pas dans les octets du programme audité (même lecture que --programmes) : un faux programme qui
 #      porte zvariant est refusé ; un programme où rien ne se lit est « non vérifié », jamais vert ; un programme sain
@@ -50,7 +51,9 @@ if [[ -n $inverse ]]; then
   exit 0
 fi
 echo "vanguard-fenetre v0.1.0 (/depot-invente/fenetre)"
-awk '!/^#/ && NF { print $1 " v" $2 }' "$f"
+# « nom version [suite] » devient « nom vversion [suite] » : la suite (« (proc-macro) », « (*) », une source autre que
+# crates.io) passe telle quelle, comme cargo tree l'écrit.
+awk '!/^#/ && NF { $2 = "v" $2; print }' "$f"
 EOF
 # La cale cargo-audit, à la version qu'épingle la CI (failles-programmes.sh l'exige) : elle dit avoir lu la liste
 # de chaque programme, sans faille.
@@ -179,6 +182,28 @@ if [[ -s $T/ref-$LINUX.txt && -s $T/ref-$WINDOWS.txt ]]; then
   lance outils/caisses-fenetre.sh
   ((CODE == 1)) && [[ $SORTIE == *"retirées revenues"*zbus* ]] && ok "caisse retirée revenue (zbus) : code 1" ||
     ko "caisse retirée revenue : code $CODE ($SORTIE)"
+  # Même nom, même version, autre source (relecture du 12 nov. 2026) : un [patch.crates-io] vers une copie locale ou
+  # un dépôt git. cargo deny et cargo vet passaient, et la liste, sans la source, aussi.
+  remet && { echo "$premiere (/srv/copie-inventee/caisse)"; tail -n +2 "$T/ref-$LINUX.txt"; } >"$T/arbres/$LINUX.txt"
+  lance outils/caisses-fenetre.sh
+  ((CODE == 1)) && [[ $SORTIE == *"autre source que crates.io"*"$premiere (chemin local)"* &&
+    $SORTIE != *copie-inventee* ]] && ok "même caisse par un chemin local : code 1, dite, sans le chemin" ||
+    ko "même caisse par un chemin local : code $CODE ($SORTIE)"
+  remet && { echo "$premiere (https://example.com/depot-invente#0123abcd)"; tail -n +2 "$T/ref-$LINUX.txt"; } \
+    >"$T/arbres/$LINUX.txt"
+  lance outils/caisses-fenetre.sh
+  ((CODE == 1)) && [[ $SORTIE == *"$premiere (autre source)"* && $SORTIE != *example.com* ]] &&
+    ok "même caisse par un dépôt git : code 1, dite" || ko "même caisse par un dépôt git : code $CODE ($SORTIE)"
+  # Ce que cargo tree ajoute sans changer la source : « (proc-macro) », « (*) » (déjà montrée plus haut).
+  remet && { echo "$premiere (proc-macro) (*)"; echo "$premiere (*)"; echo "$premiere (proc-macro)"
+    tail -n +2 "$T/ref-$LINUX.txt"; } >"$T/arbres/$LINUX.txt"
+  lance outils/caisses-fenetre.sh
+  ((CODE == 0)) && ok "(proc-macro) et (*) : la même caisse de crates.io, code 0" ||
+    ko "(proc-macro) et (*) : code $CODE ($SORTIE)"
+  remet && { echo "$premiere [forme-inventee]"; tail -n +2 "$T/ref-$LINUX.txt"; } >"$T/arbres/$LINUX.txt"
+  lance outils/caisses-fenetre.sh
+  ((CODE == 2)) && [[ $SORTIE == *"forme inconnue"* ]] && ok "ligne de cargo tree d'une forme inconnue : code 2" ||
+    ko "ligne d'une forme inconnue : code $CODE ($SORTIE)"
   remet && rm "$T/arbres/$LINUX.txt"
   lance outils/caisses-fenetre.sh
   ((CODE == 2)) && ok "cargo tree en échec : code 2" || ko "cargo tree en échec : code $CODE ($SORTIE)"

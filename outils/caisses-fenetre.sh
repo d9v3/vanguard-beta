@@ -14,8 +14,9 @@
 #   outils/caisses-fenetre.sh --caisses <programme>
 #                                        les caisses nommées dans ses octets, « nom version » par ligne (la même
 #                                        lecture, pour outils/failles-programmes.sh --fenetre)
-# Code 0 : conforme ; 1 : une caisse de trop, une retirée revenue ou une liste changée ; 2 : rien n'est conclu (cargo
-# tree en échec, liste de référence absente ou vide, aucune caisse lue dans un programme), jamais un vert.
+# Code 0 : conforme ; 1 : une caisse de trop, une retirée revenue, une caisse d'une autre source que crates.io ou une
+# liste changée ; 2 : rien n'est conclu (cargo tree en échec ou mal lu, liste de référence absente ou vide, aucune
+# caisse lue dans un programme), jamais un vert.
 # Essais : outils/essais-caisses-fenetre.sh.
 #
 # Pourquoi les octets : compilées par un seul appel de cargo (--target Linux --target Windows), les deux cibles
@@ -40,15 +41,29 @@ REFERENCES=$RACINE/outils/caisses-fenetre
 RETIREES=(accesskit_unix accesskit_atspi_common atspi atspi-common atspi-proxies atspi-connection zbus zbus_names
   zbus_macros zbus_xml zbus-lockstep zvariant zvariant_derive zvariant_utils)
 
-# L'arbre d'une cible, « nom version » par ligne, trié, sans la fenêtre elle-même. Code 2 si cargo tree échoue ou ne
-# dit rien : un arbre vide n'est pas un arbre sain.
+# L'arbre d'une cible, « nom version » par ligne, trié, sans la fenêtre elle-même. cargo tree écrit
+# « nom vversion [(proc-macro)] [(source)] [(*)] » : la source n'y est que si elle n'est pas crates.io. Elle est
+# gardée, sous une forme qui ne dit aucun chemin de cet ordinateur : « (chemin local) » ou « (autre source) ». Sans
+# elle, un [patch.crates-io] vers une copie modifiée, de même nom et de même version, passait ici comme cargo deny et
+# cargo vet (relecture du 12 nov. 2026). Code 2 si cargo tree échoue, ne dit rien ou écrit une ligne d'une forme
+# inconnue : un arbre vide ou mal lu n'est pas un arbre sain.
 arbre() {
   local sortie
   sortie=$(cargo tree -q --locked --manifest-path "$MANIFESTE" --target "$1" -e normal,build --prefix none \
     --format '{p}') || { echo "✖ cargo tree a échoué pour $1 : rien n'est conclu" >&2; return 2; }
-  sortie=$(sed 's/ (.*//; s/ v/ /' <<<"$sortie" | grep -v '^vanguard-fenetre ' | sort -u)
+  sortie=$(sed -E 's/ \(\*\)$//; s/^([^ ]+ v[^ ]+) \(proc-macro\)/\1/
+    s#^([^ ]+) v([^ ]+) \(/[^)]*\)$#\1 \2 (chemin local)#
+    s#^([^ ]+) v([^ ]+) \(.*\)$#\1 \2 (autre source)#
+    s#^([^ ]+) v([^ ]+)$#\1 \2#' <<<"$sortie" | grep -v '^vanguard-fenetre ' | sort -u)
   [[ -n $sortie ]] || { echo "✖ cargo tree n'a rien dit pour $1 : rien n'est conclu" >&2; return 2; }
+  grep -qvE '^[A-Za-z0-9_-]+ [0-9][^ ]*( \((chemin local|autre source)\))?$' <<<"$sortie" &&
+    { echo "✖ cargo tree a écrit pour $1 une ligne d'une forme inconnue : rien n'est conclu" >&2; return 2; }
   printf '%s\n' "$sortie"
+}
+
+# Les caisses d'une autre source que crates.io dans une liste (« nom version (source) » par ligne).
+autres_sources() {
+  grep -E ' \((chemin local|autre source)\)$' <<<"$1"
 }
 
 # La liste versionnée d'une cible, triée. Code 2 si elle est absente, illisible ou vide : rien n'est conclu.
@@ -121,6 +136,12 @@ if [[ ${1:-} == --ecrire ]]; then
       CODE=1
       continue
     fi
+    a=$(autres_sources "$liste")
+    if [[ -n $a ]]; then
+      echo "✖ $cible : caisses d'une autre source que crates.io, liste non écrite : $(paste -sd, - <<<"$a" | sed 's/,/, /g')"
+      CODE=1
+      continue
+    fi
     printf '%s\n' "$liste" >"$REFERENCES/$cible.txt.nouveau" && mv -f "$REFERENCES/$cible.txt.nouveau" "$REFERENCES/$cible.txt" ||
       exit 2
     echo "écrit : outils/caisses-fenetre/$cible.txt ($(wc -l <<<"$liste") caisses), à relire dans le diff"
@@ -150,6 +171,13 @@ for cible in "${CIBLES[@]}"; do
     echo "✖ $cible : caisses retirées revenues : $(paste -sd, - <<<"$r" | sed 's/,/, /g')"
     CODE=1
   fi
+  # Toujours refusée, même inscrite à la main dans la liste : cargo deny, cargo vet et cargo audit ne la jugent pas
+  # comme une caisse de crates.io, et la garde des octets ne la voit pas (son chemin n'est pas sous registry/src).
+  a=$(autres_sources "$liste")
+  if [[ -n $a ]]; then
+    echo "✖ $cible : caisses d'une autre source que crates.io : $(paste -sd, - <<<"$a" | sed 's/,/, /g')"
+    CODE=1
+  fi
   en_plus=$(comm -13 <(printf '%s\n' "$attendue") <(printf '%s\n' "$liste"))
   en_moins=$(comm -23 <(printf '%s\n' "$attendue") <(printf '%s\n' "$liste"))
   if [[ -n $en_plus || -n $en_moins ]]; then
@@ -159,7 +187,7 @@ for cible in "${CIBLES[@]}"; do
     montrer - "$en_moins"
     echo "  Voulu : outils/caisses-fenetre.sh --ecrire, puis le diff relu (une caisse de plus se dit, avec sa raison)."
     CODE=1
-  elif [[ -z $r ]]; then
+  elif [[ -z $r && -z $a ]]; then
     echo "✔ $cible : $nombre caisses, celles de outils/caisses-fenetre/$cible.txt, aucune retirée revenue"
   fi
 done

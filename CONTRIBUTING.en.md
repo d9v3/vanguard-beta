@@ -368,11 +368,13 @@ eframe's accesskit feature, taken for Windows only, brought zbus and zvariant in
 and the tests, run target by target, did not see (measured on November 12, 2026: 13.4 MB before, 10.5 MB after).
 `outils/caisses-fenetre.sh` compares each target's tree to its versioned list (`outils/caisses-fenetre/<target>.txt`,
 names and versions: one more crate shows in the diff and goes through cargo deny and cargo vet; `--ecrire` rewrites
-the lists); `--programmes`, run by `outils/compiler-version.sh` before the engraved fingerprint is computed, checks
-that each crate named in the bytes of both windows is in its target's tree, and `outils/failles-programmes.sh
---fenetre` only sets aside an advisory for an off-target crate if it cannot be read in the audited program. Nothing
-readable: nothing is concluded, never a pass. `outils/essais-caisses-fenetre.sh` (the "fenêtre" step of
-`outils/verifier.sh`) tries these guards and the recipe with shims and made-up values.
+the lists) and refuses the same crate coming from a source other than crates.io (a `[patch.crates-io]` to a local copy
+or a git repository, which cargo deny and cargo vet let through); `--programmes`, run by `outils/compiler-version.sh`
+before the engraved fingerprint is computed, checks that each crate named in the bytes of both windows is in its
+target's tree, and `outils/failles-programmes.sh --fenetre` only sets aside an advisory for an off-target crate if it
+cannot be read in the audited program. Nothing readable: nothing is concluded, never a pass.
+`outils/essais-caisses-fenetre.sh` (the "fenêtre" step of `outils/verifier.sh`) tries these guards and the recipe with
+shims and made-up values.
 
 ## Screenshots and social preview
 
