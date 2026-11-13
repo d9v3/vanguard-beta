@@ -28,6 +28,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::machine::Constat;
+use crate::modele::Echec;
 use crate::risk::Niveau;
 use crate::sceau::Lecture;
 use crate::voulues::Doute;
@@ -38,6 +39,9 @@ pub(crate) const FICHIER: &str = "programmes-planifies.json";
 
 /// Au-delà, ce n'est pas le programme de Vanguard : il n'est pas lu en entier.
 const TAILLE_MAX: u64 = 512 << 20;
+
+/// Le contexte des échecs de la lecture d'une empreinte.
+const OU_EMPREINTE: &str = "programmes_poses/empreinte";
 
 /// Ce que Vanguard planifie et qui lance son programme sans personne devant l'écran.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,28 +99,31 @@ struct Fichier {
 
 /// L'empreinte BLAKE3 du programme `chemin`, lu en entier. Le lien est suivi (la tâche le suit aussi) ; ouvert sans
 /// attendre puis jugé sur ce qui a été ouvert : un tube nommé posé à sa place ne fige pas le bilan.
-pub(crate) fn empreinte_de(chemin: &Path) -> Result<String, String> {
+pub(crate) fn empreinte_de(chemin: &Path) -> Result<String, Echec> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NONBLOCK);
-    let f = options.open(chemin).map_err(|e| e.to_string())?;
+    let f = options.open(chemin).map_err(|e| Echec::io(OU_EMPREINTE, &e))?;
     empreinte_du_fichier(&f)
 }
 
 /// L'empreinte du fichier déjà ouvert `f`, lue depuis sa poignée (pas par un chemin qu'on pourrait changer entre
 /// l'ouverture et la lecture) : un simple fichier, de taille raisonnable.
-pub(crate) fn empreinte_du_fichier(f: &std::fs::File) -> Result<String, String> {
-    let m = f.metadata().map_err(|e| e.to_string())?;
+pub(crate) fn empreinte_du_fichier(f: &std::fs::File) -> Result<String, Echec> {
+    let m = f.metadata().map_err(|e| Echec::io(OU_EMPREINTE, &e))?;
     if !m.is_file() {
-        return Err(tr!("pas un simple fichier", "not a plain file").into());
+        return Err(Echec::refuse(
+            OU_EMPREINTE,
+            tr!("pas un simple fichier", "not a plain file"),
+        ));
     }
     if m.len() > TAILLE_MAX {
-        return Err(tr!("fichier démesuré", "oversized file").into());
+        return Err(Echec::refuse(OU_EMPREINTE, tr!("fichier démesuré", "oversized file")));
     }
     let mut h = blake3::Hasher::new();
     h.update_reader(std::io::Read::take(f, TAILLE_MAX))
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| Echec::io(OU_EMPREINTE, &e))?;
     Ok(h.finalize().to_hex().to_string())
 }
 
@@ -296,7 +303,7 @@ enum Jugement {
 /// l'empreinte du programme qui tourne quand elle se connaît, et l'empreinte du texte de la tâche lu.
 fn juger(
     programme: &Path,
-    lu: &Result<String, String>,
+    lu: &Result<String, Echec>,
     pose: Result<Option<&Pose>, Doute>,
     soi: Option<&str>,
     texte: &std::io::Result<String>,
