@@ -33,12 +33,11 @@ pub(super) fn docker() -> Vec<Constat> {
     {
         return vec![];
     }
-    if let Some(variable) = docker_api::demon_designe_par_variable() {
-        return demon_designe_non_lu(variable);
+    if let Some(origine) = docker_api::demon_designe() {
+        return demon_designe_non_lu(origine);
     }
-    // L'API locale du démon d'abord (lecture seule) ; la CLI quand un contexte est choisi dans config.json (elle le
-    // lit par HOME), ou si le démon ne répond pas sur sa prise.
-    if docker_api::hote_par_defaut() && Path::new(docker_api::PRISE).exists() {
+    // Rien ne désigne un autre démon : son API locale d'abord (lecture seule), la CLI s'il ne répond pas sur sa prise.
+    if Path::new(docker_api::PRISE).exists() {
         match docker_api::conteneurs_sur(Path::new(docker_api::PRISE)) {
             Ok(liste) => return constats_docker(liste),
             // Hors du groupe docker (qui vaut root) : la CLI serait refusée de même.
@@ -48,7 +47,7 @@ pub(super) fn docker() -> Vec<Constat> {
             Err(_) => {}
         }
     }
-    let Some(liste) = sortie_delai("docker", &["ps", "--format", "{{.Names}}\t{{.Ports}}"], 15, &[0]) else {
+    let Some(liste) = ps_par_la_cli() else {
         return vec![docker_sans_acces(&processus(), autres_visibles())];
     };
     constats_docker(
@@ -62,15 +61,34 @@ pub(super) fn docker() -> Vec<Constat> {
     )
 }
 
-/// Le démon de la personne est désigné par `variable` (DOCKER_HOST…) : la CLI, lancée sans les variables du compte,
-/// en lirait un autre, et son « aucun port exposé » serait faux (E-4, recontrôle 0.95). Il est dit non vérifié, avec
-/// la variable. Le démon du système (la prise par défaut) est lu quand même s'il répond, sinon les processus ; seuls
-/// les ports exposés vus ainsi sont gardés (`constats_demon_designe`) : leur « rien d'exposé » ne dit rien du démon
-/// désigné.
-fn demon_designe_non_lu(variable: &str) -> Vec<Constat> {
+/// `docker ps` sur la prise par défaut, sans rien de la maison : `-H` fait prendre à la CLI le contexte « default »,
+/// et `--config` (un dossier qui n'existe pas) lui fait ignorer ~/.docker. Sans eux, elle suivait le `currentContext`
+/// du config.json trouvé par HOME (que `par_le_systeme` garde) : un fichier écrit par le compte après `demon_designe`,
+/// ou à côté d'un DOCKER_CONFIG qu'elle ne voit pas, lui faisait lire un faux démon et dire « aucun port exposé » (N-2,
+/// recontrôle 2 de la 0.95).
+fn ps_par_la_cli() -> Option<String> {
+    let hote = format!("unix://{}", docker_api::PRISE);
+    let args = [
+        "--config",
+        "/nonexistent/vanguard-docker",
+        "-H",
+        &hote,
+        "ps",
+        "--format",
+        "{{.Names}}\t{{.Ports}}",
+    ];
+    sortie_delai("docker", &args, 15, &[0])
+}
+
+/// Le démon de la personne est désigné par `origine` (DOCKER_HOST…, ou le config.json de la maison) : la CLI de
+/// Vanguard, lancée sans les variables du compte et sur la prise par défaut, en lirait un autre, et son « aucun port
+/// exposé » serait faux (E-4 et N-2, recontrôles 0.95). Il est dit non vérifié, avec son origine. Le démon du système
+/// (la prise par défaut) est lu quand même s'il répond, sinon les processus ; seuls les ports exposés vus ainsi sont
+/// gardés (`constats_demon_designe`) : leur « rien d'exposé » ne dit rien du démon désigné.
+fn demon_designe_non_lu(origine: &str) -> Vec<Constat> {
     let prise = Path::new(docker_api::PRISE);
     constats_demon_designe(
-        variable,
+        origine,
         prise.exists().then(|| docker_api::conteneurs_sur(prise)),
         || docker_sans_acces(&processus(), autres_visibles()),
     )
@@ -83,12 +101,12 @@ type Conteneurs = Vec<(String, Vec<String>)>;
 /// `par_processus`, la lecture par les processus, faite seulement si la prise ne répond pas.
 ///
 /// Prise absente, refusée (hors du groupe docker : le cas courant) ou muette : les processus se lisent quand même, et
-/// la variable n'y change rien. Seule leur alerte vérifiée (un port publié hors de la boucle locale) est gardée : le
+/// l'origine n'y change rien. Seule leur alerte vérifiée (un port publié hors de la boucle locale) est gardée : le
 /// non vérifié ci-dessous l'aurait sinon remplacée, et une variable du compte aurait caché un signal déjà vu (N-3,
 /// recontrôle 2 de la 0.95). Leur « sain », leur « aucun conteneur » ou leur propre non vérifié ne disent rien du
 /// démon désigné : jamais gardés.
 fn constats_demon_designe(
-    variable: &str,
+    origine: &str,
     systeme: Option<Result<Conteneurs, crate::modele::Echec>>,
     par_processus: impl FnOnce() -> Constat,
 ) -> Vec<Constat> {
@@ -100,8 +118,8 @@ fn constats_demon_designe(
     constats.push(impossible(
         "Docker",
         &trf!(
-            "le démon désigné par {variable} n'est pas lu : Vanguard lance ses outils sans les variables du compte, et ses ports publiés ne sont pas vérifiés",
-            "the daemon set by {variable} is not read: Vanguard runs its tools without the account's variables, and its published ports are not checked"
+            "le démon désigné par {origine} n'est pas lu : Vanguard ne suit pas un démon choisi par le compte (variable ou fichier de réglage), et ses ports publiés ne sont pas vérifiés",
+            "the daemon set by {origine} is not read: Vanguard does not follow a daemon chosen by the account (variable or settings file), and its published ports are not checked"
         ),
     ));
     constats
@@ -471,6 +489,186 @@ mod tests {
                 .iter()
                 .any(|c| c.starts_with("false|") && c.contains("DOCKER_HOST")),
             "démon de DOCKER_HOST pas dit non vérifié : {constats:#?}"
+        );
+    }
+
+    /// Un faux démon Docker sur une prise Unix du dossier temporaire (pas sous `essais::temporaire()` : le chemin
+    /// d'une prise tient en 108 octets, comme pour `http_unix::essais::faux_demon`). Il compte les connexions et répond
+    /// comme un démon sans conteneur : ce qu'un faux démon du compte dirait pour faire croire à « rien d'exposé ».
+    /// Arrêté et retiré quand l'essai le lâche.
+    struct FauxDemon {
+        chemin: std::path::PathBuf,
+        connexions: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        arret: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        fil: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl FauxDemon {
+        fn nouveau(nom: &str) -> FauxDemon {
+            use std::io::{Read, Write};
+            use std::sync::atomic::Ordering::SeqCst;
+            let chemin = std::env::temp_dir().join(format!("vanguard-{nom}-{}.sock", std::process::id()));
+            let _ = std::fs::remove_file(&chemin);
+            let ecoute = std::os::unix::net::UnixListener::bind(&chemin).unwrap();
+            ecoute.set_nonblocking(true).unwrap();
+            let connexions = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let arret = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let (compte, fin) = (connexions.clone(), arret.clone());
+            let fil = std::thread::spawn(move || {
+                while !fin.load(SeqCst) {
+                    let Ok((mut s, _)) = ecoute.accept() else {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                        continue;
+                    };
+                    compte.fetch_add(1, SeqCst);
+                    let _ = s.set_nonblocking(false);
+                    let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+                    let mut demande = Vec::new();
+                    let mut o = [0u8; 1];
+                    while !demande.ends_with(b"\r\n\r\n") && matches!(s.read(&mut o), Ok(1)) {
+                        demande.push(o[0]);
+                    }
+                    let demande = String::from_utf8_lossy(&demande);
+                    let corps = if demande.starts_with("HEAD ") {
+                        ""
+                    } else if demande.contains("/_ping") {
+                        "OK"
+                    } else if demande.contains("/containers/json") {
+                        "[]"
+                    } else {
+                        "{}"
+                    };
+                    let _ = write!(
+                        s,
+                        "HTTP/1.1 200 OK\r\nApi-Version: 1.47\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{corps}",
+                        corps.len()
+                    );
+                }
+            });
+            FauxDemon {
+                chemin,
+                connexions,
+                arret,
+                fil: Some(fil),
+            }
+        }
+
+        fn connexions(&self) -> usize {
+            self.connexions.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    impl Drop for FauxDemon {
+        fn drop(&mut self) {
+            self.arret.store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Some(fil) = self.fil.take() {
+                let _ = fil.join();
+            }
+            let _ = std::fs::remove_file(&self.chemin);
+        }
+    }
+
+    /// Posée dans le processus relancé par l'essai N-2 : « docker » (les constats) ou « cli » (`ps_par_la_cli`).
+    const RELANCE_N2: &str = "VANGUARD_ESSAI_N2_RELANCE";
+
+    /// N-2 (recontrôle 2 de la 0.95) : un contexte choisi dans ~/.docker/config.json, un fichier que le compte écrit,
+    /// mène à un faux démon. La CLI de Vanguard, qui garde HOME, suivait ce contexte : le faux démon disait « aucun
+    /// conteneur », et Vanguard « Aucun port de conteneur exposé », vérifié. Le démon désigné par le fichier est dit
+    /// non vérifié, comme pour une variable ; ni les constats ni la CLI de Vanguard ne joignent le faux démon.
+    #[test]
+    fn contexte_de_la_maison_dit_non_verifie() {
+        match std::env::var(RELANCE_N2).as_deref() {
+            Ok("docker") => {
+                for c in docker() {
+                    println!(
+                        "constat-n2:{}|{}|{}",
+                        c.verifie,
+                        c.probleme.is_some(),
+                        c.message.replace('\n', " ")
+                    );
+                }
+                return;
+            }
+            Ok(_) => {
+                println!("cli-n2:{}", ps_par_la_cli().is_some());
+                return;
+            }
+            Err(_) => {}
+        }
+        let Some(cli) = crate::commande::outil_systeme("docker") else {
+            return crate::essais::saute("docker absent");
+        };
+        let maison = crate::essais::Jetable::nouveau("n2-docker-contexte");
+        let demon = FauxDemon::nouveau("n2-docker");
+        // Le contexte « temoin » du compte, rangé où la CLI le cherche : contexts/meta/<sha256 du nom>/meta.json.
+        let reglages = maison.join(".docker");
+        let meta = reglages
+            .join("contexts")
+            .join("meta")
+            .join("9cf95f8768a2401fd50a768785ab7614dbe46a03d238d9a80f14e4d641563fa6");
+        std::fs::create_dir_all(&meta).unwrap();
+        std::fs::write(reglages.join("config.json"), r#"{"currentContext":"temoin"}"#).unwrap();
+        let hote = format!("unix://{}", demon.chemin.display());
+        let contexte = serde_json::json!({
+            "Name": "temoin",
+            "Metadata": {},
+            "Endpoints": {"docker": {"Host": hote, "SkipTLSVerify": false}},
+        });
+        std::fs::write(meta.join("meta.json"), contexte.to_string()).unwrap();
+        let lancer = |c: &mut std::process::Command| {
+            c.env_remove("DOCKER_HOST")
+                .env_remove("DOCKER_CONTEXT")
+                .env_remove("DOCKER_CONFIG")
+                .env("HOME", &*maison)
+                .output()
+                .unwrap()
+        };
+        // Témoin : la CLI de la personne, elle, suit ce contexte jusqu'au faux démon. Sans lui, « jamais joint » ne
+        // prouverait rien.
+        let s = lancer(std::process::Command::new(&cli).arg("ps"));
+        assert!(
+            demon.connexions() > 0,
+            "contexte témoin pas suivi : {}",
+            String::from_utf8_lossy(&s.stderr)
+        );
+        let avant = demon.connexions();
+        let relancer = |mode: &str| {
+            let s = lancer(
+                std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "machine::linux::docker::tests::contexte_de_la_maison_dit_non_verifie",
+                        "--nocapture",
+                    ])
+                    .env(RELANCE_N2, mode),
+            );
+            let texte = String::from_utf8_lossy(&s.stdout).into_owned();
+            assert!(s.status.success() && texte.contains("1 passed"), "{texte}");
+            texte
+        };
+        let texte = relancer("docker");
+        let constats: Vec<&str> = texte.lines().filter_map(|l| l.strip_prefix("constat-n2:")).collect();
+        assert!(
+            !constats.iter().any(|c| c.starts_with("true|false|")),
+            "« sain » sur le démon d'un contexte de la maison : {constats:#?}"
+        );
+        assert!(
+            constats
+                .iter()
+                .any(|c| c.starts_with("false|") && c.contains(docker_api::CONFIG_DE_LA_MAISON)),
+            "démon du config.json de la maison pas dit non vérifié : {constats:#?}"
+        );
+        assert_eq!(
+            demon.connexions(),
+            avant,
+            "constats lus sur le faux démon : {constats:#?}"
+        );
+        let texte = relancer("cli");
+        assert!(texte.contains("cli-n2:"), "{texte}");
+        assert_eq!(
+            demon.connexions(),
+            avant,
+            "la CLI de Vanguard a suivi le contexte de la maison"
         );
     }
 }
