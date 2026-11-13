@@ -10,7 +10,8 @@
 #   fermée par sa croix : un gardien caché, lancé avant Claude, attend la fin de ce script et fait la même chose.
 #   Ordinateur éteint en pleine session : le prochain lancement efface d'abord ce qui est resté.
 # - Pas de mise à jour automatique, pas de trafic non essentiel ; l'environnement de l'ordinateur visité ne choisit
-#   ni le serveur, ni le compte, ni les certificats (variables ANTHROPIC_*, CLAUDE_*, NODE_*… retirées).
+#   ni le serveur, ni le compte, ni les certificats, ni le mandataire (ANTHROPIC_*, CLAUDE_*, NODE_*, *_PROXY…
+#   retirées, avant toute commande de Claude Code).
 # - Claude ne change rien sans demander (CLAUDE.md, à côté, lui donne les consignes du dépannage).
 # Limite, dite dans LISEZMOI : un programme malveillant du même compte Windows peut lire le jeton pendant la session.
 # PowerShell 5.1 (Windows 10) : ce fichier est en UTF-8 avec BOM, sans quoi les accents seraient mal lus.
@@ -68,9 +69,20 @@ Dire 'réglages, noms de fichiers) part chez Anthropic pour être analysé. Il d
      'settings, file names) is sent to Anthropic for analysis. It asks before every command, and changes'
 Dire 'change rien sans votre accord. Il faut un compte Claude (abonnement Pro ou Max, ou console Anthropic).' `
      'nothing without your consent. A Claude account is needed (Pro or Max plan, or Anthropic Console).'
+Dire 'Connexion : sur VOTRE téléphone, jamais dans le navigateur de cet ordinateur (il garderait votre compte).' `
+     'Sign in on YOUR phone, never in this computer''s browser (it would keep your account signed in).'
 Write-Host ''
+# Oui seulement par « o », « oui », « y » ou « yes » (-match ignore la casse) : « ok non » ne vaut pas accord.
 $r = Read-Host '  Le propriétaire de cet ordinateur est d''accord ? / Does the owner of this computer agree? [o/y/N]'
-if ($r -notmatch '^\s*[oOyY]') { Write-Host '  Rien n''a été lancé. / Nothing was started.'; exit 0 }
+if ("$r".Trim() -notmatch '^(o|oui|y|yes)$') { Write-Host '  Rien n''a été lancé. / Nothing was started.'; exit 0 }
+
+# L'environnement de Claude, et du gardien qui en hérite : celui de l'ordinateur visité ne choisit ni le serveur, ni
+# le compte, ni les certificats, ni le mandataire, ni le code chargé. Retiré d'abord, avant toute commande de Claude
+# Code (même la déconnexion des restes d'une session).
+Get-ChildItem Env: | Where-Object {
+    $_.Name -match '^(ANTHROPIC_|CLAUDE_|NODE_|BUN_|SSL_CERT_|AWS_|GOOGLE_|VERTEX_|OTEL_|GIT_)' -or
+    $_.Name -match '^((HTTPS?|ALL|NO)_PROXY|REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE|BROWSER)$'
+} | ForEach-Object { Remove-Item -LiteralPath "Env:$($_.Name)" }
 
 if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
     Arret 'Claude Code n''est pas sur cette clé (Claude\Windows\claude.exe).' 'Claude Code is not on this key.'
@@ -79,14 +91,18 @@ if (-not $env:TEMP -or -not (Test-Path -LiteralPath $env:TEMP -PathType Containe
     Arret 'Dossier temporaire de Windows introuvable (TEMP).' 'Windows temporary folder not found (TEMP).'
 }
 # Réglages imposés à Claude Code par l'ordinateur (administrateur, entreprise, ou programme malveillant) : ils
-# passeraient avant les nôtres.
+# passeraient avant les nôtres. Fichiers, dossier managed-settings.d, et stratégies du registre.
+$imposes = @()
 foreach ($racine in @([Environment]::GetFolderPath('ProgramFiles'), [Environment]::GetFolderPath('CommonApplicationData'))) {
-    foreach ($nom in 'CLAUDE.md', 'managed-settings.json', 'managed-mcp.json') {
-        $f = [IO.Path]::Combine($racine, 'ClaudeCode', $nom)
-        if ([IO.File]::Exists($f)) {
-            Arret "$f existe : cet ordinateur impose ses réglages à Claude Code. Rien n'a été lancé." `
-                  "$f exists: this computer imposes its settings on Claude Code. Nothing was started."
-        }
+    foreach ($nom in 'CLAUDE.md', 'managed-settings.json', 'managed-settings.d', 'managed-mcp.json') {
+        $imposes += [IO.Path]::Combine($racine, 'ClaudeCode', $nom)
+    }
+}
+$imposes += 'HKLM:\SOFTWARE\Policies\ClaudeCode', 'HKCU:\SOFTWARE\Policies\ClaudeCode'
+foreach ($f in $imposes) {
+    if (Test-Path -LiteralPath $f) {
+        Arret "$f existe : cet ordinateur impose ses réglages à Claude Code. Rien n'a été lancé." `
+              "$f exists: this computer imposes its settings on Claude Code. Nothing was started."
     }
 }
 
@@ -120,12 +136,14 @@ try {
     if ($sig.Status -ne 'Valid' -or $nom -ne $Signataire) {
         throw [Exception]::new("signature : $($sig.Status), signataire : « $nom » (attendu : « $Signataire »)")
     }
-    # 2. Empreinte égale à celle du manifeste posé sur la clé (une copie abîmée en route, ou un autre claude.exe
-    # authentique mais d'une autre version que celle que Vanguard a posée).
+    # 2. Empreinte égale à celle du manifeste posé sur la clé : attrape une copie abîmée en route. Ce manifeste n'est
+    # pas authentifié ici (pas de gpg sous Windows) : un autre claude.exe signé « Anthropic, PBC » avec un manifeste
+    # retouché passerait. Une clé qui a quitté vos mains repasse par Vanguard (LISEZMOI, Limites).
     $manifeste = Get-Content -LiteralPath (Join-Path $Ici 'manifest.json') -Raw | ConvertFrom-Json
     $vu = (Get-FileHash -LiteralPath $Exe -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($vu -ne $manifeste.platforms.'win32-x64'.checksum) { throw [Exception]::new('empreinte différente du manifeste de la clé') }
-    $Version = $manifeste.version
+    # La version lue dans le programme signé, pas dans le manifeste qui ne l'est pas ici.
+    $Version = (Get-Item -LiteralPath $Exe).VersionInfo.ProductVersion
 } catch {
     if ($Session) { $Session.Dispose() }
     [void](Nettoyer $Dossier $null)
@@ -148,11 +166,12 @@ Get-ChildItem -LiteralPath $env:TEMP -Directory -Filter 'vanguard-claude-*' -For
         if (Nettoyer $d $Exe) { Dire 'Restes d''une session précédente effacés.' 'Leftovers of a previous session erased.' }
     }
 
-# Claude Code lit aussi les CLAUDE.md des dossiers au-dessus du dossier de travail (C:\Users\…\CLAUDE.md) : posés
-# là par quelqu'un d'autre, ce seraient des consignes.
+# Claude Code lit aussi les consignes des dossiers au-dessus du dossier de travail (C:\Users\…\CLAUDE.md,
+# C:\.claude\…) : posées là par quelqu'un d'autre, ce seraient des consignes. Limite, dite : un compte sans droits
+# peut créer C:\.claude après cette vérification ; seul un dossier refait à chaque lancement le verrait.
 for ($d = Split-Path -Parent $Dossier; $d; $d = Split-Path -Parent $d) {
-    foreach ($nom in 'CLAUDE.md', 'CLAUDE.local.md') {
-        if ([IO.File]::Exists((Join-Path $d $nom))) {
+    foreach ($nom in 'CLAUDE.md', 'CLAUDE.local.md', 'AGENTS.md', '.claude\CLAUDE.md', '.claude\AGENTS.md', '.claude\rules') {
+        if (Test-Path -LiteralPath (Join-Path $d $nom)) {
             $Session.Dispose()
             [void](Nettoyer $Dossier $null)
             Arret "$(Join-Path $d $nom) existe : Claude le lirait comme une consigne. Rien n'a été lancé." `
@@ -161,10 +180,21 @@ for ($d = Split-Path -Parent $Dossier; $d; $d = Split-Path -Parent $d) {
     }
 }
 
-# L'environnement de Claude, et du gardien qui en hérite : celui de l'ordinateur visité ne choisit ni le serveur, ni
-# le compte, ni les certificats, ni le code chargé.
-Get-ChildItem Env: | Where-Object { $_.Name -match '^(ANTHROPIC_|CLAUDE_|NODE_|BUN_|SSL_CERT_|AWS_|GOOGLE_|VERTEX_|OTEL_)' } |
-    ForEach-Object { Remove-Item -LiteralPath "Env:$($_.Name)" }
+# Sans ses consignes, Claude dépannerait sans les règles (lecture seule, accord, sécurité jamais baissée) : refusé.
+$consignes = Join-Path $Travail 'CLAUDE.md'
+try {
+    Copy-Item -LiteralPath (Join-Path $Ici 'CLAUDE.md') -Destination $consignes
+    if ((Get-Item -LiteralPath $consignes).Length -eq 0 -or
+        (Get-FileHash -LiteralPath $consignes).Hash -ne (Get-FileHash -LiteralPath (Join-Path $Ici 'CLAUDE.md')).Hash) {
+        throw [Exception]::new('copie différente')
+    }
+} catch {
+    $Session.Dispose()
+    [void](Nettoyer $Dossier $null)
+    Arret 'Consignes de dépannage (Claude\CLAUDE.md) absentes ou illisibles : rien n''a été lancé.' `
+          'Troubleshooting instructions (Claude\CLAUDE.md) missing or unreadable: nothing was started.'
+}
+
 $env:CLAUDE_CONFIG_DIR = $Config
 $env:DISABLE_AUTOUPDATER = '1'
 $env:CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1'
@@ -185,17 +215,20 @@ Get-Process -ErrorAction SilentlyContinue | Where-Object { try { `$_.Path -eq `$
 "@
 try {
     $code64 = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($gardien))
-    [void](Start-Process -FilePath $PowerShell -WindowStyle Hidden -ArgumentList '-NoProfile', '-NonInteractive',
-        '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-EncodedCommand', $code64)
+    $g = Start-Process -FilePath $PowerShell -WindowStyle Hidden -PassThru -ArgumentList '-NoProfile', '-NonInteractive',
+        '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-EncodedCommand', $code64
+    # Arrêté tout de suite (bloqué par une stratégie, langage restreint) : il ne gardera rien.
+    Start-Sleep -Seconds 1
+    if ($g.HasExited) { throw [Exception]::new('gardien arrêté') }
 } catch {
     Dire '⚠ Gardien pas lancé : fermez Claude par /exit, jamais par la croix.' '⚠ Guard not started: close Claude with /exit, never with the X.'
 }
 
-Copy-Item -LiteralPath (Join-Path $Ici 'CLAUDE.md') -Destination (Join-Path $Travail 'CLAUDE.md') -ErrorAction SilentlyContinue
-
 Write-Host ''
 Dire 'Pour finir : tapez /exit dans Claude. Après un ordinateur douteux : fermez aussi la session sur claude.ai.' `
      'To finish: type /exit in Claude. After a doubtful computer: also end the session on claude.ai.'
+Dire 'Connecté dans le navigateur de cet ordinateur par erreur : déconnectez-vous de claude.ai avant de partir.' `
+     'Signed in in this computer''s browser by mistake: sign out of claude.ai before leaving.'
 Write-Host ''
 $code = 0
 Push-Location -LiteralPath $Travail

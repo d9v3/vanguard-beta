@@ -18,8 +18,9 @@ propriétaire de l'ordinateur : ce que Claude lit (journaux, réglages, noms de 
    Ordinateur qui ne démarre plus : démarrer sur SystemRescue (menu de la clé), puis la même commande que sous
    Linux. Claude y monte le disque en lecture seule pour diagnostiquer.
 
-   La première fois, Claude donne une adresse de connexion : l'ouvrir (sur ce PC ou sur un téléphone), se
-   connecter, et recopier le code s'il en demande un.
+   La première fois, Claude donne une adresse de connexion : l'ouvrir sur VOTRE téléphone, jamais dans le
+   navigateur de cet ordinateur (il garderait votre compte connecté après votre départ), se connecter, et
+   recopier le code s'il en demande un.
 
 
 2. FINIR
@@ -28,8 +29,10 @@ propriétaire de l'ordinateur : ce que Claude lit (journaux, réglages, noms de 
    conversation de l'ordinateur. Fenêtre fermée par sa croix : sous Windows, un gardien efface quand même ;
    au moindre doute (ou sous Linux), relancer le lanceur une fois, puis /exit : il efface d'abord ce qui
    était resté.
-   Après un ordinateur douteux (virus possible) : terminer aussi la session sur claude.ai (Réglages ›
-   Compte), pour que la connexion ne vaille plus rien ailleurs.
+   Après un ordinateur douteux (virus possible), ou s'il s'est éteint ou a planté en pleine session :
+   terminer aussi la session sur claude.ai (Réglages › Compte), pour que la connexion ne vaille plus rien
+   ailleurs.
+   Connecté par erreur dans le navigateur de cet ordinateur : s'y déconnecter de claude.ai avant de partir.
 
 
 3. CE QUI EST PROTÉGÉ
@@ -40,6 +43,8 @@ propriétaire de l'ordinateur : ce que Claude lit (journaux, réglages, noms de 
    - Avant le lancement, le programme est vérifié : sous Windows, sa signature numérique « Anthropic, PBC »,
      contrôlée par Windows ; sous Linux, la signature d'Anthropic sur la liste des empreintes, et l'empreinte
      du programme.
+   - Des consignes posées sur l'ordinateur pour Claude (CLAUDE.md, AGENTS.md, .claude) ou des réglages
+     imposés à Claude Code : le lanceur refuse de démarrer, et dit pourquoi.
    - Claude reçoit des consignes de dépannage (CLAUDE.md, dans ce dossier) : diagnostiquer en lecture seule,
      expliquer la cause avant de corriger, ne rien changer sans accord, ne jamais couper l'antivirus, le
      pare-feu ni les mises à jour, respecter la vie privée du proche.
@@ -53,6 +58,8 @@ propriétaire de l'ordinateur : ce que Claude lit (journaux, réglages, noms de 
 
    - Windows et Linux 64 bits (x86-64). Sous Windows ARM, la version x86-64 tourne en émulation.
    - Sous Linux sans gpg, la signature d'Anthropic ne peut pas être vérifiée : le lanceur le dit et demande.
+   - Le lanceur vit sur la même clé que le programme : il voit une copie abîmée, pas une clé réécrite en
+     entier. Une clé qui a quitté vos mains repasse par Vanguard (sur votre ordinateur) avant de servir.
    - Un virus qui tourne déjà sous le même compte peut lire la connexion pendant la session : rien ne l'en
      empêche. Sur un ordinateur qu'on croit infecté, démarrer plutôt sur SystemRescue (menu de la clé), et
      terminer la session sur claude.ai après.

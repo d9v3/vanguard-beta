@@ -57,7 +57,8 @@ erreur() { echo "✖ $*" >&2; exit 1; }
 avertir() { # titre texte
   command -v notify-send >/dev/null && notify-send -a Vanguard -i vanguard -- "$1" "$2" || true
 }
-lire() { curl -fsSL --proto '=https,file' --retry 3 --connect-timeout 20 --max-time 120 "$1"; }
+# Petits fichiers seulement (liste des versions, manifeste) : un serveur qui en enverrait des Go est coupé à 1 Mo.
+lire() { curl -fsSL --proto '=https,file' --retry 3 --connect-timeout 20 --max-time 120 --max-filesize 1048576 "$1"; }
 
 # Comme reglage() d'outils/images-cle.sh : les lignes « NOM=… », sans commentaire, guillemets, BOM ni « \r ».
 reglage() { # nom
@@ -82,6 +83,13 @@ cache_present() {
 
 # Vérifie la signature du manifeste d'un dossier ; écrit sur la sortie le manifeste tel que gpg l'a vérifié. Code 1
 # (la raison sur la sortie d'erreur) sinon.
+# Le trousseau jetable fermé : ses processus arrêtés et son dossier de sockets (/run/user/…/gnupg/d.…) retiré, sans
+# quoi chaque vérification en laisse un.
+trousseau_ferme() { # dossier
+  gpgconf --homedir "$1" --kill all 2>/dev/null
+  gpgconf --homedir "$1" --remove-socketdir 2>/dev/null
+  rm -rf -- "$1"
+}
 manifeste_verifie() { # dossier
   local d=$1 trousseau statut
   trousseau=$(mktemp -d "${TMPDIR:-/tmp}/vanguard-claude-gpg.XXXXXX") || return 1
@@ -97,7 +105,7 @@ manifeste_verifie() { # dossier
   if ! grep -q '^\[GNUPG:\] GOODSIG ' <<<"$statut" ||
     ! grep -q "^\[GNUPG:\] VALIDSIG .* $EMPREINTE_CLE\$" <<<"$statut" ||
     grep -q '^\[GNUPG:\] \(EXPKEYSIG\|REVKEYSIG\|EXPSIG\) ' <<<"$statut"; then
-    rm -rf "$trousseau"
+    trousseau_ferme "$trousseau"
     if grep -q '^\[GNUPG:\] \(NO_PUBKEY\|ERRSIG\)' <<<"$statut"; then
       echo "manifeste signé par une clé que Vanguard ne connaît pas (une mise à jour de Vanguard l'apportera)" >&2
     else
@@ -106,7 +114,7 @@ manifeste_verifie() { # dossier
     return 1
   fi
   cat "$trousseau/manifest.json"
-  rm -rf "$trousseau"
+  trousseau_ferme "$trousseau"
 }
 
 # Lit dans un manifeste vérifié (entrée standard) la version, ou « empreinte taille binaire » d'une plateforme ; rien
@@ -168,6 +176,8 @@ chercher() {
   [[ $haute =~ ^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,6}$ ]] || haute=""
   haute=$(printf '%s\n' "$avant" "$haute" | sed '/^$/d' | sort -V | tail -1)
   if [[ $v == "$avant" ]]; then
+    # Notée ici aussi : un cache rempli autrement (ou une note perdue) garde sa protection contre le retour.
+    mkdir -p "$ETAT" && echo "$haute" >"$ETAT/claude-cle-version"
     echo "Claude Code $v : déjà dans le cache, vérifié."
     return 0
   fi
@@ -181,7 +191,8 @@ chercher() {
   # Arrêté en route ou refusé : le dossier partiel part, rien ne passe pour vérifié.
   trap 'rm -rf -- "$tmp"' EXIT
   for f in manifest.json manifest.json.sig; do
-    curl -fsSL --proto '=https,file' --retry 3 --connect-timeout 20 --max-time 120 -o "$tmp/$f" "$SOURCE/$v/$f" ||
+    curl -fsSL --proto '=https,file' --retry 3 --connect-timeout 20 --max-time 120 --max-filesize 1048576 \
+      -o "$tmp/$f" "$SOURCE/$v/$f" ||
       { echo "✖ $v/$f : pas téléchargé." >&2; return 1; }
   done
   if ! m=$(manifeste_verifie "$tmp" 2>"$tmp/.raison"); then
@@ -226,20 +237,34 @@ chercher() {
 # Le SHA-256 de chaque binaire posé sur la clé, noté ici au jeton de la clé (jamais sur la clé).
 note_de() { echo "$ETAT/claude-cle-$1.sha256"; }
 
-# Retire de la clé ce que ce script y a posé, et rien d'autre ; les dossiers seulement vides.
-retirer() { # point
-  local p=$1 f ligne _p _b dossier
-  [[ -d $p/Claude && ! -L $p/Claude ]] || { rm -f -- "$p/$LANCEUR"; return 0; }
-  for f in "${FIXES[@]}" "${SIGNES[@]}"; do rm -f -- "$p/Claude/$f"; done
-  for ligne in "${PLATEFORMES[@]}"; do
-    read -r _p _b dossier <<<"$ligne"
-    [[ -L $p/Claude/$dossier ]] && continue
-    rm -f -- "$p/Claude/$dossier/$_b"
-    rmdir -- "$p/Claude/$dossier" 2>/dev/null
-  done
-  rmdir -- "$p/Claude" 2>/dev/null
-  rm -f -- "$p/$LANCEUR"
-  echo "Claude Code retiré de la clé (coupé sur cet ordinateur)."
+# Retire de la clé ce que ce script y a posé, et rien d'autre ; les dossiers seulement vides. Seulement si la note de
+# cette clé existe : sans elle, rien ne dit que ces fichiers viennent d'ici (ceux de la personne, un autre jeton) ;
+# ils restent, et c'est dit. Chaque fichier retiré est nommé ; la note part après.
+retirer() { # point note
+  local p=$1 note=$2 f ligne _p _b dossier retires=()
+  if [[ -z $note || ! -f $note ]]; then
+    [[ ! -e $p/Claude && ! -e $p/$LANCEUR ]] ||
+      echo "Claude Code coupé ; Claude/ sur la clé n'a pas été posé d'ici (pas de note) : laissé tel quel."
+    return 0
+  fi
+  if [[ -d $p/Claude && ! -L $p/Claude ]]; then
+    for f in "${FIXES[@]}" "${SIGNES[@]}"; do
+      [[ -f $p/Claude/$f && ! -L $p/Claude/$f ]] && rm -f -- "$p/Claude/$f" && retires+=("Claude/$f")
+    done
+    for ligne in "${PLATEFORMES[@]}"; do
+      read -r _p _b dossier <<<"$ligne"
+      [[ -L $p/Claude/$dossier ]] && continue
+      [[ -f $p/Claude/$dossier/$_b && ! -L $p/Claude/$dossier/$_b ]] && rm -f -- "$p/Claude/$dossier/$_b" &&
+        retires+=("Claude/$dossier/$_b")
+      rmdir -- "$p/Claude/$dossier" 2>/dev/null
+    done
+    rmdir -- "$p/Claude" 2>/dev/null
+  fi
+  [[ -f $p/$LANCEUR && ! -L $p/$LANCEUR ]] && rm -f -- "$p/$LANCEUR" && retires+=("$LANCEUR")
+  rm -f -- "$note"
+  ((${#retires[@]})) || return 0
+  echo "Claude Code retiré de la clé (coupé sur cet ordinateur) :"
+  printf '  %s\n' "${retires[@]}"
 }
 
 # Un binaire changé pendant le voyage qu'on ne peut pas remplacer par la copie vérifiée (coupé, cache absent,
@@ -272,7 +297,7 @@ poser() { # point
     fi
   fi
   if ! active; then
-    retirer "$p"
+    retirer "$p" "${note:-}"
     [[ -z $change ]] || retirer_change "$p" "$change" "Claude Code coupé"
     return 0
   fi
@@ -297,6 +322,15 @@ poser() { # point
     [[ ! -L $chemin ]] || erreur "$chemin est un lien symbolique : rien n'est posé."
   done
   [[ $jeton =~ ^[0-9a-f]{32}$ ]] || erreur "Jeton de la clé illisible : rien n'est posé."
+  # Un binaire déjà là sans note de dépôt (jeton changé, note perdue, posé par autre chose) : on ne sait pas d'où il
+  # vient. Remplacé par la copie vérifiée, et dit, comme un binaire changé.
+  local inconnu=""
+  if [[ ! -f $note ]]; then
+    for ligne in "${PLATEFORMES[@]}"; do
+      read -r plat bin dossier <<<"$ligne"
+      [[ ! -e $p/Claude/$dossier/$bin ]] || cmp -s "$d/$plat/$bin" "$p/Claude/$dossier/$bin" || inconnu+=" Claude/$dossier/$bin"
+    done
+  fi
   # Place : les binaires qui ne sont pas déjà là, plus la marge.
   besoin=$MARGE_MIO
   for ligne in "${PLATEFORMES[@]}"; do
@@ -348,6 +382,12 @@ os.close(fd)' "$p/Claude/$dossier/$bin" 2>/dev/null || true
     echo "  remplacé pendant le voyage est un piège possible : regarder où la clé est allée." >&2
     avertir "Claude Code changé sur la clé" "Changé pendant le voyage :$change. Remplacé par la copie vérifiée ; \
 un programme remplacé est un piège possible."
+    return 2
+  fi
+  if [[ -n $inconnu ]]; then
+    echo "⚠ Déjà sur la clé, sans note de dépôt ici :$inconnu. Remplacé par la copie vérifiée ; s'il ne vient pas" >&2
+    echo "  de Vanguard (autre ordinateur, autre jeton), regarder d'où il vient." >&2
+    avertir "Claude Code inconnu sur la clé" "Déjà là sans note de dépôt :$inconnu. Remplacé par la copie vérifiée."
     return 2
   fi
 }
