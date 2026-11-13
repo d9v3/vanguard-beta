@@ -1749,7 +1749,7 @@ pub(super) fn persistance_dans(
     demarrage.extend(inclus.iter().cloned());
     hypr.extend(inclus.iter().cloned());
     t.r.hypr_inclus = inclus;
-    lire_prechargement(racine, &variable, gestion, &mut t);
+    lire_prechargement(racine, &variable, &|f| gestion.is_some_and(|g| g.possede(f)), &mut t);
     // Les fichiers de Hyprland sont aussi des fichiers de configuration, après les autres.
     configuration.extend(hypr);
     // R-6 : puis ceux qu'un profil ou un fichier d'uwsm lit par « . » ou « source », chacun selon sa sorte.
@@ -6950,10 +6950,12 @@ fn retrait(f: &Path, texte: &str, l: &str) -> Option<(String, String)> {
 
 /// /etc/ld.so.preload : chaque bibliothèque listée est chargée dans TOUS les programmes, root compris. Technique
 /// classique des rootkits ; presque aucun système normal n'en a. Puis LD_PRELOAD et LD_AUDIT de cette session.
+/// `possede` dit si la base des paquets connaît un fichier (au bilan : le gestionnaire de paquets ; dans les essais :
+/// une base inventée, pour tenir ce qui lui est demandé).
 fn lire_prechargement(
     racine: &Path,
     variable: &impl Fn(&str) -> Option<std::ffi::OsString>,
-    gestion: Option<Paquets>,
+    possede: &dyn Fn(&Path) -> bool,
     t: &mut Lancements,
 ) {
     let preload = racine.join("etc/ld.so.preload");
@@ -6968,7 +6970,7 @@ fn lire_prechargement(
         let lignes: Vec<&str> = lu.texte.split('\n').collect();
         for p in crate::machine::prechargement::bibliotheques(&lu.octets) {
             let ligne = lignes.get(p.ligne).copied().unwrap_or("");
-            let connue = gestion.is_some_and(|g| g.possede(Path::new(std::ffi::OsStr::from_bytes(&p.nom))));
+            let connue = possede(Path::new(std::ffi::OsStr::from_bytes(&p.nom)));
             let lib = String::from_utf8_lossy(&p.nom);
             t.sources.push(source_de("preload", &lib));
             t.retraits
@@ -19400,6 +19402,51 @@ mod tests {
             } else {
                 assert_eq!(c.probleme, None, "{contenu:?} : {}", c.message);
             }
+        }
+    }
+
+    /// Ronde 3 du lot 096 (N6) : un nom de /etc/ld.so.preload fini par « \r » (ligne en « \r\n ») est demandé TEL
+    /// QUEL à la base des paquets : c'est ce fichier-là, « \r » compris, que le chargeur ouvre ; la base ne connaît
+    /// que le nom sans « \r », donc il est « hors paquet » (correctif C2, qu'aucun essai ne tenait). La ligne à
+    /// retirer garde aussi son « \r » : c'est celle que le fils root relit, coupée au seul « \n ». Témoin : sans
+    /// « \r », le même nom est connu de la base, donc suspect et pas critique.
+    #[test]
+    fn preload_retour_chariot_jusqu_au_paquet_et_au_retrait() {
+        use std::os::unix::ffi::OsStrExt as _;
+        for (i, (contenu, nom, connu)) in [
+            ("/usr/lib/x.so\r\n", &b"/usr/lib/x.so\r"[..], false),
+            ("/usr/lib/x.so\n", &b"/usr/lib/x.so"[..], true),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("preload-cr-{i}"));
+            m.ecrire_hors("/etc/ld.so.preload", contenu);
+            let variable = |_: &str| -> Option<std::ffi::OsString> { None };
+            let mut t = Lancements {
+                r: releveur(&m.racine, &m.racine.join("home/alice"), &variable),
+                ..Lancements::default()
+            };
+            let demandes = std::cell::RefCell::new(Vec::new());
+            let possede = |f: &Path| {
+                demandes.borrow_mut().push(f.as_os_str().as_bytes().to_vec());
+                f == Path::new("/usr/lib/x.so")
+            };
+            lire_prechargement(&m.racine, &variable, &possede, &mut t);
+            assert_eq!(demandes.into_inner(), vec![nom.to_vec()], "{contenu:?}");
+            assert_eq!(
+                (t.suspects.len(), t.critiques.len()),
+                if connu { (1, 0) } else { (0, 1) },
+                "{contenu:?}"
+            );
+            assert!(
+                connu || t.critiques.iter().all(|c| c.contains("hors paquet")),
+                "{:?}",
+                t.critiques
+            );
+            let fichier = m.racine.join("etc/ld.so.preload").to_str().unwrap().to_string();
+            let ligne = String::from_utf8(nom.to_vec()).unwrap();
+            assert_eq!(t.retraits, vec![Some((fichier, ligne))], "{contenu:?}");
         }
     }
 

@@ -3481,4 +3481,16 @@ mod tests {
             vec![paire("LANG", "C"), paire("TZ", "America/Montreal")]
         );
     }
+
+    /// Ronde 3 du lot 096 (N6) : la réunion avec l'ancienne lecture tient. Ces formes, systemd ne les pose pas (la
+    /// clé « LD_PRE\ » s'arrête à sa ligne ; « export X » n'est pas un nom), mais l'ancienne lecture les voyait :
+    /// on ne voit jamais moins qu'avant. Sans la réunion, elles disparaissaient sans qu'aucun essai le dise.
+    #[test]
+    fn la_reunion_garde_l_ancienne_lecture() {
+        use super::variables_de_texte;
+        let cle = ("LD_PRELOAD".to_string(), "/tmp/x.so".to_string());
+        for texte in ["LD_PRE\\\nLOAD=/tmp/x.so\n", "export LD_PRELOAD=/tmp/x.so\n"] {
+            assert!(variables_de_texte(texte).contains(&cle), "{texte:?}");
+        }
+    }
 }
