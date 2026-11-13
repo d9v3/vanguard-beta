@@ -14,8 +14,9 @@
 #                                             Linux qui recevra le secret de la file ; attend ce secret (--adopter)
 #   outils/vm-tester.sh --adopter             garde le secret que l'installation a déposé, chiffré, après accord sur
 #                                             son code de vérification (le même doit s'afficher dans la VM)
-#   outils/vm-tester.sh --verdict SHA256      un verdict OK signé par le surveillant pour ce vanguard.exe ? (code 0 ;
-#                                             1 : aucun ; 3 : pas de secret ici, file pas réinstallée)
+#   outils/vm-tester.sh --verdict SHA256      un verdict OK signé par le surveillant pour ce vanguard.exe et sa
+#                                             fenêtre ? (code 0 ; 1 : aucun ; 3 : pas de secret ici, file pas
+#                                             réinstallée)
 #   outils/vm-tester.sh --essai-local         essais de ce script et du surveillant, sans VM (pwsh)
 # Provenance (campagne d'attaque n° 3) : chaque travail.txt porte le HMAC-SHA256 du secret de la file, et chaque
 # fini.txt celui du surveillant ; le secret est tiré dans la VM par l'installation et gardé ici hors du partage
@@ -604,8 +605,12 @@ print(c[0:4] + "-" + c[4:8] + "-" + c[8:12])' "$empreinte")
 }
 
 # Un verdict OK, signé par le surveillant, d'un travail signé qui a fait tourner ce vanguard.exe-là (test.ps1 compris,
-# au moins une vérification réussie) : la porte de la VM pour outils/publier-version.sh. Code 0 (la ligne du verdict
-# sur la sortie), 1 aucun, 3 pas de secret ici.
+# au moins une vérification réussie) et sa fenêtre : la porte de la VM pour outils/publier-version.sh. Code 0 (la
+# ligne du verdict sur la sortie), 1 aucun, 3 pas de secret ici.
+# La fenêtre : tout vanguard.exe publié porte gravée l'empreinte de la sienne (publier-version.sh, grave_sa_fenetre),
+# et ce script ne signe une ligne sha256.vanguard-fenetre.exe qu'égale à l'empreinte gravée dans ce vanguard.exe-là
+# (deposer). Un travail sans elle (vm-tester d'avant la 0.96, dont le test.ps1 n'essayait pas la fenêtre) n'est
+# jamais une porte. Un vanguard.exe sans fenêtre (« AUCUNE ») n'en a donc jamais : il n'est pas publiable.
 verdict() {
   local d t f
   [[ $VERDICT =~ ^[0-9a-f]{64}$ ]] || { echo "--verdict : une empreinte SHA-256 en hexadécimal" >&2; return 2; }
@@ -614,7 +619,8 @@ verdict() {
     d=${d%/}
     [[ ${d##*/} =~ $MOTIF_ID && ! -L $d ]] || continue
     t=$d/travail.txt f=$d/fini.txt
-    [[ $(cle "$t" sha256.vanguard.exe | tr 'A-F' 'a-f') == "$VERDICT" && $(cle "$t" test) == oui ]] || continue
+    [[ $(cle "$t" sha256.vanguard.exe | tr 'A-F' 'a-f') == "$VERDICT" && $(cle "$t" test) == oui &&
+      $(cle "$t" sha256.vanguard-fenetre.exe) =~ ^[0-9a-f]{64}$ ]] || continue
     signe_par_le_secret "$DOMAINE_TRAVAIL" "$t" && signe_par_le_secret "$DOMAINE_FINI" "$f" || continue
     [[ $(cle "$f" id) == "${d##*/}" && $(cle "$f" etat) == ok && $(cle "$f" code) == 0 && $(cle "$f" test.ok) -gt 0 ]] || continue
     echo "${d##*/} : $(cle "$f" test.ok) vérifications réussies, fini $(cle "$f" fin)"
@@ -658,6 +664,17 @@ m32(b + 0x48, 0x2060); m32(b + 0x4C, len(man)); v[b + 0x60:b + 0x60 + len(man)] 
 open(sys.argv[1], 'wb').write(v)
 EOF2
   printf 'MZ programme abîmé pour les essais\n' >"$T/abime.exe"
+  # La fausse fenêtre (0.96) : le même petit PE (verifier-binaire l'accepte), avec des octets à elle ; avec.exe, le
+  # faux vanguard.exe qui porte son empreinte gravée (« VANGUARD-FENETRE:<64 chiffres>; »), comme tout programme publié.
+  local sha_fen2
+  grave() { # fichier marque… : une copie du faux vanguard.exe qui porte ces marques
+    local f=$1 m
+    shift
+    cp -f "$T/vanguard.exe" "$f" && for m; do printf 'VANGUARD-FENETRE:%s;' "$m" >>"$f"; done
+  }
+  cp -f "$T/vanguard.exe" "$T/fenetre.exe" && printf 'fausse fenêtre pour les essais' >>"$T/fenetre.exe"
+  sha_fen2=$(sha256sum "$T/fenetre.exe" | cut -d' ' -f1)
+  grave "$T/avec.exe" "$sha_fen2"; grave "$T/aucune.exe" AUCUNE; grave "$T/deux.exe" "$sha_fen2" "$(printf '%064d' 0)"
   local avec_pwsh=1
   [[ -x $PWSH ]] || avec_pwsh=
   # Le secret de la file d'essai, des deux côtés (jamais celui de ~/.config) : en hexadécimal pour Linux, en octets
@@ -860,13 +877,15 @@ EOF2
     vmt --sans-attendre; tt=$VMD/file-essais/$ID/travail.txt
     { head -c $(($(stat -c %s "$tt") - 71)) "$tt"; printf 'hmac=%064d\r\n' 0; } >"$tt.n" && mv "$tt.n" "$tt"; tour
     voir "signature fausse (sans le secret) : refusé, rien lancé" eval '[[ $(fini "$ID" code) == 2 && $(fini "$ID" raison) == *"signature de travail.txt fausse"* && ! -e $TRACE ]]'
-    vmt --sans-attendre; tour
+    #     Le travail du verdict porte sa fenêtre, comme tout programme publié (publier-version.sh, grave_sa_fenetre).
+    vmt --exe "$T/avec.exe" --fenetre "$T/fenetre.exe" --sans-attendre; tour
     voir "travail signé : fait, verdict signé reconnu" eval '[[ $(fini "$ID" code) == 0 ]] && grep -q "^hmac=" "$VMD/file-essais/$ID/fini.txt"'
     local sha_exe
-    sha_exe=$(sha256sum "$T/vanguard.exe" | cut -d' ' -f1)
+    sha_exe=$(sha256sum "$T/avec.exe" | cut -d' ' -f1)
     vmt --verdict "$sha_exe"
-    voir "--verdict : le verdict OK signé de ce vanguard.exe trouvé (porte de publier-version.sh)" eval '((code == 0)) && dit "$ID"'
-    rm -f "$VMD/file-essais/$ID/pris.txt" "$VMD/file-essais/$ID/fini.txt" "$TRACE"; cp "$T/vanguard.exe" "$VMD/file-essais/$ID/"; tour
+    voir "--verdict : le verdict OK signé de ce vanguard.exe et de sa fenêtre trouvé (porte de publier-version.sh)" eval '((code == 0)) && dit "$ID"'
+    rm -f "$VMD/file-essais/$ID/pris.txt" "$VMD/file-essais/$ID/fini.txt" "$TRACE"
+    cp "$T/avec.exe" "$VMD/file-essais/$ID/vanguard.exe"; cp "$T/fenetre.exe" "$VMD/file-essais/$ID/vanguard-fenetre.exe"; tour
     voir "travail signé rejoué (pris et fini retirés) : refusé, pas refait" eval '[[ $(fini "$ID" code) == 2 && $(fini "$ID" raison) == *"déjà fait"* && ! -e $TRACE ]]'
     vmt --sans-attendre
     printf 'format=1\r\nid=%s\r\ncode=0\r\netat=ok\r\ntest.ok=999\r\n' "$ID" >"$VMD/file-essais/$ID/fini.txt"
@@ -874,7 +893,7 @@ EOF2
     voir "fini.txt forgé (sans la signature du surveillant) : verdict ignoré, code 1" eval '((code == 1)) && dit "NON SIGNÉ" && ! dit "999 OK"'
     nouvelle_vm; sources 0 0 0 'OK x'
     rm -f "${VMD%/*}/prive-surveillant/secret.bin"
-    vmt --sans-attendre; tour; vmt --attendre "$ID"
+    vmt --exe "$T/avec.exe" --fenetre "$T/fenetre.exe" --sans-attendre; tour; vmt --attendre "$ID"
     voir "VM sans secret (installation d'avant) : refusé, rien lancé ; verdict non signé, code 1" eval '[[ $(fini "$ID" code) == 2 && $(fini "$ID" raison) == *"pas de secret"* && ! -e $TRACE ]] && ((code == 1)) && dit "NON SIGNÉ"'
     printf 'format=1\r\nid=%s\r\ncode=0\r\netat=ok\r\ntest.ok=999\r\n' "$ID" >"$VMD/file-essais/$ID/fini.txt"
     vmt --verdict "$sha_exe"
@@ -1066,16 +1085,7 @@ EOF
   #     gravée (« VANGUARD-FENETRE:<64 chiffres>; », src/demarrage/empreinte_fenetre.rs). Le travail porte une
   #     fenêtre (--fenetre) si et seulement si une empreinte y est gravée, et c'est celle-là, octet pour octet ; sinon,
   #     ou face à un surveillant d'avant la version 3 (qui la refuserait), rien déposé.
-  local sha_fen2
-  grave() { # fichier marque… : une copie du faux vanguard.exe qui porte ces marques
-    local f=$1 m
-    shift
-    cp -f "$T/vanguard.exe" "$f" && for m; do printf 'VANGUARD-FENETRE:%s;' "$m" >>"$f"; done
-  }
-  # La fausse fenêtre : le même petit PE (verifier-binaire l'accepte), avec des octets à elle.
-  cp -f "$T/vanguard.exe" "$T/fenetre.exe" && printf 'fausse fenêtre pour les essais' >>"$T/fenetre.exe"
-  sha_fen2=$(sha256sum "$T/fenetre.exe" | cut -d' ' -f1)
-  grave "$T/avec.exe" "$sha_fen2"; grave "$T/aucune.exe" AUCUNE; grave "$T/deux.exe" "$sha_fen2" "$(printf '%064d' 0)"
+  #     (avec.exe, fenetre.exe et leurs pareils : faits avec le faux vanguard.exe, plus haut.)
   nouvelle_vm; sources 0 0 0 'OK x'
   # Chaque cas part d'une file vide (le battement gardé) : un travail laissé par un cas ne fait pas tomber les suivants.
   vider_file() { find "$VMD/file-essais" -mindepth 1 -maxdepth 1 ! -name battement.txt -exec rm -rf {} +; }
@@ -1130,6 +1140,15 @@ EOF
     tour
     voir "fenêtre portée : copiée par le surveillant à côté de vanguard.exe, travail fait" \
       eval '[[ $(fini "$ID" code) == 0 ]] && grep -q "fenêtre : $sha_fen2 ;" "$TRACE" || { cp "$VMD/file-essais/$ID/fini.txt" "$T/sortie" 2>/dev/null; false; }'
+    # Un travail signé fait par un vm-tester d'avant la 0.96 (ni fenêtre ni ligne sha256.vanguard-fenetre.exe : son
+    # test.ps1 n'avait pas l'étape de la fenêtre), fini OK, pour ce même vanguard.exe : jamais une porte de publication.
+    vider_file
+    ID=; vmt --exe "$T/avec.exe" --fenetre "$T/fenetre.exe" --sans-attendre
+    local tv=$VMD/file-essais/$ID/travail.txt
+    grep -av '^sha256\.vanguard-fenetre\.exe=' "$tv" >"$tv.n" && mv "$tv.n" "$tv" && resigner "$tv" && rm -f "${tv%/*}/vanguard-fenetre.exe"
+    tour; vmt --verdict "$(sha256sum "$T/avec.exe" | cut -d' ' -f1)"
+    voir "travail sans la fenêtre (vm-tester d'avant la 0.96), fini OK : --verdict n'y voit pas de porte, code 1" \
+      eval '[[ $(fini "$ID" code) == 0 && -z $(cle "$tv" sha256.vanguard-fenetre.exe) ]] && signe_par_le_secret "$DOMAINE_TRAVAIL" "$tv" && ((code == 1))'
     # Le battement du vrai surveillant (version 3) : le dépôt suivant passe.
     ID=; vmt --exe "$T/avec.exe" --fenetre "$T/fenetre.exe" --sans-attendre
     voir "battement du surveillant 3 : fenêtre déposée" eval '((code == 0)) && [[ -n $ID && -f $VMD/file-essais/$ID/vanguard-fenetre.exe ]]'
