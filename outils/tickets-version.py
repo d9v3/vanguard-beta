@@ -5,8 +5,8 @@ version) :
 1. le ticket épinglé des pistes (d9v3/vanguard-beta#1, « Fonctions et pistes d'amélioration ») : l'en-tête « État au
    <date>, version **X** (dernière page publiée : X) » remis à jour, et une section « ### 0.x (livrées en 0.x.y, le
    <date>) » posée juste avant « ### Prochaine version », une case cochée par point gras du paragraphe de la version
-   en tête de CHANGELOG.md. Une section « ### … en préparation … » qui annonce cette version est remplacée par la
-   section livrée (ses cases pas cochées vont en tête de « Prochaine version »). Une section de la version écrite à
+   en tête de CHANGELOG.md. Une section « ### … en préparation … » qui annonce cette version, ou n'en annonce aucune
+   (alors celle de la prochaine version publiée), est remplacée par la section livrée (ses cases pas cochées vont en tête de « Prochaine version »). Une section de la version écrite à
    la main (sans la marque de cet outil) est gardée telle quelle. Tout le reste du corps est gardé à l'octet près ;
    une case cochée n'est jamais décochée.
 2. les tickets « journal » (erreurs envoyées par outils/journal-vers-github.py) qu'un commit de la version cite :
@@ -171,6 +171,9 @@ def mettre_a_jour(corps, version, aujourdhui, date_version, titres):
     prochaine = auto = None
     a_la_main = None
     preparation = []
+    # « En préparation » sans numéro : celle de la prochaine version publiée, donc de celle-ci, tant que sa section
+    # livrée n'est pas encore posée. Après (passe répétée), elle a été réécrite à la main pour la suivante : gardée.
+    sans_numero = []
     for d, f in _sections(lignes):
         t = lignes[d].rstrip("\r\n")
         if t.strip() == "### Prochaine version":
@@ -182,6 +185,10 @@ def mettre_a_jour(corps, version, aujourdhui, date_version, titres):
                 a_la_main = (d, f)
         elif "en préparation" in t.lower() and _version_annoncee(t) in (version, nom):
             preparation.append((d, f))
+        elif "en préparation" in t.lower() and _version_annoncee(t) is None:
+            sans_numero.append((d, f))
+    if auto is None:
+        preparation = sorted(preparation + sans_numero)
     if a_la_main:
         notes.append(f"section {nom} écrite à la main : gardée telle quelle")
         return corps, notes

@@ -177,6 +177,23 @@ class CorpsDuTicket(unittest.TestCase):
                               PREPARATION.replace("0.2 (en", "0.3 (en") + "### Prochaine version\n")
         self.assertIn("### 0.3 (en préparation", self.maj(corps))
 
+    def test_preparation_sans_numero_remplacee(self):
+        sans = PREPARATION.replace("### 0.2 (en préparation : branche du jour)", "### En préparation (pas encore publiées)")
+        corps = CORPS.replace("### Prochaine version\n", sans + "### Prochaine version\n")
+        apres = self.maj(corps)
+        self.assertNotIn("En préparation", apres)
+        self.assertEqual(apres, self.maj(CORPS).replace(
+            "### Prochaine version\n", "### Prochaine version\n- [ ] Pas encore fait, reporté.\n"))
+        # Passe répétée après une nouvelle « en préparation » écrite pour la suivante : gardée.
+        encore = apres.replace("### Prochaine version\n", sans + "### Prochaine version\n")
+        self.assertEqual(self.maj(encore), encore)
+
+    def test_preparation_d_une_autre_version_intacte_a_l_octet(self):
+        autre = PREPARATION.replace("0.2 (en", "0.3 (en")
+        corps = CORPS.replace("### Prochaine version\n", autre + "### Prochaine version\n")
+        self.assertEqual(self.maj(corps), self.maj(CORPS).replace(
+            "### 0.2 (livrées", autre + "### 0.2 (livrées"))
+
     def test_section_ecrite_a_la_main_gardee(self):
         corps = CORPS.replace("### Prochaine version\n",
                               "### 0.2 (livrées en 0.2.0, le 20 novembre)\n- [x] Écrit à la main (0.2.0).\n\n"
