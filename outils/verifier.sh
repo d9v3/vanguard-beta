@@ -333,8 +333,11 @@ extensions() {
 fenetre() {
   local cible=${CARGO_TARGET_DIR:-$PWD/target}/fenetre m=fenetre/Cargo.toml t code=0
   cargo fmt --check --manifest-path "$m" || return 1
-  # Ses caisses, cible par cible : le compte exact et aucune retirée revenue (outils/caisses-fenetre.sh).
+  # Ses caisses, cible par cible : la liste exacte (noms et versions) et aucune retirée revenue
+  # (outils/caisses-fenetre.sh), puis les essais de cette garde, de sa place dans la recette et de l'audit de la
+  # fenêtre (outils/essais-caisses-fenetre.sh).
   bash outils/caisses-fenetre.sh || return 1
+  bash outils/essais-caisses-fenetre.sh || return 1
   for t in x86_64-unknown-linux-gnu x86_64-pc-windows-gnu; do
     CARGO_TARGET_DIR=$cible cargo clippy -q --locked --all-targets --manifest-path "$m" --target "$t" -- -D warnings ||
       return 1
@@ -855,7 +858,7 @@ if [[ $MODE != --rapide ]]; then
   ligne constructeurs "constructeurs avant main (deny)"
   ligne masque "mots d'attaque masqués"
   ligne extensions "extensions (sdk, exemple Rust)"
-  ligne fenetre "fenêtre (caisses ×2, clippy ×2, tests Linux : $(passes fenetre), protections ×2)"
+  ligne fenetre "fenêtre (caisses ×2 et leurs essais, clippy ×2, tests Linux : $(passes fenetre), protections ×2)"
   raisons_des_sautes fenetre
   ligne python "scripts Python"
   ligne relais "relais des lots ($(grep -m1 -oE '^ℹ pass [0-9]+' "$TRAVAIL/relais.log" 2>/dev/null | cut -d' ' -f3) essais)"
