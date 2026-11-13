@@ -1665,10 +1665,11 @@ pub(crate) fn avertissement_large() -> &'static str {
     )
 }
 
-/// Ce que la fenêtre administrateur montre pour une exclusion ajoutée : son genre et son texte rendu affichable et
-/// borné (R13). L'avertissement d'une exclusion large vient avant la question (`avertissement_large`).
+/// Ce que la fenêtre administrateur montre pour une exclusion ajoutée : son genre et son texte rendu affichable, en
+/// entier. La borne des listes (R13, `externe`) ne vaut pas ici : la personne confirme ce texte, et une fin coupée
+/// cacherait ce qui sera écrit. L'avertissement d'une exclusion large vient avant la question (`avertissement_large`).
 pub(crate) fn texte_ajout_exclusion(g: GenreExclusion, texte: &str) -> String {
-    let t = externe(texte);
+    let t = crate::ui::affichable(texte);
     trf!(
         "Exclusion de l'analyse ({}) : AJOUTER « {t} »",
         "Scan exclusion ({}): ADD “{t}”",
@@ -1676,9 +1677,10 @@ pub(crate) fn texte_ajout_exclusion(g: GenreExclusion, texte: &str) -> String {
     )
 }
 
-/// Ce que la fenêtre administrateur montre pour un programme permis malgré l'accès contrôlé aux dossiers.
+/// Ce que la fenêtre administrateur montre pour un programme permis malgré l'accès contrôlé aux dossiers, en entier
+/// comme une exclusion ajoutée.
 pub(crate) fn texte_autoriser_dossiers(texte: &str) -> String {
-    let t = externe(texte);
+    let t = crate::ui::affichable(texte);
     trf!(
         "Accès contrôlé aux dossiers : PERMETTRE à « {t} » d'écrire dans vos dossiers protégés",
         "Controlled folder access: ALLOW “{t}” to write to your protected folders"
@@ -2246,6 +2248,23 @@ mod tests {
 
     pub(super) fn textes(l: &[&str]) -> Vec<String> {
         l.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    /// Ce que la fenêtre administrateur fait confirmer se montre en entier : un chemin de 260 caractères n'est pas
+    /// coupé à la borne des listes, sa fin (le dossier vraiment exclu) reste lisible.
+    #[test]
+    fn un_ajout_se_montre_en_entier() {
+        let long = format!("C:\\{}\\fin-cachee.exe", "a".repeat(240));
+        assert!(long.chars().count() >= 250);
+        for t in [
+            texte_ajout_exclusion(GenreExclusion::Chemin, &long),
+            texte_autoriser_dossiers(&long),
+        ] {
+            assert!(t.contains(&long), "{t}");
+            assert!(!t.contains('…'), "{t}");
+        }
+        // Un caractère de contrôle reste neutralisé.
+        assert!(!texte_ajout_exclusion(GenreExclusion::Chemin, "C:\\a\u{1b}[2J").contains('\u{1b}'));
     }
 
     /// Un PC courant : Defender actif, Tamper active par la personne, deux règles qui bloquent, une en audit, une

@@ -622,11 +622,14 @@ fn montrer(montre: &[(String, Vec<String>)], sens: &[Option<(gestes::Montre, Str
             println!("    {GRIS}{l}{RESET}");
         }
         match s.as_ref().map(|(m, t)| (m.sens, t)) {
-            Some((gestes::Sens::Baisse, t)) => trp!(
-                "    {ACCENT}{}  (baisse la protection){RESET}",
-                "    {ACCENT}{}  (lowers protection){RESET}",
-                t
-            ),
+            // En entier, enveloppée sans rien perdre : le texte d'une exclusion ou d'un programme permis est ce que
+            // la personne confirme.
+            Some((gestes::Sens::Baisse, t)) => {
+                let suite = tr!("  (baisse la protection)", "  (lowers protection)");
+                for l in lignes_baisse(t, suite) {
+                    println!("    {ACCENT}{l}{RESET}");
+                }
+            }
             Some((gestes::Sens::Rien, t)) => trp!(
                 "    {GRIS}{}  (déjà ainsi : rien à écrire){RESET}",
                 "    {GRIS}{}  (already so: nothing to write){RESET}",
@@ -637,6 +640,12 @@ fn montrer(montre: &[(String, Vec<String>)], sens: &[Option<(gestes::Montre, Str
         }
     }
     println!();
+}
+
+/// La ligne d'une baisse et sa suite, enveloppées sous un retrait de quatre colonnes sans rien perdre ni couper
+/// (`ui::envelopper_exact`).
+fn lignes_baisse(texte: &str, suite: &str) -> Vec<String> {
+    crate::ui::envelopper_exact(&format!("{texte}{suite}"), crate::ui::LARGEUR.saturating_sub(4))
 }
 
 /// Ce qui reste actif après la baisse de `id`, coupé pour tenir dans `ui::LARGEUR` sous un retrait de deux colonnes
@@ -1720,6 +1729,24 @@ mod tests {
             gestes::GenreExclusion::Chemin,
             "C:\\"
         ))));
+    }
+
+    /// La ligne d'une baisse montre le texte confirmé en entier : un chemin long sans espace n'est ni coupé d'un
+    /// « … » ni perdu, et chaque ligne tient sous le retrait.
+    #[test]
+    fn la_baisse_se_montre_en_entier() {
+        let texte = format!(
+            "Exclusion de l'analyse (dossier ou fichier) : AJOUTER « C:\\{}\\fin »",
+            "x".repeat(250)
+        );
+        let lignes = lignes_baisse(&texte, "  (baisse la protection)");
+        assert_eq!(lignes.concat(), format!("{texte}  (baisse la protection)"));
+        assert!(lignes.len() > 3);
+        assert!(
+            lignes
+                .iter()
+                .all(|l| crate::ui::largeur_affichee(l) <= crate::ui::LARGEUR - 4)
+        );
     }
 
     /// D8 (W1, W2) : la remise du profil Public, d'un réseau en Privé ou d'un lancement suspect est jugée comme une

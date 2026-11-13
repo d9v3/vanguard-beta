@@ -143,6 +143,8 @@ struct Monde {
     texte: Option<String>,
     /// La dernière valeur relue, et de quel choix : l'écriture qui suit se juge contre elle.
     lue: Option<(IdChoix, Option<i64>)>,
+    /// La liste d'un élément relue avant l'écriture, et de quel choix : ce qui y apparaît ensuite (`apparus`).
+    liste_avant: Option<(IdChoix, Vec<String>)>,
 }
 
 /// L'écriture de `v` baisse-t-elle la protection ? Contre la valeur relue juste avant (`lue`, du même choix), sinon
@@ -161,9 +163,23 @@ const PERMIS_DOSSIERS: &str = "ControlledFolderAccessAllowedApplications";
 
 impl choix_avant::Monde for Monde {
     fn lire(&mut self, id: IdChoix) -> Option<Option<i64>> {
+        if id.element() {
+            self.liste_avant = liste_de(id).map(|l| (id, l));
+        }
         let l = lire_choix(id);
         self.lue = l.map(|l| (id, l));
         l
+    }
+
+    fn apparus(&mut self, id: IdChoix) -> Option<(String, Vec<String>)> {
+        let avant = self
+            .liste_avant
+            .as_ref()
+            .filter(|(i, _)| *i == id)
+            .map(|(_, l)| l.clone())?;
+        let envoye = self.texte.clone()?;
+        let apres = liste_de(id)?;
+        Some((envoye, apres.into_iter().filter(|x| !avant.contains(x)).collect()))
     }
 
     fn ecrire(&mut self, id: IdChoix, v: i64) -> Result<(), Echec> {
@@ -259,13 +275,15 @@ pub(super) fn juger(acte: &Acte) -> Option<(Montre, String)> {
     let nom = crate::options_defense::nom_choix(id);
     if let Acte::ChoixNoter(_) = acte {
         let note = choix_avant::note_valide(&mut Monde::default(), id);
-        let texte = trf!(
-            "{nom} : {} → NOTER « C'EST MOI » (Vanguard le dira « par votre choix »)",
-            "{nom}: {} → NOTE “IT WAS ME” (Vanguard will call it “your choice”)",
-            crate::options_defense::texte_choix(id, lue)
-        );
-        let sens = choix_avant::sens_noter(id, lue, note.as_ref());
-        return Some((Montre { sens, lue }, texte));
+        // Ce que la note désignera, relu ici et montré : l'élément exact, ou le nom de la règle.
+        let designes: Option<Vec<String>> = match id {
+            IdChoix::Exclusion(..) | IdChoix::DossiersAutorise(_) => {
+                Some(liste_de(id).map(|l| elements_de(&l, id)).unwrap_or_default())
+            }
+            IdChoix::PareFeuRegle(..) => Some(super::pare_feu::nom_regle(id).into_iter().collect()),
+            IdChoix::Defender(_) | IdChoix::Asr(_) | IdChoix::PareFeu(..) => None,
+        };
+        return Some(choix_avant::juger_noter(id, lue, note.as_ref(), designes.as_deref()));
     }
     let texte = match acte {
         Acte::DefenderExclusionAjouter(g, e) => crate::options_defense::texte_ajout_exclusion(*g, e.texte()),
@@ -312,7 +330,10 @@ pub(super) fn faire_choix(acte: &Acte, montre: Option<Montre>) -> Option<Resulta
         _ => None,
     };
     Some(resultat(choix_avant::faire_choix(
-        &mut Monde { texte, lue: None },
+        &mut Monde {
+            texte,
+            ..Monde::default()
+        },
         id,
         cible,
         montre,

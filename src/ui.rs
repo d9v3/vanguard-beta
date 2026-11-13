@@ -329,6 +329,45 @@ pub fn envelopper(t: &str, largeur: usize) -> Vec<String> {
     envelopper_decale(t, largeur, largeur)
 }
 
+/// Coupe `t` en lignes d'au plus `largeur` colonnes sans rien perdre ni changer : mises bout à bout, elles redonnent
+/// `t` exactement, espaces comprises. La coupe se fait après la dernière espace qui tient, sinon au milieu d'un mot
+/// trop long (un chemin) : ce qui sera écrit (une exclusion, un programme permis) se montre en entier, jamais coupé
+/// d'un « … » ni aux espaces resserrées comme par `envelopper`.
+#[cfg_attr(not(windows), allow(dead_code))] // servie par la fenêtre administrateur (Windows)
+pub fn envelopper_exact(t: &str, largeur: usize) -> Vec<String> {
+    let largeur = largeur.max(2);
+    let mut lignes = Vec::new();
+    let mut ligne = String::new();
+    let mut l = 0usize;
+    // Après la dernière espace de la ligne : son indice d'octet et les colonnes jusque-là.
+    let mut coupe: Option<(usize, usize)> = None;
+    for c in t.chars() {
+        let w = largeur_car(c);
+        if l.saturating_add(w) > largeur
+            && let Some((i, cols)) = coupe.take()
+            && let Some(reste) = ligne.get(i..).map(str::to_string)
+        {
+            ligne.truncate(i);
+            lignes.push(std::mem::replace(&mut ligne, reste));
+            l = l.saturating_sub(cols);
+        }
+        if l.saturating_add(w) > largeur && !ligne.is_empty() {
+            lignes.push(std::mem::take(&mut ligne));
+            l = 0;
+            coupe = None;
+        }
+        ligne.push(c);
+        l = l.saturating_add(w);
+        if c == ' ' {
+            coupe = Some((ligne.len(), l));
+        }
+    }
+    if !ligne.is_empty() {
+        lignes.push(ligne);
+    }
+    lignes
+}
+
 /// Les mots d'un texte, groupés pour la coupe : en français, « et » sont séparés de leur contenu par une espace, et
 /// une coupe à cette espace laisserait un « seul en fin de ligne ou un » seul en tête de la suivante. Décidé : un mot
 /// qui finit par « reste collé au suivant, un mot qui commence par » au précédent.
@@ -1218,6 +1257,33 @@ mod tests {
         let lignes = envelopper("💡 💡 💡 💡 💡", 8);
         assert_eq!(lignes, ["💡 💡 💡", "💡 💡"]);
         assert!(lignes.iter().all(|l| largeur_affichee(l) <= 8));
+    }
+
+    /// Ce qu'une baisse écrira se montre en entier : bout à bout, les lignes redonnent le texte exact (espaces
+    /// doublées, espace en bord, chemin de 260 caractères sans espace compris), chacune dans la largeur.
+    #[test]
+    fn envelopper_exact_ne_perd_rien() {
+        let long = format!("C:\\{}\\fin.exe", "dossier".repeat(36));
+        assert!(long.chars().count() >= 260);
+        let textes = [
+            long.clone(),
+            format!("Exclusion de chemin : {long}  (baisse la protection)"),
+            "C:\\Mes  jeux\\ un jeu \\😀😀😀".to_string(),
+            " a ".to_string(),
+            String::new(),
+        ];
+        for t in &textes {
+            for largeur in [2, 5, 13, 72] {
+                let lignes = envelopper_exact(t, largeur);
+                assert_eq!(lignes.concat(), *t, "largeur {largeur}");
+                assert!(
+                    lignes.iter().all(|l| largeur_affichee(l) <= largeur),
+                    "{largeur} : {lignes:?}"
+                );
+            }
+        }
+        // La coupe tombe après une espace quand elle le peut.
+        assert_eq!(envelopper_exact("aa bb cc", 6), ["aa bb ", "cc"]);
     }
 
     /// Décidé : jamais une ligne qui finit par « ni une qui commence par », à toutes les largeurs ; rien de perdu ni

@@ -2,7 +2,8 @@
 //! gestes.rs) : script vérifié par empreinte, programme fixe de la table, acte sur un service ou un dossier de la
 //! table, sur le pare-feu ou la catégorie d'un réseau (GUID), sur une clé du registre désignée par un nom en
 //! hexadécimal UTF-16 (IFEO, SilentProcessExit, service), sur Defender (réglage vers le plus sûr seulement, règle
-//! ASR des listes d'Optimiser, exclusion en hexadécimal UTF-16, menaces), liste validée, découpe d'une liste de correctifs en
+//! ASR des listes d'Optimiser, exclusion retirée ou ajoutée en hexadécimal UTF-16, programme permis malgré l'accès
+//! contrôlé aux dossiers, « C'est moi » noté, menaces), liste validée, découpe d'une liste de correctifs en
 //! morceaux natifs et PowerShell, états d'un script en échec ; gestes du compte (faits par Vanguard non élevé, jamais
 //! par le processus élevé) et séparation d'une liste entre points, travail élevé et gestes du compte. Chemins piégés (« .. », NUL, lecteur manquant),
 //! hexadécimal en majuscules ou en demi-paire, noms hors de la liste fermée, lignes et correctifs en nombre. Le réseau :

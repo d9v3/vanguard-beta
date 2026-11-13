@@ -1287,8 +1287,21 @@ fn lire_chemin_hex(hex: &str) -> Option<String> {
 fn chemin_sur(chemin: &str) -> bool {
     let o = chemin.as_bytes();
     let complet = matches!(o, [lecteur, b':', b'\\', _, ..] if lecteur.is_ascii_alphabetic());
-    let sans_detour = !chemin.split(['\\', '/']).any(|c| c == "." || c == "..");
-    complet && sans_detour && !chemin.contains(['\0', '\n', '\r'])
+    complet && sans_detour(chemin) && !chemin.contains(['\0', '\n', '\r'])
+}
+
+/// Aucun composant « . » ni « .. » (découpé sur `\` et `/`) : ce qui est montré est ce qui est désigné, sans détour
+/// que Windows résoudrait ailleurs.
+fn sans_detour(chemin: &str) -> bool {
+    !chemin.split(['\\', '/']).any(|c| c == "." || c == "..")
+}
+
+/// Le texte d'un élément ajouté (exclusion, programme permis) a-t-il une forme qui se montre telle qu'elle agit ? Ni
+/// espace au début ou à la fin (invisible à l'écran, gardée par Defender), ni composant « . » ou « .. » : montré
+/// « C:\Jeux\..\.. », Defender pourrait exclure la racine du disque. Retirer une exclusion n'y est pas soumis :
+/// c'est un renforcement, qui doit pouvoir viser une exclusion piégée posée par un autre.
+pub(crate) fn forme_ajout_sure(texte: &str) -> bool {
+    texte.trim() == texte && sans_detour(texte)
 }
 
 /// La ligne qui écrit le fichier préparé `chemin` à la place du hosts ; `None` si elle n'a pas sa forme.
@@ -2396,6 +2409,32 @@ impl IdChoix {
         matches!(self, IdChoix::Exclusion(..) | IdChoix::DossiersAutorise(_))
     }
 
+    /// Le même genre d'élément de liste, pour le texte `texte` tel que Defender l'a rangé ; `None` hors d'une liste.
+    pub(crate) fn autre_element(self, texte: &str) -> Option<IdChoix> {
+        match self {
+            IdChoix::Exclusion(g, _) => Some(IdChoix::Exclusion(g, EmpreinteElement::de(texte))),
+            IdChoix::DossiersAutorise(_) => Some(IdChoix::DossiersAutorise(EmpreinteElement::de(texte))),
+            _ => None,
+        }
+    }
+
+    /// Deux textes du même élément de liste écrits autrement (casse, `/` pour `\\`, barre finale, point d'une
+    /// extension, préfixe `\\?\`) : la forme sous laquelle Defender a pu ranger le texte envoyé. Une variable
+    /// (`%…%`) dépliée n'est pas reconnue : l'élément reste alors sans note, et le bilan le signale.
+    pub(crate) fn meme_element(self, a: &str, b: &str) -> bool {
+        let extension = matches!(self, IdChoix::Exclusion(GenreExclusion::Extension, _));
+        let forme = |t: &str| {
+            let t = t.trim().replace('/', "\\").to_lowercase();
+            let t = t.strip_prefix(r"\\?\").unwrap_or(&t).trim_end_matches('\\');
+            if extension {
+                t.trim_start_matches(['*', '.']).to_string()
+            } else {
+                t.to_string()
+            }
+        };
+        self.element() && forme(a) == forme(b)
+    }
+
     /// « Rallumer » n'y touche que si Vanguard l'a noté : un élément de liste, une règle du pare-feu (celles des
     /// autres ne sont jamais réglées d'office).
     pub(crate) fn note_requise(self) -> bool {
@@ -2534,8 +2573,9 @@ pub(crate) fn liste_pure(sens: &[Option<Sens>]) -> Result<bool, ()> {
 }
 
 /// Les deux listes que le parent envoie au processus élevé, en une seule demande d'administrateur (P7) : les places
-/// des lignes ordinaires, puis celles des choix exacts (`defender-choix`, `defender-asr-choix`), chacune dans son
-/// ordre. Une liste sans choix, ou faite seulement de choix, reste seule. Le processus élevé juge chacune à part
+/// des lignes ordinaires, puis celles des choix exacts (les actes dont `Acte::choix` rend un choix : réglage de
+/// Defender ou règle ASR au choix, exclusion ajoutée, programme permis, « C'est moi », profil ou règle du pare-feu),
+/// chacune dans son ordre. Une liste sans choix, ou faite seulement de choix, reste seule. Le processus élevé juge chacune à part
 /// (`liste_pure`) : les choix y sont montrés et demandés à part, jamais cachés parmi d'autres gestes. Les lignes
 /// ordinaires passent d'abord, les choix ensuite : ce qui renforce (un point de restauration, les corrections du
 /// bilan) est fait avant qu'une baisse soit même demandée, et un refus de la baisse (la réponse par défaut) ne
@@ -2645,15 +2685,20 @@ pub(crate) fn ligne_rallumer(id: IdChoix) -> String {
     Acte::Rallumer(id).ligne()
 }
 
-/// La ligne d'une exclusion que la personne ajoute (une baisse) ; `None` pour un texte vide, trop long ou avec un
-/// caractère de contrôle. Mêmes appelants que `ligne_baisse_defender`.
+/// La ligne d'une exclusion que la personne ajoute (une baisse) ; `None` pour un texte vide, trop long, avec un
+/// caractère de contrôle, une espace en bord ou un composant « . » ou « .. » (`forme_ajout_sure`). Mêmes appelants
+/// que `ligne_baisse_defender`.
 pub(crate) fn ligne_ajout_exclusion(g: GenreExclusion, texte: &str) -> Option<String> {
-    Exclusion::nouvelle(texte).map(|e| Acte::DefenderExclusionAjouter(g, e).ligne())
+    Exclusion::nouvelle(texte)
+        .filter(|e| forme_ajout_sure(e.texte()))
+        .map(|e| Acte::DefenderExclusionAjouter(g, e).ligne())
 }
 
-/// La ligne d'un programme permis malgré l'accès contrôlé aux dossiers (une baisse). Mêmes appelants.
+/// La ligne d'un programme permis malgré l'accès contrôlé aux dossiers (une baisse), mêmes refus. Mêmes appelants.
 pub(crate) fn ligne_autoriser_dossiers(texte: &str) -> Option<String> {
-    Exclusion::nouvelle(texte).map(|e| Acte::DefenderDossiersAutoriser(e).ligne())
+    Exclusion::nouvelle(texte)
+        .filter(|e| forme_ajout_sure(e.texte()))
+        .map(|e| Acte::DefenderDossiersAutoriser(e).ligne())
 }
 
 /// La ligne « C'est moi, le noter » (P11). Mêmes appelants.
@@ -3114,47 +3159,125 @@ fn analyser_regle_etat(reste: &str) -> Option<Acte> {
     Some(Acte::PareFeuRegleEtat(a, EmpreinteElement::lire(hex)?, active))
 }
 
-/// Une exclusion large (R8) : la racine d'un disque, Windows, Téléchargements, le dossier temporaire, les
-/// programmes, scripts ou interpréteurs en entier, un joker. La question le dit plus fort.
+/// Une exclusion large (R8) : la racine d'un disque ou un dossier juste dessous, Windows et tout ce qu'il contient
+/// (System32 compris), un profil entier ou son AppData, ProgramData, Téléchargements, le dossier temporaire, les
+/// programmes, scripts ou interpréteurs en entier, une variable (`%USERPROFILE%`, `%windir%`… : la personne ne voit pas
+/// où elle mène), un joker. La question le dit plus fort ; rien n'est refusé pour autant (R8 : le choix reste à la
+/// personne, montré).
 pub(crate) fn exclusion_large(g: GenreExclusion, texte: &str) -> bool {
-    let t = texte.trim().trim_end_matches(['\\', '/']).to_lowercase();
-    if t.is_empty() || t.contains('*') || t.contains('?') {
+    let t = texte.trim().replace('/', "\\").trim_end_matches('\\').to_lowercase();
+    if t.is_empty() || t.contains(['*', '?', '%']) {
         return true;
     }
     match g {
-        GenreExclusion::Extension => matches!(
-            t.trim_start_matches('.'),
-            "exe" | "ps1" | "dll" | "bat" | "cmd" | "vbs" | "js" | "scr" | "msi" | "com" | "hta" | "lnk"
-        ),
+        GenreExclusion::Extension => EXTENSIONS_LARGES.contains(&t.trim_start_matches('.')),
         GenreExclusion::Processus => {
-            let nom = t.rsplit(['\\', '/']).next().unwrap_or(&t);
-            matches!(
-                nom,
-                "powershell.exe"
-                    | "pwsh.exe"
-                    | "cmd.exe"
-                    | "wscript.exe"
-                    | "cscript.exe"
-                    | "mshta.exe"
-                    | "rundll32.exe"
-            )
+            let nom = t.rsplit('\\').next().unwrap_or(&t);
+            PROGRAMMES_LARGES.contains(&nom)
         }
-        GenreExclusion::Chemin => {
-            (t.len() <= 2 && t.ends_with(':'))
-                || t.contains("%temp%")
-                || t.contains("%tmp%")
-                || t.contains("\\appdata\\local\\temp")
-                || t.ends_with("\\downloads")
-                || t.ends_with("\\téléchargements")
-                || t.ends_with(":\\windows")
-                || t.contains(":\\windows\\temp")
-                || t.ends_with(":\\users")
-                || t.ends_with(":\\program files")
-                || t.ends_with(":\\program files (x86)")
-                || t.ends_with(":\\programdata")
-                || t.starts_with("\\\\")
-        }
+        GenreExclusion::Chemin => chemin_large(&t),
     }
+}
+
+/// Les types de fichiers qui lancent du code, s'installent ou se montent : exclus, tout fichier de ce type échappe.
+const EXTENSIONS_LARGES: [&str; 37] = [
+    "exe",
+    "ps1",
+    "psm1",
+    "psd1",
+    "dll",
+    "sys",
+    "ocx",
+    "cpl",
+    "bat",
+    "cmd",
+    "vbs",
+    "vbe",
+    "js",
+    "jse",
+    "wsf",
+    "wsh",
+    "scr",
+    "pif",
+    "msi",
+    "msp",
+    "com",
+    "hta",
+    "lnk",
+    "jar",
+    "py",
+    "pyw",
+    "msc",
+    "reg",
+    "appx",
+    "appxbundle",
+    "msix",
+    "msixbundle",
+    "iso",
+    "img",
+    "vhd",
+    "vhdx",
+    "inf",
+];
+
+/// Les interpréteurs et outils de Windows qui lancent ou téléchargent n'importe quoi : exclus ou permis, tout ce
+/// qu'ils font échappe.
+const PROGRAMMES_LARGES: [&str; 31] = [
+    "powershell.exe",
+    "powershell_ise.exe",
+    "pwsh.exe",
+    "cmd.exe",
+    "wscript.exe",
+    "cscript.exe",
+    "mshta.exe",
+    "rundll32.exe",
+    "regsvr32.exe",
+    "msiexec.exe",
+    "certutil.exe",
+    "bitsadmin.exe",
+    "wmic.exe",
+    "installutil.exe",
+    "regasm.exe",
+    "regsvcs.exe",
+    "msbuild.exe",
+    "cmstp.exe",
+    "forfiles.exe",
+    "schtasks.exe",
+    "explorer.exe",
+    "svchost.exe",
+    "conhost.exe",
+    "python.exe",
+    "pythonw.exe",
+    "py.exe",
+    "pyw.exe",
+    "node.exe",
+    "java.exe",
+    "javaw.exe",
+    "wsl.exe",
+];
+
+/// Un chemin (en minuscules, `\` seulement, sans barre finale) large : voir `exclusion_large`.
+fn chemin_large(t: &str) -> bool {
+    if t.starts_with("\\\\") {
+        return true;
+    }
+    let parties: Vec<&str> = t.split('\\').filter(|p| !p.is_empty()).collect();
+    // « C: », « C:\Jeux » : un disque ou un dossier juste sous sa racine.
+    if parties.len() <= 2 {
+        return true;
+    }
+    let sous = |racine: &str| parties.get(1).is_some_and(|p| *p == racine);
+    let profil = sous("users") || sous("utilisateurs");
+    let reste: Vec<&str> = parties.iter().skip(3).copied().collect();
+    sous("windows")
+        || sous("programdata")
+        // Un profil entier, son AppData ou ses deux moitiés.
+        || (profil && matches!(reste.as_slice(), [] | ["appdata"] | ["appdata", "local" | "roaming" | "locallow"]))
+        || t.contains("\\appdata\\local\\temp")
+        || t.ends_with("\\downloads")
+        || t.ends_with("\\téléchargements")
+        || t.ends_with(":\\program files")
+        || t.ends_with(":\\program files (x86)")
 }
 
 /// Ce qu'une ligne `defender-asr` fait d'une règle. Jamais la retirer : Optimiser ne défait pas ses règles ASR
@@ -5607,10 +5730,12 @@ pub(crate) fn analyser_acte(ligne: &str) -> Option<Acte> {
     if let Some(reste) = ligne.strip_prefix(DEFENDER_EXCLUSION_AJOUTER) {
         let (mot, hex) = reste.split_once(' ')?;
         let genre = *GenreExclusion::TOUS.iter().find(|g| g.mot() == mot)?;
-        return Some(Acte::DefenderExclusionAjouter(genre, Exclusion::lire(hex)?)).filter(|a| a.ligne() == ligne);
+        let e = Exclusion::lire(hex).filter(|e| forme_ajout_sure(e.texte()))?;
+        return Some(Acte::DefenderExclusionAjouter(genre, e)).filter(|a| a.ligne() == ligne);
     }
     if let Some(hex) = ligne.strip_prefix(DEFENDER_DOSSIERS_AUTORISER) {
-        return Some(Acte::DefenderDossiersAutoriser(Exclusion::lire(hex)?)).filter(|a| a.ligne() == ligne);
+        let e = Exclusion::lire(hex).filter(|e| forme_ajout_sure(e.texte()))?;
+        return Some(Acte::DefenderDossiersAutoriser(e)).filter(|a| a.ligne() == ligne);
     }
     if let Some(reste) = ligne.strip_prefix(PARTAGE_RETIRER_ACCES) {
         let (hex, sid) = reste.split_once(' ')?;
@@ -9564,6 +9689,161 @@ mod tests {
                 assert!(valider(std::slice::from_ref(&l), |_| Some(())).is_none(), "{l}");
             }
         }
+    }
+
+    /// Un ajout (exclusion, programme permis) dont la forme ne se montre pas telle qu'elle agit est refusé, à la
+    /// construction comme à la lecture d'une ligne brute : « .. » ou « . » (montré « C:\Jeux\..\.. », la racine
+    /// pourrait être exclue), espace au début ou à la fin (invisible, gardée). Le retrait de la même forme reste
+    /// permis : c'est un renforcement, qui doit pouvoir viser une exclusion piégée posée par un autre.
+    #[test]
+    fn un_ajout_a_detour_ou_espace_en_bord_est_refuse() {
+        for t in [
+            r"C:\Jeux\..\..",
+            r"C:\Jeux\..",
+            r"C:\Jeux\.\x",
+            "C:/Jeux/../..",
+            "..",
+            ".",
+            r"..\cmd.exe",
+            r" C:\Jeux",
+            r"C:\Jeux ",
+            "jeu.exe\u{a0}",
+            " .jeu",
+        ] {
+            assert!(!forme_ajout_sure(t), "{t:?}");
+            assert!(ligne_autoriser_dossiers(t).is_none(), "{t:?}");
+            let e = Exclusion::nouvelle(t).unwrap_or_else(|| panic!("{t:?}"));
+            let brute = format!("{DEFENDER_DOSSIERS_AUTORISER}{}", e.hex());
+            assert!(analyser_acte(&brute).is_none(), "{brute}");
+            for g in GenreExclusion::TOUS {
+                assert!(ligne_ajout_exclusion(g, t).is_none(), "{t:?}");
+                let brute = format!("{DEFENDER_EXCLUSION_AJOUTER}{} {}", g.mot(), e.hex());
+                assert!(analyser_acte(&brute).is_none(), "{brute}");
+                let retrait = format!("{DEFENDER_EXCLUSION_RETIRER}{} {}", g.mot(), e.hex());
+                assert!(analyser_acte(&retrait).is_some(), "{retrait}");
+            }
+        }
+        for t in [
+            r"C:\Jeux\Salon",
+            r"C:\Jeux\..jeu\x",
+            r"C:\Jeux\Un jeu",
+            ".jeu",
+            "jeu.exe",
+        ] {
+            assert!(forme_ajout_sure(t), "{t:?}");
+        }
+    }
+
+    /// Une exclusion large se reconnaît sous ses formes courantes : un disque, un dossier sous la racine, Windows et
+    /// ProgramData, un profil entier ou son AppData, le dossier temporaire, les téléchargements, Program Files, un
+    /// partage réseau, une variable ou un joker, un type de fichier qui lance du code, un interpréteur ; écrite avec
+    /// `/`, une barre finale ou d'autres majuscules. Un dossier ou un programme précis ne l'est pas.
+    #[test]
+    fn exclusion_large_reconnait_les_formes_courantes() {
+        use GenreExclusion::{Chemin, Extension, Processus};
+        for (g, t) in [
+            (Chemin, r"C:\"),
+            (Chemin, "C:"),
+            (Chemin, "d:/"),
+            (Chemin, r"C:\Jeux"),
+            (Chemin, r"C:\Jeux\"),
+            (Chemin, r"C:\Windows\System32"),
+            (Chemin, r"c:\WINDOWS\Temp\"),
+            (Chemin, r"C:\ProgramData\Microsoft"),
+            (Chemin, r"C:\Users\Alice"),
+            (Chemin, r"C:\Users\Alice\AppData"),
+            (Chemin, r"C:\Users\Alice\AppData\Roaming"),
+            (Chemin, r"C:\Users\Alice\AppData\Local\Temp\x"),
+            (Chemin, r"C:\Users\Alice\Downloads"),
+            (Chemin, r"C:\Utilisateurs\Alice\Téléchargements"),
+            (Chemin, r"C:\Program Files"),
+            (Chemin, r"C:\Program Files (x86)\"),
+            (Chemin, r"\\serveur\partage\dossier"),
+            (Chemin, r"%TEMP%\x\y"),
+            (Chemin, r"C:\Jeux\*\x"),
+            (Extension, ".PS1"),
+            (Extension, "dll"),
+            (Extension, "lnk"),
+            (Extension, ".iso"),
+            (Extension, "*"),
+            (Processus, "PowerShell.exe"),
+            (Processus, r"C:\Windows\System32\cmd.exe"),
+            (Processus, "rundll32.exe"),
+            (Processus, "mshta.exe"),
+            (Processus, "?"),
+        ] {
+            assert!(exclusion_large(g, t), "{} {t}", g.mot());
+        }
+        for (g, t) in [
+            (Chemin, r"C:\Jeux\Un jeu"),
+            (Chemin, r"C:\Users\Alice\Documents\Projet"),
+            (Chemin, r"C:\Users\Alice\AppData\Local\Jeu"),
+            (Chemin, r"D:\Steam\steamapps\common"),
+            (Extension, ".jeu"),
+            (Extension, "sav"),
+            (Processus, "jeu.exe"),
+            (Processus, r"C:\Windows\System32\notepad.exe"),
+        ] {
+            assert!(!exclusion_large(g, t), "{} {t}", g.mot());
+        }
+    }
+
+    /// Les formes sous lesquelles Defender peut ranger un élément envoyé sont reconnues comme le même élément ; un
+    /// autre élément, un autre genre de choix ou une variable dépliée ne le sont pas.
+    #[test]
+    fn meme_element_reconnait_les_formes_rangees() {
+        let chemin = IdChoix::Exclusion(GenreExclusion::Chemin, EmpreinteElement::de(r"C:\Jeux\Salon"));
+        for b in [
+            r"c:\jeux\salon",
+            "C:/Jeux/Salon",
+            r"C:\Jeux\Salon\",
+            r"\\?\C:\Jeux\Salon",
+        ] {
+            assert!(chemin.meme_element(r"C:\Jeux\Salon", b), "{b}");
+        }
+        for b in [r"C:\Jeux\Salon2", r"C:\Jeux", r"%SystemDrive%\Jeux\Salon"] {
+            assert!(!chemin.meme_element(r"C:\Jeux\Salon", b), "{b}");
+        }
+        let ext = IdChoix::Exclusion(GenreExclusion::Extension, EmpreinteElement::de(".jeu"));
+        assert!(ext.meme_element(".jeu", "JEU") && ext.meme_element("jeu", "*.jeu"));
+        assert!(!chemin.meme_element(".jeu", "jeu"));
+        let permis = IdChoix::DossiersAutorise(EmpreinteElement::de(r"C:\Outils\a.exe"));
+        assert!(permis.meme_element(r"C:\Outils\a.exe", r"c:\outils\A.EXE"));
+        assert_eq!(
+            permis.autre_element(r"c:\outils\A.EXE"),
+            Some(IdChoix::DossiersAutorise(EmpreinteElement::de(r"c:\outils\A.EXE")))
+        );
+        let reglage = IdChoix::Defender(ReglageDefender::TempsReel);
+        assert!(!reglage.meme_element("a", "a") && reglage.autre_element("a").is_none());
+    }
+
+    /// Chaque verbe « vanguard:… » de ce fichier est reconnu pour ce qu'il est : un acte (`est_un_acte`), un verbe de
+    /// la persistance, ou l'un des trois verbes lus ailleurs (script, programme, compte). Un verbe ajouté sans être
+    /// déclaré serait confié au mauvais validateur (le défaut trouvé par le fuzzing le 13 nov. sur trois verbes).
+    #[test]
+    fn chaque_verbe_est_reconnu() {
+        let source = include_str!("gestes.rs");
+        let code = source.split("\n#[cfg(test)]\nmod tests {").next().unwrap_or(source);
+        let mut vus = 0;
+        for ligne in code.lines() {
+            let ligne = ligne.trim_start();
+            if !(ligne.starts_with("const ") || ligne.starts_with("pub(crate) const ")) {
+                continue;
+            }
+            let Some((_, reste)) = ligne.split_once(": &str = \"vanguard:") else {
+                continue;
+            };
+            let fin = reste.find('"').unwrap_or_else(|| panic!("{ligne}"));
+            let verbe = format!("vanguard:{}", &reste[..fin]);
+            vus += 1;
+            assert!(
+                est_un_acte(&verbe)
+                    || VERBES_PERSISTANCE.contains(&verbe.as_str())
+                    || [SCRIPT, PROGRAMME, COMPTE].contains(&verbe.as_str()),
+                "verbe non déclaré : {verbe}"
+            );
+        }
+        assert!(vus >= 50, "{vus} verbes relevés : le relevé ne lit plus les constantes");
     }
 
     /// `vanguard:rallumer` ne porte que l'identifiant, jamais de valeur ; c'est un renforcement, que « Défaire » ne

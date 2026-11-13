@@ -58,6 +58,12 @@ pub(crate) trait Monde {
     fn maintenant(&self) -> u64;
     /// Pourquoi Windows a gardé la valeur (protection contre les falsifications, stratégie…).
     fn pourquoi_garde(&mut self) -> String;
+    /// Après l'ajout d'un élément de liste (exclusion, programme permis) : le texte envoyé, et les textes apparus
+    /// dans la liste depuis sa lecture d'avant l'écriture (`lire`). `None` : la liste ne se relit pas (ou ce n'est
+    /// pas un élément), ce qui garde la note.
+    fn apparus(&mut self, _id: IdChoix) -> Option<(String, Vec<String>)> {
+        None
+    }
 }
 
 /// Ce qu'un choix ou « Rallumer » a donné.
@@ -239,6 +245,12 @@ pub(crate) fn faire_choix(m: &mut impl Monde, id: IdChoix, cible: i64, montre: O
                     Issue::Fait { avant, note: true }
                 }
                 Some(v) if v == lue => {
+                    // Un élément de liste introuvable sous son empreinte a pu être rangé autrement par Defender.
+                    if id.element()
+                        && let Some(issue) = autre_forme(m, id, ancienne.as_deref(), (lue, cible), &avant)
+                    {
+                        return issue;
+                    }
                     remettre_note(m, &nom, ancienne.as_deref());
                     Issue::Echec {
                         avant: Some(avant),
@@ -271,6 +283,99 @@ pub(crate) fn faire_choix(m: &mut impl Monde, id: IdChoix, cible: i64, montre: O
             }
         }
     }
+}
+
+/// Un élément de liste écrit sans erreur, mais introuvable sous son empreinte à la relecture : Defender a pu le ranger
+/// sous une autre forme (`IdChoix::meme_element` : casse, barre, point d'une extension). Chaque forme apparue reçoit
+/// sa note, pour que le bilan la dise « par votre choix » et que « Rallumer » la retire ; la note de la forme envoyée,
+/// sans objet, est alors remise. Une liste qui ne se relit pas, ou une note qui ne s'écrit pas, garde la note
+/// d'origine : rien de ce qui a pu être posé ne perd sa trace, et ce qui n'a pas pu être vérifié est dit, jamais
+/// compté comme fait. `None` : rien n'est apparu, Windows a gardé la liste telle quelle. `valeurs` : la valeur lue
+/// avant l'écriture et celle écrite.
+fn autre_forme(
+    m: &mut impl Monde,
+    id: IdChoix,
+    ancienne: Option<&[u8]>,
+    (lue, cible): (Option<i64>, i64),
+    avant: &str,
+) -> Option<Issue> {
+    let echec = |raison: String| {
+        Some(Issue::Echec {
+            avant: Some(avant.to_string()),
+            raison,
+        })
+    };
+    let Some((envoye, apparus)) = m.apparus(id) else {
+        return echec(
+            tr!(
+                "liste relue incomplète après l'écriture : l'élément a pu être rangé sous une autre forme, non vérifié ; sa note est gardée et rien n'est compté comme fait (le bilan signale toute exclusion qui n'est pas de vous)",
+                "list not fully read back after writing: the item may have been stored in another form, not verified; its note is kept and nothing is counted as done (the report flags any exclusion that is not yours)"
+            )
+            .to_string(),
+        );
+    };
+    let (formes, etrangers): (Vec<String>, Vec<String>) =
+        apparus.into_iter().partition(|t| id.meme_element(&envoye, t));
+    let montre = |l: &[String]| {
+        l.iter()
+            .map(|t| format!("« {} »", crate::ui::affichable(t)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    if formes.is_empty() {
+        if etrangers.is_empty() {
+            return None;
+        }
+        remettre_note(m, &id.texte(), ancienne);
+        return echec(trf!(
+            "élément introuvable tel qu'envoyé ; apparu dans la liste pendant le geste, sous une forme que Vanguard ne relie pas à votre choix : {} (non noté, le bilan le signale)",
+            "item not found as sent; appeared in the list during the step, in a form Vanguard does not link to your choice: {} (not noted, the report flags it)",
+            montre(&etrangers)
+        ));
+    }
+    let mut sans_note = Vec::new();
+    for t in &formes {
+        let Some(autre) = id.autre_element(t) else {
+            sans_note.push(t.clone());
+            continue;
+        };
+        let nom = autre.texte();
+        if note_valide(m, autre).is_some() {
+            continue;
+        }
+        let octets = Note {
+            id: nom.clone(),
+            avant: lue,
+            posee: cible,
+            date: m.maintenant(),
+        }
+        .octets();
+        let ecrite = octets.len() <= NOTE_MAX
+            && m.ecrire_note(&nom, &octets).is_ok()
+            && m.lire_note(&nom).as_deref() == Some(octets.as_slice());
+        if !ecrite {
+            sans_note.push(t.clone());
+        }
+    }
+    if !sans_note.is_empty() {
+        // La note d'origine reste : la trace du geste n'est jamais effacée tant que la forme posée n'est pas notée.
+        return echec(trf!(
+            "Defender a rangé l'élément sous une autre forme ({}) et sa note n'a pas pu s'écrire : il est en place, sans note. Le bilan le signale ; retirez-le de là",
+            "Defender stored the item in another form ({}) and its note could not be written: it is in place, without a note. The report flags it; remove it from there",
+            montre(&sans_note)
+        ));
+    }
+    remettre_note(m, &id.texte(), ancienne);
+    m.journal(&trf!(
+        "Vanguard : élément ajouté à la demande de la personne, confirmée dans la fenêtre administrateur, rangé par Defender sous une autre forme et noté : {}. « Rallumer » dans Vanguard le retire.",
+        "Vanguard: item added at the person's request, confirmed in the administrator window, stored by Defender in another form and noted: {}. “Turn back on” in Vanguard removes it.",
+        montre(&formes)
+    ));
+    echec(trf!(
+        "Defender a rangé l'élément sous une autre forme : {}. Il est en place et noté « par votre choix » : « Rallumer » le retire. La forme envoyée n'a pas pu être vérifiée telle quelle",
+        "Defender stored the item in another form: {}. It is in place and noted as “your choice”: “Turn back on” removes it. The form sent could not be verified as such",
+        montre(&formes)
+    ))
 }
 
 /// Relit après l'écriture de `v`, jusqu'à la lire, au plus `fois` lectures (au moins une), chacune après
@@ -360,6 +465,43 @@ pub(crate) fn sens_noter(id: IdChoix, lue: Option<Option<i64>>, note: Option<&No
     } else {
         Sens::Rien
     }
+}
+
+/// Ce que la fenêtre administrateur montre de « C'est moi », avec le sens jugé. `designes` : ce que la note désignera,
+/// relu à l'instant (les éléments de la liste qui portent l'empreinte d'une exclusion ou d'un programme permis, ou le
+/// nom d'une règle du pare-feu) ; `None` pour un réglage, que son nom désigne seul. Sans cela, une exclusion posée
+/// par un autre passerait d'une alerte à « par votre choix » sans que la personne ait vu laquelle. Introuvable, c'est
+/// dit, et montré comme rien à noter : `noter` refuse alors (`Change`), rien n'est écrit.
+#[allow(clippy::option_option)] // None : illisible ; Some(None) : valeur absente
+pub(crate) fn juger_noter(
+    id: IdChoix,
+    lue: Option<Option<i64>>,
+    note: Option<&Note>,
+    designes: Option<&[String]>,
+) -> (Montre, String) {
+    let mut sens = sens_noter(id, lue, note);
+    let nom = crate::options_defense::nom_choix(id);
+    let nom = match designes {
+        None => nom,
+        Some([]) => {
+            sens = Sens::Rien;
+            trf!("{nom} « élément introuvable »", "{nom} “item not found”")
+        }
+        Some(d) => {
+            let d = d
+                .iter()
+                .map(|x| crate::ui::affichable(x))
+                .collect::<Vec<_>>()
+                .join(" ; ");
+            trf!("{nom} « {d} »", "{nom} “{d}”")
+        }
+    };
+    let texte = trf!(
+        "{nom} : {} → NOTER « C'EST MOI » (Vanguard le dira « par votre choix »)",
+        "{nom}: {} → NOTE “IT WAS ME” (Vanguard will call it “your choice”)",
+        crate::options_defense::texte_choix(id, lue)
+    );
+    (Montre { sens, lue }, texte)
 }
 
 /// « C'est moi » : note une protection déjà baissée, telle qu'elle a été montrée (`montre`, une baisse avec la valeur
@@ -702,6 +844,14 @@ mod tests {
         ecriture_en_retard: bool,
         ecritures: Vec<(String, i64)>,
         journal: Vec<String>,
+        /// Le texte d'un élément de liste ajouté, tel qu'envoyé à Defender.
+        envoye: String,
+        /// Defender range l'élément ajouté sous ce texte-ci (une autre forme), pas sous celui envoyé.
+        rangee: Option<String>,
+        /// Un élément apparu pendant le geste, sans lien avec l'élément envoyé.
+        etranger: Option<String>,
+        /// La liste ne se relit pas après l'écriture.
+        liste_illisible: bool,
     }
 
     impl Faux {
@@ -728,6 +878,11 @@ mod tests {
                 return Err(Echec::new("essai", crate::modele::Raison::Delai));
             }
             self.ecritures.push((id.texte(), v));
+            if let (Some(r), true) = (&self.rangee, id.element() && v == 1) {
+                let autre = id.autre_element(r).unwrap();
+                self.valeurs.insert(autre.texte(), Some(1));
+                return Ok(());
+            }
             if !self.garde {
                 self.valeurs.insert(id.texte(), Some(v));
             }
@@ -764,6 +919,13 @@ mod tests {
         }
         fn pourquoi_garde(&mut self) -> String {
             "gardée".into()
+        }
+        fn apparus(&mut self, id: IdChoix) -> Option<(String, Vec<String>)> {
+            if !id.element() || self.liste_illisible {
+                return None;
+            }
+            let apparus = self.rangee.iter().chain(&self.etranger).cloned().collect();
+            Some((self.envoye.clone(), apparus))
         }
     }
 
@@ -1127,6 +1289,98 @@ mod tests {
         let mut m = Faux::avec(profil, Some(1));
         m.ecriture_refusee = true;
         assert!(matches!(baisser(&mut m, profil, 0), Issue::Echec { .. }));
+        assert!(m.notes.is_empty());
+    }
+
+    /// Une exclusion ajoutée (`C:\Jeux\Salon`, absente) dans un faux monde où Defender la range sous `rangee`.
+    fn exclusion_rangee(rangee: Option<&str>) -> (IdChoix, Faux) {
+        use crate::machine::gestes::{EmpreinteElement, GenreExclusion};
+        let envoye = r"C:\Jeux\Salon";
+        let id = IdChoix::Exclusion(GenreExclusion::Chemin, EmpreinteElement::de(envoye));
+        let mut m = Faux::avec(id, Some(0));
+        m.envoye = envoye.to_string();
+        m.rangee = rangee.map(str::to_string);
+        (id, m)
+    }
+
+    /// Defender range l'exclusion ajoutée sous une autre forme (casse, barre finale) : la forme posée est notée,
+    /// « Rallumer » la retire ensuite, et rien n'est compté comme fait tel qu'envoyé. Avant, la note était effacée et
+    /// l'exclusion restait en place, que « Rallumer » refusait (« pas posée par Vanguard »).
+    #[test]
+    fn element_range_autrement_reste_note_et_se_rallume() {
+        let (id, mut m) = exclusion_rangee(Some(r"c:\jeux\salon\"));
+        let autre = id.autre_element(r"c:\jeux\salon\").unwrap();
+        let r = baisser(&mut m, id, 1);
+        let Issue::Echec { raison, .. } = &r else {
+            panic!("{r:?}")
+        };
+        assert!(
+            raison.contains("autre forme") || raison.contains("another form"),
+            "{raison}"
+        );
+        assert!(note_valide(&mut m, autre).is_some(), "forme posée notée");
+        assert!(!m.notes.contains_key(&id.texte()), "note de la forme envoyée remise");
+        assert_eq!(m.journal.len(), 1);
+        assert!(
+            matches!(rallumer(&mut m, autre), Issue::Fait { .. }),
+            "Rallumer retire la forme posée"
+        );
+        assert_eq!(m.valeur(autre), Some(0));
+        assert!(m.notes.is_empty());
+    }
+
+    /// La liste ne se relit pas après l'écriture : la note d'origine reste (sa trace n'est jamais perdue) et le geste
+    /// est dit non vérifié, jamais fait.
+    #[test]
+    fn element_liste_illisible_garde_la_note() {
+        let (id, mut m) = exclusion_rangee(Some(r"C:/Jeux/Salon/"));
+        m.liste_illisible = true;
+        let r = baisser(&mut m, id, 1);
+        assert!(
+            matches!(&r, Issue::Echec { raison, .. } if raison.contains("non vérifié") || raison.contains("not verified")),
+            "{r:?}"
+        );
+        assert!(note_valide(&mut m, id).is_some());
+    }
+
+    /// Seul un élément sans lien apparaît : il n'est pas noté « par votre choix » (le bilan le signale), il est cité ;
+    /// rien d'apparu du tout : Windows a gardé la liste, comme avant.
+    #[test]
+    fn element_etranger_jamais_note() {
+        let (id, mut m) = exclusion_rangee(None);
+        m.etranger = Some(r"C:\Autre".to_string());
+        m.garde = true;
+        let r = baisser(&mut m, id, 1);
+        assert!(
+            matches!(&r, Issue::Echec { raison, .. } if raison.contains(r"C:\Autre")),
+            "{r:?}"
+        );
+        assert!(m.notes.is_empty());
+        let (id, mut m) = exclusion_rangee(None);
+        m.garde = true;
+        assert_eq!(
+            baisser(&mut m, id, 1),
+            Issue::Echec {
+                avant: Some(texte_avant(id, Some(0))),
+                raison: "gardée".into()
+            }
+        );
+        assert!(m.notes.is_empty());
+    }
+
+    /// « C'est moi » sur un élément de liste montre ce qui sera noté ; introuvable, c'est dit et montré comme rien à
+    /// noter (et `noter` refuse alors : la montre ne correspond plus).
+    #[test]
+    fn noter_montre_l_element_designe() {
+        let (id, _) = exclusion_rangee(None);
+        let (montre, texte) = juger_noter(id, Some(Some(1)), None, Some(&[r"C:\Jeux\Salon".to_string()]));
+        assert_eq!(montre.sens, Sens::Baisse);
+        assert!(texte.contains(r"C:\Jeux\Salon"), "{texte}");
+        let (montre, texte) = juger_noter(id, Some(Some(1)), None, Some(&[]));
+        assert_eq!(montre.sens, Sens::Rien);
+        assert!(texte.contains("introuvable") || texte.contains("not found"), "{texte}");
+        let mut m = Faux::avec(id, Some(1));
+        assert_eq!(noter(&mut m, id, Some(montre)), Issue::Change);
         assert!(m.notes.is_empty());
     }
 
