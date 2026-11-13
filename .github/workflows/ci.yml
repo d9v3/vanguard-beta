@@ -159,6 +159,11 @@ jobs:
         with:
           tool: cargo-audit@0.22.2,cargo-deny@0.20.2
           fallback: none
+      # La chaîne épinglée posée d'abord, comme dans les autres travaux : sinon c'est le premier cargo de chaque étape
+      # (cargo deny et cargo tree, lancés en parallèle par verifier.sh) qui la pose, et le cargo tree de
+      # outils/failles-programmes.sh y échouait (nuits du 10 au 13 nov., seulement ses premiers appels).
+      - name: Rust (chaîne épinglée)
+        run: rustup toolchain install
       - name: Dépendances et failles connues (outils/verifier.sh)
         run: outils/verifier.sh --seulement dependances,failles-connues
 

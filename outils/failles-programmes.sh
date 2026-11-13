@@ -84,9 +84,11 @@ if [[ $1 == --depot ]]; then
   for exception in "${HORS_CIBLES[@]}"; do
     for cible in x86_64-unknown-linux-gnu x86_64-pc-windows-gnu; do
       # Un cargo tree qui échoue (sources pas encore téléchargées…) ne dit rien : refusé, jamais lu comme absente.
+      # Son erreur est montrée : jetée, elle laissait la CI de nuit rouge quatre nuits sans cause écrite.
       if ! arbre=$(cargo tree -q --locked --manifest-path "$RACINE/fenetre/Cargo.toml" --target "$cible" \
-        -e normal,build -i "${exception#*:}" 2>/dev/null); then
+        -e normal,build -i "${exception#*:}" 2>"$TRAVAIL/arbre.err"); then
         echo "✖ fenêtre : cargo tree a échoué pour $cible, ${exception%%:*} pas écartée"
+        tail -n 5 "$TRAVAIL/arbre.err" | sed 's/^/    /'
         CODE=1
       elif [[ -n $arbre ]]; then
         echo "✖ fenêtre : ${exception#*:} compilée pour $cible, ${exception%%:*} ne s'écarte plus"
