@@ -32,6 +32,17 @@ repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
   the file's identity, is not put back on its own: the value to put back by hand is given. Account file permissions are
   read, set and put back without a shell or a followed link (putting back used `chmod`, which follows links). The event
   log keeps no file name and no command; each sealed file is written in two steps, like the settings seal.
+- **A more honest update.** A copy swapped by another program during the update is no longer left in place: the old
+  copy is put back, or Vanguard says exactly what is in place ("do not run it"). A new copy held open for writing
+  ("Text file busy") is reported as such; a provisional name already taken (a folder) is reported with the path to
+  remove. Every refusal says "nothing is replaced".
+- **Undo without touching another file.** "What Vanguard changed" no longer puts wider permissions back on a file
+  that is no longer the one Vanguard fixed (replaced, other inode): the restore is refused, with its reason, and the
+  line shows today's permissions and those that would be restored.
+- **Clearer refusals.** "It changed since the preview" also gives the possible cause: a preview made in another
+  language (VANGUARD_LANG, system language).
+- **A help writes nothing.** `vanguard --help`, `-h`, `help` and a command's help no longer create any file (seals)
+  in the data folder.
 - **Startup programs: the consent is now required.** `vanguard startup --remove` and `--put-back` now require
   `--agreement`, the one `startup --json` gives for that action: without it, nothing is removed or put back (code 2),
   and a program whose name, command or scope changed since the list is refused. The consent binds the whole name and
@@ -63,18 +74,31 @@ repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
   owned by the account, or missing from /sys (not verified), and when declaring it normal is refused, the message says
   what changes it and how to remove that.
 - **Variables and settings that change what a program starts.** The check reads the session manager's variable files
-  (environment.d, user.conf, ~/.pam_environment, uwsm): HOME, LD_*, RSYNC_* or XDG_RUNTIME_DIR set there raise the
-  backup, and a moved unit folder is read again. These files are read as their reader reads them: a lone carriage
-  return splits an environment.d or user.conf line, as for systemd (a "#" no longer hides what follows), and every file
-  in ~/.config/uwsm/env.d counts, whatever its extension. The "exec" lines of popt settings (~/.popt, /etc/popt) are
-  judged as launches. Limit stated on screen: a variable set during the session, by a shell profile or by a Hyprland
-  "env =" line is not checked.
+  (environment.d, user.conf and user.conf.d, ~/.pam_environment, uwsm): HOME, LD_*, RSYNC_* or XDG_RUNTIME_DIR set
+  there raise the backup, and a moved unit folder is read again. environment.d and user.conf are read as systemd reads
+  them: a lone carriage return or a NUL byte splits a line, a "\" line continuation also joins with CRLF, and only
+  space, tab and line ends may come before a comment ("#" or ";"). In a shell profile and in uwsm files, only "#"
+  starts a comment: a line that begins with "//", "--" or ";" is no longer one. These files are also read where their
+  readers look outside ~/.config (the session's XDG_CONFIG_HOME or one set for the manager, and for uwsm every
+  XDG_CONFIG_DIRS and XDG_DATA_DIRS), and every file in uwsm's "env.d" and "env-<desktop>.d" counts, whatever its
+  extension. The "exec" lines of popt settings (~/.popt, /etc/popt) are judged as launches. A file that a profile or
+  an uwsm file reads with "." or "source" is judged line by line, with the same rule as ~/.bashrc: a line that names
+  LD_PRELOAD is reported, even if it only reads it. Limits: a variable set during the session, by a Hyprland "env ="
+  line, or a folder moved by a shell profile is not checked.
 - **System programs, taken by their path.** The check, traces, monitoring, the backup and the other machine readings
   start pacman, systemctl, journalctl, ss, crontab, ping and the rest from the system folders, never through the
   account's PATH: a fake program placed in ~/.local/bin can no longer hide a connection or a journal line. On Linux,
   they no longer receive the account's environment (PATH, BASH_ENV, LD_PRELOAD…): a system script such as checkupdates
   no longer starts a fake pacman placed in ~/.local/bin, and "System up to date" is no longer said without checking.
-  Tools you install yourself (docker, podman, git, nmap, trivy, gitleaks) are still looked up in the PATH, on purpose.
+  Tools you install yourself (docker, podman, git, nmap, trivy, gitleaks) are still looked up in the PATH, on purpose,
+  like xdg-open, which opens a page or a file with the application your account chose.
+- **Machine readings, taken from the system.** clamscan and upnpc are run and reported present from the system
+  folders, never through the account's PATH. checkupdates works in a new private folder, deleted afterwards: a
+  database planted in advance under the known name no longer makes it say "up to date". A system tool written in
+  Python (ufw, firewall-cmd, dnf) no longer loads the account's Python packages. A Docker daemon named by a variable
+  (DOCKER_HOST, DOCKER_CONTEXT, DOCKER_CONFIG) is reported as not checked instead of being read.
+- **The window size without an account program.** Without a terminal, Vanguard no longer runs `tput` (looked up in
+  the account's PATH) to learn the screen size.
 - **Sturdier.** Every Unicode format character (those that change reading direction or hide text) is shown as "�",
   following Unicode 17's table. A name that is not UTF-8 (lock, report, WireGuard interface) is opened under its real
   name and shown with its bytes as `\xFF`. When the system refuses a thread, Vanguard goes on in "reduced mode", says
@@ -83,7 +107,9 @@ repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
 - **Verification and publishing.** The repository tools no longer say green without checking: a skipped step is a
   failure on GitHub (except named exclusions), and skipped tests are counted down to the last line. shellcheck,
   cargo audit on the separate crates' lock files and the README numbers compared to the code are added. SECURITY.md
-  no longer promises "at most one version a day": a fix ships in the next version, sometimes the same day.
+  no longer promises "at most one version a day": a fix ships in the next version, sometimes the same day. Every
+  Python tool of the repository (privacy guard, Git hooks, verification, publishing) runs isolated (`python3 -I`): a
+  module placed in the tool's folder or in PYTHONPATH can no longer disarm the guard before a commit or a push.
 - **Kept for later.** The Vanguard window has its screens to see, apply and put back a fix and to update Vanguard,
   but it is still not shipped: `vanguard` opens the terminal menu, as before. It will only be started once its launch
   checks a signed fingerprint.

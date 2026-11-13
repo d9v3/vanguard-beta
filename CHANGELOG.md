@@ -34,6 +34,17 @@ recompilée au besoin.
   lisent, se posent et se remettent sans shell ni lien suivi (la remise passait par `chmod`, qui suit les liens). Le
   journal des événements ne garde ni nom de fichier ni commande ; chaque fichier scellé s'écrit en deux temps, comme le
   sceau des réglages.
+- **Mise à jour plus honnête.** Une copie échangée par un autre programme pendant la mise à jour n'est plus laissée
+  en place : l'ancienne copie est remise, ou Vanguard dit exactement ce qui est en place (« ne la lancez pas »). Une
+  nouvelle copie tenue ouverte en écriture (« Text file busy ») est dite comme telle ; un nom provisoire occupé (un
+  dossier) est dit avec le chemin à retirer. Chaque refus dit « rien n'est remplacé ».
+- **Annuler sans toucher un autre fichier.** « Ce que Vanguard a changé » ne remet plus des droits plus larges sur un
+  fichier qui n'est plus celui que Vanguard a corrigé (remplacé, autre inode) : la remise est refusée, avec sa raison,
+  et la ligne montre les droits d'aujourd'hui et ceux qui seraient remis.
+- **Refus plus clairs.** « Ça a changé depuis l'aperçu » dit aussi la cause possible : un aperçu fait dans une autre
+  langue (VANGUARD_LANG, langue du système).
+- **Une aide n'écrit rien.** `vanguard --help`, `-h`, `help` et l'aide d'une commande ne créent plus aucun fichier
+  (sceaux) dans le dossier de données.
 - **Programmes au démarrage : l'accord devient obligatoire.** `vanguard demarrage --retirer` et `--remettre`
   demandent maintenant `--accord`, celui que `demarrage --json` donne pour ce geste : sans lui, rien n'est retiré ni
   remis (code 2), et un programme dont le nom, la commande ou la portée a changé depuis la liste est refusé. L'accord
@@ -66,19 +77,34 @@ recompilée au besoin.
   levée si son disque est un montage FUSE, une image qui appartient au compte, ou introuvable dans /sys (non vérifié),
   et quand on refuse de la déclarer normale, le message dit ce qui la change et comment le retirer.
 - **Les variables et les réglages qui changent ce qu'un programme lance.** Le bilan lit les fichiers de variables du
-  gestionnaire de session (environment.d, user.conf, ~/.pam_environment, uwsm) : HOME, LD_*, RSYNC_* ou
-  XDG_RUNTIME_DIR posés là lèvent la sauvegarde, et un dossier d'unités déplacé est relu. Ces fichiers se lisent comme
-  leur lecteur les lit : un retour chariot seul coupe une ligne d'environment.d ou de user.conf, comme pour systemd (un
-  « # » ne cache plus la suite), et chaque fichier de ~/.config/uwsm/env.d compte, quelle que soit son extension. Les
-  lignes « exec » des réglages de popt (~/.popt, /etc/popt) se jugent comme des lancements. Limite dite à l'écran : une
-  variable posée en cours de session, par un profil de shell ou par une ligne « env = » de Hyprland n'est pas vérifiée.
+  gestionnaire de session (environment.d, user.conf et user.conf.d, ~/.pam_environment, uwsm) : HOME, LD_*, RSYNC_*
+  ou XDG_RUNTIME_DIR posés là lèvent la sauvegarde, et un dossier d'unités déplacé est relu. environment.d et
+  user.conf se lisent comme systemd les lit : un retour chariot seul ou un octet NUL coupe une ligne, une suite de
+  ligne en « \ » se joint aussi en CRLF, et seuls l'espace, la tabulation et les fins de ligne précèdent un
+  commentaire (« # » ou « ; »). Dans un profil de shell et dans les fichiers d'uwsm, seul « # » ouvre un commentaire :
+  une ligne qui commence par « // », « -- » ou « ; » n'en est plus un. Ces fichiers sont aussi lus là où leurs
+  lecteurs les cherchent hors de ~/.config (XDG_CONFIG_HOME de la session ou posé au gestionnaire, et pour uwsm
+  chaque XDG_CONFIG_DIRS et XDG_DATA_DIRS), et chaque fichier de « env.d » et « env-<bureau>.d » d'uwsm compte, quelle
+  que soit son extension. Les lignes « exec » des réglages de popt (~/.popt, /etc/popt) se jugent comme des
+  lancements. Un fichier qu'un profil ou un fichier d'uwsm lit par « . » ou « source » se juge ligne à ligne, avec la
+  même règle que ~/.bashrc : une ligne qui nomme LD_PRELOAD se signale, même si elle ne fait que le lire. Limites :
+  une variable posée en cours de session, par une ligne « env = » de Hyprland, ou un dossier déplacé par un profil de
+  shell n'est pas vérifié.
 - **Les programmes du système, pris par leur chemin.** Le bilan, les traces, la surveillance, la sauvegarde et les
   autres lectures de la machine lancent pacman, systemctl, journalctl, ss, crontab, ping et les autres depuis les
   dossiers du système, jamais par le PATH du compte : un faux programme posé dans ~/.local/bin ne peut plus cacher une
   connexion ou une ligne du journal. Sous Linux, ils ne reçoivent plus l'environnement du compte (PATH, BASH_ENV,
   LD_PRELOAD…) : un script du système comme checkupdates ne relance plus un faux pacman posé dans ~/.local/bin, et
   « Système à jour » n'est plus dit sans vérification. Les outils que vous installez vous-même (docker, podman, git,
-  nmap, trivy, gitleaks) restent cherchés dans le PATH, exprès.
+  nmap, trivy, gitleaks) restent cherchés dans le PATH, exprès, comme xdg-open, qui ouvre une page ou un fichier avec
+  l'application que votre compte a choisie.
+- **Lectures de la machine, prises au système.** clamscan et upnpc se lancent et se disent présents depuis les
+  dossiers du système, jamais par le PATH du compte. checkupdates travaille dans un dossier neuf et privé, effacé
+  ensuite : une base posée d'avance au nom connu ne lui fait plus dire « à jour ». Un outil du système écrit en Python
+  (ufw, firewall-cmd, dnf) ne charge plus les paquets Python du compte. Un démon Docker désigné par une variable
+  (DOCKER_HOST, DOCKER_CONTEXT, DOCKER_CONFIG) est dit non vérifié au lieu d'être lu.
+- **La taille de la fenêtre sans programme du compte.** Sans terminal, Vanguard ne lance plus `tput` (cherché dans
+  le PATH du compte) pour connaître la taille de l'écran.
 - **Plus solide.** Chaque caractère de format d'Unicode (ceux qui changent le sens de lecture ou cachent du texte)
   s'affiche « � », d'après la table d'Unicode 17. Un nom qui n'est pas en UTF-8 (verrou, rapport, interface WireGuard)
   est ouvert sous son vrai nom et montré avec ses octets en `\xFF`. Quand le système refuse un fil, Vanguard continue
@@ -88,7 +114,9 @@ recompilée au besoin.
   un échec sur GitHub (sauf exceptions nommées), et les essais sautés sont comptés jusqu'à la dernière ligne.
   shellcheck, cargo audit sur les verrous des crates à part et les nombres des README comparés au code s'ajoutent.
   SECURITY.md ne promet plus « au plus une version par jour » : une correction part dans la version suivante,
-  parfois le jour même.
+  parfois le jour même. Chaque outil Python du dépôt (garde-fou de confidentialité, crochets Git, vérification,
+  publication) se lance isolé (`python3 -I`) : un module posé dans le dossier de l'outil ou dans PYTHONPATH ne peut
+  plus désarmer le garde-fou avant un commit ou un envoi.
 - **Gardé pour plus tard.** La fenêtre de Vanguard a ses écrans pour voir, appliquer et remettre une correction et
   pour mettre Vanguard à jour, mais elle n'est toujours pas livrée : `vanguard` ouvre le menu du terminal, comme avant.
   Elle ne sera lancée que lorsque son lancement vérifiera une empreinte signée.
