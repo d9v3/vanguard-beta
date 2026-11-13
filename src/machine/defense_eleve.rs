@@ -4227,6 +4227,26 @@ mod tests {
         assert_eq!(a.fichiers[Path::new("/etc/ld.so.preload")].contenu, contenu);
     }
 
+    /// Ronde 3 du lot 096 (N4) : une ligne désignée qui n'est pas dans le fichier (une empreinte faite sur une ligne
+    /// lue avec pertes, hors UTF-8) n'est jamais un succès : « rien trouvé » n'est pas « déjà fait ». Échec, sans
+    /// question, fichier inchangé.
+    #[test]
+    fn ligne_introuvable_n_est_pas_un_succes() {
+        let contenu = b"/tmp/.x/\xff.so\n".to_vec();
+        let lue = String::from_utf8_lossy(b"/tmp/.x/\xff.so").into_owned();
+        let mut a = Faux::nouveau().repondre("o");
+        a.poser("/etc/ld.so.preload", &contenu, 0o644);
+        let c = CheminDesigne::nouveau(b"/etc/ld.so.preload").unwrap();
+        let r = faire_avec(
+            Defense::RetirerLigne(empreinte_de_ligne(lue.as_bytes()), c),
+            &mut a,
+            &mut FauxServices::nouveau(),
+        );
+        assert!(!r.reussi, "{}", r.raison);
+        assert_eq!(a.questions.len(), 0);
+        assert_eq!(a.fichiers[Path::new("/etc/ld.so.preload")].contenu, contenu);
+    }
+
     /// Une ligne de ld.so.preload qui nomme plusieurs bibliothèques part en entier : c'est dit avant la question.
     #[test]
     fn ligne_de_plusieurs_bibliotheques_dite() {
