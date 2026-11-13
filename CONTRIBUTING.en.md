@@ -364,24 +364,27 @@ publish: it needs the override
 signed version history (`historique.txt`, line `passe-droit-sans-empreintes-ci`, likewise `passe-droit-sans-vm` for
 `VANGUARD_PUBLIER_SANS_VM=1`); a version published that way was not checked against CI.
 
-The window is built one target at a time: built by a single cargo call, both targets shared their features, and
-eframe's accesskit feature, taken for Windows only, brought zbus and zvariant into Linux, which cargo tree, cargo deny
-and the tests, run target by target, did not see (measured on November 12, 2026: 13.4 MB before, 10.5 MB after).
+The window is built one target at a time: built by a single cargo call, both targets shared their features, and eframe's
+accesskit feature, taken for Windows only, brought zbus and zvariant into Linux, which cargo tree, cargo deny and the
+tests, run target by target, did not see (measured on November 12, 2026: 13.4 MB before, 10.5 MB after).
 `outils/caisses-fenetre.sh` compares each target's tree to its versioned list (`outils/caisses-fenetre/<target>.txt`,
-names and versions: one more crate shows in the diff and goes through cargo deny and cargo vet; `--ecrire` rewrites
-the lists) and refuses the same crate coming from a source other than crates.io (a `[patch.crates-io]` to a local copy
-or a git repository, which cargo deny and cargo vet let through, or a replaced source, `[source.crates-io]
-replace-with` in a `.cargo/config.toml`, which cargo tree and cargo deny take for crates.io: any crates.io crate read
-from somewhere other than `CARGO_HOME`'s registry is refused); `--programmes`, run by `outils/compiler-version.sh`
-before the engraved fingerprint is computed, also refuses another source in the tree and checks that each crate named
-in the bytes of both windows is in its target's tree. `outils/failles-programmes.sh --fenetre` (deployment,
-publication) judges the programs as they are, whatever their recipe: before any audit, `caisses-fenetre.sh --publies`
-refuses another source in both targets' trees and any crate read in a program's bytes that is not in its target's
-versioned list (read from its header: ELF for Linux, MZ for Windows); then an advisory for an off-target crate is only
-set aside if none of the crates removed from the window (`caisses-fenetre.sh --retirees`, zbus included) can be read
-in the audited program. Nothing readable or an unknown header: nothing is concluded, never a pass.
-`outils/essais-caisses-fenetre.sh` (the "fenêtre" step of `outils/verifier.sh`, whose summary gives the number of
-crates counted for each target) tries these guards and the recipe with shims and made-up values.
+names and versions: one more crate shows in the diff and goes through cargo deny and cargo vet; `--ecrire` rewrites the
+lists, without comments: the reason for one more crate goes in the commit message, and a line of another form than "name
+version" stops everything) and refuses the same crate coming from a source other than crates.io (a `[patch.crates-io]`
+to a local copy (which cargo deny and cargo vet let through) or to a git repository (which cargo deny already refuses
+through `unknown-git = "deny"`; tests of November 13, 2026), or a replaced source, `[source.crates-io] replace-with` in
+a `.cargo/config.toml`, which cargo tree and cargo deny take for crates.io: any crates.io crate read from somewhere
+other than `CARGO_HOME`'s registry is refused); `--programmes`, run by `outils/compiler-version.sh` before the engraved
+fingerprint is computed, also refuses another source in the tree and checks that each crate named in the bytes of both
+windows is in its target's tree. `outils/failles-programmes.sh --fenetre` (deployment, publication) judges the programs
+as they are, whatever their recipe: before any audit, `caisses-fenetre.sh --publies` refuses another source in both
+targets' trees and any crate read in a program's bytes that is not in its target's versioned list (read from its header:
+ELF for Linux, MZ for Windows); then an advisory for an off-target crate is only set aside if none of the crates removed
+from the window (`caisses-fenetre.sh --retirees`, zbus included) can be read in the audited program;
+`failles-programmes.sh --depot` only sets them aside if each target's tree is read and does not contain them. Nothing
+readable or an unknown header: nothing is concluded, never a pass. `outils/essais-caisses-fenetre.sh` (the "fenêtre"
+step of `outils/verifier.sh`, whose summary gives the number of crates counted for each target) tries these guards and
+the recipe with shims and made-up values.
 
 ## Screenshots and social preview
 
@@ -411,22 +414,22 @@ git config user.email "<id>+<account>@users.noreply.github.com"           # comm
 ```
 
 What is personal is read on the computer, never written in the repository: `~/.config/vanguard-dev/confidentiel.txt`
-(one phrase per line: name, emails, address…), the global Git identity, the home folder, the devices and MAC
-addresses of Vanguard's database, the saved Wi-Fi networks. Other people's data (the key visits friends, and their
-error journal comes back here) is recognized by its shape: account of a home folder, email, Windows SID; a journal
-issue is masked before it is sent, MAC and IP addresses included. On GitHub, the CI runs it again on the commits of
-each push and each pull request (`--generique --plage`): only data recognized by its shape, without the identity of the
-machine running it. `python3 -I outils/confidentialite.py --depot`
-rereads the whole repository and its history. In tests, made-up values: MAC addresses keeping the vendor prefix,
-network “Salon”, accounts “alice”, “bob”, “Zoé”, “Jean Dupont”, emails `@example.com`.
-The build folder (`CARGO_TARGET_DIR`) also becomes `/vanguard/target` in the programs, and
-`python3 outils/confidentialite.py --compilation <build folder> [--dossier <folder>]… <programs…>`, run by
+(one phrase per line: name, emails, address…), the global Git identity, the home folder, the devices and MAC addresses
+of Vanguard's database, the saved Wi-Fi networks. Other people's data (the key visits friends, and their error journal
+comes back here) is recognized by its shape: account of a home folder, email, Windows SID; a journal issue is masked
+before it is sent, MAC and IP addresses included. On GitHub, the CI runs it again on the commits of each push and each
+pull request (`--generique --plage`): only data recognized by its shape, without the identity of the machine running it.
+`python3 -I outils/confidentialite.py --depot` rereads the whole repository and its history. In tests, made-up values:
+MAC addresses keeping the vendor prefix, network “Salon”, accounts “alice”, “bob”, “Zoé”, “Jean Dupont”, emails
+`@example.com`. The build folder (`CARGO_TARGET_DIR`) also becomes `/vanguard/target` in the programs, and `python3
+outils/confidentialite.py --compilation <build folder> [--dossier <folder>]… <programs…>`, run by
 `outils/compiler-version.sh` before the fingerprint and the build marker, refuses a program that contains the home
-folder, the account name, the build folder or a folder given with `--dossier` (the recipe gives the repository,
-`CARGO_HOME` and `RUSTUP_HOME`, which the home folder does not cover when they are on another disk or in CI), each as
-given (`..` included), cleaned and by its real path, in UTF-8 as in UTF-16. An unreadable or empty program, a missing
-build folder: nothing is concluded, the build stops. One of these folders with a single component (`/vanguard`,
-`/cargo`) would be read in the replaced paths: one refusal too many, never one pass too many.
+folder, the account name (`USER`, or the one the system gives, and the last component of the home folder), the build
+folder or a folder given with `--dossier` (the recipe gives the repository, `CARGO_HOME` and `RUSTUP_HOME`, which the
+home folder does not cover when they are on another disk or in CI), each as given (`..` included), cleaned and by its
+real path, in UTF-8 as in UTF-16. An unreadable or empty program, a missing build folder: nothing is concluded, the
+build stops. One of these folders with a single component (`/vanguard`, `/cargo`) would be read in the replaced paths:
+one refusal too many, never one pass too many.
 
 Rust keeps the libraries' path in the programs (`/home/<account>/.cargo/registry/…`): to publish a version, build
 with `rustflags = ["--remap-path-prefix=/home/<account>=~"]` in `~/.cargo/config.toml` (`publier-version.sh` refuses

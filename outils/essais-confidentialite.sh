@@ -857,6 +857,11 @@ noter 1 "$(refus_dit $?)" "--compilation : le dossier personnel (HOME) est refus
 compile disque '/run/media/alice/disque/cibles/release/build/out/egl_bindings.rs'
 compilation "$CIBLES_I" "$P/disque"
 noter 1 "$(refus_dit $?)" "--compilation : le nom du compte dans un chemin hors de HOME est refusé"
+# Ronde Fable du 13 nov. 2026 (C6) : sans USER (ni LOGNAME), le compte venait du système, « root » sous unshare -r ;
+# le vrai nom, lui, est encore le dernier élément du HOME.
+SORTIE=$(env -u USER -u LOGNAME -u LNAME -u USERNAME HOME=/home/alice python3 "$OUTIL" --compilation "$CIBLES_I" \
+  "$P/disque" 2>&1)
+noter 1 "$(refus_dit $?)" "--compilation : sans USER, le compte lu dans le HOME est cherché hors de HOME"
 printf '\177ELF\0' >"$P/large" && printf 'C:\\Users\\alice\\cibles\0' | iconv -t UTF-16LE >>"$P/large"
 compilation "$CIBLES_I" "$P/large"
 noter 1 "$(refus_dit $?)" "--compilation : le nom du compte dans un chemin Windows en UTF-16 est refusé"

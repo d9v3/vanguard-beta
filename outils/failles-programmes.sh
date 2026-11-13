@@ -119,8 +119,10 @@ montrer_erreurs_arbre() {
   done
 }
 
-# Les avis HORS_CIBLES de la fenêtre, ajoutés à OPTIONS_FENETRE en --ignore ; code 1 si l'une d'elles est compilée
-# pour une de ses deux cibles, ou si cargo tree ne peut pas le dire (alors l'avis compte : --fenetre refuse).
+# Les avis HORS_CIBLES de la fenêtre, ajoutés à OPTIONS_FENETRE en --ignore seulement si la preuve est faite pour
+# toutes ; code 1 si l'une d'elles est compilée pour une de ses deux cibles, ou si cargo tree ne peut pas le dire
+# (alors aucun avis n'est écarté et --fenetre refuse). Relecture du 12 nov. 2026 (C5) : les --ignore étaient posés
+# même quand la preuve échouait.
 hors_cibles_prouvees() {
   local code=0 exception cible arbre erreur titre
   for exception in "${HORS_CIBLES[@]}"; do
@@ -144,9 +146,11 @@ hors_cibles_prouvees() {
         code=1
       fi
     done
+  done
+  ((code == 0)) || return "$code"
+  for exception in "${HORS_CIBLES[@]}"; do
     OPTIONS_FENETRE+=(--ignore "${exception%%:*}")
   done
-  return "$code"
 }
 
 # Les caisses retirées de la fenêtre lues dans les octets de chaque programme (outils/caisses-fenetre.sh --caisses : la
@@ -203,9 +207,9 @@ caisses_publiees() {
 
 # Le Cargo.lock du dépôt, lu depuis ce dossier-là (son audit.toml vide) : même jugement que pour les programmes.
 if [[ $1 == --depot ]]; then
-  CODE=0
+  CODE=0 ECARTEES=1
   SORTIE=$(cd "$TRAVAIL" && cargo-audit audit "${OPTIONS[@]}" --file "$RACINE/Cargo.lock" 2>&1) || CODE=$?
-  hors_cibles_prouvees || CODE=1
+  hors_cibles_prouvees || { CODE=1 ECARTEES=0; }
   SORTIE+=$'\n'"fenetre/Cargo.lock :"$'\n'$(cd "$TRAVAIL" && cargo-audit audit "${OPTIONS_FENETRE[@]}" \
     --file "$RACINE/fenetre/Cargo.lock" 2>&1) || CODE=1
   for verrou in "${A_PART[@]}"; do
@@ -220,7 +224,11 @@ if [[ $1 == --depot ]]; then
     CODE=1
   fi
   [[ -z $EXCEPTIONS ]] || echo "exceptions de deny.toml : $(printf '%s\n' "$EXCEPTIONS" | paste -sd, - | sed 's/,/, /g')"
-  echo "fenêtre : écartées car compilées par aucune de ses deux cibles : ${HORS_CIBLES[*]%%:*}"
+  if ((ECARTEES)); then
+    echo "fenêtre : écartées car compilées par aucune de ses deux cibles : ${HORS_CIBLES[*]%%:*}"
+  else
+    echo "✖ fenêtre : pas écartées, la preuve n'est pas faite (plus haut) : ${HORS_CIBLES[*]%%:*}"
+  fi
   montrer_erreurs_arbre
   exit "$CODE"
 fi

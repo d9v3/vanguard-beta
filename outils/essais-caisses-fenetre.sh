@@ -23,7 +23,10 @@
 #      crates.io est dans l'arbre d'une cible, ou si une caisse lue dans les octets n'est pas dans la liste de la cible
 #      du programme (lue dans son en-tête, ELF ou MZ : une fenêtre Linux qui porte une caisse de Windows seulement est
 #      refusée) ; en-tête inconnu ou liste absente : non vérifié.
-#   5. Dans une copie du dépôt (jamais les vraies listes) : --ecrire écrit des arbres sains, mais jamais une autre
+#   5. failles-programmes.sh --depot (Internet simulé par une cale curl) : les avis HORS_CIBLES écartés et dits
+#      écartés seulement si cargo tree prouve leur absence des deux cibles ; compilée ou cargo tree en échec : code 1,
+#      aucun --ignore posé, « pas écartées ».
+#   6. Dans une copie du dépôt (jamais les vraies listes) : --ecrire écrit des arbres sains, mais jamais une autre
 #      source ni une retirée ; une autre source inscrite à la main dans la liste reste refusée, sans coche ✔ ; la
 #      liste des retirées illisible (--retirees en échec) rend failles-programmes.sh --fenetre « non vérifié ».
 # Lancé par outils/verifier.sh (étape « fenêtre »).
@@ -36,6 +39,8 @@ ko() { echo "  ✖ $*"; ECHECS=$((ECHECS + 1)); }
 T=$(mktemp -d "${TMPDIR:-/tmp}/essais-caisses-fenetre.XXXXXX") || exit 1
 trap 'rm -rf "$T"' EXIT
 LINUX=x86_64-unknown-linux-gnu
+# Ce que la garde propose quand --ecrire accepterait (ronde 2 du 13 nov. 2026, R5 : pas quand il refuse).
+VOULU_ECRIRE="Voulu : outils/caisses-fenetre.sh --ecrire"
 WINDOWS=x86_64-pc-windows-gnu
 
 # La cale cargo : « cargo tree » et « cargo metadata », l'arbre de chaque cible lu dans $CALE_ARBRES/<cible>.txt
@@ -82,12 +87,13 @@ echo "vanguard-fenetre v0.1.0 (/depot-invente/fenetre)"
 awk '!/^#/ && NF { $2 = "v" $2; print }' "$f"
 EOF
 # La cale cargo-audit, à la version qu'épingle la CI (failles-programmes.sh l'exige) : elle dit avoir lu la liste
-# de chaque programme, sans faille.
+# de chaque programme, sans faille, et note ses arguments (un par ligne) dans $T/audit-args.
 AUDIT_CI=$(sed -n 's/.*cargo-audit@\([0-9][0-9.]*\).*/\1/p' .github/workflows/ci.yml | head -1)
 cat >"$T/bin/cargo-audit" <<EOF
 #!/usr/bin/env bash
 [[ \${1:-} == --version ]] && { echo "cargo-audit $AUDIT_CI"; exit 0; }
 touch "$T/audit-lance"
+printf '%s\n' "\$@" >>"$T/audit-args"
 for p in "\$@"; do
   [[ -f \$p ]] && echo "Found 'cargo auditable' data in \$p (3 dependencies)"
 done
@@ -202,7 +208,7 @@ for c in $LINUX $WINDOWS; do
     ko "$REF absente ou vide"
     continue
   fi
-  grep -v '^#' "$REF" >"$T/ref-$c.txt"
+  cp "$REF" "$T/ref-$c.txt"
 done
 if [[ -s $T/ref-$LINUX.txt && -s $T/ref-$WINDOWS.txt ]]; then
   remet() { cp "$T/ref-$LINUX.txt" "$T/arbres/$LINUX.txt" && cp "$T/ref-$WINDOWS.txt" "$T/arbres/$WINDOWS.txt"; }
@@ -217,7 +223,8 @@ if [[ -s $T/ref-$LINUX.txt && -s $T/ref-$WINDOWS.txt ]]; then
     ok "caisse remplacée à nombre égal : code 1, les deux montrées" || ko "caisse remplacée : code $CODE ($SORTIE)"
   remet && echo "caisse-inventee 9.9.9" >>"$T/arbres/$WINDOWS.txt"
   lance outils/caisses-fenetre.sh
-  ((CODE == 1)) && [[ $SORTIE == *"caisse-inventee 9.9.9"* ]] && ok "une caisse de plus : code 1, montrée" ||
+  ((CODE == 1)) && [[ $SORTIE == *"caisse-inventee 9.9.9"* && $SORTIE == *"$VOULU_ECRIRE"* ]] &&
+    ok "une caisse de plus : code 1, montrée, --ecrire proposé" ||
     ko "une caisse de plus : code $CODE ($SORTIE)"
   remet && tail -n +2 "$T/ref-$WINDOWS.txt" >"$T/arbres/$WINDOWS.txt"
   lance outils/caisses-fenetre.sh
@@ -225,27 +232,34 @@ if [[ -s $T/ref-$LINUX.txt && -s $T/ref-$WINDOWS.txt ]]; then
     ko "une caisse de moins : code $CODE ($SORTIE)"
   remet && echo "zbus 5.15.0" >>"$T/arbres/$LINUX.txt"
   lance outils/caisses-fenetre.sh
-  ((CODE == 1)) && [[ $SORTIE == *"retirées revenues"*zbus* ]] && ok "caisse retirée revenue (zbus) : code 1" ||
+  ((CODE == 1)) && [[ $SORTIE == *"retirées revenues"*zbus* && $SORTIE != *"$VOULU_ECRIRE"* &&
+    $SORTIE == *"--ecrire n'écrit jamais"* ]] &&
+    ok "caisse retirée revenue (zbus) : code 1, sans proposer --ecrire (qui la refuse)" ||
     ko "caisse retirée revenue : code $CODE ($SORTIE)"
   # Même nom, même version, autre source (relecture du 12 nov. 2026) : un [patch.crates-io] vers une copie locale ou
-  # un dépôt git. cargo deny et cargo vet passaient, et la liste, sans la source, aussi.
+  # un dépôt git. La copie locale passe cargo deny et cargo vet (le dépôt git, cargo deny le refuse déjà : unknown-git
+  # = "deny", essais du 13 nov. 2026), et la liste, sans la source, la laissait passer aussi.
   remet && { echo "$premiere (/srv/copie-inventee/caisse)"; tail -n +2 "$T/ref-$LINUX.txt"; } >"$T/arbres/$LINUX.txt"
   lance outils/caisses-fenetre.sh
   ((CODE == 1)) && [[ $SORTIE == *"autre source que crates.io"*"$premiere (chemin local)"* &&
-    $SORTIE != *copie-inventee* ]] && ok "même caisse par un chemin local : code 1, dite, sans le chemin" ||
+    $SORTIE != *copie-inventee* && $SORTIE != *"$VOULU_ECRIRE"* ]] &&
+    ok "même caisse par un chemin local : code 1, dite, sans le chemin, sans proposer --ecrire" ||
     ko "même caisse par un chemin local : code $CODE ($SORTIE)"
   remet && { echo "$premiere (https://example.com/depot-invente#0123abcd)"; tail -n +2 "$T/ref-$LINUX.txt"; } \
     >"$T/arbres/$LINUX.txt"
   lance outils/caisses-fenetre.sh
-  ((CODE == 1)) && [[ $SORTIE == *"$premiere (autre source)"* && $SORTIE != *example.com* ]] &&
-    ok "même caisse par un dépôt git : code 1, dite" || ko "même caisse par un dépôt git : code $CODE ($SORTIE)"
+  ((CODE == 1)) && [[ $SORTIE == *"$premiere (autre source)"* && $SORTIE != *example.com* &&
+    $SORTIE != *"$VOULU_ECRIRE"* ]] &&
+    ok "même caisse par un dépôt git : code 1, dite, sans proposer --ecrire" ||
+    ko "même caisse par un dépôt git : code $CODE ($SORTIE)"
   # Une source remplacée ([source.crates-io] replace-with vers un dossier, dans un .cargo/config.toml) : cargo garde
   # l'identité « crates.io », cargo tree n'écrit aucune source, cargo deny ne voit rien (relecture du 12 nov. 2026).
   # La caisse n'est pas lue dans le registre de CARGO_HOME : refusée, sans le chemin.
   remet && echo "$premiere" >"$T/arbres/$LINUX.remplacees"
   lance outils/caisses-fenetre.sh
   ((CODE == 1)) && [[ $SORTIE == *"autre source que crates.io"*"$premiere (autre source)"* &&
-    $SORTIE != *copie-inventee* ]] && ok "même caisse par une source remplacée : code 1, dite, sans le chemin" ||
+    $SORTIE != *copie-inventee* && $SORTIE != *"$VOULU_ECRIRE"* ]] &&
+    ok "même caisse par une source remplacée : code 1, dite, sans le chemin, sans proposer --ecrire" ||
     ko "même caisse par une source remplacée : code $CODE ($SORTIE)"
   rm "$T/arbres/$LINUX.remplacees"
   remet && touch "$T/arbres/$WINDOWS.metadata-echec"
@@ -326,7 +340,38 @@ else
   ko "listes de référence illisibles : failles-programmes.sh --fenetre pas essayé"
 fi
 
-echo "5. Dans une copie du dépôt : --ecrire, la coche d'une cible refusée, la liste des retirées illisible"
+echo "5. failles-programmes.sh --depot : les avis HORS_CIBLES écartés seulement si cargo tree l'a prouvé"
+# Relecture du 12 nov. 2026 (C5) : la preuve en échec, le code était bien 1, mais les --ignore étaient posés quand même
+# et la ligne « écartées car compilées par aucune de ses deux cibles » s'affichait. Avec Internet (cale curl) : --depot
+# s'arrête sinon (code 77) avant toute preuve.
+if [[ -s $T/ref-$LINUX.txt && -s $T/ref-$WINDOWS.txt ]]; then
+  mkdir -p "$T/reseau" && printf '#!/bin/sh\nexit 0\n' >"$T/reseau/curl" && chmod +x "$T/reseau/curl"
+  depot() { # le texte attendu (ou refusé, « ! texte ») dans la sortie, le code attendu, le nom de l'essai
+    rm -f "$T/audit-args"
+    SORTIE=$(PATH="$T/reseau:$PATH" env -u VANGUARD_HORS_LIGNE bash outils/failles-programmes.sh --depot 2>&1) &&
+      CODE=0 || CODE=$?
+  }
+  remet
+  depot
+  ((CODE == 0)) && [[ $SORTIE == *"écartées car compilées par aucune de ses deux cibles"* ]] &&
+    grep -qx RUSTSEC-2026-0370 "$T/audit-args" && ok "--depot, preuve faite : avis écartés, code 0" ||
+    ko "--depot, preuve faite : code $CODE ($SORTIE)"
+  echo "zvariant 5.15.1" >>"$T/arbres/$LINUX.txt"
+  depot
+  ((CODE == 1)) && [[ $SORTIE == *"zvariant compilée pour $LINUX"* && $SORTIE != *"écartées car"* ]] &&
+    ! grep -qx RUSTSEC-2026-0370 "$T/audit-args" && ok "--depot, zvariant compilée : avis pas écartés, code 1" ||
+    ko "--depot, zvariant compilée : code $CODE ($SORTIE ; $(paste -sd' ' "$T/audit-args"))"
+  remet && rm "$T/arbres/$WINDOWS.txt"
+  depot
+  ((CODE == 1)) && [[ $SORTIE == *"cargo tree a échoué"* && $SORTIE != *"écartées car"* ]] &&
+    ! grep -qE '^RUSTSEC-2026-037[012]$' "$T/audit-args" && ok "--depot, cargo tree en échec : rien d'écarté, code 1" ||
+    ko "--depot, cargo tree en échec : code $CODE ($SORTIE ; $(paste -sd' ' "$T/audit-args"))"
+  remet
+else
+  ko "listes de référence illisibles : --depot pas essayé"
+fi
+
+echo "6. Dans une copie du dépôt : --ecrire, la coche d'une cible refusée, la liste des retirées illisible"
 # Ronde 2 du 13 nov. 2026 : trois mutations laissaient ce banc vert (le refus de --ecrire retiré, une coche ✔ à côté
 # d'un ✖, l'échec de --retirees ignoré). Une copie, parce que --ecrire écrit les listes : jamais celles du dépôt.
 if [[ -s $T/ref-$LINUX.txt && -s $T/ref-$WINDOWS.txt ]]; then
@@ -363,6 +408,24 @@ if [[ -s $T/ref-$LINUX.txt && -s $T/ref-$WINDOWS.txt ]]; then
   ((CODE == 1)) && [[ $SORTIE == *"✖ $LINUX : caisses d'une autre source"* && $SORTIE != *"✔ $LINUX"* &&
     $SORTIE == *"✔ $WINDOWS"* ]] && ok "autre source inscrite dans la liste : code 1, aucune coche ✔ pour $LINUX" ||
     ko "autre source inscrite dans la liste : code $CODE ($SORTIE)"
+  # Relecture du 12 nov. 2026 (C4) : une ligne « # raison » donnait un rouge sans fin (« - # raison », et --ecrire,
+  # proposé, l'effaçait). Une liste n'a pas de commentaire : la raison d'une caisse va dans le message de commit.
+  ecrites && remet
+  { echo "# raison inventée d'une caisse"; cat "$T/ref-$LINUX.txt"; } >"$D/outils/caisses-fenetre/$LINUX.txt"
+  lance "$D/outils/caisses-fenetre.sh"
+  ((CODE == 2)) && [[ $SORTIE == *"message de commit"* && $SORTIE != *"$VOULU_ECRIRE"* ]] &&
+    ok "une ligne « # raison » dans une liste : code 2, la raison va dans le message de commit" ||
+    ko "une ligne « # raison » dans une liste : code $CODE ($SORTIE)"
+  { cat "$T/ref-$LINUX.txt"; echo "caisse sans version"; } >"$D/outils/caisses-fenetre/$LINUX.txt"
+  lance "$D/outils/caisses-fenetre.sh"
+  ((CODE == 2)) && [[ $SORTIE == *"caisse sans version"* ]] &&
+    ok "une ligne d'une autre forme dans une liste : code 2" ||
+    ko "une ligne d'une autre forme dans une liste : code $CODE ($SORTIE)"
+  { cat "$T/ref-$LINUX.txt"; echo "caisse-inventee 1.0.0 (remarque)"; } >"$D/outils/caisses-fenetre/$LINUX.txt"
+  lance "$D/outils/caisses-fenetre.sh"
+  ((CODE == 2)) && [[ $SORTIE == *"caisse-inventee 1.0.0 (remarque)"* ]] &&
+    ok "une parenthèse autre que la source refusée : code 2" ||
+    ko "une parenthèse autre que la source refusée : code $CODE ($SORTIE)"
   # La liste des retirées illisible (caisses-fenetre.sh --retirees en échec) : rien ne retombe sur les trois
   # HORS_CIBLES seules ; non vérifié, rien d'audité, même pour un programme sain.
   ecrites && remet

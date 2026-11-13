@@ -41,7 +41,8 @@ RACINE=$(cd "$(dirname "$0")/.." && pwd)
 MANIFESTE=$RACINE/fenetre/Cargo.toml
 CIBLES=(x86_64-unknown-linux-gnu x86_64-pc-windows-gnu)
 # La liste exacte par cible (nom et version), versionnée : elle ne change pas sans qu'on le voie dans le diff. Une
-# caisse de plus s'y ajoute avec sa raison (et passe à cargo deny et cargo vet) ; une de moins s'en retire avec le code.
+# caisse de plus s'y ajoute (et passe à cargo deny et cargo vet), sa raison dans le message de commit : une liste n'a
+# pas de commentaire, --ecrire la récrit en entier ; une de moins s'en retire avec le code.
 REFERENCES=$RACINE/outils/caisses-fenetre
 # Ce qui ne revient dans aucune cible : le lecteur d'écran d'accesskit sous Linux et tout ce qu'il amène (zbus et ses
 # formats, abandonnés), refusés par fenetre/deny.toml (fenetre/Cargo.toml, « Pas sous Linux pour l'instant »).
@@ -100,12 +101,21 @@ autres_sources() {
   grep -E ' \((chemin local|autre source)\)$' <<<"$1"
 }
 
-# La liste versionnée d'une cible, triée. Code 2 si elle est absente, illisible ou vide : rien n'est conclu.
+# La liste versionnée d'une cible, triée. Code 2 si elle est absente, illisible, vide ou si une ligne n'a pas la forme
+# « nom version » (avec, écrite à la main, la source que la garde refuse) : rien n'est conclu. Relecture du 12 nov.
+# 2026 (C4) : une ligne « # raison » donnait un rouge sans fin (« - # raison »), et --ecrire, proposé, l'effaçait.
 reference() {
-  local f=$REFERENCES/$1.txt contenu
+  local f=$REFERENCES/$1.txt contenu autres
   contenu=$(cat -- "$f" 2>/dev/null) || { echo "✖ $f : absente ou illisible, rien n'est conclu" >&2; return 2; }
   contenu=$(grep -v '^[[:space:]]*$' <<<"$contenu" | sort -u)
   [[ -n $contenu ]] || { echo "✖ $f : vide, rien n'est conclu" >&2; return 2; }
+  autres=$(grep -vE '^[A-Za-z0-9_-]+ [0-9][^ ]*( \((chemin local|autre source)\))?$' <<<"$contenu")
+  if [[ -n $autres ]]; then
+    echo "✖ $f : $(wc -l <<<"$autres") ligne(s) d'une autre forme que « nom version »," \
+      "dont « $(head -1 <<<"$autres") » (une liste n'a pas de commentaire : la raison d'une caisse va dans" \
+      "le message de commit), rien n'est conclu" >&2
+    return 2
+  fi
   printf '%s\n' "$contenu"
 }
 
@@ -274,7 +284,14 @@ for cible in "${CIBLES[@]}"; do
       "($(wc -l <<<"$attendue")) :"
     montrer + "$en_plus"
     montrer - "$en_moins"
-    echo "  Voulu : outils/caisses-fenetre.sh --ecrire, puis le diff relu (une caisse de plus se dit, avec sa raison)."
+    # Ronde 2 du 13 nov. 2026 (R5) : --ecrire était proposé même quand il refuse (retirée revenue, autre source).
+    if [[ -n $r || -n $a ]]; then
+      echo "  Voulu : d'abord retirer du code ce qui est refusé plus haut ;" \
+        "--ecrire n'écrit jamais une caisse retirée ni une autre source."
+    else
+      echo "  Voulu : outils/caisses-fenetre.sh --ecrire, puis le diff relu" \
+        "(une caisse de plus se dit, sa raison dans le message de commit)."
+    fi
     CODE=1
   elif [[ -z $r && -z $a ]]; then
     echo "✔ $cible : $nombre caisses, celles de outils/caisses-fenetre/$cible.txt, aucune retirée revenue"

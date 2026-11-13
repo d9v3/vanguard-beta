@@ -118,8 +118,12 @@ def motif_mac(mac: str) -> str:
     return rf"(?<![0-9a-f:-])(?:{'[:-]'.join(octets)}|{''.join(octets)}|{sans_zeros})(?![0-9a-f])"
 
 
-def compte() -> str:
-    return os.environ.get("USER") or getpass.getuser()
+def noms_du_compte() -> list[str]:
+    """Les noms du compte : USER (à défaut, celui que donne le système) et le dernier élément du HOME. Sans USER,
+    sous `unshare -r`, le système répond « root » : le vrai compte ne se lit plus que dans le HOME (ronde Fable du
+    13 nov. 2026, C6). D'ordinaire les deux sont le même nom, cherché une fois."""
+    maison = os.path.basename(os.environ.get("HOME", "").rstrip("/\\"))
+    return [n for n in dict.fromkeys((os.environ.get("USER") or getpass.getuser(), maison)) if n]
 
 
 def present(chemin: Path) -> bool:
@@ -156,7 +160,7 @@ def dossiers_vanguard():
     base = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
     local = base / "vanguard" if present(base / "vanguard") else None
     cle = None
-    for media in (Path("/run/media") / compte(), Path("/media") / compte()):
+    for media in (Path(racine) / nom for nom in noms_du_compte() for racine in ("/run/media", "/media")):
         try:
             for d in media.iterdir():
                 if (d / "vanguard.cle").is_file():
@@ -260,11 +264,12 @@ def termes():
             ajouter(pwd.getpwuid(os.getuid()).pw_gecos.split(",")[0].strip(), "nom complet du compte")
         except KeyError:
             pass
-    moi = re.escape(compte())
     hote = socket.gethostname().split(".")[0]
-    ajouter(f"/home/{compte()}", "dossier personnel",
-            rf"(?:/home|/Users|/run/media|/media)/{moi}(?![\w.-])|[A-Za-z]:\\+Users\\+{moi}(?![\w.-])")
-    ajouter(f"{compte()}@{hote}", "compte et nom de l'ordinateur")
+    for nom in noms_du_compte():
+        moi = re.escape(nom)
+        ajouter(f"/home/{nom}", "dossier personnel",
+                rf"(?:/home|/Users|/run/media|/media)/{moi}(?![\w.-])|[A-Za-z]:\\+Users\\+{moi}(?![\w.-])")
+        ajouter(f"{nom}@{hote}", "compte et nom de l'ordinateur")
     if len(hote) >= 4 and hote.lower() not in DISTRIBUTIONS and not generique(hote):
         ajouter(hote, "nom de l'ordinateur")
     noms, macs = appareils(*(d / "appareils.json" for d in dossiers_vanguard() if d))
@@ -1041,8 +1046,7 @@ def termes_de_compilation(cibles, donnes=()):
     maison = os.environ.get("HOME", "")
     if maison:
         dossier(maison, "dossier personnel (HOME)")
-    moi = compte()
-    if moi:
+    for moi in noms_du_compte():
         ajouter(moi, "nom du compte, dans un chemin", rf"[/\\]{re.escape(moi)}(?![\w.-])")
     dossier(cibles, "dossier de compilation (CARGO_TARGET_DIR)")
     for donne in donnes:

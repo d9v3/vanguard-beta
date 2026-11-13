@@ -366,24 +366,27 @@ dans l'historique signé des versions (`historique.txt`, ligne `passe-droit-sans
 `passe-droit-sans-vm` pour `VANGUARD_PUBLIER_SANS_VM=1`) ; une version publiée ainsi n'a pas été confrontée à la CI.
 
 La fenêtre est compilée une cible à la fois : compilées par un seul appel de cargo, les deux cibles partageaient leurs
-options, et l'option accesskit d'eframe, prise pour Windows seulement, emportait sous Linux zbus et zvariant, que
-cargo tree, cargo deny et les essais, lancés cible par cible, ne voyaient pas (mesuré le 12 novembre 2026 : 13,4 Mo
-avant, 10,5 Mo après). `outils/caisses-fenetre.sh` compare l'arbre de chaque cible à sa liste versionnée
+options, et l'option accesskit d'eframe, prise pour Windows seulement, emportait sous Linux zbus et zvariant, que cargo
+tree, cargo deny et les essais, lancés cible par cible, ne voyaient pas (mesuré le 12 novembre 2026 : 13,4 Mo avant,
+10,5 Mo après). `outils/caisses-fenetre.sh` compare l'arbre de chaque cible à sa liste versionnée
 (`outils/caisses-fenetre/<cible>.txt`, noms et versions : une caisse de plus se voit dans le diff et passe à cargo deny
-et cargo vet ; `--ecrire` refait les listes) et refuse la même caisse venue d'une autre source que crates.io (un
-`[patch.crates-io]` vers une copie locale ou un dépôt git, que cargo deny et cargo vet laissaient passer, ou une
-source remplacée, `[source.crates-io] replace-with` dans un `.cargo/config.toml`, que cargo tree et cargo deny prennent
-pour crates.io : toute caisse de crates.io lue ailleurs que dans le registre de `CARGO_HOME` est refusée) ;
-`--programmes`, lancé par `outils/compiler-version.sh` avant le calcul de l'empreinte gravée, refuse aussi une autre
-source dans l'arbre et vérifie que chaque caisse nommée dans les octets des deux fenêtres est dans l'arbre de sa cible.
+et cargo vet ; `--ecrire` refait les listes, sans commentaire : la raison d'une caisse de plus va dans le message de
+commit, et une ligne d'une autre forme que « nom version » arrête tout) et refuse la même caisse venue d'une autre
+source que crates.io (un `[patch.crates-io]` vers une copie locale, que cargo deny et cargo vet laissent passer, ou vers
+un dépôt git, que cargo deny refuse déjà par `unknown-git = "deny"` (essais du 13 novembre 2026), ou une source
+remplacée, `[source.crates-io] replace-with` dans un `.cargo/config.toml`, que cargo tree et cargo deny prennent pour
+crates.io : toute caisse de crates.io lue ailleurs que dans le registre de `CARGO_HOME` est refusée) ; `--programmes`,
+lancé par `outils/compiler-version.sh` avant le calcul de l'empreinte gravée, refuse aussi une autre source dans l'arbre
+et vérifie que chaque caisse nommée dans les octets des deux fenêtres est dans l'arbre de sa cible.
 `outils/failles-programmes.sh --fenetre` (déploiement, publication) juge les programmes tels qu'ils sont, quelle que
 soit leur recette : avant tout audit, `caisses-fenetre.sh --publies` refuse une autre source dans l'arbre des deux
 cibles et chaque caisse lue dans les octets d'un programme qui n'est pas dans la liste versionnée de sa cible (lue dans
 son en-tête : ELF pour Linux, MZ pour Windows) ; puis un avis d'une caisse hors cible n'est écarté que si aucune des
-caisses retirées de la fenêtre (`caisses-fenetre.sh --retirees`, zbus compris) ne se lit dans le programme audité. Rien
-de lisible ou un en-tête inconnu : rien n'est conclu, jamais un vert. `outils/essais-caisses-fenetre.sh` (étape
-« fenêtre » de `outils/verifier.sh`, dont le résumé dit le nombre de caisses comptées pour chaque cible) essaie ces
-gardes et la recette avec des cales et des valeurs inventées.
+caisses retirées de la fenêtre (`caisses-fenetre.sh --retirees`, zbus compris) ne se lit dans le programme audité ;
+`failles-programmes.sh --depot` ne les écarte que si l'arbre de chaque cible est lu et ne les contient pas. Rien de
+lisible ou un en-tête inconnu : rien n'est conclu, jamais un vert. `outils/essais-caisses-fenetre.sh` (étape « fenêtre »
+de `outils/verifier.sh`, dont le résumé dit le nombre de caisses comptées pour chaque cible) essaie ces gardes et la
+recette avec des cales et des valeurs inventées.
 
 ## Captures d'écran et image de partage
 
@@ -415,23 +418,22 @@ git config user.email "<id>+<compte>@users.noreply.github.com"            # comm
 
 Ce qui est personnel est lu sur l'ordinateur, jamais écrit dans le dépôt : `~/.config/vanguard-dev/confidentiel.txt`
 (une expression par ligne : nom, courriels, adresse…), l'identité Git globale, le dossier personnel, les appareils et
-adresses MAC de la base de Vanguard, les réseaux Wi-Fi enregistrés. Les données des autres (la clé passe chez des
-amis, et leur journal d'erreurs revient ici) sont reconnues à leur forme : compte d'un dossier personnel, courriel,
-SID de Windows ; un ticket du journal est masqué avant l'envoi, adresses MAC et IP comprises. Sur GitHub, la CI le
-repasse sur les commits de chaque envoi et de chaque demande de fusion (`--generique --plage`) : seulement les données
-reconnues à leur forme, sans l'identité de la machine qui le lance.
-`python3 -I outils/confidentialite.py --depot` relit tout le dépôt et son historique. Dans les tests, des valeurs
-inventées : adresses MAC au préfixe du fabricant gardé, réseau « Salon », comptes « alice », « bob », « Zoé »,
-« Jean Dupont », courriels `@example.com`.
-Le dossier de compilation (`CARGO_TARGET_DIR`) devient lui aussi `/vanguard/target` dans les programmes, et
-`python3 outils/confidentialite.py --compilation <dossier de compilation> [--dossier <dossier>]… <programmes…>`, lancé
-par `outils/compiler-version.sh` avant l'empreinte et le repère, refuse un programme qui contient le dossier personnel,
-le nom du compte, le dossier de compilation ou un dossier donné par `--dossier` (la recette donne le dépôt,
-`CARGO_HOME` et `RUSTUP_HOME`, que le dossier personnel ne couvre pas quand ils sont sur un autre disque ou dans la
-CI), chacun tel que donné (`..` compris), nettoyé et par son vrai chemin, en UTF-8 comme en UTF-16. Un programme
-illisible ou vide, un dossier de compilation absent : rien n'est conclu, la compilation s'arrête. Un de ces dossiers
-d'un seul élément (`/vanguard`, `/cargo`) se lirait dans les chemins remplacés : un refus de trop, jamais un vert de
-trop.
+adresses MAC de la base de Vanguard, les réseaux Wi-Fi enregistrés. Les données des autres (la clé passe chez des amis,
+et leur journal d'erreurs revient ici) sont reconnues à leur forme : compte d'un dossier personnel, courriel, SID de
+Windows ; un ticket du journal est masqué avant l'envoi, adresses MAC et IP comprises. Sur GitHub, la CI le repasse sur
+les commits de chaque envoi et de chaque demande de fusion (`--generique --plage`) : seulement les données reconnues à
+leur forme, sans l'identité de la machine qui le lance. `python3 -I outils/confidentialite.py --depot` relit tout le
+dépôt et son historique. Dans les tests, des valeurs inventées : adresses MAC au préfixe du fabricant gardé, réseau «
+Salon », comptes « alice », « bob », « Zoé », « Jean Dupont », courriels `@example.com`. Le dossier de compilation
+(`CARGO_TARGET_DIR`) devient lui aussi `/vanguard/target` dans les programmes, et `python3 -I outils/confidentialite.py
+--compilation <dossier de compilation> [--dossier <dossier>]… <programmes…>`, lancé par `outils/compiler-version.sh`
+avant l'empreinte et le repère, refuse un programme qui contient le dossier personnel, le nom du compte (`USER`, ou
+celui que donne le système, et le dernier élément du dossier personnel), le dossier de compilation ou un dossier donné
+par `--dossier` (la recette donne le dépôt, `CARGO_HOME` et `RUSTUP_HOME`, que le dossier personnel ne couvre pas quand
+ils sont sur un autre disque ou dans la CI), chacun tel que donné (`..` compris), nettoyé et par son vrai chemin, en
+UTF-8 comme en UTF-16. Un programme illisible ou vide, un dossier de compilation absent : rien n'est conclu, la
+compilation s'arrête. Un de ces dossiers d'un seul élément (`/vanguard`, `/cargo`) se lirait dans les chemins remplacés
+: un refus de trop, jamais un vert de trop.
 
 Rust garde le chemin des bibliothèques dans les programmes (`/home/<compte>/.cargo/registry/…`) : pour publier une
 version, compiler avec `rustflags = ["--remap-path-prefix=/home/<compte>=~"]` dans `~/.cargo/config.toml`
