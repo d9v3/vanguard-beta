@@ -2498,7 +2498,9 @@ pub fn programmes_en_ecoute() -> std::collections::HashMap<u16, String> {
     map
 }
 
-/// Ouvre un fichier ou une URL avec l'application par défaut du système.
+/// Ouvre un fichier ou une URL avec l'application par défaut du système. Sous Linux, xdg-open est cherché dans le PATH
+/// et reçoit l'environnement du compte, exprès (E-6, recontrôle 0.95) : il lance de toute façon l'application que le
+/// compte a choisie, et a besoin de sa session (DISPLAY, WAYLAND_DISPLAY, bus de session). Ce n'est pas une lecture.
 pub fn ouvrir(cible: &str) {
     #[cfg(target_os = "linux")]
     let _ = crate::coulisses::Suivie::spawn_suivi(Command::new("xdg-open").arg(cible));

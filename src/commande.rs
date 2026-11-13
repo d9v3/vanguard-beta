@@ -1134,7 +1134,10 @@ mod tests {
     /// par nom nu (« …unwrap_or_else(|| "bwrap".into()) », W-5) compte aussi. Limite dite (W-5) : ce qui cherche
     /// exprès dans le PATH un outil que la personne installe elle-même (docker, podman, trivy, gitleaks, git de
     /// protection/outil.rs, nmap de reseau/nmap.rs) n'est pas vu ici ; aucun n'est dans les lectures de la machine ni
-    /// dans la sauvegarde.
+    /// dans la sauvegarde. xdg-open (`machine::ouvrir`) reste lui aussi cherché dans le PATH, exprès (E-6, recontrôle
+    /// 0.95) : il ouvre une page ou un fichier avec l'application que le compte a choisie (ses mimeapps.list, ses
+    /// .desktop, $BROWSER), si bien que le prendre dans les dossiers du système ne retirerait rien au compte ; ce
+    /// n'est pas une lecture, et rien de ce qu'il fait n'est compté sain.
     #[cfg(target_os = "linux")]
     #[test]
     fn aucun_outil_par_son_nom_nu_dans_src() {
