@@ -682,6 +682,24 @@ fn nom_occupe(chemin: &Path) -> String {
     )
 }
 
+/// Le nom de côté pris par autre chose qu'un second nom de la copie en place (V-1, relecture du recontrôle 2 0.95) :
+/// peut-être la seule ancienne copie, gardée là après une remise ratée. Jamais effacé : son chemin est dit, à mettre à
+/// l'abri d'abord (« retirez-le » seul ferait perdre cette copie).
+fn nom_garde(chemin: &Path) -> String {
+    trf!(
+        "{} existe déjà et n'est pas la copie en place (peut-être l'ancienne copie, gardée après une mise à jour ratée) : Vanguard ne l'efface pas ; mettez-le à l'abri ou retirez-le, puis relancez la mise à jour",
+        "{} already exists and is not the copy in place (perhaps the old copy, kept after a failed update): Vanguard does not delete it; move it somewhere safe or remove it, then run the update again",
+        affichable(&chemin.display().to_string())
+    )
+}
+
+/// `a` et `b` sont-ils deux noms d'un même fichier (sous Unix, même appareil et même inode, lus tous deux à l'instant :
+/// deux noms présents ne partagent un inode que s'ils sont le même fichier) ? Ailleurs, les mêmes octets : effacer l'un
+/// ne perd rien. Faux si l'un ne se lit pas.
+fn second_nom(a: &Path, b: &Path) -> bool {
+    matches!((identite(a), identite(b)), (Some(x), Some(y)) if x == y)
+}
+
 /// Ce qui reconnaît un fichier : appareil et inode sous Unix ; ses octets ailleurs (Windows : l'identité du fichier
 /// demanderait l'API de Windows).
 #[derive(PartialEq, Eq)]
@@ -723,8 +741,18 @@ impl Precedente {
                 ));
             }
             Ok(_) => {
-                // Le reste d'une mise à jour interrompue ; un dossier à ce nom ne s'efface pas, et le lien échoue.
-                let _ = std::fs::remove_file(&de_cote);
+                // V-1 (relecture du recontrôle 2, 0.95) : ce nom n'est effacé que s'il est un second nom de la copie en
+                // place (le reste d'une mise à jour interrompue avant le renommage : rien ne s'y perd). Avant, il
+                // l'était toujours, avant même de savoir si le lien se ferait : l'ancienne copie gardée là après une
+                // remise ratée était perdue par la tentative suivante, qui refusait ensuite (« rien n'est remplacé »).
+                match std::fs::symlink_metadata(&de_cote) {
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(pas_de_cote(&e)),
+                    Ok(_) if second_nom(&de_cote, cible) => {
+                        std::fs::remove_file(&de_cote).map_err(|e| pas_de_cote(&e))?;
+                    }
+                    Ok(_) => return Err(nom_garde(&de_cote)),
+                }
                 match std::fs::hard_link(cible, &de_cote) {
                     Ok(()) => {
                         let Some(i) = identite(&de_cote) else {
@@ -733,7 +761,8 @@ impl Precedente {
                         };
                         EtatPrecedente::Retenue(i)
                     }
-                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Err(nom_occupe(&de_cote)),
+                    // Posé entre le regard et le lien (un autre programme) : jamais effacé non plus.
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Err(nom_garde(&de_cote)),
                     Err(e) => return Err(pas_de_cote(&e)),
                 }
             }
@@ -784,10 +813,10 @@ impl Precedente {
                         .into()
                     }
                     Ok(()) => ni_l_une_ni_l_autre(),
-                    // La mise à jour suivante réutilise ce nom (et l'efface) : à mettre à l'abri avant.
+                    // La mise à jour suivante refuse tant que ce nom est pris (V-1) : à mettre à l'abri avant.
                     Err(e) => trf!(
-                        "l'ancienne copie n'est pas remise ({e}), elle est gardée sous {} : copiez-la ailleurs avant de refaire la mise à jour, qui réutilise ce nom ; {}",
-                        "the old copy is not put back ({e}), it is kept as {}: copy it elsewhere before redoing the update, which reuses that name; {}",
+                        "l'ancienne copie n'est pas remise ({e}), elle est gardée sous {} : copiez-la ailleurs avant de refaire la mise à jour, qui refuse tant qu'elle y est ; {}",
+                        "the old copy is not put back ({e}), it is kept as {}: copy it elsewhere before redoing the update, which refuses while it is there; {}",
                         affichable(&self.de_cote.display().to_string()),
                         ni_l_une_ni_l_autre()
                     ),
@@ -1759,6 +1788,60 @@ mod tests {
         assert!(dit.contains("before redoing the update"), "{dit}");
         assert!(!dit.contains(" : "), "{dit}");
         assert!(de_cote.is_file(), "{dit}");
+        let _ = std::fs::remove_dir_all(&racine);
+    }
+
+    /// V-1 (relecture du recontrôle 2, 0.95) : après une remise ratée, l'ancienne copie est gardée sous
+    /// `<NOM>.precedent`. Avant, la tentative suivante (la pose de la surveillance, ou « refaites la mise à jour »)
+    /// effaçait ce nom avant de mettre de côté la copie en place, puis refusait en disant « rien n'est remplacé » : la
+    /// seule ancienne copie était perdue. Maintenant, ce nom n'est effacé que s'il est un second nom de la copie en
+    /// place ; sinon, refus, avec le chemin à mettre à l'abri. Un second nom (reste d'une mise à jour interrompue
+    /// avant le renommage) s'efface, et la mise à jour se fait.
+    #[test]
+    fn copie_gardee_jamais_effacee_par_la_tentative_suivante() {
+        let racine = crate::socle::dossier_local().join("essai-copie-gardee");
+        let _ = std::fs::remove_dir_all(&racine);
+        let source = racine.join("cle").join(NOM);
+        let cible = racine.join("bin").join(NOM);
+        let de_cote = cible.with_file_name(format!("{NOM}.precedent"));
+        let gardee = || std::fs::read(&de_cote).ok();
+        faux_programme(&source, Some("0.80.0"));
+        faux_programme(&cible, Some("0.79.0"));
+        let ancienne = Some(std::fs::read(&cible).unwrap());
+        let precedente = Precedente::retenir(&cible).expect("mise de côté");
+        std::fs::remove_file(&cible).unwrap();
+        std::fs::create_dir_all(cible.join("occupe")).unwrap();
+        let dit = precedente.remettre(&cible);
+        assert_eq!(gardee(), ancienne, "{dit}");
+        // La pose de la surveillance, puis « refaites la mise à jour » : refusées, la copie gardée reste.
+        let pose = poser_copie_dans(&source, &cible, SANS_ESSAI).unwrap_err();
+        assert_eq!(gardee(), ancienne, "copie gardée effacée par la pose : {pose}");
+        let maj = remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, SANS_ESSAI).unwrap_err();
+        assert_eq!(gardee(), ancienne, "copie gardée effacée par la mise à jour : {maj}");
+        for e in [&pose, &maj] {
+            assert!(e.contains("rien n'est remplacé"), "{e}");
+        }
+        assert!(cible.join("occupe").is_dir());
+        // Ce qui bloquait retiré, une autre copie à la place : le nom de côté n'en est pas un second nom ; il reste, et
+        // son chemin est dit, à mettre à l'abri (pas seulement « à retirer »).
+        std::fs::remove_dir_all(&cible).unwrap();
+        faux_programme(&cible, Some("0.79.5"));
+        let e = remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, SANS_ESSAI).unwrap_err();
+        assert_eq!(gardee(), ancienne, "{e}");
+        assert!(e.contains(&format!("{NOM}.precedent")), "{e}");
+        assert!(e.contains("à l'abri") && e.contains("rien n'est remplacé"), "{e}");
+        assert_eq!(lire_programme(&cible, TAILLE_MAX), Lu::Version((0, 79, 5, 0)), "{e}");
+        let en = crate::langue::en_anglais(|| remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, SANS_ESSAI))
+            .unwrap_err();
+        assert!(en.contains("somewhere safe") && !en.contains(" : "), "{en}");
+        assert_eq!(gardee(), ancienne, "{en}");
+        // Un second nom de la copie en place (mise à jour interrompue avant le renommage) : effacé, la mise à jour se
+        // fait.
+        std::fs::remove_file(&de_cote).unwrap();
+        std::fs::hard_link(&cible, &de_cote).unwrap();
+        remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, SANS_ESSAI).unwrap();
+        assert_eq!(std::fs::read(&cible).unwrap(), std::fs::read(&source).unwrap());
+        assert!(std::fs::symlink_metadata(&de_cote).is_err(), "reste laissé");
         let _ = std::fs::remove_dir_all(&racine);
     }
 
