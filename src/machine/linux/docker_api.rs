@@ -7,6 +7,7 @@
 //! DOCKER_CONTEXT, DOCKER_CONFIG) : la CLI, lancée sans les variables du compte (`commande::par_le_systeme`), ne le
 //! verrait pas ; il est dit non vérifié (`demon_designe_par_variable`, E-4 du recontrôle 0.95).
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use super::http_unix::get_json;
@@ -21,15 +22,36 @@ pub(crate) const PRISE: &str = "/var/run/docker.sock";
 /// une variable posée par un programme du compte choisirait le démon qui répond, et un faux démon dirait « rien
 /// d'exposé » (G-1).
 pub(crate) fn demon_designe_par_variable() -> Option<&'static str> {
-    let variable = |n: &str| std::env::var(n).ok().filter(|v| !v.trim().is_empty());
-    if variable("DOCKER_HOST").is_some() {
+    designe_par_variable(&|n| std::env::var_os(n))
+}
+
+/// Une variable de Docker lue par `lire` (l'environnement, ou celui d'un essai).
+type Lire<'a> = &'a dyn Fn(&str) -> Option<OsString>;
+
+/// La variable réglée, ou `None` : comme la CLI (`os.Getenv(…) != ""`), toute valeur non vide compte, même non UTF-8 ou
+/// faite de blancs (N-6, recontrôle 2 de la 0.95). Lue par `std::env::var` puis `trim`, elle passait pour absente, et
+/// le démon désigné pour celui de la prise par défaut.
+fn reglee(lire: Lire<'_>, nom: &str) -> Option<OsString> {
+    lire(nom).filter(|v| !v.is_empty())
+}
+
+/// Le config.json du dossier que nomme DOCKER_CONFIG laisse-t-il le contexte par défaut ? Un chemin relatif (des
+/// blancs, « docker-conf ») se lit depuis le dossier courant de la CLI de la personne, qu'on ne connaît pas : non plus.
+fn config_reglee_par_defaut(config: &OsString) -> bool {
+    let config = Path::new(config);
+    config.is_absolute() && config_par_defaut(config)
+}
+
+/// `demon_designe_par_variable`, les variables lues par `lire`.
+fn designe_par_variable(lire: Lire<'_>) -> Option<&'static str> {
+    if reglee(lire, "DOCKER_HOST").is_some() {
         return Some("DOCKER_HOST");
     }
-    if variable("DOCKER_CONTEXT").is_some_and(|c| c != "default") {
+    if reglee(lire, "DOCKER_CONTEXT").is_some_and(|c| c != "default") {
         return Some("DOCKER_CONTEXT");
     }
-    variable("DOCKER_CONFIG")
-        .is_some_and(|c| !config_par_defaut(Path::new(&c)))
+    reglee(lire, "DOCKER_CONFIG")
+        .is_some_and(|c| !config_reglee_par_defaut(&c))
         .then_some("DOCKER_CONFIG")
 }
 
@@ -37,14 +59,18 @@ pub(crate) fn demon_designe_par_variable() -> Option<&'static str> {
 /// contexte courant (`currentContext` de config.json) autre que « default » est réglé ; config.json illisible (mais
 /// présent) : on ne sait pas, non plus.
 pub(crate) fn hote_par_defaut() -> bool {
-    let variable = |n: &str| std::env::var(n).ok().filter(|v| !v.trim().is_empty());
-    if variable("DOCKER_HOST").is_some() || variable("DOCKER_CONTEXT").is_some_and(|c| c != "default") {
+    hote_par_defaut_dans(&|n| std::env::var_os(n), crate::socle::personnel::dossier_personnel())
+}
+
+/// `hote_par_defaut`, les variables lues par `lire`, `maison` le dossier personnel.
+fn hote_par_defaut_dans(lire: Lire<'_>, maison: Option<PathBuf>) -> bool {
+    if reglee(lire, "DOCKER_HOST").is_some() || reglee(lire, "DOCKER_CONTEXT").is_some_and(|c| c != "default") {
         return false;
     }
-    let config = variable("DOCKER_CONFIG")
-        .map(PathBuf::from)
-        .or_else(|| crate::socle::personnel::dossier_personnel().map(|m| m.join(".docker")));
-    config.is_none_or(|c| config_par_defaut(&c))
+    match reglee(lire, "DOCKER_CONFIG") {
+        Some(config) => config_reglee_par_defaut(&config),
+        None => maison.is_none_or(|m| config_par_defaut(&m.join(".docker"))),
+    }
 }
 
 /// Le config.json du dossier `config` laisse-t-il le contexte par défaut ? Absent : oui. Lu comme un simple fichier,
@@ -216,6 +242,69 @@ mod tests {
         assert!(conteneurs_sur(&prise).is_err());
         // Pas de démon : une erreur, jamais une liste vide.
         assert!(conteneurs_sur(Path::new("/nonexistent/docker.sock")).is_err());
+    }
+
+    /// N-6 (recontrôle 2 de la 0.95) : la CLI tient une variable pour réglée dès qu'elle n'est pas vide
+    /// (`os.Getenv(…) != ""`). Lue par `std::env::var` puis `trim`, une valeur non UTF-8 ou faite de blancs passait
+    /// pour absente : le démon désigné était lu comme celui de la prise par défaut.
+    #[test]
+    fn variable_reglee_des_qu_elle_n_est_pas_vide() {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        let env = |paires: Vec<(&'static str, OsString)>| {
+            move |n: &str| paires.iter().find(|(k, _)| *k == n).map(|(_, v)| v.clone())
+        };
+        let non_utf8 = || OsString::from_vec(b"unix:///run/user/1000/docker\xff.sock".to_vec());
+        assert_eq!(designe_par_variable(&env(vec![])), None);
+        // Vide : absente, pour la CLI comme ici.
+        for nom in ["DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG"] {
+            assert_eq!(designe_par_variable(&env(vec![(nom, OsString::new())])), None, "{nom}");
+        }
+        assert_eq!(
+            designe_par_variable(&env(vec![("DOCKER_CONTEXT", "default".into())])),
+            None
+        );
+        for v in [non_utf8(), "  ".into(), "\t".into()] {
+            assert_eq!(
+                designe_par_variable(&env(vec![("DOCKER_HOST", v.clone())])),
+                Some("DOCKER_HOST"),
+                "{v:?}"
+            );
+            assert_eq!(
+                designe_par_variable(&env(vec![("DOCKER_CONTEXT", v.clone())])),
+                Some("DOCKER_CONTEXT"),
+                "{v:?}"
+            );
+            assert!(
+                !hote_par_defaut_dans(&env(vec![("DOCKER_HOST", v.clone())]), None),
+                "{v:?}"
+            );
+            assert!(
+                !hote_par_defaut_dans(&env(vec![("DOCKER_CONTEXT", v.clone())]), None),
+                "{v:?}"
+            );
+        }
+        // DOCKER_CONFIG au nom non UTF-8 : son config.json est lu quand même.
+        let d = crate::essais::Jetable::nouveau("n6-docker-config");
+        let config = d.join(std::ffi::OsStr::from_bytes(b"config\xff"));
+        std::fs::create_dir(&config).unwrap();
+        let reglage = || vec![("DOCKER_CONFIG", config.clone().into_os_string())];
+        assert_eq!(designe_par_variable(&env(reglage())), None);
+        assert!(hote_par_defaut_dans(&env(reglage()), None));
+        std::fs::write(config.join("config.json"), br#"{"currentContext":"temoin"}"#).unwrap();
+        assert_eq!(designe_par_variable(&env(reglage())), Some("DOCKER_CONFIG"));
+        assert!(!hote_par_defaut_dans(&env(reglage()), None));
+        // Relatif (blancs compris) : la CLI de la personne le lit depuis son dossier courant, inconnu ici.
+        for v in ["  ", "docker-conf"] {
+            assert_eq!(
+                designe_par_variable(&env(vec![("DOCKER_CONFIG", v.into())])),
+                Some("DOCKER_CONFIG"),
+                "{v:?}"
+            );
+            assert!(
+                !hote_par_defaut_dans(&env(vec![("DOCKER_CONFIG", v.into())]), None),
+                "{v:?}"
+            );
+        }
     }
 
     #[test]
