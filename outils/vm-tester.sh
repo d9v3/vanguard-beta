@@ -6,6 +6,8 @@
 #   outils/vm-tester.sh                       l'arbre courant (HEAD, « modifie=oui » s'il n'est pas propre)
 #   outils/vm-tester.sh --branche B           la branche B (son worktree, ou un worktree temporaire)
 #   outils/vm-tester.sh --exe chemin.exe      un programme déjà compilé (rien compilé ; passé à verifier-binaire)
+#     --fenetre f.exe                         avec sa fenêtre : exigée s'il en porte l'empreinte gravée (0.96), et
+#                                             la même ; refusée sinon (compilée avec lui sans --exe)
 #   options : --sans-console --sans-test --langues fr,en --delai MIN (60) --sans-attendre
 #   outils/vm-tester.sh --attendre <id>       attendre (de nouveau) un travail déjà déposé
 #   outils/vm-tester.sh --installer           pose INSTALLER-/DESINSTALLER-ESSAIS-AUTO.bat dans la VM, et la clé de
@@ -44,7 +46,8 @@ if [[ -n ${VM_TESTER_SOURCES:-} && -n ${VANGUARD_VM_DOSSIER:-} && $VM != "$HOME/
 fi
 MOTIF_ID='^[0-9]{8}-[0-9]{6}-[0-9a-f]{7,12}-[0-9a-z]{4}$'
 
-usage() { sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; }
+# L'aide : l'en-tête, jusqu'à la première ligne qui n'est pas un commentaire.
+usage() { awk 'NR > 1 && !/^#/ { exit } NR > 1' "$0" | sed 's/^# \{0,1\}//'; }
 
 # La clé de Linux (RSA 3072, qui reçoit le secret chiffré) et le secret de la file : hors du partage, au compte seul.
 # VM_TESTER_CLES en désigne un autre dossier, pour --essai-local seulement (comme les sources des scripts).
@@ -90,11 +93,12 @@ xml_cle_linux() {
     "$(printf '%s' "$module" | octets_de_l_hexa | base64 -w0)"
 }
 
-BRANCHE_DEMANDEE='' EXE='' TEST=oui CONSOLE=oui LANGUES=fr,en DELAI=60 ATTENDRE=1 SUIVRE='' MODE=essai VERDICT=
+BRANCHE_DEMANDEE='' EXE='' FENETRE='' TEST=oui CONSOLE=oui LANGUES=fr,en DELAI=60 ATTENDRE=1 SUIVRE='' MODE=essai VERDICT=
 while (($#)); do
   case $1 in
     --branche) BRANCHE_DEMANDEE=${2:?--branche B}; shift ;;
     --exe) EXE=${2:?--exe chemin}; shift ;;
+    --fenetre) FENETRE=${2:?--fenetre chemin}; shift ;;
     --sans-console) CONSOLE=non ;;
     --sans-test) TEST=non ;;
     --langues) LANGUES=${2:?--langues fr,en}; shift ;;
@@ -114,6 +118,7 @@ done
 [[ $LANGUES =~ ^(fr|en)(,(fr|en))?$ ]] || { echo "--langues : fr, en ou fr,en" >&2; exit 2; }
 [[ $DELAI =~ ^[0-9]+$ ]] && ((DELAI >= 5 && DELAI <= 120)) || { echo "--delai : de 5 à 120 minutes" >&2; exit 2; }
 [[ -n $BRANCHE_DEMANDEE && -n $EXE ]] && { echo "--branche ou --exe, pas les deux." >&2; exit 2; }
+[[ -n $FENETRE && -z $EXE ]] && { echo "--fenetre va avec --exe (sans --exe, la fenêtre est compilée avec le programme)." >&2; exit 2; }
 
 # Une valeur d'un fichier « cle=valeur » écrit par Windows (CRLF, BOM possible).
 cle() { [[ -f $1 ]] && tr -d '\r' <"$1" | sed '1s/^\xef\xbb\xbf//' | awk -v k="$2" 'index($0, k "=") == 1 { print substr($0, length(k) + 2); exit }'; }
@@ -206,6 +211,10 @@ preparer_programme() {
   if [[ -n $EXE ]]; then
     [[ -f $EXE ]] || { echo "Programme absent : $EXE" >&2; exit 1; }
     verifier_binaire "$EXE"
+    if [[ -n $FENETRE ]]; then
+      [[ -f $FENETRE ]] || { echo "Fenêtre absente : $FENETRE" >&2; exit 1; }
+      verifier_binaire "$FENETRE"
+    fi
     COMMIT=inconnu BRANCHE="exe fourni" MODIFIE=non
     return
   fi
@@ -215,8 +224,24 @@ preparer_programme() {
   MODIFIE=non
   [[ -n $(git -C "$ARBRE" status --porcelain --untracked-files=no) ]] && MODIFIE=oui
   cible=${CARGO_TARGET_DIR:-$ARBRE/target}
+  # Sa fenêtre d'abord (0.96), comme outils/compiler-version.sh : son empreinte est gravée dans le programme, qui ne
+  # lance qu'elle. Une branche d'avant la fenêtre n'en a pas : le programme seul.
+  local sha_fenetre=
+  if [[ -f $ARBRE/fenetre/Cargo.toml ]] && grep -qF VANGUARD_FENETRE_SHA256_WINDOWS "$ARBRE/build.rs" 2>/dev/null; then
+    echo "Compilation de sa fenêtre pour Windows…"
+    FENETRE=$cible/fenetre/x86_64-pc-windows-gnu/release/vanguard-fenetre.exe
+    rm -f "$FENETRE"
+    (cd "$ARBRE" && CARGO_TARGET_DIR=$cible/fenetre cargo build -q --release --locked --manifest-path fenetre/Cargo.toml \
+      --target x86_64-pc-windows-gnu) && [[ -f $FENETRE ]] || { echo "Compilation de la fenêtre en échec." >&2; exit 1; }
+    verifier_binaire "$FENETRE"
+    sha_fenetre=$(sha256sum "$FENETRE" | cut -d' ' -f1)
+    [[ $sha_fenetre =~ ^[0-9a-f]{64}$ ]] || { echo "Empreinte de la fenêtre illisible : rien déposé." >&2; exit 1; }
+  else
+    echo "Pas de fenêtre dans cet arbre (d'avant la 0.96) : le programme seul."
+  fi
   echo "Compilation de $BRANCHE ($(git -C "$ARBRE" rev-parse --short HEAD)) pour Windows…"
-  (cd "$ARBRE" && cargo build -q --release --target x86_64-pc-windows-gnu) || { echo "Compilation en échec." >&2; exit 1; }
+  (cd "$ARBRE" && VANGUARD_FENETRE_SHA256_WINDOWS=$sha_fenetre cargo build -q --release --target x86_64-pc-windows-gnu) ||
+    { echo "Compilation en échec." >&2; exit 1; }
   EXE=$cible/x86_64-pc-windows-gnu/release/vanguard.exe
   verifier_binaire "$EXE"
 }
@@ -270,6 +295,52 @@ deposer() {
     exit 1
   }
   local fichiers=(vanguard.exe)
+  # Sa fenêtre (0.96) : vanguard.exe ne lance que celle dont il porte l'empreinte gravée
+  # (src/demarrage/empreinte_fenetre.rs), lue ici sur la copie préparée. Le travail porte une fenêtre si et seulement
+  # si une empreinte y est gravée, et c'est celle-là : jamais un essai vert d'une version sans la fenêtre qu'elle livre.
+  local lues gravee='' sha v
+  lues=$(LC_ALL=C grep -aoE 'VANGUARD-FENETRE:([0-9a-f]{64}|AUCUNE);' "$PREPA/vanguard.exe")
+  (($? <= 1)) || { echo "Marque de fenêtre de vanguard.exe illisible : rien déposé." >&2; exit 1; }
+  lues=$(LC_ALL=C sort -u <<<"$lues") || exit 1
+  if [[ $lues == *$'\n'* ]]; then
+    echo "vanguard.exe porte des marques de fenêtre qui se contredisent : rien déposé." >&2
+    exit 1
+  elif [[ -n $lues ]]; then
+    gravee=${lues#VANGUARD-FENETRE:} gravee=${gravee%;}
+  fi
+  if [[ $gravee =~ ^[0-9a-f]{64}$ && -z $FENETRE ]]; then
+    echo "Ce vanguard.exe lance seulement la fenêtre ${gravee:0:12}… (son empreinte gravée) : la donner avec --fenetre" >&2
+    echo "  (celle compilée avec lui : target/fenetre/x86_64-pc-windows-gnu/release/vanguard-fenetre.exe). Rien déposé." >&2
+    exit 1
+  elif [[ -n $FENETRE && $gravee == AUCUNE ]]; then
+    echo "Ce vanguard.exe est compilé sans fenêtre (« AUCUNE ») : il ne lancerait pas celle de --fenetre. Rien déposé." >&2
+    exit 1
+  elif [[ -n $FENETRE && -z $gravee ]]; then
+    echo "Ce vanguard.exe ne porte aucune marque de fenêtre (d'avant la 0.96) : il ne lancerait pas celle de --fenetre." >&2
+    echo "  Rien déposé." >&2
+    exit 1
+  fi
+  if [[ -n $FENETRE ]]; then
+    # Un surveillant d'avant la version 3 la refuserait (hors de sa liste fermée) : le dire avant de déposer.
+    v=$(cle "$FILE/battement.txt" surveillant)
+    if [[ -e $FILE/battement.txt ]] && { [[ ! $v =~ ^[0-9]{1,6}$ ]] || ((10#$v < 3)); }; then
+      echo "Le surveillant de la VM (surveillant ${v:-sans version}) est d'avant la fenêtre (version 3) : il refuserait" >&2
+      echo "  vanguard-fenetre.exe. Le réinstaller (outils/vm-tester.sh --installer, puis INSTALLER-ESSAIS-AUTO.bat dans" >&2
+      echo "  la VM). Rien déposé." >&2
+      exit 1
+    fi
+    preparer_fichier "$FENETRE" vanguard-fenetre.exe
+    "$DEPOT/target/x86_64-unknown-linux-musl/debug/vanguard" deploiement verifier-binaire --attendu windows "$PREPA/vanguard-fenetre.exe" >/dev/null || {
+      echo "Copie de la fenêtre refusée par « vanguard deploiement verifier-binaire » : rien déposé." >&2
+      exit 1
+    }
+    sha=$(sha256sum "$PREPA/vanguard-fenetre.exe" | cut -d' ' -f1)
+    if [[ $sha != "$gravee" ]]; then
+      echo "La fenêtre donnée (${sha:0:12}…) n'est pas celle que ce vanguard.exe lance (${gravee:0:12}…) : rien déposé." >&2
+      exit 1
+    fi
+    fichiers+=(vanguard-fenetre.exe)
+  fi
   if [[ $TEST == oui ]]; then
     preparer_fichier "$src/test.ps1" test.ps1
     preparer_fichier "$lanceur" "Lancer Vanguard.bat"
@@ -306,7 +377,7 @@ deposer() {
   sync "$p"/* 2>/dev/null
   mv "$p" "$FILE/$ID" || exit 1
   nettoyer_prepa
-  echo "Travail déposé : $ID ($BRANCHE, $([[ $COMMIT == inconnu ]] && echo "commit inconnu" || echo "${COMMIT:0:7}")$([[ $MODIFIE == oui ]] && echo ", arbre modifié"))"
+  echo "Travail déposé : $ID ($BRANCHE, $([[ $COMMIT == inconnu ]] && echo "commit inconnu" || echo "${COMMIT:0:7}")$([[ $MODIFIE == oui ]] && echo ", arbre modifié"))$([[ -n $FENETRE ]] && echo ", avec sa fenêtre")"
 }
 
 # Le résumé d'un travail fini ; code 0 si tout est passé. Un fini.txt que le surveillant n'a pas signé (écrit par un
@@ -974,6 +1045,60 @@ EOF
     voir "copie du partage réécrite pendant le dépôt : refusée par le surveillant, rien lancé" \
       eval '[[ $(fini "$ID" code) == 2 && $(fini "$ID" raison) == *"empreinte de « test.ps1 » différente"* && ! -e $attaque.lance && ! -e $TRACE ]] ||
         { cp "$VMD/file-essais/$ID/fini.txt" "$T/sortie" 2>/dev/null; false; }'
+  fi
+
+  # 26. La fenêtre portée par vm-tester.sh (0.96) : un vanguard.exe ne lance que la fenêtre dont il porte l'empreinte
+  #     gravée (« VANGUARD-FENETRE:<64 chiffres>; », src/demarrage/empreinte_fenetre.rs). Le travail porte une
+  #     fenêtre (--fenetre) si et seulement si une empreinte y est gravée, et c'est celle-là, octet pour octet ; sinon,
+  #     ou face à un surveillant d'avant la version 3 (qui la refuserait), rien déposé.
+  local sha_fen2
+  grave() { # fichier marque… : une copie du faux vanguard.exe qui porte ces marques
+    local f=$1 m
+    shift
+    cp -f "$T/vanguard.exe" "$f" && for m; do printf 'VANGUARD-FENETRE:%s;' "$m" >>"$f"; done
+  }
+  # La fausse fenêtre : le même petit PE (verifier-binaire l'accepte), avec des octets à elle.
+  cp -f "$T/vanguard.exe" "$T/fenetre.exe" && printf 'fausse fenêtre pour les essais' >>"$T/fenetre.exe"
+  sha_fen2=$(sha256sum "$T/fenetre.exe" | cut -d' ' -f1)
+  grave "$T/avec.exe" "$sha_fen2"; grave "$T/aucune.exe" AUCUNE; grave "$T/deux.exe" "$sha_fen2" "$(printf '%064d' 0)"
+  nouvelle_vm; sources 0 0 0 'OK x'
+  # Chaque cas part d'une file vide (le battement gardé) : un travail laissé par un cas ne fait pas tomber les suivants.
+  vider_file() { find "$VMD/file-essais" -mindepth 1 -maxdepth 1 ! -name battement.txt -exec rm -rf {} +; }
+  refus() { # libellé raison-attendue options… : rien déposé, code 1, la raison dite
+    # shellcheck disable=SC2034 # lue par la condition entre apostrophes, évaluée dans voir
+    local attendue=$2
+    vider_file; ID=; vmt "${@:3}" --sans-attendre
+    voir "$1 : rien déposé, code 1" eval '((code == 1)) && dit "$attendue" && [[ -z $ID && -z $(find "$VMD/file-essais" -mindepth 1 -maxdepth 1 ! -name battement.txt) ]]'
+  }
+  refus "fenêtre gravée, sans --fenetre" "lance seulement la fenêtre ${sha_fen2:0:12}… (son empreinte gravée) : la donner avec --fenetre" --exe "$T/avec.exe"
+  refus "fenêtre donnée qui n'est pas celle gravée" "n'est pas celle que ce vanguard.exe lance" --exe "$T/avec.exe" --fenetre "$T/vanguard.exe"
+  refus "compilé sans fenêtre (AUCUNE), --fenetre donné" "compilé sans fenêtre (« AUCUNE »)" --exe "$T/aucune.exe" --fenetre "$T/fenetre.exe"
+  refus "sans marque (d'avant la 0.96), --fenetre donné" "aucune marque de fenêtre" --fenetre "$T/fenetre.exe"
+  refus "deux marques qui se contredisent" "marques de fenêtre qui se contredisent" --exe "$T/deux.exe" --fenetre "$T/fenetre.exe"
+  refus "fenêtre abîmée : refusée par verifier-binaire" "refusé par « vanguard deploiement verifier-binaire »" --exe "$T/avec.exe" --fenetre "$T/abime.exe"
+  printf 'format=1\r\netat=attente\r\nsurveillant=2\r\n' >"$VMD/file-essais/battement.txt"
+  refus "surveillant 2 (d'avant la fenêtre), réinstallation demandée" "(surveillant 2) est d'avant la fenêtre" --exe "$T/avec.exe" --fenetre "$T/fenetre.exe"
+  rm -f "$VMD/file-essais/battement.txt"
+  env VANGUARD_VM_DOSSIER="$VMD" bash "$DEPOT/outils/vm-tester.sh" --fenetre "$T/fenetre.exe" >"$T/sortie" 2>&1; code=$?
+  voir "--fenetre sans --exe : refusé, code 2" eval '((code == 2)) && dit "--fenetre va avec --exe"'
+  vider_file
+  ID=; vmt --exe "$T/aucune.exe" --sans-attendre
+  voir "compilé sans fenêtre (AUCUNE), sans --fenetre : déposé sans fenêtre" \
+    eval '((code == 0)) && [[ -n $ID && ! -e $VMD/file-essais/$ID/vanguard-fenetre.exe && -z $(cle "$VMD/file-essais/$ID/travail.txt" sha256.vanguard-fenetre.exe) ]]'
+  vider_file
+  ID=; vmt --exe "$T/avec.exe" --fenetre "$T/fenetre.exe" --sans-attendre
+  voir "fenêtre gravée et donnée, la même : déposée à côté de vanguard.exe, son empreinte dans travail.txt signé" \
+    eval '((code == 0)) && [[ -n $ID ]] && cmp -s "$T/fenetre.exe" "$VMD/file-essais/$ID/vanguard-fenetre.exe" &&
+      [[ $(cle "$VMD/file-essais/$ID/travail.txt" sha256.vanguard-fenetre.exe) == "$sha_fen2" ]] && signe_par_le_secret "$DOMAINE_TRAVAIL" "$VMD/file-essais/$ID/travail.txt"'
+  if [[ -n $avec_pwsh ]]; then
+    tour
+    voir "fenêtre portée : copiée par le surveillant à côté de vanguard.exe, travail fait" \
+      eval '[[ $(fini "$ID" code) == 0 ]] && grep -q "fenêtre : $sha_fen2 ;" "$TRACE" || { cp "$VMD/file-essais/$ID/fini.txt" "$T/sortie" 2>/dev/null; false; }'
+    # Le battement du vrai surveillant (version 3) : le dépôt suivant passe.
+    ID=; vmt --exe "$T/avec.exe" --fenetre "$T/fenetre.exe" --sans-attendre
+    voir "battement du surveillant 3 : fenêtre déposée" eval '((code == 0)) && [[ -n $ID && -f $VMD/file-essais/$ID/vanguard-fenetre.exe ]]'
+  else
+    sauter "fenêtre portée, copiée par le surveillant"
   fi
 
   # 23. Sans le secret ici, ou face au surveillant d'avant la signature : rien déposé, la raison dite.
