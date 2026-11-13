@@ -233,56 +233,70 @@ verifier_binaire() {
     { echo "Programme refusé par « vanguard deploiement verifier-binaire » : rien déposé ($1)." >&2; exit 1; }
 }
 
-# Copie un fichier dans le travail ; un .ps1 reçoit le BOM qui lui manque (PowerShell 5.1 lirait sinon en ANSI).
-copier() {
+# Les fichiers d'un travail sont préparés hors du partage, dans un dossier au compte Linux seul (PREPA) : empreintes,
+# verifier-binaire et signature portent sur ces copies-là. Le partage s'écrit aussi depuis la VM, par n'importe quel
+# compte : une copie remplacée sur le partage entre sa copie et son empreinte serait signée, puis lancée en
+# administrateur. Ainsi, une copie changée sur le partage n'a plus l'empreinte signée, et le surveillant la refuse.
+PREPA=
+nettoyer_prepa() {
+  [[ -z $PREPA ]] || rm -rf "$PREPA"
+  PREPA=
+}
+
+# Prépare un fichier du travail ; un .ps1 reçoit le BOM qui lui manque (PowerShell 5.1 lirait sinon en ANSI).
+preparer_fichier() { # source nom
   if [[ $1 == *.ps1 && $(head -c3 "$1" | od -An -tx1 | tr -d ' ') != efbbbf ]]; then
-    { printf '\xef\xbb\xbf'; cat "$1"; } >"$2"
+    { printf '\xef\xbb\xbf'; cat "$1"; } >"$PREPA/$2"
   else
-    cp -f "$1" "$2"
-  fi
-  [[ -z $CROCHET ]] || eval "$CROCHET"
+    cp -f "$1" "$PREPA/$2"
+  fi || { echo "« $2 » pas préparé ($1) : rien déposé." >&2; exit 1; }
 }
 
 # Dépôt atomique : tout dans <id>.partiel (que la VM ignore), travail.txt en dernier, puis renommage.
 deposer() {
-  local src=${SOURCES:-$ARBRE/outils/test-windows} lanceur court alea p f
+  local src=${SOURCES:-$ARBRE/outils/test-windows} lanceur court alea p f h
   lanceur="${SOURCES:-$ARBRE/outils/cle}/Lancer Vanguard.bat"
   court=0000000
   [[ $COMMIT != inconnu ]] && court=${COMMIT:0:7}
   alea=$(LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c4)
   ID=$(date +%Y%m%d-%H%M%S)-$court-$alea
-  mkdir -p "$FILE" || exit 1
-  p=$FILE/$ID.partiel
-  mkdir "$p" || exit 1
-  copier "$EXE" "$p/vanguard.exe"
-  # verifier-binaire sur la copie qui part, pas sur la source : une compilation dans le même dossier cible a pu remplacer
-  # le programme entre les deux (son empreinte, dans travail.txt, est aussi celle de la copie).
-  "$DEPOT/target/x86_64-unknown-linux-musl/debug/vanguard" deploiement verifier-binaire --attendu windows "$p/vanguard.exe" >/dev/null || {
+  PREPA=$(mktemp -d "${TMPDIR:-/tmp}/vm-tester-depot.XXXXXX") || exit 1
+  trap 'nettoyer_prepa; nettoyer_arbre' EXIT
+  preparer_fichier "$EXE" vanguard.exe
+  # verifier-binaire sur la copie préparée, celle dont l'empreinte est signée, pas sur la source : une compilation
+  # dans le même dossier cible a pu remplacer le programme entre les deux.
+  "$DEPOT/target/x86_64-unknown-linux-musl/debug/vanguard" deploiement verifier-binaire --attendu windows "$PREPA/vanguard.exe" >/dev/null || {
     echo "Copie déposée refusée par « vanguard deploiement verifier-binaire » : rien déposé." >&2
-    rm -rf "$p"
     exit 1
   }
   local fichiers=(vanguard.exe)
   if [[ $TEST == oui ]]; then
-    copier "$src/test.ps1" "$p/test.ps1"
-    copier "$lanceur" "$p/Lancer Vanguard.bat"
+    preparer_fichier "$src/test.ps1" test.ps1
+    preparer_fichier "$lanceur" "Lancer Vanguard.bat"
     fichiers+=(test.ps1 "Lancer Vanguard.bat")
   fi
   if [[ $CONSOLE == oui ]]; then
-    copier "$src/essais-console.ps1" "$p/essais-console.ps1"
+    preparer_fichier "$src/essais-console.ps1" essais-console.ps1
     fichiers+=(essais-console.ps1)
   fi
   {
     printf 'format=1\r\nid=%s\r\ncommit=%s\r\nbranche=%s\r\nmodifie=%s\r\ncree=%s\r\n' \
       "$ID" "$COMMIT" "${BRANCHE//[$'\r\n']/ }" "$MODIFIE" "$(date -Iseconds)"
     printf 'test=%s\r\nconsole=%s\r\nlangues=%s\r\ndelai_minutes=%s\r\n' "$TEST" "$CONSOLE" "$LANGUES" "$DELAI"
-    for f in "${fichiers[@]}"; do printf 'sha256.%s=%s\r\n' "$f" "$(sha256sum "$p/$f" | cut -d' ' -f1)"; done
-  } >"$p/travail.txt.tmp"
+    for f in "${fichiers[@]}"; do printf 'sha256.%s=%s\r\n' "$f" "$(sha256sum "$PREPA/$f" | cut -d' ' -f1)"; done
+  } >"$PREPA/travail.txt"
   # La preuve de provenance : seul qui a le secret de la file signe un travail que la VM fait en administrateur.
-  printf 'hmac=%s\r\n' "$(hmac_de "$DOMAINE_TRAVAIL" "$p/travail.txt.tmp")" >>"$p/travail.txt.tmp" ||
-    { echo "travail.txt pas signé : rien déposé." >&2; rm -rf "$p"; exit 1; }
-  mv "$p/travail.txt.tmp" "$p/travail.txt"
-  [[ -z $CROCHET ]] || eval "$CROCHET"
+  # Signée ici, jamais relue du partage.
+  h=$(hmac_de "$DOMAINE_TRAVAIL" "$PREPA/travail.txt")
+  [[ $h =~ ^[0-9a-f]{64}$ ]] || { echo "travail.txt pas signé : rien déposé." >&2; exit 1; }
+  printf 'hmac=%s\r\n' "$h" >>"$PREPA/travail.txt" || exit 1
+  mkdir -p "$FILE" || exit 1
+  p=$FILE/$ID.partiel
+  mkdir "$p" || exit 1
+  for f in "${fichiers[@]}" travail.txt; do
+    cp -f "$PREPA/$f" "$p/$f" || { echo "Copie de « $f » sur le partage en échec : rien déposé." >&2; rm -rf "$p"; exit 1; }
+    [[ -z $CROCHET ]] || eval "$CROCHET"
+  done
   # Un lien symbolique, Samba le suit lui-même : la VM verrait un fichier ordinaire, venu d'ailleurs. Jamais déposé.
   if [[ -n $(find "$p" -mindepth 1 -type l -print -quit) ]]; then
     echo "Lien symbolique dans le travail ($(find "$p" -mindepth 1 -type l -printf '%f ' | head -c200)) : rien déposé." >&2
@@ -291,6 +305,7 @@ deposer() {
   fi
   sync "$p"/* 2>/dev/null
   mv "$p" "$FILE/$ID" || exit 1
+  nettoyer_prepa
   echo "Travail déposé : $ID ($BRANCHE, $([[ $COMMIT == inconnu ]] && echo "commit inconnu" || echo "${COMMIT:0:7}")$([[ $MODIFIE == oui ]] && echo ", arbre modifié"))"
 }
 
@@ -435,13 +450,20 @@ installer() {
   mkdir -p "$VM/programme" "$FILE" || exit 1
   cle_linux || exit 1
   local f xml
-  for f in essais-auto-installation.ps1 surveillant-essais.ps1; do copier "outils/test-windows/$f" "$VM/programme/$f"; done
+  PREPA=$(mktemp -d "${TMPDIR:-/tmp}/vm-tester-installation.XXXXXX") || exit 1
+  trap 'nettoyer_prepa' EXIT
+  for f in essais-auto-installation.ps1 surveillant-essais.ps1; do preparer_fichier "outils/test-windows/$f" "$f"; done
   xml=$(xml_cle_linux) || { echo "Clé de Linux illisible ($CLE_LINUX)." >&2; exit 1; }
-  printf '%s' "$xml" >"$VM/programme/cle-linux.xml"
-  # Ce que l'installation de la VM va lire sur le partage, tel que posé ici : relu avant d'adopter le secret. Le
-  # partage s'écrit aussi depuis la VM, et l'installateur y est relu après l'élévation.
-  (cd "$VM/programme" && sha256sum essais-auto-installation.ps1 surveillant-essais.ps1 cle-linux.xml) \
-    >"$CLES/installation.sha256"
+  printf '%s' "$xml" >"$PREPA/cle-linux.xml"
+  # Ce que l'installation de la VM va lire sur le partage, tel que préparé ici (jamais relu du partage, que la VM
+  # écrit aussi) : relu avant d'adopter le secret, car l'installateur y est relu après l'élévation.
+  (cd "$PREPA" && sha256sum essais-auto-installation.ps1 surveillant-essais.ps1 cle-linux.xml) >"$CLES/installation.sha256" ||
+    { echo "Empreintes de l'installation pas écrites : rien posé." >&2; exit 1; }
+  for f in essais-auto-installation.ps1 surveillant-essais.ps1 cle-linux.xml; do
+    cp -f "$PREPA/$f" "$VM/programme/$f" || { echo "Copie de « $f » sur le partage en échec." >&2; exit 1; }
+    [[ -z $CROCHET ]] || eval "$CROCHET"
+  done
+  nettoyer_prepa
   # Un secret chiffré d'une installation d'avant n'est pas celui qu'on attend.
   rm -f "$FILE/secret-chiffre.bin"
   cp -f outils/test-windows/INSTALLER-ESSAIS-AUTO.bat outils/test-windows/DESINSTALLER-ESSAIS-AUTO.bat "$VM/"
@@ -773,6 +795,21 @@ EOF2
     CLES_VMT=$T/cles-installation vmt --adopter <<<o
     voir "installation : installateur changé sur le partage depuis --installer : rien adopté, même avec « o »" eval '((code == 1)) && dit "CHANGÉS sur le partage" && [[ ! -e $T/cles-installation/secret ]]'
 
+    # 22 b. L'installateur réécrit sur le partage pendant --installer, entre sa copie et ses empreintes : les
+    #       empreintes gardées sont celles des fichiers préparés à Linux, et rien n'est adopté.
+    nouvelle_vm; sources 0 0 0 'OK x'
+    cat >"$T/crochet-installateur.sh" <<EOF
+[[ -f \$VM/programme/essais-auto-installation.ps1 && ! -e '$T/attaque-installateur' ]] || return 0
+printf '\n# remplacé depuis la VM pendant --installer\n' >>"\$VM/programme/essais-auto-installation.ps1"
+: >'$T/attaque-installateur'
+EOF
+    CLES_VMT=$T/cles-installation2 CROCHET_ESSAI=". '$T/crochet-installateur.sh'" vmt --installer </dev/null
+    "$PWSH" -NoProfile -NonInteractive -File "$VMD/programme/essais-auto-installation.ps1" -EssaiSecret "$VMD/programme" >/dev/null 2>&1
+    mv "$VMD/programme/secret-chiffre.bin" "$VMD/file-essais/" 2>/dev/null
+    CLES_VMT=$T/cles-installation2 vmt --adopter <<<o
+    voir "installation : installateur réécrit pendant --installer : rien adopté, même avec « o »" eval '[[ -e $T/attaque-installateur ]] &&
+      ((code == 1)) && dit "CHANGÉS sur le partage" && [[ ! -e $T/cles-installation2/secret ]]'
+
     # 5. Un dossier .partiel n'est jamais pris.
     nouvelle_vm; sources 0 0 0 'OK x'
     vmt --sans-attendre; mv "$VMD/file-essais/$ID" "$VMD/file-essais/$ID.partiel"; tour
@@ -890,6 +927,26 @@ EOF2
   ID=
   CROCHET_ESSAI='[[ -f $p/travail.txt ]] && ln -s /etc/hostname "$p/lien"' vmt --sans-attendre
   voir "lien symbolique : refusé, rien déposé, code 1" eval '((code == 1)) && dit "Lien symbolique" && [[ -z $ID ]] && [[ -z $(ls -A "$VMD/file-essais") ]]'
+
+  # 24. Un compte de la VM réécrit une copie sur le partage pendant le dépôt (le dossier <id>.partiel s'écrit depuis la
+  #     VM) : l'empreinte signée dans travail.txt reste celle du fichier préparé à Linux ; le script changé n'est
+  #     jamais lancé en administrateur.
+  nouvelle_vm; sources 0 0 0 'OK x'
+  local attaque=$T/attaque-depot
+  cat >"$T/crochet-attaque.sh" <<EOF
+[[ -f \$p/test.ps1 && ! -e '$attaque' ]] || return 0
+printf '\nAdd-Content -LiteralPath %s -Value pirate\n' "'$attaque.lance'" >>"\$p/test.ps1"
+: >'$attaque'
+EOF
+  CROCHET_ESSAI=". '$T/crochet-attaque.sh'" vmt --sans-attendre
+  voir "copie du partage réécrite pendant le dépôt : travail.txt signe le test.ps1 préparé à Linux, pas la copie changée" \
+    eval '[[ -e $attaque && -n $ID ]] && [[ $(cle "$VMD/file-essais/$ID/travail.txt" sha256.test.ps1) == "$({ printf "\xef\xbb\xbf"; cat "$SRC/test.ps1"; } | sha256sum | cut -d" " -f1)" ]]'
+  if [[ -n $avec_pwsh ]]; then
+    tour
+    voir "copie du partage réécrite pendant le dépôt : refusée par le surveillant, rien lancé" \
+      eval '[[ $(fini "$ID" code) == 2 && $(fini "$ID" raison) == *"empreinte de « test.ps1 » différente"* && ! -e $attaque.lance && ! -e $TRACE ]] ||
+        { cp "$VMD/file-essais/$ID/fini.txt" "$T/sortie" 2>/dev/null; false; }'
+  fi
 
   # 23. Sans le secret ici, ou face au surveillant d'avant la signature : rien déposé, la raison dite.
   nouvelle_vm; sources 0 0 0 'OK x'
