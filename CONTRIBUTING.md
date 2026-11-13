@@ -345,8 +345,9 @@ différait, aucun chemin dans le fichier). Un chemin peut changer un programme s
 zig (lld, en mode MinGW) range la table des imports par le chemin des bibliothèques d'import de style GNU, celle de la
 bibliothèque standard, que rustc recopie sous `CARGO_TARGET_DIR`, et `libwindows.0.52.0.a` (windows_x86_64_gnu), sous
 `CARGO_HOME` ; le dossier de compilation passait avant ou après `~/.cargo`, et l'ordre basculait. Depuis, la recette
-donne à cargo une seule écriture du dossier de compilation, physique (liens et `..` résolus), et `CARGO_HOME` par un
-lien de nom fixe sous lui (`.cargo-home`, remplacé par `/cargo` dans les programmes), qui se classe toujours avant :
+donne à cargo une seule écriture du dossier de compilation, physique (liens et `..` résolus comme `mkdir -p` les lit :
+`lien/../m` est `m` à côté de la cible du lien), et `CARGO_HOME` par un lien de nom fixe sous lui
+(`.cargo-home`, remplacé par `/cargo` dans les programmes), qui se classe toujours avant :
 mesuré le même jour, la même fenêtre Windows sous `~/.cache` (vrai dossier ou lien), `~/Projects`, `/run/media` et par
 un chemin avec `..`. La CI suit la même règle ; l'égalité de son .exe avec celui d'ici est probable, pas encore
 prouvée. Les ressources du .exe (icône, fiche de version, manifeste) passent par `zig rc`
@@ -373,12 +374,16 @@ et cargo vet ; `--ecrire` refait les listes) et refuse la même caisse venue d'u
 `[patch.crates-io]` vers une copie locale ou un dépôt git, que cargo deny et cargo vet laissaient passer, ou une
 source remplacée, `[source.crates-io] replace-with` dans un `.cargo/config.toml`, que cargo tree et cargo deny prennent
 pour crates.io : toute caisse de crates.io lue ailleurs que dans le registre de `CARGO_HOME` est refusée) ;
-`--programmes`, lancé par `outils/compiler-version.sh` avant le calcul de l'empreinte gravée, vérifie que chaque caisse
-nommée dans les octets des deux fenêtres est dans l'arbre de sa cible, et `outils/failles-programmes.sh --fenetre`
-n'écarte un avis d'une caisse hors cible que si aucune des caisses retirées de la fenêtre (`caisses-fenetre.sh
---retirees`, zbus compris) ne se lit dans le programme audité. Rien de lisible : rien n'est conclu, jamais un vert.
-`outils/essais-caisses-fenetre.sh` (étape « fenêtre » de `outils/verifier.sh`) essaie ces gardes et la recette avec des
-cales et des valeurs inventées.
+`--programmes`, lancé par `outils/compiler-version.sh` avant le calcul de l'empreinte gravée, refuse aussi une autre
+source dans l'arbre et vérifie que chaque caisse nommée dans les octets des deux fenêtres est dans l'arbre de sa cible.
+`outils/failles-programmes.sh --fenetre` (déploiement, publication) juge les programmes tels qu'ils sont, quelle que
+soit leur recette : avant tout audit, `caisses-fenetre.sh --publies` refuse une autre source dans l'arbre des deux
+cibles et chaque caisse lue dans les octets d'un programme qui n'est pas dans la liste versionnée de sa cible (lue dans
+son en-tête : ELF pour Linux, MZ pour Windows) ; puis un avis d'une caisse hors cible n'est écarté que si aucune des
+caisses retirées de la fenêtre (`caisses-fenetre.sh --retirees`, zbus compris) ne se lit dans le programme audité. Rien
+de lisible ou un en-tête inconnu : rien n'est conclu, jamais un vert. `outils/essais-caisses-fenetre.sh` (étape
+« fenêtre » de `outils/verifier.sh`, dont le résumé dit le nombre de caisses comptées pour chaque cible) essaie ces
+gardes et la recette avec des cales et des valeurs inventées.
 
 ## Captures d'écran et image de partage
 
@@ -419,10 +424,14 @@ reconnues à leur forme, sans l'identité de la machine qui le lance.
 inventées : adresses MAC au préfixe du fabricant gardé, réseau « Salon », comptes « alice », « bob », « Zoé »,
 « Jean Dupont », courriels `@example.com`.
 Le dossier de compilation (`CARGO_TARGET_DIR`) devient lui aussi `/vanguard/target` dans les programmes, et
-`python3 outils/confidentialite.py --compilation <dossier de compilation> <programmes…>`, lancé par
-`outils/compiler-version.sh` avant l'empreinte et le repère, refuse un programme qui contient le dossier personnel, le
-nom du compte ou le dossier de compilation (tel que donné, `..` compris, nettoyé et par son vrai chemin), en UTF-8
-comme en UTF-16 ; un programme illisible : rien n'est conclu, la compilation s'arrête.
+`python3 outils/confidentialite.py --compilation <dossier de compilation> [--dossier <dossier>]… <programmes…>`, lancé
+par `outils/compiler-version.sh` avant l'empreinte et le repère, refuse un programme qui contient le dossier personnel,
+le nom du compte, le dossier de compilation ou un dossier donné par `--dossier` (la recette donne le dépôt,
+`CARGO_HOME` et `RUSTUP_HOME`, que le dossier personnel ne couvre pas quand ils sont sur un autre disque ou dans la
+CI), chacun tel que donné (`..` compris), nettoyé et par son vrai chemin, en UTF-8 comme en UTF-16. Un programme
+illisible ou vide, un dossier de compilation absent : rien n'est conclu, la compilation s'arrête. Un de ces dossiers
+d'un seul élément (`/vanguard`, `/cargo`) se lirait dans les chemins remplacés : un refus de trop, jamais un vert de
+trop.
 
 Rust garde le chemin des bibliothèques dans les programmes (`/home/<compte>/.cargo/registry/…`) : pour publier une
 version, compiler avec `rustflags = ["--remap-path-prefix=/home/<compte>=~"]` dans `~/.cargo/config.toml`

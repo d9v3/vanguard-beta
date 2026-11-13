@@ -9,15 +9,21 @@
 #                                        relire dans le diff : chaque caisse de plus passe à cargo deny et cargo vet
 #   outils/caisses-fenetre.sh --programmes <fenêtre Linux> <fenêtre Windows>
 #                                        chaque caisse nommée dans les octets d'un programme (les chemins de ses
-#                                        messages de panique) est dans l'arbre de sa cible (outils/compiler-version.sh,
+#                                        messages de panique) est dans l'arbre de sa cible, et aucune caisse de cet
+#                                        arbre n'est d'une autre source que crates.io (outils/compiler-version.sh,
 #                                        après la compilation de la fenêtre)
+#   outils/caisses-fenetre.sh --publies <programme>...
+#                                        aucune caisse d'une autre source dans l'arbre des deux cibles, et chaque caisse
+#                                        nommée dans les octets d'un programme dans la liste versionnée de sa cible,
+#                                        lue dans son en-tête (ELF : Linux, MZ : Windows ; autre : rien n'est conclu),
+#                                        pour outils/failles-programmes.sh --fenetre
 #   outils/caisses-fenetre.sh --caisses <programme>
 #                                        les caisses nommées dans ses octets, « nom version » par ligne (la même
 #                                        lecture, pour outils/failles-programmes.sh --fenetre)
 #   outils/caisses-fenetre.sh --retirees les RETIREES, une par ligne (une seule liste, pour failles-programmes.sh)
 # Code 0 : conforme ; 1 : une caisse de trop, une retirée revenue, une caisse d'une autre source que crates.io ou une
 # liste changée ; 2 : rien n'est conclu (cargo tree en échec ou mal lu, liste de référence absente ou vide, aucune
-# caisse lue dans un programme), jamais un vert.
+# caisse lue dans un programme, en-tête inconnu), jamais un vert.
 # Essais : outils/essais-caisses-fenetre.sh.
 #
 # Pourquoi les octets : compilées par un seul appel de cargo (--target Linux --target Windows), les deux cibles
@@ -121,6 +127,27 @@ dans_programme() {
   sed -E 's#^registry/src/[^/]+/##; s#/$##; s#^(.*)-([0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.+-]*)$#\1 \2#' <<<"$brut" | sort -u
 }
 
+# La cible d'un programme, lue dans ses premiers octets : « \177ELF » pour Linux, « MZ » pour Windows. Code 2 sinon.
+cible_du_programme() {
+  local entete
+  entete=$(head -c 4 -- "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n') || return 2
+  case $entete in
+    7f454c46) echo "${CIBLES[0]}" ;;
+    4d5a*) echo "${CIBLES[1]}" ;;
+    *) return 2 ;;
+  esac
+}
+
+# Les caisses d'une autre source que crates.io dans l'arbre d'une cible, dites ; code 1 s'il y en a. Toujours
+# refusées, même inscrites à la main dans la liste : cargo deny, cargo vet et cargo audit ne les jugent pas comme des
+# caisses de crates.io, et la garde des octets ne les voit pas (leur chemin n'est pas sous registry/src).
+sources_refusees() { # cible, arbre
+  local a
+  a=$(autres_sources "$2") || return 0
+  echo "✖ $1 : caisses d'une autre source que crates.io : $(paste -sd, - <<<"$a" | sed 's/,/, /g')"
+  return 1
+}
+
 CODE=0
 if [[ ${1:-} == --retirees ]]; then
   (($# == 1)) || { echo "outils/caisses-fenetre.sh --retirees" >&2; exit 2; }
@@ -142,6 +169,9 @@ if [[ ${1:-} == --programmes ]]; then
     cible=${CIBLES[i]} programme=${PROGRAMMES[i]}
     [[ -f $programme ]] || { echo "✖ $programme : introuvable, rien n'est conclu" >&2; exit 2; }
     attendues=$(arbre "$cible") || exit 2
+    # Ronde 2 du 13 nov. 2026 : une autre source n'était refusée que par le mode sans argument, que la compilation
+    # ne lance pas.
+    sources_refusees "$cible" "$attendues" || CODE=1
     vues=$(dans_programme "$programme") || { echo "✖ $programme : lecture impossible, rien n'est conclu" >&2; exit 2; }
     if [[ -z $vues ]]; then
       echo "✖ $programme : aucune caisse lue dans ses octets, rien n'est conclu" >&2
@@ -154,6 +184,36 @@ if [[ ${1:-} == --programmes ]]; then
       CODE=1
     else
       echo "✔ $programme : $(wc -l <<<"$vues") caisses lues dans ses octets, toutes dans l'arbre de $cible"
+    fi
+  done
+  exit "$CODE"
+fi
+# Les programmes publiés, quelle que soit la façon dont ils ont été compilés : comparés à la liste versionnée, pas à
+# l'arbre du moment. Ronde 2 du 13 nov. 2026 : failles-programmes.sh --fenetre ne cherchait dans les octets que les
+# RETIREES ; un programme d'une autre recette (une caisse de plus, ou des chemins changés) gardait l'avis écarté.
+if [[ ${1:-} == --publies ]]; then
+  shift
+  (($# > 0)) || { echo "outils/caisses-fenetre.sh --publies <programme>..." >&2; exit 2; }
+  for cible in "${CIBLES[@]}"; do
+    liste=$(arbre "$cible") || exit 2
+    sources_refusees "$cible" "$liste" || CODE=1
+  done
+  for programme in "$@"; do
+    [[ -f $programme && -r $programme ]] ||
+      { echo "✖ $programme : introuvable ou illisible, rien n'est conclu" >&2; exit 2; }
+    cible=$(cible_du_programme "$programme") ||
+      { echo "✖ $programme : ni ELF ni MZ, cible inconnue, rien n'est conclu" >&2; exit 2; }
+    attendue=$(reference "$cible") || exit 2
+    vues=$(dans_programme "$programme") || { echo "✖ $programme : lecture impossible, rien n'est conclu" >&2; exit 2; }
+    [[ -n $vues ]] || { echo "✖ $programme : aucune caisse lue dans ses octets, rien n'est conclu" >&2; exit 2; }
+    de_trop=$(comm -23 <(printf '%s\n' "$vues") <(printf '%s\n' "$attendue"))
+    if [[ -n $de_trop ]]; then
+      echo "✖ $programme : $(wc -l <<<"$de_trop") caisses hors de outils/caisses-fenetre/$cible.txt, dont :" \
+        "$(head -8 <<<"$de_trop" | paste -sd, - | sed 's/,/, /g')"
+      CODE=1
+    else
+      echo "✔ $programme : $(wc -l <<<"$vues") caisses lues dans ses octets, toutes dans" \
+        "outils/caisses-fenetre/$cible.txt"
     fi
   done
   exit "$CODE"
@@ -182,8 +242,8 @@ if [[ ${1:-} == --ecrire ]]; then
   exit "$CODE"
 fi
 (($# == 0)) || {
-  echo "outils/caisses-fenetre.sh [--ecrire | --programmes <fenêtre Linux> <fenêtre Windows> | --caisses <programme> |" \
-    "--retirees]" >&2
+  echo "outils/caisses-fenetre.sh [--ecrire | --programmes <fenêtre Linux> <fenêtre Windows> |" \
+    "--publies <programme>... | --caisses <programme> | --retirees]" >&2
   exit 2
 }
 
@@ -205,13 +265,8 @@ for cible in "${CIBLES[@]}"; do
     echo "✖ $cible : caisses retirées revenues : $(paste -sd, - <<<"$r" | sed 's/,/, /g')"
     CODE=1
   fi
-  # Toujours refusée, même inscrite à la main dans la liste : cargo deny, cargo vet et cargo audit ne la jugent pas
-  # comme une caisse de crates.io, et la garde des octets ne la voit pas (son chemin n'est pas sous registry/src).
   a=$(autres_sources "$liste")
-  if [[ -n $a ]]; then
-    echo "✖ $cible : caisses d'une autre source que crates.io : $(paste -sd, - <<<"$a" | sed 's/,/, /g')"
-    CODE=1
-  fi
+  sources_refusees "$cible" "$liste" || CODE=1
   en_plus=$(comm -13 <(printf '%s\n' "$attendue") <(printf '%s\n' "$liste"))
   en_moins=$(comm -23 <(printf '%s\n' "$attendue") <(printf '%s\n' "$liste"))
   if [[ -n $en_plus || -n $en_moins ]]; then

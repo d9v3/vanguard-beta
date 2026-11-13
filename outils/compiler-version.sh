@@ -102,10 +102,12 @@ export CARGO_ZIGBUILD_PYTHON_PATH=/nonexistent/python3
 # le code que des bibliothèques génèrent (OUT_DIR, inclus par glutin_egl_sys, glutin_glx_sys et glutin_wgl_sys dans la
 # fenêtre), et son chemin restait dans le programme (3 fois sous Linux, 2 dans le .exe, le 12 nov. 2026). Une seule
 # écriture de ce dossier, physique, fixée ici et donnée à cargo : cargo passe à rustc le chemin tel qu'il le reçoit,
-# « x/../m4 » ou lien compris, et un remplacement écrit pour une autre forme ne s'y appliquait pas.
+# « x/../m4 » ou lien compris, et un remplacement écrit pour une autre forme ne s'y appliquait pas. Lue par cd -P, comme
+# mkdir -p l'a créé : « lien/../m » est « m » à côté de la cible du lien, alors que le cd logique de bash retire
+# « lien/.. » sur le texte et donnait un autre dossier, s'il existe (ronde 2 du 13 nov. 2026).
 CIBLES_DONNEES=${CARGO_TARGET_DIR:-target}
 mkdir -p "$CIBLES_DONNEES"
-CIBLES=$(cd "$CIBLES_DONNEES" && pwd -P)
+CIBLES=$(cd -P -- "$CIBLES_DONNEES" && pwd -P)
 # Un blanc couperait RUSTFLAGS : refusé, avant de rien poser.
 [[ $RACINE$CARGO_DOSSIER$CIBLES != *[[:blank:]]* ]] ||
   { echo "un blanc dans le chemin du dépôt, de CARGO_HOME ou de CARGO_TARGET_DIR : RUSTFLAGS le couperait" >&2; exit 1; }
@@ -143,6 +145,12 @@ for cible in x86_64_unknown_linux_musl x86_64_unknown_linux_gnu x86_64_pc_window
   export "CFLAGS_$cible=$REMPLACE_C"
 done
 # <<< dossiers de la compilation
+# Les dossiers de la chaîne que la garde de confidentialité cherche aussi dans les programmes (--dossier) : le dépôt,
+# CARGO_HOME et RUSTUP_HOME, hors du dossier personnel sur un autre disque ou dans la CI, où HOME ne les couvre pas
+# (relecture Fable du 13 nov. 2026, C3). Un dossier d'un seul élément (/vanguard, /cargo) se lirait dans les chemins
+# remplacés : un refus de trop, jamais un vert de trop.
+RUSTUP_DOSSIER=${RUSTUP_HOME:-$HOME/.rustup}
+DOSSIERS_CHAINE=(--dossier "$RACINE" --dossier "$CARGO_DOSSIER" --dossier "$RUSTUP_DOSSIER")
 ZIG_CACHE=$(mktemp -d "$CIBLES/cache-zig.XXXXXX")
 trap 'rm -rf "$ZIG_CACHE"' EXIT
 export ZIG_GLOBAL_CACHE_DIR=$ZIG_CACHE/global ZIG_LOCAL_CACHE_DIR=$ZIG_CACHE/local
@@ -200,7 +208,8 @@ bash outils/caisses-fenetre.sh --programmes "$FENETRE_LINUX" "$FENETRE_WINDOWS" 
   { echo "✖ la fenêtre compilée n'est pas celle que cargo deny, clippy et les essais jugent" >&2; exit 1; }
 # Aucun chemin de cet ordinateur dans ce qui est publié (dossier personnel, nom du compte dans un chemin, dossier de
 # compilation) : un remplacement manqué (ci-dessus) est refusé avant que l'empreinte soit gravée dans vanguard.
-python3 -I outils/confidentialite.py --compilation "$CIBLES_DONNEES" "$FENETRE_LINUX" "$FENETRE_WINDOWS" ||
+python3 -I outils/confidentialite.py --compilation "$CIBLES_DONNEES" "${DOSSIERS_CHAINE[@]}" "$FENETRE_LINUX" \
+  "$FENETRE_WINDOWS" ||
   { echo "✖ la fenêtre compilée garde un chemin de cet ordinateur : rien n'est gravé ni publié" >&2; exit 1; }
 VANGUARD_FENETRE_SHA256_LINUX=$(sha256sum "$FENETRE_LINUX" | cut -d' ' -f1)
 VANGUARD_FENETRE_SHA256_WINDOWS=$(sha256sum "$FENETRE_WINDOWS" | cut -d' ' -f1)
@@ -227,8 +236,8 @@ for p in "$CIBLES/x86_64-unknown-linux-musl/release/vanguard" "$CIBLES/x86_64-pc
   fi
 done
 # De même pour vanguard, avant que le repère le désigne pour la publication.
-python3 -I outils/confidentialite.py --compilation "$CIBLES_DONNEES" "$CIBLES/x86_64-unknown-linux-musl/release/vanguard" \
-  "$CIBLES/x86_64-pc-windows-gnu/release/vanguard.exe" ||
+python3 -I outils/confidentialite.py --compilation "$CIBLES_DONNEES" "${DOSSIERS_CHAINE[@]}" \
+  "$CIBLES/x86_64-unknown-linux-musl/release/vanguard" "$CIBLES/x86_64-pc-windows-gnu/release/vanguard.exe" ||
   { echo "✖ vanguard compilé garde un chemin de cet ordinateur : aucun repère, rien n'est publié" >&2; exit 1; }
 # Relu après : un fichier changé pendant la compilation la rend douteuse.
 [[ $PROPRE == oui && $(git rev-parse HEAD) == "$COMMIT" && -z $(git status --porcelain -- "${ARBRE[@]}" 2>/dev/null) ]] ||

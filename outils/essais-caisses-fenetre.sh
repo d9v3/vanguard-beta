@@ -7,8 +7,9 @@
 #      caisses-fenetre.sh --programmes sur les deux fenêtres, avant que leur empreinte soit calculée pour être gravée
 #      dans vanguard, son échec arrêtant tout. Trois recettes abîmées (cibles jointes, garde retirée, garde après
 #      l'empreinte) sont refusées : le lecteur de la recette refuse pour de vrai.
-#   2. --programmes : tout dans l'arbre de sa cible → 0 ; une caisse hors de l'arbre → 1 ; rien de lisible dans un
-#      programme, programme absent ou cargo tree en échec → 2 (rien n'est conclu, jamais un vert).
+#   2. --programmes : tout dans l'arbre de sa cible → 0 ; une caisse hors de l'arbre, ou d'une autre source que
+#      crates.io dans l'arbre (chemin local, source remplacée) → 1 ; rien de lisible dans un programme, programme
+#      absent ou cargo tree en échec → 2 (rien n'est conclu, jamais un vert).
 #   3. Sans argument (le cliquet de outils/verifier.sh) : l'arbre de chaque cible est comparé à sa LISTE de référence
 #      (outils/caisses-fenetre/<cible>.txt, noms et versions), jamais à un nombre : une caisse remplacée par une autre
 #      à nombre égal, une de plus, une de moins, une retirée revenue ou la même caisse d'une autre source que
@@ -18,7 +19,10 @@
 #      caisses retirées de la fenêtre (RETIREES de caisses-fenetre.sh, HORS_CIBLES comprises) ne se lit dans les
 #      octets du programme audité (même lecture que --programmes) : un faux programme qui porte zvariant, ou zbus sans
 #      zvariant, est refusé ; un programme où rien ne se lit est « non vérifié », jamais vert ; un programme sain
-#      passe (cale cargo-audit à la version de la CI).
+#      passe (cale cargo-audit à la version de la CI). Et rien n'est audité si une caisse d'une autre source que
+#      crates.io est dans l'arbre d'une cible, ou si une caisse lue dans les octets n'est pas dans la liste de la cible
+#      du programme (lue dans son en-tête, ELF ou MZ : une fenêtre Linux qui porte une caisse de Windows seulement est
+#      refusée) ; en-tête inconnu ou liste absente : non vérifié.
 # Lancé par outils/verifier.sh (étape « fenêtre »).
 #   outils/essais-caisses-fenetre.sh
 set -uo pipefail
@@ -89,11 +93,14 @@ EOF
 chmod +x "$T/bin/cargo" "$T/bin/cargo-audit"
 export CALE_ARBRES=$T/arbres PATH="$T/bin:$PATH" VANGUARD_HORS_LIGNE=1 CARGO_HOME=/srv/cargo-invente
 
-# Un faux programme : des octets quelconques, puis les chemins de panique des caisses données (« nom-version »).
+# Un faux programme : un en-tête (MZ pour un .exe, ELF sinon), des octets quelconques, puis les chemins de panique des
+# caisses données (« nom-version »).
 programme() {
   local f=$1 c
   shift
-  printf '\177ELF\0\0octets-inventes\0' >"$f"
+  local entete=$'\177ELF'
+  [[ $f == *.exe ]] && entete=MZ
+  printf '%s\0\0octets-inventes\0' "$entete" >"$f"
   for c in "$@"; do
     printf '/cargo/registry/src/index.crates.io-0123456789abcdef/%s/src/lib.rs\0' "$c" >>"$f"
   done
@@ -162,6 +169,22 @@ programme "$T/fenetre"
 lance outils/caisses-fenetre.sh --programmes "$T/fenetre" "$T/fenetre.exe"
 ((CODE == 2)) && [[ $SORTIE == *"rien n'est conclu"* ]] && ok "aucune caisse lisible : code 2, rien n'est conclu" ||
   ko "aucune caisse lisible : code $CODE ($SORTIE)"
+# Une autre source refusée aussi par --programmes (ronde 2 du 13 nov. 2026 : seul le mode sans argument la refusait).
+# Une caisse par un chemin local ne laisse aucun chemin sous registry/src : les octets ne la montrent pas.
+arbre $LINUX "alpha 1.2.0" "beta 0.3.1 (/srv/copie-inventee/beta)" "gamma 4.0.0"
+programme "$T/fenetre" alpha-1.2.0
+lance outils/caisses-fenetre.sh --programmes "$T/fenetre" "$T/fenetre.exe"
+((CODE == 1)) && [[ $SORTIE == *"autre source que crates.io"*"beta 0.3.1 (chemin local)"* &&
+  $SORTIE != *copie-inventee* ]] &&
+  ok "une caisse par un chemin local dans l'arbre : code 1, dite, sans le chemin" ||
+  ko "une caisse par un chemin local dans l'arbre : code $CODE ($SORTIE)"
+arbre $LINUX "alpha 1.2.0" "beta 0.3.1" "gamma 4.0.0"
+echo "delta 2.0.0" >"$T/arbres/$WINDOWS.remplacees"
+lance outils/caisses-fenetre.sh --programmes "$T/fenetre" "$T/fenetre.exe"
+((CODE == 1)) && [[ $SORTIE == *"autre source que crates.io"*"delta 2.0.0 (autre source)"* ]] &&
+  ok "une caisse d'une source remplacée dans l'arbre : code 1, dite" ||
+  ko "une caisse d'une source remplacée dans l'arbre : code $CODE ($SORTIE)"
+rm "$T/arbres/$WINDOWS.remplacees"
 lance outils/caisses-fenetre.sh --programmes "$T/absent" "$T/fenetre.exe"
 ((CODE == 2)) && ok "programme absent : code 2" || ko "programme absent : code $CODE ($SORTIE)"
 programme "$T/fenetre" alpha-1.2.0
@@ -243,31 +266,62 @@ if [[ -s $T/ref-$LINUX.txt && -s $T/ref-$WINDOWS.txt ]]; then
 fi
 
 echo "4. failles-programmes.sh --fenetre : zbus et zvariant écartés seulement s'ils ne sont pas dans les octets"
-arbre $LINUX "alpha 1.2.0" "beta 0.3.1"
-arbre $WINDOWS "alpha 1.2.0" "delta 2.0.0"
-programme "$T/fenetre" alpha-1.2.0 zvariant-5.15.1
-programme "$T/fenetre.exe" alpha-1.2.0 delta-2.0.0
-lance outils/failles-programmes.sh --fenetre "$T/fenetre" "$T/fenetre.exe"
-((CODE != 0)) && [[ $SORTIE == *zvariant*RUSTSEC-2026-0370* && $SORTIE != *"✔"* ]] &&
-  ok "zvariant dans les octets : RUSTSEC-2026-0370 pas écarté, refusé (code $CODE)" ||
-  ko "zvariant dans les octets : code $CODE ($SORTIE)"
-# zbus lu, zvariant non lu (relecture du 12 nov. 2026) : zbus ne se compile pas sans zvariant, et une lecture des
-# octets qui ne voit pas zvariant ne prouve pas qu'il manque. Toute caisse retirée de la fenêtre lue dans les octets
-# refuse.
-programme "$T/fenetre" alpha-1.2.0 zbus-5.19.0 accesskit_unix-0.24.1
-lance outils/failles-programmes.sh --fenetre "$T/fenetre" "$T/fenetre.exe"
-((CODE != 0)) && [[ $SORTIE == *"zbus 5.19.0"*RUSTSEC-2026-0370* && $SORTIE != *"✔"* ]] &&
-  ok "zbus dans les octets sans zvariant : avis pas écartés, refusé (code $CODE)" ||
-  ko "zbus dans les octets sans zvariant : code $CODE ($SORTIE)"
-programme "$T/fenetre"
-lance outils/failles-programmes.sh --fenetre "$T/fenetre" "$T/fenetre.exe"
-((CODE != 0)) && [[ $SORTIE == *"non vérifié"* && $SORTIE != *"✔"* ]] &&
-  ok "rien de lisible dans les octets : « non vérifié », code $CODE" || ko "rien de lisible : code $CODE ($SORTIE)"
-rm -f "$T/audit-lance"
-programme "$T/fenetre" alpha-1.2.0 beta-0.3.1
-lance outils/failles-programmes.sh --fenetre "$T/fenetre" "$T/fenetre.exe"
-((CODE == 0)) && [[ -e $T/audit-lance && $SORTIE == *"✔"* ]] && ok "programme sain : audité, code 0" ||
-  ko "programme sain : code $CODE ($SORTIE)"
+# Les programmes portent des caisses des vraies listes (la garde compare les octets à
+# outils/caisses-fenetre/<cible>.txt), et l'arbre de chaque cible est sa liste.
+if [[ -s $T/ref-$LINUX.txt && -s $T/ref-$WINDOWS.txt ]]; then
+  remet
+  nv() { sed -n "$2p" "$T/ref-$1.txt" | tr ' ' '-'; } # la n-ième caisse d'une liste, « nom-version »
+  L1=$(nv $LINUX 1) L2=$(nv $LINUX 2) W1=$(nv $WINDOWS 1) W2=$(nv $WINDOWS 2)
+  programme "$T/fenetre.exe" "$W1" "$W2"
+  programme "$T/fenetre" "$L1" zvariant-5.15.1
+  lance outils/failles-programmes.sh --fenetre "$T/fenetre" "$T/fenetre.exe"
+  ((CODE != 0)) && [[ $SORTIE == *zvariant*RUSTSEC-2026-0370* && $SORTIE != *"dépendances listées"* ]] &&
+    ok "zvariant dans les octets : RUSTSEC-2026-0370 pas écarté, refusé (code $CODE)" ||
+    ko "zvariant dans les octets : code $CODE ($SORTIE)"
+  # zbus lu, zvariant non lu (relecture du 12 nov. 2026) : zbus ne se compile pas sans zvariant, et une lecture des
+  # octets qui ne voit pas zvariant ne prouve pas qu'il manque. Toute caisse retirée de la fenêtre lue dans les octets
+  # refuse.
+  programme "$T/fenetre" "$L1" zbus-5.19.0 accesskit_unix-0.24.1
+  lance outils/failles-programmes.sh --fenetre "$T/fenetre" "$T/fenetre.exe"
+  ((CODE != 0)) && [[ $SORTIE == *"zbus 5.19.0"*RUSTSEC-2026-0370* && $SORTIE != *"dépendances listées"* ]] &&
+    ok "zbus dans les octets sans zvariant : avis pas écartés, refusé (code $CODE)" ||
+    ko "zbus dans les octets sans zvariant : code $CODE ($SORTIE)"
+  programme "$T/fenetre"
+  lance outils/failles-programmes.sh --fenetre "$T/fenetre" "$T/fenetre.exe"
+  ((CODE != 0)) && [[ $SORTIE == *"non vérifié"* && $SORTIE != *"dépendances listées"* ]] &&
+    ok "rien de lisible dans les octets : « non vérifié », code $CODE" || ko "rien de lisible : code $CODE ($SORTIE)"
+  rm -f "$T/audit-lance"
+  programme "$T/fenetre" "$L1" "$L2"
+  lance outils/failles-programmes.sh --fenetre "$T/fenetre" "$T/fenetre.exe"
+  ((CODE == 0)) && [[ -e $T/audit-lance && $SORTIE == *"✔"* ]] && ok "programme sain : audité, code 0" ||
+    ko "programme sain : code $CODE ($SORTIE)"
+  # Ronde 2 du 13 nov. 2026 : un programme falsifié (chemins des retirées changés) gardait l'avis écarté. Chaque caisse
+  # lue dans les octets doit être dans la liste de la cible du programme, lue dans son en-tête.
+  refuse() { # nom de l'essai, puis le texte attendu dans la sortie
+    rm -f "$T/audit-lance"
+    lance outils/failles-programmes.sh --fenetre "$T/fenetre" "$T/fenetre.exe"
+    ((CODE != 0)) && [[ ! -e $T/audit-lance && $SORTIE == *"$2"* && $SORTIE != *"dépendances listées"* ]] &&
+      ok "$1 : refusé, rien d'audité (code $CODE)" || ko "$1 : code $CODE ($SORTIE)"
+  }
+  programme "$T/fenetre" "$L1" caisse-inventee-9.9.9
+  refuse "une caisse hors de la liste de sa cible dans les octets" "caisse-inventee 9.9.9"
+  wseule=$(LC_ALL=C comm -13 <(LC_ALL=C sort "$T/ref-$LINUX.txt") <(LC_ALL=C sort "$T/ref-$WINDOWS.txt") | head -1)
+  programme "$T/fenetre" "$L1" "${wseule/ /-}"
+  refuse "une caisse de Windows seulement dans la fenêtre Linux ($wseule)" "$wseule"
+  programme "$T/fenetre" "$L1" "$L2"
+  printf 'XX\0/cargo/registry/src/index.crates.io-0123456789abcdef/%s/src/lib.rs\0' "$W1" >"$T/fenetre.exe"
+  refuse "un programme ni ELF ni MZ" "rien n'est conclu"
+  programme "$T/fenetre.exe" "$W1" "$W2"
+  # Ronde 2 du 13 nov. 2026 : une autre source n'était refusée que par le mode sans argument.
+  { echo "$(head -1 "$T/ref-$LINUX.txt") (/srv/copie-inventee/caisse)"; tail -n +2 "$T/ref-$LINUX.txt"; } \
+    >"$T/arbres/$LINUX.txt"
+  refuse "une caisse par un chemin local dans l'arbre" "$(head -1 "$T/ref-$LINUX.txt") (chemin local)"
+  remet && head -1 "$T/ref-$WINDOWS.txt" >"$T/arbres/$WINDOWS.remplacees"
+  refuse "une caisse d'une source remplacée dans l'arbre" "$(head -1 "$T/ref-$WINDOWS.txt") (autre source)"
+  rm "$T/arbres/$WINDOWS.remplacees"
+else
+  ko "listes de référence illisibles : failles-programmes.sh --fenetre pas essayé"
+fi
 
 ((ECHECS == 0)) || { echo "$ECHECS essai(s) en échec."; exit 1; }
 echo "Caisses de la fenêtre : recette, octets, listes et failles, tout refuse ce qu'il doit."

@@ -29,7 +29,9 @@
 #      chemin (UTF-16 et autre casse compris) ou le dossier de compilation (forme brute, nettoyée, par un lien)
 #      refusés ; le nom seul hors d'un chemin, un HOME « / » et un programme propre passent ; sans git ; usage faux ou
 #      programme absent : code 2 ; et sa place dans la recette (sur les deux fenêtres avant leur empreinte, sur vanguard
-#      avant le repère, après le remplacement des chemins ; les quatre programmes nommés) et son bloc des dossiers.
+#      avant le repère, après le remplacement des chemins ; les quatre programmes nommés) et son bloc des dossiers ;
+#      --dossier (le dépôt, CARGO_HOME, RUSTUP_HOME, donnés par la recette) cherché ; un programme vide ou un dossier
+#      de compilation absent : code 2 ; « lien/../m » lu physiquement.
 set -uo pipefail
 RACINE=$(cd "$(dirname "$0")/.." && pwd)
 OUTIL=$RACINE/outils/confidentialite.py
@@ -837,7 +839,9 @@ cliquet_isole "$D" 2>/dev/null
 noter 0 $? "témoin : le cliquet laisse passer -I et une exception dite"
 # --compilation : compte, maison et dossier de compilation inventés ; lancé hors de tout dépôt git.
 P=$TRAVAIL/compilation && mkdir -p "$P" && cd "$P" || exit 1
-CIBLES_I=/srv/cibles-inventees/vg
+# Le dossier de compilation existe (la recette le crée) : un dossier absent n'est pas jugé (ronde Fable du 13 nov. 2026).
+CIBLES_I=$P/srv/cibles-inventees/vg
+mkdir -p "$CIBLES_I" "$P/srv/cibles-inventees/x"
 compile() { # nom, puis le texte des octets (printf)
   local f=$P/$1
   shift
@@ -856,16 +860,16 @@ noter 1 "$(refus_dit $?)" "--compilation : le nom du compte dans un chemin hors 
 printf '\177ELF\0' >"$P/large" && printf 'C:\\Users\\alice\\cibles\0' | iconv -t UTF-16LE >>"$P/large"
 compilation "$CIBLES_I" "$P/large"
 noter 1 "$(refus_dit $?)" "--compilation : le nom du compte dans un chemin Windows en UTF-16 est refusé"
-compile cibles '/srv/cibles-inventees/vg/fenetre/x86_64-unknown-linux-gnu/release/build/out/glx_bindings.rs'
+compile cibles '%s/fenetre/x86_64-unknown-linux-gnu/release/build/out/glx_bindings.rs' "$CIBLES_I"
 compilation "$CIBLES_I" "$P/cibles"
 noter 1 "$(refus_dit $?)" "--compilation : le dossier de compilation (CARGO_TARGET_DIR) est refusé"
 compilation "$CIBLES_I/" "$P/cibles"
 noter 1 "$(refus_dit $?)" "--compilation : le dossier de compilation donné avec « / » final est refusé aussi"
 # Trois écritures d'un même dossier : brute (avec « .. », telle que cargo la passe à rustc), logique, physique.
-compile brut '/srv/cibles-inventees/x/../vg/fenetre/x86_64-unknown-linux-gnu/release/build/out/glx_bindings.rs'
-compilation /srv/cibles-inventees/x/../vg "$P/brut"
+compile brut '%s/srv/cibles-inventees/x/../vg/fenetre/x86_64-unknown-linux-gnu/release/build/out/glx_bindings.rs' "$P"
+compilation "$P/srv/cibles-inventees/x/../vg" "$P/brut"
 noter 1 "$(refus_dit $?)" "--compilation : le dossier de compilation dans sa forme brute (avec « .. ») est refusé"
-mkdir -p "$P/rel" && compile relatif "$P/rel/../cibles-rel/release/build/out/glx_bindings.rs"
+mkdir -p "$P/rel" "$P/cibles-rel" && compile relatif "$P/rel/../cibles-rel/release/build/out/glx_bindings.rs"
 compilation rel/../cibles-rel "$P/relatif"
 noter 1 "$(refus_dit $?)" "--compilation : un dossier relatif avec « .. », joint au dossier courant, est refusé"
 # Par un lien : le programme garde le chemin physique, que seul le vrai chemin (realpath) du dossier donné écrit.
@@ -880,7 +884,7 @@ noter 1 "$(refus_dit $?)" "--compilation : le dossier personnel en majuscules es
 compile casse-w 'C:\\USERS\\Alice\\cibles\\release'
 compilation "$CIBLES_I" "$P/casse-w"
 noter 1 "$(refus_dit $?)" "--compilation : le nom du compte dans un chemin Windows d'une autre casse est refusé"
-compile mot 'chez alice, aliceville et /srv/cibles-inventees/vg2/x et /opt/alice.txt'
+compile mot 'chez alice, aliceville et %s2/x et /opt/alice.txt' "$CIBLES_I"
 compilation "$CIBLES_I" "$P/mot"
 noter 0 $? "--compilation : le nom seul, un dossier voisin et un fichier du même nom passent"
 # Des « / » suivis de rien ou d'un blanc : un motif « / » tout seul les prendrait.
@@ -891,28 +895,52 @@ compilation "$CIBLES_I" "$P/propre" "$P/absent"
 sans_trace 2 "--compilation : un programme absent, rien n'est conclu"
 compilation "$CIBLES_I"
 sans_trace 2 "--compilation : sans programme, rien n'est conclu"
+# Ronde Fable du 13 nov. 2026 (C5) : un programme vide ou un dossier de compilation absent donnaient un vert.
+: >"$P/vide"
+compilation "$CIBLES_I" "$P/propre" "$P/vide"
+sans_trace 2 "--compilation : un programme de 0 octet, rien n'est conclu"
+compilation "$P/srv/cibles-absentes" "$P/propre"
+sans_trace 2 "--compilation : un dossier de compilation absent, rien n'est conclu"
+compilation "$P/propre" "$P/propre"
+sans_trace 2 "--compilation : un dossier de compilation qui est un fichier, rien n'est conclu"
+# Ronde Fable du 13 nov. 2026 (C3) : le dépôt, CARGO_HOME et RUSTUP_HOME hors du dossier personnel (autre disque, CI)
+# n'étaient pas cherchés. Ils se donnent par --dossier, chacun dans ses trois écritures, et n'ont pas à exister.
+compile depot '/srv/depot-invente/src/main.rs\0/cargo/registry/src/x/y.rs'
+compilation "$CIBLES_I" "$P/depot"
+noter 0 $? "--compilation : témoin, un dossier qui n'est pas donné n'est pas cherché"
+compilation "$CIBLES_I" --dossier /srv/rustup-invente --dossier /srv/depot-invente/ "$P/depot"
+noter 1 "$(refus_dit $?)" "--compilation : un dossier donné par --dossier (le dépôt) est refusé"
+[[ $SORTIE == *"dossier donné (--dossier)"* ]] && noter 0 0 "--compilation : un dossier donné se dit comme tel" ||
+  noter 0 1 "--compilation : un dossier donné ne se dit pas comme tel ($SORTIE)"
+compile chaine '/srv/rustup-invente/toolchains/x/lib/rustlib/src/rust/library/core/src/lib.rs'
+compilation "$CIBLES_I" --dossier /srv/depot-invente --dossier /srv/rustup-invente "$P/propre" "$P/chaine"
+noter 1 "$(refus_dit $?)" "--compilation : chaque --dossier est cherché (le deuxième, RUSTUP_HOME)"
+compilation "$CIBLES_I" "$P/propre" --dossier
+sans_trace 2 "--compilation : --dossier sans valeur, rien n'est conclu"
+compilation "$CIBLES_I" --dossier /srv/depot-invente
+sans_trace 2 "--compilation : --dossier sans programme, rien n'est conclu"
 # Sa place dans la recette : les lignes (hors commentaires) qui comptent, dans l'ordre.
 R=$RACINE/outils/compiler-version.sh
 ligne_de() { grep -nF -- "$1" "$R" | grep -v '^[0-9]*:[[:space:]]*#' | head -1 | cut -d: -f1; }
 remplace=$(ligne_de 'REMPLACE_RUST+=" --remap-path-prefix=$CIBLES=/vanguard/target')
 exporte=$(ligne_de 'export RUSTFLAGS=$REMPLACE_RUST')
 fenetre=$(ligne_de 'manifest-path fenetre/Cargo.toml')
-garde_f=$(ligne_de 'confidentialite.py --compilation "$CIBLES_DONNEES" "$FENETRE_LINUX" "$FENETRE_WINDOWS" ||')
+garde_f=$(ligne_de 'confidentialite.py --compilation "$CIBLES_DONNEES" "${DOSSIERS_CHAINE[@]}" "$FENETRE_LINUX"')
 empreinte=$(ligne_de 'VANGUARD_FENETRE_SHA256_LINUX=$(sha256sum')
 vanguard=$(ligne_de '--target x86_64-unknown-linux-musl --target x86_64-pc-windows-gnu "$@"')
-garde_v=$(ligne_de 'confidentialite.py --compilation "$CIBLES_DONNEES" "$CIBLES/x86_64-unknown-linux-musl/release/vanguard"')
+garde_v=$(ligne_de 'confidentialite.py --compilation "$CIBLES_DONNEES" "${DOSSIERS_CHAINE[@]}" \')
 repere=$(ligne_de '>"$REPERE.nouveau"')
 ordre="$remplace $exporte $fenetre $garde_f $empreinte $vanguard $garde_v $repere"
 if [[ $(wc -w <<<"$ordre") == 8 && $(tr ' ' '\n' <<<"$ordre" | sort -n | paste -sd' ') == "$ordre" ]] &&
-  sed -n "$((garde_f + 1))p;$((garde_v + 2))p" "$R" | grep -c 'exit 1; }' | grep -qx 2; then
+  sed -n "$((garde_f + 2))p;$((garde_v + 2))p" "$R" | grep -c 'exit 1; }' | grep -qx 2; then
   noter 0 0 "--compilation dans la recette : chemins remplacés, puis fenêtres avant l'empreinte, vanguard avant le repère"
 else
   noter 0 1 "--compilation dans la recette : absente, mal placée ou sans arrêt (lignes : $ordre)"
 fi
 # Les quatre programmes publiés, chacun nommé dans un des deux appels de la garde (lignes continuées par « \ »
-# jointes, commentaires retirés) : un programme oublié partirait sans être relu.
+# jointes, blancs répétés réduits à un, commentaires retirés) : un programme oublié partirait sans être relu.
 appels=$(awk '/^[[:space:]]*#/ { next } { if (sub(/\\$/, "")) { l = l $0; next } print l $0; l = "" }' "$R" |
-  grep -F 'confidentialite.py --compilation')
+  tr -s ' ' | grep -F 'confidentialite.py --compilation')
 appel_f=$(sed -n 1p <<<"$appels")
 appel_v=$(sed -n 2p <<<"$appels")
 if [[ $(wc -l <<<"$appels") == 2 && $appel_f == *'"$FENETRE_LINUX" "$FENETRE_WINDOWS"'* &&
@@ -921,6 +949,16 @@ if [[ $(wc -l <<<"$appels") == 2 && $appel_f == *'"$FENETRE_LINUX" "$FENETRE_WIN
   noter 0 0 "--compilation dans la recette : les quatre programmes publiés sont relus"
 else
   noter 0 1 "--compilation dans la recette : un des quatre programmes n'est pas relu ($(wc -l <<<"$appels") appel(s))"
+fi
+# Le dépôt, CARGO_HOME et RUSTUP_HOME donnés aux deux appels (--dossier), là où ils sont, même hors du dossier personnel.
+chaine=$(ligne_de 'DOSSIERS_CHAINE=(--dossier "$RACINE" --dossier "$CARGO_DOSSIER" --dossier "$RUSTUP_DOSSIER")')
+rustup=$(ligne_de 'RUSTUP_DOSSIER=${RUSTUP_HOME:-$HOME/.rustup}')
+if [[ -n $chaine && -n $rustup && -n $garde_f && $rustup -lt $chaine && $chaine -lt $garde_f &&
+  $appel_f == *'--compilation "$CIBLES_DONNEES" "${DOSSIERS_CHAINE[@]}" '* &&
+  $appel_v == *'--compilation "$CIBLES_DONNEES" "${DOSSIERS_CHAINE[@]}" '* ]]; then
+  noter 0 0 "--compilation dans la recette : le dépôt, CARGO_HOME et RUSTUP_HOME cherchés dans les deux appels"
+else
+  noter 0 1 "--compilation dans la recette : le dépôt, CARGO_HOME ou RUSTUP_HOME pas donnés (lignes $rustup $chaine)"
 fi
 # Les dossiers de la recette, rejoués pour de vrai (le bloc entre ses deux repères, sans rien compiler) : une seule
 # écriture, physique, du dossier de compilation (lien et « .. » dans celui qui est donné), CARGO_HOME par le lien de
@@ -957,6 +995,13 @@ if [[ -n $DOSSIERS ]]; then
   noter "$attendu" "$SORTIE" "recette : CARGO_TARGET_DIR physique (lien et « .. » retirés), CARGO_HOME par son lien fixe, remplacements dans l'ordre"
   dossiers lien-cibles
   noter "$attendu" "$SORTIE" "recette : un dossier de compilation relatif devient le même chemin physique"
+  # Ronde 2 du 13 nov. 2026 : « lien/../m » se lit physiquement « loin/m » (mkdir -p le crée là), mais le cd logique de
+  # bash retire « lien/.. » sur le texte et donnait « m » (un autre dossier, s'il existe). cargo écrirait dans l'un,
+  # les remplacements viseraient l'autre.
+  mkdir -p "$P/loin/profond" "$P/m" && ln -sfn loin/profond "$P/lien-loin"
+  dossiers "$P/lien-loin/../m"
+  noter "$P/loin/m"$'\n'"$P/loin/m/.cargo-home" "$(head -2 <<<"$SORTIE")" \
+    "recette : « lien/../m » donne le dossier où mkdir -p l'a créé, pas celui que le cd logique de bash lirait"
   # Sans CARGO_TARGET_DIR (outils/deployer.sh) : le target/ du dépôt, ici un lien vers l'autre disque.
   ln -sfn vraies-cibles "$P/target"
   dossiers -

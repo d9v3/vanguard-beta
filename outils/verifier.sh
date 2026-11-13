@@ -689,6 +689,17 @@ passes() {
   if ((s > 0)); then echo "$n, $s sautés"; else echo "$n"; fi
 }
 
+# Les caisses de la fenêtre que outils/caisses-fenetre.sh a comptées, lues dans le journal de l'étape (« ✔ <cible> :
+# N caisses, celles de … », en début de ligne : pas celles de ses essais, en retrait) : « 152 Linux, 122 Windows ».
+# Jamais un texte écrit d'avance : sans ces lignes, « aucune liste lue ».
+caisses_lues() {
+  local lues
+  lues=$(sed -nE 's/^✔ x86_64-unknown-linux-gnu : ([0-9]+) caisses, celles de .*/\1 Linux/p
+    s/^✔ x86_64-pc-windows-gnu : ([0-9]+) caisses, celles de .*/\1 Windows/p' "$TRAVAIL/$1.log" 2>/dev/null |
+    paste -sd, - | sed 's/,/, /g')
+  echo "${lues:-aucune liste lue}"
+}
+
 # Les raisons des tests sautés d'une étape, les plus fréquentes d'abord : ce que cette passe n'a pas vérifié.
 raisons_des_sautes() {
   local f
@@ -858,7 +869,7 @@ if [[ $MODE != --rapide ]]; then
   ligne constructeurs "constructeurs avant main (deny)"
   ligne masque "mots d'attaque masqués"
   ligne extensions "extensions (sdk, exemple Rust)"
-  ligne fenetre "fenêtre (caisses ×2 et leurs essais, clippy ×2, tests Linux : $(passes fenetre), protections ×2)"
+  ligne fenetre "fenêtre (caisses $(caisses_lues fenetre) et essais, clippy ×2, tests Linux : $(passes fenetre), protections ×2)"
   raisons_des_sautes fenetre
   ligne python "scripts Python"
   ligne relais "relais des lots ($(grep -m1 -oE '^ℹ pass [0-9]+' "$TRAVAIL/relais.log" 2>/dev/null | cut -d' ' -f3) essais)"

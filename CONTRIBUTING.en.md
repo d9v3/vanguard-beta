@@ -344,8 +344,9 @@ imported DLLs differed, no path in the file). A path can change a program withou
 (lld, in MinGW mode) sorts the import table by the path of the GNU-style import libraries, the standard library's,
 which rustc copies under `CARGO_TARGET_DIR`, and `libwindows.0.52.0.a` (windows_x86_64_gnu), under `CARGO_HOME`; the
 build folder sorted before or after `~/.cargo`, and the order flipped. Since then, the recipe gives cargo a single
-spelling of the build folder, the physical one (links and `..` resolved), and `CARGO_HOME` through a link with a fixed
-name under it (`.cargo-home`, replaced by `/cargo` in the programs), which always sorts first: measured the same day,
+spelling of the build folder, the physical one (links and `..` resolved the way `mkdir -p` reads them: `link/../m` is
+`m` next to the link's target), and `CARGO_HOME` through a link with a fixed name under it (`.cargo-home`,
+replaced by `/cargo` in the programs), which always sorts first: measured the same day,
 the same Windows window under `~/.cache` (real folder or link), `~/Projects`, `/run/media` and through a path with
 `..`. CI follows the same rule; its .exe being equal to the one built here is likely, not proven yet. The .exe's
 resources (icon, version information, manifest) go
@@ -372,11 +373,15 @@ the lists) and refuses the same crate coming from a source other than crates.io 
 or a git repository, which cargo deny and cargo vet let through, or a replaced source, `[source.crates-io]
 replace-with` in a `.cargo/config.toml`, which cargo tree and cargo deny take for crates.io: any crates.io crate read
 from somewhere other than `CARGO_HOME`'s registry is refused); `--programmes`, run by `outils/compiler-version.sh`
-before the engraved fingerprint is computed, checks that each crate named in the bytes of both windows is in its
-target's tree, and `outils/failles-programmes.sh --fenetre` only sets aside an advisory for an off-target crate if none
-of the crates removed from the window (`caisses-fenetre.sh --retirees`, zbus included) can be read in the audited
-program. Nothing readable: nothing is concluded, never a pass. `outils/essais-caisses-fenetre.sh` (the "fenêtre" step
-of `outils/verifier.sh`) tries these guards and the recipe with shims and made-up values.
+before the engraved fingerprint is computed, also refuses another source in the tree and checks that each crate named
+in the bytes of both windows is in its target's tree. `outils/failles-programmes.sh --fenetre` (deployment,
+publication) judges the programs as they are, whatever their recipe: before any audit, `caisses-fenetre.sh --publies`
+refuses another source in both targets' trees and any crate read in a program's bytes that is not in its target's
+versioned list (read from its header: ELF for Linux, MZ for Windows); then an advisory for an off-target crate is only
+set aside if none of the crates removed from the window (`caisses-fenetre.sh --retirees`, zbus included) can be read
+in the audited program. Nothing readable or an unknown header: nothing is concluded, never a pass.
+`outils/essais-caisses-fenetre.sh` (the "fenêtre" step of `outils/verifier.sh`, whose summary gives the number of
+crates counted for each target) tries these guards and the recipe with shims and made-up values.
 
 ## Screenshots and social preview
 
@@ -415,10 +420,13 @@ machine running it. `python3 -I outils/confidentialite.py --depot`
 rereads the whole repository and its history. In tests, made-up values: MAC addresses keeping the vendor prefix,
 network “Salon”, accounts “alice”, “bob”, “Zoé”, “Jean Dupont”, emails `@example.com`.
 The build folder (`CARGO_TARGET_DIR`) also becomes `/vanguard/target` in the programs, and
-`python3 outils/confidentialite.py --compilation <build folder> <programs…>`, run by `outils/compiler-version.sh`
-before the fingerprint and the build marker, refuses a program that contains the home folder, the account name or the
-build folder (as given, `..` included, cleaned and by its real path), in UTF-8 as in UTF-16; an unreadable program:
-nothing is concluded, the build stops.
+`python3 outils/confidentialite.py --compilation <build folder> [--dossier <folder>]… <programs…>`, run by
+`outils/compiler-version.sh` before the fingerprint and the build marker, refuses a program that contains the home
+folder, the account name, the build folder or a folder given with `--dossier` (the recipe gives the repository,
+`CARGO_HOME` and `RUSTUP_HOME`, which the home folder does not cover when they are on another disk or in CI), each as
+given (`..` included), cleaned and by its real path, in UTF-8 as in UTF-16. An unreadable or empty program, a missing
+build folder: nothing is concluded, the build stops. One of these folders with a single component (`/vanguard`,
+`/cargo`) would be read in the replaced paths: one refusal too many, never one pass too many.
 
 Rust keeps the libraries' path in the programs (`/home/<account>/.cargo/registry/…`): to publish a version, build
 with `rustflags = ["--remap-path-prefix=/home/<account>=~"]` in `~/.cargo/config.toml` (`publier-version.sh` refuses

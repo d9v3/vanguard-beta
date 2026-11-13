@@ -14,7 +14,10 @@
 #   outils/failles-programmes.sh --fenetre <programme>...   la fenêtre (vanguard-fenetre) : sans les exceptions de
 #                                          Vanguard (fenetre/deny.toml n'en a aucune) ; seulement HORS_CIBLES, prouvées
 #                                          par cargo tree, et si aucune caisse retirée de la fenêtre ne se lit dans les
-#                                          octets du programme (sinon : refusé, ou non vérifié si rien ne s'y lit)
+#                                          octets du programme (sinon : refusé, ou non vérifié si rien ne s'y lit) ;
+#                                          avant tout audit, aucune caisse d'une autre source que crates.io dans
+#                                          l'arbre, et chaque caisse lue dans ses octets dans la liste de sa cible
+#                                          (outils/caisses-fenetre.sh --publies), sinon refusé ou non vérifié
 #   outils/failles-programmes.sh --outil   cargo-audit seulement (présent, version de la CI), avant une compilation
 #   outils/failles-programmes.sh --depot   Cargo.lock du dépôt, de la fenêtre et des crates à part (fuzz, extensions,
 #                                          preuves Kani), jugés de même (étape « failles connues » de
@@ -181,6 +184,23 @@ hors_cibles_absentes_des_octets() {
   return "$code"
 }
 
+# Les programmes de la fenêtre comparés aux listes versionnées (outils/caisses-fenetre.sh --publies) : aucune caisse
+# d'une autre source que crates.io dans l'arbre de ses deux cibles, et chaque caisse lue dans ses octets dans la liste
+# de sa cible. Ronde 2 du 13 nov. 2026 : seules les RETIREES étaient cherchées dans les octets, et une autre source
+# n'était pas refusée ici ; un programme d'une autre recette gardait les avis HORS_CIBLES écartés. Code 1 si l'un
+# n'est pas conforme ou si rien n'est conclu (non vérifié, jamais compté comme sain).
+caisses_publiees() {
+  local sortie code=0
+  sortie=$(bash "$RACINE/outils/caisses-fenetre.sh" --publies "$@" 2>&1) || code=$?
+  [[ -z $sortie ]] || sed 's/^/fenêtre : /' <<<"$sortie"
+  case $code in
+    0) return 0 ;;
+    2) echo "✖ fenêtre : caisses des programmes non vérifiées, ${HORS_CIBLES[*]%%:*} pas écartées" ;;
+    *) echo "✖ fenêtre : caisses refusées (outils/caisses-fenetre.sh --publies), ${HORS_CIBLES[*]%%:*} pas écartées" ;;
+  esac
+  return 1
+}
+
 # Le Cargo.lock du dépôt, lu depuis ce dossier-là (son audit.toml vide) : même jugement que pour les programmes.
 if [[ $1 == --depot ]]; then
   CODE=0
@@ -205,11 +225,12 @@ if [[ $1 == --depot ]]; then
   exit "$CODE"
 fi
 
-# La fenêtre : ses avis HORS_CIBLES écartés seulement s'ils sont prouvés hors de ses deux cibles et qu'aucune caisse
-# retirée ne se lit dans ses octets ; sinon, rien ne part.
+# La fenêtre : ses avis HORS_CIBLES écartés seulement s'ils sont prouvés hors de ses deux cibles, que ses caisses
+# sont celles des listes versionnées et qu'aucune caisse retirée ne se lit dans ses octets ; sinon, rien ne part.
 if [[ -n $FENETRE ]]; then
   OPTIONS_FENETRE=("${OPTIONS[@]}")
   PROUVE=0
+  caisses_publiees "$@" || PROUVE=1
   hors_cibles_prouvees || PROUVE=1
   hors_cibles_absentes_des_octets "$@" || PROUVE=1
   ((PROUVE == 0)) || { montrer_erreurs_arbre; echo "Ces programmes ne partent nulle part."; exit 1; }

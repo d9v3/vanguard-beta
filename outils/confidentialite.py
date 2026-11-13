@@ -26,12 +26,15 @@ Depuis la racine du dépôt :
     python3 -I outils/confidentialite.py --envoi            les commits pas encore sur GitHub
     python3 -I outils/confidentialite.py --texte < FICHIER  un texte à publier
     python3 -I outils/confidentialite.py --binaire FICHIER… des programmes compilés (textes lisibles, métadonnées)
-    python3 -I outils/confidentialite.py --compilation CIBLES FICHIER…
+    python3 -I outils/confidentialite.py --compilation CIBLES [--dossier DOSSIER]… FICHIER…
                                                          des programmes à l'instant compilés (outils/compiler-version.sh,
                                                          avant leur empreinte) : ni le dossier personnel (HOME), ni le
                                                          nom du compte dans un chemin, ni le dossier de compilation
-                                                         CIBLES (CARGO_TARGET_DIR) ; rien d'autre de l'ordinateur n'est
-                                                         lu, ni git : le même jugement ici et dans la CI
+                                                         CIBLES (CARGO_TARGET_DIR, qui doit exister), ni un DOSSIER
+                                                         donné (le dépôt, CARGO_HOME, RUSTUP_HOME : hors de HOME sur un
+                                                         autre disque ou dans la CI) ; un programme vide n'est pas jugé ;
+                                                         rien d'autre de l'ordinateur n'est lu, ni git : le même
+                                                         jugement ici et dans la CI
     python3 -I outils/confidentialite.py --depot            les fichiers et tout l'historique (avant de rendre le dépôt
                                                          public)
     python3 -I outils/confidentialite.py --plage AVANT APRÈS [REF]
@@ -1010,11 +1013,12 @@ def chaines(chemin):
     return chaines_d_octets(Path(chemin).read_bytes(), mini=4)
 
 
-def termes_de_compilation(cibles):
+def termes_de_compilation(cibles, donnes=()):
     """Ce qu'une compilation laisse d'elle dans un programme quand un chemin n'est pas remplacé (--remap-path-prefix,
     -ffile-prefix-map) : le dossier personnel (HOME), le nom du compte comme élément d'un chemin (« /<compte>/ »,
     « \\<compte>\\ » : /run/media/<compte>/…, C:\\Users\\<compte>, même hors de HOME) et le dossier de compilation
-    (CARGO_TARGET_DIR, où cargo écrit le code qu'il génère, OUT_DIR). Chacun tel que donné (« .. » compris), nettoyé et
+    (CARGO_TARGET_DIR, où cargo écrit le code qu'il génère, OUT_DIR), et les dossiers `donnes` (--dossier : le dépôt,
+    CARGO_HOME, RUSTUP_HOME, que HOME ne couvre pas quand ils sont ailleurs). Chacun tel que donné (« .. » compris), nettoyé et
     par son vrai chemin (liens résolus). Le nom seul, hors d'un chemin, n'est pas cherché : un compte de deux lettres
     se lit partout dans des octets. Rien d'autre de l'ordinateur (listes, identité Git, appareils) : --binaire, à la
     publication, le fait."""
@@ -1041,7 +1045,18 @@ def termes_de_compilation(cibles):
     if moi:
         ajouter(moi, "nom du compte, dans un chemin", rf"[/\\]{re.escape(moi)}(?![\w.-])")
     dossier(cibles, "dossier de compilation (CARGO_TARGET_DIR)")
+    for donne in donnes:
+        dossier(donne, "dossier donné (--dossier)")
     return liste
+
+
+def programme_compile(chemin):
+    """Les textes lisibles d'un programme de --compilation ; un fichier vide n'en est pas un (une compilation ratée,
+    un fichier tronqué) : rien n'est conclu, jamais un vert."""
+    octets = Path(chemin).read_bytes()
+    if not octets:
+        rien_conclu(f"{chemin} est vide (0 octet) : ce n'est pas un programme compilé ; rien n'est conclu.")
+    return chaines_d_octets(octets, mini=4)
 
 
 def rapport(trouves, quoi, en_clair=True) -> int:
@@ -1075,10 +1090,24 @@ def main():
     args = sys.argv[1:]
     if args[:1] == ["--compilation"]:
         # Avant tout le reste : ni git (une source sans dépôt se compile aussi), ni les sources de cet ordinateur.
+        usage = "usage : --compilation CIBLES [--dossier DOSSIER]… FICHIER…"
         if len(args) < 3:
-            rien_conclu("usage : --compilation CIBLES FICHIER…")
-        detecteur = Detecteur(termes_de_compilation(args[1]))
-        trouves = [(f, t) for f in args[2:] for t, _ in detecteur.trouver(chaines(f), False)]
+            rien_conclu(usage)
+        cibles, reste, donnes = args[1], args[2:], []
+        while reste[:1] == ["--dossier"]:
+            if len(reste) < 2:
+                rien_conclu(usage)
+            donnes.append(reste[1])
+            reste = reste[2:]
+        if not reste or "--dossier" in reste:
+            rien_conclu(usage)
+        # Un dossier de compilation absent (ou un fichier) : la recette le crée avant de compiler ; absent, c'est un
+        # autre que celui de la compilation, et ses chemins ne seraient pas cherchés.
+        if not os.path.isdir(cibles):
+            rien_conclu(f"{cibles} n'est pas un dossier : ce n'est pas le dossier de la compilation ; rien n'est "
+                        "conclu.")
+        detecteur = Detecteur(termes_de_compilation(cibles, donnes))
+        trouves = [(f, t) for f in reste for t, _ in detecteur.trouver(programme_compile(f), False)]
         sys.exit(rapport(trouves, "les programmes compilés (un chemin de la compilation n'est pas remplacé : "
                                   "--remap-path-prefix et -ffile-prefix-map de outils/compiler-version.sh)"))
     if args[:1] in (["--message"], ["--binaire"]):

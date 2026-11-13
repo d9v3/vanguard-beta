@@ -28,7 +28,9 @@
 #  10. Le second avis (cargo audit, failles-programmes.sh --depot) : chaque Cargo.lock suivi par git est lu, les
 #      crates à part sans les exceptions de Vanguard ; une faille dans l'une fait échouer (faux cargo-audit). Les
 #      programmes de la fenêtre (--fenetre) : aucune exception de Vanguard, ses avis hors cibles écartés seulement si
-#      cargo tree les dit absents de ses deux cibles ; sinon rien n'est audité et elle ne part pas.
+#      cargo tree les dit absents de ses deux cibles, et ses caisses lues dans les octets dans la liste de leur
+#      cible (caisses-fenetre.sh --publies) ; sinon rien n'est audité et elle ne part pas. L'étape « fenêtre » :
+#      la garde de ses caisses ou ses essais en échec la font échouer, et le résumé dit les caisses lues.
 #  11. Les essais sautés à l'intérieur d'une étape verte (« (sauté : … », tests de cargo notés) : montrés sous sa
 #      ligne et comptés jusqu'à la dernière, « Tout est vert, avec N essai(s) sauté(s) » (M-8).
 #  12. Le dossier de travail d'un verifier.sh tué (SIGKILL) : retiré au départ suivant (son verrou est libre), jamais
@@ -352,7 +354,9 @@ rm -rf "$faux"
 
 # La fenêtre (failles-programmes.sh --fenetre) : sa liste gravée compte des bibliothèques qu'elle ne compile pas
 # (cargo auditable, options unies de toutes les plateformes). Aucune exception de Vanguard ; ses HORS_CIBLES écartées
-# seulement si cargo tree les dit absentes de ses deux cibles. Le faux cargo tree en trouve une si « compilee » existe.
+# seulement si cargo tree les dit absentes de ses deux cibles. Le faux cargo tree -i en trouve une si « compilee »
+# existe ; sans -i, il donne la liste versionnée de la cible (caisses-fenetre.sh --publies compare les octets à
+# celle-ci), et cargo metadata ne dit aucune source remplacée.
 faux=$(mktemp -d "$HOME/.cache/vanguard-dev/essai-audit-fenetre.XXXX")
 cat >"$faux/cargo-audit" <<FAUX
 #!/usr/bin/env bash
@@ -362,12 +366,26 @@ for p in "\$@"; do [[ -f \$p ]] && echo "Found 'cargo auditable' data in \$p (7 
 exit 0
 FAUX
 printf '#!/bin/sh\nexit 0\n' >"$faux/curl"
-printf '#!/bin/sh\n[ "$1" = tree ] || exit 9\n[ -e "%s/compilee" ] && echo "zvariant v0.0.0"\nexit 0\n' "$faux" >"$faux/cargo"
+cat >"$faux/cargo" <<FAUX
+#!/usr/bin/env bash
+[[ \$1 == metadata ]] && { echo '{"packages":[]}'; exit 0; }
+[[ \$1 == tree ]] || exit 9
+if [[ " \$* " == *" -i "* ]]; then
+  [[ -e "$faux/compilee" ]] && echo "zvariant v0.0.0"
+  exit 0
+fi
+while [[ \$# -gt 0 && \$1 != --target ]]; do shift; done
+sed 's/ / v/' "$PWD/outils/caisses-fenetre/\$2.txt"
+FAUX
 chmod +x "$faux/cargo-audit" "$faux/curl" "$faux/cargo"
-# Des octets où se lit une caisse inventée (chemin de panique), comme dans une vraie fenêtre : sans rien de lisible,
-# --fenetre dirait « non vérifié » (outils/essais-caisses-fenetre.sh l'essaie).
-printf 'ELF\0/cargo/registry/src/index.crates.io-0123456789abcdef/alpha-1.2.0/src/lib.rs\0' >"$faux/fenetre-linux"
-printf 'MZ\0/cargo/registry/src/index.crates.io-0123456789abcdef/alpha-1.2.0/src/lib.rs\0' >"$faux/fenetre.exe"
+# Des octets où se lit une caisse de la liste de sa cible (chemin de panique), comme dans une vraie fenêtre, avec
+# l'en-tête de son système : sans rien de lisible, --fenetre dirait « non vérifié » (outils/essais-caisses-fenetre.sh
+# l'essaie).
+caisse_de() { head -1 "outils/caisses-fenetre/$1.txt" | tr ' ' '-'; }
+printf '\177ELF\0/cargo/registry/src/index.crates.io-0123456789abcdef/%s/src/lib.rs\0' \
+  "$(caisse_de x86_64-unknown-linux-gnu)" >"$faux/fenetre-linux"
+printf 'MZ\0/cargo/registry/src/index.crates.io-0123456789abcdef/%s/src/lib.rs\0' \
+  "$(caisse_de x86_64-pc-windows-gnu)" >"$faux/fenetre.exe"
 auditer_fenetre() {
   : >"$faux/appels"
   SORTIE=$(env -u VANGUARD_HORS_LIGNE PATH="$faux:$PATH" bash outils/failles-programmes.sh --fenetre \
@@ -383,6 +401,43 @@ auditer_fenetre
   $CODE == 1 && ! -s $faux/appels ]] &&
   ok "cargo audit de la fenêtre : sans les exceptions de Vanguard, hors cibles écartées seulement prouvées" ||
   ko "cargo audit de la fenêtre (vert $fenetre_vert, compilée $CODE) : écartés « $ecartes » $(tail -n 1 <<<"$SORTIE")"
+rm -rf "$faux"
+
+# L'étape « fenêtre » : la garde de ses caisses (outils/caisses-fenetre.sh) et ses essais la font échouer, et le résumé
+# dit les nombres de caisses lus dans son journal, jamais un texte écrit d'avance (relecture du 13 nov. 2026 : rien ne
+# gardait cet appel). fenetre et caisses_lues lues dans verifier.sh, dans un dossier jetable ; cargo, les deux scripts
+# et le programme vanguard qui juge les protections remplacés par des cales qui ne font rien.
+faux=$(mktemp -d "$HOME/.cache/vanguard-dev/essai-etape-fenetre.XXXX")
+fonction=$(awk '/^fenetre\(\) \{/,/^\}/; /^caisses_lues\(\) \{/,/^\}/' outils/verifier.sh)
+mkdir -p "$faux/outils" "$faux/cibles/x86_64-unknown-linux-musl/debug"
+printf '#!/bin/sh\nexit 0\n' >"$faux/cibles/x86_64-unknown-linux-musl/debug/vanguard"
+chmod +x "$faux/cibles/x86_64-unknown-linux-musl/debug/vanguard"
+etape_fenetre() { # code de la cale de caisses-fenetre.sh, puis de celle de ses essais ; le code de l'étape
+  {
+    echo "echo '✔ x86_64-unknown-linux-gnu : 7 caisses, celles de outils/caisses-fenetre/x86_64-unknown-linux-gnu.txt'"
+    echo "echo '✔ x86_64-pc-windows-gnu : 5 caisses, celles de outils/caisses-fenetre/x86_64-pc-windows-gnu.txt'"
+    echo "exit $1"
+  } >"$faux/outils/caisses-fenetre.sh"
+  echo "exit $2" >"$faux/outils/essais-caisses-fenetre.sh"
+  (cd "$faux" && TRAVAIL=$faux CARGO_TARGET_DIR=$faux/cibles bash -c "cargo() { :; }; sautes() { :; }; $fonction
+fenetre >fenetre.log 2>&1")
+}
+etape_fenetre 1 0
+rouge_caisses=$?
+etape_fenetre 0 1
+rouge_essais=$?
+etape_fenetre 0 0
+vert=$?
+lues=$(TRAVAIL=$faux bash -c "$fonction
+caisses_lues fenetre" 2>&1)
+echo "  ✔ x86_64-unknown-linux-gnu : 9 caisses, celles de la liste (ligne d'un essai)" >"$faux/fenetre.log"
+aucune=$(TRAVAIL=$faux bash -c "$fonction
+caisses_lues fenetre" 2>&1)
+[[ -n $fonction && $rouge_caisses != 0 && $rouge_essais != 0 && $vert == 0 && $lues == "7 Linux, 5 Windows" &&
+  $aucune == "aucune liste lue" ]] && grep -q '^  ligne fenetre ".*\$(caisses_lues fenetre)' outils/verifier.sh &&
+  ok "étape fenêtre : la garde des caisses ou ses essais en échec la font échouer ; le résumé dit les caisses lues" ||
+  ko "étape fenêtre (caisses en échec $rouge_caisses, essais en échec $rouge_essais, vert $vert) : lues « $lues »," \
+    "sans liste « $aucune »"
 rm -rf "$faux"
 
 # Les essais sautés à l'intérieur d'une étape verte : montrés sous sa ligne, comptés jusqu'à la dernière ligne (même
