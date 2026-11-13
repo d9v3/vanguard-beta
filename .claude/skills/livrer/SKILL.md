@@ -35,6 +35,8 @@ ni envoi. Pour la clé entre-temps, sans rien envoyer : `VANGUARD_INTERMEDIAIRE=
    la page précédente, aperçu par `--notes` ; notification ; seule la dernière version garde sa page). Une version
    intermédiaire (`VANGUARD_INTERMEDIAIRE=1`) n'en a pas : la ligne « sans page sur GitHub » le dit, et la suivante la
    reprendra. S'il l'a ratée, il dit pourquoi : corriger, puis relancer `outils/publier-version.sh`.
+   Puis les tickets : vérifier la sortie de `outils/tickets-version.py` (section de la version cochée dans le
+   ticket #1, tickets « journal » cités fermés) ; code 3 = hors ligne, relancer `--appliquer` plus tard.
 5. Mises à jour qui suivent chaque version :
    - page du dépôt : toute seule après chaque envoi (`outils/github.py` applique `.github/depot.json` : description
      et version, lien du journal, sujets, options). Si les fonctions ont changé, réécrire la description dans

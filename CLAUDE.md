@@ -173,6 +173,9 @@ Réponses à l'utilisateur en français, claires, avec le pourquoi.
   de commandes viennent du code et du programme : `outils/page-fonctions.py`, que `deployer.sh` lance à chaque
   version publiée pour `docs/index.html`, servi par GitHub Pages ; la même page sur claude.ai se republie avec
   l'outil Artifact, voir /livrer) et tableau Structure (CONTRIBUTING.md, CONTRIBUTING.en.md) si un module change.
+- Tickets à chaque version publiée : `outils/tickets-version.py` (`--voir` par défaut, `--appliquer` par
+  `deployer.sh`) coche les points gras du CHANGELOG dans le ticket des pistes (#1) et ferme les tickets « journal »
+  ouverts qu'un commit de la version cite : écrire « Corrige le ticket #N » dans le message du commit qui le corrige.
 
 ## Erreurs rapportées
 
