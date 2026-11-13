@@ -51,6 +51,8 @@ Le programme : « vanguard », dans ce dossier. Toutes les distributions 64 bits
    - L'installer sur cet ordinateur : copier « vanguard » dans ~/.local/bin, puis taper simplement
      « vanguard » dans n'importe quel terminal.
    - En anglais :  VANGUARD_LANG=en /run/media/$USER/VANGUARD/Linux/vanguard
+   - La clé peut être retirée pendant que Vanguard tourne : il s'est recopié sur cet ordinateur, et ce
+     qui devait aller sur la clé va dans le dossier de Vanguard de cet ordinateur (le chemin est dit).
    - Quitter : q dans le menu, ou Ctrl+C.
 
 

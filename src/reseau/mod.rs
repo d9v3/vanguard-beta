@@ -928,12 +928,9 @@ pub fn etat_de_la_cle() -> EtatCle {
 /// La clé d'où tourne le programme (exe dans <clé>/Linux/, <clé>/Windows/…), trouvée par son seul chemin, sans
 /// parcourir les lecteurs : un lecteur réseau déconnecté ferait attendre.
 pub(crate) fn cle_du_programme() -> Option<PathBuf> {
-    // Sous Linux, le programme peut tourner depuis une copie temporaire (protection de la clé) : on part
-    // du programme d'origine.
-    #[cfg(unix)]
+    // Le programme peut tourner depuis sa copie sur cet ordinateur (protection::cle) : on part du programme
+    // d'origine.
     let exe = crate::protection::cle::exe_d_origine();
-    #[cfg(windows)]
-    let exe = std::env::current_exe().ok().and_then(|e| e.canonicalize().ok());
     exe.iter()
         .flat_map(|e| e.ancestors().skip(1).take(2).map(PathBuf::from))
         .find(|d| est_une_cle(d))
@@ -1013,6 +1010,47 @@ pub fn dossier_donnees() -> PathBuf {
                 .is_some_and(|racine| crate::protection::cles_connues::verdict(racine, true).is_ok())
         })
         .unwrap_or_else(dossier_local)
+}
+
+/// Écrit `fichiers` (nom, contenu) dans le dossier des données (`dossier_donnees`), chacun d'un coup
+/// (`socle::ecrire_atomique`). Si la clé ne les prend pas (retirée, port USB coupé, pleine), ils vont dans le dossier
+/// de cet ordinateur, et c'est dit avec le chemin. Rend le dossier où ils sont.
+pub(crate) fn ecrire_donnees(fichiers: &[(&str, &[u8])]) -> std::io::Result<PathBuf> {
+    let (dossier, repli) = ecrire_avec_repli(&dossier_donnees(), &dossier_local(), fichiers)?;
+    if let Some(e) = repli {
+        crate::ui::imprimer(&repli_dit(&e, &dossier));
+    }
+    Ok(dossier)
+}
+
+/// Ce qui est dit quand la clé n'a pas pris l'écriture : pourquoi, et où elle est allée.
+fn repli_dit(e: &std::io::Error, dossier: &std::path::Path) -> String {
+    trf!(
+        "  ⚠ La clé n'a pas pu être écrite ({e}) : enregistré sur cet ordinateur, dans {}",
+        "  ⚠ The key could not be written ({e}): saved on this computer, in {}",
+        crate::ui::chemin_affichable(dossier)
+    )
+}
+
+/// `ecrire_donnees` entre deux dossiers : `principal`, sinon `local` (l'erreur du principal rendue avec lui).
+fn ecrire_avec_repli(
+    principal: &std::path::Path,
+    local: &std::path::Path,
+    fichiers: &[(&str, &[u8])],
+) -> std::io::Result<(PathBuf, Option<std::io::Error>)> {
+    let ecrire = |dossier: &std::path::Path| {
+        fichiers
+            .iter()
+            .try_for_each(|(nom, contenu)| crate::socle::ecrire_atomique(&dossier.join(nom), contenu))
+    };
+    match ecrire(principal) {
+        Ok(()) => Ok((principal.to_path_buf(), None)),
+        Err(e) if principal != local => {
+            ecrire(local)?;
+            Ok((local.to_path_buf(), Some(e)))
+        }
+        Err(e) => Err(e),
+    }
 }
 
 fn parse_ports(spec: &str) -> Result<Vec<u16>, String> {
@@ -1857,6 +1895,35 @@ pub(crate) fn corpus_usurpation(e: &crate::modele::corpus::Entree) -> Vec<crate:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Clé retirée (son dossier ne peut plus être créé) : rapport et diagnostic vont dans le dossier de cet ordinateur,
+    /// d'un coup, et le message dit pourquoi et où. Clé présente : rien sur l'ordinateur.
+    #[test]
+    fn ecriture_sur_la_cle_retiree_va_sur_l_ordinateur() {
+        let racine = crate::essais::temporaire().join(format!("vanguard-repli-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&racine);
+        std::fs::create_dir_all(&racine).unwrap();
+        // Un fichier à la place du point de montage : comme une clé partie, rien ne se crée dessous.
+        std::fs::write(racine.join("cle"), "").unwrap();
+        let (cle, local) = (racine.join("cle").join("donnees"), racine.join("local"));
+        let fichiers: &[(&str, &[u8])] = &[("rapport.html", b"<html>"), ("rapport.md", b"# rapport")];
+        let (dossier, repli) = ecrire_avec_repli(&cle, &local, fichiers).unwrap();
+        assert_eq!(dossier, local);
+        assert_eq!(std::fs::read(local.join("rapport.md")).unwrap(), b"# rapport");
+        assert_eq!(std::fs::read(local.join("rapport.html")).unwrap(), b"<html>");
+        let dit = repli_dit(&repli.expect("repli dit"), &dossier);
+        assert!(dit.contains(&crate::ui::chemin_affichable(&local)), "{dit}");
+        // Clé là : écrit sur elle seule.
+        let presente = racine.join("presente");
+        let _ = std::fs::remove_dir_all(&local);
+        let (dossier, repli) = ecrire_avec_repli(&presente, &local, fichiers).unwrap();
+        assert_eq!(dossier, presente);
+        assert!(repli.is_none() && !local.exists());
+        assert!(presente.join("rapport.html").is_file());
+        // Les deux impossibles : l'erreur, pas un succès muet.
+        assert!(ecrire_avec_repli(&cle, &racine.join("cle").join("local"), fichiers).is_err());
+        let _ = std::fs::remove_dir_all(&racine);
+    }
 
     fn hote(ip: &str, mac: &str, role: Option<&'static str>) -> Hote {
         Hote {

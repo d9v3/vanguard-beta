@@ -46,12 +46,8 @@ pub(crate) fn minuterie_activee(timer: &str) -> bool {
 /// récente). `None` : elle n'a pas pu se faire, et c'est dit ; le chemin de la clé n'est jamais rendu à sa place,
 /// une minuterie qui le lancerait s'arrêterait sans bruit une fois la clé débranchée.
 pub(crate) fn executable() -> Option<String> {
-    // Sous Linux, le programme peut tourner depuis une copie temporaire (protection de la clé), effacée
-    // à la fin.
-    #[cfg(unix)]
+    // Le programme peut tourner depuis sa copie sur cet ordinateur (protection::cle), effacée à la fin.
     let exe = crate::protection::cle::exe_d_origine();
-    #[cfg(windows)]
-    let exe = std::env::current_exe().ok();
     let Some(exe) = exe else {
         return Some("vanguard".into());
     };

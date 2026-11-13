@@ -237,14 +237,7 @@ pub(crate) fn copie_de_cet_ordinateur() -> PathBuf {
 }
 
 fn programme() -> Option<PathBuf> {
-    #[cfg(unix)]
-    {
-        crate::protection::cle::exe_d_origine()
-    }
-    #[cfg(windows)]
-    {
-        std::env::current_exe().ok().and_then(|e| e.canonicalize().ok())
-    }
+    crate::protection::cle::exe_d_origine()
 }
 
 /// Ce qui dit qu'une copie a changé : sa taille et sa date (`None` : absente).

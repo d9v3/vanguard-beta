@@ -103,10 +103,7 @@ impl Lieux {
         };
         #[cfg(not(windows))]
         let taches = Some(Vec::new());
-        #[cfg(unix)]
         let programme = crate::protection::cle::exe_d_origine();
-        #[cfg(windows)]
-        let programme = std::env::current_exe().ok().and_then(|e| e.canonicalize().ok());
         Ok(Lieux {
             donnees,
             unites,
@@ -1507,10 +1504,24 @@ fn retirer_fichiers(e: &Element, fichiers: &[PathBuf], x: &Execution) -> Result<
 }
 
 /// Un dossier de données, sauf ce que des éléments gardés y demandent encore.
+/// La copie de Vanguard qui tourne, si elle est sous `d` (Windows, lancé depuis la clé : `copies/` du dossier local).
+fn copie_en_marche_sous(d: &Path) -> Option<PathBuf> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let exe = std::env::current_exe().ok()?;
+    let exe = exe.canonicalize().ok()?;
+    (crate::protection::cle::est_une_copie(&exe) && d.canonicalize().is_ok_and(|d| exe.starts_with(d))).then_some(exe)
+}
+
 fn retirer_dossier(e: &Element, d: &Path, x: &Execution) -> Result<String, Echec> {
     let lien = lien_vers(d);
     let gardes: Vec<&(PathBuf, String)> = x.gardes.iter().filter(|(p, _)| surveillance::sous(p, d)).collect();
-    let fichiers: Vec<PathBuf> = gardes.iter().map(|(p, _)| p.clone()).collect();
+    let mut fichiers: Vec<PathBuf> = gardes.iter().map(|(p, _)| p.clone()).collect();
+    // Lancé depuis la clé, ce Vanguard tourne depuis sa copie de copies/ : Windows ne l'efface pas en marche, le
+    // premier processus l'efface à la fin (protection::cle). Laissée sans être comptée comme un échec.
+    let copie = copie_en_marche_sous(d);
+    fichiers.extend(copie.clone());
     let restes = effacer_dossier(d, x.en_marche, &fichiers, x.cle);
     // Les sceaux gardés oublient ce qui est parti avec le dossier : effacé par la désinstallation, pas hors de
     // Vanguard.
@@ -1535,6 +1546,13 @@ fn retirer_dossier(e: &Element, d: &Path, x: &Execution) -> Result<String, Echec
             "{}; kept, for what you keep: {}",
             e.texte,
             liste.join(", ")
+        ));
+    }
+    if copie.is_some() && std::fs::symlink_metadata(d).is_ok() {
+        return Ok(trf!(
+            "{} ; sauf la copie de Vanguard en marche, effacée quand il se ferme",
+            "{}; except the running Vanguard copy, erased when it closes",
+            e.texte
         ));
     }
     // Une passe déjà lancée a pu écrire de nouveau pendant l'effacement : un dossier revenu n'est pas retiré.

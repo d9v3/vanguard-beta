@@ -63,6 +63,8 @@ The program: "vanguard.exe", in this folder. Windows 10 and 11 (64-bit), nothing
      changes Defender itself.
    - In French:  $env:VANGUARD_LANG = "fr"  (PowerShell)  or  set VANGUARD_LANG=fr  (cmd), then the
      command.
+   - The key can be removed while Vanguard is running: it copied itself to this computer, and what
+     should have gone to the key goes into Vanguard's folder on this computer (the path is shown).
    - Quit: q in the menu, or Ctrl+C.
 
 6. COMPUTER ISOLATED FROM THE NETWORK BY VANGUARD

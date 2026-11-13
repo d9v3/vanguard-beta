@@ -408,8 +408,11 @@ async fn main() {
     if let Err(e) = relro {
         journal::erreur(crate::compte_rendu::Contexte::ProtectionRelro, &e.to_string());
     }
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     protection::cle::proteger_cle();
+    // Lancé depuis la clé : ce processus attend la copie qu'il lance et ne revient pas (voir protection::cle).
+    #[cfg(windows)]
+    protection::cle::se_detacher_de_la_cle();
     protection::environnement::afficher();
     avertir_si_eleve();
     // Tant que dure l'isolement (Défense R4) : dit à chaque lancement, avec la commande qui le lève.

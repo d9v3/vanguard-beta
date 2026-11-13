@@ -4065,7 +4065,7 @@ fn outils_de_disque_quittes_sans_rien_ecrire() {
     assert!(t.contains("SAUVEGARDE AUTOMATIQUE"), "{t}");
 }
 
-/// Lancé depuis une clé (le programme copié dans <clé>/Linux, témoin vide : jamais la protection de la clé), Vanguard
+/// Lancé depuis une clé (le programme copié dans <clé>/Linux, témoin vide : jamais la remontée en lecture seule), Vanguard
 /// remplace sur accord la copie plus ancienne de cet ordinateur par lui-même ; lancé depuis cette copie, il se tourne
 /// vers GitHub. Dans le dossier temporaire de cargo, pas dans /tmp : deux programmes de debug y pèsent 250 Mo.
 /// Aucune requête vers GitHub pendant les tests : la mise à jour depuis GitHub, proposée en fin d'écran, s'arrête là.
@@ -4082,6 +4082,8 @@ fn mise_a_jour_depuis_la_cle() {
     std::fs::write(cle.join("vanguard.cle"), "").unwrap();
     let sur_la_cle = cle.join("Linux").join("vanguard");
     std::fs::copy(env!("CARGO_BIN_EXE_vanguard"), &sur_la_cle).unwrap();
+    // Le dossier de XDG_RUNTIME_DIR : le programme s'y recopie avant de tourner (protection::cle), pas dans /tmp.
+    std::fs::create_dir_all(maison.join("run")).unwrap();
     let copie = maison.join("donnees").join("vanguard").join("bin").join("vanguard");
     std::fs::create_dir_all(copie.parent().unwrap()).unwrap();
     std::fs::write(&copie, "vieille copie, sans version gravée").unwrap();
@@ -4118,6 +4120,85 @@ fn mise_a_jour_depuis_la_cle() {
         "{}",
         depuis_la_copie.texte
     );
+    let _ = std::fs::remove_dir_all(&racine);
+}
+
+/// Lancé depuis une clé (témoin `vanguard.cle`, programme dans Linux/), même chez son propriétaire, Vanguard tourne
+/// depuis une copie hors de la clé : clé retirée ou port USB coupé, rien de ce qu'il relit n'y est plus. Le processus
+/// qui tourne (/proc/<pid>/exe) n'est plus le fichier de la clé, sa copie est déjà effacée, et son dossier aussi.
+#[cfg(target_os = "linux")]
+#[test]
+fn lance_depuis_la_cle_tourne_depuis_une_copie() {
+    let racine = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("cle-independante-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&racine);
+    let (cle, maison) = (racine.join("cle"), racine.join("maison"));
+    std::fs::create_dir_all(cle.join("Linux")).unwrap();
+    std::fs::create_dir_all(maison.join("run")).unwrap();
+    std::fs::write(cle.join("vanguard.cle"), "").unwrap();
+    let sur_la_cle = cle.join("Linux").join("vanguard");
+    std::fs::copy(env!("CARGO_BIN_EXE_vanguard"), &sur_la_cle).unwrap();
+    let mut commande = Command::new(&sur_la_cle);
+    commande
+        .env("VANGUARD_LANG", "fr")
+        .env("VANGUARD_HORS_LIGNE", "1")
+        .env("USER", "essai")
+        .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
+        .env("XDG_RUNTIME_DIR", maison.join("run"))
+        .env("HOME", &maison)
+        .env("XDG_DATA_HOME", maison.join("donnees"))
+        .env("XDG_CONFIG_HOME", maison.join("config"))
+        .env("XDG_CACHE_HOME", maison.join("cache"))
+        .env_remove("VANGUARD_ORIGINE")
+        // Le menu attend sa ligne : l'entrée reste ouverte le temps de regarder le processus.
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut essais = 0;
+    let mut enfant = loop {
+        match commande.spawn() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && essais < 20 => {
+                essais += 1;
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            r => break r.expect("vanguard ne démarre pas"),
+        }
+    };
+    let texte = lire_en_fond(enfant.stdout.take().unwrap());
+    let erreurs = lire_en_fond(enfant.stderr.take().unwrap());
+    let lien = PathBuf::from(format!("/proc/{}/exe", enfant.id()));
+    let fin = Instant::now() + Duration::from_secs(60);
+    let image = loop {
+        let image = std::fs::read_link(&lien).unwrap_or_default();
+        // La copie s'efface au démarrage : Linux la montre alors « (deleted) ».
+        if image.to_string_lossy().ends_with(" (deleted)") || Instant::now() > fin {
+            break image;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    {
+        let mut entree = enfant.stdin.take().unwrap();
+        let _ = entree.write_all(b"q\n");
+    }
+    let fin = Instant::now() + Duration::from_secs(60);
+    while enfant.try_wait().unwrap().is_none() && Instant::now() < fin {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let _ = enfant.kill();
+    let _ = enfant.wait();
+    let (texte, erreurs) = (texte.join().unwrap_or_default(), erreurs.join().unwrap_or_default());
+    let image = image.to_string_lossy().into_owned();
+    let copie = PathBuf::from(image.trim_end_matches(" (deleted)"));
+    assert!(
+        copie.starts_with(maison.join("run")) && copie.ends_with("vanguard"),
+        "image {image}\n{texte}\n{erreurs}"
+    );
+    assert!(!copie.starts_with(&cle), "{image}");
+    assert!(!copie.exists(), "copie laissée : {image}");
+    assert!(
+        !copie.parent().unwrap().exists(),
+        "dossier de la copie laissé : {image}"
+    );
+    assert!(!texte.contains("tourne depuis la clé"), "{texte}");
     let _ = std::fs::remove_dir_all(&racine);
 }
 

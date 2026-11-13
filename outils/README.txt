@@ -19,6 +19,8 @@ Security of Vanguard and of the key
     ordinateurs.json (My computers: grade and problem categories of each computer, without names), which never
     goes to GitHub. Windows never starts anything by itself from a USB key (protection against viruses since
     Windows 7): double-click it.
+  - Key removed while Vanguard is running: nothing crashes. It copies itself to this computer at startup, and
+    what should have gone to the key goes into Vanguard's folder on this computer (the path is shown).
   - Protected data: if the owner protected the key's data (Vanguard menu), Vanguard asks for the passphrase on
     another computer to read the device record; Enter with nothing, it goes on without the record.
   - Signed versions: the latest version is described by a manifest (version, size and SHA-256 fingerprint of

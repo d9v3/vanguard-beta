@@ -63,6 +63,8 @@ Le programme : « vanguard.exe », dans ce dossier. Windows 10 et 11 (64 bits), 
      protection ; Vanguard ne touche jamais lui-même à Defender.
    - En anglais :  $env:VANGUARD_LANG = "en"  (PowerShell)  ou  set VANGUARD_LANG=en  (cmd), puis la
      commande.
+   - La clé peut être retirée pendant que Vanguard tourne : il s'est recopié sur cet ordinateur, et ce
+     qui devait aller sur la clé va dans le dossier de Vanguard de cet ordinateur (le chemin est dit).
    - Quitter : q dans le menu, ou Ctrl+C.
 
 6. ORDINATEUR ISOLÉ DU RÉSEAU PAR VANGUARD

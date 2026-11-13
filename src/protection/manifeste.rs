@@ -1217,16 +1217,9 @@ fn avertissement(jours: i64) -> Option<String> {
     })
 }
 
-/// Le programme tel que lancé (sur la clé, même quand c'est sa copie temporaire qui tourne).
+/// Le programme tel que lancé (sur la clé, même quand c'est sa copie sur cet ordinateur qui tourne).
 fn programme() -> Option<PathBuf> {
-    #[cfg(unix)]
-    {
-        crate::protection::cle::exe_d_origine()
-    }
-    #[cfg(windows)]
-    {
-        std::env::current_exe().ok()
-    }
+    crate::protection::cle::exe_d_origine()
 }
 
 /// Ce que dit le manifeste de la clé du programme qui tourne (`comparer_au_manifeste`) : l'écran et `--json` le
