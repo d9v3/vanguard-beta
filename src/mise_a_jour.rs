@@ -825,6 +825,7 @@ impl Tenue {
         }
         #[cfg(not(unix))]
         {
+            let _ = self;
             false
         }
     }

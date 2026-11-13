@@ -16794,7 +16794,7 @@ mod tests {
             "greffons du système qui lèvent la sauvegarde : {faux:#?}"
         );
         if !mordant {
-            return crate::essais::saute(
+            crate::essais::saute(
                 "aucun greffon du système ne lèverait la sauvegarde même du compte : le filtre de root n'est pas essayé",
             );
         }
