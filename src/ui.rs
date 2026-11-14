@@ -835,11 +835,23 @@ pub(crate) fn revenu() -> bool {
     REVENU.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Un refus ou un doute a déjà été dit par la commande en cours (`refus_dit`).
+static REFUS_DIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// R5-CODES-1 : la commande en cours a dit un refus ou un doute. Une question posée ensuite qui trouve l'entrée finie
+/// (`demander`) quitte alors avec 1, jamais 0 : sans quoi `echo o | vanguard se-mettre-a-jour` effaçait le refus du
+/// code de sortie dès la question suivante.
+pub(crate) fn refus_dit() {
+    REFUS_DIT.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Pose une question dans le terminal et retourne la réponse sans espaces autour.
 pub fn demander(question: &str) -> String {
     // Fin de l'entrée (Ctrl-D, terminal fermé, entrée redirigée) : on quitte. Le menu reposait sinon la question
-    // sans fin, en effaçant l'écran à toute vitesse (un cœur du processeur à 100 %). Vu en test.
-    reponse(question).unwrap_or_else(|| crate::machine::quitter(0))
+    // sans fin, en effaçant l'écran à toute vitesse (un cœur du processeur à 100 %). Vu en test. Avec 1 si un refus a
+    // déjà été dit (`refus_dit`).
+    reponse(question)
+        .unwrap_or_else(|| crate::machine::quitter(i32::from(REFUS_DIT.load(std::sync::atomic::Ordering::Relaxed))))
 }
 
 /// Comme `demander`, mais la fin de l'entrée donne la réponse vide, celle par défaut d'une question « [o/N] », au lieu

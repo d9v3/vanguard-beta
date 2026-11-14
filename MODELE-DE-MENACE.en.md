@@ -163,8 +163,13 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   history): this is reported as "not checked" and nothing is set up. A list of copies that is deleted, emptied,
   damaged or changed outside of Vanguard is never read as "nothing noted": a key then refuses to set up its copy, does
   not rebuild the list, and states the way out (put the latest published version on the key, then run it again from
-  the key with Internet: Vanguard checks that it is the latest signed version and rebuilds the list); the update from
-  GitHub then replaces the copy with the latest signed version only, and says so. What remains: the seals of this
+  the key with Internet: Vanguard checks that its number is not older than the latest signed version and that its
+  bytes are in the signed version history for this system, then rebuilds the list; setting up elsewhere never lifts
+  this doubt); the update from GitHub then replaces the copy with the latest signed version only, and says so; a copy
+  already at that number, or missing, is not replaced and the doubt is still reported. If the versions already seen
+  were also changed outside of Vanguard, the latest signed version is unknown until you run "vanguard
+  se-mettre-a-jour" with Internet and accept to start again from the signed version received; until then, everything
+  stays "not checked", never counted as sound. What remains: the seals of this
   register have no secret, a barrier and not a safe; a program of your account that rewrites the register along with
   its seals can have another copy noted in it, or erase the note, and a fully erased state (register and seals) looks
   like a new computer: an older key places its copy there without knowing anything. This protection only comes with
@@ -173,7 +178,8 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   for this system), a newer copy placed by a version from before this register cannot be judged and is refused. The
   way out of a list in doubt does not require a recent manifest: an old signed manifest, put back in place, can make
   an old key pass for the latest one. Monitoring, maintenance, the watcher (Linux) and "se-mettre-a-jour" return a
-  non-zero exit code after a refusal (your "n" and GitHub being unreachable are not refusals); the shortcut still
+  non-zero exit code after a refusal, even when the input ends on a question that follows it (your "n" and GitHub
+  being unreachable are not refusals); the shortcut still
   returns a zero code. Vanguard's temporary copies are recognized in the account's folder (`XDG_RUNTIME_DIR` or
   `TMPDIR`): a program of the account can place an exact copy of Vanguard there and have it taken for the key of the
   launch; no gain found for it, as it already has the account's rights.

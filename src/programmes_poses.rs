@@ -95,7 +95,7 @@ struct Pose {
 struct Fichier {
     #[serde(default)]
     taches: BTreeMap<String, Pose>,
-    /// Les copies que Vanguard a lui-même posées (`copie_posee` : depuis des octets vérifiés, ou une mise à jour signée)
+    /// Les copies que Vanguard a lui-même posées (`copie_posee_ici` : depuis des octets vérifiés, ou une mise à jour signée)
     /// : chemin → empreinte BLAKE3 et version. Sans elles, une copie trouvée dans bin/ ne se distinguait pas d'un fichier
     /// posé là par un autre programme du compte, et `noter` la scellait comme celle de Vanguard.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -103,8 +103,9 @@ struct Fichier {
     /// R4-REGISTRE-1 : la liste a été réécrite par Vanguard par-dessus une liste qui ne pouvait pas être crue
     /// (effacée, abîmée ou réécrite hors de Vanguard alors qu'un sceau l'attendait). Ce qu'elle disait des copies est
     /// perdu : une copie plus récente y était peut-être notée. Tant que ce drapeau tient, aucune copie n'y est crue
-    /// (`copie_notee_dans` rend le doute, `connue` rend faux) ; seule une pose qui a passé la garde du registre (une clé
-    /// à la dernière version publiée et signée, ou cette version reçue de GitHub) le lève (`copie_posee_dans`).
+    /// (`copie_notee_dans` rend le doute, `connue` rend faux) ; seule une pose À LA COPIE DE CET ORDINATEUR qui a passé
+    /// la garde du registre (une clé prouvée la dernière version signée, ou cette version reçue de GitHub) le lève
+    /// (`copie_posee_ici`). Une pose ailleurs (R5-REGISTRE-1 : un Vanguard mis à jour dans ~/Téléchargements) jamais.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     copies_douteuses: bool,
     /// Pareil pour les tâches : une tâche sans entrée n'est pas « posée par une version d'avant » (premier usage,
@@ -183,7 +184,7 @@ impl Fichier {
     }
 
     /// `empreinte` est-elle celle d'un programme que Vanguard a posé à `chemin` ? Seule la liste des copies compte
-    /// (écrite par `copie_posee`, après une pose depuis des octets vérifiés ou une mise à jour signée). Un sceau de
+    /// (écrite par `copie_posee_ici`, après une pose depuis des octets vérifiés ou une mise à jour signée). Un sceau de
     /// tâche, lui, ne prouve pas une pose (R1-M1) : le bilan scelle au premier usage le programme de toute tâche qui
     /// n'a pas encore d'entrée, quel qu'il soit, et une unité posée par un autre programme du compte en aurait fait
     /// « une copie de Vanguard ».
@@ -344,18 +345,22 @@ fn a_sceller(
 /// sont scellées. Un nom sans chemin (le programme ne s'est pas situé) n'a rien à sceller : le bilan le dit non
 /// vérifié.
 pub(crate) fn noter(t: Tache, chemin: &Path, texte: &std::io::Result<Vec<u8>>) {
+    noter_dans(&crate::socle::dossier_local(), t, chemin, texte);
+}
+
+/// `noter` dans le registre de `dossier`.
+pub(crate) fn noter_dans(dossier: &Path, t: Tache, chemin: &Path, texte: &std::io::Result<Vec<u8>>) {
     if !chemin.is_absolute() {
         return;
     }
     let copie = crate::mise_a_jour::copie_de_cet_ordinateur();
-    let dossier = crate::socle::dossier_local();
-    let poses = lire_dans(&dossier).ok();
+    let poses = lire_dans(dossier).ok();
     // L'image qui tourne compte aussi sous Windows pour la copie (le fichier tenu au départ) ; `soi` reste celle de
     // Linux pour le reste, comme le bilan.
     let image = crate::protection::cle::image_qui_tourne();
     let r = empreinte_de(chemin).map_err(std::io::Error::other).and_then(|lu| {
         retenir_dans(
-            &dossier,
+            dossier,
             t,
             chemin,
             a_sceller(chemin, lu, soi(), image.as_deref(), &copie, poses.as_ref()),
@@ -385,12 +390,18 @@ pub(crate) fn oublier(t: Tache) {
     oublier_dans(&crate::socle::dossier_local(), t);
 }
 
-/// Vanguard vient de mettre `octets` à la place de `cible` (sa copie de cet ordinateur, une mise à jour) : chaque
-/// tâche qui la lance garde un sceau juste. Rend les tâches concernées. Lève le doute sur les copies
-/// (`copies_douteuses`) : n'y mènent que les poses qui ont passé la garde du registre (`mise_a_jour::retour_en_arriere`
-/// : une clé à la dernière version publiée et signée) et la dernière version signée reçue de GitHub ; les copies
-/// d'avant le doute, jamais crues, sont oubliées.
+/// `copie_posee_ici` quand `cible` est la copie de cet ordinateur (essais, et la copie gardée par `poser_copie_dans`).
 pub(crate) fn copie_posee_dans(dossier: &Path, cible: &Path, octets: &[u8]) -> Vec<Tache> {
+    copie_posee_ici(dossier, cible, octets, cible)
+}
+
+/// Vanguard vient de mettre `octets` à la place de `cible` (sa copie de cet ordinateur `ici`, ou un autre programme
+/// mis à jour depuis GitHub) : chaque tâche qui la lance garde un sceau juste. Rend les tâches concernées. Lève le
+/// doute sur les copies (`copies_douteuses`) seulement si `cible` est la copie `ici` : n'y mènent que les poses qui
+/// ont passé la garde du registre (`mise_a_jour::retour_en_arriere`, sortie prouvée par `sortie_du_doute`) et la
+/// dernière version signée reçue de GitHub ; les copies d'avant le doute, jamais crues, sont oubliées. Une pose à un
+/// autre chemin (R5-REGISTRE-1) n'a rien prouvé pour la copie : le doute reste.
+pub(crate) fn copie_posee_ici(dossier: &Path, cible: &Path, octets: &[u8], ici: &Path) -> Vec<Tache> {
     let empreinte = blake3::hash(octets).to_hex().to_string();
     let copie = Copie::Notee {
         empreinte: empreinte.clone(),
@@ -398,12 +409,12 @@ pub(crate) fn copie_posee_dans(dossier: &Path, cible: &Path, octets: &[u8]) -> V
     };
     let mut touchees = Vec::new();
     let r = changer_dans(dossier, |f| {
-        let levee = std::mem::take(&mut f.copies_douteuses);
+        let levee = meme_chemin(cible, ici) && std::mem::take(&mut f.copies_douteuses);
         if levee {
             f.copies.clear();
         }
-        // Une entrée d'avant (sans version) est réécrite avec elle.
-        let copie_changee = levee || f.copie_a(cible) != Some(&copie);
+        // Une entrée d'avant (sans version) est réécrite avec elle ; sous le doute, toujours (rien n'y est lu).
+        let copie_changee = levee || f.copies_douteuses || f.copie_a(cible) != Some(&copie);
         if copie_changee {
             f.copies.retain(|c, _| !meme_chemin(Path::new(c), cible));
             f.copies.insert(cible.display().to_string(), copie.clone());
@@ -424,10 +435,6 @@ pub(crate) fn copie_posee_dans(dossier: &Path, cible: &Path, octets: &[u8]) -> V
         Echec::echoue("programmes_poses/noter", e.to_string()).journaliser();
     }
     touchees
-}
-
-pub(crate) fn copie_posee(cible: &Path, octets: &[u8]) -> Vec<Tache> {
-    copie_posee_dans(&crate::socle::dossier_local(), cible, octets)
 }
 
 /// Deux chemins du même programme : sous Windows, sans « \\?\ » ni casse ; ailleurs tels quels, puis canoniques.
@@ -551,17 +558,32 @@ enum Signee {
     Inconnu(String),
 }
 
-fn signee(programme: &Path) -> Signee {
+/// Ce que l'historique signé dit d'une empreinte (le type de `mise_a_jour::version_signee`, qui n'est pas changé ici).
+type VueSignee = Result<Option<(String, String)>, String>;
+
+/// `vue` : l'historique signé interrogé par l'empreinte SHA-256 du programme (`mise_a_jour::version_signee`, sauf
+/// aux essais) ; `dossier` : celui du registre scellé.
+fn signee_dans(dossier: &Path, programme: &Path, vue: impl FnOnce(&[u8; 32]) -> VueSignee) -> Signee {
     let Some(sha) = crate::protection::empreintes::sha256(programme) else {
         return Signee::Inconnu(tr!("programme illisible", "unreadable program").to_string());
     };
-    // R4-REGISTRE-2 : la version notée pour cette copie compte aussi ; une liste en doute n'en donne aucune (le doute
-    // est dit par la tâche elle-même).
-    let notee = copie_notee_dans(&crate::socle::dossier_local(), programme)
-        .ok()
-        .flatten()
-        .and_then(|c| c.version);
-    classer(crate::mise_a_jour::version_signee(&sha), notee.as_deref())
+    // R4-REGISTRE-2 : la version notée pour cette copie compte aussi.
+    let notee = copie_notee_dans(dossier, programme);
+    let version = notee.as_ref().ok().cloned().flatten().and_then(|c| c.version);
+    sous_doute(classer(vue(&sha), version.as_deref()), notee.err())
+}
+
+/// R5-REGISTRE-4 : une liste des copies en doute a perdu la version notée ; une version signée n'y est donc jamais
+/// crue « au moins aussi récente » (`Oui`, renotée sans rien dire) : non vérifiée, dite à chaque bilan.
+fn sous_doute(s: Signee, doute: Option<Doute>) -> Signee {
+    match (s, doute) {
+        (Signee::Oui(_), Some(d)) => Signee::Inconnu(trf!(
+            "la liste des copies posées par Vanguard {}",
+            "the list of copies set up by Vanguard {}",
+            d.texte()
+        )),
+        (s, _) => s,
+    }
 }
 
 /// Ce que dit l'historique signé d'un programme remplacé. Une version signée plus ancienne que ce Vanguard, ou que la
@@ -707,10 +729,10 @@ pub(crate) fn autre_chemin(t: Tache, programme: &Path, pose: &str) -> Constat {
         .unwrap_or_else(|| crate::machine::impossible("Surveillance", pose))
 }
 
-/// L'empreinte notée pour la tâche `t` (essais d'autres modules).
+/// L'empreinte notée pour la tâche `t` dans le registre de `dossier` (essais d'autres modules).
 #[cfg(test)]
-pub(crate) fn empreinte_notee(t: Tache) -> Option<String> {
-    lire_dans(&crate::socle::dossier_local())
+pub(crate) fn empreinte_notee_dans(dossier: &Path, t: Tache) -> Option<String> {
+    lire_dans(dossier)
         .ok()?
         .taches
         .get(t.cle())
@@ -724,16 +746,31 @@ pub(crate) fn empreinte_notee(t: Tache) -> Option<String> {
 /// pour les autres tâches.
 pub(crate) fn constat(t: Tache, programme: &Path, texte: &std::io::Result<Vec<u8>>) -> Option<Constat> {
     let dossier = crate::socle::dossier_local();
+    constat_dans(&dossier, t, programme, texte, soi(), |p| {
+        signee_dans(&dossier, p, crate::mise_a_jour::version_signee)
+    })
+}
+
+/// `constat` sur le registre de `dossier`, avec `soi` et l'historique (`signee`) donnés : les essais jugent par le
+/// même chemin que le bilan (R5-ESSAIS-1), jamais par une recopie de son branchement.
+fn constat_dans(
+    dossier: &Path,
+    t: Tache,
+    programme: &Path,
+    texte: &std::io::Result<Vec<u8>>,
+    soi: Option<&str>,
+    signee: impl FnOnce(&Path) -> Signee,
+) -> Option<Constat> {
     let lu = empreinte_de(programme);
     let texte = empreinte_texte(texte);
-    let poses = lire_dans(&dossier);
+    let poses = lire_dans(dossier);
     let pose = poses.as_ref().map_err(|d| *d).and_then(|f| f.tache(t));
     let ancien_texte = pose.as_ref().ok().and_then(|p| p.and_then(|p| p.texte.clone()));
-    let j = juger(programme, &lu, pose, soi(), &texte);
+    let j = juger(programme, &lu, pose, soi, &texte);
     let signe = (j == Jugement::Remplace).then(|| signee(programme));
     let renoter = a_renoter(&j, signe.as_ref(), ancien_texte, texte.ok());
     if let (Some(Renoter(texte)), Ok(e)) = (renoter, &lu) {
-        let _ = retenir_dans(&dossier, t, programme, e.clone(), texte);
+        let _ = retenir_dans(dossier, t, programme, e.clone(), texte);
     }
     constat_de(t, programme, &j, signe.as_ref())
 }
@@ -1300,6 +1337,97 @@ mod tests {
             juger_dans(&d, Tache::Veilleur, &p, None, UNITE),
             Jugement::NonVerifie(_)
         ));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Une liste des copies en doute (sa note effacée, puis une tâche reposée : `Doute::Herite`).
+    fn liste_en_doute(nom: &str) -> (PathBuf, PathBuf, Vec<u8>) {
+        let d = jetable(nom);
+        let octets = crate::mise_a_jour::grave("0.99.0+1700000000");
+        let p = programme(&d, &octets);
+        copie_posee_dans(&d, &p, &octets);
+        poser(&d, Tache::Surveillance, &p);
+        std::fs::remove_file(d.join(FICHIER)).unwrap();
+        poser(&d, Tache::Surveillance, &p);
+        assert!(matches!(copie_notee_dans(&d, &p), Err(Doute::Herite)));
+        (d, p, octets)
+    }
+
+    /// R5-REGISTRE-1 : une pose à un autre chemin que la copie de cet ordinateur (un autre programme mis à jour depuis
+    /// GitHub) ne prouve rien pour la copie : le doute reste ; seule la pose de la copie elle-même le lève.
+    #[test]
+    fn pose_ailleurs_ne_leve_jamais_le_doute() {
+        let (d, p, octets) = liste_en_doute("pose-ailleurs");
+        let autre = d.join("autre-programme");
+        std::fs::write(&autre, &octets).unwrap();
+        copie_posee_ici(&d, &autre, &octets, &p);
+        assert!(matches!(copie_notee_dans(&d, &p), Err(Doute::Herite)));
+        assert!(matches!(copie_notee_dans(&d, &autre), Err(Doute::Herite)));
+        copie_posee_ici(&d, &p, &octets, &p);
+        assert_eq!(
+            copie_notee_dans(&d, &p).unwrap().and_then(|c| c.version),
+            Some("0.99.0+1700000000".into())
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// R5-REGISTRE-4 : seule une réponse `Oui` devient non vérifiée sous le doute ; le reste garde son sens.
+    #[test]
+    fn version_signee_sous_doute_jamais_crue() {
+        let oui = || Signee::Oui("99.0.0".into());
+        assert!(
+            matches!(sous_doute(oui(), Some(Doute::Herite)), Signee::Inconnu(m) if m.contains(Doute::Herite.texte()))
+        );
+        assert_eq!(sous_doute(oui(), None), oui());
+        assert_eq!(sous_doute(Signee::Non, Some(Doute::Adopte)), Signee::Non);
+        assert_eq!(
+            sous_doute(Signee::Ancienne("0.1.0".into()), Some(Doute::Adopte)),
+            Signee::Ancienne("0.1.0".into())
+        );
+    }
+
+    /// R5-ESSAIS-1 et R5-REGISTRE-4, par le chemin du bilan (`constat_dans`, `signee_dans`) : sous une liste en doute,
+    /// une tâche sans entrée est dite non vérifiée sans être notée, et un programme remplacé par une version signée
+    /// plus récente reste non vérifié, son sceau intact. Sans doute, la même version signée est renotée (l'essai
+    /// n'est pas aveugle).
+    #[test]
+    fn bilan_sous_doute_dit_non_verifie_sans_rien_noter() {
+        let signee_99 = |_: &[u8; 32]| Ok(Some(("99.0.0".to_string(), "linux-x86_64".to_string())));
+        let unite = Ok(UNITE.to_vec());
+        let (d, p, _) = liste_en_doute("bilan-doute");
+        let c = constat_dans(&d, Tache::Veilleur, &p, &unite, None, |q| signee_dans(&d, q, signee_99)).unwrap();
+        assert!(!c.verifie, "{}", c.message);
+        assert!(!lire_dans(&d).unwrap().taches.contains_key(Tache::Veilleur.cle()));
+        std::fs::write(&p, crate::mise_a_jour::grave("99.0.0+1800000000")).unwrap();
+        let avant = lire_dans(&d).unwrap().taches[Tache::Surveillance.cle()]
+            .empreinte
+            .clone();
+        let c = constat_dans(&d, Tache::Surveillance, &p, &unite, None, |q| {
+            signee_dans(&d, q, signee_99)
+        })
+        .unwrap();
+        assert!(!c.verifie && c.probleme == Some(Niveau::Moyen), "{}", c.message);
+        assert_eq!(
+            lire_dans(&d).unwrap().taches[Tache::Surveillance.cle()].empreinte,
+            avant
+        );
+        let _ = std::fs::remove_dir_all(&d);
+        // Témoin : la même chose sans doute est renotée.
+        let d = jetable("bilan-temoin");
+        let octets = crate::mise_a_jour::grave("0.99.0+1700000000");
+        let p = programme(&d, &octets);
+        copie_posee_dans(&d, &p, &octets);
+        poser(&d, Tache::Surveillance, &p);
+        std::fs::write(&p, crate::mise_a_jour::grave("99.0.0+1800000000")).unwrap();
+        let c = constat_dans(&d, Tache::Surveillance, &p, &unite, None, |q| {
+            signee_dans(&d, q, signee_99)
+        })
+        .unwrap();
+        assert_eq!(c.probleme, Some(Niveau::Info), "{}", c.message);
+        assert_eq!(
+            lire_dans(&d).unwrap().taches[Tache::Surveillance.cle()].empreinte,
+            empreinte_de(&p).unwrap()
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 

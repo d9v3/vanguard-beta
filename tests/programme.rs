@@ -7050,6 +7050,65 @@ fn copie_plus_recente_inconnue_dite_non_verifiee_a_la_mise_a_jour() {
         s.erreurs
     );
     assert_eq!(std::fs::read(&copie).unwrap(), ETRANGERE, "{t}");
+    // R5-CODES-1 : un refus « non vérifié » ne rend jamais 0, même quand l'entrée finit sur une question suivante.
+    assert_ne!(s.code, Some(0), "code 0 après un refus\n{t}");
+    let _ = std::fs::remove_dir_all(&racine);
+}
+
+/// R5-CODES-1 : après un refus, l'entrée qui se termine sur la question suivante (« Repartir de la version signée
+/// reçue ? », les versions déjà vues changées hors de Vanguard) rend un code non nul : la fin d'entrée n'efface pas le
+/// refus déjà dit.
+#[cfg(target_os = "linux")]
+#[test]
+fn fin_d_entree_apres_un_refus_jamais_code_zero() {
+    let (racine, sur_la_cle, maison) = cle_et_maison("maj-refus-fin-entree");
+    let copie = copie_locale(&maison);
+    std::fs::create_dir_all(copie.parent().unwrap()).unwrap();
+    std::fs::write(&copie, ETRANGERE).unwrap();
+    let vues = registre_local(&maison)
+        .parent()
+        .unwrap()
+        .join("versions")
+        .join("plus-haute-vue.txt");
+    std::fs::create_dir_all(vues.parent().unwrap()).unwrap();
+    std::fs::write(&vues, "0.1.0+1").unwrap();
+    let s = vanguard_dans_env(&sur_la_cle, &maison, "fr", &["se-mettre-a-jour"], "", 120, HORS_LIGNE);
+    let t = a_plat(&s.texte);
+    assert!(
+        t.contains("Non vérifié : la copie d'ici se dit plus récente") && t.contains("Repartir de la version signée"),
+        "{t}\n{}",
+        s.erreurs
+    );
+    assert_ne!(s.code, Some(0), "code 0 en fin d'entrée après un refus\n{t}");
+    assert_eq!(std::fs::read(&copie).unwrap(), ETRANGERE, "{t}");
+    let _ = std::fs::remove_dir_all(&racine);
+}
+
+/// R5-ESSAIS-2 : une copie de cet ordinateur qui ne se lit pas a une version inconnue : « se-mettre-a-jour » le dit,
+/// n'y touche pas, et rend un code non nul (jamais compté comme à jour).
+#[cfg(target_os = "linux")]
+#[test]
+fn copie_illisible_jamais_comptee_a_jour() {
+    use std::os::unix::fs::PermissionsExt;
+    let (racine, sur_la_cle, maison) = cle_et_maison("maj-copie-illisible");
+    let copie = copie_locale(&maison);
+    std::fs::create_dir_all(copie.parent().unwrap()).unwrap();
+    std::fs::write(&copie, ETRANGERE).unwrap();
+    std::fs::set_permissions(&copie, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read(&copie).is_ok() {
+        let _ = std::fs::remove_dir_all(&racine);
+        return essais::saute("lancé en root : un fichier 000 reste lisible");
+    }
+    let s = vanguard_dans_env(&sur_la_cle, &maison, "fr", &["se-mettre-a-jour"], "", 120, HORS_LIGNE);
+    std::fs::set_permissions(&copie, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let t = a_plat(&s.texte);
+    assert!(
+        t.contains("La copie de cet ordinateur ne se lit pas") && !t.contains("est à jour"),
+        "{t}\n{}",
+        s.erreurs
+    );
+    assert_ne!(s.code, Some(0), "code 0 avec une copie illisible\n{t}");
+    assert_eq!(std::fs::read(&copie).unwrap(), ETRANGERE, "{t}");
     let _ = std::fs::remove_dir_all(&racine);
 }
 

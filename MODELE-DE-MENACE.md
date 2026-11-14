@@ -171,9 +171,14 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   l'historique signé des versions) : c'est dit « non vérifié » et rien n'est posé. Une liste des copies effacée, vidée,
   abîmée ou changée hors de Vanguard n'est jamais lue comme « rien de noté » : une clé refuse alors de poser sa copie,
   ne refait pas la liste, et dit la sortie (remettre la clé à la dernière version publiée, puis relancer depuis la clé
-  avec Internet : Vanguard vérifie qu'elle est la dernière version signée et refait la liste) ; la mise à jour depuis
-  GitHub remplace alors la copie par la dernière version signée seulement, et le dit. Ce qui reste : les sceaux de ce
-  registre sont sans secret, une barrière et pas un coffre ; un programme de votre compte qui réécrit le registre avec
+  avec Internet : Vanguard vérifie que son numéro n'est pas plus ancien que la dernière version signée et que ses
+  octets sont dans l'historique signé des versions pour ce système, puis refait la liste ; une pose ailleurs ne lève
+  jamais ce doute) ; la mise à jour depuis GitHub remplace alors la copie par la dernière version signée seulement, et
+  le dit ; une copie déjà à ce numéro, ou absente, n'est pas remplacée et le doute reste dit. Si les versions déjà vues
+  ont aussi été changées hors de Vanguard, la dernière version signée est inconnue jusqu'à ce que vous lanciez
+  « vanguard se-mettre-a-jour » avec Internet et acceptiez de repartir de la version signée reçue ; d'ici là, tout reste
+  « non vérifié », jamais compté sain. Ce qui reste : les sceaux de ce registre sont sans secret, une barrière et pas un
+  coffre ; un programme de votre compte qui réécrit le registre avec
   ses sceaux peut y faire noter une autre copie, ou effacer la note, et un état entièrement effacé (registre et sceaux)
   ressemble à un ordinateur neuf : une clé plus ancienne y repose sa copie sans rien en savoir. Cette protection ne
   vient qu'avec les versions qui la contiennent : une clé publiée avant elle ne lit pas la liste des copies. Quand
@@ -181,8 +186,9 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   version publiée pour ce système), une copie plus récente posée par une version d'avant ce registre ne peut pas être
   jugée et est refusée. La sortie d'une liste en doute ne demande pas un manifeste récent : un ancien manifeste signé,
   remis en place, peut faire passer une clé ancienne pour la dernière. La surveillance, l'entretien, le veilleur
-  (Linux) et « se-mettre-a-jour » rendent un code de sortie non nul après un refus (un « n » de votre part et GitHub
-  injoignable n'en sont pas) ; le raccourci rend encore un code nul. Les copies temporaires de Vanguard sont reconnues
+  (Linux) et « se-mettre-a-jour » rendent un code de sortie non nul après un refus, même quand l'entrée se termine sur
+  une question qui le suit (un « n » de votre part et GitHub injoignable n'en sont pas) ; le raccourci rend encore un
+  code nul. Les copies temporaires de Vanguard sont reconnues
   dans le dossier du compte (`XDG_RUNTIME_DIR` ou `TMPDIR`) : un programme du compte peut y poser une copie exacte de
   Vanguard et la faire prendre pour la clé du lancement ; aucun gain trouvé pour lui, qui a déjà les droits du compte.
 

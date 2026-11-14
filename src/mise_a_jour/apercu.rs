@@ -670,8 +670,17 @@ fn agir(m: &dyn Monde, accord: &str, consommer: impl FnOnce() -> Result<(), carn
         Source::Cle { octets, fenetre } => {
             for (((chemin, visee), f), vue) in plan.cibles.iter().zip(&plan.fenetres).zip(&plan.vues) {
                 let r = match (&fenetre, f) {
-                    (Some(o), Some(f)) => sa_fenetre::installer_avec(&octets, chemin, *visee, essai, o, f, vue),
-                    _ => installer(&octets, chemin, *visee, essai),
+                    (Some(o), Some(f)) => sa_fenetre::installer_avec(
+                        &octets,
+                        chemin,
+                        *visee,
+                        &crate::socle::dossier_local(),
+                        essai,
+                        o,
+                        f,
+                        vue,
+                    ),
+                    _ => installer(&octets, chemin, *visee, &crate::socle::dossier_local(), essai),
                 };
                 noter_la_pose(&mut faites, &octets, chemin, f.as_deref(), r);
             }
@@ -695,7 +704,15 @@ fn agir(m: &dyn Monde, accord: &str, consommer: impl FnOnce() -> Result<(), carn
                 Ok(f)
             };
             for (((chemin, visee), f), vue) in plan.cibles.iter().zip(&plan.fenetres).zip(&plan.vues) {
-                let r = sa_fenetre::installer_avec_sa_fenetre(&octets, chemin, *visee, essai, vue, &mut recevoir);
+                let r = sa_fenetre::installer_avec_sa_fenetre(
+                    &octets,
+                    chemin,
+                    *visee,
+                    &crate::socle::dossier_local(),
+                    essai,
+                    vue,
+                    &mut recevoir,
+                );
                 noter_la_pose(&mut faites, &octets, chemin, f.as_deref(), r);
             }
         }
