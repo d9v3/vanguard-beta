@@ -4957,9 +4957,11 @@ fn commandes_shell(texte: &str) -> Vec<Vec<String>> {
 /// d'uwsm du système d'Omarchy (/usr/share/uwsm/env.d/10-omarchy, à root seul, donc sauté) l'inclut par une ligne
 /// qui n'est pas simple (« [ -f … ] && . … ») ; ne plus le lire tairait ce qu'il pose. Un fichier qu'un fichier
 /// d'uwsm inclut se suit à part (`bureau_d_uwsm`, `environnement_change_la_sauvegarde`). Tout `env-*` se garde, quel que soit le bureau (un nom
-/// en majuscules aussi : « tr » dépend de la langue). Dans un « .d », seuls les noms qu'uwsm saute (« *.bak »,
-/// « *~ », « *.disabled », « *.example », « *.sample », « *.broken ») sont passés ; ses fichiers cachés, qu'uwsm ne
-/// lit que si le shell les fait voir (GLOBIGNORE, dotglob), se lisent : un fichier de trop se lit. Une seule
+/// en majuscules aussi : « tr » dépend de la langue). Dans un « .d », les noms qu'uwsm saute sont passés : ceux en
+/// « *.bak », « *~ », « *.disabled », « *.example », « *.sample », « *.broken », et (N7-3, revérification de la
+/// ronde 7) les fichiers cachés, que son motif « "${1}/"* » ne voit pas (un « .10-x.swp » de vim, un « .cache »).
+/// Un fichier d'uwsm qui les ferait voir (GLOBIGNORE) est dit non vérifié (`variable_speciale_du_shell`) ; un
+/// BASHOPTS hérité de la session avec « dotglob » ne se lit pas ici : limite écrite au CHANGELOG. Une seule
 /// liste pour ~/.config/uwsm et pour tout autre dossier où uwsm cherche (S-4, re-contrôle 2 0.95) : un lien se suit
 /// comme uwsm le suit, « [ -d ] » et « [ -f ] » ; un « env.d » qui est un lien vers un dossier se descend, un lien vers
 /// un dossier n'est pas un fichier. Les dossiers qui ne se lisent pas vont dans `illisibles`, jamais tus. Dans l'ordre
@@ -5008,7 +5010,7 @@ fn fichiers_d_uwsm(dossier: &Path, illisibles: &mut Vec<std::path::PathBuf>) -> 
             let nom = nom.to_string_lossy();
             // N6-2 : ce qu'uwsm ne lit jamais ne se juge pas, ni ne se dit illisible.
             if (haut && !nom.starts_with("env") && nom != INCLUS_PAR_OMARCHY)
-                || (!haut && SAUTES_PAR_UWSM.iter().any(|s| nom.ends_with(s)))
+                || (!haut && (nom.starts_with('.') || SAUTES_PAR_UWSM.iter().any(|s| nom.ends_with(s))))
             {
                 continue;
             }
@@ -5528,12 +5530,56 @@ enum LigneSimple<'a> {
 #[derive(Debug, PartialEq, Eq)]
 struct ValeurSimple<'a> {
     /// Le texte, sans ses apostrophes ou ses guillemets doubles ; « $HOME », « ${HOME} », « $PATH » et « ${PATH} »
-    /// y restent écrits tels quels.
+    /// y restent écrits tels quels, à leurs seules places permises (`valeur_litterale`) : la valeur à juger est
+    /// `calculer`, jamais ce texte.
     texte: &'a str,
     /// Elle lit « $HOME » ou « $PATH » (entre guillemets doubles).
     calculee: bool,
     /// Elle lit « $HOME » : jugée avec le dossier personnel, sauf si un fichier d'uwsm pose HOME.
     lit_maison: bool,
+}
+
+impl ValeurSimple<'_> {
+    /// N7-1 (revérification de la ronde 7) : la valeur que le shell pose, calculée avant d'être jugée. Chaque morceau
+    /// entre « : » : « $PATH » devient `chemin` (le PATH déjà posé), « $HOME/… » le dossier personnel `maison` suivi
+    /// du reste, puis chaque morceau qui commence par « / » se simplifie (« .. », « // », « . » : `chemin_simplifie`).
+    /// Le texte calculé se juge comme une valeur écrite en toutes lettres : « $HOME/../alice/.x » comme
+    /// « /home/alice/.x ».
+    fn calculer(&self, maison: &str, chemin: &str) -> String {
+        if !self.calculee {
+            return self.texte.to_string();
+        }
+        let maison = maison.trim_end_matches('/');
+        self.texte
+            .split(':')
+            .map(|morceau| {
+                let ecrit = match morceau_de_maison(morceau) {
+                    Some(reste) => format!("{maison}{reste}"),
+                    None if morceau == "$PATH" || morceau == "${PATH}" => return chemin.to_string(),
+                    None => morceau.to_string(),
+                };
+                if ecrit.starts_with('/') {
+                    chemin_simplifie(&ecrit)
+                } else {
+                    ecrit
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(":")
+    }
+}
+
+/// Le PATH que le shell d'uwsm reçoit, tenu pour les seuls dossiers du système : ce qui le pose ailleurs se juge là
+/// où c'est écrit (N7-1).
+const CHEMIN_DU_SYSTEME: &str = "/usr/local/sbin:/usr/local/bin:/usr/bin";
+
+/// Le reste d'un morceau (entre « : ») qui commence par « $HOME » ou « ${HOME} » suivi de « / » ou de rien, ou
+/// `None` : « $HOME_X », « $HOMEé », « ${HOME}x » ne lisent pas HOME à cette seule place (N7-1).
+fn morceau_de_maison(morceau: &str) -> Option<&str> {
+    ["${HOME}", "$HOME"]
+        .iter()
+        .find_map(|d| morceau.strip_prefix(d))
+        .filter(|reste| reste.is_empty() || reste.starts_with('/'))
 }
 
 /// N5-1 à N5-3 : une ligne qu'on lit sans lire le shell, ou `None`. Permis seulement : une ligne vide, un commentaire
@@ -5575,8 +5621,11 @@ fn ligne_simple(ligne: &str) -> Option<LigneSimple<'_>> {
 /// texte. Trois formes, la valeur entière :
 /// - entre apostrophes : tout texte, sans apostrophe ni octet de contrôle (espace et tabulation permis) ;
 /// - entre guillemets doubles (ronde 7) : tout texte sans guillemet double, « ` », « \ » ni octet de contrôle (espace
-///   et tabulation permis) ; « $ » seulement dans « $HOME », « ${HOME} », « $PATH », « ${PATH} » (« $HOME » suivi
-///   d'une lettre, d'un chiffre ou de « _ » serait une autre variable) : `export PATH="$HOME/.local/bin:$PATH"` ;
+///   et tabulation permis) ; « $ » seulement (N7-1, revérification de la ronde 7) dans « $PATH » ou « ${PATH} » qui
+///   fait un morceau entier entre « : » (ou la valeur entière), et dans « $HOME » ou « ${HOME} » au tout début d'un
+///   morceau, suivi de « / » ou de la fin du morceau : `export PATH="$HOME/.local/bin:$PATH"`. Toute autre place
+///   (« /$HOME/.x », « $PATH/.x », « ${HOME}${HOME} », « $HOMEé ») n'est pas simple : la valeur se calcule morceau par
+///   morceau (`ValeurSimple::calculer`), sans deviner ce que donnerait un texte collé à une variable ;
 /// - sans guillemets : sans blanc, octet de contrôle, ni rien que le shell change : guillemets, « $ », « ` », « ( »,
 ///   « ) », « ; », « & », « | », « < », « > », « \ », « # », et (N6-1, revérification de la ronde 6) « ~ », « { »,
 ///   « } », que bash développe dans les arguments d'« export » et après « = » ou « : » (`~+`, `~nom`, `a{1,2}`,
@@ -5595,31 +5644,27 @@ fn valeur_litterale(valeur: &str) -> Option<ValeurSimple<'_>> {
     }
     if let Some(dedans) = valeur.strip_prefix('"') {
         let dedans = dedans.strip_suffix('"')?;
+        if dedans
+            .chars()
+            .any(|c| matches!(c, '"' | '`' | '\\') || !blanc_ou_texte(c))
+        {
+            return None;
+        }
         let mut v = fixe(dedans);
-        let mut reste = dedans;
-        while let Some(c) = reste.chars().next() {
-            if let Some(apres) = reste.strip_prefix('$') {
-                let (nom, suite) = match apres.strip_prefix('{') {
-                    Some(accolade) => accolade.split_once('}')?,
-                    None => apres.split_at_checked(
-                        apres
-                            .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-                            .unwrap_or(apres.len()),
-                    )?,
-                };
-                match nom {
-                    "HOME" => v.lit_maison = true,
-                    "PATH" => {}
-                    _ => return None,
+        // N7-1 (revérification de la ronde 7) : « $ » seulement aux places où la valeur se calcule sans deviner.
+        for morceau in dedans.split(':') {
+            match morceau_de_maison(morceau) {
+                Some(reste) => {
+                    v.lit_maison = true;
+                    v.calculee = true;
+                    if reste.contains('$') {
+                        return None;
+                    }
                 }
-                v.calculee = true;
-                reste = suite;
-                continue;
+                None if morceau == "$PATH" || morceau == "${PATH}" => v.calculee = true,
+                None if morceau.contains('$') => return None,
+                None => {}
             }
-            if matches!(c, '"' | '`' | '\\') || !blanc_ou_texte(c) {
-                return None;
-            }
-            reste = reste.get(c.len_utf8()..)?;
         }
         return Some(v);
     }
@@ -7214,6 +7259,8 @@ fn juger_configuration(
         } else {
             ecrites.iter().enumerate().map(|(n, e)| (n, *e, *e)).collect()
         };
+        // N7-1 : le PATH que lit « $PATH », posé par les lignes simples d'avant de ce fichier.
+        let mut chemins = vec![CHEMIN_DU_SYSTEME.to_string(); maisons.len()];
         for (n, ecrite, l) in lignes {
             if prechargement_selon(l, sorte) {
                 t.sources
@@ -7229,7 +7276,7 @@ fn juger_configuration(
                     n.saturating_add(1)
                 ));
             } else if !commentaire_selon(l, sorte)
-                && let Some(raison) = variable_de_configuration(l, &maisons)
+                && let Some(raison) = variable_de_configuration(l, &maisons, &mut chemins)
                     .or_else(|| (!demarrage.contains(f)).then(|| commande_suspecte(l, false)).flatten())
             {
                 t.sources
@@ -7254,7 +7301,7 @@ fn juger_configuration(
 /// dossier caché ou temporaire (`variable_suspecte`), ou `None` : « NOM=valeur » (environment.d, profils, avec
 /// « export », « declare -x »), « setenv NOM valeur » (csh), « set -gx NOM valeur » (fish), et les variables de
 /// « DefaultEnvironment= » et « ManagerEnvironment= » (user.conf de systemd ; relecture adverse 2, N8).
-fn variable_de_configuration(ligne: &str, maisons: &[&str]) -> Option<&'static str> {
+fn variable_de_configuration(ligne: &str, maisons: &[&str], chemins: &mut [String]) -> Option<&'static str> {
     let l = ligne.trim();
     // systemd ôte les blancs autour du « = » (vérification 3, P10 : « DefaultEnvironment = A=b »).
     if let Some((cle, v)) = l.split_once('=')
@@ -7274,15 +7321,57 @@ fn variable_de_configuration(ligne: &str, maisons: &[&str]) -> Option<&'static s
             return variable_suspecte(nom, valeur.trim(), maisons);
         }
     }
+    // N7-2 (revérification de la ronde 7) : une ligne simple (`ligne_simple`, la règle des fichiers d'uwsm) se juge
+    // par sa valeur entière, celle qu'admet `valeur_litterale`, blancs et « ; » entre guillemets compris, calculée
+    // (N7-1) : jamais recoupée au premier blanc. Le PATH déjà posé par les lignes simples d'avant du fichier, dans
+    // l'ordre, est celui que « $PATH » lit (`chemins`, un par dossier personnel de `maisons`).
+    if let Some(simple) = ligne_simple(ligne) {
+        let LigneSimple::Pose { nom, valeur: Some(v) } = simple else {
+            return None;
+        };
+        let mut raison = None;
+        for (i, maison) in maisons.iter().enumerate() {
+            let chemin = chemins.get(i).map_or(CHEMIN_DU_SYSTEME, String::as_str);
+            let calculee = v.calculer(maison, chemin);
+            raison = raison.or_else(|| variable_suspecte(nom, &calculee, maisons));
+            if nom == "PATH"
+                && let Some(c) = chemins.get_mut(i)
+            {
+                *c = calculee;
+            }
+        }
+        return raison;
+    }
     let l = ["export ", "declare -x ", "typeset -x ", "readonly "]
         .iter()
         .find_map(|d| l.strip_prefix(d))
         .unwrap_or(l)
         .trim_start();
     let (nom, valeur) = affectation(l)?;
-    // La valeur jusqu'au premier blanc hors guillemets : « A=/x b » lance « b » avec A posée.
-    let valeur = valeur.split_once([' ', '\t', ';']).map_or(valeur, |(v, _)| v);
-    variable_suspecte(nom, valeur, maisons)
+    // La valeur jusqu'au premier blanc ou « ; » hors guillemets : « A=/x b » lance « b » avec A posée ; N7-2 : « A="/a
+    // b:/x" » pose A à « /a b:/x » entier.
+    variable_suspecte(nom, jusqu_au_blanc_hors_guillemets(valeur), maisons)
+}
+
+/// Le début de `valeur` jusqu'au premier blanc (espace, tabulation) ou « ; » hors apostrophes et guillemets doubles
+/// (N7-2) ; un guillemet non fermé garde tout le reste.
+fn jusqu_au_blanc_hors_guillemets(valeur: &str) -> &str {
+    let mut guillemet = None;
+    let mut echappe = false;
+    for (i, c) in valeur.char_indices() {
+        if echappe {
+            echappe = false;
+            continue;
+        }
+        match (guillemet, c) {
+            (Some(g), _) if c == g => guillemet = None,
+            (Some('"') | None, '\\') => echappe = true,
+            (None, '"' | '\'') => guillemet = Some(c),
+            (None, ' ' | '\t' | ';') => return valeur.get(..i).unwrap_or(valeur),
+            _ => {}
+        }
+    }
+    valeur
 }
 
 /// Les lignes continuées par « \ », jointes comme les lit le shell : « export L\⏎D_PRELOAD=… » précharge sans
@@ -17256,9 +17345,20 @@ mod tests {
                 &[(".config/uwsm/env.d/x.swp", PRECHARGE)],
                 Some("~/.config/uwsm/env.d/x.swp:1 précharge"),
             ),
+            // N7-3 (revérification de la ronde 7) : le motif « "${1}/"* » d'uwsm ne voit pas les fichiers cachés d'un
+            // « .d » : ni un « .cache », ni le fichier d'échange de vim (octet NUL compris).
+            (&[(".config/uwsm/env.d/.cache", PRECHARGE)], None),
+            (&[(".config/uwsm/env-hyprland.d/.a", PRECHARGE)], None),
             (
-                &[(".config/uwsm/env.d/.cache", PRECHARGE)],
-                Some("~/.config/uwsm/env.d/.cache:1 précharge"),
+                &[(
+                    ".config/uwsm/env.d/.10-x.swp",
+                    "b0VIM\0export PATH=/home/alice/.x:/usr/bin\n",
+                )],
+                None,
+            ),
+            (
+                &[(".config/uwsm/env.d/a.cache", PRECHARGE)],
+                Some("~/.config/uwsm/env.d/a.cache:1 précharge"),
             ),
         ];
         for (i, (fichiers, attendu)) in cas.iter().enumerate() {
@@ -18562,6 +18662,26 @@ mod tests {
             "A=/x\"$HOME\"",
             "A=\"a\rb\"",
             "A=\"a\u{1b}b\"",
+            // N7-1 (revérification de la ronde 7) : « $HOME » ailleurs qu'en tête d'un morceau, ou suivi d'autre chose
+            // que « / » ; « $PATH » qui n'est pas un morceau entier.
+            "export PATH=\"/$HOME/.x:$PATH\"",
+            "export PATH=\"/.$HOME/.x:$PATH\"",
+            "export PATH=\"/usr/..$HOME/.x:$PATH\"",
+            "export PATH=\"$PATH/.x:/usr/bin\"",
+            "export PATH=\"$PATH/../../home/alice/.x:$PATH\"",
+            "export PATH=\"${PATH}/../../home/alice/.x\"",
+            "export PATH=\"/usr/bin:/$HOME/.x\"",
+            "export LD_LIBRARY_PATH=\"/$HOME/.x\"",
+            "export EDITOR=\"/$HOME/.x/ed\"",
+            "export EDITOR=\"vim $HOME/.x\"",
+            "export PATH=\"${HOME}${HOME}/.x:$PATH\"",
+            "export PATH=\"$HOMEé/../alice/.x:$PATH\"",
+            "export PATH=\"${HOME}x/.x\"",
+            "A=\"${HOME}/a-$PATH.b\"",
+            "A=\"$PATH$PATH\"",
+            "A=\"x$PATH\"",
+            "A=\"$HOME/$PATH\"",
+            "A=\"${HOME}/a${HOME}\"",
         ] {
             if ligne_simple(ligne).is_some() {
                 faux.push(format!("permis à tort : {ligne:?}"));
@@ -18678,11 +18798,11 @@ mod tests {
                 },
             ),
             (
-                "A=\"${HOME}/a-$PATH.b\"",
+                "A=\"${HOME}:$HOME/a b;c:${PATH}\"",
                 LigneSimple::Pose {
                     nom: "A",
                     valeur: Some(ValeurSimple {
-                        texte: "${HOME}/a-$PATH.b",
+                        texte: "${HOME}:$HOME/a b;c:${PATH}",
                         calculee: true,
                         lit_maison: true,
                     }),
@@ -18885,6 +19005,147 @@ mod tests {
             }
         }
         assert!(faux.is_empty(), "guillemets doubles d'uwsm : {faux:#?}");
+    }
+
+    /// N7-1 (revérification de la ronde 7) : une valeur admise se calcule avant d'être jugée. « $HOME » ailleurs qu'en
+    /// tête d'un morceau, ou « $PATH » qui n'est pas un morceau entier : la ligne n'est pas simple, le fichier est dit
+    /// non vérifié et la sauvegarde se lève (ses deux formes), jamais « aucun lancement suspect » seul. Aux places
+    /// permises, la valeur calculée se juge comme en toutes lettres : « $HOME/../alice/.x » se lève,
+    /// « $HOME/../alice/bin » non (le texte brut le levait à tort) ; « $PATH » lit le PATH posé plus haut dans le fichier.
+    #[test]
+    fn uwsm_valeur_calculee_avant_d_etre_jugee() {
+        let mut faux = Vec::new();
+        for (i, texte) in [
+            "export PATH=\"/$HOME/.x:$PATH\"\n",
+            "export PATH=\"/.$HOME/.x:$PATH\"\n",
+            "export PATH=\"/usr/..$HOME/.x:$PATH\"\n",
+            "export PATH=\"$HOME\"\nexport PATH=\"$PATH/.x:/usr/bin\"\n",
+            "export PATH=\"$PATH/../../home/alice/.x:$PATH\"\n",
+            "export PATH=\"${PATH}/../../home/alice/.x\"\n",
+            "export PATH=\"$PATH:/$HOME/.x\"\n",
+            "export LD_LIBRARY_PATH=\"/$HOME/.x\"\n",
+            "export PYTHONPATH=\"/$HOME/.x\"\n",
+            "export EDITOR=\"/$HOME/.x/ed\"\n",
+            "export PATH=\"${HOME}${HOME}/.x:$PATH\"\n",
+            "export PATH=\"$HOMEé/../alice/.x:$PATH\"\n",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("uwsm-calcul-refus-{i}"));
+            m.ecrire(".config/uwsm/env", texte);
+            let tous = m.tous_avec(&[("XDG_CURRENT_DESKTOP", "Hyprland")]);
+            if !non_verifie_uwsm(&tous).is_some_and(|n| n.message.contains("~/.config/uwsm/env")) {
+                let messages: Vec<_> = tous.iter().map(|c| &c.message).collect();
+                faux.push(format!("non vérifié {texte:?} : {messages:?}"));
+            }
+            for vide in [false, true] {
+                let (m, _) = sauvegarde_d_essai(&format!("uwsm-calcul-refus-sauvegarde-{i}-{vide}"), vide);
+                m.ecrire(".config/uwsm/env", texte);
+                let c = m.lancements_avec(&[("XDG_CURRENT_DESKTOP", "Hyprland")]);
+                if !(c.probleme == Some(Niveau::Eleve) && c.message.contains(crate::sauvegarde::SERVICE)) {
+                    faux.push(format!(
+                        "sauvegarde {texte:?}, env -i {vide} : {:?} {}",
+                        c.probleme, c.message
+                    ));
+                }
+            }
+        }
+        // (texte, lignes levées) : calculé, puis jugé ; aucun non vérifié.
+        for (i, (texte, levees)) in [
+            ("export PATH=\"$HOME/../alice/.x:$PATH\"\n", &["env:1"][..]),
+            ("export PATH=\"${HOME}//.x:${PATH}\"\n", &["env:1"]),
+            ("export PATH=\"$HOME/Documents/../.x\"\n", &["env:1"]),
+            ("export PATH=\"$PATH:$HOME/./.x/\"\n", &["env:1"]),
+            (
+                "export PATH=\"$HOME/.x\"\nexport PATH=\"/usr/bin:$PATH\"\n",
+                &["env:1", "env:2"],
+            ),
+            ("export PATH=\"$HOME/../alice/bin:$PATH\"\n", &[]),
+            ("export PATH=\"$HOME:$PATH\"\nexport PATH=\"${PATH}:/opt/a\"\n", &[]),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("uwsm-calcul-juge-{i}"));
+            m.ecrire(".config/uwsm/env", texte);
+            let tous = m.tous_avec(&[("XDG_CURRENT_DESKTOP", "Hyprland")]);
+            let c = &tous[0];
+            let juste = non_verifie_uwsm(&tous).is_none()
+                && if levees.is_empty() {
+                    c.probleme < Some(Niveau::Eleve)
+                } else {
+                    c.probleme >= Some(Niveau::Eleve)
+                        && levees
+                            .iter()
+                            .all(|l| c.message.contains(&format!("~/.config/uwsm/{l} : ")))
+                };
+            if !juste {
+                let messages: Vec<_> = tous.iter().map(|c| &c.message).collect();
+                faux.push(format!("calculé {texte:?} : {:?} {messages:?}", c.probleme));
+            }
+        }
+        assert!(faux.is_empty(), "valeurs calculées d'uwsm : {faux:#?}");
+    }
+
+    /// N7-2 (revérification de la ronde 7) : la valeur jugée est la valeur admise, entière : un blanc, une tabulation
+    /// ou un « ; » entre guillemets doubles ou apostrophes ne la coupe pas (les apostrophes étaient déjà muettes
+    /// avant la ronde 7). Hors des lignes simples (un profil), la coupe se fait au premier blanc hors guillemets.
+    #[test]
+    fn valeur_entiere_jugee_blancs_entre_guillemets_compris() {
+        let mut faux = Vec::new();
+        for (i, ligne) in [
+            "export PATH=\"/opt/my tools:$HOME/.x:$PATH\"",
+            "export PATH=\"/opt/a;b:$HOME/.x:$PATH\"",
+            "export PATH=\"/opt/a\tb:/home/alice/.x:/usr/bin\"",
+            "export PATH=\"$HOME/.my tools/x:$PATH\"",
+            "export PATH=\"/opt/a b:/tmp/x:/usr/bin\"",
+            "export LD_LIBRARY_PATH=\"/opt/my libs:/home/alice/.x\"",
+            "export NODE_OPTIONS=\"--require /home/alice/.x/a.js\"",
+            "export PATH='/a b:/home/alice/.x:/usr/bin'",
+            "export EDITOR='/usr/bin/env /home/alice/.x/ed'",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if variable_de_configuration(ligne, &["/home/alice"], &mut []).is_none() {
+                faux.push(format!("muette : {ligne:?}"));
+            }
+            let m = Maison::nouvelle(&format!("uwsm-valeur-entiere-{i}"));
+            m.ecrire(".config/uwsm/env", &format!("{ligne}\n"));
+            let tous = m.tous_avec(&[("XDG_CURRENT_DESKTOP", "Hyprland")]);
+            let c = &tous[0];
+            if non_verifie_uwsm(&tous).is_some()
+                || !(c.probleme >= Some(Niveau::Eleve) && c.message.contains("~/.config/uwsm/env:1 : "))
+            {
+                faux.push(format!("bilan {ligne:?} : {:?} {}", c.probleme, c.message));
+            }
+        }
+        // Un profil, ligne qui n'est pas simple (commentaire en fin) : coupée hors guillemets seulement.
+        for (i, ligne) in [
+            "export PATH=\"/opt/a b:/home/alice/.x:/usr/bin\" # note",
+            "export PATH='/opt/a;b:/home/alice/.x' ; true",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if variable_de_configuration(ligne, &["/home/alice"], &mut []).is_none() {
+                faux.push(format!("muette : {ligne:?}"));
+            }
+            let m = Maison::nouvelle(&format!("profil-valeur-entiere-{i}"));
+            m.ecrire(".bashrc", &format!("{ligne}\n"));
+            let c = m.lancements();
+            if !(c.probleme >= Some(Niveau::Eleve) && c.message.contains("~/.bashrc:1 : ")) {
+                faux.push(format!("profil {ligne:?} : {:?} {}", c.probleme, c.message));
+            }
+        }
+        // Témoins : ce qui suit la valeur hors guillemets n'est pas la valeur ; muets.
+        for ligne in ["A=/opt/b /home/alice/.x/c", "export PATH=\"/usr/bin\" /home/alice/.x"] {
+            if variable_de_configuration(ligne, &["/home/alice"], &mut []).is_some() {
+                faux.push(format!("levée à tort : {ligne:?}"));
+            }
+        }
+        assert!(faux.is_empty(), "valeurs entières : {faux:#?}");
     }
 
     /// R-2 (relecture DEP-4 de la 0.95) : un XDG_DATA_HOME posé au gestionnaire par un fichier (environment.d), absolu
@@ -21163,7 +21424,10 @@ mod tests {
         .into_iter()
         .enumerate()
         {
-            assert!(variable_de_configuration(ligne, &["/home/alice"]).is_some(), "{ligne}");
+            assert!(
+                variable_de_configuration(ligne, &["/home/alice"], &mut []).is_some(),
+                "{ligne}"
+            );
             let m = Maison::nouvelle(&format!("v3-user-conf-{i}"));
             m.ecrire(".config/systemd/user.conf", &format!("[Manager]\n{ligne}\n"));
             leve(&m.lancements(), ligne);
