@@ -115,15 +115,13 @@ impl Fichier {
             .map(|(_, e)| e.as_str())
     }
 
-    /// `empreinte` est-elle celle d'un programme que Vanguard a posé à `chemin` : la copie notée, ou le programme
-    /// scellé pour une tâche qui le lance ?
+    /// `empreinte` est-elle celle d'un programme que Vanguard a posé à `chemin` ? Seule la liste des copies compte
+    /// (écrite par `copie_posee`, après une pose depuis des octets vérifiés ou une mise à jour signée). Un sceau de
+    /// tâche, lui, ne prouve pas une pose (R1-M1) : le bilan scelle au premier usage le programme de toute tâche qui
+    /// n'a pas encore d'entrée, quel qu'il soit, et une unité posée par un autre programme du compte en aurait fait
+    /// « une copie de Vanguard ».
     fn connue(&self, chemin: &Path, empreinte: &str) -> bool {
-        empreinte != NON_VERIFIE
-            && (self.copie_posee(chemin) == Some(empreinte)
-                || self
-                    .taches
-                    .values()
-                    .any(|p| p.empreinte == empreinte && meme_chemin(Path::new(&p.chemin), chemin)))
+        empreinte != NON_VERIFIE && self.copie_posee(chemin) == Some(empreinte)
     }
 }
 
@@ -231,8 +229,8 @@ fn retenir_dans(
 ///
 /// La copie de cet ordinateur (`copie`) peut être une version plus récente gardée (`mise_a_jour::poser_copie`) ; mais
 /// le fichier qui s'y trouve a pu être posé par un autre programme du compte, ou échangé depuis la pose. Ses octets ne
-/// sont scellés que s'ils sont ceux du programme qui tourne (`image`), de la copie que Vanguard y a posée, ou déjà
-/// scellés pour une tâche (`poses`). Sinon : l'empreinte de la copie posée par Vanguard s'il y en a une (le fichier
+/// sont scellés que s'ils sont ceux du programme qui tourne (`image`) ou de la copie que Vanguard y a posée (la
+/// liste des copies de `poses` ; un sceau de tâche ne compte pas). Sinon : l'empreinte de la copie posée par Vanguard s'il y en a une (le fichier
 /// se dira remplacé), et à défaut rien qui le vaille (`NON_VERIFIE`, dit non vérifié), jamais ces octets-là.
 fn a_sceller(
     chemin: &Path,
@@ -925,8 +923,8 @@ mod tests {
 
     /// BASSE (relecture adverse, R1-N1) : un fichier mis dans bin/ par un autre programme du compte (une version gravée
     /// plus haute suffisait pour qu'il y soit gardé), ou échangé entre la pose et `noter`, n'est jamais scellé comme
-    /// le programme de Vanguard. Seuls se scellent les octets du programme qui tourne, de la copie que Vanguard y a
-    /// posée ou ceux déjà scellés pour une tâche ; sinon la copie posée (le fichier se dira remplacé), et sans elle
+    /// le programme de Vanguard. Seuls se scellent les octets du programme qui tourne ou de la copie que Vanguard y a
+    /// posée (R1-M1 : un sceau de tâche ne compte pas) ; sinon la copie posée (le fichier se dira remplacé), et sans elle
     /// une marque que le bilan dit « non vérifié », jamais « sain ».
     #[test]
     fn copie_de_l_ordinateur_scellee_seulement_si_connue() {
@@ -950,7 +948,8 @@ mod tests {
             a_sceller(copie, "posee".into(), Some("soi"), Some("soi"), copie, Some(&posee)),
             "posee"
         );
-        // Déjà scellée pour une tâche qui la lance (une mise à jour signée posée par une version d'avant).
+        // Seulement scellée pour une tâche (le sceau de premier usage du bilan en est un, R1-M1) : pas une pose de
+        // Vanguard, jamais scellée comme telle.
         let mut tache = Fichier::default();
         tache.taches.insert(
             "surveillance".into(),
@@ -962,8 +961,9 @@ mod tests {
         );
         assert_eq!(
             a_sceller(copie, "signee".into(), None, None, copie, Some(&tache)),
-            "signee"
+            NON_VERIFIE
         );
+        assert!(!tache.connue(copie, "signee"));
         // Le programme qui tourne lui-même.
         assert_eq!(
             a_sceller(copie, "soi".into(), Some("soi"), Some("soi"), copie, Some(&vide)),

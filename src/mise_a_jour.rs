@@ -1346,10 +1346,10 @@ fn essayer(programme: &Path, attendue: Version) -> Result<(), String> {
 
 /// La copie de cet ordinateur posée depuis `source`, le programme lancé sur la clé (surveillance, entretien,
 /// raccourci, veilleur), par le même chemin que la mise à jour : à côté, version revérifiée, essayée, relue, puis
-/// mise en place d'un coup. Jamais par-dessus une copie plus récente que Vanguard y a posée : elle est gardée, et
-/// c'est elle que la surveillance lancera (« jamais vers une version plus ancienne ») ; un fichier plus récent qu'il
-/// n'a pas posé est remplacé (`poser_copie_dans`). Rend le chemin de la copie, ou pourquoi elle
-/// n'a pas pu se faire : jamais celui de la clé, qu'une minuterie ne retrouverait plus une fois débranchée.
+/// mise en place d'un coup. Jamais par-dessus une copie plus récente (« jamais vers une version plus ancienne ») :
+/// posée par Vanguard, elle est gardée, et c'est elle que la surveillance lancera ; inconnue, elle n'est ni gardée ni
+/// remplacée, rien n'est posé et c'est dit, non vérifié (`poser_copie_dans`). Rend le chemin de la copie, ou pourquoi
+/// elle n'a pas pu se faire : jamais celui de la clé, qu'une minuterie ne retrouverait plus une fois débranchée.
 ///
 /// Avec le chemin, ce qui n'a pas pu se faire sans arrêter la copie : la fenêtre qui n'a pas pu être posée (C-5,
 /// relecture 0.96 : l'échec était passé sous silence, « fait » sans un mot).
@@ -1362,9 +1362,11 @@ pub(crate) fn poser_copie(source: &Path) -> Result<(PathBuf, Option<String>), St
 
 /// `poser_copie` vers `cible` ; seuls les octets du programme qui tourne (`soi`) se posent (`de_soi`). Une copie déjà
 /// là n'est gardée que si ses octets sont connus : ceux du programme qui tourne, ou, plus récente, une copie que
-/// Vanguard y a posée lui-même (notée dans le registre scellé de `registre` par `programmes_poses::copie_posee`, d'une mise à jour signée ou
-/// d'une clé plus récente, ou scellée pour une tâche). Un autre programme du compte qui y met un fichier à une version
-/// gravée plus haute n'est donc ni gardé, ni lancé par les tâches, ni scellé : le programme qui tourne le remplace.
+/// Vanguard y a posée lui-même (notée dans la liste des copies du registre scellé de `registre` par
+/// `programmes_poses::copie_posee` : d'une mise à jour signée ou d'une clé plus récente ; un sceau de tâche ne compte
+/// pas, R1-M1). Une copie plus récente inconnue (un fichier posé par un autre programme du compte, ou une vraie
+/// version dont le registre est perdu, illisible ou forgé) n'est jamais remplacée par ce programme plus ancien
+/// (R1-M2 : un registre effacé forçait le retour en arrière) ni gardée : refusé, dit non vérifié, rien n'est posé.
 fn poser_copie_dans(
     source: &Path,
     cible: &Path,
@@ -1390,11 +1392,12 @@ fn poser_copie_dans(
         && let Ok(la) = lire_octets(cible, TAILLE_MAX)
         && let Some(v) = version_gravee(&la)
     {
-        if v > version
-            && crate::programmes_poses::copie_connue_dans(registre, cible, blake3::hash(&la).to_hex().as_str())
-        {
-            crate::programmes_poses::copie_posee_dans(registre, cible, &la);
-            return Ok(None);
+        if v > version {
+            if crate::programmes_poses::copie_connue_dans(registre, cible, blake3::hash(&la).to_hex().as_str()) {
+                crate::programmes_poses::copie_posee_dans(registre, cible, &la);
+                return Ok(None);
+            }
+            return Err(plus_recente_inconnue(v, version));
         }
         if v == version && la == octets {
             crate::programmes_poses::copie_posee_dans(registre, cible, &la);
@@ -1419,6 +1422,18 @@ fn poser_copie_dans(
         Some((f, chemin)) => sa_fenetre::installer_avec_sinon_seul(&octets, cible, version, essai, f, chemin),
         None => installer(&octets, cible, version, essai).map(|()| None),
     }
+}
+
+/// Le refus devant une copie plus récente que Vanguard ne reconnaît pas comme la sienne : ni gardée (elle pourrait
+/// venir d'un autre programme du compte), ni remplacée (ce serait un retour en arrière, peut-être d'une vraie
+/// version dont le registre est perdu). Dit non vérifié, jamais sain ni tu.
+fn plus_recente_inconnue(la: Version, ici: Version) -> String {
+    trf!(
+        "non vérifié : la copie de cet ordinateur ({}) est plus récente que ce programme ({}), mais Vanguard ne la reconnaît pas comme celle qu'il a posée (registre absent, illisible ou sans elle) ; elle n'est ni gardée ni remplacée par une version plus ancienne, rien n'est posé. Mettez-la à jour depuis GitHub (« vanguard se-mettre-a-jour » lancé depuis elle), ou retirez-la si vous ne l'avez pas posée",
+        "not checked: the copy on this computer ({}) is newer than this program ({}), but Vanguard does not recognize it as the one it set up (register missing, unreadable or without it); it is neither kept nor replaced by an older version, nothing is set up. Update it from GitHub (“vanguard se-mettre-a-jour” started from it), or remove it if you did not put it there",
+        ecrire(la),
+        ecrire(ici)
+    )
 }
 
 /// La copie de cet ordinateur est-elle plus ancienne que ce programme ? Elle écrit alors encore l'état de Vanguard
@@ -2253,8 +2268,9 @@ mod tests {
 
     /// BASSE (relecture adverse, R1-N1) : un fichier mis dans bin/ par un autre programme du compte, à une version
     /// gravée plus haute, était gardé sans comparaison, puis lancé par les tâches et scellé comme Vanguard. Il n'est
-    /// plus gardé que si Vanguard l'y a posé lui-même (noté dans son registre) ; sinon le programme qui tourne le remplace. Une
-    /// copie gardée est notée comme posée par Vanguard.
+    /// plus gardé que si Vanguard l'y a posé lui-même (noté dans son registre) ; sinon il n'est ni gardé ni remplacé
+    /// (R1-M2 : pas de retour en arrière), refusé et dit non vérifié. Une copie gardée est notée comme posée par
+    /// Vanguard.
     #[test]
     fn copie_plus_recente_gardee_seulement_si_posee_par_vanguard() {
         let racine = crate::socle::dossier_local().join("essai-copie-etrangere");
@@ -2263,14 +2279,32 @@ mod tests {
         let cible = racine.join("bin").join(NOM);
         faux_programme(&source, Some("0.80.0+5"));
         let soi = soi_de(&source);
-        // Posée par un autre programme : plus récente, jamais vue par Vanguard.
+        // Posée par un autre programme : plus récente, jamais vue par Vanguard. Ni gardée (refus, rien de noté), ni
+        // remplacée par ce programme plus ancien (R1-M2) : non vérifié, dit.
         faux_programme(&cible, Some("9.0.0+1"));
-        poser_copie_dans(&source, &cible, soi.as_deref(), &inconnue(), SANS_ESSAI).unwrap();
+        let etranger = std::fs::read(&cible).unwrap();
+        let vide = inconnue();
+        let e = poser_copie_dans(&source, &cible, soi.as_deref(), &vide, SANS_ESSAI).unwrap_err();
+        assert_eq!(e, plus_recente_inconnue((9, 0, 0, 1), (0, 80, 0, 5)));
+        assert!(e.starts_with("non vérifié") || e.starts_with("not checked"), "{e}");
+        assert_eq!(std::fs::read(&cible).unwrap(), etranger, "fichier étranger remplacé");
+        assert!(
+            !crate::programmes_poses::copie_connue_dans(&vide, &cible, blake3::hash(&etranger).to_hex().as_str()),
+            "fichier étranger noté comme posé"
+        );
+        // Registre illisible : même traitement, jamais « inconnue donc remplacée ».
+        std::fs::create_dir_all(&vide).unwrap();
+        std::fs::write(vide.join("programmes-planifies.json"), b"{pas du json").unwrap();
+        assert_eq!(
+            poser_copie_dans(&source, &cible, soi.as_deref(), &vide, SANS_ESSAI),
+            Err(plus_recente_inconnue((9, 0, 0, 1), (0, 80, 0, 5)))
+        );
         assert_eq!(
             std::fs::read(&cible).unwrap(),
-            std::fs::read(&source).unwrap(),
-            "fichier étranger gardé"
+            etranger,
+            "remplacée, registre illisible"
         );
+        let _ = std::fs::remove_dir_all(&vide);
         // Posée par Vanguard (une mise à jour signée, une clé plus récente), notée dans son registre : gardée.
         faux_programme(&cible, Some("9.0.0+1"));
         let la = std::fs::read(&cible).unwrap();
