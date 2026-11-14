@@ -86,7 +86,7 @@ fn origine_de(designee: Option<&Path>) -> (Option<PathBuf>, Option<Echec>) {
 
 /// Le programme qui tourne est-il une copie temporaire, de nom exact (`vanguard-<chiffres>-<chiffres>`) ? Sous Linux,
 /// une copie effacée (elle s'efface au démarrage) puis relancée par `/proc/self/exe` (l'autotest) se dit
-/// « <chemin> (deleted) » : la marque est retirée, seulement quand l'image n'a vraiment plus de nom (aucun lien),
+/// « `<chemin> (deleted)` » : la marque est retirée, seulement quand l'image n'a vraiment plus de nom (aucun lien),
 /// sinon un fichier nommé ainsi passerait pour la copie.
 fn dans_une_copie() -> bool {
     let Ok(exe) = std::env::current_exe() else {
@@ -1536,7 +1536,7 @@ mod tests {
             return crate::essais::saute("cmd.exe absent");
         };
         let jetable =
-            crate::essais::Jetable::garder(std::env::temp_dir().join(crate::essais::nom_unique("parent-lien")));
+            crate::essais::Jetable::garder(crate::essais::temporaire().join(crate::essais::nom_unique("parent-lien")));
         let d = jetable.to_path_buf();
         let cible = d.join("ailleurs");
         std::fs::create_dir_all(&cible).unwrap();
@@ -1569,7 +1569,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn copie_tenue_jugee_par_ses_octets() {
-        let jetable = crate::essais::Jetable::garder(std::env::temp_dir().join(crate::essais::nom_unique("tenue")));
+        let jetable =
+            crate::essais::Jetable::garder(crate::essais::temporaire().join(crate::essais::nom_unique("tenue")));
         let d = jetable.to_path_buf();
         std::fs::create_dir_all(&d).unwrap();
         let f = d.join("vanguard.exe");
