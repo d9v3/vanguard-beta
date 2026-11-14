@@ -4808,6 +4808,53 @@ mod tests {
         }
     }
 
+    /// Ronde 10 du lot 096 (N10-2) : une ligne « LD_PRELOAD=\r » précharge (bash et sh gardent le « \r »), et le
+    /// fichier qui la porte n'est plus fait que d'affectations simples : le fils root la refuse comme le bilan, avec
+    /// la raison du fichier, rien d'écrit ; un « \r » sur une autre ligne aussi.
+    #[test]
+    fn retour_chariot_au_fils_root() {
+        let shell = "affectations simples";
+        for (fichier, contenu, ligne) in [
+            ("/etc/profile.d/a.sh", "export LD_PRELOAD=\r\n", "export LD_PRELOAD=\r"),
+            ("/etc/environment", "LD_PRELOAD=\r\n", "LD_PRELOAD=\r"),
+            (
+                "/etc/profile.d/a.sh",
+                "export LD_PRELOAD=/tmp/.x/a.so\nexport A=b\r\n",
+                "export LD_PRELOAD=/tmp/.x/a.so",
+            ),
+            (
+                "/etc/environment",
+                "LD_PRELOAD=/tmp/.x/a.so\r\n",
+                "LD_PRELOAD=/tmp/.x/a.so\r",
+            ),
+        ] {
+            let mut a = Faux::nouveau().repondre("o");
+            a.poser(fichier, contenu.as_bytes(), 0o644);
+            let r = faire_avec(
+                Defense::RetirerLigne(
+                    empreinte_de_ligne(ligne.as_bytes()),
+                    CheminDesigne::nouveau(fichier.as_bytes()).unwrap(),
+                ),
+                &mut a,
+                &mut FauxServices::nouveau(),
+            );
+            assert!(!r.reussi, "{fichier} {contenu:?}");
+            assert!(r.raison.contains(shell), "{fichier} {contenu:?} : {}", r.raison);
+            assert_eq!((a.questions.len(), a.texte(fichier).as_str()), (0, contenu));
+            let numeros: Vec<usize> = contenu
+                .split('\n')
+                .enumerate()
+                .filter(|(_, l)| *l == ligne)
+                .map(|(i, _)| i)
+                .collect();
+            assert_eq!(
+                crate::machine::linux::retrait_refuse(fichier, contenu.as_bytes(), ligne.as_bytes(), &numeros),
+                Some(crate::machine::linux::Decoupe::Shell),
+                "{fichier} {contenu:?}"
+            );
+        }
+    }
+
     #[test]
     fn ouverture_automatique_coupee() {
         let mut a = Faux::nouveau().repondre("o");

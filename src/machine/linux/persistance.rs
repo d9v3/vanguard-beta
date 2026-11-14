@@ -950,7 +950,9 @@ pub(super) fn pose_un_prechargement(ligne: &str) -> bool {
 /// - chaque fois que LD_PRELOAD ou LD_AUDIT y est écrit : en début de ligne, ou après un blanc ou un « = »
 ///   (« export LD_PRELOAD= », « Environment=LD_PRELOAD= »), suivi d'un « = » puis de blancs seulement jusqu'au bout
 ///   de la ligne. Pas « LD_PRELOAD= /x.so » : pam_env lit /etc/environment jusqu'au bout de la ligne, et y précharge
-///   « /x.so » ; ni « LD_PRELOAD='' », ni un « \r » final : dans le doute, la ligne reste signalée.
+///   « /x.so » ; ni « LD_PRELOAD='' », ni un « \r » final ou un autre octet de contrôle : bash et sh gardent « \r »
+///   dans la valeur, et le chargeur précharge un objet de ce nom (ronde 10, N10-2) ; dans le doute, la ligne reste
+///   signalée. Les appelants coupent donc au seul « \n » (`lignes_jointes`, `juger_configuration`).
 fn neutralise_le_prechargement(ligne: &str) -> bool {
     let blanc = |c: char| c == ' ' || c == '\t';
     let l = ligne.trim_start_matches(blanc);
@@ -3557,7 +3559,9 @@ fn lignes_jointes(texte: &str, commentaire_seul: Option<Variables>) -> Vec<Ligne
     let mut sortie = Vec::new();
     let mut physiques: Vec<(usize, &str)> = Vec::new();
     let mut jointe = String::new();
-    for (n, l) in texte.lines().enumerate() {
+    // Coupé au seul « \n », comme bash, sh et pam_env : un « \r » final reste dans la ligne jugée (ronde 10 du lot 096,
+    // N10-2 : `lines()` l'ôtait, et « export LD_PRELOAD=\r » passait pour une valeur vide ; le shell y lit « \r »).
+    for (n, l) in texte.split_terminator('\n').enumerate() {
         let debut_de_ligne = physiques.is_empty();
         physiques.push((n.saturating_add(1), l));
         let continuee = !(debut_de_ligne && commentaire_seul.is_some_and(|s| commentaire_selon(l, s)));
@@ -7246,12 +7250,14 @@ impl IndexDeRetrait {
                 .and_then(|(d, f)| lu.texte.get(*d..*f))
                 .unwrap_or_default()
         };
+        // `l` peut garder son « \r » final (lignes coupées au seul « \n », N10-2) : cherchée sans lui, comparée telle
+        // quelle ou sans lui.
         self.lues
-            .get(&self.cles.hash_one(l.as_bytes()))
+            .get(&self.cles.hash_one(l.strip_suffix('\r').unwrap_or(l).as_bytes()))
             .into_iter()
             .flatten()
             .map(|n| ligne_texte(*n))
-            .find(|r| r.strip_suffix('\r').unwrap_or(r) == l)
+            .find(|r| *r == l || r.strip_suffix('\r').unwrap_or(r) == l)
             .unwrap_or(l)
             .to_string()
     }
@@ -8680,8 +8686,9 @@ fn juger_lignes_de_configuration(
     // Au format de systemd, chaque ligne telle que `read_line` la lit (« \r », NUL finissent aussi une ligne),
     // jugée à la ligne écrite qui la porte ; un commentaire selon la règle de systemd, et « unset » n'y est qu'un
     // mot (R-2 : « A=1 \⏎# note⏎unset LD_PRELOAD=… » pose LD_PRELOAD dans user.conf).
-    let ecrites: Vec<&str> = lu.texte.lines().collect();
-    let lignes: Vec<(usize, &str, &str)> = if systemd {
+    // Les lignes écrites, coupées au seul « \n » : un « \r » reste dans la ligne jugée (N10-2, ronde 10).
+    let ecrites: Vec<&str> = lu.texte.split_terminator('\n').collect();
+    let mut lignes: Vec<(usize, &str, &str)> = if systemd {
         lignes_lues_numerotees(&lu.texte)
             .into_iter()
             .map(|(n, l)| (n, ecrites.get(n).copied().unwrap_or(l), l))
@@ -8689,6 +8696,23 @@ fn juger_lignes_de_configuration(
     } else {
         ecrites.iter().enumerate().map(|(n, e)| (n, *e, *e)).collect()
     };
+    // Au format de systemd, « \r » coupe aussi l'enregistrement, et « LD_PRELOAD=\r » s'y lit vide ; pam_env, qui
+    // lit aussi /etc/environment, n'a pas été essayé sur ce cas : dans le doute, une ligne écrite qui précharge
+    // telle qu'écrite (« \r » ou autre octet de contrôle compris) est signalée, même si aucun de ses
+    // enregistrements ne précharge (N10-2).
+    if systemd {
+        let vues: std::collections::HashSet<usize> = lignes
+            .iter()
+            .filter(|(_, _, l)| prechargement_selon(l, sorte))
+            .map(|(n, _, _)| *n)
+            .collect();
+        for (n, e) in ecrites.iter().enumerate() {
+            if !vues.contains(&n) && prechargement_selon(e, sorte) {
+                lignes.push((n, *e, *e));
+            }
+        }
+        lignes.sort_by_key(|(n, _, _)| *n);
+    }
     // N7-1 : le PATH que lit « $PATH », posé par les lignes simples d'avant de ce fichier.
     let mut chemins = vec![CHEMIN_DU_SYSTEME.to_string(); maisons.len()];
     let format = format_de(f, sorte);
@@ -15264,6 +15288,19 @@ mod tests {
         assert!(definit_prechargement("env = LD_PRELOAD,/tmp/a.so"));
         assert!(!definit_prechargement("unset LD_PRELOAD"));
         assert!(!definit_prechargement("# LD_PRELOAD=/x"));
+        // Ronde 10 (N10-2) : un « \r » ou un autre octet de contrôle dans la valeur ne la vide pas.
+        for l in [
+            "export LD_PRELOAD=\r",
+            "LD_PRELOAD=\r",
+            "export LD_AUDIT=\r",
+            "LD_PRELOAD=\u{b}",
+            "LD_PRELOAD=\0",
+            "LD_PRELOAD= \r",
+        ] {
+            assert!(pose_un_prechargement(l), "{l:?}");
+            assert!(definit_prechargement(l), "{l:?}");
+        }
+        assert!(!pose_un_prechargement("export LD_PRELOAD= \t"));
     }
 
     /// R-3 (lot 096), bout en bout : une bibliothèque préchargée par une ligne « //tmp/… » de /etc/ld.so.preload est
@@ -20534,6 +20571,52 @@ mod tests {
         let m = Maison::nouvelle("ronde-9-temoin");
         m.ecrire_hors("/etc/profile.d/a.sh", "export LD_PRELOAD=/tmp/.x/a.so\n");
         leve(&m.lancements(), "/etc/profile.d/a.sh");
+    }
+
+    /// Ronde 10 du lot 096 (N10-2) : « LD_PRELOAD=\r » (fin de ligne de Windows) n'est pas une valeur vide. bash et sh y
+    /// lisent « \r », et le chargeur précharge un objet de ce nom ; `lines()` ôtait le « \r » avant le jugement, et la
+    /// ligne n'était plus signalée. Signalée aux trois endroits (ligne d'un profil, enregistrement de systemd, lignes
+    /// jointes), et jamais retirée seule : le fichier n'est plus fait que d'affectations simples. Un autre octet de
+    /// contrôle dans la valeur aussi. Témoin : la ligne vide sans « \r » reste muette.
+    #[test]
+    fn retour_chariot_signale_au_bilan() {
+        let a_la_main = "Vanguard ne lit pas le shell";
+        for (i, (lieu, contenu)) in [
+            ("/etc/profile.d/a.sh", "export LD_PRELOAD=\r\n"),
+            ("/etc/profile.d/b.sh", "export LD_AUDIT=\r\n"),
+            ("/etc/profile.d/c.sh", "LD_PRELOAD=\r\nexport LD_PRELOAD\n"),
+            ("/etc/environment", "LD_PRELOAD=\r\n"),
+            ("/etc/environment", "A=b\nLD_PRELOAD=\r/x.so\n"),
+            ("/etc/environment.d/50-a.conf", "LD_PRELOAD=\r\n"),
+            ("/etc/profile.d/e.sh", "export LD_PRELOAD=\u{b}\n"),
+            ("/etc/profile.d/f.sh", "export LD_PRELOAD=\u{c}\n"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("ronde-10-cr-{i}"));
+            m.ecrire_hors(lieu, contenu);
+            let c = m.lancements();
+            leve(&c, lieu);
+            assert!(c.message.contains(a_la_main), "{lieu} {contenu:?} : {}", c.message);
+        }
+        // Lignes jointes par « \ » : signalées, jamais retirées seules (`juger_lignes_jointes`).
+        let m = Maison::nouvelle("ronde-10-cr-jointe");
+        m.ecrire_hors("/etc/profile.d/d.sh", "export LD_PRE\\\nLOAD=\r\n");
+        leve(&m.lancements(), "lignes jointes");
+        for (i, (lieu, contenu)) in [
+            ("/etc/profile.d/a.sh", "export LD_PRELOAD=\n"),
+            ("/etc/environment", "LD_PRELOAD=\n"),
+            ("/etc/environment.d/50-a.conf", "LD_PRELOAD=\n"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("ronde-10-cr-temoin-{i}"));
+            m.ecrire_hors(lieu, contenu);
+            let c = m.lancements();
+            assert_eq!(c.probleme, None, "{lieu} {contenu:?} : {}", c.message);
+        }
     }
 
     /// Ronde 3 du lot 096 (N1, N2), bout en bout : le fichier de variables d'une unité du compte, lu comme systemd le
