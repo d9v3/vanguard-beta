@@ -544,7 +544,8 @@ fn valeur_simplifiee(valeur: &str) -> String {
 /// Une variable qui nomme un programme que d'autres lancent (mot de passe demandé, éditeur, pager, terminal,
 /// navigateur, shell) : sa valeur se lance comme une commande (vérification 3, P11).
 fn variable_de_programme(nom: &str) -> bool {
-    const NOMS: [&str; 17] = [
+    const NOMS: [&str; 18] = [
+        "PROMPT_COMMAND",
         "SSH_ASKPASS",
         "SUDO_ASKPASS",
         "GIT_ASKPASS",
@@ -7545,6 +7546,13 @@ fn juger_lignes_de_configuration(
                         }
                         None
                     }
+                    Jugement::Deplace(nom) => {
+                        if !de_root {
+                            t.non_verifies
+                                .push(deplace_dit(&court(f, h), n.saturating_add(1), &nom));
+                        }
+                        None
+                    }
                     Jugement::Muette => None,
                 }
             }
@@ -7683,12 +7691,16 @@ fn extension_de(nom: &str, ext: &str) -> bool {
 
 /// Ronde 11 : une variable surveillée, que la grammaire stricte juge : PATH, les variables d'injection
 /// (`variable_d_injection` : LD_*, BASH_ENV, PYTHON*…), de programme (`variable_de_programme` : SSH_ASKPASS,
-/// EDITOR…), celles du bus (DBUS_*), et selon le format « path », « fpath », « module_path » (zsh) et
-/// fish_user_paths (fish).
+/// EDITOR…, PROMPT_COMMAND), les dossiers de configuration (`variable_de_dossier`) : ZDOTDIR partout, HOME et
+/// XDG_CONFIG_HOME dans un profil de shell seulement (au gestionnaire, ils se lisent à part :
+/// `dossiers_du_gestionnaire`), celles du bus (DBUS_*), et selon le format « path », « fpath », « module_path » (zsh)
+/// et fish_user_paths (fish).
 fn variable_surveillee(nom: &str, format: Format) -> bool {
     nom == "PATH"
         || variable_d_injection(nom)
         || variable_de_programme(nom)
+        || (variable_de_dossier(nom)
+            && (nom == "ZDOTDIR" || matches!(format, Format::Shell | Format::Zsh | Format::Fish)))
         || nom.starts_with("DBUS_")
         || (format == Format::Zsh && ["path", "fpath", "module_path"].contains(&nom))
         || (format == Format::Fish && nom == "fish_user_paths")
@@ -7976,10 +7988,15 @@ fn mots_de_fish_simples(instruction: &str) -> Option<Vec<String>> {
         } else {
             let fin = reste.find([' ', '\t']).unwrap_or(reste.len());
             let (texte, suite) = reste.split_at(fin);
+            // N11-5 : « ~ » en tête, seul ou suivi de « / », est le dossier personnel (« ~alice » ne l'est pas).
+            let (maison, texte) = match texte.strip_prefix('~') {
+                Some(r) if r.is_empty() || r.starts_with('/') => ("$HOME", r),
+                _ => ("", texte),
+            };
             if texte.contains(|c: char| "\"'\\()[]{}*?~|&<>`".contains(c)) {
                 return None;
             }
-            (texte.to_string(), suite)
+            (format!("{maison}{texte}"), suite)
         };
         if mot.chars().any(char::is_control) {
             return None;
@@ -7994,7 +8011,9 @@ fn mots_de_fish_simples(instruction: &str) -> Option<Vec<String>> {
 /// « set [options] NOM valeurs… » (options : -g -x -U -l -p -a -u -f et leurs formes longues ; « -e », « -q » ne
 /// posent rien), « fish_add_path [options] dossiers… », ou « export NOM=valeur » (la fonction de fish, lue comme le
 /// shell). Les valeurs d'une liste (PATH…) jointes par « : » comme fish l'exporte, celles d'un programme par une
-/// espace ; « -p » et « -a » y joignent la variable elle-même. Un commentaire « # » après un blanc.
+/// espace ; « -p » et « -a » y joignent la variable elle-même. Un commentaire « # » après un blanc. Ronde 12
+/// (N11-1) : « set -e », « -q », « -n », « -S » ne posent rien et ne finissent pas la ligne : l'instruction est
+/// sautée et la suite (« set -q X; set -gx PATH … ») se juge.
 fn instructions_de_fish(ligne: &str) -> Option<Vec<Instruction>> {
     let mut sortie = Vec::new();
     let mut texte = ligne.trim_start_matches([' ', '\t']);
@@ -8013,8 +8032,12 @@ fn instructions_de_fish(ligne: &str) -> Option<Vec<Instruction>> {
         }
         avant_blanc = guillemet.is_none() && matches!(c, ' ' | '\t');
     }
-    for instruction in texte.split(';') {
-        let net = instruction.trim_matches([' ', '\t']);
+    'instructions: for instruction in texte.split(';') {
+        let mut net = instruction.trim_matches([' ', '\t']);
+        // « and », « or », « not » en tête : l'instruction se lit comme si elle tournait (dans le doute, jugée).
+        while let Some(reste) = ["and ", "or ", "not "].iter().find_map(|p| net.strip_prefix(p)) {
+            net = reste.trim_start_matches([' ', '\t']);
+        }
         if net.is_empty() {
             continue;
         }
@@ -8025,6 +8048,16 @@ fn instructions_de_fish(ligne: &str) -> Option<Vec<Instruction>> {
         let mots = mots_de_fish_simples(net)?;
         let mut mots = mots.into_iter();
         let commande = mots.next()?;
+        // N11-5 : un essai qui ne pose rien (« test -d … », « status is-login », « command -q x »), de mots simples.
+        if ["test", "status", "contains", "true", "false", "type"].contains(&commande.as_str())
+            || (["command", "functions"].contains(&commande.as_str())
+                && mots
+                    .clone()
+                    .next()
+                    .is_some_and(|o| ["-q", "--query", "-v", "-s", "--search"].contains(&o.as_str())))
+        {
+            continue;
+        }
         let (mut avant, mut apres) = (false, false);
         let mut reste: Vec<String> = Vec::new();
         for mot in mots.by_ref() {
@@ -8037,8 +8070,10 @@ fn instructions_de_fish(ligne: &str) -> Option<Vec<Instruction>> {
                 mot.strip_prefix('-')
                     .is_some_and(|o| !o.starts_with('-') && !o.is_empty() && o.chars().all(|c| lettres.contains(c)))
             };
+            // N11-1 : « set -e », « -q », « -n », « -S » ne posent rien : cette instruction seulement se saute, la
+            // suite de la ligne se lit (un « return » ici taisait tout ce qui suivait).
             if commande == "set" && (long(&["--erase", "--query", "--names", "--show"]) || court("eqnS")) {
-                return Some(sortie);
+                continue 'instructions;
             }
             let permis = if commande == "set" {
                 court("gxUlpauf")
@@ -8170,8 +8205,8 @@ fn instructions_de_systemd(ligne: &str) -> Option<Vec<Instruction>> {
 }
 
 /// Le premier nom que `est` retient et que `texte` écrit ailleurs qu'en le lisant : tout mot qui le nomme, sauf une
-/// simple lecture (« $NOM », « ${NOM} », « ${NOM:-…} », « ${#NOM} », « ${!NOM} ») ; « ${NOM=…} » et « ${NOM:=…} »
-/// le posent, et comptent. Une lecture ne change rien à ce qui se lance ; tout le reste, même « unset » ou un mot
+/// simple lecture (« $NOM », « ${NOM} », « ${NOM:-…} », « ${#NOM} », « ${!NOM} ») ; « ${NOM=…} », « ${NOM:=…} » et
+/// « ${NOM::=…} » de zsh le posent, et comptent. Une lecture ne change rien à ce qui se lance ; tout le reste, même « unset » ou un mot
 /// qui n'en pose pas (« echo PATH »), est pris dans le doute pour une écriture.
 fn ecriture_nommee(texte: &str, est: &dyn Fn(&str) -> bool) -> Option<String> {
     let octets = texte.as_bytes();
@@ -8194,7 +8229,8 @@ fn ecriture_nommee(texte: &str, est: &dyn Fn(&str) -> bool) -> Option<String> {
         let suite = texte.get(i..).unwrap_or_default();
         let accolade = avant(1) == Some(b'{') && avant(2) == Some(b'$')
             || matches!(avant(1), Some(b'#' | b'!')) && avant(2) == Some(b'{') && avant(3) == Some(b'$');
-        let lecture = avant(1) == Some(b'$') || accolade && !(suite.starts_with('=') || suite.starts_with(":="));
+        let lecture = avant(1) == Some(b'$')
+            || accolade && !(suite.starts_with('=') || suite.starts_with(":=") || suite.starts_with("::="));
         if !lecture {
             return Some(nom.to_string());
         }
@@ -8202,18 +8238,26 @@ fn ecriture_nommee(texte: &str, est: &dyn Fn(&str) -> bool) -> Option<String> {
     None
 }
 
-/// Les commandes d'une ligne, chacune en mots bruts (guillemets gardés), coupées sur « ; », « & », « | », « ( », « ) »
-/// hors guillemets et hors de ce qui se calcule : « $( ) », « ${ } », « ` ` » (et en fish « ( ) ») gardent leurs
-/// séparateurs dans leur mot (N10-1 : « ${NOPE:-a&b} » ne coupe plus la commande). Un « # » en tête de mot finit la
-/// ligne. Pour `nom_calcule` seulement : y trouver les commandes qui posent un nom.
-fn commandes_a_plat(ligne: &str, fish: bool) -> Vec<Vec<String>> {
+/// Les commandes d'une ligne, chacune en mots bruts (guillemets gardés) avec ce qui la finit (« ; », « ;; », « & »,
+/// « && », « | », « || », « ( », « ) », ou "" en fin de ligne), coupées hors guillemets et hors de ce qui se calcule :
+/// « $( ) », « ${ } », « $[ ] », « ` ` », « (( )) », « <( ) » (et en fish « ( ) ») gardent leurs séparateurs dans leur mot
+/// (N10-1 : « ${NOPE:-a&b} » ne coupe plus la commande), et au shell « [[ … ]] » aussi (N11-5 : « && » d'un
+/// « [[ -z $A && $B -eq 1 ]] » ne coupe pas). Une redirection (« 2>&1 », « &>x », « >|x ») reste un mot. Un « # » en
+/// tête de mot finit la ligne. Pour `non_reconnue` seulement : y trouver chaque commande et ce qu'elle lance.
+fn commandes_a_plat(ligne: &str, fish: bool) -> Vec<(Vec<String>, &'static str)> {
     let mut commandes = Vec::new();
     let (mut mots, mut mot) = (Vec::new(), String::new());
     let (mut guillemet, mut echappe) = (None::<char>, false);
     let mut profondeur: Vec<char> = Vec::new();
+    let mut crochets = false;
     let mut lettres = ligne.chars().peekable();
-    let finir = |mots: &mut Vec<String>, mot: &mut String| {
+    let finir = |mots: &mut Vec<String>, mot: &mut String, crochets: &mut bool| {
         if !mot.is_empty() {
+            if !fish && mot == "[[" {
+                *crochets = true;
+            } else if mot == "]]" {
+                *crochets = false;
+            }
             mots.push(std::mem::take(mot));
         }
     };
@@ -8243,11 +8287,15 @@ fn commandes_a_plat(ligne: &str, fish: bool) -> Vec<Vec<String>> {
                 guillemet = Some('\'');
                 mot.push(c);
             }
-            '$' if matches!(lettres.peek(), Some('(' | '{')) => {
+            '$' if matches!(lettres.peek(), Some('(' | '{' | '[')) => {
                 let ouvre = lettres.next().unwrap_or('(');
                 mot.push('$');
                 mot.push(ouvre);
-                profondeur.push(if ouvre == '(' { ')' } else { '}' });
+                profondeur.push(match ouvre {
+                    '(' => ')',
+                    '[' => ']',
+                    _ => '}',
+                });
             }
             '`' => {
                 if profondeur.last() == Some(&'`') {
@@ -8261,25 +8309,59 @@ fn commandes_a_plat(ligne: &str, fish: bool) -> Vec<Vec<String>> {
                 profondeur.pop();
                 mot.push(c);
             }
+            // « <( … ) », « >( … ) » du shell : une substitution de processus, un seul mot.
+            '(' if !fish && guillemet.is_none() && profondeur.is_empty() && mot.ends_with(['<', '>']) => {
+                profondeur.push(')');
+                mot.push(c);
+            }
             '(' if !profondeur.is_empty() || (fish && guillemet.is_none()) => {
                 profondeur.push(')');
                 mot.push(c);
             }
+            // « (( … )) » du shell : un calcul, un seul mot (jugé par `effet_cache`).
+            '(' if !fish && guillemet.is_none() && mot.is_empty() && lettres.peek() == Some(&'(') => {
+                lettres.next();
+                mot.push_str("((");
+                profondeur.push(')');
+                profondeur.push(')');
+            }
             _ if !profondeur.is_empty() || guillemet.is_some() => mot.push(c),
-            ' ' | '\t' => finir(&mut mots, &mut mot),
+            _ if crochets && !matches!(c, ' ' | '\t') => mot.push(c),
+            ' ' | '\t' => finir(&mut mots, &mut mot, &mut crochets),
+            '&' if mot.ends_with(['>', '<']) || lettres.peek() == Some(&'>') => mot.push(c),
+            '|' if mot.ends_with('>') => mot.push(c),
             ';' | '&' | '|' | '(' | ')' => {
-                finir(&mut mots, &mut mot);
+                let fin = match (c, lettres.peek()) {
+                    ('&', Some('&')) | ('|', Some('|')) | (';', Some(';')) => {
+                        lettres.next();
+                        match c {
+                            '&' => "&&",
+                            '|' => "||",
+                            _ => ";;",
+                        }
+                    }
+                    ('|', Some('&')) => {
+                        lettres.next();
+                        "|"
+                    }
+                    ('&', _) => "&",
+                    ('|', _) => "|",
+                    (';', _) => ";",
+                    ('(', _) => "(",
+                    _ => ")",
+                };
+                finir(&mut mots, &mut mot, &mut crochets);
                 if !mots.is_empty() {
-                    commandes.push(std::mem::take(&mut mots));
+                    commandes.push((std::mem::take(&mut mots), fin));
                 }
             }
             '#' if mot.is_empty() => break,
             _ => mot.push(c),
         }
     }
-    finir(&mut mots, &mut mot);
+    finir(&mut mots, &mut mot, &mut crochets);
     if !mots.is_empty() {
-        commandes.push(mots);
+        commandes.push((mots, ""));
     }
     commandes
 }
@@ -8314,91 +8396,636 @@ fn activation_permise(commande: &str) -> bool {
             .all(|m| m.starts_with('-') || ["bash", "zsh", "sh", "fish"].contains(m))
 }
 
-/// Ronde 11 : la ligne pose-t-elle une variable dont le nom se calcule, que Vanguard ne peut donc pas exclure ?
-/// « eval » (sauf « eval "$(outil activate bash)" » : `activation_permise`), « export », « declare », « typeset »,
-/// « local », « readonly » dont un nom n'est pas un mot fixe (« export "$N=…" », « export P"ATH"=… »,
-/// « export $(echo PA)TH=… », « declare -n r=$N »), « read », « mapfile », « readarray », « getopts » vers un nom
-/// calculé, « printf -v » de même, une commande dont le nom se calcule (« $X PATH=… »). En fish : « set » d'un nom
-/// calculé, « eval », et « … | source » (sauf un outil d'activation). Plus large que le shell : dans le doute, dit.
-fn nom_calcule(ligne: &str, format: Format) -> bool {
-    let fish = format == Format::Fish;
-    let construit = |m: &str| !identifiant(m.split('=').next().unwrap_or(m));
-    if fish && let Some((avant, apres)) = ligne.split_once('|') {
-        let source = apres.trim_matches([' ', '\t']);
-        if source == "source" || source.starts_with("source ") || source == "." {
-            return !(source == "source" && activation_permise(avant.trim_matches([' ', '\t'])));
+/// Ce que dit une commande qui pose un nom de variable calculé.
+fn nom_calcule_dit() -> &'static str {
+    tr!(
+        "un nom de variable calculé (eval, export \"$…\", printf -v, read, let, un calcul qui pose)",
+        "a computed variable name (eval, export \"$…\", printf -v, read, let, a calculation that assigns)"
+    )
+}
+
+/// Ce que dit une commande dont le nom se calcule ou se déguise.
+fn commande_deguisee_dite() -> &'static str {
+    tr!(
+        "une commande dont le nom se calcule ou se déguise (« \\export », « ex\"\"port », « $X », un alias, un piège)",
+        "a command whose name is computed or disguised (“\\export”, “ex\"\"port”, “$X”, an alias, a trap)"
+    )
+}
+
+/// Ce que dit une inclusion que Vanguard ne lit pas.
+fn inclusion_dite() -> &'static str {
+    tr!(
+        "un fichier inclus dont le chemin se calcule ou vient de l'entrée (« . <(…) », « source $X », « source /dev/stdin »)",
+        "an included file whose path is computed or comes from input (“. <(…)”, “source $X”, “source /dev/stdin”)"
+    )
+}
+
+/// Ronde 12 (N11-3) : un calcul qui pose une variable dans le shell même, ou `None`. Le shell calcule dans « $(( )) »,
+/// « (( )) », « $[ ] », un indice (« t[…] », « ${t[…]} », « ([…]=v) »), un décalage (« ${s:…} ») et les opérandes
+/// de « -eq » et des autres comparaisons de nombres d'un « [[ ]] » ; un calcul pose (« = », « += », « ++ »…), et
+/// « $a$b=0 » y pose une variable dont le nom se calcule (vrai bash : PATH=0). Un calcul qui pose et lit « $ » ou
+/// « ` » : dit. Aussi « ${ cmd; } » et « ${| cmd; } » de bash 5.3 (la commande tourne dans le shell même) et
+/// « ${(P)n=…} » de zsh (pose la variable que nomme n). Le texte entier est lu, guillemets compris (« PS1='$((…))' »
+/// se calcule à chaque invite). Limite écrite : une valeur lue dans un calcul (« (( z )) ») s'y calcule à son tour, et
+/// une valeur construite par morceaux (« z=$x$y ») n'est pas suivie.
+fn effet_cache(ligne: &str, format: Format) -> Option<&'static str> {
+    if !matches!(format, Format::Shell | Format::Zsh) {
+        return None;
+    }
+    let o: Vec<char> = ligne.chars().collect();
+    let a = |i: usize| o.get(i).copied();
+    // Le texte de `debut` jusqu'au `ferme` qui répond à l'`ouvre` déjà lu, ou jusqu'à la fin.
+    let jusqu_a = |debut: usize, ouvre: char, ferme: char| -> String {
+        let mut profondeur = 1usize;
+        let mut dedans = String::new();
+        for &c in o.iter().skip(debut) {
+            if c == ouvre {
+                profondeur = profondeur.saturating_add(1);
+            } else if c == ferme {
+                profondeur = profondeur.saturating_sub(1);
+                if profondeur == 0 {
+                    break;
+                }
+            }
+            dedans.push(c);
+        }
+        dedans
+    };
+    let mut calculs: Vec<String> = Vec::new();
+    for (i, &c) in o.iter().enumerate() {
+        let (suivant, apres) = (a(i.saturating_add(1)), a(i.saturating_add(2)));
+        let precedent = i.checked_sub(1).and_then(a);
+        if c == '$' && suivant == Some('{') {
+            if apres.is_some_and(|x| x.is_whitespace() || x == '|') {
+                return Some(nom_calcule_dit());
+            }
+            let dedans = jusqu_a(i.saturating_add(2), '{', '}');
+            if format == Format::Zsh
+                && let Some(drapeaux) = dedans.strip_prefix('(').and_then(|d| d.split_once(')'))
+                && drapeaux.0.contains('P')
+                && drapeaux.1.contains('=')
+            {
+                return Some(nom_calcule_dit());
+            }
+            // Un décalage : « ${nom:… » sans « - = ? + » après le « : ».
+            let nom_fin = dedans
+                .find(|x: char| !(x.is_ascii_alphanumeric() || matches!(x, '_' | '@' | '*' | '#' | '!')))
+                .unwrap_or(dedans.len());
+            let mut reste = dedans.get(nom_fin..).unwrap_or_default();
+            if reste.starts_with('[') {
+                reste = reste.split_once(']').map_or("", |(_, r)| r);
+            }
+            if let Some(decalage) = reste.strip_prefix(':')
+                && !decalage.starts_with(['-', '=', '?', '+'])
+            {
+                calculs.push(decalage.to_string());
+            }
+        }
+        if c == '(' && suivant == Some('(') {
+            calculs.push(jusqu_a(i.saturating_add(2), '(', ')'));
+        }
+        if c == '$' && suivant == Some('[') {
+            calculs.push(jusqu_a(i.saturating_add(2), '[', ']'));
+        }
+        // Un indice : « [ » collé à ce qui suit, sauf « [[ » et le « [ » d'un essai (« [ -d x ] »).
+        if c == '['
+            && precedent != Some('[')
+            && precedent != Some('$')
+            && suivant.is_some_and(|x| !x.is_whitespace() && x != '[')
+        {
+            calculs.push(jusqu_a(i.saturating_add(1), '[', ']'));
         }
     }
-    for commande in commandes_a_plat(ligne, fish) {
-        let mut mots = commande.iter().map(String::as_str).skip_while(|m| {
-            [
-                "then", "else", "do", "!", "if", "elif", "while", "until", "{", "}", "time", "command", "builtin",
-                "and", "or", "not", "begin",
-            ]
-            .contains(m)
-                || (!fish && affectation(m).is_some())
-        });
-        let Some(premier) = mots.next() else {
-            continue;
-        };
-        let args: Vec<&str> = mots.collect();
-        let sans_redirection: Vec<&str> = args
-            .iter()
-            .copied()
-            .filter(|a| !matches!(*a, ">" | "/dev/null" | ">/dev/null" | "2>/dev/null"))
-            .collect();
-        let calcule = match premier {
-            "eval" => {
-                !(sans_redirection.len() == 1
-                    && sans_redirection.first().is_some_and(|a| {
-                        let net = a.strip_prefix('"').and_then(|x| x.strip_suffix('"')).unwrap_or(a);
-                        net.strip_prefix("$(")
-                            .and_then(|x| x.strip_suffix(')'))
-                            .is_some_and(activation_permise)
-                            && !fish
-                    }))
+    calculs.iter().any(|r| calcul_qui_pose(r)).then(nom_calcule_dit)
+}
+
+/// Un calcul du shell qui pose une variable dont le nom se calcule : la cible d'un « = » (qui n'est ni « == », « != »,
+/// « <= », « >= », « =~ »), d'un « += », « <<= »… ou d'un « ++ », « -- » lit « $ » ou « ` » (« $a$b=0 » : vrai bash,
+/// PATH=0). Une cible fixe (« i=0 », « n+=$x ») pose une variable du calcul, pas une variable surveillée nommée
+/// ailleurs ; ce que vaut « $x » lu dans un calcul n'est pas suivi (limite écrite).
+fn calcul_qui_pose(calcul: &str) -> bool {
+    let o: Vec<char> = calcul.chars().collect();
+    let dans_l_operande = |c: char| c.is_ascii_alphanumeric() || "_$`{}[]#@\"'()".contains(c);
+    // L'opérande collé avant `fin` (blancs sautés) ou après `debut`.
+    let avant = |fin: usize| -> String {
+        let mut k = fin;
+        while k > 0 && o.get(k.saturating_sub(1)).is_some_and(|c| c.is_whitespace()) {
+            k = k.saturating_sub(1);
+        }
+        let mut operande = Vec::new();
+        while k > 0
+            && let Some(&c) = o.get(k.saturating_sub(1)).filter(|c| dans_l_operande(**c))
+        {
+            operande.push(c);
+            k = k.saturating_sub(1);
+        }
+        operande.iter().rev().collect()
+    };
+    let apres = |debut: usize| -> String {
+        o.iter()
+            .skip(debut)
+            .skip_while(|c| c.is_whitespace())
+            .take_while(|c| dans_l_operande(**c))
+            .collect()
+    };
+    let calculee = |cible: &str| cible.contains(['$', '`']);
+    for (i, &c) in o.iter().enumerate() {
+        let precedent = i.checked_sub(1).and_then(|k| o.get(k)).copied();
+        let suivant = o.get(i.saturating_add(1)).copied();
+        match c {
+            '=' => {
+                if matches!(suivant, Some('=' | '~')) || matches!(precedent, Some('=' | '!')) {
+                    continue;
+                }
+                let debut = match precedent {
+                    Some(p @ ('<' | '>')) => {
+                        if i.checked_sub(2).and_then(|k| o.get(k)) != Some(&p) {
+                            continue;
+                        }
+                        i.saturating_sub(2)
+                    }
+                    Some('+' | '-' | '*' | '/' | '%' | '&' | '|' | '^') => i.saturating_sub(1),
+                    _ => i,
+                };
+                if calculee(&avant(debut)) {
+                    return true;
+                }
             }
-            "export" | "declare" | "typeset" | "local" | "readonly" if !fish => {
-                let reference = args.iter().any(|a| a.starts_with('-') && a.contains('n'));
-                args.iter()
-                    .filter(|a| !a.starts_with(['-', '+']))
-                    .any(|a| construit(a) || (reference && a.contains(['$', '`'])))
+            '+' | '-' if suivant == Some(c) && (calculee(&avant(i)) || calculee(&apres(i.saturating_add(2)))) => {
+                return true;
             }
-            "read" | "mapfile" | "readarray" | "getopts" => args
-                .iter()
-                .take_while(|a| !a.starts_with(['<', '>']))
-                .any(|a| !a.starts_with('-') && !identifiant(a)),
-            "printf" if !fish => args.iter().enumerate().any(|(i, a)| {
-                a.strip_prefix("-v").is_some_and(|nom| {
-                    let nom = if nom.is_empty() {
-                        args.get(i.saturating_add(1)).copied().unwrap_or_default()
-                    } else {
-                        nom
-                    };
-                    !identifiant(nom)
-                })
-            }),
-            "set" if fish => args
-                .iter()
-                .find(|a| !a.starts_with('-'))
-                .is_some_and(|nom| !identifiant(nom)),
-            "source" | "." if fish => args.is_empty() || args.first() == Some(&"-"),
-            p => {
-                let p = p.trim_start_matches('"');
-                p.starts_with(['$', '`', '(']) && morceau_de_maison(p.trim_end_matches('"')).is_none_or(str::is_empty)
-            }
-        };
-        if calcule {
-            return true;
+            _ => {}
         }
     }
     false
 }
 
+/// Les mots d'une commande après ce qui ne change pas ce qu'elle lance : mots réservés (« if », « then », « { »…, et
+/// en fish « and », « or », « not », « begin »…), « function nom », affectations et redirections en tête, et les
+/// préfixes qui lancent le mot suivant (« builtin », « command », « exec », « noglob »…). `None` : la commande est
+/// reconnue entière sans rien poser (« command -v x », « case … in », « switch » de fish).
+fn mots_utiles(mots: &[String], fish: bool) -> Option<&[String]> {
+    let mut i = 0usize;
+    let redirection = |m: &str| {
+        m.trim_start_matches(|c: char| c.is_ascii_digit())
+            .starts_with(['<', '>'])
+            || m.starts_with("&>")
+    };
+    while let Some(m) = mots.get(i) {
+        let suivant = mots.get(i.saturating_add(1)).map(String::as_str);
+        let pas = match m.as_str() {
+            "if" | "then" | "else" | "elif" | "fi" | "do" | "done" | "while" | "until" | "{" | "}" | "!" | "coproc"
+            | "esac" | "for" | "noglob" | "nocorrect" => 1,
+            "and" | "or" | "not" | "begin" | "end" if fish => 1,
+            "time" => usize::from(suivant == Some("-p")).saturating_add(1),
+            "function" => 2,
+            "case" | "select" | "in" => return None,
+            "switch" if fish => return None,
+            "command" | "builtin" | "exec" => {
+                let mut pas = 1usize;
+                while let Some(o) = mots
+                    .get(i.saturating_add(pas))
+                    .filter(|o| o.starts_with('-') && o.len() > 1)
+                {
+                    if m == "command" && (o.contains(['v', 'V', 'q', 's']) || o == "--query" || o == "--search") {
+                        return None;
+                    }
+                    pas = pas.saturating_add(if m == "exec" && o == "-a" { 2 } else { 1 });
+                }
+                pas
+            }
+            r if redirection(r) => {
+                if r.trim_start_matches(|c: char| c.is_ascii_digit())
+                    .chars()
+                    .all(|c| matches!(c, '<' | '>' | '&' | '|'))
+                {
+                    2
+                } else {
+                    1
+                }
+            }
+            a if !fish && affectation_en_tete(a) => 1,
+            _ => break,
+        };
+        i = i.saturating_add(pas);
+    }
+    Some(mots.get(i..).unwrap_or_default())
+}
+
+/// Une affectation du shell en tête d'une commande : « NOM=… », « NOM+=… », « NOM[…]=… » (l'indice, un calcul, est
+/// lu par `effet_cache`).
+fn affectation_en_tete(m: &str) -> bool {
+    let fin = m
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(m.len());
+    let (nom, mut reste) = m.split_at(fin);
+    if reste.starts_with('[') {
+        reste = reste.split_once(']').map_or("", |(_, r)| r);
+    }
+    identifiant(nom) && (reste.starts_with('=') || reste.starts_with("+="))
+}
+
+/// Le nom d'une commande tel que le shell le lance, décodé (« \export », « "export" », « ex""port » sont
+/// « export », N11-3 : la commande se juge sous son vrai nom), ou `None` s'il se calcule ou se déguise : « $X »,
+/// « ex${z}port », « $(…) », « ` », « $'\x65'xport », un joker. « ~ » ou « $HOME » en tête d'un chemin (entre
+/// guillemets permis) restent un chemin ; « [ », « [[ » et au shell un calcul « (( … )) » (jugé par `effet_cache`)
+/// sont lus. Le nom décodé : lettres ASCII, chiffres, « _ . / + - : @ % , ~ ».
+fn nom_de_commande(m: &str, fish: bool) -> Option<String> {
+    if matches!(m, "[" | "[[") || (!fish && m.starts_with("((")) {
+        return Some(m.to_string());
+    }
+    let mut nom = String::new();
+    let mut i = 0usize;
+    while let Some(c) = m.get(i..).and_then(|r| r.chars().next()) {
+        let suite = m.get(i.saturating_add(c.len_utf8())..).unwrap_or_default();
+        i = i.saturating_add(c.len_utf8());
+        match c {
+            '\\' => {
+                let d = suite.chars().next()?;
+                nom.push(d);
+                i = i.saturating_add(d.len_utf8());
+            }
+            '"' | '\'' => {}
+            // « $HOME » ou « ${HOME} » en tête seulement, suivi de « / » ou de rien (guillemets ôtés).
+            '$' if nom.is_empty() => {
+                let apres = ["HOME", "{HOME}"].iter().find_map(|h| suite.strip_prefix(h))?;
+                let net = apres.trim_start_matches('"');
+                if !(net.is_empty() || net.starts_with('/')) {
+                    return None;
+                }
+                nom.push('~');
+                i = m.len().saturating_sub(apres.len());
+            }
+            '~' if nom.is_empty() && (suite.is_empty() || suite.starts_with('/')) => nom.push('~'),
+            '$' | '`' | '(' | ')' | '{' | '}' | '*' | '?' | '[' | ']' | '~' => return None,
+            c => nom.push(c),
+        }
+    }
+    (!nom.is_empty()
+        && nom
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_./+-:@%,~".contains(c)))
+    .then_some(nom)
+}
+
+/// Un chemin inclus (« . chemin », « source chemin ») que Vanguard lit comme un fichier nommé : des caractères
+/// simples, « ~ », et des lectures de variables (« $HOME/… », « "$OMARCHY_PATH/default/bash/rc" », « ${OMARCHY_PATH%/} », « "$f" »
+/// d'une boucle), guillemets ôtés. Ce que le fichier inclus pose n'est pas suivi ici (limite écrite) ; ce que le shell
+/// calcule ou lit de l'entrée ne l'est jamais : « $( ) », « ` », « <( ) », « ${ } » qui pose, /dev et /proc
+/// (l'entrée standard, un descripteur), un joker.
+fn inclusion_lue(chemin: &str) -> bool {
+    let net: String = chemin.chars().filter(|c| !matches!(c, '"' | '\'')).collect();
+    let sans_lectures: String = {
+        let mut s = String::new();
+        let mut reste = net.as_str();
+        while let Some(i) = reste.find('$') {
+            s.push_str(reste.get(..i).unwrap_or_default());
+            let apres = reste.get(i.saturating_add(1)..).unwrap_or_default();
+            let (nom, suite) = if let Some(a) = apres.strip_prefix('{') {
+                // « ${NOM%/} » (Omarchy : « ${OMARCHY_PATH%/}/default/uwsm/default ») ôte un « / » final : une
+                // lecture, rien n'est posé.
+                match a.split_once('}') {
+                    Some((n, r)) if identifiant(n.strip_suffix("%/").unwrap_or(n)) => {
+                        (n.strip_suffix("%/").unwrap_or(n), r)
+                    }
+                    _ => return false,
+                }
+            } else {
+                let fin = apres
+                    .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .unwrap_or(apres.len());
+                apres.split_at(fin)
+            };
+            if !identifiant(nom) {
+                return false;
+            }
+            s.push('v');
+            reste = suite;
+        }
+        s.push_str(reste);
+        s
+    };
+    !net.starts_with("/dev/")
+        && !net.starts_with("/proc/")
+        && !sans_lectures.is_empty()
+        && sans_lectures
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_./+-@,~".contains(c))
+}
+
+/// Le texte d'un mot entre apostrophes ou guillemets doubles, sans eux (« \" », « \\ », « \$ » rendus), ou le mot tel
+/// quel : le corps d'un alias ou d'un piège, qui se lit comme une ligne.
+fn sans_guillemets(m: &str) -> String {
+    if let Some(d) = m.strip_prefix('\'').and_then(|x| x.strip_suffix('\'')) {
+        return d.to_string();
+    }
+    if let Some(d) = m.strip_prefix('"').and_then(|x| x.strip_suffix('"')) {
+        return d.replace("\\\"", "\"").replace("\\$", "$").replace("\\\\", "\\");
+    }
+    m.to_string()
+}
+
+/// Un nom d'alias écrit tel quel : caractères simples, « . » compris (« alias ..='cd ..' »), sans « $ », « ` »,
+/// guillemet ni « \ » : un nom qui se calcule pourrait être celui d'une commande sensible.
+fn identifiant_d_alias(nom: &str) -> bool {
+    !nom.is_empty() && nom.chars().all(|c| c.is_ascii_alphanumeric() || "_.-+:@%,".contains(c))
+}
+
+/// Les commandes qui posent, lisent du code ou en changent le sens : un alias vers l'une d'elles, sans argument
+/// (« alias e=export »), déguise la commande d'une ligne suivante.
+const COMMANDES_SENSIBLES: [&str; 25] = [
+    "export",
+    "declare",
+    "typeset",
+    "local",
+    "readonly",
+    "integer",
+    "float",
+    "eval",
+    "let",
+    "source",
+    ".",
+    "printf",
+    "print",
+    "read",
+    "mapfile",
+    "readarray",
+    "vared",
+    "getopts",
+    "alias",
+    "builtin",
+    "command",
+    "unset",
+    "set",
+    "trap",
+    "enable",
+];
+
+/// Ronde 12 (N11-3, cause racine) : la règle devient structurelle. Une ligne du shell ou de fish ne se tait que si
+/// chacune de ses commandes est reconnue : son nom lu, décodé (`nom_de_commande`) et, pour celles qui posent ou
+/// lisent du code, chaque nom et chaque chemin fixe ; et aucun calcul n'y pose (`effet_cache`). Sinon, ce qui n'est
+/// pas reconnu est rendu, dit non vérifié : un nom de variable calculé, une commande déguisée, une inclusion
+/// calculée. Au shell, une commande d'un tube autre que la dernière, ou lancée en fond (« & »), ou dans « ( … ) »
+/// (et le motif « x) » d'un « case ») tourne dans un sous-shell : elle ne pose rien ici. En fish, rien ne tourne à
+/// part : chaque substitution « ( … ) » se lit aussi.
+fn non_reconnue(ligne: &str, format: Format) -> Option<&'static str> {
+    if !matches!(format, Format::Shell | Format::Zsh | Format::Fish) {
+        return None;
+    }
+    let fish = format == Format::Fish;
+    if let Some(r) = effet_cache(ligne, format) {
+        return Some(r);
+    }
+    let mut tube: Option<Vec<String>> = None;
+    for (mots, fin) in commandes_a_plat(ligne, fish) {
+        if let Some(r) = commande_non_reconnue(&mots, fin, tube.as_deref(), format) {
+            return Some(r);
+        }
+        tube = (fin == "|")
+            .then(|| mots_utiles(&mots, fish).map(<[String]>::to_vec))
+            .flatten();
+    }
+    None
+}
+
+/// Une commande de `non_reconnue` (ses mots, ce qui la finit, les mots utiles de la commande qui l'alimente par un
+/// tube) : ce qui n'y est pas reconnu, ou `None`.
+fn commande_non_reconnue(mots: &[String], fin: &str, tube: Option<&[String]>, format: Format) -> Option<&'static str> {
+    let fish = format == Format::Fish;
+    if fish {
+        // Une substitution de fish tourne dans le shell même : elle se lit comme une ligne.
+        for mot in mots {
+            for (i, _) in mot.match_indices('(') {
+                let dedans: String = {
+                    let mut profondeur = 1usize;
+                    let mut d = String::new();
+                    for c in mot.get(i.saturating_add(1)..).unwrap_or_default().chars() {
+                        match c {
+                            '(' => profondeur = profondeur.saturating_add(1),
+                            ')' => profondeur = profondeur.saturating_sub(1),
+                            _ => {}
+                        }
+                        if profondeur == 0 {
+                            break;
+                        }
+                        d.push(c);
+                    }
+                    d
+                };
+                if let Some(r) = non_reconnue(&dedans, format) {
+                    return Some(r);
+                }
+            }
+        }
+    } else if matches!(fin, "|" | "&" | ")") {
+        return None;
+    }
+    let mots = mots_utiles(mots, fish)?;
+    let (premier, args) = mots.split_first()?;
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let Some(premier) = nom_de_commande(premier, fish) else {
+        return Some(commande_deguisee_dite());
+    };
+    let calcule = |a: &str| a.contains(['$', '`']) || (fish && a.contains('('));
+    let nom_fixe = |a: &str| {
+        let nom = a.split('=').next().unwrap_or(a).trim_end_matches('+');
+        identifiant(nom.split_once('[').map_or(nom, |(n, _)| n))
+    };
+    let options = |a: &&str| a.starts_with(['-', '+']) && a.len() > 1;
+    let non_options = || args.iter().copied().filter(|a| !options(a));
+    let activation = |a: &str| {
+        let net = a.strip_prefix('"').and_then(|x| x.strip_suffix('"')).unwrap_or(a);
+        let dedans = if fish {
+            net.strip_prefix('(').and_then(|x| x.strip_suffix(')'))
+        } else {
+            net.strip_prefix("$(").and_then(|x| x.strip_suffix(')'))
+        };
+        dedans.is_some_and(activation_permise)
+    };
+    let redirections = |a: &&str| matches!(*a, ">" | "/dev/null" | ">/dev/null" | "2>/dev/null" | "&>/dev/null");
+    let dit = match premier.as_str() {
+        "export" | "declare" | "typeset" | "local" | "readonly" | "integer" | "float" if !fish => {
+            let reference = premier == "integer"
+                || args
+                    .iter()
+                    .any(|a| options(a) && a.trim_start_matches(['-', '+']).contains(['n', 'i']));
+            non_options()
+                .any(|a| !nom_fixe(a) || (reference && calcule(a)))
+                .then(nom_calcule_dit)
+        }
+        "export" | "setenv" if fish => non_options().next().is_some_and(|a| !nom_fixe(a)).then(nom_calcule_dit),
+        "set" if fish => non_options().next().is_some_and(|a| !nom_fixe(a)).then(nom_calcule_dit),
+        "eval" => {
+            let utiles: Vec<&str> = args.iter().copied().filter(|a| !redirections(a)).collect();
+            (!(utiles.len() == 1 && utiles.first().is_some_and(|a| activation(a)))).then(nom_calcule_dit)
+        }
+        "let" if !fish => args
+            .iter()
+            .any(|a| calcul_qui_pose(&sans_guillemets(a)))
+            .then(nom_calcule_dit),
+        "source" | "." => {
+            let entree = args.iter().any(|a| a.starts_with('<'));
+            match args.first() {
+                _ if entree => Some(inclusion_dite()),
+                None | Some(&"-") if fish => {
+                    let permis = tube.is_some_and(|t| {
+                        t.iter().all(|m| !m.contains(['$', '(', '"', '\'', '\\'])) && activation_permise(&t.join(" "))
+                    });
+                    (!permis).then(inclusion_dite)
+                }
+                Some(c) if inclusion_lue(c) => None,
+                _ => Some(inclusion_dite()),
+            }
+        }
+        "printf" | "print" if !fish => args
+            .iter()
+            .enumerate()
+            .find_map(|(i, a)| {
+                let nom = a.strip_prefix("-v")?;
+                Some(if nom.is_empty() {
+                    args.get(i.saturating_add(1)).copied().unwrap_or_default()
+                } else {
+                    nom
+                })
+            })
+            .is_some_and(|nom| !nom_fixe(nom))
+            .then(nom_calcule_dit),
+        "getopts" => args.get(1).is_some_and(|n| !identifiant(n)).then(nom_calcule_dit),
+        "read" | "mapfile" | "readarray" | "vared" => {
+            if args
+                .iter()
+                .any(|a| a.starts_with("-C") || *a == "--command" || *a == "-c" && fish)
+            {
+                return Some(nom_calcule_dit());
+            }
+            let avec_argument: &str = match (premier.as_str(), format) {
+                ("read", Format::Fish) => "pPRdn",
+                ("read", Format::Zsh) => "d",
+                ("read", _) => "adinNptu",
+                ("vared", _) => "prMmf",
+                _ => "dnOsuc",
+            };
+            let mut i = 0usize;
+            let mut calculee = false;
+            while let Some(a) = args.get(i) {
+                if a.starts_with(['<', '>', '|'])
+                    || a.trim_start_matches(|c: char| c.is_ascii_digit())
+                        .starts_with(['<', '>'])
+                {
+                    break;
+                }
+                if a.starts_with('-') && a.len() > 1 {
+                    if !a.starts_with("--") && a.chars().last().is_some_and(|l| avec_argument.contains(l)) {
+                        i = i.saturating_add(1);
+                    }
+                } else {
+                    let nom = if format == Format::Zsh {
+                        a.split('?').next().unwrap_or(a)
+                    } else {
+                        a
+                    };
+                    calculee |= !identifiant(nom);
+                }
+                i = i.saturating_add(1);
+            }
+            calculee.then(nom_calcule_dit)
+        }
+        "alias" => {
+            let corps: Vec<(String, String)> = if fish {
+                match non_options().collect::<Vec<_>>().as_slice() {
+                    [une] => une
+                        .split_once('=')
+                        .map(|(n, c)| (n.to_string(), sans_guillemets(c)))
+                        .into_iter()
+                        .collect(),
+                    [nom, reste @ ..] => vec![(
+                        nom.to_string(),
+                        reste.iter().map(|r| sans_guillemets(r)).collect::<Vec<_>>().join(" "),
+                    )],
+                    [] => Vec::new(),
+                }
+            } else {
+                non_options()
+                    .filter_map(|a| a.split_once('='))
+                    .map(|(n, c)| (n.to_string(), sans_guillemets(c)))
+                    .collect()
+            };
+            corps
+                .iter()
+                .any(|(nom, corps)| {
+                    let mut mots_du_corps = corps.split([' ', '\t']).filter(|m| !m.is_empty());
+                    let tete = mots_du_corps.next().and_then(|t| nom_de_commande(t, fish));
+                    !identifiant_d_alias(nom)
+                        || (tete.is_some_and(|t| COMMANDES_SENSIBLES.contains(&t.as_str()))
+                            && mots_du_corps.all(|m| m.starts_with('-')))
+                        || non_reconnue(corps, format).is_some()
+                })
+                .then(commande_deguisee_dite)
+        }
+        "trap" if !fish => non_options()
+            .next()
+            .is_some_and(|corps| non_reconnue(&sans_guillemets(corps), format).is_some())
+            .then(commande_deguisee_dite),
+        "enable" => args
+            .iter()
+            .any(|a| !matches!(*a, "-a" | "-p" | "-s"))
+            .then(commande_deguisee_dite),
+        "hash" if !fish => args.iter().any(|a| a.starts_with("-p")).then(commande_deguisee_dite),
+        "unset" | "shopt" | "setopt" | "unsetopt" if !fish => args.iter().any(|a| calcule(a)).then(nom_calcule_dit),
+        "dbus-update-activation-environment" => args.iter().any(|a| calcule(a)).then(nom_calcule_dit),
+        "systemctl" if args.iter().any(|a| a.ends_with("-environment")) => {
+            args.iter().any(|a| calcule(a)).then(nom_calcule_dit)
+        }
+        "uwsm" if args.contains(&"finalize") => args.iter().any(|a| calcule(a)).then(nom_calcule_dit),
+        _ => None,
+    };
+    if dit.is_some() {
+        return dit;
+    }
+    // « [[ … ]] » : les opérandes d'une comparaison de nombres se calculent.
+    if premier == "[[" {
+        for (i, a) in args.iter().enumerate() {
+            if ["-eq", "-ne", "-lt", "-le", "-gt", "-ge"].contains(a) {
+                let voisins = [
+                    i.checked_sub(1).and_then(|k| args.get(k)),
+                    args.get(i.saturating_add(1)),
+                ];
+                if voisins.iter().flatten().any(|v| calcul_qui_pose(v)) {
+                    return Some(nom_calcule_dit());
+                }
+            }
+        }
+    }
+    // Un argument « <calculé>=… » d'une autre commande (« e $a$b=… » d'un alias défini ailleurs) : le « = » hors
+    // de « ${ } », précédé de « $ » ou de « ` ».
+    let exempte = [
+        "echo", "printf", "print", "[", "[[", "test", ":", "true", "false", "alias", "trap",
+    ];
+    if !fish && !exempte.contains(&premier.as_str()) {
+        let pose_calculee = |a: &str| {
+            let mut profondeur = 0usize;
+            for (i, c) in a.char_indices() {
+                match c {
+                    '{' => profondeur = profondeur.saturating_add(1),
+                    '}' => profondeur = profondeur.saturating_sub(1),
+                    '=' if profondeur == 0 => return a.get(..i).is_some_and(|avant| avant.contains(['$', '`'])),
+                    _ => {}
+                }
+            }
+            false
+        };
+        if args.iter().any(|a| pose_calculee(a)) {
+            return Some(nom_calcule_dit());
+        }
+    }
+    None
+}
+
 /// Ronde 11 : ce qu'une ligne touche de surveillé, ou `None` : une variable surveillée (`variable_surveillee`) écrite
 /// ailleurs qu'en la lisant (`ecriture_nommee`), dans le texte tel qu'écrit ou décodé (`decodee` : « P"ATH" »,
 /// « $'\x50'ATH », « L\D_PRELOAD ») ; au shell, l'option « dotglob » (qu'un BASHOPTS exporté passe à chaque bash,
-/// N10-8) et un nom calculé (`nom_calcule`). Ce qui est rendu se dit : le nom, ou ce qui le calcule.
+/// N10-8) ; en fish, « fish_add_path », qui change PATH sans le nommer (N11-2) ; enfin ce que la ligne a de non
+/// reconnu (`non_reconnue` : nom calculé, commande déguisée, inclusion calculée). Ce qui est rendu se dit.
 fn touche(ligne: &str, format: Format) -> Option<String> {
     let est = |n: &str| variable_surveillee(n, format);
     if let Some(nom) = ecriture_nommee(ligne, &est).or_else(|| ecriture_nommee(&decodee(ligne), &est)) {
@@ -8408,16 +9035,13 @@ fn touche(ligne: &str, format: Format) -> Option<String> {
     {
         return Some(tr!("BASHOPTS (option « dotglob »)", "BASHOPTS (“dotglob” option)").to_string());
     }
-    if matches!(format, Format::Shell | Format::Zsh | Format::Fish) && nom_calcule(ligne, format) {
-        return Some(
-            tr!(
-                "un nom de variable calculé (eval, export \"$…\", printf -v, read…)",
-                "a computed variable name (eval, export \"$…\", printf -v, read…)"
-            )
-            .to_string(),
-        );
+    let ajoute = |n: &str| n == "fish_add_path";
+    if format == Format::Fish
+        && (ecriture_nommee(ligne, &ajoute).is_some() || ecriture_nommee(&decodee(ligne), &ajoute).is_some())
+    {
+        return Some(tr!("la variable PATH (fish_add_path)", "the variable PATH (fish_add_path)").to_string());
     }
-    None
+    non_reconnue(ligne, format).map(str::to_string)
 }
 
 /// Ce que la grammaire stricte (`juger_ligne`) dit d'une ligne.
@@ -8430,6 +9054,9 @@ enum Jugement {
     /// Une variable surveillée touchée hors de la forme simple (`quoi` : ce qui est touché, dit) : non vérifié,
     /// jamais tu ; élevé si la lecture large (`raison_large`) y trouve déjà un dossier caché ou temporaire.
     HorsForme { quoi: String, raison: Option<&'static str> },
+    /// N11-7 : HOME, ZDOTDIR ou XDG_CONFIG_HOME (`nom`) posé, dans la forme simple, ailleurs qu'à sa place
+    /// d'ordinaire, sans dossier caché ni temporaire : ce qui s'y lit n'est pas vérifié, dit.
+    Deplace(String),
 }
 
 /// La raison de BASHOPTS ou SHELLOPTS posé ou exporté à la session (N9-3, N10-8).
@@ -8459,9 +9086,14 @@ fn juger_ligne(ligne: &str, format: Format, maisons: &[&str], chemins: &mut [Str
         quoi,
         raison: raison_large(ligne, Some(format), maisons),
     };
+    // N11-3 : un calcul qui pose (« A=$(($a$b=0)) », « PS1='$((…))' ») se lit même sur une ligne de la forme simple.
+    if let Some(quoi) = effet_cache(ligne, format) {
+        return hors(quoi.to_string());
+    }
     let Some(instructions) = instructions else {
         return touche(ligne, format).map_or(Jugement::Muette, hors);
     };
+    let mut deplace = None;
     let mut raison = None;
     for instruction in instructions {
         let (nom, texte) = match instruction {
@@ -8489,6 +9121,15 @@ fn juger_ligne(ligne: &str, format: Format, maisons: &[&str], chemins: &mut [Str
                 .get(i)
                 .map_or_else(|| CHEMIN_DU_SYSTEME.to_string(), String::clone);
             let calculee = valeur_calculee(&nom, &texte, format, maison, &chemin);
+            if variable_de_dossier(&nom) {
+                // N11-7 : un dossier de configuration déplacé. Vers un dossier caché ou temporaire : élevé ;
+                // ailleurs qu'à sa place d'ordinaire : ce qu'il contient n'est pas lu, dit non vérifié.
+                raison = raison.or_else(|| dossier_suspect(&calculee, maisons));
+                if !dossier_d_origine(&nom, &calculee, maisons) {
+                    deplace = deplace.or_else(|| Some(nom.clone()));
+                }
+                continue;
+            }
             raison = raison.or_else(|| variable_suspecte(nom_juge(&nom), &calculee, maisons, true));
             if nom == "PATH"
                 && let Some(c) = chemins.get_mut(i)
@@ -8497,21 +9138,72 @@ fn juger_ligne(ligne: &str, format: Format, maisons: &[&str], chemins: &mut [Str
             }
         }
     }
-    raison.map_or(Jugement::Muette, Jugement::Suspecte)
+    match (raison, deplace) {
+        (Some(r), _) => Jugement::Suspecte(r),
+        (None, Some(nom)) => Jugement::Deplace(nom),
+        (None, None) => Jugement::Muette,
+    }
+}
+
+/// N11-7 : une variable qui déplace un dossier dont le shell ou les programmes lisent leur configuration (HOME,
+/// ZDOTDIR de zsh, XDG_CONFIG_HOME) : ce qu'il contient se lance comme un profil, que Vanguard ne lit qu'à sa place.
+fn variable_de_dossier(nom: &str) -> bool {
+    ["HOME", "ZDOTDIR", "XDG_CONFIG_HOME"].contains(&nom)
+}
+
+/// La raison d'un dossier de configuration déplacé vers un dossier caché ou temporaire (N11-7).
+fn dossier_deplace() -> &'static str {
+    tr!(
+        "dossier de configuration (HOME, ZDOTDIR, XDG_CONFIG_HOME) déplacé vers un dossier caché ou temporaire : les profils et la configuration s'y lisent",
+        "configuration folder (HOME, ZDOTDIR, XDG_CONFIG_HOME) moved to a hidden or temporary folder: profiles and configuration are read from there"
+    )
+}
+
+/// Une valeur de HOME, ZDOTDIR ou XDG_CONFIG_HOME qui mène à un dossier caché ou temporaire (lue comme un dossier de
+/// PATH, sous toutes ses lectures), ou `None`.
+fn dossier_suspect(valeur: &str, maisons: &[&str]) -> Option<&'static str> {
+    variable_suspecte("PATH", valeur, maisons, false).map(|_| dossier_deplace())
+}
+
+/// La valeur est-elle la place d'ordinaire du dossier, pour l'un des dossiers personnels de `maisons` : HOME et
+/// ZDOTDIR le dossier personnel, XDG_CONFIG_HOME son « .config » (« / » final permis) ?
+fn dossier_d_origine(nom: &str, valeur: &str, maisons: &[&str]) -> bool {
+    let valeur = valeur.trim_end_matches('/');
+    maisons.iter().any(|m| {
+        let m = m.trim_end_matches('/');
+        if nom == "XDG_CONFIG_HOME" {
+            valeur == format!("{m}/.config")
+        } else {
+            valeur == m
+        }
+    })
+}
+
+/// Le message non vérifié d'une ligne `n` du fichier `ou` qui déplace le dossier de la variable `nom` (N11-7).
+fn deplace_dit(ou: &str, n: usize, nom: &str) -> String {
+    trf!(
+        "{ou}:{n} : {nom} déplacé ailleurs qu'à sa place d'ordinaire : la configuration et les profils qui s'y lisent ne sont pas vérifiés",
+        "{ou}:{n}: {nom} moved away from its usual place: the configuration and profiles read from there are not checked"
+    )
 }
 
 /// La lecture large d'une ligne hors de la forme simple, pour lever plus seulement, jamais pour taire : après chaque
 /// variable surveillée suivie de « = », « += » ou « := » (et en fish d'un blanc, après « setenv » de csh aussi), le
 /// reste entier de la ligne, tel qu'écrit et décodé, jugé par `variable_suspecte` (sans le PATH relatif, qui ne se
-/// juge que sur une valeur sûre). Pas au format de systemd ni d'environment.d : leur valeur est la ligne entière
-/// (« PATH=/usr/bin # /home/alice/.x » n'y nomme pas « /home/alice/.x », N10-9), dite non vérifiée seulement.
+/// juge que sur une valeur sûre). Ronde 12 (N11-4) : aussi aux formats de systemd et d'environment.d, sur leurs lignes
+/// hors forme seulement (« PATH=/usr/bin # /home/alice/.x » y est une forme simple, jugée exacte, N10-9 ; elle
+/// n'arrive jamais ici). En fish (N11-2), « fish_add_path » se lit comme « PATH » suivi d'un blanc, et « {$HOME} »
+/// comme « $HOME ». Les dossiers de configuration (`variable_de_dossier`) se jugent par `dossier_suspect`.
 /// `None` comme format : un fichier de Hyprland, lu comme le shell.
 fn raison_large(ligne: &str, format: Option<Format>, maisons: &[&str]) -> Option<&'static str> {
-    if matches!(format, Some(Format::Cles { .. } | Format::Systemd)) {
-        return None;
-    }
     let format = format.unwrap_or(Format::Shell);
-    for texte in [ligne.to_string(), decodee(ligne)] {
+    let fish = format == Format::Fish;
+    let lectures = if fish {
+        [ligne.to_string(), decodee(ligne)].map(|l| l.replace("fish_add_path", "PATH").replace("{$HOME}", "$HOME"))
+    } else {
+        [ligne.to_string(), decodee(ligne)]
+    };
+    for texte in lectures {
         let octets = texte.as_bytes();
         let mot = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
         let mut i = 0usize;
@@ -8537,6 +9229,12 @@ fn raison_large(ligne: &str, format: Option<Format>, maisons: &[&str]) -> Option
                 .or_else(|| {
                     ((format == Format::Fish || setenv) && suite.starts_with([' ', '\t'])).then(|| suite.trim_start())
                 });
+            if variable_de_dossier(nom) {
+                if let Some(raison) = valeur.and_then(|v| dossier_suspect(v, maisons)) {
+                    return Some(raison);
+                }
+                continue;
+            }
             if let Some(raison) = valeur.and_then(|v| {
                 variable_suspecte(nom_juge(nom), v, maisons, false).or_else(|| {
                     (format != Format::Fish)
@@ -8643,25 +9341,42 @@ fn juger_lignes_jointes(
         } else if let Some(format) = format
             && !commentaire_selon(&jointe, sorte)
         {
-            // Ronde 11 : la ligne jointe sous la grammaire stricte, si aucune de ses lignes n'a déjà été jugée
-            // autrement que muette (chacune y est jugée seule) ; hors forme sans raison : non vérifié.
+            // Ronde 11 : la ligne jointe sous la grammaire stricte. Ronde 12 (N11-4) : seule une ligne déjà levée
+            // (élevée seule) la fait sauter ; des lignes seulement dites non vérifiées laissent juger la ligne
+            // jointe, qui se lève si elle a une raison (« PATH=/usr/bin:\⏎/home/alice/.x » d'environment.d), sans
+            // redire le non vérifié.
             let mut sans_chemin = vec![CHEMIN_DU_SYSTEME.to_string(); maisons.len()];
-            if physiques.iter().any(|(_, l)| {
-                juger_ligne(
-                    l,
-                    format,
-                    maisons,
-                    &mut vec![CHEMIN_DU_SYSTEME.to_string(); maisons.len()],
-                ) != Jugement::Muette
-            }) {
+            let seules: Vec<Jugement> = physiques
+                .iter()
+                .map(|(_, l)| {
+                    juger_ligne(
+                        l,
+                        format,
+                        maisons,
+                        &mut vec![CHEMIN_DU_SYSTEME.to_string(); maisons.len()],
+                    )
+                })
+                .collect();
+            if seules
+                .iter()
+                .any(|j| matches!(j, Jugement::Suspecte(_) | Jugement::HorsForme { raison: Some(_), .. }))
+            {
                 continue;
             }
+            let deja_dit = seules.iter().any(|j| *j != Jugement::Muette);
             match juger_ligne(&jointe, format, maisons, &mut sans_chemin) {
                 Jugement::Suspecte(r) | Jugement::HorsForme { raison: Some(r), .. } => Some(r),
                 Jugement::HorsForme { quoi, raison: None } => {
-                    if !de_root {
+                    if !de_root && !deja_dit {
                         t.non_verifies
                             .push(hors_forme_dite(&court(fichier, maison), premiere, &quoi));
+                    }
+                    continue;
+                }
+                Jugement::Deplace(nom) => {
+                    if !de_root && !deja_dit {
+                        t.non_verifies
+                            .push(deplace_dit(&court(fichier, maison), premiere, &nom));
                     }
                     continue;
                 }
@@ -20993,6 +21708,318 @@ mod tests {
             }
         }
         assert!(faux.is_empty(), "témoins de la grammaire stricte : {faux:#?}");
+    }
+
+    /// Ronde 12 : la grammaire stricte devient structurelle. Ne se tait qu'une ligne que Vanguard a tout entière
+    /// reconnue : N11-1 (« set -q X; set -gx PATH … » de fish se juge), N11-2 (« fish_add_path » hors de la forme
+    /// simple, « ~ » et « {$HOME} » lus), N11-3 (mot de commande déguisé, nom calculé, inclusion d'un flux), N11-4
+    /// (environment.d, user.conf : une forme hors grammaire suspecte reste élevée, lignes jointes comprises), N11-6
+    /// (le nom décodé de user.conf nomme PATH), N11-7 (HOME, ZDOTDIR, XDG_CONFIG_HOME, PROMPT_COMMAND surveillées).
+    #[test]
+    fn grammaire_stricte_ronde_12_rien_de_tu() {
+        let mut faux = Vec::new();
+        let messages = |tous: &[Constat]| tous.iter().map(|c| c.message.clone()).collect::<Vec<_>>();
+        let eleve =
+            |tous: &[Constat], ou: &str| tous[0].probleme >= Some(Niveau::Eleve) && tous[0].message.contains(ou);
+        let non_verifie = |tous: &[Constat], ou: &str| non_verifie_uwsm(tous).is_some_and(|c| c.message.contains(ou));
+        let ecrit = |nom: &str, fichier: &str, texte: &str| {
+            let m = Maison::nouvelle(nom);
+            let texte = if fichier.ends_with("user.conf") {
+                format!("[Manager]\n{texte}\n")
+            } else {
+                format!("{texte}\n")
+            };
+            m.ecrire(fichier, &texte);
+            m.tous_avec(&[])
+        };
+        let fish = |ligne: &str| {
+            juger_ligne(
+                ligne,
+                Format::Fish,
+                &["/home/alice"],
+                &mut [CHEMIN_DU_SYSTEME.to_string()],
+            )
+        };
+        // N11-1, N11-2 : élevées, au bilan, dans config.fish et conf.d (`levee` : forme simple suspecte, ou hors forme
+        // où la lecture large trouve le dossier caché).
+        let eleves_fish = [
+            "set -q NOPE; set -gx PATH /home/alice/.x $PATH",
+            "set -e NOPE; set -gx PATH /home/alice/.x",
+            "set --query NOPE; set -gx PATH /home/alice/.x",
+            "set -S; set -gx BASH_ENV /home/alice/.x/e",
+            "set -q X; set -gx LD_PRELOAD /home/alice/.x/l.so",
+            "set -q NOPE; setenv PATH /home/alice/.x",
+            "set -q NOPE; or set -gx PATH /home/alice/.x $PATH",
+            "set --show PATH; fish_add_path /home/alice/.x",
+            "if true; fish_add_path /home/alice/.x; end",
+            "begin; fish_add_path ~/.x; end",
+            "fish_add_path /home/alice/.x; and true",
+            "command -q x; fish_add_path /home/alice/.x",
+            "test -d /home/alice/.x; and fish_add_path /home/alice/.x",
+            "fish_add_path {$HOME}/.x",
+            "fish_add_path \"$HOME\"/.x",
+            "fish_add_path -x /home/alice/.x",
+            "fish_add_path ~/.x; set -q X",
+        ];
+        for (i, ligne) in eleves_fish.iter().enumerate() {
+            if !levee(&fish(ligne)) {
+                faux.push(format!("fish pas élevée : {ligne:?} {:?}", fish(ligne)));
+            }
+            for fichier in [".config/fish/config.fish", ".config/fish/conf.d/x.fish"] {
+                let tous = ecrit(&format!("r12-fish-{i}-{}", fichier.len()), fichier, ligne);
+                if !eleve(&tous, &format!("~/{fichier}:1 ")) {
+                    faux.push(format!("{fichier} {ligne:?} : {:?}", messages(&tous)));
+                }
+            }
+        }
+        // N11-2 : fish_add_path hors de la forme simple, sans dossier caché : dit non vérifié, jamais tu.
+        for (i, (texte, n)) in [
+            ("fish_add_path /opt/x/*", 1),
+            ("fish_add_path (echo /opt/x)", 1),
+            ("if test -d /opt/x; fish_add_path /opt/x; end", 1),
+            ("if status is-interactive\n    fish_add_path (pwd)/x\nend", 2),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let fichier = ".config/fish/config.fish";
+            let tous = ecrit(&format!("r12-ajoute-{i}"), fichier, texte);
+            let ou = format!("~/{fichier}:{n} : ");
+            if !(eleve(&tous, &ou) || non_verifie(&tous, &ou)) {
+                faux.push(format!("{texte:?} : {:?}", messages(&tous)));
+            }
+        }
+        // N11-3 : un mot de commande déguisé, un nom calculé, une inclusion d'un flux : non vérifiés (ou élevés).
+        for (i, (texte, n)) in [
+            ("a=PA; b=TH\n\\export $a$b=/home/alice/.x", 2),
+            ("a=PA; b=TH\n\"export\" $a$b=/home/alice/.x", 2),
+            ("a=PA; b=TH\n'export' $a$b=/home/alice/.x", 2),
+            ("a=PA; b=TH\nex\"\"port $a$b=/home/alice/.x", 2),
+            ("a=PA; b=TH\nex${z}port $a$b=/home/alice/.x", 2),
+            ("a=PA; b=TH\n\\eval \"$a$b=/home/alice/.x\"", 2),
+            ("a=PA; b=TH\n\\printf -v $a$b %s /home/alice/.x", 2),
+            ("alias e=export\na=PA; b=TH\ne $a$b=/home/alice/.x", 1),
+            (". <(printf 'export %s%s=/home/alice/.x' PA TH)", 1),
+            (
+                "source /dev/stdin <<< \"$(printf 'export %s%s=/home/alice/.x' PA TH)\"",
+                1,
+            ),
+            ("a=PA; b=TH\nlet \"$a$b=0\"", 2),
+            ("a=PA; b=TH\nA=$(($a$b=0))", 2),
+            ("a=PA; b=TH\n(( $a$b=0 ))", 2),
+            ("a=PA; b=TH\nt[$a$b=7]=1", 2),
+            ("a=PA; b=TH\ndeclare -x $a$b=/home/alice/.x", 2),
+            ("a=PA; b=TH\nread $a$b <<< /home/alice/.x", 2),
+            ("a=PA; b=TH\n$X $a$b=/home/alice/.x", 2),
+            ("alias s=source\ns <(echo export PATH=/home/alice/.x)", 1),
+            ("A=\"${ export $a$b=/home/alice/.x; }\"", 1),
+            ("eval \"$X\"", 1),
+            ("declare -n r=$n; r=/home/alice/.x", 1),
+            ("PS1='$((a$b=0))'", 1),
+            ("t=/tmp\n. \"${t%/}/x\"\n. \"${X:=/home/alice/.x}/env\"", 3),
+            (". \"${X%/x}/env\"", 1),
+            (". \"${X#/}/env\"", 1),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            for fichier in [".bashrc", ".profile", ".zshrc"] {
+                let tous = ecrit(&format!("r12-deguise-{i}-{}", fichier.len()), fichier, texte);
+                let ou = format!("~/{fichier}:{n} : ");
+                if !(eleve(&tous, &ou) || non_verifie(&tous, &ou)) {
+                    faux.push(format!("{fichier} {texte:?} : {:?}", messages(&tous)));
+                }
+            }
+        }
+        // N11-4 : environment.d et user.conf, hors de la forme simple mais suspectes : élevées (jamais un recul vers
+        // le seul non vérifié), lignes jointes par « \ » comprises.
+        for (i, (fichier, texte)) in [
+            (
+                ".config/environment.d/50-x.conf",
+                "PATH=${PATH:-/usr/bin}:/home/alice/.x",
+            ),
+            (
+                ".config/environment.d/50-x.conf",
+                "PATH=/home/alice/.x:${PATH:-/usr/bin}",
+            ),
+            (".config/environment.d/50-x.conf", "PATH=/home/alice/.x:\"$PATH\""),
+            (
+                ".config/environment.d/50-x.conf",
+                "LD_LIBRARY_PATH=\"/home/alice/.x\":/usr/lib",
+            ),
+            (".config/environment.d/50-x.conf", "PATH='/home/alice/.x':/usr/bin"),
+            (".config/environment.d/50-x.conf", "PATH=\"/home/alice\"/.x:/usr/bin"),
+            (
+                ".config/environment.d/50-x.conf",
+                "PATH=${NOPE:-/home/alice/.x}:/usr/bin",
+            ),
+            (".config/environment.d/50-x.conf", "PATH=/usr/bin:\\\n/home/alice/.x"),
+            // Une ligne seulement non vérifiée seule (« \ » final hors forme, sans raison), suspecte une fois jointe.
+            (".config/environment.d/50-x.conf", "PATH=/usr/bin:/home/alice/\\\n.x"),
+            (".bashrc", "export PATH=/usr/bin:/home/alice/\\\n.x"),
+            (".config/uwsm/env", "export PATH=/usr/bin:/home/alice/\\\n.x"),
+            (".zshrc", "PATH=/usr/bin:/home/alice/\\\n.x"),
+            (
+                ".config/systemd/user.conf",
+                "DefaultEnvironment=P\\x41TH=/home/alice/.x",
+            ),
+            (
+                ".config/systemd/user.conf",
+                "DefaultEnvironment=\"P\\101TH=/home/alice/.x\"",
+            ),
+            (
+                ".config/systemd/user.conf",
+                "DefaultEnvironment=P\\u0041TH=/home/alice/.x",
+            ),
+            (
+                ".config/systemd/user.conf",
+                "DefaultEnvironment=\"PATH=/home/alice/.x\"x",
+            ),
+            (
+                ".config/systemd/user.conf",
+                "ManagerEnvironment=LD_LIBRARY_PATH=/home/alice/.x",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let tous = ecrit(&format!("r12-session-{i}"), fichier, texte);
+            if !eleve(&tous, &format!("~/{fichier}:")) {
+                faux.push(format!("{fichier} {texte:?} : {:?}", messages(&tous)));
+            }
+        }
+        // N11-6 : le nom décodé de user.conf (« \x41 », « \101 », « \u0041 ») : ce que Vanguard dit touché nomme PATH.
+        for ligne in [
+            "DefaultEnvironment=P\\x41TH=/opt/x",
+            "DefaultEnvironment=\"P\\101TH=/opt/x\"",
+            "DefaultEnvironment=P\\u0041TH=/opt/x",
+        ] {
+            let dit = match juger_ligne(
+                ligne,
+                Format::Systemd,
+                &["/home/alice"],
+                &mut [CHEMIN_DU_SYSTEME.to_string()],
+            ) {
+                super::Jugement::HorsForme { quoi, .. } => quoi.contains("PATH"),
+                _ => false,
+            };
+            if !dit {
+                faux.push(format!("nom décodé pas nommé : {ligne:?} {:?}", jugee(ligne)));
+            }
+        }
+        // N11-7 : les dossiers qui décident de ce qui se lit, et PROMPT_COMMAND ; ZDOTDIR aussi au gestionnaire (HOME et
+        // XDG_CONFIG_HOME y sont lus par `dossiers_du_gestionnaire`).
+        for (i, (fichier, texte, attendu)) in [
+            (".bashrc", "export HOME=/home/alice/.x", "élevé"),
+            (".bashrc", "HOME=/home/alice/.x\nexport PATH=$HOME/bin:$PATH", "élevé"),
+            (".bashrc", "export XDG_CONFIG_HOME=/home/alice/.x", "élevé"),
+            (".bashrc", "export ZDOTDIR=/home/alice/.x", "élevé"),
+            (".zshenv", "ZDOTDIR=/home/alice/.x", "élevé"),
+            (".bashrc", "export XDG_CONFIG_HOME=/tmp/c", "élevé"),
+            (".bashrc", "export PROMPT_COMMAND='. /home/alice/.x/p'", "élevé"),
+            (".config/fish/config.fish", "set -gx HOME /home/alice/.x", "élevé"),
+            (".config/environment.d/50-x.conf", "ZDOTDIR=/home/alice/.x", "élevé"),
+            (
+                ".config/systemd/user.conf",
+                "DefaultEnvironment=ZDOTDIR=/home/alice/.x",
+                "élevé",
+            ),
+            (".bashrc", "export ZDOTDIR=/opt/z", "non vérifié"),
+            (".bashrc", "export XDG_CONFIG_HOME=/opt/conf", "non vérifié"),
+            (".bashrc", "export HOME=/srv/alice", "non vérifié"),
+            (".config/environment.d/50-x.conf", "ZDOTDIR=/opt/z", "non vérifié"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let tous = ecrit(&format!("r12-dossier-{i}"), fichier, texte);
+            let ou = &format!("~/{fichier}:");
+            let bon = if attendu == "élevé" {
+                eleve(&tous, ou)
+            } else {
+                !eleve(&tous, ou) && non_verifie(&tous, ou)
+            };
+            if !bon {
+                faux.push(format!("{fichier} {texte:?} pas {attendu} : {:?}", messages(&tous)));
+            }
+        }
+        assert!(faux.is_empty(), "grammaire stricte, ronde 12 : {faux:#?}");
+    }
+
+    /// Ronde 12 (N11-5) : les conditions ordinaires (« [[ … ]] », « (( … )) », boucles, alias, inclusions d'Omarchy,
+    /// outils d'activation) se taisent tout à fait : ni élevé, ni non vérifié.
+    #[test]
+    fn grammaire_stricte_ronde_12_temoins_muets() {
+        let mut faux = Vec::new();
+        for (i, (fichier, texte)) in [
+            (".bashrc", "[[ -z $DISPLAY && $XDG_VTNR -eq 1 ]] && exec startx"),
+            (".bashrc", "if [[ -t 0 && ${TERM:-x} != dumb ]]; then\n  echo x\nfi"),
+            (".bashrc", "[[ -n $A && $B != 0 ]] && echo x"),
+            (".bashrc", "(( $A > 1 && $B < 2 )) && echo x"),
+            (".bashrc", "for ((i=0; i<$n; i++)); do echo $i; done"),
+            (".bashrc", "(( count += $n ))"),
+            (".bashrc", "[[ $- != *i* ]] && return"),
+            (".bashrc", "source ~/.local/share/omarchy/default/bash/rc"),
+            (".bashrc", "source \"$OMARCHY_PATH/default/bash/rc\""),
+            (".bashrc", "alias ls='eza -lh --group-directories-first --icons=auto'"),
+            (".bashrc", "alias ..='cd ..'"),
+            (
+                ".bashrc",
+                "if command -v zoxide &> /dev/null; then\n  eval \"$(zoxide init bash)\"\nfi",
+            ),
+            (".bashrc", "eval \"$(ssh-agent -s)\""),
+            (".bashrc", "[ -f ~/.bash_aliases ] && . ~/.bash_aliases"),
+            (
+                ".bashrc",
+                "export NVM_DIR=\"$HOME/.nvm\"\n[ -s \"$NVM_DIR/nvm.sh\" ] && \\. \"$NVM_DIR/nvm.sh\"",
+            ),
+            (".bashrc", ". \"$HOME/.cargo/env\""),
+            (".bashrc", "while read -r l; do echo \"$l\"; done < /etc/hostname"),
+            (".bashrc", "mapfile -t lignes < <(ls)"),
+            (".bashrc", "case \"$TERM\" in\n  xterm*) echo x ;;\nesac"),
+            (".bashrc", "trap 'rm -f \"$t\"' EXIT"),
+            (".bashrc", "export XDG_CONFIG_HOME=\"$HOME/.config\""),
+            (".bashrc", "set +h"),
+            (".bashrc", ". \"${OMARCHY_PATH%/}/default/uwsm/default\""),
+            (".config/uwsm/env", "  . \"${OMARCHY_PATH%/}/default/uwsm/default\""),
+            (".config/fish/config.fish", "set -gx PATH ~/.local/bin $PATH"),
+            (
+                ".config/fish/config.fish",
+                "command -q zoxide; and zoxide init fish | source",
+            ),
+            (".config/fish/config.fish", "eval (ssh-agent -c)"),
+            (
+                ".config/fish/config.fish",
+                "if status is-interactive\n    starship init fish | source\nend",
+            ),
+            (".config/fish/config.fish", "fish_add_path ~/.local/bin"),
+            (
+                ".config/fish/config.fish",
+                "status is-login; and fish_add_path ~/.local/bin",
+            ),
+            (".config/fish/config.fish", "abbr -a g git"),
+            (".config/fish/config.fish", "alias ll \"ls -l\""),
+            (".config/systemd/user.conf", "DefaultEnvironment=PATH=/usr/bin:/bin"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("r12-muet-{i}"));
+            let texte = if fichier.ends_with("user.conf") {
+                format!("[Manager]\n{texte}\n")
+            } else {
+                format!("{texte}\n")
+            };
+            m.ecrire(fichier, &texte);
+            let tous = m.tous_avec(&[]);
+            let dit = tous[0].probleme >= Some(Niveau::Eleve)
+                || tous.iter().any(|c| c.message.contains(&format!("~/{fichier}:")));
+            if dit {
+                let messages: Vec<_> = tous.iter().map(|c| &c.message).collect();
+                faux.push(format!("{fichier} {texte:?} : {messages:?}"));
+            }
+        }
+        assert!(faux.is_empty(), "témoins de la ronde 12 : {faux:#?}");
     }
 
     /// R-2 (relecture DEP-4 de la 0.95) : un XDG_DATA_HOME posé au gestionnaire par un fichier (environment.d), absolu
