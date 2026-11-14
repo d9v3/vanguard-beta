@@ -404,17 +404,22 @@ fn affectation(mot: &str) -> Option<(&str, &str)> {
 /// Pourquoi poser `nom` à `valeur` change ce qui se lance, ou `None` : une bibliothèque préchargée (LD_PRELOAD,
 /// LD_AUDIT, quelle que soit sa valeur), les options de chaque bash lancé (BASHOPTS, SHELLOPTS, quelle que soit leur
 /// valeur), ou une variable de recherche ou d'injection (PATH, `variable_d_injection`) dont un morceau mène à un
-/// dossier caché ou temporaire. Un dossier visible du compte n'est pas levé (modèle de menace). Avec `relatif` (la
-/// façon dont la valeur est écrite), aussi un PATH relatif (`path_relatif`) ; sans, ce n'est pas jugé (unités,
-/// Hyprland, commandes : limite écrite au CHANGELOG).
+/// dossier caché ou temporaire. Un dossier visible du compte n'est pas levé (modèle de menace). Avec `relatif` (une
+/// valeur de la forme simple, calculée : `juger_ligne`), aussi un PATH relatif (`path_relatif`) ; sans, ce n'est pas
+/// jugé (unités, Hyprland, lecture large : limite écrite au CHANGELOG).
 ///
-/// Ronde 10, cause racine des rondes 7 à 9 : chaque format coupait la valeur d'une seule façon (au blanc, au « ; »,
-/// au « : », guillemets entiers ôtés), et chaque coupe ratée cachait un dossier. C'est la seule fonction qui juge une
-/// valeur, et elle la juge sous toutes ses lectures (`lectures_d_une_valeur`) : elle lève si UNE seule lecture est
-/// suspecte, et aucune lecture ne rassure. Chaque appelant ne fait que la coupe de son format (shell, environment.d,
-/// user.conf, fish, uwsm, Hyprland, unités), jamais un jugement à lui.
-fn variable_suspecte(nom: &str, valeur: &str, maisons: &[&str], relatif: Option<Ecriture>) -> Option<&'static str> {
-    let lectures = lectures_d_une_valeur(valeur);
+/// Ronde 10 : c'est la seule fonction qui juge une valeur, sous toutes ses lectures (`lectures_d_une_valeur`) ; elle
+/// lève si UNE seule lecture est suspecte, et aucune lecture ne rassure. Ronde 11 : pour les fichiers des variables,
+/// elle ne reçoit plus que des valeurs de la forme simple (`juger_ligne`) ou, pour lever plus seulement, la lecture
+/// large d'une ligne hors forme (`raison_large`) ; ce qui n'est pas simple est dit non vérifié ailleurs.
+fn variable_suspecte(nom: &str, valeur: &str, maisons: &[&str], relatif: bool) -> Option<&'static str> {
+    // Le PATH d'une forme simple, calculé, n'a qu'une lecture : la sienne, coupée sur « : » (N10-9). Les autres
+    // valeurs gardent toutes leurs lectures : SSH_ASKPASS ou BASH_ENV est un seul chemin, blancs et « : » compris.
+    let lectures = if relatif && nom == "PATH" {
+        vec![valeur.to_string()]
+    } else {
+        lectures_d_une_valeur(nom, valeur)
+    };
     let vide = lectures.iter().all(|l| l.trim().is_empty());
     if ["LD_PRELOAD", "LD_AUDIT"].contains(&nom) {
         return (!vide).then(prechargee);
@@ -422,12 +427,7 @@ fn variable_suspecte(nom: &str, valeur: &str, maisons: &[&str], relatif: Option<
     // N9-3 : BASHOPTS ou SHELLOPTS posé à la session change chaque bash lancé ensuite (« dotglob » fait lire à uwsm
     // les fichiers cachés de ses « .d »), quelle que soit la valeur : rien ne les pose d'ordinaire.
     if ["BASHOPTS", "SHELLOPTS"].contains(&nom) {
-        return (!vide).then(|| {
-            tr!(
-                "BASHOPTS ou SHELLOPTS posé : change les options de chaque bash lancé ensuite (« dotglob » fait lire à uwsm les fichiers cachés de ses dossiers « .d »)",
-                "BASHOPTS or SHELLOPTS set: changes the options of every bash started afterwards (“dotglob” makes uwsm read the hidden files of its “.d” folders)"
-            )
-        });
+        return (!vide).then(options_de_bash);
     }
     // Une adresse de bus « unixexec: » lance le programme qu'elle nomme à chaque connexion (vérification 3, P11).
     if nom.starts_with("DBUS_") && lectures.iter().any(|l| l.contains("unixexec:")) {
@@ -436,28 +436,41 @@ fn variable_suspecte(nom: &str, valeur: &str, maisons: &[&str], relatif: Option<
             "D-Bus address “unixexec:”: each program that connects to it starts the program it names"
         ));
     }
-    if let Some(raison) = lectures.iter().find_map(|l| lecture_suspecte(nom, l, maisons)) {
+    if let Some(raison) = lectures.iter().find_map(|l| lecture_suspecte(nom, l, maisons, relatif)) {
         return Some(raison);
     }
-    let ecriture = relatif?;
-    lectures.iter().find_map(|l| path_relatif(nom, l, ecriture))
+    if relatif { path_relatif(nom, valeur) } else { None }
 }
 
 /// Ronde 10 : les lectures d'une valeur, toutes jugées par `variable_suspecte`. Deux bases : la valeur telle
 /// qu'écrite (sans les guillemets qui l'entourent), et la valeur sans aucun guillemet ni « \ », où qu'ils soient
 /// (« /usr/bin:"/home/alice/.x" », « "$HOME"/.x », « \.x » : le shell et systemd les ôtent au milieu aussi, N9-5).
-/// Pour chacune, trois formes : telle quelle (coupée ensuite sur « : », les blancs, « ; »… par `lecture_suspecte`),
-/// chaque morceau entre « : » simplifié (`valeur_simplifiee`, N8-1 : « /home/alice/a b/../.x »), et la valeur
-/// entière simplifiée comme un seul chemin (`chemin_simplifie`, N9-2 : « /home/alice/a:b/../.x/demande » d'un
-/// SSH_ASKPASS, qui n'est pas une liste). Comme `chemin_simplifie`, sans suivre de lien.
-fn lectures_d_une_valeur(valeur: &str) -> Vec<String> {
+/// Pour chacune : telle quelle (coupée ensuite par `lecture_suspecte`), chaque morceau entre « : » simplifié
+/// (`valeur_simplifiee`, N8-1 : « /home/alice/a b/../.x »), et la valeur entière simplifiée comme un seul chemin
+/// (`chemin_simplifie`, N9-2 : « /home/alice/a:b/../.x/demande » d'un SSH_ASKPASS, qui n'est pas une liste) ; pour une
+/// variable de programme (`variable_de_programme`), aussi chaque mot simplifié (« nvim -u /home/alice/a/../.x »).
+/// Comme `chemin_simplifie`, sans suivre de lien. Ronde 11 (N10-9) : le PATH relatif ne se juge plus sur ces lectures,
+/// seulement sur la valeur calculée d'une forme simple (« /usr/bin:/a/.. » simplifiée entière n'est pas « /usr/bin: »).
+fn lectures_d_une_valeur(nom: &str, valeur: &str) -> Vec<String> {
     let ecrite = valeur.trim_matches(|c| c == '"' || c == '\'').to_string();
     let nue: String = valeur.chars().filter(|c| !matches!(c, '"' | '\'' | '\\')).collect();
     let mut lectures: Vec<String> = Vec::new();
     for base in [ecrite, nue] {
         let morceaux = valeur_simplifiee(&base);
         let entiere = chemin_simplifie(&base);
-        for l in [base, morceaux, entiere] {
+        let mots = variable_de_programme(nom).then(|| {
+            base.split(' ')
+                .map(|m| {
+                    if m.starts_with('/') {
+                        chemin_simplifie(m)
+                    } else {
+                        m.to_string()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        });
+        for l in [Some(base), Some(morceaux), Some(entiere), mots].into_iter().flatten() {
             if !lectures.contains(&l) {
                 lectures.push(l);
             }
@@ -466,27 +479,57 @@ fn lectures_d_une_valeur(valeur: &str) -> Vec<String> {
     lectures
 }
 
-/// Une lecture (`lectures_d_une_valeur`) qui mène à un dossier caché ou temporaire : coupée sur les blancs et les
-/// séparateurs, chaque morceau qui commence par « / », « ~ » ou « $ » jugé. Une variable de programme
-/// (`variable_de_programme`) : le morceau est le programme ; PATH ou une variable d'injection : un dossier où l'on
-/// cherche.
-fn lecture_suspecte(nom: &str, lecture: &str, maisons: &[&str]) -> Option<&'static str> {
-    if variable_de_programme(nom) {
-        let cache = lecture
-            .split(|c: char| c.is_whitespace() || matches!(c, '=' | ':' | '|' | '"' | '\'' | ';'))
-            .filter(|m| m.starts_with(['/', '~', '$']))
-            .any(|m| chemin_cache_chez(m, maisons, false).is_some());
-        return cache.then(variable_cachee);
+/// Ronde 11 (N10-2, N10-3) : les chemins qui commencent dans `morceau` : à son début s'il commence par « / », « ~ »
+/// ou « $ », après une option collée (« -I/home/alice/.x », « -L$HOME/.x »), et à chaque « / », « ~ » ou « $ » qui
+/// suit un caractère qui ne fait pas partie d'un chemin (« x@/home/alice/.y », « prefix,/tmp/x »).
+fn debuts_de_chemins(morceau: &str) -> Vec<&str> {
+    let dans_un_chemin =
+        |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'/' | b'~' | b'$' | b'{' | b'}' | b'-' | b'+');
+    let octets = morceau.as_bytes();
+    let mut debuts = Vec::new();
+    for (i, b) in octets.iter().enumerate() {
+        if !matches!(b, b'/' | b'~' | b'$') {
+            continue;
+        }
+        let avant = i.checked_sub(1).and_then(|k| octets.get(k).copied());
+        let option_collee = morceau.starts_with('-')
+            && morceau
+                .get(..i)
+                .is_some_and(|o| o.trim_start_matches('-').chars().all(|c| c.is_ascii_alphanumeric()));
+        if (avant.is_none_or(|a| !dans_un_chemin(a)) || option_collee)
+            && let Some(d) = morceau.get(i..)
+        {
+            debuts.push(d);
+        }
     }
-    if nom != "PATH" && !variable_d_injection(nom) {
+    debuts
+}
+
+/// Une lecture (`lectures_d_une_valeur`) qui mène à un dossier caché ou temporaire : coupée sur les blancs et les
+/// séparateurs, chaque chemin qui y commence (`debuts_de_chemins`) jugé, et ce qui serait dedans (« {chemin}/x » :
+/// un fichier caché à la racine du dossier personnel, « /home/alice/.demande », N10-2). Une variable de programme
+/// (`variable_de_programme`) : le chemin est le programme ; PATH ou une variable d'injection : un dossier où l'on
+/// cherche. `exacte` (une valeur de la forme simple, calculée) : un PATH se coupe sur « : » seulement, chaque morceau
+/// un dossier entier (« /usr/bin # /home/alice/.x » d'environment.d est un seul dossier, sous /usr : N10-9).
+fn lecture_suspecte(nom: &str, lecture: &str, maisons: &[&str], exacte: bool) -> Option<&'static str> {
+    let programme = variable_de_programme(nom);
+    if !programme && nom != "PATH" && !variable_d_injection(nom) {
         return None;
     }
-    let cache = lecture
-        .split(|c: char| c == ':' || c == ';' || c == ',' || c.is_whitespace() || c == '=')
-        .filter(|m| m.starts_with(['/', '~', '$']))
-        .any(|m| {
+    if exacte && nom == "PATH" {
+        let cache = lecture.split(':').filter(|m| m.starts_with('/')).any(|m| {
             let dedans = format!("{}/x", m.trim_end_matches('/'));
             chemin_cache_chez(&dedans, maisons, false).is_some()
+        });
+        return cache.then(variable_cachee);
+    }
+    let cache = lecture
+        .split(|c: char| c.is_whitespace() || matches!(c, '=' | ':' | '|' | '"' | '\'' | ';' | ','))
+        .flat_map(debuts_de_chemins)
+        .any(|m| {
+            let dedans = format!("{}/x", m.trim_end_matches('/'));
+            (programme && chemin_cache_chez(m, maisons, false).is_some())
+                || chemin_cache_chez(&dedans, maisons, false).is_some()
         });
     cache.then(variable_cachee)
 }
@@ -667,7 +710,7 @@ fn simple_suspecte(
             continue;
         }
         if let Some((nom, valeur)) = affectation(&m.texte) {
-            if let Some(raison) = variable_suspecte(nom, valeur, maisons, None) {
+            if let Some(raison) = variable_suspecte(nom, valeur, maisons, false) {
                 return Ok(Some(raison));
             }
             if m.flou != Flou::Aucun && (nom == "PATH" || variable_d_injection(nom)) {
@@ -728,7 +771,7 @@ fn simple_suspecte(
         }
         if lanceur
             && let Some((n, v)) = affectation(&a.texte)
-            && let Some(raison) = variable_suspecte(n, v, maisons, None)
+            && let Some(raison) = variable_suspecte(n, v, maisons, false)
         {
             return Ok(Some(raison));
         }
@@ -2618,7 +2661,7 @@ fn variable_d_injection(nom: &str) -> bool {
         "LUA_INIT",
         "OPENSSL_",
     ];
-    const NOMS: [&str; 46] = [
+    const NOMS: [&str; 48] = [
         "BASH_ENV",
         "ENV",
         "SHELLOPTS",
@@ -2669,6 +2712,9 @@ fn variable_d_injection(nom: &str) -> bool {
         "DOTNET_STARTUP_HOOKS",
         "SDL_DYNAMIC_API",
         "WINEDLLPATH",
+        // Ronde 11 : les dossiers d'où zsh charge ses fonctions (« fpath ») et ses modules (« module_path »).
+        "FPATH",
+        "MODULE_PATH",
     ];
     DEBUTS.iter().any(|d| nom.starts_with(d)) || NOMS.contains(&nom)
 }
@@ -2725,33 +2771,9 @@ fn decodee(l: &str) -> String {
 /// acceptée (bash-completion lit SHELLOPTS) ; tout le reste, même « unset » ou un mot qui n'en pose pas, est pris
 /// dans le doute pour une écriture.
 fn injection_nommee(l: &str, de_root: bool) -> Option<String> {
-    let texte = decodee(l);
-    let octets = texte.as_bytes();
-    let mot = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
-    let mut i = 0usize;
-    while i < octets.len() {
-        if !octets.get(i).copied().is_some_and(mot) {
-            i = i.saturating_add(1);
-            continue;
-        }
-        let debut = i;
-        while octets.get(i).copied().is_some_and(mot) {
-            i = i.saturating_add(1);
-        }
-        let Some(nom) = texte.get(debut..i) else { continue };
-        if !variable_d_injection(nom) && (de_root || !DE_PAQUETS.contains(&nom)) {
-            continue;
-        }
-        let avant = |n: usize| debut.checked_sub(n).and_then(|k| octets.get(k).copied());
-        let suite = texte.get(i..).unwrap_or_default();
-        let accolade = avant(1) == Some(b'{') && avant(2) == Some(b'$')
-            || matches!(avant(1), Some(b'#' | b'!')) && avant(2) == Some(b'{') && avant(3) == Some(b'$');
-        let lecture = avant(1) == Some(b'$') || accolade && !(suite.starts_with('=') || suite.starts_with(":="));
-        if !lecture {
-            return Some(nom.to_string());
-        }
-    }
-    None
+    ecriture_nommee(&decodee(l), &|nom| {
+        variable_d_injection(nom) || (!de_root && DE_PAQUETS.contains(&nom))
+    })
 }
 
 /// La sorte d'un fichier des variables, qui dit comment il pose une variable pour la session. Elle vient toujours
@@ -5016,8 +5038,26 @@ fn fichier_leve_la_sauvegarde(
             !lu.entier
                 || nomme_une_variable_de_la_sauvegarde(&texte, vide)
                 || (sorte == Variables::Shell && script_cache_ce_qu_il_pose(&texte, &r.maison, scripts))
+                || hors_forme_dans(f, &texte, sorte)
         }
     }
+}
+
+/// Ronde 11 : `texte` (le fichier `f`, de la sorte `sorte`) a-t-il une ligne qui touche une variable surveillée hors
+/// de la forme simple (`Jugement::HorsForme`), seule ou jointe par « \ » à la suivante ? Ce qu'elle pose n'est pas
+/// lu : la sauvegarde ne peut pas le reprendre, elle se lève.
+fn hors_forme_dans(f: &Path, texte: &str, sorte: Variables) -> bool {
+    let Some(format) = format_de(f, sorte) else {
+        return false;
+    };
+    let maisons: [&str; 0] = [];
+    let hors = |l: &str| {
+        !commentaire_selon(l, sorte) && matches!(juger_ligne(l, format, &maisons, &mut []), Jugement::HorsForme { .. })
+    };
+    texte.lines().any(hors)
+        || lignes_du_shell(texte, sorte)
+            .into_iter()
+            .any(|(_, physiques, jointe)| physiques.len() > 1 && hors(&jointe))
 }
 
 /// V-2 (relecture 0.95) : un script de variables (~/.config/uwsm/env…) cache ce qu'il pose au gestionnaire : une
@@ -5724,42 +5764,12 @@ enum LigneSimple<'a> {
 struct ValeurSimple<'a> {
     /// Le texte, sans ses apostrophes ou ses guillemets doubles ; « $HOME », « ${HOME} », « $PATH » et « ${PATH} »
     /// y restent écrits tels quels, à leurs seules places permises (`valeur_litterale`) : la valeur à juger est
-    /// `calculer`, jamais ce texte.
+    /// calculée (`valeur_calculee`), jamais ce texte.
     texte: &'a str,
     /// Elle lit « $HOME » ou « $PATH » (entre guillemets doubles).
     calculee: bool,
     /// Elle lit « $HOME » : jugée avec le dossier personnel, sauf si un fichier d'uwsm pose HOME.
     lit_maison: bool,
-}
-
-impl ValeurSimple<'_> {
-    /// N7-1 (revérification de la ronde 7) : la valeur que le shell pose, calculée avant d'être jugée. Chaque morceau
-    /// entre « : » : « $PATH » devient `chemin` (le PATH déjà posé), « $HOME/… » le dossier personnel `maison` suivi
-    /// du reste, puis chaque morceau qui commence par « / » se simplifie (« .. », « // », « . » : `chemin_simplifie`).
-    /// Le texte calculé se juge comme une valeur écrite en toutes lettres : « $HOME/../alice/.x » comme
-    /// « /home/alice/.x ».
-    fn calculer(&self, maison: &str, chemin: &str) -> String {
-        if !self.calculee {
-            return self.texte.to_string();
-        }
-        let maison = maison.trim_end_matches('/');
-        self.texte
-            .split(':')
-            .map(|morceau| {
-                let ecrit = match morceau_de_maison(morceau) {
-                    Some(reste) => format!("{maison}{reste}"),
-                    None if morceau == "$PATH" || morceau == "${PATH}" => return chemin.to_string(),
-                    None => morceau.to_string(),
-                };
-                if ecrit.starts_with('/') {
-                    chemin_simplifie(&ecrit)
-                } else {
-                    ecrit
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(":")
-    }
 }
 
 /// Le PATH que le shell d'uwsm reçoit, tenu pour les seuls dossiers du système : ce qui le pose ailleurs se juge là
@@ -5818,7 +5828,7 @@ fn ligne_simple(ligne: &str) -> Option<LigneSimple<'_>> {
 ///   fait un morceau entier entre « : » (ou la valeur entière), et dans « $HOME » ou « ${HOME} » au tout début d'un
 ///   morceau, suivi de « / » ou de la fin du morceau : `export PATH="$HOME/.local/bin:$PATH"`. Toute autre place
 ///   (« /$HOME/.x », « $PATH/.x », « ${HOME}${HOME} », « $HOMEé ») n'est pas simple : la valeur se calcule morceau par
-///   morceau (`ValeurSimple::calculer`), sans deviner ce que donnerait un texte collé à une variable ;
+///   morceau (`valeur_calculee`), sans deviner ce que donnerait un texte collé à une variable ;
 /// - sans guillemets : sans blanc, octet de contrôle, ni rien que le shell change : guillemets, « $ », « ` », « ( »,
 ///   « ) », « ; », « & », « | », « < », « > », « \ », « # », et (N6-1, revérification de la ronde 6) « ~ », « { »,
 ///   « } », que bash développe dans les arguments d'« export » et après « = » ou « : » (`~+`, `~nom`, `a{1,2}`,
@@ -7471,7 +7481,7 @@ fn juger_configuration(
             ));
         }
         juger_lignes_de_configuration(f, &lu, sorte, demarrage, &maisons, h, t);
-        juger_lignes_jointes(f, &lu, sorte, demarrage, h, t);
+        juger_lignes_jointes(f, &lu, sorte, demarrage, &maisons, h, t);
     }
 }
 
@@ -7502,6 +7512,8 @@ fn juger_lignes_de_configuration(
     };
     // N7-1 : le PATH que lit « $PATH », posé par les lignes simples d'avant de ce fichier.
     let mut chemins = vec![CHEMIN_DU_SYSTEME.to_string(); maisons.len()];
+    let format = format_de(f, sorte);
+    let de_root = de_root_seul(f);
     for (n, ecrite, l) in lignes {
         if prechargement_selon(l, sorte) {
             t.sources
@@ -7517,7 +7529,26 @@ fn juger_lignes_de_configuration(
                 n.saturating_add(1)
             ));
         } else if !commentaire_selon(l, sorte)
-            && let Some(raison) = variable_de_configuration(l, maisons, &mut chemins, systemd).or_else(|| {
+            && let Some(raison) = {
+                // Ronde 11 : la grammaire stricte (`juger_ligne`) ; ce qu'elle ne lit pas sûrement est dit non
+                // vérifié (`hors_forme_dite`), sauf dans un fichier que seul root peut changer (modèle de menace).
+                let jugement = match format {
+                    Some(format) => juger_ligne(l, format, maisons, &mut chemins),
+                    None => raison_large(l, None, maisons).map_or(Jugement::Muette, Jugement::Suspecte),
+                };
+                match jugement {
+                    Jugement::Suspecte(r) | Jugement::HorsForme { raison: Some(r), .. } => Some(r),
+                    Jugement::HorsForme { quoi, raison: None } => {
+                        if !de_root {
+                            t.non_verifies
+                                .push(hors_forme_dite(&court(f, h), n.saturating_add(1), &quoi));
+                        }
+                        None
+                    }
+                    Jugement::Muette => None,
+                }
+            }
+            .or_else(|| {
                 (!demarrage.iter().any(|d| d == f))
                     .then(|| commande_suspecte(l, false))
                     .flatten()
@@ -7537,6 +7568,14 @@ fn juger_lignes_de_configuration(
             ));
         }
     }
+}
+
+/// Ronde 11 : le message non vérifié d'une ligne `n` du fichier `ou` qui touche `quoi` hors de la forme simple.
+fn hors_forme_dite(ou: &str, n: usize, quoi: &str) -> String {
+    trf!(
+        "{ou}:{n} : ligne qui touche {quoi} hors de la forme simple que Vanguard lit sûrement (« NOM=/dossier:/autre », « $HOME/ » en tête d'un morceau, « $PATH » entier) : ce qu'elle pose n'est pas jugé ; écrivez-la sous cette forme simple",
+        "{ou}:{n}: line that touches {quoi} outside the simple form Vanguard reads safely (“NAME=/folder:/other”, “$HOME/” at the start of an entry, “$PATH” whole): what it sets is not checked; write it in that simple form"
+    )
 }
 
 /// N8-2 (revérification de la ronde 8) : les fichiers cachés des « .d » d'uwsm (`fichiers_d_uwsm`), qu'uwsm ne lit
@@ -7573,8 +7612,12 @@ fn juger_caches_d_uwsm(caches: &[std::path::PathBuf], h: &Path, t: &mut Lancemen
             entier: true,
         };
         let avant = t.suspects.len();
+        let non_verifies_avant = t.non_verifies.len();
         juger_lignes_de_configuration(f, &lu, Variables::Shell, &[], &maisons, h, t);
-        juger_lignes_jointes(f, &lu, Variables::Shell, &[], h, t);
+        juger_lignes_jointes(f, &lu, Variables::Shell, &[], &maisons, h, t);
+        for s in t.non_verifies.iter_mut().skip(non_verifies_avant) {
+            s.push_str(condition);
+        }
         if t.suspects.len() == avant
             && let Some(raison) = cache_d_uwsm_change_uwsm(&t.r, &lu.texte)
         {
@@ -7595,246 +7638,953 @@ fn juger_caches_d_uwsm(caches: &[std::path::PathBuf], h: &Path, t: &mut Lancemen
     }
 }
 
-/// Pourquoi une ligne d'un fichier de configuration pose une variable de recherche ou d'injection qui mène à un
-/// dossier caché ou temporaire, ou un PATH relatif (`variable_suspecte`), ou `None` : « NOM=valeur » (environment.d,
-/// profils, avec « export », « declare -x »), « setenv NOM valeur » (csh), « set -gx NOM valeur » et
-/// « fish_add_path » (fish), et les variables de « DefaultEnvironment= » et « ManagerEnvironment= » (user.conf de
-/// systemd ; relecture adverse 2, N8). `systemd` : la ligne est au format d'environnement de systemd (environment.d,
-/// /etc/environment, user.conf), sinon du shell.
-///
-/// Ronde 10 : cette fonction ne fait que la coupe du format, puis passe chaque valeur à `variable_suspecte`, qui la
-/// juge sous toutes ses lectures. N9-1 : au format de systemd, la valeur est le reste entier de la ligne (le
-/// générateur d'environment.d ne coupe ni au blanc ni au « ; », et ôte les guillemets où qu'ils soient) ; la ligne
-/// simple d'uwsm (`ligne_simple`) se juge en plus. Au format du shell, chaque commande de la ligne (coupée hors
-/// guillemets sur « ; », « & », « | », arrêtée au « # » qui commence un mot : `commandes_hors_guillemets`) et, dans
-/// chacune, chaque mot qui est une affectation (« export A=1 PATH=… »). N9-4 : fish de la même coupe, chaque mot
-/// sans ses guillemets (`mots_de_fish`), la liste jointe par « : » comme fish l'exporte.
-fn variable_de_configuration(
-    ligne: &str,
-    maisons: &[&str],
-    chemins: &mut [String],
-    systemd: bool,
-) -> Option<&'static str> {
-    let l = ligne.trim();
-    // systemd ôte les blancs autour du « = » (vérification 3, P10 : « DefaultEnvironment = A=b »).
-    if let Some((cle, v)) = l.split_once('=')
-        && ["DefaultEnvironment", "ManagerEnvironment"].contains(&cle.trim_end())
-    {
-        return commandes_de_systemd(v.trim_start())?
-            .into_iter()
-            .flatten()
-            .find_map(|mot| {
-                let (nom, valeur) = affectation(&mot)?;
-                variable_suspecte(nom, valeur, maisons, Some(Ecriture::Brute))
-            });
-    }
-    // N7-2 (revérification de la ronde 7) : une ligne simple (`ligne_simple`, la règle des fichiers d'uwsm) se juge
-    // par sa valeur entière, celle qu'admet `valeur_litterale`, blancs et « ; » entre guillemets compris, calculée
-    // (N7-1) : jamais recoupée au premier blanc. Le PATH déjà posé par les lignes simples d'avant du fichier, dans
-    // l'ordre, est celui que « $PATH » lit (`chemins`, un par dossier personnel de `maisons`).
-    let mut raison = None;
-    if let Some(simple) = ligne_simple(ligne) {
-        if let LigneSimple::Pose { nom, valeur: Some(v) } = simple {
-            for (i, maison) in maisons.iter().enumerate() {
-                let chemin = chemins.get(i).map_or(CHEMIN_DU_SYSTEME, String::as_str);
-                let calculee = v.calculer(maison, chemin);
-                raison = raison.or_else(|| variable_suspecte(nom, &calculee, maisons, Some(Ecriture::Litterale)));
-                if nom == "PATH"
-                    && let Some(c) = chemins.get_mut(i)
-                {
-                    *c = calculee;
-                }
-            }
-        }
-        if !systemd {
-            return raison;
-        }
-    }
-    if systemd {
-        // N9-1 : le reste entier de la ligne, comme le générateur d'environment.d le garde.
-        let (nom, valeur) = affectation(l.strip_prefix("export ").unwrap_or(l).trim_start())?;
-        return raison.or_else(|| variable_suspecte(nom, valeur.trim(), maisons, Some(Ecriture::Brute)));
-    }
-    commandes_hors_guillemets(l)
-        .into_iter()
-        .find_map(|commande| variable_d_une_commande(commande.trim(), maisons))
+/// Ronde 11 : le format d'un fichier des variables, tel que la grammaire stricte (`juger_ligne`) le lit. Chaque format
+/// ne fait que trouver ses lignes et leurs noms ; un seul juge pour tous.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Format {
+    /// Un profil de bash ou de sh, un fichier d'uwsm.
+    Shell,
+    /// Un fichier de zsh : le shell, plus « path », « fpath » et « module_path », que zsh lie à PATH, aux fonctions
+    /// chargées et à ses modules.
+    Zsh,
+    /// Un fichier de fish (« .fish ») : « set », « fish_add_path », et fish_user_paths, qui s'ajoute à PATH.
+    Fish,
+    /// environment.d (`developpe` : « $HOME » et « $PATH » s'y développent), /etc/environment et pam_env (non).
+    Cles { developpe: bool },
+    /// user.conf et ses compléments : « DefaultEnvironment= », « ManagerEnvironment= » (ni « $ » ni « % » lus).
+    Systemd,
 }
 
-/// Une commande du shell, de csh ou de fish (coupée par `commandes_hors_guillemets`) qui pose une variable suspecte
-/// (`variable_suspecte`) : « setenv NOM valeur » (csh, le reste entier), « set [options] NOM valeurs… » et
-/// « fish_add_path dossiers… » (fish, `mots_de_fish` ; PATH, toujours exporté par fish, change même sans « -x »), et
-/// sinon chaque mot qui est une affectation (« export A=1 B=… », « declare -x A=… », « A=… commande »), coupé aux
-/// blancs hors guillemets (« A=/x b » lance « b » avec A posée ; N7-2 : « A="/a b:/x" » pose A à « /a b:/x » entier).
-fn variable_d_une_commande(commande: &str, maisons: &[&str]) -> Option<&'static str> {
-    if let Some(reste) = commande.strip_prefix("setenv ") {
-        let (nom, valeur) = reste.trim().split_once([' ', '\t'])?;
-        return variable_suspecte(nom, valeur.trim(), maisons, Some(Ecriture::Brute));
+/// Le format de `f`, de la sorte `sorte` (`Format`) ; `None` : un fichier de Hyprland, jugé à part.
+fn format_de(f: &Path, sorte: Variables) -> Option<Format> {
+    let nom = f.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+    match sorte {
+        Variables::Hypr => None,
+        Variables::Systemd => Some(Format::Systemd),
+        Variables::Cles => Some(Format::Cles {
+            developpe: !f.ends_with("etc/environment") && !nom.contains("pam_env"),
+        }),
+        Variables::Shell if extension_de(nom, "fish") => Some(Format::Fish),
+        Variables::Shell
+            if extension_de(nom, "zsh")
+                || ["zshrc", "zshenv", "zprofile", "zlogin", "zlogout"].contains(&nom.trim_start_matches('.')) =>
+        {
+            Some(Format::Zsh)
+        }
+        Variables::Shell => Some(Format::Shell),
     }
-    let mots = mots_hors_guillemets(commande);
-    match mots.first().copied() {
-        Some("set") => {
-            let mut reste = mots.iter().skip(1).skip_while(|m| m.starts_with('-'));
-            let nom = reste.next()?;
-            let valeurs: Vec<String> = reste.map(|m| mots_de_fish(m)).collect();
-            if valeurs.is_empty() {
+}
+
+/// Le nom de fichier `nom` finit-il par « .`ext` » ? En respectant la casse, comme fish et zsh, qui ne lisent que
+/// « .fish » et « .zsh » en minuscules.
+fn extension_de(nom: &str, ext: &str) -> bool {
+    nom.strip_suffix(ext).is_some_and(|avant| avant.ends_with('.'))
+}
+
+/// Ronde 11 : une variable surveillée, que la grammaire stricte juge : PATH, les variables d'injection
+/// (`variable_d_injection` : LD_*, BASH_ENV, PYTHON*…), de programme (`variable_de_programme` : SSH_ASKPASS,
+/// EDITOR…), celles du bus (DBUS_*), et selon le format « path », « fpath », « module_path » (zsh) et
+/// fish_user_paths (fish).
+fn variable_surveillee(nom: &str, format: Format) -> bool {
+    nom == "PATH"
+        || variable_d_injection(nom)
+        || variable_de_programme(nom)
+        || nom.starts_with("DBUS_")
+        || (format == Format::Zsh && ["path", "fpath", "module_path"].contains(&nom))
+        || (format == Format::Fish && nom == "fish_user_paths")
+}
+
+/// Le nom sous lequel une variable surveillée se juge : « path » de zsh et fish_user_paths de fish font PATH,
+/// « fpath » et « module_path » de zsh, FPATH et MODULE_PATH.
+fn nom_juge(nom: &str) -> &str {
+    match nom {
+        "path" | "fish_user_paths" => "PATH",
+        "fpath" => "FPATH",
+        "module_path" => "MODULE_PATH",
+        n => n,
+    }
+}
+
+/// Un nom de variable : lettres ASCII, chiffres, « _ », pas de chiffre en tête.
+fn identifiant(m: &str) -> bool {
+    let mut o = m.bytes();
+    o.next().is_some_and(|p| p.is_ascii_alphabetic() || p == b'_') && o.all(|x| x.is_ascii_alphanumeric() || x == b'_')
+}
+
+/// Un caractère de la forme simple : lettre ASCII, chiffre, « / », « _ », « . », « + », « - ».
+fn caractere_simple(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '.' | '+' | '-')
+}
+
+/// Ronde 11 : la valeur `texte` (sans ses guillemets) de la variable surveillée `nom` est-elle de la forme simple ?
+/// Une liste (PATH, variables d'injection) : des morceaux entre « : », chacun de caractères simples
+/// (`caractere_simple`), « $HOME » ou « ${HOME} » permis en tête suivi de « / » ou de rien, et la variable elle-même
+/// (« $PATH », « ${PATH} ») comme morceau entier. Un programme (`variable_de_programme`) : des mots séparés d'une
+/// espace, le premier un nom nu ou un chemin, « = » et « , » permis dans les suivants (« --mode=x »), « $HOME » en
+/// tête d'un mot. Une adresse du bus (DBUS_*) : caractères simples, « : », « = », « , ». Sans « $ » développé
+/// (`developpe_les_dollars` : user.conf, pam_env) : aucun « $ ». Rien d'autre : ni blanc dans une liste, ni « ~ »,
+/// « % », « { », « ( », « ` », « \ », guillemet, joker ; ce qui n'est pas de cette forme se dit non vérifié. Aux
+/// formats où la valeur est du texte littéral (environment.d, /etc/environment, user.conf : `litterale`), un morceau
+/// d'une liste peut aussi porter des blancs et tout signe sauf « $ », « \ », guillemet, « ` », « % », « ~ ».
+fn forme_simple(nom: &str, texte: &str, format: Format) -> bool {
+    let dollars = developpe_les_dollars(format);
+    let litterale = matches!(format, Format::Cles { .. } | Format::Systemd);
+    let sans_maison = |m: &'_ str| -> String {
+        if dollars {
+            morceau_de_maison(m).map_or_else(|| m.to_string(), str::to_string)
+        } else {
+            m.to_string()
+        }
+    };
+    let soi = |m: &str| dollars && (m == format!("${nom}") || m == format!("${{{nom}}}"));
+    if variable_de_programme(nom) {
+        if texte.is_empty() {
+            return true;
+        }
+        return texte.split(' ').enumerate().all(|(i, mot)| {
+            let reste = sans_maison(mot);
+            !mot.is_empty()
+                && if i == 0 {
+                    !reste.starts_with('-') && reste.chars().all(caractere_simple)
+                } else {
+                    reste.chars().all(|c| caractere_simple(c) || matches!(c, '=' | ','))
+                }
+        });
+    }
+    if nom.starts_with("DBUS_") {
+        return texte
+            .chars()
+            .all(|c| caractere_simple(c) || matches!(c, ':' | '=' | ','));
+    }
+    let permis = |c: char| {
+        caractere_simple(c) || (litterale && !c.is_control() && !matches!(c, '$' | '\\' | '"' | '\'' | '`' | '%' | '~'))
+    };
+    texte.split(':').all(|m| soi(m) || sans_maison(m).chars().all(permis))
+}
+
+/// Le format développe-t-il « $HOME » et « $PATH » ? Pas user.conf ni pam_env (/etc/environment, pam_environment).
+fn developpe_les_dollars(format: Format) -> bool {
+    !matches!(format, Format::Systemd | Format::Cles { developpe: false })
+}
+
+/// La valeur que pose une forme simple (`forme_simple`), calculée pour le dossier personnel `maison` et le PATH déjà
+/// posé `chemin` : « $HOME » en tête d'un morceau (d'un mot, pour un programme) devient `maison`, la variable
+/// elle-même devient `chemin` pour PATH (ailleurs, ce qu'elle valait déjà s'est jugé là où c'était posé : le morceau
+/// s'ôte). Pour PATH, qui n'a que cette lecture (`variable_suspecte`), chaque morceau absolu se simplifie
+/// (`chemin_simplifie`, morceau par morceau : « /usr/bin:/a/.. » reste deux morceaux, N10-9) ; les autres valeurs se
+/// simplifient sous toutes leurs lectures (`lectures_d_une_valeur` : BASH_ENV est un seul chemin, « : » compris).
+fn valeur_calculee(nom: &str, texte: &str, format: Format, maison: &str, chemin: &str) -> String {
+    let dollars = developpe_les_dollars(format);
+    let maison = maison.trim_end_matches('/');
+    let morceau = |m: &str| -> String {
+        let ecrit = match morceau_de_maison(m).filter(|_| dollars) {
+            Some(reste) => format!("{maison}{reste}"),
+            None => m.to_string(),
+        };
+        if nom == "PATH" && ecrit.starts_with('/') {
+            chemin_simplifie(&ecrit)
+        } else {
+            ecrit
+        }
+    };
+    if variable_de_programme(nom) {
+        // Un programme se lit aussi comme un seul chemin (SSH_ASKPASS) : seul « $HOME » se remplace, les lectures
+        // (`lectures_d_une_valeur`) simplifient chaque mot et la valeur entière.
+        return texte
+            .split(' ')
+            .map(|m| match morceau_de_maison(m).filter(|_| dollars) {
+                Some(reste) => format!("{maison}{reste}"),
+                None => m.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+    }
+    if nom.starts_with("DBUS_") {
+        return texte.to_string();
+    }
+    let soi = |m: &str| dollars && (m == format!("${nom}") || m == format!("${{{nom}}}"));
+    texte
+        .split(':')
+        .filter_map(|m| {
+            if soi(m) {
+                (nom == "PATH").then(|| chemin.to_string())
+            } else {
+                Some(morceau(m))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
+/// Une instruction d'une ligne de la forme simple (`instructions_du_shell`, `instructions_de_fish`,
+/// `instruction_de_cles`, `instructions_de_systemd`).
+#[derive(Debug, PartialEq, Eq)]
+enum Instruction {
+    /// La variable `nom` posée à `texte` (sans ses guillemets ; « $HOME » et « $PATH » y restent écrits).
+    Pose { nom: String, texte: String },
+    /// « export NOM » : la valeur déjà posée, exportée (BASHOPTS ou SHELLOPTS exporté change chaque bash lancé).
+    Exporte(String),
+}
+
+/// La valeur d'une affectation du shell en tête de `v` (juste après le « = ») : des morceaux collés, chacun entre
+/// guillemets doubles (sans « \ » ni « ` »), entre apostrophes (sans « $ » : elle se lirait en toutes lettres) ou sans
+/// guillemets (sans « \ »), jusqu'au blanc ou au « ; » hors guillemets (« "$HOME"/.x », « "/a":"/b" »). Un nom de
+/// variable coupé par un guillemet (« $HO"ME" », « $"PATH" », « $'…' », « "$"PATH ») n'est pas simple : `None`,
+/// comme un guillemet non fermé.
+fn valeur_du_shell(v: &str) -> Option<(String, &str)> {
+    let mut texte = String::new();
+    let mut reste = v;
+    // Le morceau précédent finit-il par « $ » suivi d'un nom (ou de rien) ? Le morceau suivant le continuerait.
+    let nom_ouvert = |morceau: &str| {
+        morceau
+            .rfind('$')
+            .and_then(|p| morceau.get(p.saturating_add(1)..))
+            .is_some_and(|apres| apres.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+    };
+    let mut precedent: Option<String> = None;
+    while !(reste.is_empty() || reste.starts_with([' ', '\t', ';'])) {
+        let (morceau, suite) = if let Some(g) = reste.chars().next().filter(|c| matches!(c, '"' | '\'')) {
+            let (dedans, suite) = reste.get(1..)?.split_once(g)?;
+            let interdit: &[char] = if g == '"' { &['\\', '`'] } else { &['$'] };
+            if dedans.contains(interdit) {
                 return None;
             }
-            return variable_suspecte(nom, &valeurs.join(":"), maisons, Some(Ecriture::Brute));
-        }
-        Some("fish_add_path") => {
-            let valeurs: Vec<String> = mots
-                .iter()
-                .skip(1)
-                .filter(|m| !m.starts_with('-'))
-                .map(|m| mots_de_fish(m))
-                .collect();
-            if valeurs.is_empty() {
+            (dedans, suite)
+        } else {
+            let fin = reste.find([' ', '\t', ';', '"', '\'']).unwrap_or(reste.len());
+            let (dehors, suite) = reste.split_at(fin);
+            if dehors.contains('\\') {
                 return None;
             }
-            return variable_suspecte("PATH", &valeurs.join(":"), maisons, Some(Ecriture::Brute));
+            (dehors, suite)
+        };
+        if precedent.as_deref().is_some_and(nom_ouvert)
+            && (morceau.is_empty() || morceau.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_'))
+        {
+            return None;
         }
-        _ => {}
+        if precedent.as_deref().is_some_and(|p| p.ends_with('$')) {
+            return None;
+        }
+        texte.push_str(morceau);
+        precedent = Some(morceau.to_string());
+        reste = suite;
     }
-    mots.into_iter().find_map(|mot| {
-        let (nom, valeur) = affectation(mot)?;
-        variable_suspecte(nom, valeur, maisons, Some(Ecriture::Brute))
+    (!texte.chars().any(char::is_control)).then_some((texte, reste))
+}
+
+/// Ronde 11 : les instructions d'une ligne du shell (bash, sh, zsh) de la forme simple, ou `None`. Permis seulement,
+/// séparés par « ; » : « NOM=valeur » (une ou plusieurs), « export NOM=valeur… » ou « export NOM… »
+/// (`valeur_du_shell`), « unset NOM… » (sauf PATH), et en zsh « typeset -U NOM… ». Des blancs en tête, entre les
+/// mots, en fin, et un commentaire « # » après un blanc. Rien d'autre : « += », une commande après une affectation
+/// (« PATH=… cmd »), « declare », « eval », « \ » en fin de ligne… ne sont pas simples.
+fn instructions_du_shell(ligne: &str, format: Format) -> Option<Vec<Instruction>> {
+    const BLANCS: [char; 2] = [' ', '\t'];
+    let mut sortie = Vec::new();
+    let mut reste = ligne.trim_start_matches(BLANCS);
+    loop {
+        if reste.is_empty() || reste.starts_with('#') {
+            return Some(sortie);
+        }
+        let fin_du_mot = reste.find([' ', '\t', ';']).unwrap_or(reste.len());
+        let (premier, apres) = reste.split_at(fin_du_mot);
+        let noms_seuls = |apres: &str, permis: &dyn Fn(&str) -> bool| -> Option<usize> {
+            let mut r = apres.trim_start_matches(BLANCS);
+            while !r.is_empty() && !r.starts_with([';', '#']) {
+                let fin = r.find([' ', '\t', ';']).unwrap_or(r.len());
+                let (nom, suite) = r.split_at(fin);
+                if !permis(nom) {
+                    return None;
+                }
+                r = suite.trim_start_matches(BLANCS);
+            }
+            Some(apres.len().saturating_sub(r.len()))
+        };
+        reste = match premier {
+            "unset" => {
+                let lu = noms_seuls(apres, &|n: &str| identifiant(n) && n != "PATH" && n != "path")?;
+                apres.get(lu..)?
+            }
+            "typeset" if format == Format::Zsh => {
+                let lu = noms_seuls(apres, &|n: &str| matches!(n, "-U" | "-gU" | "-Ug") || identifiant(n))?;
+                apres.get(lu..)?
+            }
+            _ => {
+                let (exporte, mut r) = if premier == "export" {
+                    (true, apres)
+                } else {
+                    (false, reste)
+                };
+                let mut lus = 0usize;
+                loop {
+                    r = r.trim_start_matches(BLANCS);
+                    if r.is_empty() || r.starts_with([';', '#']) {
+                        break;
+                    }
+                    let fin = r
+                        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                        .unwrap_or(r.len());
+                    let (nom, suite) = r.split_at(fin);
+                    if !identifiant(nom) {
+                        return None;
+                    }
+                    if let Some(v) = suite.strip_prefix('=') {
+                        let (texte, apres_valeur) = valeur_du_shell(v)?;
+                        sortie.push(Instruction::Pose {
+                            nom: nom.to_string(),
+                            texte,
+                        });
+                        r = apres_valeur;
+                    } else if exporte && (suite.is_empty() || suite.starts_with([' ', '\t', ';'])) {
+                        sortie.push(Instruction::Exporte(nom.to_string()));
+                        r = suite;
+                    } else {
+                        return None;
+                    }
+                    lus = lus.saturating_add(1);
+                }
+                if !exporte && lus == 0 {
+                    return None;
+                }
+                r
+            }
+        };
+        reste = reste.trim_start_matches(BLANCS);
+        if let Some(suite) = reste.strip_prefix(';') {
+            reste = suite.trim_start_matches(BLANCS);
+        } else if !(reste.is_empty() || reste.starts_with('#')) {
+            return None;
+        }
+    }
+}
+
+/// Les mots d'une instruction de fish de la forme simple, ou `None` : séparés par des blancs ; chacun entre guillemets
+/// doubles (sans « \ »), entre apostrophes (sans « \ » ni « $ ») ou sans guillemets (sans guillemet, « \ », ni rien que
+/// fish développe : « ( ) [ ] { } * ? ~ | & < > ` »).
+fn mots_de_fish_simples(instruction: &str) -> Option<Vec<String>> {
+    let mut mots = Vec::new();
+    let mut reste = instruction.trim_matches([' ', '\t']);
+    while !reste.is_empty() {
+        let (mot, suite) = if let Some(g) = reste.chars().next().filter(|c| matches!(c, '"' | '\'')) {
+            let dedans = reste.get(1..)?;
+            let (texte, suite) = dedans.split_once(g)?;
+            let interdit: &[char] = if g == '"' { &['\\'] } else { &['\\', '$'] };
+            if texte.contains(interdit) || !(suite.is_empty() || suite.starts_with([' ', '\t'])) {
+                return None;
+            }
+            (texte.to_string(), suite)
+        } else {
+            let fin = reste.find([' ', '\t']).unwrap_or(reste.len());
+            let (texte, suite) = reste.split_at(fin);
+            if texte.contains(|c: char| "\"'\\()[]{}*?~|&<>`".contains(c)) {
+                return None;
+            }
+            (texte.to_string(), suite)
+        };
+        if mot.chars().any(char::is_control) {
+            return None;
+        }
+        mots.push(mot);
+        reste = suite.trim_start_matches([' ', '\t']);
+    }
+    Some(mots)
+}
+
+/// Ronde 11 : les instructions d'une ligne de fish de la forme simple, ou `None`. Séparées par « ; », chacune :
+/// « set [options] NOM valeurs… » (options : -g -x -U -l -p -a -u -f et leurs formes longues ; « -e », « -q » ne
+/// posent rien), « fish_add_path [options] dossiers… », ou « export NOM=valeur » (la fonction de fish, lue comme le
+/// shell). Les valeurs d'une liste (PATH…) jointes par « : » comme fish l'exporte, celles d'un programme par une
+/// espace ; « -p » et « -a » y joignent la variable elle-même. Un commentaire « # » après un blanc.
+fn instructions_de_fish(ligne: &str) -> Option<Vec<Instruction>> {
+    let mut sortie = Vec::new();
+    let mut texte = ligne.trim_start_matches([' ', '\t']);
+    // Le commentaire : un « # » en tête ou après un blanc, hors guillemets (un guillemet non fermé : pas simple).
+    let mut guillemet = None;
+    let mut avant_blanc = true;
+    for (i, c) in texte.char_indices() {
+        match (guillemet, c) {
+            (Some(g), _) if c == g => guillemet = None,
+            (None, '"' | '\'') => guillemet = Some(c),
+            (None, '#') if avant_blanc => {
+                texte = texte.get(..i).unwrap_or_default();
+                break;
+            }
+            _ => {}
+        }
+        avant_blanc = guillemet.is_none() && matches!(c, ' ' | '\t');
+    }
+    for instruction in texte.split(';') {
+        let net = instruction.trim_matches([' ', '\t']);
+        if net.is_empty() {
+            continue;
+        }
+        if net.starts_with("export ") {
+            sortie.extend(instructions_du_shell(net, Format::Shell)?);
+            continue;
+        }
+        let mots = mots_de_fish_simples(net)?;
+        let mut mots = mots.into_iter();
+        let commande = mots.next()?;
+        let (mut avant, mut apres) = (false, false);
+        let mut reste: Vec<String> = Vec::new();
+        for mot in mots.by_ref() {
+            if !mot.starts_with('-') || !reste.is_empty() {
+                reste.push(mot);
+                continue;
+            }
+            let long = |l: &[&str]| l.contains(&mot.as_str());
+            let court = |lettres: &str| {
+                mot.strip_prefix('-')
+                    .is_some_and(|o| !o.starts_with('-') && !o.is_empty() && o.chars().all(|c| lettres.contains(c)))
+            };
+            if commande == "set" && (long(&["--erase", "--query", "--names", "--show"]) || court("eqnS")) {
+                return Some(sortie);
+            }
+            let permis = if commande == "set" {
+                court("gxUlpauf")
+                    || long(&[
+                        "--global",
+                        "--export",
+                        "--universal",
+                        "--local",
+                        "--prepend",
+                        "--append",
+                        "--unexport",
+                        "--function",
+                        "--path",
+                    ])
+            } else {
+                court("gUapmvnP")
+                    || long(&[
+                        "--global",
+                        "--universal",
+                        "--append",
+                        "--prepend",
+                        "--move",
+                        "--verbose",
+                        "--dry-run",
+                        "--path",
+                    ])
+            };
+            if !permis {
+                return None;
+            }
+            avant |= mot == "--prepend" || court("gxUlpauf") && mot.contains('p') && commande == "set";
+            apres |= mot == "--append"
+                || mot
+                    .strip_prefix('-')
+                    .is_some_and(|o| !o.starts_with('-') && o.contains('a'));
+        }
+        let (nom, valeurs) = match commande.as_str() {
+            "set" => {
+                let mut r = reste.into_iter();
+                let nom = r.next()?;
+                if !identifiant(&nom) {
+                    return None;
+                }
+                (nom, r.collect::<Vec<_>>())
+            }
+            "fish_add_path" => {
+                // fish_add_path ajoute devant (« -a » : derrière) ce qui est déjà dans PATH.
+                avant = !apres;
+                ("PATH".to_string(), reste)
+            }
+            _ => return None,
+        };
+        if valeurs.is_empty() && commande == "set" {
+            continue;
+        }
+        let soi = format!("${nom}");
+        let mut morceaux = valeurs;
+        if avant {
+            morceaux.push(soi.clone());
+        }
+        if apres {
+            morceaux.insert(0, soi);
+        }
+        let joint = if variable_de_programme(&nom) { " " } else { ":" };
+        sortie.push(Instruction::Pose {
+            texte: morceaux.join(joint),
+            nom,
+        });
+    }
+    Some(sortie)
+}
+
+/// Ronde 11 : l'instruction d'une ligne d'environment.d, de /etc/environment ou de pam_env de la forme simple, ou
+/// `None` : « NOM=valeur » (ou « export NOM=valeur »), sans blanc autour du « = », la valeur entière entre guillemets
+/// doubles ou apostrophes (sans guillemet ni « \ » dedans) ou sans guillemets (sans guillemet ni « \ »), des blancs
+/// en tête et en fin. Une ligne vide : rien.
+fn instruction_de_cles(ligne: &str) -> Option<Vec<Instruction>> {
+    let l = ligne.trim_matches([' ', '\t']);
+    if l.is_empty() {
+        return Some(Vec::new());
+    }
+    let l = l
+        .strip_prefix("export ")
+        .map_or(l, |r| r.trim_start_matches([' ', '\t']));
+    let (nom, valeur) = l.split_once('=')?;
+    if !identifiant(nom) {
+        return None;
+    }
+    let texte = ['"', '\'']
+        .iter()
+        .find_map(|g| valeur.strip_prefix(*g).and_then(|v| v.strip_suffix(*g)))
+        .unwrap_or(valeur);
+    (!texte.contains(['"', '\'', '\\']) && !texte.chars().any(char::is_control)).then(|| {
+        vec![Instruction::Pose {
+            nom: nom.to_string(),
+            texte: texte.to_string(),
+        }]
     })
 }
 
-/// Comment une valeur passée à `path_relatif` est écrite.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Ecriture {
-    /// La valeur que pose une ligne simple, calculée (`ValeurSimple::calculer`) : chaque caractère est du texte.
-    Litterale,
-    /// Le texte tel qu'écrit, que Vanguard ne développe pas : un morceau qui lit une variable (« $ ») ne se juge pas.
-    Brute,
+/// Ronde 11 : les instructions d'une ligne de user.conf de la forme simple, ou `None` : « DefaultEnvironment= » ou
+/// « ManagerEnvironment= » (blancs permis autour du « = »), puis des mots « NOM=valeur » coupés comme systemd les
+/// coupe (aux blancs hors guillemets, guillemets ôtés : user.conf coupe en mots, environment.d non). Aucun « \ »
+/// (échappement ou ligne continuée) ; un mot qui n'est pas une affectation et nomme une variable surveillée n'est pas
+/// simple. Une autre clé : rien.
+fn instructions_de_systemd(ligne: &str) -> Option<Vec<Instruction>> {
+    let l = ligne.trim();
+    let Some((cle, v)) = l.split_once('=') else {
+        return identifiant(l).then(Vec::new).or_else(|| l.is_empty().then(Vec::new));
+    };
+    if !["DefaultEnvironment", "ManagerEnvironment"].contains(&cle.trim_end()) {
+        return (!cle.contains(['"', '\'', '\\', '$', '%'])).then(Vec::new);
+    }
+    if v.contains('\\') {
+        return None;
+    }
+    let mut sortie = Vec::new();
+    for mot in commandes_de_systemd_brutes(v.trim_start())?.into_iter().flatten() {
+        match affectation(&mot) {
+            Some((nom, texte)) => sortie.push(Instruction::Pose {
+                nom: nom.to_string(),
+                texte: texte.to_string(),
+            }),
+            None if ecriture_nommee(&mot, &|n| variable_surveillee(n, Format::Systemd)).is_some() => return None,
+            None => {}
+        }
+    }
+    Some(sortie)
+}
+
+/// Le premier nom que `est` retient et que `texte` écrit ailleurs qu'en le lisant : tout mot qui le nomme, sauf une
+/// simple lecture (« $NOM », « ${NOM} », « ${NOM:-…} », « ${#NOM} », « ${!NOM} ») ; « ${NOM=…} » et « ${NOM:=…} »
+/// le posent, et comptent. Une lecture ne change rien à ce qui se lance ; tout le reste, même « unset » ou un mot
+/// qui n'en pose pas (« echo PATH »), est pris dans le doute pour une écriture.
+fn ecriture_nommee(texte: &str, est: &dyn Fn(&str) -> bool) -> Option<String> {
+    let octets = texte.as_bytes();
+    let mot = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let mut i = 0usize;
+    while i < octets.len() {
+        if !octets.get(i).copied().is_some_and(mot) {
+            i = i.saturating_add(1);
+            continue;
+        }
+        let debut = i;
+        while octets.get(i).copied().is_some_and(mot) {
+            i = i.saturating_add(1);
+        }
+        let Some(nom) = texte.get(debut..i) else { continue };
+        if !est(nom) {
+            continue;
+        }
+        let avant = |n: usize| debut.checked_sub(n).and_then(|k| octets.get(k).copied());
+        let suite = texte.get(i..).unwrap_or_default();
+        let accolade = avant(1) == Some(b'{') && avant(2) == Some(b'$')
+            || matches!(avant(1), Some(b'#' | b'!')) && avant(2) == Some(b'{') && avant(3) == Some(b'$');
+        let lecture = avant(1) == Some(b'$') || accolade && !(suite.starts_with('=') || suite.starts_with(":="));
+        if !lecture {
+            return Some(nom.to_string());
+        }
+    }
+    None
+}
+
+/// Les commandes d'une ligne, chacune en mots bruts (guillemets gardés), coupées sur « ; », « & », « | », « ( », « ) »
+/// hors guillemets et hors de ce qui se calcule : « $( ) », « ${ } », « ` ` » (et en fish « ( ) ») gardent leurs
+/// séparateurs dans leur mot (N10-1 : « ${NOPE:-a&b} » ne coupe plus la commande). Un « # » en tête de mot finit la
+/// ligne. Pour `nom_calcule` seulement : y trouver les commandes qui posent un nom.
+fn commandes_a_plat(ligne: &str, fish: bool) -> Vec<Vec<String>> {
+    let mut commandes = Vec::new();
+    let (mut mots, mut mot) = (Vec::new(), String::new());
+    let (mut guillemet, mut echappe) = (None::<char>, false);
+    let mut profondeur: Vec<char> = Vec::new();
+    let mut lettres = ligne.chars().peekable();
+    let finir = |mots: &mut Vec<String>, mot: &mut String| {
+        if !mot.is_empty() {
+            mots.push(std::mem::take(mot));
+        }
+    };
+    while let Some(c) = lettres.next() {
+        if echappe {
+            mot.push(c);
+            echappe = false;
+            continue;
+        }
+        if guillemet == Some('\'') {
+            mot.push(c);
+            if c == '\'' {
+                guillemet = None;
+            }
+            continue;
+        }
+        match c {
+            '\\' => {
+                echappe = true;
+                mot.push(c);
+            }
+            '"' => {
+                guillemet = if guillemet.is_some() { None } else { Some('"') };
+                mot.push(c);
+            }
+            '\'' if guillemet.is_none() => {
+                guillemet = Some('\'');
+                mot.push(c);
+            }
+            '$' if matches!(lettres.peek(), Some('(' | '{')) => {
+                let ouvre = lettres.next().unwrap_or('(');
+                mot.push('$');
+                mot.push(ouvre);
+                profondeur.push(if ouvre == '(' { ')' } else { '}' });
+            }
+            '`' => {
+                if profondeur.last() == Some(&'`') {
+                    profondeur.pop();
+                } else {
+                    profondeur.push('`');
+                }
+                mot.push(c);
+            }
+            c if profondeur.last() == Some(&c) => {
+                profondeur.pop();
+                mot.push(c);
+            }
+            '(' if !profondeur.is_empty() || (fish && guillemet.is_none()) => {
+                profondeur.push(')');
+                mot.push(c);
+            }
+            _ if !profondeur.is_empty() || guillemet.is_some() => mot.push(c),
+            ' ' | '\t' => finir(&mut mots, &mut mot),
+            ';' | '&' | '|' | '(' | ')' => {
+                finir(&mut mots, &mut mot);
+                if !mots.is_empty() {
+                    commandes.push(std::mem::take(&mut mots));
+                }
+            }
+            '#' if mot.is_empty() => break,
+            _ => mot.push(c),
+        }
+    }
+    finir(&mut mots, &mut mot);
+    if !mots.is_empty() {
+        commandes.push(mots);
+    }
+    commandes
+}
+
+/// Les outils dont la sortie s'évalue d'ordinaire dans un profil (« eval "$(mise activate bash)" »,
+/// « zoxide init fish | source ») : le deuxième mot permis.
+const VERBES_D_ACTIVATION: [&str; 7] = [
+    "activate",
+    "init",
+    "hook",
+    "shellenv",
+    "env",
+    "completion",
+    "completions",
+];
+
+/// Ronde 11, élargi avec prudence (une ligne réelle d'un profil du compte) : la commande évaluée est-elle celle d'un
+/// outil d'activation ? Des mots de caractères simples sans « / » (le programme se cherche dans PATH, déjà jugé), le
+/// premier un nom ; s'il y en a d'autres, le deuxième un verbe (`VERBES_D_ACTIVATION`) ou une option, les suivants des
+/// options ou un nom de shell. Ce que l'outil écrit ne se lit pas (limite écrite au CHANGELOG).
+fn activation_permise(commande: &str) -> bool {
+    let mots: Vec<&str> = commande.split(' ').collect();
+    let simple = |m: &str| !m.is_empty() && m.chars().all(|c| caractere_simple(c) && c != '/');
+    mots.iter().all(|m| simple(m))
+        && mots.first().is_some_and(|m| !m.starts_with('-'))
+        && mots
+            .get(1)
+            .is_none_or(|m| VERBES_D_ACTIVATION.contains(m) || m.starts_with('-'))
+        && mots
+            .iter()
+            .skip(2)
+            .all(|m| m.starts_with('-') || ["bash", "zsh", "sh", "fish"].contains(m))
+}
+
+/// Ronde 11 : la ligne pose-t-elle une variable dont le nom se calcule, que Vanguard ne peut donc pas exclure ?
+/// « eval » (sauf « eval "$(outil activate bash)" » : `activation_permise`), « export », « declare », « typeset »,
+/// « local », « readonly » dont un nom n'est pas un mot fixe (« export "$N=…" », « export P"ATH"=… »,
+/// « export $(echo PA)TH=… », « declare -n r=$N »), « read », « mapfile », « readarray », « getopts » vers un nom
+/// calculé, « printf -v » de même, une commande dont le nom se calcule (« $X PATH=… »). En fish : « set » d'un nom
+/// calculé, « eval », et « … | source » (sauf un outil d'activation). Plus large que le shell : dans le doute, dit.
+fn nom_calcule(ligne: &str, format: Format) -> bool {
+    let fish = format == Format::Fish;
+    let construit = |m: &str| !identifiant(m.split('=').next().unwrap_or(m));
+    if fish && let Some((avant, apres)) = ligne.split_once('|') {
+        let source = apres.trim_matches([' ', '\t']);
+        if source == "source" || source.starts_with("source ") || source == "." {
+            return !(source == "source" && activation_permise(avant.trim_matches([' ', '\t'])));
+        }
+    }
+    for commande in commandes_a_plat(ligne, fish) {
+        let mut mots = commande.iter().map(String::as_str).skip_while(|m| {
+            [
+                "then", "else", "do", "!", "if", "elif", "while", "until", "{", "}", "time", "command", "builtin",
+                "and", "or", "not", "begin",
+            ]
+            .contains(m)
+                || (!fish && affectation(m).is_some())
+        });
+        let Some(premier) = mots.next() else {
+            continue;
+        };
+        let args: Vec<&str> = mots.collect();
+        let sans_redirection: Vec<&str> = args
+            .iter()
+            .copied()
+            .filter(|a| !matches!(*a, ">" | "/dev/null" | ">/dev/null" | "2>/dev/null"))
+            .collect();
+        let calcule = match premier {
+            "eval" => {
+                !(sans_redirection.len() == 1
+                    && sans_redirection.first().is_some_and(|a| {
+                        let net = a.strip_prefix('"').and_then(|x| x.strip_suffix('"')).unwrap_or(a);
+                        net.strip_prefix("$(")
+                            .and_then(|x| x.strip_suffix(')'))
+                            .is_some_and(activation_permise)
+                            && !fish
+                    }))
+            }
+            "export" | "declare" | "typeset" | "local" | "readonly" if !fish => {
+                let reference = args.iter().any(|a| a.starts_with('-') && a.contains('n'));
+                args.iter()
+                    .filter(|a| !a.starts_with(['-', '+']))
+                    .any(|a| construit(a) || (reference && a.contains(['$', '`'])))
+            }
+            "read" | "mapfile" | "readarray" | "getopts" => args
+                .iter()
+                .take_while(|a| !a.starts_with(['<', '>']))
+                .any(|a| !a.starts_with('-') && !identifiant(a)),
+            "printf" if !fish => args.iter().enumerate().any(|(i, a)| {
+                a.strip_prefix("-v").is_some_and(|nom| {
+                    let nom = if nom.is_empty() {
+                        args.get(i.saturating_add(1)).copied().unwrap_or_default()
+                    } else {
+                        nom
+                    };
+                    !identifiant(nom)
+                })
+            }),
+            "set" if fish => args
+                .iter()
+                .find(|a| !a.starts_with('-'))
+                .is_some_and(|nom| !identifiant(nom)),
+            "source" | "." if fish => args.is_empty() || args.first() == Some(&"-"),
+            p => {
+                let p = p.trim_start_matches('"');
+                p.starts_with(['$', '`', '(']) && morceau_de_maison(p.trim_end_matches('"')).is_none_or(str::is_empty)
+            }
+        };
+        if calcule {
+            return true;
+        }
+    }
+    false
+}
+
+/// Ronde 11 : ce qu'une ligne touche de surveillé, ou `None` : une variable surveillée (`variable_surveillee`) écrite
+/// ailleurs qu'en la lisant (`ecriture_nommee`), dans le texte tel qu'écrit ou décodé (`decodee` : « P"ATH" »,
+/// « $'\x50'ATH », « L\D_PRELOAD ») ; au shell, l'option « dotglob » (qu'un BASHOPTS exporté passe à chaque bash,
+/// N10-8) et un nom calculé (`nom_calcule`). Ce qui est rendu se dit : le nom, ou ce qui le calcule.
+fn touche(ligne: &str, format: Format) -> Option<String> {
+    let est = |n: &str| variable_surveillee(n, format);
+    if let Some(nom) = ecriture_nommee(ligne, &est).or_else(|| ecriture_nommee(&decodee(ligne), &est)) {
+        return Some(trf!("la variable {nom}", "the variable {nom}"));
+    }
+    if matches!(format, Format::Shell | Format::Zsh) && ecriture_nommee(&decodee(ligne), &|n| n == "dotglob").is_some()
+    {
+        return Some(tr!("BASHOPTS (option « dotglob »)", "BASHOPTS (“dotglob” option)").to_string());
+    }
+    if matches!(format, Format::Shell | Format::Zsh | Format::Fish) && nom_calcule(ligne, format) {
+        return Some(
+            tr!(
+                "un nom de variable calculé (eval, export \"$…\", printf -v, read…)",
+                "a computed variable name (eval, export \"$…\", printf -v, read…)"
+            )
+            .to_string(),
+        );
+    }
+    None
+}
+
+/// Ce que la grammaire stricte (`juger_ligne`) dit d'une ligne.
+#[derive(Debug, PartialEq, Eq)]
+enum Jugement {
+    /// Rien de surveillé, ou une forme simple saine.
+    Muette,
+    /// Une forme simple dont la valeur mène à un dossier caché ou temporaire, précharge, ou un PATH relatif : élevé.
+    Suspecte(&'static str),
+    /// Une variable surveillée touchée hors de la forme simple (`quoi` : ce qui est touché, dit) : non vérifié,
+    /// jamais tu ; élevé si la lecture large (`raison_large`) y trouve déjà un dossier caché ou temporaire.
+    HorsForme { quoi: String, raison: Option<&'static str> },
+}
+
+/// La raison de BASHOPTS ou SHELLOPTS posé ou exporté à la session (N9-3, N10-8).
+fn options_de_bash() -> &'static str {
+    tr!(
+        "BASHOPTS ou SHELLOPTS posé : change les options de chaque bash lancé ensuite (« dotglob » fait lire à uwsm les fichiers cachés de ses dossiers « .d »)",
+        "BASHOPTS or SHELLOPTS set: changes the options of every bash started afterwards (“dotglob” makes uwsm read the hidden files of its “.d” folders)"
+    )
+}
+
+/// Ronde 11, cause racine des rondes 5 à 10 : chaque ronde coupait une ligne du shell d'une façon de plus (au blanc, au
+/// « ; », au « & » entre guillemets, sous toutes ses lectures…), et chaque coupe ratée taisait un dossier. La règle
+/// est inversée : ce que Vanguard ne sait pas lire sûrement est dit non vérifié. Une ligne qui touche une variable
+/// surveillée (`touche`) n'est sûre que sous la forme simple de son format (`instructions_du_shell`,
+/// `instructions_de_fish`, `instruction_de_cles`, `instructions_de_systemd`) avec une valeur de la forme simple
+/// (`forme_simple`) ; cette valeur, calculée (`valeur_calculee`), se juge par `variable_suspecte` : élevé si elle est
+/// suspecte. Toute autre forme : `Jugement::HorsForme`, nommée. `chemins` : le PATH déjà posé par les lignes d'avant
+/// du fichier, un par dossier personnel de `maisons`, que « $PATH » lit (N7-1).
+fn juger_ligne(ligne: &str, format: Format, maisons: &[&str], chemins: &mut [String]) -> Jugement {
+    let instructions = match format {
+        Format::Shell | Format::Zsh => instructions_du_shell(ligne, format),
+        Format::Fish => instructions_de_fish(ligne),
+        Format::Cles { .. } => instruction_de_cles(ligne),
+        Format::Systemd => instructions_de_systemd(ligne),
+    };
+    let hors = |quoi: String| Jugement::HorsForme {
+        quoi,
+        raison: raison_large(ligne, Some(format), maisons),
+    };
+    let Some(instructions) = instructions else {
+        return touche(ligne, format).map_or(Jugement::Muette, hors);
+    };
+    let mut raison = None;
+    for instruction in instructions {
+        let (nom, texte) = match instruction {
+            Instruction::Exporte(nom) => {
+                if ["BASHOPTS", "SHELLOPTS"].contains(&nom.as_str()) {
+                    raison = raison.or(Some(options_de_bash()));
+                }
+                continue;
+            }
+            Instruction::Pose { nom, texte } => (nom, texte),
+        };
+        if !variable_surveillee(&nom, format) {
+            // « A=${PATH:=…} » : une variable surveillée posée dans la valeur d'une autre.
+            let est = |n: &str| variable_surveillee(n, format);
+            if let Some(n) = ecriture_nommee(&texte, &est).or_else(|| ecriture_nommee(&decodee(&texte), &est)) {
+                return hors(trf!("la variable {n}", "the variable {n}"));
+            }
+            continue;
+        }
+        if !forme_simple(&nom, &texte, format) {
+            return hors(trf!("la variable {nom}", "the variable {nom}"));
+        }
+        for (i, maison) in maisons.iter().enumerate() {
+            let chemin = chemins
+                .get(i)
+                .map_or_else(|| CHEMIN_DU_SYSTEME.to_string(), String::clone);
+            let calculee = valeur_calculee(&nom, &texte, format, maison, &chemin);
+            raison = raison.or_else(|| variable_suspecte(nom_juge(&nom), &calculee, maisons, true));
+            if nom == "PATH"
+                && let Some(c) = chemins.get_mut(i)
+            {
+                *c = calculee;
+            }
+        }
+    }
+    raison.map_or(Jugement::Muette, Jugement::Suspecte)
+}
+
+/// La lecture large d'une ligne hors de la forme simple, pour lever plus seulement, jamais pour taire : après chaque
+/// variable surveillée suivie de « = », « += » ou « := » (et en fish d'un blanc, après « setenv » de csh aussi), le
+/// reste entier de la ligne, tel qu'écrit et décodé, jugé par `variable_suspecte` (sans le PATH relatif, qui ne se
+/// juge que sur une valeur sûre). Pas au format de systemd ni d'environment.d : leur valeur est la ligne entière
+/// (« PATH=/usr/bin # /home/alice/.x » n'y nomme pas « /home/alice/.x », N10-9), dite non vérifiée seulement.
+/// `None` comme format : un fichier de Hyprland, lu comme le shell.
+fn raison_large(ligne: &str, format: Option<Format>, maisons: &[&str]) -> Option<&'static str> {
+    if matches!(format, Some(Format::Cles { .. } | Format::Systemd)) {
+        return None;
+    }
+    let format = format.unwrap_or(Format::Shell);
+    for texte in [ligne.to_string(), decodee(ligne)] {
+        let octets = texte.as_bytes();
+        let mot = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+        let mut i = 0usize;
+        while i < octets.len() {
+            if !octets.get(i).copied().is_some_and(mot) {
+                i = i.saturating_add(1);
+                continue;
+            }
+            let debut = i;
+            while octets.get(i).copied().is_some_and(mot) {
+                i = i.saturating_add(1);
+            }
+            let Some(nom) = texte.get(debut..i) else { continue };
+            if !variable_surveillee(nom, format) {
+                continue;
+            }
+            let suite = texte.get(i..).unwrap_or_default();
+            let setenv = texte.get(..debut).is_some_and(|a| a.trim_end().ends_with("setenv"));
+            let valeur = suite
+                .strip_prefix("+=")
+                .or_else(|| suite.strip_prefix(":="))
+                .or_else(|| suite.strip_prefix('='))
+                .or_else(|| {
+                    ((format == Format::Fish || setenv) && suite.starts_with([' ', '\t'])).then(|| suite.trim_start())
+                });
+            if let Some(raison) = valeur.and_then(|v| {
+                variable_suspecte(nom_juge(nom), v, maisons, false).or_else(|| {
+                    (format != Format::Fish)
+                        .then(|| path_relatif_brut(nom_juge(nom), v))
+                        .flatten()
+                })
+            }) {
+                return Some(raison);
+            }
+        }
+    }
+    None
+}
+
+/// Ronde 11 : un PATH relatif sur une ligne hors forme (« true && export PATH=.x:$PATH »), qui se lit encore sans
+/// doute : la valeur jusqu'au premier blanc ou opérateur, sans rien qui se calcule (« ` \ { ( »), chaque morceau sans
+/// ses guillemets ; un morceau qui lit une variable (« $… ») ne compte pas. Une ligne hors forme est déjà dite non
+/// vérifiée ; ceci la garde élevée comme avant la grammaire stricte, sans rien lever de plus qu'une lecture sûre.
+fn path_relatif_brut(nom: &str, valeur: &str) -> Option<&'static str> {
+    let valeur = valeur.split([' ', '\t', ';', '&', '|', ')']).next().unwrap_or_default();
+    if valeur.contains(['`', '\\', '{', '(']) {
+        return None;
+    }
+    let morceaux: Vec<&str> = valeur.split(':').map(|m| m.trim_matches(['"', '\''])).collect();
+    morceaux
+        .iter()
+        .any(|m| !m.contains('$') && !m.starts_with(['/', '~', '%']))
+        .then(|| path_relatif(nom, "."))
+        .flatten()
 }
 
 /// N8-3 (revérification de la ronde 8) : PATH posé avec un morceau vide ou relatif (« . », « .x », « :: », « : » au
 /// début ou à la fin) : chaque programme lancé par son seul nom se cherche aussi dans le dossier courant, quel qu'il
 /// soit au moment du lancement (uwsm, depuis le dossier personnel, lance alors « env » ou « systemctl » d'un
-/// « ~/.x »). Seuls se jugent les morceaux écrits en toutes lettres : « $… », « ~… » (bash le développe dans PATH) et
-/// « %… » (spécificateurs de systemd) ne sont ni relatifs ni sains, et une valeur brute qui contient « ` », « \ »,
-/// « { » ou « ( » (« ${PATH:+…} ») ne se coupe pas à « : » sans la lire : non jugée, comme avant. Le PATH du
-/// processus de Vanguard est un autre constat (`path_dangereux`, ce qui tourne) : celui-ci nomme la ligne du fichier
-/// qui le pose. Appelée par `variable_suspecte` seulement, sur chaque lecture (`lectures_d_une_valeur`).
-fn path_relatif(nom: &str, valeur: &str, ecriture: Ecriture) -> Option<&'static str> {
+/// « ~/.x »). Ronde 11 : jugé seulement sur la valeur d'une forme simple, calculée (`valeur_calculee`), où chaque
+/// caractère est du texte : un morceau qui ne commence pas par « / » est relatif. Le PATH du processus de Vanguard est
+/// un autre constat (`path_dangereux`, ce qui tourne) : celui-ci nomme la ligne du fichier qui le pose. Appelée par
+/// `variable_suspecte` seulement, sur chaque lecture (`lectures_d_une_valeur`).
+fn path_relatif(nom: &str, valeur: &str) -> Option<&'static str> {
     if nom != "PATH" {
         return None;
     }
-    let valeur = match ecriture {
-        Ecriture::Litterale => valeur,
-        Ecriture::Brute => valeur.trim_matches(|c| c == '"' || c == '\''),
-    };
-    if ecriture == Ecriture::Brute && valeur.contains(['`', '\\', '{', '(']) {
-        return None;
-    }
-    // Brute : chaque morceau sans ses guillemets (« "/a":"/b" » est « /a:/b »).
-    let relatif = |m: &str| match ecriture {
-        Ecriture::Litterale => m.is_empty() || !m.starts_with(['/', '~']),
-        Ecriture::Brute => {
-            let m = m.trim_matches(|c| c == '"' || c == '\'');
-            !m.contains('$') && (m.is_empty() || !m.starts_with(['/', '~', '%']))
-        }
-    };
-    valeur.split(':').any(relatif).then(|| {
+    valeur.split(':').any(|m| !m.starts_with('/')).then(|| {
         tr!(
             "PATH qui fait chercher les programmes dans le dossier courant : un morceau vide ou relatif (« . », « .x », « :: », « : » au début ou à la fin)",
             "PATH that makes programs be looked up in the current folder: an empty or relative entry (“.”, “.x”, “::”, “:” at the start or end)"
         )
     })
-}
-
-/// Les commandes d'une ligne du shell, de csh ou de fish : coupée hors apostrophes et guillemets doubles sur « ; »,
-/// « & » et « | », arrêtée au « # » qui commence un mot (un commentaire ; « a#b » reste un mot, ce qui ne peut que
-/// lever plus). Un « \ » échappe le caractère suivant ; un guillemet non fermé garde tout le reste.
-fn commandes_hors_guillemets(ligne: &str) -> Vec<&str> {
-    let mut commandes = Vec::new();
-    let (mut debut, mut guillemet, mut echappe, mut avant_blanc) = (0, None, false, true);
-    for (i, c) in ligne.char_indices() {
-        if echappe {
-            echappe = false;
-            avant_blanc = false;
-            continue;
-        }
-        match (guillemet, c) {
-            (Some(g), _) if c == g => guillemet = None,
-            (Some('"') | None, '\\') => echappe = true,
-            (None, '"' | '\'') => guillemet = Some(c),
-            (None, ';' | '&' | '|') => {
-                commandes.push(ligne.get(debut..i).unwrap_or(""));
-                debut = i.saturating_add(c.len_utf8());
-            }
-            (None, '#') if avant_blanc => {
-                commandes.push(ligne.get(debut..i).unwrap_or(""));
-                return commandes;
-            }
-            _ => {}
-        }
-        avant_blanc = guillemet.is_none() && matches!(c, ' ' | '\t' | ';' | '&' | '|');
-    }
-    commandes.push(ligne.get(debut..).unwrap_or(""));
-    commandes
-}
-
-/// Les mots d'une commande (`commandes_hors_guillemets`), coupés aux blancs hors apostrophes et guillemets doubles,
-/// guillemets gardés (`jusqu_au_blanc_hors_guillemets`).
-fn mots_hors_guillemets(commande: &str) -> Vec<&str> {
-    let mut mots = Vec::new();
-    let mut reste = commande.trim_start_matches([' ', '\t']);
-    while !reste.is_empty() {
-        let mot = jusqu_au_blanc_hors_guillemets(reste);
-        if mot.is_empty() {
-            // Un « ; » hors guillemets (déjà coupé par `commandes_hors_guillemets`) : passé.
-            reste = reste.get(1..).unwrap_or("").trim_start_matches([' ', '\t']);
-            continue;
-        }
-        mots.push(mot);
-        reste = reste.get(mot.len()..).unwrap_or("").trim_start_matches([' ', '\t']);
-    }
-    mots
-}
-
-/// N9-4 : un mot de fish tel que fish le lit : apostrophes et guillemets doubles ôtés, « \ » qui échappe le
-/// caractère suivant. « $… » et « ~ » restent écrits (`path_relatif` ne les juge pas).
-fn mots_de_fish(mot: &str) -> String {
-    let mut lu = String::new();
-    let (mut guillemet, mut echappe) = (None, false);
-    for c in mot.chars() {
-        if echappe {
-            echappe = false;
-            lu.push(c);
-            continue;
-        }
-        match (guillemet, c) {
-            (_, '\\') => echappe = true,
-            (Some(g), _) if c == g => guillemet = None,
-            (None, '"' | '\'') => guillemet = Some(c),
-            _ => lu.push(c),
-        }
-    }
-    lu
-}
-
-/// Le début de `valeur` jusqu'au premier blanc (espace, tabulation) ou « ; » hors apostrophes et guillemets doubles
-/// (N7-2) ; un guillemet non fermé garde tout le reste.
-fn jusqu_au_blanc_hors_guillemets(valeur: &str) -> &str {
-    let mut guillemet = None;
-    let mut echappe = false;
-    for (i, c) in valeur.char_indices() {
-        if echappe {
-            echappe = false;
-            continue;
-        }
-        match (guillemet, c) {
-            (Some(g), _) if c == g => guillemet = None,
-            (Some('"') | None, '\\') => echappe = true,
-            (None, '"' | '\'') => guillemet = Some(c),
-            (None, ' ' | '\t' | ';') => return valeur.get(..i).unwrap_or(valeur),
-            _ => {}
-        }
-    }
-    valeur
 }
 
 /// Les lignes continuées par « \ », jointes comme les lit le shell : « export L\⏎D_PRELOAD=… » précharge sans
@@ -7846,9 +8596,12 @@ fn juger_lignes_jointes(
     lu: &Lecture,
     sorte: Variables,
     demarrage: &[std::path::PathBuf],
+    maisons: &[&str],
     maison: &Path,
     t: &mut Lancements,
 ) {
+    let format = format_de(fichier, sorte);
+    let de_root = de_root_seul(fichier);
     // Au format de systemd, le texte coupé aussi sur chaque retour chariot seul (« #x⏎L\⏎D_PRELOAD=… » : le
     // commentaire s'arrête au retour chariot, la suite se joint) ; chaque enregistrement garde le numéro de la ligne
     // écrite qui le porte.
@@ -7887,6 +8640,33 @@ fn juger_lignes_jointes(
                 continue;
             }
             Some(raison)
+        } else if let Some(format) = format
+            && !commentaire_selon(&jointe, sorte)
+        {
+            // Ronde 11 : la ligne jointe sous la grammaire stricte, si aucune de ses lignes n'a déjà été jugée
+            // autrement que muette (chacune y est jugée seule) ; hors forme sans raison : non vérifié.
+            let mut sans_chemin = vec![CHEMIN_DU_SYSTEME.to_string(); maisons.len()];
+            if physiques.iter().any(|(_, l)| {
+                juger_ligne(
+                    l,
+                    format,
+                    maisons,
+                    &mut vec![CHEMIN_DU_SYSTEME.to_string(); maisons.len()],
+                ) != Jugement::Muette
+            }) {
+                continue;
+            }
+            match juger_ligne(&jointe, format, maisons, &mut sans_chemin) {
+                Jugement::Suspecte(r) | Jugement::HorsForme { raison: Some(r), .. } => Some(r),
+                Jugement::HorsForme { quoi, raison: None } => {
+                    if !de_root {
+                        t.non_verifies
+                            .push(hors_forme_dite(&court(fichier, maison), premiere, &quoi));
+                    }
+                    continue;
+                }
+                Jugement::Muette => continue,
+            }
         } else {
             continue;
         };
@@ -8327,7 +9107,7 @@ fn juger_hypr(
             let formes = resoudre_hypr(v.trim(), variables).unwrap_or_else(|| vec![v.trim().to_string()]);
             if let Some(raison) = formes
                 .iter()
-                .find_map(|v| variable_suspecte(nom.trim(), v, &maisons, None))
+                .find_map(|v| variable_suspecte(nom.trim(), v, &maisons, false))
             {
                 lever(t, f, lu, n, &ligne, valeur.trim(), true, a_part, simple, raison);
                 continue;
@@ -8448,7 +9228,7 @@ fn reglage_suspect(ligne: &str, r: &Releveur) -> Option<&'static str> {
     let variables = |mots: Vec<String>| {
         mots.iter().find_map(|mot| {
             let (nom, v) = mot.split_once('=')?;
-            variable_suspecte(nom.trim(), v, &maisons, None).map(|raison| {
+            variable_suspecte(nom.trim(), v, &maisons, false).map(|raison| {
                 if ["PATH", "LD_LIBRARY_PATH"].contains(&nom.trim()) {
                     dossier
                 } else {
@@ -19638,7 +20418,7 @@ mod tests {
         .into_iter()
         .enumerate()
         {
-            if variable_de_configuration(ligne, &["/home/alice"], &mut [], false).is_none() {
+            if jugee(ligne) == super::Jugement::Muette {
                 faux.push(format!("muette : {ligne:?}"));
             }
             let m = Maison::nouvelle(&format!("uwsm-valeur-entiere-{i}"));
@@ -19659,7 +20439,7 @@ mod tests {
         .into_iter()
         .enumerate()
         {
-            if variable_de_configuration(ligne, &["/home/alice"], &mut [], false).is_none() {
+            if jugee(ligne) == super::Jugement::Muette {
                 faux.push(format!("muette : {ligne:?}"));
             }
             let m = Maison::nouvelle(&format!("profil-valeur-entiere-{i}"));
@@ -19669,11 +20449,13 @@ mod tests {
                 faux.push(format!("profil {ligne:?} : {:?} {}", c.probleme, c.message));
             }
         }
-        // Témoins : ce qui suit la valeur hors guillemets n'est pas la valeur ; muets.
-        for ligne in ["A=/opt/b /home/alice/.x/c", "export PATH=\"/usr/bin\" /home/alice/.x"] {
-            if variable_de_configuration(ligne, &["/home/alice"], &mut [], false).is_some() {
-                faux.push(format!("levée à tort : {ligne:?}"));
-            }
+        // Témoin : ce qui suit la valeur hors guillemets n'est pas la valeur ; muet. Ronde 11 : « export PATH="/usr/bin"
+        // /home/alice/.x » n'est pas de la forme simple (un mot qui n'est pas une affectation) : dit, jamais tu.
+        if levee(&jugee("A=/opt/b /home/alice/.x/c")) {
+            faux.push("levée à tort : A=/opt/b /home/alice/.x/c".to_string());
+        }
+        if jugee("export PATH=\"/usr/bin\" /home/alice/.x") == super::Jugement::Muette {
+            faux.push("muette : export PATH=\"/usr/bin\" /home/alice/.x".to_string());
         }
         assert!(faux.is_empty(), "valeurs entières : {faux:#?}");
     }
@@ -19710,7 +20492,7 @@ mod tests {
             lignes.push((ligne.to_string(), true));
         }
         for (i, (ligne, uwsm)) in lignes.iter().enumerate() {
-            if variable_de_configuration(ligne, &["/home/alice"], &mut [], false).is_none() {
+            if jugee(ligne) == super::Jugement::Muette {
                 faux.push(format!("muette : {ligne:?}"));
             }
             let m = Maison::nouvelle(&format!("simplifiee-profil-{i}"));
@@ -19738,7 +20520,7 @@ mod tests {
             "export PATH=\"$HOME/a b/../bin:$PATH\"",
             "export SSH_ASKPASS=\"/home/alice/a b/../bin/demande\"",
         ] {
-            if variable_de_configuration(ligne, &["/home/alice"], &mut [], false).is_some() {
+            if levee(&jugee(ligne)) {
                 faux.push(format!("levée à tort : {ligne:?}"));
             }
         }
@@ -19756,12 +20538,7 @@ mod tests {
             ("${HOME}//./.x/:/opt/a/../b", "/home/alice/.x:/opt/b"),
             ("$HOME:$PATH", "/home/alice:/usr/bin"),
         ] {
-            let v = ValeurSimple {
-                texte,
-                calculee: true,
-                lit_maison: true,
-            };
-            let calcule = v.calculer("/home/alice/", "/usr/bin");
+            let calcule = valeur_calculee("PATH", texte, Format::Shell, "/home/alice/", "/usr/bin");
             if calcule != attendu {
                 faux.push(format!("{texte:?} : {calcule:?}"));
             }
@@ -19824,7 +20601,7 @@ mod tests {
             "set -gx PATH /usr/local/bin $PATH; set -gx EDITOR nvim",
             "set -gx PATH \"/opt/mes outils\" $PATH",
         ] {
-            if variable_de_configuration(ligne, &["/home/alice"], &mut [], false).is_some() {
+            if levee(&jugee(ligne)) {
                 faux.push(format!("levée à tort : {ligne:?}"));
             }
         }
@@ -19836,7 +20613,7 @@ mod tests {
             "ManagerEnvironment=PATH=/usr/bin:",
             "set -gx PATH /usr/bin $PATH; set -gx PATH .x $PATH",
         ] {
-            if variable_de_configuration(ligne, &["/home/alice"], &mut [], false).is_none() {
+            if jugee(ligne) == super::Jugement::Muette {
                 faux.push(format!("muette : {ligne:?}"));
             }
         }
@@ -19870,7 +20647,6 @@ mod tests {
                 ".config/environment.d/50-x.conf",
                 "SSH_ASKPASS=/home/alice/a b/../.x/demande",
             ),
-            (".config/environment.d/50-x.conf", "PATH=/usr/bin ; /home/alice/.x"),
             (".config/environment.d/50-x.conf", "BASHOPTS=dotglob"),
             (".config/environment.d/50-x.conf", "SHELLOPTS=allexport"),
             (".bashrc", "export SSH_ASKPASS=/home/alice/a:b/../.x/demande"),
@@ -19903,26 +20679,41 @@ mod tests {
                 faux.push(format!("{fichier} {ligne:?} : {:?} {}", c.probleme, c.message));
             }
         }
-        let ordinaires = [
+        // Ronde 11 : les lignes ordinaires d'Omarchy. Celles de la forme simple se taisent tout à fait ; les autres
+        // (`${EDITOR:-…}`, une commande entre apostrophes, `${PATH:+…}`, `:=`) ne sont jamais élevées, mais dites non
+        // vérifiées dans un fichier du compte (sur la machine, celles d'Omarchy sont à root seul et se taisent).
+        let simples = [
             "export TERMINAL=xdg-terminal-exec",
             "export EDITOR=\"omarchy-launch-editor --inline\"",
-            "export EDITOR=\"${EDITOR:-omarchy-launch-editor --inline}\"",
             "export SUDO_EDITOR=\"$EDITOR\"",
-            "export BROWSER=\"${BROWSER:-omarchy-launch-browser}\"",
-            "export MANPAGER=\"sh -c 'col -bx | bat -l man -p'\"",
             "export PATH=\"$PATH:$HOME/.local/bin\"",
-            "PATH=\"${PATH:+$PATH:}$HOME/.local/share/mise/shims\"",
             "export PATH",
-            ": \"${OMARCHY_PATH:=/usr/share/omarchy}\"",
             "export PATH=\"$HOME/.local/bin:$PATH\" # mes outils",
         ];
-        for (i, ligne) in ordinaires.iter().enumerate() {
+        let hors_forme = [
+            "export EDITOR=\"${EDITOR:-omarchy-launch-editor --inline}\"",
+            "export BROWSER=\"${BROWSER:-omarchy-launch-browser}\"",
+            "export MANPAGER=\"sh -c 'col -bx | bat -l man -p'\"",
+            "PATH=\"${PATH:+$PATH:}$HOME/.local/share/mise/shims\"",
+            ": \"${OMARCHY_PATH:=/usr/share/omarchy}\"",
+        ];
+        for (i, (ligne, simple)) in simples
+            .iter()
+            .map(|l| (l, true))
+            .chain(hors_forme.iter().map(|l| (l, false)))
+            .enumerate()
+        {
             for fichier in [".bashrc", ".config/uwsm/default"] {
                 let m = Maison::nouvelle(&format!("toutes-lectures-ordinaire-{i}-{}", fichier.len()));
                 m.ecrire(fichier, &format!("{ligne}\n"));
                 let tous = m.tous_avec(&[("XDG_CURRENT_DESKTOP", "Hyprland")]);
                 if tous[0].probleme >= Some(Niveau::Eleve) || tous[0].message.contains(fichier) {
                     faux.push(format!("levée à tort, {fichier} {ligne:?} : {}", tous[0].message));
+                }
+                let dite = non_verifie_uwsm(&tous).is_some_and(|n| n.message.contains(&format!("~/{fichier}:1 : ")));
+                if dite == simple {
+                    let messages: Vec<_> = tous.iter().map(|c| &c.message).collect();
+                    faux.push(format!("non vérifié {dite}, {fichier} {ligne:?} : {messages:?}"));
                 }
             }
         }
@@ -19932,6 +20723,9 @@ mod tests {
             "MOZ_ENABLE_WAYLAND=1",
             "PATH=/usr/local/bin:/usr/bin",
             "PATH=$HOME/.local/bin:$PATH",
+            // Ronde 11 (N10-9) : environment.d garde la valeur entière, un seul dossier sous /usr.
+            "PATH=/usr/bin ; /home/alice/.x",
+            "PATH=/usr/bin # /home/alice/.x",
         ] {
             let m = Maison::nouvelle(&format!("toutes-lectures-env-d-{}", ligne.len()));
             m.ecrire(".config/environment.d/50-x.conf", &format!("{ligne}\n"));
@@ -19941,6 +20735,264 @@ mod tests {
             }
         }
         assert!(faux.is_empty(), "lectures des valeurs : {faux:#?}");
+    }
+
+    /// Ronde 11 : la grammaire stricte. Chaque forme des constats N10-1 à N10-8 (revérification de la ronde 10) est
+    /// dite : élevée, ou non vérifiée en nommant le fichier et la ligne ; aucune ne se tait. Directement
+    /// (`juger_ligne`) et au bilan, dans un profil, environment.d, user.conf et fish.
+    #[test]
+    fn grammaire_stricte_ronde_11_rien_de_tu() {
+        let mut faux = Vec::new();
+        let dite = |tous: &[Constat], fichier: &str, n: usize| {
+            let ou = format!("~/{fichier}:{n} : ");
+            (tous[0].probleme >= Some(Niveau::Eleve) && tous[0].message.contains(&ou))
+                || non_verifie_uwsm(tous).is_some_and(|c| c.message.contains(&ou))
+        };
+        let profil = [
+            // N10-1 : « & », « | » dans ce qui se calcule.
+            "export PATH=${NOPE:-a&b}:/home/alice/.x",
+            "export PATH=${NOPE:-a|b}:/home/alice/.x",
+            "export PATH=$(:&&:)/usr/bin:/home/alice/.x",
+            "export PATH=`:&:`/usr/bin:/home/alice/.x",
+            "export PATH=$((1&1))/../usr/bin:/home/alice/.x",
+            // N10-2 : un séparateur dans le nom d'un dossier caché, un fichier caché à la racine du compte.
+            "export SSH_ASKPASS=\"/home/alice/.a b/demande\"",
+            "export EDITOR=/home/alice/.a:b/ed",
+            "export SUDO_ASKPASS=/home/alice/.a=b/x",
+            "export SSH_ASKPASS=/home/alice/.demande",
+            // N10-3 : un chemin collé à un préfixe.
+            "export LESSOPEN=\"|-/home/alice/.x/pre %s\"",
+            "export PAGER=\"less&/home/alice/.x/p\"",
+            "export PAGER=\"true&&/home/alice/.x/p\"",
+            "export PAGER=\"(/home/alice/.x/p)\"",
+            "export PAGER=\"`/home/alice/.x/p`\"",
+            "export PAGER=\"$(/home/alice/.x/p)\"",
+            "export PERL5OPT=\"-I/home/alice/.x -MX\"",
+            "export RUBYOPT=\"-I/home/alice/.x -rx\"",
+            // Un programme qui se calcule, même sans chemin caché.
+            "export PAGER=\"$(curl)\"",
+            "export EDITOR=\"vim&curl\"",
+            "export VISUAL=\"$EDITOR\"",
+            "export PERL5OPT=-I/home/alice/.x",
+            // N10-4 : le mot d'export entre guillemets, eval, printf -v.
+            "export \"PATH=/home/alice/.x:$PATH\"",
+            "export 'PATH=/home/alice/.x:$PATH'",
+            "export P\"ATH\"=/home/alice/.x:$PATH",
+            "export \"PATH=.x:$PATH\"",
+            "eval \"PATH=/home/alice/.x:$PATH\"",
+            "printf -v PATH /home/alice/.x",
+            // N10-6 : une valeur calculée.
+            "export PATH=${HOME%/}/.x:$PATH",
+            "export PATH=$PWD/.x:$PATH",
+            "export PATH=${NOPE:-/home/alice}/.x",
+            "export PATH=$(echo /home/alice/.x)",
+            "PATH=$X:$PATH",
+            "d=.x; PATH=$HOME/$d",
+            "export PATH=~alice/.x:$PATH",
+            "export PATH=~+/.x",
+            "export PATH=$HOME/$NOPE.x",
+            "export PATH=$HOME/${EMPTY}.x",
+            "export PATH=\"${NOPE:- # }/home/alice/.x\"",
+            "export PATH=${NOPE:-;}/home/alice/.x",
+            "export PATH=$HO\"ME\"/.x",
+            "export PATH=$'\\x2e'x:$PATH",
+            "export PATH=\"$\"PATH",
+            // N10-8 : la forme de bash qui pose dotglob.
+            "shopt -s dotglob; export BASHOPTS",
+            "declare -x BASHOPTS",
+            "export BASHOPTS",
+            // Un nom que Vanguard ne peut pas exclure.
+            "declare -x PATH=/home/alice/.x",
+            "typeset -x LD_LIBRARY_PATH=/opt/l",
+            "read PATH < /opt/chemin",
+            "export \"$N=/opt/x\"",
+            "$X PATH=/opt/x",
+            "eval \"$(cat /opt/env)\"",
+            "true && export PATH=/opt/x:$PATH",
+        ];
+        for (i, ligne) in profil.iter().enumerate() {
+            if jugee(ligne) == super::Jugement::Muette {
+                faux.push(format!("muette : {ligne:?}"));
+            }
+            let m = Maison::nouvelle(&format!("r11-profil-{i}"));
+            m.ecrire(".bashrc", &format!("{ligne}\n"));
+            let tous = m.tous_avec(&[]);
+            if !dite(&tous, ".bashrc", 1) {
+                let messages: Vec<_> = tous.iter().map(|c| &c.message).collect();
+                faux.push(format!("bilan {ligne:?} : {messages:?}"));
+            }
+        }
+        // Une forme simple suspecte : élevée, jamais seulement non vérifiée.
+        for ligne in [
+            "export SSH_ASKPASS=/home/alice/.demande",
+            "export PATH=\"$HOME\"/.x:$PATH",
+            "export PATH=\"/usr/bin\":\"/home/alice/.x\"",
+            "export PERL5OPT=-I/home/alice/.x",
+            "export BASHOPTS",
+            "export PATH=.:$PATH",
+        ] {
+            if !matches!(jugee(ligne), super::Jugement::Suspecte(_)) {
+                faux.push(format!("pas élevée : {ligne:?} {:?}", jugee(ligne)));
+            }
+        }
+        // Hors forme, mais un PATH relatif qui se lit sans doute : élevé comme avant la grammaire stricte.
+        for ligne in [
+            "true && export PATH=.x:$PATH",
+            "[ -d /opt ] && PATH=\"\":/usr/bin",
+            "f() { PATH=.:$PATH; }",
+        ] {
+            if !matches!(
+                jugee(ligne),
+                super::Jugement::HorsForme { raison: Some(_), .. } | super::Jugement::Suspecte(_)
+            ) {
+                faux.push(format!("hors forme pas élevée : {ligne:?} {:?}", jugee(ligne)));
+            }
+        }
+        // N10-5 (environment.d), N10-7 (user.conf), fish : les mêmes, dans leurs fichiers.
+        for (i, (fichier, ligne, n)) in [
+            (".config/environment.d/50-x.conf", "PATH =/home/alice/.x:/usr/bin", 1),
+            (".config/environment.d/50-x.conf", "PATH\t=/home/alice/.x:/usr/bin", 1),
+            (
+                ".config/environment.d/50-x.conf",
+                "PATH=${NOPE:-/home/alice/.x}:/usr/bin",
+                1,
+            ),
+            (
+                ".config/environment.d/50-x.conf",
+                "PATH=${NOPE:+/usr/bin}.x:/usr/bin",
+                1,
+            ),
+            (".config/environment.d/50-x.conf", "PATH=${NOPE}:/usr/bin", 1),
+            (
+                ".config/environment.d/50-x.conf",
+                "PATH=/home/alice/$NOPE.x:/usr/bin",
+                1,
+            ),
+            (".config/environment.d/50-x.conf", "PATH=${NOPE-}.x", 1),
+            (".config/environment.d/50-x.conf", "PATH=${X}:/usr/bin", 1),
+            (".config/environment.d/50-x.conf", "PATH=/usr/bin:\\", 1),
+            (
+                ".config/environment.d/50-x.conf",
+                "export\tPATH=/home/alice/.x:/usr/bin",
+                1,
+            ),
+            (
+                ".config/environment.d/50-x.conf",
+                "PATH=/opt/mes outils:/home/alice/.x",
+                1,
+            ),
+            (".config/systemd/user.conf", "DefaultEnvironment=PATH=%h/.x:/usr/bin", 2),
+            (
+                ".config/systemd/user.conf",
+                "DefaultEnvironment=\"PATH=/home/alice/.a b:/usr/bin\"",
+                2,
+            ),
+            (
+                ".config/systemd/user.conf",
+                "DefaultEnvironment=LANG=C PATH=/home/alice/.x:/usr/bin",
+                2,
+            ),
+            (".config/systemd/user.conf", "DefaultEnvironment=PATH=$HOME/.x", 2),
+            (
+                ".config/fish/config.fish",
+                "set -gx PATH (echo /home/alice/.x) $PATH",
+                1,
+            ),
+            (".config/fish/config.fish", "set -gx PATH $X $PATH", 1),
+            (".config/fish/config.fish", "set -gx (echo PATH) /opt/x", 1),
+            (".config/fish/config.fish", "echo 'set -gx PATH /opt/x' | source", 1),
+            (".config/fish/config.fish", "cat /opt/env.fish | source", 1),
+            (".config/fish/config.fish", "set -gx PATH ~/.x $PATH", 1),
+            (".config/fish/config.fish", "set -gx EDITOR /home/alice/.x/ed", 1),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("r11-format-{i}"));
+            let texte = if fichier.ends_with("user.conf") {
+                format!("[Manager]\n{ligne}\n")
+            } else {
+                format!("{ligne}\n")
+            };
+            m.ecrire(fichier, &texte);
+            let tous = m.tous_avec(&[]);
+            if !dite(&tous, fichier, n) {
+                let messages: Vec<_> = tous.iter().map(|c| &c.message).collect();
+                faux.push(format!("{fichier} {ligne:?} : {messages:?}"));
+            }
+        }
+        assert!(faux.is_empty(), "grammaire stricte : {faux:#?}");
+    }
+
+    /// Ronde 11 : les lignes ordinaires d'un compte, de la forme simple ou d'un outil d'activation permis, se taisent
+    /// tout à fait (ni élevé, ni non vérifié), dans un profil, fish, environment.d et user.conf ; une ligne hors forme
+    /// d'environment.d lève la sauvegarde (ce qu'elle pose n'est pas lu), aux deux formes de la sauvegarde.
+    #[test]
+    fn grammaire_stricte_ronde_11_temoins_muets() {
+        let mut faux = Vec::new();
+        for (i, (fichier, ligne)) in [
+            (".bashrc", "export PATH=\"$HOME/.local/bin:$PATH\""),
+            (".bashrc", "export TERMINAL=xdg-terminal-exec"),
+            (".bashrc", "export EDITOR=\"omarchy-launch-editor --inline\""),
+            (".bashrc", "eval \"$(mise activate bash)\""),
+            (".bashrc", "    export PATH=$PATH:/opt/outils/bin"),
+            (
+                ".bashrc",
+                "if command -v zoxide >/dev/null; then eval \"$(zoxide init bash)\"; fi",
+            ),
+            (".bashrc", "export HISTSIZE=5000; export HISTCONTROL=ignoreboth"),
+            (".bashrc", "PS1='\\u@\\h \\w '"),
+            (".bashrc", "shopt -s histappend"),
+            (".bashrc", "unset SSH_ASKPASS"),
+            (".bashrc", "PATH=\"$HOME/bin:$PATH\""),
+            (".zshrc", "typeset -U path"),
+            (
+                ".config/fish/config.fish",
+                "set -x PATH \"$HOME/.local/share/../bin\" $PATH",
+            ),
+            (".config/fish/config.fish", "zoxide init fish | source"),
+            (".config/fish/config.fish", "fish_add_path $HOME/.local/bin"),
+            (".config/fish/config.fish", "set -gx EDITOR nvim"),
+            (".config/fish/config.fish", "set -U fish_greeting"),
+            (".config/fish/config.fish", "if status is-interactive"),
+            (".config/environment.d/50-x.conf", "PATH=$HOME/.local/bin:$PATH"),
+            (".config/environment.d/50-x.conf", "EDITOR=nvim"),
+            (
+                ".config/systemd/user.conf",
+                "DefaultEnvironment=PATH=/usr/bin:/bin LANG=C",
+            ),
+            (
+                ".config/systemd/user.conf",
+                "DefaultEnvironment=\"PATH=/opt/mes outils:/usr/bin\"",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("r11-muet-{i}"));
+            let texte = if fichier.ends_with("user.conf") {
+                format!("[Manager]\n{ligne}\n")
+            } else {
+                format!("{ligne}\n")
+            };
+            m.ecrire(fichier, &texte);
+            let tous = m.tous_avec(&[]);
+            let dit = tous[0].probleme >= Some(Niveau::Eleve)
+                || tous.iter().any(|c| c.message.contains(&format!("~/{fichier}:")));
+            if dit {
+                let messages: Vec<_> = tous.iter().map(|c| &c.message).collect();
+                faux.push(format!("{fichier} {ligne:?} : {messages:?}"));
+            }
+        }
+        for vide in [false, true] {
+            let (m, _) = sauvegarde_d_essai(&format!("r11-sauvegarde-{vide}"), vide);
+            m.ecrire(".config/environment.d/50-x.conf", "PATH=${NOPE:-/usr/bin}\n");
+            let c = m.lancements();
+            if !(c.probleme == Some(Niveau::Eleve) && c.message.contains(crate::sauvegarde::SERVICE)) {
+                faux.push(format!("sauvegarde, env -i {vide} : {:?} {}", c.probleme, c.message));
+            }
+        }
+        assert!(faux.is_empty(), "témoins de la grammaire stricte : {faux:#?}");
     }
 
     /// R-2 (relecture DEP-4 de la 0.95) : un XDG_DATA_HOME posé au gestionnaire par un fichier (environment.d), absolu
@@ -20705,6 +21757,30 @@ mod tests {
                 None,
             )
         }
+    }
+
+    /// Ronde 11 : une ligne jugée par la grammaire stricte (`juger_ligne`) pour le dossier personnel « /home/alice »,
+    /// au format que dit son début : fish (« set », « fish_add_path »), user.conf (« DefaultEnvironment »,
+    /// « ManagerEnvironment »), sinon le shell.
+    fn jugee(ligne: &str) -> super::Jugement {
+        let net = ligne.trim_start();
+        let format = if net.starts_with("set ") || net.starts_with("fish_add_path") {
+            Format::Fish
+        } else if net.starts_with("DefaultEnvironment") || net.starts_with("ManagerEnvironment") {
+            Format::Systemd
+        } else {
+            Format::Shell
+        };
+        juger_ligne(ligne, format, &["/home/alice"], &mut [CHEMIN_DU_SYSTEME.to_string()])
+    }
+
+    /// Un jugement qui lève (élevé) : une forme simple suspecte, ou une forme hors de la grammaire où la lecture large
+    /// trouve déjà un dossier caché ou temporaire.
+    fn levee(j: &super::Jugement) -> bool {
+        matches!(
+            j,
+            super::Jugement::Suspecte(_) | super::Jugement::HorsForme { raison: Some(_), .. }
+        )
     }
 
     /// Ronde 7 : le constat « non vérifié » des fichiers de shell que Vanguard ne lit pas, s'il y en a un, vérifié
@@ -22219,10 +23295,7 @@ mod tests {
         .into_iter()
         .enumerate()
         {
-            assert!(
-                variable_de_configuration(ligne, &["/home/alice"], &mut [], false).is_some(),
-                "{ligne}"
-            );
+            assert!(levee(&jugee(ligne)), "{ligne}");
             let m = Maison::nouvelle(&format!("v3-user-conf-{i}"));
             m.ecrire(".config/systemd/user.conf", &format!("[Manager]\n{ligne}\n"));
             leve(&m.lancements(), ligne);
