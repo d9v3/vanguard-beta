@@ -1712,12 +1712,6 @@ fn fenetre_de_la_cle(source: &Path, cible: &Path) -> Option<PathBuf> {
         .and(sa_fenetre::pour(cible))
 }
 
-/// La copie `cible` remplacée par le programme de la clé (`source`), seulement s'il a les octets de l'image qui tourne.
-fn remplacer_par_la_cle(source: &Path, cible: &Path, cle: Version, vue: &sa_fenetre::Vue) -> Result<(), String> {
-    let soi = crate::protection::cle::image_qui_tourne();
-    remplacer(source, cible, cle, soi.as_deref(), TAILLE_MAX, essayer, vue)
-}
-
 /// Montre les deux versions et d'où vient la nouvelle, puis remplace la copie après un « o ».
 fn proposer(source: &Path, cible: &Path, copie: Option<Version>, cle: Version) {
     let (ici, sur_la_cle) = match copie {
@@ -1747,7 +1741,9 @@ fn proposer(source: &Path, cible: &Path, copie: Option<Version>, cle: Version) {
     {
         return;
     }
-    match remplacer_par_la_cle(source, cible, cle, &vue) {
+    // Comparée à l'image qui tourne, pas à la source elle-même (R1-N2).
+    let soi = crate::protection::cle::image_qui_tourne();
+    match remplacer(source, cible, cle, soi.as_deref(), TAILLE_MAX, essayer, &vue) {
         Ok(()) => trp!(
             "  {VERT}✔{RESET} Copie de cet ordinateur mise à jour : Vanguard {}.\n    La surveillance, l'entretien et le raccourci lancent cette version.",
             "  {VERT}✔{RESET} Copy on this computer updated: Vanguard {}.\n    Monitoring, maintenance and the shortcut start this version.",
@@ -2297,8 +2293,8 @@ mod tests {
     }
 
     /// BASSE (relecture adverse, R1-N2) : la pose réelle (`poser_copie`, celle de la surveillance) et la mise à jour
-    /// depuis la clé (`remplacer_par_la_cle`, celle de `proposer`) comparent la source à l'image qui tourne, pas à
-    /// elle-même : un fichier qui n'est pas le programme lancé (ici celui des essais) est refusé, avant tout essai.
+    /// depuis la clé (`remplacer` avec l'image qui tourne, comme dans `proposer`) comparent la source à l'image qui
+    /// tourne, pas à elle-même : un fichier qui n'est pas le programme lancé (ici celui des essais) est refusé, avant tout essai.
     #[test]
     fn la_pose_reelle_compare_a_l_image_qui_tourne() {
         let racine = crate::socle::dossier_local().join("essai-image-qui-tourne");
@@ -2313,9 +2309,17 @@ mod tests {
         faux_programme(&cible, Some("0.79.0+1"));
         let avant = std::fs::read(&cible).unwrap();
         assert_eq!(
-            remplacer_par_la_cle(&source, &cible, (0, 80, 0, 5), &dite(&source, &cible))
-                .err()
-                .as_deref(),
+            remplacer(
+                &source,
+                &cible,
+                (0, 80, 0, 5),
+                image.as_deref(),
+                TAILLE_MAX,
+                essayer,
+                &dite(&source, &cible)
+            )
+            .err()
+            .as_deref(),
             Some(refus.as_str())
         );
         assert_eq!(std::fs::read(&cible).unwrap(), avant);
