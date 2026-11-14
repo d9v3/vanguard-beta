@@ -314,7 +314,8 @@ pub(crate) fn reprendre(exe: &str) -> bool {
     ok
 }
 
-pub fn activer(oui: bool) {
+/// Rend `false` quand le geste a échoué (R3-C5 : le code de sortie le dit, pas seulement le texte).
+pub fn activer(oui: bool) -> bool {
     let retrait = if oui { Ok(()) } else { desinstaller() };
     let reussi = if oui {
         executable().is_some_and(|exe| {
@@ -352,6 +353,7 @@ pub fn activer(oui: bool) {
             "",
         ),
     }
+    reussi
 }
 
 /// Unités systemd : le 1er du mois à midi (rattrapé au démarrage suivant si l'ordinateur était éteint).

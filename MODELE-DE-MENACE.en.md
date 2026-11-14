@@ -157,6 +157,15 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   process, the script shown in full after its fingerprint is checked, and your Enter. Compare what is shown with what
   you just asked for. Such a program could already ask for PowerShell to be elevated itself; going further would take
   a signed program (the author's decision).
+- **The copy of Vanguard placed on this computer.** Vanguard notes in a sealed register the fingerprint and version
+  of each copy it places in your folder. It never replaces a newer copy with an older program, nor a newer copy it
+  does not recognize (neither noted, nor published and signed for this system according to the signed version
+  history): this is reported as "not checked" and nothing is set up. What remains: the seals of this register have no
+  secret, a barrier and not a safe; a program of your account that rewrites the register along with its seals can
+  have another copy noted in it, or erase the note. If a newer noted copy is deleted or damaged, an older key refuses
+  to set anything up, and the update from GitHub does not go below the noted version: the key must be updated. Offline,
+  a newer copy placed by a version from before this register cannot be judged and is refused. The watcher (Linux)
+  reports its refusal on screen but returns a zero exit code; monitoring and maintenance return a non-zero code.
 
 ## What Vanguard assumes
 

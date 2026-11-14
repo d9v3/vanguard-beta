@@ -604,7 +604,11 @@ async fn main() {
         }
         Some(Commande::Antivirus { complet, dossier, .. }) => protection::antivirus::analyser(portee(dossier, complet)),
         Some(Commande::Surveillance { etat }) => match etat.as_str() {
-            "on" | "off" => reseau::surveillance::activer(etat == "on"),
+            "on" | "off" => {
+                if !reseau::surveillance::activer(etat == "on") {
+                    machine::quitter(1);
+                }
+            }
             _ => println!(
                 "  {} : {}",
                 tr!("Surveillance toutes les heures", "Hourly monitoring"),
@@ -631,7 +635,11 @@ async fn main() {
         }
         Some(Commande::Surveiller) => reseau::surveillance::surveiller().await,
         Some(Commande::Entretien { etat }) => match sans_etat(etat.as_deref()) {
-            Some(e) => entretien::activer(e == "on"),
+            Some(e) => {
+                if !entretien::activer(e == "on") {
+                    machine::quitter(1);
+                }
+            }
             None => entretien::maintenant(),
         },
         Some(Commande::Entretenir) => entretien::entretenir(),

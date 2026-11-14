@@ -500,7 +500,6 @@ fn recevoir(nom: &str, max: u64, secondes: u64) -> Option<Vec<u8>> {
 }
 
 /// Le nom de ce système dans le manifeste et l'historique (« linux-x86_64 ») ; `None` : rien n'y est publié pour lui.
-#[cfg(target_os = "linux")]
 pub(super) fn systeme() -> Option<&'static str> {
     SYSTEME.map(|(s, _)| s)
 }

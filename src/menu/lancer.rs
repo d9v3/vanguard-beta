@@ -286,7 +286,9 @@ async fn executer_outil(s: &mut Session, action: Action) {
             let audit = s.audit.get_or_insert_with(|| machine::executer(false));
             a_laisser::laisser(audit);
         }
-        Action::Entretien => entretien::activer(!entretien::active()),
+        Action::Entretien => {
+            let _ = entretien::activer(!entretien::active());
+        }
         Action::Diagnostic => diagnostic::diagnostic(),
         Action::Maj => maj::executer(),
         Action::Reparer => reparer::menu(),
@@ -314,7 +316,9 @@ async fn executer_outil(s: &mut Session, action: Action) {
             ));
             nommer(&qui, &surnom);
         }
-        Action::Surveillance => reseau::surveillance::activer(!reseau::surveillance::active()),
+        Action::Surveillance => {
+            let _ = reseau::surveillance::activer(!reseau::surveillance::active());
+        }
         Action::Tableau => reseau::tableau::ouvrir(false, fonctions_du_menu()),
         Action::Veilleur => veilleur(None, None, false),
         Action::Connexion => reseau::connexion::tester().await,

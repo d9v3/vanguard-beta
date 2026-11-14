@@ -46,7 +46,10 @@ const NOM_COPIE: &str = "vanguard.exe";
 ///
 /// Reste connu (R2W-N1) : la base des copies vient de l'environnement (`XDG_RUNTIME_DIR`, `TMPDIR`), sûre mais à
 /// ce compte ; un programme du compte peut donc y poser une copie exacte de Vanguard et la lancer avec la variable.
-/// Le nom du dossier doit au moins avoir la forme exacte d'une copie (`vanguard-<chiffres>-<chiffres>`).
+/// Le nom du dossier doit au moins avoir la forme exacte d'une copie (`vanguard-<chiffres>-<chiffres>`). Rejoué
+/// (N3-O5) : ce faux dossier est alors tenu pour la clé du lancement, et la copie locale posée a les octets du vrai
+/// Vanguard ; pas de gain trouvé pour un programme qui a déjà les droits du compte. Non vérifié : ce que les autres
+/// usages de la clé du lancement (journal, mise à jour de la clé) écriraient dans ce dossier.
 pub fn exe_d_origine() -> Option<PathBuf> {
     /// L'origine décidée, et l'écart à dire : (chemin désigné montrable, raison).
     type Decision = (Option<PathBuf>, Option<(String, String)>);

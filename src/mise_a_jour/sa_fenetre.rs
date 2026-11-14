@@ -748,6 +748,7 @@ mod tests {
                 &cible,
                 crate::programmes_poses::empreinte_de(&source).ok().as_deref(),
                 &super::super::tests::inconnue(),
+                super::super::tests::HORS_HISTORIQUE,
                 ESSAI_RATE
             )
             .is_err()
@@ -758,6 +759,7 @@ mod tests {
             &cible,
             crate::programmes_poses::empreinte_de(&source).ok().as_deref(),
             &super::super::tests::inconnue(),
+            super::super::tests::HORS_HISTORIQUE,
             SANS_ESSAI,
         )
         .unwrap();
@@ -769,6 +771,7 @@ mod tests {
             &cible,
             crate::programmes_poses::empreinte_de(&source).ok().as_deref(),
             &super::super::tests::inconnue(),
+            super::super::tests::HORS_HISTORIQUE,
             SANS_ESSAI,
         )
         .unwrap();
@@ -781,6 +784,7 @@ mod tests {
             &cible,
             crate::programmes_poses::empreinte_de(&source).ok().as_deref(),
             &super::super::tests::inconnue(),
+            super::super::tests::HORS_HISTORIQUE,
             SANS_ESSAI,
         )
         .unwrap();
@@ -796,6 +800,7 @@ mod tests {
             &cible,
             crate::programmes_poses::empreinte_de(&source).ok().as_deref(),
             &super::super::tests::inconnue(),
+            super::super::tests::HORS_HISTORIQUE,
             SANS_ESSAI,
         )
         .unwrap();
@@ -839,6 +844,7 @@ mod tests {
             &cible,
             crate::programmes_poses::empreinte_de(&source).ok().as_deref(),
             &super::super::tests::inconnue(),
+            super::super::tests::HORS_HISTORIQUE,
             SANS_ESSAI,
         )
         .unwrap();
@@ -856,6 +862,7 @@ mod tests {
                 &cible,
                 crate::programmes_poses::empreinte_de(&source).ok().as_deref(),
                 &super::super::tests::inconnue(),
+                super::super::tests::HORS_HISTORIQUE,
                 ESSAI_RATE
             )
             .is_err()
@@ -882,6 +889,7 @@ mod tests {
                 &cible,
                 crate::programmes_poses::empreinte_de(&source).ok().as_deref(),
                 &super::super::tests::inconnue(),
+                super::super::tests::HORS_HISTORIQUE,
                 SANS_ESSAI
             )
             .unwrap(),
@@ -895,6 +903,7 @@ mod tests {
             &cible,
             crate::programmes_poses::empreinte_de(&source).ok().as_deref(),
             &super::super::tests::inconnue(),
+            super::super::tests::HORS_HISTORIQUE,
             SANS_ESSAI,
         )
         .unwrap();

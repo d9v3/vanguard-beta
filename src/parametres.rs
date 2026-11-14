@@ -1045,9 +1045,9 @@ fn changer(r: Reglage, saisie: &str) -> bool {
             };
             if actif != voulu {
                 if r == Reglage::Surveillance {
-                    crate::reseau::surveillance::activer(voulu);
+                    let _ = crate::reseau::surveillance::activer(voulu);
                 } else {
-                    crate::entretien::activer(voulu);
+                    let _ = crate::entretien::activer(voulu);
                 }
             }
             (mot_oui_non(actif).to_string(), mot_oui_non(voulu).to_string())

@@ -96,10 +96,50 @@ struct Fichier {
     #[serde(default)]
     taches: BTreeMap<String, Pose>,
     /// Les copies que Vanguard a lui-même posées (`copie_posee` : depuis des octets vérifiés, ou une mise à jour signée)
-    /// : chemin → empreinte BLAKE3. Sans elles, une copie trouvée dans bin/ ne se distinguait pas d'un fichier posé là
-    /// par un autre programme du compte, et `noter` la scellait comme celle de Vanguard.
+    /// : chemin → empreinte BLAKE3 et version. Sans elles, une copie trouvée dans bin/ ne se distinguait pas d'un fichier
+    /// posé là par un autre programme du compte, et `noter` la scellait comme celle de Vanguard.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    copies: BTreeMap<String, String>,
+    copies: BTreeMap<String, Copie>,
+}
+
+/// Une copie posée par Vanguard : son empreinte BLAKE3 et sa version gravée (« 0.94.0+1760900000 »). Sans la version
+/// (R3-C1), rien ne pouvait dire qu'une copie plus récente avait été posée là une fois le fichier abîmé, effacé ou
+/// rendu illisible, et la pose suivante depuis une clé plus ancienne revenait en arrière sans un mot. L'entrée d'avant,
+/// l'empreinte seule (écrite par les compilations de ce lot avant la ronde 4, jamais par une version publiée), se lit
+/// encore : sa version est inconnue, et elle est réécrite avec la version dès que Vanguard repose ou garde la copie.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(untagged)]
+enum Copie {
+    Notee {
+        empreinte: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<String>,
+    },
+    EmpreinteSeule(String),
+}
+
+impl Copie {
+    fn empreinte(&self) -> &str {
+        match self {
+            Copie::Notee { empreinte, .. } | Copie::EmpreinteSeule(empreinte) => empreinte,
+        }
+    }
+
+    fn version(&self) -> Option<&str> {
+        match self {
+            Copie::Notee { version, .. } => version.as_deref(),
+            Copie::EmpreinteSeule(_) => None,
+        }
+    }
+}
+
+/// La copie que Vanguard a notée à un chemin (`copie_notee_dans`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CopieNotee {
+    /// Son empreinte BLAKE3.
+    pub(crate) empreinte: String,
+    /// Sa version gravée, telle que notée (`None` : une entrée d'avant, sans version).
+    pub(crate) version: Option<String>,
 }
 
 /// Scellé à la place d'une empreinte quand le programme posé n'a pas pu être reconnu comme celui de Vanguard : jamais
@@ -109,10 +149,14 @@ const NON_VERIFIE: &str = "non-verifie";
 impl Fichier {
     /// L'empreinte de la copie posée par Vanguard à `chemin`, si elle est notée.
     fn copie_posee(&self, chemin: &Path) -> Option<&str> {
+        self.copie_a(chemin).map(Copie::empreinte)
+    }
+
+    fn copie_a(&self, chemin: &Path) -> Option<&Copie> {
         self.copies
             .iter()
             .find(|(c, _)| meme_chemin(Path::new(c), chemin))
-            .map(|(_, e)| e.as_str())
+            .map(|(_, e)| e)
     }
 
     /// `empreinte` est-elle celle d'un programme que Vanguard a posé à `chemin` ? Seule la liste des copies compte
@@ -129,6 +173,15 @@ impl Fichier {
 /// peut pas être crue ne connaît rien. `dossier` : celui du registre scellé (le dossier local, sauf aux essais).
 pub(crate) fn copie_connue_dans(dossier: &Path, cible: &Path, empreinte: &str) -> bool {
     lire_dans(dossier).is_ok_and(|f| f.connue(cible, empreinte))
+}
+
+/// La copie que Vanguard a notée à `cible` dans le registre scellé de `dossier` (`None` : aucune). `Err` : la liste
+/// ne peut pas être crue, rien de ce qu'elle dit ne compte.
+pub(crate) fn copie_notee_dans(dossier: &Path, cible: &Path) -> Result<Option<CopieNotee>, Doute> {
+    Ok(lire_dans(dossier)?.copie_a(cible).map(|c| CopieNotee {
+        empreinte: c.empreinte().to_string(),
+        version: c.version().map(str::to_string),
+    }))
 }
 
 /// L'empreinte BLAKE3 du programme `chemin`, lu en entier. Le lien est suivi (la tâche le suit aussi) ; ouvert sans
@@ -304,12 +357,17 @@ pub(crate) fn oublier(t: Tache) {
 /// tâche qui la lance garde un sceau juste. Rend les tâches concernées.
 pub(crate) fn copie_posee_dans(dossier: &Path, cible: &Path, octets: &[u8]) -> Vec<Tache> {
     let empreinte = blake3::hash(octets).to_hex().to_string();
+    let copie = Copie::Notee {
+        empreinte: empreinte.clone(),
+        version: crate::mise_a_jour::version_notee(octets),
+    };
     let mut touchees = Vec::new();
     let _ = changer_dans(dossier, |f| {
-        let copie_changee = f.copie_posee(cible) != Some(empreinte.as_str());
+        // Une entrée d'avant (sans version) est réécrite avec elle.
+        let copie_changee = f.copie_a(cible) != Some(&copie);
         if copie_changee {
             f.copies.retain(|c, _| !meme_chemin(Path::new(c), cible));
-            f.copies.insert(cible.display().to_string(), empreinte.clone());
+            f.copies.insert(cible.display().to_string(), copie.clone());
         }
         for t in [Tache::Surveillance, Tache::Entretien, Tache::Veilleur] {
             if let Some(p) = f.taches.get_mut(t.cle())
@@ -442,6 +500,9 @@ fn juger(
 #[derive(Debug, PartialEq, Eq)]
 enum Signee {
     Oui(String),
+    /// Publiée et signée, mais plus ancienne que ce Vanguard (R3-C7) : un retour en arrière, jamais renoté comme une
+    /// mise à jour.
+    Ancienne(String),
     Non,
     /// L'historique n'a pas répondu (hors ligne, pas encore publié) : la raison.
     Inconnu(String),
@@ -451,7 +512,14 @@ fn signee(programme: &Path) -> Signee {
     let Some(sha) = crate::protection::empreintes::sha256(programme) else {
         return Signee::Inconnu(tr!("programme illisible", "unreadable program").to_string());
     };
-    match crate::mise_a_jour::version_signee(&sha) {
+    classer(crate::mise_a_jour::version_signee(&sha))
+}
+
+/// Ce que dit l'historique signé d'un programme remplacé. Une version signée plus ancienne que ce Vanguard n'est pas
+/// une mise à jour : un programme du compte peut y remettre une ancienne version authentique, aux défauts connus.
+fn classer(vue: Result<Option<(String, String)>, String>) -> Signee {
+    match vue {
+        Ok(Some((v, _))) if crate::mise_a_jour::plus_ancienne_que_ce_programme(&v) => Signee::Ancienne(v),
         Ok(Some((v, _))) => Signee::Oui(v),
         Ok(None) => Signee::Non,
         Err(e) => Signee::Inconnu(e),
@@ -499,6 +567,18 @@ fn constat_de(t: Tache, programme: &Path, j: &Jugement, signee: Option<&Signee>)
                     "Le programme que lance {tache} ({chemin}) a été mis à jour hors de Vanguard, vers la version {v}, publiée et signée par l'auteur : Vanguard l'a noté.",
                     "The program {tache} starts ({chemin}) was updated outside Vanguard, to version {v}, published and signed by the author: Vanguard noted it."
                 ),
+            )),
+            Some(Signee::Ancienne(v)) => refaire(Some(
+                crate::machine::alerte(
+                    CAT,
+                    Niveau::Moyen,
+                    trf!(
+                        "Le programme que lance {tache} ({chemin}) a été remplacé hors de Vanguard par la version {v}, publiée et signée par l'auteur, mais plus ancienne que ce Vanguard ({}) : un retour en arrière, que Vanguard ne note pas. Une version plus ancienne peut avoir des défauts corrigés depuis.",
+                        "The program {tache} starts ({chemin}) was replaced outside Vanguard by version {v}, published and signed by the author, but older than this Vanguard ({}): a rollback, which Vanguard does not note. An older version may have flaws fixed since.",
+                        env!("CARGO_PKG_VERSION")
+                    ),
+                )
+                .manuel(remettre(), &[]),
             )),
             Some(Signee::Inconnu(e)) => refaire(Some(
                 crate::machine::Constat {
@@ -738,6 +818,31 @@ mod tests {
         )
         .unwrap();
         assert!(c.probleme == Some(Niveau::Moyen) && !c.verifie, "{}", c.message);
+        // R3-C7 : une version signée plus ancienne que ce Vanguard est un retour en arrière, dit en moyen.
+        let c = constat_de(
+            Tache::Surveillance,
+            p,
+            &Jugement::Remplace,
+            Some(&Signee::Ancienne("0.1.0".into())),
+        )
+        .unwrap();
+        assert!(
+            c.probleme == Some(Niveau::Moyen) && c.message.contains("0.1.0"),
+            "{}",
+            c.message
+        );
+    }
+
+    /// R3-C7 : l'historique signé dit une version plus ancienne que ce Vanguard : `Ancienne`, jamais `Oui` (qui
+    /// renoterait le sceau de la tâche) ; la même ou une plus récente : `Oui`.
+    #[test]
+    fn version_signee_plus_ancienne_est_un_retour_en_arriere() {
+        let vue = |v: &str| Ok(Some((v.to_string(), "linux-x86_64".to_string())));
+        assert!(matches!(classer(vue("0.1.0")), Signee::Ancienne(v) if v == "0.1.0"));
+        assert!(matches!(classer(vue(env!("CARGO_PKG_VERSION"))), Signee::Oui(_)));
+        assert!(matches!(classer(vue("99.0.0")), Signee::Oui(_)));
+        assert!(matches!(classer(Ok(None)), Signee::Non));
+        assert!(matches!(classer(Err("hors ligne".into())), Signee::Inconnu(_)));
     }
 
     /// Lot D7b, « Refaire » : le programme remplacé (ni posé, ni signé, ou l'historique muet), la liste forgée et le
@@ -907,7 +1012,8 @@ mod tests {
     fn pose_scelle_les_octets_du_programme_qui_tourne() {
         let (p, copie) = (Path::new("/x/vanguard"), Path::new("/d/bin/vanguard"));
         let mut f = Fichier::default();
-        f.copies.insert(copie.display().to_string(), "recente".into());
+        f.copies
+            .insert(copie.display().to_string(), Copie::EmpreinteSeule("recente".into()));
         let f = Some(&f);
         assert_eq!(
             a_sceller(p, "etranger".into(), Some("soi"), Some("soi"), copie, f),
@@ -939,7 +1045,9 @@ mod tests {
         assert_eq!(a_sceller(copie, etranger(), None, None, copie, None), NON_VERIFIE);
         // La copie posée par Vanguard notée : c'est elle qui est scellée.
         let mut posee = Fichier::default();
-        posee.copies.insert(copie.display().to_string(), "posee".into());
+        posee
+            .copies
+            .insert(copie.display().to_string(), Copie::EmpreinteSeule("posee".into()));
         assert_eq!(
             a_sceller(copie, etranger(), Some("soi"), Some("soi"), copie, Some(&posee)),
             "posee"
@@ -995,6 +1103,46 @@ mod tests {
         assert!(f.connue(&p, &blake3::hash(b"vanguard 3").to_hex()));
         assert!(!f.connue(&p, &blake3::hash(b"autre").to_hex()));
         assert!(!f.connue(&p, NON_VERIFIE));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// R3-C1 : la copie posée est notée avec sa version ; une entrée d'avant (l'empreinte seule) se lit encore, sans
+    /// version, et elle est réécrite avec la version quand Vanguard repose ou garde la copie.
+    #[test]
+    fn copie_notee_avec_sa_version_et_entree_d_avant_lue() {
+        let d = jetable("copie-version");
+        let octets = crate::mise_a_jour::grave("0.91.2+1700000000");
+        let p = programme(&d, &octets);
+        let empreinte = blake3::hash(&octets).to_hex().to_string();
+        changer_dans(&d, |f| {
+            f.copies
+                .insert(p.display().to_string(), Copie::EmpreinteSeule(empreinte.clone()));
+            true
+        })
+        .unwrap();
+        let brut: serde_json::Value = serde_json::from_slice(&std::fs::read(d.join(FICHIER)).unwrap()).unwrap();
+        assert_eq!(brut["copies"][p.display().to_string()], serde_json::json!(empreinte));
+        assert_eq!(
+            copie_notee_dans(&d, &p).unwrap(),
+            Some(CopieNotee {
+                empreinte: empreinte.clone(),
+                version: None
+            })
+        );
+        assert!(copie_connue_dans(&d, &p, &empreinte));
+        copie_posee_dans(&d, &p, &octets);
+        assert_eq!(
+            copie_notee_dans(&d, &p).unwrap(),
+            Some(CopieNotee {
+                empreinte: empreinte.clone(),
+                version: Some("0.91.2+1700000000".into())
+            })
+        );
+        let brut: serde_json::Value = serde_json::from_slice(&std::fs::read(d.join(FICHIER)).unwrap()).unwrap();
+        assert_eq!(
+            brut["copies"][p.display().to_string()],
+            serde_json::json!({ "empreinte": empreinte, "version": "0.91.2+1700000000" })
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 

@@ -92,7 +92,6 @@ fn vanguard_au_plus(
     env: &[(&str, &str)],
 ) -> Sortie {
     let mut commande = Command::new(programme);
-    commande.envs(env.iter().copied());
     commande
         .args(args)
         .env("VANGUARD_LANG", langue)
@@ -108,6 +107,8 @@ fn vanguard_au_plus(
         .env("XDG_CACHE_HOME", maison.join("cache"))
         .env("LOCALAPPDATA", maison.join("local"))
         .env("APPDATA", maison.join("roaming"))
+        // Après le reste : un essai peut remplacer une valeur (la fausse session D-Bus de l'activation réussie).
+        .envs(env.iter().copied())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -3559,12 +3560,11 @@ fn gaming_quitte_sans_rien_installer() {
 #[test]
 fn entretien_du_mois_sans_rien_installer() {
     let coupe = vanguard("fr", &["entretien", "off"], "", 60);
-    assert_eq!(coupe.code, Some(0), "{}", coupe.erreurs);
-    assert!(
-        sans_couleurs(&coupe.texte).contains("Entretien du mois coupé"),
-        "{}",
-        coupe.texte
-    );
+    let texte = sans_couleurs(&coupe.texte);
+    assert!(texte.contains("Entretien du mois coupé"), "{}", coupe.texte);
+    // R3-C5 : un retrait incomplet (sous Wine, sans PowerShell) rend un code non nul ; un retrait complet, 0.
+    let partiel = texte.contains("pas entièrement retiré");
+    assert_eq!(coupe.code, Some(i32::from(partiel)), "{texte}\n{}", coupe.erreurs);
     // Sans argument : ce qu'il dirait maintenant, dans le terminal ; rien n'est gardé ni planifié.
     let s = vanguard("fr", &["entretien"], "", 300);
     let t = sans_couleurs(&s.texte);
@@ -6218,21 +6218,35 @@ fn copie_effacee_relancee_par_son_image_reste_une_copie() {
     let autre = racine.join("autre");
     std::fs::write(&autre, b"programme d'un autre").unwrap();
     let par_l_image = format!("/proc/{}/fd/{}", std::process::id(), image.as_raw_fd());
-    let sortie = Command::new(&par_l_image)
-        .arg("--help")
-        .env("VANGUARD_LANG", "fr")
-        .env("VANGUARD_HORS_LIGNE", "1")
-        .env("USER", "essai")
-        .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
-        .env("XDG_RUNTIME_DIR", maison.join("run"))
-        .env("HOME", &maison)
-        .env("XDG_DATA_HOME", maison.join("donnees"))
-        .env("XDG_CONFIG_HOME", maison.join("config"))
-        .env("XDG_CACHE_HOME", maison.join("cache"))
-        .env("VANGUARD_ORIGINE", &autre)
-        .stdin(Stdio::null())
-        .output()
-        .expect("vanguard ne démarre pas par son image");
+    let lancer = || {
+        Command::new(&par_l_image)
+            .arg("--help")
+            .env("VANGUARD_LANG", "fr")
+            .env("VANGUARD_HORS_LIGNE", "1")
+            .env("USER", "essai")
+            .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
+            .env("XDG_RUNTIME_DIR", maison.join("run"))
+            .env("HOME", &maison)
+            .env("XDG_DATA_HOME", maison.join("donnees"))
+            .env("XDG_CONFIG_HOME", maison.join("config"))
+            .env("XDG_CACHE_HOME", maison.join("cache"))
+            .env("VANGUARD_ORIGINE", &autre)
+            .stdin(Stdio::null())
+            .output()
+    };
+    // « Text file busy » : un autre essai qui lance un programme au même moment a pu hériter, le temps de son fork,
+    // de l'écriture de cette copie (course connue de Linux) ; elle se referme d'elle-même, on relance.
+    let mut sortie = lancer();
+    for _ in 0..50 {
+        match &sortie {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                sortie = lancer();
+            }
+            _ => break,
+        }
+    }
+    let sortie = sortie.expect("vanguard ne démarre pas par son image");
     drop(image);
     let erreurs = String::from_utf8_lossy(&sortie.stderr).into_owned();
     let _ = std::fs::remove_dir_all(&racine);
@@ -6269,17 +6283,35 @@ fn copie_locale(maison: &Path) -> PathBuf {
     maison.join("donnees").join("vanguard").join("bin").join("vanguard")
 }
 
-/// L'empreinte notée pour la copie de cet ordinateur dans la liste des copies posées par Vanguard (le registre
+/// L'entrée notée pour la copie de cet ordinateur dans la liste des copies posées par Vanguard (le registre
 /// `programmes-planifies.json` du dossier local), s'il y en a une.
 #[cfg(target_os = "linux")]
-fn copie_notee(maison: &Path) -> Option<String> {
-    let registre = maison
+fn entree_notee(maison: &Path) -> Option<serde_json::Value> {
+    let lu: serde_json::Value = serde_json::from_slice(&std::fs::read(registre_local(maison)).ok()?).ok()?;
+    let copie = copie_locale(maison).display().to_string();
+    lu.get("copies")?.get(&copie).cloned()
+}
+
+/// Le registre scellé du dossier local, dans la maison jetable.
+#[cfg(target_os = "linux")]
+fn registre_local(maison: &Path) -> PathBuf {
+    maison
         .join("donnees")
         .join("vanguard")
-        .join("programmes-planifies.json");
-    let lu: serde_json::Value = serde_json::from_slice(&std::fs::read(registre).ok()?).ok()?;
-    let copie = copie_locale(maison).display().to_string();
-    lu.get("copies")?.get(&copie)?.as_str().map(str::to_string)
+        .join("programmes-planifies.json")
+}
+
+/// L'empreinte notée pour la copie de cet ordinateur (l'entrée avec sa version, ou celle d'avant, l'empreinte seule).
+#[cfg(target_os = "linux")]
+fn copie_notee(maison: &Path) -> Option<String> {
+    let e = entree_notee(maison)?;
+    e.get("empreinte").unwrap_or(&e).as_str().map(str::to_string)
+}
+
+/// La version notée avec la copie de cet ordinateur (R3-C1).
+#[cfg(target_os = "linux")]
+fn version_notee(maison: &Path) -> Option<String> {
+    entree_notee(maison)?.get("version")?.as_str().map(str::to_string)
 }
 
 /// Le texte sans couleurs, ses blancs ramenés à une espace : un message coupé en lignes se cherche d'un bloc.
@@ -6381,8 +6413,8 @@ fn cle_changee_avant_l_accord(sur_la_cle: &Path, maison: &Path, args: &[&str], i
 
 /// MOYENNE (relecture adverse, R1-N2, câblage de `poser_copie`) : le programme de la clé réécrit après le lancement
 /// n'est jamais posé sur cet ordinateur. Le raccourci passe par le même chemin que la surveillance, l'entretien et le
-/// veilleur (`surveillance::executable` → `mise_a_jour::poser_copie`), et lui seul attend un accord : la clé change
-/// entre la question et la pose. Refusé avec la cause ; ni copie, ni raccourci, ni copie notée. Puis, lancé depuis la
+/// veilleur (`surveillance::executable` → `mise_a_jour::poser_copie`) ; lui et le veilleur attendent un accord (le
+/// veilleur a son essai, `veilleur_ne_pose_que_la_copie_montree`) : la clé change entre la question et la pose. Refusé avec la cause ; ni copie, ni raccourci, ni copie notée. Puis, lancé depuis la
 /// clé telle qu'elle est maintenant, il pose sa copie : le refus venait bien du changement.
 #[cfg(target_os = "linux")]
 #[test]
@@ -6416,6 +6448,96 @@ fn raccourci_refuse_si_la_cle_a_change_depuis_le_lancement() {
     let _ = std::fs::remove_dir_all(&racine);
 }
 
+/// MOYENNE (relecture adverse, ronde 3, E2E-1, câblage du veilleur) : « veilleur on » lancé depuis la clé montre une
+/// unité qui lance la copie de cet ordinateur, puis ne fait la copie qu'après l'accord, et revérifie que c'est bien
+/// celle montrée (`allumer` : `exe_prevu`, puis `surveillance::executable` comparé). Refusé « non » : rien. La clé
+/// réécrite pendant la question : refusé avec la cause, ni copie, ni unité, ni note. Une copie plus récente inconnue
+/// déjà là : refusé, non vérifié, rien de posé. Puis la pose honnête : copie notée, unité vers elle (l'activation, elle,
+/// échoue hors d'une vraie session : seul ce qui est écrit avant compte ici). Sans droits ni réseau.
+#[cfg(target_os = "linux")]
+#[test]
+fn veilleur_ne_pose_que_la_copie_montree() {
+    let (racine, sur_la_cle, maison) = cle_et_maison("veilleur-cle");
+    let unites = maison.join(".config").join("systemd").join("user");
+    std::fs::create_dir_all(&unites).unwrap();
+    let unite = unites.join("vanguard-veilleur.service");
+    let copie = copie_locale(&maison);
+    let exec = format!("ExecStart=\"{}\" veilleur --servir", copie.display());
+    let rien = |t: &str| {
+        assert!(!copie.exists(), "copie posée\n{t}");
+        assert!(!unite.exists(), "unité posée\n{t}");
+        assert_eq!(copie_notee(&maison), None, "{t}");
+    };
+
+    let non = vanguard_dans_env(&sur_la_cle, &maison, "fr", &["veilleur", "on"], "n\n", 120, HORS_LIGNE);
+    let t = a_plat(&non.texte);
+    if !t.contains("Allumer le veilleur ?") {
+        // Seuls le connecteur de processus absent et le faux root (verifier.sh refait la suite dans un espace de noms
+        // à part, `unshare -rn`) excusent l'absence de la question ; toute autre sortie est un échec.
+        assert!(
+            (t.contains("rien n'est installé") && (t.contains("connecteur de processus") || t.contains("abonnement")))
+                || t.contains("En root, rien n'est posé"),
+            "{t}\n{}",
+            non.erreurs
+        );
+        rien(&t);
+        let _ = std::fs::remove_dir_all(&racine);
+        return essais::saute(
+            "veilleur impossible ici : connecteur de processus absent ou faux root (espace de noms à part ?)",
+        );
+    }
+    assert!(
+        t.contains(&exec),
+        "l'unité montrée ne lance pas la copie de cet ordinateur : {t}"
+    );
+    assert!(t.contains("Rien n'est posé"), "{t}");
+    assert_eq!(non.code, Some(0), "{t}");
+    rien(&t);
+
+    let s = cle_changee_avant_l_accord(&sur_la_cle, &maison, &["veilleur", "on"], "Allumer le veilleur ?");
+    let t = a_plat(&s.texte);
+    assert!(
+        t.contains("La copie locale de Vanguard n'a pas pu se faire")
+            && t.contains("le programme de la clé a changé : ce n'est plus celui qui tourne"),
+        "{t}\n{}",
+        s.erreurs
+    );
+    assert!(!t.contains("Copie locale pour la surveillance"), "{t}");
+    rien(&t);
+    std::fs::copy(env!("CARGO_BIN_EXE_vanguard"), &sur_la_cle).unwrap();
+
+    std::fs::create_dir_all(copie.parent().unwrap()).unwrap();
+    std::fs::write(&copie, ETRANGERE).unwrap();
+    let s = vanguard_dans_env(&sur_la_cle, &maison, "fr", &["veilleur", "on"], "o\n", 120, HORS_LIGNE);
+    let t = a_plat(&s.texte);
+    assert!(
+        t.contains("La copie locale de Vanguard n'a pas pu se faire")
+            && t.contains("non vérifié : la copie de cet ordinateur (99.0.0"),
+        "{t}\n{}",
+        s.erreurs
+    );
+    rien_de_pose(&maison, &t);
+    assert!(!unite.exists(), "unité posée vers une copie inconnue\n{t}");
+    std::fs::remove_file(&copie).unwrap();
+
+    // Contrôle : la pose honnête fait la copie, la note, et écrit l'unité vers elle.
+    let s = vanguard_dans_env(&sur_la_cle, &maison, "fr", &["veilleur", "on"], "o\n", 120, HORS_LIGNE);
+    let t = a_plat(&s.texte);
+    assert!(t.contains("Copie locale pour la surveillance"), "{t}\n{}", s.erreurs);
+    let cle = std::fs::read(&sur_la_cle).unwrap();
+    assert!(
+        std::fs::read(&copie).unwrap() == cle,
+        "la copie n'est pas le programme de la clé"
+    );
+    assert_eq!(
+        copie_notee(&maison).as_deref(),
+        Some(blake3::hash(&cle).to_hex().as_str())
+    );
+    let ecrite = std::fs::read_to_string(&unite).unwrap_or_default();
+    assert!(ecrite.contains(&exec), "unité écrite : {ecrite}\n{t}");
+    let _ = std::fs::remove_dir_all(&racine);
+}
+
 /// MOYENNE (relecture adverse, R1-N2, câblage de `proposer`) : « se-mettre-a-jour » lancé depuis la clé, la clé
 /// réécrite entre la question et l'accord : l'ancienne copie reste, et la cause est dite.
 #[cfg(target_os = "linux")]
@@ -6442,15 +6564,53 @@ fn mise_a_jour_refusee_si_la_cle_a_change_depuis_le_lancement() {
     let _ = std::fs::remove_dir_all(&racine);
 }
 
-/// Le programme de ce test, sa version montée d'un cran dans le chiffre du correctif (même longueur : la version
-/// gravée et celle que dit « --version » changent ensemble, et le programme démarre). `None` si ce chiffre est déjà
-/// 9.
+/// Une version plus haute que `ici` (« x.y.z »), de même longueur (E2E-5 : pour toute version, plus seulement quand
+/// le dernier chiffre est sous 9) : le dernier nombre qui peut monter sans s'allonger monte d'un cran, ceux qui le
+/// suivent prennent la plus petite valeur de leur longueur (« 0.94.9 » → « 0.95.0 », « 0.99.99 » → « 1.10.10 »).
+/// `None` : seulement des 9.
 #[cfg(target_os = "linux")]
-fn programme_plus_recent() -> Option<Vec<u8>> {
+fn version_plus_haute(ici: &str) -> Option<String> {
+    let mut nombres: Vec<String> = ici.split('.').map(str::to_string).collect();
+    let i = nombres.iter().rposition(|n| n.chars().any(|c| c != '9'))?;
+    let monte = nombres[i].parse::<u64>().ok()? + 1;
+    nombres[i] = format!("{monte:0width$}", width = nombres[i].len());
+    for n in &mut nombres[i + 1..] {
+        *n = if n.len() == 1 {
+            "0".to_string()
+        } else {
+            format!("1{}", "0".repeat(n.len() - 1))
+        };
+    }
+    Some(nombres.join("."))
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn version_plus_haute_pour_toute_version() {
+    let numero = |v: &str| v.split('.').map(|n| n.parse::<u64>().unwrap()).collect::<Vec<_>>();
+    for (ici, plus) in [
+        ("0.94.0", "0.94.1"),
+        ("0.94.9", "0.95.0"),
+        ("0.99.9", "1.10.0"),
+        ("0.99.19", "0.99.20"),
+        ("0.99.99", "1.10.10"),
+        ("1.9.99", "2.0.10"),
+    ] {
+        let vue = version_plus_haute(ici).unwrap();
+        assert_eq!(vue, plus);
+        assert_eq!(vue.len(), ici.len());
+        assert!(numero(&vue) > numero(ici), "{vue} pas plus haute que {ici}");
+        assert!(!vue.split('.').any(|n| n.len() > 1 && n.starts_with('0')), "{vue}");
+    }
+    assert_eq!(version_plus_haute("9.99.9"), None);
+}
+
+/// Le programme de ce test, sa version montée d'un cran (`version_plus_haute`, même longueur : la version gravée et
+/// celle que dit « --version » changent ensemble, et le programme démarre). Rend (version, octets).
+#[cfg(target_os = "linux")]
+fn programme_plus_recent() -> (String, Vec<u8>) {
     let ici = env!("CARGO_PKG_VERSION");
-    let (debut, dernier) = ici.split_at(ici.len() - 1);
-    let chiffre = dernier.parse::<u8>().ok().filter(|c| *c < 9)?;
-    let plus = format!("{debut}{}", chiffre + 1);
+    let plus = version_plus_haute(ici).expect("une version faite de 9 seulement");
     let octets = std::fs::read(env!("CARGO_BIN_EXE_vanguard")).unwrap();
     let (de, vers) = (ici.as_bytes(), plus.as_bytes());
     let mut sortie = Vec::with_capacity(octets.len());
@@ -6464,7 +6624,7 @@ fn programme_plus_recent() -> Option<Vec<u8>> {
             i += 1;
         }
     }
-    Some(sortie)
+    (plus, sortie)
 }
 
 /// BASSE (relecture adverse, R1-M3) : une copie posée depuis une clé plus récente est notée par Vanguard (`installer`
@@ -6473,9 +6633,7 @@ fn programme_plus_recent() -> Option<Vec<u8>> {
 #[cfg(target_os = "linux")]
 #[test]
 fn copie_d_une_cle_plus_recente_gardee_par_une_plus_ancienne() {
-    let Some(recente) = programme_plus_recent() else {
-        return essais::saute("chiffre du correctif déjà à 9 : pas de version plus récente de même longueur");
-    };
+    let (_, recente) = programme_plus_recent();
     let (racine, sur_la_cle, maison) = cle_et_maison("cle-plus-recente");
     let copie = copie_locale(&maison);
     let ancienne = std::fs::read(&sur_la_cle).unwrap();
@@ -6500,6 +6658,127 @@ fn copie_d_une_cle_plus_recente_gardee_par_une_plus_ancienne() {
     );
     let identique = std::fs::read(&copie).unwrap() == recente;
     assert!(identique, "copie plus récente remplacée par une plus ancienne");
+    let _ = std::fs::remove_dir_all(&racine);
+}
+
+/// Les unités systemd de la maison jetable, chacune avec son contenu : rien de posé ni de changé se compare d'un bloc.
+#[cfg(target_os = "linux")]
+fn unites_de(maison: &Path) -> Vec<(String, Vec<u8>)> {
+    let dossier = maison.join(".config").join("systemd").join("user");
+    let mut vues = Vec::new();
+    let mut a_voir = vec![dossier.clone()];
+    while let Some(d) = a_voir.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() && !p.is_symlink() {
+                a_voir.push(p);
+            } else {
+                let nom = p.strip_prefix(&dossier).unwrap().display().to_string();
+                vues.push((nom, std::fs::read(&p).unwrap_or_default()));
+            }
+        }
+    }
+    vues.sort();
+    vues
+}
+
+/// BASSE (relecture adverse, ronde 3, R3-C1) : la liste des copies notait l'empreinte sans la version. Une copie posée
+/// depuis une clé plus récente, puis effacée, abîmée (sans version gravée), rendue illisible ou remplacée par une
+/// version plus basse, était reposée par une clé plus ancienne : retour en arrière sans un mot. La version est notée
+/// avec l'empreinte ; devant chacune de ces formes, la clé plus ancienne refuse, dit non vérifié, rend un code non nul,
+/// et ne pose rien (ni copie, ni unité, ni note changée), par la surveillance comme par « se-mettre-a-jour ». La copie
+/// remise telle quelle est de nouveau gardée.
+#[cfg(target_os = "linux")]
+#[test]
+fn copie_plus_recente_notee_jamais_remplacee_par_une_cle_plus_ancienne() {
+    use std::os::unix::fs::PermissionsExt;
+    let (plus, recente) = programme_plus_recent();
+    let (racine, sur_la_cle, maison) = cle_et_maison("retour-note");
+    let copie = copie_locale(&maison);
+    let ancienne = std::fs::read(&sur_la_cle).unwrap();
+    std::fs::write(&sur_la_cle, &recente).unwrap();
+    let pose = vanguard_dans_env(&sur_la_cle, &maison, "fr", &["surveillance", "on"], "", 120, HORS_LIGNE);
+    let t = a_plat(&pose.texte);
+    assert!(t.contains("Copie locale pour la surveillance"), "{t}\n{}", pose.erreurs);
+    assert!(
+        std::fs::read(&copie).unwrap() == recente,
+        "copie de la clé plus récente pas posée"
+    );
+    let note = blake3::hash(&recente).to_hex().to_string();
+    assert_eq!(copie_notee(&maison).as_deref(), Some(note.as_str()));
+    let version = version_notee(&maison).expect("version pas notée avec l'empreinte");
+    assert!(version.starts_with(&format!("{plus}+")), "{version}");
+    std::fs::write(&sur_la_cle, &ancienne).unwrap();
+    let unites = unites_de(&maison);
+    let refuse = |args: &[&str], entree: &str, etat: &str| {
+        let avant = std::fs::read(&copie).ok();
+        let s = vanguard_dans_env(&sur_la_cle, &maison, "fr", args, entree, 120, HORS_LIGNE);
+        let t = a_plat(&s.texte);
+        assert!(
+            t.contains(&format!(
+                "non vérifié : Vanguard a posé sur cet ordinateur une copie plus récente ({plus}"
+            )) && t.contains(etat)
+                && t.contains("rien n'est posé"),
+            "{args:?}, {etat} : {t}\n{}",
+            s.erreurs
+        );
+        assert!(
+            !t.contains("Surveillance activée") && !t.contains("mise à jour : Vanguard"),
+            "{t}"
+        );
+        // Rien ne conseille de lancer ce qui est là.
+        assert!(!t.contains("lancé depuis elle"), "{t}");
+        assert_eq!(std::fs::read(&copie).ok(), avant, "copie touchée ({etat})\n{t}");
+        assert_eq!(copie_notee(&maison).as_deref(), Some(note.as_str()), "{t}");
+        assert_eq!(version_notee(&maison).as_deref(), Some(version.as_str()), "{t}");
+        assert_eq!(unites_de(&maison), unites, "unités changées ({etat})\n{t}");
+        s.code
+    };
+    // Effacée.
+    std::fs::remove_file(&copie).unwrap();
+    assert_ne!(
+        refuse(&["surveillance", "on"], "", "(effacée)"),
+        Some(0),
+        "code 0 après un refus"
+    );
+    assert!(!copie.exists(), "reposée par-dessus une copie plus récente effacée");
+    // Abîmée, sans version gravée : ni la surveillance ni la mise à jour depuis la clé ne la remplacent.
+    std::fs::write(&copie, b"copie abimee").unwrap();
+    assert_ne!(refuse(&["surveillance", "on"], "", "sans version gravée"), Some(0));
+    refuse(&["se-mettre-a-jour"], "o\n", "sans version gravée");
+    // Illisible (droits retirés).
+    std::fs::write(&copie, &recente).unwrap();
+    std::fs::set_permissions(&copie, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read(&copie).is_ok() {
+        std::fs::set_permissions(&copie, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = std::fs::remove_dir_all(&racine);
+        return essais::saute("lancé en root : un fichier 000 reste lisible");
+    }
+    let s = vanguard_dans_env(&sur_la_cle, &maison, "fr", &["surveillance", "on"], "", 120, HORS_LIGNE);
+    std::fs::set_permissions(&copie, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let t = a_plat(&s.texte);
+    assert!(
+        t.contains(&format!("une copie plus récente ({plus}")) && t.contains("(illisible") && t.contains("non vérifié"),
+        "{t}\n{}",
+        s.erreurs
+    );
+    assert_ne!(s.code, Some(0), "{t}");
+    assert!(std::fs::read(&copie).unwrap() == recente, "copie illisible remplacée");
+    assert_eq!(unites_de(&maison), unites, "{t}");
+    // Remplacée par une version plus basse : les octets mêmes de la clé plus ancienne.
+    std::fs::write(&copie, &ancienne).unwrap();
+    let plus_basse = format!("remplacée par un fichier de version {}", env!("CARGO_PKG_VERSION"));
+    assert_ne!(refuse(&["surveillance", "on"], "", &plus_basse), Some(0));
+    // La copie notée, remise telle quelle : gardée, sans retour en arrière.
+    std::fs::write(&copie, &recente).unwrap();
+    let gardee = vanguard_dans_env(&sur_la_cle, &maison, "fr", &["surveillance", "on"], "", 120, HORS_LIGNE);
+    let t = a_plat(&gardee.texte);
+    assert!(
+        t.contains("Copie locale pour la surveillance") && !t.contains("non vérifié"),
+        "{t}\n{}",
+        gardee.erreurs
+    );
+    assert_eq!(std::fs::read(&copie).unwrap(), recente);
     let _ = std::fs::remove_dir_all(&racine);
 }
 
@@ -6556,6 +6835,50 @@ fn copie_plus_recente_inconnue_ni_gardee_ni_remplacee() {
             && t.contains("neither kept nor replaced"),
         "{t}\n{}",
         en.erreurs
+    );
+    // R3-C8 : rien n'est posé non plus (le registre reste celui, illisible, de l'essai).
+    let unites = maison.join(".config").join("systemd").join("user");
+    let sans_unite = |t: &str| {
+        assert_eq!(std::fs::read(&copie).unwrap(), ETRANGERE, "{t}");
+        for nom in ["vanguard-surveillance.service", "vanguard-entretien.service"] {
+            assert!(!unites.join(nom).exists(), "{nom} posée\n{t}");
+        }
+    };
+    sans_unite(&t);
+
+    // E2E-6 : un registre forgé en JSON valide, sans sceau, qui note l'empreinte exacte de la copie et sa version,
+    // n'est pas cru : le même refus.
+    let empreinte = blake3::hash(ETRANGERE).to_hex().to_string();
+    let forge = serde_json::json!({ "copies": { copie.display().to_string(): { "empreinte": empreinte, "version": "99.0.0+1" } } });
+    std::fs::write(registre_local(&maison), forge.to_string()).unwrap();
+    let fr = vanguard_dans_env(&sur_la_cle, &maison, "fr", &["entretien", "on"], "", 120, HORS_LIGNE);
+    let t = a_plat(&fr.texte);
+    assert!(
+        t.contains("Copie locale de Vanguard impossible : rien n'est posé") && t.contains("non vérifié"),
+        "registre forgé cru\n{t}\n{}",
+        fr.erreurs
+    );
+    sans_unite(&t);
+    let _ = std::fs::remove_dir_all(&racine);
+}
+
+/// BASSE (relecture adverse, R3-C3) : « se-mettre-a-jour » lancé depuis la clé devant une copie qui se dit plus
+/// récente sans que Vanguard la reconnaisse ne la présente pas comme une vraie version : c'est dit non vérifié, et la
+/// copie reste telle quelle.
+#[cfg(target_os = "linux")]
+#[test]
+fn copie_plus_recente_inconnue_dite_non_verifiee_a_la_mise_a_jour() {
+    let (racine, sur_la_cle, maison) = cle_et_maison("maj-copie-etrangere");
+    let copie = copie_locale(&maison);
+    std::fs::create_dir_all(copie.parent().unwrap()).unwrap();
+    std::fs::write(&copie, ETRANGERE).unwrap();
+    let s = vanguard_dans_env(&sur_la_cle, &maison, "fr", &["se-mettre-a-jour"], "", 120, HORS_LIGNE);
+    let t = a_plat(&s.texte);
+    assert!(
+        t.contains("Non vérifié : la copie d'ici se dit plus récente (99.0.0")
+            && !t.contains("Remettez la clé à jour chez vous"),
+        "{t}\n{}",
+        s.erreurs
     );
     assert_eq!(std::fs::read(&copie).unwrap(), ETRANGERE, "{t}");
     let _ = std::fs::remove_dir_all(&racine);
@@ -6641,6 +6964,19 @@ fn origine_ignoree_hors_d_une_copie() {
         !copie_locale(&maison).exists(),
         "copie posée depuis l'origine soufflée\n{t}"
     );
+    // E2E-4, N3-O2 : une trace positive, le programme lancé s'est posé lui-même (l'unité lance prog/vanguard).
+    let unite = std::fs::read_to_string(
+        maison
+            .join(".config")
+            .join("systemd")
+            .join("user")
+            .join("vanguard-surveillance.service"),
+    )
+    .unwrap_or_default();
+    assert!(
+        unite.contains(&format!("ExecStart=\"{}\"", programme.display())),
+        "unité absente ou vers un autre programme : {unite}\n{t}"
+    );
     let _ = std::fs::remove_dir_all(&racine);
 }
 
@@ -6655,6 +6991,14 @@ fn nom_en_deleted_encore_lie_n_est_pas_une_copie() {
     let maison = racine.join("maison");
     let dossier = maison.join("run").join("vanguard-1-1");
     std::fs::create_dir_all(&dossier).unwrap();
+    // N3-O1 : des droits sûrs, quel que soit l'umask ; sinon la base serait refusée et l'essai aveugle.
+    for d in [maison.join("run"), dossier.clone()] {
+        std::fs::set_permissions(
+            &d,
+            <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+        )
+        .unwrap();
+    }
     let faux = dossier.join("vanguard (deleted)");
     std::fs::copy(env!("CARGO_BIN_EXE_vanguard"), &faux).unwrap();
     let autre = racine.join("autre");

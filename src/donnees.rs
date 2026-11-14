@@ -160,7 +160,7 @@ pub fn restaurer(fichier: &Path) {
         ))
         .oui()
     {
-        surveillance::activer(true);
+        let _ = surveillance::activer(true);
     }
 }
 

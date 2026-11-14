@@ -1443,7 +1443,8 @@ pub(crate) enum Reglages {
     DAvant,
 }
 
-pub fn activer(oui: bool) {
+/// Rend `false` quand le geste a échoué (R3-C5 : le code de sortie le dit, pas seulement le texte).
+pub fn activer(oui: bool) -> bool {
     // Une tâche d'une version d'avant que la personne réactive : elle est refaite avec les réglages d'aujourd'hui, et
     // c'est dit.
     let d_avant = oui
@@ -1520,6 +1521,7 @@ pub fn activer(oui: bool) {
             "",
         ),
     }
+    reussi
 }
 
 /// Retire la surveillance sans rien demander (la désinstallation l'a déjà montrée et fait accepter), et l'oublie.

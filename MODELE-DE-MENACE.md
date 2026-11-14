@@ -165,6 +165,16 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   script montré en entier après la vérification de son empreinte, et votre Entrée. Comparez ce qui est montré à ce
   que vous venez de demander. Un tel programme pouvait déjà demander lui-même l'élévation de PowerShell ; il faudrait
   une signature du programme pour aller plus loin (décision de l'auteur).
+- **La copie de Vanguard posée sur cet ordinateur.** Vanguard note dans un registre scellé l'empreinte et la version
+  de chaque copie qu'il pose dans votre dossier. Il ne remplace jamais une copie plus récente par un programme plus
+  ancien, ni une copie plus récente qu'il ne reconnaît pas (ni notée, ni publiée et signée pour ce système, selon
+  l'historique signé des versions) : c'est dit « non vérifié » et rien n'est posé. Ce qui reste : les sceaux de ce
+  registre sont sans secret, une barrière et pas un coffre ; un programme de votre compte qui réécrit le registre avec
+  ses sceaux peut y faire noter une autre copie, ou effacer la note. Si une copie notée plus récente est effacée ou
+  abîmée, une clé plus ancienne refuse de poser quoi que ce soit, et la mise à jour depuis GitHub ne descend pas sous
+  la version notée : il faut remettre la clé à jour. Hors ligne, une copie plus récente posée par une version d'avant
+  ce registre ne peut pas être jugée et est refusée. Le veilleur (Linux) dit son refus à l'écran mais rend un code de
+  sortie nul ; la surveillance et l'entretien rendent un code non nul.
 
 ## Ce que Vanguard suppose
 
