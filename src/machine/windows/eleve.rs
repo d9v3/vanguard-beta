@@ -440,6 +440,10 @@ pub(crate) fn appliquer(lignes: &[String]) -> Option<Vec<Reponse>> {
     };
     // Chaque dossier du chemin, puis le fichier, tenus jusqu'à la réponse du fils (`drop(tenu)` tout en bas), chaque
     // contrôle revu en dernier : le chemin donné à « runas » (`tenu.chemin`, le nom long) est celui qui a été vérifié.
+    if let Err(refus) = windows_assez_recent(build_de_windows()) {
+        refus.montrer(&exe);
+        return None;
+    }
     let tenu = match preparer_la_relance(&exe, crate::protection::cle::meme_que_soi, |_| {}) {
         Ok(t) => t,
         Err(refus) => {
@@ -519,6 +523,9 @@ enum Refus {
     Dll(String),
     /// Le fichier tenu n'a plus les octets du programme qui tourne.
     PasSoi,
+    /// Windows plus ancien que 10 1607 (le numéro lu, `None` s'il n'a pas pu l'être) : sans la garde du PE sur les
+    /// DLL (chargement.rs), une bibliothèque posée à côté pendant la demande d'administrateur y serait chargée.
+    WindowsTropAncien(Option<u32>),
 }
 
 impl Refus {
@@ -536,7 +543,42 @@ impl Refus {
                 "    ✖ Vanguard's file is no longer the running program ({}): nothing is done as administrator. Restart Vanguard, then try again.",
                 exe.display()
             ),
+            Self::WindowsTropAncien(Some(build)) => trp!(
+                "    ✖ Cette version de Windows (build {}) est plus ancienne que Windows 10 1607 : elle ne protège pas assez le chargement des bibliothèques, rien n'est fait en administrateur. Mettez Windows à jour, puis recommencez.",
+                "    ✖ This Windows version (build {}) is older than Windows 10 1607: it does not protect library loading enough, nothing is done as administrator. Update Windows, then try again.",
+                build
+            ),
+            Self::WindowsTropAncien(None) => trp!(
+                "    ✖ Vanguard n'a pas pu lire la version de Windows : par prudence, rien n'est fait en administrateur.",
+                "    ✖ Vanguard could not read the Windows version: to be safe, nothing is done as administrator."
+            ),
         }
+    }
+}
+
+/// Windows 10 1607 : le premier qui applique DependentLoadFlags (chargement.rs), donc où les DLL importées ne viennent
+/// que de System32 même si une bibliothèque est posée à côté du programme pendant la demande d'administrateur.
+const BUILD_WINDOWS_10_1607: u32 = 14393;
+
+/// Le numéro de build de Windows, lu dans la clé de la machine (que le compte ne peut pas écrire) ; `None` s'il n'a pas
+/// pu être lu.
+fn build_de_windows() -> Option<u32> {
+    use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_64KEY};
+    let cle = winreg::RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey_with_flags(
+            r"SOFTWARE\Microsoft\Windows NT\CurrentVersion",
+            KEY_READ | KEY_WOW64_64KEY,
+        )
+        .ok()?;
+    let build: String = cle.get_value("CurrentBuildNumber").ok()?;
+    build.trim().parse().ok()
+}
+
+/// Refuse la relance sur un Windows d'avant 10 1607, et quand la version n'a pas pu être lue (rien n'est prouvé).
+fn windows_assez_recent(build: Option<u32>) -> Result<(), Refus> {
+    match build {
+        Some(b) if b >= BUILD_WINDOWS_10_1607 => Ok(()),
+        autre => Err(Refus::WindowsTropAncien(autre)),
     }
 }
 
@@ -547,8 +589,9 @@ impl Refus {
 /// retirée ou remontée plus haut se voit).
 ///
 /// La bibliothèque à côté : la vraie garde est dans le PE lui-même (chargement.rs : imports pris dans System32
-/// seulement), à partir de Windows 10 1607. Avant, ce contrôle n'est qu'un instantané : une DLL posée pendant la
-/// demande d'administrateur n'est pas vue (une poignée sur le dossier n'empêche pas d'y créer un fichier).
+/// seulement), à partir de Windows 10 1607 ; plus ancien, la relance est refusée avant d'arriver ici
+/// (`windows_assez_recent`), car ce contrôle n'y serait qu'un instantané : une DLL posée pendant la demande
+/// d'administrateur ne serait pas vue (une poignée sur le dossier n'empêche pas d'y créer un fichier).
 fn preparer_la_relance(
     exe: &std::path::Path,
     est_soi: impl Fn(&std::fs::File) -> bool,
@@ -2683,6 +2726,35 @@ mod tests {
         );
     }
 
+    /// Windows 10 1607 (build 14393) et plus passe ; plus ancien, ou une version illisible, est refusé.
+    #[test]
+    fn un_windows_d_avant_1607_est_refuse() {
+        assert!(windows_assez_recent(Some(14393)).is_ok());
+        assert!(windows_assez_recent(Some(26100)).is_ok());
+        assert!(matches!(
+            windows_assez_recent(Some(14392)),
+            Err(Refus::WindowsTropAncien(Some(14392)))
+        ));
+        assert!(matches!(
+            windows_assez_recent(Some(10586)),
+            Err(Refus::WindowsTropAncien(Some(10586)))
+        ));
+        assert!(matches!(
+            windows_assez_recent(Some(9600)),
+            Err(Refus::WindowsTropAncien(Some(9600)))
+        ));
+        assert!(matches!(
+            windows_assez_recent(None),
+            Err(Refus::WindowsTropAncien(None))
+        ));
+        // La machine d'essai (Windows ou Wine) a une version lisible et assez récente.
+        assert!(
+            windows_assez_recent(build_de_windows()).is_ok(),
+            "{:?}",
+            build_de_windows()
+        );
+    }
+
     /// `appliquer` prépare par `preparer_la_relance`, donne le chemin tenu à « runas », vérifie le fils avant tout
     /// envoi et garde les poignées jusqu'à la fin, dans cet ordre (la demande UAC ne se lance pas dans un essai : le
     /// texte de la fonction est lu).
@@ -2696,6 +2768,7 @@ mod tests {
             corps.find(motif).unwrap()
         };
         let etapes = [
+            "windows_assez_recent(build_de_windows())",
             "preparer_la_relance(&exe, crate::protection::cle::meme_que_soi, |_| {})",
             "relancer_eleve(&tenu.chemin, &parametres)",
             "verifier_le_fils(&tenu, fils.0.as_raw_handle())",
