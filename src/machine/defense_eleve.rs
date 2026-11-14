@@ -2062,6 +2062,25 @@ fn juger_ligne(e: Empreinte, c: &CheminDesigne, a: &mut dyn Acces) -> Jugement {
                     crate::machine::linux::RETRAIT_OCTETS_MAX / (1024 * 1024)
                 )));
             }
+            Some(crate::machine::linux::Decoupe::Longue) => {
+                return Err(refus(trf!(
+                    "{vu} a une ligne de plus de {} octets : un lecteur à tampon fixe peut s'arrêter à une telle ligne, et en retirer une pourrait en réveiller d'autres ; par prudence, rien n'est fait : corrigez ce fichier à la main",
+                    "{vu} has a line of more than {} bytes: a reader with a fixed buffer can stop at such a line, and removing one could wake up others; to be safe, nothing is done: fix this file by hand",
+                    crate::machine::linux::LIGNE_OCTETS_MAX
+                )));
+            }
+            Some(crate::machine::linux::Decoupe::Interprete) => {
+                return Err(refus(trf!(
+                    "la première ligne « #! » de {vu} ne nomme pas /bin/sh ni /bin/bash : pour un autre interpréteur, Vanguard ne sait pas ce que fait chaque ligne ; par prudence, rien n'est fait : corrigez ce fichier à la main",
+                    "the first \"#!\" line of {vu} names neither /bin/sh nor /bin/bash: for another interpreter, Vanguard does not know what each line does; to be safe, nothing is done: fix this file by hand"
+                )));
+            }
+            Some(crate::machine::linux::Decoupe::Lecteur) => {
+                return Err(refus(trf!(
+                    "dans {vu}, la ligne désignée n'a pas la forme stricte que le lecteur de ce fichier accepte à coup sûr, ou une autre ligne pose la même clé, ou cron pourrait ignorer ce fichier tout entier : la retirer seule pourrait réveiller d'autres lignes ; par prudence, rien n'est fait : corrigez ce fichier à la main",
+                    "in {vu}, the line named does not have the strict form this file's reader surely accepts, or another line sets the same key, or cron could ignore this whole file: removing it alone could wake up other lines; to be safe, nothing is done: fix this file by hand"
+                )));
+            }
             None => {}
         }
     }
@@ -4600,6 +4619,74 @@ mod tests {
         let (r, questions, apres) = essai(&contenu, piege);
         assert!(!r.reussi && r.raison.contains("ne lit pas le shell"), "{}", r.raison);
         assert_eq!((questions, apres), (0, contenu));
+    }
+
+    /// Ronde 8 du lot 096 (N8-1, N8-3, N8-4), côté fils root : une ligne de plus de 1 000 octets dans le fichier,
+    /// un /etc/rc.local dont la ligne « #! » ne nomme pas sh ou bash, une ligne de cron ou de .desktop hors de la
+    /// forme stricte de son lecteur ou dont une autre ligne pose la même clé : refusé, sans question, fichier
+    /// inchangé, et la raison le dit. Témoins : les mêmes lignes dans un fichier sans ces défauts partent.
+    #[test]
+    fn refus_de_la_ronde_8() {
+        let essai = |fichier: &str, contenu: &str, ligne: &str| {
+            let mut a = Faux::nouveau().repondre("o");
+            a.poser(fichier, contenu.as_bytes(), 0o644);
+            let r = faire_avec(
+                Defense::RetirerLigne(
+                    empreinte_de_ligne(ligne.as_bytes()),
+                    CheminDesigne::nouveau(fichier.as_bytes()).unwrap(),
+                ),
+                &mut a,
+                &mut FauxServices::nouveau(),
+            );
+            (r, a.questions.len(), a.texte(fichier))
+        };
+        let piege = "export LD_PRELOAD=/tmp/.x/evil.so";
+        let longue = format!("{piege}\nA={}\n", "b".repeat(1100));
+        let python = format!("#!/usr/bin/python3\n{piege}\n");
+        for (fichier, contenu, ligne, raison) in [
+            ("/etc/environment", longue.as_str(), piege, "plus de 1000 octets"),
+            ("/etc/rc.local", python.as_str(), piege, "« #! »"),
+            (
+                "/etc/cron.d/x",
+                "export LD_PRELOAD=/tmp/.x/evil.so\n",
+                piege,
+                "forme stricte",
+            ),
+            (
+                "/etc/xdg/autostart/a.desktop",
+                "[Desktop Entry]\nExec=/usr/bin/true\nExec=/tmp/.x/a\n",
+                "Exec=/tmp/.x/a",
+                "même clé",
+            ),
+        ] {
+            let (r, questions, apres) = essai(fichier, contenu, ligne);
+            assert!(!r.reussi, "{fichier} {contenu:?}");
+            assert!(
+                r.raison.contains(raison) && r.raison.contains("à la main"),
+                "{fichier} : {}",
+                r.raison
+            );
+            assert_eq!((questions, apres.as_str()), (0, contenu), "{fichier}");
+        }
+        for (fichier, contenu, ligne, reste) in [
+            ("/etc/environment", format!("{piege}\nA=b\n"), piege, "A=b\n"),
+            (
+                "/etc/rc.local",
+                format!("#!/bin/sh -e\n{piege}\n"),
+                piege,
+                "#!/bin/sh -e\n",
+            ),
+            (
+                "/etc/xdg/autostart/a.desktop",
+                "[Desktop Entry]\nName=A\nExec=/tmp/.x/a\n".to_string(),
+                "Exec=/tmp/.x/a",
+                "[Desktop Entry]\nName=A\n",
+            ),
+        ] {
+            let (r, _, apres) = essai(fichier, &contenu, ligne);
+            assert!(r.reussi, "{fichier} : {}", r.raison);
+            assert_eq!(apres, reste, "{fichier}");
+        }
     }
 
     #[test]

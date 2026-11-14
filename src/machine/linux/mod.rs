@@ -1572,6 +1572,63 @@ pub(crate) enum Decoupe {
     /// Le fichier a plus de `RETRAIT_LIGNES_MAX` lignes ou de `RETRAIT_OCTETS_MAX` octets : rien n'est jugé, le
     /// retrait est refusé.
     Trop,
+    /// Une ligne du fichier a plus de `LIGNE_OCTETS_MAX` octets : un lecteur à tampon fixe peut s'y arrêter ou la
+    /// couper (ronde 8 du lot 096, N8-1).
+    Longue,
+    /// Un fichier que le système lance lui-même (/etc/rc.local) dont la ligne « #! » ne nomme pas sh ou bash : pour un
+    /// autre interpréteur, « NOM=valeur » n'est pas une affectation (ronde 8 du lot 096, N8-3).
+    Interprete,
+    /// Un fichier lu ligne par ligne (cron, .desktop, unité, gestionnaire de connexion) : la ligne retirée n'a pas la
+    /// forme stricte que son lecteur accepte à coup sûr, ou une autre ligne pose la même clé, ou le fichier entier
+    /// pourrait être ignoré de cron (ronde 8 du lot 096, N8-4 : `LecteurDeLignes`).
+    Lecteur,
+}
+
+/// Au plus autant d'octets dans chaque ligne d'un fichier dont Vanguard juge le retrait d'une ligne seule ; au-delà,
+/// refus (`Decoupe::Longue`). Ronde 8 du lot 096 (N8-1) : pam_env de Linux-PAM 1.4.0 à 1.5.3 arrête la lecture de
+/// /etc/environment, sans erreur, à une ligne de 8 191 octets ou plus (tampon fixe) ; retirer cette ligne réveillerait
+/// les suivantes. Bien sous les tampons connus : pam_env 1.3 (1 024, ligne coupée en morceaux) et cron de Debian
+/// (1 000 pour une variable ou une commande).
+pub(crate) const LIGNE_OCTETS_MAX: usize = 1000;
+
+/// Comment le lecteur d'un fichier admis le lit, pour juger le retrait d'une ligne seule (`AnalyseDeRetrait`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LecteurDeLignes {
+    /// Un shell, pam_env ou le générateur environment.d de systemd : règle du fichier d'affectations simples.
+    Shell,
+    /// /etc/crontab et /etc/cron.d/* : le cron de Debian et d'Ubuntu ignore le fichier ENTIER dès une ligne qu'il ne
+    /// comprend pas (« Syntax error, this crontab file will be ignored », user.c de cron 3.0pl1-162, lu), dès un
+    /// compte inconnu (getpwnam), dès une dernière ligne sans « \n », ou au-delà de 10 000 lignes (cron.h) : retirer une
+    /// telle ligne réveillerait toutes les autres.
+    Cron,
+    /// /etc/anacrontab : anacron saute une ligne qu'il ne comprend pas et lit la suite (readtab.c d'anacron 2.3-36,
+    /// lu) ; une ligne y a une longueur libre.
+    Anacron,
+    /// Un fichier à clés (`Clé=valeur` sous des groupes « [Nom] ») : .desktop, gestionnaires de connexion (GLib
+    /// GKeyFile, qui rejette le fichier ENTIER dès une ligne invalide ou une clé avant tout groupe) et unités systemd
+    /// (une ligne « [ » invalide fait rejeter l'unité). Une clé posée deux fois : la dernière gagne (GLib), ou l'unité
+    /// est refusée (deux ExecStart=) ; retirer l'une réveillerait l'autre.
+    Cles,
+}
+
+impl LecteurDeLignes {
+    /// Le lecteur de `fichier`, jugé sur son nom et ceux de ses dossiers exacts, comme `lu_ligne_par_ligne`.
+    fn de(fichier: &str) -> Self {
+        if !lu_ligne_par_ligne(fichier) {
+            return Self::Shell;
+        }
+        let mut parties = fichier.rsplit('/');
+        let nom = parties.next().unwrap_or(fichier);
+        let parent = parties.next().unwrap_or("");
+        let aieul = parties.next().unwrap_or("");
+        if (parent == "etc" && nom == "crontab") || (parent == "cron.d" && aieul == "etc") {
+            Self::Cron
+        } else if parent == "etc" && nom == "anacrontab" {
+            Self::Anacron
+        } else {
+            Self::Cles
+        }
+    }
 }
 
 /// Au plus autant de lignes dans un fichier dont Vanguard juge le retrait d'une ligne seule ; au-delà, rien n'est
@@ -1637,7 +1694,7 @@ fn lu_ligne_par_ligne(fichier: &str) -> bool {
 /// changent l'identité du shell. Celles qui commencent par un préfixe de `PREFIXES_DU_SHELL` aussi. Un NOM qui porte
 /// une minuscule est refusé à part (`affectation_simple`) : zsh lie des tableaux en minuscules à ses variables
 /// (« path », « status », « aliases »…).
-const NOMS_DU_SHELL: [&[u8]; 110] = [
+const NOMS_DU_SHELL: [&[u8]; 118] = [
     b"_",
     b"IFS",
     b"PATH",
@@ -1749,6 +1806,17 @@ const NOMS_DU_SHELL: [&[u8]; 110] = [
     b"CORRECT_IGNORE_FILE",
     b"REPORTTIME",
     b"REPORTMEMORY",
+    // Ronde 8 (N8-2) : bash lit TERMCAP (il en tire COLUMNS et LINES, en interactif) et TZ (l'heure de ses invites et
+    // de « printf %(…)T »).
+    b"TERMCAP",
+    b"TZ",
+    // Ronde 8 (N8-3) : en lecture seule dans mksh (non essayé : mksh absent ; lu dans son manuel).
+    b"KSHUID",
+    b"KSHGID",
+    b"KSHEGID",
+    b"USER_ID",
+    b"PGRP",
+    b"KSH_VERSION",
 ];
 
 /// Les débuts de NOM que le shell se réserve (`NOMS_DU_SHELL`) : « BASH_ » (BASH_ENV, BASH_ALIASES, BASH_XTRACEFD…),
@@ -1837,12 +1905,227 @@ fn vide_ou_commentaire(ligne: &[u8]) -> bool {
     }
 }
 
+/// Les interpréteurs admis sur la ligne « #! » d'un fichier que le système lance lui-même (`AnalyseDeRetrait`) : ceux
+/// qui lisent « NOM=valeur » comme une affectation, et que les rondes 6 à 8 ont essayés (bash et sh).
+const INTERPRETES_ADMIS: [&[u8]; 4] = [b"/bin/sh", b"/usr/bin/sh", b"/bin/bash", b"/usr/bin/bash"];
+
+/// Le fichier est-il de ceux que le système lance lui-même au lieu de les faire lire par un shell (/etc/rc.local,
+/// lancé par rc-local.service ou le script d'init) ? Sa ligne « #! » choisit alors son lecteur (ronde 8 du lot 096,
+/// N8-3). Jugé sur le nom et le dossier exacts, comme `lu_ligne_par_ligne`.
+fn lance_par_le_systeme(fichier: &str) -> bool {
+    let mut parties = fichier.rsplit('/');
+    parties.next() == Some("rc.local") && parties.next() == Some("etc")
+}
+
+/// La première ligne de `contenu` est-elle « #! » suivi d'un interpréteur de `INTERPRETES_ADMIS`, sans option ou de la
+/// seule option « -e » (le rc.local de Debian), puis de blancs seulement ? Sans « #! », le lanceur décide : systemd
+/// échoue, un shell lit le fichier lui-même ; trop d'incertitude, la réponse est non.
+fn interprete_admis(contenu: &[u8]) -> bool {
+    fn sans_blancs_au_bout(t: &[u8]) -> &[u8] {
+        let debut = t.iter().position(|o| !blanc(*o)).unwrap_or(t.len());
+        let fin = t
+            .iter()
+            .rposition(|o| !blanc(*o))
+            .map_or(debut, |f| f.saturating_add(1));
+        t.get(debut..fin.max(debut)).unwrap_or_default()
+    }
+    let premiere = contenu.split(|o| *o == b'\n').next().unwrap_or_default();
+    let Some(reste) = premiere.strip_prefix(b"#!") else {
+        return false;
+    };
+    let reste = sans_blancs_au_bout(reste);
+    INTERPRETES_ADMIS.iter().any(|i| {
+        reste.strip_prefix(*i).is_some_and(|option| {
+            option.is_empty() || (option.first().is_some_and(|o| blanc(*o)) && sans_blancs_au_bout(option) == b"-e")
+        })
+    })
+}
+
+/// Les bornes des cinq champs horaires de cron : minute, heure, jour du mois, mois, jour de la semaine (0 et 7 :
+/// dimanche).
+const CHAMPS_DE_CRON: [(u8, u8); 5] = [(0, 59), (0, 23), (1, 31), (1, 12), (0, 7)];
+
+/// Un nombre d'un champ de cron, d'un ou deux chiffres ASCII, entre `bas` et `haut`.
+fn nombre_de_cron(t: &[u8], bas: u8, haut: u8) -> Option<u8> {
+    let n = match t {
+        [a] if a.is_ascii_digit() => a.checked_sub(b'0'),
+        [a, b] if a.is_ascii_digit() && b.is_ascii_digit() => {
+            a.checked_sub(b'0')?.checked_mul(10)?.checked_add(b.checked_sub(b'0')?)
+        }
+        _ => None,
+    }?;
+    (bas..=haut).contains(&n).then_some(n)
+}
+
+/// Un champ horaire de cron de la forme la plus stricte, que les cron de Debian et cronie acceptent tous deux :
+/// éléments séparés par « , », chacun « * », « */pas », « n » ou « n-m » (n ≤ m), suivi peut-être de « /pas » sauf
+/// après un « n » seul (le cron de Debian refuse « 1/20 ») ; pas de 1 à `haut`. Ni nom (« jan », « mon »), ni « ~ ».
+fn champ_de_cron(champ: &[u8], bas: u8, haut: u8) -> bool {
+    !champ.is_empty()
+        && champ.split(|o| *o == b',').all(|element| {
+            let (plage, pas) = match element.iter().position(|o| *o == b'/') {
+                Some(i) => (element.get(..i).unwrap_or_default(), element.get(i.saturating_add(1)..)),
+                None => (element, None),
+            };
+            let pas_admis = pas.is_none_or(|p| nombre_de_cron(p, 1, haut).is_some());
+            let plage_admise = if plage == b"*" {
+                true
+            } else if let Some(i) = plage.iter().position(|o| *o == b'-') {
+                let debut = nombre_de_cron(plage.get(..i).unwrap_or_default(), bas, haut);
+                let fin = nombre_de_cron(plage.get(i.saturating_add(1)..).unwrap_or_default(), bas, haut);
+                debut.zip(fin).is_some_and(|(d, f)| d <= f)
+            } else {
+                pas.is_none() && nombre_de_cron(plage, bas, haut).is_some()
+            };
+            pas_admis && plage_admise
+        })
+}
+
+/// Le premier mot de `t` (jusqu'au premier blanc) et ce qui suit ses blancs.
+fn mot_et_suite(t: &[u8]) -> (&[u8], &[u8]) {
+    let fin = t.iter().position(|o| blanc(*o)).unwrap_or(t.len());
+    let (mot, apres) = t.split_at(fin);
+    (
+        mot,
+        apres
+            .get(apres.iter().position(|o| !blanc(*o)).unwrap_or(apres.len())..)
+            .unwrap_or_default(),
+    )
+}
+
+/// La ligne d'un fichier de cron du système (/etc/crontab, /etc/cron.d/*) est-elle de la forme la plus stricte, que
+/// son lecteur accepte à coup sûr ? `LigneDeCron::Variable(NOM)` pour « NOM=valeur » (NOM `[A-Za-z_][A-Za-z0-9_]*`,
+/// valeur non vide de `octet_simple` : le cron de Debian refuse « NOM= » vide), `LigneDeCron::Tache` pour une tâche
+/// (« @reboot » et ses semblables, ou cinq champs de `champ_de_cron`, puis le compte « root », le seul qui existe
+/// partout, puis une commande non vide sans octet de contrôle autre que la tabulation), `None` sinon. Au plus
+/// `CRON_LIGNE_OCTETS_MAX` octets : sous le tampon de 1 000 du cron de Debian, qui couperait une ligne plus longue en
+/// deux.
+fn ligne_de_cron_admise(ligne: &[u8]) -> Option<LigneDeCron<'_>> {
+    if ligne.len() > CRON_LIGNE_OCTETS_MAX {
+        return None;
+    }
+    if let Some(i) = ligne.iter().position(|o| *o == b'=') {
+        let (nom, valeur) = (ligne.get(..i)?, ligne.get(i.saturating_add(1)..)?);
+        if nom.first().is_some_and(|o| o.is_ascii_alphabetic() || *o == b'_')
+            && nom.iter().all(|o| o.is_ascii_alphanumeric() || *o == b'_')
+            && !valeur.is_empty()
+            && valeur.iter().all(|o| octet_simple(*o))
+        {
+            return Some(LigneDeCron::Variable(nom));
+        }
+    }
+    let mut reste = ligne;
+    if let Some(apres) = ligne.strip_prefix(b"@") {
+        let (mot, suite) = mot_et_suite(apres);
+        if !["reboot", "yearly", "annually", "monthly", "weekly", "daily", "hourly"]
+            .iter()
+            .any(|m| m.as_bytes() == mot)
+        {
+            return None;
+        }
+        reste = suite;
+    } else {
+        for (bas, haut) in CHAMPS_DE_CRON {
+            let (champ, suite) = mot_et_suite(reste);
+            if !champ_de_cron(champ, bas, haut) {
+                return None;
+            }
+            reste = suite;
+        }
+    }
+    let (compte, commande) = mot_et_suite(reste);
+    (compte == b"root" && !commande.is_empty() && !commande.iter().any(|o| (*o < 0x20 && *o != b'\t') || *o == 0x7f))
+        .then_some(LigneDeCron::Tache)
+}
+
+/// Une ligne de cron admise (`ligne_de_cron_admise`).
+enum LigneDeCron<'a> {
+    /// « NOM=valeur » : la variable NOM.
+    Variable(&'a [u8]),
+    /// Une tâche.
+    Tache,
+}
+
+/// Au plus autant d'octets dans une ligne de cron retirée seule (`ligne_de_cron_admise`).
+const CRON_LIGNE_OCTETS_MAX: usize = 900;
+
+/// Au plus autant de lignes dans un fichier de cron dont une ligne se retire seule : le cron de Debian ignore un
+/// fichier de plus de 10 000 lignes (cron.h, MAX_TAB_LINES), et en retirer une le réveillerait.
+const CRON_LIGNES_MAX: usize = 9000;
+
+/// La clé que pose une ligne de cron, au sens large (pour trouver une autre ligne qui pose la même variable) : après
+/// les blancs et un guillemet, jusqu'au premier « = », blanc ou guillemet, si la ligne porte un « = » ; `None` pour
+/// un commentaire. Large exprès : une ligne qui n'est pas une variable donne une clé qu'aucun NOM n'égale, ou en égale
+/// un et fait refuser de trop.
+fn cle_large_de_cron(ligne: &[u8]) -> Option<&[u8]> {
+    let debut = ligne.iter().position(|o| !o.is_ascii_whitespace())?;
+    let t = ligne.get(debut..)?;
+    if t.first() == Some(&b'#') || !t.contains(&b'=') {
+        return None;
+    }
+    let t = t.strip_prefix(b"\"").or_else(|| t.strip_prefix(b"'")).unwrap_or(t);
+    let fin = t
+        .iter()
+        .position(|o| *o == b'=' || o.is_ascii_whitespace() || *o == b'"' || *o == b'\'')
+        .unwrap_or(t.len());
+    t.get(..fin)
+}
+
+/// La clé que pose une ligne d'un fichier à clés, au sens large, et si sa valeur est vide : après les blancs, jusqu'au
+/// « = » (blancs de fin ôtés), sans la langue (« Name[fr] » compte comme « Name ») ; `None` pour un commentaire « # »,
+/// un groupe « [ » ou une ligne sans « = ». Une valeur vide (« ExecStart= » qui vide la liste de systemd) ne pose rien
+/// que le retrait d'une autre ligne réveillerait.
+fn cle_large(ligne: &[u8]) -> Option<(&[u8], bool)> {
+    let debut = ligne.iter().position(|o| !o.is_ascii_whitespace())?;
+    let t = ligne.get(debut..)?;
+    if matches!(t.first(), Some(b'#' | b'[')) {
+        return None;
+    }
+    let egal = t.iter().position(|o| *o == b'=')?;
+    let cle = t.get(..egal)?.trim_ascii_end();
+    let cle = cle.split(|o| *o == b'[').next().unwrap_or(cle);
+    let vide = t
+        .get(egal.saturating_add(1)..)
+        .unwrap_or_default()
+        .trim_ascii()
+        .is_empty();
+    Some((cle, vide))
+}
+
+/// La ligne d'un fichier à clés est-elle « Clé=valeur » de la forme la plus stricte, que GLib et systemd acceptent à
+/// coup sûr ? La clé (rendue) : lettres et chiffres ASCII, « _ » et « - », sans langue, autre qu'« Encoding » (que GLib
+/// juge dans le premier groupe) ; des blancs peut-être autour du « = » ; une valeur sans octet de contrôle autre que la
+/// tabulation.
+fn ligne_de_cles_admise(ligne: &[u8]) -> Option<&[u8]> {
+    let egal = ligne.iter().position(|o| *o == b'=')?;
+    let cle = ligne.get(..egal)?.trim_ascii_end();
+    let valeur = ligne.get(egal.saturating_add(1)..)?;
+    (!cle.is_empty()
+        && cle != b"Encoding"
+        && cle
+            .iter()
+            .all(|o| o.is_ascii_alphanumeric() || *o == b'_' || *o == b'-')
+        && !valeur.iter().any(|o| (*o < 0x20 && *o != b'\t') || *o == 0x7f))
+    .then_some(cle)
+}
+
+/// La ligne est-elle un en-tête de groupe « [Nom] » (blancs autour admis), au nom non vide sans « [ », « ] » ni octet
+/// de contrôle ?
+fn en_tete_de_groupe(ligne: &[u8]) -> bool {
+    ligne
+        .trim_ascii()
+        .strip_prefix(b"[")
+        .and_then(|r| r.strip_suffix(b"]"))
+        .is_some_and(|nom| !nom.is_empty() && !nom.iter().any(|o| *o == b'[' || *o == b']' || o.is_ascii_control()))
+}
+
 /// Un fichier lu une fois, pour juger le retrait de lignes seules (ronde 5 du lot 096, N1 : en temps linéaire). Au-delà
 /// de `RETRAIT_LIGNES_MAX` lignes ou de `RETRAIT_OCTETS_MAX` octets, rien n'est lu et tout retrait est refusé.
 ///
 /// Ronde 7 : Vanguard ne lit plus de shell. Quatre rondes de relecture ont trouvé des trous dans un lecteur de shell
 /// (guillemets, substitutions, tableaux, heredocs, alias, variables lues par la suite) ; pour juger UNE ligne, il
 /// fallait comprendre toutes les autres. La règle porte désormais sur le fichier entier (`simple`).
+#[allow(clippy::struct_excessive_bools)] // des constats sur le fichier, chacun pour lui-même
 pub(crate) struct AnalyseDeRetrait {
     /// Un fichier qu'un shell, pam_env ou systemd lit comme des variables (tout fichier sauf `lu_ligne_par_ligne`).
     shell: bool,
@@ -1857,6 +2140,25 @@ pub(crate) struct AnalyseDeRetrait {
     /// quand un shell le lit : aucune de ses lignes ne peut ouvrir, lire, tester ni définir quoi que ce soit qu'une
     /// autre ligne verrait.
     simple: bool,
+    /// Une ligne a plus de `LIGNE_OCTETS_MAX` octets (ronde 8 du lot 096, N8-1).
+    longue: bool,
+    /// Un fichier que le système lance lui-même dont la ligne « #! » n'est pas admise (`interprete_admis`, N8-3).
+    interprete_refuse: bool,
+    /// Le lecteur du fichier (N8-4).
+    lecteur: LecteurDeLignes,
+    /// Pour chaque ligne d'un fichier lu ligne par ligne : elle a la forme stricte que son lecteur accepte
+    /// (`ligne_de_cron_admise`, `ligne_de_cles_admise` après un en-tête de groupe ; toute ligne pour anacron).
+    admises: Vec<bool>,
+    /// Pour chaque ligne admise qui pose une variable (cron, anacron au sens large) ou une clé : son nom.
+    cles: Vec<Option<Vec<u8>>>,
+    /// Pour chaque ligne : sa clé au sens large (`cle_large_de_cron`, `cle_large`) est comptée dans `comptes` (une
+    /// valeur vide ne l'est pas dans un fichier à clés).
+    comptees: Vec<bool>,
+    /// Combien de lignes posent chaque clé, au sens large.
+    comptes: std::collections::HashMap<Vec<u8>, usize>,
+    /// Un fichier de cron fini par « \n » et d'au plus `CRON_LIGNES_MAX` lignes : le cron de Debian le lit (sinon il
+    /// l'ignore tout entier, et un retrait pourrait le réveiller).
+    cron_entier: bool,
 }
 
 /// Au plus autant d'octets dans un fichier dont Vanguard juge le retrait d'une ligne seule ; au-delà, refus
@@ -1867,13 +2169,22 @@ pub(crate) const RETRAIT_OCTETS_MAX: usize = 4 * 1024 * 1024;
 impl AnalyseDeRetrait {
     /// L'analyse de `fichier`, de contenu `contenu`.
     pub(crate) fn de(fichier: &str, contenu: &[u8]) -> Self {
-        let shell = !lu_ligne_par_ligne(fichier);
+        let lecteur = LecteurDeLignes::de(fichier);
+        let shell = lecteur == LecteurDeLignes::Shell;
         let mut analyse = Self {
             shell,
             trop: true,
             barres: Vec::new(),
             affectations: Vec::new(),
             simple: false,
+            longue: false,
+            interprete_refuse: false,
+            lecteur,
+            admises: Vec::new(),
+            cles: Vec::new(),
+            comptees: Vec::new(),
+            comptes: std::collections::HashMap::new(),
+            cron_entier: false,
         };
         if contenu.len() > RETRAIT_OCTETS_MAX || contenu.split(|o| *o == b'\n').nth(RETRAIT_LIGNES_MAX).is_some() {
             return analyse;
@@ -1884,8 +2195,12 @@ impl AnalyseDeRetrait {
             .is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("fish"));
         let mut simple = shell && !fish && std::str::from_utf8(contenu).is_ok();
         let mut noms: std::collections::HashSet<&[u8]> = std::collections::HashSet::new();
+        let mut groupe_vu = false;
+        let mut lignes = 0usize;
         for ligne in contenu.split(|o| *o == b'\n') {
             pas_de_retrait();
+            lignes = lignes.saturating_add(1);
+            analyse.longue = analyse.longue || ligne.len() > LIGNE_OCTETS_MAX;
             analyse.barres.push(ligne.trim_ascii_end().ends_with(b"\\"));
             let nom = if shell { affectation_simple(ligne) } else { None };
             analyse.affectations.push(nom.is_some());
@@ -1896,9 +2211,41 @@ impl AnalyseDeRetrait {
             } else {
                 simple = simple && vide_ou_commentaire(ligne);
             }
+            let (admise, cle, large) = match lecteur {
+                LecteurDeLignes::Shell => (false, None, None),
+                LecteurDeLignes::Anacron => {
+                    // anacron saute une ligne qu'il ne comprend pas ; une variable posée deux fois garde la dernière
+                    // valeur : retirer l'une réveillerait l'autre (clé au sens large, comme pour cron).
+                    let large = cle_large_de_cron(ligne);
+                    (true, large, large)
+                }
+                LecteurDeLignes::Cron => {
+                    let lue = ligne_de_cron_admise(ligne);
+                    let nom = match lue {
+                        Some(LigneDeCron::Variable(nom)) => Some(nom),
+                        Some(LigneDeCron::Tache) | None => None,
+                    };
+                    (lue.is_some(), nom, cle_large_de_cron(ligne))
+                }
+                LecteurDeLignes::Cles => {
+                    let cle = if groupe_vu { ligne_de_cles_admise(ligne) } else { None };
+                    groupe_vu = groupe_vu || en_tete_de_groupe(ligne);
+                    let large = cle_large(ligne).and_then(|(c, vide)| (!vide).then_some(c));
+                    (cle.is_some(), cle, large)
+                }
+            };
+            analyse.admises.push(admise);
+            analyse.cles.push(cle.map(<[u8]>::to_vec));
+            analyse.comptees.push(large.is_some());
+            if let Some(c) = large {
+                let compte = analyse.comptes.entry(c.to_vec()).or_insert(0);
+                *compte = compte.saturating_add(1);
+            }
         }
         analyse.trop = false;
         analyse.simple = simple;
+        analyse.interprete_refuse = shell && lance_par_le_systeme(fichier) && !interprete_admis(contenu);
+        analyse.cron_entier = contenu.last() == Some(&b'\n') && lignes <= CRON_LIGNES_MAX.saturating_add(1);
         analyse
     }
 
@@ -1918,6 +2265,9 @@ impl AnalyseDeRetrait {
         if self.trop {
             return Some(Decoupe::Trop);
         }
+        if self.longue {
+            return Some(Decoupe::Longue);
+        }
         let barre = |n: usize| self.barres.get(n).copied().unwrap_or(false);
         if numeros.iter().any(|n| {
             pas_de_retrait();
@@ -1932,7 +2282,41 @@ impl AnalyseDeRetrait {
                     self.affectations.get(*n).is_some_and(|a| !a)
                 })
         };
-        (self.shell && hors_de_la_forme()).then_some(Decoupe::Shell)
+        if self.shell {
+            if self.interprete_refuse {
+                return Some(Decoupe::Interprete);
+            }
+            return hors_de_la_forme().then_some(Decoupe::Shell);
+        }
+        self.lecteur_refuse(numeros).then_some(Decoupe::Lecteur)
+    }
+
+    /// Dans un fichier lu ligne par ligne (ronde 8 du lot 096, N8-4) : une ligne retirée n'a pas la forme stricte que
+    /// son lecteur accepte (`admises`), ou le fichier de cron n'est pas lu en entier par le cron de Debian
+    /// (`cron_entier`), ou une ligne gardée pose la même clé qu'une ligne retirée (`comptes`).
+    fn lecteur_refuse(&self, numeros: &[usize]) -> bool {
+        let mut vus: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        let mut retirees: std::collections::HashMap<&[u8], usize> = std::collections::HashMap::new();
+        for n in numeros {
+            pas_de_retrait();
+            if *n >= self.admises.len() || !vus.insert(*n) {
+                continue;
+            }
+            if !self.admises.get(*n).copied().unwrap_or(false)
+                || (self.lecteur == LecteurDeLignes::Cron && !self.cron_entier)
+            {
+                return true;
+            }
+            if let Some(Some(cle)) = self.cles.get(*n) {
+                let r = retirees.entry(cle.as_slice()).or_insert(0);
+                if self.comptees.get(*n).copied().unwrap_or(false) {
+                    *r = r.saturating_add(1);
+                }
+            }
+        }
+        retirees
+            .iter()
+            .any(|(cle, r)| self.comptes.get(*cle).copied().unwrap_or(0) > *r)
     }
 }
 
@@ -3399,6 +3783,296 @@ mod tests {
         for nom in ["SHELLOPTS", "SHELL", "SHELLX"] {
             assert_eq!(juge_le_nom(nom), [Some(Decoupe::Shell); 2], "{nom}");
         }
+    }
+
+    /// Ronde 8 du lot 096 (N8-2, N8-3) : TERMCAP et TZ, que le shell lit lui-même (bash recharge le terminal ou le
+    /// fuseau à l'affectation) ; KSHUID, KSHGID, KSHEGID, USER_ID, PGRP et KSH_VERSION, en lecture seule dans mksh
+    /// (d'après son manuel, mksh n'est pas installé ici).
+    #[test]
+    fn retrait_refuse_termcap_tz_et_les_noms_de_mksh() {
+        for nom in [
+            "TERMCAP",
+            "TZ",
+            "KSHUID",
+            "KSHGID",
+            "KSHEGID",
+            "USER_ID",
+            "PGRP",
+            "KSH_VERSION",
+        ] {
+            assert_eq!(juge_le_nom(nom), [Some(Decoupe::Shell); 2], "{nom}");
+        }
+    }
+
+    /// Ronde 8 du lot 096 (N8-1) : pam_env de Linux-PAM 1.4.0 à 1.5.3 arrête la lecture de /etc/environment, sans
+    /// erreur, à une ligne de 8 191 octets ou plus ; retirer la ligne longue, ou une ligne d'avant, réveillerait les
+    /// suivantes. Une ligne de plus de `LIGNE_OCTETS_MAX` octets fait refuser tout retrait du fichier, quel que soit
+    /// son lecteur ; à la borne, le retrait se juge.
+    #[test]
+    fn retrait_refuse_dans_un_fichier_a_ligne_longue() {
+        let p = "LD_PRELOAD=/tmp/.x/a.so";
+        let avec = |n: usize| format!("{p}\nA={}\nexport C=d\n", "b".repeat(n - 2));
+        for f in ["/etc/environment", "/etc/profile.d/x.sh", "/etc/security/pam_env.conf"] {
+            assert_eq!(retrait_decoupe(f, avec(LIGNE_OCTETS_MAX).as_bytes(), &[0]), None, "{f}");
+            assert_eq!(
+                retrait_decoupe(f, avec(LIGNE_OCTETS_MAX + 1).as_bytes(), &[0]),
+                Some(Decoupe::Longue),
+                "{f}"
+            );
+            assert_eq!(
+                retrait_decoupe(f, avec(9000).as_bytes(), &[1]),
+                Some(Decoupe::Longue),
+                "{f}"
+            );
+        }
+        let longue = format!("{p}{}\n", "a".repeat(LIGNE_OCTETS_MAX + 1 - p.len()));
+        assert_eq!(
+            retrait_decoupe("/etc/environment", longue.as_bytes(), &[0]),
+            Some(Decoupe::Longue)
+        );
+        let bureau = format!(
+            "[Desktop Entry]\nComment={}\nExec=/tmp/.x/a\n",
+            "c".repeat(LIGNE_OCTETS_MAX)
+        );
+        assert_eq!(
+            retrait_decoupe("/etc/xdg/autostart/a.desktop", bureau.as_bytes(), &[2]),
+            Some(Decoupe::Longue)
+        );
+        let cron = format!("* * * * * root /tmp/.x/a\n# {}\n", "c".repeat(LIGNE_OCTETS_MAX));
+        assert_eq!(
+            retrait_decoupe("/etc/cron.d/x", cron.as_bytes(), &[0]),
+            Some(Decoupe::Longue)
+        );
+    }
+
+    /// Ronde 8 du lot 096 (N8-3) : /etc/rc.local est lancé par le système, et sa ligne « #! » choisit son lecteur.
+    /// Seuls sh et bash (essayés aux rondes 6 et 7), sans option ou avec la seule « -e » du rc.local de Debian,
+    /// admettent un retrait ; tout autre interpréteur, une option de plus ou l'absence de « #! » le refusent. Un
+    /// fichier lu par un shell (profile.d) ne regarde pas sa ligne « #! ».
+    #[test]
+    fn retrait_de_rc_local_selon_l_interprete() {
+        let corps = "export LD_PRELOAD=/tmp/.x/a.so\nA=b\n";
+        for f in ["/etc/rc.local", "/tmp/essai/etc/rc.local"] {
+            for tete in [
+                "#!/bin/sh",
+                "#!/bin/sh -e",
+                "#!/usr/bin/sh",
+                "#!/bin/bash",
+                "#!/usr/bin/bash",
+                "#! /bin/bash  ",
+                "#!/bin/sh\t-e",
+            ] {
+                let contenu = format!("{tete}\n{corps}");
+                assert_eq!(retrait_decoupe(f, contenu.as_bytes(), &[1]), None, "{f} {tete:?}");
+            }
+            for tete in [
+                "#!/usr/bin/python3",
+                "#!/bin/zsh",
+                "#!/bin/mksh",
+                "#!/usr/bin/fish",
+                "#!/usr/bin/env sh",
+                "#!/bin/sh -x",
+                "#!/bin/sh -e -u",
+                "#!/bin/shx",
+                "#!/bin/sh-e",
+                "#!",
+                "# /bin/sh",
+                "",
+            ] {
+                let contenu = format!("{tete}\n{corps}");
+                assert_eq!(
+                    retrait_decoupe(f, contenu.as_bytes(), &[1]),
+                    Some(Decoupe::Interprete),
+                    "{f} {tete:?}"
+                );
+            }
+            assert_eq!(
+                retrait_decoupe(f, corps.as_bytes(), &[0]),
+                Some(Decoupe::Interprete),
+                "{f} sans #!"
+            );
+        }
+        let python = format!("#!/usr/bin/python3\n{corps}");
+        assert_eq!(retrait_decoupe("/etc/profile.d/x.sh", python.as_bytes(), &[1]), None);
+        assert_eq!(retrait_decoupe("/etc/rc.local.d/x", python.as_bytes(), &[1]), None);
+    }
+
+    /// Ronde 8 du lot 096 (N8-4) : le cron de Debian ignore un fichier ENTIER dès une ligne qu'il ne comprend pas, un
+    /// compte inconnu, une dernière ligne sans « \n » ou plus de 10 000 lignes (user.c et entry.c de cron
+    /// 3.0pl1-162, lus) : retirer une telle ligne réveillerait toutes les autres. Seule une ligne de la forme la plus
+    /// stricte (`ligne_de_cron_admise`), dans un fichier qu'il lit en entier, se retire ; une variable posée deux
+    /// fois (la dernière gagne) refuse le retrait de l'une seule.
+    #[test]
+    fn retrait_dans_cron_selon_le_cron_de_debian() {
+        for f in ["/etc/cron.d/x", "/etc/crontab", "/tmp/essai/etc/cron.d/x"] {
+            for (contenu, n) in [
+                ("* * * * * root /tmp/.x/a\n", 0),
+                (
+                    "SHELL=/bin/sh\nPATH=/usr/bin:/bin\n*/5 1-3,7 1 1-12/2 0-7 root /tmp/.x/a --b\n",
+                    2,
+                ),
+                ("@reboot root /tmp/.x/a\n", 0),
+                ("@daily\troot\t/tmp/.x/a\n", 0),
+                (
+                    "# note\n\nLD_PRELOAD=/tmp/.x/a.so\n17 * * * * root cd / && run-parts /etc/cron.hourly\n",
+                    2,
+                ),
+                ("A=b\nLD_PRELOAD=/tmp/.x/a.so\n", 1),
+                ("A=b\nA=c\n* * * * * root a\n", 2),
+            ] {
+                assert_eq!(retrait_decoupe(f, contenu.as_bytes(), &[n]), None, "{f} {contenu:?}");
+            }
+            for (contenu, n) in [
+                ("export LD_PRELOAD=/tmp/.x/a.so\n* * * * * root true\n", 0),
+                ("* * * * * alice /tmp/.x/a\n", 0),
+                ("* * * * * root /tmp/.x/a", 0),
+                ("60 * * * * root a\n", 0),
+                ("1/20 * * * * root a\n", 0),
+                ("*/0 * * * * root a\n", 0),
+                ("5-1 * * * * root a\n", 0),
+                ("* * 0 * * root a\n", 0),
+                ("* * * jan * root a\n", 0),
+                ("* * * * mon root a\n", 0),
+                ("* * * * 8 root a\n", 0),
+                ("* * * * * root\n", 0),
+                ("* * * * *\n", 0),
+                ("@every root a\n", 0),
+                ("@reboot\n", 0),
+                (" * * * * * root a\n", 0),
+                ("* * * * * root a\x0bb\n", 0),
+                ("LD_PRELOAD=\n", 0),
+                ("LD_PRELOAD=\"/tmp/.x/a.so\"\n", 0),
+                ("LD_PRELOAD = /tmp/.x/a.so\n", 0),
+                ("1A=b\n", 0),
+                ("A=b\nA=c\n", 1),
+                ("A=b\nA=c\n", 0),
+                ("A=b\n A = c\n", 0),
+                ("# note\n", 0),
+            ] {
+                assert_eq!(
+                    retrait_decoupe(f, contenu.as_bytes(), &[n]),
+                    Some(Decoupe::Lecteur),
+                    "{f} {contenu:?} ligne {n}"
+                );
+            }
+            // Les deux lignes qui posent la même variable partent ensemble ; un numéro hors du fichier ne compte pas.
+            assert_eq!(retrait_decoupe(f, b"A=b\nA=c\n", &[1, 0]), None);
+            assert_eq!(retrait_decoupe(f, b"A=b\nA=c\n", &[1, 1]), Some(Decoupe::Lecteur));
+            assert_eq!(retrait_decoupe(f, b"* * * * * root a\n", &[0, 99]), None);
+        }
+        // Au plus `CRON_LIGNE_OCTETS_MAX` octets dans la ligne retirée (sous le tampon de 1 000 du cron de Debian).
+        let tache = "* * * * * root ";
+        let juste = format!("{tache}{}\n", "a".repeat(CRON_LIGNE_OCTETS_MAX - tache.len()));
+        assert_eq!(retrait_decoupe("/etc/cron.d/x", juste.as_bytes(), &[0]), None);
+        let trop = format!("{tache}{}\n", "a".repeat(CRON_LIGNE_OCTETS_MAX + 1 - tache.len()));
+        assert_eq!(
+            retrait_decoupe("/etc/cron.d/x", trop.as_bytes(), &[0]),
+            Some(Decoupe::Lecteur)
+        );
+        // Au plus `CRON_LIGNES_MAX` lignes (le cron de Debian ignore un fichier de plus de 10 000 lignes).
+        let lignes = |n: usize| format!("{tache}a\n{}", "\n".repeat(n - 1));
+        assert_eq!(
+            retrait_decoupe("/etc/cron.d/x", lignes(CRON_LIGNES_MAX).as_bytes(), &[0]),
+            None
+        );
+        assert_eq!(
+            retrait_decoupe("/etc/cron.d/x", lignes(CRON_LIGNES_MAX + 1).as_bytes(), &[0]),
+            Some(Decoupe::Lecteur)
+        );
+    }
+
+    /// Ronde 8 du lot 096 (N8-4) : anacron saute une ligne qu'il ne comprend pas et lit la suite (readtab.c
+    /// d'anacron 2.3-36, lu) ; une ligne s'y retire seule, sauf si une autre pose la même variable.
+    #[test]
+    fn retrait_dans_anacrontab() {
+        let f = "/etc/anacrontab";
+        let tab = "SHELL=/bin/sh\n1 5 cron.daily run-parts /etc/cron.daily\nLD_PRELOAD=/tmp/.x/a.so\n";
+        assert_eq!(retrait_decoupe(f, tab.as_bytes(), &[2]), None);
+        assert_eq!(retrait_decoupe(f, b"x y\n", &[0]), None);
+        assert_eq!(
+            retrait_decoupe(f, b"LD_PRELOAD=/a.so\nLD_PRELOAD=/tmp/.x/a.so\n", &[1]),
+            Some(Decoupe::Lecteur)
+        );
+        assert_eq!(
+            retrait_decoupe(f, b"LD_PRELOAD=/a.so\n LD_PRELOAD = /tmp/.x/a.so\n", &[0]),
+            Some(Decoupe::Lecteur)
+        );
+    }
+
+    /// Ronde 8 du lot 096 (N8-4) : GLib (GKeyFile, gkeyfile.c lu) rejette un fichier .desktop ou de gestionnaire de
+    /// connexion ENTIER dès une ligne invalide, une clé avant tout groupe ou un « Encoding » faux ; une clé posée deux
+    /// fois garde la dernière valeur ; systemd rejette une unité à l'en-tête invalide et refuse deux ExecStart=.
+    /// Seule une ligne « Clé=valeur » de la forme la plus stricte, après un en-tête de groupe, dont aucune autre ligne
+    /// ne pose la clé (sauf vide : « ExecStart= » qui vide la liste), se retire seule.
+    #[test]
+    fn retrait_dans_un_fichier_a_cles() {
+        let bureau = "/etc/xdg/autostart/a.desktop";
+        let unite = "/etc/systemd/system/x.service";
+        let ajout = "/etc/systemd/system/x.service.d/a.conf";
+        for (f, contenu, n) in [
+            (
+                bureau,
+                "[Desktop Entry]\nType=Application\nName=Agent\nExec=/tmp/.x/a\n",
+                3,
+            ),
+            (
+                bureau,
+                "# note\n[Desktop Entry]\nName=Agent\nName[fr]=Agent\nExec = /tmp/.x/a\n",
+                4,
+            ),
+            (
+                bureau,
+                "[Desktop Entry]\nExec=/tmp/.x/a\n[Desktop Action b]\nName=B\n",
+                1,
+            ),
+            (unite, "[Unit]\nDescription=x\n[Service]\nExecStart=/tmp/.x/a\n", 3),
+            (ajout, "[Service]\nExecStart=\nExecStart=/tmp/.x/a\n", 2),
+            (unite, "[Service]\nEnvironment=LD_PRELOAD=/tmp/.x/a.so\n", 1),
+            (
+                "/etc/gdm3/custom.conf",
+                "[daemon]\nAutomaticLoginEnable=true\nAutomaticLogin=alice\n",
+                1,
+            ),
+            ("/etc/sddm.conf.d/a.conf", "[Autologin]\nUser=alice\nSession=x\n", 1),
+            ("/etc/lightdm/lightdm.conf", "[Seat:*]\nautologin-user=alice\n", 1),
+        ] {
+            assert_eq!(retrait_decoupe(f, contenu.as_bytes(), &[n]), None, "{f} {contenu:?}");
+        }
+        for (f, contenu, n) in [
+            (bureau, "Exec=/tmp/.x/a\n[Desktop Entry]\nName=a\n", 0),
+            (bureau, "[Desktop Entry]\nExec=/usr/bin/true\nExec=/tmp/.x/a\n", 2),
+            (bureau, "[Desktop Entry]\nExec=/tmp/.x/a\nExec=/usr/bin/true\n", 1),
+            (
+                bureau,
+                "[Desktop Entry]\nExec=/tmp/.x/a\n[Desktop Action b]\nExec=/usr/bin/true\n",
+                1,
+            ),
+            (bureau, "[Desktop Entry]\r\nExec=/tmp/.x/a\r\n", 1),
+            (bureau, "[Desktop Entry]\n  Exec=/tmp/.x/a\n", 1),
+            (bureau, "[Desktop Entry]\nEncoding=UTF-8\n", 1),
+            (bureau, "[Desktop Entry]\nExec[fr]=/tmp/.x/a\n", 1),
+            (bureau, "[Desktop Entry]\nExec /tmp/.x/a\n", 1),
+            (bureau, "[Desktop Entry]\n# Exec=/tmp/.x/a\n", 1),
+            (unite, "[Service]\nExecStart=/tmp/.x/a\n", 0),
+            (unite, "[Service]\nExecStart=/usr/bin/true\nExecStart=/tmp/.x/a\n", 2),
+            (
+                unite,
+                "[Service]\nEnvironment=A=b\nEnvironment=LD_PRELOAD=/tmp/.x/a.so\n",
+                2,
+            ),
+            (ajout, "[Service]\nExecStart=\nExecStart=/tmp/.x/a\n", 1),
+            (ajout, "[Service\nExecStart=/tmp/.x/a\n", 1),
+        ] {
+            assert_eq!(
+                retrait_decoupe(f, contenu.as_bytes(), &[n]),
+                Some(Decoupe::Lecteur),
+                "{f} {contenu:?} ligne {n}"
+            );
+        }
+        // Les lignes qui posent la même clé partent ensemble ; un numéro hors du fichier ne compte pas.
+        let deux = b"[Desktop Entry]\nExec=/usr/bin/true\nExec=/tmp/.x/a\n";
+        assert_eq!(retrait_decoupe(bureau, deux, &[2, 1]), None);
+        assert_eq!(retrait_decoupe(bureau, deux, &[2, 99]), Some(Decoupe::Lecteur));
     }
 
     /// Sans lecture du Wi-Fi, la règle ne disparaît pas : sans carte, rien à juger ; avec une carte, non vérifié,
