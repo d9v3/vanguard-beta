@@ -1530,5 +1530,18 @@
 ["=abcdefghijklmnopr\u00e9seaupin<utilisateur>< : 0x1\u00412B3C4D",0,0],
 ["jour\u002ekey\u002dpr\u00e9seauX\u002d\u0041pi\u002dKey$e\u0301user",0,0],
 ["1234\u005fmise\u00bbsnake\u005fcase\u005fword\u005flist",0,0],
-["\u00c9chec\u002edeux,Zm9vYmFyRmF1eEVudH\u004avcGllMDEypinclient\u005fsecret:\u0041BCD\u002dEFGH\u002dI\u004aKL\u002dMNOP\u0041Iza\u0041Iza",2,1]
+["\u00c9chec\u002edeux,Zm9vYmFyRmF1eEVudH\u004avcGllMDEypinclient\u005fsecret:\u0041BCD\u002dEFGH\u002dI\u004aKL\u002dMNOP\u0041Iza\u0041Iza",2,1],
+["\u0364e erreur du service invent\u00e9",0,0],
+["\u0345 iota seul en t\u00eate du message",0,0],
+["version 2\u0364 install\u00e9e sur le poste",0,0],
+["erreur :\u0345 inattendue au d\u00e9marrage",0,0],
+["mot e\u0364 accept\u00e9 apr\u00e8s une lettre",0,1],
+["le grec o\u0345 gard\u00e9 apr\u00e8s une lettre",0,1],
+["pilote e\u0301\u0301\u0301 avec trois accents empil\u00e9s",0,0],
+["pilote a\u0364\u0345\u0301 avec trois lettres\u002daccents",0,0],
+["pilote e\u0301\u0345 avec deux accents gard\u00e9s",0,1],
+["texte\u034f avec un liant invisible",0,0],
+["pilote e\u0301\u034f liant apr\u00e8s un accent",0,0],
+["lien <url>\u0364 apr\u00e8s un marqueur",0,0],
+["\u0364\ufffd\ufffd\ufffde\u0624\ufffd0\ufffdlice:\ufffd\ufffd\ufffd& e9t h\u00f4te\u06240\u00f4te\u0624\ufffdsecret\ufffd\ufffd0\u00f4te\u0624\ufffd\u0364***ecret\ufffd\ufffd0\u00f4te\u0624\ufffd\u0364**********************\ufffd\ufffd\u03db\u002e1\u002e20",0,0]
 ]

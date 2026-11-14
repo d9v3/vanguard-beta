@@ -1436,7 +1436,10 @@ enum Tri {
 /// filtre gardait comme une lettre un accent qu'Unicode compte parmi les lettres (U+0345, U+0364), seul ou en tête,
 /// que la relecture refusait comme accent. U+034F (liant de graphèmes), dans le bloc mais invisible, n'est jamais
 /// gardé : `normaliser` le retire déjà, la relecture le refuse aussi. Recopiée dans le relais (relais/worker.js,
-/// `trier`) : le test `corpus_du_relais_identique` exige les mêmes réponses.
+/// `trier`) : `corpus_du_relais_identique` et les essais du relais exigent les mêmes réponses sur les textes du
+/// corpus commun (relais/essais/corpus-detecteur.json), pas sur toute entrée. Ce corpus porte un cas par branche
+/// (lettre-accent en tête, après un chiffre, une ponctuation ou un marqueur, trois accents, U+034F) : un écart de
+/// la copie sur l'une d'elles y est vu.
 fn trier(x: char, precedent: Option<char>, accents: u8) -> Tri {
     if accent_combinant(x) {
         if !invisible(x) && accents < ACCENTS_MAX && precedent.is_some_and(|p| p.is_alphabetic() || accent_combinant(p))
