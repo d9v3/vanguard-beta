@@ -6243,6 +6243,430 @@ fn copie_effacee_relancee_par_son_image_reste_une_copie() {
     );
 }
 
+// Essais de bout en bout du programme lancé depuis une clé (relecture adverse, ronde 2 : changement de méthode). Une
+// garde corrigée ne suffit pas : chacune est câblée dans le vrai programme, et c'est ce câblage que ces essais
+// éprouvent, sans droits ni réseau (la session systemd de l'utilisateur reste hors de portée, voir
+// `vanguard_dans_env`).
+
+/// Une fausse clé (témoin `vanguard.cle`, programme dans Linux/) et une maison jetable, dans le dossier temporaire de
+/// cargo (deux programmes de debug pèsent 250 Mo). Rend (racine, programme sur la clé, maison).
+#[cfg(target_os = "linux")]
+fn cle_et_maison(nom: &str) -> (PathBuf, PathBuf, PathBuf) {
+    let racine = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{nom}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&racine);
+    let (cle, maison) = (racine.join("cle"), racine.join("maison"));
+    std::fs::create_dir_all(cle.join("Linux")).unwrap();
+    std::fs::write(cle.join("vanguard.cle"), "").unwrap();
+    std::fs::create_dir_all(maison.join("run")).unwrap();
+    let sur_la_cle = cle.join("Linux").join("vanguard");
+    std::fs::copy(env!("CARGO_BIN_EXE_vanguard"), &sur_la_cle).unwrap();
+    (racine, sur_la_cle, maison)
+}
+
+/// La copie de cet ordinateur, dans la maison jetable.
+#[cfg(target_os = "linux")]
+fn copie_locale(maison: &Path) -> PathBuf {
+    maison.join("donnees").join("vanguard").join("bin").join("vanguard")
+}
+
+/// L'empreinte notée pour la copie de cet ordinateur dans la liste des copies posées par Vanguard (le registre
+/// `programmes-planifies.json` du dossier local), s'il y en a une.
+#[cfg(target_os = "linux")]
+fn copie_notee(maison: &Path) -> Option<String> {
+    let registre = maison
+        .join("donnees")
+        .join("vanguard")
+        .join("programmes-planifies.json");
+    let lu: serde_json::Value = serde_json::from_slice(&std::fs::read(registre).ok()?).ok()?;
+    let copie = copie_locale(maison).display().to_string();
+    lu.get("copies")?.get(&copie)?.as_str().map(str::to_string)
+}
+
+/// Le texte sans couleurs, ses blancs ramenés à une espace : un message coupé en lignes se cherche d'un bloc.
+#[cfg(target_os = "linux")]
+fn a_plat(t: &str) -> String {
+    sans_couleurs(t).split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Démarre `commande`, relancée tant que Linux répond « Text file busy » (voir `attendre`).
+#[cfg(target_os = "linux")]
+fn demarrer(commande: &mut Command) -> std::process::Child {
+    let mut essais = 0;
+    loop {
+        match commande.spawn() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && essais < 20 => {
+                essais += 1;
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            r => break r.expect("vanguard ne démarre pas"),
+        }
+    }
+}
+
+/// Lance le programme de la clé (`args`, en français, hors ligne), attend qu'il pose la question `invite`, puis
+/// réécrit le programme de la clé (des octets en plus à la fin : un fichier réécrit, ou une autre clé au même
+/// endroit, après le lancement) et répond oui. Rend ce qu'il a dit.
+#[cfg(target_os = "linux")]
+fn cle_changee_avant_l_accord(sur_la_cle: &Path, maison: &Path, args: &[&str], invite: &str) -> Sortie {
+    use std::sync::{Arc, Mutex};
+    let mut commande = Command::new(sur_la_cle);
+    commande
+        .args(args)
+        .env("VANGUARD_LANG", "fr")
+        .env("VANGUARD_HORS_LIGNE", "1")
+        .env("USER", "essai")
+        .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
+        .env("XDG_RUNTIME_DIR", maison.join("run"))
+        .env("HOME", maison)
+        .env("XDG_DATA_HOME", maison.join("donnees"))
+        .env("XDG_CONFIG_HOME", maison.join("config"))
+        .env("XDG_CACHE_HOME", maison.join("cache"))
+        .env_remove("VANGUARD_ORIGINE")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut enfant = demarrer(&mut commande);
+    // Lu au fil de l'eau : la question doit être là avant que la clé change.
+    let lu = Arc::new(Mutex::new(Vec::new()));
+    let fil = {
+        let lu = Arc::clone(&lu);
+        let mut flux = enfant.stdout.take().unwrap();
+        std::thread::spawn(move || {
+            let mut tampon = [0u8; 4096];
+            while let Ok(n @ 1..) = flux.read(&mut tampon) {
+                lu.lock().unwrap().extend_from_slice(&tampon[..n]);
+            }
+        })
+    };
+    let erreurs = lire_en_fond(enfant.stderr.take().unwrap());
+    let fin = Instant::now() + Duration::from_secs(60);
+    while !String::from_utf8_lossy(&lu.lock().unwrap()).contains(invite) {
+        if Instant::now() > fin || enfant.try_wait().unwrap().is_some() {
+            let _ = enfant.kill();
+            let _ = enfant.wait();
+            let texte = String::from_utf8_lossy(&lu.lock().unwrap()).into_owned();
+            panic!("pas de question « {invite} »\n{texte}");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(sur_la_cle)
+        .unwrap()
+        .write_all(b"\nautre programme, pose apres le lancement\n")
+        .unwrap();
+    {
+        let mut entree = enfant.stdin.take().unwrap();
+        let _ = entree.write_all(b"o\n");
+    }
+    let fin = Instant::now() + Duration::from_secs(120);
+    let code = loop {
+        if let Some(statut) = enfant.try_wait().unwrap() {
+            break statut.code();
+        }
+        if Instant::now() > fin {
+            let _ = enfant.kill();
+            panic!("vanguard {args:?} n'a pas rendu la main en 120 s");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let _ = fil.join();
+    let texte = String::from_utf8_lossy(&lu.lock().unwrap()).into_owned();
+    Sortie {
+        code,
+        texte,
+        erreurs: erreurs.join().unwrap_or_default(),
+    }
+}
+
+/// MOYENNE (relecture adverse, R1-N2, câblage de `poser_copie`) : le programme de la clé réécrit après le lancement
+/// n'est jamais posé sur cet ordinateur. Le raccourci passe par le même chemin que la surveillance, l'entretien et le
+/// veilleur (`surveillance::executable` → `mise_a_jour::poser_copie`), et lui seul attend un accord : la clé change
+/// entre la question et la pose. Refusé avec la cause ; ni copie, ni raccourci, ni copie notée. Puis, lancé depuis la
+/// clé telle qu'elle est maintenant, il pose sa copie : le refus venait bien du changement.
+#[cfg(target_os = "linux")]
+#[test]
+fn raccourci_refuse_si_la_cle_a_change_depuis_le_lancement() {
+    let (racine, sur_la_cle, maison) = cle_et_maison("raccourci-cle-changee");
+    std::fs::create_dir_all(maison.join("donnees").join("applications")).unwrap();
+    let raccourci = maison.join("donnees").join("applications").join("Vanguard.desktop");
+    let s = cle_changee_avant_l_accord(&sur_la_cle, &maison, &["raccourci"], "Le poser ?");
+    let t = a_plat(&s.texte);
+    assert_eq!(s.code, Some(0), "{t}\n{}", s.erreurs);
+    assert!(
+        t.contains("Copie locale de Vanguard impossible : rien n'est posé")
+            && t.contains("le programme de la clé a changé : ce n'est plus celui qui tourne"),
+        "{t}"
+    );
+    assert!(!t.contains("Raccourci posé"), "{t}");
+    assert!(!copie_locale(&maison).exists(), "copie posée depuis une clé changée");
+    assert!(!raccourci.exists(), "raccourci posé vers une clé changée");
+    assert_eq!(copie_notee(&maison), None);
+
+    let honnete = vanguard_dans_env(&sur_la_cle, &maison, "fr", &["raccourci"], "o\n", 120, HORS_LIGNE);
+    let t = a_plat(&honnete.texte);
+    assert!(t.contains("Raccourci posé"), "{t}\n{}", honnete.erreurs);
+    let cle = std::fs::read(&sur_la_cle).unwrap();
+    let identique = std::fs::read(copie_locale(&maison)).unwrap() == cle;
+    assert!(identique, "la copie n'est pas le programme de la clé");
+    assert_eq!(
+        copie_notee(&maison).as_deref(),
+        Some(blake3::hash(&cle).to_hex().as_str())
+    );
+    let _ = std::fs::remove_dir_all(&racine);
+}
+
+/// MOYENNE (relecture adverse, R1-N2, câblage de `proposer`) : « se-mettre-a-jour » lancé depuis la clé, la clé
+/// réécrite entre la question et l'accord : l'ancienne copie reste, et la cause est dite.
+#[cfg(target_os = "linux")]
+#[test]
+fn mise_a_jour_refusee_si_la_cle_a_change_depuis_le_lancement() {
+    let (racine, sur_la_cle, maison) = cle_et_maison("maj-cle-changee");
+    let copie = copie_locale(&maison);
+    std::fs::create_dir_all(copie.parent().unwrap()).unwrap();
+    std::fs::write(&copie, "vieille copie, sans version gravée").unwrap();
+    let s = cle_changee_avant_l_accord(&sur_la_cle, &maison, &["se-mettre-a-jour"], "La remplacer");
+    let t = a_plat(&s.texte);
+    assert_eq!(s.code, Some(0), "{t}\n{}", s.erreurs);
+    assert!(
+        t.contains("Copie non mise à jour, l'ancienne reste en place")
+            && t.contains("le programme de la clé a changé : ce n'est plus celui qui tourne"),
+        "{t}"
+    );
+    assert!(!t.contains("Copie de cet ordinateur mise à jour"), "{t}");
+    assert_eq!(
+        std::fs::read(&copie).unwrap(),
+        "vieille copie, sans version gravée".as_bytes()
+    );
+    assert_eq!(copie_notee(&maison), None);
+    let _ = std::fs::remove_dir_all(&racine);
+}
+
+/// Le programme de ce test, sa version montée d'un cran dans le chiffre du correctif (même longueur : la version
+/// gravée et celle que dit « --version » changent ensemble, et le programme démarre). `None` si ce chiffre est déjà
+/// 9.
+#[cfg(target_os = "linux")]
+fn programme_plus_recent() -> Option<Vec<u8>> {
+    let ici = env!("CARGO_PKG_VERSION");
+    let (debut, dernier) = ici.split_at(ici.len() - 1);
+    let chiffre = dernier.parse::<u8>().ok().filter(|c| *c < 9)?;
+    let plus = format!("{debut}{}", chiffre + 1);
+    let octets = std::fs::read(env!("CARGO_BIN_EXE_vanguard")).unwrap();
+    let (de, vers) = (ici.as_bytes(), plus.as_bytes());
+    let mut sortie = Vec::with_capacity(octets.len());
+    let mut i = 0;
+    while i < octets.len() {
+        if octets[i..].starts_with(de) {
+            sortie.extend_from_slice(vers);
+            i += de.len();
+        } else {
+            sortie.push(octets[i]);
+            i += 1;
+        }
+    }
+    Some(sortie)
+}
+
+/// BASSE (relecture adverse, R1-M3) : une copie posée depuis une clé plus récente est notée par Vanguard (`installer`
+/// → `copie_posee`, dans le dossier local) ; lancée ensuite depuis une clé plus ancienne, la surveillance la garde,
+/// sans retour en arrière.
+#[cfg(target_os = "linux")]
+#[test]
+fn copie_d_une_cle_plus_recente_gardee_par_une_plus_ancienne() {
+    let Some(recente) = programme_plus_recent() else {
+        return essais::saute("chiffre du correctif déjà à 9 : pas de version plus récente de même longueur");
+    };
+    let (racine, sur_la_cle, maison) = cle_et_maison("cle-plus-recente");
+    let copie = copie_locale(&maison);
+    let ancienne = std::fs::read(&sur_la_cle).unwrap();
+    std::fs::write(&sur_la_cle, &recente).unwrap();
+    let pose = vanguard_dans_env(&sur_la_cle, &maison, "fr", &["surveillance", "on"], "", 120, HORS_LIGNE);
+    let t = a_plat(&pose.texte);
+    assert!(t.contains("Copie locale pour la surveillance"), "{t}\n{}", pose.erreurs);
+    let identique = std::fs::read(&copie).unwrap() == recente;
+    assert!(identique, "la copie n'est pas celle de la clé plus récente");
+    assert_eq!(
+        copie_notee(&maison).as_deref(),
+        Some(blake3::hash(&recente).to_hex().as_str())
+    );
+
+    std::fs::write(&sur_la_cle, &ancienne).unwrap();
+    let gardee = vanguard_dans_env(&sur_la_cle, &maison, "fr", &["surveillance", "on"], "", 120, HORS_LIGNE);
+    let t = a_plat(&gardee.texte);
+    assert!(
+        t.contains("Copie locale pour la surveillance") && !t.contains("Copie locale de Vanguard impossible"),
+        "{t}\n{}",
+        gardee.erreurs
+    );
+    let identique = std::fs::read(&copie).unwrap() == recente;
+    assert!(identique, "copie plus récente remplacée par une plus ancienne");
+    let _ = std::fs::remove_dir_all(&racine);
+}
+
+/// Une copie que Vanguard n'a pas posée, d'une version plus haute que la sienne (un fichier qu'un autre programme du
+/// compte a mis dans bin/), et ce qu'elle contient.
+#[cfg(target_os = "linux")]
+const ETRANGERE: &[u8] = b"programme d'un autre VANGUARD-VERSION:99.0.0+1; fin";
+
+/// Ni copie posée, ni copie notée, ni unité écrite : rien n'a été posé.
+#[cfg(target_os = "linux")]
+fn rien_de_pose(maison: &Path, t: &str) {
+    assert_eq!(std::fs::read(copie_locale(maison)).unwrap(), ETRANGERE, "{t}");
+    assert_eq!(copie_notee(maison), None, "{t}");
+    let unites = maison.join(".config").join("systemd").join("user");
+    for nom in ["vanguard-surveillance.service", "vanguard-entretien.service"] {
+        assert!(!unites.join(nom).exists(), "{nom} posée\n{t}");
+    }
+}
+
+/// MOYENNE (relecture adverse, R1-M2) : une copie plus récente que Vanguard ne reconnaît pas n'est ni gardée ni
+/// remplacée (jamais de retour en arrière en silence) ; c'est dit « non vérifié », en français et en anglais, et rien
+/// n'est posé. Registre illisible : le même refus, jamais un remplacement.
+#[cfg(target_os = "linux")]
+#[test]
+fn copie_plus_recente_inconnue_ni_gardee_ni_remplacee() {
+    let (racine, sur_la_cle, maison) = cle_et_maison("copie-etrangere");
+    let copie = copie_locale(&maison);
+    std::fs::create_dir_all(copie.parent().unwrap()).unwrap();
+    std::fs::write(&copie, ETRANGERE).unwrap();
+    let fr = vanguard_dans_env(&sur_la_cle, &maison, "fr", &["surveillance", "on"], "", 120, HORS_LIGNE);
+    let t = a_plat(&fr.texte);
+    assert!(
+        t.contains("Copie locale de Vanguard impossible : rien n'est posé")
+            && t.contains("non vérifié : la copie de cet ordinateur (99.0.0")
+            && t.contains("ni gardée ni remplacée"),
+        "{t}\n{}",
+        fr.erreurs
+    );
+    rien_de_pose(&maison, &t);
+
+    std::fs::write(
+        maison
+            .join("donnees")
+            .join("vanguard")
+            .join("programmes-planifies.json"),
+        "{pas du json",
+    )
+    .unwrap();
+    let en = vanguard_dans_env(&sur_la_cle, &maison, "en", &["entretien", "on"], "", 120, HORS_LIGNE);
+    let t = a_plat(&en.texte);
+    assert!(
+        t.contains("Local copy of Vanguard not possible: nothing is set up")
+            && t.contains("not checked: the copy on this computer (99.0.0")
+            && t.contains("neither kept nor replaced"),
+        "{t}\n{}",
+        en.erreurs
+    );
+    assert_eq!(std::fs::read(&copie).unwrap(), ETRANGERE, "{t}");
+    let _ = std::fs::remove_dir_all(&racine);
+}
+
+/// MOYENNE (relecture adverse, R1-M1) : le bilan scelle au premier usage le programme d'une tâche qui n'a pas encore
+/// d'entrée, quel qu'il soit. Ce sceau-là ne prouve pas que Vanguard a posé la copie : une unité d'entretien posée par
+/// un autre programme du compte, qui lance un fichier plus récent mis dans bin/, ne le fait pas garder.
+#[cfg(target_os = "linux")]
+#[test]
+fn sceau_de_premier_usage_ne_fait_pas_une_copie_de_vanguard() {
+    let (racine, sur_la_cle, maison) = cle_et_maison("premier-usage");
+    let copie = copie_locale(&maison);
+    std::fs::create_dir_all(copie.parent().unwrap()).unwrap();
+    std::fs::write(&copie, ETRANGERE).unwrap();
+    let unites = maison.join(".config").join("systemd").join("user");
+    std::fs::create_dir_all(unites.join("timers.target.wants")).unwrap();
+    std::fs::write(
+        unites.join("vanguard-entretien.service"),
+        format!(
+            "[Service]\nType=oneshot\nExecStart=\"{}\" entretenir\n",
+            copie.display()
+        ),
+    )
+    .unwrap();
+    std::fs::write(unites.join("vanguard-entretien.timer"), "[Timer]\nOnCalendar=monthly\n").unwrap();
+    std::os::unix::fs::symlink(
+        "../vanguard-entretien.timer",
+        unites.join("timers.target.wants").join("vanguard-entretien.timer"),
+    )
+    .unwrap();
+    let bilan = vanguard_dans(
+        Path::new(env!("CARGO_BIN_EXE_vanguard")),
+        &maison,
+        "fr",
+        &["audit", "--json"],
+        "",
+        300,
+    );
+    // Le sceau de premier usage est bien là : sans lui, l'essai ne montrerait rien.
+    let registre = maison
+        .join("donnees")
+        .join("vanguard")
+        .join("programmes-planifies.json");
+    let lu: serde_json::Value = serde_json::from_slice(&std::fs::read(&registre).unwrap()).unwrap();
+    assert_eq!(
+        lu["taches"]["entretien"]["empreinte"].as_str(),
+        Some(blake3::hash(ETRANGERE).to_hex().as_str()),
+        "{lu}\n{}",
+        bilan.erreurs
+    );
+    std::fs::remove_file(unites.join("timers.target.wants").join("vanguard-entretien.timer")).unwrap();
+    std::fs::remove_file(unites.join("vanguard-entretien.timer")).unwrap();
+    std::fs::remove_file(unites.join("vanguard-entretien.service")).unwrap();
+
+    let s = vanguard_dans_env(&sur_la_cle, &maison, "fr", &["surveillance", "on"], "", 120, HORS_LIGNE);
+    let t = a_plat(&s.texte);
+    assert!(
+        t.contains("Copie locale de Vanguard impossible") && t.contains("non vérifié : la copie de cet ordinateur"),
+        "{t}\n{}",
+        s.erreurs
+    );
+    rien_de_pose(&maison, &t);
+    let _ = std::fs::remove_dir_all(&racine);
+}
+
+/// BASSE (relecture adverse, R2W-N3, câblage) : hors d'une copie temporaire, VANGUARD_ORIGINE est ignorée, même vers
+/// une fausse clé qui porte les mêmes octets : le programme lancé se pose lui-même, jamais une copie de la « clé ».
+#[cfg(target_os = "linux")]
+#[test]
+fn origine_ignoree_hors_d_une_copie() {
+    let (racine, sur_la_cle, maison) = cle_et_maison("origine-hors-copie");
+    let programme = maison.join("prog").join("vanguard");
+    std::fs::create_dir_all(programme.parent().unwrap()).unwrap();
+    std::fs::copy(&sur_la_cle, &programme).unwrap();
+    let origine = sur_la_cle.display().to_string();
+    let env = [("VANGUARD_HORS_LIGNE", "1"), ("VANGUARD_ORIGINE", origine.as_str())];
+    let s = vanguard_dans_env(&programme, &maison, "fr", &["surveillance", "on"], "", 120, &env);
+    let t = a_plat(&s.texte);
+    assert!(!s.erreurs.contains("VANGUARD_ORIGINE"), "{}", s.erreurs);
+    assert!(!t.contains("Copie locale"), "{t}");
+    assert!(
+        !copie_locale(&maison).exists(),
+        "copie posée depuis l'origine soufflée\n{t}"
+    );
+    let _ = std::fs::remove_dir_all(&racine);
+}
+
+/// BASSE (relecture adverse, R2W-N2, câblage) : un fichier encore lié dont le nom finit par « (deleted) », à la place
+/// d'une copie, n'est pas une copie effacée : la marque n'est retirée que si /proc/self/exe n'a plus de lien, et
+/// VANGUARD_ORIGINE reste ignorée (aucune alerte, rien d'examiné).
+#[cfg(target_os = "linux")]
+#[test]
+fn nom_en_deleted_encore_lie_n_est_pas_une_copie() {
+    let racine = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("faux-deleted-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&racine);
+    let maison = racine.join("maison");
+    let dossier = maison.join("run").join("vanguard-1-1");
+    std::fs::create_dir_all(&dossier).unwrap();
+    let faux = dossier.join("vanguard (deleted)");
+    std::fs::copy(env!("CARGO_BIN_EXE_vanguard"), &faux).unwrap();
+    let autre = racine.join("autre");
+    std::fs::write(&autre, b"programme d'un autre").unwrap();
+    let origine = autre.display().to_string();
+    let env = [("VANGUARD_HORS_LIGNE", "1"), ("VANGUARD_ORIGINE", origine.as_str())];
+    let s = vanguard_dans_env(&faux, &maison, "fr", &["--help"], "", 60, &env);
+    assert_eq!(s.code, Some(0), "{}", s.erreurs);
+    assert!(!s.erreurs.contains("VANGUARD_ORIGINE"), "{}", s.erreurs);
+    let _ = std::fs::remove_dir_all(&racine);
+}
+
 /// Les traces collectées dans un dossier jetable : un seul dossier daté, réservé au compte, avec LISEZMOI (en
 /// français puis en anglais), MANIFESTE et les processus ; chaque empreinte du manifeste est juste et chaque fichier y
 /// est. Sous Wine, sans PowerShell, une partie manque et c'est dit ; LISEZMOI et MANIFESTE, eux, sont là.
