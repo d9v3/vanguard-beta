@@ -34,6 +34,7 @@ pub(crate) use fichiers::{
 pub(crate) use identite::compte_d_en_face;
 #[cfg(unix)]
 pub(crate) use identite::{ecrivable, euid, uid};
+pub(crate) use personnel::maison_inconnue;
 #[cfg(unix)]
 pub use personnel::volume;
 pub use personnel::{maison, taille_lisible};

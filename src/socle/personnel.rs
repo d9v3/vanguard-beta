@@ -30,16 +30,18 @@ pub(crate) fn dossier_personnel() -> Option<PathBuf> {
 /// d'une seule façon (`normalise`). R4-5, N5-8 (revérifications des rondes 4 et 5 du lot 0.95) : « /home/alice/ »,
 /// « /home//alice », « /home/./alice » ou « /home/alice/. » (HOME de l'environnement ou de /etc/passwd) ne
 /// ressemblaient plus à « /home/alice » pour les comparaisons de texte du bilan (« {maison}/ ») : un programme dans un
-/// dossier caché du dossier personnel n'était plus dit caché. Un HOME complet avec « .. » : `None`, sans repli (ce
-/// qu'il désigne dépend des liens du disque ; il n'est pas deviné, le bilan dit le dossier personnel inconnu).
+/// dossier caché du dossier personnel n'était plus dit caché. N6-4 (revérification de la ronde 6) : un HOME complet
+/// avec « .. » n'est pas deviné (ce qu'il désigne dépend des liens du disque) ; le `repli` le remplace, comme un HOME
+/// relatif. Avant, `None` faisait de `maison` un chemin vide, lu depuis le dossier courant par qui y joint
+/// « .config/… ». Le bilan dit encore un HOME de la session avec « .. » (persistance).
 fn dossier_personnel_selon(
     home: Option<std::ffi::OsString>,
     repli: impl FnOnce() -> Option<PathBuf>,
 ) -> Option<PathBuf> {
-    match home.map(PathBuf::from) {
-        Some(h) if h.is_absolute() => normalise(&h),
-        _ => repli().filter(|d| d.is_absolute()).and_then(|d| normalise(&d)),
-    }
+    home.map(PathBuf::from)
+        .filter(|h| h.is_absolute())
+        .and_then(|h| normalise(&h))
+        .or_else(|| repli().filter(|d| d.is_absolute()).and_then(|d| normalise(&d)))
 }
 
 /// Un chemin complet écrit d'une seule façon, sans toucher au disque : « / » doublés, « . » et « / » finaux retirés
@@ -67,10 +69,31 @@ fn normalise(d: &Path) -> Option<PathBuf> {
     }
 }
 
-/// `dossier_personnel`, pour qui y joint un sous-dossier et lit ce qui s'y trouve : un chemin vide quand il n'y en a
-/// aucun (ce que faisaient toutes les copies), qui ne mène qu'à des lectures ratées, dites par chacun.
+/// `dossier_personnel`, pour qui y joint un sous-dossier et lit ce qui s'y trouve. Quand il n'y en a aucun (ni HOME
+/// ni la base des comptes ne donnent un chemin complet sans « .. ») : `MAISON_INCONNUE`, jamais vide ni relatif.
 pub fn maison() -> PathBuf {
-    dossier_personnel().unwrap_or_default()
+    maison_selon(dossier_personnel())
+}
+
+/// N6-4 (revérification de la ronde 6 du lot 0.95) : le dossier personnel quand il n'y en a aucun. Un chemin vide
+/// (l'ancien repli) devenait relatif une fois joint à « .config/… » : lu depuis le dossier courant, où l'absence de
+/// tout passait pour « rien à signaler ». Ce chemin-ci est complet et contient un octet NUL : chaque lecture,
+/// écriture ou commande qui s'en sert échoue (« InvalidInput », jamais « absent »), aucune comparaison de texte ne
+/// le rencontre dans un vrai chemin. `maison` a plus de cent appelants : un type à traiter par chacun ne se
+/// relisait pas en une ronde ; ceux qui disent déjà « dossier personnel inconnu » le reconnaissent (`maison_inconnue`).
+#[cfg(unix)]
+const MAISON_INCONNUE: &str = "/\0dossier-personnel-inconnu";
+#[cfg(windows)]
+const MAISON_INCONNUE: &str = "C:\\\0dossier-personnel-inconnu";
+
+/// `maison` d'après `dossier_personnel` (essais).
+fn maison_selon(dossier: Option<PathBuf>) -> PathBuf {
+    dossier.unwrap_or_else(|| PathBuf::from(MAISON_INCONNUE))
+}
+
+/// Le dossier personnel `maison` est-il inconnu : vide, relatif, ou `MAISON_INCONNUE` (un octet NUL) ?
+pub(crate) fn maison_inconnue(maison: &Path) -> bool {
+    !maison.is_absolute() || maison.as_os_str().as_encoded_bytes().contains(&0)
 }
 
 /// Le dossier personnel du compte `uid`, d'après la base des comptes du système, écrit d'une seule façon
@@ -220,12 +243,24 @@ mod tests {
         }
         assert_eq!(texte(dossier_personnel_selon(os("/"), rien)), os("/"));
         assert_eq!(texte(dossier_personnel_selon(os("//./"), rien)), os("/"));
-        // « .. » : jamais deviné, ni par HOME (sans repli) ni par la base des comptes.
+        // « .. » : jamais deviné. N6-4 : un HOME avec « .. » cède à la base des comptes, comme un HOME relatif ; une
+        // base avec « .. » ne donne rien.
         let base_saine = || Some(PathBuf::from("/home/alice"));
         for forme in ["/home/x/../alice", "/home/alice/..", "/../home/alice"] {
-            assert_eq!(dossier_personnel_selon(os(forme), base_saine), None, "HOME={forme}");
+            assert_eq!(
+                texte(dossier_personnel_selon(os(forme), base_saine)),
+                alice,
+                "HOME={forme}"
+            );
+            assert_eq!(
+                dossier_personnel_selon(os(forme), rien),
+                None,
+                "HOME={forme}, sans base"
+            );
             let compte = Some((std::ffi::OsString::from("alice"), PathBuf::from(forme)));
             assert_eq!(dossier_de_la_base(compte), None, "base des comptes : {forme}");
+            let base = || Some(PathBuf::from(forme));
+            assert_eq!(dossier_personnel_selon(os(forme), base), None, "HOME et base : {forme}");
         }
         assert_eq!(dossier_personnel_selon(None, || Some(PathBuf::from("rel/"))), None);
         assert_eq!(
@@ -233,6 +268,30 @@ mod tests {
             None
         );
         assert_eq!(dossier_de_la_base(None), None);
+    }
+
+    /// N6-4 (revérification de la ronde 6 du lot 0.95) : sans dossier personnel, `maison` n'est ni vide ni relatif ;
+    /// joint à un sous-dossier, il ne se lit pas depuis le dossier courant, qui a pourtant ce sous-dossier.
+    #[test]
+    fn maison_inconnue_jamais_relative() {
+        let m = maison_selon(None);
+        assert!(m.is_absolute() && !m.as_os_str().is_empty(), "{m:?}");
+        assert!(maison_inconnue(&m));
+        assert!(maison_inconnue(Path::new("")) && maison_inconnue(Path::new("alice")));
+        assert!(!maison_inconnue(Path::new(if cfg!(windows) {
+            "C:\\Users\\alice"
+        } else {
+            "/home/alice"
+        })));
+        // Le dossier courant des essais a un « src » ; sous `maison` inconnu, il ne se lit pas, ni ne passe pour
+        // absent : l'erreur dit une entrée refusée.
+        assert!(Path::new("src").is_dir());
+        for chemin in [m.clone(), m.join("src"), m.join(".config/uwsm/env")] {
+            let e = std::fs::metadata(&chemin).expect_err("lu sous un dossier personnel inconnu");
+            assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput, "{chemin:?}");
+        }
+        let alice = PathBuf::from("/home/alice");
+        assert_eq!(maison_selon(Some(alice.clone())), alice);
     }
 
     #[test]

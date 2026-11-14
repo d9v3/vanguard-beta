@@ -1265,8 +1265,15 @@ pub(super) fn persistance_dans(
     // Un dossier personnel inconnu ou relatif : les fichiers du compte se liraient sous le dossier courant, et
     // l'absence de tout y passerait pour « rien de suspect » (campagne E, M-f). Avec « .. » (N5-8) : ce qu'il désigne
     // dépend des liens du disque, et les comparaisons de texte du bilan ne le reconnaîtraient pas. C'est dit, non
-    // vérifié.
-    if !maison.is_absolute() || maison.components().any(|m| m == std::path::Component::ParentDir) {
+    // vérifié. N6-4 (revérification de la ronde 6) : `socle::maison` ne rend plus de chemin vide (un chemin complet à
+    // octet NUL, `socle::maison_inconnue`), et un HOME avec « .. » y cède à la base des comptes : un HOME de la session
+    // avec « .. » reste dit ici, les programmes du compte le lisent tel quel.
+    let home_avec_parent =
+        variable("HOME").is_some_and(|h| Path::new(&h).components().any(|m| m == std::path::Component::ParentDir));
+    if crate::socle::maison_inconnue(maison)
+        || home_avec_parent
+        || maison.components().any(|m| m == std::path::Component::ParentDir)
+    {
         t.sources.push(source_de("maison", "relatif"));
         t.retraits.push(None);
         t.temoins.push(Err(temoins::Refus(
@@ -1283,7 +1290,7 @@ pub(super) fn persistance_dans(
     // Un dossier personnel absent ou qu'on ne peut pas lire, ou un des dossiers où le compte range ses démarrages :
     // rien n'y serait trouvé, et ce ne serait pas « rien de suspect » (vérifications de la campagne E, N9). Un
     // sous-dossier absent, lui, ne lance rien.
-    if maison.is_absolute() {
+    if !crate::socle::maison_inconnue(maison) {
         for (rang, dossier) in [
             "",
             ".config",
@@ -2332,7 +2339,7 @@ fn temoin_de_ligne(
     if std::str::from_utf8(&lu.octets).is_err() || fichier.to_str().is_none() {
         return Err(octet_refuse(&court(fichier, &t.r.maison)));
     }
-    if !t.r.maison.is_absolute() {
+    if crate::socle::maison_inconnue(&t.r.maison) {
         return Err(temoins::Refus(
             tr!("le dossier personnel est inconnu", "the home folder is unknown").to_string(),
         ));
@@ -15024,19 +15031,36 @@ mod tests {
     #[test]
     fn dossier_personnel_relatif_dit() {
         let m = maison_avec_rappel("relatif");
-        for maison in ["maison", "/home/x/../alice"] {
-            let c = persistance_dans(&m.racine, Path::new(maison), |_| None, None, None)
+        let saine = m.racine.join("home/alice").to_string_lossy().into_owned();
+        // N6-4 : le chemin de `socle::maison` sans dossier personnel (octet NUL), et un HOME de la session avec « .. »
+        // alors que `socle::maison` a cédé à la base des comptes (un dossier sain).
+        let inconnue = "/\0dossier-personnel-inconnu";
+        for (maison, home) in [
+            ("maison", None),
+            ("/home/x/../alice", None),
+            (inconnue, None),
+            (saine.as_str(), Some("/home/x/../alice")),
+        ] {
+            let variable = |v: &str| (v == "HOME").then(|| home.map(std::ffi::OsString::from)).flatten();
+            let c = persistance_dans(&m.racine, Path::new(maison), variable, None, None)
                 .into_iter()
                 .next()
                 .unwrap();
-            assert!(c.probleme >= Some(Niveau::Eleve), "{maison} : {:?}", c.probleme);
+            assert!(c.probleme >= Some(Niveau::Eleve), "{maison:?} : {:?}", c.probleme);
             assert!(
                 c.message.contains("dossier personnel inconnu, relatif ou avec « .. »"),
-                "{maison} : {}",
+                "{maison:?} : {}",
                 c.message
             );
             assert!(crate::apprentissage::declarable(&c).is_err());
         }
+        // Témoin : le même dossier sain, HOME sans « .. ».
+        let variable = |v: &str| (v == "HOME").then(|| std::ffi::OsString::from(&saine));
+        let c = persistance_dans(&m.racine, Path::new(&saine), variable, None, None)
+            .into_iter()
+            .next()
+            .unwrap();
+        assert!(!c.message.contains("dossier personnel inconnu"), "{}", c.message);
     }
 
     /// Vérification de la campagne E, N3 : un fichier que lit un fichier des variables (« source = » de Hyprland,

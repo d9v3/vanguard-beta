@@ -533,7 +533,7 @@ fn plus_gros_dossiers() -> Vec<(String, u64)> {
     let maison = std::path::PathBuf::from(std::env::var_os("USERPROFILE").unwrap_or_default());
     #[cfg(not(windows))]
     let maison = crate::socle::maison();
-    if maison.as_os_str().is_empty() {
+    if crate::socle::maison_inconnue(&maison) {
         return Vec::new();
     }
     let fin = std::time::Instant::now()

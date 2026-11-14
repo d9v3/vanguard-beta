@@ -158,7 +158,8 @@ pub(crate) fn maison_simple(maison: &Path) -> Result<PathBuf, crate::modele::rai
             ),
         )
     };
-    if !maison.is_absolute() {
+    // N6-4 : `socle::maison_inconnue` (vide, relatif, ou le chemin à octet NUL d'un dossier personnel introuvable).
+    if crate::socle::maison_inconnue(maison) {
         return Err(refus());
     }
     let mut simple = PathBuf::new();
