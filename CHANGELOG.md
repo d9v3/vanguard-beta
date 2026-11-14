@@ -125,72 +125,85 @@ recompilée au besoin.
   (« .cache »), que le motif d'uwsm ne voit que si l'option « dotglob » de bash est posée (un BASHOPTS hérité de la
   session), se jugent pour lever seulement : un préchargement, un dossier caché ou temporaire, un PATH relatif, ou ce
   qui change ce qu'uwsm lit ensuite (variable d'uwsm, HOME, variable spéciale du shell comme BASHOPTS ou IFS, nom de
-  bureau, inclusion, « eval ») est dit, élevé, avec cette condition, et lève la sauvegarde ; un fichier caché sain,
-  binaire ou avec un octet NUL (« .10-x.swp » de vim) se tait, jamais dit non vérifié ; « default-id », des notes ou une
-  copie de travail (« env.bak », « .env.swp ») en haut du dossier ne se jugent plus. Un nom de bureau hors lettres,
-  chiffres, « _ », « . » et « - », dans XDG_CURRENT_DESKTOP de la session ou dans le DesktopNames d'une session d'uwsm
-  (wayland-sessions), ou une ligne DesktopNames avec un octet de contrôle ou non ASCII, est dit, non vérifié (uwsm en
-  tire un fichier « env-… » ailleurs, que Vanguard ne lit pas), ne se déclare pas normal et lève la sauvegarde. Un
-  fichier de variables d'uwsm (de chaque dossier qu'il lit) ou un greffon que le compte peut changer, et chaque fichier
-  qu'ils incluent, à tous les niveaux et quel que soit son propriétaire, ne se juge que s'il n'a que des lignes
-  simples : ligne vide, commentaire entier, « NOM=valeur » ou « export NOM=valeur », « export NOM », et « . chemin » ou
-  « source chemin » avec un chemin absolu ou « ~/… » écrit en toutes lettres, jusqu'à 64 fichiers inclus. La valeur est
-  sans guillemet, « $ », accent grave, barre oblique inverse, parenthèse, « ; », « & », « | », « < », « > », « # »,
-  « ~ », accolade, joker (« * », « ? », « [ », « ] ») ni blanc ; ou tout entière entre apostrophes ; ou tout entière
-  entre guillemets doubles, sans guillemet, accent grave, barre oblique inverse ni octet de contrôle, « $ » n'y servant
-  qu'à « $PATH » ou « ${PATH} » qui forme un morceau entier entre « : » (ou la valeur entière), et à « $HOME » ou
-  « ${HOME} » au tout début d'un morceau, suivi de « / » ou de la fin du morceau ; ailleurs (« /$HOME/.x »,
-  « $PATH/.x », « $HOMEx »), la ligne n'est pas simple. La valeur est calculée avant d'être jugée : « $HOME » devient le
-  dossier personnel sous sa forme normale, « $PATH » le PATH posé plus haut dans le même fichier (sinon celui du
-  système), puis la valeur entière, blancs et « ; » entre guillemets ou apostrophes compris, se juge comme écrite en
-  toutes lettres (`export PATH="$HOME/.local/bin:$PATH"` comme « /home/alice/.local/bin:… »). Vanguard ne lit pas le
-  shell : un fichier qui a une autre ligne (eval, fonction, condition, « ~+ », « {a,b} », commentaire en fin de ligne,
-  octet NUL, texte hors UTF-8…), qui pose une variable que le shell d'uwsm ou ses programmes lisent pour changer la
-  suite (IFS, EXECIGNORE, BASH_ENV, BASH_*, ENV, GLOBIGNORE, CDPATH, LANG, LC_*…), ou qui lit « $HOME » ou « ~/ » alors
-  qu'un fichier d'uwsm pose HOME, n'est pas jugé : il est dit à part, non vérifié (jamais compté sain, sans gravité
-  devinée), avec ce qu'il faut récrire, et il lève la sauvegarde. Dans un fichier jugé, une ligne qui écrit
-  XDG_CURRENT_DESKTOP est dite, non vérifiée, élevée et non déclarable, car uwsm relit ce nom pour chaque dossier
-  suivant, sauf à une valeur fixe de lettres, chiffres, « _ », « . » et « - » (« sway », « GNOME:sway », entre
-  guillemets ou non), dite en information ; de même pour une variable d'uwsm (`__NOM__`) ou HOME, et pour une inclusion
-  relative ou d'un dossier. Un profil du shell ou un fichier d'uwsm qui contient un octet NUL, que le shell retire avant
-  de lire, est dit aussi, non vérifié ; et un « env.d » qui est un lien vers un dossier se suit partout, comme uwsm le
-  suit : la sauvegarde juge ce qu'il contient au lieu de se lever parce qu'il ne se lit pas comme un fichier. Dans un
-  profil, une valeur entre guillemets ou apostrophes n'est plus coupée au premier blanc qu'elle contient, seulement au
-  premier blanc hors guillemets. Partout où Vanguard juge une variable de recherche ou d'injection (PATH,
-  LD_LIBRARY_PATH, SSH_ASKPASS, GIT_SSH… ; fichiers d'uwsm, profils, environment.d, unités, Hyprland, commandes), chaque
-  morceau entre « : » se simplifie (« .. », « // », « . ») avant toute autre coupe, que la valeur lise « $HOME » ou
-  « $PATH » ou non, et la valeur se juge simplifiée et telle qu'écrite : « /home/alice/a b/../.x » se lève comme
-  « $HOME/a b/../.x » (avant, la coupe aux blancs, « ; », « , » ou « = » venait d'abord et le « .. » n'était pas
-  appliqué). Un PATH avec un morceau vide ou relatif (« . », « .x », « :: », « : » au début ou à la fin), qui fait
-  chercher chaque programme lancé par son nom dans le dossier courant, est élevé dans un fichier d'uwsm, un profil du
-  shell (fish compris), environment.d et user.conf de systemd. Les lignes « exec » des réglages de popt (~/.popt,
-  /etc/popt) se jugent comme des lancements. Un fichier qu'un profil ou un fichier d'uwsm lit par « . » ou « source » se
-  juge aussi ligne à ligne, avec la même règle que ~/.bashrc (une ligne qui nomme LD_PRELOAD se signale, même si elle ne
-  fait que le lire), quand l'inclusion est écrite en toutes lettres en position de commande et que son chemin est absolu
-  ou sous « ~/ » ou « $HOME/ », jusqu'à 64 fichiers inclus. Un dossier personnel écrit autrement (« /home/alice/. »,
-  « /home//alice ») se lit sous sa forme normale ; un HOME avec « .. » n'est pas suivi (le dossier tiré de la base des
-  comptes le remplace, et sans lui, aucun chemin relatif ni vide n'en tient lieu) et le bilan dit le dossier personnel
-  inconnu, non vérifié. Limites : dans un profil, une inclusion écrite autrement (chemin relatif ou calculé par une
-  variable, boucle sur un dossier, eval) n'est pas suivie, et le bilan ne le signale pas, un fichier inclus illisible,
-  trop gros ou qui n'est pas en UTF-8 n'est pas jugé, et une valeur entre guillemets écrite sur plusieurs lignes n'est
-  pas suivie d'une ligne à l'autre, et peut cacher la ligne qui la suit ; les fichiers d'uwsm du système à root seul, et
-  ce qu'ils incluent, ne se jugent pas ainsi ; ~/.profile, qu'uwsm lit avant ses fichiers dans le même shell, n'est pas
-  jugé de la règle d'uwsm (choix de l'auteur) : une ligne qui y change le nom de bureau ou une variable d'uwsm, y
-  définit une fonction ou un alias, ou y lance une commande quelconque, n'est pas vérifiée ; un PATH posé par une ligne
-  simple n'est jugé que pour ses dossiers cachés et ses morceaux vides ou relatifs : un dossier ordinaire du compte
-  placé devant ceux du système peut changer chaque programme qu'uwsm, ou ce qu'il lance, trouve ensuite par PATH (tr,
-  sh, env, systemctl, xdg-user-dirs-update…) ; Vanguard ne lit pas le réglage « dotglob » : un fichier caché d'un « .d »
-  n'est jugé que pour lever, jamais dit non vérifié, et une ligne qui n'y est pas simple n'est lue que commande par
-  commande, sans lire le shell ; un PATH relatif posé par une unité de systemd ou une ligne « env = » de Hyprland, et un
-  LD_LIBRARY_PATH relatif, ne sont pas signalés ; hors d'une ligne simple, un morceau de PATH qui lit une variable
-  (« $… »), commence par « ~ » ou « % », ou une valeur qui contient « ` », « \ », « { » ou « ( » (« ${PATH:+$PATH:}$1 »
-  d'Arch) n'est pas jugé relatif ; dans fish, un dossier entre guillemets qui contient un blanc se coupe au blanc (un
-  faux positif lève) ; XDG_DATA_DIRS, XDG_CONFIG_DIRS, GIT_EXEC_PATH, TMPDIR ou FPATH posés vers un dossier caché ne
-  sont pas signalés, ni un dossier caché plus loin que le premier niveau du dossier personnel (« ~/outils/.x », règle
-  commune) ; un cycle d'inclusions entre fichiers d'uwsm n'est pas dit au bilan (la sauvegarde se lève) ; dans un
-  profil, une ligne qui n'est pas simple ne se calcule pas (« /$HOME/.x » n'y est pas lu comme le dossier personnel).
-  Une variable posée en cours de session, par une ligne « env = » de Hyprland, ou un dossier déplacé par un profil de
-  shell n'est pas vérifié.
+  bureau, inclusion, « eval ») est dit, élevé, avec cette condition, et lève la sauvegarde ; un fichier caché sain, ou
+  que bash refuse lui-même (un octet NUL dans sa première ligne, comme « .10-x.swp » de vim), se tait ; un fichier caché
+  que Vanguard ne lit pas sûrement (octet NUL plus loin, que bash retire, texte hors UTF-8, plus de 1 Mio, illisible,
+  ligne qui n'est pas simple) est dit non vérifié, avec la même condition, lève la sauvegarde, et ce qu'il pose de
+  suspect se lève quand même ; « default-id », des notes ou une copie de travail (« env.bak », « .env.swp ») en haut du
+  dossier ne se jugent plus. Un nom de bureau hors lettres, chiffres, « _ », « . » et « - », dans XDG_CURRENT_DESKTOP de
+  la session ou dans le DesktopNames d'une session d'uwsm (wayland-sessions), ou une ligne DesktopNames avec un octet de
+  contrôle ou non ASCII, est dit, non vérifié (uwsm en tire un fichier « env-… » ailleurs, que Vanguard ne lit pas), ne
+  se déclare pas normal et lève la sauvegarde. Un fichier de variables d'uwsm (de chaque dossier qu'il lit) ou un
+  greffon que le compte peut changer, et chaque fichier qu'ils incluent, à tous les niveaux et quel que soit son
+  propriétaire, ne se juge que s'il n'a que des lignes simples : ligne vide, commentaire entier, « NOM=valeur » ou
+  « export NOM=valeur », « export NOM », et « . chemin » ou « source chemin » avec un chemin absolu ou « ~/… » écrit en
+  toutes lettres, jusqu'à 64 fichiers inclus. La valeur est sans guillemet, « $ », accent grave, barre oblique inverse,
+  parenthèse, « ; », « & », « | », « < », « > », « # », « ~ », accolade, joker (« * », « ? », « [ », « ] ») ni blanc ;
+  ou tout entière entre apostrophes ; ou tout entière entre guillemets doubles, sans guillemet, accent grave, barre
+  oblique inverse ni octet de contrôle, « $ » n'y servant qu'à « $PATH » ou « ${PATH} » qui forme un morceau entier
+  entre « : » (ou la valeur entière), et à « $HOME » ou « ${HOME} » au tout début d'un morceau, suivi de « / » ou de la
+  fin du morceau ; ailleurs (« /$HOME/.x », « $PATH/.x », « $HOMEx »), la ligne n'est pas simple. La valeur est calculée
+  avant d'être jugée : « $HOME » devient le dossier personnel sous sa forme normale, « $PATH » le PATH posé plus haut
+  dans le même fichier (sinon celui du système), puis la valeur entière, blancs et « ; » entre guillemets ou apostrophes
+  compris, se juge comme écrite en toutes lettres (`export PATH="$HOME/.local/bin:$PATH"` comme
+  « /home/alice/.local/bin:… »). Vanguard ne lit pas le shell : un fichier qui a une autre ligne (eval, fonction,
+  condition, « ~+ », « {a,b} », commentaire en fin de ligne, octet NUL, texte hors UTF-8…), qui pose une variable que le
+  shell d'uwsm ou ses programmes lisent pour changer la suite (IFS, EXECIGNORE, BASH_ENV, BASH_*, ENV, GLOBIGNORE,
+  CDPATH, LANG, LC_*…), ou qui lit « $HOME » ou « ~/ » alors qu'un fichier d'uwsm pose HOME, n'est pas jugé : il est dit
+  à part, non vérifié (jamais compté sain, sans gravité devinée), avec ce qu'il faut récrire, et il lève la sauvegarde.
+  Dans un fichier jugé, une ligne qui écrit XDG_CURRENT_DESKTOP est dite, non vérifiée, élevée et non déclarable, car
+  uwsm relit ce nom pour chaque dossier suivant, sauf à une valeur fixe de lettres, chiffres, « _ », « . » et « - »
+  (« sway », « GNOME:sway », entre guillemets ou non), dite en information ; de même pour une variable d'uwsm
+  (`__NOM__`) ou HOME, et pour une inclusion relative ou d'un dossier. Un profil du shell ou un fichier d'uwsm qui
+  contient un octet NUL, que le shell retire avant de lire, est dit aussi, non vérifié ; et un « env.d » qui est un lien
+  vers un dossier se suit partout, comme uwsm le suit : la sauvegarde juge ce qu'il contient au lieu de se lever parce
+  qu'il ne se lit pas comme un fichier. Dans un profil, une valeur entre guillemets ou apostrophes n'est plus coupée au
+  premier blanc qu'elle contient, seulement au premier blanc hors guillemets. Partout où Vanguard juge une variable de
+  recherche ou d'injection (PATH, LD_LIBRARY_PATH, SSH_ASKPASS, GIT_SSH… ; fichiers d'uwsm, profils, environment.d,
+  user.conf, unités, Hyprland, commandes), la valeur se juge sous plusieurs lectures, et une seule suspecte suffit :
+  telle qu'écrite ; sans aucun guillemet ni barre oblique inverse, où qu'ils soient (« /usr/bin:"/home/alice/.x" »,
+  « "$HOME"/.x ») ; chaque morceau entre « : » simplifié (« .. », « // », « . »), que la valeur lise « $HOME » ou
+  « $PATH » ou non ; et la valeur entière simplifiée comme un seul chemin (« /home/alice/a:b/../.x/demande » d'un
+  SSH_ASKPASS, qui n'est pas une liste). « /home/alice/a b/../.x » se lève donc comme « $HOME/a b/../.x ». Chaque format
+  ne fait que sa propre coupe : environment.d et user.conf gardent le reste entier de la ligne, blancs et « ; » compris,
+  comme systemd (avant, la valeur s'y coupait au premier blanc, comme dans le shell) ; dans un profil, chaque commande
+  de la ligne, coupée hors guillemets à « ; », « & » et « | », se juge jusqu'au commentaire (« true && export
+  PATH=… ») ; dans fish, chaque mot sans ses guillemets, jusqu'au commentaire ou au « ; » (avant, « set -gx PATH
+  /usr/local/bin $PATH # mes outils » se levait à tort). BASHOPTS ou SHELLOPTS posé à la session (environment.d,
+  user.conf, un profil) est élevé : « dotglob » fait lire à uwsm les fichiers cachés de ses « .d ». Un PATH avec un
+  morceau vide ou relatif (« . », « .x », « :: », « : » au début ou à la fin), qui fait chercher chaque programme lancé
+  par son nom dans le dossier courant, est élevé dans un fichier d'uwsm, un profil du shell (fish compris),
+  environment.d et user.conf de systemd. Les lignes « exec » des réglages de popt (~/.popt, /etc/popt) se jugent comme
+  des lancements. Un fichier qu'un profil ou un fichier d'uwsm lit par « . » ou « source » se juge aussi ligne à ligne,
+  avec la même règle que ~/.bashrc (une ligne qui nomme LD_PRELOAD se signale, même si elle ne fait que le lire), quand
+  l'inclusion est écrite en toutes lettres en position de commande et que son chemin est absolu ou sous « ~/ » ou
+  « $HOME/ », jusqu'à 64 fichiers inclus. Un dossier personnel écrit autrement (« /home/alice/. », « /home//alice ») se
+  lit sous sa forme normale ; un HOME avec « .. » n'est pas suivi (le dossier tiré de la base des comptes le remplace,
+  et sans lui, aucun chemin relatif ni vide n'en tient lieu) et le bilan dit le dossier personnel inconnu, non vérifié.
+  Limites : dans un profil, une inclusion écrite autrement (chemin relatif ou calculé par une variable, boucle sur un
+  dossier, eval) n'est pas suivie, et le bilan ne le signale pas, un fichier inclus illisible, trop gros ou qui n'est
+  pas en UTF-8 n'est pas jugé, et une valeur entre guillemets écrite sur plusieurs lignes n'est pas suivie d'une ligne à
+  l'autre, et peut cacher la ligne qui la suit ; les fichiers d'uwsm du système à root seul, et ce qu'ils incluent, ne
+  se jugent pas ainsi ; ~/.profile, qu'uwsm lit avant ses fichiers dans le même shell, n'est pas jugé de la règle d'uwsm
+  (choix de l'auteur) : une ligne qui y change le nom de bureau ou une variable d'uwsm, y définit une fonction ou un
+  alias, ou y lance une commande quelconque, n'est pas vérifiée ; un PATH posé par une ligne simple n'est jugé que pour
+  ses dossiers cachés et ses morceaux vides ou relatifs : un dossier ordinaire du compte placé devant ceux du système
+  peut changer chaque programme qu'uwsm, ou ce qu'il lance, trouve ensuite par PATH (tr, sh, env, systemctl,
+  xdg-user-dirs-update…) ; Vanguard ne lit pas le réglage « dotglob » de la session : un fichier caché d'un « .d » se
+  juge sous cette condition, dite ; une ligne qui n'y est pas simple n'est lue que commande par commande, sans lire le
+  shell ; bash 5.3 refuse aussi un fichier avec un octet NUL en deuxième ligne après « #! », que Vanguard dit non
+  vérifié par prudence (un programme ELF, avec un octet NUL dans ses premiers octets, se tait comme binaire) ; un PATH
+  relatif posé par une unité de systemd ou une ligne « env = » de Hyprland, et un LD_LIBRARY_PATH relatif, ne sont pas
+  signalés ; hors d'une ligne simple, un morceau de PATH qui lit une variable (« $… »), commence par « ~ » ou « % », ou
+  une valeur qui contient « ` », « \ », « { » ou « ( » (« ${PATH:+$PATH:}$1 » d'Arch) n'est pas jugé relatif ; un « ~ »
+  entre apostrophes (`export PATH='~/bin:/usr/bin'`), « PATH=.x:${PATH} », « PATH+=… », la forme « $'…' » de bash et
+  « path=(. $path) » de zsh ne se jugent pas, et ~/.cshrc n'est pas lu ; une condition ou une boucle d'un profil (« if
+  …; then export …; fi ») se lit commande par commande, sans lire le shell ; XDG_DATA_DIRS, XDG_CONFIG_DIRS,
+  GIT_EXEC_PATH, TMPDIR ou FPATH posés vers un dossier caché ne sont pas signalés, ni un dossier caché plus loin que le
+  premier niveau du dossier personnel (« ~/outils/.x », règle commune) ; un cycle d'inclusions entre fichiers d'uwsm
+  n'est pas dit au bilan (la sauvegarde se lève) ; dans un profil, une ligne qui n'est pas simple ne se calcule pas
+  (« /$HOME/.x » n'y est pas lu comme le dossier personnel). Une variable posée en cours de session, par une ligne « env
+  = » de Hyprland, ou un dossier déplacé par un profil de shell n'est pas vérifié.
 - **Les programmes du système, pris par leur chemin.** Le bilan, les traces, la surveillance, la sauvegarde et les
   autres lectures de la machine lancent pacman, systemctl, journalctl, ss, crontab, ping et les autres depuis les
   dossiers du système, jamais par le PATH du compte : un faux programme posé dans ~/.local/bin ne peut plus cacher une
