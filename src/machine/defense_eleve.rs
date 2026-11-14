@@ -1980,6 +1980,60 @@ fn noms_montres(noms: &[Vec<u8>]) -> String {
     montres.join(", ")
 }
 
+/// La raison, dite au fils root, d'un retrait ou d'un commentaire de ligne refusé (`linux::retrait_refuse`,
+/// `linux::proxy_refuse`) ; `hors` : celle d'une ligne qui n'est pas de celles que le geste touche.
+fn raison_de_decoupe(d: crate::machine::linux::Decoupe, vu: &str, hors: String) -> String {
+    use crate::machine::linux::Decoupe;
+    match d {
+        Decoupe::Hors => hors,
+        Decoupe::Format => {
+            trf!(
+                "{vu} est une unité systemd, un fichier de cron ou d'anacron, ou un raccourci .desktop : une ligne peut y en retenir une autre (« ExecStartPre= » ou « ExecCondition= » qui empêche « ExecStart= », « SHELL= » ou « PATH= » qui fait échouer les tâches de cron qui suivent), et en retirer une seule pourrait faire lancer ce qu'elle retenait ; Vanguard ne corrige jamais ces fichiers lui-même : rien n'est fait, corrigez ce fichier à la main",
+                "{vu} is a systemd unit, a cron or anacron file, or a .desktop shortcut: a line there can hold back another one (\"ExecStartPre=\" or \"ExecCondition=\" that stops \"ExecStart=\", \"SHELL=\" or \"PATH=\" that makes the cron jobs after it fail), and removing one alone could start what it held back; Vanguard never fixes these files itself: nothing is done, fix this file by hand"
+            )
+        }
+        Decoupe::Barre => {
+            trf!(
+                "dans {vu}, la ligne désignée ou celle d'avant finit par « \\ » : un lecteur comme le shell ou systemd la joindrait à la suivante, et la retirer seule ferait lire autre chose à la ligne d'après ; par prudence, rien n'est fait : corrigez ce fichier à la main",
+                "in {vu}, the line named or the one before it ends with \"\\\": a reader such as the shell or systemd would join it to the next one, and removing it alone would change what the next line does; to be safe, nothing is done: fix this file by hand"
+            )
+        }
+        Decoupe::Shell => {
+            trf!(
+                "dans {vu}, le fichier n'est pas fait que de lignes vides, de commentaires et d'affectations simples « export NOM=valeur » (NOM en majuscules, valeur sans « $ », guillemet double, « ; », « & », « | », « # » ni « \\ », chaque NOM une seule fois, aucune variable du shell comme PATH ou UID), ou la ligne désignée n'en est pas une : Vanguard ne lit pas le shell, et la retirer seule pourrait changer ce que font d'autres lignes ; par prudence, rien n'est fait : corrigez ce fichier à la main",
+                "in {vu}, the file is not made only of empty lines, comments and simple assignments \"export NAME=value\" (NAME in capitals, a value without \"$\", double quote, \";\", \"&\", \"|\", \"#\" or \"\\\\\", each NAME only once, no shell variable such as PATH or UID), or the line named is not one of them: Vanguard does not read shell code, and removing it alone could change what other lines do; to be safe, nothing is done: fix this file by hand"
+            )
+        }
+        Decoupe::Trop => {
+            trf!(
+                "{vu} a plus de {} lignes ou de {} Mio : Vanguard ne vérifie pas qu'en retirer une seule ne change rien d'autre ; rien n'est fait : corrigez ce fichier à la main",
+                "{vu} has more than {} lines or {} MiB: Vanguard does not check that removing one alone changes nothing else; nothing is done: fix this file by hand",
+                crate::machine::linux::RETRAIT_LIGNES_MAX,
+                crate::machine::linux::RETRAIT_OCTETS_MAX / (1024 * 1024)
+            )
+        }
+        Decoupe::Longue => {
+            trf!(
+                "{vu} a une ligne de plus de {} octets : un lecteur à tampon fixe peut s'arrêter à une telle ligne, et en retirer une pourrait en réveiller d'autres ; par prudence, rien n'est fait : corrigez ce fichier à la main",
+                "{vu} has a line of more than {} bytes: a reader with a fixed buffer can stop at such a line, and removing one could wake up others; to be safe, nothing is done: fix this file by hand",
+                crate::machine::linux::LIGNE_OCTETS_MAX
+            )
+        }
+        Decoupe::Interprete => {
+            trf!(
+                "la première ligne « #! » de {vu} ne nomme pas /bin/sh ni /bin/bash : pour un autre interpréteur, Vanguard ne sait pas ce que fait chaque ligne ; par prudence, rien n'est fait : corrigez ce fichier à la main",
+                "the first \"#!\" line of {vu} names neither /bin/sh nor /bin/bash: for another interpreter, Vanguard does not know what each line does; to be safe, nothing is done: fix this file by hand"
+            )
+        }
+        Decoupe::Connexion => {
+            trf!(
+                "{vu} est un fichier de gestionnaire de connexion (GDM, SDDM, LightDM) : chacun lit plusieurs fichiers à sa façon (SDDM n'est pas lu comme GDM et LightDM), et la dernière valeur l'emporte ; retirer ou commenter la ligne de celui-ci pourrait laisser, ou réveiller, celle d'un autre fichier. Vanguard ne corrige jamais ces fichiers lui-même : rien n'est fait, corrigez ce fichier à la main",
+                "{vu} is a login manager file (GDM, SDDM, LightDM): each one reads several files in its own way (SDDM is not read like GDM and LightDM), and the last value wins; removing or commenting out the line in this one could leave, or wake up, the one in another file. Vanguard never fixes these files itself: nothing is done, fix this file by hand"
+            )
+        }
+    }
+}
+
 fn juger_ligne(e: Empreinte, c: &CheminDesigne, a: &mut dyn Acces) -> Jugement {
     let (p, f, contenu) = fichier_de_ligne(c, a)?;
     let vu = lisible(&p);
@@ -2038,56 +2092,8 @@ fn juger_ligne(e: Empreinte, c: &CheminDesigne, a: &mut dyn Acces) -> Jugement {
     // se retire seule que si tout le fichier n'est fait que de lignes vides, de commentaires entiers et
     // d'affectations « [export ]NOM=valeur » de la forme la plus simple, chaque NOM une fois. Ronde 9 : jamais dans
     // une unité systemd, un fichier de cron ou d'anacron, un raccourci .desktop (`Decoupe::Format`).
-    if !preload {
-        match crate::machine::linux::retrait_refuse(fichier, &contenu, ligne, &numeros) {
-            Some(crate::machine::linux::Decoupe::Hors) => return Err(refus(hors)),
-            Some(crate::machine::linux::Decoupe::Format) => {
-                return Err(refus(trf!(
-                    "{vu} est une unité systemd, un fichier de cron ou d'anacron, ou un raccourci .desktop : une ligne peut y en retenir une autre (« ExecStartPre= » ou « ExecCondition= » qui empêche « ExecStart= », « SHELL= » ou « PATH= » qui fait échouer les tâches de cron qui suivent), et en retirer une seule pourrait faire lancer ce qu'elle retenait ; Vanguard ne corrige jamais ces fichiers lui-même : rien n'est fait, corrigez ce fichier à la main",
-                    "{vu} is a systemd unit, a cron or anacron file, or a .desktop shortcut: a line there can hold back another one (\"ExecStartPre=\" or \"ExecCondition=\" that stops \"ExecStart=\", \"SHELL=\" or \"PATH=\" that makes the cron jobs after it fail), and removing one alone could start what it held back; Vanguard never fixes these files itself: nothing is done, fix this file by hand"
-                )));
-            }
-            Some(crate::machine::linux::Decoupe::Barre) => {
-                return Err(refus(trf!(
-                    "dans {vu}, la ligne désignée ou celle d'avant finit par « \\ » : un lecteur comme le shell ou systemd la joindrait à la suivante, et la retirer seule ferait lire autre chose à la ligne d'après ; par prudence, rien n'est fait : corrigez ce fichier à la main",
-                    "in {vu}, the line named or the one before it ends with \"\\\": a reader such as the shell or systemd would join it to the next one, and removing it alone would change what the next line does; to be safe, nothing is done: fix this file by hand"
-                )));
-            }
-            Some(crate::machine::linux::Decoupe::Shell) => {
-                return Err(refus(trf!(
-                    "dans {vu}, le fichier n'est pas fait que de lignes vides, de commentaires et d'affectations simples « export NOM=valeur » (valeur sans « $ », guillemet double, « ; », « & », « | », « # » ni « \\ », chaque NOM une seule fois, aucune variable du shell comme PATH ou UID), ou la ligne désignée n'en est pas une : Vanguard ne lit pas le shell, et la retirer seule pourrait changer ce que font d'autres lignes ; par prudence, rien n'est fait : corrigez ce fichier à la main",
-                    "in {vu}, the file is not made only of empty lines, comments and simple assignments \"export NAME=value\" (a value without \"$\", double quote, \";\", \"&\", \"|\", \"#\" or \"\\\\\", each NAME only once, no shell variable such as PATH or UID), or the line named is not one of them: Vanguard does not read shell code, and removing it alone could change what other lines do; to be safe, nothing is done: fix this file by hand"
-                )));
-            }
-            Some(crate::machine::linux::Decoupe::Trop) => {
-                return Err(refus(trf!(
-                    "{vu} a plus de {} lignes ou de {} Mio : Vanguard ne vérifie pas qu'en retirer une seule ne change rien d'autre ; rien n'est fait : corrigez ce fichier à la main",
-                    "{vu} has more than {} lines or {} MiB: Vanguard does not check that removing one alone changes nothing else; nothing is done: fix this file by hand",
-                    crate::machine::linux::RETRAIT_LIGNES_MAX,
-                    crate::machine::linux::RETRAIT_OCTETS_MAX / (1024 * 1024)
-                )));
-            }
-            Some(crate::machine::linux::Decoupe::Longue) => {
-                return Err(refus(trf!(
-                    "{vu} a une ligne de plus de {} octets : un lecteur à tampon fixe peut s'arrêter à une telle ligne, et en retirer une pourrait en réveiller d'autres ; par prudence, rien n'est fait : corrigez ce fichier à la main",
-                    "{vu} has a line of more than {} bytes: a reader with a fixed buffer can stop at such a line, and removing one could wake up others; to be safe, nothing is done: fix this file by hand",
-                    crate::machine::linux::LIGNE_OCTETS_MAX
-                )));
-            }
-            Some(crate::machine::linux::Decoupe::Interprete) => {
-                return Err(refus(trf!(
-                    "la première ligne « #! » de {vu} ne nomme pas /bin/sh ni /bin/bash : pour un autre interpréteur, Vanguard ne sait pas ce que fait chaque ligne ; par prudence, rien n'est fait : corrigez ce fichier à la main",
-                    "the first \"#!\" line of {vu} names neither /bin/sh nor /bin/bash: for another interpreter, Vanguard does not know what each line does; to be safe, nothing is done: fix this file by hand"
-                )));
-            }
-            Some(crate::machine::linux::Decoupe::Lecteur) => {
-                return Err(refus(trf!(
-                    "dans {vu}, la ligne désignée n'a pas la forme stricte que le lecteur de ce fichier accepte à coup sûr, ou une autre ligne pose la même clé : la retirer seule pourrait réveiller d'autres lignes ; par prudence, rien n'est fait : corrigez ce fichier à la main",
-                    "in {vu}, the line named does not have the strict form this file's reader surely accepts, or another line sets the same key: removing it alone could wake up other lines; to be safe, nothing is done: fix this file by hand"
-                )));
-            }
-            None => {}
-        }
+    if !preload && let Some(d) = crate::machine::linux::retrait_refuse(fichier, &contenu, ligne, &numeros) {
+        return Err(refus(raison_de_decoupe(d, &vu, hors)));
     }
     // Ronde 3 du lot 096 (N3) : ce que le chargeur efface d'un « # » dépend de la taille du reste du fichier ; retirer
     // une ligne peut donc lui faire lire une ligne « # … » qu'il effaçait jusque-là. Le fichier d'après est relu comme
@@ -4655,7 +4661,7 @@ mod tests {
                 "/etc/gdm3/custom.conf",
                 "[daemon]\nAutomaticLoginEnable=True\nAutomaticLoginEnable=true\n",
                 "AutomaticLoginEnable=True",
-                "même clé",
+                "gestionnaire de connexion",
             ),
         ] {
             let (r, questions, apres) = essai(fichier, contenu, ligne);
@@ -4674,12 +4680,6 @@ mod tests {
                 format!("#!/bin/sh -e\n{piege}\n"),
                 piege,
                 "#!/bin/sh -e\n",
-            ),
-            (
-                "/etc/gdm3/custom.conf",
-                "[daemon]\nAutomaticLoginEnable=True\nAutomaticLogin=alice\n".to_string(),
-                "AutomaticLoginEnable=True",
-                "[daemon]\nAutomaticLogin=alice\n",
             ),
         ] {
             let (r, _, apres) = essai(fichier, &contenu, ligne);
@@ -4716,6 +4716,7 @@ mod tests {
         };
         let format = "Vanguard ne corrige jamais ces fichiers";
         let hors = "n'est pas de celles que Vanguard retire";
+        let connexion = "gestionnaire de connexion";
         for (fichier, contenu, ligne, raison) in [
             (
                 "/etc/systemd/system/a.service",
@@ -4766,7 +4767,7 @@ mod tests {
                 "/etc/gdm3/custom.conf",
                 "[daemon]\nWaylandEnable=false\n",
                 "WaylandEnable=false",
-                hors,
+                connexion,
             ),
         ] {
             let (r, questions, apres, bilan) = essai(fichier, contenu, ligne);
@@ -4793,12 +4794,6 @@ mod tests {
                 "A=b\nLD_PRELOAD=/tmp/.x/a.so\n",
                 "LD_PRELOAD=/tmp/.x/a.so",
                 "A=b\n",
-            ),
-            (
-                "/etc/gdm/custom.conf",
-                "[daemon]\nAutomaticLoginEnable=True\n",
-                "AutomaticLoginEnable=True",
-                "[daemon]\n",
             ),
         ] {
             let (r, _, apres, bilan) = essai(fichier, contenu, ligne);
@@ -4855,22 +4850,58 @@ mod tests {
         }
     }
 
+    /// Ronde 10 du lot 096 (N10-3, N10-4) : le fils root ne retire ni ne commente jamais une ligne d'un fichier de
+    /// GDM, SDDM ou LightDM, même la ligne qui ouvre une session, même demandé et « o » répondu ; rien d'écrit, sans
+    /// question, la raison dite. SDDM lit aussi un fichier de sddm.conf.d qui ne finit pas par « .conf ».
     #[test]
-    fn ouverture_automatique_coupee() {
-        let mut a = Faux::nouveau().repondre("o");
-        a.poser(
-            "/etc/gdm/custom.conf",
-            b"[daemon]\nAutomaticLoginEnable=True\nAutomaticLogin=alice\n",
-            0o644,
-        );
-        let c = CheminDesigne::nouveau(b"/etc/gdm/custom.conf").unwrap();
-        let r = faire_avec(
-            Defense::RetirerLigne(empreinte_de_ligne(b"AutomaticLoginEnable=True"), c),
-            &mut a,
-            &mut FauxServices::nouveau(),
-        );
-        assert!(r.reussi, "{}", r.raison);
-        assert_eq!(a.texte("/etc/gdm/custom.conf"), "[daemon]\nAutomaticLogin=alice\n");
+    fn ouverture_automatique_jamais_coupee_par_le_fils() {
+        for (fichier, contenu, ligne) in [
+            (
+                "/etc/gdm/custom.conf",
+                "[daemon]\nAutomaticLoginEnable=True\nAutomaticLogin=alice\n",
+                "AutomaticLoginEnable=True",
+            ),
+            ("/etc/sddm.conf", "[Autologin]\nUser=bob\n", "User=bob"),
+            ("/etc/sddm.conf.d/autologin", "[Autologin]\nUser=alice\n", "User=alice"),
+            (
+                "/etc/lightdm/lightdm.conf.d/50-sddm.conf",
+                "[Seat:*]\nautologin-user=alice\n",
+                "autologin-user=alice",
+            ),
+            (
+                "/etc/sddm.conf.d/a.conf",
+                "HTTP_PROXY=http://198.51.100.7:3128\n",
+                "HTTP_PROXY=http://198.51.100.7:3128",
+            ),
+        ] {
+            for commenter in [false, true] {
+                let mut a = Faux::nouveau().repondre("o");
+                a.poser(fichier, contenu.as_bytes(), 0o644);
+                let e = empreinte_de_ligne(ligne.as_bytes());
+                let c = CheminDesigne::nouveau(fichier.as_bytes()).unwrap();
+                let geste = if commenter {
+                    Defense::CommenterProxy(e, c)
+                } else {
+                    Defense::RetirerLigne(e, c)
+                };
+                let r = faire_avec(geste, &mut a, &mut FauxServices::nouveau());
+                assert!(!r.reussi, "{fichier} {ligne}");
+                // Commenter une ligne qui ne règle pas de proxy est refusé plus tôt, pour cette raison-là ; un fichier
+                // hors des noms de démarrage que le fils root connaît aussi (« autologin » sans « .conf »).
+                if (!commenter || ligne.starts_with("HTTP_PROXY")) && fichier != "/etc/sddm.conf.d/autologin" {
+                    assert!(
+                        r.raison.contains("gestionnaire de connexion"),
+                        "{fichier} {ligne} : {}",
+                        r.raison
+                    );
+                }
+                assert_eq!(
+                    (a.questions.len(), a.texte(fichier).as_str()),
+                    (0, contenu),
+                    "{fichier}"
+                );
+            }
+        }
     }
 
     /// Le texte hostile d'une ligne montrée : échappé.

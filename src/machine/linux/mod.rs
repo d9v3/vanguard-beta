@@ -1332,87 +1332,232 @@ fn valeur_ini(texte: &str, section: impl Fn(&str) -> bool, cle: &str) -> Option<
     trouvee
 }
 
-/// Le compte dont la session s'ouvre toute seule, et le fichier qui le dit, d'après les fichiers de GDM, SDDM et
-/// LightDM donnés dans l'ordre où ils s'appliquent (le dernier l'emporte). `None` : personne.
-fn ouverture_automatique_de(fichiers: &[(String, String)]) -> Option<(String, String)> {
-    let mut trouve: Option<(String, String)> = None;
-    for (chemin, texte) in fichiers {
-        let compte = if chemin.contains("/gdm") {
-            let daemon = |cle: &str| valeur_ini(texte, |s| s.eq_ignore_ascii_case("daemon"), cle);
-            let oui = |cle: &str| daemon(cle).is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1");
-            let auto = oui("AutomaticLoginEnable").then(|| daemon("AutomaticLogin")).flatten();
-            let minute = oui("TimedLoginEnable").then(|| daemon("TimedLogin")).flatten();
-            Some(auto.or(minute).unwrap_or_default())
-        } else if chemin.contains("sddm") {
-            valeur_ini(texte, |s| s == "Autologin", "User")
-        } else if chemin.contains("lightdm") {
-            valeur_ini(
-                texte,
-                |s| s.starts_with("Seat") || s == "SeatDefaults",
-                "autologin-user",
-            )
-        } else {
-            None
-        };
-        match compte {
-            Some(c) if !c.is_empty() => trouve = Some((c, chemin.clone())),
-            Some(_) => trouve = None,
-            None => {}
-        }
-    }
-    trouve
+/// Le gestionnaire de connexion qui lit un fichier (`fichiers_de_connexion`) : dit par le dossier où le fichier a été
+/// trouvé, jamais deviné d'un bout de son chemin (ronde 10 du lot 096 : un ajout de LightDM nommé « 50-sddm.conf »
+/// était lu comme un fichier de SDDM, et son ouverture automatique n'était pas vue).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Gestionnaire {
+    Gdm,
+    Sddm,
+    LightDm,
 }
 
-/// Fichiers des gestionnaires de connexion, dans l'ordre où ils s'appliquent (le dernier l'emporte) : GDM
-/// (custom.conf sur Ubuntu et Fedora, daemon.conf sur Debian) ; SDDM (réglages de la distribution sous /usr/lib, puis
-/// /etc/sddm.conf.d, puis /etc/sddm.conf) ; LightDM (sous /usr/share, puis /etc/lightdm/lightdm.conf.d, puis
-/// /etc/lightdm/lightdm.conf).
-fn fichiers_de_connexion() -> Vec<(String, String)> {
-    fn dossier(chemin: &str) -> Vec<std::path::PathBuf> {
-        let mut dedans: Vec<std::path::PathBuf> = std::fs::read_dir(chemin)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|e| e == "conf"))
-            .collect();
-        dedans.sort();
-        dedans
+/// Un fichier d'un gestionnaire de connexion. `texte` à `None` : il existe mais ne s'est pas lu (droits, pas du texte
+/// UTF-8, plus de `CONNEXION_OCTETS_MAX` octets, ou c'est un dossier qui ne se liste pas) ; jamais compté comme sain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FichierDeConnexion {
+    gestionnaire: Gestionnaire,
+    chemin: String,
+    texte: Option<String>,
+}
+
+/// Au plus autant d'octets lus d'un fichier de gestionnaire de connexion ; au-delà, non vérifié.
+const CONNEXION_OCTETS_MAX: u64 = 1 << 20;
+
+/// Au plus autant de fichiers lus dans un dossier de gestionnaire de connexion ; au-delà, le dossier est non vérifié.
+const CONNEXION_FICHIERS_MAX: usize = 1000;
+
+/// Le compte dont la session s'ouvre toute seule, et le fichier qui le dit, d'après les fichiers de GDM, SDDM et
+/// LightDM donnés dans l'ordre où ils s'appliquent. Chaque gestionnaire est jugé sur l'ensemble de ses fichiers, clé
+/// par clé, la dernière valeur l'emportant (une clé posée dans un fichier, son interrupteur dans un autre, comptent
+/// ensemble). Les fichiers illisibles n'entrent pas ici (`constat_d_ouverture` les dit). `None` : personne.
+///
+/// LightDM : « autologin-guest=true » ouvre une session d'invité, avant « autologin-user » (seat.c de LightDM 1.32).
+fn ouverture_automatique_de(fichiers: &[FichierDeConnexion]) -> Option<(String, String)> {
+    // La dernière valeur de `cle` dans la section choisie, chez `g`, et le fichier qui la pose.
+    let valeur = |g: Gestionnaire, section: &dyn Fn(&str) -> bool, cle: &str| -> Option<(String, String)> {
+        let mut trouvee = None;
+        for f in fichiers.iter().filter(|f| f.gestionnaire == g) {
+            if let Some(texte) = &f.texte
+                && let Some(v) = valeur_ini(texte, section, cle)
+            {
+                trouvee = Some((v, f.chemin.clone()));
+            }
+        }
+        trouvee
+    };
+    let vrai = |v: &str| v.eq_ignore_ascii_case("true") || v == "1";
+    let daemon = |s: &str| s.eq_ignore_ascii_case("daemon");
+    let gdm = |interrupteur: &str, compte: &str| {
+        let (oui, fichier) = valeur(Gestionnaire::Gdm, &daemon, interrupteur)?;
+        let (compte, _) = valeur(Gestionnaire::Gdm, &daemon, compte)?;
+        (vrai(&oui) && !compte.is_empty()).then_some((compte, fichier))
+    };
+    let siege = |s: &str| s.starts_with("Seat") || s == "SeatDefaults";
+    let invite = valeur(Gestionnaire::LightDm, &siege, "autologin-guest")
+        .filter(|(v, _)| vrai(v))
+        .map(|(_, fichier)| (tr!("invité", "guest").to_string(), fichier));
+    gdm("AutomaticLoginEnable", "AutomaticLogin")
+        .or_else(|| gdm("TimedLoginEnable", "TimedLogin"))
+        .or_else(|| valeur(Gestionnaire::Sddm, &|s| s == "Autologin", "User").filter(|(c, _)| !c.is_empty()))
+        .or(invite)
+        .or_else(|| valeur(Gestionnaire::LightDm, &siege, "autologin-user").filter(|(c, _)| !c.is_empty()))
+}
+
+/// Un fichier de gestionnaire de connexion lu (`lire_fichier_de_connexion`).
+enum Lu {
+    /// Il n'existe pas : rien à juger.
+    Absent,
+    /// Il existe et se lit (`FichierDeConnexion::texte`) ; `None` : il ne se lit pas.
+    Present(Option<String>),
+}
+
+/// Le texte d'un fichier de gestionnaire de connexion, ou s'il est absent.
+fn lire_fichier_de_connexion(chemin: &Path) -> Lu {
+    use std::io::Read;
+    match std::fs::metadata(chemin) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Lu::Absent,
+        Err(_) => return Lu::Present(None),
+        Ok(m) if !m.is_file() || m.len() > CONNEXION_OCTETS_MAX => return Lu::Present(None),
+        Ok(_) => {}
     }
-    let mut chemins: Vec<std::path::PathBuf> =
-        ["/etc/gdm/custom.conf", "/etc/gdm3/custom.conf", "/etc/gdm3/daemon.conf"]
-            .iter()
-            .map(std::path::PathBuf::from)
-            .collect();
-    chemins.extend(dossier("/usr/lib/sddm/sddm.conf.d"));
-    chemins.extend(dossier("/etc/sddm.conf.d"));
-    chemins.push("/etc/sddm.conf".into());
-    chemins.extend(dossier("/usr/share/lightdm/lightdm.conf.d"));
-    chemins.extend(dossier("/etc/lightdm/lightdm.conf.d"));
-    chemins.push("/etc/lightdm/lightdm.conf".into());
-    chemins
-        .into_iter()
-        .filter_map(|p| Some((p.to_string_lossy().into_owned(), std::fs::read_to_string(&p).ok()?)))
-        .collect()
+    let mut octets = Vec::new();
+    let lu = std::fs::File::open(chemin)
+        .and_then(|f| f.take(CONNEXION_OCTETS_MAX.saturating_add(1)).read_to_end(&mut octets))
+        .is_ok_and(|n| u64::try_from(n).is_ok_and(|n| n <= CONNEXION_OCTETS_MAX));
+    Lu::Present(lu.then(|| String::from_utf8(octets).ok()).flatten())
+}
+
+/// Fichiers des gestionnaires de connexion sous `racine` (« / » au bilan), dans l'ordre où chacun les applique (le
+/// dernier l'emporte) :
+/// - GDM : custom.conf (Ubuntu, Fedora) et daemon.conf (Debian) ;
+/// - SDDM : TOUS les fichiers (quel que soit leur nom) de /usr/lib/sddm/sddm.conf.d, puis de /etc/sddm.conf.d, puis
+///   /etc/sddm.conf ;
+/// - LightDM : les « .conf » de /usr/share, /usr/local/share, /etc/xdg (XDG_CONFIG_DIRS par défaut), puis
+///   /etc/lightdm/lightdm.conf.d, puis /etc/lightdm/lightdm.conf.
+///
+/// Un fichier ou un dossier qui existe mais ne se lit pas y est, sans texte : ronde 10 du lot 096 (N10-4), avant il
+/// était sauté sans rien dire, et une ouverture automatique posée là était comptée saine. Un sous-dossier est sauté
+/// (ni SDDM ni LightDM ne le lisent).
+fn fichiers_de_connexion(racine: &Path) -> Vec<FichierDeConnexion> {
+    let sous = |c: &str| racine.join(c.trim_start_matches('/'));
+    let mut fichiers: Vec<FichierDeConnexion> = Vec::new();
+    let fichier = |g: Gestionnaire, p: &Path, fichiers: &mut Vec<FichierDeConnexion>| {
+        if let Lu::Present(texte) = lire_fichier_de_connexion(p) {
+            fichiers.push(FichierDeConnexion {
+                gestionnaire: g,
+                chemin: p.to_string_lossy().into_owned(),
+                texte,
+            });
+        }
+    };
+    let dossier = |g: Gestionnaire, d: &Path, conf_seuls: bool, fichiers: &mut Vec<FichierDeConnexion>| {
+        let illisible = |fichiers: &mut Vec<FichierDeConnexion>| {
+            fichiers.push(FichierDeConnexion {
+                gestionnaire: g,
+                chemin: d.to_string_lossy().into_owned(),
+                texte: None,
+            });
+        };
+        let entrees = match std::fs::read_dir(d) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(_) => return illisible(fichiers),
+            Ok(e) => e,
+        };
+        let mut noms: Vec<PathBuf> = Vec::new();
+        for entree in entrees {
+            let Ok(entree) = entree else {
+                return illisible(fichiers);
+            };
+            let p = entree.path();
+            if conf_seuls && !entree.file_name().as_encoded_bytes().ends_with(b".conf") {
+                continue;
+            }
+            if std::fs::metadata(&p).is_ok_and(|m| m.is_dir()) {
+                continue;
+            }
+            noms.push(p);
+            if noms.len() > CONNEXION_FICHIERS_MAX {
+                return illisible(fichiers);
+            }
+        }
+        noms.sort_by(|a, b| a.as_os_str().as_encoded_bytes().cmp(b.as_os_str().as_encoded_bytes()));
+        for p in noms {
+            // Disparu entre la liste et la lecture : non vérifié, jamais compté comme absent.
+            fichiers.push(FichierDeConnexion {
+                gestionnaire: g,
+                chemin: p.to_string_lossy().into_owned(),
+                texte: match lire_fichier_de_connexion(&p) {
+                    Lu::Present(texte) => texte,
+                    Lu::Absent => None,
+                },
+            });
+        }
+    };
+    for c in ["/etc/gdm/custom.conf", "/etc/gdm3/custom.conf", "/etc/gdm3/daemon.conf"] {
+        fichier(Gestionnaire::Gdm, &sous(c), &mut fichiers);
+    }
+    dossier(
+        Gestionnaire::Sddm,
+        &sous("/usr/lib/sddm/sddm.conf.d"),
+        false,
+        &mut fichiers,
+    );
+    dossier(Gestionnaire::Sddm, &sous("/etc/sddm.conf.d"), false, &mut fichiers);
+    fichier(Gestionnaire::Sddm, &sous("/etc/sddm.conf"), &mut fichiers);
+    for d in [
+        "/usr/share/lightdm/lightdm.conf.d",
+        "/usr/local/share/lightdm/lightdm.conf.d",
+        "/etc/xdg/lightdm/lightdm.conf.d",
+        "/etc/lightdm/lightdm.conf.d",
+    ] {
+        dossier(Gestionnaire::LightDm, &sous(d), true, &mut fichiers);
+    }
+    fichier(Gestionnaire::LightDm, &sous("/etc/lightdm/lightdm.conf"), &mut fichiers);
+    fichiers
 }
 
 /// Session qui s'ouvre toute seule : sans disque chiffré, un ordinateur volé s'allume directement sur les fichiers.
 /// Avec un disque chiffré (Omarchy), le mot de passe du disque protège : c'est dit, sans alerte.
 fn ouverture_automatique() -> Option<Constat> {
-    let fichiers = fichiers_de_connexion();
-    let (compte, fichier) = ouverture_automatique_de(&fichiers)?;
-    let gestes = gestes_d_ouverture(&fichiers, &fichier);
-    Some(juger_ouverture_automatique(
-        &compte,
-        &fichier,
-        racine_chiffree(),
-        &gestes,
-    ))
+    constat_d_ouverture(&fichiers_de_connexion(Path::new("/")), racine_chiffree)
 }
 
-/// `gestes` : ceux qui coupent l'ouverture automatique (`gestes_d_ouverture`) ; vide, la correction reste à la main.
-fn juger_ouverture_automatique(compte: &str, fichier: &str, chiffree: Option<bool>, gestes: &[Defense]) -> Constat {
+/// Combien de fichiers non lus un constat d'ouverture automatique nomme au plus ; les autres sont comptés.
+const NON_LUS_MONTRES: usize = 5;
+
+/// Le constat d'ouverture automatique d'après `fichiers` (`fichiers_de_connexion`) ; `None` : personne, et tout a été
+/// lu. Un fichier qui ne s'est pas lu est dit non vérifié (ronde 10 du lot 096, N10-4), jamais compté comme sain.
+fn constat_d_ouverture(fichiers: &[FichierDeConnexion], chiffree: impl FnOnce() -> Option<bool>) -> Option<Constat> {
+    let non_lus: Vec<String> = fichiers
+        .iter()
+        .filter(|f| f.texte.is_none())
+        .map(|f| crate::ui::affichable(&f.chemin))
+        .collect();
+    let mut montres: Vec<String> = non_lus.iter().take(NON_LUS_MONTRES).cloned().collect();
+    let autres = non_lus.len().saturating_sub(NON_LUS_MONTRES);
+    if autres > 0 {
+        montres.push(trf!("et {autres} autre(s)", "and {autres} more"));
+    }
+    let montres = montres.join(", ");
+    match ouverture_automatique_de(fichiers) {
+        Some((compte, fichier)) => {
+            let mut c = juger_ouverture_automatique(&compte, &fichier, chiffree());
+            if !non_lus.is_empty() {
+                c.message.push_str(&trf!(
+                    " Fichiers du gestionnaire de connexion qui ne se lisent pas, non vérifiés : {montres}.",
+                    " Login manager files that cannot be read, not checked: {montres}."
+                ));
+            }
+            Some(c)
+        }
+        None if non_lus.is_empty() => None,
+        None => Some(impossible(
+            "Comptes",
+            &trf!(
+                "ouverture automatique de session : des fichiers du gestionnaire de connexion ne se lisent pas, {montres}",
+                "automatic login: some login manager files cannot be read, {montres}"
+            ),
+        )),
+    }
+}
+
+/// Le constat d'une session qui s'ouvre toute seule. La correction reste à la main (ronde 10 du lot 096, N10-3) :
+/// GDM, SDDM et LightDM lisent plusieurs fichiers, chacun à sa façon (SDDM n'est pas lu par GLib), et retirer la ligne
+/// vue pourrait laisser, ou réveiller, celle d'un autre fichier.
+fn juger_ouverture_automatique(compte: &str, fichier: &str, chiffree: Option<bool>) -> Constat {
     let compte = crate::ui::affichable(compte);
+    let fichier = crate::ui::affichable(fichier);
     if chiffree == Some(true) {
         return ok(
             "Comptes",
@@ -1422,7 +1567,7 @@ fn juger_ouverture_automatique(compte: &str, fichier: &str, chiffree: Option<boo
             ),
         );
     }
-    let constat = alerte(
+    alerte(
         "Comptes",
         Niveau::Moyen,
         trf!(
@@ -1432,18 +1577,10 @@ fn juger_ouverture_automatique(compte: &str, fichier: &str, chiffree: Option<boo
     )
     .manuel(
         trf!(
-            "Couper l'ouverture automatique : réglages des utilisateurs du bureau (GNOME : Paramètres > Utilisateurs ; KDE : Écran de connexion), ou la ligne du compte dans {fichier}",
-            "Turn off automatic login: the desktop's user settings (GNOME: Settings > Users; KDE: Login Screen), or the account's line in {fichier}"
+            "Couper l'ouverture automatique : réglages des utilisateurs du bureau (GNOME : Paramètres > Utilisateurs ; KDE : Écran de connexion), ou la ligne du compte dans {fichier}. Vanguard ne la retire pas lui-même : le gestionnaire de connexion lit plusieurs fichiers, et une ligne d'un autre fichier pourrait reprendre la main.",
+            "Turn off automatic login: the desktop's user settings (GNOME: Settings > Users; KDE: Login Screen), or the account's line in {fichier}. Vanguard does not remove it itself: the login manager reads several files, and a line in another file could take over."
         ),
         &[],
-    );
-    super::defense::corriger(
-        constat,
-        trf!(
-            "Couper l'ouverture automatique (la ligne de {fichier} retirée ; le mot de passe sera demandé au prochain démarrage)",
-            "Turn off automatic login (the line in {fichier} removed; the password will be asked at the next startup)"
-        ),
-        gestes,
     )
 }
 
@@ -1549,19 +1686,22 @@ pub(crate) enum Decoupe {
     /// Un fichier que le système lance lui-même (/etc/rc.local) dont la ligne « #! » ne nomme pas sh ou bash : pour un
     /// autre interpréteur, « NOM=valeur » n'est pas une affectation (ronde 8 du lot 096, N8-3).
     Interprete,
-    /// Un fichier d'un gestionnaire de connexion (GDM, SDDM, LightDM) : la ligne retirée n'a pas la forme stricte que
-    /// son lecteur accepte à coup sûr, ou une autre ligne pose la même clé (ronde 8 du lot 096, N8-4 :
-    /// `LecteurDeLignes::Cles`).
-    Lecteur,
+    /// Un fichier d'un gestionnaire de connexion (GDM, SDDM, LightDM) : Vanguard n'y retire ni n'y commente jamais une
+    /// ligne seul (ronde 10 du lot 096, N10-3 et N10-4). Chacun lit ses fichiers à sa façon (SDDM n'est pas lu par
+    /// GLib : il ôte tous les blancs Unicode autour d'une clé, ne rejette jamais un fichier), en lit plusieurs (SDDM :
+    /// tous les fichiers de ses dossiers, quel que soit leur nom), et la dernière valeur gagne : retirer la ligne vue
+    /// peut laisser, ou réveiller, celle d'un autre fichier ou d'une autre clé, que la question ne montre pas.
+    Connexion,
     /// Une unité systemd (et ses fichiers .d/*.conf), un fichier de cron ou d'anacron, un raccourci .desktop : Vanguard
     /// n'y retire jamais une ligne seul (ronde 9 du lot 096, N9-1 et N9-2). Une ligne y peut en retenir une autre, quelle
     /// que soit sa forme : « ExecStartPre= » ou « ExecCondition= » qui échoue empêche « ExecStart= », « User= » ou
     /// « Condition…= » aussi ; « SHELL= », « PATH= » ou « HOME= » d'un fichier de cron fait échouer les tâches qui
     /// suivent. La retirer réveillerait ce qu'elle retenait, sans le montrer.
     Format,
-    /// La ligne n'est pas de celles que Vanguard retire lui-même (`AnalyseDeRetrait::ligne_offerte`) : hors d'une
-    /// affectation de LD_PRELOAD ou de LD_AUDIT qui précharge vraiment, ou de l'ouverture automatique d'une session
-    /// (ronde 9 du lot 096, N9-3 : le fils root et le bilan en jugent par la même fonction, `retrait_refuse`).
+    /// La ligne n'est pas de celles que Vanguard retire (ou commente) lui-même (`AnalyseDeRetrait::ligne_offerte`) :
+    /// pour un retrait, hors d'une affectation de LD_PRELOAD ou de LD_AUDIT qui précharge vraiment ; pour un
+    /// commentaire de proxy, hors d'une ligne de proxy (ronde 9 du lot 096, N9-3 : le fils root et le bilan en jugent
+    /// par la même fonction, `retrait_refuse` ou `proxy_refuse`).
     Hors,
 }
 
@@ -1577,10 +1717,10 @@ pub(crate) const LIGNE_OCTETS_MAX: usize = 1000;
 enum LecteurDeLignes {
     /// Un shell, pam_env ou le générateur environment.d de systemd : règle du fichier d'affectations simples.
     Shell,
-    /// Un fichier d'un gestionnaire de connexion (GDM et LightDM : GLib GKeyFile, qui rejette le fichier ENTIER dès
-    /// une ligne invalide ou une clé avant tout groupe ; SDDM, lu de même sans l'avoir vérifié) : `Clé=valeur` sous des
-    /// groupes « [Nom] ». Une clé posée deux fois : la dernière gagne ; retirer l'une réveillerait l'autre.
-    Cles,
+    /// Un fichier d'un gestionnaire de connexion (GDM, SDDM, LightDM). Jamais de retrait ni de commentaire
+    /// automatique (`Decoupe::Connexion`, ronde 10 du lot 096) : la règle stricte des rondes 8 et 9 jugeait une ligne
+    /// d'un seul fichier, comme GLib la lit ; SDDM n'est pas GLib, et chacun en lit plusieurs.
+    Connexion,
     /// Les autres fichiers lus ligne par ligne (`lu_ligne_par_ligne`) : unités systemd et leurs .d/*.conf, cron,
     /// anacron, .desktop. Jamais de retrait automatique (`Decoupe::Format`).
     Format,
@@ -1588,24 +1728,22 @@ enum LecteurDeLignes {
 
 impl LecteurDeLignes {
     /// Le lecteur de `fichier`, jugé sur son nom et ceux de ses dossiers exacts, comme `lu_ligne_par_ligne`.
+    /// Un fichier de gestionnaire de connexion d'abord, quel que soit son nom dans les dossiers « sddm.conf.d » et
+    /// « lightdm.conf.d » (SDDM les lit tous : ronde 10, N10-4) : un refus de trop laisse le geste à la main.
     fn de(fichier: &str) -> Self {
-        if !lu_ligne_par_ligne(fichier) {
-            return Self::Shell;
-        }
         let mut parties = fichier.rsplit('/');
         let nom = parties.next().unwrap_or(fichier);
         let parent = parties.next().unwrap_or("");
-        let conf = nom
-            .rsplit_once('.')
-            .is_some_and(|(avant, ext)| !avant.is_empty() && ext == "conf");
         if (parent == "etc" && nom == "sddm.conf")
             || (["gdm", "gdm3"].contains(&parent) && ["custom.conf", "daemon.conf"].contains(&nom))
             || (parent == "lightdm" && nom == "lightdm.conf")
-            || (["sddm.conf.d", "lightdm.conf.d"].contains(&parent) && conf)
+            || ["sddm.conf.d", "lightdm.conf.d"].contains(&parent)
         {
-            Self::Cles
-        } else {
+            Self::Connexion
+        } else if lu_ligne_par_ligne(fichier) {
             Self::Format
+        } else {
+            Self::Shell
         }
     }
 }
@@ -1644,6 +1782,26 @@ pub(crate) fn retrait_decoupe(fichier: &str, contenu: &[u8], numeros: &[usize]) 
 pub(crate) fn retrait_refuse(fichier: &str, contenu: &[u8], ligne: &[u8], numeros: &[usize]) -> Option<Decoupe> {
     AnalyseDeRetrait::de(fichier, contenu).refus(ligne, numeros)
 }
+
+/// Pourquoi Vanguard ne met pas lui-même en commentaire, dans `fichier`, la ligne de proxy `ligne` (geste
+/// `CommenterProxy`) ; `None` : il la commente. La même règle que `retrait_refuse`, au bilan (`reparer`, le geste n'est
+/// pas offert) comme au fils root (refusé même si on le lui demande) : ronde 10 du lot 096 (N10-1). Avant, ce geste ne
+/// vérifiait que la forme de la ligne ; le commentaire d'une ligne qui ouvre un guillemet, d'une ligne d'unité, de cron
+/// ou de gestionnaire de connexion réveillait ce qu'elle retenait.
+pub(crate) fn proxy_refuse(fichier: &str, contenu: &[u8], ligne: &[u8], numeros: &[usize]) -> Option<Decoupe> {
+    AnalyseDeRetrait::de(fichier, contenu).refus_de_proxy(ligne, numeros)
+}
+
+/// Ce que Vanguard fait d'une ligne seule : la retirer (`RetirerLigne`) ou la mettre en commentaire (`CommenterProxy`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Retouche {
+    Retirer,
+    CommenterProxy,
+}
+
+/// Les variables de proxy qu'une affectation simple peut poser pour que Vanguard la commente (en majuscules :
+/// `affectation_simple` refuse tout NOM qui porte une minuscule).
+const NOMS_DE_PROXY: [&[u8]; 4] = [b"HTTP_PROXY", b"HTTPS_PROXY", b"FTP_PROXY", b"ALL_PROXY"];
 
 /// Les fichiers admis dont le lecteur coupe strictement ligne par ligne (hors « \ » final) : un guillemet ou un « << »
 /// n'y relie pas deux lignes. Jugé sur le nom du fichier et ceux de ses dossiers exacts (pour valoir aussi sous la
@@ -1928,54 +2086,6 @@ fn interprete_admis(contenu: &[u8]) -> bool {
     })
 }
 
-/// La clé que pose une ligne d'un fichier à clés, au sens large, et si sa valeur est vide : après les blancs, jusqu'au
-/// « = » (blancs de fin ôtés), sans la langue (« Name[fr] » compte comme « Name ») ; `None` pour un commentaire « # »,
-/// un groupe « [ » ou une ligne sans « = ». Une valeur vide (« ExecStart= » qui vide la liste de systemd) ne pose rien
-/// que le retrait d'une autre ligne réveillerait.
-fn cle_large(ligne: &[u8]) -> Option<(&[u8], bool)> {
-    let debut = ligne.iter().position(|o| !o.is_ascii_whitespace())?;
-    let t = ligne.get(debut..)?;
-    if matches!(t.first(), Some(b'#' | b'[')) {
-        return None;
-    }
-    let egal = t.iter().position(|o| *o == b'=')?;
-    let cle = t.get(..egal)?.trim_ascii_end();
-    let cle = cle.split(|o| *o == b'[').next().unwrap_or(cle);
-    let vide = t
-        .get(egal.saturating_add(1)..)
-        .unwrap_or_default()
-        .trim_ascii()
-        .is_empty();
-    Some((cle, vide))
-}
-
-/// La ligne d'un fichier à clés est-elle « Clé=valeur » de la forme la plus stricte, que GLib et systemd acceptent à
-/// coup sûr ? La clé (rendue) : lettres et chiffres ASCII, « _ » et « - », sans langue, autre qu'« Encoding » (que GLib
-/// juge dans le premier groupe) ; des blancs peut-être autour du « = » ; une valeur sans octet de contrôle autre que la
-/// tabulation.
-fn ligne_de_cles_admise(ligne: &[u8]) -> Option<&[u8]> {
-    let egal = ligne.iter().position(|o| *o == b'=')?;
-    let cle = ligne.get(..egal)?.trim_ascii_end();
-    let valeur = ligne.get(egal.saturating_add(1)..)?;
-    (!cle.is_empty()
-        && cle != b"Encoding"
-        && cle
-            .iter()
-            .all(|o| o.is_ascii_alphanumeric() || *o == b'_' || *o == b'-')
-        && !valeur.iter().any(|o| (*o < 0x20 && *o != b'\t') || *o == 0x7f))
-    .then_some(cle)
-}
-
-/// La ligne est-elle un en-tête de groupe « [Nom] » (blancs autour admis), au nom non vide sans « [ », « ] » ni octet
-/// de contrôle ?
-fn en_tete_de_groupe(ligne: &[u8]) -> bool {
-    ligne
-        .trim_ascii()
-        .strip_prefix(b"[")
-        .and_then(|r| r.strip_suffix(b"]"))
-        .is_some_and(|nom| !nom.is_empty() && !nom.iter().any(|o| *o == b'[' || *o == b']' || o.is_ascii_control()))
-}
-
 /// Un fichier lu une fois, pour juger le retrait de lignes seules (ronde 5 du lot 096, N1 : en temps linéaire). Au-delà
 /// de `RETRAIT_LIGNES_MAX` lignes ou de `RETRAIT_OCTETS_MAX` octets, rien n'est lu et tout retrait est refusé.
 ///
@@ -2001,20 +2111,10 @@ pub(crate) struct AnalyseDeRetrait {
     longue: bool,
     /// Un fichier que le système lance lui-même dont la ligne « #! » n'est pas admise (`interprete_admis`, N8-3).
     interprete_refuse: bool,
-    /// Le fichier jugé (`ouvre_une_session` en dépend).
-    fichier: String,
+    /// Le fichier jugé est /etc/ld.so.preload (sous la racine d'un essai aussi) : jamais une ligne de proxy.
+    preload: bool,
     /// Le lecteur du fichier (N8-4, ronde 9).
     lecteur: LecteurDeLignes,
-    /// Pour chaque ligne d'un fichier de gestionnaire de connexion : elle a la forme stricte que son lecteur accepte
-    /// (`ligne_de_cles_admise` après un en-tête de groupe).
-    admises: Vec<bool>,
-    /// Pour chaque ligne admise : la clé qu'elle pose.
-    cles: Vec<Option<Vec<u8>>>,
-    /// Pour chaque ligne : sa clé au sens large (`cle_large`) est comptée dans `comptes` (une valeur vide ne l'est
-    /// pas).
-    comptees: Vec<bool>,
-    /// Combien de lignes posent chaque clé, au sens large.
-    comptes: std::collections::HashMap<Vec<u8>, usize>,
 }
 
 /// Au plus autant d'octets dans un fichier dont Vanguard juge le retrait d'une ligne seule ; au-delà, refus
@@ -2035,12 +2135,8 @@ impl AnalyseDeRetrait {
             simple: false,
             longue: false,
             interprete_refuse: false,
-            fichier: fichier.to_string(),
+            preload: fichier.ends_with("/etc/ld.so.preload"),
             lecteur,
-            admises: Vec::new(),
-            cles: Vec::new(),
-            comptees: Vec::new(),
-            comptes: std::collections::HashMap::new(),
         };
         if contenu.len() > RETRAIT_OCTETS_MAX || contenu.split(|o| *o == b'\n').nth(RETRAIT_LIGNES_MAX).is_some() {
             return analyse;
@@ -2051,7 +2147,6 @@ impl AnalyseDeRetrait {
             .is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("fish"));
         let mut simple = shell && !fish && std::str::from_utf8(contenu).is_ok();
         let mut noms: std::collections::HashSet<&[u8]> = std::collections::HashSet::new();
-        let mut groupe_vu = false;
         for ligne in contenu.split(|o| *o == b'\n') {
             pas_de_retrait();
             analyse.longue = analyse.longue || ligne.len() > LIGNE_OCTETS_MAX;
@@ -2065,22 +2160,6 @@ impl AnalyseDeRetrait {
             } else {
                 simple = simple && vide_ou_commentaire(ligne);
             }
-            let (admise, cle, large) = match lecteur {
-                LecteurDeLignes::Shell | LecteurDeLignes::Format => (false, None, None),
-                LecteurDeLignes::Cles => {
-                    let cle = if groupe_vu { ligne_de_cles_admise(ligne) } else { None };
-                    groupe_vu = groupe_vu || en_tete_de_groupe(ligne);
-                    let large = cle_large(ligne).and_then(|(c, vide)| (!vide).then_some(c));
-                    (cle.is_some(), cle, large)
-                }
-            };
-            analyse.admises.push(admise);
-            analyse.cles.push(cle.map(<[u8]>::to_vec));
-            analyse.comptees.push(large.is_some());
-            if let Some(c) = large {
-                let compte = analyse.comptes.entry(c.to_vec()).or_insert(0);
-                *compte = compte.saturating_add(1);
-            }
         }
         analyse.trop = false;
         analyse.simple = simple;
@@ -2089,44 +2168,63 @@ impl AnalyseDeRetrait {
     }
 
     /// Pourquoi Vanguard ne retire pas lui-même la ligne `ligne`, écrite aux numéros `numeros` (`retrait_refuse`) ;
-    /// `None` : il la retire. D'abord le fichier (`Decoupe::Format`, `Decoupe::Trop`), puis la ligne
-    /// (`ligne_offerte`), puis ce que son retrait ferait aux autres (`decoupe`).
+    /// `None` : il la retire. D'abord le fichier (`Decoupe::Format`, `Decoupe::Connexion`, `Decoupe::Trop`), puis la
+    /// ligne (`ligne_offerte`), puis ce que son retrait ferait aux autres (`decoupe`).
     pub(crate) fn refus(&self, ligne: &[u8], numeros: &[usize]) -> Option<Decoupe> {
-        if self.lecteur == LecteurDeLignes::Format {
-            return Some(Decoupe::Format);
+        self.refus_de(Retouche::Retirer, ligne, numeros)
+    }
+
+    /// Pourquoi Vanguard ne met pas lui-même en commentaire la ligne de proxy `ligne`, écrite aux numéros `numeros`
+    /// (`proxy_refuse`) ; `None` : il la commente. Même règle que le retrait (ronde 10 du lot 096, N10-1) : une ligne
+    /// mise en commentaire est une ligne retirée pour son lecteur.
+    pub(crate) fn refus_de_proxy(&self, ligne: &[u8], numeros: &[usize]) -> Option<Decoupe> {
+        self.refus_de(Retouche::CommenterProxy, ligne, numeros)
+    }
+
+    fn refus_de(&self, retouche: Retouche, ligne: &[u8], numeros: &[usize]) -> Option<Decoupe> {
+        match self.lecteur {
+            LecteurDeLignes::Format => return Some(Decoupe::Format),
+            LecteurDeLignes::Connexion => return Some(Decoupe::Connexion),
+            LecteurDeLignes::Shell => {}
         }
         if self.trop {
             return Some(Decoupe::Trop);
         }
-        if !self.ligne_offerte(ligne) {
+        if !self.ligne_offerte(retouche, ligne) {
             return Some(Decoupe::Hors);
         }
         self.decoupe(numeros)
     }
 
-    /// La ligne est-elle de celles que Vanguard retire lui-même (ronde 9 du lot 096, N9-3) ?
-    /// - Dans un fichier lu par un shell : une affectation de LD_PRELOAD ou de LD_AUDIT qui précharge vraiment
-    ///   (`definit_prechargement` : ni commentaire, ni « unset », ni valeur vide qui neutralise : N9-4). Une ligne qui
-    ///   n'est pas une affectation simple est refusée plus loin (`Decoupe::Shell`) ; une affectation simple d'une
-    ///   autre variable (« FOO=LD_PRELOAD ») l'est ici.
-    /// - Dans un fichier de gestionnaire de connexion : une ligne qui ouvre une session toute seule
-    ///   (`ouvre_une_session`).
-    /// - Ailleurs (`LecteurDeLignes::Format`) : aucune.
+    /// La ligne, dans un fichier lu par un shell, pam_env ou le générateur environment.d (les autres sont refusés
+    /// avant), est-elle de celles que Vanguard retire ou commente lui-même (ronde 9 du lot 096, N9-3) ?
+    /// - Pour un retrait : une affectation de LD_PRELOAD ou de LD_AUDIT qui précharge vraiment
+    ///   (`definit_prechargement` : ni commentaire, ni « unset », ni valeur vide qui neutralise : N9-4).
+    /// - Pour un commentaire de proxy (ronde 10, N10-1) : une ligne de proxy (`ligne_de_proxy`), hors de
+    ///   /etc/ld.so.preload, que le chargeur lit autrement. Les noms en minuscules (« http_proxy ») ne sont pas des
+    ///   affectations simples (`affectation_simple`) : refusés plus loin, à la main.
     ///
-    /// Une variable suspecte d'une autre sorte (PYTHONPATH, adresse de D-Bus) ou une commande reste à la main : le fils
-    /// root ne saurait pas la juger comme le bilan (dossiers personnels, paquets), et n'admet que ce qu'il juge seul.
-    fn ligne_offerte(&self, ligne: &[u8]) -> bool {
+    /// Une ligne qui n'est pas une affectation simple est refusée plus loin (`Decoupe::Shell`) ; une affectation
+    /// simple d'une autre variable (« FOO=LD_PRELOAD ») l'est ici. Une variable suspecte d'une autre sorte
+    /// (PYTHONPATH, adresse de D-Bus) ou une commande reste à la main : le fils root ne saurait pas la juger comme le
+    /// bilan (dossiers personnels, paquets), et n'admet que ce qu'il juge seul.
+    fn ligne_offerte(&self, retouche: Retouche, ligne: &[u8]) -> bool {
         let Ok(texte) = std::str::from_utf8(ligne) else {
             return false;
         };
-        match self.lecteur {
-            LecteurDeLignes::Format => false,
-            LecteurDeLignes::Shell => {
-                !vide_ou_commentaire(ligne)
-                    && definit_prechargement(texte)
+        if vide_ou_commentaire(ligne) {
+            return false;
+        }
+        match retouche {
+            Retouche::Retirer => {
+                definit_prechargement(texte)
                     && affectation_simple(ligne).is_none_or(|nom| [&b"LD_PRELOAD"[..], b"LD_AUDIT"].contains(&nom))
             }
-            LecteurDeLignes::Cles => !commentaire(texte) && ouvre_une_session(&self.fichier, texte),
+            Retouche::CommenterProxy => {
+                !self.preload
+                    && crate::machine::defense_eleve::ligne_de_proxy(ligne)
+                    && affectation_simple(ligne).is_none_or(|nom| NOMS_DE_PROXY.contains(&nom))
+            }
         }
     }
 
@@ -2142,8 +2240,10 @@ impl AnalyseDeRetrait {
     ///   changer des lignes non montrées : la correction reste à la main, avec la raison dite.
     /// - Trop de lignes ou d'octets : `Decoupe::Trop`, jamais un retrait admis sans jugement.
     fn decoupe(&self, numeros: &[usize]) -> Option<Decoupe> {
-        if self.lecteur == LecteurDeLignes::Format {
-            return Some(Decoupe::Format);
+        match self.lecteur {
+            LecteurDeLignes::Format => return Some(Decoupe::Format),
+            LecteurDeLignes::Connexion => return Some(Decoupe::Connexion),
+            LecteurDeLignes::Shell => {}
         }
         if self.trop {
             return Some(Decoupe::Trop);
@@ -2171,106 +2271,8 @@ impl AnalyseDeRetrait {
             }
             return hors_de_la_forme().then_some(Decoupe::Shell);
         }
-        self.lecteur_refuse(numeros).then_some(Decoupe::Lecteur)
+        Some(Decoupe::Connexion)
     }
-
-    /// Dans un fichier de gestionnaire de connexion (ronde 8 du lot 096, N8-4) : une ligne retirée n'a pas la forme
-    /// stricte que son lecteur accepte (`admises`), ou une ligne gardée pose la même clé qu'une ligne retirée
-    /// (`comptes`).
-    fn lecteur_refuse(&self, numeros: &[usize]) -> bool {
-        let mut vus: std::collections::HashSet<usize> = std::collections::HashSet::new();
-        let mut retirees: std::collections::HashMap<&[u8], usize> = std::collections::HashMap::new();
-        for n in numeros {
-            pas_de_retrait();
-            if *n >= self.admises.len() || !vus.insert(*n) {
-                continue;
-            }
-            if !self.admises.get(*n).copied().unwrap_or(false) {
-                return true;
-            }
-            if let Some(Some(cle)) = self.cles.get(*n) {
-                let r = retirees.entry(cle.as_slice()).or_insert(0);
-                if self.comptees.get(*n).copied().unwrap_or(false) {
-                    *r = r.saturating_add(1);
-                }
-            }
-        }
-        retirees
-            .iter()
-            .any(|(cle, r)| self.comptes.get(*cle).copied().unwrap_or(0) > *r)
-    }
-}
-
-/// La ligne ouvre-t-elle une session toute seule, d'après le gestionnaire de connexion du fichier (comme
-/// `ouverture_automatique_de`) : GDM « AutomaticLoginEnable » ou « TimedLoginEnable » à vrai, SDDM « User= » d'un
-/// compte, LightDM « autologin-user= » d'un compte.
-pub(crate) fn ouvre_une_session(fichier: &str, ligne: &str) -> bool {
-    let Some((cle, valeur)) = ligne.trim().split_once('=') else {
-        return false;
-    };
-    let (cle, valeur) = (cle.trim(), valeur.trim());
-    if fichier.contains("/gdm") {
-        (cle.eq_ignore_ascii_case("AutomaticLoginEnable") || cle.eq_ignore_ascii_case("TimedLoginEnable"))
-            && (valeur.eq_ignore_ascii_case("true") || valeur == "1")
-    } else if fichier.contains("sddm") {
-        cle.eq_ignore_ascii_case("User") && !valeur.is_empty()
-    } else if fichier.contains("lightdm") {
-        cle.eq_ignore_ascii_case("autologin-user") && !valeur.is_empty()
-    } else {
-        false
-    }
-}
-
-/// Les gestes qui coupent l'ouverture automatique : retirer de `fichier` chaque ligne qui l'allume (lignes coupées
-/// au seul « \n », comme les relit le fils root, qui en recalcule l'empreinte). Seulement si `fichier` est de ceux
-/// qu'un geste a le droit de modifier, et si, ces lignes parties, plus aucun fichier n'ouvre de session : sinon un
-/// réglage d'avant (sous /usr, dans un autre fichier) reprendrait la main sans rien dire, et la correction reste à
-/// la main. Ronde 9 du lot 096 (N9-3) : chaque ligne passe aussi par `retrait_refuse`, la règle que le fils root
-/// rejoue ; une seule refusée (forme, clé posée deux fois, « \ » final) laisse tout à la main.
-fn gestes_d_ouverture(fichiers: &[(String, String)], fichier: &str) -> Vec<Defense> {
-    let Some((_, texte)) = fichiers.iter().rev().find(|(c, _)| c == fichier) else {
-        return Vec::new();
-    };
-    let mut lignes: Vec<&str> = Vec::new();
-    for l in texte.split('\n') {
-        if !commentaire(l) && ouvre_une_session(fichier, l) && !lignes.contains(&l) {
-            lignes.push(l);
-        }
-    }
-    let analyse = AnalyseDeRetrait::de(fichier, texte.as_bytes());
-    for l in &lignes {
-        let numeros: Vec<usize> = texte
-            .split('\n')
-            .enumerate()
-            .filter(|(_, e)| e == l)
-            .map(|(n, _)| n)
-            .collect();
-        if analyse.refus(l.as_bytes(), &numeros).is_some() {
-            return Vec::new();
-        }
-    }
-    let Some(gestes) = lignes
-        .iter()
-        .map(|l| super::defense::retirer_ligne(fichier, l))
-        .collect::<Option<Vec<Defense>>>()
-    else {
-        return Vec::new();
-    };
-    let apres: Vec<(String, String)> = fichiers
-        .iter()
-        .map(|(c, t)| {
-            if c == fichier {
-                let garde: Vec<&str> = t.split('\n').filter(|l| !lignes.contains(l)).collect();
-                (c.clone(), garde.join("\n"))
-            } else {
-                (c.clone(), t.clone())
-            }
-        })
-        .collect();
-    if gestes.is_empty() || ouverture_automatique_de(&apres).is_some() {
-        return Vec::new();
-    }
-    gestes
 }
 
 /// `pacman -Qo` en anglais : « /usr/bin/su is owned by util-linux 2.42.4-1 », une ligne par fichier qui a un paquet.
@@ -3183,11 +3185,14 @@ mod tests {
             retrait_decoupe(sh, format!("# Don't touch\n{p}\n").as_bytes(), &[1]),
             None
         );
-        // Une apostrophe dans un fichier lu ligne par ligne ne relie rien ; jugé comme du shell, le même texte est
-        // refusé (prudence par défaut). Le « \ » final se juge partout. Ronde 9 : un .desktop ou un fichier de cron
-        // ne se corrige plus seul (`Decoupe::Format`) ; la règle se voit sur un fichier de gestionnaire de connexion.
+        // Jugé comme du shell, un texte à apostrophe est refusé (prudence par défaut). Ronde 9 : un .desktop ou un
+        // fichier de cron ne se corrige plus seul (`Decoupe::Format`) ; ronde 10 (N10-3), un fichier de gestionnaire
+        // de connexion non plus (`Decoupe::Connexion`), avant même le « \ » final.
         let gdm = b"[daemon]\nX=L'agent\nAutomaticLoginEnable=true\n";
-        assert_eq!(retrait_decoupe("/etc/gdm3/custom.conf", gdm, &[2]), None);
+        assert_eq!(
+            retrait_decoupe("/etc/gdm3/custom.conf", gdm, &[2]),
+            Some(Decoupe::Connexion)
+        );
         assert_eq!(retrait_decoupe(sh, gdm, &[2]), Some(Decoupe::Shell));
         assert_eq!(
             retrait_decoupe(
@@ -3195,10 +3200,13 @@ mod tests {
                 b"[daemon]\nAutomaticLoginEnable=true \\\n",
                 &[1]
             ),
-            Some(Decoupe::Barre)
+            Some(Decoupe::Connexion)
         );
         // Sous la racine d'un essai, le chemin se juge par sa fin.
-        assert_eq!(retrait_decoupe("/tmp/essai/etc/gdm3/custom.conf", gdm, &[2]), None);
+        assert_eq!(
+            retrait_decoupe("/tmp/essai/etc/gdm3/custom.conf", gdm, &[2]),
+            Some(Decoupe::Connexion)
+        );
         let bureau = b"[Desktop Entry]\nName=L'agent\nExec=/tmp/.x/a\n";
         assert_eq!(
             retrait_decoupe("/tmp/essai/etc/xdg/autostart/a.desktop", bureau, &[2]),
@@ -3435,9 +3443,10 @@ mod tests {
             retrait_decoupe("/etc/profile.d/x.sh", trop.as_bytes(), &[0]),
             Some(Decoupe::Trop)
         );
+        // Un fichier de gestionnaire de connexion est refusé avant d'être compté (ronde 10, N10-3).
         assert_eq!(
             retrait_decoupe("/etc/gdm3/custom.conf", trop.as_bytes(), &[0]),
-            Some(Decoupe::Trop)
+            Some(Decoupe::Connexion)
         );
     }
 
@@ -3737,7 +3746,7 @@ mod tests {
         );
         assert_eq!(
             retrait_decoupe("/etc/gdm3/custom.conf", gdm.as_bytes(), &[2]),
-            Some(Decoupe::Longue)
+            Some(Decoupe::Connexion)
         );
     }
 
@@ -3898,8 +3907,8 @@ mod tests {
 
     /// Ronde 9 du lot 096 (N9-3, N9-4) : Vanguard ne retire lui-même que les lignes qu'il sait juger seul, la même
     /// règle au bilan et au fils root (`retrait_refuse`) : une affectation simple de LD_PRELOAD ou de LD_AUDIT qui
-    /// précharge vraiment, ou une ligne qui ouvre une session toute seule. Une ligne qui vide la variable
-    /// (« LD_PRELOAD= ») ne précharge rien : la retirer n'enlève rien (N9-4).
+    /// précharge vraiment (ronde 10 : plus l'ouverture automatique d'une session, N10-3). Une ligne qui vide la
+    /// variable (« LD_PRELOAD= ») ne précharge rien : la retirer n'enlève rien (N9-4).
     #[test]
     fn retrait_seulement_des_lignes_que_vanguard_retire() {
         let env = "/etc/environment";
@@ -3912,20 +3921,6 @@ mod tests {
             (env, "A=b\nLD_PRELOAD=/tmp/.x/a.so\n", 1),
             (sh, "# note\nexport LD_AUDIT=/tmp/.x/a.so\n", 1),
             (sh, "export LD_PRELOAD='/tmp/.x/a.so'\n", 0),
-            (
-                "/etc/gdm3/custom.conf",
-                "[daemon]\nAutomaticLoginEnable=true\nAutomaticLogin=alice\n",
-                1,
-            ),
-            ("/etc/gdm/custom.conf", "[daemon]\nTimedLoginEnable=1\n", 1),
-            ("/etc/sddm.conf.d/a.conf", "[Autologin]\nUser=alice\nSession=x\n", 1),
-            ("/etc/sddm.conf", "[Autologin]\nUser=alice\n", 1),
-            ("/etc/lightdm/lightdm.conf", "[Seat:*]\nautologin-user=alice\n", 1),
-            (
-                "/etc/lightdm/lightdm.conf.d/a.conf",
-                "[Seat:*]\nautologin-user=alice\n",
-                1,
-            ),
         ] {
             assert_eq!(juge(f, contenu, n), None, "{f} {contenu:?} ligne {n}");
         }
@@ -3943,14 +3938,6 @@ mod tests {
             (sh, "# export LD_PRELOAD=/tmp/.x/a.so\n", 0),
             (sh, "\n", 0),
             ("/etc/rc.local", "#!/bin/sh\n/tmp/.x/a\n", 1),
-            // Un fichier de connexion : une autre clé, ou une valeur qui n'ouvre rien.
-            ("/etc/gdm3/custom.conf", "[daemon]\nAutomaticLogin=alice\n", 1),
-            ("/etc/gdm3/custom.conf", "[daemon]\nAutomaticLoginEnable=false\n", 1),
-            ("/etc/gdm3/custom.conf", "[daemon]\n# AutomaticLoginEnable=true\n", 1),
-            ("/etc/lightdm/lightdm.conf", "[Seat:*]\nautologin-user=\n", 1),
-            ("/etc/lightdm/lightdm.conf", "[Seat:*]\nautologin-session=x\n", 1),
-            // Un préchargement ailleurs que dans un fichier de connexion.
-            ("/etc/gdm3/custom.conf", "[daemon]\nLD_PRELOAD=/tmp/.x/a.so\n", 1),
         ] {
             assert_eq!(juge(f, contenu, n), Some(Decoupe::Hors), "{f} {contenu:?} ligne {n}");
         }
@@ -3972,66 +3959,177 @@ mod tests {
         );
     }
 
-    /// Ronde 8 du lot 096 (N8-4), restreint aux gestionnaires de connexion à la ronde 9 : GLib (GKeyFile, gkeyfile.c
-    /// lu) rejette un fichier ENTIER dès une ligne invalide, une clé avant tout groupe ou un « Encoding » faux ; une
-    /// clé posée deux fois garde la dernière valeur. Seule une ligne « Clé=valeur » de la forme la plus stricte, après
-    /// un en-tête de groupe, dont aucune autre ligne ne pose la clé (au sens large : langue « [fr] », blancs avant le
-    /// « = » ; sauf vide), se retire seule.
+    /// Ronde 10 du lot 096 (N10-3, N10-4) : dans un fichier de GDM, SDDM ou LightDM, Vanguard ne retire ni ne
+    /// commente jamais une ligne lui-même, au bilan comme au fils root (`retrait_refuse`, `proxy_refuse`). La règle
+    /// stricte des rondes 8 et 9 jugeait une ligne d'UN fichier comme GLib la lit ; SDDM n'est pas GLib (blancs
+    /// Unicode ôtés autour d'une clé), et chacun lit plusieurs fichiers. Les cas de la relecture.
     #[test]
-    fn retrait_dans_un_fichier_de_connexion() {
-        let gdm = "/etc/gdm3/custom.conf";
-        let a = "AutomaticLoginEnable=true";
-        for (contenu, n) in [
-            (format!("[daemon]\n{a}\nAutomaticLogin=alice\n"), 1),
-            (format!("# note\n\n[daemon]\n{a}\n"), 3),
-            ("[daemon]\nAutomaticLoginEnable = true\n".to_string(), 1),
-            (format!("[daemon]\n{a}\n[security]\nX=y\n"), 1),
-            (format!("[daemon]\nAutomaticLoginEnable=\n{a}\n"), 2),
+    fn jamais_de_retouche_dans_un_fichier_de_connexion() {
+        for (f, contenu, n) in [
+            // Ce que les rondes 8 et 9 retiraient seules.
+            (
+                "/etc/gdm3/custom.conf",
+                "[daemon]\nAutomaticLoginEnable=true\nAutomaticLogin=alice\n",
+                1,
+            ),
+            ("/etc/gdm/custom.conf", "[daemon]\nTimedLoginEnable=1\n", 1),
+            ("/etc/gdm3/daemon.conf", "[daemon]\nAutomaticLoginEnable=true\n", 1),
+            ("/etc/sddm.conf.d/a.conf", "[Autologin]\nUser=alice\nSession=x\n", 1),
+            // N10-3 : un autre fichier pose « User=mallory », ou la même clé avec un espace insécable, ou
+            // « TimedLoginEnable » reste indenté.
+            ("/etc/sddm.conf", "[Autologin]\nUser=bob\n", 1),
+            ("/etc/sddm.conf", "[Autologin]\nUser=bob\nUser\u{a0}=mallory\n", 1),
+            (
+                "/etc/gdm3/custom.conf",
+                "[daemon]\nAutomaticLoginEnable=true\n  TimedLoginEnable=true\n",
+                1,
+            ),
+            ("/etc/lightdm/lightdm.conf", "[Seat:*]\nautologin-user=alice\n", 1),
+            (
+                "/etc/lightdm/lightdm.conf.d/a.conf",
+                "[Seat:*]\nautologin-user=alice\n",
+                1,
+            ),
+            // N10-4 : SDDM lit tous les fichiers de ses dossiers, quel que soit leur nom.
+            ("/etc/sddm.conf.d/a", "[Autologin]\nUser=alice\n", 1),
+            ("/usr/lib/sddm/sddm.conf.d/a.conf", "[Autologin]\nUser=alice\n", 1),
+            ("/tmp/essai/etc/sddm.conf.d/50-x", "[Autologin]\nUser=alice\n", 1),
+            // Une ligne d'affectation simple n'y change rien : le fichier décide.
+            ("/etc/gdm3/custom.conf", "LD_PRELOAD=/tmp/.x/a.so\n", 0),
+            ("/etc/sddm.conf.d/a", "HTTP_PROXY=http://198.51.100.7:3128\n", 0),
         ] {
             let ligne = contenu.split('\n').nth(n).unwrap_or_default();
-            assert_eq!(
-                retrait_refuse(gdm, contenu.as_bytes(), ligne.as_bytes(), &[n]),
-                None,
-                "{contenu:?} ligne {n}"
-            );
+            for refus in [
+                retrait_refuse(f, contenu.as_bytes(), ligne.as_bytes(), &[n]),
+                proxy_refuse(f, contenu.as_bytes(), ligne.as_bytes(), &[n]),
+                retrait_decoupe(f, contenu.as_bytes(), &[n]),
+            ] {
+                assert_eq!(refus, Some(Decoupe::Connexion), "{f} {contenu:?} ligne {n}");
+            }
         }
-        for (contenu, n) in [
-            // Une clé avant tout groupe, un groupe vide « [] » ou mal fermé.
-            (format!("{a}\n[daemon]\n"), 0),
-            (format!("[]\n{a}\n"), 1),
-            (format!("[daemon\n{a}\n"), 1),
-            // La même clé posée deux fois, au sens large.
-            (format!("[daemon]\n{a}\n{a}x\n"), 1),
-            (format!("[daemon]\n{a}\nAutomaticLoginEnable[fr]=false\n"), 1),
-            (format!("[daemon]\n{a}\nAutomaticLoginEnable =false\n"), 1),
-            (format!("[daemon]\n{a}\n[security]\nAutomaticLoginEnable=false\n"), 1),
-            // Pas la forme stricte.
-            (format!("[daemon]\n  {a}\n"), 1),
-            (format!("[daemon]\r\n{a}\r\n"), 1),
-            ("[daemon]\nAutomaticLoginEnable[fr]=true\n".to_string(), 1),
-            ("[daemon]\nAutomaticLoginEnable=tr\x0bue\n".to_string(), 1),
-        ] {
-            let ligne = contenu.split('\n').nth(n).unwrap_or_default();
-            let refus = retrait_refuse(gdm, contenu.as_bytes(), ligne.as_bytes(), &[n]);
-            assert!(
-                matches!(refus, Some(Decoupe::Lecteur | Decoupe::Hors)),
-                "{contenu:?} ligne {n} : {refus:?}"
-            );
-            assert_eq!(
-                retrait_decoupe(gdm, contenu.as_bytes(), &[n]),
-                Some(Decoupe::Lecteur),
-                "{contenu:?} ligne {n}"
-            );
-        }
-        // « Encoding » n'est jamais retiré seul ; les lignes qui posent la même clé partent ensemble ; un numéro hors
-        // du fichier ne compte pas.
+        // Même un fichier trop long : la raison est le fichier.
+        let trop = "\n".repeat(RETRAIT_LIGNES_MAX + 1);
         assert_eq!(
-            retrait_decoupe(gdm, b"[daemon]\nEncoding=UTF-8\n", &[1]),
-            Some(Decoupe::Lecteur)
+            proxy_refuse("/etc/sddm.conf", trop.as_bytes(), b"", &[0]),
+            Some(Decoupe::Connexion)
         );
-        let deux = format!("[daemon]\n{a}\nAutomaticLoginEnable=1\n");
-        assert_eq!(retrait_decoupe(gdm, deux.as_bytes(), &[2, 1]), None);
-        assert_eq!(retrait_decoupe(gdm, deux.as_bytes(), &[1, 99]), Some(Decoupe::Lecteur));
+    }
+
+    /// Ronde 10 du lot 096 (N10-1) : « mettre en commentaire une ligne de proxy » suit la règle du retrait, au bilan
+    /// comme au fils root (`proxy_refuse`) : une ligne commentée est une ligne retirée pour son lecteur. Les cas de la
+    /// relecture, une famille de fichier chacun.
+    #[test]
+    fn proxy_commente_selon_la_regle_du_retrait() {
+        let juge = |f: &str, contenu: &str, n: usize| {
+            let ligne = contenu.split('\n').nth(n).unwrap_or_default();
+            let numeros: Vec<usize> = contenu
+                .split('\n')
+                .enumerate()
+                .filter(|(_, l)| *l == ligne)
+                .map(|(i, _)| i)
+                .collect();
+            proxy_refuse(f, contenu.as_bytes(), ligne.as_bytes(), &numeros)
+        };
+        let proxy = "HTTP_PROXY=http://198.51.100.7:3128";
+        // Admis : une affectation simple en majuscules, dans un fichier d'affectations simples.
+        for (f, contenu, n) in [
+            ("/etc/environment", format!("EXEMPLE=1\n{proxy}\n"), 1),
+            ("/etc/profile.d/proxy.sh", format!("# proxy\nexport {proxy}\n"), 1),
+            (
+                "/etc/environment.d/90-proxy.conf",
+                "HTTPS_PROXY=http://198.51.100.7:3128\n".to_string(),
+                0,
+            ),
+            (
+                "/etc/profile.d/proxy.sh",
+                "export ALL_PROXY='http://198.51.100.7:3128'\n".to_string(),
+                0,
+            ),
+            ("/etc/rc.local", format!("#!/bin/sh\n{proxy}\n"), 1),
+        ] {
+            assert_eq!(juge(f, &contenu, n), None, "{f} {contenu:?} ligne {n}");
+        }
+        // a) Le guillemet ouvert de la relecture : la commande qu'il tient se lancerait.
+        let quote = "export http_proxy='http://198.51.100.7:3128\n/tmp/.x/a &\n'\n";
+        assert_eq!(juge("/etc/profile.d/a.sh", quote, 0), Some(Decoupe::Shell));
+        let quote = "export HTTP_PROXY='http://198.51.100.7:3128\n/tmp/.x/a &\n'\n";
+        assert_eq!(juge("/etc/profile.d/a.sh", quote, 0), Some(Decoupe::Shell));
+        // Un heredoc dans /etc/profile.
+        let heredoc = format!("cat > /dev/null <<'FIN'\n{proxy}\nFIN\n/tmp/.x/a &\n");
+        assert_eq!(juge("/etc/profile", &heredoc, 1), Some(Decoupe::Shell));
+        // Minuscules, guillemets doubles, autre fichier qui n'est pas simple : à la main.
+        for (f, contenu, n) in [
+            ("/etc/environment", "http_proxy=http://198.51.100.7:3128\n", 0),
+            ("/etc/environment", "HTTP_PROXY=\"http://198.51.100.7:3128\"\n", 0),
+            (
+                "/etc/environment",
+                "PATH=/usr/bin\nHTTP_PROXY=http://198.51.100.7:3128\n",
+                1,
+            ),
+            (
+                "/etc/profile.d/a.sh",
+                "export HTTP_PROXY=http://198.51.100.7:3128\nexport HTTP_PROXY=http://198.51.100.7:3128\n",
+                0,
+            ),
+        ] {
+            assert_eq!(juge(f, contenu, n), Some(Decoupe::Shell), "{f} {contenu:?} ligne {n}");
+        }
+        // « \ » final : la ligne d'après changerait de sens.
+        assert_eq!(
+            juge("/etc/environment", &format!("{proxy} \\\nLD_PRELOAD=/tmp/.x/a.so\n"), 0),
+            Some(Decoupe::Barre)
+        );
+        // b) Demandes forgées : unité (« \ » qui retient ExecStart), cron, anacron, .desktop.
+        for (f, contenu, n) in [
+            (
+                "/etc/systemd/system/a.service",
+                "[Service]\nEnvironment=http_proxy=x \\\nExecStart=/tmp/.x/a\n",
+                1,
+            ),
+            (
+                "/etc/systemd/system/a.service",
+                "[Service]\nhttp_proxy=x \\\nExecStart=/tmp/.x/a\n",
+                1,
+            ),
+            (
+                "/etc/cron.d/x",
+                "HTTP_PROXY=http://198.51.100.7:3128\n* * * * * root /tmp/.x/a\n",
+                0,
+            ),
+            ("/etc/crontab", "http_proxy=x\n", 0),
+            ("/etc/anacrontab", "HTTP_PROXY=x\n1 5 a /tmp/.x/a\n", 0),
+            (
+                "/etc/xdg/autostart/a.desktop",
+                "[Desktop Entry]\nhttp_proxy=x\nExec=/tmp/.x/a\n",
+                1,
+            ),
+        ] {
+            assert_eq!(juge(f, contenu, n), Some(Decoupe::Format), "{f} {contenu:?} ligne {n}");
+        }
+        // /etc/ld.so.preload : le chargeur lit chaque mot comme une bibliothèque, jamais une ligne de proxy.
+        assert_eq!(
+            juge("/etc/ld.so.preload", &format!("{proxy}\n"), 0),
+            Some(Decoupe::Hors)
+        );
+        // Une ligne qui ne règle pas le proxy, même désignée par ce geste ; un commentaire.
+        for (f, contenu) in [
+            ("/etc/environment", "LD_PRELOAD=/tmp/.x/a.so\n"),
+            ("/etc/environment", "NO_PROXY=localhost\n"),
+            ("/etc/profile.d/a.sh", "/tmp/.x/a &\n"),
+            ("/etc/environment", "# HTTP_PROXY=http://198.51.100.7:3128\n"),
+        ] {
+            assert_eq!(juge(f, contenu, 0), Some(Decoupe::Hors), "{f} {contenu:?}");
+        }
+        // Et le retrait, lui, ne prend pas une ligne de proxy : chaque geste a ses lignes.
+        assert_eq!(
+            retrait_refuse(
+                "/etc/environment",
+                format!("{proxy}\n").as_bytes(),
+                proxy.as_bytes(),
+                &[0]
+            ),
+            Some(Decoupe::Hors)
+        );
     }
 
     /// Sans lecture du Wi-Fi, la règle ne disparaît pas : sans carte, rien à juger ; avec une carte, non vérifié,
@@ -4316,9 +4414,26 @@ mod tests {
         crate::autotest::croisees::essayer("AUT-LNX-008");
     }
 
+    /// Un fichier de gestionnaire de connexion lu, pour les essais : le gestionnaire est dit par le chemin, comme
+    /// `fichiers_de_connexion` le dirait par le dossier.
+    pub(super) fn connexion(chemin: &str, texte: &str) -> FichierDeConnexion {
+        let gestionnaire = if chemin.contains("gdm") {
+            Gestionnaire::Gdm
+        } else if chemin.contains("lightdm") {
+            Gestionnaire::LightDm
+        } else {
+            Gestionnaire::Sddm
+        };
+        FichierDeConnexion {
+            gestionnaire,
+            chemin: chemin.to_string(),
+            texte: Some(texte.to_string()),
+        }
+    }
+
     #[test]
     fn ouverture_de_session_automatique() {
-        let f = |c: &str, t: &str| (c.to_string(), t.to_string());
+        let f = connexion;
         // SDDM d'Omarchy ; un fichier lu après qui vide le compte l'annule.
         let omarchy = f(
             "/etc/sddm.conf.d/autologin.conf",
@@ -4364,84 +4479,201 @@ mod tests {
                 .0,
             "alice"
         );
+        // Ronde 10 (N10-4) : la session d'invité de LightDM, avant le compte nommé.
+        let invite = "[Seat:*]\nautologin-guest=true\n";
+        assert_eq!(
+            ouverture_automatique_de(&[f("/etc/lightdm/lightdm.conf", invite)]),
+            Some((tr!("invité", "guest").to_string(), "/etc/lightdm/lightdm.conf".into()))
+        );
+        assert_eq!(
+            ouverture_automatique_de(&[f("/etc/lightdm/lightdm.conf", "[Seat:*]\nautologin-guest=false\n")]),
+            None
+        );
+        // Ronde 10 (N10-4) : le gestionnaire est celui du dossier, pas un bout du nom. Un ajout de LightDM nommé
+        // « 50-sddm.conf » reste un fichier de LightDM ; une section de SDDM dans un fichier de LightDM ne compte pas.
+        let mal_nomme = FichierDeConnexion {
+            gestionnaire: Gestionnaire::LightDm,
+            chemin: "/etc/lightdm/lightdm.conf.d/50-sddm.conf".into(),
+            texte: Some("[Seat:*]\nautologin-user=alice\n".into()),
+        };
+        assert_eq!(ouverture_automatique_de(&[mal_nomme]).unwrap().0, "alice");
+        let croise = FichierDeConnexion {
+            gestionnaire: Gestionnaire::LightDm,
+            chemin: "/etc/lightdm/lightdm.conf".into(),
+            texte: Some("[Autologin]\nUser=alice\n".into()),
+        };
+        assert_eq!(ouverture_automatique_de(&[croise]), None);
+        // Un interrupteur dans un fichier, le compte dans un autre : ils comptent ensemble.
+        let deux = [
+            f("/etc/gdm3/daemon.conf", "[daemon]\nAutomaticLogin=bob\n"),
+            f("/etc/gdm3/custom.conf", "[daemon]\nAutomaticLoginEnable=true\n"),
+        ];
+        assert_eq!(ouverture_automatique_de(&deux).unwrap().0, "bob");
         // Jugement : disque chiffré, sans alerte ; sinon moyen.
-        assert!(
-            juger_ouverture_automatique("alice", "x", Some(true), &[])
-                .probleme
-                .is_none()
-        );
+        assert!(juger_ouverture_automatique("alice", "x", Some(true)).probleme.is_none());
         assert_eq!(
-            juger_ouverture_automatique("alice", "x", Some(false), &[]).probleme,
+            juger_ouverture_automatique("alice", "x", Some(false)).probleme,
             Some(Niveau::Moyen)
         );
         assert_eq!(
-            juger_ouverture_automatique("alice", "x", None, &[]).probleme,
+            juger_ouverture_automatique("alice", "x", None).probleme,
             Some(Niveau::Moyen)
         );
-        // Sans geste : à la main.
-        let k = juger_ouverture_automatique("alice", "x", None, &[]).correctif.unwrap();
-        assert!(!k.automatique);
     }
 
-    /// D7a : l'ouverture automatique se coupe par un geste seulement si toutes ses lignes sont dans un fichier admis
-    /// et que, parties, plus rien n'ouvre de session.
+    /// Ronde 10 du lot 096 (N10-3) : l'ouverture automatique n'a plus de geste. Le gestionnaire lit plusieurs fichiers
+    /// à sa façon (SDDM n'est pas GLib) : retirer la ligne vue pourrait laisser, ou réveiller, celle d'un autre. La
+    /// correction est dite, à la main, avec la raison ; jamais une commande que Vanguard lancerait.
     #[test]
-    fn ouverture_automatique_coupee_par_geste() {
-        const AUCUN: [Defense; 0] = [];
-        let f = |chemin: &str, texte: &str| (chemin.to_string(), texte.to_string());
-        let empreinte = crate::machine::defense_eleve::empreinte_de_ligne;
-        // SDDM d'Omarchy : la ligne du compte, telle quelle, comme la relit le fils root.
-        let sddm = [f(
-            "/etc/sddm.conf.d/autologin.conf",
-            "[Autologin]\nUser=alice\nSession=omarchy.desktop\n",
-        )];
-        let g = gestes_d_ouverture(&sddm, "/etc/sddm.conf.d/autologin.conf");
-        let [Defense::RetirerLigne(lue, fichier)] = g.as_slice() else {
-            panic!("un geste attendu : {g:?}")
+    fn ouverture_automatique_sans_geste() {
+        for fichiers in [
+            vec![connexion(
+                "/etc/sddm.conf.d/autologin.conf",
+                "[Autologin]\nUser=alice\nSession=omarchy.desktop\n",
+            )],
+            vec![connexion(
+                "/etc/gdm3/custom.conf",
+                "[daemon]\nAutomaticLoginEnable=true\nAutomaticLogin=bob\n",
+            )],
+            vec![connexion(
+                "/etc/lightdm/lightdm.conf",
+                "[Seat:*]\nautologin-user=alice\n",
+            )],
+        ] {
+            let c = constat_d_ouverture(&fichiers, || Some(false)).unwrap();
+            assert_eq!(c.probleme, Some(Niveau::Moyen), "{fichiers:?}");
+            assert!(c.verifie);
+            let k = c.correctif.unwrap();
+            assert!(!k.automatique, "{fichiers:?}");
+            assert!(k.commandes.is_empty(), "{:?}", k.commandes);
+            assert!(
+                !matches!(k.defaire, crate::machine::Defaire::Gestes(_)),
+                "{:?}",
+                k.defaire
+            );
+            assert!(
+                k.action
+                    .contains(tr!("ne la retire pas lui-même", "does not remove it itself")),
+                "{}",
+                k.action
+            );
+        }
+    }
+
+    /// Ronde 10 du lot 096 (N10-4) : un fichier de connexion qui ne se lit pas est dit non vérifié, jamais compté
+    /// comme une machine sans ouverture automatique ; s'il y a une ouverture vue ailleurs, il est nommé avec elle.
+    #[test]
+    fn ouverture_automatique_non_lue_dite() {
+        let non_lu = |chemin: &str| FichierDeConnexion {
+            gestionnaire: Gestionnaire::Sddm,
+            chemin: chemin.to_string(),
+            texte: None,
         };
-        assert_eq!(*lue, empreinte(b"User=alice"));
-        // Ronde 9 du lot 096 (N9-3) : une fin « \r » n'a pas la forme stricte que le fils root admet
-        // (`Decoupe::Lecteur`) ; le bilan ne l'offre donc pas non plus, la correction reste à la main.
-        let sddm_cr = [f(
-            "/etc/sddm.conf.d/autologin.conf",
-            "[Autologin]\nUser=alice\r\nSession=omarchy.desktop\n",
-        )];
-        assert_eq!(gestes_d_ouverture(&sddm_cr, "/etc/sddm.conf.d/autologin.conf"), AUCUN);
-        // De même pour une clé posée deux fois, ou une clé avant tout groupe.
-        let double = [f(
-            "/etc/gdm3/custom.conf",
-            "[daemon]\nAutomaticLoginEnable=true\nAutomaticLoginEnable = true\n",
-        )];
-        assert_eq!(gestes_d_ouverture(&double, "/etc/gdm3/custom.conf"), AUCUN);
-        let sans_groupe = [f("/etc/lightdm/lightdm.conf", "autologin-user=alice\n[Seat:*]\n")];
-        assert_eq!(gestes_d_ouverture(&sans_groupe, "/etc/lightdm/lightdm.conf"), AUCUN);
-        assert_eq!(fichier.octets(), b"/etc/sddm.conf.d/autologin.conf");
-        let k = juger_ouverture_automatique("alice", "/etc/sddm.conf.d/autologin.conf", None, &g)
-            .correctif
-            .unwrap();
-        assert!(k.automatique);
-        assert!(matches!(k.defaire, crate::machine::Defaire::Gestes(ref v) if v.len() == 1));
-        // GDM : les deux interrupteurs, deux gestes ; le compte nommé reste.
-        let gdm = [f(
-            "/etc/gdm3/custom.conf",
-            "[daemon]\nAutomaticLoginEnable=true\nAutomaticLogin=bob\nTimedLoginEnable=true\nTimedLogin=bob\n",
-        )];
-        assert_eq!(gestes_d_ouverture(&gdm, "/etc/gdm3/custom.conf").len(), 2);
-        // Un réglage de la distribution (sous /usr) reprendrait la main : rien d'automatique.
-        let dessous = [
-            f("/usr/lib/sddm/sddm.conf.d/auto.conf", "[Autologin]\nUser=alice\n"),
-            f("/etc/sddm.conf", "[Autologin]\nUser=alice\n"),
-        ];
-        assert_eq!(gestes_d_ouverture(&dessous, "/etc/sddm.conf"), AUCUN);
-        // Fichier hors de la liste admise : à la main.
-        let ailleurs = [f("/usr/lib/sddm/sddm.conf.d/auto.conf", "[Autologin]\nUser=alice\n")];
-        assert_eq!(
-            gestes_d_ouverture(&ailleurs, "/usr/lib/sddm/sddm.conf.d/auto.conf"),
-            AUCUN
+        // Rien lu d'autre : impossible de vérifier, pas « OK ».
+        let c = constat_d_ouverture(&[non_lu("/etc/sddm.conf.d/a")], || Some(false)).unwrap();
+        assert!(!c.verifie, "{}", c.message);
+        assert!(c.message.contains("/etc/sddm.conf.d/a"), "{}", c.message);
+        // Une ouverture vue ailleurs : constat d'ouverture, et le fichier non lu est nommé.
+        let c = constat_d_ouverture(
+            &[
+                connexion("/etc/lightdm/lightdm.conf", "[Seat:*]\nautologin-user=alice\n"),
+                non_lu("/etc/sddm.conf"),
+            ],
+            || Some(false),
+        )
+        .unwrap();
+        assert_eq!(c.probleme, Some(Niveau::Moyen));
+        assert!(
+            c.message.contains(tr!("non vérifiés", "not checked")) && c.message.contains("/etc/sddm.conf"),
+            "{}",
+            c.message
         );
-        // Un nom de fichier hostile n'est jamais admis.
-        let hostile = [f("/etc/sddm.conf.d/a;rm -rf.conf", "[Autologin]\nUser=alice\n")];
-        assert_eq!(gestes_d_ouverture(&hostile, "/etc/sddm.conf.d/a;rm -rf.conf"), AUCUN);
+        // Beaucoup de fichiers non lus : les premiers nommés, les autres comptés.
+        let beaucoup: Vec<_> = (0..8).map(|i| non_lu(&format!("/etc/sddm.conf.d/{i}"))).collect();
+        let c = constat_d_ouverture(&beaucoup, || None).unwrap();
+        assert!(c.message.contains("/etc/sddm.conf.d/4") && !c.message.contains("/etc/sddm.conf.d/5"));
+        assert!(
+            c.message.contains(&trf!("et {} autre(s)", "and {} more", 3)),
+            "{}",
+            c.message
+        );
+        // Tout lu, personne : rien à dire.
+        assert!(constat_d_ouverture(&[connexion("/etc/sddm.conf", "[Theme]\nCurrent=x\n")], || None).is_none());
+        // Un nom de fichier hostile est rendu affichable.
+        let c = constat_d_ouverture(&[non_lu("/etc/sddm.conf.d/a\u{1b}[2J")], || None).unwrap();
+        assert!(!c.message.contains('\u{1b}'), "{:?}", c.message);
+    }
+
+    /// Ronde 10 du lot 096 (N10-4) : les fichiers lus, sur une racine d'essai, comme SDDM et LightDM les lisent. SDDM
+    /// prend tout fichier de ses dossiers, « .conf » ou non ; LightDM, ses « .conf » de /usr/share, /usr/local/share,
+    /// /etc/xdg puis /etc/lightdm ; un sous-dossier est sauté ; un fichier qui ne se lit pas reste, sans texte.
+    #[test]
+    fn fichiers_de_connexion_sur_une_racine() {
+        let racine = crate::essais::Jetable::nouveau("fichiers-de-connexion");
+        let ecrire = |c: &str, t: &[u8]| {
+            let p = racine.join(c.trim_start_matches('/'));
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, t).unwrap();
+        };
+        ecrire("/etc/sddm.conf.d/autologin", b"[Autologin]\nUser=alice\n");
+        ecrire("/usr/lib/sddm/sddm.conf.d/10-theme.conf", b"[Theme]\nCurrent=x\n");
+        ecrire(
+            "/etc/xdg/lightdm/lightdm.conf.d/50-sddm.conf",
+            b"[Seat:*]\nautologin-guest=true\n",
+        );
+        ecrire(
+            "/etc/lightdm/lightdm.conf.d/notes.txt",
+            b"[Seat:*]\nautologin-user=bob\n",
+        );
+        ecrire("/etc/gdm3/custom.conf", b"[daemon]\n\xff\n");
+        std::fs::create_dir_all(racine.join("etc/sddm.conf.d/sous")).unwrap();
+        let fichiers = fichiers_de_connexion(&racine);
+        let vus: Vec<(Gestionnaire, String, bool)> = fichiers
+            .iter()
+            .map(|f| {
+                let c = f.chemin.strip_prefix(&*racine.to_string_lossy()).unwrap_or(&f.chemin);
+                (f.gestionnaire, c.to_string(), f.texte.is_some())
+            })
+            .collect();
+        assert_eq!(
+            vus,
+            [
+                (Gestionnaire::Gdm, "/etc/gdm3/custom.conf".to_string(), false),
+                (
+                    Gestionnaire::Sddm,
+                    "/usr/lib/sddm/sddm.conf.d/10-theme.conf".to_string(),
+                    true
+                ),
+                (Gestionnaire::Sddm, "/etc/sddm.conf.d/autologin".to_string(), true),
+                (
+                    Gestionnaire::LightDm,
+                    "/etc/xdg/lightdm/lightdm.conf.d/50-sddm.conf".to_string(),
+                    true
+                ),
+            ]
+        );
+        // Le constat : l'ouverture de SDDM, et le fichier de GDM non lu nommé.
+        let c = constat_d_ouverture(&fichiers, || Some(false)).unwrap();
+        assert!(
+            c.message.contains("« alice »") || c.message.contains("“alice”"),
+            "{}",
+            c.message
+        );
+        assert!(c.message.contains("custom.conf"), "{}", c.message);
+        // Un tube nommé n'est jamais lu (pas de blocage) : non vérifié.
+        #[cfg(unix)]
+        {
+            let tube = racine.join("etc/sddm.conf");
+            if crate::essais::tube_nomme(&tube).is_ok() {
+                let f = fichiers_de_connexion(&racine);
+                assert!(
+                    f.iter()
+                        .any(|f| f.chemin.ends_with("/etc/sddm.conf") && f.texte.is_none())
+                );
+            } else {
+                crate::essais::saute("mkfifo refusé ici");
+            }
+        }
     }
 
     /// D7a : un compte caché à l'UID 0 se verrouille par un geste (jamais supprimé) ; un nom forgé laisse la liste
@@ -4934,7 +5166,7 @@ mod tests_au_hasard {
         #[test]
         fn lecteurs_sans_plantage(t in texte(), chemin in "(/etc/gdm3/custom.conf|/etc/sddm.conf|/etc/lightdm/lightdm.conf|/x)") {
             let _ = valeur_ini(&t, |_| true, "User");
-            let _ = ouverture_automatique_de(&[(chemin, t.clone())]);
+            let _ = ouverture_automatique_de(&[super::tests::connexion(&chemin, &t)]);
             let _ = proprietaires_pacman(&t);
             let _ = wifi_ouvert(&t);
             let _ = maj::juger_dnf_auto(false, true, &t);

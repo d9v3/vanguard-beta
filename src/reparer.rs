@@ -297,7 +297,22 @@ fn navigation() -> Reparation {
     }
     // Lignes de proxy des fichiers de démarrage du système : mises en commentaire par un geste de Vanguard (tous ou
     // aucun) ; celles du dossier personnel restent à la main, plus bas.
-    let gestes = gestes_proxy(lire_fichiers_proxy());
+    let (gestes, a_la_main) = match gestes_proxy(lire_fichiers_proxy()) {
+        Ok(g) => (g, Vec::new()),
+        Err(f) => (Vec::new(), f),
+    };
+    if !a_la_main.is_empty() {
+        let fichiers: Vec<String> = a_la_main.iter().map(|f| crate::ui::affichable(f)).collect();
+        constats.push(trf!(
+            "ligne(s) de proxy dans {} (à mettre en commentaire à la main : Vanguard n'y touche seul que dans un fichier fait de lignes vides, de commentaires et d'affectations simples « NOM=valeur », le NOM en majuscules)",
+            "proxy line(s) in {} (to comment out by hand: Vanguard only touches them on its own in a file made of empty lines, comments and simple \"NAME=value\" assignments, the NAME in capitals)",
+            fichiers.join(", ")
+        ));
+        // Des chemins fixes, jamais un nom lu dans un dossier : la commande ne reprend rien du disque.
+        commandes.push(format!(
+            "{TROUVER_PROXY} /etc/environment /etc/profile /etc/bash.bashrc /etc/bashrc /etc/zshenv /etc/zprofile /etc/zshrc /etc/zsh/* /etc/profile.d/* /etc/environment.d/*; true"
+        ));
+    }
     if !gestes.is_empty() {
         let lignes: Option<Vec<String>> = gestes
             .iter()
@@ -432,23 +447,40 @@ fn sans_proxy(contenu: &[u8]) -> bool {
 
 /// Un geste pour chaque ligne de proxy de ces fichiers, tous ou aucun : un fichier qui ne se lit pas, une ligne de
 /// proxy qui n'est pas du texte ou qu'un geste ne peut pas désigner, et tout reste à la main (jamais une correction
-/// qui n'en retirerait qu'une partie).
+/// qui n'en retirerait qu'une partie). `Err` : les fichiers dont la règle du retrait (`linux::proxy_refuse`, celle que
+/// le fils root rejoue) refuse une ligne ; aucun geste, et c'est dit (ronde 10 du lot 096, N10-1).
 #[cfg(target_os = "linux")]
-fn gestes_proxy(fichiers: Vec<(String, Option<Vec<u8>>)>) -> Vec<crate::machine::gestes_unix::Defense> {
+fn gestes_proxy(
+    fichiers: Vec<(String, Option<Vec<u8>>)>,
+) -> Result<Vec<crate::machine::gestes_unix::Defense>, Vec<String>> {
     use crate::machine::defense_eleve::ligne_de_proxy;
     let mut vus: Vec<(String, String)> = Vec::new();
+    let mut refuses: Vec<String> = Vec::new();
     for (fichier, contenu) in fichiers {
         let Some(contenu) = contenu else {
             // Illisible : peut-être un réglage du proxy qu'on ne voit pas ; un lien d'un dossier .d aussi.
-            return Vec::new();
+            return Ok(Vec::new());
         };
+        let analyse = crate::machine::linux::AnalyseDeRetrait::de(&fichier, &contenu);
         for ligne in contenu.split(|o| *o == b'\n') {
             let texte = String::from_utf8_lossy(ligne);
             if !ligne_de_proxy(texte.as_bytes()) {
                 continue;
             }
             if std::str::from_utf8(ligne).is_err() {
-                return Vec::new();
+                return Ok(Vec::new());
+            }
+            let numeros: Vec<usize> = contenu
+                .split(|o| *o == b'\n')
+                .enumerate()
+                .filter(|(_, l)| *l == ligne)
+                .map(|(n, _)| n)
+                .collect();
+            if analyse.refus_de_proxy(ligne, &numeros).is_some() {
+                if !refuses.contains(&fichier) {
+                    refuses.push(fichier.clone());
+                }
+                continue;
             }
             let paire = (fichier.clone(), texte.into_owned());
             if !vus.contains(&paire) {
@@ -456,7 +488,12 @@ fn gestes_proxy(fichiers: Vec<(String, Option<Vec<u8>>)>) -> Vec<crate::machine:
             }
         }
     }
-    crate::machine::defense::tous(vus, |(f, l)| crate::machine::defense::commenter_proxy(&f, &l))
+    if !refuses.is_empty() {
+        return Err(refuses);
+    }
+    Ok(crate::machine::defense::tous(vus, |(f, l)| {
+        crate::machine::defense::commenter_proxy(&f, &l)
+    }))
 }
 
 /// ClamAV absent : rien à mettre à jour, et rien à proposer (AV5 : ClamAV est un second avis facultatif, le moteur de
@@ -1643,7 +1680,9 @@ mod tests {
         assert_eq!(v, ["https_proxy=http://10.0.0.9:3128�]52;c;eA==��"]);
     }
 
-    /// Les lignes de proxy des fichiers du système deviennent des gestes, tous ou aucun.
+    /// Les lignes de proxy des fichiers du système deviennent des gestes, tous ou aucun. Ronde 10 du lot 096 (N10-1) :
+    /// seulement celles que la règle du retrait admet (`AnalyseDeRetrait::refus_de_proxy`), la même qu'au fils root ;
+    /// un fichier refusé est rendu, pour que la correction le nomme, à la main.
     #[cfg(target_os = "linux")]
     #[test]
     fn proxy_du_systeme_par_gestes() {
@@ -1652,19 +1691,17 @@ mod tests {
         let g = gestes_proxy(vec![
             f(
                 "/etc/environment",
-                b"PATH=/usr/bin\nhttps_proxy=http://10.0.0.9:3128\n# http_proxy=x\n",
+                b"EXEMPLE=1\nHTTPS_PROXY=http://10.0.0.9:3128\n# http_proxy=x\n",
             ),
-            f(
-                "/etc/profile.d/proxy.sh",
-                b"export HTTP_PROXY=http://10.0.0.9:3128\nexport HTTP_PROXY=http://10.0.0.9:3128\n",
-            ),
+            f("/etc/profile.d/proxy.sh", b"export HTTP_PROXY=http://10.0.0.9:3128\n"),
             f("/etc/profile", b"# Vanguard : http_proxy=x\n"),
-        ]);
-        assert_eq!(g.len(), 2, "une ligne en double ne fait qu'un geste");
+        ])
+        .unwrap();
+        assert_eq!(g.len(), 2);
         assert!(g.iter().all(|d| matches!(d, Defense::CommenterProxy(..))));
         assert_eq!(
             g[0],
-            crate::machine::defense::commenter_proxy("/etc/environment", "https_proxy=http://10.0.0.9:3128").unwrap()
+            crate::machine::defense::commenter_proxy("/etc/environment", "HTTPS_PROXY=http://10.0.0.9:3128").unwrap()
         );
         // Un lien du système sans proxy est laissé de côté ; un lien qui en règle un (même en octets qui ne sont pas du
         // texte) laisse tout à la main.
@@ -1674,32 +1711,64 @@ mod tests {
         // Rien à faire.
         assert_eq!(
             gestes_proxy(vec![f("/etc/environment", b"LANG=fr_CA.UTF-8\n")]),
-            Vec::<Defense>::new()
+            Ok(Vec::<Defense>::new())
         );
-        assert_eq!(gestes_proxy(Vec::new()), Vec::<Defense>::new());
-        // Tous ou aucun : un fichier illisible, une ligne hors des fichiers admis ou qui n'est pas du texte.
-        let proxy = f("/etc/environment", b"http_proxy=http://10.0.0.9:3128\n");
+        assert_eq!(gestes_proxy(Vec::new()), Ok(Vec::<Defense>::new()));
+        // Tous ou aucun : un fichier illisible, une ligne qui n'est pas du texte.
+        let proxy = f("/etc/environment", b"HTTP_PROXY=http://10.0.0.9:3128\n");
         assert_eq!(
             gestes_proxy(vec![proxy.clone(), ("/etc/profile.d/x.sh".into(), None)]),
-            Vec::<Defense>::new()
-        );
-        assert_eq!(
-            gestes_proxy(vec![proxy.clone(), f("/etc/profile.d/x.csh", b"http_proxy=y\n")]),
-            Vec::<Defense>::new()
+            Ok(Vec::<Defense>::new())
         );
         assert_eq!(
             gestes_proxy(vec![proxy.clone(), f("/etc/profile", b"http_proxy=\xff\n")]),
-            Vec::<Defense>::new()
+            Ok(Vec::<Defense>::new())
         );
-        // Plus de gestes qu'une correction n'en porte : tout reste à la main.
-        let trop = (0..=crate::machine::defense::GESTES_MAX).fold(String::new(), |mut s, i| {
-            let _ = std::fmt::Write::write_fmt(&mut s, format_args!("http_proxy=http://10.0.0.{i}:3128\n"));
-            s
-        });
+        // Un fichier que le geste ne prend pas (csh) : rien d'automatique non plus.
         assert_eq!(
-            gestes_proxy(vec![f("/etc/environment", trop.as_bytes())]),
-            Vec::<Defense>::new()
+            gestes_proxy(vec![proxy.clone(), f("/etc/profile.d/x.csh", b"HTTP_PROXY=y\n")]),
+            Ok(Vec::<Defense>::new())
         );
+        // Refusés par la règle du retrait, le fichier nommé : minuscules, ligne en double, fichier qui n'est pas fait
+        // d'affectations simples, guillemet ouvert (la relecture), heredoc.
+        for (fichier, contenu) in [
+            ("/etc/environment", &b"https_proxy=http://10.0.0.9:3128\n"[..]),
+            (
+                "/etc/profile.d/proxy.sh",
+                b"export HTTP_PROXY=http://10.0.0.9:3128\nexport HTTP_PROXY=http://10.0.0.9:3128\n",
+            ),
+            ("/etc/environment", b"PATH=/usr/bin\nHTTP_PROXY=http://10.0.0.9:3128\n"),
+            (
+                "/etc/profile.d/a.sh",
+                b"export http_proxy='http://198.51.100.7:3128\n/tmp/.x/a &\n'\n",
+            ),
+            (
+                "/etc/profile",
+                b"cat > /dev/null <<'FIN'\nHTTP_PROXY=http://10.0.0.9:3128\nFIN\n/tmp/.x/a &\n",
+            ),
+        ] {
+            assert_eq!(
+                gestes_proxy(vec![proxy.clone(), f(fichier, contenu)]),
+                Err(vec![fichier.to_string()]),
+                "{fichier} {:?}",
+                String::from_utf8_lossy(contenu)
+            );
+        }
+        // Plus de gestes qu'une correction n'en porte (un fichier chacun : un NOM n'y est admis qu'une fois) : tout
+        // reste à la main.
+        let trop: Vec<_> = (0..=crate::machine::defense::GESTES_MAX)
+            .map(|i| {
+                (
+                    format!("/etc/profile.d/proxy{i}.sh"),
+                    Some(format!("export HTTP_PROXY=http://10.0.0.{i}:3128\n").into_bytes()),
+                )
+            })
+            .collect();
+        assert_eq!(
+            gestes_proxy(trop[1..].to_vec()).map(|g| g.len()),
+            Ok(crate::machine::defense::GESTES_MAX)
+        );
+        assert_eq!(gestes_proxy(trop), Ok(Vec::<Defense>::new()));
     }
 
     /// Proxy et script de proxy viennent du registre, que tout programme de la session peut écrire.

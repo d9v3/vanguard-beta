@@ -728,10 +728,13 @@ pub(super) fn juger_proxy(e: Empreinte, c: &CheminDesigne, a: &mut dyn Acces) ->
     let vu = lisible(&p);
     let mut nouveau = Vec::with_capacity(contenu.len().saturating_add(MARQUE_PROXY.len()));
     let mut trouvee: Option<&[u8]> = None;
-    for morceau in contenu.split_inclusive(|o| *o == b'\n') {
+    // Les numéros (depuis 0, coupés au seul « \n ») des lignes mises en commentaire.
+    let mut numeros: Vec<usize> = Vec::new();
+    for (n, morceau) in contenu.split_inclusive(|o| *o == b'\n').enumerate() {
         let ligne = morceau.strip_suffix(b"\n").unwrap_or(morceau);
         if empreinte_de_ligne(ligne) == e {
             trouvee = Some(ligne);
+            numeros.push(n);
             nouveau.extend_from_slice(MARQUE_PROXY);
         }
         nouveau.extend_from_slice(morceau);
@@ -739,11 +742,21 @@ pub(super) fn juger_proxy(e: Empreinte, c: &CheminDesigne, a: &mut dyn Acces) ->
     let Some(ligne) = trouvee else {
         return Ok(None);
     };
+    let hors = trf!(
+        "la ligne désignée dans {vu} ne règle pas le proxy : rien n'est fait",
+        "the line named in {vu} does not set the proxy: nothing is done"
+    );
     if !ligne_de_proxy(ligne) {
-        return Err(refus(trf!(
-            "la ligne désignée dans {vu} ne règle pas le proxy : rien n'est fait",
-            "the line named in {vu} does not set the proxy: nothing is done"
-        )));
+        return Err(refus(hors));
+    }
+    // Ronde 10 du lot 096 (N10-1) : une ligne mise en commentaire est une ligne retirée pour son lecteur. La même
+    // règle que le retrait (`linux::proxy_refuse`, celle du bilan) : jamais dans une unité systemd, un fichier de cron
+    // ou d'anacron, un raccourci .desktop, un fichier de gestionnaire de connexion ; ailleurs, seulement dans un
+    // fichier d'affectations simples, sans « \ » final. Avant, une ligne qui ouvrait un guillemet se commentait, et la
+    // commande qu'elle tenait entre guillemets se lançait à chaque ouverture de session.
+    let fichier = std::str::from_utf8(c.octets()).unwrap_or_default();
+    if let Some(d) = crate::machine::linux::proxy_refuse(fichier, &contenu, ligne, &numeros) {
+        return Err(refus(super::raison_de_decoupe(d, &vu, hors)));
     }
     Ok(Some(Plan {
         texte: trf!(

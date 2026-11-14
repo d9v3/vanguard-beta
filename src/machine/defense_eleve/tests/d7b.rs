@@ -517,7 +517,7 @@ fn proxy_commente() {
     let mut a = Faux::nouveau().repondre("o");
     a.poser(
         "/etc/environment",
-        b"PATH=/usr/bin\nexport HTTPS_PROXY=http://10.0.0.1:3128\n",
+        b"EXEMPLE=1\nexport HTTPS_PROXY=http://10.0.0.1:3128\n",
         0o644,
     );
     let e = empreinte_de_ligne(b"export HTTPS_PROXY=http://10.0.0.1:3128");
@@ -529,9 +529,136 @@ fn proxy_commente() {
     assert!(r.reussi, "{}", r.raison);
     assert_eq!(
         a.texte("/etc/environment"),
-        "PATH=/usr/bin\n# Vanguard : export HTTPS_PROXY=http://10.0.0.1:3128\n"
+        "EXEMPLE=1\n# Vanguard : export HTTPS_PROXY=http://10.0.0.1:3128\n"
     );
     assert!(a.questions[0].contains("non annulable"));
+}
+
+/// Ronde 10 du lot 096 (N10-1) : le fils root ne commente une ligne de proxy que si la règle du retrait l'admet,
+/// comme le bilan (même fonction, `linux::proxy_refuse`) ; sinon rien d'écrit, sans question, la raison dite. Les
+/// demandes forgées de la relecture, une famille de fichier chacune.
+#[test]
+fn proxy_selon_la_regle_du_retrait() {
+    let guillemet = "export http_proxy='http://198.51.100.7:3128\n/tmp/.x/a &\n'\n";
+    let heredoc = "cat > /dev/null <<'FIN'\nHTTP_PROXY=http://198.51.100.7:3128\nFIN\n/tmp/.x/a &\n";
+    for (fichier, contenu, ligne, raison) in [
+        (
+            "/etc/profile.d/a.sh",
+            guillemet,
+            "export http_proxy='http://198.51.100.7:3128",
+            "affectations simples",
+        ),
+        (
+            "/etc/profile",
+            heredoc,
+            "HTTP_PROXY=http://198.51.100.7:3128",
+            "affectations simples",
+        ),
+        (
+            "/etc/environment",
+            "https_proxy=http://10.0.0.1:3128\n",
+            "https_proxy=http://10.0.0.1:3128",
+            "affectations simples",
+        ),
+        (
+            "/etc/environment",
+            "PATH=/usr/bin\nHTTPS_PROXY=http://10.0.0.1:3128\n",
+            "HTTPS_PROXY=http://10.0.0.1:3128",
+            "affectations simples",
+        ),
+        (
+            "/etc/systemd/system/a.service",
+            "[Service]\nhttp_proxy=x \\\nExecStart=/tmp/.x/a\n",
+            "http_proxy=x \\",
+            "Vanguard ne corrige jamais ces fichiers",
+        ),
+        (
+            "/etc/cron.d/x",
+            "HTTP_PROXY=http://198.51.100.7:3128\n* * * * * root /tmp/.x/a\n",
+            "HTTP_PROXY=http://198.51.100.7:3128",
+            "Vanguard ne corrige jamais ces fichiers",
+        ),
+        (
+            "/etc/crontab",
+            "http_proxy=x\n",
+            "http_proxy=x",
+            "Vanguard ne corrige jamais ces fichiers",
+        ),
+        (
+            "/etc/anacrontab",
+            "HTTP_PROXY=x\n1 5 a /tmp/.x/a\n",
+            "HTTP_PROXY=x",
+            "Vanguard ne corrige jamais ces fichiers",
+        ),
+        (
+            "/etc/xdg/autostart/a.desktop",
+            "[Desktop Entry]\nhttp_proxy=x\nExec=/tmp/.x/a\n",
+            "http_proxy=x",
+            "Vanguard ne corrige jamais ces fichiers",
+        ),
+        (
+            "/etc/gdm3/custom.conf",
+            "[daemon]\nhttp_proxy=x\n",
+            "http_proxy=x",
+            "gestionnaire de connexion",
+        ),
+        (
+            "/etc/ld.so.preload",
+            "HTTP_PROXY=http://198.51.100.7:3128\n",
+            "HTTP_PROXY=http://198.51.100.7:3128",
+            "",
+        ),
+    ] {
+        let mut a = Faux::nouveau().repondre("o");
+        a.poser(fichier, contenu.as_bytes(), 0o644);
+        let avant = a.fichiers.clone();
+        let r = faire_avec(
+            Defense::CommenterProxy(empreinte_de_ligne(ligne.as_bytes()), chemin(fichier)),
+            &mut a,
+            &mut FauxServices::nouveau(),
+        );
+        assert!(!r.reussi, "{fichier} {contenu:?}");
+        assert!(r.raison.contains(raison), "{fichier} : {}", r.raison);
+        assert_eq!(a.questions, Vec::<String>::new(), "{fichier}");
+        rien_ecrit(&a, &avant);
+        let numeros: Vec<usize> = contenu
+            .split('\n')
+            .enumerate()
+            .filter(|(_, l)| *l == ligne)
+            .map(|(i, _)| i)
+            .collect();
+        assert!(
+            crate::machine::linux::proxy_refuse(fichier, contenu.as_bytes(), ligne.as_bytes(), &numeros).is_some(),
+            "{fichier} : le bilan l'offrirait"
+        );
+    }
+    // Ce que le bilan offre, le fils le fait : une affectation simple en majuscules, guillemets simples compris.
+    for (fichier, contenu, ligne) in [
+        (
+            "/etc/profile.d/proxy.sh",
+            "export ALL_PROXY='http://198.51.100.7:3128'\n",
+            "export ALL_PROXY='http://198.51.100.7:3128'",
+        ),
+        (
+            "/etc/environment.d/90-proxy.conf",
+            "FTP_PROXY=http://198.51.100.7:3128\n",
+            "FTP_PROXY=http://198.51.100.7:3128",
+        ),
+    ] {
+        let mut a = Faux::nouveau().repondre("o");
+        a.poser(fichier, contenu.as_bytes(), 0o644);
+        let r = faire_avec(
+            Defense::CommenterProxy(empreinte_de_ligne(ligne.as_bytes()), chemin(fichier)),
+            &mut a,
+            &mut FauxServices::nouveau(),
+        );
+        assert!(r.reussi, "{fichier} : {}", r.raison);
+        assert_eq!(a.texte(fichier), format!("# Vanguard : {ligne}\n"));
+        assert_eq!(
+            crate::machine::linux::proxy_refuse(fichier, contenu.as_bytes(), ligne.as_bytes(), &[0]),
+            None
+        );
+    }
 }
 
 /// Ronde 3 du lot 096 (N4), la même cause que pour `RetirerLigne` : une ligne de proxy désignée qui n'est pas dans le

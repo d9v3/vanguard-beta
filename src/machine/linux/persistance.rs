@@ -2162,10 +2162,9 @@ struct Lancements {
     longues: bool,
     /// Une ligne signalée dans /etc/rc.local dont la ligne « #! » ne nomme pas sh ou bash (ronde 8, N8-3).
     interprete: bool,
-    /// Une ligne signalée dans un fichier de gestionnaire de connexion dont le retrait seul n'a pas la forme stricte
-    /// que son lecteur accepte à coup sûr, ou dont une autre ligne pose la même clé (ronde 8, N8-4 :
-    /// `linux::AnalyseDeRetrait`).
-    lecteur: bool,
+    /// Une ligne signalée dans un fichier de gestionnaire de connexion (GDM, SDDM, LightDM) : Vanguard n'y retire
+    /// jamais une ligne lui-même (ronde 10, N10-3 : `linux::Decoupe::Connexion`).
+    connexion: bool,
     /// Une ligne signalée dans une unité systemd, un fichier de cron ou d'anacron, un raccourci .desktop : Vanguard
     /// n'y retire jamais une ligne lui-même (ronde 9, N9-1 et N9-2 : `linux::Decoupe::Format`).
     format: bool,
@@ -7321,8 +7320,8 @@ fn retrait(t: &mut Lancements, f: &Path, lu: &Lecture, l: &str) -> Option<(Strin
             t.interprete = true;
             None
         }
-        Rendu::Decoupe(crate::machine::linux::Decoupe::Lecteur) => {
-            t.lecteur = true;
+        Rendu::Decoupe(crate::machine::linux::Decoupe::Connexion) => {
+            t.connexion = true;
             None
         }
         Rendu::Decoupe(crate::machine::linux::Decoupe::Format) => {
@@ -14162,7 +14161,7 @@ fn constat_des_lancements(t: Lancements) -> Constat {
         trop_long,
         longues,
         interprete,
-        lecteur,
+        connexion,
         format,
         hors,
         ..
@@ -14252,10 +14251,10 @@ fn constat_des_lancements(t: Lancements) -> Constat {
             " A reported line is in /etc/rc.local, whose first \"#!\" line names neither /bin/sh nor /bin/bash: for another interpreter, Vanguard does not know what each line does; everything is to be fixed by hand."
         ));
     }
-    if lecteur {
+    if connexion {
         message.push_str(tr!(
-            " Une ligne signalée est dans un fichier de gestionnaire de connexion où elle n'a pas la forme stricte que son lecteur accepte à coup sûr, ou où une autre ligne pose la même clé : la retirer seule pourrait réveiller d'autres lignes ; tout est à corriger à la main.",
-            " A reported line is in a login manager file where it does not have the strict form its reader surely accepts, or where another line sets the same key: removing it alone could wake up other lines; everything is to be fixed by hand."
+            " Une ligne signalée est dans un fichier de gestionnaire de connexion (GDM, SDDM, LightDM) : chacun lit plusieurs fichiers à sa façon, et retirer une ligne seule pourrait laisser, ou réveiller, celle d'un autre fichier. Vanguard ne corrige jamais ces fichiers lui-même : tout est à corriger à la main.",
+            " A reported line is in a login manager file (GDM, SDDM, LightDM): each one reads several files in its own way, and removing one line alone could leave, or wake up, the one in another file. Vanguard never fixes these files itself: everything is to be fixed by hand."
         ));
     }
     if format {
@@ -14266,8 +14265,8 @@ fn constat_des_lancements(t: Lancements) -> Constat {
     }
     if hors {
         message.push_str(tr!(
-            " Une ligne signalée n'est pas de celles que Vanguard retire lui-même (il ne retire seul qu'une affectation simple de LD_PRELOAD ou de LD_AUDIT, et l'ouverture automatique d'une session) : tout est à corriger à la main.",
-            " A reported line is not one Vanguard removes itself (it only removes on its own a simple assignment of LD_PRELOAD or LD_AUDIT, and automatic session login): everything is to be fixed by hand."
+            " Une ligne signalée n'est pas de celles que Vanguard retire lui-même (il ne retire seul qu'une affectation simple de LD_PRELOAD ou de LD_AUDIT qui précharge) : tout est à corriger à la main.",
+            " A reported line is not one Vanguard removes itself (it only removes on its own a simple assignment of LD_PRELOAD or LD_AUDIT that preloads): everything is to be fixed by hand."
         ));
     }
     if let Some(a) = a_savoir {
