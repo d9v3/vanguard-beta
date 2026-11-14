@@ -387,7 +387,7 @@ pub fn proteger_cle() {
         trp!(
             "  ⚠ Clé VANGUARD non protégée : elle est utilisée (terminal ou fenêtre ouverts dans la clé ?).\n    {GRIS}Fermez-les, puis relancez Vanguard depuis un autre dossier : {}/{DOSSIER_PROGRAMME}/vanguard{RESET}",
             "  ⚠ VANGUARD key not protected: it is in use (terminal or window open inside the key?).\n    {GRIS}Close them, then run Vanguard from another folder: {}/{DOSSIER_PROGRAMME}/vanguard{RESET}",
-            cle.display()
+            crate::ui::chemin_affichable(&cle)
         );
         crate::journal::erreur(
             crate::compte_rendu::Contexte::ProtectionCle,
