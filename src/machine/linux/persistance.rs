@@ -1263,8 +1263,10 @@ pub(super) fn persistance_dans(
         );
     }
     // Un dossier personnel inconnu ou relatif : les fichiers du compte se liraient sous le dossier courant, et
-    // l'absence de tout y passerait pour « rien de suspect » (campagne E, M-f). C'est dit, non vérifié.
-    if !maison.is_absolute() {
+    // l'absence de tout y passerait pour « rien de suspect » (campagne E, M-f). Avec « .. » (N5-8) : ce qu'il désigne
+    // dépend des liens du disque, et les comparaisons de texte du bilan ne le reconnaîtraient pas. C'est dit, non
+    // vérifié.
+    if !maison.is_absolute() || maison.components().any(|m| m == std::path::Component::ParentDir) {
         t.sources.push(source_de("maison", "relatif"));
         t.retraits.push(None);
         t.temoins.push(Err(temoins::Refus(
@@ -1272,8 +1274,8 @@ pub(super) fn persistance_dans(
         )));
         t.suspects.push(
             tr!(
-                "dossier personnel inconnu ou relatif : les démarrages du compte ne sont pas vérifiés",
-                "home folder unknown or relative: the account's startup files are not checked"
+                "dossier personnel inconnu, relatif ou avec « .. » : les démarrages du compte ne sont pas vérifiés",
+                "home folder unknown, relative or with “..”: the account's startup files are not checked"
             )
             .to_string(),
         );
@@ -1390,8 +1392,8 @@ pub(super) fn persistance_dans(
     let (sortes, mut illisibles) = fichiers_de_configuration(&t.r);
     // N-1 : les fichiers de session dont un DesktopNames mène uwsm hors des fichiers lus ; ce qui ne se lit pas aussi.
     let bureaux = bureaux_a_dire(&t.r, &mut illisibles);
-    // V3-1 : les fichiers d'uwsm qui changent XDG_CURRENT_DESKTOP, que relit uwsm pour chaque dossier.
-    let bureau_change = bureau_change_par_uwsm(&t.r, &mut illisibles);
+    // V3-1, R4-1 à R4-4 : les fichiers d'uwsm (et ce qu'ils incluent) qui changent ce qu'uwsm lit ensuite.
+    let bureau_change = bureau_d_uwsm(&t.r, &mut illisibles);
     illisibles.sort();
     illisibles.dedup();
     // S-3 (re-contrôle 2 0.95) : un dossier où uwsm cherche ses fichiers de variables (XDG_CONFIG_DIRS, XDG_DATA_DIRS)
@@ -1430,21 +1432,87 @@ pub(super) fn persistance_dans(
             ),
         );
     }
-    for f in bureau_change {
+    for (f, jugement) in bureau_change {
         let ou = crate::ui::affichable(&t.r.montre(&f));
-        let source = format!("uwsm bureau change {}", t.r.montre(&f));
-        constat_sans_ligne(
-            &mut t,
-            &source,
-            trf!(
-                "{ou} change XDG_CURRENT_DESKTOP : uwsm relit ce nom de bureau pour chaque dossier suivant et en tire des fichiers « uwsm/env-… » que Vanguard ne suit pas (non vérifié)",
-                "{ou} changes XDG_CURRENT_DESKTOP: uwsm reads this desktop name again for each following folder and turns it into “uwsm/env-…” files that Vanguard does not follow (not verified)"
+        let (sorte, constat, refus) = match jugement {
+            // R4-4 : une valeur fixe sûre, dont Vanguard lit tous les « uwsm/env-<nom> » : une information.
+            BureauUwsm::Fixe(noms) => {
+                let noms = crate::ui::couper(&crate::ui::affichable(&noms.join(", ")), 90);
+                t.notes.push(trf!(
+                    "{ou} pose le nom de bureau d'uwsm à « {noms} », une valeur fixe : Vanguard lit aussi les fichiers « uwsm/env-… » qui en viennent",
+                    "{ou} sets uwsm's desktop name to “{noms}”, a fixed value: Vanguard also reads the “uwsm/env-…” files that follow from it"
+                ));
+                continue;
+            }
+            BureauUwsm::Change => (
+                "change",
+                trf!(
+                    "{ou} change XDG_CURRENT_DESKTOP : uwsm relit ce nom de bureau pour chaque dossier suivant et en tire des fichiers « uwsm/env-… » que Vanguard ne suit pas (non vérifié)",
+                    "{ou} changes XDG_CURRENT_DESKTOP: uwsm reads this desktop name again for each following folder and turns it into “uwsm/env-…” files that Vanguard does not follow (not verified)"
+                ),
+                trf!(
+                    "{ou} change le nom de bureau d'uwsm : l'alerte ne se déclare pas normale tant qu'il le change ; retirez cette ligne du fichier, ou donnez-lui une valeur fixe",
+                    "{ou} changes uwsm's desktop name: the alert cannot be declared normal while it does; remove that line from the file, or give it a fixed value"
+                ),
             ),
-            trf!(
-                "{ou} change le nom de bureau d'uwsm : l'alerte ne se déclare pas normale tant qu'il le change ; retirez cette ligne du fichier",
-                "{ou} changes uwsm's desktop name: the alert cannot be declared normal while it does; remove that line from the file"
+            BureauUwsm::Nul => (
+                "nul",
+                trf!(
+                    "{ou} contient un octet NUL, que le shell d'uwsm retire avant de lire : ce qu'il pose n'est pas ce que Vanguard lit (non vérifié)",
+                    "{ou} contains a NUL byte, which uwsm's shell removes before reading: what it sets is not what Vanguard reads (not verified)"
+                ),
+                trf!(
+                    "{ou} contient un octet NUL : l'alerte ne se déclare pas normale tant qu'il y est ; retirez-le du fichier",
+                    "{ou} contains a NUL byte: the alert cannot be declared normal while it is there; remove it from the file"
+                ),
             ),
-        );
+            BureauUwsm::Inclusion => (
+                "inclusion",
+                trf!(
+                    "{ou} lit un autre fichier (« . » ou « source ») que Vanguard ne suit pas : chemin relatif, ou qui n'est pas un fichier ordinaire ; ce qu'il pose n'est pas jugé (non vérifié)",
+                    "{ou} reads another file (“.” or “source”) that Vanguard does not follow: a relative path, or not a regular file; what it sets is not judged (not verified)"
+                ),
+                trf!(
+                    "{ou} lit un fichier que Vanguard ne suit pas : l'alerte ne se déclare pas normale tant qu'il le lit ; écrivez son chemin en entier (absolu, ou « ~/… ») ou retirez cette ligne",
+                    "{ou} reads a file that Vanguard does not follow: the alert cannot be declared normal while it does; write its full path (absolute, or “~/…”) or remove that line"
+                ),
+            ),
+            BureauUwsm::Borne => (
+                "borne",
+                trf!(
+                    "{ou} et les fichiers inclus après lui ne sont pas lus : plus de {SOURCES_MAX} fichiers inclus par ceux d'uwsm (non vérifié)",
+                    "{ou} and the files included after it are not read: more than {SOURCES_MAX} files included by uwsm's files (not verified)"
+                ),
+                trf!(
+                    "{ou} : trop de fichiers inclus par ceux d'uwsm : l'alerte ne se déclare pas normale tant qu'ils y sont ; réduisez les inclusions",
+                    "{ou}: too many files included by uwsm's files: the alert cannot be declared normal while they are there; reduce the inclusions"
+                ),
+            ),
+            BureauUwsm::Script => (
+                "script",
+                trf!(
+                    "{ou} n'a pas que des lignes simples (NOM=valeur, export NOM=valeur, commentaire entier, « . /chemin ») : Vanguard ne lit pas le shell, ce fichier n'est pas jugé et ce qu'uwsm lit ensuite non plus (forme du shell non lue, non vérifié)",
+                    "{ou} does not have only simple lines (NAME=value, export NAME=value, whole comment, “. /path”): Vanguard does not read shell code, this file is not judged and neither is what uwsm reads next (shell form not read, not verified)"
+                ),
+                trf!(
+                    "{ou} n'a pas que des lignes simples : l'alerte ne se déclare pas normale tant qu'il en a d'autres ; écrivez chaque variable en toutes lettres, une par ligne, sans « $ », guillemets doubles ni commande",
+                    "{ou} does not have only simple lines: the alert cannot be declared normal while it has others; write each variable in full, one per line, without “$”, double quotes or commands"
+                ),
+            ),
+            BureauUwsm::Interne => (
+                "interne",
+                trf!(
+                    "{ou} écrit une variable d'uwsm lui-même (« __…__ ») ou HOME : ce qu'uwsm lit ensuite n'est pas jugé (non vérifié)",
+                    "{ou} writes one of uwsm's own variables (“__…__”) or HOME: what uwsm reads next is not judged (not verified)"
+                ),
+                trf!(
+                    "{ou} écrit une variable d'uwsm ou HOME : l'alerte ne se déclare pas normale tant qu'il l'écrit ; retirez cette ligne du fichier",
+                    "{ou} writes an uwsm variable or HOME: the alert cannot be declared normal while it does; remove that line from the file"
+                ),
+            ),
+        };
+        let source = format!("uwsm bureau {sorte} {}", t.r.montre(&f));
+        constat_sans_ligne(&mut t, &source, constat, refus);
     }
     // W-3 : un morceau à joker d'une variable de la session qu'uwsm coupe : les dossiers qu'il en tire ne sont pas lus.
     for (nom, morceau) in t.r.uwsm_session_joker.clone() {
@@ -1733,6 +1801,9 @@ struct Lancements {
     /// Ce qui n'a pas été vu d'une ligne permise (`permise::Ecart::information` : disque de la sauvegarde débranché,
     /// réglages de popt du système à root), dit en information, jamais tu ni levé.
     informations: Vec<String>,
+    /// Ce qui a été vu et n'est pas suspect, mais mérite d'être su (R4-4 de la 0.95 : un fichier d'uwsm qui pose un
+    /// nom de bureau fixe), dit en information, jamais levé.
+    notes: Vec<String>,
     r: Releveur,
 }
 
@@ -4690,8 +4761,9 @@ fn environnement_change_la_sauvegarde(r: &Releveur, vide: bool) -> bool {
         fichiers_du_gestionnaire(r, &configs_posees(&r.gestionnaire), &dossiers_d_uwsm(r));
     // N-1 : un fichier de session dont un DesktopNames mène uwsm hors des fichiers lus.
     let bureaux = bureaux_a_dire(r, &mut illisibles_d_uwsm);
-    // V3-1 : un fichier d'uwsm qui change XDG_CURRENT_DESKTOP, que relit uwsm pour chaque dossier.
-    let bureau_change = bureau_change_par_uwsm(r, &mut illisibles_d_uwsm);
+    // V3-1, R4-1 à R4-4 : un fichier d'uwsm, ou qu'il inclut, qui change ce qu'uwsm lit ensuite ; une valeur fixe sûre
+    // du nom de bureau, non (R4-4 : Vanguard lit les fichiers qui en viennent).
+    let bureau_change = bureau_d_uwsm(r, &mut illisibles_d_uwsm);
     // V-2 : les scripts d'uwsm lus, seuls fichiers qu'une inclusion peut nommer sans lever.
     let scripts: Vec<std::path::PathBuf> = fichiers
         .iter()
@@ -4704,7 +4776,7 @@ fn environnement_change_la_sauvegarde(r: &Releveur, vide: bool) -> bool {
         || !illisibles_d_uwsm.is_empty()
         || !r.uwsm_session_joker.is_empty()
         || !bureaux.is_empty()
-        || !bureau_change.is_empty()
+        || bureau_change.iter().any(|(_, j)| !matches!(j, BureauUwsm::Fixe(_)))
         || !r.gestionnaire_non_resolu.is_empty()
         || fichiers
             .iter()
@@ -5112,18 +5184,54 @@ fn bureaux_a_dire(r: &Releveur, illisibles: &mut Vec<std::path::PathBuf>) -> Vec
         .collect()
 }
 
-/// V3-1 (revérification de la ronde 3, DEP-4 de la 0.95) : les fichiers d'uwsm qui écrivent XDG_CURRENT_DESKTOP
-/// (`ecrit_le_nom_de_bureau`), quelle que soit la valeur. Uwsm relit ce nom pour chaque dossier, du moins prioritaire
-/// au plus prioritaire (prepare-env.sh, `in_each_config_dir_reversed`) : un « uwsm/env » lu tôt qui le change lui fait
-/// lire, dans les dossiers suivants, des « uwsm/env-<bureau> » que Vanguard ne suit pas, puis peut le remettre ; la
-/// valeur finale de la session ne montre rien. Le nom de bureau est une donnée hostile : plutôt que de suivre la
-/// valeur, toute écriture est dite. Chaque fichier de variables d'uwsm (env, env-*, env.d, env-*.d) de chaque dossier
-/// qu'il lit (`fichiers_du_gestionnaire`, la liste de la sauvegarde), du compte ou du système, et ses greffons que le
-/// compte peut changer (leurs « quirks » passent avant les fichiers de variables). Les greffons à root seul, non :
-/// celui de Hyprland ajoute « Hyprland », un nom fixe, et rien d'autre du système n'est jugé ainsi (R-3). Un fichier
-/// masqué (lien vers /dev/null), absent ou qui n'est pas un fichier ne compte pas ; un fichier qui ne se lit pas en
-/// entier va dans `illisibles`, jamais tu. Une seule liste pour le bilan et la sauvegarde.
-fn bureau_change_par_uwsm(r: &Releveur, illisibles: &mut Vec<std::path::PathBuf>) -> Vec<std::path::PathBuf> {
+/// Ce qu'un fichier de variables d'uwsm, ou un fichier qu'il inclut, fait à ce qu'uwsm lit ensuite
+/// (`bureau_d_uwsm`). Tout sauf `Fixe` est non vérifié, non déclarable, et lève la sauvegarde.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BureauUwsm {
+    /// R4-4 (revérification de la ronde 4 de la 0.95) : il pose XDG_CURRENT_DESKTOP, chaque fois à une valeur fixe
+    /// sûre (`valeur_sure_du_bureau`), ces noms-là : uwsm lit alors des « uwsm/env-<nom> », que Vanguard lit tous
+    /// (`fichiers_d_uwsm`). Une information, rien à faire.
+    Fixe(Vec<String>),
+    /// V3-1 : il le pose à une autre valeur, dans une ligne simple (« a/b », « Hyprland:a/b », vide).
+    Change,
+    /// R4-2 : un octet NUL, que le shell retire avant de lire : ce que Vanguard lit n'est pas ce que lit uwsm.
+    Nul,
+    /// R4-1 : une inclusion simple (« . chemin », « source chemin ») que Vanguard ne suit pas : chemin relatif (cherché
+    /// dans PATH), ou qui n'est pas un fichier ordinaire.
+    Inclusion,
+    /// R4-1 : au-delà de `SOURCES_MAX` fichiers inclus, celui-ci et les suivants ne sont pas lus.
+    Borne,
+    /// N5-1 à N5-3 (revérification de la ronde 5 de la 0.95) : le fichier n'est pas fait que de lignes simples
+    /// (`ligne_simple`) ; Vanguard ne lit pas le shell, il est dit en entier.
+    Script,
+    /// R4-3 : il écrit une variable d'uwsm lui-même (`variable_interne_d_uwsm`) ou HOME.
+    Interne,
+}
+
+/// Les noms de variables qu'un fichier d'uwsm ne peut pas écrire sans être dit : celles d'uwsm lui-même, toutes de la
+/// forme « __X__ » (« __SELF_NAME__ », qui fait le nom des fichiers « uwsm/env » ; « __OIFS__ »… : relevées dans
+/// prepare-env.sh et les greffons d'uwsm 0.27), et HOME, d'où Vanguard tire « ~/ » pour suivre une inclusion (R4-3).
+/// N5-6 : un nom qui commence par « __ » sans finir par « __ » n'est pas à uwsm (« __GLX_VENDOR_LIBRARY_NAME », que
+/// la documentation de Hyprland donne pour NVIDIA).
+fn variable_interne_d_uwsm(nom: &str) -> bool {
+    (nom.len() >= 4 && nom.starts_with("__") && nom.ends_with("__")) || nom == "HOME"
+}
+
+/// V3-1, R4-1 à R4-4, N5-1 à N5-5 (revérifications des rondes 3 à 5, DEP-4 de la 0.95) : les fichiers d'uwsm qui
+/// changent ce qu'uwsm lit ensuite. Uwsm relit XDG_CURRENT_DESKTOP pour chaque dossier, du moins prioritaire au plus
+/// prioritaire (prepare-env.sh, `in_each_config_dir_reversed`) : un « uwsm/env » lu tôt qui le change lui fait lire,
+/// dans les dossiers suivants, des « uwsm/env-<bureau> », puis peut le remettre ; la valeur finale de la session ne
+/// montre rien. Le nom de bureau est une donnée hostile : toute écriture est dite, non vérifiée, sauf une valeur fixe
+/// sûre (R4-4, `BureauUwsm::Fixe`, une information). Lus : chaque fichier de variables d'uwsm (env, env-*, env.d,
+/// env-*.d) de chaque dossier qu'il lit (`fichiers_du_gestionnaire`, la liste de la sauvegarde) et ses greffons, que
+/// le compte peut changer, sauf ceux à root seul (R4-4, comme les greffons : celui de Hyprland ajoute « Hyprland »,
+/// un nom fixe, et rien d'autre du système n'est jugé ainsi, R-3), ni ce qu'ils incluent : limite dite. Puis (R4-1)
+/// chaque fichier qu'ils incluent par une ligne simple, à tous les niveaux, jugé de la même règle quel que soit son
+/// propriétaire (N5-5 : un fichier du compte qui passe par un script du système à root seul ne s'y cache pas) ; une
+/// inclusion que Vanguard ne suit pas est dite. Un fichier masqué (lien vers /dev/null), absent ou qui n'est pas un
+/// fichier ne compte pas ; un fichier qui ne se lit pas en entier va dans `illisibles`, jamais tu. Une seule liste
+/// pour le bilan et la sauvegarde.
+fn bureau_d_uwsm(r: &Releveur, illisibles: &mut Vec<std::path::PathBuf>) -> Vec<(std::path::PathBuf, BureauUwsm)> {
     let (fichiers, _, _) = fichiers_du_gestionnaire(r, &configs_posees(&r.gestionnaire), &dossiers_d_uwsm(r));
     let absent = |e: &std::io::Error| {
         matches!(
@@ -5131,56 +5239,220 @@ fn bureau_change_par_uwsm(r: &Releveur, illisibles: &mut Vec<std::path::PathBuf>
             std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
         ) || e.raw_os_error() == Some(libc::ELOOP)
     };
+    let mut premiers: Vec<std::path::PathBuf> = fichiers
+        .into_iter()
+        .filter(|(_, _, sorte)| *sorte == Variables::Shell)
+        .map(|(f, _, _)| f)
+        .collect();
+    premiers.sort();
+    premiers.dedup();
+    let nombre = premiers.len();
+    // (fichier, sauté) : un fichier d'uwsm à root seul est sauté ; inclus, il se juge (N5-5).
+    let mut a_lire: Vec<(std::path::PathBuf, bool)> = premiers
+        .into_iter()
+        .map(|f| {
+            let saute = programme_de_root_seul(&r.racine, &f);
+            (f, saute)
+        })
+        .collect();
     let mut trouves = Vec::new();
-    for (f, _, sorte) in fichiers {
-        if sorte != Variables::Shell
-            || std::fs::read_link(&f).is_ok_and(|v| v == Path::new("/dev/null"))
-            || (f.parent().is_some_and(|d| d.ends_with("uwsm/plugins")) && programme_de_root_seul(&r.racine, &f))
-            || std::fs::metadata(&f).is_ok_and(|m| !m.is_file())
-        {
+    let mut rang = 0usize;
+    while let Some((f, saute)) = a_lire.get(rang).cloned() {
+        rang = rang.saturating_add(1);
+        let inclus = rang > nombre;
+        if saute || std::fs::read_link(&f).is_ok_and(|v| v == Path::new("/dev/null")) {
             continue;
+        }
+        if rang > nombre.saturating_add(SOURCES_MAX) {
+            trouves.push((f, BureauUwsm::Borne));
+            break;
+        }
+        match std::fs::metadata(&f) {
+            Err(e) if absent(&e) => continue,
+            // Uwsm ne lit que les fichiers ordinaires (« [ -f ] ») ; un fichier inclus, lui, se lit quel qu'il soit
+            // (« . /dev/stdin ») : non suivi, dit.
+            Ok(m) if !m.is_file() => {
+                if inclus {
+                    trouves.push((f, BureauUwsm::Inclusion));
+                }
+                continue;
+            }
+            _ => {}
         }
         match temoins::lire_borne(&f, AJOUT_MAX) {
             Err(e) if absent(&e) => {}
             Ok(lu) if lu.entier => {
-                if ecrit_le_nom_de_bureau(&String::from_utf8_lossy(&lu.octets)) {
-                    trouves.push(f);
+                let (jugement, suivis) = juger_un_fichier_d_uwsm(r, &lu.octets);
+                for s in suivis {
+                    if !a_lire.iter().any(|(p, saute)| *p == s && !*saute) {
+                        a_lire.push((s, false));
+                    }
+                }
+                if let Some(j) = jugement {
+                    trouves.push((f, j));
                 }
             }
             _ => illisibles.push(f),
         }
     }
-    trouves.sort();
-    trouves.dedup();
+    trouves.sort_by(|a, b| a.0.cmp(&b.0));
+    trouves.dedup_by(|a, b| a.0 == b.0);
     trouves
 }
 
-/// V3-1 : un texte de shell écrit XDG_CURRENT_DESKTOP ailleurs qu'en le lisant (« $X », « ${X} », « ${X:-…} ») et hors
-/// d'une ligne de commentaire du shell : « X=… », « export X », « unset X », « read X », « ${X=…} », « ${X:=…} »…
-/// Lu tel qu'écrit, ses lignes continuées par « \ » jointes, et chacun décodé (`decodee` : guillemets et « \ » retirés,
-/// « \x58 » décodé) : « XDG_CURRENT_"DESKTOP"=… » se voit aussi. Plus large que le shell : un faux positif lève, il ne
-/// tait jamais. Un nom construit (« ${n}_DESKTOP », eval) ne se voit pas ici : la sauvegarde se lève déjà pour lui
-/// (`script_cache_ce_qu_il_pose`).
-fn ecrit_le_nom_de_bureau(texte: &str) -> bool {
-    const NOM: &str = "XDG_CURRENT_DESKTOP";
-    let mot = |c: Option<char>| c.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
-    let jointe = texte.replace("\\\n", "");
-    [texte.to_string(), decodee(texte), decodee(&jointe), jointe]
-        .iter()
-        .flat_map(|t| t.lines().map(str::to_string).collect::<Vec<_>>())
-        .filter(|l| !commentaire_du_shell(l))
-        .any(|l| {
-            l.match_indices(NOM).any(|(i, _)| {
-                let avant = l.get(..i).unwrap_or_default();
-                let apres = l.get(i.saturating_add(NOM.len())..).unwrap_or_default();
-                if mot(avant.chars().next_back()) || mot(apres.chars().next()) {
-                    return false;
+/// Un fichier d'uwsm (ses `octets`) : ce qu'il fait à ce qu'uwsm lit (`None` : rien), et les fichiers qu'il inclut, à
+/// lire à leur tour. N5-1 à N5-3, N5-9, R4-3 (revérification de la ronde 5 de la 0.95) : Vanguard ne lit plus de
+/// shell. Une liste de formes interdites, posée sur une lecture partielle du shell, se contournait à chaque ronde
+/// (« x=$(:)#; … », une redirection devant « eval », l'arithmétique « (( a )) »…). La règle est maintenant une liste
+/// de ce qui est permis : un fichier n'est jugé que si chacune de ses lignes est simple (`ligne_simple`) ; sinon il
+/// est dit en entier, non vérifié (`BureauUwsm::Script`) : une forme oubliée tombe du côté « dit », jamais du côté
+/// « sain ». Le plus grave l'emporte : NUL, forme non simple, variable d'uwsm, inclusion non suivie, écriture du nom de
+/// bureau, valeur fixe.
+fn juger_un_fichier_d_uwsm(r: &Releveur, octets: &[u8]) -> (Option<BureauUwsm>, Vec<std::path::PathBuf>) {
+    // R4-2 : bash retire les octets NUL avant de lire ; Vanguard ne lit pas « au mieux », il le dit.
+    if octets.contains(&0) {
+        return (Some(BureauUwsm::Nul), Vec::new());
+    }
+    // Hors UTF-8 : ce que bash en ferait n'est pas deviné.
+    let Ok(texte) = std::str::from_utf8(octets) else {
+        return (Some(BureauUwsm::Script), Vec::new());
+    };
+    let (mut interne, mut inclusion, mut change) = (false, false, false);
+    let mut valeurs: Vec<String> = Vec::new();
+    let mut suivis = Vec::new();
+    for ligne in texte.split('\n') {
+        match ligne_simple(ligne) {
+            None => return (Some(BureauUwsm::Script), Vec::new()),
+            Some(LigneSimple::Rien) => {}
+            Some(LigneSimple::Pose { nom, valeur }) => {
+                interne |= variable_interne_d_uwsm(nom);
+                match valeur {
+                    Some(v) if nom == "XDG_CURRENT_DESKTOP" => {
+                        if !valeur_sure_du_bureau(v) {
+                            change = true;
+                        } else if !valeurs.iter().any(|x| x == v) {
+                            valeurs.push(v.to_string());
+                        }
+                    }
+                    _ => {}
                 }
-                let lue = (avant.ends_with('$') && !avant.ends_with("$$"))
-                    || (avant.ends_with("${") && !apres.starts_with('=') && !apres.starts_with(":="));
-                !lue
-            })
-        })
+            }
+            Some(LigneSimple::Inclut(chemin)) => match cible_d_inclusion(r, chemin) {
+                Some(c) => suivis.push(c),
+                None => inclusion = true,
+            },
+        }
+    }
+    let jugement = if interne {
+        Some(BureauUwsm::Interne)
+    } else if inclusion {
+        Some(BureauUwsm::Inclusion)
+    } else if change {
+        Some(BureauUwsm::Change)
+    } else if valeurs.is_empty() {
+        None
+    } else {
+        Some(BureauUwsm::Fixe(valeurs))
+    };
+    (jugement, suivis)
+}
+
+/// Une ligne simple d'un fichier d'uwsm (`ligne_simple`).
+#[derive(Debug, PartialEq, Eq)]
+enum LigneSimple<'a> {
+    /// Vide (espaces et tabulations), ou un commentaire entier (« # » en tête, après des blancs).
+    Rien,
+    /// « NOM=valeur », « export NOM=valeur » (`valeur` sans ses apostrophes) ou « export NOM » (`valeur` : `None`).
+    Pose { nom: &'a str, valeur: Option<&'a str> },
+    /// « . chemin » ou « source chemin », chemin écrit en toutes lettres (`chemin_litteral`).
+    Inclut(&'a str),
+}
+
+/// N5-1 à N5-3 : une ligne qu'on lit sans lire le shell, ou `None`. Permis seulement : une ligne vide, un commentaire
+/// entier, « NOM=valeur » ou « export NOM=valeur » (NOM : lettres ASCII, chiffres, « _ », pas de chiffre en tête ;
+/// valeur sans guillemet double, apostrophe, « $ », « ` », « ( », « ) », « ; », « & », « | », « < », « > », « \ »,
+/// « # », blanc ni octet de contrôle, ou tout entière entre apostrophes sans apostrophe ni octet de contrôle dedans),
+/// « export NOM », et « . chemin » ou « source chemin » (`chemin_litteral`). Des blancs (espaces, tabulations) en
+/// tête, entre les mots et en fin de ligne. Rien d'autre : « += », deux affectations, « \ » en fin de ligne, un
+/// commentaire en fin de ligne, « \r »… ne sont pas simples.
+fn ligne_simple(ligne: &str) -> Option<LigneSimple<'_>> {
+    const BLANCS: [char; 2] = [' ', '\t'];
+    let l = ligne.trim_start_matches(BLANCS);
+    if l.is_empty() || l.starts_with('#') {
+        return Some(LigneSimple::Rien);
+    }
+    let l = l.trim_end_matches(BLANCS);
+    for commande in [".", "source"] {
+        if let Some(reste) = l.strip_prefix(commande)
+            && reste.starts_with(BLANCS)
+        {
+            let chemin = reste.trim_start_matches(BLANCS);
+            return chemin_litteral(chemin).then_some(LigneSimple::Inclut(chemin));
+        }
+    }
+    let (exporte, l) = match l.strip_prefix("export") {
+        Some(reste) if reste.starts_with(BLANCS) => (true, reste.trim_start_matches(BLANCS)),
+        _ => (false, l),
+    };
+    let (nom, valeur) = match l.split_once('=') {
+        Some((nom, valeur)) => (nom, Some(valeur_litterale(valeur)?)),
+        None if exporte => (l, None),
+        None => return None,
+    };
+    let mut octets = nom.bytes();
+    let identifiant = octets.next().is_some_and(|p| p.is_ascii_alphabetic() || p == b'_')
+        && octets.all(|o| o.is_ascii_alphanumeric() || o == b'_');
+    identifiant.then_some(LigneSimple::Pose { nom, valeur })
+}
+
+/// La valeur d'une affectation simple (`ligne_simple`), apostrophes retirées, ou `None` si le shell pourrait y lire
+/// autre chose qu'un texte.
+fn valeur_litterale(valeur: &str) -> Option<&str> {
+    if let Some(dedans) = valeur.strip_prefix('\'') {
+        let dedans = dedans.strip_suffix('\'')?;
+        let simple = dedans
+            .chars()
+            .all(|c| c != '\'' && (c == ' ' || c == '\t' || !c.is_control()));
+        return simple.then_some(dedans);
+    }
+    let simple = valeur
+        .chars()
+        .all(|c| !c.is_control() && !c.is_whitespace() && !"\"'$`();&|<>\\#".contains(c));
+    simple.then_some(valeur)
+}
+
+/// Le chemin d'une inclusion simple (`ligne_simple`) : écrit en toutes lettres, sans rien que le shell développe
+/// (ni « $ », guillemets, « \ », jokers « * ? [ ] », accolades, blanc ni octet de contrôle) ; « ~ » seulement en tête,
+/// suivi de « / ». Un chemin relatif est simple ; il ne se suit pas (`cible_d_inclusion`).
+fn chemin_litteral(chemin: &str) -> bool {
+    let sans_maison = chemin.strip_prefix("~/").unwrap_or(chemin);
+    !chemin.is_empty()
+        && sans_maison
+            .chars()
+            .all(|c| !c.is_control() && !c.is_whitespace() && !"\"'$`();&|<>\\#*?[]{}~".contains(c))
+}
+
+/// R4-4 : une valeur fixe sûre du nom de bureau : des noms de lettres, chiffres, « _ », « . » et « - », séparés par
+/// « : ».
+fn valeur_sure_du_bureau(valeur: &str) -> bool {
+    valeur.split(':').all(|nom| {
+        !nom.is_empty()
+            && nom
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
+    })
+}
+
+/// R4-1 : le fichier qu'une inclusion simple lit (son chemin, `chemin_litteral`) : absolu, ou sous « ~/ ». `None` :
+/// relatif (le shell le cherche dans PATH).
+fn cible_d_inclusion(r: &Releveur, chemin: &str) -> Option<std::path::PathBuf> {
+    if let Some(reste) = chemin.strip_prefix("~/") {
+        Some(r.maison.join(reste))
+    } else if chemin.starts_with('/') {
+        Some(r.sous(Path::new(chemin)))
+    } else {
+        None
+    }
 }
 
 /// W-2 : les bases où pyxdg cherche les données d'uwsm (ses greffons ; N-1 : ses « wayland-sessions »), plus large
@@ -6703,6 +6975,24 @@ fn juger_configuration(
         };
         // La sorte du fichier, qui dit son lecteur : un fichier de Hyprland (ajouté hors de `sortes`) sinon.
         let sorte = sortes.iter().find(|(c, _)| c == f).map_or(Variables::Hypr, |(_, s)| *s);
+        // R4-2 (revérification de la ronde 4 de la 0.95) : le shell retire les octets NUL avant de lire
+        // (« LD_PRE\0LOAD=… » pose LD_PRELOAD) ; Vanguard ne lit pas ce fichier « au mieux » : c'est dit, non vérifié,
+        // en plus de ce que ses lignes montrent.
+        if sorte == Variables::Shell && lu.octets.contains(&0) {
+            t.sources
+                .push(source_de(&crate::modele::id::chemin(&f.to_string_lossy()), "octet NUL"));
+            t.retraits.push(None);
+            t.temoins.push(Err(temoins::Refus(trf!(
+                "{} contient un octet NUL : retirez-le du fichier",
+                "{} contains a NUL byte: remove it from the file",
+                court(f, h)
+            ))));
+            t.suspects.push(trf!(
+                "{} : un octet NUL, que le shell retire avant de lire : ce qu'il pose n'est pas ce que Vanguard lit, non vérifié",
+                "{}: a NUL byte, which the shell removes before reading: what it sets is not what Vanguard reads, not checked",
+                court(f, h)
+            ));
+        }
         let systemd = format_systemd(sorte);
         // Au format de systemd, chaque ligne telle que `read_line` la lit (« \r », NUL finissent aussi une ligne),
         // jugée à la ligne écrite qui la porte ; un commentaire selon la règle de systemd, et « unset » n'y est qu'un
@@ -9543,8 +9833,9 @@ fn popt_non_lu(t: &mut Lancements, f: &Path, compte: bool) {
 }
 
 /// Le constat des lancements : aucun suspect, ou une alerte (critique si une bibliothèque hors paquet est préchargée)
-/// qui en nomme six au plus. Ce qui n'a pas été vu d'une ligne permise (`Lancements::informations`) s'y dit à la
-/// fin ; sans suspect, en information (`Niveau::Info`, rien à faire), jamais en « aucun suspect » muet.
+/// qui en nomme six au plus. Ce qui n'a pas été vu d'une ligne permise (`Lancements::informations`) et ce qui mérite
+/// d'être su (`Lancements::notes`) s'y disent à la fin ; sans suspect, en information (`Niveau::Info`, rien à faire),
+/// jamais en « aucun suspect » muet.
 fn constat_des_lancements(t: Lancements) -> Constat {
     const CAT: &str = "Persistance";
     let Lancements {
@@ -9554,19 +9845,27 @@ fn constat_des_lancements(t: Lancements) -> Constat {
         mut retraits,
         temoins: releves,
         mut informations,
+        mut notes,
         ..
     } = t;
     suspects.sort();
     suspects.dedup();
     informations.sort();
     informations.dedup();
-    let a_savoir = (!informations.is_empty()).then(|| {
+    notes.sort();
+    notes.dedup();
+    let notes = (!notes.is_empty()).then(|| trf!(" À savoir : {}.", " Worth knowing: {}.", notes.join(" ; ")));
+    let non_vu = (!informations.is_empty()).then(|| {
         trf!(
             " À savoir, non vérifié : {}.",
             " Worth knowing, not checked: {}.",
             informations.join(" ; ")
         )
     });
+    let a_savoir = match (notes, non_vu) {
+        (None, None) => None,
+        (a, b) => Some(format!("{}{}", a.unwrap_or_default(), b.unwrap_or_default())),
+    };
     if critiques.is_empty() && suspects.is_empty() {
         let aucun = tr!(
             "Aucun lancement automatique suspect (préchargement, services, démarrage de session, cron).",
@@ -11540,11 +11839,24 @@ mod tests {
                 &[
                     (
                         ENV,
-                        "# réglages\nexport PATH=\"$HOME/bin:$PATH\"\nexport \"EDITOR=nvim\"\nexport ACCUEIL=\"bonjour ; . /tmp/x le monde\" # fin\n[ -f ~/.config/uwsm/default ] && . ~/.config/uwsm/default\nsource \"$HOME/.config/uwsm/default\"\n",
+                        "# réglages\nexport PATH=/home/alice/bin:/usr/bin\nexport EDITOR=nvim\nexport ACCUEIL='bonjour ; . /tmp/x le monde'\n. ~/.config/uwsm/default\nsource ~/.config/uwsm/default\n",
                     ),
                     (".config/uwsm/default", "export TERMINAL=kitty\n"),
                 ],
                 false,
+            ),
+            // N5-9 (revérification de la ronde 5 de la 0.95) : des lignes ordinaires, mais pas simples : le fichier
+            // n'est pas lu (le shell ne l'est plus), non vérifié, la sauvegarde se lève.
+            (
+                "forme du shell non lue",
+                &[
+                    (
+                        ENV,
+                        "export PATH=\"$HOME/bin:$PATH\"\n[ -f ~/.config/uwsm/default ] && . ~/.config/uwsm/default\n",
+                    ),
+                    (".config/uwsm/default", "export TERMINAL=kitty\n"),
+                ],
+                true,
             ),
             ("inclusion ailleurs", &[(ENV, "source ~/.cache/x/env\n")], true),
             ("inclusion par point", &[(ENV, "true; . /home/alice/.cache/x\n")], true),
@@ -14707,21 +15019,24 @@ mod tests {
         }
     }
 
-    /// Campagne E, M-f : un dossier personnel relatif ne passe jamais pour « rien de suspect ».
+    /// Campagne E, M-f : un dossier personnel relatif ne passe jamais pour « rien de suspect ». N5-8 : avec « .. »
+    /// non plus (ce qu'il désigne n'est pas deviné).
     #[test]
     fn dossier_personnel_relatif_dit() {
         let m = maison_avec_rappel("relatif");
-        let c = persistance_dans(&m.racine, Path::new("maison"), |_| None, None, None)
-            .into_iter()
-            .next()
-            .unwrap();
-        assert!(c.probleme >= Some(Niveau::Eleve), "{:?}", c.probleme);
-        assert!(
-            c.message.contains("dossier personnel inconnu ou relatif"),
-            "{}",
-            c.message
-        );
-        assert!(crate::apprentissage::declarable(&c).is_err());
+        for maison in ["maison", "/home/x/../alice"] {
+            let c = persistance_dans(&m.racine, Path::new(maison), |_| None, None, None)
+                .into_iter()
+                .next()
+                .unwrap();
+            assert!(c.probleme >= Some(Niveau::Eleve), "{maison} : {:?}", c.probleme);
+            assert!(
+                c.message.contains("dossier personnel inconnu, relatif ou avec « .. »"),
+                "{maison} : {}",
+                c.message
+            );
+            assert!(crate::apprentissage::declarable(&c).is_err());
+        }
     }
 
     /// Vérification de la campagne E, N3 : un fichier que lit un fichier des variables (« source = » de Hyprland,
@@ -17222,12 +17537,14 @@ mod tests {
     /// moins prioritaire au plus prioritaire. Un « uwsm/env » d'un dossier lu tôt (XDG_DATA_DIRS, XDG_CONFIG_DIRS) qui
     /// pose « Hyprland:a/b » lui fait lire « ~/.config/uwsm/env-a/b », qui remet « Hyprland » : la valeur finale ne
     /// montre rien, Vanguard disait « Aucun lancement automatique suspect ». Toute écriture du nom dans un fichier de
-    /// variables d'uwsm, quelle que soit la valeur, du compte ou du système, ou dans un greffon que le compte peut
-    /// changer, est dite (non vérifié, non déclarable) et lève la sauvegarde. Témoins : le lire, le commenter, et le
-    /// greffon du système à root seul (celui de Hyprland ajoute « Hyprland ») ne disent rien.
+    /// variables d'uwsm hors d'une valeur fixe sûre (R4-4 : `uwsm_valeur_fixe_du_bureau_information`), du compte ou du
+    /// système ouvert, ou dans un greffon que le compte peut changer (une fonction : forme non suivie, R4-3), est dite
+    /// (non vérifié, non déclarable) et lève la sauvegarde ; un fichier qui n'a pas que des lignes simples aussi
+    /// (N5-9). Témoins : le commenter, un nom voisin, et les fichiers du système à root seul (R4-4 ; le greffon de
+    /// Hyprland ajoute « Hyprland ») ne disent rien.
     #[test]
     fn nom_de_bureau_change_par_un_fichier_d_uwsm_dit() {
-        const DIT: &str = "change XDG_CURRENT_DESKTOP";
+        const DIT: [&str; 2] = ["change XDG_CURRENT_DESKTOP", "n'a pas que des lignes simples"];
         const CACHE: &str = "export LD_PRELOAD=/opt/inerte/a.so\nexport XDG_CURRENT_DESKTOP=Hyprland\n";
         // (nom, variables de la session, fichiers (chemin sous la racine si « / » en tête), dit)
         type Cas<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a [(&'a str, &'a str)], bool);
@@ -17248,19 +17565,13 @@ mod tests {
                 true,
             ),
             (
-                "valeur sûre, ~/.config/uwsm/env",
-                &[],
-                &[(".config/uwsm/env", "export XDG_CURRENT_DESKTOP=Hyprland\n")],
-                true,
-            ),
-            (
-                "système à root seul",
+                "témoin : système à root seul (R4-4)",
                 &[],
                 &[(
                     "/usr/share/uwsm/env.d/a",
-                    "XDG_CURRENT_DESKTOP=Hyprland; export XDG_CURRENT_DESKTOP\n",
+                    "XDG_CURRENT_DESKTOP=a/b; export XDG_CURRENT_DESKTOP\n",
                 )],
-                true,
+                false,
             ),
             (
                 "système ouvert, XDG_DATA_DIRS",
@@ -17290,11 +17601,11 @@ mod tests {
                 true,
             ),
             (
-                "témoin : lu, commenté",
+                "témoin : commenté, nom voisin",
                 &[],
                 &[(
                     ".config/uwsm/env",
-                    "case \"$XDG_CURRENT_DESKTOP\" in *) ;; esac\nexport X=\"${XDG_CURRENT_DESKTOP:-a}\"\n# export XDG_CURRENT_DESKTOP=a/b\nexport OLD_XDG_CURRENT_DESKTOP=x\n",
+                    "# export XDG_CURRENT_DESKTOP=a/b\n\t# XDG_CURRENT_DESKTOP=$(x)\nexport OLD_XDG_CURRENT_DESKTOP=a/b\nXDG_CURRENT_DESKTOPS=a/b\n",
                 )],
                 false,
             ),
@@ -17319,7 +17630,7 @@ mod tests {
             let mut variables = variables.to_vec();
             variables.push(("XDG_CURRENT_DESKTOP", "Hyprland"));
             let c = m.lancements_avec(&variables);
-            let vu = c.message.contains(DIT);
+            let vu = DIT.iter().any(|d| c.message.contains(d));
             if vu != *dit
                 || (*dit && !(c.probleme >= Some(Niveau::Eleve) && crate::apprentissage::declarable(&c).is_err()))
             {
@@ -17327,11 +17638,14 @@ mod tests {
             }
         }
         for vide in [false, true] {
-            for (f, texte) in [
-                (".config/uwsm/env", "export XDG_CURRENT_DESKTOP=Hyprland\n"),
-                ("/usr/share/uwsm/env.d/a", "export XDG_CURRENT_DESKTOP=Hyprland\n"),
-            ] {
-                let nom = format!("uwsm-bureau-change-sauvegarde-{vide}-{}", f.starts_with('/'));
+            for (i, (f, texte)) in [
+                (".config/uwsm/env", "export XDG_CURRENT_DESKTOP=Hyprland:a/b\n"),
+                (".config/uwsm/env.d/a", "XDG_CURRENT_DESKTOP=\"$(cat /var/tmp/n)\"\n"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let nom = format!("uwsm-bureau-change-sauvegarde-{vide}-{i}");
                 let (m, _) = sauvegarde_d_essai(&nom, vide);
                 let p = f.strip_prefix('/').map_or_else(|| m.chemin(f), |s| m.racine.join(s));
                 std::fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -17346,6 +17660,579 @@ mod tests {
             }
         }
         assert!(faux.is_empty(), "nom de bureau changé par uwsm : {faux:#?}");
+    }
+
+    /// Pose les `fichiers` (sous la racine si « / » en tête, sinon sous le dossier personnel) d'une maison d'essai.
+    fn poser_fichiers(m: &Maison, fichiers: &[(&str, &[u8])]) {
+        for (f, texte) in fichiers {
+            let p = f.strip_prefix('/').map_or_else(|| m.chemin(f), |s| m.racine.join(s));
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, texte).unwrap();
+        }
+    }
+
+    /// R4-1 (revérification de la ronde 4 de la 0.95) : un fichier de variables d'uwsm qui en inclut un autre
+    /// (« . ~/Documents/x.sh ») : Vanguard ne jugeait que le premier, l'inclus changeait XDG_CURRENT_DESKTOP sans
+    /// rien dire. Chaque fichier inclus par une ligne simple (« . » ou « source », chemin absolu ou « ~/ » en toutes
+    /// lettres), à tous les niveaux, se juge de la même règle, quel que soit son propriétaire (N5-5 : un relais par un
+    /// script du système à root seul) ; une inclusion relative ou d'un dossier est dite ; un chemin calculé, « ~ »
+    /// entre guillemets, un argument en plus ou une redirection (N5-2 b) ne sont pas des lignes simples : le fichier
+    /// est dit (N5-9). Tout est non vérifié, non déclarable. Témoin : un inclus qui ne touche à rien.
+    #[test]
+    fn uwsm_fichier_inclus_juge_de_la_meme_regle() {
+        const CHANGE: &str = "x.sh change XDG_CURRENT_DESKTOP";
+        const NON_SUIVI: &str = "lit un autre fichier (« . » ou « source ») que Vanguard ne suit pas";
+        const SCRIPT: &str = "a.sh n'a pas que des lignes simples";
+        const ENV: &str = "env n'a pas que des lignes simples";
+        // (nom, variables de la session, fichiers, ce que le message doit dire ; vide : rien d'uwsm)
+        type Cas<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a [(&'a str, &'a [u8])], &'a str);
+        let cas: &[Cas<'_>] = &[
+            (
+                "~/.config/uwsm/env, « . ~/ »",
+                &[],
+                &[
+                    (".config/uwsm/env", b". ~/Documents/x.sh\n"),
+                    ("Documents/x.sh", b"export XDG_CURRENT_DESKTOP=a/b\n"),
+                ],
+                CHANGE,
+            ),
+            (
+                "XDG_DATA_DIRS du compte, « source ~/ »",
+                &[("XDG_DATA_DIRS", "/home/alice/.d:/usr/share")],
+                &[
+                    (".d/uwsm/env", b"source ~/Documents/x.sh\n"),
+                    ("Documents/x.sh", b"XDG_CURRENT_DESKTOP=a/b\n"),
+                ],
+                CHANGE,
+            ),
+            (
+                "deux niveaux, absolu puis « ~/ »",
+                &[],
+                &[
+                    (".config/uwsm/env.d/1", b"\t. /home/alice/a.sh \n"),
+                    ("a.sh", b"# relais\nsource\t~/Documents/x.sh\n"),
+                    ("Documents/x.sh", b"export XDG_CURRENT_DESKTOP='a/b'\n"),
+                ],
+                CHANGE,
+            ),
+            (
+                "N5-5 : relais par un script du système à root seul",
+                &[("XDG_DATA_DIRS", "/home/alice/.d:/usr/share")],
+                &[
+                    (".d/uwsm/env", b". /usr/share/z/x.sh\n"),
+                    ("/usr/share/z/x.sh", b". /home/alice/Documents/y.sh\n"),
+                    ("Documents/y.sh", b"XDG_CURRENT_DESKTOP=a/b\n"),
+                ],
+                "y.sh change XDG_CURRENT_DESKTOP",
+            ),
+            (
+                "« \"$HOME/\" »",
+                &[],
+                &[
+                    (".config/uwsm/env", b"source \"$HOME/Documents/x.sh\"\n"),
+                    ("Documents/x.sh", b"export MOZ_ENABLE_WAYLAND=1\n"),
+                ],
+                ENV,
+            ),
+            (
+                "« ${HOME}/ »",
+                &[],
+                &[(".config/uwsm/env", b". ${HOME}/x.sh\n"), ("x.sh", b"")],
+                ENV,
+            ),
+            (
+                "N5-1 f : « # » collé à « ) »",
+                &[],
+                &[
+                    (".config/uwsm/env", b"x=$(:)#; . /home/alice/Documents/x.sh\n"),
+                    ("Documents/x.sh", b"export XDG_CURRENT_DESKTOP=a/b\n"),
+                ],
+                ENV,
+            ),
+            (
+                "N5-2 b : redirection devant l'inclusion",
+                &[],
+                &[
+                    (".config/uwsm/env", b"2>/dev/null . /home/alice/Documents/x.sh\n"),
+                    ("Documents/x.sh", b"export XDG_CURRENT_DESKTOP=a/b\n"),
+                ],
+                ENV,
+            ),
+            (
+                "inclus : forme non suivie",
+                &[],
+                &[(".config/uwsm/env", b". ~/a.sh\n"), ("a.sh", b"eval \"$x\"\n")],
+                SCRIPT,
+            ),
+            ("chemin calculé", &[], &[(".config/uwsm/env", b". \"$D/x.sh\"\n")], ENV),
+            (
+                "chemin relatif",
+                &[],
+                &[(".config/uwsm/env", b"source x.sh\n.  ./y.sh\n")],
+                NON_SUIVI,
+            ),
+            (
+                "« ~ » entre guillemets",
+                &[],
+                &[(".config/uwsm/env", b". \"~/x.sh\"\n")],
+                ENV,
+            ),
+            ("argument en plus", &[], &[(".config/uwsm/env", b". ~/x.sh a\n")], ENV),
+            (
+                "dossier inclus",
+                &[],
+                &[(".config/uwsm/env", b". ~/Documents\n"), ("Documents/y", b"")],
+                NON_SUIVI,
+            ),
+            (
+                "témoin : inclus sans effet",
+                &[],
+                &[
+                    (".config/uwsm/env", b". ~/a.sh\n"),
+                    ("a.sh", b"export MOZ_ENABLE_WAYLAND=1\n"),
+                ],
+                "",
+            ),
+        ];
+        let mut faux = Vec::new();
+        for (i, (nom, variables, fichiers, dit)) in cas.iter().enumerate() {
+            let m = Maison::nouvelle(&format!("uwsm-inclus-{i}"));
+            poser_fichiers(&m, fichiers);
+            let mut variables = variables.to_vec();
+            variables.push(("XDG_CURRENT_DESKTOP", "Hyprland"));
+            let c = m.lancements_avec(&variables);
+            let bon = if dit.is_empty() {
+                ![CHANGE, NON_SUIVI, "n'a pas que des lignes simples"]
+                    .iter()
+                    .any(|d| c.message.contains(d))
+            } else {
+                c.message.contains(dit)
+                    && c.probleme >= Some(Niveau::Eleve)
+                    && crate::apprentissage::declarable(&c).is_err()
+            };
+            if !bon {
+                faux.push(format!("{nom} : {:?} {}", c.probleme, c.message));
+            }
+        }
+        // Au-delà de SOURCES_MAX fichiers inclus : le suivant et les autres ne sont pas lus, c'est dit.
+        let m = Maison::nouvelle("uwsm-inclus-borne");
+        let env = (0..=SOURCES_MAX)
+            .map(|k| format!(". ~/i/{k}.sh\n"))
+            .collect::<Vec<_>>()
+            .concat();
+        m.ecrire(".config/uwsm/env", &env);
+        for k in 0..=SOURCES_MAX {
+            m.ecrire(&format!("i/{k}.sh"), "");
+        }
+        let c = m.lancements_avec(&[("XDG_CURRENT_DESKTOP", "Hyprland")]);
+        if !(c.message.contains("ne sont pas lus : plus de 64 fichiers inclus") && c.probleme >= Some(Niveau::Eleve)) {
+            faux.push(format!("borne : {:?} {}", c.probleme, c.message));
+        }
+        // N5-5 : le bilan et la sauvegarde disent la même chose du relais par un script du système.
+        for vide in [false, true] {
+            let (m, _) = sauvegarde_d_essai(&format!("uwsm-inclus-relais-{vide}"), vide);
+            poser_fichiers(
+                &m,
+                &[
+                    (".config/uwsm/env", b". /usr/share/z/x.sh\n"),
+                    ("/usr/share/z/x.sh", b". /home/alice/Documents/y.sh\n"),
+                    ("Documents/y.sh", b"XDG_CURRENT_DESKTOP=a/b\n"),
+                ],
+            );
+            let c = m.lancements_avec(&[("XDG_CURRENT_DESKTOP", "Hyprland")]);
+            if !(c.probleme == Some(Niveau::Eleve) && c.message.contains(crate::sauvegarde::SERVICE)) {
+                faux.push(format!(
+                    "relais, sauvegarde, env -i {vide} : {:?} {}",
+                    c.probleme, c.message
+                ));
+            }
+        }
+        assert!(faux.is_empty(), "fichiers inclus par uwsm : {faux:#?}");
+    }
+
+    /// R4-2 (revérification de la ronde 4 de la 0.95) : le shell retire les octets NUL avant de lire ;
+    /// « LD_PRE\0LOAD=… » pose donc LD_PRELOAD, et « XDG_CURRENT_\0DESKTOP=… » change le nom de bureau, sans que
+    /// Vanguard, qui lisait le fichier « au mieux », le voie. Un NUL dans un fichier d'uwsm ou dans un profil du shell
+    /// est dit, non vérifié, non déclarable ; dans un fichier d'uwsm, il lève aussi la sauvegarde.
+    #[test]
+    fn octet_nul_dans_un_fichier_du_shell_dit() {
+        let mut faux = Vec::new();
+        for (i, (f, texte, dit)) in [
+            (
+                ".config/uwsm/env",
+                &b"export XDG_CURRENT_\0DESKTOP=a/b\n"[..],
+                "env contient un octet NUL, que le shell d'uwsm retire",
+            ),
+            (
+                ".bashrc",
+                &b"export LD_PRE\0LOAD=/opt/inerte/a.so\n"[..],
+                "un octet NUL, que le shell retire avant de lire",
+            ),
+            (
+                ".profile",
+                &b"true\0\n"[..],
+                "un octet NUL, que le shell retire avant de lire",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("octet-nul-{i}"));
+            poser_fichiers(&m, &[(f, texte)]);
+            // Un fichier inclus par un profil se lit de même (R-6).
+            if f == ".profile" {
+                poser_fichiers(
+                    &m,
+                    &[
+                        (".bashrc", b". ~/Documents/x.sh\n"),
+                        ("Documents/x.sh", b"export LD_PRE\0LOAD=/opt/inerte/a.so\n"),
+                    ],
+                );
+            }
+            let c = m.lancements_avec(&[("XDG_CURRENT_DESKTOP", "Hyprland")]);
+            if !(c.message.contains(dit)
+                && (f != ".profile" || c.message.contains("x.sh : un octet NUL"))
+                && c.probleme >= Some(Niveau::Eleve)
+                && crate::apprentissage::declarable(&c).is_err())
+            {
+                faux.push(format!("{f} : {:?} {}", c.probleme, c.message));
+            }
+        }
+        let (m, _) = sauvegarde_d_essai("octet-nul-sauvegarde", false);
+        poser_fichiers(&m, &[(".config/uwsm/env", b"export A=1\0\n")]);
+        let c = m.lancements_avec(&[("XDG_CURRENT_DESKTOP", "Hyprland")]);
+        if !c.message.contains(crate::sauvegarde::SERVICE) {
+            faux.push(format!("sauvegarde : {:?} {}", c.probleme, c.message));
+        }
+        assert!(faux.is_empty(), "octet NUL : {faux:#?}");
+    }
+
+    /// R4-3 (revérification de la ronde 4 de la 0.95), N5-1 à N5-3 et N5-9 (ronde 5) : un fichier de variables d'uwsm
+    /// qui change ce qu'uwsm lit ensuite sans écrire XDG_CURRENT_DESKTOP en toutes lettres (eval, nom construit,
+    /// fonction d'uwsm redéfinie, texte sur plusieurs lignes, redirection en tête, arithmétique…). Vanguard ne lit plus
+    /// le shell : toute ligne qui n'est pas simple fait dire le fichier entier, non vérifié, non déclarable, et lève la
+    /// sauvegarde ; une variable d'uwsm (« __…__ ») ou HOME écrite en toutes lettres aussi. Toutes les écritures des
+    /// revérifications y sont. Témoin : un fichier de lignes simples (dont la variable NVIDIA « __GLX_… », N5-6).
+    #[test]
+    fn uwsm_forme_du_shell_non_suivie_dite() {
+        const DIT: &str = "env n'a pas que des lignes simples";
+        const INTERNE: &str = "env écrit une variable d'uwsm lui-même";
+        let formes: &[&[u8]] = &[
+            // Ronde 4.
+            b"eval \"XDG_CURRENT_${x}DESKTOP=a/b\"\n",
+            b"export XDG_CURRENT_${e}DESKTOP=a/b\n",
+            b"declare -n r=XDG_CURRENT_DESKTOP\nr=a/b\n",
+            b"lowercase() { printf a/b; }\n",
+            b"unset lowercase\n",
+            b"function f { :; }\n",
+            b"export A=\"x\n# \"; XDG_CURRENT_DESKTOP=a/b\n",
+            b"cat <<F\nx\nF\n",
+            b"$c XDG_CURRENT_DESKTOP=a/b\n",
+            b"alias tr=true\n",
+            b"read XDG_CURRENT_DESKTOP < /var/tmp/n\n",
+            b"printf -v XDG_CURRENT_DESKTOP a/b\n",
+            b"X=$(\ncase a in a) ;; esac\n)\n",
+            b"export A=\"${B:-'x'}\"\n",
+            b"enable -n export\n",
+            b"XDG_CURRENT_DESKTOP+=:a/b\n",
+            // N5-1 : « # » collé à « ) ».
+            b"x=$(:)#; export XDG_CURRENT_DESKTOP=Hyprland:a/b\n",
+            b"x=$((1))#; export XDG_CURRENT_DESKTOP=Hyprland:a/b\n",
+            b"[[ x =~ (x)# ]]; export XDG_CURRENT_DESKTOP=Hyprland:a/b\n",
+            b"a=(x)#; export XDG_CURRENT_DESKTOP=Hyprland:a/b\n",
+            // N5-2 : redirection, option, accolades, « \ » puis saut de ligne.
+            b"a=XDG_CURRENT\n>/dev/null eval \"export ${a}_DESKTOP=Hyprland:a/b\"\n",
+            b"a=XDG_CURRENT\nA=1 >/dev/null eval \"export ${a}_DESKTOP=Hyprland:a/b\"\n",
+            b"a=XDG_CURRENT\ncommand -p eval \"export ${a}_DESKTOP=Hyprland:a/b\"\n",
+            b"a=XDG_CURRENT\nbuiltin -- eval \"export ${a}_DESKTOP=Hyprland:a/b\"\n",
+            b"a=XDG_CURRENT\nprintf \"-v\" ${a}_DESKTOP %s Hyprland:a/b\n",
+            b"a=XDG_CURRENT\n{eval,} \"export ${a}_DESKTOP=Hyprland:a/b\"\n",
+            b"lowercase (\\\n) { printf %s a/b; }\n",
+            // N5-3 : l'arithmétique écrit une variable d'uwsm sans la nommer.
+            b"u=_\na=\"${u}${u}SELF_NAME${u}${u}=5\"\n(( a ))\n",
+            b"u=_\na=\"${u}${u}SELF_NAME${u}${u}=5\"\n: $(( a ))\n",
+            b"u=_\na=\"${u}${u}SELF_NAME${u}${u}=5\"\n[[ a -eq 0 ]]\n",
+            b"u=_\na=\"${u}${u}SELF_NAME${u}${u}=5\"\n: ${u:a}\n",
+            // N5-9 : des lignes ordinaires, non simples, restent dites (le shell n'est plus lu).
+            b"eval \"$(ssh-agent -s)\"\n",
+            b"unset http_proxy https_proxy\n",
+            // Ni UTF-8, ni « \r » : ce que bash en ferait n'est pas deviné.
+            b"export A=\xff\n",
+            b"export A=1\r\n",
+            b"export XDG_CURRENT_DESKTOP\r\n",
+        ];
+        let mut faux = Vec::new();
+        for (i, texte) in formes.iter().enumerate() {
+            let (m, _) = sauvegarde_d_essai(&format!("uwsm-forme-{i}"), false);
+            poser_fichiers(&m, &[(".config/uwsm/env", texte)]);
+            let c = m.lancements_avec(&[("XDG_CURRENT_DESKTOP", "Hyprland")]);
+            if !(c.message.contains(DIT)
+                && c.probleme >= Some(Niveau::Eleve)
+                && crate::apprentissage::declarable(&c).is_err()
+                && c.message.contains(crate::sauvegarde::SERVICE))
+            {
+                faux.push(format!(
+                    "{:?} : {:?} {}",
+                    String::from_utf8_lossy(texte),
+                    c.probleme,
+                    c.message
+                ));
+            }
+        }
+        // Une variable d'uwsm (N5-6 : « __…__ ») ou HOME, écrite en toutes lettres.
+        for (i, texte) in [
+            "__SELF_NAME__=../../../home/alice/x\n",
+            "export __WM_DESKTOP_NAMES__=a/b\n",
+            "export __OIFS__\n",
+            "HOME=/var/tmp/h\n",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let (m, _) = sauvegarde_d_essai(&format!("uwsm-forme-interne-{i}"), false);
+            m.ecrire(".config/uwsm/env", texte);
+            let c = m.lancements_avec(&[("XDG_CURRENT_DESKTOP", "Hyprland")]);
+            if !(c.message.contains(INTERNE)
+                && c.probleme >= Some(Niveau::Eleve)
+                && crate::apprentissage::declarable(&c).is_err()
+                && c.message.contains(crate::sauvegarde::SERVICE))
+            {
+                faux.push(format!("{texte:?} : {:?} {}", c.probleme, c.message));
+            }
+        }
+        let m = Maison::nouvelle("uwsm-forme-temoin");
+        m.ecrire(
+            ".config/uwsm/env",
+            "# eval x ; lowercase() {\n\n  \t\nexport PATH=/home/alice/.local/bin:/usr/bin\nexport A='#x $y; (z)'\n\
+             export __GLX_VENDOR_LIBRARY_NAME=nvidia\n__NV_PRIME_RENDER_OFFLOAD=1\n\texport  B=a=b:~/c \nexport C\n\
+             _D=\nsource /home/alice/.config/uwsm/autre\n",
+        );
+        m.ecrire(".config/uwsm/autre", "export E=1\n");
+        let c = m.lancements_avec(&[("XDG_CURRENT_DESKTOP", "Hyprland")]);
+        if [
+            "lignes simples",
+            "XDG_CURRENT_DESKTOP",
+            "variable d'uwsm",
+            "ne suit pas",
+        ]
+        .iter()
+        .any(|d| c.message.contains(d))
+        {
+            faux.push(format!("témoin : {:?} {}", c.probleme, c.message));
+        }
+        assert!(faux.is_empty(), "formes du shell dans uwsm : {faux:#?}");
+    }
+
+    /// R4-4 (revérification de la ronde 4 de la 0.95) : un fichier d'uwsm du compte qui pose XDG_CURRENT_DESKTOP à une
+    /// valeur fixe sûre (« sway », « 'GNOME:sway' » puis « export » seul) était dit ÉLEVÉ comme une valeur hostile :
+    /// uwsm en tire des « uwsm/env-<nom> », que Vanguard lit tous. Une information (`Niveau::Info`), qui ne lève pas
+    /// la sauvegarde ; une valeur hors règle, ou une ligne qui n'est pas simple, à côté reste dite. Le nom dans un
+    /// commentaire entier ne compte pas, et les fichiers d'uwsm du système à root seul ne se jugent pas (comme ses
+    /// greffons).
+    #[test]
+    fn uwsm_valeur_fixe_du_bureau_information() {
+        let mut faux = Vec::new();
+        for (i, (texte, valeur)) in [
+            ("# mon bureau\nexport XDG_CURRENT_DESKTOP=sway\n", "« sway »"),
+            (
+                "XDG_CURRENT_DESKTOP='GNOME:sway'\nexport XDG_CURRENT_DESKTOP\n",
+                "« GNOME:sway »",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            for vide in [false, true] {
+                let (m, _) = sauvegarde_d_essai(&format!("uwsm-fixe-{i}-{vide}"), vide);
+                m.ecrire(".config/uwsm/env", texte);
+                let c = m.lancements_avec(&[("XDG_CURRENT_DESKTOP", "Hyprland")]);
+                if !(c.probleme == Some(Niveau::Info)
+                    && c.message
+                        .contains(&format!("pose le nom de bureau d'uwsm à {valeur}, une valeur fixe")))
+                {
+                    faux.push(format!("{texte:?}, env -i {vide} : {:?} {}", c.probleme, c.message));
+                }
+            }
+        }
+        for (i, (f, texte, dit)) in [
+            (
+                ".config/uwsm/env",
+                "export XDG_CURRENT_DESKTOP=sway\nXDG_CURRENT_DESKTOP=\"$X\"\n",
+                true,
+            ),
+            (".config/uwsm/env", "XDG_CURRENT_DESKTOP=sway;unset A\n", true),
+            (
+                ".config/uwsm/env",
+                "export XDG_CURRENT_DESKTOP=sway # mon bureau\n",
+                true,
+            ),
+            (".config/uwsm/env", "XDG_CURRENT_DESKTOP=\"sway\"\n", true),
+            (".config/uwsm/env", "export XDG_CURRENT_DESKTOP=a:\n", true),
+            (".config/uwsm/env", "XDG_CURRENT_DESKTOP=\n", true),
+            (".config/uwsm/env", "# export XDG_CURRENT_DESKTOP=a/b\n", false),
+            (
+                "/usr/share/uwsm/env",
+                "XDG_CURRENT_DESKTOP=\"$(cat /var/tmp/n)\"\n",
+                false,
+            ),
+            ("/usr/share/uwsm/env.d/a", "eval x\n", false),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("uwsm-fixe-autre-{i}"));
+            poser_fichiers(&m, &[(f, texte.as_bytes())]);
+            let c = m.lancements_avec(&[("XDG_CURRENT_DESKTOP", "Hyprland")]);
+            let vu = c.message.contains("change XDG_CURRENT_DESKTOP") || c.message.contains("lignes simples");
+            if vu != dit || (!dit && c.message.contains("nom de bureau d'uwsm")) {
+                faux.push(format!("{f} {texte:?} : {:?} {}", c.probleme, c.message));
+            }
+        }
+        assert!(faux.is_empty(), "valeur fixe du nom de bureau : {faux:#?}");
+    }
+
+    /// N5-1 à N5-3 (revérification de la ronde 5 de la 0.95) : la liste de ce qui est permis dans un fichier d'uwsm,
+    /// caractère par caractère. Chaque caractère que le shell pourrait lire autrement qu'un texte rend la ligne non
+    /// simple, dans une valeur sans apostrophes comme dans un chemin inclus ; une apostrophe dedans aussi ; un nom
+    /// qui n'en est pas un aussi. Témoins : ce qui reste permis.
+    #[test]
+    fn ligne_simple_seulement_ce_qui_est_permis() {
+        let mut faux = Vec::new();
+        for c in [
+            '"', '\'', '$', '`', '(', ')', ';', '&', '|', '<', '>', '\\', '#', ' ', '\t', '\r', '\x0b', '\x0c',
+            '\u{1b}', '\u{a0}', '\u{2028}',
+        ] {
+            for ligne in [
+                format!("A=x{c}y"),
+                format!("export A=x{c}y"),
+                format!(". /a{c}b"),
+                format!("source ~/a{c}b"),
+            ] {
+                if ligne_simple(&ligne).is_some() {
+                    faux.push(format!("permis à tort : {ligne:?}"));
+                }
+            }
+        }
+        for c in ['*', '?', '[', ']', '{', '}', '~'] {
+            let ligne = format!(". /a{c}b");
+            if ligne_simple(&ligne).is_some() {
+                faux.push(format!("chemin permis à tort : {ligne:?}"));
+            }
+        }
+        for ligne in [
+            "A='x'y'",
+            "A='x''y'",
+            "A='x",
+            "A=x'",
+            "A='a\rb'",
+            "A='a\u{1b}b'",
+            "1A=x",
+            "A-B=x",
+            "É=x",
+            "A[0]=x",
+            "A+=x",
+            "=x",
+            "A",
+            "export",
+            "export -n A",
+            "export A B",
+            "export A=1 B=2",
+            "A=1 B=2",
+            "A=1 cmd",
+            "exportA=1 B",
+            ". ~",
+            ". ~alice/x",
+            ". \"/a\"",
+            ". /a b",
+            ".",
+            "source",
+            "eval x",
+            "\r",
+            "A=1\r",
+        ] {
+            if ligne_simple(ligne).is_some() {
+                faux.push(format!("permis à tort : {ligne:?}"));
+            }
+        }
+        for (ligne, attendu) in [
+            ("", LigneSimple::Rien),
+            (" \t ", LigneSimple::Rien),
+            ("  # x=$(y) ; eval", LigneSimple::Rien),
+            (
+                "A=x",
+                LigneSimple::Pose {
+                    nom: "A",
+                    valeur: Some("x"),
+                },
+            ),
+            (
+                "_a1=",
+                LigneSimple::Pose {
+                    nom: "_a1",
+                    valeur: Some(""),
+                },
+            ),
+            (
+                "\texport  XDG_CURRENT_DESKTOP=GNOME:sway ",
+                LigneSimple::Pose {
+                    nom: "XDG_CURRENT_DESKTOP",
+                    valeur: Some("GNOME:sway"),
+                },
+            ),
+            (
+                "A='x $y; (z) # \"'",
+                LigneSimple::Pose {
+                    nom: "A",
+                    valeur: Some("x $y; (z) # \""),
+                },
+            ),
+            (
+                "A=a=b:~/c,%@+-*?[]{}!^",
+                LigneSimple::Pose {
+                    nom: "A",
+                    valeur: Some("a=b:~/c,%@+-*?[]{}!^"),
+                },
+            ),
+            ("export A", LigneSimple::Pose { nom: "A", valeur: None }),
+            (". /a/b.sh", LigneSimple::Inclut("/a/b.sh")),
+            ("source\t~/a", LigneSimple::Inclut("~/a")),
+            (". x.sh", LigneSimple::Inclut("x.sh")),
+        ] {
+            let vu = ligne_simple(ligne);
+            if vu.as_ref() != Some(&attendu) {
+                faux.push(format!("{ligne:?} : {vu:?}, attendu {attendu:?}"));
+            }
+        }
+        assert!(faux.is_empty(), "lignes simples d'uwsm : {faux:#?}");
+    }
+
+    /// N5-6 (revérification de la ronde 5 de la 0.95) : les variables d'uwsm commencent et finissent par « __ » ; les
+    /// variables NVIDIA (« __GLX_VENDOR_LIBRARY_NAME »…), qui ne finissent pas ainsi, ne sont pas les siennes.
+    #[test]
+    fn variable_interne_d_uwsm_commence_et_finit_par_deux_soulignes() {
+        for nom in [
+            "__SELF_NAME__",
+            "__OIFS__",
+            "__WM_DESKTOP_NAMES__",
+            "__env_files__",
+            "__dnlc__",
+            "HOME",
+        ] {
+            assert!(variable_interne_d_uwsm(nom), "{nom}");
+        }
+        for nom in [
+            "__GLX_VENDOR_LIBRARY_NAME",
+            "__NV_PRIME_RENDER_OFFLOAD",
+            "__GL_GSYNC_ALLOWED",
+            "__VK_LAYER_NV_optimus",
+            "_X__",
+            "___",
+            "__",
+            "HOME_",
+            "home",
+        ] {
+            assert!(!variable_interne_d_uwsm(nom), "{nom}");
+        }
     }
 
     /// R-2 (relecture DEP-4 de la 0.95) : un XDG_DATA_HOME posé au gestionnaire par un fichier (environment.d), absolu
