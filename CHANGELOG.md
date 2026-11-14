@@ -172,10 +172,13 @@ recompilée au besoin.
   ManagerEnvironment= en mots comme systemd, guillemets compris, et chaque mot pose une variable
   (« DefaultEnvironment=PATH=/usr/bin LANG=C ») ; user.conf, user.conf.d et les Environment= des unités joignent une
   ligne finie par « \ » exactement comme systemd (mesuré sur systemd 262) : la barre devient une espace, un commentaire
-  au milieu se saute, une ligne vide finit la suite, « \\ » et « \ » suivi d'une espace ne joignent pas (une ligne finie
-  par « \ » suivi d'un blanc, que systemd refuse, est dite non vérifiée) (avant, ils se joignaient comme un shell, et
-  « DefaultEnvironment=A=1 \ », puis « # note \ », puis « PATH=/home/alice/.x » se taisait ; « DefaultEnvironment=B\ »
-  suivi de « ASH_ENV=… », que systemd lit comme ASH_ENV, n'est plus élevé comme un BASH_ENV) ; dans un profil, chaque
+  au milieu se saute, une ligne vide finit la suite, « \\ » (deux barres) et « \ » suivi d'une espace ne joignent pas
+  (une ligne finie par « \ » suivi d'un blanc est dite non vérifiée : systemd ne la joint pas à la suivante ; ce qui est
+  écrit avant la barre reste posé) (avant, ils se joignaient comme un shell, et « DefaultEnvironment=A=1 \ », puis
+  « # note \ », puis « PATH=/home/alice/.x » se taisait). Des faux élevés reculent, fidèles à systemd (mesuré : la
+  variable suspecte n'y est jamais posée) : « DefaultEnvironment=B\ » suivi de « ASH_ENV=… », que systemd lit comme
+  ASH_ENV, et « DefaultEnvironment=A=1 \\ » (deux barres) suivi de « PATH=… », que systemd refuse comme clé inconnue,
+  se taisent ; une ligne finie par « \ » suivi d'un blanc, puis une ligne suspecte, passe d'élevée à non vérifiée ; dans un profil, chaque
   commande de la ligne, coupée hors guillemets à « ; », « & » et « | », se juge jusqu'au commentaire (« true && export
   PATH=… ») ; dans fish, chaque mot sans ses guillemets, jusqu'au commentaire ou au « ; » (avant, « set -gx PATH
   /usr/local/bin $PATH # mes outils » se levait à tort). BASHOPTS ou SHELLOPTS posé à la session (environment.d,
@@ -250,11 +253,16 @@ recompilée au besoin.
   $f » d'une variable posée dans le fichier, « set -A », « emulate sh -c », « - eval », « if [[ … ]] { … } » de zsh, un
   nom de commande qui se calcule (« ex${z}port », « $X »), « . <(…) », « source /dev/stdin ». fish n'est plus lu
   finement : dès qu'une configuration de fish existe (config.fish, fish_variables, conf.d, functions, completions de
-  ~/.config/fish ; vendor_conf.d, vendor_functions.d, vendor_completions.d et generated_completions de
-  ~/.local/share/fish ; /etc/fish et les dossiers de fish de /usr/share, /usr/local/share et XDG_DATA_DIRS), le bilan
+  ~/.config/fish ou du fish de XDG_CONFIG_HOME ; vendor_conf.d, vendor_functions.d, vendor_completions.d et
+  generated_completions de ~/.local/share/fish ou du fish de XDG_DATA_HOME ; config.fish, conf.d, functions,
+  completions de /etc/fish et de /usr/local/etc/fish ; config.fish, functions, completions de /usr/share/fish et de
+  /usr/local/share/fish ; vendor_conf.d, vendor_functions.d, vendor_completions.d de fish sous /usr/share,
+  /usr/local/share et chaque dossier de XDG_DATA_DIRS), le bilan
   dit « fish : non vérifié » en nommant ce qui est présent (huit endroits au plus, puis le nombre des autres) :
   fonctions chargées à la demande, variables universelles, compléments et conf.d des paquets ne sont pas lus, et ce que
-  fish pose ou lance n'est pas jugé. Les formes simples suspectes de fish restent élevées. Un dossier de fish du système
+  fish pose ou lance n'est pas jugé ; les endroits hors de cette liste ne sont pas comptés (~/.config/fish/fishd.*,
+  ~/.cache/fish, le fish d'un profil de Nix, un fish_function_path posé par un profil du shell). Les formes simples
+  suspectes de fish restent élevées. Un dossier de fish du système
   que seul root peut changer ne se dit que si fish est là (un endroit du compte est présent, ou le programme fish est
   installé) : sans fish, les dossiers vendor_*.d que d'autres paquets installent ne se disent pas. Le prix : un
   ~/.config/fish/conf.d qu'un autre programme a rempli, sans que fish soit installé, suffit pour que « fish : non
@@ -277,13 +285,18 @@ recompilée au besoin.
   Limites : ce qu'écrit un outil d'activation permis n'est pas lu ; un fichier inclus par un chemin qui lit l'une des
   variables permises (« source "$OMARCHY_PATH/default/bash/rc" », « . "${OMARCHY_PATH%/}/default/uwsm/default" ») n'est
   pas suivi, et la ligne se tait ; dans environment.d et user.conf, HOME et XDG_CONFIG_HOME ne sont pas jugés comme un
-  dossier déplacé : Vanguard y lit seulement les unités de systemd sous le dossier posé ; dans environment.d, une
+  dossier déplacé : Vanguard y lit seulement les unités de systemd sous le dossier posé, et un XDG_CONFIG_HOME ou un
+  XDG_DATA_HOME posé là n'est pas suivi pour fish (seuls ceux de la session le sont) ; dans environment.d, une
   variable posée plus haut (HOME, XDG_CONFIG_HOME ou toute autre, dans l'ordre du générateur de systemd : par nom de
   fichier, ~/.config/environment.d, /etc, /run, /usr/local/lib puis /usr/lib) est suivie : une variable surveillée qui
   la lit (« $HOME », « ${HOME} », « ${X:-…} », « ${X:+…} ») est dite non vérifiée en nommant la variable et la ligne qui
   la pose, et élevée si sa valeur, développée comme le générateur la développe, est suspecte (« HOME=/home/alice/.x »
   puis « PATH=$HOME/bin ») ; « export HOME=… » ne pose rien pour le générateur, et « %h » n'y est pas développé ; si le
-  fichier et ceux qui posent ne sont changeables que par root, rien n'est dit ; « : ${PATH::=/home/alice/.x} » de zsh et
+  fichier et ceux qui posent ne sont changeables que par root, rien n'est dit ; un fichier d'environment.d qui a une ligne
+  finie par « \ » (une barre ou plusieurs, suivie ou non d'un blanc ou d'un retour chariot), que le générateur ne joint
+  pas comme Vanguard la lit, est dit non vérifié en entier et lève la sauvegarde, sauf s'il est à root seul ; un fichier
+  de /usr/local/lib/environment.d ou de /usr/lib/environment.d qui lit une variable posée par un fichier que le compte
+  peut changer est dit non vérifié en entier ; « : ${PATH::=/home/alice/.x} » de zsh et
   « PATH =… » d'environment.d (une espace avant « = ») sont dits non vérifiés, pas élevés ; dans le shell, une variable
   posée plus haut dans le fichier n'est pas suivie (« PATH=$X:$PATH » est dit, pas élevé) ; une valeur lue dans un
   calcul, ou construite en morceaux sur plusieurs lignes, n'est pas suivie ; une ligne hors forme d'un fichier que seul

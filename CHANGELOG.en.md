@@ -161,11 +161,14 @@ repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
   user.conf, for its part, splits DefaultEnvironment= and ManagerEnvironment= into words as systemd does, quotes
   included, and each word sets one variable ("DefaultEnvironment=PATH=/usr/bin LANG=C"); user.conf, user.conf.d and
   units' Environment= join a line ending in "\" exactly as systemd does (measured on systemd 262): the backslash becomes
-  a space, a comment in the middle is skipped, an empty line ends the continuation, "\\" and "\" followed by a space do
-  not join (a line ending in "\" followed by a blank, which systemd rejects, is reported as not checked) (before, they
-  were joined like a shell, and "DefaultEnvironment=A=1 \", then "# note \", then "PATH=/home/alice/.x" stayed silent;
-  "DefaultEnvironment=B\" followed by "ASH_ENV=…", which systemd reads as ASH_ENV, is no longer reported high as a
-  BASH_ENV); in a profile, each command of the line, cut outside quotes at ";", "&" and "|", is judged up to the comment
+  a space, a comment in the middle is skipped, an empty line ends the continuation, "\\" (two backslashes) and "\"
+  followed by a space do not join (a line ending in "\" followed by a blank is reported as not checked: systemd does not
+  join it to the next one; what is written before the backslash stays set) (before, they were joined like a shell, and
+  "DefaultEnvironment=A=1 \", then "# note \", then "PATH=/home/alice/.x" stayed silent). Some false highs step back,
+  faithful to systemd (measured: the suspicious variable is never set there): "DefaultEnvironment=B\" followed by
+  "ASH_ENV=…", which systemd reads as ASH_ENV, and "DefaultEnvironment=A=1 \\" (two backslashes) followed by "PATH=…",
+  which systemd rejects as an unknown key, are silent; a line ending in "\" followed by a blank, then a suspicious line,
+  goes from high to not checked; in a profile, each command of the line, cut outside quotes at ";", "&" and "|", is judged up to the comment
   ("true && export PATH=…"); in fish, each word without its quotes, up to the comment or the ";" (before, "set -gx PATH
   /usr/local/bin $PATH # my tools" was wrongly raised). BASHOPTS or SHELLOPTS set for the session (environment.d,
   user.conf, a profile) is reported high: "dotglob" makes uwsm read the hidden files of its ".d" folders. A PATH with an
@@ -234,11 +237,16 @@ repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
   `printf "-v"`, "compgen -V", "wait -p", "hash -p", `eval "$(f)"` of a function from the file, ". $f" of a variable set
   in the file, "set -A", "emulate sh -c", "- eval", zsh's "if [[ … ]] { … }", a command name that is computed
   ("ex${z}port", "$X"), ". <(…)", "source /dev/stdin". fish is no longer read in detail: as soon as a fish configuration
-  exists (config.fish, fish_variables, conf.d, functions, completions in ~/.config/fish; vendor_conf.d,
-  vendor_functions.d, vendor_completions.d and generated_completions in ~/.local/share/fish; /etc/fish and the fish
-  folders of /usr/share, /usr/local/share and XDG_DATA_DIRS), the check says "fish: not checked", naming what is present
+  exists (config.fish, fish_variables, conf.d, functions, completions in ~/.config/fish or in the fish folder of
+  XDG_CONFIG_HOME; vendor_conf.d, vendor_functions.d, vendor_completions.d and generated_completions in
+  ~/.local/share/fish or in the fish folder of XDG_DATA_HOME; config.fish, conf.d, functions, completions in /etc/fish
+  and in /usr/local/etc/fish; config.fish, functions, completions in /usr/share/fish and in /usr/local/share/fish;
+  vendor_conf.d, vendor_functions.d, vendor_completions.d of fish under /usr/share, /usr/local/share and each
+  XDG_DATA_DIRS folder), the check says "fish: not checked", naming what is present
   (eight places at most, then the count of the others): lazily loaded functions, universal variables, completions and
-  packages' conf.d are not read, and what fish sets or runs is not judged. Simple suspicious fish forms stay high. A
+  packages' conf.d are not read, and what fish sets or runs is not judged; places outside this list are not counted
+  (~/.config/fish/fishd.*, ~/.cache/fish, the fish of a Nix profile, a fish_function_path set by a shell profile).
+  Simple suspicious fish forms stay high. A
   system fish folder only root can change is reported only if fish is there (an account place is present, or the fish
   program is installed): without fish, the vendor_*.d folders other packages install are not reported. The price: a
   ~/.config/fish/conf.d filled by another program, with fish not installed, is enough for "fish: not checked" to show,
@@ -260,13 +268,18 @@ repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
   single literal value, under /usr). Limits: what an allowed activation tool writes is not read; a file included through
   a path that reads one of the allowed variables (`source "$OMARCHY_PATH/default/bash/rc"`, `.
   "${OMARCHY_PATH%/}/default/uwsm/default"`) is not followed, and the line stays silent; in environment.d and user.conf,
-  HOME and XDG_CONFIG_HOME are not judged as a moved folder: Vanguard only reads the systemd units under the folder set;
-  in environment.d, a variable set earlier (HOME, XDG_CONFIG_HOME or any other, in the order of the systemd generator:
+  HOME and XDG_CONFIG_HOME are not judged as a moved folder: Vanguard only reads the systemd units under the folder set,
+  and an XDG_CONFIG_HOME or XDG_DATA_HOME set there is not followed for fish (only the session's are); in
+  environment.d, a variable set earlier (HOME, XDG_CONFIG_HOME or any other, in the order of the systemd generator:
   by file name, ~/.config/environment.d, /etc, /run, /usr/local/lib then /usr/lib) is followed: a watched variable that
   reads it ("$HOME", "${HOME}", "${X:-…}", "${X:+…}") is reported as not checked, naming the variable and the line that
   sets it, and high if its value, expanded as the generator expands it, is suspicious ("HOME=/home/alice/.x" then
   "PATH=$HOME/bin"); "export HOME=…" sets nothing for the generator, and "%h" is not expanded there; if the file and
-  those that set are changeable only by root, nothing is reported; zsh's ": ${PATH::=/home/alice/.x}" and
+  those that set are changeable only by root, nothing is reported; an environment.d file with a line ending in "\" (one
+  backslash or more, followed or not by a blank or a carriage return), which the generator does not join the way
+  Vanguard reads it, is reported as not checked as a whole and raises the backup, unless it is root-only; a file of
+  /usr/local/lib/environment.d or /usr/lib/environment.d that reads a variable set by a file the account can change is
+  reported as not checked as a whole; zsh's ": ${PATH::=/home/alice/.x}" and
   environment.d's "PATH =…" (a space before "=") are reported as not checked, not high; in the shell, a variable set
   earlier in the file is not followed ("PATH=$X:$PATH" is reported, not high); a value read inside a calculation, or
   built in pieces over several lines, is not followed; a non-simple line in a file only root can change is not reported
