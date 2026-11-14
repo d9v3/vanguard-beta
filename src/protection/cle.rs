@@ -43,6 +43,10 @@ const NOM_COPIE: &str = "vanguard.exe";
 /// fichier qu'elle désigne a exactement les octets du programme qui tourne ; hors d'une copie elle est ignorée sans
 /// bruit, dans une copie l'écart est dit (et noté au journal des erreurs). Sinon c'est le programme qui tourne qui
 /// compte : rien n'est installé depuis elle.
+///
+/// Reste connu (R2W-N1) : la base des copies vient de l'environnement (`XDG_RUNTIME_DIR`, `TMPDIR`), sûre mais à
+/// ce compte ; un programme du compte peut donc y poser une copie exacte de Vanguard et la lancer avec la variable.
+/// Le nom du dossier doit au moins avoir la forme exacte d'une copie (`vanguard-<chiffres>-<chiffres>`).
 pub fn exe_d_origine() -> Option<PathBuf> {
     /// L'origine décidée, et l'écart à dire : (chemin désigné montrable, raison).
     type Decision = (Option<PathBuf>, Option<(String, String)>);
@@ -52,8 +56,7 @@ pub fn exe_d_origine() -> Option<PathBuf> {
     static ALERTE_DITE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     let (origine, alerte) = DECIDE.get_or_init(|| {
         let designee = std::env::var_os(ORIGINE);
-        let dans_une_copie = || std::env::current_exe().is_ok_and(|e| est_une_copie(&e));
-        let (crue, alerte) = decider_origine(designee.as_deref().map(Path::new), dans_une_copie, image_qui_tourne);
+        let (crue, alerte) = origine_de(designee.as_deref().map(Path::new));
         let alerte = alerte.map(|raison| {
             let designee = designee.as_deref().map_or_else(PathBuf::new, PathBuf::from);
             (chemin_affichable(&designee), raison.to_string())
@@ -73,6 +76,53 @@ pub fn exe_d_origine() -> Option<PathBuf> {
         );
     }
     origine.clone()
+}
+
+/// `decider_origine` branchée sur le vrai programme : la place de celui qui tourne (`dans_une_copie`) et l'empreinte
+/// de son image (`image_qui_tourne`). À part pour être essayée telle que lancée.
+fn origine_de(designee: Option<&Path>) -> (Option<PathBuf>, Option<Echec>) {
+    decider_origine(designee, dans_une_copie, image_qui_tourne)
+}
+
+/// Le programme qui tourne est-il une copie temporaire, de nom exact (`vanguard-<chiffres>-<chiffres>`) ? Sous Linux,
+/// une copie effacée (elle s'efface au démarrage) puis relancée par `/proc/self/exe` (l'autotest) se dit
+/// « <chemin> (deleted) » : la marque est retirée, seulement quand l'image n'a vraiment plus de nom (aucun lien),
+/// sinon un fichier nommé ainsi passerait pour la copie.
+fn dans_une_copie() -> bool {
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    #[cfg(target_os = "linux")]
+    let exe = {
+        use std::os::unix::fs::MetadataExt;
+        let effacee = std::fs::metadata("/proc/self/exe").is_ok_and(|m| m.nlink() == 0);
+        sans_marque_d_effacement(exe, effacee)
+    };
+    nom_exact_de_copie(&exe) && est_une_copie(&exe)
+}
+
+/// Linux : le chemin d'une image effacée, sans « (deleted) » que le noyau ajoute (`effacee` : plus aucun lien).
+#[cfg(target_os = "linux")]
+fn sans_marque_d_effacement(exe: PathBuf, effacee: bool) -> PathBuf {
+    const MARQUE: &str = " (deleted)";
+    if !effacee {
+        return exe;
+    }
+    match exe.to_str().and_then(|e| e.strip_suffix(MARQUE)) {
+        Some(nom) => PathBuf::from(nom),
+        None => exe,
+    }
+}
+
+/// Le dossier de `exe` a-t-il exactement la forme que `nom_de_copie` donne (`vanguard-<chiffres>-<chiffres>`) ?
+fn nom_exact_de_copie(exe: &Path) -> bool {
+    let Some(nom) = exe.parent().and_then(Path::file_name).and_then(std::ffi::OsStr::to_str) else {
+        return false;
+    };
+    let chiffres = |t: &str| !t.is_empty() && t.bytes().all(|o| o.is_ascii_digit());
+    nom.strip_prefix("vanguard-")
+        .and_then(|r| r.split_once('-'))
+        .is_some_and(|(pid, nanos)| chiffres(pid) && chiffres(nanos))
 }
 
 /// Ce que vaut `VANGUARD_ORIGINE` (`designee`) : le chemin cru, ou `None` (le programme qui tourne compte), et l'écart
@@ -720,6 +770,31 @@ fn base_sans_point_d_analyse(base: &Path) -> Result<(), Echec> {
     Ok(())
 }
 
+/// Windows : pourquoi la copie lancée est arrêtée. Une image illisible n'est pas dite « un autre programme » : rien
+/// n'est prouvé dans un sens ni dans l'autre, elle est arrêtée par prudence (R2W-N5 ; à essayer sur un vrai Windows,
+/// Wine ne fait pas lire l'image d'un fils comme lui).
+#[cfg(windows)]
+fn raison_du_fils_arrete(ecart: &crate::machine::windows::eleve::ImageDuFils) -> String {
+    use crate::machine::windows::eleve::ImageDuFils;
+    match ecart {
+        ImageDuFils::Illisible(Some(code)) => trf!(
+            "l'image de la copie lancée n'a pas pu être lue (erreur Windows {}) : arrêtée par prudence",
+            "the started copy's image could not be read (Windows error {}): stopped as a precaution",
+            code
+        ),
+        ImageDuFils::Illisible(None) => tr!(
+            "l'image de la copie lancée n'a pas pu être lue : arrêtée par prudence",
+            "the started copy's image could not be read: stopped as a precaution"
+        )
+        .to_string(),
+        ImageDuFils::Autre => tr!(
+            "la copie lancée n'est pas le fichier vérifié (un autre programme) : arrêtée",
+            "the started copy is not the verified file (another program): stopped"
+        )
+        .to_string(),
+    }
+}
+
 /// Efface la copie et son dossier, rien d'autre : le dossier ne part que s'il est vide.
 fn effacer_copie(copie: &Path) {
     let _ = std::fs::remove_file(copie);
@@ -762,7 +837,7 @@ fn relancer_depuis_une_copie(exe: &Path) -> Vec<String> {
             }
             Err(e) => e.to_string(),
         };
-        erreurs.push(format!("{} : {erreur}", base.display()));
+        erreurs.push(format!("{} : {erreur}", chemin_affichable(&base)));
     }
     erreurs
 }
@@ -817,9 +892,14 @@ fn lancer_une_copie(
         drop(verrou);
         return refus(e);
     }
+    // Lancée par le chemin long du fichier tenu, pas par `copie` : un nom court dans la base (8.3) resterait dans
+    // l'image du fils et ne se comparerait plus au fichier tenu (copie honnête arrêtée sur un vrai Windows).
+    let lancee = crate::machine::windows::eleve::chemin_long_du_fichier(&verrou)
+        .filter(|c| c.is_absolute())
+        .unwrap_or_else(|| copie.clone());
     // Suivi par les coulisses jusqu'à sa fin : la copie lancée s'y voit, avec son code.
     let (lance, mut suivi) =
-        crate::coulisses::Suivie::spawn_et_suivre(std::process::Command::new(&copie).args(args).env(ORIGINE, origine));
+        crate::coulisses::Suivie::spawn_et_suivre(std::process::Command::new(&lancee).args(args).env(ORIGINE, origine));
     let mut fils = match lance {
         Ok(f) => f,
         Err(e) => {
@@ -829,18 +909,12 @@ fn lancer_une_copie(
     };
     // Lancée par son chemin : son image doit être le fichier tenu et vérifié. Sinon (un dossier du chemin retourné
     // entre-temps), elle est arrêtée et Vanguard reste sur la clé, en le disant.
-    if !crate::machine::windows::eleve::image_du_fils_est(fils.as_raw_handle(), &verrou) {
+    if let Err(ecart) = crate::machine::windows::eleve::image_du_fils_est(fils.as_raw_handle(), &verrou) {
         let _ = fils.kill();
         let _ = fils.wait();
         drop(suivi);
         drop(verrou);
-        return refus(Echec::refuse(
-            OU_COPIE,
-            tr!(
-                "la copie lancée n'est pas le fichier vérifié : arrêtée",
-                "the started copy is not the verified file: stopped"
-            ),
-        ));
+        return refus(Echec::refuse(OU_COPIE, raison_du_fils_arrete(&ecart)));
     }
     // La console fermée par le X, la fin de session : Windows ne laisse que le gestionnaire (`effacer_a_la_fermeture`)
     // agir avant d'arrêter ce processus ; il retrouve ici la copie et son verrou.
@@ -1062,6 +1136,54 @@ mod tests {
         assert!(crue.is_none() && alerte.is_some());
         assert_eq!(decider_origine(None, || true, || soi.clone()).0, None);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// BASSE (relecture adverse, R2W-N3) : la décision telle que lancée (`origine_de`, celle de `exe_d_origine`) lit
+    /// la vraie place du programme : le programme des essais n'est pas une copie temporaire, donc une copie exacte de
+    /// lui-même désignée par la variable n'est pas crue (elle le serait si la place était prise pour acquise).
+    #[test]
+    fn origine_telle_que_lancee_hors_d_une_copie() {
+        let d = crate::essais::temporaire().join(format!("vanguard-origine-lancee-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let exacte = d.join("v");
+        std::fs::copy(std::env::current_exe().unwrap(), &exacte).unwrap();
+        assert!(!dans_une_copie());
+        let (crue, alerte) = origine_de(Some(&exacte));
+        assert!(crue.is_none() && alerte.is_none(), "crue hors d'une copie : {crue:?}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// BASSE (relecture adverse, R2W-N1) : seul le nom exact d'une copie (`vanguard-<chiffres>-<chiffres>`) compte.
+    #[test]
+    fn nom_de_copie_exact_seulement() {
+        let dans = |n: &str| Path::new("/base").join(n).join(NOM_COPIE);
+        assert!(nom_exact_de_copie(&dans(&nom_de_copie())));
+        assert!(nom_exact_de_copie(&dans("vanguard-12-345")));
+        for faux in [
+            "vanguard-x-1",
+            "vanguard-1-",
+            "vanguard--1",
+            "vanguard-1-2-3",
+            "vanguard-1",
+            "vanguardé-1-2",
+        ] {
+            assert!(!nom_exact_de_copie(&dans(faux)), "{faux}");
+        }
+    }
+
+    /// BASSE (relecture adverse, R2W-N2) : la marque « (deleted) » n'est retirée que d'une image sans aucun lien.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn marque_d_effacement_retiree_seulement_si_effacee() {
+        let marque = PathBuf::from("/run/user/1/vanguard-1-2/vanguard (deleted)");
+        assert_eq!(
+            sans_marque_d_effacement(marque.clone(), true),
+            PathBuf::from("/run/user/1/vanguard-1-2/vanguard")
+        );
+        assert_eq!(sans_marque_d_effacement(marque.clone(), false), marque);
+        let sans = PathBuf::from("/run/user/1/vanguard-1-2/vanguard");
+        assert_eq!(sans_marque_d_effacement(sans.clone(), true), sans);
     }
 
     #[cfg(target_os = "linux")]
@@ -1402,6 +1524,86 @@ mod tests {
         );
         let _ = std::fs::remove_dir(&base);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// BASSE (relecture adverse, R2W-N4 a et b) : le dossier au-dessus de `copies\` (le dossier local, `vanguard\`)
+    /// en lien est refusé lui aussi, avant toute création : rien n'est créé dans la cible du lien, rien n'est lancé.
+    #[cfg(windows)]
+    #[test]
+    fn parent_de_la_base_en_lien_refuse() {
+        use std::os::windows::fs::MetadataExt;
+        let Some(source) = cmd() else {
+            return crate::essais::saute("cmd.exe absent");
+        };
+        let jetable =
+            crate::essais::Jetable::garder(std::env::temp_dir().join(crate::essais::nom_unique("parent-lien")));
+        let d = jetable.to_path_buf();
+        let cible = d.join("ailleurs");
+        std::fs::create_dir_all(&cible).unwrap();
+        let local = d.join("local");
+        if std::os::windows::fs::symlink_dir(&cible, &local).is_err()
+            || !std::fs::symlink_metadata(&local).is_ok_and(|m| m.file_attributes() & 0x400 != 0)
+        {
+            let _ = std::fs::remove_dir_all(&d);
+            return crate::essais::saute("lien symbolique de dossier impossible ou invisible ici");
+        }
+        let soi = crate::programmes_poses::empreinte_de(&source).unwrap();
+        let r = lancer_une_copie(
+            &source,
+            &soi,
+            &local.join("copies"),
+            vec!["/c".into(), "exit 7".into()],
+            &source,
+            || panic!("copie lancée sous un dossier local en lien"),
+        );
+        let vu = format!("{r:?}");
+        let laisse = std::fs::read_dir(&cible).unwrap().count();
+        let _ = std::fs::remove_dir(&local);
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(vu.contains("jonction") || vu.contains("junction"), "{r:?}");
+        assert_eq!(laisse, 0, "dossier créé dans la cible du lien");
+    }
+
+    /// BASSE (relecture adverse, R2W-N4 c) : la copie tenue est jugée par ses octets lus par la poignée : un autre
+    /// contenu est refusé, le même accepté.
+    #[cfg(windows)]
+    #[test]
+    fn copie_tenue_jugee_par_ses_octets() {
+        let jetable = crate::essais::Jetable::garder(std::env::temp_dir().join(crate::essais::nom_unique("tenue")));
+        let d = jetable.to_path_buf();
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("vanguard.exe");
+        std::fs::write(&f, b"programme essai").unwrap();
+        let bonne = crate::programmes_poses::empreinte_de(&f).unwrap();
+        let tenu = std::fs::File::open(&f).unwrap();
+        assert!(verifier_tenue(&tenu, &bonne).is_ok());
+        let autre = blake3::hash(b"autre programme").to_hex().to_string();
+        assert!(verifier_tenue(&tenu, &autre).is_err(), "autres octets acceptés");
+        drop(tenu);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// BASSE (relecture adverse, R2W-N5) : une image du fils illisible ne se dit pas « un autre programme ». À essayer
+    /// sur un vrai Windows : sous Wine, seule la poignée nulle donne une lecture impossible sûre.
+    #[cfg(windows)]
+    #[test]
+    fn image_illisible_dite_a_part() {
+        use crate::machine::windows::eleve::{ImageDuFils, image_du_fils_est};
+        let Some(source) = cmd() else {
+            return crate::essais::saute("cmd.exe absent");
+        };
+        let tenu = std::fs::File::open(&source).unwrap();
+        let ecart = image_du_fils_est(std::ptr::null_mut(), &tenu);
+        assert!(matches!(ecart, Err(ImageDuFils::Illisible(_))), "{ecart:?}");
+        let illisible = raison_du_fils_arrete(&ImageDuFils::Illisible(Some(5)));
+        let autre = raison_du_fils_arrete(&ImageDuFils::Autre);
+        assert!(illisible.contains("lue") || illisible.contains("read"), "{illisible}");
+        assert!(illisible.contains('5'), "{illisible}");
+        assert!(!illisible.contains("autre programme") && !illisible.contains("another program"));
+        assert!(
+            autre.contains("autre programme") || autre.contains("another program"),
+            "{autre}"
+        );
     }
 
     /// Windows : les copies d'avant s'effacent, sauf celle d'un processus qui tourne encore (ici le nôtre, et un

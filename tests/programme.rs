@@ -4266,6 +4266,52 @@ fn origine_ecartee_dans_une_copie_ne_fige_pas() {
     let _ = std::fs::remove_dir_all(&racine);
 }
 
+/// BASSE (relecture adverse, R2W-N2) : une copie temporaire déjà effacée (elle s'efface au démarrage) et relancée
+/// par son image (l'autotest relance `/proc/self/exe`) se sait encore une copie : le noyau ajoute « (deleted) » à son
+/// chemin, qui ne ressemblait plus à une copie, et VANGUARD_ORIGINE (sa clé) était oubliée sans rien dire. Ici
+/// l'origine désignée n'a pas ses octets : l'écart doit être dit, preuve que la variable a bien été examinée.
+#[cfg(target_os = "linux")]
+#[test]
+fn copie_effacee_relancee_par_son_image_reste_une_copie() {
+    use std::os::fd::AsRawFd;
+    let racine = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("copie-effacee-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&racine);
+    let maison = racine.join("maison");
+    let dossier = maison.join("run").join("vanguard-1-1");
+    std::fs::create_dir_all(&dossier).unwrap();
+    let copie = dossier.join("vanguard");
+    std::fs::copy(env!("CARGO_BIN_EXE_vanguard"), &copie).unwrap();
+    let image = std::fs::File::open(&copie).unwrap();
+    std::fs::remove_file(&copie).unwrap();
+    std::fs::remove_dir(&dossier).unwrap();
+    let autre = racine.join("autre");
+    std::fs::write(&autre, b"programme d'un autre").unwrap();
+    let par_l_image = format!("/proc/{}/fd/{}", std::process::id(), image.as_raw_fd());
+    let sortie = Command::new(&par_l_image)
+        .arg("--help")
+        .env("VANGUARD_LANG", "fr")
+        .env("VANGUARD_HORS_LIGNE", "1")
+        .env("USER", "essai")
+        .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
+        .env("XDG_RUNTIME_DIR", maison.join("run"))
+        .env("HOME", &maison)
+        .env("XDG_DATA_HOME", maison.join("donnees"))
+        .env("XDG_CONFIG_HOME", maison.join("config"))
+        .env("XDG_CACHE_HOME", maison.join("cache"))
+        .env("VANGUARD_ORIGINE", &autre)
+        .stdin(Stdio::null())
+        .output()
+        .expect("vanguard ne démarre pas par son image");
+    drop(image);
+    let erreurs = String::from_utf8_lossy(&sortie.stderr).into_owned();
+    let _ = std::fs::remove_dir_all(&racine);
+    assert!(sortie.status.success(), "{erreurs}");
+    assert!(
+        erreurs.contains("VANGUARD_ORIGINE"),
+        "copie effacée plus reconnue : {erreurs}"
+    );
+}
+
 /// Les traces collectées dans un dossier jetable : un seul dossier daté, réservé au compte, avec LISEZMOI (en
 /// français puis en anglais), MANIFESTE et les processus ; chaque empreinte du manifeste est juste et chaque fichier y
 /// est. Sous Wine, sans PowerShell, une partie manque et c'est dit ; LISEZMOI et MANIFESTE, eux, sont là.

@@ -709,9 +709,36 @@ fn image_est_le_fichier(processus: *mut c_void, fichier: &std::fs::File) -> Resu
 
 /// Le processus `processus` (la poignée d'un `Child`) a-t-il pour image le fichier ouvert `fichier` ? Pour la copie
 /// temporaire de la clé (`protection::cle`), lancée par son chemin : une jonction retournée entre la vérification et
-/// le lancement ferait lancer un autre fichier. Une lecture impossible est un non.
-pub(crate) fn image_du_fils_est(processus: std::os::windows::io::RawHandle, fichier: &std::fs::File) -> bool {
-    image_est_le_fichier(processus.cast(), fichier).is_ok()
+/// le lancement ferait lancer un autre fichier. Une lecture impossible est un non, dit à part (R2W-N5) : ce n'est
+/// pas la preuve d'un autre programme.
+pub(crate) fn image_du_fils_est(
+    processus: std::os::windows::io::RawHandle,
+    fichier: &std::fs::File,
+) -> Result<(), ImageDuFils> {
+    image_est_le_fichier(processus.cast(), fichier).map_err(|e| match e {
+        Imposteur::Illisible(code) => ImageDuFils::Illisible(code),
+        Imposteur::Autre | Imposteur::Revue(_) => ImageDuFils::Autre,
+    })
+}
+
+/// Le chemin complet du fichier ouvert `fichier`, lu par sa poignée, en noms longs (normalisé par Windows, lettre du
+/// gestionnaire des volumes). Une copie se lance par lui : Windows garde pour l'image d'un processus le chemin tel
+/// que donné à CreateProcess, noms courts (8.3) compris (`C:\Users\RUNNER~1\…`, le TEMP des machines de GitHub),
+/// alors que le chemin NT du fichier tenu est normalisé en noms longs : lancée par un nom court, une copie honnête ne
+/// se reconnaissait plus et était arrêtée. `None` si Windows ne le dit pas (Wine sur Z:).
+pub(crate) fn chemin_long_du_fichier(fichier: &std::fs::File) -> Option<std::path::PathBuf> {
+    chemin_final(fichier, VOLUME_PAR_LETTRE)
+        .ok()
+        .map(std::path::PathBuf::from)
+}
+
+/// Pourquoi l'image d'un fils n'est pas tenue pour le fichier vérifié (`image_du_fils_est`).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ImageDuFils {
+    /// Image ou chemin du fichier illisible (erreur Windows) : rien n'est prouvé.
+    Illisible(Option<i32>),
+    /// L'image est un autre fichier.
+    Autre,
 }
 
 /// Juste après « runas », avant tout envoi : le processus élevé a pour image le fichier tenu, et le chemin tenu est
