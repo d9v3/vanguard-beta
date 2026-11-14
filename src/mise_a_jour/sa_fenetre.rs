@@ -742,18 +742,44 @@ mod tests {
         std::fs::write(pour(&source).unwrap(), &neuve).unwrap();
         let fenetre = pour(&cible).unwrap();
         // Rien ici : le programme et sa fenêtre posés. Mais pas si le programme ne démarre pas.
-        assert!(super::super::poser_copie_dans(&source, &cible, ESSAI_RATE).is_err());
+        assert!(
+            super::super::poser_copie_dans(
+                &source,
+                &cible,
+                crate::programmes_poses::empreinte_de(&source).ok().as_deref(),
+                ESSAI_RATE
+            )
+            .is_err()
+        );
         assert!(std::fs::symlink_metadata(&fenetre).is_err());
-        super::super::poser_copie_dans(&source, &cible, SANS_ESSAI).unwrap();
+        super::super::poser_copie_dans(
+            &source,
+            &cible,
+            crate::programmes_poses::empreinte_de(&source).ok().as_deref(),
+            SANS_ESSAI,
+        )
+        .unwrap();
         assert_eq!(std::fs::read(&fenetre).unwrap(), neuve);
         // La même copie, sa fenêtre effacée : remise.
         std::fs::remove_file(&fenetre).unwrap();
-        super::super::poser_copie_dans(&source, &cible, SANS_ESSAI).unwrap();
+        super::super::poser_copie_dans(
+            &source,
+            &cible,
+            crate::programmes_poses::empreinte_de(&source).ok().as_deref(),
+            SANS_ESSAI,
+        )
+        .unwrap();
         assert_eq!(std::fs::read(&fenetre).unwrap(), neuve);
         // Une fenêtre changée sur la clé : la copie de même version garde la sienne, jamais celle de la clé.
         std::fs::write(pour(&source).unwrap(), b"fenetre plantee").unwrap();
         std::fs::remove_file(&fenetre).unwrap();
-        super::super::poser_copie_dans(&source, &cible, SANS_ESSAI).unwrap();
+        super::super::poser_copie_dans(
+            &source,
+            &cible,
+            crate::programmes_poses::empreinte_de(&source).ok().as_deref(),
+            SANS_ESSAI,
+        )
+        .unwrap();
         assert!(std::fs::symlink_metadata(&fenetre).is_err());
         // Ni pour remplacer une copie plus ancienne : le programme est posé, sans elle.
         std::fs::write(
@@ -761,7 +787,13 @@ mod tests {
             [b"prog ".as_slice(), &super::super::entete(), b"0.95.0+1; "].concat(),
         )
         .unwrap();
-        super::super::poser_copie_dans(&source, &cible, SANS_ESSAI).unwrap();
+        super::super::poser_copie_dans(
+            &source,
+            &cible,
+            crate::programmes_poses::empreinte_de(&source).ok().as_deref(),
+            SANS_ESSAI,
+        )
+        .unwrap();
         assert_eq!(std::fs::read(&cible).unwrap(), std::fs::read(&source).unwrap());
         assert!(std::fs::symlink_metadata(&fenetre).is_err());
         assert!(rien_a_cote(&d.join("bin")));
@@ -797,7 +829,13 @@ mod tests {
         .unwrap();
         let fenetre = pour(&cible).unwrap();
         std::fs::create_dir(&fenetre).unwrap();
-        let note = super::super::poser_copie_dans(&source, &cible, SANS_ESSAI).unwrap();
+        let note = super::super::poser_copie_dans(
+            &source,
+            &cible,
+            crate::programmes_poses::empreinte_de(&source).ok().as_deref(),
+            SANS_ESSAI,
+        )
+        .unwrap();
         assert_eq!(std::fs::read(&cible).unwrap(), std::fs::read(&source).unwrap());
         assert!(dite_ou_posee_sous_windows(note, &fenetre, &neuve), "rien n'est dit");
         // Un programme qui ne démarre pas : rien n'est posé, la fenêtre non plus.
@@ -806,7 +844,15 @@ mod tests {
             [b"prog ".as_slice(), &super::super::entete(), b"0.95.0+1; "].concat(),
         )
         .unwrap();
-        assert!(super::super::poser_copie_dans(&source, &cible, ESSAI_RATE).is_err());
+        assert!(
+            super::super::poser_copie_dans(
+                &source,
+                &cible,
+                crate::programmes_poses::empreinte_de(&source).ok().as_deref(),
+                ESSAI_RATE
+            )
+            .is_err()
+        );
         assert_ne!(std::fs::read(&cible).unwrap(), std::fs::read(&source).unwrap());
         assert!(rien_a_cote(&d.join("bin")));
         let _ = std::fs::remove_dir_all(&d);
@@ -824,13 +870,25 @@ mod tests {
         std::fs::write(&source, lancant(&neuve)).unwrap();
         std::fs::write(pour(&source).unwrap(), &neuve).unwrap();
         assert_eq!(
-            super::super::poser_copie_dans(&source, &cible, SANS_ESSAI).unwrap(),
+            super::super::poser_copie_dans(
+                &source,
+                &cible,
+                crate::programmes_poses::empreinte_de(&source).ok().as_deref(),
+                SANS_ESSAI
+            )
+            .unwrap(),
             None
         );
         let fenetre = pour(&cible).unwrap();
         std::fs::remove_file(&fenetre).unwrap();
         std::fs::create_dir(&fenetre).unwrap();
-        let note = super::super::poser_copie_dans(&source, &cible, SANS_ESSAI).unwrap();
+        let note = super::super::poser_copie_dans(
+            &source,
+            &cible,
+            crate::programmes_poses::empreinte_de(&source).ok().as_deref(),
+            SANS_ESSAI,
+        )
+        .unwrap();
         assert!(dite_ou_posee_sous_windows(note, &fenetre, &neuve), "rien n'est dit");
         assert_eq!(std::fs::read(&cible).unwrap(), std::fs::read(&source).unwrap());
         let _ = std::fs::remove_dir_all(&d);

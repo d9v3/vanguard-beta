@@ -491,21 +491,40 @@ pub(crate) fn programme_signe_a_remettre() -> Result<(String, Vec<u8>), crate::m
 /// du programme de la clé suit, si c'est bien la sienne (`sa_fenetre::de_la_source`), comme pour `poser_copie_dans`.
 /// `vue` : la fenêtre dite avant la question (C-7, relecture 0.96) ; avec ou sans fenêtre, ce qui se pose est ce qui
 /// a été dit, sinon rien.
+/// `soi` : l'empreinte du programme qui tourne ; seuls ses octets se posent (voir `de_soi`).
 fn remplacer(
     source: &Path,
     cible: &Path,
     attendue: Version,
+    soi: Option<&str>,
     max: u64,
     essai: Essai,
     vue: &sa_fenetre::Vue,
 ) -> Result<(), String> {
     let octets = lire_octets(source, max)?;
+    de_soi(&octets, soi)?;
     let fenetre = sa_fenetre::de_la_source(source, &octets).zip(sa_fenetre::pour(cible));
     vue.dite(fenetre.as_ref().map(|(_, chemin)| chemin.as_path()))?;
     match fenetre {
         Some((f, chemin)) => sa_fenetre::installer_avec(&octets, cible, attendue, essai, &f, &chemin, vue),
         None => installer(&octets, cible, attendue, essai),
     }
+}
+
+/// Les octets relus au chemin de la clé sont-ils ceux du programme qui tourne (`soi` : leur empreinte, prise au
+/// démarrage) ? Ce chemin n'est vérifié qu'une fois, au lancement : clé retirée puis une autre branchée au même
+/// endroit, ou fichier réécrit depuis, et c'est un autre programme qui se poserait, se lancerait (`essayer`) et serait
+/// scellé comme celui de Vanguard. Les octets comparés sont ceux, en mémoire, qui seront écrits : rien ne peut changer
+/// entre la comparaison et la pose. Sans empreinte du programme qui tourne : refusé aussi, jamais cru.
+fn de_soi(octets: &[u8], soi: Option<&str>) -> Result<(), String> {
+    if soi.is_some_and(|s| blake3::hash(octets).to_hex().as_str() == s) {
+        return Ok(());
+    }
+    Err(tr!(
+        "le programme de la clé n'est plus celui qui tourne (changé, ou une autre clé, depuis le lancement) : rien n'est posé",
+        "the key's program is no longer the one running (changed, or another key, since launch): nothing is set up"
+    )
+    .into())
 }
 
 /// L'essai d'un programme posé à côté, avant qu'il remplace l'ancien (`essayer`, ou celui d'un test).
@@ -1323,12 +1342,15 @@ fn essayer(programme: &Path, attendue: Version) -> Result<(), String> {
 /// relecture 0.96 : l'échec était passé sous silence, « fait » sans un mot).
 pub(crate) fn poser_copie(source: &Path) -> Result<(PathBuf, Option<String>), String> {
     let cible = copie_de_cet_ordinateur();
-    let note = poser_copie_dans(source, &cible, essayer)?;
+    let soi = crate::protection::cle::image_qui_tourne();
+    let note = poser_copie_dans(source, &cible, soi.as_deref(), essayer)?;
     Ok((cible, note))
 }
 
-fn poser_copie_dans(source: &Path, cible: &Path, essai: Essai) -> Result<Option<String>, String> {
+/// `poser_copie` vers `cible` ; seuls les octets du programme qui tourne (`soi`) se posent (`de_soi`).
+fn poser_copie_dans(source: &Path, cible: &Path, soi: Option<&str>, essai: Essai) -> Result<Option<String>, String> {
     let octets = lire_octets(source, TAILLE_MAX)?;
+    de_soi(&octets, soi)?;
     let Some(version) = version_gravee(&octets) else {
         return Err(tr!(
             "pas de version gravée dans le programme",
@@ -1685,7 +1707,8 @@ fn proposer(source: &Path, cible: &Path, copie: Option<Version>, cle: Version) {
     {
         return;
     }
-    match remplacer(source, cible, cle, TAILLE_MAX, essayer, &vue) {
+    let soi = crate::protection::cle::image_qui_tourne();
+    match remplacer(source, cible, cle, soi.as_deref(), TAILLE_MAX, essayer, &vue) {
         Ok(()) => trp!(
             "  {VERT}✔{RESET} Copie de cet ordinateur mise à jour : Vanguard {}.\n    La surveillance, l'entretien et le raccourci lancent cette version.",
             "  {VERT}✔{RESET} Copy on this computer updated: Vanguard {}.\n    Monitoring, maintenance and the shortcut start this version.",
@@ -1726,7 +1749,7 @@ mod tests {
         crate::programmes_poses::noter(Tache::Entretien, &cible, &Ok(b"[Service]".to_vec()));
         let avant = empreinte_notee(Tache::Entretien).expect("notée");
         faux_programme(&source, Some("0.81.0"));
-        poser_copie_dans(&source, &cible, SANS_ESSAI).unwrap();
+        poser_copie_dans(&source, &cible, soi_de(&source).as_deref(), SANS_ESSAI).unwrap();
         let apres = empreinte_notee(Tache::Entretien).expect("notée");
         assert_ne!(avant, apres);
         assert_eq!(apres, crate::programmes_poses::empreinte_de(&cible).unwrap());
@@ -1992,6 +2015,7 @@ mod tests {
             &source,
             &cible,
             (0, 80, 0, 0),
+            soi_de(&source).as_deref(),
             TAILLE_MAX,
             SANS_ESSAI,
             &dite(&source, &cible),
@@ -2012,6 +2036,7 @@ mod tests {
                 &source,
                 &cible,
                 (0, 80, 0, 0),
+                soi_de(&source).as_deref(),
                 TAILLE_MAX,
                 SANS_ESSAI,
                 &dite(&source, &cible)
@@ -2025,6 +2050,7 @@ mod tests {
                 &racine.join("absente"),
                 &cible,
                 (0, 80, 0, 0),
+                Some("0"),
                 TAILLE_MAX,
                 SANS_ESSAI,
                 &dite(&racine.join("absente"), &cible)
@@ -2032,7 +2058,18 @@ mod tests {
             .is_err()
         );
         faux_programme(&source, Some("0.80.0"));
-        assert!(remplacer(&source, &cible, (0, 80, 0, 0), 4, SANS_ESSAI, &dite(&source, &cible)).is_err());
+        assert!(
+            remplacer(
+                &source,
+                &cible,
+                (0, 80, 0, 0),
+                soi_de(&source).as_deref(),
+                4,
+                SANS_ESSAI,
+                &dite(&source, &cible)
+            )
+            .is_err()
+        );
         assert_eq!(lire_programme(&cible, TAILLE_MAX), Lu::Version((0, 70, 0, 0)));
         assert!(!cible.with_file_name(format!("{NOM}.nouveau")).exists());
         let _ = std::fs::remove_dir_all(&racine);
@@ -2062,6 +2099,7 @@ mod tests {
             &source,
             &cible,
             (0, 80, 0, 0),
+            soi_de(&source).as_deref(),
             TAILLE_MAX,
             SANS_ESSAI,
             &dite(&source, &cible),
@@ -2076,6 +2114,7 @@ mod tests {
             &source,
             &cible,
             (0, 80, 0, 0),
+            soi_de(&source).as_deref(),
             TAILLE_MAX,
             SANS_ESSAI,
             &dite(&source, &cible),
@@ -2090,7 +2129,16 @@ mod tests {
         std::fs::write(&fenetre_cle, b"fenetre plantee").unwrap();
         let vue = dite(&source, &cible);
         std::fs::write(&fenetre_cle, &neuve).unwrap();
-        let e = remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, SANS_ESSAI, &vue).expect_err("pas dite");
+        let e = remplacer(
+            &source,
+            &cible,
+            (0, 80, 0, 0),
+            soi_de(&source).as_deref(),
+            TAILLE_MAX,
+            SANS_ESSAI,
+            &vue,
+        )
+        .expect_err("pas dite");
         assert!(
             e.contains("depuis ce qui a été montré") || e.contains("since what was shown"),
             "{e}"
@@ -2100,7 +2148,16 @@ mod tests {
         // Dite avec sa fenêtre, qui n'est plus la sienne avant la pose : pas le programme seul non plus.
         let vue = dite(&source, &cible);
         std::fs::write(&fenetre_cle, b"fenetre plantee").unwrap();
-        let e = remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, SANS_ESSAI, &vue).expect_err("pas dit");
+        let e = remplacer(
+            &source,
+            &cible,
+            (0, 80, 0, 0),
+            soi_de(&source).as_deref(),
+            TAILLE_MAX,
+            SANS_ESSAI,
+            &vue,
+        )
+        .expect_err("pas dit");
         assert!(
             e.contains("depuis ce qui a été montré") || e.contains("since what was shown"),
             "{e}"
@@ -2112,6 +2169,51 @@ mod tests {
     /// La fenêtre telle que `proposer` la dirait maintenant.
     fn dite(source: &Path, cible: &Path) -> sa_fenetre::Vue {
         sa_fenetre::Vue::de(fenetre_de_la_cle(source, cible))
+    }
+
+    /// L'empreinte d'un faux programme, comme s'il était celui qui tourne.
+    fn soi_de(p: &Path) -> Option<String> {
+        crate::programmes_poses::empreinte_de(p).ok()
+    }
+
+    /// MOYENNE (campagne d'attaque, COPIE-1, DONNEES-2, SORTIES-1) : la clé n'est vérifiée qu'au lancement. Son
+    /// programme changé depuis (fichier réécrit, ou une autre clé branchée au même endroit, à la même version gravée)
+    /// ne se pose jamais dans bin/ : ni par la surveillance, l'entretien, le raccourci ou le veilleur
+    /// (`poser_copie_dans`), ni par la mise à jour depuis la clé (`remplacer`) ; rien n'est lancé ni scellé, la copie
+    /// d'avant reste. Sans empreinte du programme qui tourne, rien non plus.
+    #[test]
+    fn programme_de_la_cle_change_depuis_le_lancement_jamais_pose() {
+        let racine = crate::socle::dossier_local().join("essai-cle-changee");
+        let _ = std::fs::remove_dir_all(&racine);
+        let source = racine.join("cle").join(NOM);
+        let cible = racine.join("bin").join(NOM);
+        faux_programme(&source, Some("0.80.0+5"));
+        let soi = soi_de(&source);
+        // Une autre clé, ou le fichier réécrit : même version gravée, d'autres octets.
+        std::fs::write(&source, [&std::fs::read(&source).unwrap()[..], b"hostile"].concat()).unwrap();
+        assert_eq!(lire_programme(&source, TAILLE_MAX), Lu::Version((0, 80, 0, 5)));
+        let essai_interdit: Essai = |_, _| panic!("un programme qui n'est pas celui qui tourne a été lancé");
+        let e = poser_copie_dans(&source, &cible, soi.as_deref(), essai_interdit).unwrap_err();
+        assert!(e.contains("rien n'est posé") || e.contains("nothing is set up"), "{e}");
+        assert!(!cible.exists(), "posé depuis une clé changée");
+        faux_programme(&cible, Some("0.79.0+1"));
+        let avant = std::fs::read(&cible).unwrap();
+        assert!(
+            remplacer(
+                &source,
+                &cible,
+                (0, 80, 0, 5),
+                soi.as_deref(),
+                TAILLE_MAX,
+                essai_interdit,
+                &dite(&source, &cible)
+            )
+            .is_err()
+        );
+        assert!(poser_copie_dans(&source, &cible, None, essai_interdit).is_err());
+        assert_eq!(std::fs::read(&cible).unwrap(), avant, "copie d'avant changée");
+        assert!(!cible.with_file_name(format!("{NOM}.nouveau")).exists());
+        let _ = std::fs::remove_dir_all(&racine);
     }
 
     /// Les faux programmes des tests ne se lancent pas : l'essai réel a son propre test.
@@ -2131,22 +2233,22 @@ mod tests {
         let cible = racine.join("bin").join(NOM);
         faux_programme(&source, Some("0.80.0+5"));
         // Pas encore de copie : posée.
-        poser_copie_dans(&source, &cible, SANS_ESSAI).unwrap();
+        poser_copie_dans(&source, &cible, soi_de(&source).as_deref(), SANS_ESSAI).unwrap();
         assert_eq!(lire_programme(&cible, TAILLE_MAX), Lu::Version((0, 80, 0, 5)));
         // Une copie plus récente que la clé : gardée telle quelle (une vieille clé ne fait pas revenir en arrière).
         faux_programme(&cible, Some("0.81.0+1"));
-        poser_copie_dans(&source, &cible, SANS_ESSAI).unwrap();
+        poser_copie_dans(&source, &cible, soi_de(&source).as_deref(), SANS_ESSAI).unwrap();
         assert_eq!(lire_programme(&cible, TAILLE_MAX), Lu::Version((0, 81, 0, 1)));
         // Une copie plus ancienne : remplacée, sauf si la nouvelle ne démarre pas.
         faux_programme(&cible, Some("0.79.0+1"));
-        assert!(poser_copie_dans(&source, &cible, essai_rate).is_err());
+        assert!(poser_copie_dans(&source, &cible, soi_de(&source).as_deref(), essai_rate).is_err());
         assert_eq!(lire_programme(&cible, TAILLE_MAX), Lu::Version((0, 79, 0, 1)));
         assert!(!cible.with_file_name(format!("{NOM}.nouveau")).exists());
-        poser_copie_dans(&source, &cible, SANS_ESSAI).unwrap();
+        poser_copie_dans(&source, &cible, soi_de(&source).as_deref(), SANS_ESSAI).unwrap();
         assert_eq!(std::fs::read(&cible).unwrap(), std::fs::read(&source).unwrap());
         // Une source sans version gravée : rien n'est posé.
         faux_programme(&source, None);
-        assert!(poser_copie_dans(&source, &cible, SANS_ESSAI).is_err());
+        assert!(poser_copie_dans(&source, &cible, soi_de(&source).as_deref(), SANS_ESSAI).is_err());
         let _ = std::fs::remove_dir_all(&racine);
     }
 
@@ -2218,6 +2320,7 @@ mod tests {
             &source,
             &cible,
             (0, 80, 0, 0),
+            soi_de(&source).as_deref(),
             TAILLE_MAX,
             REECRITE_EN_PLACE,
             &dite(&source, &cible),
@@ -2238,6 +2341,7 @@ mod tests {
             &source,
             &cible,
             (0, 80, 0, 0),
+            soi_de(&source).as_deref(),
             TAILLE_MAX,
             ECHANGE_PAR_LE_NOM,
             &dite(&source, &cible),
@@ -2288,6 +2392,7 @@ mod tests {
             &source,
             &cible,
             (0, 80, 0, 0),
+            soi_de(&source).as_deref(),
             TAILLE_MAX,
             ECHANGE_PAR_LE_NOM,
             &dite(&source, &cible),
@@ -2326,6 +2431,7 @@ mod tests {
                 &source,
                 &cible,
                 (0, 80, 0, 0),
+                soi_de(&source).as_deref(),
                 TAILLE_MAX,
                 essai,
                 &dite(&source, &cible),
@@ -2355,6 +2461,7 @@ mod tests {
             &source,
             &autre,
             (0, 80, 0, 0),
+            soi_de(&source).as_deref(),
             TAILLE_MAX,
             SANS_ESSAI,
             &dite(&source, &autre),
@@ -2368,6 +2475,7 @@ mod tests {
             &source,
             &cible,
             (0, 80, 0, 0),
+            soi_de(&source).as_deref(),
             TAILLE_MAX,
             SANS_ESSAI,
             &dite(&source, &cible),
@@ -2447,12 +2555,13 @@ mod tests {
         let dit = precedente.remettre(&cible);
         assert_eq!(gardee(), ancienne, "{dit}");
         // La pose de la surveillance, puis « refaites la mise à jour » : refusées, la copie gardée reste.
-        let pose = poser_copie_dans(&source, &cible, SANS_ESSAI).unwrap_err();
+        let pose = poser_copie_dans(&source, &cible, soi_de(&source).as_deref(), SANS_ESSAI).unwrap_err();
         assert_eq!(gardee(), ancienne, "copie gardée effacée par la pose : {pose}");
         let maj = remplacer(
             &source,
             &cible,
             (0, 80, 0, 0),
+            soi_de(&source).as_deref(),
             TAILLE_MAX,
             SANS_ESSAI,
             &dite(&source, &cible),
@@ -2471,6 +2580,7 @@ mod tests {
             &source,
             &cible,
             (0, 80, 0, 0),
+            soi_de(&source).as_deref(),
             TAILLE_MAX,
             SANS_ESSAI,
             &dite(&source, &cible),
@@ -2485,6 +2595,7 @@ mod tests {
                 &source,
                 &cible,
                 (0, 80, 0, 0),
+                soi_de(&source).as_deref(),
                 TAILLE_MAX,
                 SANS_ESSAI,
                 &dite(&source, &cible),
@@ -2501,6 +2612,7 @@ mod tests {
             &source,
             &cible,
             (0, 80, 0, 0),
+            soi_de(&source).as_deref(),
             TAILLE_MAX,
             SANS_ESSAI,
             &dite(&source, &cible),
@@ -2923,6 +3035,7 @@ mod tests {
                 &source,
                 &cible,
                 (0, 80, 0, 0),
+                soi_de(&source).as_deref(),
                 TAILLE_MAX,
                 ECHANGE_PAR_LE_NOM,
                 &dite(&source, &cible),
@@ -2989,6 +3102,7 @@ mod tests {
             &source,
             &cible,
             (0, 80, 0, 0),
+            soi_de(&source).as_deref(),
             TAILLE_MAX,
             regarde,
             &dite(&source, &cible),
@@ -3040,6 +3154,7 @@ mod tests {
             &source,
             &cible,
             (0, 80, 0, 0),
+            soi_de(&source).as_deref(),
             TAILLE_MAX,
             SANS_ESSAI,
             &dite(&source, &cible),
@@ -3053,6 +3168,7 @@ mod tests {
             &source,
             &cible,
             (0, 80, 0, 0),
+            soi_de(&source).as_deref(),
             TAILLE_MAX,
             SANS_ESSAI,
             &dite(&source, &cible),
@@ -3078,6 +3194,7 @@ mod tests {
                 &source,
                 &cible,
                 (0, 80, 0, 0),
+                soi_de(&source).as_deref(),
                 TAILLE_MAX,
                 SANS_ESSAI,
                 &dite(&source, &cible),
@@ -3096,6 +3213,7 @@ mod tests {
                 &source,
                 &cible,
                 (0, 80, 0, 0),
+                soi_de(&source).as_deref(),
                 TAILLE_MAX,
                 ECHANGE_PAR_LE_NOM,
                 &dite(&source, &cible),
@@ -3142,7 +3260,7 @@ mod tests {
         let cible = racine.join("bin").join(NOM);
         faux_programme(&source, Some("0.80.0"));
         for anglais in [false, true] {
-            let pose = || poser_copie_dans(&source, &cible, essayer);
+            let pose = || poser_copie_dans(&source, &cible, soi_de(&source).as_deref(), essayer);
             let e = if anglais {
                 crate::langue::en_anglais(pose)
             } else {
