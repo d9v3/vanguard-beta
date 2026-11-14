@@ -63,11 +63,13 @@ The program: "vanguard.exe", in this folder. Windows 10 and 11 (64-bit), nothing
      changes Defender itself.
    - In French:  $env:VANGUARD_LANG = "fr"  (PowerShell)  or  set VANGUARD_LANG=fr  (cmd), then the
      command.
-   - The key can be removed while Vanguard is running: it copied itself to this computer, and what
-     should have gone to the key goes into Vanguard's folder on this computer (the path is shown).
-     Except when started as administrator: it then runs from the key (it says so); do not remove it
-     before quitting. A copy left by a force-closed window or a pulled key is erased the next time
-     Vanguard starts on this computer (%LOCALAPPDATA%\vanguard\copies).
+   - The key can be removed while Vanguard is running: it copied itself to this computer and goes on
+     from that copy. Except when started as administrator, or if the copy could not be made: it then
+     runs from the key (it says so at startup); do not remove it before quitting. With the key
+     removed, the report, the diagnostics and the log go into Vanguard's folder on this computer
+     (their path is shown). A copy left by a force-closed window or a pulled key is erased the next
+     time Vanguard starts without administrator rights, under the same account
+     (%LOCALAPPDATA%\vanguard\copies).
    - Quit: q in the menu, or Ctrl+C.
 
 6. COMPUTER ISOLATED FROM THE NETWORK BY VANGUARD
