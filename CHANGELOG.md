@@ -95,8 +95,10 @@ recompilée au besoin.
   levée si son disque est un montage FUSE, une image qui appartient au compte, ou introuvable dans /sys (non vérifié),
   et quand on refuse de la déclarer normale, le message dit ce qui la change et comment le retirer.
 - **Les variables et les réglages qui changent ce qu'un programme lance.** Le bilan lit les fichiers de variables du
-  gestionnaire de session (environment.d, user.conf et user.conf.d, ~/.pam_environment, uwsm) : HOME, LD_*, RSYNC_* ou
-  XDG_RUNTIME_DIR posés là lèvent la sauvegarde, et un dossier d'unités déplacé est relu. environment.d et user.conf se
+  gestionnaire de session (environment.d, user.conf et user.conf.d, uwsm) : HOME, LD_*, RSYNC_* ou XDG_RUNTIME_DIR
+  posés là lèvent la sauvegarde, et un dossier d'unités déplacé est relu. ~/.pam_environment est lu par la sauvegarde
+  seulement (les mêmes variables la lèvent), pas jugé au bilan : pam_env ne le lit qu'avec « user_readenv=1 », qui
+  n'est pas son réglage par défaut. environment.d et user.conf se
   lisent comme systemd les lit : un retour chariot seul ou un octet NUL coupe une ligne, une suite de ligne en « \ » se
   joint aussi en CRLF, et seuls l'espace, la tabulation et les fins de ligne précèdent un commentaire (« # » ou « ; »).
   Dans un profil de shell et dans les fichiers d'uwsm, seul « # » ouvre un commentaire : une ligne qui commence par
@@ -203,32 +205,51 @@ recompilée au besoin.
   TMPDIR posés vers un dossier caché ne sont pas signalés, ni un dossier caché plus loin que le premier niveau du
   dossier personnel (« ~/outils/.x », règle commune) ; un cycle d'inclusions entre fichiers d'uwsm n'est pas dit au
   bilan (la sauvegarde se lève) ; dans un profil, une ligne qui n'est pas simple ne se calcule pas (« /$HOME/.x » n'y
-  est pas lu comme le dossier personnel) : elle est dite non vérifiée. Une variable posée en cours de session, par une
-  ligne « env = » de Hyprland, ou un dossier déplacé par un profil de shell n'est pas vérifié.
+  est pas lu comme le dossier personnel) : elle est dite non vérifiée. Une variable posée en cours de session ou par une
+  ligne « env = » de Hyprland n'est pas vérifiée ; un dossier déplacé par un profil de shell (HOME, ZDOTDIR,
+  XDG_CONFIG_HOME) est dit, mais ce qui se lit sous lui n'est pas jugé.
 - **Ce que Vanguard ne sait pas lire sûrement est dit non vérifié.** Dans un profil du shell (bash, zsh, fish), un
-  fichier d'uwsm, environment.d et user.conf, une ligne qui touche une variable surveillée (PATH, LD_*, BASH_ENV,
-  BASHOPTS, SSH_ASKPASS, EDITOR, PAGER, PERL5OPT… ; FPATH et MODULE_PATH s'y ajoutent) ne se tait que dans une forme
-  simple que Vanguard calcule entièrement : « NOM=valeur » ou « export NOM=valeur », la valeur littérale, entre
-  guillemets ou apostrophes ou non, qui ne lit que « $HOME » en tête d'un morceau et la variable elle-même (« $PATH »),
-  sans « $( », « ` », « ${…:-…} », « ~ », « & », « | » ni barre oblique inverse ; dans fish, « set -x NOM mot… » de
-  même ; dans environment.d, « NOM=valeur » ; dans user.conf, chaque mot de DefaultEnvironment=. Une forme simple dont
-  la valeur est suspecte est élevée. Toute autre ligne qui touche une de ces variables, ou qui pose une variable dont le
-  nom se calcule (« export "$N=…" », « export P"ATH"=… », « eval "PATH=…" », « printf -v PATH », « read PATH »,
-  « declare -x », « … | source » dans fish), est dite au bilan, non vérifiée, en nommant le fichier et la ligne, jamais
-  comptée saine ; si elle se lit encore sans doute comme suspecte (« true && export PATH=.x:$PATH »), elle reste élevée.
-  Dans un fichier d'environnement de la session (environment.d, user.conf, uwsm), une telle ligne lève aussi la
-  sauvegarde : ce qu'elle pose n'est pas lu. Les outils d'activation courants (« eval "$(mise activate bash)" »,
-  « zoxide init fish | source ») se taisent. Avant, ces formes se lisaient de plusieurs façons devinées, et certaines se
-  taisaient (« export PATH=${NOPE:-a&b}:/home/alice/.x », « export "PATH=/home/alice/.x:$PATH" »,
-  « PERL5OPT="-I/home/alice/.x -MX" », « SSH_ASKPASS=/home/alice/.demande », « shopt -s dotglob; export BASHOPTS »).
-  Deux faux élevés disparaissent : « PATH=/usr/bin:/a/.. » (chaque morceau se simplifie seul) et « PATH=/usr/bin #
-  /home/alice/.x » d'environment.d (une seule valeur littérale, sous /usr). Limites : ce qu'écrit un outil d'activation
-  permis n'est pas lu ; une ligne hors forme d'un fichier que seul root peut changer n'est pas dite (celles d'Omarchy,
-  comme « ${EDITOR:-…} », se taisent donc) ; dans un fichier du compte, des formes courantes sont dites non vérifiées
-  sans être fautives (« export VISUAL="$EDITOR" », « ${EDITOR:-…} », « PATH=~/bin:$PATH », « path=(…) » de zsh,
-  l'« eval » de lesspipe de Debian, une ligne dans un « case ») ; dans environment.d et user.conf, une ligne hors forme
-  est seulement dite non vérifiée, jamais élevée, et un « %h » ou une barre oblique inverse finale y est dit non
-  vérifié ; une ligne hors forme d'un fichier de session peut lever la sauvegarde pour une forme sans danger.
+  fichier d'uwsm, environment.d et user.conf, une ligne ne se tait que si Vanguard la reconnaît tout entière : chaque
+  commande de la ligne est connue, son mot de commande écrit en toutes lettres (« \export » et « "export" » se lisent
+  comme export), et une ligne qui touche une variable surveillée (PATH, LD_*, BASH_ENV, BASHOPTS, SSH_ASKPASS, EDITOR,
+  PAGER, PERL5OPT… ; FPATH, MODULE_PATH, PROMPT_COMMAND et ZDOTDIR s'y ajoutent, et dans un profil HOME et
+  XDG_CONFIG_HOME, qui décident des fichiers lus ensuite) est dans une forme simple que Vanguard calcule entièrement : «
+  NOM=valeur » ou « export NOM=valeur », la valeur littérale, entre guillemets ou apostrophes ou non, qui ne lit que «
+  $HOME » en tête d'un morceau et la variable elle-même (« $PATH »), sans « $( », « ` », « ${…:-…} », « & », « | » ni
+  barre oblique inverse ; dans fish, chaque instruction de la ligne, « set -x NOM mot… » ou « fish_add_path dossier… »,
+  « ~ » et « $HOME » en tête d'un mot compris (« set -q », « set -e », « set -n » et « set -S » ne posent rien : la
+  suite de la ligne se juge) ; dans environment.d, « NOM=valeur » ; dans user.conf, chaque mot de DefaultEnvironment=.
+  Une forme simple dont la valeur est suspecte est élevée. Toute autre ligne qui touche une de ces variables est dite au
+  bilan, non vérifiée, en nommant le fichier et la ligne, jamais comptée saine, de même qu'une ligne qui pose une
+  variable dont le nom se calcule (« export "$N=…" », « export P"ATH"=… », « eval "PATH=…" », « printf -v "$N" », « read
+  "$N" », « declare -x "$N=…" », « let », « (( … )) » ou un indice de tableau qui pose « $a$b », « … | source » dans
+  fish), dont le mot de commande se calcule ou se cache (« ex${z}port », « $X », un alias vers export, eval, source…),
+  ou qui lit un flux (« . <(…) », « source /dev/stdin ») ; si elle se lit encore sans doute comme suspecte (« true &&
+  export PATH=.x:$PATH », « fish_add_path ~/.x » dans un « if »), elle reste élevée, dans environment.d et user.conf
+  aussi (« PATH=/home/alice/.x:"$PATH" », un nom décodé comme « DefaultEnvironment=P\x41TH=… », lu PATH). Un HOME, un
+  ZDOTDIR ou un XDG_CONFIG_HOME posé ailleurs qu'à sa place d'ordinaire est dit non vérifié, et élevé vers un dossier
+  caché ou temporaire. Dans un fichier d'environnement de la session (environment.d, user.conf, uwsm), une telle ligne
+  lève aussi la sauvegarde : ce qu'elle pose n'est pas lu. Les outils d'activation courants (« eval "$(mise activate
+  bash)" », « zoxide init fish | source ») et les conditions ordinaires (« [[ -z $DISPLAY && $XDG_VTNR -eq 1 ]] », « for
+  ((i=0; i<$n; i++)) », « command -q zoxide ») se taisent. Avant, ces formes se lisaient de plusieurs façons devinées,
+  et certaines se taisaient (« export PATH=${NOPE:-a&b}:/home/alice/.x », « export "PATH=/home/alice/.x:$PATH" », «
+  PERL5OPT="-I/home/alice/.x -MX" », « SSH_ASKPASS=/home/alice/.demande », « shopt -s dotglob; export BASHOPTS », « set
+  -q X; set -gx PATH /home/alice/.x » et « fish_add_path » dans un bloc de fish). Deux faux élevés disparaissent : «
+  PATH=/usr/bin:/a/.. » (chaque morceau se simplifie seul) et « PATH=/usr/bin # /home/alice/.x » d'environment.d (une
+  seule valeur littérale, sous /usr). Limites : ce qu'écrit un outil d'activation permis n'est pas lu ; un fichier
+  inclus par un chemin qui lit une variable (« source "$OMARCHY_PATH/default/bash/rc" », « .
+  "${OMARCHY_PATH%/}/default/uwsm/default" », « . "$NVM_DIR/nvm.sh" ») n'est pas suivi, et la ligne se tait ; dans
+  environment.d et user.conf, HOME et XDG_CONFIG_HOME ne sont pas jugés comme un dossier déplacé : Vanguard y lit
+  seulement les unités de systemd sous le dossier posé ; « : ${PATH::=/home/alice/.x} » de zsh et « PATH =… »
+  d'environment.d (une espace avant « = ») sont dits non vérifiés, pas élevés ; une valeur lue dans un calcul, ou
+  construite en morceaux sur plusieurs lignes, n'est pas suivie ; une ligne hors forme d'un fichier que seul root peut
+  changer n'est pas dite (celles d'Omarchy, comme « ${EDITOR:-…} », se taisent donc) ; dans un fichier du compte, des
+  formes courantes sont dites non vérifiées sans être fautives (« export VISUAL="$EDITOR" », « ${EDITOR:-…} », «
+  PATH=~/bin:$PATH », « path=(…) » de zsh, « ZDOTDIR=$HOME/.config/zsh », « PROMPT_COMMAND="history -a; …" », « eval
+  "$(dircolors -b ~/.dircolors)" » et l'« eval » de lesspipe de Debian, un alias qui lance « $EDITOR », le corps d'un «
+  << », une ligne dans un « case », « shopt -s dotglob ») ; dans environment.d et user.conf, un « %h » ou une barre
+  oblique inverse finale est dit non vérifié ; une ligne hors forme d'un fichier de session peut lever la sauvegarde
+  pour une forme sans danger.
 - **Les programmes du système, pris par leur chemin.** Le bilan, les traces, la surveillance, la sauvegarde et les
   autres lectures de la machine lancent pacman, systemctl, journalctl, ss, crontab, ping et les autres depuis les
   dossiers du système, jamais par le PATH du compte : un faux programme posé dans ~/.local/bin ne peut plus cacher une

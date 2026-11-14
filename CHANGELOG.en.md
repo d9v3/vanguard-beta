@@ -90,9 +90,11 @@ repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
   owned by the account, or missing from /sys (not verified), and when declaring it normal is refused, the message says
   what changes it and how to remove that.
 - **Variables and settings that change what a program starts.** The check reads the session manager's variable files
-  (environment.d, user.conf and user.conf.d, ~/.pam_environment, uwsm): HOME, LD_*, RSYNC_* or XDG_RUNTIME_DIR set there
-  raise the backup, and a moved unit folder is read again. environment.d and user.conf are read as systemd reads them: a
-  lone carriage return or a NUL byte splits a line, a "\" line continuation also joins with CRLF, and only space, tab
+  (environment.d, user.conf and user.conf.d, uwsm): HOME, LD_*, RSYNC_* or XDG_RUNTIME_DIR set there raise the backup,
+  and a moved unit folder is read again. ~/.pam_environment is read by the backup only (the same variables raise it),
+  not judged by the check: pam_env reads it only with "user_readenv=1", which is not its default setting.
+  environment.d and user.conf are read as systemd reads them: a lone carriage return or a NUL byte splits a line, a
+  "\" line continuation also joins with CRLF, and only space, tab
   and line ends may come before a comment ("#" or ";"). In a shell profile and in uwsm files, only "#" starts a comment:
   a line that begins with "//", "--" or ";" is no longer one. These files are also read where their readers look outside
   ~/.config (the session's XDG_CONFIG_HOME or one set for the manager, and for uwsm every XDG_CONFIG_HOME,
@@ -191,29 +193,47 @@ repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
   nor is a hidden folder deeper than the first level of the home folder ("~/tools/.x", common rule); an inclusion cycle
   between uwsm files is not reported by the check (the backup is raised); in a profile, a line that is not simple is not
   computed ("/$HOME/.x" is not read there as the home folder): it is reported as not checked. A variable set during the
-  session, by a Hyprland "env =" line, or a folder moved by a shell profile is not checked.
+  session or by a Hyprland "env =" line is not checked; a folder moved by a shell profile (HOME, ZDOTDIR,
+  XDG_CONFIG_HOME) is reported, but what is read under it is not judged.
 - **What Vanguard cannot read safely is reported as not checked.** In a shell profile (bash, zsh, fish), an uwsm file,
-  environment.d and user.conf, a line that touches a watched variable (PATH, LD_*, BASH_ENV, BASHOPTS, SSH_ASKPASS,
-  EDITOR, PAGER, PERL5OPT…; FPATH and MODULE_PATH are added) stays silent only in a simple form that Vanguard computes
-  entirely: "NAME=value" or "export NAME=value", the value literal, in double or single quotes or not, reading only
-  "$HOME" at the start of a piece and the variable itself ("$PATH"), without "$(", "`", "${…:-…}", "~", "&", "|" or
-  backslash; in fish, "set -x NAME word…" likewise; in environment.d, "NAME=value"; in user.conf, each word of
-  DefaultEnvironment=. A simple form whose value is suspicious is reported high. Any other line that touches one of
-  these variables, or that sets a variable whose name is computed (`export "$N=…"`, `export P"ATH"=…`, `eval "PATH=…"`,
-  "printf -v PATH", "read PATH", "declare -x", "… | source" in fish), is reported by the check as not checked, naming
-  the file and the line, never counted as healthy; if it can still be read without doubt as suspicious ("true && export
-  PATH=.x:$PATH"), it stays high. In a session environment file (environment.d, user.conf, uwsm), such a line also
-  raises the backup: what it sets is not read. Common activation tools (`eval "$(mise activate bash)"`, "zoxide init
-  fish | source") stay silent. Before, these forms were read in several guessed ways, and some stayed silent ("export
-  PATH=${NOPE:-a&b}:/home/alice/.x", `export "PATH=/home/alice/.x:$PATH"`, `PERL5OPT="-I/home/alice/.x -MX"`,
-  "SSH_ASKPASS=/home/alice/.askpass", "shopt -s dotglob; export BASHOPTS"). Two false high reports go away:
-  "PATH=/usr/bin:/a/.." (each piece is simplified on its own) and environment.d's "PATH=/usr/bin # /home/alice/.x" (a
-  single literal value, under /usr). Limits: what an allowed activation tool writes is not read; a non-simple line in a
-  file only root can change is not reported (Omarchy's, such as "${EDITOR:-…}", therefore stay silent); in an account
-  file, common forms are reported as not checked without being wrong (`export VISUAL="$EDITOR"`, "${EDITOR:-…}",
-  "PATH=~/bin:$PATH", zsh's "path=(…)", Debian's lesspipe "eval", a line inside a "case"); in environment.d and
-  user.conf, a non-simple line is only reported as not checked, never high, and a "%h" or a final backslash there is
-  reported as not checked; a non-simple line in a session file may raise the backup for a harmless form.
+  environment.d and user.conf, a line stays silent only if Vanguard recognizes all of it: each command on the line is
+  known, its command word written out in full ("\export" and `"export"` are read as export), and a line that touches a
+  watched variable (PATH, LD_*, BASH_ENV, BASHOPTS, SSH_ASKPASS, EDITOR, PAGER, PERL5OPT…; FPATH, MODULE_PATH,
+  PROMPT_COMMAND and ZDOTDIR are added, and in a profile HOME and XDG_CONFIG_HOME, which decide the files read next) is
+  in a simple form that Vanguard computes entirely: "NAME=value" or "export NAME=value", the value literal, in double or
+  single quotes or not, reading only "$HOME" at the start of a piece and the variable itself ("$PATH"), without "$(",
+  "`", "${…:-…}", "&", "|" or backslash; in fish, each instruction on the line, "set -x NAME word…" or "fish_add_path
+  folder…", with "~" and "$HOME" at the start of a word ("set -q", "set -e", "set -n" and "set -S" set nothing: the rest
+  of the line is judged); in environment.d, "NAME=value"; in user.conf, each word of DefaultEnvironment=. A simple form
+  whose value is suspicious is reported high. Any other line that touches one of these variables is reported by the
+  check as not checked, naming the file and the line, never counted as healthy, as is a line that sets a variable whose
+  name is computed (`export "$N=…"`, `export P"ATH"=…`, `eval "PATH=…"`, `printf -v "$N"`, `read "$N"`, `declare -x
+  "$N=…"`, "let", "(( … ))" or an array index that sets "$a$b", "… | source" in fish), whose command word is computed or
+  hidden ("ex${z}port", "$X", an alias to export, eval, source…), or that reads a stream (". <(…)", "source
+  /dev/stdin"); if it can still be read without doubt as suspicious ("true && export PATH=.x:$PATH", "fish_add_path
+  ~/.x" inside an "if"), it stays high, in environment.d and user.conf too (`PATH=/home/alice/.x:"$PATH"`, a decoded
+  name such as "DefaultEnvironment=P\x41TH=…", read as PATH). A HOME, ZDOTDIR or XDG_CONFIG_HOME set elsewhere than its
+  usual place is reported as not checked, and high toward a hidden or temporary folder. In a session environment file
+  (environment.d, user.conf, uwsm), such a line also raises the backup: what it sets is not read. Common activation
+  tools (`eval "$(mise activate bash)"`, "zoxide init fish | source") and ordinary conditions ("[[ -z $DISPLAY &&
+  $XDG_VTNR -eq 1 ]]", "for ((i=0; i<$n; i++))", "command -q zoxide") stay silent. Before, these forms were read in
+  several guessed ways, and some stayed silent ("export PATH=${NOPE:-a&b}:/home/alice/.x", `export
+  "PATH=/home/alice/.x:$PATH"`, `PERL5OPT="-I/home/alice/.x -MX"`, "SSH_ASKPASS=/home/alice/.askpass", "shopt -s
+  dotglob; export BASHOPTS", "set -q X; set -gx PATH /home/alice/.x" and "fish_add_path" inside a fish block). Two false
+  high reports go away: "PATH=/usr/bin:/a/.." (each piece is simplified on its own) and environment.d's "PATH=/usr/bin #
+  /home/alice/.x" (a single literal value, under /usr). Limits: what an allowed activation tool writes is not read; a
+  file included through a path that reads a variable (`source "$OMARCHY_PATH/default/bash/rc"`, `.
+  "${OMARCHY_PATH%/}/default/uwsm/default"`, `. "$NVM_DIR/nvm.sh"`) is not followed, and the line stays silent; in
+  environment.d and user.conf, HOME and XDG_CONFIG_HOME are not judged as a moved folder: Vanguard only reads the
+  systemd units under the folder set; zsh's ": ${PATH::=/home/alice/.x}" and environment.d's "PATH =…" (a space before
+  "=") are reported as not checked, not high; a value read inside a calculation, or built in pieces over several lines,
+  is not followed; a non-simple line in a file only root can change is not reported (Omarchy's, such as "${EDITOR:-…}",
+  therefore stay silent); in an account file, common forms are reported as not checked without being wrong (`export
+  VISUAL="$EDITOR"`, "${EDITOR:-…}", "PATH=~/bin:$PATH", zsh's "path=(…)", "ZDOTDIR=$HOME/.config/zsh",
+  `PROMPT_COMMAND="history -a; …"`, `eval "$(dircolors -b ~/.dircolors)"` and Debian's lesspipe "eval", an alias that
+  runs "$EDITOR", the body of a "<<", a line inside a "case", "shopt -s dotglob"); in environment.d and user.conf, a
+  "%h" or a final backslash is reported as not checked; a non-simple line in a session file may raise the backup for a
+  harmless form.
 - **System programs, taken by their path.** The check, traces, monitoring, the backup and the other machine readings
   start pacman, systemctl, journalctl, ss, crontab, ping and the rest from the system folders, never through the
   account's PATH: a fake program placed in ~/.local/bin can no longer hide a connection or a journal line. The
