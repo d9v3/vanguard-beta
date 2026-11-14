@@ -84,6 +84,12 @@ pub(crate) fn plus_ancienne_que_ce_programme(v: &str) -> bool {
     matches!((lire_version(v), courante()), (Some(a), Some(c)) if (a.0, a.1, a.2) < (c.0, c.1, c.2))
 }
 
+/// La version `v` a-t-elle un numéro plus bas que `autre` (date de compilation ignorée, comme ci-dessus) ? `false` si
+/// l'une des deux ne se lit pas.
+pub(crate) fn plus_ancienne_que(v: &str, autre: &str) -> bool {
+    matches!((lire_version(v), lire_version(autre)), (Some(a), Some(b)) if (a.0, a.1, a.2) < (b.0, b.1, b.2))
+}
+
 /// La version gravée dans `octets`, écrite en entier pour être notée (« 0.94.0+1760900000 », date comprise : deux
 /// compilations d'un même numéro se départagent), et relue par `lire_version`. `None` : pas de version gravée.
 pub(crate) fn version_notee(octets: &[u8]) -> Option<String> {
@@ -526,7 +532,7 @@ fn remplacer(
     if !de_soi(&octets, soi) {
         return Err(pas_de_soi(soi));
     }
-    if let Some(refus) = retour_en_arriere(registre, cible, attendue, &present(cible)) {
+    if let Some(refus) = retour_en_arriere(registre, cible, attendue, &present(cible), derniere_publiee) {
         return Err(refus);
     }
     let fenetre = sa_fenetre::de_la_source(source, &octets).zip(sa_fenetre::pour(cible));
@@ -1412,7 +1418,14 @@ fn signee_pour_ce_systeme(octets: &[u8]) -> Result<bool, crate::modele::Echec> {
     };
     let sha: [u8; 32] = Sha256::digest(octets).into();
     let vue = version_signee(&sha).map_err(|e| crate::modele::Echec::echoue("mise_a_jour/historique", e))?;
-    Ok(vue.is_some_and(|(n, s)| s == ici && n == ecrire(v)))
+    Ok(signee_ici(vue, ici, v))
+}
+
+/// Ce que l'historique signé dit (`vue` : la version et le système publiés pour ces octets) vaut-il « publiée et signée
+/// pour ce système (`ici`), à la version gravée `v` » ? Le même numéro pour un autre système, ou un autre numéro (des
+/// octets d'une version renommée), ne compte pas.
+fn signee_ici(vue: Option<(String, String)>, ici: &str, v: Version) -> bool {
+    vue.is_some_and(|(n, s)| s == ici && n == ecrire(v))
 }
 
 /// Le fichier à la place de la copie, lu une fois.
@@ -1433,10 +1446,24 @@ fn present(cible: &Path) -> Present {
 /// fichier là n'est plus elle : effacé, illisible, sans version gravée ou d'une version plus basse. Ce programme plus
 /// ancien ne s'y pose pas, sans quoi effacer ou abîmer la copie suffisait à faire revenir en arrière sans un mot ;
 /// le refus, non vérifié. `None` : rien de tel (aucune copie notée, notée sans version, pas plus récente, toujours
-/// là, ou un autre fichier au moins aussi récent, jugé ensuite comme une copie plus récente inconnue). Un registre qui
-/// ne peut pas être cru ne dit rien ici : limite écrite (R3-C6, sceaux sans secret).
-fn retour_en_arriere(registre: &Path, cible: &Path, ici: Version, la: &Present) -> Option<String> {
-    let notee = crate::programmes_poses::copie_notee_dans(registre, cible).ok()??;
+/// là, ou un autre fichier au moins aussi récent, jugé ensuite comme une copie plus récente inconnue).
+///
+/// Un registre qui ne peut pas être cru (R4-REGISTRE-1 : effacé, abîmé ou réécrit alors qu'un sceau l'attendait, ou
+/// réécrit depuis par-dessus ce doute) ne dit pas « rien de noté » : une copie plus récente y était peut-être notée.
+/// Refusé, non vérifié, sauf si ce programme est au moins la dernière version publiée et signée (`derniere`) : rien
+/// de plus récent n'a pu être perdu, c'est la sortie de l'utilisateur légitime, dite dans le refus. Tout effacer d'un
+/// coup, sceaux compris, ne laisse pas de témoin : limite écrite (MODELE-DE-MENACE, T3).
+fn retour_en_arriere(
+    registre: &Path,
+    cible: &Path,
+    ici: Version,
+    la: &Present,
+    derniere: impl FnOnce() -> Result<Version, crate::modele::Echec>,
+) -> Option<String> {
+    let notee = match crate::programmes_poses::copie_notee_dans(registre, cible) {
+        Ok(n) => n?,
+        Err(d) => return registre_douteux(d, ici, derniere()),
+    };
     let n = notee.version.as_deref().and_then(lire_version)?;
     if n <= ici {
         return None;
@@ -1468,6 +1495,52 @@ fn retour_en_arriere(registre: &Path, cible: &Path, ici: Version, la: &Present) 
         etat,
         ecrire(n)
     ))
+}
+
+/// Le refus devant un registre en doute (`retour_en_arriere`), sauf si ce programme (`ici`) est au moins la dernière
+/// version publiée et signée (`derniere`) : `None`, la pose continue et refait la liste des copies.
+fn registre_douteux(
+    d: crate::voulues::Doute,
+    ici: Version,
+    derniere: Result<Version, crate::modele::Echec>,
+) -> Option<String> {
+    let raison = match derniere {
+        Ok(p) if ici >= p => return None,
+        Ok(p) => trf!(
+            "la dernière version signée est {}",
+            "the latest signed version is {}",
+            ecrire(p)
+        ),
+        Err(e) => trf!(
+            "dernière version signée inconnue : {}",
+            "latest signed version unknown: {}",
+            e.to_string()
+        ),
+    };
+    Some(trf!(
+        "non vérifié : la liste des copies posées par Vanguard {} ; rien ne dit qu'une copie plus récente que ce programme ({}) n'y était pas notée, et ce programme ne se pose pas à sa place (ce serait peut-être un retour en arrière) : rien n'est posé ({}). Remettez la clé à la dernière version publiée, puis relancez la commande depuis la clé avec Internet : Vanguard vérifie qu'elle est la dernière version signée, et refait la liste",
+        "not checked: the list of copies set up by Vanguard {}; nothing shows that a copy newer than this program ({}) was not noted in it, and this program does not set itself up in its place (it might be a rollback): nothing is set up ({}). Update the key to the latest published version, then run the command again from the key with Internet: Vanguard checks that it is the latest signed version, and rebuilds the list",
+        d.texte(),
+        ecrire(ici),
+        raison
+    ))
+}
+
+/// La dernière version publiée et signée, demandée seulement devant un registre en doute (`registre_douteux`). Aux
+/// essais : celle que l'essai a donnée (`tests::DERNIERE`), sinon « hors ligne », jamais GitHub.
+fn derniere_publiee() -> Result<Version, crate::modele::Echec> {
+    #[cfg(test)]
+    {
+        tests::DERNIERE
+            .with(std::cell::Cell::get)
+            .ok_or_else(|| crate::modele::Echec::echoue("mise_a_jour/historique", "hors ligne (essai)"))
+    }
+    #[cfg(not(test))]
+    {
+        github::derniere()
+            .map(|p| p.version)
+            .map_err(|e| crate::modele::Echec::echoue("mise_a_jour/historique", e))
+    }
 }
 
 /// `poser_copie` vers `cible` ; seuls les octets du programme qui tourne (`soi`) se posent (`de_soi`). Une copie déjà
@@ -1508,7 +1581,7 @@ fn poser_copie_dans(
     };
     // D'abord : une copie plus récente notée n'est plus là telle quelle. Même les octets du programme qui tourne ne
     // sont pas gardés à sa place : ce serait bénir un retour en arrière déjà fait sur le disque.
-    if let Some(refus) = retour_en_arriere(registre, cible, version, &la) {
+    if let Some(refus) = retour_en_arriere(registre, cible, version, &la, derniere_publiee) {
         return Err(refus);
     }
     if let Present::Lu(la) = &la {
@@ -1642,8 +1715,10 @@ fn mettre_en_place_sous(provisoire: &Path, cible: &Path, ancien: &Path) -> std::
     })
 }
 
-/// « vanguard se-mettre-a-jour » et l'entrée du menu : l'état, puis la mise à jour sur accord.
-pub fn commande() {
+/// « vanguard se-mettre-a-jour » et l'entrée du menu : l'état, puis la mise à jour sur accord. `false` (R4-REGISTRE-5) :
+/// un refus ou un doute a été dit (copie illisible ou non reconnue, pose refusée, programme dit non vérifié, mise à
+/// jour manquée) ; un « n » de la personne et GitHub injoignable ne sont pas des refus.
+pub fn commande() -> bool {
     titre(tr!("Mettre Vanguard à jour", "Update Vanguard"));
     trp!(
         "  {GRIS}La copie de Vanguard posée sur cet ordinateur (surveillance, entretien,\n  raccourci) ne suit pas la clé : elle se met à jour d'ici, sur accord.{RESET}\n",
@@ -1653,6 +1728,7 @@ pub fn commande() {
     // Le reste d'une mise à jour faite pendant que la copie (ou sa fenêtre) tournait (Windows).
     let _ = std::fs::remove_file(cible.with_file_name(format!("{NOM}.ancien")));
     sa_fenetre::effacer_l_ancienne(&cible);
+    let mut sans_refus = true;
     match etat() {
         Etat::Rien => trp!(
             "  Pas de copie de Vanguard posée sur cet ordinateur (la surveillance,\n  l'entretien et le raccourci en posent une).",
@@ -1662,12 +1738,15 @@ pub fn commande() {
             "  {GRIS}Vanguard ne tourne pas depuis la clé VANGUARD : la mise à jour vient de GitHub.{RESET}",
             "  {GRIS}Vanguard is not running from the VANGUARD key: the update comes from GitHub.{RESET}"
         ),
-        Etat::Illisible(e) => trp!(
-            "  ✖ La copie de cet ordinateur ne se lit pas : sa version reste inconnue.\n    {GRIS}{} : {}{RESET}",
-            "  ✖ The copy on this computer cannot be read: its version is unknown.\n    {GRIS}{}: {}{RESET}",
-            affichable(&cible.display().to_string()),
-            affichable(&e)
-        ),
+        Etat::Illisible(e) => {
+            sans_refus = false;
+            trp!(
+                "  ✖ La copie de cet ordinateur ne se lit pas : sa version reste inconnue.\n    {GRIS}{} : {}{RESET}",
+                "  ✖ The copy on this computer cannot be read: its version is unknown.\n    {GRIS}{}: {}{RESET}",
+                affichable(&cible.display().to_string()),
+                affichable(&e)
+            );
+        }
         Etat::AJour(v) => trp!(
             "  {VERT}✔{RESET} La copie de cet ordinateur est à jour ({}).",
             "  {VERT}✔{RESET} The copy on this computer is up to date ({}).",
@@ -1682,16 +1761,19 @@ pub fn commande() {
                     "  La copie d'ici ({copie}) est plus récente que la clé ({cle}).\n  Remettez la clé à jour chez vous : Vanguard ne revient jamais en arrière.",
                     "  The copy on this computer ({copie}) is newer than the key ({cle}).\n  Update the key at home: Vanguard never goes back to an older version."
                 ),
-                Err(pourquoi) => trp!(
-                    "  Non vérifié : la copie d'ici se dit plus récente ({copie}) que la clé ({cle}),\n  mais Vanguard ne la reconnaît ni comme celle qu'il a posée ni comme une version publiée\n  ({}). Elle n'est pas remplacée : Vanguard ne revient jamais en arrière.\n  Retirez-la si vous ne l'avez pas posée vous-même ; sinon, remettez la clé à jour.",
-                    "  Not checked: the copy on this computer claims to be newer ({copie}) than the key ({cle}),\n  but Vanguard recognizes it neither as the one it set up nor as a published version\n  ({}). It is not replaced: Vanguard never goes back to an older version.\n  Remove it if you did not put it there yourself; otherwise, update the key.",
-                    affichable(&pourquoi.to_string())
-                ),
+                Err(pourquoi) => {
+                    sans_refus = false;
+                    trp!(
+                        "  Non vérifié : la copie d'ici se dit plus récente ({copie}) que la clé ({cle}),\n  mais Vanguard ne la reconnaît ni comme celle qu'il a posée ni comme une version publiée\n  ({}). Elle n'est pas remplacée : Vanguard ne revient jamais en arrière.\n  Retirez-la si vous ne l'avez pas posée vous-même ; sinon, remettez la clé à jour.",
+                        "  Not checked: the copy on this computer claims to be newer ({copie}) than the key ({cle}),\n  but Vanguard recognizes it neither as the one it set up nor as a published version\n  ({}). It is not replaced: Vanguard never goes back to an older version.\n  Remove it if you did not put it there yourself; otherwise, update the key.",
+                        affichable(&pourquoi.to_string())
+                    );
+                }
             }
         }
-        Etat::AMettreAJour { source, copie, cle } => proposer(&source, &cible, copie, cle),
+        Etat::AMettreAJour { source, copie, cle } => sans_refus = proposer(&source, &cible, copie, cle),
     }
-    depuis_github();
+    depuis_github() && sans_refus
 }
 
 /// La copie de cet ordinateur, à `cible`, est-elle reconnue comme venant de Vanguard : notée dans la liste des copies
@@ -1705,22 +1787,32 @@ fn reconnue_ici(cible: &Path) -> Result<(), crate::modele::Echec> {
     ) {
         return Ok(());
     }
+    // R4-ORIGINE-DOC-6 (b) : une liste en doute n'est pas dite « absente de la liste » : elle n'a pas pu être crue.
+    let liste = match crate::programmes_poses::copie_notee_dans(&crate::socle::dossier_local(), cible) {
+        Err(d) => trf!(
+            "la liste des copies posées par Vanguard {}",
+            "the list of copies set up by Vanguard {}",
+            d.texte()
+        ),
+        Ok(_) => tr!(
+            "absente de la liste des copies posées",
+            "not in the list of copies set up"
+        )
+        .to_string(),
+    };
     match signee_pour_ce_systeme(&la) {
         Ok(true) => Ok(()),
         Ok(false) => Err(crate::modele::Echec::refuse(
             "mise_a_jour/historique",
-            tr!(
-                "absente de la liste des copies posées et de l'historique signé",
-                "not in the list of copies set up nor in the signed history"
+            trf!(
+                "{} ; absente de l'historique signé",
+                "{}; not in the signed history",
+                liste
             ),
         )),
         Err(e) => Err(crate::modele::Echec::echoue(
             "mise_a_jour/historique",
-            trf!(
-                "absente de la liste des copies posées ; {}",
-                "not in the list of copies set up; {}",
-                historique_muet(&e.to_string())
-            ),
+            trf!("{} ; {}", "{}; {}", liste, historique_muet(&e.to_string())),
         )),
     }
 }
@@ -1762,7 +1854,22 @@ fn juger_cibles(
         if !plus_ancien(&c, publiee) {
             continue;
         }
-        if let Some(refus) = retour_en_arriere(registre, &c, publiee, &present(&c)) {
+        // R4-REGISTRE-1 : la liste des copies en doute ne dit pas qu'une copie plus récente n'était pas notée ; la
+        // dernière version signée, elle, ne revient sur rien de publié : elle remplace la copie et refait la liste,
+        // et c'est dit.
+        if meme_fichier(&c, copie)
+            && let Err(d) = crate::programmes_poses::copie_notee_dans(registre, &c)
+        {
+            doutes.push(trf!(
+                "  Non vérifié : la liste des copies posées par Vanguard {} ; rien ne dit\n  qu'une copie plus récente n'y était pas notée. Seule la dernière version signée ({})\n  la remplace, et la liste est refaite.",
+                "  Not checked: the list of copies set up by Vanguard {}; nothing shows\n  that a newer copy was not noted in it. Only the latest signed version ({})\n  replaces it, and the list is rebuilt.",
+                d.texte(),
+                ecrire(publiee)
+            ));
+            a_remplacer.push(c);
+            continue;
+        }
+        if let Some(refus) = retour_en_arriere(registre, &c, publiee, &present(&c), || Ok(publiee)) {
             doutes.push(format!("  {}", affichable(&refus)));
             continue;
         }
@@ -1773,7 +1880,7 @@ fn juger_cibles(
 
 /// La dernière version publiée sur GitHub : montrée, puis téléchargée, vérifiée et installée après un « o », à la
 /// place de chaque programme d'ici qui est plus ancien.
-fn depuis_github() {
+fn depuis_github() -> bool {
     if let Some(exe) = programme_ecarte_en_root() {
         trp!(
             "\n  {GRIS}Lancé en root depuis un dossier que d'autres comptes peuvent changer :\n  {}\n  Ce programme n'est pas remplacé d'ici : posez-le dans un dossier à root,\n  ou mettez-le à jour sans sudo.{RESET}",
@@ -1783,14 +1890,14 @@ fn depuis_github() {
     }
     let cibles = cibles_github();
     if cibles.is_empty() {
-        return;
+        return true;
     }
     if !github::dossier_sur() {
         trp!(
             "\n  {GRIS}Lancé en root avec le dossier d'un autre compte : pas de mise à jour depuis GitHub.\n  Relancez Vanguard depuis ce compte.{RESET}",
             "\n  {GRIS}Started as root with another account's folder: no update from GitHub.\n  Start Vanguard again from that account.{RESET}"
         );
-        return;
+        return true;
     }
     if github::versions_vues_douteuses() {
         trp!(
@@ -1803,11 +1910,11 @@ fn depuis_github() {
         ))
         .oui()
         {
-            return;
+            return false;
         }
         if let Err(e) = github::oublier_versions_vues() {
             trp!("  ✖ {}", "  ✖ {}", affichable(&e.to_string()));
-            return;
+            return false;
         }
     }
     trp!(
@@ -1822,7 +1929,7 @@ fn depuis_github() {
                 "  GitHub: {}. Nothing was checked.",
                 affichable(&e)
             );
-            return;
+            return true;
         }
     };
     let (ici, a_remplacer, doutes) = juger_cibles(
@@ -1836,8 +1943,8 @@ fn depuis_github() {
         println!("{d}");
     }
     if a_remplacer.is_empty() {
-        dire_a_jour(publiee.version, &ici, maintenant());
-        return;
+        dire_a_jour(publiee.version, &ici, maintenant(), !doutes.is_empty());
+        return doutes.is_empty();
     }
     trp!(
         "  Vanguard {} est publié, signé par son auteur (signature vérifiée).\n  Il remplacerait :",
@@ -1869,13 +1976,13 @@ fn depuis_github() {
     ))
     .oui()
     {
-        return;
+        return doutes.is_empty();
     }
     let octets = match github::programme_verifie(&publiee) {
         Ok(o) => o,
         Err(e) => {
             trp!("  ✖ {}", "  ✖ {}", affichable(&e));
-            return;
+            return false;
         }
     };
     // La fenêtre de la nouvelle version : téléchargée une fois, et seulement si une fenêtre est posée à côté d'un
@@ -1889,6 +1996,7 @@ fn depuis_github() {
         recue = Some(f.clone());
         Ok(f)
     };
+    let mut sans_refus = doutes.is_empty();
     for (c, vue) in a_remplacer.iter().zip(&vues) {
         match sa_fenetre::installer_avec_sa_fenetre(&octets, c, publiee.version, essayer, vue, &mut recevoir) {
             Ok(()) => trp!(
@@ -1897,14 +2005,18 @@ fn depuis_github() {
                 affichable(&c.display().to_string()),
                 ecrire(publiee.version)
             ),
-            Err(e) => trp!(
-                "  ✖ {} n'est pas mis à jour :\n    {}",
-                "  ✖ {} is not updated:\n    {}",
-                affichable(&c.display().to_string()),
-                affichable(&e)
-            ),
+            Err(e) => {
+                sans_refus = false;
+                trp!(
+                    "  ✖ {} n'est pas remplacé, l'ancien reste en place :\n    {}",
+                    "  ✖ {} is not replaced, the old one stays in place:\n    {}",
+                    affichable(&c.display().to_string()),
+                    affichable(&e)
+                );
+            }
         }
     }
+    sans_refus
 }
 
 /// Les secondes depuis 1970 (0 si l'horloge est avant 1970). Une horloge en retard sur la date de la dernière
@@ -1923,15 +2035,20 @@ enum Verdict {
     Perimee(String),
     /// Un programme d'ici porte un numéro plus récent (celui-ci) : un ancien manifeste a pu être remis en place.
     PlusRecenteIci(Version),
+    /// R4-REGISTRE-3 : un programme d'ici a été dit non vérifié (ci-dessus) : jamais de coche verte après.
+    Doutes,
 }
 
 /// Le verdict d'après la dernière version signée, les versions des programmes d'ici et l'heure. Seul le numéro
 /// compte pour le plancher, pas la date : une compilation de développement porte le numéro publié et une date
 /// plus récente, sans rien trahir.
-fn verdict(publiee: Version, ici: &[Version], maintenant: u64) -> Verdict {
+fn verdict(publiee: Version, ici: &[Version], maintenant: u64, doutes: bool) -> Verdict {
     let numero = |v: Version| (v.0, v.1, v.2);
     if let Some(&v) = ici.iter().filter(|v| numero(**v) > numero(publiee)).max() {
         return Verdict::PlusRecenteIci(v);
+    }
+    if doutes {
+        return Verdict::Doutes;
     }
     match github::age_jours(publiee, maintenant) {
         Some(jours) if jours <= github::FRAICHEUR_JOURS => Verdict::AJour,
@@ -1943,8 +2060,13 @@ fn verdict(publiee: Version, ici: &[Version], maintenant: u64) -> Verdict {
 /// « Rien de plus récent », seulement si la dernière version signée est assez récente pour être crue la dernière
 /// et que rien d'ici n'est plus récent qu'elle : un vieux manifeste remis en place sur GitHub gèlerait sinon les
 /// mises à jour derrière une coche verte.
-fn dire_a_jour(publiee: Version, ici: &[Version], maintenant: u64) {
-    match verdict(publiee, ici, maintenant) {
+fn dire_a_jour(publiee: Version, ici: &[Version], maintenant: u64, doutes: bool) {
+    match verdict(publiee, ici, maintenant, doutes) {
+        Verdict::Doutes => trp!(
+            "  Non vérifié : rien n'est remplacé depuis GitHub (dernière version : {}),\n  mais ce qui est dit ci-dessus reste à régler.",
+            "  Not checked: nothing is replaced from GitHub (latest version: {}),\n  but what is said above still needs fixing.",
+            ecrire(publiee)
+        ),
         Verdict::AJour => trp!(
             "  {VERT}✔{RESET} Rien de plus récent sur GitHub (dernière version : {}).",
             "  {VERT}✔{RESET} Nothing newer on GitHub (latest version: {}).",
@@ -1977,8 +2099,8 @@ fn fenetre_de_la_cle(source: &Path, cible: &Path) -> Option<PathBuf> {
         .and(sa_fenetre::pour(cible))
 }
 
-/// Montre les deux versions et d'où vient la nouvelle, puis remplace la copie après un « o ».
-fn proposer(source: &Path, cible: &Path, copie: Option<Version>, cle: Version) {
+/// Montre les deux versions et d'où vient la nouvelle, puis remplace la copie après un « o ». `false` : refusé.
+fn proposer(source: &Path, cible: &Path, copie: Option<Version>, cle: Version) -> bool {
     let (ici, sur_la_cle) = match copie {
         Some(c) => cote_a_cote(c, cle),
         None => (version_affichee(None), ecrire(cle)),
@@ -2004,7 +2126,7 @@ fn proposer(source: &Path, cible: &Path, copie: Option<Version>, cle: Version) {
     ))
     .oui()
     {
-        return;
+        return true;
     }
     // Comparée à l'image qui tourne, pas à la source elle-même (R1-N2).
     let soi = crate::protection::cle::image_qui_tourne();
@@ -2018,16 +2140,22 @@ fn proposer(source: &Path, cible: &Path, copie: Option<Version>, cle: Version) {
         essayer,
         &vue,
     ) {
-        Ok(()) => trp!(
-            "  {VERT}✔{RESET} Copie de cet ordinateur mise à jour : Vanguard {}.\n    La surveillance, l'entretien et le raccourci lancent cette version.",
-            "  {VERT}✔{RESET} Copy on this computer updated: Vanguard {}.\n    Monitoring, maintenance and the shortcut start this version.",
-            ecrire(cle)
-        ),
-        Err(e) => trp!(
-            "  ✖ Copie non mise à jour :\n    {}",
-            "  ✖ Copy not updated:\n    {}",
-            affichable(&e)
-        ),
+        Ok(()) => {
+            trp!(
+                "  {VERT}✔{RESET} Copie de cet ordinateur mise à jour : Vanguard {}.\n    La surveillance, l'entretien et le raccourci lancent cette version.",
+                "  {VERT}✔{RESET} Copy on this computer updated: Vanguard {}.\n    Monitoring, maintenance and the shortcut start this version.",
+                ecrire(cle)
+            );
+            true
+        }
+        Err(e) => {
+            trp!(
+                "  ✖ Copie non mise à jour, l'ancienne reste en place :\n    {}",
+                "  ✖ Copy not updated, the old one stays in place:\n    {}",
+                affichable(&e)
+            );
+            false
+        }
     }
 }
 
@@ -2038,6 +2166,11 @@ pub(crate) use tests::grave;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    thread_local! {
+        /// La dernière version publiée et signée que voit `derniere_publiee` dans cet essai (`None` : hors ligne).
+        pub(super) static DERNIERE: std::cell::Cell<Option<Version>> = const { std::cell::Cell::new(None) };
+    }
 
     /// Relecture D7b : sans version publiée pour ce système, refusé (avant de lire l'historique, dans
     /// `version_signee_ici`) ; ici, le système publié.
@@ -2154,16 +2287,16 @@ mod tests {
     fn a_jour_seulement_si_la_signee_est_recente() {
         let jour = 86_400;
         let v = (0, 85, 0, 1_792_540_000);
-        assert_eq!(verdict(v, &[], v.3 + 45 * jour), Verdict::AJour);
-        let Verdict::Perimee(dit) = verdict(v, &[], v.3 + 46 * jour) else {
+        assert_eq!(verdict(v, &[], v.3 + 45 * jour, false), Verdict::AJour);
+        let Verdict::Perimee(dit) = verdict(v, &[], v.3 + 46 * jour, false) else {
             panic!("46 jours : périmée");
         };
         assert!(dit.contains("46"), "{dit}");
-        assert!(matches!(verdict((0, 85, 0, 0), &[], v.3), Verdict::Perimee(_)));
+        assert!(matches!(verdict((0, 85, 0, 0), &[], v.3, false), Verdict::Perimee(_)));
         // Horloge revenue en 2020 : l'âge est inconnu, jamais « à jour ».
-        assert!(matches!(verdict(v, &[], 1_577_836_800), Verdict::Perimee(_)));
+        assert!(matches!(verdict(v, &[], 1_577_836_800, false), Verdict::Perimee(_)));
         // Une heure de décalage juste après la publication : à jour.
-        assert_eq!(verdict(v, &[], v.3 - 3_600), Verdict::AJour);
+        assert_eq!(verdict(v, &[], v.3 - 3_600, false), Verdict::AJour);
     }
 
     /// Une copie passée à la 0.86 par la clé, et GitHub qui rend le manifeste de la 0.85 : jamais la coche verte.
@@ -2171,10 +2304,10 @@ mod tests {
     fn une_copie_plus_recente_que_github_n_est_pas_a_jour() {
         let v = (0, 85, 0, 1_792_540_000);
         let ici = (0, 86, 0, 1_792_600_000);
-        assert_eq!(verdict(v, &[ici, v], v.3), Verdict::PlusRecenteIci(ici));
+        assert_eq!(verdict(v, &[ici, v], v.3, false), Verdict::PlusRecenteIci(ici));
         // Même numéro : à jour, même si la compilation d'ici est plus récente (développement).
-        assert_eq!(verdict(v, &[(0, 85, 0, 1_792_700_000)], v.3), Verdict::AJour);
-        assert_eq!(verdict(v, &[(0, 84, 2, 1)], v.3), Verdict::AJour);
+        assert_eq!(verdict(v, &[(0, 85, 0, 1_792_700_000)], v.3, false), Verdict::AJour);
+        assert_eq!(verdict(v, &[(0, 84, 2, 1)], v.3, false), Verdict::AJour);
     }
 
     #[test]
@@ -2312,6 +2445,137 @@ mod tests {
         assert_eq!(std::fs::read(&cible).unwrap(), std::fs::read(&recente).unwrap());
         let _ = std::fs::remove_dir_all(&registre);
         let _ = std::fs::remove_dir_all(&racine);
+    }
+
+    /// R4-REGISTRE-1 : la liste des copies effacée, vidée (« {} ») ou abîmée alors qu'un sceau l'attendait, et la
+    /// copie plus récente notée effacée : ni la pose d'une tâche (`poser_copie_dans`) ni la mise à jour depuis la clé
+    /// (`remplacer`) ne comptent « rien de noté ». Refusé, non vérifié, rien n'est posé ; hors ligne comme devant une
+    /// version signée plus récente que ce programme. La sortie : ce programme est la dernière version signée ; il est
+    /// posé, et la liste des copies refaite.
+    #[test]
+    fn registre_en_doute_jamais_compte_comme_rien_de_note() {
+        let racine = crate::socle::dossier_local().join("essai-registre-doute");
+        let _ = std::fs::remove_dir_all(&racine);
+        let source = racine.join("cle").join(NOM);
+        let cible = racine.join("bin").join(NOM);
+        faux_programme(&source, Some("0.80.0+5"));
+        let soi = soi_de(&source);
+        let registre = inconnue();
+        let liste = registre.join(crate::programmes_poses::FICHIER);
+        let effacer = |p: &Path| std::fs::remove_file(p).unwrap();
+        let vider = |p: &Path| std::fs::write(p, b"{}").unwrap();
+        let abimer = |p: &Path| std::fs::write(p, b"{pas du json").unwrap();
+        let falsifications: [&dyn Fn(&Path); 3] = [&effacer, &vider, &abimer];
+        for falsifier in falsifications {
+            let _ = std::fs::remove_dir_all(&registre);
+            faux_programme(&cible, Some("0.90.0+7"));
+            crate::programmes_poses::copie_posee_dans(&registre, &cible, &std::fs::read(&cible).unwrap());
+            std::fs::remove_file(&cible).unwrap();
+            falsifier(&liste);
+            for (derniere, dit) in [(None, "hors ligne (essai)"), (Some((0, 81, 0, 9)), "0.81.0")] {
+                DERNIERE.with(|d| d.set(derniere));
+                let e = poser_copie_dans(
+                    &source,
+                    &cible,
+                    soi.as_deref(),
+                    &registre,
+                    HORS_HISTORIQUE,
+                    ESSAI_INTERDIT,
+                )
+                .unwrap_err();
+                assert!(e.starts_with("non vérifié") || e.starts_with("not checked"), "{e}");
+                assert!(
+                    e.contains(tr!("la liste des copies", "the list of copies"))
+                        && e.contains("0.80.0")
+                        && e.contains(dit),
+                    "{e}"
+                );
+                let e = remplacer(
+                    &source,
+                    &cible,
+                    (0, 80, 0, 5),
+                    soi.as_deref(),
+                    TAILLE_MAX,
+                    &registre,
+                    ESSAI_INTERDIT,
+                    &dite(&source, &cible),
+                )
+                .unwrap_err();
+                assert!(e.contains(tr!("la liste des copies", "the list of copies")), "{e}");
+                assert!(
+                    std::fs::symlink_metadata(&cible).is_err(),
+                    "posée par-dessus un registre en doute"
+                );
+                assert!(!cible.with_file_name(format!("{NOM}.nouveau")).exists());
+            }
+        }
+        // La sortie : ce programme est la dernière version signée. La copie (ses octets mêmes) est gardée, et la
+        // liste refaite la note.
+        DERNIERE.with(|d| d.set(Some((0, 80, 0, 5))));
+        std::fs::copy(&source, &cible).unwrap();
+        poser_copie_dans(
+            &source,
+            &cible,
+            soi.as_deref(),
+            &registre,
+            HORS_HISTORIQUE,
+            ESSAI_INTERDIT,
+        )
+        .unwrap();
+        DERNIERE.with(|d| d.set(None));
+        assert_eq!(
+            crate::programmes_poses::copie_notee_dans(&registre, &cible)
+                .unwrap()
+                .and_then(|c| c.version),
+            Some("0.80.0+5".to_string())
+        );
+        let _ = std::fs::remove_dir_all(&registre);
+        let _ = std::fs::remove_dir_all(&racine);
+    }
+
+    /// R4-REGISTRE-1, depuis GitHub (`juger_cibles`) : la liste des copies en doute est dite ; seule la dernière
+    /// version signée remplace la copie (elle ne revient sur rien de publié), et la liste est refaite après.
+    #[test]
+    fn mise_a_jour_github_dit_le_registre_en_doute() {
+        let racine = crate::socle::dossier_local().join("essai-juger-doute");
+        let _ = std::fs::remove_dir_all(&racine);
+        let copie = racine.join("bin").join(NOM);
+        let registre = inconnue();
+        faux_programme(&copie, Some("0.90.0+7"));
+        crate::programmes_poses::copie_posee_dans(&registre, &copie, &std::fs::read(&copie).unwrap());
+        std::fs::write(&copie, b"abime").unwrap();
+        std::fs::remove_file(registre.join(crate::programmes_poses::FICHIER)).unwrap();
+        let (_, a_remplacer, doutes) = juger_cibles(vec![copie.clone()], (0, 95, 0, 0), &copie, &registre, |_| Ok(()));
+        assert_eq!(a_remplacer, vec![copie.clone()]);
+        assert!(
+            doutes.len() == 1
+                && doutes[0].contains("0.95.0")
+                && (doutes[0].contains("Non vérifié") || doutes[0].contains("Not checked")),
+            "{doutes:?}"
+        );
+        let _ = std::fs::remove_dir_all(&registre);
+        let _ = std::fs::remove_dir_all(&racine);
+    }
+
+    /// R4-REGISTRE-3 : un programme dit non vérifié pendant la mise à jour depuis GitHub, et rien à remplacer : jamais
+    /// la coche verte après.
+    #[test]
+    fn pas_de_coche_verte_apres_un_doute() {
+        let v = (0, 85, 0, 1_792_540_000);
+        assert_eq!(verdict(v, &[], v.3, true), Verdict::Doutes);
+        assert_eq!(verdict(v, &[], v.3, false), Verdict::AJour);
+    }
+
+    /// R4-ESSAIS-1 : seuls la même version et le même système que l'historique signé valent « publiée et signée pour
+    /// ce système ».
+    #[test]
+    fn signee_ici_exige_version_et_systeme() {
+        let v = (0, 85, 0, 1_792_540_000);
+        let vue = |n: &str, s: &str| Some((n.to_string(), s.to_string()));
+        assert!(signee_ici(vue(&ecrire(v), "linux-x86_64"), "linux-x86_64", v));
+        assert!(!signee_ici(vue(&ecrire(v), "windows-x86_64"), "linux-x86_64", v));
+        assert!(!signee_ici(vue("0.84.0", "linux-x86_64"), "linux-x86_64", v));
+        assert!(!signee_ici(None, "linux-x86_64", v));
     }
 
     /// N3-O3 : une copie plus récente absente de la liste (posée par une version d'avant la liste) est gardée si
@@ -2783,16 +3047,16 @@ mod tests {
             !crate::programmes_poses::copie_connue_dans(&vide, &cible, blake3::hash(&etranger).to_hex().as_str()),
             "fichier étranger noté comme posé"
         );
-        // Registre illisible : même traitement, jamais « inconnue donc remplacée ».
+        // Registre illisible : jamais « inconnue donc remplacée » ; le registre en doute est dit d'abord (R4-REGISTRE-1).
         std::fs::create_dir_all(&vide).unwrap();
         std::fs::write(vide.join("programmes-planifies.json"), b"{pas du json").unwrap();
-        assert_eq!(
-            poser_copie_dans(&source, &cible, soi.as_deref(), &vide, HORS_HISTORIQUE, SANS_ESSAI),
-            Err(plus_recente_inconnue(
-                (9, 0, 0, 1),
-                (0, 80, 0, 5),
-                &historique_muet("hors ligne (essai)")
-            ))
+        let e = poser_copie_dans(&source, &cible, soi.as_deref(), &vide, HORS_HISTORIQUE, SANS_ESSAI).unwrap_err();
+        assert!(
+            e.starts_with(tr!(
+                "non vérifié : la liste des copies",
+                "not checked: the list of copies"
+            )),
+            "{e}"
         );
         assert_eq!(
             std::fs::read(&cible).unwrap(),

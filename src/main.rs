@@ -1017,7 +1017,11 @@ async fn main() {
             chiffrement::oublier_session();
             std::process::exit(code);
         }
-        Some(Commande::SeMettreAJour { .. }) => mise_a_jour::commande(),
+        Some(Commande::SeMettreAJour { .. }) => {
+            if !mise_a_jour::commande() {
+                machine::quitter(1);
+            }
+        }
         Some(Commande::Desinstaller { liste }) => desinstaller::commande(liste),
         Some(Commande::Regles { json: false }) => machine::regles::afficher(),
         Some(Commande::Regles { json: true }) => machine::regles::json(),

@@ -2807,19 +2807,21 @@ fn aussi_les_fichiers() -> &'static str {
     )
 }
 
-fn allumer() {
+/// Allume le veilleur, sur accord. `false` : rien n'est allumé, pour une autre raison qu'un « n » de la personne (un
+/// refus de pose, une copie impossible, un allumage manqué).
+fn allumer() -> bool {
     if root() {
         trp!(
             "  ✖ En root, rien n'est posé : le veilleur se pose pour votre compte. Relancez sans sudo.",
             "  ✖ As root, nothing is set up: the watcher is set up for your account. Run it again without sudo."
         );
-        return;
+        return false;
     }
     if let Some(r) = release_du_noyau()
         && noyau_suffisant(&r) == Some(false)
     {
         trp!("  ✖ {}", "  ✖ {}", noyau_trop_ancien(&r));
-        return;
+        return false;
     }
     // L'essai sur le vrai noyau, 2 secondes au plus : ce qui ne s'ouvre pas ici ne s'ouvrira pas dans l'unité. Un
     // Ctrl-C pendant l'essai laisse partir le désabonnement ; l'action d'avant revient ensuite, pour la question.
@@ -2830,30 +2832,30 @@ fn allumer() {
     let interrompu = ARRET.swap(false, Ordering::SeqCst);
     if let Err(refus) = essai {
         trp!("  ✖ {}", "  ✖ {}", refus.raison());
-        return;
+        return false;
     }
     if interrompu {
         trp!("  ✖ {}", "  ✖ {}", Refus::Arrete.raison());
-        return;
+        return false;
     }
     if crate::machine::linux::natif::unite_activee(UNITE, true).is_none() {
         trp!(
             "  ✖ systemd de l'utilisateur introuvable : le veilleur est un de ses services. Rien n'est installé.",
             "  ✖ User systemd not found: the watcher is one of its services. Nothing is installed."
         );
-        return;
+        return false;
     }
     let Some(exe) = exe_prevu().filter(|e| !e.contains(['\n', '\r'])) else {
         trp!(
             "  ✖ Le chemin de Vanguard ne se lit pas : rien n'est installé.",
             "  ✖ Vanguard's path cannot be read: nothing is installed."
         );
-        return;
+        return false;
     };
     let chemin = fichier_unite();
     if let Err(raison) = place_libre(std::fs::read(&chemin)) {
         trp!("  ✖ {}", "  ✖ {}", raison);
-        return;
+        return false;
     }
     let texte = unite(&exe);
     afficher_aligne("  ", explication(), 2, "");
@@ -2876,7 +2878,7 @@ fn allumer() {
     .oui()
     {
         trp!("  Rien n'est posé.", "  Nothing is set up.");
-        return;
+        return true;
     }
     // La copie locale (Vanguard lancé depuis la clé) se fait maintenant, après l'accord ; un autre chemin que celui
     // montré, et rien n'est posé.
@@ -2887,12 +2889,12 @@ fn allumer() {
             "  ✖ The local copy of Vanguard could not be made ({}): nothing is set up.",
             crate::ui::affichable(&exe)
         );
-        return;
+        return false;
     }
     // Revu juste avant d'écrire : une unité étrangère posée pendant la question n'est pas écrasée non plus.
     if let Err(raison) = place_libre(std::fs::read(&chemin)) {
         trp!("  ✖ {}", "  ✖ {}", raison);
-        return;
+        return false;
     }
     // Déjà en marche (un veilleur d'avant une mise à jour) : « enable --now » ne le relance pas, et l'ancien
     // programme resterait en mémoire.
@@ -2931,7 +2933,7 @@ fn allumer() {
             "  ✖ Le veilleur n'a pas pu être allumé (journalctl --user -u {UNITE} dit pourquoi).",
             "  ✖ The watcher could not be turned on (journalctl --user -u {UNITE} tells why)."
         );
-        return;
+        return false;
     }
     marquer(&fichier_voulu());
     voulues::noter(Defense::Veilleur, true);
@@ -2956,6 +2958,7 @@ fn allumer() {
     // contre les rançongiciels (point ouvert 6).
     proposer_arret();
     proposer_rancon();
+    true
 }
 
 /// Peut-on écrire notre unité, d'après ce qui est à sa place (`std::fs::read`) ? Seulement si rien n'y est, ou si
@@ -3207,7 +3210,13 @@ pub(crate) fn commande(etat: Option<&str>, sous_etat: Option<&str>, servir: bool
         "Watcher: launches, connections and files"
     ));
     match etat {
-        Some("on") => allumer(),
+        // R4-VEILLEUR-1 : un refus de pose ou un allumage manqué rend 1, comme la surveillance et l'entretien ; un
+        // « n » de la personne, 0.
+        Some("on") => {
+            if !allumer() {
+                crate::machine::quitter(1);
+            }
+        }
         Some("off") => couper(),
         _ => {
             let c = constat();

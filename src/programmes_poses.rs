@@ -100,6 +100,17 @@ struct Fichier {
     /// posé là par un autre programme du compte, et `noter` la scellait comme celle de Vanguard.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     copies: BTreeMap<String, Copie>,
+    /// R4-REGISTRE-1 : la liste a été réécrite par Vanguard par-dessus une liste qui ne pouvait pas être crue
+    /// (effacée, abîmée ou réécrite hors de Vanguard alors qu'un sceau l'attendait). Ce qu'elle disait des copies est
+    /// perdu : une copie plus récente y était peut-être notée. Tant que ce drapeau tient, aucune copie n'y est crue
+    /// (`copie_notee_dans` rend le doute, `connue` rend faux) ; seule une pose qui a passé la garde du registre (une clé
+    /// à la dernière version publiée et signée, ou cette version reçue de GitHub) le lève (`copie_posee_dans`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    copies_douteuses: bool,
+    /// Pareil pour les tâches : une tâche sans entrée n'est pas « posée par une version d'avant » (premier usage,
+    /// renoté sans rien dire) mais non vérifiée, jusqu'à ce que Vanguard la repose.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    taches_douteuses: bool,
 }
 
 /// Une copie posée par Vanguard : son empreinte BLAKE3 et sa version gravée (« 0.94.0+1760900000 »). Sans la version
@@ -147,12 +158,24 @@ pub(crate) struct CopieNotee {
 const NON_VERIFIE: &str = "non-verifie";
 
 impl Fichier {
+    /// Ce qui est noté pour la tâche `t` ; rien de noté dans une liste réécrite par-dessus un doute : non vérifié
+    /// (`Doute::Herite`), jamais « premier usage ».
+    fn tache(&self, t: Tache) -> Result<Option<&Pose>, Doute> {
+        match self.taches.get(t.cle()) {
+            None if self.taches_douteuses => Err(Doute::Herite),
+            p => Ok(p),
+        }
+    }
+
     /// L'empreinte de la copie posée par Vanguard à `chemin`, si elle est notée.
     fn copie_posee(&self, chemin: &Path) -> Option<&str> {
         self.copie_a(chemin).map(Copie::empreinte)
     }
 
     fn copie_a(&self, chemin: &Path) -> Option<&Copie> {
+        if self.copies_douteuses {
+            return None;
+        }
         self.copies
             .iter()
             .find(|(c, _)| meme_chemin(Path::new(c), chemin))
@@ -178,7 +201,11 @@ pub(crate) fn copie_connue_dans(dossier: &Path, cible: &Path, empreinte: &str) -
 /// La copie que Vanguard a notée à `cible` dans le registre scellé de `dossier` (`None` : aucune). `Err` : la liste
 /// ne peut pas être crue, rien de ce qu'elle dit ne compte.
 pub(crate) fn copie_notee_dans(dossier: &Path, cible: &Path) -> Result<Option<CopieNotee>, Doute> {
-    Ok(lire_dans(dossier)?.copie_a(cible).map(|c| CopieNotee {
+    let f = lire_dans(dossier)?;
+    if f.copies_douteuses {
+        return Err(Doute::Herite);
+    }
+    Ok(f.copie_a(cible).map(|c| CopieNotee {
         empreinte: c.empreinte().to_string(),
         version: c.version().map(str::to_string),
     }))
@@ -247,10 +274,15 @@ fn empreinte_texte(texte: &std::io::Result<Vec<u8>>) -> std::io::Result<String> 
     }
 }
 
-/// Réécrit l'état. Un état qui ne pouvait pas être cru repart de zéro : ce qu'il disait des autres tâches n'est pas
-/// recopié, et elles se diront « jamais notées », donc non vérifiées.
+/// Réécrit l'état. Un état qui ne pouvait pas être cru n'est jamais rescellé à neuf (R4-REGISTRE-1) : ce qu'il disait
+/// n'est pas recopié, et le doute l'est (`copies_douteuses`, `taches_douteuses`) : les autres tâches se diront non
+/// vérifiées, et aucune copie n'y sera crue, plutôt que « rien de noté ».
 fn changer_dans(dossier: &Path, changer: impl FnOnce(&mut Fichier) -> bool) -> std::io::Result<()> {
-    let mut f = lire_dans(dossier).unwrap_or_default();
+    let mut f = lire_dans(dossier).unwrap_or_else(|_| Fichier {
+        copies_douteuses: true,
+        taches_douteuses: true,
+        ..Fichier::default()
+    });
     if !changer(&mut f) {
         return Ok(());
     }
@@ -354,7 +386,10 @@ pub(crate) fn oublier(t: Tache) {
 }
 
 /// Vanguard vient de mettre `octets` à la place de `cible` (sa copie de cet ordinateur, une mise à jour) : chaque
-/// tâche qui la lance garde un sceau juste. Rend les tâches concernées.
+/// tâche qui la lance garde un sceau juste. Rend les tâches concernées. Lève le doute sur les copies
+/// (`copies_douteuses`) : n'y mènent que les poses qui ont passé la garde du registre (`mise_a_jour::retour_en_arriere`
+/// : une clé à la dernière version publiée et signée) et la dernière version signée reçue de GitHub ; les copies
+/// d'avant le doute, jamais crues, sont oubliées.
 pub(crate) fn copie_posee_dans(dossier: &Path, cible: &Path, octets: &[u8]) -> Vec<Tache> {
     let empreinte = blake3::hash(octets).to_hex().to_string();
     let copie = Copie::Notee {
@@ -362,9 +397,13 @@ pub(crate) fn copie_posee_dans(dossier: &Path, cible: &Path, octets: &[u8]) -> V
         version: crate::mise_a_jour::version_notee(octets),
     };
     let mut touchees = Vec::new();
-    let _ = changer_dans(dossier, |f| {
+    let r = changer_dans(dossier, |f| {
+        let levee = std::mem::take(&mut f.copies_douteuses);
+        if levee {
+            f.copies.clear();
+        }
         // Une entrée d'avant (sans version) est réécrite avec elle.
-        let copie_changee = f.copie_a(cible) != Some(&copie);
+        let copie_changee = levee || f.copie_a(cible) != Some(&copie);
         if copie_changee {
             f.copies.retain(|c, _| !meme_chemin(Path::new(c), cible));
             f.copies.insert(cible.display().to_string(), copie.clone());
@@ -380,6 +419,10 @@ pub(crate) fn copie_posee_dans(dossier: &Path, cible: &Path, octets: &[u8]) -> V
         }
         copie_changee || !touchees.is_empty()
     });
+    // R4-REGISTRE-6 : la copie n'a pas pu être notée (disque plein, dossier refusé) ; dit au journal, jamais tu.
+    if let Err(e) = r {
+        Echec::echoue("programmes_poses/noter", e.to_string()).journaliser();
+    }
     touchees
 }
 
@@ -512,14 +555,25 @@ fn signee(programme: &Path) -> Signee {
     let Some(sha) = crate::protection::empreintes::sha256(programme) else {
         return Signee::Inconnu(tr!("programme illisible", "unreadable program").to_string());
     };
-    classer(crate::mise_a_jour::version_signee(&sha))
+    // R4-REGISTRE-2 : la version notée pour cette copie compte aussi ; une liste en doute n'en donne aucune (le doute
+    // est dit par la tâche elle-même).
+    let notee = copie_notee_dans(&crate::socle::dossier_local(), programme)
+        .ok()
+        .flatten()
+        .and_then(|c| c.version);
+    classer(crate::mise_a_jour::version_signee(&sha), notee.as_deref())
 }
 
-/// Ce que dit l'historique signé d'un programme remplacé. Une version signée plus ancienne que ce Vanguard n'est pas
-/// une mise à jour : un programme du compte peut y remettre une ancienne version authentique, aux défauts connus.
-fn classer(vue: Result<Option<(String, String)>, String>) -> Signee {
+/// Ce que dit l'historique signé d'un programme remplacé. Une version signée plus ancienne que ce Vanguard, ou que la
+/// version notée pour cette copie (`notee`, R4-REGISTRE-2), n'est pas une mise à jour : un programme du compte peut y
+/// remettre une ancienne version authentique, aux défauts connus.
+fn classer(vue: Result<Option<(String, String)>, String>, notee: Option<&str>) -> Signee {
+    let ancienne = |v: &str| {
+        crate::mise_a_jour::plus_ancienne_que_ce_programme(v)
+            || notee.is_some_and(|n| crate::mise_a_jour::plus_ancienne_que(v, n))
+    };
     match vue {
-        Ok(Some((v, _))) if crate::mise_a_jour::plus_ancienne_que_ce_programme(&v) => Signee::Ancienne(v),
+        Ok(Some((v, _))) if ancienne(&v) => Signee::Ancienne(v),
         Ok(Some((v, _))) => Signee::Oui(v),
         Ok(None) => Signee::Non,
         Err(e) => Signee::Inconnu(e),
@@ -673,19 +727,31 @@ pub(crate) fn constat(t: Tache, programme: &Path, texte: &std::io::Result<Vec<u8
     let lu = empreinte_de(programme);
     let texte = empreinte_texte(texte);
     let poses = lire_dans(&dossier);
-    let pose = poses.as_ref().map(|f| f.taches.get(t.cle())).map_err(|d| *d);
+    let pose = poses.as_ref().map_err(|d| *d).and_then(|f| f.tache(t));
     let ancien_texte = pose.as_ref().ok().and_then(|p| p.and_then(|p| p.texte.clone()));
     let j = juger(programme, &lu, pose, soi(), &texte);
     let signe = (j == Jugement::Remplace).then(|| signee(programme));
-    let renoter = match (&j, &signe) {
-        (Jugement::Soi, _) | (Jugement::Remplace, Some(Signee::Oui(_))) => Some(ancien_texte),
-        (Jugement::Premier, _) => Some(texte.ok()),
-        _ => None,
-    };
-    if let (Some(texte), Ok(e)) = (renoter, &lu) {
+    let renoter = a_renoter(&j, signe.as_ref(), ancien_texte, texte.ok());
+    if let (Some(Renoter(texte)), Ok(e)) = (renoter, &lu) {
         let _ = retenir_dans(&dossier, t, programme, e.clone(), texte);
     }
     constat_de(t, programme, &j, signe.as_ref())
+}
+
+/// Un sceau de tâche à renoter, avec ce texte de tâche (s'il y en a un).
+#[derive(Debug, PartialEq)]
+struct Renoter(Option<String>);
+
+/// Le texte de tâche à renoter avec le programme lu (`Some`), ou rien à renoter (`None`) : le programme qui tourne au
+/// bon chemin et une version signée au moins aussi récente que ce Vanguard gardent le texte noté (`ancien`) ; le
+/// premier usage note le texte lu (`lu`). Jamais une version signée plus ancienne (`Signee::Ancienne`, R3-C7) : un
+/// retour en arrière n'est pas renoté comme une mise à jour, il reste dit à chaque bilan.
+fn a_renoter(j: &Jugement, signe: Option<&Signee>, ancien: Option<String>, lu: Option<String>) -> Option<Renoter> {
+    match (j, signe) {
+        (Jugement::Soi, _) | (Jugement::Remplace, Some(Signee::Oui(_))) => Some(Renoter(ancien)),
+        (Jugement::Premier, _) => Some(Renoter(lu)),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -759,7 +825,7 @@ mod tests {
         juger(
             p,
             &lu,
-            f.as_ref().map(|f| f.taches.get(t.cle())).map_err(|x| *x),
+            f.as_ref().map_err(|x| *x).and_then(|f| f.tache(t)),
             soi,
             &texte(unite),
         )
@@ -838,11 +904,22 @@ mod tests {
     #[test]
     fn version_signee_plus_ancienne_est_un_retour_en_arriere() {
         let vue = |v: &str| Ok(Some((v.to_string(), "linux-x86_64".to_string())));
-        assert!(matches!(classer(vue("0.1.0")), Signee::Ancienne(v) if v == "0.1.0"));
-        assert!(matches!(classer(vue(env!("CARGO_PKG_VERSION"))), Signee::Oui(_)));
-        assert!(matches!(classer(vue("99.0.0")), Signee::Oui(_)));
-        assert!(matches!(classer(Ok(None)), Signee::Non));
-        assert!(matches!(classer(Err("hors ligne".into())), Signee::Inconnu(_)));
+        assert!(matches!(classer(vue("0.1.0"), None), Signee::Ancienne(v) if v == "0.1.0"));
+        assert!(matches!(classer(vue(env!("CARGO_PKG_VERSION")), None), Signee::Oui(_)));
+        assert!(matches!(classer(vue("99.0.0"), None), Signee::Oui(_)));
+        assert!(matches!(classer(Ok(None), None), Signee::Non));
+        assert!(matches!(classer(Err("hors ligne".into()), None), Signee::Inconnu(_)));
+        // R4-REGISTRE-2 : plus récente que ce programme, mais plus ancienne que la version notée pour la copie.
+        assert!(matches!(classer(vue("98.0.0"), Some("99.0.0+1700000000")), Signee::Ancienne(v) if v == "98.0.0"));
+        assert!(matches!(
+            classer(vue("99.0.0"), Some("99.0.0+1700000000")),
+            Signee::Oui(_)
+        ));
+        assert!(matches!(
+            classer(vue("99.1.0"), Some("99.0.0+1700000000")),
+            Signee::Oui(_)
+        ));
+        assert!(matches!(classer(vue("99.0.0"), Some("illisible")), Signee::Oui(_)));
     }
 
     /// Lot D7b, « Refaire » : le programme remplacé (ni posé, ni signé, ou l'historique muet), la liste forgée et le
@@ -1170,5 +1247,89 @@ mod tests {
         oublier_dans(&d, Tache::Surveillance);
         assert_eq!(juger_dans(&d, Tache::Surveillance, &p, None, UNITE), Jugement::Premier);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// R4-REGISTRE-1 : la liste effacée (ou réécrite) alors qu'un sceau l'attendait n'est jamais rescellée à neuf. La
+    /// pose d'une tâche qui suit garde le doute : aucune copie n'y est crue (une copie plus récente y était peut-être
+    /// notée), et une autre tâche sans entrée est non vérifiée, pas « premier usage ». Seule une copie posée par Vanguard
+    /// après la garde du registre (`copie_posee_dans`) lève le doute sur les copies.
+    #[test]
+    fn liste_douteuse_jamais_rescellee_a_neuf() {
+        let d = jetable("douteuse");
+        let octets = crate::mise_a_jour::grave("0.99.0+1700000000");
+        let p = programme(&d, &octets);
+        copie_posee_dans(&d, &p, &octets);
+        poser(&d, Tache::Veilleur, &p);
+        assert!(copie_notee_dans(&d, &p).unwrap().is_some());
+        std::fs::remove_file(d.join(FICHIER)).unwrap();
+        assert!(matches!(copie_notee_dans(&d, &p), Err(Doute::HorsVanguard)));
+        // Une tâche reposée par Vanguard réécrit la liste : le doute la suit.
+        poser(&d, Tache::Surveillance, &p);
+        assert!(matches!(copie_notee_dans(&d, &p), Err(Doute::Herite)));
+        let lue = lire_dans(&d).unwrap();
+        assert!(!lue.connue(&p, &blake3::hash(&octets).to_hex()));
+        assert_eq!(juger_dans(&d, Tache::Surveillance, &p, None, UNITE), Jugement::Sain);
+        let jugement = juger_dans(&d, Tache::Veilleur, &p, None, UNITE);
+        assert!(
+            matches!(&jugement, Jugement::NonVerifie(m) if m.contains(Doute::Herite.texte())),
+            "{jugement:?}"
+        );
+        oublier_dans(&d, Tache::Surveillance);
+        assert!(matches!(copie_notee_dans(&d, &p), Err(Doute::Herite)));
+        // Une entrée glissée dans la liste en doute (inventée : une autre copie notée 0.99.1) n'y survit pas.
+        let autre = d.join("autre-copie");
+        changer_dans(&d, |f| {
+            f.copies.insert(
+                autre.display().to_string(),
+                Copie::Notee {
+                    empreinte: "0".repeat(64),
+                    version: Some("0.99.1+1700000001".into()),
+                },
+            );
+            true
+        })
+        .unwrap();
+        // Levé par une copie posée après la garde : notée de nouveau, les autres tâches restent non vérifiées.
+        copie_posee_dans(&d, &p, &octets);
+        assert!(matches!(copie_notee_dans(&d, &autre), Ok(None)));
+        assert_eq!(
+            copie_notee_dans(&d, &p).unwrap().and_then(|c| c.version),
+            Some("0.99.0+1700000000".into())
+        );
+        assert!(matches!(
+            juger_dans(&d, Tache::Veilleur, &p, None, UNITE),
+            Jugement::NonVerifie(_)
+        ));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// R4-ESSAIS-3 : au bilan, seuls le programme qui tourne, une version signée au moins aussi récente et le premier
+    /// usage se renotent ; une version signée plus ancienne (retour en arrière) jamais, ni rien d'autre.
+    #[test]
+    fn retour_en_arriere_signe_jamais_renote() {
+        let ancien = || Some("texte-note".to_string());
+        let lu = || Some("texte-lu".to_string());
+        let oui = Signee::Oui("9.9.9".into());
+        assert_eq!(
+            a_renoter(&Jugement::Remplace, Some(&oui), ancien(), lu()),
+            Some(Renoter(ancien()))
+        );
+        assert_eq!(a_renoter(&Jugement::Soi, None, ancien(), lu()), Some(Renoter(ancien())));
+        assert_eq!(a_renoter(&Jugement::Premier, None, ancien(), lu()), Some(Renoter(lu())));
+        let ancienne = Signee::Ancienne("0.1.0".into());
+        let non = Signee::Non;
+        let inconnu = Signee::Inconnu("hors ligne".into());
+        for s in [Some(&ancienne), Some(&non), Some(&inconnu), None] {
+            assert_eq!(a_renoter(&Jugement::Remplace, s, ancien(), lu()), None, "{s:?}");
+        }
+        for j in [
+            Jugement::Sain,
+            Jugement::TexteChange,
+            Jugement::ListeForgee,
+            Jugement::AutreChemin("/x".into()),
+            Jugement::NonVerifie("x".into()),
+        ] {
+            assert_eq!(a_renoter(&j, Some(&oui), ancien(), lu()), None, "{j:?}");
+        }
     }
 }

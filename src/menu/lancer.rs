@@ -381,7 +381,9 @@ async fn executer_outil(s: &mut Session, action: Action) {
         Action::Raccourci => raccourci::commande(None),
         Action::Ordinateurs => ordinateurs::menu(),
         Action::ProtegerDonnees => chiffrement::menu(),
-        Action::MettreAJour => mise_a_jour::commande(),
+        Action::MettreAJour => {
+            mise_a_jour::commande();
+        }
         Action::Guide => guide::menu(),
         Action::Depanner => depanner_avec_ses_outils(),
         Action::DepannerInfection => depanner::executer("infection"),

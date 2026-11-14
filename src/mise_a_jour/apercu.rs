@@ -518,7 +518,8 @@ fn plan_github(m: &dyn Monde, pour: Pour) -> Result<Plan, Refus> {
         .map(|(c, _)| (c, p.version))
         .collect();
     if a_remplacer.is_empty() {
-        return Err(match super::verdict(p.version, &ici, m.maintenant()) {
+        // Les doutes de `juger_cibles` (clé indépendante) sont branchés ici au commit d'intégration qui suit le rebase.
+        return Err(match super::verdict(p.version, &ici, m.maintenant(), false) {
             Verdict::AJour => Refus::AJour(ecrire(p.version)),
             Verdict::Perimee(age) => Refus::NonVerifie(trf!(
                 "la dernière version signée {} ({}) : rien ne prouve que ce soit encore la dernière",
@@ -532,6 +533,13 @@ fn plan_github(m: &dyn Monde, pour: Pour) -> Result<Plan, Refus> {
                 ecrire(v),
                 ecrire(p.version)
             )),
+            Verdict::Doutes => Refus::NonVerifie(
+                tr!(
+                    "un programme d'ici n'a pas pu être vérifié",
+                    "a program here could not be checked"
+                )
+                .to_string(),
+            ),
         });
     }
     // La fenêtre posée à côté d'un programme remplacé le suit (`sa_fenetre::installer_avec_sa_fenetre`).

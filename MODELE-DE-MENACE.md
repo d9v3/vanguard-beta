@@ -168,13 +168,23 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
 - **La copie de Vanguard posée sur cet ordinateur.** Vanguard note dans un registre scellé l'empreinte et la version
   de chaque copie qu'il pose dans votre dossier. Il ne remplace jamais une copie plus récente par un programme plus
   ancien, ni une copie plus récente qu'il ne reconnaît pas (ni notée, ni publiée et signée pour ce système, selon
-  l'historique signé des versions) : c'est dit « non vérifié » et rien n'est posé. Ce qui reste : les sceaux de ce
+  l'historique signé des versions) : c'est dit « non vérifié » et rien n'est posé. Une liste des copies effacée, vidée,
+  abîmée ou changée hors de Vanguard n'est jamais lue comme « rien de noté » : une clé refuse alors de poser sa copie,
+  ne refait pas la liste, et dit la sortie (remettre la clé à la dernière version publiée, puis relancer depuis la clé
+  avec Internet : Vanguard vérifie qu'elle est la dernière version signée et refait la liste) ; la mise à jour depuis
+  GitHub remplace alors la copie par la dernière version signée seulement, et le dit. Ce qui reste : les sceaux de ce
   registre sont sans secret, une barrière et pas un coffre ; un programme de votre compte qui réécrit le registre avec
-  ses sceaux peut y faire noter une autre copie, ou effacer la note. Si une copie notée plus récente est effacée ou
-  abîmée, une clé plus ancienne refuse de poser quoi que ce soit, et la mise à jour depuis GitHub ne descend pas sous
-  la version notée : il faut remettre la clé à jour. Hors ligne, une copie plus récente posée par une version d'avant
-  ce registre ne peut pas être jugée et est refusée. Le veilleur (Linux) dit son refus à l'écran mais rend un code de
-  sortie nul ; la surveillance et l'entretien rendent un code non nul.
+  ses sceaux peut y faire noter une autre copie, ou effacer la note, et un état entièrement effacé (registre et sceaux)
+  ressemble à un ordinateur neuf : une clé plus ancienne y repose sa copie sans rien en savoir. Cette protection ne
+  vient qu'avec les versions qui la contiennent : une clé publiée avant elle ne lit pas la liste des copies. Quand
+  l'historique signé ne répond pas (hors ligne, GitHub injoignable ou filtré, historique absent ou mal signé, ou pas de
+  version publiée pour ce système), une copie plus récente posée par une version d'avant ce registre ne peut pas être
+  jugée et est refusée. La sortie d'une liste en doute ne demande pas un manifeste récent : un ancien manifeste signé,
+  remis en place, peut faire passer une clé ancienne pour la dernière. La surveillance, l'entretien, le veilleur
+  (Linux) et « se-mettre-a-jour » rendent un code de sortie non nul après un refus (un « n » de votre part et GitHub
+  injoignable n'en sont pas) ; le raccourci rend encore un code nul. Les copies temporaires de Vanguard sont reconnues
+  dans le dossier du compte (`XDG_RUNTIME_DIR` ou `TMPDIR`) : un programme du compte peut y poser une copie exacte de
+  Vanguard et la faire prendre pour la clé du lancement ; aucun gain trouvé pour lui, qui a déjà les droits du compte.
 
 ## Ce que Vanguard suppose
 
