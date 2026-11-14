@@ -1357,41 +1357,160 @@ const CONNEXION_OCTETS_MAX: u64 = 1 << 20;
 /// Au plus autant de fichiers lus dans un dossier de gestionnaire de connexion ; au-delà, le dossier est non vérifié.
 const CONNEXION_FICHIERS_MAX: usize = 1000;
 
-/// Le compte dont la session s'ouvre toute seule, et le fichier qui le dit, d'après les fichiers de GDM, SDDM et
-/// LightDM donnés dans l'ordre où ils s'appliquent. Chaque gestionnaire est jugé sur l'ensemble de ses fichiers, clé
-/// par clé, la dernière valeur l'emportant (une clé posée dans un fichier, son interrupteur dans un autre, comptent
-/// ensemble). Les fichiers illisibles n'entrent pas ici (`constat_d_ouverture` les dit). `None` : personne.
+/// Les affectations d'un fichier de connexion, (section, clé, valeur) telles qu'écrites, dans l'ordre du fichier, lues
+/// comme son gestionnaire les lit (ronde 11 du lot 096, N11-1) :
+/// - SDDM 0.21.0 (`ConfigReader.cpp`, `loadInternal`) : tout ce qui suit le premier « # » de la ligne est retiré, PUIS
+///   une ligne qui garde un « = » est une affectation, même « [x=y] » ; sinon « [nom] » ouvre une section. Ainsi
+///   « [Autologin] # note » ouvre bien la section Autologin ;
+/// - GDM et LightDM (GKeyFile de GLib) : « # » seulement en tête de ligne ; « [nom] » avant « = ».
 ///
-/// LightDM : « autologin-guest=true » ouvre une session d'invité, avant « autologin-user » (seat.c de LightDM 1.32).
-fn ouverture_automatique_de(fichiers: &[FichierDeConnexion]) -> Option<(String, String)> {
-    // La dernière valeur de `cle` dans la section choisie, chez `g`, et le fichier qui la pose.
-    let valeur = |g: Gestionnaire, section: &dyn Fn(&str) -> bool, cle: &str| -> Option<(String, String)> {
-        let mut trouvee = None;
-        for f in fichiers.iter().filter(|f| f.gestionnaire == g) {
-            if let Some(texte) = &f.texte
-                && let Some(v) = valeur_ini(texte, section, cle)
-            {
-                trouvee = Some((v, f.chemin.clone()));
+/// Une marque UTF-8 (BOM) en tête est retirée : ce que Qt et GLib en font n'a pas été vérifié, et la lire comme une
+/// section ne peut que faire voir une ouverture de plus, jamais en cacher une.
+fn affectations(g: Gestionnaire, texte: &str) -> Vec<(String, String, String)> {
+    let texte = texte.strip_prefix('\u{feff}').unwrap_or(texte);
+    let mut section = String::new();
+    let mut sortie = Vec::new();
+    for ligne in texte.lines() {
+        let mut l = ligne.trim();
+        if g == Gestionnaire::Sddm {
+            l = l.split_once('#').map_or(l, |(avant, _)| avant).trim();
+        } else if l.starts_with('#') {
+            continue;
+        }
+        let section_ici = l.strip_prefix('[').and_then(|l| l.strip_suffix(']'));
+        match (g == Gestionnaire::Sddm, l.split_once('='), section_ici) {
+            (true, Some((k, v)), _) | (false, Some((k, v)), None) => {
+                sortie.push((section.clone(), k.trim().to_string(), v.trim().to_string()));
+            }
+            (_, _, Some(nom)) => section = nom.to_string(),
+            _ => {}
+        }
+    }
+    sortie
+}
+
+/// Une valeur d'ouverture automatique posée dans un fichier : l'indice du fichier, puis la section, la clé et la
+/// valeur telles qu'écrites.
+struct Pose {
+    fichier: usize,
+    section: String,
+    cle: String,
+    valeur: String,
+}
+
+/// Ce que Vanguard conclut d'une façon d'ouvrir la session (un compte de GDM, de SDDM ou de LightDM, l'invité de
+/// LightDM) : `vue`, le compte et le fichier qui le pose ; `douteuse`, le fichier d'une ouverture qu'une autre ligne
+/// annule sans que Vanguard soit sûr que le gestionnaire lise cette ligne, ni dans cet ordre (N11-2).
+struct Ouverture {
+    vue: Option<(String, String)>,
+    douteuse: Option<String>,
+}
+
+/// Les façons d'ouvrir la session, dans l'ordre où elles sont dites : GDM (automatique, puis minutée), SDDM, l'invité
+/// de LightDM, puis le compte de LightDM (« autologin-guest » passe avant « autologin-user », seat.c de LightDM 1.32).
+///
+/// `vue` : chaque gestionnaire est jugé sur l'ensemble de ses fichiers, clé par clé, la dernière valeur l'emportant
+/// (une clé posée dans un fichier, son interrupteur dans un autre, comptent ensemble). Les sections et les clés y sont
+/// prises sans tenir compte de la casse : une ouverture de trop peut être dite, jamais une de moins.
+///
+/// `douteuse` (ronde 11 du lot 096, N11-2) : une ouverture n'est tenue pour annulée que par une ligne plus loin DANS LE
+/// MÊME FICHIER, même section et même clé, casse comprise, avec une valeur qui coupe à coup sûr. Tout le reste n'est
+/// pas cru : un autre fichier (SDDM trie selon la langue et ne lit pas les fichiers cachés ; LightDM saute un fichier
+/// qu'il ne sait pas lire ; GDM ne lit qu'un fichier, celui de sa distribution), une autre section (LightDM applique
+/// [Seat:*] puis la section du siège ; [SeatDefaults] et [Seat:*] sont deux noms), une autre casse (GKeyFile, SDDM).
+/// Les fichiers illisibles n'entrent pas ici (`constat_d_ouverture` les dit).
+fn ouvertures(fichiers: &[FichierDeConnexion]) -> [Ouverture; 5] {
+    let poses = |g: Gestionnaire, section: &dyn Fn(&str) -> bool, cle: &str| -> Vec<Pose> {
+        let mut sortie = Vec::new();
+        for (i, f) in fichiers.iter().enumerate().filter(|(_, f)| f.gestionnaire == g) {
+            let Some(texte) = &f.texte else { continue };
+            for (s, k, v) in affectations(g, texte) {
+                if section(&s) && k.eq_ignore_ascii_case(cle) {
+                    sortie.push(Pose {
+                        fichier: i,
+                        section: s,
+                        cle: k,
+                        valeur: v,
+                    });
+                }
             }
         }
-        trouvee
+        sortie
     };
+    let chemin = |p: &Pose| fichiers.get(p.fichier).map_or_else(String::new, |f| f.chemin.clone());
+    let derniere = |poses: &[Pose]| poses.last().map(|p| (p.valeur.clone(), chemin(p)));
+    // Le fichier d'une pose qui ouvre et qu'aucune ligne sûre n'annule après elle.
+    let vivante = |poses: &[Pose], ouvre: &dyn Fn(&str) -> bool, coupe: &dyn Fn(&str) -> bool| {
+        poses.iter().enumerate().find_map(|(i, p)| {
+            let annulee = poses
+                .iter()
+                .skip(i)
+                .skip(1)
+                .any(|q| q.fichier == p.fichier && q.section == p.section && q.cle == p.cle && coupe(&q.valeur));
+            (ouvre(&p.valeur) && !annulee).then(|| chemin(p))
+        })
+    };
+    let rempli = |v: &str| !v.is_empty();
+    let vide = str::is_empty;
     let vrai = |v: &str| v.eq_ignore_ascii_case("true") || v == "1";
+    // GDM (gdm-settings-utils.c) : « false » sans casse ou « 0 » ; une autre valeur est une erreur, jamais crue.
+    let faux_gdm = |v: &str| v.eq_ignore_ascii_case("false") || v == "0";
     let daemon = |s: &str| s.eq_ignore_ascii_case("daemon");
     let gdm = |interrupteur: &str, compte: &str| {
-        let (oui, fichier) = valeur(Gestionnaire::Gdm, &daemon, interrupteur)?;
-        let (compte, _) = valeur(Gestionnaire::Gdm, &daemon, compte)?;
-        (vrai(&oui) && !compte.is_empty()).then_some((compte, fichier))
+        let oui = poses(Gestionnaire::Gdm, &daemon, interrupteur);
+        let comptes = poses(Gestionnaire::Gdm, &daemon, compte);
+        let vue = match (derniere(&oui), derniere(&comptes)) {
+            (Some((o, fichier)), Some((c, _))) if vrai(&o) && !c.is_empty() => Some((c, fichier)),
+            _ => None,
+        };
+        let douteuse = vivante(&oui, &|v| !faux_gdm(v), &faux_gdm).and_then(|_| vivante(&comptes, &rempli, &vide));
+        Ouverture { vue, douteuse }
+    };
+    let compte = |g: Gestionnaire, section: &dyn Fn(&str) -> bool, cle: &str| {
+        let p = poses(g, section, cle);
+        Ouverture {
+            vue: derniere(&p).filter(|(c, _)| !c.is_empty()),
+            douteuse: vivante(&p, &rempli, &vide),
+        }
     };
     let siege = |s: &str| s.starts_with("Seat") || s == "SeatDefaults";
-    let invite = valeur(Gestionnaire::LightDm, &siege, "autologin-guest")
-        .filter(|(v, _)| vrai(v))
-        .map(|(_, fichier)| (tr!("invité", "guest").to_string(), fichier));
-    gdm("AutomaticLoginEnable", "AutomaticLogin")
-        .or_else(|| gdm("TimedLoginEnable", "TimedLogin"))
-        .or_else(|| valeur(Gestionnaire::Sddm, &|s| s == "Autologin", "User").filter(|(c, _)| !c.is_empty()))
-        .or(invite)
-        .or_else(|| valeur(Gestionnaire::LightDm, &siege, "autologin-user").filter(|(c, _)| !c.is_empty()))
+    let invite = {
+        let p = poses(Gestionnaire::LightDm, &siege, "autologin-guest");
+        Ouverture {
+            vue: derniere(&p)
+                .filter(|(v, _)| vrai(v))
+                .map(|(_, fichier)| (tr!("invité", "guest").to_string(), fichier)),
+            // LightDM (configuration.c, config_get_boolean) : seul « true » ouvre ; toute autre valeur coupe.
+            douteuse: vivante(&p, &vrai, &|v| v != "true"),
+        }
+    };
+    [
+        gdm("AutomaticLoginEnable", "AutomaticLogin"),
+        gdm("TimedLoginEnable", "TimedLogin"),
+        compte(Gestionnaire::Sddm, &|s| s == "Autologin", "User"),
+        invite,
+        compte(Gestionnaire::LightDm, &siege, "autologin-user"),
+    ]
+}
+
+/// Le compte dont la session s'ouvre toute seule, et le fichier qui le dit (`ouvertures`). `None` : personne vu.
+fn ouverture_automatique_de(fichiers: &[FichierDeConnexion]) -> Option<(String, String)> {
+    ouvertures(fichiers).into_iter().find_map(|o| o.vue)
+}
+
+/// Les fichiers d'une ouverture annulée d'une façon que Vanguard ne sait pas confirmer (`ouvertures`, N11-2), sans
+/// doublon : jamais comptés comme une machine sans ouverture automatique.
+fn annulations_non_sures(fichiers: &[FichierDeConnexion]) -> Vec<String> {
+    let mut sortie: Vec<String> = Vec::new();
+    for o in ouvertures(fichiers) {
+        if o.vue.is_none()
+            && let Some(f) = o.douteuse
+            && !sortie.contains(&f)
+        {
+            sortie.push(f);
+        }
+    }
+    sortie
 }
 
 /// Un fichier de gestionnaire de connexion lu (`lire_fichier_de_connexion`).
@@ -1517,8 +1636,15 @@ fn ouverture_automatique() -> Option<Constat> {
 const NON_LUS_MONTRES: usize = 5;
 
 /// Le constat d'ouverture automatique d'après `fichiers` (`fichiers_de_connexion`) ; `None` : personne, et tout a été
-/// lu. Un fichier qui ne s'est pas lu est dit non vérifié (ronde 10 du lot 096, N10-4), jamais compté comme sain.
+/// lu. Un fichier qui ne s'est pas lu est dit non vérifié (ronde 10 du lot 096, N10-4), jamais compté comme sain ; une
+/// ouverture annulée d'une façon que Vanguard ne sait pas confirmer aussi (ronde 11, N11-2, `annulations_non_sures`).
 fn constat_d_ouverture(fichiers: &[FichierDeConnexion], chiffree: impl FnOnce() -> Option<bool>) -> Option<Constat> {
+    let douteuses: Vec<String> = annulations_non_sures(fichiers)
+        .iter()
+        .take(NON_LUS_MONTRES)
+        .map(|f| crate::ui::affichable(f))
+        .collect();
+    let douteuses = douteuses.join(", ");
     let non_lus: Vec<String> = fichiers
         .iter()
         .filter(|f| f.texte.is_none())
@@ -1539,16 +1665,38 @@ fn constat_d_ouverture(fichiers: &[FichierDeConnexion], chiffree: impl FnOnce() 
                     " Login manager files that cannot be read, not checked: {montres}."
                 ));
             }
+            if !douteuses.is_empty() {
+                c.message.push_str(&trf!(
+                    " Ouverture automatique annulée d'une façon non vérifiée, dans : {douteuses}.",
+                    " Automatic login cancelled in a way not checked, in: {douteuses}."
+                ));
+            }
             Some(c)
         }
-        None if non_lus.is_empty() => None,
-        None => Some(impossible(
-            "Comptes",
-            &trf!(
-                "ouverture automatique de session : des fichiers du gestionnaire de connexion ne se lisent pas, {montres}",
-                "automatic login: some login manager files cannot be read, {montres}"
-            ),
-        )),
+        None if non_lus.is_empty() && douteuses.is_empty() => None,
+        None => {
+            let mut raisons = Vec::new();
+            if !non_lus.is_empty() {
+                raisons.push(trf!(
+                    "des fichiers du gestionnaire de connexion ne se lisent pas, {montres}",
+                    "some login manager files cannot be read, {montres}"
+                ));
+            }
+            if !douteuses.is_empty() {
+                raisons.push(trf!(
+                    "une ouverture posée dans {douteuses} est annulée par une ligne que le gestionnaire ne lit peut-être pas, ou pas dans cet ordre (autre fichier, autre section)",
+                    "a login set in {douteuses} is cancelled by a line the login manager may not read, or not in that order (other file, other section)"
+                ));
+            }
+            Some(impossible(
+                "Comptes",
+                &trf!(
+                    "ouverture automatique de session : {}",
+                    "automatic login: {}",
+                    raisons.join(" ; ")
+                ),
+            ))
+        }
     }
 }
 
@@ -4676,6 +4824,278 @@ mod tests {
         }
     }
 
+    /// Ronde 11 du lot 096 (N11-1) : une section de SDDM se lit comme SDDM 0.21.0 la lit (`ConfigReader.cpp`) : le
+    /// « # » coupe la ligne avant tout, puis une ligne qui garde un « = » est une affectation, même « [x=y] ». Une
+    /// marque UTF-8 en tête ne cache pas la section.
+    #[test]
+    fn sections_de_sddm_lues_comme_sddm() {
+        for texte in [
+            "[Autologin] # note\nUser=mallory\n",
+            "[Autologin]#note\nUser=mallory\n",
+            "[Autologin]\n[x=y]\nUser=mallory\n",
+            "\u{feff}[Autologin]\nUser=mallory\n",
+            "[Autologin]\nUser=mallory # le compte\n",
+            "  [Autologin]  \n  User = mallory  \n",
+        ] {
+            assert_eq!(
+                ouverture_automatique_de(&[connexion("/etc/sddm.conf.d/x.conf", texte)]),
+                Some(("mallory".into(), "/etc/sddm.conf.d/x.conf".into())),
+                "{texte:?}"
+            );
+        }
+        // Le reste de la ligne après « # » n'est rien pour SDDM : ni une valeur, ni une section.
+        for texte in [
+            "[Autologin]\n# User=mallory\n",
+            "[Autologin]\nSession=x # User=mallory\n",
+            "# [Autologin]\nUser=mallory\n",
+            "[Theme]\nUser=mallory\n",
+        ] {
+            assert_eq!(
+                ouverture_automatique_de(&[connexion("/etc/sddm.conf.d/x.conf", texte)]),
+                None,
+                "{texte:?}"
+            );
+        }
+        // GDM et LightDM (GKeyFile) : « # » seulement en tête de ligne, une marque UTF-8 ne cache rien non plus.
+        let gdm = "\u{feff}[daemon]\nAutomaticLoginEnable=true\nAutomaticLogin=mallory\n";
+        assert_eq!(
+            ouverture_automatique_de(&[connexion("/etc/gdm/custom.conf", gdm)])
+                .unwrap()
+                .0,
+            "mallory"
+        );
+    }
+
+    /// Ronde 11 du lot 096 (N11-2) : une ouverture n'est tenue pour annulée que par une ligne plus loin dans le même
+    /// fichier, même section et même clé. Une annulation venue d'un autre fichier ou d'une autre section n'est pas crue :
+    /// « non vérifié », jamais « rien à signaler ».
+    #[test]
+    fn annulation_non_sure_dite_non_verifiee() {
+        let f = connexion;
+        let cas: [(&str, Vec<FichierDeConnexion>); 10] = [
+            (
+                // SDDM trie selon la langue : « B-on » peut passer après « a-off ».
+                "tri selon la langue",
+                vec![
+                    f("/etc/sddm.conf.d/B-on.conf", "[Autologin]\nUser=bob\n"),
+                    f("/etc/sddm.conf.d/a-off.conf", "[Autologin]\nUser=\n"),
+                ],
+            ),
+            (
+                // SDDM ne lit pas les fichiers cachés : « .off » n'annule rien pour lui.
+                "fichier caché",
+                vec![
+                    f("/etc/sddm.conf.d/+on", "[Autologin]\nUser=bob\n"),
+                    f("/etc/sddm.conf.d/.off", "[Autologin]\nUser=\n"),
+                ],
+            ),
+            (
+                "sddm.conf après sddm.conf.d",
+                vec![
+                    f("/etc/sddm.conf.d/a.conf", "[Autologin]\nUser=bob\n"),
+                    f("/etc/sddm.conf", "[Autologin]\nUser=\n"),
+                ],
+            ),
+            (
+                // LightDM ne retient [Seat:seat9] que sur le siège seat9.
+                "section d'un autre siège",
+                vec![f(
+                    "/etc/lightdm/lightdm.conf",
+                    "[Seat:*]\nautologin-user=bob\n[Seat:seat9]\nautologin-user=\n",
+                )],
+            ),
+            (
+                // LightDM applique [Seat:*] AVANT la section du siège.
+                "siège puis défaut",
+                vec![f(
+                    "/etc/lightdm/lightdm.conf",
+                    "[Seat:seat0]\nautologin-user=bob\n[Seat:*]\nautologin-user=\n",
+                )],
+            ),
+            (
+                // LightDM saute un fichier qu'il ne sait pas lire : l'annulation d'un autre fichier n'est pas crue.
+                "autre fichier de LightDM",
+                vec![
+                    f(
+                        "/usr/share/lightdm/lightdm.conf.d/50-a.conf",
+                        "[Seat:*]\nautologin-guest=true\n",
+                    ),
+                    f("/etc/lightdm/lightdm.conf", "[Seat:*]\nautologin-guest=false\n"),
+                ],
+            ),
+            (
+                // Une machine ne lit qu'un fichier de GDM, celui de sa distribution.
+                "GDM de deux distributions",
+                vec![
+                    f(
+                        "/etc/gdm/custom.conf",
+                        "[daemon]\nAutomaticLoginEnable=true\nAutomaticLogin=bob\n",
+                    ),
+                    f("/etc/gdm3/daemon.conf", "[daemon]\nAutomaticLoginEnable=false\n"),
+                ],
+            ),
+            (
+                // GKeyFile tient compte de la casse : [Daemon] n'est pas [daemon].
+                "autre casse",
+                vec![f(
+                    "/etc/gdm3/custom.conf",
+                    "[daemon]\nAutomaticLoginEnable=true\nAutomaticLogin=bob\n[Daemon]\nAutomaticLoginEnable=false\n",
+                )],
+            ),
+            (
+                // SDDM ne connaît que « User » : « user= » n'annule rien pour lui.
+                "clé d'une autre casse",
+                vec![f("/etc/sddm.conf.d/x.conf", "[Autologin]\nUser=bob\nuser=\n")],
+            ),
+            (
+                // Ni « true » ni « false » : une erreur pour GDM, jamais crue comme une coupure.
+                "interrupteur illisible",
+                vec![f(
+                    "/etc/gdm3/custom.conf",
+                    "[daemon]\nAutomaticLoginEnable=oui\nAutomaticLogin=bob\n",
+                )],
+            ),
+        ];
+        for (nom, fichiers) in cas {
+            assert_eq!(ouverture_automatique_de(&fichiers), None, "{nom}");
+            assert!(!annulations_non_sures(&fichiers).is_empty(), "{nom}");
+            let c = constat_d_ouverture(&fichiers, || Some(false)).unwrap_or_else(|| panic!("{nom} : compté sain"));
+            assert!(!c.verifie, "{nom} : {}", c.message);
+            assert_eq!(c.probleme, Some(Niveau::Info), "{nom} : {}", c.message);
+            assert!(
+                c.message.contains(tr!("ne lit peut-être pas", "may not read")),
+                "{nom} : {}",
+                c.message
+            );
+        }
+        // Le fichier de l'ouverture est nommé.
+        let c = constat_d_ouverture(
+            &[
+                f("/etc/sddm.conf.d/+on", "[Autologin]\nUser=bob\n"),
+                f("/etc/sddm.conf.d/.off", "[Autologin]\nUser=\n"),
+            ],
+            || None,
+        )
+        .unwrap();
+        assert!(c.message.contains("/etc/sddm.conf.d/+on"), "{}", c.message);
+        // Annulations sûres (même fichier, même section, même clé) : rien à dire.
+        for fichiers in [
+            vec![f("/etc/sddm.conf.d/x.conf", "[Autologin]\nUser=bob\nUser=\n")],
+            vec![f(
+                "/etc/gdm3/custom.conf",
+                "[daemon]\nAutomaticLoginEnable=True\nAutomaticLogin=bob\nAutomaticLoginEnable=False\n",
+            )],
+            vec![f(
+                "/etc/gdm3/custom.conf",
+                "[daemon]\nAutomaticLoginEnable=false\nAutomaticLogin=bob\n",
+            )],
+            vec![f(
+                "/etc/lightdm/lightdm.conf",
+                "[Seat:*]\nautologin-user=bob\nautologin-guest=true\n[Seat:*]\nautologin-user=\nautologin-guest=false\n",
+            )],
+        ] {
+            assert!(annulations_non_sures(&fichiers).is_empty(), "{fichiers:?}");
+            assert!(constat_d_ouverture(&fichiers, || Some(false)).is_none(), "{fichiers:?}");
+        }
+        // Une ouverture vue reste signalée, et l'annulation douteuse d'un autre gestionnaire est nommée avec elle.
+        let c = constat_d_ouverture(
+            &[
+                f(
+                    "/etc/gdm/custom.conf",
+                    "[daemon]\nAutomaticLoginEnable=true\nAutomaticLogin=bob\n",
+                ),
+                f("/etc/gdm3/daemon.conf", "[daemon]\nAutomaticLoginEnable=false\n"),
+                f("/etc/lightdm/lightdm.conf", "[Seat:*]\nautologin-user=alice\n"),
+            ],
+            || Some(false),
+        )
+        .unwrap();
+        assert_eq!(c.probleme, Some(Niveau::Moyen), "{}", c.message);
+        assert!(c.message.contains("/etc/gdm/custom.conf"), "{}", c.message);
+    }
+
+    /// Ronde 11 du lot 096 (N11-3) : GDM ouvre aussi la session après un délai (« TimedLogin »), et LightDM lit encore
+    /// l'ancien nom de section [SeatDefaults].
+    #[test]
+    fn ouverture_minutee_et_ancienne_section() {
+        let gdm = "[daemon]\nTimedLoginEnable=true\nTimedLogin=bob\nTimedLoginDelay=10\n";
+        assert_eq!(
+            ouverture_automatique_de(&[connexion("/etc/gdm3/custom.conf", gdm)]),
+            Some(("bob".into(), "/etc/gdm3/custom.conf".into()))
+        );
+        let lightdm = "[SeatDefaults]\nautologin-user=alice\n";
+        assert_eq!(
+            ouverture_automatique_de(&[connexion("/etc/lightdm/lightdm.conf", lightdm)]),
+            Some(("alice".into(), "/etc/lightdm/lightdm.conf".into()))
+        );
+    }
+
+    /// Ronde 11 du lot 096 (N11-3) : sur une racine d'essai, l'ordre de SDDM (/usr/lib, puis /etc/sddm.conf.d, puis
+    /// /etc/sddm.conf, le dernier l'emportant) et les branches « non vérifié » de la ronde 10 : un fichier dont on ne lit
+    /// pas les droits, un dossier qui ne s'ouvre pas, plus de `CONNEXION_FICHIERS_MAX` fichiers, un fichier listé qui ne
+    /// se retrouve pas (lien cassé). Les liens en boucle tiennent lieu de droits refusés : l'essai tourne aussi en root.
+    #[test]
+    fn connexion_sur_une_racine_ordre_et_non_lus() {
+        use std::os::unix::fs::symlink;
+        let racine = crate::essais::Jetable::nouveau("connexion-ordre");
+        let ecrire = |c: &str, t: &str| {
+            let p = racine.join(c.trim_start_matches('/'));
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, t).unwrap();
+        };
+        let court = |f: &FichierDeConnexion| {
+            let c = f.chemin.strip_prefix(&*racine.to_string_lossy()).unwrap_or(&f.chemin);
+            (c.to_string(), f.texte.is_some())
+        };
+        // Ordre de SDDM : /etc/sddm.conf l'emporte, puis /etc/sddm.conf.d sur /usr/lib.
+        ecrire("/usr/lib/sddm/sddm.conf.d/a.conf", "[Autologin]\nUser=alice\n");
+        ecrire("/etc/sddm.conf.d/b.conf", "[Autologin]\nUser=bob\n");
+        ecrire("/etc/sddm.conf", "[Autologin]\nUser=carol\n");
+        assert_eq!(
+            ouverture_automatique_de(&fichiers_de_connexion(&racine)).unwrap().0,
+            "carol"
+        );
+        std::fs::remove_file(racine.join("etc/sddm.conf")).unwrap();
+        assert_eq!(
+            ouverture_automatique_de(&fichiers_de_connexion(&racine)).unwrap().0,
+            "bob"
+        );
+        std::fs::remove_file(racine.join("etc/sddm.conf.d/b.conf")).unwrap();
+        // Fichier dont les droits ne se lisent pas (ici un lien en boucle) : non vérifié, jamais absent.
+        std::fs::create_dir_all(racine.join("etc/gdm3")).unwrap();
+        symlink("custom.conf", racine.join("etc/gdm3/custom.conf")).unwrap();
+        let vus: Vec<_> = fichiers_de_connexion(&racine).iter().map(court).collect();
+        assert!(vus.contains(&("/etc/gdm3/custom.conf".to_string(), false)), "{vus:?}");
+        // Fichier listé qui ne se retrouve pas à la lecture (lien cassé) : non vérifié.
+        symlink("parti", racine.join("etc/sddm.conf.d/z.conf")).unwrap();
+        let vus: Vec<_> = fichiers_de_connexion(&racine).iter().map(court).collect();
+        assert!(vus.contains(&("/etc/sddm.conf.d/z.conf".to_string(), false)), "{vus:?}");
+        // Dossier qui ne s'ouvre pas (lien en boucle) : non vérifié.
+        std::fs::create_dir_all(racine.join("etc/lightdm")).unwrap();
+        symlink("lightdm.conf.d", racine.join("etc/lightdm/lightdm.conf.d")).unwrap();
+        let vus: Vec<_> = fichiers_de_connexion(&racine).iter().map(court).collect();
+        assert!(
+            vus.contains(&("/etc/lightdm/lightdm.conf.d".to_string(), false)),
+            "{vus:?}"
+        );
+        // Plus de fichiers qu'on n'en lit : le dossier est non vérifié, pas lu à moitié en silence.
+        let gros = racine.join("usr/share/lightdm/lightdm.conf.d");
+        std::fs::create_dir_all(&gros).unwrap();
+        for i in 0..=CONNEXION_FICHIERS_MAX {
+            std::fs::write(gros.join(format!("{i:04}.conf")), "").unwrap();
+        }
+        let vus: Vec<_> = fichiers_de_connexion(&racine).iter().map(court).collect();
+        assert!(
+            vus.contains(&("/usr/share/lightdm/lightdm.conf.d".to_string(), false)),
+            "{:?}",
+            vus.iter().filter(|v| !v.1).collect::<Vec<_>>()
+        );
+        // Et le constat les dit tous non vérifiés, à côté de l'ouverture vue.
+        let c = constat_d_ouverture(&fichiers_de_connexion(&racine), || Some(false)).unwrap();
+        assert_eq!(c.probleme, Some(Niveau::Moyen), "{}", c.message);
+        assert!(c.message.contains(tr!("non vérifiés", "not checked")), "{}", c.message);
+    }
+
     /// D7a : un compte caché à l'UID 0 se verrouille par un geste (jamais supprimé) ; un nom forgé laisse la liste
     /// entière à la main.
     #[test]
@@ -5167,6 +5587,7 @@ mod tests_au_hasard {
         fn lecteurs_sans_plantage(t in texte(), chemin in "(/etc/gdm3/custom.conf|/etc/sddm.conf|/etc/lightdm/lightdm.conf|/x)") {
             let _ = valeur_ini(&t, |_| true, "User");
             let _ = ouverture_automatique_de(&[super::tests::connexion(&chemin, &t)]);
+            let _ = annulations_non_sures(&[super::tests::connexion(&chemin, &t), super::tests::connexion(&chemin, &t)]);
             let _ = proprietaires_pacman(&t);
             let _ = wifi_ouvert(&t);
             let _ = maj::juger_dnf_auto(false, true, &t);
