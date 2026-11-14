@@ -112,37 +112,47 @@ repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
   takes it whole, uwsm may split it), except the whole form "${XDG_DATA_HOME:-/folder}" in a root-only environment.d
   file, read as systemd reads it (in user.conf, /etc/environment or pam_env.conf, which do not expand it, it stays
   unresolved, reported); "~/x" or "$HOME/x" set there is read both ways: replaced by the home folder, and as written,
-  from the home folder. Every file in the uwsm folder and in its "env.d" and "env-<desktop>.d" counts, whatever its name
-  and extension; a desktop name outside letters, digits, "_", "." and "-", in the session's XDG_CURRENT_DESKTOP or in
-  the DesktopNames of an uwsm session (wayland-sessions), or a DesktopNames line with a control or non-ASCII byte, is
-  reported, not checked (uwsm derives from it an "env-…" file elsewhere, which Vanguard does not read), cannot be
-  declared normal and raises the backup. An uwsm variables file (in every folder it reads) or a plugin the account can
-  change, and each file they include, at every level and whoever owns it, is judged only if it has nothing but simple
-  lines: blank line, whole comment, "NAME=value" or "export NAME=value" (value without double quote, "$", backquote,
-  backslash, parenthesis, ";", "&", "|", "<", ">", "#" or blank, or wholly within single quotes), "export NAME", and ".
-  path" or "source path" with an absolute or "~/…" path spelled out, up to 64 included files. Vanguard does not read
-  shell code: a file with any other line (eval, function, condition, "$HOME", value in double quotes, end-of-line
-  comment, NUL byte, non-UTF-8 text…) is reported whole, not checked, cannot be declared normal and raises the backup;
-  this also holds for an ordinary file (`export PATH="$HOME/bin:$PATH"`): rewrite it in simple lines. In a judged file,
-  a line that writes XDG_CURRENT_DESKTOP is reported the same way, since uwsm reads this name again for each following
-  folder, except with a fixed value of letters, digits, "_", "." and "-" ("sway", "GNOME:sway"), reported as
-  information; the same goes for an uwsm variable (`__NAME__`) or HOME, and for a relative inclusion or one of a folder.
-  A shell profile that contains a NUL byte, which the shell removes before reading, is reported too, not checked; and an
-  "env.d" that is a link to a folder is followed everywhere, as uwsm follows it: the backup judges what it holds instead
-  of being raised because it cannot be read as a file. The "exec" lines of popt settings (~/.popt, /etc/popt) are judged
-  as launches. A file that a profile or an uwsm file reads with "." or "source" is also judged line by line, with the
-  same rule as ~/.bashrc (a line that names LD_PRELOAD is reported, even if it only reads it), when the inclusion is
-  spelled out in command position and its path is absolute or under "~/" or "$HOME/", up to 64 included files. A home
-  folder written another way ("/home/alice/.", "/home//alice") is read in its normal form; with "..", it is reported as
-  unknown, not checked. Limits: in a profile, an inclusion written another way (relative path or one computed from a
-  variable, loop over a folder, eval) is not followed, and the check does not report it, an included file that cannot be
-  read, is too large or is not UTF-8 is not judged, and a quoted value written over several lines is not followed from
-  one line to the next, and can hide the line after it; root-only system uwsm files, and what they include, are not
-  judged this way; ~/.profile, which uwsm reads before its own files in the same shell, is not judged with the uwsm rule
-  (the author's choice): a line there that changes the desktop name or an uwsm variable, defines a function or an alias,
-  or starts any command, is not checked; a program found through PATH (uwsm starts "tr" and "sh" this way), or a
-  language variable that changes what "tr" does, can change what uwsm reads next. A variable set during the session, by
-  a Hyprland "env =" line, or a folder moved by a shell profile is not checked.
+  from the home folder. The files uwsm reads count: "env" and "env-<desktop>" in the uwsm folder, every file in its
+  "env.d" and "env-<desktop>.d" except those uwsm skips ("*.bak", "*~", "*.disabled", "*.example", "*.sample",
+  "*.broken"), and "~/.config/uwsm/default", which Omarchy's uwsm file includes; "default-id", notes or a working copy
+  ("env.bak", ".env.swp") at the top of the folder are no longer judged. A desktop name outside letters, digits, "_",
+  "." and "-", in the session's XDG_CURRENT_DESKTOP or in the DesktopNames of an uwsm session (wayland-sessions), or a
+  DesktopNames line with a control or non-ASCII byte, is reported, not checked (uwsm derives from it an "env-…" file
+  elsewhere, which Vanguard does not read), cannot be declared normal and raises the backup. An uwsm variables file (in
+  every folder it reads) or a plugin the account can change, and each file they include, at every level and whoever
+  owns it, is judged only if it has nothing but simple lines: blank line, whole comment, "NAME=value" or "export
+  NAME=value", "export NAME", and ". path" or "source path" with an absolute or "~/…" path spelled out, up to 64
+  included files. The value has no quote, "$", backquote, backslash, parenthesis, ";", "&", "|", "<", ">", "#", "~",
+  brace, wildcard ("*", "?", "[", "]") or blank; or is wholly within single quotes; or is wholly within double quotes,
+  without quote, backquote, backslash or control byte, "$" being used there only for "$HOME", "${HOME}", "$PATH" or
+  "${PATH}" (`export PATH="$HOME/.local/bin:$PATH"` is judged, with the home folder in place of "$HOME"). Vanguard
+  does not read shell code: a file with any other line (eval, function, condition, "~+", "{a,b}", end-of-line comment,
+  NUL byte, non-UTF-8 text…), that sets a variable uwsm's shell or its programs read to change what follows (IFS,
+  EXECIGNORE, BASH_ENV, BASH_*, ENV, GLOBIGNORE, CDPATH, LANG, LC_*…), or that reads "$HOME" or "~/" while an uwsm
+  file sets HOME, is not judged: it is reported separately, not checked (never counted as safe, with no guessed
+  severity), with what to rewrite, and it raises the backup. In a judged file, a line that writes XDG_CURRENT_DESKTOP
+  is reported, not checked, high and not declarable, since uwsm reads this name again for each following folder,
+  except with a fixed value of letters, digits, "_", "." and "-" ("sway", "GNOME:sway", quoted or not), reported as
+  information; the same goes for an uwsm variable (`__NAME__`) or HOME, and for a relative inclusion or one of a
+  folder. A shell profile or an uwsm file that contains a NUL byte, which the shell removes before reading, is reported
+  too, not checked; and an "env.d" that is a link to a folder is followed everywhere, as uwsm follows it: the backup
+  judges what it holds instead of being raised because it cannot be read as a file. The "exec" lines of popt settings
+  (~/.popt, /etc/popt) are judged as launches. A file that a profile or an uwsm file reads with "." or "source" is also
+  judged line by line, with the same rule as ~/.bashrc (a line that names LD_PRELOAD is reported, even if it only reads
+  it), when the inclusion is spelled out in command position and its path is absolute or under "~/" or "$HOME/", up to
+  64 included files. A home folder written another way ("/home/alice/.", "/home//alice") is read in its normal form; a
+  HOME with ".." is not followed (the folder taken from the account database replaces it, and without it, no relative
+  or empty path stands in for it) and the check reports the home folder as unknown, not checked. Limits: in a profile,
+  an inclusion written another way (relative path or one computed from a variable, loop over a folder, eval) is not
+  followed, and the check does not report it, an included file that cannot be read, is too large or is not UTF-8 is not
+  judged, and a quoted value written over several lines is not followed from one line to the next, and can hide the
+  line after it; root-only system uwsm files, and what they include, are not judged this way; ~/.profile, which uwsm
+  reads before its own files in the same shell, is not judged with the uwsm rule (the author's choice): a line there
+  that changes the desktop name or an uwsm variable, defines a function or an alias, or starts any command, is not
+  checked; a PATH set by a simple line is judged only for its hidden folders: an ordinary folder of the account placed
+  before the system ones can change every program that uwsm, or what it starts, then finds through PATH (tr, sh, env,
+  systemctl, xdg-user-dirs-update…). A variable set during the session, by a Hyprland "env =" line, or a folder moved
+  by a shell profile is not checked.
 - **System programs, taken by their path.** The check, traces, monitoring, the backup and the other machine readings
   start pacman, systemctl, journalctl, ss, crontab, ping and the rest from the system folders, never through the
   account's PATH: a fake program placed in ~/.local/bin can no longer hide a connection or a journal line. The
