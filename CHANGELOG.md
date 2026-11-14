@@ -170,44 +170,50 @@ recompilée au besoin.
   ne fait que sa propre coupe : environment.d garde le reste entier de la ligne, blancs et « ; » compris, comme systemd
   (avant, la valeur s'y coupait au premier blanc, comme dans le shell) ; user.conf, lui, coupe DefaultEnvironment= et
   ManagerEnvironment= en mots comme systemd, guillemets compris, et chaque mot pose une variable
-  (« DefaultEnvironment=PATH=/usr/bin LANG=C ») ; dans un profil, chaque commande de la ligne, coupée hors guillemets à
-  « ; », « & » et « | », se juge jusqu'au commentaire (« true && export PATH=… ») ; dans fish, chaque mot sans ses
-  guillemets, jusqu'au commentaire ou au « ; » (avant, « set -gx PATH /usr/local/bin $PATH # mes outils » se levait à
-  tort). BASHOPTS ou SHELLOPTS posé à la session (environment.d, user.conf, un profil) est élevé : « dotglob » fait lire
-  à uwsm les fichiers cachés de ses « .d ». Un PATH avec un morceau vide ou relatif (« . », « .x », « :: », « : » au
-  début ou à la fin), qui fait chercher chaque programme lancé par son nom dans le dossier courant, est élevé dans un
-  fichier d'uwsm, un profil du shell (fish compris), environment.d et user.conf de systemd. Les lignes « exec » des
-  réglages de popt (~/.popt, /etc/popt) se jugent comme des lancements. Un fichier qu'un profil ou un fichier d'uwsm lit
-  par « . » ou « source » se juge aussi ligne à ligne, avec la même règle que ~/.bashrc (une ligne qui nomme LD_PRELOAD
-  se signale, même si elle ne fait que le lire), quand l'inclusion est écrite en toutes lettres en position de commande
-  et que son chemin est absolu ou sous « ~/ » ou « $HOME/ », jusqu'à 64 fichiers inclus. Un dossier personnel écrit
-  autrement (« /home/alice/. », « /home//alice ») se lit sous sa forme normale ; un HOME avec « .. » n'est pas suivi (le
-  dossier tiré de la base des comptes le remplace, et sans lui, aucun chemin relatif ni vide n'en tient lieu) et le
-  bilan dit le dossier personnel inconnu, non vérifié. Limites : dans un profil, une inclusion écrite autrement (chemin
-  relatif ou calculé par une variable, boucle sur un dossier, eval) n'est pas suivie, et le bilan ne le signale pas, un
-  fichier inclus illisible, trop gros ou qui n'est pas en UTF-8 n'est pas jugé, et une valeur entre guillemets écrite
-  sur plusieurs lignes n'est pas suivie d'une ligne à l'autre, et peut cacher la ligne qui la suit ; les fichiers d'uwsm
-  du système à root seul, et ce qu'ils incluent, ne se jugent pas ainsi ; ~/.profile, qu'uwsm lit avant ses fichiers
-  dans le même shell, n'est pas jugé de la règle d'uwsm (choix de l'auteur) : une ligne qui y change le nom de bureau ou
-  une variable d'uwsm, y définit une fonction ou un alias, ou y lance une commande quelconque, n'est pas vérifiée ; un
-  PATH posé par une ligne simple n'est jugé que pour ses dossiers cachés et ses morceaux vides ou relatifs : un dossier
-  ordinaire du compte placé devant ceux du système peut changer chaque programme qu'uwsm, ou ce qu'il lance, trouve
-  ensuite par PATH (tr, sh, env, systemctl, xdg-user-dirs-update…) ; Vanguard ne lit pas le réglage « dotglob » de la
-  session : un fichier caché d'un « .d » se juge sous cette condition, dite ; une ligne qui n'y est pas simple n'est lue
-  que commande par commande, sans lire le shell ; bash 5.3 refuse aussi un fichier avec un octet NUL en deuxième ligne
-  après « #! », que Vanguard dit non vérifié par prudence (un programme ELF, avec un octet NUL dans ses premiers octets,
-  se tait comme binaire) ; un PATH relatif posé par une unité de systemd ou une ligne « env = » de Hyprland, et un
-  LD_LIBRARY_PATH relatif, ne sont pas signalés ; hors d'une ligne simple, un morceau de PATH qui lit une variable
-  (« $… »), commence par « ~ » ou « % », ou une valeur qui contient « ` », « \ », « { » ou « ( » (« ${PATH:+$PATH:}$1 »
-  d'Arch) n'est pas jugé relatif ; un « ~ » entre apostrophes (`export PATH='~/bin:/usr/bin'`) et « path=(. $path) » de
-  zsh sont seulement dits non vérifiés, et ~/.cshrc n'est pas lu ; une condition ou une boucle d'un profil (« if …; then
-  export …; fi ») se lit commande par commande, sans lire le shell ; XDG_DATA_DIRS, XDG_CONFIG_DIRS, GIT_EXEC_PATH ou
-  TMPDIR posés vers un dossier caché ne sont pas signalés, ni un dossier caché plus loin que le premier niveau du
-  dossier personnel (« ~/outils/.x », règle commune) ; un cycle d'inclusions entre fichiers d'uwsm n'est pas dit au
-  bilan (la sauvegarde se lève) ; dans un profil, une ligne qui n'est pas simple ne se calcule pas (« /$HOME/.x » n'y
-  est pas lu comme le dossier personnel) : elle est dite non vérifiée. Une variable posée en cours de session ou par une
-  ligne « env = » de Hyprland n'est pas vérifiée ; un dossier déplacé par un profil de shell (HOME, ZDOTDIR,
-  XDG_CONFIG_HOME) est dit, mais ce qui se lit sous lui n'est pas jugé.
+  (« DefaultEnvironment=PATH=/usr/bin LANG=C ») ; user.conf, user.conf.d et les Environment= des unités joignent une
+  ligne finie par « \ » exactement comme systemd (mesuré sur systemd 262) : la barre devient une espace, un commentaire
+  au milieu se saute, une ligne vide finit la suite, « \\ » et « \ » suivi d'une espace ne joignent pas (une ligne finie
+  par « \ » suivi d'un blanc, que systemd refuse, est dite non vérifiée) (avant, ils se joignaient comme un shell, et
+  « DefaultEnvironment=A=1 \ », puis « # note \ », puis « PATH=/home/alice/.x » se taisait ; « DefaultEnvironment=B\ »
+  suivi de « ASH_ENV=… », que systemd lit comme ASH_ENV, n'est plus élevé comme un BASH_ENV) ; dans un profil, chaque
+  commande de la ligne, coupée hors guillemets à « ; », « & » et « | », se juge jusqu'au commentaire (« true && export
+  PATH=… ») ; dans fish, chaque mot sans ses guillemets, jusqu'au commentaire ou au « ; » (avant, « set -gx PATH
+  /usr/local/bin $PATH # mes outils » se levait à tort). BASHOPTS ou SHELLOPTS posé à la session (environment.d,
+  user.conf, un profil) est élevé : « dotglob » fait lire à uwsm les fichiers cachés de ses « .d ». Un PATH avec un
+  morceau vide ou relatif (« . », « .x », « :: », « : » au début ou à la fin), qui fait chercher chaque programme lancé
+  par son nom dans le dossier courant, est élevé dans un fichier d'uwsm, un profil du shell (fish compris),
+  environment.d et user.conf de systemd. Les lignes « exec » des réglages de popt (~/.popt, /etc/popt) se jugent comme
+  des lancements. Un fichier qu'un profil ou un fichier d'uwsm lit par « . » ou « source » se juge aussi ligne à ligne,
+  avec la même règle que ~/.bashrc (une ligne qui nomme LD_PRELOAD se signale, même si elle ne fait que le lire), quand
+  l'inclusion est écrite en toutes lettres en position de commande et que son chemin est absolu ou sous « ~/ » ou
+  « $HOME/ », jusqu'à 64 fichiers inclus. Un dossier personnel écrit autrement (« /home/alice/. », « /home//alice ») se
+  lit sous sa forme normale ; un HOME avec « .. » n'est pas suivi (le dossier tiré de la base des comptes le remplace,
+  et sans lui, aucun chemin relatif ni vide n'en tient lieu) et le bilan dit le dossier personnel inconnu, non vérifié.
+  Limites : dans un profil, une inclusion écrite autrement (chemin relatif ou calculé par une variable, boucle sur un
+  dossier, eval) n'est pas suivie, et le bilan ne le signale pas, un fichier inclus illisible, trop gros ou qui n'est
+  pas en UTF-8 n'est pas jugé, et une valeur entre guillemets écrite sur plusieurs lignes n'est pas suivie d'une ligne à
+  l'autre, et peut cacher la ligne qui la suit ; les fichiers d'uwsm du système à root seul, et ce qu'ils incluent, ne
+  se jugent pas ainsi ; ~/.profile, qu'uwsm lit avant ses fichiers dans le même shell, n'est pas jugé de la règle d'uwsm
+  (choix de l'auteur) : une ligne qui y change le nom de bureau ou une variable d'uwsm, y définit une fonction ou un
+  alias, ou y lance une commande quelconque, n'est pas vérifiée ; un PATH posé par une ligne simple n'est jugé que pour
+  ses dossiers cachés et ses morceaux vides ou relatifs : un dossier ordinaire du compte placé devant ceux du système
+  peut changer chaque programme qu'uwsm, ou ce qu'il lance, trouve ensuite par PATH (tr, sh, env, systemctl,
+  xdg-user-dirs-update…) ; Vanguard ne lit pas le réglage « dotglob » de la session : un fichier caché d'un « .d » se
+  juge sous cette condition, dite ; une ligne qui n'y est pas simple n'est lue que commande par commande, sans lire le
+  shell ; bash 5.3 refuse aussi un fichier avec un octet NUL en deuxième ligne après « #! », que Vanguard dit non
+  vérifié par prudence (un programme ELF, avec un octet NUL dans ses premiers octets, se tait comme binaire) ; un PATH
+  relatif posé par une unité de systemd ou une ligne « env = » de Hyprland, et un LD_LIBRARY_PATH relatif, ne sont pas
+  signalés ; hors d'une ligne simple, un morceau de PATH qui lit une variable (« $… »), commence par « ~ » ou « % », ou
+  une valeur qui contient « ` », « \ », « { » ou « ( » (« ${PATH:+$PATH:}$1 » d'Arch) n'est pas jugé relatif ; un « ~ »
+  entre apostrophes (`export PATH='~/bin:/usr/bin'`) et « path=(. $path) » de zsh sont seulement dits non vérifiés, et
+  ~/.cshrc n'est pas lu ; une condition ou une boucle d'un profil (« if …; then export …; fi ») se lit commande par
+  commande, sans lire le shell ; XDG_DATA_DIRS, XDG_CONFIG_DIRS, GIT_EXEC_PATH ou TMPDIR posés vers un dossier caché ne
+  sont pas signalés, ni un dossier caché plus loin que le premier niveau du dossier personnel (« ~/outils/.x », règle
+  commune) ; un cycle d'inclusions entre fichiers d'uwsm n'est pas dit au bilan (la sauvegarde se lève) ; dans un
+  profil, une ligne qui n'est pas simple ne se calcule pas (« /$HOME/.x » n'y est pas lu comme le dossier personnel) :
+  elle est dite non vérifiée. Une variable posée en cours de session ou par une ligne « env = » de Hyprland n'est pas
+  vérifiée ; un dossier déplacé par un profil de shell (HOME, ZDOTDIR, XDG_CONFIG_HOME) est dit, mais ce qui se lit sous
+  lui n'est pas jugé.
 - **Ce que Vanguard ne sait pas lire sûrement est dit non vérifié.** Dans un profil du shell (bash, sh, zsh, fish), un
   fichier d'uwsm, environment.d et user.conf, une ligne qui touche une variable surveillée (PATH, LD_*, BASH_ENV,
   BASHOPTS, SSH_ASKPASS, EDITOR, PAGER, PERL5OPT… ; FPATH, MODULE_PATH, PROMPT_COMMAND et ZDOTDIR s'y ajoutent, et dans
@@ -232,14 +238,29 @@ recompilée au besoin.
   « source » ou « . » d'un chemin fixe qui ne lit que HOME, XDG_CONFIG_HOME, XDG_DATA_HOME, ZDOTDIR, OMARCHY_PATH,
   NVM_DIR, ZSH ou __fish_config_dir. Une commande qui tourne à part (avant « | » ou « & », dans « ( … ) ») se tait
   aussi. Le découpeur rend la ligne non vérifiée dès qu'il doute (« $'…' », « ` », « \ » hors guillemets, un guillemet
-  ou une parenthèse qu'il ne referme pas). Tout le reste est dit au bilan, non vérifié, en nommant le fichier et la
-  ligne, jamais compté sain : « builtin export », « command export », un alias vers export, eval ou source (« alias
-  e='x=1 export' » compris), « declare -n », « read -a », « mapfile -d », « printf -vPATH », « printf "-v" », « compgen
-  -V », « wait -p », « hash -p », « eval "$(f)" » d'une fonction du fichier, « . $f » d'une variable posée dans le
-  fichier, « set -A », « emulate sh -c », « - eval », « if [[ … ]] { … } » de zsh, un nom de commande qui se calcule
-  (« ex${z}port », « $X »), « . <(…) », « source /dev/stdin ». Dans fish, environment.d et user.conf, toute ligne hors
-  de la forme simple qui touche une variable surveillée, par son nom ou par un nom calculé (« set -gx $n … », « … |
-  source »), est dite de même. Si une ligne dite se lit encore sans doute comme suspecte (« true && export
+  ou une parenthèse qu'il ne referme pas). Il lit chaque ligne seule (seules les lignes finies par « \ » se joignent) :
+  une valeur entre guillemets ouverte sur plusieurs lignes n'est pas suivie et peut cacher la ligne qui la suit (la
+  limite écrite plus haut vaut aussi pour cette liste blanche). Une fonction de bash-completion qui pose une variable
+  par son nom (« _comp_upvars », « _comp_get_words » et toute « _comp_… », « _upvars », « _get_comp_words_by_ref »,
+  « _init_completion »…) appelée avec un argument calculé (« _comp_upvars -v $a$b … ») est dite non vérifiée ; un nom
+  surveillé écrit en clair dans ses arguments (« _upvars -v PATH … ») l'était déjà. Tout le reste est dit au bilan, non
+  vérifié, en nommant le fichier et la ligne, jamais compté sain : « builtin export », « command export », un alias vers
+  export, eval ou source (« alias e='x=1 export' » compris), « declare -n », « read -a », « mapfile -d », « printf
+  -vPATH », « printf "-v" », « compgen -V », « wait -p », « hash -p », « eval "$(f)" » d'une fonction du fichier, « .
+  $f » d'une variable posée dans le fichier, « set -A », « emulate sh -c », « - eval », « if [[ … ]] { … } » de zsh, un
+  nom de commande qui se calcule (« ex${z}port », « $X »), « . <(…) », « source /dev/stdin ». fish n'est plus lu
+  finement : dès qu'une configuration de fish existe (config.fish, fish_variables, conf.d, functions, completions de
+  ~/.config/fish ; vendor_conf.d, vendor_functions.d, vendor_completions.d et generated_completions de
+  ~/.local/share/fish ; /etc/fish et les dossiers de fish de /usr/share, /usr/local/share et XDG_DATA_DIRS), le bilan
+  dit « fish : non vérifié » en nommant ce qui est présent (huit endroits au plus, puis le nombre des autres) :
+  fonctions chargées à la demande, variables universelles, compléments et conf.d des paquets ne sont pas lus, et ce que
+  fish pose ou lance n'est pas jugé. Les formes simples suspectes de fish restent élevées. Un dossier de fish du système
+  que seul root peut changer ne se dit que si fish est là (un endroit du compte est présent, ou le programme fish est
+  installé) : sans fish, les dossiers vendor_*.d que d'autres paquets installent ne se disent pas. Le prix : un
+  ~/.config/fish/conf.d qu'un autre programme a rempli, sans que fish soit installé, suffit pour que « fish : non
+  vérifié » s'affiche, avec ce dossier et les vendor_*.d de /usr/share/fish. Dans fish, environment.d et user.conf,
+  toute ligne hors de la forme simple qui touche une variable surveillée, par son nom ou par un nom calculé (« set -gx
+  $n … », « … | source »), est dite de même. Si une ligne dite se lit encore sans doute comme suspecte (« true && export
   PATH=.x:$PATH », « fish_add_path ~/.x » dans un « if »), elle reste élevée, dans environment.d et user.conf aussi
   (« PATH=/home/alice/.x:"$PATH" », un nom décodé comme « DefaultEnvironment=P\x41TH=… », lu PATH) ; dans environment.d,
   où une variable qui n'y est pas posée est vide, « ${NOPE:+x}/home/alice/.x », « /home/alice/${NOPE:-.x} » et
@@ -256,11 +277,17 @@ recompilée au besoin.
   Limites : ce qu'écrit un outil d'activation permis n'est pas lu ; un fichier inclus par un chemin qui lit l'une des
   variables permises (« source "$OMARCHY_PATH/default/bash/rc" », « . "${OMARCHY_PATH%/}/default/uwsm/default" ») n'est
   pas suivi, et la ligne se tait ; dans environment.d et user.conf, HOME et XDG_CONFIG_HOME ne sont pas jugés comme un
-  dossier déplacé : Vanguard y lit seulement les unités de systemd sous le dossier posé ; « : ${PATH::=/home/alice/.x} »
-  de zsh et « PATH =… » d'environment.d (une espace avant « = ») sont dits non vérifiés, pas élevés ; dans le shell, une
-  variable posée plus haut dans le fichier n'est pas suivie (« PATH=$X:$PATH » est dit, pas élevé) ; une valeur lue dans
-  un calcul, ou construite en morceaux sur plusieurs lignes, n'est pas suivie ; une ligne hors forme d'un fichier que
-  seul root peut changer n'est pas dite (celles d'Omarchy, comme « ${EDITOR:-…} », se taisent donc) ; dans un fichier du
+  dossier déplacé : Vanguard y lit seulement les unités de systemd sous le dossier posé ; dans environment.d, une
+  variable posée plus haut (HOME, XDG_CONFIG_HOME ou toute autre, dans l'ordre du générateur de systemd : par nom de
+  fichier, ~/.config/environment.d, /etc, /run, /usr/local/lib puis /usr/lib) est suivie : une variable surveillée qui
+  la lit (« $HOME », « ${HOME} », « ${X:-…} », « ${X:+…} ») est dite non vérifiée en nommant la variable et la ligne qui
+  la pose, et élevée si sa valeur, développée comme le générateur la développe, est suspecte (« HOME=/home/alice/.x »
+  puis « PATH=$HOME/bin ») ; « export HOME=… » ne pose rien pour le générateur, et « %h » n'y est pas développé ; si le
+  fichier et ceux qui posent ne sont changeables que par root, rien n'est dit ; « : ${PATH::=/home/alice/.x} » de zsh et
+  « PATH =… » d'environment.d (une espace avant « = ») sont dits non vérifiés, pas élevés ; dans le shell, une variable
+  posée plus haut dans le fichier n'est pas suivie (« PATH=$X:$PATH » est dit, pas élevé) ; une valeur lue dans un
+  calcul, ou construite en morceaux sur plusieurs lignes, n'est pas suivie ; une ligne hors forme d'un fichier que seul
+  root peut changer n'est pas dite (celles d'Omarchy, comme « ${EDITOR:-…} », se taisent donc) ; dans un fichier du
   compte, des formes courantes sont dites non vérifiées sans être fautives : « [[ … && … ]] » et « [[ … || … ]] » (« [[
   -z $DISPLAY && $XDG_VTNR -eq 1 ]] »), « [[ x =~ (x) ]] », le « \. "$NVM_DIR/nvm.sh" » de NVM, « for f in …; do source
   "$f"; done », la fonction « zd() » d'Omarchy, « local x=$(…) », « command ssh … », « source <(kubectl completion

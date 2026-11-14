@@ -159,42 +159,48 @@ repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
   raised like "$HOME/a b/../.x". Each format only makes its own cut: environment.d keeps the whole rest of the line,
   blanks and ";" included, as systemd does (before, the value was cut there at the first blank, as in the shell);
   user.conf, for its part, splits DefaultEnvironment= and ManagerEnvironment= into words as systemd does, quotes
-  included, and each word sets one variable ("DefaultEnvironment=PATH=/usr/bin LANG=C"); in a profile, each command of
-  the line, cut outside quotes at ";", "&" and "|", is judged up to the comment ("true && export PATH=…"); in fish, each
-  word without its quotes, up to the comment or the ";" (before, "set -gx PATH /usr/local/bin $PATH # my tools" was
-  wrongly raised). BASHOPTS or SHELLOPTS set for the session (environment.d, user.conf, a profile) is reported high:
-  "dotglob" makes uwsm read the hidden files of its ".d" folders. A PATH with an empty or relative piece (".", ".x",
-  "::", ":" at the start or end), which makes every program started by name be looked up in the current folder, is
-  reported high in an uwsm file, a shell profile (fish included), environment.d and systemd's user.conf. The "exec"
-  lines of popt settings (~/.popt, /etc/popt) are judged as launches. A file that a profile or an uwsm file reads with
-  "." or "source" is also judged line by line, with the same rule as ~/.bashrc (a line that names LD_PRELOAD is
-  reported, even if it only reads it), when the inclusion is spelled out in command position and its path is absolute or
-  under "~/" or "$HOME/", up to 64 included files. A home folder written another way ("/home/alice/.", "/home//alice")
-  is read in its normal form; a HOME with ".." is not followed (the folder taken from the account database replaces it,
-  and without it, no relative or empty path stands in for it) and the check reports the home folder as unknown, not
-  checked. Limits: in a profile, an inclusion written another way (relative path or one computed from a variable, loop
-  over a folder, eval) is not followed, and the check does not report it, an included file that cannot be read, is too
-  large or is not UTF-8 is not judged, and a quoted value written over several lines is not followed from one line to
-  the next, and can hide the line after it; root-only system uwsm files, and what they include, are not judged this way;
-  ~/.profile, which uwsm reads before its own files in the same shell, is not judged with the uwsm rule (the author's
-  choice): a line there that changes the desktop name or an uwsm variable, defines a function or an alias, or starts any
-  command, is not checked; a PATH set by a simple line is judged only for its hidden folders and its empty or relative
-  pieces: an ordinary folder of the account placed before the system ones can change every program that uwsm, or what it
-  starts, then finds through PATH (tr, sh, env, systemctl, xdg-user-dirs-update…); Vanguard does not read the session's
-  "dotglob" setting: a hidden file of a ".d" is judged under that condition, stated; a line there that is not simple is
-  read only command by command, without reading shell code; bash 5.3 also refuses a file with a NUL byte on the second
-  line after "#!", which Vanguard reports unchecked to be safe (an ELF program, with a NUL byte in its first bytes,
-  stays silent as binary); a relative PATH set by a systemd unit or a Hyprland "env =" line, and a relative
-  LD_LIBRARY_PATH, are not reported; outside a simple line, a PATH piece that reads a variable ("$…"), starts with "~"
-  or "%", or a value containing "`", "\", "{" or "(" (Arch's "${PATH:+$PATH:}$1") is not judged relative; a "~" within
-  single quotes (`export PATH='~/bin:/usr/bin'`) and zsh's "path=(. $path)" are only reported as not checked, and
-  ~/.cshrc is not read; a condition or loop in a profile ("if …; then export …; fi") is read command by command, without
-  reading shell code; XDG_DATA_DIRS, XDG_CONFIG_DIRS, GIT_EXEC_PATH or TMPDIR set to a hidden folder are not reported,
-  nor is a hidden folder deeper than the first level of the home folder ("~/tools/.x", common rule); an inclusion cycle
-  between uwsm files is not reported by the check (the backup is raised); in a profile, a line that is not simple is not
-  computed ("/$HOME/.x" is not read there as the home folder): it is reported as not checked. A variable set during the
-  session or by a Hyprland "env =" line is not checked; a folder moved by a shell profile (HOME, ZDOTDIR,
-  XDG_CONFIG_HOME) is reported, but what is read under it is not judged.
+  included, and each word sets one variable ("DefaultEnvironment=PATH=/usr/bin LANG=C"); user.conf, user.conf.d and
+  units' Environment= join a line ending in "\" exactly as systemd does (measured on systemd 262): the backslash becomes
+  a space, a comment in the middle is skipped, an empty line ends the continuation, "\\" and "\" followed by a space do
+  not join (a line ending in "\" followed by a blank, which systemd rejects, is reported as not checked) (before, they
+  were joined like a shell, and "DefaultEnvironment=A=1 \", then "# note \", then "PATH=/home/alice/.x" stayed silent;
+  "DefaultEnvironment=B\" followed by "ASH_ENV=…", which systemd reads as ASH_ENV, is no longer reported high as a
+  BASH_ENV); in a profile, each command of the line, cut outside quotes at ";", "&" and "|", is judged up to the comment
+  ("true && export PATH=…"); in fish, each word without its quotes, up to the comment or the ";" (before, "set -gx PATH
+  /usr/local/bin $PATH # my tools" was wrongly raised). BASHOPTS or SHELLOPTS set for the session (environment.d,
+  user.conf, a profile) is reported high: "dotglob" makes uwsm read the hidden files of its ".d" folders. A PATH with an
+  empty or relative piece (".", ".x", "::", ":" at the start or end), which makes every program started by name be
+  looked up in the current folder, is reported high in an uwsm file, a shell profile (fish included), environment.d and
+  systemd's user.conf. The "exec" lines of popt settings (~/.popt, /etc/popt) are judged as launches. A file that a
+  profile or an uwsm file reads with "." or "source" is also judged line by line, with the same rule as ~/.bashrc (a
+  line that names LD_PRELOAD is reported, even if it only reads it), when the inclusion is spelled out in command
+  position and its path is absolute or under "~/" or "$HOME/", up to 64 included files. A home folder written another
+  way ("/home/alice/.", "/home//alice") is read in its normal form; a HOME with ".." is not followed (the folder taken
+  from the account database replaces it, and without it, no relative or empty path stands in for it) and the check
+  reports the home folder as unknown, not checked. Limits: in a profile, an inclusion written another way (relative path
+  or one computed from a variable, loop over a folder, eval) is not followed, and the check does not report it, an
+  included file that cannot be read, is too large or is not UTF-8 is not judged, and a quoted value written over several
+  lines is not followed from one line to the next, and can hide the line after it; root-only system uwsm files, and what
+  they include, are not judged this way; ~/.profile, which uwsm reads before its own files in the same shell, is not
+  judged with the uwsm rule (the author's choice): a line there that changes the desktop name or an uwsm variable,
+  defines a function or an alias, or starts any command, is not checked; a PATH set by a simple line is judged only for
+  its hidden folders and its empty or relative pieces: an ordinary folder of the account placed before the system ones
+  can change every program that uwsm, or what it starts, then finds through PATH (tr, sh, env, systemctl,
+  xdg-user-dirs-update…); Vanguard does not read the session's "dotglob" setting: a hidden file of a ".d" is judged
+  under that condition, stated; a line there that is not simple is read only command by command, without reading shell
+  code; bash 5.3 also refuses a file with a NUL byte on the second line after "#!", which Vanguard reports unchecked to
+  be safe (an ELF program, with a NUL byte in its first bytes, stays silent as binary); a relative PATH set by a systemd
+  unit or a Hyprland "env =" line, and a relative LD_LIBRARY_PATH, are not reported; outside a simple line, a PATH piece
+  that reads a variable ("$…"), starts with "~" or "%", or a value containing "`", "\", "{" or "(" (Arch's
+  "${PATH:+$PATH:}$1") is not judged relative; a "~" within single quotes (`export PATH='~/bin:/usr/bin'`) and zsh's
+  "path=(. $path)" are only reported as not checked, and ~/.cshrc is not read; a condition or loop in a profile ("if …;
+  then export …; fi") is read command by command, without reading shell code; XDG_DATA_DIRS, XDG_CONFIG_DIRS,
+  GIT_EXEC_PATH or TMPDIR set to a hidden folder are not reported, nor is a hidden folder deeper than the first level of
+  the home folder ("~/tools/.x", common rule); an inclusion cycle between uwsm files is not reported by the check (the
+  backup is raised); in a profile, a line that is not simple is not computed ("/$HOME/.x" is not read there as the home
+  folder): it is reported as not checked. A variable set during the session or by a Hyprland "env =" line is not
+  checked; a folder moved by a shell profile (HOME, ZDOTDIR, XDG_CONFIG_HOME) is reported, but what is read under it is
+  not judged.
 - **What Vanguard cannot read safely is reported as not checked.** In a shell profile (bash, sh, zsh, fish), an uwsm
   file, environment.d and user.conf, a line that touches a watched variable (PATH, LD_*, BASH_ENV, BASHOPTS,
   SSH_ASKPASS, EDITOR, PAGER, PERL5OPT…; FPATH, MODULE_PATH, PROMPT_COMMAND and ZDOTDIR are added, and in a profile HOME
@@ -217,12 +223,26 @@ repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
   command; a common activation tool (`eval "$(mise activate bash)"`); "source" or "." of a fixed path that reads only
   HOME, XDG_CONFIG_HOME, XDG_DATA_HOME, ZDOTDIR, OMARCHY_PATH, NVM_DIR, ZSH or __fish_config_dir. A command that runs
   apart (before "|" or "&", inside "( … )") stays silent too. The splitter reports the line as not checked as soon as it
-  is in doubt ("$'…'", "`", "\" outside quotes, a quote or a parenthesis it does not close). Everything else is reported
-  by the check as not checked, naming the file and the line, never counted as healthy: "builtin export", "command
-  export", an alias to export, eval or source ("alias e='x=1 export'" included), "declare -n", "read -a", "mapfile -d",
-  "printf -vPATH", `printf "-v"`, "compgen -V", "wait -p", "hash -p", `eval "$(f)"` of a function from the file, ". $f"
-  of a variable set in the file, "set -A", "emulate sh -c", "- eval", zsh's "if [[ … ]] { … }", a command name that is
-  computed ("ex${z}port", "$X"), ". <(…)", "source /dev/stdin". In fish, environment.d and user.conf, any line outside
+  is in doubt ("$'…'", "`", "\" outside quotes, a quote or a parenthesis it does not close). It reads each line on its
+  own (only lines ending in "\" are joined): a quoted value left open over several lines is not followed and can hide
+  the line after it (the limit written above holds for this allowlist too). A bash-completion function that sets a
+  variable by its name ("_comp_upvars", "_comp_get_words" and any "_comp_…", "_upvars", "_get_comp_words_by_ref",
+  "_init_completion"…) called with a computed argument ("_comp_upvars -v $a$b …") is reported as not checked; a watched
+  name written plainly among its arguments ("_upvars -v PATH …") already was. Everything else is reported by the check
+  as not checked, naming the file and the line, never counted as healthy: "builtin export", "command export", an alias
+  to export, eval or source ("alias e='x=1 export'" included), "declare -n", "read -a", "mapfile -d", "printf -vPATH",
+  `printf "-v"`, "compgen -V", "wait -p", "hash -p", `eval "$(f)"` of a function from the file, ". $f" of a variable set
+  in the file, "set -A", "emulate sh -c", "- eval", zsh's "if [[ … ]] { … }", a command name that is computed
+  ("ex${z}port", "$X"), ". <(…)", "source /dev/stdin". fish is no longer read in detail: as soon as a fish configuration
+  exists (config.fish, fish_variables, conf.d, functions, completions in ~/.config/fish; vendor_conf.d,
+  vendor_functions.d, vendor_completions.d and generated_completions in ~/.local/share/fish; /etc/fish and the fish
+  folders of /usr/share, /usr/local/share and XDG_DATA_DIRS), the check says "fish: not checked", naming what is present
+  (eight places at most, then the count of the others): lazily loaded functions, universal variables, completions and
+  packages' conf.d are not read, and what fish sets or runs is not judged. Simple suspicious fish forms stay high. A
+  system fish folder only root can change is reported only if fish is there (an account place is present, or the fish
+  program is installed): without fish, the vendor_*.d folders other packages install are not reported. The price: a
+  ~/.config/fish/conf.d filled by another program, with fish not installed, is enough for "fish: not checked" to show,
+  with that folder and the vendor_*.d folders of /usr/share/fish. In fish, environment.d and user.conf, any line outside
   the simple form that touches a watched variable, by its name or by a computed name ("set -gx $n …", "… | source"), is
   reported the same way. If a reported line can still be read without doubt as suspicious ("true && export
   PATH=.x:$PATH", "fish_add_path ~/.x" inside an "if"), it stays high, in environment.d and user.conf too
@@ -241,18 +261,24 @@ repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
   a path that reads one of the allowed variables (`source "$OMARCHY_PATH/default/bash/rc"`, `.
   "${OMARCHY_PATH%/}/default/uwsm/default"`) is not followed, and the line stays silent; in environment.d and user.conf,
   HOME and XDG_CONFIG_HOME are not judged as a moved folder: Vanguard only reads the systemd units under the folder set;
-  zsh's ": ${PATH::=/home/alice/.x}" and environment.d's "PATH =…" (a space before "=") are reported as not checked, not
-  high; in the shell, a variable set earlier in the file is not followed ("PATH=$X:$PATH" is reported, not high); a
-  value read inside a calculation, or built in pieces over several lines, is not followed; a non-simple line in a file
-  only root can change is not reported (Omarchy's, such as "${EDITOR:-…}", therefore stay silent); in an account file,
-  common forms are reported as not checked without being wrong: "[[ … && … ]]" and "[[ … || … ]]" ("[[ -z $DISPLAY &&
-  $XDG_VTNR -eq 1 ]]"), "[[ x =~ (x) ]]", NVM's `\. "$NVM_DIR/nvm.sh"`, `for f in …; do source "$f"; done`, Omarchy's
-  "zd()" function, "local x=$(…)", "command ssh …", "source <(kubectl completion bash)", "enable -n kill", "autoload" in
-  a bash file, `export VISUAL="$EDITOR"`, "${EDITOR:-…}", "PATH=~/bin:$PATH", zsh's "path=(…)",
-  "ZDOTDIR=$HOME/.config/zsh", `PROMPT_COMMAND="history -a; …"`, `eval "$(dircolors -b ~/.dircolors)"` and Debian's
-  lesspipe "eval", an alias that runs "$EDITOR", the body of a "<<", a line inside a "case", "shopt -s dotglob"; in
-  environment.d and user.conf, a "%h" or a final backslash is reported as not checked; a non-simple line in a session
-  file may raise the backup for a harmless form.
+  in environment.d, a variable set earlier (HOME, XDG_CONFIG_HOME or any other, in the order of the systemd generator:
+  by file name, ~/.config/environment.d, /etc, /run, /usr/local/lib then /usr/lib) is followed: a watched variable that
+  reads it ("$HOME", "${HOME}", "${X:-…}", "${X:+…}") is reported as not checked, naming the variable and the line that
+  sets it, and high if its value, expanded as the generator expands it, is suspicious ("HOME=/home/alice/.x" then
+  "PATH=$HOME/bin"); "export HOME=…" sets nothing for the generator, and "%h" is not expanded there; if the file and
+  those that set are changeable only by root, nothing is reported; zsh's ": ${PATH::=/home/alice/.x}" and
+  environment.d's "PATH =…" (a space before "=") are reported as not checked, not high; in the shell, a variable set
+  earlier in the file is not followed ("PATH=$X:$PATH" is reported, not high); a value read inside a calculation, or
+  built in pieces over several lines, is not followed; a non-simple line in a file only root can change is not reported
+  (Omarchy's, such as "${EDITOR:-…}", therefore stay silent); in an account file, common forms are reported as not
+  checked without being wrong: "[[ … && … ]]" and "[[ … || … ]]" ("[[ -z $DISPLAY && $XDG_VTNR -eq 1 ]]"), "[[ x =~ (x)
+  ]]", NVM's `\. "$NVM_DIR/nvm.sh"`, `for f in …; do source "$f"; done`, Omarchy's "zd()" function, "local x=$(…)",
+  "command ssh …", "source <(kubectl completion bash)", "enable -n kill", "autoload" in a bash file, `export
+  VISUAL="$EDITOR"`, "${EDITOR:-…}", "PATH=~/bin:$PATH", zsh's "path=(…)", "ZDOTDIR=$HOME/.config/zsh",
+  `PROMPT_COMMAND="history -a; …"`, `eval "$(dircolors -b ~/.dircolors)"` and Debian's lesspipe "eval", an alias that
+  runs "$EDITOR", the body of a "<<", a line inside a "case", "shopt -s dotglob"; in environment.d and user.conf, a "%h"
+  or a final backslash is reported as not checked; a non-simple line in a session file may raise the backup for a
+  harmless form.
 - **System programs, taken by their path.** The check, traces, monitoring, the backup and the other machine readings
   start pacman, systemctl, journalctl, ss, crontab, ping and the rest from the system folders, never through the
   account's PATH: a fake program placed in ~/.local/bin can no longer hide a connection or a journal line. The
