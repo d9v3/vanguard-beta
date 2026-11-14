@@ -19,7 +19,9 @@
 //!   d'application en quatre mots de quatre lettres séparés par des espaces, un mot de passe fait de lettres seules
 //!   après une option sans `=` (`-p motdepasse`, pris pour un mot de la phrase), un mot de passe collé à son option (`mysql -pXXXX`), donné à `net use` sans option, ou lu
 //!   dans un fichier `.pgpass` ou `.netrc` (« hôte:port:base:nom:mdp »).
-//! - Les signes combinants hors du bloc U+0300 à U+036F sont remplacés par une espace, pas comptés à part.
+//! - Les signes combinants hors du bloc U+0300 à U+036F sont remplacés par une espace, pas comptés à part, sauf ceux
+//!   qu'Unicode compte parmi les lettres (voyelles de l'arabe, de l'hébreu ou du devanagari, U+1DE7…) : gardés comme
+//!   des lettres, même seuls ou empilés.
 
 // Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
 #![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
@@ -283,8 +285,30 @@ const VERSION: Forme = Forme {
     lettres: Lettres::Aucune,
 };
 
-/// Le nettoyage complet, sans compter le refus : passes jusqu'au point fixe, puis les deux jugements de l'étape 6.
+/// Le nettoyage complet, sans compter le refus : passes jusqu'au point fixe, les deux jugements de l'étape 6, puis la
+/// relecture de la sortie. Le filtre et la relecture suivent la même règle (`trier`) : ce dernier refus ne devrait
+/// jamais servir. S'il sert, une étape a laissé ce que l'étape 5 interdit, et le texte, venu d'ailleurs, est jeté
+/// plutôt que gardé.
 fn passer(brut: &str, forme: Forme) -> Result<String, Rejet> {
+    let t = passer_sans_relecture(brut, forme)?;
+    if !sortie_permise(&t) {
+        return Err(Rejet::Forme);
+    }
+    Ok(t)
+}
+
+/// Vrai si la relecture finale de `passer` n'a rien à refuser pour ce texte, sous chaque forme : le banc de fuzzing et
+/// les essais l'exigent, pour qu'un écart entre le filtre et la relecture se voie au lieu d'être tu par ce refus.
+#[cfg(any(test, fuzzing))]
+pub(crate) fn relecture_inutile(brut: &str) -> bool {
+    [TEXTE, NOM, VERSION].into_iter().all(|forme| {
+        passer_sans_relecture(brut, forme)
+            .ok()
+            .is_none_or(|t| sortie_permise(&t))
+    })
+}
+
+fn passer_sans_relecture(brut: &str, forme: Forme) -> Result<String, Rejet> {
     let mut t = normaliser(borne_entree(brut));
     let mut alertes: u32 = 0;
     let mut stable = false;
@@ -1379,7 +1403,8 @@ fn forme_de_mots(suite: &[char]) -> bool {
 /// Les caractères permis (plan, étape 5) : lettres Unicode, chiffres, espace et `.,:;'()[]#%/_-+=`. Les chevrons ne
 /// restent que dans les marqueurs connus.
 /// Un accent du bloc U+0300 à U+036F n'en est jamais un, même compté comme lettre par Unicode (U+0345, iota
-/// souscrit) : il suit la règle des accents de `filtrer`, comme le relit `sortie_permise`.
+/// souscrit ; U+0363 à U+036F, petites lettres latines suscrites comme U+0364) : il suit la règle des accents
+/// (`trier`), jamais gardé seul ni en tête.
 pub(crate) fn permis(x: char) -> bool {
     (x.is_alphabetic() && !invisible(x) && !accent_combinant(x))
         || x.is_ascii_digit()
@@ -1390,6 +1415,41 @@ pub(crate) fn permis(x: char) -> bool {
 /// plus, pour qu'un mot accentué ne soit pas coupé en deux, sans laisser empiler des signes sur une lettre.
 fn accent_combinant(x: char) -> bool {
     ('\u{0300}'..='\u{036F}').contains(&x)
+}
+
+/// Le nombre d'accents écrits à part gardés de suite sur une lettre.
+const ACCENTS_MAX: u8 = 2;
+
+/// Ce que l'étape 5 fait d'un caractère hors marqueur.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tri {
+    /// Un caractère permis : la suite d'accents repart de zéro.
+    Garde,
+    /// Un accent gardé : il suit une lettre ou un accent gardé, et la suite reste sous `ACCENTS_MAX`.
+    Accent,
+    /// Tout le reste : remplacé par une espace au nettoyage, refusé à la relecture.
+    Retire,
+}
+
+/// La règle de l'étape 5, la seule : `filtrer` la suit pour écrire et `sortie_permise` pour relire, avec le même
+/// caractère d'avant (le dernier écrit) et la même suite d'accents. Deux règles écrites à part avaient divergé : le
+/// filtre gardait comme une lettre un accent qu'Unicode compte parmi les lettres (U+0345, U+0364), seul ou en tête,
+/// que la relecture refusait comme accent. U+034F (liant de graphèmes), dans le bloc mais invisible, n'est jamais
+/// gardé : `normaliser` le retire déjà, la relecture le refuse aussi. Recopiée dans le relais (relais/worker.js,
+/// `trier`) : le test `corpus_du_relais_identique` exige les mêmes réponses.
+fn trier(x: char, precedent: Option<char>, accents: u8) -> Tri {
+    if accent_combinant(x) {
+        if !invisible(x) && accents < ACCENTS_MAX && precedent.is_some_and(|p| p.is_alphabetic() || accent_combinant(p))
+        {
+            Tri::Accent
+        } else {
+            Tri::Retire
+        }
+    } else if permis(x) {
+        Tri::Garde
+    } else {
+        Tri::Retire
+    }
 }
 
 fn filtrer(c: &[char]) -> Vec<char> {
@@ -1403,21 +1463,24 @@ fn filtrer(c: &[char]) -> Vec<char> {
             i = fin;
             continue;
         }
-        let y = if renvoi(c, i, &sortie) {
-            accents = 0;
-            ' '
-        } else if permis(x) {
-            accents = 0;
-            x
-        } else if accent_combinant(x)
-            && accents < 2
-            && sortie.last().is_some_and(|p| p.is_alphabetic() || accent_combinant(*p))
-        {
-            accents = accents.saturating_add(1);
-            x
+        let tri = if renvoi(c, i, &sortie) {
+            Tri::Retire
         } else {
-            accents = 0;
-            ' '
+            trier(x, sortie.last().copied(), accents)
+        };
+        let y = match tri {
+            Tri::Garde => {
+                accents = 0;
+                x
+            }
+            Tri::Accent => {
+                accents = accents.saturating_add(1);
+                x
+            }
+            Tri::Retire => {
+                accents = 0;
+                ' '
+            }
         };
         if y != ' ' || sortie.last().is_some_and(|p| *p != ' ') {
             sortie.push(y);
@@ -1469,7 +1532,8 @@ fn couper(c: &[char], max: usize) -> Vec<char> {
     sortie
 }
 
-/// Vrai si `s` n'a que ce que l'étape 5 laisse : caractères permis, et chevrons dans les marqueurs connus seulement.
+/// Vrai si `s` n'a que ce que l'étape 5 laisse : caractères permis, accents selon `trier` (la règle même du filtre),
+/// et chevrons dans les marqueurs connus seulement. `passer` n'accepte aucune sortie qu'elle refuse.
 pub(crate) fn sortie_permise(s: &str) -> bool {
     let c: Vec<char> = s.chars().collect();
     let mut i = 0;
@@ -1480,15 +1544,10 @@ pub(crate) fn sortie_permise(s: &str) -> bool {
             accents = 0;
             continue;
         }
-        if accent_combinant(x) {
-            accents = accents.saturating_add(1);
-            if accents > 2 || i == 0 {
-                return false;
-            }
-        } else if permis(x) {
-            accents = 0;
-        } else {
-            return false;
+        match trier(x, avant(&c, i), accents) {
+            Tri::Garde => accents = 0,
+            Tri::Accent => accents = accents.saturating_add(1),
+            Tri::Retire => return false,
         }
         i = suivant(i);
     }

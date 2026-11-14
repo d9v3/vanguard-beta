@@ -400,6 +400,10 @@ fn morceau_piege() -> impl Strategy<Value = String> {
         Just("\u{200B}".to_string()),
         Just("\u{202E}".to_string()),
         Just("\u{301}".to_string()),
+        // Des accents du bloc qu'Unicode compte aussi parmi les lettres (iota souscrit, e suscrit), seuls ou en suite.
+        Just("\u{345}".to_string()),
+        Just("\u{364}".to_string()),
+        "[\u{300}-\u{36F}]{1,4}",
         Just("ｇ".to_string()),
         Just("\n".to_string()),
         Just("\"".to_string()),
@@ -421,6 +425,7 @@ proptest! {
 
     #[test]
     fn idempotent_et_permis_quelconque(brut in any::<String>()) {
+        prop_assert!(relecture_inutile(&brut));
         for forme in [TEXTE, NOM] {
             if let Ok(s) = passer(&brut, forme) {
                 verifier_sortie(&s, forme.max);
@@ -431,6 +436,7 @@ proptest! {
 
     #[test]
     fn idempotent_et_permis_piege(brut in texte_piege()) {
+        prop_assert!(relecture_inutile(&brut));
         for forme in [TEXTE, NOM] {
             match passer(&brut, forme) {
                 Ok(s) => {
@@ -705,5 +711,79 @@ fn permis_ni_accent_ni_invisible() {
                 assert_eq!(crate::ui::rendu(x), Some(x), "U+{n:04X} permis mais caché");
             }
         }
+    }
+}
+
+/// Une graine de la CI de nuit : U+0364 (e suscrit), un accent du bloc qu'Unicode compte parmi les lettres, en tête du
+/// texte. Avant que ces accents ne soient plus des lettres permises, le filtre le gardait comme une lettre et la
+/// relecture le refusait comme accent en tête. Rejouée comme la cible fuzz/fuzz_targets/texte_nettoye.rs : telle
+/// quelle, puis avec un faux jeton glissé à la position que tire son premier octet.
+#[test]
+fn combinant_lettre_en_tete_retire() {
+    let octets: &[u8] = include_bytes!("../../../fuzz/graines/texte_nettoye/regression-combinant-en-tete.bin");
+    let brut = String::from_utf8_lossy(octets);
+    assert!(brut.starts_with('\u{364}'));
+    let jeton = ["gh", "p_", "FAUXjetonInventePourLesEssais"].concat();
+    let mut pos = usize::from(octets[0]).min(brut.len());
+    while !brut.is_char_boundary(pos) {
+        pos -= 1;
+    }
+    let avec = format!("{} {jeton} {}", &brut[..pos], &brut[pos..]);
+    for entree in [brut.to_string(), avec] {
+        assert!(relecture_inutile(&entree), "{entree:?}");
+        for forme in [TEXTE, NOM] {
+            let s = passer(&entree, forme).unwrap_or_else(|r| panic!("{entree:?} rejeté : {r:?}"));
+            verifier_sortie(&s, forme.max);
+            assert!(s.starts_with("e\u{624} 0 lice"), "{s:?}");
+            assert_eq!(passer(&s, forme), Ok(s.clone()));
+        }
+    }
+}
+
+/// Toute la famille : chaque accent du bloc U+0300 à U+036F, lettre pour Unicode ou non, devant ou après tout ce qui
+/// n'est pas une lettre (rien, espace, chiffre, ponctuation, marqueur, caractère retiré), et en suite trop longue. Le
+/// filtre et la relecture en jugent de même ; un accent n'est gardé qu'après une lettre, deux au plus, et jamais s'il
+/// est invisible.
+#[test]
+fn accents_du_bloc_meme_regle_au_filtre_et_a_la_relecture() {
+    for n in 0x300..=0x36F_u32 {
+        let x = char::from_u32(n).unwrap();
+        assert!(!permis(x), "U+{n:04X}");
+        let seul = x.to_string();
+        let triple = format!("mot{x}{x}{x}");
+        for brut in [
+            seul.clone(),
+            format!("{x}mot"),
+            format!("{x}{x}mot"),
+            format!("mot {x}mot"),
+            format!("mot 7{x} mot"),
+            format!("mot.{x} mot"),
+            format!("mot <jeton>{x} mot"),
+            format!("mot \u{FFFD}{x} mot"),
+            format!("mot \u{200B}{x} mot"),
+            triple.clone(),
+        ] {
+            assert!(relecture_inutile(&brut), "U+{n:04X} dans {brut:?}");
+            if let Ok(t) = TexteNettoye::nettoyer(&brut) {
+                verifier_sortie(t.as_str(), TEXTE_MAX);
+                assert!(!t.as_str().starts_with(x), "U+{n:04X} en tête de {t:?}");
+                assert_eq!(TexteNettoye::nettoyer(t.as_str()).as_ref(), Ok(&t));
+            }
+        }
+        if invisible(x) {
+            // U+034F, liant de graphèmes : invisible, retiré partout, jamais gardé comme accent.
+            assert_eq!(propre(&triple), "mot", "U+{n:04X}");
+            assert!(!sortie_permise(&format!("mot{x}")), "U+{n:04X}");
+            continue;
+        }
+        assert_eq!(propre(&format!("mot{x} suite")), format!("mot{x} suite"), "U+{n:04X}");
+        assert_eq!(propre(&triple), format!("mot{x}{x}"), "U+{n:04X}");
+        assert!(!sortie_permise(&seul), "U+{n:04X}");
+        assert!(!sortie_permise(&format!("{x}mot")), "U+{n:04X}");
+        for avant in ["mot ", "mot 7", "mot.", "mot <jeton>"] {
+            assert!(!sortie_permise(&format!("{avant}{x}")), "U+{n:04X} après {avant:?}");
+        }
+        assert!(!sortie_permise(&triple), "U+{n:04X}");
+        assert!(sortie_permise(&format!("mot{x}{x}")), "U+{n:04X}");
     }
 }

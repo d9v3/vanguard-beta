@@ -1653,12 +1653,23 @@ function alertes(s) {
 }
 
 function permis(x) {
-  return (alpha(x) && !invisible(x)) || asciiChiffre(x) || DETECTEUR.ponctuation.includes(x);
+  return (alpha(x) && !invisible(x) && !accentCombinant(x)) || asciiChiffre(x) || DETECTEUR.ponctuation.includes(x);
 }
 
 const accentCombinant = (x) => x !== undefined && x.codePointAt(0) >= 0x300 && x.codePointAt(0) <= 0x36f;
 
-/// texte.rs, `sortie_permise` : caractères permis, et chevrons dans les marqueurs connus seulement.
+/// texte.rs, `trier` : la règle de l'étape 5, la même au filtre et à la relecture. Un accent du bloc U+0300 à
+/// U+036F n'est jamais une lettre permise, même compté comme lettre par Unicode (U+0345, U+0364) : il n'est gardé
+/// qu'après une lettre ou un accent gardé, deux de suite au plus, et jamais invisible (U+034F).
+function trier(x, precedent, accents) {
+  if (accentCombinant(x)) {
+    return !invisible(x) && accents < 2 && (alpha(precedent) || accentCombinant(precedent)) ? "accent" : "retire";
+  }
+  return permis(x) ? "garde" : "retire";
+}
+
+/// texte.rs, `sortie_permise` : caractères permis, accents selon `trier`, et chevrons dans les marqueurs connus
+/// seulement.
 function sortiePermise(s) {
   const c = Array.from(s);
   let i = 0;
@@ -1670,17 +1681,11 @@ function sortiePermise(s) {
       accents = 0;
       continue;
     }
-    const x = c[i];
-    if (accentCombinant(x)) {
-      accents += 1;
-      if (accents > 2 || i === 0) {
-        return false;
-      }
-    } else if (permis(x)) {
-      accents = 0;
-    } else {
+    const tri = trier(c[i], car(c, i - 1), accents);
+    if (tri === "retire") {
       return false;
     }
+    accents = tri === "accent" ? accents + 1 : 0;
     i += 1;
   }
   return true;

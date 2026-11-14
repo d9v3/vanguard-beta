@@ -24,6 +24,9 @@ fn verifier(s: &str, max: usize) {
 }
 
 fn essayer(brut: &str) {
+    // Le filtre et la relecture suivent la même règle : la relecture finale de `nettoyer` (qui jette le texte) ne doit
+    // jamais servir. Sans cette ligne, un écart entre les deux serait tu par ce refus au lieu d'être trouvé ici.
+    assert!(texte::relecture_inutile(brut), "la sortie du filtre est refusée à la relecture : {brut:?}");
     if let Ok(t) = TexteNettoye::nettoyer(brut) {
         verifier(t.as_str(), texte::TEXTE_MAX);
         assert_eq!(TexteNettoye::nettoyer(t.as_str()).as_ref(), Ok(&t));
