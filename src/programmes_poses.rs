@@ -95,6 +95,42 @@ struct Pose {
 struct Fichier {
     #[serde(default)]
     taches: BTreeMap<String, Pose>,
+    /// Les copies que Vanguard a lui-même posées (`copie_posee` : depuis des octets vérifiés, ou une mise à jour signée)
+    /// : chemin → empreinte BLAKE3. Sans elles, une copie trouvée dans bin/ ne se distinguait pas d'un fichier posé là
+    /// par un autre programme du compte, et `noter` la scellait comme celle de Vanguard.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    copies: BTreeMap<String, String>,
+}
+
+/// Scellé à la place d'une empreinte quand le programme posé n'a pas pu être reconnu comme celui de Vanguard : jamais
+/// une empreinte BLAKE3 (64 chiffres hexadécimaux), donc jamais égal à un programme lu ; le bilan le dit non vérifié.
+const NON_VERIFIE: &str = "non-verifie";
+
+impl Fichier {
+    /// L'empreinte de la copie posée par Vanguard à `chemin`, si elle est notée.
+    fn copie_posee(&self, chemin: &Path) -> Option<&str> {
+        self.copies
+            .iter()
+            .find(|(c, _)| meme_chemin(Path::new(c), chemin))
+            .map(|(_, e)| e.as_str())
+    }
+
+    /// `empreinte` est-elle celle d'un programme que Vanguard a posé à `chemin` : la copie notée, ou le programme
+    /// scellé pour une tâche qui le lance ?
+    fn connue(&self, chemin: &Path, empreinte: &str) -> bool {
+        empreinte != NON_VERIFIE
+            && (self.copie_posee(chemin) == Some(empreinte)
+                || self
+                    .taches
+                    .values()
+                    .any(|p| p.empreinte == empreinte && meme_chemin(Path::new(&p.chemin), chemin)))
+    }
+}
+
+/// `empreinte` est-elle celle d'un programme que Vanguard a posé à `cible` (voir `Fichier::connue`) ? Une liste qui ne
+/// peut pas être crue ne connaît rien. `dossier` : celui du registre scellé (le dossier local, sauf aux essais).
+pub(crate) fn copie_connue_dans(dossier: &Path, cible: &Path, empreinte: &str) -> bool {
+    lire_dans(dossier).is_ok_and(|f| f.connue(cible, empreinte))
 }
 
 /// L'empreinte BLAKE3 du programme `chemin`, lu en entier. Le lien est suivi (la tâche le suit aussi) ; ouvert sans
@@ -192,13 +228,33 @@ fn retenir_dans(
 /// tourne se connaît (`soi`) et n'a pas ces octets alors que `chemin` n'est pas la copie de cet ordinateur. Vanguard
 /// pose alors ce programme-ci : un fichier changé entre la pose et sa lecture, ou un chemin d'origine soufflé par une
 /// variable d'environnement du compte (`VANGUARD_ORIGINE`), n'est jamais scellé comme le sien ; il se dira remplacé.
-/// La copie de cet ordinateur peut, elle, être une version plus récente gardée (`mise_a_jour::poser_copie`) : ses
-/// octets à elle.
-fn a_sceller(chemin: &Path, lu: String, soi: Option<&str>, copie: &Path) -> String {
-    match soi {
-        Some(s) if s != lu && !meme_chemin(chemin, copie) => s.to_string(),
-        _ => lu,
+///
+/// La copie de cet ordinateur (`copie`) peut être une version plus récente gardée (`mise_a_jour::poser_copie`) ; mais
+/// le fichier qui s'y trouve a pu être posé par un autre programme du compte, ou échangé depuis la pose. Ses octets ne
+/// sont scellés que s'ils sont ceux du programme qui tourne (`image`), de la copie que Vanguard y a posée, ou déjà
+/// scellés pour une tâche (`poses`). Sinon : l'empreinte de la copie posée par Vanguard s'il y en a une (le fichier
+/// se dira remplacé), et à défaut rien qui le vaille (`NON_VERIFIE`, dit non vérifié), jamais ces octets-là.
+fn a_sceller(
+    chemin: &Path,
+    lu: String,
+    soi: Option<&str>,
+    image: Option<&str>,
+    copie: &Path,
+    poses: Option<&Fichier>,
+) -> String {
+    if !meme_chemin(chemin, copie) {
+        return match soi {
+            Some(s) if s != lu => s.to_string(),
+            _ => lu,
+        };
     }
+    if image == Some(lu.as_str()) || poses.is_some_and(|f| f.connue(copie, &lu)) {
+        return lu;
+    }
+    poses
+        .and_then(|f| f.copie_posee(copie))
+        .unwrap_or(NON_VERIFIE)
+        .to_string()
 }
 
 /// Vanguard vient de poser la tâche `t`, qui lance `chemin`, et dont le texte posé est `texte` : leurs empreintes
@@ -209,12 +265,17 @@ pub(crate) fn noter(t: Tache, chemin: &Path, texte: &std::io::Result<Vec<u8>>) {
         return;
     }
     let copie = crate::mise_a_jour::copie_de_cet_ordinateur();
+    let dossier = crate::socle::dossier_local();
+    let poses = lire_dans(&dossier).ok();
+    // L'image qui tourne compte aussi sous Windows pour la copie (le fichier tenu au départ) ; `soi` reste celle de
+    // Linux pour le reste, comme le bilan.
+    let image = crate::protection::cle::image_qui_tourne();
     let r = empreinte_de(chemin).map_err(std::io::Error::other).and_then(|lu| {
         retenir_dans(
-            &crate::socle::dossier_local(),
+            &dossier,
             t,
             chemin,
-            a_sceller(chemin, lu, soi(), &copie),
+            a_sceller(chemin, lu, soi(), image.as_deref(), &copie, poses.as_ref()),
             empreinte_texte(texte).ok(),
         )
     });
@@ -247,6 +308,11 @@ pub(crate) fn copie_posee_dans(dossier: &Path, cible: &Path, octets: &[u8]) -> V
     let empreinte = blake3::hash(octets).to_hex().to_string();
     let mut touchees = Vec::new();
     let _ = changer_dans(dossier, |f| {
+        let copie_changee = f.copie_posee(cible) != Some(empreinte.as_str());
+        if copie_changee {
+            f.copies.retain(|c, _| !meme_chemin(Path::new(c), cible));
+            f.copies.insert(cible.display().to_string(), empreinte.clone());
+        }
         for t in [Tache::Surveillance, Tache::Entretien, Tache::Veilleur] {
             if let Some(p) = f.taches.get_mut(t.cle())
                 && meme_chemin(Path::new(&p.chemin), cible)
@@ -256,7 +322,7 @@ pub(crate) fn copie_posee_dans(dossier: &Path, cible: &Path, octets: &[u8]) -> V
                 touchees.push(t);
             }
         }
-        !touchees.is_empty()
+        copie_changee || !touchees.is_empty()
     });
     touchees
 }
@@ -336,6 +402,16 @@ fn juger(
     // posé (« vanguard surveillance on » est la seule voie pour en changer).
     if !meme_chemin(Path::new(&p.chemin), programme) {
         return Jugement::AutreChemin(p.chemin.clone());
+    }
+    // Rien de vérifié n'a été scellé à la pose (`a_sceller`) : ni sain, ni « remplacé » (rien ne dit ce qu'il y avait).
+    if p.empreinte == NON_VERIFIE && !soi_ok {
+        return Jugement::NonVerifie(
+            tr!(
+                "quand Vanguard a posé la tâche, ce fichier n'était ni le programme qui tourne ni une copie posée par Vanguard",
+                "when Vanguard set up the task, this file was neither the running program nor a copy placed by Vanguard"
+            )
+            .to_string(),
+        );
     }
     if p.empreinte != *lu && !soi_ok {
         return Jugement::Remplace;
@@ -829,10 +905,94 @@ mod tests {
     #[test]
     fn pose_scelle_les_octets_du_programme_qui_tourne() {
         let (p, copie) = (Path::new("/x/vanguard"), Path::new("/d/bin/vanguard"));
-        assert_eq!(a_sceller(p, "etranger".into(), Some("soi"), copie), "soi");
-        assert_eq!(a_sceller(p, "soi".into(), Some("soi"), copie), "soi");
-        assert_eq!(a_sceller(copie, "recente".into(), Some("soi"), copie), "recente");
-        assert_eq!(a_sceller(p, "lu".into(), None, copie), "lu");
+        let mut f = Fichier::default();
+        f.copies.insert(copie.display().to_string(), "recente".into());
+        let f = Some(&f);
+        assert_eq!(
+            a_sceller(p, "etranger".into(), Some("soi"), Some("soi"), copie, f),
+            "soi"
+        );
+        assert_eq!(a_sceller(p, "soi".into(), Some("soi"), Some("soi"), copie, f), "soi");
+        assert_eq!(
+            a_sceller(copie, "recente".into(), Some("soi"), Some("soi"), copie, f),
+            "recente"
+        );
+        assert_eq!(a_sceller(p, "lu".into(), None, None, copie, f), "lu");
+    }
+
+    /// BASSE (relecture adverse, R1-N1) : un fichier mis dans bin/ par un autre programme du compte (une version gravée
+    /// plus haute suffisait pour qu'il y soit gardé), ou échangé entre la pose et `noter`, n'est jamais scellé comme
+    /// le programme de Vanguard. Seuls se scellent les octets du programme qui tourne, de la copie que Vanguard y a
+    /// posée ou ceux déjà scellés pour une tâche ; sinon la copie posée (le fichier se dira remplacé), et sans elle
+    /// une marque que le bilan dit « non vérifié », jamais « sain ».
+    #[test]
+    fn copie_de_l_ordinateur_scellee_seulement_si_connue() {
+        let copie = Path::new("/d/bin/vanguard");
+        let vide = Fichier::default();
+        let etranger = || "etranger".to_string();
+        // Rien de connu : ni ses octets, ni une empreinte inventée.
+        assert_eq!(
+            a_sceller(copie, etranger(), Some("soi"), Some("soi"), copie, Some(&vide)),
+            NON_VERIFIE
+        );
+        assert_eq!(a_sceller(copie, etranger(), None, None, copie, None), NON_VERIFIE);
+        // La copie posée par Vanguard notée : c'est elle qui est scellée.
+        let mut posee = Fichier::default();
+        posee.copies.insert(copie.display().to_string(), "posee".into());
+        assert_eq!(
+            a_sceller(copie, etranger(), Some("soi"), Some("soi"), copie, Some(&posee)),
+            "posee"
+        );
+        assert_eq!(
+            a_sceller(copie, "posee".into(), Some("soi"), Some("soi"), copie, Some(&posee)),
+            "posee"
+        );
+        // Déjà scellée pour une tâche qui la lance (une mise à jour signée posée par une version d'avant).
+        let mut tache = Fichier::default();
+        tache.taches.insert(
+            "surveillance".into(),
+            Pose {
+                chemin: copie.display().to_string(),
+                empreinte: "signee".into(),
+                texte: None,
+            },
+        );
+        assert_eq!(
+            a_sceller(copie, "signee".into(), None, None, copie, Some(&tache)),
+            "signee"
+        );
+        // Le programme qui tourne lui-même.
+        assert_eq!(
+            a_sceller(copie, "soi".into(), Some("soi"), Some("soi"), copie, Some(&vide)),
+            "soi"
+        );
+        // Au bilan, la marque n'est ni saine ni « remplacée » : non vérifiée, sauf pour le programme qui tourne.
+        let d = jetable("non-verifie");
+        let prog = programme(&d, b"vanguard 9");
+        retenir_dans(&d, Tache::Surveillance, &prog, NON_VERIFIE.into(), texte(UNITE).ok()).unwrap();
+        assert!(matches!(
+            juger_dans(&d, Tache::Surveillance, &prog, None, UNITE),
+            Jugement::NonVerifie(_)
+        ));
+        let lu = empreinte_de(&prog).unwrap();
+        assert_eq!(
+            juger_dans(&d, Tache::Surveillance, &prog, Some(&lu), UNITE),
+            Jugement::Soi
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// La copie posée par Vanguard est notée même sans tâche qui la lance encore : la pose qui suit la reconnaît.
+    #[test]
+    fn copie_posee_notee_sans_tache() {
+        let d = jetable("copie-notee");
+        let p = programme(&d, b"vanguard 3");
+        assert_eq!(copie_posee_dans(&d, &p, b"vanguard 3"), Vec::<Tache>::new());
+        let f = lire_dans(&d).unwrap();
+        assert!(f.connue(&p, &blake3::hash(b"vanguard 3").to_hex()));
+        assert!(!f.connue(&p, &blake3::hash(b"autre").to_hex()));
+        assert!(!f.connue(&p, NON_VERIFIE));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// Un nom sans chemin (« vanguard », « @… ») alors qu'un chemin a été posé : un autre programme, élevé.
