@@ -13,8 +13,11 @@
 //! La frontière entre les deux : un tube nommé au nom aléatoire, créé par le parent AVANT la relance, à instance
 //! unique (personne ne peut en créer une deuxième et se faire passer pour le serveur), aux clients distants refusés
 //! et à la DACL explicite. Le parent n'accepte que le client dont le PID est celui du processus qu'il vient de lancer ;
-//! le fils n'accepte qu'un serveur dont le PID est celui annoncé et dont le programme a la même empreinte SHA-256 que
-//! le sien. Un tube anonyme hérité ne marcherait pas : un processus « runas » est créé par le service AppInfo, il
+//! le fils n'accepte qu'un serveur dont le PID est celui annoncé et dont le fichier du programme a la même empreinte
+//! SHA-256 que le sien. Ce n'est pas une preuve d'origine : cela dit quel fichier a lancé le parent, pas quel code y
+//! tourne (un programme du compte peut piloter un Vanguard non élevé, ou lancer le vrai et tenir le tube) ; ce qui
+//! garde le fils est la liste fermée, les ordres rejugés, le script montré en entier et l'Entrée (MODELE-DE-MENACE.md,
+//! limite connue). Un tube anonyme hérité ne marcherait pas : un processus « runas » est créé par le service AppInfo, il
 //! n'hérite rien de nous. Avant « runas », le parent tient le chemin que la demande va relire (`tenir_le_programme`,
 //! par son nom long) : chaque dossier vérifié sans point d'analyse (jonction, lien) et ouvert sans partage de
 //! suppression, puis son fichier, aux octets du programme qui tourne, chacun à l'endroit nommé pour Windows (une
@@ -29,7 +32,7 @@
 //! (`verifier_le_fils`) : dès le retour de « runas », avant d'envoyer quoi que ce soit au fils, l'image du processus
 //! élevé est comparée au fichier tenu (chemins NT) et la revue est refaite ; un écart ou une lecture impossible :
 //! rien n'est envoyé, le fils est arrêté si Windows le permet, alerte à l'écran et au journal. L'empreinte que le fils
-//! compare au parent ne protège qu'un vrai Vanguard contre un faux serveur, pas l'inverse. La commande de « runas »
+//! compare au parent écarte un serveur lancé depuis un autre programme, pas un vrai vanguard.exe piloté ou détourné. La commande de « runas »
 //! est prise dans la classe des programmes de la machine (HKLM), jamais dans celle du compte.
 //! Le processus élevé n'écrit aucun fichier dans un dossier du compte : ses réponses passent par le tube.
 

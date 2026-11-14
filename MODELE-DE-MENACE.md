@@ -157,6 +157,14 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   Windows passe un jour à llvm-mingw ou MSVC.
 - **Ce que lit un ordinateur emprunté.** La protection en écriture empêche qu'on modifie la clé, pas qu'on la lise :
   le carnet n'est à l'abri que chiffré.
+- **L'origine de la liste montrée dans la fenêtre administrateur (Windows).** Le processus élevé vérifie que son
+  parent est le processus annoncé et que le fichier de son programme a les mêmes octets que le sien : cela prouve quel
+  fichier a lancé le parent, pas quel code y tourne. Un programme du même compte peut piloter un Vanguard non élevé de
+  ce compte, ou lancer lui-même le vrai vanguard.exe et tenir le tube à sa place ; la liste reçue ne vient alors pas
+  de ce que vous avez demandé. Ce qui reste : la liste fermée des gestes, les ordres rejugés par le processus élevé, le
+  script montré en entier après la vérification de son empreinte, et votre Entrée. Comparez ce qui est montré à ce
+  que vous venez de demander. Un tel programme pouvait déjà demander lui-même l'élévation de PowerShell ; il faudrait
+  une signature du programme pour aller plus loin (décision de l'auteur).
 
 ## Ce que Vanguard suppose
 

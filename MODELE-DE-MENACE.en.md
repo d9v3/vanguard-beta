@@ -149,6 +149,14 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   without being required, to be revisited if the Windows build ever moves to llvm-mingw or MSVC.
 - **What a borrowed computer reads.** Write protection keeps the key from being changed, not from being read: the
   logbook is safe only when encrypted.
+- **Where the list shown in the administrator window comes from (Windows).** The elevated process checks that its
+  parent is the announced process and that the file of its program has the same bytes as its own: this proves which
+  file started the parent, not which code runs in it. A program of the same account can drive a non-elevated Vanguard
+  of that account, or start the real vanguard.exe itself and hold the pipe in its place; the list received then does
+  not come from what you asked for. What remains: the closed list of actions, the orders judged again by the elevated
+  process, the script shown in full after its fingerprint is checked, and your Enter. Compare what is shown with what
+  you just asked for. Such a program could already ask for PowerShell to be elevated itself; going further would take
+  a signed program (the author's decision).
 
 ## What Vanguard assumes
 

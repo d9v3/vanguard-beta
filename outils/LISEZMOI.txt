@@ -20,8 +20,10 @@ Sécurité de Vanguard et de la clé
     ordinateurs.json (Mes ordinateurs : note et catégories des problèmes de chaque ordinateur, sans nom), qui ne
     part jamais sur GitHub. Windows ne lance rien tout seul depuis une clé USB (protection contre les virus depuis
     Windows 7) : il faut double-cliquer.
-  - Clé retirée pendant que Vanguard tourne : rien ne plante. Il se recopie sur cet ordinateur au lancement, et
-    ce qui devait aller sur la clé va dans le dossier de Vanguard de cet ordinateur (le chemin est dit).
+  - Clé retirée pendant que Vanguard tourne : lancé depuis la clé, il se recopie sur cet ordinateur et continue
+    depuis cette copie. S'il n'a pas pu (il le dit au démarrage : « tourne depuis la clé »), ou s'il est lancé en
+    administrateur sous Windows, ne retirez pas la clé avant de le quitter. Clé retirée, le rapport, le diagnostic
+    et le journal vont dans le dossier de Vanguard de cet ordinateur (leur chemin est dit).
   - Données protégées : si le propriétaire a protégé les données de la clé (menu Vanguard), Vanguard demande sa
     phrase sur un autre ordinateur pour lire le carnet des appareils ; Entrée sans rien, il continue sans le
     carnet.
