@@ -495,7 +495,9 @@ fn remplacer(
     essai: Essai,
 ) -> Result<(), String> {
     let octets = lire_octets(source, max)?;
-    de_soi(&octets, soi).map_err(String::from)?;
+    if !de_soi(&octets, soi) {
+        return Err(pas_de_soi());
+    }
     installer(&octets, cible, attendue, essai)
 }
 
@@ -504,17 +506,17 @@ fn remplacer(
 /// endroit, ou fichier réécrit depuis, et c'est un autre programme qui se poserait, se lancerait (`essayer`) et serait
 /// scellé comme celui de Vanguard. Les octets comparés sont ceux, en mémoire, qui seront écrits : rien ne peut changer
 /// entre la comparaison et la pose. Sans empreinte du programme qui tourne : refusé aussi, jamais cru.
-fn de_soi(octets: &[u8], soi: Option<&str>) -> Result<(), crate::modele::Echec> {
-    if soi.is_some_and(|s| blake3::hash(octets).to_hex().as_str() == s) {
-        return Ok(());
-    }
-    Err(crate::modele::Echec::refuse(
-        "mise_a_jour/copie",
-        tr!(
-            "le programme de la clé n'est plus celui qui tourne (changé, ou une autre clé, depuis le lancement) : rien n'est posé",
-            "the key's program is no longer the one running (changed, or another key, since launch): nothing is set up"
-        ),
-    ))
+fn de_soi(octets: &[u8], soi: Option<&str>) -> bool {
+    soi.is_some_and(|s| blake3::hash(octets).to_hex().as_str() == s)
+}
+
+/// Le refus quand les octets lus ne sont pas `de_soi`.
+fn pas_de_soi() -> String {
+    tr!(
+        "le programme de la clé n'est plus celui qui tourne (changé, ou une autre clé, depuis le lancement) : rien n'est posé",
+        "the key's program is no longer the one running (changed, or another key, since launch): nothing is set up"
+    )
+    .into()
 }
 
 /// L'essai d'un programme posé à côté, avant qu'il remplace l'ancien (`essayer`, ou celui d'un test).
@@ -619,7 +621,9 @@ pub(crate) fn poser_copie(source: &Path) -> Result<PathBuf, String> {
 /// `poser_copie` vers `cible` ; seuls les octets du programme qui tourne (`soi`) se posent (`de_soi`).
 fn poser_copie_dans(source: &Path, cible: &Path, soi: Option<&str>, essai: Essai) -> Result<(), String> {
     let octets = lire_octets(source, TAILLE_MAX)?;
-    de_soi(&octets, soi).map_err(String::from)?;
+    if !de_soi(&octets, soi) {
+        return Err(pas_de_soi());
+    }
     let Some(version) = version_gravee(&octets) else {
         return Err(tr!(
             "pas de version gravée dans le programme",
