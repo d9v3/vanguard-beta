@@ -1421,6 +1421,9 @@ fn les_essais_n_ecrivent_pas_dans_le_dossier_temporaire() {
         // le point de montage /home se montre en point d'analyse et serait refusé à juste titre ; le dossier
         // temporaire de Windows, lui, est sur C: (sous Wine, dans le préfixe jetable, hors du /tmp de Linux).
         ("src/machine/windows/eleve.rs", 1),
+        // La copie de la clé (Windows) : le dossier où l'on cherche une base sûre (hors essais), et deux essais qui
+        // lancent une copie : sur Z:, Wine ne donne pas le chemin NT du fichier tenu, et l'image du fils serait refusée.
+        ("src/protection/cle.rs", 3),
         // Et des essais qui donnent au programme un TMPDIR jetable, dans son dossier personnel ou à côté, pour y voir
         // ce qu'il écrirait (l'aperçu d'une correction ne doit rien écrire, même là ; vérification de Fable n° 2,
         // L5 : environnement vidé, XDG et TMPDIR hors du dossier personnel), puis un essai qui juge ce dossier-là.
