@@ -38,38 +38,64 @@ const NOM_COPIE: &str = "vanguard.exe";
 /// une fois par lancement (la copie temporaire s'efface au démarrage, `proteger_cle` le demande avant).
 ///
 /// `VANGUARD_ORIGINE` n'est qu'une variable d'environnement, que tout programme du compte peut poser : elle faisait
-/// installer, poser en tâche ou dire vérifié un autre programme que Vanguard. Elle n'est donc crue que si le fichier
-/// qu'elle désigne a exactement les octets du programme qui tourne ; sinon elle est ignorée, l'écart est dit (et noté
-/// au journal des erreurs), et c'est le programme qui tourne qui compte : rien n'est installé depuis elle.
+/// installer, poser en tâche ou dire vérifié un autre programme que Vanguard, et prendre un dossier du compte pour la
+/// clé. Elle n'est donc crue que dans une copie temporaire (`est_une_copie`, reconnue à sa place), et seulement si le
+/// fichier qu'elle désigne a exactement les octets du programme qui tourne ; hors d'une copie elle est ignorée sans
+/// bruit, dans une copie l'écart est dit (et noté au journal des erreurs). Sinon c'est le programme qui tourne qui
+/// compte : rien n'est installé depuis elle.
 pub fn exe_d_origine() -> Option<PathBuf> {
-    static DECIDE: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
-    DECIDE
-        .get_or_init(|| {
-            let courant = exe_courant;
-            let Some(designee) = std::env::var_os(ORIGINE) else {
-                return courant();
-            };
-            match origine_crue(Path::new(&designee), image_qui_tourne()) {
-                Ok(chemin) => Some(lisible(&chemin)),
-                // Hors de la copie temporaire, la variable n'est qu'héritée (un Vanguard lancé par celui de la clé) ou
-                // posée par un autre programme : ignorée sans bruit, elle ne sert à rien. Dans la copie, l'écart se dit.
-                Err(_) if !std::env::current_exe().is_ok_and(|e| est_une_copie(&e)) => courant(),
-                // Le fichier désigné n'est plus là : la clé a été retirée avant ce lancement (un Vanguard relancé par
-                // la copie, l'autotest). Ce n'est pas un programme étranger : rien à signaler, il n'est pas cru non
-                // plus.
-                Err(Refus::Absente) => courant(),
-                Err(Refus::Autre(raison)) => {
-                    tre!(
-                        "Attention : VANGUARD_ORIGINE désigne {}, qui n'est pas le programme qui tourne ({raison}) : ignorée.",
-                        "Warning: VANGUARD_ORIGINE points to {}, which is not the running program ({raison}): ignored.",
-                        chemin_affichable(Path::new(&designee))
-                    );
-                    crate::journal::erreur(crate::compte_rendu::Contexte::OrigineProgramme, &format!("VANGUARD_ORIGINE ignorée : {raison}"));
-                    courant()
-                }
-            }
-        })
-        .clone()
+    /// L'origine décidée, et l'écart à dire : (chemin désigné montrable, raison).
+    type Decision = (Option<PathBuf>, Option<(String, String)>);
+    static DECIDE: std::sync::OnceLock<Decision> = std::sync::OnceLock::new();
+    // L'alerte se dit après l'initialisation, jamais pendant : le journal se demande où il est (clé ou non) et
+    // rappellerait cette fonction sur le même fil, dans une initialisation pas finie (blocage ou panique).
+    static ALERTE_DITE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let (origine, alerte) = DECIDE.get_or_init(|| {
+        let designee = std::env::var_os(ORIGINE);
+        let dans_une_copie = || std::env::current_exe().is_ok_and(|e| est_une_copie(&e));
+        let (crue, alerte) = decider_origine(designee.as_deref().map(Path::new), dans_une_copie, image_qui_tourne);
+        let alerte = alerte.map(|raison| {
+            let designee = designee.as_deref().map_or_else(PathBuf::new, PathBuf::from);
+            (chemin_affichable(&designee), raison.to_string())
+        });
+        (crue.map(|c| lisible(&c)).or_else(exe_courant), alerte)
+    });
+    if let Some((designee, raison)) = alerte
+        && !ALERTE_DITE.swap(true, std::sync::atomic::Ordering::SeqCst)
+    {
+        tre!(
+            "Attention : VANGUARD_ORIGINE désigne {designee}, qui n'est pas le programme qui tourne ({raison}) : ignorée.",
+            "Warning: VANGUARD_ORIGINE points to {designee}, which is not the running program ({raison}): ignored."
+        );
+        crate::journal::erreur(
+            crate::compte_rendu::Contexte::OrigineProgramme,
+            &format!("VANGUARD_ORIGINE ignorée : {raison}"),
+        );
+    }
+    origine.clone()
+}
+
+/// Ce que vaut `VANGUARD_ORIGINE` (`designee`) : le chemin cru, ou `None` (le programme qui tourne compte), et l'écart
+/// à dire. Hors d'une copie temporaire (`dans_une_copie`), la variable n'est qu'héritée (un Vanguard lancé par celui
+/// de la clé) ou posée par un autre programme du compte : ignorée sans bruit, ses octets ne sont même pas lus (une
+/// copie exacte de Vanguard posée dans un dossier du compte les aurait). Le fichier désigné absent (clé retirée avant
+/// ce lancement : un Vanguard relancé par la copie, l'autotest) : rien à dire, il n'est pas cru non plus.
+fn decider_origine(
+    designee: Option<&Path>,
+    dans_une_copie: impl FnOnce() -> bool,
+    soi: impl FnOnce() -> Option<String>,
+) -> (Option<PathBuf>, Option<Echec>) {
+    let Some(designee) = designee else {
+        return (None, None);
+    };
+    if !dans_une_copie() {
+        return (None, None);
+    }
+    match origine_crue(designee, soi()) {
+        Ok(chemin) => (Some(chemin), None),
+        Err(Refus::Absente) => (None, None),
+        Err(Refus::Autre(raison)) => (None, Some(raison)),
+    }
 }
 
 /// Le fichier du programme qui tourne, chemin complet (sous Windows, sans le préfixe `\\?\` de canonicalize, qui
@@ -93,8 +119,9 @@ fn lisible(chemin: &Path) -> PathBuf {
 }
 
 /// L'empreinte du programme qui tourne : son image (/proc/self/exe sous Linux, lisible même effacée), sinon son
-/// fichier.
-fn image_qui_tourne() -> Option<String> {
+/// fichier (sous Windows, celui tenu par `soi_au_depart` dans une copie). La copie de cet ordinateur ne se pose
+/// qu'à partir d'octets qui l'ont (`mise_a_jour::poser_copie`).
+pub(crate) fn image_qui_tourne() -> Option<String> {
     // Déjà lue par les programmes posés : pas une seconde lecture du programme.
     if let Some(soi) = crate::programmes_poses::soi() {
         return Some(soi.to_string());
@@ -192,10 +219,13 @@ pub(crate) fn programme_a_relancer() -> std::io::Result<PathBuf> {
     }
 }
 
-/// Windows : l'empreinte du programme qui tourne, prise au démarrage (`se_detacher_de_la_cle`), avant qu'un autre
-/// programme du compte n'ait pu changer le fichier. Dans une copie temporaire, son fichier reste ouvert en lecture
-/// seule partagée toute la vie du processus : ni renommé, ni remplacé, ni effacé, même si le premier processus (qui le
-/// tenait aussi) meurt avec la clé ; l'empreinte est lue par cette poignée-là.
+/// Windows : l'empreinte du programme qui tourne, prise une fois au démarrage (`se_detacher_de_la_cle`). Dans une
+/// copie temporaire, son fichier reste ouvert en lecture seule partagée toute la vie du processus : ni renommé, ni
+/// remplacé, ni effacé, même si le premier processus (qui le tenait aussi) meurt avec la clé ; l'empreinte est lue par
+/// cette poignée-là, c'est bien celle de l'image lancée. Hors d'une copie, c'est seulement le fichier qui se trouve à
+/// ce chemin à ce moment, lu par son nom : Windows laisse renommer un programme en marche, et un fichier mis à sa place
+/// entre le lancement et cette lecture serait pris pour soi. Celui qui le peut aurait pu remplacer le programme avant
+/// son lancement : ce n'est pas une preuve que l'image qui tourne a ces octets, seulement que ce fichier les a.
 #[cfg(windows)]
 pub(crate) fn soi_au_depart() -> Option<&'static str> {
     use std::os::windows::fs::OpenOptionsExt;
@@ -387,8 +417,8 @@ pub fn proteger_cle() {
 pub fn se_detacher_de_la_cle() {
     let _ = exe_d_origine();
     let _ = cle_de_lancement();
-    // Pris maintenant, avant qu'un autre programme du compte n'ait pu changer le fichier ; dans une copie, celui-ci
-    // reste tenu jusqu'à la fin.
+    // Pris tôt, une fois ; dans une copie, le fichier reste tenu jusqu'à la fin. Hors d'une copie, lu par son chemin
+    // (voir `soi_au_depart` : ce n'est pas une preuve sur l'image qui tourne).
     let _ = soi_au_depart();
     let eleve = crate::machine::windows::processus::eleve_ou_inconnu();
     let base = bases_des_copies().into_iter().next();
@@ -632,6 +662,7 @@ fn preparer_copie(exe: &Path, base: &Path, nom: &str) -> std::io::Result<PathBuf
 }
 
 /// La copie a-t-elle exactement les octets du programme qui tourne (`soi` : leur empreinte) ? Sinon pourquoi.
+#[cfg(unix)]
 fn verifier_copie(copie: &Path, soi: &str) -> Result<(), Echec> {
     let lu = crate::programmes_poses::empreinte_de(copie)?;
     if lu == soi {
@@ -645,6 +676,48 @@ fn verifier_copie(copie: &Path, soi: &str) -> Result<(), Echec> {
             ),
         ))
     }
+}
+
+/// Windows : la copie tenue ouverte (`verrou`) a-t-elle les octets `soi`, lus par sa poignée ?
+#[cfg(windows)]
+fn verifier_tenue(verrou: &std::fs::File, soi: &str) -> Result<(), Echec> {
+    if memes_octets(verrou, Some(soi)) {
+        Ok(())
+    } else {
+        Err(Echec::refuse(
+            OU_COPIE,
+            tr!(
+                "la copie n'a pas les octets du programme qui tourne",
+                "the copy does not have the running program's bytes"
+            ),
+        ))
+    }
+}
+
+/// Windows : `base` (`copies\`) et son dossier (`vanguard\`, le dossier local), quand ils existent, ne sont pas des
+/// points d'analyse (jonction, lien) : le compte les possède et pourrait y retourner une jonction entre la vérification
+/// de la copie et son lancement.
+#[cfg(windows)]
+fn base_sans_point_d_analyse(base: &Path) -> Result<(), Echec> {
+    use std::os::windows::fs::MetadataExt;
+    const POINT_D_ANALYSE: u32 = 0x400;
+    for d in [base.parent(), Some(base)].into_iter().flatten() {
+        match std::fs::symlink_metadata(d) {
+            Ok(m) if m.file_attributes() & POINT_D_ANALYSE != 0 || m.file_type().is_symlink() => {
+                return Err(Echec::refuse(
+                    OU_COPIE,
+                    tr!(
+                        "le dossier des copies est un lien ou une jonction : refusé",
+                        "the copies folder is a link or a junction: refused"
+                    ),
+                ));
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(Echec::io(OU_COPIE, &e)),
+        }
+    }
+    Ok(())
 }
 
 /// Efface la copie et son dossier, rien d'autre : le dossier ne part que s'il est vide.
@@ -720,7 +793,12 @@ fn lancer_une_copie(
     avant_d_attendre: impl FnOnce(),
 ) -> Result<i32, Echec> {
     use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    // Avant et après la création : une jonction posée d'avance sur `vanguard\` ou `copies\` (le compte les possède)
+    // se retournerait entre la vérification et le lancement.
+    base_sans_point_d_analyse(base)?;
     std::fs::create_dir_all(base).map_err(|e| Echec::ecriture(OU_COPIE, &e))?;
+    base_sans_point_d_analyse(base)?;
     let copie = preparer_copie(source, base, &nom_de_copie()).map_err(|e| Echec::ecriture(OU_COPIE, &e))?;
     let refus = |e: Echec| {
         effacer_copie(&copie);
@@ -734,7 +812,8 @@ fn lancer_une_copie(
         Ok(v) => v,
         Err(e) => return refus(Echec::io(OU_COPIE, &e)),
     };
-    if let Err(e) = verifier_copie(&copie, soi) {
+    // Par la poignée du verrou, pas par le chemin : c'est ce fichier-là que plus rien ne change.
+    if let Err(e) = verifier_tenue(&verrou, soi) {
         drop(verrou);
         return refus(e);
     }
@@ -748,6 +827,21 @@ fn lancer_une_copie(
             return refus(Echec::echoue(OU_COPIE, e.to_string()));
         }
     };
+    // Lancée par son chemin : son image doit être le fichier tenu et vérifié. Sinon (un dossier du chemin retourné
+    // entre-temps), elle est arrêtée et Vanguard reste sur la clé, en le disant.
+    if !crate::machine::windows::eleve::image_du_fils_est(fils.as_raw_handle(), &verrou) {
+        let _ = fils.kill();
+        let _ = fils.wait();
+        drop(suivi);
+        drop(verrou);
+        return refus(Echec::refuse(
+            OU_COPIE,
+            tr!(
+                "la copie lancée n'est pas le fichier vérifié : arrêtée",
+                "the started copy is not the verified file: stopped"
+            ),
+        ));
+    }
     // La console fermée par le X, la fin de session : Windows ne laisse que le gestionnaire (`effacer_a_la_fermeture`)
     // agir avant d'arrêter ce processus ; il retrouve ici la copie et son verrou.
     if let Ok(mut en_cours) = COPIE_EN_COURS.lock() {
@@ -943,6 +1037,30 @@ mod tests {
         assert!(matches!(origine_crue(&autre, soi.clone()), Err(Refus::Autre(_))));
         assert!(matches!(origine_crue(&d.join("absent"), soi), Err(Refus::Absente)));
         assert!(matches!(origine_crue(&vrai, None), Err(Refus::Autre(_))));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// MOYENNE (campagne d'attaque, DONNEES-1, COPIE-2) : hors d'une copie temporaire, VANGUARD_ORIGINE n'est jamais
+    /// crue, même vers une copie exacte du programme posée dans un dossier du compte avec un témoin de clé : sinon ce
+    /// dossier devenait « la clé » (données, clés connues, désinstallation, mise à jour). Ses octets ne sont même pas
+    /// lus, et rien n'est dit. Dans une copie, la règle des mêmes octets reste.
+    #[test]
+    fn origine_jamais_crue_hors_d_une_copie() {
+        let d = crate::essais::temporaire().join(format!("vanguard-hors-copie-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("x")).unwrap();
+        std::fs::write(d.join("vanguard.cle"), "").unwrap();
+        let exacte = d.join("x").join("v");
+        std::fs::write(&exacte, b"programme de vanguard").unwrap();
+        let soi = crate::programmes_poses::empreinte_de(&exacte).ok();
+        let (crue, alerte) = decider_origine(Some(&exacte), || false, || panic!("octets lus hors d'une copie"));
+        assert!(crue.is_none() && alerte.is_none(), "crue hors d'une copie : {crue:?}");
+        let (crue, alerte) = decider_origine(Some(&exacte), || true, || soi.clone());
+        assert_eq!(crue, Some(exacte.canonicalize().unwrap()));
+        assert!(alerte.is_none());
+        let (crue, alerte) = decider_origine(Some(&d.join("vanguard.cle")), || true, || soi.clone());
+        assert!(crue.is_none() && alerte.is_some());
+        assert_eq!(decider_origine(None, || true, || soi.clone()).0, None);
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -1209,8 +1327,10 @@ mod tests {
         let Some(source) = cmd() else {
             return crate::essais::saute("cmd.exe absent");
         };
-        let base = crate::essais::temporaire().join(format!("vanguard-copies-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        // Dans le dossier temporaire du système (C: sous Wine) : sur Z:, Wine ne donne pas le chemin NT du fichier
+        // tenu, et la copie lancée y serait refusée comme une image inconnue.
+        let jetable = crate::essais::Jetable::garder(std::env::temp_dir().join(crate::essais::nom_unique("copies")));
+        let base = jetable.to_path_buf();
         let soi = crate::programmes_poses::empreinte_de(&source).unwrap();
         let mut appele = false;
         let code = lancer_une_copie(
@@ -1235,6 +1355,53 @@ mod tests {
         assert!(refus.is_err());
         assert_eq!(std::fs::read_dir(&base).unwrap().count(), 0, "copie refusée laissée");
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// BASSE (campagne d'attaque, COPIE-3) : un dossier des copies (`copies\`, ou le dossier local au-dessus) qui est
+    /// un lien ou une jonction est refusé avant toute copie : le compte pourrait le retourner entre la vérification et
+    /// le lancement. Rien n'est lancé, rien n'est laissé dans la cible.
+    #[cfg(windows)]
+    #[test]
+    fn base_des_copies_en_lien_refusee() {
+        use std::os::windows::fs::MetadataExt;
+        let Some(source) = cmd() else {
+            return crate::essais::saute("cmd.exe absent");
+        };
+        // Sur C: sous Wine (comme copie_lancee_attendue_puis_effacee) : sur Z:, l'image de la copie lancée serait
+        // refusée de toute façon, et l'essai ne verrait pas une base en lien acceptée.
+        let jetable = crate::essais::Jetable::garder(std::env::temp_dir().join(crate::essais::nom_unique("base-lien")));
+        let d = jetable.to_path_buf();
+        let (cible, local) = (d.join("ailleurs"), d.join("local"));
+        std::fs::create_dir_all(&cible).unwrap();
+        std::fs::create_dir_all(&local).unwrap();
+        let base = local.join("copies");
+        if std::os::windows::fs::symlink_dir(&cible, &base).is_err()
+            || !std::fs::symlink_metadata(&base).is_ok_and(|m| m.file_attributes() & 0x400 != 0)
+        {
+            let _ = std::fs::remove_dir_all(&d);
+            return crate::essais::saute("lien symbolique de dossier impossible ou invisible ici");
+        }
+        let soi = crate::programmes_poses::empreinte_de(&source).unwrap();
+        let r = lancer_une_copie(
+            &source,
+            &soi,
+            &base,
+            vec!["/c".into(), "exit 7".into()],
+            &source,
+            || panic!("copie lancée par une base en lien"),
+        );
+        let vu = format!("{r:?}");
+        assert!(
+            vu.contains("jonction") || vu.contains("junction"),
+            "base en lien acceptée, ou refusée pour une autre raison : {r:?}"
+        );
+        assert_eq!(
+            std::fs::read_dir(&cible).unwrap().count(),
+            0,
+            "copie posée dans la cible du lien"
+        );
+        let _ = std::fs::remove_dir(&base);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// Windows : les copies d'avant s'effacent, sauf celle d'un processus qui tourne encore (ici le nôtre, et un

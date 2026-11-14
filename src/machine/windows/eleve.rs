@@ -704,6 +704,13 @@ fn image_est_le_fichier(processus: *mut c_void, fichier: &std::fs::File) -> Resu
     Ok(())
 }
 
+/// Le processus `processus` (la poignée d'un `Child`) a-t-il pour image le fichier ouvert `fichier` ? Pour la copie
+/// temporaire de la clé (`protection::cle`), lancée par son chemin : une jonction retournée entre la vérification et
+/// le lancement ferait lancer un autre fichier. Une lecture impossible est un non.
+pub(crate) fn image_du_fils_est(processus: std::os::windows::io::RawHandle, fichier: &std::fs::File) -> bool {
+    image_est_le_fichier(processus.cast(), fichier).is_ok()
+}
+
 /// Juste après « runas », avant tout envoi : le processus élevé a pour image le fichier tenu, et le chemin tenu est
 /// encore sûr. Une lettre redéfinie ou un lien posé pendant la demande ferait élever un autre fichier, au même chemin
 /// affiché : l'image le montre. Cela ne défait pas l'élévation, mais elle ne passe plus en silence et le fils ne

@@ -4202,6 +4202,70 @@ fn lance_depuis_la_cle_tourne_depuis_une_copie() {
     let _ = std::fs::remove_dir_all(&racine);
 }
 
+/// BASSE (campagne d'attaque, DONNEES-3) : une copie temporaire lancée avec VANGUARD_ORIGINE vers un autre fichier
+/// dit l'écart et continue. L'alerte notée au journal se demandait où est la clé, donc rappelait la décision de
+/// l'origine pendant sa propre initialisation : Vanguard restait figé (ou paniquait) au lieu de continuer.
+#[cfg(target_os = "linux")]
+#[test]
+fn origine_ecartee_dans_une_copie_ne_fige_pas() {
+    let racine = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("origine-ecartee-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&racine);
+    let maison = racine.join("maison");
+    // Une copie à sa place (`<XDG_RUNTIME_DIR>/vanguard-<…>/vanguard`), d'un autre processus que le sien : elle ne
+    // s'efface pas, et l'origine désignée n'a pas ses octets.
+    let dossier = maison.join("run").join("vanguard-1-1");
+    std::fs::create_dir_all(&dossier).unwrap();
+    let copie = dossier.join("vanguard");
+    std::fs::copy(env!("CARGO_BIN_EXE_vanguard"), &copie).unwrap();
+    let autre = racine.join("autre");
+    std::fs::write(&autre, b"programme d'un autre").unwrap();
+    let mut commande = Command::new(&copie);
+    commande
+        .arg("--help")
+        .env("VANGUARD_LANG", "fr")
+        .env("VANGUARD_HORS_LIGNE", "1")
+        .env("USER", "essai")
+        .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
+        .env("XDG_RUNTIME_DIR", maison.join("run"))
+        .env("HOME", &maison)
+        .env("XDG_DATA_HOME", maison.join("donnees"))
+        .env("XDG_CONFIG_HOME", maison.join("config"))
+        .env("XDG_CACHE_HOME", maison.join("cache"))
+        .env("VANGUARD_ORIGINE", &autre)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut essais = 0;
+    let mut enfant = loop {
+        match commande.spawn() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && essais < 20 => {
+                essais += 1;
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            r => break r.expect("vanguard ne démarre pas"),
+        }
+    };
+    let texte = lire_en_fond(enfant.stdout.take().unwrap());
+    let erreurs = lire_en_fond(enfant.stderr.take().unwrap());
+    let fin = Instant::now() + Duration::from_secs(30);
+    let statut = loop {
+        if let Some(s) = enfant.try_wait().unwrap() {
+            break Some(s);
+        }
+        if Instant::now() > fin {
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let _ = enfant.kill();
+    let _ = enfant.wait();
+    let (texte, erreurs) = (texte.join().unwrap_or_default(), erreurs.join().unwrap_or_default());
+    assert!(statut.is_some(), "figé après l'alerte\n{texte}\n{erreurs}");
+    assert!(statut.unwrap().success(), "{texte}\n{erreurs}");
+    assert!(erreurs.contains("VANGUARD_ORIGINE"), "alerte absente : {erreurs}");
+    let _ = std::fs::remove_dir_all(&racine);
+}
+
 /// Les traces collectées dans un dossier jetable : un seul dossier daté, réservé au compte, avec LISEZMOI (en
 /// français puis en anglais), MANIFESTE et les processus ; chaque empreinte du manifeste est juste et chaque fichier y
 /// est. Sous Wine, sans PowerShell, une partie manque et c'est dit ; LISEZMOI et MANIFESTE, eux, sont là.
