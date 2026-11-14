@@ -1761,6 +1761,9 @@ pub(super) fn persistance_dans(
         }
     }
     juger_configuration(&configuration, &sortes_lues, &demarrage, maison, &mut t);
+    if let Some(fish) = fish_non_verifie(&t.r) {
+        t.non_verifies.push(fish);
+    }
     juger_caches_d_uwsm(&caches_d_uwsm, maison, &mut t);
     juger_demarrage(&demarrage, maison, &mut t);
     juger_generateurs(&mut t);
@@ -1773,6 +1776,114 @@ pub(super) fn persistance_dans(
     constats.extend(constat_des_copies(&copies, maison));
     constats.extend(services);
     constats
+}
+
+/// Au plus autant d'endroits de fish nommés dans son non vérifié ; les autres se comptent.
+const FISH_MONTRES: usize = 8;
+
+/// Ronde 14 (décision de l'auteur, N13-fish-env-3 à -8) : Vanguard ne lit pas fish finement (fonctions chargées à la
+/// demande, variables universelles de fish_variables, compléments, conf.d des paquets). Dès qu'une configuration de
+/// fish est présente, le bilan le dit, non vérifié, en nommant ce qui est là ; jamais tu. Ce que la grammaire stricte
+/// lève déjà dans config.fish et conf.d (`juger_ligne`, format fish) reste levé.
+///
+/// Les endroits : sous le dossier de réglages (~/.config, ou un XDG_CONFIG_HOME déplacé) « fish/config.fish »,
+/// « fish/fish_variables », « fish/conf.d », « fish/functions », « fish/completions » ; sous le dossier des données
+/// (~/.local/share, ou un XDG_DATA_HOME déplacé) « fish/vendor_conf.d », « fish/vendor_functions.d »,
+/// « fish/vendor_completions.d », « fish/generated_completions » ; au système /etc/fish (config.fish, conf.d,
+/// functions, completions), /usr/share/fish (config.fish, functions, completions) et « fish/vendor_*.d » sous
+/// chaque XDG_DATA_DIRS, /usr/local/share et /usr/share. Un fichier compte s'il existe, un dossier s'il n'est pas vide
+/// ou ne se lit pas. Un endroit du système que seul root peut changer (`de_root_seul`) ne compte que si fish est là :
+/// un endroit du compte compte, ou un programme « fish » est installé (/usr/bin, /bin, /usr/local/bin, ~/.local/bin,
+/// ~/bin) ; sans fish, les fichiers que des paquets y posent ne sont lus par personne.
+fn fish_non_verifie(r: &Releveur) -> Option<String> {
+    let present = |p: &Path| match std::fs::symlink_metadata(p) {
+        Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+        Ok(m) if m.is_dir() || std::fs::metadata(p).is_ok_and(|c| c.is_dir()) => {
+            std::fs::read_dir(p).map_or(true, |mut d| d.next().is_some())
+        }
+        Ok(_) => true,
+    };
+    let mut du_compte: Vec<std::path::PathBuf> = Vec::new();
+    let mut configs = vec![r.maison.join(".config")];
+    if let Some(c) = &r.config {
+        configs.push(r.sous(c));
+    }
+    let mut donnees = vec![r.maison.join(".local/share")];
+    if let Some(d) = &r.donnees {
+        donnees.push(r.sous(d));
+    }
+    for c in &configs {
+        for f in ["config.fish", "fish_variables", "conf.d", "functions", "completions"] {
+            du_compte.push(c.join("fish").join(f));
+        }
+    }
+    for d in &donnees {
+        for f in [
+            "vendor_conf.d",
+            "vendor_functions.d",
+            "vendor_completions.d",
+            "generated_completions",
+        ] {
+            du_compte.push(d.join("fish").join(f));
+        }
+    }
+    let mut systeme: Vec<std::path::PathBuf> = ["config.fish", "conf.d", "functions", "completions"]
+        .iter()
+        .map(|f| r.racine.join("etc/fish").join(f))
+        .collect();
+    systeme.extend(
+        ["config.fish", "functions", "completions"]
+            .iter()
+            .map(|f| r.racine.join("usr/share/fish").join(f)),
+    );
+    let mut bases: Vec<std::path::PathBuf> = r.donnees_systeme.iter().map(|d| r.sous(d)).collect();
+    bases.extend(["usr/local/share", "usr/share"].map(|d| r.racine.join(d)));
+    for b in &bases {
+        for f in ["vendor_conf.d", "vendor_functions.d", "vendor_completions.d"] {
+            systeme.push(b.join("fish").join(f));
+        }
+    }
+    // Une base sous la maison (un XDG_DATA_DIRS du compte) est du compte.
+    let (a_la_maison, systeme): (Vec<_>, Vec<_>) = systeme.into_iter().partition(|p| p.starts_with(&r.maison));
+    du_compte.extend(a_la_maison);
+    let mut vus: Vec<std::path::PathBuf> = Vec::new();
+    let mut presents: Vec<std::path::PathBuf> = du_compte
+        .into_iter()
+        .filter(|p| {
+            let nouveau = !vus.contains(p);
+            vus.push(p.clone());
+            nouveau && present(p)
+        })
+        .collect();
+    let installe = ["usr/bin", "bin", "usr/local/bin"]
+        .iter()
+        .map(|d| r.racine.join(d).join("fish"))
+        .chain([r.maison.join(".local/bin/fish"), r.maison.join("bin/fish")])
+        .any(|f| f.exists());
+    let fish_la = installe || !presents.is_empty();
+    for p in systeme {
+        if !vus.contains(&p) && present(&p) && (fish_la || !de_root_seul(&p)) {
+            vus.push(p.clone());
+            presents.push(p);
+        }
+    }
+    if presents.is_empty() {
+        return None;
+    }
+    let total = presents.len();
+    let mut noms: Vec<String> = presents.iter().take(FISH_MONTRES).map(|p| r.montre(p)).collect();
+    if total > FISH_MONTRES {
+        let reste = total.saturating_sub(FISH_MONTRES);
+        noms.push(trf!("et {reste} autre(s)", "and {reste} other(s)"));
+    }
+    Some(trf!(
+        "fish : non vérifié ; Vanguard ne lit pas fish en entier (fonctions chargées à la demande, variables universelles, compléments, conf.d des paquets) : ce que sa configuration pose et lance n'est pas jugé ; présents : {}",
+        "fish: not checked; Vanguard does not read fish in full (functions loaded on demand, universal variables, completions, package conf.d): what its configuration sets and starts is not checked; present: {}",
+        noms.iter()
+            .map(|n| crate::ui::affichable(n))
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
 }
 
 /// Le dossier de la bibliothèque d'Omarchy, posé par son paquet.
@@ -3033,7 +3144,17 @@ fn environnement(
         // Au format de systemd, un retour chariot seul coupe aussi l'enregistrement (L-1) : chaque morceau se juge, à
         // la ligne écrite qui le porte.
         let systemd = format_systemd(variables);
-        for (numero, physiques, jointe) in lignes_continuees(texte) {
+        // Ronde 14 (N13-fish-env-1) : user.conf et user.conf.d se joignent comme systemd (« \ » devient une espace,
+        // un commentaire au milieu se saute), les autres comme le shell.
+        let logiques: Vec<LigneJointe> = if variables == Variables::Systemd {
+            lignes_jointes_de_systemd(texte)
+        } else {
+            lignes_continuees(texte)
+                .into_iter()
+                .map(|(n, p, j)| (n, p.into_iter().map(|(m, l)| (m, l.to_string())).collect(), j))
+                .collect()
+        };
+        for (numero, physiques, jointe) in logiques {
             let mut vus: Vec<String> = Vec::new();
             for (n, l) in physiques
                 .iter()
@@ -3059,7 +3180,8 @@ fn environnement(
             }
             // Le shell et environment.d joignent « \ » + retour à la ligne suivante sans rien entre les deux : un nom
             // coupé ainsi (« export L\⏎D_PRELOAD=… ») ne se voit que joint (troisième vérification, V1). systemd met
-            // une espace : ses mots sont ceux des lignes une à une, déjà lues.
+            // une espace, mais la suite d'un « DefaultEnvironment=A=1 \ » pose des noms que la ligne seule ne montre
+            // pas (« PATH=… » sans clé) : jugée jointe aussi (ronde 14).
             if physiques.len() > 1 {
                 for jointe in enregistrements(&jointe, systemd) {
                     if let Some(nom) = injection_nommee(jointe, de_root) {
@@ -3162,6 +3284,10 @@ fn environnement(
 
 /// Une ligne logique : le numéro de sa première ligne, chaque ligne physique et son numéro, le texte joint.
 type LigneContinuee<'a> = (usize, Vec<(usize, &'a str)>, String);
+
+/// Une ligne logique jointe, ses lignes physiques possédées : numéro de la première, (numéro, texte) de chacune,
+/// texte joint.
+type LigneJointe = (usize, Vec<(usize, String)>, String);
 
 /// Les lignes logiques d'un fichier des variables, comme les joint un shell : (numéro de la première ligne, chaque
 /// ligne physique et son numéro, le texte joint sans rien à la place de « \ » + retour). Une ligne qui finit par
@@ -4329,6 +4455,18 @@ fn forme_finale_de_systemd(
     Ok(None)
 }
 
+/// Ronde 14 (N13-fish-env-1) : les lignes logiques d'un fichier au format de systemd (user.conf, user.conf.d, une
+/// unité) comme les joint systemd (`lignes_de_systemd`), en lignes continuées : « \ » final remplacé par une espace,
+/// une ligne de commentaire sautée au milieu d'une suite, « \ » suivi d'un retour chariot joint aussi. Le shell joint
+/// sans rien entre les deux (`lignes_du_shell`) : lu ainsi, « DefaultEnvironment=A=1\⏎PATH=… » devenait la seule
+/// variable A, quand systemd pose aussi PATH.
+fn lignes_jointes_de_systemd(texte: &str) -> Vec<LigneJointe> {
+    lignes_de_systemd(texte)
+        .into_iter()
+        .map(|l| (l.numero, l.morceaux, l.texte))
+        .collect()
+}
+
 /// Les lignes d'une unité ou d'un ajout telles que systemd les lit (`lignes_de_systemd`), leur seul texte.
 fn lignes_logiques(texte: &str) -> Vec<String> {
     lignes_de_systemd(texte).into_iter().map(|l| l.texte).collect()
@@ -4344,6 +4482,9 @@ struct LigneDeSystemd {
     premiere: String,
     /// Son texte, joint et sans blancs autour.
     texte: String,
+    /// Chaque ligne lue qu'elle joint (commentaires sautés), avec le numéro (à partir de 1) de la ligne écrite qui la
+    /// porte, marque d'ordre des octets ôtée.
+    morceaux: Vec<(usize, String)>,
 }
 
 /// Les lignes d'une unité, d'un ajout ou d'un .desktop comme les assemble systemd (`config_parse`, systemd 262) :
@@ -4380,6 +4521,7 @@ fn lignes_de_systemd(texte: &str) -> Vec<LigneDeSystemd> {
             Some(mut c) => {
                 c.texte.push_str(l);
                 c.lues = c.lues.saturating_add(1);
+                c.morceaux.push((compte, l.to_string()));
                 c
             }
             None => LigneDeSystemd {
@@ -4387,6 +4529,7 @@ fn lignes_de_systemd(texte: &str) -> Vec<LigneDeSystemd> {
                 lues: 1,
                 premiere: brute.to_string(),
                 texte: l.to_string(),
+                morceaux: vec![(compte, l.to_string())],
             },
         };
         // L'échappement se lit sur le seul morceau ajouté : le texte d'avant finit par l'espace mise à la place
@@ -5055,10 +5198,17 @@ fn hors_forme_dans(f: &Path, texte: &str, sorte: Variables) -> bool {
     let hors = |l: &str| {
         !commentaire_selon(l, sorte) && matches!(juger_ligne(l, format, &maisons, &mut []), Jugement::HorsForme { .. })
     };
+    // Ronde 14 : au format de systemd, les lignes jointes comme systemd (`lignes_jointes_de_systemd`).
     texte.lines().any(hors)
-        || lignes_du_shell(texte, sorte)
-            .into_iter()
-            .any(|(_, physiques, jointe)| physiques.len() > 1 && hors(&jointe))
+        || if sorte == Variables::Systemd {
+            lignes_jointes_de_systemd(texte)
+                .into_iter()
+                .any(|(_, physiques, jointe)| physiques.len() > 1 && hors(&jointe))
+        } else {
+            lignes_du_shell(texte, sorte)
+                .into_iter()
+                .any(|(_, physiques, jointe)| physiques.len() > 1 && hors(&jointe))
+        }
 }
 
 /// V-2 (relecture 0.95) : un script de variables (~/.config/uwsm/env…) cache ce qu'il pose au gestionnaire : une
@@ -7457,10 +7607,15 @@ fn juger_configuration(
 ) {
     let (session, lue) = (home(), t.r.maison.to_string_lossy().into_owned());
     let maisons = [session.as_str(), lue.as_str()];
+    // Ronde 14 (N13-fish-env-2) : ce que posent les fichiers d'environment.d avant chacun, dans l'ordre du générateur.
+    let avant_d_environment_d = posees_avant_chaque_environment_d(&t.r, configuration, sortes, h);
     for f in configuration {
         let Some(lu) = lire(f, h, t) else {
             continue;
         };
+        if let Some((_, posees)) = avant_d_environment_d.iter().find(|(c, _)| c == f) {
+            juger_posees_d_environment_d(f, &lu, posees, &maisons, h, t);
+        }
         // La sorte du fichier, qui dit son lecteur : un fichier de Hyprland (ajouté hors de `sortes`) sinon.
         let sorte = sortes.iter().find(|(c, _)| c == f).map_or(Variables::Hypr, |(_, s)| *s);
         // R4-2 (revérification de la ronde 4 de la 0.95) : le shell retire les octets NUL avant de lire
@@ -7483,6 +7638,259 @@ fn juger_configuration(
         }
         juger_lignes_de_configuration(f, &lu, sorte, demarrage, &maisons, h, t);
         juger_lignes_jointes(f, &lu, sorte, demarrage, &maisons, h, t);
+    }
+}
+
+/// Ronde 14 (N13-fish-env-2) : une variable posée par une ligne d'environment.d, que le générateur
+/// (30-systemd-environment-d-generator) développe dans les lignes lues après elle (« $NOM », « ${NOM} »,
+/// « ${NOM:-mot} », « ${NOM:+mot} »), dans le même fichier et dans ceux qui le suivent.
+#[derive(Clone, Debug)]
+struct PoseeDEnvironmentD {
+    nom: String,
+    /// La valeur posée, développée ; `None` : elle ne se calcule pas sûrement (un « $ » qui reste, un « \ »).
+    valeur: Option<String>,
+    /// Où elle est posée (« fichier:ligne »).
+    ou: String,
+    /// Le fichier qui la pose est à root seul (`de_root_seul`).
+    de_root: bool,
+}
+
+/// L'affectation d'une ligne logique d'environment.d telle que la lit le générateur (systemd 262, mesuré) : la clé est
+/// le texte avant le premier « = », blancs ôtés autour (« HOME =/x » pose HOME, « export HOME=/x » ne pose pas HOME),
+/// la valeur le reste, blancs ôtés autour et une paire de guillemets ôtée. Une clé qui n'est pas un nom : rien.
+fn pose_d_environment_d(ligne: &str) -> Option<(String, String)> {
+    let net = ligne.trim_matches([' ', '\t', '\r']);
+    if net.is_empty() || net.starts_with(['#', ';']) {
+        return None;
+    }
+    let (cle, valeur) = net.split_once('=')?;
+    let cle = cle.trim_matches([' ', '\t']);
+    if !identifiant(cle) {
+        return None;
+    }
+    let valeur = valeur.trim_matches([' ', '\t']);
+    let valeur = ['"', '\'']
+        .iter()
+        .find_map(|g| valeur.strip_prefix(*g).and_then(|v| v.strip_suffix(*g)))
+        .unwrap_or(valeur);
+    Some((cle.to_string(), valeur.to_string()))
+}
+
+/// Ce que donne `valeur` une fois développées les variables de `posees` (sauf `soi`, jugée là où elle est posée) :
+/// le texte (`None` si une variable lue ne se calcule pas), et les variables posées qu'elle lit. Les autres « $ »
+/// restent écrits (« $HOME » non posé, « $PATH » : la grammaire stricte les lit).
+fn developpe_posees(valeur: &str, posees: &[PoseeDEnvironmentD], soi: &str) -> (Option<String>, Vec<usize>) {
+    let mut sortie = String::with_capacity(valeur.len());
+    let mut lues: Vec<usize> = Vec::new();
+    let mut inconnue = false;
+    let mut reste = valeur;
+    while let Some(i) = reste.find('$') {
+        sortie.push_str(reste.get(..i).unwrap_or_default());
+        let apres = reste.get(i.saturating_add(1)..).unwrap_or_default();
+        // « ${NOM} », « ${NOM:-mot} », « ${NOM:+mot} » ; ou « $NOM ».
+        let (nom, mot, ecrit_len) = if let Some(dedans) = apres.strip_prefix('{') {
+            let Some(fin) = dedans.find('}') else {
+                sortie.push('$');
+                reste = apres;
+                continue;
+            };
+            let corps = dedans.get(..fin).unwrap_or_default();
+            let (nom, mot) = match corps.find(':') {
+                Some(d) => (corps.get(..d).unwrap_or_default(), corps.get(d..)),
+                None => (corps, None),
+            };
+            (nom, mot, fin.saturating_add(2))
+        } else {
+            let fin = apres
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(apres.len());
+            (apres.get(..fin).unwrap_or_default(), None, fin)
+        };
+        let ecrit = reste
+            .get(i..i.saturating_add(1).saturating_add(ecrit_len))
+            .unwrap_or_default();
+        reste = apres.get(ecrit_len..).unwrap_or_default();
+        let trouvee = (nom != soi).then(|| posees.iter().position(|p| p.nom == nom)).flatten();
+        let Some(k) = trouvee else {
+            sortie.push_str(ecrit);
+            continue;
+        };
+        if !lues.contains(&k) {
+            lues.push(k);
+        }
+        let Some(v) = posees.get(k).and_then(|p| p.valeur.as_deref()) else {
+            inconnue = true;
+            continue;
+        };
+        match mot {
+            None => sortie.push_str(v),
+            Some(m) if m.starts_with(":-") => {
+                sortie.push_str(if v.is_empty() {
+                    m.get(2..).unwrap_or_default()
+                } else {
+                    v
+                });
+            }
+            Some(m) if m.starts_with(":+") => {
+                if !v.is_empty() {
+                    sortie.push_str(m.get(2..).unwrap_or_default());
+                }
+            }
+            // Une autre forme : le générateur la lit autrement ; non calculée.
+            Some(_) => inconnue = true,
+        }
+    }
+    sortie.push_str(reste);
+    ((!inconnue).then_some(sortie), lues)
+}
+
+/// Les fichiers d'environment.d que lit le générateur, dans son ordre : chacun de `configuration` (au format des
+/// clés, dans un dossier « environment.d ») et ceux des dossiers du système, triés par nom de fichier, un nom pris
+/// une seule fois, au dossier qui prime (le compte, puis /etc, /run, /usr/local/lib, /usr/lib) ; et pour chacun, ce
+/// que les fichiers d'avant lui ont posé (`PoseeDEnvironmentD`). Un fichier qui ne se lit pas ne pose rien ici (sa
+/// lecture ratée se dit ailleurs).
+fn posees_avant_chaque_environment_d(
+    r: &Releveur,
+    configuration: &[std::path::PathBuf],
+    sortes: &[(std::path::PathBuf, Variables)],
+    h: &Path,
+) -> Vec<(std::path::PathBuf, Vec<PoseeDEnvironmentD>)> {
+    let systeme = ["etc", "run", "usr/local/lib", "usr/lib"].map(|d| r.racine.join(d).join("environment.d"));
+    let rang = |f: &Path| {
+        f.parent()
+            .and_then(|d| systeme.iter().position(|s| s == d))
+            .map_or(0, |p| p.saturating_add(1))
+    };
+    let mut fichiers: Vec<std::path::PathBuf> = configuration
+        .iter()
+        .filter(|f| {
+            sortes.iter().any(|(c, s)| c == *f && *s == Variables::Cles)
+                && f.parent().is_some_and(|d| d.ends_with("environment.d"))
+                && a_l_extension(f, "conf")
+        })
+        .cloned()
+        .collect();
+    for d in &systeme {
+        for f in fichiers_de(d, &["conf"]) {
+            if f.parent() == Some(d.as_path()) && !fichiers.contains(&f) {
+                fichiers.push(f);
+            }
+        }
+    }
+    fichiers.sort_by(|a, b| (a.file_name(), rang(a)).cmp(&(b.file_name(), rang(b))));
+    fichiers.dedup_by(|b, a| a.file_name() == b.file_name());
+    let maison = r.maison.to_string_lossy().into_owned();
+    let mut posees: Vec<PoseeDEnvironmentD> = Vec::new();
+    let mut avant = Vec::new();
+    for f in fichiers {
+        avant.push((f.clone(), posees.clone()));
+        let Ok(lu) = temoins::lire_borne(&f, LECTURE_MAX) else {
+            continue;
+        };
+        let texte = String::from_utf8_lossy(&lu.octets).into_owned();
+        let de_root = de_root_seul(&f);
+        for (n, _, jointe) in lignes_logiques_selon(&texte, Variables::Cles) {
+            poser_d_environment_d(&jointe, &mut posees, &maison, format!("{}:{n}", court(&f, h)), de_root);
+        }
+    }
+    avant
+}
+
+/// La ligne logique `ligne` d'environment.d pose-t-elle une variable ? Si oui, elle remplace dans `posees` celle du
+/// même nom, sa valeur développée comme le générateur (`developpe_posees`, puis « $HOME » non posé : `maison`) ;
+/// un « $ » ou un « \ » qui reste : non calculée.
+fn poser_d_environment_d(ligne: &str, posees: &mut Vec<PoseeDEnvironmentD>, maison: &str, ou: String, de_root: bool) {
+    let Some((nom, valeur)) = pose_d_environment_d(ligne) else {
+        return;
+    };
+    let (developpee, _) = developpe_posees(&valeur, posees, "");
+    let valeur = developpee.map(|v| {
+        v.replace("${HOME}", maison.trim_end_matches('/'))
+            .replace("$HOME", maison.trim_end_matches('/'))
+    });
+    let valeur = valeur.filter(|v| !v.contains(['$', '\\']));
+    posees.retain(|p| p.nom != nom);
+    posees.push(PoseeDEnvironmentD {
+        nom,
+        valeur,
+        ou,
+        de_root,
+    });
+}
+
+/// Ronde 14 (N13-fish-env-2) : dans un fichier d'environment.d, chaque ligne qui pose une variable surveillée en
+/// lisant une variable posée plus haut (`posees` : par les fichiers d'avant, puis par les lignes d'avant de celui-ci),
+/// jugée sur sa valeur développée avec la valeur posée : levée si elle est suspecte (« HOME=/home/alice/.x » puis
+/// « PATH=$HOME/bin » : le générateur rend PATH=/home/alice/.x/bin), sinon dite non vérifiée, nommée. Une ligne déjà
+/// levée par la grammaire stricte, ou déjà dite, ne se redit pas ; le non vérifié se tait seulement quand le fichier
+/// et celui qui pose la variable sont à root seul. « %h » n'est pas lu par le générateur : pas concerné.
+fn juger_posees_d_environment_d(
+    f: &Path,
+    lu: &Lecture,
+    posees: &[PoseeDEnvironmentD],
+    maisons: &[&str],
+    h: &Path,
+    t: &mut Lancements,
+) {
+    let format = Format::Cles { developpe: true };
+    let mut posees = posees.to_vec();
+    let de_root = de_root_seul(f);
+    let maison = t.r.maison.to_string_lossy().into_owned();
+    for (n, physiques, jointe) in lignes_logiques_selon(&lu.texte, Variables::Cles) {
+        if let Some(Instruction::Pose { nom, texte }) = instruction_de_cles(&jointe).and_then(|mut v| v.pop())
+            && variable_surveillee(&nom, format)
+            && let (developpee, lues) = developpe_posees(&texte, &posees, &nom)
+            && !lues.is_empty()
+        {
+            let sans = |l: &str| {
+                juger_ligne(
+                    l,
+                    format,
+                    maisons,
+                    &mut vec![CHEMIN_DU_SYSTEME.to_string(); maisons.len()],
+                )
+            };
+            let deja: Vec<Jugement> = std::iter::once(sans(&jointe))
+                .chain(physiques.iter().filter(|_| physiques.len() > 1).map(|(_, l)| sans(l)))
+                .collect();
+            let levee = |j: &Jugement| matches!(j, Jugement::Suspecte(_) | Jugement::HorsForme { raison: Some(_), .. });
+            if !deja.iter().any(levee) {
+                let raison = developpee.as_deref().and_then(|v| match sans(&format!("{nom}={v}")) {
+                    Jugement::Suspecte(r) | Jugement::HorsForme { raison: Some(r), .. } => Some(r),
+                    _ => None,
+                });
+                let lues: Vec<&PoseeDEnvironmentD> = lues.iter().filter_map(|k| posees.get(*k)).collect();
+                let dites = lues
+                    .iter()
+                    .map(|p| trf!("{} (posée à {})", "{} (set at {})", p.nom, p.ou))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let ou = court(f, h);
+                if let Some(raison) = raison {
+                    let ecrite = physiques.first().map_or(jointe.as_str(), |(_, l)| l.as_str());
+                    t.sources
+                        .push(source_de(&crate::modele::id::chemin(&f.to_string_lossy()), &jointe));
+                    t.retraits.push(if physiques.len() == 1 {
+                        retrait(f, &lu.texte, ecrite)
+                    } else {
+                        None
+                    });
+                    let d = designes::commande(&jointe, designes::Contexte::Shell);
+                    let temoin = temoin_de_ligne(t, f, n.saturating_sub(1), lu, &jointe, d, true, Sorte::Shell);
+                    t.temoins.push(temoin);
+                    t.suspects.push(trf!(
+                        "{ou}:{n} : {raison} (le générateur d'environment.d y développe {dites})",
+                        "{ou}:{n}: {raison} (the environment.d generator expands {dites} there)"
+                    ));
+                } else if deja.iter().all(|j| *j == Jugement::Muette) && !(de_root && lues.iter().all(|p| p.de_root)) {
+                    t.non_verifies.push(trf!(
+                        "{ou}:{n} : {nom} lit {dites}, que le générateur d'environment.d développe : ce qu'elle pose n'est pas jugé ; écrivez la valeur sans cette variable",
+                        "{ou}:{n}: {nom} reads {dites}, which the environment.d generator expands: what it sets is not checked; write the value without that variable"
+                    ));
+                }
+            }
+        }
+        poser_d_environment_d(&jointe, &mut posees, &maison, format!("{}:{n}", court(f, h)), de_root);
     }
 }
 
@@ -8913,8 +9321,9 @@ fn hors_liste_du_shell(ligne: &str, format: Format) -> Option<&'static str> {
 /// littéral sans calcul qui pose ; « getopts » littéral ; « hash -r » ; « enable -a/-p/-s » ; « autoload » et « zle »
 /// de zsh littéraux ; « [[ … ]] » sans rien après son « ]] » et un calcul « (( … )) » seul (« if [[ … ]] { liste } »
 /// de zsh) ; enfin un programme ou une fonction (un nom hors de `INTEGREES_DU_SHELL`), sauf « $…=… » en argument, et
-/// les commandes qui posent l'environnement de la session (systemctl …-environment, dbus-update-activation-environment,
-/// uwsm finalize) avec un argument calculé. Tout le reste : dit.
+/// avec un argument calculé, une fonction de bash-completion qui pose (`fonction_qui_pose`) ou une commande qui pose
+/// l'environnement de la session (systemctl …-environment, dbus-update-activation-environment, uwsm finalize). Tout
+/// le reste : dit.
 fn commande_hors_liste(mots: &[String], fin: &str, format: Format) -> Option<&'static str> {
     if matches!(fin, "|" | "&" | ")") {
         return None;
@@ -9138,6 +9547,12 @@ fn commande_hors_liste(mots: &[String], fin: &str, format: Format) -> Option<&'s
             if session && args.iter().any(calcule) {
                 return Some(nom_calcule_dit());
             }
+            // Ronde 14 (N13-essais-3) : une fonction de bash-completion qui pose les variables qu'on lui nomme
+            // (« _comp_upvars -v $a$b /home/alice/.x » pose PATH) ; un argument calculé y est un nom calculé, dit. Un
+            // nom surveillé écrit en clair est déjà dit (`touche`).
+            if fonction_qui_pose(premier) && args.iter().any(calcule) {
+                return Some(nom_calcule_dit());
+            }
             // Un argument « <calculé>=… » (« e $a$b=… » d'un alias défini ailleurs) : le « = » hors de « ${ } »,
             // précédé de « $ » ou de « ` ».
             let pose_calculee = |a: &&str| {
@@ -9155,6 +9570,31 @@ fn commande_hors_liste(mots: &[String], fin: &str, format: Format) -> Option<&'s
             args.iter().any(pose_calculee).then(nom_calcule_dit)
         }
     }
+}
+
+/// Les fonctions de bash-completion (2.12, son espace « _comp_ » et ses anciens noms, mesurés dans
+/// /usr/share/bash-completion) qui posent, dans le shell qui les appelle, une variable dont le nom est un argument.
+const FONCTIONS_QUI_POSENT: [&str; 13] = [
+    "_upvars",
+    "_upvar",
+    "_get_comp_words_by_ref",
+    "__get_cword_at_cursor_by_ref",
+    "__reassemble_comp_words_by_ref",
+    "_get_cword",
+    "_get_pword",
+    "_init_completion",
+    "_quote_readline_by_ref",
+    "__expand_tilde_by_ref",
+    "_count_args",
+    "_variables",
+    "_split_longopt",
+];
+
+/// Ronde 14 : une commande qui est une fonction de bash-completion posant les variables qu'on lui nomme : tout son
+/// espace « _comp_ » (_comp_upvars, _comp_get_words, _comp_compgen -v…, dans le doute toutes), et ses anciens noms
+/// (`FONCTIONS_QUI_POSENT`).
+fn fonction_qui_pose(nom: &str) -> bool {
+    nom.starts_with("_comp_") || FONCTIONS_QUI_POSENT.contains(&nom)
 }
 
 /// La valeur d'une déclaration (« export x=… ») sans « $ » ni « ` » hors guillemets : bash ne la coupe pas en mots,
@@ -10048,10 +10488,54 @@ fn path_relatif(nom: &str, valeur: &str) -> Option<&'static str> {
     })
 }
 
-/// Les lignes continuées par « \ », jointes comme les lit le shell : « export L\⏎D_PRELOAD=… » précharge sans
-/// qu'aucune ligne écrite ne nomme LD_PRELOAD. Seulement ce qu'aucune de leurs lignes n'a déjà levé ; sans retrait
-/// proposé (retirer la seule première ligne laisserait la suite). Au format de systemd (`systemd`), les lignes se
-/// coupent aussi sur un retour chariot seul (`enregistrements`).
+/// Les lignes logiques d'un fichier de configuration de la sorte `sorte`, comme les joint son lecteur, chacune avec le
+/// numéro (à partir de 1) de sa première ligne écrite, chaque ligne physique et son numéro, et le texte joint. Ronde 14
+/// (N13-fish-env-1) : user.conf, user.conf.d et les unités se joignent comme systemd (`lignes_jointes_de_systemd` :
+/// « \ » devient une espace, un commentaire au milieu se saute) ; environment.d et les scripts comme le shell
+/// (`lignes_du_shell`), au format d'environment.d sur les lignes que coupe systemd (« \r » seul, NUL).
+fn lignes_logiques_selon(texte: &str, sorte: Variables) -> Vec<LigneJointe> {
+    if sorte == Variables::Systemd {
+        return lignes_jointes_de_systemd(texte);
+    }
+    let systemd = format_systemd(sorte);
+    let (coupe, numeros): (std::borrow::Cow<'_, str>, Vec<usize>) = if systemd {
+        (
+            coupe_comme_systemd(texte, Variables::Systemd).into(),
+            lignes_lues_numerotees(texte)
+                .into_iter()
+                .map(|(n, _)| n.saturating_add(1))
+                .collect(),
+        )
+    } else {
+        (texte.into(), Vec::new())
+    };
+    lignes_du_shell(&coupe, sorte)
+        .into_iter()
+        .map(|(premiere, physiques, jointe)| {
+            let premiere = if systemd {
+                numeros.get(premiere.saturating_sub(1)).copied().unwrap_or(premiere)
+            } else {
+                premiere
+            };
+            let physiques = physiques.into_iter().map(|(n, l)| (n, l.to_string())).collect();
+            (premiere, physiques, jointe)
+        })
+        .collect()
+}
+
+/// Ronde 14 : une ligne finie par « \ » puis des blancs (retour chariot ôté). systemd ne la joint pas à la suivante
+/// (mesuré sur systemd 262 : « Invalid syntax », puis « Unknown key » pour la ligne d'après) : la suite que l'auteur
+/// voulait poser n'est pas posée, et Vanguard ne devine pas laquelle il voulait.
+fn barre_suivie_d_un_blanc(ligne: &str) -> bool {
+    let l = ligne.strip_suffix('\r').unwrap_or(ligne);
+    l.ends_with([' ', '\t']) && l.trim_end().ends_with('\\') && !l.trim_end().ends_with("\\\\")
+}
+
+/// Les lignes continuées par « \ », jointes comme les lit leur lecteur (`lignes_logiques_selon`) : « export
+/// L\⏎D_PRELOAD=… » précharge sans qu'aucune ligne écrite ne nomme LD_PRELOAD. Seulement ce qu'aucune de leurs lignes
+/// n'a déjà levé ; sans retrait proposé (retirer la seule première ligne laisserait la suite). Au format de systemd
+/// (`systemd`), les lignes se coupent aussi sur un retour chariot seul (`enregistrements`). Ronde 14 : une ligne de
+/// systemd finie par « \ » suivi d'un blanc (`barre_suivie_d_un_blanc`) est dite non vérifiée.
 fn juger_lignes_jointes(
     fichier: &Path,
     lu: &Lecture,
@@ -10066,27 +10550,22 @@ fn juger_lignes_jointes(
     // Au format de systemd, le texte coupé aussi sur chaque retour chariot seul (« #x⏎L\⏎D_PRELOAD=… » : le
     // commentaire s'arrête au retour chariot, la suite se joint) ; chaque enregistrement garde le numéro de la ligne
     // écrite qui le porte.
-    let systemd = format_systemd(sorte);
-    let (texte, numeros): (std::borrow::Cow<'_, str>, Vec<usize>) = if systemd {
-        (
-            coupe_comme_systemd(&lu.texte, Variables::Systemd).into(),
-            lignes_lues_numerotees(&lu.texte)
-                .into_iter()
-                .map(|(n, _)| n.saturating_add(1))
-                .collect(),
-        )
-    } else {
-        (lu.texte.as_str().into(), Vec::new())
-    };
-    for (premiere, physiques, jointe) in lignes_du_shell(&texte, sorte) {
+    for (premiere, physiques, jointe) in lignes_logiques_selon(&lu.texte, sorte) {
+        if sorte == Variables::Systemd
+            && !de_root
+            && let [(n, l)] = physiques.as_slice()
+            && barre_suivie_d_un_blanc(l)
+            && !commentaire_selon(l, sorte)
+        {
+            t.non_verifies.push(trf!(
+                "{}:{n} : ligne finie par « \\ » suivi d'un blanc : systemd ne la joint pas à la suivante et la refuse ; ce qu'elle devait poser n'est pas jugé ; ôtez le blanc après « \\ »",
+                "{}:{n}: line ending in “\\” followed by a blank: systemd does not join it to the next one and rejects it; what it was meant to set is not checked; remove the blank after “\\”",
+                court(fichier, maison)
+            ));
+        }
         if physiques.len() < 2 {
             continue;
         }
-        let premiere = if systemd {
-            numeros.get(premiere.saturating_sub(1)).copied().unwrap_or(premiere)
-        } else {
-            premiere
-        };
         let n = premiere.saturating_sub(1);
         let raison = if prechargement_selon(&jointe, sorte) {
             if physiques.iter().any(|(_, l)| prechargement_selon(l, sorte)) {
@@ -18961,9 +19440,11 @@ mod tests {
                 "[Manager]\nDefaultEnvironment=\\\nLD_PRELOAD=/tmp/l.so\n",
                 "~/.config/systemd/user.conf.d/x.conf:3",
             ),
+            // Ronde 14 : systemd joint « \ » par une espace (mesuré sur systemd 262 : « Environment=B\⏎ASH_ENV=/x »
+            // donne « B » refusé puis ASH_ENV=/x) ; un nom ne s'y coupe donc pas. La suite d'une valeur, elle, pose.
             (
                 ".config/systemd/user.conf.d/x.conf",
-                "[Manager]\nDefaultEnvironment=B\\\nASH_ENV=/home/alice/.e\n",
+                "[Manager]\nDefaultEnvironment=LANG=C\\\nBASH_ENV=/home/alice/.e\n",
                 "~/.config/systemd/user.conf.d/x.conf:2",
             ),
         ]
@@ -22055,7 +22536,10 @@ mod tests {
             let c = &tous[0];
             let ou = format!("~/{fichier}:1 : PATH qui fait chercher les programmes dans le dossier courant");
             let cache = fichier.contains(".d/.");
-            if non_verifie_uwsm(&tous).is_some()
+            // Ronde 14 : un fichier de fish présent est dit « fish : non vérifié » en plus (fish n'est plus lu en
+            // entier) ; la ligne reste élevée. Ailleurs, aucun non vérifié.
+            let dit = non_verifie_uwsm(&tous).map(|n| n.message.contains("fish : non vérifié"));
+            if dit.is_some_and(|fish| !(fish && fichier.contains("fish/")))
                 || !(c.probleme >= Some(Niveau::Eleve)
                     && c.message.contains(&ou)
                     && c.message.contains("dotglob") == cache)
@@ -22938,8 +23422,8 @@ mod tests {
                 faux.push(format!(".zshrc {texte:?} : {:?}", messages(&tous)));
             }
         }
-        // Les 28 cas de fish des rondes 11 et 12 (N11-1, N11-2) : ÉLEVÉ à la base abc907a0, ÉLEVÉ encore ; les
-        // muets d'alors au moins dits.
+        // Les 33 cas de fish des rondes 11 et 12 (N11-1, N11-2) : les 26 de `fish_eleves`, ÉLEVÉ à la base abc907a0,
+        // ÉLEVÉ encore ; les 7 de `fish_dits`, muets d'alors, au moins dits.
         let fish_eleves = [
             "set -q NOPE; set -gx PATH /home/alice/.x $PATH",
             "set -e NOPE; set -gx PATH /home/alice/.x",
@@ -23110,6 +23594,419 @@ mod tests {
             }
         }
         assert!(faux.is_empty(), "témoins de la ronde 13 : {faux:#?}");
+    }
+
+    /// Ronde 14 (décisions de l'auteur sur la ronde 13) : user.conf joint comme systemd (N13-fish-env-1), une
+    /// variable posée dans environment.d développée comme le générateur (N13-fish-env-2), fish dit non vérifié dès
+    /// qu'une configuration est là (N13-fish-env-3 à -8), un nom calculé passé à une fonction de bash-completion qui
+    /// pose (N13-essais-3). Les cas exacts des rapports, valeurs inventées.
+    #[test]
+    fn grammaire_stricte_ronde_14_rien_de_tu() {
+        let mut faux = Vec::new();
+        let messages = |tous: &[Constat]| tous.iter().map(|c| c.message.clone()).collect::<Vec<_>>();
+        let eleve =
+            |tous: &[Constat], ou: &str| tous[0].probleme >= Some(Niveau::Eleve) && tous[0].message.contains(ou);
+        let non_verifie = |tous: &[Constat], ou: &str| non_verifie_uwsm(tous).is_some_and(|c| c.message.contains(ou));
+        let ecrits = |nom: &str, fichiers: &[(&str, &str)]| {
+            let m = Maison::nouvelle(nom);
+            for (fichier, texte) in fichiers {
+                m.ecrire(fichier, &format!("{texte}\n"));
+            }
+            m.tous_avec(&[])
+        };
+        // N13-fish-env-1 : user.conf et user.conf.d, « \ » joint par une espace, commentaire au milieu sauté, « \ »
+        // suivi d'un retour chariot. Mesuré sur systemd 262 (« systemd --test --user » privé) : PATH y est posé.
+        for (i, (cle, suite, valeur)) in [
+            ("DefaultEnvironment", "\\\n", "PATH=/home/alice/.x"),
+            ("DefaultEnvironment", " \\\n# c\n", "PATH=/home/alice/.x"),
+            ("DefaultEnvironment", " \\\n# c \\\n", "PATH=/home/alice/.x"),
+            ("DefaultEnvironment", " \\\n  ; c\n", "PATH=/home/alice/.x"),
+            ("ManagerEnvironment", "\\\n", "PATH=/home/alice/.x"),
+            ("DefaultEnvironment", "\\\r", "PATH=/home/alice/.x"),
+            ("DefaultEnvironment", "\\\r\n", "PATH=/home/alice/.x"),
+            ("DefaultEnvironment", "\\\n", "BASH_ENV=/home/alice/.x/e"),
+            ("DefaultEnvironment", "\\\n", "EDITOR=/home/alice/.x/ed"),
+            ("DefaultEnvironment", "\\\n", "PYTHONPATH=/home/alice/.x"),
+            ("DefaultEnvironment", "\\\n", "SSH_ASKPASS=/home/alice/.x/a"),
+            ("DefaultEnvironment", "\\\n", "LD_LIBRARY_PATH=/home/alice/.x"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            for fichier in [".config/systemd/user.conf", ".config/systemd/user.conf.d/a.conf"] {
+                let texte = format!("[Manager]\n{cle}=A=1{suite}{valeur}");
+                let tous = ecrits(&format!("r14-conf-{i}-{}", fichier.len()), &[(fichier, &texte)]);
+                if !eleve(&tous, &format!("~/{fichier}:2 ")) {
+                    faux.push(format!("pas élevée : {fichier} {texte:?} : {:?}", messages(&tous)));
+                }
+            }
+        }
+        // N13-fish-env-2 : HOME (ou une autre variable) posé dans environment.d, puis lu par une variable surveillée ;
+        // mesuré sur le vrai générateur (30-systemd-environment-d-generator, systemd 262).
+        let env = ".config/environment.d";
+        for (i, (fichiers, ou)) in [
+            (
+                vec![("50-x.conf", "HOME=/home/alice/.x\nPATH=$HOME/bin:/usr/bin")],
+                "50-x.conf:2 ",
+            ),
+            (
+                vec![("50-x.conf", "HOME=/home/alice/.x\nPATH=${HOME}/bin:/usr/bin")],
+                "50-x.conf:2 ",
+            ),
+            (
+                vec![("50-x.conf", "HOME=/tmp\nPATH=$HOME/bin:/usr/bin")],
+                "50-x.conf:2 ",
+            ),
+            (
+                vec![("50-x.conf", "HOME=\"/home/alice/.x\"\nPATH=$HOME/bin")],
+                "50-x.conf:2 ",
+            ),
+            (
+                vec![("50-x.conf", "HOME =/home/alice/.x\nPATH=$HOME/bin")],
+                "50-x.conf:2 ",
+            ),
+            (
+                vec![("50-x.conf", "HOME=/home/alice/.x\nEDITOR=$HOME/ed")],
+                "50-x.conf:2 ",
+            ),
+            (
+                vec![("50-x.conf", "HOME=/home/alice/.x\nLD_LIBRARY_PATH=$HOME/lib")],
+                "50-x.conf:2 ",
+            ),
+            (vec![("50-x.conf", "HOME=$HOME/.x\nPATH=$HOME/bin")], "50-x.conf:2 "),
+            (
+                vec![
+                    ("10-a.conf", "HOME=/home/alice/.x"),
+                    ("50-x.conf", "PATH=$HOME/bin:/usr/bin"),
+                ],
+                "50-x.conf:1 ",
+            ),
+            (
+                vec![("10-a.conf", "HOME=/home/alice/.x"), ("50-x.conf", "PATH=${HOME}/bin")],
+                "50-x.conf:1 ",
+            ),
+            (
+                vec![("50-x.conf", "XDG_CONFIG_HOME=/tmp/q\nPATH=$XDG_CONFIG_HOME/b")],
+                "50-x.conf:2 ",
+            ),
+            (
+                vec![("50-x.conf", "A=/home/alice/.x\nPATH=${A:-/usr}/bin")],
+                "50-x.conf:2 ",
+            ),
+            (vec![("50-x.conf", "X=$HOME/.x\nPATH=$X/b")], "50-x.conf:2 "),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let chemins: Vec<(String, &str)> = fichiers.iter().map(|(f, t)| (format!("{env}/{f}"), *t)).collect();
+            let fichiers: Vec<(&str, &str)> = chemins.iter().map(|(f, t)| (f.as_str(), *t)).collect();
+            let tous = ecrits(&format!("r14-env-{i}"), &fichiers);
+            if !eleve(&tous, &format!("~/{env}/{ou}")) {
+                faux.push(format!("pas élevée : {fichiers:?} : {:?}", messages(&tous)));
+            }
+        }
+        // Une valeur posée saine, ou qui ne se calcule pas : dite non vérifiée, nommée, jamais tue.
+        for (i, texte) in [
+            "HOME=/opt/x\nPATH=$HOME/bin",
+            "HOME=$NOPE/x\nPATH=$HOME/bin",
+            "HOME=/opt/x\nEDITOR=$HOME/ed",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let fichier = format!("{env}/50-x.conf");
+            let tous = ecrits(&format!("r14-env-dit-{i}"), &[(&fichier, texte)]);
+            if !non_verifie(&tous, &format!("~/{fichier}:2 : ")) || !non_verifie(&tous, "HOME") {
+                faux.push(format!("pas dite : {texte:?} : {:?}", messages(&tous)));
+            }
+        }
+        // « \ » suivi d'un blanc : systemd ne joint pas et refuse la ligne (mesuré : « Invalid syntax », puis
+        // « Unknown key 'PATH' ») ; rien n'est posé, mais la ligne se dit, jamais tue (elle était élevée à 367ac9b8).
+        for (i, (fichier, texte)) in [
+            (
+                ".config/systemd/user.conf",
+                "[Manager]\nDefaultEnvironment=A=1 \\ \nPATH=/home/alice/.x",
+            ),
+            (
+                ".config/systemd/user.conf.d/a.conf",
+                "[Manager]\nDefaultEnvironment=A=1\\\t\nPATH=/home/alice/.x",
+            ),
+            (
+                ".config/systemd/user.conf",
+                "[Manager]\nDefaultEnvironment=A=1 \\ \r\nPATH=/home/alice/.x",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let tous = ecrits(&format!("r14-barre-{i}"), &[(fichier, texte)]);
+            if !non_verifie(&tous, &format!("~/{fichier}:2 : ligne finie par")) {
+                faux.push(format!("pas dite : {texte:?} : {:?}", messages(&tous)));
+            }
+        }
+        // N13-fish-env-3 à -8 : fish, dit non vérifié dès qu'une configuration est là, l'endroit nommé ; ce que la
+        // grammaire stricte lève encore reste levé.
+        for (i, (fichier, texte, nomme)) in [
+            (
+                ".config/fish/fish_variables",
+                "SETUVAR fish_user_paths:/home/alice/.x",
+                ".config/fish/fish_variables",
+            ),
+            (
+                ".config/fish/fish_variables",
+                "SETUVAR --export --path PATH:/home/alice/.x\\x1e/usr/bin",
+                ".config/fish/fish_variables",
+            ),
+            (
+                ".config/fish/functions/fish_prompt.fish",
+                "function fish_prompt\n    set -gx PATH /home/alice/.x $PATH\nend",
+                ".config/fish/functions",
+            ),
+            (
+                ".config/fish/functions/fish_greeting.fish",
+                "set -gx PATH /home/alice/.x $PATH",
+                ".config/fish/functions",
+            ),
+            (
+                ".config/fish/completions/x.fish",
+                "set -gx PATH /home/alice/.x $PATH",
+                ".config/fish/completions",
+            ),
+            (
+                ".local/share/fish/vendor_conf.d/x.fish",
+                "set -gx PATH /home/alice/.x $PATH",
+                ".local/share/fish/vendor_conf.d",
+            ),
+            (
+                ".config/fish/config.fish",
+                "if true; set -gx PATH .; end",
+                ".config/fish/config.fish",
+            ),
+            (
+                ".config/fish/config.fish",
+                "fish_add_pat\\X68 /home/alice/.x",
+                ".config/fish/config.fish",
+            ),
+            (
+                ".config/fish/conf.d/x.fish",
+                "s\\X65t -gx PAT\\X48 /home/alice/.x",
+                ".config/fish/conf.d",
+            ),
+            (
+                ".config/fish/config.fish",
+                "set -gx fish_function_path /home/alice/.x $fish_function_path",
+                ".config/fish/config.fish",
+            ),
+            (
+                ".config/fish/config.fish",
+                "export A=1 (string join '' PA TH)=/home/alice/.x",
+                ".config/fish/config.fish",
+            ),
+            (
+                ".config/fish/config.fish",
+                "function zoxide; printf 'fish_add_pat%s /home/alice/.x\\n' h; end\nzoxide init fish | source",
+                ".config/fish/config.fish",
+            ),
+            (
+                ".config/fish/conf.d/x.fish",
+                "set g '(?<PA'\nset g \"$g\"'TH>.*)'\nstring match -rq $g -- /home/alice/.x",
+                ".config/fish/conf.d",
+            ),
+            (
+                ".config/fish/conf.d/x.fish",
+                "exec env (string join '' PA TH)=/home/alice/.x fish",
+                ".config/fish/conf.d",
+            ),
+            (
+                ".config/fish/config.fish",
+                "set -g fish_greeting",
+                ".config/fish/config.fish",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let tous = ecrits(&format!("r14-fish-{i}"), &[(fichier, texte)]);
+            if !non_verifie(&tous, "fish : non vérifié") || !non_verifie(&tous, &format!("~/{nomme}")) {
+                faux.push(format!("fish pas dit : {fichier} {texte:?} : {:?}", messages(&tous)));
+            }
+        }
+        // Les formes simples suspectes de fish restent ÉLEVÉ (aucun recul de gravité).
+        for (i, (fichier, texte)) in [
+            (".config/fish/config.fish", "set -gx PATH /home/alice/.x $PATH"),
+            (".config/fish/conf.d/x.fish", "fish_add_path /home/alice/.x"),
+            (".config/fish/config.fish", "set -gx LD_PRELOAD /home/alice/.x/l.so"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let tous = ecrits(&format!("r14-fish-eleve-{i}"), &[(fichier, texte)]);
+            if !eleve(&tous, &format!("~/{fichier}:")) {
+                faux.push(format!("fish pas élevé : {fichier} {texte:?} : {:?}", messages(&tous)));
+            }
+        }
+        // N13-essais-3 et N13-bash-1 : un nom calculé passé à une fonction de bash-completion qui pose ; le nom écrit
+        // en clair, déjà dit.
+        for (i, texte) in [
+            "a=PA; b=TH\n_comp_upvars -v $a$b /home/alice/.x",
+            "a=PA; b=TH\n_upvars -v \"$a$b\" /home/alice/.x",
+            "a=PA; b=TH\n_comp_compgen -v $a$b -- -W /home/alice/.x",
+            "a=PA; b=TH\n_upvar $a$b /home/alice/.x",
+            "_comp_upvars -v PATH /home/alice/.x",
+            "x PATH=/home/alice/.x",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            for fichier in [".bashrc", ".profile"] {
+                let tous = ecrits(&format!("r14-bash-{i}-{}", fichier.len()), &[(fichier, texte)]);
+                let n = texte.lines().count();
+                let ou = format!("~/{fichier}:{n} ");
+                if !(eleve(&tous, &ou) || non_verifie(&tous, &ou)) {
+                    faux.push(format!("{fichier} {texte:?} : {:?}", messages(&tous)));
+                }
+            }
+        }
+        assert!(faux.is_empty(), "grammaire stricte, ronde 14 : {faux:#?}");
+    }
+
+    /// Ronde 14 : les témoins restent muets. user.conf : une ligne vide finit la suite (systemd ignore « PATH= » sans
+    /// clé), « \ » suivi d'une espace ne continue pas ; environment.d : « $HOME » lu avant que HOME soit posé, « %h »,
+    /// « export HOME=… » (le générateur ne le lit pas comme HOME) ; bash : les fonctions de bash-completion aux
+    /// arguments écrits tels quels ; pas de fish nulle part : rien de fish dit.
+    #[test]
+    fn grammaire_stricte_ronde_14_temoins_muets() {
+        let mut faux = Vec::new();
+        for (i, (fichier, texte)) in [
+            (
+                ".config/systemd/user.conf",
+                "[Manager]\nDefaultEnvironment=A=1\\\n\nPATH=/home/alice/.x",
+            ),
+            (
+                ".config/systemd/user.conf",
+                "[Manager]\nDefaultEnvironment=A=1 \\\n  B=2",
+            ),
+            (
+                ".config/systemd/user.conf",
+                "[Manager]\nDefaultEnvironment=A=1 \\\\ \nB=2",
+            ),
+            // Mesuré : systemd lit « B ASH_ENV=… », pas BASH_ENV (le nom ne se coupe pas, l'espace le sépare).
+            (
+                ".config/systemd/user.conf",
+                "[Manager]\nDefaultEnvironment=B\\\nASH_ENV=/home/alice/.e",
+            ),
+            (
+                ".config/environment.d/50-x.conf",
+                "PATH=$HOME/bin:/usr/bin\nHOME=/home/alice/.x",
+            ),
+            (
+                ".config/environment.d/50-x.conf",
+                "export HOME=/home/alice/.x\nPATH=$HOME/bin",
+            ),
+            (".config/environment.d/50-x.conf", "A=/usr/local\nB=$A/share"),
+            (".config/environment.d/50-x.conf", "PATH=$HOME/.local/bin:$PATH"),
+            (".bashrc", "_comp_get_words cur prev words cword"),
+            (".bashrc", "_init_completion -s || return"),
+            (".bashrc", "__git_ps1 \"%s\""),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m = Maison::nouvelle(&format!("r14-muet-{i}"));
+            m.ecrire(fichier, &format!("{texte}\n"));
+            let tous = m.tous_avec(&[]);
+            let dit = tous[0].probleme >= Some(Niveau::Eleve)
+                || tous
+                    .iter()
+                    .any(|c| c.message.contains(&format!("~/{fichier}")) || c.message.contains("fish"));
+            if dit {
+                let messages: Vec<_> = tous.iter().map(|c| &c.message).collect();
+                faux.push(format!("{fichier} {texte:?} : {messages:?}"));
+            }
+        }
+        assert!(faux.is_empty(), "témoins de la ronde 14 : {faux:#?}");
+    }
+
+    /// Ronde 14 (N13-fish-env-1) : la jonction de systemd vaut aussi pour le témoin des variables et pour la
+    /// sauvegarde. « DefaultEnvironment=LANG=C \⏎# note⏎FOO=1 » pose FOO (le commentaire se saute) : le témoin la
+    /// montre ; une valeur hors forme posée ainsi (« PATH=%h/bin ») lève la sauvegarde. Témoin : sans « \ », la
+    /// ligne « PATH=… » est une clé inconnue de [Manager], rien n'est posé, la sauvegarde ne se lève pas.
+    #[test]
+    fn jonction_de_systemd_pour_le_temoin_et_la_sauvegarde() {
+        const CONF: &str = ".config/systemd/user.conf";
+        let m = maison_avec_rappel("r14-temoin-jonction");
+        m.ecrire(CONF, "[Manager]\nDefaultEnvironment=LANG=C \\\n# note\nFOO=1\n");
+        let c = m.lancements();
+        assert!(crate::apprentissage::declarable(&c).is_ok(), "{}", refus(&c));
+        let apercu = apercu_de_l_environnement(&c);
+        assert!(
+            apercu
+                .iter()
+                .any(|l| l.contains("~/.config/systemd/user.conf:2") && l.contains("FOO")),
+            "{apercu:?}"
+        );
+        let mut faux = Vec::new();
+        for (i, (texte, leve)) in [
+            (
+                "[Manager]\nDefaultEnvironment=LANG=C \\\n# note\nPATH=%h/bin:/usr/bin\n",
+                true,
+            ),
+            (
+                "[Manager]\nDefaultEnvironment=LANG=C\n# note\nPATH=%h/bin:/usr/bin\n",
+                false,
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            for vide in [false, true] {
+                let (m, _) = sauvegarde_d_essai(&format!("r14-sauvegarde-jonction-{i}-{vide}"), vide);
+                m.ecrire(CONF, texte);
+                let c = m.lancements();
+                let juste = if leve {
+                    c.probleme == Some(Niveau::Eleve) && crate::apprentissage::declarable(&c).is_err()
+                } else {
+                    (vide && c.probleme.is_none())
+                        || (!vide && c.probleme == Some(Niveau::Info) && c.message.contains("avant la 0.95"))
+                };
+                if !juste {
+                    faux.push(format!("{texte:?}, env -i {vide} : {:?} {:?}", c.probleme, c.message));
+                }
+            }
+        }
+        assert!(faux.is_empty(), "jonction de systemd et sauvegarde : {faux:#?}");
+    }
+
+    /// Ronde 14 (N13-fish-env-1) : la jonction de systemd, mesurée sur systemd 262 (« systemd --test --user » privé,
+    /// une unité d'essai : chaque « Environment: » affiché) : « \ » devient une espace, un commentaire au milieu se
+    /// saute, une ligne vide finit la suite, « \ » suivi d'un retour chariot joint, « \\ » et « \ » suivi d'une espace
+    /// ne joignent pas, un commentaire en tête ne se continue pas.
+    #[test]
+    fn jonction_de_systemd_mesuree() {
+        let jointes = |t: &str| {
+            lignes_jointes_de_systemd(t)
+                .into_iter()
+                .map(|(n, p, j)| (n, p.len(), j))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(jointes("E=A=1\\\nB=2"), [(1, 2, "E=A=1 B=2".to_string())]);
+        assert_eq!(jointes("E=A=1 \\\n# c \\\nB=2"), [(1, 2, "E=A=1  B=2".to_string())]);
+        assert_eq!(jointes("E=A=1 \\\n  ; c\nB=2"), [(1, 2, "E=A=1  B=2".to_string())]);
+        assert_eq!(jointes("E=C=3 \\\r\nD=4"), [(1, 2, "E=C=3  D=4".to_string())]);
+        assert_eq!(jointes("E=C=3\\\rD=4"), [(1, 2, "E=C=3 D=4".to_string())]);
+        assert_eq!(
+            jointes("E=A=1 \\\n\nB=2"),
+            [(1, 2, "E=A=1".to_string()), (3, 1, "B=2".to_string())]
+        );
+        assert_eq!(
+            jointes("E=A=1 \\\\\nE=B=2"),
+            [(1, 1, "E=A=1 \\\\".to_string()), (2, 1, "E=B=2".to_string())]
+        );
+        assert_eq!(
+            jointes("E=A=1 \\ \nE=B=2"),
+            [(1, 1, "E=A=1 \\".to_string()), (2, 1, "E=B=2".to_string())]
+        );
+        assert_eq!(jointes("# x \\\nE=E=5"), [(2, 1, "E=E=5".to_string())]);
     }
 
     /// R-2 (relecture DEP-4 de la 0.95) : un XDG_DATA_HOME posé au gestionnaire par un fichier (environment.d), absolu
