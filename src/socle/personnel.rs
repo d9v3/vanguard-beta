@@ -7,9 +7,7 @@
 // FFI de libc : getpwuid_r et statvfs.
 #![allow(unsafe_code)]
 
-#[cfg(unix)]
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::{tr, trf};
 
@@ -19,15 +17,54 @@ const MEGA: u64 = 1 << 20;
 /// Le dossier personnel du compte : HOME quand c'est un chemin complet, sinon (HOME vide, relatif ou absent : un
 /// service, un `env -i`) celui que la base des comptes donne au compte, sous Linux ; sous Windows,
 /// USERPROFILE quand HOME manque. `None` : aucun des deux, jamais un chemin vide, qui se lirait depuis le dossier
-/// courant.
+/// courant. Écrit d'une seule façon (`normalise`).
 pub(crate) fn dossier_personnel() -> Option<PathBuf> {
-    let complet = |v: std::ffi::OsString| Some(PathBuf::from(v)).filter(|d| d.is_absolute());
-    let home = std::env::var_os("HOME").and_then(complet);
     #[cfg(unix)]
-    let repli = || dossier_personnel_de(crate::socle::uid()).filter(|d| d.is_absolute());
+    let repli = || dossier_personnel_de(crate::socle::uid());
     #[cfg(windows)]
-    let repli = || std::env::var_os("USERPROFILE").and_then(complet);
-    home.or_else(repli)
+    let repli = || std::env::var_os("USERPROFILE").map(PathBuf::from);
+    dossier_personnel_selon(std::env::var_os("HOME"), repli)
+}
+
+/// `dossier_personnel` d'après une valeur de HOME et un `repli` : HOME s'il est complet, sinon le `repli` ; écrit
+/// d'une seule façon (`normalise`). R4-5, N5-8 (revérifications des rondes 4 et 5 du lot 0.95) : « /home/alice/ »,
+/// « /home//alice », « /home/./alice » ou « /home/alice/. » (HOME de l'environnement ou de /etc/passwd) ne
+/// ressemblaient plus à « /home/alice » pour les comparaisons de texte du bilan (« {maison}/ ») : un programme dans un
+/// dossier caché du dossier personnel n'était plus dit caché. Un HOME complet avec « .. » : `None`, sans repli (ce
+/// qu'il désigne dépend des liens du disque ; il n'est pas deviné, le bilan dit le dossier personnel inconnu).
+fn dossier_personnel_selon(
+    home: Option<std::ffi::OsString>,
+    repli: impl FnOnce() -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    match home.map(PathBuf::from) {
+        Some(h) if h.is_absolute() => normalise(&h),
+        _ => repli().filter(|d| d.is_absolute()).and_then(|d| normalise(&d)),
+    }
+}
+
+/// Un chemin complet écrit d'une seule façon, sans toucher au disque : « / » doublés, « . » et « / » finaux retirés
+/// (« /home//./alice/. » → « /home/alice ») ; la racine reste « / ». `None` : relatif, ou avec « .. », que seul le
+/// disque résout (un lien peut mener ailleurs), jamais deviné. Sous Windows : le chemin tel quel s'il est complet
+/// (pas relu ici).
+fn normalise(d: &Path) -> Option<PathBuf> {
+    #[cfg(unix)]
+    {
+        use std::path::Component;
+        let mut sortie = PathBuf::new();
+        for morceau in d.components() {
+            match morceau {
+                Component::RootDir => sortie.push("/"),
+                Component::Normal(n) => sortie.push(n),
+                Component::CurDir => {}
+                Component::ParentDir | Component::Prefix(_) => return None,
+            }
+        }
+        sortie.is_absolute().then_some(sortie)
+    }
+    #[cfg(not(unix))]
+    {
+        d.is_absolute().then(|| d.to_path_buf())
+    }
 }
 
 /// `dossier_personnel`, pour qui y joint un sous-dossier et lit ce qui s'y trouve : un chemin vide quand il n'y en a
@@ -36,10 +73,18 @@ pub fn maison() -> PathBuf {
     dossier_personnel().unwrap_or_default()
 }
 
-/// Le dossier personnel du compte `uid`, d'après la base des comptes du système.
+/// Le dossier personnel du compte `uid`, d'après la base des comptes du système, écrit d'une seule façon
+/// (`dossier_de_la_base`).
 #[cfg(unix)]
 pub(crate) fn dossier_personnel_de(uid: libc::uid_t) -> Option<PathBuf> {
-    compte_de(uid).map(|(_, dossier)| dossier)
+    dossier_de_la_base(compte_de(uid))
+}
+
+/// Le dossier personnel d'une entrée de la base des comptes (`compte_de`) : complet, sans « .. », écrit d'une seule
+/// façon (`normalise`, R4-5, N5-8) ; `None` sinon.
+#[cfg(unix)]
+fn dossier_de_la_base(compte: Option<(std::ffi::OsString, PathBuf)>) -> Option<PathBuf> {
+    compte.and_then(|(_, dossier)| normalise(&dossier))
 }
 
 /// Le nom et le dossier personnel du compte `uid`, d'après la base des comptes du système (getpwuid_r) : ce que
@@ -128,6 +173,66 @@ mod tests {
         // Les tests tournent sous un vrai compte : HOME ou la base des comptes donne un chemin complet.
         assert!(dossier_personnel().is_some_and(|d| d.is_absolute()));
         assert_eq!(maison(), dossier_personnel().unwrap());
+    }
+
+    /// R4-5, N5-8 (revérifications des rondes 4 et 5 du lot 0.95) : un dossier personnel écrit autrement
+    /// (« / » final ou doublé, « /./ », « /. » final), par HOME ou par la base des comptes, se lit d'une seule façon :
+    /// les comparaisons de texte du bilan (« {maison}/ ») le reconnaissent. Avec « .. » : `None`, jamais deviné, même
+    /// quand la base des comptes donnerait un chemin. Valeurs inventées.
+    #[cfg(unix)]
+    #[test]
+    fn dossier_personnel_ecrit_d_une_seule_facon() {
+        // Comparé en texte : deux PathBuf « /home/alice/ » et « /home/alice » sont égaux (par morceaux), alors que
+        // le bilan compare leur texte.
+        let os = |s: &str| Some(std::ffi::OsString::from(s));
+        let texte = |d: Option<PathBuf>| d.map(PathBuf::into_os_string);
+        let rien = || None;
+        let alice = os("/home/alice");
+        let formes = [
+            "/home/alice",
+            "/home/alice/",
+            "/home/alice///",
+            "/home//alice",
+            "//home/alice",
+            "/home/./alice",
+            "/home/alice/.",
+            "/home/alice/./",
+            "/./home/alice",
+        ];
+        for forme in formes {
+            // Source 1 : HOME de l'environnement.
+            assert_eq!(texte(dossier_personnel_selon(os(forme), rien)), alice, "HOME={forme}");
+            // Source 2 : la base des comptes (HOME absent, vide ou relatif).
+            let compte = || Some((std::ffi::OsString::from("alice"), PathBuf::from(forme)));
+            assert_eq!(texte(dossier_de_la_base(compte())), alice, "base des comptes : {forme}");
+            let base = || dossier_de_la_base(compte());
+            assert_eq!(texte(dossier_personnel_selon(None, base)), alice, "repli : {forme}");
+            assert_eq!(
+                texte(dossier_personnel_selon(os(""), base)),
+                alice,
+                "HOME vide : {forme}"
+            );
+            assert_eq!(
+                texte(dossier_personnel_selon(os("alice/"), base)),
+                alice,
+                "HOME relatif : {forme}"
+            );
+        }
+        assert_eq!(texte(dossier_personnel_selon(os("/"), rien)), os("/"));
+        assert_eq!(texte(dossier_personnel_selon(os("//./"), rien)), os("/"));
+        // « .. » : jamais deviné, ni par HOME (sans repli) ni par la base des comptes.
+        let base_saine = || Some(PathBuf::from("/home/alice"));
+        for forme in ["/home/x/../alice", "/home/alice/..", "/../home/alice"] {
+            assert_eq!(dossier_personnel_selon(os(forme), base_saine), None, "HOME={forme}");
+            let compte = Some((std::ffi::OsString::from("alice"), PathBuf::from(forme)));
+            assert_eq!(dossier_de_la_base(compte), None, "base des comptes : {forme}");
+        }
+        assert_eq!(dossier_personnel_selon(None, || Some(PathBuf::from("rel/"))), None);
+        assert_eq!(
+            dossier_de_la_base(Some((std::ffi::OsString::from("alice"), PathBuf::from("rel")))),
+            None
+        );
+        assert_eq!(dossier_de_la_base(None), None);
     }
 
     #[test]
