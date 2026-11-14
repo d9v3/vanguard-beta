@@ -1037,7 +1037,7 @@ pub fn diagnostic() {
         Ok(dossier) => trp!(
             "\n  {DISCRET}Copie texte : {}{RESET}",
             "\n  {DISCRET}Text copy: {}{RESET}",
-            dossier.join(&nom).display()
+            crate::ui::chemin_affichable(&dossier.join(&nom))
         ),
         Err(e) => trp!(
             "\n  ⚠ Copie texte impossible à enregistrer : {e}",

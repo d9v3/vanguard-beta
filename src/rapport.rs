@@ -1192,7 +1192,7 @@ pub fn recent(age_max: std::time::Duration) -> Option<PathBuf> {
 pub fn ouvrir(audit: Option<&Audit>, reseau: Option<&Rapport>, audit_reseau: Option<&AuditReseau>) {
     match generer(audit, reseau, audit_reseau) {
         Ok(p) => {
-            trp!("  Rapport : {}", "  Report: {}", p.display());
+            trp!("  Rapport : {}", "  Report: {}", crate::ui::chemin_affichable(&p));
             crate::machine::ouvrir(&p.display().to_string());
         }
         Err(e) => trp!(
