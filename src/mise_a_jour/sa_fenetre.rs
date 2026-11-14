@@ -747,6 +747,7 @@ mod tests {
                 &source,
                 &cible,
                 crate::programmes_poses::empreinte_de(&source).ok().as_deref(),
+                &super::super::tests::inconnue(),
                 ESSAI_RATE
             )
             .is_err()
@@ -756,6 +757,7 @@ mod tests {
             &source,
             &cible,
             crate::programmes_poses::empreinte_de(&source).ok().as_deref(),
+            &super::super::tests::inconnue(),
             SANS_ESSAI,
         )
         .unwrap();
@@ -766,6 +768,7 @@ mod tests {
             &source,
             &cible,
             crate::programmes_poses::empreinte_de(&source).ok().as_deref(),
+            &super::super::tests::inconnue(),
             SANS_ESSAI,
         )
         .unwrap();
@@ -777,6 +780,7 @@ mod tests {
             &source,
             &cible,
             crate::programmes_poses::empreinte_de(&source).ok().as_deref(),
+            &super::super::tests::inconnue(),
             SANS_ESSAI,
         )
         .unwrap();
@@ -791,6 +795,7 @@ mod tests {
             &source,
             &cible,
             crate::programmes_poses::empreinte_de(&source).ok().as_deref(),
+            &super::super::tests::inconnue(),
             SANS_ESSAI,
         )
         .unwrap();
@@ -833,6 +838,7 @@ mod tests {
             &source,
             &cible,
             crate::programmes_poses::empreinte_de(&source).ok().as_deref(),
+            &super::super::tests::inconnue(),
             SANS_ESSAI,
         )
         .unwrap();
@@ -849,6 +855,7 @@ mod tests {
                 &source,
                 &cible,
                 crate::programmes_poses::empreinte_de(&source).ok().as_deref(),
+                &super::super::tests::inconnue(),
                 ESSAI_RATE
             )
             .is_err()
@@ -874,6 +881,7 @@ mod tests {
                 &source,
                 &cible,
                 crate::programmes_poses::empreinte_de(&source).ok().as_deref(),
+                &super::super::tests::inconnue(),
                 SANS_ESSAI
             )
             .unwrap(),
@@ -886,6 +894,7 @@ mod tests {
             &source,
             &cible,
             crate::programmes_poses::empreinte_de(&source).ok().as_deref(),
+            &super::super::tests::inconnue(),
             SANS_ESSAI,
         )
         .unwrap();

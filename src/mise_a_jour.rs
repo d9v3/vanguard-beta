@@ -503,7 +503,7 @@ fn remplacer(
 ) -> Result<(), String> {
     let octets = lire_octets(source, max)?;
     if !de_soi(&octets, soi) {
-        return Err(pas_de_soi());
+        return Err(pas_de_soi(soi));
     }
     let fenetre = sa_fenetre::de_la_source(source, &octets).zip(sa_fenetre::pour(cible));
     vue.dite(fenetre.as_ref().map(|(_, chemin)| chemin.as_path()))?;
@@ -522,11 +522,19 @@ fn de_soi(octets: &[u8], soi: Option<&str>) -> bool {
     soi.is_some_and(|s| blake3::hash(octets).to_hex().as_str() == s)
 }
 
-/// Le refus quand les octets lus ne sont pas `de_soi`.
-fn pas_de_soi() -> String {
+/// Le refus quand les octets lus ne sont pas `de_soi`. Deux causes, deux textes : sans empreinte du programme qui tourne
+/// (`soi` absent : /proc/self/exe ou le fichier du départ illisible), rien ne dit que la clé a changé.
+fn pas_de_soi(soi: Option<&str>) -> String {
+    if soi.is_none() {
+        return tr!(
+            "le programme qui tourne ne se lit pas : rien ne peut être comparé à lui, rien n'est posé (non vérifié)",
+            "the running program cannot be read: nothing can be compared with it, nothing is set up (not checked)"
+        )
+        .into();
+    }
     tr!(
-        "le programme de la clé n'est plus celui qui tourne (changé, ou une autre clé, depuis le lancement) : rien n'est posé",
-        "the key's program is no longer the one running (changed, or another key, since launch): nothing is set up"
+        "le programme de la clé a changé : ce n'est plus celui qui tourne (fichier réécrit, ou une autre clé, depuis le lancement) ; rien n'est posé",
+        "the key's program has changed: it is no longer the one running (file rewritten, or another key, since launch); nothing is set up"
     )
     .into()
 }
@@ -1338,8 +1346,9 @@ fn essayer(programme: &Path, attendue: Version) -> Result<(), String> {
 
 /// La copie de cet ordinateur posée depuis `source`, le programme lancé sur la clé (surveillance, entretien,
 /// raccourci, veilleur), par le même chemin que la mise à jour : à côté, version revérifiée, essayée, relue, puis
-/// mise en place d'un coup. Jamais par-dessus une copie plus récente : elle est gardée, et c'est elle que la
-/// surveillance lancera (« jamais vers une version plus ancienne »). Rend le chemin de la copie, ou pourquoi elle
+/// mise en place d'un coup. Jamais par-dessus une copie plus récente que Vanguard y a posée : elle est gardée, et
+/// c'est elle que la surveillance lancera (« jamais vers une version plus ancienne ») ; un fichier plus récent qu'il
+/// n'a pas posé est remplacé (`poser_copie_dans`). Rend le chemin de la copie, ou pourquoi elle
 /// n'a pas pu se faire : jamais celui de la clé, qu'une minuterie ne retrouverait plus une fois débranchée.
 ///
 /// Avec le chemin, ce qui n'a pas pu se faire sans arrêter la copie : la fenêtre qui n'a pas pu être posée (C-5,
@@ -1347,15 +1356,25 @@ fn essayer(programme: &Path, attendue: Version) -> Result<(), String> {
 pub(crate) fn poser_copie(source: &Path) -> Result<(PathBuf, Option<String>), String> {
     let cible = copie_de_cet_ordinateur();
     let soi = crate::protection::cle::image_qui_tourne();
-    let note = poser_copie_dans(source, &cible, soi.as_deref(), essayer)?;
+    let note = poser_copie_dans(source, &cible, soi.as_deref(), &crate::socle::dossier_local(), essayer)?;
     Ok((cible, note))
 }
 
-/// `poser_copie` vers `cible` ; seuls les octets du programme qui tourne (`soi`) se posent (`de_soi`).
-fn poser_copie_dans(source: &Path, cible: &Path, soi: Option<&str>, essai: Essai) -> Result<Option<String>, String> {
+/// `poser_copie` vers `cible` ; seuls les octets du programme qui tourne (`soi`) se posent (`de_soi`). Une copie déjà
+/// là n'est gardée que si ses octets sont connus : ceux du programme qui tourne, ou, plus récente, une copie que
+/// Vanguard y a posée lui-même (notée dans le registre scellé de `registre` par `programmes_poses::copie_posee`, d'une mise à jour signée ou
+/// d'une clé plus récente, ou scellée pour une tâche). Un autre programme du compte qui y met un fichier à une version
+/// gravée plus haute n'est donc ni gardé, ni lancé par les tâches, ni scellé : le programme qui tourne le remplace.
+fn poser_copie_dans(
+    source: &Path,
+    cible: &Path,
+    soi: Option<&str>,
+    registre: &Path,
+    essai: Essai,
+) -> Result<Option<String>, String> {
     let octets = lire_octets(source, TAILLE_MAX)?;
     if !de_soi(&octets, soi) {
-        return Err(pas_de_soi());
+        return Err(pas_de_soi(soi));
     }
     let Some(version) = version_gravee(&octets) else {
         return Err(tr!(
@@ -1366,9 +1385,19 @@ fn poser_copie_dans(source: &Path, cible: &Path, soi: Option<&str>, essai: Essai
     };
     // La fenêtre posée à côté du programme de la clé suit la copie, si c'est bien la sienne.
     let fenetre = sa_fenetre::de_la_source(source, &octets).zip(sa_fenetre::pour(cible));
-    match lire_programme(cible, TAILLE_MAX) {
-        Lu::Version(v) if v > version => return Ok(None),
-        Lu::Version(v) if v == version && lire_octets(cible, TAILLE_MAX).ok().as_deref() == Some(&octets[..]) => {
+    // Gardée : ses octets, lus une fois, notés comme posés par Vanguard (la tâche posée ensuite les reconnaît).
+    if std::fs::symlink_metadata(cible).is_ok()
+        && let Ok(la) = lire_octets(cible, TAILLE_MAX)
+        && let Some(v) = version_gravee(&la)
+    {
+        if v > version
+            && crate::programmes_poses::copie_connue_dans(registre, cible, blake3::hash(&la).to_hex().as_str())
+        {
+            crate::programmes_poses::copie_posee_dans(registre, cible, &la);
+            return Ok(None);
+        }
+        if v == version && la == octets {
+            crate::programmes_poses::copie_posee_dans(registre, cible, &la);
             // La même copie : sa fenêtre seule, si elle manque ou diffère. Un échec n'arrête pas la copie, que la
             // surveillance lance : sans sa fenêtre, le raccourci ouvre le menu.
             let Some((f, chemin)) = &fenetre else {
@@ -1382,7 +1411,6 @@ fn poser_copie_dans(source: &Path, cible: &Path, soi: Option<&str>, essai: Essai
                 )
             }));
         }
-        _ => {}
     }
     if let Some(d) = cible.parent() {
         std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
@@ -1684,6 +1712,12 @@ fn fenetre_de_la_cle(source: &Path, cible: &Path) -> Option<PathBuf> {
         .and(sa_fenetre::pour(cible))
 }
 
+/// La copie `cible` remplacée par le programme de la clé (`source`), seulement s'il a les octets de l'image qui tourne.
+fn remplacer_par_la_cle(source: &Path, cible: &Path, cle: Version, vue: &sa_fenetre::Vue) -> Result<(), String> {
+    let soi = crate::protection::cle::image_qui_tourne();
+    remplacer(source, cible, cle, soi.as_deref(), TAILLE_MAX, essayer, vue)
+}
+
 /// Montre les deux versions et d'où vient la nouvelle, puis remplace la copie après un « o ».
 fn proposer(source: &Path, cible: &Path, copie: Option<Version>, cle: Version) {
     let (ici, sur_la_cle) = match copie {
@@ -1713,8 +1747,7 @@ fn proposer(source: &Path, cible: &Path, copie: Option<Version>, cle: Version) {
     {
         return;
     }
-    let soi = crate::protection::cle::image_qui_tourne();
-    match remplacer(source, cible, cle, soi.as_deref(), TAILLE_MAX, essayer, &vue) {
+    match remplacer_par_la_cle(source, cible, cle, &vue) {
         Ok(()) => trp!(
             "  {VERT}✔{RESET} Copie de cet ordinateur mise à jour : Vanguard {}.\n    La surveillance, l'entretien et le raccourci lancent cette version.",
             "  {VERT}✔{RESET} Copy on this computer updated: Vanguard {}.\n    Monitoring, maintenance and the shortcut start this version.",
@@ -1755,7 +1788,7 @@ mod tests {
         crate::programmes_poses::noter(Tache::Entretien, &cible, &Ok(b"[Service]".to_vec()));
         let avant = empreinte_notee(Tache::Entretien).expect("notée");
         faux_programme(&source, Some("0.81.0"));
-        poser_copie_dans(&source, &cible, soi_de(&source).as_deref(), SANS_ESSAI).unwrap();
+        poser_copie_dans(&source, &cible, soi_de(&source).as_deref(), &inconnue(), SANS_ESSAI).unwrap();
         let apres = empreinte_notee(Tache::Entretien).expect("notée");
         assert_ne!(avant, apres);
         assert_eq!(apres, crate::programmes_poses::empreinte_de(&cible).unwrap());
@@ -2199,7 +2232,7 @@ mod tests {
         std::fs::write(&source, [&std::fs::read(&source).unwrap()[..], b"hostile"].concat()).unwrap();
         assert_eq!(lire_programme(&source, TAILLE_MAX), Lu::Version((0, 80, 0, 5)));
         let essai_interdit: Essai = |_, _| panic!("un programme qui n'est pas celui qui tourne a été lancé");
-        let e = poser_copie_dans(&source, &cible, soi.as_deref(), essai_interdit).unwrap_err();
+        let e = poser_copie_dans(&source, &cible, soi.as_deref(), &inconnue(), essai_interdit).unwrap_err();
         assert!(e.contains("rien n'est posé") || e.contains("nothing is set up"), "{e}");
         assert!(!cible.exists(), "posé depuis une clé changée");
         faux_programme(&cible, Some("0.79.0+1"));
@@ -2216,10 +2249,118 @@ mod tests {
             )
             .is_err()
         );
-        assert!(poser_copie_dans(&source, &cible, None, essai_interdit).is_err());
+        assert!(poser_copie_dans(&source, &cible, None, &inconnue(), essai_interdit).is_err());
         assert_eq!(std::fs::read(&cible).unwrap(), avant, "copie d'avant changée");
         assert!(!cible.with_file_name(format!("{NOM}.nouveau")).exists());
         let _ = std::fs::remove_dir_all(&racine);
+    }
+
+    /// BASSE (relecture adverse, R1-N1) : un fichier mis dans bin/ par un autre programme du compte, à une version
+    /// gravée plus haute, était gardé sans comparaison, puis lancé par les tâches et scellé comme Vanguard. Il n'est
+    /// plus gardé que si Vanguard l'y a posé lui-même (noté dans son registre) ; sinon le programme qui tourne le remplace. Une
+    /// copie gardée est notée comme posée par Vanguard.
+    #[test]
+    fn copie_plus_recente_gardee_seulement_si_posee_par_vanguard() {
+        let racine = crate::socle::dossier_local().join("essai-copie-etrangere");
+        let _ = std::fs::remove_dir_all(&racine);
+        let source = racine.join("cle").join(NOM);
+        let cible = racine.join("bin").join(NOM);
+        faux_programme(&source, Some("0.80.0+5"));
+        let soi = soi_de(&source);
+        // Posée par un autre programme : plus récente, jamais vue par Vanguard.
+        faux_programme(&cible, Some("9.0.0+1"));
+        poser_copie_dans(&source, &cible, soi.as_deref(), &inconnue(), SANS_ESSAI).unwrap();
+        assert_eq!(
+            std::fs::read(&cible).unwrap(),
+            std::fs::read(&source).unwrap(),
+            "fichier étranger gardé"
+        );
+        // Posée par Vanguard (une mise à jour signée, une clé plus récente), notée dans son registre : gardée.
+        faux_programme(&cible, Some("9.0.0+1"));
+        let la = std::fs::read(&cible).unwrap();
+        let registre = inconnue();
+        crate::programmes_poses::copie_posee_dans(&registre, &cible, &la);
+        poser_copie_dans(&source, &cible, soi.as_deref(), &registre, SANS_ESSAI).unwrap();
+        assert_eq!(std::fs::read(&cible).unwrap(), la);
+        // Les octets du programme qui tourne déjà là : gardés, et notés comme posés par Vanguard.
+        let neuf = inconnue();
+        std::fs::copy(&source, &cible).unwrap();
+        poser_copie_dans(&source, &cible, soi.as_deref(), &neuf, SANS_ESSAI).unwrap();
+        let empreinte = blake3::hash(&std::fs::read(&source).unwrap()).to_hex().to_string();
+        assert!(
+            crate::programmes_poses::copie_connue_dans(&neuf, &cible, &empreinte),
+            "copie gardée non notée"
+        );
+        let _ = std::fs::remove_dir_all(&registre);
+        let _ = std::fs::remove_dir_all(&neuf);
+        let _ = std::fs::remove_dir_all(&racine);
+    }
+
+    /// BASSE (relecture adverse, R1-N2) : la pose réelle (`poser_copie`, celle de la surveillance) et la mise à jour
+    /// depuis la clé (`remplacer_par_la_cle`, celle de `proposer`) comparent la source à l'image qui tourne, pas à
+    /// elle-même : un fichier qui n'est pas le programme lancé (ici celui des essais) est refusé, avant tout essai.
+    #[test]
+    fn la_pose_reelle_compare_a_l_image_qui_tourne() {
+        let racine = crate::socle::dossier_local().join("essai-image-qui-tourne");
+        let _ = std::fs::remove_dir_all(&racine);
+        let source = racine.join("cle").join(NOM);
+        faux_programme(&source, Some("0.80.0+5"));
+        let image = crate::protection::cle::image_qui_tourne();
+        assert!(image.is_some(), "image des essais illisible");
+        let refus = pas_de_soi(image.as_deref());
+        assert_eq!(poser_copie(&source).err().as_deref(), Some(refus.as_str()));
+        let cible = racine.join("bin").join(NOM);
+        faux_programme(&cible, Some("0.79.0+1"));
+        let avant = std::fs::read(&cible).unwrap();
+        assert_eq!(
+            remplacer_par_la_cle(&source, &cible, (0, 80, 0, 5), &dite(&source, &cible))
+                .err()
+                .as_deref(),
+            Some(refus.as_str())
+        );
+        assert_eq!(std::fs::read(&cible).unwrap(), avant);
+        let _ = std::fs::remove_dir_all(&racine);
+    }
+
+    /// BASSE (relecture adverse, R1-N3) : le programme qui tourne illisible n'est pas dit « clé changée » : deux causes,
+    /// deux textes, dans les deux langues ; `remplacer` sans empreinte refuse aussi.
+    #[test]
+    fn refus_sans_empreinte_distinct_de_la_cle_changee() {
+        let (illisible, changee) = (pas_de_soi(None), pas_de_soi(Some("abc")));
+        assert_ne!(illisible, changee);
+        assert!(
+            illisible.contains("ne se lit pas") || illisible.contains("cannot be read"),
+            "{illisible}"
+        );
+        assert!(
+            changee.contains("a changé") || changee.contains("has changed"),
+            "{changee}"
+        );
+        let racine = crate::socle::dossier_local().join("essai-sans-empreinte");
+        let _ = std::fs::remove_dir_all(&racine);
+        let (source, cible) = (racine.join("cle").join(NOM), racine.join("bin").join(NOM));
+        faux_programme(&source, Some("0.80.0+5"));
+        let essai_interdit: Essai = |_, _| panic!("lancé sans empreinte du programme qui tourne");
+        assert_eq!(
+            remplacer(
+                &source,
+                &cible,
+                (0, 80, 0, 5),
+                None,
+                TAILLE_MAX,
+                essai_interdit,
+                &dite(&source, &cible)
+            ),
+            Err(illisible)
+        );
+        assert!(!cible.exists());
+        let _ = std::fs::remove_dir_all(&racine);
+    }
+
+    /// Un registre neuf, à lui seul (le dossier local des essais est partagé par les essais qui tournent en même
+    /// temps) : aucune copie n'y est notée comme posée par Vanguard.
+    pub(super) fn inconnue() -> PathBuf {
+        crate::essais::temporaire().join(crate::essais::nom_unique("registre"))
     }
 
     /// Les faux programmes des tests ne se lancent pas : l'essai réel a son propre test.
@@ -2239,22 +2380,25 @@ mod tests {
         let cible = racine.join("bin").join(NOM);
         faux_programme(&source, Some("0.80.0+5"));
         // Pas encore de copie : posée.
-        poser_copie_dans(&source, &cible, soi_de(&source).as_deref(), SANS_ESSAI).unwrap();
+        poser_copie_dans(&source, &cible, soi_de(&source).as_deref(), &inconnue(), SANS_ESSAI).unwrap();
         assert_eq!(lire_programme(&cible, TAILLE_MAX), Lu::Version((0, 80, 0, 5)));
-        // Une copie plus récente que la clé : gardée telle quelle (une vieille clé ne fait pas revenir en arrière).
+        // Une copie plus récente que la clé, posée par Vanguard : gardée telle quelle (une vieille clé ne fait pas
+        // revenir en arrière).
         faux_programme(&cible, Some("0.81.0+1"));
-        poser_copie_dans(&source, &cible, soi_de(&source).as_deref(), SANS_ESSAI).unwrap();
+        let connue = inconnue();
+        crate::programmes_poses::copie_posee_dans(&connue, &cible, &std::fs::read(&cible).unwrap());
+        poser_copie_dans(&source, &cible, soi_de(&source).as_deref(), &connue, SANS_ESSAI).unwrap();
         assert_eq!(lire_programme(&cible, TAILLE_MAX), Lu::Version((0, 81, 0, 1)));
         // Une copie plus ancienne : remplacée, sauf si la nouvelle ne démarre pas.
         faux_programme(&cible, Some("0.79.0+1"));
-        assert!(poser_copie_dans(&source, &cible, soi_de(&source).as_deref(), essai_rate).is_err());
+        assert!(poser_copie_dans(&source, &cible, soi_de(&source).as_deref(), &inconnue(), essai_rate).is_err());
         assert_eq!(lire_programme(&cible, TAILLE_MAX), Lu::Version((0, 79, 0, 1)));
         assert!(!cible.with_file_name(format!("{NOM}.nouveau")).exists());
-        poser_copie_dans(&source, &cible, soi_de(&source).as_deref(), SANS_ESSAI).unwrap();
+        poser_copie_dans(&source, &cible, soi_de(&source).as_deref(), &inconnue(), SANS_ESSAI).unwrap();
         assert_eq!(std::fs::read(&cible).unwrap(), std::fs::read(&source).unwrap());
         // Une source sans version gravée : rien n'est posé.
         faux_programme(&source, None);
-        assert!(poser_copie_dans(&source, &cible, soi_de(&source).as_deref(), SANS_ESSAI).is_err());
+        assert!(poser_copie_dans(&source, &cible, soi_de(&source).as_deref(), &inconnue(), SANS_ESSAI).is_err());
         let _ = std::fs::remove_dir_all(&racine);
     }
 
@@ -2561,7 +2705,7 @@ mod tests {
         let dit = precedente.remettre(&cible);
         assert_eq!(gardee(), ancienne, "{dit}");
         // La pose de la surveillance, puis « refaites la mise à jour » : refusées, la copie gardée reste.
-        let pose = poser_copie_dans(&source, &cible, soi_de(&source).as_deref(), SANS_ESSAI).unwrap_err();
+        let pose = poser_copie_dans(&source, &cible, soi_de(&source).as_deref(), &inconnue(), SANS_ESSAI).unwrap_err();
         assert_eq!(gardee(), ancienne, "copie gardée effacée par la pose : {pose}");
         let maj = remplacer(
             &source,
@@ -3266,7 +3410,7 @@ mod tests {
         let cible = racine.join("bin").join(NOM);
         faux_programme(&source, Some("0.80.0"));
         for anglais in [false, true] {
-            let pose = || poser_copie_dans(&source, &cible, soi_de(&source).as_deref(), essayer);
+            let pose = || poser_copie_dans(&source, &cible, soi_de(&source).as_deref(), &inconnue(), essayer);
             let e = if anglais {
                 crate::langue::en_anglais(pose)
             } else {
