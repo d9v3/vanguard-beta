@@ -71,8 +71,8 @@ Réponses à l'utilisateur en français, claires, avec le pourquoi.
   d'essais, HMAC du secret tiré à son installation : `outils/vm-tester.sh --verdict <sha256>` ;
   `VANGUARD_PUBLIER_SANS_VM=1` pour s'en passer, dit), et quand Linux et Windows ont les empreintes de la compilation
   reproductible de la CI (`VANGUARD_PUBLIER_SANS_EMPREINTES_CI=1` pour s'en passer, dit) ; avec elle, l'historique signé des versions ; elle reprend les versions intermédiaires d'avant, qui n'ont pas la leur. Pour chaque page, il refait
-  aussi les captures du README (`outils/captures.py`, sur une copie des données, ce qui identifierait la maison
-  masqué) et les commite à part.
+  aussi les captures du README (`outils/captures-readme.sh` : la fenêtre, sur des données inventées)
+  et les commite à part.
 - Captures de la fenêtre (fenetre/, chaque écran FR/EN, sombre/clair, 1280×800 et 1920×1080, et les images clés de
   l'ouverture) : `outils/captures-fenetre.sh`, rendu logiciel des essais, sans fenêtre ni écran (jamais grim) ;
   PNG dans ~/.cache/vanguard-dev/captures-fenetre/, jamais dans le dépôt.
@@ -125,7 +125,7 @@ Réponses à l'utilisateur en français, claires, avec le pourquoi.
 - Aucun secret dans le code ni sur la clé ; le journal des erreurs est anonymisé (`journal.rs`).
 - Rien de personnel sur GitHub (dépôt, historique, commits, captures, pages de version, programmes, tickets) :
   `outils/confidentialite.py` le vérifie tout seul (crochets `outils/hooks/`, `deployer.sh`, `publier-version.sh`,
-  `journal-vers-github.py`, `captures.py`) ; ses essais (noms piégés, binaires, renommages, historique) :
+  `journal-vers-github.py`) ; ses essais (noms piégés, binaires, renommages, historique) :
   `outils/essais-confidentialite.sh`, dans `verifier.sh`. Tests : valeurs inventées (adresses MAC au préfixe du
   fabricant gardé, réseau « Salon », compte « alice »), jamais celles de la maison. Commits signés `d9v3` avec l'adresse
   noreply de GitHub (`git config user.email`, déjà réglé dans ce dépôt).

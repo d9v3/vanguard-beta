@@ -393,18 +393,17 @@ recette avec des cales et des valeurs inventées.
 
 ## Captures d'écran et image de partage
 
-`outils/captures.py` refait les captures du README (`assets/captures/`, en français et en anglais) et l'image de
-partage du dépôt (`assets/partage.png`). `deployer.sh` le lance pour chaque version publiée, puisque le menu montre
-son numéro, et commite les images à part.
+`outils/captures-readme.sh` refait les captures du README (`assets/captures/fenetre-*.png`, en français et en
+anglais) et l'image de partage du dépôt (`assets/partage.png`, le haut de l'accueil en anglais). `deployer.sh` le
+lance pour chaque version publiée et commite les images à part.
 
-Vanguard y tourne pour de vrai, dans un pseudo-terminal de 80 colonnes, depuis une fausse clé et sur une copie des
-données : rien de vrai n'est touché. Le nom du réseau devient « Salon » ; adresses MAC (préfixe du fabricant gardé),
-adresses IP (un réseau inventé, longueurs et ordre gardés), noms d'appareils et dossiers du compte sont remplacés, au
-hasard à chaque passe ; du bilan de la machine, seul un extrait sans rien de personnel est montré. Puis le garde-fou
-de confidentialité relit chaque image : si un détail de la maison restait visible, aucune n'est écrite.
+Ce sont des captures de la fenêtre, dessinées sans écran ni carte graphique par `outils/captures-fenetre.sh`, sur des
+données inventées écrites dans le code (le réseau « Salon », des adresses de documentation, une adresse MAC
+inventée) : rien de l'ordinateur n'est lu. Ces données passent par le garde-fou de confidentialité comme tout le
+code.
 
 ```sh
-uv run --no-project --with pyte python -I outils/captures.py [programme] [--connexion | --sans-connexion]
+outils/captures-readme.sh [DOSSIER]   # DOSSIER : copier depuis des captures déjà faites, sans refaire le rendu
 ```
 
 ## Confidentialité

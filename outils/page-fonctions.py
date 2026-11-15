@@ -201,6 +201,8 @@ def verifications_vm() -> str:
 
 # Les captures du README gardées sur la page : nom dans assets/captures, et la partie gardée (gauche, haut, droite,
 # bas), None pour toute. Plus aucune de l'ancienne interface en terminal : le bilan et le réseau montrent la fenêtre.
+# rapport.png (le rapport HTML) n'est plus refait à chaque version : deployer.sh lance outils/captures-readme.sh,
+# qui ne fait que la fenêtre, depuis la 0.96.
 CAPTURES = {
     "RAPPORT": ("rapport.png", None),
 }

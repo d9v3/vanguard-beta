@@ -391,18 +391,16 @@ the recipe with shims and made-up values.
 
 ## Screenshots and social preview
 
-`outils/captures.py` retakes the README screenshots (`assets/captures/`, in French and English) and the repository's
-social preview (`assets/partage.png`). `deployer.sh` runs it for each published version, since the menu shows its
-number, and commits the images separately.
+`outils/captures-readme.sh` retakes the README screenshots (`assets/captures/fenetre-*.png`, in French and
+English) and the repository's social preview (`assets/partage.png`, the top of the English overview). `deployer.sh`
+runs it for each published version and commits the images separately.
 
-Vanguard really runs there, in an 80-column pseudo-terminal, from a fake key and on a copy of the data: nothing real is
-touched. The network becomes “Salon”; MAC addresses (vendor prefix kept), IP addresses (a made-up network, lengths and
-order kept), device names and the account's folders are replaced, at random on each run; only an excerpt of the
-machine check with nothing personal in it is shown. Then the privacy guard rereads each image: if a detail of the
-home is still visible, none is written.
+They are screenshots of the window, drawn without a screen or graphics card by `outils/captures-fenetre.sh`, on
+made-up data written in the code (the “Salon” network, documentation addresses, a made-up MAC address): nothing is
+read from the computer. That data goes through the privacy guard like all the code.
 
 ```sh
-uv run --no-project --with pyte python -I outils/captures.py [program] [--connexion | --sans-connexion]
+outils/captures-readme.sh [DIRECTORY]   # DIRECTORY: copy from screenshots already taken, without rendering again
 ```
 
 ## Privacy

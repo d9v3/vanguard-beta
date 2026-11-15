@@ -399,10 +399,10 @@ outils/failles-programmes.sh --fenetre "${FENETRES[@]}" || refuser
 # Page de la version sur GitHub (Releases) : chaque publication a la sienne, 0.x.0 comme 0.x.y. Il n'y en a qu'une par
 # jour : le lien « dernière version » du README mène toujours à celle du jour. Une version intermédiaire (VANGUARD_INTERMEDIAIRE) va sur la clé et sur GitHub (le code) sans page :
 # la suivante la reprend (outils/publier-version.sh).
-# Captures d'écran du README (assets/captures/) : refaites pour chaque page publiée, puisque le menu montre le numéro
-# de la version téléchargée. Vanguard y tourne sur une copie des données, sans rien toucher de vrai, et ce qui
-# identifierait la maison est masqué (outils/captures.py). Elles partent dans leur propre commit, comme la liste des
-# fabricants. En cas d'échec, le README garde celles d'avant.
+# Captures d'écran du README (assets/captures/fenetre-*.png) et image de partage : refaites pour chaque page publiée,
+# depuis la fenêtre dessinée sans écran sur des données inventées (outils/captures-readme.sh) : rien de l'ordinateur
+# n'y paraît. Elles partent dans leur propre commit, comme la liste des fabricants. En cas d'échec, le README garde
+# celles d'avant.
 A_PUBLIER=""
 if [[ -z $MODE ]]; then
   VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
@@ -412,7 +412,7 @@ if [[ -z $MODE ]]; then
   fi
   T_CAPTURES=$SECONDS
   if [[ -n $A_PUBLIER && $(cat assets/captures/VERSION 2>/dev/null) != "$VERSION" ]]; then
-    if command -v uv >/dev/null && timeout 900 uv run -q --no-project --with pyte python -I outils/captures.py "$LINUX"; then
+    if timeout 1800 outils/captures-readme.sh; then
       git add assets/captures assets/partage.png
       # Les captures ne sont pas dans le programme (.github/hors-code.txt) : celui qui vient d'être compilé reste
       # celui du commit compilé, que outils/publier-version.sh étiquette et publie.

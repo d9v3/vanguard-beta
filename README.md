@@ -768,27 +768,27 @@ vérifiées.
 
 ## En images
 
-![Bilan de sécurité de Vanguard : une note de A à F, chaque problème expliqué avec sa correction](assets/captures/bilan.png)
+![La fenêtre de Vanguard, écran Bilan : la note, chaque vérification et ce qu'il faut corriger](assets/captures/fenetre-bilan.png)
 
 <table>
   <tr>
-    <td width="50%"><img src="assets/captures/menu.png" alt="Menu de Vanguard"><br><sub>Le menu : dernier bilan,
-    connexion, clé branchée.</sub></td>
-    <td width="50%"><img src="assets/captures/rapport.png" alt="Rapport HTML de Vanguard"><br><sub>Le rapport HTML et
-    l'évolution des notes.</sub></td>
+    <td width="50%"><img src="assets/captures/fenetre-accueil.png" alt="Accueil de la fenêtre de Vanguard"><br><sub>
+    L'accueil : bilan, protection et journal d'un coup d'œil.</sub></td>
+    <td width="50%"><img src="assets/captures/fenetre-alertes.png" alt="Alertes de Vanguard"><br><sub>Les alertes :
+    triées par gravité, chacune expliquée.</sub></td>
   </tr>
   <tr>
-    <td width="50%"><img src="assets/captures/reseau.png" alt="Scan du réseau local"><br><sub>Le réseau : chaque
-    appareil, ses ports et ce qu'il faut regarder.</sub></td>
-    <td width="50%"><img src="assets/captures/connexion.png" alt="Test de connexion pour le jeu"><br><sub>La connexion
-    pour le jeu : ping, gigue, débit, bufferbloat.</sub></td>
+    <td width="50%"><img src="assets/captures/fenetre-appareils.png" alt="Appareils du réseau local"><br><sub>Les
+    appareils du réseau : ports ouverts, risques, nouveaux venus.</sub></td>
+    <td width="50%"><img src="assets/captures/fenetre-connexions.png" alt="Connexions sortantes"><br><sub>Les
+    connexions sortantes : qui parle à qui, et ce qui est suspect.</sub></td>
   </tr>
 </table>
 
-![Tableau de bord de Vanguard : surveillance, dernier bilan, alertes par gravité et protection](assets/captures/tableau.png)
+![Guide des commandes de la fenêtre de Vanguard](assets/captures/fenetre-guide.png)
 
-<sub>Captures refaites à chaque version, sur une copie des données ; les adresses et les noms du réseau local y sont
-masqués.</sub>
+<sub>Captures de la fenêtre refaites à chaque version, sans écran, sur des données inventées : rien ne vient d'un vrai
+ordinateur.</sub>
 
 ## Systèmes pris en charge
 

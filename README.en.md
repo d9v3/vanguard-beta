@@ -724,27 +724,27 @@ not checked them.
 
 ## In pictures
 
-![Vanguard's security check: a grade from A to F, each problem explained with its fix](assets/captures/bilan-en.png)
+![Vanguard's window, Check screen: the grade, every check and what to fix](assets/captures/fenetre-bilan-en.png)
 
 <table>
   <tr>
-    <td width="50%"><img src="assets/captures/menu-en.png" alt="Vanguard's menu"><br><sub>The menu: last check,
-    connection, key plugged in.</sub></td>
-    <td width="50%"><img src="assets/captures/rapport-en.png" alt="Vanguard's HTML report"><br><sub>The HTML report and
-    the grade history.</sub></td>
+    <td width="50%"><img src="assets/captures/fenetre-accueil-en.png" alt="Vanguard window overview"><br><sub>The
+    overview: check, protection and log at a glance.</sub></td>
+    <td width="50%"><img src="assets/captures/fenetre-alertes-en.png" alt="Vanguard alerts"><br><sub>The alerts:
+    sorted by severity, each one explained.</sub></td>
   </tr>
   <tr>
-    <td width="50%"><img src="assets/captures/reseau-en.png" alt="Local network scan"><br><sub>The network: every
-    device, its ports and what deserves a look.</sub></td>
-    <td width="50%"><img src="assets/captures/connexion-en.png" alt="Connection test for gaming"><br><sub>The
-    connection for gaming: ping, jitter, speed, bufferbloat.</sub></td>
+    <td width="50%"><img src="assets/captures/fenetre-appareils-en.png" alt="Local network devices"><br><sub>The
+    network devices: open ports, risks, newcomers.</sub></td>
+    <td width="50%"><img src="assets/captures/fenetre-connexions-en.png" alt="Outgoing connections"><br><sub>The
+    outgoing connections: who talks to whom, and what looks suspicious.</sub></td>
   </tr>
 </table>
 
-![Vanguard's dashboard: monitoring, last check, alerts by severity and protection](assets/captures/tableau-en.png)
+![Command guide in Vanguard's window](assets/captures/fenetre-guide-en.png)
 
-<sub>Screenshots retaken at each version, on a copy of the data; the local network's addresses and names are
-masked.</sub>
+<sub>Screenshots of the window retaken at each version, without a screen, on made-up data: nothing comes from a real
+computer.</sub>
 
 ## Supported systems
 
