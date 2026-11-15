@@ -2058,9 +2058,19 @@ fn repartir_des_versions_vues() -> Repartir {
     }
 }
 
+/// Ce que donne `derniere_selon`.
+enum Reception {
+    Recue(github::Publiee),
+    /// GitHub en erreur ou manifeste refusé, dit : rien n'a été vérifié.
+    SansGithub,
+    /// En repartant : manifeste signé reçu, mais l'état local pas écrit ou pas scellé jusqu'au bout, dit (jamais
+    /// « GitHub n'a pas été consulté »).
+    NonEcrit,
+}
+
 /// La dernière version signée reçue de GitHub, en repartant des versions vues si la personne l'a voulu ; reparti, c'est
-/// dit. `None` : GitHub en erreur, ou en repartant l'état local non écrit, dit (rien n'est oublié dans les deux cas).
-fn derniere_selon(repartir: Repartir) -> Option<github::Publiee> {
+/// dit, et chaque échec aussi (rien n'est oublié).
+fn derniere_selon(repartir: Repartir) -> Reception {
     let recue = if repartir == Repartir::Oui {
         match github::derniere_en_repartant() {
             Ok(p) => Ok(p),
@@ -2070,17 +2080,15 @@ fn derniere_selon(repartir: Repartir) -> Option<github::Publiee> {
                     "  GitHub: {}. Nothing was checked, and nothing is forgotten: the versions seen stay in doubt.",
                     affichable(&e.to_string())
                 );
-                return None;
+                return Reception::SansGithub;
             }
             Err(github::EchecRepartir::NonEcrit(v, fichier, e)) => {
-                trp!(
-                    "  Version signée reçue ({}), mais {} n'a pas pu être écrit ({}) : rien n'est oublié, les versions vues restent en doute. Vérifiez ce fichier et son dossier, puis relancez.",
-                    "  Signed version received ({}), but {} could not be written ({}): nothing is forgotten, the versions seen stay in doubt. Check this file and its folder, then run again.",
-                    ecrire(v),
-                    affichable(&fichier.display().to_string()),
-                    affichable(&e.to_string())
+                let doute = github::versions_vues_douteuses();
+                println!(
+                    "{}",
+                    non_ecrit(v, &fichier, &crate::socle::dossier_local(), &e.to_string(), doute)
                 );
-                return None;
+                return Reception::NonEcrit;
             }
         }
     } else {
@@ -2094,18 +2102,47 @@ fn derniere_selon(repartir: Repartir) -> Option<github::Publiee> {
                 "  GitHub: {}. Nothing was checked.",
                 affichable(&e)
             );
-            return None;
+            return Reception::SansGithub;
         }
     };
-    if repartir != Repartir::Oui {
-        return Some(publiee);
+    if repartir == Repartir::Oui {
+        trp!(
+            "  Les versions déjà vues repartent de la version signée reçue ({}).",
+            "  The versions already seen start over from the signed version received ({}).",
+            ecrire(publiee.version)
+        );
     }
-    trp!(
-        "  Les versions déjà vues repartent de la version signée reçue ({}).",
-        "  The versions already seen start over from the signed version received ({}).",
-        ecrire(publiee.version)
+    Reception::Recue(publiee)
+}
+
+/// Manifeste signé reçu, état local pas écrit ou pas scellé jusqu'au bout (`github::EchecRepartir::NonEcrit`). L'erreur
+/// peut venir du fichier, de son verrou ou du registre des sceaux du dossier : les deux sont nommés. `doute` relu après
+/// l'échec : « restent en doute » n'est dit que si c'est vrai (le fichier peut être écrit et seul son sceau manquer).
+fn non_ecrit(v: Version, fichier: &Path, dossier: &Path, e: &str, doute: bool) -> String {
+    let (f, d, e) = (
+        affichable(&fichier.display().to_string()),
+        affichable(&dossier.display().to_string()),
+        affichable(e),
     );
-    Some(publiee)
+    if doute {
+        trf!(
+            "  Version signée reçue ({}), mais {} n'a pas pu être écrit ou scellé ({}) : rien n'est oublié, les versions vues restent en doute. Vérifiez ce fichier et le dossier {} (son registre des sceaux), puis relancez.",
+            "  Signed version received ({}), but {} could not be written or sealed ({}): nothing is forgotten, the versions seen stay in doubt. Check this file and the folder {} (its seal register), then run again.",
+            ecrire(v),
+            f,
+            e,
+            d
+        )
+    } else {
+        trf!(
+            "  Version signée reçue ({}) et retenue comme plus haute vue, mais le scellement de {} n'a pas fini ({}). Vérifiez le dossier {} (son registre des sceaux), puis relancez.",
+            "  Signed version received ({}) and kept as the highest seen, but sealing {} did not finish ({}). Check the folder {} (its seal register), then run again.",
+            ecrire(v),
+            f,
+            e,
+            d
+        )
+    }
 }
 
 /// La dernière version publiée sur GitHub : montrée, puis téléchargée, vérifiée et installée après un « o », à la
@@ -2176,8 +2213,17 @@ fn depuis_github_vers(cibles: Vec<PathBuf>, doute: Option<crate::voulues::Doute>
         "\n  {GRIS}Dernière version publiée sur GitHub…{RESET}",
         "\n  {GRIS}Latest version published on GitHub…{RESET}"
     );
-    let Some(publiee) = derniere_selon(repartir) else {
-        return sans_github(doute);
+    let publiee = match derniere_selon(repartir) {
+        Reception::Recue(p) => p,
+        Reception::SansGithub => return sans_github(doute),
+        // GitHub a répondu : seul le doute sur la liste est redit, sans « GitHub n'a pas été consulté ».
+        Reception::NonEcrit => {
+            crate::ui::refus_dit();
+            if let Some(d) = doute {
+                println!("\n{}", doute_de_la_liste(d));
+            }
+            return false;
+        }
     };
     let (ici, a_remplacer, doutes) = juger_cibles(
         cibles,
@@ -2431,6 +2477,23 @@ mod tests {
         pub(super) static DERNIERE: std::cell::Cell<Option<Version>> = const { std::cell::Cell::new(None) };
         /// Ce que dit l'historique signé à `historique_du_doute` dans cet essai (`None` : hors ligne).
         pub(super) static SIGNEE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+    }
+
+    /// Vérification 0.94, R9-CODES-DOC-2 et 3 : le message d'un état local pas écrit nomme le fichier ET le dossier du
+    /// registre des sceaux, ne parle jamais de GitHub, et ne dit « restent en doute » que si c'est vrai.
+    #[test]
+    fn non_ecrit_dit_vrai() {
+        let (f, d) = (Path::new("/d/versions/plus-haute-vue.txt"), Path::new("/d"));
+        for doute in [true, false] {
+            let t = non_ecrit((0, 94, 0, 1), f, d, "disque plein", doute);
+            assert!(
+                t.contains("0.94.0") && t.contains("/d/versions/plus-haute-vue.txt"),
+                "{t}"
+            );
+            assert!(t.contains("dossier /d ") && t.contains("disque plein"), "{t}");
+            assert!(!t.contains("GitHub") && !t.contains("Rien n'a été vérifié"), "{t}");
+            assert_eq!(t.contains("restent en doute"), doute, "{t}");
+        }
     }
 
     /// Relecture D7b : sans version publiée pour ce système, refusé (avant de lire l'historique, dans

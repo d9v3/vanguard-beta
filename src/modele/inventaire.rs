@@ -779,6 +779,41 @@ mod tests {
     /// fait échouer `chaque_lecture_passe_par_le_sceau`.
     const HORS_DU_SCEAU: &[(&str, &str, usize, &str)] = &[
         (
+            "agent/etat.rs",
+            "agent/etat/cache.json",
+            1,
+            "la table nom_etat, qui donne le nom de l'état d'une mission à lire_dans, lire_sans_ecrire_dans et \
+             ecrire_dans (enveloppes de sceau::juge_dans et sceau::ecrire_dans) ; vue depuis R9-ESSAIS-2",
+        ),
+        (
+            "agent/etat.rs",
+            "agent/etat/corrections.json",
+            1,
+            "la table nom_etat, qui donne le nom de l'état d'une mission à lire_dans, lire_sans_ecrire_dans et \
+             ecrire_dans (enveloppes de sceau::juge_dans et sceau::ecrire_dans) ; vue depuis R9-ESSAIS-2",
+        ),
+        (
+            "agent/etat.rs",
+            "agent/etat/reglage.json",
+            1,
+            "la table nom_etat, qui donne le nom de l'état d'une mission à lire_dans, lire_sans_ecrire_dans et \
+             ecrire_dans (enveloppes de sceau::juge_dans et sceau::ecrire_dans) ; vue depuis R9-ESSAIS-2",
+        ),
+        (
+            "agent/etat.rs",
+            "agent/etat/releve.json",
+            1,
+            "la table nom_etat, qui donne le nom de l'état d'une mission à lire_dans, lire_sans_ecrire_dans et \
+             ecrire_dans (enveloppes de sceau::juge_dans et sceau::ecrire_dans) ; vue depuis R9-ESSAIS-2",
+        ),
+        (
+            "mise_a_jour/github.rs",
+            "versions/principale-revoquee.txt",
+            1,
+            "le nom du fichier que repartir_de n'a pas pu écrire, rendu pour être dit à la personne (jamais lu ni \
+             écrit hors de sceau::lire et sceau::ecrire)",
+        ),
+        (
             "mise_a_jour/github.rs",
             "versions/plus-haute-vue.txt",
             1,
@@ -1432,9 +1467,18 @@ mod tests {
         let permis = |code: &str, pos: usize| {
             let ligne = debut_de_ligne(code, pos).trim_start();
             // Dans la définition d'une constante (même sur plusieurs lignes) : un nom, pas un usage.
+            // Le mot seul : ni « &'static str » (une signature, R9-ESSAIS-2), ni « *const », ni un nom qui finit
+            // par lui.
             let dans_definition = ["const ", "static "]
                 .iter()
-                .filter_map(|m| code[..pos].rfind(m))
+                .filter_map(|m| {
+                    code[..pos].rmatch_indices(m).map(|(d, _)| d).find(|&d| {
+                        code[..d]
+                            .chars()
+                            .next_back()
+                            .is_none_or(|p| !(p.is_ascii_alphanumeric() || matches!(p, '_' | '\'' | '*')))
+                    })
+                })
                 .max()
                 .is_some_and(|d| {
                     let morceau = &code[d..pos];

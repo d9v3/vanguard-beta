@@ -190,10 +190,10 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   (Linux) et « se-mettre-a-jour » rendent un code de sortie non nul après un refus, même quand l'entrée se termine sur
   une question qui le suit (un « n » de votre part n'en est pas ; GitHub injoignable non plus, sauf quand la liste des
   copies est en doute : le doute est alors dit, avec un code non nul) ; des versions déjà vues changées hors de Vanguard
-  rendent un code non nul, même après « repartir », quand une copie de Vanguard posée est à mettre à jour (sans copie
-  posée, elles ne sont ni dites ni comptées : code nul ; en root avec le dossier d'un autre compte, rien n'est
-  promis) ; le raccourci rend encore un
-  code nul. Les copies temporaires de Vanguard sont reconnues
+  rendent un code non nul, même après « repartir », quand il y a ici un programme de Vanguard à mettre à jour (une
+  copie posée, ou le programme lancé hors de la clé et remplaçable) ; sans rien à mettre à jour, elles ne sont ni dites
+  ni comptées (code nul), sauf quand la liste des copies est aussi en doute ; en root avec le dossier d'un autre
+  compte, rien n'est promis ; le raccourci rend encore un code nul. Les copies temporaires de Vanguard sont reconnues
   dans le dossier du compte (`XDG_RUNTIME_DIR` ou `TMPDIR`) : un programme du compte peut y poser une copie exacte de
   Vanguard et la faire prendre pour la clé du lancement ; aucun gain trouvé pour lui, qui a déjà les droits du compte.
 
