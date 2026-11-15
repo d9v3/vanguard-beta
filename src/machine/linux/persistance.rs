@@ -8687,13 +8687,22 @@ fn juger_lignes_de_configuration(
     // mot (R-2 : « A=1 \⏎# note⏎unset LD_PRELOAD=… » pose LD_PRELOAD dans user.conf).
     // Les lignes écrites, coupées au seul « \n » : un « \r » reste dans la ligne jugée (N10-2, ronde 10).
     let ecrites: Vec<&str> = lu.texte.split_terminator('\n').collect();
+    // Fusion 0.96 (relecture de la fusion, BAS 2) : un fichier de fish en « \r\n ». Que fish garde le « \r » dans la
+    // valeur (« bin\r ») ou le lise comme un blanc (« bin »), « set -gx PATH bin $PATH » fait chercher dans un dossier
+    // relatif : la ligne se juge sans son « \r » final, et la ligne écrite reste entière pour le retrait. Sinon la
+    // grammaire stricte la disait hors forme, et rien n'était dit dans un fichier que seul root peut changer.
+    let fish = matches!(format_de(f, sorte), Some(Format::Fish));
     let mut lignes: Vec<(usize, &str, &str)> = if systemd {
         lignes_lues_numerotees(&lu.texte)
             .into_iter()
             .map(|(n, l)| (n, ecrites.get(n).copied().unwrap_or(l), l))
             .collect()
     } else {
-        ecrites.iter().enumerate().map(|(n, e)| (n, *e, *e)).collect()
+        ecrites
+            .iter()
+            .enumerate()
+            .map(|(n, e)| (n, *e, if fish { e.strip_suffix('\r').unwrap_or(e) } else { *e }))
+            .collect()
     };
     // Au format de systemd, « \r » coupe aussi l'enregistrement, et « LD_PRELOAD=\r » s'y lit vide ; pam_env, qui
     // lit aussi /etc/environment, n'a pas été essayé sur ce cas : dans le doute, une ligne écrite qui précharge
@@ -8829,8 +8838,16 @@ fn juger_caches_d_uwsm(caches: &[std::path::PathBuf], h: &Path, t: &mut Lancemen
         };
         let avant = t.suspects.len();
         let non_verifies_avant = t.non_verifies.len();
+        let retraits_avant = t.retraits.len();
         juger_lignes_de_configuration(f, &lu, Variables::Shell, &[], &maisons, h, t);
         juger_lignes_jointes(f, &lu, Variables::Shell, &[], &maisons, h, t);
+        // Fusion 0.96 (relecture de la fusion, BAS 1) : un cache qui ne se lit pas sûrement (NUL, hors UTF-8, trop
+        // long) n'est jamais « simple » pour le fils root, qui refuserait le retrait : aucun geste offert, à la main.
+        if !fidele {
+            for r in t.retraits.iter_mut().skip(retraits_avant) {
+                *r = None;
+            }
+        }
         for s in t.non_verifies.iter_mut().skip(non_verifies_avant) {
             s.push_str(condition);
         }
@@ -20304,6 +20321,30 @@ mod tests {
     /// Dans la maison d'essai, le fichier est sous la racine jetable, qu'aucun geste n'a le droit de toucher
     /// (`fichier_de_ligne_admis` : chemins exacts de /etc) : le bilan entier y est donc toujours « à la main ». Le
     /// choix du geste se juge sur les retraits relevés, ramenés à leur vrai chemin de /etc.
+    /// Fusion 0.96 (BAS 1) : un cache caché d'uwsm qui ne se lit pas sûrement (ici un NUL après la première ligne) :
+    /// sa ligne suspecte est levée, mais aucun retrait n'est offert, car le fils root le refuserait toujours.
+    #[test]
+    fn cache_d_uwsm_non_lu_sans_retrait() {
+        let m = Maison::nouvelle("cache-uwsm-non-lu");
+        let f = m.chemin(".config/uwsm/env.d/.b");
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        for (octets, retirable) in [
+            (&b"export LD_PRELOAD=/home/alice/.cache/x.so\nx\0y\n"[..], false),
+            (b"export LD_PRELOAD=/home/alice/.cache/x.so\n", true),
+        ] {
+            std::fs::write(&f, octets).unwrap();
+            let variable = |_: &str| -> Option<std::ffi::OsString> { None };
+            let mut t = Lancements {
+                r: releveur(&m.racine, &m.racine.join("home/alice"), &variable),
+                ..Lancements::default()
+            };
+            juger_caches_d_uwsm(std::slice::from_ref(&f), &m.racine.join("home/alice"), &mut t);
+            assert!(!t.suspects.is_empty(), "{octets:?}");
+            assert!(!t.retraits.is_empty(), "{octets:?}");
+            assert!(t.retraits.iter().all(|r| r.is_some() == retirable), "{octets:?}");
+        }
+    }
+
     #[test]
     fn ligne_hors_utf8_a_la_main() {
         let phrase = "n'est pas du texte UTF-8";
@@ -24205,6 +24246,8 @@ mod tests {
             (".config/environment.d/50-x.conf", "PATH=.x:/usr/bin"),
             (".config/environment.d/50-x.conf", "PATH=$PATH:.x"),
             (".config/fish/config.fish", "set -gx PATH . $PATH"),
+            // Fusion 0.96 (BAS 2) : le même en fins de ligne « \r\n ».
+            (".config/fish/config.fish", "set -gx PATH . $PATH\r"),
         ]
         .into_iter()
         .enumerate()
