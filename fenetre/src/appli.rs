@@ -1257,14 +1257,20 @@ impl Appli {
             (Issue::Terminee, Some(0)) => crate::donnees::couleurs::lire(&f.sortie),
             _ => Err(crate::tr!("pas lues", "not read").to_string()),
         };
-        match lues {
+        // Le bloc ouvert au lancement se ferme toujours ici (sinon « lecture en cours… » pour toujours).
+        let (resume, ton, echec) = match lues {
             Ok(l) => {
-                if let Some(d) = l.doute
-                    && self.couleurs.doute != Some(d)
-                {
-                    self.coulisses.avis(d.texte());
-                    self.dire("couleurs", d.texte(), Ton::Attention);
-                }
+                let fin = match l.doute {
+                    Some(d) if self.couleurs.doute != Some(d) => {
+                        self.coulisses.avis(d.texte());
+                        (d.texte().to_string(), Ton::Attention, false)
+                    }
+                    _ => (
+                        crate::tr!("couleurs lues", "colors read").to_string(),
+                        Ton::Discret,
+                        false,
+                    ),
+                };
                 // Les animations gardées valent dès qu'elles sont lues, sauf choisies ici entre-temps.
                 if !self.animations_choisies
                     && let Some(reduites) = l.animations_reduites
@@ -1273,6 +1279,7 @@ impl Appli {
                 }
                 self.couleurs = l;
                 self.fermer_si_couleurs_changees();
+                fin
             }
             Err(e) => {
                 let texte = crate::trf!(
@@ -1281,15 +1288,25 @@ impl Appli {
                     e
                 );
                 self.coulisses.avis(&texte);
-                self.dire("couleurs", &texte, Ton::Attention);
+                (texte, Ton::Attention, true)
             }
-        }
+        };
+        self.console.finir(
+            f.lancement,
+            console::Fini {
+                resume,
+                ton,
+                points: Vec::new(),
+                duree: f.duree,
+                echec,
+            },
+        );
     }
 
     /// Un changement des couleurs a fini : son issue dans la console, puis les couleurs relues (seule source de ce
     /// qui est montré : jamais celles demandées, toujours celles que `vanguard` a gardées).
     fn finir_couleurs(&mut self, cc: ChangementCouleurs, f: &Fin) {
-        let (texte, ton) = match crate::donnees::couleurs::lire_issue(cc, f) {
+        let (texte, ton, echec) = match crate::donnees::couleurs::lire_issue(cc, f) {
             IssueCouleurs::Fait { avant, apres: _ } => {
                 self.revenir = Some(ChangementCouleurs {
                     theme: cc.theme,
@@ -1303,15 +1320,26 @@ impl Appli {
                     )
                     .to_string(),
                     Ton::Bon,
+                    false,
                 )
             }
             IssueCouleurs::Refuse(r) => (
                 crate::trf!("Refusé, rien n'a changé : {}", "Refused, nothing changed: {}", r),
                 Ton::Attention,
+                false,
             ),
-            IssueCouleurs::Echec(r) => (crate::trf!("Échec : {}", "Failed: {}", r), Ton::Attention),
+            IssueCouleurs::Echec(r) => (crate::trf!("Échec : {}", "Failed: {}", r), Ton::Attention, true),
         };
-        self.dire("couleurs", &texte, ton);
+        self.console.finir(
+            f.lancement,
+            console::Fini {
+                resume: texte,
+                ton,
+                points: Vec::new(),
+                duree: f.duree,
+                echec,
+            },
+        );
         self.demander(Commande::Couleurs);
     }
 
@@ -2764,6 +2792,50 @@ exit 0
         assert!(sans.animations_reduites);
         assert_eq!(sans.animations_a_garder, None);
         assert_eq!(sans.taches(), 0);
+    }
+
+    /// Chaque lancement fini ferme le bloc ouvert pour lui dans la console, réussi ou non : aucun ne reste « en
+    /// cours » (les couleurs relues à l'ouverture y restaient, « lecture en cours… » pour toujours).
+    #[test]
+    fn chaque_lancement_fini_ferme_son_bloc_dans_la_console() {
+        let couleurs = ChangementCouleurs {
+            theme: Theme::Sombre,
+            choix: None,
+        };
+        let mut lancements: Vec<Lancement> = Commande::TOUTES.iter().map(|&c| c.into()).collect();
+        lancements.extend([Lancement::Couleurs(couleurs), Lancement::Animations(true)]);
+        for l in lancements {
+            for (code, sortie, issue) in [
+                (Some(0), &b"{}"[..], Issue::Terminee),
+                (Some(1), &b"illisible"[..], Issue::Terminee),
+                (None, &b""[..], Issue::DelaiDepasse),
+            ] {
+                let mut a = Appli::pour_captures();
+                a.console.commencer(l);
+                let numero = a.console.en_cours().map(|b| b.numero).expect("bloc ouvert");
+                a.finir(&Fin {
+                    lancement: l,
+                    code,
+                    sortie: sortie.to_vec(),
+                    issue,
+                    duree: Duration::from_millis(7),
+                });
+                let bloc = a.console.blocs().find(|b| b.numero == numero).expect("bloc gardé");
+                assert_ne!(bloc.etat, console::Etat::EnCours, "{l:?} {code:?} : resté en cours");
+                assert!(!bloc.resume.is_empty(), "{l:?} {code:?} : sans résumé");
+            }
+        }
+        // Les couleurs relues : lues, dit discrètement ; illisibles, un échec qui le dit.
+        let mut a = Appli::pour_captures();
+        a.console.commencer(Commande::Couleurs.into());
+        a.poser(Commande::Couleurs, b"{}");
+        let bloc = a.console.blocs().last().expect("bloc");
+        assert_eq!((bloc.etat, bloc.ton), (console::Etat::Fini, Ton::Discret));
+        a.console.commencer(Commande::Couleurs.into());
+        a.poser(Commande::Couleurs, b"pas du json");
+        let bloc = a.console.blocs().last().expect("bloc");
+        assert_eq!(bloc.etat, console::Etat::Echec);
+        assert!(bloc.resume.contains("illisibles"), "{}", bloc.resume);
     }
 
     /// Les couleurs : l'aperçu en direct sans rien écrire, jamais une couleur presque invisible, la confirmation
