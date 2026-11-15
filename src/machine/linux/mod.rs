@@ -1360,9 +1360,9 @@ const CONNEXION_FICHIERS_MAX: usize = 1000;
 /// Les affectations d'un fichier de connexion, (section, clé, valeur) telles qu'écrites, dans l'ordre du fichier, lues
 /// comme son gestionnaire les lit (ronde 11 du lot 096, N11-1) :
 /// - SDDM 0.21.0 (`ConfigReader.cpp`, `loadInternal`) : tout ce qui suit le premier « # » de la ligne est retiré, PUIS
-///   une ligne qui garde un « = » est une affectation, même « [x=y] » ; sinon « [nom] » ouvre une section. Ainsi
-///   « [Autologin] # note » ouvre bien la section Autologin ;
-/// - GDM et LightDM (GKeyFile de GLib) : « # » seulement en tête de ligne ; « [nom] » avant « = ».
+///   une ligne qui garde un « = » est une affectation, même « `[x=y]` » ; sinon « `[nom]` » ouvre une section. Ainsi
+///   « `[Autologin]` # note » ouvre bien la section Autologin ;
+/// - GDM et LightDM (GKeyFile de GLib) : « # » seulement en tête de ligne ; « `[nom]` » avant « = ».
 ///
 /// Une marque UTF-8 (BOM) en tête est retirée : ce que Qt et GLib en font n'a pas été vérifié, et la lire comme une
 /// section ne peut que faire voir une ouverture de plus, jamais en cacher une.
@@ -1417,8 +1417,8 @@ struct Ouverture {
 /// MÊME FICHIER, même section et même clé, casse comprise, avec une valeur qui coupe à coup sûr. Tout le reste n'est
 /// pas cru : un autre fichier (SDDM trie selon la langue et ne lit pas les fichiers cachés ; LightDM saute un fichier
 /// qu'il ne sait pas lire ; GDM ne lit qu'un fichier, celui de sa distribution), une autre section (LightDM applique
-/// [Seat:*] puis la section du siège ; [SeatDefaults] et [Seat:*] sont deux noms), une autre casse (GKeyFile, SDDM).
-/// Les fichiers illisibles n'entrent pas ici (`constat_d_ouverture` les dit).
+/// `[Seat:*]` puis la section du siège ; `[SeatDefaults]` et `[Seat:*]` sont deux noms), une autre casse (GKeyFile,
+/// SDDM). Les fichiers illisibles n'entrent pas ici (`constat_d_ouverture` les dit).
 fn ouvertures(fichiers: &[FichierDeConnexion]) -> [Ouverture; 5] {
     let poses = |g: Gestionnaire, section: &dyn Fn(&str) -> bool, cle: &str| -> Vec<Pose> {
         let mut sortie = Vec::new();
@@ -1821,7 +1821,7 @@ fn lecture_rpm(code: Option<i32>, sortie: &str, erreurs: &str) -> Result<Option<
 pub(crate) enum Decoupe {
     /// Elle, ou celle d'avant, finit par « \ » : le shell, systemd et pam_env la joignent à la suivante.
     Barre,
-    /// Dans un fichier lu par un shell : elle n'est pas de la forme « [export ]NOM=valeur » la plus simple, ou le
+    /// Dans un fichier lu par un shell : elle n'est pas de la forme « `[export ]NOM=valeur` » la plus simple, ou le
     /// fichier n'est pas fait que de lignes vides, de commentaires entiers et de telles affectations, chaque NOM une
     /// fois (`AnalyseDeRetrait::decoupe`, ronde 7 du lot 096).
     Shell,
@@ -2140,7 +2140,7 @@ fn blanc(o: u8) -> bool {
     o == b' ' || o == b'\t'
 }
 
-/// La ligne est-elle une affectation de la forme la plus simple, « [export ]NOM=valeur » ? Le NOM qu'elle pose, sinon
+/// La ligne est-elle une affectation de la forme la plus simple, « `[export ]NOM=valeur` » ? Le NOM qu'elle pose, sinon
 /// `None`. Admis, et rien d'autre (ronde 7 du lot 096) :
 /// - des blancs (`blanc`) en tête ; « export » suivi de blancs ;
 /// - un NOM de majuscules ASCII, chiffres et « _ », pas en tête un chiffre, hors `NOMS_DU_SHELL` et

@@ -3157,7 +3157,7 @@ pub(super) fn variables_de_texte(texte: &str) -> Vec<(String, String)> {
     variables
 }
 
-/// La variable d'une ligne « [export ] NOM=valeur » : « export » ôté, guillemets simples ou doubles autour de la
+/// La variable d'une ligne « `[export ]` NOM=valeur » : « export » ôté, guillemets simples ou doubles autour de la
 /// valeur ôtés. Sans « = » : rien.
 fn affectation_de_variable(ligne: &str) -> Option<(String, String)> {
     let l = ligne.trim();

@@ -238,7 +238,7 @@ const DOSSIERS_DE_DONNEES: [&str; 8] = [
     ".password-store",
 ];
 
-/// Le chemin sans « /proc/self/root », « /proc/thread-self/root » ni « /proc/<numéro>/root » en tête : la racine
+/// Le chemin sans « /proc/self/root », « /proc/thread-self/root » ni « `/proc/<numéro>/root` » en tête : la racine
 /// vue par un processus, la même ici (relecture adverse 2, N4).
 fn sans_racine_de_proc(p: &str) -> &str {
     let mut p = p;
@@ -2214,7 +2214,7 @@ struct Releveur {
     /// qui ont un saut de ligne aussi. N-1 : les noms de XDG_CURRENT_DESKTOP hors de `nom_de_bureau_sur`, sous ce nom.
     uwsm_session_joker: Vec<(&'static str, std::ffi::OsString)>,
     /// W-2 (contrôle 2 du sous-lot c2-uwsm, 0.95) : XDG_DATA_HOME de la session, tel que pyxdg le lit pour trouver les
-    /// greffons d'uwsm (« uwsm/plugins/<compositeur>.sh ») : entier, relatif joint au dossier personnel.
+    /// greffons d'uwsm (« `uwsm/plugins/<compositeur>.sh` ») : entier, relatif joint au dossier personnel.
     uwsm_donnees: Option<std::path::PathBuf>,
     /// Les dossiers que les fichiers du gestionnaire de systemd du compte posent par une `VARIABLES_DES_DOSSIERS`
     /// (relecture 0.95, V-1) : (variable, dossier), où systemd cherche aussi des unités (`dossiers_du_gestionnaire`).
@@ -5689,7 +5689,7 @@ fn fichiers_d_uwsm(
 const SAUTES_PAR_UWSM: [&str; 6] = [".bak", "~", ".disabled", ".example", ".sample", ".broken"];
 
 /// W-2 (contrôle 2 du sous-lot c2-uwsm, 0.95) : les greffons d'uwsm sous un dossier de données `base`. Uwsm 0.27
-/// (main.py) cherche « uwsm/plugins/<compositeur>.sh » par pyxdg (`load_data_paths` : XDG_DATA_HOME, puis chaque
+/// (main.py) cherche « `uwsm/plugins/<compositeur>.sh` » par pyxdg (`load_data_paths` : XDG_DATA_HOME, puis chaque
 /// XDG_DATA_DIRS, « os.path.exists », qui suit les liens) et les passe à prepare-env.sh, qui les lit par « . » : du
 /// code de shell, comme « uwsm/env ». Plus large qu'uwsm : chaque « *.sh » du dossier, pas seulement celui du
 /// compositeur lancé. Un lien cassé, une boucle ou un dossier n'en est pas un (uwsm ne le lit pas) ; un dossier ou une
@@ -5732,7 +5732,7 @@ fn greffons_d_uwsm(base: &Path, illisibles: &mut Vec<std::path::PathBuf>) -> Vec
 }
 
 /// N-1 : un nom de bureau tel qu'uwsm l'accepte de « -D » (uwsm 0.27, misc.py, `dn_colon`) : lettres, chiffres, « _ »,
-/// « . », « - ». Il donne alors un seul nom de fichier, « uwsm/env-<nom> » (« env-.. » compris), que Vanguard lit
+/// « . », « - ». Il donne alors un seul nom de fichier, « `uwsm/env-<nom>` » (« env-.. » compris), que Vanguard lit
 /// (`fichiers_d_uwsm` lit chaque fichier du dossier et descend dans « env-*.d »). Un nom vide aussi (« uwsm/env- »).
 fn nom_de_bureau_sur(nom: &[u8]) -> bool {
     nom.iter()
@@ -5747,7 +5747,7 @@ const BUREAUX_PROFONDEUR: usize = 16;
 /// N-1 : les fichiers de session (« wayland-sessions/…/*.desktop ») des `bases` dont un DesktopNames a un nom hors de
 /// `nom_de_bureau_sur` : (fichier, valeur). Uwsm 0.27 (main.py, `find_entries`) les cherche par pyxdg dans
 /// XDG_DATA_HOME puis chaque XDG_DATA_DIRS, en descendant tout l'arbre (liens suivis), et ajoute leur DesktopNames
-/// (non validé) à XDG_CURRENT_DESKTOP, d'où il tire « uwsm/env-<bureau> ». Plus large qu'uwsm : chaque clé qui
+/// (non validé) à XDG_CURRENT_DESKTOP, d'où il tire « `uwsm/env-<bureau>` ». Plus large qu'uwsm : chaque clé qui
 /// commence par « DesktopNames », dans chaque groupe, et chaque « .desktop », pas seulement celui de la session lancée.
 /// Ce qui ne se lit pas (dossier, fichier, trop gros, trop d'entrées ou de niveaux) va dans `illisibles`, jamais tu.
 fn bureaux_d_uwsm(
@@ -5889,7 +5889,7 @@ fn bureaux_a_dire(r: &Releveur, illisibles: &mut Vec<std::path::PathBuf>) -> Vec
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum BureauUwsm {
     /// R4-4 (revérification de la ronde 4 de la 0.95) : il pose XDG_CURRENT_DESKTOP, chaque fois à une valeur fixe
-    /// sûre (`valeur_sure_du_bureau`), ces noms-là : uwsm lit alors des « uwsm/env-<nom> », que Vanguard lit tous
+    /// sûre (`valeur_sure_du_bureau`), ces noms-là : uwsm lit alors des « `uwsm/env-<nom>` », que Vanguard lit tous
     /// (`fichiers_d_uwsm`). Une information, rien à faire.
     Fixe(Vec<String>),
     /// V3-1 : il le pose à une autre valeur, dans une ligne simple (« a/b », « Hyprland:a/b », vide).
@@ -5963,7 +5963,7 @@ fn variable_speciale_du_shell(nom: &str) -> bool {
 /// V3-1, R4-1 à R4-4, N5-1 à N5-5 (revérifications des rondes 3 à 5, DEP-4 de la 0.95) : les fichiers d'uwsm qui
 /// changent ce qu'uwsm lit ensuite. Uwsm relit XDG_CURRENT_DESKTOP pour chaque dossier, du moins prioritaire au plus
 /// prioritaire (prepare-env.sh, `in_each_config_dir_reversed`) : un « uwsm/env » lu tôt qui le change lui fait lire,
-/// dans les dossiers suivants, des « uwsm/env-<bureau> », puis peut le remettre ; la valeur finale de la session ne
+/// dans les dossiers suivants, des « `uwsm/env-<bureau>` », puis peut le remettre ; la valeur finale de la session ne
 /// montre rien. Le nom de bureau est une donnée hostile : toute écriture est dite, non vérifiée, sauf une valeur fixe
 /// sûre (R4-4, `BureauUwsm::Fixe`, une information). Lus : chaque fichier de variables d'uwsm (env, env-*, env.d,
 /// env-*.d) de chaque dossier qu'il lit (`fichiers_du_gestionnaire`, la liste de la sauvegarde) et ses greffons, que
@@ -9216,8 +9216,8 @@ fn mots_de_fish_simples(instruction: &str) -> Option<Vec<String>> {
 }
 
 /// Ronde 11 : les instructions d'une ligne de fish de la forme simple, ou `None`. Séparées par « ; », chacune :
-/// « set [options] NOM valeurs… » (options : -g -x -U -l -p -a -u -f et leurs formes longues ; « -e », « -q » ne
-/// posent rien), « fish_add_path [options] dossiers… », ou « export NOM=valeur » (la fonction de fish, lue comme le
+/// « set `[options]` NOM valeurs… » (options : -g -x -U -l -p -a -u -f et leurs formes longues ; « -e », « -q » ne
+/// posent rien), « fish_add_path `[options]` dossiers… », ou « export NOM=valeur » (la fonction de fish, lue comme le
 /// shell). Les valeurs d'une liste (PATH…) jointes par « : » comme fish l'exporte, celles d'un programme par une
 /// espace ; « -p » et « -a » y joignent la variable elle-même. Un commentaire « # » après un blanc. Ronde 12
 /// (N11-1) : « set -e », « -q », « -n », « -S » ne posent rien et ne finissent pas la ligne : l'instruction est
@@ -11174,7 +11174,7 @@ fn raison_large(ligne: &str, format: Option<Format>, maisons: &[&str]) -> Option
 }
 
 /// Ronde 13 (N12-6) : les lectures d'une ligne hors forme pour `raison_large` (lever plus, jamais taire) : telle
-/// quelle ; chaque « ${NOM<op>mot} » (« :+ :- := :? + - = ? ») rendu vide, puis rendu à son mot ; et, sur chacune,
+/// quelle ; chaque « `${NOM<op>mot}` » (« :+ :- := :? + - = ? ») rendu vide, puis rendu à son mot ; et, sur chacune,
 /// chaque autre lecture de variable que « $HOME », « $PATH » et « $path » rendue vide (« ${NOPE:+x}/home/alice/.x »,
 /// « /home/alice/${NOPE:-.x} », « $NOPE/home/alice/.x » posent le dossier caché si NOPE est vide ou absente).
 /// La lecture vide (`vides`) seulement dans environment.d, où une variable non posée plus haut est vide : dans le
@@ -22090,7 +22090,7 @@ mod tests {
         assert!(!c.message.contains("v.sh:1 précharge"), "{}", c.message);
     }
 
-    /// L-2 (campagne 0.95, angle lecture) : uwsm lit chaque fichier de « env.d » et « env-<bureau>.d », quelle que
+    /// L-2 (campagne 0.95, angle lecture) : uwsm lit chaque fichier de « env.d » et « `env-<bureau>.d` », quelle que
     /// soit son extension (uwsm 0.27, prepare-env.sh, `source_dir`) : un préchargement posé dans « env.d/a » se juge
     /// comme dans « env.d/a.conf ».
     #[test]
@@ -22131,7 +22131,7 @@ mod tests {
         }
     }
 
-    /// S-4 (re-contrôle 2 0.95, angle lecture) : uwsm suit un « env.d » ou « env-<bureau>.d » qui est un lien vers un
+    /// S-4 (re-contrôle 2 0.95, angle lecture) : uwsm suit un « env.d » ou « `env-<bureau>.d` » qui est un lien vers un
     /// dossier (« [ -d ] », prepare-env.sh, `source_dir`), sous ~/.config/uwsm comme sous tout autre dossier où il
     /// cherche (XDG_CONFIG_HOME de la session ou posé par environment.d, XDG_DATA_DIRS). Vanguard le suit partout, par
     /// la même liste (`fichiers_d_uwsm`) : la pose en clair du dossier visé se lève à sa ligne, une fois. Témoin : un
@@ -22185,8 +22185,8 @@ mod tests {
     }
 
     /// N6-2 (revérification de la ronde 6) : sous ~/.config/uwsm, seuls les fichiers qu'uwsm lit se jugent : « env »
-    /// et « env-<nom> » en haut, chaque fichier de leurs dossiers « .d » sauf les noms qu'uwsm saute (« .bak », « ~ »,
-    /// « .disabled »…). « default-id », des notes, une copie « .bak » ou « .swp » en haut ne lèvent ni le bilan ni la
+    /// et « `env-<nom>` » en haut, chaque fichier de leurs dossiers « .d » sauf les noms qu'uwsm saute (« .bak »,
+    /// « ~ », « .disabled »…). « default-id », des notes, une copie « .bak » ou « .swp » en haut ne lèvent ni le bilan ni la
     /// sauvegarde. « ~/.config/uwsm/default », que le fichier du système d'Omarchy inclut, se juge (S-4), seul ou
     /// inclus.
     #[test]
@@ -22537,7 +22537,7 @@ mod tests {
         assert!(faux.is_empty(), "sous les dossiers déjà lus : {faux:#?}");
     }
 
-    /// W-2 (contrôle 2 du sous-lot c2-uwsm, 0.95) : les greffons d'uwsm (« uwsm/plugins/<compositeur>.sh », lus par
+    /// W-2 (contrôle 2 du sous-lot c2-uwsm, 0.95) : les greffons d'uwsm (« `uwsm/plugins/<compositeur>.sh` », lus par
     /// « . » dans prepare-env.sh) sous XDG_DATA_HOME (par défaut ~/.local/share, relatif depuis le dossier personnel)
     /// et chaque XDG_DATA_DIRS se jugent, au bilan et à la sauvegarde (ses deux formes) ; avant, jamais lus. Hors de la
     /// maison, par la même règle que « uwsm/env » : jugé si root n'est pas seul à pouvoir le changer. Témoin : un
@@ -22787,7 +22787,7 @@ mod tests {
         assert!(faux.is_empty(), "sauts de ligne de la session : {faux:#?}");
     }
 
-    /// N-1 (revérification de la ronde 2, DEP-4 de la 0.95) : uwsm lit « uwsm/env-<bureau> » pour chaque nom de
+    /// N-1 (revérification de la ronde 2, DEP-4 de la 0.95) : uwsm lit « `uwsm/env-<bureau>` » pour chaque nom de
     /// XDG_CURRENT_DESKTOP, pris tel quel. « a/b » le fait lire dans un sous-dossier, « x/../.. » n'importe où, un
     /// joker se développe : dit (non vérifié, non déclarable), et la sauvegarde exacte se lève. Même chose pour un
     /// DesktopNames d'un fichier de session (« wayland-sessions »), qu'uwsm ajoute à XDG_CURRENT_DESKTOP. Témoins : un
@@ -23462,7 +23462,7 @@ mod tests {
 
     /// R4-4 (revérification de la ronde 4 de la 0.95) : un fichier d'uwsm du compte qui pose XDG_CURRENT_DESKTOP à une
     /// valeur fixe sûre (« sway », « 'GNOME:sway' » puis « export » seul) était dit ÉLEVÉ comme une valeur hostile :
-    /// uwsm en tire des « uwsm/env-<nom> », que Vanguard lit tous. Une information (`Niveau::Info`), qui ne lève pas
+    /// uwsm en tire des « `uwsm/env-<nom>` », que Vanguard lit tous. Une information (`Niveau::Info`), qui ne lève pas
     /// la sauvegarde ; une valeur hors règle, ou une ligne qui n'est pas simple, à côté reste dite. Le nom dans un
     /// commentaire entier ne compte pas, et les fichiers d'uwsm du système à root seul ne se jugent pas (comme ses
     /// greffons).
@@ -27703,8 +27703,8 @@ mod tests {
     }
 
     /// D-2 (relecture 0.94) : XDG_RUNTIME_DIR changé ne déplace pas le dossier de session de systemd
-    /// (/run/user/<uid>) en fin de liste : l'ordre est celui de la vraie session, chaque dossier de la variable juste
-    /// après celui de systemd ; /run/user/<uid>/systemd/user passe donc toujours avant /usr/lib/systemd/user.
+    /// (`/run/user/<uid>`) en fin de liste : l'ordre est celui de la vraie session, chaque dossier de la variable juste
+    /// après celui de systemd ; `/run/user/<uid>/systemd/user` passe donc toujours avant /usr/lib/systemd/user.
     #[test]
     fn un_xdg_runtime_dir_change_garde_l_ordre_de_systemd() {
         let uid = uid_du_compte().expect("uid du compte");
