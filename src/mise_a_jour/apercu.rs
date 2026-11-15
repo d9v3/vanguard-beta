@@ -227,7 +227,7 @@ pub(super) trait Monde {
     /// `juger_cibles` du terminal : (planchers, à remplacer, doutes à dire), la version publiée étant `publiee`.
     fn juger(&self, cibles: Vec<PathBuf>, publiee: Version) -> (Vec<Version>, Vec<PathBuf>, Vec<String>);
     /// `reconnue_ici` du terminal : la copie à `c` vient-elle de Vanguard (liste des copies, historique signé) ?
-    fn reconnue(&self, c: &Path) -> Result<(), String>;
+    fn reconnue(&self, c: &Path) -> Result<(), Echec>;
 }
 
 /// L'ordinateur pour de vrai.
@@ -297,8 +297,8 @@ impl Monde for Ici {
     fn juger(&self, cibles: Vec<PathBuf>, publiee: Version) -> (Vec<Version>, Vec<PathBuf>, Vec<String>) {
         super::juger_cibles(cibles, publiee, &self.copie(), &self.registre(), super::reconnue_ici)
     }
-    fn reconnue(&self, c: &Path) -> Result<(), String> {
-        super::reconnue_ici(c).map_err(String::from)
+    fn reconnue(&self, c: &Path) -> Result<(), Echec> {
+        super::reconnue_ici(c)
     }
 }
 
@@ -464,7 +464,7 @@ fn plan(m: &dyn Monde, pour: Pour) -> Result<Plan, Refus> {
             // plancher) se décide dans le terminal : l'aperçu n'écrit rien avant l'accord.
             let au_terminal = || {
                 Err(Echec::refuse(
-                    "mise_a_jour/apercu",
+                    "mise_a_jour/remise",
                     tr!(
                         "dans la fenêtre, la sortie d'une liste en doute se décide dans le terminal (vanguard se-mettre-a-jour)",
                         "in the window, the way out of a list in doubt is decided in the terminal (vanguard se-mettre-a-jour)"
@@ -511,7 +511,7 @@ fn plan(m: &dyn Monde, pour: Pour) -> Result<Plan, Refus> {
                 Err(Refus::AJour(_) | Refus::Rien) => Err(Refus::NonVerifie(trf!(
                     "la copie d'ici se dit plus récente que la clé, mais Vanguard ne la reconnaît ni comme celle qu'il a posée ni comme une version publiée ({}) ; elle n'est pas remplacée, la suite se décide dans le terminal (vanguard se-mettre-a-jour)",
                     "the copy on this computer claims to be newer than the key, but Vanguard recognizes it neither as the one it set up nor as a published version ({}); it is not replaced, what to do next is decided in the terminal (vanguard se-mettre-a-jour)",
-                    sans_entete(&e)
+                    sans_entete(&String::from(e))
                 ))),
                 autre => autre,
             },
@@ -1092,8 +1092,8 @@ mod tests {
             let reconnue = |_: &Path| self.reconnue.clone().map_err(|e| Echec::refuse("essai", e));
             super::super::juger_cibles(cibles, publiee, &self.copie, &self.registre, reconnue)
         }
-        fn reconnue(&self, _: &Path) -> Result<(), String> {
-            self.reconnue.clone()
+        fn reconnue(&self, _: &Path) -> Result<(), Echec> {
+            self.reconnue.clone().map_err(|e| Echec::refuse("essai", e))
         }
     }
 
