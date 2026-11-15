@@ -6152,8 +6152,9 @@ fn origine_ecartee_dans_une_copie_ne_fige_pas() {
     let autre = racine.join("autre");
     std::fs::write(&autre, b"programme d'un autre").unwrap();
     let mut commande = Command::new(&copie);
+    // « regles » et non « --help » : l'aide se montre avant tout examen (R-7), VANGUARD_ORIGINE n'y est plus lue.
     commande
-        .arg("--help")
+        .arg("regles")
         .env("VANGUARD_LANG", "fr")
         .env("VANGUARD_HORS_LIGNE", "1")
         .env("USER", "essai")
@@ -6220,8 +6221,9 @@ fn copie_effacee_relancee_par_son_image_reste_une_copie() {
     std::fs::write(&autre, b"programme d'un autre").unwrap();
     let par_l_image = format!("/proc/{}/fd/{}", std::process::id(), image.as_raw_fd());
     let lancer = || {
+        // « regles » et non « --help » : l'aide se montre avant tout examen (R-7), VANGUARD_ORIGINE n'y est plus lue.
         Command::new(&par_l_image)
-            .arg("--help")
+            .arg("regles")
             .env("VANGUARD_LANG", "fr")
             .env("VANGUARD_HORS_LIGNE", "1")
             .env("USER", "essai")
