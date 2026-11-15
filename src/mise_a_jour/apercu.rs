@@ -502,17 +502,20 @@ fn plan(m: &dyn Monde, pour: Pour) -> Result<Plan, Refus> {
             e
         ))),
         // Comme au terminal (R3-C3) : une copie plus récente que la clé n'est crue que reconnue (liste des copies
-        // posées, ou historique signé) ; sinon jamais « à jour », même si elle grave la version publiée.
-        Etat::ClePlusAncienne { .. } => {
-            m.reconnue(&m.copie()).map_err(|e| {
-                Refus::NonVerifie(trf!(
-                    "la copie d'ici se dit plus récente que la clé, mais Vanguard ne la reconnaît ni comme celle qu'il a posée ni comme une version publiée ({}) ; elle n'est pas remplacée",
-                    "the copy on this computer claims to be newer than the key, but Vanguard recognizes it neither as the one it set up nor as a published version ({}); it is not replaced",
+        // posées, ou historique signé) ; sinon jamais « à jour » ni « rien », même si elle grave la version publiée.
+        // La dernière version signée, plus récente qu'elle, la remplace pourtant, comme au terminal (`juger_cibles`
+        // ne demande la reconnaissance que d'une copie plus récente que la publiée).
+        Etat::ClePlusAncienne { .. } => match m.reconnue(&m.copie()) {
+            Ok(()) => plan_github(m, pour),
+            Err(e) => match plan_github(m, pour) {
+                Err(Refus::AJour(_) | Refus::Rien) => Err(Refus::NonVerifie(trf!(
+                    "la copie d'ici se dit plus récente que la clé, mais Vanguard ne la reconnaît ni comme celle qu'il a posée ni comme une version publiée ({}) ; elle n'est pas remplacée, la suite se décide dans le terminal (vanguard se-mettre-a-jour)",
+                    "the copy on this computer claims to be newer than the key, but Vanguard recognizes it neither as the one it set up nor as a published version ({}); it is not replaced, what to do next is decided in the terminal (vanguard se-mettre-a-jour)",
                     sans_entete(&e)
-                ))
-            })?;
-            plan_github(m, pour)
-        }
+                ))),
+                autre => autre,
+            },
+        },
         Etat::Rien | Etat::PasDepuisLaCle | Etat::AJour(_) => plan_github(m, pour),
     }
 }
@@ -1272,6 +1275,17 @@ mod tests {
         match plan(&f, Pour::Voir) {
             Err(Refus::NonVerifie(e)) => assert!(e.contains("pas dans la liste"), "{e}"),
             autre => panic!("{:?}", autre.map(|p| p.apercu)),
+        }
+        // Une version signée plus récente qu'elle la remplace, comme au terminal (2e relecture adverse).
+        let publie = programme("0.97.0+1793000000", "publie");
+        f.derniere = Ok(Publiee::d_essai(version("0.97.0+1793000000"), &publie));
+        f.recus = publie;
+        match plan(&f, Pour::Voir) {
+            Ok(p) => assert_eq!(
+                p.cibles.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>(),
+                vec![f.copie.clone()]
+            ),
+            Err(r) => panic!("{r:?}"),
         }
         let _ = std::fs::remove_dir_all(&d);
     }
