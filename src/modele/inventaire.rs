@@ -779,6 +779,13 @@ mod tests {
     /// fait échouer `chaque_lecture_passe_par_le_sceau`.
     const HORS_DU_SCEAU: &[(&str, &str, usize, &str)] = &[
         (
+            "mise_a_jour/github.rs",
+            "versions/plus-haute-vue.txt",
+            1,
+            "le nom du fichier que repartir_de n'a pas pu écrire, rendu pour être dit à la personne (jamais lu ni \
+             écrit hors de sceau::ecrire)",
+        ),
+        (
             "amelioration/mod.rs",
             "amelioration/suivi.json",
             4,

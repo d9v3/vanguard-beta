@@ -182,7 +182,8 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   non-zero exit code after a refusal, even when the input ends on a question that follows it (your "n" is not a
   refusal; neither is GitHub being unreachable, except when the list of copies is in doubt: the doubt is then
   reported, with a non-zero code); versions already seen that were changed outside of Vanguard return a non-zero code,
-  even after "start again"; the shortcut still
+  even after "start over", when a placed copy of Vanguard is to be updated (with no placed copy, they are neither
+  reported nor counted: zero code; as root with another account's folder, nothing is promised); the shortcut still
   returns a zero code. Vanguard's temporary copies are recognized in the account's folder (`XDG_RUNTIME_DIR` or
   `TMPDIR`): a program of the account can place an exact copy of Vanguard there and have it taken for the key of the
   launch; no gain found for it, as it already has the account's rights.

@@ -2059,23 +2059,35 @@ fn repartir_des_versions_vues() -> Repartir {
 }
 
 /// La dernière version signée reçue de GitHub, en repartant des versions vues si la personne l'a voulu ; reparti, c'est
-/// dit. `None` : GitHub en erreur, dit (rien n'a été vérifié ; en repartant, rien n'est oublié).
+/// dit. `None` : GitHub en erreur, ou en repartant l'état local non écrit, dit (rien n'est oublié dans les deux cas).
 fn derniere_selon(repartir: Repartir) -> Option<github::Publiee> {
     let recue = if repartir == Repartir::Oui {
-        github::derniere_en_repartant().map_err(String::from)
+        match github::derniere_en_repartant() {
+            Ok(p) => Ok(p),
+            Err(github::EchecRepartir::NonRecu(e)) => {
+                trp!(
+                    "  GitHub : {}. Rien n'a été vérifié, et rien n'est oublié : les versions vues restent en doute.",
+                    "  GitHub: {}. Nothing was checked, and nothing is forgotten: the versions seen stay in doubt.",
+                    affichable(&e.to_string())
+                );
+                return None;
+            }
+            Err(github::EchecRepartir::NonEcrit(v, fichier, e)) => {
+                trp!(
+                    "  Version signée reçue ({}), mais {} n'a pas pu être écrit ({}) : rien n'est oublié, les versions vues restent en doute. Vérifiez ce fichier et son dossier, puis relancez.",
+                    "  Signed version received ({}), but {} could not be written ({}): nothing is forgotten, the versions seen stay in doubt. Check this file and its folder, then run again.",
+                    ecrire(v),
+                    affichable(&fichier.display().to_string()),
+                    affichable(&e.to_string())
+                );
+                return None;
+            }
+        }
     } else {
         github::derniere()
     };
     let publiee = match recue {
         Ok(p) => p,
-        Err(e) if repartir == Repartir::Oui => {
-            trp!(
-                "  GitHub : {}. Rien n'a été vérifié, et rien n'est oublié : les versions vues restent en doute.",
-                "  GitHub: {}. Nothing was checked, and nothing is forgotten: the versions seen stay in doubt.",
-                affichable(&e)
-            );
-            return None;
-        }
         Err(e) => {
             trp!(
                 "  GitHub : {}. Rien n'a été vérifié.",

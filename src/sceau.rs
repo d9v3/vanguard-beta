@@ -1010,16 +1010,44 @@ fn arret_d_essai(nom: &str) {
 #[cfg(test)]
 thread_local! {
     static COUPE_A: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+    /// Le seul fichier coupé (`coupe_de`) ; `None` : tous.
+    static COUPE_DE: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
 }
 
 /// Vrai si l'essai en cours coupe l'écriture à `etape` (`COUPE_A`) ; toujours faux hors des essais.
 fn coupe(etape: &'static str) -> bool {
+    coupe_de(etape, None)
+}
+
+/// `coupe`, pour l'écriture du fichier `nom` : coupée seulement si l'essai vise tous les fichiers ou celui-ci.
+fn coupe_de(etape: &'static str, nom: Option<&str>) -> bool {
     #[cfg(test)]
-    if COUPE_A.with(std::cell::Cell::get) == Some(etape) {
+    if COUPE_A.with(std::cell::Cell::get) == Some(etape)
+        && COUPE_DE.with(std::cell::Cell::get).is_none_or(|vise| nom == Some(vise))
+    {
         return true;
     }
-    let _ = etape;
+    let _ = (etape, nom);
     false
+}
+
+/// Essais seulement : `f`, coupé net à l'étape `etape` d'une écriture des sceaux (`coupe`), comme si Vanguard y était
+/// tué ; aussi pour les essais d'autres modules qui écrivent un état scellé.
+#[cfg(test)]
+pub(crate) fn coupe_a<R>(etape: &'static str, f: impl FnOnce() -> R) -> R {
+    COUPE_A.with(|c| c.set(Some(etape)));
+    let r = f();
+    COUPE_A.with(|c| c.set(None));
+    r
+}
+
+/// Essais seulement : `coupe_a`, mais seulement pour l'écriture du fichier `nom` ; les autres passent.
+#[cfg(test)]
+pub(crate) fn coupe_a_pour<R>(etape: &'static str, nom: &'static str, f: impl FnOnce() -> R) -> R {
+    COUPE_DE.with(|c| c.set(Some(nom)));
+    let r = coupe_a(etape, f);
+    COUPE_DE.with(|c| c.set(None));
+    r
 }
 
 /// L'erreur d'une écriture coupée par un essai (`coupe`).
@@ -1077,7 +1105,7 @@ pub(crate) fn ecrire_dans(dossier: &Path, nom: &str, octets: &[u8]) -> std::io::
     let nouvelle = empreinte(nom, octets);
     sceaux.en_attente.insert(nom.to_string(), nouvelle.clone());
     enregistrer_registre(dossier, &sceaux)?;
-    if coupe("ecrire:avant-fichier") {
+    if coupe_de("ecrire:avant-fichier", Some(nom)) {
         return Err(coupee());
     }
     let ecrit = crate::socle::ecrire_atomique(&dossier.join(nom), octets);
@@ -1818,14 +1846,6 @@ mod tests {
         ecrire_dans(&d, nom, b"fin").unwrap();
         effacer_dans(&d, nom).unwrap();
         assert!(registre(&d).unwrap().unwrap().en_attente.is_empty());
-    }
-
-    /// `f`, coupé net à l'étape `etape` d'une écriture des sceaux (`coupe`), comme si Vanguard y était tué.
-    fn coupe_a<R>(etape: &'static str, f: impl FnOnce() -> R) -> R {
-        COUPE_A.with(|c| c.set(Some(etape)));
-        let r = f();
-        COUPE_A.with(|c| c.set(None));
-        r
     }
 
     /// Vérification 0.94, A1 : après des sceaux refaits, un fichier absent reste « inconnu » (tout est redit) tant

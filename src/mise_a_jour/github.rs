@@ -440,19 +440,36 @@ fn oublier_versions_vues() -> std::io::Result<()> {
     crate::sceau::effacer(crate::sceau::VERSIONS)
 }
 
+/// Pourquoi `derniere_en_repartant` n'a pas reparti.
+pub(super) enum EchecRepartir {
+    /// Rien reçu, ou manifeste refusé : rien n'a été écrit ni oublié.
+    NonRecu(Echec),
+    /// Manifeste signé reçu, mais ce fichier de l'état local n'a pas pu être écrit : les versions vues restent telles
+    /// quelles (rien n'est effacé avant l'écriture), donc encore en doute.
+    NonEcrit(Version, std::path::PathBuf, std::io::Error),
+}
+
 /// Repartir de zéro, sur accord (`depuis_github`) : le manifeste est d'abord reçu et sa signature vérifiée ; alors
-/// seulement les versions vues sont oubliées, et la version reçue devient la plus haute vue. Hors ligne, ou manifeste
-/// refusé : rien n'est oublié, le témoin du changement reste.
-pub(super) fn derniere_en_repartant() -> Result<Publiee, Echec> {
-    let publiee = derniere_recue()?;
-    let echec = |e: &dyn std::fmt::Display| Echec::echoue("mise_a_jour/remise", e.to_string());
-    oublier_versions_vues().map_err(|e| echec(&e))?;
+/// seulement la version reçue est écrite par-dessus les versions vues (`repartir_de`). Hors ligne, manifeste refusé ou
+/// écriture en échec : rien n'est oublié, le témoin du changement reste.
+pub(super) fn derniere_en_repartant() -> Result<Publiee, EchecRepartir> {
+    let publiee = derniere_recue().map_err(EchecRepartir::NonRecu)?;
+    repartir_de(&publiee)
+        .map_err(|(nom, e)| EchecRepartir::NonEcrit(publiee.version, crate::socle::dossier_local().join(nom), e))?;
+    Ok(publiee)
+}
+
+/// L'état local repart du manifeste signé reçu, sans rien effacer d'abord : la révocation est retenue en premier (comme
+/// dans `derniere`), puis la version reçue est écrite par-dessus les versions vues, en une écriture scellée en deux
+/// temps (`sceau::ecrire`). Coupé ou en échec à n'importe quelle étape, l'ancien fichier changé reste et se lit encore
+/// en doute : jamais « rien de vu ». `Err` : le fichier qui n'a pas pu être écrit.
+fn repartir_de(publiee: &Publiee) -> Result<(), (&'static str, std::io::Error)> {
+    use crate::sceau::{REVOCATION, VERSIONS};
     if publiee.revoque {
-        retenir_revocation().map_err(|e| echec(&e))?;
+        ecrire_revocation().map_err(|e| (REVOCATION, e))?;
     }
     let v = publiee.version;
-    crate::sceau::ecrire(crate::sceau::VERSIONS, format!("{}.{}.{}+{}", v.0, v.1, v.2, v.3)).map_err(|e| echec(&e))?;
-    Ok(publiee)
+    crate::sceau::ecrire(VERSIONS, format!("{}.{}.{}+{}", v.0, v.1, v.2, v.3)).map_err(|e| (VERSIONS, e))
 }
 
 /// Retient que la clé de secours a révoqué la principale, la première fois : la plus haute version vue, qu'un voleur
@@ -462,8 +479,16 @@ fn retenir_revocation() -> std::io::Result<()> {
     if revocation_retenue() {
         return Ok(());
     }
-    crate::sceau::ecrire(crate::sceau::REVOCATION, LIGNE_REVOCATION)?;
+    ecrire_revocation()?;
     oublier_versions_vues()
+}
+
+/// Écrit la révocation si elle n'est pas déjà retenue, sans toucher aux versions vues.
+fn ecrire_revocation() -> std::io::Result<()> {
+    if revocation_retenue() {
+        return Ok(());
+    }
+    crate::sceau::ecrire(crate::sceau::REVOCATION, LIGNE_REVOCATION)
 }
 
 /// Le manifeste reçu, comparé à la plus haute version signée déjà vue : refusé s'il est plus vieux (un ancien remis
@@ -951,6 +976,60 @@ passe-droit-sans-vm {zeros} 0
         lecture_seule::relever_pour_le_test();
         assert_eq!(r, Ok(()));
         assert!(retenue);
+        crate::sceau::effacer(crate::sceau::REVOCATION).unwrap();
+        oublier_versions_vues().unwrap();
+    }
+
+    /// Vérification 0.94, R8-ORIGINE-1 et 2 : repartir n'efface rien d'abord. Coupé net ou en échec à la révocation,
+    /// ou au milieu (révocation retenue, version pas encore écrite), les versions vues changées restent là et en
+    /// doute : jamais « rien de vu », qui ôtait témoin et plancher. Mené jusqu'au bout, le plancher est la version
+    /// reçue.
+    #[test]
+    fn repartir_coupe_au_milieu_n_oublie_rien() {
+        let _seul = ETAT_DES_VERSIONS.lock().unwrap_or_else(PoisonError::into_inner);
+        let changer_a_cote = || {
+            crate::sceau::ecrire(crate::sceau::VERSIONS, "0.85.0+1792540000").unwrap();
+            std::fs::write(crate::socle::dossier_local().join(crate::sceau::VERSIONS), "99.0.0+1").unwrap();
+            assert!(versions_vues_douteuses());
+        };
+        let recue = |revoque| Publiee {
+            version: (0, 94, 0, 1_794_463_891),
+            sha256: [0; 32],
+            taille: 1,
+            fichier: "vanguard",
+            revoque,
+        };
+        let _ = crate::sceau::effacer(crate::sceau::REVOCATION);
+        // 1. Coupé à la première écriture (la révocation) : rien n'a changé.
+        changer_a_cote();
+        let coupe = crate::sceau::coupe_a("ecrire:avant-fichier", || repartir_de(&recue(true)));
+        assert_eq!(coupe.map_err(|(nom, _)| nom), Err(crate::sceau::REVOCATION));
+        assert!(
+            versions_vues_douteuses(),
+            "coupé à la révocation : les versions vues restent en doute"
+        );
+        // 2. Au milieu : la révocation, neuve, est écrite ; coupé à l'écriture de la version.
+        let coupe = crate::sceau::coupe_a_pour("ecrire:avant-fichier", crate::sceau::VERSIONS, || {
+            repartir_de(&recue(true))
+        });
+        assert_eq!(coupe.map_err(|(nom, _)| nom), Err(crate::sceau::VERSIONS));
+        assert!(revocation_retenue(), "la révocation passe avant la version");
+        assert!(
+            versions_vues_douteuses(),
+            "coupé au milieu : les versions vues restent en doute"
+        );
+        // Révocation déjà retenue, coupé de même.
+        let coupe = crate::sceau::coupe_a("ecrire:avant-fichier", || repartir_de(&recue(true)));
+        assert_eq!(coupe.map_err(|(nom, _)| nom), Err(crate::sceau::VERSIONS));
+        assert!(versions_vues_douteuses());
+        crate::sceau::effacer(crate::sceau::REVOCATION).unwrap();
+        // 3. Sans révocation, coupé à l'écriture de la version : même chose.
+        let coupe = crate::sceau::coupe_a("ecrire:avant-fichier", || repartir_de(&recue(false)));
+        assert!(coupe.is_err() && versions_vues_douteuses());
+        // 4. Jusqu'au bout : la version reçue est la plus haute vue, sans doute, et la révocation retenue d'abord.
+        repartir_de(&recue(true)).unwrap();
+        assert_eq!(plus_haute_vue(), Ok(Some((0, 94, 0, 1_794_463_891))));
+        assert!(revocation_retenue());
         crate::sceau::effacer(crate::sceau::REVOCATION).unwrap();
         oublier_versions_vues().unwrap();
     }
