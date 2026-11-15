@@ -720,6 +720,32 @@ mod tests {
     /// fenêtre remplacée sur le disque après la vérification ne tourne pas ; un lien, une fenêtre modifiable par
     /// d'autres ou d'une autre empreinte ne sont pas lancés. `echo` y joue la fenêtre (un vrai programme ELF : il dit
     /// ce qu'on lui donne).
+    /// Les arguments qui font jouer `outil` (« echo », « env ») au programme `octets` lancé sous le nom de la fenêtre.
+    /// Aucun pour les outils GNU. uutils (Ubuntu 26.04, la CI) met tous ses outils dans un seul programme qui choisit
+    /// d'après son nom : nommé « vanguard-fenetre », il ne sait pas lequel jouer et ne dit rien ; l'outil se donne
+    /// alors en premier argument. Sondé avec `echo` (GNU écrit « echo x », uutils « x ») : `env` ne départage pas,
+    /// GNU relancerait `echo` depuis le PATH et écrirait « x » lui aussi.
+    #[cfg(target_os = "linux")]
+    fn jouer(dossier: &Path, octets: &[u8], outil: &str) -> Vec<&'static str> {
+        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::process::CommandExt;
+        let echo = std::fs::read("/usr/bin/echo").unwrap_or_default();
+        let sonde = dossier.join("sonde-multiappel");
+        std::fs::write(&sonde, &echo).unwrap();
+        std::fs::set_permissions(&sonde, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let sortie = Command::new(&sonde)
+            .arg0("vanguard-fenetre")
+            .args(["echo", "x"])
+            .output();
+        let _ = std::fs::remove_file(&sonde);
+        let multiappel = sortie.is_ok_and(|s| s.stdout == b"x\n") && octets == echo.as_slice();
+        match (multiappel, outil) {
+            (true, "echo") => vec!["echo"],
+            (true, "env") => vec!["env"],
+            _ => vec![],
+        }
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn seuls_les_octets_verifies_sont_lances() {
@@ -751,6 +777,7 @@ mod tests {
         let faux = format!("#!/bin/sh\n: > '{}'\necho {OUVERTE}\n", temoin.display());
         poser("vanguard-fenetre", faux.as_bytes(), 0o755);
         let sortie = commande(&v, std::env::vars_os())
+            .args(jouer(&dossier, &echo, "echo"))
             .arg("vérifiée")
             .stderr(Stdio::null())
             .output()
@@ -905,7 +932,11 @@ mod tests {
             .chain([("PATH", "/home/alice/bin:/usr/bin")].iter())
             .map(|(n, v)| ((*n).into(), (*v).into()))
             .collect();
-        let sortie = commande(&v, de).stderr(Stdio::null()).output().unwrap();
+        let sortie = commande(&v, de)
+            .args(jouer(&dossier, &env, "env"))
+            .stderr(Stdio::null())
+            .output()
+            .unwrap();
         let texte = String::from_utf8_lossy(&sortie.stdout).into_owned();
         let recues: std::collections::BTreeMap<&str, &str> = texte.lines().filter_map(|l| l.split_once('=')).collect();
         for (nom, _) in interdites {

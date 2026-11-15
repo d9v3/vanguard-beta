@@ -10,6 +10,7 @@ compilation, comme winresource). Lancer depuis la racine du dépôt :
 """
 
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -96,6 +97,7 @@ def paquets_embarques(manifeste, cible):
         )
     )
     par_nom = {(p["name"], p["version"]): p for p in meta["packages"]}
+    # Sans couleur : la CI met CARGO_TERM_COLOR=always, et cargo tree en glisse les codes dans ses lignes.
     arbre = subprocess.check_output(
         [
             "cargo",
@@ -113,6 +115,7 @@ def paquets_embarques(manifeste, cible):
             "{p}",
         ],
         text=True,
+        env={**os.environ, "CARGO_TERM_COLOR": "never"},
     )
     racine = meta["resolve"]["root"]
     vus = {}

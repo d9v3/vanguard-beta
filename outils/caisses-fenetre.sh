@@ -41,6 +41,9 @@
 set -uo pipefail
 # Un seul ordre de tri, celui des octets : comm compare les listes triées de la même façon partout.
 export LC_ALL=C
+# Sans couleur : la CI met CARGO_TERM_COLOR=always, et cargo tree glissait alors ses codes de couleur dans chaque ligne
+# (« forme inconnue », 0.96.0).
+export CARGO_TERM_COLOR=never
 RACINE=$(cd "$(dirname "$0")/.." && pwd)
 MANIFESTE=$RACINE/fenetre/Cargo.toml
 CIBLES=(x86_64-unknown-linux-gnu x86_64-pc-windows-gnu)

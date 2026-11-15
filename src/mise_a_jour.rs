@@ -539,8 +539,12 @@ fn installer(octets: &[u8], cible: &Path, attendue: Version, essai: Essai) -> Re
         let _ = std::fs::remove_file(&provisoire);
         let f = ecrire_provisoire(&provisoire, octets).map_err(|e| {
             // R-4 (recontrôle 0.95) : un dossier (ou autre chose qui ne s'efface pas) sous ce nom ; dit avec le chemin
-            // à retirer, jamais « File exists » seul.
-            if e.kind() == std::io::ErrorKind::AlreadyExists {
+            // à retirer, jamais « File exists » seul. Un vrai Windows dit « Access is denied » (os error 5) pour un
+            // dossier à ce nom, là où Wine et Linux disent « File exists » (CI de la 0.96.0).
+            let dossier = || std::fs::symlink_metadata(&provisoire).is_ok_and(|m| m.is_dir());
+            if e.kind() == std::io::ErrorKind::AlreadyExists
+                || (e.kind() == std::io::ErrorKind::PermissionDenied && dossier())
+            {
                 rien(nom_occupe(&provisoire))
             } else {
                 rien(e.to_string())

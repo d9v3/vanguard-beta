@@ -94,7 +94,8 @@ else
 fi
 # « nom version [suite] » devient « nom vversion [suite] » : la suite (« (proc-macro) », « (*) », une source autre que
 # crates.io) passe telle quelle, comme cargo tree l'écrit.
-awk '!/^#/ && NF { $2 = "v" $2; print }' "$f"
+# Comme cargo, des codes de couleur dans chaque ligne quand CARGO_TERM_COLOR=always (la CI le met).
+awk -v c="${CARGO_TERM_COLOR:-}" '!/^#/ && NF { $2 = "v" $2; if (c == "always") $1 = "\033[1m" $1 "\033[0m"; print }' "$f"
 EOF
 # La cale cargo-audit, à la version qu'épingle la CI (failles-programmes.sh l'exige) : elle dit avoir lu la liste
 # de chaque programme, sans faille, et note ses arguments (un par ligne) dans $T/audit-args.
@@ -347,6 +348,9 @@ if [[ -s $T/ref-$LINUX.txt && -s $T/ref-$WINDOWS.txt ]]; then
   lance outils/caisses-fenetre.sh
   ((CODE == 0)) && ok "(proc-macro) et (*) : la même caisse de crates.io, code 0" ||
     ko "(proc-macro) et (*) : code $CODE ($SORTIE)"
+  remet && CARGO_TERM_COLOR=always lance outils/caisses-fenetre.sh
+  ((CODE == 0)) && ok "CARGO_TERM_COLOR=always (la CI) : lu sans couleur, code 0" ||
+    ko "CARGO_TERM_COLOR=always : code $CODE ($SORTIE)"
   remet && { echo "$premiere [forme-inventee]"; tail -n +2 "$T/ref-$LINUX.txt"; } >"$T/arbres/$LINUX.txt"
   lance outils/caisses-fenetre.sh
   ((CODE == 2)) && [[ $SORTIE == *"forme inconnue"* ]] && ok "ligne de cargo tree d'une forme inconnue : code 2" ||

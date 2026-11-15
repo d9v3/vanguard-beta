@@ -387,6 +387,9 @@ Version 0.95 was not published: all its work is in this version.
   and a command) each read the record then wrote it back: one entry could vanish, for example the one that lets a
   quarantined file be put back. Each entry is now written under a lock, from reading to writing; if the lock cannot
   be taken, nothing is written over and this is said.
+- **Windows: an update blocked by a folder says so.** A folder named like the temporary copy
+  (`vanguard.exe.nouveau`) is named, with what to do, on a real Windows too, which answered "Access is denied" where Wine
+  and Linux say "File exists".
 - **Windows: a root added to the account alone is shown.** A root certificate added to the user's own account only,
   for example by a program that intercepts HTTPS traffic, is now reported in the checkup whatever its name, at medium
   level or higher. If that store cannot be read, the checkup says "not checked" instead of "nothing added". A root

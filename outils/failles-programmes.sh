@@ -26,6 +26,8 @@
 # Lancé par outils/deployer.sh (après chaque compilation), par outils/publier-version.sh sur les programmes qu'il
 # publie, et par la CI sur ceux qu'elle compile (ci.yml). Sans Internet : la base RustSec du dernier téléchargement, et c'est dit.
 set -euo pipefail
+# Sans couleur : cargo tree est lu ligne par ligne, et la CI met CARGO_TERM_COLOR=always.
+export CARGO_TERM_COLOR=never
 RACINE=$(cd "$(dirname "$0")/.." && pwd)
 
 if (($# == 0)); then
