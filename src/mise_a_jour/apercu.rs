@@ -219,6 +219,13 @@ pub(super) trait Monde {
     /// dernière version, pas encore jugée (`sa_fenetre` la compare à l'empreinte gravée dans le programme vérifié).
     fn telecharger_fenetre(&self) -> Result<Vec<u8>, String>;
     fn essai(&self) -> Essai;
+    /// L'empreinte du programme qui tourne (`protection::cle::image_qui_tourne`) : seuls ses octets se posent depuis
+    /// la clé lue à `source` (`gardes_de_la_cle`).
+    fn soi(&self, source: &Path) -> Option<String>;
+    /// Le dossier du registre scellé où Vanguard note les copies qu'il pose (`programmes_poses`).
+    fn registre(&self) -> PathBuf;
+    /// `juger_cibles` du terminal : (planchers, à remplacer, doutes à dire), la version publiée étant `publiee`.
+    fn juger(&self, cibles: Vec<PathBuf>, publiee: Version) -> (Vec<Version>, Vec<PathBuf>, Vec<String>);
 }
 
 /// L'ordinateur pour de vrai.
@@ -278,6 +285,15 @@ impl Monde for Ici {
     }
     fn essai(&self) -> Essai {
         super::essayer
+    }
+    fn soi(&self, _: &Path) -> Option<String> {
+        crate::protection::cle::image_qui_tourne()
+    }
+    fn registre(&self) -> PathBuf {
+        crate::socle::dossier_local()
+    }
+    fn juger(&self, cibles: Vec<PathBuf>, publiee: Version) -> (Vec<Version>, Vec<PathBuf>, Vec<String>) {
+        super::juger_cibles(cibles, publiee, &self.copie(), &self.registre(), super::reconnue_ici)
     }
 }
 
@@ -437,6 +453,10 @@ fn plan(m: &dyn Monde, pour: Pour) -> Result<Plan, Refus> {
                 ));
             }
             let copie = m.copie();
+            // Les gardes du terminal (`remplacer`) : les octets du programme qui tourne, jamais un retour en arrière
+            // que la liste des copies interdit. Rejouées après l'accord (`agir` refait le plan).
+            super::gardes_de_la_cle(&octets, &copie, cle, m.soi(&source).as_deref(), &m.registre())
+                .map_err(|e| Refus::NonVerifie(sans_entete(&e)))?;
             // Sa fenêtre suit si c'est bien la sienne, jugée ici et revérifiée à la pose (`installer_avec`).
             let (fenetre, chemin) = sa_fenetre::de_la_source(&source, &octets)
                 .zip(sa_fenetre::pour(&copie))
@@ -508,17 +528,28 @@ fn plan_github(m: &dyn Monde, pour: Pour) -> Result<Plan, Refus> {
     if pour == Pour::Voir {
         m.retenir_la_vue(&p).map_err(|e| Refus::NonVerifie(e.to_string()))?;
     }
+    // Les doutes du terminal (`juger_cibles`) : une copie plus récente que Vanguard ne reconnaît pas, une liste des
+    // copies qui ne peut pas être crue, un retour en arrière. Un seul, et rien n'est dit à jour ni proposé : la sortie
+    // (remplacer par la dernière version signée, refaire la liste) se décide au terminal, où chaque doute est dit.
+    let (_, jugees, doutes) = m.juger(lues.iter().map(|(c, _)| c.clone()).collect(), p.version);
+    if !doutes.is_empty() {
+        let dits: Vec<String> = doutes.iter().map(|d| sans_entete(d)).collect();
+        return Err(Refus::NonVerifie(trf!(
+            "{} ; la suite se décide dans le terminal (vanguard se-mettre-a-jour)",
+            "{}; what to do next is decided in the terminal (vanguard se-mettre-a-jour)",
+            dits.join(" ; ")
+        )));
+    }
     // Le plancher : le programme lancé et les copies d'ici (`depuis_github`).
     let ici: Vec<Version> = lues.iter().filter_map(|(_, v)| *v).chain(m.courante()).collect();
     // Seulement ce qui est plus ancien que la version publiée (sans version gravée : d'avant la 0.78, donc plus
     // ancien) ; jamais un plus récent.
     let a_remplacer: Vec<(PathBuf, Version)> = lues
         .into_iter()
-        .filter(|(_, v)| v.is_none_or(|v| v < p.version))
+        .filter(|(c, v)| v.is_none_or(|v| v < p.version) && jugees.contains(c))
         .map(|(c, _)| (c, p.version))
         .collect();
     if a_remplacer.is_empty() {
-        // Les doutes de `juger_cibles` (clé indépendante) sont branchés ici au commit d'intégration qui suit le rebase.
         return Err(match super::verdict(p.version, &ici, m.maintenant(), false) {
             Verdict::AJour => Refus::AJour(ecrire(p.version)),
             Verdict::Perimee(age) => Refus::NonVerifie(trf!(
@@ -533,6 +564,7 @@ fn plan_github(m: &dyn Monde, pour: Pour) -> Result<Plan, Refus> {
                 ecrire(v),
                 ecrire(p.version)
             )),
+            // Les doutes sont refusés plus haut, chacun dit.
             Verdict::Doutes => Refus::NonVerifie(
                 tr!(
                     "un programme d'ici n'a pas pu être vérifié",
@@ -555,6 +587,24 @@ fn plan_github(m: &dyn Monde, pour: Pour) -> Result<Plan, Refus> {
 }
 
 /// Une copie d'ici qui ne se lit pas : sa version reste inconnue, rien n'est dit à jour.
+/// Un refus ou un doute du terminal, sur une ligne et sans son « non vérifié : » de tête (`Refus::raison` le dit).
+fn sans_entete(texte: &str) -> String {
+    let une_ligne = texte.split_whitespace().collect::<Vec<_>>().join(" ");
+    for tete in [
+        "Non vérifié : ",
+        "non vérifié : ",
+        "Not checked: ",
+        "not checked: ",
+        "Not verified: ",
+        "not verified: ",
+    ] {
+        if let Some(reste) = une_ligne.strip_prefix(tete) {
+            return reste.to_string();
+        }
+    }
+    une_ligne
+}
+
 fn copie_illisible(chemin: &Path, pourquoi: &str) -> Refus {
     Refus::NonVerifie(trf!(
         "{} ne se lit pas, sa version reste inconnue ({})",
@@ -670,25 +720,10 @@ fn agir(m: &dyn Monde, accord: &str, consommer: impl FnOnce() -> Result<(), carn
         Source::Cle { octets, fenetre } => {
             for (((chemin, visee), f), vue) in plan.cibles.iter().zip(&plan.fenetres).zip(&plan.vues) {
                 let r = match (&fenetre, f) {
-                    (Some(o), Some(f)) => sa_fenetre::installer_avec(
-                        &octets,
-                        chemin,
-                        *visee,
-                        &crate::socle::dossier_local(),
-                        &m.copie(),
-                        essai,
-                        o,
-                        f,
-                        vue,
-                    ),
-                    _ => installer(
-                        &octets,
-                        chemin,
-                        *visee,
-                        &crate::socle::dossier_local(),
-                        &m.copie(),
-                        essai,
-                    ),
+                    (Some(o), Some(f)) => {
+                        sa_fenetre::installer_avec(&octets, chemin, *visee, &m.registre(), &m.copie(), essai, o, f, vue)
+                    }
+                    _ => installer(&octets, chemin, *visee, &m.registre(), &m.copie(), essai),
                 };
                 noter_la_pose(&mut faites, &octets, chemin, f.as_deref(), r);
             }
@@ -716,7 +751,7 @@ fn agir(m: &dyn Monde, accord: &str, consommer: impl FnOnce() -> Result<(), carn
                     &octets,
                     chemin,
                     *visee,
-                    &crate::socle::dossier_local(),
+                    &m.registre(),
                     &m.copie(),
                     essai,
                     vue,
@@ -912,6 +947,13 @@ mod tests {
         telecharges: Cell<u32>,
         /// Une fenêtre posée là pendant le téléchargement du programme (un autre programme du compte).
         apparait: Option<PathBuf>,
+        /// L'empreinte du programme qui tourne ; `None` : celle de la clé lue (le cas ordinaire).
+        #[allow(clippy::option_option)] // None : l'empreinte de la source ; Some(None) : pas d'empreinte
+        soi: Option<Option<String>>,
+        /// Le registre des copies posées (un dossier à l'essai, vide au départ).
+        registre: PathBuf,
+        /// Ce que répond la reconnaissance d'une copie plus récente (`reconnue_ici`).
+        reconnue: Result<(), String>,
     }
 
     impl Faux {
@@ -932,6 +974,9 @@ mod tests {
                 vus: Cell::new(0),
                 telecharges: Cell::new(0),
                 apparait: None,
+                soi: None,
+                registre: dossier.join("registre"),
+                reconnue: Ok(()),
             }
         }
     }
@@ -986,6 +1031,20 @@ mod tests {
         }
         fn essai(&self) -> Essai {
             ESSAI_OK
+        }
+        fn soi(&self, source: &Path) -> Option<String> {
+            self.soi.clone().unwrap_or_else(|| {
+                std::fs::read(source)
+                    .ok()
+                    .map(|o| blake3::hash(&o).to_hex().to_string())
+            })
+        }
+        fn registre(&self) -> PathBuf {
+            self.registre.clone()
+        }
+        fn juger(&self, cibles: Vec<PathBuf>, publiee: Version) -> (Vec<Version>, Vec<PathBuf>, Vec<String>) {
+            let reconnue = |_: &Path| self.reconnue.clone().map_err(|e| Echec::refuse("essai", e));
+            super::super::juger_cibles(cibles, publiee, &self.copie, &self.registre, reconnue)
         }
     }
 
@@ -1063,6 +1122,98 @@ mod tests {
         std::fs::write(&source, programme("0.95.0+1790000000", "autre")).unwrap();
         assert_eq!(agir(&f, &accord, CONSOMME), Issue::Refuse(Refus::Change));
         assert_eq!(std::fs::read(&f.copie).unwrap(), ancien);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Une clé prête à remplacer la copie (0.94) par la 0.95 : l'ordinateur inventé et l'ancienne copie.
+    fn cle_prete(nom: &str) -> (PathBuf, Faux, Vec<u8>) {
+        let d = dossier(nom);
+        let mut f = Faux::nouveau(&d);
+        let source = d.join("cle").join(NOM);
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(&source, programme("0.95.0+1790000000", "cle")).unwrap();
+        std::fs::create_dir_all(f.copie.parent().unwrap()).unwrap();
+        let ancien = programme("0.94.0+1780000000", "copie");
+        std::fs::write(&f.copie, &ancien).unwrap();
+        f.etat = Etat::AMettreAJour {
+            source,
+            copie: Some(version("0.94.0+1780000000")),
+            cle: version("0.95.0+1790000000"),
+        };
+        (d, f, ancien)
+    }
+
+    /// Les gardes du terminal tiennent aussi pour l'aperçu de la clé (`gardes_de_la_cle`) : seuls les octets du
+    /// programme qui tourne se posent ; sans son empreinte, rien. Le changement après l'aperçu est revu à l'accord.
+    #[test]
+    fn la_cle_d_un_autre_programme_ne_se_pose_pas_par_l_apercu() {
+        let (d, mut f, ancien) = cle_prete("cle-pas-soi");
+        let accord = plan(&f, Pour::Voir).unwrap().apercu.accord();
+        for (soi, dit) in [
+            (Some("0".repeat(64)), tr!("a changé", "has changed")),
+            (None, tr!("ne se lit pas", "cannot be read")),
+        ] {
+            f.soi = Some(soi);
+            match plan(&f, Pour::Voir) {
+                Err(Refus::NonVerifie(e)) => assert!(e.contains(dit), "{e}"),
+                autre => panic!("{:?}", autre.map(|p| p.apercu)),
+            }
+            match agir(&f, &accord, CONSOMME) {
+                Issue::Refuse(Refus::NonVerifie(e)) => assert!(e.contains(dit), "{e}"),
+                autre => panic!("{autre:?}"),
+            }
+            assert_eq!(std::fs::read(&f.copie).unwrap(), ancien);
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// R3-C1 par l'aperçu : une copie plus récente notée par Vanguard (0.96), remplacée depuis par une plus ancienne,
+    /// n'est pas écrasée par la clé (0.95) : refusé avant l'aperçu, rien posé.
+    #[test]
+    fn l_apercu_de_la_cle_ne_revient_pas_en_arriere() {
+        let (d, f, ancien) = cle_prete("cle-retour");
+        crate::programmes_poses::copie_posee_dans(&f.registre, &f.copie, &programme("0.96.0+1795000000", "notee"));
+        match plan(&f, Pour::Voir) {
+            Err(Refus::NonVerifie(e)) => assert!(e.contains("0.96.0"), "{e}"),
+            autre => panic!("{:?}", autre.map(|p| p.apercu)),
+        }
+        assert_eq!(std::fs::read(&f.copie).unwrap(), ancien);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// R4-REGISTRE-1 et 3 par l'aperçu : la liste des copies effacée alors qu'un sceau l'attendait ne dit pas « rien
+    /// de noté ». Le terminal le dit et en sort ; l'aperçu ne propose rien et ne dit jamais « à jour ».
+    #[test]
+    fn github_un_registre_en_doute_n_est_jamais_propose_ni_a_jour() {
+        let d = dossier("github-doute");
+        let mut f = Faux::nouveau(&d);
+        std::fs::create_dir_all(f.copie.parent().unwrap()).unwrap();
+        let ancien = programme("0.94.0+1780000000", "copie");
+        std::fs::write(&f.copie, &ancien).unwrap();
+        crate::programmes_poses::copie_posee_dans(&f.registre, &f.copie, &ancien);
+        std::fs::remove_file(f.registre.join(crate::programmes_poses::FICHIER)).unwrap();
+        f.cibles = vec![f.copie.clone()];
+        let publie = programme("0.95.0+1790000000", "publie");
+        f.derniere = Ok(Publiee::d_essai(version("0.95.0+1790000000"), &publie));
+        f.recus = publie;
+        for p in [Pour::Voir, Pour::Appliquer] {
+            match plan(&f, p) {
+                Err(Refus::NonVerifie(e)) => {
+                    assert!(e.contains(tr!("la liste des copies", "the list of copies")), "{e}");
+                    assert!(e.contains("se-mettre-a-jour"), "{e}");
+                }
+                autre => panic!("{:?}", autre.map(|p| p.apercu)),
+            }
+        }
+        // Une copie plus récente que Vanguard ne reconnaît pas : jamais « à jour » non plus.
+        let _ = std::fs::remove_dir_all(&f.registre);
+        std::fs::write(&f.copie, programme("0.96.0+1795000000", "inconnue")).unwrap();
+        f.reconnue = Err("pas dans la liste".into());
+        match plan(&f, Pour::Voir) {
+            Err(Refus::NonVerifie(e)) => assert!(e.contains("pas dans la liste"), "{e}"),
+            autre => panic!("{:?}", autre.map(|p| p.apercu)),
+        }
+        assert_eq!(f.telecharges.get(), 0);
         let _ = std::fs::remove_dir_all(&d);
     }
 

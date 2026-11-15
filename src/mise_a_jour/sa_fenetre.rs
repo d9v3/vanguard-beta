@@ -52,6 +52,7 @@ fn sans_marque() -> String {
 ///
 /// `vue` : la fenêtre que l'aperçu a montrée à côté de `cible` (C-7, relecture 0.96). Apparue, partie ou changée
 /// depuis, rien n'est remplacé, le programme non plus : jamais une fenêtre remplacée sans avoir été montrée.
+#[allow(clippy::too_many_arguments)] // chacun une garde : la liste des copies (registre) et la copie de cet ordinateur s'ajoutent
 pub(super) fn installer_avec_sa_fenetre(
     octets: &[u8],
     cible: &Path,
@@ -202,6 +203,7 @@ impl Avant {
 /// `octets` à la place de `cible`, `fenetre` posée à `chemin` d'abord, revérifiée ici contre l'empreinte gravée dans
 /// `octets` (le seul endroit où cela se juge). Si le programme ne se pose pas, ce qui était à `chemin` y revient.
 /// Tout ou rien : une fenêtre qui ne se pose pas arrête aussi le programme (GitHub, où l'aperçu les a montrés ensemble).
+#[allow(clippy::too_many_arguments)] // chacun une garde : la liste des copies (registre) et la copie de cet ordinateur s'ajoutent
 pub(super) fn installer_avec(
     octets: &[u8],
     cible: &Path,
@@ -230,6 +232,7 @@ pub(super) fn installer_avec(
 /// `installer_avec` pour la copie depuis la clé (C-4, relecture 0.96) : une fenêtre qui ne peut pas être posée (un
 /// dossier à son nom…) n'arrête pas le programme, posé seul ; la raison est rendue pour être dite. La fenêtre d'avant
 /// reste à côté de lui, refusée par l'empreinte qu'il grave : le menu.
+#[allow(clippy::too_many_arguments)] // chacun une garde : la liste des copies (registre) et la copie de cet ordinateur s'ajoutent
 pub(super) fn installer_avec_sinon_seul(
     octets: &[u8],
     cible: &Path,
@@ -243,6 +246,7 @@ pub(super) fn installer_avec_sinon_seul(
     installer_avec_repli(octets, cible, attendue, registre, copie, essai, fenetre, chemin, None)
 }
 
+#[allow(clippy::too_many_arguments)] // chacun une garde : la liste des copies (registre) et la copie de cet ordinateur s'ajoutent
 fn installer_avec_repli(
     octets: &[u8],
     cible: &Path,

@@ -518,6 +518,7 @@ pub(crate) fn programme_signe_a_remettre() -> Result<(String, Vec<u8>), crate::m
 /// `soi` : l'empreinte du programme qui tourne ; seuls ses octets se posent (voir `de_soi`).
 /// `registre` : le dossier du registre scellé où Vanguard note les copies qu'il pose ; une copie plus récente que
 /// `attendue` y est notée et le fichier là n'est plus elle (R3-C1) : refusé, rien n'est remplacé (`retour_en_arriere`).
+#[allow(clippy::too_many_arguments)] // chacun une garde : la liste des copies (registre) et la copie de cet ordinateur s'ajoutent
 fn remplacer(
     source: &Path,
     cible: &Path,
@@ -529,13 +530,7 @@ fn remplacer(
     vue: &sa_fenetre::Vue,
 ) -> Result<(), String> {
     let octets = lire_octets(source, max)?;
-    if !de_soi(&octets, soi) {
-        return Err(pas_de_soi(soi));
-    }
-    let sortie = || sortie_du_doute(attendue, derniere_publiee(), || historique_du_doute()(&octets));
-    if let Some(refus) = retour_en_arriere(registre, cible, attendue, &present(cible), sortie) {
-        return Err(refus);
-    }
+    gardes_de_la_cle(&octets, cible, attendue, soi, registre)?;
     let fenetre = sa_fenetre::de_la_source(source, &octets).zip(sa_fenetre::pour(cible));
     vue.dite(fenetre.as_ref().map(|(_, chemin)| chemin.as_path()))?;
     match fenetre {
@@ -551,6 +546,27 @@ fn remplacer(
             vue,
         ),
         None => installer(&octets, cible, attendue, registre, &copie_de_cet_ordinateur(), essai),
+    }
+}
+
+/// Ce qui doit tenir avant que `octets`, lus sur la clé, remplacent `cible` : ce sont ceux du programme qui tourne
+/// (`de_soi`), et la liste des copies du registre de `registre` ne dit pas que ce serait un retour en arrière
+/// (`retour_en_arriere`, sortie prouvée par `sortie_du_doute`). Le terminal (`remplacer`) et l'aperçu de la fenêtre
+/// (`apercu::plan`, rejoué après l'accord) passent par ici : aucun chemin ne pose la clé sans ces gardes.
+pub(super) fn gardes_de_la_cle(
+    octets: &[u8],
+    cible: &Path,
+    attendue: Version,
+    soi: Option<&str>,
+    registre: &Path,
+) -> Result<(), String> {
+    if !de_soi(octets, soi) {
+        return Err(pas_de_soi(soi));
+    }
+    let sortie = || sortie_du_doute(attendue, derniere_publiee(), || historique_du_doute()(octets));
+    match retour_en_arriere(registre, cible, attendue, &present(cible), sortie) {
+        Some(refus) => Err(refus),
+        None => Ok(()),
     }
 }
 
@@ -1878,7 +1894,7 @@ pub fn commande() -> bool {
 
 /// La copie de cet ordinateur, à `cible`, est-elle reconnue comme venant de Vanguard : notée dans la liste des copies
 /// qu'il a posées, ou publiée et signée pour ce système ? `Err` : pourquoi non, ou pourquoi on ne sait pas.
-fn reconnue_ici(cible: &Path) -> Result<(), crate::modele::Echec> {
+pub(super) fn reconnue_ici(cible: &Path) -> Result<(), crate::modele::Echec> {
     let la = lire_octets(cible, TAILLE_MAX).map_err(|e| crate::modele::Echec::echoue("mise_a_jour/historique", e))?;
     if crate::programmes_poses::copie_connue_dans(
         &crate::socle::dossier_local(),
@@ -1926,7 +1942,7 @@ fn reconnue_ici(cible: &Path) -> Result<(), crate::modele::Echec> {
 /// de `registre` et qui n'est plus là telle quelle (R3-C1), n'est pas remplacée par cette version plus ancienne. Une
 /// liste des copies en doute est toujours dite (R5-REGISTRE-3) : seule une copie plus ancienne que la version publiée
 /// est remplacée ; au même numéro, ou absente, rien ne l'est.
-fn juger_cibles(
+pub(super) fn juger_cibles(
     cibles: Vec<PathBuf>,
     publiee: Version,
     copie: &Path,
