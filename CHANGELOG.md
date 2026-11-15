@@ -305,7 +305,9 @@ recompilée au besoin.
   user.conf.d) qui n'est pas à root seul, ou par une ligne qui en lit une, quel que soit le fichier qui l'écrit ; un
   fichier du système dont une ligne en lit une compte aussi pour tout ce qu'il pose ; une ligne d'un fichier à root
   seul ne rend jamais une telle variable à root ; celles de la session (profils, ~/.pam_environment) ne sont pas
-  comptées ; « : ${PATH::=/home/alice/.x} » de zsh et
+  comptées ; limites : un nom séparé de son « $ » par « \ », « " » ou « ' » (« $\A », « "$"A ») dans un fichier
+  à root seul n'est pas relevé, et « % » (« %u ») de ManagerEnvironment= ou DefaultEnvironment= n'est pas développé ;
+  « : ${PATH::=/home/alice/.x} » de zsh et
   « PATH =… » d'environment.d (une espace avant « = ») sont dits non vérifiés, pas élevés ; dans le shell, une variable
   posée plus haut dans le fichier n'est pas suivie (« PATH=$X:$PATH » est dit, pas élevé) ; une valeur lue dans un
   calcul, ou construite en morceaux sur plusieurs lignes, n'est pas suivie ; une ligne hors forme d'un fichier que seul

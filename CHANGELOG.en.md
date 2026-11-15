@@ -287,7 +287,9 @@ repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
   double quote, an apostrophe or "\" is not read: it stands for every name), by a system file (environment.d,
   user.conf, user.conf.d) that is not root-only, or by a line that reads one, whatever file writes it; a system file with a line that reads one also
   counts for everything it sets; a line of a root-only file never hands such a variable back to root; those of the
-  session (profiles, ~/.pam_environment) are not counted; zsh's ": ${PATH::=/home/alice/.x}" and
+  session (profiles, ~/.pam_environment) are not counted; limits: a name parted from its "$" by "\", '"' or "'"
+  ("$\A", '"$"A') in a root-only file is not picked up, and "%" ("%u") in ManagerEnvironment= or
+  DefaultEnvironment= is not expanded; zsh's ": ${PATH::=/home/alice/.x}" and
   environment.d's "PATH =…" (a space before "=") are reported as not checked, not high; in the shell, a variable set
   earlier in the file is not followed ("PATH=$X:$PATH" is reported, not high); a value read inside a calculation, or
   built in pieces over several lines, is not followed; a non-simple line in a file only root can change is not reported
