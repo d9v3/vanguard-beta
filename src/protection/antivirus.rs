@@ -2777,8 +2777,8 @@ fn a_part_de_la_liste(fichiers: Vec<PathBuf>) -> (Vec<PathBuf>, Vec<PathBuf>, us
     (liste, a_part, laisses)
 }
 
-/// Ce qui a été donné à clamscan : un chemin signalé hors de là (un nom piégé « a⏎<autre chemin> », un chemin relatif)
-/// n'a pas été demandé, et ne se propose jamais à un geste.
+/// Ce qui a été donné à clamscan : un chemin signalé hors de là (un nom piégé « `a⏎<autre chemin>` »,
+/// un chemin relatif) n'a pas été demandé, et ne se propose jamais à un geste.
 #[cfg(unix)]
 #[derive(Debug, Default)]
 struct Perimetre {
@@ -3029,7 +3029,7 @@ fn pas_au_bout() -> &'static str {
 /// sortie de clamscan se lit par lignes, et un nom de fichier peut en contenir : « a⏎$HOME/.bashrc » infecté faisait
 /// lire « $HOME/.bashrc: … FOUND », et la personne était invitée à isoler ou à effacer ce fichier-là. Ne reste
 /// infecté qu'un fichier ordinaire (lu sans suivre un lien), dans ce qui a été donné à clamscan (`perimetre`), dont
-/// la seconde analyse redit exactement « <ce chemin>: … FOUND », et qui n'a pas changé pendant ce temps ; son inode
+/// la seconde analyse redit exactement « `<ce chemin>: … FOUND` », et qui n'a pas changé pendant ce temps ; son inode
 /// est gardé pour le geste. Le reste passe dans `non_verifies`, avec sa raison : jamais compté sain, jamais proposé
 /// à un geste. `analyser` reçoit des lots (un seul lancement de clamscan pour beaucoup de fichiers : il recharge ses
 /// signatures à chaque fois, cinq secondes environ) ; un nom à saut de ligne est revu seul.
@@ -3189,7 +3189,7 @@ fn verdicts_du_lot(
 }
 
 /// La sortie de « clamscan --no-summary -- f1 f2 … » : exactement une ligne par fichier, dans l'ordre des arguments
-/// (vu avec 1.5.4), chacune « <fi>: OK », « <fi>: <menace> FOUND » ou une autre réponse sur ce fichier (« Empty
+/// (vu avec 1.5.4), chacune « `<fi>: OK` », « `<fi>: <menace> FOUND` » ou une autre réponse sur ce fichier (« Empty
 /// file », « Access denied »), qui ne conclut rien pour lui seul. Aucun chemin du lot n'a de saut de ligne : chaque
 /// ligne se rattache sans doute possible à son fichier. Autre forme : `None`, rien n'est conclu.
 #[cfg(unix)]
@@ -3276,7 +3276,7 @@ fn rien_de_net() -> &'static str {
 const RELANCES: usize = 16;
 
 /// clamscan sur ces seuls fichiers, avec les mêmes limites et options que l'analyse : (code, sortie). Sans « -i », un
-/// fichier sain s'écrit « <chemin>: OK », jamais un silence ; sans bilan, la sortie ne parle que d'eux.
+/// fichier sain s'écrit « `<chemin>: OK` », jamais un silence ; sans bilan, la sortie ne parle que d'eux.
 #[cfg(unix)]
 fn analyser_ensemble(chemins: &[&std::path::Path], base: Option<&String>) -> Option<(Option<i32>, String)> {
     let r = crate::commande::lancer(

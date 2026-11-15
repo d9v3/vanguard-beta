@@ -394,7 +394,7 @@ const USERSHARE_MAX: u64 = 16 * 1024;
 #[cfg(target_os = "linux")]
 const EXPORTS_MAX: u64 = 1024 * 1024;
 
-/// Le dossier des partages d'utilisateur donné par « usershare path » de [global] (testparm l'écrit ainsi).
+/// Le dossier des partages d'utilisateur donné par « usershare path » de `[global]` (testparm l'écrit ainsi).
 #[cfg(any(target_os = "linux", test))]
 fn dossier_usershares(config: &str) -> Option<String> {
     sections_samba(config)
