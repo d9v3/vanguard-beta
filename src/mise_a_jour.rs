@@ -2216,7 +2216,14 @@ mod tests {
         faux_programme(&cible, Some("0.79.0"));
         let avant = std::fs::read(&cible).unwrap();
         REECRITE.store(false, std::sync::atomic::Ordering::SeqCst);
-        let r = remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, REECRITE_EN_PLACE);
+        let r = remplacer(
+            &source,
+            &cible,
+            (0, 80, 0, 0),
+            TAILLE_MAX,
+            REECRITE_EN_PLACE,
+            &dite(&source, &cible),
+        );
         if REECRITE.load(std::sync::atomic::Ordering::SeqCst) {
             assert!(r.is_err(), "réécrite en place, et dite faite");
             assert_eq!(std::fs::read(&cible).unwrap(), avant, "l'ancienne copie n'est plus là");
@@ -2229,7 +2236,14 @@ mod tests {
         }
 
         REECRITE.store(false, std::sync::atomic::Ordering::SeqCst);
-        let r = remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, ECHANGE_PAR_LE_NOM);
+        let r = remplacer(
+            &source,
+            &cible,
+            (0, 80, 0, 0),
+            TAILLE_MAX,
+            ECHANGE_PAR_LE_NOM,
+            &dite(&source, &cible),
+        );
         if REECRITE.load(std::sync::atomic::Ordering::SeqCst) {
             let e = r.expect_err("échangée par son nom, et dite faite");
             // R-1 (recontrôle 0.95) : l'ancienne copie est remise, et c'est dit ; avant, le faux restait posé et
@@ -2272,7 +2286,14 @@ mod tests {
         *ECHANGE.lock().unwrap() = Some(racine.join("bin"));
 
         REECRITE.store(false, std::sync::atomic::Ordering::SeqCst);
-        let r = remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, ECHANGE_PAR_LE_NOM);
+        let r = remplacer(
+            &source,
+            &cible,
+            (0, 80, 0, 0),
+            TAILLE_MAX,
+            ECHANGE_PAR_LE_NOM,
+            &dite(&source, &cible),
+        );
         if REECRITE.load(std::sync::atomic::Ordering::SeqCst) {
             let e = r.expect_err("échangée par son nom, et dite faite");
             assert!(std::fs::symlink_metadata(&cible).is_err(), "le faux reste posé : {e}");
@@ -2303,7 +2324,15 @@ mod tests {
         let _seul = UN_A_LA_FOIS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         *ECHANGE.lock().unwrap() = Some(racine.join("bin"));
         for essai in [ECHANGE_PAR_LE_NOM, SANS_ESSAI] {
-            let e = remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, essai).unwrap_err();
+            let e = remplacer(
+                &source,
+                &cible,
+                (0, 80, 0, 0),
+                TAILLE_MAX,
+                essai,
+                &dite(&source, &cible),
+            )
+            .unwrap_err();
             assert_eq!(
                 std::fs::read(&cible).unwrap(),
                 avant,
@@ -2324,12 +2353,28 @@ mod tests {
         // physique) : refus aussi, jamais un renommage sans copie à remettre.
         let autre = racine.join("ailleurs").join(NOM);
         std::fs::create_dir_all(autre.join("dedans")).unwrap();
-        let e = remplacer(&source, &autre, (0, 80, 0, 0), TAILLE_MAX, SANS_ESSAI).unwrap_err();
+        let e = remplacer(
+            &source,
+            &autre,
+            (0, 80, 0, 0),
+            TAILLE_MAX,
+            SANS_ESSAI,
+            &dite(&source, &autre),
+        )
+        .unwrap_err();
         assert!(e.contains("rien n'est remplacé"), "{e}");
         assert!(autre.join("dedans").is_dir(), "{e}");
 
         std::fs::remove_dir_all(&de_cote).unwrap();
-        remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, SANS_ESSAI).unwrap();
+        remplacer(
+            &source,
+            &cible,
+            (0, 80, 0, 0),
+            TAILLE_MAX,
+            SANS_ESSAI,
+            &dite(&source, &cible),
+        )
+        .unwrap();
         assert_eq!(std::fs::read(&cible).unwrap(), std::fs::read(&source).unwrap());
         assert!(std::fs::symlink_metadata(&de_cote).is_err(), "reste laissé");
         let _ = std::fs::remove_dir_all(&racine);
@@ -2406,7 +2451,15 @@ mod tests {
         // La pose de la surveillance, puis « refaites la mise à jour » : refusées, la copie gardée reste.
         let pose = poser_copie_dans(&source, &cible, SANS_ESSAI).unwrap_err();
         assert_eq!(gardee(), ancienne, "copie gardée effacée par la pose : {pose}");
-        let maj = remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, SANS_ESSAI).unwrap_err();
+        let maj = remplacer(
+            &source,
+            &cible,
+            (0, 80, 0, 0),
+            TAILLE_MAX,
+            SANS_ESSAI,
+            &dite(&source, &cible),
+        )
+        .unwrap_err();
         assert_eq!(gardee(), ancienne, "copie gardée effacée par la mise à jour : {maj}");
         for e in [&pose, &maj] {
             assert!(e.contains("rien n'est remplacé"), "{e}");
@@ -2416,20 +2469,45 @@ mod tests {
         // son chemin est dit, à mettre à l'abri (pas seulement « à retirer »).
         std::fs::remove_dir_all(&cible).unwrap();
         faux_programme(&cible, Some("0.79.5"));
-        let e = remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, SANS_ESSAI).unwrap_err();
+        let e = remplacer(
+            &source,
+            &cible,
+            (0, 80, 0, 0),
+            TAILLE_MAX,
+            SANS_ESSAI,
+            &dite(&source, &cible),
+        )
+        .unwrap_err();
         assert_eq!(gardee(), ancienne, "{e}");
         assert!(e.contains(&format!("{NOM}.precedent")), "{e}");
         assert!(e.contains("à l'abri") && e.contains("rien n'est remplacé"), "{e}");
         assert_eq!(lire_programme(&cible, TAILLE_MAX), Lu::Version((0, 79, 5, 0)), "{e}");
-        let en = crate::langue::en_anglais(|| remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, SANS_ESSAI))
-            .unwrap_err();
+        let en = crate::langue::en_anglais(|| {
+            remplacer(
+                &source,
+                &cible,
+                (0, 80, 0, 0),
+                TAILLE_MAX,
+                SANS_ESSAI,
+                &dite(&source, &cible),
+            )
+        })
+        .unwrap_err();
         assert!(en.contains("somewhere safe") && !en.contains(" : "), "{en}");
         assert_eq!(gardee(), ancienne, "{en}");
         // Un second nom de la copie en place (mise à jour interrompue avant le renommage) : effacé, la mise à jour se
         // fait.
         std::fs::remove_file(&de_cote).unwrap();
         std::fs::hard_link(&cible, &de_cote).unwrap();
-        remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, SANS_ESSAI).unwrap();
+        remplacer(
+            &source,
+            &cible,
+            (0, 80, 0, 0),
+            TAILLE_MAX,
+            SANS_ESSAI,
+            &dite(&source, &cible),
+        )
+        .unwrap();
         assert_eq!(std::fs::read(&cible).unwrap(), std::fs::read(&source).unwrap());
         assert!(std::fs::symlink_metadata(&de_cote).is_err(), "reste laissé");
         let _ = std::fs::remove_dir_all(&racine);
@@ -2843,7 +2921,14 @@ mod tests {
         for tour in 0..200 {
             faux_programme(&cible, Some("0.79.0"));
             let avant = std::fs::read(&cible).unwrap();
-            let e = match remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, ECHANGE_PAR_LE_NOM) {
+            let e = match remplacer(
+                &source,
+                &cible,
+                (0, 80, 0, 0),
+                TAILLE_MAX,
+                ECHANGE_PAR_LE_NOM,
+                &dite(&source, &cible),
+            ) {
                 Ok(()) => {
                     echec = Some(format!("tour {tour} : échangée, et dite faite"));
                     break;
@@ -2902,7 +2987,14 @@ mod tests {
         faux_programme(&cible, Some("0.79.0"));
         let _seul = UN_A_LA_FOIS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         *ECHANGE.lock().unwrap() = Some(racine.join("bin"));
-        let r = remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, regarde);
+        let r = remplacer(
+            &source,
+            &cible,
+            (0, 80, 0, 0),
+            TAILLE_MAX,
+            regarde,
+            &dite(&source, &cible),
+        );
         // L'essai a vu la bonne copie ; la mise en place, elle, a pris le nom échangé : échec dit.
         let e = r.unwrap_err();
         assert!(!e.contains("l'essai voit autre chose"), "{e}");
@@ -2946,12 +3038,28 @@ mod tests {
         let avant = std::fs::read(&cible).unwrap();
         let provisoire = racine.join("bin").join(format!("{NOM}.nouveau"));
         std::fs::create_dir_all(provisoire.join("dedans")).unwrap();
-        let e = remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, SANS_ESSAI).unwrap_err();
+        let e = remplacer(
+            &source,
+            &cible,
+            (0, 80, 0, 0),
+            TAILLE_MAX,
+            SANS_ESSAI,
+            &dite(&source, &cible),
+        )
+        .unwrap_err();
         assert!(e.contains("retirez"), "{e}");
         assert!(e.contains(&format!("{NOM}.nouveau")), "{e}");
         assert_eq!(std::fs::read(&cible).unwrap(), avant);
         std::fs::remove_dir_all(&provisoire).unwrap();
-        remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, SANS_ESSAI).unwrap();
+        remplacer(
+            &source,
+            &cible,
+            (0, 80, 0, 0),
+            TAILLE_MAX,
+            SANS_ESSAI,
+            &dite(&source, &cible),
+        )
+        .unwrap();
         let _ = std::fs::remove_dir_all(&racine);
     }
 
@@ -2967,7 +3075,16 @@ mod tests {
         faux_programme(&cible, Some("0.79.0"));
         let provisoire = racine.join("bin").join(format!("{NOM}.nouveau"));
         std::fs::create_dir_all(provisoire.join("dedans")).unwrap();
-        let r = crate::langue::en_anglais(|| remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, SANS_ESSAI));
+        let r = crate::langue::en_anglais(|| {
+            remplacer(
+                &source,
+                &cible,
+                (0, 80, 0, 0),
+                TAILLE_MAX,
+                SANS_ESSAI,
+                &dite(&source, &cible),
+            )
+        });
         let e = r.unwrap_err();
         assert!(e.contains("again: nothing is replaced"), "{e}");
         assert!(!e.contains(" : "), "{e}");
@@ -2976,7 +3093,16 @@ mod tests {
         let _seul = UN_A_LA_FOIS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         *ECHANGE.lock().unwrap() = Some(racine.join("bin"));
         REECRITE.store(false, std::sync::atomic::Ordering::SeqCst);
-        let r = crate::langue::en_anglais(|| remplacer(&source, &cible, (0, 80, 0, 0), TAILLE_MAX, ECHANGE_PAR_LE_NOM));
+        let r = crate::langue::en_anglais(|| {
+            remplacer(
+                &source,
+                &cible,
+                (0, 80, 0, 0),
+                TAILLE_MAX,
+                ECHANGE_PAR_LE_NOM,
+                &dite(&source, &cible),
+            )
+        });
         if REECRITE.load(std::sync::atomic::Ordering::SeqCst) {
             let e = r.expect_err("échangée par son nom, et dite faite");
             assert!(e.contains("another program): the old copy is put back"), "{e}");

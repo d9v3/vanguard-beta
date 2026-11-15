@@ -581,7 +581,9 @@ mod tests {
     #[test]
     fn un_programme_change_pendant_l_echec_n_est_pas_apparie_a_l_ancienne_fenetre() {
         const CHANGE_PUIS_RATE: Essai = |provisoire, _| {
-            std::fs::write(provisoire.with_file_name(NOM), b"programme inconnu").unwrap();
+            // Sous Linux, l'essai reçoit /proc/self/fd/N (lot-095) : son vrai chemin donne le dossier du programme.
+            let vrai = std::fs::read_link(provisoire).unwrap_or_else(|_| provisoire.to_path_buf());
+            std::fs::write(vrai.with_file_name(NOM), b"programme inconnu").unwrap();
             Err("ne démarre pas".into())
         };
         let d = dossier("essai-sa-fenetre-change");
