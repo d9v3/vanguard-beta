@@ -8,8 +8,49 @@ delivered just before it. Since November 7, 2026, more than one release on the s
 other in their day's paragraph. Only the latest version has its download page; every version keeps its tag in the
 repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
 
-## November 12, 2026: version 0.95.0
+## November 15, 2026: version 0.96.0
 
+Version 0.95 was not published: all its work is in this version.
+
+- **The Vanguard window ships, safely.** On a graphical desktop, `vanguard` now opens the window (`vanguard-fenetre`),
+  otherwise the terminal menu, as before; `vanguard --menu` forces it. The window is only started if its SHA-256
+  fingerprint is the one engraved in `vanguard` at build time: since `vanguard` is signed, that fingerprint is too.
+  The verified bytes are started, not the path: on Linux, a sealed in-memory copy (memfd); on Windows, the file held
+  open without write sharing during the launch, and its folders too (neither renamed nor replaced meanwhile). A fake
+  window placed next to it is never started: the menu, with the reason given (a launch refused by the system also says
+  why). A program built without a fingerprint (`cargo build`, the tests) starts no window. `vanguard -h` says "No
+  argument: the window on a graphical desktop, otherwise the menu".
+- **Nothing from the account gets into the window.** It only receives a closed list of environment variables (display,
+  language, XDG folders, proxies) and a clean PATH; if a library injected into the session's programs is reported
+  (`LD_PRELOAD`…), the window is not started: the menu, which does not run it. `VANGUARD_ORIGINE` is only trusted in
+  the temporary copy `vanguard` makes of itself on a key; elsewhere the variable is ignored. The window is given the
+  program to start (`--vanguard <path>`) and keeps its own checks on that path, even when it is not UTF-8.
+- **Fix, restore as before and update from the window.** "See the fix" shows Vanguard's whole preview;
+  "Apply this fix" becomes active 2 seconds later, only for an account fix that can be undone exactly and whose text
+  is fully visible (otherwise the reason is given). The "What Vanguard changed" screen shows each change with its
+  state, and "Restore as before" on each fix that can be put back, through the same preview and the same delay. One
+  action at a time, which is not interrupted; the window only sends back the preview's token and consent, and Vanguard
+  judges everything again on its side. The "Update Vanguard" card first shows where the update comes from, the target
+  version, its fingerprint, its size and each program replaced; nothing is installed before "Install this update". In
+  each section, a command's whole card is a button (mouse, or Tab then Enter) that opens its page; in the audit,
+  "What is fine" wraps instead of overflowing.
+- **The window travels with the program.** The release page, the update repository and the key carry the Linux and
+  Windows window, judged like the program (fingerprint, known vulnerabilities, privacy, SHA256SUMS). An update from
+  GitHub (terminal or window) downloads the new version's window after consent and checks it against the fingerprint
+  engraved in the new program, all or nothing; from the key, the key's window follows if it is its own, and if it
+  cannot be placed, the program is placed alone and this is said. The preview shows it as one more line. The placed
+  window is read back (the same file, the bytes received, otherwise a failure); a window that appeared, disappeared or
+  changed since the preview is never replaced: nothing is placed for that program, and the reason is given.
+  Uninstalling also removes the window.
+- **Coming from 0.94, the window is placed once by hand.** The 0.94 update does not know the window: it places the
+  program alone, which opens the terminal menu; a later update does not add it (it only replaces a window already
+  there). To get it, take `vanguard-fenetre-linux-x86_64` or `vanguard-fenetre-windows-x86_64.exe` from the release
+  page and place it next to the program (the VANGUARD key already carries it).
+- **Limits of the window** (stated in the [threat model](MODELE-DE-MENACE.en.md)). Windows: verified under Wine only,
+  with no suspended launch or process image check; folders behind a junction and a redefined drive letter (`subst`)
+  are not held. A kernel that refuses executing a memfd (`vm.memfd_noexec=2`, SELinux, AppArmor): the menu, no
+  fallback. The window does not yet re-check the content of the `vanguard` it starts: an account replacing that file
+  is not stopped by it.
 - **Update Vanguard after seeing what gets installed.** `vanguard self-update --voir` says, without installing
   anything, where the update comes from (the VANGUARD key, or GitHub, signed by the author), the target version, its
   SHA-256 fingerprint, its size and each program it would replace, with its version today. `--appliquer --accord
@@ -327,6 +368,148 @@ repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
   to be not checked.
 - **The window size without an account program.** Without a terminal, Vanguard no longer runs `tput` (looked up in
   the account's PATH) to learn the screen size.
+- **ClamAV scan: only the file actually examined is touched.** Each reported file is checked again on its own before
+  Vanguard offers to quarantine or delete it, and the action only targets that exact file. A file with a booby-trapped
+  name (one containing a line break) can no longer make it target another of your files. The quick scan once again
+  reads Downloads and the other risky places even when /tmp holds recent files. Anything that could not be scanned or
+  confirmed is shown as "not verified", never as "clean".
+- **Quarantine: restoring a file can no longer be used to write elsewhere.** A file is only put back in its original
+  place, from the quarantine folder; on Linux, never through a shortcut (link) placed by another account. On Windows
+  too, every folder of the path is checked and held during the restore, and a folder deleted since the isolation is
+  recreated. When a record exists, Vanguard checks that the restored content is the one that was isolated; otherwise
+  the file stays in quarantine and Vanguard shows both fingerprints. On Windows, when Vanguard runs as administrator,
+  nothing leaves the quarantine any more: Vanguard explains how to do it by hand, safely. When Vanguard refuses to
+  restore a file for a safety reason (original folder, fingerprint, administrator), it says how to take the file out
+  yourself. A file's special permissions are not restored, but Vanguard says so and gives the command to restore them.
+  Set-aside entries are shown by name and reported in the incident traces. A path that contains ".." is resolved
+  before isolation. A YARA scan started on a relative folder ("vanguard yara .") quarantines what it finds again.
+- **Windows: a root added to the account alone is shown.** A root certificate added to the user's own account only,
+  for example by a program that intercepts HTTPS traffic, is now reported in the checkup whatever its name, at medium
+  level or higher. If that store cannot be read, the checkup says "not checked" instead of "nothing added". A root
+  placed in the account can no longer hide the computer's one, and the checkup no longer offers a removal that
+  Vanguard would then refuse.
+- **Secret search: a received project no longer starts anything.** The search for secrets in git projects can no
+  longer be trapped by a received project (for example an unpacked archive): neither git nor gitleaks starts a program
+  chosen by that project's settings any more, and nothing is downloaded. With a git older than version 2.31, gitleaks
+  is no longer run (and this is said), and a project that gitleaks only read in part is no longer counted as checked.
+  In the guide, git commands, "yay -Qua" (which can run git) and "claude mcp list" are no longer started from Vanguard
+  and no longer described as harmless: they can start programs chosen elsewhere, and are typed in a terminal.
+- **Linux: the sharing check sees every share.** It now sees folders shared from the file manager ("Share this folder"
+  with guest access) and NFS shares stored in /etc/exports.d. A share file written in an unusual way, or an NFS share
+  written over several lines or with no client listed, no longer fools it. When it cannot read these settings, it says
+  "could not check" instead of "no open share".
+- **/etc/ld.so.preload read the way the Linux loader (glibc) reads it.** This file makes libraries load into every
+  program, root included. The glibc loader does not always ignore a line that starts with "#": from the second "#" in
+  the file on, a "# /path.so" line may be loaded. Vanguard follows its reading as it is, on the bytes, and adds the
+  "a # closes its line" reading: a name seen by either one counts. A name ending with a carriage return is judged as
+  the file it names, which is not the package's file; a note at the end of a line no longer counts as a library. The
+  audit, the removal of a line after confirmation and the startup notice read this file the same way.
+- **Removing a line from /etc/ld.so.preload refuses what would change more than that line.** It refuses a line that
+  loads nothing (empty, or a comment the loader ignores). It also refuses, without asking and without writing
+  anything, a removal that would make the loader load a name it did not load: what it blanks from a "#" depends on the
+  file size, and removing a line can wake a hidden "# …" line. The refusal names what would be loaded (each name once,
+  paths first, five at most, a lone "#" counted apart) and asks to fix the file by hand. If the removed line stopped
+  the loader (a NUL byte), the following lines, already shown in the audit, will be loaded afterwards: the question
+  says so before the yes.
+- **A line that cannot be found is no longer a success.** When removing a startup line, or commenting out a proxy
+  line, cannot find the named line (file changed since the audit, a line that is not UTF-8 text), it is a reported
+  failure, "not done", no longer "already done". A flagged line that is not UTF-8 text is no longer offered for
+  automatic removal: the alert says it must be removed by hand.
+- **A flagged line of a startup file is now removed alone only in a file made of simple assignments.** A line ending
+  with "\" (even followed by blanks), or following such a line, is never removed alone: the shell and systemd join it
+  to the next one (systemd, even after a comment). In a file read by a shell or as a variables file (/etc/profile,
+  /etc/profile.d, bashrc, zsh, fish, /etc/environment, environment.d…), Vanguard does not read shell code: a line is
+  removed alone only if it is "NAME=value" or "export NAME=value" and the WHOLE file, in UTF-8, is made only of empty
+  lines, whole comments ("#" at the start of the line, after spaces or tabs) and lines of that form. The value is made
+  of letters, digits and "/ . _ - : + , = @ %" (empty allowed, with no "=" at the start or after a ":", which zsh
+  expands), or is entirely inside single quotes with those signs and spaces; after it, only blanks (no comment, no
+  "\r"). Lines are split at "\n" only: for bash and sh, a final "\r" is part of the value. A file written on Windows
+  ("\r\n") is therefore not of that form, and "LD_PRELOAD=\r", which preloads a file named "\r", stays flagged. The
+  NAME is made of capital letters, digits and "_", is set only once in the file, and is not a variable the shell
+  reads, sets or keeps itself (IFS, PATH, ENV, HOME, PWD, OLDPWD, LANG, UID, EUID, PPID, GID, EGID, USERNAME, TMPDIR,
+  GLOBSORT, TERMCAP, TZ, and those mksh keeps read-only such as KSHUID… 118 names, and any NAME starting with BASH_,
+  LC_, SHELL, ZSH, ZLE, COMP, READLINE_, HIST, PROMPT or RPROMPT). For bash, sh, dash and ash (tried), such a file
+  runs, opens, reads and tests nothing another of its lines would see, and always returns 0. A line of more than 1,000
+  bytes anywhere in the file makes every removal refused: pam_env from Linux-PAM 1.4.0 to 1.5.3 silently stops reading
+  /etc/environment at a line of 8,191 bytes or more, and removing a line would wake up the following ones.
+  /etc/rc.local, which the system runs itself, keeps the removal only if its first line is "#!/bin/sh" or
+  "#!/bin/bash" (or /usr/bin/sh, /usr/bin/bash), with no option or only "-e": for another interpreter, "NAME=value" is
+  not an assignment. Everything else stays flagged, at the same level, with the fix to make by hand: the audit no
+  longer offers it, and the removal refuses it, without asking and without writing anything, if it gets it anyway. One
+  such line drops the automatic removal of ALL the flagged lines of the finding: the alert says so. A file of more
+  than 100,000 lines or 4 MiB is not judged: removal refused, said in the alert. The "\" rule applies to every file
+  other than /etc/ld.so.preload. Outside /etc/ld.so.preload, Vanguard now removes only one kind of line itself: an
+  assignment of LD_PRELOAD or LD_AUDIT that really preloads, in a simple assignments file as above. Another suspicious
+  variable (PYTHONPATH…) or a command stays flagged, at the same level, to fix by hand: the removal accepts it only if
+  the audit offers it, by the same rule. A line that empties LD_PRELOAD or LD_AUDIT ("LD_PRELOAD=",
+  "export LD_AUDIT=", "UnsetEnvironment=LD_PRELOAD") preloads nothing: it is no longer flagged. A systemd unit (and
+  its ".service.d/*.conf" drop-ins), /etc/crontab, /etc/cron.d, /etc/anacrontab, a .desktop shortcut and the GDM, SDDM
+  and LightDM settings are never fixed line by line by Vanguard itself: a line there can hold back another one
+  ("ExecStartPre=" or "ExecCondition=" that fails stops "ExecStart="; "SHELL=" or "PATH=" makes the cron jobs after it
+  fail), and a login manager reads several files, each in its own way, the last value winning. The alert says so, the
+  fix is by hand, and Vanguard refuses it even when asked, whether removing a line or commenting one out. These files
+  are recognised by their exact name; a script stored elsewhere in those folders stays shell. The judgment is made
+  once per file, in linear time. Limits: in a real bashrc or /etc/profile (a command, an "alias", an "if"), no line is
+  removed alone, the fix is always by hand; a NAME set twice makes the whole file refused, even if both lines go
+  together; "LD_PRELOAD=''" (empty quotes), "Environment=LD_PRELOAD=" in a unit and "Exec=env LD_PRELOAD= …" in a
+  .desktop file stay flagged (by hand). The rule does not see what other files read before define (an "export"
+  function or alias, "readonly", "set -e"), nor what the code read after the file does with the removed variable (the
+  file that reads it, a launched program). Replayed with bash, sh (bash in POSIX mode), dash and busybox ash: zsh,
+  fish, csh, ksh and mksh were not tried, and fish does not read "NAME=value" the way bash does: a .fish file always
+  keeps the fix by hand.
+- **A proxy line is now commented out only where a line can be removed safely.** Since 0.92.0, the browsing repair
+  commented out the "http_proxy=…" lines of the system startup files (/etc/environment, /etc/profile, /etc/profile.d…)
+  by looking at the line alone: a line that opened a quote without closing it got commented out, and the command the
+  quote held then ran at every login. A commented-out line is a removed line for whoever reads the file: commenting
+  out now follows the removal rule above, at the audit and when applied, even when asked. Only a simple assignment in
+  capitals (HTTP_PROXY, HTTPS_PROXY, FTP_PROXY, ALL_PROXY) in a simple assignments file is commented out by Vanguard;
+  never in a unit, cron, anacron, a .desktop file, a login manager setting or /etc/ld.so.preload. The rest (lowercase
+  "http_proxy", double quotes, a real /etc/profile, an /etc/environment that sets PATH, like Ubuntu's) is flagged, the
+  file named, to comment out by hand.
+- **Automatic login is no longer turned off by Vanguard itself.** Since 0.92.0, Vanguard removed the line that opens
+  the session without a password in GDM, SDDM or LightDM. Each reads several files, SDDM with its own reader, and the
+  last value wins: removing the line seen could leave, or wake up, the one in another file. The alert stays, at the
+  same level; the fix is by hand (the desktop's user settings, or the line in the file named), with the reason given.
+- **Automatic login is read more closely, and a doubtful cancellation is no longer believed.** Files read: SDDM, every
+  file of /usr/lib/sddm/sddm.conf.d and /etc/sddm.conf.d, whatever its name, then /etc/sddm.conf; LightDM, the ".conf"
+  files of /usr/share, /usr/local/share, /etc/xdg then /etc/lightdm, and the guest session ("autologin-guest"); GDM,
+  custom.conf (/etc/gdm, /etc/gdm3) and daemon.conf (Debian); each file counted to its login manager by its folder. An
+  SDDM line is read the way SDDM 0.21.0 reads it, from its source: "#" cuts the line, and "[Autologin] # note" does
+  open the section. A login set in a file is taken as cancelled only by a line further down the same file, same
+  section, same key; cancelled anywhere else (another file, another section, another case, a value the login manager
+  does not understand), it is reported as "not checked", the file named, not as "no automatic login". A file or folder
+  of these login managers that cannot be read (permissions, not text, more than 1 MiB, more than 1,000 files) is
+  named, not checked. Limits: GDM, SDDM and LightDM were not run (the sources of SDDM 0.21.0, LightDM 1.32.0 and GDM's
+  settings were read); Vanguard also reads hidden files and the GDM files of every distribution, so it may report a
+  login the login manager does not read; what SDDM and GDM do with a UTF-8 mark (BOM) at the start of a file was not
+  checked (Vanguard skips it); /run/gdm/custom.conf is not read; Vanguard does not yet read a line exactly as GLib and
+  Qt do: a Unicode space at the start of a line, a NUL byte after a section title, a UTF-8 mark at the start of a line
+  other than the first, a GDM file that stops at an error; in these rare cases, which require writing in /etc, a login
+  may go unseen.
+- **The startup notice no longer goes silent on /etc/ld.so.preload.** A byte that is not UTF-8 silenced it; so did an
+  unreadable file. Unreadable (a link to a missing target included), it is now reported as "not verified", with the
+  reason; too large to be read in full, the unread rest is reported.
+- **The audit no longer goes silent on an unreadable startup file or folder.** An /etc/ld.so.preload that is present
+  but unreadable (permissions, a folder in its place, a link loop, a link to a missing target) left the audit green;
+  it is now raised as "not checked", with the same reason as the startup notice (the audit raises it as high, the
+  notice reports it as medium). The other startup and configuration files the audit reads (shell, environment, cron,
+  session startup) and their folders (/etc/cron.d, /etc/profile.d, unit and session startup folders…) are raised too,
+  unless they are root-only (an /etc/crontab at 600 or an /etc/cron.d at 700, for example): reported as information. A
+  link in one of these folders whose target cannot be seen (a closed folder on its path) is raised too. Not raised:
+  what is absent, a link to a missing target in one of these folders, a link to /dev/null (a masked file), an
+  impossible path (a file in place of one of the path's folders); a folder in place of one of these other files is
+  reported as information.
+- **A service's `EnvironmentFile=` files are read the way systemd reads them.** A comment ends at the end of its line,
+  and a lone carriage return also ends a line. A line ending with "\" continues only inside a value: a comment or a
+  line without "=" no longer hides the next line. Escapes in a value are undone the way systemd undoes them ("\x"
+  outside quotes, "\" \\ \` \$" inside double quotes, nothing inside single quotes); both the written and the undone
+  form are judged, and a variable used as "${VAR}" in an Exec= line is expanded there in the form the service
+  receives. A variable such as LD_PRELOAD set right after a comment, or hidden by an escape, is seen.
+- **An error text cleaned with a single accent rule.** Cleaning an error text (the local record, and the relay, ready
+  but not in service) and its final check now follow the same rule for separately written accents (U+0300 to U+036F):
+  an accent is only kept after a letter, two in a row at most; after a digit, punctuation or nothing, it is removed,
+  and U+034F, invisible, is never kept. The two separately written rules had drifted apart; the relay keeps a copy,
+  tested on the same texts.
 - **Sturdier.** Every Unicode format character (those that change reading direction or hide text) is shown as "�",
   following Unicode 17's table. A name that is not UTF-8 (lock, report, WireGuard interface) is opened under its real
   name and shown with its bytes as `\xFF`. When the system refuses a thread, Vanguard goes on in "reduced mode", says
@@ -338,9 +521,29 @@ repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
   no longer promises "at most one version a day": a fix ships in the next version, sometimes the same day. Every
   Python tool of the repository (privacy guard, Git hooks, verification, publishing) runs isolated (`python3 -I`): a
   module placed in the tool's folder or in PYTHONPATH can no longer disarm the guard before a commit or a push.
-- **Kept for later.** The Vanguard window has its screens to see, apply and put back a fix and to update Vanguard,
-  but it is still not shipped: `vanguard` opens the terminal menu, as before. It will only be started once its launch
-  checks a signed fingerprint.
+- **The Windows VM tests carry the window.** `outils/vm-tester.sh --exe vanguard.exe --fenetre vanguard-fenetre.exe`
+  deposits the window with the program; without `--exe`, it is built with it and its fingerprint engraved. The deposit
+  is refused, with the reason, if the window is missing while `vanguard.exe` names one, if it is not the one whose
+  fingerprint it carries, if its marks contradict each other, or if the VM watcher is older than version 3. A job's
+  fingerprints and signature are taken on the files prepared on the Linux side, never on their copies in the shared
+  folder, which the VM can rewrite. `test.ps1` has a "Window (0.96)" step: the window in place must be the one whose
+  fingerprint `vanguard.exe` carries, then `vanguard-fenetre --version` is run (30 s at most); a missing, different or
+  unreadable window is a problem, never a skipped step, and a different window is never run. `outils/vm-tester.sh
+  --verdict`, the release gate, requires a signed job that carried the window.
+- **The features page looks like the window.** The features page (GitHub Pages) takes the colours, tabs and cards of
+  the 0.96 window, read from its code at each render. A "Prise en main" (getting started) tab walks through it in ten
+  steps, in the order of a first use (home, checkup, fix shown then read back, restore as before, alerts, devices,
+  guide, command page, console). The "Coming next" section is drawn from the public roadmap issue (#1). The console
+  searches the page: a typed word (accents and case ignored) hides the sections without it and highlights the
+  passages; Enter goes to the next one, Escape resets everything. The screenshots show the window, no longer the
+  terminal.
+- **README screenshots taken in the window.** Six screens (audit, home, alerts, devices, outgoing connections,
+  guide), in French and English, drawn by the window's tests, without a screen, on made-up data: nothing from the
+  computer is read. They replace the screenshots of the terminal menu and are redone at each published version.
+- **Issues follow each version, on their own.** At each published version, `outils/tickets-version.py` ticks the
+  version's bold points in the roadmap issue (#1), replaces its "in preparation" section, and closes the "journal"
+  issues that the version's commits say they fix. Each text first goes through the privacy guard; an empty body, or
+  one shortened by more than 20%, is refused.
 
 ## November 12, 2026: version 0.94.0
 

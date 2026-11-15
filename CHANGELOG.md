@@ -9,8 +9,52 @@ jour est permise ; elles se suivent dans le paragraphe de leur journée. Seule l
 téléchargement ; chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par exemple), pour être
 recompilée au besoin.
 
-## 12 novembre 2026 : version 0.95.0
+## 15 novembre 2026 : version 0.96.0
 
+La 0.95 n'a pas été publiée : tout son travail est dans cette version.
+
+- **La fenêtre de Vanguard est livrée, de façon sûre.** Sur un bureau graphique, `vanguard` ouvre maintenant la
+  fenêtre (`vanguard-fenetre`), sinon le menu du terminal, comme avant ; `vanguard --menu` le force. Elle n'est lancée
+  que si son empreinte SHA-256 est celle gravée dans `vanguard` à la compilation : comme `vanguard` est signé, cette
+  empreinte l'est aussi. Ce sont les octets vérifiés qui sont lancés, pas le chemin : sous Linux, une copie en mémoire
+  scellée (memfd) ; sous Windows, le fichier tenu ouvert sans partage d'écriture pendant le lancement, ainsi que ses
+  dossiers (ni renommés ni remplacés pendant ce temps). Une fausse fenêtre posée à côté n'est jamais lancée : le menu,
+  et la raison dite (un lancement refusé par le système dit aussi pourquoi). Un programme compilé sans empreinte
+  (`cargo build`, les essais) ne lance aucune fenêtre. `vanguard -h` dit « Sans argument : la fenêtre sur un bureau
+  graphique, sinon le menu ».
+- **Rien du compte n'entre dans la fenêtre.** Elle ne reçoit qu'une liste fermée de variables d'environnement
+  (affichage, langue, dossiers XDG, mandataires) et un PATH propre ; si une bibliothèque injectée dans les programmes
+  de la session est signalée (`LD_PRELOAD`…), la fenêtre n'est pas lancée : le menu, qui ne l'exécute pas.
+  `VANGUARD_ORIGINE` n'est crue que dans la copie temporaire que `vanguard` se fait sur une clé ; ailleurs, la
+  variable est ignorée. La fenêtre reçoit le programme à relancer (`--vanguard <chemin>`) et garde ses propres
+  vérifications sur ce chemin, même s'il n'est pas en UTF-8.
+- **Corriger, remettre comme avant et mettre à jour depuis la fenêtre.** « Voir la correction » montre l'aperçu de
+  Vanguard en entier ; « Appliquer cette correction » s'active 2 secondes après, seulement pour une correction du
+  compte qui s'annule exactement et dont tout le texte se voit (sinon la raison est dite). L'écran
+  « Ce que Vanguard a changé » montre chaque changement avec son état, et « Remettre comme avant » sur chaque
+  correction qui se remet, par le même aperçu et le même délai. Un geste à la fois, qui ne s'interrompt pas ; la
+  fenêtre ne renvoie que le jeton et l'accord de l'aperçu, et Vanguard rejuge tout de son côté. La carte
+  « Mettre à jour Vanguard » montre d'abord d'où vient la mise à jour, la version visée, son empreinte, sa taille et
+  chaque programme remplacé ; rien ne s'installe avant « Installer cette mise à jour ». Dans chaque rubrique, toute la
+  carte d'une commande est un bouton (souris, ou Tab puis Entrée) qui ouvre sa page ; dans le bilan,
+  « Ce qui va bien » passe à la ligne au lieu de déborder.
+- **La fenêtre voyage avec le programme.** La page de la version, le dépôt des mises à jour et la clé portent la
+  fenêtre Linux et Windows, jugée comme le programme (empreinte, failles connues, confidentialité, SHA256SUMS). Une
+  mise à jour depuis GitHub (terminal ou fenêtre) télécharge la fenêtre de la nouvelle version après l'accord et la
+  vérifie contre l'empreinte gravée dans le nouveau programme, tout ou rien ; depuis la clé, la fenêtre de la clé suit
+  si c'est la sienne, et si elle ne peut pas être posée, le programme l'est seul et c'est dit. L'aperçu la montre
+  comme une ligne de plus. La fenêtre posée est relue (le même fichier, les octets reçus, sinon un échec) ; une
+  fenêtre apparue, partie ou changée depuis l'aperçu n'est jamais remplacée : rien n'est posé pour ce programme, et la
+  raison est dite. La désinstallation enlève aussi la fenêtre.
+- **Depuis la 0.94, la fenêtre se pose une fois à la main.** La mise à jour de la 0.94 ne connaît pas la fenêtre :
+  elle pose le programme seul, qui ouvre le menu du terminal ; une mise à jour suivante ne l'ajoute pas (elle ne
+  remplace qu'une fenêtre déjà là). Pour l'avoir, prenez sur la page de la version `vanguard-fenetre-linux-x86_64` ou
+  `vanguard-fenetre-windows-x86_64.exe`, et posez-la à côté du programme (la clé VANGUARD la porte déjà).
+- **Limites de la fenêtre** (dites au [modèle de menace](MODELE-DE-MENACE.md)). Windows : vérifié sous Wine seulement,
+  sans lancement suspendu ni vérification de l'image du processus ; les dossiers derrière une jonction et une lettre
+  de lecteur redéfinie (`subst`) ne sont pas tenus. Un noyau qui refuse l'exécution d'un memfd (`vm.memfd_noexec=2`,
+  SELinux, AppArmor) : le menu, sans repli. La fenêtre ne revérifie pas encore le contenu du `vanguard` qu'elle
+  relance : le compte qui remplacerait ce fichier n'est pas arrêté par elle.
 - **Mettre Vanguard à jour après avoir vu ce qui s'installe.** `vanguard se-mettre-a-jour --voir` dit, sans rien
   installer, d'où vient la mise à jour (la clé VANGUARD, ou GitHub, signée par l'auteur), la version visée, son
   empreinte SHA-256, sa taille et chaque programme qu'elle remplacerait, avec sa version d'aujourd'hui.
@@ -347,6 +391,161 @@ recompilée au besoin.
   publie n'est plus signalé, seulement dit non vérifié.
 - **La taille de la fenêtre sans programme du compte.** Sans terminal, Vanguard ne lance plus `tput` (cherché dans
   le PATH du compte) pour connaître la taille de l'écran.
+- **Analyse ClamAV : seul le fichier vraiment examiné est touché.** Chaque fichier signalé est revérifié à part avant
+  que Vanguard propose de l'isoler ou de le supprimer, et le geste ne vise que ce fichier-là. Un fichier au nom piégé
+  (avec un retour à la ligne) ne peut plus faire viser un autre de vos fichiers. L'analyse rapide lit de nouveau
+  Téléchargements et les autres endroits à risque, même quand /tmp contient des fichiers récents. Ce qui n'a pas pu
+  être analysé ou confirmé est indiqué « non vérifié », jamais « sain ».
+- **Quarantaine : remettre un fichier ne peut plus servir à écrire ailleurs.** Un fichier n'est remis qu'à sa place
+  d'origine, depuis le dossier de la quarantaine ; sous Linux, jamais au travers d'un raccourci (lien) posé par un
+  autre compte. Sous Windows aussi, chaque dossier du chemin est vérifié et tenu pendant la remise, et un dossier
+  effacé depuis l'isolement est recréé. Quand un relevé existe, Vanguard vérifie que le contenu remis est bien celui
+  qui a été isolé ; sinon, le fichier reste en quarantaine et Vanguard montre les deux empreintes. Sous Windows, quand
+  Vanguard tourne en administrateur, plus rien ne sort de la quarantaine : Vanguard explique comment le faire à la
+  main, en sécurité. Quand Vanguard refuse de remettre un fichier pour une raison de sécurité (dossier d'origine,
+  empreinte, administrateur), il dit comment le sortir soi-même. Les droits spéciaux d'un fichier ne sont pas remis,
+  mais Vanguard le dit et donne la commande pour les remettre. Les entrées mises de côté sont montrées par leur nom et
+  signalées dans les traces d'incident. Un chemin qui contient « .. » est résolu avant l'isolement. Une analyse YARA
+  lancée sur un dossier relatif (« vanguard yara . ») met de nouveau en quarantaine ce qu'elle trouve.
+- **Windows : une racine ajoutée au seul compte est montrée.** Un certificat racine ajouté au seul compte de
+  l'utilisateur, par exemple par un programme qui intercepte le trafic HTTPS, est maintenant signalé dans le bilan,
+  quel que soit son nom, au moins au niveau moyen. Si ce magasin ne peut pas être lu, le bilan dit « non vérifié » au
+  lieu de « rien d'ajouté ». Une racine posée dans le compte ne peut plus cacher celle de l'ordinateur, et le bilan ne
+  propose plus un retrait que Vanguard refuserait ensuite.
+- **Recherche de secrets : un projet reçu ne fait plus rien lancer.** La recherche de secrets dans les projets git ne
+  peut plus être piégée par un projet reçu (par exemple une archive décompressée) : ni git ni gitleaks ne lancent plus
+  un programme choisi par les réglages de ce projet, et rien n'est téléchargé. Avec un git plus ancien que la version
+  2.31, gitleaks n'est plus lancé (c'est dit), et un projet que gitleaks n'a lu qu'en partie n'est plus compté comme
+  relu. Dans le guide, les commandes git, « yay -Qua » (qui peut lancer git) et « claude mcp list » ne se lancent plus
+  depuis Vanguard et ne sont plus dites sans effet : elles peuvent lancer des programmes choisis ailleurs, et se
+  tapent dans un terminal.
+- **Linux : le bilan des partages voit tous les partages.** Il voit maintenant les dossiers partagés depuis le
+  gestionnaire de fichiers (« Partager ce dossier » avec accès invité) et les partages NFS rangés dans /etc/exports.d.
+  Il n'est plus trompé par un fichier de partage écrit de façon inhabituelle, ni par un partage NFS écrit sur
+  plusieurs lignes ou sans client nommé. S'il ne peut pas lire ces réglages, il dit « impossible de vérifier » au lieu
+  de « aucun partage ouvert ».
+- **/etc/ld.so.preload lu comme le lit le chargeur de Linux (glibc).** Ce fichier fait charger des bibliothèques dans
+  tous les programmes, root compris. Le chargeur de glibc n'ignore pas toujours une ligne qui commence par « # » : dès
+  le deuxième « # » du fichier, une ligne « # /chemin.so » peut être chargée. Vanguard reprend sa lecture telle
+  quelle, sur les octets, et y ajoute la lecture « un # ferme sa ligne » : un nom vu par l'une des deux compte. Un nom
+  fini par un retour chariot est jugé comme le fichier qu'il nomme, qui n'est pas celui du paquet ; une note en fin de
+  ligne ne compte plus comme une bibliothèque. Le bilan, le retrait d'une ligne après confirmation et l'avis du
+  démarrage lisent ce fichier de la même façon.
+- **Le retrait d'une ligne de /etc/ld.so.preload refuse ce qui changerait autre chose que cette ligne.** Il refuse une
+  ligne qui ne fait rien charger (vide, ou un commentaire que le chargeur ignore). Il refuse aussi, sans poser de
+  question et sans rien écrire, un retrait qui ferait charger au chargeur un nom qu'il ne chargeait pas : ce qu'il
+  efface d'un « # » dépend de la taille du fichier, et retirer une ligne peut réveiller une ligne « # … » cachée. Le
+  refus nomme ce qui serait chargé (chaque nom une fois, les chemins d'abord, cinq au plus, le « # » seul compté à
+  part) et demande de corriger le fichier à la main. Si la ligne retirée arrêtait le chargeur (un octet nul), les
+  lignes suivantes, déjà montrées au bilan, seront chargées après : la question le dit avant le oui.
+- **Une ligne introuvable n'est plus un succès.** Quand le retrait d'une ligne de démarrage, ou la mise en commentaire
+  d'une ligne de proxy, ne retrouve pas la ligne désignée (fichier changé depuis le bilan, ligne qui n'est pas du
+  texte UTF-8), c'est un échec dit, « pas fait », et non plus « déjà fait ». Une ligne signalée qui n'est pas du texte
+  UTF-8 n'est plus offerte au retrait automatique : l'alerte dit qu'elle est à retirer à la main.
+- **Une ligne signalée d'un fichier de démarrage n'est plus retirée seule que dans un fichier fait d'affectations
+  simples.** Une ligne finie par « \ » (même suivie de blancs), ou qui suit une telle ligne, n'est jamais retirée
+  seule : le shell et systemd la joignent à la suivante (systemd, même après un commentaire). Dans un fichier lu par
+  un shell ou comme un fichier de variables (/etc/profile, /etc/profile.d, bashrc, zsh, fish, /etc/environment,
+  environment.d…), Vanguard ne lit pas le shell : une ligne n'est retirée seule que si elle est « NOM=valeur » ou
+  « export NOM=valeur » et que TOUT le fichier, en UTF-8, n'est fait que de lignes vides, de commentaires entiers
+  (« # » en début de ligne, après des espaces ou des tabulations) et de lignes de cette forme. La valeur est faite de
+  lettres, chiffres et « / . _ - : + , = @ % » (vide permise, sans « = » en tête ni après un « : », que zsh
+  développe), ou tout entière entre guillemets simples avec ces signes et des espaces ; après elle, des blancs
+  seulement (ni commentaire, ni « \r »). Les lignes sont coupées au seul « \n » : pour bash et sh, un « \r » final
+  fait partie de la valeur. Un fichier écrit sous Windows (« \r\n ») n'est donc pas de cette forme, et
+  « LD_PRELOAD=\r », qui précharge un fichier nommé « \r », reste signalé. Le NOM est fait de majuscules, chiffres et
+  « _ », n'est posé qu'une fois dans le fichier, et n'est pas une variable que le shell lit, pose ou garde lui-même
+  (IFS, PATH, ENV, HOME, PWD, OLDPWD, LANG, UID, EUID, PPID, GID, EGID, USERNAME, TMPDIR, GLOBSORT, TERMCAP, TZ, et
+  ceux que mksh garde en lecture seule comme KSHUID… 118 noms, et tout NOM qui commence par BASH_, LC_, SHELL, ZSH,
+  ZLE, COMP, READLINE_, HIST, PROMPT ou RPROMPT). Pour bash, sh, dash et ash (essayés), un tel fichier ne lance,
+  n'ouvre, ne lit et ne teste rien qu'une autre de ses lignes verrait, et rend toujours 0. Une ligne de plus de 1 000
+  octets, n'importe où dans le fichier, fait refuser tout retrait : pam_env de Linux-PAM 1.4.0 à 1.5.3 arrête sans
+  erreur la lecture de /etc/environment à une ligne de 8 191 octets ou plus, et retirer une ligne réveillerait les
+  suivantes. /etc/rc.local, que le système lance lui-même, ne garde le retrait que si sa première ligne est
+  « #!/bin/sh » ou « #!/bin/bash » (ou /usr/bin/sh, /usr/bin/bash), sans option ou avec la seule « -e » : pour un
+  autre interpréteur, « NOM=valeur » n'est pas une affectation. Tout le reste reste signalé, au même niveau, avec la
+  correction à faire à la main : le bilan ne l'offre plus, et le retrait la refuse, sans question et sans rien écrire,
+  s'il la reçoit quand même. Une seule ligne ainsi fait tomber le retrait automatique de TOUTES les lignes signalées
+  du constat : l'alerte le dit. Un fichier de plus de 100 000 lignes ou de 4 Mio n'est pas jugé : retrait refusé, dit
+  dans l'alerte. La règle du « \ » vaut pour tout fichier autre que /etc/ld.so.preload. Hors de /etc/ld.so.preload,
+  Vanguard ne retire plus lui-même qu'une sorte de ligne : une affectation de LD_PRELOAD ou de LD_AUDIT qui précharge
+  vraiment, dans un fichier d'affectations simples comme ci-dessus. Une autre variable suspecte (PYTHONPATH…) ou une
+  commande reste signalée, au même niveau, à corriger à la main : le retrait ne l'admet que si le bilan l'offre, par
+  la même règle. Une ligne qui vide LD_PRELOAD ou LD_AUDIT (« LD_PRELOAD= », « export LD_AUDIT= »,
+  « UnsetEnvironment=LD_PRELOAD ») ne précharge rien : elle n'est plus signalée. Une unité systemd (et ses ajouts
+  « .service.d/*.conf »), /etc/crontab, /etc/cron.d, /etc/anacrontab, un raccourci .desktop et les réglages de GDM,
+  SDDM et LightDM ne sont jamais corrigés ligne à ligne par Vanguard lui-même : une ligne peut y en retenir une autre
+  (« ExecStartPre= » ou « ExecCondition= » qui échoue empêche « ExecStart= » ; « SHELL= » ou « PATH= » fait échouer
+  les tâches de cron qui suivent), et un gestionnaire de connexion lit plusieurs fichiers, chacun à sa façon, la
+  dernière valeur l'emportant. L'alerte le dit, la correction est à la main, et Vanguard la refuse même si on la lui
+  demande, qu'il s'agisse de retirer une ligne ou d'en mettre une en commentaire. Ces fichiers sont reconnus à leur
+  nom exact ; un script rangé ailleurs dans ces dossiers reste du shell. Le jugement est fait une fois par fichier, en
+  temps linéaire. Limites : dans un vrai bashrc ou /etc/profile (une commande, un « alias », un « if »), aucune ligne
+  n'est retirée seule, la correction est toujours à la main ; un NOM posé deux fois fait refuser tout le fichier, même
+  si les deux lignes partent ensemble ; « LD_PRELOAD='' » (guillemets vides), « Environment=LD_PRELOAD= » dans une
+  unité et « Exec=env LD_PRELOAD= … » dans un .desktop restent signalés (à la main). La règle ne voit pas ce que
+  définissent d'autres fichiers lus avant (une fonction ou un alias « export », « readonly », « set -e »), ni ce que
+  fait de la variable retirée le code lu après le fichier (le fichier qui le lit, un programme lancé). Rejouée avec
+  bash, sh (bash en mode POSIX), dash et busybox ash : zsh, fish, csh, ksh et mksh n'ont pas été essayés, et fish ne
+  lit pas « NOM=valeur » comme bash : un fichier .fish garde toujours le geste à la main.
+- **Une ligne de proxy n'est plus mise en commentaire que là où une ligne se retire sans danger.** Depuis la 0.92.0,
+  la réparation de la navigation mettait en commentaire les lignes « http_proxy=… » des fichiers de démarrage du
+  système (/etc/environment, /etc/profile, /etc/profile.d…) en ne regardant que la ligne : une ligne qui ouvrait un
+  guillemet sans le fermer se commentait, et la commande que le guillemet tenait se lançait alors à chaque ouverture
+  de session. Une ligne commentée est une ligne retirée pour celui qui lit le fichier : la mise en commentaire suit
+  maintenant la règle du retrait ci-dessus, au bilan comme au moment de l'appliquer, même si on la demande. Seule une
+  affectation simple en majuscules (HTTP_PROXY, HTTPS_PROXY, FTP_PROXY, ALL_PROXY) dans un fichier d'affectations
+  simples est commentée par Vanguard ; jamais dans une unité, cron, anacron, un .desktop, un réglage de gestionnaire
+  de connexion ni /etc/ld.so.preload. Le reste (minuscules « http_proxy », guillemets doubles, un vrai /etc/profile,
+  un /etc/environment qui pose PATH, comme celui d'Ubuntu) est signalé, le fichier nommé, à mettre en commentaire à la
+  main.
+- **L'ouverture automatique d'une session n'est plus coupée par Vanguard lui-même.** Depuis la 0.92.0, Vanguard
+  retirait la ligne qui ouvre la session sans mot de passe dans GDM, SDDM ou LightDM. Chacun lit plusieurs fichiers,
+  SDDM avec son propre lecteur, et la dernière valeur l'emporte : retirer la ligne vue pouvait laisser, ou réveiller,
+  celle d'un autre fichier. L'alerte reste, au même niveau ; la correction se fait à la main (réglages des
+  utilisateurs du bureau, ou la ligne du fichier nommé), avec la raison dite.
+- **L'ouverture automatique d'une session est mieux lue, et une annulation douteuse n'est plus crue.** Fichiers lus :
+  SDDM, tous les fichiers de /usr/lib/sddm/sddm.conf.d et /etc/sddm.conf.d, quel que soit leur nom, puis
+  /etc/sddm.conf ; LightDM, les « .conf » de /usr/share, /usr/local/share, /etc/xdg puis /etc/lightdm, et la session
+  d'invité (« autologin-guest ») ; GDM, custom.conf (/etc/gdm, /etc/gdm3) et daemon.conf (Debian) ; chaque fichier
+  compté à son gestionnaire par son dossier. Une ligne de SDDM se lit comme SDDM 0.21.0 la lit, d'après sa source : le
+  « # » coupe la ligne, et « [Autologin] # note » ouvre bien la section. Une ouverture posée dans un fichier n'est
+  tenue pour annulée que par une ligne plus loin dans le même fichier, même section, même clé ; annulée ailleurs (un
+  autre fichier, une autre section, une autre casse, une valeur que le gestionnaire ne comprend pas), elle est dite
+  « non vérifiée », le fichier nommé, et non « pas d'ouverture automatique ». Un fichier ou un dossier de ces
+  gestionnaires qui ne se lit pas (droits, pas du texte, plus de 1 Mio, plus de 1 000 fichiers) est nommé, non
+  vérifié. Limites : GDM, SDDM et LightDM n'ont pas été lancés (sources de SDDM 0.21.0, de LightDM 1.32.0 et des
+  réglages de GDM lues) ; Vanguard lit aussi les fichiers cachés et les fichiers de GDM de toutes les distributions,
+  et peut donc signaler une ouverture que le gestionnaire ne lit pas ; ce que SDDM et GDM font d'une marque UTF-8
+  (BOM) en tête de fichier n'a pas été vérifié (Vanguard la saute) ; /run/gdm/custom.conf n'est pas lu ; Vanguard ne
+  lit pas encore une ligne tout à fait comme GLib et Qt : espace Unicode en début de ligne, octet NUL après un titre
+  de section, marque UTF-8 en tête d'une autre ligne que la première, fichier de GDM qui s'arrête à une faute ; dans
+  ces cas rares, qui demandent d'écrire dans /etc, une ouverture peut ne pas être vue.
+- **L'avis du démarrage ne se tait plus sur /etc/ld.so.preload.** Un octet qui n'est pas de l'UTF-8 le rendait muet ;
+  un fichier illisible aussi. Illisible (un lien vers une cible absente compris), il est maintenant dit
+  « non vérifié », avec la raison ; trop gros pour être lu en entier, la suite non lue est dite.
+- **Le bilan ne se tait plus sur un fichier ou un dossier de démarrage illisible.** Un /etc/ld.so.preload présent mais
+  illisible (droits, dossier à sa place, boucle de liens, lien vers une cible absente) laissait le bilan en vert ; il
+  est maintenant levé, « non vérifié », avec la même raison que l'avis du démarrage (le bilan le lève en niveau élevé,
+  l'avis le dit en niveau moyen). Les autres fichiers de démarrage et de configuration que le bilan lit (shell,
+  environnement, cron, démarrage de session) et leurs dossiers (/etc/cron.d, /etc/profile.d, dossiers d'unités et de
+  démarrage de session…) sont levés aussi, sauf s'ils sont à root seul (un /etc/crontab en 600 ou un /etc/cron.d en
+  700, par exemple) : dits en information. Un lien d'un de ces dossiers dont la cible ne se voit pas (un dossier fermé
+  sur son chemin) est levé aussi. Ne sont pas levés : ce qui est absent, un lien vers une cible absente dans un de ces
+  dossiers, un lien vers /dev/null (un fichier masqué), un chemin impossible (un fichier à la place d'un des dossiers
+  du chemin) ; un dossier à la place d'un de ces autres fichiers est dit en information.
+- **Les fichiers `EnvironmentFile=` d'un service se lisent comme systemd les lit.** Un commentaire se ferme au bout de
+  sa ligne, un retour chariot seul coupe aussi une ligne. Une ligne finie par « \ » ne continue que dans une valeur :
+  un commentaire ou une ligne sans « = » ne cache plus la ligne suivante. Les échappements d'une valeur sont défaits
+  comme systemd les défait (« \x » hors guillemets, « \" \\ \` \$ » entre guillemets doubles, rien entre guillemets
+  simples) ; la forme écrite et la forme défaite se jugent toutes deux, et une variable reprise par « ${VAR} » dans
+  une ligne Exec= s'y développe sous la forme que le service reçoit. Une variable comme LD_PRELOAD posée juste après
+  un commentaire, ou cachée par un échappement, est vue.
+- **Un texte d'erreur nettoyé avec une seule règle des accents.** Le nettoyage d'un texte d'erreur (relevé local, et
+  relais prêt mais pas en service) et sa relecture finale suivent maintenant la même règle pour les accents écrits à
+  part (U+0300 à U+036F) : un accent n'est gardé qu'après une lettre, deux au plus de suite ; après un chiffre, une
+  ponctuation ou rien, il est retiré, et U+034F, invisible, ne l'est jamais. Les deux règles écrites à part avaient
+  divergé ; le relais en garde une copie, essayée sur les mêmes textes.
 - **Plus solide.** Chaque caractère de format d'Unicode (ceux qui changent le sens de lecture ou cachent du texte)
   s'affiche « � », d'après la table d'Unicode 17. Un nom qui n'est pas en UTF-8 (verrou, rapport, interface WireGuard)
   est ouvert sous son vrai nom et montré avec ses octets en `\xFF`. Quand le système refuse un fil, Vanguard continue
@@ -359,9 +558,31 @@ recompilée au besoin.
   parfois le jour même. Chaque outil Python du dépôt (garde-fou de confidentialité, crochets Git, vérification,
   publication) se lance isolé (`python3 -I`) : un module posé dans le dossier de l'outil ou dans PYTHONPATH ne peut
   plus désarmer le garde-fou avant un commit ou un envoi.
-- **Gardé pour plus tard.** La fenêtre de Vanguard a ses écrans pour voir, appliquer et remettre une correction et
-  pour mettre Vanguard à jour, mais elle n'est toujours pas livrée : `vanguard` ouvre le menu du terminal, comme avant.
-  Elle ne sera lancée que lorsque son lancement vérifiera une empreinte signée.
+- **Les essais Windows de la VM portent la fenêtre.** `outils/vm-tester.sh --exe vanguard.exe --fenetre
+  vanguard-fenetre.exe` dépose la fenêtre avec le programme ; sans `--exe`, elle est compilée avec lui et son
+  empreinte gravée. Le dépôt est refusé, raison dite, si la fenêtre manque alors que `vanguard.exe` en nomme une, si
+  elle n'est pas celle dont il porte l'empreinte, si ses marques se contredisent, ou si le surveillant de la VM est
+  d'avant la version 3. Les empreintes et la signature d'un travail sont prises sur les fichiers préparés côté Linux,
+  jamais sur leurs copies du dossier partagé, que la VM peut réécrire. `test.ps1` a une étape « Fenêtre (0.96) » : la
+  fenêtre posée doit être celle dont `vanguard.exe` porte l'empreinte, puis `vanguard-fenetre --version` est lancée
+  (30 s au plus) ; une fenêtre absente, autre ou illisible est un problème, jamais une étape sautée, et une autre
+  fenêtre n'est jamais lancée. `outils/vm-tester.sh --verdict`, la porte de publication, exige un travail signé qui
+  portait la fenêtre.
+- **La page des fonctions a l'allure de la fenêtre.** La page des fonctions (GitHub Pages) reprend les couleurs, les
+  onglets et les cartes de la fenêtre 0.96, lus dans son code à chaque rendu. Un onglet « Prise en main » la parcourt
+  en dix étapes, dans l'ordre d'un premier usage (accueil, bilan, correction montrée puis relue, remettre comme avant,
+  alertes, appareils, guide, page de commande, console). La section « À venir » est tirée du ticket public des pistes
+  (#1). La console cherche dans la page : un mot tapé (accents et majuscules ignorés) masque les sections qui ne l'ont
+  pas et surligne les passages ; Entrée passe au suivant, Échap remet tout. Les captures montrent la fenêtre, plus le
+  terminal.
+- **Des captures du README prises dans la fenêtre.** Six écrans (bilan, accueil, alertes, appareils, connexions
+  sortantes, guide), en français et en anglais, dessinés par les essais de la fenêtre, sans écran, sur des données
+  inventées : rien de l'ordinateur n'est lu. Ils remplacent les captures du menu du terminal et sont refaits à chaque
+  version publiée.
+- **Les tickets suivent chaque version, tout seuls.** À chaque version publiée, `outils/tickets-version.py` coche dans
+  le ticket des pistes (#1) les points en gras de la version, remplace sa section « en préparation », et ferme les
+  tickets « journal » que les commits de la version disent corrigés. Chaque texte passe d'abord la garde de
+  confidentialité ; un corps vide, ou raccourci de plus de 20 %, est refusé.
 
 ## 12 novembre 2026 : version 0.94.0
 
