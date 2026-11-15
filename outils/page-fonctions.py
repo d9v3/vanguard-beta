@@ -247,15 +247,16 @@ def _webp(image, prefixe: str) -> dict[str, str]:
 def captures(dossier_fenetre: Path = CAPTURES_FENETRE) -> dict[str, str]:
     """Les captures du README (CAPTURE_*) et celles de la visite guidée (VISITE_*), prises dans dossier_fenetre.
     Une capture de la visite qui manque arrête tout : jamais une page à trous."""
-    try:
-        from PIL import Image
-    except ImportError:
-        sys.exit("✖ Pillow manque pour intégrer les captures (python-pillow, ou pip install pillow)")
     manquantes = [nom for nom in VISITE.values() if not (dossier_fenetre / nom).is_file()]
     if manquantes:
         sys.exit(f"✖ {len(manquantes)} capture(s) de la fenêtre manquent dans {dossier_fenetre} "
                  f"({', '.join(manquantes[:3])}{' …' if len(manquantes) > 3 else ''}) : lancez "
                  "outils/captures-fenetre.sh (ou donnez le bon dossier par --captures)")
+    # Après les captures : une capture qui manque se dit telle quelle, même sans Pillow (la CI).
+    try:
+        from PIL import Image
+    except ImportError:
+        sys.exit("✖ Pillow manque pour intégrer les captures (python-pillow, ou pip install pillow)")
     valeurs = {}
     for cle, (nom, partie) in CAPTURES.items():
         with Image.open(RACINE / "assets/captures" / nom) as image:

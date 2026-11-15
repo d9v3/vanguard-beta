@@ -278,7 +278,9 @@ gardes=("$faux_maison/.cache/vanguard-dev"/verrous-changes.*/)
 garde_dit=""
 [[ ${#gardes[@]} == 1 && -d ${gardes[0]} ]] && grep -qF "état d'après gardé : ${gardes[0]%/}/apres.tar" <<<"$SORTIE" &&
   garde_dit=1
-apres=$(tar -xOf "${gardes[0]}apres.tar" supply-chain/audits.toml supply-chain/autre.toml 2>/dev/null | tr '\n' ' ')
+# Un fichier à la fois : tar -xO suit l'ordre de l'archive (celui de find, propre au système de fichiers), pas celui
+# des noms donnés ; ext4 (la CI) et btrfs ne rangent pas pareil.
+apres=$(for f in audits autre; do tar -xOf "${gardes[0]}apres.tar" "supply-chain/$f.toml"; done 2>/dev/null | tr '\n' ' ')
 avant_garde=$(tar -xOf "${gardes[0]}avant.tar" supply-chain/audits.toml 2>/dev/null)
 code_garde=$CODE remis_garde=$REMIS
 rm -rf "$faux_maison/.cache/vanguard-dev"
