@@ -5042,6 +5042,8 @@ fn environnement_change_la_sauvegarde(r: &Releveur, vide: bool) -> bool {
         || caches
             .iter()
             .any(|(f, du_compte)| cache_d_uwsm_leve_la_sauvegarde(r, f, *du_compte, vide))
+        // Ronde 16 : un fichier d'environment.d non vérifié en entier, celui à root seul qui lit un nom du compte compris.
+        || !environment_d_non_verifies(r, &r.maison).is_empty()
 }
 
 /// Ce que Vanguard lit d'un fichier caché d'un « .d » d'uwsm (`lecture_d_un_cache_d_uwsm`).
@@ -7617,7 +7619,7 @@ fn juger_configuration(
     let maisons = [session.as_str(), lue.as_str()];
     // Ronde 14 (N13-fish-env-2) : ce que posent les fichiers d'environment.d avant chacun, dans l'ordre du générateur.
     let avant_d_environment_d = posees_avant_chaque_environment_d(&t.r, configuration, sortes, h);
-    juger_environment_d_entiers(&avant_d_environment_d, h, t);
+    juger_environment_d_entiers(h, t);
     for f in configuration {
         let Some(lu) = lire(f, h, t) else {
             continue;
@@ -7754,23 +7756,16 @@ fn developpe_posees(valeur: &str, posees: &[PoseeDEnvironmentD], soi: &str) -> (
 }
 
 /// Les fichiers d'environment.d que lit le générateur, dans son ordre : chacun de `configuration` (au format des
-/// clés, dans un dossier « environment.d ») et ceux des dossiers du système, triés par nom de fichier, un nom pris
-/// une seule fois, au dossier qui prime (le compte, puis /etc, /run, /usr/local/lib, /usr/lib) ; et pour chacun, ce
-/// que les fichiers d'avant lui ont posé (`PoseeDEnvironmentD`). Un fichier qui ne se lit pas ne pose rien ici (sa
-/// lecture ratée se dit ailleurs).
+/// clés, dans un dossier « environment.d ») et ceux des dossiers du système (`environment_d_en_ordre`) ; et pour
+/// chacun, ce que les fichiers d'avant lui ont posé (`PoseeDEnvironmentD`). Un fichier qui ne se lit pas ne pose rien
+/// ici (sa lecture ratée se dit ailleurs).
 fn posees_avant_chaque_environment_d(
     r: &Releveur,
     configuration: &[std::path::PathBuf],
     sortes: &[(std::path::PathBuf, Variables)],
     h: &Path,
 ) -> Vec<(std::path::PathBuf, Vec<PoseeDEnvironmentD>)> {
-    let systeme = ["etc", "run", "usr/local/lib", "usr/lib"].map(|d| r.racine.join(d).join("environment.d"));
-    let rang = |f: &Path| {
-        f.parent()
-            .and_then(|d| systeme.iter().position(|s| s == d))
-            .map_or(0, |p| p.saturating_add(1))
-    };
-    let mut fichiers: Vec<std::path::PathBuf> = configuration
+    let compte: Vec<std::path::PathBuf> = configuration
         .iter()
         .filter(|f| {
             sortes.iter().any(|(c, s)| c == *f && *s == Variables::Cles)
@@ -7779,19 +7774,10 @@ fn posees_avant_chaque_environment_d(
         })
         .cloned()
         .collect();
-    for d in &systeme {
-        for f in fichiers_de(d, &["conf"]) {
-            if f.parent() == Some(d.as_path()) && !fichiers.contains(&f) {
-                fichiers.push(f);
-            }
-        }
-    }
-    fichiers.sort_by(|a, b| (a.file_name(), rang(a)).cmp(&(b.file_name(), rang(b))));
-    fichiers.dedup_by(|b, a| a.file_name() == b.file_name());
     let maison = r.maison.to_string_lossy().into_owned();
     let mut posees: Vec<PoseeDEnvironmentD> = Vec::new();
     let mut avant = Vec::new();
-    for f in fichiers {
+    for (f, _) in environment_d_en_ordre(r, compte) {
         avant.push((f.clone(), posees.clone()));
         let Ok(lu) = temoins::lire_borne(&f, LECTURE_MAX) else {
             continue;
@@ -7805,6 +7791,34 @@ fn posees_avant_chaque_environment_d(
     avant
 }
 
+/// Les fichiers d'environment.d que lit le générateur, dans son ordre : ceux du compte (`compte`) et ceux des dossiers
+/// du système, triés par nom de fichier, un nom pris une seule fois, au dossier qui prime (le compte, puis /etc,
+/// /run, /usr/local/lib, /usr/lib). Avec, pour chacun, s'il vient d'un dossier du système.
+fn environment_d_en_ordre(r: &Releveur, mut fichiers: Vec<std::path::PathBuf>) -> Vec<(std::path::PathBuf, bool)> {
+    let systeme = ["etc", "run", "usr/local/lib", "usr/lib"].map(|d| r.racine.join(d).join("environment.d"));
+    let rang = |f: &Path| {
+        f.parent()
+            .and_then(|d| systeme.iter().position(|s| s == d))
+            .map_or(0, |p| p.saturating_add(1))
+    };
+    for d in &systeme {
+        for f in fichiers_de(d, &["conf"]) {
+            if f.parent() == Some(d.as_path()) && !fichiers.contains(&f) {
+                fichiers.push(f);
+            }
+        }
+    }
+    fichiers.sort_by(|a, b| (a.file_name(), rang(a)).cmp(&(b.file_name(), rang(b))));
+    fichiers.dedup_by(|b, a| a.file_name() == b.file_name());
+    fichiers
+        .into_iter()
+        .map(|f| {
+            let du_systeme = rang(&f) > 0;
+            (f, du_systeme)
+        })
+        .collect()
+}
+
 /// Ronde 15 (N14-systemd-1, décision de l'auteur) : le numéro (à partir de 1) de la première ligne écrite d'un fichier
 /// d'environment.d qui finit par « \ » (une barre ou plusieurs, des blancs ou un retour chariot après, ou non). Le
 /// générateur ne joint pas ces lignes comme Vanguard les lit (« FOO\⏎HOME=… », « A=1\ » puis CR LF, « \ » puis
@@ -7816,60 +7830,222 @@ fn barre_finale_d_environment_d(texte: &str) -> Option<usize> {
         .map(|i| i.saturating_add(1))
 }
 
-/// Ronde 15 (N14-systemd-2, décision de l'auteur) : dans un fichier d'environment.d du système, la première ligne qui
-/// lit une variable posée plus haut (`posees`, puis ses propres lignes) par un fichier que le compte peut changer
-/// (pas `de_root`) : son numéro, et la variable lue avec l'endroit qui la pose. Une variable qui se lit elle-même
-/// (« PATH=$PATH:… ») ne compte pas : sa valeur posée est jugée là où elle est posée.
-fn lit_une_posee_du_compte(
-    texte: &str,
-    posees: &[PoseeDEnvironmentD],
-    maison: &str,
-    ou: &str,
-    de_root: bool,
-) -> Option<(usize, String, String)> {
-    let mut posees = posees.to_vec();
-    for (n, _, jointe) in lignes_logiques_selon(texte, Variables::Cles) {
-        if let Some((nom, valeur)) = pose_d_environment_d(&jointe) {
-            let (_, lues) = developpe_posees(&valeur, &posees, &nom);
-            if let Some(p) = lues.iter().filter_map(|k| posees.get(*k)).find(|p| !p.de_root) {
-                return Some((n, p.nom.clone(), p.ou.clone()));
-            }
+/// Ronde 16 (N15-1) : chaque nom écrit après un « $ » ou un « ${ » dans `valeur`, sans rien calculer : les formes
+/// imbriquées (« ${NOPE:-${A}} »), le mot de « :- » et « :+ » (« ${NOPE:-$A} ») et la variable elle-même
+/// (« PATH=$PATH:… ») comptent. Un « \$A » compte aussi : en trop, du côté prudent.
+fn noms_lus(valeur: &str) -> Vec<String> {
+    let mut noms: Vec<String> = Vec::new();
+    let mut reste = valeur;
+    while let Some(i) = reste.find('$') {
+        reste = reste.get(i.saturating_add(1)..).unwrap_or_default();
+        let corps = reste.strip_prefix('{').unwrap_or(reste);
+        let fin = corps
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(corps.len());
+        let nom = corps.get(..fin).unwrap_or_default();
+        if !nom.is_empty() && !noms.iter().any(|n| n == nom) {
+            noms.push(nom.to_string());
         }
-        poser_d_environment_d(&jointe, &mut posees, maison, format!("{ou}:{n}"), de_root);
     }
-    None
+    noms
 }
 
-/// Ronde 15 : les fichiers d'environment.d que lit le générateur (`avant`, dans son ordre, avec ce que posent ceux
-/// d'avant), dits non vérifiés en entier quand Vanguard ne peut pas suivre ce qu'ils posent : une ligne finie par
-/// « \ » (`barre_finale_d_environment_d`, sauf un fichier à root seul), ou, dans /usr/local/lib/environment.d et
-/// /usr/lib/environment.d, une ligne qui lit une variable posée par un fichier du compte (`lit_une_posee_du_compte`).
-/// Ceux de /etc, de /run et du compte sont déjà jugés ligne à ligne (`juger_posees_d_environment_d`).
-fn juger_environment_d_entiers(avant: &[(std::path::PathBuf, Vec<PoseeDEnvironmentD>)], h: &Path, t: &mut Lancements) {
-    let maison = t.r.maison.to_string_lossy().into_owned();
-    let systeme = ["usr/local/lib", "usr/lib"].map(|d| t.r.racine.join(d).join("environment.d"));
-    for (f, posees) in avant {
-        let Ok(lu) = temoins::lire_borne(f, LECTURE_MAX) else {
-            continue;
+/// Ronde 16 (N15-2, N15-3) : les noms qu'un fichier du compte pose au départ, avec l'endroit (« fichier:ligne ») :
+/// pour environment.d, chaque clé de ligne logique et de ligne écrite (coupée aussi à « \r ») ; pour user.conf et
+/// user.conf.d, chaque « NOM= » d'une valeur de ManagerEnvironment= ou DefaultEnvironment=. Plus large que le
+/// lecteur : un nom en trop dit un fichier non vérifié, il n'en tait jamais un.
+fn noms_poses_au_depart(texte: &str, sorte: Variables, ou: &str) -> Vec<(String, String)> {
+    let mut noms: Vec<(String, String)> = Vec::new();
+    let mut garder = |nom: &str, n: usize| {
+        if !noms.iter().any(|(m, _)| m == nom) {
+            noms.push((nom.to_string(), format!("{ou}:{n}")));
+        }
+    };
+    let ecrites: Vec<(usize, &str)> = texte
+        .split('\n')
+        .enumerate()
+        .flat_map(|(i, l)| l.split('\r').map(move |m| (i.saturating_add(1), m)))
+        .collect();
+    let jointes = lignes_logiques_selon(texte, sorte);
+    let lignes = jointes
+        .iter()
+        .map(|(n, _, l)| (*n, l.as_str()))
+        .chain(ecrites.iter().copied());
+    for (n, ligne) in lignes {
+        if sorte == Variables::Systemd {
+            let Some((cle, valeur)) = ligne.split_once('=') else {
+                continue;
+            };
+            if !matches!(
+                cle.trim_matches([' ', '\t']),
+                "ManagerEnvironment" | "DefaultEnvironment"
+            ) {
+                continue;
+            }
+            for (i, _) in valeur.match_indices('=') {
+                let avant = valeur.get(..i).unwrap_or_default();
+                let debut = avant
+                    .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .map_or(0, |d| d.saturating_add(1));
+                let nom = avant.get(debut..).unwrap_or_default();
+                if identifiant(nom) {
+                    garder(nom, n);
+                }
+            }
+        } else if let Some((nom, _)) = pose_d_environment_d(ligne) {
+            garder(&nom, n);
+        }
+    }
+    noms
+}
+
+/// Un fichier d'environment.d tel que le lit `souillure_d_environment_d`.
+struct EnvironmentDLu {
+    /// Son nom court, pour les messages.
+    ou: String,
+    texte: String,
+    /// D'un dossier du système (/etc, /run, /usr/local/lib, /usr/lib), pas du compte.
+    systeme: bool,
+    /// À root seul (`de_root_seul`).
+    de_root: bool,
+}
+
+/// Pourquoi un fichier d'environment.d est non vérifié en entier.
+#[derive(Debug, PartialEq, Eq)]
+enum EnvironmentDNonVerifie {
+    /// Une ligne finie par « \ » (`barre_finale_d_environment_d`), à ce numéro.
+    Barre(usize),
+    /// Un fichier du système : à la ligne `ligne`, il lit `nom`, que le compte peut changer (posée à `pose`).
+    Lit { ligne: usize, nom: String, pose: String },
+}
+
+/// Ronde 16 (N15-1 à N15-4, décision de coordination) : la souillure textuelle. Rien n'est calculé. T, les noms « du
+/// compte », part de `depart` (`noms_poses_au_depart`) ; puis, dans l'ordre du générateur, chaque « NOM=valeur » qui
+/// lit un nom de T (`noms_lus`, la variable elle-même comprise : « A=$A » d'un fichier de root garde A dans T) met
+/// NOM dans T : la marque suit la valeur, quel que soit le propriétaire du fichier. Un fichier qui n'est pas à root
+/// seul met aussi dans T tout ce qu'il pose ; un fichier à root seul, sans « \ » final, qui pose une valeur sans nom
+/// de T, en retire NOM. Rendu : pour chaque fichier (son rang dans `fichiers`), le premier motif d'un non vérifié
+/// entier : une ligne finie par « \ » (sauf à root seul), ou, pour un fichier du système, la première ligne qui lit
+/// un nom de T. Les lignes écrites d'une ligne jointe se lisent aussi une à une : le générateur ne joint pas comme
+/// Vanguard.
+fn souillure_d_environment_d(
+    fichiers: &[EnvironmentDLu],
+    depart: &[(String, String)],
+) -> Vec<(usize, EnvironmentDNonVerifie)> {
+    let mut t: Vec<(String, String)> = depart.to_vec();
+    let mut sortie = Vec::new();
+    for (i, f) in fichiers.iter().enumerate() {
+        let barre = barre_finale_d_environment_d(&f.texte);
+        let mut dit = false;
+        if !f.de_root
+            && let Some(n) = barre
+        {
+            sortie.push((i, EnvironmentDNonVerifie::Barre(n)));
+            dit = true;
+        }
+        for (n, physiques, jointe) in lignes_logiques_selon(&f.texte, Variables::Cles) {
+            let ecrites = physiques
+                .iter()
+                .filter(|_| physiques.len() > 1)
+                .map(|(_, l)| l.as_str());
+            for ligne in std::iter::once(jointe.as_str()).chain(ecrites) {
+                let Some((nom, valeur)) = pose_d_environment_d(ligne) else {
+                    continue;
+                };
+                let lue = noms_lus(&valeur)
+                    .into_iter()
+                    .find_map(|x| t.iter().find(|(m, _)| *m == x).cloned());
+                if f.systeme
+                    && !dit
+                    && let Some((x, pose)) = &lue
+                {
+                    sortie.push((
+                        i,
+                        EnvironmentDNonVerifie::Lit {
+                            ligne: n,
+                            nom: x.clone(),
+                            pose: pose.clone(),
+                        },
+                    ));
+                    dit = true;
+                }
+                let souillee = lue.is_some() || !f.de_root;
+                if souillee || barre.is_none() {
+                    t.retain(|(m, _)| *m != nom);
+                }
+                if souillee {
+                    t.push((nom, format!("{}:{n}", f.ou)));
+                }
+            }
+        }
+    }
+    sortie
+}
+
+/// Ronde 16 : les fichiers d'environment.d non vérifiés en entier (`souillure_d_environment_d`), leur nom court
+/// (`court`, depuis `h`) avec le motif. Les fichiers du compte et les user.conf viennent de `fichiers_du_gestionnaire`
+/// (un XDG_CONFIG_HOME déplacé compris) ; un user.conf du système qui n'est pas à root seul compte comme du compte.
+/// Un fichier qui ne se lit pas n'entre pas ici (sa lecture ratée se dit ailleurs, et lève la sauvegarde).
+fn environment_d_non_verifies(r: &Releveur, h: &Path) -> Vec<(String, EnvironmentDNonVerifie)> {
+    let (fichiers, _, _, _) = fichiers_du_gestionnaire(r, &configs_posees(&r.gestionnaire), &dossiers_d_uwsm(r));
+    let lire = |f: &Path| {
+        temoins::lire_borne(f, LECTURE_MAX)
+            .ok()
+            .map(|lu| String::from_utf8_lossy(&lu.octets).into_owned())
+    };
+    let mut depart = Vec::new();
+    let mut compte = Vec::new();
+    for (f, du_compte, sorte) in &fichiers {
+        let environment_d = *sorte == Variables::Cles
+            && f.parent().is_some_and(|d| d.ends_with("environment.d"))
+            && a_l_extension(f, "conf");
+        let pris = if environment_d {
+            *du_compte
+        } else {
+            *sorte == Variables::Systemd && (*du_compte || !de_root_seul(f))
         };
-        let texte = String::from_utf8_lossy(&lu.octets);
-        let de_root = de_root_seul(f);
-        let ou = court(f, h);
-        if !de_root && let Some(n) = barre_finale_d_environment_d(&texte) {
-            t.non_verifies.push(trf!(
+        if !pris {
+            continue;
+        }
+        if environment_d && !compte.contains(f) {
+            compte.push(f.clone());
+        }
+        if let Some(texte) = lire(f) {
+            depart.extend(noms_poses_au_depart(&texte, *sorte, &court(f, h)));
+        }
+    }
+    let lus: Vec<EnvironmentDLu> = environment_d_en_ordre(r, compte)
+        .into_iter()
+        .filter_map(|(f, systeme)| {
+            Some(EnvironmentDLu {
+                texte: lire(&f)?,
+                ou: court(&f, h),
+                systeme,
+                de_root: de_root_seul(&f),
+            })
+        })
+        .collect();
+    souillure_d_environment_d(&lus, &depart)
+        .into_iter()
+        .filter_map(|(i, v)| lus.get(i).map(|f| (f.ou.clone(), v)))
+        .collect()
+}
+
+/// Ronde 15, puis 16 : les fichiers d'environment.d que lit le générateur, dits non vérifiés en entier quand Vanguard
+/// ne peut pas suivre ce qu'ils posent (`environment_d_non_verifies`) : une ligne finie par « \ », ou, pour un fichier
+/// de /etc, /run, /usr/local/lib ou /usr/lib, une ligne qui lit un nom que le compte peut changer.
+fn juger_environment_d_entiers(h: &Path, t: &mut Lancements) {
+    for (ou, motif) in environment_d_non_verifies(&t.r, h) {
+        t.non_verifies.push(match motif {
+            EnvironmentDNonVerifie::Barre(n) => trf!(
                 "{ou}:{n} : ligne finie par « \\ » : le générateur d'environment.d ne joint pas les lignes comme Vanguard les lit ; tout ce fichier est non vérifié (ce qu'il pose, et ce que les fichiers suivants en lisent) ; écrivez chaque variable sur une seule ligne",
                 "{ou}:{n}: line ending in “\\”: the environment.d generator does not join lines the way Vanguard reads them; this whole file is not checked (what it sets, and what the following files read from it); write each variable on a single line"
-            ));
-            continue;
-        }
-        if f.parent().is_some_and(|d| systeme.iter().any(|s| s == d))
-            && let Some((n, nom, pose)) = lit_une_posee_du_compte(&texte, posees, &maison, &ou, de_root)
-        {
-            t.non_verifies.push(trf!(
-                "{ou}:{n} : ce fichier du système lit {nom} (posée à {pose}), qu'un fichier du compte peut changer : tout ce fichier est non vérifié",
-                "{ou}:{n}: this system file reads {nom} (set at {pose}), which a file of the account can change: this whole file is not checked"
-            ));
-        }
+            ),
+            EnvironmentDNonVerifie::Lit { ligne: n, nom, pose } => trf!(
+                "{ou}:{n} : ce fichier du système lit {nom} (posée à {pose}), dont la valeur vient d'un fichier que le compte peut changer : tout ce fichier est non vérifié",
+                "{ou}:{n}: this system file reads {nom} (set at {pose}), whose value comes from a file the account can change: this whole file is not checked"
+            ),
+        });
     }
 }
 
@@ -24399,7 +24575,7 @@ mod tests {
 
     /// Ronde 15 : les témoins. Un fichier d'environment.d sans « \ » final ne se dit pas en entier ; un fichier du
     /// système qui lit une variable que personne ne pose ($HOME, $PATH du gestionnaire) se tait ; et la règle de
-    /// `lit_une_posee_du_compte` : une variable posée seulement par root ne compte pas (dans la racine d'essai rien
+    /// `souillure_d_environment_d` : une variable posée seulement par root ne compte pas (dans la racine d'essai rien
     /// n'est à root, d'où l'essai sur la fonction).
     #[test]
     fn grammaire_stricte_ronde_15_temoins_muets() {
@@ -24427,17 +24603,26 @@ mod tests {
                 faux.push(format!("{texte:?} dit"));
             }
         }
-        let posee = |de_root: bool| PoseeDEnvironmentD {
-            nom: "HOME".into(),
-            valeur: Some("/home/alice/.x".into()),
-            ou: "/etc/environment.d/10-a.conf:1".into(),
+        // Ronde 16 : la souillure, sur la fonction (dans la racine d'essai rien n'est à root).
+        let lu = |texte: &str, de_root: bool| EnvironmentDLu {
+            ou: "60-z.conf".into(),
+            texte: texte.into(),
+            systeme: true,
             de_root,
         };
-        if lit_une_posee_du_compte("PATH=$HOME/bin\n", &[posee(true)], "/home/alice", "60-z.conf", true).is_some() {
-            faux.push("posée par root seul : dite".into());
+        let depart = [("HOME".to_string(), "50-x.conf:1".to_string())];
+        if !souillure_d_environment_d(&[lu("PATH=/usr/bin\nA=/x\nPATH=$A/bin\n", true)], &depart).is_empty() {
+            faux.push("ne lit que des noms posés par root : dit".into());
         }
-        if lit_une_posee_du_compte("PATH=$HOME/bin\n", &[posee(false)], "/home/alice", "60-z.conf", true)
-            != Some((1, "HOME".into(), "/etc/environment.d/10-a.conf:1".into()))
+        if souillure_d_environment_d(&[lu("PATH=$HOME/bin\n", true)], &depart)
+            != [(
+                0,
+                EnvironmentDNonVerifie::Lit {
+                    ligne: 1,
+                    nom: "HOME".into(),
+                    pose: "50-x.conf:1".into(),
+                },
+            )]
         {
             faux.push("posée par le compte : tue".into());
         }
@@ -24467,6 +24652,259 @@ mod tests {
             }
         }
         assert!(faux.is_empty(), "témoins de la ronde 15 : {faux:#?}");
+    }
+
+    /// Ronde 16 (N15-1 à N15-4) : la souillure textuelle. Chaîne entière (racine d'essai) : un fichier du système qui
+    /// lit, sous une forme imbriquée ou par le mot de « :- », une variable posée par le compte (N15-1 : s12, t09,
+    /// t11, t03), ou posée par le user.conf du compte (N15-3 : s21, s22, user.conf.d), est non vérifié en entier, dans
+    /// /usr/lib comme dans /etc et /run. Sur la fonction, avec des fichiers à root seul : « A=$A » garde A au compte
+    /// (N15-2 : r01, r03), la marque suit la valeur d'un fichier à l'autre (r20, et « B=$A » puis « $B »), et
+    /// l'exception « à root seul » de la barre finale dans les deux sens (N15-4). Témoins muets : snapd sans variable
+    /// du compte (les noms posés par le compte de cette machine), un fichier de root qui ne lit que ce que root pose.
+    #[test]
+    fn souillure_ronde_16_rien_de_tu() {
+        type Cas<'a> = (&'a str, (&'a str, &'a str), &'a str, &'a str, Option<usize>);
+        type Rendu = Vec<(usize, EnvironmentDNonVerifie)>;
+        let mut faux = Vec::new();
+        let messages = |tous: &[Constat]| tous.iter().map(|c| c.message.clone()).collect::<Vec<_>>();
+        let dit = |tous: &[Constat], ou: &str| {
+            non_verifie_uwsm(tous).is_some_and(|c| c.message.contains(&format!("{ou} : ce fichier du système lit")))
+        };
+        let a = "A=/home/alice/.x";
+        // (cas, compte : (fichier, texte), fichier du système, son texte, ligne dite ou None)
+        let cas: &[Cas] = &[
+            (
+                "s12",
+                (".config/environment.d/50-x.conf", a),
+                "usr/lib",
+                "PATH=${NOPE:-$A}:/usr/bin",
+                Some(1),
+            ),
+            (
+                "t03",
+                (".config/environment.d/50-x.conf", a),
+                "usr/lib",
+                "PATH=${NOPE:-${A}}:/usr/bin",
+                Some(1),
+            ),
+            (
+                "t06",
+                (".config/environment.d/50-x.conf", a),
+                "usr/lib",
+                "PATH=${PATH:+$A:}/usr/bin",
+                Some(1),
+            ),
+            (
+                "t09",
+                (".config/environment.d/50-x.conf", "HOME=/home/alice/.x"),
+                "usr/lib",
+                "PATH=${NOPE:-$HOME/bin}:/usr/bin",
+                Some(1),
+            ),
+            (
+                "t11",
+                (".config/environment.d/50-x.conf", a),
+                "usr/lib",
+                "LD_PRELOAD=${NOPE:-$A/l.so}",
+                Some(1),
+            ),
+            (
+                "t16",
+                (".config/environment.d/50-x.conf", a),
+                "usr/local/lib",
+                "PATH=${NOPE:-$A}:/usr/bin",
+                Some(1),
+            ),
+            (
+                "t09 /etc",
+                (".config/environment.d/50-x.conf", "HOME=/home/alice/.x"),
+                "etc",
+                "LANG=C\nPATH=${NOPE:-$HOME/bin}",
+                Some(2),
+            ),
+            (
+                "t09 /run",
+                (".config/environment.d/50-x.conf", "HOME=/home/alice/.x"),
+                "run",
+                "PATH=${NOPE:-$HOME/bin}",
+                Some(1),
+            ),
+            (
+                "autoréférence",
+                (".config/environment.d/50-x.conf", "PATH=/home/alice/.x"),
+                "usr/lib",
+                "PATH=$PATH:/snap/bin",
+                Some(1),
+            ),
+            (
+                "s21",
+                (
+                    ".config/systemd/user.conf",
+                    "[Manager]\nManagerEnvironment=A=/home/alice/.x",
+                ),
+                "usr/lib",
+                "PATH=$A/bin:/usr/bin",
+                Some(1),
+            ),
+            (
+                "s22",
+                (
+                    ".config/systemd/user.conf",
+                    "[Manager]\nDefaultEnvironment=\"B=1 A=/home/alice/.x\"",
+                ),
+                "usr/lib",
+                "PATH=$A/bin:/usr/bin",
+                Some(1),
+            ),
+            (
+                "s25",
+                (
+                    ".config/systemd/user.conf.d/a.conf",
+                    "[Manager]\nManagerEnvironment=A=/home/alice/.x",
+                ),
+                "etc",
+                "PATH=$A/bin:/usr/bin",
+                Some(1),
+            ),
+            (
+                "snapd, compte de cette machine",
+                (
+                    ".config/environment.d/nvidia-shader-cache.conf",
+                    "__GL_SHADER_DISK_CACHE_SIZE=1\nMOZ_ENABLE_WAYLAND=1",
+                ),
+                "usr/lib",
+                "PATH=$PATH:/snap/bin\nXDG_DATA_DIRS=${XDG_DATA_DIRS:-/usr/local/share:/usr/share}:/var/lib/snapd/desktop",
+                None,
+            ),
+            (
+                "t15",
+                (".config/environment.d/50-x.conf", a),
+                "usr/lib",
+                "PATH=${NOPE:-/usr/bin}",
+                None,
+            ),
+            (
+                "lit avant",
+                (".config/environment.d/50-x.conf", "LANG=C"),
+                "usr/lib",
+                "PATH=$A/bin:$HOME/bin",
+                None,
+            ),
+        ];
+        for (i, (nom, (compte, texte_compte), dossier, texte, ligne)) in cas.iter().enumerate() {
+            let m = Maison::nouvelle(&format!("r16-souillure-{i}"));
+            m.ecrire(compte, &format!("{texte_compte}\n"));
+            let f = m.racine.join(dossier).join("environment.d/990-z.conf");
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(&f, format!("{texte}\n")).unwrap();
+            let tous = m.tous_avec(&[]);
+            let juste = match ligne {
+                Some(n) => dit(&tous, &format!("990-z.conf:{n}")),
+                None => !tous.iter().any(|c| c.message.contains("ce fichier du système lit")),
+            };
+            if !juste {
+                faux.push(format!("{nom} : {:?}", messages(&tous)));
+            }
+        }
+        // Sur la fonction : fichiers à root seul (`de_root`), dans l'ordre du générateur.
+        let lu = |ou: &str, texte: &str, systeme: bool, de_root: bool| EnvironmentDLu {
+            ou: ou.into(),
+            texte: texte.into(),
+            systeme,
+            de_root,
+        };
+        let compte = [("A".to_string(), "50-x.conf:1".to_string())];
+        let lit = |ligne: usize, nom: &str, pose: &str| EnvironmentDNonVerifie::Lit {
+            ligne,
+            nom: nom.into(),
+            pose: pose.into(),
+        };
+        let fonction: Vec<(&str, Vec<EnvironmentDLu>, Rendu)> = vec![
+            (
+                "r01",
+                vec![lu("60-z.conf", "A=$A\nPATH=$A/bin:/usr/bin\n", true, true)],
+                vec![(0, lit(1, "A", "50-x.conf:1"))],
+            ),
+            (
+                "r03",
+                vec![lu(
+                    "60-z.conf",
+                    "XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-$HOME/.config}\nBASH_ENV=$XDG_CONFIG_HOME/rc\n",
+                    true,
+                    true,
+                )],
+                vec![(0, lit(1, "XDG_CONFIG_HOME", "50-x.conf:1"))],
+            ),
+            (
+                "r20",
+                vec![
+                    lu("55-y.conf", "A=$A\n", true, true),
+                    lu("60-z.conf", "PATH=$A/bin:/usr/bin\n", true, true),
+                ],
+                vec![(0, lit(1, "A", "50-x.conf:1")), (1, lit(1, "A", "55-y.conf:1"))],
+            ),
+            (
+                "la marque suit la valeur",
+                vec![
+                    lu("55-y.conf", "B=${NOPE:-$A}\n", true, true),
+                    lu("60-z.conf", "PATH=$B/bin:/usr/bin\n", true, true),
+                ],
+                vec![(0, lit(1, "A", "50-x.conf:1")), (1, lit(1, "B", "55-y.conf:1"))],
+            ),
+            (
+                "root pose une valeur pure",
+                vec![lu("60-z.conf", "A=/opt\nPATH=$A/bin\n", true, true)],
+                vec![],
+            ),
+            (
+                "barre à root seul : lit quand même",
+                vec![lu("60-z.conf", "FOO=1\\\nPATH=$A/bin\n", true, true)],
+                vec![(0, lit(1, "A", "50-x.conf:1"))],
+            ),
+            (
+                "barre à root seul, sans nom du compte : se tait",
+                vec![lu("60-z.conf", "FOO=1\\\nPATH=/usr/bin\n", true, true)],
+                vec![],
+            ),
+            (
+                "barre hors root : dite",
+                vec![lu("60-z.conf", "FOO=1\\\nPATH=/usr/bin\n", true, false)],
+                vec![(0, EnvironmentDNonVerifie::Barre(1))],
+            ),
+            (
+                "barre à root seul : ne retire pas A",
+                vec![
+                    lu("55-y.conf", "FOO=1\\\nA=/opt\n", true, true),
+                    lu("60-z.conf", "PATH=$A/bin\n", true, true),
+                ],
+                vec![(1, lit(1, "A", "50-x.conf:1"))],
+            ),
+            (
+                "fichier du compte : jamais « lit »",
+                vec![lu("70-c.conf", "PATH=$A/bin\n", false, false)],
+                vec![],
+            ),
+        ];
+        let compte_r03 = [("XDG_CONFIG_HOME".to_string(), "50-x.conf:1".to_string())];
+        for (nom, fichiers, attendu) in &fonction {
+            let depart: &[(String, String)] = if *nom == "r03" { &compte_r03 } else { &compte };
+            let obtenu = souillure_d_environment_d(fichiers, depart);
+            if obtenu != *attendu {
+                faux.push(format!("{nom} : {obtenu:?}"));
+            }
+        }
+        // Le relevé des noms, sans rien calculer.
+        for (valeur, attendu) in [
+            ("${NOPE:-${A}}:/usr/bin", vec!["NOPE", "A"]),
+            ("${NOPE:+x}${NOPE:-$A}", vec!["NOPE", "A"]),
+            ("$PATH:/snap/bin", vec!["PATH"]),
+            ("/usr/bin", vec![]),
+        ] {
+            if noms_lus(valeur) != attendu {
+                faux.push(format!("noms_lus({valeur:?}) = {:?}", noms_lus(valeur)));
+            }
+        }
+        assert!(faux.is_empty(), "souillure, ronde 16 : {faux:#?}");
     }
 
     /// R-2 (relecture DEP-4 de la 0.95) : un XDG_DATA_HOME posé au gestionnaire par un fichier (environment.d), absolu
