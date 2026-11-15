@@ -675,12 +675,20 @@ fn agir(m: &dyn Monde, accord: &str, consommer: impl FnOnce() -> Result<(), carn
                         chemin,
                         *visee,
                         &crate::socle::dossier_local(),
+                        &m.copie(),
                         essai,
                         o,
                         f,
                         vue,
                     ),
-                    _ => installer(&octets, chemin, *visee, &crate::socle::dossier_local(), essai),
+                    _ => installer(
+                        &octets,
+                        chemin,
+                        *visee,
+                        &crate::socle::dossier_local(),
+                        &m.copie(),
+                        essai,
+                    ),
                 };
                 noter_la_pose(&mut faites, &octets, chemin, f.as_deref(), r);
             }
@@ -709,6 +717,7 @@ fn agir(m: &dyn Monde, accord: &str, consommer: impl FnOnce() -> Result<(), carn
                     chemin,
                     *visee,
                     &crate::socle::dossier_local(),
+                    &m.copie(),
                     essai,
                     vue,
                     &mut recevoir,

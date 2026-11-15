@@ -176,7 +176,8 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   jamais ce doute) ; la mise à jour depuis GitHub remplace alors la copie par la dernière version signée seulement, et
   le dit ; une copie déjà à ce numéro, ou absente, n'est pas remplacée et le doute reste dit. Si les versions déjà vues
   ont aussi été changées hors de Vanguard, la dernière version signée est inconnue jusqu'à ce que vous lanciez
-  « vanguard se-mettre-a-jour » avec Internet et acceptiez de repartir de la version signée reçue ; d'ici là, tout reste
+  « vanguard se-mettre-a-jour » avec Internet et acceptiez de repartir de la version signée reçue (les versions vues ne
+  sont oubliées qu'une fois ce manifeste signé reçu, jamais hors ligne) ; d'ici là, tout reste
   « non vérifié », jamais compté sain. Ce qui reste : les sceaux de ce registre sont sans secret, une barrière et pas un
   coffre ; un programme de votre compte qui réécrit le registre avec
   ses sceaux peut y faire noter une autre copie, ou effacer la note, et un état entièrement effacé (registre et sceaux)

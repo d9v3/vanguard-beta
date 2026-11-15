@@ -434,9 +434,25 @@ pub(super) fn versions_vues_douteuses() -> bool {
     plus_haute_vue().is_err()
 }
 
-/// Repartir de zéro, sur accord (`depuis_github`) : la prochaine version signée reçue devient la plus haute vue.
-pub(super) fn oublier_versions_vues() -> std::io::Result<()> {
+/// Oublier les versions vues (`derniere_en_repartant`, la révocation) : la prochaine version signée reçue devient la
+/// plus haute vue.
+fn oublier_versions_vues() -> std::io::Result<()> {
     crate::sceau::effacer(crate::sceau::VERSIONS)
+}
+
+/// Repartir de zéro, sur accord (`depuis_github`) : le manifeste est d'abord reçu et sa signature vérifiée ; alors
+/// seulement les versions vues sont oubliées, et la version reçue devient la plus haute vue. Hors ligne, ou manifeste
+/// refusé : rien n'est oublié, le témoin du changement reste.
+pub(super) fn derniere_en_repartant() -> Result<Publiee, Echec> {
+    let publiee = derniere_recue()?;
+    let echec = |e: &dyn std::fmt::Display| Echec::echoue("mise_a_jour/remise", e.to_string());
+    oublier_versions_vues().map_err(|e| echec(&e))?;
+    if publiee.revoque {
+        retenir_revocation().map_err(|e| echec(&e))?;
+    }
+    let v = publiee.version;
+    crate::sceau::ecrire(crate::sceau::VERSIONS, format!("{}.{}.{}+{}", v.0, v.1, v.2, v.3)).map_err(|e| echec(&e))?;
+    Ok(publiee)
 }
 
 /// Retient que la clé de secours a révoqué la principale, la première fois : la plus haute version vue, qu'un voleur

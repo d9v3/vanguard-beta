@@ -539,8 +539,18 @@ fn remplacer(
     let fenetre = sa_fenetre::de_la_source(source, &octets).zip(sa_fenetre::pour(cible));
     vue.dite(fenetre.as_ref().map(|(_, chemin)| chemin.as_path()))?;
     match fenetre {
-        Some((f, chemin)) => sa_fenetre::installer_avec(&octets, cible, attendue, registre, essai, &f, &chemin, vue),
-        None => installer(&octets, cible, attendue, registre, essai),
+        Some((f, chemin)) => sa_fenetre::installer_avec(
+            &octets,
+            cible,
+            attendue,
+            registre,
+            &copie_de_cet_ordinateur(),
+            essai,
+            &f,
+            &chemin,
+            vue,
+        ),
+        None => installer(&octets, cible, attendue, registre, &copie_de_cet_ordinateur(), essai),
     }
 }
 
@@ -574,8 +584,16 @@ fn pas_de_soi(soi: Option<&str>) -> String {
 type Essai = fn(&Path, Version) -> Result<(), String>;
 
 /// Les octets d'un programme à la place de `cible`, s'ils portent la version `attendue` et que l'essai les a vus
-/// démarrer.
-fn installer(octets: &[u8], cible: &Path, attendue: Version, registre: &Path, essai: Essai) -> Result<(), String> {
+/// démarrer. `ici` est la copie de cet ordinateur (`copie_de_cet_ordinateur`, hors des essais) : seule une pose sur
+/// `ici` lève le doute sur la liste (`programmes_poses::copie_posee_ici`).
+fn installer(
+    octets: &[u8],
+    cible: &Path,
+    attendue: Version,
+    registre: &Path,
+    ici: &Path,
+    essai: Essai,
+) -> Result<(), String> {
     if version_gravee(octets) != Some(attendue) {
         return Err(tr!(
             "le programme de la clé a changé depuis l'affichage, rien n'est remplacé",
@@ -650,7 +668,7 @@ fn installer(octets: &[u8], cible: &Path, attendue: Version, registre: &Path, es
     } else {
         // Posée par Vanguard : chaque tâche qui la lance garde un sceau juste (`programmes_poses`), sans quoi le bilan
         // la dirait remplacée hors de Vanguard.
-        let touchees = crate::programmes_poses::copie_posee_ici(registre, cible, octets, &copie_de_cet_ordinateur());
+        let touchees = crate::programmes_poses::copie_posee_ici(registre, cible, octets, ici);
         // Le veilleur tourne sans s'arrêter : relancé, il prend la copie posée au lieu de garder l'ancienne en mémoire,
         // que plus rien sur le disque ne reconnaît.
         // Son unité suffit à le dire : posé par une version d'avant, rien n'est encore noté pour lui.
@@ -1700,8 +1718,17 @@ fn poser_copie_dans(
         std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
     }
     match &fenetre {
-        Some((f, chemin)) => sa_fenetre::installer_avec_sinon_seul(&octets, cible, version, registre, essai, f, chemin),
-        None => installer(&octets, cible, version, registre, essai).map(|()| None),
+        Some((f, chemin)) => sa_fenetre::installer_avec_sinon_seul(
+            &octets,
+            cible,
+            version,
+            registre,
+            &copie_de_cet_ordinateur(),
+            essai,
+            f,
+            chemin,
+        ),
+        None => installer(&octets, cible, version, registre, &copie_de_cet_ordinateur(), essai).map(|()| None),
     }
 }
 
@@ -1994,32 +2021,79 @@ fn doute_hors_github(d: crate::voulues::Doute) -> String {
     )
 }
 
-/// Les versions déjà vues ici, changées hors de Vanguard, ne protègent plus d'un vieux manifeste : dit, puis repartir
-/// de la version signée reçue maintenant, sur accord. `false` : pas reparti (un « n », ou l'oubli a échoué).
-fn repartir_des_versions_vues() -> bool {
+/// Ce que la personne a choisi pour des versions déjà vues changées hors de Vanguard.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Repartir {
+    /// Les versions vues sont crues : rien à demander.
+    PasBesoin,
+    /// « o » : repartir de la version signée reçue (`github::derniere_en_repartant`) ; le code reste non nul.
+    Oui,
+    /// « n » : rien n'est reçu ni oublié.
+    Non,
+}
+
+/// Les versions déjà vues ici, changées hors de Vanguard, ne protègent plus d'un vieux manifeste : dit, puis demande
+/// s'il faut repartir de la version signée qui sera reçue. Rien n'est oublié ici : seulement une fois un manifeste
+/// signé reçu (`github::derniere_en_repartant`).
+fn repartir_des_versions_vues() -> Repartir {
     if !github::versions_vues_douteuses() {
-        return true;
+        return Repartir::PasBesoin;
     }
     trp!(
         "\n  ✖ Les versions déjà vues ici ont été changées hors de Vanguard :\n    elles ne protègent plus d'un vieux manifeste remis sur GitHub.\n    Rien n'est vérifié tant qu'elles ne repartent pas de zéro.",
         "\n  ✖ The versions already seen here were changed outside Vanguard:\n    they no longer protect against an old manifest put back on GitHub.\n    Nothing is checked until they start over."
     );
-    // R6-CODES-1 : dit avant la question, qui quitte en fin d'entrée ; même reparti, un changement hors de Vanguard a
-    // été vu : le code reste non nul.
+    // R6-CODES-1, R7-CODES-1 : dit avant la question, qui quitte en fin d'entrée ; même reparti, un changement hors de
+    // Vanguard a été vu : le code reste non nul (`depuis_github`).
     crate::ui::refus_dit();
-    if !demander(tr!(
-        "  Repartir de la version signée reçue maintenant ? [o/N] : ",
-        "  Start over from the signed version received now? [y/N]: "
+    if demander(tr!(
+        "  Repartir de la version signée que GitHub va envoyer ? [o/N] : ",
+        "  Start over from the signed version GitHub will send? [y/N]: "
     ))
     .oui()
     {
-        return false;
+        Repartir::Oui
+    } else {
+        Repartir::Non
     }
-    if let Err(e) = github::oublier_versions_vues() {
-        trp!("  ✖ {}", "  ✖ {}", affichable(&e.to_string()));
-        return false;
+}
+
+/// La dernière version signée reçue de GitHub, en repartant des versions vues si la personne l'a voulu ; reparti, c'est
+/// dit. `None` : GitHub en erreur, dit (rien n'a été vérifié ; en repartant, rien n'est oublié).
+fn derniere_selon(repartir: Repartir) -> Option<github::Publiee> {
+    let recue = if repartir == Repartir::Oui {
+        github::derniere_en_repartant().map_err(String::from)
+    } else {
+        github::derniere()
+    };
+    let publiee = match recue {
+        Ok(p) => p,
+        Err(e) if repartir == Repartir::Oui => {
+            trp!(
+                "  GitHub : {}. Rien n'a été vérifié, et rien n'est oublié : les versions vues restent en doute.",
+                "  GitHub: {}. Nothing was checked, and nothing is forgotten: the versions seen stay in doubt.",
+                affichable(&e)
+            );
+            return None;
+        }
+        Err(e) => {
+            trp!(
+                "  GitHub : {}. Rien n'a été vérifié.",
+                "  GitHub: {}. Nothing was checked.",
+                affichable(&e)
+            );
+            return None;
+        }
+    };
+    if repartir != Repartir::Oui {
+        return Some(publiee);
     }
-    true
+    trp!(
+        "  Les versions déjà vues repartent de la version signée reçue ({}).",
+        "  The versions already seen start over from the signed version received ({}).",
+        ecrire(publiee.version)
+    );
+    Some(publiee)
 }
 
 /// La dernière version publiée sur GitHub : montrée, puis téléchargée, vérifiée et installée après un « o », à la
@@ -2042,8 +2116,9 @@ fn depuis_github() -> bool {
             Err(d) => {
                 crate::ui::refus_dit();
                 println!("\n{}", doute_sans_copie(d));
-                if github::dossier_sur() {
-                    let _ = repartir_des_versions_vues();
+                // R6-ORIGINE-DOC-2 : « o » reçoit vraiment la version signée avant d'oublier quoi que ce soit.
+                if github::dossier_sur() && repartir_des_versions_vues() == Repartir::Oui {
+                    let _ = derniere_selon(Repartir::Oui);
                 }
                 false
             }
@@ -2060,23 +2135,37 @@ fn depuis_github() -> bool {
         );
         return sans_github(doute);
     }
-    if !repartir_des_versions_vues() {
+    // R7-REGISTRE-1 : le doute sur la liste est dit avant la question, qui peut quitter (fin d'entrée).
+    if let Some(d) = doute
+        && github::versions_vues_douteuses()
+    {
+        crate::ui::refus_dit();
+        println!("\n{}", doute_de_la_liste(d));
+    }
+    let repartir = repartir_des_versions_vues();
+    if repartir == Repartir::Non {
         return false;
     }
+    // Reparti : un changement hors de Vanguard a été vu ; jamais compté comme une réussite (R7-CODES-1).
+    depuis_github_vers(cibles, doute, repartir) && repartir == Repartir::PasBesoin
+}
+
+fn doute_de_la_liste(d: crate::voulues::Doute) -> String {
+    trf!(
+        "  Non vérifié : la liste des copies posées par Vanguard {} ; rien ne dit\n  qu'une copie plus récente n'y était pas notée.",
+        "  Not checked: the list of copies set up by Vanguard {}; nothing shows\n  that a newer copy was not noted in it.",
+        d.texte()
+    )
+}
+
+/// La suite de `depuis_github`, une fois les versions vues crues ou la personne d'accord pour en repartir.
+fn depuis_github_vers(cibles: Vec<PathBuf>, doute: Option<crate::voulues::Doute>, repartir: Repartir) -> bool {
     trp!(
         "\n  {GRIS}Dernière version publiée sur GitHub…{RESET}",
         "\n  {GRIS}Latest version published on GitHub…{RESET}"
     );
-    let publiee = match github::derniere() {
-        Ok(p) => p,
-        Err(e) => {
-            trp!(
-                "  GitHub : {}. Rien n'a été vérifié.",
-                "  GitHub: {}. Nothing was checked.",
-                affichable(&e)
-            );
-            return sans_github(doute);
-        }
+    let Some(publiee) = derniere_selon(repartir) else {
+        return sans_github(doute);
     };
     let (ici, a_remplacer, doutes) = juger_cibles(
         cibles,
@@ -2152,6 +2241,7 @@ fn depuis_github() -> bool {
             c,
             publiee.version,
             &crate::socle::dossier_local(),
+            &copie_de_cet_ordinateur(),
             essayer,
             vue,
             &mut recevoir,
@@ -2391,11 +2481,53 @@ mod tests {
         );
         faux_programme(&source, Some("0.81.0"));
         let octets = std::fs::read(&source).unwrap();
-        installer(&octets, &cible, version_gravee(&octets).unwrap(), &registre, SANS_ESSAI).unwrap();
+        installer(
+            &octets,
+            &cible,
+            version_gravee(&octets).unwrap(),
+            &registre,
+            &copie_de_cet_ordinateur(),
+            SANS_ESSAI,
+        )
+        .unwrap();
         assert_eq!(std::fs::read(&cible).unwrap(), octets, "pas posée");
         assert!(
             copie_notee_dans(&registre, &cible).is_err(),
             "doute levé par une pose ailleurs que la copie de cet ordinateur"
+        );
+        let _ = std::fs::remove_dir_all(&racine);
+        let _ = std::fs::remove_dir_all(&registre);
+    }
+
+    /// R7-ESSAIS-1 : une pose par `installer` sur la copie de cet ordinateur (`ici`, injectée) lève le doute sur la
+    /// liste ; c'est la seule sortie du doute (numéro et octets signés, vérifiés avant `installer`).
+    #[test]
+    fn installer_sur_la_copie_d_ici_leve_le_doute() {
+        use crate::programmes_poses::{FICHIER, copie_notee_dans, copie_posee_dans};
+        let racine = crate::essais::temporaire().join(crate::essais::nom_unique("installer-ici"));
+        let registre = inconnue();
+        let (source, cible) = (racine.join("source"), racine.join("bin").join(NOM));
+        faux_programme(&cible, Some("0.80.0+1"));
+        copie_posee_dans(&registre, &cible, &std::fs::read(&cible).unwrap());
+        std::fs::remove_file(registre.join(FICHIER)).unwrap();
+        assert!(
+            copie_notee_dans(&registre, &cible).is_err(),
+            "liste pas en doute au départ"
+        );
+        faux_programme(&source, Some("0.81.0"));
+        let octets = std::fs::read(&source).unwrap();
+        installer(
+            &octets,
+            &cible,
+            version_gravee(&octets).unwrap(),
+            &registre,
+            &cible,
+            SANS_ESSAI,
+        )
+        .unwrap();
+        assert!(
+            matches!(copie_notee_dans(&registre, &cible), Ok(Some(_))),
+            "doute pas levé par la pose sur la copie d'ici"
         );
         let _ = std::fs::remove_dir_all(&racine);
         let _ = std::fs::remove_dir_all(&registre);

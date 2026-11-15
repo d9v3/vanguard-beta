@@ -168,7 +168,8 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   this doubt); the update from GitHub then replaces the copy with the latest signed version only, and says so; a copy
   already at that number, or missing, is not replaced and the doubt is still reported. If the versions already seen
   were also changed outside of Vanguard, the latest signed version is unknown until you run "vanguard
-  se-mettre-a-jour" with Internet and accept to start again from the signed version received; until then, everything
+  se-mettre-a-jour" with Internet and accept to start again from the signed version received (the versions seen
+  are only forgotten once that signed manifest is received, never offline); until then, everything
   stays "not checked", never counted as sound. What remains: the seals of this
   register have no secret, a barrier and not a safe; a program of your account that rewrites the register along with
   its seals can have another copy noted in it, or erase the note, and a fully erased state (register and seals) looks

@@ -57,16 +57,17 @@ pub(super) fn installer_avec_sa_fenetre(
     cible: &Path,
     attendue: Version,
     registre: &Path,
+    copie: &Path,
     essai: Essai,
     vue: &Vue,
     recevoir: &mut dyn FnMut() -> Result<Vec<u8>, String>,
 ) -> Result<(), String> {
     vue.dite(a_cote(cible).as_deref())?;
     let Some(chemin) = a_cote(cible) else {
-        return installer(octets, cible, attendue, registre, essai);
+        return installer(octets, cible, attendue, registre, copie, essai);
     };
     match empreinte_fenetre::gravee(octets) {
-        Some(Gravee::Aucune) => return installer(octets, cible, attendue, registre, essai),
+        Some(Gravee::Aucune) => return installer(octets, cible, attendue, registre, copie, essai),
         // Rien n'est téléchargé pour un programme qui ne dit pas sa fenêtre : refusé tout de suite.
         None => return Err(sans_marque()),
         Some(Gravee::Empreinte(_)) => {}
@@ -74,7 +75,7 @@ pub(super) fn installer_avec_sa_fenetre(
     let fenetre = recevoir()?;
     // Le téléchargement a pris du temps : une fenêtre a pu apparaître sous un autre nom que le lancement cherche.
     vue.dite(a_cote(cible).as_deref())?;
-    installer_avec(octets, cible, attendue, registre, essai, &fenetre, &chemin, vue)
+    installer_avec(octets, cible, attendue, registre, copie, essai, &fenetre, &chemin, vue)
 }
 
 /// La fenêtre telle que l'aperçu (ou la question du terminal) l'a montrée : le chemin que la mise à jour remplacera,
@@ -206,12 +207,24 @@ pub(super) fn installer_avec(
     cible: &Path,
     attendue: Version,
     registre: &Path,
+    copie: &Path,
     essai: Essai,
     fenetre: &[u8],
     chemin: &Path,
     vue: &Vue,
 ) -> Result<(), String> {
-    installer_avec_repli(octets, cible, attendue, registre, essai, fenetre, chemin, Some(vue)).map(|_| ())
+    installer_avec_repli(
+        octets,
+        cible,
+        attendue,
+        registre,
+        copie,
+        essai,
+        fenetre,
+        chemin,
+        Some(vue),
+    )
+    .map(|_| ())
 }
 
 /// `installer_avec` pour la copie depuis la clé (C-4, relecture 0.96) : une fenêtre qui ne peut pas être posée (un
@@ -222,11 +235,12 @@ pub(super) fn installer_avec_sinon_seul(
     cible: &Path,
     attendue: Version,
     registre: &Path,
+    copie: &Path,
     essai: Essai,
     fenetre: &[u8],
     chemin: &Path,
 ) -> Result<Option<String>, String> {
-    installer_avec_repli(octets, cible, attendue, registre, essai, fenetre, chemin, None)
+    installer_avec_repli(octets, cible, attendue, registre, copie, essai, fenetre, chemin, None)
 }
 
 fn installer_avec_repli(
@@ -234,6 +248,7 @@ fn installer_avec_repli(
     cible: &Path,
     attendue: Version,
     registre: &Path,
+    copie: &Path,
     essai: Essai,
     fenetre: &[u8],
     chemin: &Path,
@@ -257,7 +272,7 @@ fn installer_avec_repli(
         match poser(fenetre, chemin) {
             Ok(()) => {}
             Err(e) if seul_sinon => {
-                installer(octets, cible, attendue, registre, essai)?;
+                installer(octets, cible, attendue, registre, copie, essai)?;
                 return Ok(Some(crate::trf!(
                     "la fenêtre n'a pas pu être posée à côté de la copie ({}) : le programme est posé seul, le raccourci ouvrira le menu",
                     "the window could not be placed next to the copy ({}): the program is placed alone, the shortcut will open the menu",
@@ -267,7 +282,7 @@ fn installer_avec_repli(
             Err(e) => return Err(e),
         }
     }
-    installer(octets, cible, attendue, registre, essai).map(|()| None).map_err(|e| {
+    installer(octets, cible, attendue, registre, copie, essai).map(|()| None).map_err(|e| {
         if changee && !programme_avant.toujours_la(cible, TAILLE_PROGRAMME) {
             return format!(
                 "{e}\n    {}",
@@ -511,6 +526,7 @@ mod tests {
             &cible,
             V,
             &crate::socle::dossier_local(),
+            &crate::mise_a_jour::copie_de_cet_ordinateur(),
             SANS_ESSAI,
             &montree(&cible),
             &mut recevoir,
@@ -528,6 +544,7 @@ mod tests {
                 &cible,
                 V,
                 &crate::socle::dossier_local(),
+                &crate::mise_a_jour::copie_de_cet_ordinateur(),
                 SANS_ESSAI,
                 &montree(&cible),
                 &mut autre
@@ -542,6 +559,7 @@ mod tests {
                 &cible,
                 V,
                 &crate::socle::dossier_local(),
+                &crate::mise_a_jour::copie_de_cet_ordinateur(),
                 SANS_ESSAI,
                 &montree(&cible),
                 &mut panne
@@ -556,6 +574,7 @@ mod tests {
                 &cible,
                 V,
                 &crate::socle::dossier_local(),
+                &crate::mise_a_jour::copie_de_cet_ordinateur(),
                 ESSAI_RATE,
                 &montree(&cible),
                 &mut recevoir
@@ -572,6 +591,7 @@ mod tests {
                 &cible,
                 V,
                 &crate::socle::dossier_local(),
+                &crate::mise_a_jour::copie_de_cet_ordinateur(),
                 SANS_ESSAI,
                 &montree(&cible),
                 &mut recevoir
@@ -585,6 +605,7 @@ mod tests {
             &cible,
             V,
             &crate::socle::dossier_local(),
+            &crate::mise_a_jour::copie_de_cet_ordinateur(),
             SANS_ESSAI,
             &montree(&cible),
             &mut recevoir,
@@ -599,6 +620,7 @@ mod tests {
             &cible,
             V,
             &crate::socle::dossier_local(),
+            &crate::mise_a_jour::copie_de_cet_ordinateur(),
             SANS_ESSAI,
             &montree(&cible),
             &mut recevoir,
@@ -615,6 +637,7 @@ mod tests {
             &cible,
             V,
             &crate::socle::dossier_local(),
+            &crate::mise_a_jour::copie_de_cet_ordinateur(),
             SANS_ESSAI,
             &montree(&cible),
             &mut recevoir,
@@ -679,6 +702,7 @@ mod tests {
             &cible,
             V,
             &crate::socle::dossier_local(),
+            &crate::mise_a_jour::copie_de_cet_ordinateur(),
             CHANGE_PUIS_RATE,
             &montree(&cible),
             &mut recevoir,
@@ -730,6 +754,7 @@ mod tests {
             &cible,
             V,
             &crate::socle::dossier_local(),
+            &crate::mise_a_jour::copie_de_cet_ordinateur(),
             SANS_ESSAI,
             &aucune,
             &mut recevoir,
@@ -749,6 +774,7 @@ mod tests {
             &cible,
             V,
             &crate::socle::dossier_local(),
+            &crate::mise_a_jour::copie_de_cet_ordinateur(),
             SANS_ESSAI,
             &vue,
             &mut changer,
@@ -763,6 +789,7 @@ mod tests {
             &cible,
             V,
             &crate::socle::dossier_local(),
+            &crate::mise_a_jour::copie_de_cet_ordinateur(),
             SANS_ESSAI,
             &vue,
             &mut recevoir,
@@ -781,6 +808,7 @@ mod tests {
             &cible,
             V,
             &crate::socle::dossier_local(),
+            &crate::mise_a_jour::copie_de_cet_ordinateur(),
             SANS_ESSAI,
             &vue,
             &mut apparait,
@@ -797,6 +825,7 @@ mod tests {
             &cible,
             V,
             &crate::socle::dossier_local(),
+            &crate::mise_a_jour::copie_de_cet_ordinateur(),
             SANS_ESSAI,
             &vue,
             &mut recevoir,
@@ -821,6 +850,7 @@ mod tests {
                 &cible,
                 V,
                 &crate::socle::dossier_local(),
+                &crate::mise_a_jour::copie_de_cet_ordinateur(),
                 SANS_ESSAI,
                 &neuve,
                 &fenetre,

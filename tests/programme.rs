@@ -7172,6 +7172,77 @@ fn versions_vues_changees_jamais_code_zero() {
     let _ = std::fs::remove_dir_all(&racine);
 }
 
+/// Les versions déjà vues de `maison`, changées hors de Vanguard (une version plus basse que tout manifeste).
+#[cfg(target_os = "linux")]
+fn versions_vues_falsifiees(maison: &Path) -> PathBuf {
+    let vues = registre_local(maison)
+        .parent()
+        .unwrap()
+        .join("versions")
+        .join("plus-haute-vue.txt");
+    std::fs::create_dir_all(vues.parent().unwrap()).unwrap();
+    std::fs::write(&vues, "0.1.0+1").unwrap();
+    vues
+}
+
+/// R7-CODES-1, R7-ORIGINE-1 : « o » à « Repartir ? » sans GitHub : rien n'est oublié (le témoin du changement reste)
+/// et le code est non nul ; repartir n'est jamais une réussite.
+#[cfg(target_os = "linux")]
+#[test]
+fn repartir_hors_ligne_n_oublie_rien() {
+    let (racine, sur_la_cle, maison) = cle_et_maison("maj-repartir-hors-ligne");
+    let copie = copie_locale(&maison);
+    std::fs::create_dir_all(copie.parent().unwrap()).unwrap();
+    std::fs::copy(&sur_la_cle, &copie).unwrap();
+    let vues = versions_vues_falsifiees(&maison);
+    let s = vanguard_dans_env(
+        &sur_la_cle,
+        &maison,
+        "fr",
+        &["se-mettre-a-jour"],
+        "o\n",
+        120,
+        HORS_LIGNE,
+    );
+    let t = a_plat(&s.texte);
+    assert!(t.contains("Repartir de la version signée"), "{t}\n{}", s.erreurs);
+    assert_eq!(
+        std::fs::read_to_string(&vues).ok().as_deref(),
+        Some("0.1.0+1"),
+        "versions vues oubliées sans manifeste signé reçu\n{t}"
+    );
+    assert_ne!(s.code, Some(0), "code 0 après « o » à « Repartir ? »\n{t}");
+    let _ = std::fs::remove_dir_all(&racine);
+}
+
+/// R7-REGISTRE-1 : la liste des copies en doute ET les versions vues changées : le doute sur la liste est dit avant
+/// « Repartir ? », donc même si l'entrée se termine là.
+#[cfg(target_os = "linux")]
+#[test]
+fn double_doute_liste_dite_avant_repartir() {
+    let (racine, sur_la_cle, maison) = cle_et_maison("maj-double-doute");
+    let copie = copie_locale(&maison);
+    let pose = vanguard_dans_env(&sur_la_cle, &maison, "fr", &["surveillance", "on"], "", 120, HORS_LIGNE);
+    assert!(
+        copie.exists(),
+        "copie pas posée : {}\n{}",
+        a_plat(&pose.texte),
+        pose.erreurs
+    );
+    std::fs::remove_file(registre_local(&maison)).unwrap();
+    versions_vues_falsifiees(&maison);
+    let s = vanguard_dans_env(&sur_la_cle, &maison, "fr", &["se-mettre-a-jour"], "", 120, HORS_LIGNE);
+    let t = a_plat(&s.texte);
+    assert!(
+        t.contains("Non vérifié : la liste des copies posées par Vanguard")
+            && t.contains("Rien n'est vérifié tant qu'elles"),
+        "{t}\n{}",
+        s.erreurs
+    );
+    assert_ne!(s.code, Some(0), "{t}");
+    let _ = std::fs::remove_dir_all(&racine);
+}
+
 /// MOYENNE (relecture adverse, R1-M1) : le bilan scelle au premier usage le programme d'une tâche qui n'a pas encore
 /// d'entrée, quel qu'il soit. Ce sceau-là ne prouve pas que Vanguard a posé la copie : une unité d'entretien posée par
 /// un autre programme du compte, qui lance un fichier plus récent mis dans bin/, ne le fait pas garder.
