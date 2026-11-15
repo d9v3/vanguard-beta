@@ -296,13 +296,16 @@ recompilée au besoin.
   finie par « \ » (une barre ou plusieurs, suivie ou non d'un blanc ou d'un retour chariot), que le générateur ne joint
   pas comme Vanguard la lit, est dit non vérifié en entier et lève la sauvegarde, sauf s'il est à root seul ; un fichier
   d'environment.d de /etc, /run, /usr/local/lib ou /usr/lib qui lit une variable que le compte peut changer est dit non
-  vérifié en entier et lève la sauvegarde ; rien n'y est calculé : il suffit que le nom soit écrit après « $ » ou « ${ »,
-  dans le mot d'un « ${X:-…} » ou « ${X:+…} » aussi, imbriqué ou non, la variable elle-même comprise (« PATH=$PATH:… »
-  quand le compte pose PATH) ; une variable que le compte peut changer est posée par un environment.d du compte, par
-  ManagerEnvironment= ou DefaultEnvironment= d'un user.conf ou user.conf.d du compte, par un
-  fichier du système (environment.d, user.conf, user.conf.d) qui n'est pas à root seul, ou par une ligne qui en lit
-  une, quel que soit le fichier qui l'écrit ; celles de la session
-  (profils, ~/.pam_environment) ne sont pas comptées ; « : ${PATH::=/home/alice/.x} » de zsh et
+  vérifié en entier et lève la sauvegarde ; rien n'y est calculé : il suffit que le nom soit écrit juste après « $ »
+  ou « ${ » sur une même ligne du fichier, commentaire ou suite d'une valeur entre guillemets comprise, dans le mot d'un
+  « ${X:-…} » ou « ${X:+…} » aussi, imbriqué ou non, la variable elle-même comprise (« PATH=$PATH:… » quand le compte
+  pose PATH) ; une variable que le compte peut changer est posée par un environment.d du compte, par
+  ManagerEnvironment= ou DefaultEnvironment= d'un user.conf ou user.conf.d du compte (une valeur écrite avec « " »,
+  « ' » ou « \ » n'est pas lue : elle vaut pour tous les noms), par un fichier du système (environment.d, user.conf,
+  user.conf.d) qui n'est pas à root seul, ou par une ligne qui en lit une, quel que soit le fichier qui l'écrit ; un
+  fichier du système dont une ligne en lit une compte aussi pour tout ce qu'il pose ; une ligne d'un fichier à root
+  seul ne rend jamais une telle variable à root ; celles de la session (profils, ~/.pam_environment) ne sont pas
+  comptées ; « : ${PATH::=/home/alice/.x} » de zsh et
   « PATH =… » d'environment.d (une espace avant « = ») sont dits non vérifiés, pas élevés ; dans le shell, une variable
   posée plus haut dans le fichier n'est pas suivie (« PATH=$X:$PATH » est dit, pas élevé) ; une valeur lue dans un
   calcul, ou construite en morceaux sur plusieurs lignes, n'est pas suivie ; une ligne hors forme d'un fichier que seul
