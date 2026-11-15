@@ -2101,9 +2101,25 @@ struct Releveur {
     budget: temoins::Budget,
     /// `dossiers_dbus`, calculés une fois (chacun jugé par `de_root_seul`).
     dbus: std::cell::OnceCell<Vec<std::path::PathBuf>>,
+    /// Ronde 17 (N16-4) : dans les essais, qui tournent où rien n'est à root seul, les fichiers qui comptent pour à
+    /// root seul (`a_root_seul`).
+    #[cfg(test)]
+    root_seul_d_essai: Vec<std::path::PathBuf>,
 }
 
 impl Releveur {
+    /// `de_root_seul`, ou (essais seulement) un fichier de `root_seul_d_essai`.
+    #[cfg(not(test))]
+    #[allow(clippy::unused_self)]
+    fn a_root_seul(&self, f: &Path) -> bool {
+        de_root_seul(f)
+    }
+
+    #[cfg(test)]
+    fn a_root_seul(&self, f: &Path) -> bool {
+        self.root_seul_d_essai.iter().any(|x| x == f) || de_root_seul(f)
+    }
+
     /// Un fichier des dossiers de Hyprland (~/.config/hypr, ou celui d'un XDG_CONFIG_HOME déplacé).
     fn dans_hypr(&self, f: &Path) -> bool {
         f.starts_with(self.maison.join(".config/hypr"))
@@ -5175,7 +5191,7 @@ fn fichier_leve_la_sauvegarde(
     if std::fs::read_link(f).is_ok_and(|v| v == Path::new("/dev/null")) {
         return false;
     }
-    if !du_compte && de_root_seul(f) {
+    if !du_compte && r.a_root_seul(f) {
         return false;
     }
     match temoins::lire_borne(f, AJOUT_MAX) {
@@ -7854,6 +7870,10 @@ fn noms_lus(valeur: &str) -> Vec<String> {
 /// pour environment.d, chaque clé de ligne logique et de ligne écrite (coupée aussi à « \r ») ; pour user.conf et
 /// user.conf.d, chaque « NOM= » d'une valeur de ManagerEnvironment= ou DefaultEnvironment=. Plus large que le
 /// lecteur : un nom en trop dit un fichier non vérifié, il n'en tait jamais un.
+///
+/// Ronde 17 (N16-1, décision de l'auteur) : systemd retire les guillemets et décode les échappements avant de couper au
+/// « = » (« A""=/x », « \x41=/x » posent A). Une telle valeur (« " », « ' » ou « \ ») ne se lit pas : elle pose le
+/// joker `TOUT_NOM` (tout nom), que rien ne retire, au lieu de noms devinés. Rien n'est décodé.
 fn noms_poses_au_depart(texte: &str, sorte: Variables, ou: &str) -> Vec<(String, String)> {
     let mut noms: Vec<(String, String)> = Vec::new();
     let mut garder = |nom: &str, n: usize| {
@@ -7882,6 +7902,10 @@ fn noms_poses_au_depart(texte: &str, sorte: Variables, ou: &str) -> Vec<(String,
             ) {
                 continue;
             }
+            if valeur.contains(['"', '\'', '\\']) {
+                garder(TOUT_NOM, n);
+                continue;
+            }
             for (i, _) in valeur.match_indices('=') {
                 let avant = valeur.get(..i).unwrap_or_default();
                 let debut = avant
@@ -7898,6 +7922,10 @@ fn noms_poses_au_depart(texte: &str, sorte: Variables, ou: &str) -> Vec<(String,
     }
     noms
 }
+
+/// Ronde 17 (N16-1) : le nom de T qui vaut pour tout nom (`noms_poses_au_depart`) ; jamais un identifiant, donc jamais
+/// retiré par une ligne qui pose un nom.
+const TOUT_NOM: &str = "*";
 
 /// Un fichier d'environment.d tel que le lit `souillure_d_environment_d`.
 struct EnvironmentDLu {
@@ -7917,17 +7945,43 @@ enum EnvironmentDNonVerifie {
     Barre(usize),
     /// Un fichier du système : à la ligne `ligne`, il lit `nom`, que le compte peut changer (posée à `pose`).
     Lit { ligne: usize, nom: String, pose: String },
+    /// Ronde 17 (N16-1) : un fichier du système lit `nom` à la ligne `ligne`, et le compte peut poser tout nom à `pose`
+    /// sous une écriture que Vanguard ne lit pas (`TOUT_NOM`).
+    LitSousEcriture { ligne: usize, nom: String, pose: String },
+}
+
+/// Ronde 17 : `x`, un nom lu, est-il dans T (`souillure_d_environment_d`) ? Rendu : le motif à dire à la ligne `ligne`
+/// (par son nom, ou par le joker `TOUT_NOM`).
+fn lu_dans_t(t: &[(String, String)], x: &str, ligne: usize) -> Option<EnvironmentDNonVerifie> {
+    if let Some((_, pose)) = t.iter().find(|(m, _)| m == x) {
+        return Some(EnvironmentDNonVerifie::Lit {
+            ligne,
+            nom: x.to_string(),
+            pose: pose.clone(),
+        });
+    }
+    t.iter()
+        .find(|(m, _)| m == TOUT_NOM)
+        .map(|(_, pose)| EnvironmentDNonVerifie::LitSousEcriture {
+            ligne,
+            nom: x.to_string(),
+            pose: pose.clone(),
+        })
 }
 
 /// Ronde 16 (N15-1 à N15-4, décision de coordination) : la souillure textuelle. Rien n'est calculé. T, les noms « du
 /// compte », part de `depart` (`noms_poses_au_depart`) ; puis, dans l'ordre du générateur, chaque « NOM=valeur » qui
 /// lit un nom de T (`noms_lus`, la variable elle-même comprise : « A=$A » d'un fichier de root garde A dans T) met
 /// NOM dans T : la marque suit la valeur, quel que soit le propriétaire du fichier. Un fichier qui n'est pas à root
-/// seul met aussi dans T tout ce qu'il pose ; un fichier à root seul, sans « \ » final, qui pose une valeur sans nom
-/// de T, en retire NOM. Rendu : pour chaque fichier (son rang dans `fichiers`), le premier motif d'un non vérifié
-/// entier : une ligne finie par « \ » (sauf à root seul), ou, pour un fichier du système, la première ligne qui lit
-/// un nom de T. Les lignes écrites d'une ligne jointe se lisent aussi une à une : le générateur ne joint pas comme
-/// Vanguard.
+/// seul met aussi dans T tout ce qu'il pose. Ronde 17 (N16-2) : rien ne retire un nom de T, pas même une ligne d'un
+/// fichier à root seul (le générateur refuse des lignes que Vanguard lirait, « A= », « A="" », une valeur ouverte
+/// plus haut). Rendu : pour chaque fichier (son rang dans `fichiers`), le premier motif d'un non vérifié entier : une
+/// ligne finie par « \ » (sauf à root seul), ou, pour un fichier du système, une ligne qui lit un nom de T. Les
+/// lignes écrites d'une ligne jointe se lisent aussi une à une : le générateur ne joint pas comme Vanguard. Ronde 17
+/// (N16-3) : pour un fichier du système, chaque ligne écrite aussi, telle quelle (commentaires compris : dans une
+/// valeur entre guillemets sur plusieurs lignes, rien n'est un commentaire ni une clé) ; si l'une lit un nom de T,
+/// le fichier est non vérifié et tout ce qu'il pose entre dans T. La ligne brute se juge contre T à l'entrée du
+/// fichier.
 fn souillure_d_environment_d(
     fichiers: &[EnvironmentDLu],
     depart: &[(String, String)],
@@ -7935,6 +7989,8 @@ fn souillure_d_environment_d(
     let mut t: Vec<(String, String)> = depart.to_vec();
     let mut sortie = Vec::new();
     for (i, f) in fichiers.iter().enumerate() {
+        // T à l'entrée du fichier : la ligne brute se juge contre lui (« PATH=$PATH:… » ne se lit pas elle-même).
+        let t_avant = t.clone();
         let barre = barre_finale_d_environment_d(&f.texte);
         let mut dit = false;
         if !f.de_root
@@ -7952,29 +8008,35 @@ fn souillure_d_environment_d(
                 let Some((nom, valeur)) = pose_d_environment_d(ligne) else {
                     continue;
                 };
-                let lue = noms_lus(&valeur)
-                    .into_iter()
-                    .find_map(|x| t.iter().find(|(m, _)| *m == x).cloned());
+                let lue = noms_lus(&valeur).into_iter().find_map(|x| lu_dans_t(&t, &x, n));
+                let souillee = lue.is_some() || !f.de_root;
                 if f.systeme
                     && !dit
-                    && let Some((x, pose)) = &lue
+                    && let Some(motif) = lue
                 {
-                    sortie.push((
-                        i,
-                        EnvironmentDNonVerifie::Lit {
-                            ligne: n,
-                            nom: x.clone(),
-                            pose: pose.clone(),
-                        },
-                    ));
+                    sortie.push((i, motif));
                     dit = true;
                 }
-                let souillee = lue.is_some() || !f.de_root;
-                if souillee || barre.is_none() {
-                    t.retain(|(m, _)| *m != nom);
-                }
                 if souillee {
+                    t.retain(|(m, _)| *m != nom);
                     t.push((nom, format!("{}:{n}", f.ou)));
+                }
+            }
+        }
+        if f.systeme {
+            let brute = f.texte.split('\n').enumerate().find_map(|(k, l)| {
+                noms_lus(l)
+                    .into_iter()
+                    .find_map(|x| lu_dans_t(&t_avant, &x, k.saturating_add(1)))
+            });
+            if let Some(motif) = brute {
+                if !dit {
+                    sortie.push((i, motif));
+                }
+                for (nom, ou) in noms_poses_au_depart(&f.texte, Variables::Cles, &f.ou) {
+                    if !t.iter().any(|(m, _)| *m == nom) {
+                        t.push((nom, ou));
+                    }
                 }
             }
         }
@@ -8002,7 +8064,7 @@ fn environment_d_non_verifies(r: &Releveur, h: &Path) -> Vec<(String, Environmen
         let pris = if environment_d {
             *du_compte
         } else {
-            *sorte == Variables::Systemd && (*du_compte || !de_root_seul(f))
+            *sorte == Variables::Systemd && (*du_compte || !r.a_root_seul(f))
         };
         if !pris {
             continue;
@@ -8021,7 +8083,7 @@ fn environment_d_non_verifies(r: &Releveur, h: &Path) -> Vec<(String, Environmen
                 texte: lire(&f)?,
                 ou: court(&f, h),
                 systeme,
-                de_root: de_root_seul(&f),
+                de_root: r.a_root_seul(&f),
             })
         })
         .collect();
@@ -8044,6 +8106,10 @@ fn juger_environment_d_entiers(h: &Path, t: &mut Lancements) {
             EnvironmentDNonVerifie::Lit { ligne: n, nom, pose } => trf!(
                 "{ou}:{n} : ce fichier du système lit {nom} (posée à {pose}), dont la valeur vient d'un fichier que le compte peut changer : tout ce fichier est non vérifié",
                 "{ou}:{n}: this system file reads {nom} (set at {pose}), whose value comes from a file the account can change: this whole file is not checked"
+            ),
+            EnvironmentDNonVerifie::LitSousEcriture { ligne: n, nom, pose } => trf!(
+                "{ou}:{n} : ce fichier du système lit {nom}, que le compte peut poser à {pose} sous une écriture que Vanguard ne lit pas (guillemets, apostrophe ou « \\ ») : tout ce fichier est non vérifié",
+                "{ou}:{n}: this system file reads {nom}, which the account can set at {pose} in a form Vanguard does not read (quotes, apostrophe or “\\”): this whole file is not checked"
             ),
         });
     }
@@ -24852,9 +24918,10 @@ mod tests {
                 vec![(0, lit(1, "A", "50-x.conf:1")), (1, lit(1, "B", "55-y.conf:1"))],
             ),
             (
-                "root pose une valeur pure",
+                // Ronde 17 (N16-2) : root ne retire jamais un nom de T.
+                "root pose une valeur pure : A reste au compte",
                 vec![lu("60-z.conf", "A=/opt\nPATH=$A/bin\n", true, true)],
-                vec![],
+                vec![(0, lit(2, "A", "50-x.conf:1"))],
             ),
             (
                 "barre à root seul : lit quand même",
@@ -24905,6 +24972,228 @@ mod tests {
             }
         }
         assert!(faux.is_empty(), "souillure, ronde 16 : {faux:#?}");
+    }
+
+    /// Ronde 17 (N16-1 à N16-4). Chaîne entière : un user.conf du compte qui pose un nom sous une écriture que Vanguard
+    /// ne lit pas (guillemets, apostrophe, « \ » : les neuf de la ronde 16 et « "A"= » de DefaultEnvironment=) rend
+    /// non vérifié tout fichier du système qui lit un nom (N16-1) ; une lecture dans une valeur entre guillemets sur
+    /// deux lignes est dite (N16-3 : g01, g02, g11). Sur la fonction : root ne retire jamais un nom de T (N16-2 :
+    /// « A= », « A="" », « A= », f04, un fichier d'avant), le joker n'est jamais retiré, une ligne brute qui lit un
+    /// nom de T met dans T tout ce que le fichier pose. Témoins muets : un user.conf à guillemets sans fichier du
+    /// système qui lit, la forme simple.
+    #[test]
+    fn souillure_ronde_17_rien_de_tu() {
+        type Rendu = Vec<(usize, EnvironmentDNonVerifie)>;
+        type Cas<'a> = (&'a str, &'a [(String, String)], Vec<EnvironmentDLu>, Rendu);
+        let mut faux = Vec::new();
+        let dit = |tous: &[Constat], ou: &str| {
+            non_verifie_uwsm(tous).is_some_and(|c| c.message.contains(&format!("{ou} : ce fichier du système lit")))
+        };
+        let muet = |tous: &[Constat]| !tous.iter().any(|c| c.message.contains("ce fichier du système lit"));
+        // (cas, fichier du compte, son texte, texte du système, ligne dite ou None)
+        let mut cas: Vec<(String, &str, String, &str, Option<usize>)> = Vec::new();
+        for (nom, valeur) in [
+            ("h01", "ManagerEnvironment=A\"\"=/home/alice/.x"),
+            ("h15", "ManagerEnvironment=A''=/home/alice/.x"),
+            ("h18", "ManagerEnvironment=A\"=/home/alice/.x\""),
+            ("h02", "ManagerEnvironment='A'=/home/alice/.x"),
+            ("h03", "ManagerEnvironment=\"A\"=/home/alice/.x"),
+            ("h04", "ManagerEnvironment=\\x41=/home/alice/.x"),
+            ("h13", "ManagerEnvironment=\\101=/home/alice/.x"),
+            ("h12", "ManagerEnvironment=\"\\u0041=/home/alice/.x\""),
+            ("h05", "ManagerEnvironment=\"A\\x3d/home/alice/.x\""),
+            ("DefaultEnvironment \"A\"=", "DefaultEnvironment=\"A\"=/home/alice/.x"),
+        ] {
+            cas.push((
+                nom.into(),
+                ".config/systemd/user.conf",
+                format!("[Manager]\n{valeur}"),
+                "PATH=$A/bin:/usr/bin",
+                Some(1),
+            ));
+        }
+        cas.push((
+            "user.conf.d à guillemets".into(),
+            ".config/systemd/user.conf.d/a.conf",
+            "[Manager]\nManagerEnvironment=\"A=/home/alice/.x\"".into(),
+            "LANG=C\nPATH=$A/bin",
+            Some(2),
+        ));
+        cas.push((
+            "guillemets, rien ne lit".into(),
+            ".config/systemd/user.conf",
+            "[Manager]\nManagerEnvironment=\"A=/home/alice/.x\"".into(),
+            "PATH=/usr/bin",
+            None,
+        ));
+        cas.push((
+            "forme simple, B lu".into(),
+            ".config/systemd/user.conf",
+            "[Manager]\nManagerEnvironment=A=/home/alice/.x".into(),
+            "PATH=$B/bin:/usr/bin",
+            None,
+        ));
+        let a = "A=/home/alice/.x".to_string();
+        for (nom, systeme) in [
+            ("g01", "PATH=\"/usr/bin\n:$A/bin\""),
+            ("g02", "PATH='/usr/bin\n:$A/bin'"),
+            ("g11", "BASH_ENV=\"\n$A/rc\""),
+        ] {
+            cas.push((
+                nom.into(),
+                ".config/environment.d/50-x.conf",
+                a.clone(),
+                systeme,
+                Some(2),
+            ));
+        }
+        for (i, (nom, compte, texte_compte, texte, ligne)) in cas.iter().enumerate() {
+            let m = Maison::nouvelle(&format!("r17-souillure-{i}"));
+            m.ecrire(compte, &format!("{texte_compte}\n"));
+            let f = m.racine.join("usr/lib/environment.d/990-z.conf");
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(&f, format!("{texte}\n")).unwrap();
+            let tous = m.tous_avec(&[]);
+            let juste = match ligne {
+                Some(n) => dit(&tous, &format!("990-z.conf:{n}")),
+                None => muet(&tous),
+            };
+            if !juste {
+                let messages: Vec<_> = tous.iter().map(|c| c.message.clone()).collect();
+                faux.push(format!("{nom} : {messages:?}"));
+            }
+        }
+        // Sur la fonction, à root seul.
+        let lu = |ou: &str, texte: &str| EnvironmentDLu {
+            ou: ou.into(),
+            texte: texte.into(),
+            systeme: true,
+            de_root: true,
+        };
+        let lit = |ligne: usize, nom: &str, pose: &str| EnvironmentDNonVerifie::Lit {
+            ligne,
+            nom: nom.into(),
+            pose: pose.into(),
+        };
+        let sous = |ligne: usize, nom: &str| EnvironmentDNonVerifie::LitSousEcriture {
+            ligne,
+            nom: nom.into(),
+            pose: "user.conf:2".into(),
+        };
+        let compte = vec![("A".to_string(), "50-x.conf:1".to_string())];
+        let joker = vec![(TOUT_NOM.to_string(), "user.conf:2".to_string())];
+        let fonction: Vec<Cas> = vec![
+            (
+                "f09 A=",
+                &compte,
+                vec![lu("60-z.conf", "A=\nPATH=$A/bin\n")],
+                vec![(0, lit(2, "A", "50-x.conf:1"))],
+            ),
+            (
+                "A=\"\"",
+                &compte,
+                vec![lu("60-z.conf", "A=\"\"\nPATH=$A/bin\n")],
+                vec![(0, lit(2, "A", "50-x.conf:1"))],
+            ),
+            (
+                "A= (une espace)",
+                &compte,
+                vec![lu("60-z.conf", "A= \nPATH=$A/bin\n")],
+                vec![(0, lit(2, "A", "50-x.conf:1"))],
+            ),
+            (
+                "f04",
+                &compte,
+                vec![lu("60-z.conf", "B=\"x\nA=/opt\"\nPATH=$A/bin\n")],
+                vec![(0, lit(3, "A", "50-x.conf:1"))],
+            ),
+            (
+                "A= dans un fichier d'avant",
+                &compte,
+                vec![lu("55-y.conf", "A=\n"), lu("60-z.conf", "PATH=$A/bin\n")],
+                vec![(1, lit(1, "A", "50-x.conf:1"))],
+            ),
+            (
+                "joker : tout nom lu",
+                &joker,
+                vec![lu("60-z.conf", "LANG=C\nPATH=$FOO/bin\n")],
+                vec![(0, sous(2, "FOO"))],
+            ),
+            (
+                "joker : jamais retiré",
+                &joker,
+                vec![lu("55-y.conf", "FOO=/opt\n"), lu("60-z.conf", "PATH=$FOO/bin\n")],
+                vec![(1, sous(1, "FOO"))],
+            ),
+            (
+                "joker : rien ne lit",
+                &joker,
+                vec![lu("60-z.conf", "PATH=/usr/bin\n")],
+                vec![],
+            ),
+            (
+                "ligne brute : tout ce que le fichier pose entre dans T",
+                &compte,
+                vec![
+                    lu("55-y.conf", "C=/opt\nPATH=\"/usr/bin\n:$A/bin\"\n"),
+                    lu("60-z.conf", "X=$C/bin\n"),
+                ],
+                vec![(0, lit(3, "A", "50-x.conf:1")), (1, lit(1, "C", "55-y.conf:1"))],
+            ),
+            (
+                "ligne brute : un commentaire qui lit A (prudent)",
+                &compte,
+                vec![lu("60-z.conf", "# $A\nLANG=C\n")],
+                vec![(0, lit(1, "A", "50-x.conf:1"))],
+            ),
+        ];
+        for (nom, depart, fichiers, attendu) in &fonction {
+            let obtenu = souillure_d_environment_d(fichiers, depart);
+            if obtenu != *attendu {
+                faux.push(format!("{nom} : {obtenu:?}"));
+            }
+        }
+        // Le relevé de user.conf : le joker pour une valeur à guillemets, apostrophe ou « \ », les noms sinon.
+        for (valeur, attendu) in [
+            ("ManagerEnvironment=A\"\"=/x", vec![TOUT_NOM]),
+            ("DefaultEnvironment=\\x41=/x", vec![TOUT_NOM]),
+            ("ManagerEnvironment='A'=/x B=1", vec![TOUT_NOM]),
+            ("ManagerEnvironment=A=/x B=/y", vec!["A", "B"]),
+        ] {
+            let noms: Vec<String> = noms_poses_au_depart(&format!("[Manager]\n{valeur}\n"), Variables::Systemd, "u")
+                .into_iter()
+                .map(|(n, _)| n)
+                .collect();
+            if noms != attendu {
+                faux.push(format!("noms_poses_au_depart({valeur:?}) = {noms:?}"));
+            }
+        }
+        assert!(faux.is_empty(), "souillure, ronde 17 : {faux:#?}");
+    }
+
+    /// Ronde 17 (N16-4) : un fichier d'environment.d du système à root seul (le point d'essai `root_seul_d_essai`) qui
+    /// lit un nom que pose le compte lève la sauvegarde, sous ses deux formes ; le même sans ce nom au compte, non.
+    /// Rien d'autre ne le lève : sans cet essai, retirer la clause de `environnement_change_la_sauvegarde` passait.
+    #[test]
+    fn environnement_change_la_sauvegarde_par_un_fichier_de_root_qui_lit() {
+        let mut faux = Vec::new();
+        for (i, (compte, leve)) in [("A=/home/alice/.x", true), ("LANG=C", false)].into_iter().enumerate() {
+            for vide in [false, true] {
+                let m = Maison::nouvelle(&format!("r17-sauvegarde-root-{i}-{vide}"));
+                m.ecrire(".config/environment.d/50-x.conf", &format!("{compte}\n"));
+                let f = m.racine.join("usr/lib/environment.d/60-z.conf");
+                std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+                std::fs::write(&f, "PATH=$A/bin:/usr/bin\n").unwrap();
+                let mut r = releveur(&m.racine, &m.maison(), &|v: &str| {
+                    (v == "XDG_RUNTIME_DIR").then(|| "/run/user/1000".into())
+                });
+                r.root_seul_d_essai.push(f.clone());
+                if environnement_change_la_sauvegarde(&r, vide) != leve {
+                    faux.push(format!("compte {compte:?}, env -i {vide} : attendu {leve}"));
+                }
+            }
+        }
+        assert!(faux.is_empty(), "sauvegarde, fichier de root qui lit : {faux:#?}");
     }
 
     /// R-2 (relecture DEP-4 de la 0.95) : un XDG_DATA_HOME posé au gestionnaire par un fichier (environment.d), absolu
