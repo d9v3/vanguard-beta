@@ -860,7 +860,7 @@ compilation "$CIBLES_I" "$P/disque"
 noter 1 "$(refus_dit $?)" "--compilation : le nom du compte dans un chemin hors de HOME est refusé"
 # Ronde Fable du 13 nov. 2026 (C6) : sans USER (ni LOGNAME), le compte venait du système, « root » sous unshare -r ;
 # le vrai nom, lui, est encore le dernier élément du HOME.
-SORTIE=$(env -u USER -u LOGNAME -u LNAME -u USERNAME HOME=/home/alice python3 "$OUTIL" --compilation "$CIBLES_I" \
+SORTIE=$(env -u USER -u LOGNAME -u LNAME -u USERNAME HOME=/home/alice python3 -I "$OUTIL" --compilation "$CIBLES_I" \
   "$P/disque" 2>&1)
 noter 1 "$(refus_dit $?)" "--compilation : sans USER, le compte lu dans le HOME est cherché hors de HOME"
 # Relecture adverse du lot 097 (C3) : la même lecture du HOME vaut pour la garde ordinaire (--texte, commits, --depot)
@@ -891,7 +891,7 @@ if unshare -rm true 2>/dev/null && [[ -n $MONTE ]]; then
       mkdir -p /run/media/alice/cle-inventee/donnees && : >/run/media/alice/cle-inventee/vanguard.cle &&
       printf "{\"reseaux\": {\"r1\": {\"nom\": \"Chez Gaspard\", \"appareils\": {}}}}\n" \
         >/run/media/alice/cle-inventee/donnees/appareils.json && export PATH=$CHEMIN &&
-      exec python3 "$OUTIL" --texte')
+      exec python3 -I "$OUTIL" --texte')
   }
   SORTIE=$(cle_sans_user /srv/maison/alice 2>&1)
   code=$?

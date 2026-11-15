@@ -4,7 +4,7 @@ plus), la section « À venir » tirée d'un faux ticket (texte échappé, cases
 hors ligne), le remplissage du gabarit en un seul passage, et la visite guidée (capture manquante = échec clair,
 chaque image décrite et dimensionnée, section et onglet présents). Aucun réseau : le ticket est un fichier inventé.
 
-    python3 outils/essais-page-fonctions.py
+    python3 -I outils/essais-page-fonctions.py
 """
 import contextlib
 import importlib.util

@@ -656,6 +656,8 @@ if [[ $MODE != --rapide ]]; then
   etape extensions extensions &
   etape fenetre fenetre &
   etape python scripts_python &
+  etape page-fonctions python3 -I outils/essais-page-fonctions.py &
+  etape tickets python3 -I outils/essais-tickets-version.py &
   etape relais relais &
   etape relais-schema python3 -I outils/relais-schema.py &
   etape liens python3 -I outils/liens.py --hors-ligne &
@@ -872,6 +874,8 @@ if [[ $MODE != --rapide ]]; then
   ligne fenetre "fenêtre (caisses $(caisses_lues fenetre) et essais, clippy ×2, tests Linux : $(passes fenetre), protections ×2)"
   raisons_des_sautes fenetre
   ligne python "scripts Python"
+  ligne page-fonctions "page des fonctions (essais)"
+  ligne tickets "tickets à chaque version (essais)"
   ligne relais "relais des lots ($(grep -m1 -oE '^ℹ pass [0-9]+' "$TRAVAIL/relais.log" 2>/dev/null | cut -d' ' -f3) essais)"
   ligne relais-schema "relais : schéma et détecteur"
   [[ -f $TRAVAIL/relais-schema.log ]] && grep -E '^comparaison .* sautée' "$TRAVAIL/relais-schema.log" | sed 's/^/      /'

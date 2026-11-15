@@ -445,7 +445,7 @@ def pistes(texte: str) -> list[tuple[str, list[str]]]:
 def confidentiel(texte: str) -> bool:
     """Vrai si outils/confidentialite.py refuse ce texte (ou ne peut pas le lire) : rien n'entre dans la page."""
     try:
-        r = subprocess.run([sys.executable, str(RACINE / "outils/confidentialite.py"), "--texte"], input=texte,
+        r = subprocess.run([sys.executable, "-I", str(RACINE / "outils/confidentialite.py"), "--texte"], input=texte,
                            capture_output=True, text=True, timeout=120, cwd=RACINE)
     except (OSError, subprocess.TimeoutExpired):
         return True

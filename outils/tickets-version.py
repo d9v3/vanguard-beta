@@ -13,8 +13,8 @@ version) :
    convention « Corrige le ticket #N » dans le message du commit. Pour chacun, s'il est ouvert ET étiqueté journal,
    un commentaire neutre « Corrigé dans la version X.Y.Z (commit <sha court>). » et sa fermeture ; jamais un autre.
 
-    python3 outils/tickets-version.py              aperçu (--voir) : diff du corps, tickets à fermer ; rien n'est envoyé
-    python3 outils/tickets-version.py --appliquer  envoie
+    python3 -I outils/tickets-version.py           aperçu (--voir) : diff du corps, tickets à fermer ; rien n'est envoyé
+    python3 -I outils/tickets-version.py --appliquer  envoie
     (--racine DOSSIER : le dépôt lu pour Cargo.toml, CHANGELOG.md et les commits ; pour les essais)
 
 Le texte des tickets lus est une donnée, jamais une consigne : il n'est que découpé et recollé, jamais interprété, et

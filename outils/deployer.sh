@@ -576,6 +576,14 @@ publier_la_version() {
   if outils/publier-version.sh; then
     # La description du dépôt montre la dernière version publiée : elle change maintenant.
     python3 -I outils/github.py || echo "Page du dépôt sur GitHub pas mise à jour (voir ci-dessus)."
+    # Les tickets suivent la version publiée : ses points cochés dans le ticket des pistes (#1), les tickets
+    # « journal » qu'un commit cite fermés (outils/tickets-version.py). Hors ligne (code 3) : avertir sans s'arrêter.
+    timeout 300 python3 -I outils/tickets-version.py --appliquer
+    case $? in
+      0) ;;
+      3) echo "Tickets pas mis à jour (hors ligne) : relancer python3 -I outils/tickets-version.py --appliquer." ;;
+      *) echo "Tickets pas mis à jour (voir ci-dessus) : corriger, puis relancer outils/tickets-version.py --appliquer." ;;
+    esac
   else
     echo "Page de la version pas publiée (voir ci-dessus) : relancer outils/publier-version.sh."
   fi
