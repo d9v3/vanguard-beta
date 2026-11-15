@@ -522,6 +522,10 @@ Version 0.95 was not published: all its work is in this version.
   name and shown with its bytes as `\xFF`. When the system refuses a thread, Vanguard goes on in "reduced mode", says
   so, and what could not be done is not verified. A file included in the sshd configuration that cannot be read back
   is reported as not verified instead of being kept quiet.
+- **The colours line closes in the console.** On opening, the window reads back the saved colours
+  (`vanguard couleurs --json`); the command finished at once, but its line stayed "running" and its timer kept
+  counting. It now closes ("colors read", or the error), like the line of a colour change. A test requires every
+  finished command to close its line, successful or not.
 - **Verification and publishing.** The repository tools no longer say green without checking: a skipped step is a
   failure on GitHub (except named exclusions), and skipped tests are counted down to the last line. shellcheck,
   cargo audit on the separate crates' lock files and the README numbers compared to the code are added. SECURITY.md

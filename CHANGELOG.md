@@ -558,6 +558,10 @@ La 0.95 n'a pas été publiée : tout son travail est dans cette version.
   est ouvert sous son vrai nom et montré avec ses octets en `\xFF`. Quand le système refuse un fil, Vanguard continue
   en « mode réduit », le dit, et ce qui n'a pas pu se faire est non vérifié. Un fichier inclus dans la configuration
   de sshd qui ne se relit pas est dit non vérifié au lieu d'être tu.
+- **La ligne des couleurs se ferme dans la console.** À l'ouverture, la fenêtre relit les couleurs gardées
+  (`vanguard couleurs --json`) ; la commande finissait tout de suite, mais sa ligne restait « en cours » et son
+  compteur montait sans fin. Elle se ferme maintenant (« couleurs lues », ou l'erreur), comme celle d'un changement
+  des couleurs. Un essai exige que chaque commande finie ferme sa ligne, réussie ou non.
 - **Vérification et publication.** Les outils du dépôt ne disent plus vert sans avoir vérifié : une étape sautée est
   un échec sur GitHub (sauf exceptions nommées), et les essais sautés sont comptés jusqu'à la dernière ligne.
   shellcheck, cargo audit sur les verrous des crates à part et les nombres des README comparés au code s'ajoutent.
