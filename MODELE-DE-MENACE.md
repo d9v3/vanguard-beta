@@ -187,7 +187,9 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   jugée et est refusée. La sortie d'une liste en doute ne demande pas un manifeste récent : un ancien manifeste signé,
   remis en place, peut faire passer une clé ancienne pour la dernière. La surveillance, l'entretien, le veilleur
   (Linux) et « se-mettre-a-jour » rendent un code de sortie non nul après un refus, même quand l'entrée se termine sur
-  une question qui le suit (un « n » de votre part et GitHub injoignable n'en sont pas) ; le raccourci rend encore un
+  une question qui le suit (un « n » de votre part n'en est pas ; GitHub injoignable non plus, sauf quand la liste des
+  copies est en doute : le doute est alors dit, avec un code non nul) ; des versions déjà vues changées hors de Vanguard
+  rendent un code non nul, même après « repartir » ; le raccourci rend encore un
   code nul. Les copies temporaires de Vanguard sont reconnues
   dans le dossier du compte (`XDG_RUNTIME_DIR` ou `TMPDIR`) : un programme du compte peut y poser une copie exacte de
   Vanguard et la faire prendre pour la clé du lancement ; aucun gain trouvé pour lui, qui a déjà les droits du compte.

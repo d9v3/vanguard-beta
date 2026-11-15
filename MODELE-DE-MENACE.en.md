@@ -178,8 +178,10 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   for this system), a newer copy placed by a version from before this register cannot be judged and is refused. The
   way out of a list in doubt does not require a recent manifest: an old signed manifest, put back in place, can make
   an old key pass for the latest one. Monitoring, maintenance, the watcher (Linux) and "se-mettre-a-jour" return a
-  non-zero exit code after a refusal, even when the input ends on a question that follows it (your "n" and GitHub
-  being unreachable are not refusals); the shortcut still
+  non-zero exit code after a refusal, even when the input ends on a question that follows it (your "n" is not a
+  refusal; neither is GitHub being unreachable, except when the list of copies is in doubt: the doubt is then
+  reported, with a non-zero code); versions already seen that were changed outside of Vanguard return a non-zero code,
+  even after "start again"; the shortcut still
   returns a zero code. Vanguard's temporary copies are recognized in the account's folder (`XDG_RUNTIME_DIR` or
   `TMPDIR`): a program of the account can place an exact copy of Vanguard there and have it taken for the key of the
   launch; no gain found for it, as it already has the account's rights.

@@ -7112,6 +7112,66 @@ fn copie_illisible_jamais_comptee_a_jour() {
     let _ = std::fs::remove_dir_all(&racine);
 }
 
+/// R6-REGISTRE-3 : la liste des copies en doute, la copie là (au numéro de la clé), et GitHub injoignable : le doute
+/// est dit et le code est non nul ; jamais « rien n'a été vérifié » rendu comme une réussite.
+#[cfg(target_os = "linux")]
+#[test]
+fn liste_en_doute_dite_meme_sans_github() {
+    let (racine, sur_la_cle, maison) = cle_et_maison("maj-doute-hors-ligne");
+    let copie = copie_locale(&maison);
+    let pose = vanguard_dans_env(&sur_la_cle, &maison, "fr", &["surveillance", "on"], "", 120, HORS_LIGNE);
+    let t = a_plat(&pose.texte);
+    assert!(copie.exists(), "copie pas posée : {t}\n{}", pose.erreurs);
+    std::fs::remove_file(registre_local(&maison)).unwrap();
+    let avant = std::fs::read(&copie).unwrap();
+    let s = vanguard_dans_env(&sur_la_cle, &maison, "fr", &["se-mettre-a-jour"], "", 120, HORS_LIGNE);
+    let t = a_plat(&s.texte);
+    assert!(
+        t.contains("Non vérifié : la liste des copies posées par Vanguard")
+            && t.contains("GitHub n'a pas été consulté"),
+        "{t}\n{}",
+        s.erreurs
+    );
+    assert_ne!(s.code, Some(0), "code 0 avec la liste en doute, GitHub muet\n{t}");
+    assert_eq!(std::fs::read(&copie).unwrap(), avant, "{t}");
+    assert!(
+        !registre_local(&maison).exists(),
+        "liste refaite par-dessus le doute\n{t}"
+    );
+    let _ = std::fs::remove_dir_all(&racine);
+}
+
+/// R6-CODES-1 : les versions déjà vues changées hors de Vanguard, seul refus : « ✖ Rien n'est vérifié » puis la question
+/// « Repartir ? » ; l'entrée qui se termine là rend un code non nul.
+#[cfg(target_os = "linux")]
+#[test]
+fn versions_vues_changees_jamais_code_zero() {
+    let (racine, sur_la_cle, maison) = cle_et_maison("maj-vues-seules");
+    let copie = copie_locale(&maison);
+    std::fs::create_dir_all(copie.parent().unwrap()).unwrap();
+    std::fs::copy(&sur_la_cle, &copie).unwrap();
+    let vues = registre_local(&maison)
+        .parent()
+        .unwrap()
+        .join("versions")
+        .join("plus-haute-vue.txt");
+    std::fs::create_dir_all(vues.parent().unwrap()).unwrap();
+    std::fs::write(&vues, "0.1.0+1").unwrap();
+    let s = vanguard_dans_env(&sur_la_cle, &maison, "fr", &["se-mettre-a-jour"], "", 120, HORS_LIGNE);
+    let t = a_plat(&s.texte);
+    assert!(
+        t.contains("Rien n'est vérifié tant qu'elles ne repartent pas") && !t.contains("Non vérifié : la copie d'ici"),
+        "{t}\n{}",
+        s.erreurs
+    );
+    assert_ne!(
+        s.code,
+        Some(0),
+        "code 0 en fin d'entrée après « Rien n'est vérifié »\n{t}"
+    );
+    let _ = std::fs::remove_dir_all(&racine);
+}
+
 /// MOYENNE (relecture adverse, R1-M1) : le bilan scelle au premier usage le programme d'une tâche qui n'a pas encore
 /// d'entrée, quel qu'il soit. Ce sceau-là ne prouve pas que Vanguard a posé la copie : une unité d'entretien posée par
 /// un autre programme du compte, qui lance un fichier plus récent mis dans bin/, ne le fait pas garder.

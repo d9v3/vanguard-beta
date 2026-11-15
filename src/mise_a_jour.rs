@@ -1975,6 +1975,25 @@ fn doute_sans_copie(d: crate::voulues::Doute) -> String {
     )
 }
 
+/// GitHub pas consulté (injoignable, ou dossier d'un autre compte) : sans doute sur la liste des copies, ce n'est pas
+/// un refus (`true`, écrit) ; liste en doute, le doute est dit et le code est non nul (`false`).
+fn sans_github(doute: Option<crate::voulues::Doute>) -> bool {
+    let Some(d) = doute else {
+        return true;
+    };
+    crate::ui::refus_dit();
+    println!("\n{}", doute_hors_github(d));
+    false
+}
+
+fn doute_hors_github(d: crate::voulues::Doute) -> String {
+    trf!(
+        "  Non vérifié : la liste des copies posées par Vanguard {} ; rien ne dit\n  qu'une copie plus récente n'y était pas notée, et GitHub n'a pas été consulté :\n  rien n'est remplacé, et la liste reste en doute. Relancez « vanguard se-mettre-a-jour »\n  avec Internet, ou reposez la copie depuis une clé à la dernière version signée.",
+        "  Not checked: the list of copies set up by Vanguard {}; nothing shows\n  that a newer copy was not noted in it, and GitHub was not reached:\n  nothing is replaced, and the list stays in doubt. Run “vanguard se-mettre-a-jour”\n  again with Internet, or set the copy up again from a key at the latest signed version.",
+        d.texte()
+    )
+}
+
 /// Les versions déjà vues ici, changées hors de Vanguard, ne protègent plus d'un vieux manifeste : dit, puis repartir
 /// de la version signée reçue maintenant, sur accord. `false` : pas reparti (un « n », ou l'oubli a échoué).
 fn repartir_des_versions_vues() -> bool {
@@ -1985,6 +2004,9 @@ fn repartir_des_versions_vues() -> bool {
         "\n  ✖ Les versions déjà vues ici ont été changées hors de Vanguard :\n    elles ne protègent plus d'un vieux manifeste remis sur GitHub.\n    Rien n'est vérifié tant qu'elles ne repartent pas de zéro.",
         "\n  ✖ The versions already seen here were changed outside Vanguard:\n    they no longer protect against an old manifest put back on GitHub.\n    Nothing is checked until they start over."
     );
+    // R6-CODES-1 : dit avant la question, qui quitte en fin d'entrée ; même reparti, un changement hors de Vanguard a
+    // été vu : le code reste non nul.
+    crate::ui::refus_dit();
     if !demander(tr!(
         "  Repartir de la version signée reçue maintenant ? [o/N] : ",
         "  Start over from the signed version received now? [y/N]: "
@@ -2028,12 +2050,15 @@ fn depuis_github() -> bool {
             Ok(_) => true,
         };
     }
+    // R6-REGISTRE-3 : le doute sur la liste est un fait d'ici, connu sans réseau ; GitHub muet ne le tait jamais.
+    let doute =
+        crate::programmes_poses::copie_notee_dans(&crate::socle::dossier_local(), &copie_de_cet_ordinateur()).err();
     if !github::dossier_sur() {
         trp!(
             "\n  {GRIS}Lancé en root avec le dossier d'un autre compte : pas de mise à jour depuis GitHub.\n  Relancez Vanguard depuis ce compte.{RESET}",
             "\n  {GRIS}Started as root with another account's folder: no update from GitHub.\n  Start Vanguard again from that account.{RESET}"
         );
-        return true;
+        return sans_github(doute);
     }
     if !repartir_des_versions_vues() {
         return false;
@@ -2050,7 +2075,7 @@ fn depuis_github() -> bool {
                 "  GitHub: {}. Nothing was checked.",
                 affichable(&e)
             );
-            return true;
+            return sans_github(doute);
         }
     };
     let (ici, a_remplacer, doutes) = juger_cibles(
@@ -2344,6 +2369,34 @@ mod tests {
         let apres = empreinte_notee_dans(&registre, Tache::Entretien).expect("notée");
         assert_ne!(avant, apres);
         assert_eq!(apres, crate::programmes_poses::empreinte_de(&cible).unwrap());
+        let _ = std::fs::remove_dir_all(&racine);
+        let _ = std::fs::remove_dir_all(&registre);
+    }
+
+    /// R6-ESSAIS-1 : `installer` ne lève le doute sur la liste que pour la copie de cet ordinateur ; un autre programme
+    /// mis à jour depuis GitHub le laisse, et la copie posée n'y est pas crue.
+    #[test]
+    fn installer_ailleurs_ne_leve_jamais_le_doute() {
+        use crate::programmes_poses::{FICHIER, copie_notee_dans, copie_posee_dans};
+        let racine = crate::essais::temporaire().join(crate::essais::nom_unique("installer-ailleurs"));
+        let registre = inconnue();
+        let (source, cible) = (racine.join("source"), racine.join("bin").join(NOM));
+        assert_ne!(cible, copie_de_cet_ordinateur());
+        faux_programme(&cible, Some("0.80.0+1"));
+        copie_posee_dans(&registre, &cible, &std::fs::read(&cible).unwrap());
+        std::fs::remove_file(registre.join(FICHIER)).unwrap();
+        assert!(
+            copie_notee_dans(&registre, &cible).is_err(),
+            "liste pas en doute au départ"
+        );
+        faux_programme(&source, Some("0.81.0"));
+        let octets = std::fs::read(&source).unwrap();
+        installer(&octets, &cible, version_gravee(&octets).unwrap(), &registre, SANS_ESSAI).unwrap();
+        assert_eq!(std::fs::read(&cible).unwrap(), octets, "pas posée");
+        assert!(
+            copie_notee_dans(&registre, &cible).is_err(),
+            "doute levé par une pose ailleurs que la copie de cet ordinateur"
+        );
         let _ = std::fs::remove_dir_all(&racine);
         let _ = std::fs::remove_dir_all(&registre);
     }
