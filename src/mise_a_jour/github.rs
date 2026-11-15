@@ -443,18 +443,23 @@ fn oublier_versions_vues() -> std::io::Result<()> {
     crate::sceau::effacer(crate::sceau::VERSIONS)
 }
 
-/// Pourquoi `derniere_en_repartant` n'a pas reparti.
+/// Pourquoi `derniere` ou `derniere_en_repartant` n'a pas rendu de version à suivre.
 pub(super) enum EchecRepartir {
     /// Rien reçu, ou manifeste refusé : rien n'a été écrit ni oublié.
     NonRecu(Echec),
-    /// Manifeste signé reçu, mais ce fichier de l'état local n'a pas pu être écrit : les versions vues restent telles
-    /// quelles (rien n'est effacé avant l'écriture), donc encore en doute.
+    /// En repartant : manifeste signé reçu, mais ce fichier de l'état local n'a pas pu être écrit ou scellé. Rien n'est
+    /// effacé avant l'écriture : les versions vues restent en doute, sauf si le fichier a été écrit et que seul son
+    /// sceau manque (`versions_vues_douteuses`, à relire).
     NonEcrit(Version, std::path::PathBuf, std::io::Error),
+    /// Manifeste de secours reçu, mais la révocation de la principale pas retenue jusqu'au bout (`retenir_revocation`) :
+    /// ce fichier n'a pas pu être écrit, effacé ou scellé. Le manifeste n'est pas suivi ; la passe suivante reprend.
+    Revocation(Version, std::path::PathBuf, std::io::Error),
 }
 
 /// Repartir de zéro, sur accord (`depuis_github`) : le manifeste est d'abord reçu et sa signature vérifiée ; alors
-/// seulement la version reçue est écrite par-dessus les versions vues (`repartir_de`). Hors ligne, manifeste refusé ou
-/// écriture en échec : rien n'est oublié, le témoin du changement reste.
+/// seulement la version reçue est écrite par-dessus les versions vues (`repartir_de`). Hors ligne ou manifeste refusé :
+/// rien n'est écrit ni oublié. Écriture en échec : rien n'est effacé d'abord, et la version reçue a pu être écrite
+/// sans que son sceau soit fini.
 pub(super) fn derniere_en_repartant() -> Result<Publiee, EchecRepartir> {
     repartir_apres(derniere_recue())
 }
@@ -469,11 +474,12 @@ fn repartir_apres(recue: Result<Publiee, Echec>) -> Result<Publiee, EchecReparti
 
 /// L'état local repart du manifeste signé reçu, sans rien effacer d'abord : la révocation est retenue en premier (comme
 /// dans `derniere`), puis la version reçue est écrite par-dessus les versions vues, en une écriture scellée en deux
-/// temps (`sceau::ecrire`). Coupé ou en échec à n'importe quelle étape, l'ancien fichier changé reste et se lit encore
-/// en doute : jamais « rien de vu ». `Err` : le fichier qui n'a pas pu être écrit.
+/// temps (`sceau::ecrire`). Coupé ou en échec à n'importe quelle étape, jamais « rien de vu » : l'ancien fichier
+/// changé reste (en doute), ou la version reçue est écrite, son sceau peut-être pas fini. Une révocation « en cours »
+/// est finie, même si ce manifeste ne la redit pas. `Err` : le fichier qui n'a pas pu être écrit.
 fn repartir_de(publiee: &Publiee) -> Result<(), (&'static str, std::io::Error)> {
     use crate::sceau::{REVOCATION, VERSIONS};
-    if publiee.revoque {
+    if publiee.revoque || revocation_en_cours() {
         ecrire_revocation().map_err(|e| (REVOCATION, e))?;
     }
     let v = publiee.version;
@@ -486,16 +492,28 @@ fn repartir_de(publiee: &Publiee) -> Result<(), (&'static str, std::io::Error)> 
 /// échec avant la ligne finale, la passe suivante lit « en cours » intact et refait l'oubli : jamais la révocation
 /// retenue avec le plancher du voleur gardé pour toujours (R9-ECRITURE-1). Un fichier changé hors de Vanguard reste
 /// une révocation retenue, sans rien oublier de plus. `Err` : non retenue ou oubli pas fini (disque, dossier d'un
-/// autre compte), le manifeste n'est pas suivi.
-fn retenir_revocation() -> std::io::Result<()> {
-    use crate::sceau::{Lecture, REVOCATION};
+/// autre compte), avec le fichier en cause ; le manifeste n'est pas suivi.
+fn retenir_revocation() -> Result<(), (&'static str, std::io::Error)> {
+    use crate::sceau::{Lecture, REVOCATION, VERSIONS};
+    let revocation = |e| (REVOCATION, e);
     match crate::sceau::lire(REVOCATION) {
         Lecture::Intact(c) if c == REVOCATION_EN_COURS.as_bytes() => {}
-        Lecture::Absent | Lecture::Inconnu => crate::sceau::ecrire(REVOCATION, REVOCATION_EN_COURS)?,
+        Lecture::Absent | Lecture::Inconnu => {
+            crate::sceau::ecrire(REVOCATION, REVOCATION_EN_COURS).map_err(revocation)?;
+        }
         _ => return Ok(()),
     }
-    oublier_versions_vues()?;
-    crate::sceau::ecrire(REVOCATION, LIGNE_REVOCATION)
+    oublier_versions_vues().map_err(|e| (VERSIONS, e))?;
+    crate::sceau::ecrire(REVOCATION, LIGNE_REVOCATION).map_err(revocation)
+}
+
+/// La révocation retenue, l'oubli pas encore fini (« en cours », intact) : à finir dès le manifeste de secours suivant,
+/// qu'il redise la révocation ou non (`signer-versions.sh --secours` sans `--revoquer`), sans quoi un plancher monté
+/// par un voleur de la principale resterait (R10-ECRITURE-1). Sûr : révocation retenue, seule la clé de secours signe
+/// un manifeste accepté.
+fn revocation_en_cours() -> bool {
+    matches!(crate::sceau::lire(crate::sceau::REVOCATION),
+        crate::sceau::Lecture::Intact(c) if c == REVOCATION_EN_COURS.as_bytes())
 }
 
 /// Écrit la révocation finale si elle n'est pas déjà retenue, ou seulement « en cours », sans toucher aux versions
@@ -564,34 +582,60 @@ pub(super) fn systeme() -> Option<&'static str> {
     SYSTEME.map(|(s, _)| s)
 }
 
-/// La dernière version publiée pour ce système, manifeste téléchargé et vérifié ; `Err` : pourquoi on ne sait pas.
-pub(super) fn derniere() -> Result<Publiee, String> {
-    let publiee = derniere_recue()?;
-    retenir(&publiee)?;
+/// La dernière version publiée pour ce système, manifeste téléchargé et vérifié ; `Err` : pourquoi on ne sait pas, ou
+/// la révocation pas retenue (le fichier en cause).
+pub(super) fn derniere() -> Result<Publiee, EchecRepartir> {
+    retenir_apres(derniere_recue().map_err(EchecRepartir::NonRecu)?)
+}
+
+/// La suite de `derniere`, le manifeste signé reçu (`retenir_en`). À part pour être essayée sans réseau.
+fn retenir_apres(publiee: Publiee) -> Result<Publiee, EchecRepartir> {
+    retenir_en(&publiee, false)?;
     Ok(publiee)
 }
 
-/// Ce que `derniere` retient d'un manifeste reçu et vérifié : la révocation, puis la plus haute version vue. `Err` : le
-/// manifeste est plus vieux que celui déjà vu (un ancien remis en place), ou la révocation ne s'écrit pas.
-/// Au terminal, la plus haute version vue qui ne s'écrit pas n'arrête rien (le refus du verrou va au journal des
-/// erreurs ; elle montera à la prochaine lecture).
+/// Ce que `derniere` retient d'un manifeste reçu et vérifié : la révocation (ou sa fin, si « en cours »), puis la plus
+/// haute version vue. `Err` : le manifeste est plus vieux que celui déjà vu (un ancien remis en place), ou la
+/// révocation ne s'écrit pas. Au terminal, la plus haute version vue qui ne s'écrit pas n'arrête rien (le refus du
+/// verrou va au journal des erreurs ; elle montera à la prochaine lecture).
 pub(super) fn retenir(publiee: &Publiee) -> Result<(), Echec> {
-    retenir_en(publiee, false)
+    retenir_en(publiee, false).map_err(en_echec)
+}
+
+/// Un échec de `retenir_en` pour qui attend un `Echec` (l'aperçu) : la révocation pas retenue nomme son fichier.
+fn en_echec(e: EchecRepartir) -> Echec {
+    match e {
+        EchecRepartir::NonRecu(e) => e,
+        EchecRepartir::Revocation(v, fichier, e) | EchecRepartir::NonEcrit(v, fichier, e) => Echec::echoue(
+            "mise_a_jour/remise",
+            trf!(
+                "version {} signée reçue, mais {} n'a pas pu être écrit, effacé ou scellé ({}) : non vérifié, réessayez",
+                "signed version {} received, but {} could not be written, erased or sealed ({}): not verified, try again",
+                ecrire(v),
+                fichier.display(),
+                e
+            ),
+        ),
+    }
 }
 
 /// `retenir`, le plancher exigé ou non : l'aperçu l'exige (`retenir_pendant_un_apercu`), puisque le journal des
 /// erreurs ne s'y écrit pas ; un plancher pas écrit y est dit, jamais tu.
-fn retenir_en(publiee: &Publiee, plancher_exige: bool) -> Result<(), Echec> {
-    if publiee.revoque {
-        retenir_revocation().map_err(|e| Echec::echoue("mise_a_jour/remise", e.to_string()))?;
+fn retenir_en(publiee: &Publiee, plancher_exige: bool) -> Result<(), EchecRepartir> {
+    if publiee.revoque || revocation_en_cours() {
+        retenir_revocation().map_err(|(nom, e)| {
+            EchecRepartir::Revocation(publiee.version, crate::socle::dossier_local().join(nom), e)
+        })?;
     }
-    let vue = plus_haute_vue()?;
+    let vue = plus_haute_vue().map_err(EchecRepartir::NonRecu)?;
     // Retenue seulement une fois la signature vérifiée : un manifeste quelconque ne fait pas monter la barre.
-    if comparer_a_la_vue(vue, publiee.version).map_err(|e| Echec::refuse("mise_a_jour/remise", e))? {
+    let plus_recente = comparer_a_la_vue(vue, publiee.version)
+        .map_err(|e| EchecRepartir::NonRecu(Echec::refuse("mise_a_jour/remise", e)))?;
+    if plus_recente {
         let v = publiee.version;
         let ecrite = crate::sceau::ecrire(crate::sceau::VERSIONS, format!("{}.{}.{}+{}", v.0, v.1, v.2, v.3));
         if let (Err(e), true) = (ecrite, plancher_exige) {
-            return Err(Echec::echoue(
+            return Err(EchecRepartir::NonRecu(Echec::echoue(
                 "mise_a_jour/remise",
                 trf!(
                     "la version {} vue n'a pas pu être retenue ({}) : non vérifié, réessayez dans un instant",
@@ -599,7 +643,7 @@ fn retenir_en(publiee: &Publiee, plancher_exige: bool) -> Result<(), Echec> {
                     ecrire(v),
                     e
                 ),
-            ));
+            )));
         }
     }
     Ok(())
@@ -609,7 +653,7 @@ fn retenir_en(publiee: &Publiee, plancher_exige: bool) -> Result<(), Echec> {
 /// manifeste vu, signature vérifiée, et seulement cela (le plancher des versions vues, la révocation, leurs sceaux).
 /// Sans quoi un manifeste signé plus vieux, resservi plus tard, serait jugé sans le plancher de ce qui a été vu.
 pub(super) fn retenir_pendant_un_apercu(publiee: &Publiee) -> Result<(), Echec> {
-    crate::autotest::lecture_seule::ecrire_vues(|| retenir_en(publiee, true))
+    crate::autotest::lecture_seule::ecrire_vues(|| retenir_en(publiee, true).map_err(en_echec))
 }
 
 /// `retenir` sans rien écrire, pour un aperçu : le manifeste reçu passerait-il la plus haute version vue ? Révoquée
@@ -1099,6 +1143,92 @@ passe-droit-sans-vm {zeros} 0
         assert!(repartir_apres(Ok(recue)).is_ok());
         assert_eq!(plus_haute_vue(), Ok(Some((0, 94, 0, 1_794_463_891))));
         assert!(!revocation_retenue());
+        oublier_versions_vues().unwrap();
+    }
+
+    /// Vérification 0.94, R10-ESSAIS-1 : reçu mais pas écrit. Coupé à l'écriture des versions vues : `NonEcrit` avec ce
+    /// fichier (jamais `NonRecu`, qui dirait « GitHub »), rien n'est oublié, le doute reste.
+    #[test]
+    fn repartir_apres_un_echec_d_ecriture() {
+        let _seul = ETAT_DES_VERSIONS.lock().unwrap_or_else(PoisonError::into_inner);
+        let _ = crate::sceau::effacer(crate::sceau::REVOCATION);
+        crate::sceau::ecrire(crate::sceau::VERSIONS, "0.85.0+1792540000").unwrap();
+        std::fs::write(crate::socle::dossier_local().join(crate::sceau::VERSIONS), "99.0.0+1").unwrap();
+        let recue = Publiee {
+            version: (0, 94, 0, 1_794_463_891),
+            sha256: [0; 32],
+            taille: 1,
+            fichier: "vanguard",
+            revoque: false,
+        };
+        let r = crate::sceau::coupe_a_pour("ecrire:avant-fichier", crate::sceau::VERSIONS, || {
+            repartir_apres(Ok(recue))
+        });
+        match r {
+            Err(EchecRepartir::NonEcrit(v, f, _)) => {
+                assert_eq!(v, (0, 94, 0, 1_794_463_891));
+                assert_eq!(f, crate::socle::dossier_local().join(crate::sceau::VERSIONS));
+            }
+            _ => panic!("reçu mais pas écrit : NonEcrit attendu"),
+        }
+        assert!(versions_vues_douteuses(), "rien n'est oublié");
+        oublier_versions_vues().unwrap();
+    }
+
+    /// Vérification 0.94, R10-ECRITURE-1 : une révocation « en cours » se finit au manifeste de secours suivant, même
+    /// s'il ne redit pas la révocation (`--secours` sans `--revoquer`) ; un « en cours » posé hors de Vanguard (sans
+    /// sceau) n'oublie rien. Coupée, l'erreur nomme le fichier (`Revocation`, jamais « GitHub »).
+    #[test]
+    fn revocation_en_cours_finie_sans_la_ligne() {
+        use crate::sceau::{Lecture, REVOCATION, VERSIONS};
+        let _seul = ETAT_DES_VERSIONS.lock().unwrap_or_else(PoisonError::into_inner);
+        let haut = "4294967295.0.0+1792540000";
+        let recue = Publiee {
+            version: (0, 95, 0, 1_795_000_000),
+            sha256: [0; 32],
+            taille: 1,
+            fichier: "vanguard",
+            revoque: false,
+        };
+        // 1. « en cours » intact + plancher du voleur : l'oubli est fini, la version reçue devient la plus haute vue.
+        crate::sceau::ecrire(REVOCATION, REVOCATION_EN_COURS).unwrap();
+        crate::sceau::ecrire(VERSIONS, haut).unwrap();
+        assert!(retenir_apres(recue.clone()).is_ok());
+        assert_eq!(plus_haute_vue(), Ok(Some((0, 95, 0, 1_795_000_000))));
+        assert_eq!(
+            crate::sceau::lire(REVOCATION),
+            Lecture::Intact(LIGNE_REVOCATION.as_bytes().to_vec())
+        );
+        // 2. Coupé à la ligne finale : `Revocation` avec le fichier de révocation, rien n'est suivi.
+        crate::sceau::ecrire(REVOCATION, REVOCATION_EN_COURS).unwrap();
+        crate::sceau::ecrire(VERSIONS, haut).unwrap();
+        let r = crate::sceau::coupe_a_pour("ecrire:avant-fichier", REVOCATION, || retenir_apres(recue.clone()));
+        match r {
+            Err(EchecRepartir::Revocation(v, f, _)) => {
+                assert_eq!(v, recue.version);
+                assert_eq!(f, crate::socle::dossier_local().join(REVOCATION));
+            }
+            _ => panic!("révocation coupée : Revocation attendu"),
+        }
+        // 3. En repartant aussi, « en cours » est fini.
+        crate::sceau::ecrire(REVOCATION, REVOCATION_EN_COURS).unwrap();
+        repartir_de(&recue).unwrap();
+        assert_eq!(
+            crate::sceau::lire(REVOCATION),
+            Lecture::Intact(LIGNE_REVOCATION.as_bytes().to_vec())
+        );
+        // 4. « en cours » écrit hors de Vanguard (sans son sceau) : pas intact, rien n'est oublié.
+        crate::sceau::effacer(REVOCATION).unwrap();
+        crate::sceau::ecrire(VERSIONS, haut).unwrap();
+        std::fs::write(crate::socle::dossier_local().join(REVOCATION), REVOCATION_EN_COURS).unwrap();
+        assert!(!revocation_en_cours());
+        assert!(
+            retenir_apres(recue.clone()).is_err(),
+            "plus vieux que le plancher : refusé"
+        );
+        assert_eq!(plus_haute_vue(), Ok(Some((4_294_967_295, 0, 0, 1_792_540_000))));
+        let _ = std::fs::remove_file(crate::socle::dossier_local().join(REVOCATION));
+        let _ = crate::sceau::effacer(REVOCATION);
         oublier_versions_vues().unwrap();
     }
 

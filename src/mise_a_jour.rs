@@ -1619,9 +1619,13 @@ fn derniere_publiee() -> Result<Version, crate::modele::Echec> {
                 ),
             ));
         }
-        github::derniere()
-            .map(|p| p.version)
-            .map_err(|e| crate::modele::Echec::echoue("mise_a_jour/historique", e))
+        github::derniere().map(|p| p.version).map_err(|e| {
+            let texte = match &e {
+                github::EchecRepartir::NonRecu(e) => e.to_string(),
+                _ => echec_dit(&e, Repartir::Non).0.trim().to_string(),
+            };
+            crate::modele::Echec::echoue("mise_a_jour/historique", texte)
+        })
     }
 }
 
@@ -2063,8 +2067,8 @@ enum Reception {
     Recue(github::Publiee),
     /// GitHub en erreur ou manifeste refusé, dit : rien n'a été vérifié.
     SansGithub,
-    /// En repartant : manifeste signé reçu, mais l'état local pas écrit ou pas scellé jusqu'au bout, dit (jamais
-    /// « GitHub n'a pas été consulté »).
+    /// Manifeste signé reçu, mais l'état local pas écrit ou pas scellé jusqu'au bout (en repartant, ou la révocation de
+    /// la principale), dit avec le fichier en cause (jamais « GitHub n'a pas été consulté »).
     NonEcrit,
 }
 
@@ -2072,37 +2076,16 @@ enum Reception {
 /// dit, et chaque échec aussi (rien n'est oublié).
 fn derniere_selon(repartir: Repartir) -> Reception {
     let recue = if repartir == Repartir::Oui {
-        match github::derniere_en_repartant() {
-            Ok(p) => Ok(p),
-            Err(github::EchecRepartir::NonRecu(e)) => {
-                trp!(
-                    "  GitHub : {}. Rien n'a été vérifié, et rien n'est oublié : les versions vues restent en doute.",
-                    "  GitHub: {}. Nothing was checked, and nothing is forgotten: the versions seen stay in doubt.",
-                    affichable(&e.to_string())
-                );
-                return Reception::SansGithub;
-            }
-            Err(github::EchecRepartir::NonEcrit(v, fichier, e)) => {
-                let doute = github::versions_vues_douteuses();
-                println!(
-                    "{}",
-                    non_ecrit(v, &fichier, &crate::socle::dossier_local(), &e.to_string(), doute)
-                );
-                return Reception::NonEcrit;
-            }
-        }
+        github::derniere_en_repartant()
     } else {
         github::derniere()
     };
     let publiee = match recue {
         Ok(p) => p,
         Err(e) => {
-            trp!(
-                "  GitHub : {}. Rien n'a été vérifié.",
-                "  GitHub: {}. Nothing was checked.",
-                affichable(&e)
-            );
-            return Reception::SansGithub;
+            let (texte, reception) = echec_dit(&e, repartir);
+            crate::ui::imprimer(&texte);
+            return reception;
         }
     };
     if repartir == Repartir::Oui {
@@ -2113,6 +2096,52 @@ fn derniere_selon(repartir: Repartir) -> Reception {
         );
     }
     Reception::Recue(publiee)
+}
+
+/// Un échec de `github::derniere` ou de `github::derniere_en_repartant`, dit (une ligne en retrait), et ce qu'il donne.
+/// Seul un manifeste pas reçu ou refusé parle de GitHub ; un fichier d'ici pas écrit est nommé, avec son dossier.
+fn echec_dit(e: &github::EchecRepartir, repartir: Repartir) -> (String, Reception) {
+    use github::EchecRepartir::{NonEcrit, NonRecu, Revocation};
+    let dossier = crate::socle::dossier_local();
+    match e {
+        NonRecu(e) if repartir == Repartir::Oui => (
+            trf!(
+                "  GitHub : {}. Rien n'a été vérifié, et rien n'est oublié : les versions vues restent en doute.",
+                "  GitHub: {}. Nothing was checked, and nothing is forgotten: the versions seen stay in doubt.",
+                affichable(&e.to_string())
+            ),
+            Reception::SansGithub,
+        ),
+        NonRecu(e) => (
+            trf!(
+                "  GitHub : {}. Rien n'a été vérifié.",
+                "  GitHub: {}. Nothing was checked.",
+                affichable(&e.to_string())
+            ),
+            Reception::SansGithub,
+        ),
+        NonEcrit(v, fichier, e) => (
+            non_ecrit(*v, fichier, &dossier, &e.to_string(), github::versions_vues_douteuses()),
+            Reception::NonEcrit,
+        ),
+        Revocation(v, fichier, e) => (
+            revocation_non_retenue(*v, fichier, &dossier, &e.to_string()),
+            Reception::NonEcrit,
+        ),
+    }
+}
+
+/// Manifeste de secours reçu, révocation de la principale pas retenue jusqu'au bout (`github::EchecRepartir::Revocation`) :
+/// rien n'est installé, la passe suivante reprend là.
+fn revocation_non_retenue(v: Version, fichier: &Path, dossier: &Path, e: &str) -> String {
+    trf!(
+        "  Version signée par la clé de secours reçue ({}), mais la révocation de la clé principale n'a pas pu être retenue jusqu'au bout : {} n'a pas pu être écrit, effacé ou scellé ({}). Rien n'est installé. Vérifiez ce fichier et le dossier {} (son registre des sceaux), puis relancez : la suite reprend là.",
+        "  Version signed by the backup key received ({}), but the revocation of the main key could not be kept all the way: {} could not be written, erased or sealed ({}). Nothing is installed. Check this file and the folder {} (its seal register), then run again: it picks up from there.",
+        ecrire(v),
+        affichable(&fichier.display().to_string()),
+        affichable(e),
+        affichable(&dossier.display().to_string())
+    )
 }
 
 /// Manifeste signé reçu, état local pas écrit ou pas scellé jusqu'au bout (`github::EchecRepartir::NonEcrit`). L'erreur
@@ -2494,6 +2523,39 @@ mod tests {
             assert!(!t.contains("GitHub") && !t.contains("Rien n'a été vérifié"), "{t}");
             assert_eq!(t.contains("restent en doute"), doute, "{t}");
         }
+    }
+
+    /// Vérification 0.94, R10-ECRITURE-2 : une révocation pas retenue nomme son fichier et son dossier, sans « GitHub » ;
+    /// un manifeste pas reçu, lui, parle de GitHub.
+    #[test]
+    fn echec_de_revocation_dit_vrai() {
+        let (fichier, dossier) = (Path::new("/d/versions/principale-revoquee.txt"), Path::new("/d"));
+        let texte = revocation_non_retenue((0, 95, 0, 1), fichier, dossier, "disque plein");
+        assert!(
+            texte.contains("0.95.0") && texte.contains("/d/versions/principale-revoquee.txt"),
+            "{texte}"
+        );
+        assert!(
+            texte.contains("dossier /d ") && texte.contains("disque plein") && texte.contains("clé de secours"),
+            "{texte}"
+        );
+        assert!(
+            !texte.contains("GitHub") && !texte.contains("Rien n'a été vérifié"),
+            "{texte}"
+        );
+        let erreur = std::io::Error::other("disque plein");
+        let e = github::EchecRepartir::Revocation((0, 95, 0, 1), fichier.to_path_buf(), erreur);
+        let (texte, reception) = echec_dit(&e, Repartir::Non);
+        assert!(
+            !texte.contains("GitHub") && matches!(reception, Reception::NonEcrit),
+            "{texte}"
+        );
+        let e = github::EchecRepartir::NonRecu(crate::modele::Echec::echoue("essai", "hors ligne"));
+        let (texte, reception) = echec_dit(&e, Repartir::Non);
+        assert!(
+            texte.contains("GitHub") && matches!(reception, Reception::SansGithub),
+            "{texte}"
+        );
     }
 
     /// Relecture D7b : sans version publiée pour ce système, refusé (avant de lire l'historique, dans

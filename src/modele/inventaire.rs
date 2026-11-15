@@ -809,16 +809,16 @@ mod tests {
         (
             "mise_a_jour/github.rs",
             "versions/principale-revoquee.txt",
-            1,
-            "le nom du fichier que repartir_de n'a pas pu écrire, rendu pour être dit à la personne (jamais lu ni \
-             écrit hors de sceau::lire et sceau::ecrire)",
+            2,
+            "le nom du fichier que repartir_de ou retenir_revocation n'a pas pu écrire ou effacer, rendu pour être \
+             dit à la personne (jamais lu ni écrit hors de sceau::lire et sceau::ecrire, ou sceau::effacer)",
         ),
         (
             "mise_a_jour/github.rs",
             "versions/plus-haute-vue.txt",
-            1,
-            "le nom du fichier que repartir_de n'a pas pu écrire, rendu pour être dit à la personne (jamais lu ni \
-             écrit hors de sceau::ecrire)",
+            2,
+            "le nom du fichier que repartir_de ou retenir_revocation n'a pas pu écrire ou effacer, rendu pour être \
+             dit à la personne (jamais lu ni écrit hors de sceau::ecrire, ou sceau::effacer)",
         ),
         (
             "amelioration/mod.rs",
