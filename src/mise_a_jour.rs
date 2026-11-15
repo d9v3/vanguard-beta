@@ -530,7 +530,7 @@ fn remplacer(
     vue: &sa_fenetre::Vue,
 ) -> Result<(), String> {
     let octets = lire_octets(source, max)?;
-    gardes_de_la_cle(&octets, cible, attendue, soi, registre)?;
+    gardes_de_la_cle(&octets, cible, attendue, soi, registre, derniere_publiee)?;
     let fenetre = sa_fenetre::de_la_source(source, &octets).zip(sa_fenetre::pour(cible));
     vue.dite(fenetre.as_ref().map(|(_, chemin)| chemin.as_path()))?;
     match fenetre {
@@ -553,17 +553,20 @@ fn remplacer(
 /// (`de_soi`), et la liste des copies du registre de `registre` ne dit pas que ce serait un retour en arrière
 /// (`retour_en_arriere`, sortie prouvée par `sortie_du_doute`). Le terminal (`remplacer`) et l'aperçu de la fenêtre
 /// (`apercu::plan`, rejoué après l'accord) passent par ici : aucun chemin ne pose la clé sans ces gardes.
+/// `derniere` : la dernière version signée, demandée seulement devant une liste en doute. Le terminal la reçoit de
+/// GitHub (`derniere_publiee`, qui retient le plancher) ; l'aperçu n'écrit rien avant l'accord et la refuse.
 pub(super) fn gardes_de_la_cle(
     octets: &[u8],
     cible: &Path,
     attendue: Version,
     soi: Option<&str>,
     registre: &Path,
+    derniere: impl FnOnce() -> Result<Version, crate::modele::Echec>,
 ) -> Result<(), String> {
     if !de_soi(octets, soi) {
         return Err(pas_de_soi(soi));
     }
-    let sortie = || sortie_du_doute(attendue, derniere_publiee(), || historique_du_doute()(octets));
+    let sortie = || sortie_du_doute(attendue, derniere(), || historique_du_doute()(octets));
     match retour_en_arriere(registre, cible, attendue, &present(cible), sortie) {
         Some(refus) => Err(refus),
         None => Ok(()),
@@ -2014,7 +2017,7 @@ pub(super) fn juger_cibles(
 }
 
 /// Le doute sur la liste des copies quand la copie de cet ordinateur n'est pas là (R5-REGISTRE-3, R5-ORIGINE-DOC-1).
-fn doute_sans_copie(d: crate::voulues::Doute) -> String {
+pub(super) fn doute_sans_copie(d: crate::voulues::Doute) -> String {
     trf!(
         "  Non vérifié : la liste des copies posées par Vanguard {} ; rien ne dit\n  qu'une copie plus récente n'y était pas notée, et la copie de cet ordinateur n'est pas là.\n  Une clé plus ancienne ne s'y pose pas. Posez-la depuis une clé à la dernière version signée.",
         "  Not checked: the list of copies set up by Vanguard {}; nothing shows\n  that a newer copy was not noted in it, and the copy on this computer is not there.\n  An older key does not set itself up there. Set it up from a key at the latest signed version.",

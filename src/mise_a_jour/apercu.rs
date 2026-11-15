@@ -226,6 +226,8 @@ pub(super) trait Monde {
     fn registre(&self) -> PathBuf;
     /// `juger_cibles` du terminal : (planchers, à remplacer, doutes à dire), la version publiée étant `publiee`.
     fn juger(&self, cibles: Vec<PathBuf>, publiee: Version) -> (Vec<Version>, Vec<PathBuf>, Vec<String>);
+    /// `reconnue_ici` du terminal : la copie à `c` vient-elle de Vanguard (liste des copies, historique signé) ?
+    fn reconnue(&self, c: &Path) -> Result<(), String>;
 }
 
 /// L'ordinateur pour de vrai.
@@ -294,6 +296,9 @@ impl Monde for Ici {
     }
     fn juger(&self, cibles: Vec<PathBuf>, publiee: Version) -> (Vec<Version>, Vec<PathBuf>, Vec<String>) {
         super::juger_cibles(cibles, publiee, &self.copie(), &self.registre(), super::reconnue_ici)
+    }
+    fn reconnue(&self, c: &Path) -> Result<(), String> {
+        super::reconnue_ici(c).map_err(String::from)
     }
 }
 
@@ -455,8 +460,26 @@ fn plan(m: &dyn Monde, pour: Pour) -> Result<Plan, Refus> {
             let copie = m.copie();
             // Les gardes du terminal (`remplacer`) : les octets du programme qui tourne, jamais un retour en arrière
             // que la liste des copies interdit. Rejouées après l'accord (`agir` refait le plan).
-            super::gardes_de_la_cle(&octets, &copie, cle, m.soi(&source).as_deref(), &m.registre())
-                .map_err(|e| Refus::NonVerifie(sans_entete(&e)))?;
+            // Devant une liste en doute, la sortie (la dernière version signée, reçue de GitHub, qui retient le
+            // plancher) se décide dans le terminal : l'aperçu n'écrit rien avant l'accord.
+            let au_terminal = || {
+                Err(Echec::refuse(
+                    "mise_a_jour/apercu",
+                    tr!(
+                        "dans la fenêtre, la sortie d'une liste en doute se décide dans le terminal (vanguard se-mettre-a-jour)",
+                        "in the window, the way out of a list in doubt is decided in the terminal (vanguard se-mettre-a-jour)"
+                    ),
+                ))
+            };
+            super::gardes_de_la_cle(
+                &octets,
+                &copie,
+                cle,
+                m.soi(&source).as_deref(),
+                &m.registre(),
+                au_terminal,
+            )
+            .map_err(|e| Refus::NonVerifie(sans_entete(&e)))?;
             // Sa fenêtre suit si c'est bien la sienne, jugée ici et revérifiée à la pose (`installer_avec`).
             let (fenetre, chemin) = sa_fenetre::de_la_source(&source, &octets)
                 .zip(sa_fenetre::pour(&copie))
@@ -478,13 +501,33 @@ fn plan(m: &dyn Monde, pour: Pour) -> Result<Plan, Refus> {
             "the copy on this computer cannot be read, its version is unknown ({})",
             e
         ))),
-        Etat::Rien | Etat::PasDepuisLaCle | Etat::AJour(_) | Etat::ClePlusAncienne { .. } => plan_github(m, pour),
+        // Comme au terminal (R3-C3) : une copie plus récente que la clé n'est crue que reconnue (liste des copies
+        // posées, ou historique signé) ; sinon jamais « à jour », même si elle grave la version publiée.
+        Etat::ClePlusAncienne { .. } => {
+            m.reconnue(&m.copie()).map_err(|e| {
+                Refus::NonVerifie(trf!(
+                    "la copie d'ici se dit plus récente que la clé, mais Vanguard ne la reconnaît ni comme celle qu'il a posée ni comme une version publiée ({}) ; elle n'est pas remplacée",
+                    "the copy on this computer claims to be newer than the key, but Vanguard recognizes it neither as the one it set up nor as a published version ({}); it is not replaced",
+                    sans_entete(&e)
+                ))
+            })?;
+            plan_github(m, pour)
+        }
+        Etat::Rien | Etat::PasDepuisLaCle | Etat::AJour(_) => plan_github(m, pour),
     }
 }
 
 fn plan_github(m: &dyn Monde, pour: Pour) -> Result<Plan, Refus> {
     let cibles = m.cibles_github();
     if cibles.is_empty() {
+        // R5-REGISTRE-3 : sans copie ici, une liste des copies en doute est dite (le terminal la dit), pas « rien ».
+        if let Err(d) = crate::programmes_poses::copie_notee_dans(&m.registre(), &m.copie()) {
+            return Err(Refus::NonVerifie(trf!(
+                "{} ; la suite se décide dans le terminal (vanguard se-mettre-a-jour)",
+                "{}; what to do next is decided in the terminal (vanguard se-mettre-a-jour)",
+                sans_entete(&super::doute_sans_copie(d))
+            )));
+        }
         return Err(Refus::Rien);
     }
     if !m.dossier_sur() {
@@ -1046,6 +1089,9 @@ mod tests {
             let reconnue = |_: &Path| self.reconnue.clone().map_err(|e| Echec::refuse("essai", e));
             super::super::juger_cibles(cibles, publiee, &self.copie, &self.registre, reconnue)
         }
+        fn reconnue(&self, _: &Path) -> Result<(), String> {
+            self.reconnue.clone()
+        }
     }
 
     fn dossier(nom: &str) -> PathBuf {
@@ -1178,6 +1224,73 @@ mod tests {
             autre => panic!("{:?}", autre.map(|p| p.apercu)),
         }
         assert_eq!(std::fs::read(&f.copie).unwrap(), ancien);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Relecture adverse : devant une liste des copies en doute, la sortie (dernière version signée, reçue de GitHub,
+    /// qui retient le plancher) n'est pas demandée par l'aperçu : rien n'est écrit avant l'accord, le terminal décide.
+    #[test]
+    fn l_apercu_de_la_cle_devant_une_liste_en_doute_renvoie_au_terminal() {
+        let (d, f, ancien) = cle_prete("cle-doute");
+        crate::programmes_poses::copie_posee_dans(&f.registre, &f.copie, &ancien);
+        std::fs::remove_file(f.registre.join(crate::programmes_poses::FICHIER)).unwrap();
+        let accord = format!("sha256:{}", "0".repeat(64));
+        for essai in [plan(&f, Pour::Voir).err(), plan(&f, Pour::Appliquer).err()] {
+            match essai {
+                Some(Refus::NonVerifie(e)) => assert!(e.contains("se-mettre-a-jour"), "{e}"),
+                autre => panic!("{autre:?}"),
+            }
+        }
+        assert!(matches!(
+            agir(&f, &accord, CONSOMME),
+            Issue::Refuse(Refus::NonVerifie(_))
+        ));
+        assert_eq!((f.retenus.get(), f.vus.get(), f.telecharges.get()), (0, 0, 0));
+        assert_eq!(std::fs::read(&f.copie).unwrap(), ancien);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// R3-C3 par l'aperçu : une copie plus récente que la clé, qui grave la version publiée mais que Vanguard ne
+    /// reconnaît pas, n'est jamais dite « à jour » (le terminal la dit non vérifiée).
+    #[test]
+    fn une_copie_plus_recente_que_la_cle_non_reconnue_n_est_pas_a_jour() {
+        let d = dossier("cle-ancienne");
+        let mut f = Faux::nouveau(&d);
+        std::fs::create_dir_all(f.copie.parent().unwrap()).unwrap();
+        let ici = programme("0.96.0+1793000000", "etrangere");
+        std::fs::write(&f.copie, &ici).unwrap();
+        f.cibles = vec![f.copie.clone()];
+        f.derniere = Ok(Publiee::d_essai(version("0.96.0+1793000000"), &ici));
+        f.maintenant = 1_793_000_000;
+        f.etat = Etat::ClePlusAncienne {
+            copie: version("0.96.0+1793000000"),
+            cle: version("0.95.0+1790000000"),
+        };
+        let r = plan(&f, Pour::Voir).map(|p| p.apercu);
+        assert!(matches!(r, Err(Refus::AJour(_))), "reconnue : à jour, {r:?}");
+        f.reconnue = Err("pas dans la liste".into());
+        match plan(&f, Pour::Voir) {
+            Err(Refus::NonVerifie(e)) => assert!(e.contains("pas dans la liste"), "{e}"),
+            autre => panic!("{:?}", autre.map(|p| p.apercu)),
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// R5-REGISTRE-3 par l'aperçu : sans copie ici, la liste des copies en doute est dite, jamais « rien ».
+    #[test]
+    fn sans_copie_une_liste_en_doute_n_est_pas_rien() {
+        let d = dossier("sans-copie-doute");
+        let f = Faux::nouveau(&d);
+        assert!(matches!(plan(&f, Pour::Voir), Err(Refus::Rien)));
+        crate::programmes_poses::copie_posee_dans(&f.registre, &f.copie, b"posee");
+        std::fs::remove_file(f.registre.join(crate::programmes_poses::FICHIER)).unwrap();
+        match plan(&f, Pour::Voir) {
+            Err(Refus::NonVerifie(e)) => {
+                assert!(e.contains(tr!("la liste des copies", "the list of copies")), "{e}");
+                assert!(e.contains("se-mettre-a-jour"), "{e}");
+            }
+            autre => panic!("{:?}", autre.map(|p| p.apercu)),
+        }
         let _ = std::fs::remove_dir_all(&d);
     }
 

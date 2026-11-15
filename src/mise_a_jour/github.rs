@@ -657,9 +657,10 @@ pub(super) fn retenir_pendant_un_apercu(publiee: &Publiee) -> Result<(), Echec> 
 }
 
 /// `retenir` sans rien écrire, pour un aperçu : le manifeste reçu passerait-il la plus haute version vue ? Révoquée
-/// pour la première fois, la plus haute vue repartira de zéro (`retenir_revocation`) : elle ne compte pas.
+/// pour la première fois, ou révocation « en cours » (oubli pas fini, que `retenir_en` finira), la plus haute vue
+/// repartira de zéro (`retenir_revocation`) : elle ne compte pas, comme au terminal.
 pub(super) fn juger_la_vue(publiee: &Publiee) -> Result<(), Echec> {
-    let vue = if publiee.revoque && !revocation_retenue() {
+    let vue = if (publiee.revoque && !revocation_retenue()) || revocation_en_cours() {
         None
     } else {
         plus_haute_vue()?
@@ -1193,6 +1194,15 @@ passe-droit-sans-vm {zeros} 0
         // 1. « en cours » intact + plancher du voleur : l'oubli est fini, la version reçue devient la plus haute vue.
         crate::sceau::ecrire(REVOCATION, REVOCATION_EN_COURS).unwrap();
         crate::sceau::ecrire(VERSIONS, haut).unwrap();
+        // L'aperçu juge comme le terminal : le plancher qui sera oublié ne compte pas (la fenêtre ne gèle pas).
+        assert_eq!(juger_la_vue(&recue), Ok(()));
+        assert_eq!(
+            juger_la_vue(&Publiee {
+                revoque: true,
+                ..recue.clone()
+            }),
+            Ok(())
+        );
         assert!(retenir_apres(recue.clone()).is_ok());
         assert_eq!(plus_haute_vue(), Ok(Some((0, 95, 0, 1_795_000_000))));
         assert_eq!(
