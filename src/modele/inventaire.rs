@@ -150,6 +150,8 @@ pub(crate) const INVENTAIRE: &[FichierEtat] = &[
     scelle(crate::changements::RELEVE, "changements"),
     // L'empreinte de chacune de ses lignes : un relevé changé garde les lignes que Vanguard a écrites.
     scelle(crate::changements::LIGNES, "changements"),
+    // Le verrou du relevé, tenu de sa lecture à sa réécriture : deux Vanguard ne s'effacent plus une note.
+    local(crate::changements::VERROU, "changements"),
     local(crate::modele::journal::DOSSIER, "modele::journal"),
     // Les événements qui n'ont pas pu être notés, comptés sans verrou ni sceau, dits à la prochaine écriture.
     local(crate::modele::journal::PERDUS, "modele::journal"),
@@ -552,6 +554,7 @@ mod tests {
         ("envoi.lock", "verrou, sans contenu"),
         ("parametres.lock", "verrou, sans contenu"),
         (crate::apprentissage::VERROU, "verrou, sans contenu"),
+        (crate::changements::VERROU, "verrou, sans contenu"),
         (crate::protection::normales::VERROU, "verrou, sans contenu"),
         (
             crate::parametres::partage::MARQUE_NON,

@@ -149,6 +149,31 @@ pub(crate) enum Inverse {
 /// Le relevé des corrections faites ici, dans le dossier de données : le seul endroit où leurs commandes sont notées.
 pub(crate) const RELEVE: &str = "changements.jsonl";
 
+/// Le verrou tenu de la lecture du relevé à sa réécriture : sans lui, deux Vanguard (le surveillant et une commande)
+/// qui le relisent en même temps réécrivent chacun sa copie, et l'une des notes se perd (celle qui permet de remettre
+/// un fichier mis en quarantaine, par exemple).
+pub(crate) const VERROU: &str = "changements.verrou";
+
+/// Prend le verrou du relevé `chemin`. `None` : pas tenu, dit à la personne et au journal des erreurs, et rien ne
+/// s'écrit (une réécriture sans lui pourrait effacer la note d'un autre).
+fn tenir(chemin: &std::path::Path) -> Option<crate::socle::Verrou> {
+    let (dossier, _) = lieu(chemin);
+    // Comme les sceaux : en administrateur dans le dossier d'un compte, rien n'y est créé, pas même le verrou (un
+    // verrou à root y bloquerait ensuite chaque note du compte).
+    if !crate::socle::ecriture_sure(dossier) {
+        dire_non_note(&crate::sceau::dossier_d_un_autre().to_string());
+        return None;
+    }
+    let verrou = crate::socle::Verrou::prendre(dossier, VERROU, false, crate::socle::ATTENTE_ECRITURE).ok();
+    if verrou.is_none() {
+        dire_non_note(tr!(
+            "relevé occupé ou verrou illisible",
+            "record busy or lock unreadable"
+        ));
+    }
+    verrou
+}
+
 fn fichier() -> std::path::PathBuf {
     crate::socle::dossier_local().join(RELEVE)
 }
@@ -166,7 +191,8 @@ pub(crate) fn noter_annulables(correctifs: &[Vec<String>], resultats: &[bool], a
 fn noter_dans(chemin: &std::path::Path, correctifs: &[Vec<String>], resultats: &[bool], annulables: &[Option<String>]) {
     use crate::modele::evenement::{Evenement, Genre, Source};
     let date = maintenant();
-    let mut tous = lire_de(chemin);
+    // Les événements d'abord, hors du verrou : déjà posé, un correctif reste au journal même si le relevé est occupé.
+    let mut nouveaux = Vec::new();
     for (i, (commandes, &reussi)) in correctifs.iter().zip(resultats).enumerate() {
         // Rien à noter : un correctif vide, ou dont chaque ligne était déjà bonne (rien d'écrit, sous Windows).
         if commandes.is_empty() {
@@ -182,7 +208,7 @@ fn noter_dans(chemin: &std::path::Path, correctifs: &[Vec<String>], resultats: &
         if let Genre::Action { annulable: a, .. } = &mut ev.quoi {
             a.clone_from(&annulable);
         }
-        tous.push(Changement {
+        nouveaux.push(Changement {
             date: date.clone(),
             commandes: commandes.clone(),
             reussi,
@@ -195,6 +221,14 @@ fn noter_dans(chemin: &std::path::Path, correctifs: &[Vec<String>], resultats: &
             annulation_en_cours: false,
         });
     }
+    if nouveaux.is_empty() {
+        return;
+    }
+    let Some(_verrou) = tenir(chemin) else {
+        return;
+    };
+    let mut tous = lire_de(chemin);
+    tous.extend(nouveaux);
     ecrire(chemin, &tous);
 }
 
@@ -232,6 +266,9 @@ fn noter_en_cours_dans(
     if let Genre::Action { annulable, .. } = &mut ev.quoi {
         *annulable = Some(id.to_string());
     }
+    let Some(_verrou) = tenir(chemin) else {
+        return false;
+    };
     let mut tous = lire_de(chemin);
     tous.push(Changement {
         date: maintenant(),
@@ -255,6 +292,9 @@ pub(crate) fn finir(id: &str, reussi: bool) -> bool {
 }
 
 fn finir_dans(chemin: &std::path::Path, id: &str, reussi: bool) -> bool {
+    let Some(_verrou) = tenir(chemin) else {
+        return false;
+    };
     let mut tous = lire_de(chemin);
     let Some(c) = tous
         .iter_mut()
@@ -285,6 +325,9 @@ pub(crate) fn finir_annulation(id: &str) {
 }
 
 fn marquer_annulation_dans(chemin: &std::path::Path, id: &str, en_cours: bool) -> bool {
+    let Some(_verrou) = tenir(chemin) else {
+        return false;
+    };
     let mut tous = lire_de(chemin);
     let mut touchees = false;
     for c in tous
@@ -303,6 +346,9 @@ pub(crate) fn marquer_defaite(id: &str) {
 }
 
 fn marquer_defaite_dans(chemin: &std::path::Path, id: &str) {
+    let Some(_verrou) = tenir(chemin) else {
+        return;
+    };
     let mut tous = lire_de(chemin);
     let date = maintenant();
     for c in tous.iter_mut().filter(|c| c.annulable.as_deref() == Some(id)) {
@@ -474,6 +520,9 @@ pub(crate) fn noter_blocage_dans(chemin: &std::path::Path, commandes: Vec<String
 }
 
 fn ecrire_blocage(chemin: &std::path::Path, commandes: Vec<String>, reussi: bool, blocage: Blocage) {
+    let Some(_verrou) = tenir(chemin) else {
+        return;
+    };
     let mut tous = lire_de(chemin);
     tous.push(Changement {
         date: maintenant(),
@@ -557,6 +606,9 @@ pub(crate) fn marquer_annule(id: &str) {
 }
 
 fn marquer_annule_dans(chemin: &std::path::Path, id: &str, supprime: bool) {
+    let Some(_verrou) = tenir(chemin) else {
+        return;
+    };
     let mut tous = lire_de(chemin);
     let date = maintenant();
     let mut trouve = None;
@@ -681,6 +733,9 @@ fn lire_et_juger(chemin: &std::path::Path) -> (Vec<Changement>, &'static str) {
 pub(crate) fn resceller_d_avant() {
     if crate::sceau::adopte(RELEVE) {
         let chemin = fichier();
+        let Some(_verrou) = tenir(&chemin) else {
+            return;
+        };
         let tous = lire_de(&chemin);
         ecrire(&chemin, &tous);
     }

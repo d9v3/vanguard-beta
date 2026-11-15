@@ -407,6 +407,10 @@ La 0.95 n'a pas été publiée : tout son travail est dans cette version.
   mais Vanguard le dit et donne la commande pour les remettre. Les entrées mises de côté sont montrées par leur nom et
   signalées dans les traces d'incident. Un chemin qui contient « .. » est résolu avant l'isolement. Une analyse YARA
   lancée sur un dossier relatif (« vanguard yara . ») met de nouveau en quarantaine ce qu'elle trouve.
+- **Le relevé des changements ne perd plus une note.** Deux Vanguard qui notaient en même temps (la surveillance et
+  une commande) relisaient chacun le relevé puis le réécrivaient : la note de l'un pouvait disparaître, par exemple
+  celle qui permet de remettre un fichier mis en quarantaine. Chaque note se prend maintenant sous un verrou, de la
+  lecture à l'écriture ; s'il ne se prend pas, rien n'est écrit par-dessus et c'est dit.
 - **Windows : une racine ajoutée au seul compte est montrée.** Un certificat racine ajouté au seul compte de
   l'utilisateur, par exemple par un programme qui intercepte le trafic HTTPS, est maintenant signalé dans le bilan,
   quel que soit son nom, au moins au niveau moyen. Si ce magasin ne peut pas être lu, le bilan dit « non vérifié » au

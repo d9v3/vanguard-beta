@@ -2567,7 +2567,11 @@ mod tests {
         let duree = debut.elapsed();
         assert_eq!(liste.ecartees.len(), n);
         assert_eq!(liste.admises.len(), 0);
-        assert!(duree < std::time::Duration::from_secs(5), "{duree:?}");
+        // Sous Linux, 0,5 s ; sous Wine, chaque accès passe par l'émulation : 4,3 s seul, plus sous charge (la borne
+        // de 5 s y tombait). Un parcours de toutes les entrées à chaque ligne (60 000², 3,6 milliards de comparaisons) dépasse 5 s sous
+        // Linux : c'est lui qui garde l'ordre de grandeur, Windows garde une borne contre le figé.
+        let borne = std::time::Duration::from_secs(if cfg!(windows) { 60 } else { 5 });
+        assert!(duree < borne, "{duree:?}");
         let _ = std::fs::remove_dir_all(&maison);
     }
 

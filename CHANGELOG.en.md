@@ -383,6 +383,10 @@ Version 0.95 was not published: all its work is in this version.
   yourself. A file's special permissions are not restored, but Vanguard says so and gives the command to restore them.
   Set-aside entries are shown by name and reported in the incident traces. A path that contains ".." is resolved
   before isolation. A YARA scan started on a relative folder ("vanguard yara .") quarantines what it finds again.
+- **The record of changes no longer loses an entry.** Two Vanguard processes writing at the same time (monitoring
+  and a command) each read the record then wrote it back: one entry could vanish, for example the one that lets a
+  quarantined file be put back. Each entry is now written under a lock, from reading to writing; if the lock cannot
+  be taken, nothing is written over and this is said.
 - **Windows: a root added to the account alone is shown.** A root certificate added to the user's own account only,
   for example by a program that intercepts HTTPS traffic, is now reported in the checkup whatever its name, at medium
   level or higher. If that store cannot be read, the checkup says "not checked" instead of "nothing added". A root
