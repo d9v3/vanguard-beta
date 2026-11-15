@@ -277,9 +277,15 @@ repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
   "PATH=$HOME/bin"); "export HOME=…" sets nothing for the generator, and "%h" is not expanded there; if the file and
   those that set are changeable only by root, nothing is reported; an environment.d file with a line ending in "\" (one
   backslash or more, followed or not by a blank or a carriage return), which the generator does not join the way
-  Vanguard reads it, is reported as not checked as a whole and raises the backup, unless it is root-only; a file of
-  /usr/local/lib/environment.d or /usr/lib/environment.d that reads a variable set by a file the account can change is
-  reported as not checked as a whole; zsh's ": ${PATH::=/home/alice/.x}" and
+  Vanguard reads it, is reported as not checked as a whole and raises the backup, unless it is root-only; an
+  environment.d file of /etc, /run, /usr/local/lib or /usr/lib that reads a variable the account can change is reported
+  as not checked as a whole and raises the backup; nothing is computed there: it is enough for the name to be written
+  after "$" or "${", in the word of a "${X:-…}" or "${X:+…}" too, nested or not, the variable itself included
+  ("PATH=$PATH:…" when the account sets PATH); a variable the account can change is set by an environment.d file of the
+  account, by ManagerEnvironment= or DefaultEnvironment= of a user.conf or user.conf.d of the account, by a
+  system file (environment.d, user.conf, user.conf.d) that is not root-only, or by a line that reads one, whatever
+  file writes it; those of the session (profiles,
+  ~/.pam_environment) are not counted; zsh's ": ${PATH::=/home/alice/.x}" and
   environment.d's "PATH =…" (a space before "=") are reported as not checked, not high; in the shell, a variable set
   earlier in the file is not followed ("PATH=$X:$PATH" is reported, not high); a value read inside a calculation, or
   built in pieces over several lines, is not followed; a non-simple line in a file only root can change is not reported
