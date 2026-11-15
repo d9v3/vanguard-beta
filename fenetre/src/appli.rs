@@ -2923,8 +2923,8 @@ exit 0
         );
         assert!(
             a.console
-                .lignes()
-                .any(|l| l.ton == Ton::Attention && l.texte.contains("hors de Vanguard"))
+                .blocs()
+                .any(|b| b.ton == Ton::Attention && b.resume.contains("hors de Vanguard"))
         );
     }
 }
