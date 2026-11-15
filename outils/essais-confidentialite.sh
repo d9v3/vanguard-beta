@@ -858,6 +858,17 @@ noter 1 "$(refus_dit $?)" "--compilation : le dossier personnel (HOME) est refus
 compile disque '/run/media/alice/disque/cibles/release/build/out/egl_bindings.rs'
 compilation "$CIBLES_I" "$P/disque"
 noter 1 "$(refus_dit $?)" "--compilation : le nom du compte dans un chemin hors de HOME est refusé"
+# 0.96.0 : du code machine dont les octets s'écrivent « \<compte court> » (un « call » et son adresse, entre
+# des octets qui ne sont pas de l'UTF-8) n'est pas un texte ; un vrai chemin collé à ces octets en reste un.
+compile code-machine '\x89\xc11\xd2I\x89\xf8\xe8\\x\0H\x89\xf1'
+SORTIE=$(HOME=/home/x USER=x garde --compilation "$CIBLES_I" "$P/code-machine" 2>&1)
+noter 0 $? "--compilation : du code machine qui s'écrit « \\x » passe (compte x)"
+compile code-x '\x89\xf8\xe8/run/media/x/disque/x.rs'
+SORTIE=$(HOME=/home/x USER=x garde --compilation "$CIBLES_I" "$P/code-x" 2>&1)
+noter 1 "$(refus_dit $?)" "--compilation : le chemin du compte x collé à ces octets est refusé"
+compile colle '\x89\xf8\xe8/run/media/alice/disque/x.rs'
+compilation "$CIBLES_I" "$P/colle"
+noter 1 "$(refus_dit $?)" "--compilation : un chemin collé à des octets qui ne sont pas de l'UTF-8 est refusé"
 # Ronde Fable du 13 nov. 2026 (C6) : sans USER (ni LOGNAME), le compte venait du système, « root » sous unshare -r ;
 # le vrai nom, lui, est encore le dernier élément du HOME.
 SORTIE=$(env -u USER -u LOGNAME -u LNAME -u USERNAME HOME=/home/alice python3 -I "$OUTIL" --compilation "$CIBLES_I" \

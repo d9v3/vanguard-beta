@@ -659,7 +659,15 @@ def chaines_d_octets(brut: bytes, mini=12) -> str:
     """Les textes lisibles d'un contenu binaire, un par ligne : ASCII et UTF-8 (`mini` caractères de suite au moins),
     puis UTF-16 et UTF-32. Douze par défaut : dans les octets au hasard d'une image compressée, une suite plus
     courte finit par dessiner un faux courriel (une lettre, « @ », une lettre, un point, deux lettres) ; un vrai tient dans un texte plus long."""
-    textes = [s.decode(errors="replace") for s in re.findall(rb"[\t\x20-\x7e\x80-\xff]{%d,}" % mini, brut)]
+    # Seul l'UTF-8 valide est un texte : coupé à chaque octet qui n'en est pas. Sans cela, du code machine (un « call »,
+    # e8 suivi de son adresse, après 89 c1 f8…) se lisait comme une phrase, et une adresse qui s'écrit « \<deux
+    # lettres> » y devenait un nom de compte (0.96.0, fausse alerte qui bloquait la publication).
+    textes = [
+        morceau
+        for s in re.findall(rb"[\t\x20-\x7e\x80-\xff]{%d,}" % mini, brut)
+        for morceau in s.decode(errors="replace").split("\ufffd")
+        if len(morceau) >= mini
+    ]
     for motif, sens in ((rb"(?:[\x20-\x7e]\x00){4,}", "utf-16-le"), (rb"(?:\x00[\x20-\x7e]){4,}", "utf-16-be"),
                         (rb"(?:[\x20-\x7e]\x00\x00\x00){4,}", "utf-32-le"),
                         (rb"(?:\x00\x00\x00[\x20-\x7e]){4,}", "utf-32-be")):
