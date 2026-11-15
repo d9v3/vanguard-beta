@@ -284,8 +284,9 @@ enum Lancement {
     PasOuverte,
 }
 
-/// Le plus gros fichier de fenêtre lu (la fenêtre compilée fait une dizaine de Mio).
-pub(crate) const TAILLE_MAX: u64 = 128 * 1024 * 1024;
+/// Le plus gros fichier de fenêtre lu (la fenêtre compilée fait une dizaine de Mio). Dans les essais seulement, 1 Gio :
+/// ils lancent comme fenêtre leur propre programme d'essai, qui dépasse 128 Mio ; le programme publié garde 128 Mio.
+pub(crate) const TAILLE_MAX: u64 = if cfg!(test) { 1 << 30 } else { 128 * 1024 * 1024 };
 
 /// Les octets de la fenêtre ouverte, `TAILLE_MAX` au plus (`m` : ce que dit la poignée).
 fn lire_borne(f: &std::fs::File, m: &std::fs::Metadata) -> Result<Vec<u8>, String> {
@@ -716,45 +717,57 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dossier);
     }
 
-    /// LIV-1 : seuls les octets dont l'empreinte est attendue sont lancés, depuis une copie scellée en mémoire ; la
-    /// fenêtre remplacée sur le disque après la vérification ne tourne pas ; un lien, une fenêtre modifiable par
-    /// d'autres ou d'une autre empreinte ne sont pas lancés. `echo` y joue la fenêtre (un vrai programme ELF : il dit
-    /// ce qu'on lui donne).
-    /// Les arguments qui font jouer `outil` (« echo », « env ») au programme `octets` lancé sous le nom de la fenêtre.
-    /// Aucun pour les outils GNU. uutils (Ubuntu 26.04, la CI) met tous ses outils dans un seul programme qui choisit
-    /// d'après son nom : nommé « vanguard-fenetre », il ne sait pas lequel jouer et ne dit rien ; l'outil se donne
-    /// alors en premier argument. Sondé avec `echo` (GNU écrit « echo x », uutils « x ») : `env` ne départage pas,
-    /// GNU relancerait `echo` depuis le PATH et écrirait « x » lui aussi.
+    /// La variable qui dit à `joue_la_fenetre` quoi faire : « env » pour écrire ses variables, sinon la dire.
     #[cfg(target_os = "linux")]
-    fn jouer(dossier: &Path, octets: &[u8], outil: &str) -> Vec<&'static str> {
-        use std::os::unix::fs::PermissionsExt;
-        use std::os::unix::process::CommandExt;
-        let echo = std::fs::read("/usr/bin/echo").unwrap_or_default();
-        let sonde = dossier.join("sonde-multiappel");
-        std::fs::write(&sonde, &echo).unwrap();
-        std::fs::set_permissions(&sonde, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let sortie = Command::new(&sonde)
-            .arg0("vanguard-fenetre")
-            .args(["echo", "x"])
-            .output();
-        let _ = std::fs::remove_file(&sonde);
-        let multiappel = sortie.is_ok_and(|s| s.stdout == b"x\n") && octets == echo.as_slice();
-        match (multiappel, outil) {
-            (true, "echo") => vec!["echo"],
-            (true, "env") => vec!["env"],
-            _ => vec![],
+    const JOUER: &str = "VANGUARD_ESSAI_JOUER";
+
+    /// Le programme qui joue la fenêtre dans les essais suivants : ce programme d'essai lui-même (un vrai ELF, lancé
+    /// depuis la copie scellée comme la fenêtre), et les arguments qui n'y lancent que `joue_la_fenetre`. Pas
+    /// /usr/bin/echo ni /usr/bin/env : uutils (Ubuntu 26.04, la CI de la 0.96.0) est un seul programme qui choisit
+    /// l'outil d'après son nom, et nommé « vanguard-fenetre », il ne disait rien.
+    #[cfg(target_os = "linux")]
+    fn joueur() -> (Vec<u8>, [&'static str; 6]) {
+        let octets = std::fs::read(std::env::current_exe().unwrap()).unwrap();
+        let essai = "demarrage::lancer_fenetre::tests::joue_la_fenetre";
+        (
+            octets,
+            [
+                "--exact",
+                essai,
+                "--ignored",
+                "--nocapture",
+                "--quiet",
+                "--test-threads=1",
+            ],
+        )
+    }
+
+    /// Joue la fenêtre (`joueur`) ; ne fait rien sans `JOUER`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "lancé seulement par les essais de la fenêtre, depuis une copie scellée"]
+    fn joue_la_fenetre() {
+        match std::env::var(JOUER).as_deref() {
+            Ok("env") => {
+                for (nom, valeur) in std::env::vars_os() {
+                    println!("{}={}", nom.to_string_lossy(), valeur.to_string_lossy());
+                }
+            }
+            Ok(texte) => println!("dit:{texte}"),
+            Err(_) => {}
         }
     }
 
+    /// LIV-1 : seuls les octets dont l'empreinte est attendue sont lancés, depuis une copie scellée en mémoire ; la
+    /// fenêtre remplacée sur le disque après la vérification ne tourne pas ; un lien, une fenêtre modifiable par
+    /// d'autres ou d'une autre empreinte ne sont pas lancés. Le programme d'essai y joue la fenêtre (`joueur`).
     #[cfg(target_os = "linux")]
     #[test]
     fn seuls_les_octets_verifies_sont_lances() {
         use sha2::Digest;
         use std::io::Write;
         use std::os::unix::fs::{FileExt, PermissionsExt};
-        let Ok(echo) = std::fs::read("/usr/bin/echo") else {
-            return crate::essais::saute("pas de /usr/bin/echo");
-        };
+        let (echo, arguments) = joueur();
         let dossier = crate::socle::dossier_local().join("essai-fenetre-verifiee");
         let _ = std::fs::remove_dir_all(&dossier);
         std::fs::create_dir_all(&dossier).unwrap();
@@ -776,13 +789,10 @@ mod tests {
         let temoin = dossier.join("lancee");
         let faux = format!("#!/bin/sh\n: > '{}'\necho {OUVERTE}\n", temoin.display());
         poser("vanguard-fenetre", faux.as_bytes(), 0o755);
-        let sortie = commande(&v, std::env::vars_os())
-            .args(jouer(&dossier, &echo, "echo"))
-            .arg("vérifiée")
-            .stderr(Stdio::null())
-            .output()
-            .unwrap();
-        assert_eq!(String::from_utf8_lossy(&sortie.stdout).trim_end(), "vérifiée");
+        let de = std::env::vars_os().chain([(JOUER.into(), "vérifiée".into())]);
+        let sortie = commande(&v, de).args(arguments).stderr(Stdio::null()).output().unwrap();
+        let texte = String::from_utf8_lossy(&sortie.stdout).into_owned();
+        assert!(texte.lines().any(|l| l == "dit:vérifiée"), "{texte}");
         assert!(!temoin.exists(), "le fichier posé après la vérification a tourné");
         // Scellée : ni réécrite en place (au début : écrire à la fin l'allongerait, refusé pour une autre raison), ni
         // raccourcie, ni allongée, et les sceaux ne se retirent plus.
@@ -886,16 +896,14 @@ mod tests {
 
     /// L1 (relecture 0.96) : la fenêtre vérifiée héritait de tout l'environnement du compte, et LD_PRELOAD y faisait
     /// tourner une bibliothèque étrangère dès son démarrage (la fenêtre est dynamique, `vanguard` non). Elle ne reçoit
-    /// plus qu'une liste fermée, et un PATH fixe. `env` (un vrai programme ELF, lancé comme la fenêtre, depuis la
-    /// copie scellée) dit ce qu'il a reçu.
+    /// plus qu'une liste fermée, et un PATH fixe. Le programme d'essai (`joueur`), lancé comme la fenêtre, dit ce
+    /// qu'il a reçu.
     #[cfg(target_os = "linux")]
     #[test]
     fn la_fenetre_ne_recoit_qu_une_liste_fermee_de_variables() {
         use sha2::Digest;
         use std::os::unix::fs::PermissionsExt;
-        let Ok(env) = std::fs::read("/usr/bin/env") else {
-            return crate::essais::saute("pas de /usr/bin/env");
-        };
+        let (env, arguments) = joueur();
         let dossier = crate::socle::dossier_local().join("essai-environnement-fenetre");
         let _ = std::fs::remove_dir_all(&dossier);
         std::fs::create_dir_all(&dossier).unwrap();
@@ -929,14 +937,10 @@ mod tests {
         let de: Vec<(std::ffi::OsString, std::ffi::OsString)> = interdites
             .iter()
             .chain(gardees.iter())
-            .chain([("PATH", "/home/alice/bin:/usr/bin")].iter())
+            .chain([("PATH", "/home/alice/bin:/usr/bin"), (JOUER, "env")].iter())
             .map(|(n, v)| ((*n).into(), (*v).into()))
             .collect();
-        let sortie = commande(&v, de)
-            .args(jouer(&dossier, &env, "env"))
-            .stderr(Stdio::null())
-            .output()
-            .unwrap();
+        let sortie = commande(&v, de).args(arguments).stderr(Stdio::null()).output().unwrap();
         let texte = String::from_utf8_lossy(&sortie.stdout).into_owned();
         let recues: std::collections::BTreeMap<&str, &str> = texte.lines().filter_map(|l| l.split_once('=')).collect();
         for (nom, _) in interdites {

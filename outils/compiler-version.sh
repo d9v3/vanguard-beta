@@ -166,6 +166,10 @@ ln -s "$ZIG_BIN/cargo-zigbuild" "$ZIG_CACHE/outils/x86_64-w64-mingw32-dlltool"
 export PATH="$ZIG_CACHE/outils:$PATH"
 [[ $(command -v x86_64-w64-mingw32-dlltool) == "$ZIG_CACHE/outils/x86_64-w64-mingw32-dlltool" ]] ||
   { echo "dlltool pris ailleurs que dans $ZIG_CACHE/outils" >&2; exit 1; }
+# pkg-config jamais trouvé : x11-dl (la fenêtre Linux) grave sinon dans le programme le dossier des bibliothèques X11
+# de l'ordinateur qui compile (/usr/lib ici, /usr/lib/x86_64-linux-gnu sur Ubuntu), et l'empreinte dépend alors de la
+# distribution. Sans lui, la fenêtre cherche ces bibliothèques par leur seul nom, comme les autres qu'elle charge.
+export PKG_CONFIG=/nonexistent/pkg-config
 # La date gravée : celle du code (outils/date-du-code.sh), pas du dernier commit, pour que les commits des captures et
 # de la page des fonctions ne la changent pas et que les nomenclatures de GitHub portent la même. Une date déjà donnée
 # l'emporte.
