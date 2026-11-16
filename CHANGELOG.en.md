@@ -522,6 +522,11 @@ Version 0.95 was not published: all its work is in this version.
   name and shown with its bytes as `\xFF`. When the system refuses a thread, Vanguard goes on in "reduced mode", says
   so, and what could not be done is not verified. A file included in the sshd configuration that cannot be read back
   is reported as not verified instead of being kept quiet.
+- **A program in a temporary folder is suspicious again on Windows.** Since 0.95, a scanned folder
+  (`vanguard yara <folder>`, the antivirus) goes by its real path, `\\?\C:\…` on Windows, which never started like
+  `%TEMP%` or Downloads: an unsigned program found there was no longer reported as suspicious. Each folder is now
+  compared in its written form and by its real path, ignoring the prefix and case; a folder declared through a
+  symbolic link also counts on Linux. Found by the Windows VM test, before release.
 - **The colours line closes in the console.** On opening, the window reads back the saved colours
   (`vanguard couleurs --json`); the command finished at once, but its line stayed "running" and its timer kept
   counting. It now closes ("colors read", or the error), like the line of a colour change. A test requires every

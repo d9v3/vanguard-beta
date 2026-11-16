@@ -558,6 +558,12 @@ La 0.95 n'a pas été publiée : tout son travail est dans cette version.
   est ouvert sous son vrai nom et montré avec ses octets en `\xFF`. Quand le système refuse un fil, Vanguard continue
   en « mode réduit », le dit, et ce qui n'a pas pu se faire est non vérifié. Un fichier inclus dans la configuration
   de sshd qui ne se relit pas est dit non vérifié au lieu d'être tu.
+- **Un programme d'un dossier temporaire redevient suspect sous Windows.** Depuis la 0.95, un dossier analysé
+  (`vanguard yara <dossier>`, l'antivirus) passe sous son chemin réel, `\\?\C:\…` sous Windows, qui ne commençait
+  jamais comme `%TEMP%` ou Téléchargements : un programme sans signature qui s'y trouvait n'y était plus dit suspect.
+  Chaque dossier est maintenant comparé sous sa forme écrite et sous son chemin réel, sans le préfixe ni la casse ; un
+  dossier déclaré par un lien symbolique compte aussi sous Linux. Trouvé par l'essai de la VM Windows, avant la
+  publication.
 - **La ligne des couleurs se ferme dans la console.** À l'ouverture, la fenêtre relit les couleurs gardées
   (`vanguard couleurs --json`) ; la commande finissait tout de suite, mais sa ligne restait « en cours » et son
   compteur montait sans fin. Elle se ferme maintenant (« couleurs lues », ou l'erreur), comme celle d'un changement

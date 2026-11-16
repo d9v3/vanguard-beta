@@ -530,20 +530,82 @@ fn clamav_et_manques(mode: Mode) -> (Option<&'static Base>, Vec<String>) {
 }
 
 /// Le lieu d'un fichier pour les heuristiques : le dossier des téléchargements, un dossier temporaire, ou ailleurs.
+/// Un dossier analysé devient son chemin réel (`vanguard yara <dossier>`, l'antivirus) : sous Windows `\\?\C:\…`, en
+/// noms longs, alors que `%TEMP%` s'écrit souvent `C:\Users\ALICE~1\…` et que la casse n'y compte pas. Comparés
+/// tels quels, un programme d'un dossier temporaire ou des téléchargements y passait pour « ailleurs » (0.95). Chaque
+/// dossier compte donc sous sa forme écrite et sous son chemin réel, les deux côtés sans le préfixe ni la casse
+/// (`composants`) ; un fichier seul donné en nom court n'est pas allongé (à faire). Le lieu ne fait qu'ajouter des
+/// signes : reconnaître plus de formes ne peut en retirer aucun.
 fn lieu_de(chemin: &Path) -> Lieu {
-    let chemin = std::path::absolute(chemin).unwrap_or_else(|_| chemin.to_path_buf());
-    if crate::protection::telechargement::dossier_telechargements().is_some_and(|d| chemin.starts_with(d)) {
-        return Lieu::Telechargements;
-    }
     #[cfg(unix)]
-    let ailleurs = ["/tmp", "/var/tmp", "/dev/shm"];
+    let ailleurs = ["/tmp", "/var/tmp", "/dev/shm"].map(std::path::PathBuf::from);
     #[cfg(windows)]
-    let ailleurs: [&str; 0] = [];
-    if chemin.starts_with(std::env::temp_dir()) || ailleurs.iter().any(|t| chemin.starts_with(t)) {
+    let ailleurs: [std::path::PathBuf; 0] = [];
+    let mut temporaires = vec![std::env::temp_dir()];
+    temporaires.extend(ailleurs);
+    lieu_selon(
+        chemin,
+        crate::protection::telechargement::dossier_telechargements().as_deref(),
+        &temporaires,
+    )
+}
+
+/// Le cœur de `lieu_de`, les dossiers donnés : pour l'essayer sur des dossiers jetables.
+fn lieu_selon(chemin: &Path, telechargements: Option<&Path>, temporaires: &[std::path::PathBuf]) -> Lieu {
+    let chemin = composants(&std::path::absolute(chemin).unwrap_or_else(|_| chemin.to_path_buf()));
+    let sous = |dossier: &Path| {
+        let ecrit = std::path::absolute(dossier).unwrap_or_else(|_| dossier.to_path_buf());
+        chemin.starts_with(&composants(&ecrit))
+            || chemin_reel(&ecrit).is_some_and(|r| chemin.starts_with(&composants(&r)))
+    };
+    if telechargements.is_some_and(sous) {
+        Lieu::Telechargements
+    } else if temporaires.iter().any(|t| sous(t)) {
         Lieu::Temporaire
     } else {
         Lieu::Ordinaire
     }
+}
+
+/// Le chemin réel d'un dossier, gardé une fois trouvé : une analyse complète juge des centaines de milliers de
+/// fichiers. Un échec n'est pas gardé (dossier pas encore créé) : il sera redemandé.
+fn chemin_reel(dossier: &Path) -> Option<std::path::PathBuf> {
+    type Reels = std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, std::path::PathBuf>>;
+    static REELS: std::sync::OnceLock<Reels> = std::sync::OnceLock::new();
+    let reels = REELS.get_or_init(Default::default);
+    if let Some(r) = reels.lock().ok().and_then(|g| g.get(dossier).cloned()) {
+        return Some(r);
+    }
+    let r = std::fs::canonicalize(dossier).ok()?;
+    if let Ok(mut g) = reels.lock() {
+        g.insert(dossier.to_path_buf(), r.clone());
+    }
+    Some(r)
+}
+
+/// Un chemin ramené à une forme comparable, composant par composant. Sous Windows, sans le préfixe étendu
+/// (« \\?\C: » vaut « C: », « \\?\UNC\serveur\partage » vaut « \\serveur\partage ») et sans casse.
+fn composants(chemin: &Path) -> Vec<std::ffi::OsString> {
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        chemin
+            .components()
+            .map(|c| match c {
+                Component::Prefix(p) => match p.kind() {
+                    Prefix::Disk(l) | Prefix::VerbatimDisk(l) => format!("{}:", char::from(l.to_ascii_lowercase())),
+                    Prefix::UNC(s, d) | Prefix::VerbatimUNC(s, d) => {
+                        format!(r"\\{}\{}", s.to_string_lossy(), d.to_string_lossy()).to_lowercase()
+                    }
+                    _ => c.as_os_str().to_string_lossy().to_lowercase(),
+                },
+                _ => c.as_os_str().to_string_lossy().to_lowercase(),
+            })
+            .map(std::ffi::OsString::from)
+            .collect()
+    }
+    #[cfg(not(windows))]
+    chemin.components().map(|c| c.as_os_str().to_os_string()).collect()
 }
 
 /// Le juge de la base ClamAV ; `None` en administrateur (P22). Les essais jugent aussi sous root (espace de noms).
@@ -1162,6 +1224,78 @@ mod tests {
         assert_eq!(lieu_de(Path::new("/dev/shm/a")), Lieu::Temporaire);
         #[cfg(unix)]
         assert_eq!(lieu_de(Path::new("/usr/bin/ls")), Lieu::Ordinaire);
+    }
+
+    /// Un fichier du dossier temporaire, donné sous son chemin réel (celui d'un dossier analysé ; sous Windows
+    /// `\\?\C:\…`), reste dans le dossier temporaire ; un chemin ailleurs, non.
+    #[test]
+    fn le_lieu_reconnait_le_chemin_reel() {
+        let d = crate::protection::isoler::dossier_jetable().unwrap();
+        let f = d.join("outil.exe");
+        std::fs::write(&f, b"MZ").unwrap();
+        let reel = std::fs::canonicalize(&f).unwrap();
+        let temporaires = [d.clone()];
+        assert_eq!(lieu_selon(&reel, None, &temporaires), Lieu::Temporaire, "{reel:?}");
+        assert_eq!(lieu_selon(&f, None, &temporaires), Lieu::Temporaire, "{f:?}");
+        assert_eq!(lieu_selon(&reel, Some(&d), &[]), Lieu::Telechargements, "{reel:?}");
+        // Le chemin réel est bien l'autre forme : sous Windows, étendu, sinon l'essai ne prouverait rien.
+        #[cfg(windows)]
+        {
+            assert!(reel.to_string_lossy().starts_with(r"\\?\"), "{reel:?}");
+            let crie = std::path::PathBuf::from(reel.to_string_lossy().to_uppercase());
+            assert_eq!(lieu_selon(&crie, None, &temporaires), Lieu::Temporaire, "{crie:?}");
+        }
+        // Un chemin fixe, hors de tout dossier jetable, même si le dépôt est sous /tmp.
+        #[cfg(unix)]
+        let ailleurs = Path::new("/usr/bin/outil");
+        #[cfg(windows)]
+        let ailleurs = Path::new(r"\\?\C:\Windows\System32\outil.exe");
+        assert_eq!(
+            lieu_selon(ailleurs, Some(&d), &temporaires),
+            Lieu::Ordinaire,
+            "{ailleurs:?}"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Un dossier déclaré par un lien symbolique (`~/Téléchargements` vers un autre disque) compte sous son chemin
+    /// réel : c'est sous lui que l'analyse d'un dossier donne ses fichiers.
+    #[cfg(unix)]
+    #[test]
+    fn le_lieu_suit_un_dossier_en_lien() {
+        let d = crate::protection::isoler::dossier_jetable().unwrap();
+        let reel = d.join("reel");
+        std::fs::create_dir(&reel).unwrap();
+        let lien = d.join("lien");
+        std::os::unix::fs::symlink(&reel, &lien).unwrap();
+        let f = reel.join("outil");
+        std::fs::write(&f, b"\x7fELF").unwrap();
+        assert_eq!(lieu_selon(&f, Some(&lien), &[]), Lieu::Telechargements, "{f:?}");
+        assert_eq!(
+            lieu_selon(&f, None, std::slice::from_ref(&lien)),
+            Lieu::Temporaire,
+            "{f:?}"
+        );
+        assert_eq!(lieu_selon(&f, None, &[d.join("autre")]), Lieu::Ordinaire, "{f:?}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Les formes d'un même chemin Windows se valent : préfixe étendu, réseau, casse.
+    #[cfg(windows)]
+    #[test]
+    fn les_formes_windows_se_valent() {
+        let sous = |c: &str, d: &str| composants(Path::new(c)).starts_with(&composants(Path::new(d)));
+        assert!(sous(r"\\?\C:\Users\Alice\Downloads\x.exe", r"c:\users\ALICE\downloads"));
+        assert!(sous(
+            r"\\?\UNC\Salon\Partage\Downloads\x.exe",
+            r"\\salon\partage\Downloads"
+        ));
+        assert!(sous(r"C:\Users\Alice\Downloads\x.exe", r"\\?\C:\Users\Alice\Downloads"));
+        assert!(!sous(
+            r"\\?\D:\Users\Alice\Downloads\x.exe",
+            r"C:\Users\Alice\Downloads"
+        ));
+        assert!(!sous(r"C:\Users\Alice\Downloads2\x.exe", r"C:\Users\Alice\Downloads"));
     }
 
     /// Chaque manque se dit, dans les deux langues, et seuls le format inconnu et la quine ne laissent rien de non
