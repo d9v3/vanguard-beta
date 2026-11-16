@@ -320,7 +320,7 @@ details > summary::after { display: none; }
 </header>
 <div class="console" role="note" aria-label="État de la version">
 <div class="cadre">
-<p class="console-etat"><span>Version <b>0.96.0</b></span><span>publiée le <b>15 novembre 2026</b></span><span><b>4 443</b> tests sous Linux · <b>3 303</b> sous Windows</span><span><b>28</b> hôtes joints, liste fermée</span></p>
+<p class="console-etat"><span>Version <b>0.96.0</b></span><span>publiée le <b>15 novembre 2026</b></span><span><b>4 445</b> tests sous Linux · <b>3 305</b> sous Windows</span><span><b>28</b> hôtes joints, liste fermée</span></p>
 <form class="invite recherche" id="recherche" role="search" hidden>
 <label for="cherche"><b>vanguard ›</b><span class="cache-lecteur"> Chercher dans la page / Search this page</span></label>
 <input id="cherche" type="search" placeholder="chercher : rançongiciel, Wi-Fi, clé…  ( / )" autocomplete="off" spellcheck="false" enterkeyhint="search" aria-describedby="cherche-etat">
@@ -654,9 +654,9 @@ details > summary::after { display: none; }
 </details>
 <h3 class="sous-titre">Testé à chaque version</h3>
 <div class="chiffres">
-<div class="carte stat"><span class="valeur">≈ 447 000</span><span class="detail">lignes de code Rust</span></div>
-<div class="carte stat"><span class="valeur">4 443</span><span class="detail">tests sous Linux</span></div>
-<div class="carte stat"><span class="valeur">3 303</span><span class="detail">tests sous Windows (Wine)</span></div>
+<div class="carte stat"><span class="valeur">≈ 447 100</span><span class="detail">lignes de code Rust</span></div>
+<div class="carte stat"><span class="valeur">4 445</span><span class="detail">tests sous Linux</span></div>
+<div class="carte stat"><span class="valeur">3 305</span><span class="detail">tests sous Windows (Wine)</span></div>
 <div class="carte stat"><span class="valeur">236</span><span class="detail">vérifications sur un vrai Windows</span></div>
 </div>
 <p class="note">Chaque version passe par <code>outils/verifier.sh</code> (formatage, clippy, tests Linux et sous Wine, fuzzing, preuves, liens), et par un vrai Windows qui se teste tout seul. Cette page est refaite par le script de publication à chaque version.</p>
@@ -834,7 +834,7 @@ details > summary::after { display: none; }
 <p>Pour qui veut connaître le fonctionnement interne : les règles du bilan, les interfaces du système lues directement en Rust, les sources de menaces, et chaque commande.</p>
 </div>
 <dl class="specs">
-<div><dt>Langage</dt><dd>Rust, édition 2024 · ≈ 447 000 lignes ; aucun programme externe pour lire le système ; calculs vérifiés contre les dépassements dans la version publiée</dd></div>
+<div><dt>Langage</dt><dd>Rust, édition 2024 · ≈ 447 100 lignes ; aucun programme externe pour lire le système ; calculs vérifiés contre les dépassements dans la version publiée</dd></div>
 <div><dt>Programme</dt><dd>Un seul exécutable, rien à installer : Linux x86_64 (statique, musl), Windows x86_64</dd></div>
 <div><dt>Règles du bilan</dt><dd>139 règles à identifiant stable (<code>LNX-SSH-006</code>) : 95 sous Linux, 82 sous Windows, communes comprises ; 34 fiches d'audit du réseau</dd></div>
 <div><dt>Interface</dt><dd>Menu au clavier, ou 85 commandes en ligne ; sorties <code>--json</code>, rapport HTML ou Markdown</dd></div>
