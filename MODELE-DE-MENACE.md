@@ -472,7 +472,19 @@ gardes :
   (sinon la copie se fait sans elle), celle de GitHub téléchargée après l'accord seulement et vérifiée contre
   l'empreinte gravée dans le programme vérifié (une autre, ou aucune reçue : rien n'est remplacé) ; posée, elle est
   relue par la copie provisoire tenue ouverte (le même fichier, les octets reçus), sinon un échec, et sa ligne du
-  résultat relit la fenêtre posée. Le terminal pose par le même chemin (`vanguard se-mettre-a-jour`, liste et
+  résultat relit la fenêtre posée. Depuis GitHub (0.97), une fenêtre absente à côté d'un programme remplacé est
+  ajoutée là où le lancement la cherche (« sa fenêtre, nouvelle ici »), au même accord, tout ou rien ; et au même
+  numéro, un programme d'ici qui est exactement celui que l'auteur a signé (taille et empreinte du manifeste), sans sa
+  fenêtre ou avec une autre, se voit proposer sa fenêtre seule (« ajoutée seule », « remplacée seule »), jugée contre
+  l'empreinte qu'il grave, sans retélécharger le programme ; un programme d'ailleurs au même numéro, rien (sa fenêtre
+  ne se juge pas d'ici, il garde le menu). Ce qui était à chaque chemin de fenêtre (rien, une empreinte SHA-256,
+  illisible) est dans l'accord sans être affiché : changé entre l'aperçu et le clic, refusé, rien téléchargé. Une
+  fenêtre qui ne se lit pas (droits, dossier, trop grande) ne se compare à rien : rien n'est proposé, son chemin est
+  dit ; montrée illisible, elle n'est jamais comptée pareille à la pose. Reste, connu : entre la dernière relecture
+  de la fenêtre en place et le renommage qui pose la nouvelle, quelques millisecondes où un programme du même compte
+  peut y glisser un autre fichier ; il est alors remplacé par la fenêtre vérifiée (relue par son descripteur, jamais
+  par son nom), et, si le programme ne se pose pas, ce qui revient est ce qui a été relu et montré, pas ce fichier-là.
+  Un tel programme a déjà les droits du compte : il ne gagne rien qu'il n'ait pas. Le terminal pose par le même chemin (`vanguard se-mettre-a-jour`, liste et
   question). En mode lecture seule, `--appliquer` est refusé net (code 2). Depuis la fenêtre : la
   carte « Mettre à jour Vanguard » des réglages ouvre la feuille de l'aperçu, lu strictement
   (`fenetre/src/donnees/mise_a_jour.rs` : forme exacte, textes bornés et montrés signe par signe) ; « Installer cette
@@ -484,7 +496,11 @@ gardes :
   ancienne, que le menu installerait de même, notée au journal. Essais :
   `la_cle_ne_pose_que_ce_que_l_apercu_a_montre`, `une_cle_changee_apres_l_apercu_est_refusee`,
   `github_ne_retient_ni_ne_telecharge_avant_l_accord`, `rien_de_verifie_n_est_jamais_a_jour`,
-  `l_accord_lie_chaque_champ` (`src/mise_a_jour/apercu.rs`),
+  `l_accord_lie_chaque_champ`, `github_propose_la_fenetre_seule_au_meme_numero`,
+  `github_ne_pose_jamais_une_fenetre_seule_fausse`, `github_ne_propose_pas_de_fenetre_pour_un_programme_d_ailleurs`,
+  `une_fenetre_changee_entre_l_apercu_et_le_clic_change_l_accord`, `une_fenetre_illisible_ne_fait_rien_proposer`
+  (`src/mise_a_jour/apercu.rs`), `une_fenetre_montree_illisible_n_est_jamais_comptee_pareille`,
+  `une_fenetre_seule_ne_se_pose_que_telle_que_montree` (`src/mise_a_jour/sa_fenetre.rs`),
   `l_apercu_d_une_mise_a_jour_hors_ligne_n_est_pas_a_jour_et_n_ecrit_rien` (`tests/programme.rs`),
   `mettre_a_jour_ne_part_qu_avec_l_accord_montre` (`fenetre/src/appli.rs`),
   `la_mise_a_jour_ne_passe_qu_apres_son_apercu` (`fenetre/src/relais.rs`), `la_mise_a_jour_n_a_que_son_jeton`

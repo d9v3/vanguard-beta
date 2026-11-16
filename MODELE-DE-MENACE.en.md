@@ -445,7 +445,20 @@ safeguards:
   window placed next to a replaced program follows it, shown as one more line of the preview, so bound by the consent:
   the key's only if it is the one its program engraves (otherwise the copy is made without it), GitHub's downloaded
   only after the consent and checked against the fingerprint engraved in the verified program (another one, or none
-  received: nothing is replaced); its result line reads the placed window back. The terminal does the same
+  received: nothing is replaced); its result line reads the placed window back. From GitHub (0.97), a window missing
+  next to a replaced program is added where the launch looks for it (“its window, new here”), under the same consent,
+  all or nothing; and at the same version number, a program here that is exactly the one the author signed (size and
+  checksum from the manifest), without its window or with another one, is offered its window alone (“added alone”,
+  “replaced alone”), checked against the fingerprint it engraves, without downloading the program again; a program
+  built elsewhere at the same number gets nothing (its window cannot be judged from here, it keeps the menu). What was
+  at each window path (nothing, a SHA-256 checksum, unreadable) is in the consent without being displayed: changed
+  between the preview and the click, refused, nothing downloaded. A window that cannot be read (permissions, folder,
+  too large) compares to nothing: nothing is offered, its path is said; shown unreadable, it is never counted as the
+  same when placing. Known residual: between the last reread of the window in place and the rename that places the
+  new one, a few milliseconds during which a program of the same account can slip another file there; it is then
+  replaced by the verified window (read back through its descriptor, never by its name), and, if the program does not
+  install, what comes back is what was read and shown, not that file. Such a program already has the account's
+  rights: it gains nothing it did not have. The terminal does the same
   (`vanguard self-update`, list and question). In read-only mode, `--appliquer` is refused
   outright (code 2). From the window: the settings' “Update Vanguard” card opens the preview sheet, read strictly
   (`fenetre/src/donnees/mise_a_jour.rs`: exact form, bounded texts shown character by character); “Install this
@@ -456,7 +469,11 @@ safeguards:
   preview and consent, and only gets a version signed by the author, never older, that the menu would install the same
   way, logged. Tests: `la_cle_ne_pose_que_ce_que_l_apercu_a_montre`, `une_cle_changee_apres_l_apercu_est_refusee`,
   `github_ne_retient_ni_ne_telecharge_avant_l_accord`, `rien_de_verifie_n_est_jamais_a_jour`,
-  `l_accord_lie_chaque_champ` (`src/mise_a_jour/apercu.rs`),
+  `l_accord_lie_chaque_champ`, `github_propose_la_fenetre_seule_au_meme_numero`,
+  `github_ne_pose_jamais_une_fenetre_seule_fausse`, `github_ne_propose_pas_de_fenetre_pour_un_programme_d_ailleurs`,
+  `une_fenetre_changee_entre_l_apercu_et_le_clic_change_l_accord`, `une_fenetre_illisible_ne_fait_rien_proposer`
+  (`src/mise_a_jour/apercu.rs`), `une_fenetre_montree_illisible_n_est_jamais_comptee_pareille`,
+  `une_fenetre_seule_ne_se_pose_que_telle_que_montree` (`src/mise_a_jour/sa_fenetre.rs`),
   `l_apercu_d_une_mise_a_jour_hors_ligne_n_est_pas_a_jour_et_n_ecrit_rien` (`tests/programme.rs`),
   `mettre_a_jour_ne_part_qu_avec_l_accord_montre` (`fenetre/src/appli.rs`),
   `la_mise_a_jour_ne_passe_qu_apres_son_apercu` (`fenetre/src/relais.rs`), `la_mise_a_jour_n_a_que_son_jeton`
