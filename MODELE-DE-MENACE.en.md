@@ -235,69 +235,67 @@ safeguards:
   by the window's account or by root, that neither the group nor others can modify, in folders (up to `/`) that
   neither the group nor others can modify either (except a folder with the sticky bit, like `/tmp`), or it is not
   started: the same rule as for the window, below, checked again before each command, not only at opening.
-- **First action, in two steps: a startup program removed or put back.** The startup screen shows the state of each program that
-  starts at login. An ordinary program has “Remove from startup”, a program removed by Vanguard has “Put back”; a
-  program to keep or a firewall has no button, its reason is shown. A click only opens a confirmation inside the window
-  (name, command, what will happen, administrator window if the program belongs to the whole computer); only
-  “Accept” starts the change, one at a time, buttons greyed out while a command runs, with no “remove all”. The window
-  only offers the actions that `vanguard demarrage --json` has just written, and only sends the kind (remove or put
-  back) and the program's fingerprint (32 hexadecimal digits, computed by `vanguard`): never a name, a command or a
-  path. The form started is closed, `vanguard demarrage --retirer|--remettre <fingerprint> --json`, and `vanguard`
-  judges everything again: without the action's consent (`--accord`, the one `demarrage --json` gives, which binds
-  the name, the whole command and the scope), nothing is done, the fingerprint alone no longer designating anything
-  (the window gives back, as is, the consent the list gave, without computing it; under Linux, its relay adds it to
-  the closed form);
-  malformed, unknown or ambiguous fingerprint, program to keep, firewall, Vanguard's notes
-  unreadable or changed outside Vanguard (neither removal nor putting back while they are), “put back” for a program
-  that already starts (put back or rewritten outside Vanguard, perhaps now a program to keep: the old note does not
-  overwrite it, neither through undoing a block nor through “Put everything back”), all are refused without changing
-  anything; what changes goes through the
-  same correction as in the terminal (restore point, previous value noted, a single administrator window, never sudo).
-  The console starts no change, in any typed form. “Accept” checks again that the action is still in the last list
-  read: a list read again that no longer contains it closes the confirmation (“The list changed: nothing changed.”),
-  as changing screens does; the alert watch goes on while a confirmation is open. A change once started is not
-  interrupted (cutting it in the middle would leave a half-done state): Stop does nothing to it, and under Linux
-  neither does closing the window (the relay lets it finish); it is stopped by declining the administrator window.
-  Only its time limit, 15 minutes (the Windows administrator window may wait), cuts it. On the `vanguard` side, a
-  change holds the notes lock (`reglages.verrou`) from reading the notes to their last write, as the terminal
-  optimiser and “Put everything back” do: two Vanguards never change the notes at the same time, the second refuses
-  without changing anything. “Put back” reads the notes again under this lock and requires the same noted setting as
-  on the first reading (otherwise refused, nothing written); “Remove” on a program that starts replaces an old note
-  left from before with the value read now, so that “Put back” brings back the state from before this removal. Under
-  Linux, this previous value (the autostart entry) is read in a single opening that does not follow a link, does not
-  wait on a pipe and stops at 64 KiB: otherwise refused, nothing changed (an entry that is a link therefore cannot be
-  removed from here), and an entry unreadable in this way is offered neither for removal nor for putting back (the
-  list says it was not read), and “Put back” never overwrites it. An entry that, once hidden, could no longer be read
-  back within this bound is refused before being written. The list and the name of a removed entry are read the same
-  way, bounded, without waiting on a pipe; a rewritten entry keeps its permissions. Each change done or refused is
-  written to the event log (kind, cleaned name, outcome, fingerprint); a refusal identical to the previous one (same fingerprint, same kind, same reason) is not written
-  again for 10 minutes, so that a burst of requests does not drown the alerts; a change done is always written. Its end is told
-  (done, refused, failure, with the reason), then the list is read again; only the last line of the output, a JSON of
-  the same action, with exit code 0, means “done”: anything else is a failure, never a success
-  (`fenetre/src/attaques.rs`, tests B1 to B3). Tests: `une_confirmation_ne_bloque_rien_et_suit_la_liste`
-  (`fenetre/src/appli.rs`), the relay tests (`fenetre/src/relais.rs`), `verrou_des_notes_tenu_puis_rendu` and those
-  of `src/optimiser/demarrage.rs` (`seul_un_programme_note_se_remet`, `pare_feu_reconnu_par_son_paquet`),
+- **First action, in two steps: a startup program removed or put back.** The startup screen shows the state of each
+  program that starts at login. An ordinary program has “Remove from startup”, a program removed by Vanguard has “Put
+  back”; a program to keep or a firewall has no button, its reason is shown. A click only opens a confirmation inside
+  the window (name, command, what will happen, administrator window if the program belongs to the whole computer);
+  only “Accept” starts the change, one at a time, buttons greyed out while a command runs, with no “remove all”. The
+  window only offers the actions that `vanguard demarrage --json` has just written, and only sends the kind (remove or
+  put back) and the program's fingerprint (32 hexadecimal digits, computed by `vanguard`): never a name, a command or
+  a path. The form started is closed, `vanguard demarrage --retirer|--remettre <fingerprint> --json`, and `vanguard`
+  judges everything again: without the action's consent (`--accord`, the one `demarrage --json` gives, which binds the
+  name, the whole command and the scope), nothing is done, the fingerprint alone no longer designating anything (the
+  window gives back, as is, the consent the list gave, without computing it; under Linux, its relay adds it to the
+  closed form); malformed, unknown or ambiguous fingerprint, program to keep, firewall, Vanguard's notes unreadable or
+  changed outside Vanguard (neither removal nor putting back while they are), “put back” for a program that already
+  starts (put back or rewritten outside Vanguard, perhaps now a program to keep: the old note does not overwrite it,
+  neither through undoing a block nor through “Put everything back”), all are refused without changing anything; what
+  changes goes through the same correction as in the terminal (restore point, previous value noted, a single
+  administrator window, never sudo). The console starts no change, in any typed form. “Accept” checks again that the
+  action is still in the last list read: a list read again that no longer contains it closes the confirmation (“The
+  list changed: nothing changed.”), as changing screens does; the alert watch goes on while a confirmation is open. A
+  change once started is not interrupted (cutting it in the middle would leave a half-done state): Stop does nothing
+  to it, and under Linux neither does closing the window (the relay lets it finish); it is stopped by declining the
+  administrator window. Only its time limit, 15 minutes (the Windows administrator window may wait), cuts it. On the
+  `vanguard` side, a change holds the notes lock (`reglages.verrou`) from reading the notes to their last write, as
+  the terminal optimiser and “Put everything back” do: two Vanguards never change the notes at the same time, the
+  second refuses without changing anything. “Put back” reads the notes again under this lock and requires the same
+  noted setting as on the first reading (otherwise refused, nothing written); “Remove” on a program that starts
+  replaces an old note left from before with the value read now, so that “Put back” brings back the state from before
+  this removal. Under Linux, this previous value (the autostart entry) is read in a single opening that does not
+  follow a link, does not wait on a pipe and stops at 64 KiB: otherwise refused, nothing changed (an entry that is a
+  link therefore cannot be removed from here), and an entry unreadable in this way is offered neither for removal nor
+  for putting back (the list says it was not read), and “Put back” never overwrites it. An entry that, once hidden,
+  could no longer be read back within this bound is refused before being written. The list and the name of a removed
+  entry are read the same way, bounded, without waiting on a pipe; a rewritten entry keeps its permissions. Each
+  change done or refused is written to the event log (kind, cleaned name, outcome, fingerprint); a refusal identical
+  to the previous one (same fingerprint, same kind, same reason) is not written again for 10 minutes, so that a burst
+  of requests does not drown the alerts; a change done is always written. Its end is told (done, refused, failure,
+  with the reason), then the list is read again; only the last line of the output, a JSON of the same action, with
+  exit code 0, means “done”: anything else is a failure, never a success (`fenetre/src/attaques.rs`, tests B1 to B3).
+  Tests: `une_confirmation_ne_bloque_rien_et_suit_la_liste` (`fenetre/src/appli.rs`), the relay tests
+  (`fenetre/src/relais.rs`), `verrou_des_notes_tenu_puis_rendu` and those of `src/optimiser/demarrage.rs`
+  (`seul_un_programme_note_se_remet`, `pare_feu_reconnu_par_son_paquet`),
   `valeur_d_avant_d_autostart_ni_lien_ni_tube_ni_trop_gros`, `entree_trop_grosse_ni_proposee_ni_ecrite` and
   `liste_et_noms_lus_bornes`, `remise_sur_une_entree_pas_lue_n_ecrit_rien`,
   `entree_trop_grosse_une_fois_masquee_refusee_avant_d_ecrire` (`src/optimiser/linux.rs`), and end to end, with a
   throwaway home folder, `demarrage_retire_puis_remet_a_l_octet_pres` and the `demarrage_sous_attaque` module
   (`tests/programme.rs`: putting back over a program that starts, from the window and through “Put everything back”,
   removal on doubtful notes, simultaneous changes, link, pipe, oversized entry, permissions, lock held, forged or
-  replayed notes, repeated refusals).
-  The action written by `vanguard demarrage --json` also carries a consent: a BLAKE3 fingerprint (64 hexadecimal
-  digits) of the kind, fingerprint, name, command and scope shown, and of the fingerprint of the whole name and
-  command (the text shown is cut at 80 and 160 characters: two commands that only differ after the cut give two
-  consents). The finding's object (an autostart entry) goes to the window as “~/…”, no longer by the home folder path;
-  the fingerprint stays that of the whole path, as before. Given back with `--agreement <consent>`, `vanguard` reads
-  the programs only once under the notes lock, and that same reading judges the consent and decides the action (remove
-  or put back): it requires the same consent: a program whose command, name or scope changed between the list and the
-  click is refused (“changed since the list”), nothing is written, and the consent of a “remove” does not work for
-  “put back”. Without `--agreement`, nothing is removed or put back (“missing agreement”); the window reads it
-  strictly and gives it back in its change frame, with the kind and the fingerprint. A window taken over can
-  still read the list again and give back the current consent: it does not prove that a person clicked, only that what
-  is changed is what was shown. Tests: `accord_de_chaque_champ_montre` (`src/optimiser/demarrage/resultat.rs`),
-  `une_seule_lecture_juge_l_accord_et_choisit` (`src/optimiser/demarrage.rs`),
-  `demarrage_l_accord_tient_ce_qui_a_ete_montre` (`tests/programme.rs`).
+  replayed notes, repeated refusals). The action written by `vanguard demarrage --json` also carries a consent: a
+  BLAKE3 fingerprint (64 hexadecimal digits) of the kind, fingerprint, name, command and scope shown, and of the
+  fingerprint of the whole name and command (the text shown is cut at 80 and 160 characters: two commands that only
+  differ after the cut give two consents). The finding's object (an autostart entry) goes to the window as “~/…”, no
+  longer by the home folder path; the fingerprint stays that of the whole path, as before. Given back with
+  `--agreement <consent>`, `vanguard` reads the programs only once under the notes lock, and that same reading judges
+  the consent and decides the action (remove or put back): it requires the same consent: a program whose command, name
+  or scope changed between the list and the click is refused (“changed since the list”), nothing is written, and the
+  consent of a “remove” does not work for “put back”. Without `--agreement`, nothing is removed or put back (“missing
+  agreement”); the window reads it strictly and gives it back in its change frame, with the kind and the fingerprint.
+  A window taken over can still read the list again and give back the current consent: it does not prove that a person
+  clicked, only that what is changed is what was shown. Tests: `accord_de_chaque_champ_montre`
+  (`src/optimiser/demarrage/resultat.rs`), `une_seule_lecture_juge_l_accord_et_choisit`
+  (`src/optimiser/demarrage.rs`), `demarrage_l_accord_tient_ce_qui_a_ete_montre` (`tests/programme.rs`).
 - **One account fix, shown then applied, then put back as before (commands and window).** The audit
   (`audit --json`) gives each fixable finding a token (32 hexadecimal digits); `vanguard correction --show <token>
   [--json]` runs only the token's rule again and shows everything the fix would do (commands, rights, values before,

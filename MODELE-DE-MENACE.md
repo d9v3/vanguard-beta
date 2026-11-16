@@ -241,57 +241,59 @@ sans empreinte (`cargo build`, les essais) ou une marque illisible : aucune fen�
 gardes :
 
 - **Elle ne fait rien d'elle-même : des lectures, et quatre gestes acceptés un à un.** Ce qui change l'ordinateur
-  passe seulement par quatre gestes, chacun montré dans la fenêtre puis accepté, et rejugé par `vanguard` : retirer
-  ou remettre un programme du démarrage, appliquer une correction du compte, la remettre comme avant, installer la
-  mise à jour de Vanguard (chacun décrit plus bas). Tout le reste est lecture : elle relance le programme `vanguard`
-  posé à côté d'elle (chemin absolu, jamais cherché dans le PATH ; lancée d'un fichier en mémoire, elle reçoit ce
-  chemin de `vanguard` par `--vanguard`, et lui applique les mêmes gardes) avec une commande d'une liste fermée, qui
-  ne change rien à l'ordinateur (`audit`, `protection`, `evenements`, `diagnostic`, `test-connexion`…), toujours en `--json`, sans argument libre,
-  sans shell, entrée fermée, une à la fois, avec un délai et un bouton Arrêter (sous Linux, tout le groupe de
-  processus est arrêté, et ce qui en reste à la fin de la commande aussi ; `vanguard` n'est récolté qu'après, pour
-  que ce numéro de groupe ne puisse pas être celui d'un autre ; un processus sorti du groupe qui garderait les sorties ouvertes n'y retient pas la fenêtre, qui lâche les tuyaux). La console de la fenêtre n'accepte que les noms de cette liste. Sous Linux, ce `vanguard`
-  doit être un fichier ordinaire au compte de la fenêtre ou à root, que ni le groupe ni les autres ne peuvent
-  modifier, dans des dossiers (jusqu'à `/`) que ni le groupe ni les autres ne peuvent modifier non plus (sauf un
-  dossier à « sticky bit », comme `/tmp`), sinon il n'est pas lancé : la même règle que pour la fenêtre, plus bas,
-  revérifiée avant chaque commande, et pas seulement à l'ouverture.
-- **Premier geste, en deux temps : un programme retiré du démarrage ou remis.** L'écran du démarrage montre l'état de chaque
-  programme qui se lance à l'ouverture de session. Un programme ordinaire a « Retirer du démarrage », un programme
-  retiré par Vanguard a « Remettre » ; un programme à garder ou un pare-feu n'a aucun bouton, sa raison est dite. Un
-  clic n'ouvre qu'une confirmation dans la fenêtre (nom, commande, ce qui va se passer, fenêtre administrateur si le
-  programme est de tout l'ordinateur) ; seul « Accepter » lance le changement, un à la fois, boutons grisés pendant
-  qu'une commande tourne, sans « tout retirer ». La fenêtre ne propose que les gestes que `vanguard demarrage --json`
-  vient d'écrire, et n'envoie que la sorte (retirer ou remettre) et l'empreinte du programme (32 chiffres
-  hexadécimaux, calculée par `vanguard`) : jamais un nom, une commande ou un chemin. La forme lancée est fermée,
-  `vanguard demarrage --retirer|--remettre <empreinte> --json`, et `vanguard` rejuge tout : sans l'accord du geste
-  (`--accord`, celui que `demarrage --json` donne et qui lie le nom, la commande entière et la portée), rien n'est
-  fait, l'empreinte seule ne désignant plus rien (la fenêtre rend tel quel l'accord que la liste a donné, sans le
-  recalculer ; sous Linux, son relais l'ajoute à la forme fermée) ; empreinte mal formée, inconnue, ambiguë, programme à garder, pare-feu, notes de Vanguard illisibles ou changées hors de Vanguard (ni
-  retrait ni remise tant qu'elles le sont), « remettre » un programme qui se lance déjà (remis ou réécrit hors de
-  Vanguard, peut-être devenu un programme à garder : la vieille note ne l'écrase pas, ni par l'annulation d'un blocage
-  ni par « Tout remettre comme avant »), tout est refusé sans rien changer ; ce qui change passe par la même correction que le terminal (point de restauration,
-  valeur d'avant notée, une seule fenêtre administrateur, jamais sudo). La console ne lance aucun changement, sous
-  aucune forme tapée. « Accepter » revérifie que le geste est encore dans la dernière liste lue : une liste relue qui
-  ne le contient plus ferme la confirmation (« La liste a changé : rien n'a changé. »), comme changer d'écran ; la
-  veille des alertes continue pendant qu'une confirmation est ouverte. Un changement lancé ne s'interrompt pas (le
-  couper au milieu laisserait un état à moitié fait) : Arrêter n'y fait rien, et sous Linux la fermeture de la fenêtre
-  non plus (le relais le laisse finir) ; on l'arrête en refusant la fenêtre administrateur. Seul son délai, 15 minutes
-  (la fenêtre administrateur de Windows peut attendre), le coupe. Côté `vanguard`, un changement tient le verrou des
-  notes (`reglages.verrou`) de leur lecture à leur dernière écriture, comme l'optimiseur du terminal et « Tout
-  remettre comme avant » : deux Vanguard ne changent pas les notes en même temps, le second refuse sans rien changer.
-  « Remettre » relit les notes sous ce verrou et exige le même réglage noté qu'à la première lecture (sinon refusé,
-  rien écrit) ; « Retirer » un programme qui se lance remplace une vieille note restée d'avant par la valeur lue
-  maintenant, pour que « Remettre » ramène l'état d'avant ce retrait-là. Sous Linux, cette valeur d'avant (l'entrée
-  d'autostart) est lue en une seule ouverture qui ne suit pas un lien, n'attend pas un tube et s'arrête à 64 Kio :
-  sinon refusé, rien changé (une entrée qui est un lien ne se retire donc pas d'ici), et une entrée ainsi illisible
-  n'est proposée ni pour être retirée ni pour être remise (la liste dit qu'elle n'a pas été lue), et « Remettre » ne
-  l'écrase jamais. Une entrée qui, masquée, ne se relirait plus dans cette borne est refusée avant d'être écrite. La
-  liste et le nom d'une entrée retirée se lisent de même, bornés, sans attendre un tube ; une entrée réécrite garde
-  ses droits. Chaque changement fait ou refusé
-  est écrit au journal des événements (sorte, nom nettoyé, issue, empreinte) ; un refus identique au précédent (même
-  empreinte, même sorte, même raison) ne s'y réécrit pas pendant 10 minutes, pour qu'une rafale de demandes ne noie pas
-  les alertes ; un changement fait s'y écrit toujours. Sa fin est dite (fait, refusé, échec, avec la
-  raison), puis la liste est relue ; seule la dernière ligne de la sortie, un JSON du même geste, avec le code 0, dit
-  « fait » : tout le reste est un échec, jamais un succès (`fenetre/src/attaques.rs`, essais B1 à B3). Essais :
+  passe seulement par quatre gestes, chacun montré dans la fenêtre puis accepté, et rejugé par `vanguard` : retirer ou
+  remettre un programme du démarrage, appliquer une correction du compte, la remettre comme avant, installer la mise à
+  jour de Vanguard (chacun décrit plus bas). Tout le reste est lecture : elle relance le programme `vanguard` posé à
+  côté d'elle (chemin absolu, jamais cherché dans le PATH ; lancée d'un fichier en mémoire, elle reçoit ce chemin de
+  `vanguard` par `--vanguard`, et lui applique les mêmes gardes) avec une commande d'une liste fermée, qui ne change
+  rien à l'ordinateur (`audit`, `protection`, `evenements`, `diagnostic`, `test-connexion`…), toujours en `--json`,
+  sans argument libre, sans shell, entrée fermée, une à la fois, avec un délai et un bouton Arrêter (sous Linux, tout
+  le groupe de processus est arrêté, et ce qui en reste à la fin de la commande aussi ; `vanguard` n'est récolté
+  qu'après, pour que ce numéro de groupe ne puisse pas être celui d'un autre ; un processus sorti du groupe qui
+  garderait les sorties ouvertes n'y retient pas la fenêtre, qui lâche les tuyaux). La console de la fenêtre n'accepte
+  que les noms de cette liste. Sous Linux, ce `vanguard` doit être un fichier ordinaire au compte de la fenêtre ou à
+  root, que ni le groupe ni les autres ne peuvent modifier, dans des dossiers (jusqu'à `/`) que ni le groupe ni les
+  autres ne peuvent modifier non plus (sauf un dossier à « sticky bit », comme `/tmp`), sinon il n'est pas lancé : la
+  même règle que pour la fenêtre, plus bas, revérifiée avant chaque commande, et pas seulement à l'ouverture.
+- **Premier geste, en deux temps : un programme retiré du démarrage ou remis.** L'écran du démarrage montre l'état de
+  chaque programme qui se lance à l'ouverture de session. Un programme ordinaire a « Retirer du démarrage », un
+  programme retiré par Vanguard a « Remettre » ; un programme à garder ou un pare-feu n'a aucun bouton, sa raison est
+  dite. Un clic n'ouvre qu'une confirmation dans la fenêtre (nom, commande, ce qui va se passer, fenêtre
+  administrateur si le programme est de tout l'ordinateur) ; seul « Accepter » lance le changement, un à la fois,
+  boutons grisés pendant qu'une commande tourne, sans « tout retirer ». La fenêtre ne propose que les gestes que
+  `vanguard demarrage --json` vient d'écrire, et n'envoie que la sorte (retirer ou remettre) et l'empreinte du
+  programme (32 chiffres hexadécimaux, calculée par `vanguard`) : jamais un nom, une commande ou un chemin. La forme
+  lancée est fermée, `vanguard demarrage --retirer|--remettre <empreinte> --json`, et `vanguard` rejuge tout : sans
+  l'accord du geste (`--accord`, celui que `demarrage --json` donne et qui lie le nom, la commande entière et la
+  portée), rien n'est fait, l'empreinte seule ne désignant plus rien (la fenêtre rend tel quel l'accord que la liste a
+  donné, sans le recalculer ; sous Linux, son relais l'ajoute à la forme fermée) ; empreinte mal formée, inconnue,
+  ambiguë, programme à garder, pare-feu, notes de Vanguard illisibles ou changées hors de Vanguard (ni retrait ni
+  remise tant qu'elles le sont), « remettre » un programme qui se lance déjà (remis ou réécrit hors de Vanguard,
+  peut-être devenu un programme à garder : la vieille note ne l'écrase pas, ni par l'annulation d'un blocage ni par «
+  Tout remettre comme avant »), tout est refusé sans rien changer ; ce qui change passe par la même correction que le
+  terminal (point de restauration, valeur d'avant notée, une seule fenêtre administrateur, jamais sudo). La console ne
+  lance aucun changement, sous aucune forme tapée. « Accepter » revérifie que le geste est encore dans la dernière
+  liste lue : une liste relue qui ne le contient plus ferme la confirmation (« La liste a changé : rien n'a changé.
+  »), comme changer d'écran ; la veille des alertes continue pendant qu'une confirmation est ouverte. Un changement
+  lancé ne s'interrompt pas (le couper au milieu laisserait un état à moitié fait) : Arrêter n'y fait rien, et sous
+  Linux la fermeture de la fenêtre non plus (le relais le laisse finir) ; on l'arrête en refusant la fenêtre
+  administrateur. Seul son délai, 15 minutes (la fenêtre administrateur de Windows peut attendre), le coupe. Côté
+  `vanguard`, un changement tient le verrou des notes (`reglages.verrou`) de leur lecture à leur dernière écriture,
+  comme l'optimiseur du terminal et « Tout remettre comme avant » : deux Vanguard ne changent pas les notes en même
+  temps, le second refuse sans rien changer. « Remettre » relit les notes sous ce verrou et exige le même réglage noté
+  qu'à la première lecture (sinon refusé, rien écrit) ; « Retirer » un programme qui se lance remplace une vieille
+  note restée d'avant par la valeur lue maintenant, pour que « Remettre » ramène l'état d'avant ce retrait-là. Sous
+  Linux, cette valeur d'avant (l'entrée d'autostart) est lue en une seule ouverture qui ne suit pas un lien, n'attend
+  pas un tube et s'arrête à 64 Kio : sinon refusé, rien changé (une entrée qui est un lien ne se retire donc pas
+  d'ici), et une entrée ainsi illisible n'est proposée ni pour être retirée ni pour être remise (la liste dit qu'elle
+  n'a pas été lue), et « Remettre » ne l'écrase jamais. Une entrée qui, masquée, ne se relirait plus dans cette borne
+  est refusée avant d'être écrite. La liste et le nom d'une entrée retirée se lisent de même, bornés, sans attendre un
+  tube ; une entrée réécrite garde ses droits. Chaque changement fait ou refusé est écrit au journal des événements
+  (sorte, nom nettoyé, issue, empreinte) ; un refus identique au précédent (même empreinte, même sorte, même raison)
+  ne s'y réécrit pas pendant 10 minutes, pour qu'une rafale de demandes ne noie pas les alertes ; un changement fait
+  s'y écrit toujours. Sa fin est dite (fait, refusé, échec, avec la raison), puis la liste est relue ; seule la
+  dernière ligne de la sortie, un JSON du même geste, avec le code 0, dit « fait » : tout le reste est un échec,
+  jamais un succès (`fenetre/src/attaques.rs`, essais B1 à B3). Essais :
   `une_confirmation_ne_bloque_rien_et_suit_la_liste` (`fenetre/src/appli.rs`), les essais du relais
   (`fenetre/src/relais.rs`), `verrou_des_notes_tenu_puis_rendu` et ceux de `src/optimiser/demarrage.rs`
   (`seul_un_programme_note_se_remet`, `pare_feu_reconnu_par_son_paquet`),
@@ -300,21 +302,20 @@ gardes :
   `entree_trop_grosse_une_fois_masquee_refusee_avant_d_ecrire` (`src/optimiser/linux.rs`), et de bout en bout, avec un
   dossier personnel jetable, `demarrage_retire_puis_remet_a_l_octet_pres` et le module `demarrage_sous_attaque`
   (`tests/programme.rs` : remise par-dessus un programme qui se lance, par la fenêtre et par « Tout remettre comme
-  avant », retrait sur des notes douteuses, changements simultanés, lien, tube, entrée trop grosse, droits, verrou tenu,
-  notes forgées ou rejouées, refus répétés).
-  Le geste écrit par `vanguard demarrage --json` porte aussi un accord : une empreinte BLAKE3 (64 chiffres
-  hexadécimaux) de la sorte, de l'empreinte, du nom, de la commande et de la portée montrés, et de l'empreinte du nom
-  et de la commande entiers (le texte montré est coupé à 80 et 160 signes : deux commandes qui ne diffèrent qu'après
-  la coupe donnent deux accords). L'objet du constat (une entrée d'autostart) part vers la fenêtre en « ~/… », plus
-  par le chemin du dossier personnel ; l'empreinte reste celle du chemin entier, comme avant. Rendu avec `--accord
-  <accord>`, `vanguard` relit les programmes une seule fois sous le verrou des notes, et cette même lecture juge
-  l'accord et décide du geste (retirer ou remettre) : il exige le même accord : un programme dont la commande, le nom
-  ou la portée ont changé entre la liste et le clic est refusé (« a changé depuis la liste »), rien n'est écrit, et
-  l'accord d'un « retirer » ne vaut pas pour « remettre ». Sans `--accord`, rien n'est retiré ni remis (« accord
-  manquant ») ; la fenêtre le lit strictement et le rend dans sa trame de changement, avec la sorte et l'empreinte.
-  Une fenêtre prise en main peut toujours relire la liste et rendre l'accord du moment : il ne prouve pas
-  qu'une personne a cliqué, seulement que ce qui est changé est ce qui a été montré. Essais :
-  `accord_de_chaque_champ_montre` (`src/optimiser/demarrage/resultat.rs`),
+  avant », retrait sur des notes douteuses, changements simultanés, lien, tube, entrée trop grosse, droits, verrou
+  tenu, notes forgées ou rejouées, refus répétés). Le geste écrit par `vanguard demarrage --json` porte aussi un
+  accord : une empreinte BLAKE3 (64 chiffres hexadécimaux) de la sorte, de l'empreinte, du nom, de la commande et de
+  la portée montrés, et de l'empreinte du nom et de la commande entiers (le texte montré est coupé à 80 et 160 signes
+  : deux commandes qui ne diffèrent qu'après la coupe donnent deux accords). L'objet du constat (une entrée
+  d'autostart) part vers la fenêtre en « ~/… », plus par le chemin du dossier personnel ; l'empreinte reste celle du
+  chemin entier, comme avant. Rendu avec `--accord <accord>`, `vanguard` relit les programmes une seule fois sous le
+  verrou des notes, et cette même lecture juge l'accord et décide du geste (retirer ou remettre) : il exige le même
+  accord : un programme dont la commande, le nom ou la portée ont changé entre la liste et le clic est refusé (« a
+  changé depuis la liste »), rien n'est écrit, et l'accord d'un « retirer » ne vaut pas pour « remettre ». Sans
+  `--accord`, rien n'est retiré ni remis (« accord manquant ») ; la fenêtre le lit strictement et le rend dans sa
+  trame de changement, avec la sorte et l'empreinte. Une fenêtre prise en main peut toujours relire la liste et rendre
+  l'accord du moment : il ne prouve pas qu'une personne a cliqué, seulement que ce qui est changé est ce qui a été
+  montré. Essais : `accord_de_chaque_champ_montre` (`src/optimiser/demarrage/resultat.rs`),
   `une_seule_lecture_juge_l_accord_et_choisit` (`src/optimiser/demarrage.rs`),
   `demarrage_l_accord_tient_ce_qui_a_ete_montre` (`tests/programme.rs`).
 - **Une correction du compte, montrée puis appliquée, puis remise comme avant (commandes et fenêtre).** Le
