@@ -96,7 +96,8 @@ pub(crate) fn racines(maison: &Path) -> Vec<Racine> {
         (Connu::Bureau, "Desktop"),
         (Connu::Documents, "Documents"),
     ];
-    if !sur_un_disque(maison) {
+    // Un profil à la racine d'un lecteur (« C:\ ») ferait de tout le lecteur un « enfant du profil ».
+    if !sur_un_disque(maison) || maison.parent().is_none() {
         return Vec::new();
     }
     // AppData tel que Windows le place, et tel que le dit l'environnement : jamais un endroit permis, ni rien sous
@@ -114,7 +115,7 @@ pub(crate) fn racines(maison: &Path) -> Vec<Racine> {
         .collect();
     let mut racines: Vec<PathBuf> = Vec::new();
     let mut garder = |r: PathBuf| {
-        if !racines.iter().any(|d| meme_texte(d, &r)) {
+        if !racines.iter().any(|d| meme_chemin(d, &r)) {
             racines.push(r);
         }
     };
@@ -132,10 +133,16 @@ pub(crate) fn racines(maison: &Path) -> Vec<Racine> {
     racines.into_iter().map(Racine::meme).collect()
 }
 
-/// Deux chemins qui s'écrivent pareil, sans tenir compte de la casse (comme le système de fichiers de Windows).
+/// Deux chemins qui désignent le même endroit sur le texte, comparés composant par composant comme
+/// `valeur_console::reste_sous` et sans tenir compte de la casse (comme le système de fichiers de Windows) : une
+/// barre finale, un « \.\ », des « / » ou une autre casse n'en font pas un autre chemin. Comparer le texte brut
+/// laissait « C:\Users\alice\OneDrive\ » passer pour un enfant du profil autre que OneDrive.
 #[cfg(windows)]
-fn meme_texte(a: &Path, b: &Path) -> bool {
-    a.as_os_str().to_string_lossy().to_lowercase() == b.as_os_str().to_string_lossy().to_lowercase()
+fn meme_chemin(a: &Path, b: &Path) -> bool {
+    a.components().count() == b.components().count()
+        && a.components()
+            .zip(b.components())
+            .all(|(x, y)| valeur_console::meme_composant(x, y))
 }
 
 /// Un chemin « C:\… » : une lettre de lecteur et sa racine, rien d'autre (ni \\serveur, ni \\?\UNC\, ni \\?\C:\,
@@ -166,10 +173,11 @@ const NOMS_JAMAIS: [&str; 9] = [
 /// Un dossier connu tel que Windows le place (lu dans le registre, déjà développé), gardé seulement s'il est sur un
 /// disque, sous le profil `maison`, hors des dossiers `jamais` et de tout ce qui est sous eux (AppData, les autres
 /// dossiers connus, voir `Connu::JAMAIS`), autre que les dossiers `nuages` eux-mêmes (OneDrive, `Connu::NUAGES` :
-/// seuls ses enfants peuvent l'être), et soit enfant direct du profil, soit enfant direct de son OneDrive
-/// (« OneDrive », « OneDrive - Entreprise »). Chaque nom est simple : ni « .. », ni « : », ni « ~ » (un nom court
-/// comme APPDAT~1 désigne AppData), ni point ou espace final (« AppData. » aussi), ni nom de périphérique, ni celui
-/// d'un autre dossier connu (Pictures, Saved Games…, `NOMS_JAMAIS`) ; OneDrive lui-même n'est pas un endroit permis.
+/// seuls ses enfants peuvent l'être), et soit enfant direct du profil, soit enfant direct de son OneDrive (par son
+/// nom, « OneDrive », « OneDrive - Entreprise », ou par sa place, un dossier de `nuages`). Chaque nom est simple :
+/// ni « .. », ni « : », ni « ~ » (un nom court comme APPDAT~1 désigne AppData), ni point ou espace final (« AppData. »
+/// aussi), ni nom de périphérique, ni celui d'un autre dossier connu (Pictures, Saved Games…, `NOMS_JAMAIS`) ;
+/// OneDrive lui-même n'est pas un endroit permis. Les égalités se jugent composant par composant (`meme_chemin`).
 /// HKCU s'écrit sans droits particuliers : un \\serveur\x y enverrait sinon l'empreinte NTLM de la session à qui
 /// l'a écrit, un AppData\Roaming ferait lire des secrets comme des Documents, et un OneDrive entier tout ce qui y est
 /// synchronisé.
@@ -179,8 +187,8 @@ fn racine_du_registre(valeur: &Path, maison: &Path, jamais: &[PathBuf], nuages: 
     if !sur_un_disque(valeur)
         || jamais
             .iter()
-            .any(|a| valeur_console::reste_sous(valeur, a).is_some() || meme_texte(valeur, a))
-        || nuages.iter().any(|n| meme_texte(valeur, n))
+            .any(|a| valeur_console::reste_sous(valeur, a).is_some() || meme_chemin(valeur, a))
+        || nuages.iter().any(|n| meme_chemin(valeur, n))
     {
         return None;
     }
@@ -202,9 +210,15 @@ fn racine_du_registre(valeur: &Path, maison: &Path, jamais: &[PathBuf], nuages: 
             && !crate::socle::valeur_console::nom_de_peripherique(std::ffi::OsStr::new(n))
     };
     let nuage = |n: &String| n == "onedrive" || n.starts_with("onedrive - ");
+    // Un OneDrive déplacé sous un autre nom (« Nuage ») est reconnu par sa place, celle que Windows donne.
+    let sous_un_nuage = || {
+        valeur
+            .parent()
+            .is_some_and(|p| nuages.iter().any(|n| meme_chemin(p, n)))
+    };
     let permis = match noms.as_slice() {
         [nom] => simple(nom) && !nuage(nom),
-        [dessus, nom] => nuage(dessus) && simple(dessus) && simple(nom) && !nuage(nom),
+        [dessus, nom] => (nuage(dessus) || sous_un_nuage()) && simple(dessus) && simple(nom) && !nuage(nom),
         _ => false,
     };
     permis.then(|| valeur.to_path_buf())
@@ -417,13 +431,39 @@ mod tests {
             None
         );
         // Un OneDrive déplacé sous un autre nom (« Nuage ») : la règle des noms le laisserait passer comme enfant
-        // direct du profil ; c'est `nuages` qui le refuse, et ses enfants restent permis.
+        // direct du profil ; c'est sa place, dans `nuages`, qui le refuse lui-même, et qui laisse passer ses enfants
+        // directs (Documents, Bureau) comme ceux d'un dossier nommé « OneDrive ». L'égalité se juge composant par
+        // composant : ni une barre finale, ni « \.\ », ni des « / », ni la casse n'en font un autre dossier.
         let deplace = [PathBuf::from(r"C:\Users\alice\Nuage")];
+        let juge_deplace = |v: &str| racine_du_registre(Path::new(v), maison, &jamais, &deplace);
+        for refuse in [
+            r"C:\Users\alice\Nuage",
+            r"c:\users\alice\nuage",
+            r"C:\Users\alice\Nuage\",
+            r"C:\Users\alice\.\Nuage",
+            r"C:\Users\alice\Nuage\.",
+            r"C:/Users/alice/Nuage/",
+            r"C:\USERS\ALICE\NUAGE\",
+            r"C:\Users\alice\Nuage\Pictures",
+            r"C:\Users\alice\Nuage\OneDrive",
+            r"C:\Users\alice\Nuage\a\b",
+        ] {
+            assert_eq!(juge_deplace(refuse), None, "{refuse}");
+        }
+        for permis in [
+            r"C:\Users\alice\Nuage\Documents",
+            r"C:\Users\alice\Nuage\Desktop",
+            r"c:\users\alice\NUAGE\Bureau",
+            r"C:/Users/alice/Nuage/./Documents",
+        ] {
+            assert_eq!(juge_deplace(permis), Some(PathBuf::from(permis)), "{permis}");
+        }
+        // Sans `nuages`, « Nuage » n'est qu'un enfant du profil, et ce qui est sous lui, trop profond.
+        assert!(racine_du_registre(Path::new(r"C:\Users\alice\Nuage"), maison, &jamais, &[]).is_some());
         assert_eq!(
-            racine_du_registre(Path::new(r"c:\users\alice\nuage"), maison, &jamais, &deplace),
+            racine_du_registre(Path::new(r"C:\Users\alice\Nuage\Documents"), maison, &jamais, &[]),
             None
         );
-        assert!(racine_du_registre(Path::new(r"C:\Users\alice\Nuage"), maison, &jamais, &[]).is_some());
         for refuse in [
             r"\\127.0.0.1\absent\Downloads",
             r"\\?\UNC\127.0.0.1\absent\Downloads",
@@ -436,6 +476,11 @@ mod tests {
             r"C:\Users\alice\AppData",
             r"C:\Users\alice\AppData\Roaming\Downloads",
             r"C:\Users\alice\Donnees",
+            // Un dossier de `jamais` lui-même, écrit autrement.
+            r"C:\Users\alice\Donnees\",
+            r"C:\Users\alice\.\Donnees",
+            r"C:/Users/alice/donnees/",
+            r"C:\USERS\ALICE\DONNEES\.",
             r"C:\Users\alice\APPDAT~1",
             r"C:\Users\alice\AppData.",
             r"C:\Users\alice\Downloads ",
@@ -465,6 +510,8 @@ mod tests {
         ] {
             assert_eq!(juge(refuse), None, "{refuse}");
         }
+        // Un profil à la racine d'un lecteur : aucun endroit permis, sinon tout le lecteur serait « sous le profil ».
+        assert_eq!(racines(Path::new(r"C:\")), Vec::<Racine>::new());
         assert!(sur_un_disque(Path::new(r"E:\")));
         assert!(!sur_un_disque(Path::new(r"\\?\Volume{0}\")));
         assert!(!sur_un_disque(Path::new(r"\\serveur\partage\")));

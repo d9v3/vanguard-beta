@@ -134,8 +134,9 @@ pub(crate) enum Refus {
     /// (`NOMS_DECLARABLES`) : écarté ; le refus le dit au lieu de « hors des endroits ».
     #[cfg_attr(windows, allow(dead_code))]
     NomNonReconnu,
-    /// Un chemin sous /run/media alors que le nom du compte est inconnu (un compte hors de /etc/passwd, que `vanguard`
-    /// ne lit pas : systemd-homed, LDAP) : aucun support amovible n'est situé.
+    /// Un chemin sous /run/media sans nom de compte utilisable : inconnu (un compte hors de /etc/passwd, que
+    /// `vanguard` ne lit pas : systemd-homed, LDAP) ou qui n'est pas un simple nom de dossier (`nom_de_compte`) ;
+    /// aucun support amovible n'est situé.
     #[cfg_attr(windows, allow(dead_code))]
     CompteInconnu,
     /// Le fichier est dans un dossier caché, ou caché lui-même.
@@ -217,8 +218,10 @@ impl Refus {
                  Downloads, Desktop or Documents"
             ),
             Refus::CompteInconnu => crate::tr!(
-                "nom du compte inconnu (compte hors de /etc/passwd) : les supports amovibles ne sont pas situés",
-                "account name unknown (account outside /etc/passwd): removable drives are not located"
+                "nom du compte absent de /etc/passwd ou inutilisable comme nom de dossier : les supports amovibles \
+                 ne sont pas situés",
+                "account name missing from /etc/passwd or unusable as a folder name: removable drives are not \
+                 located"
             ),
             Refus::Cache => crate::tr!(
                 "fichier caché ou dans un dossier caché",
@@ -483,7 +486,7 @@ fn cache(c: Component<'_>) -> bool {
 }
 
 /// Deux composants de chemin pareils ; sous Windows, sans tenir compte de la casse, comme le système de fichiers.
-fn meme_composant(a: Component<'_>, b: Component<'_>) -> bool {
+pub(crate) fn meme_composant(a: Component<'_>, b: Component<'_>) -> bool {
     #[cfg(windows)]
     if let (Some(a), Some(b)) = (a.as_os_str().to_str(), b.as_os_str().to_str()) {
         return a.to_lowercase() == b.to_lowercase();
@@ -963,6 +966,12 @@ pub(crate) fn racines_linux(maison: &Path, declares: &str, compte: Option<&str>)
     let Ok(maison_reelle) = maison.canonicalize() else {
         return Vec::new();
     };
+    // Une maison « / » (un compte de service, HOME=/), écrite telle ou par un lien : tout lien absolu y serait
+    // « sous la maison » (~/Documents lié à /etc deviendrait un endroit permis). Aucun endroit, pas même /run/media.
+    // Le relais de la fenêtre, qui compile ce même fichier, suit la même règle.
+    if maison_reelle.parent().is_none() {
+        return Vec::new();
+    }
     let mut relatifs: Vec<Result<PathBuf, PathBuf>> = ["XDG_DOWNLOAD_DIR", "XDG_DESKTOP_DIR", "XDG_DOCUMENTS_DIR"]
         .iter()
         .filter_map(|cle| declare(declares, cle, maison, &maison_reelle))
@@ -1007,8 +1016,9 @@ pub(crate) fn racines_linux(maison: &Path, declares: &str, compte: Option<&str>)
                 racines.push(Racine::meme(media));
             }
         }
-        // `vanguard` ne lit que /etc/passwd (musl) : un compte de systemd-homed ou de LDAP n'y a pas de nom, et le
-        // refus le dit plutôt que « hors des endroits ».
+        // `vanguard` ne lit que /etc/passwd (musl) : un compte de systemd-homed ou de LDAP n'y a pas de nom ; un nom
+        // qui n'est pas un simple nom de dossier (« ../alice ») n'est pas pris. Le refus le dit plutôt que « hors des
+        // endroits ».
         None => racines.push(Racine {
             ecartee: Some(Refus::CompteInconnu),
             ..Racine::meme(media.to_path_buf())
@@ -1340,6 +1350,25 @@ mod tests {
             situer(Path::new("/home/alice/Documents/a.pdf"), &[]),
             Err(Refus::HorsDesEndroits)
         );
+    }
+
+    /// Une maison « / », écrite telle ou par un lien : aucun endroit permis, ni /run/media ; sinon tout lien absolu
+    /// serait sous elle (~/Documents lié à /etc deviendrait un endroit permis).
+    #[cfg(unix)]
+    #[test]
+    fn une_maison_a_la_racine_n_a_aucun_endroit() {
+        let m = Maison::nouvelle("a-la-racine");
+        let lien = m.0.join("maison");
+        std::os::unix::fs::symlink("/", &lien).unwrap();
+        for maison in [Path::new("/"), lien.as_path()] {
+            for compte in [None, Some("alice")] {
+                assert_eq!(
+                    racines_linux(maison, "", compte),
+                    Vec::<Racine>::new(),
+                    "{maison:?} {compte:?}"
+                );
+            }
+        }
     }
 
     /// Hors des endroits permis, le refus est le même que le fichier existe ou non : rien n'est regardé sur le disque
@@ -1717,6 +1746,13 @@ mod tests {
         }
         assert!(Refus::Decompose.phrase().contains("retype") || Refus::Decompose.phrase().contains("retapez"));
         assert!(Refus::BlancDansUnNom.phrase().contains("vanguard verifier-fichier"));
+        // Les deux causes de `CompteInconnu` : un compte hors de /etc/passwd, ou un nom refusé (« ../alice »).
+        let compte = Refus::CompteInconnu.phrase();
+        assert!(compte.contains("/etc/passwd"), "{compte}");
+        assert!(
+            compte.contains("nom de dossier") || compte.contains("folder name"),
+            "{compte}"
+        );
     }
 
     /// La table des invisibles est en plages croissantes et disjointes : la recherche par dichotomie en dépend.
