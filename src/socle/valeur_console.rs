@@ -956,7 +956,7 @@ fn cible_de(maison: &Path, maison_reelle: &Path, relatif: &Path) -> Option<Resul
 }
 
 /// Les endroits permis sous Linux : Téléchargements, Bureau et Documents (ceux que déclare user-dirs.dirs, voir
-/// `declare`, et leurs noms usuels), chacun résolu une fois (`cible_de`) ; et /run/media/<compte>, où le bureau monte
+/// `declare`, et leurs noms usuels), chacun résolu une fois (`cible_de`) ; et `/run/media/<compte>`, où le bureau monte
 /// les supports amovibles, s'il est bien lui-même. Un endroit qui est un lien hors des cibles admises, ou déclaré
 /// sous un nom non reconnu, reste dans la liste, écarté (`ecartee`), pour que le refus dise sa vraie cause ; de même
 /// /run/media quand le nom du compte est inconnu (`CompteInconnu`). `declares` : le texte de user-dirs.dirs (vide
@@ -1431,7 +1431,7 @@ mod tests {
         )
         .unwrap();
         symlink(maison.join("absent"), maison.join("Téléchargements/casse")).unwrap();
-        symlink(maison.join("Documents"), maison.join("Téléchargements/docs")).unwrap();
+        symlink(maison.join("Documents"), maison.join("Téléchargements/lien-documents")).unwrap();
         // Un lien physique : le même fichier que ~/.ssh/id_ed25519, sous un second nom dans Téléchargements.
         std::fs::hard_link(maison.join(".ssh/id_ed25519"), maison.join("Téléchargements/copie.pdf")).unwrap();
         std::fs::create_dir_all(maison.join("Téléchargements/sous")).unwrap();
@@ -1465,7 +1465,7 @@ mod tests {
             ("~/Téléchargements/env", Refus::Lien),
             ("~/Documents/vers-x.pdf", Refus::Lien),
             ("~/Téléchargements/casse", Refus::Lien),
-            ("~/Téléchargements/docs/lettre.eml", Refus::Lien),
+            ("~/Téléchargements/lien-documents/lettre.eml", Refus::Lien),
             ("~/Téléchargements/copie.pdf", Refus::PlusieursNoms),
             ("~/Téléchargements/.cache/y", Refus::Cache),
             ("~/Téléchargements/.cache.pdf", Refus::Cache),

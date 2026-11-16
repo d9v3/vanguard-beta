@@ -843,8 +843,8 @@ fn ipv4_commune(ip: Ipv4Addr) -> bool {
 }
 
 /// La commande lancée, pour le journal : le surnom donné par « vanguard nommer » nomme souvent quelqu'un
-/// (« tablette de Zoé ») ; il ne reste que « `<surnom>` ». La valeur tapée dans la Console de la fenêtre (« vanguard
-/// console <commande> -- <valeur> » : un chemin, un lien, des mots) devient « `<valeur>` ».
+/// (« tablette de Zoé ») ; il ne reste que « `<surnom>` ». La valeur tapée dans la Console de la fenêtre (« `vanguard
+/// console <commande> -- <valeur>` » : un chemin, un lien, des mots) devient « `<valeur>` ».
 fn commande_anonyme(args: &[String]) -> String {
     let mut args = args.to_vec();
     if args.first().is_some_and(|a| a == "console") {

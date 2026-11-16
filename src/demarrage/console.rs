@@ -5,7 +5,7 @@
 //! fenêtre et son relais l'ont déjà fait : sous Windows il n'y a pas de relais, et rien de ce qui précède n'est cru.
 //!
 //! Confidentialité : ce processus ne relève rien et n'envoie rien (`amelioration::taire`, posé dans `main` avant
-//! tout le reste), et le journal des erreurs n'en garde que « console <commande> -- <valeur> » (`journal`).
+//! tout le reste), et le journal des erreurs n'en garde que « `console <commande> -- <valeur>` » (`journal`).
 
 use std::path::{Path, PathBuf};
 
