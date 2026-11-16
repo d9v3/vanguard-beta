@@ -190,6 +190,11 @@ impl Publiee {
         self.taille
     }
 
+    /// `octets` sont-ils exactement le programme signé (taille et empreinte) ?
+    pub(super) fn est(&self, octets: &[u8]) -> bool {
+        u64::try_from(octets.len()).ok() == Some(self.taille) && Sha256::digest(octets)[..] == self.sha256
+    }
+
     /// Une version publiée inventée, pour les essais de l'aperçu (`apercu`) : rien n'y est signé.
     #[cfg(test)]
     pub(super) fn d_essai(version: Version, octets: &[u8]) -> Self {
@@ -722,7 +727,7 @@ pub(super) fn programme_verifie(p: &Publiee) -> Result<Vec<u8>, Echec> {
             tr!("téléchargement interrompu", "download interrupted"),
         ));
     };
-    if u64::try_from(recus.len()).ok() == Some(p.taille) && Sha256::digest(&recus)[..] == p.sha256 {
+    if p.est(&recus) {
         return Ok(recus);
     }
     Err(Echec::echoue(

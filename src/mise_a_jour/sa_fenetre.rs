@@ -3,6 +3,11 @@
 //! taille et empreinte de GitHub, ou la version de la clé). La fenêtre d'abord, puis le programme ; si le programme
 //! ne se pose pas, l'ancienne fenêtre est remise. Même si ce retour échouait, rien de dangereux : un programme ne
 //! lance jamais une fenêtre dont l'empreinte n'est pas la sienne (le menu à la place).
+//!
+//! Depuis GitHub (C-6, 0.97), une fenêtre absente est ajoutée là où le lancement la cherche, au même accord que le
+//! programme ; et au même numéro, un programme d'ici qui est exactement celui que l'auteur a signé reçoit sa fenêtre
+//! seule, ajoutée ou réparée, sans être retéléchargé (`Seule`). Jamais rien sans avoir été montré puis accepté ; ce
+//! qui ne se vérifie pas (une fenêtre illisible, un programme d'ailleurs) est dit et rien n'est posé.
 
 use std::path::{Path, PathBuf};
 
@@ -56,13 +61,15 @@ fn ratee(e: impl std::fmt::Display) -> Echec {
     Echec::echoue("fenetre/poser", e.to_string())
 }
 
-/// `octets` à la place de `cible` (`installer`), et la fenêtre posée à côté remplacée par celle de la nouvelle
-/// version, que `recevoir` donne (appelé seulement s'il en faut une). Tout ou rien : une fenêtre qui ne vient pas, ou
-/// qui n'est pas celle gravée, et rien n'est remplacé. Un nouveau programme qui ne lance aucune fenêtre se pose seul :
-/// celle d'ici reste, il ne la lancera pas.
+/// `octets` à la place de `cible` (`installer`), et la fenêtre à côté (`vue.chemin`) remplacée, ou ajoutée si elle
+/// n'y est pas (C-6, 0.97), par celle de la nouvelle version, que `recevoir` donne (appelé seulement s'il en faut une).
+/// Tout ou rien : une fenêtre qui ne vient pas, ou qui n'est pas celle gravée, et rien n'est remplacé. Un nouveau
+/// programme qui ne lance aucune fenêtre se pose seul : celle d'ici reste, il ne la lancera pas. Un qui ne dit pas sa
+/// fenêtre se pose seul là où il n'y en a pas (rien à remplacer), et il est refusé à côté d'une fenêtre.
 ///
-/// `vue` : la fenêtre que l'aperçu a montrée à côté de `cible` (C-7, relecture 0.96). Apparue, partie ou changée
-/// depuis, rien n'est remplacé, le programme non plus : jamais une fenêtre remplacée sans avoir été montrée.
+/// `vue` : la fenêtre que l'aperçu a montrée à côté de `cible` (C-7, relecture 0.96), son chemin et ce qui y était.
+/// Apparue, partie ou changée depuis, rien n'est remplacé, le programme non plus : jamais une fenêtre remplacée sans
+/// avoir été montrée.
 #[allow(clippy::too_many_arguments)] // chacun une garde : la liste des copies (registre) et la copie de cet ordinateur s'ajoutent
 pub(super) fn installer_avec_sa_fenetre(
     octets: &[u8],
@@ -74,25 +81,126 @@ pub(super) fn installer_avec_sa_fenetre(
     vue: &Vue,
     recevoir: &mut dyn FnMut() -> Result<Vec<u8>, Echec>,
 ) -> Result<(), Echec> {
-    vue.dite(a_cote(cible).as_deref())?;
-    let Some(chemin) = a_cote(cible) else {
+    vue.telle_quelle(cible)?;
+    let Some(chemin) = vue.chemin.clone() else {
         return installer(octets, cible, attendue, registre, copie, essai).map_err(ratee);
     };
     match empreinte_fenetre::gravee(octets) {
         Some(Gravee::Aucune) => return installer(octets, cible, attendue, registre, copie, essai).map_err(ratee),
+        // Rien à remplacer ici : le programme seul, comme avant la 0.97 ; la ligne de la fenêtre dit pourquoi elle
+        // n'est pas ajoutée (`posee_juste`).
+        None if vue.etat == Montree::Absente => {
+            return installer(octets, cible, attendue, registre, copie, essai).map_err(ratee);
+        }
         // Rien n'est téléchargé pour un programme qui ne dit pas sa fenêtre : refusé tout de suite.
         None => return Err(sans_marque()),
         Some(Gravee::Empreinte(_)) => {}
     }
     let fenetre = recevoir()?;
-    // Le téléchargement a pris du temps : une fenêtre a pu apparaître sous un autre nom que le lancement cherche.
-    vue.dite(a_cote(cible).as_deref())?;
+    // Le téléchargement a pris du temps : une fenêtre a pu apparaître, partir ou changer.
+    vue.telle_quelle(cible)?;
     installer_avec(octets, cible, attendue, registre, copie, essai, &fenetre, &chemin, vue)
 }
 
-/// La fenêtre telle que l'aperçu (ou la question du terminal) l'a montrée : le chemin que la mise à jour remplacera,
-/// s'il y en a un, et ce qui y était (C-7, relecture 0.96). La pose la compare à ce qui y est maintenant ; sinon une
-/// fenêtre apparue pendant le téléchargement était remplacée sans avoir été montrée.
+/// GitHub, au même numéro (C-6, 0.97) : un programme d'ici qui est exactement celui que l'auteur a signé (taille et
+/// empreinte du manifeste), sans sa fenêtre à côté, ou avec une autre que celle qu'il grave. Seule sa fenêtre est
+/// proposée, ajoutée ou réparée ; le programme, déjà juste, n'est pas retéléchargé.
+#[derive(Debug)]
+pub(super) struct Seule {
+    /// Le programme d'ici, tel que lu et reconnu pour l'aperçu.
+    programme: PathBuf,
+    octets: Vec<u8>,
+    /// Où sa fenêtre sera posée, et ce qui y était quand elle a été montrée.
+    pub(super) vue: Vue,
+}
+
+impl Seule {
+    /// Le chemin de la fenêtre qui sera posée.
+    pub(super) fn chemin(&self) -> &Path {
+        // `seule_a_poser` ne fait jamais de `Seule` sans chemin.
+        self.vue.chemin.as_deref().unwrap_or(&self.programme)
+    }
+
+    /// Vrai si aucune fenêtre n'est là (ajoutée), faux si une autre l'est (réparée).
+    pub(super) fn ajout(&self) -> bool {
+        self.vue.etat == Montree::Absente
+    }
+
+    /// Ce que la ligne de la fenêtre dit dans l'aperçu.
+    pub(super) fn dite(&self) -> &'static str {
+        if self.ajout() {
+            tr!(
+                "sa fenêtre, absente : ajoutée seule",
+                "its window, missing: added alone"
+            )
+        } else {
+            tr!(
+                "sa fenêtre, pas la sienne : remplacée seule",
+                "its window, not its own: replaced alone"
+            )
+        }
+    }
+
+    /// Après l'accord : la fenêtre que `recevoir` donne, jugée contre l'empreinte que grave le programme d'ici
+    /// (reconnu comme celui que l'auteur a signé), posée à la place de ce qui a été montré. Rien d'autre n'est
+    /// touché ; une fenêtre changée depuis l'aperçu, un programme d'ici changé, une fenêtre reçue qui n'est pas la
+    /// gravée : rien.
+    pub(super) fn poser(&self, recevoir: &mut dyn FnMut() -> Result<Vec<u8>, Echec>) -> Result<(), Echec> {
+        self.vue.telle_quelle(&self.programme)?;
+        let Some(chemin) = self.vue.chemin.as_deref() else {
+            return Err(changee_depuis_l_apercu());
+        };
+        if !matches!(empreinte_fenetre::gravee(&self.octets), Some(Gravee::Empreinte(_))) {
+            return juste(&self.octets, &[]);
+        }
+        let fenetre = recevoir()?;
+        juste(&self.octets, &fenetre)?;
+        // Le téléchargement a pris du temps : la fenêtre ou le programme d'ici ont pu changer.
+        self.vue.telle_quelle(&self.programme)?;
+        if lire_octets(&self.programme, TAILLE_PROGRAMME).ok().as_deref() != Some(self.octets.as_slice()) {
+            return Err(Echec::refuse(
+                "fenetre/apercu",
+                tr!(
+                    "le programme à côté de cette fenêtre a changé depuis ce qui a été montré : sa fenêtre n'est pas posée ; relancez la mise à jour pour le voir",
+                    "the program next to this window changed since what was shown: its window is not placed; run the update again to see it"
+                ),
+            ));
+        }
+        self.vue.meme_etat(chemin, &Avant::de(chemin, TAILLE_MAX))?;
+        poser(&fenetre, chemin)
+    }
+
+    /// Ce que dit la ligne de la fenêtre après la pose : relue, jamais « à jour » sans l'être.
+    pub(super) fn posee_juste(&self) -> Result<(), Echec> {
+        posee_juste(&self.octets, self.chemin())
+    }
+}
+
+/// La fenêtre seule à proposer à côté de `cible` (C-6, 0.97), si `cible` est exactement le programme que l'auteur a
+/// signé (`publiee`) et qu'il grave une fenêtre qui n'est pas celle d'ici (absente, autre, ou illisible : à refuser
+/// avant de rien proposer, `Vue::illisible`). Un programme d'ici qui n'est pas celui publié (une compilation
+/// d'ailleurs au même numéro) : rien, sa fenêtre ne peut pas être jugée d'ici contre GitHub.
+pub(super) fn seule_a_poser(cible: &Path, publiee: &super::github::Publiee) -> Option<Seule> {
+    let octets = lire_octets(cible, TAILLE_PROGRAMME).ok().filter(|o| publiee.est(o))?;
+    let Some(Gravee::Empreinte(e)) = empreinte_fenetre::gravee(&octets) else {
+        return None;
+    };
+    let vue = Vue::de(pour(cible));
+    vue.chemin.as_ref()?;
+    if vue.etat == Montree::Empreinte(e) {
+        return None;
+    }
+    Some(Seule {
+        programme: cible.to_path_buf(),
+        octets,
+        vue,
+    })
+}
+
+/// La fenêtre telle que l'aperçu (ou la question du terminal) l'a montrée : le chemin que la mise à jour remplacera
+/// ou ajoutera, s'il y en a un, et ce qui y était (C-7, relecture 0.96). La pose la compare à ce qui y est maintenant ;
+/// sinon une fenêtre apparue pendant le téléchargement était remplacée sans avoir été montrée. Dans l'interface, où le
+/// plan est refait au clic, ce qui y était entre aussi dans l'accord (`pour_l_accord`, C-7-1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Vue {
     chemin: Option<PathBuf>,
@@ -126,7 +234,12 @@ impl Vue {
         Vue { chemin, etat }
     }
 
-    /// La fenêtre que la pose toucherait est-elle encore à ce chemin montré (ou aucune, si aucune n'a été montrée) ?
+    /// Le chemin montré (`None` : aucune fenêtre ne sera touchée).
+    pub(super) fn chemin(&self) -> Option<&Path> {
+        self.chemin.as_deref()
+    }
+
+    /// Le chemin que la pose toucherait est-il celui qui a été montré (ou aucun, si aucun ne l'a été) ?
     pub(super) fn dite(&self, maintenant: Option<&Path>) -> Result<(), Echec> {
         if self.chemin.as_deref() == maintenant {
             Ok(())
@@ -135,14 +248,53 @@ impl Vue {
         }
     }
 
-    /// Ce qui est à `chemin` juste avant la pose (`avant`) est-il ce qui a été montré ?
+    /// GitHub : la fenêtre à côté de `cible`, relue maintenant, est-elle encore celle qui a été montrée, au même
+    /// chemin (un autre nom que le lancement cherche compris) et avec le même contenu ?
+    fn telle_quelle(&self, cible: &Path) -> Result<(), Echec> {
+        self.dite(pour(cible).as_deref())?;
+        match self.chemin.as_deref() {
+            Some(c) => self.meme_etat(c, &Avant::de(c, TAILLE_MAX)),
+            None => Ok(()),
+        }
+    }
+
+    /// Ce qui est à `chemin` juste avant la pose (`avant`) est-il ce qui a été montré ? Une fenêtre montrée illisible
+    /// ne l'est jamais (C-7-2, relecture 0.96) : rien ne dit que c'est la même ; non vérifié, donc non.
     fn meme_etat(&self, chemin: &Path, avant: &Avant) -> Result<(), Echec> {
         self.dite(Some(chemin))?;
+        if self.etat == Montree::Illisible {
+            return Err(illisible_refusee());
+        }
         if self.etat == Montree::de(avant) {
             Ok(())
         } else {
             Err(changee_depuis_l_apercu())
         }
+    }
+
+    /// La fenêtre montrée ne se lisait pas (droits, dossier, trop grande) : rien ne doit être proposé pour elle.
+    pub(super) fn illisible(&self) -> Option<&Path> {
+        self.chemin.as_deref().filter(|_| self.etat == Montree::Illisible)
+    }
+
+    /// Ce que l'accord retient de cette fenêtre (C-7-1, relecture 0.96) : son chemin et ce qui y était (rien, une
+    /// empreinte SHA-256, illisible). Un contenu changé entre l'aperçu et le clic change l'accord, même au même chemin.
+    pub(super) fn pour_l_accord(&self) -> Vec<u8> {
+        let mut o = Vec::new();
+        if let Some(c) = &self.chemin {
+            o.push(1);
+            o.extend_from_slice(c.as_os_str().as_encoded_bytes());
+        }
+        o.push(0);
+        match &self.etat {
+            Montree::Absente => o.push(0),
+            Montree::Empreinte(e) => {
+                o.push(1);
+                o.extend_from_slice(e);
+            }
+            Montree::Illisible => o.push(2),
+        }
+        o
     }
 }
 
@@ -153,6 +305,25 @@ fn changee_depuis_l_apercu() -> Echec {
             "la fenêtre à côté de ce programme a changé depuis ce qui a été montré (apparue, partie ou modifiée) : rien n'est remplacé ; relancez la mise à jour pour la voir",
             "the window next to this program changed since what was shown (appeared, gone or modified): nothing is replaced; run the update again to see it"
         ),
+    )
+}
+
+fn illisible_refusee() -> Echec {
+    Echec::refuse(
+        "fenetre/apercu",
+        tr!(
+            "la fenêtre à côté de ce programme ne se lisait pas quand elle a été montrée (droits, dossier, trop grande) : rien ne dit que c'est la même, rien n'est remplacé ; retirez ou réparez ce fichier, puis relancez la mise à jour",
+            "the window next to this program could not be read when it was shown (permissions, folder, too large): nothing shows it is the same one, nothing is replaced; remove or repair this file, then run the update again"
+        ),
+    )
+}
+
+/// La phrase d'une fenêtre illisible trouvée par l'aperçu (`Vue::illisible`) : rien n'est proposé.
+pub(super) fn illisible_dite(chemin: &str) -> String {
+    crate::trf!(
+        "la fenêtre {} ne se lit pas (droits, dossier, trop grande) : rien n'est proposé ; retirez ou réparez ce fichier, puis relancez la mise à jour",
+        "the window {} cannot be read (permissions, folder, too large): nothing is offered; remove or repair this file, then run the update again",
+        chemin
     )
 }
 
@@ -170,12 +341,23 @@ pub(super) fn pour(cible: &Path) -> Option<PathBuf> {
 }
 
 /// La fenêtre posée à `chemin` est-elle, relue maintenant, celle que grave `programme` ? Ce que dit la ligne de la
-/// fenêtre après une mise à jour : jamais « à jour » sans l'avoir relue.
+/// fenêtre après une mise à jour : jamais « à jour » sans l'avoir relue. Un programme qui ne lance aucune fenêtre, ou
+/// ne dit pas laquelle, le dit d'abord : la fenêtre n'a pas été posée.
 pub(super) fn posee_juste(programme: &[u8], chemin: &Path) -> Result<(), Echec> {
-    juste(
-        programme,
-        &lire_octets(chemin, TAILLE_MAX).map_err(|e| Echec::echoue("fenetre/juger", e))?,
-    )
+    match empreinte_fenetre::gravee(programme) {
+        Some(Gravee::Empreinte(_)) => juste(
+            programme,
+            &lire_octets(chemin, TAILLE_MAX).map_err(|e| Echec::echoue("fenetre/juger", e))?,
+        ),
+        None => Err(Echec::refuse(
+            "fenetre/juger",
+            tr!(
+                "le programme posé ne dit pas quelle fenêtre il lance : elle n'est pas posée",
+                "the installed program does not say which window it launches: it is not placed"
+            ),
+        )),
+        Some(Gravee::Aucune) => juste(programme, &[]),
+    }
 }
 
 /// Le reste d'une mise à jour faite pendant que la fenêtre de la copie `cible` tournait (Windows) : effacé. Encore
@@ -512,7 +694,7 @@ mod tests {
 
     /// La fenêtre à côté de `cible` telle qu'un aperçu la montrerait maintenant.
     fn montree(cible: &Path) -> Vue {
-        Vue::de(a_cote(cible))
+        Vue::de(pour(cible))
     }
 
     fn rien_a_cote(d: &Path) -> bool {
@@ -637,10 +819,45 @@ mod tests {
         .unwrap();
         assert_eq!(std::fs::read(&cible).unwrap(), sans_fenetre);
         assert_eq!(std::fs::read(&fenetre).unwrap(), b"ancienne fenetre");
-        // Pas de fenêtre à côté : le programme seul, rien n'est téléchargé.
+        assert_eq!(appels.get(), avant);
+        // Pas de fenêtre à côté (C-6, 0.97) : celle de la nouvelle version est ajoutée là où le lancement la cherche,
+        // vérifiée ; une autre que celle gravée, et rien n'est posé, ni elle ni le programme.
         std::fs::remove_file(&fenetre).unwrap();
+        let vue = montree(&cible);
+        assert!(
+            installer_avec_sa_fenetre(
+                &nouveau,
+                &cible,
+                V,
+                &crate::socle::dossier_local(),
+                &crate::mise_a_jour::copie_de_cet_ordinateur(),
+                SANS_ESSAI,
+                &vue,
+                &mut autre
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(&cible).unwrap(), sans_fenetre);
+        assert!(std::fs::symlink_metadata(&fenetre).is_err());
         installer_avec_sa_fenetre(
             &nouveau,
+            &cible,
+            V,
+            &crate::socle::dossier_local(),
+            &crate::mise_a_jour::copie_de_cet_ordinateur(),
+            SANS_ESSAI,
+            &vue,
+            &mut recevoir,
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&cible).unwrap(), nouveau);
+        assert_eq!(std::fs::read(&fenetre).unwrap(), neuve);
+        assert_eq!(appels.get(), avant + 1);
+        // Un programme qui ne dit pas sa fenêtre, là où il n'y en a pas : posé seul (rien à remplacer), rien n'est
+        // téléchargé.
+        std::fs::remove_file(&fenetre).unwrap();
+        installer_avec_sa_fenetre(
+            &programme(None),
             &cible,
             V,
             &crate::socle::dossier_local(),
@@ -650,9 +867,9 @@ mod tests {
             &mut recevoir,
         )
         .unwrap();
-        assert_eq!(std::fs::read(&cible).unwrap(), nouveau);
+        assert_eq!(std::fs::read(&cible).unwrap(), programme(None));
         assert!(std::fs::symlink_metadata(&fenetre).is_err());
-        assert_eq!(appels.get(), avant);
+        assert_eq!(appels.get(), avant + 1);
         // Posée sous le nom de la page de la version : c'est elle qui est remplacée.
         let page = d.join(lancer_fenetre::NOM_PAGE);
         std::fs::write(&page, b"ancienne fenetre").unwrap();
@@ -747,7 +964,8 @@ mod tests {
 
     /// C-7 (relecture 0.96) : la présence de la fenêtre était recalculée à la pose ; une fenêtre apparue pendant le
     /// téléchargement était remplacée sans avoir été montrée. Ce qui se pose est ce qui a été montré, sinon rien, le
-    /// programme non plus, et c'est dit.
+    /// programme non plus, et c'est dit. Ici, la pose, après l'accord (pendant le téléchargement) ; un changement
+    /// entre l'aperçu et le clic de l'interface change déjà l'accord (C-7-1, `apercu`).
     #[test]
     fn une_fenetre_changee_depuis_l_apercu_n_est_jamais_remplacee() {
         let d = dossier("essai-sa-fenetre-apercu");
@@ -1067,6 +1285,111 @@ mod tests {
         .unwrap();
         assert!(dite_ou_posee_sous_windows(note, &fenetre, &neuve), "rien n'est dit");
         assert_eq!(std::fs::read(&cible).unwrap(), std::fs::read(&source).unwrap());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// C-7-2 (relecture 0.96) : une fenêtre montrée illisible était comptée pareille à une illisible au moment de la
+    /// pose, et remplacée. Non vérifié n'est jamais pareil : rien n'est posé, rien n'est téléchargé, ni par GitHub ni
+    /// par la clé.
+    #[test]
+    fn une_fenetre_montree_illisible_n_est_jamais_comptee_pareille() {
+        let d = dossier("essai-sa-fenetre-illisible");
+        let cible = d.join(NOM);
+        std::fs::write(&cible, b"ancien programme").unwrap();
+        let fenetre = pour(&cible).unwrap();
+        std::fs::create_dir_all(&fenetre).unwrap();
+        let vue = montree(&cible);
+        assert_eq!(vue.illisible(), Some(fenetre.as_path()));
+        assert!(vue.meme_etat(&fenetre, &Avant::de(&fenetre, TAILLE_MAX)).is_err());
+        let neuve = b"fenetre 0.96".to_vec();
+        let nouveau = lancant(&neuve);
+        let appels = std::cell::Cell::new(0);
+        let mut recevoir = || -> Result<Vec<u8>, Echec> {
+            appels.set(appels.get() + 1);
+            Ok(neuve.clone())
+        };
+        assert!(
+            installer_avec_sa_fenetre(
+                &nouveau,
+                &cible,
+                V,
+                &crate::socle::dossier_local(),
+                &crate::mise_a_jour::copie_de_cet_ordinateur(),
+                SANS_ESSAI,
+                &vue,
+                &mut recevoir
+            )
+            .is_err()
+        );
+        assert_eq!(appels.get(), 0);
+        assert!(
+            installer_avec(
+                &nouveau,
+                &cible,
+                V,
+                &crate::socle::dossier_local(),
+                &crate::mise_a_jour::copie_de_cet_ordinateur(),
+                SANS_ESSAI,
+                &neuve,
+                &fenetre,
+                &vue
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(&cible).unwrap(), b"ancien programme");
+        assert!(fenetre.is_dir());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// C-6 (0.97) : la fenêtre seule d'un programme d'ici qui est exactement celui signé ; proposée absente ou autre,
+    /// jamais pour un programme d'ailleurs ; posée seulement si c'est celle qu'il grave, et seulement si ni elle ni le
+    /// programme d'ici n'ont changé depuis l'aperçu.
+    #[test]
+    fn une_fenetre_seule_ne_se_pose_que_telle_que_montree() {
+        let d = dossier("essai-sa-fenetre-seule");
+        let cible = d.join(NOM);
+        let fenetre = pour(&cible).unwrap();
+        let neuve = b"fenetre 0.96".to_vec();
+        let ici = lancant(&neuve);
+        std::fs::write(&cible, &ici).unwrap();
+        let publiee = super::super::github::Publiee::d_essai(V, &ici);
+        // Un programme d'ailleurs au même numéro : rien.
+        let ailleurs = super::super::github::Publiee::d_essai(V, &lancant(b"fenetre d'ailleurs"));
+        assert!(seule_a_poser(&cible, &ailleurs).is_none());
+        let s = seule_a_poser(&cible, &publiee).unwrap();
+        assert!(s.ajout());
+        assert_eq!(s.chemin(), fenetre.as_path());
+        // Une autre que celle gravée, ou aucune reçue : rien.
+        assert!(s.poser(&mut || Ok(b"fenetre plantee".to_vec())).is_err());
+        assert!(
+            s.poser(&mut || Err(Echec::echoue("essai", "téléchargement interrompu")))
+                .is_err()
+        );
+        assert!(std::fs::symlink_metadata(&fenetre).is_err());
+        // Le programme d'ici changé pendant le téléchargement : rien.
+        let mut change = || -> Result<Vec<u8>, Echec> {
+            std::fs::write(&cible, b"autre programme").unwrap();
+            Ok(neuve.clone())
+        };
+        assert!(s.poser(&mut change).is_err());
+        assert!(std::fs::symlink_metadata(&fenetre).is_err());
+        std::fs::write(&cible, &ici).unwrap();
+        // Une fenêtre apparue pendant le téléchargement : elle reste.
+        let mut apparait = || -> Result<Vec<u8>, Echec> {
+            std::fs::write(&fenetre, b"fenetre apparue").unwrap();
+            Ok(neuve.clone())
+        };
+        assert!(s.poser(&mut apparait).is_err());
+        assert_eq!(std::fs::read(&fenetre).unwrap(), b"fenetre apparue");
+        // Montrée autre : réparée, relue juste ; juste, plus rien à proposer.
+        let s = seule_a_poser(&cible, &publiee).unwrap();
+        assert!(!s.ajout());
+        s.poser(&mut || Ok(neuve.clone())).unwrap();
+        s.posee_juste().unwrap();
+        assert_eq!(std::fs::read(&fenetre).unwrap(), neuve);
+        assert_eq!(std::fs::read(&cible).unwrap(), ici);
+        assert!(rien_a_cote(&d));
+        assert!(seule_a_poser(&cible, &publiee).is_none());
         let _ = std::fs::remove_dir_all(&d);
     }
 }

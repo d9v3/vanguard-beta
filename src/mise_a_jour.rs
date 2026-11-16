@@ -2275,6 +2275,7 @@ fn depuis_github_vers(cibles: Vec<PathBuf>, doute: Option<crate::voulues::Doute>
             return false;
         }
     };
+    let lues = cibles.clone();
     let (ici, a_remplacer, doutes) = juger_cibles(
         cibles,
         publiee.version,
@@ -2288,51 +2289,118 @@ fn depuis_github_vers(cibles: Vec<PathBuf>, doute: Option<crate::voulues::Doute>
     for d in &doutes {
         println!("{d}");
     }
-    if a_remplacer.is_empty() {
+    // Au même numéro (C-6, 0.97), sans doute : la fenêtre seule d'un programme d'ici qui est exactement celui signé.
+    let mut seules: Vec<sa_fenetre::Seule> = Vec::new();
+    if doutes.is_empty() {
+        for c in lues.iter().filter(|c| !a_remplacer.contains(c)) {
+            let Some(s) = sa_fenetre::seule_a_poser(c, &publiee) else {
+                continue;
+            };
+            let deja = seules.iter().any(|t| t.chemin() == s.chemin())
+                || a_remplacer
+                    .iter()
+                    .any(|r| sa_fenetre::pour(r).as_deref() == Some(s.chemin()));
+            if !deja {
+                seules.push(s);
+            }
+        }
+    }
+    if a_remplacer.is_empty() && seules.is_empty() {
         dire_a_jour(publiee.version, &ici, maintenant(), !doutes.is_empty());
         return doutes.is_empty();
     }
-    trp!(
-        "  Vanguard {} est publié, signé par son auteur (signature vérifiée).\n  Il remplacerait :",
-        "  Vanguard {} is published, signed by its author (signature checked).\n  It would replace:",
-        ecrire(publiee.version)
-    );
-    // Chaque fenêtre telle que montrée : la pose la compare à ce qui est là (C-7, relecture 0.96).
-    let mut vues = Vec::with_capacity(a_remplacer.len());
-    for c in &a_remplacer {
+    // Chaque fenêtre telle que montrée : la pose la compare à ce qui est là (C-7, relecture 0.96). Remplacée, ou
+    // ajoutée là où le lancement la cherche si elle n'y est pas (C-6, 0.97).
+    let vues: Vec<sa_fenetre::Vue> = a_remplacer
+        .iter()
+        .map(|c| sa_fenetre::Vue::de(sa_fenetre::pour(c)))
+        .collect();
+    // Une fenêtre qui ne se lit pas ne se compare à rien : rien n'est proposé (C-7-2).
+    if let Some(f) = vues
+        .iter()
+        .chain(seules.iter().map(|s| &s.vue))
+        .find_map(sa_fenetre::Vue::illisible)
+    {
+        crate::ui::refus_dit();
+        trp!(
+            "  Non vérifié : {}",
+            "  Not verified: {}",
+            affichable(&sa_fenetre::illisible_dite(&f.display().to_string()))
+        );
+        return false;
+    }
+    if a_remplacer.is_empty() {
+        dire_a_jour(publiee.version, &ici, maintenant(), false);
+    } else {
+        trp!(
+            "  Vanguard {} est publié, signé par son auteur (signature vérifiée).\n  Il remplacerait :",
+            "  Vanguard {} is published, signed by its author (signature checked).\n  It would replace:",
+            ecrire(publiee.version)
+        );
+    }
+    for (c, vue) in a_remplacer.iter().zip(&vues) {
         let v = match lire_programme(c, TAILLE_MAX) {
             Lu::Version(v) => ecrire(v),
             _ => version_affichee(None),
         };
         println!("    {} {GRIS}({v}){RESET}", affichable(&c.display().to_string()));
-        // Sa fenêtre : remplacée par celle de la nouvelle version, vérifiée contre l'empreinte qu'elle grave.
-        let vue = sa_fenetre::a_cote(c);
-        if let Some(f) = &vue {
-            trp!(
-                "    {} {GRIS}(sa fenêtre){RESET}",
-                "    {} {GRIS}(its window){RESET}",
-                affichable(&f.display().to_string())
-            );
+        // Sa fenêtre : remplacée, ou ajoutée, par celle de la nouvelle version, vérifiée contre l'empreinte gravée.
+        if let Some(f) = vue.chemin() {
+            if std::fs::symlink_metadata(f).is_ok() {
+                trp!(
+                    "    {} {GRIS}(sa fenêtre){RESET}",
+                    "    {} {GRIS}(its window){RESET}",
+                    affichable(&f.display().to_string())
+                );
+            } else {
+                trp!(
+                    "    {} {GRIS}(sa fenêtre, nouvelle ici){RESET}",
+                    "    {} {GRIS}(its window, new here){RESET}",
+                    affichable(&f.display().to_string())
+                );
+            }
         }
-        vues.push(sa_fenetre::Vue::de(vue));
     }
-    if !demander(tr!(
-        "  Le télécharger et l'installer ? [o/N] : ",
-        "  Download and install it? [y/N]: "
-    ))
-    .oui()
-    {
+    if !seules.is_empty() {
+        trp!(
+            "  Sa fenêtre, vérifiée contre l'empreinte que grave le programme d'ici :",
+            "  Its window, checked against the fingerprint the program here carries:"
+        );
+    }
+    for s in &seules {
+        println!(
+            "    {} {GRIS}({}){RESET}",
+            affichable(&s.chemin().display().to_string()),
+            s.dite()
+        );
+    }
+    let question = if a_remplacer.is_empty() {
+        tr!(
+            "  Télécharger sa fenêtre et la poser ? [o/N] : ",
+            "  Download its window and place it? [y/N]: "
+        )
+    } else {
+        tr!(
+            "  Le télécharger et l'installer ? [o/N] : ",
+            "  Download and install it? [y/N]: "
+        )
+    };
+    if !demander(question).oui() {
         return doutes.is_empty();
     }
-    let octets = match github::programme_verifie(&publiee) {
-        Ok(o) => o,
-        Err(e) => {
-            trp!("  ✖ {}", "  ✖ {}", affichable(&e.to_string()));
-            return false;
+    // Rien à remplacer, seulement des fenêtres seules : le programme n'est pas téléchargé.
+    let octets = if a_remplacer.is_empty() {
+        Vec::new()
+    } else {
+        match github::programme_verifie(&publiee) {
+            Ok(o) => o,
+            Err(e) => {
+                trp!("  ✖ {}", "  ✖ {}", affichable(&e.to_string()));
+                return false;
+            }
         }
     };
-    // La fenêtre de la nouvelle version : téléchargée une fois, et seulement si une fenêtre est posée à côté d'un
-    // programme remplacé (`sa_fenetre`).
+    // La fenêtre de la nouvelle version : téléchargée une fois, et seulement s'il en faut une (`sa_fenetre`).
     let mut recue: Option<Vec<u8>> = None;
     let mut recevoir = || -> Result<Vec<u8>, crate::modele::Echec> {
         if let Some(f) = &recue {
@@ -2366,6 +2434,24 @@ fn depuis_github_vers(cibles: Vec<PathBuf>, doute: Option<crate::voulues::Doute>
                     "  ✖ {} n'est pas remplacé, l'ancien reste en place :\n    {}",
                     "  ✖ {} is not replaced, the old one stays in place:\n    {}",
                     affichable(&c.display().to_string()),
+                    affichable(&e.to_string())
+                );
+            }
+        }
+    }
+    for s in &seules {
+        match s.poser(&mut recevoir).and_then(|()| s.posee_juste()) {
+            Ok(()) => trp!(
+                "  {VERT}✔{RESET} {} : sa fenêtre posée, vérifiée.",
+                "  {VERT}✔{RESET} {}: its window placed, verified.",
+                affichable(&s.chemin().display().to_string())
+            ),
+            Err(e) => {
+                sans_refus = false;
+                trp!(
+                    "  ✖ {} : sa fenêtre n'est pas posée, rien n'est changé :\n    {}",
+                    "  ✖ {}: its window is not placed, nothing is changed:\n    {}",
+                    affichable(&s.chemin().display().to_string()),
                     affichable(&e.to_string())
                 );
             }
@@ -2475,6 +2561,15 @@ fn proposer(source: &Path, cible: &Path, copie: Option<Version>, cle: Version) -
         );
     }
     let vue = sa_fenetre::Vue::de(fenetre);
+    // Une fenêtre qui ne se lit pas ne se compare à rien : rien n'est proposé (C-7-2, relecture 0.96).
+    if let Some(f) = vue.illisible() {
+        trp!(
+            "  ✖ Non vérifié : {}",
+            "  ✖ Not verified: {}",
+            affichable(&sa_fenetre::illisible_dite(&f.display().to_string()))
+        );
+        return false;
+    }
     if !demander(tr!(
         "  La remplacer par celle de la clé ? [o/N] : ",
         "  Replace it with the key's? [y/N]: "
