@@ -52,6 +52,7 @@
 //! couleurs laides, jamais cacher une alerte : la gravité est toujours dite aussi en mots.
 
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsString;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -605,8 +606,10 @@ fn servir_pour(
 }
 
 /// Ce que le relais sait du compte pour juger un chemin : sa maison, son dossier de réglages (où est
-/// user-dirs.dirs) et son nom (pour /run/media/<compte>). Lu du milieu du relais, celui de la session, jamais de la
-/// fenêtre ; `vanguard` le rejuge ensuite avec son propre compte (`maison_du_compte`, le nom d'après l'uid).
+/// user-dirs.dirs) et son nom (pour /run/media/<compte>). La maison et le nom viennent de la base des comptes, d'après
+/// l'uid, comme du côté de `vanguard` (`maison_du_compte`, `compte_de`) : une session lancée sans USER (un service,
+/// `env -i`) ou avec un HOME d'emprunt ne juge pas autrement que `vanguard`. Le milieu du relais (celui de la session,
+/// jamais celui de la fenêtre) ne sert qu'en repli, et pour XDG_CONFIG_HOME.
 struct Compte {
     maison: Option<PathBuf>,
     config: Option<PathBuf>,
@@ -615,15 +618,27 @@ struct Compte {
 
 impl Compte {
     fn du_milieu() -> Compte {
-        let absolu = |v: &str| {
-            std::env::var_os(v)
-                .map(PathBuf::from)
-                .filter(|p| p.is_absolute() && p.parent().is_some())
-        };
-        let maison = absolu("HOME");
+        let mut base = systeme::compte_de_l_uid();
+        // Variante d'essai, absente du programme publié, la même que celle de `vanguard` (`maison_du_compte`) : les
+        // essais du programme entier posent la maison sur un dossier jetable.
+        #[cfg(debug_assertions)]
+        if let Some(essai) = std::env::var_os("VANGUARD_ESSAI_MAISON_DU_COMPTE").map(PathBuf::from) {
+            base = Some((base.and_then(|(nom, _)| nom), essai));
+        }
+        Compte::depuis(base, |v| std::env::var_os(v))
+    }
+
+    /// Le compte d'après la base des comptes (`base` : le nom s'il est lisible, et la maison), le `milieu` en repli.
+    fn depuis(base: Option<(Option<String>, PathBuf)>, milieu: impl Fn(&str) -> Option<OsString>) -> Compte {
+        let absolu = |p: PathBuf| (p.is_absolute() && p.parent().is_some()).then_some(p);
+        let (nom, maison) = base.map_or((None, None), |(nom, maison)| (nom, absolu(maison)));
+        let maison = maison.or_else(|| milieu("HOME").map(PathBuf::from).and_then(absolu));
         // XDG_CONFIG_HOME relatif : ignoré, comme le veut la spécification.
-        let config = absolu("XDG_CONFIG_HOME").or_else(|| maison.as_ref().map(|m| m.join(".config")));
-        let nom = ["USER", "LOGNAME"].iter().find_map(|v| std::env::var(v).ok());
+        let config = milieu("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .and_then(absolu)
+            .or_else(|| maison.as_ref().map(|m| m.join(".config")));
+        let nom = nom.or_else(|| ["USER", "LOGNAME"].iter().find_map(|v| milieu(v)?.into_string().ok()));
         Compte { maison, config, nom }
     }
 }
@@ -846,6 +861,45 @@ fn lire_reponses(entree: &mut UnixStream, attente: &Mutex<HashMap<u32, Attente>>
 }
 
 mod systeme {
+    use std::path::PathBuf;
+
+    /// Le nom (s'il est en UTF-8) et la maison du compte qui fait tourner le relais, d'après la base des comptes
+    /// (getpwuid_r sur l'uid), sans rien prendre du milieu. Hors du code que le banc de fuzzing compile.
+    // raison : FFI de getuid et getpwuid_r (libc), que std ne fait pas.
+    #[allow(unsafe_code)]
+    pub fn compte_de_l_uid() -> Option<(Option<String>, PathBuf)> {
+        use std::os::unix::ffi::OsStrExt as _;
+        let mut tampon: Vec<libc::c_char> = vec![0; 16 << 10];
+        // SAFETY: passwd n'a que des entiers et des pointeurs, valides à zéro ; getpwuid_r les remplit.
+        let mut compte: libc::passwd = unsafe { std::mem::zeroed() };
+        let mut trouve: *mut libc::passwd = std::ptr::null_mut();
+        // SAFETY: getuid ne lit rien du programme ; `compte`, `tampon` (avec sa vraie longueur) et `trouve` vivent
+        // jusqu'à la fin de la fonction, et getpwuid_r n'écrit que dans eux.
+        let r = unsafe {
+            libc::getpwuid_r(
+                libc::getuid(),
+                &raw mut compte,
+                tampon.as_mut_ptr(),
+                tampon.len(),
+                &raw mut trouve,
+            )
+        };
+        if r != 0 || trouve.is_null() || compte.pw_dir.is_null() || compte.pw_name.is_null() {
+            return None;
+        }
+        // SAFETY: pw_dir et pw_name pointent dans `tampon`, encore vivant, et getpwuid_r les a terminés par un zéro.
+        let (maison, nom) = unsafe {
+            (
+                std::ffi::CStr::from_ptr(compte.pw_dir),
+                std::ffi::CStr::from_ptr(compte.pw_name),
+            )
+        };
+        Some((
+            nom.to_str().ok().map(str::to_owned),
+            PathBuf::from(std::ffi::OsStr::from_bytes(maison.to_bytes())),
+        ))
+    }
+
     /// Le dédoublement : 0 dans l'enfant, son numéro dans le parent.
     // raison : FFI de fork (libc), que std ne fait pas sans exec ; appelé quand la fenêtre n'a qu'un fil.
     #[allow(unsafe_code)]
@@ -1180,6 +1234,42 @@ esac
         (d, compte)
     }
 
+    /// Le compte du relais vient de la base des comptes : sans USER ni LOGNAME (un service, `env -i`), son nom est
+    /// connu (et /run/media/<compte> avec lui), et un HOME d'emprunt ne change pas sa maison. Le milieu ne sert
+    /// qu'en repli.
+    #[test]
+    fn le_compte_vient_de_l_uid_meme_sans_user() {
+        let emprunt = |v: &str| match v {
+            "HOME" => Some(OsString::from("/tmp/emprunt")),
+            "XDG_CONFIG_HOME" => Some(OsString::from("relatif")),
+            _ => None,
+        };
+        let c = Compte::depuis(Some((Some("alice".into()), PathBuf::from("/home/alice"))), emprunt);
+        assert_eq!(c.nom.as_deref(), Some("alice"));
+        assert_eq!(c.maison.as_deref(), Some(Path::new("/home/alice")));
+        assert_eq!(c.config.as_deref(), Some(Path::new("/home/alice/.config")));
+        let repli = |v: &str| match v {
+            "HOME" => Some(OsString::from("/home/bob")),
+            "LOGNAME" => Some(OsString::from("bob")),
+            _ => None,
+        };
+        let c = Compte::depuis(None, repli);
+        assert_eq!(c.nom.as_deref(), Some("bob"));
+        assert_eq!(c.maison.as_deref(), Some(Path::new("/home/bob")));
+        let c = Compte::depuis(Some((None, PathBuf::from("relative"))), repli);
+        assert_eq!(
+            (c.nom.as_deref(), c.maison.as_deref()),
+            (Some("bob"), Some(Path::new("/home/bob")))
+        );
+        // Le vrai compte de l'essai, USER retiré : son nom vient de l'uid.
+        let Some(base) = systeme::compte_de_l_uid() else {
+            return crate::essais::sauter("l'uid de l'essai n'est pas dans la base des comptes");
+        };
+        let attendu = base.0.clone();
+        assert!(attendu.is_some());
+        assert_eq!(Compte::depuis(Some(base), |_| None).nom, attendu);
+    }
+
     fn jugee(c: Commande, v: &str, compte: &Compte) -> Result<Lancement, String> {
         rejuger(&Lancement::AvecValeur(AvecValeur::nouvelle(c, v).unwrap()), compte)
     }
@@ -1217,7 +1307,7 @@ esac
             ("~/Téléchargements/ssh/id_ed25519", Refus::Lien),
             ("~/Téléchargements/racine/etc/passwd", Refus::Lien),
             ("~/Documents/lien.pdf", Refus::Lien),
-            ("~/Bureau/id_ed25519", Refus::HorsDesEndroits),
+            ("~/Bureau/id_ed25519", Refus::RacineEnLien),
             ("~/Téléchargements/environ", Refus::Lien),
             ("/proc/self/environ", Refus::HorsDesEndroits),
             ("~/Téléchargements/zero", Refus::Lien),

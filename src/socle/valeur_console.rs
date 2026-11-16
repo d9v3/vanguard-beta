@@ -107,6 +107,9 @@ pub(crate) enum Refus {
     Invisible,
     /// Une espace autre que l'espace ordinaire (U+0020) : insécable, idéographique, fine… Elle se confond avec elle.
     Blanc,
+    /// La même, dans un chemin : souvent dans le nom d'une capture d'écran (« 10.30\u{202F}AM ») ; la phrase dit quoi
+    /// faire, le refus reste (un autre fichier que celui qu'on croit lire).
+    BlancDansUnNom,
     /// La forme attendue n'y est pas (des chiffres, un identifiant, une adresse sans espace).
     Forme,
     /// « ~nom » : le dossier d'un autre compte.
@@ -119,6 +122,12 @@ pub(crate) enum Refus {
     Reseau,
     /// Le fichier n'est ni sous Téléchargements, Bureau ou Documents, ni sur un support amovible.
     HorsDesEndroits,
+    /// Hors des endroits permis, et des accents en forme décomposée (NFD) dans le texte : le nom tapé ne s'écrit pas
+    /// comme celui du dossier, qui le désigne pourtant (rien n'est normalisé : il faudrait une dépendance de plus).
+    Decompose,
+    /// Téléchargements, Bureau ou Documents est un lien vers un endroit qui n'en est pas un (un dossier caché, hors
+    /// de la maison, la maison elle-même) : écarté, jamais suivi ; le refus le dit au lieu de « hors des endroits ».
+    RacineEnLien,
     /// Le fichier est dans un dossier caché, ou caché lui-même.
     Cache,
     /// Ce n'est pas un fichier ordinaire (dossier, tube nommé, périphérique).
@@ -181,6 +190,16 @@ impl Refus {
                 "fichier hors des endroits permis (Téléchargements, Bureau, Documents, support amovible)",
                 "file outside the allowed places (Downloads, Desktop, Documents, removable drive)"
             ),
+            Refus::Decompose => crate::tr!(
+                "fichier hors des endroits permis, et accents en forme décomposée dans le chemin : retapez le nom",
+                "file outside the allowed places, and accents in decomposed form in the path: retype the name"
+            ),
+            Refus::RacineEnLien => crate::tr!(
+                "ce dossier est un lien vers un dossier caché, vers le dossier personnel ou hors de lui : la Console \
+                 ne le suit pas",
+                "this folder is a link to a hidden folder, to the home folder or outside it: the Console does not \
+                 follow it"
+            ),
             Refus::Cache => crate::tr!(
                 "fichier caché ou dans un dossier caché",
                 "hidden file or file in a hidden folder"
@@ -194,6 +213,12 @@ impl Refus {
             Refus::Blanc => crate::tr!(
                 "espace autre que l'espace ordinaire dans la valeur (insécable, idéographique…)",
                 "space other than the ordinary space in the value (non-breaking, ideographic…)"
+            ),
+            Refus::BlancDansUnNom => crate::tr!(
+                "espace insécable ou spéciale dans le nom : renommez le fichier ou lancez vanguard verifier-fichier \
+                 dans un terminal",
+                "non-breaking or special space in the name: rename the file or run vanguard verifier-fichier in a \
+                 terminal"
             ),
             Refus::Lien => crate::tr!(
                 "lien symbolique ou jonction sur le chemin : la Console ne les suit pas",
@@ -220,8 +245,11 @@ impl Refus {
 /// Default_Ignorable_Code_Point, d'Unicode 16.0.0 (DerivedGeneralCategory.txt, DerivedCoreProperties.txt), plus ce
 /// qui s'affiche vide sans en être : séparateurs de ligne et de paragraphe (U+2028, U+2029), braille vide (U+2800),
 /// remplissages Hangûl (U+115F, U+1160, U+3164, U+FFA0, déjà ignorables). Une table plutôt qu'une liste écrite au fil
-/// des trouvailles : la relecture adverse en a trouvé hors de l'ancienne (U+1D173, U+1BCA0, U+2800).
-const INVISIBLES: [(u32, u32); 26] = [
+/// des trouvailles : la relecture adverse en a trouvé hors de l'ancienne (U+1D173, U+1BCA0, U+2800). Et ce qu'une
+/// police peut dessiner vide ou à sa guise, la campagne d'attaque l'a montré : les zones privées (U+E000 à U+F8FF,
+/// plans 15 et 16), les non-caractères (U+FDD0 à U+FDEF, et les deux derniers points de chaque plan, jugés à part dans
+/// `invisible`), le remplaçant d'objet U+FFFC, U+16FE4 (séparateur khitan) et U+1D159 (note nulle).
+const INVISIBLES: [(u32, u32); 32] = [
     (0x00AD, 0x00AD),
     (0x034F, 0x034F),
     (0x0600, 0x0605),
@@ -238,21 +266,31 @@ const INVISIBLES: [(u32, u32); 26] = [
     (0x2060, 0x206F),
     (0x2800, 0x2800),
     (0x3164, 0x3164),
+    (0xE000, 0xF8FF),
+    (0xFDD0, 0xFDEF),
     (0xFE00, 0xFE0F),
     (0xFEFF, 0xFEFF),
     (0xFFA0, 0xFFA0),
-    (0xFFF0, 0xFFFB),
+    (0xFFF0, 0xFFFC),
+    (0xFFFE, 0xFFFF),
     (0x110BD, 0x110BD),
     (0x110CD, 0x110CD),
     (0x13430, 0x1343F),
+    (0x16FE4, 0x16FE4),
     (0x1BCA0, 0x1BCA3),
+    (0x1D159, 0x1D159),
     (0x1D173, 0x1D17A),
     (0xE0000, 0xE0FFF),
+    (0xF0000, 0x10_FFFF),
 ];
 
 /// Invisible ou qui retourne le texte (`INVISIBLES`) : une valeur qui s'affiche autrement qu'elle se lit ne passe pas.
 pub(crate) fn invisible(c: char) -> bool {
     let c = u32::from(c);
+    // Les non-caractères de fin de plan (U+1FFFE, U+2FFFF…) : un par plan, plus simple jugé que listé.
+    if c & 0xFFFE == 0xFFFE {
+        return true;
+    }
     INVISIBLES
         .binary_search_by(|&(debut, fin)| {
             if fin < c {
@@ -284,7 +322,11 @@ pub(crate) fn valider(sorte: Argument, texte: &str) -> Result<(), Refus> {
     }
     // Une seule espace permise, l'ordinaire : une insécable dans un chemin désigne un autre fichier qu'on croit lire.
     if texte.chars().any(|c| c.is_whitespace() && c != ' ') {
-        return Err(Refus::Blanc);
+        return Err(if sorte == Argument::Chemin {
+            Refus::BlancDansUnNom
+        } else {
+            Refus::Blanc
+        });
     }
     if texte.trim() != texte {
         return Err(Refus::Bords);
@@ -444,11 +486,14 @@ pub(crate) fn reste_sous(chemin: &Path, racine: &Path) -> Option<PathBuf> {
 
 /// Un endroit permis. `tapee` : tel qu'on le tape, sous la maison que donne le système ; `reelle` : le même sous la
 /// maison résolue, d'où `vanguard` descend sans suivre de lien. Sous Windows les deux sont le même texte : rien n'y
-/// est résolu, car résoudre une jonction ou un partage fait déjà sortir la session sur le réseau.
+/// est résolu, car résoudre une jonction ou un partage fait déjà sortir la session sur le réseau. `ecartee` : un
+/// endroit usuel ou déclaré qui est un lien vers ailleurs (voir `racines_linux`) ; rien n'y est permis, il ne sert
+/// qu'à dire la vraie cause du refus (`RacineEnLien`) plutôt que « hors des endroits ».
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Racine {
     pub(crate) tapee: PathBuf,
     pub(crate) reelle: PathBuf,
+    pub(crate) ecartee: bool,
 }
 
 impl Racine {
@@ -458,20 +503,27 @@ impl Racine {
         Racine {
             tapee: chemin.clone(),
             reelle: chemin,
+            ecartee: false,
         }
     }
 }
 
 /// Où tombe `chemin` (absolu, « ~ » développé) parmi les `racines`, sur le texte seul : la racine et le reste après
 /// elle, fait de noms seulement, aucun caché. Hors de toute racine, `HorsDesEndroits` sans rien regarder sur le
-/// disque : un refus qui différerait selon que ~/.ssh/id_ed25519 existe ou non dirait ce qu'il y a dans ~/.ssh.
+/// disque : un refus qui différerait selon que ~/.ssh/id_ed25519 existe ou non dirait ce qu'il y a dans ~/.ssh. Sous
+/// une racine écartée, rien n'est permis : le refus dit seulement pourquoi (`RacineEnLien`).
 pub(crate) fn situer<'r>(chemin: &Path, racines: &'r [Racine]) -> Result<(&'r Racine, PathBuf), Refus> {
     let mut cache_vu = false;
+    let mut lien_vu = false;
     for r in racines {
         for base in [&r.tapee, &r.reelle] {
             let Some(reste) = reste_sous(chemin, base) else {
                 continue;
             };
+            if r.ecartee {
+                lien_vu = true;
+                continue;
+            }
             if !reste.components().all(|c| matches!(c, Component::Normal(_))) {
                 continue;
             }
@@ -482,7 +534,13 @@ pub(crate) fn situer<'r>(chemin: &Path, racines: &'r [Racine]) -> Result<(&'r Ra
             return Ok((r, reste));
         }
     }
-    Err(if cache_vu { Refus::Cache } else { Refus::HorsDesEndroits })
+    Err(if cache_vu {
+        Refus::Cache
+    } else if lien_vu {
+        Refus::RacineEnLien
+    } else {
+        Refus::HorsDesEndroits
+    })
 }
 
 /// Le jugement sur le texte seul : la forme (`valider`), « ~ » développé, puis la place parmi les `racines`.
@@ -493,14 +551,267 @@ pub(crate) fn juger_lexical<'r>(
 ) -> Result<(&'r Racine, PathBuf), Refus> {
     valider(Argument::Chemin, texte)?;
     let chemin = developper(texte, maison)?;
-    situer(&chemin, racines)
+    situer(&chemin, racines).map_err(|refus| {
+        // Un « é » tapé ou collé en deux points (e + accent U+0301) ne s'écrit pas comme celui du disque : le dire,
+        // plutôt qu'un « hors des endroits » incompréhensible devant « ~/Téléchargements ».
+        let decompose = texte.chars().any(|c| ('\u{300}'..='\u{36F}').contains(&c));
+        if refus == Refus::HorsDesEndroits && decompose {
+            Refus::Decompose
+        } else {
+            refus
+        }
+    })
 }
 
-/// Le nom du dossier que user-dirs.dirs déclare pour `cle`, seulement s'il est un enfant direct et visible de la
-/// maison (« $HOME/Nom », ou le même écrit en entier). user-dirs.dirs s'écrit sans droits particuliers : un
-/// « $HOME/.ssh », un « $HOME/.config/vanguard » ou « /etc » ferait sinon lire des secrets comme un Téléchargements.
+/// Les noms que peut porter un Téléchargements, un Bureau ou un Documents déclaré par user-dirs.dirs : les traductions
+/// de « Desktop », « Documents », « Download » et « Downloads » dans les 80 catalogues de xdg-user-dirs 0.20-1 (Arch,
+/// /usr/share/locale/*/LC_MESSAGES/xdg-user-dirs.mo), plus les noms anglais. Liste fermée : user-dirs.dirs s'écrit
+/// sans droits particuliers, et un « XDG_DESKTOP_DIR="$HOME/Projets" » ferait sinon de tout un dossier de travail un
+/// endroit permis. Retirés exprès : les 10 noms qui portent un antiliant ou un liant sans chasse (U+200C, U+200D ;
+/// persan, assamais, télougou, malayalam), que `valider` refuse de toute façon comme invisibles.
 #[cfg(unix)]
-fn declare(declares: &str, cle: &str, maison: &Path, maison_reelle: &Path) -> Option<std::ffi::OsString> {
+const NOMS_DECLARABLES: [&str; 234] = [
+    "Aberwetaedje",
+    "Aberwetaedjes",
+    "Afgelaai",
+    "Allalaadimised",
+    "Allalaaditud",
+    "An deasg",
+    "Asiakirjat",
+    "Asztal",
+    "Atsiuntimai",
+    "Awakolerwa",
+    "Azdam",
+    "Baixada",
+    "Baixades",
+    "Belge",
+    "Belgeler",
+    "Birou",
+    "Bureau",
+    "Bureaublad",
+    "Burev",
+    "Bản tải về",
+    "Cáipéisí",
+    "Daalladen",
+    "Dakumenty",
+    "Darbastalis",
+    "Darbvirsma",
+    "Daxistin",
+    "Deasc",
+    "Descarga",
+    "Descargas",
+    "Descargues",
+    "Descărcare",
+    "Descărcări",
+    "Deskargak",
+    "Desktop",
+    "Destop",
+    "Discarga",
+    "Discargas",
+    "Discjariâts",
+    "Documente",
+    "Documenten",
+    "Documenti",
+    "Documentos",
+    "Documents",
+    "Documints",
+    "Dokumen",
+    "Dokumendid",
+    "Dokument",
+    "Dokumenta",
+    "Dokumentai",
+    "Dokumente",
+    "Dokumenter",
+    "Dokumenti",
+    "Dokumentoj",
+    "Dokumentuak",
+    "Dokumentumok",
+    "Dokumenty",
+    "Download",
+    "Downloads",
+    "Ebiwandike",
+    "Ebiwanudwa",
+    "Elŝuto",
+    "Elŝutoj",
+    "Endirme",
+    "Endirmeler",
+    "Escriptori",
+    "Escritorio",
+    "Escritoriu",
+    "Hentet",
+    "Hämtat",
+    "Hämtningar",
+    "Isemliyen",
+    "Isidar",
+    "Labortablo",
+    "Lataa",
+    "Lataukset",
+    "Lejupielāde",
+    "Lejupielādes",
+    "Letöltések",
+    "Luchdadh a-nuas",
+    "Luchdaidhean a-nuas",
+    "Mahaigaina",
+    "Masaüstü",
+    "Màn hình nền",
+    "Namizje",
+    "Nedlasting",
+    "Nedlastingar",
+    "Nedlastinger",
+    "Niðurhal",
+    "Pellgargañ",
+    "Plocha",
+    "Pobrane",
+    "Pobrany",
+    "Prejemi",
+    "Preuzeto",
+    "Preuzimanja",
+    "Preuzimanje",
+    "Pulpit",
+    "Radna površ",
+    "Radna površina",
+    "Scaricati",
+    "Schreibtisch",
+    "Schrievdisk",
+    "Scriptorio",
+    "Scritori",
+    "Scrivania",
+    "Sermase",
+    "Sgrìobhainnean",
+    "Shkarkim",
+    "Shkarkime",
+    "Sicribanne",
+    "Skjáborð",
+    "Skjöl",
+    "Skrivbord",
+    "Skrivebord",
+    "Stažené",
+    "Stažený",
+    "Stiahnuté",
+    "Stoł",
+    "Sóttar skrár",
+    "Tanarit",
+    "Teulioù",
+    "Transferência",
+    "Transferências",
+    "Työpöytä",
+    "Tài liệu",
+    "Téléchargement",
+    "Téléchargements",
+    "Töölaud",
+    "Tải về",
+    "Unduh",
+    "Unduhan",
+    "Vesiqalar",
+    "Wanula",
+    "Werkskerm",
+    "Zahruzka",
+    "Área de Trabalho",
+    "Área de trabalho",
+    "Íosluchtú",
+    "İndirilenler",
+    "Έγγραφα",
+    "Επιφάνεια εργασίας",
+    "Λήψεις",
+    "Аусурҭатә еишәа",
+    "Ахҩылаара",
+    "Ахҩылаақәа",
+    "Ашәҟәқәа",
+    "Дакументы",
+    "Документа",
+    "Документи",
+    "Документы",
+    "Жүктемелер",
+    "Жүктөө",
+    "Жүктөөлөр",
+    "Жұмыс үстелі",
+    "Завантажене",
+    "Завантаження",
+    "Загрузка",
+    "Загрузки",
+    "Иш кагаздар",
+    "Иш столу",
+    "Плот",
+    "Површина",
+    "Преземања",
+    "Преузето",
+    "Преузимања",
+    "Рабочий стол",
+    "Радна површ",
+    "Свалени",
+    "Стол",
+    "Стільниця",
+    "Сцягнутыя файлы",
+    "Құжаттар",
+    "הורדות",
+    "מסמכים",
+    "שולחן עבודה",
+    "التنزيل",
+    "التنزيلات",
+    "المستندات",
+    "بەڵگەنامەکان",
+    "داگرتنەکان",
+    "دایگرە",
+    "رالېښنې",
+    "سرپاڼه",
+    "سطح المكتب",
+    "سندها",
+    "لاسوندونه",
+    "ڕوومێز",
+    "डाउनलोड",
+    "डाउनलोड्स्",
+    "डाऊनलोड",
+    "डेस्कटॉप",
+    "दस्तऐवज",
+    "दस्तावेज़",
+    "ডকুমেন্টবোৰ",
+    "ডেস্কট'প",
+    "ਡਾਊਨਲੋਡ",
+    "ਡੈਸਕਟਾਪ",
+    "ਦਸਤਾਵੇਜ਼",
+    "ડાઉનલોડ",
+    "ડેસ્કટોપ",
+    "દસ્તાવેજો",
+    "ଆହରଣ",
+    "ଆହରଣଗୁଡ଼ିକ",
+    "ଡେସ୍କଟପ",
+    "ଦଲିଲ",
+    "ஆவணங்கள்",
+    "பணிமேடை",
+    "பதிவிறக்கங்கள்",
+    "பதிவிறக்கம்",
+    "డెస్కుటాప్",
+    "పత్రములు",
+    "ಇಳಿಕೆಗಳು",
+    "ಗಣಕತೆರೆ",
+    "ದಸ್ತಾವೇಜುಗಳು",
+    "ನಕಲಿಳಿಸು",
+    "പണിയിടം",
+    "ดาวน์โหลด",
+    "พื้นโต๊ะ",
+    "เอกสาร",
+    "გადმოწერები",
+    "დოკუმენტები",
+    "სამუშაო მაგიდა",
+    "ჩამოტვირთვა",
+    "ダウンロード",
+    "デスクトップ",
+    "ドキュメント",
+    "下載",
+    "下载",
+    "文件",
+    "文档",
+    "桌面",
+    "다운로드",
+    "문서",
+    "바탕화면",
+];
+
+/// Le chemin, relatif à la maison, du dossier que user-dirs.dirs déclare pour `cle` : un ou deux noms visibles
+/// (« $HOME/Documents », « $HOME/Nextcloud/Documents », ou le même écrit en entier), le dernier pris dans la liste
+/// fermée `NOMS_DECLARABLES`. Ni « $HOME/.ssh », ni « $HOME/.config/vanguard », ni « /etc », ni « $HOME/Projets ».
+#[cfg(unix)]
+fn declare(declares: &str, cle: &str, maison: &Path, maison_reelle: &Path) -> Option<PathBuf> {
     let valeur = declares
         .lines()
         .find_map(|l| l.trim().strip_prefix(cle)?.strip_prefix('='))?
@@ -511,39 +822,65 @@ fn declare(declares: &str, cle: &str, maison: &Path, maison_reelle: &Path) -> Op
         None => PathBuf::from(valeur),
     };
     let reste = [maison, maison_reelle].iter().find_map(|m| reste_sous(&chemin, m))?;
-    let mut composants = reste.components();
-    match (composants.next(), composants.next()) {
-        (Some(c @ Component::Normal(nom)), None) if !cache(c) => Some(nom.to_os_string()),
-        _ => None,
-    }
+    let noms: Vec<Component<'_>> = reste.components().collect();
+    let bons = (1..=2).contains(&noms.len()) && noms.iter().all(|c| matches!(c, Component::Normal(_)) && !cache(*c));
+    let dernier = reste.file_name()?.to_str()?;
+    (bons && NOMS_DECLARABLES.contains(&dernier)).then_some(reste)
 }
 
-/// Les endroits permis sous Linux : Téléchargements, Bureau et Documents (ceux que déclare user-dirs.dirs, enfants
-/// directs de la maison, et leurs noms usuels), chacun gardé seulement s'il est un vrai dossier (un lien vers ~/.ssh,
-/// vers / ou vers la maison ne compte pas) ; et /run/media/<compte>, où le bureau monte les supports amovibles, s'il
-/// est bien lui-même. `declares` : le texte de user-dirs.dirs (vide s'il manque) ; `compte` : le nom du compte.
+/// Le dossier réel d'un endroit permis `relatif` à la maison, résolu une seule fois, ici : `Some(Ok(cible))` si c'est
+/// un vrai dossier, ou un lien vers un dossier visible strictement sous la maison réelle (~/Documents lié à
+/// ~/Nextcloud/Documents) ; `Some(Err(RacineEnLien))` si c'est un lien vers un dossier ailleurs (~/.ssh, /, la
+/// maison elle-même) ; `None` s'il n'y a là aucun dossier. La descente part ensuite de la cible, sans plus suivre de
+/// lien : changer le lien après coup ne déplace pas l'endroit permis.
+#[cfg(unix)]
+fn cible_de(maison_reelle: &Path, relatif: &Path) -> Option<Result<PathBuf, Refus>> {
+    let cible = maison_reelle.join(relatif).canonicalize().ok()?;
+    if !std::fs::symlink_metadata(&cible).is_ok_and(|m| m.is_dir()) {
+        return None;
+    }
+    let bonne = reste_sous(&cible, maison_reelle)
+        .is_some_and(|r| r.components().all(|c| matches!(c, Component::Normal(_)) && !cache(c)));
+    Some(if bonne { Ok(cible) } else { Err(Refus::RacineEnLien) })
+}
+
+/// Les endroits permis sous Linux : Téléchargements, Bureau et Documents (ceux que déclare user-dirs.dirs, voir
+/// `declare`, et leurs noms usuels), chacun résolu une fois (`cible_de`) ; et /run/media/<compte>, où le bureau monte
+/// les supports amovibles, s'il est bien lui-même. Un endroit qui est un lien hors des cibles admises reste dans la
+/// liste, écarté (`ecartee`), pour que le refus dise sa vraie cause. `declares` : le texte de user-dirs.dirs (vide
+/// s'il manque) ; `compte` : le nom du compte.
 #[cfg(unix)]
 pub(crate) fn racines_linux(maison: &Path, declares: &str, compte: Option<&str>) -> Vec<Racine> {
     let Ok(maison_reelle) = maison.canonicalize() else {
         return Vec::new();
     };
-    let mut noms: Vec<std::ffi::OsString> = ["XDG_DOWNLOAD_DIR", "XDG_DESKTOP_DIR", "XDG_DOCUMENTS_DIR"]
+    let mut relatifs: Vec<PathBuf> = ["XDG_DOWNLOAD_DIR", "XDG_DESKTOP_DIR", "XDG_DOCUMENTS_DIR"]
         .iter()
         .filter_map(|cle| declare(declares, cle, maison, &maison_reelle))
         .collect();
-    noms.extend(
+    relatifs.extend(
         ["Téléchargements", "Downloads", "Bureau", "Desktop", "Documents"]
             .iter()
-            .map(std::ffi::OsString::from),
+            .map(PathBuf::from),
     );
     let mut racines: Vec<Racine> = Vec::new();
-    for nom in noms {
-        let reelle = maison_reelle.join(&nom);
-        if std::fs::symlink_metadata(&reelle).is_ok_and(|m| m.is_dir()) && !racines.iter().any(|r| r.reelle == reelle) {
-            racines.push(Racine {
-                tapee: maison.join(&nom),
+    for relatif in relatifs {
+        let tapee = maison.join(&relatif);
+        let racine = match cible_de(&maison_reelle, &relatif) {
+            None => continue,
+            Some(Ok(reelle)) => Racine {
+                tapee,
                 reelle,
-            });
+                ecartee: false,
+            },
+            Some(Err(_)) => Racine {
+                tapee,
+                reelle: maison_reelle.join(&relatif),
+                ecartee: true,
+            },
+        };
+        if !racines.contains(&racine) {
+            racines.push(racine);
         }
     }
     if let Some(compte) = compte.filter(|n| nom_de_compte(n)) {
@@ -659,12 +996,33 @@ mod tests {
                 '\u{00AD}',
                 '\u{180E}',
                 '\u{FE0F}',
+                // Trouvés par la campagne d'attaque : zones privées, non-caractères, remplaçant d'objet, khitan,
+                // note nulle.
+                '\u{E000}',
+                '\u{F8FF}',
+                '\u{FDD0}',
+                '\u{FDEF}',
+                '\u{FFFC}',
+                '\u{FFFE}',
+                '\u{FFFF}',
+                '\u{16FE4}',
+                '\u{1D159}',
+                '\u{1FFFE}',
+                '\u{2FFFF}',
+                '\u{F0000}',
+                '\u{10FFFD}',
             ] {
                 assert_eq!(valider(a, &format!("1{c}2")), Err(Refus::Invisible), "{a:?} {c:?}");
             }
-            // Une espace qui n'est pas l'ordinaire : insécable, fine, idéographique, ogham.
+            // Une espace qui n'est pas l'ordinaire : insécable, fine, idéographique, ogham. Dans un chemin, le refus
+            // dit quoi faire : un nom de fichier venu d'ailleurs en porte souvent une.
+            let blanc = if a == Argument::Chemin {
+                Refus::BlancDansUnNom
+            } else {
+                Refus::Blanc
+            };
             for c in ['\u{00A0}', '\u{2009}', '\u{202F}', '\u{3000}', '\u{1680}', '\u{2002}'] {
-                assert_eq!(valider(a, &format!("1{c}2")), Err(Refus::Blanc), "{a:?} {c:?}");
+                assert_eq!(valider(a, &format!("1{c}2")), Err(blanc), "{a:?} {c:?}");
             }
             let long = "1".repeat(a.max().saturating_add(1));
             assert_eq!(valider(a, &long), Err(Refus::TropLongue), "{a:?}");
@@ -800,6 +1158,7 @@ mod tests {
         let racines = [Racine {
             tapee: tapee.join("Documents"),
             reelle: m.0.join("Documents"),
+            ecartee: false,
         }];
         let texte = |p: &Path| p.to_str().unwrap().to_owned();
         let attendu = m.0.join("Documents").join("sous").join("a.txt");
@@ -842,6 +1201,7 @@ mod tests {
         let racines = [Racine {
             tapee: PathBuf::from("/home/alice/Documents"),
             reelle: PathBuf::from("/data/alice/Documents"),
+            ecartee: false,
         }];
         let place = |c: &str| situer(Path::new(c), &racines).map(|(_, reste)| reste);
         assert_eq!(place("/home/alice/Documents/a.pdf"), Ok(PathBuf::from("a.pdf")));
@@ -982,8 +1342,9 @@ mod tests {
         );
     }
 
-    /// user-dirs.dirs s'écrit sans droits : il ne déclare qu'un enfant direct et visible de la maison. Un dossier plus
-    /// profond, caché, ailleurs ou lié (vers ~/.ssh, vers /, vers la maison) n'est pas une racine.
+    /// user-dirs.dirs s'écrit sans droits : il ne déclare qu'un ou deux noms visibles sous la maison, le dernier pris
+    /// dans la liste fermée des noms de Téléchargements, Bureau et Documents. Un endroit lié vers ~/.ssh, vers / ou
+    /// vers la maison n'est pas permis, et le refus dit pourquoi.
     #[cfg(unix)]
     #[test]
     fn les_racines_declarees_ou_liees_hors_de_la_maison_sont_ecartees() {
@@ -993,14 +1354,22 @@ mod tests {
         for d in [".ssh", "Mes téléchargements", "Projets/profond", ".config/vanguard"] {
             std::fs::create_dir_all(maison.join(d)).unwrap();
         }
+        std::fs::write(maison.join("Projets/a.pdf"), b"essai").unwrap();
         // Bureau : un lien vers ~/.ssh ; Desktop : un lien vers / ; Documents : un lien vers la maison.
         symlink(maison.join(".ssh"), maison.join("Bureau")).unwrap();
         symlink("/", maison.join("Desktop")).unwrap();
         symlink(maison, maison.join("Documents")).unwrap();
-        let declares = "XDG_DOWNLOAD_DIR=\"$HOME/Mes téléchargements\"\nXDG_DESKTOP_DIR=\"/etc\"\n\
+        let declares = "XDG_DOWNLOAD_DIR=\"$HOME/Mes téléchargements\"\nXDG_DESKTOP_DIR=\"$HOME/Projets\"\n\
                         XDG_DOCUMENTS_DIR=\"$HOME/.ssh\"\n";
         let racines = racines_linux(maison, declares, Some("../alice"));
-        assert_eq!(racines, vec![Racine::meme(maison.join("Mes téléchargements"))]);
+        assert_eq!(racines.iter().filter(|r| !r.ecartee).count(), 0, "{racines:?}");
+        assert_eq!(racines.iter().filter(|r| r.ecartee).count(), 3, "{racines:?}");
+        let juge = |t: &str| juger_chemin(t, maison, &racines);
+        assert_eq!(juge("~/Projets/a.pdf"), Err(Refus::HorsDesEndroits));
+        assert_eq!(juge("~/Bureau/id_ed25519"), Err(Refus::RacineEnLien));
+        assert_eq!(juge("~/Desktop/etc/passwd"), Err(Refus::RacineEnLien));
+        assert_eq!(juge("~/Documents/Projets/a.pdf"), Err(Refus::RacineEnLien));
+        assert_eq!(juge("~/Documents/.ssh/id_ed25519"), Err(Refus::RacineEnLien));
         let un = |valeur: &str| {
             declare(
                 &format!("XDG_DOWNLOAD_DIR=\"{valeur}\""),
@@ -1009,25 +1378,112 @@ mod tests {
                 maison,
             )
         };
-        assert_eq!(un("$HOME/Projets"), Some("Projets".into()));
-        assert_eq!(un(&format!("{}/Projets", maison.display())), Some("Projets".into()));
+        assert_eq!(un("$HOME/Téléchargements"), Some("Téléchargements".into()));
+        assert_eq!(un(&format!("{}/Bureau", maison.display())), Some("Bureau".into()));
+        assert_eq!(un("$HOME/Nextcloud/Documents"), Some("Nextcloud/Documents".into()));
+        assert_eq!(un("$HOME/Escritorio"), Some("Escritorio".into()));
         for refuse in [
+            "$HOME/Projets",
+            "$HOME/Mes téléchargements",
             "$HOME/Projets/profond",
+            "$HOME/a/b/Documents",
+            "$HOME/.Nextcloud/Documents",
+            "$HOME/Nextcloud/.Documents",
             "$HOME/.config/vanguard",
             "$HOME/.ssh",
             "$HOME",
             "$HOME/../bob",
+            "$HOME/../Documents",
             "/etc",
             "/",
-            "Projets",
+            "Documents",
         ] {
             assert_eq!(un(refuse), None, "{refuse}");
+        }
+        // La liste fermée garde ses noms usuels, et rien d'invisible.
+        for nom in ["Téléchargements", "Downloads", "Bureau", "Desktop", "Documents"] {
+            assert!(NOMS_DECLARABLES.contains(&nom), "{nom}");
+        }
+        for nom in NOMS_DECLARABLES {
+            assert_eq!(valider(Argument::Chemin, &format!("/{nom}")), Ok(()), "{nom}");
+            assert!(!nom.contains(['/', '.']), "{nom}");
         }
         // La maison elle-même, ou un nom de compte qui sort de /run/media : rien.
         assert_eq!(racines_linux(Path::new("/nulle/part"), "", None), Vec::<Racine>::new());
         assert!(!nom_de_compte(".."));
         assert!(!nom_de_compte("a/b"));
         assert!(nom_de_compte("alice"));
+    }
+
+    /// Un endroit permis peut être un lien vers un dossier visible sous la maison (~/Documents lié à
+    /// ~/Nextcloud/Documents, ou user-dirs.dirs qui déclare « $HOME/Sync/Bureau ») : il est résolu une fois, quand
+    /// les racines sont faites ; changer le lien ensuite ne fait rien lire d'autre.
+    #[cfg(unix)]
+    #[test]
+    fn une_racine_liee_sous_la_maison_est_resolue_une_fois() {
+        use std::os::unix::fs::symlink;
+        let m = Maison::nouvelle("liee");
+        let maison = &m.0;
+        for d in ["Nextcloud/Documents", "Sync/Bureau", ".ssh"] {
+            std::fs::create_dir_all(maison.join(d)).unwrap();
+        }
+        for f in ["Nextcloud/Documents/a.pdf", "Sync/Bureau/b.pdf", ".ssh/id_ed25519"] {
+            std::fs::write(maison.join(f), b"essai").unwrap();
+        }
+        symlink("Nextcloud/Documents", maison.join("Documents")).unwrap();
+        let racines = racines_linux(maison, "XDG_DESKTOP_DIR=\"$HOME/Sync/Bureau\"\n", None);
+        let docs = racines.iter().find(|r| r.tapee == maison.join("Documents")).unwrap();
+        assert_eq!(docs.reelle, maison.join("Nextcloud/Documents"));
+        assert!(!docs.ecartee);
+        let juge = |t: &str| juger_chemin(t, maison, &racines);
+        assert_eq!(juge("~/Documents/a.pdf"), Ok(maison.join("Nextcloud/Documents/a.pdf")));
+        assert_eq!(
+            juge("~/Nextcloud/Documents/a.pdf"),
+            Ok(maison.join("Nextcloud/Documents/a.pdf"))
+        );
+        assert_eq!(juge("~/Sync/Bureau/b.pdf"), Ok(maison.join("Sync/Bureau/b.pdf")));
+        // Le lien change après coup : la racine reste la cible d'avant, où id_ed25519 n'est pas.
+        std::fs::remove_file(maison.join("Documents")).unwrap();
+        symlink(".ssh", maison.join("Documents")).unwrap();
+        assert_eq!(juge("~/Documents/id_ed25519"), Err(Refus::Introuvable));
+        // La cible elle-même devient un lien vers ~/.ssh : refusée en descendant.
+        std::fs::rename(maison.join("Nextcloud/Documents"), maison.join("Nextcloud/vrai")).unwrap();
+        symlink(maison.join(".ssh"), maison.join("Nextcloud/Documents")).unwrap();
+        assert_eq!(juge("~/Documents/id_ed25519"), Err(Refus::Lien));
+        // Refaites, les racines écartent ce lien et disent pourquoi.
+        let racines = racines_linux(maison, "", None);
+        assert_eq!(
+            juger_chemin("~/Documents/id_ed25519", maison, &racines),
+            Err(Refus::RacineEnLien)
+        );
+    }
+
+    /// Un nom aux accents décomposés (e + U+0301) hors des endroits : le refus dit de retaper le nom. Le même, à sa
+    /// place, n'est pas touché : le jugement sur le texte ne change pas.
+    #[test]
+    fn des_accents_decomposes_hors_des_endroits_sont_nommes() {
+        let maison = PathBuf::from(if cfg!(windows) {
+            "C:\\Users\\alice"
+        } else {
+            "/home/alice"
+        });
+        let racines = [Racine::meme(maison.join("Téléchargements"))];
+        let sep = std::path::MAIN_SEPARATOR;
+        let decompose = format!("~{sep}Te\u{301}le\u{301}chargements{sep}a.pdf");
+        assert_eq!(
+            juger_lexical(&decompose, &maison, &racines).err(),
+            Some(Refus::Decompose)
+        );
+        assert_eq!(
+            juger_lexical(&format!("~{sep}Images{sep}a.pdf"), &maison, &racines).err(),
+            Some(Refus::HorsDesEndroits)
+        );
+        assert!(juger_lexical(&format!("~{sep}Téléchargements{sep}a\u{301}.pdf"), &maison, &racines).is_ok());
+        for refus in [Refus::Decompose, Refus::BlancDansUnNom] {
+            assert_ne!(refus.phrase(), "");
+        }
+        assert!(Refus::Decompose.phrase().contains("retype") || Refus::Decompose.phrase().contains("retapez"));
+        assert!(Refus::BlancDansUnNom.phrase().contains("vanguard verifier-fichier"));
     }
 
     /// La table des invisibles est en plages croissantes et disjointes : la recherche par dichotomie en dépend.
@@ -1039,7 +1495,24 @@ mod tests {
         for paire in INVISIBLES.windows(2) {
             assert!(paire[0].1 < paire[1].0, "{:X}", paire[1].0);
         }
-        for c in ['a', ' ', 'é', '\u{2027}', '\u{2030}', '\u{1D17B}', '\u{E1000}'] {
+        for c in [
+            'a',
+            ' ',
+            'é',
+            '\u{2027}',
+            '\u{2030}',
+            '\u{1D17B}',
+            '\u{E1000}',
+            '\u{D7FF}',
+            '\u{F900}',
+            '\u{FDCF}',
+            '\u{FDF0}',
+            '\u{FFFD}',
+            '\u{16FE3}',
+            '\u{1D158}',
+            '\u{1FFFD}',
+            '\u{EFFFD}',
+        ] {
             assert!(!invisible(c), "{c:?}");
         }
     }

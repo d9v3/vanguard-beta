@@ -61,14 +61,16 @@ fn comprendre(brut: &str) {
     match commandes::comprendre(brut) {
         Saisie::Lancer(c) => {
             assert!(Commande::TOUTES.contains(&c));
-            // Ses arguments viennent de la liste, jamais de la saisie : un nom, au plus une option fixe de la liste
-            // (« antivirus --etat »), puis --json.
+            // Ses arguments viennent de la liste, jamais de la saisie : un nom, au plus une option ou une
+            // sous-commande fixe de la liste (« antivirus --etat », « blocage etat »), puis --json.
             let a = c.arguments();
             assert!(a.len() == 2 || a.len() == 3, "{a:?}");
             assert_eq!(a.last().copied(), Some("--json"));
             assert!(a[0].bytes().all(|o| o.is_ascii_lowercase() || o == b'-'), "{a:?}");
             assert!(
-                a[1..].iter().all(|x| x.starts_with("--") && x[2..].bytes().all(|o| o.is_ascii_lowercase() || o == b'-')),
+                a[1..]
+                    .iter()
+                    .all(|x| x.strip_prefix("--").unwrap_or(x).bytes().all(|o| o.is_ascii_lowercase() || o == b'-')),
                 "{a:?}"
             );
             // Et le texte tapé était bien son nom (« vanguard » devant permis), à la casse près.
