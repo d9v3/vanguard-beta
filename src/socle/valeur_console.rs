@@ -5,10 +5,12 @@
 //! Une seule règle, donc un seul jugement : rien ne peut passer chez l'un et être compris autrement chez l'autre.
 //!
 //! La valeur ne devient jamais un drapeau ni une commande : `vanguard` la reçoit comme une seule case d'une liste
-//! d'arguments fermée (`console <commande> -- <valeur>`), sans shell. Un chemin n'est lu que s'il désigne, une fois
-//! chaque lien résolu, un fichier ordinaire sous Téléchargements, Bureau ou Documents du compte (ou un support
-//! amovible), jamais dans un dossier caché : une fenêtre prise ou un adjoint abusé ne fait pas lire ~/.ssh ni
-//! ~/.config/vanguard avec les droits du compte.
+//! d'arguments fermée (`console <commande> -- <valeur>`), sans shell. Un chemin n'est lu que s'il désigne un fichier
+//! ordinaire, à un seul nom, sous Téléchargements, Bureau ou Documents du compte (ou un support amovible), jamais
+//! dans un dossier caché et sans aucun lien sur le chemin : une fenêtre prise ou un adjoint abusé ne fait pas lire
+//! ~/.ssh ni ~/.config/vanguard avec les droits du compte. Le jugement se fait d'abord sur le texte seul (hors des
+//! endroits permis, rien n'est regardé sur le disque), puis `vanguard` ouvre le fichier une seule fois, sans suivre de
+//! lien, et juge ce qu'il a ouvert (`socle::ouvrir_console`).
 
 // Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
 #![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
@@ -103,6 +105,8 @@ pub(crate) enum Refus {
     Controle,
     /// Un caractère invisible ou qui retourne le texte (bidi, U+2028, espace sans largeur…).
     Invisible,
+    /// Une espace autre que l'espace ordinaire (U+0020) : insécable, idéographique, fine… Elle se confond avec elle.
+    Blanc,
     /// La forme attendue n'y est pas (des chiffres, un identifiant, une adresse sans espace).
     Forme,
     /// « ~nom » : le dossier d'un autre compte.
@@ -119,10 +123,23 @@ pub(crate) enum Refus {
     Cache,
     /// Ce n'est pas un fichier ordinaire (dossier, tube nommé, périphérique).
     PasUnFichier,
-    /// Introuvable (ou un lien qui ne mène nulle part).
+    /// Introuvable.
     Introuvable,
     /// Le dossier personnel du compte est inconnu : aucun endroit n'est permis.
     MaisonInconnue,
+    /// Un lien symbolique ou une jonction sur le chemin (ou un point de réanalyse inconnu sous Windows) : jamais suivi.
+    Lien,
+    /// Un fichier à plusieurs noms (lien physique) : l'un d'eux peut être dans ~/.ssh.
+    PlusieursNoms,
+    /// Un fichier en ligne seulement (OneDrive) : le lire le ferait télécharger ; non vérifié. Seul Windows le dit.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    EnLigneSeulement,
+    /// Le fichier n'a pas pu être ouvert (droits, partage).
+    Illisible,
+    /// Le chemin réel du fichier ouvert n'a pas pu être relu : rien n'est lu sans ce second jugement. Seul `vanguard`
+    /// ouvre (la fenêtre et le banc de fuzzing ne le construisent jamais).
+    #[allow(dead_code)]
+    NonVerifie,
 }
 
 impl Refus {
@@ -174,34 +191,79 @@ impl Refus {
                 "dossier personnel inconnu : aucun fichier ne peut être lu",
                 "home folder unknown: no file can be read"
             ),
+            Refus::Blanc => crate::tr!(
+                "espace autre que l'espace ordinaire dans la valeur (insécable, idéographique…)",
+                "space other than the ordinary space in the value (non-breaking, ideographic…)"
+            ),
+            Refus::Lien => crate::tr!(
+                "lien symbolique ou jonction sur le chemin : la Console ne les suit pas",
+                "symbolic link or junction in the path: the Console does not follow them"
+            ),
+            Refus::PlusieursNoms => crate::tr!(
+                "fichier à plusieurs noms (lien physique) : refusé",
+                "file with several names (hard link): refused"
+            ),
+            Refus::EnLigneSeulement => crate::tr!(
+                "non vérifié : fichier en ligne seulement, pas sur cet ordinateur",
+                "not checked: online-only file, not on this computer"
+            ),
+            Refus::Illisible => crate::tr!("fichier illisible", "file unreadable"),
+            Refus::NonVerifie => crate::tr!(
+                "non vérifié : le chemin réel du fichier ouvert n'a pas pu être relu",
+                "not checked: the real path of the opened file could not be read back"
+            ),
         }
     }
 }
 
-/// Invisible ou qui retourne le texte : marques de sens et isolats (bidi), séparateurs de ligne et de paragraphe,
-/// espaces et liants sans largeur, trait d'union conditionnel, sélecteurs de variante, étiquettes, remplissages
-/// Hangûl, BOM. Une valeur qui s'affiche autrement qu'elle se lit ne passe pas.
-fn invisible(c: char) -> bool {
-    matches!(
-        u32::from(c),
-        0x00AD
-            | 0x034F
-            | 0x061C
-            | 0x115F
-            | 0x1160
-            | 0x17B4
-            | 0x17B5
-            | 0x180B..=0x180F
-            | 0x200B..=0x200F
-            | 0x2028..=0x202E
-            | 0x2060..=0x206F
-            | 0x3164
-            | 0xFE00..=0xFE0F
-            | 0xFEFF
-            | 0xFFA0
-            | 0xFFF0..=0xFFFB
-            | 0xE0000..=0xE0FFF
-    )
+/// Les caractères invisibles, en plages croissantes et disjointes : la catégorie « format » (Cf) et la propriété
+/// Default_Ignorable_Code_Point, d'Unicode 16.0.0 (DerivedGeneralCategory.txt, DerivedCoreProperties.txt), plus ce
+/// qui s'affiche vide sans en être : séparateurs de ligne et de paragraphe (U+2028, U+2029), braille vide (U+2800),
+/// remplissages Hangûl (U+115F, U+1160, U+3164, U+FFA0, déjà ignorables). Une table plutôt qu'une liste écrite au fil
+/// des trouvailles : la relecture adverse en a trouvé hors de l'ancienne (U+1D173, U+1BCA0, U+2800).
+const INVISIBLES: [(u32, u32); 26] = [
+    (0x00AD, 0x00AD),
+    (0x034F, 0x034F),
+    (0x0600, 0x0605),
+    (0x061C, 0x061C),
+    (0x06DD, 0x06DD),
+    (0x070F, 0x070F),
+    (0x0890, 0x0891),
+    (0x08E2, 0x08E2),
+    (0x115F, 0x1160),
+    (0x17B4, 0x17B5),
+    (0x180B, 0x180F),
+    (0x200B, 0x200F),
+    (0x2028, 0x202E),
+    (0x2060, 0x206F),
+    (0x2800, 0x2800),
+    (0x3164, 0x3164),
+    (0xFE00, 0xFE0F),
+    (0xFEFF, 0xFEFF),
+    (0xFFA0, 0xFFA0),
+    (0xFFF0, 0xFFFB),
+    (0x110BD, 0x110BD),
+    (0x110CD, 0x110CD),
+    (0x13430, 0x1343F),
+    (0x1BCA0, 0x1BCA3),
+    (0x1D173, 0x1D17A),
+    (0xE0000, 0xE0FFF),
+];
+
+/// Invisible ou qui retourne le texte (`INVISIBLES`) : une valeur qui s'affiche autrement qu'elle se lit ne passe pas.
+pub(crate) fn invisible(c: char) -> bool {
+    let c = u32::from(c);
+    INVISIBLES
+        .binary_search_by(|&(debut, fin)| {
+            if fin < c {
+                std::cmp::Ordering::Less
+            } else if debut > c {
+                std::cmp::Ordering::Greater
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        })
+        .is_ok()
 }
 
 /// La forme d'une valeur, sans rien lire sur le disque : ce que la fenêtre juge avant d'envoyer, et ce que le relais
@@ -219,6 +281,10 @@ pub(crate) fn valider(sorte: Argument, texte: &str) -> Result<(), Refus> {
     }
     if texte.chars().any(invisible) {
         return Err(Refus::Invisible);
+    }
+    // Une seule espace permise, l'ordinaire : une insécable dans un chemin désigne un autre fichier qu'on croit lire.
+    if texte.chars().any(|c| c.is_whitespace() && c != ' ') {
+        return Err(Refus::Blanc);
     }
     if texte.trim() != texte {
         return Err(Refus::Bords);
@@ -291,6 +357,12 @@ fn forme_du_chemin(texte: &str) -> Result<(), Refus> {
             }
             // Après « ~/ », le reste est relatif à la maison : une racine (« ~//etc ») le rendrait absolu.
             Component::RootDir if texte != reste => return Err(Refus::Relatif),
+            // Sous Windows, « CON », « NUL » ou « COM1 » dans un dossier désignent un périphérique, et « x.pdf:flux »
+            // un flux caché du fichier : jamais un fichier ordinaire à lire.
+            #[cfg(windows)]
+            Component::Normal(n) if nom_de_peripherique(n) => return Err(Refus::Reseau),
+            #[cfg(windows)]
+            Component::Normal(n) if n.as_encoded_bytes().contains(&b':') => return Err(Refus::Forme),
             _ => {}
         }
     }
@@ -298,6 +370,29 @@ fn forme_du_chemin(texte: &str) -> Result<(), Refus> {
         return Err(Refus::Relatif);
     }
     Ok(())
+}
+
+/// Un nom réservé à un périphérique sous Windows (CON, PRN, AUX, NUL, COM0 à COM9, LPT0 à LPT9, avec les chiffres en
+/// exposant, CONIN$, CONOUT$), quelle que soit la casse et même suivi d'une extension ou d'espaces.
+#[cfg(windows)]
+pub(crate) fn nom_de_peripherique(nom: &std::ffi::OsStr) -> bool {
+    let Some(nom) = nom.to_str() else {
+        return false;
+    };
+    let base = nom
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches(' ')
+        .to_uppercase();
+    if matches!(base.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$") {
+        return true;
+    }
+    let mut reste = base.chars();
+    let debut: String = reste.by_ref().take(3).collect();
+    let chiffre: Vec<char> = reste.collect();
+    matches!(debut.as_str(), "COM" | "LPT")
+        && matches!(chiffre[..], [c] if c.is_ascii_digit() || matches!(c, '¹' | '²' | '³'))
 }
 
 /// Le chemin tapé, « ~ » remplacé par `maison` (le même remplacement chez le relais et chez `vanguard`, qui seuls le
@@ -325,25 +420,87 @@ fn cache(c: Component<'_>) -> bool {
     matches!(c, Component::Normal(n) if n.as_encoded_bytes().first() == Some(&b'.'))
 }
 
-/// `chemin` est-il strictement sous `racine`, sans aucun composant caché entre les deux ? Les deux sont des chemins
-/// réels (liens résolus) : la comparaison est faite composant par composant.
-fn strictement_sous(chemin: &Path, racine: &Path) -> Option<bool> {
-    let reste = chemin.strip_prefix(racine).ok()?;
-    let mut composants = reste.components().peekable();
-    composants.peek()?;
-    Some(!composants.any(cache))
+/// Deux composants de chemin pareils ; sous Windows, sans tenir compte de la casse, comme le système de fichiers.
+fn meme_composant(a: Component<'_>, b: Component<'_>) -> bool {
+    #[cfg(windows)]
+    if let (Some(a), Some(b)) = (a.as_os_str().to_str(), b.as_os_str().to_str()) {
+        return a.to_lowercase() == b.to_lowercase();
+    }
+    a == b
 }
 
-/// Une racine permise : son chemin réel est strictement sous le chemin réel de la maison, sans dossier caché entre
-/// les deux. Un « Documents » qui est un lien vers ~/.ssh, vers / ou vers la maison elle-même ne compte pas.
-pub(crate) fn racine_permise(racine_reelle: &Path, maison_reelle: &Path) -> bool {
-    strictement_sous(racine_reelle, maison_reelle) == Some(true)
+/// Ce qui reste de `chemin` après `racine`, comparé composant par composant (« /home/a » n'est pas sous elle pour
+/// « /home/alice ») ; `None` si `chemin` n'est pas strictement sous `racine`.
+pub(crate) fn reste_sous(chemin: &Path, racine: &Path) -> Option<PathBuf> {
+    let mut composants = chemin.components();
+    for r in racine.components() {
+        if !meme_composant(composants.next()?, r) {
+            return None;
+        }
+    }
+    let reste = composants.as_path();
+    (!reste.as_os_str().is_empty()).then(|| reste.to_path_buf())
 }
 
-/// Le dossier que déclare user-dirs.dirs pour `cle` (« XDG_DOWNLOAD_DIR="$HOME/Téléchargements" »), seulement s'il
-/// est sous la maison : « $HOME/… », ou un chemin absolu. Lexical ; `racine_permise` juge ensuite le chemin réel.
+/// Un endroit permis. `tapee` : tel qu'on le tape, sous la maison que donne le système ; `reelle` : le même sous la
+/// maison résolue, d'où `vanguard` descend sans suivre de lien. Sous Windows les deux sont le même texte : rien n'y
+/// est résolu, car résoudre une jonction ou un partage fait déjà sortir la session sur le réseau.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Racine {
+    pub(crate) tapee: PathBuf,
+    pub(crate) reelle: PathBuf,
+}
+
+impl Racine {
+    /// Une racine qui s'écrit pareil tapée ou réelle (support amovible, dossier du registre).
+    #[cfg_attr(not(any(windows, test)), allow(dead_code))]
+    pub(crate) fn meme(chemin: PathBuf) -> Racine {
+        Racine {
+            tapee: chemin.clone(),
+            reelle: chemin,
+        }
+    }
+}
+
+/// Où tombe `chemin` (absolu, « ~ » développé) parmi les `racines`, sur le texte seul : la racine et le reste après
+/// elle, fait de noms seulement, aucun caché. Hors de toute racine, `HorsDesEndroits` sans rien regarder sur le
+/// disque : un refus qui différerait selon que ~/.ssh/id_ed25519 existe ou non dirait ce qu'il y a dans ~/.ssh.
+pub(crate) fn situer<'r>(chemin: &Path, racines: &'r [Racine]) -> Result<(&'r Racine, PathBuf), Refus> {
+    let mut cache_vu = false;
+    for r in racines {
+        for base in [&r.tapee, &r.reelle] {
+            let Some(reste) = reste_sous(chemin, base) else {
+                continue;
+            };
+            if !reste.components().all(|c| matches!(c, Component::Normal(_))) {
+                continue;
+            }
+            if reste.components().any(cache) {
+                cache_vu = true;
+                continue;
+            }
+            return Ok((r, reste));
+        }
+    }
+    Err(if cache_vu { Refus::Cache } else { Refus::HorsDesEndroits })
+}
+
+/// Le jugement sur le texte seul : la forme (`valider`), « ~ » développé, puis la place parmi les `racines`.
+pub(crate) fn juger_lexical<'r>(
+    texte: &str,
+    maison: &Path,
+    racines: &'r [Racine],
+) -> Result<(&'r Racine, PathBuf), Refus> {
+    valider(Argument::Chemin, texte)?;
+    let chemin = developper(texte, maison)?;
+    situer(&chemin, racines)
+}
+
+/// Le nom du dossier que user-dirs.dirs déclare pour `cle`, seulement s'il est un enfant direct et visible de la
+/// maison (« $HOME/Nom », ou le même écrit en entier). user-dirs.dirs s'écrit sans droits particuliers : un
+/// « $HOME/.ssh », un « $HOME/.config/vanguard » ou « /etc » ferait sinon lire des secrets comme un Téléchargements.
 #[cfg(unix)]
-fn declare(declares: &str, cle: &str, maison: &Path) -> Option<PathBuf> {
+fn declare(declares: &str, cle: &str, maison: &Path, maison_reelle: &Path) -> Option<std::ffi::OsString> {
     let valeur = declares
         .lines()
         .find_map(|l| l.trim().strip_prefix(cle)?.strip_prefix('='))?
@@ -353,41 +510,46 @@ fn declare(declares: &str, cle: &str, maison: &Path) -> Option<PathBuf> {
         Some(reste) => maison.join(reste),
         None => PathBuf::from(valeur),
     };
-    (chemin.is_absolute() && !chemin.components().any(|c| c == Component::ParentDir)).then_some(chemin)
+    let reste = [maison, maison_reelle].iter().find_map(|m| reste_sous(&chemin, m))?;
+    let mut composants = reste.components();
+    match (composants.next(), composants.next()) {
+        (Some(c @ Component::Normal(nom)), None) if !cache(c) => Some(nom.to_os_string()),
+        _ => None,
+    }
 }
 
-/// Les endroits permis sous Linux, en chemins réels : Téléchargements, Bureau et Documents (ceux que déclare
-/// user-dirs.dirs, et leurs noms usuels), chacun gardé seulement si `racine_permise` ; et /run/media/<compte>, où le
-/// bureau monte les supports amovibles, s'il est bien lui-même (aucun lien). `declares` : le texte de user-dirs.dirs
-/// (vide s'il manque) ; `compte` : le nom du compte.
+/// Les endroits permis sous Linux : Téléchargements, Bureau et Documents (ceux que déclare user-dirs.dirs, enfants
+/// directs de la maison, et leurs noms usuels), chacun gardé seulement s'il est un vrai dossier (un lien vers ~/.ssh,
+/// vers / ou vers la maison ne compte pas) ; et /run/media/<compte>, où le bureau monte les supports amovibles, s'il
+/// est bien lui-même. `declares` : le texte de user-dirs.dirs (vide s'il manque) ; `compte` : le nom du compte.
 #[cfg(unix)]
-pub(crate) fn racines_linux(maison: &Path, declares: &str, compte: Option<&str>) -> Vec<PathBuf> {
+pub(crate) fn racines_linux(maison: &Path, declares: &str, compte: Option<&str>) -> Vec<Racine> {
     let Ok(maison_reelle) = maison.canonicalize() else {
         return Vec::new();
     };
-    let mut candidats: Vec<PathBuf> = ["XDG_DOWNLOAD_DIR", "XDG_DESKTOP_DIR", "XDG_DOCUMENTS_DIR"]
+    let mut noms: Vec<std::ffi::OsString> = ["XDG_DOWNLOAD_DIR", "XDG_DESKTOP_DIR", "XDG_DOCUMENTS_DIR"]
         .iter()
-        .filter_map(|cle| declare(declares, cle, maison))
+        .filter_map(|cle| declare(declares, cle, maison, &maison_reelle))
         .collect();
-    candidats.extend(
+    noms.extend(
         ["Téléchargements", "Downloads", "Bureau", "Desktop", "Documents"]
             .iter()
-            .map(|n| maison.join(n)),
+            .map(std::ffi::OsString::from),
     );
-    let mut racines: Vec<PathBuf> = Vec::new();
-    for c in candidats {
-        if let Ok(r) = c.canonicalize()
-            && r.is_dir()
-            && racine_permise(&r, &maison_reelle)
-            && !racines.contains(&r)
-        {
-            racines.push(r);
+    let mut racines: Vec<Racine> = Vec::new();
+    for nom in noms {
+        let reelle = maison_reelle.join(&nom);
+        if std::fs::symlink_metadata(&reelle).is_ok_and(|m| m.is_dir()) && !racines.iter().any(|r| r.reelle == reelle) {
+            racines.push(Racine {
+                tapee: maison.join(&nom),
+                reelle,
+            });
         }
     }
     if let Some(compte) = compte.filter(|n| nom_de_compte(n)) {
         let media = Path::new("/run/media").join(compte);
         if media.canonicalize().is_ok_and(|r| r == media) {
-            racines.push(media);
+            racines.push(Racine::meme(media));
         }
     }
     racines
@@ -399,23 +561,54 @@ fn nom_de_compte(nom: &str) -> bool {
     !nom.is_empty() && !nom.starts_with('.') && !nom.contains(['/', '\0'])
 }
 
-/// Juge un chemin tapé : sa forme (`valider`), « ~ » développé, puis son chemin réel (chaque lien résolu) doit être un
-/// fichier ordinaire strictement sous l'une des `racines` (déjà réelles), sans composant caché après elle. Rend ce
-/// chemin réel, seul à être passé plus loin (jamais le texte tapé).
-pub(crate) fn juger_chemin(texte: &str, maison: &Path, racines: &[PathBuf]) -> Result<PathBuf, Refus> {
-    valider(Argument::Chemin, texte)?;
-    let chemin = developper(texte, maison)?;
-    let reel = chemin.canonicalize().map_err(|_| Refus::Introuvable)?;
-    let mut sous = racines.iter().filter_map(|r| strictement_sous(&reel, r));
-    match (sous.next(), sous.any(|visible| visible)) {
-        (None, _) => return Err(Refus::HorsDesEndroits),
-        (Some(false), false) => return Err(Refus::Cache),
-        _ => {}
+/// Le refus d'une erreur de lecture du disque : absent (ou un dossier attendu qui n'en est pas un), sinon illisible.
+fn refus_d_erreur(e: &std::io::Error) -> Refus {
+    match e.kind() {
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory => Refus::Introuvable,
+        _ => Refus::Illisible,
     }
-    if !std::fs::metadata(&reel).is_ok_and(|m| m.is_file()) {
+}
+
+/// Juge un chemin tapé sans rien ouvrir : sur le texte (`juger_lexical`), puis chaque composant après la racine
+/// réelle, regardé sans suivre de lien. Un lien, où qu'il soit, est refusé ; le dernier doit être un fichier
+/// ordinaire à un seul nom. Rend le chemin depuis la racine réelle. Sert au relais de la fenêtre, qui ne transmet
+/// qu'une valeur jugée ; `vanguard` ne lit jamais par ce chemin : il rouvre une fois, en descendant sans suivre de
+/// lien, et juge ce qu'il a ouvert (`socle::ouvrir_console`), car le disque peut changer entre les deux.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn juger_chemin(texte: &str, maison: &Path, racines: &[Racine]) -> Result<PathBuf, Refus> {
+    let (racine, reste) = juger_lexical(texte, maison, racines)?;
+    let mut courant = racine.reelle.clone();
+    let m = std::fs::symlink_metadata(&courant).map_err(|e| refus_d_erreur(&e))?;
+    if m.file_type().is_symlink() {
+        return Err(Refus::Lien);
+    }
+    let noms: Vec<Component<'_>> = reste.components().collect();
+    let Some((dernier, dossiers)) = noms.split_last() else {
+        return Err(Refus::HorsDesEndroits);
+    };
+    for nom in dossiers {
+        courant.push(nom);
+        let m = std::fs::symlink_metadata(&courant).map_err(|e| refus_d_erreur(&e))?;
+        if m.file_type().is_symlink() {
+            return Err(Refus::Lien);
+        }
+        if !m.is_dir() {
+            return Err(Refus::Introuvable);
+        }
+    }
+    courant.push(dernier);
+    let m = std::fs::symlink_metadata(&courant).map_err(|e| refus_d_erreur(&e))?;
+    if m.file_type().is_symlink() {
+        return Err(Refus::Lien);
+    }
+    if !m.is_file() {
         return Err(Refus::PasUnFichier);
     }
-    Ok(reel)
+    #[cfg(unix)]
+    if std::os::unix::fs::MetadataExt::nlink(&m) > 1 {
+        return Err(Refus::PlusieursNoms);
+    }
+    Ok(courant)
 }
 
 #[cfg(test)]
@@ -456,8 +649,22 @@ mod tests {
                 '\u{FEFF}',
                 '\u{061C}',
                 '\u{E0041}',
+                // Hors de l'ancienne liste écrite à la main : trouvés par la relecture adverse.
+                '\u{1D173}',
+                '\u{1BCA0}',
+                '\u{2800}',
+                '\u{3164}',
+                '\u{115F}',
+                '\u{FFA0}',
+                '\u{00AD}',
+                '\u{180E}',
+                '\u{FE0F}',
             ] {
                 assert_eq!(valider(a, &format!("1{c}2")), Err(Refus::Invisible), "{a:?} {c:?}");
+            }
+            // Une espace qui n'est pas l'ordinaire : insécable, fine, idéographique, ogham.
+            for c in ['\u{00A0}', '\u{2009}', '\u{202F}', '\u{3000}', '\u{1680}', '\u{2002}'] {
+                assert_eq!(valider(a, &format!("1{c}2")), Err(Refus::Blanc), "{a:?} {c:?}");
             }
             let long = "1".repeat(a.max().saturating_add(1));
             assert_eq!(valider(a, &long), Err(Refus::TropLongue), "{a:?}");
@@ -505,7 +712,7 @@ mod tests {
         }
         assert_eq!(valider(Argument::Adresse, "https://exemple.test/a?b=c&d"), Ok(()));
         assert_eq!(valider(Argument::Adresse, "https://a b"), Err(Refus::Forme));
-        assert_eq!(valider(Argument::Adresse, "https://a\u{a0}b"), Err(Refus::Forme));
+        assert_eq!(valider(Argument::Adresse, "https://a\u{a0}b"), Err(Refus::Blanc));
         assert_eq!(valider(Argument::Mots, "pare feu"), Ok(()));
     }
 
@@ -590,9 +797,12 @@ mod tests {
         for f in ["Documents/sous/a.txt", "Documents/.cache/b.txt", "Autre/c.txt"] {
             std::fs::write(m.0.join(f), "x").unwrap();
         }
-        let racines = [m.0.join("Documents").canonicalize().unwrap()];
+        let racines = [Racine {
+            tapee: tapee.join("Documents"),
+            reelle: m.0.join("Documents"),
+        }];
         let texte = |p: &Path| p.to_str().unwrap().to_owned();
-        let attendu = m.0.join("Documents/sous/a.txt").canonicalize().unwrap();
+        let attendu = m.0.join("Documents").join("sous").join("a.txt");
         let sep = std::path::MAIN_SEPARATOR;
         assert_eq!(
             juger_chemin(&format!("~{sep}Documents{sep}sous{sep}a.txt"), &tapee, &racines),
@@ -624,20 +834,49 @@ mod tests {
         );
     }
 
+    /// La place d'un chemin se juge sur le texte seul, composant par composant, sous l'une ou l'autre forme d'une
+    /// racine ; ni la racine elle-même, ni un voisin dont le nom commence pareil, ni un dossier caché.
+    #[cfg(unix)]
     #[test]
-    fn une_racine_hors_de_la_maison_ou_cachee_n_est_pas_permise() {
-        let m = Path::new("/home/alice");
-        assert!(racine_permise(&m.join("Documents"), m));
-        assert!(racine_permise(&m.join("Mes trucs/Documents"), m));
-        assert!(!racine_permise(m, m));
-        assert!(!racine_permise(Path::new("/"), m));
-        // Un compte dont le nom commence par celui de la maison n'est pas sous elle (« /home/a », « /home/alice »).
-        assert!(!racine_permise(
-            Path::new("/home/alice/Documents"),
-            Path::new("/home/a")
-        ));
-        assert!(!racine_permise(&m.join(".ssh"), m));
-        assert!(!racine_permise(&m.join(".local/Documents"), m));
+    fn la_place_d_un_chemin_se_juge_sur_le_texte_seul() {
+        let racines = [Racine {
+            tapee: PathBuf::from("/home/alice/Documents"),
+            reelle: PathBuf::from("/data/alice/Documents"),
+        }];
+        let place = |c: &str| situer(Path::new(c), &racines).map(|(_, reste)| reste);
+        assert_eq!(place("/home/alice/Documents/a.pdf"), Ok(PathBuf::from("a.pdf")));
+        assert_eq!(place("/data/alice/Documents/b/a.pdf"), Ok(PathBuf::from("b/a.pdf")));
+        assert_eq!(place("/home/alice/Documents"), Err(Refus::HorsDesEndroits));
+        assert_eq!(place("/home/alice/Documents2/a.pdf"), Err(Refus::HorsDesEndroits));
+        assert_eq!(place("/home/alice/Documents/.x/a.pdf"), Err(Refus::Cache));
+        assert_eq!(place("/home/alice/.ssh/id_ed25519"), Err(Refus::HorsDesEndroits));
+        assert_eq!(place("/"), Err(Refus::HorsDesEndroits));
+        assert_eq!(
+            situer(Path::new("/home/alice/Documents/a.pdf"), &[]),
+            Err(Refus::HorsDesEndroits)
+        );
+    }
+
+    /// Hors des endroits permis, le refus est le même que le fichier existe ou non : rien n'est regardé sur le disque
+    /// avant le jugement sur le texte, qui ne dit donc pas ce que contient ~/.ssh.
+    #[cfg(unix)]
+    #[test]
+    fn hors_des_endroits_le_refus_ne_dit_pas_ce_qui_existe() {
+        let m = Maison::nouvelle("oracle");
+        let maison = &m.0;
+        std::fs::create_dir_all(maison.join("Documents")).unwrap();
+        std::fs::create_dir_all(maison.join(".ssh")).unwrap();
+        std::fs::write(maison.join(".ssh/id_ed25519"), b"essai").unwrap();
+        let racines = racines_linux(maison, "", None);
+        for t in [
+            "~/.ssh/id_ed25519",
+            "~/.ssh/absent",
+            "~/absent/x",
+            "/nulle/part/x",
+            "/etc/passwd",
+        ] {
+            assert_eq!(juger_chemin(t, maison, &racines), Err(Refus::HorsDesEndroits), "{t}");
+        }
     }
 
     #[cfg(unix)]
@@ -678,10 +917,13 @@ mod tests {
         )
         .unwrap();
         symlink(maison.join("absent"), maison.join("Téléchargements/casse")).unwrap();
+        symlink(maison.join("Documents"), maison.join("Téléchargements/docs")).unwrap();
+        // Un lien physique : le même fichier que ~/.ssh/id_ed25519, sous un second nom dans Téléchargements.
+        std::fs::hard_link(maison.join(".ssh/id_ed25519"), maison.join("Téléchargements/copie.pdf")).unwrap();
         std::fs::create_dir_all(maison.join("Téléchargements/sous")).unwrap();
         let racines = racines_linux(maison, "", Some("alice"));
         assert_eq!(
-            racines.iter().filter(|r| r.starts_with(maison)).count(),
+            racines.iter().filter(|r| r.reelle.starts_with(maison)).count(),
             2,
             "{racines:?}"
         );
@@ -698,20 +940,23 @@ mod tests {
             juge("~/Téléchargements/a b.pdf"),
             Ok(maison.join("Téléchargements/a b.pdf"))
         );
-        // Un lien d'un endroit permis vers un autre : le chemin réel, permis.
-        assert_eq!(juge("~/Documents/vers-x.pdf"), Ok(maison.join("Téléchargements/x.pdf")));
         for (t, refus) in [
             ("~/.ssh/id_ed25519", Refus::HorsDesEndroits),
             ("~/.config/vanguard/cle", Refus::HorsDesEndroits),
             ("~/Images/photo.png", Refus::HorsDesEndroits),
             ("~/racine.txt", Refus::HorsDesEndroits),
-            ("~/Téléchargements/cle.pdf", Refus::HorsDesEndroits),
-            ("~/Téléchargements/dossier/id_ed25519", Refus::HorsDesEndroits),
-            ("~/Téléchargements/env", Refus::HorsDesEndroits),
+            // Aucun lien n'est suivi, même d'un endroit permis vers un autre, même cassé.
+            ("~/Téléchargements/cle.pdf", Refus::Lien),
+            ("~/Téléchargements/dossier/id_ed25519", Refus::Lien),
+            ("~/Téléchargements/env", Refus::Lien),
+            ("~/Documents/vers-x.pdf", Refus::Lien),
+            ("~/Téléchargements/casse", Refus::Lien),
+            ("~/Téléchargements/docs/lettre.eml", Refus::Lien),
+            ("~/Téléchargements/copie.pdf", Refus::PlusieursNoms),
             ("~/Téléchargements/.cache/y", Refus::Cache),
             ("~/Téléchargements/.cache.pdf", Refus::Cache),
-            ("~/Téléchargements/casse", Refus::Introuvable),
             ("~/Téléchargements/absent.pdf", Refus::Introuvable),
+            ("~/Téléchargements/x.pdf/y", Refus::Introuvable),
             ("~/Téléchargements/sous", Refus::PasUnFichier),
             ("~/Téléchargements", Refus::HorsDesEndroits),
             ("/proc/self/environ", Refus::HorsDesEndroits),
@@ -737,14 +982,17 @@ mod tests {
         );
     }
 
+    /// user-dirs.dirs s'écrit sans droits : il ne déclare qu'un enfant direct et visible de la maison. Un dossier plus
+    /// profond, caché, ailleurs ou lié (vers ~/.ssh, vers /, vers la maison) n'est pas une racine.
     #[cfg(unix)]
     #[test]
     fn les_racines_declarees_ou_liees_hors_de_la_maison_sont_ecartees() {
         use std::os::unix::fs::symlink;
         let m = Maison::nouvelle("racines");
         let maison = &m.0;
-        std::fs::create_dir_all(maison.join(".ssh")).unwrap();
-        std::fs::create_dir_all(maison.join("Mes téléchargements")).unwrap();
+        for d in [".ssh", "Mes téléchargements", "Projets/profond", ".config/vanguard"] {
+            std::fs::create_dir_all(maison.join(d)).unwrap();
+        }
         // Bureau : un lien vers ~/.ssh ; Desktop : un lien vers / ; Documents : un lien vers la maison.
         symlink(maison.join(".ssh"), maison.join("Bureau")).unwrap();
         symlink("/", maison.join("Desktop")).unwrap();
@@ -752,11 +1000,47 @@ mod tests {
         let declares = "XDG_DOWNLOAD_DIR=\"$HOME/Mes téléchargements\"\nXDG_DESKTOP_DIR=\"/etc\"\n\
                         XDG_DOCUMENTS_DIR=\"$HOME/.ssh\"\n";
         let racines = racines_linux(maison, declares, Some("../alice"));
-        assert_eq!(racines, vec![maison.join("Mes téléchargements")]);
+        assert_eq!(racines, vec![Racine::meme(maison.join("Mes téléchargements"))]);
+        let un = |valeur: &str| {
+            declare(
+                &format!("XDG_DOWNLOAD_DIR=\"{valeur}\""),
+                "XDG_DOWNLOAD_DIR",
+                maison,
+                maison,
+            )
+        };
+        assert_eq!(un("$HOME/Projets"), Some("Projets".into()));
+        assert_eq!(un(&format!("{}/Projets", maison.display())), Some("Projets".into()));
+        for refuse in [
+            "$HOME/Projets/profond",
+            "$HOME/.config/vanguard",
+            "$HOME/.ssh",
+            "$HOME",
+            "$HOME/../bob",
+            "/etc",
+            "/",
+            "Projets",
+        ] {
+            assert_eq!(un(refuse), None, "{refuse}");
+        }
         // La maison elle-même, ou un nom de compte qui sort de /run/media : rien.
-        assert_eq!(racines_linux(Path::new("/nulle/part"), "", None), Vec::<PathBuf>::new());
+        assert_eq!(racines_linux(Path::new("/nulle/part"), "", None), Vec::<Racine>::new());
         assert!(!nom_de_compte(".."));
         assert!(!nom_de_compte("a/b"));
         assert!(nom_de_compte("alice"));
+    }
+
+    /// La table des invisibles est en plages croissantes et disjointes : la recherche par dichotomie en dépend.
+    #[test]
+    fn la_table_des_invisibles_est_triee() {
+        for (debut, fin) in INVISIBLES {
+            assert!(debut <= fin, "{debut:X}");
+        }
+        for paire in INVISIBLES.windows(2) {
+            assert!(paire[0].1 < paire[1].0, "{:X}", paire[1].0);
+        }
+        for c in ['a', ' ', 'é', '\u{2027}', '\u{2030}', '\u{1D17B}', '\u{E1000}'] {
+            assert!(!invisible(c), "{c:?}");
+        }
     }
 }

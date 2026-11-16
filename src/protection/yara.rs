@@ -655,6 +655,39 @@ pub(crate) fn examiner_en_detail(fichier: &Path) -> (Examen, Option<moteur::Resu
     (examiner_avec(&sources, fichier), None)
 }
 
+/// Comme `examiner_en_detail`, pour un fichier que la Console a ouvert et jugé : lu par ce descripteur seulement,
+/// depuis le début, jamais rouvert par `chemin`, qui ne sert qu'à nommer. Sans résultat du moteur, pas d'examen par le
+/// chemin en secours : impossible, et dit tel.
+#[cfg(any(target_os = "linux", windows))]
+pub(crate) fn examiner_ouvert_en_detail(
+    mut fichier: std::fs::File,
+    chemin: &Path,
+) -> (Examen, Option<moteur::Resultat>) {
+    let impossible = || {
+        Examen::Impossible(
+            tr!(
+                "le moteur n'a pas pu lire le fichier",
+                "the engine could not read the file"
+            )
+            .to_string(),
+        )
+    };
+    if std::io::Seek::rewind(&mut fichier).is_err() {
+        return (impossible(), None);
+    }
+    let sources = moteur::sources(Usage::ALaDemande);
+    let bornes = crate::analyse::Bornes {
+        delai: DELAI_PAR_FICHIER,
+        ..crate::analyse::Bornes::default()
+    };
+    match crate::journal::rattraper(std::panic::AssertUnwindSafe(|| {
+        moteur::examiner_ouvert(fichier, chemin, &sources, bornes)
+    })) {
+        Ok(Ok(r)) => (examen_de(&r), Some(r)),
+        _ => (impossible(), None),
+    }
+}
+
 /// L'examen tiré d'un résultat du moteur, dans l'ordre de `examiner_avec` : reconnu, suspect, impossible (source
 /// attendue absente ou partie non lue), puis sain, sous réserve si une source facultative manquait.
 fn examen_de(r: &moteur::Resultat) -> Examen {

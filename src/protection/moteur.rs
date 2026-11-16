@@ -795,9 +795,10 @@ pub(crate) fn examiner(chemin: &Path, sources: &Sources<'_>, delai: Duration) ->
 }
 
 /// Comme [`examiner`], pour un fichier déjà ouvert par l'appelant (le veilleur l'ouvre sous le dossier qu'il
-/// surveille, sans suivre de lien) ; `chemin` ne sert qu'à nommer et situer ce qui est trouvé, jamais à rouvrir.
-/// `bornes` : celles de l'appelant (le veilleur tient en 128 Mo de mémoire), délai compris.
-#[cfg(target_os = "linux")]
+/// surveille, la Console en descendant depuis un endroit permis, tous deux sans suivre de lien) ; `chemin` ne sert
+/// qu'à nommer et situer ce qui est trouvé, jamais à rouvrir. `bornes` : celles de l'appelant (le veilleur tient en
+/// 128 Mo de mémoire), délai compris.
+#[cfg(any(target_os = "linux", windows))]
 pub(crate) fn examiner_ouvert(
     fichier: std::fs::File,
     chemin: &Path,

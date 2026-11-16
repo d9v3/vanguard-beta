@@ -1395,13 +1395,9 @@ pub fn verifier_moi(autre: Option<&Path>) {
 /// signé, qui demande un accord, n'est pas comparé, et c'est dit. Versé au rapport pour ce programme-ci seulement : le
 /// résultat d'une autre copie écraserait, sous le même identifiant, celui de Vanguard lui-même.
 pub(crate) fn verifier_moi_json(autre: Option<&Path>) {
-    use resultat::{Historique, Moi};
+    use resultat::Moi;
     let debut = (chrono::Utc::now(), std::time::Instant::now());
-    let historique = if crate::parametres::hors_ligne() {
-        Historique::HorsLigne
-    } else {
-        Historique::SansAccord
-    };
+    let historique = historique_sans_question();
     let sha256 =
         |p: &Path| crate::protection::telechargement::calculer(p, crate::protection::telechargement::Algo::Sha256);
     let moi = if let Some(copie) = autre {
@@ -1439,6 +1435,36 @@ pub(crate) fn verifier_moi_json(autre: Option<&Path>) {
         crate::modele::resultat::verser(&r);
     }
     println!("{}", crate::modele::resultat::json(&r));
+}
+
+/// Sans question, l'historique signé n'est pas comparé : la raison dite.
+fn historique_sans_question() -> resultat::Historique {
+    if crate::parametres::hors_ligne() {
+        resultat::Historique::HorsLigne
+    } else {
+        resultat::Historique::SansAccord
+    }
+}
+
+/// `vanguard console verifier-moi -- <programme>` : comme `verifier_moi_json` pour une autre copie, mais l'empreinte
+/// est lue sur le fichier que la Console a ouvert et jugé, par ce même descripteur ; jamais rouvert par son chemin.
+/// Rien n'est versé (voir `verifier_moi_json`).
+#[cfg(any(target_os = "linux", windows))]
+pub(crate) fn verifier_copie_json(juge: &crate::socle::ouvrir_console::FichierJuge) {
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
+    let moi = resultat::Moi {
+        version: None,
+        compile: None,
+        perime: None,
+        programme: Some(chemin_affichable(&juge.chemin)),
+        sha256: Some(
+            crate::protection::telechargement::calculer_juge(juge, crate::protection::telechargement::Algo::Sha256)
+                .map_err(String::from),
+        ),
+        manifeste: None,
+        historique: historique_sans_question(),
+    };
+    println!("{}", crate::modele::resultat::json(&resultat::resultat(&moi, debut)));
 }
 
 /// Une autre copie de Vanguard, par son empreinte SHA-256 et l'historique signé des versions publiées.

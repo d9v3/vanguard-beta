@@ -19,6 +19,9 @@ pub(crate) mod processus;
 #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
 pub(crate) mod relro;
 pub(crate) mod systeme;
+// Linux et Windows seulement : la descente sans lien de la Console (openat ; FILE_FLAG_OPEN_REPARSE_POINT).
+#[cfg(any(target_os = "linux", windows))]
+pub(crate) mod ouvrir_console;
 pub(crate) mod valeur_console;
 
 pub use fichiers::dossier_local;

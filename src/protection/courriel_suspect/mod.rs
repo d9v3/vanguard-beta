@@ -377,6 +377,12 @@ fn lire_fichier(chemin: &Path) -> Result<Vec<u8>, Refus> {
         std::io::ErrorKind::FileTooLarge => Refus::TropGros,
         _ => Refus::Illisible,
     })?;
+    lire_ouvert(f)
+}
+
+/// Le courriel lu sur ce qui est déjà ouvert, depuis sa position, au plus jusqu'à la borne, quoi qu'il annonce.
+fn lire_ouvert(f: impl Read) -> Result<Vec<u8>, Refus> {
+    let max = u64::try_from(mime::BORNES.octets).unwrap_or(u64::MAX);
     let mut octets = Vec::new();
     f.take(max.saturating_add(1))
         .read_to_end(&mut octets)
@@ -924,8 +930,37 @@ pub fn verifier(fichier: Option<&Path>) {
 /// ligne (qui demande un accord) et l'analyse des pièces jointes (qui lance les moteurs) n'y sont pas faites : elles
 /// sont dites non vérifiées, jamais comptées saines.
 pub fn json(chemin: &Path) {
+    json_de(lire_fichier(chemin));
+}
+
+/// `vanguard console courriel-suspect -- <fichier>` : comme `json`, pour le fichier que la Console a ouvert et jugé,
+/// lu par ce même descripteur, depuis le début ; jamais rouvert par son chemin.
+#[cfg(any(target_os = "linux", windows))]
+pub(crate) fn json_juge(juge: &crate::socle::ouvrir_console::FichierJuge) {
+    json_de(lire_juge(juge));
+}
+
+/// Le courriel d'un fichier que la Console a ouvert et jugé.
+/// Pour les essais de la Console : les octets lus d'un fichier jugé, comme les lit `json_juge`.
+#[cfg(all(test, any(target_os = "linux", windows)))]
+pub(crate) fn octets_juges(juge: &crate::socle::ouvrir_console::FichierJuge) -> Option<Vec<u8>> {
+    lire_juge(juge).ok()
+}
+
+#[cfg(any(target_os = "linux", windows))]
+fn lire_juge(juge: &crate::socle::ouvrir_console::FichierJuge) -> Result<Vec<u8>, Refus> {
+    if juge.taille > u64::try_from(mime::BORNES.octets).unwrap_or(u64::MAX) {
+        return Err(Refus::TropGros);
+    }
+    let mut f = &juge.fichier;
+    std::io::Seek::rewind(&mut f).map_err(|_| Refus::Illisible)?;
+    lire_ouvert(f)
+}
+
+/// Le résultat d'un courriel lu (ou de son refus), versé puis écrit en JSON.
+fn json_de(lu: Result<Vec<u8>, Refus>) {
     let debut = (chrono::Utc::now(), std::time::Instant::now());
-    let r = match lire_fichier(chemin) {
+    let r = match lu {
         Err(refus) => resultat::refuse(&texte_refus(&refus), debut),
         Ok(octets) => {
             let m = mime::lire(&octets);

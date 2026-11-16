@@ -27,6 +27,8 @@ mod defender;
 mod defender_ecriture;
 pub(crate) mod defense_etat;
 mod demarrage_ecriture;
+// Ce qu'une poignée ouverte désigne vraiment : servi aussi à la Console (`socle::ouvrir_console`).
+pub(crate) use demarrage_ecriture::{chemin_final, information as information_fichier};
 mod demarrage_notes;
 mod durcissement;
 pub(crate) mod ecoute;

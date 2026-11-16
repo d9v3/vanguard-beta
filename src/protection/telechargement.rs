@@ -114,6 +114,17 @@ fn chercher_dans_liste(texte: &str, nom: &str, seule_permise: bool) -> Option<(A
 fn empreinte_a_cote(fichier: &Path) -> Option<(Algo, String, PathBuf)> {
     let nom = fichier.file_name()?.to_string_lossy().to_string();
     let dossier = fichier.parent()?;
+    // Une liste d'empreintes tient en quelques kilo-octets : un gros fichier de ce nom n'en est pas une. Lue par le
+    // lecteur sûr : un tube nommé posé sous ce nom ne fige pas la vérification, un lien n'est pas suivi.
+    empreinte_voisine(&nom, |c| {
+        crate::socle::lire_texte_ordinaire(&dossier.join(c), 1_000_000).ok()
+    })
+    .map(|(a, e, c)| (a, e, dossier.join(c)))
+}
+
+/// L'empreinte publiée à côté du fichier `nom`, chaque nom candidat lu par `lire` : (sorte, empreinte, nom du fichier
+/// où elle a été lue). `lire` lit par le chemin du dossier, ou par le dossier que la Console tient ouvert.
+fn empreinte_voisine(nom: &str, lire: impl Fn(&str) -> Option<String>) -> Option<(Algo, String, String)> {
     let candidats = [
         format!("{nom}.sha256"),
         format!("{nom}.sha256sum"),
@@ -130,12 +141,9 @@ fn empreinte_a_cote(fichier: &Path) -> Option<(Algo, String, PathBuf)> {
         "checksums.txt".into(),
     ];
     candidats.iter().find_map(|c| {
-        let chemin = dossier.join(c);
-        // Une liste d'empreintes tient en quelques kilo-octets : un gros fichier de ce nom n'en est pas une. Lue par
-        // le lecteur sûr : un tube nommé posé sous ce nom ne fige pas la vérification, un lien n'est pas suivi.
-        let texte = crate::socle::lire_texte_ordinaire(&chemin, 1_000_000).ok()?;
+        let texte = lire(c)?;
         // « outil.zip.sha256 » ne parle que d'outil.zip ; « SHA256SUMS » parle de tout le dossier.
-        chercher_dans_liste(&texte, &nom, c.starts_with(&format!("{nom}."))).map(|(a, e)| (a, e, chemin))
+        chercher_dans_liste(&texte, nom, c.starts_with(&format!("{nom}."))).map(|(a, e)| (a, e, c.clone()))
     })
 }
 
@@ -149,9 +157,10 @@ pub(crate) struct Ouvert {
     f: std::fs::File,
     /// La taille annoncée à l'ouverture (fstat) : exactement ce qui est lu, ni plus ni moins.
     taille: u64,
-    /// Le chemin ouvert : sous Windows, Get-FileHash en secours de BCrypt le relit par lui.
+    /// Le chemin ouvert : sous Windows, Get-FileHash en secours de BCrypt le relit par lui. `None` : un fichier
+    /// ouvert et jugé par la Console, qui ne se relit jamais par son chemin (pas de secours).
     #[cfg_attr(not(windows), allow(dead_code))]
-    chemin: PathBuf,
+    chemin: Option<PathBuf>,
 }
 
 impl Ouvert {
@@ -162,7 +171,20 @@ impl Ouvert {
         Ok(Ouvert {
             f,
             taille: m.len(),
-            chemin: chemin.to_path_buf(),
+            chemin: Some(chemin.to_path_buf()),
+        })
+    }
+
+    /// Le fichier que la Console a ouvert et jugé (`socle::ouvrir_console`), lu par ce même descripteur.
+    #[cfg(any(target_os = "linux", windows))]
+    fn du_juge(juge: &crate::socle::ouvrir_console::FichierJuge) -> std::io::Result<Ouvert> {
+        if juge.taille > EMPREINTE_MAX {
+            return Err(std::io::Error::from(std::io::ErrorKind::FileTooLarge));
+        }
+        Ok(Ouvert {
+            f: juge.fichier.try_clone()?,
+            taille: juge.taille,
+            chemin: None,
         })
     }
 
@@ -206,12 +228,20 @@ pub(crate) fn calculer_donne(fichier: &Path, algo: Algo) -> Result<String, Echec
     calculer(&reel, algo).map_err(|e| Echec::echoue(CONTEXTE_EMPREINTE, e))
 }
 
+/// L'empreinte d'un fichier que la Console a ouvert et jugé, lue par ce même descripteur.
+#[cfg(any(target_os = "linux", windows))]
+pub(crate) fn calculer_juge(juge: &crate::socle::ouvrir_console::FichierJuge, algo: Algo) -> Result<String, Echec> {
+    let mut ouvert =
+        Ouvert::du_juge(juge).map_err(|e| Echec::echoue(CONTEXTE_EMPREINTE, affichable(&e.to_string())))?;
+    calculer_ouvert(&mut ouvert, algo)
+}
+
 /// L'empreinte d'un fichier déjà ouvert : calculée ici sous Linux (sha2, sha1, md-5), par Windows lui-même sous
 /// Windows (BCrypt, Get-FileHash en secours) ; relu depuis le début à chaque fois.
 fn calculer_ouvert(ouvert: &mut Ouvert, algo: Algo) -> Result<String, Echec> {
     #[cfg(windows)]
     let sortie = {
-        let fichier = ouvert.chemin.clone();
+        let chemin = ouvert.chemin.clone();
         let nom = match algo {
             Algo::Md5 => "MD5",
             Algo::Sha1 => "SHA1",
@@ -229,6 +259,13 @@ fn calculer_ouvert(ouvert: &mut Ouvert, algo: Algo) -> Result<String, Echec> {
         if let Some(e) = calcul.map_err(|e| Echec::echoue(CONTEXTE_EMPREINTE, affichable(&e.to_string())))? {
             e
         } else {
+            // Un fichier ouvert et jugé par la Console ne se relit pas par son chemin : sans BCrypt, pas d'empreinte.
+            let Some(fichier) = chemin else {
+                return Err(Echec::echoue(
+                    CONTEXTE_EMPREINTE,
+                    tr!("BCrypt indisponible", "BCrypt unavailable"),
+                ));
+            };
             // PowerShell 5.1 lit mal « \\?\ » : la forme courte, seulement quand elle désigne sans doute possible le
             // même fichier (`sans_verbatim`) ; sinon le chemin tel quel, qui échoue plutôt que de lire un autre fichier.
             let texte = fichier.to_string_lossy();
@@ -447,7 +484,8 @@ pub fn verifier(fichier: Option<&Path>, empreinte: Option<&str>) {
     montrer_le_fichier(&chemin, &nom, ouvert.taille);
     let mut v = Verification::default();
     // 1. L'empreinte : celle collée, sinon celle posée à côté, sinon on la demande (menu).
-    let attendue = empreinte_attendue(&chemin, empreinte, interactif, &mut v);
+    let a_cote = || empreinte_a_cote(&chemin).map(|(a, e, f)| (a, e, nom_du_fichier(&f)));
+    let attendue = empreinte_attendue(&a_cote, empreinte, interactif, &mut v);
     verifier_l_empreinte(&mut ouvert, attendue.as_ref(), &mut v);
     // 2. Le nom et les premiers octets.
     verifier_le_nom(&mut ouvert, &nom, &mut v);
@@ -472,21 +510,62 @@ pub fn json(fichier: &Path, empreinte: Option<&str>) {
     let r = match ouvrir(fichier) {
         Err(refus) => resultat::refuse(&refus.raison(), debut),
         Ok((chemin, mut ouvert)) => {
-            let nom = nom_du_fichier(&chemin);
-            let attendue = empreinte_attendue(&chemin, empreinte, false, &mut v);
+            let a_cote = || empreinte_a_cote(&chemin).map(|(a, e, f)| (a, e, nom_du_fichier(&f)));
+            let attendue = empreinte_attendue(&a_cote, empreinte, false, &mut v);
             verifier_l_empreinte(&mut ouvert, attendue.as_ref(), &mut v);
-            verifier_le_nom(&mut ouvert, &nom, &mut v);
+            verifier_le_nom(&mut ouvert, &nom_du_fichier(&chemin), &mut v);
             analyser_vanguard(&chemin, &mut v);
-            v.releve.manques.push(trf!(
-                "{} : pas lancé avec --json",
-                "{}: not run with --json",
-                antivirus_du_systeme()
-            ));
+            sans_antivirus_du_systeme(&mut v);
             resultat::resultat(&v.releve, debut)
         }
     };
-    crate::modele::resultat::verser(&r);
-    let mut valeur = serde_json::to_value(&r).unwrap_or_default();
+    sortir_en_json(&r, &v);
+}
+
+/// `vanguard console verifier-fichier -- <fichier>` : comme `json` sans empreinte donnée, pour le fichier que la
+/// Console a ouvert et jugé. Tout est lu par ce qui est ouvert : le fichier par son descripteur, la liste
+/// d'empreintes voisine par le dossier tenu, le moteur sur le même descripteur ; aucun chemin n'est rouvert.
+#[cfg(any(target_os = "linux", windows))]
+pub(crate) fn json_juge(juge: &crate::socle::ouvrir_console::FichierJuge) {
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
+    let mut v = Verification {
+        muet: true,
+        ..Verification::default()
+    };
+    let r = match Ouvert::du_juge(juge) {
+        Err(e) => resultat::refuse(&affichable(&e.to_string()), debut),
+        Ok(mut ouvert) => {
+            let nom = nom_du_fichier(&juge.chemin);
+            let a_cote = || empreinte_voisine(&nom, |c| String::from_utf8(juge.lire_voisin(c, 1_000_000).ok()?).ok());
+            let attendue = empreinte_attendue(&a_cote, None, false, &mut v);
+            verifier_l_empreinte(&mut ouvert, attendue.as_ref(), &mut v);
+            verifier_le_nom(&mut ouvert, &nom, &mut v);
+            let (examen, detail) = match juge.fichier.try_clone() {
+                Ok(f) => crate::protection::yara::examiner_ouvert_en_detail(f, &juge.chemin),
+                Err(e) => (Examen::Impossible(affichable(&e.to_string())), None),
+            };
+            v.moteur = detail;
+            juger("Vanguard", &examen, &mut v);
+            sans_antivirus_du_systeme(&mut v);
+            resultat::resultat(&v.releve, debut)
+        }
+    };
+    sortir_en_json(&r, &v);
+}
+
+/// L'antivirus du système n'est pas lancé en JSON (il peut demander une installation) : dit, jamais compté sain.
+fn sans_antivirus_du_systeme(v: &mut Verification) {
+    v.releve.manques.push(trf!(
+        "{} : pas lancé avec --json",
+        "{}: not run with --json",
+        antivirus_du_systeme()
+    ));
+}
+
+/// Le résultat versé, puis écrit en JSON, celui du moteur sous « moteur ».
+fn sortir_en_json(r: &crate::modele::resultat::Resultat, v: &Verification) {
+    crate::modele::resultat::verser(r);
+    let mut valeur = serde_json::to_value(r).unwrap_or_default();
     if let Some(objet) = valeur.as_object_mut() {
         objet.insert(
             "moteur".into(),
@@ -670,14 +749,14 @@ fn montrer_le_fichier(chemin: &Path, nom: &str, octets: u64) {
 /// L'empreinte publiée : (algorithme, valeur, d'où elle vient). Celle donnée, sinon celle d'un fichier posé à côté,
 /// sinon demandée (menu) ; un texte qui n'en est pas une est dit.
 fn empreinte_attendue(
-    chemin: &Path,
+    a_cote: &dyn Fn() -> Option<(Algo, String, String)>,
     empreinte: Option<&str>,
     interactif: bool,
     v: &mut Verification,
 ) -> Option<(Algo, String, String)> {
     let saisie = match empreinte {
         Some(e) => Some(e.to_string()),
-        None if interactif && empreinte_a_cote(chemin).is_none() => Some(demander(tr!(
+        None if interactif && a_cote().is_none() => Some(demander(tr!(
             "  Empreinte publiée par le site (SHA-256 ; Entrée si vous ne l'avez pas) : ",
             "  Checksum published by the site (SHA-256; Enter if you do not have it): "
         )))
@@ -708,13 +787,7 @@ fn empreinte_attendue(
             }
             lue
         }
-        None => empreinte_a_cote(chemin).map(|(a, e, f)| {
-            let source = f
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-            (a, e, trf!("lue dans {source}", "read from {source}"))
-        }),
+        None => a_cote().map(|(a, e, source)| (a, e, trf!("lue dans {source}", "read from {source}"))),
     }
 }
 

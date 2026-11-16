@@ -112,7 +112,7 @@ fn pas_a_pas(depart: BorrowedFd<'_>, relatif: &Path, dossier: bool) -> io::Resul
 // FFI de libc : openat sur un descripteur ouvert, avec un nom en C vivant pendant l'appel ; le descripteur rendu est
 // pris par OwnedFd ici même.
 #[allow(unsafe_code)]
-fn un_element(dans: BorrowedFd<'_>, nom: &std::ffi::OsStr, drapeaux: i32) -> io::Result<File> {
+pub(crate) fn un_element(dans: BorrowedFd<'_>, nom: &std::ffi::OsStr, drapeaux: i32) -> io::Result<File> {
     let nom = CString::new(nom.as_bytes()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
     // SAFETY: `nom` est à nous, vivant pendant l'appel ; `dans` est un descripteur ouvert, emprunté pendant l'appel ;
     // aucun mode n'est passé (pas d'O_CREAT).

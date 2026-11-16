@@ -1457,6 +1457,9 @@ fn les_essais_n_ecrivent_pas_dans_le_dossier_temporaire() {
         // `essais::temporaire` ; sous Wine, le dossier temporaire de Windows est sur C: (dans le préfixe jetable),
         // où le chemin tapé se juge sans le point de montage de Z:.
         ("src/socle/valeur_console.rs", 2),
+        // La descente de la Console sous Windows : elle part d'une lettre de lecteur, et `essais::temporaire` passe
+        // sous Wine par Z:, la racine Unix montée par Wine.
+        ("src/socle/ouvrir_console.rs", 1),
     ]
     .into_iter()
     .collect();
