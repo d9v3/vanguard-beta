@@ -146,7 +146,7 @@ if command -v gpg >/dev/null; then
 fi
 # L'empreinte de « linux-x64 » dans ce manifeste : par python3 s'il est là (JSON lu pour de vrai), sinon par awk sur
 # la forme indentée qu'Anthropic publie.
-if command -v python3 >/dev/null; then
+if [ -n "$(command -v python3)" ]; then
   attendu=$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["platforms"]["linux-x64"]["checksum"])' \
     "$DOSSIER/manifest.json" 2>/dev/null)
 else

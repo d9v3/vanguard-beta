@@ -6009,6 +6009,10 @@ const HORS_LIGNE: &[(&str, &str)] = &[("VANGUARD_HORS_LIGNE", "1")];
 fn mise_a_jour_depuis_la_cle() {
     let racine = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("mise-a-jour-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&racine);
+    // Le vrai chemin : target peut être un lien symbolique (autre disque), et Linux montre le programme qui tourne
+    // (/proc/<pid>/exe) par son vrai chemin ; comparé à un chemin passant par le lien, il ne commencerait jamais pareil.
+    std::fs::create_dir_all(&racine).unwrap();
+    let racine = racine.canonicalize().unwrap();
     let (cle, maison) = (racine.join("cle"), racine.join("maison"));
     std::fs::create_dir_all(cle.join("Linux")).unwrap();
     std::fs::write(cle.join("vanguard.cle"), "").unwrap();
@@ -6063,6 +6067,10 @@ fn mise_a_jour_depuis_la_cle() {
 fn lance_depuis_la_cle_tourne_depuis_une_copie() {
     let racine = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("cle-independante-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&racine);
+    // Le vrai chemin : target peut être un lien symbolique (autre disque), et Linux montre le programme qui tourne
+    // (/proc/<pid>/exe) par son vrai chemin ; comparé à un chemin passant par le lien, il ne commencerait jamais pareil.
+    std::fs::create_dir_all(&racine).unwrap();
+    let racine = racine.canonicalize().unwrap();
     let (cle, maison) = (racine.join("cle"), racine.join("maison"));
     std::fs::create_dir_all(cle.join("Linux")).unwrap();
     std::fs::create_dir_all(maison.join("run")).unwrap();
@@ -6271,6 +6279,10 @@ fn copie_effacee_relancee_par_son_image_reste_une_copie() {
 fn cle_et_maison(nom: &str) -> (PathBuf, PathBuf, PathBuf) {
     let racine = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{nom}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&racine);
+    // Le vrai chemin : target peut être un lien symbolique (autre disque), et Linux montre le programme qui tourne
+    // (/proc/<pid>/exe) par son vrai chemin ; comparé à un chemin passant par le lien, il ne commencerait jamais pareil.
+    std::fs::create_dir_all(&racine).unwrap();
+    let racine = racine.canonicalize().unwrap();
     let (cle, maison) = (racine.join("cle"), racine.join("maison"));
     std::fs::create_dir_all(cle.join("Linux")).unwrap();
     std::fs::write(cle.join("vanguard.cle"), "").unwrap();
