@@ -645,10 +645,13 @@ fn rejuger(lancement: &Lancement, compte: &Compte) -> Result<Lancement, String> 
     }
 }
 
-/// La valeur rejugée : sa forme (`AvecValeur::nouvelle`) ; pour un fichier, en plus, son chemin réel (chaque lien
-/// résolu) doit être un fichier ordinaire sous Téléchargements, Bureau ou Documents du compte, ou sous
-/// /run/media/<compte>, sans dossier caché (`valeur::juger_chemin`). Rend ce chemin réel, seul à partir : un lien
-/// changé entre ce jugement et la lecture est rejugé par `vanguard`, qui ne lit que ce chemin-là.
+/// La valeur rejugée : sa forme (`AvecValeur::nouvelle`) ; pour un fichier, en plus, sa place jugée sur le texte
+/// d'abord (hors de Téléchargements, Bureau, Documents du compte et de /run/media/<compte> : refusé sans rien
+/// regarder sur le disque), puis chaque élément regardé sans suivre de lien : aucun lien, aucun dossier caché, un
+/// fichier ordinaire à un seul nom (`valeur::juger_chemin`). Rend son chemin sous l'endroit réel. Ce jugement ne vaut
+/// que pour l'instant où il est fait : `vanguard` ne le croit pas, il rejuge le texte puis ouvre le fichier une seule
+/// fois en descendant sans suivre de lien, et juge ce qui est ouvert (`socle::ouvrir_console`) ; ce qui change entre
+/// les deux est refusé là, jamais lu.
 fn rejuger_valeur(av: &AvecValeur, compte: &Compte) -> Result<AvecValeur, Refus> {
     let av = AvecValeur::nouvelle(av.commande(), av.valeur())?;
     if av.sorte() != Argument::Chemin {
@@ -666,15 +669,16 @@ fn rejuger_valeur(av: &AvecValeur, compte: &Compte) -> Result<AvecValeur, Refus>
 }
 
 /// user-dirs.dirs, lu sans jamais bloquer ni déborder : ouvert sans attendre (un tube nommé posé à sa place ne fige
-/// pas le relais), seulement s'il est un fichier ordinaire, 64 Kio au plus, en UTF-8. Absent ou autre : vide (les
-/// noms usuels des dossiers servent alors seuls).
+/// pas le relais) et sans suivre de lien (un lien vers un fichier d'ailleurs n'y déclare rien), seulement s'il est un
+/// fichier ordinaire, 64 Kio au plus, en UTF-8. Absent ou autre : vide (les noms usuels des dossiers servent alors
+/// seuls), comme du côté de `vanguard` (`socle::lire_texte_ordinaire`).
 fn lire_declares(chemin: &Path) -> String {
     use std::io::Read;
     use std::os::unix::fs::OpenOptionsExt;
     const MAX: u64 = 64 << 10;
     let Ok(f) = std::fs::OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_NOFOLLOW)
         .open(chemin)
     else {
         return String::new();
@@ -1180,10 +1184,9 @@ esac
         rejuger(&Lancement::AvecValeur(AvecValeur::nouvelle(c, v).unwrap()), compte)
     }
 
-    /// Le relais rejuge chaque chemin sur son chemin réel (liens résolus), sans croire la fenêtre : seul un fichier
-    /// ordinaire sous Téléchargements, Bureau ou Documents part, et c'est son chemin réel qui part ; un lien qui sort
-    /// de ces endroits, ~/.ssh, /proc, /dev, un tube nommé, un dossier caché ou un dossier sont refusés, et le refus
-    /// ne redit jamais la valeur.
+    /// Le relais rejuge chaque chemin sans croire la fenêtre : seul un fichier ordinaire sous Téléchargements, Bureau
+    /// ou Documents part, par son chemin sous l'endroit réel ; un lien (même vers un fichier permis), ~/.ssh, /proc,
+    /// /dev, un tube nommé, un dossier caché ou un dossier sont refusés, et le refus ne redit jamais la valeur.
     #[test]
     fn le_relais_rejuge_chaque_chemin_sur_son_chemin_reel() {
         let (d, compte) = maison_piegee("rejuger");
@@ -1193,7 +1196,6 @@ esac
         for (v, attendu) in [
             ("~/Téléchargements/facture.pdf", reel("facture.pdf")),
             ("~/Téléchargements/ma facture.pdf", reel("ma facture.pdf")),
-            ("~/Documents/lien.pdf", reel("facture.pdf")),
             (&reel("facture.pdf"), reel("facture.pdf")),
         ] {
             for c in [
@@ -1208,14 +1210,17 @@ esac
         }
         for (v, refus) in [
             ("~/.ssh/id_ed25519", Refus::HorsDesEndroits),
+            // Le même refus qu'il existe ou non : rien n'est regardé hors des endroits permis.
+            ("~/.ssh/absent", Refus::HorsDesEndroits),
             ("~/hors.txt", Refus::HorsDesEndroits),
-            ("~/Téléchargements/cle", Refus::HorsDesEndroits),
-            ("~/Téléchargements/ssh/id_ed25519", Refus::HorsDesEndroits),
-            ("~/Téléchargements/racine/etc/passwd", Refus::HorsDesEndroits),
+            ("~/Téléchargements/cle", Refus::Lien),
+            ("~/Téléchargements/ssh/id_ed25519", Refus::Lien),
+            ("~/Téléchargements/racine/etc/passwd", Refus::Lien),
+            ("~/Documents/lien.pdf", Refus::Lien),
             ("~/Bureau/id_ed25519", Refus::HorsDesEndroits),
-            ("~/Téléchargements/environ", Refus::HorsDesEndroits),
+            ("~/Téléchargements/environ", Refus::Lien),
             ("/proc/self/environ", Refus::HorsDesEndroits),
-            ("~/Téléchargements/zero", Refus::HorsDesEndroits),
+            ("~/Téléchargements/zero", Refus::Lien),
             ("/dev/zero", Refus::HorsDesEndroits),
             ("~/Téléchargements/tube", Refus::PasUnFichier),
             ("~/Téléchargements", Refus::HorsDesEndroits),
@@ -1240,6 +1245,21 @@ esac
             rejuger(&Lancement::Commande(Commande::Bilan), &compte),
             Ok(Lancement::Commande(Commande::Bilan))
         );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// user-dirs.dirs posé en lien (vers un fichier qui déclarerait ~/.ssh comme Téléchargements) ne déclare rien :
+    /// lu sans suivre de lien, il est vide, et seuls les noms usuels servent.
+    #[test]
+    fn user_dirs_en_lien_ne_declare_rien() {
+        let d = crate::essais::banc("user-dirs-lien");
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let vrai = d.join("ailleurs.dirs");
+        std::fs::write(&vrai, "XDG_DOWNLOAD_DIR=\"$HOME/Telechargements\"\n").unwrap();
+        std::os::unix::fs::symlink(&vrai, d.join("user-dirs.dirs")).unwrap();
+        assert_eq!(lire_declares(&vrai), "XDG_DOWNLOAD_DIR=\"$HOME/Telechargements\"\n");
+        assert_eq!(lire_declares(&d.join("user-dirs.dirs")), "");
         let _ = std::fs::remove_dir_all(&d);
     }
 

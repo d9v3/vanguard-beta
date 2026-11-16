@@ -96,6 +96,12 @@ fn comprendre(brut: &str) {
             assert!(Commande::TOUTES.contains(&c));
             assert_eq!(c.argument(), Some(av.sorte()), "{brut:?}");
             assert!(valeur::valider(av.sorte(), av.valeur()).is_ok(), "{brut:?}");
+            // Rien d'invisible (table `valeur::INVISIBLES`) ni aucun blanc autre que l'espace ordinaire : la valeur
+            // lancée se lit telle qu'elle s'affiche.
+            for ch in av.valeur().chars() {
+                assert!(!valeur::invisible(ch), "U+{:04X} dans {brut:?}", u32::from(ch));
+                assert!(!ch.is_whitespace() || ch == ' ', "U+{:04X} dans {brut:?}", u32::from(ch));
+            }
             let l = commandes::Lancement::AvecValeur(av.clone());
             assert_eq!(l.arguments(), ["console", c.nom(), "--", av.valeur()], "{brut:?}");
             assert!(!l.change());
