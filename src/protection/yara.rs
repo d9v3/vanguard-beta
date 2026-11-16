@@ -129,9 +129,15 @@ pub(crate) fn endroits_a_risque() -> Vec<PathBuf> {
 fn dossiers_reels(liste: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut reels: Vec<PathBuf> = Vec::new();
     for p in liste.into_iter().filter(|p| p.is_dir()) {
-        // Le chemin réel seulement s'il diffère (un lien) : sous Windows, il prend la forme « \\?\C:\… ».
+        // Le chemin réel seulement s'il diffère (un lien ; sous Windows, il prend la forme « \\?\C:\… ») et
+        // désigne un dossier à part : un lien vers « / » reste un lien, dit illisible, pas tout le disque parcouru.
         let reel = match std::fs::canonicalize(&p) {
-            Ok(r) if crate::socle::chemins::composants(&r) != crate::socle::chemins::composants(&p) => r,
+            Ok(r)
+                if crate::socle::chemins::composants(&r) != crate::socle::chemins::composants(&p)
+                    && moteur::assez_precis(&r, &crate::socle::maison()) =>
+            {
+                r
+            }
             _ => p,
         };
         let forme = crate::socle::chemins::composants(&reel);
@@ -730,6 +736,9 @@ mod tests {
         for liste in [vec![d.join("b"), vrai.clone()], vec![vrai.clone(), d.join("b")]] {
             assert_eq!(dossiers_reels(liste), vec![vrai.clone()]);
         }
+        let racine = d.join("racine");
+        std::os::unix::fs::symlink("/", &racine).unwrap();
+        assert_eq!(dossiers_reels(vec![racine.clone()]), vec![racine]);
         let _ = std::fs::remove_dir_all(&d);
     }
 

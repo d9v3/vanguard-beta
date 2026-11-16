@@ -54,7 +54,8 @@ pub(crate) fn nom_sans_ambiguite(nom: &str) -> bool {
         })
     });
     !nom.is_empty()
-        && !nom.ends_with(['.', ' '])
+        // Tout blanc final (espace insécable, tabulation…) : un .NET ancien le retire aussi.
+        && !nom.ends_with(|c: char| c == '.' || c.is_whitespace())
         && !nom.chars().any(|c| c < ' ' || "<>:\"/|?*".contains(c))
         && !PERIPHERIQUES.contains(&souche.as_str())
         && !numerote
@@ -121,6 +122,9 @@ mod essais {
         // Ce que Windows réinterpréterait sans « \\?\ » : un autre fichier, ou un périphérique.
         for c in [
             r"\\?\C:\x\dossier.",
+            "\\\\?\\C:\\x\\outil.exe\u{a0}",
+            "\\\\?\\C:\\x\\outil.exe\t",
+            "\\\\?\\C:\\x\\outil.exe\u{85}",
             r"\\?\C:\x\dossier ",
             r"\\?\C:\x\..\y",
             r"\\?\C:\x\.\y",

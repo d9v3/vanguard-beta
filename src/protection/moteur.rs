@@ -537,22 +537,22 @@ fn clamav_et_manques(mode: Mode) -> (Option<&'static Base>, Vec<String>) {
 fn lieu_de(chemin: &Path) -> Lieu {
     type Garde = std::sync::Mutex<Option<(Instant, std::sync::Arc<Lieux>)>>;
     static LIEUX: Garde = std::sync::Mutex::new(None);
-    let lieux = {
-        let mut g = LIEUX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        match g.as_ref() {
-            Some((quand, l)) if quand.elapsed() < Duration::from_secs(60) => std::sync::Arc::clone(l),
-            _ => {
-                let l = std::sync::Arc::new(Lieux::nouveaux(
-                    crate::protection::telechargement::dossier_telechargements().as_deref(),
-                    &dossiers_temporaires(),
-                    &crate::socle::maison(),
-                ));
-                *g = Some((Instant::now(), std::sync::Arc::clone(&l)));
-                l
-            }
-        }
+    let frais = |g: &Option<(Instant, std::sync::Arc<Lieux>)>| match g {
+        Some((quand, l)) if quand.elapsed() < Duration::from_secs(60) => Some(std::sync::Arc::clone(l)),
+        _ => None,
     };
-    lieux.de(chemin)
+    let verrou = || LIEUX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(l) = frais(&verrou()) {
+        return l.de(chemin);
+    }
+    // Calculé hors du verrou : un dossier sur un partage réseau muet ne fait attendre que ce fil, pas tous.
+    let l = std::sync::Arc::new(Lieux::nouveaux(
+        crate::protection::telechargement::dossier_telechargements().as_deref(),
+        &dossiers_temporaires(),
+        &crate::socle::maison(),
+    ));
+    *verrou() = Some((Instant::now(), std::sync::Arc::clone(&l)));
+    l.de(chemin)
 }
 
 /// Les dossiers temporaires du compte : celui du processus (`temp_dir`, qui lit TMP sous Windows, TMPDIR ailleurs),
@@ -586,14 +586,19 @@ fn temporaires_selon(variable: &dyn Fn(&str) -> Option<std::ffi::OsString>, mais
 }
 
 /// Un dossier venu de l'environnement (TMPDIR, TEMP, XDG_DOWNLOAD_DIR…) n'est retenu que s'il désigne un dossier à
-/// part : absolu, pas le dossier personnel lui-même, et ne contenant pas le système (« / », « C:\ », C:\Windows,
-/// Program Files), qui ferait de chaque fichier un fichier temporaire ou téléchargé. La racine d'un autre lecteur
-/// (« R:\ », un disque en mémoire) ou un partage réseau sont de vrais dossiers à part. Un dossier qui contient le
+/// part : absolu, pas le dossier personnel lui-même, ni contenant le système (« / », « C:\ ») ni dedans (/usr/lib,
+/// C:\Windows\System32, Program Files, sauf /var/tmp et Windows\Temp), qui ferait de chaque fichier du système un
+/// fichier temporaire ou téléchargé. La racine d'un autre lecteur (« R:\ », un disque en mémoire) ou un partage
+/// réseau sont de vrais dossiers à part. Un dossier qui contient le
 /// dossier personnel (/tmp quand HOME vaut /tmp/invite) reste retenu : les fichiers du dossier personnel n'y comptent
 /// pas (`Lieux::de`).
-fn assez_precis(dossier: &Path, maison: &Path) -> bool {
+pub(crate) fn assez_precis(dossier: &Path, maison: &Path) -> bool {
     let d = composants(dossier);
-    dossier.is_absolute() && !formes_de(maison).contains(&d) && !dossiers_du_systeme().iter().any(|s| s.starts_with(&d))
+    let (systeme, permis) = dossiers_du_systeme();
+    let dans_le_systeme = |s: &Forme| d.starts_with(s) && !permis.iter().any(|p| d.starts_with(p));
+    dossier.is_absolute()
+        && !formes_de(maison).contains(&d)
+        && !systeme.iter().any(|s| s.starts_with(&d) || dans_le_systeme(s))
 }
 
 /// Un dossier sous sa forme écrite et, si elle diffère, sous son chemin réel.
@@ -604,19 +609,37 @@ fn formes_de(dossier: &Path) -> Vec<Forme> {
     f
 }
 
-/// Les dossiers du système, qu'un dossier temporaire ou de téléchargements ne contient jamais.
-fn dossiers_du_systeme() -> Vec<Forme> {
+/// Les dossiers du système, qu'un dossier temporaire ou de téléchargements ne contient pas et où il n'est pas, et
+/// les dossiers temporaires du système qui y sont permis. Sous Windows, demandés à Windows : SystemRoot, windir ou
+/// ProgramFiles se réécrivent dans l'environnement du compte.
+fn dossiers_du_systeme() -> (Vec<Forme>, Vec<Forme>) {
     #[cfg(unix)]
-    let dossiers = ["/usr", "/etc"].map(std::path::PathBuf::from).to_vec();
-    #[cfg(windows)]
-    let dossiers: Vec<std::path::PathBuf> = ["SystemRoot", "windir", "ProgramFiles"]
-        .iter()
-        .filter_map(std::env::var_os)
+    let (systeme, permis) = (
+        [
+            "/usr", "/etc", "/bin", "/sbin", "/lib", "/lib64", "/boot", "/opt", "/var", "/proc", "/sys",
+        ]
         .map(std::path::PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .chain([std::path::PathBuf::from(r"C:\Windows")])
-        .collect();
-    dossiers.iter().flat_map(|d| formes_de(d)).collect()
+        .to_vec(),
+        vec![std::path::PathBuf::from("/var/tmp")],
+    );
+    #[cfg(windows)]
+    let (systeme, permis) = {
+        let d = crate::machine::windows::environnement::dossiers();
+        let windows = Some(d.windows.clone())
+            .filter(|w| w.is_absolute())
+            .unwrap_or_else(|| r"C:\Windows".into());
+        let autres = [
+            &d.program_files,
+            &d.program_files_x86,
+            &d.program_files_x64,
+            &d.program_data,
+        ];
+        let mut systeme: Vec<std::path::PathBuf> = autres.into_iter().flatten().cloned().collect();
+        systeme.push(windows.clone());
+        (systeme, vec![windows.join("Temp")])
+    };
+    let formes = |l: Vec<std::path::PathBuf>| l.iter().flat_map(|d| formes_de(d)).collect();
+    (formes(systeme), formes(permis))
 }
 
 /// Un chemin sous sa forme comparable (`composants`).
@@ -1477,11 +1500,25 @@ mod tests {
         #[cfg(unix)]
         let systeme = std::path::PathBuf::from("/usr");
         #[cfg(windows)]
-        let systeme = std::path::PathBuf::from(r"C:\Windows");
-        let mut vagues = vec![std::path::PathBuf::new(), racine.clone(), maison.clone(), systeme];
+        let systeme = crate::machine::windows::environnement::dossiers().windows.clone();
+        let mut vagues = vec![
+            std::path::PathBuf::new(),
+            racine.clone(),
+            maison.clone(),
+            systeme.clone(),
+        ];
+        #[cfg(unix)]
+        vagues.extend(["/usr/lib", "/var/lib", "/opt/outil"].map(std::path::PathBuf::from));
+        #[cfg(windows)]
+        vagues.extend([systeme.join("System32"), systeme.join(r"System32\drivers")]);
         for v in &vagues {
             assert!(!assez_precis(v, &maison), "{v:?}");
         }
+        // Les dossiers temporaires du système, eux, comptent.
+        #[cfg(unix)]
+        assert!(assez_precis(Path::new("/var/tmp"), &maison));
+        #[cfg(windows)]
+        assert!(assez_precis(&systeme.join("Temp"), &maison));
         vagues.extend(maison.parent().map(Path::to_path_buf));
         #[cfg(unix)]
         {
