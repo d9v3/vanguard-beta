@@ -1048,16 +1048,16 @@ vanguard yara --complet</pre>
     <div class="tete-section">
       <p class="surtitre">Nouveautés de la version {{VERSION_COURTE}}</p>
       <h2>Ce qui vient d'arriver</h2>
-      <p>Une version où Vanguard lit ce qui se relance au démarrage et la configuration SSH comme le système les lit : ce qu'il ne comprend pas jusqu'au bout est dit, jamais compté comme sain.</p>
+      <p>Une version où Vanguard a sa fenêtre : livrée avec le programme, lancée seulement si c'est bien la sienne, et chaque geste montré avant d'être fait.</p>
     </div>
     <ul class="nouveautes">
-      <li><b>Le démarrage lu pour de vrai</b><span>Sous Linux, systemd, Hyprland et sa configuration Lua jugés ligne par ligne comme ils s'exécutent : variables, lignes coupées, échappements, raccourcis qui lancent.</span></li>
-      <li><b>« C'est normal chez moi », exact</b><span>Le choix montre chaque ligne et l'empreinte de ce qu'elle lance ; il ne tait l'alerte que pour cet état, 90 jours.</span></li>
-      <li><b>SSH lu comme SSH</b><span>Include, Host et Match suivis jusque dans les fichiers inclus ; les cas limites d'OpenSSH 10 lus comme lui.</span></li>
-      <li><b>Aperçu d'une correction</b><span>Ce qu'une correction ferait (commandes, droits, valeurs d'avant, annulation), sans rien lancer.</span></li>
-      <li><b>Seize outils en <code>--json</code></b><span>Pour les scripts : aucune question, rien de changé, et ce qui n'a pas pu se voir rend le tout non vérifié.</span></li>
-      <li><b>La souris dans le menu</b><span>Clic, survol avec aperçu, roulette, clic droit pour revenir ; Linux, Windows et SSH.</span></li>
-      <li><b>Textes piégés</b><span>Les faux blancs et les invisibles rares deviennent « &#xFFFD; » : un nom ne paraît plus vide ni pareil à un autre.</span></li>
+      <li><b>La fenêtre de Vanguard</b><span>Sur un bureau graphique, <code>vanguard</code> ouvre la fenêtre, sinon le menu du terminal, comme avant ; <code>vanguard --menu</code> le force.</span></li>
+      <li><b>Lancée seulement si c'est la sienne</b><span>Son empreinte SHA-256 est gravée dans le programme signé : une fausse fenêtre posée à côté n'est jamais lancée, et rien du compte n'y entre.</span></li>
+      <li><b>Corriger et remettre depuis la fenêtre</b><span>L'aperçu entier d'abord ; « Appliquer » et « Remettre comme avant » s'activent 2 secondes après, un geste à la fois (Linux).</span></li>
+      <li><b>Mettre à jour en voyant ce qui s'installe</b><span>D'où vient la mise à jour, sa version, son empreinte, sa taille et chaque programme remplacé, avant l'accord ; aussi <code>vanguard se-mettre-a-jour --voir</code>.</span></li>
+      <li><b>La fenêtre voyage avec le programme</b><span>La page de la version, les mises à jour et la clé la portent, vérifiée comme le programme, tout ou rien.</span></li>
+      <li><b>Programmes au démarrage sur accord</b><span>Retirer ou remettre une entrée demande l'accord donné pour ce geste ; une entrée changée depuis la liste est refusée.</span></li>
+      <li><b>Les programmes du système, pris par leur chemin</b><span>Jamais par le PATH du compte : un faux programme posé dans <code>~/.local/bin</code> ne cache plus une connexion ni une ligne du journal.</span></li>
 </ul>
   </section>
 
