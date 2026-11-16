@@ -1,7 +1,8 @@
 //! La bande Console, sous la barre : l'en-tête (état, Arrêter, filtres, recherche, Coulisses, Déplier), les places de
 //! la console (lignes simples et blocs de commande, `console::Console::places`), la saisie et sa liste de
-//! suggestions. Rien ici ne lance autre chose qu'une commande de la liste fermée, par `Appli::demander` ou
-//! `Appli::saisir` : jamais un changement, jamais un argument libre.
+//! suggestions. Rien ici ne lance autre chose qu'une commande de la liste fermée, par `Appli::demander`,
+//! `Appli::redemander` ou `Appli::saisir` : jamais un changement ; une valeur tapée seulement pour une commande qui en
+//! prend une, de sa sorte, jugée (`AvecValeur`), jamais une option ni une suite libre.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -554,9 +555,9 @@ fn defiler(appli: &mut Appli, ui: &mut Ui, places: &[Place], b: &mut Bande) {
 enum Action {
     Basculer(u64),
     Deplier(u64),
-    Retirer(Commande),
+    Retirer(Lancement),
     Voir(Commande),
-    Relancer(Commande),
+    Relancer(Lancement),
     Copier(String),
 }
 
@@ -564,9 +565,9 @@ fn agir(appli: &mut Appli, ui: &Ui, a: Action) {
     match a {
         Action::Basculer(n) => appli.console.basculer(n),
         Action::Deplier(n) => appli.console.deplier(n),
-        Action::Retirer(c) => appli.retirer(c),
+        Action::Retirer(l) => appli.retirer(&l),
         Action::Voir(c) => appli.aller(ecran_de(c)),
-        Action::Relancer(c) => appli.demander(c),
+        Action::Relancer(l) => appli.redemander(&l),
         Action::Copier(t) => {
             ui.ctx().copy_text(t);
             let maintenant = ui.input(|i| i.time);
@@ -726,7 +727,7 @@ fn dessiner_bloc(
                         "Retirer de la file (rien n'a été lancé)",
                         "Remove from the queue (nothing was run)"
                     ));
-                return clic.then_some(Action::Retirer(commande));
+                return clic.then(|| Action::Retirer(b.lancement.clone()));
             }
             // Le chevron : ouvert vers le bas, replié vers la droite.
             let c = droite.center();
@@ -845,7 +846,7 @@ fn dessiner_bloc(
                 action = Some(Action::Voir(commande));
             }
             x = fin + 20.0;
-            if let Lancement::Commande(c) = b.lancement {
+            if matches!(b.lancement, Lancement::Commande(_) | Lancement::AvecValeur(_)) {
                 let (rep, fin) = lien(
                     ui,
                     peintre,
@@ -854,7 +855,7 @@ fn dessiner_bloc(
                     id.with("relancer"),
                 );
                 if rep.clicked() {
-                    action = Some(Action::Relancer(c));
+                    action = Some(Action::Relancer(b.lancement.clone()));
                 }
                 rep.on_hover_text(crate::trf!(
                     "Relance « {} » (lecture seule)",

@@ -7,6 +7,8 @@
 
 use std::time::Duration;
 
+pub(crate) use crate::valeur::{Argument, Refus};
+
 /// Les rubriques du rail, dans l'ordre du menu de Vanguard.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Rubrique {
@@ -72,9 +74,10 @@ impl Rubrique {
         }
     }
 
-    /// Les commandes de la liste rangées dans cette rubrique, celles de ce système seulement.
+    /// Les commandes de la liste rangées dans cette rubrique, celles de ce système seulement, et sans celles qui ne
+    /// se lancent qu'avec une valeur tapée (un clic n'en a pas).
     pub fn commandes(self) -> impl Iterator<Item = Commande> {
-        Commande::ici().filter(move |c| c.rubrique() == self)
+        Commande::ici().filter(move |c| c.rubrique() == self && !c.valeur_requise())
     }
 }
 
@@ -149,12 +152,18 @@ pub enum Commande {
     Blocage,
     VerifierSauvegarde,
     Ordinateurs,
+    /// Les quatre suivantes ne se lancent qu'avec une valeur tapée dans la console (`Commande::argument`) : ni
+    /// montrées dans le rail, ni lancées d'un clic.
+    Chercher,
+    Lien,
+    VerifierFichier,
+    CourrielSuspect,
 }
 
 impl Commande {
     /// L'ordre compte : le relais reçoit le rang d'une commande dans cette liste (`protocole`). Une commande
     /// nouvelle s'ajoute à la fin.
-    pub const TOUTES: [Commande; 45] = [
+    pub const TOUTES: [Commande; 49] = [
         Commande::Bilan,
         Commande::Protection,
         Commande::Evenements,
@@ -200,6 +209,10 @@ impl Commande {
         Commande::Blocage,
         Commande::VerifierSauvegarde,
         Commande::Ordinateurs,
+        Commande::Chercher,
+        Commande::Lien,
+        Commande::VerifierFichier,
+        Commande::CourrielSuspect,
     ];
 
     /// Les commandes de la liste que ce système sait lancer et que la personne choisit, dans l'ordre de la liste. Une
@@ -216,6 +229,27 @@ impl Commande {
     /// dossier de .evtx demanderait un chemin, jamais donné d'ici).
     pub fn sur_ce_systeme(self) -> bool {
         !matches!(self, Commande::JournauxWindows) || cfg!(windows)
+    }
+
+    /// La sorte de valeur que la console accepte après son nom (`verifier-fichier ~/Téléchargements/x.pdf`) : une
+    /// seule par commande, et aucune pour toutes les autres. Liste fermée, relue par les essais (`attaques`).
+    pub fn argument(self) -> Option<Argument> {
+        match self {
+            Commande::Chercher => Some(Argument::Mots),
+            Commande::Lien => Some(Argument::Adresse),
+            Commande::Evenements => Some(Argument::Incident),
+            Commande::DernieresFailles | Commande::JournauxWindows => Some(Argument::Jours),
+            Commande::VerifierFichier | Commande::CourrielSuspect | Commande::VerifierMoi => Some(Argument::Chemin),
+            _ => None,
+        }
+    }
+
+    /// Une commande qui ne se lance qu'avec sa valeur : sans elle, elle n'a rien à lire.
+    pub fn valeur_requise(self) -> bool {
+        matches!(
+            self,
+            Commande::Chercher | Commande::Lien | Commande::VerifierFichier | Commande::CourrielSuspect
+        )
     }
 
     /// Le nom tapé dans la console (français).
@@ -266,6 +300,10 @@ impl Commande {
             Commande::Blocage => "blocage",
             Commande::VerifierSauvegarde => "verifier-sauvegarde",
             Commande::Ordinateurs => "ordinateurs",
+            Commande::Chercher => "chercher",
+            Commande::Lien => "lien",
+            Commande::VerifierFichier => "verifier-fichier",
+            Commande::CourrielSuspect => "courriel-suspect",
         }
     }
 
@@ -317,6 +355,10 @@ impl Commande {
             Commande::Blocage => "blocking",
             Commande::VerifierSauvegarde => "check-backup",
             Commande::Ordinateurs => "computers",
+            Commande::Chercher => "search",
+            Commande::Lien => "link",
+            Commande::VerifierFichier => "check-file",
+            Commande::CourrielSuspect => "suspicious-email",
         }
     }
 
@@ -395,6 +437,13 @@ impl Commande {
             Commande::VerifierSauvegarde => &["verifier-sauvegarde", "--json"],
             // Sans menu : jamais renommer ni oublier un ordinateur d'ici.
             Commande::Ordinateurs => &["ordinateurs", "--json"],
+            // Jamais lancées sans valeur (`Lancement::AvecValeur`) : la fenêtre et le relais le refusent avant. Si
+            // c'était quand même le cas, `vanguard console` sans « -- <valeur> » est refusé par sa ligne de
+            // commande, sans rien faire.
+            Commande::Chercher => &["console", "chercher"],
+            Commande::Lien => &["console", "lien"],
+            Commande::VerifierFichier => &["console", "verifier-fichier"],
+            Commande::CourrielSuspect => &["console", "courriel-suspect"],
         }
     }
 
@@ -427,6 +476,8 @@ impl Commande {
             | Commande::Autotest
             // La taille de chaque cache, mesurée ; la base des paquets lue.
             | Commande::Nettoyer
+            // Un fichier reçu (jusqu'à quelques centaines de Mo) passé aux règles, comme l'analyse d'un dossier.
+            | Commande::VerifierFichier
             | Commande::Logiciels => 300,
             // Le scan du réseau local : une douzaine de secondes sur un /24, plus sur une plage large ou lente.
             Commande::TestConnexion
@@ -468,7 +519,8 @@ impl Commande {
             | Commande::Parametres
             | Commande::Blocage
             | Commande::VerifierSauvegarde
-            | Commande::Ordinateurs => Forme::Libre,
+            | Commande::Ordinateurs
+            | Commande::Chercher => Forme::Libre,
             _ => Forme::Resultat,
         }
     }
@@ -523,6 +575,10 @@ impl Commande {
                 crate::tr!("Vérifier la sauvegarde automatique", "Check the automatic backup")
             }
             Commande::Ordinateurs => crate::tr!("Mes ordinateurs", "My computers"),
+            Commande::Chercher => crate::tr!("Chercher dans Vanguard", "Search Vanguard"),
+            Commande::Lien => crate::tr!("Vérifier un lien", "Check a link"),
+            Commande::VerifierFichier => crate::tr!("Vérifier un fichier", "Check a file"),
+            Commande::CourrielSuspect => crate::tr!("Courriel suspect", "Suspicious email"),
         }
     }
 
@@ -709,6 +765,22 @@ impl Commande {
                 "Le tableau de la clé VANGUARD : chaque ordinateur vu, sa note et ses problèmes restants. Rien n'est écrit.",
                 "The VANGUARD key's table: each computer seen, its grade and its remaining problems. Nothing is written."
             ),
+            Commande::Chercher => crate::tr!(
+                "Les dix meilleurs résultats de la recherche du menu, et leur commande. Rien ne s'ouvre ni ne se lance.",
+                "The ten best results of the menu's search, and their command. Nothing is opened or run."
+            ),
+            Commande::Lien => crate::tr!(
+                "Les signes d'un lien piégé, lus sur cet ordinateur : le lien n'est jamais ouvert, rien n'est envoyé.",
+                "The signs of a trapped link, read on this computer: the link is never opened, nothing is sent."
+            ),
+            Commande::VerifierFichier => crate::tr!(
+                "Un fichier de Téléchargements, Bureau, Documents ou d'un support amovible, examiné ici, sans Internet.",
+                "A file from Downloads, Desktop, Documents or a removable drive, examined here, without Internet."
+            ),
+            Commande::CourrielSuspect => crate::tr!(
+                "Un courriel enregistré (.eml) : expéditeur, liens et pièces jointes, lus ici, sans Internet.",
+                "A saved email (.eml): sender, links and attachments, read here, without Internet."
+            ),
         }
     }
 
@@ -734,8 +806,12 @@ impl Commande {
             | Commande::Antivirus
             | Commande::EtatAntivirus
             | Commande::Yara
-            | Commande::Memoire => Rubrique::Virus,
-            Commande::BilanConfidentialite | Commande::CameraMicro => Rubrique::Arnaques,
+            | Commande::Memoire
+            | Commande::VerifierFichier => Rubrique::Virus,
+            Commande::BilanConfidentialite | Commande::CameraMicro | Commande::Lien | Commande::CourrielSuspect => {
+                Rubrique::Arnaques
+            }
+            Commande::Chercher => Rubrique::Accueil,
             Commande::Protection
             | Commande::Evenements
             | Commande::OptionsDefense
@@ -1116,12 +1192,52 @@ pub struct ChangementCouleurs {
     pub choix: Option<crate::couleurs::Choix>,
 }
 
-/// Ce qu'une tâche lance : une commande de la liste (elle lit), ou un changement (seulement par un clic confirmé,
-/// jamais par la console) : au démarrage, des couleurs de la fenêtre, ou ses animations (`true` : réduites), gardées
-/// par `vanguard` pour les prochaines ouvertures.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+/// Une commande de la console et la valeur tapée après son nom (`verifier-fichier ~/Téléchargements/x.pdf`), jugée
+/// sur sa forme (`valeur::valider`) pour la sorte que la commande accepte, et pour elle seule. Ses champs sont privés :
+/// seule `nouvelle` en fait une, et le relais la refait avec le chemin réel avant de lancer quoi que ce soit.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct AvecValeur {
+    commande: Commande,
+    valeur: String,
+}
+
+impl AvecValeur {
+    /// Refusée si la commande n'accepte aucune valeur, ou si la valeur n'a pas la forme de sa sorte (vide, « - »
+    /// devant, caractère de contrôle ou invisible, trop longue…).
+    pub fn nouvelle(commande: Commande, valeur: &str) -> Result<AvecValeur, Refus> {
+        let sorte = commande.argument().ok_or(Refus::Forme)?;
+        crate::valeur::valider(sorte, valeur)?;
+        Ok(AvecValeur {
+            commande,
+            valeur: valeur.to_owned(),
+        })
+    }
+
+    pub fn commande(&self) -> Commande {
+        self.commande
+    }
+
+    // Lues par le protocole du relais (Linux seulement) et par les essais d'attaque : ailleurs, elles n'existent pas.
+    #[cfg(any(target_os = "linux", test))]
+    pub fn valeur(&self) -> &str {
+        &self.valeur
+    }
+
+    /// La sorte de la valeur : celle de la commande (toujours là, `nouvelle` l'a vérifié).
+    #[cfg(any(target_os = "linux", test))]
+    pub fn sorte(&self) -> Argument {
+        self.commande.argument().unwrap_or(Argument::Mots)
+    }
+}
+
+/// Ce qu'une tâche lance : une commande de la liste (elle lit), la même avec une valeur tapée dans la console (elle
+/// lit aussi), ou un changement (seulement par un clic confirmé, jamais par la console) : au démarrage, des couleurs
+/// de la fenêtre, ou ses animations (`true` : réduites), gardées par `vanguard` pour les prochaines ouvertures.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Lancement {
     Commande(Commande),
+    /// Une commande de la console avec sa valeur : `vanguard console <nom> -- <valeur>`, toujours en lecture.
+    AvecValeur(AvecValeur),
     Changement(Changement),
     Couleurs(ChangementCouleurs),
     Animations(bool),
@@ -1139,9 +1255,17 @@ impl Lancement {
     /// Les arguments donnés à `vanguard`. Un changement n'a qu'une forme : `demarrage --retirer|--remettre
     /// <32 chiffres> --accord <64 chiffres> --json` (sans `--accord` s'il n'y en a pas), sans question (stdin fermé ; la fenêtre administrateur du système, s'il en faut une,
     /// est la seule).
-    pub fn arguments(self) -> Vec<String> {
+    pub fn arguments(&self) -> Vec<String> {
         match self {
             Lancement::Commande(c) => c.arguments().iter().map(|a| (*a).to_string()).collect(),
+            // Une liste fermée de quatre mots : la valeur n'en est que la dernière case, toujours après « -- » (jamais
+            // lue comme une option), jamais passée par un shell. `vanguard console` la rejuge en entier.
+            Lancement::AvecValeur(av) => vec![
+                "console".to_string(),
+                av.commande.nom().to_string(),
+                "--".to_string(),
+                av.valeur.clone(),
+            ],
             Lancement::Changement(ch) => {
                 let option = match ch.sorte {
                     Sorte::Retirer => "--retirer",
@@ -1175,7 +1299,7 @@ impl Lancement {
             }
             // Deux mots fermés, rien d'autre.
             Lancement::Animations(reduites) => {
-                let mot = if reduites { "reduites" } else { "toutes" };
+                let mot = if *reduites { "reduites" } else { "toutes" };
                 ["couleurs", "--animations", mot, "--json"].map(str::to_string).to_vec()
             }
             // Une forme fixe par sorte, le jeton en 32 chiffres et l'accord en 64 construits ici depuis leurs octets :
@@ -1204,9 +1328,9 @@ impl Lancement {
     }
 
     /// Un changement (au démarrage, des couleurs ou des animations) : il passe seul, et ne s'interrompt pas.
-    pub fn change(self) -> bool {
+    pub fn change(&self) -> bool {
         match self {
-            Lancement::Commande(_) => false,
+            Lancement::Commande(_) | Lancement::AvecValeur(_) => false,
             Lancement::Geste(g) => !g.sorte.voir(),
             Lancement::Changement(_) | Lancement::Couleurs(_) | Lancement::Animations(_) => true,
         }
@@ -1214,9 +1338,10 @@ impl Lancement {
 
     /// Un changement attend peut-être le mot de passe dans la fenêtre administrateur (Windows) : quinze minutes. C'est
     /// le seul cas où il est coupé : ni « Arrêter », ni la fermeture de la fenêtre ne l'interrompent (`relais`).
-    pub fn delai(self) -> Duration {
+    pub fn delai(&self) -> Duration {
         match self {
             Lancement::Commande(c) => c.delai(),
+            Lancement::AvecValeur(av) => av.commande.delai(),
             Lancement::Changement(_) => Duration::from_mins(15),
             // Écrire un petit fichier, scellé.
             Lancement::Couleurs(_) | Lancement::Animations(_) => Duration::from_mins(1),
@@ -1230,13 +1355,13 @@ impl Lancement {
         }
     }
 
-    pub fn sur_ce_systeme(self) -> bool {
+    pub fn sur_ce_systeme(&self) -> bool {
         self.commande().sur_ce_systeme()
     }
 
     /// Le nom montré dans la console et les messages : celui de sa commande, sauf la mise à jour, qui a le sien
     /// (elle n'est ni « couleurs » ni une autre commande).
-    pub fn nom_affiche(self) -> &'static str {
+    pub fn nom_affiche(&self) -> &'static str {
         match self {
             Lancement::Geste(g) if g.sorte.famille() == Famille::MiseAJour => {
                 crate::tr!("Mettre à jour Vanguard", "Update Vanguard")
@@ -1246,9 +1371,10 @@ impl Lancement {
     }
 
     /// La commande de la liste dont il relève : celle dont l'écran montre le résultat.
-    pub fn commande(self) -> Commande {
+    pub fn commande(&self) -> Commande {
         match self {
-            Lancement::Commande(c) => c,
+            Lancement::Commande(c) => *c,
+            Lancement::AvecValeur(av) => av.commande,
             Lancement::Changement(_) => Commande::Demarrage,
             Lancement::Couleurs(_) | Lancement::Animations(_) => Commande::Couleurs,
             Lancement::Geste(g) => g.sorte.famille().liste(),
@@ -1286,6 +1412,15 @@ pub enum Saisie {
     Rien,
     /// Une commande de la liste.
     Lancer(Commande),
+    /// Une commande de la liste et la valeur tapée après son nom, de la forme qu'elle accepte.
+    LancerAvec(AvecValeur),
+    /// Une commande qui ne se lance qu'avec sa valeur, tapée sans elle : rien n'est lancé, la forme est redite.
+    ValeurManquante(Commande),
+    /// Une valeur après une commande qui n'en prend aucune : rien n'est lancé.
+    SansValeur(Commande),
+    /// Une valeur qui n'a pas la forme attendue : rien n'est lancé, la raison est dite (jamais la valeur relue
+    /// autrement).
+    ValeurRefusee(Commande, Refus),
     /// La liste des commandes permises, sans rien lancer.
     Aide,
     /// `aide <commande>` : ce que fait une commande de la liste, sans la lancer.
@@ -1300,32 +1435,74 @@ pub enum Saisie {
 const AIDE: [&str; 3] = ["aide", "help", "?"];
 const EFFACER: [&str; 2] = ["effacer", "clear"];
 
-/// Lit une saisie de la console : un seul mot, nom français ou anglais d'une commande de la liste (« vanguard »
-/// devant est permis), sans argument. Tout autre texte est refusé tel quel : jamais découpé, jamais complété,
-/// jamais passé à un programme.
+/// Lit une saisie de la console : le nom français ou anglais d'une commande de la liste (« vanguard » devant est
+/// permis), seul ou suivi d'UNE valeur si cette commande en accepte une (`Commande::argument`) : tout le reste de la
+/// ligne, entre guillemets s'il le faut (`verifier-fichier "~/Téléchargements/mon fichier.pdf"`). La valeur est
+/// jugée sur sa forme (`AvecValeur::nouvelle`) ; jamais découpée en plusieurs, jamais lue comme une option, jamais
+/// passée à un shell. Tout autre texte est refusé tel quel.
 pub fn comprendre(saisie: &str) -> Saisie {
     let t = saisie.trim();
     if t.is_empty() {
         return Saisie::Rien;
     }
     let refus = || Saisie::Refusee(crate::nettoyage::nom(t, 60));
-    let mots: Vec<&str> = t.split_whitespace().collect();
-    let mot = match mots.as_slice() {
-        [m] => *m,
-        [v, m] if v.eq_ignore_ascii_case("vanguard") => *m,
-        [a, m] if AIDE.contains(&a.to_ascii_lowercase().as_str()) => {
-            return de_nom(m).map_or_else(refus, Saisie::AideSur);
-        }
-        _ => return refus(),
+    let (premier, apres) = couper(t);
+    let (mot, reste) = if premier.eq_ignore_ascii_case("vanguard") && !apres.is_empty() {
+        couper(apres)
+    } else {
+        (premier, apres)
     };
     let m = mot.to_ascii_lowercase();
     if AIDE.contains(&m.as_str()) {
-        return Saisie::Aide;
+        return match couper(reste) {
+            ("", _) => Saisie::Aide,
+            (nom, "") => de_nom(nom).map_or_else(refus, Saisie::AideSur),
+            _ => refus(),
+        };
     }
     if EFFACER.contains(&m.as_str()) {
-        return Saisie::Effacer;
+        return if reste.is_empty() { Saisie::Effacer } else { refus() };
     }
-    de_nom(&m).map_or_else(refus, Saisie::Lancer)
+    let Some(c) = de_nom(&m) else {
+        return refus();
+    };
+    if reste.is_empty() {
+        return if c.valeur_requise() {
+            Saisie::ValeurManquante(c)
+        } else {
+            Saisie::Lancer(c)
+        };
+    }
+    if c.argument().is_none() {
+        return Saisie::SansValeur(c);
+    }
+    let Some(valeur) = sans_guillemets(reste) else {
+        return Saisie::ValeurRefusee(c, Refus::Forme);
+    };
+    match AvecValeur::nouvelle(c, valeur) {
+        Ok(av) => Saisie::LancerAvec(av),
+        Err(r) => Saisie::ValeurRefusee(c, r),
+    }
+}
+
+/// Le premier mot et le reste, coupés au premier espace ou tab seulement : un autre blanc (U+2028, espace insécable)
+/// ne sépare rien, il reste dans le mot, qui n'est alors aucun nom de la liste.
+fn couper(t: &str) -> (&str, &str) {
+    match t.split_once([' ', '\t']) {
+        Some((a, b)) => (a, b.trim_start_matches([' ', '\t'])),
+        None => (t, ""),
+    }
+}
+
+/// La valeur sans ses guillemets, droits ou simples, s'ils l'entourent : sans autre guillemet du même genre dedans
+/// (`None` sinon). Sans guillemets autour, la valeur telle quelle.
+fn sans_guillemets(reste: &str) -> Option<&str> {
+    for g in ['"', '\''] {
+        if let Some(dedans) = reste.strip_prefix(g) {
+            return dedans.strip_suffix(g).filter(|v| !v.contains(g));
+        }
+    }
+    Some(reste)
 }
 
 /// La commande de ce système qui porte ce nom, français ou anglais (casse ASCII ignorée).
@@ -1445,6 +1622,14 @@ mod tests {
         assert_eq!(noms.len(), avant, "un nom sert deux fois");
         for c in Commande::TOUTES {
             let a = c.arguments();
+            assert!(!AIDE.contains(&c.nom()) && !EFFACER.contains(&c.nom()));
+            assert!(c.delai().as_secs() >= 60 && c.delai().as_secs() <= 1800, "{c:?}");
+            // Une commande qui ne part qu'avec sa valeur : `console <nom>`, puis « -- » et la valeur (`AvecValeur`).
+            if c.valeur_requise() {
+                assert_eq!(a, ["console", c.nom()], "{c:?}");
+                assert!(c.argument().is_some(), "{c:?}");
+                continue;
+            }
             // La sous-commande, --json à la fin, et entre les deux seulement une option qui lit (--etat) : aucun mot
             // qui agit (« oui », « non », --choisir, --rallumer, --accepter, --complet…), aucun chemin.
             assert!(
@@ -1452,8 +1637,6 @@ mod tests {
                 "{c:?}"
             );
             assert_eq!(a.last(), Some(&"--json"), "{c:?}");
-            assert!(!AIDE.contains(&c.nom()) && !EFFACER.contains(&c.nom()));
-            assert!(c.delai().as_secs() >= 60 && c.delai().as_secs() <= 1800, "{c:?}");
         }
     }
 
@@ -1490,8 +1673,16 @@ mod tests {
             "bilan\ncorriger",
             "biIan",
         ] {
-            assert!(matches!(comprendre(refus), Saisie::Refusee(_)), "{refus:?} accepté");
+            assert!(rien_ne_part(&comprendre(refus)), "{refus:?} accepté");
         }
+    }
+
+    /// Une saisie refusée, sous l'une de ses formes : rien ne part.
+    fn rien_ne_part(s: &Saisie) -> bool {
+        matches!(
+            s,
+            Saisie::Refusee(_) | Saisie::SansValeur(_) | Saisie::ValeurRefusee(..)
+        )
     }
 
     /// La console ne demande jamais un changement : ni la forme de Vanguard, ni un nom, ni une empreinte.
@@ -1508,7 +1699,7 @@ mod tests {
             "retirer-du-demarrage".to_string(),
             e.to_string(),
         ] {
-            assert!(matches!(comprendre(&refus), Saisie::Refusee(_)), "{refus:?} accepté");
+            assert!(rien_ne_part(&comprendre(&refus)), "{refus:?} accepté");
         }
         // « demarrage » seul : la liste, qui ne change rien.
         assert_eq!(comprendre("demarrage"), Saisie::Lancer(Commande::Demarrage));
@@ -1732,6 +1923,15 @@ mod tests {
         assert_eq!(Commande::TOUTES[34], Commande::Couleurs);
         assert_eq!(Commande::TOUTES[35], Commande::Agent);
         assert_eq!(Commande::TOUTES[44], Commande::Ordinateurs);
+        assert_eq!(
+            Commande::TOUTES[45..],
+            [
+                Commande::Chercher,
+                Commande::Lien,
+                Commande::VerifierFichier,
+                Commande::CourrielSuspect
+            ]
+        );
     }
 
     /// Les lectures ajoutées au lot « console, commandes » : chacune se tape en français et en anglais, part à la fin
@@ -1799,7 +1999,7 @@ mod tests {
             assert_eq!(comprendre(&format!("vanguard {}", c.nom())), Saisie::Lancer(c));
             for de_plus in ["on", "off", "langue en", "annuler", "--appliquer", "--recommandes"] {
                 assert!(
-                    matches!(comprendre(&format!("{} {de_plus}", c.nom())), Saisie::Refusee(_)),
+                    rien_ne_part(&comprendre(&format!("{} {de_plus}", c.nom()))),
                     "{c:?} {de_plus}"
                 );
             }
@@ -1811,7 +2011,194 @@ mod tests {
             assert!(!vue.lignes.is_empty() && !vue.coupe, "{c:?}");
             assert!(!c.titre().is_empty() && !c.description().is_empty(), "{c:?}");
         }
-        assert_eq!(Commande::TOUTES.len(), 45);
+        assert_eq!(Commande::TOUTES.len(), 49);
+    }
+
+    fn avec(c: Commande, v: &str) -> Saisie {
+        Saisie::LancerAvec(AvecValeur::nouvelle(c, v).unwrap())
+    }
+
+    /// Une valeur après le nom : une seule case, de la sorte de la commande, telle que tapée (guillemets autour
+    /// retirés, « ~ » gardé : le relais et `vanguard` seuls le développent).
+    #[test]
+    fn une_valeur_se_tape_apres_le_nom() {
+        use Commande::{Chercher, CourrielSuspect, DernieresFailles, Evenements, Lien, VerifierFichier};
+        let f = "~/Téléchargements/x.pdf";
+        assert_eq!(comprendre(&format!("verifier-fichier {f}")), avec(VerifierFichier, f));
+        assert_eq!(comprendre(&format!("check-file {f}")), avec(VerifierFichier, f));
+        assert_eq!(
+            comprendre(&format!("vanguard verifier-fichier {f}")),
+            avec(VerifierFichier, f)
+        );
+        assert_eq!(
+            comprendre(&format!("verifier-fichier\t\t{f}  ")),
+            avec(VerifierFichier, f)
+        );
+        let espace = "~/Téléchargements/ma facture.pdf";
+        assert_eq!(
+            comprendre(&format!("verifier-fichier \"{espace}\"")),
+            avec(VerifierFichier, espace)
+        );
+        assert_eq!(
+            comprendre(&format!("verifier-fichier '{espace}'")),
+            avec(VerifierFichier, espace)
+        );
+        assert_eq!(
+            comprendre(&format!("verifier-fichier {espace}")),
+            avec(VerifierFichier, espace)
+        );
+        assert_eq!(
+            comprendre("courriel-suspect /run/media/alice/CLE/message.eml"),
+            avec(CourrielSuspect, "/run/media/alice/CLE/message.eml")
+        );
+        assert_eq!(
+            comprendre("lien https://exemple.test/a?b=c"),
+            avec(Lien, "https://exemple.test/a?b=c")
+        );
+        assert_eq!(
+            comprendre("chercher pare-feu ouvert"),
+            avec(Chercher, "pare-feu ouvert")
+        );
+        assert_eq!(
+            comprendre("evenements inc-20261116-1"),
+            avec(Evenements, "inc-20261116-1")
+        );
+        assert_eq!(comprendre("evenements"), Saisie::Lancer(Evenements));
+        assert_eq!(comprendre("dernieres-failles 30"), avec(DernieresFailles, "30"));
+        assert_eq!(comprendre("dernieres-failles"), Saisie::Lancer(DernieresFailles));
+        // Sans sa valeur : la forme est redite, rien ne part.
+        for c in [Chercher, Lien, VerifierFichier, CourrielSuspect] {
+            assert_eq!(comprendre(c.nom()), Saisie::ValeurManquante(c));
+            assert_eq!(comprendre(c.nom_anglais()), Saisie::ValeurManquante(c));
+            assert_eq!(comprendre(&format!("aide {}", c.nom())), Saisie::AideSur(c));
+        }
+        // Une valeur pour une commande qui n'en prend pas.
+        assert_eq!(comprendre("bilan x"), Saisie::SansValeur(Commande::Bilan));
+        assert_eq!(
+            comprendre("protection --json"),
+            Saisie::SansValeur(Commande::Protection)
+        );
+    }
+
+    /// La fenêtre et `vanguard console` s'accordent : les mêmes commandes prennent une valeur, chacune de la même
+    /// sorte (la règle de la valeur, elle, est un seul fichier compilé des deux côtés, `src/socle/valeur_console.rs`).
+    #[test]
+    fn la_fenetre_et_vanguard_ont_la_meme_liste_de_valeurs() {
+        const VANGUARD: &str = include_str!("../../src/demarrage/console.rs");
+        let mut cote_vanguard: Vec<(String, String)> = Vec::new();
+        let corps = VANGUARD
+            .split("fn sorte(")
+            .nth(1)
+            .unwrap()
+            .split("_ => return None")
+            .next()
+            .unwrap();
+        for ligne in corps.lines().filter(|l| l.contains("=> Argument::")) {
+            let (noms, sorte) = ligne.split_once("=>").unwrap();
+            let sorte = sorte.trim().trim_end_matches(',').trim_start_matches("Argument::");
+            for n in noms.split('|') {
+                cote_vanguard.push((n.trim().trim_matches('"').to_string(), sorte.to_string()));
+            }
+        }
+        let mut cote_fenetre: Vec<(String, String)> = Commande::TOUTES
+            .iter()
+            .filter_map(|c| Some((c.nom().to_string(), format!("{:?}", c.argument()?))))
+            .collect();
+        cote_vanguard.sort();
+        cote_fenetre.sort();
+        assert_eq!(cote_fenetre, cote_vanguard);
+        assert_eq!(cote_fenetre.len(), 8);
+        // Et la liste fermée de `vanguard console` (NOMS) est exactement celle-là.
+        let noms = VANGUARD
+            .split("NOMS: [&str; 8] = [")
+            .nth(1)
+            .unwrap()
+            .split("];")
+            .next()
+            .unwrap();
+        let mut noms: Vec<String> = noms
+            .split(',')
+            .map(|n| n.trim().trim_matches('"').to_string())
+            .filter(|n| !n.is_empty())
+            .collect();
+        noms.sort();
+        assert_eq!(noms, cote_fenetre.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>());
+    }
+
+    /// Chaque refus de la valeur, avec sa raison : rien ne part, la phrase dit pourquoi.
+    #[test]
+    fn chaque_refus_de_valeur_a_sa_raison() {
+        use Commande::{Chercher, DernieresFailles, Evenements, Lien, VerifierFichier};
+        for (saisie, c, r) in [
+            ("lien --internet", Lien, Refus::Tiret),
+            ("lien -x", Lien, Refus::Tiret),
+            ("lien \"--internet\"", Lien, Refus::Tiret),
+            ("lien \"\"", Lien, Refus::Vide),
+            ("lien \"   \"", Lien, Refus::Vide),
+            ("lien ' x'", Lien, Refus::Bords),
+            ("lien a b", Lien, Refus::Forme),
+            ("lien \"a\"b\"", Lien, Refus::Forme),
+            ("lien \"a", Lien, Refus::Forme),
+            ("chercher a\u{202E}b", Chercher, Refus::Invisible),
+            ("chercher a\u{200E}b", Chercher, Refus::Invisible),
+            ("chercher a\u{2066}b", Chercher, Refus::Invisible),
+            ("chercher a\u{2028}b", Chercher, Refus::Invisible),
+            ("chercher a\u{2029}b", Chercher, Refus::Invisible),
+            ("chercher a\u{200B}b", Chercher, Refus::Invisible),
+            ("chercher a\u{7f}b", Chercher, Refus::Controle),
+            ("chercher a\u{85}b", Chercher, Refus::Controle),
+            ("chercher a\u{1b}[2Kb", Chercher, Refus::Controle),
+            ("chercher a\nb", Chercher, Refus::Controle),
+            ("chercher a\0b", Chercher, Refus::Controle),
+            ("dernieres-failles 0", DernieresFailles, Refus::Forme),
+            ("dernieres-failles 3651", DernieresFailles, Refus::Forme),
+            ("dernieres-failles 030", DernieresFailles, Refus::Forme),
+            ("dernieres-failles ３", DernieresFailles, Refus::Forme),
+            ("dernieres-failles ３０", DernieresFailles, Refus::TropLongue),
+            ("dernieres-failles 10000", DernieresFailles, Refus::TropLongue),
+            ("evenements inc 1", Evenements, Refus::Forme),
+            ("evenements ../x", Evenements, Refus::Forme),
+            ("verifier-fichier x.pdf", VerifierFichier, Refus::Relatif),
+            (
+                "verifier-fichier ../../.ssh/id_ed25519",
+                VerifierFichier,
+                Refus::Remontee,
+            ),
+            (
+                "verifier-fichier ~/../alice/.ssh/id_ed25519",
+                VerifierFichier,
+                Refus::Remontee,
+            ),
+            ("verifier-fichier ~alice/x", VerifierFichier, Refus::Tilde),
+            ("verifier-fichier ~//etc/passwd", VerifierFichier, Refus::Relatif),
+        ] {
+            assert_eq!(comprendre(saisie), Saisie::ValeurRefusee(c, r), "{saisie:?}");
+            assert_ne!(r.phrase(), "");
+        }
+        // Les bornes : 256 octets de mots passent, 257 non ; 4096 de chemin passent, 4097 non.
+        assert_eq!(
+            comprendre(&format!("chercher {}", "a".repeat(256))),
+            avec(Chercher, &"a".repeat(256))
+        );
+        assert_eq!(
+            comprendre(&format!("chercher {}", "a".repeat(257))),
+            Saisie::ValeurRefusee(Chercher, Refus::TropLongue)
+        );
+        let chemin = format!("/{}", "a".repeat(4095));
+        assert_eq!(
+            comprendre(&format!("verifier-fichier {chemin}")),
+            avec(VerifierFichier, &chemin)
+        );
+        assert_eq!(
+            comprendre(&format!("verifier-fichier {chemin}a")),
+            Saisie::ValeurRefusee(VerifierFichier, Refus::TropLongue)
+        );
+        assert_eq!(
+            comprendre(&format!("lien https://exemple.test/{}", "a".repeat(5000))),
+            Saisie::ValeurRefusee(Lien, Refus::TropLongue)
+        );
+        // `AvecValeur` ne se fabrique que par la règle : une commande sans sorte n'en a pas.
+        assert_eq!(AvecValeur::nouvelle(Commande::Bilan, "x"), Err(Refus::Forme));
     }
 
     /// Un changement de couleurs part en mots fermés et en couleurs construites ici ; la lecture des couleurs n'est
@@ -1931,7 +2318,8 @@ mod tests {
     #[test]
     fn chaque_rubrique_garde_ses_commandes() {
         let total: usize = Rubrique::TOUTES.iter().map(|r| r.commandes().count()).sum();
-        assert_eq!(total, Commande::ici().count());
+        // Les commandes qui ne partent qu'avec leur valeur ne sont dans aucune rubrique : elles se tapent.
+        assert_eq!(total, Commande::ici().filter(|c| !c.valeur_requise()).count());
         assert_eq!(Rubrique::Accueil.commandes().count(), 0);
         assert_eq!(Rubrique::Vanguard.commandes().count(), 6);
         assert_eq!(Rubrique::Donnees.commandes().count(), 2);

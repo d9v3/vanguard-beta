@@ -363,7 +363,7 @@ mod tests {
     /// Une fenêtre sans programme (rien ne peut partir) et des coulisses remplies.
     fn appli() -> Appli {
         let mut a = Appli::nouvelle(Err("absent".into()), std::sync::Arc::new(|| {}));
-        a.coulisses.lancee(Commande::Bilan.into(), Chemin::Direct);
+        a.coulisses.lancee(&Commande::Bilan.into(), Chemin::Direct);
         a.coulisses.processus(4242);
         a.coulisses.erreur("une ligne d'erreur");
         a.coulisses.finie(&Fin {

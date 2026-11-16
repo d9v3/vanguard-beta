@@ -388,10 +388,10 @@ impl Console {
     }
 
     /// Retire le bloc en attente de `l` (✕, ou « Arrêter » qui vide la file).
-    pub fn retirer(&mut self, l: Lancement) {
+    pub fn retirer(&mut self, l: &Lancement) {
         let avant = self.entrees.len();
         self.entrees
-            .retain(|e| !matches!(e, Entree::Bloc(b) if b.etat == Etat::EnAttente && b.lancement == l));
+            .retain(|e| !matches!(e, Entree::Bloc(b) if b.etat == Etat::EnAttente && b.lancement == *l));
         self.blocs = self.blocs.saturating_sub(avant - self.entrees.len());
     }
 
@@ -447,11 +447,14 @@ impl Console {
 
     /// La fin de la commande en cours : son résumé, ses points, sa durée. Sans bloc en cours (effacé entre-temps,
     /// ce qui ne devrait pas arriver), un bloc fini est ajouté.
-    pub fn finir(&mut self, l: Lancement, fin: Fini) {
-        if self.bloc_mut(|b| b.etat == Etat::EnCours && b.lancement == l).is_none() {
-            self.pousser(|numero, heure| Entree::Bloc(Bloc::nouveau(numero, heure, l, Etat::EnCours)));
+    pub fn finir(&mut self, l: &Lancement, fin: Fini) {
+        if self
+            .bloc_mut(|b| b.etat == Etat::EnCours && b.lancement == *l)
+            .is_none()
+        {
+            self.pousser(|numero, heure| Entree::Bloc(Bloc::nouveau(numero, heure, l.clone(), Etat::EnCours)));
         }
-        if let Some(b) = self.bloc_mut(|b| b.etat == Etat::EnCours && b.lancement == l) {
+        if let Some(b) = self.bloc_mut(|b| b.etat == Etat::EnCours && b.lancement == *l) {
             b.etat = if fin.echec { Etat::Echec } else { Etat::Fini };
             b.duree = Some(fin.duree);
             b.resume = crate::nettoyage::ligne(&fin.resume);
@@ -657,13 +660,13 @@ mod tests {
         let mut c = Console::nouvelle();
         let bilan: Lancement = Commande::Bilan.into();
         let prot: Lancement = Commande::Protection.into();
-        c.commencer(prot);
-        c.attendre(bilan);
+        c.commencer(prot.clone());
+        c.attendre(bilan.clone());
         assert!(c.recevoir("@etape 1/2 Pare-feu"));
         assert_eq!(c.en_cours().and_then(|b| b.etape.clone()).map(|e| e.fait), Some(1));
-        c.finir(prot, fini("4 interrupteurs lus", Ton::Bon, 0));
+        c.finir(&prot, fini("4 interrupteurs lus", Ton::Bon, 0));
         c.dire("fenêtre", "entre les deux", Ton::Discret);
-        c.commencer(bilan);
+        c.commencer(bilan.clone());
         assert!(c.recevoir("avertissement : lent"));
         assert!(c.recevoir("@etape 3/9 Comptes"));
         let b = c.en_cours().unwrap();
@@ -672,7 +675,7 @@ mod tests {
         // Le bloc du bilan est passé après la ligne de la fenêtre ; celui de la protection s'est replié.
         assert!(matches!(c.get(2), Some(Entree::Bloc(b)) if b.lancement == bilan));
         assert!(matches!(c.get(0), Some(Entree::Bloc(b)) if b.replie));
-        c.finir(bilan, fini("9 vérifications", Ton::Attention, 5));
+        c.finir(&bilan, fini("9 vérifications", Ton::Attention, 5));
         let p = c.places(Filtre::Tout, "");
         assert_eq!(
             p,
@@ -729,7 +732,7 @@ mod tests {
             (Commande::Bilan, Ton::Attention, 4),
         ] {
             c.commencer(cmd.into());
-            c.finir(cmd.into(), fini("x", ton, n));
+            c.finir(&cmd.into(), fini("x", ton, n));
         }
         let tetes = |f: Filtre, q: &str| {
             c.places(f, q)
@@ -768,12 +771,12 @@ mod tests {
             c.recevoir("message");
         }
         assert_eq!(c.en_cours().map(|b| b.messages.len()), Some(MESSAGES_MAX));
-        c.finir(Commande::Bilan.into(), fini("x", Ton::Attention, POINTS_MAX + 7));
+        c.finir(&Commande::Bilan.into(), fini("x", Ton::Attention, POINTS_MAX + 7));
         let b = c.blocs().next().unwrap();
         assert_eq!((b.points.len(), b.total), (POINTS_MAX, POINTS_MAX + 7));
         for _ in 0..(BLOCS_MAX + 5) {
             c.commencer(Commande::Protection.into());
-            c.finir(Commande::Protection.into(), fini("x", Ton::Bon, 0));
+            c.finir(&Commande::Protection.into(), fini("x", Ton::Bon, 0));
         }
         assert_eq!(c.blocs().count(), BLOCS_MAX);
         assert!(c.len() <= ENTREES_MAX);

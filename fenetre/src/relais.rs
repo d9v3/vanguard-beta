@@ -8,7 +8,9 @@
 //! ce qu'il doit voir (les programmes en cours, le bus système, sudo).
 //!
 //! Le relais ne fait confiance à rien de ce que dit la fenêtre (c'est elle qu'on protège de ce qu'elle dessine) : une
-//! demande est un numéro de la liste fermée, un changement de forme fermée, la langue, ou un arrêt ; rien d'autre n'est compris, et une demande
+//! demande est un numéro de la liste fermée, une lecture de cette liste avec sa seule valeur (rejugée ici en entier,
+//! un fichier sur son chemin réel, sous les endroits permis du compte : `rejuger`), un changement de forme fermée,
+//! la langue, ou un arrêt ; rien d'autre n'est compris, et une demande
 //! hors de ce protocole l'arrête. Il retrouve lui-même le `vanguard` voisin et rejoue sa garde (`lanceur`). Il ne
 //! se laisse pas observer (PR_SET_DUMPABLE à 0 : ni ptrace ni /proc/<pid>/mem du même compte), et Landlock empêche
 //! de toute façon la fenêtre d'observer ce qui est hors de son bac. Quand la fenêtre se ferme ou meurt, la socket se
@@ -51,12 +53,14 @@
 
 use std::collections::{HashMap, HashSet};
 use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
 use crate::commandes::{
-    APERCU_LU, Accord, Commande, Empreinte, Famille, Geste, GesteOffert, Lancement, Sorte, SorteGeste,
+    APERCU_LU, Accord, Argument, AvecValeur, Commande, Empreinte, Famille, Geste, GesteOffert, Lancement, Refus, Sorte,
+    SorteGeste,
 };
 use crate::lanceur::{Fin, Issue, Message, Programme, Rendre, Reveil, SORTIE_MAX, Tache};
 use crate::protocole::{
@@ -101,7 +105,7 @@ struct Etat {
 
 impl Etat {
     /// Pourquoi ce lancement est refusé, s'il l'est ; sinon il est retenu (et un changement consomme la liste vue).
-    fn admettre(&mut self, id: u32, lancement: Lancement, arret: &Arc<AtomicBool>) -> Option<&'static str> {
+    fn admettre(&mut self, id: u32, lancement: &Lancement, arret: &Arc<AtomicBool>) -> Option<&'static str> {
         let changement = lancement.change();
         if self.taches.len() >= TACHES_MAX || self.taches.contains_key(&id) {
             return Some(crate::tr!(
@@ -121,7 +125,7 @@ impl Etat {
                 "one change at a time: a command is still running"
             ));
         }
-        if let Lancement::Changement(ch) = lancement {
+        if let Lancement::Changement(ch) = *lancement {
             match self.vues.get(&ch.empreinte) {
                 None => {
                     return Some(crate::tr!(
@@ -145,13 +149,13 @@ impl Etat {
                 Some(_) => self.vues.clear(),
             }
         }
-        if let Lancement::Geste(g) = lancement
+        if let Lancement::Geste(g) = *lancement
             && let Some(r) = self.admettre_geste(g)
         {
             return Some(r);
         }
         // Des couleurs : revérifiées ici aussi (`vanguard` le refait), une presque invisible sur le fond refusée.
-        if let Lancement::Couleurs(cc) = lancement
+        if let Lancement::Couleurs(cc) = *lancement
             && let Some(c) = cc.choix
             && crate::couleurs::verifier(cc.theme, &c).is_err()
         {
@@ -487,6 +491,15 @@ fn verrou<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 /// avec la surveillance de `lanceur` et renvoie ses lignes puis sa fin. À la fin, arrête les lectures, laisse finir
 /// un changement, et attend tout.
 fn servir(flux: UnixStream, trouver: impl Fn() -> Result<Programme, String> + Send + Sync + 'static) {
+    servir_pour(flux, trouver, &Compte::du_milieu());
+}
+
+/// `servir`, pour `compte` : ce qui juge les chemins tapés (une maison jetable dans les essais).
+fn servir_pour(
+    flux: UnixStream,
+    trouver: impl Fn() -> Result<Programme, String> + Send + Sync + 'static,
+    compte: &Compte,
+) {
     let Ok(sortie) = flux.try_clone() else {
         return;
     };
@@ -517,16 +530,24 @@ fn servir(flux: UnixStream, trouver: impl Fn() -> Result<Programme, String> + Se
             }
             Demande::Lancer { id, lancement, anglais } => {
                 let arret = Arc::new(AtomicBool::new(false));
-                let refus = verrou(&etat).admettre(id, lancement, &arret);
+                // La valeur tapée est rejugée en entier, chemin réel compris, avant toute admission : la fenêtre
+                // n'est pas crue. Ce qui part est la valeur rejugée (pour un fichier, son chemin réel).
+                let (lancement, refus) = match rejuger(&lancement, compte) {
+                    Ok(l) => {
+                        let refus = verrou(&etat).admettre(id, &l, &arret).map(String::from);
+                        (l, refus)
+                    }
+                    Err(r) => (lancement, Some(r)),
+                };
                 let impossible = |texte: String| Fin {
-                    lancement,
+                    lancement: lancement.clone(),
                     code: None,
                     sortie: Vec::new(),
                     issue: Issue::Impossible(texte),
                     duree: Duration::ZERO,
                 };
                 if let Some(r) = refus {
-                    envoyer(&coder_fin(id, &impossible(r.into())));
+                    envoyer(&coder_fin(id, &impossible(r)));
                     continue;
                 }
                 let rendre: Rendre = {
@@ -539,13 +560,14 @@ fn servir(flux: UnixStream, trouver: impl Fn() -> Result<Programme, String> + Se
                     })
                 };
                 let (envoyer2, etat2, trouver2) = (Arc::clone(&envoyer), Arc::clone(&etat), Arc::clone(&trouver));
+                let pour_le_fil = lancement.clone();
                 let lance = std::thread::Builder::new()
                     .name("vanguard-relais".into())
                     .spawn(move || {
                         let fin = match trouver2() {
-                            Ok(p) => crate::lanceur::surveiller(&p, lancement, anglais, &arret, &rendre),
+                            Ok(p) => crate::lanceur::surveiller(&p, &pour_le_fil, anglais, &arret, &rendre),
                             Err(e) => Fin {
-                                lancement,
+                                lancement: pour_le_fil,
                                 code: None,
                                 sortie: Vec::new(),
                                 issue: Issue::Impossible(e),
@@ -580,6 +602,93 @@ fn servir(flux: UnixStream, trouver: impl Fn() -> Result<Programme, String> + Se
     for f in fils {
         let _ = f.join();
     }
+}
+
+/// Ce que le relais sait du compte pour juger un chemin : sa maison, son dossier de réglages (où est
+/// user-dirs.dirs) et son nom (pour /run/media/<compte>). Lu du milieu du relais, celui de la session, jamais de la
+/// fenêtre ; `vanguard` le rejuge ensuite avec son propre compte (`maison_du_compte`, le nom d'après l'uid).
+struct Compte {
+    maison: Option<PathBuf>,
+    config: Option<PathBuf>,
+    nom: Option<String>,
+}
+
+impl Compte {
+    fn du_milieu() -> Compte {
+        let absolu = |v: &str| {
+            std::env::var_os(v)
+                .map(PathBuf::from)
+                .filter(|p| p.is_absolute() && p.parent().is_some())
+        };
+        let maison = absolu("HOME");
+        // XDG_CONFIG_HOME relatif : ignoré, comme le veut la spécification.
+        let config = absolu("XDG_CONFIG_HOME").or_else(|| maison.as_ref().map(|m| m.join(".config")));
+        let nom = ["USER", "LOGNAME"].iter().find_map(|v| std::env::var(v).ok());
+        Compte { maison, config, nom }
+    }
+}
+
+/// Rejuge une demande avant de l'admettre : une commande qui se lance avec sa valeur ne part pas sans elle, et la
+/// valeur, si elle vient, est rejugée comme si la fenêtre n'avait rien vérifié (`rejuger_valeur`). Le refus est dit
+/// sans la valeur.
+fn rejuger(lancement: &Lancement, compte: &Compte) -> Result<Lancement, String> {
+    match lancement {
+        Lancement::Commande(c) if c.valeur_requise() => Err(crate::tr!(
+            "cette commande se lance avec sa valeur",
+            "this command runs with its value"
+        )
+        .into()),
+        Lancement::AvecValeur(av) => rejuger_valeur(av, compte)
+            .map(Lancement::AvecValeur)
+            .map_err(|r| crate::trf!("valeur refusée : {}", "value refused: {}", r.phrase())),
+        autre => Ok(autre.clone()),
+    }
+}
+
+/// La valeur rejugée : sa forme (`AvecValeur::nouvelle`) ; pour un fichier, en plus, son chemin réel (chaque lien
+/// résolu) doit être un fichier ordinaire sous Téléchargements, Bureau ou Documents du compte, ou sous
+/// /run/media/<compte>, sans dossier caché (`valeur::juger_chemin`). Rend ce chemin réel, seul à partir : un lien
+/// changé entre ce jugement et la lecture est rejugé par `vanguard`, qui ne lit que ce chemin-là.
+fn rejuger_valeur(av: &AvecValeur, compte: &Compte) -> Result<AvecValeur, Refus> {
+    let av = AvecValeur::nouvelle(av.commande(), av.valeur())?;
+    if av.sorte() != Argument::Chemin {
+        return Ok(av);
+    }
+    let maison = compte.maison.as_deref().ok_or(Refus::MaisonInconnue)?;
+    let declares = compte
+        .config
+        .as_deref()
+        .map(|c| lire_declares(&c.join("user-dirs.dirs")))
+        .unwrap_or_default();
+    let racines = crate::valeur::racines_linux(maison, &declares, compte.nom.as_deref());
+    let reel = crate::valeur::juger_chemin(av.valeur(), maison, &racines)?;
+    AvecValeur::nouvelle(av.commande(), reel.to_str().ok_or(Refus::Forme)?)
+}
+
+/// user-dirs.dirs, lu sans jamais bloquer ni déborder : ouvert sans attendre (un tube nommé posé à sa place ne fige
+/// pas le relais), seulement s'il est un fichier ordinaire, 64 Kio au plus, en UTF-8. Absent ou autre : vide (les
+/// noms usuels des dossiers servent alors seuls).
+fn lire_declares(chemin: &Path) -> String {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    const MAX: u64 = 64 << 10;
+    let Ok(f) = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open(chemin)
+    else {
+        return String::new();
+    };
+    if !f.metadata().is_ok_and(|m| m.is_file()) {
+        return String::new();
+    }
+    let mut octets = Vec::new();
+    if f.take(MAX.saturating_add(1)).read_to_end(&mut octets).is_err()
+        || u64::try_from(octets.len()).map_or(true, |n| n > MAX)
+    {
+        return String::new();
+    }
+    String::from_utf8(octets).unwrap_or_default()
 }
 
 /// Une tâche de la fenêtre qui attend sa fin du relais.
@@ -639,7 +748,7 @@ impl Client {
         let (envoi, recu) = mpsc::channel();
         let id = self.suivant.fetch_add(1, Ordering::Relaxed);
         let a = Attente {
-            lancement,
+            lancement: lancement.clone(),
             envoi,
             reveil: Arc::clone(reveil),
         };
@@ -653,7 +762,11 @@ impl Client {
             }
         };
         let refus = refus.or_else(|| {
-            let d = Demande::Lancer { id, lancement, anglais };
+            let d = Demande::Lancer {
+                id,
+                lancement: lancement.clone(),
+                anglais,
+            };
             ecrire_trame(&mut *verrou(&self.sortie), &d.coder())
                 .err()
                 .and_then(|_| verrou(&self.attente).remove(&id))
@@ -685,7 +798,7 @@ fn relais_parti() -> String {
 
 fn rendre_fin(a: &Attente, code: Option<i32>, issue: Issue, duree: Duration, sortie: Vec<u8>) {
     let _ = a.envoi.send(Message::Fin(Fin {
-        lancement: a.lancement,
+        lancement: a.lancement.clone(),
         code,
         sortie,
         issue,
@@ -825,7 +938,7 @@ mod tests {
         });
         let bonne = Demande::Lancer {
             id: 7,
-            lancement: ch,
+            lancement: ch.clone(),
             anglais: false,
         }
         .coder();
@@ -848,7 +961,7 @@ mod tests {
             });
             let c = Client::demarrer(fenetre.try_clone().unwrap(), None);
             let rien: Reveil = Arc::new(|| {});
-            let f = attendre_fin(&c.lancer(ch, false, &rien));
+            let f = attendre_fin(&c.lancer(ch.clone(), false, &rien));
             assert_eq!(f.lancement, ch);
             assert!(
                 matches!(&f.issue, Issue::Impossible(r) if r.contains("dernière liste")),
@@ -948,16 +1061,16 @@ mod tests {
                 accord,
             })
         };
-        assert!(etat.admettre(1, demande(Sorte::Retirer, a), &arret).is_some());
+        assert!(etat.admettre(1, &demande(Sorte::Retirer, a), &arret).is_some());
         // M-2 : un autre accord que celui de la liste (fabriqué, ou absent) est refusé, sans consommer la liste.
         let autre = Accord::lire(&"5d".repeat(32)).unwrap();
         for faux in [autre, Accord::NUL] {
-            let r = etat.admettre(1, demande(Sorte::Remettre, faux), &arret);
+            let r = etat.admettre(1, &demande(Sorte::Remettre, faux), &arret);
             assert!(r.is_some_and(|r| r.contains("accord")), "{r:?}");
         }
         assert!(etat.taches.is_empty());
         assert_eq!(etat.vues.get(&e), Some(&(Sorte::Remettre, a)));
-        assert_eq!(etat.admettre(2, demande(Sorte::Remettre, a), &arret), None);
+        assert_eq!(etat.admettre(2, &demande(Sorte::Remettre, a), &arret), None);
         assert!(etat.vues.is_empty());
     }
 
@@ -978,21 +1091,21 @@ mod tests {
             })
         };
         let mut etat = Etat::default();
-        assert!(etat.admettre(1, demande(Some(noir)), &arret).is_some());
+        assert!(etat.admettre(1, &demande(Some(noir)), &arret).is_some());
         assert!(etat.taches.is_empty());
-        assert_eq!(etat.admettre(2, Commande::Protection.into(), &arret), None);
+        assert_eq!(etat.admettre(2, &Commande::Protection.into(), &arret), None);
         assert!(
-            etat.admettre(3, demande(Some(braise)), &arret).is_some(),
+            etat.admettre(3, &demande(Some(braise)), &arret).is_some(),
             "pendant une lecture"
         );
         etat.taches.clear();
-        assert_eq!(etat.admettre(4, demande(Some(braise)), &arret), None);
+        assert_eq!(etat.admettre(4, &demande(Some(braise)), &arret), None);
         assert!(
-            etat.admettre(5, Commande::Protection.into(), &arret).is_some(),
+            etat.admettre(5, &Commande::Protection.into(), &arret).is_some(),
             "pendant le changement"
         );
         etat.taches.clear();
-        assert_eq!(etat.admettre(6, demande(None), &arret), None);
+        assert_eq!(etat.admettre(6, &demande(None), &arret), None);
     }
 
     /// Un faux `vanguard` : la liste lue dans liste.json, le bilan dans bilan.json s'il existe ; un changement noté
@@ -1016,6 +1129,258 @@ case "$1 $2" in
 *) attendre va-lecture; echo '{}' ;;
 esac
 "#;
+
+    /// Une maison jetable d'« alice » : Téléchargements avec un vrai fichier (et un autre au nom à espace), Documents
+    /// avec un lien vers lui, et tout ce qu'une fenêtre prise viserait : ~/.ssh, un lien vers lui ou vers sa clé,
+    /// /proc/self/environ, /dev/zero, un tube nommé, un dossier caché, un Bureau qui est un lien vers ~/.ssh, et un
+    /// user-dirs.dirs qui déclare ~/.ssh comme Téléchargements.
+    fn maison_piegee(nom: &str) -> (PathBuf, Compte) {
+        use std::os::unix::fs::symlink;
+        let d = crate::essais::banc(nom);
+        let _ = std::fs::remove_dir_all(&d);
+        let maison = d.join("alice");
+        let tele = maison.join("Téléchargements");
+        for dossier in [
+            &tele,
+            &maison.join(".ssh"),
+            &maison.join("Documents"),
+            &maison.join(".config"),
+        ] {
+            std::fs::create_dir_all(dossier).unwrap();
+        }
+        std::fs::create_dir_all(tele.join(".cache")).unwrap();
+        std::fs::write(tele.join("facture.pdf"), b"%PDF-1.7").unwrap();
+        std::fs::write(tele.join("ma facture.pdf"), b"%PDF-1.7").unwrap();
+        std::fs::write(tele.join(".cache/x.pdf"), b"%PDF-1.7").unwrap();
+        std::fs::write(maison.join(".ssh/id_ed25519"), b"fausse cle").unwrap();
+        std::fs::write(maison.join("hors.txt"), b"x").unwrap();
+        symlink(maison.join(".ssh/id_ed25519"), tele.join("cle")).unwrap();
+        symlink(maison.join(".ssh"), tele.join("ssh")).unwrap();
+        symlink("/proc/self/environ", tele.join("environ")).unwrap();
+        symlink("/dev/zero", tele.join("zero")).unwrap();
+        symlink("/", tele.join("racine")).unwrap();
+        symlink(tele.join("facture.pdf"), maison.join("Documents/lien.pdf")).unwrap();
+        symlink(maison.join(".ssh"), maison.join("Bureau")).unwrap();
+        std::fs::write(
+            maison.join(".config/user-dirs.dirs"),
+            "XDG_DOWNLOAD_DIR=\"$HOME/.ssh\"\nXDG_DESKTOP_DIR=\"/\"\n",
+        )
+        .unwrap();
+        let tube = std::process::Command::new("mkfifo").arg(tele.join("tube")).status();
+        assert!(tube.is_ok_and(|s| s.success()), "mkfifo");
+        let compte = Compte {
+            config: Some(maison.join(".config")),
+            maison: Some(maison),
+            nom: Some("alice".into()),
+        };
+        (d, compte)
+    }
+
+    fn jugee(c: Commande, v: &str, compte: &Compte) -> Result<Lancement, String> {
+        rejuger(&Lancement::AvecValeur(AvecValeur::nouvelle(c, v).unwrap()), compte)
+    }
+
+    /// Le relais rejuge chaque chemin sur son chemin réel (liens résolus), sans croire la fenêtre : seul un fichier
+    /// ordinaire sous Téléchargements, Bureau ou Documents part, et c'est son chemin réel qui part ; un lien qui sort
+    /// de ces endroits, ~/.ssh, /proc, /dev, un tube nommé, un dossier caché ou un dossier sont refusés, et le refus
+    /// ne redit jamais la valeur.
+    #[test]
+    fn le_relais_rejuge_chaque_chemin_sur_son_chemin_reel() {
+        let (d, compte) = maison_piegee("rejuger");
+        let maison = compte.maison.clone().unwrap();
+        let tele = maison.join("Téléchargements");
+        let reel = |c: &str| tele.join(c).to_str().unwrap().to_string();
+        for (v, attendu) in [
+            ("~/Téléchargements/facture.pdf", reel("facture.pdf")),
+            ("~/Téléchargements/ma facture.pdf", reel("ma facture.pdf")),
+            ("~/Documents/lien.pdf", reel("facture.pdf")),
+            (&reel("facture.pdf"), reel("facture.pdf")),
+        ] {
+            for c in [
+                Commande::VerifierFichier,
+                Commande::CourrielSuspect,
+                Commande::VerifierMoi,
+            ] {
+                let l = jugee(c, v, &compte).unwrap();
+                assert_eq!(l.arguments()[3], attendu, "{v:?}");
+                assert_eq!(l.arguments()[..3], ["console", c.nom(), "--"]);
+            }
+        }
+        for (v, refus) in [
+            ("~/.ssh/id_ed25519", Refus::HorsDesEndroits),
+            ("~/hors.txt", Refus::HorsDesEndroits),
+            ("~/Téléchargements/cle", Refus::HorsDesEndroits),
+            ("~/Téléchargements/ssh/id_ed25519", Refus::HorsDesEndroits),
+            ("~/Téléchargements/racine/etc/passwd", Refus::HorsDesEndroits),
+            ("~/Bureau/id_ed25519", Refus::HorsDesEndroits),
+            ("~/Téléchargements/environ", Refus::HorsDesEndroits),
+            ("/proc/self/environ", Refus::HorsDesEndroits),
+            ("~/Téléchargements/zero", Refus::HorsDesEndroits),
+            ("/dev/zero", Refus::HorsDesEndroits),
+            ("~/Téléchargements/tube", Refus::PasUnFichier),
+            ("~/Téléchargements", Refus::HorsDesEndroits),
+            ("~/Téléchargements/.cache/x.pdf", Refus::Cache),
+            ("~/Téléchargements/absent.pdf", Refus::Introuvable),
+        ] {
+            let attendu = crate::trf!("valeur refusée : {}", "value refused: {}", refus.phrase());
+            assert_eq!(jugee(Commande::VerifierFichier, v, &compte), Err(attendu), "{v:?}");
+        }
+        // Sans maison connue, aucun chemin ne passe ; le reste (mots, jours) ne lit rien et passe rejugé.
+        let sans = Compte {
+            maison: None,
+            config: None,
+            nom: None,
+        };
+        assert!(jugee(Commande::VerifierFichier, &reel("facture.pdf"), &sans).is_err());
+        assert!(jugee(Commande::Chercher, "pare-feu", &sans).is_ok());
+        assert!(jugee(Commande::DernieresFailles, "30", &sans).is_ok());
+        // Une commande qui ne part qu'avec sa valeur, demandée sans elle : refusée ; une autre passe telle quelle.
+        assert!(rejuger(&Lancement::Commande(Commande::Chercher), &compte).is_err());
+        assert_eq!(
+            rejuger(&Lancement::Commande(Commande::Bilan), &compte),
+            Ok(Lancement::Commande(Commande::Bilan))
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Pour de vrai, avec un faux `vanguard` qui note ce qu'on lui passe : un fichier de Téléchargements part par son
+    /// chemin réel, en une case après « -- » ; un chemin vers ~/.ssh finit « impossible » sans que rien ne soit lancé.
+    #[test]
+    fn le_relais_ne_lance_que_le_chemin_rejuge() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let (d, compte) = maison_piegee("relais-valeur");
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let script = d.join("vanguard");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done >> \"$(dirname \"$0\")/lances\"\necho '{}'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let moi = std::fs::metadata(&d).unwrap().uid();
+        let (fenetre, relais) = UnixStream::pair().unwrap();
+        let dossier = d.clone();
+        let serveur = std::thread::spawn(move || servir_pour(relais, move || Programme::dans(&dossier, moi), &compte));
+        let c = Client::demarrer(fenetre, None);
+        let rien: Reveil = Arc::new(|| {});
+        let lances = || std::fs::read_to_string(d.join("lances")).unwrap_or_default();
+        let av = |v: &str| Lancement::AvecValeur(AvecValeur::nouvelle(Commande::VerifierFichier, v).unwrap());
+        let f = attendre_fin(&c.lancer(av("~/.ssh/id_ed25519"), false, &rien));
+        assert!(
+            matches!(&f.issue, Issue::Impossible(r) if !r.contains("ssh")),
+            "{:?}",
+            f.issue
+        );
+        assert_eq!(lances(), "");
+        let f = attendre_fin(&c.lancer(av("~/Téléchargements/cle"), false, &rien));
+        assert!(matches!(f.issue, Issue::Impossible(_)), "{:?}", f.issue);
+        assert_eq!(lances(), "");
+        let f = attendre_fin(&c.lancer(av("~/Téléchargements/ma facture.pdf"), false, &rien));
+        assert_eq!(f.code, Some(0), "{:?}", f.issue);
+        let reel = d.join("alice/Téléchargements/ma facture.pdf");
+        assert_eq!(
+            lances(),
+            format!("console\nverifier-fichier\n--\n{}\n", reel.to_str().unwrap())
+        );
+        c.fermer();
+        serveur.join().unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Une fenêtre prise n'a pas `AvecValeur::nouvelle` : elle écrit ses octets elle-même. Chaque trame 7 forgée à la
+    /// main avec une valeur hostile (option, tiret, bidi, saut de ligne, NUL, mauvaise sorte, longueur qui ment) ferme
+    /// le relais sans rien lancer ; la même trame avec une bonne valeur, elle, lance la lecture : la forge est juste.
+    #[test]
+    fn une_trame_de_valeur_forgee_ne_lance_rien() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let (d, compte) = maison_piegee("relais-forge");
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let script = d.join("vanguard");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done >> \"$(dirname \"$0\")/lances\"\necho '{}'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let moi = std::fs::metadata(&d).unwrap().uid();
+        let rang = |c: Commande| u8::try_from(Commande::TOUTES.iter().position(|x| *x == c).unwrap()).unwrap();
+        let forger = |c: Commande, sorte: Argument, valeur: &[u8], longueur: usize| {
+            let mut t = vec![7, 1, 0, 0, 0, rang(c), sorte.octet(), 0];
+            t.extend(u16::try_from(longueur).unwrap().to_le_bytes());
+            t.extend(valeur);
+            t
+        };
+        let lances = || std::fs::read_to_string(d.join("lances")).unwrap_or_default();
+        let envoyer_ou_attendre = |trame: Vec<u8>, attendre: bool| {
+            let (fenetre, relais) = UnixStream::pair().unwrap();
+            let dossier = d.clone();
+            let compte = Compte {
+                maison: compte.maison.clone(),
+                config: compte.config.clone(),
+                nom: compte.nom.clone(),
+            };
+            let serveur =
+                std::thread::spawn(move || servir_pour(relais, move || Programme::dans(&dossier, moi), &compte));
+            ecrire_trame(&mut &fenetre, &trame).unwrap();
+            // Une lecture lancée s'arrête quand la fenêtre se ferme : sa trace est attendue avant de fermer (une
+            // demi-seconde pour une trame hostile, qui, admise par erreur, aurait ainsi le temps de se voir).
+            let delai = Duration::from_millis(if attendre { 10_000 } else { 500 });
+            let debut = Instant::now();
+            while lances().is_empty() && debut.elapsed() < delai {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            fenetre.shutdown(std::net::Shutdown::Write).unwrap();
+            let mut reponse = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut &fenetre, &mut reponse);
+            serveur.join().unwrap();
+        };
+        let envoyer = |trame: Vec<u8>| envoyer_ou_attendre(trame, false);
+        let hostiles: [(Commande, &[u8]); 12] = [
+            (Commande::Lien, b"--internet"),
+            (Commande::Chercher, b"-x"),
+            (Commande::Chercher, "a\u{202E}b".as_bytes()),
+            (Commande::Chercher, "a\u{2066}b".as_bytes()),
+            (Commande::Chercher, b"x\ny"),
+            (Commande::Chercher, b"x\0y"),
+            (Commande::Chercher, b" "),
+            (Commande::Chercher, b""),
+            (Commande::Chercher, b"\xff\xfe"),
+            (Commande::VerifierFichier, b"--appliquer"),
+            (Commande::VerifierFichier, b"../../.ssh/id_ed25519"),
+            (Commande::DernieresFailles, b"3651"),
+        ];
+        for (c, v) in hostiles {
+            envoyer(forger(c, c.argument().unwrap(), v, v.len()));
+            assert_eq!(lances(), "", "{c:?} {:?}", String::from_utf8_lossy(v));
+        }
+        let bonne = "~/Téléchargements/facture.pdf".as_bytes();
+        // La sorte d'une autre commande, ou une longueur qui ment d'un octet : refusées aussi.
+        envoyer(forger(Commande::VerifierFichier, Argument::Mots, bonne, bonne.len()));
+        envoyer(forger(
+            Commande::VerifierFichier,
+            Argument::Chemin,
+            bonne,
+            bonne.len() + 1,
+        ));
+        envoyer(forger(
+            Commande::VerifierFichier,
+            Argument::Chemin,
+            bonne,
+            bonne.len() - 1,
+        ));
+        envoyer(forger(Commande::Bilan, Argument::Chemin, bonne, bonne.len()));
+        assert_eq!(lances(), "");
+        envoyer_ou_attendre(
+            forger(Commande::VerifierFichier, Argument::Chemin, bonne, bonne.len()),
+            true,
+        );
+        let reel = d.join("alice/Téléchargements/facture.pdf");
+        assert_eq!(
+            lances(),
+            format!("console\nverifier-fichier\n--\n{}\n", reel.to_str().unwrap())
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     /// Pour de vrai, avec un faux `vanguard` : un changement n'est accepté que pour une empreinte de la dernière
     /// liste relayée, et cette liste ne sert qu'une fois ; il passe seul (refusé pendant une lecture, et rien ne se
@@ -1382,14 +1747,14 @@ esac
         let arret = Arc::new(AtomicBool::new(false));
         let voir = |j| Lancement::Geste(Geste::voir_correction(j));
         let mut etat = Etat::default();
-        assert!(etat.admettre(1, voir(j), &arret).is_some(), "sans bilan");
+        assert!(etat.admettre(1, &voir(j), &arret).is_some(), "sans bilan");
         etat.offerts = [(j, SorteGeste::VoirCorrection)].into();
-        assert!(etat.admettre(2, voir(autre), &arret).is_some(), "jeton non offert");
+        assert!(etat.admettre(2, &voir(autre), &arret).is_some(), "jeton non offert");
         assert!(etat.taches.is_empty());
-        assert_eq!(etat.admettre(3, voir(j), &arret), None);
+        assert_eq!(etat.admettre(3, &voir(j), &arret), None);
         assert!(!etat.taches[&3].changement);
         etat.taches.clear();
-        assert_eq!(etat.admettre(4, voir(j), &arret), None, "la liste sert encore");
+        assert_eq!(etat.admettre(4, &voir(j), &arret), None, "la liste sert encore");
         etat.taches.clear();
         let e = Empreinte::lire(&"e".repeat(32)).unwrap();
         etat.vues = [(e, (Sorte::Retirer, Accord::NUL))].into();
@@ -1398,8 +1763,8 @@ esac
             empreinte: e,
             accord: Accord::NUL,
         });
-        assert_eq!(etat.admettre(5, ch, &arret), None);
-        assert!(etat.admettre(6, voir(j), &arret).is_some(), "pendant un changement");
+        assert_eq!(etat.admettre(5, &ch, &arret), None);
+        assert!(etat.admettre(6, &voir(j), &arret).is_some(), "pendant un changement");
     }
 
     /// Pour de vrai, avec le faux `vanguard` : un aperçu demandé avant tout bilan, ou pour un jeton que le bilan
@@ -1463,22 +1828,22 @@ esac
             ..Etat::default()
         };
 
-        assert!(etat.admettre(1, appliquer(j, a), &arret).is_some(), "sans aperçu");
+        assert!(etat.admettre(1, &appliquer(j, a), &arret).is_some(), "sans aperçu");
         etat.montres.insert(Famille::Correction, (j, a, Instant::now()));
-        let r = etat.admettre(2, appliquer(j, a), &arret);
+        let r = etat.admettre(2, &appliquer(j, a), &arret);
         assert!(r.is_some_and(|r| r.contains("2 s")), "trop tôt : {r:?}");
         etat.montres.insert(
             Famille::Correction,
             (j, a, il_y_a(APERCU_LU + Duration::from_millis(50))),
         );
-        assert!(etat.admettre(3, appliquer(autre, a), &arret).is_some(), "autre jeton");
-        assert!(etat.admettre(4, appliquer(j, b), &arret).is_some(), "autre accord");
+        assert!(etat.admettre(3, &appliquer(autre, a), &arret).is_some(), "autre jeton");
+        assert!(etat.admettre(4, &appliquer(j, b), &arret).is_some(), "autre accord");
         assert!(
-            etat.admettre(5, appliquer(j, Accord::NUL), &arret).is_some(),
+            etat.admettre(5, &appliquer(j, Accord::NUL), &arret).is_some(),
             "accord nul"
         );
         assert!(
-            etat.admettre(6, annuler(j, a), &arret).is_some(),
+            etat.admettre(6, &annuler(j, a), &arret).is_some(),
             "aperçu de l'autre famille"
         );
         // Une lecture en cours : un changement attend qu'elle finisse.
@@ -1490,20 +1855,20 @@ esac
             },
         );
         assert!(
-            etat.admettre(7, appliquer(j, a), &arret).is_some(),
+            etat.admettre(7, &appliquer(j, a), &arret).is_some(),
             "pendant une lecture"
         );
         etat.taches.clear();
         // Aucun refus n'a rien consommé.
         assert!(etat.montres.contains_key(&Famille::Correction));
         assert_eq!(etat.offerts.len(), 2);
-        assert_eq!(etat.admettre(8, appliquer(j, a), &arret), None);
+        assert_eq!(etat.admettre(8, &appliquer(j, a), &arret), None);
         assert!(etat.taches[&8].changement);
         assert!(!etat.montres.contains_key(&Famille::Correction));
         assert_eq!(etat.offerts, [(autre, SorteGeste::VoirAnnulation)].into());
         etat.taches.clear();
         assert!(
-            etat.admettre(9, appliquer(j, a), &arret).is_some(),
+            etat.admettre(9, &appliquer(j, a), &arret).is_some(),
             "consommé : une fois"
         );
 
@@ -1512,10 +1877,10 @@ esac
             Famille::Annulation,
             (autre, a, il_y_a(APERCU_VIEUX + Duration::from_secs(1))),
         );
-        let r = etat.admettre(10, annuler(autre, a), &arret);
+        let r = etat.admettre(10, &annuler(autre, a), &arret);
         assert!(r.is_some_and(|r| r.contains("10 minutes")), "{r:?}");
         etat.montres.insert(Famille::Annulation, (autre, a, il_y_a(APERCU_LU)));
-        assert_eq!(etat.admettre(11, annuler(autre, a), &arret), None);
+        assert_eq!(etat.admettre(11, &annuler(autre, a), &arret), None);
         assert!(etat.offerts.is_empty() && etat.montres.is_empty());
     }
 
@@ -1535,10 +1900,10 @@ esac
             offerts: [(autre, SorteGeste::VoirCorrection)].into(),
             ..Etat::default()
         };
-        assert_eq!(etat.admettre(1, voir(j), &arret), None);
+        assert_eq!(etat.admettre(1, &voir(j), &arret), None);
         etat.taches.clear();
-        assert!(etat.admettre(2, voir(autre), &arret).is_some(), "autre jeton");
-        assert!(etat.admettre(3, installer(j, a), &arret).is_some(), "sans aperçu");
+        assert!(etat.admettre(2, &voir(autre), &arret).is_some(), "autre jeton");
+        assert!(etat.admettre(3, &installer(j, a), &arret).is_some(), "sans aperçu");
         let fin = |sortie: &str| Fin {
             lancement: voir(j),
             code: Some(0),
@@ -1553,20 +1918,20 @@ esac
         );
         etat.retenir(&fin(&ligne));
         assert_eq!(etat.montres.get(&Famille::MiseAJour).map(|m| (m.0, m.1)), Some((j, a)));
-        let r = etat.admettre(4, installer(j, a), &arret);
+        let r = etat.admettre(4, &installer(j, a), &arret);
         assert!(r.is_some_and(|r| r.contains("2 s")), "trop tôt : {r:?}");
         let il_y_a = Instant::now()
             .checked_sub(APERCU_LU + Duration::from_millis(50))
             .unwrap();
         etat.montres.insert(Famille::MiseAJour, (j, a, il_y_a));
-        assert!(etat.admettre(5, installer(autre, a), &arret).is_some(), "autre jeton");
+        assert!(etat.admettre(5, &installer(autre, a), &arret).is_some(), "autre jeton");
         let b = Accord::lire(&"d4".repeat(32)).unwrap();
-        assert!(etat.admettre(6, installer(j, b), &arret).is_some(), "autre accord");
-        assert_eq!(etat.admettre(7, installer(j, a), &arret), None);
+        assert!(etat.admettre(6, &installer(j, b), &arret).is_some(), "autre accord");
+        assert_eq!(etat.admettre(7, &installer(j, a), &arret), None);
         assert!(etat.montres.is_empty());
         assert_eq!(etat.offerts, [(autre, SorteGeste::VoirCorrection)].into());
         etat.taches.clear();
-        assert!(etat.admettre(8, installer(j, a), &arret).is_some(), "une fois");
+        assert!(etat.admettre(8, &installer(j, a), &arret).is_some(), "une fois");
         // Une liste qui écrirait la mise à jour ne l'offre pas.
         let liste = format!(
             r#"{{"constats":[{{"geste":{{"sorte":"voir-mise-a-jour","jeton":"{}"}}}}]}}"#,

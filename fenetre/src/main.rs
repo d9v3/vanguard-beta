@@ -40,6 +40,11 @@ mod sortie;
 mod temps;
 #[cfg(windows)]
 mod travail;
+// La valeur tapée après le nom d'une commande de la console : le fichier de `vanguard console`, compilé ici à
+// l'identique (une seule règle des deux côtés). Le jugement des chemins réels n'y sert qu'au relais (Linux).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[path = "../../src/socle/valeur_console.rs"]
+mod valeur;
 
 use std::process::ExitCode;
 

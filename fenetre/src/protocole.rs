@@ -12,6 +12,9 @@
 //! 12 voir ce qui serait remis comme avant, 13 le remettre ; le jeton est celui qu'`audit --json` ou
 //! `changements --json` a donné ; l'accord d'un « voir » est tout à zéro, celui d'un geste qui change est celui que
 //! son aperçu a donné, jamais tout à zéro) ou
+//! `7 id rang sorte langue longueur(2) valeur` (une commande de la liste qui se lance avec sa valeur : la sorte doit
+//! être celle de la commande, la longueur, petit-boutiste, celle exacte de la valeur, en UTF-8, au plus la borne de
+//! sa sorte, 4096 octets pour un chemin ; le relais la rejuge en entier, chemin réel compris, sans rien croire) ou
 //! `2 id` (arrêter). Relais → fenêtre : `1 id texte` (une ligne d'erreur), `3 id pid`
 //! (`vanguard` est lancé, sous ce numéro : pour les coulisses) ou `2 id issue code durée texte sortie` (la fin).
 
@@ -19,14 +22,20 @@ use std::io::{Read, Write};
 use std::time::Duration;
 
 use crate::commandes::{
-    Accord, Changement, ChangementCouleurs, Commande, Empreinte, Famille, Fin, Geste, Issue, Lancement, Sorte,
-    SorteGeste,
+    Accord, Argument, AvecValeur, Changement, ChangementCouleurs, Commande, Empreinte, Famille, Fin, Geste, Issue,
+    Lancement, Sorte, SorteGeste,
 };
 use crate::couleurs::{Base, Choix, Rgb, Theme, VIFS};
 
-/// Une demande de la fenêtre fait au plus 55 octets (un geste, un changement au démarrage) : plus long, c'est hors
-/// du protocole.
-pub const DEMANDE_MAX: usize = 64;
+/// L'en-tête d'une trame de commande avec sa valeur : type, id, rang, sorte, langue, longueur.
+const ENTETE_VALEUR: usize = 1 + 4 + 1 + 1 + 1 + 2;
+
+/// La plus longue valeur, toutes sortes confondues (un chemin, 4096 octets).
+const VALEUR_MAX: usize = 4096;
+
+/// Une demande de la fenêtre fait au plus l'en-tête d'une commande avec sa valeur et la plus longue valeur : plus
+/// long, c'est hors du protocole. Les autres trames font au plus 55 octets (un geste, un changement au démarrage).
+pub const DEMANDE_MAX: usize = ENTETE_VALEUR + VALEUR_MAX;
 
 /// La longueur exacte d'une trame de geste : type, id, sorte, jeton, accord, langue.
 const LONGUEUR_GESTE: usize = 1 + 4 + 1 + 16 + 32 + 1;
@@ -34,7 +43,7 @@ const LONGUEUR_GESTE: usize = 1 + 4 + 1 + 16 + 32 + 1;
 const LONGUEUR_CHANGEMENT: usize = 1 + 4 + 1 + 16 + 32 + 1;
 
 /// Une demande de la fenêtre.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Demande {
     Lancer {
         id: u32,
@@ -47,8 +56,8 @@ pub enum Demande {
 }
 
 impl Demande {
-    pub fn coder(self) -> Vec<u8> {
-        match self {
+    pub fn coder(&self) -> Vec<u8> {
+        match self.clone() {
             Demande::Lancer {
                 id,
                 lancement: Lancement::Commande(commande),
@@ -116,6 +125,24 @@ impl Demande {
                 v.push(u8::from(anglais));
                 v
             }
+            Demande::Lancer {
+                id,
+                lancement: Lancement::AvecValeur(av),
+                anglais,
+            } => {
+                let valeur = av.valeur().as_bytes();
+                // La borne est tenue par `AvecValeur::nouvelle` (4096 octets au plus) : u16 suffit toujours ; une
+                // valeur qui ne tiendrait pas donne une longueur fausse, que `lire` refuse.
+                let longueur = u16::try_from(valeur.len()).unwrap_or(u16::MAX);
+                let mut v = vec![7];
+                v.extend(id.to_le_bytes());
+                v.push(rang(av.commande()));
+                v.push(av.sorte().octet());
+                v.push(u8::from(anglais));
+                v.extend(longueur.to_le_bytes());
+                v.extend(valeur);
+                v
+            }
             Demande::Arreter { id } => {
                 let mut v = vec![2];
                 v.extend(id.to_le_bytes());
@@ -136,7 +163,12 @@ impl Demande {
         match (o.first()?, o.len()) {
             (1, 7) => Some(Demande::Lancer {
                 id,
-                lancement: Lancement::Commande(*Commande::TOUTES.get(usize::from(*o.get(5)?))?),
+                // Une commande qui se lance avec sa valeur ne part jamais sans elle (sa trame est la 7).
+                lancement: Lancement::Commande(
+                    *Commande::TOUTES
+                        .get(usize::from(*o.get(5)?))
+                        .filter(|c| !c.valeur_requise())?,
+                ),
                 anglais: langue(6)?,
             }),
             (3, LONGUEUR_CHANGEMENT) => Some(Demande::Lancer {
@@ -163,10 +195,33 @@ impl Demande {
                 lancement: Lancement::Geste(geste(o.get(5..54)?)?),
                 anglais: langue(54)?,
             }),
+            (7, n) if n >= ENTETE_VALEUR => Some(Demande::Lancer {
+                id,
+                lancement: Lancement::AvecValeur(avec_valeur(o)?),
+                anglais: langue(7)?,
+            }),
             (2, 5) => Some(Demande::Arreter { id }),
             _ => None,
         }
     }
+}
+
+/// `7 id rang sorte langue longueur(2) valeur`, strictement : un rang de la liste dont la commande se lance avec une
+/// valeur, la sorte de cette commande et aucune autre, la longueur exacte de ce qui suit, de l'UTF-8, puis la valeur
+/// jugée par la même règle que la fenêtre (`AvecValeur::nouvelle` : bornes, tiret en tête, contrôles, invisibles).
+/// Le chemin réel, lui, est jugé ensuite par le relais (`relais::rejuger`), puis par Vanguard.
+fn avec_valeur(o: &[u8]) -> Option<AvecValeur> {
+    let commande = *Commande::TOUTES.get(usize::from(*o.get(5)?))?;
+    let sorte = Argument::depuis_octet(*o.get(6)?)?;
+    if commande.argument() != Some(sorte) {
+        return None;
+    }
+    let longueur = usize::from(u16::from_le_bytes(o.get(8..ENTETE_VALEUR)?.try_into().ok()?));
+    let valeur = o.get(ENTETE_VALEUR..)?;
+    if valeur.len() != longueur || longueur > sorte.max() {
+        return None;
+    }
+    AvecValeur::nouvelle(commande, std::str::from_utf8(valeur).ok()?).ok()
 }
 
 /// `theme action base rvb(15)`, strictement : un thème et une base connus ; pour « celles de Vanguard », tout le
@@ -358,7 +413,9 @@ mod tests {
                     lancement: Lancement::Commande(c),
                     anglais,
                 };
-                assert_eq!(Demande::lire(&d.coder()), Some(d));
+                // Une commande qui ne part qu'avec sa valeur n'a pas de trame sans elle.
+                let attendu = (!c.valeur_requise()).then(|| d.clone());
+                assert_eq!(Demande::lire(&d.coder()), attendu, "{c:?}");
             }
         }
         let d = Demande::Arreter { id: 7 };
@@ -377,6 +434,118 @@ mod tests {
         ] {
             assert_eq!(Demande::lire(faux), None, "{faux:?}");
         }
+    }
+
+    fn avec(c: Commande, valeur: &str) -> Demande {
+        Demande::Lancer {
+            id: 9,
+            lancement: Lancement::AvecValeur(AvecValeur::nouvelle(c, valeur).unwrap()),
+            anglais: true,
+        }
+    }
+
+    /// Une commande avec sa valeur : aller-retour pour chaque commande qui en prend une, la valeur la plus longue
+    /// de sa sorte comprise ; l'en-tête fait 10 octets et la trame la plus longue tient dans `DEMANDE_MAX`.
+    #[test]
+    fn une_valeur_aller_retour_et_bornee() {
+        for c in Commande::TOUTES.iter().copied().filter(|c| c.argument().is_some()) {
+            let sorte = c.argument().unwrap();
+            let courte = match sorte {
+                Argument::Chemin => "~/Téléchargements/facture été.pdf".to_string(),
+                Argument::Adresse => "https://exemple.test/a?b=c".to_string(),
+                Argument::Mots => "pare-feu ouvert".to_string(),
+                Argument::Incident => "inc-20261116-1".to_string(),
+                Argument::Jours => "3650".to_string(),
+            };
+            let longue = match sorte {
+                Argument::Chemin => format!("/{}", "a".repeat(sorte.max() - 1)),
+                Argument::Jours => "30".to_string(),
+                _ => "a".repeat(sorte.max()),
+            };
+            for v in [courte, longue] {
+                let d = avec(c, &v);
+                let o = d.coder();
+                assert_eq!(o.len(), ENTETE_VALEUR + v.len(), "{c:?}");
+                assert!(o.len() <= DEMANDE_MAX, "{c:?}");
+                assert_eq!(Demande::lire(&o), Some(d), "{c:?} {v:?}");
+            }
+        }
+        assert_eq!(DEMANDE_MAX, 10 + 4096);
+    }
+
+    /// Ce que le relais refuse dans une trame de valeur, même bien formée par ailleurs : une sorte qui n'est pas celle
+    /// de la commande, une commande sans valeur, une longueur fausse ou au-delà de la borne, de l'UTF-8 invalide, et
+    /// chaque valeur que la règle commune refuse (tiret devant, contrôle, bidi, vide, bords).
+    #[test]
+    fn une_valeur_hors_de_sa_forme_est_refusee() {
+        let bonne = avec(Commande::VerifierFichier, "~/Téléchargements/x.pdf").coder();
+        assert!(Demande::lire(&bonne).is_some());
+        let mut autre_sorte = bonne.clone();
+        autre_sorte[6] = Argument::Mots.octet();
+        let mut sans_valeur = bonne.clone();
+        sans_valeur[5] = rang(Commande::Bilan);
+        let mut hors_liste = bonne.clone();
+        hors_liste[5] = u8::try_from(Commande::TOUTES.len()).unwrap();
+        let mut sorte_inconnue = bonne.clone();
+        sorte_inconnue[6] = 0;
+        let mut langue = bonne.clone();
+        langue[7] = 2;
+        let mut plus_court = bonne.clone();
+        plus_court.pop();
+        let mut plus_long = bonne.clone();
+        plus_long.push(b'f');
+        let mut utf8 = bonne.clone();
+        *utf8.last_mut().unwrap() = 0xff;
+        let fausses = [
+            autre_sorte,
+            sans_valeur,
+            hors_liste,
+            sorte_inconnue,
+            langue,
+            plus_court,
+            plus_long,
+            utf8,
+            bonne[..ENTETE_VALEUR - 1].to_vec(),
+        ];
+        for f in &fausses {
+            assert_eq!(Demande::lire(f), None, "{f:?}");
+        }
+        // Une valeur que la fenêtre aurait dû refuser, mise à la main dans une trame : le relais la refuse aussi.
+        let trame = |c: Commande, v: &[u8]| {
+            let mut o = vec![7, 1, 0, 0, 0, rang(c), c.argument().unwrap().octet(), 0];
+            o.extend(u16::try_from(v.len()).unwrap().to_le_bytes());
+            o.extend(v);
+            o
+        };
+        assert!(Demande::lire(&trame(Commande::Lien, b"https://exemple.test")).is_some());
+        for v in [
+            &b"--internet"[..],
+            b"-x",
+            "a\u{202E}b".as_bytes(),
+            "x\u{2066}y".as_bytes(),
+            b"x\ny",
+            b"x\0y",
+            b"",
+            b" x",
+        ] {
+            assert_eq!(Demande::lire(&trame(Commande::Lien, v)), None, "{v:?}");
+        }
+        for v in [&b"../../.ssh/id_ed25519"[..], b"x.pdf", b"~alice/x"] {
+            assert_eq!(Demande::lire(&trame(Commande::VerifierFichier, v)), None, "{v:?}");
+        }
+        // La borne : 4096 octets de chemin passent, 4097 non, même si la longueur annoncée le dit.
+        let limite = format!("/{}", "a".repeat(4095));
+        assert!(Demande::lire(&trame(Commande::VerifierFichier, limite.as_bytes())).is_some());
+        let trop = format!("/{}", "a".repeat(4096));
+        assert_eq!(Demande::lire(&trame(Commande::VerifierFichier, trop.as_bytes())), None);
+        // Une adresse a sa propre borne (2048), plus courte que celle de la trame.
+        let adresse = format!("https://exemple.test/{}", "a".repeat(2048));
+        assert_eq!(Demande::lire(&trame(Commande::Lien, adresse.as_bytes())), None);
+        // Et la lecture des trames refuse ce qui dépasse `DEMANDE_MAX` avant même de le lire.
+        let mut flux = Vec::new();
+        flux.extend(u32::try_from(DEMANDE_MAX + 1).unwrap().to_le_bytes());
+        flux.extend(vec![0u8; DEMANDE_MAX + 1]);
+        assert!(lire_trame(&mut &flux[..], DEMANDE_MAX).is_err());
     }
 
     /// Un changement : aller-retour pour chaque sorte, langue et empreinte ; une autre longueur, une sorte inconnue,

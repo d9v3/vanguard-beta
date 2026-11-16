@@ -24,6 +24,10 @@ mod nettoyage;
 mod couleurs;
 
 #[allow(dead_code)]
+#[path = "../../src/socle/valeur_console.rs"]
+mod valeur;
+
+#[allow(dead_code)]
 #[path = "../../fenetre/src/commandes.rs"]
 mod commandes;
 

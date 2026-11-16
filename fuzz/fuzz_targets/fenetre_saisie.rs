@@ -20,6 +20,10 @@ mod nettoyage;
 mod couleurs;
 
 #[allow(dead_code)]
+#[path = "../../src/socle/valeur_console.rs"]
+mod valeur;
+
+#[allow(dead_code)]
 #[path = "../../fenetre/src/commandes.rs"]
 mod commandes;
 
@@ -85,6 +89,20 @@ fn comprendre(brut: &str) {
             assert_eq!(mots.len(), 2, "{brut:?}");
             assert!(mots[1] == c.nom() || mots[1] == c.nom_anglais(), "{brut:?} → {c:?}");
         }
+        // Une valeur : la commande de la liste qui en prend une, de sa sorte, jugée bonne, seule case libre de
+        // `console <nom> -- <valeur>`.
+        Saisie::LancerAvec(av) => {
+            let c = av.commande();
+            assert!(Commande::TOUTES.contains(&c));
+            assert_eq!(c.argument(), Some(av.sorte()), "{brut:?}");
+            assert!(valeur::valider(av.sorte(), av.valeur()).is_ok(), "{brut:?}");
+            let l = commandes::Lancement::AvecValeur(av.clone());
+            assert_eq!(l.arguments(), ["console", c.nom(), "--", av.valeur()], "{brut:?}");
+            assert!(!l.change());
+        }
+        Saisie::ValeurManquante(c) => assert!(c.valeur_requise(), "{brut:?}"),
+        Saisie::ValeurRefusee(c, _) => assert!(c.argument().is_some(), "{brut:?}"),
+        Saisie::SansValeur(c) => assert!(c.argument().is_none(), "{brut:?}"),
         Saisie::Aide | Saisie::Effacer => {}
     }
     // Les suggestions : bornées, sans doublon, toutes de la liste fermée (elles ne se lancent jamais seules).

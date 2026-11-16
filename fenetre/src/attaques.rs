@@ -103,6 +103,10 @@ fn aucune_saisie_ne_fabrique_un_argument() {
         essais.push(e);
     }
     for e in &essais {
+        if let Saisie::LancerAvec(av) = commandes::comprendre(e) {
+            valeur_fermee(e, &av);
+            continue;
+        }
         if let Saisie::Lancer(c) = commandes::comprendre(e) {
             assert!(Commande::TOUTES.contains(&c), "{e:?}");
             // Une commande d'un autre système (les journaux de Windows sous Linux) ne se comprend pas ici.
@@ -420,6 +424,14 @@ fn la_console_ne_lance_aucun_changement() {
         "--internet",
         "--premier",
         "etat",
+        "chercher",
+        "lien",
+        "verifier-fichier",
+        "courriel-suspect",
+        "evenements",
+        "~/Téléchargements/x.pdf",
+        "https://exemple.test",
+        "30",
     ];
     // Les mots qui changent, envoient ou ouvrent une question, dans l'une ou l'autre de ces commandes.
     let agissent = [
@@ -466,7 +478,89 @@ fn la_console_ne_lance_aucun_changement() {
                 );
                 assert!(!Lancement::from(c).change(), "{saisie:?}");
             }
-            Saisie::Refusee(_) | Saisie::Rien | Saisie::Aide | Saisie::AideSur(_) | Saisie::Effacer => {}
+            Saisie::LancerAvec(av) => {
+                valeur_fermee(&saisie, &av);
+                lancees.insert(av.commande().nom());
+                // La partie fixée ne porte aucun mot qui change ; la valeur, elle, est une case après « -- », que
+                // `vanguard console` ne lit jamais comme une option.
+                let l = Lancement::AvecValeur(av.clone());
+                let a = l.arguments();
+                let fixe = a.get(..3).unwrap_or_default();
+                assert!(
+                    fixe.iter().all(|x| !agissent.contains(&x.as_str())),
+                    "{saisie:?} -> {a:?}"
+                );
+                assert!(!Lancement::AvecValeur(av).change(), "{saisie:?}");
+            }
+            Saisie::Refusee(_)
+            | Saisie::Rien
+            | Saisie::Aide
+            | Saisie::AideSur(_)
+            | Saisie::Effacer
+            | Saisie::ValeurManquante(_)
+            | Saisie::SansValeur(_)
+            | Saisie::ValeurRefusee(..) => {}
+        }
+    }
+    // Des valeurs hostiles, après chaque commande qui prend une valeur : aucune ne part. Les chemins qui ont la bonne
+    // forme mais mènent ailleurs (un lien vers ~/.ssh, un tube nommé, /proc/self/environ, /dev/zero) sont refusés par
+    // le relais sur leur chemin réel : `relais::tests::le_relais_rejuge_chaque_chemin_sur_son_chemin_reel`.
+    let longue = "a".repeat(5000);
+    let hostiles = [
+        "--internet",
+        "-x",
+        "--premier",
+        "--accepter",
+        "--invite",
+        "--appliquer",
+        "a\u{202E}b",
+        "x\ny",
+        "x\u{2028}y",
+        "x\u{2066}y",
+        "x\u{200E}y",
+        "x\u{85}y",
+        "x\u{7f}y",
+        "x\0y",
+        &longue,
+        "\"a\" \"b\"",
+        "\"--internet\"",
+        "' -x'",
+        "\"\"",
+    ];
+    for c in Commande::TOUTES.iter().filter(|c| c.argument().is_some()) {
+        for h in hostiles {
+            let saisie = format!("{} {h}", c.nom());
+            assert!(
+                !matches!(
+                    commandes::comprendre(&saisie),
+                    Saisie::LancerAvec(_) | Saisie::Lancer(_)
+                ),
+                "{saisie:?}"
+            );
+        }
+        // Un chemin relatif ou qui remonte, pour une commande de fichier (des mots ou une adresse, eux, ne sont pas
+        // des chemins : `vanguard chercher` et `vanguard lien` ne lisent aucun fichier).
+        for h in [
+            "../../.ssh/id_ed25519",
+            "~/../alice/.ssh/id_ed25519",
+            "x.pdf",
+            "Téléchargements/x.pdf",
+            "/proc/../home/alice/x",
+            "~alice/x",
+        ] {
+            if c.argument() == Some(commandes::Argument::Chemin) {
+                let saisie = format!("{} {h}", c.nom());
+                assert!(
+                    matches!(commandes::comprendre(&saisie), Saisie::ValeurRefusee(..)),
+                    "{saisie:?}"
+                );
+            }
+        }
+        // Une seconde valeur ne fait jamais deux cases : sans guillemets, des mots avec des espaces ne sont pris que
+        // par `chercher`, et toujours en une seule case.
+        if let Saisie::LancerAvec(av) = commandes::comprendre(&format!("{} a b", c.nom())) {
+            assert_eq!(av.commande().argument(), Some(commandes::Argument::Mots), "{c:?}");
+            assert_eq!(Lancement::AvecValeur(av).arguments().len(), 4, "{c:?}");
         }
     }
     // Les commandes de lecture qui changent ailleurs avec un mot de plus ont bien été lancées ici, nues.
@@ -481,4 +575,28 @@ fn la_console_ne_lance_aucun_changement() {
     ] {
         assert!(lancees.contains(nom), "{nom} jamais lancée par l'essai");
     }
+}
+
+/// Ce qu'une valeur tapée peut faire partir, et rien d'autre : `console <commande> -- <valeur>`, la commande de la
+/// liste fermée qui prend cette sorte de valeur, la valeur en une seule case, toujours après « -- », jugée par la
+/// règle commune (jamais vide, jamais un tiret devant, aucun contrôle ni invisible, sa borne).
+fn valeur_fermee(e: &str, av: &commandes::AvecValeur) {
+    let c = av.commande();
+    assert!(
+        Commande::TOUTES.contains(&c) && c.argument() == Some(av.sorte()),
+        "{e:?} -> {c:?}"
+    );
+    assert!(c.sur_ce_systeme(), "{e:?} -> {c:?}");
+    let l = Lancement::AvecValeur(av.clone());
+    assert_eq!(l.arguments(), ["console", c.nom(), "--", av.valeur()], "{e:?}");
+    assert!(!l.change(), "{e:?}");
+    let v = av.valeur();
+    assert!(!v.is_empty() && !v.starts_with('-') && v.trim() == v, "{e:?} -> {v:?}");
+    assert!(v.len() <= av.sorte().max(), "{e:?}");
+    assert!(!v.chars().any(char::is_control), "{e:?} -> {v:?}");
+    assert!(
+        !v.chars()
+            .any(|ch| matches!(u32::from(ch), 0x200B..=0x200F | 0x2028..=0x202E | 0x2060..=0x206F | 0xFEFF)),
+        "{e:?} -> {v:?}"
+    );
 }

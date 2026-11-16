@@ -23,6 +23,10 @@ mod nettoyage;
 mod couleurs;
 
 #[allow(dead_code)]
+#[path = "../../src/socle/valeur_console.rs"]
+mod valeur;
+
+#[allow(dead_code)]
 #[path = "../../fenetre/src/commandes.rs"]
 mod commandes;
 
@@ -49,9 +53,22 @@ fn relais(mut flux: &[u8]) {
     while let Ok(Some(t)) = protocole::lire_trame(&mut flux, DEMANDE_MAX) {
         assert!(t.len() <= DEMANDE_MAX && t.len() <= avant);
         let Some(d) = Demande::lire(&t) else { break };
-        if let Demande::Lancer { lancement, .. } = d {
+        if let Demande::Lancer { lancement, .. } = &d {
             match lancement {
-                Lancement::Commande(c) => assert!(Commande::TOUTES.contains(&c)),
+                // Une commande qui exige sa valeur ne passe jamais sans elle (verifier-moi la permet seulement).
+                Lancement::Commande(c) => assert!(Commande::TOUTES.contains(c) && !c.valeur_requise(), "{c:?}"),
+                // Une lecture avec sa valeur : `console <nom> -- <valeur>`, le nom de la liste fermée, la valeur de la
+                // seule sorte que la commande accepte, jugée bonne, jamais une option ; rien qui change.
+                Lancement::AvecValeur(av) => {
+                    let c = av.commande();
+                    assert!(Commande::TOUTES.contains(&c), "{c:?}");
+                    assert_eq!(c.argument(), Some(av.sorte()), "{c:?}");
+                    assert!(valeur::valider(av.sorte(), av.valeur()).is_ok(), "{av:?}");
+                    assert!(!av.valeur().starts_with('-'), "{av:?}");
+                    let a = lancement.arguments();
+                    assert_eq!(a, ["console", c.nom(), "--", av.valeur()], "{a:?}");
+                    assert!(!lancement.change());
+                }
                 // `demarrage --retirer|--remettre <32 hex> [--accord <64 hex>] --json` : l'accord rendu tel que la
                 // trame le porte, absent seulement s'il est tout à zéro.
                 Lancement::Changement(ch) => {

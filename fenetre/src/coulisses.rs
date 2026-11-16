@@ -136,7 +136,7 @@ impl Coulisses {
     }
 
     /// Une commande (ou un changement au démarrage) part.
-    pub fn lancee(&mut self, lancement: Lancement, chemin: Chemin) {
+    pub fn lancee(&mut self, lancement: &Lancement, chemin: Chemin) {
         if self.passages.len() >= PASSAGES_MAX {
             self.passages.pop_front();
         }
@@ -311,7 +311,7 @@ mod tests {
     #[test]
     fn une_commande_est_notee_de_bout_en_bout() {
         let mut c = Coulisses::nouvelles(("bac".into(), false));
-        c.lancee(Commande::Bilan.into(), Chemin::Relais);
+        c.lancee(&Commande::Bilan.into(), Chemin::Relais);
         c.processus(4242);
         c.erreur("une ligne d'erreur");
         c.finie(&fin(b"{\"a\": 1}\n{\"b\": 2}\n", Issue::Terminee, Some(0)));
@@ -344,7 +344,7 @@ mod tests {
         let empreinte = Empreinte::lire(&"a".repeat(32)).unwrap();
         let mut c = Coulisses::nouvelles(("bac".into(), false));
         c.lancee(
-            Lancement::Changement(Changement {
+            &Lancement::Changement(Changement {
                 sorte: Geste::Retirer,
                 empreinte,
                 accord: Accord::NUL,
@@ -373,11 +373,11 @@ mod tests {
     fn tout_est_borne() {
         let mut c = Coulisses::nouvelles(("bac".into(), false));
         for _ in 0..PASSAGES_MAX + 5 {
-            c.lancee(Commande::Protection.into(), Chemin::Direct);
+            c.lancee(&Commande::Protection.into(), Chemin::Direct);
             c.finie(&fin(b"", Issue::Terminee, Some(0)));
         }
         assert_eq!(c.passages().len(), PASSAGES_MAX);
-        c.lancee(Commande::Bilan.into(), Chemin::Direct);
+        c.lancee(&Commande::Bilan.into(), Chemin::Direct);
         let sortie = "{}\n".repeat(SORTIE_LIGNES_MAX + 30);
         c.finie(&fin(sortie.as_bytes(), Issue::Terminee, Some(0)));
         let derniere = c.notes().back().unwrap();
@@ -405,7 +405,7 @@ mod tests {
     #[test]
     fn un_texte_piege_est_nettoye() {
         let mut c = Coulisses::nouvelles(("bac".into(), false));
-        c.lancee(Commande::Bilan.into(), Chemin::Direct);
+        c.lancee(&Commande::Bilan.into(), Chemin::Direct);
         c.erreur("\u{1b}[2J\u{1b}]0;titre\u{7}Sal\u{202e}on\rfaux");
         c.finie(&fin(
             "{\"nom\": \"Lecteur\u{1b}[31m\u{200b}\"}".as_bytes(),

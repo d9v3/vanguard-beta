@@ -262,6 +262,7 @@ impl Tache {
         let (envoi, recu) = mpsc::channel();
         let programme = programme.clone();
         let a = Arc::clone(&arret);
+        let pour_le_fil = lancement.clone();
         let rendre: Rendre = {
             let envoi = envoi.clone();
             let reveil = Arc::clone(reveil);
@@ -273,12 +274,12 @@ impl Tache {
         let lance = std::thread::Builder::new()
             .name("vanguard-tache".into())
             .spawn(move || {
-                let fin = surveiller(&programme, lancement, anglais, &a, &rendre);
+                let fin = surveiller(&programme, &pour_le_fil, anglais, &a, &rendre);
                 rendre(Message::Fin(fin));
             });
         if let Err(e) = lance {
             let _ = envoi.send(Message::Fin(Fin {
-                lancement,
+                lancement: lancement.clone(),
                 code: None,
                 sortie: Vec::new(),
                 issue: Issue::Impossible(e.to_string()),
@@ -337,7 +338,7 @@ impl Tache {
     }
 }
 
-fn preparer(chemin: &Path, lancement: Lancement, anglais: bool) -> Command {
+fn preparer(chemin: &Path, lancement: &Lancement, anglais: bool) -> Command {
     let mut c = Command::new(chemin);
     c.args(lancement.arguments())
         .stdin(Stdio::null())
@@ -372,14 +373,14 @@ fn preparer(chemin: &Path, lancement: Lancement, anglais: bool) -> Command {
 /// (pas la fin : l'appelant la rend lui-même).
 pub fn surveiller(
     programme: &Programme,
-    lancement: Lancement,
+    lancement: &Lancement,
     anglais: bool,
     arret: &AtomicBool,
     rendre: &Rendre,
 ) -> Fin {
     let debut = Instant::now();
     let fin = |code, sortie, issue| Fin {
-        lancement,
+        lancement: lancement.clone(),
         code,
         sortie,
         issue,
@@ -964,7 +965,7 @@ esac
                     empreinte,
                     accord,
                 });
-                let (_, f) = attendre(&Tache::lancer(&p, ch, false, &rien));
+                let (_, f) = attendre(&Tache::lancer(&p, ch.clone(), false, &rien));
                 assert_eq!(f.code, Some(1), "{mot}");
                 assert_eq!(
                     String::from_utf8_lossy(&f.sortie),

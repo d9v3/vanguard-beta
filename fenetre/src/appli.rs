@@ -23,8 +23,8 @@ use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 use crate::commandes::{
-    self, APERCU_LU, Accord, Changement, ChangementCouleurs, Commande, Empreinte, Famille, Forme, Geste, Lancement,
-    Rubrique, Saisie, Sorte,
+    self, APERCU_LU, Accord, Argument, AvecValeur, Changement, ChangementCouleurs, Commande, Empreinte, Famille, Forme,
+    Geste, Lancement, Rubrique, Saisie, Sorte,
 };
 use crate::console::{self, Console};
 use crate::couleurs::{Choix, Jeu, Theme};
@@ -206,7 +206,8 @@ pub struct Appli {
     animations_a_garder: Option<bool>,
     programme: Result<Programme, String>,
     tache: Option<Tache>,
-    file: VecDeque<Commande>,
+    /// Les lectures en attente : une commande de la liste, ou la même avec sa valeur tapée (jamais un changement).
+    file: VecDeque<Lancement>,
     /// Les lignes et les blocs de la console (bornée).
     pub console: Console,
     /// Ce que fait la fenêtre, pour la fenêtre « Coulisses » (en mémoire seulement).
@@ -399,7 +400,7 @@ impl Appli {
             duree: Duration::from_millis(2143),
         };
         // Les coulisses le notent comme un vrai passage par le relais (numéro de processus inventé).
-        self.coulisses.lancee(fin.lancement, Chemin::Relais);
+        self.coulisses.lancee(&fin.lancement, Chemin::Relais);
         self.coulisses.processus(4242);
         self.coulisses.finie(&fin);
         self.finir(&fin);
@@ -415,29 +416,71 @@ impl Appli {
     }
 
     /// Demande une commande : lancée tout de suite si rien ne tourne, sinon mise en file, avec son bloc « en
-    /// attente ». Déjà en cours ou déjà en attente : dit, pas ajoutée une seconde fois.
+    /// attente ». Déjà en cours ou déjà en attente : dit, pas ajoutée une seconde fois. Une commande qui ne se lance
+    /// qu'avec sa valeur ne part pas : la forme à taper est redite.
     pub fn demander(&mut self, c: Commande) {
+        if c.valeur_requise() {
+            self.dire_forme(c);
+            return;
+        }
+        self.mettre_en_route(Lancement::Commande(c));
+    }
+
+    /// Demande une commande avec la valeur tapée après son nom (en lecture, comme les autres).
+    pub fn demander_avec(&mut self, av: AvecValeur) {
+        self.mettre_en_route(Lancement::AvecValeur(av));
+    }
+
+    /// Une lecture déjà demandée (le « Relancer » d'un bloc de la console) : seulement une commande de la liste ou la
+    /// même avec sa valeur, jamais un changement.
+    pub fn redemander(&mut self, l: &Lancement) {
+        match l {
+            Lancement::Commande(c) => self.demander(*c),
+            Lancement::AvecValeur(av) => self.demander_avec(av.clone()),
+            _ => {}
+        }
+    }
+
+    /// « verifier-fichier <fichier> » : la forme à taper pour une commande qui prend une valeur, et où un chemin est
+    /// permis.
+    fn dire_forme(&mut self, c: Commande) {
+        let Some(sorte) = c.argument() else {
+            return;
+        };
+        self.dire(
+            "fenêtre",
+            &crate::trf!(
+                "{} se lance avec sa valeur : tapez « {} {} ».",
+                "{} runs with its value: type “{} {}”.",
+                c.nom_affiche(),
+                c.nom_affiche(),
+                sorte.attendu()
+            ),
+            Ton::Attention,
+        );
+        if sorte == Argument::Chemin {
+            self.dire("fenêtre", endroits_permis(), Ton::Discret);
+        }
+    }
+
+    fn mettre_en_route(&mut self, l: Lancement) {
         if self.programme.is_err() {
             let e = self.programme.as_ref().err().cloned().unwrap_or_default();
             self.dire("fenêtre", &e, Ton::Grave);
             return;
         }
-        if self
-            .tache
-            .as_ref()
-            .is_some_and(|t| t.lancement == Lancement::Commande(c))
-        {
+        if self.tache.as_ref().is_some_and(|t| t.lancement == l) {
             self.dire(
                 "fenêtre",
-                &crate::trf!("{} : déjà en cours.", "{}: already running.", c.nom_affiche()),
+                &crate::trf!("{} : déjà en cours.", "{}: already running.", l.nom_affiche()),
                 Ton::Discret,
             );
             return;
         }
-        if self.file.contains(&c) {
+        if self.file.contains(&l) {
             self.dire(
                 "fenêtre",
-                &crate::trf!("{} : déjà en attente.", "{}: already queued.", c.nom_affiche()),
+                &crate::trf!("{} : déjà en attente.", "{}: already queued.", l.nom_affiche()),
                 Ton::Discret,
             );
             return;
@@ -451,18 +494,18 @@ impl Appli {
                 );
                 return;
             }
-            self.file.push_back(c);
-            self.console.attendre(c.into());
+            self.console.attendre(l.clone());
+            self.file.push_back(l);
             return;
         }
-        self.lancer(c.into());
+        self.lancer(l);
     }
 
-    /// Retire une commande de la file (le ✕ de son bloc) ; rien si elle n'y est pas.
-    pub fn retirer(&mut self, c: Commande) {
-        if self.file.contains(&c) {
-            self.file.retain(|x| *x != c);
-            self.console.retirer(c.into());
+    /// Retire une lecture de la file (le ✕ de son bloc) ; rien si elle n'y est pas.
+    pub fn retirer(&mut self, l: &Lancement) {
+        if self.file.contains(l) {
+            self.file.retain(|x| x != l);
+            self.console.retirer(l);
         }
     }
 
@@ -470,13 +513,13 @@ impl Appli {
         let Ok(p) = &self.programme else {
             return;
         };
-        let tache = Tache::lancer(p, l, crate::langue::anglais(), &self.reveil);
+        let tache = Tache::lancer(p, l.clone(), crate::langue::anglais(), &self.reveil);
         let chemin = if tache.par_le_relais() {
             Chemin::Relais
         } else {
             Chemin::Direct
         };
-        self.coulisses.lancee(l, chemin);
+        self.coulisses.lancee(&l, chemin);
         self.tache = Some(tache);
         self.console.commencer(l);
     }
@@ -485,8 +528,8 @@ impl Appli {
     /// pourrait laisser le programme retiré sans la note qui permet de le remettre. Il finit seul (la fenêtre
     /// administrateur refusée ou fermée suffit), borné par son délai.
     pub fn arreter(&mut self) {
-        for c in std::mem::take(&mut self.file) {
-            self.console.retirer(c.into());
+        for l in std::mem::take(&mut self.file) {
+            self.console.retirer(&l);
         }
         if let Some(t) = &self.tache
             && !t.arret_demande()
@@ -878,7 +921,7 @@ impl Appli {
 
     /// La commande attend-elle son tour ?
     pub fn en_attente(&self, c: Commande) -> bool {
-        self.file.contains(&c)
+        self.file.iter().any(|l| l.commande() == c)
     }
 
     pub fn taches(&self) -> usize {
@@ -935,8 +978,8 @@ impl Appli {
                 self.lancer(Lancement::Animations(reduites));
             } else if self.file.is_empty() && self.lancer_correction() {
                 // L'aperçu demandé pendant une commande part à sa fin.
-            } else if let Some(c) = self.file.pop_front() {
-                self.lancer(c.into());
+            } else if let Some(l) = self.file.pop_front() {
+                self.lancer(l);
             } else if self.programme.is_ok() && self.dernier_sondage.elapsed() >= SONDAGE {
                 // Même pendant une confirmation ouverte : la veille des alertes ne s'arrête jamais pour elle
                 // (« Accepter » pendant la lecture dit d'attendre sa fin, la confirmation reste ouverte).
@@ -948,13 +991,16 @@ impl Appli {
 
     fn finir(&mut self, f: &Fin) {
         self.coulisses.finie(f);
-        let c = match f.lancement {
+        // Avec une valeur : un incident, des jours, un fichier choisis. Le journal des alertes n'est pas celui-là (un
+        // seul incident n'est pas le journal) : il ne le remplace pas, et aucune alerte n'y est cherchée.
+        let (c, avec_valeur) = match &f.lancement {
             Lancement::Commande(Commande::Couleurs) => return self.lire_couleurs(f),
-            Lancement::Commande(c) => c,
-            Lancement::Changement(ch) => return self.finir_changement(ch, f),
-            Lancement::Couleurs(cc) => return self.finir_couleurs(cc, f),
-            Lancement::Animations(reduites) => return self.finir_animations(reduites, f),
-            Lancement::Geste(g) => return self.finir_geste(g, f),
+            Lancement::Commande(c) => (*c, false),
+            Lancement::AvecValeur(av) => (av.commande(), true),
+            Lancement::Changement(ch) => return self.finir_changement(*ch, f),
+            Lancement::Couleurs(cc) => return self.finir_couleurs(*cc, f),
+            Lancement::Animations(reduites) => return self.finir_animations(*reduites, f),
+            Lancement::Geste(g) => return self.finir_geste(*g, f),
         };
         let contenu = match &f.issue {
             Issue::Terminee => match lire(c, &f.sortie) {
@@ -996,7 +1042,7 @@ impl Appli {
             Contenu::Libre(v) => crate::trn!(v.lignes.len(), "valeur", "valeurs", "value", "values"),
         };
         self.console.finir(
-            f.lancement,
+            &f.lancement,
             console::Fini {
                 resume: texte,
                 ton: ton(&contenu),
@@ -1005,6 +1051,10 @@ impl Appli {
                 echec: matches!(contenu, Contenu::Erreur(_)),
             },
         );
+        if c == Commande::Evenements && avec_valeur {
+            // Seul le bloc de la console le montre : l'écran des alertes garde le journal entier.
+            return;
+        }
         if let Contenu::Evenements(v) = &contenu {
             self.dernier_sondage = Instant::now();
             let nouvelles: Vec<String> = match &self.journal {
@@ -1070,7 +1120,7 @@ impl Appli {
             IssueChangement::Echec(r) => (crate::trf!("Échec : {}", "Failed: {}", r), Ton::Attention),
         };
         self.console.finir(
-            f.lancement,
+            &f.lancement,
             console::Fini {
                 resume: texte,
                 ton,
@@ -1157,7 +1207,7 @@ impl Appli {
             (_, false, None) => (String::new(), Ton::Discret, true),
         };
         self.console.finir(
-            f.lancement,
+            &f.lancement,
             console::Fini {
                 resume,
                 ton,
@@ -1212,7 +1262,7 @@ impl Appli {
             _ => Ton::Attention,
         };
         self.console.finir(
-            f.lancement,
+            &f.lancement,
             console::Fini {
                 resume: phrase.clone(),
                 ton,
@@ -1292,7 +1342,7 @@ impl Appli {
             }
         };
         self.console.finir(
-            f.lancement,
+            &f.lancement,
             console::Fini {
                 resume,
                 ton,
@@ -1331,7 +1381,7 @@ impl Appli {
             IssueCouleurs::Echec(r) => (crate::trf!("Échec : {}", "Failed: {}", r), Ton::Attention, true),
         };
         self.console.finir(
-            f.lancement,
+            &f.lancement,
             console::Fini {
                 resume: texte,
                 ton,
@@ -1395,7 +1445,7 @@ impl Appli {
             ),
         };
         self.console.finir(
-            f.lancement,
+            &f.lancement,
             console::Fini {
                 resume: texte,
                 ton,
@@ -1427,14 +1477,23 @@ impl Appli {
                     Ton::Normal,
                 );
                 for c in Commande::ici() {
-                    let l = format!("{:<22} {}", c.nom_affiche(), c.titre());
+                    let l = format!("{:<22} {}", forme_a_taper(c), c.titre());
                     self.dire("aide", &l, Ton::Discret);
                 }
                 self.dire(
                     "aide",
                     crate::tr!(
-                        "Rien d'autre ne se lance d'ici : ni option, ni argument, ni commande qui change l'ordinateur (un changement se fait d'un clic, après confirmation).",
-                        "Nothing else runs from here: no option, no argument, no command that changes the computer (a change is one click, after confirmation)."
+                        "Entre [ ], une valeur permise après le nom ; entre < >, une valeur demandée. Une seule valeur, en lecture : entre guillemets si elle a des espaces, jamais une option.",
+                        "In [ ], a value allowed after the name; in < >, a required value. One value only, read-only: in quotes if it has spaces, never an option."
+                    ),
+                    Ton::Discret,
+                );
+                self.dire("aide", endroits_permis(), Ton::Discret);
+                self.dire(
+                    "aide",
+                    crate::tr!(
+                        "Rien d'autre ne se lance d'ici : ni option, ni seconde valeur, ni commande qui change l'ordinateur (un changement se fait d'un clic, après confirmation).",
+                        "Nothing else runs from here: no option, no second value, no command that changes the computer (a change is one click, after confirmation)."
                     ),
                     Ton::Discret,
                 );
@@ -1452,6 +1511,47 @@ impl Appli {
             Saisie::Lancer(c) => {
                 self.aller(ecran_de(c));
                 self.demander(c);
+            }
+            // Le résultat d'un incident ne se montre que dans son bloc : l'écran des alertes garde le journal entier.
+            Saisie::LancerAvec(av) => {
+                if av.commande() != Commande::Evenements {
+                    self.aller(ecran_de(av.commande()));
+                }
+                self.demander_avec(av);
+            }
+            Saisie::ValeurManquante(c) => {
+                self.dire_forme(c);
+                // Le nom reste dans la saisie : il ne manque que la valeur.
+                self.saisie = format!("{} ", c.nom_affiche());
+            }
+            Saisie::SansValeur(c) => {
+                self.coulisses.refusee(&texte);
+                self.dire("vous", &propre, Ton::Commande);
+                self.dire(
+                    "fenêtre",
+                    &crate::trf!(
+                        "{} ne prend aucune valeur : tapez « {} » seul. Rien n'a été lancé.",
+                        "{} takes no value: type “{}” alone. Nothing was run.",
+                        c.nom_affiche(),
+                        c.nom_affiche()
+                    ),
+                    Ton::Attention,
+                );
+            }
+            Saisie::ValeurRefusee(c, refus) => {
+                self.coulisses.refusee(&texte);
+                self.dire("vous", &propre, Ton::Commande);
+                self.dire(
+                    "fenêtre",
+                    &crate::trf!(
+                        "Valeur refusée pour {} : {}. Rien n'a été lancé.",
+                        "Value refused for {}: {}. Nothing was run.",
+                        c.nom_affiche(),
+                        refus.phrase()
+                    ),
+                    Ton::Attention,
+                );
+                self.dire_forme(c);
             }
             Saisie::Refusee(t) => {
                 self.coulisses.refusee(&texte);
@@ -1480,21 +1580,29 @@ impl Appli {
         }
     }
 
-    /// `aide <commande>` : ce qu'elle fait, où elle se range, ce qui est lancé exactement. Rien n'est lancé.
+    /// `aide <commande>` : ce qu'elle fait, où elle se range, ce qui est lancé exactement, et la valeur qu'elle
+    /// accepte. Rien n'est lancé.
     fn aide_sur(&mut self, c: Commande) {
         self.dire("aide", &format!("{} — {}", c.nom_affiche(), c.titre()), Ton::Normal);
         self.dire("aide", c.description(), Ton::Discret);
+        let lance = match c.argument() {
+            Some(sorte) => format!("vanguard console {} -- {}", c.nom(), sorte.attendu()),
+            None => format!("vanguard {}", c.arguments().join(" ")),
+        };
         self.dire(
             "aide",
             &crate::trf!(
-                "Rubrique : {} · lance exactement : vanguard {} · tapez « {} » pour la lancer.",
-                "Section: {} · runs exactly: vanguard {} · type “{}” to run it.",
+                "Rubrique : {} · lance exactement : {} · tapez « {} » pour la lancer.",
+                "Section: {} · runs exactly: {} · type “{}” to run it.",
                 c.rubrique().nom(),
-                c.arguments().join(" "),
-                c.nom_affiche()
+                lance,
+                forme_a_taper(c)
             ),
             Ton::Discret,
         );
+        if c.argument() == Some(Argument::Chemin) {
+            self.dire("aide", endroits_permis(), Ton::Discret);
+        }
     }
 
     /// Les saisies d'avant, la plus récente à la fin (Ctrl+R y cherche).
@@ -1526,10 +1634,12 @@ impl Appli {
             .unwrap_or_default();
     }
 
-    /// Tab : complète la saisie quand un seul nom convient.
+    /// Tab : complète la saisie quand un seul nom convient ; une espace après le nom d'une commande qui ne se lance
+    /// qu'avec sa valeur, qui reste à taper.
     pub fn completer(&mut self) {
         if let Some(n) = commandes::completer(&self.saisie) {
-            self.saisie = n.to_string();
+            let espace = matches!(commandes::comprendre(n), Saisie::ValeurManquante(_));
+            self.saisie = if espace { format!("{n} ") } else { n.to_string() };
         }
     }
 }
@@ -1677,6 +1787,23 @@ fn etat_du_bac() -> (String, bool) {
         }
         .into(),
         false,
+    )
+}
+
+/// Ce qui se tape pour une commande : son nom, et la valeur qu'elle demande (`<fichier>`) ou permet (`[jours]`).
+pub fn forme_a_taper(c: Commande) -> String {
+    match c.argument() {
+        Some(sorte) if c.valeur_requise() => format!("{} {}", c.nom_affiche(), sorte.attendu()),
+        Some(sorte) => format!("{} [{}]", c.nom_affiche(), sorte.attendu().trim_matches(['<', '>'])),
+        None => c.nom_affiche().to_owned(),
+    }
+}
+
+/// Où un fichier tapé dans la console est permis : la même règle que le relais et `vanguard console` (`valeur`).
+pub fn endroits_permis() -> &'static str {
+    crate::tr!(
+        "Un fichier n'est lu que sous Téléchargements, Bureau ou Documents de ce compte, ou sur un support amovible, liens résolus ; jamais dans un dossier caché (~/.ssh, ~/.config…).",
+        "A file is read only under this account's Downloads, Desktop or Documents, or on a removable drive, links resolved; never in a hidden folder (~/.ssh, ~/.config…)."
     )
 }
 
@@ -1861,6 +1988,36 @@ mod tests {
         assert_eq!(a.taches(), 0);
         assert!(a.console.dit("rien n'a été lancé"));
         assert_eq!(a.saisie, "");
+    }
+
+    /// Une valeur tapée : le nom seul garde la saisie et dit la forme ; une valeur refusée ou une valeur donnée à une
+    /// commande qui n'en prend pas ne lance rien ; l'aide dit où un fichier est permis.
+    #[test]
+    fn la_console_juge_la_valeur_tapee() {
+        let mut a = appli();
+        a.saisie = "verifier-fichier".into();
+        a.saisir();
+        assert_eq!(a.saisie, "verifier-fichier ");
+        assert!(a.console.dit("se lance avec sa valeur"));
+        for refusee in [
+            "verifier-fichier ../../.ssh/id_ed25519",
+            "verifier-fichier --internet",
+            "lien a\u{202E}b",
+            "dernieres-failles 3651",
+            "bilan x",
+        ] {
+            a.saisie = refusee.into();
+            a.saisir();
+            assert!(a.en_cours().is_none(), "{refusee}");
+            assert_eq!(a.taches(), 0, "{refusee}");
+            assert!(a.file.is_empty(), "{refusee}");
+            assert_eq!(a.saisie, "", "{refusee}");
+        }
+        assert!(a.console.dit("Valeur refusée pour"));
+        assert!(a.console.dit("ne prend aucune valeur"));
+        a.saisie = "aide".into();
+        a.saisir();
+        assert!(a.console.dit("Téléchargements, Bureau ou Documents"));
     }
 
     #[test]
@@ -2811,10 +2968,10 @@ exit 0
                 (None, &b""[..], Issue::DelaiDepasse),
             ] {
                 let mut a = Appli::pour_captures();
-                a.console.commencer(l);
+                a.console.commencer(l.clone());
                 let numero = a.console.en_cours().map(|b| b.numero).expect("bloc ouvert");
                 a.finir(&Fin {
-                    lancement: l,
+                    lancement: l.clone(),
                     code,
                     sortie: sortie.to_vec(),
                     issue,
