@@ -139,12 +139,22 @@ pub enum Commande {
     /// Les couleurs de la fenêtre, lues par `vanguard` (`couleurs --json`) : jamais montrée ni tapée dans la console,
     /// demandée par la fenêtre elle-même (au lancement, après un changement de couleurs).
     Couleurs,
+    Agent,
+    CameraMicro,
+    Logiciels,
+    Nettoyer,
+    Desinstaller,
+    SitesDangereux,
+    Parametres,
+    Blocage,
+    VerifierSauvegarde,
+    Ordinateurs,
 }
 
 impl Commande {
     /// L'ordre compte : le relais reçoit le rang d'une commande dans cette liste (`protocole`). Une commande
     /// nouvelle s'ajoute à la fin.
-    pub const TOUTES: [Commande; 35] = [
+    pub const TOUTES: [Commande; 45] = [
         Commande::Bilan,
         Commande::Protection,
         Commande::Evenements,
@@ -180,6 +190,16 @@ impl Commande {
         Commande::VerifierMoi,
         Commande::Regles,
         Commande::Couleurs,
+        Commande::Agent,
+        Commande::CameraMicro,
+        Commande::Logiciels,
+        Commande::Nettoyer,
+        Commande::Desinstaller,
+        Commande::SitesDangereux,
+        Commande::Parametres,
+        Commande::Blocage,
+        Commande::VerifierSauvegarde,
+        Commande::Ordinateurs,
     ];
 
     /// Les commandes de la liste que ce système sait lancer et que la personne choisit, dans l'ordre de la liste. Une
@@ -236,6 +256,16 @@ impl Commande {
             Commande::VerifierMoi => "verifier-moi",
             Commande::Regles => "regles",
             Commande::Couleurs => "couleurs",
+            Commande::Agent => "agent",
+            Commande::CameraMicro => "camera-micro",
+            Commande::Logiciels => "logiciels",
+            Commande::Nettoyer => "nettoyer",
+            Commande::Desinstaller => "desinstaller",
+            Commande::SitesDangereux => "sites-dangereux",
+            Commande::Parametres => "parametres",
+            Commande::Blocage => "blocage",
+            Commande::VerifierSauvegarde => "verifier-sauvegarde",
+            Commande::Ordinateurs => "ordinateurs",
         }
     }
 
@@ -277,6 +307,16 @@ impl Commande {
             Commande::VerifierMoi => "self-check",
             Commande::Regles => "rules",
             Commande::Couleurs => "colors",
+            Commande::Agent => "agent",
+            Commande::CameraMicro => "camera-mic",
+            Commande::Logiciels => "software",
+            Commande::Nettoyer => "clean",
+            Commande::Desinstaller => "uninstall",
+            Commande::SitesDangereux => "dangerous-sites",
+            Commande::Parametres => "settings",
+            Commande::Blocage => "blocking",
+            Commande::VerifierSauvegarde => "check-backup",
+            Commande::Ordinateurs => "computers",
         }
     }
 
@@ -337,8 +377,38 @@ impl Commande {
             Commande::VerifierMoi => &["verifier-moi", "--json"],
             Commande::Regles => &["regles", "--json"],
             Commande::Couleurs => &["couleurs", "--json"],
+            // Lecture seule, sans aucune donnée personnelle : ses interrupteurs ne se changent pas d'ici.
+            Commande::Agent => &["agent", "--json"],
+            Commande::CameraMicro => &["camera-micro", "--json"],
+            // La liste, rien d'installé : jamais --recommandes (qui installe), jamais un nom tapé.
+            Commande::Logiciels => &["logiciels", "--liste", "--json"],
+            // La liste, rien d'effacé.
+            Commande::Nettoyer => &["nettoyer", "--liste", "--json"],
+            // La liste, rien de retiré.
+            Commande::Desinstaller => &["desinstaller", "--liste", "--json"],
+            // L'état seulement : jamais « on » ni « off » (droits d'administrateur, fichier hosts).
+            Commande::SitesDangereux => &["sites-dangereux", "--json"],
+            // Sans aucun mot : avec un réglage et une valeur, « parametres » change ce réglage.
+            Commande::Parametres => &["parametres", "--json"],
+            // « etat » seulement : tout autre mot règle une catégorie ou annule un blocage.
+            Commande::Blocage => &["blocage", "etat", "--json"],
+            Commande::VerifierSauvegarde => &["verifier-sauvegarde", "--json"],
+            // Sans menu : jamais renommer ni oublier un ordinateur d'ici.
+            Commande::Ordinateurs => &["ordinateurs", "--json"],
         }
     }
+
+    /// Les seules formes d'arguments à trois mots : entre la sous-commande et --json, une option ou un mot qui LIT
+    /// (l'état, une liste), fixé ici. Liste fermée, relue par les essais (`attaques`) : aucun mot qui agit (« oui »,
+    /// « on », --appliquer, --accepter, --recommandes…), aucun chemin, aucun nom tapé.
+    #[cfg(test)]
+    pub(crate) const LECTURES_A_TROIS_MOTS: [[&'static str; 3]; 5] = [
+        ["antivirus", "--etat", "--json"],
+        ["logiciels", "--liste", "--json"],
+        ["nettoyer", "--liste", "--json"],
+        ["desinstaller", "--liste", "--json"],
+        ["blocage", "etat", "--json"],
+    ];
 
     /// Le délai au-delà duquel la commande est arrêtée (son groupe tué) : l'audit en prend quelques secondes, les
     /// outils qui lisent une liste en ligne jusqu'à quelques minutes sur une connexion lente.
@@ -354,7 +424,10 @@ impl Commande {
             | Commande::MisesAJour
             | Commande::Integrite
             | Commande::JournauxWindows
-            | Commande::Autotest => 300,
+            | Commande::Autotest
+            // La taille de chaque cache, mesurée ; la base des paquets lue.
+            | Commande::Nettoyer
+            | Commande::Logiciels => 300,
             // Le scan du réseau local : une douzaine de secondes sur un /24, plus sur une plage large ou lente.
             Commande::TestConnexion
             | Commande::ConnexionsSortantes
@@ -366,6 +439,8 @@ impl Commande {
             | Commande::VerifierMoi => 180,
             // Un petit fichier et le thème du système : quelques millisecondes ; le délai le plus court de la liste.
             Commande::Couleurs => 60,
+            // Quelques fichiers relus sur le disque de sauvegarde (jusqu'à 1 Gio chacun), cache contourné.
+            Commande::VerifierSauvegarde => 600,
             _ => 120,
         })
     }
@@ -383,7 +458,17 @@ impl Commande {
             | Commande::OptionsDefense
             | Commande::Autotest
             | Commande::Regles
-            | Commande::Couleurs => Forme::Libre,
+            | Commande::Couleurs
+            | Commande::Agent
+            | Commande::CameraMicro
+            | Commande::Logiciels
+            | Commande::Nettoyer
+            | Commande::Desinstaller
+            | Commande::SitesDangereux
+            | Commande::Parametres
+            | Commande::Blocage
+            | Commande::VerifierSauvegarde
+            | Commande::Ordinateurs => Forme::Libre,
             _ => Forme::Resultat,
         }
     }
@@ -426,6 +511,18 @@ impl Commande {
             Commande::VerifierMoi => crate::tr!("Vérifier cette copie de Vanguard", "Verify this copy of Vanguard"),
             Commande::Regles => crate::tr!("Règles du bilan", "Check rules"),
             Commande::Couleurs => crate::tr!("Couleurs de la fenêtre", "Window colors"),
+            Commande::Agent => crate::tr!("Agent Vanguard", "Vanguard Agent"),
+            Commande::CameraMicro => crate::tr!("Caméra et micro", "Camera and microphone"),
+            Commande::Logiciels => crate::tr!("Logiciels conseillés", "Recommended software"),
+            Commande::Nettoyer => crate::tr!("Place à libérer", "Space to free up"),
+            Commande::Desinstaller => crate::tr!("Ce que Vanguard a posé ici", "What Vanguard placed here"),
+            Commande::SitesDangereux => crate::tr!("Sites dangereux bloqués", "Dangerous sites blocked"),
+            Commande::Parametres => crate::tr!("Paramètres de Vanguard", "Vanguard settings"),
+            Commande::Blocage => crate::tr!("Blocage des menaces", "Threat blocking"),
+            Commande::VerifierSauvegarde => {
+                crate::tr!("Vérifier la sauvegarde automatique", "Check the automatic backup")
+            }
+            Commande::Ordinateurs => crate::tr!("Mes ordinateurs", "My computers"),
         }
     }
 
@@ -572,6 +669,46 @@ impl Commande {
                 "Les couleurs réglées pour chaque thème, et celles du système, lues par Vanguard.",
                 "The colors set for each theme, and the system's, read by Vanguard."
             ),
+            Commande::Agent => crate::tr!(
+                "Ses missions, leur dernier tour et son journal, sans aucune donnée personnelle. Rien n'est changé ni envoyé.",
+                "Its missions, their last run and its journal, with no personal data. Nothing is changed or sent."
+            ),
+            Commande::CameraMicro => crate::tr!(
+                "Les programmes qui se servent de la caméra et du micro, ou s'en sont servis. Rien n'est changé.",
+                "Programs using the camera and microphone, or that used them. Nothing is changed."
+            ),
+            Commande::Logiciels => crate::tr!(
+                "Des logiciels sûrs et gratuits, par catégorie, et ceux déjà installés. Rien n'est installé d'ici.",
+                "Safe, free software by category, and what is already installed. Nothing is installed from here."
+            ),
+            Commande::Nettoyer => crate::tr!(
+                "Paquets téléchargés, caches, corbeille : ce qui pourrait partir, et sa taille. Rien n'est effacé d'ici.",
+                "Downloaded packages, caches, trash: what could go, and its size. Nothing is deleted from here."
+            ),
+            Commande::Desinstaller => crate::tr!(
+                "Tâches, raccourcis, programme et dossier de données : ce que retirer Vanguard enlèverait. Rien n'est retiré d'ici.",
+                "Tasks, shortcuts, program and data folder: what removing Vanguard would take away. Nothing is removed from here."
+            ),
+            Commande::SitesDangereux => crate::tr!(
+                "La liste des sites malveillants dans le fichier hosts : posée ou non, intacte, depuis quand. Rien n'est changé.",
+                "The list of malicious sites in the hosts file: in place or not, intact, since when. Nothing is changed."
+            ),
+            Commande::Parametres => crate::tr!(
+                "Chaque réglage de Vanguard et sa valeur. Rien ne se change d'ici : le menu Paramètres.",
+                "Each Vanguard setting and its value. Nothing is changed from here: the Settings menu."
+            ),
+            Commande::Blocage => crate::tr!(
+                "Pour chaque menace : automatique, un clic ou désactivé, et le geste fait. Rien ne se règle d'ici.",
+                "For each threat: automatic, one click or off, and the action taken. Nothing is set from here."
+            ),
+            Commande::VerifierSauvegarde => crate::tr!(
+                "Quelques fichiers relus sur le disque de sauvegarde, comparés à leur original. Rien n'est écrit ni effacé.",
+                "A few files read back from the backup disk, compared with their original. Nothing is written or deleted."
+            ),
+            Commande::Ordinateurs => crate::tr!(
+                "Le tableau de la clé VANGUARD : chaque ordinateur vu, sa note et ses problèmes restants. Rien n'est écrit.",
+                "The VANGUARD key's table: each computer seen, its grade and its remaining problems. Nothing is written."
+            ),
         }
     }
 
@@ -598,16 +735,28 @@ impl Commande {
             | Commande::EtatAntivirus
             | Commande::Yara
             | Commande::Memoire => Rubrique::Virus,
-            Commande::BilanConfidentialite => Rubrique::Arnaques,
+            Commande::BilanConfidentialite | Commande::CameraMicro => Rubrique::Arnaques,
             Commande::Protection
             | Commande::Evenements
             | Commande::OptionsDefense
             | Commande::JournauxWindows
-            | Commande::Changements => Rubrique::Bloquer,
-            Commande::LogicielsPerimes | Commande::Demarrage | Commande::Nat | Commande::CanauxWifi => {
-                Rubrique::Optimiser
-            }
-            Commande::Autotest | Commande::VerifierMoi | Commande::Regles | Commande::Couleurs => Rubrique::Vanguard,
+            | Commande::Changements
+            | Commande::SitesDangereux
+            | Commande::Blocage => Rubrique::Bloquer,
+            Commande::VerifierSauvegarde | Commande::Ordinateurs => Rubrique::Donnees,
+            Commande::LogicielsPerimes
+            | Commande::Demarrage
+            | Commande::Nat
+            | Commande::CanauxWifi
+            | Commande::Logiciels
+            | Commande::Nettoyer => Rubrique::Optimiser,
+            Commande::Autotest
+            | Commande::VerifierMoi
+            | Commande::Regles
+            | Commande::Couleurs
+            | Commande::Agent
+            | Commande::Desinstaller
+            | Commande::Parametres => Rubrique::Vanguard,
         }
     }
 }
@@ -1298,7 +1447,10 @@ mod tests {
             let a = c.arguments();
             // La sous-commande, --json à la fin, et entre les deux seulement une option qui lit (--etat) : aucun mot
             // qui agit (« oui », « non », --choisir, --rallumer, --accepter, --complet…), aucun chemin.
-            assert!(a.len() == 2 || a == ["antivirus", "--etat", "--json"], "{c:?}");
+            assert!(
+                a.len() == 2 || Commande::LECTURES_A_TROIS_MOTS.iter().any(|f| a == f),
+                "{c:?}"
+            );
             assert_eq!(a.last(), Some(&"--json"), "{c:?}");
             assert!(!AIDE.contains(&c.nom()) && !EFFACER.contains(&c.nom()));
             assert!(c.delai().as_secs() >= 60 && c.delai().as_secs() <= 1800, "{c:?}");
@@ -1578,6 +1730,88 @@ mod tests {
         assert_eq!(Commande::TOUTES[22], Commande::Appareils);
         assert_eq!(Commande::TOUTES[33], Commande::Regles);
         assert_eq!(Commande::TOUTES[34], Commande::Couleurs);
+        assert_eq!(Commande::TOUTES[35], Commande::Agent);
+        assert_eq!(Commande::TOUTES[44], Commande::Ordinateurs);
+    }
+
+    /// Les lectures ajoutées au lot « console, commandes » : chacune se tape en français et en anglais, part à la fin
+    /// de la liste (rang du relais), sous sa forme fixée qui lit, et sa sortie (forme libre) se lit. Un mot de plus
+    /// (celui qui, dans un terminal, changerait un réglage) est refusé : la console ne prend qu'un mot.
+    #[test]
+    fn les_lectures_ajoutees_se_tapent_et_se_lisent() {
+        let ajoutees: [(Commande, Rubrique, &str); 10] = [
+            (
+                Commande::Agent,
+                Rubrique::Vanguard,
+                r#"{"schema":1,"agent":"en-marche","missions":[]}"#,
+            ),
+            (
+                Commande::CameraMicro,
+                Rubrique::Arnaques,
+                r#"{"schema":1,"historique":false,"camera":[],"micro":null,"tout_lu":false,"suspects":0,"conclusion":"x"}"#,
+            ),
+            (
+                Commande::Logiciels,
+                Rubrique::Optimiser,
+                r#"{"schema":1,"proposes":1,"installes":1,"a_installer":0,"categories":[{"categorie":"Navigateurs","logiciels":[{"nom":"Firefox","installe":true,"source":"paquet"}]}],"a_savoir":"x"}"#,
+            ),
+            (
+                Commande::Nettoyer,
+                Rubrique::Optimiser,
+                r#"{"schema":1,"disque_libre":"1 Go","disque_total":"2 Go","elements":[{"titre":"Corbeille","octets":10,"taille":"10 o","coche_d_office":true,"propre":false,"prudence":null}],"a_liberer_coche":"10 o","a_liberer_tout":"10 o","a_savoir":"x"}"#,
+            ),
+            (
+                Commande::Desinstaller,
+                Rubrique::Vanguard,
+                r#"{"schema":1,"elements":[{"element":"Dossier","precision":"p","detail":"d","coche_d_office":false}],"changements_a_defaire_d_abord":[],"a_faire_soi_meme":[],"pas_a_vanguard":[],"non_verifie":[],"a_savoir":["x"]}"#,
+            ),
+            (
+                Commande::SitesDangereux,
+                Rubrique::Bloquer,
+                r#"{"schema":1,"fichier":"/etc/hosts","bloc_abime":false,"bloques":false,"sites":null,"depuis":null,"a_savoir":"x"}"#,
+            ),
+            (
+                Commande::Parametres,
+                Rubrique::Vanguard,
+                r#"{"schema":1,"parametres_json":"lu","reglages":[{"reglage":"langue","valeur":"auto"}],"a_savoir":"x"}"#,
+            ),
+            (
+                Commande::Blocage,
+                Rubrique::Bloquer,
+                r#"{"schema":1,"categories":[{"categorie":"c","mode":"un clic","geste":"g"}],"protection_active":false,"accord_le":null,"a_savoir":[]}"#,
+            ),
+            (
+                Commande::VerifierSauvegarde,
+                Rubrique::Donnees,
+                r#"{"schema":1,"mise_en_place":"rsync","date":"2020-01-01","destination":"/x","etat":"se_relit","conclusion":"x","relus":{"identiques":3},"problemes":[]}"#,
+            ),
+            (
+                Commande::Ordinateurs,
+                Rubrique::Donnees,
+                r#"{"schema":1,"cle":true,"ordinateurs":[{"surnom":"Portable","ici":true,"problemes":[]}],"a_savoir":[]}"#,
+            ),
+        ];
+        for (c, rubrique, exemple) in ajoutees {
+            let rang = Commande::TOUTES.iter().position(|x| *x == c).unwrap();
+            assert!(rang >= 35, "{c:?} : une commande nouvelle se met à la fin");
+            assert_eq!(comprendre(c.nom()), Saisie::Lancer(c));
+            assert_eq!(comprendre(c.nom_anglais()), Saisie::Lancer(c));
+            assert_eq!(comprendre(&format!("vanguard {}", c.nom())), Saisie::Lancer(c));
+            for de_plus in ["on", "off", "langue en", "annuler", "--appliquer", "--recommandes"] {
+                assert!(
+                    matches!(comprendre(&format!("{} {de_plus}", c.nom())), Saisie::Refusee(_)),
+                    "{c:?} {de_plus}"
+                );
+            }
+            assert!(c.sur_ce_systeme() && Commande::ici().any(|x| x == c), "{c:?}");
+            assert_eq!(c.rubrique(), rubrique, "{c:?}");
+            assert_eq!(c.forme(), Forme::Libre, "{c:?}");
+            assert!(!Lancement::from(c).change(), "{c:?}");
+            let vue = crate::donnees::libre::lire(exemple.as_bytes()).unwrap();
+            assert!(!vue.lignes.is_empty() && !vue.coupe, "{c:?}");
+            assert!(!c.titre().is_empty() && !c.description().is_empty(), "{c:?}");
+        }
+        assert_eq!(Commande::TOUTES.len(), 45);
     }
 
     /// Un changement de couleurs part en mots fermés et en couleurs construites ici ; la lecture des couleurs n'est
@@ -1638,7 +1872,9 @@ mod tests {
         assert_eq!(completer(""), None);
         assert_eq!(completer("zzz"), None);
         assert_eq!(completer("appa"), Some("appareils"));
-        assert_eq!(completer("ver"), Some("verifier-moi"));
+        assert_eq!(completer("ver"), None, "verifier-moi et verifier-sauvegarde");
+        assert_eq!(completer("verifier-m"), Some("verifier-moi"));
+        assert_eq!(completer("verifier-s"), Some("verifier-sauvegarde"));
     }
 
     /// Les suggestions : les noms qui commencent par le mot, puis ceux qui le contiennent, puis les fautes de frappe
@@ -1697,7 +1933,8 @@ mod tests {
         let total: usize = Rubrique::TOUTES.iter().map(|r| r.commandes().count()).sum();
         assert_eq!(total, Commande::ici().count());
         assert_eq!(Rubrique::Accueil.commandes().count(), 0);
-        assert_eq!(Rubrique::Vanguard.commandes().count(), 3);
+        assert_eq!(Rubrique::Vanguard.commandes().count(), 6);
+        assert_eq!(Rubrique::Donnees.commandes().count(), 2);
         for r in Rubrique::TOUTES {
             assert!(r.nom_court().lines().all(|l| l.chars().count() <= 12), "{r:?}");
         }

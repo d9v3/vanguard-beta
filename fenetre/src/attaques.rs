@@ -109,7 +109,10 @@ fn aucune_saisie_ne_fabrique_un_argument() {
             assert!(c.sur_ce_systeme(), "{e:?} -> {c:?}");
             let a = c.arguments();
             // La sous-commande et --json, ou la seule option qui lit (antivirus --etat) : jamais un mot tapé.
-            assert!(a.len() == 2 || a == ["antivirus", "--etat", "--json"], "{e:?} -> {a:?}");
+            assert!(
+                a.len() == 2 || Commande::LECTURES_A_TROIS_MOTS.iter().any(|f| a == f),
+                "{e:?} -> {a:?}"
+            );
             assert_eq!(a.last(), Some(&"--json"), "{e:?}");
             assert!(
                 a.iter().all(|m| m.bytes().all(|o| o.is_ascii_lowercase() || o == b'-')),
@@ -363,7 +366,9 @@ fn un_nom_piege_n_atteint_jamais_les_arguments() {
 }
 
 /// B3 : la console ne lance aucun changement, sous aucune forme tapée (le changement n'existe que par un clic,
-/// confirmé dans la fenêtre).
+/// confirmé dans la fenêtre). Les commandes qui, en dehors de la console, changent avec un mot de plus (parametres,
+/// blocage, sites-dangereux, logiciels, nettoyer, desinstaller, ordinateurs…) n'en reçoivent jamais : la console ne
+/// lance que leur forme fixée, qui lit.
 #[test]
 fn la_console_ne_lance_aucun_changement() {
     let e = "0123456789abcdef0123456789abcdef";
@@ -383,22 +388,97 @@ fn la_console_ne_lance_aucun_changement() {
         "&&",
         "\u{a0}",
         "=",
+        "parametres",
+        "settings",
+        "langue",
+        "en",
+        "blocage",
+        "blocking",
+        "automatique",
+        "annuler",
+        "sites-dangereux",
+        "dangerous-sites",
+        "on",
+        "off",
+        "oui",
+        "logiciels",
+        "software",
+        "--recommandes",
+        "nettoyer",
+        "clean",
+        "--appliquer",
+        "desinstaller",
+        "uninstall",
+        "--liste",
+        "ordinateurs",
+        "computers",
+        "oublier",
+        "camera-micro",
+        "agent",
+        "verifier-sauvegarde",
+        "--accepter",
+        "--internet",
+        "--premier",
+        "etat",
     ];
+    // Les mots qui changent, envoient ou ouvrent une question, dans l'une ou l'autre de ces commandes.
+    let agissent = [
+        "--retirer",
+        "--remettre",
+        "--recommandes",
+        "--appliquer",
+        "--accepter",
+        "--internet",
+        "--premier",
+        "--effacer",
+        "on",
+        "off",
+        "oui",
+        "annuler",
+        "automatique",
+        "un-clic",
+        "desactive",
+        "permettre",
+        "retirer",
+        "oublier",
+        "renommer",
+        "langue",
+    ];
+    let mut lancees = std::collections::BTreeSet::new();
     for _ in 0..5000 {
         let n = 1 + usize::try_from(suite.suivant() % 4).unwrap();
         let mots: Vec<&str> = (0..n).map(|_| *suite.parmi(&morceaux)).collect();
         let saisie = mots.join(" ");
         match commandes::comprendre(&saisie) {
             Saisie::Lancer(c) => {
+                lancees.insert(c.nom());
+                let a = c.arguments();
                 // Une commande de la liste, jamais une option de changement ni une empreinte.
                 assert!(
-                    c.arguments()
-                        .iter()
-                        .all(|x| !matches!(*x, "--retirer" | "--remettre") && *x != e),
-                    "{saisie:?}"
+                    a.iter().all(|x| !agissent.contains(x) && *x != e),
+                    "{saisie:?} -> {a:?}"
                 );
+                // Sa forme fixée : la sous-commande et --json, ou l'une des lectures à trois mots, rien d'autre.
+                assert_eq!(a.last(), Some(&"--json"), "{saisie:?}");
+                assert!(
+                    a.len() == 2 || Commande::LECTURES_A_TROIS_MOTS.iter().any(|f| a == f),
+                    "{saisie:?} -> {a:?}"
+                );
+                assert!(!Lancement::from(c).change(), "{saisie:?}");
             }
             Saisie::Refusee(_) | Saisie::Rien | Saisie::Aide | Saisie::AideSur(_) | Saisie::Effacer => {}
         }
+    }
+    // Les commandes de lecture qui changent ailleurs avec un mot de plus ont bien été lancées ici, nues.
+    for nom in [
+        "parametres",
+        "blocage",
+        "sites-dangereux",
+        "logiciels",
+        "nettoyer",
+        "desinstaller",
+        "ordinateurs",
+    ] {
+        assert!(lancees.contains(nom), "{nom} jamais lancée par l'essai");
     }
 }
