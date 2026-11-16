@@ -118,10 +118,20 @@ const SOURCE = readFileSync(new URL("../worker.js", import.meta.url), "utf8");
 let numero = 0;
 
 /// Le Worker tel quel, plus l'accès des essais à trois fonctions internes : le Worker déployé n'exporte que son
-/// gestionnaire. Un module neuf à chaque appel (le sel gardé par l'isolat repart de zéro).
+/// gestionnaire. Un module neuf à chaque appel (le sel gardé par l'isolat repart de zéro). Seul ajout : la taille du
+/// plus long texte reçu par le détecteur (`plusLongVuParLeDetecteur`), pour prouver sans chronomètre qu'un champ
+/// trop long n'y passe pas.
 async function charger() {
   numero += 1;
-  const texte = `${SOURCE}\nexport { alertes, juger, sortiePermise };\n// essai ${numero}\n`;
+  const entree = "function alertes(s) {\n";
+  assert.equal(SOURCE.split(entree).length, 2, "le détecteur se déclare une seule fois");
+  const compte = SOURCE.replace(
+    entree,
+    `let plusLongVu = 0;\n${entree}  plusLongVu = Math.max(plusLongVu, String(s).length);\n`,
+  );
+  const texte =
+    `${compte}\nconst plusLongVuParLeDetecteur = () => plusLongVu;\n` +
+    `export { alertes, juger, plusLongVuParLeDetecteur, sortiePermise };\n// essai ${numero}\n`;
   return import(`data:text/javascript;base64,${Buffer.from(texte).toString("base64")}`);
 }
 
@@ -360,10 +370,17 @@ describe("réception d'un lot", () => {
     const profond = "[".repeat(65000) + "]".repeat(65000);
     await muette(await appeler(envoi(profond)), 422);
     const lot = lotValide();
+    // La mesure voit bien le détecteur : le texte d'un lot valide y passe.
+    assert.equal(module.juger(lot), null);
+    assert.ok(module.plusLongVuParLeDetecteur() >= lot.textes[0].texte.length, "la mesure ne voit pas le détecteur");
+    // Un champ trop long est refusé sans y passer (son temps de calcul croît avec le texte). Mesuré, pas chronométré :
+    // un chronomètre de 20 ms tombait sur une machine lente de la CI, après le corps imbriqué ci-dessus.
     lot.textes[0].texte = "erreur ".repeat(18000).slice(0, 120000).trim();
-    const debut = performance.now();
     assert.equal(module.juger(lot), "schema");
-    assert.ok(performance.now() - debut < 20, "un champ trop long ne passe pas par le détecteur");
+    assert.ok(
+      module.plusLongVuParLeDetecteur() < lot.textes[0].texte.length,
+      "un champ trop long ne passe pas par le détecteur",
+    );
     await muette(await appeler(envoi(lot, { ip: "203.0.113.7" })), 422);
     assert.deepEqual(await refus(db), { schema: 2 });
   });
