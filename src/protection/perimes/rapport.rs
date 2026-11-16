@@ -1036,15 +1036,12 @@ mod tests {
                 .iter()
                 .any(|e| e.plateforme == "Windows")
         );
-        // Chaque Edge Stable de Windows a sa liste de CVE corrigées, à leur forme.
+        // Chaque Edge Stable de Windows a sa liste de CVE corrigées, lue à leur forme. Une liste vide est un vrai état
+        // de la source : une mise à jour sans correctif de sécurité (157.0.4341.60, 15 nov. 2026). Un champ disparu ou
+        // une CVE à une autre forme donne `None`, refusé ici.
         let edge = editeurs::edge(&lire("products")).unwrap();
         for e in edge.iter().filter(|e| e.plateforme == "Windows") {
-            assert!(
-                e.correctifs
-                    .iter()
-                    .all(|c| c.cves.as_ref().is_some_and(|l| !l.is_empty())),
-                "{e:?}"
-            );
+            assert!(e.correctifs.iter().all(|c| c.cves.is_some()), "{e:?}");
         }
         let office = editeurs::office(&lire("OfficeReleases")).unwrap();
         assert!(office.iter().all(|c| !c.guids.is_empty()), "chaque canal a son GUID");
