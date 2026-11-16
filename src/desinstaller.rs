@@ -1936,6 +1936,84 @@ pub fn commande(liste: bool) {
     retirer_et_conclure(&lieux, &rec, &etats, gardes, &a);
 }
 
+/// `vanguard desinstaller --liste --json` : ce que Vanguard a posé ici, en JSON (forme libre, schéma 1), pour la
+/// Console de la fenêtre. Le même recensement que « --liste » ; rien n'est retiré, rien n'est demandé. Sans lieux sûrs
+/// où chercher : la raison sur la sortie d'erreur, code 1.
+pub fn liste_json() -> i32 {
+    let lieux = match Lieux::de_cet_ordinateur() {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("{e}");
+            return 1;
+        }
+    };
+    let rec = recenser(&lieux);
+    let a = annulables();
+    let changements: Vec<serde_json::Value> = if a.vide() {
+        Vec::new()
+    } else {
+        entrees_annulables(&a)
+            .into_iter()
+            .map(|(texte, precision)| serde_json::json!({ "changement": texte, "precision": precision }))
+            .collect()
+    };
+    let elements: Vec<serde_json::Value> = rec
+        .elements
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "element": e.texte,
+                "precision": e.precision,
+                "detail": e.detail,
+                "coche_d_office": e.coche,
+            })
+        })
+        .collect();
+    let mut a_savoir: Vec<String> = Vec::new();
+    if !changements.is_empty() {
+        a_savoir.push(
+            tr!(
+                "Retirer Vanguard ne défait pas les changements faits sur le système : défaites d'abord ceux que vous ne voulez plus.",
+                "Removing Vanguard does not undo the changes made to the system: first undo those you no longer want."
+            )
+            .to_string(),
+        );
+    }
+    if crate::protection::blocage::protection_active() {
+        a_savoir.push(
+            tr!(
+                "La protection active tourne dans la surveillance horaire et s'arrête avec elle ; son réglage reste dans le dossier de données.",
+                "Active protection runs inside the hourly monitoring and stops with it; its setting stays in the data folder."
+            )
+            .to_string(),
+        );
+    }
+    if rec.elements.is_empty() && !rec.non_verifie.is_empty() {
+        a_savoir.push(tr!(
+            "Rien de Vanguard n'a été trouvé, mais certains points n'ont pas pu être cherchés : ce qu'ils couvrent peut encore être là.",
+            "Nothing of Vanguard was found, but some points could not be looked for: what they cover may still be there."
+        ).to_string());
+    }
+    a_savoir.push(
+        tr!(
+            "Rien n'a été retiré : « vanguard desinstaller » sans --liste propose de le faire.",
+            "Nothing was removed: “vanguard uninstall” without --list offers to do it."
+        )
+        .to_string(),
+    );
+    let v = serde_json::json!({
+        "schema": 1,
+        "elements": elements,
+        "changements_a_defaire_d_abord": changements,
+        "a_faire_soi_meme": rec.a_faire,
+        "pas_a_vanguard": rec.pas_a_lui,
+        "non_verifie": rec.non_verifie,
+        "a_savoir": a_savoir,
+    });
+    println!("{v}");
+    0
+}
+
 /// Le titre, ce que fait la désinstallation, et le Wi-Fi public éteint d'abord s'il est allumé.
 fn presenter(liste: bool) {
     titre(tr!(

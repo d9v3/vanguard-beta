@@ -619,6 +619,65 @@ pub fn liste() {
     );
 }
 
+/// « vanguard logiciels --liste --json » : la même liste, en JSON (forme libre, schéma 1), pour la Console de la
+/// fenêtre ; rien n'est installé. Rend le code de sortie : 1 quand rien ne se lit (la raison sur la sortie d'erreur).
+pub fn liste_json() -> i32 {
+    match lire() {
+        Ok(etat) if !etat.offres.is_empty() => {
+            println!("{}", vue_json(&etat));
+            0
+        }
+        Ok(_) => {
+            eprintln!(
+                "{}",
+                tr!(
+                    "Aucun logiciel à proposer sur ce système.",
+                    "No software to offer on this system."
+                )
+            );
+            1
+        }
+        Err(raison) => {
+            eprintln!(
+                "{}",
+                trf!(
+                    "Logiciels installés illisibles : {raison}",
+                    "Installed software unreadable: {raison}"
+                )
+            );
+            1
+        }
+    }
+}
+
+/// La vue JSON : par catégorie (dans l'ordre du menu), chaque logiciel, installé ou non, et sa source.
+fn vue_json(etat: &Etat) -> serde_json::Value {
+    let categories: Vec<serde_json::Value> = Categorie::TOUTES
+        .into_iter()
+        .filter_map(|c| {
+            let offres: Vec<serde_json::Value> = etat
+                .offres
+                .iter()
+                .filter(|o| o.logiciel.categorie == c)
+                .map(|o| serde_json::json!({ "nom": o.logiciel.nom, "installe": o.installe, "source": o.source }))
+                .collect();
+            (!offres.is_empty()).then(|| serde_json::json!({ "categorie": c.titre(), "logiciels": offres }))
+        })
+        .collect();
+    let installes = etat.offres.iter().filter(|o| o.installe).count();
+    serde_json::json!({
+        "schema": 1,
+        "proposes": etat.offres.len(),
+        "installes": installes,
+        "a_installer": etat.offres.len().saturating_sub(installes),
+        "categories": categories,
+        "a_savoir": tr!(
+            "Rien n'est installé d'ici : Optimiser et installer › Logiciels, ou vanguard logiciels dans un terminal.",
+            "Nothing is installed from here: Optimize and install › Software, or vanguard software in a terminal."
+        ),
+    })
+}
+
 /// « vanguard logiciels --recommandes » : le pack de départ, directement.
 pub fn recommandes() {
     if let Some(etat) = lire_en_parlant() {

@@ -625,7 +625,10 @@ async fn main() {
             servir,
         }) => veilleur(sans_etat(etat.as_deref()), sans_etat(sous_etat.as_deref()), servir),
         Some(Commande::Garde { action, argument }) => garde(action.as_deref(), argument.as_deref()),
-        Some(Commande::SitesDangereux { etat }) => protection::sites_bloques::commande(sans_etat(etat.as_deref())),
+        Some(Commande::SitesDangereux { json: true, .. }) => machine::quitter(protection::sites_bloques::json()),
+        Some(Commande::SitesDangereux { etat, json: false }) => {
+            protection::sites_bloques::commande(sans_etat(etat.as_deref()));
+        }
         Some(Commande::DernieresFailles { jours, json }) => {
             if json {
                 protection::kev::json(jours);
@@ -654,7 +657,11 @@ async fn main() {
         }
         Some(Commande::Reparer) => reparer::menu(),
         Some(Commande::Gaming) => gaming::menu(),
-        Some(Commande::Nettoyer { liste }) => {
+        Some(Commande::Nettoyer {
+            liste: true,
+            json: true,
+        }) => nettoyer::liste_json(),
+        Some(Commande::Nettoyer { liste, .. }) => {
             if liste {
                 nettoyer::liste();
             } else {
@@ -665,7 +672,12 @@ async fn main() {
         Some(Commande::Connexion { json: true }) => reseau::connexion::json().await,
         Some(Commande::Diagnostic { json: false }) => diagnostic::diagnostic(),
         Some(Commande::Diagnostic { json: true }) => diagnostic::json(),
-        Some(Commande::Logiciels { liste, recommandes }) => {
+        Some(Commande::Logiciels {
+            liste: true,
+            json: true,
+            ..
+        }) => machine::quitter(logiciels::liste_json()),
+        Some(Commande::Logiciels { liste, recommandes, .. }) => {
             if liste {
                 logiciels::liste();
             } else if recommandes {
@@ -795,7 +807,8 @@ async fn main() {
                 machine::quitter(code);
             }
         }
-        Some(Commande::CameraMicro) => protection::camera::afficher_tout(),
+        Some(Commande::CameraMicro { json: false }) => protection::camera::afficher_tout(),
+        Some(Commande::CameraMicro { json: true }) => protection::camera::json(),
         Some(Commande::Acces { json: false }) => protection::acces::afficher_tout(),
         Some(Commande::Acces { json: true }) => protection::acces::json(),
         Some(Commande::Quarantaine) => protection::quarantaine::menu(),
@@ -803,8 +816,22 @@ async fn main() {
         Some(Commande::Secrets { json: true }) => protection::secrets_git::json(),
         Some(Commande::Conteneurs { json: false }) => protection::conteneurs::analyser(),
         Some(Commande::Conteneurs { json: true }) => protection::conteneurs::json(),
-        Some(Commande::Blocage { quoi }) => protection::blocage::commande(&quoi),
-        Some(Commande::Parametres { quoi }) => parametres::commande(&quoi),
+        Some(Commande::Blocage { quoi, json: false }) => protection::blocage::commande(&quoi),
+        Some(Commande::Blocage { quoi, json: true }) => machine::quitter(protection::blocage::json(&quoi)),
+        // « --json » après un réglage tombe dans sa queue (allow_hyphen_values) : refusé, jamais un changement fait
+        // par qui attendait une lecture.
+        Some(Commande::Parametres { quoi, json: false }) if quoi.iter().any(|m| m == "--json") => {
+            eprintln!(
+                "{}",
+                tr!(
+                    "--json ne va qu'avec « vanguard parametres » seul : rien n'est changé.",
+                    "--json only goes with “vanguard settings” alone: nothing is changed."
+                )
+            );
+            machine::quitter(2)
+        }
+        Some(Commande::Parametres { quoi, json: false }) => parametres::commande(&quoi),
+        Some(Commande::Parametres { json: true, .. }) => parametres::json(),
         Some(Commande::Couleurs {
             json,
             theme,
@@ -966,7 +993,8 @@ async fn main() {
         Some(Commande::Fiche { json }) => fiche::fiche(json),
         Some(Commande::CopierFichiers { destination }) => copier::commande(destination.as_deref()),
         Some(Commande::VerifierCopie { dossier }) => copier::verifier_copie(dossier.as_deref()),
-        Some(Commande::VerifierSauvegarde) => sauvegarde::verifier_sauvegarde(),
+        Some(Commande::VerifierSauvegarde { json: false }) => sauvegarde::verifier_sauvegarde(),
+        Some(Commande::VerifierSauvegarde { json: true }) => machine::quitter(sauvegarde::verifier_sauvegarde_json()),
         Some(Commande::VerifierCle { dossier }) => verifier_cle::commande(dossier.as_deref()),
         // Remettre change quelque chose : il suit le chemin ordinaire, comme appliquer.
         Some(Commande::Changements {
@@ -1003,7 +1031,8 @@ async fn main() {
             }
         }
         Some(Commande::Raccourci { etat }) => raccourci::commande(sans_etat(etat.as_deref()).map(|e| e == "on")),
-        Some(Commande::Ordinateurs) => ordinateurs::menu(),
+        Some(Commande::Ordinateurs { json: false }) => ordinateurs::menu(),
+        Some(Commande::Ordinateurs { json: true }) => ordinateurs::json(),
         // Installer depuis la fenêtre change quelque chose : le chemin ordinaire (journal, passage).
         Some(Commande::SeMettreAJour {
             appliquer: true,
@@ -1027,7 +1056,11 @@ async fn main() {
                 machine::quitter(1);
             }
         }
-        Some(Commande::Desinstaller { liste }) => desinstaller::commande(liste),
+        Some(Commande::Desinstaller {
+            liste: true,
+            json: true,
+        }) => machine::quitter(desinstaller::liste_json()),
+        Some(Commande::Desinstaller { liste, .. }) => desinstaller::commande(liste),
         Some(Commande::Regles { json: false }) => machine::regles::afficher(),
         Some(Commande::Regles { json: true }) => machine::regles::json(),
         // En lecture seule : ni envoi en fond (plus haut), ni tour de sortie de l'agent (plus bas), qui écriraient.

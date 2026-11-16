@@ -420,6 +420,50 @@ pub fn liste() {
     trp!("  Rien n'a été effacé.", "  Nothing was deleted.");
 }
 
+/// « vanguard nettoyer --liste --json » : la même mesure, en JSON (forme libre, schéma 1), pour la Console de la
+/// fenêtre ; rien n'est effacé. Une taille connue seulement une fois fait vaut `null`.
+pub fn liste_json() {
+    println!("{}", vue_json(&systeme::elements(), place()));
+}
+
+/// La vue JSON : la place du disque du système, chaque élément (titre, octets à libérer, coché d'office, déjà propre,
+/// son revers), puis les deux totaux de la liste.
+fn vue_json(elements: &[Element], place: Option<(u64, u64, u64)>) -> serde_json::Value {
+    let a_liberer = |reco: bool| {
+        somme(
+            elements
+                .iter()
+                .filter(|e| !e.propre() && (e.recommande || !reco))
+                .filter_map(|e| e.taille),
+        )
+    };
+    let liste: Vec<serde_json::Value> = elements
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "titre": e.titre,
+                "octets": e.taille,
+                "taille": e.taille.map(taille_lisible),
+                "coche_d_office": e.recommande,
+                "propre": e.propre(),
+                "prudence": e.prudence,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "schema": 1,
+        "disque_libre": place.map(|(libre, _, _)| taille_lisible(libre)),
+        "disque_total": place.map(|(_, total, _)| taille_lisible(total)),
+        "elements": liste,
+        "a_liberer_coche": taille_lisible(a_liberer(true)),
+        "a_liberer_tout": taille_lisible(a_liberer(false)),
+        "a_savoir": tr!(
+            "Rien n'a été effacé. Nettoyer : Optimiser et installer › Nettoyer, ou vanguard nettoyer dans un terminal.",
+            "Nothing was deleted. To clean: Optimize and install › Clean up, or vanguard clean in a terminal."
+        ),
+    })
+}
+
 #[allow(
     clippy::arithmetic_side_effects,
     clippy::as_conversions,

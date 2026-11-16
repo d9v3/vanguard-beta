@@ -9443,3 +9443,160 @@ fn nat_en_json_hors_ligne() {
 fn canaux_wifi_en_json() {
     examen_en_json("canaux-wifi", "PRO-CAN-001");
 }
+
+/// Une lecture de la Console de la fenêtre, lancée comme son lanceur la lance (entrée fermée, sans couleurs) dans un
+/// dossier jetable qui a trois pièces : la maison (HOME, données, réglages), un dossier temporaire (TMPDIR, TEMP) et un
+/// dossier « dehors » à côté, avec un témoin. Après : code 0, un seul JSON sur la sortie, schéma 1, le dehors au
+/// fichier près, le temporaire vide et rien d'autre de créé dans le dossier jetable. Rend le JSON.
+fn lecture_de_la_console(args: &[&str], secondes: u64) -> serde_json::Value {
+    let racine = maison_jetable();
+    let (maison, dehors, tmp) = (racine.join("maison"), racine.join("dehors"), racine.join("tmp"));
+    for d in [&maison, &dehors, &tmp] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    std::fs::write(dehors.join("temoin.txt"), "un témoin inventé\n").unwrap();
+    #[cfg(unix)]
+    let avant = instantane(&dehors);
+    let t = tmp.to_string_lossy().into_owned();
+    let s = vanguard_dans_env(
+        Path::new(env!("CARGO_BIN_EXE_vanguard")),
+        &maison,
+        "fr",
+        args,
+        "",
+        secondes,
+        &[
+            ("TMPDIR", &t),
+            ("TEMP", &t),
+            ("TMP", &t),
+            ("NO_COLOR", "1"),
+            ("TERM", "dumb"),
+        ],
+    );
+    assert_eq!(s.code, Some(0), "{args:?} : {}", s.erreurs);
+    let v: serde_json::Value =
+        serde_json::from_str(&s.texte).unwrap_or_else(|e| panic!("{args:?} : {e} : {}", s.texte));
+    assert_eq!(v["schema"], 1, "{args:?} : {v}");
+    #[cfg(unix)]
+    assert_eq!(instantane(&dehors), avant, "{args:?} a écrit hors de la maison jetable");
+    let mut pieces: Vec<String> = std::fs::read_dir(&*racine)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    pieces.sort_unstable();
+    assert_eq!(pieces, ["dehors", "maison", "tmp"], "{args:?}");
+    assert_eq!(
+        std::fs::read_dir(&tmp).unwrap().count(),
+        0,
+        "{args:?} a laissé un fichier temporaire"
+    );
+    v
+}
+
+#[test]
+fn console_agent_se_lit_sans_trace() {
+    let v = lecture_de_la_console(&["agent", "--json"], 120);
+    assert!(v["agent"].is_string() && v["missions"].is_array(), "{v}");
+}
+
+#[test]
+fn console_camera_micro_se_lit_sans_trace() {
+    let v = lecture_de_la_console(&["camera-micro", "--json"], 120);
+    assert!(v["conclusion"].is_string() && v["tout_lu"].is_boolean(), "{v}");
+}
+
+#[test]
+fn console_logiciels_se_lit_sans_trace() {
+    if optimiser_refuse_ici() {
+        return essais::saute(REFUS_OPTIMISER);
+    }
+    let v = lecture_de_la_console(&["logiciels", "--liste", "--json"], 300);
+    assert!(!v["categories"].as_array().unwrap().is_empty(), "{v}");
+}
+
+#[test]
+fn console_nettoyer_se_lit_sans_trace() {
+    if optimiser_refuse_ici() {
+        return essais::saute(REFUS_OPTIMISER);
+    }
+    let v = lecture_de_la_console(&["nettoyer", "--liste", "--json"], 300);
+    assert!(v["elements"].is_array() && v["a_liberer_tout"].is_string(), "{v}");
+}
+
+#[test]
+fn console_desinstaller_se_lit_sans_trace() {
+    let v = lecture_de_la_console(&["desinstaller", "--liste", "--json"], 120);
+    assert!(v["elements"].is_array(), "{v}");
+    assert!(v["a_savoir"].to_string().contains("Rien n'a été retiré"), "{v}");
+}
+
+#[test]
+fn console_sites_dangereux_se_lit_sans_trace() {
+    let v = lecture_de_la_console(&["sites-dangereux", "--json"], 60);
+    assert!(v["bloques"].is_boolean() && v["bloc_abime"].is_boolean(), "{v}");
+}
+
+#[test]
+fn console_parametres_se_lit_sans_trace() {
+    let v = lecture_de_la_console(&["parametres", "--json"], 60);
+    let reglages = v["reglages"].as_array().unwrap();
+    assert!(reglages.len() >= 10, "{v}");
+    assert!(
+        reglages
+            .iter()
+            .all(|r| r["reglage"].is_string() && r["valeur"].is_string()),
+        "{v}"
+    );
+}
+
+#[test]
+fn console_blocage_se_lit_sans_trace() {
+    let v = lecture_de_la_console(&["blocage", "etat", "--json"], 60);
+    assert!(!v["categories"].as_array().unwrap().is_empty(), "{v}");
+    // Une maison neuve : aucun accord, rien d'automatique.
+    assert_eq!(v["protection_active"], false, "{v}");
+}
+
+#[test]
+fn console_verifier_sauvegarde_se_lit_sans_trace() {
+    let v = lecture_de_la_console(&["verifier-sauvegarde", "--json"], 120);
+    // Une maison neuve : aucune sauvegarde mise en place, rien n'est vérifié ni supposé.
+    assert_eq!(v["etat"], "aucune", "{v}");
+}
+
+#[test]
+fn console_ordinateurs_se_lit_sans_trace() {
+    let v = lecture_de_la_console(&["ordinateurs", "--json"], 60);
+    // Aucune clé connue de cette maison neuve : la vraie clé, si elle est branchée, n'est ni lue ni montrée.
+    assert_eq!(v["cle"], false, "{v}");
+}
+
+/// --json ne se combine jamais avec ce qui change : sans le mot qui lit (--liste, « etat »), avec un mot qui agit, ou
+/// tombé dans la queue d'un réglage, il est refusé (code 2), sans rien sur la sortie, et la maison n'a rien reçu de
+/// ce que le geste aurait écrit.
+#[test]
+fn json_ne_va_jamais_avec_un_changement() {
+    for args in [
+        &["desinstaller", "--json"][..],
+        &["nettoyer", "--json"],
+        &["logiciels", "--json"],
+        &["logiciels", "--liste", "--recommandes", "--json"],
+        &["blocage", "--json"],
+        &["blocage", "annuler", "--json"],
+        &["blocage", "programmes", "off", "--json"],
+        &["sites-dangereux", "on", "--json"],
+        &["sites-dangereux", "--json", "off"],
+        &["parametres", "--json", "langue", "en"],
+        &["parametres", "langue", "en", "--json"],
+    ] {
+        let maison = maison_jetable();
+        let s = vanguard_dans(Path::new(env!("CARGO_BIN_EXE_vanguard")), &maison, "fr", args, "", 60);
+        assert_eq!(s.code, Some(2), "{args:?} : {}{}", s.texte, s.erreurs);
+        assert_eq!(s.texte, "", "{args:?}");
+        let parametres = dossier_vanguard(&maison).join("parametres.json");
+        assert!(
+            std::fs::read_to_string(&parametres).map_or(true, |t| !t.contains("\"en\"")),
+            "{args:?} a changé la langue"
+        );
+    }
+}

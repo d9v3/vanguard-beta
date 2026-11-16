@@ -455,6 +455,56 @@ pub fn commande(etat: Option<&str>) {
     }
 }
 
+/// `vanguard sites-dangereux --json` : l'état seul, en lecture (forme libre, schéma 1), pour la Console de la fenêtre.
+/// Rend le code de sortie : 1 quand le fichier hosts ne se lit pas (la raison sur la sortie d'erreur, rien sur la
+/// sortie : jamais un « rien de bloqué » supposé).
+pub fn json() -> i32 {
+    let chemin = fichier_hosts();
+    let texte = match std::fs::read(&chemin) {
+        Ok(o) => String::from_utf8_lossy(&o).into_owned(),
+        Err(e) => {
+            eprintln!(
+                "{}",
+                trf!("{} illisible : {e}", "{} unreadable: {e}", chemin_affichable(&chemin))
+            );
+            return 1;
+        }
+    };
+    println!("{}", etat_json(&texte, &chemin_affichable(&chemin)));
+    0
+}
+
+/// L'état du bloc de Vanguard dans `hosts`, en JSON : posé ou non, depuis quand, combien de noms ; un bloc abîmé (une
+/// marque sans l'autre) est dit, sans compte.
+fn etat_json(hosts: &str, fichier: &str) -> serde_json::Value {
+    let abime = sans_bloc(hosts).is_none();
+    let pose = if abime { None } else { bloc_pose(hosts) };
+    serde_json::json!({
+        "schema": 1,
+        "fichier": fichier,
+        "bloc_abime": abime,
+        "bloques": pose.is_some(),
+        "sites": pose.map(|(_, n)| n),
+        "depuis": pose.and_then(|(d, _)| d).map(|d| d.to_string()),
+        "a_savoir": if abime {
+            tr!(
+                "Le bloc de Vanguard est abîmé (une marque sans l'autre) : à corriger à la main.",
+                "Vanguard's block is damaged (one marker without the other): to fix by hand."
+            )
+        } else if pose.is_some() {
+            tr!(
+                "Rafraîchir : vanguard sites-dangereux on ; retirer : vanguard sites-dangereux off (dans un terminal).",
+                "Refresh: vanguard dangerous-sites on; remove: vanguard dangerous-sites off (in a terminal)."
+            )
+        } else {
+            tr!(
+                "Aucun site dangereux bloqué. Les bloquer : vanguard sites-dangereux on (clé abuse.ch, droits d'administrateur).",
+                "No dangerous site blocked. Block them: vanguard dangerous-sites on (abuse.ch key, administrator rights)."
+            )
+        },
+    })
+}
+
 /// Depuis le menu : l'état, puis bloquer (ou rafraîchir), retirer, ou rien.
 pub fn menu() {
     commande(None);
@@ -586,6 +636,29 @@ mod tests {
 
     fn jour(d: &str) -> NaiveDate {
         NaiveDate::parse_from_str(d, "%Y-%m-%d").unwrap()
+    }
+
+    /// La vue JSON de la Console : posé (nombre, date), absent, ou abîmé (sans compte ni « rien de bloqué »).
+    #[test]
+    fn la_vue_json_dit_pose_absent_ou_abime() {
+        let hosts = "127.0.0.1 localhost\n";
+        let noms: BTreeSet<String> = ["piege-exemple.com", "c2.exemple.org"].map(String::from).into();
+        let pose = avec_bloc(hosts, &bloc(&noms, jour("2026-10-22")));
+        let v = etat_json(&pose, "hosts");
+        assert_eq!((v["bloques"].as_bool(), v["sites"].as_u64()), (Some(true), Some(2)));
+        assert_eq!(v["depuis"].as_str(), Some("2026-10-22"));
+        let v = etat_json(hosts, "hosts");
+        assert_eq!(
+            (v["bloques"].as_bool(), v["bloc_abime"].as_bool()),
+            (Some(false), Some(false))
+        );
+        let abime = format!("{hosts}{DEBUT}\n0.0.0.0 piege-exemple.com\n");
+        let v = etat_json(&abime, "hosts");
+        assert_eq!(
+            (v["bloques"].as_bool(), v["bloc_abime"].as_bool()),
+            (Some(false), Some(true))
+        );
+        assert!(v["sites"].is_null());
     }
 
     #[test]

@@ -1151,6 +1151,37 @@ fn afficher() {
     );
 }
 
+/// `vanguard parametres --json` : l'état, en JSON (forme libre, schéma 1), pour la Console de la fenêtre. Jamais
+/// une valeur ni un réglage de la ligne de commande : rien n'est changé.
+pub fn json() {
+    let fichier_lu = match charger_juge(&fichier()) {
+        Err(e) => trf!(
+            "illisible ({e}) : les valeurs par défaut servent",
+            "unreadable ({e}): the defaults are used"
+        ),
+        Ok((_, Some(douteux))) => trf!(
+            "{} : ce qu'il coupait reste en marche, et un accord qu'il donnait ne vaut pas",
+            "{}: what it turned off stays on, and a consent it gave does not count",
+            douteux.texte()
+        ),
+        Ok(_) => tr!("lu", "read").to_string(),
+    };
+    let reglages: Vec<serde_json::Value> = Reglage::TOUS
+        .into_iter()
+        .map(|r| serde_json::json!({ "reglage": r.mot(), "valeur": valeur(r) }))
+        .collect();
+    let v = serde_json::json!({
+        "schema": 1,
+        "parametres_json": fichier_lu,
+        "reglages": reglages,
+        "a_savoir": tr!(
+            "Changer : vanguard parametres <réglage> <valeur>, dans un terminal, ou le menu Paramètres. Une variable d'environnement (VANGUARD_LANG, VANGUARD_EMOJI, VANGUARD_HORS_LIGNE) l'emporte sur ces réglages.",
+            "Change: vanguard settings <setting> <value>, in a terminal, or the Settings menu. An environment variable (VANGUARD_LANG, VANGUARD_EMOJI, VANGUARD_HORS_LIGNE) wins over these settings."
+        ),
+    });
+    println!("{v}");
+}
+
 /// Ce que fait un réglage, en une phrase, sous son choix de valeur.
 fn explication(r: Reglage) -> &'static str {
     match r {

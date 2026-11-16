@@ -1743,6 +1743,136 @@ pub fn verifier_sauvegarde() {
     }
 }
 
+/// `vanguard verifier-sauvegarde --json` : la même relecture, en JSON (forme libre, schéma 1), pour la Console de
+/// la fenêtre. La note est jugée sans rien écrire ni créer ; rien n'est écrit ni effacé. Une note qui ne peut pas
+/// être crue : la raison sur la sortie d'erreur, code 1 (rien n'est vérifié d'après elle).
+pub fn verifier_sauvegarde_json() -> i32 {
+    let mise_en_place = match juger_notes(crate::sceau::juge_sans_ecrire_dans(&dossier_notes(), NOTES)) {
+        Ok(n) => n.mise_en_place,
+        Err(d) => {
+            eprintln!("{}", note_douteuse(d));
+            return 1;
+        }
+    };
+    let v = match mise_en_place {
+        Some(MiseEnPlace::Systemd { destination, date, .. }) => vue_relecture_json(&PathBuf::from(destination), &date),
+        Some(MiseEnPlace::DejaDup { .. }) => serde_json::json!({
+            "schema": 1,
+            "mise_en_place": "deja-dup",
+            "etat": "non_verifie",
+            "conclusion": tr!(
+                "Déjà Dup compresse et chiffre ses sauvegardes : Vanguard ne les relit pas. Non vérifié ici.",
+                "Déjà Dup compresses and encrypts its backups: Vanguard does not read them back. Not checked here."
+            ),
+        }),
+        None => serde_json::json!({
+            "schema": 1,
+            "mise_en_place": null,
+            "etat": "aucune",
+            "conclusion": tr!(
+                "Aucune sauvegarde mise en place par Vanguard sur cet ordinateur : rien n'a été vérifié.",
+                "No backup set up by Vanguard on this computer: nothing was checked."
+            ),
+        }),
+    };
+    println!("{v}");
+    0
+}
+
+/// La relecture de la sauvegarde rsync en `destination`, en JSON : les comptes, les fichiers abîmés et le verdict.
+fn vue_relecture_json(destination: &Path, date: &str) -> serde_json::Value {
+    let base = |etat: &str, conclusion: &str| {
+        serde_json::json!({
+            "schema": 1,
+            "mise_en_place": "rsync",
+            "date": date,
+            "destination": chemin_affichable(destination),
+            "etat": etat,
+            "conclusion": conclusion,
+        })
+    };
+    if !destination.is_dir() {
+        return base(
+            "introuvable",
+            tr!(
+                "Sauvegarde introuvable (disque débranché ?) : rien n'a été vérifié.",
+                "Backup not found (disk unplugged?): nothing was checked."
+            ),
+        );
+    }
+    let (relus, gros) = relire_sauvegarde(destination, &sources_actuelles());
+    if relus.is_empty() && gros == 0 {
+        return base(
+            "vide",
+            tr!(
+                "La sauvegarde est vide : rsync n'y a encore rien copié. Rien n'a été vérifié.",
+                "The backup is empty: rsync has not copied anything yet. Nothing was checked."
+            ),
+        );
+    }
+    let compte = |c: Comparaison| relus.iter().filter(|(_, v)| *v == c).count();
+    let (identiques, differents, illisibles) = (
+        compte(Comparaison::Identique),
+        compte(Comparaison::Different),
+        compte(Comparaison::Illisible),
+    );
+    let problemes: Vec<serde_json::Value> = relus
+        .iter()
+        .filter(|(_, v)| matches!(v, Comparaison::Different | Comparaison::Illisible))
+        .map(|(relatif, verdict)| {
+            serde_json::json!({
+                "fichier": chemin_affichable(relatif),
+                "verdict": if *verdict == Comparaison::Different {
+                    tr!("différent de l'original, qui n'a pas changé", "different from the original, which has not changed")
+                } else {
+                    tr!("illisible sur le disque de sauvegarde", "unreadable on the backup disk")
+                },
+            })
+        })
+        .collect();
+    let (etat, conclusion) = if differents.saturating_add(illisibles) > 0 {
+        (
+            "abimee",
+            tr!(
+                "La sauvegarde est abîmée : le disque perd peut-être des données. Vérifiez-le et refaites une sauvegarde complète sur un autre disque.",
+                "The backup is damaged: the disk may be losing data. Check it and make a full backup to another disk."
+            ),
+        )
+    } else if identiques > 0 {
+        (
+            "se_relit",
+            tr!(
+                "La sauvegarde se relit : un fichier perdu s'y retrouverait. Rien n'a été écrit ni effacé.",
+                "The backup reads back: a lost file would be found there. Nothing was written or deleted."
+            ),
+        )
+    } else {
+        (
+            "rien_conclu",
+            tr!(
+                "Aucun fichier n'a pu être comparé : rien n'est conclu.",
+                "No file could be compared: nothing is concluded."
+            ),
+        )
+    };
+    let mut v = base(etat, conclusion);
+    if let Some(o) = v.as_object_mut() {
+        o.insert(
+            "relus".into(),
+            serde_json::json!({
+                "identiques": identiques,
+                "modifies_depuis": compte(Comparaison::ModifieDepuis),
+                "differents": differents,
+                "sans_original": compte(Comparaison::SansOriginal),
+                "illisibles": illisibles,
+                "gros_non_relus": gros,
+            }),
+        );
+        o.insert("problemes".into(), serde_json::Value::Array(problemes));
+    }
+    v
+}
+
 #[allow(
     clippy::arithmetic_side_effects,
     clippy::as_conversions,

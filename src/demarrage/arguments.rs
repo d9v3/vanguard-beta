@@ -159,6 +159,9 @@ pub(crate) enum Commande {
     SitesDangereux {
         #[arg(value_parser = interrupteur, value_name = "on|off")]
         etat: Option<String>,
+        /// La vue en JSON (forme libre, schéma 1), pour la Console de la fenêtre : rien n'est changé ni demandé.
+        #[arg(long, conflicts_with = "etat")]
+        json: bool,
     },
     /// Veilleur (Linux 6.6 et plus) : chaque programme lancé et chaque connexion fermée, vus sur le moment et jugés
     /// comme au bilan, et chaque fichier posé dans Téléchargements, le Bureau, ~/.local/bin ou ~/.config/autostart,
@@ -234,6 +237,9 @@ pub(crate) enum Commande {
         /// Installer le pack de départ (navigateur, mots de passe, vidéo, bureautique, archives), après accord.
         #[arg(long, visible_alias = "recommended")]
         recommandes: bool,
+        /// Avec --liste seulement : la liste en JSON (forme libre, schéma 1), sans rien installer.
+        #[arg(long, requires = "liste", conflicts_with = "recommandes")]
+        json: bool,
     },
     /// Nettoyer le système : caches, fichiers temporaires, paquets téléchargés, vieux journaux, corbeille… La place
     /// libérée par chaque élément est montrée avant ; on coche, puis on accepte.
@@ -242,6 +248,9 @@ pub(crate) enum Commande {
         /// Montrer ce qui pourrait être nettoyé et la place à gagner, sans rien effacer.
         #[arg(long, visible_alias = "list")]
         liste: bool,
+        /// Avec --liste seulement : la liste en JSON (forme libre, schéma 1), sans rien effacer.
+        #[arg(long, requires = "liste")]
+        json: bool,
     },
     /// Optimiser : les réglages recommandés, ceux de confidentialité, de performance et de confort, chacun
     /// montré, accepté puis annulable exactement ; « annuler » remet tout comme avant. Sans argument : le menu
@@ -512,7 +521,11 @@ pub(crate) enum Commande {
     /// Caméra et micro : qui s'en sert ? Sous Windows, chaque programme et la dernière fois ; sous Linux, ce qui les
     /// tient en ce moment. Lecture seule.
     #[command(name = "camera-micro", visible_alias = "camera-mic")]
-    CameraMicro,
+    CameraMicro {
+        /// La vue en JSON (forme libre, schéma 1), pour la Console de la fenêtre : rien n'est changé ni demandé.
+        #[arg(long)]
+        json: bool,
+    },
     /// Bilan de confidentialité : les applications qui ont accès à la position, aux contacts, à la caméra et au micro,
     /// et leur dernier usage quand il est noté. Lecture seule.
     #[command(name = "bilan-confidentialite", visible_alias = "privacy-review")]
@@ -552,6 +565,9 @@ pub(crate) enum Commande {
         /// restrictions, abuse.ch, second-avis, pua, versions-logiciels, autotest, paquets-aur, auto-reglage, partage) et sa valeur ; temps-reel non prend aussi --pendant 1h ou 4h.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         quoi: Vec<String>,
+        /// Sans réglage seulement : leur état en JSON (forme libre, schéma 1) ; rien n'est changé.
+        #[arg(long, conflicts_with = "quoi")]
+        json: bool,
     },
     /// Les couleurs de la fenêtre, par thème (un préréglage ou celles du système, et les cinq couleurs vives),
     /// gardées dans parametres.json : sans option, celles réglées et celles du système ; « --theme sombre --base
@@ -591,6 +607,9 @@ pub(crate) enum Commande {
         /// (réversible) ou « rendre-reseau » (un PID, ou tous ceux que Vanguard a coupés), « isoler » (l'ordinateur
         /// coupé du réseau, sauf la session à distance en cours) ou « lever-isolement ».
         quoi: Vec<String>,
+        /// Avec « etat » seulement : l'état en JSON (forme libre, schéma 1) ; refusé avec tout autre mot.
+        #[arg(long)]
+        json: bool,
     },
     /// Une alerte notifiée, par l'identifiant que donne sa notification : l'alerte est relue dans le journal scellé,
     /// la menace cherchée de nouveau et rejugée, puis ses gestes proposés (bloquer, suspendre, surveiller de plus
@@ -712,7 +731,11 @@ pub(crate) enum Commande {
     /// sur toute la sauvegarde comparés à leur original ; pour Déjà Dup et l'Historique des fichiers,
     /// la marche à suivre. Rien n'est écrit ni effacé.
     #[command(name = "verifier-sauvegarde", visible_alias = "check-backup")]
-    VerifierSauvegarde,
+    VerifierSauvegarde {
+        /// La vue en JSON (forme libre, schéma 1), pour la Console de la fenêtre : rien n'est changé ni demandé.
+        #[arg(long)]
+        json: bool,
+    },
     /// Vérifier ma clé : capacité réelle (fausses clés), vitesses et blocs en erreur d'une clé USB ou d'un disque
     /// externe. Écrit dans l'espace libre après accord, relit, puis efface ; vos fichiers ne sont pas touchés.
     #[command(name = "verifier-cle", visible_alias = "check-drive")]
@@ -798,7 +821,11 @@ pub(crate) enum Commande {
     /// Mes ordinateurs : ceux où la clé VANGUARD a fait un bilan, leur note et leurs problèmes restants (sur la
     /// partition VANGUARDLOG de la clé).
     #[command(visible_alias = "computers")]
-    Ordinateurs,
+    Ordinateurs {
+        /// Le tableau en JSON (forme libre, schéma 1), pour la Console de la fenêtre : sans menu, rien n'est changé.
+        #[arg(long)]
+        json: bool,
+    },
     /// Mettre Vanguard à jour sur cet ordinateur : depuis une clé VANGUARD plus récente, ou depuis la dernière version
     /// publiée sur GitHub, signée par l'auteur et vérifiée ; toujours sur accord, jamais vers une version plus ancienne.
     /// Sans option : l'état, puis la mise à jour sur accord, au terminal. Pour la fenêtre : --voir montre ce qui
@@ -833,6 +860,9 @@ pub(crate) enum Commande {
         /// Montrer ce qui serait retiré, sans rien retirer.
         #[arg(long, visible_alias = "list")]
         liste: bool,
+        /// Avec --liste seulement : ce qui serait retiré, en JSON (forme libre, schéma 1).
+        #[arg(long, requires = "liste")]
+        json: bool,
     },
     /// Les règles du bilan déclarées pour ce système : identifiant stable, sujet, références de durcissement.
     #[command(visible_alias = "rules")]

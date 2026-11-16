@@ -452,6 +452,11 @@ fn phrase_pour(ou: Ou, c: &Coupure, maintenant: i64) -> String {
     }
 }
 
+/// La phrase de la coupure pour `ou`, s'il y en a une, sans l'afficher (les vues JSON).
+pub(crate) fn phrase_si_coupee(ou: Ou) -> Option<String> {
+    coupure().map(|c| phrase_pour(ou, &c, maintenant()))
+}
+
 /// Dit la coupure en une ligne d'information, s'il y en a une. Rend `true` si elle l'a dite.
 pub(crate) fn dire_si_coupee(ou: Ou) -> bool {
     let Some(c) = coupure() else {

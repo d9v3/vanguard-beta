@@ -126,6 +126,74 @@ pub fn afficher_tout() {
     }
 }
 
+/// `vanguard camera-micro --json` : la même lecture, en JSON (forme libre, schéma 1), pour la Console de la fenêtre.
+/// Une liste qui n'a pas pu être lue vaut `null` (non vérifié), jamais une liste vide.
+pub fn json() {
+    #[cfg(windows)]
+    println!(
+        "{}",
+        vue_json(Some(&windows::lire("webcam")), Some(&windows::lire("microphone")), true)
+    );
+    #[cfg(target_os = "linux")]
+    println!(
+        "{}",
+        vue_json(linux::camera().as_deref(), linux::micro().as_deref(), false)
+    );
+}
+
+/// La vue JSON : chaque programme (affichable), sa dernière fois, en cours ou non, lancé d'un lieu suspect ; puis ce
+/// qu'il faut en conclure, dans la langue de l'interface. `historique` : Windows (des dates), sinon en ce moment.
+#[cfg(any(windows, target_os = "linux", test))]
+fn vue_json(camera: Option<&[Usage]>, micro: Option<&[Usage]>, historique: bool) -> serde_json::Value {
+    let liste = |u: Option<&[Usage]>| {
+        u.map(|l| {
+            l.iter()
+                .map(|u| {
+                    serde_json::json!({
+                        "programme": affichable(&u.programme),
+                        "dernier": u.dernier,
+                        "en_cours": u.en_cours,
+                        "lieu_suspect": lieu_suspect(&u.programme),
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+    };
+    let vus: Vec<&Usage> = camera.into_iter().chain(micro).flatten().collect();
+    let suspects = vus.iter().filter(|u| lieu_suspect(&u.programme)).count();
+    let tout_lu = camera.is_some() && micro.is_some();
+    let conclusion = if vus.is_empty() && !tout_lu {
+        tr!(
+            "Rien vu, mais tout n'a pas pu être lu : non vérifié. Rien n'a été changé.",
+            "Nothing seen, but not everything could be read: not verified. Nothing was changed."
+        )
+    } else if vus.is_empty() {
+        tr!(
+            "Aucun programme ne s'en sert. Rien n'a été changé.",
+            "No program uses them. Nothing was changed."
+        )
+    } else if suspects == 0 {
+        tr!(
+            "Un programme que vous ne reconnaissez pas : cherchez son nom, puis retirez-le. Rien n'a été changé.",
+            "A program you do not recognize: look up its name, then remove it. Nothing was changed."
+        )
+    } else {
+        tr!(
+            "Un programme lancé depuis un dossier temporaire ou Téléchargements s'est servi de la caméra ou du micro : faites vérifier le fichier avant tout. Rien n'a été changé.",
+            "A program started from a temporary folder or Downloads used the camera or microphone: have the file checked first. Nothing was changed."
+        )
+    };
+    serde_json::json!({
+        "schema": 1,
+        "historique": historique,
+        "camera": liste(camera),
+        "micro": liste(micro),
+        "tout_lu": tout_lu,
+        "suspects": suspects,
+        "conclusion": conclusion,
+    })
+}
+
 #[cfg(any(windows, target_os = "linux"))]
 fn conclure<'a>(usages: impl Iterator<Item = &'a Usage>) {
     let usages: Vec<&Usage> = usages.collect();
@@ -360,6 +428,27 @@ fn lire_pactl(texte: &str) -> Vec<Usage> {
 )]
 #[cfg(test)]
 mod tests {
+    /// La vue JSON : une lecture manquée vaut `null` et « non vérifié », jamais « aucun programme ».
+    #[test]
+    fn la_vue_json_ne_conclut_pas_sans_tout_lire() {
+        let u = Usage {
+            programme: r"C:\Users\alice\Downloads\outil.exe".into(),
+            dernier: None,
+            en_cours: true,
+        };
+        let v = super::vue_json(None, Some(&[]), false);
+        assert!(v["camera"].is_null() && v["tout_lu"] == false);
+        assert!(
+            v["conclusion"].as_str().unwrap().contains("non vérifié")
+                || v["conclusion"].as_str().unwrap().contains("not verified")
+        );
+        let v = super::vue_json(Some(&[u]), Some(&[]), true);
+        assert_eq!(
+            (v["suspects"].as_u64(), v["camera"][0]["lieu_suspect"].as_bool()),
+            (Some(1), Some(true))
+        );
+    }
+
     use super::*;
 
     #[test]

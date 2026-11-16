@@ -272,6 +272,76 @@ fn detail(o: &Ordinateur) -> Vec<String> {
     l
 }
 
+/// `vanguard ordinateurs --json` : le tableau de la clé, en JSON (forme libre, schéma 1), pour la Console de la
+/// fenêtre ; ni menu, ni question, rien n'est écrit. L'empreinte de chaque machine n'est pas montrée (elle ne sert
+/// qu'à retrouver l'entrée) : « ici » dit seulement laquelle est cet ordinateur.
+pub fn json() {
+    println!(
+        "{}",
+        vue_json(
+            fichier().map(|c| lire(&c)).as_ref(),
+            crate::machine::empreinte_machine().as_deref()
+        )
+    );
+}
+
+/// Le tableau en JSON ; `None` : aucune clé VANGUARD branchée.
+fn vue_json(tableau: Option<&Tableau>, ici: Option<&str>) -> serde_json::Value {
+    let Some(t) = tableau else {
+        return serde_json::json!({
+            "schema": 1,
+            "cle": false,
+            "ordinateurs": [],
+            "a_savoir": [tr!(
+                "Branchez la clé VANGUARD : le tableau est gardé sur sa partition VANGUARDLOG.",
+                "Plug in the VANGUARD key: the table is kept on its VANGUARDLOG partition."
+            )],
+        });
+    };
+    let aujourd_hui = chrono::Local::now().date_naive();
+    let ordinateurs: Vec<serde_json::Value> = triees(t)
+        .into_iter()
+        .map(|(empreinte, o)| {
+            let problemes: Vec<serde_json::Value> = o
+                .problemes
+                .iter()
+                .map(|p| {
+                    serde_json::json!({
+                        "categorie": crate::langue::categorie(&p.categorie),
+                        "niveau": match p.niveau {
+                            Niveau::Critique => tr!("critique", "critical"),
+                            Niveau::Eleve => tr!("élevé", "high"),
+                            Niveau::Moyen => tr!("moyen", "medium"),
+                            Niveau::Info => tr!("faible", "low"),
+                        },
+                    })
+                })
+                .collect();
+            serde_json::json!({
+                "surnom": o.surnom,
+                "systeme": o.systeme,
+                "modele": o.modele,
+                "vu_le": o.vu_le,
+                "note_machine": o.note_machine,
+                "note_reseau": o.note_reseau,
+                "version": o.version,
+                "problemes": problemes,
+                "pas_revu_depuis_90_jours": date(&o.vu_le)
+                    .is_some_and(|d| aujourd_hui.signed_duration_since(d).num_days() > JOURS_OUBLI),
+                "ici": ici == Some(empreinte.as_str()),
+            })
+        })
+        .collect();
+    let mut a_savoir: Vec<&str> = Vec::new();
+    if ordinateurs.is_empty() {
+        a_savoir.push(tr!(
+            "Aucun ordinateur pour l'instant : chaque bilan complet fait avec cette clé y ajoute le sien.",
+            "No computer yet: each full check run with this key adds its own."
+        ));
+    }
+    serde_json::json!({ "schema": 1, "cle": true, "ordinateurs": ordinateurs, "a_savoir": a_savoir })
+}
+
 /// Menu Données › Mes ordinateurs, ou `vanguard ordinateurs`.
 pub fn menu() {
     titre(tr!("Mes ordinateurs", "My computers"));
@@ -535,5 +605,37 @@ mod tests {
             );
         }
         assert!(deployer.contains("rapatrier_journal \"$JOURNAL/journal-erreurs.txt\""));
+    }
+
+    /// La vue JSON de la Console : jamais l'empreinte d'une machine, « ici » pour celle-ci seulement, et sans clé,
+    /// un tableau vide qui le dit.
+    #[test]
+    fn la_vue_json_ne_montre_pas_l_empreinte() {
+        let o = Ordinateur {
+            surnom: "Portable du salon".into(),
+            systeme: "Linux".into(),
+            modele: String::new(),
+            vu_le: "2020-01-02 03:04".into(),
+            note_machine: Some(80),
+            note_reseau: None,
+            version: "0.0.0".into(),
+            problemes: vec![Probleme {
+                categorie: "Pare-feu".into(),
+                niveau: Niveau::Eleve,
+            }],
+        };
+        let mut t = Tableau::default();
+        t.ordinateurs.insert("aaaa1111".into(), o.clone());
+        t.ordinateurs.insert("bbbb2222".into(), o);
+        let v = vue_json(Some(&t), Some("bbbb2222"));
+        let texte = v.to_string();
+        assert!(!texte.contains("aaaa1111") && !texte.contains("bbbb2222"), "{texte}");
+        let liste = v["ordinateurs"].as_array().unwrap();
+        assert_eq!(liste.len(), 2);
+        assert_eq!(liste.iter().filter(|o| o["ici"] == true).count(), 1);
+        assert!(liste.iter().all(|o| o["pas_revu_depuis_90_jours"] == true));
+        let sans = vue_json(None, None);
+        assert_eq!(sans["cle"], false);
+        assert_eq!(sans["ordinateurs"], serde_json::json!([]));
     }
 }

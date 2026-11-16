@@ -675,6 +675,63 @@ fn afficher_etat(p: &Parametres) {
     dire_si_pare_feu_coupe();
 }
 
+/// `vanguard blocage etat --json` : l'état, en JSON (forme libre, schéma 1), pour la Console de la fenêtre ; rien
+/// n'est changé. Avec tout autre mot que « etat », refusé (code 2) : --json ne lance jamais un geste.
+pub fn json(mots: &[String]) -> i32 {
+    if !matches!(mots, [m] if est(m, &["etat", "état", "status", "state"])) {
+        eprintln!(
+            "{}",
+            tr!(
+                "--json ne va qu'avec « etat » : vanguard blocage etat --json.",
+                "--json only goes with “status”: vanguard blocking status --json."
+            )
+        );
+        return 2;
+    }
+    let (p, illisibles) = match parametres::charger() {
+        Ok(p) => (p, None),
+        Err(e) => (Parametres::default(), Some(e.to_string())),
+    };
+    let mut a_savoir: Vec<String> = Vec::new();
+    if let Some(raison) = parametres::ignores() {
+        a_savoir.push(trf!(
+            "blocage.json {raison} : ses catégories désactivées restent sur « un clic » et son accord ne fait rien bloquer sans clic.",
+            "blocage.json {raison}: its turned-off categories stay on “one click” and its consent blocks nothing without a click."
+        ));
+    }
+    if let Some(e) = illisibles {
+        a_savoir.push(trf!(
+            "Réglages du blocage illisibles ({e}) : un clic partout, rien d'automatique.",
+            "Blocking settings unreadable ({e}): one click everywhere, nothing automatic."
+        ));
+    }
+    if p.actif() && gestes::administrateur_ou_inconnu() {
+        a_savoir.push(
+            tr!(
+                "Vanguard est en administrateur : la protection active ne bloque rien toute seule.",
+                "Vanguard is running as administrator: active protection blocks nothing by itself."
+            )
+            .to_string(),
+        );
+    }
+    a_savoir.extend(crate::protection::temps_reel::phrase_si_coupee(
+        crate::protection::temps_reel::Ou::Blocage,
+    ));
+    let categories: Vec<serde_json::Value> = Categorie::TOUTES
+        .into_iter()
+        .map(|c| serde_json::json!({ "categorie": c.titre(), "mode": p.effectif(c).libelle(), "geste": c.geste() }))
+        .collect();
+    let v = serde_json::json!({
+        "schema": 1,
+        "categories": categories,
+        "protection_active": p.actif(),
+        "accord_le": p.accord.as_deref().filter(|_| p.actif()),
+        "a_savoir": a_savoir,
+    });
+    println!("{v}");
+    0
+}
+
 /// Le texte de l'accord, montré une seule fois, avant le premier « automatique ».
 fn demander_accord() -> bool {
     titre(tr!("Protection active", "Active protection"));
