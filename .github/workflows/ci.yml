@@ -81,7 +81,7 @@ jobs:
           fallback: none
       - name: cargo-fuzz
         run: outils/installer-cargo-fuzz.sh
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # La vérification de l'ordinateur de l'auteur, sans Wine (pas de Wine ici ; le vrai Windows est plus bas).
       - name: outils/verifier.sh
         run: outils/verifier.sh --ci
@@ -327,7 +327,7 @@ jobs:
         run: rustup toolchain install
       # Une clé propre à la chaîne de zig : aucune bibliothèque compilée par l'ancienne chaîne de la distribution
       # (musl-gcc, gcc de MinGW) ne revient du cache dans les programmes comparés.
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: chaine-zig-0.17.0-0.24.0
       # cargo auditable grave dans chaque programme la liste de ses dépendances, versions comprises, que cargo audit
@@ -411,7 +411,7 @@ jobs:
           persist-credentials: false
       - name: Rust (rust-toolchain.toml)
         run: rustup toolchain install
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # La cible est donnée : .cargo/config.toml vise Linux par défaut. Ici, PowerShell existe vraiment (pas comme
       # sous Wine) : les tests lisent le vrai registre et le vrai système. La cible MSVC : celle de MinGW, livrée, est
       # essayée telle qu'elle part par le travail « windows-livre ».
