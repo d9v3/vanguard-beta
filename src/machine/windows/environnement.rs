@@ -183,6 +183,18 @@ static APPDATA: GUID = GUID::from_u128(0x3eb685db_65f9_4cf6_a03a_e3ef65729f3d);
 static APPDATA_LOCAL: GUID = GUID::from_u128(0xf1b32785_6fba_4fcf_9d55_7b8e7f157091);
 static DEMARRAGE_COMMUN: GUID = GUID::from_u128(0x82a5ea35_d9cd_47c5_9629_e15d2f714e6e);
 static DEMARRAGE_PERSONNE: GUID = GUID::from_u128(0xb97d20bb_f46a_4c97_ba10_5e3608430854);
+static TELECHARGEMENTS: GUID = GUID::from_u128(0x374de290_123f_4565_9164_39c4925e467b);
+static BUREAU: GUID = GUID::from_u128(0xb4bfcc3a_db2c_424c_b029_7fe99a87c641);
+static DOCUMENTS: GUID = GUID::from_u128(0xfdd39ad0_238f_46af_adb4_6c85480369c7);
+static IMAGES: GUID = GUID::from_u128(0x33e28130_4e1e_4676_835a_98395c3bc3bb);
+static VIDEOS: GUID = GUID::from_u128(0x18989b1d_99b5_455b_841c_ab7c74e4ddfc);
+static MUSIQUE: GUID = GUID::from_u128(0x4bd8d571_6d19_48d3_be97_422220080e43);
+static FAVORIS: GUID = GUID::from_u128(0x1777f761_68ad_4d8a_87bd_30b759fa33dd);
+static CONTACTS: GUID = GUID::from_u128(0x56784854_c6cb_462b_8169_88e350acb882);
+static LIENS: GUID = GUID::from_u128(0xbfb9d5e0_c6a9_404c_b2b2_ae6db6af4968);
+static PARTIES: GUID = GUID::from_u128(0x4c5c32ff_bb9d_43b0_b5b4_2d72e54eaaa4);
+static RECHERCHES: GUID = GUID::from_u128(0x7d1d3a04_debb_4115_95cf_2f29da2920da);
+static ONEDRIVE: GUID = GUID::from_u128(0xa52bba46_e9e1_435f_b3d9_28daa648c0f6);
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
@@ -317,13 +329,88 @@ pub(crate) fn chemin_long(chemin: &str) -> Option<String> {
     None
 }
 
+/// KF_FLAG_DONT_VERIFY (learn.microsoft.com, « KNOWN_FOLDER_FLAG ») : le chemin actuel, peut-être redirigé, sans que
+/// Windows vérifie qu'il existe ni ne le crée. Sans lui, un dossier redirigé vers \\serveur\x serait visité, et
+/// l'empreinte NTLM de la session envoyée à qui a écrit la redirection.
+const ACTUEL_SANS_VERIFIER: u32 = 0x0000_4000;
+
+/// Un dossier connu du compte, pour la Console (`demarrage::console::racines`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Connu {
+    Telechargements,
+    Bureau,
+    Documents,
+    AppData,
+    AppDataLocal,
+    Images,
+    Videos,
+    Musique,
+    Favoris,
+    Contacts,
+    Liens,
+    Parties,
+    Recherches,
+    OneDrive,
+}
+
+impl Connu {
+    /// Les dossiers connus que la Console ne prend jamais pour un endroit permis, même si le registre y redirige
+    /// Téléchargements, Bureau ou Documents : AppData (des secrets), les autres dossiers du profil et OneDrive
+    /// lui-même (tout ce qui y est synchronisé).
+    pub(crate) const JAMAIS: [Connu; 11] = [
+        Connu::AppData,
+        Connu::AppDataLocal,
+        Connu::Images,
+        Connu::Videos,
+        Connu::Musique,
+        Connu::Favoris,
+        Connu::Contacts,
+        Connu::Liens,
+        Connu::Parties,
+        Connu::Recherches,
+        Connu::OneDrive,
+    ];
+
+    fn guid(self) -> &'static GUID {
+        match self {
+            Connu::Telechargements => &TELECHARGEMENTS,
+            Connu::Bureau => &BUREAU,
+            Connu::Documents => &DOCUMENTS,
+            Connu::AppData => &APPDATA,
+            Connu::AppDataLocal => &APPDATA_LOCAL,
+            Connu::Images => &IMAGES,
+            Connu::Videos => &VIDEOS,
+            Connu::Musique => &MUSIQUE,
+            Connu::Favoris => &FAVORIS,
+            Connu::Contacts => &CONTACTS,
+            Connu::Liens => &LIENS,
+            Connu::Parties => &PARTIES,
+            Connu::Recherches => &RECHERCHES,
+            Connu::OneDrive => &ONEDRIVE,
+        }
+    }
+}
+
+/// Le dossier connu `quel` du compte qui fait tourner ce processus, à son emplacement actuel (celui qu'affiche
+/// l'Explorateur, peut-être redirigé : HKCU\…\User Shell Folders, développé par Windows), sans rien vérifier sur le
+/// disque ni le réseau (`ACTUEL_SANS_VERIFIER`). Écrit par le compte : à juger avant de servir
+/// (`demarrage::console::racine_du_registre`).
+pub(crate) fn dossier_actuel(quel: Connu) -> Option<PathBuf> {
+    dossier_connu_avec(quel.guid(), ACTUEL_SANS_VERIFIER)
+}
+
 /// Un dossier connu du compte qui fait tourner ce processus (jeton nul), à son emplacement par défaut, ou `None` si
 /// Windows n'en donne pas.
 fn dossier_connu(id: &GUID) -> Option<PathBuf> {
+    dossier_connu_avec(id, PAR_DEFAUT)
+}
+
+/// Un dossier connu du compte qui fait tourner ce processus (jeton nul), selon les `drapeaux` (KNOWN_FOLDER_FLAG).
+fn dossier_connu_avec(id: &GUID, drapeaux: u32) -> Option<PathBuf> {
     let mut chemin = PWSTR::null();
     // SAFETY: `id` est un GUID valide pour l'appel ; drapeaux documentés et jeton nul (le compte de ce processus) ;
     // Windows écrit dans `chemin` une chaîne allouée par CoTaskMemAlloc, à libérer même en cas d'échec.
-    let r = unsafe { SHGetKnownFolderPath(id, PAR_DEFAUT, std::ptr::null_mut(), &raw mut chemin) };
+    let r = unsafe { SHGetKnownFolderPath(id, drapeaux, std::ptr::null_mut(), &raw mut chemin) };
     // SAFETY: en cas de succès, `chemin` est une chaîne terminée par un zéro, lue avant d'être libérée.
     let lu = (r >= 0 && !chemin.is_null()).then(|| PathBuf::from(OsString::from_wide(unsafe { chemin.as_wide() })));
     // SAFETY: CoTaskMemFree accepte un pointeur nul ; sinon c'est la chaîne rendue par SHGetKnownFolderPath, libérée

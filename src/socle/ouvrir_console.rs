@@ -4,9 +4,10 @@
 //!
 //! D'abord le jugement sur le texte seul (`valeur_console::juger_lexical`) : hors des endroits permis, rien n'est
 //! regardé sur le disque. Puis une descente depuis la racine permise, un nom à la fois, chaque dossier ouvert à partir
-//! du précédent sans jamais suivre de lien (Linux : openat et O_NOFOLLOW à chaque nom ; Windows : chaque nom ouvert
-//! lui-même, FILE_FLAG_OPEN_REPARSE_POINT, et tenu ouvert sans partage de suppression jusqu'à la fin de la lecture,
-//! pour que rien sur le chemin ne soit renommé). Le fichier ouvert doit être ordinaire, à un seul nom (un lien physique vers
+//! du précédent sans jamais suivre de lien (Linux : openat et O_NOFOLLOW à chaque nom ; Windows : NtCreateFile relatif
+//! à la poignée du dossier précédent, FILE_OPEN_REPARSE_POINT, chaque dossier tenu avec un accès de liste, qui fait
+//! appliquer son partage sans suppression : nul ne le renomme tant qu'on lit). Le fichier ouvert doit être ordinaire,
+//! à un seul nom (un lien physique vers
 //! ~/.ssh/id_ed25519 posé dans Téléchargements est un autre nom du même fichier), et son chemin réel, relu sur ce qu'on
 //! tient (/proc/self/fd, GetFinalPathNameByHandleW), est jugé une seconde fois contre les mêmes endroits.
 //!
@@ -219,17 +220,26 @@ mod systeme {
 
 #[cfg(windows)]
 mod systeme {
-    use std::ffi::OsStr;
+    use std::ffi::{OsStr, c_void};
     use std::fs::File;
+    use std::os::windows::ffi::OsStrExt as _;
     use std::os::windows::fs::OpenOptionsExt as _;
+    use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _};
     use std::path::{Component, Path, PathBuf};
 
     use super::{Etape, Refus, crochet, juger_attributs, refus_d_erreur};
 
+    const FILE_LIST_DIRECTORY: u32 = 0x0001;
+    const FILE_TRAVERSE: u32 = 0x0020;
     const FILE_READ_ATTRIBUTES: u32 = 0x0080;
     const SYNCHRONIZE: u32 = 0x0010_0000;
-    /// Lecture et écriture partagées, jamais la suppression : tant qu'on tient un nom, ni lui ni ce qui est au-dessus
-    /// ne se renomme ni ne s'efface.
+    const FILE_GENERIC_READ: u32 = 0x0012_0089;
+    /// Un dossier tenu : le lister, le traverser, lire ses attributs. Lister compte pour Windows comme une lecture
+    /// (FILE_READ_DATA) : c'est ce qui fait appliquer le partage ci-dessous. Un accès aux attributs seul ne le fait pas
+    /// appliquer, et laissait renommer un dossier pourtant « tenu ».
+    const ACCES_DOSSIER: u32 = FILE_LIST_DIRECTORY | FILE_TRAVERSE | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
+    /// Lecture et écriture partagées, jamais la suppression : tant qu'on tient un nom avec un accès de lecture, nul ne
+    /// l'ouvre pour le renommer ni l'effacer (il faudrait l'accès DELETE, que ce partage refuse).
     const PARTAGE: u32 = 0x0001 | 0x0002;
     const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
     const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
@@ -238,10 +248,20 @@ mod systeme {
     const DRAPEAUX: u32 = FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_NO_RECALL;
     const ATTRIBUT_DOSSIER: u32 = 0x10;
 
-    /// Le dossier qui contient le fichier (son chemin), et chaque nom de la descente tenu ouvert.
+    // NtCreateFile (learn.microsoft.com, « NtCreateFile function (winternl.h) ») : disposition et options.
+    const FILE_OPEN: u32 = 1;
+    const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x0000_0020;
+    const FILE_OPEN_FOR_BACKUP_INTENT: u32 = 0x0000_4000;
+    const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const FILE_OPEN_NO_RECALL: u32 = 0x0040_0000;
+    const OBJ_CASE_INSENSITIVE: u32 = 0x40;
+    // Les NTSTATUS d'un nom absent (STATUS_OBJECT_NAME_NOT_FOUND, _PATH_NOT_FOUND, STATUS_NOT_A_DIRECTORY).
+    const ABSENTS: [u32; 3] = [0xC000_0034, 0xC000_003A, 0xC000_0103];
+
+    /// Le dossier qui contient le fichier, et chaque nom de la descente tenu ouvert, de la racine du lecteur à lui
+    /// (le dernier).
     pub(super) struct Dossier {
-        chemin: PathBuf,
-        _tenus: Vec<File>,
+        tenus: Vec<File>,
     }
 
     /// Les attributs et l'étiquette de point d'analyse de ce qui est ouvert (FileAttributeTagInfo).
@@ -255,15 +275,60 @@ mod systeme {
     /// FileAttributeTagInfo, dans FILE_INFO_BY_HANDLE_CLASS.
     const ATTRIBUTS_ETIQUETTE: u32 = 9;
 
+    /// UNICODE_STRING : longueurs en octets, sans zéro final.
+    #[repr(C)]
+    struct TexteNt {
+        longueur: u16,
+        maximum: u16,
+        tampon: *mut u16,
+    }
+
+    /// OBJECT_ATTRIBUTES : le nom, relatif au dossier `racine` (une poignée ouverte).
+    #[repr(C)]
+    struct AttributsObjet {
+        longueur: u32,
+        racine: *mut c_void,
+        nom: *const TexteNt,
+        attributs: u32,
+        descripteur: *mut c_void,
+        qualite: *mut c_void,
+    }
+
+    /// IO_STATUS_BLOCK.
+    #[repr(C)]
+    struct EtatEs {
+        etat: isize,
+        information: usize,
+    }
+
     // FFI de kernel32 : les attributs et l'étiquette de point d'analyse d'une poignée ouverte.
     #[allow(unsafe_code)]
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn GetFileInformationByHandleEx(
-            fichier: *mut std::ffi::c_void,
+            fichier: *mut c_void,
             classe: u32,
-            information: *mut std::ffi::c_void,
+            information: *mut c_void,
             taille: u32,
+        ) -> i32;
+    }
+
+    // FFI de ntdll : NtCreateFile, la seule façon d'ouvrir un nom sous une poignée de dossier (l'équivalent d'openat).
+    #[allow(unsafe_code)]
+    #[link(name = "ntdll")]
+    unsafe extern "system" {
+        fn NtCreateFile(
+            poignee: *mut *mut c_void,
+            acces: u32,
+            objet: *const AttributsObjet,
+            etat: *mut EtatEs,
+            taille: *const i64,
+            attributs: u32,
+            partage: u32,
+            disposition: u32,
+            options: u32,
+            ea: *mut c_void,
+            longueur_ea: u32,
         ) -> i32;
     }
 
@@ -271,7 +336,6 @@ mod systeme {
     // FFI de kernel32 : GetFileInformationByHandleEx(FileAttributeTagInfo).
     #[allow(unsafe_code)]
     fn attributs(f: &File) -> Option<(u32, u32)> {
-        use std::os::windows::io::AsRawHandle as _;
         let mut info = AttributsEtiquette::default();
         let taille = u32::try_from(std::mem::size_of::<AttributsEtiquette>()).ok()?;
         // SAFETY: la poignée vient d'un fichier ouvert qui vit pendant l'appel ; `info` est une FILE_ATTRIBUTE_TAG_INFO
@@ -282,25 +346,103 @@ mod systeme {
         ok.then_some((info.attributs, info.etiquette))
     }
 
-    /// Un nom, ouvert lui-même (jamais suivi), jugé sur ses attributs. `lire` : le fichier, en lecture ; sinon un
-    /// dossier, les attributs seulement.
-    fn ouvrir(chemin: &Path, lire: bool, sous_racine: bool) -> Result<(File, u32), Refus> {
-        let mut options = std::fs::OpenOptions::new();
-        if lire {
-            options.read(true);
-        } else {
-            options.access_mode(FILE_READ_ATTRIBUTES | SYNCHRONIZE);
+    /// La racine du lecteur (« C:\ »), ouverte elle-même, tenue comme un dossier.
+    fn ouvrir_lecteur(chemin: &Path) -> Result<File, Refus> {
+        let f = std::fs::OpenOptions::new()
+            .access_mode(ACCES_DOSSIER)
+            .share_mode(PARTAGE)
+            .custom_flags(DRAPEAUX)
+            .open(chemin)
+            .map_err(|e| refus_d_erreur(&e))?;
+        let (attributs, etiquette) = attributs(&f).ok_or(Refus::NonVerifie)?;
+        juger_attributs(attributs, etiquette, false)?;
+        if attributs & ATTRIBUT_DOSSIER == 0 {
+            return Err(Refus::Introuvable);
         }
-        options.share_mode(PARTAGE).custom_flags(DRAPEAUX);
-        let f = options.open(chemin).map_err(|e| refus_d_erreur(&e))?;
+        Ok(f)
+    }
+
+    /// Un nom simple sous le dossier tenu `dessus`, ouvert par NtCreateFile relativement à lui (jamais par un chemin
+    /// complet, qui se relirait depuis la racine), lui-même (FILE_OPEN_REPARSE_POINT : un lien ou une jonction est
+    /// ouvert, pas suivi), puis jugé sur ses attributs. `lire` : un fichier, en lecture ; sinon un dossier, tenu
+    /// (`ACCES_DOSSIER`). Ni FILE_DIRECTORY_FILE ni FILE_NON_DIRECTORY_FILE : un lien s'ouvre ainsi tel quel et se dit
+    /// lien ; ce qui est ouvert est jugé ensuite.
+    // FFI de ntdll : NtCreateFile ; la poignée rendue devient un File, fermé une fois.
+    #[allow(unsafe_code)]
+    pub(super) fn ouvrir_sous(dessus: &File, nom: &OsStr, lire: bool, sous_racine: bool) -> Result<(File, u32), Refus> {
+        let mut large: Vec<u16> = nom.encode_wide().collect();
+        let point = u16::from(b'.');
+        let interdit = |c: &u16| [u16::from(b'\\'), u16::from(b'/'), u16::from(b':'), 0].contains(c);
+        if large.is_empty() || large == [point] || large == [point, point] || large.iter().any(interdit) {
+            return Err(Refus::Forme);
+        }
+        let octets = large
+            .len()
+            .checked_mul(2)
+            .and_then(|n| u16::try_from(n).ok())
+            .ok_or(Refus::Forme)?;
+        let texte = TexteNt {
+            longueur: octets,
+            maximum: octets,
+            tampon: large.as_mut_ptr(),
+        };
+        let objet = AttributsObjet {
+            longueur: u32::try_from(std::mem::size_of::<AttributsObjet>()).map_err(|_| Refus::NonVerifie)?,
+            racine: dessus.as_raw_handle(),
+            nom: &raw const texte,
+            attributs: OBJ_CASE_INSENSITIVE,
+            descripteur: std::ptr::null_mut(),
+            qualite: std::ptr::null_mut(),
+        };
+        let options = FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT | FILE_OPEN_NO_RECALL;
+        let (acces, options) = if lire {
+            (FILE_GENERIC_READ, options)
+        } else {
+            (ACCES_DOSSIER, options | FILE_OPEN_FOR_BACKUP_INTENT)
+        };
+        let mut poignee: *mut c_void = std::ptr::null_mut();
+        let mut etat = EtatEs {
+            etat: 0,
+            information: 0,
+        };
+        // SAFETY: `objet` et le `texte` qu'il désigne (sur `large`, vivant, de la longueur dite) vivent pendant
+        // l'appel ; `dessus` est une poignée de dossier ouverte, tenue par l'appelant ; `poignee` et `etat` sont à
+        // nous ; ni taille ni attributs étendus (pointeurs nuls, longueur 0), comme le veut FILE_OPEN.
+        let r = unsafe {
+            NtCreateFile(
+                &raw mut poignee,
+                acces,
+                &raw const objet,
+                &raw mut etat,
+                std::ptr::null(),
+                0,
+                PARTAGE,
+                FILE_OPEN,
+                options,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if r < 0 || poignee.is_null() {
+            let code = u32::from_ne_bytes(r.to_ne_bytes());
+            return Err(if ABSENTS.contains(&code) {
+                Refus::Introuvable
+            } else {
+                Refus::Illisible
+            });
+        }
+        // SAFETY: NtCreateFile a réussi : `poignee` est une poignée de fichier ouverte, à nous seuls ; le File la
+        // fermera une fois.
+        let f = unsafe { File::from_raw_handle(poignee) };
         let (attributs, etiquette) = attributs(&f).ok_or(Refus::NonVerifie)?;
         juger_attributs(attributs, etiquette, sous_racine)?;
         Ok((f, attributs))
     }
 
-    /// La descente depuis la racine du lecteur : chaque nom jusqu'à la racine permise (aucun lien, aucune jonction,
-    /// un fichier en ligne seulement non plus), puis chaque nom sous elle (ni caché ni système non plus), tous tenus.
-    /// Rien n'est résolu d'avance : une jonction en route pourrait mener à un partage, que le système contacterait.
+    /// La descente depuis la racine du lecteur : chaque nom ouvert sous le dossier tenu juste avant, jusqu'à la racine
+    /// permise (aucun lien, aucune jonction, un fichier en ligne seulement non plus), puis chaque nom sous elle (ni
+    /// caché ni système non plus), tous tenus jusqu'à la fin de la lecture. Rien n'est résolu d'avance : une jonction
+    /// en route pourrait mener à un partage, que le système contacterait.
     pub(super) fn descendre(racine: &Path, dossiers: &[&OsStr], dernier: &OsStr) -> Result<(File, Dossier), Refus> {
         let mut composants = racine.components();
         let (Some(Component::Prefix(p)), Some(Component::RootDir)) = (composants.next(), composants.next()) else {
@@ -309,40 +451,36 @@ mod systeme {
         if !matches!(p.kind(), std::path::Prefix::Disk(_)) {
             return Err(Refus::Reseau);
         }
-        let mut courant = PathBuf::from(p.as_os_str());
-        courant.push(std::path::MAIN_SEPARATOR_STR);
-        let mut tenus = Vec::new();
-        let (f, _) = ouvrir(&courant, false, false)?;
-        tenus.push(f);
-        for nom in composants {
-            courant.push(nom);
-            let (f, attributs) = ouvrir(&courant, false, false)?;
+        let mut lecteur = PathBuf::from(p.as_os_str());
+        lecteur.push(std::path::MAIN_SEPARATOR_STR);
+        let mut tenus = vec![ouvrir_lecteur(&lecteur)?];
+        let suivant = |tenus: &[File], nom: &OsStr, sous_racine: bool| -> Result<File, Refus> {
+            let dessus = tenus.last().ok_or(Refus::NonVerifie)?;
+            let (f, attributs) = ouvrir_sous(dessus, nom, false, sous_racine)?;
             if attributs & ATTRIBUT_DOSSIER == 0 {
                 return Err(Refus::Introuvable);
             }
+            Ok(f)
+        };
+        for c in composants {
+            let Component::Normal(nom) = c else {
+                return Err(Refus::Forme);
+            };
+            let f = suivant(&tenus, nom, false)?;
             tenus.push(f);
         }
         crochet(Etape::Racine);
         for (n, nom) in dossiers.iter().enumerate() {
-            courant.push(nom);
-            let (f, attributs) = ouvrir(&courant, false, true)?;
-            if attributs & ATTRIBUT_DOSSIER == 0 {
-                return Err(Refus::Introuvable);
-            }
+            let f = suivant(&tenus, nom, true)?;
             tenus.push(f);
             crochet(Etape::Dossier(n));
         }
-        let (fichier, attributs) = ouvrir(&courant.join(dernier), true, true)?;
+        let dessus = tenus.last().ok_or(Refus::NonVerifie)?;
+        let (fichier, attributs) = ouvrir_sous(dessus, dernier, true, true)?;
         if attributs & ATTRIBUT_DOSSIER != 0 {
             return Err(Refus::PasUnFichier);
         }
-        Ok((
-            fichier,
-            Dossier {
-                chemin: courant,
-                _tenus: tenus,
-            },
-        ))
+        Ok((fichier, Dossier { tenus }))
     }
 
     /// Le nombre de noms (liens physiques) du fichier ouvert.
@@ -355,14 +493,19 @@ mod systeme {
         crate::machine::windows::chemin_final(f).map(PathBuf::from)
     }
 
-    /// Un nom du dossier tenu, ouvert comme le fichier (lui-même, jugé sur ses attributs).
+    /// Un nom du dossier tenu, ouvert sous lui comme le fichier (lui-même, jugé sur ses attributs).
     pub(super) fn voisin(d: &Dossier, nom: &OsStr) -> std::io::Result<File> {
-        match ouvrir(&d.chemin.join(nom), true, true) {
-            Ok((f, attributs)) if attributs & ATTRIBUT_DOSSIER == 0 => Ok(f),
-            _ => Err(std::io::Error::new(
+        let pas_ordinaire = || {
+            std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 crate::tr!("pas un simple fichier", "not a plain file"),
-            )),
+            )
+        };
+        let dessus = d.tenus.last().ok_or_else(pas_ordinaire)?;
+        match ouvrir_sous(dessus, nom, true, true) {
+            Ok((f, attributs)) if attributs & ATTRIBUT_DOSSIER == 0 => Ok(f),
+            Err(Refus::Introuvable) => Err(std::io::Error::from(std::io::ErrorKind::NotFound)),
+            _ => Err(pas_ordinaire()),
         }
     }
 }
@@ -534,6 +677,27 @@ mod tests {
         assert_eq!(b.ouvrir("~/Téléchargements/x.pdf").err(), Some(Refus::HorsDesEndroits));
     }
 
+    /// ~/Documents lié à ~/Nextcloud/Documents : la racine est la cible, résolue une fois quand les racines sont
+    /// faites. Le lien changé ensuite vers ~/.ssh ne fait rien lire de ~/.ssh ; la cible changée en lien est refusée.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn une_racine_liee_se_lit_par_sa_cible_resolue_une_fois() {
+        use std::os::unix::fs::symlink;
+        let mut b = Banc::nouveau("racine-liee");
+        let cible = b.maison.join("Nextcloud/Documents");
+        std::fs::create_dir_all(&cible).unwrap();
+        std::fs::write(cible.join("a.pdf"), b"%PDF-1.7 contrat").unwrap();
+        symlink("Nextcloud/Documents", b.maison.join("Documents")).unwrap();
+        b.racines = valeur_console::racines_linux(&b.maison, "", None);
+        assert_eq!(b.ouvrir("~/Documents/a.pdf").unwrap().chemin, cible.join("a.pdf"));
+        std::fs::remove_file(b.maison.join("Documents")).unwrap();
+        symlink(".ssh", b.maison.join("Documents")).unwrap();
+        assert_eq!(b.ouvrir("~/Documents/id_ed25519").err(), Some(Refus::Introuvable));
+        std::fs::rename(&cible, b.maison.join("Nextcloud/vrai")).unwrap();
+        symlink(b.maison.join(".ssh"), &cible).unwrap();
+        assert_eq!(b.ouvrir("~/Documents/id_ed25519").err(), Some(Refus::Lien));
+    }
+
     /// Un lien physique vers la clé posé dans Téléchargements est un autre nom du même fichier : refusé.
     #[cfg(target_os = "linux")]
     #[test]
@@ -605,11 +769,9 @@ mod tests {
             Some(&b"%PDF-1.7 facture"[..])
         );
         assert!(std::fs::remove_file(tele.join("x.pdf")).is_err());
-        // Renommer un dossier tenu sans partage de suppression : Windows le refuse, Wine non (vérifié seulement dans
-        // la machine virtuelle Windows).
-        if !crate::commande::sous_wine() {
-            assert!(std::fs::rename(&tele, maison.join("Downloads-vrai")).is_err());
-        }
+        // Un dossier tenu avec un accès de liste, sans partage de suppression : ni Windows ni Wine ne le renomment
+        // (un accès aux attributs seul ne faisait pas appliquer le partage).
+        assert!(std::fs::rename(&tele, maison.join("Downloads-vrai")).is_err());
         drop(juge);
         std::fs::hard_link(maison.join(".ssh").join("id_ed25519"), tele.join("cle.pdf")).unwrap();
         assert_eq!(
@@ -633,6 +795,46 @@ mod tests {
         } else {
             crate::essais::saute("attrib absent : l'attribut caché n'est pas essayé");
         }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Sous Windows : un nom s'ouvre sous la poignée du dossier, jamais par son chemin complet. Le dossier `sous`,
+    /// ouvert ici avec un partage de suppression (pour que Wine laisse le renommer), renommé, et un autre `sous\y.pdf`
+    /// posé à sa place : c'est le premier qui est lu. Une ouverture par chemin lirait le fichier posé. Un nom qui
+    /// n'est pas simple est refusé avant toute ouverture.
+    #[cfg(windows)]
+    #[test]
+    fn un_nom_s_ouvre_sous_la_poignee_du_dossier() {
+        use std::io::Read as _;
+        use std::os::windows::fs::OpenOptionsExt as _;
+        let (d, _, racines) = banc_windows("poignee");
+        let tele = racines[0].reelle.clone();
+        std::fs::write(tele.join("sous").join("y.pdf"), b"%PDF-1.7 releve").unwrap();
+        let tenu = std::fs::OpenOptions::new()
+            .access_mode(0x0001 | 0x0020 | 0x0080 | 0x0010_0000)
+            .share_mode(0x7)
+            .custom_flags(0x0200_0000)
+            .open(tele.join("sous"))
+            .unwrap();
+        std::fs::rename(tele.join("sous"), tele.join("sous-vrai")).unwrap();
+        std::fs::create_dir(tele.join("sous")).unwrap();
+        std::fs::write(tele.join("sous").join("y.pdf"), b"%PDF-1.7 piege").unwrap();
+        let (mut f, _) = systeme::ouvrir_sous(&tenu, OsStr::new("y.pdf"), true, true).unwrap();
+        let mut lu = Vec::new();
+        f.read_to_end(&mut lu).unwrap();
+        assert_eq!(lu, b"%PDF-1.7 releve");
+        for nom in ["", ".", "..", r"..\x.pdf", "a/b", "c:x", "a\0b"] {
+            assert_eq!(
+                systeme::ouvrir_sous(&tenu, OsStr::new(nom), true, true).err(),
+                Some(Refus::Forme),
+                "{nom:?}"
+            );
+        }
+        assert_eq!(
+            systeme::ouvrir_sous(&tenu, OsStr::new("absent.pdf"), true, true).err(),
+            Some(Refus::Introuvable)
+        );
+        drop((f, tenu));
         let _ = std::fs::remove_dir_all(&d);
     }
 }

@@ -82,39 +82,42 @@ pub(crate) fn racines(maison: &Path) -> Vec<Racine> {
     valeur_console::racines_linux(maison, &declares, compte.as_ref().and_then(|n| n.to_str()))
 }
 
-/// Les endroits permis de ce compte : Téléchargements, Bureau et Documents (ceux du registre, s'ils sont des enfants
-/// directs du profil ou sous son OneDrive, puis ceux du profil) ; et la racine de chaque lecteur amovible que Windows
-/// connaît comme tel. Tout est jugé sur le texte : rien n'est résolu ici (`canonicalize` suit une jonction ou un
-/// partage, et ouvrir \\serveur\x envoie déjà l'empreinte NTLM de la session). La descente qui suit
-/// (`ouvrir_console`) ne suit aucun lien ni point de montage.
+/// Les endroits permis de ce compte : Téléchargements, Bureau et Documents (là où Windows les place, s'ils sont des
+/// enfants directs du profil ou sous son OneDrive, puis ceux du profil) ; et la racine de chaque lecteur amovible que
+/// Windows connaît comme tel. Tout est jugé sur le texte : rien n'est résolu ici (`canonicalize` suit une jonction ou
+/// un partage, et ouvrir \\serveur\x envoie déjà l'empreinte NTLM de la session ; les dossiers connus sont demandés
+/// sans vérification, `dossier_actuel`). La descente qui suit (`ouvrir_console`) ne suit aucun lien ni point de
+/// montage.
 #[cfg(windows)]
 pub(crate) fn racines(maison: &Path) -> Vec<Racine> {
-    const DOSSIERS: [(&str, &str); 3] = [
-        ("{374DE290-123F-4565-9164-39C4925E467B}", "Downloads"),
-        ("Desktop", "Desktop"),
-        ("Personal", "Documents"),
+    use crate::machine::windows::environnement::{Connu, dossier_actuel};
+    const DOSSIERS: [(Connu, &str); 3] = [
+        (Connu::Telechargements, "Downloads"),
+        (Connu::Bureau, "Desktop"),
+        (Connu::Documents, "Documents"),
     ];
     if !sur_un_disque(maison) {
         return Vec::new();
     }
-    let appdata: Vec<PathBuf> = ["APPDATA", "LOCALAPPDATA"]
+    // AppData tel que Windows le place, et tel que le dit l'environnement : jamais un endroit permis.
+    let jamais: Vec<PathBuf> = Connu::JAMAIS
         .iter()
-        .filter_map(std::env::var_os)
-        .map(PathBuf::from)
+        .filter_map(|c| dossier_actuel(*c))
+        .chain(
+            ["APPDATA", "LOCALAPPDATA"]
+                .iter()
+                .filter_map(std::env::var_os)
+                .map(PathBuf::from),
+        )
         .collect();
-    let cle = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
-        .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders")
-        .ok();
     let mut racines: Vec<PathBuf> = Vec::new();
     let mut garder = |r: PathBuf| {
         if !racines.iter().any(|d| meme_texte(d, &r)) {
             racines.push(r);
         }
     };
-    for (valeur, profil) in DOSSIERS {
-        if let Some(c) = cle.as_ref().and_then(|k| k.get_value::<String, _>(valeur).ok())
-            && let Some(r) = racine_du_registre(Path::new(&crate::protection::pieges::developper(&c)), maison, &appdata)
-        {
+    for (connu, profil) in DOSSIERS {
+        if let Some(r) = dossier_actuel(connu).and_then(|c| racine_du_registre(&c, maison, &jamais)) {
             garder(r);
         }
         garder(maison.join(profil));
@@ -143,17 +146,35 @@ fn sur_un_disque(chemin: &Path) -> bool {
         && composants.next() == Some(Component::RootDir)
 }
 
-/// Un dossier connu lu dans le registre (déjà développé), gardé seulement s'il est sur un disque, sous le profil
-/// `maison`, hors d'AppData (et des dossiers `appdata` de l'environnement), et soit enfant direct du profil, soit
-/// enfant direct de son OneDrive (« OneDrive », « OneDrive - Entreprise »). Chaque nom est simple : ni « .. », ni
-/// « : », ni « ~ » (un nom court comme APPDAT~1 désigne AppData), ni point ou espace final (« AppData. » aussi), ni
-/// nom de périphérique. HKCU s'écrit sans droits particuliers : un \\serveur\x y enverrait sinon l'empreinte NTLM
-/// de la session à qui l'a écrit, et un AppData\Roaming ferait lire des secrets comme des Documents.
+/// Les noms des dossiers du profil qui ne sont jamais un endroit permis (en minuscules, tels qu'ils sont sur le
+/// disque : Windows n'en traduit que l'affichage).
 #[cfg(windows)]
-fn racine_du_registre(valeur: &Path, maison: &Path, appdata: &[PathBuf]) -> Option<PathBuf> {
+const NOMS_JAMAIS: [&str; 9] = [
+    "pictures",
+    "videos",
+    "music",
+    "favorites",
+    "contacts",
+    "links",
+    "saved games",
+    "searches",
+    "3d objects",
+];
+
+/// Un dossier connu tel que Windows le place (lu dans le registre, déjà développé), gardé seulement s'il est sur un
+/// disque, sous le profil `maison`, hors des dossiers `jamais` (AppData, les autres dossiers connus, OneDrive
+/// lui-même, voir `Connu::JAMAIS`), et soit enfant direct du profil, soit enfant direct de son OneDrive
+/// (« OneDrive », « OneDrive - Entreprise »). Chaque nom est simple : ni « .. », ni « : », ni « ~ » (un nom court
+/// comme APPDAT~1 désigne AppData), ni point ou espace final (« AppData. » aussi), ni nom de périphérique, ni celui
+/// d'un autre dossier connu (Pictures, Saved Games…, `NOMS_JAMAIS`) ; OneDrive lui-même n'est pas un endroit permis.
+/// HKCU s'écrit sans droits particuliers : un \\serveur\x y enverrait sinon l'empreinte NTLM de la session à qui
+/// l'a écrit, un AppData\Roaming ferait lire des secrets comme des Documents, et un OneDrive entier tout ce qui y est
+/// synchronisé.
+#[cfg(windows)]
+fn racine_du_registre(valeur: &Path, maison: &Path, jamais: &[PathBuf]) -> Option<PathBuf> {
     use std::path::Component;
     if !sur_un_disque(valeur)
-        || appdata
+        || jamais
             .iter()
             .any(|a| valeur_console::reste_sous(valeur, a).is_some() || meme_texte(valeur, a))
     {
@@ -173,11 +194,13 @@ fn racine_du_registre(valeur: &Path, maison: &Path, appdata: &[PathBuf]) -> Opti
             && !n.contains([':', '~'])
             && !n.ends_with(['.', ' '])
             && !n.starts_with("appdata")
+            && !NOMS_JAMAIS.contains(&n.as_str())
             && !crate::socle::valeur_console::nom_de_peripherique(std::ffi::OsStr::new(n))
     };
+    let nuage = |n: &String| n == "onedrive" || n.starts_with("onedrive - ");
     let permis = match noms.as_slice() {
-        [nom] => simple(nom),
-        [nuage, nom] => (nuage == "onedrive" || nuage.starts_with("onedrive - ")) && simple(nuage) && simple(nom),
+        [nom] => simple(nom) && !nuage(nom),
+        [dessus, nom] => nuage(dessus) && simple(dessus) && simple(nom) && !nuage(nom),
         _ => false,
     };
     permis.then(|| valeur.to_path_buf())
@@ -325,17 +348,45 @@ mod tests {
     }
 
     /// Les dossiers connus du registre (HKCU, que tout programme du compte réécrit) jugés sur le texte seul : un
-    /// partage (\\serveur, \\?\UNC\), un chemin hors du profil, dans AppData ou trop profond hors de OneDrive ne
-    /// devient jamais un endroit permis ; rien n'est ouvert ni résolu pour le dire.
+    /// partage (\\serveur, \\?\UNC\), un chemin hors du profil, dans AppData, trop profond hors de OneDrive, OneDrive
+    /// lui-même ou un autre dossier connu (Images, Parties enregistrées…) ne devient jamais un endroit permis ; rien
+    /// n'est ouvert ni résolu pour le dire.
+    /// Les dossiers connus viennent de SHGetKnownFolderPath, tels que Windows les place : Documents est un enfant
+    /// direct du profil (dans le préfixe jetable sous Wine) et passe le jugement du registre ; AppData, Images et les
+    /// autres de `Connu::JAMAIS` sont au contraire refusés comme racine.
+    #[cfg(windows)]
+    #[test]
+    fn les_dossiers_connus_viennent_de_windows() {
+        use crate::machine::windows::environnement::{Connu, dossier_actuel};
+        let maison = PathBuf::from(std::env::var_os("USERPROFILE").unwrap());
+        let jamais: Vec<PathBuf> = Connu::JAMAIS.iter().filter_map(|c| dossier_actuel(*c)).collect();
+        let documents = dossier_actuel(Connu::Documents).unwrap();
+        assert_eq!(documents.parent(), Some(maison.as_path()), "{documents:?}");
+        assert_eq!(
+            racine_du_registre(&documents, &maison, &jamais),
+            Some(documents.clone())
+        );
+        let appdata = dossier_actuel(Connu::AppData).unwrap();
+        assert!(appdata.starts_with(&maison), "{appdata:?}");
+        assert_eq!(racine_du_registre(&appdata, &maison, &jamais), None);
+        for c in [Connu::Images, Connu::Musique, Connu::Videos] {
+            if let Some(d) = dossier_actuel(c) {
+                assert_eq!(racine_du_registre(&d, &maison, &jamais), None, "{d:?}");
+            }
+        }
+        assert!(racines(&maison).iter().any(|r| r.reelle == documents));
+    }
+
     #[cfg(windows)]
     #[test]
     fn le_registre_ne_donne_que_des_enfants_du_profil() {
         let maison = Path::new(r"C:\Users\alice");
-        let appdata = [
+        let jamais = [
             PathBuf::from(r"C:\Users\alice\AppData\Roaming"),
             PathBuf::from(r"C:\Users\alice\Donnees"),
+            PathBuf::from(r"C:\Users\alice\Mes images"),
         ];
-        let juge = |v: &str| racine_du_registre(Path::new(v), maison, &appdata);
+        let juge = |v: &str| racine_du_registre(Path::new(v), maison, &jamais);
         for permis in [
             r"C:\Users\alice\Downloads",
             r"c:\users\ALICE\Mes documents",
@@ -365,6 +416,22 @@ mod tests {
             r"C:\Users\alice\OneDriveX\Documents",
             r"C:\Users\alice\OneDrive\a\b",
             r"C:\Users\alice\OneDrive\AppData",
+            // OneDrive lui-même, et les autres dossiers connus, par leur nom ou là où Windows les place.
+            r"C:\Users\alice\OneDrive",
+            r"C:\Users\alice\OneDrive - Contoso",
+            r"C:\Users\alice\OneDrive\OneDrive - Contoso",
+            r"C:\Users\alice\Pictures",
+            r"C:\Users\alice\OneDrive\Pictures",
+            r"C:\Users\alice\Videos",
+            r"C:\Users\alice\Music",
+            r"C:\Users\alice\Favorites",
+            r"C:\Users\alice\Contacts",
+            r"C:\Users\alice\Links",
+            r"C:\Users\alice\Saved Games",
+            r"C:\Users\alice\OneDrive - Contoso\saved games",
+            r"C:\Users\alice\Searches",
+            r"C:\Users\alice\Mes images",
+            r"C:\Users\alice\Mes images\Vacances",
         ] {
             assert_eq!(juge(refuse), None, "{refuse}");
         }
