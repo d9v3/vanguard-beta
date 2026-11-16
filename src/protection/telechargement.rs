@@ -9,6 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::modele::raison::Echec;
 use crate::protection::antivirus::Examen;
 use crate::protection::moteur;
 use crate::risk::Niveau;
@@ -187,24 +188,27 @@ impl Ouvert {
 /// L'empreinte du fichier, ouvert par le lecteur sûr (`Ouvert::ouvrir`).
 pub(crate) fn calculer(fichier: &Path, algo: Algo) -> Result<String, String> {
     let mut ouvert = Ouvert::ouvrir(fichier).map_err(|e| affichable(&e.to_string()))?;
-    calculer_ouvert(&mut ouvert, algo)
+    calculer_ouvert(&mut ouvert, algo).map_err(String::from)
 }
+
+/// Le contexte stable des échecs d'empreinte (`Echec`), pour le journal des erreurs.
+const CONTEXTE_EMPREINTE: &str = "telechargement/empreinte";
 
 /// L'empreinte d'un fichier donné par la personne (`vanguard verifier-moi <programme>`) : son chemin réel, refusé
 /// dans les dossiers du système (`socle::du_systeme`), puis lu par le lecteur sûr.
-pub(crate) fn calculer_donne(fichier: &Path, algo: Algo) -> Result<String, String> {
+pub(crate) fn calculer_donne(fichier: &Path, algo: Algo) -> Result<String, Echec> {
     let reel = fichier
         .canonicalize()
-        .map_err(|_| tr!("fichier introuvable", "file not found").to_string())?;
+        .map_err(|_| Echec::echoue(CONTEXTE_EMPREINTE, tr!("fichier introuvable", "file not found")))?;
     if crate::socle::du_systeme(&reel) {
-        return Err(crate::socle::refus_du_systeme().to_string());
+        return Err(Echec::refuse(CONTEXTE_EMPREINTE, crate::socle::refus_du_systeme()));
     }
-    calculer(&reel, algo)
+    calculer(&reel, algo).map_err(|e| Echec::echoue(CONTEXTE_EMPREINTE, e))
 }
 
 /// L'empreinte d'un fichier déjà ouvert : calculée ici sous Linux (sha2, sha1, md-5), par Windows lui-même sous
 /// Windows (BCrypt, Get-FileHash en secours) ; relu depuis le début à chaque fois.
-fn calculer_ouvert(ouvert: &mut Ouvert, algo: Algo) -> Result<String, String> {
+fn calculer_ouvert(ouvert: &mut Ouvert, algo: Algo) -> Result<String, Echec> {
     #[cfg(windows)]
     let sortie = {
         let fichier = ouvert.chemin.clone();
@@ -222,7 +226,7 @@ fn calculer_ouvert(ouvert: &mut Ouvert, algo: Algo) -> Result<String, String> {
         };
         let calcul = crate::machine::windows::hachage::empreinte(nom, octets, |chaque| ouvert.parcourir(chaque));
         // Une lecture refusée (fichier changé, illisible) ne passe pas au secours : il relirait par le chemin.
-        if let Some(e) = calcul.map_err(|e| affichable(&e.to_string()))? {
+        if let Some(e) = calcul.map_err(|e| Echec::echoue(CONTEXTE_EMPREINTE, affichable(&e.to_string())))? {
             e
         } else {
             // PowerShell 5.1 lit mal « \\?\ » : la forme courte, seulement quand elle désigne sans doute possible le
@@ -235,22 +239,23 @@ fn calculer_ouvert(ouvert: &mut Ouvert, algo: Algo) -> Result<String, String> {
             let chemin = crate::commande::ps_texte(&texte);
             crate::machine::windows::ps(&format!("(Get-FileHash -Algorithm {nom} -LiteralPath '{chemin}').Hash"))
                 .ok_or_else(|| {
-                    if garde {
+                    let phrase = if garde {
                         tr!(
                             "Get-FileHash a échoué : nom de fichier que PowerShell ne peut pas ouvrir (point ou espace final, nom réservé ou chemin trop long)",
                             "Get-FileHash failed: a file name PowerShell cannot open (trailing dot or space, reserved name or path too long)"
                         )
                     } else {
                         tr!("Get-FileHash a échoué", "Get-FileHash failed")
-                    }
-                    .to_string()
+                    };
+                    Echec::echoue(CONTEXTE_EMPREINTE, phrase)
                 })?
         }
     };
     // Lu ici, sans md5sum, sha256sum, md5 ni shasum : rien à lancer, et rien qu'un faux programme du PATH (le dossier
     // de Homebrew appartient au compte) puisse remplacer.
     #[cfg(unix)]
-    let sortie = empreinte_lue(ouvert, algo).map_err(|e| affichable(&e.to_string()))?;
+    let sortie =
+        empreinte_lue(ouvert, algo).map_err(|e| Echec::echoue(CONTEXTE_EMPREINTE, affichable(&e.to_string())))?;
     // sha256sum commence la ligne par « \\ » quand le nom du fichier contient « \\ » ou un saut de ligne.
     let empreinte = sortie
         .split_whitespace()
@@ -261,7 +266,10 @@ fn calculer_ouvert(ouvert: &mut Ouvert, algo: Algo) -> Result<String, String> {
     if Algo::par_longueur(empreinte.len()) == Some(algo) && empreinte.chars().all(|c| c.is_ascii_hexdigit()) {
         Ok(empreinte)
     } else {
-        Err(tr!("réponse illisible de l'outil", "unreadable answer from the tool").into())
+        Err(Echec::echoue(
+            CONTEXTE_EMPREINTE,
+            tr!("réponse illisible de l'outil", "unreadable answer from the tool"),
+        ))
     }
 }
 
@@ -1437,7 +1445,7 @@ mod tests {
         assert!(matches!(ouvrir(&lien_zero), Err(Refus::DuSysteme)));
         assert!(matches!(ouvrir(Path::new("/dev/zero")), Err(Refus::DuSysteme)));
         assert_eq!(
-            calculer_donne(&lien_zero, Algo::Sha256),
+            calculer_donne(&lien_zero, Algo::Sha256).map_err(String::from),
             Err(crate::socle::refus_du_systeme().to_string())
         );
         // Sans le refus des chemins, le lecteur sûr refuse encore /dev/zero (périphérique) et ne lit de /proc que

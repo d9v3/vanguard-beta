@@ -371,6 +371,19 @@ pub(crate) const OPTIONS_EN: &[(&str, &str, &str)] = &[
     ("canaux-wifi", "json", "The result as JSON, for a script: no search is started, nothing changes"),
     ("conteneurs", "json", "The result as JSON, for a script: nothing is installed or downloaded; at most 30 images \
                             and 10 minutes"),
+    ("sites-dangereux", "json", "The view as JSON (free form, schema 1), for the window's Console: nothing is \
+                                 changed or asked"),
+    ("logiciels", "json", "With --liste only: the list as JSON (free form, schema 1), without installing anything"),
+    ("nettoyer", "json", "With --liste only: the list as JSON (free form, schema 1), without deleting anything"),
+    ("camera-micro", "json", "The view as JSON (free form, schema 1), for the window's Console: nothing is changed \
+                              or asked"),
+    ("parametres", "json", "Without a setting only: their state as JSON (free form, schema 1); nothing is changed"),
+    ("blocage", "json", "With “etat” only: the state as JSON (free form, schema 1); refused with any other word"),
+    ("verifier-sauvegarde", "json", "The view as JSON (free form, schema 1), for the window's Console: nothing is \
+                                     changed or asked"),
+    ("ordinateurs", "json", "The table as JSON (free form, schema 1), for the window's Console: no menu, nothing is \
+                             changed"),
+    ("desinstaller", "json", "With --liste only: what would be removed, as JSON (free form, schema 1)"),
 ];
 
 /// La ligne de commande, avec son aide en anglais si l'interface est en anglais (l'aide écrite plus haut, en

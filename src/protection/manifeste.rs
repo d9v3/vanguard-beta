@@ -1411,10 +1411,13 @@ pub(crate) fn verifier_moi_json(autre: Option<&Path>) {
             perime: None,
             programme: Some(chemin_affichable(copie)),
             // Un chemin donné : son chemin réel, refusé dans les dossiers du système, lu par le lecteur sûr.
-            sha256: Some(crate::protection::telechargement::calculer_donne(
-                copie,
-                crate::protection::telechargement::Algo::Sha256,
-            )),
+            sha256: Some(
+                crate::protection::telechargement::calculer_donne(
+                    copie,
+                    crate::protection::telechargement::Algo::Sha256,
+                )
+                .map_err(String::from),
+            ),
             manifeste: None,
             historique,
         }
