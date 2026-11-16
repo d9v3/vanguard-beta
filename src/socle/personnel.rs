@@ -78,7 +78,17 @@ pub fn maison() -> PathBuf {
 /// Le dossier personnel que le système donne au compte (la base des comptes ; sous Windows, FOLDERID_Profile), sans
 /// HOME, que tout programme du compte réécrit : pour les lieux de la protection (un fichier temporaire ou téléchargé),
 /// qu'un HOME posé sur /tmp ou sur TEMP ne doit pas effacer. Repli : `maison`.
+///
+/// Variante d'essai, absente du programme publié (compilé sans `debug_assertions`) :
+/// `VANGUARD_ESSAI_MAISON_DU_COMPTE` la remplace, pour que les essais du programme entier (`tests/programme.rs`, qui
+/// posent HOME sur une maison jetable) ne lisent jamais la vraie maison de qui les lance.
 pub(crate) fn maison_du_compte() -> PathBuf {
+    #[cfg(debug_assertions)]
+    if let Some(essai) = std::env::var_os("VANGUARD_ESSAI_MAISON_DU_COMPTE").map(PathBuf::from)
+        && essai.is_absolute()
+    {
+        return essai;
+    }
     #[cfg(unix)]
     let compte = dossier_personnel_de(crate::socle::uid());
     #[cfg(windows)]
