@@ -1094,7 +1094,7 @@ vanguard yara --complet</pre>
 <h2>Les pistes ouvertes</h2>
 <p>Tirées du ticket public des pistes au moment où cette page est faite : ce qui est coché n'y est plus. Rien n'y est promis ni daté.</p>
 </div>
-<p class="note">39 pistes encore ouvertes, tirées du <a href="https://github.com/d9v3/vanguard-beta/issues/1">ticket public n° 1</a> « Fonctions et pistes d'amélioration » au moment de cette page. Sans date ni promesse. <span lang="en">39 open items from public issue #1, no date or promise.</span></p>
+<p class="note">31 pistes encore ouvertes, tirées du <a href="https://github.com/d9v3/vanguard-beta/issues/1">ticket public n° 1</a> « Fonctions et pistes d'amélioration » au moment de cette page. Sans date ni promesse. <span lang="en">31 open items from public issue #1, no date or promise.</span></p>
 <div class="pistes">
 <details class="replie"><summary><span>Corriger d&#x27;abord</span><span class="compte">1</span></summary>
 <ul class="liste">
@@ -1124,18 +1124,10 @@ vanguard yara --complet</pre>
 <li>Les vérifications Linux sur une vraie distribution (dossiers de commandes, IPv6, sshd et ses algorithmes, PAM de Fedora et d&#x27;Arch, modules du noyau et pilote NVIDIA, carte en mode promiscuité : ce conteneur n&#x27;a ni IPv6 …</li>
 <li>trivy sur une vraie machine avec Docker (ni trivy ni démon Docker dans le conteneur où il a été écrit), et installé par winget dans la VM (identifiant à confirmer) …</li>
 </ul></details>
-<details class="replie" open><summary><span>Prochaine version</span><span class="compte">17</span></summary>
+<details class="replie" open><summary><span>Prochaine version</span><span class="compte">9</span></summary>
 <ul class="liste">
-<li>Mettre Vanguard à jour après avoir vu ce qui s&#x27;installe : origine, version, empreinte et programmes remplacés montrés, puis installés une seule fois sur accord.</li>
-<li>Appliquer une correction du bilan, puis la remettre comme avant, chacune sur un accord lié à ce qui a été montré (Linux).</li>
-<li>Programmes au démarrage : l&#x27;accord devient obligatoire pour retirer ou remettre ; ce qui n&#x27;a pas été lu est dit, jamais compté comme sain.</li>
-<li>Sauvegarde automatique plus difficile à détourner, programmes du système pris par leur chemin (Linux).</li>
-<li>La fenêtre de Vanguard (accueil, bilan, alertes, appareils du réseau, rubriques, guide, console) ; lancée seulement quand son lancement vérifie une empreinte signée.</li>
 <li>Lancé depuis la clé, Vanguard continue si on la retire : copie vérifiée par son empreinte sur l&#x27;ordinateur, effacée à la fin.</li>
 <li>Options de défense sous Windows : <code>--exclure</code>, <code>--permettre</code> et <code>--noter</code> réparées ; une baisse montrée en entier dans la fenêtre administrateur avant l&#x27;accord, « Rallumer » toujours possible. …</li>
-<li>Page des fonctions : visite guidée de la fenêtre (captures à données inventées), recherche dans la page, thème sombre ou clair, version téléphone.</li>
-<li>CI : actions tenues à jour par Dependabot (délai de 7 jours) ; les erreurs de <code>cargo tree</code> montrées au lieu d&#x27;être tues.</li>
-<li>Ce ticket et les tickets « journal » mis à jour tout seuls à chaque version publiée.</li>
 <li>Règles suivantes de <code>journaux-windows</code>, chacune provoquée dans la VM (E5) ; le menu et deux règles sont arrivés en 0.88.0.</li>
 <li>Windows : les dernières corrections en PowerShell passées en Rust, une seule demande administrateur (Rust 3 …</li>
 <li>Linux : corrections par l&#x27;assistant élevé, sans <code>bash -c</code> ni <code>sudo</code> lancés par Vanguard.</li>
