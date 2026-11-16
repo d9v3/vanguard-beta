@@ -151,11 +151,13 @@ pub(super) fn autres_mises_a_jour() -> Vec<Constat> {
         // fwupd par D-Bus d'abord ; fwupdmgr en secours si le bus ne répond pas.
         let firmware = present("fwupdmgr").then(|| {
             crate::socle::fil::dans_ou_ici(portee, "firmware", || {
-                match firmwares_par_dbus() {
-                    Ok(v) => return Some(v),
-                    // fwupd a répondu par une erreur (métadonnées absentes…) : fwupdmgr la tairait.
-                    Err(e) if e.to_string().starts_with("org.freedesktop.fwupd.") => return None,
-                    Err(_) => {}
+                let erreur = match firmwares_par_dbus() {
+                    Ok(v) => return Ok(v),
+                    Err(e) => e.to_string(),
+                };
+                // fwupd a répondu par une erreur : fwupdmgr la tairait.
+                if erreur.starts_with("org.freedesktop.fwupd.") {
+                    return Err(raison_firmware(&erreur));
                 }
                 sortie_delai(
                     "fwupdmgr",
@@ -165,6 +167,7 @@ pub(super) fn autres_mises_a_jour() -> Vec<Constat> {
                 )
                 .and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok())
                 .map(|v| firmwares_proposes(&v))
+                .ok_or_else(|| raison_firmware(&erreur))
             })
         });
 
@@ -224,15 +227,10 @@ pub(super) fn autres_mises_a_jour() -> Vec<Constat> {
             });
         }
         if let Some(t) = firmware {
-            constats.push(match t.join().ok().flatten() {
-                None => impossible(
-                    "Firmware",
-                    tr!(
-                        "métadonnées fwupd absentes : fwupdmgr refresh",
-                        "fwupd metadata missing: fwupdmgr refresh"
-                    ),
-                ),
-                Some(appareils) => {
+            constats.push(match t.join() {
+                Err(_) => impossible("Firmware", tr!("lecture interrompue", "reading interrupted")),
+                Ok(Err(raison)) => impossible("Firmware", &raison),
+                Ok(Ok(appareils)) => {
                     if appareils.is_empty() {
                         ok(
                             "Firmware",
@@ -303,6 +301,26 @@ fn reponse_upgrades(r: Result<Vec<dbus::Valeur>, String>) -> Result<bool, crate:
             Ok(false)
         }
         Err(e) => Err(echec_fwupd(e)),
+    }
+}
+
+/// Pourquoi les firmwares n'ont pas pu être lus, d'après l'erreur de la lecture par D-Bus (ticket #28 : la raison
+/// dite était toujours « métadonnées absentes : fwupdmgr refresh », un remède qui ne s'appliquait pas). Une erreur
+/// rendue par fwupd est nommée (son nom seul : le reste du message vient du service) ; sinon fwupd était injoignable
+/// et fwupdmgr, essayé en secours, n'a rien rendu.
+fn raison_firmware(erreur: &str) -> String {
+    if let Some(reste) = erreur.strip_prefix("org.freedesktop.fwupd.") {
+        let nom = crate::ui::affichable(reste.split_whitespace().next().unwrap_or_default());
+        trf!(
+            "fwupd a répondu par une erreur ({nom})",
+            "fwupd answered with an error ({nom})"
+        )
+    } else {
+        let cause = crate::ui::affichable(erreur);
+        trf!(
+            "fwupd injoignable ({cause}), et fwupdmgr sans réponse",
+            "fwupd unreachable ({cause}), and no answer from fwupdmgr"
+        )
     }
 }
 
@@ -1906,6 +1924,33 @@ mod tests {
 
     /// L'oracle : les firmwares proposés par D-Bus contre `fwupdmgr get-updates --json`, sur cet ordinateur (des
     /// nombres seulement dans le message).
+    #[test]
+    fn raison_firmware_dit_ce_qui_a_echoue() {
+        for anglais in [false, true] {
+            let dire = |e: &str| {
+                if anglais {
+                    crate::langue::en_anglais(|| raison_firmware(e))
+                } else {
+                    raison_firmware(e)
+                }
+            };
+            // Une erreur de fwupd : son nom, sans le reste du message (texte du service), jamais le faux remède.
+            let r = dire("org.freedesktop.fwupd.NotSupported le reste\u{202e} du message");
+            assert!(r.contains("(NotSupported)"), "{r}");
+            assert!(!r.contains("reste") && !r.contains('\u{202e}'), "{r}");
+            // fwupd injoignable, fwupdmgr muet : la cause du bus, nettoyée.
+            let r = dire("espace de noms isolé");
+            assert!(r.contains("(espace de noms isolé)") && r.contains("fwupdmgr"), "{r}");
+            assert!(raison_firmware("bus\u{202e}fermé").contains("bus\u{fffd}fermé"));
+            for r in [dire("org.freedesktop.fwupd.Internal x"), dire("délai dépassé")] {
+                assert!(
+                    !r.contains("refresh") && !r.contains("métadonnées") && !r.contains("metadata"),
+                    "{r}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn firmwares_par_dbus_comme_fwupdmgr() {
         let natif = match firmwares_par_dbus() {
