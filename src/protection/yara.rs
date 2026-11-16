@@ -104,13 +104,8 @@ pub(crate) fn non_verifiees(regles: &Regles) -> Option<String> {
 /// programmes ; un même dossier n'est analysé qu'une fois). Chez soi selon HOME et selon le système (`maison_du_compte`)
 /// quand ils diffèrent : un HOME réécrit par un programme du compte ne sort pas les vrais dossiers de l'analyse.
 pub(crate) fn endroits_a_risque() -> Vec<PathBuf> {
-    let maisons = [crate::socle::maison(), crate::socle::maison_du_compte()];
-    #[cfg(windows)]
-    let noms = ["Downloads", "Desktop"];
-    #[cfg(unix)]
-    let noms = crate::protection::antivirus::ENDROITS_A_RISQUE;
     #[allow(unused_mut)]
-    let mut liste: Vec<PathBuf> = maisons.iter().flat_map(|m| noms.iter().map(|d| m.join(d))).collect();
+    let mut liste = endroits_selon(&maisons());
     #[cfg(windows)]
     liste.extend(
         [
@@ -123,6 +118,20 @@ pub(crate) fn endroits_a_risque() -> Vec<PathBuf> {
         .chain(crate::protection::moteur::dossiers_temporaires()),
     );
     dossiers_reels(liste)
+}
+
+/// Le dossier personnel selon HOME (`maison`) et selon le système (`maison_du_compte`).
+fn maisons() -> [PathBuf; 2] {
+    [crate::socle::maison(), crate::socle::maison_du_compte()]
+}
+
+/// Les endroits à risque de chaque dossier personnel (téléchargements, bureau…), avant `dossiers_reels`.
+fn endroits_selon(maisons: &[PathBuf]) -> Vec<PathBuf> {
+    #[cfg(windows)]
+    let noms = ["Downloads", "Desktop"];
+    #[cfg(unix)]
+    let noms = crate::protection::antivirus::ENDROITS_A_RISQUE;
+    maisons.iter().flat_map(|m| noms.iter().map(|d| m.join(d))).collect()
 }
 
 /// Les dossiers existants, chacun une fois, sous son chemin réel : l'analyse ne suit pas un lien (`fichiers`), et
@@ -426,7 +435,16 @@ fn niveau(t: &Trouve) -> crate::risk::Niveau {
 fn cibles(portee: &Portee) -> Vec<PathBuf> {
     match portee {
         Portee::Dossier(d) => vec![d.canonicalize().unwrap_or_else(|_| d.clone())],
-        Portee::Complete => vec![crate::socle::maison()],
+        // Selon HOME et selon le système, quand ils diffèrent (un HOME réécrit ne vide pas l'analyse) ; aucun des deux
+        // n'existe : HOME tel quel, dit illisible.
+        Portee::Complete => {
+            let existants = dossiers_reels(maisons().to_vec());
+            if existants.is_empty() {
+                vec![crate::socle::maison()]
+            } else {
+                existants
+            }
+        }
         Portee::Rapide => endroits_a_risque(),
     }
 }
@@ -740,6 +758,38 @@ mod tests {
         let racine = d.join("racine");
         std::os::unix::fs::symlink("/", &racine).unwrap();
         assert_eq!(dossiers_reels(vec![racine.clone()]), vec![racine]);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// HOME réécrit par un programme et le dossier du compte : les téléchargements des deux sont analysés ; deux
+    /// noms d'un même dossier personnel (lui-même, ou un lien vers lui) n'en font qu'un.
+    #[test]
+    fn les_endroits_de_chaque_dossier_personnel() {
+        let d = std::fs::canonicalize(crate::protection::isoler::dossier_jetable().unwrap()).unwrap();
+        let (vrai, faux) = (d.join("compte"), d.join("faux-home"));
+        for m in [&vrai, &faux] {
+            std::fs::create_dir_all(m.join("Downloads")).unwrap();
+        }
+        let telechargements = |l: Vec<PathBuf>| -> Vec<PathBuf> {
+            dossiers_reels(endroits_selon(&l))
+                .into_iter()
+                .filter(|p| p.ends_with("Downloads"))
+                .collect()
+        };
+        assert_eq!(
+            telechargements(vec![faux.clone(), vrai.clone()]),
+            vec![faux.join("Downloads"), vrai.join("Downloads")]
+        );
+        assert_eq!(
+            telechargements(vec![vrai.clone(), vrai.clone()]),
+            vec![vrai.join("Downloads")]
+        );
+        #[cfg(unix)]
+        {
+            let lien = d.join("lien");
+            std::os::unix::fs::symlink(&vrai, &lien).unwrap();
+            assert_eq!(telechargements(vec![lien, vrai.clone()]), vec![vrai.join("Downloads")]);
+        }
         let _ = std::fs::remove_dir_all(&d);
     }
 

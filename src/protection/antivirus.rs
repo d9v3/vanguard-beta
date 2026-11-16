@@ -2277,8 +2277,9 @@ fn second_avis(portee: &Portee, ecran: bool) -> SecondAvis {
     // l'utilisateur). Documents passe par l'analyse complète : des milliers de fichiers, rarement une porte d'entrée.
     let cibles: Vec<PathBuf> = match portee {
         Portee::Dossier(d) => vec![d.clone()],
-        Portee::Complete => vec![h.clone()],
-        // Selon HOME et selon le système, comme l'analyse rapide de YARA (`yara::endroits_a_risque`).
+        // Selon HOME et selon le système, comme l'analyse de YARA (`yara::cibles`) ; `sans_doublons` les fond quand
+        // ils désignent le même dossier.
+        Portee::Complete => vec![h.clone(), crate::socle::maison_du_compte()],
         Portee::Rapide => [h.clone(), crate::socle::maison_du_compte()]
             .iter()
             .flat_map(|m| ENDROITS_A_RISQUE.iter().map(|d| m.join(d)))

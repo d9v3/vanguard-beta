@@ -589,9 +589,10 @@ fn temporaires_selon(variable: &dyn Fn(&str) -> Option<std::ffi::OsString>, mais
 /// part : absolu, pas le dossier personnel lui-même, ni contenant le système (« / », « C:\ ») ni dedans (/usr/lib,
 /// C:\Windows\System32, Program Files, sauf /var/tmp et Windows\Temp), qui ferait de chaque fichier du système un
 /// fichier temporaire ou téléchargé. La racine d'un autre lecteur (« R:\ », un disque en mémoire) ou un partage
-/// réseau sont de vrais dossiers à part. Un dossier qui contient le
-/// dossier personnel (/tmp quand HOME vaut /tmp/invite) reste retenu : les fichiers du dossier personnel n'y comptent
-/// pas (`Lieux::de`).
+/// réseau sont de vrais dossiers à part. Un dossier qui contient le dossier personnel du compte (/tmp, pour un compte
+/// invité dont la base des comptes donne /tmp/invite) reste retenu : les fichiers du dossier personnel n'y comptent
+/// pas (`Lieux::de`). Le dossier personnel est celui du système (`maison_du_compte`), pas HOME : un HOME posé sur un
+/// dossier temporaire par un programme laisse ses fichiers temporaires (un signe de plus, jamais un de moins).
 pub(crate) fn assez_precis(dossier: &Path, maison: &Path) -> bool {
     let d = composants(dossier);
     let (systeme, permis) = dossiers_du_systeme();
@@ -1577,7 +1578,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// Un dossier qui contient le dossier personnel (HOME=/tmp/invite) reste temporaire pour ce qui est hors du
+    /// Un dossier qui contient le dossier personnel du compte (/tmp/invite) reste temporaire pour ce qui est hors du
     /// dossier personnel ; /tmp n'est jamais écarté pour autant.
     #[test]
     fn un_dossier_qui_contient_la_maison() {

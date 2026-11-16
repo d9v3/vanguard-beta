@@ -82,7 +82,10 @@ pub(crate) fn maison_du_compte() -> PathBuf {
     #[cfg(unix)]
     let compte = dossier_personnel_de(crate::socle::uid());
     #[cfg(windows)]
-    let compte = crate::machine::windows::environnement::profil().filter(|p| p.is_absolute());
+    let compte = crate::machine::windows::environnement::dossiers()
+        .profil
+        .clone()
+        .filter(|p| p.is_absolute());
     compte.unwrap_or_else(maison)
 }
 
