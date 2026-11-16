@@ -792,9 +792,16 @@ mod tests {
 
     /// Le banc sous Windows : dans le dossier temporaire de Windows (sur C:, dans le préfixe jetable sous Wine), où la
     /// descente part d'une lettre de lecteur ; `essais::temporaire` passerait par Z:, la racine Unix montée par Wine.
+    /// Le dossier temporaire est pris en nom long : sur un vrai Windows, il peut s'écrire en 8.3 (« RUNNER~1 »), alors
+    /// que le chemin réel du fichier ouvert, lu par sa poignée, est toujours en noms longs (comme les racines du
+    /// produit, données par Windows).
     #[cfg(windows)]
     fn banc_windows(nom: &str) -> (PathBuf, PathBuf, Vec<Racine>) {
-        let d = std::env::temp_dir().join(format!("vanguard-ouvrir-{nom}-{}", std::process::id()));
+        let temp = std::env::temp_dir();
+        let temp = crate::machine::windows::environnement::chemin_long(&temp.to_string_lossy())
+            .map(PathBuf::from)
+            .unwrap_or(temp);
+        let d = temp.join(format!("vanguard-ouvrir-{nom}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         let maison = d.join("alice");
         let tele = maison.join("Downloads");
