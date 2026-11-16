@@ -327,7 +327,7 @@ pub(super) fn dans_l_historique(sha256: &[u8; 32]) -> Result<Option<(Version, St
 }
 
 /// Le manifeste et sa signature, vérifiés : la version publiée pour `systeme`, ou pourquoi elle ne vaut rien.
-fn juger(manifeste: &[u8], signature: &[u8], systeme: &str, fichier: &'static str) -> Result<Publiee, String> {
+fn juger(manifeste: &[u8], signature: &[u8], systeme: &str, fichier: &'static str) -> Result<Publiee, Echec> {
     juger_avec(
         cles_acceptees(principale_revoquee()),
         manifeste,
@@ -344,20 +344,24 @@ fn juger_avec(
     signature: &[u8],
     systeme: &str,
     fichier: &'static str,
-) -> Result<Publiee, String> {
+) -> Result<Publiee, Echec> {
     let Some(cle) = cles.iter().find(|c| signature_valide(c, manifeste, signature)) else {
         if !cles.contains(&CLE_PUBLIQUE) && signature_valide(&CLE_PUBLIQUE, manifeste, signature) {
-            return Err(tr!(
-                "manifeste signé par la clé principale, révoquée ici par la clé de secours : rien n'est proposé",
-                "manifest signed by the main key, revoked here by the backup key: nothing is offered"
-            )
-            .into());
+            return Err(Echec::echoue(
+                "mise_a_jour/remise",
+                tr!(
+                    "manifeste signé par la clé principale, révoquée ici par la clé de secours : rien n'est proposé",
+                    "manifest signed by the main key, revoked here by the backup key: nothing is offered"
+                ),
+            ));
         }
-        return Err(tr!(
-            "manifeste de GitHub mal signé : rien n'est proposé",
-            "badly signed GitHub manifest: nothing is offered"
-        )
-        .into());
+        return Err(Echec::echoue(
+            "mise_a_jour/remise",
+            tr!(
+                "manifeste de GitHub mal signé : rien n'est proposé",
+                "badly signed GitHub manifest: nothing is offered"
+            ),
+        ));
     };
     // Seule la clé de secours (la dernière des clés acceptées) révoque : la ligne signée par la principale ne compte
     // pas, sinon un voleur de la principale couperait la clé de secours.
@@ -366,18 +370,22 @@ fn juger_avec(
         .ok()
         .and_then(|t| lire_manifeste(t, systeme))
         .ok_or_else(|| {
-            tr!(
-                "manifeste de GitHub illisible, ou sans version pour ce système",
-                "unreadable GitHub manifest, or no version for this system"
+            Echec::echoue(
+                "mise_a_jour/remise",
+                tr!(
+                    "manifeste de GitHub illisible, ou sans version pour ce système",
+                    "unreadable GitHub manifest, or no version for this system"
+                ),
             )
-            .to_string()
         })?;
     if taille > TAILLE_MAX {
-        return Err(tr!(
-            "programme publié démesuré : refusé",
-            "oversized published program: refused"
-        )
-        .into());
+        return Err(Echec::echoue(
+            "mise_a_jour/remise",
+            tr!(
+                "programme publié démesuré : refusé",
+                "oversized published program: refused"
+            ),
+        ));
     }
     Ok(Publiee {
         version,
@@ -530,13 +538,16 @@ fn ecrire_revocation() -> std::io::Result<()> {
 
 /// Le manifeste reçu, comparé à la plus haute version signée déjà vue : refusé s'il est plus vieux (un ancien remis
 /// en place pour geler les mises à jour) ; `Ok(true)` s'il est plus récent, à retenir.
-fn comparer_a_la_vue(vue: Option<Version>, recue: Version) -> Result<bool, String> {
+fn comparer_a_la_vue(vue: Option<Version>, recue: Version) -> Result<bool, Echec> {
     match vue {
-        Some(v) if recue < v => Err(trf!(
-            "manifeste plus vieux que celui déjà vu : refusé ({} reçu, {} déjà vu)",
-            "manifest older than the one already seen: refused ({} received, {} already seen)",
-            ecrire(recue),
-            ecrire(v)
+        Some(v) if recue < v => Err(Echec::refuse(
+            "mise_a_jour/remise",
+            trf!(
+                "manifeste plus vieux que celui déjà vu : refusé ({} reçu, {} déjà vu)",
+                "manifest older than the one already seen: refused ({} received, {} already seen)",
+                ecrire(recue),
+                ecrire(v)
+            ),
         )),
         Some(v) => Ok(recue > v),
         None => Ok(true),
@@ -629,8 +640,7 @@ fn retenir_en(publiee: &Publiee, plancher_exige: bool) -> Result<(), EchecRepart
     }
     let vue = plus_haute_vue().map_err(EchecRepartir::NonRecu)?;
     // Retenue seulement une fois la signature vérifiée : un manifeste quelconque ne fait pas monter la barre.
-    let plus_recente = comparer_a_la_vue(vue, publiee.version)
-        .map_err(|e| EchecRepartir::NonRecu(Echec::refuse("mise_a_jour/remise", e)))?;
+    let plus_recente = comparer_a_la_vue(vue, publiee.version).map_err(EchecRepartir::NonRecu)?;
     if plus_recente {
         let v = publiee.version;
         let ecrite = crate::sceau::ecrire(crate::sceau::VERSIONS, format!("{}.{}.{}+{}", v.0, v.1, v.2, v.3));
@@ -665,9 +675,7 @@ pub(super) fn juger_la_vue(publiee: &Publiee) -> Result<(), Echec> {
     } else {
         plus_haute_vue()?
     };
-    comparer_a_la_vue(vue, publiee.version)
-        .map(|_| ())
-        .map_err(|e| Echec::refuse("mise_a_jour/remise", e))
+    comparer_a_la_vue(vue, publiee.version).map(|_| ())
 }
 
 /// La dernière version publiée pour ce système, manifeste téléchargé et sa signature vérifiée, sans rien retenir
@@ -702,43 +710,52 @@ pub(super) fn derniere_recue() -> Result<Publiee, Echec> {
     }
     let manifeste = recevoir("derniere.txt", MANIFESTE_MAX, 20).ok_or_else(pas_de_reponse)?;
     let signature = recevoir("derniere.txt.sig", 64, 20).ok_or_else(pas_de_reponse)?;
-    juger(&manifeste, &signature, systeme, fichier).map_err(|e| Echec::echoue("mise_a_jour/remise", e))
+    juger(&manifeste, &signature, systeme, fichier)
 }
 
 /// Télécharge le programme de `p` et rend ses octets, seulement si leur taille et leur empreinte sont celles signées.
 /// Ce sont ces octets-là, gardés en mémoire, qui s'installent (`installer`, qui vérifie encore la version gravée).
-pub(super) fn programme_verifie(p: &Publiee) -> Result<Vec<u8>, String> {
+pub(super) fn programme_verifie(p: &Publiee) -> Result<Vec<u8>, Echec> {
     let Some(recus) = recevoir(p.fichier, p.taille, 900) else {
-        return Err(tr!("téléchargement interrompu", "download interrupted").into());
+        return Err(Echec::echoue(
+            "mise_a_jour/remise",
+            tr!("téléchargement interrompu", "download interrupted"),
+        ));
     };
     if u64::try_from(recus.len()).ok() == Some(p.taille) && Sha256::digest(&recus)[..] == p.sha256 {
         return Ok(recus);
     }
-    Err(tr!(
-        "le programme téléchargé n'est pas celui que l'auteur a signé : rien n'est remplacé",
-        "the downloaded program is not the one the author signed: nothing is replaced"
-    )
-    .into())
+    Err(Echec::echoue(
+        "mise_a_jour/remise",
+        tr!(
+            "le programme téléchargé n'est pas celui que l'auteur a signé : rien n'est remplacé",
+            "the downloaded program is not the one the author signed: nothing is replaced"
+        ),
+    ))
 }
 
 /// La fenêtre de la dernière version pour ce système (`vanguard-fenetre-linux-x86_64`, publiée à côté du programme),
 /// reçue en mémoire, `lancer_fenetre::TAILLE_MAX` octets au plus. Elle n'est pas jugée ici : `sa_fenetre` la compare
 /// à l'empreinte gravée dans le nouveau programme, déjà vérifié, avant de la poser.
-pub(super) fn fenetre_recue() -> Result<Vec<u8>, String> {
+pub(super) fn fenetre_recue() -> Result<Vec<u8>, Echec> {
     use crate::demarrage::lancer_fenetre::{NOM_PAGE, TAILLE_MAX};
     if SYSTEME.is_none() {
-        return Err(tr!(
-            "aucune fenêtre publiée pour ce système",
-            "no window published for this system"
-        )
-        .into());
+        return Err(Echec::echoue(
+            "fenetre/recevoir",
+            tr!(
+                "aucune fenêtre publiée pour ce système",
+                "no window published for this system"
+            ),
+        ));
     }
     recevoir(NOM_PAGE, TAILLE_MAX, 900).ok_or_else(|| {
-        tr!(
-            "la fenêtre de la nouvelle version n'a pas pu être téléchargée : rien n'est remplacé",
-            "the new version's window could not be downloaded: nothing is replaced"
+        Echec::echoue(
+            "fenetre/recevoir",
+            tr!(
+                "la fenêtre de la nouvelle version n'a pas pu être téléchargée : rien n'est remplacé",
+                "the new version's window could not be downloaded: nothing is replaced"
+            ),
         )
-        .into()
     })
 }
 
@@ -979,7 +996,9 @@ passe-droit-sans-vm {zeros} 0
         assert_eq!(comparer_a_la_vue(None, (0, 84, 0, 1)), Ok(true));
         assert_eq!(comparer_a_la_vue(vue, (0, 85, 0, 1_792_540_000)), Ok(false));
         assert_eq!(comparer_a_la_vue(vue, (0, 86, 0, 1_792_600_000)), Ok(true));
-        let refus = comparer_a_la_vue(vue, (0, 84, 0, 1_792_000_000)).unwrap_err();
+        let refus = comparer_a_la_vue(vue, (0, 84, 0, 1_792_000_000))
+            .unwrap_err()
+            .to_string();
         assert!(refus.contains("0.84.0") && refus.contains("0.85.0"), "{refus}");
         // Même numéro, commit plus ancien : plus vieux aussi.
         assert!(comparer_a_la_vue(vue, (0, 85, 0, 1_792_539_999)).is_err());

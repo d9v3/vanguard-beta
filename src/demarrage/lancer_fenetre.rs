@@ -18,6 +18,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use crate::coulisses::Suivie;
+use crate::modele::{Echec, Raison};
 use crate::{tr, trf};
 
 /// La ligne que la fenêtre écrit sur sa sortie quand elle s'est ouverte (fenetre/src/dessin/mod.rs).
@@ -290,32 +291,37 @@ enum Lancement {
 pub(crate) const TAILLE_MAX: u64 = if cfg!(test) { 1 << 30 } else { 128 * 1024 * 1024 };
 
 /// Les octets de la fenêtre ouverte, `TAILLE_MAX` au plus (`m` : ce que dit la poignée).
-fn lire_borne(f: &std::fs::File, m: &std::fs::Metadata) -> Result<Vec<u8>, String> {
+fn lire_borne(f: &std::fs::File, m: &std::fs::Metadata) -> Result<Vec<u8>, Echec> {
     use std::io::Read;
-    let trop = || tr!("fichier trop gros", "file too large").to_string();
+    let trop = || Echec::refuse("fenetre/verifier", tr!("fichier trop gros", "file too large"));
     if m.len() > TAILLE_MAX {
         return Err(trop());
     }
     let mut octets = Vec::new();
     f.take(TAILLE_MAX.saturating_add(1))
         .read_to_end(&mut octets)
-        .map_err(|e| trf!("illisible : {}", "unreadable: {}", e))?;
+        .map_err(|e| illisible(&e))?;
     if u64::try_from(octets.len()).map_or(true, |n| n > TAILLE_MAX) {
         return Err(trop());
     }
     Ok(octets)
 }
 
-/// L'empreinte lue est-elle celle attendue ? Sinon la raison.
-fn comparer(lue: &[u8; 32], attendue: &[u8; 32]) -> Result<(), String> {
+/// « illisible : … » (« unreadable: … ») : la lecture de la fenêtre a échoué, avec ce qu'en dit le système.
+fn illisible(e: &std::io::Error) -> Echec {
+    Echec::new("fenetre/verifier", Raison::Illisible(e.to_string()))
+}
+
+/// L'empreinte lue est-elle celle attendue ? Sinon la raison : une fenêtre qui n'est pas la gravée, jamais crue
+/// (la phrase seule est rendue, `Raison::Falsifie` avec son détail).
+fn comparer(lue: &[u8; 32], attendue: &[u8; 32]) -> Result<(), Echec> {
     if lue == attendue {
         return Ok(());
     }
-    Err(tr!(
+    Err(Echec::new("fenetre/verifier", Raison::Falsifie).detail(tr!(
         "son empreinte n'est pas celle de la fenêtre de cette version",
         "its fingerprint is not that of this version's window"
-    )
-    .into())
+    )))
 }
 
 /// La fenêtre vérifiée, prête à lancer : une copie de ses octets en mémoire (memfd), scellée, dont l'empreinte est
@@ -328,30 +334,37 @@ struct Verifiee(std::fs::File);
 /// est ouvert (`refus` : fichier ordinaire, à ce compte ou à root, non modifiable par d'autres), lue entière, copiée
 /// dans un memfd scellé, et l'empreinte calculée **sur cette copie scellée**, celle qui sera lancée. Sinon la raison.
 #[cfg(target_os = "linux")]
-fn verifier(chemin: &Path, attendue: &[u8; 32], moi: u32) -> Result<Verifiee, String> {
+fn verifier(chemin: &Path, attendue: &[u8; 32], moi: u32) -> Result<Verifiee, Echec> {
     use sha2::Digest;
     use std::os::unix::fs::{FileExt, OpenOptionsExt};
     let f = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(chemin)
-        .map_err(|e| trf!("illisible : {}", "unreadable: {}", e))?;
-    let m = f.metadata().map_err(|e| trf!("illisible : {}", "unreadable: {}", e))?;
+        .map_err(|e| illisible(&e))?;
+    let m = f.metadata().map_err(|e| illisible(&e))?;
     if let Some(r) = refus(&m, moi) {
-        return Err(r.into());
+        return Err(Echec::refuse("fenetre/verifier", r));
     }
     let octets = lire_borne(&f, &m)?;
-    let copie = super::memfd::scelle("vanguard-fenetre", &octets)
-        .map_err(|e| trf!("copie scellée impossible : {}", "sealed copy impossible: {}", e))?;
+    let copie = super::memfd::scelle("vanguard-fenetre", &octets).map_err(|e| {
+        Echec::echoue(
+            "fenetre/verifier",
+            trf!("copie scellée impossible : {}", "sealed copy impossible: {}", e),
+        )
+    })?;
     drop(octets);
     // L'empreinte de la copie scellée, relue du début : exactement ce que le noyau lancera.
     let mut h = sha2::Sha256::new();
     let mut tampon = vec![0u8; 1 << 16];
     let mut position = 0u64;
     loop {
-        let n = copie
-            .read_at(&mut tampon, position)
-            .map_err(|e| trf!("copie illisible : {}", "copy unreadable: {}", e))?;
+        let n = copie.read_at(&mut tampon, position).map_err(|e| {
+            Echec::echoue(
+                "fenetre/verifier",
+                trf!("copie illisible : {}", "copy unreadable: {}", e),
+            )
+        })?;
         let Some(lus) = tampon.get(..n).filter(|l| !l.is_empty()) else {
             break;
         };
@@ -469,7 +482,7 @@ struct Verifiee {
 /// empreinte comparée. Sinon la raison. Les droits (ACL) du fichier et de ses dossiers ne sont pas lus (limite dite
 /// au modèle de menace).
 #[cfg(windows)]
-fn verifier(chemin: &Path, attendue: &[u8; 32]) -> Result<Verifiee, String> {
+fn verifier(chemin: &Path, attendue: &[u8; 32]) -> Result<Verifiee, Echec> {
     use sha2::Digest;
     use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
     const FILE_SHARE_READ: u32 = 0x1;
@@ -482,13 +495,13 @@ fn verifier(chemin: &Path, attendue: &[u8; 32]) -> Result<Verifiee, String> {
         .share_mode(FILE_SHARE_READ)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
         .open(chemin)
-        .map_err(|e| trf!("illisible : {}", "unreadable: {}", e))?;
-    let m = f.metadata().map_err(|e| trf!("illisible : {}", "unreadable: {}", e))?;
+        .map_err(|e| illisible(&e))?;
+    let m = f.metadata().map_err(|e| illisible(&e))?;
     if let Some(r) = refus(&m) {
-        return Err(r.into());
+        return Err(Echec::refuse("fenetre/verifier", r));
     }
     if m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-        return Err(tr!("un lien", "a link").into());
+        return Err(Echec::refuse("fenetre/verifier", tr!("un lien", "a link")));
     }
     let octets = lire_borne(&f, &m)?;
     comparer(&sha2::Sha256::digest(&octets).into(), attendue)?;
@@ -507,7 +520,7 @@ fn verifier(chemin: &Path, attendue: &[u8; 32]) -> Result<Verifiee, String> {
 /// les dossiers de l'autre côté d'une jonction (sa cible), et le sens d'une lettre de lecteur. Un dossier qui ne
 /// s'ouvre pas : refusé (dans le doute, le menu).
 #[cfg(windows)]
-fn dossiers_tenus(chemin: &Path) -> Result<Vec<std::fs::File>, String> {
+fn dossiers_tenus(chemin: &Path) -> Result<Vec<std::fs::File>, Echec> {
     use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
     // Lister le dossier, pas seulement lire ses attributs : une poignée sans accès aux données ne compte pas dans le
     // partage (Windows ne le vérifie ni ne l'enregistre), elle n'empêcherait rien.
@@ -520,10 +533,13 @@ fn dossiers_tenus(chemin: &Path) -> Result<Vec<std::fs::File>, String> {
     const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
     const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
     let illisible = |e: std::io::Error| {
-        trf!(
-            "un dossier du chemin illisible : {}",
-            "an unreadable folder in the path: {}",
-            e
+        Echec::echoue(
+            "fenetre/verifier",
+            trf!(
+                "un dossier du chemin illisible : {}",
+                "an unreadable folder in the path: {}",
+                e
+            ),
         )
     };
     let ouvrir = |d: &Path, partage: u32| {
@@ -544,11 +560,13 @@ fn dossiers_tenus(chemin: &Path) -> Result<Vec<std::fs::File>, String> {
         let f = ouvrir(d, FILE_SHARE_READ | FILE_SHARE_WRITE)?;
         let attributs = f.metadata().map_err(illisible)?.file_attributes();
         if attributs & FILE_ATTRIBUTE_DIRECTORY == 0 {
-            return Err(tr!(
-                "un élément du chemin n'est pas un dossier",
-                "a path element is not a folder"
-            )
-            .into());
+            return Err(Echec::refuse(
+                "fenetre/verifier",
+                tr!(
+                    "un élément du chemin n'est pas un dossier",
+                    "a path element is not a folder"
+                ),
+            ));
         }
         if attributs & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
             // Tenu par la première poignée pendant que la seconde s'ouvre : c'est le même lien.
@@ -590,7 +608,7 @@ fn lancer(chemin: &Path, programme: &Path) -> Lancement {
     // avant, le numéro de son descripteur pourrait désigner un autre fichier ; Windows : le fichier tenu).
     let verifiee = match verifiee {
         Ok(v) => v,
-        Err(r) => return Lancement::Refusee(r),
+        Err(r) => return Lancement::Refusee(r.to_string()),
     };
     #[cfg(target_os = "linux")]
     let mut c = commande(&verifiee, std::env::vars_os());

@@ -496,7 +496,7 @@ pub(crate) fn programme_signe_a_remettre() -> Result<(String, Vec<u8>), crate::m
             ),
         ));
     }
-    let octets = github::programme_verifie(&p).map_err(|e| Echec::echoue("mise_a_jour/remise", e))?;
+    let octets = github::programme_verifie(&p)?;
     if version_gravee(&octets) != Some(p.version) {
         return Err(Echec::refuse(
             "mise_a_jour/remise",
@@ -544,7 +544,8 @@ fn remplacer(
             &f,
             &chemin,
             vue,
-        ),
+        )
+        .map_err(String::from),
         None => installer(&octets, cible, attendue, registre, &copie_de_cet_ordinateur(), essai),
     }
 }
@@ -1750,7 +1751,8 @@ fn poser_copie_dans(
             essai,
             f,
             chemin,
-        ),
+        )
+        .map_err(String::from),
         None => installer(&octets, cible, version, registre, &copie_de_cet_ordinateur(), essai).map(|()| None),
     }
 }
@@ -2325,14 +2327,14 @@ fn depuis_github_vers(cibles: Vec<PathBuf>, doute: Option<crate::voulues::Doute>
     let octets = match github::programme_verifie(&publiee) {
         Ok(o) => o,
         Err(e) => {
-            trp!("  ✖ {}", "  ✖ {}", affichable(&e));
+            trp!("  ✖ {}", "  ✖ {}", affichable(&e.to_string()));
             return false;
         }
     };
     // La fenêtre de la nouvelle version : téléchargée une fois, et seulement si une fenêtre est posée à côté d'un
     // programme remplacé (`sa_fenetre`).
     let mut recue: Option<Vec<u8>> = None;
-    let mut recevoir = || -> Result<Vec<u8>, String> {
+    let mut recevoir = || -> Result<Vec<u8>, crate::modele::Echec> {
         if let Some(f) = &recue {
             return Ok(f.clone());
         }
@@ -2364,7 +2366,7 @@ fn depuis_github_vers(cibles: Vec<PathBuf>, doute: Option<crate::voulues::Doute>
                     "  ✖ {} n'est pas remplacé, l'ancien reste en place :\n    {}",
                     "  ✖ {} is not replaced, the old one stays in place:\n    {}",
                     affichable(&c.display().to_string()),
-                    affichable(&e)
+                    affichable(&e.to_string())
                 );
             }
         }

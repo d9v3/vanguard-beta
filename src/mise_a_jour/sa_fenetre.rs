@@ -12,6 +12,7 @@ use super::TAILLE_MAX as TAILLE_PROGRAMME;
 use super::{Essai, Version, installer, lire_octets, mettre_en_place_sous};
 use crate::demarrage::empreinte_fenetre::{self, Gravee};
 use crate::demarrage::lancer_fenetre::{self, TAILLE_MAX};
+use crate::modele::{Echec, Raison};
 use crate::tr;
 
 /// La fenêtre posée à côté de `programme`, s'il y en a une, sous l'un des noms que le lancement cherche.
@@ -20,29 +21,39 @@ pub(super) fn a_cote(programme: &Path) -> Option<PathBuf> {
 }
 
 /// `fenetre` est-elle celle que grave `programme` ? Sinon, pourquoi pas.
-fn juste(programme: &[u8], fenetre: &[u8]) -> Result<(), String> {
+/// Une fenêtre qui n'a pas l'empreinte gravée n'est jamais crue : `Raison::Falsifie`, sa phrase seule rendue.
+fn juste(programme: &[u8], fenetre: &[u8]) -> Result<(), Echec> {
     match empreinte_fenetre::gravee(programme) {
         Some(Gravee::Empreinte(e)) if Sha256::digest(fenetre)[..] == e => Ok(()),
-        Some(Gravee::Empreinte(_)) => Err(tr!(
+        Some(Gravee::Empreinte(_)) => Err(Echec::new("fenetre/juger", Raison::Falsifie).detail(tr!(
             "la fenêtre reçue n'est pas celle du nouveau programme : rien n'est remplacé",
             "the received window is not the new program's: nothing is replaced"
-        )
-        .into()),
-        Some(Gravee::Aucune) => Err(tr!(
-            "le nouveau programme ne lance aucune fenêtre",
-            "the new program launches no window"
-        )
-        .into()),
+        ))),
+        Some(Gravee::Aucune) => Err(Echec::refuse(
+            "fenetre/juger",
+            tr!(
+                "le nouveau programme ne lance aucune fenêtre",
+                "the new program launches no window"
+            ),
+        )),
         None => Err(sans_marque()),
     }
 }
 
-fn sans_marque() -> String {
-    tr!(
-        "le nouveau programme ne dit pas quelle fenêtre il lance : rien n'est remplacé",
-        "the new program does not say which window it launches: nothing is replaced"
+fn sans_marque() -> Echec {
+    Echec::refuse(
+        "fenetre/juger",
+        tr!(
+            "le nouveau programme ne dit pas quelle fenêtre il lance : rien n'est remplacé",
+            "the new program does not say which window it launches: nothing is replaced"
+        ),
     )
-    .into()
+}
+
+/// Un échec de la pose, sa phrase telle quelle : ce qu'en dit le système, ou le refus de `installer` (encore en
+/// texte).
+fn ratee(e: impl std::fmt::Display) -> Echec {
+    Echec::echoue("fenetre/poser", e.to_string())
 }
 
 /// `octets` à la place de `cible` (`installer`), et la fenêtre posée à côté remplacée par celle de la nouvelle
@@ -61,14 +72,14 @@ pub(super) fn installer_avec_sa_fenetre(
     copie: &Path,
     essai: Essai,
     vue: &Vue,
-    recevoir: &mut dyn FnMut() -> Result<Vec<u8>, String>,
-) -> Result<(), String> {
+    recevoir: &mut dyn FnMut() -> Result<Vec<u8>, Echec>,
+) -> Result<(), Echec> {
     vue.dite(a_cote(cible).as_deref())?;
     let Some(chemin) = a_cote(cible) else {
-        return installer(octets, cible, attendue, registre, copie, essai);
+        return installer(octets, cible, attendue, registre, copie, essai).map_err(ratee);
     };
     match empreinte_fenetre::gravee(octets) {
-        Some(Gravee::Aucune) => return installer(octets, cible, attendue, registre, copie, essai),
+        Some(Gravee::Aucune) => return installer(octets, cible, attendue, registre, copie, essai).map_err(ratee),
         // Rien n'est téléchargé pour un programme qui ne dit pas sa fenêtre : refusé tout de suite.
         None => return Err(sans_marque()),
         Some(Gravee::Empreinte(_)) => {}
@@ -116,7 +127,7 @@ impl Vue {
     }
 
     /// La fenêtre que la pose toucherait est-elle encore à ce chemin montré (ou aucune, si aucune n'a été montrée) ?
-    pub(super) fn dite(&self, maintenant: Option<&Path>) -> Result<(), String> {
+    pub(super) fn dite(&self, maintenant: Option<&Path>) -> Result<(), Echec> {
         if self.chemin.as_deref() == maintenant {
             Ok(())
         } else {
@@ -125,7 +136,7 @@ impl Vue {
     }
 
     /// Ce qui est à `chemin` juste avant la pose (`avant`) est-il ce qui a été montré ?
-    fn meme_etat(&self, chemin: &Path, avant: &Avant) -> Result<(), String> {
+    fn meme_etat(&self, chemin: &Path, avant: &Avant) -> Result<(), Echec> {
         self.dite(Some(chemin))?;
         if self.etat == Montree::de(avant) {
             Ok(())
@@ -135,12 +146,14 @@ impl Vue {
     }
 }
 
-fn changee_depuis_l_apercu() -> String {
-    tr!(
-        "la fenêtre à côté de ce programme a changé depuis ce qui a été montré (apparue, partie ou modifiée) : rien n'est remplacé ; relancez la mise à jour pour la voir",
-        "the window next to this program changed since what was shown (appeared, gone or modified): nothing is replaced; run the update again to see it"
+fn changee_depuis_l_apercu() -> Echec {
+    Echec::refuse(
+        "fenetre/apercu",
+        tr!(
+            "la fenêtre à côté de ce programme a changé depuis ce qui a été montré (apparue, partie ou modifiée) : rien n'est remplacé ; relancez la mise à jour pour la voir",
+            "the window next to this program changed since what was shown (appeared, gone or modified): nothing is replaced; run the update again to see it"
+        ),
     )
-    .into()
 }
 
 /// La fenêtre posée à côté du programme `source` (la clé), si c'est bien celle que gravent ses `octets`. Sinon
@@ -158,8 +171,11 @@ pub(super) fn pour(cible: &Path) -> Option<PathBuf> {
 
 /// La fenêtre posée à `chemin` est-elle, relue maintenant, celle que grave `programme` ? Ce que dit la ligne de la
 /// fenêtre après une mise à jour : jamais « à jour » sans l'avoir relue.
-pub(super) fn posee_juste(programme: &[u8], chemin: &Path) -> Result<(), String> {
-    juste(programme, &lire_octets(chemin, TAILLE_MAX)?)
+pub(super) fn posee_juste(programme: &[u8], chemin: &Path) -> Result<(), Echec> {
+    juste(
+        programme,
+        &lire_octets(chemin, TAILLE_MAX).map_err(|e| Echec::echoue("fenetre/juger", e))?,
+    )
 }
 
 /// Le reste d'une mise à jour faite pendant que la fenêtre de la copie `cible` tournait (Windows) : effacé. Encore
@@ -214,7 +230,7 @@ pub(super) fn installer_avec(
     fenetre: &[u8],
     chemin: &Path,
     vue: &Vue,
-) -> Result<(), String> {
+) -> Result<(), Echec> {
     installer_avec_repli(
         octets,
         cible,
@@ -242,7 +258,7 @@ pub(super) fn installer_avec_sinon_seul(
     essai: Essai,
     fenetre: &[u8],
     chemin: &Path,
-) -> Result<Option<String>, String> {
+) -> Result<Option<String>, Echec> {
     installer_avec_repli(octets, cible, attendue, registre, copie, essai, fenetre, chemin, None)
 }
 
@@ -257,7 +273,7 @@ fn installer_avec_repli(
     fenetre: &[u8],
     chemin: &Path,
     vue: Option<&Vue>,
-) -> Result<Option<String>, String> {
+) -> Result<Option<String>, Echec> {
     juste(octets, fenetre)?;
     let avant = Avant::de(chemin, TAILLE_MAX);
     // Avec un aperçu (`vue`) : ce qui est là doit être ce qu'il a montré, et tout ou rien. Sans (la copie depuis la
@@ -276,7 +292,7 @@ fn installer_avec_repli(
         match poser(fenetre, chemin) {
             Ok(()) => {}
             Err(e) if seul_sinon => {
-                installer(octets, cible, attendue, registre, copie, essai)?;
+                installer(octets, cible, attendue, registre, copie, essai).map_err(ratee)?;
                 return Ok(Some(crate::trf!(
                     "la fenêtre n'a pas pu être posée à côté de la copie ({}) : le programme est posé seul, le raccourci ouvrira le menu",
                     "the window could not be placed next to the copy ({}): the program is placed alone, the shortcut will open the menu",
@@ -288,35 +304,37 @@ fn installer_avec_repli(
     }
     installer(octets, cible, attendue, registre, copie, essai).map(|()| None).map_err(|e| {
         if changee && !programme_avant.toujours_la(cible, TAILLE_PROGRAMME) {
-            return format!(
+            return ratee(format!(
                 "{e}\n    {}",
                 tr!(
                     "le programme n'est plus celui d'avant (changé pendant la mise à jour par un autre programme, ou illisible) : l'ancienne fenêtre n'est pas remise à côté de lui ; relancez la mise à jour",
                     "the program is no longer the previous one (changed during the update by another program, or unreadable): the old window is not put back next to it; run the update again"
                 )
-            );
+            ));
         }
+        // Remise ou pas : seul compte qu'elle soit faite (la raison d'un échec n'est pas dite, le menu l'est).
         let remise = match &avant {
-            _ if !changee => Ok(()),
-            Avant::Lue(o) => poser(o, chemin),
-            Avant::Absente => std::fs::remove_file(chemin).map_err(|e| e.to_string()),
-            Avant::Illisible => Err(String::new()),
+            _ if !changee => true,
+            Avant::Lue(o) => poser(o, chemin).is_ok(),
+            Avant::Absente => std::fs::remove_file(chemin).is_ok(),
+            Avant::Illisible => false,
         };
-        match remise {
-            Ok(()) => e,
-            Err(_) => format!(
+        if remise {
+            ratee(e)
+        } else {
+            ratee(format!(
                 "{e}\n    {}",
                 tr!(
                     "l'ancienne fenêtre n'a pas pu être remise : le menu s'ouvrira à sa place",
                     "the old window could not be put back: the menu will open instead"
                 )
-            ),
+            ))
         }
     })
 }
 
 /// La copie de même version que la clé : seulement sa fenêtre, posée si celle d'ici n'est pas déjà la même.
-pub(super) fn poser_si_autre(fenetre: &[u8], chemin: &Path) -> Result<(), String> {
+pub(super) fn poser_si_autre(fenetre: &[u8], chemin: &Path) -> Result<(), Echec> {
     if lire_octets(chemin, TAILLE_MAX).ok().as_deref() == Some(fenetre) {
         return Ok(());
     }
@@ -325,7 +343,7 @@ pub(super) fn poser_si_autre(fenetre: &[u8], chemin: &Path) -> Result<(), String
 
 /// `octets` à `chemin`, comme `installer` le fait pour le programme : à côté d'abord (créé neuf, jamais par un lien),
 /// relu et comparé, puis renommé d'un coup ; rien ne traîne à côté en cas d'échec.
-fn poser(octets: &[u8], chemin: &Path) -> Result<(), String> {
+fn poser(octets: &[u8], chemin: &Path) -> Result<(), Echec> {
     poser_avec(octets, chemin, |_| ())
 }
 
@@ -336,21 +354,28 @@ fn poser(octets: &[u8], chemin: &Path) -> Result<(), String> {
 /// le programme) : par son seul nom, un programme du compte pouvait l'échanger entre la relecture et le renommage, et
 /// « fait » était dit sur une autre fenêtre. Relue par le descripteur ; après le renommage, la fenêtre posée doit
 /// être ce même fichier, avec ces mêmes octets.
-fn poser_avec(octets: &[u8], chemin: &Path, avant_renommage: impl FnOnce(&Path)) -> Result<(), String> {
+fn poser_avec(octets: &[u8], chemin: &Path, avant_renommage: impl FnOnce(&Path)) -> Result<(), Echec> {
     let nom = chemin
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
-        .ok_or_else(|| tr!("chemin sans nom de fichier", "path without a file name").to_string())?;
+        .ok_or_else(|| {
+            Echec::refuse(
+                "fenetre/poser",
+                tr!("chemin sans nom de fichier", "path without a file name"),
+            )
+        })?;
     let provisoire = chemin.with_file_name(format!("{nom}.nouveau"));
-    let posee = (|| -> Result<(), String> {
+    let posee = (|| -> Result<(), Echec> {
         let _ = std::fs::remove_file(&provisoire);
         let f = ecrire_provisoire(&provisoire, octets)?;
         if !meme_contenu(&f, octets)? {
-            return Err(tr!("la copie relue ne correspond pas", "the copy read back does not match").into());
+            return Err(ratee(tr!(
+                "la copie relue ne correspond pas",
+                "the copy read back does not match"
+            )));
         }
         avant_renommage(&provisoire);
-        mettre_en_place_sous(&provisoire, chemin, &chemin.with_file_name(format!("{nom}.ancien")))
-            .map_err(|e| e.to_string())?;
+        mettre_en_place_sous(&provisoire, chemin, &chemin.with_file_name(format!("{nom}.ancien"))).map_err(ratee)?;
         verifier_posee(&f, chemin, octets)
     })();
     if posee.is_err() {
@@ -364,32 +389,30 @@ fn poser_avec(octets: &[u8], chemin: &Path, avant_renommage: impl FnOnce(&Path))
 /// descripteur (`/proc/self/fd`, le même fichier même si le nom a changé) et le descripteur d'écriture fermé. Sous
 /// Windows, rouverte en lecture par son nom, l'écriture refusée aux autres tant qu'elle est tenue (FILE_SHARE_READ |
 /// FILE_SHARE_DELETE : sans le partage de suppression, le renommage échouerait) ; ce qui est ouvert est relu ensuite.
-fn ecrire_provisoire(provisoire: &Path, octets: &[u8]) -> Result<std::fs::File, String> {
+fn ecrire_provisoire(provisoire: &Path, octets: &[u8]) -> Result<std::fs::File, Echec> {
     use std::io::Write;
     let mut f = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create_new(true)
         .open(provisoire)
-        .map_err(|e| e.to_string())?;
-    f.write_all(octets)
-        .and_then(|()| f.sync_all())
-        .map_err(|e| e.to_string())?;
+        .map_err(ratee)?;
+    f.write_all(octets).and_then(|()| f.sync_all()).map_err(ratee)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         f.set_permissions(std::fs::Permissions::from_mode(0o755))
-            .map_err(|e| e.to_string())?;
+            .map_err(ratee)?;
     }
     #[cfg(target_os = "linux")]
     {
         use std::os::fd::AsRawFd;
         let lecture = std::fs::File::open(format!("/proc/self/fd/{}", f.as_raw_fd())).map_err(|e| {
-            crate::trf!(
+            ratee(crate::trf!(
                 "copie provisoire pas rouverte par son descripteur (/proc) : {}",
                 "temporary copy not reopened through its descriptor (/proc): {}",
                 e
-            )
+            ))
         })?;
         drop(f);
         Ok(lecture)
@@ -400,19 +423,19 @@ fn ecrire_provisoire(provisoire: &Path, octets: &[u8]) -> Result<std::fs::File, 
         let mut options = std::fs::OpenOptions::new();
         options.read(true);
         std::os::windows::fs::OpenOptionsExt::share_mode(&mut options, 1 | 4);
-        options.open(provisoire).map_err(|e| e.to_string())
+        options.open(provisoire).map_err(ratee)
     }
     #[cfg(not(any(target_os = "linux", windows)))]
     Ok(f)
 }
 
 /// Le fichier ouvert `f` contient-il exactement `octets` ? Relu depuis le début, jamais plus d'un octet de trop.
-fn meme_contenu(mut f: &std::fs::File, octets: &[u8]) -> Result<bool, String> {
+fn meme_contenu(mut f: &std::fs::File, octets: &[u8]) -> Result<bool, Echec> {
     use std::io::{Read, Seek};
-    f.seek(std::io::SeekFrom::Start(0)).map_err(|e| e.to_string())?;
+    f.seek(std::io::SeekFrom::Start(0)).map_err(ratee)?;
     let mut lu = Vec::with_capacity(octets.len());
     let borne = u64::try_from(octets.len()).unwrap_or(u64::MAX).saturating_add(1);
-    f.take(borne).read_to_end(&mut lu).map_err(|e| e.to_string())?;
+    f.take(borne).read_to_end(&mut lu).map_err(ratee)?;
     Ok(lu == octets)
 }
 
@@ -421,13 +444,13 @@ fn meme_contenu(mut f: &std::fs::File, octets: &[u8]) -> Result<bool, String> {
 /// poignée qui refuse l'écriture et la suppression aux autres le temps de la lecture (l'identité du fichier n'y est
 /// pas comparée ; les octets, eux, le sont). Sinon, un échec qui le dit : jamais « fait » sur une autre fenêtre (que
 /// `vanguard`, de toute façon, ne lancera pas : son empreinte n'est pas la gravée).
-fn verifier_posee(f: &std::fs::File, chemin: &Path, octets: &[u8]) -> Result<(), String> {
-    let changee = || -> String {
-        tr!(
+fn verifier_posee(f: &std::fs::File, chemin: &Path, octets: &[u8]) -> Result<(), Echec> {
+    // Changée par un autre programme : jamais crue, `Raison::Falsifie`, sa phrase seule rendue.
+    let changee = || -> Echec {
+        Echec::new("fenetre/poser", Raison::Falsifie).detail(tr!(
             "la fenêtre posée n'est pas celle qui a été reçue (changée pendant la mise à jour par un autre programme) : la mise à jour n'est pas faite, relancez-la",
             "the installed window is not the one that was received (changed during the update by another program): the update is not done, run it again"
-        )
-        .into()
+        ))
     };
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
@@ -440,10 +463,7 @@ fn verifier_posee(f: &std::fs::File, chemin: &Path, octets: &[u8]) -> Result<(),
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        let (a, b) = (
-            f.metadata().map_err(|e| e.to_string())?,
-            posee.metadata().map_err(|e| e.to_string())?,
-        );
+        let (a, b) = (f.metadata().map_err(ratee)?, posee.metadata().map_err(ratee)?);
         if !b.is_file() || a.dev() != b.dev() || a.ino() != b.ino() {
             return Err(changee());
         }
@@ -521,7 +541,7 @@ mod tests {
         let appels = std::cell::Cell::new(0);
         // La bonne fenêtre : les deux remplacés.
         remettre();
-        let mut recevoir = || -> Result<Vec<u8>, String> {
+        let mut recevoir = || -> Result<Vec<u8>, Echec> {
             appels.set(appels.get() + 1);
             Ok(neuve.clone())
         };
@@ -541,7 +561,7 @@ mod tests {
         assert!(rien_a_cote(&d));
         // Une autre fenêtre que celle gravée, ou aucune reçue : rien n'est remplacé.
         remettre();
-        let mut autre = || -> Result<Vec<u8>, String> { Ok(b"fenetre plantee".to_vec()) };
+        let mut autre = || -> Result<Vec<u8>, Echec> { Ok(b"fenetre plantee".to_vec()) };
         assert!(
             installer_avec_sa_fenetre(
                 &nouveau,
@@ -556,7 +576,7 @@ mod tests {
             .is_err()
         );
         assert!(inchange());
-        let mut panne = || -> Result<Vec<u8>, String> { Err("téléchargement interrompu".into()) };
+        let mut panne = || -> Result<Vec<u8>, Echec> { Err(Echec::echoue("essai", "téléchargement interrompu")) };
         assert!(
             installer_avec_sa_fenetre(
                 &nouveau,
@@ -700,7 +720,7 @@ mod tests {
         std::fs::write(&cible, b"ancien programme").unwrap();
         std::fs::write(&fenetre, b"ancienne fenetre").unwrap();
         let neuve = b"fenetre 0.96".to_vec();
-        let mut recevoir = || -> Result<Vec<u8>, String> { Ok(neuve.clone()) };
+        let mut recevoir = || -> Result<Vec<u8>, Echec> { Ok(neuve.clone()) };
         let r = installer_avec_sa_fenetre(
             &lancant(&neuve),
             &cible,
@@ -711,7 +731,7 @@ mod tests {
             &montree(&cible),
             &mut recevoir,
         );
-        let e = r.expect_err("un échec");
+        let e = r.expect_err("un échec").to_string();
         assert!(
             e.contains("n'est plus celui d'avant") || e.contains("no longer the previous"),
             "{e}"
@@ -736,8 +756,8 @@ mod tests {
         let page = d.join(lancer_fenetre::NOM_PAGE);
         let neuve = b"fenetre 0.96".to_vec();
         let nouveau = lancant(&neuve);
-        let dit = |r: Result<(), String>| {
-            let e = r.expect_err("posé sans avoir été montré");
+        let dit = |r: Result<(), Echec>| {
+            let e = r.expect_err("posé sans avoir été montré").to_string();
             assert!(
                 e.contains("depuis ce qui a été montré") || e.contains("since what was shown"),
                 "{e}"
@@ -747,7 +767,7 @@ mod tests {
         std::fs::write(&cible, b"ancien programme").unwrap();
         // GitHub. Aucune fenêtre montrée, une apparaît pendant le téléchargement du programme : rien, rien téléchargé.
         let appels = std::cell::Cell::new(0);
-        let mut recevoir = || -> Result<Vec<u8>, String> {
+        let mut recevoir = || -> Result<Vec<u8>, Echec> {
             appels.set(appels.get() + 1);
             Ok(neuve.clone())
         };
@@ -769,7 +789,7 @@ mod tests {
         // Montrée, puis changée pendant le téléchargement de la nouvelle fenêtre.
         std::fs::write(&fenetre, b"ancienne fenetre").unwrap();
         let vue = montree(&cible);
-        let mut changer = || -> Result<Vec<u8>, String> {
+        let mut changer = || -> Result<Vec<u8>, Echec> {
             std::fs::write(&fenetre, b"fenetre changee").unwrap();
             Ok(neuve.clone())
         };
@@ -803,7 +823,7 @@ mod tests {
         // Montrée sous le nom de la page ; une autre apparaît sous le premier nom pendant le téléchargement.
         std::fs::write(&page, b"ancienne fenetre").unwrap();
         let vue = montree(&cible);
-        let mut apparait = || -> Result<Vec<u8>, String> {
+        let mut apparait = || -> Result<Vec<u8>, Echec> {
             std::fs::write(&fenetre, b"fenetre apparue").unwrap();
             Ok(neuve.clone())
         };

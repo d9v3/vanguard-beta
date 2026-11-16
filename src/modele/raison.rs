@@ -333,8 +333,9 @@ mod tests {
     /// Paramètres. 184 : le point de restauration de Windows. 187 avec Structure 1 sans en ajouter : les trois
     /// interrupteurs du menu, sortis de main.rs (que ce compte coupait à son premier `#[cfg(test)] mod`) vers
     /// menu/outils.rs, sont enfin comptés. 215 pour la 0.96, une dette dite : la ligne de la fenêtre (lanceur, memfd,
-    /// aperçu, GitHub, mise à jour) en a ajouté 28 ; un lot de la 0.97 les passe à `Echec` et revient à 187.
-    const ERREURS_EN_TEXTE_AU_PLUS: usize = 215;
+    /// aperçu, GitHub, mise à jour) en a ajouté 28. 183 pour la 0.97 : ces 28 passées à `Echec`, et quatre de
+    /// GitHub (juger le manifeste, le comparer à l'aperçu, vérifier le programme) que leurs appelants y passaient déjà.
+    const ERREURS_EN_TEXTE_AU_PLUS: usize = 183;
 
     /// T13 : le cliquet des erreurs en texte, compté hors des modules de tests.
     #[test]

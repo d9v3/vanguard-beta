@@ -217,7 +217,7 @@ pub(super) trait Monde {
     fn telecharger(&self, p: &Publiee) -> Result<Vec<u8>, Echec>;
     /// Après l'accord, et seulement si une fenêtre est posée à côté d'un programme remplacé : la fenêtre de la
     /// dernière version, pas encore jugée (`sa_fenetre` la compare à l'empreinte gravée dans le programme vérifié).
-    fn telecharger_fenetre(&self) -> Result<Vec<u8>, String>;
+    fn telecharger_fenetre(&self) -> Result<Vec<u8>, Echec>;
     fn essai(&self) -> Essai;
     /// L'empreinte du programme qui tourne (`protection::cle::image_qui_tourne`) : seuls ses octets se posent depuis
     /// la clé lue à `source` (`gardes_de_la_cle`).
@@ -280,9 +280,9 @@ impl Monde for Ici {
         github::retenir_pendant_un_apercu(p)
     }
     fn telecharger(&self, p: &Publiee) -> Result<Vec<u8>, Echec> {
-        github::programme_verifie(p).map_err(|e| Echec::echoue("mise_a_jour/remise", e))
+        github::programme_verifie(p)
     }
-    fn telecharger_fenetre(&self) -> Result<Vec<u8>, String> {
+    fn telecharger_fenetre(&self) -> Result<Vec<u8>, Echec> {
         github::fenetre_recue()
     }
     fn essai(&self) -> Essai {
@@ -738,6 +738,7 @@ fn agir(m: &dyn Monde, accord: &str, consommer: impl FnOnce() -> Result<(), carn
                 let r = match (&fenetre, f) {
                     (Some(o), Some(f)) => {
                         sa_fenetre::installer_avec(&octets, chemin, *visee, &m.registre(), &m.copie(), essai, o, f, vue)
+                            .map_err(String::from)
                     }
                     _ => installer(&octets, chemin, *visee, &m.registre(), &m.copie(), essai),
                 };
@@ -754,7 +755,7 @@ fn agir(m: &dyn Monde, accord: &str, consommer: impl FnOnce() -> Result<(), carn
             };
             // La fenêtre de la nouvelle version : téléchargée une fois, et seulement s'il en faut une.
             let mut recue: Option<Vec<u8>> = None;
-            let mut recevoir = || -> Result<Vec<u8>, String> {
+            let mut recevoir = || -> Result<Vec<u8>, Echec> {
                 if let Some(f) = &recue {
                     return Ok(f.clone());
                 }
@@ -772,7 +773,8 @@ fn agir(m: &dyn Monde, accord: &str, consommer: impl FnOnce() -> Result<(), carn
                     essai,
                     vue,
                     &mut recevoir,
-                );
+                )
+                .map_err(String::from);
                 noter_la_pose(&mut faites, &octets, chemin, f.as_deref(), r);
             }
         }
@@ -791,7 +793,7 @@ fn noter_la_pose(
 ) {
     let ligne_fenetre = fenetre.map(|f| {
         let rf = match &r {
-            Ok(()) => sa_fenetre::posee_juste(octets, f),
+            Ok(()) => sa_fenetre::posee_juste(octets, f).map_err(String::from),
             Err(e) => Err(e.clone()),
         };
         (montre(f), rf)
@@ -1040,10 +1042,10 @@ mod tests {
             }
             Ok(self.recus.clone())
         }
-        fn telecharger_fenetre(&self) -> Result<Vec<u8>, String> {
+        fn telecharger_fenetre(&self) -> Result<Vec<u8>, Echec> {
             self.fenetres_telechargees
                 .set(self.fenetres_telechargees.get().saturating_add(1));
-            self.fenetre.clone()
+            self.fenetre.clone().map_err(|e| Echec::echoue("essai", e))
         }
         fn essai(&self) -> Essai {
             ESSAI_OK
