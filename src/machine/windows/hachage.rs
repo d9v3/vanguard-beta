@@ -6,8 +6,6 @@
 
 use std::ffi::c_void;
 use std::fmt::Write as _;
-use std::io::Read;
-use std::path::Path;
 
 #[link(name = "bcrypt")]
 unsafe extern "system" {
@@ -33,22 +31,27 @@ unsafe extern "system" {
 }
 
 /// L'empreinte en hexadécimal minuscule ; `algo` est le nom de BCrypt (« MD5 », « SHA1 », « SHA256 », « SHA512 »)
-/// et `taille` la longueur de l'empreinte en octets. `None` si le fichier ne se lit pas ou que BCrypt refuse.
-pub(crate) fn empreinte(fichier: &Path, algo: &str, taille: usize) -> Option<String> {
-    let mut f = std::fs::File::open(fichier).ok()?;
+/// et `taille` la longueur de l'empreinte en octets. `lire` passe le contenu du fichier, morceau par morceau, à la
+/// fonction qu'elle reçoit (le lecteur sûr de `telechargement::Ouvert`, borné à la taille annoncée) : son erreur est
+/// rendue telle quelle. `Ok(None)` si BCrypt refuse, pour passer au secours.
+pub(crate) fn empreinte(
+    algo: &str,
+    taille: usize,
+    lire: impl FnOnce(&mut dyn FnMut(&[u8]) -> std::io::Result<()>) -> std::io::Result<()>,
+) -> std::io::Result<Option<String>> {
     let nom: Vec<u16> = algo.encode_utf16().chain([0]).collect();
     let (mut fournisseur, mut calcul) = (std::ptr::null_mut(), std::ptr::null_mut());
     let mut resultat = vec![0u8; taille];
-    let mut morceau = vec![0u8; 1 << 20];
+    let mut refuse_par_bcrypt = false;
     // SAFETY: le nom est terminé par un zéro et vit pendant l'appel ; le fournisseur et le calcul (refus : code non
-    // nul, vérifié avant tout usage) sont rendus une seule fois, à la fin. BCrypt lit au plus `n` octets du morceau,
-    // qui les a, et écrit `taille` octets dans `resultat`, qui les a (BCrypt refuse une taille qui n'est pas celle
-    // de l'algorithme).
+    // nul, vérifié avant tout usage) sont rendus une seule fois, à la fin. BCrypt lit les octets d'un morceau, qui
+    // les a (sa longueur, pas plus), et écrit `taille` octets dans `resultat`, qui les a (BCrypt refuse une taille
+    // qui n'est pas celle de l'algorithme).
     unsafe {
         if BCryptOpenAlgorithmProvider(&raw mut fournisseur, nom.as_ptr(), std::ptr::null(), 0) != 0 {
-            return None;
+            return Ok(None);
         }
-        let mut lu = BCryptCreateHash(
+        let cree = BCryptCreateHash(
             fournisseur,
             &raw mut calcul,
             std::ptr::null_mut(),
@@ -57,26 +60,38 @@ pub(crate) fn empreinte(fichier: &Path, algo: &str, taille: usize) -> Option<Str
             0,
             0,
         ) == 0;
-        while lu {
-            match f.read(&mut morceau) {
-                Ok(0) => break,
-                Ok(n) => lu = BCryptHashData(calcul, morceau.as_ptr(), u32::try_from(n).unwrap_or(0), 0) == 0,
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(_) => lu = false,
-            }
-        }
+        let lu = if cree {
+            lire(&mut |morceau: &[u8]| {
+                let accepte =
+                    u32::try_from(morceau.len()).is_ok_and(|n| BCryptHashData(calcul, morceau.as_ptr(), n, 0) == 0);
+                if accepte {
+                    Ok(())
+                } else {
+                    refuse_par_bcrypt = true;
+                    Err(std::io::Error::other("BCryptHashData"))
+                }
+            })
+        } else {
+            refuse_par_bcrypt = true;
+            Ok(())
+        };
         // Pas de `?` ici : le fournisseur et le calcul doivent encore être rendus.
-        lu = lu && u32::try_from(taille).is_ok_and(|t| BCryptFinishHash(calcul, resultat.as_mut_ptr(), t, 0) == 0);
+        let fini = lu.is_ok()
+            && !refuse_par_bcrypt
+            && u32::try_from(taille).is_ok_and(|t| BCryptFinishHash(calcul, resultat.as_mut_ptr(), t, 0) == 0);
         if !calcul.is_null() {
             BCryptDestroyHash(calcul);
         }
         BCryptCloseAlgorithmProvider(fournisseur, 0);
-        lu.then(|| {
-            resultat.iter().fold(String::new(), |mut t, o| {
-                let _ = write!(t, "{o:02x}");
-                t
-            })
-        })
+        match lu {
+            Err(e) if !refuse_par_bcrypt => Err(e),
+            _ => Ok(fini.then(|| {
+                resultat.iter().fold(String::new(), |mut t, o| {
+                    let _ = write!(t, "{o:02x}");
+                    t
+                })
+            })),
+        }
     }
 }
 
@@ -89,21 +104,30 @@ mod tests {
     fn empreintes_de_bcrypt() {
         let f = crate::essais::temporaire().join(format!("vanguard-hachage-{}.txt", std::process::id()));
         std::fs::write(&f, b"abc").unwrap();
+        let calcul = |algo: &str, taille: usize| {
+            let (mut fichier, m) = crate::socle::ouvrir_ordinaire(&f, 1 << 20)?;
+            empreinte(algo, taille, |chaque| {
+                crate::socle::parcourir_ordinaire(&mut fichier, m.len(), chaque)
+            })
+        };
         assert_eq!(
-            empreinte(&f, "MD5", 16).as_deref(),
+            calcul("MD5", 16).unwrap().as_deref(),
             Some("900150983cd24fb0d6963f7d28e17f72")
         );
         assert_eq!(
-            empreinte(&f, "SHA1", 20).as_deref(),
+            calcul("SHA1", 20).unwrap().as_deref(),
             Some("a9993e364706816aba3e25717850c26c9cd0d89d")
         );
         assert_eq!(
-            empreinte(&f, "SHA256", 32).as_deref(),
+            calcul("SHA256", 32).unwrap().as_deref(),
             Some("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
         );
-        assert_eq!(empreinte(&f, "SHA512", 64).map(|e| e.len()), Some(128));
-        assert_eq!(empreinte(&f, "SHA256", 20), None);
+        assert_eq!(calcul("SHA512", 64).unwrap().map(|e| e.len()), Some(128));
+        assert_eq!(calcul("SHA256", 20).unwrap(), None);
+        // Une lecture qui échoue est rendue telle quelle, sans passer au secours.
+        let e = empreinte("SHA256", 32, |_| Err(std::io::Error::other("changé"))).unwrap_err();
+        assert_eq!(e.to_string(), "changé");
         let _ = std::fs::remove_file(&f);
-        assert_eq!(empreinte(&f, "SHA256", 32), None);
+        assert!(calcul("SHA256", 32).is_err());
     }
 }

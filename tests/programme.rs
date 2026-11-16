@@ -7906,16 +7906,24 @@ fn signaler_en_json_sur_un_journal_d_essai() {
         journal,
         "rien n'est noté au journal"
     );
-    // Un identifiant inconnu est refusé, et c'est dit.
-    let s = vanguard_dans(
-        Path::new(env!("CARGO_BIN_EXE_vanguard")),
-        &maison,
-        "fr",
-        &["signaler", "--incident", "inconnu", "--json"],
-        "",
-        60,
-    );
-    assert!(s.texte.contains("aucun événement « inconnu »"), "{}", s.texte);
+    // Un identifiant, un programme ou une langue inconnus sont refusés, et c'est dit sur la sortie d'erreur : rien
+    // sur la sortie, qu'un script lirait comme du JSON, et le code 2 d'une demande à refaire autrement.
+    for (args, dit) in [
+        (
+            &["signaler", "--incident", "inconnu", "--json"][..],
+            "aucun événement « inconnu »",
+        ),
+        (
+            &["signaler", "--programme", "inconnu", "--json"][..],
+            "programme inconnu",
+        ),
+        (&["signaler", "--langue", "xx", "--json"][..], "langue inconnue"),
+    ] {
+        let s = vanguard_dans(Path::new(env!("CARGO_BIN_EXE_vanguard")), &maison, "fr", args, "", 60);
+        assert_eq!(s.code, Some(2), "{args:?} : {}\n{}", s.texte, s.erreurs);
+        assert!(s.texte.trim().is_empty(), "{args:?} : {}", s.texte);
+        assert!(s.erreurs.contains(dit), "{args:?} : {}", s.erreurs);
+    }
     let _ = std::fs::remove_dir_all(&maison);
 }
 

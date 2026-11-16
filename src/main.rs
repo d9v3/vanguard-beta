@@ -782,14 +782,19 @@ async fn main() {
             langue,
             json,
             effacer,
-        }) => signaler::commande(&signaler::Options {
-            incident,
-            outil,
-            programme,
-            langue,
-            json,
-            effacer,
-        }),
+        }) => {
+            let code = signaler::commande(&signaler::Options {
+                incident,
+                outil,
+                programme,
+                langue,
+                json,
+                effacer,
+            });
+            if code != 0 {
+                machine::quitter(code);
+            }
+        }
         Some(Commande::CameraMicro) => protection::camera::afficher_tout(),
         Some(Commande::Acces { json: false }) => protection::acces::afficher_tout(),
         Some(Commande::Acces { json: true }) => protection::acces::json(),

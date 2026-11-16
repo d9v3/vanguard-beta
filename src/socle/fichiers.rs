@@ -102,39 +102,148 @@ fn drapeaux_de_lecture(suivre: bool) -> libc::c_int {
 
 fn lire_simple(chemin: &std::path::Path, max: u64, suivre: bool) -> std::io::Result<Vec<u8>> {
     use std::io::Read;
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, drapeaux_de_lecture(suivre));
-    #[cfg(windows)]
-    if !suivre {
-        // FILE_FLAG_OPEN_REPARSE_POINT : un lien symbolique ou une jonction s'ouvre lui-même, sans être suivi.
-        std::os::windows::fs::OpenOptionsExt::custom_flags(&mut options, 0x0020_0000);
-    }
-    let f = options.open(chemin).map_err(|e| {
-        // O_NOFOLLOW sur un lien : ELOOP, qui n'est pas « absent ».
+    // Les lecteurs d'état ne distinguent que « absent » et « pas lu pour ça » (droits compris).
+    let (f, _) = ouvrir_simple(chemin, max, suivre).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             e
         } else {
             std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
         }
     })?;
-    let m = f.metadata()?;
-    if !m.file_type().is_file() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            tr!("pas un simple fichier", "not a plain file"),
-        ));
-    }
-    if m.len() > max {
-        return Err(trop_gros(max));
-    }
     let mut octets = Vec::new();
     f.take(max.saturating_add(1)).read_to_end(&mut octets)?;
     if u64::try_from(octets.len()).unwrap_or(u64::MAX) > max {
         return Err(trop_gros(max));
     }
     Ok(octets)
+}
+
+/// `lire_ordinaire` sans tout charger : le fichier ouvert et ce qu'en dit fstat, pour le lire en flux (une image
+/// disque de plusieurs Gio s'empreinte par morceaux, avec `parcourir_ordinaire`). Mêmes refus, jugés sur ce qui a été
+/// ouvert et jamais sur le chemin : `NotFound` s'il n'existe pas, `PermissionDenied` sans le droit de le lire,
+/// `FileTooLarge` s'il annonce plus de `max` octets, `InvalidData` s'il n'est pas un simple fichier (lien, tube
+/// nommé, périphérique, dossier).
+pub(crate) fn ouvrir_ordinaire(
+    chemin: &std::path::Path,
+    max: u64,
+) -> std::io::Result<(std::fs::File, std::fs::Metadata)> {
+    ouvrir_simple(chemin, max, false)
+}
+
+fn ouvrir_simple(
+    chemin: &std::path::Path,
+    max: u64,
+    suivre: bool,
+) -> std::io::Result<(std::fs::File, std::fs::Metadata)> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, drapeaux_de_lecture(suivre));
+    #[cfg(windows)]
+    {
+        // FILE_FLAG_BACKUP_SEMANTICS : un dossier s'ouvre aussi, pour être refusé par ce qu'il est (« pas un simple
+        // fichier ») plutôt que par un « accès refusé » trompeur. FILE_FLAG_OPEN_REPARSE_POINT : un lien symbolique ou
+        // une jonction s'ouvre lui-même, sans être suivi.
+        let drapeaux = if suivre { 0x0200_0000 } else { 0x0220_0000 };
+        std::os::windows::fs::OpenOptionsExt::custom_flags(&mut options, drapeaux);
+    }
+    let ouvert = options.open(chemin);
+    // O_NOFOLLOW sur un lien : ELOOP, qui n'est ni « absent » ni « interdit ».
+    #[cfg(unix)]
+    let ouvert = ouvert.map_err(|e| {
+        if e.raw_os_error() == Some(libc::ELOOP) {
+            pas_un_simple_fichier()
+        } else {
+            e
+        }
+    });
+    let f = ouvert?;
+    let m = f.metadata()?;
+    if !m.file_type().is_file() {
+        return Err(pas_un_simple_fichier());
+    }
+    if m.len() > max {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::FileTooLarge,
+            trop_gros(max).to_string(),
+        ));
+    }
+    Ok((f, m))
+}
+
+fn pas_un_simple_fichier() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        tr!("pas un simple fichier", "not a plain file"),
+    )
+}
+
+/// Lit en entier un fichier ouvert par `ouvrir_ordinaire`, morceau par morceau passé à `chaque`, et exactement la
+/// taille que fstat annonçait (`annoncee`) : jamais plus, car un fichier de /proc ou de /sys annonce 0 octet et en
+/// donne autant qu'on en demande, et un fichier qui grossit pendant la lecture ne finirait pas ; jamais moins non
+/// plus (tronqué en route). La taille qui change est une erreur (`InvalidData`), pas une empreinte d'autre chose.
+/// La lecture part de la position courante : `rewind` avant, pour un fichier déjà lu.
+pub(crate) fn parcourir_ordinaire(
+    f: &mut std::fs::File,
+    annoncee: u64,
+    mut chaque: impl FnMut(&[u8]) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    use std::io::Read;
+    let change = || {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            tr!(
+                "le fichier a changé pendant la lecture",
+                "the file changed while being read"
+            ),
+        )
+    };
+    let mut tampon = vec![0u8; 1 << 16];
+    let mut lus: u64 = 0;
+    loop {
+        match f.read(&mut tampon) {
+            Ok(0) => break,
+            Ok(n) => {
+                // Un lecteur qui dit avoir lu plus que le tampon : une erreur, pas une empreinte inventée.
+                let morceau = tampon
+                    .get(..n)
+                    .ok_or_else(|| std::io::Error::other("lecture plus longue que le tampon"))?;
+                lus = lus.saturating_add(u64::try_from(n).unwrap_or(u64::MAX));
+                if lus > annoncee {
+                    return Err(change());
+                }
+                chaque(morceau)?;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    if lus == annoncee { Ok(()) } else { Err(change()) }
+}
+
+/// Un chemin réel (déjà mis en forme par `canonicalize`) dans les dossiers du noyau, des périphériques ou de
+/// l'exécution (/proc, /sys, /dev, /run) : rien qu'une personne ait téléchargé ou reçu. Leurs fichiers annoncent une
+/// taille fausse (0 octet), changent à chaque lecture ou sont des périphériques. Sauf /run/media, où se montent les
+/// clés et disques externes (une copie de Vanguard sur une autre clé). Sous Windows, rien de tel : le lecteur sûr
+/// (fichier ouvert jugé par ce qu'il est, lecture bornée) suffit.
+pub(crate) fn du_systeme(reel: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    {
+        ["/proc", "/sys", "/dev", "/run"].iter().any(|d| reel.starts_with(d)) && !reel.starts_with("/run/media")
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = reel;
+        false
+    }
+}
+
+/// La phrase d'un chemin refusé par `du_systeme`.
+pub(crate) fn refus_du_systeme() -> &'static str {
+    tr!(
+        "chemin du système (/proc, /sys, /dev, /run) : ce n'est pas un fichier à examiner",
+        "system path (/proc, /sys, /dev, /run): not a file to check"
+    )
 }
 
 /// `lire_ordinaire`, en texte UTF-8 (`InvalidData` sinon) : ce que lisent la plupart des fichiers d'état.
@@ -728,6 +837,101 @@ mod tests {
         );
         // Le lien n'est suivi que par cette lecture-ci : celle des fichiers d'état le refuse toujours.
         assert!(lire_ordinaire(&dossier.join("lien-vrai"), 1024).is_err());
+    }
+
+    /// Le lecteur en flux des commandes qui reçoivent un chemin (verifier-fichier, verifier-moi, courriel-suspect) :
+    /// un tube nommé ne fige rien, un lien n'est pas suivi, un périphérique est refusé, et seule la taille que fstat
+    /// annonçait se lit (un fichier de /proc qui annonce 0, un fichier qui change entre l'ouverture et la lecture).
+    #[cfg(unix)]
+    #[test]
+    fn ouverture_ordinaire_lue_en_flux_bornee() {
+        use std::io::Write;
+        let dossier = crate::essais::Jetable::nouveau("ouverture-ordinaire");
+        let tube = dossier.join("tube.iso");
+        crate::essais::tube_nomme(&tube).unwrap();
+        let vrai = dossier.join("vrai.iso");
+        std::fs::write(&vrai, b"abcdef").unwrap();
+        let lien = dossier.join("lien.iso");
+        std::os::unix::fs::symlink(&vrai, &lien).unwrap();
+        let debut = std::time::Instant::now();
+        for refuse in [tube.as_path(), lien.as_path(), std::path::Path::new("/dev/zero")] {
+            let e = ouvrir_ordinaire(refuse, 1 << 20).unwrap_err();
+            assert_eq!(e.kind(), std::io::ErrorKind::InvalidData, "{}", refuse.display());
+        }
+        assert!(debut.elapsed() < std::time::Duration::from_secs(2));
+        assert_eq!(
+            ouvrir_ordinaire(&dossier.join("absent"), 1 << 20).unwrap_err().kind(),
+            std::io::ErrorKind::NotFound
+        );
+        assert_eq!(
+            ouvrir_ordinaire(&vrai, 5).unwrap_err().kind(),
+            std::io::ErrorKind::FileTooLarge
+        );
+        // Un simple fichier se lit en entier, par morceaux.
+        let lire = |f: &mut std::fs::File, annoncee: u64| {
+            let mut lu = Vec::new();
+            parcourir_ordinaire(f, annoncee, |m| {
+                lu.extend_from_slice(m);
+                Ok(())
+            })
+            .map(|()| lu)
+        };
+        let (mut f, m) = ouvrir_ordinaire(&vrai, 1 << 20).unwrap();
+        assert_eq!(lire(&mut f, m.len()).unwrap(), b"abcdef");
+        // Grossi après l'ouverture : la lecture s'arrête à la taille annoncée et le dit.
+        let (mut f, m) = ouvrir_ordinaire(&vrai, 1 << 20).unwrap();
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&vrai)
+            .unwrap()
+            .write_all(b"ghij")
+            .unwrap();
+        assert_eq!(
+            lire(&mut f, m.len()).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+        // Tronqué après l'ouverture : moins que l'annonce, refusé aussi.
+        let (mut f, m) = ouvrir_ordinaire(&vrai, 1 << 20).unwrap();
+        std::fs::File::create(&vrai).unwrap();
+        assert_eq!(
+            lire(&mut f, m.len()).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+        // Un fichier de /proc est un « simple fichier » qui annonce 0 octet : sa lecture, elle, est refusée.
+        #[cfg(target_os = "linux")]
+        {
+            let (mut f, m) = ouvrir_ordinaire(std::path::Path::new("/proc/self/status"), 1 << 20).unwrap();
+            assert_eq!(m.len(), 0);
+            assert_eq!(
+                lire(&mut f, m.len()).unwrap_err().kind(),
+                std::io::ErrorKind::InvalidData
+            );
+        }
+    }
+
+    /// Les dossiers du système refusés aux commandes qui reçoivent un chemin, par élément entier (« /procs » n'en est
+    /// pas un), sauf /run/media où se montent les clés.
+    #[cfg(unix)]
+    #[test]
+    fn chemins_du_systeme() {
+        for oui in [
+            "/proc",
+            "/proc/self/status",
+            "/sys/kernel/x",
+            "/dev/zero",
+            "/run/user/1000/x",
+        ] {
+            assert!(du_systeme(std::path::Path::new(oui)), "{oui}");
+        }
+        for non in [
+            "/procs/x",
+            "/home/alice/dev/x.iso",
+            "/run/media/alice/CLE/vanguard",
+            "/tmp/x",
+            "/devx",
+        ] {
+            assert!(!du_systeme(std::path::Path::new(non)), "{non}");
+        }
     }
 
     /// En root, le dossier d'un compte (le nôtre ici, qui n'est pas root) n'est pas sûr ; hors de root, tout l'est.

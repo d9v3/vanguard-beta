@@ -1410,7 +1410,11 @@ pub(crate) fn verifier_moi_json(autre: Option<&Path>) {
             compile: None,
             perime: None,
             programme: Some(chemin_affichable(copie)),
-            sha256: Some(sha256(copie)),
+            // Un chemin donné : son chemin réel, refusé dans les dossiers du système, lu par le lecteur sûr.
+            sha256: Some(crate::protection::telechargement::calculer_donne(
+                copie,
+                crate::protection::telechargement::Algo::Sha256,
+            )),
             manifeste: None,
             historique,
         }
@@ -1442,7 +1446,7 @@ fn verifier_une_copie(copie: &Path) {
         tr!("Programme ", "Program   "),
         chemin_affichable(copie)
     );
-    match crate::protection::telechargement::calculer(copie, crate::protection::telechargement::Algo::Sha256) {
+    match crate::protection::telechargement::calculer_donne(copie, crate::protection::telechargement::Algo::Sha256) {
         Ok(h) => {
             println!("  {GRIS}SHA-256   {RESET}  {h}");
             comparer_a_l_historique(&h);

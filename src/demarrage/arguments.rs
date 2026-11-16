@@ -144,7 +144,7 @@ pub(crate) enum Commande {
     #[command(name = "dernieres-failles", visible_alias = "latest-flaws")]
     DernieresFailles {
         /// Combien de jours en arrière (7 par défaut).
-        #[arg(long, visible_alias = "days", default_value_t = 7)]
+        #[arg(long, visible_alias = "days", default_value_t = 7, value_parser = clap::value_parser!(u32).range(1..=3650))]
         jours: u32,
         /// Le résultat en JSON, pour un script : rien ne change sur l'ordinateur ; le catalogue est relu en ligne
         /// s'il a plus d'un jour. Hors ligne, la copie gardée seule, sans rien croiser avec les paquets d'ici (dit non
@@ -978,4 +978,28 @@ pub(crate) enum Commande {
         #[arg(long)]
         langue: Option<String>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `dernieres-failles --jours` : de 1 à 3650, comme `journaux-windows`. Sans borne, 0 rendait une liste vide
+    /// présentée comme « aucune faille », et 4 milliards de jours remontaient au début du calendrier.
+    #[test]
+    fn dernieres_failles_jours_bornes() {
+        for refuse in ["0", "3651", "4294967295", "-1", "abc"] {
+            assert!(
+                Args::try_parse_from(["vanguard", "dernieres-failles", "--jours", refuse]).is_err(),
+                "--jours {refuse}"
+            );
+        }
+        for (permis, attendu) in [("1", 1), ("3650", 3650)] {
+            let a = Args::try_parse_from(["vanguard", "dernieres-failles", "--jours", permis]).unwrap();
+            assert!(
+                matches!(a.commande, Some(Commande::DernieresFailles { jours, .. }) if jours == attendu),
+                "--jours {permis}"
+            );
+        }
+    }
 }

@@ -352,6 +352,8 @@ enum Refus {
     /// Présent, mais pas lisible (droits, erreur de lecture).
     Illisible,
     PasUnFichier,
+    /// Dans /proc, /sys, /dev ou /run (`socle::du_systeme`).
+    DuSysteme,
     TropGros,
     /// Un message Outlook (.msg), que Vanguard ne lit pas.
     Msg,
@@ -360,19 +362,24 @@ enum Refus {
 
 const OLE: &[u8] = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1";
 
-/// Le fichier, lu au plus jusqu'à la borne (un « fichier » qui serait un lien vers un flux sans fin s'arrête là).
+/// Le fichier, par son chemin réel (refusé dans les dossiers du système), ouvert une seule fois par le lecteur sûr
+/// et jugé sur ce qui a été ouvert : ni lien, ni tube nommé (qui figeait la commande), ni périphérique. Regarder le
+/// chemin puis l'ouvrir laissait un écart où glisser l'un d'eux. Lu au plus jusqu'à la borne, quoi qu'il annonce.
 fn lire_fichier(chemin: &Path) -> Result<Vec<u8>, Refus> {
-    let meta = std::fs::metadata(chemin).map_err(|_| Refus::Introuvable)?;
-    if !meta.is_file() {
-        return Err(Refus::PasUnFichier);
+    let reel = chemin.canonicalize().map_err(|_| Refus::Introuvable)?;
+    if crate::socle::du_systeme(&reel) {
+        return Err(Refus::DuSysteme);
     }
     let max = u64::try_from(mime::BORNES.octets).unwrap_or(u64::MAX);
-    if meta.len() > max {
-        return Err(Refus::TropGros);
-    }
+    let (f, _) = crate::socle::ouvrir_ordinaire(&reel, max).map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => Refus::Introuvable,
+        std::io::ErrorKind::InvalidData => Refus::PasUnFichier,
+        std::io::ErrorKind::FileTooLarge => Refus::TropGros,
+        _ => Refus::Illisible,
+    })?;
     let mut octets = Vec::new();
-    std::fs::File::open(chemin)
-        .and_then(|f| f.take(max.saturating_add(1)).read_to_end(&mut octets))
+    f.take(max.saturating_add(1))
+        .read_to_end(&mut octets)
         .map_err(|_| Refus::Illisible)?;
     if octets.len() > mime::BORNES.octets {
         return Err(Refus::TropGros);
@@ -498,6 +505,10 @@ fn afficher_refus(refus: &Refus, chemin: &Path) {
                 "Ce n'est pas un fichier : donnez un courriel enregistré (.eml).",
                 "This is not a file: give a saved email (.eml)."
             ),
+        ),
+        Refus::DuSysteme => ligne(
+            Some(Niveau::Moyen),
+            &trf!("{}.", "{}.", crate::socle::refus_du_systeme()),
         ),
         Refus::TropGros => ligne(
             Some(Niveau::Moyen),
@@ -954,6 +965,7 @@ fn texte_refus(r: &Refus) -> String {
         Refus::Introuvable => tr!("fichier introuvable", "file not found"),
         Refus::Illisible => tr!("fichier illisible", "file unreadable"),
         Refus::PasUnFichier => tr!("pas un fichier", "not a file"),
+        Refus::DuSysteme => crate::socle::refus_du_systeme(),
         Refus::TropGros => tr!("fichier trop gros", "file too large"),
         Refus::Msg => tr!(
             "message Outlook (.msg), que Vanguard ne lit pas",
@@ -1215,6 +1227,32 @@ Reply-To: r@autre example.org\r\n\r\nbonjour";
         assert_eq!(chemin_saisi("  "), None);
         let maison = crate::socle::maison();
         assert_eq!(chemin_saisi("~/x.eml"), Some(maison.join("x.eml")));
+    }
+
+    /// `courriel-suspect <fichier>` : le fichier est ouvert une seule fois par le lecteur sûr. Un tube nommé ne fige
+    /// pas la commande, un lien n'est pas suivi jusqu'à un périphérique, et un chemin du système est refusé.
+    #[cfg(unix)]
+    #[test]
+    fn ni_tube_ni_lien_ni_chemin_du_systeme() {
+        let d = crate::essais::Jetable::nouveau("courriel-lecteur-sur");
+        let tube = d.join("tube.eml");
+        crate::essais::tube_nomme(&tube).unwrap();
+        let lien_zero = d.join("zero.eml");
+        std::os::unix::fs::symlink("/dev/zero", &lien_zero).unwrap();
+        let debut = std::time::Instant::now();
+        assert_eq!(lire_fichier(&tube), Err(Refus::PasUnFichier));
+        assert!(debut.elapsed() < std::time::Duration::from_secs(2));
+        // Mis en forme, le lien mène dans /dev : refusé avant toute ouverture.
+        assert_eq!(lire_fichier(&lien_zero), Err(Refus::DuSysteme));
+        assert_eq!(lire_fichier(Path::new("/dev/zero")), Err(Refus::DuSysteme));
+        #[cfg(target_os = "linux")]
+        assert_eq!(lire_fichier(Path::new("/proc/self/status")), Err(Refus::DuSysteme));
+        // Un courriel ordinaire se lit toujours, même donné par un lien.
+        let vrai = d.join("vrai.eml");
+        std::fs::write(&vrai, b"From: alice@example.com\n\nx").unwrap();
+        let lien = d.join("lien.eml");
+        std::os::unix::fs::symlink(&vrai, &lien).unwrap();
+        assert_eq!(lire_fichier(&lien).unwrap(), b"From: alice@example.com\n\nx");
     }
 
     #[cfg(unix)]

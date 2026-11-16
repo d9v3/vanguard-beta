@@ -130,21 +130,84 @@ fn empreinte_a_cote(fichier: &Path) -> Option<(Algo, String, PathBuf)> {
     ];
     candidats.iter().find_map(|c| {
         let chemin = dossier.join(c);
-        // Une liste d'empreintes tient en quelques kilo-octets : un gros fichier de ce nom n'en est pas une.
-        if !std::fs::metadata(&chemin).is_ok_and(|m| m.len() <= 1_000_000) {
-            return None;
-        }
-        let texte = std::fs::read_to_string(&chemin).ok()?;
+        // Une liste d'empreintes tient en quelques kilo-octets : un gros fichier de ce nom n'en est pas une. Lue par
+        // le lecteur sûr : un tube nommé posé sous ce nom ne fige pas la vérification, un lien n'est pas suivi.
+        let texte = crate::socle::lire_texte_ordinaire(&chemin, 1_000_000).ok()?;
         // « outil.zip.sha256 » ne parle que d'outil.zip ; « SHA256SUMS » parle de tout le dossier.
         chercher_dans_liste(&texte, &nom, c.starts_with(&format!("{nom}."))).map(|(a, e)| (a, e, chemin))
     })
 }
 
-/// L'empreinte du fichier : calculée ici sous Linux (sha2, sha1, md-5), par Windows
-/// lui-même sous Windows (BCrypt, Get-FileHash en secours).
+/// La plus grosse empreinte calculée : au-delà de la plus grosse image disque publiée (un DVD double couche fait
+/// 8,5 Go). Un fichier creux qui annonce des téraoctets ne fait pas tourner le calcul pendant des heures.
+const EMPREINTE_MAX: u64 = 64 << 30;
+
+/// Un fichier ouvert une seule fois pour être lu (empreintes, premiers octets), jugé sur ce qui a été ouvert : un
+/// échange entre le regard et la lecture ne fait pas lire un autre fichier que celui qui a été vérifié.
+pub(crate) struct Ouvert {
+    f: std::fs::File,
+    /// La taille annoncée à l'ouverture (fstat) : exactement ce qui est lu, ni plus ni moins.
+    taille: u64,
+    /// Le chemin ouvert : sous Windows, Get-FileHash en secours de BCrypt le relit par lui.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    chemin: PathBuf,
+}
+
+impl Ouvert {
+    /// Ouvert par le lecteur sûr : un simple fichier seulement (ni lien, ni tube nommé, ni périphérique), sans
+    /// attendre, d'au plus `EMPREINTE_MAX` octets annoncés.
+    pub(crate) fn ouvrir(chemin: &Path) -> std::io::Result<Ouvert> {
+        let (f, m) = crate::socle::ouvrir_ordinaire(chemin, EMPREINTE_MAX)?;
+        Ok(Ouvert {
+            f,
+            taille: m.len(),
+            chemin: chemin.to_path_buf(),
+        })
+    }
+
+    /// Les premiers octets (au plus `n`), lus depuis le début.
+    fn debut(&mut self, n: usize) -> Vec<u8> {
+        use std::io::{Read, Seek};
+        let mut octets = Vec::new();
+        if self.f.rewind().is_ok() {
+            let _ = (&mut self.f)
+                .take(u64::try_from(n).unwrap_or(0))
+                .read_to_end(&mut octets);
+        }
+        octets
+    }
+
+    /// Tout le fichier, depuis le début, par morceaux passés à `chaque`, borné à la taille annoncée.
+    fn parcourir(&mut self, chaque: impl FnMut(&[u8]) -> std::io::Result<()>) -> std::io::Result<()> {
+        std::io::Seek::rewind(&mut self.f)?;
+        crate::socle::parcourir_ordinaire(&mut self.f, self.taille, chaque)
+    }
+}
+
+/// L'empreinte du fichier, ouvert par le lecteur sûr (`Ouvert::ouvrir`).
 pub(crate) fn calculer(fichier: &Path, algo: Algo) -> Result<String, String> {
+    let mut ouvert = Ouvert::ouvrir(fichier).map_err(|e| affichable(&e.to_string()))?;
+    calculer_ouvert(&mut ouvert, algo)
+}
+
+/// L'empreinte d'un fichier donné par la personne (`vanguard verifier-moi <programme>`) : son chemin réel, refusé
+/// dans les dossiers du système (`socle::du_systeme`), puis lu par le lecteur sûr.
+pub(crate) fn calculer_donne(fichier: &Path, algo: Algo) -> Result<String, String> {
+    let reel = fichier
+        .canonicalize()
+        .map_err(|_| tr!("fichier introuvable", "file not found").to_string())?;
+    if crate::socle::du_systeme(&reel) {
+        return Err(crate::socle::refus_du_systeme().to_string());
+    }
+    calculer(&reel, algo)
+}
+
+/// L'empreinte d'un fichier déjà ouvert : calculée ici sous Linux (sha2, sha1, md-5), par Windows lui-même sous
+/// Windows (BCrypt, Get-FileHash en secours) ; relu depuis le début à chaque fois.
+fn calculer_ouvert(ouvert: &mut Ouvert, algo: Algo) -> Result<String, String> {
     #[cfg(windows)]
     let sortie = {
+        let fichier = ouvert.chemin.clone();
         let nom = match algo {
             Algo::Md5 => "MD5",
             Algo::Sha1 => "SHA1",
@@ -157,7 +220,9 @@ pub(crate) fn calculer(fichier: &Path, algo: Algo) -> Result<String, String> {
             Algo::Sha256 => 32,
             Algo::Sha512 => 64,
         };
-        if let Some(e) = crate::machine::windows::hachage::empreinte(fichier, nom, octets) {
+        let calcul = crate::machine::windows::hachage::empreinte(nom, octets, |chaque| ouvert.parcourir(chaque));
+        // Une lecture refusée (fichier changé, illisible) ne passe pas au secours : il relirait par le chemin.
+        if let Some(e) = calcul.map_err(|e| affichable(&e.to_string()))? {
             e
         } else {
             // PowerShell 5.1 lit mal « \\?\ » : la forme courte, seulement quand elle désigne sans doute possible le
@@ -185,7 +250,7 @@ pub(crate) fn calculer(fichier: &Path, algo: Algo) -> Result<String, String> {
     // Lu ici, sans md5sum, sha256sum, md5 ni shasum : rien à lancer, et rien qu'un faux programme du PATH (le dossier
     // de Homebrew appartient au compte) puisse remplacer.
     #[cfg(unix)]
-    let sortie = empreinte_lue(fichier, algo).map_err(|e| affichable(&e.to_string()))?;
+    let sortie = empreinte_lue(ouvert, algo).map_err(|e| affichable(&e.to_string()))?;
     // sha256sum commence la ligne par « \\ » quand le nom du fichier contient « \\ » ou un saut de ligne.
     let empreinte = sortie
         .split_whitespace()
@@ -367,17 +432,17 @@ pub fn verifier(fichier: Option<&Path>, empreinte: Option<&str>) {
     titre(tr!("Vérifier un fichier téléchargé", "Check a downloaded file"));
     let debut = (chrono::Utc::now(), std::time::Instant::now());
     let interactif = fichier.is_none();
-    let Some((chemin, meta)) = fichier_a_verifier(fichier) else {
+    let Some((chemin, mut ouvert)) = fichier_a_verifier(fichier) else {
         return;
     };
     let nom = nom_du_fichier(&chemin);
-    montrer_le_fichier(&chemin, &nom, &meta);
+    montrer_le_fichier(&chemin, &nom, ouvert.taille);
     let mut v = Verification::default();
     // 1. L'empreinte : celle collée, sinon celle posée à côté, sinon on la demande (menu).
     let attendue = empreinte_attendue(&chemin, empreinte, interactif, &mut v);
-    verifier_l_empreinte(&chemin, attendue.as_ref(), &mut v);
+    verifier_l_empreinte(&mut ouvert, attendue.as_ref(), &mut v);
     // 2. Le nom et les premiers octets.
-    verifier_le_nom(&chemin, &nom, &mut v);
+    verifier_le_nom(&mut ouvert, &nom, &mut v);
     // 3. Les moteurs : celui de Vanguard, puis l'antivirus du système.
     section(tr!("Analyse", "Scan"));
     analyser_vanguard(&chemin, &mut v);
@@ -398,11 +463,11 @@ pub fn json(fichier: &Path, empreinte: Option<&str>) {
     };
     let r = match ouvrir(fichier) {
         Err(refus) => resultat::refuse(&refus.raison(), debut),
-        Ok((chemin, _)) => {
+        Ok((chemin, mut ouvert)) => {
             let nom = nom_du_fichier(&chemin);
             let attendue = empreinte_attendue(&chemin, empreinte, false, &mut v);
-            verifier_l_empreinte(&chemin, attendue.as_ref(), &mut v);
-            verifier_le_nom(&chemin, &nom, &mut v);
+            verifier_l_empreinte(&mut ouvert, attendue.as_ref(), &mut v);
+            verifier_le_nom(&mut ouvert, &nom, &mut v);
             analyser_vanguard(&chemin, &mut v);
             v.releve.manques.push(trf!(
                 "{} : pas lancé avec --json",
@@ -486,6 +551,10 @@ enum Refus {
     Introuvable(PathBuf),
     Illisible(PathBuf),
     PasUnFichier,
+    /// Dans /proc, /sys, /dev ou /run (`socle::du_systeme`).
+    DuSysteme,
+    /// Plus gros que `EMPREINTE_MAX`.
+    TropGros,
 }
 
 impl Refus {
@@ -495,28 +564,39 @@ impl Refus {
             Refus::Introuvable(_) => tr!("fichier introuvable", "file not found"),
             Refus::Illisible(_) => tr!("fichier illisible", "file unreadable"),
             Refus::PasUnFichier => tr!("pas un fichier", "not a file"),
+            Refus::DuSysteme => crate::socle::refus_du_systeme(),
+            Refus::TropGros => tr!("fichier trop gros", "file too large"),
         }
         .to_string()
     }
 }
 
-/// Le chemin réel d'un fichier et ses métadonnées. Le chemin réel, « \\?\ » compris sous Windows : c'est lui qui
-/// désigne ce fichier-là (« facture.exe. » et « facture.exe » sont deux fichiers). Il n'est raccourci qu'à l'écran
-/// (`affiche`).
-fn ouvrir(chemin: &Path) -> Result<(PathBuf, std::fs::Metadata), Refus> {
+/// Le chemin réel d'un fichier, et le fichier ouvert une seule fois par le lecteur sûr (`Ouvert`) : tout ce qui est
+/// lu ensuite (empreintes, premiers octets) l'est dans ce fichier-là, jugé sur ce qui a été ouvert. Regarder le chemin
+/// puis l'ouvrir laissait un écart : un tube nommé ou un lien glissé entre les deux figeait la commande ou faisait
+/// lire autre chose. Le chemin réel, « \\?\ » compris sous Windows : c'est lui qui désigne ce fichier-là
+/// (« facture.exe. » et « facture.exe » sont deux fichiers). Il n'est raccourci qu'à l'écran (`affiche`).
+fn ouvrir(chemin: &Path) -> Result<(PathBuf, Ouvert), Refus> {
     let reel = chemin
         .canonicalize()
         .map_err(|_| Refus::Introuvable(chemin.to_path_buf()))?;
-    let meta = std::fs::metadata(&reel).map_err(|_| Refus::Illisible(reel.clone()))?;
-    if !meta.is_file() {
-        return Err(Refus::PasUnFichier);
+    if crate::socle::du_systeme(&reel) {
+        return Err(Refus::DuSysteme);
     }
-    Ok((reel, meta))
+    match Ouvert::ouvrir(&reel) {
+        Ok(ouvert) => Ok((reel, ouvert)),
+        Err(e) => Err(match e.kind() {
+            std::io::ErrorKind::NotFound => Refus::Introuvable(reel),
+            std::io::ErrorKind::InvalidData => Refus::PasUnFichier,
+            std::io::ErrorKind::FileTooLarge => Refus::TropGros,
+            _ => Refus::Illisible(reel),
+        }),
+    }
 }
 
-/// Le fichier à vérifier, donné ou demandé, son chemin réel et ses métadonnées ; `None` (et c'est dit) s'il est
-/// introuvable, illisible ou n'est pas un fichier.
-fn fichier_a_verifier(fichier: Option<&Path>) -> Option<(PathBuf, std::fs::Metadata)> {
+/// Le fichier à vérifier, donné ou demandé, son chemin réel et le fichier ouvert ; `None` (et c'est dit) s'il est
+/// introuvable, illisible, n'est pas un fichier ou est un chemin du système.
+fn fichier_a_verifier(fichier: Option<&Path>) -> Option<(PathBuf, Ouvert)> {
     let chemin = if let Some(f) = fichier {
         f.to_path_buf()
     } else {
@@ -547,17 +627,29 @@ fn fichier_a_verifier(fichier: Option<&Path>) -> Option<(PathBuf, std::fs::Metad
             );
             None
         }
+        Err(Refus::DuSysteme) => {
+            trp!("  ✖ {}.", "  ✖ {}.", crate::socle::refus_du_systeme());
+            None
+        }
+        Err(Refus::TropGros) => {
+            trp!(
+                "  ✖ Fichier de plus de {} Gio : trop gros pour une vérification.",
+                "  ✖ File over {} GiB: too large to check.",
+                EMPREINTE_MAX >> 30
+            );
+            None
+        }
     }
 }
 
 /// Le nom, la taille et le dossier du fichier, rendus inoffensifs.
-fn montrer_le_fichier(chemin: &Path, nom: &str, meta: &std::fs::Metadata) {
+fn montrer_le_fichier(chemin: &Path, nom: &str, octets: u64) {
     println!();
     println!(
         "  {GRIS}{}{RESET} {} {GRIS}({}){RESET}",
         ajuster(tr!("Fichier", "File"), 8),
         affichable(nom),
-        taille(meta.len())
+        taille(octets)
     );
     afficher_aligne(
         &format!("  {GRIS}{}{RESET} ", ajuster(tr!("Dossier", "Folder"), 8)),
@@ -619,7 +711,7 @@ fn empreinte_attendue(
 }
 
 /// L'empreinte calculée, comparée à celle publiée.
-fn verifier_l_empreinte(chemin: &Path, attendue: Option<&(Algo, String, String)>, v: &mut Verification) {
+fn verifier_l_empreinte(ouvert: &mut Ouvert, attendue: Option<&(Algo, String, String)>, v: &mut Verification) {
     if !v.muet {
         section(tr!("Empreinte", "Checksum"));
         trp!(
@@ -627,7 +719,7 @@ fn verifier_l_empreinte(chemin: &Path, attendue: Option<&(Algo, String, String)>
             "  {GRIS}Computing the checksum…{RESET}"
         );
     }
-    let sha256 = calculer(chemin, Algo::Sha256);
+    let sha256 = calculer_ouvert(ouvert, Algo::Sha256);
     match &sha256 {
         Ok(sha256) => {
             if !v.muet {
@@ -655,7 +747,7 @@ fn verifier_l_empreinte(chemin: &Path, attendue: Option<&(Algo, String, String)>
         Some((algo, valeur, source)) => match if *algo == Algo::Sha256 {
             sha256.clone()
         } else {
-            calculer(chemin, *algo)
+            calculer_ouvert(ouvert, *algo)
         } {
             Ok(calculee) if calculee == *valeur => {
                 v.releve.conforme = !algo.faible();
@@ -701,16 +793,12 @@ fn verifier_l_empreinte(chemin: &Path, attendue: Option<&(Algo, String, String)>
 }
 
 /// Le nom et les premiers octets : un nom ou un contenu qui trompe sur ce qu'est le fichier.
-fn verifier_le_nom(chemin: &Path, nom: &str, v: &mut Verification) {
+fn verifier_le_nom(ouvert: &mut Ouvert, nom: &str, v: &mut Verification) {
     if !v.muet {
         section(tr!("Nom et contenu", "Name and content"));
     }
-    let mut debut = [0_u8; 4];
-    let lus = std::fs::File::open(chemin)
-        .and_then(|mut f| std::io::Read::read(&mut f, &mut debut))
-        .unwrap_or(0);
-    // Les octets lus (au plus 4), sans dépasser le tampon.
-    let lu: Vec<u8> = debut.iter().take(lus).copied().collect();
+    // Les premiers octets (au plus 4), lus dans le fichier déjà ouvert et vérifié.
+    let lu = ouvert.debut(4);
     let signes = nature(nom, &lu);
     if signes.is_empty() {
         v.dire(
@@ -1038,36 +1126,26 @@ pub fn nouveaux_a_signaler() -> Vec<(String, String)> {
 /// L'empreinte d'un fichier en hexadécimal minuscule, lu par morceaux : une image disque de plusieurs gigaoctets ne
 /// tient pas en mémoire.
 #[cfg(any(unix, test))]
-fn empreinte_lue(fichier: &Path, algo: Algo) -> std::io::Result<String> {
+fn empreinte_lue(ouvert: &mut Ouvert, algo: Algo) -> std::io::Result<String> {
     match algo {
-        Algo::Md5 => empreinte_par::<md5::Md5>(fichier),
-        Algo::Sha1 => empreinte_par::<sha1::Sha1>(fichier),
-        Algo::Sha256 => empreinte_par::<sha2::Sha256>(fichier),
-        Algo::Sha512 => empreinte_par::<sha2::Sha512>(fichier),
+        Algo::Md5 => empreinte_par::<md5::Md5>(ouvert),
+        Algo::Sha1 => empreinte_par::<sha1::Sha1>(ouvert),
+        Algo::Sha256 => empreinte_par::<sha2::Sha256>(ouvert),
+        Algo::Sha512 => empreinte_par::<sha2::Sha512>(ouvert),
     }
 }
 
 /// Le calcul d'un algorithme de RustCrypto ; MD5 compris, qui était écrit ici à la main : il ne protège plus d'une
 /// falsification, mais une empreinte MD5 publiée à côté d'un vieux téléchargement dit encore s'il est arrivé entier.
+/// Le fichier est lu par le lecteur sûr, exactement la taille annoncée à l'ouverture : un fichier de /proc (qui
+/// annonce 0 octet) ou un fichier qui change pendant le calcul est une erreur, jamais l'empreinte d'autre chose.
 #[cfg(any(unix, test))]
-fn empreinte_par<D: sha2::Digest>(fichier: &Path) -> std::io::Result<String> {
-    use std::io::Read;
+fn empreinte_par<D: sha2::Digest>(ouvert: &mut Ouvert) -> std::io::Result<String> {
     let mut calcul = D::new();
-    let mut f = std::fs::File::open(fichier)?;
-    let mut tampon = vec![0u8; 1 << 16];
-    loop {
-        match f.read(&mut tampon) {
-            Ok(0) => break,
-            // Un lecteur qui dit avoir lu plus que le tampon : une erreur, pas une empreinte inventée.
-            Ok(n) => calcul.update(
-                tampon
-                    .get(..n)
-                    .ok_or_else(|| std::io::Error::other("lecture plus longue que le tampon"))?,
-            ),
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(e) => return Err(e),
-        }
-    }
+    ouvert.parcourir(|morceau| {
+        calcul.update(morceau);
+        Ok(())
+    })?;
     Ok(crate::socle::hachage::hexa(&calcul.finalize()))
 }
 
@@ -1123,6 +1201,11 @@ pub(crate) fn corpus_signalements(e: &crate::modele::corpus::Entree) -> Vec<crat
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// L'empreinte d'un fichier ouvert par le lecteur sûr.
+    fn lue(f: &Path, algo: Algo) -> std::io::Result<String> {
+        empreinte_lue(&mut Ouvert::ouvrir(f)?, algo)
+    }
 
     /// Un suspect garde ses manques : la partie non lue reste « incomplète » à l'écran et non vérifiée dans le résultat
     /// versé (et donc le JSON), la réserve aussi dans le résultat ; le signe reste au niveau moyen.
@@ -1183,7 +1266,7 @@ mod tests {
             ),
         ] {
             std::fs::write(&f, message).unwrap();
-            assert_eq!(empreinte_lue(&f, Algo::Md5).unwrap(), attendue, "{message}");
+            assert_eq!(lue(&f, Algo::Md5).unwrap(), attendue, "{message}");
         }
         let _ = std::fs::remove_file(&f);
     }
@@ -1196,25 +1279,22 @@ mod tests {
         let contenu: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
         std::fs::write(&f, &contenu).unwrap();
         assert_eq!(
-            empreinte_lue(&f, Algo::Md5).unwrap(),
+            lue(&f, Algo::Md5).unwrap(),
             crate::socle::hachage::hexa(&md5::Md5::digest(&contenu))
         );
-        assert_eq!(
-            empreinte_lue(&f, Algo::Sha1).unwrap(),
-            crate::socle::hachage::sha1_hexa(&contenu)
-        );
+        assert_eq!(lue(&f, Algo::Sha1).unwrap(), crate::socle::hachage::sha1_hexa(&contenu));
         std::fs::write(&f, "abc").unwrap();
         assert_eq!(
-            empreinte_lue(&f, Algo::Sha256).unwrap(),
+            lue(&f, Algo::Sha256).unwrap(),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
         assert_eq!(
-            empreinte_lue(&f, Algo::Sha512).unwrap(),
+            lue(&f, Algo::Sha512).unwrap(),
             "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a\
              2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"
         );
         let _ = std::fs::remove_file(&f);
-        assert!(empreinte_lue(&f, Algo::Sha256).is_err());
+        assert!(lue(&f, Algo::Sha256).is_err());
     }
 
     /// Sur cet ordinateur, les empreintes calculées ici sont celles de md5sum, sha1sum, sha256sum et sha512sum.
@@ -1235,7 +1315,7 @@ mod tests {
                 continue;
             };
             let dite = r.sortie.split_whitespace().next().unwrap_or_default().to_string();
-            assert_eq!(empreinte_lue(&f, algo).unwrap(), dite, "{outil}");
+            assert_eq!(lue(&f, algo).unwrap(), dite, "{outil}");
         }
         let _ = std::fs::remove_file(&f);
     }
@@ -1324,6 +1404,73 @@ mod tests {
             assert_eq!(calculer(&bizarre, Algo::Sha256).as_deref(), Ok(SHA));
         }
         std::fs::remove_dir_all(&dossier).unwrap();
+    }
+
+    /// verifier-fichier et verifier-moi : le fichier est ouvert une seule fois par le lecteur sûr. Un tube nommé ne
+    /// fige rien (ni le fichier, ni un SHA256SUMS voisin), un lien glissé à la place du fichier n'est pas suivi, un
+    /// chemin du système est refusé, et un fichier changé entre l'ouverture et le calcul ne donne pas d'empreinte.
+    #[cfg(unix)]
+    #[test]
+    fn verification_par_le_lecteur_sur() {
+        use std::io::Write;
+        let d = crate::essais::Jetable::nouveau("telechargement-lecteur-sur");
+        let tube = d.join("outil.iso");
+        crate::essais::tube_nomme(&tube).unwrap();
+        let debut = std::time::Instant::now();
+        assert!(matches!(ouvrir(&tube), Err(Refus::PasUnFichier)));
+        assert!(calculer(&tube, Algo::Sha256).is_err());
+        assert!(calculer_donne(&tube, Algo::Sha256).is_err());
+        // Un SHA256SUMS voisin qui est un tube nommé : passé sans figer.
+        let fichier = d.join("outil.zip");
+        std::fs::write(&fichier, b"test").unwrap();
+        crate::essais::tube_nomme(&d.join("SHA256SUMS")).unwrap();
+        assert_eq!(empreinte_a_cote(&fichier), None);
+        // Un SHA256SUMS voisin qui est un lien : pas suivi.
+        let ailleurs = d.join("ailleurs.txt");
+        std::fs::write(&ailleurs, format!("{SHA}  outil.zip\n")).unwrap();
+        std::os::unix::fs::symlink(&ailleurs, d.join("sha256sums.txt")).unwrap();
+        assert_eq!(empreinte_a_cote(&fichier), None);
+        assert!(debut.elapsed() < std::time::Duration::from_secs(2));
+        // Les chemins du système, même par un lien : refusés avant toute ouverture.
+        let lien_zero = d.join("zero.iso");
+        std::os::unix::fs::symlink("/dev/zero", &lien_zero).unwrap();
+        assert!(matches!(ouvrir(&lien_zero), Err(Refus::DuSysteme)));
+        assert!(matches!(ouvrir(Path::new("/dev/zero")), Err(Refus::DuSysteme)));
+        assert_eq!(
+            calculer_donne(&lien_zero, Algo::Sha256),
+            Err(crate::socle::refus_du_systeme().to_string())
+        );
+        // Sans le refus des chemins, le lecteur sûr refuse encore /dev/zero (périphérique) et ne lit de /proc que
+        // ce que fstat annonce (0 octet) : une erreur, pas l'empreinte d'un fichier vide.
+        assert!(calculer(Path::new("/dev/zero"), Algo::Sha256).is_err());
+        #[cfg(target_os = "linux")]
+        {
+            assert!(matches!(ouvrir(Path::new("/proc/self/status")), Err(Refus::DuSysteme)));
+            assert!(calculer(Path::new("/proc/self/status"), Algo::Sha256).is_err());
+        }
+        // Un lien donné est mis en forme : c'est le fichier au bout qui est vérifié, ouvert sans suivre de lien.
+        let lien = d.join("lien.zip");
+        std::os::unix::fs::symlink(&fichier, &lien).unwrap();
+        assert_eq!(calculer_donne(&lien, Algo::Sha256).as_deref(), Ok(SHA));
+        assert!(calculer(&lien, Algo::Sha256).is_err());
+        let (reel, mut ouvert) = ouvrir(&lien).ok().unwrap();
+        assert_eq!(reel, fichier.canonicalize().unwrap());
+        // Remplacé par un lien après l'ouverture : c'est le fichier ouvert qui est lu, pas ce que le chemin désigne.
+        std::fs::remove_file(&fichier).unwrap();
+        std::os::unix::fs::symlink(&ailleurs, &fichier).unwrap();
+        assert_eq!(calculer_ouvert(&mut ouvert, Algo::Sha256).as_deref(), Ok(SHA));
+        assert_eq!(ouvert.debut(4), b"test");
+        // Grossi entre l'ouverture et le calcul : pas d'empreinte.
+        let grossi = d.join("grossi.zip");
+        std::fs::write(&grossi, b"test").unwrap();
+        let mut ouvert = Ouvert::ouvrir(&grossi).unwrap();
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&grossi)
+            .unwrap()
+            .write_all(b"++")
+            .unwrap();
+        assert!(calculer_ouvert(&mut ouvert, Algo::Sha256).is_err());
     }
 
     // Une empreinte seule, sans nom, ne vaut que dans le fichier propre à l'image (« outil.zip.sha256 ») : dans une

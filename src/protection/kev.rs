@@ -328,6 +328,16 @@ mod tests {
         }
     }
 
+    /// Les bornes de `--jours` (1 et 3650) et au-delà : le premier jour se calcule sans déborder ni paniquer.
+    #[test]
+    fn depuis_aux_bornes() {
+        let d = |t: &str| NaiveDate::parse_from_str(t, "%Y-%m-%d").unwrap();
+        assert_eq!(depuis(d("2026-11-16"), 1), d("2026-11-15"));
+        assert_eq!(depuis(d("2026-11-16"), 3650), d("2016-11-18"));
+        assert_eq!(depuis(NaiveDate::MIN, 3650), NaiveDate::MIN);
+        assert!(depuis(d("2026-11-16"), u32::MAX) < d("1000-01-01"));
+    }
+
     #[test]
     fn recentes_d_abord_et_celles_d_ici_en_tete() {
         let e = |cve: &str, d: &str| Exploitee {

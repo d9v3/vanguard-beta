@@ -64,16 +64,34 @@ pub(crate) struct Options {
     pub effacer: bool,
 }
 
-/// `vanguard signaler [--incident ID] [--outil ID] [--programme NOM] [--langue fr|en] [--json] [--effacer]`.
-pub(crate) fn commande(o: &Options) {
-    if let Err(e) = lancer(o) {
-        trp!("\n  ✖ {}", "\n  ✖ {}", affichable(&e.to_string()));
+/// `vanguard signaler [--incident ID] [--outil ID] [--programme NOM] [--langue fr|en] [--json] [--effacer]`. Rend
+/// le code de sortie (`code_de_sortie`).
+pub(crate) fn commande(o: &Options) -> i32 {
+    match lancer(o) {
+        Ok(()) => 0,
+        // Un script lit la sortie comme du JSON : l'erreur va sur la sortie d'erreur, comme celles des autres
+        // commandes `--json` (journaux-windows), jamais en texte sur la sortie, et le code dit qu'il n'y a rien à lire.
+        Err(e) if o.json => {
+            eprintln!("  ✖ {}", affichable(&e.to_string()));
+            code_de_sortie(&e)
+        }
+        // À l'écran (et depuis le menu, qui continue), la phrase suffit.
+        Err(e) => {
+            trp!("\n  ✖ {}", "\n  ✖ {}", affichable(&e.to_string()));
+            0
+        }
     }
+}
+
+/// Le code de sortie d'un échec en `--json` : 2 pour une demande refusée (identifiant, programme ou langue inconnus,
+/// à refaire autrement), 1 pour le reste.
+fn code_de_sortie(e: &Echec) -> i32 {
+    if e.code() == "refuse" { 2 } else { 1 }
 }
 
 /// Le menu : Protection › Préparer un signalement.
 pub(crate) fn menu() {
-    commande(&Options {
+    let _ = commande(&Options {
         incident: None,
         outil: None,
         programme: None,
