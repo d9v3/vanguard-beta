@@ -50,6 +50,8 @@ Merci de garder le secret jusqu'à la publication de l'avis.
 - le programme `vanguard` pour Linux et Windows, tel que publié (page Releases et dépôt
   [vanguard-update](https://github.com/d9v3/vanguard-update)), et les scripts qu'il écrit puis lance (PowerShell,
   shell) ;
+- la fenêtre de Vanguard (`vanguard-fenetre-linux-x86_64`, `vanguard-fenetre-windows-x86_64.exe`), publiée avec lui
+  sur les mêmes pages, et ce que `vanguard` vérifie avant de la lancer (son empreinte gravée) ;
 - les scripts de la clé USB : `Lancer Vanguard.bat`, `autorun.sh` et ce qu'ils exécutent ;
 - l'installation : la copie sur l'ordinateur depuis la clé, le raccourci, la mise à jour depuis la clé ou depuis
   GitHub.
@@ -99,10 +101,10 @@ Par exemple :
   plus ancienne, ou dont la taille ou l'empreinte diffère.
 - **Compilation reproductible** des programmes Linux et Windows, vérifiée la nuit sur GitHub quand le code a changé :
   le même code, compilé deux fois, donne exactement le même programme.
-- **Nomenclatures (SBOM) et attestation** : chaque page de version joint la nomenclature CycloneDX de chaque programme
-  (toutes les dépendances compilées, versions et licences) ; elles décrivent leur code, pas le fichier publié. GitHub,
-  qui les produit, les atteste (Sigstore), à vérifier avec la GitHub CLI connectée, le nom du fichier changé pour
-  l'autre système :
+- **Nomenclatures (SBOM) et attestation** : chaque page de version joint la nomenclature CycloneDX du programme
+  `vanguard` de chaque système (toutes les dépendances compilées, versions et licences), pas encore celle de la
+  fenêtre ; elles décrivent leur code, pas le fichier publié. GitHub, qui les produit, les atteste (Sigstore), à
+  vérifier avec la GitHub CLI connectée, le nom du fichier changé pour l'autre système :
   `gh attestation verify vanguard-linux-x86_64.cdx.json -R d9v3/vanguard-beta --signer-workflow d9v3/vanguard-beta/.github/workflows/ci.yml --source-ref refs/heads/master`.
   Les programmes Linux et Windows, compilés par l'auteur, ne sont pas attestés : la mise à jour intégrée les vérifie
   par la signature Ed25519 ci-dessus.
@@ -161,6 +163,8 @@ Please keep the flaw secret until the advisory is published.
 - the `vanguard` program for Linux and Windows, as published (Releases page and the
   [vanguard-update](https://github.com/d9v3/vanguard-update) repository), and the scripts it writes then runs
   (PowerShell, shell);
+- the Vanguard window (`vanguard-fenetre-linux-x86_64`, `vanguard-fenetre-windows-x86_64.exe`), published with it on
+  the same pages, and what `vanguard` checks before starting it (its built-in fingerprint);
 - the USB key's scripts: `Lancer Vanguard.bat`, `autorun.sh` and what they run;
 - the installation: the copy onto the computer from the key, the shortcut, the update from the key or from GitHub.
 
@@ -209,9 +213,10 @@ For example:
   older, or whose size or checksum differs.
 - **Reproducible build** of the Linux and Windows programs, checked nightly on GitHub when the code changed: the same
   code, built twice, gives exactly the same program.
-- **SBOMs and attestation**: each release page includes the CycloneDX bill of materials of each program (every
-  compiled dependency, versions and licenses); they describe its code, not the published file. GitHub, which builds
-  them, attests them (Sigstore); check with the GitHub CLI logged in, changing the file name for the other system:
+- **SBOMs and attestation**: each release page includes the CycloneDX bill of materials of each system's `vanguard`
+  program (every compiled dependency, versions and licenses), not yet the window's; they describe its code, not the
+  published file. GitHub, which builds them, attests them (Sigstore); check with the GitHub CLI logged in, changing
+  the file name for the other system:
   `gh attestation verify vanguard-linux-x86_64.cdx.json -R d9v3/vanguard-beta --signer-workflow d9v3/vanguard-beta/.github/workflows/ci.yml --source-ref refs/heads/master`.
   The Linux and Windows programs, built by the author, are not attested: the built-in update checks them with the
   Ed25519 signature above.

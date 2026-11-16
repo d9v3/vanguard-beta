@@ -240,10 +240,13 @@ sans empreinte (`cargo build`, les essais) ou une marque illisible : aucune fen�
 `vanguard`) quand la personne est devant un écran graphique ; sinon, le menu du terminal, comme avant. Ses
 gardes :
 
-- **Elle ne fait rien d'elle-même.** Elle relance le programme `vanguard` posé à côté d'elle (chemin absolu, jamais
-  cherché dans le PATH ; lancée d'un fichier en mémoire, elle reçoit ce chemin de `vanguard` par `--vanguard`, et lui
-  applique les mêmes gardes) avec une commande d'une liste fermée, qui ne change rien à l'ordinateur
-  (`audit`, `protection`, `evenements`, `diagnostic`, `test-connexion`…), toujours en `--json`, sans argument libre,
+- **Elle ne fait rien d'elle-même : des lectures, et quatre gestes acceptés un à un.** Ce qui change l'ordinateur
+  passe seulement par quatre gestes, chacun montré dans la fenêtre puis accepté, et rejugé par `vanguard` : retirer
+  ou remettre un programme du démarrage, appliquer une correction du compte, la remettre comme avant, installer la
+  mise à jour de Vanguard (chacun décrit plus bas). Tout le reste est lecture : elle relance le programme `vanguard`
+  posé à côté d'elle (chemin absolu, jamais cherché dans le PATH ; lancée d'un fichier en mémoire, elle reçoit ce
+  chemin de `vanguard` par `--vanguard`, et lui applique les mêmes gardes) avec une commande d'une liste fermée, qui
+  ne change rien à l'ordinateur (`audit`, `protection`, `evenements`, `diagnostic`, `test-connexion`…), toujours en `--json`, sans argument libre,
   sans shell, entrée fermée, une à la fois, avec un délai et un bouton Arrêter (sous Linux, tout le groupe de
   processus est arrêté, et ce qui en reste à la fin de la commande aussi ; `vanguard` n'est récolté qu'après, pour
   que ce numéro de groupe ne puisse pas être celui d'un autre ; un processus sorti du groupe qui garderait les sorties ouvertes n'y retient pas la fenêtre, qui lâche les tuyaux). La console de la fenêtre n'accepte que les noms de cette liste. Sous Linux, ce `vanguard`
@@ -251,7 +254,7 @@ gardes :
   modifier, dans des dossiers (jusqu'à `/`) que ni le groupe ni les autres ne peuvent modifier non plus (sauf un
   dossier à « sticky bit », comme `/tmp`), sinon il n'est pas lancé : la même règle que pour la fenêtre, plus bas,
   revérifiée avant chaque commande, et pas seulement à l'ouverture.
-- **Un seul changement, en deux temps : un programme du démarrage.** L'écran du démarrage montre l'état de chaque
+- **Premier geste, en deux temps : un programme retiré du démarrage ou remis.** L'écran du démarrage montre l'état de chaque
   programme qui se lance à l'ouverture de session. Un programme ordinaire a « Retirer du démarrage », un programme
   retiré par Vanguard a « Remettre » ; un programme à garder ou un pare-feu n'a aucun bouton, sa raison est dite. Un
   clic n'ouvre qu'une confirmation dans la fenêtre (nom, commande, ce qui va se passer, fenêtre administrateur si le

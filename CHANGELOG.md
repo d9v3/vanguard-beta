@@ -6,8 +6,8 @@ Ce que chaque journée a apporté à Vanguard, la plus récente en haut. Depuis 
 une seule publication par jour, qui regroupe le travail de la journée ; le 21 octobre en a eu deux, la 0.82 au matin et
 la 0.84 au soir, qui reprend la 0.83 livrée juste avant elle. Depuis le 7 novembre 2026, plus d'une publication le même
 jour est permise ; elles se suivent dans le paragraphe de leur journée. Seule la dernière version a sa page de
-téléchargement ; chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par exemple), pour être
-recompilée au besoin.
+téléchargement et garde son étiquette dans le dépôt. Le commit de chaque version porte son numéro à la fin de son
+titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pour la recompiler au besoin.
 
 ## 15 novembre 2026 : version 0.96.0
 

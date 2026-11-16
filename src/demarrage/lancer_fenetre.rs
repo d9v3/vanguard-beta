@@ -3,8 +3,9 @@
 //! programme porte l'empreinte gravée (`fenetre_livree`, `empreinte_fenetre`) ; sous Linux, ce sont les octets vérifiés
 //! qui sont lancés, pas le chemin ; sous Windows, le chemin, le fichier et ses dossiers tenus ; un programme compilé sans empreinte (`cargo build`, les essais) n'en lance aucune, comme la
 //! 0.95 (LIV-1). La fenêtre ne fait rien d'elle-même :
-//! elle relance ce programme-ci avec des commandes en lecture, et un seul changement, un programme retiré du démarrage
-//! ou remis, après sa confirmation (voir `fenetre/` et MODELE-DE-MENACE.md, « La fenêtre »).
+//! elle relance ce programme-ci avec des commandes en lecture, et quatre gestes qui changent, chacun montré puis
+//! accepté : un programme retiré du démarrage ou remis, une correction du compte appliquée, remise comme avant, et la
+//! mise à jour de Vanguard (voir `fenetre/` et MODELE-DE-MENACE.md, « La fenêtre »).
 //!
 //! Le menu reste le choix sûr : sans terminal des deux côtés (un script qui écrit les choix, une sortie redirigée),
 //! en SSH ou au Bureau à distance, en administrateur, sans écran graphique, sans fenêtre posée à côté, avec une fenêtre que d'autres

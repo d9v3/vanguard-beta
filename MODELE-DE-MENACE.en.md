@@ -220,9 +220,13 @@ unreadable mark: no window, the menu, with the reason.
 `vanguard`) when someone is in front of a graphical screen; otherwise, the terminal menu, as before. Its
 safeguards:
 
-- **It does nothing by itself.** It runs the `vanguard` program placed next to it (absolute path, never looked up in
-  the PATH; started from an in-memory file, it receives that path from `vanguard` through `--vanguard`, and applies
-  the same safeguards to it) with a command from a closed list, which changes nothing on the computer (`audit`,
+- **It does nothing by itself: reads, and four actions accepted one by one.** What changes the computer only goes
+  through four actions, each shown in the window then accepted, and judged again by `vanguard`: removing or putting
+  back a startup program, applying an account fix, putting it back as before, installing the Vanguard update (each
+  described below). Everything else is reading: it runs the `vanguard` program placed next to it (absolute path,
+  never looked up in the PATH; started from an in-memory file, it receives that path from `vanguard` through
+  `--vanguard`, and applies the same safeguards to it) with a command from a closed list, which changes nothing on
+  the computer (`audit`,
   `protection`, `evenements`, `diagnostic`, `test-connexion`…), always with `--json`, no free argument, no shell,
   input closed, one at a time, with a time limit and a Stop button (on Linux, the whole process group is stopped,
   and whatever is left of it when the command ends too; `vanguard` is only reaped afterwards, so that group number
@@ -231,7 +235,7 @@ safeguards:
   by the window's account or by root, that neither the group nor others can modify, in folders (up to `/`) that
   neither the group nor others can modify either (except a folder with the sticky bit, like `/tmp`), or it is not
   started: the same rule as for the window, below, checked again before each command, not only at opening.
-- **A single change, in two steps: a startup program.** The startup screen shows the state of each program that
+- **First action, in two steps: a startup program removed or put back.** The startup screen shows the state of each program that
   starts at login. An ordinary program has “Remove from startup”, a program removed by Vanguard has “Put back”; a
   program to keep or a firewall has no button, its reason is shown. A click only opens a confirmation inside the window
   (name, command, what will happen, administrator window if the program belongs to the whole computer); only

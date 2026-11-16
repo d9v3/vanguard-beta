@@ -102,7 +102,9 @@ TELECHARGER="Un programme par système, à télécharger :
   (« Informations complémentaires » puis « Exécuter quand même »).
 - **Linux** : \`vanguard-linux-x86_64\` (toutes les distributions), \`chmod +x\` puis lancer dans un terminal.
 - **La fenêtre**, facultative : \`vanguard-fenetre-linux-x86_64\` ou \`vanguard-fenetre-windows-x86_64.exe\`, posée à côté du programme ;
-  il ne lance que celle compilée avec lui (son empreinte y est gravée), sinon le menu dans le terminal.
+  il ne lance que celle compilée avec lui (son empreinte y est gravée), sinon le menu dans le terminal. La fenêtre
+  Linux demande glibc (le programme, lui, n'en dépend pas) : sur une distribution sans glibc (Alpine), le menu du
+  terminal.
 
 Empreintes SHA-256 : \`SHA256SUMS.txt\` (\`sha256sum -c SHA256SUMS.txt\`).
 
@@ -124,7 +126,8 @@ Ce qu'ont apporté les versions d'avant : \`CHANGELOG.md\` dans le dépôt.
 Download the program for your system: \`vanguard-windows-x86_64.exe\` (Windows, unsigned: SmartScreen may warn, “More
 info” then “Run anyway”), \`vanguard-linux-x86_64\` (any distribution: \`chmod +x\`, then run it in a terminal).
 Optional window: \`vanguard-fenetre-linux-x86_64\` or \`vanguard-fenetre-windows-x86_64.exe\`, placed next to the program; it only
-launches the one built with it (its fingerprint is engraved in it), otherwise the menu in the terminal.
+launches the one built with it (its fingerprint is engraved in it), otherwise the menu in the terminal. The Linux
+window needs glibc (the program itself does not): on a distribution without glibc (Alpine), use the terminal menu.
 SHA-256 checksums: \`SHA256SUMS.txt\` (they check the download, not the origin). On the d9v3/vanguard-beta page,
 software bills of materials (CycloneDX SBOM): \`vanguard-<system>.cdx.json\`, one per Vanguard program (not yet for
 the window); they describe its code, not the published file. The SBOMs are attested by GitHub, which built them; check with the GitHub CLI logged in

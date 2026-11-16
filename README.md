@@ -1,6 +1,9 @@
 <h1 align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/banniere-blanche.png"><img src="assets/banniere-noire.png" alt="Vanguard" width="600"></picture></h1>
 
-<p align="center"><b>Français</b> · <a href="README.en.md">English</a></p>
+<p align="center">
+  <b>Français</b> · <a href="README.en.md">English</a> ·
+  <a href="https://d9v3.github.io/vanguard-beta/">Page web du projet</a>
+</p>
 
 <p align="center">
   <b>Cyberdéfense portable des postes et des réseaux, depuis une clé USB.</b><br>
@@ -816,11 +819,20 @@ versions](../../releases/latest), avec les empreintes SHA-256. Ce qu'a apporté 
   vérifier l'empreinte SHA-256 sur la page de la version.
 - **Linux** : `chmod +x vanguard-linux-x86_64`, puis `./vanguard-linux-x86_64` dans un terminal (toutes les
   distributions, rien à installer).
+- **La fenêtre de Vanguard**, facultative : sur la même page,
+  [vanguard-fenetre-windows-x86_64.exe](../../releases/latest/download/vanguard-fenetre-windows-x86_64.exe) ou
+  [vanguard-fenetre-linux-x86_64](../../releases/latest/download/vanguard-fenetre-linux-x86_64), à poser dans le même
+  dossier que le programme, sous ce nom. Sur un bureau graphique, `vanguard` l'ouvre alors au lieu du menu, seulement
+  si son empreinte est celle gravée en lui à la compilation (la fenêtre d'une autre version n'est pas lancée). Le menu
+  du terminal reste là sans fenêtre posée à côté, en SSH ou au Bureau à distance, en administrateur, ou sans terminal ;
+  `vanguard --menu` le force. Sous Linux, la fenêtre demande la bibliothèque C glibc, celle de presque toutes les
+  distributions (le programme, lui, n'en dépend pas) : sur une distribution sans glibc (Alpine, par exemple), prendre
+  le menu du terminal. Une fois posée, la mise à jour intégrée la remplace avec le programme.
 - **Depuis la clé USB** : `Windows/vanguard.exe` ou `Linux/vanguard` ; le guide de la clé est dans `LISEZMOI.txt`.
 
-Dans le menu, choisir **1** (bilan de sécurité complet), puis **2** (corriger). Les flèches ↑ ↓ pour se déplacer, Entrée ou → pour
-choisir ; Échap, ← ou Retour arrière pour revenir. La fenêtre se met à la taille du menu quand elle a été ouverte pour
-Vanguard.
+Dans le menu du terminal, choisir **1** (bilan de sécurité complet), puis **2** (corriger). Les flèches ↑ ↓ pour se
+déplacer, Entrée ou → pour choisir ; Échap, ← ou Retour arrière pour revenir. La fenêtre du terminal se met à la taille
+du menu quand elle a été ouverte pour Vanguard.
 
 Le menu range les outils en deux parties. **Cyberdéfense** : 4 Cet ordinateur, 5 Réseau et Internet, 6 Virus et
 logiciels espions, 7 Arnaques et vie privée, 8 Bloquer et réagir. **En plus** : 9 Données et sauvegardes, 10 Guide des

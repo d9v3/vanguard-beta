@@ -1,6 +1,9 @@
 <h1 align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/banniere-blanche.png"><img src="assets/banniere-noire.png" alt="Vanguard" width="600"></picture></h1>
 
-<p align="center"><a href="README.md">Français</a> · <b>English</b></p>
+<p align="center">
+  <a href="README.md">Français</a> · <b>English</b> ·
+  <a href="https://d9v3.github.io/vanguard-beta/">Project web page</a> (in French, with an English tour of the window)
+</p>
 
 <p align="center">
   <b>Portable cyber defense for endpoints and networks, from a USB key.</b><br>
@@ -770,10 +773,19 @@ with the SHA-256 checksums. What each version brought: [history](CHANGELOG.en.md
   a new program): it is a false positive; check the SHA-256 checksum on the release page.
 - **Linux**: `chmod +x vanguard-linux-x86_64`, then `./vanguard-linux-x86_64` in a terminal (any distribution, nothing
   to install).
+- **The Vanguard window**, optional: on the same page,
+  [vanguard-fenetre-windows-x86_64.exe](../../releases/latest/download/vanguard-fenetre-windows-x86_64.exe) or
+  [vanguard-fenetre-linux-x86_64](../../releases/latest/download/vanguard-fenetre-linux-x86_64), to place in the same
+  folder as the program, under that name. On a graphical desktop, `vanguard` then opens it instead of the menu, only
+  if its fingerprint is the one built into it at compile time (another version's window is not started). The
+  terminal menu stays with no window next to it, over SSH or Remote Desktop, as administrator, or with no terminal;
+  `vanguard --menu` forces it. On Linux, the window needs the glibc C library, the one of almost every distribution
+  (the program itself does not depend on it): on a distribution without glibc (Alpine, for example), use the terminal
+  menu. Once in place, the built-in update replaces it along with the program.
 - **From the USB key**: `Windows/vanguard.exe` or `Linux/vanguard`; the key's guide is in `README.txt`.
 
-In the menu, choose **1** (full security check), then **2** (fix). ↑ ↓ to move, Enter or → to select; Esc, ← or
-Backspace to go back. The window fits the menu when it was opened for Vanguard.
+In the terminal menu, choose **1** (full security check), then **2** (fix). ↑ ↓ to move, Enter or → to select; Esc, ← or
+Backspace to go back. The terminal window fits the menu when it was opened for Vanguard.
 
 The menu sorts the tools in two parts. **Cyber defense**: 4 This computer, 5 Network and Internet, 6 Viruses and
 spyware, 7 Scams and privacy, 8 Block and respond. **Also included**: 9 Data and backups, 10 Command guide,

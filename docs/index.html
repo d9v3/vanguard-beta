@@ -392,8 +392,8 @@ details > summary::after { display: none; }
 <li>Relancer une lecture d'un clic, sous <b>Relire</b> : Bilan de cet ordinateur, Protection, Alertes et événements, Diagnostic du réseau.</li>
 </ul>
 <p class="touches">Un clic ou une touche saute l'ouverture. Dans la rubrique Vanguard, Animations « Réduites » la retire pour de bon.</p>
-<details class="plus"><summary>Pourquoi rien ne se lance pas tout seul ?</summary>
-<p>Les premières lectures sont déjà parties quand la fenêtre s'affiche : leurs réponses arrivent pendant l'ouverture. Ce qui changerait l'ordinateur (corrections, réglages, quarantaine) n'est jamais lancé sans être montré puis accepté ; la fenêtre le dit en bas de la Vue d'ensemble : « Ce qui change l'ordinateur (corrections, réglages, quarantaine) reste dans le menu de Vanguard pour l'instant : il arrive ici lot par lot, toujours montré puis accepté. »</p>
+<details class="plus"><summary>Qu'est-ce qui se lance tout seul ?</summary>
+<p>Les premières lectures sont déjà parties quand la fenêtre s'affiche : leurs réponses arrivent pendant l'ouverture. Rien de ce qui changerait l'ordinateur ne part seul : chaque changement est montré, puis lancé seulement après votre accord. Depuis la fenêtre, quatre gestes : retirer ou remettre un programme du démarrage, appliquer une correction du compte, la remettre comme avant, installer la mise à jour de Vanguard. Les corrections de tout l'ordinateur, les réglages et la quarantaine restent pour l'instant dans le menu de Vanguard.</p>
 </details>
 </div>
 </li>
@@ -657,7 +657,7 @@ details > summary::after { display: none; }
 <div class="carte stat"><span class="valeur">≈ 447 100</span><span class="detail">lignes de code Rust</span></div>
 <div class="carte stat"><span class="valeur">4 445</span><span class="detail">tests sous Linux</span></div>
 <div class="carte stat"><span class="valeur">3 305</span><span class="detail">tests sous Windows (Wine)</span></div>
-<div class="carte stat"><span class="valeur">236</span><span class="detail">vérifications sur un vrai Windows</span></div>
+<div class="carte stat"><span class="valeur">238</span><span class="detail">vérifications sur un vrai Windows</span></div>
 </div>
 <p class="note">Chaque version passe par <code>outils/verifier.sh</code> (formatage, clippy, tests Linux et sous Wine, fuzzing, preuves, liens), et par un vrai Windows qui se teste tout seul. Cette page est refaite par le script de publication à chaque version.</p>
 </section>
@@ -1124,7 +1124,7 @@ vanguard yara --complet</pre>
 <li>Les vérifications Linux sur une vraie distribution (dossiers de commandes, IPv6, sshd et ses algorithmes, PAM de Fedora et d&#x27;Arch, modules du noyau et pilote NVIDIA, carte en mode promiscuité : ce conteneur n&#x27;a ni IPv6 …</li>
 <li>trivy sur une vraie machine avec Docker (ni trivy ni démon Docker dans le conteneur où il a été écrit), et installé par winget dans la VM (identifiant à confirmer) …</li>
 </ul></details>
-<details class="replie"><summary><span>En préparation (pas encore publiées)</span><span class="compte">10</span></summary>
+<details class="replie" open><summary><span>Prochaine version</span><span class="compte">17</span></summary>
 <ul class="liste">
 <li>Mettre Vanguard à jour après avoir vu ce qui s&#x27;installe : origine, version, empreinte et programmes remplacés montrés, puis installés une seule fois sur accord.</li>
 <li>Appliquer une correction du bilan, puis la remettre comme avant, chacune sur un accord lié à ce qui a été montré (Linux).</li>
@@ -1136,9 +1136,6 @@ vanguard yara --complet</pre>
 <li>Page des fonctions : visite guidée de la fenêtre (captures à données inventées), recherche dans la page, thème sombre ou clair, version téléphone.</li>
 <li>CI : actions tenues à jour par Dependabot (délai de 7 jours) ; les erreurs de <code>cargo tree</code> montrées au lieu d&#x27;être tues.</li>
 <li>Ce ticket et les tickets « journal » mis à jour tout seuls à chaque version publiée.</li>
-</ul></details>
-<details class="replie" open><summary><span>Prochaine version</span><span class="compte">7</span></summary>
-<ul class="liste">
 <li>Règles suivantes de <code>journaux-windows</code>, chacune provoquée dans la VM (E5) ; le menu et deux règles sont arrivés en 0.88.0.</li>
 <li>Windows : les dernières corrections en PowerShell passées en Rust, une seule demande administrateur (Rust 3 …</li>
 <li>Linux : corrections par l&#x27;assistant élevé, sans <code>bash -c</code> ni <code>sudo</code> lancés par Vanguard.</li>
@@ -1203,7 +1200,7 @@ vanguard yara --complet</pre>
 </div>
 <h3 class="sous-titre">Le chemin principal : Vanguard sur votre ordinateur</h3>
 <ol class="chaine">
-<li><b>Télécharger</b>Sur la <a href="https://github.com/d9v3/vanguard-beta/releases/latest">page de la dernière version</a>, le programme de votre système : <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-windows-x86_64.exe">Windows</a> · <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-linux-x86_64">Linux</a>. Un seul exécutable, rien à installer pour le lancer.</li>
+<li><b>Télécharger</b>Sur la <a href="https://github.com/d9v3/vanguard-beta/releases/latest">page de la dernière version</a>, le programme de votre système : <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-windows-x86_64.exe">Windows</a> · <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-linux-x86_64">Linux</a>. Un seul exécutable, rien à installer pour le lancer. La fenêtre de Vanguard, facultative, est sur la même page (<a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-fenetre-windows-x86_64.exe">Windows</a> · <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-fenetre-linux-x86_64">Linux</a>) : posée dans le même dossier que le programme, elle s'ouvre au lieu du menu sur un bureau graphique, seulement si son empreinte est celle gravée dans le programme. Le menu du terminal reste là en SSH ou au Bureau à distance, en administrateur, ou avec <code>vanguard --menu</code>. Sous Linux, la fenêtre demande glibc, la bibliothèque C de presque toutes les distributions (sans elle, Alpine par exemple, le menu du terminal).</li>
 <li><b>Vérifier l'empreinte</b>Avec <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/SHA256SUMS.txt">SHA256SUMS.txt</a>, posé à côté : <code>sha256sum -c --ignore-missing SHA256SUMS.txt</code> sous Linux ; sous Windows, <code>Get-FileHash</code>, à comparer à sa ligne. Une empreinte différente : ne pas le lancer.</li>
 <li><b>Le mettre sur l'ordinateur</b><code>vanguard raccourci</code> le copie dans son dossier sur cet ordinateur et le lance d'un clic (menu des applications sous Linux, Bureau sous Windows), après accord.</li>
 <li><b>Le tenir à jour</b><code>vanguard se-mettre-a-jour</code> prend la dernière version publiée, signée par l'auteur et vérifiée ; toujours sur accord, jamais une version plus ancienne.</li>
@@ -1242,7 +1239,7 @@ vanguard yara --complet</pre>
 <summary><span><h3>In English: download, check, install</h3><span class="resume">Download, check the checksum, keep it up to date.</span></span></summary>
 <div>
 <ol class="chaine">
-<li><b>Download</b>From the <a href="https://github.com/d9v3/vanguard-beta/releases/latest">latest release page</a>, the program for your system: <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-windows-x86_64.exe">Windows</a> · <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-linux-x86_64">Linux</a>. A single executable, nothing to install to run it.</li>
+<li><b>Download</b>From the <a href="https://github.com/d9v3/vanguard-beta/releases/latest">latest release page</a>, the program for your system: <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-windows-x86_64.exe">Windows</a> · <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-linux-x86_64">Linux</a>. A single executable, nothing to install to run it. The Vanguard window, optional, is on the same page (<a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-fenetre-windows-x86_64.exe">Windows</a> · <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-fenetre-linux-x86_64">Linux</a>): placed in the same folder as the program, it opens instead of the menu on a graphical desktop, only if its fingerprint is the one built into the program. The terminal menu stays over SSH or Remote Desktop, as administrator, or with <code>vanguard --menu</code>. On Linux, the window needs glibc, the C library of almost every distribution (without it, Alpine for example, use the terminal menu).</li>
 <li><b>Check the checksum</b>With <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/SHA256SUMS.txt">SHA256SUMS.txt</a> next to it: <code>sha256sum -c --ignore-missing SHA256SUMS.txt</code> on Linux; on Windows, <code>Get-FileHash</code>, compared to its line. A different checksum: do not run it.</li>
 <li><b>Put it on the computer</b><code>vanguard shortcut</code> copies it to its folder on this computer and launches it in one click (applications menu on Linux, Desktop on Windows), after your consent.</li>
 <li><b>Keep it up to date</b><code>vanguard self-update</code> takes the latest published version, signed by the author and checked; always with your consent, never an older version.</li>
