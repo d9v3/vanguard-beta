@@ -127,7 +127,17 @@ pub(crate) enum Refus {
     Decompose,
     /// Téléchargements, Bureau ou Documents est un lien vers un endroit qui n'en est pas un (un dossier caché, hors
     /// de la maison, la maison elle-même) : écarté, jamais suivi ; le refus le dit au lieu de « hors des endroits ».
+    /// Cette variante et les deux suivantes ne viennent que des racines de Linux (`racines_linux`).
+    #[cfg_attr(windows, allow(dead_code))]
     RacineEnLien,
+    /// user-dirs.dirs déclare Téléchargements, Bureau ou Documents sous un nom hors de la liste fermée
+    /// (`NOMS_DECLARABLES`) : écarté ; le refus le dit au lieu de « hors des endroits ».
+    #[cfg_attr(windows, allow(dead_code))]
+    NomNonReconnu,
+    /// Un chemin sous /run/media alors que le nom du compte est inconnu (un compte hors de /etc/passwd, que `vanguard`
+    /// ne lit pas : systemd-homed, LDAP) : aucun support amovible n'est situé.
+    #[cfg_attr(windows, allow(dead_code))]
+    CompteInconnu,
     /// Le fichier est dans un dossier caché, ou caché lui-même.
     Cache,
     /// Ce n'est pas un fichier ordinaire (dossier, tube nommé, périphérique).
@@ -199,6 +209,16 @@ impl Refus {
                  ne le suit pas",
                 "this folder is a link to a hidden folder, to the home folder or outside it: the Console does not \
                  follow it"
+            ),
+            Refus::NomNonReconnu => crate::tr!(
+                "dossier déclaré par user-dirs.dirs sous un nom non reconnu : la Console ne le prend pas pour \
+                 Téléchargements, Bureau ou Documents",
+                "folder declared in user-dirs.dirs under an unrecognized name: the Console does not take it for \
+                 Downloads, Desktop or Documents"
+            ),
+            Refus::CompteInconnu => crate::tr!(
+                "nom du compte inconnu (compte hors de /etc/passwd) : les supports amovibles ne sont pas situés",
+                "account name unknown (account outside /etc/passwd): removable drives are not located"
             ),
             Refus::Cache => crate::tr!(
                 "fichier caché ou dans un dossier caché",
@@ -487,23 +507,23 @@ pub(crate) fn reste_sous(chemin: &Path, racine: &Path) -> Option<PathBuf> {
 /// Un endroit permis. `tapee` : tel qu'on le tape, sous la maison que donne le système ; `reelle` : le même sous la
 /// maison résolue, d'où `vanguard` descend sans suivre de lien. Sous Windows les deux sont le même texte : rien n'y
 /// est résolu, car résoudre une jonction ou un partage fait déjà sortir la session sur le réseau. `ecartee` : un
-/// endroit usuel ou déclaré qui est un lien vers ailleurs (voir `racines_linux`) ; rien n'y est permis, il ne sert
-/// qu'à dire la vraie cause du refus (`RacineEnLien`) plutôt que « hors des endroits ».
+/// endroit usuel ou déclaré qui n'en est pas un (un lien vers ailleurs, un nom non reconnu, /run/media sans nom de
+/// compte, voir `racines_linux`) ; rien n'y est permis, il ne sert qu'à dire la vraie cause du refus
+/// (`RacineEnLien`, `NomNonReconnu`, `CompteInconnu`) plutôt que « hors des endroits ».
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Racine {
     pub(crate) tapee: PathBuf,
     pub(crate) reelle: PathBuf,
-    pub(crate) ecartee: bool,
+    pub(crate) ecartee: Option<Refus>,
 }
 
 impl Racine {
     /// Une racine qui s'écrit pareil tapée ou réelle (support amovible, dossier du registre).
-    #[cfg_attr(not(any(windows, test)), allow(dead_code))]
     pub(crate) fn meme(chemin: PathBuf) -> Racine {
         Racine {
             tapee: chemin.clone(),
             reelle: chemin,
-            ecartee: false,
+            ecartee: None,
         }
     }
 }
@@ -511,17 +531,17 @@ impl Racine {
 /// Où tombe `chemin` (absolu, « ~ » développé) parmi les `racines`, sur le texte seul : la racine et le reste après
 /// elle, fait de noms seulement, aucun caché. Hors de toute racine, `HorsDesEndroits` sans rien regarder sur le
 /// disque : un refus qui différerait selon que ~/.ssh/id_ed25519 existe ou non dirait ce qu'il y a dans ~/.ssh. Sous
-/// une racine écartée, rien n'est permis : le refus dit seulement pourquoi (`RacineEnLien`).
+/// une racine écartée, rien n'est permis : le refus dit seulement pourquoi (la première cause rencontrée).
 pub(crate) fn situer<'r>(chemin: &Path, racines: &'r [Racine]) -> Result<(&'r Racine, PathBuf), Refus> {
     let mut cache_vu = false;
-    let mut lien_vu = false;
+    let mut ecartee_vue: Option<Refus> = None;
     for r in racines {
         for base in [&r.tapee, &r.reelle] {
             let Some(reste) = reste_sous(chemin, base) else {
                 continue;
             };
-            if r.ecartee {
-                lien_vu = true;
+            if let Some(cause) = r.ecartee {
+                ecartee_vue = ecartee_vue.or(Some(cause));
                 continue;
             }
             if !reste.components().all(|c| matches!(c, Component::Normal(_))) {
@@ -536,10 +556,8 @@ pub(crate) fn situer<'r>(chemin: &Path, racines: &'r [Racine]) -> Result<(&'r Ra
     }
     Err(if cache_vu {
         Refus::Cache
-    } else if lien_vu {
-        Refus::RacineEnLien
     } else {
-        Refus::HorsDesEndroits
+        ecartee_vue.unwrap_or(Refus::HorsDesEndroits)
     })
 }
 
@@ -808,10 +826,12 @@ const NOMS_DECLARABLES: [&str; 234] = [
 ];
 
 /// Le chemin, relatif à la maison, du dossier que user-dirs.dirs déclare pour `cle` : un ou deux noms visibles
-/// (« $HOME/Documents », « $HOME/Nextcloud/Documents », ou le même écrit en entier), le dernier pris dans la liste
-/// fermée `NOMS_DECLARABLES`. Ni « $HOME/.ssh », ni « $HOME/.config/vanguard », ni « /etc », ni « $HOME/Projets ».
+/// (« $HOME/Documents », « $HOME/Nextcloud/Documents », ou le même écrit en entier). `Ok` si le dernier est dans la
+/// liste fermée `NOMS_DECLARABLES`, sans tenir compte de la casse (« $HOME/downloads ») ; `Err` (le même chemin) s'il
+/// n'y est pas : la racine est alors écartée et le refus le dit (`NomNonReconnu`). Ni « $HOME/.ssh », ni
+/// « $HOME/.config/vanguard », ni « /etc », ni « $HOME/Projets ».
 #[cfg(unix)]
-fn declare(declares: &str, cle: &str, maison: &Path, maison_reelle: &Path) -> Option<PathBuf> {
+fn declare(declares: &str, cle: &str, maison: &Path, maison_reelle: &Path) -> Option<Result<PathBuf, PathBuf>> {
     let valeur = declares
         .lines()
         .find_map(|l| l.trim().strip_prefix(cle)?.strip_prefix('='))?
@@ -824,70 +844,175 @@ fn declare(declares: &str, cle: &str, maison: &Path, maison_reelle: &Path) -> Op
     let reste = [maison, maison_reelle].iter().find_map(|m| reste_sous(&chemin, m))?;
     let noms: Vec<Component<'_>> = reste.components().collect();
     let bons = (1..=2).contains(&noms.len()) && noms.iter().all(|c| matches!(c, Component::Normal(_)) && !cache(*c));
-    let dernier = reste.file_name()?.to_str()?;
-    (bons && NOMS_DECLARABLES.contains(&dernier)).then_some(reste)
-}
-
-/// Le dossier réel d'un endroit permis `relatif` à la maison, résolu une seule fois, ici : `Some(Ok(cible))` si c'est
-/// un vrai dossier, ou un lien vers un dossier visible strictement sous la maison réelle (~/Documents lié à
-/// ~/Nextcloud/Documents) ; `Some(Err(RacineEnLien))` si c'est un lien vers un dossier ailleurs (~/.ssh, /, la
-/// maison elle-même) ; `None` s'il n'y a là aucun dossier. La descente part ensuite de la cible, sans plus suivre de
-/// lien : changer le lien après coup ne déplace pas l'endroit permis.
-#[cfg(unix)]
-fn cible_de(maison_reelle: &Path, relatif: &Path) -> Option<Result<PathBuf, Refus>> {
-    let cible = maison_reelle.join(relatif).canonicalize().ok()?;
-    if !std::fs::symlink_metadata(&cible).is_ok_and(|m| m.is_dir()) {
+    let dernier = reste.file_name()?.to_str()?.to_lowercase();
+    if !bons {
         return None;
     }
-    let bonne = reste_sous(&cible, maison_reelle)
-        .is_some_and(|r| r.components().all(|c| matches!(c, Component::Normal(_)) && !cache(c)));
-    Some(if bonne { Ok(cible) } else { Err(Refus::RacineEnLien) })
+    Some(if NOMS_DECLARABLES.iter().any(|n| n.to_lowercase() == dernier) {
+        Ok(reste)
+    } else {
+        Err(reste)
+    })
+}
+
+/// Le plus de liens suivis pour résoudre un endroit permis (`cible_de`) : au-delà (une boucle, une longue chaîne),
+/// il est écarté.
+#[cfg(unix)]
+const SAUTS_AU_PLUS: usize = 8;
+
+/// Un pas de la résolution d'un endroit permis (`cible_de`).
+#[cfg(unix)]
+enum Pas {
+    Nom(std::ffi::OsString),
+    Remonter,
+}
+
+/// Les pas d'un chemin relatif (« a/../b ») ; `None` s'il n'est pas relatif.
+#[cfg(unix)]
+fn pas_de(chemin: &Path) -> Option<Vec<Pas>> {
+    chemin
+        .components()
+        .filter(|c| *c != Component::CurDir)
+        .map(|c| match c {
+            Component::Normal(n) => Some(Pas::Nom(n.to_os_string())),
+            Component::ParentDir => Some(Pas::Remonter),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Le dossier réel d'un endroit permis `relatif` à la maison, résolu une seule fois, ici, pas à pas : chaque nom est
+/// regardé sans suivre de lien, sous un dossier déjà reconnu comme vrai et sous la maison réelle ; un lien est lu
+/// (son texte, sans rien toucher de ce qu'il désigne) et son texte rejoint les noms qui restent. Rien hors de la
+/// maison n'est jamais touché : un montage automatique (/net/…) ne se lance pas, un partage figé ne fige rien.
+/// `Some(Ok(cible))` si c'est un vrai dossier, ou un lien vers un dossier visible strictement sous la maison réelle
+/// (~/Documents lié à ~/Nextcloud/Documents) ; `Some(Err(RacineEnLien))` dès qu'un texte de lien sort de la maison
+/// (absolu ailleurs, ou un « .. » au-dessus d'elle), passe par un nom caché, mène à la maison elle-même ou fait plus
+/// de `SAUTS_AU_PLUS` sauts : ce refus ne dépend donc jamais de ce qui existe hors de la maison. `None` s'il n'y a là
+/// aucun dossier. La descente part ensuite de la cible, sans plus suivre de lien : changer le lien après coup ne
+/// déplace pas l'endroit permis.
+#[cfg(unix)]
+fn cible_de(maison: &Path, maison_reelle: &Path, relatif: &Path) -> Option<Result<PathBuf, Refus>> {
+    let ecartee = Some(Err(Refus::RacineEnLien));
+    // Les pas qui restent, le prochain à la fin.
+    let mut a_voir: Vec<Pas> = pas_de(relatif)?;
+    a_voir.reverse();
+    let mut courant = maison_reelle.to_path_buf();
+    let mut sauts: usize = 0;
+    while let Some(pas) = a_voir.pop() {
+        let nom = match pas {
+            // `courant` n'a aucun lien : y remonter d'un cran est son vrai parent.
+            Pas::Remonter if courant == maison_reelle => return ecartee,
+            Pas::Remonter => {
+                courant.pop();
+                continue;
+            }
+            Pas::Nom(nom) => nom,
+        };
+        if nom.as_encoded_bytes().first() == Some(&b'.') {
+            return ecartee;
+        }
+        let suivant = courant.join(&nom);
+        let m = std::fs::symlink_metadata(&suivant).ok()?;
+        if m.file_type().is_symlink() {
+            sauts = sauts.saturating_add(1);
+            if sauts > SAUTS_AU_PLUS {
+                return ecartee;
+            }
+            let texte = std::fs::read_link(&suivant).ok()?;
+            let reste = if texte.is_absolute() {
+                let sous = |base: &Path| {
+                    if texte.components().eq(base.components()) {
+                        Some(PathBuf::new())
+                    } else {
+                        reste_sous(&texte, base)
+                    }
+                };
+                let Some(reste) = sous(maison_reelle).or_else(|| sous(maison)) else {
+                    return ecartee;
+                };
+                courant = maison_reelle.to_path_buf();
+                reste
+            } else {
+                texte
+            };
+            let Some(pas) = pas_de(&reste) else {
+                return ecartee;
+            };
+            a_voir.extend(pas.into_iter().rev());
+        } else if m.is_dir() {
+            courant = suivant;
+        } else {
+            return None;
+        }
+    }
+    if courant == maison_reelle {
+        return ecartee;
+    }
+    Some(Ok(courant))
 }
 
 /// Les endroits permis sous Linux : Téléchargements, Bureau et Documents (ceux que déclare user-dirs.dirs, voir
 /// `declare`, et leurs noms usuels), chacun résolu une fois (`cible_de`) ; et /run/media/<compte>, où le bureau monte
-/// les supports amovibles, s'il est bien lui-même. Un endroit qui est un lien hors des cibles admises reste dans la
-/// liste, écarté (`ecartee`), pour que le refus dise sa vraie cause. `declares` : le texte de user-dirs.dirs (vide
+/// les supports amovibles, s'il est bien lui-même. Un endroit qui est un lien hors des cibles admises, ou déclaré
+/// sous un nom non reconnu, reste dans la liste, écarté (`ecartee`), pour que le refus dise sa vraie cause ; de même
+/// /run/media quand le nom du compte est inconnu (`CompteInconnu`). `declares` : le texte de user-dirs.dirs (vide
 /// s'il manque) ; `compte` : le nom du compte.
 #[cfg(unix)]
 pub(crate) fn racines_linux(maison: &Path, declares: &str, compte: Option<&str>) -> Vec<Racine> {
     let Ok(maison_reelle) = maison.canonicalize() else {
         return Vec::new();
     };
-    let mut relatifs: Vec<PathBuf> = ["XDG_DOWNLOAD_DIR", "XDG_DESKTOP_DIR", "XDG_DOCUMENTS_DIR"]
+    let mut relatifs: Vec<Result<PathBuf, PathBuf>> = ["XDG_DOWNLOAD_DIR", "XDG_DESKTOP_DIR", "XDG_DOCUMENTS_DIR"]
         .iter()
         .filter_map(|cle| declare(declares, cle, maison, &maison_reelle))
         .collect();
     relatifs.extend(
         ["Téléchargements", "Downloads", "Bureau", "Desktop", "Documents"]
             .iter()
-            .map(PathBuf::from),
+            .map(|n| Ok(PathBuf::from(n))),
     );
     let mut racines: Vec<Racine> = Vec::new();
     for relatif in relatifs {
+        let (relatif, cible) = match relatif {
+            Ok(r) => {
+                let cible = cible_de(maison, &maison_reelle, &r);
+                (r, cible)
+            }
+            Err(r) => (r, Some(Err(Refus::NomNonReconnu))),
+        };
         let tapee = maison.join(&relatif);
-        let racine = match cible_de(&maison_reelle, &relatif) {
+        let racine = match cible {
             None => continue,
             Some(Ok(reelle)) => Racine {
                 tapee,
                 reelle,
-                ecartee: false,
+                ecartee: None,
             },
-            Some(Err(_)) => Racine {
+            Some(Err(cause)) => Racine {
                 tapee,
                 reelle: maison_reelle.join(&relatif),
-                ecartee: true,
+                ecartee: Some(cause),
             },
         };
         if !racines.contains(&racine) {
             racines.push(racine);
         }
     }
-    if let Some(compte) = compte.filter(|n| nom_de_compte(n)) {
-        let media = Path::new("/run/media").join(compte);
-        if media.canonicalize().is_ok_and(|r| r == media) {
-            racines.push(Racine::meme(media));
+    let media = Path::new("/run/media");
+    match compte.filter(|n| nom_de_compte(n)) {
+        Some(compte) => {
+            let media = media.join(compte);
+            if media.canonicalize().is_ok_and(|r| r == media) {
+                racines.push(Racine::meme(media));
+            }
         }
+        // `vanguard` ne lit que /etc/passwd (musl) : un compte de systemd-homed ou de LDAP n'y a pas de nom, et le
+        // refus le dit plutôt que « hors des endroits ».
+        None => racines.push(Racine {
+            ecartee: Some(Refus::CompteInconnu),
+            ..Racine::meme(media.to_path_buf())
+        }),
     }
     racines
 }
@@ -1158,7 +1283,7 @@ mod tests {
         let racines = [Racine {
             tapee: tapee.join("Documents"),
             reelle: m.0.join("Documents"),
-            ecartee: false,
+            ecartee: None,
         }];
         let texte = |p: &Path| p.to_str().unwrap().to_owned();
         let attendu = m.0.join("Documents").join("sous").join("a.txt");
@@ -1201,7 +1326,7 @@ mod tests {
         let racines = [Racine {
             tapee: PathBuf::from("/home/alice/Documents"),
             reelle: PathBuf::from("/data/alice/Documents"),
-            ecartee: false,
+            ecartee: None,
         }];
         let place = |c: &str| situer(Path::new(c), &racines).map(|(_, reste)| reste);
         assert_eq!(place("/home/alice/Documents/a.pdf"), Ok(PathBuf::from("a.pdf")));
@@ -1362,10 +1487,16 @@ mod tests {
         let declares = "XDG_DOWNLOAD_DIR=\"$HOME/Mes téléchargements\"\nXDG_DESKTOP_DIR=\"$HOME/Projets\"\n\
                         XDG_DOCUMENTS_DIR=\"$HOME/.ssh\"\n";
         let racines = racines_linux(maison, declares, Some("../alice"));
-        assert_eq!(racines.iter().filter(|r| !r.ecartee).count(), 0, "{racines:?}");
-        assert_eq!(racines.iter().filter(|r| r.ecartee).count(), 3, "{racines:?}");
+        assert_eq!(racines.iter().filter(|r| r.ecartee.is_none()).count(), 0, "{racines:?}");
+        // Bureau, Desktop et Documents en lien ; Projets et « Mes téléchargements », déclarés sous un nom non
+        // reconnu ; /run/media, sans nom de compte valable.
+        assert_eq!(racines.iter().filter(|r| r.ecartee.is_some()).count(), 6, "{racines:?}");
         let juge = |t: &str| juger_chemin(t, maison, &racines);
-        assert_eq!(juge("~/Projets/a.pdf"), Err(Refus::HorsDesEndroits));
+        assert_eq!(juge("~/Projets/a.pdf"), Err(Refus::NomNonReconnu));
+        assert_eq!(juge("~/Mes téléchargements/a.pdf"), Err(Refus::NomNonReconnu));
+        assert_eq!(juge("~/Projets/profond/a.pdf"), Err(Refus::NomNonReconnu));
+        assert_eq!(juge("~/Autre/a.pdf"), Err(Refus::HorsDesEndroits));
+        assert_eq!(juge("/run/media/alice/a.pdf"), Err(Refus::CompteInconnu));
         assert_eq!(juge("~/Bureau/id_ed25519"), Err(Refus::RacineEnLien));
         assert_eq!(juge("~/Desktop/etc/passwd"), Err(Refus::RacineEnLien));
         assert_eq!(juge("~/Documents/Projets/a.pdf"), Err(Refus::RacineEnLien));
@@ -1378,14 +1509,31 @@ mod tests {
                 maison,
             )
         };
-        assert_eq!(un("$HOME/Téléchargements"), Some("Téléchargements".into()));
-        assert_eq!(un(&format!("{}/Bureau", maison.display())), Some("Bureau".into()));
-        assert_eq!(un("$HOME/Nextcloud/Documents"), Some("Nextcloud/Documents".into()));
-        assert_eq!(un("$HOME/Escritorio"), Some("Escritorio".into()));
+        assert_eq!(un("$HOME/Téléchargements"), Some(Ok("Téléchargements".into())));
+        assert_eq!(un(&format!("{}/Bureau", maison.display())), Some(Ok("Bureau".into())));
+        assert_eq!(un("$HOME/Nextcloud/Documents"), Some(Ok("Nextcloud/Documents".into())));
+        assert_eq!(un("$HOME/Escritorio"), Some(Ok("Escritorio".into())));
+        // Sans tenir compte de la casse : les noms en minuscules (ou en capitales) d'un compte qui les a renommés.
+        for nom in [
+            "downloads",
+            "documents",
+            "desktop",
+            "bureau",
+            "TÉLÉCHARGEMENTS",
+            "escritorio",
+        ] {
+            assert_eq!(un(&format!("$HOME/{nom}")), Some(Ok(nom.into())), "{nom}");
+        }
+        // Un ou deux noms visibles, mais le dernier hors de la liste fermée : écarté, et le refus le dira.
+        for (valeur, reste) in [
+            ("$HOME/Projets", "Projets"),
+            ("$HOME/Mes téléchargements", "Mes téléchargements"),
+            ("$HOME/Projets/profond", "Projets/profond"),
+            ("$HOME/Docs", "Docs"),
+        ] {
+            assert_eq!(un(valeur), Some(Err(reste.into())), "{valeur}");
+        }
         for refuse in [
-            "$HOME/Projets",
-            "$HOME/Mes téléchargements",
-            "$HOME/Projets/profond",
             "$HOME/a/b/Documents",
             "$HOME/.Nextcloud/Documents",
             "$HOME/Nextcloud/.Documents",
@@ -1434,7 +1582,7 @@ mod tests {
         let racines = racines_linux(maison, "XDG_DESKTOP_DIR=\"$HOME/Sync/Bureau\"\n", None);
         let docs = racines.iter().find(|r| r.tapee == maison.join("Documents")).unwrap();
         assert_eq!(docs.reelle, maison.join("Nextcloud/Documents"));
-        assert!(!docs.ecartee);
+        assert_eq!(docs.ecartee, None);
         let juge = |t: &str| juger_chemin(t, maison, &racines);
         assert_eq!(juge("~/Documents/a.pdf"), Ok(maison.join("Nextcloud/Documents/a.pdf")));
         assert_eq!(
@@ -1456,6 +1604,91 @@ mod tests {
             juger_chemin("~/Documents/id_ed25519", maison, &racines),
             Err(Refus::RacineEnLien)
         );
+    }
+
+    /// Une racine en lien se résout pas à pas, sur le texte de chaque lien, sans jamais toucher ce qui est hors de la
+    /// maison : un lien qui en sort est écarté qu'il mène à un dossier ou à rien (le refus ne dit pas ce qui existe
+    /// ailleurs), et même s'il y revient (un lien posé dehors qui ramène sous la maison n'est pas suivi). Un « .. »
+    /// qui reste dedans passe, un « .. » qui sort, un nom caché, une boucle ou plus de `SAUTS_AU_PLUS` sauts, non.
+    #[cfg(unix)]
+    #[test]
+    fn une_racine_se_resout_pas_a_pas_sans_sortir_de_la_maison() {
+        use std::os::unix::fs::symlink;
+        let m = Maison::nouvelle("pas");
+        let dehors = Maison::nouvelle("pas-dehors");
+        let maison = &m.0;
+        for d in ["Projets/pub", "Sync/Docs", "downloads", ".ssh"] {
+            std::fs::create_dir_all(maison.join(d)).unwrap();
+        }
+        std::fs::write(maison.join("Projets/pub/a.pdf"), b"essai").unwrap();
+        std::fs::write(maison.join("downloads/f.txt"), b"essai").unwrap();
+        // Dehors : un dossier, et un lien qui ramène sous la maison.
+        std::fs::create_dir_all(dehors.0.join("dossier")).unwrap();
+        symlink(maison.join("Projets/pub"), dehors.0.join("retour")).unwrap();
+        let documents = maison.join("Documents");
+        let juge = |cible: &Path| {
+            let _ = std::fs::remove_file(&documents);
+            symlink(cible, &documents).unwrap();
+            let racines = racines_linux(maison, "", Some("alice"));
+            racines
+                .into_iter()
+                .find(|r| r.tapee == documents)
+                .map(|r| r.ecartee.map_or(Ok(r.reelle), Err))
+        };
+        let ecartee = Some(Err(Refus::RacineEnLien));
+        let pub_ = Some(Ok(maison.join("Projets/pub")));
+        assert_eq!(juge(Path::new("Projets/pub")), pub_);
+        assert_eq!(juge(&maison.join("Projets/pub")), pub_);
+        assert_eq!(
+            juge(Path::new("Projets/../Sync/Docs")),
+            Some(Ok(maison.join("Sync/Docs")))
+        );
+        assert_eq!(juge(Path::new("./Projets/pub/")), pub_);
+        // Hors de la maison : le même refus, que la cible existe ou non, et rien n'y est suivi.
+        assert_eq!(juge(&dehors.0.join("dossier")), ecartee);
+        assert_eq!(juge(&dehors.0.join("absent")), ecartee);
+        assert_eq!(juge(&dehors.0.join("retour")), ecartee);
+        assert_eq!(juge(Path::new("/")), ecartee);
+        assert_eq!(juge(Path::new("..")), ecartee);
+        assert_eq!(juge(Path::new("../absent")), ecartee);
+        assert_eq!(juge(Path::new("Projets/../../absent")), ecartee);
+        assert_eq!(juge(Path::new(".")), ecartee);
+        assert_eq!(juge(maison), ecartee);
+        assert_eq!(juge(Path::new(".ssh")), ecartee);
+        assert_eq!(juge(Path::new("Projets/.absent")), ecartee);
+        // Absente sous la maison : pas de racine, pas de refus nommé.
+        assert_eq!(juge(Path::new("Projets/absent")), None);
+        // Un lien en route vers dehors, puis une boucle.
+        symlink(dehors.0.join("dossier"), maison.join("Projets/sortie")).unwrap();
+        assert_eq!(juge(Path::new("Projets/sortie")), ecartee);
+        symlink("Documents", maison.join("Boucle")).unwrap();
+        assert_eq!(juge(Path::new("Boucle")), ecartee);
+        // Une chaîne : `SAUTS_AU_PLUS` sauts passent (Documents, puis c1 à c7), un de plus non.
+        let mut avant = String::from("Projets/pub");
+        for n in 1..=SAUTS_AU_PLUS {
+            let nom = format!("c{n}");
+            symlink(&avant, maison.join(&nom)).unwrap();
+            avant = nom;
+        }
+        assert_eq!(juge(Path::new(&format!("c{}", SAUTS_AU_PLUS - 1))), pub_);
+        assert_eq!(juge(Path::new(&format!("c{SAUTS_AU_PLUS}"))), ecartee);
+        // La maison donnée par un autre chemin (un lien vers elle, comme /home lié à /var/home) : un lien absolu
+        // écrit sous ce chemin-là reste sous la maison.
+        let alias = dehors.0.join("alias");
+        symlink(maison, &alias).unwrap();
+        let _ = std::fs::remove_file(&documents);
+        symlink(alias.join("Projets/pub"), &documents).unwrap();
+        let racines = racines_linux(&alias, "", Some("alice"));
+        let docs = racines.iter().find(|r| r.tapee == alias.join("Documents")).unwrap();
+        assert_eq!((docs.reelle.clone(), docs.ecartee), (maison.join("Projets/pub"), None));
+        // user-dirs.dirs en minuscules : ~/downloads est un endroit permis.
+        let racines = racines_linux(maison, "XDG_DOWNLOAD_DIR=\"$HOME/downloads\"\n", Some("alice"));
+        assert_eq!(
+            juger_chemin("~/downloads/f.txt", maison, &racines),
+            Ok(maison.join("downloads/f.txt"))
+        );
+        // Un nom de compte connu : /run/media n'est pas écarté pour lui.
+        assert!(racines.iter().all(|r| r.ecartee != Some(Refus::CompteInconnu)));
     }
 
     /// Un nom aux accents décomposés (e + U+0301) hors des endroits : le refus dit de retaper le nom. Le même, à sa

@@ -354,10 +354,10 @@ pub(crate) enum Connu {
 }
 
 impl Connu {
-    /// Les dossiers connus que la Console ne prend jamais pour un endroit permis, même si le registre y redirige
-    /// Téléchargements, Bureau ou Documents : AppData (des secrets), les autres dossiers du profil et OneDrive
-    /// lui-même (tout ce qui y est synchronisé).
-    pub(crate) const JAMAIS: [Connu; 11] = [
+    /// Les dossiers connus que la Console ne prend jamais pour un endroit permis, ni eux ni rien sous eux, même si le
+    /// registre y redirige Téléchargements, Bureau ou Documents : AppData (des secrets) et les autres dossiers du
+    /// profil. OneDrive est à part (`NUAGES`).
+    pub(crate) const JAMAIS: [Connu; 10] = [
         Connu::AppData,
         Connu::AppDataLocal,
         Connu::Images,
@@ -368,8 +368,11 @@ impl Connu {
         Connu::Liens,
         Connu::Parties,
         Connu::Recherches,
-        Connu::OneDrive,
     ];
+
+    /// OneDrive : jamais un endroit permis lui-même (tout ce qui y est synchronisé), mais ses enfants directs peuvent
+    /// l'être, car la sauvegarde des dossiers de OneDrive y place le Bureau et les Documents (« OneDrive\Documents »).
+    pub(crate) const NUAGES: [Connu; 1] = [Connu::OneDrive];
 
     fn guid(self) -> &'static GUID {
         match self {

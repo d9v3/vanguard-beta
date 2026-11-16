@@ -99,7 +99,9 @@ pub(crate) fn racines(maison: &Path) -> Vec<Racine> {
     if !sur_un_disque(maison) {
         return Vec::new();
     }
-    // AppData tel que Windows le place, et tel que le dit l'environnement : jamais un endroit permis.
+    // AppData tel que Windows le place, et tel que le dit l'environnement : jamais un endroit permis, ni rien sous
+    // lui. OneDrive : jamais lui-même, mais le Bureau et les Documents que sa sauvegarde y place, oui.
+    let nuages: Vec<PathBuf> = Connu::NUAGES.iter().filter_map(|c| dossier_actuel(*c)).collect();
     let jamais: Vec<PathBuf> = Connu::JAMAIS
         .iter()
         .filter_map(|c| dossier_actuel(*c))
@@ -117,7 +119,7 @@ pub(crate) fn racines(maison: &Path) -> Vec<Racine> {
         }
     };
     for (connu, profil) in DOSSIERS {
-        if let Some(r) = dossier_actuel(connu).and_then(|c| racine_du_registre(&c, maison, &jamais)) {
+        if let Some(r) = dossier_actuel(connu).and_then(|c| racine_du_registre(&c, maison, &jamais, &nuages)) {
             garder(r);
         }
         garder(maison.join(profil));
@@ -162,8 +164,9 @@ const NOMS_JAMAIS: [&str; 9] = [
 ];
 
 /// Un dossier connu tel que Windows le place (lu dans le registre, déjà développé), gardé seulement s'il est sur un
-/// disque, sous le profil `maison`, hors des dossiers `jamais` (AppData, les autres dossiers connus, OneDrive
-/// lui-même, voir `Connu::JAMAIS`), et soit enfant direct du profil, soit enfant direct de son OneDrive
+/// disque, sous le profil `maison`, hors des dossiers `jamais` et de tout ce qui est sous eux (AppData, les autres
+/// dossiers connus, voir `Connu::JAMAIS`), autre que les dossiers `nuages` eux-mêmes (OneDrive, `Connu::NUAGES` :
+/// seuls ses enfants peuvent l'être), et soit enfant direct du profil, soit enfant direct de son OneDrive
 /// (« OneDrive », « OneDrive - Entreprise »). Chaque nom est simple : ni « .. », ni « : », ni « ~ » (un nom court
 /// comme APPDAT~1 désigne AppData), ni point ou espace final (« AppData. » aussi), ni nom de périphérique, ni celui
 /// d'un autre dossier connu (Pictures, Saved Games…, `NOMS_JAMAIS`) ; OneDrive lui-même n'est pas un endroit permis.
@@ -171,12 +174,13 @@ const NOMS_JAMAIS: [&str; 9] = [
 /// l'a écrit, un AppData\Roaming ferait lire des secrets comme des Documents, et un OneDrive entier tout ce qui y est
 /// synchronisé.
 #[cfg(windows)]
-fn racine_du_registre(valeur: &Path, maison: &Path, jamais: &[PathBuf]) -> Option<PathBuf> {
+fn racine_du_registre(valeur: &Path, maison: &Path, jamais: &[PathBuf], nuages: &[PathBuf]) -> Option<PathBuf> {
     use std::path::Component;
     if !sur_un_disque(valeur)
         || jamais
             .iter()
             .any(|a| valeur_console::reste_sous(valeur, a).is_some() || meme_texte(valeur, a))
+        || nuages.iter().any(|n| meme_texte(valeur, n))
     {
         return None;
     }
@@ -360,18 +364,19 @@ mod tests {
         use crate::machine::windows::environnement::{Connu, dossier_actuel};
         let maison = PathBuf::from(std::env::var_os("USERPROFILE").unwrap());
         let jamais: Vec<PathBuf> = Connu::JAMAIS.iter().filter_map(|c| dossier_actuel(*c)).collect();
+        let nuages: Vec<PathBuf> = Connu::NUAGES.iter().filter_map(|c| dossier_actuel(*c)).collect();
         let documents = dossier_actuel(Connu::Documents).unwrap();
         assert_eq!(documents.parent(), Some(maison.as_path()), "{documents:?}");
         assert_eq!(
-            racine_du_registre(&documents, &maison, &jamais),
+            racine_du_registre(&documents, &maison, &jamais, &nuages),
             Some(documents.clone())
         );
         let appdata = dossier_actuel(Connu::AppData).unwrap();
         assert!(appdata.starts_with(&maison), "{appdata:?}");
-        assert_eq!(racine_du_registre(&appdata, &maison, &jamais), None);
+        assert_eq!(racine_du_registre(&appdata, &maison, &jamais, &nuages), None);
         for c in [Connu::Images, Connu::Musique, Connu::Videos] {
             if let Some(d) = dossier_actuel(c) {
-                assert_eq!(racine_du_registre(&d, &maison, &jamais), None, "{d:?}");
+                assert_eq!(racine_du_registre(&d, &maison, &jamais, &nuages), None, "{d:?}");
             }
         }
         assert!(racines(&maison).iter().any(|r| r.reelle == documents));
@@ -386,15 +391,39 @@ mod tests {
             PathBuf::from(r"C:\Users\alice\Donnees"),
             PathBuf::from(r"C:\Users\alice\Mes images"),
         ];
-        let juge = |v: &str| racine_du_registre(Path::new(v), maison, &jamais);
+        // OneDrive tel que Windows le place (FOLDERID_SkyDrive) : la sauvegarde de ses dossiers y met le Bureau et
+        // les Documents, qui restent permis ; OneDrive lui-même et ce qui est plus bas, non.
+        let nuages = [PathBuf::from(r"C:\Users\alice\OneDrive")];
+        let juge = |v: &str| racine_du_registre(Path::new(v), maison, &jamais, &nuages);
         for permis in [
             r"C:\Users\alice\Downloads",
             r"c:\users\ALICE\Mes documents",
             r"C:\Users\alice\OneDrive\Documents",
+            r"C:\Users\alice\OneDrive\Desktop",
+            r"c:\users\alice\onedrive\Bureau",
             r"C:\Users\alice\OneDrive - Contoso\Bureau",
         ] {
             assert_eq!(juge(permis), Some(PathBuf::from(permis)), "{permis}");
         }
+        // Dans `jamais`, tout ce qui est sous un dossier est refusé : c'est pourquoi OneDrive n'y est pas.
+        let tout_refuse = [jamais.as_slice(), nuages.as_slice()].concat();
+        assert_eq!(
+            racine_du_registre(
+                Path::new(r"C:\Users\alice\OneDrive\Documents"),
+                maison,
+                &tout_refuse,
+                &[]
+            ),
+            None
+        );
+        // Un OneDrive déplacé sous un autre nom (« Nuage ») : la règle des noms le laisserait passer comme enfant
+        // direct du profil ; c'est `nuages` qui le refuse, et ses enfants restent permis.
+        let deplace = [PathBuf::from(r"C:\Users\alice\Nuage")];
+        assert_eq!(
+            racine_du_registre(Path::new(r"c:\users\alice\nuage"), maison, &jamais, &deplace),
+            None
+        );
+        assert!(racine_du_registre(Path::new(r"C:\Users\alice\Nuage"), maison, &jamais, &[]).is_some());
         for refuse in [
             r"\\127.0.0.1\absent\Downloads",
             r"\\?\UNC\127.0.0.1\absent\Downloads",
@@ -418,6 +447,7 @@ mod tests {
             r"C:\Users\alice\OneDrive\AppData",
             // OneDrive lui-même, et les autres dossiers connus, par leur nom ou là où Windows les place.
             r"C:\Users\alice\OneDrive",
+            r"c:\users\alice\onedrive",
             r"C:\Users\alice\OneDrive - Contoso",
             r"C:\Users\alice\OneDrive\OneDrive - Contoso",
             r"C:\Users\alice\Pictures",

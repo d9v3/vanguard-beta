@@ -607,9 +607,13 @@ fn servir_pour(
 
 /// Ce que le relais sait du compte pour juger un chemin : sa maison, son dossier de réglages (où est
 /// user-dirs.dirs) et son nom (pour /run/media/<compte>). La maison et le nom viennent de la base des comptes, d'après
-/// l'uid, comme du côté de `vanguard` (`maison_du_compte`, `compte_de`) : une session lancée sans USER (un service,
-/// `env -i`) ou avec un HOME d'emprunt ne juge pas autrement que `vanguard`. Le milieu du relais (celui de la session,
-/// jamais celui de la fenêtre) ne sert qu'en repli, et pour XDG_CONFIG_HOME.
+/// l'uid, avec les mêmes règles que `vanguard` (`maison_du_compte`, `compte_de`) : la maison écrite d'une seule façon
+/// (`normalise`), aucun nom pris du milieu quand la base en a donné un, même illisible. Une session lancée sans USER
+/// (un service, `env -i`) ou avec un HOME d'emprunt ne juge donc pas autrement. Mais la base n'est pas lue pareil :
+/// le relais (glibc) passe par NSS (systemd-homed, LDAP), `vanguard` (musl) ne lit que /etc/passwd. Pour un compte
+/// hors de /etc/passwd, le relais peut connaître un nom que `vanguard` ignore : `vanguard`, qui juge en dernier,
+/// refuse alors /run/media et le dit (`Refus::CompteInconnu`). Le milieu du relais (celui de la session, jamais celui
+/// de la fenêtre) ne sert qu'en repli quand la base ne répond pas, et pour XDG_CONFIG_HOME.
 struct Compte {
     maison: Option<PathBuf>,
     config: Option<PathBuf>,
@@ -628,19 +632,43 @@ impl Compte {
         Compte::depuis(base, |v| std::env::var_os(v))
     }
 
-    /// Le compte d'après la base des comptes (`base` : le nom s'il est lisible, et la maison), le `milieu` en repli.
+    /// Le compte d'après la base des comptes (`base` : le nom s'il est lisible, et la maison), le `milieu` en repli :
+    /// HOME si la maison de la base n'est pas un chemin complet sans « .. », USER ou LOGNAME seulement si la base n'a
+    /// pas répondu (un nom illisible n'est pas remplacé : `vanguard` n'en aurait aucun).
     fn depuis(base: Option<(Option<String>, PathBuf)>, milieu: impl Fn(&str) -> Option<OsString>) -> Compte {
         let absolu = |p: PathBuf| (p.is_absolute() && p.parent().is_some()).then_some(p);
-        let (nom, maison) = base.map_or((None, None), |(nom, maison)| (nom, absolu(maison)));
-        let maison = maison.or_else(|| milieu("HOME").map(PathBuf::from).and_then(absolu));
+        let repondu = base.is_some();
+        let (nom, maison) = base.map_or((None, None), |(nom, maison)| (nom, normalise(&maison)));
+        let maison = maison.or_else(|| milieu("HOME").and_then(|h| normalise(Path::new(&h))));
         // XDG_CONFIG_HOME relatif : ignoré, comme le veut la spécification.
         let config = milieu("XDG_CONFIG_HOME")
             .map(PathBuf::from)
             .and_then(absolu)
             .or_else(|| maison.as_ref().map(|m| m.join(".config")));
-        let nom = nom.or_else(|| ["USER", "LOGNAME"].iter().find_map(|v| milieu(v)?.into_string().ok()));
+        let nom = if repondu {
+            nom
+        } else {
+            ["USER", "LOGNAME"].iter().find_map(|v| milieu(v)?.into_string().ok())
+        };
         Compte { maison, config, nom }
     }
+}
+
+/// Un chemin complet écrit d'une seule façon, sans toucher au disque, comme `vanguard` écrit la maison du compte
+/// (`socle::personnel::normalise`) : « / » doublés, « . » et « / » finaux retirés ; la racine reste « / ». `None` :
+/// relatif, ou avec « .. », que seul le disque résout.
+fn normalise(chemin: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+    let mut sortie = PathBuf::new();
+    for morceau in chemin.components() {
+        match morceau {
+            Component::RootDir => sortie.push("/"),
+            Component::Normal(n) => sortie.push(n),
+            Component::CurDir => {}
+            Component::ParentDir | Component::Prefix(_) => return None,
+        }
+    }
+    sortie.is_absolute().then_some(sortie)
 }
 
 /// Rejuge une demande avant de l'admettre : une commande qui se lance avec sa valeur ne part pas sans elle, et la
@@ -1256,11 +1284,29 @@ esac
         let c = Compte::depuis(None, repli);
         assert_eq!(c.nom.as_deref(), Some("bob"));
         assert_eq!(c.maison.as_deref(), Some(Path::new("/home/bob")));
+        // La base a répondu, avec un nom illisible (pas en UTF-8) et une maison relative : HOME en repli pour la
+        // maison, mais aucun nom pris du milieu, comme `vanguard`.
         let c = Compte::depuis(Some((None, PathBuf::from("relative"))), repli);
         assert_eq!(
             (c.nom.as_deref(), c.maison.as_deref()),
-            (Some("bob"), Some(Path::new("/home/bob")))
+            (None, Some(Path::new("/home/bob")))
         );
+        // La maison écrite d'une seule façon, comme `vanguard` : « // », « . » et « / » final retirés ; « .. » refusé
+        // (HOME en repli, lui aussi écrit d'une seule façon) ; la racine reste la racine.
+        // Comparés en texte : deux `PathBuf` sont égaux composant par composant, « // » ou non.
+        let maison = |base: &str, home: &str| {
+            let home = OsString::from(home);
+            Compte::depuis(Some((Some("alice".into()), PathBuf::from(base))), move |v| {
+                (v == "HOME").then(|| home.clone())
+            })
+            .maison
+            .map(PathBuf::into_os_string)
+        };
+        let texte = |t: &str| Some(OsString::from(t));
+        assert_eq!(maison("/home//./alice/.", "/x"), texte("/home/alice"));
+        assert_eq!(maison("/home/alice/../bob", "//home/bob/"), texte("/home/bob"));
+        assert_eq!(maison("/home/alice/../bob", "/home/../bob"), None);
+        assert_eq!(maison("/", "/home/bob"), texte("/"));
         // Le vrai compte de l'essai, USER retiré : son nom vient de l'uid.
         let Some(base) = systeme::compte_de_l_uid() else {
             return crate::essais::sauter("l'uid de l'essai n'est pas dans la base des comptes");

@@ -241,6 +241,12 @@ mod systeme {
     /// Lecture et écriture partagées, jamais la suppression : tant qu'on tient un nom avec un accès de lecture, nul ne
     /// l'ouvre pour le renommer ni l'effacer (il faudrait l'accès DELETE, que ce partage refuse).
     const PARTAGE: u32 = 0x0001 | 0x0002;
+    /// Un ancêtre de la racine permise (« C:\ », « Users », le profil) : seulement ses attributs, pour le juger, et
+    /// rien qui demande l'accord de son ACL au-delà (ni liste ni traversée : un profil sous un dossier en « traverser
+    /// seulement » reste lisible). Ce que la descente relative empêche déjà : un échange de l'ancêtre ne déplace pas
+    /// ce qui est ouvert sous lui. Partage complet : tenir C:\ ou le profil ne gêne aucun autre programme.
+    const ACCES_ANCETRE: u32 = FILE_READ_ATTRIBUTES | SYNCHRONIZE;
+    const PARTAGE_ANCETRE: u32 = 0x0001 | 0x0002 | 0x0004;
     const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
     const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
     /// Ne pas rapatrier un fichier en ligne seulement (OneDrive) : l'ouvrir le ferait télécharger.
@@ -262,6 +268,28 @@ mod systeme {
     /// (le dernier).
     pub(super) struct Dossier {
         tenus: Vec<File>,
+    }
+
+    /// Comment un nom est ouvert sous son dossier.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub(super) enum Ouverture {
+        /// Un ancêtre de la racine permise : attributs seulement, partage complet (`ACCES_ANCETRE`).
+        Ancetre,
+        /// La racine permise et ce qui est sous elle : tenu, listé, sans partage de suppression (`ACCES_DOSSIER`).
+        Tenu,
+        /// Le fichier, en lecture.
+        Fichier,
+    }
+
+    impl Ouverture {
+        /// L'accès et le partage demandés.
+        fn acces_et_partage(self) -> (u32, u32) {
+            match self {
+                Ouverture::Ancetre => (ACCES_ANCETRE, PARTAGE_ANCETRE),
+                Ouverture::Tenu => (ACCES_DOSSIER, PARTAGE),
+                Ouverture::Fichier => (FILE_GENERIC_READ, PARTAGE),
+            }
+        }
     }
 
     /// Les attributs et l'étiquette de point d'analyse de ce qui est ouvert (FileAttributeTagInfo).
@@ -346,11 +374,13 @@ mod systeme {
         ok.then_some((info.attributs, info.etiquette))
     }
 
-    /// La racine du lecteur (« C:\ »), ouverte elle-même, tenue comme un dossier.
-    fn ouvrir_lecteur(chemin: &Path) -> Result<File, Refus> {
+    /// La racine du lecteur (« C:\ »), ouverte elle-même : tenue comme un dossier si elle est la racine permise (un
+    /// support amovible), en ancêtre sinon.
+    fn ouvrir_lecteur(chemin: &Path, ouverture: Ouverture) -> Result<File, Refus> {
+        let (acces, partage) = ouverture.acces_et_partage();
         let f = std::fs::OpenOptions::new()
-            .access_mode(ACCES_DOSSIER)
-            .share_mode(PARTAGE)
+            .access_mode(acces)
+            .share_mode(partage)
             .custom_flags(DRAPEAUX)
             .open(chemin)
             .map_err(|e| refus_d_erreur(&e))?;
@@ -364,12 +394,17 @@ mod systeme {
 
     /// Un nom simple sous le dossier tenu `dessus`, ouvert par NtCreateFile relativement à lui (jamais par un chemin
     /// complet, qui se relirait depuis la racine), lui-même (FILE_OPEN_REPARSE_POINT : un lien ou une jonction est
-    /// ouvert, pas suivi), puis jugé sur ses attributs. `lire` : un fichier, en lecture ; sinon un dossier, tenu
-    /// (`ACCES_DOSSIER`). Ni FILE_DIRECTORY_FILE ni FILE_NON_DIRECTORY_FILE : un lien s'ouvre ainsi tel quel et se dit
-    /// lien ; ce qui est ouvert est jugé ensuite.
+    /// ouvert, pas suivi), puis jugé sur ses attributs, avec l'accès et le partage de son `ouverture`. Ni
+    /// FILE_DIRECTORY_FILE ni FILE_NON_DIRECTORY_FILE : un lien s'ouvre ainsi tel quel et se dit lien ; ce qui est
+    /// ouvert est jugé ensuite.
     // FFI de ntdll : NtCreateFile ; la poignée rendue devient un File, fermé une fois.
     #[allow(unsafe_code)]
-    pub(super) fn ouvrir_sous(dessus: &File, nom: &OsStr, lire: bool, sous_racine: bool) -> Result<(File, u32), Refus> {
+    pub(super) fn ouvrir_sous(
+        dessus: &File,
+        nom: &OsStr,
+        ouverture: Ouverture,
+        sous_racine: bool,
+    ) -> Result<(File, u32), Refus> {
         let mut large: Vec<u16> = nom.encode_wide().collect();
         let point = u16::from(b'.');
         let interdit = |c: &u16| [u16::from(b'\\'), u16::from(b'/'), u16::from(b':'), 0].contains(c);
@@ -395,10 +430,11 @@ mod systeme {
             qualite: std::ptr::null_mut(),
         };
         let options = FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT | FILE_OPEN_NO_RECALL;
-        let (acces, options) = if lire {
-            (FILE_GENERIC_READ, options)
+        let (acces, partage) = ouverture.acces_et_partage();
+        let options = if ouverture == Ouverture::Fichier {
+            options
         } else {
-            (ACCES_DOSSIER, options | FILE_OPEN_FOR_BACKUP_INTENT)
+            options | FILE_OPEN_FOR_BACKUP_INTENT
         };
         let mut poignee: *mut c_void = std::ptr::null_mut();
         let mut etat = EtatEs {
@@ -416,7 +452,7 @@ mod systeme {
                 &raw mut etat,
                 std::ptr::null(),
                 0,
-                PARTAGE,
+                partage,
                 FILE_OPEN,
                 options,
                 std::ptr::null_mut(),
@@ -439,10 +475,12 @@ mod systeme {
         Ok((f, attributs))
     }
 
-    /// La descente depuis la racine du lecteur : chaque nom ouvert sous le dossier tenu juste avant, jusqu'à la racine
-    /// permise (aucun lien, aucune jonction, un fichier en ligne seulement non plus), puis chaque nom sous elle (ni
-    /// caché ni système non plus), tous tenus jusqu'à la fin de la lecture. Rien n'est résolu d'avance : une jonction
-    /// en route pourrait mener à un partage, que le système contacterait.
+    /// La descente depuis la racine du lecteur : chaque nom ouvert sous le dossier ouvert juste avant, jusqu'à la
+    /// racine permise (aucun lien, aucune jonction, un fichier en ligne seulement non plus), puis chaque nom sous elle
+    /// (ni caché ni système non plus), tous gardés ouverts jusqu'à la fin de la lecture : les ancêtres en accès
+    /// réduit et partage complet (`Ouverture::Ancetre`), la racine permise et ce qui est sous elle tenus sans partage
+    /// de suppression. Rien n'est résolu d'avance : une jonction en route pourrait mener à un partage, que le système
+    /// contacterait.
     pub(super) fn descendre(racine: &Path, dossiers: &[&OsStr], dernier: &OsStr) -> Result<(File, Dossier), Refus> {
         let mut composants = racine.components();
         let (Some(Component::Prefix(p)), Some(Component::RootDir)) = (composants.next(), composants.next()) else {
@@ -453,30 +491,42 @@ mod systeme {
         }
         let mut lecteur = PathBuf::from(p.as_os_str());
         lecteur.push(std::path::MAIN_SEPARATOR_STR);
-        let mut tenus = vec![ouvrir_lecteur(&lecteur)?];
-        let suivant = |tenus: &[File], nom: &OsStr, sous_racine: bool| -> Result<File, Refus> {
+        let noms: Vec<&OsStr> = composants
+            .map(|c| match c {
+                Component::Normal(nom) => Ok(nom),
+                _ => Err(Refus::Forme),
+            })
+            .collect::<Result<_, _>>()?;
+        // Un ancêtre jusqu'à l'avant-dernier nom ; le dernier (ou le lecteur, s'il n'y en a aucun) est la racine
+        // permise.
+        let sorte = |n: usize| {
+            if n < noms.len() {
+                Ouverture::Ancetre
+            } else {
+                Ouverture::Tenu
+            }
+        };
+        let mut tenus = vec![ouvrir_lecteur(&lecteur, sorte(0))?];
+        let suivant = |tenus: &[File], nom: &OsStr, ouverture: Ouverture, sous_racine: bool| -> Result<File, Refus> {
             let dessus = tenus.last().ok_or(Refus::NonVerifie)?;
-            let (f, attributs) = ouvrir_sous(dessus, nom, false, sous_racine)?;
+            let (f, attributs) = ouvrir_sous(dessus, nom, ouverture, sous_racine)?;
             if attributs & ATTRIBUT_DOSSIER == 0 {
                 return Err(Refus::Introuvable);
             }
             Ok(f)
         };
-        for c in composants {
-            let Component::Normal(nom) = c else {
-                return Err(Refus::Forme);
-            };
-            let f = suivant(&tenus, nom, false)?;
+        for (n, nom) in noms.iter().enumerate() {
+            let f = suivant(&tenus, nom, sorte(n + 1), false)?;
             tenus.push(f);
         }
         crochet(Etape::Racine);
         for (n, nom) in dossiers.iter().enumerate() {
-            let f = suivant(&tenus, nom, true)?;
+            let f = suivant(&tenus, nom, Ouverture::Tenu, true)?;
             tenus.push(f);
             crochet(Etape::Dossier(n));
         }
         let dessus = tenus.last().ok_or(Refus::NonVerifie)?;
-        let (fichier, attributs) = ouvrir_sous(dessus, dernier, true, true)?;
+        let (fichier, attributs) = ouvrir_sous(dessus, dernier, Ouverture::Fichier, true)?;
         if attributs & ATTRIBUT_DOSSIER != 0 {
             return Err(Refus::PasUnFichier);
         }
@@ -502,7 +552,7 @@ mod systeme {
             )
         };
         let dessus = d.tenus.last().ok_or_else(pas_ordinaire)?;
-        match ouvrir_sous(dessus, nom, true, true) {
+        match ouvrir_sous(dessus, nom, Ouverture::Fichier, true) {
             Ok((f, attributs)) if attributs & ATTRIBUT_DOSSIER == 0 => Ok(f),
             Err(Refus::Introuvable) => Err(std::io::Error::from(std::io::ErrorKind::NotFound)),
             _ => Err(pas_ordinaire()),
@@ -772,6 +822,20 @@ mod tests {
         // Un dossier tenu avec un accès de liste, sans partage de suppression : ni Windows ni Wine ne le renomment
         // (un accès aux attributs seul ne faisait pas appliquer le partage).
         assert!(std::fs::rename(&tele, maison.join("Downloads-vrai")).is_err());
+        let (supprimer, lister) = (0x0001_0000_u32, 0x0001_u32);
+        // Les ancêtres (le profil, C:\) ne sont ouverts que pour leurs attributs, en partage complet : un autre
+        // programme peut ouvrir le profil pour le supprimer, ou le lister sans rien partager. La racine permise, non.
+        let ouvrir = |chemin: &Path, acces: u32, partage: u32| {
+            use std::os::windows::fs::OpenOptionsExt as _;
+            std::fs::OpenOptions::new()
+                .access_mode(acces | 0x0010_0000)
+                .share_mode(partage)
+                .custom_flags(0x0200_0000)
+                .open(chemin)
+        };
+        assert!(ouvrir(&maison, supprimer, 0x7).is_ok());
+        assert!(ouvrir(&maison, lister, 0).is_ok());
+        assert!(ouvrir(&tele, supprimer, 0x7).is_err());
         drop(juge);
         std::fs::hard_link(maison.join(".ssh").join("id_ed25519"), tele.join("cle.pdf")).unwrap();
         assert_eq!(
@@ -819,19 +883,19 @@ mod tests {
         std::fs::rename(tele.join("sous"), tele.join("sous-vrai")).unwrap();
         std::fs::create_dir(tele.join("sous")).unwrap();
         std::fs::write(tele.join("sous").join("y.pdf"), b"%PDF-1.7 piege").unwrap();
-        let (mut f, _) = systeme::ouvrir_sous(&tenu, OsStr::new("y.pdf"), true, true).unwrap();
+        let (mut f, _) = systeme::ouvrir_sous(&tenu, OsStr::new("y.pdf"), systeme::Ouverture::Fichier, true).unwrap();
         let mut lu = Vec::new();
         f.read_to_end(&mut lu).unwrap();
         assert_eq!(lu, b"%PDF-1.7 releve");
         for nom in ["", ".", "..", r"..\x.pdf", "a/b", "c:x", "a\0b"] {
             assert_eq!(
-                systeme::ouvrir_sous(&tenu, OsStr::new(nom), true, true).err(),
+                systeme::ouvrir_sous(&tenu, OsStr::new(nom), systeme::Ouverture::Fichier, true).err(),
                 Some(Refus::Forme),
                 "{nom:?}"
             );
         }
         assert_eq!(
-            systeme::ouvrir_sous(&tenu, OsStr::new("absent.pdf"), true, true).err(),
+            systeme::ouvrir_sous(&tenu, OsStr::new("absent.pdf"), systeme::Ouverture::Fichier, true).err(),
             Some(Refus::Introuvable)
         );
         drop((f, tenu));
