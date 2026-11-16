@@ -186,9 +186,14 @@ fn graphiques_lspci(texte: &str) -> Vec<(String, String)> {
                     .find_map(|l| l.strip_prefix(cle)?.strip_prefix(':'))
                     .map_or_else(String::new, |v| v.trim().to_string())
             };
+            // Les noms de la classe 0x03 de pciutils, entiers : « Non-VGA unclassified device » (la puce PIIX4 ACPI
+            // des machines Amazon) contient « VGA » sans être une carte graphique.
             let classe = champ("Class");
-            (classe.contains("VGA") || classe.contains("3D") || classe.contains("Display"))
-                .then(|| (nom_graphique(&champ("Vendor"), &champ("Device")), champ("Driver")))
+            matches!(
+                classe.as_str(),
+                "VGA compatible controller" | "3D controller" | "Display controller"
+            )
+            .then(|| (nom_graphique(&champ("Vendor"), &champ("Device")), champ("Driver")))
         })
         .collect()
 }
@@ -1051,6 +1056,24 @@ mod tests {
             .map(|c| (nom_graphique(&c.fabricant, &c.puce), c.pilote))
             .collect();
         assert_eq!(natifs, graphiques_lspci(&r.sortie));
+    }
+
+    /// Le lecteur de l'essai ci-dessus garde les sous-classes de la fiche (VGA, 3D, « Display controller »), par leur
+    /// nom entier : sur une machine Amazon, la puce PIIX4 ACPI est « Non-VGA unclassified device » et passait pour une
+    /// carte graphique (CI du 16 nov. 2026).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn lspci_lu_par_nom_de_classe_entier() {
+        let texte = "Slot:\t00:01.3\nClass:\tNon-VGA unclassified device\nVendor:\tIntel Corporation\n\
+                     Device:\t82371AB/EB/MB PIIX4 ACPI\nDriver:\tpiix4_smbus\n\n\
+                     Slot:\t00:03.0\nClass:\tVGA compatible controller\nVendor:\tAmazon.com, Inc.\n\
+                     Device:\tDevice 1111\n\n\
+                     Slot:\t00:04.0\nClass:\tXGA compatible controller\nVendor:\tX\nDevice:\tY\n\n\
+                     Slot:\t01:00.0\nClass:\t3D controller\nVendor:\tNVIDIA Corporation\nDevice:\tGA100\n\
+                     Driver:\tnvidia\n";
+        let vus: Vec<String> = graphiques_lspci(texte).into_iter().map(|(nom, _)| nom).collect();
+        assert_eq!(vus.len(), 2, "{vus:?}");
+        assert!(vus[0].contains("Device 1111") && vus[1].contains("GA100"), "{vus:?}");
     }
 
     /// Le fichier de udev (« E:CLÉ=valeur », d'autres lignes pour ses liens et ses étiquettes) se lit comme la
