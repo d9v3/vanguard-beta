@@ -75,6 +75,17 @@ pub fn maison() -> PathBuf {
     maison_selon(dossier_personnel())
 }
 
+/// Le dossier personnel que le système donne au compte (la base des comptes ; sous Windows, FOLDERID_Profile), sans
+/// HOME, que tout programme du compte réécrit : pour les lieux de la protection (un fichier temporaire ou téléchargé),
+/// qu'un HOME posé sur /tmp ou sur TEMP ne doit pas effacer. Repli : `maison`.
+pub(crate) fn maison_du_compte() -> PathBuf {
+    #[cfg(unix)]
+    let compte = dossier_personnel_de(crate::socle::uid());
+    #[cfg(windows)]
+    let compte = crate::machine::windows::environnement::profil().filter(|p| p.is_absolute());
+    compte.unwrap_or_else(maison)
+}
+
 /// N6-4 (revérification de la ronde 6 du lot 0.95) : le dossier personnel quand il n'y en a aucun. Un chemin vide
 /// (l'ancien repli) devenait relatif une fois joint à « .config/… » : lu depuis le dossier courant, où l'absence de
 /// tout passait pour « rien à signaler ». Ce chemin-ci est complet et contient un octet NUL : chaque lecture,

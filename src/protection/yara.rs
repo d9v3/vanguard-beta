@@ -101,26 +101,27 @@ pub(crate) fn non_verifiees(regles: &Regles) -> Option<String> {
 
 /// Les endroits à risque : téléchargements, bureau, programmes lancés au démarrage (et les dossiers temporaires sous
 /// Windows, où atterrissent les programmes téléchargés : TMP, que lit `temp_dir`, et TEMP, que lisent d'autres
-/// programmes ; un même dossier n'est analysé qu'une fois).
+/// programmes ; un même dossier n'est analysé qu'une fois). Chez soi selon HOME et selon le système (`maison_du_compte`)
+/// quand ils diffèrent : un HOME réécrit par un programme du compte ne sort pas les vrais dossiers de l'analyse.
 pub(crate) fn endroits_a_risque() -> Vec<PathBuf> {
-    let maison = crate::socle::maison();
+    let maisons = [crate::socle::maison(), crate::socle::maison_du_compte()];
     #[cfg(windows)]
-    let mut liste: Vec<PathBuf> = ["Downloads", "Desktop"].iter().map(|d| maison.join(d)).collect();
+    let noms = ["Downloads", "Desktop"];
+    #[cfg(unix)]
+    let noms = crate::protection::antivirus::ENDROITS_A_RISQUE;
+    #[allow(unused_mut)]
+    let mut liste: Vec<PathBuf> = maisons.iter().flat_map(|m| noms.iter().map(|d| m.join(d))).collect();
     #[cfg(windows)]
     liste.extend(
         [
-            std::env::var_os("APPDATA")
-                .map(|a| PathBuf::from(a).join(r"Microsoft\Windows\Start Menu\Programs\Startup")),
+            std::env::var_os("APPDATA").map(PathBuf::from),
+            crate::machine::windows::environnement::dossiers().appdata.clone(),
         ]
         .into_iter()
         .flatten()
+        .map(|a| a.join(r"Microsoft\Windows\Start Menu\Programs\Startup"))
         .chain(crate::protection::moteur::dossiers_temporaires()),
     );
-    #[cfg(unix)]
-    let liste: Vec<PathBuf> = crate::protection::antivirus::ENDROITS_A_RISQUE
-        .iter()
-        .map(|d| maison.join(d))
-        .collect();
     dossiers_reels(liste)
 }
 
@@ -134,7 +135,7 @@ fn dossiers_reels(liste: Vec<PathBuf>) -> Vec<PathBuf> {
         let reel = match std::fs::canonicalize(&p) {
             Ok(r)
                 if crate::socle::chemins::composants(&r) != crate::socle::chemins::composants(&p)
-                    && moteur::assez_precis(&r, &crate::socle::maison()) =>
+                    && moteur::assez_precis(&r, &crate::socle::maison_du_compte()) =>
             {
                 r
             }

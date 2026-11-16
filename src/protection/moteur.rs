@@ -549,7 +549,7 @@ fn lieu_de(chemin: &Path) -> Lieu {
     let l = std::sync::Arc::new(Lieux::nouveaux(
         crate::protection::telechargement::dossier_telechargements().as_deref(),
         &dossiers_temporaires(),
-        &crate::socle::maison(),
+        &crate::socle::maison_du_compte(),
     ));
     *verrou() = Some((Instant::now(), std::sync::Arc::clone(&l)));
     l.de(chemin)
@@ -559,7 +559,7 @@ fn lieu_de(chemin: &Path) -> Lieu {
 /// et sous Windows aussi TEMP, qu'un autre programme peut lire à sa place ; ailleurs, ceux du système. Un dossier
 /// trop vague pour en être un (`assez_precis`) est écarté.
 pub(crate) fn dossiers_temporaires() -> Vec<std::path::PathBuf> {
-    temporaires_selon(&|v| std::env::var_os(v), &crate::socle::maison())
+    temporaires_selon(&|v| std::env::var_os(v), &crate::socle::maison_du_compte())
 }
 
 /// Le cœur de `dossiers_temporaires`, les variables lues par `variable` : pour l'essayer sans toucher à
@@ -700,7 +700,7 @@ impl Lieux {
 /// Le cœur de `lieu_de`, les dossiers donnés : pour l'essayer sur des dossiers jetables.
 #[cfg(test)]
 fn lieu_selon(chemin: &Path, telechargements: Option<&Path>, temporaires: &[std::path::PathBuf]) -> Lieu {
-    Lieux::nouveaux(telechargements, temporaires, &crate::socle::maison()).de(chemin)
+    Lieux::nouveaux(telechargements, temporaires, &crate::socle::maison_du_compte()).de(chemin)
 }
 
 /// Le fichier jugé sous sa forme écrite et, si elle diffère, sous le chemin réel de son dossier : `..`, un lien, un
@@ -1489,7 +1489,7 @@ mod tests {
     #[test]
     fn un_dossier_vague_ne_compte_pas() {
         let d = crate::protection::isoler::dossier_jetable().unwrap();
-        let maison = crate::socle::maison();
+        let maison = crate::socle::maison_du_compte();
         #[cfg(unix)]
         let (racine, ailleurs) = (std::path::PathBuf::from("/"), Path::new("/usr/bin/outil"));
         #[cfg(windows)]
@@ -1553,7 +1553,7 @@ mod tests {
     #[test]
     fn temp_et_tmp_comptent() {
         let d = crate::protection::isoler::dossier_jetable().unwrap();
-        let maison = crate::socle::maison();
+        let maison = crate::socle::maison_du_compte();
         for v in ["TEMP", "TMP"] {
             let dossiers = temporaires_selon(&|n| (n == v).then(|| d.clone().into_os_string()), &maison);
             assert!(

@@ -2278,9 +2278,10 @@ fn second_avis(portee: &Portee, ecran: bool) -> SecondAvis {
     let cibles: Vec<PathBuf> = match portee {
         Portee::Dossier(d) => vec![d.clone()],
         Portee::Complete => vec![h.clone()],
-        Portee::Rapide => ENDROITS_A_RISQUE
+        // Selon HOME et selon le système, comme l'analyse rapide de YARA (`yara::endroits_a_risque`).
+        Portee::Rapide => [h.clone(), crate::socle::maison_du_compte()]
             .iter()
-            .map(|d| h.join(d))
+            .flat_map(|m| ENDROITS_A_RISQUE.iter().map(|d| m.join(d)))
             .filter(|p| p.exists())
             .collect(),
     };
