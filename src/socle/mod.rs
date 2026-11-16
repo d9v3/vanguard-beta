@@ -19,6 +19,7 @@ pub(crate) mod processus;
 #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
 pub(crate) mod relro;
 pub(crate) mod systeme;
+pub(crate) mod valeur_console;
 
 pub use fichiers::dossier_local;
 #[cfg(all(unix, test))]

@@ -1008,6 +1008,17 @@ pub(crate) enum Commande {
         #[arg(long)]
         langue: Option<String>,
     },
+    /// La Console de la fenêtre, quand elle passe une valeur tapée : `console <commande> -- <valeur>`. Une liste
+    /// fermée de lectures, chacune en JSON, sans Internet sauf `dernieres-failles` (catalogue fixe) ; la valeur, seule
+    /// case libre, vient après « -- » et est rejugée ici (`demarrage::console`), même quand le relais l'a déjà fait.
+    #[command(name = "console", hide = true)]
+    Console {
+        #[arg(value_parser = clap::builder::PossibleValuesParser::new(crate::demarrage::console::NOMS))]
+        commande: String,
+        /// La valeur tapée, seule et toujours après « -- » : jamais lue comme une option.
+        #[arg(last = true, required = true, num_args = 1)]
+        valeur: String,
+    },
 }
 
 #[cfg(test)]

@@ -3,6 +3,7 @@
 
 pub(crate) mod aide;
 pub(crate) mod arguments;
+pub(crate) mod console;
 pub(crate) mod droits;
 pub(crate) mod empreinte_fenetre;
 pub(crate) mod lancer_fenetre;

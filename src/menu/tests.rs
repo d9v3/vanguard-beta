@@ -1450,8 +1450,13 @@ fn les_essais_n_ecrivent_pas_dans_le_dossier_temporaire() {
         // Et des essais qui donnent au programme un TMPDIR jetable, dans son dossier personnel ou à côté, pour y voir
         // ce qu'il écrirait (l'aperçu d'une correction ne doit rien écrire, même là ; vérification de Fable n° 2,
         // L5 : environnement vidé, XDG et TMPDIR hors du dossier personnel), puis un essai qui juge ce dossier-là ;
-        // de même pour l'aperçu d'une mise à jour (`se-mettre-a-jour --voir`, lot 0.95 de la fenêtre).
-        ("tests/programme.rs", 5),
+        // de même pour l'aperçu d'une mise à jour (`se-mettre-a-jour --voir`, lot 0.95 de la fenêtre), pour les
+        // lectures en JSON de la Console et pour sa valeur tapée (rien d'écrit hors du dossier personnel jetable).
+        ("tests/programme.rs", 7),
+        // La valeur tapée dans la Console : module partagé avec la fenêtre et le banc de fuzzing, qui n'ont pas
+        // `essais::temporaire` ; sous Wine, le dossier temporaire de Windows est sur C: (dans le préfixe jetable),
+        // où le chemin tapé se juge sans le point de montage de Z:.
+        ("src/socle/valeur_console.rs", 2),
     ]
     .into_iter()
     .collect();

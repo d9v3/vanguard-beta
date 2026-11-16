@@ -487,6 +487,11 @@ async fn main() {
         }
         autotest::lecture_seule::relever_avant_tout();
     }
+    // La Console de la fenêtre avec une valeur tapée : rien de ce processus n'est relevé ni envoyé, avant que quoi
+    // que ce soit puisse noter (demarrage::console).
+    if lus.first().is_some_and(|a| a == "console") {
+        crate::amelioration::taire();
+    }
     // Les réglages du lancement (langue, emojis, travail sans Internet), avant tout affichage.
     parametres::au_lancement();
     journal::installer();
@@ -517,7 +522,7 @@ async fn main() {
     // l'attend.
     if !matches!(
         args.commande,
-        Some(Commande::Autotest { .. } | Commande::Surveiller | Commande::Agent { .. })
+        Some(Commande::Autotest { .. } | Commande::Surveiller | Commande::Agent { .. } | Commande::Console { .. })
     ) {
         crate::envoi::en_fond(false);
     }
@@ -1018,6 +1023,7 @@ async fn main() {
         Some(Commande::Changements { json: false, .. }) => changements::afficher(),
         Some(Commande::Changements { json: true, .. }) => changements::json(),
         Some(Commande::Evenements { json, incident }) => evenements::afficher(json, incident.as_deref()),
+        Some(Commande::Console { commande, valeur }) => demarrage::console::executer(&commande, &valeur).await,
         Some(Commande::Alerte { id }) => protection::blocage::alerte(&id),
         Some(Commande::JournauxWindows { dossier, jours, json }) => {
             journaux_windows::commande::executer(dossier.as_deref(), jours, json);

@@ -843,9 +843,18 @@ fn ipv4_commune(ip: Ipv4Addr) -> bool {
 }
 
 /// La commande lancée, pour le journal : le surnom donné par « vanguard nommer » nomme souvent quelqu'un
-/// (« tablette de Zoé ») ; il ne reste que « `<surnom>` ».
+/// (« tablette de Zoé ») ; il ne reste que « `<surnom>` ». La valeur tapée dans la Console de la fenêtre (« vanguard
+/// console <commande> -- <valeur> » : un chemin, un lien, des mots) devient « `<valeur>` ».
 fn commande_anonyme(args: &[String]) -> String {
     let mut args = args.to_vec();
+    if args.first().is_some_and(|a| a == "console") {
+        let garde = args.iter().position(|a| a == "--").map_or(2, |k| k.saturating_add(1));
+        if args.len() > garde {
+            args.truncate(garde);
+            args.push("<valeur>".into());
+        }
+        return args.join(" ");
+    }
     if let Some(k) = args.iter().position(|a| a == "nommer" || a == "name")
         && args.len() > k.saturating_add(2)
     {
@@ -1540,6 +1549,38 @@ mod tests {
             commande_anonyme(&args("reseau 192.168.1.0/24")),
             "reseau 192.168.1.0/24"
         );
+    }
+
+    /// La valeur tapée dans la Console de la fenêtre n'entre pas dans le journal : ni un chemin, ni un lien, ni des
+    /// mots, même mal formés (sans « -- », ou un « -- » dans la valeur elle-même).
+    #[test]
+    fn valeur_de_la_console_masquee() {
+        let args = |a: &[&str]| a.iter().map(|x| String::from(*x)).collect::<Vec<_>>();
+        assert_eq!(
+            commande_anonyme(&args(&[
+                "console",
+                "verifier-fichier",
+                "--",
+                "/home/alice/Téléchargements/facture.pdf"
+            ])),
+            "console verifier-fichier -- <valeur>"
+        );
+        assert_eq!(
+            commande_anonyme(&args(&[
+                "console",
+                "lien",
+                "--",
+                "https://exemple.test/?jeton=secret",
+                "--",
+                "x"
+            ])),
+            "console lien -- <valeur>"
+        );
+        assert_eq!(
+            commande_anonyme(&args(&["console", "chercher", "mot de passe"])),
+            "console chercher <valeur>"
+        );
+        assert_eq!(commande_anonyme(&args(&["console", "lien", "--"])), "console lien --");
     }
 
     #[cfg(unix)]

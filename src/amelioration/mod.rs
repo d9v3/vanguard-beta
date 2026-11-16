@@ -845,6 +845,13 @@ pub(crate) fn pourquoi_pas_efface() -> Option<&'static str> {
     }
 }
 
+/// La Console de la fenêtre (`vanguard console <commande> -- <valeur>`) : rien de ce processus n'est relevé, sans
+/// rien effacer. La valeur tapée (un chemin, un lien, des mots) n'entre ainsi dans aucun relevé, pas même par le
+/// gabarit d'une erreur (`noter_cause`) ou l'empreinte d'un objet : ce qui n'est pas noté ne peut pas partir.
+pub(crate) fn taire() {
+    ARRETE.store(true, Ordering::Relaxed);
+}
+
 /// « Ne pas partager » (A5) : le relevé s'arrête pour ce processus, sa mémoire est vidée, et ce qui a été écrit est
 /// effacé (`peut_effacer`). Un relevé en cours ne réécrit rien après (`ecrire_si_permis`) ; un autre processus
 /// Vanguard déjà lancé le voit à l'interrupteur gardé sur le disque (`parametres::partage::refuse_dans`), relu avant

@@ -9600,3 +9600,119 @@ fn json_ne_va_jamais_avec_un_changement() {
         );
     }
 }
+
+/// `console <commande> -- <valeur>` (ce que lance la Console de la fenêtre) : un courriel sous Téléchargements est
+/// lu ; un fichier de ~/.ssh, un lien qui y mène, un tube nommé, /proc ou une option sont refusés avec le code 2,
+/// sans rien lancer. La valeur (un nom de fichier marqué) ne figure dans aucun fichier écrit par Vanguard (relevé,
+/// file de l'envoi, journal des erreurs, examens), et rien ne change hors de son propre dossier : le dossier
+/// personnel jetable porte les dossiers XDG et le dossier temporaire, donc tout ce que le programme écrirait.
+#[cfg(unix)]
+#[test]
+fn la_console_ne_lit_que_sous_les_endroits_permis() {
+    const MARQUE: &str = "alice-marque-7f3a9c";
+    let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
+    let maison = maison_jetable();
+    let telechargements = maison.join("Téléchargements");
+    let ssh = maison.join(".ssh");
+    std::fs::create_dir_all(&telechargements).unwrap();
+    std::fs::create_dir_all(&ssh).unwrap();
+    std::fs::create_dir_all(maison.join("tmp")).unwrap();
+    let eml = courriel_piege(&telechargements);
+    let marque = telechargements.join(format!("{MARQUE}.eml"));
+    std::fs::rename(&eml, &marque).unwrap();
+    std::fs::write(ssh.join("id_ed25519"), "inventée\n").unwrap();
+    std::os::unix::fs::symlink(ssh.join("id_ed25519"), telechargements.join("cle.eml")).unwrap();
+    let tube = telechargements.join("tube.eml");
+    assert!(
+        Command::new("mkfifo").arg(&tube).status().is_ok_and(|s| s.success()),
+        "mkfifo"
+    );
+    let tmp = maison.join("tmp");
+    let env = [("TMPDIR", tmp.to_str().unwrap()), ("CI", "")];
+    let lancer = |commande: &str, valeur: &str| {
+        vanguard_dans_env(
+            programme,
+            &maison,
+            "fr",
+            &["console", commande, "--", valeur],
+            "",
+            120,
+            &env,
+        )
+    };
+    // Le partage avec l'auteur accepté : le relevé tournerait, et la file de l'envoi aussi.
+    let s = vanguard_dans_env(
+        programme,
+        &maison,
+        "fr",
+        &["parametres", "partage", "oui"],
+        "",
+        60,
+        &env,
+    );
+    assert_eq!(s.code, Some(0), "{}", s.erreurs);
+    let avant = instantane(&maison);
+    let s = lancer("courriel-suspect", &format!("~/Téléchargements/{MARQUE}.eml"));
+    assert_eq!(s.code, Some(0), "{}{}", s.texte, s.erreurs);
+    let v: serde_json::Value =
+        serde_json::from_str(&s.texte).unwrap_or_else(|e| panic!("JSON illisible ({e}) : {}", s.texte));
+    assert_eq!(v["outil"], "PRO-COU-001", "{v}");
+    for (commande, valeur) in [
+        (
+            "verifier-fichier",
+            ssh.join("id_ed25519").to_string_lossy().into_owned(),
+        ),
+        ("verifier-fichier", "~/.ssh/id_ed25519".into()),
+        ("courriel-suspect", "~/Téléchargements/cle.eml".into()),
+        ("courriel-suspect", "~/Téléchargements/tube.eml".into()),
+        ("verifier-moi", "~/Téléchargements/../.ssh/id_ed25519".into()),
+        ("verifier-fichier", "/proc/self/environ".into()),
+        ("verifier-fichier", "/dev/zero".into()),
+        ("verifier-fichier", "Téléchargements/x.eml".into()),
+        ("lien", "--internet".into()),
+        ("chercher", "a\u{202E}b".into()),
+        ("dernieres-failles", "3651".into()),
+        ("corriger", "x".into()),
+    ] {
+        let s = lancer(commande, &valeur);
+        assert_eq!(s.code, Some(2), "{commande} {valeur:?} : {}{}", s.texte, s.erreurs);
+        assert!(s.texte.trim().is_empty(), "{commande} {valeur:?} : {}", s.texte);
+        assert!(!s.erreurs.contains("inventée"), "{commande} {valeur:?} : {}", s.erreurs);
+    }
+    let apres = instantane(&maison);
+    // Seul le dossier de Vanguard (et son cache) peut changer : ni Téléchargements, ni ~/.ssh, ni le reste.
+    let propres = |n: &str| n.starts_with("donnees") || n.starts_with("cache") || n.starts_with("config");
+    // La maison elle-même change de date quand un de ces dossiers y est créé.
+    let propres_ou_maison = |n: &str| n.is_empty() || propres(n);
+    let hors: Vec<String> = ecarts(&avant, &apres)
+        .into_iter()
+        .filter(|e| {
+            let nom = e
+                .split_once('«')
+                .and_then(|(_, r)| r.split_once('»'))
+                .map_or("?", |(n, _)| n.trim());
+            !propres_ou_maison(nom)
+        })
+        .collect();
+    assert_eq!(hors, Vec::<String>::new(), "écrit hors du dossier de Vanguard");
+    // La valeur n'est nulle part dans ce que Vanguard a écrit (relevé, envoi, journal, examens, cache) ; le résultat
+    // versé de la lecture permise, au moins, y est : la recherche a de quoi chercher.
+    assert!(dossier_vanguard(&maison).join("examens/PRO-COU-001.json").is_file());
+    // Rien de ces processus n'est relevé ni mis en file pour l'envoi, même le partage accepté.
+    let releves: Vec<String> = ecarts(&avant, &apres)
+        .into_iter()
+        .filter(|e| e.contains("vanguard/amelioration") || e.contains("vanguard/envoi"))
+        .collect();
+    assert_eq!(releves, Vec::<String>::new(), "relevé ou envoi écrit par la console");
+    for (nom, _) in apres.iter().filter(|(n, _)| propres(n)) {
+        let chemin = maison.join(nom);
+        if chemin.is_file() {
+            let octets = std::fs::read(&chemin).unwrap_or_default();
+            assert!(
+                !String::from_utf8_lossy(&octets).contains(MARQUE),
+                "la valeur tapée figure dans {nom}"
+            );
+        }
+    }
+    let _ = std::fs::remove_dir_all(&maison);
+}
