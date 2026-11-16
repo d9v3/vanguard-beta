@@ -335,49 +335,16 @@ fn montre(chemin: &Path) -> String {
 }
 
 /// Sous Windows, `canonicalize` rend `\\?\C:\…`, que la fenêtre refuse (elle ne lit que `C:\…`). Ce préfixe ne
-/// s'ôte que pour la forme exacte `\\?\X:\…` dont le reste désigne le même fichier sans lui : moins de 260 octets,
-/// chaque nom non vide, sans « . » ni « .. », sans point ni espace à la fin, sans caractère interdit, sans nom réservé
-/// (CON, NUL, COM1…). Sinon (`\\?\UNC\…`, un autre préfixe, un nom douteux), le chemin reste tel quel : la fenêtre
-/// le refuse, rien ne s'installe. Seul l'affichage change : les fichiers se lisent et s'écrivent par le vrai chemin.
+/// s'ôte que pour la forme `\\?\X:\…` dont le reste désigne le même fichier sans lui
+/// (`socle::chemins::sans_verbatim` : moins de 260 caractères, sans « . » ni « .. », sans point ni espace final, sans
+/// caractère interdit ni nom réservé) et nomme au moins un dossier ou fichier. Sinon (`\\?\UNC\…`, la racine, un
+/// autre préfixe, un nom douteux), le chemin reste tel quel : la fenêtre le refuse, rien ne s'installe. Seul
+/// l'affichage change : les fichiers se lisent et s'écrivent par le vrai chemin.
 fn sans_prefixe_etendu(chemin: &str) -> &str {
-    let Some(reste) = chemin.strip_prefix(r"\\?\") else {
-        return chemin;
-    };
-    let (Some(noms), [lettre, b':', b'\\', _, ..]) = (reste.get(3..), reste.as_bytes()) else {
-        return chemin;
-    };
-    if lettre.is_ascii_alphabetic() && reste.len() < 260 && noms.split('\\').all(nom_sans_prefixe) {
-        reste
-    } else {
-        chemin
+    match (chemin.get(4..), crate::socle::chemins::sans_verbatim(chemin)) {
+        (Some(local), Some(court)) if court == local && local.len() > 3 => local,
+        _ => chemin,
     }
-}
-
-/// Un nom de chemin qui se lit pareil avec ou sans le préfixe étendu.
-fn nom_sans_prefixe(nom: &str) -> bool {
-    const RESERVES: [&str; 6] = ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"];
-    if nom.is_empty() || nom.ends_with(['.', ' ']) {
-        return false;
-    }
-    if nom
-        .chars()
-        .any(|c| c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '/' | '|' | '?' | '*'))
-    {
-        return false;
-    }
-    let base = nom
-        .split('.')
-        .next()
-        .unwrap_or(nom)
-        .trim_end_matches(' ')
-        .to_ascii_uppercase();
-    let numerote = ["COM", "LPT"].iter().any(|p| {
-        base.strip_prefix(p).is_some_and(|n| {
-            let mut c = n.chars();
-            matches!((c.next(), c.next()), (Some('0'..='9' | '¹' | '²' | '³'), None))
-        })
-    });
-    !RESERVES.contains(&base.as_str()) && !numerote
 }
 
 fn apercu(

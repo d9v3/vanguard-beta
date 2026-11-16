@@ -94,24 +94,12 @@ fn executable_depuis(
     }
 }
 
-/// Un chemin sans le préfixe « \\?\ » que `canonicalize` met sous Windows (sauf « \\?\UNC\ », qui n'a pas de forme
-/// courte équivalente) : PowerShell et un raccourci veulent la forme courante, et `Path::starts_with` tient
-/// « \\?\E:\ » et « E:\ » pour deux débuts différents.
-pub(crate) fn sans_verbatim(p: &Path) -> PathBuf {
-    p.to_str()
-        .and_then(|s| s.strip_prefix(r"\\?\"))
-        .filter(|s| !s.starts_with(r"UNC\"))
-        .map_or_else(|| p.to_path_buf(), PathBuf::from)
-}
-
 /// `p` est-il sous `d` ? Comparés sous leur forme courante, puis canonique : la clé se situe par `canonicalize`
 /// (« \\?\E:\ »), le programme par `current_exe` (« E:\… »).
 pub(crate) fn sous(p: &Path, d: &Path) -> bool {
-    let canon = |x: &Path| {
-        x.canonicalize()
-            .map_or_else(|_| sans_verbatim(x), |c| sans_verbatim(&c))
-    };
-    sans_verbatim(p).starts_with(sans_verbatim(d)) || canon(p).starts_with(canon(d))
+    use crate::socle::chemins::composants;
+    let canon = |x: &Path| composants(&x.canonicalize().unwrap_or_else(|_| x.to_path_buf()));
+    composants(p).starts_with(&composants(d)) || canon(p).starts_with(&canon(d))
 }
 
 pub(crate) fn notifier(titre: &str, corps: &str) {
@@ -2460,15 +2448,6 @@ mod tests {
 
     #[test]
     fn programme_de_la_cle_sur_un_lecteur_absent() {
-        // Le préfixe « \\?\ » de canonicalize, retiré pour PowerShell et le raccourci ; UNC gardé tel quel.
-        assert_eq!(
-            sans_verbatim(Path::new(r"\\?\E:\Windows\vanguard.exe")),
-            PathBuf::from(r"E:\Windows\vanguard.exe")
-        );
-        assert_eq!(
-            sans_verbatim(Path::new(r"\\?\UNC\serveur\x")),
-            PathBuf::from(r"\\?\UNC\serveur\x")
-        );
         #[cfg(windows)]
         {
             // La clé se situe par canonicalize (« \\?\E:\ »), le programme par current_exe (« E:\… ») : le même

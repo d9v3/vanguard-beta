@@ -31,6 +31,7 @@ use crate::protection::empreintes::{self, Empreintes};
 use crate::protection::heuristiques::{self, Heuristique, Lieu, Signe};
 use crate::protection::moteur_yara::Regles;
 use crate::protection::sources::porte_la_marque_d_essai;
+use crate::socle::chemins::composants;
 use crate::{tr, trf};
 
 /// Un manque du socle qui laisse une partie non vérifiée. Ni un format inconnu (ses octets sont passés tels quels aux
@@ -530,82 +531,183 @@ fn clamav_et_manques(mode: Mode) -> (Option<&'static Base>, Vec<String>) {
 }
 
 /// Le lieu d'un fichier pour les heuristiques : le dossier des téléchargements, un dossier temporaire, ou ailleurs.
-/// Un dossier analysé devient son chemin réel (`vanguard yara <dossier>`, l'antivirus) : sous Windows `\\?\C:\…`, en
-/// noms longs, alors que `%TEMP%` s'écrit souvent `C:\Users\ALICE~1\…` et que la casse n'y compte pas. Comparés
-/// tels quels, un programme d'un dossier temporaire ou des téléchargements y passait pour « ailleurs » (0.95). Chaque
-/// dossier compte donc sous sa forme écrite et sous son chemin réel, les deux côtés sans le préfixe ni la casse
-/// (`composants`) ; un fichier seul donné en nom court n'est pas allongé (à faire). Le lieu ne fait qu'ajouter des
-/// signes : reconnaître plus de formes ne peut en retirer aucun.
+/// Le lieu ne fait qu'ajouter des signes : reconnaître plus de formes d'un chemin ne peut en retirer aucun. Les
+/// dossiers se calculent une fois par minute (`Lieux`), pas à chaque fichier : une analyse complète en juge des
+/// centaines de milliers, et le dossier des téléchargements se lit dans un fichier ou le registre.
 fn lieu_de(chemin: &Path) -> Lieu {
+    type Garde = std::sync::Mutex<Option<(Instant, std::sync::Arc<Lieux>)>>;
+    static LIEUX: Garde = std::sync::Mutex::new(None);
+    let lieux = {
+        let mut g = LIEUX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        match g.as_ref() {
+            Some((quand, l)) if quand.elapsed() < Duration::from_secs(60) => std::sync::Arc::clone(l),
+            _ => {
+                let l = std::sync::Arc::new(Lieux::nouveaux(
+                    crate::protection::telechargement::dossier_telechargements().as_deref(),
+                    &dossiers_temporaires(),
+                    &crate::socle::maison(),
+                ));
+                *g = Some((Instant::now(), std::sync::Arc::clone(&l)));
+                l
+            }
+        }
+    };
+    lieux.de(chemin)
+}
+
+/// Les dossiers temporaires du compte : celui du processus (`temp_dir`, qui lit TMP sous Windows, TMPDIR ailleurs),
+/// et sous Windows aussi TEMP, qu'un autre programme peut lire à sa place ; ailleurs, ceux du système. Un dossier
+/// trop vague pour en être un (`assez_precis`) est écarté.
+pub(crate) fn dossiers_temporaires() -> Vec<std::path::PathBuf> {
+    temporaires_selon(&|v| std::env::var_os(v), &crate::socle::maison())
+}
+
+/// Le cœur de `dossiers_temporaires`, les variables lues par `variable` : pour l'essayer sans toucher à
+/// l'environnement des autres essais.
+fn temporaires_selon(variable: &dyn Fn(&str) -> Option<std::ffi::OsString>, maison: &Path) -> Vec<std::path::PathBuf> {
     #[cfg(unix)]
-    let ailleurs = ["/tmp", "/var/tmp", "/dev/shm"].map(std::path::PathBuf::from);
+    let ailleurs = {
+        let _ = variable;
+        ["/tmp", "/var/tmp", "/dev/shm"].map(std::path::PathBuf::from).to_vec()
+    };
     #[cfg(windows)]
-    let ailleurs: [std::path::PathBuf; 0] = [];
-    let mut temporaires = vec![std::env::temp_dir()];
-    temporaires.extend(ailleurs);
-    lieu_selon(
-        chemin,
-        crate::protection::telechargement::dossier_telechargements().as_deref(),
-        &temporaires,
-    )
+    let ailleurs: Vec<std::path::PathBuf> = ["TEMP", "TMP"]
+        .iter()
+        .filter_map(|v| variable(v))
+        .map(std::path::PathBuf::from)
+        .collect();
+    let mut dossiers: Vec<std::path::PathBuf> = Vec::new();
+    for d in std::iter::once(std::env::temp_dir()).chain(ailleurs) {
+        if assez_precis(&d, maison) && !dossiers.iter().any(|v| composants(v) == composants(&d)) {
+            dossiers.push(d);
+        }
+    }
+    dossiers
+}
+
+/// Un dossier venu de l'environnement (TMPDIR, TEMP, XDG_DOWNLOAD_DIR…) n'est retenu que s'il désigne vraiment un
+/// dossier à part : vide, « / » ou « C:\ » (aucun nom après la racine), ou le dossier personnel et ce qui le contient,
+/// ils feraient de chaque fichier un fichier temporaire ou téléchargé. Jugé sous sa forme écrite et sous son chemin
+/// réel (un lien vers « / »).
+fn assez_precis(dossier: &Path, maison: &Path) -> bool {
+    let maisons: Vec<_> = std::iter::once(maison.to_path_buf())
+        .chain(std::fs::canonicalize(maison))
+        .map(|m| composants(&m))
+        .collect();
+    let precis = |d: &Path| {
+        d.is_absolute()
+            && d.components().any(|c| matches!(c, std::path::Component::Normal(_)))
+            && !maisons.iter().any(|m| m.starts_with(&composants(d)))
+    };
+    precis(dossier) && std::fs::canonicalize(dossier).map_or(true, |r| precis(&r))
+}
+
+/// Un chemin sous sa forme comparable (`composants`).
+type Forme = Vec<std::ffi::OsString>;
+
+/// Les dossiers qui donnent un lieu, chacun sous sa forme écrite et sous son chemin réel. Un dossier analysé devient
+/// son chemin réel (`vanguard yara <dossier>`, l'antivirus) : sous Windows `\\?\C:\…`, en noms longs, alors que
+/// `%TEMP%` s'écrit souvent `C:\Users\ALICE~1\…` ; comparés tels quels, un programme du dossier temporaire passait pour
+/// « ailleurs » (0.95).
+struct Lieux {
+    telechargements: Vec<Forme>,
+    temporaires: Vec<Forme>,
+}
+
+impl Lieux {
+    fn nouveaux(telechargements: Option<&Path>, temporaires: &[std::path::PathBuf], maison: &Path) -> Self {
+        let formes = |d: &Path| -> Vec<Forme> {
+            let ecrit = std::path::absolute(d).unwrap_or_else(|_| d.to_path_buf());
+            if !assez_precis(&ecrit, maison) {
+                return Vec::new();
+            }
+            let mut f = vec![composants(&ecrit)];
+            f.extend(std::fs::canonicalize(&ecrit).map(|r| composants(&r)));
+            f.dedup();
+            f
+        };
+        Lieux {
+            telechargements: telechargements.map(formes).unwrap_or_default(),
+            temporaires: temporaires.iter().flat_map(|t| formes(t)).collect(),
+        }
+    }
+
+    fn de(&self, chemin: &Path) -> Lieu {
+        let formes = formes_du_fichier(chemin);
+        let sous = |dossiers: &[Forme]| formes.iter().any(|f| dossiers.iter().any(|d| f.starts_with(d)));
+        if sous(&self.telechargements) || formes.iter().any(|f| usuel(f) == Some(Lieu::Telechargements)) {
+            Lieu::Telechargements
+        } else if sous(&self.temporaires) || formes.iter().any(|f| usuel(f) == Some(Lieu::Temporaire)) {
+            Lieu::Temporaire
+        } else {
+            Lieu::Ordinaire
+        }
+    }
 }
 
 /// Le cœur de `lieu_de`, les dossiers donnés : pour l'essayer sur des dossiers jetables.
+#[cfg(test)]
 fn lieu_selon(chemin: &Path, telechargements: Option<&Path>, temporaires: &[std::path::PathBuf]) -> Lieu {
-    let chemin = composants(&std::path::absolute(chemin).unwrap_or_else(|_| chemin.to_path_buf()));
-    let sous = |dossier: &Path| {
-        let ecrit = std::path::absolute(dossier).unwrap_or_else(|_| dossier.to_path_buf());
-        chemin.starts_with(&composants(&ecrit))
-            || chemin_reel(&ecrit).is_some_and(|r| chemin.starts_with(&composants(&r)))
-    };
-    if telechargements.is_some_and(sous) {
-        Lieu::Telechargements
-    } else if temporaires.iter().any(|t| sous(t)) {
-        Lieu::Temporaire
-    } else {
-        Lieu::Ordinaire
-    }
+    Lieux::nouveaux(telechargements, temporaires, &crate::socle::maison()).de(chemin)
 }
 
-/// Le chemin réel d'un dossier, gardé une fois trouvé : une analyse complète juge des centaines de milliers de
-/// fichiers. Un échec n'est pas gardé (dossier pas encore créé) : il sera redemandé.
-fn chemin_reel(dossier: &Path) -> Option<std::path::PathBuf> {
-    type Reels = std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, std::path::PathBuf>>;
-    static REELS: std::sync::OnceLock<Reels> = std::sync::OnceLock::new();
-    let reels = REELS.get_or_init(Default::default);
-    if let Some(r) = reels.lock().ok().and_then(|g| g.get(dossier).cloned()) {
-        return Some(r);
+/// Le fichier jugé sous sa forme écrite et, si elle diffère, sous le chemin réel de son dossier : `..`, un lien, un
+/// nom court (`ALICE~1`), `\\.\C:\…` ou `\\?\GLOBALROOT\…` n'en font pas un fichier d'ailleurs. Seul le dossier est
+/// résolu, pas le fichier : un lien posé dans les téléchargements y reste. Le dernier dossier résolu est gardé par
+/// fil (une minute au plus) : une analyse juge les fichiers d'un même dossier à la suite.
+fn formes_du_fichier(chemin: &Path) -> Vec<Forme> {
+    type Dernier = std::cell::RefCell<Option<(std::path::PathBuf, Instant, Option<std::path::PathBuf>)>>;
+    thread_local! {
+        static DERNIER: Dernier = const { std::cell::RefCell::new(None) };
     }
-    let r = std::fs::canonicalize(dossier).ok()?;
-    if let Ok(mut g) = reels.lock() {
-        g.insert(dossier.to_path_buf(), r.clone());
+    let ecrit = std::path::absolute(chemin).unwrap_or_else(|_| chemin.to_path_buf());
+    let premiere = composants(&ecrit);
+    let mut formes = Vec::new();
+    if let (Some(dossier), Some(nom)) = (ecrit.parent(), ecrit.file_name()) {
+        let reel = DERNIER.with_borrow_mut(|dernier| match dernier {
+            Some((d, quand, r)) if d == dossier && quand.elapsed() < Duration::from_secs(60) => r.clone(),
+            _ => {
+                let r = std::fs::canonicalize(dossier).ok();
+                *dernier = Some((dossier.to_path_buf(), Instant::now(), r.clone()));
+                r
+            }
+        });
+        if let Some(r) = reel.map(|r| composants(&r.join(nom)))
+            && r != premiere
+        {
+            formes.push(r);
+        }
     }
-    Some(r)
+    formes.push(premiere);
+    formes
 }
 
-/// Un chemin ramené à une forme comparable, composant par composant. Sous Windows, sans le préfixe étendu
-/// (« \\?\C: » vaut « C: », « \\?\UNC\serveur\partage » vaut « \\serveur\partage ») et sans casse.
-fn composants(chemin: &Path) -> Vec<std::ffi::OsString> {
+/// Les dossiers usuels de tout compte, reconnus à leur forme : sous un autre compte (SYSTEM, une élévation), le
+/// dossier temporaire et les téléchargements du processus ne sont pas ceux de la personne dont on juge le fichier.
+/// Windows : `C:\Users\<compte>\Downloads`, `C:\Users\<compte>\AppData\Local\Temp`, `C:\Windows\Temp` ; ailleurs,
+/// `/home/<compte>/Downloads` (ou Téléchargements).
+fn usuel(forme: &Forme) -> Option<Lieu> {
     #[cfg(windows)]
     {
-        use std::path::{Component, Prefix};
-        chemin
-            .components()
-            .map(|c| match c {
-                Component::Prefix(p) => match p.kind() {
-                    Prefix::Disk(l) | Prefix::VerbatimDisk(l) => format!("{}:", char::from(l.to_ascii_lowercase())),
-                    Prefix::UNC(s, d) | Prefix::VerbatimUNC(s, d) => {
-                        format!(r"\\{}\{}", s.to_string_lossy(), d.to_string_lossy()).to_lowercase()
-                    }
-                    _ => c.as_os_str().to_string_lossy().to_lowercase(),
-                },
-                _ => c.as_os_str().to_string_lossy().to_lowercase(),
-            })
-            .map(std::ffi::OsString::from)
-            .collect()
+        // [lecteur, racine, noms…] ; `composants` met tout en minuscules.
+        let noms = forme.get(2..).filter(|_| forme.get(1).is_some_and(|r| r == "\\"))?;
+        let est = |i: usize, n: &str| noms.get(i).is_some_and(|x| x == n);
+        if est(0, "users") && est(2, "downloads") {
+            Some(Lieu::Telechargements)
+        } else if (est(0, "users") && est(2, "appdata") && est(3, "local") && est(4, "temp"))
+            || (est(0, "windows") && est(1, "temp"))
+        {
+            Some(Lieu::Temporaire)
+        } else {
+            None
+        }
     }
     #[cfg(not(windows))]
-    chemin.components().map(|c| c.as_os_str().to_os_string()).collect()
+    {
+        let est = |i: usize, n: &str| forme.get(i).is_some_and(|x| x == n);
+        (est(0, "/") && est(1, "home") && (est(3, "Downloads") || est(3, "Téléchargements")))
+            .then_some(Lieu::Telechargements)
+    }
 }
 
 /// Le juge de la base ClamAV ; `None` en administrateur (P22). Les essais jugent aussi sous root (espace de noms).
@@ -1278,6 +1380,144 @@ mod tests {
         );
         assert_eq!(lieu_selon(&f, None, &[d.join("autre")]), Lieu::Ordinaire, "{f:?}");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Le fichier jugé compte aussi sous le chemin réel de son dossier : passé par `..` ou par un lien, il reste dans
+    /// le dossier temporaire.
+    #[test]
+    fn le_lieu_resout_le_dossier_du_fichier() {
+        let d = crate::protection::isoler::dossier_jetable().unwrap();
+        let (t, autre) = (d.join("t"), d.join("autre"));
+        std::fs::create_dir(&t).unwrap();
+        std::fs::create_dir(&autre).unwrap();
+        std::fs::write(t.join("outil.exe"), b"MZ").unwrap();
+        let temporaires = [t.clone()];
+        let detour = autre.join("..").join("t").join("outil.exe");
+        assert_eq!(lieu_selon(&detour, None, &temporaires), Lieu::Temporaire, "{detour:?}");
+        assert_eq!(lieu_selon(&detour, Some(&t), &[]), Lieu::Telechargements, "{detour:?}");
+        // Le même nom dans un dossier voisin reste ailleurs. Sous Windows, le dossier jetable est lui-même dans
+        // `AppData\Local\Temp`, temporaire pour tout compte (`usuel`) : seuls les téléchargements y prouvent la
+        // résolution.
+        assert_eq!(
+            lieu_selon(&autre.join("outil.exe"), Some(&t), &[]),
+            if cfg!(windows) {
+                Lieu::Temporaire
+            } else {
+                Lieu::Ordinaire
+            }
+        );
+        #[cfg(unix)]
+        {
+            let lien = d.join("lien");
+            std::os::unix::fs::symlink(&t, &lien).unwrap();
+            let f = lien.join("outil.exe");
+            assert_eq!(lieu_selon(&f, None, &temporaires), Lieu::Temporaire, "{f:?}");
+            assert_eq!(lieu_selon(&f, Some(&t), &[]), Lieu::Telechargements, "{f:?}");
+        }
+        #[cfg(windows)]
+        {
+            // « \\.\C:\… », la forme des périphériques, désigne le même fichier.
+            let reel = std::fs::canonicalize(t.join("outil.exe")).unwrap();
+            let peripherique = std::path::PathBuf::from(format!(
+                r"\\.\{}",
+                crate::socle::chemins::sans_verbatim(&reel.to_string_lossy()).unwrap()
+            ));
+            assert_eq!(
+                lieu_selon(&peripherique, Some(&t), &[]),
+                Lieu::Telechargements,
+                "{peripherique:?}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Un dossier trop vague (vide, la racine, le dossier personnel ou ce qui le contient, un lien vers la racine)
+    /// ne fait pas de chaque fichier un fichier temporaire ou téléchargé.
+    #[test]
+    fn un_dossier_vague_ne_compte_pas() {
+        let d = crate::protection::isoler::dossier_jetable().unwrap();
+        let maison = crate::socle::maison();
+        #[cfg(unix)]
+        let (racine, ailleurs) = (std::path::PathBuf::from("/"), Path::new("/usr/bin/outil"));
+        #[cfg(windows)]
+        let (racine, ailleurs) = (
+            std::path::PathBuf::from(r"C:\"),
+            Path::new(r"C:\Windows\System32\outil.exe"),
+        );
+        let mut vagues = vec![std::path::PathBuf::new(), racine.clone(), maison.clone()];
+        vagues.extend(maison.parent().map(Path::to_path_buf));
+        #[cfg(unix)]
+        {
+            let lien = d.join("racine");
+            std::os::unix::fs::symlink("/", &lien).unwrap();
+            vagues.push(lien);
+        }
+        for v in &vagues {
+            assert!(!assez_precis(v, &maison), "{v:?}");
+            assert_eq!(
+                lieu_selon(ailleurs, Some(v), std::slice::from_ref(v)),
+                Lieu::Ordinaire,
+                "{v:?}"
+            );
+            let chez_soi = maison.join("Documents").join("outil.exe");
+            assert_eq!(
+                lieu_selon(&chez_soi, Some(v), std::slice::from_ref(v)),
+                Lieu::Ordinaire,
+                "{v:?}"
+            );
+        }
+        // Un vrai dossier, lui, compte.
+        assert!(assez_precis(&d, &maison), "{d:?}");
+        for t in dossiers_temporaires() {
+            assert!(assez_precis(&t, &maison), "{t:?}");
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Sous Windows, TEMP compte comme TMP (celui de `temp_dir`) : un programme téléchargé atterrit dans l'un ou
+    /// l'autre. Un TEMP vague est écarté.
+    #[cfg(windows)]
+    #[test]
+    fn temp_et_tmp_comptent() {
+        let d = crate::protection::isoler::dossier_jetable().unwrap();
+        let maison = crate::socle::maison();
+        for v in ["TEMP", "TMP"] {
+            let dossiers = temporaires_selon(&|n| (n == v).then(|| d.clone().into_os_string()), &maison);
+            assert!(
+                dossiers.iter().any(|x| composants(x) == composants(&d)),
+                "{v} {dossiers:?}"
+            );
+            let vague = temporaires_selon(&|n| (n == v).then(|| r"C:\".into()), &maison);
+            assert!(
+                !vague.iter().any(|x| composants(x) == composants(Path::new(r"C:\"))),
+                "{v} {vague:?}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Les dossiers usuels de tout compte se reconnaissent à leur forme, même s'ils ne sont pas ceux du processus
+    /// (un autre compte, une élévation).
+    #[test]
+    fn les_dossiers_usuels_de_tout_compte() {
+        let lieu = |c: &str| lieu_selon(Path::new(c), None, &[]);
+        #[cfg(unix)]
+        {
+            assert_eq!(lieu("/home/bob/Downloads/outil"), Lieu::Telechargements);
+            assert_eq!(lieu("/home/bob/Téléchargements/outil"), Lieu::Telechargements);
+            assert_eq!(lieu("/home/bob/Documents/outil"), Lieu::Ordinaire);
+            assert_eq!(lieu("/srv/home/bob/Downloads/outil"), Lieu::Ordinaire);
+        }
+        #[cfg(windows)]
+        {
+            assert_eq!(lieu(r"C:\Users\Bob\Downloads\outil.exe"), Lieu::Telechargements);
+            assert_eq!(lieu(r"\\?\D:\USERS\bob\downloads\x\outil.exe"), Lieu::Telechargements);
+            assert_eq!(lieu(r"C:\Users\Bob\AppData\Local\Temp\outil.exe"), Lieu::Temporaire);
+            assert_eq!(lieu(r"\\?\C:\Windows\Temp\outil.exe"), Lieu::Temporaire);
+            assert_eq!(lieu(r"C:\Users\Bob\Documents\outil.exe"), Lieu::Ordinaire);
+            assert_eq!(lieu(r"D:\jeux\Windows\Temp\outil.exe"), Lieu::Ordinaire);
+            assert_eq!(lieu(r"C:\Users\Bob\AppData\Roaming\Temp\outil.exe"), Lieu::Ordinaire);
+        }
     }
 
     /// Les formes d'un même chemin Windows se valent : préfixe étendu, réseau, casse.

@@ -745,7 +745,7 @@ fn plateforme_sure(installe: &str, program_data: &str) -> Option<String> {
         .get(..racine.len())
         .filter(|debut| debut.eq_ignore_ascii_case(&racine))
         .and_then(|_| installe.get(racine.len()..))?;
-    (!version.contains(['\\', '/']) && nom_sans_ambiguite(version)).then(|| installe.to_string())
+    (!version.contains(['\\', '/']) && crate::socle::chemins::nom_sans_ambiguite(version)).then(|| installe.to_string())
 }
 
 /// Pendant une analyse qui peut durer une heure, une ligne par minute : MpCmdRun écrit son compte rendu dans un tube,
@@ -1305,7 +1305,7 @@ fn couverture(
     let mut couvrent = exclusions_qui_couvrent(cible, dossier, chemins, extensions, variables);
     if verification == Some(true) {
         // Pas deux fois : une exclusion déjà montrée qui est la cible elle-même.
-        let montree = sans_verbatim(cible).unwrap_or_else(|| cible.to_string());
+        let montree = crate::socle::chemins::sans_verbatim(cible).unwrap_or_else(|| cible.to_string());
         let c = pour_comparer(&montree);
         if !couvrent.iter().any(|x| pour_comparer(x) == c) {
             couvrent.insert(0, affichable(&montree));
@@ -1926,64 +1926,8 @@ fn examen_de(verdict: Verdict, sortie: &str, encore_la: bool) -> Examen {
 fn chemin_pour_mpcmdrun(chemin: &std::path::Path) -> PathBuf {
     chemin
         .to_str()
-        .and_then(sans_verbatim)
+        .and_then(crate::socle::chemins::sans_verbatim)
         .map_or_else(|| chemin.to_path_buf(), PathBuf::from)
-}
-
-/// « \\?\C:\… » → « C:\… », « \\?\UNC\serveur\partage\… » → « \\serveur\partage\… », seulement quand la forme
-/// courte désigne sans doute possible le même fichier. Sans « \\?\ », Windows réinterprète le chemin : point ou espace
-/// final retiré, « . » et « .. » résolus, CON, NUL, COM1… pris pour des périphériques, longueur bornée (MAX_PATH).
-/// « C:\x\dossier. », créé exprès par qui veut se cacher, deviendrait « C:\x\dossier », un autre dossier, sain. Dans
-/// ces cas, et pour toute autre forme (« \\?\Volume{…}\ »), `None` : le chemin reste tel quel, et rien n'agit sur un
-/// autre fichier à sa place.
-#[cfg(any(windows, test))]
-pub(crate) fn sans_verbatim(chemin: &str) -> Option<String> {
-    // Au moins le serveur et le partage pour un chemin réseau ; un nom pour un lecteur.
-    let (court, noms, minimum) = if let Some(reseau) = chemin.strip_prefix(r"\\?\UNC\") {
-        (format!(r"\\{reseau}"), reseau, 2)
-    } else {
-        let local = chemin.strip_prefix(r"\\?\")?;
-        let mut c = local.chars();
-        let (Some(lettre), Some(':'), Some('\\')) = (c.next(), c.next(), c.next()) else {
-            return None;
-        };
-        if !lettre.is_ascii_alphabetic() {
-            return None;
-        }
-        // La racine du lecteur, « C:\ », n'a pas de nom après elle.
-        let noms = c.as_str();
-        if noms.is_empty() {
-            return Some(local.to_string());
-        }
-        (local.to_string(), noms, 1)
-    };
-    let noms: Vec<&str> = noms.split('\\').collect();
-    let sur = noms.len() >= minimum
-        && noms.iter().all(|n| nom_sans_ambiguite(n))
-        // MAX_PATH : 260 caractères UTF-16, le nul final compris.
-        && court.encode_utf16().count() < 260;
-    sur.then_some(court)
-}
-
-/// Un nom que Windows lit tel quel hors de « \\?\ » : ni vide, ni « . » ou « .. », sans point ni espace final, sans
-/// caractère interdit, et pas un nom de périphérique (« CON », « nul.txt », « COM¹ »…), même suivi d'une extension.
-#[cfg(any(windows, test))]
-fn nom_sans_ambiguite(nom: &str) -> bool {
-    const PERIPHERIQUES: [&str; 6] = ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"];
-    let souche = nom.split('.').next().unwrap_or_default().trim_end().to_uppercase();
-    let numerote = ["COM", "LPT"].iter().any(|p| {
-        souche.strip_prefix(p).is_some_and(|n| {
-            matches!(
-                n,
-                "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
-            )
-        })
-    });
-    !nom.is_empty()
-        && !nom.ends_with(['.', ' '])
-        && !nom.chars().any(|c| c < ' ' || "<>:\"/|?*".contains(c))
-        && !PERIPHERIQUES.contains(&souche.as_str())
-        && !numerote
 }
 
 /// La raison d'un fichier sauté ou exclu par Defender : propre à ce fichier (`vaut_pour_tous` la refuse, et
@@ -4736,64 +4680,6 @@ mod tests_cle {
             lire_reponse(Some(0), "Scanning C:\\facture was skipped.exe found no threats.\r\n"),
             Verdict::Sain
         );
-    }
-
-    #[test]
-    fn prefixe_etendu_retire_seulement_sans_ambiguite() {
-        let s = |c: &str| sans_verbatim(c);
-        assert_eq!(
-            s(r"\\?\C:\Users\Public\vg-essai-eicar").as_deref(),
-            Some(r"C:\Users\Public\vg-essai-eicar")
-        );
-        assert_eq!(s(r"\\?\d:\").as_deref(), Some(r"d:\"));
-        assert_eq!(
-            s(r"\\?\C:\Données\été 2026\a.b.txt").as_deref(),
-            Some(r"C:\Données\été 2026\a.b.txt")
-        );
-        assert_eq!(s(r"\\?\UNC\nas\partage\x").as_deref(), Some(r"\\nas\partage\x"));
-        assert_eq!(s(r"\\?\UNC\nas\partage").as_deref(), Some(r"\\nas\partage"));
-        // Déjà court, ou une forme sans équivalent court : tel quel.
-        for c in [
-            r"C:\Users\alice",
-            r"\\nas\partage",
-            r"\\?\Volume{1234}\a",
-            r"\\?\GLOBALROOT\Device\x",
-            r"\\?\UNC\nas",
-            r"\\?\UNC\",
-            r"\\?\",
-            r"\\?\C:",
-            r"\\?\1:\x",
-            r"\\.\C:\x",
-        ] {
-            assert_eq!(s(c), None, "{c}");
-        }
-        // Ce que Windows réinterpréterait sans « \\?\ » : un autre fichier, ou un périphérique.
-        for c in [
-            r"\\?\C:\x\dossier.",
-            r"\\?\C:\x\dossier ",
-            r"\\?\C:\x\..\y",
-            r"\\?\C:\x\.\y",
-            r"\\?\C:\x\\y",
-            r"\\?\C:\x\",
-            r"\\?\C:\x\CON",
-            r"\\?\C:\x\nul.txt",
-            r"\\?\C:\x\Aux .log",
-            r"\\?\C:\x\com1",
-            r"\\?\C:\x\LPT¹",
-            r"\\?\C:\x\CONOUT$",
-            r"\\?\C:\x\a:flux",
-            r"\\?\C:\x\a*b",
-            "\\\\?\\C:\\x\\a\u{1}b",
-            r"\\?\UNC\nas\partage.\x",
-        ] {
-            assert_eq!(s(c), None, "{c}");
-        }
-        // Les noms qui ressemblent sans l'être restent courts.
-        assert!(s(r"\\?\C:\x\CONSOLE\com10\nul2.txt\.config").is_some());
-        // MAX_PATH : 259 caractères au plus, le nul final en plus.
-        let long = |n: usize| format!(r"\\?\C:\{}", "a".repeat(n - 3));
-        assert!(s(&long(259)).is_some());
-        assert_eq!(s(&long(260)), None);
     }
 }
 

@@ -163,7 +163,12 @@ fn exe_courant() -> Option<PathBuf> {
 fn lisible(chemin: &Path) -> PathBuf {
     #[cfg(windows)]
     {
-        crate::reseau::surveillance::sans_verbatim(chemin)
+        // La forme courante seulement si elle désigne sans doute possible le même fichier : le chemin part vers
+        // PowerShell et le raccourci, qui agiraient sinon sur un autre (« dossier. » lu « dossier »).
+        chemin
+            .to_str()
+            .and_then(crate::socle::chemins::sans_verbatim)
+            .map_or_else(|| chemin.to_path_buf(), PathBuf::from)
     }
     #[cfg(not(windows))]
     {

@@ -99,8 +99,9 @@ pub(crate) fn non_verifiees(regles: &Regles) -> Option<String> {
     ))
 }
 
-/// Les endroits à risque : téléchargements, bureau, programmes lancés au démarrage (et le dossier temporaire sous
-/// Windows, où atterrissent les programmes téléchargés).
+/// Les endroits à risque : téléchargements, bureau, programmes lancés au démarrage (et les dossiers temporaires sous
+/// Windows, où atterrissent les programmes téléchargés : TMP, que lit `temp_dir`, et TEMP, que lisent d'autres
+/// programmes ; un même dossier n'est analysé qu'une fois).
 pub(crate) fn endroits_a_risque() -> Vec<PathBuf> {
     let maison = crate::socle::maison();
     #[cfg(windows)]
@@ -110,17 +111,27 @@ pub(crate) fn endroits_a_risque() -> Vec<PathBuf> {
         [
             std::env::var_os("APPDATA")
                 .map(|a| PathBuf::from(a).join(r"Microsoft\Windows\Start Menu\Programs\Startup")),
-            std::env::var_os("TEMP").map(PathBuf::from),
         ]
         .into_iter()
-        .flatten(),
+        .flatten()
+        .chain(crate::protection::moteur::dossiers_temporaires()),
     );
     #[cfg(unix)]
     let liste: Vec<PathBuf> = crate::protection::antivirus::ENDROITS_A_RISQUE
         .iter()
         .map(|d| maison.join(d))
         .collect();
-    liste.into_iter().filter(|p| p.is_dir()).collect()
+    let mut vus = Vec::new();
+    liste
+        .into_iter()
+        .filter(|p| p.is_dir())
+        .filter(|p| {
+            let forme = crate::socle::chemins::composants(&std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()));
+            let neuf = !vus.contains(&forme);
+            vus.push(forme);
+            neuf
+        })
+        .collect()
 }
 
 /// Une correspondance : la source, la règle (« Win32_Ransomware_WannaCry », ou le texte de l'heuristique) et le

@@ -163,7 +163,7 @@ pub(crate) fn calculer(fichier: &Path, algo: Algo) -> Result<String, String> {
             // PowerShell 5.1 lit mal « \\?\ » : la forme courte, seulement quand elle désigne sans doute possible le
             // même fichier (`sans_verbatim`) ; sinon le chemin tel quel, qui échoue plutôt que de lire un autre fichier.
             let texte = fichier.to_string_lossy();
-            let court = crate::protection::antivirus::sans_verbatim(&texte);
+            let court = crate::socle::chemins::sans_verbatim(&texte);
             // Gardé en « \?\ », le chemin a de quoi faire échouer PowerShell : le dire plutôt qu'un échec muet.
             let garde = court.is_none() && texte.starts_with(r"\\?\");
             let texte = court.unwrap_or_else(|| texte.to_string());

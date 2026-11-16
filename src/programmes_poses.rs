@@ -440,13 +440,7 @@ pub(crate) fn copie_posee_ici(dossier: &Path, cible: &Path, octets: &[u8], ici: 
 /// Deux chemins du même programme : sous Windows, sans « \\?\ » ni casse ; ailleurs tels quels, puis canoniques.
 pub(crate) fn meme_chemin(a: &Path, b: &Path) -> bool {
     if cfg!(windows) {
-        let court = |p: &Path| {
-            crate::reseau::surveillance::sans_verbatim(p)
-                .display()
-                .to_string()
-                .to_lowercase()
-        };
-        return court(a) == court(b);
+        return crate::socle::chemins::composants(a) == crate::socle::chemins::composants(b);
     }
     a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(x), Ok(y)) if x == y)
 }
