@@ -1394,14 +1394,20 @@ mod tests {
         k.defaire = Defaire::Gestes(vec![crate::optimiser::Geste::droits(&fichier).unwrap()]);
         let c = constat("LNX-ESS-001", "x", Some(k));
         let j = Jeton::de("LNX-ESS-001", &c.cle().unwrap().to_string());
-        // Les noms du dossier, sans les verrous : les essais voisins, qui tournent en même temps dans ce même dossier,
-        // en prennent et en lâchent (`sceaux.verrou`). Le programme entier, lui, est relevé sans exception dans un
-        // dossier personnel à lui (`voir_une_correction_n_ecrit_rien`, tests/programme.rs).
+        // Les noms du dossier, sans ce qu'y posent les essais voisins, qui tournent en même temps dans ce même
+        // dossier : leurs verrous (`sceaux.verrou`), leurs dossiers « essai-… » (`essai-reglage-bornes` est apparu
+        // pendant l'aperçu le 16 nov.) et leurs fichiers au numéro du processus. Aucun nom du programme ne commence
+        // ainsi. Le programme entier, lui, est relevé sans exception dans un dossier personnel à lui
+        // (`voir_une_correction_n_ecrit_rien`, tests/programme.rs).
+        let processus = format!("{}-", std::process::id());
         let noms = || -> std::collections::BTreeSet<std::ffi::OsString> {
             std::fs::read_dir(&dossier)
                 .unwrap()
                 .map(|e| e.unwrap().file_name())
-                .filter(|n| !n.to_string_lossy().ends_with(".verrou"))
+                .filter(|n| {
+                    let n = n.to_string_lossy();
+                    !n.ends_with(".verrou") && !n.starts_with("essai-") && !n.starts_with(&processus)
+                })
                 .collect()
         };
         let avant = noms();
