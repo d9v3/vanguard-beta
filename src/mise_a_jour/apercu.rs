@@ -342,7 +342,10 @@ fn montre(chemin: &Path) -> String {
 /// l'affichage change : les fichiers se lisent et s'écrivent par le vrai chemin.
 fn sans_prefixe_etendu(chemin: &str) -> &str {
     match (chemin.get(4..), crate::socle::chemins::sans_verbatim(chemin)) {
-        (Some(local), Some(court)) if court == local && local.len() > 3 => local,
+        // La fenêtre refuse aussi tout caractère de contrôle (DEL, C1), que Windows lirait pourtant tel quel.
+        (Some(local), Some(court)) if court == local && local.len() > 3 && !local.chars().any(char::is_control) => {
+            local
+        }
         _ => chemin,
     }
 }

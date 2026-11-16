@@ -55,7 +55,7 @@ pub(crate) fn nom_sans_ambiguite(nom: &str) -> bool {
     });
     !nom.is_empty()
         && !nom.ends_with(['.', ' '])
-        && !nom.chars().any(|c| c.is_control() || "<>:\"/|?*".contains(c))
+        && !nom.chars().any(|c| c < ' ' || "<>:\"/|?*".contains(c))
         && !PERIPHERIQUES.contains(&souche.as_str())
         && !numerote
 }

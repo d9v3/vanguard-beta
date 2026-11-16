@@ -121,17 +121,25 @@ pub(crate) fn endroits_a_risque() -> Vec<PathBuf> {
         .iter()
         .map(|d| maison.join(d))
         .collect();
-    let mut vus = Vec::new();
-    liste
-        .into_iter()
-        .filter(|p| p.is_dir())
-        .filter(|p| {
-            let forme = crate::socle::chemins::composants(&std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()));
-            let neuf = !vus.contains(&forme);
-            vus.push(forme);
-            neuf
-        })
-        .collect()
+    dossiers_reels(liste)
+}
+
+/// Les dossiers existants, chacun une fois, sous son chemin réel : l'analyse ne suit pas un lien (`fichiers`), et
+/// `~/Downloads` peut n'être qu'un lien vers `~/Téléchargements`. Garder le lien retirerait le vrai dossier.
+fn dossiers_reels(liste: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut reels: Vec<PathBuf> = Vec::new();
+    for p in liste.into_iter().filter(|p| p.is_dir()) {
+        // Le chemin réel seulement s'il diffère (un lien) : sous Windows, il prend la forme « \\?\C:\… ».
+        let reel = match std::fs::canonicalize(&p) {
+            Ok(r) if crate::socle::chemins::composants(&r) != crate::socle::chemins::composants(&p) => r,
+            _ => p,
+        };
+        let forme = crate::socle::chemins::composants(&reel);
+        if !reels.iter().any(|r| crate::socle::chemins::composants(r) == forme) {
+            reels.push(reel);
+        }
+    }
+    reels
 }
 
 /// Une correspondance : la source, la règle (« Win32_Ransomware_WannaCry », ou le texte de l'heuristique) et le
@@ -711,6 +719,20 @@ pub fn menu() {
 )]
 #[cfg(test)]
 mod tests {
+    /// Deux noms du même dossier (`~/Downloads` lien vers `~/Téléchargements`) : le vrai dossier reste, une fois.
+    #[cfg(unix)]
+    #[test]
+    fn un_dossier_et_son_lien_comptent_une_fois_sous_le_vrai_nom() {
+        let d = std::fs::canonicalize(crate::protection::isoler::dossier_jetable().unwrap()).unwrap();
+        let vrai = d.join("a");
+        std::fs::create_dir(&vrai).unwrap();
+        std::os::unix::fs::symlink(&vrai, d.join("b")).unwrap();
+        for liste in [vec![d.join("b"), vrai.clone()], vec![vrai.clone(), d.join("b")]] {
+            assert_eq!(dossiers_reels(liste), vec![vrai.clone()]);
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     use super::*;
     use crate::protection::empreintes::Empreintes;
 

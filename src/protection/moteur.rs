@@ -585,21 +585,38 @@ fn temporaires_selon(variable: &dyn Fn(&str) -> Option<std::ffi::OsString>, mais
     dossiers
 }
 
-/// Un dossier venu de l'environnement (TMPDIR, TEMP, XDG_DOWNLOAD_DIR…) n'est retenu que s'il désigne vraiment un
-/// dossier à part : vide, « / » ou « C:\ » (aucun nom après la racine), ou le dossier personnel et ce qui le contient,
-/// ils feraient de chaque fichier un fichier temporaire ou téléchargé. Jugé sous sa forme écrite et sous son chemin
-/// réel (un lien vers « / »).
+/// Un dossier venu de l'environnement (TMPDIR, TEMP, XDG_DOWNLOAD_DIR…) n'est retenu que s'il désigne un dossier à
+/// part : absolu, pas le dossier personnel lui-même, et ne contenant pas le système (« / », « C:\ », C:\Windows,
+/// Program Files), qui ferait de chaque fichier un fichier temporaire ou téléchargé. La racine d'un autre lecteur
+/// (« R:\ », un disque en mémoire) ou un partage réseau sont de vrais dossiers à part. Un dossier qui contient le
+/// dossier personnel (/tmp quand HOME vaut /tmp/invite) reste retenu : les fichiers du dossier personnel n'y comptent
+/// pas (`Lieux::de`).
 fn assez_precis(dossier: &Path, maison: &Path) -> bool {
-    let maisons: Vec<_> = std::iter::once(maison.to_path_buf())
-        .chain(std::fs::canonicalize(maison))
-        .map(|m| composants(&m))
+    let d = composants(dossier);
+    dossier.is_absolute() && !formes_de(maison).contains(&d) && !dossiers_du_systeme().iter().any(|s| s.starts_with(&d))
+}
+
+/// Un dossier sous sa forme écrite et, si elle diffère, sous son chemin réel.
+fn formes_de(dossier: &Path) -> Vec<Forme> {
+    let mut f = vec![composants(dossier)];
+    f.extend(std::fs::canonicalize(dossier).map(|r| composants(&r)));
+    f.dedup();
+    f
+}
+
+/// Les dossiers du système, qu'un dossier temporaire ou de téléchargements ne contient jamais.
+fn dossiers_du_systeme() -> Vec<Forme> {
+    #[cfg(unix)]
+    let dossiers = ["/usr", "/etc"].map(std::path::PathBuf::from).to_vec();
+    #[cfg(windows)]
+    let dossiers: Vec<std::path::PathBuf> = ["SystemRoot", "windir", "ProgramFiles"]
+        .iter()
+        .filter_map(std::env::var_os)
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .chain([std::path::PathBuf::from(r"C:\Windows")])
         .collect();
-    let precis = |d: &Path| {
-        d.is_absolute()
-            && d.components().any(|c| matches!(c, std::path::Component::Normal(_)))
-            && !maisons.iter().any(|m| m.starts_with(&composants(d)))
-    };
-    precis(dossier) && std::fs::canonicalize(dossier).map_or(true, |r| precis(&r))
+    dossiers.iter().flat_map(|d| formes_de(d)).collect()
 }
 
 /// Un chemin sous sa forme comparable (`composants`).
@@ -612,29 +629,41 @@ type Forme = Vec<std::ffi::OsString>;
 struct Lieux {
     telechargements: Vec<Forme>,
     temporaires: Vec<Forme>,
+    maisons: Vec<Forme>,
 }
 
 impl Lieux {
     fn nouveaux(telechargements: Option<&Path>, temporaires: &[std::path::PathBuf], maison: &Path) -> Self {
+        // Chaque forme jugée seule : un dossier précis dont le chemin réel est vague (un lien vers « / ») garde sa
+        // forme écrite.
         let formes = |d: &Path| -> Vec<Forme> {
             let ecrit = std::path::absolute(d).unwrap_or_else(|_| d.to_path_buf());
-            if !assez_precis(&ecrit, maison) {
-                return Vec::new();
+            let mut f: Vec<Forme> = Vec::new();
+            for forme in std::iter::once(ecrit.clone()).chain(std::fs::canonicalize(&ecrit)) {
+                let c = composants(&forme);
+                if assez_precis(&forme, maison) && !f.contains(&c) {
+                    f.push(c);
+                }
             }
-            let mut f = vec![composants(&ecrit)];
-            f.extend(std::fs::canonicalize(&ecrit).map(|r| composants(&r)));
-            f.dedup();
             f
         };
         Lieux {
             telechargements: telechargements.map(formes).unwrap_or_default(),
             temporaires: temporaires.iter().flat_map(|t| formes(t)).collect(),
+            maisons: formes_de(maison),
         }
     }
 
     fn de(&self, chemin: &Path) -> Lieu {
         let formes = formes_du_fichier(chemin);
-        let sous = |dossiers: &[Forme]| formes.iter().any(|f| dossiers.iter().any(|d| f.starts_with(d)));
+        // Sous un dossier, sauf si ce dossier contient le dossier personnel et que le fichier est dedans.
+        let sous = |dossiers: &[Forme]| {
+            formes.iter().any(|f| {
+                dossiers
+                    .iter()
+                    .any(|d| f.starts_with(d) && !self.maisons.iter().any(|m| m.starts_with(d) && f.starts_with(m)))
+            })
+        };
         if sous(&self.telechargements) || formes.iter().any(|f| usuel(f) == Some(Lieu::Telechargements)) {
             Lieu::Telechargements
         } else if sous(&self.temporaires) || formes.iter().any(|f| usuel(f) == Some(Lieu::Temporaire)) {
@@ -1431,8 +1460,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// Un dossier trop vague (vide, la racine, le dossier personnel ou ce qui le contient, un lien vers la racine)
-    /// ne fait pas de chaque fichier un fichier temporaire ou téléchargé.
+    /// Un dossier trop vague (vide, la racine, le système, le dossier personnel) est écarté ; ce qui contient le
+    /// dossier personnel, ou un lien vers la racine, est gardé sans faire du système ni du dossier personnel un lieu
+    /// temporaire ou de téléchargement.
     #[test]
     fn un_dossier_vague_ne_compte_pas() {
         let d = crate::protection::isoler::dossier_jetable().unwrap();
@@ -1444,7 +1474,14 @@ mod tests {
             std::path::PathBuf::from(r"C:\"),
             Path::new(r"C:\Windows\System32\outil.exe"),
         );
-        let mut vagues = vec![std::path::PathBuf::new(), racine.clone(), maison.clone()];
+        #[cfg(unix)]
+        let systeme = std::path::PathBuf::from("/usr");
+        #[cfg(windows)]
+        let systeme = std::path::PathBuf::from(r"C:\Windows");
+        let mut vagues = vec![std::path::PathBuf::new(), racine.clone(), maison.clone(), systeme];
+        for v in &vagues {
+            assert!(!assez_precis(v, &maison), "{v:?}");
+        }
         vagues.extend(maison.parent().map(Path::to_path_buf));
         #[cfg(unix)]
         {
@@ -1453,7 +1490,6 @@ mod tests {
             vagues.push(lien);
         }
         for v in &vagues {
-            assert!(!assez_precis(v, &maison), "{v:?}");
             assert_eq!(
                 lieu_selon(ailleurs, Some(v), std::slice::from_ref(v)),
                 Lieu::Ordinaire,
@@ -1487,11 +1523,38 @@ mod tests {
                 dossiers.iter().any(|x| composants(x) == composants(&d)),
                 "{v} {dossiers:?}"
             );
-            let vague = temporaires_selon(&|n| (n == v).then(|| r"C:\".into()), &maison);
+            for vague in [r"C:\", r"C:\Windows", "relatif"] {
+                let t = temporaires_selon(&|n| (n == v).then(|| vague.into()), &maison);
+                assert!(
+                    !t.iter().any(|x| composants(x) == composants(Path::new(vague))),
+                    "{v} {t:?}"
+                );
+            }
+            // La racine d'un autre lecteur (un disque en mémoire) est un vrai dossier temporaire.
+            let r = temporaires_selon(&|n| (n == v).then(|| r"R:\".into()), &maison);
             assert!(
-                !vague.iter().any(|x| composants(x) == composants(Path::new(r"C:\"))),
-                "{v} {vague:?}"
+                r.iter().any(|x| composants(x) == composants(Path::new(r"R:\"))),
+                "{v} {r:?}"
             );
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Un dossier qui contient le dossier personnel (HOME=/tmp/invite) reste temporaire pour ce qui est hors du
+    /// dossier personnel ; /tmp n'est jamais écarté pour autant.
+    #[test]
+    fn un_dossier_qui_contient_la_maison() {
+        let d = crate::protection::isoler::dossier_jetable().unwrap();
+        let maison = d.join("invite");
+        std::fs::create_dir(&maison).unwrap();
+        let lieux = Lieux::nouveaux(None, std::slice::from_ref(&d), &maison);
+        assert_eq!(lieux.de(&d.join("charge.elf")), Lieu::Temporaire);
+        // Sous Windows, le dossier jetable est dans AppData\Local\Temp, temporaire par sa forme (`usuel`).
+        #[cfg(unix)]
+        {
+            assert_eq!(lieux.de(&maison.join("Documents").join("charge.elf")), Lieu::Ordinaire);
+            let t = temporaires_selon(&|_| None, Path::new("/tmp/invite"));
+            assert!(t.contains(&std::path::PathBuf::from("/tmp")), "{t:?}");
         }
         let _ = std::fs::remove_dir_all(&d);
     }
