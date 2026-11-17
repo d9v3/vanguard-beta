@@ -1,28 +1,31 @@
 #!/usr/bin/env bash
-# Failles connues des programmes compilés, lues dans la liste de leurs dépendances, versions comprises, que chacun
-# porte (cargo auditable build, section .dep-v0) : cargo audit bin ne lit que le programme, pas le code source, comme
-# le ferait quiconque l'a téléchargé. Les avis sont traités comme par cargo deny (deny.toml) : une faille, une
-# bibliothèque abandonnée ou au code défaillant (unsound), un avis « notice » arrête tout ; une version retirée de
-# crates.io (yanked), elle, est seulement signalée. Les seules exceptions sont celles de deny.toml, où est leur preuve :
-# cargo audit lit aussi le .cargo/audit.toml du dossier courant (à défaut, celui de ~/.cargo) et ajoute ses exceptions
-# sans le dire ; il tourne donc dans un dossier à lui, dont l'audit.toml vide masque les autres. Un programme sans sa
-# liste est refusé : cargo audit n'en retrouverait qu'une partie (messages de panique) et pourrait dire vert à tort. La
-# liste vient de cargo metadata : elle compte parfois une dépendance facultative qui n'est pas compilée (9 de plus que cargo tree pour
-# Linux comme pour Windows, le 21 oct. 2026), d'où au pire une alerte de trop, jamais une de moins. cargo-audit est
-# celui de la CI (.github/workflows/ci.yml) : le même jugement ici et là-bas.
+# Failles connues des programmes compilés, lues dans la liste de leurs dépendances, versions comprises, que chacun porte
+# (cargo auditable build, section .dep-v0) : cargo audit bin ne lit que le programme, pas le code source, comme le
+# ferait quiconque l'a téléchargé. Les avis sont traités comme par cargo deny (deny.toml) : une faille, une bibliothèque
+# abandonnée ou au code défaillant (unsound), un avis « notice » arrête tout ; une version retirée de crates.io
+# (yanked), elle, est seulement signalée. Les seules exceptions sont celles du deny.toml de chaque crate, où est leur
+# raison (outils/exceptions-rustsec.py) : celles de deny.toml pour Vanguard, de fenetre/deny.toml pour la fenêtre, et
+# ainsi de suite ; jamais celles d'une autre crate. cargo audit lit aussi le .cargo/audit.toml du dossier courant (à
+# défaut, celui de ~/.cargo) et ajoute ses exceptions sans le dire ; il tourne donc dans un dossier à lui, dont
+# l'audit.toml vide masque les autres. Un programme sans sa liste est refusé : cargo audit n'en retrouverait qu'une
+# partie (messages de panique) et pourrait dire vert à tort. La liste vient de cargo metadata : elle compte parfois une
+# dépendance facultative qui n'est pas compilée (9 de plus que cargo tree pour Linux comme pour Windows, le 21 oct.
+# 2026), d'où au pire une alerte de trop, jamais une de moins. cargo-audit est celui de la CI
+# (.github/workflows/ci.yml) : le même jugement ici et là-bas.
 #   outils/failles-programmes.sh <programme>...
 #   outils/failles-programmes.sh --fenetre <programme>...   la fenêtre (vanguard-fenetre) : sans les exceptions de
-#                                          Vanguard (fenetre/deny.toml n'en a aucune) ; seulement HORS_CIBLES, prouvées
-#                                          par cargo tree, et si aucune caisse retirée de la fenêtre ne se lit dans les
-#                                          octets du programme (sinon : refusé, ou non vérifié si rien ne s'y lit) ;
-#                                          avant tout audit, aucune caisse d'une autre source que crates.io dans
+#                                          Vanguard, seulement celles de fenetre/deny.toml (chrono) et HORS_CIBLES,
+#                                          prouvées par cargo tree, et si aucune caisse retirée de la fenêtre ne se lit
+#                                          dans les octets du programme (sinon : refusé, ou non vérifié si rien ne s'y
+#                                          lit) ; avant tout audit, aucune caisse d'une autre source que crates.io dans
 #                                          l'arbre, et chaque caisse lue dans ses octets dans la liste de sa cible
 #                                          (outils/caisses-fenetre.sh --publies), sinon refusé ou non vérifié
 #   outils/failles-programmes.sh --outil   cargo-audit seulement (présent, version de la CI), avant une compilation
 #   outils/failles-programmes.sh --depot   Cargo.lock du dépôt, de la fenêtre et des crates à part (fuzz, extensions,
-#                                          preuves Kani), jugés de même (étape « failles connues » de
-#                                          outils/verifier.sh, que la CI lance aussi chaque nuit) : code 77 sans
-#                                          cargo-audit ou sans Internet, où une base pas à jour dirait vert à tort
+#                                          preuves Kani), chacun avec les exceptions de son deny.toml, jugés de même
+#                                          (étape « failles connues » de outils/verifier.sh, que la CI lance aussi
+#                                          chaque nuit) : code 77 sans cargo-audit ou sans Internet, où une base pas
+#                                          à jour dirait vert à tort
 # Lancé par outils/deployer.sh (après chaque compilation), par outils/publier-version.sh sur les programmes qu'il
 # publie, et par la CI sur ceux qu'elle compile (ci.yml). Sans Internet : la base RustSec du dernier téléchargement, et c'est dit.
 set -euo pipefail
@@ -67,32 +70,50 @@ if [[ $1 == --fenetre ]]; then
 fi
 
 OPTIONS=(--color never --deny unmaintained --deny unsound)
-# La fenêtre (fenetre/Cargo.lock) n'a aucune exception dans fenetre/deny.toml (ignore = []) : celles de Vanguard,
-# venues de YARA-X, ne la couvrent pas. Mais cargo audit lit Cargo.lock sans cible, et il y trouve des bibliothèques
-# que ni Linux ni Windows ne compilent (zvariant, zbus_names, zvariant_derive, abandonnées : sous accesskit_unix,
-# que la fenêtre ne prend pas sous Linux, fenetre/Cargo.toml). Leur avis n'est écarté ici que si `cargo tree` dit,
-# pour chacune des deux cibles, que la bibliothèque n'y est pas (cargo deny, cible par cible, les refuse sinon) et,
-# avec --fenetre, qu'aucune caisse retirée de la fenêtre ne se lit dans les octets du programme audité
-# (hors_cibles_absentes_des_octets).
+# Les exceptions du deny.toml d'une crate (outils/exceptions-rustsec.py), en --ignore ajoutés au tableau d'options
+# nommé : une par crate, jamais celles d'une autre. Un deny.toml absent ou illisible arrête tout, jamais lu comme
+# « aucune exception » ni comme un vert.
+ajouter_exceptions() { # deny.toml (depuis la racine), puis le nom du tableau d'options
+  local -n options_visees=$2
+  local ids id
+  ids=$(python3 -I "$RACINE/outils/exceptions-rustsec.py" "$1") ||
+    { echo "✖ exceptions de $1 illisibles : rien n'est audité. Ces programmes ne partent nulle part."; exit 1; }
+  for id in $ids; do
+    options_visees+=(--ignore "$id")
+  done
+}
+# La fenêtre (fenetre/Cargo.lock) n'a que les exceptions de fenetre/deny.toml (chrono, abandonnée sans faille connue,
+# admise pour un temps) : celles de Vanguard venues de YARA-X (rsa, bincode) ne la couvrent pas. Mais cargo audit lit
+# Cargo.lock sans cible, et il y trouve des bibliothèques que ni Linux ni Windows ne compilent (zvariant, zbus_names,
+# zvariant_derive, abandonnées : sous accesskit_unix, que la fenêtre ne prend pas sous Linux, fenetre/Cargo.toml). Leur
+# avis n'est écarté ici que si `cargo tree` dit, pour chacune des deux cibles, que la bibliothèque n'y est pas (cargo
+# deny, cible par cible, les refuse sinon) et, avec --fenetre, qu'aucune caisse retirée de la fenêtre ne se lit dans les
+# octets du programme audité (hors_cibles_absentes_des_octets).
 OPTIONS_FENETRE=("${OPTIONS[@]}")
-# Les crates à part, chacune avec son Cargo.lock : le banc de fuzzing (fuzz/deny.toml), la bibliothèque des
-# extensions et l'exemple en Rust (extensions/deny.toml), les preuves Kani (outils/preuves). Aucune exception
-# (ignore = [] dans leurs deny.toml) : celles de Vanguard, venues de YARA-X, ne les couvrent pas.
+ajouter_exceptions fenetre/deny.toml OPTIONS_FENETRE
+# Les crates à part, chacune avec son Cargo.lock et les exceptions de son deny.toml, rien de plus : le banc de
+# fuzzing (fuzz/deny.toml : chrono, comme Vanguard), la bibliothèque des extensions et l'exemple en Rust
+# (extensions/deny.toml : aucune), les preuves Kani (outils/preuves, sans deny.toml : aucune). Celles de Vanguard
+# venues de YARA-X ne les couvrent pas. « verrou:deny.toml », rien après le deux-points pour aucune exception.
 OPTIONS_A_PART=("${OPTIONS[@]}")
-A_PART=(fuzz/Cargo.lock extensions/sdk/Cargo.lock extensions/exemples/rust-exemple/Cargo.lock outils/preuves/Cargo.lock)
+A_PART=(fuzz/Cargo.lock:fuzz/deny.toml extensions/sdk/Cargo.lock:extensions/deny.toml
+  extensions/exemples/rust-exemple/Cargo.lock:extensions/deny.toml outils/preuves/Cargo.lock:)
 HORS_CIBLES=(RUSTSEC-2026-0370:zvariant RUSTSEC-2026-0371:zbus_names RUSTSEC-2026-0372:zvariant_derive)
-# Les exceptions de deny.toml, par leur identifiant RustSec (outils/exceptions-rustsec.py, qui les donne aussi à
-# outils/verifier.sh) ; une exception d'une autre forme y est refusée plutôt que perdue en route.
-EXCEPTIONS=$(python3 -I "$RACINE/outils/exceptions-rustsec.py")
-# La fenêtre : aucune des exceptions de Vanguard. Sa liste de dépendances gravée en compte pourtant plus qu'elle n'en
-# compile : cargo auditable la tire de `cargo metadata`, qui unit les options de toutes les plateformes (l'option
-# accesskit d'eframe, prise pour Windows seulement, y amène accesskit_unix et zvariant sous Linux aussi ; vu sur la
-# fenêtre Linux de la 0.96 ; 243 caisses listées pour 152 dans son arbre le 12 nov. 2026). Jusque-là, ce code y
-# était aussi compilé (les deux cibles dans un seul appel de cargo) ; outils/compiler-version.sh les compile
-# désormais une à la fois, et outils/caisses-fenetre.sh --programmes prouve sur les octets que la preuve par cargo
-# tree vaut pour le programme. Seules les HORS_CIBLES s'écartent, par la même preuve que pour --depot (plus bas), et
-# seulement si aucune caisse retirée de la fenêtre ne se lit dans les octets du programme audité.
-[[ -z $FENETRE ]] || EXCEPTIONS=
+# Les exceptions de deny.toml (Vanguard), ou de fenetre/deny.toml avec --fenetre, par leur identifiant RustSec
+# (outils/exceptions-rustsec.py) ; une exception d'une autre forme y est refusée plutôt que perdue en route. La fenêtre
+# : aucune des exceptions de Vanguard, seulement les siennes. Sa liste de dépendances gravée en compte pourtant plus
+# qu'elle n'en compile : cargo auditable la tire de `cargo metadata`, qui unit les options de toutes les plateformes
+# (l'option accesskit d'eframe, prise pour Windows seulement, y amène accesskit_unix et zvariant sous Linux aussi ; vu
+# sur la fenêtre Linux de la 0.96 ; 243 caisses listées pour 152 dans son arbre le 12 nov. 2026). Jusque-là, ce code y
+# était aussi compilé (les deux cibles dans un seul appel de cargo) ; outils/compiler-version.sh les compile désormais
+# une à la fois, et outils/caisses-fenetre.sh --programmes prouve sur les octets que la preuve par cargo tree vaut pour
+# le programme. Seules ses exceptions (fenetre/deny.toml) et les HORS_CIBLES s'écartent, ces dernières par la même
+# preuve que pour --depot (plus bas), et seulement si aucune caisse retirée de la fenêtre ne se lit dans les octets du
+# programme audité.
+DENY=deny.toml
+[[ -z $FENETRE ]] || DENY=fenetre/deny.toml
+EXCEPTIONS=$(python3 -I "$RACINE/outils/exceptions-rustsec.py" "$DENY") ||
+  { echo "✖ exceptions de $DENY illisibles : rien n'est audité. Ces programmes ne partent nulle part."; exit 1; }
 for id in $EXCEPTIONS; do
   OPTIONS+=(--ignore "$id")
 done
@@ -106,7 +127,7 @@ fi
 TRAVAIL=$(mktemp -d "${TMPDIR:-/tmp}/failles-programmes.XXXXXX")
 trap 'rm -rf "$TRAVAIL"' EXIT
 mkdir "$TRAVAIL/.cargo"
-echo "# outils/failles-programmes.sh : aucune exception ici, seulement celles de deny.toml (--ignore)." \
+echo "# outils/failles-programmes.sh : aucune exception ici, seulement celles des deny.toml (--ignore)." \
   >"$TRAVAIL/.cargo/audit.toml"
 
 # Les erreurs de cargo tree, gardées pour la fin : écrites après la sortie de cargo audit, juste avant le code de
@@ -214,8 +235,11 @@ if [[ $1 == --depot ]]; then
   hors_cibles_prouvees || { CODE=1 ECARTEES=0; }
   SORTIE+=$'\n'"fenetre/Cargo.lock :"$'\n'$(cd "$TRAVAIL" && cargo-audit audit "${OPTIONS_FENETRE[@]}" \
     --file "$RACINE/fenetre/Cargo.lock" 2>&1) || CODE=1
-  for verrou in "${A_PART[@]}"; do
-    SORTIE+=$'\n'"$verrou :"$'\n'$(cd "$TRAVAIL" && cargo-audit audit "${OPTIONS_A_PART[@]}" \
+  for crate in "${A_PART[@]}"; do
+    verrou=${crate%%:*}
+    options_crate=("${OPTIONS_A_PART[@]}")
+    [[ -z ${crate#*:} ]] || ajouter_exceptions "${crate#*:}" options_crate
+    SORTIE+=$'\n'"$verrou :"$'\n'$(cd "$TRAVAIL" && cargo-audit audit "${options_crate[@]}" \
       --file "$RACINE/$verrou" 2>&1) || CODE=1
   done
   printf '%s\n' "$SORTIE"
@@ -225,7 +249,11 @@ if [[ $1 == --depot ]]; then
     echo "✖ avis que cargo deny refuse aussi (notice)"
     CODE=1
   fi
-  [[ -z $EXCEPTIONS ]] || echo "exceptions de deny.toml : $(printf '%s\n' "$EXCEPTIONS" | paste -sd, - | sed 's/,/, /g')"
+  # Les exceptions de chaque deny.toml, dites : cargo audit les tait.
+  for deny in deny.toml fenetre/deny.toml fuzz/deny.toml extensions/deny.toml; do
+    ids=$(python3 -I "$RACINE/outils/exceptions-rustsec.py" "$deny") || CODE=1
+    [[ -z $ids ]] || echo "exceptions de $deny : $(paste -sd, - <<<"$ids" | sed 's/,/, /g')"
+  done
   if ((ECARTEES)); then
     echo "fenêtre : écartées car compilées par aucune de ses deux cibles : ${HORS_CIBLES[*]%%:*}"
   else
@@ -299,5 +327,5 @@ for ((i = 0; i < ${#CHEMINS[@]}; i++)); do
   echo "✔ ${NOMS[i]} : $nombre dépendances listées, aucune faille connue"
 done
 if [[ -n $EXCEPTIONS ]]; then
-  echo "  exceptions de deny.toml : $(printf '%s\n' "$EXCEPTIONS" | paste -sd, - | sed 's/,/, /g')"
+  echo "  exceptions de $DENY : $(printf '%s\n' "$EXCEPTIONS" | paste -sd, - | sed 's/,/, /g')"
 fi

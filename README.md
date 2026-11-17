@@ -967,9 +967,11 @@ de sécurité dans Vanguard se signale en privé : voir [SECURITY.md](SECURITY.m
 liste de ses dépendances, versions comprises (cargo auditable), que cargo audit compare aux failles connues de la base
 RustSec : `cargo audit bin <programme>`. Jusqu'à la 0.86, le programme portait YARA-X, et avec lui rsa (sans version
 corrigée) et bincode (abandonné), deux avis admis avec leur preuve dans [deny.toml](deny.toml) : pour ces versions,
-ajouter `--ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2025-0141`. La vérification de chaque publication, avis traités
-comme par cargo deny : `outils/failles-programmes.sh <programme>`, depuis le code ; pour la fenêtre,
-`outils/failles-programmes.sh --fenetre <programme>`, qui lit aussi ses octets avant d'écarter un avis.
+ajouter `--ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2025-0141`. Depuis le 17 nov. 2026, un troisième avis est admis,
+d'une autre sorte : chrono (RUSTSEC-2026-0543), déclarée abandonnée, sans faille connue ni version corrigée, admise
+pour un temps en attendant son remplacement par jiff (`--ignore RUSTSEC-2026-0543`). La vérification de chaque
+publication, avis traités comme par cargo deny : `outils/failles-programmes.sh <programme>`, depuis le code ; pour la
+fenêtre, `outils/failles-programmes.sh --fenetre <programme>`, qui lit aussi ses octets avant d'écarter un avis.
 
 ## Licence
 

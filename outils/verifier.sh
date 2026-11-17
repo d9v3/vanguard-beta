@@ -820,16 +820,18 @@ compte_unsafe() {
     "$(modules '#!\[allow(unsafe_code)\]')" "$(elements '#\[allow\(unsafe_code\)\]')" "$(modules '#!\[forbid(unsafe_code)\]')"
 }
 
-# Ce que cargo deny laisse passer sans le taire : les failles admises dans deny.toml (leur raison commence par le nom
-# de la bibliothèque), les doublons, la base de failles hors ligne, et tout autre avertissement (version retirée de
+# Ce que cargo deny laisse passer sans le taire : les failles admises dans chaque deny.toml (leur raison commence par le
+# nom de la bibliothèque), les doublons, la base de failles hors ligne, et tout autre avertissement (version retirée de
 # crates.io, cible inconnue…) : l'étape reste verte, et son journal part à la fin, il ne se lirait nulle part ailleurs.
 remarques_dependances() {
-  local journal=$TRAVAIL/dependances.log admises doublons
+  local journal=$TRAVAIL/dependances.log admises doublons deny
   [[ -f $journal && $(head -c6 "$TRAVAIL/dependances.etat" 2>/dev/null) != sautee ]] || return 0
   grep -m1 '^sans Internet' "$journal" | sed 's/^/      /'
-  admises=$(grep -oE '\{ id = "RUSTSEC-[0-9]{4}-[0-9]{4}", reason = "[^,]+' deny.toml |
-    sed -E 's/.*"(RUSTSEC-[0-9-]+)", reason = "(.*)/\1 (\2)/' | paste -sd, | sed 's/,/, /g')
-  [[ -n $admises ]] && echo "      failles admises (deny.toml) : $admises"
+  for deny in deny.toml fenetre/deny.toml fuzz/deny.toml extensions/deny.toml; do
+    admises=$(grep -oE '\{ id = "RUSTSEC-[0-9]{4}-[0-9]{4}", reason = "[^,]+' "$deny" |
+      sed -E 's/.*"(RUSTSEC-[0-9-]+)", reason = "(.*)/\1 (\2)/' | paste -sd, | sed 's/,/, /g')
+    [[ -z $admises ]] || echo "      failles admises ($deny) : $admises"
+  done
   doublons=$(grep -c '^warning\[duplicate\]' "$journal")
   ((doublons == 0)) || echo "      $doublons bibliothèques en plusieurs versions (doublons)"
   grep -E '^warning(\[[a-z-]+\])?:' "$journal" | grep -v '^warning\[duplicate\]' | sort | uniq -c |

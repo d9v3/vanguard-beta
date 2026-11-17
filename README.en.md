@@ -919,10 +919,12 @@ flaw in Vanguard? Report it privately: see [SECURITY.md](SECURITY.md#security). 
 list of its dependencies, versions included (cargo auditable), which cargo audit checks against the known
 vulnerabilities of the RustSec database: `cargo audit bin <program>`. Up to 0.86, the program carried YARA-X, and with
 it rsa (no fixed version) and bincode (unmaintained), two advisories accepted with their proof in
-[deny.toml](deny.toml): for those versions, add `--ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2025-0141`. The check run
-before each release, advisories handled as cargo deny does: `outils/failles-programmes.sh <program>`, from the source;
-for the window, `outils/failles-programmes.sh --fenetre <program>`, which also reads its bytes before setting an
-advisory aside.
+[deny.toml](deny.toml): for those versions, add `--ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2025-0141`. Since 17 Nov.
+2026, a third advisory is accepted, of another kind: chrono (RUSTSEC-2026-0543), declared unmaintained, with no known
+vulnerability and no fixed version, accepted for a while until it is replaced by jiff (`--ignore RUSTSEC-2026-0543`).
+The check run before each release, advisories handled as cargo deny does: `outils/failles-programmes.sh <program>`,
+from the source; for the window, `outils/failles-programmes.sh --fenetre <program>`, which also reads its bytes before
+setting an advisory aside.
 
 ## License
 

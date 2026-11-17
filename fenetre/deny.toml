@@ -14,13 +14,21 @@ targets = [
     "x86_64-pc-windows-gnu",
 ]
 
-# Failles connues, bibliothèques abandonnées ou au code défaillant : refusées, dans tout l'arbre, sans exception.
+# Failles connues, bibliothèques abandonnées ou au code défaillant : refusées, dans tout l'arbre. Une seule exception,
+# la même que dans deny.toml : chrono, dépendance directe de la fenêtre, déclarée abandonnée sans faille connue ni
+# version corrigée ; pas un défaut écarté par une preuve, mais un abandon admis pour un temps (17 nov. 2026), en
+# attendant son remplacement par jiff. Les exceptions de YARA-X (rsa, bincode) n'ont rien à faire ici. La raison
+# commence par le nom de la bibliothèque et une virgule, comme dans deny.toml. outils/failles-programmes.sh donne à
+# cargo audit les exceptions de ce fichier-ci pour fenetre/Cargo.lock et les programmes de la fenêtre
+# (outils/exceptions-rustsec.py fenetre/deny.toml).
 [advisories]
 unmaintained = "all"
 unsound = "all"
-# Comme deny.toml : une exception qui ne sert plus fait échouer (aucune pour l'instant).
+# Comme deny.toml : une exception qui ne sert plus fait échouer, pour qu'on l'ôte.
 unused-ignored-advisory = "deny"
-ignore = []
+ignore = [
+    { id = "RUSTSEC-2026-0543", reason = "chrono, dépendance directe, déclarée abandonnée (14 sept. 2026), sans faille connue ni version corrigée : admise le 17 nov. 2026 en attendant son remplacement par jiff, pas écartée par une preuve" },
+]
 
 # Les licences permises de deny.toml qu'une des deux cibles rencontre, rien de plus ; la fenêtre elle-même
 # (GPL-3.0-or-later) est nommée. Une licence que l'autre cible seule rencontre n'est pas une remarque. En plus, pour

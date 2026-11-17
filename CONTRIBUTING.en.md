@@ -282,8 +282,9 @@ compared with master (`outils/textes.py`).
 
 Dependencies: `cargo deny` (`deny.toml`: known RustSec vulnerabilities, licenses from its list, crates.io only,
 duplicates; `extensions/deny.toml` for the extensions library and the Rust example, which have no dependencies) and
-`cargo audit` (a second opinion on vulnerabilities, with only the exceptions of `deny.toml`, which `.cargo/audit.toml`
-copies), in `outils/verifier.sh` (skipped without the tool, cargo audit also without Internet) and every night in CI.
+`cargo audit` (a second opinion on vulnerabilities, each `Cargo.lock` with only the exceptions of its crate's
+`deny.toml`; `.cargo/audit.toml` copies those of `deny.toml`), in `outils/verifier.sh` (skipped without the tool,
+cargo audit also without Internet) and every night in CI.
 `cargo vet` (`supply-chain/`) also requires, at every verification and offline, an imported review (Google, Mozilla,
 Bytecode Alliance, Zcash, ISRG) or an exemption at the exact number for each version: after a `cargo update`,
 `cargo vet` (with Internet) reads the registries again and names what is missing; each remaining version gets its

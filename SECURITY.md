@@ -83,8 +83,9 @@ Par exemple :
 ## Vérifications déjà en place
 
 - **cargo deny**, à chaque vérification complète (`outils/verifier.sh`) et chaque nuit sur GitHub : failles connues
-  des dépendances (base RustSec), licences permises, crates.io comme seule source. Un avis admis l'est avec sa preuve,
-  dans [deny.toml](deny.toml).
+  des dépendances (base RustSec), licences permises, crates.io comme seule source. Un avis admis l'est avec sa raison,
+  dans [deny.toml](deny.toml) : la preuve que Vanguard n'atteint pas le défaut, ou, pour chrono (abandonnée, sans
+  faille connue), une admission datée, en attendant son remplacement par jiff.
 - **cargo audit**, chaque nuit sur GitHub, sur la même base RustSec.
 - **cargo vet**, à chaque vérification : chaque version de chaque dépendance du programme et de ses essais a une
   relecture publiée par Google, Mozilla, Bytecode Alliance, Zcash ou ISRG, ou une exemption écrite à son numéro exact
@@ -196,7 +197,8 @@ For example:
 
 - **cargo deny**, in each full check (`outils/verifier.sh`) and every night on GitHub: known vulnerabilities in the
   dependencies (RustSec database), allowed licenses, crates.io as the only source. An accepted advisory comes with its
-  proof, in [deny.toml](deny.toml).
+  reason, in [deny.toml](deny.toml): the proof that Vanguard cannot reach the flaw, or, for chrono (unmaintained, no
+  known vulnerability), a dated acceptance until it is replaced by jiff.
 - **cargo audit**, every night on GitHub, on the same RustSec database.
 - **cargo vet**, at every verification: each version of each dependency of the program and its tests has a review
   published by Google, Mozilla, Bytecode Alliance, Zcash or ISRG, or a written exemption at its exact number

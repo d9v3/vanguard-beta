@@ -12,13 +12,19 @@ targets = [
 # Failles connues, bibliothèques abandonnées ou au code défaillant (unsound) : refusées, dans tout l'arbre (sans
 # « all », cargo deny ne regarde le code défaillant que dans les dépendances directes). Une version retirée de
 # crates.io (yanked) est seulement signalée, dans le résumé d'outils/verifier.sh : elle n'est pas forcément
-# dangereuse. Une faille s'ôte en mettant la dépendance à jour ; une exception n'est admise que sans correctif publié
-# et pour un défaut que Vanguard ne peut pas atteindre, dite ici avec sa preuve, affichée à chaque passage
-# (outils/verifier.sh) et à relire à chaque mise à jour de YARA-X. Elle vaut pour l'avis dans tout l'arbre : [bans]
-# réserve la bibliothèque à YARA-X, qui n'est plus qu'une dépendance de développement (l'oracle des tests du moteur YARA
-# maison, src/protection/oracle_yara.rs) : jamais dans les programmes publiés, mais compilé et lancé ici par les tests. Dès qu'elle disparaît de l'arbre, l'exception devenue inutile fait échouer
+# dangereuse. Une faille s'ôte en mettant la dépendance à jour. Chaque exception est dite ici, avec sa raison,
+# affichée à chaque passage (outils/verifier.sh), et l'exception devenue inutile fait échouer
 # (advisory-not-detected), pour qu'on l'ôte. La raison commence par le nom de la bibliothèque et une virgule :
-# outils/verifier.sh la cite dans son résumé.
+# outils/verifier.sh la cite dans son résumé. Deux sortes d'exceptions :
+# - rsa et bincode, venues de YARA-X : sans correctif publié et pour un défaut que Vanguard ne peut pas atteindre,
+#   avec sa preuve, à relire à chaque mise à jour de YARA-X. Elles valent pour l'avis dans tout l'arbre : [bans]
+#   réserve la bibliothèque à YARA-X, qui n'est plus qu'une dépendance de développement (l'oracle des tests du moteur
+#   YARA maison, src/protection/oracle_yara.rs) : jamais dans les programmes publiés, mais compilé et lancé ici par
+#   les tests.
+# - chrono, différente : une dépendance directe, compilée dans les programmes publiés, déclarée abandonnée sans
+#   aucune faille connue ni version corrigée. Ce n'est pas un défaut écarté par une preuve, mais un abandon admis
+#   pour un temps, par choix de l'auteur (17 nov. 2026), en attendant son remplacement par jiff. La même exception
+#   est dans fenetre/deny.toml et fuzz/deny.toml, qui ont chrono en dépendance directe eux aussi.
 [advisories]
 unmaintained = "all"
 unsound = "all"
@@ -26,6 +32,7 @@ unused-ignored-advisory = "deny"
 ignore = [
     { id = "RUSTSEC-2023-0071", reason = "rsa, par YARA-X seulement ([bans]), sans version corrigée : l'attaque Marvin vise les opérations à clé privée (déchiffrement), YARA-X ne fait que vérifier des signatures Authenticode avec une clé publique (modules/utils/crypto.rs, RsaPublicKey)" },
     { id = "RUSTSEC-2025-0141", reason = "bincode, par YARA-X seulement ([bans]) et sans réglage qui l'ôte, abandonné mais sans faille connue : YARA-X n'y encode puis n'y relit que ses propres variables globales (compilation des règles intégrées, puis chaque Scanner::new), dans le même processus ; Vanguard n'appelle jamais Rules::deserialize : aucune donnée venue d'ailleurs ne passe par bincode" },
+    { id = "RUSTSEC-2026-0543", reason = "chrono, dépendance directe, déclarée abandonnée (14 sept. 2026), sans faille connue ni version corrigée : admise le 17 nov. 2026 en attendant son remplacement par jiff, pas écartée par une preuve" },
 ]
 
 # Les licences déjà présentes parmi les dépendances (LICENCES-TIERCES.txt), toutes permissives : compatibles avec la

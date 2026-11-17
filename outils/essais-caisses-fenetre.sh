@@ -32,7 +32,8 @@
 #   6. Dans une copie du dépôt (jamais les vraies listes) : --ecrire écrit des arbres sains, mais jamais une autre
 #      source ni une retirée ; une autre source inscrite à la main dans la liste reste refusée, sans coche ✔ ; la
 #      liste des retirées illisible (--retirees en échec), la liste d'une cible absente ou d'une forme inconnue
-#      (« # raison ») rendent failles-programmes.sh --fenetre « non vérifié ».
+#      (« # raison ») rendent failles-programmes.sh --fenetre « non vérifié » ; fenetre/deny.toml absent (ses
+#      exceptions illisibles) : rien n'est audité.
 # Lancé par outils/verifier.sh (étape « fenêtre »).
 #   outils/essais-caisses-fenetre.sh
 set -uo pipefail
@@ -461,6 +462,7 @@ if [[ -s $T/ref-$LINUX.txt && -s $T/ref-$WINDOWS.txt ]]; then
   D=$T/depot
   mkdir -p "$D/outils/caisses-fenetre" "$D/.github/workflows"
   cp outils/caisses-fenetre.sh outils/failles-programmes.sh outils/exceptions-rustsec.py "$D/outils/"
+  mkdir -p "$D/fenetre" && cp fenetre/deny.toml "$D/fenetre/"
   cp deny.toml "$D/" && cp .github/workflows/ci.yml "$D/.github/workflows/"
   ecrites() { cp "$T/ref-$LINUX.txt" "$D/outils/caisses-fenetre/$LINUX.txt"
     cp "$T/ref-$WINDOWS.txt" "$D/outils/caisses-fenetre/$WINDOWS.txt"; }
@@ -530,6 +532,14 @@ EOF
   lance "$D/outils/failles-programmes.sh" --fenetre "$T/fenetre" "$T/fenetre.exe"
   ((CODE == 0)) && [[ -e $T/audit-lance ]] && ok "la même copie, --retirees lisible : audité, code 0" ||
     ko "la même copie, --retirees lisible : code $CODE ($SORTIE)"
+  # Les exceptions de la fenêtre viennent de fenetre/deny.toml seul : absent, rien n'est audité, jamais lu comme
+  # « aucune exception » ni remplacé par celles de Vanguard.
+  mv "$D/fenetre/deny.toml" "$D/fenetre/deny.toml.cache"
+  rm -f "$T/audit-lance"
+  lance "$D/outils/failles-programmes.sh" --fenetre "$T/fenetre" "$T/fenetre.exe"
+  ((CODE != 0)) && [[ ! -e $T/audit-lance && $SORTIE == *"exceptions de fenetre/deny.toml illisibles"* ]] &&
+    ok "fenetre/deny.toml absent : rien d'audité (code $CODE)" || ko "fenetre/deny.toml absent : code $CODE ($SORTIE)"
+  mv "$D/fenetre/deny.toml.cache" "$D/fenetre/deny.toml"
   # Relecture adverse du lot 097 (C2) : la liste de la cible absente, ou d'une forme inconnue (« # raison »), n'était
   # essayée que dans le mode sans argument. failles --fenetre (par --publies) : non vérifié, rien d'audité.
   sans_liste() { # nom de l'essai

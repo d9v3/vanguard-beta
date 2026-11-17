@@ -7,11 +7,20 @@
 [graph]
 targets = ["x86_64-unknown-linux-gnu"]
 
-# Failles connues, bibliothèques abandonnées ou au code défaillant : refusées, dans tout l'arbre, sans exception.
+# Failles connues, bibliothèques abandonnées ou au code défaillant : refusées, dans tout l'arbre. Une seule exception,
+# la même que dans deny.toml : chrono, dépendance directe du banc (les modules de Vanguard qu'il lit s'en servent),
+# déclarée abandonnée sans faille connue ni version corrigée ; pas un défaut écarté par une preuve, mais un abandon
+# admis pour un temps (17 nov. 2026), en attendant son remplacement par jiff. Les exceptions de YARA-X (rsa, bincode)
+# n'ont rien à faire ici. Comme dans deny.toml : la raison commence par le nom de la bibliothèque et une virgule, et
+# une exception qui ne sert plus fait échouer, pour qu'on l'ôte. outils/failles-programmes.sh donne à cargo audit les
+# exceptions de ce fichier-ci pour fuzz/Cargo.lock (outils/exceptions-rustsec.py fuzz/deny.toml).
 [advisories]
 unmaintained = "all"
 unsound = "all"
-ignore = []
+unused-ignored-advisory = "deny"
+ignore = [
+    { id = "RUSTSEC-2026-0543", reason = "chrono, dépendance directe, déclarée abandonnée (14 sept. 2026), sans faille connue ni version corrigée : admise le 17 nov. 2026 en attendant son remplacement par jiff, pas écartée par une preuve" },
+]
 
 # Les licences de deny.toml que l'arbre du banc rencontre, permissives. Une de plus demande d'abord une décision
 # (CLAUDE.md, « Nouvelle dépendance »). Le banc lui-même (GPL-3.0-or-later) est nommé. libfuzzer-sys, seul, y ajoute

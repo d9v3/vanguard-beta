@@ -25,9 +25,10 @@
 #      a été gardé dans un dossier daté et dit ; pas gardé, rien n'est remis (la garde lue dans verifier.sh, l'étape
 #      remplacée par une fausse, dépôt jetable).
 #   9. Les dépendances (cargo deny) hors ligne : sautée avec sa raison, jamais un vert ; un refus reste un échec.
-#  10. Le second avis (cargo audit, failles-programmes.sh --depot) : chaque Cargo.lock suivi par git est lu, les
-#      crates à part sans les exceptions de Vanguard ; une faille dans l'une fait échouer (faux cargo-audit). Les
-#      programmes de la fenêtre (--fenetre) : aucune exception de Vanguard, ses avis hors cibles écartés seulement si
+#  10. Le second avis (cargo audit, failles-programmes.sh --depot) : chaque Cargo.lock suivi par git est lu, chacun
+#      avec les seules exceptions de son deny.toml (lues ici sans outils/exceptions-rustsec.py), jamais celles de
+#      Vanguard pour une crate à part ; une faille dans l'une fait échouer (faux cargo-audit). Les programmes de la
+#      fenêtre (--fenetre) : les exceptions de fenetre/deny.toml seulement, ses avis hors cibles écartés seulement si
 #      cargo tree les dit absents de ses deux cibles, et ses caisses lues dans les octets dans la liste de leur
 #      cible (caisses-fenetre.sh --publies) ; sinon rien n'est audité et elle ne part pas. L'étape « fenêtre » :
 #      la garde de ses caisses ou ses essais en échec la font échouer, et le résumé dit les caisses lues.
@@ -322,7 +323,8 @@ deny 1 1 base
 rm -rf "$faux"
 
 # Le second avis (cargo audit, failles-programmes.sh --depot) lit chaque Cargo.lock du dépôt, crates à part comprises
-# (fuzz, extensions, preuves Kani), celles-ci sans les exceptions de Vanguard ; une faille dans l'une fait échouer.
+# (fuzz, extensions, preuves Kani), chacun avec les exceptions de son deny.toml et rien d'autre (les preuves Kani, sans
+# deny.toml : aucune) ; une faille dans l'une fait échouer.
 # cargo-audit, curl et cargo remplacés par des faux : le premier note ses arguments, refuse le verrou écrit dans
 # « refuse ».
 faux=$(mktemp -d "$HOME/.cache/vanguard-dev/essai-audit.XXXX")
@@ -337,6 +339,15 @@ FAUX
 printf '#!/bin/sh\nexit 0\n' >"$faux/curl"
 printf '#!/bin/sh\n[ "$1" = tree ] || exit 9\n' >"$faux/cargo"
 chmod +x "$faux/cargo-audit" "$faux/curl" "$faux/cargo"
+# Les avis écartés pour un verrou (les --ignore de l'appel qui le lit), triés ; ceux qu'un deny.toml admet, lus par
+# grep et non par outils/exceptions-rustsec.py, que cet essai juge aussi.
+ignores_de() {
+  awk -v f="$PWD/$1" '$NF == f { for (i = 1; i < NF; i++) if ($i == "--ignore") print $(i + 1) }' "$faux/appels" |
+    sort | paste -sd' '
+}
+admises_de() {
+  [[ -z ${1:-} ]] || grep -oE 'id = "RUSTSEC-[0-9]{4}-[0-9]{4}"' "$1" | cut -d'"' -f2 | sort | paste -sd' '
+}
 auditer() {
   : >"$faux/appels"
   printf '%s' "$1" >"$faux/refuse"
@@ -347,15 +358,28 @@ auditer ""
 audit_vert=$CODE
 lus=$(grep -oE -- '--file [^ ]+' "$faux/appels" | sed "s|--file $PWD/||" | sort | paste -sd' ')
 attendus=$(git ls-files '*Cargo.lock' | sort | paste -sd' ')
-a_part_sans_exception=$(grep -E -- '--file [^ ]*/(fuzz|extensions|outils/preuves)/' "$faux/appels" | grep -c -- '--ignore RUSTSEC')
+# Chaque verrou et le deny.toml dont il reçoit les exceptions ; la fenêtre reçoit en plus ses avis hors cibles,
+# prouvés absents de ses deux cibles par le faux cargo tree (vide).
+mal_places=""
+for paire in Cargo.lock:deny.toml fuzz/Cargo.lock:fuzz/deny.toml extensions/sdk/Cargo.lock:extensions/deny.toml \
+  extensions/exemples/rust-exemple/Cargo.lock:extensions/deny.toml outils/preuves/Cargo.lock: \
+  fenetre/Cargo.lock:fenetre/deny.toml; do
+  verrou=${paire%%:*}
+  read -ra admises <<<"$(admises_de "${paire#*:}")"
+  [[ $verrou != fenetre/Cargo.lock ]] || admises+=(RUSTSEC-2026-0370 RUSTSEC-2026-0371 RUSTSEC-2026-0372)
+  voulus=$( ((${#admises[@]} == 0)) || printf '%s\n' "${admises[@]}" | sort | paste -sd' ')
+  ecartes=$(ignores_de "$verrou")
+  [[ $ecartes == "$voulus" ]] || mal_places+=" $verrou (« $ecartes » au lieu de « $voulus »)"
+done
 auditer "fuzz/Cargo.lock"
-[[ $audit_vert == 0 && -n $attendus && $lus == "$attendus" && $a_part_sans_exception == 0 && $CODE == 1 ]] &&
-  ok "cargo audit : chaque Cargo.lock du dépôt lu, crates à part sans les exceptions de Vanguard, une faille fait échouer" ||
-  ko "cargo audit (vert $audit_vert, refus $CODE, exceptions mal placées $a_part_sans_exception) : lus « $lus », attendus « $attendus » $(tail -n 1 <<<"$SORTIE")"
+[[ $audit_vert == 0 && -n $attendus && $lus == "$attendus" && -z $mal_places && $CODE == 1 ]] &&
+  ok "cargo audit : chaque Cargo.lock du dépôt lu, chacun avec les exceptions de son deny.toml, une faille fait échouer" ||
+  ko "cargo audit (vert $audit_vert, refus $CODE, exceptions mal placées :${mal_places:- aucune}) : lus « $lus », attendus « $attendus » $(tail -n 1 <<<"$SORTIE")"
 rm -rf "$faux"
 
 # La fenêtre (failles-programmes.sh --fenetre) : sa liste gravée compte des bibliothèques qu'elle ne compile pas
-# (cargo auditable, options unies de toutes les plateformes). Aucune exception de Vanguard ; ses HORS_CIBLES écartées
+# (cargo auditable, options unies de toutes les plateformes). Aucune exception de Vanguard, seulement celles de
+# fenetre/deny.toml ; ses HORS_CIBLES écartées
 # seulement si cargo tree les dit absentes de ses deux cibles. Le faux cargo tree -i en trouve une si « compilee »
 # existe ; sans -i, il donne la liste versionnée de la cible (caisses-fenetre.sh --publies compare les octets à
 # celle-ci), et cargo metadata ne dit aucune source remplacée.
@@ -399,9 +423,11 @@ fenetre_vert=$CODE
 ecartes=$(grep -oE -- '--ignore [^ ]+' "$faux/appels" | sort -u | paste -sd' ')
 touch "$faux/compilee"
 auditer_fenetre
-[[ $fenetre_vert == 0 && $ecartes == "--ignore RUSTSEC-2026-0370 --ignore RUSTSEC-2026-0371 --ignore RUSTSEC-2026-0372" &&
-  $CODE == 1 && ! -s $faux/appels ]] &&
-  ok "cargo audit de la fenêtre : sans les exceptions de Vanguard, hors cibles écartées seulement prouvées" ||
+read -ra admises_fenetre <<<"$(admises_de fenetre/deny.toml)"
+voulus=$(printf -- '--ignore %s\n' "${admises_fenetre[@]}" RUSTSEC-2026-0370 RUSTSEC-2026-0371 RUSTSEC-2026-0372 |
+  sort -u | paste -sd' ')
+[[ $fenetre_vert == 0 && $ecartes == "$voulus" && $CODE == 1 && ! -s $faux/appels ]] &&
+  ok "cargo audit de la fenêtre : seulement les exceptions de fenetre/deny.toml, hors cibles écartées seulement prouvées" ||
   ko "cargo audit de la fenêtre (vert $fenetre_vert, compilée $CODE) : écartés « $ecartes » $(tail -n 1 <<<"$SORTIE")"
 rm -rf "$faux"
 
