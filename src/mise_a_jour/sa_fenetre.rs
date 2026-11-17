@@ -2092,6 +2092,15 @@ mod tests {
         std::fs::write(&vrai, &ici).unwrap();
         std::os::unix::fs::symlink(&vrai, &lien).unwrap();
         let publiee = super::super::github::Publiee::d_essai(V, &ici);
+        if crate::socle::euid() == 0 {
+            // Root ne remplace que dans un chemin à root sans écriture des autres (`remplacable_ici`), ce que le
+            // dossier d'essai n'est pas (sous `unshare -r`, « / » n'est même pas à root) : la copie est laissée de
+            // côté, et rien n'est posé à côté du lien.
+            assert!(matches!(seule_a_poser(&lien, &publiee), Some(Err(_))));
+            assert!(std::fs::symlink_metadata(pour(&lien).unwrap()).is_err());
+            let _ = std::fs::remove_dir_all(&d);
+            return crate::essais::saute("root : la pose à côté du fichier désigné demande un chemin sûr pour root");
+        }
         let s = seule_a_poser(&lien, &publiee).unwrap().unwrap();
         let attendue = pour(&vrai.canonicalize().unwrap()).unwrap();
         assert_eq!(s.chemin(), attendue.as_path());
