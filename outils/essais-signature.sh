@@ -878,10 +878,21 @@ apres "$H_COMPILE" "$H_PAGE" "$H_CAPTURES" && ko "publier : CI acceptée sur un 
   ok "publier : CI refusée sur un commit d'avant, le même, un nom abrégé ou symbolique, un commit inconnu" ||
   ko "publier : CI d'un commit d'avant, abrégé, symbolique ou inconnu acceptée comme descendant"
 # Ce que la liste dit hors de la compilation ne l'est pas : rien de src/, build.rs ni Cargo.toml ne cite ces
-# chemins, et build.rs ne parcourt aucun dossier (il ne lit que des fichiers nommés).
+# chemins, et build.rs ne parcourt qu'un dossier, src/, pour le vocabulaire de la porte des assistants
+# (fichiers_rs : les seuls .rs, appelée sur "src" et sur ses sous-dossiers) ; aucun .rs de src/ n'est dans la liste.
+# Tout autre parcours, un autre dossier ou un filtre retiré sont refusés.
 cites=$(grep -rnE 'assets/captures|captures/|partage\.png|index\.html|\.\./docs|"/?docs/|/docs"' \
   "$DEPOT/src" "$DEPOT/build.rs" "$DEPOT/Cargo.toml" || true)
-parcours=$(grep -nE 'read_dir|glob(::|\()|WalkDir|walkdir' "$DEPOT/build.rs" || true)
+parcours=$(grep -nE 'read_dir|glob(::|\()|WalkDir|walkdir' "$DEPOT/build.rs" |
+  grep -vF 'let entrees = std::fs::read_dir(dossier).expect("dossier des sources illisible");' || true)
+appels=$(grep -vE '^ *fn fichiers_rs' "$DEPOT/build.rs" | grep -oE 'fichiers_rs\(([^()]|\([^()]*\))*\)' |
+  LC_ALL=C sort | tr '\n' ' ')
+[[ $appels == 'fichiers_rs(&chemin, liste) fichiers_rs(Path::new("src"), &mut fichiers) ' ]] ||
+  parcours+=" fichiers_rs appelée ailleurs que sur src : $appels"
+grep -qF '} else if chemin.extension().is_some_and(|e| e == "rs") && nom != "tests.rs" {' "$DEPOT/build.rs" ||
+  parcours+=" fichiers_rs sans son filtre des .rs"
+dans_la_liste=$(cd "$DEPOT" && find src -name '*.rs' | grep -E "$(grep -v '^#' .github/hors-code.txt | head -n 1)" || true)
+[[ -z $dans_la_liste ]] || parcours+=" .rs de src/ dans la liste : $dans_la_liste"
 [[ -z $cites && -z $parcours ]] &&
   ok "liste hors compilation : ni src/, ni build.rs, ni Cargo.toml ne lisent les captures ou la page des fonctions" ||
   ko "liste hors compilation : un fichier de la liste est lu par la compilation : ${cites#"$DEPOT"/}${parcours}"

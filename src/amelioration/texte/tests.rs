@@ -247,6 +247,35 @@ fn adresses_et_identifiants_masques() {
     }
 }
 
+/// Re-contrôle RC-1 : une IPv4 portée dans une IPv6 suivie d'un port après un point, d'une lettre ou d'un chiffre
+/// collés, ou aux octets invalides, est masquée en entier ; RC-6 : la zone d'une adresse avec « - », « . » ou « _ »,
+/// et les points idéographiques. Le même masqueur sert au journal des erreurs et au brouillon de signalement.
+#[test]
+fn rc1_rc6_ipv4_portee_mal_formee_et_zone_masquees_en_entier() {
+    let cas = [
+        ("vers 64:ff9b::198.51.100.23.443 fin", "vers <ip> fin"),
+        ("vers 2a02:1234:5678::198.51.100.23.8080 fin", "vers <ip> fin"),
+        ("vers ::ffff:198.51.100.23x fin", "vers <ip> fin"),
+        ("vers ::ffff:198.51.100.2345 fin", "vers <ip> fin"),
+        ("vers ::ffff:198.51.100.256 fin", "vers <ip> fin"),
+        ("vers ::ffff:198.51.100 fin", "vers <ip> fin"),
+        ("vers ::ffff:1.2.3.4.5.6.7.8 fin", "vers <ip> fin"),
+        ("vers ::ffff:198.51.100.256.", "vers <ip>."),
+        ("vers 198.51.100.23.443 fin", "vers <ip> fin"),
+        ("vers 198.51.100.23x fin", "vers <ip> fin"),
+        ("voisin fe80::a4b3:c2ff:fed1:e0f9%br-lan vu", "voisin <ip> vu"),
+        ("voisin fe80::a4b3:c2ff:fed1:e0f9%eth0.100 vu", "voisin <ip> vu"),
+        ("voisin fe80::a4b3:c2ff:fed1:e0f9%wl_p2s0.", "voisin <ip>."),
+        ("voisin 198\u{3002}51\u{3002}100\u{3002}23 vu", "voisin <ip> vu"),
+        ("voisin 198\u{FF61}51\u{FF61}100\u{FF61}23 vu", "voisin <ip> vu"),
+        // Une version à cinq nombres ou plus n'est pas une adresse.
+        ("version 1.2.3.4.5.6 publiée", "version 1.2.3.4.5.6 publiée"),
+    ];
+    for (brut, attendu) in cas {
+        assert_eq!(propre(brut), attendu, "{brut:?}");
+    }
+}
+
 #[test]
 fn textes_courants_gardes() {
     for t in [

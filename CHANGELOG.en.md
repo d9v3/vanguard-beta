@@ -14,11 +14,18 @@ example, finds it, to rebuild it if needed.
 - **New read-only door for AI assistants (`vanguard mcp`), on Linux only.** An assistant you connect can read Vanguard's
   state, events and findings, and cannot change anything. It uses only the program's standard input and output, with no
   port and no network, refuses to run as administrator, never shows paths, command lines or secrets, and marks
-  everything it returns as untrusted. A session served is noted in the journal, without ever filling it; a program that
-  sends it abnormal messages is cut off, and an alert says so. It refuses to start under a file size limit
+  everything it returns as untrusted. A text that comes from the computer (a finding's message, an alert's title, a
+  program's name) only leaves it made of the words Vanguard itself writes in its messages, in French and English; any
+  other word, digit or sign becomes "…". A session served is noted in the journal, without ever filling it; a program
+  that sends it abnormal messages is cut off, and an alert says so. It refuses to start under a file size limit
   (`ulimit -f`), which could cut its note in the middle; a note cut anyway is undone, and the journal stays readable.
   After 15 minutes of silence, it closes; the assistant starts it again. On Windows, the command refuses to start until
   it has been tried on a real Windows.
+- **The address masker, shared by the error journal and the report draft, holds back more.** An IPv4 address carried
+  inside an IPv6 one ("::ffff:…"), an address followed by a port or by stuck letters, a zone written with dots, hyphens
+  or ideographic full stops ("。") are now masked whole, with no piece left behind. Known limit: an IPv6 address written
+  without any digit ("fd::ab") looks too much like a word to be recognized; through the assistants' door it does not
+  come out (it is not one of Vanguard's words).
 
 ## November 15, 2026: version 0.96.0
 

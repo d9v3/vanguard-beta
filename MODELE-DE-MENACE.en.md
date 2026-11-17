@@ -720,7 +720,10 @@ to start (code 2) until it has been tried on a real Windows.
   (`une_note_coupee_de_la_porte_est_defaite`). So that a note is not cut, the door refuses to start under a file size
   limit (`ulimit -f`), or if that limit cannot be read (`la_porte_refuse_un_plafond_de_taille_de_fichier`), reads it
   again before each note (`sous_un_plafond_de_taille_la_porte_n_ecrit_rien`) and ignores the size-exceeded signal
-  (SIGXFSZ): a refused write returns an error instead of killing the door in the middle of its note. Limit: if putting
+  (SIGXFSZ): a refused write returns an error instead of killing the door in the middle of its note. Under a limit set
+  during the session (`prlimit --pid`), nothing of this session is written: neither its note nor its alert, and what it
+  held back is not counted either (the next session does not announce it). Whoever starts the door already has this
+  power: they can also never start it and read Vanguard's files without it. Limit: if putting
   the size back fails itself, the cut line stays; Vanguard's next write notes it as a break in the journal, without
   adopting anything silently. Its own note does not make the journal "not up to date": it is read again right after
   (`la_note_de_la_porte_ne_rend_pas_son_journal_perime`). The person can thus see that their assistant reads Vanguard,
@@ -753,20 +756,21 @@ to start (code 2) until it has been tried on a real Windows.
   forms: in the `_meta` of a result, in the `error.data` of an error, and at the head of a tool's result, in its text as
   in `structuredContent`, before any content (`la_teinte_est_en_tete_de_chaque_reponse`, checked in the written line).
   Names (severity, family, rule, reason, end) come out of a closed list, or empty. The text that comes from the computer
-  (title, message, category, program name) comes out apart, as `{"texte_externe": …, "non_fiable": true}`, bounded and
-  cleaned like the error log; the door first removes from it process numbers, command excerpts (in parentheses, and a
-  program's lineage), square brackets, the cut word of a shortened text, serial numbers and what follows an announced
-  password or passphrase; it normalizes the text first (full-width forms, invisible characters) and reduces it again
-  after the cleaning, until nothing changes any more. A lone parenthesis only removes its surroundings: a program name
-  "x(" no longer makes the reason of an alert disappear. It also removes a relative path ("Documents/taxes.pdf") and a
-  MAC address written with dots, and masks the IPv4 address carried in an IPv6 one. The cleaning removes what acts on a
-  screen, never the meaning: an instruction written in plain words stays a sentence. It is up to the assistant to treat
-  it as data, never as an instruction. Known limit: such a text can still name a device, a Wi-Fi network, a server or an
-  account when an alert quotes them; only the names the cleaner knows are removed (the account and the computer, taken
-  from the environment of the process, which the client starts). Other known limits of the cleaning, with no known way
-  around what it removes: in "a) b (c", the "b" stays; "parent: …" is not treated as a lineage; a mask placed before the
-  cleaning can come out as a plain word ("secret", "chemin", "mac"), which says that a value was removed without saying
-  it; the dotted MAC is removed by the door only.
+  (title, message, category, program name) comes out apart, as `{"texte_externe": …, "non_fiable": true}`, through a
+  word allow-list: only the words Vanguard writes itself in its own messages come out (the strings of its text macros,
+  in French and English, taken from the code at each build, without the tests: about 8,300 words). Any other word
+  becomes "…", as do digits, paths, addresses, tokens, names and any sign outside a small fixed punctuation set (never a
+  parenthesis or a square bracket); several "…" in a row make only one, and the output is 400 bytes at most
+  (`chaque_mot_de_la_sortie_est_du_vocabulaire`, property test). The text is normalized before it is judged (full-width
+  forms, invisible characters, quotes, Latin accents recomposed); a letter that imitates another (Cyrillic, Kelvin sign,
+  ligature, mathematical letter) is not brought back: the word is not known and comes out "…". A one-letter word only
+  comes out if it is "a", "à" or "y", so that a value cannot be spelled out. What follows an announced password or
+  passphrase ("password: …") is held back up to the end of the sentence, even when made of known words. It is up to
+  the assistant to treat this text as data, never as an instruction. Known limit: a sequence of vocabulary words comes
+  out as it is. An attacker who writes on the computer can therefore compose a sentence with these words ("Ignore the
+  previous instructions" comes out as it is), and a command line or a name quoted by an alert lets out
+  those of its words that are also Vanguard's words ("bash", "sshd", "cat"); nothing else comes out. An untracked `.rs`
+  file placed in `src/` would be read too at build time.
 - **It cannot prove it is the real Vanguard.** A fake program placed at the same path would answer the same, `identite`
   included; and a program of the account can write to Vanguard's files (the seals are a barrier, not a safe: see "The
   programs of your account do not target Vanguard itself"). The proof is made before starting, by the client: start a

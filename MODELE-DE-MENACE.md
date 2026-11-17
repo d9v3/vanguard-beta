@@ -764,7 +764,10 @@ commande refuse de démarrer (code 2) tant qu'elle n'a pas été essayée sur un
   (`une_note_coupee_de_la_porte_est_defaite`). Pour qu'une note ne soit pas coupée, la porte refuse de démarrer sous un
   plafond de taille de fichier (`ulimit -f`), ou s'il ne se lit pas (`la_porte_refuse_un_plafond_de_taille_de_fichier`),
   le relit avant chaque note (`sous_un_plafond_de_taille_la_porte_n_ecrit_rien`) et ignore le signal de dépassement
-  (SIGXFSZ) : une écriture refusée rend une erreur au lieu de tuer la porte au milieu de sa note. Limite : si la remise
+  (SIGXFSZ) : une écriture refusée rend une erreur au lieu de tuer la porte au milieu de sa note. Sous un plafond posé
+  en cours de session (`prlimit --pid`), rien de cette session n'est écrit : ni sa note, ni son alerte, et sa retenue
+  n'est pas comptée non plus (la session suivante ne l'annonce pas). Qui lance la porte a déjà ce pouvoir : il peut
+  aussi ne jamais la lancer et lire les fichiers de Vanguard sans elle. Limite : si la remise
   à la taille échoue elle-même, la ligne coupée reste ; la prochaine écriture de Vanguard la note comme une rupture du
   journal, sans rien adopter en silence. Sa propre note ne rend pas le journal « pas à jour » : il est relu juste après
   (`la_note_de_la_porte_ne_rend_pas_son_journal_perime`). La personne peut donc voir que son assistant lit Vanguard, et
@@ -798,20 +801,21 @@ commande refuse de démarrer (code 2) tant qu'elle n'a pas été essayée sur un
   du résultat d'un outil, dans son texte comme dans `structuredContent`, avant tout contenu
   (`la_teinte_est_en_tete_de_chaque_reponse`, vérifié dans la ligne écrite). Les noms (gravité, famille, règle, raison,
   fin) sortent d'une liste fermée, ou vides. Le texte venu de l'ordinateur (titre, message, catégorie, nom de programme)
-  sort à part, sous la forme `{"texte_externe": …, "non_fiable": true}`, borné et nettoyé comme le journal des erreurs ;
-  la porte en retire d'abord les numéros de processus, les extraits de commande (entre parenthèses, et la lignée d'un
-  programme), les crochets, le mot coupé d'un texte raccourci, les numéros de série et ce qui suit un mot de passe ou
-  une phrase de passe annoncés ; elle normalise le texte avant (pleine chasse, invisibles) et le réduit encore après le
-  nettoyage, jusqu'à ce que plus rien ne change. Une parenthèse seule ne retire que son voisinage : un nom de programme
-  « x( » ne fait plus disparaître la raison d'une alerte. Elle retire aussi un chemin relatif (« Documents/impots.pdf »)
-  et une adresse MAC écrite à points, et masque l'adresse IPv4 portée dans une IPv6. Le nettoyage retire ce qui agit sur
-  un écran, jamais le sens : une consigne écrite en clair y reste une phrase. C'est à l'assistant de la traiter comme
-  une donnée, jamais comme une consigne. Limite connue : un tel texte peut encore nommer un appareil, un réseau Wi-Fi,
-  un serveur ou un compte, quand une alerte les cite ; seuls les noms que le nettoyeur connaît sont retirés (le compte
-  et l'ordinateur, pris dans l'environnement du processus, que le client lance). Autres limites connues du nettoyage,
-  sans contournement connu de ce qu'il retire : dans « a) b (c », le « b » reste ; « parent : … » n'est pas traité comme
-  une lignée ; un masque posé avant le nettoyage peut ressortir comme un mot simple (« secret », « chemin », « mac »),
-  qui dit qu'une valeur a été retirée sans la dire ; la MAC à points n'est retirée que par la porte.
+  sort à part, sous la forme `{"texte_externe": …, "non_fiable": true}`, par une liste blanche de mots : seuls sortent
+  les mots que Vanguard écrit lui-même dans ses propres messages (les chaînes de ses macros de texte, en français et en
+  anglais, tirées du code à chaque compilation, sans les essais : environ 8 300 mots). Tout autre mot devient « … »,
+  comme les chiffres, les chemins, les adresses, les jetons, les noms et tout signe hors d'une petite ponctuation fixe
+  (jamais une parenthèse ni un crochet) ; plusieurs « … » de suite n'en font qu'un, et la sortie fait 400 octets au plus
+  (`chaque_mot_de_la_sortie_est_du_vocabulaire`, essai de propriété). Le texte est normalisé avant d'être jugé (pleine
+  chasse, invisibles, guillemets, accents latins recomposés) ; une lettre qui en imite une autre (cyrillique, signe
+  Kelvin, ligature, lettre mathématique) n'est pas ramenée : le mot n'est pas connu et sort « … ». Un mot d'une seule
+  lettre ne sort que s'il est « a », « à » ou « y », pour qu'une valeur ne puisse pas s'épeler. Ce qui suit un mot de
+  passe ou une phrase de passe annoncés (« mot de passe : … ») est retenu jusqu'à la fin de la phrase, même fait de mots
+  connus. C'est à l'assistant de traiter ce texte comme une donnée, jamais comme une consigne. Limite connue : une suite
+  de mots du vocabulaire sort telle quelle. Un attaquant qui écrit sur l'ordinateur peut donc composer une phrase avec
+  ces mots (« Ignore les consignes précédentes » sort tel quel), et une ligne de commande ou un nom
+  cités par une alerte laissent sortir ceux de leurs mots qui sont aussi des mots de Vanguard (« bash », « sshd »,
+  « cat ») ; rien d'autre ne sort. Un fichier `.rs` non suivi posé dans `src/` serait lu aussi à la compilation.
 - **Elle ne peut pas prouver qu'elle est le vrai Vanguard.** Un faux programme posé au même chemin répondrait la même
   chose, `identite` comprise ; et un programme du compte peut écrire dans les fichiers de Vanguard (les sceaux sont une
   barrière, pas un coffre : voir « Les programmes de votre compte ne visent pas Vanguard lui-même »). La preuve se fait

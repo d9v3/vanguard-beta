@@ -14,12 +14,19 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
 - **Nouvelle porte de lecture pour les assistants d'IA (`vanguard mcp`), sous Linux seulement.** Un assistant que vous
   branchez peut lire l'état de Vanguard, ses événements et ses constats, sans pouvoir rien changer. Elle passe seulement
   par l'entrée et la sortie du programme, sans port ni réseau, refuse de tourner en administrateur, ne montre ni
-  chemins, ni lignes de commande, ni secrets, et marque tout ce qu'elle rend comme non fiable. Une session servie est
-  notée dans le journal, sans jamais le remplir ; un programme qui lui envoie des messages anormaux est coupé, et une
-  alerte le dit. Elle refuse de démarrer sous un plafond de taille de fichier (`ulimit -f`), qui pourrait couper sa note
-  au milieu ; une note coupée malgré tout est défaite, et le journal reste lisible. Après 15 minutes de silence, elle se
-  ferme ; l'assistant la relance. Sous Windows, la commande refuse de démarrer tant qu'elle n'a pas été essayée sur un
-  vrai Windows.
+  chemins, ni lignes de commande, ni secrets, et marque tout ce qu'elle rend comme non fiable. Un texte venu de
+  l'ordinateur (message d'un constat, titre d'une alerte, nom d'un programme) n'en sort que fait des mots que Vanguard
+  écrit lui-même dans ses messages, en français et en anglais ; tout autre mot, chiffre ou signe devient « … ». Une
+  session servie est notée dans le journal, sans jamais le remplir ; un programme qui lui envoie des messages anormaux
+  est coupé, et une alerte le dit. Elle refuse de démarrer sous un plafond de taille de fichier (`ulimit -f`), qui
+  pourrait couper sa note au milieu ; une note coupée malgré tout est défaite, et le journal reste lisible. Après 15
+  minutes de silence, elle se ferme ; l'assistant la relance. Sous Windows, la commande refuse de démarrer tant qu'elle
+  n'a pas été essayée sur un vrai Windows.
+- **Le masqueur des adresses, commun au journal des erreurs et au brouillon de signalement, en retient plus.** Une
+  adresse IPv4 portée dans une IPv6 (« ::ffff:… »), une adresse suivie d'un port ou de lettres collées, une zone écrite
+  avec des points, des tirets ou des points idéographiques (« 。 ») sont maintenant masquées en entier, sans qu'un
+  morceau en reste. Limite connue : une adresse IPv6 écrite sans aucun chiffre (« fd::ab ») ressemble trop à un mot pour
+  être reconnue ; par la porte des assistants, elle ne sort pas (ce n'est pas un mot de Vanguard).
 
 ## 15 novembre 2026 : version 0.96.0
 

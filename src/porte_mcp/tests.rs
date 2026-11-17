@@ -721,10 +721,15 @@ fn rien_d_exclu_ne_sort_de_la_porte() {
         assert!(!tout.contains(exclu), "« {exclu} » est sorti de la porte");
     }
     // Ce qui doit sortir sort : sinon l'essai ne prouverait rien.
-    // Le nom court du programme d'une preuve, dans son propre champ : « minerai-xmr » seul ne suffit pas, le texte de
-    // l'alerte le porte aussi.
+    // Le nom court du programme d'une preuve garde son propre champ ; « minerai-xmr » n'est pas un mot du vocabulaire
+    // de Vanguard : il sort « … », dans ce champ comme dans le texte de l'alerte, dont les mots de Vanguard sortent.
+    assert!(
+        !tout.contains("minerai"),
+        "un nom hors vocabulaire est sorti de la porte"
+    );
     for attendu in [
-        "\"programme\":{\"texte_externe\":\"minerai-xmr\"",
+        "\"programme\":{\"texte_externe\":\"…\"",
+        "Le programme … parle à un serveur connu.",
         "botnet",
         "alerte-botnet",
         "\"preuve\"",

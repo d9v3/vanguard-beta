@@ -15,6 +15,7 @@ fn main() {
     empreinte_fenetre();
     fabricants();
     regles_yara();
+    vocabulaire();
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         ressources_windows();
     }
@@ -177,6 +178,206 @@ fn regles_yara() {
     let sortie = std::env::var("OUT_DIR").expect("OUT_DIR");
     std::fs::write(Path::new(&sortie).join("reversinglabs.yara"), alleger_yara(&texte))
         .expect("règles YARA allégées non écrites");
+}
+
+/// Le vocabulaire de la porte MCP (src/porte_mcp/vocabulaire.rs) : les morceaux (suites sans espace) des chaînes que
+/// Vanguard passe à ses macros de texte (tr!, trf!, trp!, tre!, trw!, trwln!, trpr!, comme outils/textes.py), sans
+/// les marques de format (« {} », « {nom} »), triés et sans doublon, un par ligne. Tiré du code à chaque compilation
+/// où src/ change : toujours à jour, sans geste, et le même pour le même code. Les essais (fichiers tests.rs,
+/// dossiers tests/, module `tests` en fin de fichier) n'y entrent pas : leurs valeurs inventées ne sont pas des mots
+/// de Vanguard. Le programme découpe ces morceaux en mots avec les règles mêmes qui jugent un texte.
+fn vocabulaire() {
+    println!("cargo:rerun-if-changed=src");
+    let mut fichiers = Vec::new();
+    fichiers_rs(Path::new("src"), &mut fichiers);
+    fichiers.sort();
+    let mut morceaux = std::collections::BTreeSet::new();
+    for fichier in &fichiers {
+        let texte = std::fs::read_to_string(fichier).expect("source illisible pour le vocabulaire");
+        let fin = fin_hors_essais(&texte);
+        for chaine in chaines_de_texte(texte.get(..fin).unwrap_or_default()) {
+            morceaux.extend(sans_marques(&chaine).split_whitespace().map(str::to_string));
+        }
+    }
+    let sortie = std::env::var("OUT_DIR").expect("OUT_DIR");
+    let mut texte = morceaux.into_iter().collect::<Vec<_>>().join("\n");
+    texte.push('\n');
+    std::fs::write(Path::new(&sortie).join("vocabulaire.txt"), texte).expect("vocabulaire non écrit");
+}
+
+/// Les fichiers `.rs` sous `dossier`, sans les fichiers et dossiers d'essais.
+fn fichiers_rs(dossier: &Path, liste: &mut Vec<std::path::PathBuf>) {
+    let entrees = std::fs::read_dir(dossier).expect("dossier des sources illisible");
+    for entree in entrees {
+        let chemin = entree.expect("entrée des sources illisible").path();
+        let nom = chemin.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+        if chemin.is_dir() {
+            if nom != "tests" {
+                fichiers_rs(&chemin, liste);
+            }
+        } else if chemin.extension().is_some_and(|e| e == "rs") && nom != "tests.rs" {
+            liste.push(chemin);
+        }
+    }
+}
+
+/// Où commence le module d'essais d'un fichier (« #[cfg(test)] » puis « mod tests » en début de ligne) ; la fin du
+/// texte sinon.
+fn fin_hors_essais(texte: &str) -> usize {
+    let mut depuis = 0;
+    while let Some(p) = texte.get(depuis..).and_then(|t| t.find("#[cfg(test)]")) {
+        let debut = depuis + p;
+        let reste = texte[debut + "#[cfg(test)]".len()..].trim_start();
+        let en_tete = debut == 0 || texte[..debut].ends_with('\n');
+        let mot_suivant = reste.strip_prefix("mod tests").and_then(|r| r.chars().next());
+        if en_tete && mot_suivant.is_some_and(|x| !x.is_alphanumeric() && x != '_') {
+            return debut;
+        }
+        depuis = debut + 1;
+    }
+    texte.len()
+}
+
+/// Les chaînes (décodées) de chaque appel aux macros de texte, jusqu'à sa parenthèse fermante : chaînes brutes
+/// (r"…", r#"…"#) comprises ; un caractère '"', '(' ou ')' n'est ni une chaîne ni une parenthèse.
+fn chaines_de_texte(texte: &str) -> Vec<String> {
+    let lettres: Vec<char> = texte.chars().collect();
+    let mut trouvees = Vec::new();
+    let mut pos = 0;
+    while pos < lettres.len() {
+        let Some(debut) = appel_de_macro(&lettres, pos) else {
+            pos += 1;
+            continue;
+        };
+        let mut profondeur = 1usize;
+        let mut j = debut;
+        while j < lettres.len() && profondeur > 0 {
+            let lu = lettres[j];
+            if lu == 'r' && (j == 0 || !lettres[j - 1].is_alphanumeric()) {
+                let dieses = lettres[j + 1..].iter().take_while(|y| **y == '#').count();
+                if lettres.get(j + 1 + dieses) == Some(&'"') {
+                    let corps = j + 2 + dieses;
+                    let mut k = corps;
+                    while k < lettres.len()
+                        && !(lettres[k] == '"' && lettres[k + 1..].iter().take(dieses).all(|y| *y == '#'))
+                    {
+                        k += 1;
+                    }
+                    trouvees.push(lettres[corps..k.min(lettres.len())].iter().collect());
+                    j = k + 1 + dieses;
+                    continue;
+                }
+            }
+            if lu == '"' {
+                let mut k = j + 1;
+                let mut chaine = String::new();
+                while k < lettres.len() && lettres[k] != '"' {
+                    if lettres[k] == '\\' {
+                        k = echappement(&lettres, k, &mut chaine);
+                    } else {
+                        chaine.push(lettres[k]);
+                        k += 1;
+                    }
+                }
+                trouvees.push(chaine);
+                j = k + 1;
+                continue;
+            }
+            if lu == '\'' && lettres.get(j + 2) == Some(&'\'') && matches!(lettres.get(j + 1), Some('"' | '(' | ')')) {
+                j += 3;
+                continue;
+            }
+            if lu == '(' {
+                profondeur += 1;
+            } else if lu == ')' {
+                profondeur -= 1;
+            }
+            j += 1;
+        }
+        pos = j;
+    }
+    trouvees
+}
+
+/// Si un appel « tr!( », « trf!( »… commence en `i` (après une limite de mot), l'indice qui suit sa parenthèse.
+fn appel_de_macro(c: &[char], i: usize) -> Option<usize> {
+    if c.get(i..i + 2)? != ['t', 'r'] || (i > 0 && (c[i - 1].is_alphanumeric() || c[i - 1] == '_')) {
+        return None;
+    }
+    let mut j = i + 2;
+    let suite: String = c[j..].iter().take_while(|x| x.is_ascii_lowercase()).collect();
+    if !["", "f", "p", "e", "w", "wln", "pr"].contains(&suite.as_str()) {
+        return None;
+    }
+    j += suite.len();
+    if c.get(j) != Some(&'!') {
+        return None;
+    }
+    j += 1;
+    while c.get(j).is_some_and(|x| x.is_whitespace()) {
+        j += 1;
+    }
+    (c.get(j) == Some(&'(')).then_some(j + 1)
+}
+
+/// Décode l'échappement qui commence en `k` (« \n », « \u{e9} », fin de ligne échappée…) ; rend l'indice qui suit.
+/// Les sauts de ligne et tabulations deviennent une espace : ils séparent des mots.
+fn echappement(c: &[char], k: usize, chaine: &mut String) -> usize {
+    match c.get(k + 1) {
+        Some('n' | 't' | 'r' | '0') => {
+            chaine.push(' ');
+            k + 2
+        }
+        Some('u') => {
+            let fin = c[k..].iter().position(|x| *x == '}').map_or(c.len(), |p| k + p);
+            let hexa: String = c.get(k + 3..fin).unwrap_or_default().iter().collect();
+            if let Some(x) = u32::from_str_radix(&hexa, 16).ok().and_then(char::from_u32) {
+                chaine.push(x);
+            }
+            fin + 1
+        }
+        Some('x') => {
+            let hexa: String = c.get(k + 2..k + 4).unwrap_or_default().iter().collect();
+            if let Some(x) = u32::from_str_radix(&hexa, 16).ok().and_then(char::from_u32) {
+                chaine.push(x);
+            }
+            k + 4
+        }
+        Some('\n') => {
+            let mut j = k + 1;
+            while c.get(j).is_some_and(|x| x.is_whitespace()) {
+                j += 1;
+            }
+            chaine.push(' ');
+            j
+        }
+        Some(x) => {
+            chaine.push(*x);
+            k + 2
+        }
+        None => k + 1,
+    }
+}
+
+/// La chaîne sans ses marques de format : « {} », « {nom} », « {:?} » deviennent une espace (« {{ » et « }} » aussi).
+fn sans_marques(chaine: &str) -> String {
+    let mut sortie = String::with_capacity(chaine.len());
+    let mut dans = false;
+    for x in chaine.chars() {
+        match x {
+            '{' => {
+                dans = !dans;
+                sortie.push(' ');
+            }
+            '}' => {
+                dans = false;
+                sortie.push(' ');
+            }
+            x if !dans => sortie.push(x),
+            _ => {}
+        }
+    }
+    sortie
 }
 
 /// Un morceau du texte des règles.

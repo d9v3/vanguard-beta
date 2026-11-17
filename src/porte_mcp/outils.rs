@@ -233,6 +233,7 @@ impl Examen {
 
 impl Porte {
     pub(crate) fn new(dossier: PathBuf, liens: Liens) -> Porte {
+        super::vocabulaire::preparer();
         Porte {
             dossier,
             liens,

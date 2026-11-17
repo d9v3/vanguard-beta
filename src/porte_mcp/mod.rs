@@ -14,6 +14,7 @@
 mod outils;
 mod rpc;
 mod trame;
+mod vocabulaire;
 mod vues;
 
 use std::collections::BTreeMap;

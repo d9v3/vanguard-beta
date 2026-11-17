@@ -611,6 +611,8 @@ fn pleine_chasse(x: char) -> char {
     match x {
         '\u{FF01}'..='\u{FF5E}' => u32::from(x).checked_sub(0xFEE0).and_then(char::from_u32).unwrap_or(' '),
         '\u{3000}' => ' ',
+        // Les points idéographiques (« 198。51。100。23 ») : un point pour le détecteur d'adresses.
+        '\u{3002}' | '\u{FF61}' => '.',
         x => x,
     }
 }
@@ -1249,10 +1251,22 @@ fn ipv4(c: &[char], i: usize) -> Option<usize> {
         }
         j = fin;
     }
-    if car(c, j).is_some_and(|y| y.is_ascii_alphanumeric())
-        || (car(c, j) == Some('.') && car(c, suivant(j)).is_some_and(|y| y.is_ascii_digit()))
-    {
-        return None;
+    // Un port écrit après un point (« 198.51.100.23.443 », la forme de tcpdump et de netstat sous BSD) est pris avec
+    // l'adresse s'il est seul ; un cinquième nombre suivi d'un autre (« 1.2.3.4.5.6 ») n'est pas une adresse.
+    if car(c, j) == Some('.') && car(c, suivant(j)).is_some_and(|y| y.is_ascii_digit()) {
+        let fin = fin_tant_que(c, suivant(j), |y| y.is_ascii_digit());
+        let encore = car(c, fin) == Some('.') && car(c, suivant(fin)).is_some_and(|y| y.is_ascii_digit());
+        if !(1..=5).contains(&entre(suivant(j), fin))
+            || encore
+            || car(c, fin).is_some_and(|y| y.is_ascii_alphanumeric())
+        {
+            return None;
+        }
+        return Some(fin);
+    }
+    // Des lettres collées (« 198.51.100.23x ») sont prises avec l'adresse : sinon l'adresse entière sortirait.
+    if car(c, j).is_some_and(|y| y.is_ascii_alphabetic()) {
+        return Some(fin_tant_que(c, j, |y| y.is_ascii_alphanumeric()));
     }
     // Port et préfixe : « 10.0.0.1:8080 », « 10.0.0.0/8 ».
     for marque in [':', '/'] {
@@ -1277,23 +1291,41 @@ fn ipv6(c: &[char], i: usize) -> Option<usize> {
     // Une IPv4 portée en fin d'adresse (« ::ffff:203.0.113.7 », celle que le noyau donne pour une connexion IPv4 sur
     // une prise IPv6, « 64:ff9b::… », « ::… ») : prise en entier, comptée pour deux groupes. Sans cela, « ::ffff:203 »
     // serait masqué seul et les trois derniers octets sortiraient en clair.
+    // Si la partie IPv4 est mal formée (octet de trop, trop grand, nombre ou lettre collés, port après un point), toute
+    // la suite de lettres, chiffres, points et deux-points est prise : retomber sur « ::ffff:198 » seul laisserait
+    // sortir les octets qui suivent.
     if car(c, fin) == Some('.')
         && let Some(k) = corps.rfind(':')
-        && let Some(f) = ipv4(c, debut.saturating_add(k).saturating_add(1))
     {
-        corps = format!("{}0:0", chaine(c, debut, debut.saturating_add(k).saturating_add(1)));
-        fin = f;
+        let tete = debut.saturating_add(k).saturating_add(1);
+        if chaine(c, tete, fin).chars().all(|y| y.is_ascii_digit()) && tete < fin {
+            corps = format!("{}0:0", chaine(c, debut, tete));
+            fin = ipv4(c, tete).unwrap_or_else(|| {
+                let mut f = fin_tant_que(c, fin, |y| y.is_ascii_alphanumeric() || y == '.' || y == ':');
+                while f > fin && car(c, f.saturating_sub(1)) == Some('.') {
+                    f = f.saturating_sub(1);
+                }
+                f
+            });
+        }
     }
     let deux_points = corps.matches(':').count();
     let groupes_courts = corps.split(':').all(|g| g.len() <= 4);
     let pleine = deux_points == 7 && corps.split(':').all(|g| !g.is_empty());
     let abregee = corps.contains("::") && corps.split(':').any(|g| !g.is_empty()) && corps.matches("::").count() == 1;
+    // Un chiffre décimal est exigé : sans lui, « fa::ce » ou « de::ad » seraient pris pour des adresses. Limite dite
+    // (CHANGELOG) : une adresse sans aucun chiffre (« fd::ab ») reste en clair ici ; la porte des assistants la retient.
     if !groupes_courts || !(pleine || abregee) || !corps.chars().any(|y| y.is_ascii_digit()) {
         return None;
     }
     let mut j = fin;
+    // La zone : un nom d'interface (« %eth0 », « %br-lan », « %eth0.100 »), sans le point qui finit la phrase.
     if car(c, j) == Some('%') {
-        j = fin_tant_que(c, suivant(j), |y| y.is_ascii_alphanumeric());
+        let zone = suivant(j);
+        j = fin_tant_que(c, zone, |y| y.is_ascii_alphanumeric() || matches!(y, '-' | '.' | '_'));
+        while j > zone && car(c, j.saturating_sub(1)) == Some('.') {
+            j = j.saturating_sub(1);
+        }
     }
     if car(c, j) == Some('/') {
         let f = fin_tant_que(c, suivant(j), |y| y.is_ascii_digit());
