@@ -830,7 +830,8 @@ commande refuse de démarrer (code 2) tant qu'elle n'a pas été essayée sur un
   premier mot, avec ou sans parenthèse, et une fermante de trop après un « (PID n) » montre qu'il était cité dans
   l'extrait d'avant, qui va alors jusqu'à lui ; après un extrait refermé, un « (PID n) » n'ouvre un nouveau programme
   que derrière l'écart exact du veilleur (« ; « nom » ») : sinon il était cité, et l'extrait est retenu en entier,
-  avant comme après lui ; une autre parenthèse ne sort
+  avant comme après lui ; les parenthèses du nom entre guillemets du programme suivant (« (sd-pam) », « b(1) ») ne
+  comptent pas dans l'extrait d'avant ; une autre parenthèse ne sort
   que si tous ses mots sont connus. Le
   prix : un texte utile qui suit une annonce est perdu (environ 0,8 % des morceaux de texte de Vanguard contiennent un
   de ces mots, « clé de registre » et « code » compris). Ce sont des filets, pas une garantie : une valeur que rien
@@ -849,9 +850,10 @@ commande refuse de démarrer (code 2) tant qu'elle n'a pas été essayée sur un
   `r#test` et `r#cfg` comme le compilateur, et un `#[path]` sur un module en ligne depuis le dossier du fichier ;
   `cfg(test)`, `cfg(kani)`, `cfg(fuzzing)` et `cfg(miri)` sont faux dans le programme. Elle arrête la compilation sur
   une forme qu'elle ne sait pas juger : `cfg_select!` ou `cfg_match!`, un `path` posé par `cfg_attr` sur un module, un
-  module à fichier déclaré dans un bloc (fonction, `const`), un corps de macro qu'elle ne relit pas comme du code
-  avec des bras (« => » ou « else » à son premier niveau, « if #[…] » partout : `cfg_if!`, une enveloppe d'un autre
-  paquet) et un appel de texte. Le
+  module à fichier déclaré dans un bloc (fonction, `const`), et toute macro hors d'une liste blanche jugée (`format!`,
+  `write!`, `json!`, `vec!`…) appelée dans un appel de texte ou dont le corps en contient un (`cfg_if!`, une enveloppe
+  d'un autre paquet, une macro maison qui choisirait par `cfg`, quelle que soit la forme de ses bras), comme un nom de
+  la liste blanche donné à une autre macro (`macro_rules!`, `use … as`, chemin hors de std et serde_json). Le
   script de compilation (`build.rs`), la lecture qu'il inclut et la configuration de cargo du dépôt sont jugés par une
   empreinte de tout le fichier, et `Cargo.toml` par la liste exacte de ses cibles et de ses paquets de compilation
   (`outils/essais-signature.sh`) : un changement y demande une relecture voulue. Le dépôt n'a ni fichier hérité que
@@ -859,8 +861,9 @@ commande refuse de démarrer (code 2) tant qu'elle n'a pas été essayée sur un
   sous `target/`), ni aucun lien non suivi hors de `target/` et `.git/` (`target` peut être un lien vers un autre
   disque) ; hors de la racine d'un dépôt git, les liens suivis sont « non vérifiés », un échec. Non vérifié : la
   configuration de cargo hors du dépôt, une macro d'un paquet ordinaire qui lirait le disque, `cfg!(test)` écrit dans
-  une expression du programme (lu comme du programme), et une macro à bras d'une autre forme (« test: { … } », ou des
-  bras plus bas que son premier niveau), dont tous les bras seraient lus comme du programme.
+  une expression du programme (lu comme du programme), et une macro d'un autre paquet qui prendrait le nom d'une macro
+  admise par une importation globale (`use autre::*;`). Une macro à bras d'une autre forme n'est plus une limite :
+  toute macro inconnue autour d'un texte arrête la compilation, quels que soient ses bras.
 - **Elle ne peut pas prouver qu'elle est le vrai Vanguard.** Un faux programme posé au même chemin répondrait la même
   chose, `identite` comprise ; et un programme du compte peut écrire dans les fichiers de Vanguard (les sceaux sont une
   barrière, pas un coffre : voir « Les programmes de votre compte ne visent pas Vanguard lui-même »). La preuve se fait

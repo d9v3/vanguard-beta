@@ -419,18 +419,19 @@ fn r5_sources_1_une_macro_a_bras_avec_un_texte_arrete_la_compilation() {
     ] {
         match lecture(&[("src/main.rs", texte)]) {
             Ok(mots) => panic!("lu sans erreur : {mots:?} ({texte})"),
-            Err(Illisible(e)) => assert!(e.contains("corps de macro à bras"), "{e} ({texte})"),
+            Err(Illisible(e)) => assert!(e.contains("hors de la liste blanche"), "{e} ({texte})"),
         }
     }
-    // Restent lus : les règles d'un `macro_rules!`, un `match` relu comme du code, une macro à bras sans texte, un
-    // `if` ou un `match` du programme plus bas dans une macro qui n'est pas relue comme du code (`json!`).
+    // Restent lus : les règles d'un `macro_rules!`, un `match` relu comme du code dans une macro admise, une macro
+    // inconnue sans texte, un `if` ou un `match` du programme plus bas dans une macro admise qui n'est pas relue comme
+    // du code (`json!`).
     assert_eq!(
         un("macro_rules! m { () => { TR(\"vrai\", \"real\") }; ($x:expr) => { TR(\"maison\", \"rouge\") }; }\n"),
         attendus(&["vrai", "real", "maison", "rouge"])
     );
     assert_eq!(
         un(
-            "fn a(x: u8) { m!(match x { 0 => TR(\"vrai\", \"real\"), _ => TR(\"maison\", \"rouge\") }); }\n\
+            "fn a(x: u8) { vec![match x { 0 => TR(\"vrai\", \"real\"), _ => TR(\"maison\", \"rouge\") }]; }\n\
             fn b() { choix! { test => { 1 } _ => { 2 } } }\n"
         ),
         attendus(&["vrai", "real", "maison", "rouge"])
@@ -439,6 +440,72 @@ fn r5_sources_1_une_macro_a_bras_avec_un_texte_arrete_la_compilation() {
         un(
             "fn a(x: bool) { let _ = json!({ \"a\": if x { TR(\"vrai\", \"real\") } else { TR(\"maison\", \"rouge\") }, \
             \"b\": match x { true => 1, false => 2 } }); }\n"
+        ),
+        attendus(&["vrai", "real", "maison", "rouge"])
+    );
+}
+
+#[test]
+fn r6_sources_1_une_macro_hors_de_la_liste_blanche_autour_d_un_texte_arrete_la_compilation() {
+    // Les quatre formes de la 6e passe : une macro inconnue qui choisit par `cfg` dans un appel de texte, à toute
+    // profondeur, quelle que soit la forme de ses bras.
+    for texte in [
+        "fn a() -> String { TRF(\"vrai {}\", \"real {}\", autre::choix! { test => { \"alice salon\" } _ => { \"maison\" } }) }\n",
+        "fn a() -> String { TRF(\"vrai {}\", \"real {}\", choix! { if #[cfg(not(test))] { \"maison\" } else { \"alice \
+         salon\" } }) }\n",
+        "fn a() -> String { TRF(\"vrai {}\", \"real {}\", choix! { not(test) => \"maison\", else => \"alice salon\" }) }\n",
+        "m! { @ [ TRF(\"vrai {}\", \"real {}\", choix! { test => { \"alice salon\" } _ => { \"maison\" } }) ] }\n",
+        // Une macro inconnue sous un nom admis : par son chemin, dans du code ou dans des jetons.
+        "fn a() -> String { TRF(\"vrai {}\", \"real {}\", autre::format! { test => { \"alice salon\" } }) }\n",
+        "macro_rules! m { () => { TRF(\"vrai {}\", \"real {}\", autre::format! { test => { \"alice salon\" } }) } }\n",
+        "macro_rules! m { () => { TRF(\"vrai {}\", \"real {}\", ::format! { test => { \"alice salon\" } }) } }\n",
+    ] {
+        match lecture(&[("src/main.rs", texte)]) {
+            Ok(mots) => panic!("lu sans erreur : {mots:?} ({texte})"),
+            Err(Illisible(e)) => assert!(e.contains("hors de la liste blanche"), "{e} ({texte})"),
+        }
+    }
+    // Un nom admis donné à une autre macro : par un `use` ou par une définition.
+    for texte in [
+        "use autre::choix as format;\n",
+        "use autre::format;\n",
+        "use std::println as format;\n",
+        "use autre::{x, choix as vec};\n",
+    ] {
+        match lecture(&[("src/main.rs", texte)]) {
+            Ok(mots) => panic!("lu sans erreur : {mots:?} ({texte})"),
+            Err(Illisible(e)) => assert!(e.contains("donne le nom d'une macro admise"), "{e} ({texte})"),
+        }
+    }
+    refuse(
+        &[("src/main.rs", "macro_rules! format { (test => $a:expr) => { $a }; }\n")],
+        "définie sous le nom d'une macro admise",
+    );
+    // Restent lus : les importations admises, et un nom admis du paquet même (une fonction `json`).
+    assert_eq!(
+        un(
+            "use serde_json::json;\nuse std::format;\nuse super::json;\nuse crate::x::json as y;\n\
+            fn a() { let _ = serde_json::json!({ \"a\": TR(\"vrai\", \"real\") }); }\n"
+        ),
+        attendus(&["vrai", "real"])
+    );
+}
+
+#[test]
+fn r6_sources_2_un_if_dans_une_macro_admise_dans_une_autre_est_lu() {
+    // Deux formes que la détection des bras refusait à tort : un `if` du programme dans `format!` dans `json!`, et
+    // dans `write!` dans un `macro_rules!`.
+    assert_eq!(
+        un(
+            "fn a(x: bool) { let _ = json!({ \"a\": format!(\"{}\", if x { TR(\"vrai\", \"real\") } else { TR(\"maison\", \
+             \"rouge\") }) }); }\n"
+        ),
+        attendus(&["vrai", "real", "maison", "rouge"])
+    );
+    assert_eq!(
+        un(
+            "macro_rules! m { () => { write!(f, \"{}\", if a { TR(\"vrai\", \"real\") } else { TR(\"maison\", \
+             \"rouge\") }) } }\n"
         ),
         attendus(&["vrai", "real", "maison", "rouge"])
     );

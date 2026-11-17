@@ -446,6 +446,26 @@ fn entre_deux_programmes(jetons: &[&str], fin: usize, pid: usize) -> bool {
     nom.is_some_and(|n| n.len() >= 2 && n.starts_with('"') && n.ends_with('"'))
 }
 
+/// Le premier jeton du nom entre guillemets que le veilleur écrit juste avant le « (PID n) » au jeton `pid`, cherché
+/// depuis `depart` : « " (sd-pam) " » en français, « "(sd-pam)" » ou « "mon prog" » en anglais (guillemets déjà
+/// droits). Sans guillemet fermant juste avant, `pid` : il n'y a pas de nom. Le guillemet ouvrant cherché est le plus
+/// proche : un guillemet dans le nom le raccourcit, sans jamais le faire partir avant le vrai guillemet ouvrant.
+fn debut_du_nom(jetons: &[&str], depart: usize, pid: usize) -> usize {
+    let Some(dernier) = pid.checked_sub(1).filter(|d| *d >= depart) else {
+        return pid;
+    };
+    let Some(jeton) = jetons.get(dernier).filter(|m| m.ends_with('"')) else {
+        return pid;
+    };
+    if jeton.len() >= 2 && jeton.starts_with('"') {
+        return dernier;
+    }
+    (depart..dernier)
+        .rev()
+        .find(|k| jetons.get(*k).is_some_and(|m| m.starts_with('"')))
+        .unwrap_or(pid)
+}
+
 /// Un groupe entre parenthèses : de son premier jeton qui ouvre à son dernier qui ferme, s'il est retenu en entier, et
 /// s'il est l'extrait d'un programme (après un « (PID n) ») plutôt qu'une précision de Vanguard.
 #[derive(Clone, Copy)]
@@ -480,7 +500,8 @@ fn profondeur(jetons: &[&str], de: usize, a: usize, depart: i64) -> (i64, bool) 
 /// revenue à zéro ; sinon (« (sh (x) maison (PID 9) b) ») il n'est pas fermé et retient tout jusqu'au « (PID n) »
 /// suivant, dont l'extrait le continue. Une fermante de trop (« (a) maison (PID 9) b) ») montre que ce « (PID n) »
 /// était cité dans l'extrait d'avant : celui-ci va jusqu'à lui (4e re-contrôle, VUES-2) ; de même quand l'écart entre
-/// un extrait fermé et le « (PID n) » suivant n'est pas « ; « nom » » (5e re-contrôle, R5-VUES-1). Sans aucun « (PID n) »,
+/// un extrait fermé et le « (PID n) » suivant n'est pas « ; « nom » » (5e re-contrôle, R5-VUES-1). L'extrait finit avant le nom
+/// entre guillemets du programme suivant : ses parenthèses ne comptent pas (6e passe, R6-VUES-1). Sans aucun « (PID n) »,
 /// c'est une précision de Vanguard (« (numéro repris, parent ou heure illisible) »), du premier jeton qui ouvre au
 /// dernier qui ferme : elle sort si tous ses mots sont du vocabulaire, retenue sinon ; une parenthèse qui ne se ferme
 /// pas n'en fait pas.
@@ -515,15 +536,26 @@ fn groupes_entre_parentheses(jetons: &[&str]) -> Vec<Groupe> {
     let mut precedent_cite = false;
     for (n, pid) in pids.iter().enumerate() {
         let depart = pid.saturating_add(2);
-        let borne = pids.get(n.saturating_add(1)).copied().unwrap_or(jetons.len());
-        let (fin_de_profondeur, negatif) = profondeur(jetons, depart, borne, reste);
+        let suivant = pids.get(n.saturating_add(1)).copied();
+        // Le nom du programme suivant n'est pas dans l'extrait : ses parenthèses (« (sd-pam) », « b(1) ») ne comptent
+        // pas, sans quoi il passerait pour la fin de l'extrait et le « (PID n) » suivant pour un cité (6e passe,
+        // R6-VUES-1). Seulement si l'extrait est revenu à zéro avant le nom : sinon le « nom » est dans l'extrait
+        // encore ouvert, et tout jusqu'au « (PID n) » suivant en fait partie.
+        let nom = suivant.map_or(jetons.len(), |s| debut_du_nom(jetons, depart, s));
+        let (p_nom, negatif_nom) = profondeur(jetons, depart, nom, reste);
+        let (borne, (fin_de_profondeur, negatif)) = if p_nom <= 0 {
+            (nom, (p_nom, negatif_nom))
+        } else {
+            let borne = suivant.unwrap_or(jetons.len());
+            (borne, profondeur(jetons, depart, borne, reste))
+        };
         let ouvert = reste > 0;
         reste = fin_de_profondeur.max(0);
         // Le premier « (PID n) » ne peut pas être cité dans un extrait d'avant : une fermante de trop y est dans son
         // propre extrait (« (case x in a) cat y;; esac) »). Après un extrait fermé, seule la forme exacte du veilleur
         // (« ; » puis le nom entre guillemets) annonce un vrai programme ; tout autre écart, même vide, montre un
         // « (PID n) » cité dans un extrait aux parenthèses équilibrées (« (a) maison (PID 9) (b) ») : 5e re-contrôle,
-        // R5-VUES-1.
+        // R5-VUES-1. La fin de l'extrait se cherche avant le nom suivant, pas dans lui (6e passe, R6-VUES-1).
         let apres_un_extrait = n.checked_sub(1).and_then(|m| pids.get(m)).and_then(|precedent| {
             groupes
                 .last()
@@ -1349,6 +1381,53 @@ mod tests {
                 "{brut:?} : {:?}",
                 sortie(brut)
             );
+        }
+    }
+
+    /// 6e passe R6-VUES-1 : un nom de programme qui contient des parenthèses (« (sd-pam) », « b(1) ») n'est pas la
+    /// fin de l'extrait d'avant ; le « (PID n) » qui le suit reste un vrai programme, dont la raison se lit.
+    #[test]
+    fn r6_vues_1_les_parentheses_d_un_nom_ne_cachent_pas_le_programme_suivant() {
+        let tete = "Programme(s) en marche qui ont la forme d'une attaque : ";
+        for (corps, programmes) in [
+            (
+                "« a » (PID 11) programme inconnu (/tmp/a -x) ; « (sd-pam) » (PID 22) programme inconnu (/tmp/b).",
+                2,
+            ),
+            (
+                "“a” (PID 11) programme inconnu (/tmp/a -x); “(sd-pam)” (PID 22) programme inconnu (/tmp/b).",
+                2,
+            ),
+            (
+                "« a » (PID 11) programme inconnu ; « (sd-pam) » (PID 22) programme inconnu (/tmp/b).",
+                2,
+            ),
+            (
+                "“a” (PID 11) programme inconnu; “(sd-pam)” (PID 22) programme inconnu (/tmp/b).",
+                2,
+            ),
+            (
+                "« a » (PID 11) programme inconnu (/tmp/a -x) ; « b(1) » (PID 22) programme inconnu (/tmp/b) ; « c » \
+                 (PID 33) programme inconnu (/tmp/c).",
+                3,
+            ),
+            (
+                "“a” (PID 11) programme inconnu (/tmp/a -x); “b(1)” (PID 22) programme inconnu (/tmp/b); “c” (PID 33) \
+                 programme inconnu (/tmp/c).",
+                3,
+            ),
+            // Témoin : le même nom sans parenthèses.
+            (
+                "« a » (PID 11) programme inconnu (/tmp/a -x) ; « b » (PID 22) programme inconnu (/tmp/b).",
+                2,
+            ),
+        ] {
+            let brut = format!("{tete}{corps}");
+            let s = sortie(&brut);
+            assert_eq!(s.matches("programme inconnu").count(), programmes, "{brut:?} : {s:?}");
+            for extrait in ["/tmp/a", "-x", "/tmp/b", "/tmp/c"] {
+                assert!(!s.contains(extrait), "{extrait} sorti : {brut:?} : {s:?}");
+            }
         }
     }
 

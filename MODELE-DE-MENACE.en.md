@@ -784,7 +784,8 @@ to start (code 2) until it has been tried on a real Windows.
   word, with or without a parenthesis, and an extra closing parenthesis after a "(PID n)" shows it was quoted in the
   excerpt before, which then runs up to it; after a closed excerpt, a "(PID n)" opens a new program only behind the
   watcher's exact gap ("; “name”"): otherwise it was quoted, and the excerpt is held back whole, before and after
-  it; any other parenthesis
+  it; the parentheses of the next program's quoted name ("(sd-pam)", "b(1)") do not count in the excerpt before; any
+  other parenthesis
   comes out only if all its words are known. The price:
   useful text that follows an announcement is lost (about 0.8% of Vanguard's text pieces contain one of these words,
   "registry key" and "code" included). These are safety nets, not a guarantee: a value that nothing announces comes out
@@ -802,9 +803,10 @@ to start (code 2) until it has been tried on a real Windows.
   message, and one word less only masks more. The reading follows `r#test` and `r#cfg` as the compiler does, and a
   `#[path]` on an inline module from the file's folder; `cfg(test)`, `cfg(kani)`, `cfg(fuzzing)` and `cfg(miri)` are
   false in the program. It stops the build on a form it cannot judge: `cfg_select!` or `cfg_match!`, a `path` set by
-  `cfg_attr` on a module, a file module declared in a block (function, `const`), a macro body it does not reread as
-  code with arms ("=>" or "else" at its first level, "if #[…]" anywhere: `cfg_if!`, a wrapper from another
-  package) and a text call. The build script (`build.rs`), the reading it includes and the
+  `cfg_attr` on a module, a file module declared in a block (function, `const`), and any macro outside a reviewed
+  allow-list (`format!`, `write!`, `json!`, `vec!`…) called inside a text call or whose body contains one (`cfg_if!`,
+  a wrapper from another package, a home-made macro that would choose by `cfg`, whatever the form of its arms), as well
+  as an allow-list name given to another macro (`macro_rules!`, `use … as`, a path outside std and serde_json). The build script (`build.rs`), the reading it includes and the
   repository's cargo configuration are judged by a hash of the whole file, and `Cargo.toml` by the exact list of its
   targets and build dependencies (`outils/essais-signature.sh`): a change there calls for a deliberate review. The
   repository has no legacy file that cargo or rustup would prefer to the judged one (`.cargo/config`,
@@ -812,8 +814,9 @@ to start (code 2) until it has been tried on a real Windows.
   no untracked link outside `target/` and `.git/` (`target` may be a link to another disk); outside the root of a git
   repository, tracked links are "not verified", a failure. Not verified: cargo configuration outside the repository,
   a macro of an ordinary dependency that would read the disk, `cfg!(test)` written in a program expression (read as
-  program), and a macro with arms of another form ("test: { … }", or arms below its first level), all of whose arms
-  would be read as program.
+  program), and a macro from another package that would take an allowed macro's name through a glob import
+  (`use other::*;`). A macro with arms of another form is no longer a limit: any unknown macro around a text stops the
+  build, whatever its arms.
 - **It cannot prove it is the real Vanguard.** A fake program placed at the same path would answer the same, `identite`
   included; and a program of the account can write to Vanguard's files (the seals are a barrier, not a safe: see "The
   programs of your account do not target Vanguard itself"). The proof is made before starting, by the client: start a

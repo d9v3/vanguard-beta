@@ -23,14 +23,22 @@
 //! les garde pas comme du code). Le corps d'une macro est relu comme une liste d'expressions ou d'instructions ; s'il
 //! n'en est pas une (`macro_rules!`, `matches!`), ses jetons sont parcourus pour trouver les appels de texte.
 //!
+//! Une macro autre que de texte, appelée dans un appel de texte ou dont le corps en contient un, doit être de la liste
+//! blanche (MACROS_ADMISES : `format!`, `write!`, `json!`, `vec!`…), chacune jugée : elle ne choisit rien par `cfg`.
+//! Une macro inconnue pourrait garder un seul de ses bras (`cfg_if!`, ou une macro maison qui choisit par `cfg`) quand
+//! la lecture les prendrait tous pour du programme ; plutôt que de deviner ses bras, la compilation s'arrête et dit de
+//! l'ajouter à la liste après l'avoir jugée (6e passe, R6-SOURCES-1).
+//!
 //! Rien n'est ignoré en silence, la compilation s'arrête : un fichier que syn ne sait pas lire, une forme qu'il garde
 //! sans la comprendre (`Verbatim`), un `cfg` mal écrit, un module du programme sans fichier, un attribut d'essai dans
-//! le corps d'une macro qui n'est pas relu comme du code, un fichier .rs de la liste qu'aucun module ne déclare.
+//! le corps d'une macro qui n'est pas relu comme du code, une macro hors de la liste blanche autour d'un texte, un nom
+//! de la liste blanche pris par une autre macro (`macro_rules!`, `use … as`, chemin hors de std et serde_json), un
+//! fichier .rs de la liste qu'aucun module ne déclare.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
-use proc_macro2::{Delimiter, Spacing, TokenStream, TokenTree};
+use proc_macro2::{Delimiter, TokenStream, TokenTree};
 use syn::parse::Parser;
 use syn::punctuated::Punctuated;
 use syn::visit::{self, Visit};
@@ -48,6 +56,30 @@ const CFG_FAUX: [&str; 4] = ["test", "kani", "fuzzing", "miri"];
 /// Les macros qui choisissent leur code par `cfg` (`cfg_select!`, et son ancien nom `cfg_match!`) : la lecture ne
 /// juge pas leurs bras, la compilation s'arrête sur elles, même renommées par un `use` (4e re-contrôle, SOURCES-1).
 const MACROS_DE_CFG: [&str; 2] = ["cfg_select", "cfg_match"];
+/// Les macros admises autour des textes : dans un appel de texte, ou avec un appel de texte dans leur corps. Chacune a
+/// été jugée : elle ne choisit rien par `cfg` (une enveloppe comme `cfg_if!` en garderait un seul bras, la lecture
+/// les prendrait tous pour du programme). Toute autre macro à cet endroit arrête la compilation, quelle que soit sa
+/// forme (6e passe, R6-SOURCES-1) ; liste tirée des macros que le programme emploie vraiment autour de ses textes.
+/// `cfg!` ne rend qu'un booléen : les deux branches d'un `if cfg!(…)` sont compilées, toutes deux du programme.
+/// `env!` rend une chaîne fixée à la compilation, `macro_rules!` définit une macro sans rien choisir (ses bras sont
+/// tous lus, et un attribut d'essai dedans arrête la compilation).
+const MACROS_ADMISES: [&str; 11] = [
+    "cfg",
+    "env",
+    "eprintln",
+    "format",
+    "json",
+    "macro_rules",
+    "print",
+    "println",
+    "vec",
+    "write",
+    "writeln",
+];
+/// Les seuls paquets d'où une macro admise peut venir quand elle est appelée par un chemin (`std::format!`,
+/// `serde_json::json!`) ou importée par un `use` : `autre::format!` est une autre macro, qui pourrait choisir par
+/// `cfg` sous un nom admis.
+const RACINES_ADMISES: [&str; 4] = ["std", "core", "alloc", "serde_json"];
 
 /// Une forme que la lecture ne sait pas juger, avec ce qu'elle a vu : build.rs arrête la compilation sur elle. Un type
 /// à part plutôt que `Echec` du programme, que build.rs ne peut pas atteindre.
@@ -215,9 +247,7 @@ impl Lecteur<'_> {
     }
 
     /// Le corps d'une macro : relu comme une liste d'expressions, sinon comme des instructions, sinon jeton par jeton.
-    /// Les bras d'une définition `macro_rules!` sont ses règles, tous du programme : ils ne sont pas jugés comme ceux
-    /// d'une enveloppe.
-    fn corps(&mut self, flux: &TokenStream, regles: bool) {
+    fn corps(&mut self, flux: &TokenStream) {
         if let Ok(liste) = Punctuated::<Expr, Token![,]>::parse_terminated.parse2(flux.clone()) {
             for expression in &liste {
                 self.visit_expr(expression);
@@ -227,24 +257,20 @@ impl Lecteur<'_> {
                 self.visit_stmt(instruction);
             }
         } else {
-            // Les bras après les jetons : une erreur plus précise trouvée dedans (attribut d'essai, `cfg_select!`)
-            // est dite la première.
             self.jetons(flux.clone());
-            if !regles {
-                self.bras(flux);
-            }
         }
     }
 
-    /// Un corps de macro que syn ne relit pas comme du code, avec des bras (« => », « if #[…] », « else ») et un appel
-    /// de texte : une enveloppe qui choisit un bras par `cfg` (`cfg_if!`, une macro hors de src/ ou d'une dépendance)
-    /// n'en garderait qu'un, la lecture les prendrait tous pour du programme. La compilation s'arrête (5e re-contrôle,
-    /// SOURCES-1).
-    fn bras(&mut self, flux: &TokenStream) {
-        if des_bras(flux, true) && un_texte(flux) {
-            self.erreur(
-                "corps de macro à bras (« => », « if #[…] », « else ») avec un appel de texte : forme non jugée",
-            );
+    /// Une macro qui n'est pas de texte, appelée dans un appel de texte ou dont le corps en contient un : elle doit
+    /// être de la liste blanche. Jugée après son corps, pour qu'une erreur plus précise trouvée dedans (attribut
+    /// d'essai, `cfg_select!`) soit dite la première.
+    fn admise(&mut self, chemin: &[String], flux: &TokenStream) {
+        if !admise(chemin) && (self.texte > 0 || un_texte(flux)) {
+            self.erreur(&format!(
+                "macro « {}! » autour d'un texte, hors de la liste blanche (MACROS_ADMISES, \
+                 src/porte_mcp/sources.rs) : vérifier qu'elle ne choisit rien par cfg, puis l'ajouter à la liste",
+                chemin.join("::")
+            ));
         }
     }
 
@@ -294,9 +320,11 @@ impl Lecteur<'_> {
                             i += 3;
                             continue;
                         }
-                        // Une autre macro appelée ici : ses bras sont jugés comme ceux d'un corps, après ses jetons.
+                        // Une autre macro appelée ici : lue comme un corps, puis jugée par la liste blanche.
                         self.jetons(g.stream());
-                        self.bras(&g.stream());
+                        let mut chemin = chemin_avant(&arbres, i);
+                        chemin.push(nom);
+                        self.admise(&chemin, &g.stream());
                         i += 3;
                         continue;
                     }
@@ -319,6 +347,46 @@ impl Lecteur<'_> {
         if self.texte > 0 && !self.essai {
             self.chaines
                 .push(valeur.chars().map(|x| if x.is_control() { ' ' } else { x }).collect());
+        }
+    }
+
+    /// Un `use` du programme : un nom admis n'est importé que sous son propre nom, du paquet même ou d'un paquet admis.
+    /// Sinon `use autre::choix as format;` ferait passer une macro inconnue sous un nom de la liste blanche.
+    fn importe(&mut self, chemin: &mut Vec<String>, arbre: &syn::UseTree) {
+        // Le nom donné dans ce fichier, et le chemin complet de ce qu'il désigne.
+        let juge = |l: &mut Self, nom: &syn::Ident, origine: &syn::Ident| {
+            let nom = sans_r(&nom.to_string()).to_string();
+            let origine = sans_r(&origine.to_string()).to_string();
+            if MACROS_ADMISES.contains(&nom.as_str()) {
+                let mut complet = chemin.clone();
+                complet.push(origine.clone());
+                // Un nom du paquet même (`use super::json`, une fonction) : une macro de ce nom y serait définie par un
+                // `macro_rules!`, refusé plus bas. D'ailleurs, seul un paquet admis.
+                let racine = complet.first().map(String::as_str).unwrap_or_default();
+                let ici = complet.len() > 1 && ["crate", "self", "super"].contains(&racine);
+                if nom != origine || !(ici || complet.len() > 1 && admise(&complet)) {
+                    l.erreur(&format!(
+                        "« use {} » donne le nom d'une macro admise (« {nom} ») à ce qui ne vient pas d'un paquet \
+                         admis : forme non jugée",
+                        complet.join("::")
+                    ));
+                }
+            }
+        };
+        match arbre {
+            syn::UseTree::Path(p) => {
+                chemin.push(sans_r(&p.ident.to_string()).to_string());
+                self.importe(chemin, &p.tree);
+                chemin.pop();
+            }
+            syn::UseTree::Name(n) => juge(self, &n.ident, &n.ident),
+            syn::UseTree::Rename(r) => juge(self, &r.rename, &r.ident),
+            syn::UseTree::Group(g) => {
+                for arbre in &g.items {
+                    self.importe(chemin, arbre);
+                }
+            }
+            syn::UseTree::Glob(_) => {}
         }
     }
 
@@ -361,6 +429,35 @@ impl Lecteur<'_> {
             par: format!("{} (module « {nom} »)", self.fichier.display()),
         });
     }
+}
+
+/// Vrai si cette macro (son chemin, dernier nom compris) est de la liste blanche : un nom admis, seul ou sous un
+/// paquet admis.
+fn admise(chemin: &[String]) -> bool {
+    let nom = chemin.last().map(String::as_str).unwrap_or_default();
+    MACROS_ADMISES.contains(&nom) && (chemin.len() == 1 || RACINES_ADMISES.contains(&chemin[0].as_str()))
+}
+
+/// Le chemin écrit devant le nom d'une macro dans des jetons (`a::b::` devant `c!`), sans le nom.
+fn chemin_avant(arbres: &[TokenTree], mut i: usize) -> Vec<String> {
+    let mut chemin = Vec::new();
+    while i >= 2
+        && matches!(&arbres[i - 1], TokenTree::Punct(p) if p.as_char() == ':')
+        && matches!(&arbres[i - 2], TokenTree::Punct(p) if p.as_char() == ':')
+    {
+        match arbres.get(i.wrapping_sub(3)) {
+            Some(TokenTree::Ident(segment)) if i >= 3 => {
+                chemin.insert(0, sans_r(&segment.to_string()).to_string());
+                i -= 3;
+            }
+            // `::format!` ou `$crate::format!` : une racine qui n'est pas un paquet admis.
+            _ => {
+                chemin.insert(0, String::from("::"));
+                break;
+            }
+        }
+    }
+    chemin
 }
 
 /// Un identifiant sans son préfixe brut : rustc lit `r#test` comme `test` (3e re-contrôle).
@@ -871,29 +968,44 @@ impl<'ast> Visit<'ast> for Lecteur<'_> {
         if texte {
             self.texte += 1;
         }
-        self.corps(&m.tokens, nom == "macro_rules");
+        self.corps(&m.tokens);
         if texte {
             self.texte -= 1;
+        } else {
+            let chemin: Vec<String> = m
+                .path
+                .segments
+                .iter()
+                .map(|s| sans_r(&s.ident.to_string()).to_string())
+                .collect();
+            self.admise(&chemin, &m.tokens);
         }
+    }
+
+    fn visit_item_macro(&mut self, i: &'ast syn::ItemMacro) {
+        // Une macro du programme au nom d'une macro admise la cacherait : elle passerait la liste blanche sans avoir
+        // été jugée.
+        if let Some(nom) = &i.ident
+            && !self.essai
+            && MACROS_ADMISES.contains(&sans_r(&nom.to_string()))
+        {
+            self.erreur(&format!(
+                "macro « {nom}! » définie sous le nom d'une macro admise : forme non jugée"
+            ));
+        }
+        visit::visit_item_macro(self, i);
+    }
+
+    fn visit_item_use(&mut self, i: &'ast syn::ItemUse) {
+        if !self.essai {
+            self.importe(&mut Vec::new(), &i.tree);
+        }
+        visit::visit_item_use(self, i);
     }
 
     fn visit_lit_str(&mut self, s: &'ast syn::LitStr) {
         self.chaine(&s.value());
     }
-}
-
-/// Vrai si ces jetons portent des bras : « => » ou « else » à leur premier niveau, « if » suivi d'un attribut
-/// (`cfg_if!`) à toute profondeur. Plus bas, « => » et « else » sont ceux d'un `match` ou d'un `if` du programme
-/// (`json!` en contient) : ils ne comptent pas.
-fn des_bras(flux: &TokenStream, premier: bool) -> bool {
-    let arbres: Vec<TokenTree> = flux.clone().into_iter().collect();
-    let puis = |i: usize, x: char| matches!(arbres.get(i + 1), Some(TokenTree::Punct(p)) if p.as_char() == x);
-    arbres.iter().enumerate().any(|(i, arbre)| match arbre {
-        TokenTree::Punct(p) => premier && p.as_char() == '=' && p.spacing() == Spacing::Joint && puis(i, '>'),
-        TokenTree::Ident(nom) => (premier && nom == "else") || (nom == "if" && puis(i, '#')),
-        TokenTree::Group(g) => des_bras(&g.stream(), false),
-        TokenTree::Literal(_) => false,
-    })
 }
 
 /// Vrai si ces jetons appellent une macro de texte, à toute profondeur (hors des macros d'essais).
