@@ -2142,27 +2142,37 @@ elseif ($jetable -and -not $jetable.HasExited) {
     $id = $jetable.Id
     LancerAvec 'blocage-suspendre' @('blocage', 'suspendre', "$id") "o`no`n"
     $t = "$(Sortie 'blocage-suspendre')"
-    if ($t -match 'Suspendu\.|Suspended\.') { Ok "vanguard blocage suspendre $id : dit suspendu" }
-    else { Bug "vanguard blocage suspendre $id : pas « Suspendu. » ($((Lignes $t | Where-Object { $_ -match '✖' }) -join ' / '))" }
-    $etat = Fils-Suspendus $id
-    if ($etat -eq $true) { Ok 'Chaque fil du programme est suspendu pour Windows (effet mesuré)' }
-    else { Bug "Les fils du programme ne sont pas tous suspendus (Get-Process : $etat)" }
-    # Une seconde suspension ne s'empile pas : refusée (« déjà suspendu »), elle laisse une seule reprise suffire.
-    LancerAvec 'blocage-suspendre-double' @('blocage', 'suspendre', "$id") "o`no`n"
-    $t = "$(Sortie 'blocage-suspendre-double')"
-    if ($t -match 'déjà suspendu|already suspended') { Ok 'Une seconde suspension du même programme est refusée (déjà suspendu)' }
-    else { Bug "Une seconde suspension n'est pas refusée ($((Lignes $t | Where-Object { $_ -match '✖|✔' }) -join ' / '))" }
-    Lancer 'blocage-reprendre' @('blocage', 'reprendre', "$id")
-    $t = "$(Sortie 'blocage-reprendre')"
-    if ($t -match 'Repris :|Repris par|Resumed:|Resumed by') { Ok "vanguard blocage reprendre $id : dit repris" }
-    else { Bug "vanguard blocage reprendre $id : pas « Repris » ($((Lignes $t | Where-Object { $_ -match '✖|⚠' }) -join ' / '))" }
-    $etat = Fils-Suspendus $id
-    $encore = @((Get-Process -Id $id -ErrorAction SilentlyContinue).Threads | Where-Object { $_.ThreadState -eq 'Wait' -and $_.WaitReason -eq 'Suspended' }).Count
-    if ($etat -eq $false -and $encore -eq 0) { Ok 'Une seule reprise libère chaque fil, même après une seconde suspension refusée (effet mesuré)' }
-    else { Bug "Le programme reste suspendu après la reprise (Get-Process : $etat, fils suspendus : $encore)" }
-    Lancer 'blocage-reprendre-vide' @('blocage', 'reprendre', "$id")
-    if ("$(Sortie 'blocage-reprendre-vide')" -match "pas été suspendu par Vanguard|was not suspended by Vanguard") { Ok 'Une seconde reprise ne touche à rien : il n''est plus dans la liste' }
-    else { Bug 'Une seconde reprise ne dit pas « pas été suspendu par Vanguard »' }
+    # Lancé dans la session du Bureau à distance sans droits d'administrateur (passe du menu), Vanguard ne lit pas
+    # l'heure de création de tous les ancêtres : la lignée est incertaine pendant une session à distance, et la
+    # suspension est refusée, comme voulu (gardes.rs), comme la coupure du réseau plus bas.
+    $tPlat = $t -replace '\s+', ' '
+    if ($tPlat -match "Rien n'est suspendu|Nothing is suspended" -and $tPlat -match 'session à distance|remote session' -and (Fils-Suspendus $id) -ne $true) {
+        Ok 'Session à distance (lignée incertaine sans droits d''administrateur) : la suspension est refusée, rien n''est suspendu'
+        Sautee 'Suspension, seconde suspension et reprise : refusées dans une session à distance sans droits d''administrateur'
+    }
+    else {
+        if ($t -match 'Suspendu\.|Suspended\.') { Ok "vanguard blocage suspendre $id : dit suspendu" }
+        else { Bug "vanguard blocage suspendre $id : pas « Suspendu. » ($((Lignes $t | Where-Object { $_ -match '✖' }) -join ' / '))" }
+        $etat = Fils-Suspendus $id
+        if ($etat -eq $true) { Ok 'Chaque fil du programme est suspendu pour Windows (effet mesuré)' }
+        else { Bug "Les fils du programme ne sont pas tous suspendus (Get-Process : $etat)" }
+        # Une seconde suspension ne s'empile pas : refusée (« déjà suspendu »), elle laisse une seule reprise suffire.
+        LancerAvec 'blocage-suspendre-double' @('blocage', 'suspendre', "$id") "o`no`n"
+        $t = "$(Sortie 'blocage-suspendre-double')"
+        if ($t -match 'déjà suspendu|already suspended') { Ok 'Une seconde suspension du même programme est refusée (déjà suspendu)' }
+        else { Bug "Une seconde suspension n'est pas refusée ($((Lignes $t | Where-Object { $_ -match '✖|✔' }) -join ' / '))" }
+        Lancer 'blocage-reprendre' @('blocage', 'reprendre', "$id")
+        $t = "$(Sortie 'blocage-reprendre')"
+        if ($t -match 'Repris :|Repris par|Resumed:|Resumed by') { Ok "vanguard blocage reprendre $id : dit repris" }
+        else { Bug "vanguard blocage reprendre $id : pas « Repris » ($((Lignes $t | Where-Object { $_ -match '✖|⚠' }) -join ' / '))" }
+        $etat = Fils-Suspendus $id
+        $encore = @((Get-Process -Id $id -ErrorAction SilentlyContinue).Threads | Where-Object { $_.ThreadState -eq 'Wait' -and $_.WaitReason -eq 'Suspended' }).Count
+        if ($etat -eq $false -and $encore -eq 0) { Ok 'Une seule reprise libère chaque fil, même après une seconde suspension refusée (effet mesuré)' }
+        else { Bug "Le programme reste suspendu après la reprise (Get-Process : $etat, fils suspendus : $encore)" }
+        Lancer 'blocage-reprendre-vide' @('blocage', 'reprendre', "$id")
+        if ("$(Sortie 'blocage-reprendre-vide')" -match "pas été suspendu par Vanguard|was not suspended by Vanguard") { Ok 'Une seconde reprise ne touche à rien : il n''est plus dans la liste' }
+        else { Bug 'Une seconde reprise ne dit pas « pas été suspendu par Vanguard »' }
+    }
     Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
 }
 # Un programme administrateur (lancé par une fenêtre UAC) : ce compte n'a pas le droit de le suspendre, l'assistant
@@ -2219,7 +2229,8 @@ try {
         $t = "$(Sortie 'blocage-suspendre-microsoft')" -replace '\s+', ' '
         $etat = Fils-Suspendus $signe.Id
         # En session à distance, la garde de la session refuse la première : sa raison vaut aussi.
-        $raison = $t -match 'signé par Microsoft|signed by Microsoft' -or ($hoteDistant -and $t -match 'session à distance|remote session')
+        # Sans droits d'administrateur, la lignée incertaine pendant la session refuse aussi (hôte distant pas trouvé).
+        $raison = $t -match 'signé par Microsoft|signed by Microsoft' -or $t -match 'session à distance|remote session'
         if ($t -match "Rien n'est suspendu|Nothing is suspended" -and $raison -and $etat -ne $true) { Ok 'Copie de PING.EXE (signée Microsoft) : suspension refusée, avec sa raison' }
         else { Bug "Copie de PING.EXE : suspension non refusée ou sans sa raison (fils suspendus : $etat ; $((Lignes (Sortie 'blocage-suspendre-microsoft') | Where-Object { $_ -match '✖' }) -join ' / '))" }
     }
