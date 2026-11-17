@@ -889,12 +889,17 @@ apres "$H_COMPILE" "$H_PAGE" "$H_CAPTURES" && ko "publier : CI acceptée sur un 
 #   tests/programme.rs, build.rs) et ces paquets de compilation (winresource, syn, proc-macro2) du registre
 #   crates.io, sans chemin, git, renommage ni plateforme ; leur version reste libre (Dependabot) ;
 # - Cargo.lock : chaque paquet autre que vanguard vient du registre crates.io, et seules les clés connues y sont ;
-# - rust-toolchain.toml : seulement channel, profile, components et targets (pas de chaîne prise dans un dossier).
+# - rust-toolchain.toml : seulement channel, profile, components et targets (pas de chaîne prise dans un dossier) ;
+# - aucun fichier hérité que les outils préfèrent au fichier jugé (4e re-contrôle) : .cargo/config (cargo le lit à la
+#   place de .cargo/config.toml) et rust-toolchain (rustup le lit à la place de rust-toolchain.toml) ;
+# - aucun lien symbolique dans tout le dépôt (hors target/ et .git/) : build.rs, cargo, awk et rustup lisent à
+#   travers un lien, et un lien posé avant vers la liste (assets/oui.tsv -> captures/x.png, Cargo.lock, Cargo.toml)
+#   ferait d'un commit « captures seulement » un changement de la compilation (4e re-contrôle).
 # Non vérifié ici, dit : src/ qui lirait un fichier de la liste autrement que par son nom écrit en clair (cites ne
 # voit ni include_str!(concat!(…)) ni une macro renommée), une macro procédurale d'un paquet ordinaire qui lirait le
 # disque, et la configuration de cargo hors du dépôt (~/.cargo). Sans cargo ou sans jq : « non vérifié », un échec.
 EMPREINTES_COMPILATION='9e0fc63f67a0bc7419545c8df5db8070b537a28e697d3f01c792932c3fa54a89 build.rs
-08e4d578ef40f8f8853abcf1aaea832a49a5a4598f00d176de5a512a11735944 src/porte_mcp/sources.rs
+dcd22e6b2a3936acceb8a79155cef7bbdd5f5d9f3d4951c232c6a57efdeb5e38 src/porte_mcp/sources.rs
 a132b1fdb1a4e6ce3f3e4de078e3c048a0b8f7f040081fd8fac351e0185eb651 .cargo/config.toml'
 REGISTRE='registry+https://github.com/rust-lang/crates.io-index'
 garde_compilation() { # $1 : racine d'un dépôt ; écrit chaque écart, rien si tout est permis
@@ -941,12 +946,20 @@ garde_compilation() { # $1 : racine d'un dépôt ; écrit chaque écart, rien si
   grep -vxE '\s*(#.*)?|\[toolchain\]|(channel|profile) = "[A-Za-z0-9._-]+"|(components|targets) = \[("[A-Za-z0-9_-]+"(, )?)*\]' \
     "$d/rust-toolchain.toml" 2>/dev/null | sed 's/^/ rust-toolchain.toml : ligne hors de la forme permise : /'
   [[ -f $d/rust-toolchain.toml && ! -L $d/rust-toolchain.toml ]] || echo " rust-toolchain.toml absent ou lien"
+  [[ ! -e $d/.cargo/config && ! -L $d/.cargo/config ]] ||
+    echo " .cargo/config présent : cargo le préfère à .cargo/config.toml (à retirer)"
+  [[ ! -e $d/rust-toolchain && ! -L $d/rust-toolchain ]] ||
+    echo " rust-toolchain présent : rustup le préfère à rust-toolchain.toml (à retirer)"
+  local liens
+  if ! liens=$(cd "$d" && find . \( \( -path ./target -o -path ./.git \) ! -type l \) -prune -o -type l -print); then
+    echo " liens symboliques non vérifiés (find en échec)"
+  elif [[ -n $liens ]]; then
+    echo " lien symbolique dans le dépôt : $(tr '\n' ' ' <<<"$liens")"
+  fi
 }
 cites=$(grep -rnE 'assets/captures|captures/|partage\.png|index\.html|\.\./docs|"/?docs/|/docs"' \
   "$DEPOT/src" "$DEPOT/build.rs" "$DEPOT/Cargo.toml" || true)
 parcours=$(garde_compilation "$DEPOT" | tr '\n' ';')
-liens=$(cd "$DEPOT" && find src -type l)
-[[ -z $liens ]] || parcours+=" lien symbolique sous src/ : $liens"
 dans_la_liste=$(cd "$DEPOT" && find src -name '*.rs' | grep -E "$(grep -v '^#' .github/hors-code.txt | head -n 1)" || true)
 [[ -z $dans_la_liste ]] || parcours+=" .rs de src/ dans la liste : $dans_la_liste"
 [[ -z $cites && -z $parcours ]] &&
@@ -991,6 +1004,27 @@ garde_copie && printf 'path = "/opt/rust"\n' >>"$G/rust-toolchain.toml" &&
   garde_voit "rust-toolchain.toml : ligne hors" "une chaîne prise dans un dossier"
 garde_copie && rm "$G/build.rs" && garde_voit "build.rs a changé (empreinte absente" "un build.rs absent"
 garde_copie && printf '[[[\n' >>"$G/Cargo.toml" && garde_voit "Cargo.toml non vérifié" "un Cargo.toml illisible (non vérifié)"
+# 4e re-contrôle : un fichier hérité que cargo ou rustup préfère, un lien symbolique hors de src/ vers la liste.
+garde_copie && printf '[build]\nrustc-wrapper = "assets/captures/emballage.png"\n' >"$G/.cargo/config" &&
+  garde_voit ".cargo/config présent" "un .cargo/config hérité à côté de .cargo/config.toml"
+garde_copie && ln -s config.toml "$G/.cargo/config" &&
+  garde_voit ".cargo/config présent" "un .cargo/config hérité en lien"
+garde_copie && printf 'stable\n' >"$G/rust-toolchain" &&
+  garde_voit "rust-toolchain présent" "un rust-toolchain hérité à côté de rust-toolchain.toml"
+garde_copie && mkdir -p "$G/assets/captures" && printf 'x\n' >"$G/assets/captures/fabricants.png" &&
+  ln -s captures/fabricants.png "$G/assets/oui.tsv" &&
+  garde_voit "lien symbolique dans le dépôt : ./assets/oui.tsv" "assets/oui.tsv en lien vers une capture"
+garde_copie && mkdir -p "$G/assets/captures" && mv "$G/Cargo.lock" "$G/assets/captures/verrou.png" &&
+  ln -s assets/captures/verrou.png "$G/Cargo.lock" &&
+  garde_voit "lien symbolique dans le dépôt : ./Cargo.lock" "Cargo.lock en lien vers une capture"
+garde_copie && mkdir -p "$G/docs" && mv "$G/Cargo.toml" "$G/docs/index.html" && ln -s docs/index.html "$G/Cargo.toml" &&
+  garde_voit "lien symbolique dans le dépôt : ./Cargo.toml" "Cargo.toml en lien vers la page des fonctions"
+garde_copie && mkdir -p "$G/target" && ln -s ../Cargo.toml "$G/target/lien" && ln -s Cargo.toml "$G/.git" &&
+  garde_voit "lien symbolique dans le dépôt : ./.git" ".git en lien (target/ seul est sauté, et pas en lien)"
+mkdir -p "$T/find-en-panne" && printf '#!/bin/sh\nexit 3\n' >"$T/find-en-panne/find" && chmod +x "$T/find-en-panne/find"
+garde_copie && [[ $(PATH="$T/find-en-panne:$PATH" garde_compilation "$G") == *"liens symboliques non vérifiés"* ]] &&
+  ok "garde de compilation : find en échec compte comme non vérifié" ||
+  ko "garde de compilation : find en échec passe pour un dépôt sans lien"
 mkdir -p "$T/jq-en-panne" && printf '#!/bin/sh\nexit 5\n' >"$T/jq-en-panne/jq" && chmod +x "$T/jq-en-panne/jq"
 garde_copie && [[ $(PATH="$T/jq-en-panne:$PATH" garde_compilation "$G") == *"Cargo.toml non vérifié (jq en échec)"* ]] &&
   ok "garde de compilation : jq en échec compte comme non vérifié" ||

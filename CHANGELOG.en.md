@@ -38,8 +38,9 @@ example, finds it, to rebuild it if needed.
   are now masked whole. A word stuck after the full stop ("5::6.The rest") keeps its place. IPv6 addresses are read by
   a strict grammar, without looking at what surrounds them: any run of hexadecimal digits, colons and full stops with
   at least two colons and one digit is masked, whatever label is stuck before it ("remote_addr:", "X-Forwarded-For:",
-  "nas.lan:") or word stuck after it ("…::7:Connection refused"); a stuck word made of digits and letters is masked
-  with it, up to the space. The only exception, to keep the timeline: a time of exact shape (HH:MM or HH:MM:SS, two
+  "nas.lan:") or word stuck after it; any word stuck after it is masked with it, up to the space, because a last
+  group made of letters a-f cannot be told from the start of a word (accepted price: "…::7:Connection refused" gives
+  "<ip> refused"). The only exception, to keep the timeline: a time of exact shape (HH:MM or HH:MM:SS, two
   digits per group, hours 00 to 23, minutes 00 to 59, seconds 00 to 60, maybe followed by "." and 1 to 9 digits),
   bounded on both sides by a character that is neither hexadecimal, nor ":", nor "."; "12:34:56" and
   "08:15:02.123456" stay readable, but not "12:34:56:78", "24:00:00", "12:34:5a" or "12:34::1". Accepted price: a
@@ -53,8 +54,7 @@ example, finds it, to rebuild it if needed.
   port after one of these words), as does an address followed by two numbers or more (".443.80"), taken for a version;
   an address stuck behind letters or a digit ("host198.51.100.23", "0198.51.100.23") stays in clear; an IPv6 address
   written without any digit ("fd::ab") looks too much like a word to be recognized; a full stop followed by letters
-  ends the zone ("%eth0.vlan5" leaves ".vlan5"), and a host name stuck after a malformed carried IPv4 address stays
-  ("::ffff:300.1.2.3.example.test" leaves ".example.test"): no address byte comes out of it; a four-number version is
+  ends the zone ("%eth0.vlan5" leaves ".vlan5"): no address byte comes out of it; a four-number version is
   taken for an address even when named ("version 6.1.0.2" keeps its name, not its numbers). Through the assistants'
   door none of these forms comes out: they are not Vanguard's words.
 

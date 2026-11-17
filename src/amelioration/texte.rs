@@ -1434,9 +1434,9 @@ fn fin_du_mot(c: &[char], debut: usize, j: usize) -> usize {
 /// (« /64 ») et un port (« ]:443 », « %eth0:546 ») sont pris avec elle. Elle ne commence ni par un point ni par un
 /// deux-points seul (celui d'une étiquette, « addr:fd12::7 », qui garde son nom) ; elle commence au milieu d'un mot
 /// (« hôte:fd12:… » donne « `hôt<ip>` » : le « e » est hexadécimal). Les points et le deux-points seul qui la finissent
-/// sont de la phrase. Un mot collé après (« …::7:Connection refused », « …:eth0 ») garde sa place si le dernier
-/// morceau pris n'a que des lettres et que le reste est encore une adresse ; sinon tout le mot est masqué, jusqu'à
-/// l'espace. Seule exception : une heure de forme exacte (`heure`), sans quoi le journal servi perd sa chronologie.
+/// sont de la phrase. Un mot collé après (« …::7:Connection refused », « …:eth0 ») est masqué avec elle, jusqu'à
+/// l'espace (4e re-contrôle) : un dernier groupe fait de lettres a-f (« …::beefx ») ne se distingue pas du début d'un
+/// mot, et le rendre ferait sortir 16 bits de l'adresse. Seule exception : une heure de forme exacte (`heure`), sans quoi le journal servi perd sa chronologie.
 /// Prix accepté : une heure mal bornée (« 12:30:45. », « hôte12:30:45 ») ou un rapport (« 1:2:3 ») sont masqués.
 fn ipv6(c: &[char], i: usize) -> Ip6 {
     let crochet = car(c, i) == Some('[');
@@ -1457,22 +1457,9 @@ fn ipv6(c: &[char], i: usize) -> Ip6 {
     if !assez_pour_une_ipv6(morceau(c, debut, fin)) {
         return Ip6::RienJusqua(coeur);
     }
-    // Un mot collé après : le cœur s'arrête au milieu d'un mot.
+    // Un mot collé après : le cœur s'arrête au milieu d'un mot, masqué en entier sans reculer (MASQUEUR-4).
     if fin == coeur && car(c, coeur).is_some_and(|y| y.is_alphanumeric() || y == '_') {
-        let suite = morceau(c, debut, coeur);
-        let separateur = suite.iter().rposition(|y| *y == ':' || *y == '.');
-        let lettres = separateur.is_some_and(|s| {
-            let dernier = suite.get(suivant(s)..).unwrap_or(&[]);
-            !dernier.is_empty() && dernier.iter().all(char::is_ascii_alphabetic)
-        });
-        let recule = separateur
-            .filter(|_| lettres)
-            .map(|s| sans_ponctuation_finale(c, debut, plus(debut, s)))
-            .filter(|f| assez_pour_une_ipv6(morceau(c, debut, *f)));
-        return match recule {
-            Some(f) if !crochet => Ip6::Adresse(f),
-            _ => Ip6::Adresse(fin_du_mot(c, debut, coeur)),
-        };
+        return Ip6::Adresse(fin_du_mot(c, debut, coeur));
     }
     let mut j = fin;
     if car(c, j) == Some('%') && car(c, suivant(j)).is_some_and(|y| y.is_ascii_alphanumeric()) {

@@ -294,3 +294,106 @@ fn une_fin_de_ligne_echappee_colle_les_deux_bouts() {
         attendus(&["coupé", "est", "ici", "le", "pare-feu", "x", "[K"])
     );
 }
+
+/// 4e re-contrôle SOURCES-1 : `cfg_select!` (ou `cfg_match!`) choisit ses bras par `cfg` ; la lecture ne les juge pas
+/// et arrête la compilation, en élément, en expression, renommée par un `use` ou dans des jetons de macro.
+#[test]
+fn r4_sources_1_cfg_select_arrete_la_compilation() {
+    for texte in [
+        "cfg_select! { test => { fn a() { TR(\"alice\", \"salon\"); } } _ => { fn a() { TR(\"vrai\", \"real\"); } } }\n",
+        "fn a() { let _ = cfg_select! { test => { TR(\"alice\", \"salon\") } _ => { TR(\"vrai\", \"real\") } }; }\n",
+        "cfg_select! { not(test) => { fn a() { TR(\"vrai\", \"real\"); } } _ => { fn a() { TR(\"alice\", \"salon\"); } } }\n",
+        "core::cfg_match! { test => { fn a() { TR(\"alice\", \"salon\"); } } _ => {} }\n",
+        "r#cfg_select! { test => { fn a() { TR(\"alice\", \"salon\"); } } _ => {} }\n",
+        "use core::cfg_select as choix;\nchoix! { test => { fn a() { TR(\"alice\", \"salon\"); } } _ => {} }\n",
+        "m! { => cfg_select! { test => { TR(\"alice\", \"salon\") } } }\n",
+    ] {
+        match lecture(&[("src/main.rs", texte)]) {
+            Ok(mots) => panic!("lu sans erreur : {mots:?} ({texte})"),
+            Err(Illisible(e)) => assert!(e.contains("forme non jugée") && e.contains("cfg_"), "{e} ({texte})"),
+        }
+    }
+}
+
+/// 4e re-contrôle SOURCES-2 : un `path` posé par `cfg_attr` sur un module (à fichier ou en ligne) arrête la
+/// compilation, à toute profondeur.
+#[test]
+fn r4_sources_2_un_path_pose_par_cfg_attr_arrete_la_compilation() {
+    let horloge = ("src/horloge.rs", "fn g() { TR(\"alice\", \"salon\"); }\n");
+    refuse(
+        &[
+            (
+                "src/main.rs",
+                "#[cfg_attr(not(test), path = \"../commun/horloge.rs\")]\nmod horloge;\n",
+            ),
+            horloge,
+        ],
+        "path posé par cfg_attr",
+    );
+    refuse(
+        &[
+            (
+                "src/main.rs",
+                "#[cfg_attr(not(test), path = \"vrai.rs\")]\nmod horloge;\n#[cfg(test)]\nmod vrai;\n",
+            ),
+            horloge,
+            ("src/vrai.rs", "fn v() { TR(\"vrai\", \"real\"); }\n"),
+        ],
+        "path posé par cfg_attr",
+    );
+    refuse(
+        &[
+            (
+                "src/main.rs",
+                "#[cfg_attr(unix, cfg_attr(all(), path = \"horloge.rs\"))]\nmod h;\n",
+            ),
+            horloge,
+        ],
+        "path posé par cfg_attr",
+    );
+    refuse(
+        &[
+            (
+                "src/main.rs",
+                "#[cfg_attr(test, path = \"ailleurs\")]\nmod en_ligne {\n    mod horloge;\n}\n",
+            ),
+            horloge,
+        ],
+        "path posé par cfg_attr",
+    );
+}
+
+/// 4e re-contrôle SOURCES-3 : un module à fichier déclaré dans un bloc (corps de fonction, `const _`) arrête la
+/// compilation : rustc le cherche depuis un dossier que la lecture ne suit pas.
+#[test]
+fn r4_sources_3_un_module_a_fichier_dans_un_bloc_arrete_la_compilation() {
+    let p = ("src/x/p.rs", "pub fn g() { TR(\"vrai\", \"real\"); }\n");
+    let faux = ("src/a/x/p.rs", "pub fn g() { TR(\"alice\", \"salon\"); }\n");
+    for a in [
+        "pub fn f() { mod x { #[path = \"p.rs\"] pub mod m; } x::m::g(); }\n",
+        "pub const _: () = { mod x { #[path = \"p.rs\"] pub mod m; } };\n",
+        "pub fn f() { #[path = \"x/p.rs\"] mod m; }\n",
+        "#[cfg(test)]\npub fn f() { mod x { #[path = \"p.rs\"] pub mod m; } }\n",
+    ] {
+        refuse(
+            &[("src/main.rs", "mod a;\n"), ("src/a.rs", a), p, faux],
+            "déclaré dans un bloc",
+        );
+    }
+    // Un module en ligne dans un bloc, sans fichier, reste lu.
+    assert_eq!(
+        un("fn f() { mod x { pub fn g() { TR(\"vrai\", \"real\"); } } }\n"),
+        attendus(&["vrai", "real"])
+    );
+}
+
+/// 4e re-contrôle SOURCES-4 : `cfg(fuzzing)` et `cfg(miri)`, employés dans le dépôt, sont faux dans le programme
+/// comme `cfg(test)` et `cfg(kani)`.
+#[test]
+fn r4_sources_4_fuzzing_et_miri_sont_faux_dans_le_programme() {
+    let texte = "#[cfg(fuzzing)]\nfn a() { TR(\"alice\", \"salon\"); }\n\
+                 #[cfg(any(test, fuzzing))]\nfn b() { TR(\"maison\", \"rouge\"); }\n\
+                 #[cfg(miri)]\nfn c() { TR(\"bureau\", \"desk\"); }\n\
+                 #[cfg(not(miri))]\nfn d() { TR(\"vrai\", \"real\"); }\n";
+    assert_eq!(un(texte), attendus(&["vrai", "real"]));
+}

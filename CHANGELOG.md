@@ -40,8 +40,9 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
   Un mot collé après le point (« 5::6.Le reste ») garde sa place. Les adresses IPv6 sont lues par une grammaire
   stricte, sans regarder ce qui les entoure : toute suite de chiffres hexadécimaux, de deux-points et de points qui
   compte au moins deux deux-points et un chiffre est masquée, quelle que soit l'étiquette collée devant
-  (« remote_addr: », « X-Forwarded-For: », « nas.lan: ») ou le mot collé derrière (« …::7:Connection refused ») ; un
-  mot collé fait de chiffres et de lettres est masqué avec elle, jusqu'à l'espace. Seule exception, pour garder la
+  (« remote_addr: », « X-Forwarded-For: », « nas.lan: ») ou le mot collé derrière ; tout mot collé derrière elle est
+  masqué avec elle, jusqu'à l'espace, car un dernier groupe fait de lettres a-f ne se distingue pas du début d'un mot
+  (prix accepté : « …::7:Connection refused » donne « <ip> refused »). Seule exception, pour garder la
   chronologie : une heure de forme exacte (HH:MM ou HH:MM:SS, deux chiffres par groupe, heures 00 à 23, minutes 00 à
   59, secondes 00 à 60, peut-être suivie de « . » et de 1 à 9 chiffres), bornée des deux côtés par un caractère qui
   n'est ni hexadécimal, ni « : », ni « . » ; « 12:34:56 » et « 08:15:02.123456 » restent lisibles, mais pas
@@ -57,10 +58,9 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
   et un port de deux chiffres après un de ces mots), comme une adresse suivie de deux nombres ou plus (« .443.80 »),
   prise pour une version ; une adresse collée derrière des lettres ou un chiffre (« hôte198.51.100.23 »,
   « 0198.51.100.23 ») reste en clair ; une adresse IPv6 écrite sans aucun chiffre (« fd::ab ») ressemble trop à un mot
-  pour être reconnue ; un point suivi de lettres finit la zone (« %eth0.vlan5 » laisse « .vlan5 »), et un nom d'hôte
-  collé après une IPv4 portée mal formée reste (« ::ffff:300.1.2.3.exemple.test » laisse « .exemple.test ») : aucun
-  octet d'adresse n'en sort ; un numéro de quatre nombres est pris pour une adresse même nommé (« version 6.1.0.2 »
-  garde son nom, pas ses nombres). Par la porte des assistants, aucune de ces formes ne sort : ce ne sont pas des mots
+  pour être reconnue ; un point suivi de lettres finit la zone (« %eth0.vlan5 » laisse « .vlan5 ») : aucun octet
+  d'adresse n'en sort ; un numéro de quatre nombres est pris pour une adresse même nommé (« version 6.1.0.2 » garde son
+  nom, pas ses nombres). Par la porte des assistants, aucune de ces formes ne sort : ce ne sont pas des mots
   de Vanguard.
 
 ## 15 novembre 2026 : version 0.96.0

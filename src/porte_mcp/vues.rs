@@ -175,20 +175,34 @@ pub(crate) const SORTES: &[&str] = &[
 /// à part et marqué `non_fiable` : une phrase faite de mots du vocabulaire sort telle quelle, consigne comprise. Vide
 /// (`retire`) quand rien ne reste.
 pub(crate) fn texte_externe(brut: &str) -> Value {
-    let texte = vocabulaire::normalise(borne(brut));
+    // Tout blanc autre que l'espace simple (tabulation, insécable) sépare deux champs, comme un saut de ligne : il en
+    // devient un avant la normalisation, qui en ferait sinon un espace que la négation traverserait (VUES-4).
+    let separe: String = borne(brut)
+        .chars()
+        .map(|x| if x != ' ' && x.is_whitespace() { '\n' } else { x })
+        .collect();
+    let texte = vocabulaire::normalise(&separe);
     let jetons: Vec<&str> = texte.split_whitespace().collect();
     // Coupé par la borne, le dernier mot n'est peut-être que le début d'un mot (« root » de « rootkit-… »).
     let coupe = (brut.len() > BRUT_MAX).then(|| jetons.len().saturating_sub(1));
     let groupes = groupes_entre_parentheses(&jetons);
     let groupe_de = |k: usize| groupes.iter().find(|g| g.masque && (g.debut..=g.fin).contains(&k));
     let masque = |k: usize| groupe_de(k).is_some();
-    let annonce = fin_d_annonce(&jetons, &masque);
+    // Seul l'extrait d'un programme est sauté pour chercher une annonce : il est déjà retenu en entier, et un chemin
+    // comme « /usr/bin/code » couperait sinon toute l'alerte. Une précision retenue (« (mot de passe WPA2) ») peut,
+    // elle, annoncer la valeur écrite juste après sa parenthèse (4e re-contrôle, VUES-1).
+    let extrait = |k: usize| groupes.iter().any(|g| g.extrait && (g.debut..=g.fin).contains(&k));
+    let annonce = fin_d_annonce(&jetons, &ecarts_simples(&texte), &extrait);
     let mut juges: Vec<String> = Vec::with_capacity(jetons.len());
     let mut i = 0;
     while let Some(jeton) = jetons.get(i) {
         if masque(i) || coupe == Some(i) {
             vocabulaire::ajouter(&mut juges, vocabulaire::RETENU.into());
-            i = groupe_de(i).map_or(i, |g| g.fin).saturating_add(1);
+            let fin = groupe_de(i).map_or(i, |g| g.fin);
+            if annonce.is_some_and(|a| (i..=fin).contains(&a)) {
+                break;
+            }
+            i = fin.saturating_add(1);
             continue;
         }
         if groupe_pid(&jetons, i) {
@@ -243,7 +257,7 @@ fn borne(brut: &str) -> &str {
 /// Les mots qui annoncent un secret, en minuscules, écrits d'un seul tenant (« mot de passe », « mot-de-passe »,
 /// « MotDePasse » s'écrivent tous « motdepasse »). Une valeur faible est justement un mot courant, qui peut être du
 /// vocabulaire : après l'un d'eux, plus rien du texte ne sort, sans attendre un « : » ni s'arrêter à un point.
-const ANNONCES: [&str; 48] = [
+const ANNONCES: [&str; 54] = [
     "motdepasse",
     "motsdepasse",
     "motdepasses",
@@ -284,11 +298,17 @@ const ANNONCES: [&str; 48] = [
     "secrete",
     "secretes",
     "seed",
+    "seeds",
     "phrasederécupération",
     "phrasederecuperation",
+    "phrasesderécupération",
+    "phrasesderecuperation",
     "recoveryphrase",
+    "recoveryphrases",
     "identifiant",
+    "identifiants",
     "login",
+    "logins",
     "psk",
     "passcode",
     "passcodes",
@@ -306,11 +326,33 @@ const ANNONCES_EN_TETE: [&str; 6] = [
 /// Vanguard (réseau Wi-Fi ouvert) dit qu'il n'y a pas de secret, il n'en cite pas.
 const NEGATIONS: [&str; 5] = ["sans", "without", "no", "aucun", "aucune"];
 
-/// L'indice du jeton qui finit la première annonce d'un secret, hors des jetons `ignore` (un groupe déjà retenu). Les
-/// jetons sont lus par morceaux de lettres, en minuscules (« mot-de-passe:x » donne « mot », « de », « passe », « x »),
-/// et une annonce est faite d'un à trois morceaux qui se suivent : la casse, les tirets, les traits bas et l'absence
-/// de séparateur ne la cachent pas.
-fn fin_d_annonce(jetons: &[&str], ignore: &dyn Fn(usize) -> bool) -> Option<usize> {
+/// Pour chaque jeton de `split_whitespace`, l'écart qui le précède n'est-il fait que d'espaces simples ? Un saut de
+/// ligne ou une tabulation sépare deux lignes ou deux champs : une négation à la fin de l'un ne nie pas une annonce
+/// au début de l'autre (4e re-contrôle, VUES-4). Même découpage que `split_whitespace` (`char::is_whitespace`).
+fn ecarts_simples(texte: &str) -> Vec<bool> {
+    let mut simples = Vec::new();
+    let mut simple = true;
+    let mut dans_un_mot = false;
+    for x in texte.chars() {
+        if x.is_whitespace() {
+            if dans_un_mot {
+                dans_un_mot = false;
+                simple = true;
+            }
+            simple &= x == ' ';
+        } else if !dans_un_mot {
+            dans_un_mot = true;
+            simples.push(simple);
+        }
+    }
+    simples
+}
+
+/// L'indice du jeton qui finit la première annonce d'un secret, hors des jetons `ignore` (l'extrait d'un programme,
+/// déjà retenu). Les jetons sont lus par morceaux de lettres, en minuscules (« mot-de-passe:x » donne « mot », « de »,
+/// « passe », « x »), et une annonce est faite d'un à trois morceaux qui se suivent : la casse, les tirets, les traits
+/// bas et l'absence de séparateur ne la cachent pas. `simples` : voir `ecarts_simples`.
+fn fin_d_annonce(jetons: &[&str], simples: &[bool], ignore: &dyn Fn(usize) -> bool) -> Option<usize> {
     // Chaque morceau : ses lettres en minuscules, son jeton, et s'il ouvre son jeton.
     let mut morceaux: Vec<(String, usize, bool)> = Vec::new();
     for (t, jeton) in jetons.iter().enumerate().filter(|(t, _)| !ignore(*t)) {
@@ -334,7 +376,7 @@ fn fin_d_annonce(jetons: &[&str], ignore: &dyn Fn(usize) -> bool) -> Option<usiz
             if !annonce {
                 continue;
             }
-            if *ouvre && niee(jetons, *debut, *fin) {
+            if *ouvre && niee(jetons, simples, *debut, *fin) {
                 niee_jusqu_a = niee_jusqu_a.max(s.saturating_add(n).saturating_add(1));
             } else {
                 return Some(*fin);
@@ -349,14 +391,16 @@ fn fin_d_annonce(jetons: &[&str], ignore: &dyn Fn(usize) -> bool) -> Option<usiz
 /// l'espace (la négation finit par une lettre, l'annonce commence par une lettre). Tout signe entre les deux (« Sans.
 /// Mot de passe maison », « Sans! mot », « (réseau sans) mot », « sans: mot », « sans (mot de passe maison) ») fait
 /// une annonce. Et aucun séparateur collé à la fin de l'annonce ou au jeton qui la suit : « sans mot de passe :
-/// maison » annonce quand même une valeur.
-fn niee(jetons: &[&str], debut: usize, fin: usize) -> bool {
-    let avant = debut
-        .checked_sub(1)
-        .and_then(|k| jetons.get(k))
-        .filter(|m| m.chars().next_back().is_some_and(char::is_alphabetic))
-        .map(|m| m.trim_start_matches(|x: char| !x.is_alphabetic()).to_lowercase())
-        .is_some_and(|m| NEGATIONS.contains(&m.as_str()))
+/// maison » annonce quand même une valeur. Entre la négation et l'annonce, des espaces simples seulement : un saut
+/// de ligne ou une tabulation (« aucune\nclé maison ») fait une annonce.
+fn niee(jetons: &[&str], simples: &[bool], debut: usize, fin: usize) -> bool {
+    let avant = simples.get(debut).copied().unwrap_or(false)
+        && debut
+            .checked_sub(1)
+            .and_then(|k| jetons.get(k))
+            .filter(|m| m.chars().next_back().is_some_and(char::is_alphabetic))
+            .map(|m| m.trim_start_matches(|x: char| !x.is_alphabetic()).to_lowercase())
+            .is_some_and(|m| NEGATIONS.contains(&m.as_str()))
         && jetons
             .get(debut)
             .is_some_and(|m| m.chars().next().is_some_and(char::is_alphabetic));
@@ -378,22 +422,43 @@ fn groupe_pid(jetons: &[&str], i: usize) -> bool {
         })
 }
 
-/// Un groupe entre parenthèses : de son premier jeton qui ouvre à son dernier qui ferme, et s'il est retenu en entier.
+/// Un groupe entre parenthèses : de son premier jeton qui ouvre à son dernier qui ferme, s'il est retenu en entier, et
+/// s'il est l'extrait d'un programme (après un « (PID n) ») plutôt qu'une précision de Vanguard.
 #[derive(Clone, Copy)]
 struct Groupe {
     debut: usize,
     fin: usize,
     masque: bool,
+    extrait: bool,
+}
+
+/// La profondeur des parenthèses à la fin des jetons `de..a`, partie de `depart`, et si elle est passée sous zéro.
+fn profondeur(jetons: &[&str], de: usize, a: usize, depart: i64) -> (i64, bool) {
+    let mut p = depart;
+    let mut negatif = false;
+    for jeton in jetons.get(de..a).unwrap_or_default() {
+        for x in jeton.chars() {
+            match x {
+                '(' => p = p.saturating_add(1),
+                ')' => p = p.saturating_sub(1),
+                _ => {}
+            }
+            negatif |= p < 0;
+        }
+    }
+    (p, negatif)
 }
 
 /// Les groupes entre parenthèses du texte. Après chaque « (PID n) », c'est l'extrait de la commande d'un programme
 /// (le veilleur en joint jusqu'à quatre par « ; » dans un seul message), choisi par qui l'a lancée : il est retenu en
-/// entier (« (mysql --password secret) » ne laisse pas sortir « secret »). Il commence au premier jeton qui ouvre ou
-/// ferme une parenthèse après ce « (PID n) » et finit au dernier qui en ferme une avant le « (PID n) » suivant ; une
-/// parenthèse jamais fermée retient tout jusqu'au « (PID n) » suivant ou jusqu'à la fin. Sans aucun « (PID n) », c'est
-/// une précision de Vanguard (« (numéro repris, parent ou heure illisible) »), du premier jeton qui ouvre au dernier
-/// qui ferme : elle sort si tous ses mots sont du vocabulaire, retenue sinon ; une parenthèse qui ne se ferme pas n'en
-/// fait pas.
+/// entier (« (mysql --password secret) » ne laisse pas sortir « secret »). Il commence à la première parenthèse après
+/// ce « (PID n) » et finit à la dernière fermante avant le « (PID n) » suivant, si la profondeur des parenthèses y est
+/// revenue à zéro ; sinon (« (sh (x) maison (PID 9) b) ») il n'est pas fermé et retient tout jusqu'au « (PID n) »
+/// suivant, dont l'extrait le continue. Une fermante de trop (« (a) maison (PID 9) b) ») montre que ce « (PID n) »
+/// était cité dans l'extrait d'avant : celui-ci va jusqu'à lui (4e re-contrôle, VUES-2). Sans aucun « (PID n) »,
+/// c'est une précision de Vanguard (« (numéro repris, parent ou heure illisible) »), du premier jeton qui ouvre au
+/// dernier qui ferme : elle sort si tous ses mots sont du vocabulaire, retenue sinon ; une parenthèse qui ne se ferme
+/// pas n'en fait pas.
 fn groupes_entre_parentheses(jetons: &[&str]) -> Vec<Groupe> {
     let a = |k: usize, x: char| jetons.get(k).is_some_and(|m| m.contains(x));
     let pids: Vec<usize> = (0..jetons.len()).filter(|k| groupe_pid(jetons, *k)).collect();
@@ -413,21 +478,43 @@ fn groupes_entre_parentheses(jetons: &[&str]) -> Vec<Groupe> {
             debut,
             fin,
             masque: !connus,
+            extrait: false,
         }];
     }
-    let mut groupes = Vec::new();
-    // L'extrait d'avant ne s'est pas fermé avant ce « (PID n) » : ce « (PID n) » est cité dans l'extrait, et ce qui le
-    // suit en fait encore partie (« (mysql (PID 7) rouge maison (x)) »), de son premier mot, qu'une parenthèse vienne
-    // ou non (3e re-contrôle).
-    let mut ouvert = false;
+    let mut groupes: Vec<Groupe> = Vec::new();
+    // Les parenthèses que l'extrait d'avant a laissées ouvertes : ce « (PID n) » y est cité, et ce qui le suit en fait
+    // encore partie (« (mysql (PID 7) rouge maison (x)) »), de son premier mot, qu'une parenthèse vienne ou non.
+    let mut reste: i64 = 0;
     for (n, pid) in pids.iter().enumerate() {
         let depart = pid.saturating_add(2);
         let borne = pids.get(n.saturating_add(1)).copied().unwrap_or(jetons.len());
-        let premier = (depart..borne).find(|k| a(*k, '(') || a(*k, ')'));
-        // Une fermante avant toute ouvrante (« … (PID 5) rouge) » : l'extrait citait lui-même un « (PID n) ») : le
-        // groupe part de ce « (PID n) », sans quoi les mots d'avant la fermante sortiraient un par un.
-        let debut = match premier {
-            _ if ouvert => depart,
+        let (fin_de_profondeur, negatif) = profondeur(jetons, depart, borne, reste);
+        let ouvert = reste > 0;
+        reste = fin_de_profondeur.max(0);
+        // Le premier « (PID n) » ne peut pas être cité dans un extrait d'avant : une fermante de trop y est dans son
+        // propre extrait (« (case x in a) cat y;; esac) »).
+        let cite = ouvert || (negatif && n > 0);
+        if cite && !ouvert {
+            // Une fermante de trop : l'extrait d'avant ne s'était pas vraiment fermé, il citait ce « (PID n) » ; il
+            // est retenu jusqu'à lui, ou, s'il n'avait pas de parenthèse, tout ce qui suit le « (PID n) » d'avant.
+            if let Some(precedent) = n.checked_sub(1).and_then(|m| pids.get(m)) {
+                let depart_precedent = precedent.saturating_add(2);
+                match groupes.last_mut() {
+                    Some(g) if g.debut >= depart_precedent => g.fin = pid.saturating_sub(1).max(g.fin),
+                    _ if depart_precedent < *pid => groupes.push(Groupe {
+                        debut: depart_precedent,
+                        fin: pid.saturating_sub(1),
+                        masque: true,
+                        extrait: true,
+                    }),
+                    _ => {}
+                }
+            }
+        }
+        // Une fermante avant toute ouvrante (« … (PID 5) rouge) ») : le groupe part de ce « (PID n) », sans quoi les
+        // mots d'avant la fermante sortiraient un par un.
+        let debut = match (depart..borne).find(|k| a(*k, '(') || a(*k, ')')) {
+            _ if cite => depart,
             Some(p) if a(p, '(') => p,
             Some(_) => depart,
             None => continue,
@@ -435,19 +522,16 @@ fn groupes_entre_parentheses(jetons: &[&str]) -> Vec<Groupe> {
         if debut >= borne {
             continue;
         }
-        let ferme = (debut..borne).rev().find(|k| a(*k, ')'));
-        let ouvre = (debut..borne).rev().find(|k| a(*k, '('));
-        // Fermé après sa dernière ouverture : jusqu'à cette fermante ; sinon jusqu'au « (PID n) » suivant ou la fin.
-        let (fin, ferme) = match (ferme, ouvre) {
-            (Some(f), Some(o)) if f >= o => (f, true),
-            (Some(f), None) => (f, true),
-            _ => (borne.saturating_sub(1), false),
+        // Revenu à zéro (ou en dessous) : fermé à sa dernière fermante ; sinon ouvert jusqu'au « (PID n) » suivant.
+        let fin = match (debut..borne).rev().find(|k| a(*k, ')')) {
+            Some(f) if fin_de_profondeur <= 0 => f,
+            _ => borne.saturating_sub(1),
         };
-        ouvert = !ferme;
         groupes.push(Groupe {
             debut,
             fin,
             masque: true,
+            extrait: true,
         });
     }
     groupes
@@ -1146,6 +1230,91 @@ mod tests {
             sortie("« a » (PID 11) programme inconnu, effacé depuis ; « b » (PID 22) programme inconnu (root maison)."),
             "\" a \" … programme inconnu, effacé depuis ; \" … \" … programme inconnu …"
         );
+    }
+
+    /// 4e re-contrôle VUES-1 : une annonce dans une précision retenue (« (mot de passe WPA2) ») coupe aussi tout ce qui
+    /// suit la parenthèse ; seul l'extrait d'un programme est sauté pour chercher une annonce.
+    #[test]
+    fn r4_vues_1_une_annonce_dans_une_precision_retenue_coupe_la_suite() {
+        let valeurs = ["maison", "rouge", "bureau", "admin"];
+        for brut in [
+            "Réseau maison (mot de passe WPA2) rouge bureau",
+            "Wi-Fi (clé WPA2): maison rouge",
+            "Compte (login x7) admin bureau",
+            "Réseau Salon (Mot de passe x9) rouge bureau",
+        ] {
+            let s = sans(brut, &valeurs[1..]);
+            assert!(s.ends_with(vocabulaire::RETENU), "{s:?} ({brut:?})");
+        }
+        // Le « maison » d'avant l'annonce reste lisible : seule la suite est coupée.
+        assert!(sortie("Réseau maison (mot de passe WPA2) rouge bureau").contains("maison"));
+        // Un chemin d'extrait (« /usr/bin/code ») ne coupe pas la raison du programme suivant.
+        assert!(
+            sortie("« a » (PID 11) raison (/usr/bin/code x) ; « b » (PID 22) programme inconnu (y)")
+                .contains("programme inconnu")
+        );
+    }
+
+    /// 4e re-contrôle VUES-2 : la profondeur des parenthèses est comptée. Un extrait qui ouvre deux fois et ne referme
+    /// qu'une (« (sh (x) maison rouge (PID 9) bureau) ») ne s'arrête pas à la première fermante ; une fermante de trop
+    /// après un « (PID n) » (« (a) maison rouge (PID 9) b) ») montre qu'il était cité dans l'extrait d'avant.
+    #[test]
+    fn r4_vues_2_la_profondeur_des_parentheses_est_comptee() {
+        let valeurs = ["maison", "rouge", "bureau", "admin"];
+        for brut in [
+            "« mysql » (PID 5) raison (sh (x) maison rouge (PID 9) bureau)",
+            "« mysql » (PID 5) raison (sh (x) maison rouge (PID 9) bureau) fin",
+            "« mysql » (PID 5) raison (a) maison rouge (PID 9) b)",
+            "« mysql » (PID 5) raison (a) maison rouge (PID 9) b) ; « c » (PID 12) raison (x)",
+            "« mysql » (PID 5) raison (sh ((x)) admin (y) maison rouge",
+            "« mysql » (PID 5) raison maison rouge (PID 9) b)",
+            "« a » (PID 5) raison (sh (x) maison (PID 9) (PID 10) rouge bureau)",
+        ] {
+            sans(brut, &valeurs);
+        }
+        // Un extrait bien fermé laisse lire la raison du programme suivant.
+        assert!(
+            sortie("« a » (PID 11) raison (sh (x) y) ; « b » (PID 22) programme inconnu (z)")
+                .contains("programme inconnu")
+        );
+    }
+
+    /// 4e re-contrôle VUES-3 : les pluriels d'annonce qui manquaient (identifiants, logins, seeds, phrases de
+    /// récupération, recovery phrases) retiennent la suite.
+    #[test]
+    fn r4_vues_3_les_pluriels_d_annonce_retiennent_la_suite() {
+        let valeurs = ["maison", "rouge", "bureau", "admin"];
+        for brut in [
+            "identifiants : maison rouge",
+            "Identifiants maison rouge",
+            "logins: admin bureau",
+            "seeds maison rouge",
+            "phrases de récupération maison rouge",
+            "phrases de recuperation maison rouge",
+            "recovery phrases maison rouge",
+            "Recovery-Phrases: maison rouge",
+        ] {
+            sans(brut, &valeurs);
+        }
+    }
+
+    /// 4e re-contrôle VUES-4 : une négation au bout d'une ligne ou d'un champ (saut de ligne, tabulation) ne nie pas
+    /// l'annonce qui ouvre la ligne suivante ; « sans mot de passe (WEP) » sur une ligne reste nié.
+    #[test]
+    fn r4_vues_4_une_negation_ne_traverse_pas_un_saut_de_ligne() {
+        let valeurs = ["maison", "rouge", "bureau", "admin"];
+        for brut in [
+            "Sécurité : aucune\nclé maison rouge",
+            "Réseau ouvert sans\nMot de passe maison rouge",
+            "Réseau ouvert sans\tmot de passe maison rouge",
+            "Réseau ouvert sans \n mot de passe maison rouge",
+            "Réseau ouvert sans\r\nmot de passe maison rouge",
+            "no\u{a0}password admin bureau",
+        ] {
+            sans(brut, &valeurs);
+        }
+        let s = sortie("Le réseau Wi-Fi est ouvert, sans mot de passe (WEP) ; changez-le.");
+        assert!(s.contains("changez"), "{s:?}");
     }
 
     /// Re-contrôle R2-fuite-5 : les autres formes courantes d'annonce (fautes de pluriel, NIP, phrase de récupération,

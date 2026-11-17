@@ -42,8 +42,12 @@ const MACROS_DE_TEXTE: [&str; 7] = ["tr", "trf", "trp", "tre", "trw", "trwln", "
 const MACROS_D_ESSAIS: [&str; 2] = ["proptest", "quickcheck"];
 /// Les attributs qui font d'une fonction un essai (dernier nom du chemin : `test`, `tokio::test`).
 const ATTRIBUTS_D_ESSAIS: [&str; 2] = ["test", "bench"];
-/// Les `cfg` faux dans le programme : ses essais, et les preuves de Kani (outils/preuves.sh).
-const CFG_FAUX: [&str; 2] = ["test", "kani"];
+/// Les `cfg` faux dans le programme : ses essais, les preuves de Kani (outils/preuves.sh), le banc de fuzzing (fuzz/)
+/// et Miri (outils/preuves.sh) ; aucun n'est posé par la compilation du programme (4e re-contrôle, SOURCES-4).
+const CFG_FAUX: [&str; 4] = ["test", "kani", "fuzzing", "miri"];
+/// Les macros qui choisissent leur code par `cfg` (`cfg_select!`, et son ancien nom `cfg_match!`) : la lecture ne
+/// juge pas leurs bras, la compilation s'arrête sur elles, même renommées par un `use` (4e re-contrôle, SOURCES-1).
+const MACROS_DE_CFG: [&str; 2] = ["cfg_select", "cfg_match"];
 
 /// Une forme que la lecture ne sait pas juger, avec ce qu'elle a vu : build.rs arrête la compilation sur elle. Un type
 /// à part plutôt que `Echec` du programme, que build.rs ne peut pas atteindre.
@@ -108,6 +112,7 @@ pub fn vocabulaire(sources: &[(PathBuf, String)]) -> Result<BTreeSet<String>, Il
             en_ligne: 0,
             essai: module.essai,
             texte: 0,
+            bloc: 0,
             chaines: Vec::new(),
             modules: Vec::new(),
             erreurs: Vec::new(),
@@ -184,6 +189,8 @@ struct Lecteur<'a> {
     essai: bool,
     /// La profondeur des appels aux macros de texte autour du nœud courant.
     texte: usize,
+    /// La profondeur des blocs (corps de fonction, `const _: () = { … }`) autour du nœud courant.
+    bloc: usize,
     chaines: Vec<String>,
     modules: Vec<Declare>,
     erreurs: Vec<String>,
@@ -249,6 +256,11 @@ impl Lecteur<'_> {
                 }
                 TokenTree::Ident(nom) => {
                     let nom = sans_r(&nom.to_string()).to_string();
+                    if MACROS_DE_CFG.contains(&nom.as_str()) {
+                        self.erreur(&format!(
+                            "« {nom} » dans le corps d'une macro : bras choisis par cfg, forme non jugée"
+                        ));
+                    }
                     if let (Some(TokenTree::Punct(b)), Some(TokenTree::Group(g))) = (suivant, arbres.get(i + 2))
                         && b.as_char() == '!'
                     {
@@ -288,6 +300,15 @@ impl Lecteur<'_> {
 
     /// Un module à fichier (`nom;`) : son fichier et le dossier de ses modules, comme rustc les cherche.
     fn declare(&mut self, nom: &str, chemin: Option<String>) {
+        // Dans un bloc, rustc cherche le fichier depuis un dossier que la lecture ne suit pas (le nom du fichier
+        // courant, puis les modules en ligne) : elle lirait le mauvais fichier, même en essai (4e re-contrôle,
+        // SOURCES-3).
+        if self.bloc > 0 {
+            self.erreur(&format!(
+                "module à fichier « {nom} » déclaré dans un bloc (fonction, const) : forme non jugée"
+            ));
+            return;
+        }
         let (fichier, enfants) = if let Some(chemin) = chemin {
             // Hors module en ligne, relatif au dossier du fichier ; dedans, au dossier des modules en ligne. Le
             // fichier ainsi nommé cherche ses modules à côté de lui (comme un mod.rs).
@@ -331,6 +352,22 @@ fn est(chemin: &syn::Path, nom: &str) -> bool {
             .segments
             .first()
             .is_some_and(|s| s.arguments.is_none() && sans_r(&s.ident.to_string()) == nom)
+}
+
+/// L'attribut est-il un `cfg_attr` qui nomme `path`, à n'importe quelle profondeur (`cfg_attr(a, cfg_attr(b, path =
+/// "…"))`) ? Dans le doute (un `path` qui serait autre chose), il est refusé.
+fn path_par_cfg_attr(attribut: &Attribute) -> bool {
+    fn nomme_path(flux: TokenStream) -> bool {
+        flux.into_iter().any(|arbre| match arbre {
+            TokenTree::Ident(i) => sans_r(&i.to_string()) == "path",
+            TokenTree::Group(g) => nomme_path(g.stream()),
+            _ => false,
+        })
+    }
+    match &attribut.meta {
+        Meta::List(liste) if est(&liste.path, "cfg_attr") => nomme_path(liste.tokens.clone()),
+        _ => false,
+    }
 }
 
 /// Le chemin d'un attribut `path = "…"`, s'il y en a un.
@@ -637,6 +674,13 @@ impl<'ast> Visit<'ast> for Lecteur<'_> {
 
     fn visit_item_mod(&mut self, m: &'ast syn::ItemMod) {
         let nom = sans_r(&m.ident.to_string()).to_string();
+        // Un `path` posé par `cfg_attr` changerait le fichier selon la condition : la lecture ne le suit pas (4e
+        // re-contrôle, SOURCES-2).
+        if m.attrs.iter().any(path_par_cfg_attr) {
+            self.erreur(&format!(
+                "path posé par cfg_attr sur le module « {nom} » : forme non jugée"
+            ));
+        }
         let chemin = chemin_d_attribut(&m.attrs);
         match &m.content {
             None => self.declare(&nom, chemin),
@@ -773,7 +817,24 @@ impl<'ast> Visit<'ast> for Lecteur<'_> {
         self.sous(&i.attrs, |l| visit::visit_const_param(l, i));
     }
 
+    fn visit_block(&mut self, b: &'ast syn::Block) {
+        self.bloc += 1;
+        visit::visit_block(self, b);
+        self.bloc -= 1;
+    }
+
+    fn visit_ident(&mut self, i: &'ast proc_macro2::Ident) {
+        let nom = i.to_string();
+        if MACROS_DE_CFG.contains(&sans_r(&nom)) {
+            self.erreur(&format!("« {nom} » : bras choisis par cfg, forme non jugée"));
+        }
+    }
+
     fn visit_macro(&mut self, m: &'ast syn::Macro) {
+        // Avant le retour des essais : le nom de la macro n'est pas visité ailleurs.
+        for segment in &m.path.segments {
+            self.visit_ident(&segment.ident);
+        }
         if self.essai {
             return;
         }

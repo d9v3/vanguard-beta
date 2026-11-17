@@ -415,7 +415,7 @@ fn r2_fuite_3_4_ipv6_suivie_d_un_deux_points_ou_collee() {
 
 /// 3e re-contrôle (IPv6 après une étiquette à tiret, trait bas ou point ; mot collé après le deux-points final) :
 /// grammaire stricte, sans contexte. Toute suite de chiffres hexadécimaux, « : » et « . » avec deux « : » et un chiffre
-/// est masquée ; le mot collé après garde sa place quand c'est possible, sinon il est masqué jusqu'à l'espace.
+/// est masquée ; le mot collé après est masqué avec elle jusqu'à l'espace (4e re-contrôle : plus de recul).
 #[test]
 fn r3_ipv6_masquee_quel_que_soit_l_entourage() {
     let cas = [
@@ -438,19 +438,19 @@ fn r3_ipv6_masquee_quel_que_soit_l_entourage() {
         ("X-Forwarded-For:2001:db8:aa::17 vu", "X-Forwarded-For:<ip> vu"),
         (
             "ssh: connect to host fd12:3456::7:Connection refused",
-            "ssh: connect to host <ip>:Connection refused",
+            "ssh: connect to host <ip> refused",
         ),
         (
             "liaison impossible sur 2001:db8:aa::17:Address already in use",
-            "liaison impossible sur <ip>:Address already in use",
+            "liaison impossible sur <ip> already in use",
         ),
         (
             "liaison impossible sur fd12:3456:abcd:ef01:2345:6789:abcd:ef01:Address already in use",
-            "liaison impossible sur <ip>:Address already in use",
+            "liaison impossible sur <ip> already in use",
         ),
-        ("liaison sur 2001:db8:aa::17:denied", "liaison sur <ip>:denied"),
-        ("liaison sur 2001:db8:aa::17:eth0", "liaison sur <ip>:eth0"),
-        ("liaison sur 2001:db8:aa::17:443:closed", "liaison sur <ip>:closed"),
+        ("liaison sur 2001:db8:aa::17:denied", "liaison sur <ip>"),
+        ("liaison sur 2001:db8:aa::17:eth0", "liaison sur <ip>"),
+        ("liaison sur 2001:db8:aa::17:443:closed", "liaison sur <ip>"),
         ("liaison sur 2001:db8:aa::17:timeout", "liaison sur <ip>:timeout"),
         // Collée devant et derrière, sans séparateur : tout le mot, jusqu'à l'espace.
         ("vu xfd12:3456::7Connection fin", "vu x<ip> fin"),
@@ -464,6 +464,33 @@ fn r3_ipv6_masquee_quel_que_soit_l_entourage() {
     // Sans chiffre, ou avec un seul « : » : pas la forme (limite dite : « fd::ab »).
     for t in ["std::fs::read refusé", "à 12:30 hier", "fd::ab vu"] {
         assert_eq!(propre(t), t, "{t:?}");
+    }
+}
+
+/// 4e re-contrôle MASQUEUR-4 : un dernier groupe fait de lettres a-f suivi d'un mot collé (« ::beefx », « :cafe_tx »)
+/// n'est plus rendu comme début du mot ; tout le mot est masqué avec l'adresse, par `passer` comme par `texte()`.
+#[test]
+fn r4_masqueur_4_un_dernier_groupe_de_lettres_ne_sort_pas() {
+    let cas = [
+        ("montre fd12:3456:789a::beefx puis", "montre <ip> puis"),
+        ("montre 2001:db8:1:2:3:4:5:beefhost puis", "montre <ip> puis"),
+        ("montre fd12:3456:789a::bad_iface puis", "montre <ip> puis"),
+        ("montre fd12:3456:789a:1:2:3:4:cafe_tx puis", "montre <ip> puis"),
+        ("montre [fd12:3456:789a::dead]x puis", "montre <ip> puis"),
+    ];
+    for (brut, attendu) in cas {
+        let vu = propre(brut);
+        for groupe in ["beef", "bad", "cafe"] {
+            assert!(!vu.contains(groupe), "{groupe} sort de {vu:?} ({brut:?})");
+        }
+        assert_eq!(vu, attendu, "{brut:?}");
+        let par_texte = crate::amelioration::texte(brut).unwrap_or_else(|r| panic!("{brut:?} rejeté : {r:?}"));
+        for groupe in ["beef", "bad", "cafe"] {
+            assert!(
+                !par_texte.as_str().contains(groupe),
+                "{groupe} sort de {par_texte:?} par texte() ({brut:?})"
+            );
+        }
     }
 }
 
@@ -517,14 +544,12 @@ fn r3_heure_exacte_gardee_le_reste_masque() {
 }
 
 /// 2e re-contrôle R2-REGRESSION-2 : le choix fixé. Un point suivi de lettres finit la zone (« %eth0.vlan5 » laisse
-/// « .vlan5 ») et un nom d'hôte collé après une IPv4 portée mal formée reste ; aucun octet d'adresse ne sort.
+/// « .vlan5 ») ; un nom d'hôte collé après une IPv4 portée mal formée est masqué avec elle (4e re-contrôle, plus de
+/// recul) ; aucun octet d'adresse ne sort.
 #[test]
 fn r2_regression_2_zone_et_nom_colle_laissent_le_mot() {
     assert_eq!(propre("voisin fe80::1%eth0.vlan5 muet"), "voisin <ip>.vlan5 muet");
-    assert_eq!(
-        propre("hôte ::ffff:300.1.2.3.exemple.test muet"),
-        "hôte <ip>.exemple.test muet"
-    );
+    assert_eq!(propre("hôte ::ffff:300.1.2.3.exemple.test muet"), "hôte <ip> muet");
 }
 
 #[test]

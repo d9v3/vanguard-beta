@@ -774,10 +774,15 @@ to start (code 2) until it has been tried on a real Windows.
   required), the whole rest of the text becomes a single "…", not only up to the first full stop; the only exception is
   a negated announcement ("sans mot de passe", "no password") with no ":" or "=" after it, when the negation ends with a
   letter and the announcement starts with a letter: no sign between the two (full stop, "!", "?", colon, opening or
-  closing parenthesis), as in Vanguard's message about a Wi-Fi network without a password. A value written before the announcement ("maison rouge is the password") is not held back. In a watcher
+  closing parenthesis), and nothing but plain spaces (a line break, a tab or a non-breaking space makes an
+  announcement), as in Vanguard's message about a Wi-Fi network without a password. An announcement written inside a
+  held-back parenthesis ("(mot de passe WPA2)") also cuts everything that follows. A value written before the
+  announcement ("maison rouge is the password") is not held back. In a watcher
   alert, each "(PID n)" opens its own group: the command excerpt that follows it in parentheses becomes a single "…",
-  and a parenthesis never closed holds back everything up to the next "(PID n)" or to the end; a "(PID n)" quoted in an
-  excerpt still open continues it, from its first word, with or without a parenthesis; any other parenthesis
+  and the depth of the parentheses is counted in it: an excerpt that has not come back to zero holds back everything
+  up to the next "(PID n)" or to the end; a "(PID n)" quoted in an excerpt still open continues it, from its first
+  word, with or without a parenthesis, and an extra closing parenthesis after a "(PID n)" shows it was quoted in the
+  excerpt before, which then runs up to it; any other parenthesis
   comes out only if all its words are known. The price:
   useful text that follows an announcement is lost (about 0.8% of Vanguard's text pieces contain one of these words,
   "registry key" and "code" included). These are safety nets, not a guarantee: a value that nothing announces comes out
@@ -792,10 +797,16 @@ to start (code 2) until it has been tried on a real Windows.
   address get through. This is a channel for someone who already writes the log or an unsealed review, not a leak of the
   person's data. A module loaded from outside `src/` (the colour model shared with the window) is not read: it has no
   message, and one word less only masks more. The reading follows `r#test` and `r#cfg` as the compiler does, and a
-  `#[path]` on an inline module from the file's folder. The build script (`build.rs`), the reading it includes and the
+  `#[path]` on an inline module from the file's folder; `cfg(test)`, `cfg(kani)`, `cfg(fuzzing)` and `cfg(miri)` are
+  false in the program. It stops the build on a form it cannot judge: `cfg_select!` or `cfg_match!`, a `path` set by
+  `cfg_attr` on a module, a file module declared in a block (function, `const`). The build script (`build.rs`), the
+  reading it includes and the
   repository's cargo configuration are judged by a hash of the whole file, and `Cargo.toml` by the exact list of its
-  targets and build dependencies (`outils/essais-signature.sh`): a change there calls for a deliberate review. Not
-  verified: cargo configuration outside the repository, and a macro of an ordinary dependency that would read the disk.
+  targets and build dependencies (`outils/essais-signature.sh`): a change there calls for a deliberate review. The
+  repository has no legacy file that cargo or rustup would prefer to the judged one (`.cargo/config`,
+  `rust-toolchain`), and no symbolic link at all (outside `target/` and `.git/`). Not
+  verified: cargo configuration outside the repository, a macro of an ordinary dependency that would read the disk,
+  and `cfg!(test)` written in a program expression (read as program).
 - **It cannot prove it is the real Vanguard.** A fake program placed at the same path would answer the same, `identite`
   included; and a program of the account can write to Vanguard's files (the seals are a barrier, not a safe: see "The
   programs of your account do not target Vanguard itself"). The proof is made before starting, by the client: start a
