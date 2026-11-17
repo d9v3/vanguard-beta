@@ -631,14 +631,16 @@ fn appels() -> Vec<(&'static str, Value)> {
 
 /// Une session entière sur les vrais outils ; rend chaque réponse relue.
 fn session_reelle(dossier: &std::path::Path) -> Vec<Value> {
-    session_brute(dossier)
-        .iter()
-        .map(|l| serde_json::from_str(l).unwrap())
-        .collect()
+    lues(&session_brute(dossier))
 }
 
-/// La même session, chaque réponse telle qu'écrite (l'ordre des clés compte).
-fn session_brute(dossier: &std::path::Path) -> Vec<String> {
+fn lues(lignes: &[String]) -> Vec<Value> {
+    lignes.iter().map(|l| serde_json::from_str(l).unwrap()).collect()
+}
+
+/// La session de `session_brute` sans la page suivante, que seul un dossier à trois événements ou plus donne ; et
+/// le lien `suivant` de sa première page de deux, s'il y en a un.
+fn premiere_page(dossier: &std::path::Path) -> (Vec<String>, Option<String>, Bornes) {
     let mut porte = outils::Porte::new(dossier.to_path_buf(), vues::Liens::fixes());
     let mut lignes = vec![
         INIT.to_string(),
@@ -661,8 +663,8 @@ fn session_brute(dossier: &std::path::Path) -> Vec<String> {
     };
     let bilan = servir_muet(entree, &mut sortie, &mut porte, bornes);
     assert_eq!(bilan.fin, Fin::FlotFini, "{bilan:?}");
-    let mut reponses: Vec<String> = String::from_utf8(sortie).unwrap().lines().map(str::to_string).collect();
-    // La page suivante des événements, par le lien de la première page de deux.
+    let reponses: Vec<String> = String::from_utf8(sortie).unwrap().lines().map(str::to_string).collect();
+    // Le lien de la première page de deux, vers la page suivante des événements.
     let suivant = reponses
         .iter()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
@@ -671,24 +673,34 @@ fn session_brute(dossier: &std::path::Path) -> Vec<String> {
                 .and_then(Value::as_str)
                 .map(str::to_string)
         });
-    if let Some(avant) = suivant {
-        // Mêmes bornes et même bilan exigé : une page 2 manquante ferait passer les essais de contenu sans l'avoir lue.
-        let mut porte = outils::Porte::new(dossier.to_path_buf(), vues::Liens::fixes());
-        let demande = json!({ "jsonrpc": "2.0", "id": 99, "method": "tools/call",
-                              "params": { "name": "evenements", "arguments": { "limite": 2, "avant": avant } } });
-        let mut sortie = Vec::new();
-        let entree = Cursor::new(format!("{INIT}\n{demande}\n").into_bytes());
-        let bilan = servir_muet(entree, &mut sortie, &mut porte, bornes);
-        assert_eq!(bilan.fin, Fin::FlotFini, "page suivante : {bilan:?}");
-        let page: Vec<String> = String::from_utf8(sortie).unwrap().lines().map(str::to_string).collect();
-        assert!(
-            page.iter()
-                .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-                .any(|r| r["id"] == 99 && r.get("result").is_some()),
-            "pas de réponse d'id 99 à la page suivante : {page:?}"
-        );
-        reponses.extend(page);
-    }
+    (reponses, suivant, bornes)
+}
+
+/// La même session, chaque réponse telle qu'écrite (l'ordre des clés compte), page suivante des événements comprise.
+fn session_brute(dossier: &std::path::Path) -> Vec<String> {
+    let (mut reponses, suivant, bornes) = premiere_page(dossier);
+    // Exigée (3e re-contrôle) : une page 2 manquante, faute de lien `suivant`, ferait passer les essais de contenu sans
+    // l'avoir lue. Mêmes bornes et même bilan exigé, et une vraie page d'événements, pas une erreur d'outil.
+    let avant = suivant.expect("la première page de deux doit donner un lien suivant");
+    let mut porte = outils::Porte::new(dossier.to_path_buf(), vues::Liens::fixes());
+    let demande = json!({ "jsonrpc": "2.0", "id": 99, "method": "tools/call",
+                          "params": { "name": "evenements", "arguments": { "limite": 2, "avant": avant } } });
+    let mut sortie = Vec::new();
+    let entree = Cursor::new(format!("{INIT}\n{demande}\n").into_bytes());
+    let bilan = servir_muet(entree, &mut sortie, &mut porte, bornes);
+    assert_eq!(bilan.fin, Fin::FlotFini, "page suivante : {bilan:?}");
+    let page: Vec<String> = String::from_utf8(sortie).unwrap().lines().map(str::to_string).collect();
+    assert!(
+        page.iter()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .any(|r| r["id"] == 99
+                && r.pointer("/result/isError").is_none_or(|e| e == false)
+                && r.pointer("/result/structuredContent/evenements")
+                    .and_then(Value::as_array)
+                    .is_some_and(|e| !e.is_empty())),
+        "pas de page d'événements non vide d'id 99 à la page suivante : {page:?}"
+    );
+    reponses.extend(page);
     reponses
 }
 
@@ -717,7 +729,8 @@ fn un_premier_usage_n_est_pas_adopte_en_ecrivant() {
     std::fs::create_dir_all(dossier.join(nom).parent().unwrap()).unwrap();
     std::fs::write(dossier.join(nom), resultat("PRO-ESP-001")).unwrap();
     let avant = empreinte_dossier(&dossier);
-    let reponses = session_reelle(&dossier);
+    // Sans événement, pas de page suivante.
+    let reponses = lues(&premiere_page(&dossier).0);
     assert_eq!(ecarts(&avant, &empreinte_dossier(&dossier)), Vec::new());
     // Adopté sans être cru : jamais « sain ».
     let etat = reponses

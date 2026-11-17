@@ -35,7 +35,13 @@ example, finds it, to rebuild it if needed.
   IPv6 address followed by a colon ("fd12:…:6: Connection refused", "fe80::1%eth0: …", "%eth0:546"), preceded by a
   stuck label ("addr:fd12::7") or by a full stop ("fd12::7.fd12::8", "...10.0.0.5"); a zone written with hyphens,
   underscores or a full stop followed by a digit ("%br-lan", "%eth0.100"); ideographic full stops ("。"): all of these
-  are now masked whole. A word stuck after the full stop ("5::6.The rest") keeps its place. Only numbers that cannot be
+  are now masked whole. A word stuck after the full stop ("5::6.The rest") keeps its place. IPv6 addresses are read by
+  a strict grammar, without looking at what surrounds them: any run of hexadecimal digits, colons and full stops with
+  at least two colons and one digit is masked, whatever label is stuck before it ("remote_addr:", "X-Forwarded-For:",
+  "nas.lan:") or word stuck after it ("…::7:Connection refused"); a stuck word made of digits and letters is masked
+  with it, up to the space. Accepted price: a time ("12:30:45"), a ratio ("1:2:3") or a PCI device address
+  ("0000:00:02.0") are masked too; in a measured desktop journal, about two lines in five have their time masked this
+  way. A label ending with a hexadecimal letter loses it ("node:fd12::7" gives "nod<ip>"). Only numbers that cannot be
   an address with its port stay readable: a version with a known suffix ("1.2.3.4rc1", "4.19.0.0beta", "alpha",
   "esr"); after "version", "build", "section", "control", "driver", "release" and their French forms, a fifth number of
   one or two digits behind a first number under 100 ("version 1.2.3.4.5"); a run of six numbers or more

@@ -345,20 +345,21 @@ fn fin_d_annonce(jetons: &[&str], ignore: &dyn Fn(usize) -> bool) -> Option<usiz
 }
 
 /// L'annonce qui va du jeton `debut` au jeton `fin` est-elle niée (« sans mot de passe (WEP) ») ? Il faut un mot de
-/// négation entier juste avant, qui touche l'annonce (ni « . », « ! », « ? » ni « ( » entre eux : « Sans. Mot de passe
-/// maison », « sans (mot de passe maison) » annoncent une valeur), et aucun séparateur collé à la fin de l'annonce ou
-/// au jeton qui la suit : « sans mot de passe : maison » annonce quand même une valeur.
+/// négation entier juste avant, qui touche l'annonce : une liste blanche, des lettres seulement de part et d'autre de
+/// l'espace (la négation finit par une lettre, l'annonce commence par une lettre). Tout signe entre les deux (« Sans.
+/// Mot de passe maison », « Sans! mot », « (réseau sans) mot », « sans: mot », « sans (mot de passe maison) ») fait
+/// une annonce. Et aucun séparateur collé à la fin de l'annonce ou au jeton qui la suit : « sans mot de passe :
+/// maison » annonce quand même une valeur.
 fn niee(jetons: &[&str], debut: usize, fin: usize) -> bool {
-    let coupe = |x: char| matches!(x, '.' | '!' | '?' | '(');
     let avant = debut
         .checked_sub(1)
         .and_then(|k| jetons.get(k))
-        .filter(|m| !m.chars().rev().take_while(|x| !x.is_alphabetic()).any(coupe))
-        .map(|m| m.trim_matches(|x: char| !x.is_alphabetic()).to_lowercase())
+        .filter(|m| m.chars().next_back().is_some_and(char::is_alphabetic))
+        .map(|m| m.trim_start_matches(|x: char| !x.is_alphabetic()).to_lowercase())
         .is_some_and(|m| NEGATIONS.contains(&m.as_str()))
         && jetons
             .get(debut)
-            .is_some_and(|m| !m.chars().take_while(|x| !x.is_alphabetic()).any(coupe));
+            .is_some_and(|m| m.chars().next().is_some_and(char::is_alphabetic));
     let separe = jetons.get(fin).is_some_and(|m| m.contains([':', '=']))
         || jetons
             .get(fin.saturating_add(1))
@@ -415,23 +416,34 @@ fn groupes_entre_parentheses(jetons: &[&str]) -> Vec<Groupe> {
         }];
     }
     let mut groupes = Vec::new();
+    // L'extrait d'avant ne s'est pas fermé avant ce « (PID n) » : ce « (PID n) » est cité dans l'extrait, et ce qui le
+    // suit en fait encore partie (« (mysql (PID 7) rouge maison (x)) »), de son premier mot, qu'une parenthèse vienne
+    // ou non (3e re-contrôle).
+    let mut ouvert = false;
     for (n, pid) in pids.iter().enumerate() {
         let depart = pid.saturating_add(2);
         let borne = pids.get(n.saturating_add(1)).copied().unwrap_or(jetons.len());
-        let Some(premier) = (depart..borne).find(|k| a(*k, '(') || a(*k, ')')) else {
-            continue;
-        };
+        let premier = (depart..borne).find(|k| a(*k, '(') || a(*k, ')'));
         // Une fermante avant toute ouvrante (« … (PID 5) rouge) » : l'extrait citait lui-même un « (PID n) ») : le
         // groupe part de ce « (PID n) », sans quoi les mots d'avant la fermante sortiraient un par un.
-        let debut = if a(premier, '(') { premier } else { depart };
+        let debut = match premier {
+            _ if ouvert => depart,
+            Some(p) if a(p, '(') => p,
+            Some(_) => depart,
+            None => continue,
+        };
+        if debut >= borne {
+            continue;
+        }
         let ferme = (debut..borne).rev().find(|k| a(*k, ')'));
         let ouvre = (debut..borne).rev().find(|k| a(*k, '('));
         // Fermé après sa dernière ouverture : jusqu'à cette fermante ; sinon jusqu'au « (PID n) » suivant ou la fin.
-        let fin = match (ferme, ouvre) {
-            (Some(f), Some(o)) if f >= o => f,
-            (Some(f), None) => f,
-            _ => borne.saturating_sub(1),
+        let (fin, ferme) = match (ferme, ouvre) {
+            (Some(f), Some(o)) if f >= o => (f, true),
+            (Some(f), None) => (f, true),
+            _ => (borne.saturating_sub(1), false),
         };
+        ouvert = !ferme;
         groupes.push(Groupe {
             debut,
             fin,
@@ -1123,6 +1135,9 @@ mod tests {
             "« a » (PID 11) raison (bash maison (PID 5) rouge bureau) fin",
             "« a » (PID 11) raison (x) ; « b » (PID 22) raison (bash root (PID 5) maison) ; « c » (PID 33) raison \
              (rouge bureau",
+            // 3e re-contrôle : un « (PID n) » cité dans un extrait resté ouvert, puis une autre ouvrante.
+            "« mysql » (PID 5) raison (mysql (PID 7) rouge maison (x))",
+            "« mysql » (PID 5) raison (mysql (PID 7) rouge maison",
         ] {
             sans(brut, &valeurs);
         }
@@ -1134,8 +1149,9 @@ mod tests {
     }
 
     /// Re-contrôle R2-fuite-5 : les autres formes courantes d'annonce (fautes de pluriel, NIP, phrase de récupération,
-    /// identifiant) retiennent la suite ; une négation séparée de l'annonce par un point, « ! », « ? » ou une parenthèse
-    /// ne la nie plus, et le « passe » d'une annonce niée n'est pas relu seul.
+    /// identifiant) retiennent la suite ; une négation séparée de l'annonce par un signe (point, « ! », « ? »,
+    /// parenthèse ouvrante ou fermante, deux-points ; 3e re-contrôle : « Sans! », « no! », « (réseau sans) ») ne la nie
+    /// plus, et le « passe » d'une annonce niée n'est pas relu seul.
     #[test]
     fn r2_fuite_5_les_annonces_courantes_et_la_negation_collee() {
         let valeurs = ["maison", "rouge", "bureau", "admin"];
@@ -1156,6 +1172,10 @@ mod tests {
             "Sans. Mot de passe maison rouge",
             "sans (mot de passe maison rouge)",
             "Sans ! mot de passe maison rouge",
+            "Sans! mot de passe maison rouge",
+            "no! password maison rouge",
+            "(réseau sans) mot de passe maison rouge",
+            "sans: mot de passe maison rouge",
             "no? password maison rouge",
             "sans mot de passe. Mot de passe maison rouge",
         ] {

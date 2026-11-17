@@ -171,6 +171,43 @@ fn les_chemins_d_essais_sont_suivis_comme_rustc() {
 }
 
 #[test]
+fn les_identifiants_bruts_sont_lus_comme_rustc() {
+    // 3e re-contrôle : rustc lit `r#test`, `r#cfg` ou `r#println!` comme `test`, `cfg` ou `println!` (vérifié
+    // avec rustc 1.99) ; la lecture aussi, sinon un mot d'essai entrait dans la liste blanche.
+    let essais = [
+        "#[cfg(r#test)]\nfn a() { TR(\"salon\", \"x\"); }\n",
+        "#[r#test]\nfn a() { TR(\"salon\", \"x\"); }\n",
+        "#[r#cfg(test)]\nfn a() { TR(\"salon\", \"x\"); }\n",
+        "#[cfg(all(unix, r#test))]\nfn a() { TR(\"salon\", \"x\"); }\n",
+        "#[r#cfg_attr(unix, r#test)]\nfn a() { TR(\"salon\", \"x\"); }\n",
+        "r#proptest! {\n    fn f(x in 0u8..) { TR(\"salon\", \"x\"); }\n}\n",
+    ];
+    for texte in essais {
+        assert!(!un(texte).contains("salon"), "{texte}");
+    }
+    assert!(un("#[cfg(not(r#test))]\nfn a() { TR(\"salon\", \"x\"); }\n").contains("salon"));
+}
+
+#[test]
+fn un_path_sur_un_module_en_ligne_part_du_dossier_du_fichier() {
+    // 3e re-contrôle : dans src/a.rs (pas un mod.rs), `#[path = "foo"] mod en_ligne { mod b; }` compile src/foo/b.rs
+    // pour rustc 1.99, pas src/a/foo/b.rs. Avant, le premier cas arrêtait la compilation d'un code juste, et le
+    // second lisait comme programme le fichier d'essais src/a/foo/b.rs.
+    let a = "#[path = \"foo\"]\npub mod en_ligne {\n    pub mod b;\n}\n";
+    let vrai = "fn a() { TR(\"vrai\", \"real\"); }\n";
+    let lu = mots(&[("src/main.rs", "mod a;\n"), ("src/a.rs", a), ("src/foo/b.rs", vrai)]);
+    assert_eq!(lu, attendus(&["vrai", "real"]));
+    let avec_essai = format!("{a}#[cfg(test)]\n#[path = \"a/foo/b.rs\"]\nmod z;\n");
+    let lu = mots(&[
+        ("src/main.rs", "mod a;\n"),
+        ("src/a.rs", &avec_essai),
+        ("src/foo/b.rs", vrai),
+        ("src/a/foo/b.rs", "fn a() { TR(\"alice\", \"salon\"); }\n"),
+    ]);
+    assert_eq!(lu, attendus(&["vrai", "real"]));
+}
+
+#[test]
 fn un_essai_en_ligne_ne_retire_que_son_module() {
     // R2-COMPILATION-5b : « mod sous { #![cfg(test)] … } » retire ce module seul, pas le fichier ni son dossier.
     let lu = mots(&[

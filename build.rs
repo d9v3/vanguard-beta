@@ -193,14 +193,21 @@ fn regles_yara() {
 /// sur le programme ni sur sa reproductibilité.
 fn vocabulaire() {
     println!("cargo:rerun-if-changed=src");
+    // Depuis la racine du paquet, pas le dossier courant (3e re-contrôle) ; la lecture reçoit les chemins relatifs
+    // (« src/… »), comme rustc les écrit.
+    let racine = std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     let mut fichiers = Vec::new();
-    fichiers_rs(Path::new("src"), &mut fichiers);
+    fichiers_rs(&racine.join("src"), &mut fichiers);
     fichiers.sort();
     let sources: Vec<_> = fichiers
         .into_iter()
         .map(|fichier| {
             let texte = std::fs::read_to_string(&fichier).expect("source illisible pour le vocabulaire");
-            (fichier, texte)
+            let relatif = fichier
+                .strip_prefix(&racine)
+                .expect("source hors du paquet")
+                .to_path_buf();
+            (relatif, texte)
         })
         .collect();
     let sortie = std::env::var("OUT_DIR").expect("OUT_DIR");

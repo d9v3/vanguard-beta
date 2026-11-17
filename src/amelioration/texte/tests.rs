@@ -292,11 +292,9 @@ fn lb_fermeture_1_ipv6_pleine_suivie_d_un_point_masquee() {
             "vers 2a02:1234:5678:9abc:a4b3:c2ff:fed1:1234.Nouvel essai",
             "vers <ip>.Nouvel essai",
         ),
-        (
-            "IP6 2a02:1234:5678:9abc:a4b3:c2ff:fed1:1234.443 fin",
-            "IP6 <ip>.443 fin",
-        ),
-        ("vers fd12:3456:789a:1:a4b3:c2ff:fed1:1234.22 fin", "vers <ip>.22 fin"),
+        // 3e re-contrôle (grammaire stricte) : le port écrit après un point est masqué avec l'adresse.
+        ("IP6 2a02:1234:5678:9abc:a4b3:c2ff:fed1:1234.443 fin", "IP6 <ip> fin"),
+        ("vers fd12:3456:789a:1:a4b3:c2ff:fed1:1234.22 fin", "vers <ip> fin"),
     ];
     for (brut, attendu) in cas {
         assert_eq!(propre(brut), attendu, "{brut:?}");
@@ -396,12 +394,13 @@ fn r2_fuite_3_4_ipv6_suivie_d_un_deux_points_ou_collee() {
         ),
         ("udp6 fe80::a4b3:c2ff:fed1:e0f9%eth0:546 vu", "udp6 <ip> vu"),
         ("tcp6 fd12:3456:abcd:ef01:2345:6789:abcd:ef01:443 vu", "tcp6 <ip> vu"),
-        ("hôte:fd12:3456:abcd:ef01:2345:6789:abcd:ef01 vu", "hôte:<ip> vu"),
-        ("ip6:fd12:3456::7 vu", "ip6:<ip> vu"),
+        // 3e re-contrôle (grammaire stricte) : la fin hexadécimale d'une étiquette collée est masquée avec l'adresse.
+        ("hôte:fd12:3456:abcd:ef01:2345:6789:abcd:ef01 vu", "hôt<ip> vu"),
+        ("ip6:fd12:3456::7 vu", "ip<ip> vu"),
         ("addr:fd12:3456::7 vu", "addr:<ip> vu"),
         ("2001:db8::1: Connection refused", "<ip>: Connection refused"),
-        ("vers fd12:3456::7.fd12:3456::8 fin", "vers <ip>.<ip> fin"),
-        ("vers fd12:3456::7...fd12:3456::8 fin", "vers <ip>...<ip> fin"),
+        ("vers fd12:3456::7.fd12:3456::8 fin", "vers <ip> fin"),
+        ("vers fd12:3456::7...fd12:3456::8 fin", "vers <ip> fin"),
         (
             "vers fd12:3456:abcd:ef01:2345:6789:abcd:198.51.100.23 fin",
             "vers <ip> fin",
@@ -411,6 +410,61 @@ fn r2_fuite_3_4_ipv6_suivie_d_un_deux_points_ou_collee() {
     ];
     for (brut, attendu) in cas {
         assert_eq!(propre(brut), attendu, "{brut:?}");
+    }
+}
+
+/// 3e re-contrôle (IPv6 après une étiquette à tiret, trait bas ou point ; mot collé après le deux-points final) :
+/// grammaire stricte, sans contexte. Toute suite de chiffres hexadécimaux, « : » et « . » avec deux « : » et un chiffre
+/// est masquée ; le mot collé après garde sa place quand c'est possible, sinon il est masqué jusqu'à l'espace.
+#[test]
+fn r3_ipv6_masquee_quel_que_soit_l_entourage() {
+    let cas = [
+        (
+            "nginx upstream remote_addr:2001:db8:aa::17 a ferme la connexion",
+            "nginx upstream remote_addr:<ip> a ferme la connexion",
+        ),
+        (
+            "pare-feu: paquet de src_ip:fd12:3456:abcd:ef01:2345:6789:abcd:ef01 refuse",
+            "pare-feu: paquet de src_ip:<ip> refuse",
+        ),
+        (
+            "dhcp bail pour portable-salon:fd12:3456::7 expire",
+            "dhcp bail pour portable-salon:<ip> expire",
+        ),
+        (
+            "resolution de nas.lan:fd12:3456::7 en echec",
+            "resolution de nas.lan:<ip> en echec",
+        ),
+        ("X-Forwarded-For:2001:db8:aa::17 vu", "X-Forwarded-For:<ip> vu"),
+        (
+            "ssh: connect to host fd12:3456::7:Connection refused",
+            "ssh: connect to host <ip>:Connection refused",
+        ),
+        (
+            "liaison impossible sur 2001:db8:aa::17:Address already in use",
+            "liaison impossible sur <ip>:Address already in use",
+        ),
+        (
+            "liaison impossible sur fd12:3456:abcd:ef01:2345:6789:abcd:ef01:Address already in use",
+            "liaison impossible sur <ip>:Address already in use",
+        ),
+        ("liaison sur 2001:db8:aa::17:denied", "liaison sur <ip>:denied"),
+        ("liaison sur 2001:db8:aa::17:eth0", "liaison sur <ip>:eth0"),
+        ("liaison sur 2001:db8:aa::17:443:closed", "liaison sur <ip>:closed"),
+        ("liaison sur 2001:db8:aa::17:timeout", "liaison sur <ip>:timeout"),
+        // Collée devant et derrière, sans séparateur : tout le mot, jusqu'à l'espace.
+        ("vu xfd12:3456::7Connection fin", "vu x<ip> fin"),
+        ("vu fd12::Cafeteria fin", "vu <ip> fin"),
+        // Le prix, accepté : une heure ou un rapport ont la forme.
+        ("ouvert à 12:30:45 hier", "ouvert à <ip> hier"),
+        ("rapport 1:2:3 vu", "rapport <ip> vu"),
+    ];
+    for (brut, attendu) in cas {
+        assert_eq!(propre(brut), attendu, "{brut:?}");
+    }
+    // Sans chiffre, ou avec un seul « : » : pas la forme (limite dite : « fd::ab »).
+    for t in ["std::fs::read refusé", "à 12:30 hier", "fd::ab vu"] {
+        assert_eq!(propre(t), t, "{t:?}");
     }
 }
 

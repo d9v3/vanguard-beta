@@ -37,7 +37,14 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
   « fe80::1%eth0: … », « %eth0:546 »), précédée d'une étiquette collée (« addr:fd12::7 ») ou d'un point
   (« fd12::7.fd12::8 », « ...10.0.0.5 ») ; une zone écrite avec des tirets, des traits bas ou un point suivi d'un
   chiffre (« %br-lan », « %eth0.100 ») ; des points idéographiques (« 。 ») : tout cela est maintenant masqué en entier.
-  Un mot collé après le point (« 5::6.Le reste ») garde sa place. Ne restent lisibles que des numéros qui ne peuvent pas
+  Un mot collé après le point (« 5::6.Le reste ») garde sa place. Les adresses IPv6 sont lues par une grammaire
+  stricte, sans regarder ce qui les entoure : toute suite de chiffres hexadécimaux, de deux-points et de points qui
+  compte au moins deux deux-points et un chiffre est masquée, quelle que soit l'étiquette collée devant
+  (« remote_addr: », « X-Forwarded-For: », « nas.lan: ») ou le mot collé derrière (« …::7:Connection refused ») ; un
+  mot collé fait de chiffres et de lettres est masqué avec elle, jusqu'à l'espace. Prix accepté : une heure
+  (« 12:30:45 »), un rapport (« 1:2:3 ») ou une adresse de périphérique PCI (« 0000:00:02.0 ») sont masqués aussi ;
+  dans un journal de bureau mesuré, environ deux lignes sur cinq ont ainsi leur heure masquée. Une étiquette qui finit
+  par une lettre hexadécimale la perd (« hôte:fd12::7 » donne « hôt<ip> »). Ne restent lisibles que des numéros qui ne peuvent pas
   être une adresse avec son port : une version à suffixe connu (« 1.2.3.4rc1 », « 4.19.0.0beta », « alpha », « esr ») ;
   après « version », « build », « section », « contrôle », « pilote », « release » et leurs formes anglaises, un
   cinquième nombre d'un ou deux chiffres derrière un premier nombre sous 100 (« version 1.2.3.4.5 ») ; une suite de six

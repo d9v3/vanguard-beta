@@ -248,7 +248,7 @@ impl Lecteur<'_> {
                     }
                 }
                 TokenTree::Ident(nom) => {
-                    let nom = nom.to_string();
+                    let nom = sans_r(&nom.to_string()).to_string();
                     if let (Some(TokenTree::Punct(b)), Some(TokenTree::Group(g))) = (suivant, arbres.get(i + 2))
                         && b.as_char() == '!'
                     {
@@ -318,10 +318,25 @@ impl Lecteur<'_> {
     }
 }
 
+/// Un identifiant sans son préfixe brut : rustc lit `r#test` comme `test` (3e re-contrôle).
+fn sans_r(nom: &str) -> &str {
+    nom.strip_prefix("r#").unwrap_or(nom)
+}
+
+/// Le chemin est-il le seul identifiant `nom`, brut ou non (`cfg`, `r#cfg`) ?
+fn est(chemin: &syn::Path, nom: &str) -> bool {
+    chemin.leading_colon.is_none()
+        && chemin.segments.len() == 1
+        && chemin
+            .segments
+            .first()
+            .is_some_and(|s| s.arguments.is_none() && sans_r(&s.ident.to_string()) == nom)
+}
+
 /// Le chemin d'un attribut `path = "…"`, s'il y en a un.
 fn chemin_d_attribut(attributs: &[Attribute]) -> Option<String> {
     attributs.iter().find_map(|a| match &a.meta {
-        Meta::NameValue(nv) if nv.path.is_ident("path") => match &nv.value {
+        Meta::NameValue(nv) if est(&nv.path, "path") => match &nv.value {
             Expr::Lit(l) => match &l.lit {
                 Lit::Str(s) => Some(s.value()),
                 _ => None,
@@ -337,17 +352,17 @@ fn essai_par<'m>(attributs: impl Iterator<Item = &'m Meta>) -> Result<bool, Illi
     for meta in attributs {
         let chemin = meta.path();
         let dernier = chemin.segments.last().map(|s| s.ident.to_string()).unwrap_or_default();
-        if ATTRIBUTS_D_ESSAIS.contains(&dernier.as_str()) {
+        if ATTRIBUTS_D_ESSAIS.contains(&sans_r(&dernier)) {
             return Ok(true);
         }
-        if chemin.is_ident("cfg") {
+        if est(chemin, "cfg") {
             let Meta::List(liste) = meta else {
                 return Err(Illisible(String::from("cfg sans parenthèses")));
             };
             if un_seul(liste.tokens.clone())? == Tri::Faux {
                 return Ok(true);
             }
-        } else if chemin.is_ident("cfg_attr") {
+        } else if est(chemin, "cfg_attr") {
             let Meta::List(liste) = meta else {
                 return Err(Illisible(String::from("cfg_attr sans parenthèses")));
             };
@@ -410,7 +425,7 @@ fn conditions(flux: TokenStream) -> Result<Vec<Tri>, Illisible> {
         let TokenTree::Ident(nom) = arbre else {
             return Err(illisible());
         };
-        let nom = nom.to_string();
+        let nom = sans_r(&nom.to_string()).to_string();
         let valeur = match arbres.peek() {
             Some(TokenTree::Punct(p)) if p.as_char() == '=' => {
                 arbres.next();
@@ -621,14 +636,21 @@ impl<'ast> Visit<'ast> for Lecteur<'_> {
     }
 
     fn visit_item_mod(&mut self, m: &'ast syn::ItemMod) {
-        let nom = m.ident.to_string();
-        let nom = nom.strip_prefix("r#").unwrap_or(&nom).to_string();
+        let nom = sans_r(&m.ident.to_string()).to_string();
         let chemin = chemin_d_attribut(&m.attrs);
         match &m.content {
             None => self.declare(&nom, chemin),
             Some((_, elements)) => {
                 let avant = self.enfants.clone();
-                self.enfants = propre(&self.enfants.join(chemin.unwrap_or(nom)));
+                // Comme rustc (3e re-contrôle) : un `#[path]` sur un module en ligne qui n'est dans aucun autre est
+                // relatif au dossier du fichier, même hors mod.rs ; dedans, au dossier des modules en ligne.
+                self.enfants = match chemin {
+                    Some(chemin) if self.en_ligne == 0 => {
+                        propre(&self.fichier.parent().unwrap_or(Path::new("")).join(chemin))
+                    }
+                    Some(chemin) => propre(&self.enfants.join(chemin)),
+                    None => propre(&self.enfants.join(nom)),
+                };
                 self.en_ligne += 1;
                 for element in elements {
                     self.visit_item(element);
@@ -756,10 +778,11 @@ impl<'ast> Visit<'ast> for Lecteur<'_> {
             return;
         }
         let nom = m.path.segments.last().map(|s| s.ident.to_string()).unwrap_or_default();
-        if MACROS_D_ESSAIS.contains(&nom.as_str()) {
+        let nom = sans_r(&nom);
+        if MACROS_D_ESSAIS.contains(&nom) {
             return;
         }
-        let texte = MACROS_DE_TEXTE.contains(&nom.as_str());
+        let texte = MACROS_DE_TEXTE.contains(&nom);
         if texte {
             self.texte += 1;
         }

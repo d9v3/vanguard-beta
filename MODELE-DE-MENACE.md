@@ -818,11 +818,13 @@ commande refuse de démarrer (code 2) tant qu'elle n'a pas été essayée sur un
   code, PIN, NIP, PSK, jeton, token, secret, secrète, passe, seed, phrase de récupération, recovery phrase,
   identifiant, login, au singulier ou au pluriel, en toute casse, avec ou sans tiret, sans séparateur exigé), tout le
   reste du texte devient un seul « … », pas seulement jusqu'au premier point ; seule exception, une annonce niée
-  (« sans mot de passe », « no password ») sans « : » ni « = » qui la suive, et sans point, « ! », « ? » ni parenthèse
-  entre la négation et l'annonce, comme dans le message de Vanguard sur un réseau Wi-Fi sans mot de passe. Une valeur
+  (« sans mot de passe », « no password ») sans « : » ni « = » qui la suive, quand la négation finit par une lettre et
+  que l'annonce commence par une lettre : aucun signe entre les deux (point, « ! », « ? », deux-points, parenthèse
+  ouvrante ou fermante), comme dans le message de Vanguard sur un réseau Wi-Fi sans mot de passe. Une valeur
   écrite avant l'annonce (« maison rouge est le mot de passe ») n'est pas retenue. Dans une alerte du veilleur, chaque
   « (PID n) » ouvre son propre groupe : l'extrait de commande qui le suit entre parenthèses devient un seul « … », et une
-  parenthèse jamais fermée retient tout jusqu'au « (PID n) » suivant ou jusqu'à la fin ; une autre parenthèse ne sort
+  parenthèse jamais fermée retient tout jusqu'au « (PID n) » suivant ou jusqu'à la fin ; un « (PID n) » cité dans un
+  extrait encore ouvert le continue, de son premier mot, avec ou sans parenthèse ; une autre parenthèse ne sort
   que si tous ses mots sont connus. Le
   prix : un texte utile qui suit une annonce est perdu (environ 0,8 % des morceaux de texte de Vanguard contiennent un
   de ces mots, « clé de registre » et « code » compris). Ce sont des filets, pas une garantie : une valeur que rien
@@ -836,7 +838,12 @@ commande refuse de démarrer (code 2) tant qu'elle n'a pas été essayée sur un
   lettres et chiffres que leur forme admet, sans être relus : une date impossible, une règle inventée ou un nombre qui
   écrit une adresse IPv4 en entier y passent. C'est un canal pour qui écrit déjà le journal ou un examen non scellé, pas
   une fuite d'une donnée de la personne. Un module chargé hors de `src/` (le modèle des couleurs partagé avec la
-  fenêtre) n'est pas lu : il n'a aucun message, et un mot de moins ne fait que masquer davantage.
+  fenêtre) n'est pas lu : il n'a aucun message, et un mot de moins ne fait que masquer davantage. La lecture suit
+  `r#test` et `r#cfg` comme le compilateur, et un `#[path]` sur un module en ligne depuis le dossier du fichier. Le
+  script de compilation (`build.rs`), la lecture qu'il inclut et la configuration de cargo du dépôt sont jugés par une
+  empreinte de tout le fichier, et `Cargo.toml` par la liste exacte de ses cibles et de ses paquets de compilation
+  (`outils/essais-signature.sh`) : un changement y demande une relecture voulue. Non vérifié : la configuration de
+  cargo hors du dépôt, et une macro d'un paquet ordinaire qui lirait le disque.
 - **Elle ne peut pas prouver qu'elle est le vrai Vanguard.** Un faux programme posé au même chemin répondrait la même
   chose, `identite` comprise ; et un programme du compte peut écrire dans les fichiers de Vanguard (les sceaux sont une
   barrière, pas un coffre : voir « Les programmes de votre compte ne visent pas Vanguard lui-même »). La preuve se fait

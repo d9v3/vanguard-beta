@@ -877,62 +877,74 @@ apres "$H_COMPILE" "$H_PAGE" "$H_CAPTURES" && ko "publier : CI acceptée sur un 
   ! apres "$H_COMPILE" HEAD && ! apres "$H_COMPILE" "$(printf 'f%.0s' {1..40})" &&
   ok "publier : CI refusée sur un commit d'avant, le même, un nom abrégé ou symbolique, un commit inconnu" ||
   ko "publier : CI d'un commit d'avant, abrégé, symbolique ou inconnu acceptée comme descendant"
-# Ce que la liste dit hors de la compilation ne l'est pas : rien de src/, build.rs ni Cargo.toml ne cite ces
-# chemins, et build.rs ne parcourt qu'un dossier, src/, pour le vocabulaire de la porte des assistants. Des listes
-# permises, pas des motifs interdits (un motif se contourne par un alias, un chemin coupé ou un autre appel) :
-# - les corps de vocabulaire() et de fichiers_rs (les seuls .rs, sur "src" et ses sous-dossiers, liens symboliques
-#   ni suivis ni lus) ont une empreinte SHA-256 fixée ici ; un changement, même d'une espace, est refusé jusqu'à ce
-#   qu'on relise la fonction et qu'on reporte sa nouvelle empreinte, et fichiers_rs n'est nommée que trois fois ;
-# - chaque ligne de build.rs qui touche au disque ou lance un programme (std::fs, std::process, std::os, std::net,
-#   Command, File, OpenOptions, read_to_string, read_dir, use, extern crate, macro_rules!, « std as ») doit être
-#   une des lignes permises ci-dessous, autant de fois ;
-# - la lecture (src/porte_mcp/sources.rs, seul module que build.rs inclut) n'importe que std::collections,
-#   std::path, syn et proc_macro2, ne nomme dans std que collections, path et iter, et ne nomme ni super, ni crate,
-#   ni macro_rules!, ni un autre paquet. Limite : le contenu des paquets permis n'est pas relu ici (syn et
-#   proc_macro2 ne lisent pas le disque), et une écriture que rustfmt refuserait (« std :: fs ») n'est vue que par
-#   l'étape de mise en forme de outils/verifier.sh.
+# Ce que la liste dit hors de la compilation ne l'est pas : rien de ce qui fait le programme ne lit ces chemins. Des
+# formes entières et des listes permises, pas des mots interdits (3e re-contrôle : un motif se contournait par un
+# import groupé, un chemin coupé, un module voisin ou un changement de dossier) :
+# - build.rs, la lecture qu'il inclut (src/porte_mcp/sources.rs) et .cargo/config.toml ont chacun une empreinte
+#   SHA-256 du fichier entier, fixée ici ; un changement, même d'une espace, est refusé jusqu'à ce qu'on relise tout
+#   le fichier et qu'on reporte sa nouvelle empreinte (geste voulu). Relu à cette empreinte : build.rs lit src/ depuis
+#   CARGO_MANIFEST_DIR sans suivre les liens symboliques, et seulement assets/oui.tsv, les règles YARA et l'icône
+#   hors de src/ ; la lecture ne touche ni au disque ni à l'environnement ;
+# - Cargo.toml (lu par cargo metadata, pas par motif) : exactement ces cibles (le programme, l'essai
+#   tests/programme.rs, build.rs) et ces paquets de compilation (winresource, syn, proc-macro2) du registre
+#   crates.io, sans chemin, git, renommage ni plateforme ; leur version reste libre (Dependabot) ;
+# - Cargo.lock : chaque paquet autre que vanguard vient du registre crates.io, et seules les clés connues y sont ;
+# - rust-toolchain.toml : seulement channel, profile, components et targets (pas de chaîne prise dans un dossier).
+# Non vérifié ici, dit : src/ qui lirait un fichier de la liste autrement que par son nom écrit en clair (cites ne
+# voit ni include_str!(concat!(…)) ni une macro renommée), une macro procédurale d'un paquet ordinaire qui lirait le
+# disque, et la configuration de cargo hors du dépôt (~/.cargo). Sans cargo ou sans jq : « non vérifié », un échec.
+EMPREINTES_COMPILATION='9e0fc63f67a0bc7419545c8df5db8070b537a28e697d3f01c792932c3fa54a89 build.rs
+08e4d578ef40f8f8853abcf1aaea832a49a5a4598f00d176de5a512a11735944 src/porte_mcp/sources.rs
+a132b1fdb1a4e6ce3f3e4de078e3c048a0b8f7f040081fd8fac351e0185eb651 .cargo/config.toml'
+REGISTRE='registry+https://github.com/rust-lang/crates.io-index'
+garde_compilation() { # $1 : racine d'un dépôt ; écrit chaque écart, rien si tout est permis
+  local d attendue fichier reelle meta
+  d=$(cd "$1" && pwd -P) || { echo " $1 illisible"; return; }
+  while read -r attendue fichier; do
+    reelle=
+    [[ -f $d/$fichier && ! -L $d/$fichier ]] && reelle=$(sha256sum <"$d/$fichier" | cut -d' ' -f1)
+    [[ $reelle == "$attendue" ]] ||
+      echo " $fichier a changé (empreinte ${reelle:-absente} : relire tout le fichier, puis la reporter ici)"
+  done <<<"$EMPREINTES_COMPILATION"
+  if ! command -v jq >/dev/null ||
+    ! meta=$(cd "$d" && cargo metadata --no-deps --offline --format-version 1 2>/dev/null); then
+    echo " Cargo.toml non vérifié (cargo metadata ou jq absent, ou Cargo.toml illisible)"
+  else
+    jq -r --arg d "$d/" --arg r "$REGISTRE" '
+      if (.packages | length) != 1 then " Cargo.toml : plusieurs paquets"
+      else .packages[0] |
+        ([.targets[] | {kind, src: (.src_path | ltrimstr($d))}] | sort) as $c |
+        ([.dependencies[] | select(.kind == "build") | {name, source, rename, target, registry, path}]
+          | sort_by(.name)) as $b |
+        (if $c == ([{kind: ["bin"], src: "src/main.rs"}, {kind: ["custom-build"], src: "build.rs"},
+                    {kind: ["test"], src: "tests/programme.rs"}] | sort) then empty
+         else " Cargo.toml : cibles hors de la liste : \($c | tojson)" end),
+        (if $b == (["proc-macro2", "syn", "winresource"] | map({name: ., source: $r, rename: null,
+                    target: null, registry: null, path: null})) then empty
+         else " Cargo.toml : paquets de compilation hors de la liste : \($b | tojson)" end)
+      end' <<<"$meta" || echo " Cargo.toml non vérifié (jq en échec)"
+  fi
+  awk -v r="$REGISTRE" '
+    function fin() { if (n == "vanguard") { v++; if (s != "") print " Cargo.lock : vanguard a une source" }
+                     else if (p && s != r) print " Cargo.lock : " n " ne vient pas du registre (" s ")" }
+    /^#/ || /^$/ { next }
+    /^version = [0-9]+$/ && !p { next }
+    /^\[\[package\]\]$/ { fin(); p = 1; n = s = ""; next }
+    p && /^name = "[^"]+"$/ { n = $3; gsub(/"/, "", n); next }
+    p && /^version = "[^"]+"$/ { next }
+    p && /^source = "[^"]+"$/ { s = $3; gsub(/"/, "", s); next }
+    p && /^checksum = "[0-9a-f]{64}"$/ { next }
+    p && (/^dependencies = \[$/ || /^ "[^"]+",$/ || /^\]$/) { next }
+    { print " Cargo.lock : ligne hors de la forme permise : " $0 }
+    END { fin(); if (v != 1) print " Cargo.lock : " v + 0 " paquet(s) vanguard" }' "$d/Cargo.lock" 2>/dev/null ||
+    echo " Cargo.lock illisible"
+  grep -vxE '\s*(#.*)?|\[toolchain\]|(channel|profile) = "[A-Za-z0-9._-]+"|(components|targets) = \[("[A-Za-z0-9_-]+"(, )?)*\]' \
+    "$d/rust-toolchain.toml" 2>/dev/null | sed 's/^/ rust-toolchain.toml : ligne hors de la forme permise : /'
+  [[ -f $d/rust-toolchain.toml && ! -L $d/rust-toolchain.toml ]] || echo " rust-toolchain.toml absent ou lien"
+}
 cites=$(grep -rnE 'assets/captures|captures/|partage\.png|index\.html|\.\./docs|"/?docs/|/docs"' \
   "$DEPOT/src" "$DEPOT/build.rs" "$DEPOT/Cargo.toml" || true)
-LECTURE=$DEPOT/src/porte_mcp/sources.rs
-parcours=
-corps() { awk -v d="^fn $1\\\\(" '$0~d{p=1} p{print} p&&/^}$/{exit}' "$DEPOT/build.rs" | sha256sum | cut -d' ' -f1; }
-[[ $(corps vocabulaire) == fb5ec10f86b52b76f50f4c4afa12ac08fac23a21ff71d397cc90244037f0ed0f ]] ||
-  parcours+=" vocabulaire() de build.rs a changé (empreinte $(corps vocabulaire) : relire, puis la reporter ici)"
-[[ $(corps fichiers_rs) == de0e0b3f239625e15e6ae44bb0cda4068388ac29d1deb60f885fad783e337b94 ]] ||
-  parcours+=" fichiers_rs de build.rs a changé (empreinte $(corps fichiers_rs) : relire, puis la reporter ici)"
-[[ $(grep -ow 'fichiers_rs' "$DEPOT/build.rs" | wc -l) == 3 ]] ||
-  parcours+=" fichiers_rs nommée ailleurs : $(grep -nw 'fichiers_rs' "$DEPOT/build.rs" | tr '\n' ' ')"
-SENSIBLE='std\s*::\s*(fs|process|os|net)\b|\bCommand\b|\bFile\b|OpenOptions|read_to_string|read_dir|^\s*(pub\s+)?use\s|extern\s+crate|macro_rules|\bstd\s+as\b'
-PERMISES='use std::collections::HashMap;
-use std::fmt::Write as _;
-use std::path::Path;
-let sortie = std::process::Command::new("git").args(args).output().ok()?;
-let texte = std::fs::read_to_string("assets/oui.tsv").expect("assets/oui.tsv illisible");
-std::fs::write(Path::new(&sortie).join("fabricants.rs"), rs).expect("fabricants.rs non écrit");
-let texte = std::fs::read_to_string("assets/yara/reversinglabs.yara").expect("règles YARA illisibles");
-std::fs::write(Path::new(&sortie).join("reversinglabs.yara"), alleger_yara(&texte))
-let texte = std::fs::read_to_string(&fichier).expect("source illisible pour le vocabulaire");
-std::fs::write(Path::new(&sortie).join("vocabulaire.txt"), texte).expect("vocabulaire non écrit");
-let entrees = std::fs::read_dir(dossier).expect("dossier des sources illisible");
-let texte = std::fs::read_to_string(&rc)?;
-std::fs::write(&rc, format!("// Ressources de vanguard.exe (build.rs)\n{texte}"))?;
-let etat = std::process::Command::new(zig)'
-en_trop=$(diff <(grep -vE '^\s*//' "$DEPOT/build.rs" | grep -E "$SENSIBLE" | sed -E 's/^\s+//' | LC_ALL=C sort) \
-  <(LC_ALL=C sort <<<"$PERMISES") | grep '^<' | cut -c3- || true)
-[[ -z $en_trop ]] || parcours+=" build.rs touche au disque ou lance un programme hors des lignes permises : $en_trop"
-[[ $(grep -cE '#!?\[path|include(_str|_bytes)?!' "$DEPOT/build.rs" || true) == 1 ]] &&
-  [[ $(grep -cxF '#[path = "src/porte_mcp/sources.rs"]' "$DEPOT/build.rs") == 1 ]] ||
-  parcours+=" build.rs inclut autre chose que src/porte_mcp/sources.rs"
-# Le code de la lecture, sans ses commentaires ni la déclaration de ses essais (sources/tests.rs, hors de build.rs).
-lecture=$(grep -vE '^\s*//' "$LECTURE" 2>/dev/null | grep -vxF 'mod tests;' || true)
-imports=$(grep -E '^\s*(pub\s+)?use\s' <<<"$lecture" |
-  grep -vE '^use (std::(collections|path)|syn|proc_macro2)::[A-Za-z_:{}, ]+(;|\{)$' || true)
-noms=$(grep -oE '(^|[^A-Za-z0-9_:])[a-z_][a-z0-9_]*\s*::(\s*[a-z_][a-z0-9_]*)?' <<<"$lecture" |
-  sed -E 's/^[^a-z_]//; s/\s//g' | grep -vxE '(syn|proc_macro2|visit)::[a-z_0-9]*|std::(collections|path|iter)|str::[a-z_0-9]+' || true)
-[[ -f $LECTURE ]] && [[ -z $imports && -z $noms ]] &&
-  ! grep -qE 'fs::|File|read_dir|read_to_string|include(_str|_bytes)?!|#!?\[path|env|Command|mod |macro_rules|extern\s+crate' \
-    <<<"$lecture" ||
-  parcours+=" src/porte_mcp/sources.rs importe, nomme ou inclut hors de la liste permise : ${imports//$'\n'/ } ${noms//$'\n'/ }"
+parcours=$(garde_compilation "$DEPOT" | tr '\n' ';')
 liens=$(cd "$DEPOT" && find src -type l)
 [[ -z $liens ]] || parcours+=" lien symbolique sous src/ : $liens"
 dans_la_liste=$(cd "$DEPOT" && find src -name '*.rs' | grep -E "$(grep -v '^#' .github/hors-code.txt | head -n 1)" || true)
@@ -940,6 +952,49 @@ dans_la_liste=$(cd "$DEPOT" && find src -name '*.rs' | grep -E "$(grep -v '^#' .
 [[ -z $cites && -z $parcours ]] &&
   ok "liste hors compilation : ni src/, ni build.rs, ni Cargo.toml ne lisent les captures ou la page des fonctions" ||
   ko "liste hors compilation : un fichier de la liste est lu par la compilation : ${cites#"$DEPOT"/}${parcours}"
+# La garde elle-même, sur une copie des fichiers qu'elle juge : saine, puis un défaut à la fois (chacun du 3e
+# re-contrôle ou de sa famille) ; chaque défaut doit être vu, et nommé.
+G=$T/garde-compilation
+garde_copie() {
+  rm -rf "$G" && mkdir -p "$G/src/porte_mcp" "$G/tests" "$G/.cargo" &&
+    cp "$DEPOT/build.rs" "$DEPOT/Cargo.toml" "$DEPOT/Cargo.lock" "$DEPOT/rust-toolchain.toml" "$G/" &&
+    cp "$DEPOT/src/porte_mcp/sources.rs" "$G/src/porte_mcp/" && cp "$DEPOT/.cargo/config.toml" "$G/.cargo/" &&
+    : >"$G/src/main.rs" && : >"$G/tests/programme.rs"
+}
+garde_copie && [[ -z $(garde_compilation "$G") ]] && ok "garde de compilation : une copie fidèle passe" ||
+  ko "garde de compilation : la copie fidèle est refusée (les essais suivants ne prouveraient rien) : $(garde_compilation "$G")"
+garde_voit() { # $1 : le mot attendu ; $2 : le défaut posé
+  local vu
+  vu=$(garde_compilation "$G")
+  [[ $vu == *"$1"* ]] && ok "garde de compilation : $2 refusé" || ko "garde de compilation : $2 pas vu ($vu)"
+}
+garde_copie && printf 'mod voisin;\n' >>"$G/build.rs" && garde_voit "build.rs a changé" "un module voisin dans build.rs"
+garde_copie && sed -i 's/^use /pub(crate) use /' "$G/src/porte_mcp/sources.rs" &&
+  garde_voit "sources.rs a changé" "un import changé dans la lecture"
+garde_copie && printf '[source.crates-io]\nreplace-with = "local"\n' >>"$G/.cargo/config.toml" &&
+  garde_voit "config.toml a changé" "un remplacement de source dans .cargo/config.toml"
+garde_copie && sed -i 's/^\[package\]$/[package]\nbuild = "autre.rs"/' "$G/Cargo.toml" && : >"$G/autre.rs" &&
+  garde_voit "cibles hors de la liste" "un autre script de compilation dans Cargo.toml"
+garde_copie && mkdir -p "$G/voisin/src" && : >"$G/voisin/src/lib.rs" &&
+  printf '[package]\nname = "voisin"\nversion = "0.1.0"\nedition = "2024"\n' >"$G/voisin/Cargo.toml" &&
+  sed -i 's/^\[build-dependencies\]$/[build-dependencies]\nvoisin = { path = "voisin" }/' "$G/Cargo.toml" &&
+  garde_voit "paquets de compilation hors de la liste" "un paquet local de compilation dans Cargo.toml"
+garde_copie && sed -i 's/^\[build-dependencies\]$/[build-dependencies]\nsyn2 = { package = "syn", version = "3" }/' \
+  "$G/Cargo.toml" && garde_voit "paquets de compilation hors de la liste" "un paquet de compilation renommé"
+garde_copie && printf '\n[[package]]\nname = "voisin"\nversion = "0.1.0"\n' >>"$G/Cargo.lock" &&
+  garde_voit "voisin ne vient pas du registre" "un paquet sans source dans Cargo.lock"
+garde_copie && printf '\n[[package]]\nname = "voisin"\nversion = "0.1.0"\nsource = "git+https://exemple.invalid/v"\n' \
+  >>"$G/Cargo.lock" && garde_voit "voisin ne vient pas du registre" "un paquet git dans Cargo.lock"
+garde_copie && printf '\n[[patch.unused]]\nname = "voisin"\n' >>"$G/Cargo.lock" &&
+  garde_voit "hors de la forme permise" "une section inconnue dans Cargo.lock"
+garde_copie && printf 'path = "/opt/rust"\n' >>"$G/rust-toolchain.toml" &&
+  garde_voit "rust-toolchain.toml : ligne hors" "une chaîne prise dans un dossier"
+garde_copie && rm "$G/build.rs" && garde_voit "build.rs a changé (empreinte absente" "un build.rs absent"
+garde_copie && printf '[[[\n' >>"$G/Cargo.toml" && garde_voit "Cargo.toml non vérifié" "un Cargo.toml illisible (non vérifié)"
+mkdir -p "$T/jq-en-panne" && printf '#!/bin/sh\nexit 5\n' >"$T/jq-en-panne/jq" && chmod +x "$T/jq-en-panne/jq"
+garde_copie && [[ $(PATH="$T/jq-en-panne:$PATH" garde_compilation "$G") == *"Cargo.toml non vérifié (jq en échec)"* ]] &&
+  ok "garde de compilation : jq en échec compte comme non vérifié" ||
+  ko "garde de compilation : jq en échec passe pour un Cargo.toml sain"
 # La liste est aussi « hors code » pour outils/date-du-code.sh : la date gravée par la CI sur ce commit d'après est
 # celle du commit compilé.
 while read -r p; do
