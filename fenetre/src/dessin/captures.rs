@@ -1929,6 +1929,56 @@ fn une_carte_de_commande_s_ouvre_d_un_seul_geste() {
     }
 }
 
+/// Entrée qui valide un champ de la console (sa recherche, sa saisie) ne relance pas la page montrée à côté de la
+/// liste : un champ d'une ligne lâche le focus sur Entrée sans manger la touche, et le clavier de la liste passe
+/// après lui. F5 pendant une saisie non plus.
+#[test]
+fn entree_dans_un_champ_ne_relance_pas_la_page() {
+    use egui::{Event, Key, Modifiers};
+    let ctx = Context::default();
+    super::polices(&ctx);
+    super::appliquer_theme(&ctx, true);
+    let mut temps = 1.0;
+    let touche = |key, modifiers| Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers,
+    };
+    let rubrique = Rubrique::Ordinateur;
+    let mut a = appli_remplie(false, true);
+    a.aller(Ecran::Rubrique(rubrique));
+    for _ in 0..4 {
+        tour(&ctx, &mut a, &mut temps, Vec::new());
+    }
+    let montree = a.detail();
+    assert!(montree.is_some(), "pas de page à côté de la liste");
+    assert_eq!(a.taches(), 0);
+    // La recherche de la console (Ctrl+F).
+    tour(&ctx, &mut a, &mut temps, vec![touche(Key::F, Modifiers::COMMAND)]);
+    tour(&ctx, &mut a, &mut temps, vec![Event::Text("fiche".into())]);
+    assert!(ctx.text_edit_focused(), "la recherche n'a pas le focus");
+    tour(&ctx, &mut a, &mut temps, vec![touche(Key::F5, Modifiers::NONE)]);
+    assert_eq!(a.taches(), 0, "F5 dans la recherche a relancé la page");
+    tour(&ctx, &mut a, &mut temps, vec![touche(Key::Enter, Modifiers::NONE)]);
+    assert_eq!(a.taches(), 0, "Entrée dans la recherche a relancé la page");
+    tour(&ctx, &mut a, &mut temps, vec![touche(Key::Escape, Modifiers::NONE)]);
+    // La saisie principale.
+    cliquer(
+        &ctx,
+        &mut a,
+        &mut temps,
+        "Tapez une commande de Vanguard (bilan, aide…)",
+    );
+    assert!(ctx.text_edit_focused(), "la saisie n'a pas le focus");
+    tour(&ctx, &mut a, &mut temps, vec![Event::Text("aide".into())]);
+    tour(&ctx, &mut a, &mut temps, vec![touche(Key::Enter, Modifiers::NONE)]);
+    assert_eq!(a.taches(), 0, "Entrée dans la saisie a relancé la page");
+    assert_eq!(a.ecran, Ecran::Rubrique(rubrique));
+    assert_eq!(a.detail(), montree);
+}
+
 /// En large, une rubrique est une liste à gauche et la page de la commande choisie à droite : un clic dans la liste
 /// change la page sans rien ajouter à « Retour » ; ↓ et ↑ changent de commande, Entrée ou F5 la relancent (une
 /// seule fois), un double-clic l'ouvre et la relance ; rien de cela quand un champ a le focus. Aller à la page d'une

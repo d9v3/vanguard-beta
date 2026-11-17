@@ -273,11 +273,18 @@ impl Appli {
         }
         self.annuler();
         self.abandonner_brouillon();
-        if retenir {
+        // Une rubrique dans une fenêtre large montre une page à côté de sa liste (`page`, dite par le dessin) : c'est
+        // elle que « Retour » doit rendre. Retenir la rubrique ferait un pas pour rien, si la page qu'elle montre
+        // ensuite est celle où l'on va (le Bilan tapé dans la console, retenu par sa rubrique).
+        let quitte = match (self.ecran, self.page) {
+            (Ecran::Rubrique(r), Some(c)) if c.rubrique() == r => ecran_de(c),
+            (e, _) => e,
+        };
+        if retenir && quitte != vers {
             if self.retours.len() >= RETOURS_MAX {
                 self.retours.remove(0);
             }
-            self.retours.push(self.ecran);
+            self.retours.push(quitte);
         }
         self.ecran = vers;
     }
@@ -345,16 +352,21 @@ impl Appli {
         }
     }
 
-    /// Une lecture à relancer d'elle-même : rapide (`LECTURE_RAPIDE`) et qui ne sonde pas le réseau, sans valeur à taper, qui ne change rien,
-    /// ni en cours ni en attente, et jamais lue dans cette fenêtre ou lue il y a plus de `FRAICHEUR`. Une lecture
-    /// longue (le bilan, l'antivirus…) ne part jamais seule : son bouton la lance.
+    /// Une lecture à relancer d'elle-même : rapide (`LECTURE_RAPIDE`) et qui ne sonde pas le réseau, sans valeur à
+    /// taper, quand rien ne tourne et que la file est vide, et jamais lue dans cette fenêtre ou lue il y a plus de
+    /// `FRAICHEUR`. Une lecture longue (le bilan, l'antivirus…) ne part jamais seule : son bouton la lance. Parcourir
+    /// la liste avec ↓ pendant qu'une lecture tourne ne met donc rien en file : seule la page où l'on s'arrête,
+    /// ouverte de nouveau plus tard, se relit.
+    ///
+    /// Aucune garde « qui ne change rien » : une commande seule (`Lancement::Commande`) ne fait que lire, par
+    /// construction (`Lancement::change` le dit faux pour elle) ; ce qui change le système passe par un changement ou
+    /// un geste, confirmé, jamais par ce chemin.
     fn a_relire(&self, c: Commande, maintenant: Instant) -> bool {
         self.programme.is_ok()
             && !lecture_longue(c)
             && !c.valeur_requise()
-            && !Lancement::Commande(c).change()
-            && self.tache.as_ref().is_none_or(|t| t.lancement.commande() != c)
-            && !self.en_attente(c)
+            && self.tache.is_none()
+            && self.file.is_empty()
             && self
                 .resultats
                 .get(&c)
@@ -2285,6 +2297,69 @@ mod tests {
         assert_eq!(a.detail(), None);
         a.aller(Ecran::Rubrique(Rubrique::Vanguard));
         assert_eq!(a.detail(), None);
+    }
+
+    /// En large, « Retour » depuis un écran ouvert d'une rubrique rend la page qu'elle montrait à côté de sa liste,
+    /// pas la rubrique (qui montrerait ensuite la page où l'on était allé : un pas pour rien). En étroit, la rubrique.
+    /// Vers la page même qu'elle montrait : rien de plus dans « Retour ».
+    #[test]
+    fn retour_rend_la_page_montree_a_cote_de_la_liste() {
+        let mut a = appli();
+        let r = Rubrique::Ordinateur;
+        let fiche = Commande::FicheOrdinateur;
+        assert_eq!(fiche.rubrique(), r);
+        let montrer = |a: &mut Appli, large: bool| {
+            let page = if large { a.detail() } else { commande_de(a.ecran) };
+            a.page_montree(page);
+        };
+        a.aller(Ecran::Rubrique(r));
+        a.choisir(fiche);
+        montrer(&mut a, true);
+        a.aller(Ecran::Bilan);
+        assert_eq!(
+            a.retour(),
+            Some(Ecran::Commande(fiche)),
+            "Retour ne rend pas la page montrée"
+        );
+        montrer(&mut a, true);
+        a.revenir();
+        montrer(&mut a, true);
+        assert_eq!(a.detail(), Some(fiche), "Retour a rendu une autre page");
+        // Étroit : la rubrique garde ses cartes, sans page à côté.
+        a.aller(Ecran::Rubrique(r));
+        montrer(&mut a, false);
+        a.aller(Ecran::Bilan);
+        assert_eq!(a.retour(), Some(Ecran::Rubrique(r)));
+        // Vers la page qu'elle montrait : rien de plus.
+        a.aller(Ecran::Rubrique(r));
+        a.choisir(fiche);
+        montrer(&mut a, true);
+        let pile = a.retours.clone();
+        a.aller(Ecran::Commande(fiche));
+        assert_eq!(a.retours, pile, "un pas pour rien dans « Retour »");
+    }
+
+    /// Parcourir la liste avec ↓ pendant qu'une lecture tourne ne met rien en file : une relance d'elle-même ne part
+    /// que si rien ne tourne et que la file est vide.
+    #[cfg(unix)]
+    #[test]
+    fn parcourir_la_liste_ne_met_rien_en_file() {
+        let mut a = appli_au_faux("parcourir");
+        let rapides: Vec<Commande> = Rubrique::Ordinateur
+            .commandes()
+            .filter(|c| !lecture_longue(*c) && !c.valeur_requise() && a.resultat(*c).is_none())
+            .collect();
+        assert!(rapides.len() >= 3, "trop peu de lectures rapides jamais lues");
+        for c in &rapides {
+            a.page_montree(Some(*c));
+        }
+        assert_eq!(
+            a.en_cours().map(|(e, _)| e),
+            Some(rapides[0]),
+            "la première page n'est pas partie"
+        );
+        assert_eq!(a.taches(), 1, "parcourir la liste a mis des lectures en file");
+        finir_tout(&mut a);
     }
 
     /// Une fenêtre au faux `vanguard` (il rend du vide, aussitôt), ses lectures du lancement finies.

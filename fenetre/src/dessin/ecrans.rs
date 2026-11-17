@@ -161,7 +161,11 @@ fn etat_court(appli: &Appli, c: Commande) -> String {
 /// ouverte : ↑ et ↓ montrent la commande d'avant ou d'après (le focus suit, s'il était sur la liste), Entrée ou F5
 /// relance celle montrée (la garde du bouton : `Appli::relancer`). F5 vaut aussi quand un bouton a le focus, jamais
 /// pendant une saisie.
-pub fn clavier_de_la_liste(appli: &mut Appli, ctx: &eframe::egui::Context, montree: Commande) {
+///
+/// `champ_au_debut` : un champ de texte (la saisie de la console, sa recherche) avait le focus au début de l'image.
+/// Un champ d'une ligne lâche le focus sur Entrée sans manger la touche : sans cette mémoire, l'Entrée qui valide la
+/// saisie ou la recherche relançait aussi la page. Dans une telle image, ni flèche, ni Entrée, ni F5 ne sont pris.
+pub fn clavier_de_la_liste(appli: &mut Appli, ctx: &eframe::egui::Context, montree: Commande, champ_au_debut: bool) {
     use eframe::egui::{Key, Modifiers};
     if appli.feuille_correction().is_some() || appli.confirmation().is_some() || appli.confirmation_couleurs().is_some()
     {
@@ -169,8 +173,8 @@ pub fn clavier_de_la_liste(appli: &mut Appli, ctx: &eframe::egui::Context, montr
     }
     let liste: Vec<Commande> = montree.rubrique().commandes().collect();
     let sur_la_liste = ctx.memory(|m| m.focused().map(|f| liste.iter().any(|c| id_de_ligne(*c) == f)));
-    let libre = sur_la_liste != Some(false);
-    let saisie = ctx.egui_wants_keyboard_input();
+    let saisie = champ_au_debut || ctx.text_edit_focused();
+    let libre = !saisie && sur_la_liste != Some(false);
     let (haut, bas, entree, f5) = ctx.input_mut(|i| {
         (
             libre && i.consume_key(Modifiers::NONE, Key::ArrowUp),

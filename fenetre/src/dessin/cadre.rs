@@ -11,6 +11,9 @@ use crate::donnees::protection::Allure;
 
 pub fn tout(appli: &mut Appli, ui: &mut Ui) {
     let p = pal();
+    // Avant la console : un champ de texte qui avait le focus peut le lâcher sur Entrée pendant l'image
+    // (`ecrans::clavier_de_la_liste`).
+    let champ_au_debut = ui.ctx().text_edit_focused();
     super::mouvement::regler(ui.ctx(), appli.animations_reduites);
     if appli.feuille_correction().is_none() {
         super::bilan::oublier_la_feuille(ui.ctx());
@@ -62,7 +65,7 @@ pub fn tout(appli: &mut Appli, ui: &mut Ui) {
                     .auto_shrink(false)
                     .show(ui, |ui| super::ecrans::liste_rubrique(appli, ui, c));
             });
-        super::ecrans::clavier_de_la_liste(appli, ui.ctx(), c);
+        super::ecrans::clavier_de_la_liste(appli, ui.ctx(), c, champ_au_debut);
     }
     // Après la liste : un clic ou une touche y a peut-être choisi une autre page.
     let detail = if large { appli.detail() } else { None };
