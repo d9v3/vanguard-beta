@@ -888,6 +888,16 @@ fn sans_trace_du_journal(dossier: &Path, r: &Registre) -> bool {
             .all(|n| std::fs::symlink_metadata(dossier.join(n)).is_err())
 }
 
+/// Les sceaux de `dossier` peuvent-ils recevoir la note de la porte de lecture des assistants (`porte_mcp`) sans rien
+/// adopter, rattraper ni refaire ? Là, lisibles, de cette forme, leur témoin posé, sans écriture en attente, chaque
+/// fichier protégé tard déjà vu. Sinon la porte ne note rien : Vanguard le fera à sa prochaine écriture.
+pub(crate) fn prets_sans_reparer(dossier: &Path) -> bool {
+    std::fs::symlink_metadata(dossier.join(TEMOIN)).is_ok_and(|m| m.is_file())
+        && matches!(registre(dossier), Ok(Some(r)) if r.format == FORMAT
+            && r.en_attente.is_empty()
+            && TARDIFS.iter().chain(TARDIFS_DOSSIERS).all(|n| r.vus.contains(*n)))
+}
+
 /// Des sceaux d'une forme d'avant jugés (`forme_d_avant`) et réécrits dans celle-ci AVANT que le journal des événements
 /// laisse dans `dossier` sa première trace : il prenait son verrou et créait son dossier avant de lire sa tête, et
 /// c'est cette lecture qui jugeait les sceaux ; ses propres traces faisaient alors prendre une 0.86 ou une 0.87 qui

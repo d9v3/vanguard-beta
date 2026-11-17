@@ -34,8 +34,11 @@ impl Outils for Faux {
                 m.insert("texte".into(), json!("a".repeat(REPONSE_MAX)));
             }
             "sans-teinte" => {
-                m.insert("teinte".into(), json!("fiable"));
+                // Une autre clé avant elle, dans l'ordre d'insertion (`preserve_order`, que les dépendances des
+                // essais activent) comme dans l'ordre alphabétique (le programme publié).
                 m.insert("a".into(), json!(1));
+                m.insert("teinte".into(), json!("fiable"));
+                m.insert("zeta".into(), json!(2));
             }
             _ => return Err(Code::Arguments),
         }
@@ -122,10 +125,19 @@ fn initialisation_puis_liste_et_appel() {
 #[test]
 fn la_teinte_est_posee_quoi_que_rende_l_outil() {
     let mut e = Essai::nouveau();
-    let (r, _) = e.envoyer(r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"sans-teinte"}}"#);
+    let appel = r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"sans-teinte"}}"#;
+    let Suite::Repondre { texte: ligne, .. } = e.brut(appel.as_bytes()) else {
+        panic!("une réponse attendue");
+    };
+    let r: Value = serde_json::from_str(&ligne).unwrap();
     assert_eq!(r["result"]["structuredContent"]["teinte"], TEINTE);
     let texte = r["result"]["content"][0]["text"].as_str().unwrap_or("");
     assert!(texte.starts_with(r#"{"teinte":"non-fiable""#), "{texte}");
+    // Dans la ligne écrite, `structuredContent` aussi commence par la teinte, quel que soit l'ordre de la `Map`.
+    assert!(
+        ligne.contains(r#""structuredContent":{"teinte":"non-fiable","a":1,"zeta":2}"#),
+        "{ligne}"
+    );
 }
 
 #[test]
@@ -137,7 +149,7 @@ fn avant_l_initialisation_rien_n_est_servi() {
         let Suite::Repondre { texte, fermer } = s.traiter(l.as_bytes(), 0, &mut o) else {
             panic!("une réponse attendue");
         };
-        assert!(texte.contains("pas-initialise"), "{texte}");
+        assert!(texte.contains("non-initialise"), "{texte}");
         assert_eq!(fermer, None);
     }
     assert_eq!(o.appels, 0);
@@ -218,6 +230,18 @@ fn enveloppes_piegees_refusees_et_session_fermee() {
         (r#"{"jsonrpc":"2.0","id":{"a":1},"method":"ping"}"#, "enveloppe"),
         (r#"{"jsonrpc":"2.0","id":"","method":"ping"}"#, "enveloppe"),
         (r#"{"jsonrpc":"2.0","id":"a\nb","method":"ping"}"#, "enveloppe"),
+        // Un id texte est en ASCII visible : ni sens d'écriture inversé, ni séparateur de ligne, ni blanc.
+        (
+            "{\"jsonrpc\":\"2.0\",\"id\":\"\u{202e} x\",\"method\":\"ping\"}",
+            "enveloppe",
+        ),
+        (r#"{"jsonrpc":"2.0","id":"\u202Ex","method":"ping"}"#, "enveloppe"),
+        (
+            "{\"jsonrpc\":\"2.0\",\"id\":\"a\u{2028}b\",\"method\":\"ping\"}",
+            "enveloppe",
+        ),
+        (r#"{"jsonrpc":"2.0","id":"a b","method":"ping"}"#, "enveloppe"),
+        (r#"{"jsonrpc":"2.0","id":"é","method":"ping"}"#, "enveloppe"),
         (r#"{"jsonrpc":"2.0","id":1,"method":7}"#, "enveloppe"),
     ];
     for (ligne, attendu) in piegees {
@@ -231,6 +255,26 @@ fn enveloppes_piegees_refusees_et_session_fermee() {
     let long = format!(r#"{{"jsonrpc":"2.0","id":"{}","method":"ping"}}"#, "a".repeat(65));
     let (r, f) = Essai::nouveau().envoyer(&long);
     assert_eq!((code_de(&r), f), ("enveloppe", Some(Fin::Hostile)));
+    // 64 caractères visibles, la borne exacte : accepté et renvoyé tel quel.
+    let id = format!("{}~", "A-z.:_9".repeat(9));
+    let borne = format!(r#"{{"jsonrpc":"2.0","id":"{id}","method":"ping"}}"#);
+    let (r, f) = Essai::nouveau().envoyer(&borne);
+    assert_eq!((r["id"].as_str(), f), (Some(id.as_str()), None), "{r}");
+}
+
+#[test]
+fn une_reponse_recue_n_est_pas_repondue_par_son_id() {
+    // JSON-RPC interdit de répondre à une réponse : l'erreur porte l'id null.
+    for ligne in [
+        r#"{"jsonrpc":"2.0","id":7,"result":{}}"#,
+        r#"{"jsonrpc":"2.0","id":7,"error":{"code":1,"message":"x"}}"#,
+        r#"{"jsonrpc":"2.0","id":7}"#,
+    ] {
+        let (r, f) = Essai::nouveau().envoyer(ligne);
+        assert_eq!(code_de(&r), "enveloppe", "{ligne}");
+        assert_eq!(r["id"], Value::Null, "{ligne}");
+        assert_eq!(f, Some(Fin::Hostile));
+    }
 }
 
 #[test]
@@ -272,6 +316,12 @@ fn champs_inconnus_des_parametres_refuses() {
         r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"faux","name":"gros"}}"#,
         r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":[]}"#,
         r#"{"jsonrpc":"2.0","id":1,"method":"tools/call"}"#,
+        // Des paramètres en tableau, que serde lirait par position : refusés, comme dans le schéma publié.
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":["faux"]}"#,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":["faux",{"x":1}]}"#,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":[]}"#,
+        r#"{"jsonrpc":"2.0","id":1,"method":"ping","params":[]}"#,
+        r#"{"jsonrpc":"2.0","id":1,"method":"ping","params":[{"x":1}]}"#,
     ] {
         let (r, f) = e.envoyer(l);
         assert_eq!(code_de(&r), "parametres", "{l}");
@@ -280,19 +330,31 @@ fn champs_inconnus_des_parametres_refuses() {
     let (r, _) = e.envoyer(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"progressToken":1}}}"#);
     assert!(r["result"]["tools"].is_array(), "_meta est permis : {r}");
     assert_eq!(e.o.appels, 0);
+    // `initialize` aussi : ses paramètres en tableau ne l'ouvrent pas.
+    let mut s = Session::new("0", 100);
+    let mut o = faux();
+    let tableau = br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":["2025-06-18",{},{"name":"x"}]}"#;
+    let Suite::Repondre { texte, .. } = s.traiter(tableau, 0, &mut o) else {
+        panic!("une réponse attendue");
+    };
+    assert!(texte.contains("\"parametres\""), "{texte}");
+    assert!(!s.ouverte);
 }
 
 #[test]
-fn methodes_inconnues_fermees_a_la_troisieme() {
+fn demandes_inconnues_refusees_sans_fermer() {
+    // Une demande bien formée reçoit son -32601 propre, sans compter : un client plus récent que la porte n'est
+    // pas accusé pour avoir essayé des méthodes nouvelles.
     let mut e = Essai::nouveau();
-    for i in 1..=2 {
-        let (r, f) = e.envoyer(&format!(r#"{{"jsonrpc":"2.0","id":{i},"method":"shell/exec"}}"#));
+    for i in 1..=10 {
+        let (r, f) = e.envoyer(&format!(r#"{{"jsonrpc":"2.0","id":{i},"method":"shell/exec{i}"}}"#));
         assert_eq!(code_de(&r), "methode-inconnue");
         assert_eq!(r["error"]["code"], -32601);
+        assert_eq!(r["id"], i);
         assert_eq!(f, None);
     }
-    let (_, f) = e.envoyer(r#"{"jsonrpc":"2.0","id":3,"method":"tools/write"}"#);
-    assert_eq!(f, Some(Fin::Hostile));
+    assert!(!e.s.hostile);
+    assert_eq!(e.s.refus.get(&Code::MethodeInconnue), Some(&10));
 }
 
 #[test]
@@ -335,7 +397,20 @@ fn trop_vite_ferme_la_session() {
         panic!("une réponse attendue");
     };
     assert!(texte.contains("\"rythme\""), "{texte}");
+    assert!(
+        texte.contains("\"id\":1,"),
+        "le refus porte l'id de la demande : {texte}"
+    );
     assert_eq!(fermer, Some(Fin::Hostile));
+    // Les lignes vides ne comptent pas : cent d'un trait, puis une demande, rien ne ferme.
+    let mut s = Session::new("0", 1000);
+    for i in 0..100u64 {
+        assert_eq!(s.traiter(b"  ", i, &mut o), Suite::Rien);
+    }
+    let Suite::Repondre { fermer, .. } = s.traiter(ping, 100, &mut o) else {
+        panic!("une réponse attendue");
+    };
+    assert_eq!(fermer, None);
     // Au rythme permis, rien ne ferme.
     let mut s = Session::new("0", 1000);
     for i in 0..200u64 {

@@ -14,9 +14,10 @@ example, finds it, to rebuild it if needed.
 - **New read-only door for AI assistants (`vanguard mcp`), on Linux only.** An assistant you connect can read
   Vanguard's state, events and findings, and cannot change anything. It uses only the program's standard input and
   output, with no port and no network, refuses to run as administrator, never shows paths, command lines or secrets,
-  and marks everything it returns as untrusted. Each session is noted in the journal; a program that sends it
-  abnormal messages is cut off, and an alert says so. On Windows, the command exists but has not yet been tried on a
-  real Windows: it is not promised there.
+  and marks everything it returns as untrusted. A session served is noted in the journal, without ever filling it; a
+  program that sends it abnormal messages is cut off, and an alert says so. After 15 minutes of silence, it closes;
+  the assistant starts it again. On Windows, the command refuses to start until it has been tried on a real
+  Windows.
 
 ## November 15, 2026: version 0.96.0
 

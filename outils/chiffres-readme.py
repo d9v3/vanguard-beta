@@ -3,10 +3,10 @@
 tapé à la main vieillit sans que personne le voie, et la page d'accueil du dépôt dirait alors autre chose que le code.
 
 Nombres gardés : les règles du bilan (toutes, Linux, Windows), les modules qui refusent l'unsafe sans recours, les
-règles YARA de ReversingLabs (le nombre exact ; « plus de N », jamais plus que le vrai), et les comptes d'unsafe de
-la section « Le code ». Les règles, les modules et le YARA viennent de outils/page-fonctions.py, le même calcul que
-la page des fonctions ; l'unsafe, du même calcul que outils/verifier.sh (compte_unsafe), et
-outils/essais-chiffres-readme.sh vérifie que les deux disent pareil.
+règles YARA de ReversingLabs (le nombre exact ; « plus de N », jamais plus que le vrai), les comptes d'unsafe de
+la section « Le code », et les cibles de fuzzing (les fichiers de fuzz/fuzz_targets/). Les règles, les modules et le
+YARA viennent de outils/page-fonctions.py, le même calcul que la page des fonctions ; l'unsafe, du même calcul que
+outils/verifier.sh (compte_unsafe), et outils/essais-chiffres-readme.sh vérifie que les deux disent pareil.
 
     python3 -I outils/chiffres-readme.py                    les deux README du dépôt
     python3 -I outils/chiffres-readme.py --lisez-moi FR EN  deux autres fichiers (essais), comptés contre ce code
@@ -49,10 +49,16 @@ def unsafe() -> list[int]:
             forme(r"#\[unsafe\(")]
 
 
+def cibles_fuzz() -> int:
+    """Les cibles du banc de fuzzing : un fichier .rs chacune dans fuzz/fuzz_targets/."""
+    return len(list((RACINE / "fuzz/fuzz_targets").glob("*.rs")))
+
+
 # Chaque phrase attendue, par langue : son motif (les espaces peuvent être des retours à la ligne du Markdown) et les
 # nombres qu'elle doit porter, dans l'ordre de ses groupes. Chaque occurrence est vérifiée ; il en faut au moins une.
 def phrases(r: dict[str, int], s: dict[str, int], u: list[int]) -> dict[str, list[tuple[str, str, list[int]]]]:
     regles = [r["REGLES"], r["REGLES_LINUX"], r["REGLES_WINDOWS"]]
+    fuzz = [cibles_fuzz()]
     return {
         "fr": [
             ("règles du bilan", r"(\d+) règles à identifiant stable \(`[^`]+`\) : (\d+) sous Linux, (\d+) sous Windows",
@@ -61,6 +67,7 @@ def phrases(r: dict[str, int], s: dict[str, int], u: list[int]) -> dict[str, lis
             ("comptes d'unsafe", r"(\d+) blocs `unsafe`, (\d+) blocs `unsafe extern`, (\d+) fonctions, (\d+) `impl` et"
              r" (\d+) attributs? `#\[unsafe\(…\)\]`", u),
             ("règles YARA", r"(?<!plus\sde\s)(?<!\d)(\d+) règles de ReversingLabs", [s["YARA"]]),
+            ("cibles de fuzzing", r"(\d+) cibles de fuzzing", fuzz),
         ],
         "en": [
             ("règles du bilan", r"(\d+) rules with a stable identifier \(`[^`]+`\): (\d+) on Linux, (\d+) on Windows",
@@ -69,6 +76,7 @@ def phrases(r: dict[str, int], s: dict[str, int], u: list[int]) -> dict[str, lis
             ("comptes d'unsafe", r"(\d+) `unsafe` blocks, (\d+) `unsafe extern` blocks, (\d+) functions, (\d+) `impl`"
              r" and (\d+) `#\[unsafe\(…\)\]` attributes?", u),
             ("règles YARA", r"(?<!over\s)(?<!\d)(\d+) ReversingLabs rules", [s["YARA"]]),
+            ("cibles de fuzzing", r"(\d+) fuzzing targets", fuzz),
         ],
     }
 
@@ -128,7 +136,8 @@ def main() -> None:
     if vieillis:
         sys.exit(1)
     print(f"README : règles {r['REGLES']} ({r['REGLES_LINUX']} Linux, {r['REGLES_WINDOWS']} Windows), forbid "
-          f"{s['FORBID']}, YARA {s['YARA']}, unsafe {' '.join(map(str, u))} : à jour dans les deux langues")
+          f"{s['FORBID']}, YARA {s['YARA']}, unsafe {' '.join(map(str, u))}, fuzz {cibles_fuzz()} : "
+          "à jour dans les deux langues")
 
 
 if __name__ == "__main__":

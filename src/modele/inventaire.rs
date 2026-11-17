@@ -934,8 +934,8 @@ mod tests {
         (
             "modele/journal.rs",
             "evenements.tete",
-            2,
-            "plafond des lectures qui ne jugent pas la tête (traces en administrateur, elles ne disent rien d'intact), et la liste des fichiers du journal que les traces recopient",
+            3,
+            "plafond des lectures qui ne jugent pas la tête (traces en administrateur, elles ne disent rien d'intact), la liste des fichiers du journal que les traces recopient, et la note de la porte, qui regarde seulement si la tête existe avant de prendre le verrou (jamais lue là : tete_lue la juge ensuite)",
         ),
         (
             "optimiser/mod.rs",

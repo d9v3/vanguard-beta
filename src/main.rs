@@ -354,7 +354,8 @@ async fn main() {
         std::process::exit(machine::linux::isolement::demarrage());
     }
     // La porte de lecture pour les assistants d'IA : la lecture seule avant tout le reste (ni passage, ni sceaux
-    // réparés, ni dossier créé), puis les réglages seulement (la langue). Seule la note de fin de session s'écrit.
+    // réparés), puis les réglages seulement (la langue). Seule la note de session s'écrit, et seulement dans un
+    // journal qui existe déjà avec ses sceaux : sur un compte où Vanguard n'a jamais tourné, rien n'est créé.
     if std::env::args_os().skip(1).eq(["mcp"]) {
         autotest::lecture_seule::poser();
         parametres::au_lancement();

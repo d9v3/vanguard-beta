@@ -9932,7 +9932,7 @@ mod porte_mcp {
         let r = reponses(&s);
         assert_eq!(
             r.last().and_then(|e| e.pointer("/error/data/code")),
-            Some(&"trop-grande".into())
+            Some(&"trame-trop-grande".into())
         );
 
         // La session suivante voit les deux sessions notées, et l'alerte du client hostile.
@@ -9944,9 +9944,71 @@ mod porte_mcp {
         let s = vanguard_dans(programme(), &maison, "fr", &["mcp"], &(lire.join("\n") + "\n"), 60);
         let r = reponses(&s);
         let sessions = r.get(1).map(ToString::to_string).unwrap_or_default();
+        // La session servie : sa note d'ouverture et sa note de fin. Le client hostile, sans appel servi : son
+        // alerte seule.
+        assert!(sessions.contains(r#""fin":"ouverte""#), "{sessions}");
         assert!(sessions.contains(r#""fin":"fin-du-flot""#), "{sessions}");
-        assert!(sessions.contains(r#""fin":"hostile""#), "{sessions}");
+        assert!(!sessions.contains(r#""fin":"hostile""#), "{sessions}");
         let alertes = r.get(2).map(ToString::to_string).unwrap_or_default();
         assert!(alertes.contains(r#""famille":"porte-mcp""#), "{alertes}");
+    }
+
+    /// SIGTERM pendant une session : la porte finit proprement (code 0) et sa note de fin dit « signal ».
+    #[test]
+    fn un_signal_d_arret_finit_la_session_et_la_note() {
+        use std::io::{BufRead as _, BufReader, Write as _};
+        if en_root() {
+            return essais::saute("en root (unshare) : la porte refuse de démarrer");
+        }
+        let maison = maison_jetable();
+        let audit = vanguard_dans(programme(), &maison, "fr", &["audit", "--json"], "", 180);
+        assert!(audit.code.is_some(), "{}", audit.erreurs);
+        let mut enfant = Command::new(programme())
+            .arg("mcp")
+            .env("VANGUARD_LANG", "fr")
+            .env("HOME", &*maison)
+            .env("XDG_DATA_HOME", maison.join("donnees"))
+            .env("XDG_CONFIG_HOME", maison.join("config"))
+            .env("XDG_CACHE_HOME", maison.join("cache"))
+            .env("XDG_RUNTIME_DIR", maison.join("run"))
+            .env("VANGUARD_ESSAI_MAISON_DU_COMPTE", &*maison)
+            .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("vanguard ne démarre pas");
+        let mut entree = enfant.stdin.take().unwrap();
+        let mut sortie = BufReader::new(enfant.stdout.take().unwrap());
+        writeln!(entree, "{INIT}\n{}", appel(1, "etat", &serde_json::json!({}))).unwrap();
+        let mut ligne = String::new();
+        for _ in 0..2 {
+            ligne.clear();
+            sortie.read_line(&mut ligne).unwrap();
+            assert!(ligne.ends_with('\n'), "réponse attendue : {ligne:?}");
+        }
+        let pid = enfant.id().to_string();
+        assert!(Command::new("kill").args(["-TERM", &pid]).status().unwrap().success());
+        let debut = Instant::now();
+        let statut = loop {
+            if let Some(s) = enfant.try_wait().unwrap() {
+                break s;
+            }
+            if debut.elapsed() > Duration::from_secs(20) {
+                let _ = enfant.kill();
+                panic!("vanguard mcp ne finit pas sur SIGTERM");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        drop(entree);
+        assert_eq!(statut.code(), Some(0), "{statut:?}");
+        let lire = format!(
+            "{INIT}\n{}\n",
+            appel(1, "evenements", &serde_json::json!({ "genre": "session-porte" }))
+        );
+        let s = vanguard_dans(programme(), &maison, "fr", &["mcp"], &lire, 60);
+        let sessions = reponses(&s).get(1).map(ToString::to_string).unwrap_or_default();
+        assert!(sessions.contains(r#""fin":"ouverte""#), "{sessions}");
+        assert!(sessions.contains(r#""fin":"signal""#), "{sessions}");
     }
 }

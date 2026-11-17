@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Essais de outils/chiffres-readme.py, la garde des nombres des README, sur des copies des deux README :
 #   1. Les vrais README : code 0 (« plus de 300 règles » n'y est pas pris pour le nombre exact).
-#   2. Un nombre vieilli (règles du bilan, modules sans unsafe, comptes d'unsafe, règles YARA), en français ou en
-#      anglais : code 1, le fichier, la ligne et le bon nombre nommés.
+#   2. Un nombre vieilli (règles du bilan, modules sans unsafe, comptes d'unsafe, règles YARA, cibles de fuzzing), en
+#      français ou en anglais : code 1, le fichier, la ligne et le bon nombre nommés.
 #   3. « plus de N » au-dessus du vrai nombre : code 1.
 #   4. Une phrase attendue qui change de forme : code 2 (rien n'est conclu), jamais un vert.
 #   5. Les comptes d'unsafe sont ceux de compte_unsafe (lue dans outils/verifier.sh) : un seul calcul, deux lecteurs.
@@ -49,6 +49,10 @@ vieilli "comptes d'unsafe (fr)" fr 's/[0-9]\+ blocs `unsafe extern`/7 blocs `uns
   '^✖ README\.md:[0-9]+ : comptes d.unsafe'
 vieilli "règles YARA (fr)" fr 's/[0-9]\+ règles de ReversingLabs, empreintes/7 règles de ReversingLabs, empreintes/' \
   '^✖ README\.md:[0-9]+ : règles YARA : \[7\]'
+vieilli "cibles de fuzzing (fr)" fr 's/[0-9]\+ cibles de fuzzing/7 cibles de fuzzing/' \
+  '^✖ README\.md:[0-9]+ : cibles de fuzzing : \[7\] écrit'
+vieilli "cibles de fuzzing (en)" en 's/[0-9]\+ fuzzing targets/7 fuzzing targets/' \
+  '^✖ README\.en\.md:[0-9]+ : cibles de fuzzing : \[7\] écrit'
 vieilli "plus de N règles au-dessus du vrai (en)" en 's/over 300 rules/over 9000 rules/' \
   '^✖ README\.en\.md:[0-9]+ : « plus de 9000 »'
 

@@ -338,6 +338,11 @@ pub(crate) fn libelle_genre(nom: &str) -> &'static str {
     Genre::de(nom).libelle()
 }
 
+/// Les noms stables de tous les genres : la porte de lecture ne montre une famille que si elle en est une.
+pub(crate) fn familles() -> impl Iterator<Item = &'static str> {
+    Genre::TOUS.into_iter().map(Genre::nom)
+}
+
 /// Le nom stable d'un genre, tel que le journal le garde.
 pub(crate) fn nom_genre(g: Genre) -> &'static str {
     g.nom()

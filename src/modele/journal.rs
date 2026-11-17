@@ -1283,12 +1283,246 @@ pub(crate) fn fichiers(dossier: &Path) -> Vec<String> {
     f
 }
 
-/// La note de fin de session de la porte de lecture des assistants (`porte_mcp`) : la seule écriture de la porte,
-/// une fois la session finie, sous l'interrupteur de lecture seule qui ne laisse passer que le journal et ses sceaux.
-pub(crate) fn noter_pour_la_porte(dossier: &Path, evs: Vec<Evenement>) -> std::io::Result<()> {
+/// Les notes de session de la porte de lecture des assistants (`porte_mcp`) gardées par heure, au plus (ouvertures et
+/// fins comprises). Le processus de la porte est neuf à chaque session : le frein se lit dans le journal même, jamais
+/// en mémoire. Un client qui ouvre mille sessions de suite n'y ajoute donc qu'un nombre borné de lignes.
+pub(crate) const PORTE_NOTES_PAR_HEURE: usize = 12;
+/// Ses alertes « client hostile » gardées par heure, au plus.
+pub(crate) const PORTE_ALERTES_PAR_HEURE: usize = 1;
+/// La famille et la clé de déduplication fixes de l'alerte de la porte.
+pub(crate) const PORTE_FAMILLE: &str = "porte-mcp";
+/// La porte n'écrit plus quand le segment du mois dépasse cette taille, bien avant `SEGMENT_MAX` : le « journal du
+/// mois plein », qui ferait perdre les alertes de Vanguard, ne vient jamais d'elle.
+const PORTE_SEGMENT_MAX: u64 = SEGMENT_MAX / 4;
+/// Les lignes relues au plus, depuis la fin, pour compter les notes de l'heure.
+const PORTE_LIGNES_RELUES: usize = 4096;
+/// Les notes retenues par le frein, comptées à part (un octet chacune : `n` une session, `a` une alerte) et dites par
+/// la note suivante. Sans sceau : un compte d'information, que seul un programme du compte pourrait changer.
+pub(crate) const PORTE_RETENUES: &str = "evenements.porte-retenues";
+/// Plein, le compte ne grossit plus (la note dit alors « au moins »).
+const PORTE_RETENUES_MAX: u64 = 64 * 1024;
+
+/// Ce qu'a donné une note de la porte.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum NotePorte {
+    /// Écrite au journal.
+    Ecrite,
+    /// Retenue par le frein de l'heure, et comptée pour la note suivante.
+    Retenue,
+}
+
+/// Les notes et les alertes de la porte de l'heure qui précède `maintenant`, d'après les dernières lignes du segment.
+/// Une ligne datée après `maintenant` (horloge reculée) compte aussi : le frein se trompe vers moins de notes.
+fn porte_de_l_heure(reelles: &[&[u8]], maintenant: chrono::DateTime<chrono::Utc>) -> (usize, usize) {
+    let depuis = maintenant
+        .checked_sub_signed(chrono::Duration::hours(1))
+        .unwrap_or(chrono::DateTime::<chrono::Utc>::MIN_UTC);
+    let (mut notes, mut alertes) = (0usize, 0usize);
+    for l in reelles.iter().rev().take(PORTE_LIGNES_RELUES) {
+        let Ok(e) = serde_json::from_slice::<Evenement>(l) else {
+            continue;
+        };
+        let Ok(quand) = chrono::DateTime::parse_from_rfc3339(&e.quand) else {
+            continue;
+        };
+        if quand.with_timezone(&chrono::Utc) < depuis {
+            break;
+        }
+        if e.source != Source::PorteMcp {
+            continue;
+        }
+        match e.quoi {
+            Genre::SessionPorte { .. } => notes = notes.saturating_add(1),
+            Genre::Alerte { .. } => alertes = alertes.saturating_add(1),
+            _ => {}
+        }
+    }
+    (notes, alertes)
+}
+
+/// Compte une note retenue (`n` ou `a`), sans dépasser `PORTE_RETENUES_MAX`.
+fn retenir_pour_la_porte(dossier: &Path, alerte: bool) {
+    let chemin = dossier.join(PORTE_RETENUES);
+    if std::fs::symlink_metadata(&chemin).is_ok_and(|m| m.len() >= PORTE_RETENUES_MAX) {
+        return;
+    }
+    let _ = ajouter(&chemin, if alerte { b"a" } else { b"n" });
+}
+
+/// Prend les comptes retenus (renommés à un nom à soi, sous le verrou du journal) : (sessions, alertes, plein), et
+/// les fichiers à effacer une fois la note écrite.
+fn prendre_retenues(dossier: &Path) -> ((u32, u32, bool), Vec<PathBuf>) {
+    let a_soi = dossier.join(format!("{PORTE_RETENUES}.{}", std::process::id()));
+    let _ = std::fs::rename(dossier.join(PORTE_RETENUES), &a_soi);
+    let Ok(octets) = crate::socle::lire_ordinaire(&a_soi, PORTE_RETENUES_MAX) else {
+        return ((0, 0, false), Vec::new());
+    };
+    let compter = |c: u8| {
+        octets
+            .iter()
+            .fold(0u32, |n, o| if *o == c { n.saturating_add(1) } else { n })
+    };
+    let plein = u64::try_from(octets.len()).unwrap_or(u64::MAX) >= PORTE_RETENUES_MAX;
+    ((compter(b'n'), compter(b'a'), plein), vec![a_soi])
+}
+
+/// Pourquoi la porte ne note pas : rien n'est créé, adopté ni réparé (`ecrire_pour_la_porte`).
+fn pas_pour_la_porte(raison: &'static str) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::NotFound, raison)
+}
+
+/// La note de la porte de lecture des assistants (`porte_mcp`) : un seul événement, sous l'interrupteur de lecture
+/// seule qui ne laisse passer que le journal et ses sceaux. Rend `Ecrite` ou `Retenue` (frein de l'heure) ; une
+/// erreur : rien d'écrit.
+pub(crate) fn noter_pour_la_porte(dossier: &Path, ev: Evenement) -> std::io::Result<NotePorte> {
     crate::autotest::lecture_seule::ecrire_note_de_la_porte(|| {
-        ecrire_dans(dossier, evs, chrono::Utc::now(), attente_noter())
+        ecrire_pour_la_porte(dossier, ev, chrono::Utc::now(), attente_noter())
     })
+}
+
+/// L'écriture de la porte. À la différence de `ecrire_dans`, elle ne crée rien et ne répare rien : le dossier de
+/// données, le journal, sa tête et les sceaux doivent déjà être là, intacts, de cette version (sinon `NotFound`, rien
+/// d'écrit) ; aucune rupture, aucun passage de version, aucun compte de perdus, aucun mois élagué. Le frein de l'heure
+/// (`PORTE_NOTES_PAR_HEURE`, `PORTE_ALERTES_PAR_HEURE`) et la réserve (`PORTE_SEGMENT_MAX`) passent avant tout.
+fn ecrire_pour_la_porte(
+    dossier: &Path,
+    mut ev: Evenement,
+    maintenant: chrono::DateTime<chrono::Utc>,
+    attente: std::time::Duration,
+) -> std::io::Result<NotePorte> {
+    if !crate::socle::ecriture_sure(dossier) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "dossier d'un autre compte / another account's folder",
+        ));
+    }
+    if crate::autotest::lecture_seule::active() && !crate::autotest::lecture_seule::note_de_la_porte_permise() {
+        return Err(crate::autotest::lecture_seule::refus());
+    }
+    let rep = dossier.join(DOSSIER);
+    // Le dossier du journal et la tête d'abord : le verrou, lui, crée son fichier dans `dossier`.
+    if !std::fs::symlink_metadata(&rep).is_ok_and(|m| m.is_dir())
+        || std::fs::symlink_metadata(dossier.join(TETE)).is_err()
+        || !crate::sceau::prets_sans_reparer(dossier)
+    {
+        return Err(pas_pour_la_porte(
+            "journal ou sceaux pas encore là / log or seals not there yet",
+        ));
+    }
+    let _verrou =
+        crate::socle::Verrou::prendre_compatible(dossier, VERROU, false, attente).map_err(|e| e.erreur(VERROU))?;
+    let TeteLue::Lue(mut tete, false) = tete_lue(dossier, Facon::SansEcrire) else {
+        return Err(pas_pour_la_porte("tête pas intacte / head not intact"));
+    };
+    if tete.version != env!("CARGO_PKG_VERSION") || tete.sceaux != crate::sceau::FORMAT || tete.annonce.is_some() {
+        return Err(pas_pour_la_porte("tête d'une autre version / head of another version"));
+    }
+    let courant = mois_de(maintenant);
+    let plafond = tete.segment.clone().max(courant.clone());
+    let presents: Vec<(String, PathBuf)> = segments(&rep).into_iter().filter(|(m, _)| *m <= plafond).collect();
+    let (dernier, octets) = match presents.last() {
+        // La réserve : un segment plus gros que `PORTE_SEGMENT_MAX` ne se lit pas ici, rien n'est écrit.
+        Some((m, chemin)) => (
+            Some(m.clone()),
+            crate::socle::lire_ordinaire(chemin, PORTE_SEGMENT_MAX)?,
+        ),
+        None => (None, Vec::new()),
+    };
+    let reelles = lignes(&octets);
+    let fin_reelle = reelles.last().map(|l| empreinte_ligne(l));
+    if fin_trouvee(&tete, dernier.as_deref(), reelles.len(), fin_reelle.as_deref()) != Fin::DeLaTete {
+        return Err(pas_pour_la_porte(
+            "fin du journal pas celle de la tête / log end not the head's",
+        ));
+    }
+    let alerte = matches!(ev.quoi, Genre::Alerte { .. });
+    let (notes, alertes) = porte_de_l_heure(&reelles, maintenant);
+    if (alerte && alertes >= PORTE_ALERTES_PAR_HEURE) || (!alerte && notes >= PORTE_NOTES_PAR_HEURE) {
+        retenir_pour_la_porte(dossier, alerte);
+        return Ok(NotePorte::Retenue);
+    }
+    let mut pris = Vec::new();
+    if let Genre::SessionPorte {
+        retenues,
+        alertes_retenues,
+        retenues_au_moins,
+        ..
+    } = &mut ev.quoi
+    {
+        let ((n, a, plein), fichiers) = prendre_retenues(dossier);
+        *retenues = n;
+        *alertes_retenues = a;
+        *retenues_au_moins = plein;
+        pris = fichiers;
+    }
+    let mois = match &dernier {
+        Some(d) if *d > courant => d.clone(),
+        _ => courant,
+    };
+    let mut n_courant = u64::try_from(reelles.len()).unwrap_or(u64::MAX);
+    let mut a_ajouter = Vec::new();
+    let mut clos_ici = None;
+    if let Some(d) = &dernier
+        && *d != mois
+    {
+        clos_ici = Some((
+            d.clone(),
+            Clos {
+                lignes: n_courant,
+                empreinte: empreinte_segment(&octets),
+            },
+        ));
+        n_courant = 0;
+    } else if !octets.is_empty() && !octets.ends_with(b"\n") {
+        a_ajouter.push(b'\n');
+    }
+    ev.precedent = fin_reelle.unwrap_or_else(|| tete.ancre.clone());
+    let ligne = serde_json::to_vec(&ev).map_err(std::io::Error::other)?;
+    let derniere = empreinte_ligne(&ligne);
+    a_ajouter.extend_from_slice(&ligne);
+    a_ajouter.push(b'\n');
+    n_courant = n_courant.saturating_add(1);
+    let deja = if n_courant == 1 && clos_ici.is_some() {
+        0
+    } else {
+        u64::try_from(octets.len()).unwrap_or(u64::MAX)
+    };
+    if deja.saturating_add(u64::try_from(a_ajouter.len()).unwrap_or(u64::MAX)) > PORTE_SEGMENT_MAX {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::StorageFull,
+            "réserve du journal atteinte pour la porte / log reserve reached for the door",
+        ));
+    }
+    // Comme `ecrire_dans` : la fin à venir annoncée dans la tête scellée, l'ajout, puis la tête qui le couvre.
+    tete.annonce = Some(Annonce {
+        segment: mois.clone(),
+        lignes: n_courant,
+        derniere: derniere.clone(),
+        clos: clos_ici.clone(),
+    });
+    crate::sceau::ecrire_dans(
+        dossier,
+        TETE,
+        &serde_json::to_vec(&tete).map_err(std::io::Error::other)?,
+    )?;
+    ajouter(&rep.join(format!("{mois}.jsonl")), &a_ajouter)?;
+    for f in &pris {
+        let _ = std::fs::remove_file(f);
+    }
+    tete.annonce = None;
+    if let Some((m, c)) = clos_ici {
+        tete.clos.insert(m, c);
+    }
+    tete.segment = mois;
+    tete.lignes = n_courant;
+    tete.derniere = derniere;
+    crate::sceau::ecrire_dans(
+        dossier,
+        TETE,
+        &serde_json::to_vec(&tete).map_err(std::io::Error::other)?,
+    )
+    .map_err(|e| std::io::Error::other(ApresAjout(e)))?;
+    Ok(NotePorte::Ecrite)
 }
 
 /// Le dossier qui porte le journal de cet ordinateur : le dossier de données.
@@ -2697,6 +2931,181 @@ mod tests {
                 let lu = lire_dans(&d).lecture;
                 prop_assert!(lu != Lecture::Intact, "{:?} → {:?}", m, lu);
             }
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    }
+
+    fn session_porte(fin: &str, quand: &str) -> Evenement {
+        Evenement::le(
+            Source::PorteMcp,
+            Genre::SessionPorte {
+                duree_s: 1,
+                appels: std::collections::BTreeMap::from([("etat".to_string(), 1)]),
+                refus: std::collections::BTreeMap::new(),
+                fin: fin.into(),
+                retenues: 0,
+                alertes_retenues: 0,
+                retenues_au_moins: false,
+            },
+            le(quand),
+        )
+    }
+
+    fn alerte_porte(quand: &str) -> Evenement {
+        Evenement::le(
+            Source::PorteMcp,
+            Genre::Alerte {
+                famille: PORTE_FAMILLE.into(),
+                titre: "t".into(),
+                texte: "x".into(),
+            },
+            le(quand),
+        )
+        .cle(Some(PORTE_FAMILLE))
+    }
+
+    fn porte(d: &Path, ev: Evenement, quand: &str) -> std::io::Result<NotePorte> {
+        ecrire_pour_la_porte(d, ev, le(quand), std::time::Duration::ZERO)
+    }
+
+    fn lignes_du_journal(d: &Path) -> usize {
+        segments(&d.join(DOSSIER))
+            .iter()
+            .map(|(_, c)| lignes(&std::fs::read(c).unwrap()).len())
+            .sum()
+    }
+
+    /// CLIENT-1 : un client qui relance la porte mille fois de suite (chaque processus est neuf) n'ajoute au journal
+    /// qu'un nombre borné de lignes : le frein se lit dans le journal même. Les notes retenues sont dites par la
+    /// première note de l'heure suivante, et le journal reste intact.
+    #[test]
+    fn mille_sessions_de_la_porte_n_ajoutent_qu_un_nombre_borne_de_lignes() {
+        let d = dossier("porte-mille");
+        let q = "2026-11-17T10:30:00Z";
+        remplir(&d, 1, "2026-11-17T10:00:00Z");
+        let avant = lignes_du_journal(&d);
+        let mut ecrites = 0;
+        for _ in 0..1000 {
+            for ev in [session_porte("ouverte", q), alerte_porte(q)] {
+                if porte(&d, ev, q).unwrap() == NotePorte::Ecrite {
+                    ecrites += 1;
+                }
+            }
+        }
+        let bornees = PORTE_NOTES_PAR_HEURE + PORTE_ALERTES_PAR_HEURE;
+        assert_eq!(ecrites, bornees);
+        assert_eq!(lignes_du_journal(&d) - avant, bornees);
+        let plus_tard = "2026-11-17T11:31:00Z";
+        assert_eq!(
+            porte(&d, session_porte("fin-du-flot", plus_tard), plus_tard).unwrap(),
+            NotePorte::Ecrite
+        );
+        let lu = lire_dans(&d);
+        assert_eq!(lu.lecture, Lecture::Intact, "{:?}", lu.lecture);
+        // Chaque retenue est dite une fois, par une des notes écrites ensuite (dans l'heure ou après).
+        let (mut sessions, mut alertes_dites) = (0, 0);
+        for e in &lu.evenements {
+            if let Genre::SessionPorte {
+                retenues,
+                alertes_retenues,
+                retenues_au_moins,
+                ..
+            } = &e.quoi
+            {
+                sessions += *retenues as usize;
+                alertes_dites += *alertes_retenues as usize;
+                assert!(!retenues_au_moins);
+            }
+        }
+        assert_eq!(sessions, 1000 - PORTE_NOTES_PAR_HEURE);
+        assert_eq!(alertes_dites, 1000 - PORTE_ALERTES_PAR_HEURE);
+        assert!(
+            matches!(&lu.evenements.last().unwrap().quoi, Genre::SessionPorte { retenues, .. } if *retenues > 0),
+            "la note de l'heure suivante dit les retenues"
+        );
+        assert!(!d.join(PORTE_RETENUES).exists(), "les retenues dites sont prises");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// CLIENT-2 : la porte ne crée ni le dossier de données, ni le journal, ni les sceaux, et n'adopte rien : sans
+    /// eux, aucune note, et rien de nouveau sur le disque.
+    #[test]
+    fn la_porte_ne_cree_ni_dossier_ni_journal_ni_sceaux() {
+        let q = "2026-11-17T10:30:00Z";
+        let absent = dossier("porte-absent").join("pas-la");
+        assert!(porte(&absent, session_porte("ouverte", q), q).is_err());
+        assert!(!absent.exists(), "dossier créé");
+        let vide = dossier("porte-vide");
+        assert!(porte(&vide, session_porte("ouverte", q), q).is_err());
+        assert_eq!(
+            std::fs::read_dir(&vide).unwrap().count(),
+            0,
+            "écrit dans un dossier vide"
+        );
+        // Un journal sans le témoin des sceaux : il serait refait (adopté) par une écriture ordinaire.
+        let sans_temoin = dossier("porte-sans-temoin");
+        remplir(&sans_temoin, 1, q);
+        std::fs::remove_file(sans_temoin.join(crate::sceau::TEMOIN)).unwrap();
+        let tete = std::fs::read(sans_temoin.join(TETE)).unwrap();
+        assert!(porte(&sans_temoin, session_porte("ouverte", q), q).is_err());
+        assert!(!sans_temoin.join(crate::sceau::TEMOIN).exists(), "témoin refait");
+        assert_eq!(std::fs::read(sans_temoin.join(TETE)).unwrap(), tete, "tête réécrite");
+        // Des sceaux prêts, mais ni journal, ni tête, ni verrou : la porte ne prend pas son verrou, qui créerait son
+        // fichier.
+        let sans_journal = dossier("porte-sans-journal");
+        remplir(&sans_journal, 1, q);
+        std::fs::remove_dir_all(sans_journal.join(DOSSIER)).unwrap();
+        // Le verrou du système compris : sans les gardes, la porte le recréerait (le verrou d'avant, lui, s'efface).
+        for f in [TETE.to_owned(), VERROU.to_owned(), crate::socle::nom_systeme(VERROU)] {
+            let _ = std::fs::remove_file(sans_journal.join(f));
+        }
+        let noms = |d: &Path| {
+            let mut n: Vec<_> = std::fs::read_dir(d).unwrap().map(|e| e.unwrap().file_name()).collect();
+            n.sort();
+            n
+        };
+        let avant = noms(&sans_journal);
+        assert!(crate::sceau::prets_sans_reparer(&sans_journal));
+        assert!(porte(&sans_journal, session_porte("ouverte", q), q).is_err());
+        assert_eq!(noms(&sans_journal), avant, "verrou ou journal créé");
+        for d in [vide, sans_temoin, sans_journal] {
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    }
+
+    /// CLIENT-1 : la réserve. Un segment du mois au-delà de `PORTE_SEGMENT_MAX` n'est plus touché par la porte, bien
+    /// avant `SEGMENT_MAX` : la place qui reste est pour les alertes de Vanguard.
+    #[test]
+    fn la_porte_garde_une_reserve_dans_le_segment() {
+        let q = "2026-11-17T10:30:00Z";
+        let gros = |n: usize| {
+            Evenement::le(
+                Source::Surveillance,
+                Genre::Alerte {
+                    famille: "port".into(),
+                    titre: "alerte 0".into(),
+                    texte: "x".repeat(n),
+                },
+                le(q),
+            )
+        };
+        let mesure = dossier("porte-reserve-mesure");
+        noter_dans(&mesure, gros(1000), le(q)).unwrap();
+        let entour = std::fs::read(segment(&mesure, "2026-11")).unwrap().len() - 1000;
+        let _ = std::fs::remove_dir_all(&mesure);
+        // Juste sous la réserve (la note ne tient plus), puis au-delà (le segment ne se lit plus ici).
+        for marge in [100, 0] {
+            let d = dossier("porte-reserve");
+            let max = usize::try_from(PORTE_SEGMENT_MAX).unwrap();
+            noter_dans(&d, gros(max - entour - marge + usize::from(marge == 0) * 10), le(q)).unwrap();
+            let taille = std::fs::metadata(segment(&d, "2026-11")).unwrap().len();
+            assert_eq!(taille > PORTE_SEGMENT_MAX, marge == 0, "{taille}");
+            let avant = lignes_du_journal(&d);
+            assert!(porte(&d, session_porte("ouverte", q), q).is_err());
+            assert_eq!(lignes_du_journal(&d), avant);
+            // Vanguard, lui, écrit encore.
+            noter_dans(&d, alerte(1, q), le(q)).unwrap();
+            assert_eq!(lire_dans(&d).lecture, Lecture::Intact);
             let _ = std::fs::remove_dir_all(&d);
         }
     }

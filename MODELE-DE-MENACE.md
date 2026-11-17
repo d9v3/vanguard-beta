@@ -732,8 +732,8 @@ gardes :
 ## La porte de lecture pour les assistants d'IA
 
 `vanguard mcp` est une porte en lecture seule pour un assistant d'IA que la personne branche elle-même (un client
-MCP) : il peut lire ce que Vanguard a déjà écrit, sans pouvoir rien changer. **Linux seulement** : la commande existe
-sous Windows, mais elle n'a pas encore été essayée sur un vrai Windows, et rien n'y est promis.
+MCP) : il peut lire ce que Vanguard a déjà écrit, sans pouvoir rien changer. **Linux seulement** : sous Windows, la
+commande refuse de démarrer (code 2) tant qu'elle n'a pas été essayée sur un vrai Windows.
 
 - **Ce qu'elle donne.** Cinq outils, une liste fermée : `etat` (journal vérifié ou non, dernier examen de chaque
   outil, alertes des 30 derniers jours par gravité, protection et interrupteurs), `evenements` (le journal, page par
@@ -745,26 +745,49 @@ sous Windows, mais elle n'a pas encore été essayée sur un vrai Windows, et ri
   numéros de processus, ni comptes, ni adresses des connexions, ni nom de l'ordinateur ou du réseau, ni paramètres,
   ni secrets, ni le contenu d'un fichier, ni les commandes d'une correction. Un essai plante ces valeurs (inventées)
   dans le journal, les examens et l'historique, puis vérifie qu'aucune ne sort, par aucun outil
-  (`rien_d_exclu_ne_sort_de_la_porte`).
+  (`rien_d_exclu_ne_sort_de_la_porte`). Le texte venu de l'ordinateur, rangé à part (plus bas), fait exception : il
+  peut citer un nom.
 - **Elle n'écrit rien, sauf sa note.** Elle lit les notes scellées sans les adopter ni les réparer ; un essai compare
   les empreintes de tout le dossier avant et après une session (`une_session_entiere_n_ecrit_rien`). La seule écriture
-  est une note de fin de session au journal : sa durée, le nombre d'appels par outil, les refus et la raison de la fin,
-  jamais les arguments ni les réponses. La personne peut donc voir que son assistant lit Vanguard, et à quel rythme.
+  est une note de session au journal : sa durée, le nombre d'appels par outil, les refus par code et la raison de la
+  fin, jamais les arguments ni les réponses. Elle est écrite au premier appel servi, avant sa réponse, puis complétée
+  à la fin ; un arrêt demandé (SIGTERM, SIGINT, SIGHUP) finit la session et la note. Seul un SIGKILL coupe sans note
+  de fin, et la note d'ouverture reste. La porte ne crée rien : sur un compte où Vanguard n'a jamais tourné (ni
+  journal ni sceaux), rien n'est noté. Un frein borne ce qu'un client peut ajouter au journal : 12 notes et 1 alerte
+  par heure au plus ; les suivantes sont seulement comptées dans un petit fichier à part et dites par la note
+  suivante. Rien n'est écrit non plus quand le journal du mois a pris le quart de sa taille permise : les alertes de
+  Vanguard gardent leur place. La personne peut donc voir que son assistant lit Vanguard, et à quel rythme. C'est une
+  trace de bonne foi, pas une barrière : un programme du compte peut lire les fichiers de Vanguard sans la porte.
 - **Elle n'écoute rien.** Ni port, ni socket : seul le programme qui l'a lancée lui parle, par l'entrée et la sortie
   standard. Elle ne demande aucun droit et ne donne rien que le compte ne puisse déjà lire. Elle refuse de tourner
   en root (code 2, rien sur la sortie, rien au journal : `la_porte_refuse_root`) et refuse un terminal en entrée
-  (`la_porte_refuse_un_terminal`) : elle est faite pour un programme, pas pour une personne au clavier.
+  (`la_porte_refuse_un_terminal`) : elle est faite pour un programme, pas pour une personne au clavier. Ce refus est
+  une aide contre une erreur de frappe, pas une garde : un programme peut toujours lui donner un tube.
 - **Le client est tenu pour hostile.** Un message fait 64 Kio au plus, borné pendant la lecture même, et doit finir
-  en 10 secondes ; une session s'arrête après 15 minutes de silence, 8 heures ou 10 000 demandes ; plus de 20 lignes
-  par seconde, un message qui n'est pas du JSON valide, un lot ou des méthodes inconnues répétées ferment la session.
-  Un tel signe est noté en plus par une alerte moyenne : un assistant honnête n'en envoie jamais, donc il est piégé
-  ou ce n'est pas lui (`une_session_n_ecrit_que_sa_note_et_le_client_hostile_est_note`). Une réponse fait 256 Kio
-  au plus ; une page trop longue est raccourcie et le dit.
+  en 10 secondes ; une réponse doit être écrite en 10 secondes, sans quoi la session finit (un client qui ne lit pas
+  sa sortie ne bloque pas la porte). Une session s'arrête après 15 minutes de silence, 8 heures ou 10 000 demandes ;
+  après une longue pause, l'assistant relance la porte (l'outil peut sembler arrêté jusque-là). Plus de 20 demandes
+  en une seconde (les lignes vides ne comptent pas, et le refus porte l'id de la demande), un message qui n'est pas du
+  JSON valide, une enveloppe fausse (paramètres en tableau, `id` hors de l'ASCII visible), un lot ou trois
+  notifications inconnues ferment la session ; une demande de méthode inconnue reçoit son refus sans rien fermer. Un
+  signe hostile est noté en plus par une alerte moyenne : un assistant ordinaire attend ses réponses et n'en envoie
+  pas, donc il est piégé, mal écrit ou ce n'est pas lui
+  (`une_session_n_ecrit_que_sa_note_et_le_client_hostile_est_note`). Une réponse fait 256 Kio au plus ; une page trop
+  longue est raccourcie et le dit.
 - **Tout ce qu'elle rend est non fiable.** Un titre d'alerte, un message de constat ou un nom de programme peut
-  citer un attaquant (un fichier nommé pour donner des ordres à l'assistant, par exemple). Chaque réponse, erreurs
-  comprises, est marquée `"teinte": "non-fiable"`, en tête de son texte (`la_teinte_est_en_tete_de_chaque_reponse`),
-  et le texte venu de l'ordinateur est nettoyé, borné et rangé à part. C'est à l'assistant de le traiter comme une
-  donnée, jamais comme une consigne.
+  citer un attaquant (un fichier nommé pour donner des ordres à l'assistant, par exemple). Chaque réponse est marquée
+  `"teinte": "non-fiable"`, sous trois formes : dans `_meta` d'un résultat, dans `error.data` d'une erreur, et en tête
+  du résultat d'un outil, dans son texte comme dans `structuredContent`, avant tout contenu
+  (`la_teinte_est_en_tete_de_chaque_reponse`, vérifié dans la ligne écrite). Les noms (gravité, famille, règle,
+  raison, fin) sortent d'une liste fermée, ou vides. Le texte venu de l'ordinateur (titre, message, catégorie, nom de
+  programme) sort à part, sous la forme `{"texte_externe": …, "non_fiable": true}`, borné et nettoyé comme le
+  journal des erreurs ; la porte en retire d'abord les numéros de processus, les extraits de commande (entre
+  parenthèses, et la lignée d'un programme), les crochets, le mot coupé d'un texte raccourci, les numéros de série et
+  ce qui suit un mot de passe ou une phrase de passe annoncés. Le nettoyage retire ce qui agit sur un écran, jamais le
+  sens : une consigne écrite en clair y reste une phrase. C'est à l'assistant de la traiter comme une donnée, jamais
+  comme une consigne. Limite connue : un tel texte peut encore nommer un appareil, un réseau Wi-Fi, un serveur ou un
+  compte, quand une alerte les cite ; seuls les noms que le nettoyeur connaît sont retirés (le compte et l'ordinateur,
+  pris dans l'environnement du processus, que le client lance).
 - **Elle ne peut pas prouver qu'elle est le vrai Vanguard.** Un faux programme posé au même chemin répondrait la même
   chose, `identite` comprise ; et un programme du compte peut écrire dans les fichiers de Vanguard (les sceaux sont une
   barrière, pas un coffre : voir « Les programmes de votre compte ne visent pas Vanguard lui-même »). La preuve se fait

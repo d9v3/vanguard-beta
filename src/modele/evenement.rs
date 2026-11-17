@@ -110,11 +110,25 @@ pub(crate) enum Genre {
         appels: std::collections::BTreeMap<String, u32>,
         #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
         refus: std::collections::BTreeMap<String, u32>,
+        /// « ouverte » pour la note du premier appel servi (écrite avant sa réponse), sinon la fin de la session.
         fin: String,
+        /// Les notes de session et les alertes que le frein de l'heure a retenues depuis la note d'avant
+        /// (`journal::PORTE_NOTES_PAR_HEURE`) ; `retenues_au_moins` : le compte était plein, il y en a eu plus.
+        #[serde(default, skip_serializing_if = "est_zero")]
+        retenues: u32,
+        #[serde(default, skip_serializing_if = "est_zero")]
+        alertes_retenues: u32,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        retenues_au_moins: bool,
     },
     /// Écrit par une version plus récente : gardé tel quel, jamais jugé.
     #[serde(other)]
     Inconnu,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // la forme que demande `skip_serializing_if`
+fn est_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 impl Genre {

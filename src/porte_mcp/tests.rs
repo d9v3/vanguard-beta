@@ -38,13 +38,38 @@ fn courtes() -> Bornes {
         inactivite: Duration::from_millis(400),
         duree_max: Duration::from_secs(30),
         demandes_max: 1000,
+        delai_ecriture: Duration::from_millis(500),
     }
+}
+
+/// Un noteur qui ne note rien : le transport seul.
+struct Muet;
+
+impl Noteur for Muet {
+    fn ouvrir(&mut self, _: &BilanSession) {}
+    fn alerter(&mut self) {}
+    fn fermer(&mut self, _: &BilanSession) {}
+}
+
+fn servir_muet<R: Read + Send + 'static>(
+    entree: R,
+    sortie: &mut impl Write,
+    outils: &mut dyn Outils,
+    bornes: Bornes,
+) -> BilanSession {
+    let arret = AtomicBool::new(false);
+    let mut b = Branchements {
+        outils,
+        noteur: &mut Muet,
+        arret: &arret,
+    };
+    servir(entree, sortie, &mut b, bornes)
 }
 
 /// Sert `entree` jusqu'au bout ; rend le bilan et chaque ligne écrite, relue en JSON.
 fn session<R: Read + Send + 'static>(entree: R, bornes: Bornes) -> (BilanSession, Vec<Value>) {
     let mut sortie = Vec::new();
-    let bilan = servir(entree, &mut sortie, &mut Aucun, bornes);
+    let bilan = servir_muet(entree, &mut sortie, &mut Aucun, bornes);
     let lignes = String::from_utf8(sortie)
         .unwrap()
         .lines()
@@ -68,7 +93,7 @@ fn une_trame_geante_est_refusee_et_ferme_la_session() {
         2,
         "le ping d'après la trame géante n'a pas de réponse : {lignes:?}"
     );
-    assert_eq!(lignes.get(1).map(code_d_erreur), Some("trop-grande"));
+    assert_eq!(lignes.get(1).map(code_d_erreur), Some("trame-trop-grande"));
     assert_eq!(lignes.get(1).and_then(|l| l.get("id")), Some(&Value::Null));
 }
 
@@ -77,7 +102,7 @@ fn un_flot_sans_fin_de_ligne_est_coupe_vite() {
     let depart = Instant::now();
     let (bilan, lignes) = session(std::io::repeat(b'a'), courtes());
     assert_eq!(bilan.fin, Fin::Hostile);
-    assert_eq!(lignes.first().map(code_d_erreur), Some("trop-grande"));
+    assert_eq!(lignes.first().map(code_d_erreur), Some("trame-trop-grande"));
     assert!(depart.elapsed() < Duration::from_secs(5), "{:?}", depart.elapsed());
 }
 
@@ -152,7 +177,7 @@ impl Write for Fermee {
 
 #[test]
 fn une_sortie_fermee_finit_la_session() {
-    let bilan = servir(
+    let bilan = servir_muet(
         Cursor::new(format!("{INIT}\n{PING}\n").into_bytes()),
         &mut Fermee,
         &mut Aucun,
@@ -169,6 +194,254 @@ fn la_fin_du_flot_et_la_ligne_coupee() {
     let (bilan, lignes) = session(Cursor::new(INIT.as_bytes().to_vec()), courtes());
     assert_eq!(bilan.fin, Fin::Coupee);
     assert_eq!(lignes, Vec::<Value>::new(), "une ligne sans fin n'est pas servie");
+}
+
+/// Des outils qui servent `etat` (un objet vide), pour juger quand la note s'écrit.
+struct UnOutil;
+
+impl Outils for UnOutil {
+    fn liste(&self) -> Value {
+        json!([])
+    }
+
+    fn nom_ferme(&self, nom: &str) -> Option<&'static str> {
+        (nom == "etat").then_some("etat")
+    }
+
+    fn appeler(&mut self, _nom: &'static str, _arguments: Option<&RawValue>) -> Result<Map<String, Value>, Code> {
+        Ok(Map::new())
+    }
+}
+
+type Trace = std::rc::Rc<std::cell::RefCell<Vec<String>>>;
+
+/// Note dans la même trace que la sortie : l'ordre des notes et des réponses se lit.
+struct Temoin(Trace);
+
+impl Noteur for Temoin {
+    fn ouvrir(&mut self, ouverture: &BilanSession) {
+        self.0.borrow_mut().push(format!("ouvrir:{}", ouverture.fin.nom()));
+    }
+    fn alerter(&mut self) {
+        self.0.borrow_mut().push("alerter".into());
+    }
+    fn fermer(&mut self, bilan: &BilanSession) {
+        self.0.borrow_mut().push(format!("fermer:{}", bilan.fin.nom()));
+    }
+}
+
+struct SortieTemoin(Trace);
+
+impl Write for SortieTemoin {
+    fn write(&mut self, octets: &[u8]) -> std::io::Result<usize> {
+        Ok(octets.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.borrow_mut().push("reponse".into());
+        Ok(())
+    }
+}
+
+fn trace_de(entree: String) -> Vec<String> {
+    let trace = Trace::default();
+    let arret = AtomicBool::new(false);
+    let mut b = Branchements {
+        outils: &mut UnOutil,
+        noteur: &mut Temoin(trace.clone()),
+        arret: &arret,
+    };
+    servir(
+        Cursor::new(entree.into_bytes()),
+        &mut SortieTemoin(trace.clone()),
+        &mut b,
+        courtes(),
+    );
+    trace.take()
+}
+
+/// CLIENT-1, CLIENT-2 : la note s'ouvre au premier appel servi, avant sa réponse (un client qui tue la porte en
+/// lisant cette réponse ne l'efface pas) ; l'alerte d'un client hostile s'écrit avant la réponse qui ferme ; une
+/// session sans appel servi n'ouvre rien.
+#[test]
+fn la_note_passe_avant_la_reponse() {
+    let appel = |id: u32| json!({ "jsonrpc": "2.0", "id": id, "method": "tools/call", "params": { "name": "etat", "arguments": {} } });
+    let geante = format!("{{\"x\":\"{}\"}}", "a".repeat(70_000));
+    let trace = trace_de(format!("{INIT}\n{PING}\n{}\n{}\n{geante}\n", appel(2), appel(3)));
+    assert_eq!(
+        trace,
+        [
+            "reponse",
+            "reponse",
+            "ouvrir:ouverte",
+            "reponse",
+            "reponse",
+            "alerter",
+            "reponse",
+            "fermer:hostile"
+        ]
+    );
+    let trace = trace_de(format!("{INIT}\n{PING}\n"));
+    assert_eq!(trace, ["reponse", "reponse", "fermer:fin-du-flot"]);
+    let trace = trace_de(format!("{INIT}\n{geante}\n"));
+    assert_eq!(trace, ["reponse", "alerter", "reponse", "fermer:hostile"]);
+}
+
+/// CLIENT-1 : un signal d'arrêt (le drapeau levé par le fil des signaux) finit la session vite, et proprement :
+/// la note de fin passe.
+#[test]
+fn un_signal_finit_la_session_et_la_note() {
+    let (lecture, ecriture) = std::io::pipe().unwrap();
+    let arret = std::sync::Arc::new(AtomicBool::new(false));
+    let leve = arret.clone();
+    let fil = crate::socle::fil::lancer("essai-signal", move || {
+        std::thread::sleep(Duration::from_millis(300));
+        leve.store(true, Ordering::SeqCst);
+    })
+    .unwrap();
+    let trace = Trace::default();
+    let mut b = Branchements {
+        outils: &mut UnOutil,
+        noteur: &mut Temoin(trace.clone()),
+        arret: &arret,
+    };
+    let depart = Instant::now();
+    let bornes = Bornes {
+        inactivite: Duration::from_secs(60),
+        ..courtes()
+    };
+    let bilan = servir(lecture, &mut Vec::new(), &mut b, bornes);
+    assert_eq!(bilan.fin, Fin::Signal);
+    assert!(depart.elapsed() < Duration::from_secs(5), "{:?}", depart.elapsed());
+    assert_eq!(trace.take(), ["fermer:signal"]);
+    fil.join().unwrap();
+    drop(ecriture);
+}
+
+/// Une sortie qui ne rend jamais la main (un client qui ne lit plus ses réponses) ; relâchée à la fin de l'essai.
+struct Coincee(std::sync::mpsc::Receiver<()>);
+
+impl Write for Coincee {
+    fn write(&mut self, octets: &[u8]) -> std::io::Result<usize> {
+        let _ = self.0.recv();
+        Ok(octets.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// CLIENT-3 : une réponse que le client ne prend pas ne retient pas la porte au-delà du délai d'écriture ; la
+/// session finit, comptée hostile.
+#[test]
+fn une_sortie_qui_ne_lit_plus_finit_la_session_a_temps() {
+    let (relache, attente) = std::sync::mpsc::channel();
+    let bornes = courtes();
+    let mut sortie = SortieBornee::new(Coincee(attente), bornes.delai_ecriture).unwrap();
+    let (lecture, ecriture) = std::io::pipe().unwrap();
+    let mut envoi = ecriture;
+    writeln!(envoi, "{INIT}\n{PING}").unwrap();
+    let depart = Instant::now();
+    let bilan = servir_muet(lecture, &mut sortie, &mut Aucun, bornes);
+    assert_eq!(bilan.fin, Fin::SortieBloquee);
+    assert!(bilan.hostile);
+    assert!(depart.elapsed() < Duration::from_secs(5), "{:?}", depart.elapsed());
+    // Bloquée, elle le reste : plus rien ne s'écrit.
+    assert_eq!(
+        sortie
+            .write_all(b"x")
+            .and_then(|()| sortie.flush())
+            .map_err(|e| e.kind()),
+        Err(std::io::ErrorKind::TimedOut)
+    );
+    drop(relache);
+    drop(envoi);
+}
+
+/// Une sortie bornée qui marche rend chaque réponse, entière et dans l'ordre.
+#[test]
+fn une_sortie_bornee_rend_les_reponses() {
+    let (lecture, ecriture) = std::io::pipe().unwrap();
+    let mut sortie = SortieBornee::new(ecriture, Duration::from_secs(5)).unwrap();
+    let bilan = servir_muet(
+        Cursor::new(format!("{INIT}\n{PING}\n").into_bytes()),
+        &mut sortie,
+        &mut Aucun,
+        courtes(),
+    );
+    assert_eq!(bilan.fin, Fin::FlotFini);
+    drop(sortie);
+    let mut texte = String::new();
+    BufReader::new(lecture).read_to_string(&mut texte).unwrap();
+    let lignes: Vec<Value> = texte.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert_eq!(lignes.len(), 2, "{texte}");
+    assert_eq!(lignes.get(1).and_then(|l| l.get("id")), Some(&json!(1)));
+}
+
+/// DROITS-4 : root, setuid, setgid, une capacité effective, ou un champ qui manque : refusée.
+#[test]
+fn les_droits_eleves_se_lisent_dans_le_status() {
+    let status =
+        |uid: &str, gid: &str, cap: &str| format!("Name:\tvanguard\nUid:\t{uid}\nGid:\t{gid}\nCapEff:\t{cap}\n");
+    let ordinaire = status("1000\t1000\t1000\t1000", "1000\t1000\t1000\t1000", "0000000000000000");
+    assert!(!eleve_d_apres(&ordinaire));
+    for eleve in [
+        status("0\t0\t0\t0", "0\t0\t0\t0", "0000000000000000"),
+        status("1000\t0\t1000\t1000", "1000\t1000\t1000\t1000", "0000000000000000"),
+        status("1000\t1000\t0\t1000", "1000\t1000\t1000\t1000", "0000000000000000"),
+        status("1000\t1000\t1000\t1000", "1000\t5\t1000\t1000", "0000000000000000"),
+        status("1000\t1000\t1000\t1000", "1000\t1000\t1000\t1000", "0000000000001000"),
+        status("1000\t1000\t1000", "1000\t1000\t1000\t1000", "0000000000000000"),
+        status("1000\t1000\t1000\t1000", "1000\t1000\t1000\t1000", "zz"),
+        "Name:\tvanguard\nUid:\t1000\t1000\t1000\t1000\n".to_string(),
+        String::new(),
+    ] {
+        assert!(eleve_d_apres(&eleve), "{eleve}");
+    }
+}
+
+/// CONTRAT-7 : sous Windows, refusée tant qu'elle n'y est pas essayée.
+#[cfg(windows)]
+#[test]
+fn la_porte_est_refusee_sous_windows() {
+    assert!(refus_de_demarrer().is_some());
+}
+
+/// CLIENT-1, CLIENT-2 : avec le vrai journal, une session qui sert un appel laisse sa note d'ouverture puis sa note
+/// de fin ; une session sans appel ne laisse rien ; un client hostile laisse son alerte, même sans appel.
+#[test]
+fn le_vrai_journal_ne_note_que_les_sessions_servies() {
+    use crate::modele::journal::lire_dans;
+    let dossier = planter("porte-mcp-notes");
+    let porte_mcp = |dossier: &std::path::Path| {
+        lire_dans(dossier)
+            .evenements
+            .into_iter()
+            .filter(|e| e.source == Source::PorteMcp)
+            .map(|e| match e.quoi {
+                Genre::SessionPorte { fin, .. } => fin,
+                Genre::Alerte { famille, .. } => format!("alerte:{famille}"),
+                autre => format!("{autre:?}"),
+            })
+            .collect::<Vec<_>>()
+    };
+    let servir_journal = |entree: String| {
+        let arret = AtomicBool::new(false);
+        let mut noteur = NoteurJournal::new(dossier.to_path_buf());
+        let mut porte = outils::Porte::new(dossier.to_path_buf(), vues::Liens::fixes());
+        let mut b = Branchements {
+            outils: &mut porte,
+            noteur: &mut noteur,
+            arret: &arret,
+        };
+        servir(Cursor::new(entree.into_bytes()), &mut Vec::new(), &mut b, courtes());
+    };
+    servir_journal(format!("{INIT}\n{PING}\n"));
+    assert_eq!(porte_mcp(&dossier), Vec::<String>::new());
+    let appel = json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": { "name": "etat" } });
+    servir_journal(format!("{INIT}\n{appel}\n"));
+    assert_eq!(porte_mcp(&dossier), ["ouverte", "fin-du-flot"]);
+    servir_journal(format!("{INIT}\n{{\"x\":\"{}\"}}\n", "a".repeat(70_000)));
+    assert_eq!(porte_mcp(&dossier), ["ouverte", "fin-du-flot", "alerte:porte-mcp"]);
 }
 
 // --- Les vrais outils sur un dossier planté ---------------------------------------------------------------------
@@ -336,6 +609,14 @@ fn appels() -> Vec<(&'static str, Value)> {
 
 /// Une session entière sur les vrais outils ; rend chaque réponse relue.
 fn session_reelle(dossier: &std::path::Path) -> Vec<Value> {
+    session_brute(dossier)
+        .iter()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+/// La même session, chaque réponse telle qu'écrite (l'ordre des clés compte).
+fn session_brute(dossier: &std::path::Path) -> Vec<String> {
     let mut porte = outils::Porte::new(dossier.to_path_buf(), vues::Liens::fixes());
     let mut lignes = vec![
         INIT.to_string(),
@@ -350,31 +631,26 @@ fn session_reelle(dossier: &std::path::Path) -> Vec<Value> {
     let mut sortie = Vec::new();
     let entree = Cursor::new(lignes.iter().fold(String::new(), |t, l| t + l + "\n").into_bytes());
     // Sous le rythme : quinze lignes, moins de vingt.
-    let bilan = servir(entree, &mut sortie, &mut porte, courtes());
+    let bilan = servir_muet(entree, &mut sortie, &mut porte, courtes());
     assert_eq!(bilan.fin, Fin::FlotFini, "{bilan:?}");
-    let mut reponses: Vec<Value> = String::from_utf8(sortie)
-        .unwrap()
-        .lines()
-        .map(|l| serde_json::from_str(l).unwrap())
-        .collect();
+    let mut reponses: Vec<String> = String::from_utf8(sortie).unwrap().lines().map(str::to_string).collect();
     // La page suivante des événements, par le lien de la première page de deux.
     let suivant = reponses
         .iter()
-        .find_map(|r| r.pointer("/result/structuredContent/suivant").and_then(Value::as_str))
-        .map(str::to_string);
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .find_map(|r| {
+            r.pointer("/result/structuredContent/suivant")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        });
     if let Some(avant) = suivant {
         let mut porte = outils::Porte::new(dossier.to_path_buf(), vues::Liens::fixes());
         let demande = json!({ "jsonrpc": "2.0", "id": 99, "method": "tools/call",
                               "params": { "name": "evenements", "arguments": { "limite": 2, "avant": avant } } });
         let mut sortie = Vec::new();
         let entree = Cursor::new(format!("{INIT}\n{demande}\n").into_bytes());
-        servir(entree, &mut sortie, &mut porte, courtes());
-        reponses.extend(
-            String::from_utf8(sortie)
-                .unwrap()
-                .lines()
-                .map(|l| serde_json::from_str::<Value>(l).unwrap()),
-        );
+        servir_muet(entree, &mut sortie, &mut porte, courtes());
+        reponses.extend(String::from_utf8(sortie).unwrap().lines().map(str::to_string));
     }
     reponses
 }
@@ -426,7 +702,7 @@ fn rien_d_exclu_ne_sort_de_la_porte() {
     // Le nom court du programme d'une preuve, dans son propre champ : « minerai-xmr » seul ne suffit pas, le texte de
     // l'alerte le porte aussi.
     for attendu in [
-        "\"programme\":\"minerai-xmr\"",
+        "\"programme\":{\"texte_externe\":\"minerai-xmr\"",
         "botnet",
         "alerte-botnet",
         "\"preuve\"",
@@ -446,7 +722,9 @@ fn rien_d_exclu_ne_sort_de_la_porte() {
 #[test]
 fn la_teinte_est_en_tete_de_chaque_reponse() {
     let dossier = planter("porte-mcp-teinte");
-    for r in session_reelle(&dossier) {
+    let mut structures = 0;
+    for brute in session_brute(&dossier) {
+        let r: Value = serde_json::from_str(&brute).unwrap();
         if let Some(e) = r.get("error") {
             assert_eq!(
                 e.pointer("/data/teinte").and_then(Value::as_str),
@@ -465,8 +743,32 @@ fn la_teinte_est_en_tete_de_chaque_reponse() {
             assert_eq!(contenu.get("teinte").and_then(Value::as_str), Some(rpc::TEINTE), "{r}");
             let texte = resultat.pointer("/content/0/text").and_then(Value::as_str).unwrap();
             assert!(texte.starts_with(r#"{"teinte":"non-fiable""#), "{texte}");
+            // Dans la ligne même : `structuredContent` commence par la teinte, avant tout contenu.
+            assert!(
+                brute.contains(r#""structuredContent":{"teinte":"non-fiable","origine":"vanguard","schema":"#),
+                "{}",
+                brute.chars().take(300).collect::<String>()
+            );
+            structures += 1;
         }
     }
+    assert!(structures >= 5, "des réponses d'outil attendues : {structures}");
+}
+
+/// Les arguments d'un outil sont un objet : un tableau, que serde lirait par position, est refusé.
+#[test]
+fn des_arguments_en_tableau_sont_refuses() {
+    let mut porte = outils::Porte::new(crate::essais::temporaire(), vues::Liens::fixes());
+    for (nom, brut) in [("etat", "[]"), ("bilans", "[3]"), ("evenements", " [null,null,null,2]")] {
+        let brut = RawValue::from_string(brut.to_string()).unwrap();
+        assert_eq!(
+            porte.appeler(nom, Some(&brut)).err(),
+            Some(rpc::Code::Arguments),
+            "{nom}"
+        );
+    }
+    let objet = RawValue::from_string(r#" {"limite":3}"#.to_string()).unwrap();
+    assert!(porte.appeler("bilans", Some(&objet)).is_ok());
 }
 
 #[test]
@@ -517,7 +819,7 @@ proptest::proptest! {
         let t = v.get("texte_externe").and_then(Value::as_str).unwrap_or("");
         proptest::prop_assert!(t.len() <= 1200, "{}", t.len());
         proptest::prop_assert!(!t.chars().any(|c| c.is_control() && c != '\n' && c != '\t'), "{t:?}");
-        proptest::prop_assert_eq!(v.get("nettoye"), Some(&json!(true)));
+        proptest::prop_assert_eq!(v.get("non_fiable"), Some(&json!(true)));
     }
 
     /// Un nom fermé n'accepte que `[a-z0-9-]`.
