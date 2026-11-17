@@ -1925,7 +1925,7 @@ pub fn endroits_permis() -> &'static str {
 }
 
 /// Une lecture longue : plus de `LECTURE_RAPIDE`, ou un scan d'autres machines (`Commande::sonde_le_reseau`). Elle ne
-/// part jamais seule, et son bouton dit qu'elle prend quelques minutes.
+/// part jamais seule ; seule celle qui dure (plus de `LECTURE_RAPIDE`) dit « quelques minutes » sur son bouton.
 pub fn lecture_longue(c: Commande) -> bool {
     c.delai() > LECTURE_RAPIDE || c.sonde_le_reseau()
 }

@@ -481,10 +481,11 @@ fn lancer_arreter(appli: &mut Appli, ui: &mut Ui, c: Commande) {
             appli.arreter();
         }
     } else {
-        // Jamais lue : une lecture longue dit qu'elle prend du temps, puisqu'elle ne part pas seule.
+        // Jamais lue : une lecture qui dure (plus de `LECTURE_RAPIDE`) le dit, puisqu'elle ne part pas seule ; un scan
+        // du réseau, court, ne part pas seul non plus mais dit simplement « Lancer » (sa page dit sa durée).
         let t = if appli.resultat(c).is_some() {
             crate::tr!("Relancer", "Run again")
-        } else if crate::appli::lecture_longue(c) {
+        } else if c.delai() > crate::appli::LECTURE_RAPIDE {
             crate::tr!("Lancer (quelques minutes)", "Run (a few minutes)")
         } else {
             crate::tr!("Lancer", "Run")
