@@ -377,7 +377,9 @@ pub(super) fn trier(cibles: Vec<PathBuf>) -> Vec<(PathBuf, Vue)> {
 
 /// Les fenêtres seules à proposer (`seule_a_poser`) à côté des `candidats` (au numéro publié), une par chemin, et
 /// aucune là où une copie à remplacer (`gardees`) pose déjà la sienne ; celles qui ne se lisent pas, ou d'une copie
-/// en lien qui ne peut pas la recevoir, vont dans `ecartees`.
+/// en lien qui ne peut pas la recevoir, vont dans `ecartees`. Une copie à remplacer dont la fenêtre est laissée (une
+/// copie en lien, R3-2, ronde 4) écarte aussi la fenêtre seule du même chemin : sa ligne dit « sa fenêtre n'est pas
+/// posée à côté du lien », la poser ici le démentirait ; elle suit au tour suivant, que la ligne demande.
 pub(super) fn seules(
     candidats: &[PathBuf],
     publiee: &super::github::Publiee,
@@ -547,7 +549,10 @@ impl Vue {
     }
 
     /// La ligne de la fenêtre au résultat quand elle est laissée : jamais « à jour », la raison et ce qui n'est pas
-    /// touché (code 1 : pas tout mis à jour).
+    /// touché (code 1 : pas tout mis à jour). Une copie en lien : la pose du programme a remplacé le lien lui-même
+    /// par un fichier, sous les deux systèmes (`mettre_en_place_sous` : un renommage sur le nom, jamais à travers le
+    /// lien), donc relancer suffit (R3-2, ronde 4). Une fenêtre seule d'une autre copie au même chemin attend aussi
+    /// ce tour suivant (`seules`).
     pub(super) fn laissee_dite(&self) -> Option<String> {
         Some(match self.laissee? {
             Laissee::Illisible => tr!(
@@ -556,13 +561,35 @@ impl Vue {
             )
             .to_string(),
             Laissee::CopieEnLien => tr!(
-                "la copie était un lien : sa fenêtre n'est posée ni à côté de lui ni à côté de ce qu'il désignait, le programme est posé seul ; pour avoir sa fenêtre, posez la copie elle-même à la place du lien",
-                "the copy was a link: its window is placed neither next to it nor next to what it pointed to, the program is placed alone; to get its window, put the copy itself in place of the link"
+                "la copie était un lien : sa fenêtre n'est posée ni à côté de lui ni à côté de ce qu'il désignait, le programme est posé seul, à la place du lien ; relancez la mise à jour pour poser sa fenêtre",
+                "the copy was a link: its window is placed neither next to it nor next to what it pointed to, the program is placed alone, in place of the link; run the update again to place its window"
             )
             .to_string(),
             Laissee::DeLaCle(raison) => crate::trf!(
                 "la fenêtre de la clé n'est pas posée, non vérifiée ({}) : celle d'ici n'est pas touchée, le programme est posé seul",
                 "the key's window is not placed, not verified ({}): the one here is not touched, the program is placed alone",
+                raison
+            ),
+        })
+    }
+
+    /// `laissee_dite` quand la même copie est déjà là (la clé, même version) : rien n'a été posé, ni le programme
+    /// ni la fenêtre (R3-5, ronde 4). Une copie en lien reste donc un lien : à remplacer par la copie elle-même.
+    pub(super) fn laissee_deja_a_jour(&self) -> Option<String> {
+        Some(match self.laissee? {
+            Laissee::Illisible => tr!(
+                "le programme est déjà à jour ; sa fenêtre ne se lit pas (droits, dossier, tube ou fichier spécial, trop grande) : elle n'est pas touchée, le menu s'ouvrira à sa place ; retirez ou réparez ce fichier, puis relancez la mise à jour",
+                "the program is already up to date; its window cannot be read (permissions, folder, pipe or special file, too large): it is not touched, the menu will open instead; remove or repair this file, then run the update again"
+            )
+            .to_string(),
+            Laissee::CopieEnLien => tr!(
+                "le programme est déjà à jour ; la copie est un lien : sa fenêtre n'est posée ni à côté de lui ni à côté de ce qu'il désigne ; pour avoir sa fenêtre, posez la copie elle-même à la place du lien, puis relancez la mise à jour",
+                "the program is already up to date; the copy is a link: its window is placed neither next to it nor next to what it points to; to get its window, put the copy itself in place of the link, then run the update again"
+            )
+            .to_string(),
+            Laissee::DeLaCle(raison) => crate::trf!(
+                "le programme est déjà à jour ; la fenêtre de la clé n'est pas posée, non vérifiée ({}) : celle d'ici n'est pas touchée",
+                "the program is already up to date; the key's window is not placed, not verified ({}): the one here is not touched",
                 raison
             ),
         })
@@ -584,7 +611,8 @@ impl Vue {
     }
 
     /// Ce que dit la ligne de cette fenêtre dans l'aperçu, à côté d'un programme remplacé (80 caractères au plus) :
-    /// d'abord si elle est laissée, puis si le lancement refuse son dossier, puis ce qui lui sera fait.
+    /// d'abord si elle est laissée, sinon ce qui lui sera fait, suivi du refus de son dossier par le lancement s'il y
+    /// en a un (R3-3, ronde 4 : l'un ne cache plus l'autre).
     pub(super) fn dite_a_cote(&self) -> &'static str {
         match self.laissee {
             Some(Laissee::Illisible) => {
@@ -607,23 +635,33 @@ impl Vue {
             }
             None => {}
         }
-        if self.dossier.is_some() {
-            return tr!(
-                "sa fenêtre, posée, mais son dossier est refusé au lancement",
-                "its window, placed, but its folder is refused at launch"
-            );
-        }
-        match self.etat {
-            Montree::Absente => tr!("sa fenêtre, nouvelle ici", "its window, new here"),
-            Montree::Lien(_) => tr!(
+        match (&self.etat, self.dossier.is_some()) {
+            (Montree::Absente, false) => tr!("sa fenêtre, nouvelle ici", "its window, new here"),
+            (Montree::Absente, true) => tr!(
+                "sa fenêtre, nouvelle ici ; dossier refusé au lancement",
+                "its window, new here; folder refused at launch"
+            ),
+            (Montree::Lien(_), false) => tr!(
                 "sa fenêtre, un lien : remplacé par un fichier",
                 "its window, a link: replaced by a file"
             ),
-            Montree::Refusee(_) => tr!(
+            (Montree::Lien(_), true) => tr!(
+                "sa fenêtre, un lien remplacé par un fichier ; dossier refusé au lancement",
+                "its window, a link replaced by a file; folder refused at launch"
+            ),
+            (Montree::Refusee(_), false) => tr!(
                 "sa fenêtre, refusée au lancement (droits) : remplacée",
                 "its window, refused at launch (permissions): replaced"
             ),
-            Montree::Empreinte(_) | Montree::Illisible => tr!("sa fenêtre", "its window"),
+            (Montree::Refusee(_), true) => tr!(
+                "sa fenêtre, refusée (droits) : remplacée ; dossier refusé au lancement",
+                "its window, refused (permissions): replaced; folder refused at launch"
+            ),
+            (Montree::Empreinte(_) | Montree::Illisible, false) => tr!("sa fenêtre", "its window"),
+            (Montree::Empreinte(_) | Montree::Illisible, true) => tr!(
+                "sa fenêtre, posée, mais son dossier est refusé au lancement",
+                "its window, placed, but its folder is refused at launch"
+            ),
         }
     }
 
@@ -780,17 +818,18 @@ pub(super) fn de_la_source(source: &Path, octets: &[u8]) -> DeLaSource {
 /// revérifier à la pose. Le programme n'est jamais bloqué par sa fenêtre (A-ACCORD-1, A-REFUS-5, ronde 3) : une
 /// fenêtre de la clé pas posable, une fenêtre d'ici qui ne se lit pas, ou une copie qui est un lien, et la vue est
 /// laissée (`Laissee`) : le programme seul, celle d'ici jamais touchée, dit. Pas de fenêtre sur la clé : aucune vue,
-/// la copie se fait sans elle (comme avant la 0.97).
+/// la copie se fait sans elle (comme avant la 0.97). La copie en lien se regarde avant la fenêtre de la clé (R3-1,
+/// ronde 4) : c'est la seule raison que `Vue::toujours_laissee` peut revérifier avec un lien, sinon le programme
+/// serait refusé à chaque essai (« la fenêtre a changé »).
 pub(super) fn de_la_cle(source: &Path, octets: &[u8], copie: &Path) -> (Option<Vec<u8>>, Vue) {
-    let chemin = pour(copie);
+    let vue = || Vue::de(pour(copie));
     match de_la_source(source, octets) {
         DeLaSource::Absente => (None, Vue::de(None)),
-        DeLaSource::Pas(raison) => (None, Vue::de(chemin).laisser(Laissee::DeLaCle(raison))),
+        _ if en_lien(copie) => (None, vue().laisser(Laissee::CopieEnLien)),
+        DeLaSource::Pas(raison) => (None, vue().laisser(Laissee::DeLaCle(raison))),
         DeLaSource::Juste(f) => {
-            let vue = Vue::de(chemin);
-            if en_lien(copie) {
-                (None, vue.laisser(Laissee::CopieEnLien))
-            } else if vue.etat == Montree::Illisible {
+            let vue = vue();
+            if vue.etat == Montree::Illisible {
                 (None, vue.laisser(Laissee::Illisible))
             } else {
                 (Some(f), vue)
@@ -867,9 +906,17 @@ pub(super) fn posee_juste(programme: &[u8], chemin: &Path) -> Result<(), Echec> 
 /// Les restes d'une mise à jour faite pendant que la fenêtre de la copie `cible` tournait (Windows) : effacés. Encore
 /// ouverts, ils restent, et partiront la fois suivante. Seulement des fichiers ordinaires à un nom que la pose donne
 /// (`<fenêtre>.ancien-<32 chiffres hexadécimaux>`, A-POSE-2, ronde 3 ; et `<fenêtre>.ancien`, le nom fixe d'avant) :
-/// un dossier ou un lien à ce nom n'est pas à nous.
+/// un dossier ou un lien à ce nom n'est pas à nous. Rien n'est retiré tant que la fenêtre n'est pas un fichier à son
+/// nom (R3-5, ronde 4) : après un double échec de renommage sous Windows (`mettre_en_place_sous`, qui dit ce chemin),
+/// le reste est la dernière copie de l'ancienne fenêtre.
 pub(super) fn effacer_l_ancienne(cible: &Path) {
-    let Some(nom) = pour(cible).and_then(|f| f.file_name().and_then(|n| n.to_str()).map(str::to_string)) else {
+    let Some(fenetre) = pour(cible) else {
+        return;
+    };
+    if !std::fs::symlink_metadata(&fenetre).is_ok_and(|m| m.file_type().is_file()) {
+        return;
+    }
+    let Some(nom) = fenetre.file_name().and_then(|n| n.to_str()).map(str::to_string) else {
         return;
     };
     let Some(dossier) = cible.parent() else {
@@ -2118,6 +2165,12 @@ mod tests {
             SANS_ESSAI,
         )
         .unwrap();
+        // R3-5 (ronde 4) : rien n'a été posé, la note ne dit jamais « posé seul ».
+        assert!(
+            note.as_deref()
+                .is_none_or(|n| n.contains("déjà à jour") && !n.contains("posé seul")),
+            "{note:?}"
+        );
         assert!(dite_ou_posee_sous_windows(note, &fenetre, &neuve), "rien n'est dit");
         assert_eq!(std::fs::read(&cible).unwrap(), std::fs::read(&source).unwrap());
         let _ = std::fs::remove_dir_all(&d);
@@ -2551,6 +2604,116 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// R3-1 (re-contrôle de la ronde 3) : la fenêtre de la clé non vérifiée (ici, un dossier à son nom) et une copie
+    /// en lien donnaient `DeLaCle`, que la pose ne peut jamais revérifier avec un lien : refusé à chaque essai, « la
+    /// fenêtre a changé ». La copie en lien passe d'abord : le programme est posé seul, à la place du lien, rien à
+    /// côté du lien ni de ce qu'il désignait, et la ligne dit de relancer.
+    #[cfg(unix)]
+    #[test]
+    fn une_copie_en_lien_pose_son_programme_seul_meme_si_la_cle_n_a_pas_de_fenetre_verifiee() {
+        let d = dossier("essai-sa-fenetre-cle-et-lien");
+        let source = d.join("cle").join(NOM);
+        let (vrai, lien) = (d.join("vrai").join(NOM), d.join("lien").join(NOM));
+        for c in [&source, &vrai, &lien] {
+            std::fs::create_dir_all(c.parent().unwrap()).unwrap();
+        }
+        let neuve = b"fenetre 0.96".to_vec();
+        let nouveau = lancant(&neuve);
+        std::fs::write(&source, &nouveau).unwrap();
+        std::fs::create_dir_all(pour(&source).unwrap().join("dedans")).unwrap();
+        std::fs::write(&vrai, b"ancien programme").unwrap();
+        std::os::unix::fs::symlink(&vrai, &lien).unwrap();
+        // L'aperçu, puis le geste, qui relit tout comme `remplacer` et `agir`.
+        let (fenetre, vue) = de_la_cle(&source, &nouveau, &lien);
+        assert_eq!((fenetre, vue.laissee()), (None, Some(Laissee::CopieEnLien)));
+        let (_, maintenant) = de_la_cle(&source, &nouveau, &lien);
+        assert_eq!(maintenant.laissee(), vue.laissee());
+        installer_seul(
+            &nouveau,
+            &lien,
+            V,
+            &crate::socle::dossier_local(),
+            &crate::mise_a_jour::copie_de_cet_ordinateur(),
+            SANS_ESSAI,
+            &vue,
+        )
+        .unwrap();
+        assert!(
+            std::fs::symlink_metadata(&lien).unwrap().file_type().is_file(),
+            "le lien est remplacé"
+        );
+        assert_eq!(std::fs::read(&lien).unwrap(), nouveau);
+        assert_eq!(std::fs::read(&vrai).unwrap(), b"ancien programme");
+        for c in [&lien, &vrai] {
+            assert!(
+                std::fs::symlink_metadata(pour(c).unwrap()).is_err(),
+                "rien à côté de {c:?}"
+            );
+        }
+        let dite = vue.laissee_dite().unwrap();
+        assert!(
+            dite.contains("à la place du lien ; relancez la mise à jour") && !dite.contains("posez la copie"),
+            "{dite}"
+        );
+        // Au tour suivant, la copie n'est plus un lien : la fenêtre de la clé non vérifiée est dite.
+        let (_, apres) = de_la_cle(&source, &nouveau, &lien);
+        assert_eq!(apres.laissee(), Some(Laissee::DeLaCle("illisible")));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// R3-3 (re-contrôle de la ronde 3) : dans un dossier que le lancement refuse, la ligne de la fenêtre ne disait
+    /// plus ce qui lui serait fait (nouvelle, un lien remplacé, refusée remplacée). Les deux sont dits, en français
+    /// et en anglais, en 80 caractères au plus.
+    #[cfg(unix)]
+    #[test]
+    fn un_dossier_refuse_ne_cache_pas_ce_qui_sera_fait_a_la_fenetre() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = dossier("essai-sa-fenetre-dossier-refuse-dit");
+        let ouvert = d.join("ouvert");
+        std::fs::create_dir_all(&ouvert).unwrap();
+        let cible = ouvert.join(NOM);
+        let fenetre = pour(&cible).unwrap();
+        std::fs::write(&cible, b"ancien programme").unwrap();
+        std::fs::set_permissions(&ouvert, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let dites = || {
+            let v = montree(&cible);
+            (v.dite_a_cote(), crate::langue::en_anglais(|| v.dite_a_cote()))
+        };
+        let mut vues = vec![dites()];
+        std::os::unix::fs::symlink(d.join("ailleurs"), &fenetre).unwrap();
+        vues.push(dites());
+        std::fs::remove_file(&fenetre).unwrap();
+        std::fs::write(&fenetre, b"ancienne fenetre").unwrap();
+        std::fs::set_permissions(&fenetre, std::fs::Permissions::from_mode(0o666)).unwrap();
+        vues.push(dites());
+        std::fs::set_permissions(&fenetre, std::fs::Permissions::from_mode(0o644)).unwrap();
+        vues.push(dites());
+        assert_eq!(
+            vues,
+            [
+                (
+                    "sa fenêtre, nouvelle ici ; dossier refusé au lancement",
+                    "its window, new here; folder refused at launch"
+                ),
+                (
+                    "sa fenêtre, un lien remplacé par un fichier ; dossier refusé au lancement",
+                    "its window, a link replaced by a file; folder refused at launch"
+                ),
+                (
+                    "sa fenêtre, refusée (droits) : remplacée ; dossier refusé au lancement",
+                    "its window, refused (permissions): replaced; folder refused at launch"
+                ),
+                (
+                    "sa fenêtre, posée, mais son dossier est refusé au lancement",
+                    "its window, placed, but its folder is refused at launch"
+                ),
+            ]
+        );
+        assert!(vues.iter().all(|(fr, en)| fr.chars().count() <= 80 && en.len() <= 80));
+        std::fs::set_permissions(&ouvert, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     /// A-ORIGINE-3 (campagne d'attaque C-6/C-7) : une copie devenue un lien entre l'aperçu et la pose était suivie au
     /// moment de poser. Revérifiée à la pose : rien n'est posé, ni la fenêtre seule ni le programme avec elle.
     #[cfg(unix)]
@@ -2689,6 +2852,14 @@ mod tests {
         }
         let dossier_au_nom = d.join(format!("{nom}.ancien-{}", "f".repeat(32)));
         std::fs::create_dir_all(dossier_au_nom.join("dedans")).unwrap();
+        // R3-5 (ronde 4) : sans fenêtre à son nom (double échec de renommage sous Windows), le reste est la dernière
+        // copie de l'ancienne : rien n'est retiré.
+        std::fs::remove_file(d.join(&nom)).unwrap();
+        effacer_l_ancienne(&cible);
+        for n in &restes {
+            assert!(d.join(n).exists(), "{n} retiré sans fenêtre à son nom");
+        }
+        std::fs::write(d.join(&nom), b"x").unwrap();
         effacer_l_ancienne(&cible);
         for n in &restes {
             assert!(!d.join(n).exists(), "{n} reste");

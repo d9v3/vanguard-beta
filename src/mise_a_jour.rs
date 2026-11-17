@@ -310,7 +310,7 @@ fn etat() -> Etat {
     let copie = copie_de_cet_ordinateur();
     ETAT.lire(empreinte(&copie), || {
         // Le reste d'une mise à jour faite pendant que la copie tournait (Windows), s'il ne tourne plus.
-        let _ = std::fs::remove_file(copie.with_file_name(format!("{NOM}.ancien")));
+        effacer_l_ancien(&copie);
         programme().map_or(Etat::Rien, |exe| {
             etat_de(
                 &exe,
@@ -1716,7 +1716,7 @@ fn poser_copie_dans(
             // La même copie : sa fenêtre seule, si elle manque ou diffère. Un échec n'arrête pas la copie, que la
             // surveillance lance : sans sa fenêtre, le raccourci ouvre le menu.
             let Some((f, chemin)) = &fenetre else {
-                return Ok(vue.laissee_dite());
+                return Ok(vue.laissee_deja_a_jour());
             };
             return Ok(sa_fenetre::poser_si_autre(f, chemin).err().map(|e| {
                 trf!(
@@ -1832,6 +1832,16 @@ fn mettre_en_place(provisoire: &Path, cible: &Path) -> std::io::Result<()> {
     mettre_en_place_sous(provisoire, cible, &cible.with_file_name(format!("{NOM}.ancien")))
 }
 
+/// Le reste d'une mise à jour faite pendant que la copie tournait (Windows, `mettre_en_place`) : effacé ; encore
+/// lancé, il reste et partira la fois suivante. Rien n'est retiré tant que la copie n'est pas un fichier à son nom
+/// (R3-5, ronde 4) : après un double échec de renommage, `NOM.ancien` est la dernière copie du programme, dont
+/// `mettre_en_place_sous` a dit le chemin.
+pub(super) fn effacer_l_ancien(copie: &Path) {
+    if std::fs::symlink_metadata(copie).is_ok_and(|m| m.file_type().is_file()) {
+        let _ = std::fs::remove_file(copie.with_file_name(format!("{NOM}.ancien")));
+    }
+}
+
 /// `mettre_en_place`, l'ancien mis de côté sous le nom `ancien` (la fenêtre a le sien, `sa_fenetre`).
 fn mettre_en_place_sous(provisoire: &Path, cible: &Path, ancien: &Path) -> std::io::Result<()> {
     let erreur = match std::fs::rename(provisoire, cible) {
@@ -1849,8 +1859,16 @@ fn mettre_en_place_sous(provisoire: &Path, cible: &Path, ancien: &Path) -> std::
         )));
     }
     std::fs::rename(cible, ancien)?;
-    std::fs::rename(provisoire, cible).inspect_err(|_| {
-        let _ = std::fs::rename(ancien, cible);
+    // Deux échecs (R3-5, ronde 4) : l'ancienne n'est plus que sous `ancien`, que le ménage garde alors ; son chemin
+    // est dit, jamais tu.
+    std::fs::rename(provisoire, cible).map_err(|e| match std::fs::rename(ancien, cible) {
+        Ok(()) => e,
+        Err(_) => std::io::Error::other(trf!(
+            "{} ; l'ancienne copie n'a pas pu revenir à sa place : elle est gardée sous {}",
+            "{}; the old copy could not go back to its place: it is kept as {}",
+            e,
+            affichable(&ancien.display().to_string())
+        )),
     })
 }
 
@@ -1865,7 +1883,7 @@ pub fn commande() -> bool {
     );
     let cible = copie_de_cet_ordinateur();
     // Le reste d'une mise à jour faite pendant que la copie (ou sa fenêtre) tournait (Windows).
-    let _ = std::fs::remove_file(cible.with_file_name(format!("{NOM}.ancien")));
+    effacer_l_ancien(&cible);
     sa_fenetre::effacer_l_ancienne(&cible);
     let mut sans_refus = true;
     match etat() {
@@ -2666,6 +2684,28 @@ mod tests {
             assert!(!t.contains("GitHub") && !t.contains("Rien n'a été vérifié"), "{t}");
             assert_eq!(t.contains("restent en doute"), doute, "{t}");
         }
+    }
+
+    /// R3-5, ronde 4 : le reste `NOM.ancien` n'est retiré que si la copie est un fichier à son nom ; sans elle (double
+    /// échec de renommage sous Windows), c'est la dernière copie du programme, gardée.
+    #[test]
+    fn le_reste_du_programme_est_garde_sans_copie_a_sa_place() {
+        let d = crate::essais::temporaire().join(format!("vanguard-ancien-programme-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let copie = d.join(NOM);
+        let ancien = d.join(format!("{NOM}.ancien"));
+        std::fs::write(&ancien, b"vieux").unwrap();
+        effacer_l_ancien(&copie);
+        assert!(ancien.exists(), "sans copie, le reste est la dernière");
+        std::fs::create_dir(&copie).unwrap();
+        effacer_l_ancien(&copie);
+        assert!(ancien.exists(), "un dossier au nom de la copie n'en est pas une");
+        std::fs::remove_dir(&copie).unwrap();
+        std::fs::write(&copie, b"nouveau").unwrap();
+        effacer_l_ancien(&copie);
+        assert!(!ancien.exists(), "la copie en place, le reste part");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// Vérification 0.94, R10-ECRITURE-2 : une révocation pas retenue nomme son fichier et son dossier, sans « GitHub » ;

@@ -933,7 +933,7 @@ fn agir(m: &dyn Monde, accord: &str, consommer: impl FnOnce() -> Result<(), carn
     }
     // Le reste d'une mise à jour faite pendant que la copie tournait (Windows, `mettre_en_place`) s'efface comme au
     // terminal (`commande`), après l'accord seulement. Encore lancé, il reste : il partira la fois suivante.
-    let _ = std::fs::remove_file(m.copie().with_file_name(format!("{}.ancien", super::NOM)));
+    super::effacer_l_ancien(&m.copie());
     sa_fenetre::effacer_l_ancienne(&m.copie());
     let essai = m.essai();
     let mut faites = Vec::with_capacity(plan.apercu.cibles.len());
@@ -2095,7 +2095,8 @@ mod tests {
     }
 
     /// Le reste d'une mise à jour faite pendant que la copie tournait (`NOM.ancien`, Windows) s'efface comme au
-    /// terminal, après l'accord seulement : un mauvais accord le laisse.
+    /// terminal, après l'accord seulement : un mauvais accord le laisse. Celui de la fenêtre reste tant qu'elle n'est
+    /// pas à sa place.
     #[test]
     fn le_reste_d_une_mise_a_jour_s_efface_apres_l_accord() {
         let d = dossier("ancien");
@@ -2105,7 +2106,9 @@ mod tests {
         std::fs::write(&f.copie, programme("0.94.0+1780000000", "ici")).unwrap();
         let ancien = f.copie.with_file_name(format!("{NOM}.ancien"));
         std::fs::write(&ancien, b"vieux").unwrap();
-        // Celui de sa fenêtre aussi.
+        // Celui de sa fenêtre, sans fenêtre à sa place : la dernière copie de l'ancienne (double échec de renommage
+        // sous Windows, R3-5, ronde 4), gardée ; retiré quand elle y est
+        // (`le_menage_ne_retire_que_les_restes_d_une_pose`).
         let mut nom = sa_fenetre::pour(&f.copie).unwrap().file_name().unwrap().to_os_string();
         nom.push(".ancien");
         let ancienne_fenetre = f.copie.with_file_name(nom);
@@ -2120,7 +2123,7 @@ mod tests {
         assert!(ancienne_fenetre.exists());
         assert!(matches!(agir(&f, &accord, CONSOMME), Issue::Fait(_)));
         assert!(!ancien.exists());
-        assert!(!ancienne_fenetre.exists());
+        assert!(ancienne_fenetre.exists());
         assert_eq!(std::fs::read(&f.copie).unwrap(), publie);
         let _ = std::fs::remove_dir_all(&d);
     }

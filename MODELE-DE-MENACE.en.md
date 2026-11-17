@@ -456,73 +456,80 @@ safeguards:
   from here, it keeps the menu). Two programs in the same folder share a single window: it is judged and placed once.
   What was at each window path (nothing, a SHA-256 checksum, a link and what it points to, a file the launch refuses
   with its checksum, or nothing readable) is in the consent without being displayed: changed between the preview and the
-  click, refused, nothing downloaded. A link, or a file the launch refuses (permissions, owner, not a regular file), is
-  never counted as “its window is right”, even with the right bytes: its window is offered as a repair; it is never read
-  through a link (opened without following it). The window is judged by the launch's whole rule (the file,
-  `lancer_fenetre::refusee`, and, under Unix, each folder of its path, `lancer_fenetre::dossiers_refuses`; under
-  Windows, the launch does not judge folders): a folder the launch refuses (a link, another account's, writable by the
-  group or others without the sticky bit) is not fixed by placing the window again; this is said in the preview and in
-  the result, with the reason, never counted as “verified”, and no repair is offered (a lone window is not placed
-  there). The program is never blocked by its window (round 3 of 0.97): next to a window here that cannot be read
-  (permissions, folder, pipe or special file, too large), or for a copy that is a link, the program is placed alone, and
-  its window is neither touched nor downloaded; this is a separate gesture of the preview (“program alone, its window
-  cannot be read: untouched, the menu will open”, “program alone, the copy is a link”), so in the consent: readable
-  again, or the copy no longer a link (or one now), between the preview and the click, and nothing is done, the program
-  included. A copy that is a link gets its window neither next to the link nor next to the file it points to, under
-  Linux as under Windows, and this is said on its line; the link is checked again at placement time (a copy turned into
-  a link since the preview: nothing is placed). At the same version number, the lone window of a copy that is a link,
-  unreadable or in a refused folder is set aside, with its line in the preview (so in the consent) and its reason. In
-  all these cases, the result says “not verified” and why, never followed by a “nothing newer” check mark; when applied,
-  the code is 1; a verdict that is not “up to date” (signed version too old, newer here) is still said. When only lone
-  windows are left and the version is not verified up to date, the window's preview carries “not verified”, like the
-  terminal. The new window is written under a random temporary name (`vanguard-fenetre.nouveau-<32 hexadecimal digits>`,
-  128 bits from the system's randomness source), created new (O_EXCL: never over a file, never through a link); a name
-  already taken is never reused, another one is drawn. Only that file is ever erased, never someone else's: under Linux,
-  recognized as the same file (device and inode); under Windows, by its bytes (erasing a copy with the same bytes loses
-  nothing). Under Windows, the window still running is moved aside under a name drawn the same way (`.ancien-<32
-  hexadecimal digits>`), erased later; this cleanup and uninstalling only remove regular files with these exact names (a
-  folder or a link with such a name stays). After a failure (the program not installing, or the lone window wrong when
-  read back), what was there comes back, only over the placed window: a file with its bytes and its mode, never group or
-  others write nor a special bit (mode & 0755); a mode or owner that does not come back as it was is said (“put back
-  with its bytes, as a new file of this account”), a hard link to it is not kept (it comes back as a new file); a link
-  as a link (under Windows, it is not recreated and the placed window stays, said); a file refused at launch with the
-  permissions of a new file (0755, this account), said; what does not come back is said, with the reason; a failure
-  before the rename, where nothing moved, says nothing was put back. Known residual: between the last reread of the
-  window in place and the rename that places the new one, the time it takes to write and read back the temporary copy, a
-  program of the same account can slip another file there; it is then replaced by the verified window (read back through
-  its descriptor under Linux; under Windows, by its name, the bytes compared), and, if the program does not install,
-  what comes back is what was read and shown, not that file; likewise between the reread that decides a restore and that
-  restore, and between the reread of a folder and the placement. Such a program already has the account's rights: it
-  gains nothing it did not have. The terminal installs through the same path (`vanguard self-update`, list and
-  question). In read-only mode, `--appliquer` is refused outright (code 2). From the window: the settings' “Update
-  Vanguard” card opens the preview sheet, read strictly (`fenetre/src/donnees/mise_a_jour.rs`: exact form, bounded texts
-  shown character by character); “Install this update” waits 2 seconds and only sends back the consent shown. This
-  gesture's token is fixed (`Empreinte::MISE_A_JOUR`): no list offers it, the frame and the relay refuse any other token
-  for it, and the relay only admits it with the consent of the last preview it relayed itself, like a fix. The window
-  downloads, verifies and writes nothing itself. What the consent does not prove: that a person clicked; a hijacked
-  window can chain preview and consent, and only gets a version signed by the author, never older, that the menu would
-  install the same way, logged. Tests: `la_cle_ne_pose_que_ce_que_l_apercu_a_montre`,
-  `une_cle_changee_apres_l_apercu_est_refusee`, `github_ne_retient_ni_ne_telecharge_avant_l_accord`,
-  `rien_de_verifie_n_est_jamais_a_jour`, `l_accord_lie_chaque_champ`, `github_propose_la_fenetre_seule_au_meme_numero`,
+  click, refused, nothing downloaded. A link, or a file the launch refuses (permissions, owner), is never counted as
+  “its window is right”, even with the right bytes: its window is offered as a repair; it is never read through a link
+  (opened without following it). The window is judged by the launch's whole rule (the file, `lancer_fenetre::refusee`,
+  and, under Unix, each folder of its path, `lancer_fenetre::dossiers_refuses`; under Windows, the launch does not judge
+  folders): a folder the launch refuses (a link, another account's, writable by the group or others without the sticky
+  bit) is not fixed by placing the window again; this is said in the preview and in the result, with the reason, never
+  counted as “verified”, and no repair is offered (a lone window is not placed there). The program is never blocked by
+  its window (round 3 of 0.97): next to a window here that cannot be read (permissions, folder, pipe or special file,
+  too large), or for a copy that is a link, the program is placed alone, and its window is neither touched nor
+  downloaded; this is a separate gesture of the preview (“program alone, its window cannot be read: untouched, the menu
+  will open”, “program alone, the copy is a link”), so in the consent: readable again, or the copy no longer a link (or
+  one now), between the preview and the click, and nothing is done, the program included. A copy that is a link gets its
+  window neither next to the link nor next to the file it points to, under Linux as under Windows, and this is said on
+  its line; the link is checked again at placement time (a copy turned into a link since the preview: nothing is
+  placed). The placed program replaces the link itself with a file (a rename onto its name, never through it, under both
+  systems): its line says to run the update again, which then places the window; a copy that is a link and already up to
+  date (same version, nothing placed) says to put the copy itself in place of the link. From the key, the copy being a
+  link is looked at before the key's window: even with the key's window not verified, the program is placed alone, never
+  refused at every attempt. At the same version number, the lone window of a copy that is a link, unreadable or in a
+  refused folder is set aside, with its line in the preview (so in the consent) and its reason. In all these cases, the
+  result says “not verified” and why, never followed by a “nothing newer” check mark; when applied, the code is 1; a
+  verdict that is not “up to date” (signed version too old, newer here) is still said. When only lone windows are left
+  and the version is not verified up to date, the window's preview carries “not verified”, like the terminal. The new
+  window is written under a random temporary name (`vanguard-fenetre.nouveau-<32 hexadecimal digits>`, 128 bits from the
+  system's randomness source), created new (O_EXCL: never over a file, never through a link); a name already taken is
+  never reused, another one is drawn. Only that file is ever erased, never someone else's: under Linux, recognized as
+  the same file (device and inode); under Windows, by its bytes (erasing a copy with the same bytes loses nothing).
+  Under Windows, the window still running is moved aside under a name drawn the same way (`.ancien-<32 hexadecimal
+  digits>`), erased later; this cleanup and uninstalling only remove regular files with these exact names (a folder or a
+  link with such a name stays). The cleanup removes nothing while the window is not a file at its name: after a double
+  rename failure, that leftover is the last copy of the old one, kept, and its path is said. After a failure (the
+  program not installing, or the lone window wrong when read back), what was there comes back, only over the placed
+  window: a file with its bytes and its mode, never group or others write nor a special bit (mode & 0755); a mode or
+  owner that does not come back as it was is said (“put back with its bytes, as a new file of this account”), a hard
+  link to it is not kept (it comes back as a new file); a link as a link (under Windows, it is not recreated and the
+  placed window stays, said); a file refused at launch with the permissions of a new file (0755, this account), said;
+  what does not come back is said, with the reason; a failure before the rename, where nothing moved, says nothing was
+  put back. Known residual: between the last reread of the window in place and the rename that places the new one, the
+  time it takes to write and read back the temporary copy, a program of the same account can slip another file there; it
+  is then replaced by the verified window (read back through its descriptor under Linux; under Windows, by its name, the
+  bytes compared), and, if the program does not install, what comes back is what was read and shown, not that file;
+  likewise between the reread that decides a restore and that restore, and between the reread of a folder and the
+  placement. Such a program already has the account's rights: it gains nothing it did not have. The terminal installs
+  through the same path (`vanguard self-update`, list and question). In read-only mode, `--appliquer` is refused
+  outright (code 2). From the window: the settings' “Update Vanguard” card opens the preview sheet, read strictly
+  (`fenetre/src/donnees/mise_a_jour.rs`: exact form, bounded texts shown character by character); “Install this update”
+  waits 2 seconds and only sends back the consent shown. This gesture's token is fixed (`Empreinte::MISE_A_JOUR`): no
+  list offers it, the frame and the relay refuse any other token for it, and the relay only admits it with the consent
+  of the last preview it relayed itself, like a fix. The window downloads, verifies and writes nothing itself. What the
+  consent does not prove: that a person clicked; a hijacked window can chain preview and consent, and only gets a
+  version signed by the author, never older, that the menu would install the same way, logged. Tests:
+  `la_cle_ne_pose_que_ce_que_l_apercu_a_montre`, `une_cle_changee_apres_l_apercu_est_refusee`,
+  `github_ne_retient_ni_ne_telecharge_avant_l_accord`, `rien_de_verifie_n_est_jamais_a_jour`,
+  `l_accord_lie_chaque_champ`, `github_propose_la_fenetre_seule_au_meme_numero`,
   `github_ne_pose_jamais_une_fenetre_seule_fausse`, `github_ne_propose_pas_de_fenetre_pour_un_programme_d_ailleurs`,
   `une_fenetre_changee_entre_l_apercu_et_le_clic_change_l_accord`, `une_fenetre_illisible_n_est_jamais_touchee`,
   `une_fenetre_illisible_ne_laisse_de_cote_que_sa_copie`, `deux_programmes_du_meme_dossier_partagent_leur_fenetre`,
   `une_fenetre_seule_garde_le_non_verifie_du_verdict`, `l_apercu_dit_le_geste_de_chaque_ligne`,
   `la_cle_pose_le_programme_seul_a_cote_d_une_fenetre_illisible`, `la_cle_dit_sa_fenetre_illisible_ou_en_lien`,
-  `des_copies_laissees_de_cote_gardent_le_non_verifie_du_verdict` (`src/mise_a_jour/apercu.rs`),
-  `une_fenetre_montree_illisible_n_est_jamais_comptee_pareille`, `une_fenetre_seule_ne_se_pose_que_telle_que_montree`,
-  `deux_programmes_du_meme_dossier_posent_leur_fenetre_une_fois`,
+  `des_copies_laissees_de_cote_gardent_le_non_verifie_du_verdict`, `la_fenetre_de_la_cle_suit_ce_que_l_apercu_a_montre`
+  (`src/mise_a_jour/apercu.rs`), `une_fenetre_montree_illisible_n_est_jamais_comptee_pareille`,
+  `une_fenetre_seule_ne_se_pose_que_telle_que_montree`, `deux_programmes_du_meme_dossier_posent_leur_fenetre_une_fois`,
   `une_fenetre_illisible_laisse_poser_son_programme_seul`, `une_fenetre_laissee_puis_changee_ne_fait_rien_poser`,
   `un_lien_ou_une_fenetre_refusee_n_est_jamais_juste`,
   `un_lien_a_la_place_de_la_fenetre_n_est_jamais_lu_et_revient_en_lien`,
   `le_retour_d_une_fenetre_absente_n_efface_pas_un_fichier_etranger`,
   `une_fenetre_posee_mais_fausse_a_la_relecture_est_remise`, `un_nom_provisoire_d_un_autre_n_est_jamais_efface`,
   `seule_l_absence_vraie_compte_absente`, `une_copie_en_lien_laisse_sa_fenetre`,
+  `une_copie_en_lien_pose_son_programme_seul_meme_si_la_cle_n_a_pas_de_fenetre_verifiee`,
   `une_copie_devenue_un_lien_ne_fait_rien_poser`, `un_dossier_que_le_lancement_refuse_est_dit_jamais_repare`,
-  `un_nom_provisoire_deja_pris_n_est_jamais_repris`, `le_menage_ne_retire_que_les_restes_d_une_pose`,
-  `l_ancienne_fenetre_revient_avec_ses_droits_ou_c_est_dit`, `rien_n_est_dit_remis_quand_rien_n_a_bouge`
-  (`src/mise_a_jour/sa_fenetre.rs`), `remplacer_pose_le_programme_seul_a_cote_d_une_fenetre_illisible`
-  (`src/mise_a_jour.rs`), `mise_a_jour_depuis_la_cle`,
+  `un_dossier_refuse_ne_cache_pas_ce_qui_sera_fait_a_la_fenetre`, `un_nom_provisoire_deja_pris_n_est_jamais_repris`,
+  `le_menage_ne_retire_que_les_restes_d_une_pose`, `l_ancienne_fenetre_revient_avec_ses_droits_ou_c_est_dit`,
+  `rien_n_est_dit_remis_quand_rien_n_a_bouge` (`src/mise_a_jour/sa_fenetre.rs`),
+  `remplacer_pose_le_programme_seul_a_cote_d_une_fenetre_illisible` (`src/mise_a_jour.rs`), `mise_a_jour_depuis_la_cle`,
   `l_apercu_d_une_mise_a_jour_hors_ligne_n_est_pas_a_jour_et_n_ecrit_rien` (`tests/programme.rs`),
   `mettre_a_jour_ne_part_qu_avec_l_accord_montre` (`fenetre/src/appli.rs`),
   `la_mise_a_jour_ne_passe_qu_apres_son_apercu` (`fenetre/src/relais.rs`), `la_mise_a_jour_n_a_que_son_jeton`
