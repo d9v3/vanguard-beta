@@ -54,14 +54,12 @@ code { background: var(--surface-2); color: var(--encre); border-radius: var(--r
 .marque:hover { color: var(--encre); }
 .marque .v { font-size: 1.625rem; font-weight: 500; line-height: 1; }
 .marque .mot { font-size: .875rem; font-weight: 500; letter-spacing: .24em; }
-.onglets { display: flex; align-self: stretch; margin-left: 1rem; min-width: 0; }
+.onglets { display: flex; align-self: stretch; margin-left: 1rem; min-width: 0; overflow-x: auto; scrollbar-width: none; }
 .onglets a { display: flex; align-items: center; padding: 0 .8rem; font-size: .875rem; color: var(--doux); text-decoration: none; white-space: nowrap; box-shadow: inset 0 -2px 0 transparent; }
 .onglets a:hover { color: var(--encre); }
 .onglets a[aria-current] { color: var(--encre); box-shadow: inset 0 -2px 0 var(--accent); }
 .onglets a:focus-visible { outline-offset: -4px; }
 .outils-barre { display: flex; align-items: center; gap: 1rem; margin-left: auto; flex: none; }
-.etat { display: inline-flex; align-items: center; gap: .55rem; font-size: .8125rem; color: var(--doux); white-space: nowrap; }
-.etat::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--bon); box-shadow: 0 0 0 3px color-mix(in srgb, var(--bon) 22%, transparent); }
 .theme { font: inherit; font-size: .8125rem; color: var(--encre); background: var(--surface-2); border: 1px solid var(--trait); border-radius: var(--rayon-pastille); min-height: 32px; padding: 0 .75rem; cursor: pointer; display: inline-flex; align-items: center; gap: .4rem; }
 .theme:hover { background: var(--surface-3); }
 .theme svg { width: 1em; height: 1em; }
@@ -275,8 +273,7 @@ footer .cadre { display: flex; flex-wrap: wrap; justify-content: space-between; 
 footer a { color: var(--discret); }
 footer a:hover { color: var(--encre); }
 
-@media (max-width: 1180px) {
-  .etat { display: none; }
+@media (max-width: 1360px) {
   .barre-dedans { flex-wrap: wrap; gap: 0 1rem; }
   .onglets { order: 3; flex: 1 0 100%; margin: 0 calc(-1 * max(16px, env(safe-area-inset-left, 0px))); padding: 0 max(8px, env(safe-area-inset-left, 0px)); min-height: 44px; overflow-x: auto; scrollbar-width: none; border-top: 1px solid var(--trait); }
   .onglets::-webkit-scrollbar { display: none; }
@@ -346,7 +343,6 @@ footer a:hover { color: var(--encre); }
       <a href="#installer">Installer</a>
     </nav>
     <div class="outils-barre">
-      <span class="etat">Version {{VERSION}}</span>
       <button class="theme" type="button" id="theme" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor"/></svg><span></span></button>
       <a class="bouton" href="https://github.com/d9v3/vanguard-beta">Code source</a>
     </div>
