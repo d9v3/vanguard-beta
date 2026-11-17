@@ -41,9 +41,14 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
   stricte, sans regarder ce qui les entoure : toute suite de chiffres hexadécimaux, de deux-points et de points qui
   compte au moins deux deux-points et un chiffre est masquée, quelle que soit l'étiquette collée devant
   (« remote_addr: », « X-Forwarded-For: », « nas.lan: ») ou le mot collé derrière (« …::7:Connection refused ») ; un
-  mot collé fait de chiffres et de lettres est masqué avec elle, jusqu'à l'espace. Prix accepté : une heure
-  (« 12:30:45 »), un rapport (« 1:2:3 ») ou une adresse de périphérique PCI (« 0000:00:02.0 ») sont masqués aussi ;
-  dans un journal de bureau mesuré, environ deux lignes sur cinq ont ainsi leur heure masquée. Une étiquette qui finit
+  mot collé fait de chiffres et de lettres est masqué avec elle, jusqu'à l'espace. Seule exception, pour garder la
+  chronologie : une heure de forme exacte (HH:MM ou HH:MM:SS, deux chiffres par groupe, heures 00 à 23, minutes 00 à
+  59, secondes 00 à 60, peut-être suivie de « . » et de 1 à 9 chiffres), bornée des deux côtés par un caractère qui
+  n'est ni hexadécimal, ni « : », ni « . » ; « 12:34:56 » et « 08:15:02.123456 » restent lisibles, mais pas
+  « 12:34:56:78 », « 24:00:00 », « 12:34:5a » ni « 12:34::1 ». Prix accepté : une heure suivie d'un point de phrase
+  (« 12:34:56. »), un rapport (« 1:2:3 »), une version à deux-points (« 7.6.7:1:80 ») ou une adresse de périphérique
+  PCI (« 0000:00:02.0 ») sont masqués aussi ; dans un journal de bureau mesuré, environ une ligne sur seize garde
+  ainsi un masque (au lieu de deux sur trois quand toute heure était masquée). Une étiquette qui finit
   par une lettre hexadécimale la perd (« hôte:fd12::7 » donne « hôt<ip> »). Ne restent lisibles que des numéros qui ne peuvent pas
   être une adresse avec son port : une version à suffixe connu (« 1.2.3.4rc1 », « 4.19.0.0beta », « alpha », « esr ») ;
   après « version », « build », « section », « contrôle », « pilote », « release » et leurs formes anglaises, un

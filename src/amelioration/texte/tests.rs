@@ -455,8 +455,7 @@ fn r3_ipv6_masquee_quel_que_soit_l_entourage() {
         // Collée devant et derrière, sans séparateur : tout le mot, jusqu'à l'espace.
         ("vu xfd12:3456::7Connection fin", "vu x<ip> fin"),
         ("vu fd12::Cafeteria fin", "vu <ip> fin"),
-        // Le prix, accepté : une heure ou un rapport ont la forme.
-        ("ouvert à 12:30:45 hier", "ouvert à <ip> hier"),
+        // Le prix, accepté : un rapport a la forme.
         ("rapport 1:2:3 vu", "rapport <ip> vu"),
     ];
     for (brut, attendu) in cas {
@@ -466,6 +465,55 @@ fn r3_ipv6_masquee_quel_que_soit_l_entourage() {
     for t in ["std::fs::read refusé", "à 12:30 hier", "fd::ab vu"] {
         assert_eq!(propre(t), t, "{t:?}");
     }
+}
+
+/// Retouche du 3e re-contrôle : masquer toute heure ôtait sa chronologie au journal servi. Seule une heure de forme
+/// exacte est gardée (grammaire stricte, `heure`) ; un groupe de trop, « :: », une lettre, une valeur hors borne ou
+/// un voisin hexadécimal, « : » ou « . » la laissent masquée.
+#[test]
+fn r3_heure_exacte_gardee_le_reste_masque() {
+    // Une phrase assez longue pour passer le filtre des lettres.
+    let phrase = |x: &str| format!("le journal du service montre {x} puis reprend normalement");
+    for x in [
+        "12:34:56",
+        "08:15:02.123456",
+        "23:59:60",
+        "00:00",
+        "2026-11-17T00:00:00",
+        "[12:34:56]",
+        "12:34:56.123456789",
+        "vanguard[42]: 12:34:56 prêt",
+    ] {
+        let t = phrase(x);
+        assert_eq!(propre(&t), t, "{x:?}");
+    }
+    let masques = [
+        ("12:34:56:78", "<ip>"),
+        ("1:2:3", "<ip>"),
+        ("24:00:00", "<ip>"),
+        ("12:60:00", "<ip>"),
+        ("12:34:61", "<ip>"),
+        ("12:34:5a", "<ip>"),
+        ("fe80::1", "<ip>"),
+        ("12:34::1", "<ip>"),
+        ("12::34", "<ip>"),
+        ("12:34:56.", "<ip>."),
+        ("12:34:56.1234567890", "<ip>"),
+        ("12:34:56.12ab", "<ip>"),
+        ("12:34:56.1.2", "<ip>"),
+    ];
+    for (brut, attendu) in masques {
+        assert_eq!(propre(&phrase(brut)), phrase(attendu), "{brut:?}");
+    }
+    // Les bornes, lues seules : un voisin hexadécimal, « : » ou « . » de chaque côté refuse l'heure.
+    let c: Vec<char> = " 12:34:56.".chars().collect();
+    assert!(!heure(&c, 1, 9), "voisin de droite");
+    for avant in [':', '.', 'f', '0'] {
+        let c: Vec<char> = format!("{avant}12:34:56 ").chars().collect();
+        assert!(!heure(&c, 1, 9), "voisin {avant:?}");
+    }
+    let c: Vec<char> = " 12:34:56 ".chars().collect();
+    assert!(heure(&c, 1, 9));
 }
 
 /// 2e re-contrôle R2-REGRESSION-2 : le choix fixé. Un point suivi de lettres finit la zone (« %eth0.vlan5 » laisse

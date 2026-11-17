@@ -953,6 +953,7 @@ fn masquer_formes(c: &[char], ip: bool) -> Vec<char> {
             match ipv6(c, i) {
                 Ip6::Adresse(fin) => return Some((fin, "<ip>".to_string())),
                 Ip6::RienJusqua(fin) => sans_ipv6_avant = fin,
+                Ip6::Heure(fin) => return Some((fin, morceau(c, i, fin).iter().collect())),
                 Ip6::Rien => {}
             }
         }
@@ -1356,6 +1357,9 @@ enum Ip6 {
     /// Pas d'adresse qui commence entre `i` et cette fin : la suite de `i` n'a pas deux « : » et un chiffre, et les
     /// suites qui partent plus loin en sont des morceaux. Sauter ces positions garde la lecture linéaire.
     RienJusqua(usize),
+    /// Une heure de forme exacte (`heure`), gardée telle quelle jusqu'à cette fin : aucune autre forme n'y est
+    /// cherchée (sa fraction de 8 ou 9 chiffres n'est pas une longue suite hexadécimale).
+    Heure(usize),
 }
 
 /// Un caractère du cœur d'une IPv6 : chiffre hexadécimal, « : », ou « . » (IPv4 portée, port écrit après un point).
@@ -1366,6 +1370,37 @@ fn de_l_ipv6(x: char) -> bool {
 /// Deux « : » ou plus et un chiffre décimal : la forme qui suffit pour masquer.
 fn assez_pour_une_ipv6(suite: &[char]) -> bool {
     suite.iter().filter(|y| **y == ':').count() >= 2 && suite.iter().any(char::is_ascii_digit)
+}
+
+/// Une heure de forme exacte, de `debut` à `fin`, par une grammaire stricte et sans contexte : HH:MM ou HH:MM:SS,
+/// deux chiffres décimaux par groupe (heures 00 à 23, minutes 00 à 59, secondes 00 à 60), puis peut-être « . » et 1
+/// à 9 chiffres décimaux ; bornée des deux côtés par un caractère qui n'est ni hexadécimal, ni « : », ni « . ». Jamais
+/// « :: » (un groupe vide n'a pas deux chiffres), jamais de lettre a-f, jamais plus de trois groupes : tout le reste
+/// garde la forme d'une adresse et reste masqué.
+fn heure(c: &[char], debut: usize, fin: usize) -> bool {
+    if avant(c, debut).is_some_and(de_l_ipv6) || car(c, fin).is_some_and(de_l_ipv6) {
+        return false;
+    }
+    let suite = morceau(c, debut, fin);
+    let (groupes, fraction) = match suite.iter().position(|y| *y == '.') {
+        Some(p) => (
+            suite.get(..p).unwrap_or(&[]),
+            Some(suite.get(suivant(p)..).unwrap_or(&[])),
+        ),
+        None => (suite, None),
+    };
+    if fraction.is_some_and(|f| f.is_empty() || f.len() > 9 || !f.iter().all(char::is_ascii_digit)) {
+        return false;
+    }
+    let groupes: Vec<&[char]> = groupes.split(|y| *y == ':').collect();
+    if !(2..=3).contains(&groupes.len()) {
+        return false;
+    }
+    let maximums = [['2', '3'], ['5', '9'], ['6', '0']];
+    groupes.iter().zip(maximums).all(|(groupe, max)| match groupe {
+        [a, b] if a.is_ascii_digit() && b.is_ascii_digit() => [*a, *b] <= max,
+        _ => false,
+    })
 }
 
 /// La fin d'une suite sans les points et le deux-points seul qui finissent la phrase (« …::7. », « …::7: erreur ») ;
@@ -1401,7 +1436,8 @@ fn fin_du_mot(c: &[char], debut: usize, j: usize) -> usize {
 /// (« hôte:fd12:… » donne « `hôt<ip>` » : le « e » est hexadécimal). Les points et le deux-points seul qui la finissent
 /// sont de la phrase. Un mot collé après (« …::7:Connection refused », « …:eth0 ») garde sa place si le dernier
 /// morceau pris n'a que des lettres et que le reste est encore une adresse ; sinon tout le mot est masqué, jusqu'à
-/// l'espace. Prix accepté : une heure (« 12:30:45 ») ou un rapport (« 1:2:3 ») sont masqués aussi.
+/// l'espace. Seule exception : une heure de forme exacte (`heure`), sans quoi le journal servi perd sa chronologie.
+/// Prix accepté : une heure mal bornée (« 12:30:45. », « hôte12:30:45 ») ou un rapport (« 1:2:3 ») sont masqués.
 fn ipv6(c: &[char], i: usize) -> Ip6 {
     let crochet = car(c, i) == Some('[');
     let debut = if crochet { suivant(i) } else { i };
@@ -1411,6 +1447,9 @@ fn ipv6(c: &[char], i: usize) -> Ip6 {
         _ => return Ip6::Rien,
     }
     let coeur = fin_tant_que(c, debut, de_l_ipv6);
+    if heure(c, debut, coeur) {
+        return Ip6::Heure(coeur);
+    }
     if !assez_pour_une_ipv6(morceau(c, debut, coeur)) {
         return Ip6::RienJusqua(coeur);
     }

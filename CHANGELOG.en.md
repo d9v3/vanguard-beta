@@ -39,9 +39,13 @@ example, finds it, to rebuild it if needed.
   a strict grammar, without looking at what surrounds them: any run of hexadecimal digits, colons and full stops with
   at least two colons and one digit is masked, whatever label is stuck before it ("remote_addr:", "X-Forwarded-For:",
   "nas.lan:") or word stuck after it ("…::7:Connection refused"); a stuck word made of digits and letters is masked
-  with it, up to the space. Accepted price: a time ("12:30:45"), a ratio ("1:2:3") or a PCI device address
-  ("0000:00:02.0") are masked too; in a measured desktop journal, about two lines in five have their time masked this
-  way. A label ending with a hexadecimal letter loses it ("node:fd12::7" gives "nod<ip>"). Only numbers that cannot be
+  with it, up to the space. The only exception, to keep the timeline: a time of exact shape (HH:MM or HH:MM:SS, two
+  digits per group, hours 00 to 23, minutes 00 to 59, seconds 00 to 60, maybe followed by "." and 1 to 9 digits),
+  bounded on both sides by a character that is neither hexadecimal, nor ":", nor "."; "12:34:56" and
+  "08:15:02.123456" stay readable, but not "12:34:56:78", "24:00:00", "12:34:5a" or "12:34::1". Accepted price: a
+  time followed by a sentence period ("12:34:56."), a ratio ("1:2:3"), a colon version ("7.6.7:1:80") or a PCI device
+  address ("0000:00:02.0") are masked too; in a measured desktop journal, about one line in sixteen keeps a mask this
+  way (instead of two in three when every time was masked). A label ending with a hexadecimal letter loses it ("node:fd12::7" gives "nod<ip>"). Only numbers that cannot be
   an address with its port stay readable: a version with a known suffix ("1.2.3.4rc1", "4.19.0.0beta", "alpha",
   "esr"); after "version", "build", "section", "control", "driver", "release" and their French forms, a fifth number of
   one or two digits behind a first number under 100 ("version 1.2.3.4.5"); a run of six numbers or more
