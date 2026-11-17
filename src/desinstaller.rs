@@ -615,20 +615,22 @@ fn copie_du_programme(l: &Lieux, copies_d_avant: Vec<PathBuf>, r: &mut Recenseme
         .map(|n| bin.join(n))
         .filter(|p| std::fs::symlink_metadata(p).is_ok())
         .collect();
-    // Le reste d'une pose de fenêtre interrompue : un nom provisoire propre à chaque pose (« .nouveau-<pid>-<n> »).
+    // Le reste d'une pose de fenêtre interrompue : un nom de côté tiré au hasard à chaque pose
+    // (« .nouveau-<32 hexadécimaux> », « .ancien-<32 hexadécimaux> », A-POSE-2, A-POSE-3), un fichier ordinaire
+    // seulement : rien d'autre de bin/ ne lui ressemble par hasard.
     if let Ok(entrees) = std::fs::read_dir(&bin) {
-        let provisoires: Vec<String> = [fenetre.as_str(), page]
-            .iter()
-            .map(|nom| format!("{nom}.nouveau-"))
-            .collect();
+        let reste = |n: &str| {
+            [fenetre.as_str(), page].iter().any(|f| {
+                ["nouveau", "ancien"]
+                    .iter()
+                    .any(|s| crate::mise_a_jour::reste_de_pose(f, s, n))
+            })
+        };
         fichiers.extend(
             entrees
                 .flatten()
-                .filter(|e| {
-                    e.file_name()
-                        .to_str()
-                        .is_some_and(|n| provisoires.iter().any(|p| n.starts_with(p.as_str())))
-                })
+                .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+                .filter(|e| e.file_name().to_str().is_some_and(reste))
                 .map(|e| e.path()),
         );
     }
@@ -2395,13 +2397,29 @@ mod tests {
         );
         // C-8 (relecture 0.96) : la fenêtre posée sous le nom de la page de la version part aussi.
         ecrire(&bin.join(crate::demarrage::lancer_fenetre::NOM_PAGE), "fenêtre");
-        // Le reste d'une pose de fenêtre interrompue (nom provisoire propre à chaque pose, POSE-5) part aussi.
+        // Les restes d'une pose de fenêtre interrompue (noms tirés au hasard, A-POSE-2, A-POSE-3) partent aussi ;
+        // un nom qui leur ressemble sans en être un reste (`vanguard-fenetre.nouveau-tmp`), ou un dossier, non.
+        for sorte in ["nouveau", "ancien"] {
+            ecrire(
+                &bin.join(format!(
+                    "vanguard-fenetre{}.{sorte}-{}",
+                    std::env::consts::EXE_SUFFIX,
+                    "0a".repeat(16)
+                )),
+                "fenêtre",
+            );
+        }
+        ecrire(
+            &bin.join(format!("vanguard-fenetre{}.nouveau-tmp", std::env::consts::EXE_SUFFIX)),
+            "à moi",
+        );
         ecrire(
             &bin.join(format!(
-                "vanguard-fenetre{}.nouveau-4242-0",
-                std::env::consts::EXE_SUFFIX
+                "vanguard-fenetre{}.ancien-{}/dedans",
+                std::env::consts::EXE_SUFFIX,
+                "0b".repeat(16)
             )),
-            "fenêtre",
+            "à moi",
         );
         // Des données, une quarantaine, et l'ancien dossier de données.
         ecrire(&l.donnees.join("appareils.json"), "{}");
@@ -2456,8 +2474,18 @@ mod tests {
         let Retrait::Fichiers(copies) = &rec.elements[5].retrait else {
             panic!("{:?}", rec.elements[5]);
         };
-        assert_eq!(copies.len(), 6, "{copies:?}");
-        assert!(copies.iter().any(|c| c.to_string_lossy().ends_with(".nouveau-4242-0")));
+        assert_eq!(copies.len(), 7, "{copies:?}");
+        for sorte in ["nouveau", "ancien"] {
+            let reste = format!(".{sorte}-{}", "0a".repeat(16));
+            assert!(
+                copies.iter().any(|c| c.to_string_lossy().ends_with(&reste)),
+                "{copies:?}"
+            );
+        }
+        assert!(!copies.iter().any(|c| {
+            let c = c.to_string_lossy();
+            c.ends_with(".nouveau-tmp") || c.contains(&"0b".repeat(16))
+        }));
         assert!(
             copies
                 .iter()

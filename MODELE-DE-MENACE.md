@@ -451,81 +451,106 @@ gardes :
   `fenetre_relais` et `fenetre_donnees`.
 - **La mise à jour de Vanguard, montrée puis installée (commande et fenêtre).** `vanguard se-mettre-a-jour --voir
   --json` cherche la mise à jour (la clé VANGUARD d'où il tourne, sinon GitHub : manifeste signé Ed25519, jamais une
-  version plus ancienne que la plus haute déjà vue) et montre d'où elle vient, la version visée, son empreinte
-  SHA-256, sa taille et chaque programme qu'elle remplacerait avec sa version d'aujourd'hui, avec un accord qui lie
-  chacun de ces champs ; il ne tourne qu'en lecture seule et n'écrit, liste fermée, que le carnet des aperçus
-  (`apercus.json`, son verrou `apercus.lock`) et, comme le terminal pour tout manifeste signé vu, la plus haute version
-  vue et la révocation de la clé principale (`versions/plus-haute-vue.txt`, `versions/principale-revoquee.txt`), avec
-  le registre des sceaux, son témoin et son verrou (`sceaux.json`, `sceaux.temoin`, `sceaux.verrou`) ; rien
-  d'installé. Si ce plancher ne s'écrit pas (verrou des sceaux tenu par un autre Vanguard), l'aperçu le dit : « non
-  vérifié, réessayez dans un instant ». « À jour » ne se dit
-  que vérifié : un manifeste trop vieux, une horloge en retard ou GitHub sans réponse donnent « non vérifié » (code
-  1), jamais « à jour ». `vanguard se-mettre-a-jour --appliquer --accord <accord> --json` refait l'aperçu au moment
-  d'agir et n'installe que si l'accord recalculé est le même (une autre version, une autre empreinte, une clé changée
-  entre les deux : refusé, rien changé), consomme l'entrée du carnet (2 s à 10 minutes après l'aperçu, une seule
-  fois), puis garde chaque vérification d'avant : signature, taille et empreinte, copie écrite à côté, relue, comparée
-  et essayée (sous Windows, pas encore d'essai : la fenêtre ne dit alors que « relu et comparé »), mise en place d'un
-  coup (sinon l'ancienne reste ; sous Windows, une ancienne qui tourne encore est mise de côté, `vanguard.exe.ancien`,
-  effacée après l'accord suivant) ; il dit chaque programme remplacé ou pas (code 0
-  seulement si tous l'ont été). La fenêtre de Vanguard posée à côté d'un programme remplacé le suit, montrée comme une
-  ligne de plus de l'aperçu, donc liée par l'accord : celle de la clé seulement si c'est celle que grave son programme
-  (sinon la copie se fait sans elle), celle de GitHub téléchargée après l'accord seulement et vérifiée contre
+  version plus ancienne que la plus haute déjà vue) et montre d'où elle vient, la version visée, son empreinte SHA-256,
+  sa taille et chaque programme qu'elle remplacerait avec sa version d'aujourd'hui, avec un accord qui lie chacun de ces
+  champs ; il ne tourne qu'en lecture seule et n'écrit, liste fermée, que le carnet des aperçus (`apercus.json`, son
+  verrou `apercus.lock`) et, comme le terminal pour tout manifeste signé vu, la plus haute version vue et la révocation
+  de la clé principale (`versions/plus-haute-vue.txt`, `versions/principale-revoquee.txt`), avec le registre des sceaux,
+  son témoin et son verrou (`sceaux.json`, `sceaux.temoin`, `sceaux.verrou`) ; rien d'installé. Si ce plancher ne
+  s'écrit pas (verrou des sceaux tenu par un autre Vanguard), l'aperçu le dit : « non vérifié, réessayez dans un instant
+  ». « À jour » ne se dit que vérifié : un manifeste trop vieux, une horloge en retard ou GitHub sans réponse donnent «
+  non vérifié » (code 1), jamais « à jour ». `vanguard se-mettre-a-jour --appliquer --accord <accord> --json` refait
+  l'aperçu au moment d'agir et n'installe que si l'accord recalculé est le même (une autre version, une autre empreinte,
+  une clé changée entre les deux : refusé, rien changé), consomme l'entrée du carnet (2 s à 10 minutes après l'aperçu,
+  une seule fois), puis garde chaque vérification d'avant : signature, taille et empreinte, copie écrite à côté, relue,
+  comparée et essayée (sous Windows, pas encore d'essai : la fenêtre ne dit alors que « relu et comparé »), mise en
+  place d'un coup (sinon l'ancienne reste ; sous Windows, une ancienne qui tourne encore est mise de côté,
+  `vanguard.exe.ancien`, effacée après l'accord suivant) ; il dit chaque programme remplacé ou pas (code 0 seulement si
+  tous l'ont été). La fenêtre de Vanguard posée à côté d'un programme remplacé le suit, montrée comme une ligne de plus
+  de l'aperçu, donc liée par l'accord : celle de GitHub téléchargée après l'accord seulement et vérifiée contre
   l'empreinte gravée dans le programme vérifié (une autre, ou aucune reçue : rien n'est remplacé) ; posée, elle est
   relue par la copie provisoire tenue ouverte sous Linux (le même fichier, les octets reçus), par son nom sous Windows
-  (les octets comparés), sinon un échec, et sa ligne du résultat relit la fenêtre posée, sans suivre de lien, refusée
-  si le lancement la refuserait. Depuis GitHub (0.97), une fenêtre absente à côté d'un programme remplacé est ajoutée
-  là où le lancement la cherche (« sa fenêtre, nouvelle ici »), au même accord, tout ou rien ; et au même numéro, un
-  programme d'ici qui est exactement celui que l'auteur a signé (taille et empreinte du manifeste), sans sa fenêtre ou
-  avec une autre, se voit proposer sa fenêtre seule (« ajoutée seule », « remplacée seule »), jugée contre l'empreinte
-  qu'il grave, sans retélécharger le programme ; un programme d'ailleurs au même numéro, rien (sa fenêtre ne se juge
-  pas d'ici, il garde le menu). Deux programmes du même dossier partagent une seule fenêtre : elle est jugée et posée
-  une fois. Une copie atteinte par un lien reçoit sa fenêtre seule là où le lancement la cherche, à côté du fichier
-  désigné (Linux, et seulement si ce dossier se remplace d'ici) ; sous Windows, une telle copie est laissée de côté,
-  dit. Ce qui était à chaque chemin de fenêtre (rien, une empreinte SHA-256, un lien et ce qu'il désigne, ou un
-  fichier que le lancement refuse, avec son empreinte) est dans l'accord sans être affiché : changé entre l'aperçu et
-  le clic, refusé, rien téléchargé. Un lien, ou un fichier que le lancement refuse (droits, propriétaire, pas un
-  fichier ordinaire), n'est jamais compté « sa fenêtre juste », même aux bons octets : sa fenêtre est proposée en
-  réparation ; il n'est jamais lu à travers un lien (ouvert sans le suivre). Une fenêtre qui ne se lit pas (droits,
-  dossier, trop grande) n'entre pas dans l'accord et ne se compare à rien : sa cible, le programme et sa fenêtre, est
-  laissée de côté, ni l'un ni l'autre touchés, la raison et le chemin dits, et le code est 1 ; les autres cibles vont
-  de l'avant, et s'il ne reste rien, « non vérifié ». Quand il ne reste que des fenêtres seules et que la version
-  n'est pas vérifiée à jour, l'aperçu de la fenêtre porte « non vérifié », comme le terminal. La nouvelle fenêtre
-  s'écrit sous un nom provisoire neuf (`vanguard-fenetre.nouveau-<pid>-<n>`, créé sans écraser), et seul ce fichier-là
-  est effacé, jamais celui d'un autre. Après un échec (le programme qui ne se pose pas, ou la fenêtre seule fausse à
-  la relecture), ce qui était là y revient, seulement par-dessus la fenêtre posée : un fichier avec ses octets, un
-  lien en lien (sous Windows, il n'est pas refait et la fenêtre posée reste, dit), un fichier refusé au lancement avec
-  les droits d'un fichier neuf (0755, à ce compte), dit ; ce qui ne revient pas est dit, avec la raison. Reste, connu
-  : entre la dernière relecture de la fenêtre en place et le renommage qui pose la nouvelle, le temps d'écrire et de
-  relire la copie provisoire, un programme du même compte peut y glisser un autre fichier ; il est alors remplacé par
-  la fenêtre vérifiée (relue par son descripteur sous Linux ; sous Windows, par son nom, les octets comparés), et, si
-  le programme ne se pose pas, ce qui revient est ce qui a été relu et montré, pas ce fichier-là ; de même entre la
-  relecture qui décide d'un retour et ce retour. Un tel programme a déjà les droits du compte : il ne gagne rien qu'il
-  n'ait pas. Le terminal pose par le même chemin (`vanguard se-mettre-a-jour`, liste et
-  question). En mode lecture seule, `--appliquer` est refusé net (code 2). Depuis la fenêtre : la
-  carte « Mettre à jour Vanguard » des réglages ouvre la feuille de l'aperçu, lu strictement
-  (`fenetre/src/donnees/mise_a_jour.rs` : forme exacte, textes bornés et montrés signe par signe) ; « Installer cette
-  mise à jour » attend 2 secondes et ne renvoie que l'accord montré. Le jeton de ce geste est fixe
-  (`Empreinte::MISE_A_JOUR`) : aucune liste ne l'offre, la trame et le relais refusent tout autre jeton pour lui, et
-  le relais ne l'admet qu'avec l'accord du dernier aperçu qu'il a lui-même relayé, comme une correction. La fenêtre ne
-  télécharge, ne vérifie et n'écrit rien elle-même. Ce que l'accord ne prouve pas : qu'une personne a cliqué ; une
-  fenêtre prise peut enchaîner aperçu et accord, et n'obtient qu'une version signée par l'auteur, jamais plus
-  ancienne, que le menu installerait de même, notée au journal. Essais :
+  (les octets comparés), sinon un échec, et sa ligne du résultat relit la fenêtre posée, sans suivre de lien. Celle de
+  la clé suit seulement si c'est celle que grave son programme ; là mais pas posable (illisible, un lien, ou une autre),
+  elle n'est jamais comptée absente : le programme est posé seul, celle d'ici n'est pas touchée, et « fenêtre de la clé
+  non vérifiée » est dit (aperçu, question du terminal), avec la raison au résultat. Depuis GitHub (0.97), une fenêtre
+  absente à côté d'un programme remplacé est ajoutée là où le lancement la cherche (« sa fenêtre, nouvelle ici »), au
+  même accord, tout ou rien ; et au même numéro, un programme d'ici qui est exactement celui que l'auteur a signé
+  (taille et empreinte du manifeste), sans sa fenêtre ou avec une autre, se voit proposer sa fenêtre seule (« ajoutée
+  seule », « remplacée seule »), jugée contre l'empreinte qu'il grave, sans retélécharger le programme ; un programme
+  d'ailleurs au même numéro, rien (sa fenêtre ne se juge pas d'ici, il garde le menu). Deux programmes du même dossier
+  partagent une seule fenêtre : elle est jugée et posée une fois. Ce qui était à chaque chemin de fenêtre (rien, une
+  empreinte SHA-256, un lien et ce qu'il désigne, un fichier que le lancement refuse avec son empreinte, ou rien de
+  lisible) est dans l'accord sans être affiché : changé entre l'aperçu et le clic, refusé, rien téléchargé. Un lien, ou
+  un fichier que le lancement refuse (droits, propriétaire, pas un fichier ordinaire), n'est jamais compté « sa fenêtre
+  juste », même aux bons octets : sa fenêtre est proposée en réparation ; il n'est jamais lu à travers un lien (ouvert
+  sans le suivre). La fenêtre est jugée par la règle entière du lancement (le fichier, `lancer_fenetre::refusee`, et,
+  sous Unix, chaque dossier du chemin, `lancer_fenetre::dossiers_refuses` ; sous Windows, le lancement ne juge pas les
+  dossiers) : un dossier que le lancement refuse (un lien, d'un autre compte, ouvert en écriture au groupe ou aux autres
+  sans bit collant) ne se répare pas en reposant la fenêtre ; c'est dit dans l'aperçu et au résultat, avec la raison,
+  jamais compté « vérifiée », et aucune réparation n'est proposée (une fenêtre seule n'y est pas posée). Le programme
+  n'est jamais bloqué par sa fenêtre (ronde 3 de la 0.97) : à côté d'une fenêtre d'ici qui ne se lit pas (droits,
+  dossier, tube ou fichier spécial, trop grande), ou pour une copie qui est un lien, le programme est posé seul, et sa
+  fenêtre n'est ni touchée ni téléchargée ; c'est un geste à part de l'aperçu (« programme seul, sa fenêtre ne se lit
+  pas : non touchée, le menu s'ouvrira », « programme seul, la copie est un lien »), donc dans l'accord : redevenue
+  lisible, ou la copie qui n'est plus un lien (ou l'est devenue), entre l'aperçu et le clic, et rien n'est fait, le
+  programme compris. Une copie qui est un lien ne reçoit sa fenêtre ni à côté du lien ni à côté du fichier qu'il
+  désigne, sous Linux comme sous Windows, et c'est dit sur sa ligne ; le lien est revérifié au moment de la pose (une
+  copie devenue un lien depuis l'aperçu : rien n'est posé). Au même numéro, la fenêtre seule d'une copie en lien,
+  illisible ou dans un dossier refusé est laissée de côté, avec sa ligne dans l'aperçu (donc dans l'accord) et sa
+  raison. Dans tous ces cas, le résultat dit « non vérifié » et pourquoi, jamais suivi d'une coche « rien de plus récent
+  » ; à l'application, le code est 1 ; le verdict qui n'est pas « à jour » (version signée trop vieille, plus récente
+  ici) reste dit. Quand il ne reste que des fenêtres seules et que la version n'est pas vérifiée à jour, l'aperçu de la
+  fenêtre porte « non vérifié », comme le terminal. La nouvelle fenêtre s'écrit sous un nom provisoire tiré au hasard
+  (`vanguard-fenetre.nouveau-<32 chiffres hexadécimaux>`, 128 bits de la source d'aléa du système), créé neuf (O_EXCL :
+  jamais par-dessus un fichier, jamais par un lien) ; un nom déjà pris n'est jamais repris, un autre est tiré. Seul ce
+  fichier-là est effacé, jamais celui d'un autre : sous Linux, reconnu au même fichier (appareil et inode) ; sous
+  Windows, à ses octets (effacer une copie des mêmes octets ne perd rien). Sous Windows, la fenêtre qui tourne encore
+  est mise de côté sous un nom tiré de même (`.ancien-<32 chiffres hexadécimaux>`), effacé ensuite ; ce ménage et la
+  désinstallation ne retirent que des fichiers ordinaires à ces noms exacts (un dossier ou un lien à ce nom reste).
+  Après un échec (le programme qui ne se pose pas, ou la fenêtre seule fausse à la relecture), ce qui était là y
+  revient, seulement par-dessus la fenêtre posée : un fichier avec ses octets et son mode, jamais l'écriture du groupe
+  ou des autres ni un bit spécial (mode & 0755) ; un mode ou un propriétaire qui ne revient pas tel quel est dit («
+  remise avec ses octets, en fichier neuf de ce compte »), un lien en dur vers elle n'est pas gardé (elle revient en
+  fichier neuf) ; un lien en lien (sous Windows, il n'est pas refait et la fenêtre posée reste, dit) ; un fichier refusé
+  au lancement avec les droits d'un fichier neuf (0755, à ce compte), dit ; ce qui ne revient pas est dit, avec la
+  raison ; un échec avant le renommage, où rien n'a bougé, ne dit rien de remis. Reste, connu : entre la dernière
+  relecture de la fenêtre en place et le renommage qui pose la nouvelle, le temps d'écrire et de relire la copie
+  provisoire, un programme du même compte peut y glisser un autre fichier ; il est alors remplacé par la fenêtre
+  vérifiée (relue par son descripteur sous Linux ; sous Windows, par son nom, les octets comparés), et, si le programme
+  ne se pose pas, ce qui revient est ce qui a été relu et montré, pas ce fichier-là ; de même entre la relecture qui
+  décide d'un retour et ce retour, et entre la relecture d'un dossier et la pose. Un tel programme a déjà les droits du
+  compte : il ne gagne rien qu'il n'ait pas. Le terminal pose par le même chemin (`vanguard se-mettre-a-jour`, liste et
+  question). En mode lecture seule, `--appliquer` est refusé net (code 2). Depuis la fenêtre : la carte « Mettre à jour
+  Vanguard » des réglages ouvre la feuille de l'aperçu, lu strictement (`fenetre/src/donnees/mise_a_jour.rs` : forme
+  exacte, textes bornés et montrés signe par signe) ; « Installer cette mise à jour » attend 2 secondes et ne renvoie
+  que l'accord montré. Le jeton de ce geste est fixe (`Empreinte::MISE_A_JOUR`) : aucune liste ne l'offre, la trame et
+  le relais refusent tout autre jeton pour lui, et le relais ne l'admet qu'avec l'accord du dernier aperçu qu'il a
+  lui-même relayé, comme une correction. La fenêtre ne télécharge, ne vérifie et n'écrit rien elle-même. Ce que l'accord
+  ne prouve pas : qu'une personne a cliqué ; une fenêtre prise peut enchaîner aperçu et accord, et n'obtient qu'une
+  version signée par l'auteur, jamais plus ancienne, que le menu installerait de même, notée au journal. Essais :
   `la_cle_ne_pose_que_ce_que_l_apercu_a_montre`, `une_cle_changee_apres_l_apercu_est_refusee`,
   `github_ne_retient_ni_ne_telecharge_avant_l_accord`, `rien_de_verifie_n_est_jamais_a_jour`,
   `l_accord_lie_chaque_champ`, `github_propose_la_fenetre_seule_au_meme_numero`,
   `github_ne_pose_jamais_une_fenetre_seule_fausse`, `github_ne_propose_pas_de_fenetre_pour_un_programme_d_ailleurs`,
-  `une_fenetre_changee_entre_l_apercu_et_le_clic_change_l_accord`, `une_fenetre_illisible_ne_fait_rien_proposer`,
+  `une_fenetre_changee_entre_l_apercu_et_le_clic_change_l_accord`, `une_fenetre_illisible_n_est_jamais_touchee`,
   `une_fenetre_illisible_ne_laisse_de_cote_que_sa_copie`, `deux_programmes_du_meme_dossier_partagent_leur_fenetre`,
-  `une_fenetre_seule_garde_le_non_verifie_du_verdict`, `l_apercu_dit_le_geste_de_chaque_ligne`
-  (`src/mise_a_jour/apercu.rs`), `une_fenetre_montree_illisible_n_est_jamais_comptee_pareille`,
-  `une_fenetre_seule_ne_se_pose_que_telle_que_montree`,
+  `une_fenetre_seule_garde_le_non_verifie_du_verdict`, `l_apercu_dit_le_geste_de_chaque_ligne`,
+  `la_cle_pose_le_programme_seul_a_cote_d_une_fenetre_illisible`, `la_cle_dit_sa_fenetre_illisible_ou_en_lien`,
+  `des_copies_laissees_de_cote_gardent_le_non_verifie_du_verdict` (`src/mise_a_jour/apercu.rs`),
+  `une_fenetre_montree_illisible_n_est_jamais_comptee_pareille`, `une_fenetre_seule_ne_se_pose_que_telle_que_montree`,
   `deux_programmes_du_meme_dossier_posent_leur_fenetre_une_fois`,
-  `une_fenetre_illisible_ne_met_de_cote_que_son_programme`, `un_lien_ou_une_fenetre_refusee_n_est_jamais_juste`,
+  `une_fenetre_illisible_laisse_poser_son_programme_seul`, `une_fenetre_laissee_puis_changee_ne_fait_rien_poser`,
+  `un_lien_ou_une_fenetre_refusee_n_est_jamais_juste`,
   `un_lien_a_la_place_de_la_fenetre_n_est_jamais_lu_et_revient_en_lien`,
   `le_retour_d_une_fenetre_absente_n_efface_pas_un_fichier_etranger`,
   `une_fenetre_posee_mais_fausse_a_la_relecture_est_remise`, `un_nom_provisoire_d_un_autre_n_est_jamais_efface`,
-  `seule_l_absence_vraie_compte_absente`, `la_fenetre_seule_d_une_copie_en_lien_va_ou_le_lancement_la_cherche`
-  (`src/mise_a_jour/sa_fenetre.rs`),
+  `seule_l_absence_vraie_compte_absente`, `une_copie_en_lien_laisse_sa_fenetre`,
+  `une_copie_devenue_un_lien_ne_fait_rien_poser`, `un_dossier_que_le_lancement_refuse_est_dit_jamais_repare`,
+  `un_nom_provisoire_deja_pris_n_est_jamais_repris`, `le_menage_ne_retire_que_les_restes_d_une_pose`,
+  `l_ancienne_fenetre_revient_avec_ses_droits_ou_c_est_dit`, `rien_n_est_dit_remis_quand_rien_n_a_bouge`
+  (`src/mise_a_jour/sa_fenetre.rs`), `remplacer_pose_le_programme_seul_a_cote_d_une_fenetre_illisible`
+  (`src/mise_a_jour.rs`), `mise_a_jour_depuis_la_cle`,
   `l_apercu_d_une_mise_a_jour_hors_ligne_n_est_pas_a_jour_et_n_ecrit_rien` (`tests/programme.rs`),
   `mettre_a_jour_ne_part_qu_avec_l_accord_montre` (`fenetre/src/appli.rs`),
   `la_mise_a_jour_ne_passe_qu_apres_son_apercu` (`fenetre/src/relais.rs`), `la_mise_a_jour_n_a_que_son_jeton`

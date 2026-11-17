@@ -82,6 +82,8 @@ pub(crate) enum Geste {
     Ajoute,
     /// Laissée de côté, ni touchée ni comptée faite (ILLISIBLE-1).
     Ecarte,
+    /// La fenêtre d'un programme posé seul : jamais touchée, comptée pas faite (A-ACCORD-1, ronde 3).
+    ProgrammeSeul,
 }
 
 impl Geste {
@@ -90,6 +92,7 @@ impl Geste {
             Geste::Remplace => 0,
             Geste::Ajoute => 1,
             Geste::Ecarte => 2,
+            Geste::ProgrammeSeul => 3,
         }
     }
 }
@@ -449,7 +452,13 @@ fn apercu(origine: &str, visee: Version, sha256: String, taille: u64, l: &Lignes
         if let Some(v) = vue
             && let Some(f) = v.ligne()
         {
-            let geste = if v.absente() { Geste::Ajoute } else { Geste::Remplace };
+            let geste = if v.laissee().is_some() {
+                Geste::ProgrammeSeul
+            } else if v.absente() {
+                Geste::Ajoute
+            } else {
+                Geste::Remplace
+            };
             montrees.push(ligne(f, v.dite_a_cote(), geste));
         }
     }
@@ -560,14 +569,14 @@ fn plan(m: &dyn Monde, pour: Pour) -> Result<Plan, Refus> {
                 au_terminal,
             )
             .map_err(|e| Refus::NonVerifie(sans_entete(&e)))?;
-            // Sa fenêtre suit si c'est bien la sienne, jugée ici et revérifiée à la pose (`installer_avec`).
-            let (fenetre, chemin) = sa_fenetre::de_la_source(&source, &octets)
-                .zip(sa_fenetre::pour(&copie))
-                .unzip();
+            // Sa fenêtre suit si c'est bien la sienne, jugée ici et revérifiée à la pose (`installer_avec`). Une
+            // fenêtre qui ne peut pas suivre (illisible ici, de la clé non vérifiée, une copie en lien) ne bloque
+            // jamais le programme : posé seul, montré « programme seul » (A-ACCORD-1, A-REFUS-5, ronde 3).
+            let (fenetre, vue) = sa_fenetre::de_la_cle(&source, &octets, &copie);
+            let fenetre = fenetre.filter(|_| vue.chemin().is_some());
+            let fenetres = vec![vue.chemin().map(Path::to_path_buf)];
             let cibles = vec![(copie, cle)];
-            let vues = vec![sa_fenetre::Vue::de(chemin.clone())];
-            fenetres_lisibles(&vues)?;
-            let fenetres = vec![chemin];
+            let vues = vec![vue];
             let taille = u64::try_from(octets.len()).unwrap_or(u64::MAX);
             let lignes = Lignes {
                 cibles: &cibles,
@@ -685,10 +694,13 @@ fn plan_github(m: &dyn Monde, pour: Pour) -> Result<Plan, Refus> {
         .filter(|(c, v)| v.is_none_or(|v| v < p.version) && jugees.contains(c))
         .map(|(c, _)| c.clone())
         .collect();
-    let aucun_programme = a_remplacer.is_empty();
-    // Chacun avec sa fenêtre, relue maintenant ; une fenêtre illisible ne laisse de côté que son programme
-    // (ILLISIBLE-1), une fenêtre partagée n'est montrée qu'une fois (ACCORD-1). La même logique qu'au terminal.
-    let (gardees, mut ecartees) = sa_fenetre::trier(a_remplacer);
+    // Chacun avec sa fenêtre, relue maintenant ; une fenêtre illisible ou une copie en lien laisse sa fenêtre, le
+    // programme posé seul (ronde 3), une fenêtre partagée n'est montrée qu'une fois (ACCORD-1). La même logique qu'au
+    // terminal.
+    let gardees = sa_fenetre::trier(a_remplacer);
+    let mut ecartees = Vec::new();
+    // Après le tri (A-REFUS-2) : aucun programme posé, seulement des fenêtres seules ou des copies mises de côté.
+    let aucun_programme = gardees.is_empty();
     // Au même numéro (C-6, 0.97) : un programme d'ici qui est exactement celui que l'auteur a signé, sans sa fenêtre
     // ou avec une autre, se voit proposer sa fenêtre seule, jugée contre l'empreinte qu'il grave ; lui n'est pas
     // retéléchargé. Un autre programme au même numéro (compilé ailleurs) : rien, sa fenêtre ne se juge pas d'ici. Les
@@ -725,12 +737,14 @@ fn plan_github(m: &dyn Monde, pour: Pour) -> Result<Plan, Refus> {
             ),
         });
     }
-    // Rien d'autre à faire que des copies laissées de côté : non vérifié, chacune dite avec ses chemins.
+    // Rien d'autre à faire que des copies laissées de côté : non vérifié, chacune dite avec ses chemins, et le verdict
+    // qui n'est pas « à jour », jamais masqué (A-REFUS-2).
     if gardees.is_empty() && seules.is_empty() {
-        let dites: Vec<String> = ecartees
+        let mut dites: Vec<String> = ecartees
             .iter()
             .map(|e| e.dite(&montre(&e.programme), &montre(&e.fenetre)))
             .collect();
+        dites.extend(avertissement(&verdict));
         return Err(Refus::NonVerifie(dites.join(" ; ")));
     }
     let (cibles, vues): (Vec<(PathBuf, Version)>, Vec<sa_fenetre::Vue>) =
@@ -755,15 +769,6 @@ fn plan_github(m: &dyn Monde, pour: Pour) -> Result<Plan, Refus> {
         seules,
         ecartees,
     })
-}
-
-/// Une fenêtre qui ne se lit pas (droits, dossier, trop grande) ne se compare à rien : rien n'est proposé, son
-/// chemin est dit (C-7-2, relecture 0.96 : non vérifié n'est jamais compté comme pareil).
-fn fenetres_lisibles<'a>(vues: impl IntoIterator<Item = &'a sa_fenetre::Vue>) -> Result<(), Refus> {
-    match vues.into_iter().find_map(sa_fenetre::Vue::illisible) {
-        Some(c) => Err(Refus::NonVerifie(sa_fenetre::illisible_dite(&montre(c)))),
-        None => Ok(()),
-    }
 }
 
 /// Une copie d'ici qui ne se lit pas : sa version reste inconnue, rien n'est dit à jour.
@@ -892,6 +897,12 @@ fn dire_apercu(a: &Apercu) {
                 montre_strict(&c.chemin),
                 montre_strict(&c.version)
             ),
+            Geste::ProgrammeSeul => trp!(
+                "  programme seul, ne touche pas {} ({})",
+                "  program alone, leaves {} untouched ({})",
+                montre_strict(&c.chemin),
+                montre_strict(&c.version)
+            ),
         }
     }
     trp!("  Accord : {}", "  Consent: {}", a.accord());
@@ -930,13 +941,18 @@ fn agir(m: &dyn Monde, accord: &str, consommer: impl FnOnce() -> Result<(), carn
         Source::Cle { octets, fenetre } => {
             for (((chemin, visee), f), vue) in plan.cibles.iter().zip(&plan.fenetres).zip(&plan.vues) {
                 let r = match (&fenetre, f) {
+                    // Montré « programme seul » : revérifié tel quel, sa fenêtre jamais touchée (A-ACCORD-1).
+                    _ if vue.laissee().is_some() => {
+                        sa_fenetre::installer_seul(&octets, chemin, *visee, &m.registre(), &m.copie(), essai, vue)
+                            .map_err(String::from)
+                    }
                     (Some(o), Some(f)) => {
                         sa_fenetre::installer_avec(&octets, chemin, *visee, &m.registre(), &m.copie(), essai, o, f, vue)
                             .map_err(String::from)
                     }
                     _ => installer(&octets, chemin, *visee, &m.registre(), &m.copie(), essai),
                 };
-                noter_la_pose(&mut faites, &octets, chemin, f.as_deref(), r);
+                noter_la_pose(&mut faites, &octets, chemin, f.as_deref(), vue, r);
             }
         }
         Source::Github(p) => {
@@ -974,7 +990,7 @@ fn agir(m: &dyn Monde, accord: &str, consommer: impl FnOnce() -> Result<(), carn
                     &mut recevoir,
                 )
                 .map_err(String::from);
-                noter_la_pose(&mut faites, &octets, chemin, f.as_deref(), r);
+                noter_la_pose(&mut faites, &octets, chemin, f.as_deref(), vue, r);
             }
             // Chaque fenêtre seule, tout ou rien : relue, jugée, posée ; sa ligne la relit.
             for s in &plan.seules {
@@ -996,18 +1012,21 @@ fn agir(m: &dyn Monde, accord: &str, consommer: impl FnOnce() -> Result<(), carn
 /// La ligne d'un programme posé (ou pas), puis celle de sa fenêtre : relue, elle n'est « à jour » que si c'est bien
 /// celle que grave le programme posé ; le programme pas posé, elle dit la même raison (l'ancienne reste ou revient).
 /// Une fenêtre partagée par deux programmes du même dossier (ACCORD-1) n'a qu'une ligne : juste si l'une des poses
-/// l'a laissée juste (relue chaque fois), sinon la première raison.
+/// l'a laissée juste (relue chaque fois), sinon la première raison. Le programme posé seul (`Vue::laissee`), sa
+/// fenêtre n'est jamais comptée faite : sa ligne dit pourquoi elle n'a pas été touchée (code 1).
 fn noter_la_pose(
     faites: &mut Vec<(String, Result<(), String>)>,
     octets: &[u8],
     chemin: &Path,
     fenetre: Option<&Path>,
+    vue: &sa_fenetre::Vue,
     r: Result<(), String>,
 ) {
     let ligne_fenetre = fenetre.map(|f| {
-        let rf = match &r {
-            Ok(()) => sa_fenetre::posee_juste(octets, f).map_err(String::from),
-            Err(e) => Err(e.clone()),
+        let rf = match (&r, vue.laissee_dite()) {
+            (Ok(()), Some(n)) => Err(n),
+            (Ok(()), None) => sa_fenetre::posee_juste(octets, f).map_err(String::from),
+            (Err(e), _) => Err(e.clone()),
         };
         (montre(f), rf)
     });
@@ -1594,8 +1613,8 @@ mod tests {
     }
 
     /// La clé : sa fenêtre, si c'est celle que grave son programme, est une ligne de l'aperçu (donc de l'accord) et
-    /// suit la copie, relue au résultat ; une autre fenêtre n'est ni montrée ni posée ; une fenêtre apparue à la clé
-    /// après l'aperçu change l'accord.
+    /// suit la copie, relue au résultat ; une autre fenêtre n'est pas posée, le programme seul, et c'est dit (ronde 3,
+    /// A-REFUS-5 : jamais en silence) ; une fenêtre apparue à la clé après l'aperçu change l'accord.
     #[test]
     fn la_fenetre_de_la_cle_suit_ce_que_l_apercu_a_montre() {
         let d = dossier("cle-fenetre");
@@ -1622,11 +1641,22 @@ mod tests {
         // Sans fenêtre à la clé : le programme seul, comme avant.
         let sans = plan(&f, Pour::Voir).unwrap().apercu;
         assert_eq!(sans.cibles.len(), 1);
-        // Une fenêtre qui n'est pas celle du programme : ni montrée, ni posée.
+        // Une fenêtre qui n'est pas celle du programme : pas posée, le programme seul, dit sur la ligne de la fenêtre.
         std::fs::write(&fenetre_cle, b"fenetre plantee").unwrap();
         let a = plan(&f, Pour::Voir).unwrap().apercu;
-        assert_eq!(a.cibles.len(), 1);
-        assert!(matches!(agir(&f, &a.accord(), CONSOMME), Issue::Fait(c) if c.len() == 1 && c[0].1.is_ok()));
+        assert_eq!(a.cibles.len(), 2);
+        assert_eq!(a.cibles[1].geste, Geste::ProgrammeSeul);
+        let Issue::Fait(c) = agir(&f, &a.accord(), CONSOMME) else {
+            panic!("pas fait")
+        };
+        assert!(c[0].1.is_ok(), "{c:?}");
+        assert!(
+            c[1].1
+                .as_ref()
+                .is_err_and(|e| e.contains("pas celle que grave son programme")),
+            "{c:?}"
+        );
+        assert_eq!(std::fs::read(&f.copie).unwrap(), neuf);
         assert_eq!(std::fs::read(&fenetre_ici).unwrap(), b"ancienne fenetre");
         remettre();
         // La sienne, apparue après l'aperçu : l'accord ne vaut plus.
@@ -1654,10 +1684,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// ILLISIBLE-1 (relecture C-6) : la clé n'a qu'une cible ; une fenêtre d'ici qui ne se lit pas la met de côté,
-    /// donc rien n'est proposé ni posé (« non vérifié », la raison dite), programme compris.
+    /// A-ACCORD-1, A-REFUS-1 (campagne d'attaque C-6/C-7) : la clé n'a qu'une cible ; un dossier au nom de la fenêtre
+    /// d'ici gelait la copie à l'ancienne version. Le programme est posé seul, montré « programme seul », le dossier
+    /// intact, sa ligne dit pourquoi (pas faite). Redevenue lisible entre l'aperçu et le clic : l'accord ne vaut plus.
     #[test]
-    fn la_cle_ne_pose_rien_par_dessus_une_fenetre_illisible() {
+    fn la_cle_pose_le_programme_seul_a_cote_d_une_fenetre_illisible() {
         let d = dossier("cle-fenetre-illisible");
         let mut f = Faux::nouveau(&d);
         let source = d.join("cle").join(NOM);
@@ -1676,14 +1707,81 @@ mod tests {
             copie: Some(version("0.94.0+1780000000")),
             cle: version("0.95.0+1790000000"),
         };
-        for pour in [Pour::Voir, Pour::Appliquer] {
-            match plan(&f, pour) {
-                Err(Refus::NonVerifie(e)) => assert!(e.contains("ne se lit pas"), "{e}"),
-                autre => panic!("{:?}", autre.map(|p| p.apercu)),
-            }
-        }
+        let a = plan(&f, Pour::Voir).unwrap().apercu;
+        assert_eq!(a.cibles.len(), 2);
+        assert_eq!(a.cibles[1].geste, Geste::ProgrammeSeul);
+        assert!(
+            a.cibles[1].version.contains("programme seul"),
+            "{}",
+            a.cibles[1].version
+        );
+        // Redevenue lisible avant le clic : rien.
+        std::fs::remove_dir_all(&fenetre_ici).unwrap();
+        std::fs::write(&fenetre_ici, b"ancienne fenetre").unwrap();
+        assert_eq!(agir(&f, &a.accord(), CONSOMME), Issue::Refuse(Refus::Change));
         assert_eq!(std::fs::read(&f.copie).unwrap(), ancien);
-        assert!(fenetre_ici.is_dir());
+        std::fs::remove_file(&fenetre_ici).unwrap();
+        std::fs::create_dir_all(fenetre_ici.join("dedans")).unwrap();
+        let Issue::Fait(c) = agir(&f, &a.accord(), CONSOMME) else {
+            panic!("pas fait")
+        };
+        assert!(c[0].1.is_ok(), "{c:?}");
+        assert!(c[1].1.as_ref().is_err_and(|e| e.contains("ne se lit pas")), "{c:?}");
+        assert_eq!(std::fs::read(&f.copie).unwrap(), neuf);
+        assert!(fenetre_ici.join("dedans").is_dir(), "le dossier n'est pas touché");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A-REFUS-5 (campagne d'attaque C-6/C-7) : la fenêtre de la clé illisible (un dossier) ou en lien était comptée
+    /// absente, en silence. Jamais comptée absente : « non vérifié », dit avec sa raison ; le programme seul, celle
+    /// d'ici non touchée.
+    #[cfg(unix)]
+    #[test]
+    fn la_cle_dit_sa_fenetre_illisible_ou_en_lien() {
+        let d = dossier("cle-fenetre-de-la-cle");
+        let mut f = Faux::nouveau(&d);
+        let source = d.join("cle").join(NOM);
+        let fenetre_cle = sa_fenetre::pour(&source).unwrap();
+        let neuve = b"fenetre 0.95".to_vec();
+        let neuf = lancant("0.95.0+1790000000", &neuve);
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(&source, &neuf).unwrap();
+        std::fs::write(d.join("cle").join("vraie"), &neuve).unwrap();
+        std::fs::create_dir_all(f.copie.parent().unwrap()).unwrap();
+        let ancien = programme("0.94.0+1780000000", "copie");
+        let fenetre_ici = sa_fenetre::pour(&f.copie).unwrap();
+        f.etat = Etat::AMettreAJour {
+            source,
+            copie: Some(version("0.94.0+1780000000")),
+            cle: version("0.95.0+1790000000"),
+        };
+        for (raison, poser) in [
+            (
+                "illisible",
+                &(|p: &Path| std::fs::create_dir_all(p).unwrap()) as &dyn Fn(&Path),
+            ),
+            ("un lien", &|p: &Path| std::os::unix::fs::symlink("vraie", p).unwrap()),
+        ] {
+            let _ = std::fs::remove_dir_all(&fenetre_cle);
+            let _ = std::fs::remove_file(&fenetre_cle);
+            poser(&fenetre_cle);
+            std::fs::write(&f.copie, &ancien).unwrap();
+            std::fs::write(&fenetre_ici, b"ancienne fenetre").unwrap();
+            let a = plan(&f, Pour::Voir).unwrap().apercu;
+            assert_eq!(a.cibles[1].geste, Geste::ProgrammeSeul, "{raison}");
+            let Issue::Fait(c) = agir(&f, &a.accord(), CONSOMME) else {
+                panic!("pas fait : {raison}")
+            };
+            assert!(c[0].1.is_ok(), "{c:?}");
+            assert!(
+                c[1].1
+                    .as_ref()
+                    .is_err_and(|e| e.contains("non vérifiée") && e.contains(raison)),
+                "{c:?}"
+            );
+            assert_eq!(std::fs::read(&f.copie).unwrap(), neuf);
+            assert_eq!(std::fs::read(&fenetre_ici).unwrap(), b"ancienne fenetre");
+        }
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -2172,11 +2270,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// C-7-2 (relecture 0.96) : une fenêtre qui ne se lit pas (ici un dossier) ne se compare à rien ; rien n'est
-    /// proposé, son chemin est dit, rien n'est téléchargé : à côté d'un programme à remplacer comme d'un programme
-    /// déjà juste.
+    /// C-7-2 (relecture 0.96), A-ACCORD-1 (campagne d'attaque C-6/C-7) : une fenêtre qui ne se lit pas (ici un
+    /// dossier) ne se compare à rien et n'est jamais touchée ni téléchargée. À côté d'un programme à remplacer (une
+    /// seule copie), le programme est posé seul, montré et dit ; à côté d'un programme déjà juste, rien n'est proposé
+    /// (« non vérifié », son chemin dit).
     #[test]
-    fn une_fenetre_illisible_ne_fait_rien_proposer() {
+    fn une_fenetre_illisible_n_est_jamais_touchee() {
         let d = dossier("github-fenetre-illisible");
         let mut f = Faux::nouveau(&d);
         let vieux = d.join("a").join(NOM);
@@ -2190,77 +2289,103 @@ mod tests {
         f.derniere = Ok(Publiee::d_essai(version("0.95.0+1790000000"), &publie));
         f.recus = publie.clone();
         f.fenetre = Ok(b"fenetre 0.95".to_vec());
-        for cible in [&vieux, &pareil] {
-            let fenetre = sa_fenetre::pour(cible).unwrap();
-            std::fs::create_dir_all(&fenetre).unwrap();
-            f.cibles = vec![cible.clone()];
-            for pour in [Pour::Voir, Pour::Appliquer] {
-                match plan(&f, pour) {
-                    Err(Refus::NonVerifie(e)) => assert!(e.contains("ne se lit pas"), "{e}"),
-                    autre => panic!("{:?}", autre.map(|p| p.apercu)),
-                }
+        let fenetre = sa_fenetre::pour(&pareil).unwrap();
+        std::fs::create_dir_all(&fenetre).unwrap();
+        f.cibles = vec![pareil.clone()];
+        for pour in [Pour::Voir, Pour::Appliquer] {
+            match plan(&f, pour) {
+                Err(Refus::NonVerifie(e)) => assert!(e.contains("ne se lit pas"), "{e}"),
+                autre => panic!("{:?}", autre.map(|p| p.apercu)),
             }
-            assert!(fenetre.is_dir());
-            assert_eq!((f.telecharges.get(), f.fenetres_telechargees.get()), (0, 0));
         }
+        assert!(fenetre.is_dir());
+        assert_eq!((f.telecharges.get(), f.fenetres_telechargees.get()), (0, 0));
+        // Une seule copie, à remplacer : le programme seul.
+        let fenetre = sa_fenetre::pour(&vieux).unwrap();
+        std::fs::create_dir_all(fenetre.join("dedans")).unwrap();
+        f.cibles = vec![vieux.clone()];
+        let a = plan(&f, Pour::Voir).unwrap().apercu;
+        let gestes: Vec<(&str, Geste)> = a.cibles.iter().map(|c| (c.chemin.as_str(), c.geste)).collect();
+        assert_eq!(
+            gestes,
+            [
+                (montre(&vieux).as_str(), Geste::Remplace),
+                (montre(&fenetre).as_str(), Geste::ProgrammeSeul)
+            ]
+        );
+        let Issue::Fait(c) = agir(&f, &a.accord(), CONSOMME) else {
+            panic!("pas fait")
+        };
+        assert!(c[0].1.is_ok(), "{c:?}");
+        assert!(c[1].1.as_ref().is_err_and(|e| e.contains("ne se lit pas")), "{c:?}");
+        assert_eq!(std::fs::read(&vieux).unwrap(), publie);
+        assert!(fenetre.join("dedans").is_dir(), "le dossier n'est pas touché");
+        assert_eq!(f.fenetres_telechargees.get(), 0);
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// ILLISIBLE-1 (relecture C-6/C-7) : une fenêtre illisible bloquait toute la mise à jour. Seule sa copie est
-    /// laissée de côté, montrée (« laisse de côté », dans l'accord), jamais touchée et dite au résultat (code 1) ;
-    /// l'autre copie est mise à jour : à côté d'un programme à remplacer comme d'un programme déjà juste.
+    /// ILLISIBLE-1 (relecture C-6/C-7) : une fenêtre illisible bloquait toute la mise à jour. À côté d'un programme
+    /// déjà juste (rien à poser que sa fenêtre), sa copie est laissée de côté, montrée (« laisse de côté », dans
+    /// l'accord), jamais touchée et dite au résultat (code 1) ; l'autre copie est mise à jour. À côté d'un programme à
+    /// remplacer : voir `une_fenetre_illisible_n_est_jamais_touchee` (le programme seul).
     #[test]
     fn une_fenetre_illisible_ne_laisse_de_cote_que_sa_copie() {
         let d = dossier("github-fenetre-illisible-une");
         let mut f = Faux::nouveau(&d);
-        let vieux = d.join("a").join(NOM);
         let pareil = d.join("b").join(NOM);
         let autre = d.join("c").join(NOM);
-        for c in [&vieux, &pareil, &autre] {
+        for c in [&pareil, &autre] {
             std::fs::create_dir_all(c.parent().unwrap()).unwrap();
         }
         let ancien = programme("0.94.0+1780000000", "ici");
         let neuve = b"fenetre 0.95".to_vec();
         let publie = lancant("0.95.0+1790000000", &neuve);
-        std::fs::write(&vieux, &ancien).unwrap();
         std::fs::write(&pareil, &publie).unwrap();
         f.derniere = Ok(Publiee::d_essai(version("0.95.0+1790000000"), &publie));
         f.recus = publie.clone();
         f.fenetre = Ok(neuve.clone());
-        for (cible, ici) in [(&vieux, &ancien), (&pareil, &publie)] {
-            std::fs::write(&autre, &ancien).unwrap();
-            let _ = std::fs::remove_file(sa_fenetre::pour(&autre).unwrap());
-            let illisible = sa_fenetre::pour(cible).unwrap();
-            std::fs::create_dir_all(&illisible).unwrap();
-            f.cibles = vec![cible.clone(), autre.clone()];
-            let a = plan(&f, Pour::Voir).unwrap().apercu;
-            let ecartees: Vec<&str> = a
-                .cibles
-                .iter()
-                .filter(|c| c.geste == Geste::Ecarte)
-                .map(|c| c.chemin.as_str())
-                .collect();
-            assert_eq!(ecartees, [montre(cible), montre(&illisible)], "{a:?}");
-            let Issue::Fait(c) = agir(&f, &a.accord(), CONSOMME) else {
-                panic!("pas fait")
-            };
-            let mise_de_cote = c.iter().find(|(chemin, _)| *chemin == montre(cible));
-            assert!(
-                mise_de_cote.is_some_and(|(_, r)| r.as_ref().is_err_and(|e| e.contains("laissé de côté"))),
-                "{c:?}"
-            );
-            assert!(
-                c.iter()
-                    .filter(|(chemin, _)| *chemin != montre(cible))
-                    .all(|(_, r)| r.is_ok()),
-                "{c:?}"
-            );
-            assert_eq!(&std::fs::read(cible).unwrap(), ici);
-            assert!(illisible.is_dir());
-            assert_eq!(std::fs::read(&autre).unwrap(), publie);
-            assert_eq!(std::fs::read(sa_fenetre::pour(&autre).unwrap()).unwrap(), neuve);
-            std::fs::remove_dir_all(&illisible).unwrap();
-        }
+        let (cible, ici) = (&pareil, &publie);
+        std::fs::write(&autre, &ancien).unwrap();
+        let _ = std::fs::remove_file(sa_fenetre::pour(&autre).unwrap());
+        let illisible = sa_fenetre::pour(cible).unwrap();
+        std::fs::create_dir_all(&illisible).unwrap();
+        f.cibles = vec![cible.clone(), autre.clone()];
+        let a = plan(&f, Pour::Voir).unwrap().apercu;
+        let ecartees: Vec<&str> = a
+            .cibles
+            .iter()
+            .filter(|c| c.geste == Geste::Ecarte)
+            .map(|c| c.chemin.as_str())
+            .collect();
+        assert_eq!(ecartees, [montre(cible), montre(&illisible)], "{a:?}");
+        // A-ACCORD-4 : sa ligne est dans l'accord. Redevenue lisible avant le clic, ou montrée lisible puis
+        // illisible au clic : l'accord ne vaut plus, rien n'est fait.
+        std::fs::remove_dir_all(&illisible).unwrap();
+        std::fs::write(&illisible, b"ancienne fenetre").unwrap();
+        assert_eq!(agir(&f, &a.accord(), CONSOMME), Issue::Refuse(Refus::Change));
+        let lisible = plan(&f, Pour::Voir).unwrap().apercu.accord();
+        std::fs::remove_file(&illisible).unwrap();
+        std::fs::create_dir_all(&illisible).unwrap();
+        assert_eq!(agir(&f, &lisible, CONSOMME), Issue::Refuse(Refus::Change));
+        assert_eq!(std::fs::read(&autre).unwrap(), ancien, "rien n'est fait");
+        let Issue::Fait(c) = agir(&f, &a.accord(), CONSOMME) else {
+            panic!("pas fait")
+        };
+        let mise_de_cote = c.iter().find(|(chemin, _)| *chemin == montre(cible));
+        assert!(
+            mise_de_cote.is_some_and(|(_, r)| r.as_ref().is_err_and(|e| e.contains("laissé de côté"))),
+            "{c:?}"
+        );
+        assert!(
+            c.iter()
+                .filter(|(chemin, _)| *chemin != montre(cible))
+                .all(|(_, r)| r.is_ok()),
+            "{c:?}"
+        );
+        assert_eq!(&std::fs::read(cible).unwrap(), ici);
+        assert!(illisible.is_dir());
+        assert_eq!(std::fs::read(&autre).unwrap(), publie);
+        assert_eq!(std::fs::read(sa_fenetre::pour(&autre).unwrap()).unwrap(), neuve);
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -2334,6 +2459,36 @@ mod tests {
         );
         assert!(vieille.visee.chars().count() <= 80, "{}", vieille.visee);
         assert_ne!(vieille.accord(), a.accord());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A-REFUS-2 (ronde 3) : avec seulement des copies laissées de côté, le refus ne portait que leurs lignes, et un
+    /// verdict qui n'est pas « à jour » (version signée trop vieille) n'était plus dit.
+    #[test]
+    fn des_copies_laissees_de_cote_gardent_le_non_verifie_du_verdict() {
+        let d = dossier("github-ecartee-perimee");
+        let mut f = Faux::nouveau(&d);
+        let ici = d.join("a").join(NOM);
+        std::fs::create_dir_all(sa_fenetre::pour(&ici).unwrap()).unwrap();
+        let publie = lancant("0.95.0+1790000000", b"fenetre 0.95");
+        std::fs::write(&ici, &publie).unwrap();
+        f.cibles = vec![ici.clone()];
+        f.derniere = Ok(Publiee::d_essai(version("0.95.0+1790000000"), &publie));
+        let Err(Refus::NonVerifie(frais)) = plan(&f, Pour::Voir) else {
+            panic!("une copie laissée de côté n'est jamais à jour");
+        };
+        assert!(
+            frais.contains("ne se lit pas") && !frais.contains("la version signée"),
+            "{frais}"
+        );
+        f.maintenant = 1_790_000_000 + 400 * 86_400;
+        let Err(Refus::NonVerifie(vieux)) = plan(&f, Pour::Voir) else {
+            panic!("une copie laissée de côté n'est jamais à jour");
+        };
+        assert!(
+            vieux.contains("ne se lit pas") && vieux.contains("la version signée"),
+            "{vieux}"
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 

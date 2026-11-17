@@ -179,17 +179,67 @@ fn refus_dossier(m: &std::fs::Metadata, moi: u32) -> Option<&'static str> {
 /// suivre aucun lien. Le chemin vient de `current_exe`, déjà résolu sous Linux.
 #[cfg(unix)]
 fn refus_chemin(chemin: &Path, m: &std::fs::Metadata, moi: u32) -> Option<&'static str> {
-    if let Some(r) = refus(m, moi) {
-        return Some(r);
-    }
+    refus(m, moi).or_else(|| refus_des_dossiers(chemin, moi))
+}
+
+/// Les dossiers qui contiennent `chemin`, jusqu'à la racine (`refus_dossier`), sans suivre aucun lien.
+#[cfg(unix)]
+fn refus_des_dossiers(chemin: &Path, moi: u32) -> Option<&'static str> {
     chemin
         .ancestors()
         .skip(1)
         .filter(|d| !d.as_os_str().is_empty())
+        .take_while(|d| dans_les_essais(d))
         .find_map(|d| match std::fs::symlink_metadata(d) {
             Ok(m) => refus_dossier(&m, moi),
             Err(_) => Some(tr!("un dossier illisible", "an unreadable folder")),
         })
+}
+
+/// Hors essais, tous les dossiers comptent. Dans les essais de la mise à jour, seulement ceux du dossier
+/// temporaire des essais (lui compris) : sous `unshare -r` (la suite hors ligne), /home et la racine paraissent à
+/// « nobody » et tout serait refusé ; l'essai du lancement, lui, se saute dans ce cas.
+#[cfg(all(unix, not(test)))]
+fn dans_les_essais(_: &Path) -> bool {
+    true
+}
+
+#[cfg(all(unix, test))]
+fn dans_les_essais(d: &Path) -> bool {
+    // Le chemin tel quel et résolu : les essais du lancement passent l'un, `dossiers_refuses` l'autre.
+    static RACINES: std::sync::OnceLock<[PathBuf; 2]> = std::sync::OnceLock::new();
+    RACINES
+        .get_or_init(|| {
+            let t = crate::essais::temporaire();
+            [std::fs::canonicalize(&t).unwrap_or_else(|_| t.clone()), t]
+        })
+        .iter()
+        .any(|r| d.starts_with(r))
+}
+
+/// Le refus que le lancement opposerait aux dossiers de la fenêtre `chemin` (A-ACCORD-2, relecture C-6/C-7) : le
+/// lancement juge le chemin résolu (`current_exe`), donc le dossier est résolu ici aussi. Un refus d'un dossier ne
+/// se répare pas en reposant la fenêtre : la mise à jour le dit, sans le proposer. Sous Windows, aucun.
+pub(crate) fn dossiers_refuses(chemin: &Path) -> Option<&'static str> {
+    #[cfg(unix)]
+    {
+        let (Some(dossier), Some(nom)) = (chemin.parent(), chemin.file_name()) else {
+            return Some(tr!("un dossier illisible", "an unreadable folder"));
+        };
+        let Ok(dossier) = std::fs::canonicalize(if dossier.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            dossier
+        }) else {
+            return Some(tr!("un dossier illisible", "an unreadable folder"));
+        };
+        refus_des_dossiers(&dossier.join(nom), crate::socle::uid())
+    }
+    #[cfg(windows)]
+    {
+        let _ = chemin;
+        None
+    }
 }
 
 #[cfg(windows)]

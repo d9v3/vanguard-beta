@@ -6036,22 +6036,28 @@ fn mise_a_jour_depuis_la_cle() {
     std::fs::create_dir_all(copie.parent().unwrap()).unwrap();
     std::fs::write(&copie, "vieille copie, sans version gravée").unwrap();
 
+    // Une fenêtre sur la clé qui n'est pas celle de son programme (A-REFUS-5, ronde 3) : dite avant la question
+    // (« programme seul »), jamais posée, et le programme suit seul ; dite encore après, code 1.
+    let fenetre_cle = cle.join("Linux").join("vanguard-fenetre");
+    std::fs::write(&fenetre_cle, "fenetre inventee").unwrap();
     // Refusée (Entrée) : rien ne change.
     let refus = vanguard_dans_env(&sur_la_cle, &maison, "fr", &["se-mettre-a-jour"], "\n", 60, HORS_LIGNE);
     assert_eq!(refus.code, Some(0), "{}", refus.erreurs);
     let t = sans_couleurs(&refus.texte);
     assert!(t.contains("d'avant la 0.78") && t.contains("La remplacer"), "{t}");
+    assert!(t.contains("programme seul, fenêtre de la clé non vérifiée"), "{t}");
     assert_eq!(
         std::fs::read(&copie).unwrap(),
         b"vieille copie, sans version grav\xc3\xa9e"
     );
-    // Acceptée : la copie devient le programme de la clé, octet pour octet.
+    // Acceptée : la copie devient le programme de la clé, octet pour octet ; sa fenêtre n'est pas posée.
     let accord = vanguard_dans_env(&sur_la_cle, &maison, "fr", &["se-mettre-a-jour"], "o\n", 60, HORS_LIGNE);
-    assert!(
-        sans_couleurs(&accord.texte).contains("Copie de cet ordinateur mise à jour"),
-        "{}",
-        accord.texte
-    );
+    let t = sans_couleurs(&accord.texte);
+    assert!(t.contains("Copie de cet ordinateur mise à jour"), "{t}");
+    assert!(t.contains("Non vérifié : la fenêtre de la clé n'est pas posée"), "{t}");
+    assert_eq!(accord.code, Some(1), "{t}");
+    assert!(!copie.with_file_name("vanguard-fenetre").exists(), "{t}");
+    std::fs::remove_file(&fenetre_cle).unwrap();
     // Comparés sans assert_eq! : en cas d'échec, il imprimerait deux programmes de 113 Mo.
     let identique = std::fs::read(&copie).unwrap() == std::fs::read(&sur_la_cle).unwrap();
     assert!(identique, "la copie n'est pas le programme de la clé");

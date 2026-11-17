@@ -27,6 +27,9 @@ pub(crate) mod apercu;
 mod github;
 mod sa_fenetre;
 
+/// Les noms de côté d'une pose de fenêtre interrompue, pour la désinstallation (`desinstaller`).
+pub(crate) use sa_fenetre::reste_de_pose;
+
 /// La version de ce programme et la date de son commit, gravées dans son fichier pour qu'une autre copie les lise sans
 /// le lancer (« VANGUARD-VERSION:0.78.0+1760900000; »). `courante` la lit là : sans lecture, l'éditeur de liens
 /// retirerait ce texte du programme publié.
@@ -512,9 +515,10 @@ pub(crate) fn programme_signe_a_remettre() -> Result<(String, Vec<u8>), crate::m
 /// Copie `source` à la place de `cible` : à côté d'abord, sa version revérifiée (ce qui a été montré est ce qui
 /// s'installe : la clé a pu changer depuis l'affichage), relue et comparée, puis renommée d'un coup ; une copie
 /// interrompue ou abîmée ne remplace jamais celle qui marche, et ne reste pas sur le disque. La fenêtre posée à côté
-/// du programme de la clé suit, si c'est bien la sienne (`sa_fenetre::de_la_source`), comme pour `poser_copie_dans`.
+/// du programme de la clé suit, si c'est bien la sienne (`sa_fenetre::de_la_cle`), comme pour `poser_copie_dans`.
 /// `vue` : la fenêtre dite avant la question (C-7, relecture 0.96) ; avec ou sans fenêtre, ce qui se pose est ce qui
-/// a été dit, sinon rien.
+/// a été dit, sinon rien. Une fenêtre qui ne peut pas suivre (`Vue::laissee`) : le programme seul, si c'est encore
+/// ce qui a été dit (A-ACCORD-1, A-REFUS-5).
 /// `soi` : l'empreinte du programme qui tourne ; seuls ses octets se posent (voir `de_soi`).
 /// `registre` : le dossier du registre scellé où Vanguard note les copies qu'il pose ; une copie plus récente que
 /// `attendue` y est notée et le fichier là n'est plus elle (R3-C1) : refusé, rien n'est remplacé (`retour_en_arriere`).
@@ -531,10 +535,23 @@ fn remplacer(
 ) -> Result<(), String> {
     let octets = lire_octets(source, max)?;
     gardes_de_la_cle(&octets, cible, attendue, soi, registre, derniere_publiee)?;
-    let fenetre = sa_fenetre::de_la_source(source, &octets).zip(sa_fenetre::pour(cible));
-    vue.dite(fenetre.as_ref().map(|(_, chemin)| chemin.as_path()))?;
-    match fenetre {
-        Some((f, chemin)) => sa_fenetre::installer_avec(
+    let (fenetre, maintenant) = sa_fenetre::de_la_cle(source, &octets, cible);
+    vue.dite(maintenant.chemin())?;
+    if maintenant.laissee() != vue.laissee() {
+        return Err(sa_fenetre::changee_depuis_l_apercu().into());
+    }
+    match (fenetre, maintenant.chemin()) {
+        _ if vue.laissee().is_some() => sa_fenetre::installer_seul(
+            &octets,
+            cible,
+            attendue,
+            registre,
+            &copie_de_cet_ordinateur(),
+            essai,
+            vue,
+        )
+        .map_err(String::from),
+        (Some(f), Some(chemin)) => sa_fenetre::installer_avec(
             &octets,
             cible,
             attendue,
@@ -542,11 +559,11 @@ fn remplacer(
             &copie_de_cet_ordinateur(),
             essai,
             &f,
-            &chemin,
+            chemin,
             vue,
         )
         .map_err(String::from),
-        None => installer(&octets, cible, attendue, registre, &copie_de_cet_ordinateur(), essai),
+        _ => installer(&octets, cible, attendue, registre, &copie_de_cet_ordinateur(), essai),
     }
 }
 
@@ -1676,8 +1693,10 @@ fn poser_copie_dans(
         )
         .into());
     };
-    // La fenêtre posée à côté du programme de la clé suit la copie, si c'est bien la sienne.
-    let fenetre = sa_fenetre::de_la_source(source, &octets).zip(sa_fenetre::pour(cible));
+    // La fenêtre posée à côté du programme de la clé suit la copie, si c'est bien la sienne. Sinon (illisible, en
+    // lien, de la clé non vérifiée) : le programme seul, et la note qui le dit (A-ACCORD-1, A-REFUS-5).
+    let (fenetre, vue) = sa_fenetre::de_la_cle(source, &octets, cible);
+    let fenetre = fenetre.zip(vue.chemin().map(Path::to_path_buf));
     let la = present(cible);
     // Gardée : ses octets, lus une fois, notés comme posés par Vanguard, avec leur version (la tâche posée ensuite les
     // reconnaît, et une pose plus ancienne saura qu'une copie plus récente était là).
@@ -1697,7 +1716,7 @@ fn poser_copie_dans(
             // La même copie : sa fenêtre seule, si elle manque ou diffère. Un échec n'arrête pas la copie, que la
             // surveillance lance : sans sa fenêtre, le raccourci ouvre le menu.
             let Some((f, chemin)) = &fenetre else {
-                return Ok(None);
+                return Ok(vue.laissee_dite());
             };
             return Ok(sa_fenetre::poser_si_autre(f, chemin).err().map(|e| {
                 trf!(
@@ -1742,6 +1761,9 @@ fn poser_copie_dans(
         std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
     }
     match &fenetre {
+        _ if vue.laissee().is_some() => {
+            installer(&octets, cible, version, registre, &copie_de_cet_ordinateur(), essai).map(|()| vue.laissee_dite())
+        }
         Some((f, chemin)) => sa_fenetre::installer_avec_sinon_seul(
             &octets,
             cible,
@@ -2291,13 +2313,10 @@ fn depuis_github_vers(cibles: Vec<PathBuf>, doute: Option<crate::voulues::Doute>
         println!("{d}");
     }
     let avant_tri = a_remplacer.clone();
-    // Chacun avec sa fenêtre, relue maintenant ; une fenêtre illisible ne laisse de côté que son programme
-    // (ILLISIBLE-1), une fenêtre partagée n'est montrée qu'une fois (ACCORD-1). La même logique que l'interface.
-    let (a_remplacer, vues): (Vec<PathBuf>, Vec<sa_fenetre::Vue>) = {
-        let (gardees, ecartees) = sa_fenetre::trier(a_remplacer);
-        mises_de_cote.extend(ecartees);
-        gardees.into_iter().unzip()
-    };
+    // Chacun avec sa fenêtre, relue maintenant ; une fenêtre illisible ou une copie en lien laisse sa fenêtre, le
+    // programme posé seul (ronde 3), une fenêtre partagée n'est montrée qu'une fois (ACCORD-1). La même logique que
+    // l'interface.
+    let (a_remplacer, vues): (Vec<PathBuf>, Vec<sa_fenetre::Vue>) = sa_fenetre::trier(a_remplacer).into_iter().unzip();
     // Au même numéro (C-6, 0.97), sans doute : la fenêtre seule d'un programme d'ici qui est exactement celui signé.
     let seules: Vec<sa_fenetre::Seule> = if doutes.is_empty() {
         let candidats: Vec<PathBuf> = lues.into_iter().filter(|c| !avant_tri.contains(c)).collect();
@@ -2321,11 +2340,14 @@ fn depuis_github_vers(cibles: Vec<PathBuf>, doute: Option<crate::voulues::Doute>
             affichable(&e.dite(&e.programme.display().to_string(), &e.fenetre.display().to_string()))
         );
     }
+    // Jamais de coche verte juste après un « non vérifié » (A-REFUS-2) : le verdict le dit avec les doutes.
+    let a_regler = !mises_de_cote.is_empty() || !doutes.is_empty();
     if a_remplacer.is_empty() && seules.is_empty() {
+        dire_a_jour(publiee.version, &ici, maintenant(), true);
         return false;
     }
     if a_remplacer.is_empty() {
-        dire_a_jour(publiee.version, &ici, maintenant(), false);
+        dire_a_jour(publiee.version, &ici, maintenant(), a_regler);
     } else {
         trp!(
             "  Vanguard {} est publié, signé par son auteur (signature vérifiée).\n  Il remplacerait :",
@@ -2410,12 +2432,19 @@ fn depuis_github_vers(cibles: Vec<PathBuf>, doute: Option<crate::voulues::Doute>
             vue,
             &mut recevoir,
         ) {
-            Ok(()) => trp!(
-                "  {VERT}✔{RESET} {} : Vanguard {}.",
-                "  {VERT}✔{RESET} {}: Vanguard {}.",
-                affichable(&c.display().to_string()),
-                ecrire(publiee.version)
-            ),
+            Ok(()) => {
+                trp!(
+                    "  {VERT}✔{RESET} {} : Vanguard {}.",
+                    "  {VERT}✔{RESET} {}: Vanguard {}.",
+                    affichable(&c.display().to_string()),
+                    ecrire(publiee.version)
+                );
+                // Posé seul : sa fenêtre n'est pas comptée faite, comme dans l'interface (code 1).
+                if let Some(n) = vue.laissee_dite() {
+                    sans_refus = false;
+                    trp!("  Non vérifié : {}", "  Not verified: {}", affichable(&n));
+                }
+            }
             Err(e) => {
                 sans_refus = false;
                 trp!(
@@ -2519,13 +2548,14 @@ fn dire_a_jour(publiee: Version, ici: &[Version], maintenant: u64, doutes: bool)
     }
 }
 
-/// Où la fenêtre de la clé serait posée à côté de `cible`, si c'est bien celle du programme de la clé : ce que
-/// `proposer` dit avant la question.
-fn fenetre_de_la_cle(source: &Path, cible: &Path) -> Option<PathBuf> {
-    lire_octets(source, TAILLE_MAX)
-        .ok()
-        .and_then(|o| sa_fenetre::de_la_source(source, &o))
-        .and(sa_fenetre::pour(cible))
+/// La fenêtre à côté de `cible` telle que `proposer` la dit avant la question : posée si c'est bien celle du programme
+/// de la clé, laissée (programme seul) si elle ne peut pas suivre, aucune si la clé n'en a pas ; `remplacer` la
+/// revérifie. Un programme de la clé illisible : aucune, `remplacer` le refusera de toute façon.
+fn fenetre_de_la_cle(source: &Path, cible: &Path) -> sa_fenetre::Vue {
+    match lire_octets(source, TAILLE_MAX) {
+        Ok(o) => sa_fenetre::de_la_cle(source, &o, cible).1,
+        Err(_) => sa_fenetre::Vue::de(None),
+    }
 }
 
 /// Montre les deux versions et d'où vient la nouvelle, puis remplace la copie après un « o ». `false` : refusé.
@@ -2539,24 +2569,26 @@ fn proposer(source: &Path, cible: &Path, copie: Option<Version>, cle: Version) -
         "  Copy on this computer: {ici}\n  VANGUARD key         : {sur_la_cle}\n  {GRIS}From {}{RESET}\n",
         affichable(&source.display().to_string())
     );
-    // Sa fenêtre suit, si celle de la clé est la sienne : dite avant la question (`remplacer` la revérifie).
-    let fenetre = fenetre_de_la_cle(source, cible);
-    if let Some(f) = &fenetre {
-        trp!(
-            "  Sa fenêtre aussi, vérifiée : {}\n",
-            "  Its window too, verified: {}\n",
-            affichable(&f.display().to_string())
-        );
-    }
-    let vue = sa_fenetre::Vue::de(fenetre);
-    // Une fenêtre qui ne se lit pas ne se compare à rien : rien n'est proposé (C-7-2, relecture 0.96).
-    if let Some(f) = vue.illisible() {
-        trp!(
-            "  ✖ Non vérifié : {}",
-            "  ✖ Not verified: {}",
-            affichable(&sa_fenetre::illisible_dite(&f.display().to_string()))
-        );
-        return false;
+    // Sa fenêtre, dite avant la question avec ce qui lui sera fait, comme dans l'interface (`dite_a_cote`,
+    // A-ACCORD-5) : vérifiée si elle suit, « programme seul » si elle ne peut pas suivre (`remplacer` revérifie l'un
+    // et l'autre).
+    let vue = fenetre_de_la_cle(source, cible);
+    if let Some(f) = vue.chemin() {
+        if vue.laissee().is_some() {
+            trp!(
+                "  Sa fenêtre : {} {GRIS}({}){RESET}\n",
+                "  Its window: {} {GRIS}({}){RESET}\n",
+                affichable(&f.display().to_string()),
+                vue.dite_a_cote()
+            );
+        } else {
+            trp!(
+                "  Sa fenêtre aussi, vérifiée : {} {GRIS}({}){RESET}\n",
+                "  Its window too, verified: {} {GRIS}({}){RESET}\n",
+                affichable(&f.display().to_string()),
+                vue.dite_a_cote()
+            );
+        }
     }
     if !demander(tr!(
         "  La remplacer par celle de la clé ? [o/N] : ",
@@ -2584,7 +2616,14 @@ fn proposer(source: &Path, cible: &Path, copie: Option<Version>, cle: Version) -
                 "  {VERT}✔{RESET} Copy on this computer updated: Vanguard {}.\n    Monitoring, maintenance and the shortcut start this version.",
                 ecrire(cle)
             );
-            true
+            // Le programme posé seul : sa fenêtre n'est pas comptée faite (code 1, comme dans l'interface).
+            match vue.laissee_dite() {
+                Some(n) => {
+                    trp!("  Non vérifié : {}", "  Not verified: {}", affichable(&n));
+                    false
+                }
+                None => true,
+            }
         }
         Err(e) => {
             trp!(
@@ -3590,9 +3629,70 @@ mod tests {
         let _ = std::fs::remove_dir_all(&racine);
     }
 
+    /// A-ACCORD-1, A-ACCORD-4 (campagne d'attaque C-6/C-7) : au terminal, une fenêtre d'ici qui ne se lit pas (un
+    /// dossier à son nom) gelait la copie. Le programme de la clé est posé seul, le dossier intact ; redevenue lisible
+    /// après la question, ou devenue illisible, rien n'est posé.
+    #[test]
+    fn remplacer_pose_le_programme_seul_a_cote_d_une_fenetre_illisible() {
+        use crate::demarrage::empreinte_fenetre::marque_d_essai;
+        use sha2::{Digest, Sha256};
+        let racine = crate::socle::dossier_local().join("essai-remplacement-fenetre-illisible");
+        let _ = std::fs::remove_dir_all(&racine);
+        let source = racine.join("cle").join(NOM);
+        let cible = racine.join("bin").join(NOM);
+        let fenetre_ici = sa_fenetre::pour(&cible).unwrap();
+        let neuve = b"fenetre 0.80".to_vec();
+        let mut neuf = avec_entete("prog ", "0.80.0; ");
+        neuf.extend(marque_d_essai(&Sha256::digest(&neuve).into()));
+        faux_programme(&cible, None);
+        faux_programme(&source, None);
+        std::fs::write(&source, &neuf).unwrap();
+        std::fs::write(sa_fenetre::pour(&source).unwrap(), &neuve).unwrap();
+        let ancien = std::fs::read(&cible).unwrap();
+        let poser = |vue: &sa_fenetre::Vue| {
+            remplacer(
+                &source,
+                &cible,
+                (0, 80, 0, 0),
+                soi_de(&source).as_deref(),
+                TAILLE_MAX,
+                &inconnue(),
+                SANS_ESSAI,
+                vue,
+            )
+        };
+        let (dossier, fichier) = (
+            || std::fs::create_dir_all(fenetre_ici.join("dedans")).unwrap(),
+            || std::fs::write(&fenetre_ici, b"ancienne fenetre").unwrap(),
+        );
+        let vider = || {
+            let _ = std::fs::remove_dir_all(&fenetre_ici);
+            let _ = std::fs::remove_file(&fenetre_ici);
+        };
+        // Montrée illisible puis lisible, montrée lisible puis illisible : rien.
+        for (avant, apres) in [(&dossier as &dyn Fn(), &fichier as &dyn Fn()), (&fichier, &dossier)] {
+            vider();
+            avant();
+            let vue = dite(&source, &cible);
+            vider();
+            apres();
+            let e = poser(&vue).expect_err("changée");
+            assert!(e.contains("depuis ce qui a été montré"), "{e}");
+            assert_eq!(std::fs::read(&cible).unwrap(), ancien);
+        }
+        vider();
+        dossier();
+        let vue = dite(&source, &cible);
+        assert_eq!(vue.laissee(), Some(sa_fenetre::Laissee::Illisible));
+        poser(&vue).unwrap();
+        assert_eq!(std::fs::read(&cible).unwrap(), neuf);
+        assert!(fenetre_ici.join("dedans").is_dir(), "le dossier n'est pas touché");
+        let _ = std::fs::remove_dir_all(&racine);
+    }
+
     /// La fenêtre telle que `proposer` la dirait maintenant.
     fn dite(source: &Path, cible: &Path) -> sa_fenetre::Vue {
-        sa_fenetre::Vue::de(fenetre_de_la_cle(source, cible))
+        fenetre_de_la_cle(source, cible)
     }
 
     /// L'empreinte d'un faux programme, comme s'il était celui qui tourne.
