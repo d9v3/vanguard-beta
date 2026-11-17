@@ -333,7 +333,7 @@ pub fn enregistrer_complet(
     enregistrer_dans(&fichier(), bilan(audit, reseau, audit_reseau))
 }
 
-fn enregistrer_dans(chemin: &std::path::Path, mut nouveau: Bilan) -> (Option<Bilan>, Bilan) {
+pub(crate) fn enregistrer_dans(chemin: &std::path::Path, mut nouveau: Bilan) -> (Option<Bilan>, Bilan) {
     let mut tous = match lire_de(chemin) {
         Ok(tous) => tous,
         Err(e) => {

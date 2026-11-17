@@ -402,12 +402,12 @@ fn trop_vite_ferme_la_session() {
         "le refus porte l'id de la demande : {texte}"
     );
     assert_eq!(fermer, Some(Fin::Hostile));
-    // Les lignes vides ne comptent pas : cent d'un trait, puis une demande, rien ne ferme.
+    // Les lignes vides ne comptent pas dans le rythme : `VIDES_MAX` d'un trait, puis une demande, rien ne ferme.
     let mut s = Session::new("0", 1000);
-    for i in 0..100u64 {
+    for i in 0..u64::from(VIDES_MAX) {
         assert_eq!(s.traiter(b"  ", i, &mut o), Suite::Rien);
     }
-    let Suite::Repondre { fermer, .. } = s.traiter(ping, 100, &mut o) else {
+    let Suite::Repondre { fermer, .. } = s.traiter(ping, u64::from(VIDES_MAX), &mut o) else {
         panic!("une réponse attendue");
     };
     assert_eq!(fermer, None);
@@ -488,4 +488,63 @@ proptest! {
             }
         }
     }
+}
+
+/// A-PROTOCOLE-3 : les lignes vides ou d'espaces sont bornées : `VIDES_MAX` passent sans réponse, la suivante ferme
+/// la session comme hostile, l'id inconnu (`null`).
+#[test]
+fn les_lignes_vides_sont_bornees() {
+    let mut e = Essai::nouveau();
+    for i in 0..VIDES_MAX {
+        let ligne = if i % 2 == 0 { "" } else { " \t  " };
+        assert_eq!(e.envoyer(ligne), (Value::Null, None), "{i}");
+    }
+    let (r, f) = e.envoyer("   ");
+    assert_eq!(code_de(&r), "lignes-vides");
+    assert_eq!(r["id"], Value::Null);
+    assert_eq!(f, Some(Fin::Hostile));
+    assert!(e.s.hostile);
+    assert_eq!(
+        e.s.demandes, 1,
+        "une ligne vide n'est pas une demande (seule l'ouverture compte)"
+    );
+}
+
+/// A-PROTOCOLE-4 : les `params` sont un objet, ou absents ; `null` compte partout comme absent. Une notification aux
+/// `params` d'une autre forme est refusée et comptée, sans réponse.
+#[test]
+fn les_params_sont_un_objet_ou_absents() {
+    let mut e = Essai::nouveau();
+    for forme in ["[]", "1", "\"x\"", "true", "[{}]"] {
+        let avant = e.s.refus.get(&Code::Parametres).copied().unwrap_or(0);
+        let ligne = format!(r#"{{"jsonrpc":"2.0","method":"notifications/initialized","params":{forme}}}"#);
+        assert_eq!(e.envoyer(&ligne), (Value::Null, None), "{forme}");
+        assert_eq!(e.s.refus.get(&Code::Parametres).copied(), Some(avant + 1), "{forme}");
+        let ligne = format!(r#"{{"jsonrpc":"2.0","id":7,"method":"ping","params":{forme}}}"#);
+        assert_eq!(code_de(&e.envoyer(&ligne).0), "parametres", "{forme}");
+    }
+    let refus = e.s.refus.clone();
+    // `null`, comme absent : admis là où l'absence l'est, refusé là où des paramètres sont exigés.
+    for ligne in [
+        r#"{"jsonrpc":"2.0","method":"notifications/initialized","params":null}"#,
+        r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":3}}"#,
+        r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+    ] {
+        assert_eq!(e.envoyer(ligne), (Value::Null, None), "{ligne}");
+    }
+    assert_eq!(e.s.refus, refus, "une notification admise compte comme refusée");
+    for methode in ["ping", "tools/list"] {
+        let (r, _) = e.envoyer(&format!(
+            r#"{{"jsonrpc":"2.0","id":8,"method":"{methode}","params":null}}"#
+        ));
+        assert!(r.get("result").is_some(), "{methode} : {r}");
+    }
+    let (r, _) = e.envoyer(r#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":null}"#);
+    assert_eq!(code_de(&r), "parametres");
+    let mut neuve = Session::new("0", 1000);
+    let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":null}"#;
+    let Suite::Repondre { texte, .. } = neuve.traiter(init.as_bytes(), 0, &mut faux()) else {
+        panic!("une réponse attendue");
+    };
+    assert!(texte.contains("\"parametres\""), "{texte}");
 }

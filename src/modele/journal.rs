@@ -1349,12 +1349,11 @@ fn retenir_pour_la_porte(dossier: &Path, alerte: bool) {
     let _ = ajouter(&chemin, if alerte { b"a" } else { b"n" });
 }
 
-/// Prend les comptes retenus (renommés à un nom à soi, sous le verrou du journal) : (sessions, alertes, plein), et
-/// les fichiers à effacer une fois la note écrite.
+/// Lit les comptes retenus, sous le verrou du journal, sans les prendre : (sessions, alertes, plein), et les fichiers
+/// à effacer une fois la note écrite. Une note qui échoue les laisse donc à la suivante, sans fichier à part.
 fn prendre_retenues(dossier: &Path) -> ((u32, u32, bool), Vec<PathBuf>) {
-    let a_soi = dossier.join(format!("{PORTE_RETENUES}.{}", std::process::id()));
-    let _ = std::fs::rename(dossier.join(PORTE_RETENUES), &a_soi);
-    let Ok(octets) = crate::socle::lire_ordinaire(&a_soi, PORTE_RETENUES_MAX) else {
+    let chemin = dossier.join(PORTE_RETENUES);
+    let Ok(octets) = crate::socle::lire_ordinaire(&chemin, PORTE_RETENUES_MAX) else {
         return ((0, 0, false), Vec::new());
     };
     let compter = |c: u8| {
@@ -1363,7 +1362,65 @@ fn prendre_retenues(dossier: &Path) -> ((u32, u32, bool), Vec<PathBuf>) {
             .fold(0u32, |n, o| if *o == c { n.saturating_add(1) } else { n })
     };
     let plein = u64::try_from(octets.len()).unwrap_or(u64::MAX) >= PORTE_RETENUES_MAX;
-    ((compter(b'n'), compter(b'a'), plein), vec![a_soi])
+    ((compter(b'n'), compter(b'a'), plein), vec![chemin])
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Les essais : un plafond de taille de fichier vu par la porte.
+    static PORTE_PLAFOND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Les essais : l'ajout de la porte coupé après tant d'octets, comme sous un plafond de taille.
+    static PORTE_COUPE: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// Aucun plafond de taille de fichier (RLIMIT_FSIZE) : celui qui lance la porte le choisit, et un plafond juste
+/// au-dessus du segment coupe la note au milieu. Illisible : comme un plafond.
+fn sans_plafond_de_taille() -> bool {
+    #[cfg(test)]
+    if PORTE_PLAFOND.get() {
+        return false;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        matches!(crate::socle::processus::plafond_de_fichier(), Ok(u64::MAX))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
+    }
+}
+
+/// L'ajout de la porte au segment (`ajouter`) ; les essais le coupent au milieu (`PORTE_COUPE`).
+fn ajouter_pour_la_porte(chemin: &Path, octets: &[u8]) -> std::io::Result<()> {
+    #[cfg(test)]
+    if let Some(n) = PORTE_COUPE.take() {
+        ajouter(chemin, octets.get(..n).unwrap_or(octets))?;
+        return Err(std::io::Error::other("coupé par l'essai / cut by the test"));
+    }
+    ajouter(chemin, octets)
+}
+
+/// Défait un ajout manqué : le segment remis à sa taille d'avant, ou effacé s'il n'existait pas ; sans suivre de lien.
+fn remettre_le_segment(chemin: &Path, avant: Option<u64>) -> std::io::Result<()> {
+    let Some(taille) = avant else {
+        return match std::fs::remove_file(chemin) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        };
+    };
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let f = o.open(chemin)?;
+    if !f.metadata()?.file_type().is_file() {
+        return Err(std::io::Error::other("pas un simple fichier / not a plain file"));
+    }
+    f.set_len(taille)?;
+    f.sync_data()
 }
 
 /// Pourquoi la porte ne note pas : rien n'est créé, adopté ni réparé (`ecrire_pour_la_porte`).
@@ -1407,6 +1464,12 @@ fn ecrire_pour_la_porte(
     {
         return Err(pas_pour_la_porte(
             "journal ou sceaux pas encore là / log or seals not there yet",
+        ));
+    }
+    // Sous un plafond de taille, rien n'est écrit : ni la note, ni un compte de retenues.
+    if !sans_plafond_de_taille() {
+        return Err(pas_pour_la_porte(
+            "plafond de taille de fichier posé / file size limit set",
         ));
     }
     let _verrou =
@@ -1494,6 +1557,9 @@ fn ecrire_pour_la_porte(
         ));
     }
     // Comme `ecrire_dans` : la fin à venir annoncée dans la tête scellée, l'ajout, puis la tête qui le couvre.
+    let sans_annonce = tete.clone();
+    let segment = rep.join(format!("{mois}.jsonl"));
+    let avant = (dernier.as_deref() == Some(mois.as_str())).then(|| u64::try_from(octets.len()).unwrap_or(u64::MAX));
     tete.annonce = Some(Annonce {
         segment: mois.clone(),
         lignes: n_courant,
@@ -1505,7 +1571,18 @@ fn ecrire_pour_la_porte(
         TETE,
         &serde_json::to_vec(&tete).map_err(std::io::Error::other)?,
     )?;
-    ajouter(&rep.join(format!("{mois}.jsonl")), &a_ajouter)?;
+    // Un ajout manqué (plafond de taille abaissé en route, disque plein) est défait : le segment à sa taille d'avant,
+    // la tête sans annonce. Sinon une ligne coupée ferait dire le journal changé hors de Vanguard, et plus aucune
+    // note de la porte ne passerait. Les retenues restent à la note suivante.
+    if let Err(e) = ajouter_pour_la_porte(&segment, &a_ajouter) {
+        remettre_le_segment(&segment, avant)?;
+        crate::sceau::ecrire_dans(
+            dossier,
+            TETE,
+            &serde_json::to_vec(&sans_annonce).map_err(std::io::Error::other)?,
+        )?;
+        return Err(e);
+    }
     for f in &pris {
         let _ = std::fs::remove_file(f);
     }
@@ -3071,6 +3148,85 @@ mod tests {
         for d in [vide, sans_temoin, sans_journal] {
             let _ = std::fs::remove_dir_all(&d);
         }
+    }
+
+    /// Les retenues dites par la dernière note de la porte.
+    fn retenues_dites(d: &Path) -> (u32, u32) {
+        match &lire_dans(d).evenements.last().unwrap().quoi {
+            Genre::SessionPorte {
+                retenues,
+                alertes_retenues,
+                ..
+            } => (*retenues, *alertes_retenues),
+            autre => panic!("{autre:?}"),
+        }
+    }
+
+    /// Aucun fichier de retenues à part (`evenements.porte-retenues.<pid>`) laissé dans le dossier.
+    fn sans_orphelin(d: &Path) {
+        let a_part = format!("{PORTE_RETENUES}.");
+        for e in std::fs::read_dir(d).unwrap() {
+            let nom = e.unwrap().file_name().to_string_lossy().into_owned();
+            assert!(!nom.starts_with(&a_part), "{nom}");
+        }
+    }
+
+    /// A-FREIN-1, A-FREIN-2 : un ajout de la porte coupé au milieu (un plafond de taille abaissé en route) est
+    /// défait : le segment revient octet pour octet (ou disparaît s'il était neuf), la tête n'a plus d'annonce, le
+    /// journal reste intact, les retenues restent sans fichier à part, et la note suivante passe et les dit.
+    #[test]
+    fn une_note_coupee_de_la_porte_est_defaite() {
+        for (mois, quand) in [("2026-11", "2026-11-17T10:30:00Z"), ("2026-12", "2026-12-01T00:10:00Z")] {
+            let d = dossier("porte-coupee");
+            remplir(&d, 1, "2026-11-17T10:00:00Z");
+            std::fs::write(d.join(PORTE_RETENUES), b"nna").unwrap();
+            let avant = std::fs::read(segment(&d, mois)).ok();
+            PORTE_COUPE.set(Some(20));
+            assert!(porte(&d, session_porte("ouverte", quand), quand).is_err());
+            assert_eq!(PORTE_COUPE.get(), None, "l'ajout n'a pas été tenté");
+            assert_eq!(std::fs::read(segment(&d, mois)).ok(), avant, "{mois}");
+            assert!(
+                matches!(tete_lue(&d, Facon::SansEcrire), TeteLue::Lue(t, false) if t.annonce.is_none()),
+                "annonce restée"
+            );
+            assert_eq!(lire_dans(&d).lecture, Lecture::Intact);
+            assert_eq!(std::fs::read(d.join(PORTE_RETENUES)).unwrap(), b"nna");
+            sans_orphelin(&d);
+            assert_eq!(
+                porte(&d, session_porte("fin-du-flot", quand), quand).unwrap(),
+                NotePorte::Ecrite
+            );
+            assert_eq!(retenues_dites(&d), (2, 1));
+            assert_eq!(lire_dans(&d).lecture, Lecture::Intact);
+            assert!(!d.join(PORTE_RETENUES).exists());
+            sans_orphelin(&d);
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    }
+
+    /// A-FREIN-1, A-FREIN-2 : sous un plafond de taille de fichier, la porte n'écrit rien (ni note, ni retenue) et
+    /// ne prend pas les retenues ; la note suivante, sans plafond, les dit.
+    #[test]
+    fn sous_un_plafond_de_taille_la_porte_n_ecrit_rien() {
+        let q = "2026-11-17T10:30:00Z";
+        let d = dossier("porte-plafond");
+        remplir(&d, 1, "2026-11-17T10:00:00Z");
+        std::fs::write(d.join(PORTE_RETENUES), b"n").unwrap();
+        let (seg, tete) = (
+            std::fs::read(segment(&d, "2026-11")).unwrap(),
+            std::fs::read(d.join(TETE)).unwrap(),
+        );
+        PORTE_PLAFOND.set(true);
+        let refus = porte(&d, session_porte("ouverte", q), q);
+        PORTE_PLAFOND.set(false);
+        assert!(refus.is_err());
+        assert_eq!(std::fs::read(segment(&d, "2026-11")).unwrap(), seg);
+        assert_eq!(std::fs::read(d.join(TETE)).unwrap(), tete);
+        assert_eq!(std::fs::read(d.join(PORTE_RETENUES)).unwrap(), b"n");
+        sans_orphelin(&d);
+        assert_eq!(porte(&d, session_porte("ouverte", q), q).unwrap(), NotePorte::Ecrite);
+        assert_eq!(retenues_dites(&d), (1, 0));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// CLIENT-1 : la réserve. Un segment du mois au-delà de `PORTE_SEGMENT_MAX` n'est plus touché par la porte, bien

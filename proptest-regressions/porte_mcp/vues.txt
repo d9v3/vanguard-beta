@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc cd3e6b439e019b6b51d40e9525550b529a40a6c6a35ed9654f5f46e31a0bacb4 # shrinks to brut = "password:§[sn=s/n:］"

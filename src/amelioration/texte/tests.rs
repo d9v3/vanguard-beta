@@ -215,6 +215,18 @@ fn adresses_et_identifiants_masques() {
         ("hôte 192.168.1.20:8080 injoignable", "hôte <ip> injoignable"),
         ("hôte fe80::1ff:fe23:4567:890a%3 injoignable", "hôte <ip> injoignable"),
         ("hôte [2001:db8::1]:443 injoignable", "hôte <ip> injoignable"),
+        // Une IPv4 portée dans une IPv6 : masquée en entier, jamais ses trois derniers octets en clair.
+        (
+            "vers ::ffff:203.0.113.7 port 443 par curl",
+            "vers <ip> port 443 par curl",
+        ),
+        ("vers [::ffff:203.0.113.7]:443 fermé", "vers <ip> fermé"),
+        (
+            "vers 64:ff9b::203.0.113.7 et ::203.0.113.7 vus",
+            "vers <ip> et <ip> vus",
+        ),
+        ("vers 0:0:0:0:0:ffff:203.0.113.7/96 vu", "vers <ip> vu"),
+        ("vers ::FFFF:203.0.113.7, puis rien", "vers <ip>, puis rien"),
         (
             "pilote {4D36E972-E325-11CE-BFC1-08002BE10318} absent",
             "pilote <guid> absent",

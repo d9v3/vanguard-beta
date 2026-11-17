@@ -146,6 +146,13 @@ struct ArgsBilans {
 
 /// `depuis`, une date (« AAAA-MM-JJ ») ou une date et heure UTC (« AAAA-MM-JJTHH:MM:SSZ »), pas plus de 400 jours
 /// en arrière : rendue sous la forme des dates du journal, qui se comparent comme du texte.
+/// Le curseur de la page suivante des événements : lié à l'événement et à son rang dans le journal, sous la clé de la
+/// session. La page d'après commence donc strictement avant lui, même si des événements portent le même id (un
+/// journal changé hors de Vanguard) : la pagination finit toujours. Un journal raccourci depuis : refusé, à reprendre.
+fn curseur(liens: &Liens, rang: usize, id: &str) -> String {
+    liens.lien(&format!("{rang}\u{0}{id}"))
+}
+
 fn depuis(texte: &str, maintenant: chrono::DateTime<chrono::Utc>) -> Result<String, Code> {
     let complet = if texte.len() == 10 {
         format!("{texte}T00:00:00Z")
@@ -324,13 +331,17 @@ impl Porte {
         let liens = &self.liens;
         let mut fin = j.evenements.len();
         if let Some(a) = &avant {
+            // Le curseur d'une page d'abord ; l'id d'un événement rendu aussi, comme avant.
             fin = j
                 .evenements
                 .iter()
-                .rposition(|e| liens.lien(&e.id) == *a)
+                .enumerate()
+                .rposition(|(rang, e)| curseur(liens, rang, &e.id) == *a)
+                .or_else(|| j.evenements.iter().rposition(|e| liens.lien(&e.id) == *a))
                 .ok_or(Code::Arguments)?;
         }
         let mut rendus: Vec<Value> = Vec::new();
+        let mut dernier = None;
         let mut taille = 0usize;
         let mut suivant = None;
         let mut tronque = false;
@@ -348,17 +359,18 @@ impl Porte {
                 continue;
             }
             if rendus.len() >= limite {
-                suivant = rendus.last().and_then(|v| v.get("id")).cloned();
+                suivant = dernier;
                 break;
             }
             let vue = vues::evenement(e, !j.perime && rang >= j.verifies_des, liens);
             taille = taille.saturating_add(vue.to_string().len());
             if taille > BUDGET {
                 tronque = true;
-                suivant = rendus.last().and_then(|v| v.get("id")).cloned();
+                suivant = dernier;
                 break;
             }
             rendus.push(vue);
+            dernier = Some(curseur(liens, rang, &e.id));
         }
         let mut m = tete();
         m.insert(
@@ -366,7 +378,7 @@ impl Porte {
             json!({ "lecture": j.lecture, "a_jour": !j.perime, "tronque": j.tronque }),
         );
         m.insert("evenements".into(), Value::Array(rendus));
-        m.insert("suivant".into(), suivant.unwrap_or(Value::Null));
+        m.insert("suivant".into(), json!(suivant));
         m.insert("tronque".into(), json!(tronque));
         Ok(m)
     }
@@ -435,8 +447,10 @@ impl Porte {
             m.insert("bilans".into(), json!([]));
             return Ok(m);
         };
-        // Les bilans d'avant la rupture restent crus ; ceux d'après, non.
+        // Les bilans d'avant la rupture restent crus ; ceux d'après, non. Aucune empreinte : rien n'a été contrôlé,
+        // la chaîne n'est pas dite intacte ; un bilan sans empreinte n'est jamais dit vérifié.
         let (chaine, crus_jusqu_a) = match crate::historique::verifier_chaine(&tous) {
+            crate::historique::Chaine::Intacte { chaines: 0 } if !tous.is_empty() => ("non-verifiee", 0),
             crate::historique::Chaine::Intacte { .. } => ("intacte", tous.len()),
             crate::historique::Chaine::Rompue { indice, .. } => ("rompue", indice),
             crate::historique::Chaine::NonVerifiee { indice, .. } => ("non-verifiee", indice),
@@ -446,15 +460,12 @@ impl Porte {
         for (i, b) in tous.iter().enumerate().skip(debut).rev() {
             let precedent = i.checked_sub(1).and_then(|p| tous.get(p));
             let reseau_change = precedent.map(|p| p.nom_reseau != b.nom_reseau);
-            let date = (b.date.len() == 16)
-                .then_some(b.date.as_str())
-                .filter(|d| d.bytes().all(|o| o.is_ascii_digit() || matches!(o, b'-' | b' ' | b':')));
             rendus.push(json!({
-                "date": date,
+                "date": vues::date_de_bilan(&b.date),
                 "note_audit": b.note_audit(),
                 "problemes": b.problemes.len(),
                 "reseau_change": reseau_change,
-                "verifie": i < crus_jusqu_a,
+                "verifie": i < crus_jusqu_a && b.empreinte.is_some(),
             }));
         }
         m.insert("chaine".into(), json!(chaine));
@@ -673,6 +684,13 @@ impl Outils for Porte {
 
     fn nom_ferme(&self, nom: &str) -> Option<&'static str> {
         NOMS.iter().find(|n| **n == nom).copied()
+    }
+
+    /// Le journal est rejugé à l'appel suivant, sans attendre `REJUGER_APRES` : la note de la porte ne le rend pas
+    /// « pas à jour », et un changement d'ailleurs fait en même temps est jugé, pas effacé. Au plus deux fois par
+    /// session (ouverture, alerte).
+    fn apres_sa_note(&mut self) {
+        self.journal = None;
     }
 
     fn appeler(&mut self, nom: &'static str, brut: Option<&RawValue>) -> Result<Map<String, Value>, Code> {

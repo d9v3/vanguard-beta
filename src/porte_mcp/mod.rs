@@ -349,7 +349,8 @@ fn boucle(
             Err(mpsc::RecvTimeoutError::Disconnected) => return Fin::ErreurLecture,
         };
         echeance = None;
-        silence = Instant::now();
+        // Une ligne vide n'est pas une activité : le silence continue de courir.
+        let (vides, recu_a) = (session.vides, Instant::now());
         let suite = match lu {
             Lu::Ligne(ligne) => {
                 let ms = u64::try_from(depart.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -360,15 +361,20 @@ fn boucle(
             Lu::Coupee => return Fin::Coupee,
             Lu::Erreur => return Fin::ErreurLecture,
         };
+        if session.vides == vides {
+            silence = recu_a;
+        }
         // Les notes avant la réponse : un client qui tue la porte en la lisant ne les efface pas.
         if !ouverte && !session.appels.is_empty() {
             ouverte = true;
             b.noteur
                 .ouvrir(&BilanSession::de(session, Fin::Ouverte, depart.elapsed()));
+            b.outils.apres_sa_note();
         }
         if !alertee && session.hostile {
             alertee = true;
             b.noteur.alerter();
+            b.outils.apres_sa_note();
         }
         if let Suite::Repondre { texte, fermer } = suite {
             if let Err(f) = ecrire(sortie, &texte) {
@@ -434,6 +440,15 @@ fn refus_de_demarrer() -> Option<&'static str> {
             "vanguard mcp: refused as root, administrator or with raised rights; run it under your own account."
         ));
     }
+    #[cfg(target_os = "linux")]
+    if plafond_refuse(&crate::socle::processus::plafond_de_fichier()) {
+        return Some(crate::tr!(
+            "vanguard mcp : refusé sous un plafond de taille de fichier (ulimit -f) ou s'il ne se lit pas ; \
+             la note au journal pourrait être coupée au milieu.",
+            "vanguard mcp: refused under a file size limit (ulimit -f) or if it cannot be read; \
+             the journal note could be cut in the middle."
+        ));
+    }
     if io::stdin().is_terminal() {
         return Some(crate::tr!(
             "vanguard mcp : c'est la porte de lecture pour les assistants d'IA ; un assistant la lance, pas un terminal.",
@@ -441,6 +456,13 @@ fn refus_de_demarrer() -> Option<&'static str> {
         ));
     }
     None
+}
+
+/// Un plafond de taille de fichier (RLIMIT_FSIZE) posé par celui qui lance la porte coupe une écriture au milieu :
+/// refusé, comme un plafond qui ne se lit pas. Seul « sans plafond » passe.
+#[cfg(target_os = "linux")]
+fn plafond_refuse(lu: &io::Result<u64>) -> bool {
+    !matches!(lu, Ok(u64::MAX))
 }
 
 fn dire(texte: &str) -> i32 {
@@ -462,6 +484,13 @@ pub(crate) fn servir_stdio() -> i32 {
             "vanguard mcp: the stop signals could not be taken."
         ));
     };
+    #[cfg(target_os = "linux")]
+    if crate::socle::canal_stdio::depassement_de_taille_ignore().is_err() {
+        return dire(crate::tr!(
+            "vanguard mcp : le signal de dépassement de taille n'a pas pu être ignoré.",
+            "vanguard mcp: the file size signal could not be ignored."
+        ));
+    }
     #[cfg(not(target_os = "linux"))]
     let arret = &AtomicBool::new(false);
     crate::parametres::forcer_hors_ligne();

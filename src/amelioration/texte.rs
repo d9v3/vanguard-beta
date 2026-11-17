@@ -569,10 +569,6 @@ fn invisible(x: char) -> bool {
     )
 }
 
-/// Le texte en caractères : invisibles retirés, formes pleine chasse (« ｇｈｐ＿ ») ramenées à l'ASCII, fins de ligne
-/// unifiées (une valeur de `Cookie:` court jusqu'à la fin de sa ligne), autres contrôles et espaces en espace simple,
-/// guillemets et apostrophes typographiques en guillemet et apostrophe droits (« password : « … » » est une valeur
-/// entre guillemets, comme `password: "…"`).
 /// Le texte brut sans chevrons, pleine chasse comprise : à appliquer avant `journal::anonymiser`, qui pose ses
 /// propres marqueurs. Sans cela, « `<secret>` » écrit dans un message d'erreur passerait pour un marqueur posé par
 /// le nettoyage, et ce qui le suit ou l'entoure échapperait à la recherche.
@@ -582,6 +578,17 @@ pub(crate) fn sans_chevrons(brut: &str) -> String {
         .collect()
 }
 
+/// La normalisation du nettoyage (`normaliser`), rendue en texte. La porte MCP la fait passer avant ses propres
+/// réductions : faites sur le brut, elles ne verraient pas « （…） » ni « P\u{200B}ID », que le nettoyage ramène
+/// ensuite à « (…) » et à « PID ».
+pub(crate) fn normalise(texte: &str) -> String {
+    normaliser(texte).into_iter().collect()
+}
+
+/// Le texte en caractères : invisibles retirés, formes pleine chasse (« ｇｈｐ＿ ») ramenées à l'ASCII, fins de ligne
+/// unifiées (une valeur de `Cookie:` court jusqu'à la fin de sa ligne), autres contrôles et espaces en espace simple,
+/// guillemets et apostrophes typographiques en guillemet et apostrophe droits (« password : « … » » est une valeur
+/// entre guillemets, comme `password: "…"`).
 fn normaliser(texte: &str) -> Vec<char> {
     let mut c = Vec::with_capacity(texte.len());
     for x in texte.chars() {
@@ -1265,8 +1272,18 @@ fn ipv6(c: &[char], i: usize) -> Option<usize> {
     }
     let crochet = car(c, i) == Some('[');
     let debut = if crochet { suivant(i) } else { i };
-    let fin = fin_tant_que(c, debut, |y| y.is_ascii_hexdigit() || y == ':');
-    let corps = chaine(c, debut, fin);
+    let mut fin = fin_tant_que(c, debut, |y| y.is_ascii_hexdigit() || y == ':');
+    let mut corps = chaine(c, debut, fin);
+    // Une IPv4 portée en fin d'adresse (« ::ffff:203.0.113.7 », celle que le noyau donne pour une connexion IPv4 sur
+    // une prise IPv6, « 64:ff9b::… », « ::… ») : prise en entier, comptée pour deux groupes. Sans cela, « ::ffff:203 »
+    // serait masqué seul et les trois derniers octets sortiraient en clair.
+    if car(c, fin) == Some('.')
+        && let Some(k) = corps.rfind(':')
+        && let Some(f) = ipv4(c, debut.saturating_add(k).saturating_add(1))
+    {
+        corps = format!("{}0:0", chaine(c, debut, debut.saturating_add(k).saturating_add(1)));
+        fin = f;
+    }
     let deux_points = corps.matches(':').count();
     let groupes_courts = corps.split(':').all(|g| g.len() <= 4);
     let pleine = deux_points == 7 && corps.split(':').all(|g| !g.is_empty());

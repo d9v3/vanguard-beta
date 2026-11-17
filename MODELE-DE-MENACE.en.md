@@ -692,57 +692,81 @@ safeguards:
 read what Vanguard has already written, and cannot change anything. **Linux only**: on Windows, the command refuses
 to start (code 2) until it has been tried on a real Windows.
 
-- **What it gives.** Five tools, a closed list: `etat` (journal verified or not, last scan of each tool, alerts of
-  the last 30 days by severity, protection and switches), `evenements` (the journal, page by page), `constats` (the
-  latest scan results), `bilans` (score and number of problems of each check-up) and `identite` (version and SHA-256
-  fingerprint of the running program). None of them starts a scan, goes on the network (the whole process is put
-  offline) or opens a file of the person's. A tool name is recognized only exactly: no capitals, no blanks, no path
-  (`la_liste_des_outils_est_fermee`).
+- **What it gives.** Five tools, a closed list: `etat` (journal verified or not, last scan of each tool, alerts of the
+  last 30 days by severity, protection and switches), `evenements` (the journal, page by page), `constats` (the latest
+  scan results), `bilans` (score and number of problems of each check-up) and `identite` (version number, without the
+  build date, and SHA-256 fingerprint of the running program). A check-up is said to be verified only if it carries a
+  fingerprint trusted by the chain; a history without any fingerprint is said `non-verifiee`
+  (`un_bilan_sans_empreinte_n_est_pas_dit_verifie`). That fingerprint is an unkeyed BLAKE3: it shows that a check-up was
+  not damaged, not who wrote it, since a program of the account can compute it again. None of them starts a scan, goes
+  on the network (the whole process is put offline) or opens a file of the person's. A tool name is recognized only
+  exactly: no capitals, no blanks, no path (`la_liste_des_outils_est_fermee`).
 - **What it never gives.** No command lines, no paths (of a program, only the short name comes out), no process
   numbers, no accounts, no connection addresses, no computer or network name, no settings, no secrets, no file
   contents, no fix commands. A test plants these values (made up) in the journal, the scans and the history, then
   checks that none of them comes out, through any tool (`rien_d_exclu_ne_sort_de_la_porte`). The text from the
   computer, set apart (below), is the exception: it can quote a name.
-- **It writes nothing, except its note.** It reads the sealed notes without adopting or repairing them; a test
-  compares the fingerprints of the whole folder before and after a session (`une_session_entiere_n_ecrit_rien`). The
-  only write is a session note in the journal: its duration, the number of calls per tool, the refusals by code and
-  the reason it ended, never the arguments or the answers. It is written at the first call served, before its answer,
-  then completed at the end; a requested stop (SIGTERM, SIGINT, SIGHUP) ends the session and notes it. Only a SIGKILL
-  cuts it off without an end note, and the opening note stays. The door creates nothing: on an account where
-  Vanguard has never run (no journal and no seals), nothing is noted. A brake bounds what a client can add to the
-  journal: 12 notes and 1 alert per hour at most; the next ones are only counted in a small separate file and told by
-  the following note. Nothing is written either once the month's journal has taken a quarter of its allowed size:
-  Vanguard's alerts keep their room. The person can thus see that their assistant reads Vanguard, and how often. It
-  is a good-faith trace, not a barrier: a program of the account can read Vanguard's files without the door.
+- **It writes nothing, except its note.** It reads the sealed notes without adopting or repairing them; a test compares
+  the fingerprints of the whole folder before and after a session (`une_session_entiere_n_ecrit_rien`). The only write
+  is a session note in the journal: its duration, the number of calls per tool, the refusals by code and the reason it
+  ended, never the arguments or the answers. It is written at the first call served, before its answer, then completed
+  at the end; a requested stop (SIGTERM, SIGINT, SIGHUP) ends the session and notes it. Only a SIGKILL cuts it off
+  without an end note, and the opening note stays. The door creates nothing: on an account where Vanguard has never run
+  (no journal and no seals), nothing is noted. A brake bounds what a client can add to the journal: 12 notes and 1 alert
+  per hour at most; the next ones are only counted in a small separate file and told by the following note. Nothing is
+  written either once the month's journal has taken a quarter of its allowed size: Vanguard's alerts keep their room. A
+  note cut in the middle is undone: the month's journal is put back to its previous size and its head taken back without
+  the announcement, and the count of held-back notes is erased only after a note written in full
+  (`une_note_coupee_de_la_porte_est_defaite`). So that a note is not cut, the door refuses to start under a file size
+  limit (`ulimit -f`), or if that limit cannot be read (`la_porte_refuse_un_plafond_de_taille_de_fichier`), reads it
+  again before each note (`sous_un_plafond_de_taille_la_porte_n_ecrit_rien`) and ignores the size-exceeded signal
+  (SIGXFSZ): a refused write returns an error instead of killing the door in the middle of its note. Limit: if putting
+  the size back fails itself, the cut line stays; Vanguard's next write notes it as a break in the journal, without
+  adopting anything silently. Its own note does not make the journal "not up to date": it is read again right after
+  (`la_note_de_la_porte_ne_rend_pas_son_journal_perime`). The person can thus see that their assistant reads Vanguard,
+  and how often. It is a good-faith trace, not a barrier: a program of the account can read Vanguard's files without the
+  door.
 - **It listens to nothing.** No port, no socket: only the program that started it talks to it, through standard
   input and output. It asks for no rights and gives nothing the account cannot already read. It refuses to run as
   root (code 2, nothing on the output, nothing in the journal: `la_porte_refuse_root`) and refuses a terminal as
   input (`la_porte_refuse_un_terminal`): it is made for a program, not for a person at the keyboard. This refusal is
   a help against a typing mistake, not a guard: a program can always give it a pipe.
 - **The client is treated as hostile.** A message is 64 KiB at most, bounded while it is being read, and must finish
-  within 10 seconds; an answer must be written within 10 seconds, or the session ends (a client that does not read
-  its output does not block the door). A session stops after 15 minutes of silence, 8 hours or 10,000 requests; after
-  a long pause, the assistant starts the door again (the tool may look stopped until then). More than 20 requests in
-  one second (blank lines do not count, and the refusal carries the request's id), a message that is not valid JSON,
-  a wrong envelope (parameters as an array, an `id` outside visible ASCII), a batch or three unknown notifications
-  close the session; a request for an unknown method gets its refusal without closing anything. A hostile sign is
-  also noted by a medium alert: an ordinary assistant waits for its answers and does not send one, so it is
+  within 10 seconds; an answer must be written within 10 seconds, or the session ends (a client that does not read its
+  output does not block the door). A session stops after 15 minutes of silence (a blank line does not break it:
+  `les_lignes_vides_ne_rompent_pas_le_silence`), 8 hours or 10,000 requests; after a long pause, the assistant starts
+  the door again (the tool may look stopped until then). More than 20 requests in one second (blank lines do not count,
+  and the refusal carries the request's id), more than 64 blank lines in the session (`les_lignes_vides_sont_bornees`),
+  a message that is not valid JSON, a wrong envelope (an unknown or repeated field, an `id` outside visible ASCII), a
+  batch or three unknown notifications close the session; a request for an unknown method gets its refusal without
+  closing anything. Parameters are an object, or absent (`null` counts as absent): a request with parameters of another
+  shape gets its refusal, a protocol notification is counted as refused, without an answer
+  (`les_params_sont_un_objet_ou_absents`). The next page of `evenements` is asked for with a cursor that points to an
+  exact place: reading ends even when events carry the same id (`la_pagination_finit_meme_avec_des_ids_en_double`); an
+  `avant` given as the id of a repeated event keeps the old meaning (the most recent one with that name). A hostile sign
+  is also noted by a medium alert: an ordinary assistant waits for its answers and does not send one, so it is
   compromised, badly written or it is not the assistant
-  (`une_session_n_ecrit_que_sa_note_et_le_client_hostile_est_note`). An answer is 256 KiB at most; a page that is
-  too long is shortened and says so.
-- **Everything it returns is untrusted.** An alert title, a finding message or a program name can quote an attacker
-  (a file named to give orders to the assistant, for example). Every answer is marked `"teinte": "non-fiable"`, in
-  three forms: in the `_meta` of a result, in the `error.data` of an error, and at the head of a tool's result, in its
-  text as in `structuredContent`, before any content (`la_teinte_est_en_tete_de_chaque_reponse`, checked in the
-  written line). Names (severity, family, rule, reason, end) come out of a closed list, or empty. The text that comes
-  from the computer (title, message, category, program name) comes out apart, as
-  `{"texte_externe": …, "non_fiable": true}`, bounded and cleaned like the error log; the door first removes from it
-  process numbers, command excerpts (in parentheses, and a program's lineage), square brackets, the cut word of a
-  shortened text, serial numbers and what follows an announced password or passphrase. The cleaning removes what acts
-  on a screen, never the meaning: an instruction written in plain words stays a sentence. It is up to the assistant to
-  treat it as data, never as an instruction. Known limit: such a text can still name a device, a Wi-Fi network, a
-  server or an account when an alert quotes them; only the names the cleaner knows are removed (the account and the
-  computer, taken from the environment of the process, which the client starts).
+  (`une_session_n_ecrit_que_sa_note_et_le_client_hostile_est_note`). An answer is 256 KiB at most; a page that is too
+  long is shortened and says so.
+- **Everything it returns is untrusted.** An alert title, a finding message or a program name can quote an attacker (a
+  file named to give orders to the assistant, for example). Every answer is marked `"teinte": "non-fiable"`, in three
+  forms: in the `_meta` of a result, in the `error.data` of an error, and at the head of a tool's result, in its text as
+  in `structuredContent`, before any content (`la_teinte_est_en_tete_de_chaque_reponse`, checked in the written line).
+  Names (severity, family, rule, reason, end) come out of a closed list, or empty. The text that comes from the computer
+  (title, message, category, program name) comes out apart, as `{"texte_externe": …, "non_fiable": true}`, bounded and
+  cleaned like the error log; the door first removes from it process numbers, command excerpts (in parentheses, and a
+  program's lineage), square brackets, the cut word of a shortened text, serial numbers and what follows an announced
+  password or passphrase; it normalizes the text first (full-width forms, invisible characters) and reduces it again
+  after the cleaning, until nothing changes any more. A lone parenthesis only removes its surroundings: a program name
+  "x(" no longer makes the reason of an alert disappear. It also removes a relative path ("Documents/taxes.pdf") and a
+  MAC address written with dots, and masks the IPv4 address carried in an IPv6 one. The cleaning removes what acts on a
+  screen, never the meaning: an instruction written in plain words stays a sentence. It is up to the assistant to treat
+  it as data, never as an instruction. Known limit: such a text can still name a device, a Wi-Fi network, a server or an
+  account when an alert quotes them; only the names the cleaner knows are removed (the account and the computer, taken
+  from the environment of the process, which the client starts). Other known limits of the cleaning, with no known way
+  around what it removes: in "a) b (c", the "b" stays; "parent: …" is not treated as a lineage; a mask placed before the
+  cleaning can come out as a plain word ("secret", "chemin", "mac"), which says that a value was removed without saying
+  it; the dotted MAC is removed by the door only.
 - **It cannot prove it is the real Vanguard.** A fake program placed at the same path would answer the same, `identite`
   included; and a program of the account can write to Vanguard's files (the seals are a barrier, not a safe: see "The
   programs of your account do not target Vanguard itself"). The proof is made before starting, by the client: start a

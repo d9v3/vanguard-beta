@@ -258,6 +258,28 @@ fn envoyer_signal(pid: u32, signal: libc::c_int) -> bool {
     unsafe { libc::kill(pid, signal) == 0 }
 }
 
+/// Le plafond de taille d'un fichier écrit par ce processus (RLIMIT_FSIZE, limite souple), lu dans
+/// `/proc/self/limits` : `u64::MAX` sans plafond (RLIM_INFINITY). Celui qui lance un programme choisit ses limites
+/// (`prlimit --fsize`) ; un plafond juste au-dessus d'un fichier fait couper une écriture au milieu. Une erreur :
+/// illisible, à dire non vérifié.
+#[cfg(target_os = "linux")]
+pub(crate) fn plafond_de_fichier() -> std::io::Result<u64> {
+    let texte = std::fs::read_to_string("/proc/self/limits")?;
+    plafond_lu(&texte).ok_or_else(|| std::io::Error::other("« Max file size » illisible / unreadable"))
+}
+
+/// La limite souple de « Max file size » dans un `/proc/<pid>/limits` : `u64::MAX` sans plafond (« unlimited »),
+/// `None` si la ligne manque ou ne se lit pas.
+#[cfg(target_os = "linux")]
+pub(crate) fn plafond_lu(texte: &str) -> Option<u64> {
+    let ligne = texte.lines().find_map(|l| l.strip_prefix("Max file size"))?;
+    let souple = ligne.split_whitespace().next()?;
+    if souple == "unlimited" {
+        return Some(u64::MAX);
+    }
+    souple.parse().ok()
+}
+
 #[cfg(all(test, target_os = "linux"))]
 #[allow(
     clippy::arithmetic_side_effects,
@@ -266,6 +288,24 @@ fn envoyer_signal(pid: u32, signal: libc::c_int) -> bool {
 )]
 mod tests {
     use super::*;
+
+    #[test]
+    fn le_plafond_de_taille_se_lit_dans_les_limites() {
+        let tete = "Limit                     Soft Limit           Hard Limit           Units     \n\
+                    Max cpu time              unlimited            unlimited            seconds   \n";
+        let sans = format!("{tete}Max file size             unlimited            unlimited            bytes     \n");
+        assert_eq!(plafond_lu(&sans), Some(u64::MAX));
+        let avec = format!("{tete}Max file size             3008                 unlimited            bytes     \n");
+        assert_eq!(plafond_lu(&avec), Some(3008));
+        // Illisible : ni sans plafond, ni un nombre inventé.
+        assert_eq!(plafond_lu(tete), None);
+        assert_eq!(
+            plafond_lu("Max file size             beaucoup  unlimited  bytes\n"),
+            None
+        );
+        // Celui de ce processus se lit (les essais ne tournent pas sous un plafond).
+        assert!(plafond_de_fichier().is_ok());
+    }
 
     /// Le départ se lit après la DERNIÈRE « ) » : un nom de programme qui en contient une (choisi par lui) ne décale
     /// pas les champs.

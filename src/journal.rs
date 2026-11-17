@@ -1487,6 +1487,20 @@ mod tests {
     }
 
     #[test]
+    fn ipv4_publique_portee_dans_une_ipv6() {
+        // Le noyau écrit « ::ffff:a.b.c.d » pour une connexion IPv4 sur une prise IPv6 : l'adresse publique est
+        // remplacée comme une IPv4 seule, ou l'adresse entière comme une IPv6 (NAT64).
+        for t in [
+            "vers ::ffff:81.2.69.142 port 443",
+            "vers [::ffff:81.2.69.142]:443",
+            "vers 64:ff9b::81.2.69.142 et ::81.2.69.142",
+        ] {
+            let a = anonymiser(t);
+            assert!(!a.contains("81.2.69") && !a.contains("2.69.142"), "{t} -> {a}");
+        }
+    }
+
+    #[test]
     fn sid_de_windows() {
         // SID d'exemple de la documentation de Microsoft.
         assert_eq!(

@@ -91,3 +91,34 @@ pub(crate) fn fin_sur_signal() -> io::Result<&'static AtomicBool> {
     }
     Ok(&ARRET)
 }
+
+/// Un plafond de taille de fichier abaissé pendant la session (`prlimit --pid`) envoie SIGXFSZ, qui tuerait le
+/// processus au milieu d'une écriture du journal, sans la défaire. Ignoré, il fait rendre à l'écriture l'erreur
+/// EFBIG : la porte remet alors le segment à sa taille d'avant et sa tête sans annonce.
+#[cfg(target_os = "linux")]
+pub(crate) fn depassement_de_taille_ignore() -> io::Result<()> {
+    // SAFETY: sigaction est une structure C sans invariant : tout à zéro est valide (masque vide, aucun drapeau).
+    let mut ignore: libc::sigaction = unsafe { std::mem::zeroed() };
+    ignore.sa_sigaction = libc::SIG_IGN;
+    // SAFETY: un pointeur vers une structure vivante de la pile, le temps de l'appel ; l'ancienne action n'est pas
+    // demandée (null) ; SIG_IGN ne fait tourner aucun code dans un gestionnaire.
+    if unsafe { libc::sigaction(libc::SIGXFSZ, &raw const ignore, std::ptr::null_mut()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    /// A-FREIN-1 : SIGXFSZ ignoré, une écriture au-delà du plafond rend une erreur au lieu de tuer le processus.
+    #[test]
+    fn le_depassement_de_taille_ne_tue_plus() {
+        assert!(super::depassement_de_taille_ignore().is_ok());
+        // SAFETY: tout à zéro est valide pour sigaction (voir plus haut).
+        let mut vue: libc::sigaction = unsafe { std::mem::zeroed() };
+        // SAFETY: lecture seule (aucune nouvelle disposition) dans une structure vivante de la pile.
+        let lu = unsafe { libc::sigaction(libc::SIGXFSZ, std::ptr::null(), &raw mut vue) };
+        assert_eq!(lu, 0);
+        assert_eq!(vue.sa_sigaction, libc::SIG_IGN);
+    }
+}

@@ -28,6 +28,9 @@ pub(crate) const RYTHME: usize = 20;
 const INCONNUES_MAX: u32 = 3;
 /// La taille d'un `id` texte, en caractères.
 const ID_MAX: usize = 64;
+/// Les lignes vides ou d'espaces admises par session. Elles ne sont ni des demandes (hors du rythme et du plafond de
+/// demandes), ni une activité (le silence court) : sans borne, un client enverrait du bruit sans fin, sans trace.
+pub(crate) const VIDES_MAX: u32 = 64;
 /// La taille d'une réponse, en octets.
 pub(crate) const REPONSE_MAX: usize = 256 * 1024;
 
@@ -61,6 +64,7 @@ pub(crate) enum Code {
     Enveloppe,
     Rythme,
     TropDeDemandes,
+    LignesVides,
     MethodeInconnue,
     MethodeNonServie,
     PasInitialise,
@@ -82,6 +86,7 @@ impl Code {
             Code::Enveloppe => "enveloppe",
             Code::Rythme => "rythme",
             Code::TropDeDemandes => "trop-de-demandes",
+            Code::LignesVides => "lignes-vides",
             Code::MethodeInconnue => "methode-inconnue",
             Code::MethodeNonServie => "methode-non-servie",
             Code::PasInitialise => "non-initialise",
@@ -97,7 +102,7 @@ impl Code {
     pub(crate) fn rpc(self) -> i64 {
         match self {
             Code::TropGrande | Code::Json | Code::Encodage => -32700,
-            Code::Lot | Code::Enveloppe | Code::PasInitialise | Code::DejaInitialise => -32600,
+            Code::Lot | Code::Enveloppe | Code::LignesVides | Code::PasInitialise | Code::DejaInitialise => -32600,
             Code::MethodeInconnue | Code::MethodeNonServie => -32601,
             Code::Parametres | Code::OutilInconnu | Code::Arguments => -32602,
             Code::ReponseTropGrande | Code::Interne => -32603,
@@ -109,7 +114,13 @@ impl Code {
     pub(crate) fn hostile(self) -> bool {
         matches!(
             self,
-            Code::TropGrande | Code::Encodage | Code::Json | Code::Lot | Code::Enveloppe | Code::Rythme
+            Code::TropGrande
+                | Code::Encodage
+                | Code::Json
+                | Code::Lot
+                | Code::Enveloppe
+                | Code::Rythme
+                | Code::LignesVides
         )
     }
 
@@ -130,6 +141,7 @@ impl Code {
                 "Trop de demandes pour une session.",
                 "Too many requests for one session."
             ),
+            Code::LignesVides => tr!("Trop de lignes vides.", "Too many empty lines."),
             Code::MethodeInconnue => tr!("Méthode inconnue.", "Unknown method."),
             Code::MethodeNonServie => tr!(
                 "Méthode non offerte par cette porte.",
@@ -223,6 +235,8 @@ pub(crate) trait Outils {
     fn nom_ferme(&self, nom: &str) -> Option<&'static str>;
     /// Le contenu structuré de la réponse (un objet), ou le refus des arguments.
     fn appeler(&mut self, nom: &'static str, arguments: Option<&RawValue>) -> Result<Map<String, Value>, Code>;
+    /// La porte vient d'écrire sa propre note au journal : ce changement-là n'est pas un changement d'ailleurs.
+    fn apres_sa_note(&mut self) {}
 }
 
 /// Que faire après une ligne.
@@ -291,6 +305,8 @@ pub(crate) struct Session {
     inconnues: u32,
     /// Les demandes reçues (lignes non vides).
     pub(crate) demandes: u32,
+    /// Les lignes vides ou d'espaces reçues : ni demande, ni activité ; au-delà de `VIDES_MAX`, hostile.
+    pub(crate) vides: u32,
     /// Les appels réussis, par outil (noms fermés).
     pub(crate) appels: BTreeMap<&'static str, u32>,
     /// Les refus, par code.
@@ -391,6 +407,7 @@ impl Session {
             rythme_vus: 0,
             inconnues: 0,
             demandes: 0,
+            vides: 0,
             appels: BTreeMap::new(),
             refus: BTreeMap::new(),
             hostile: false,
@@ -437,6 +454,10 @@ impl Session {
             return self.refuser(&rien, Code::Encodage);
         };
         if texte.trim().is_empty() {
+            self.vides = self.vides.saturating_add(1);
+            if self.vides > VIDES_MAX {
+                return self.refuser(&rien, Code::LignesVides);
+            }
             return Suite::Rien;
         }
         self.demandes = self.demandes.saturating_add(1);
@@ -475,7 +496,7 @@ impl Session {
         };
         let params = enveloppe.params.as_deref();
         match id {
-            None => self.notification(&methode),
+            None => self.notification(&methode, params),
             Some(id) => self.demande(id, &methode, params, outils),
         }
     }
@@ -483,8 +504,13 @@ impl Session {
     /// Une notification ne reçoit pas de réponse. Celles du protocole sont acceptées (et ignorées) ; une méthode
     /// ordinaire envoyée sans `id` compte comme une méthode inconnue. À la dernière permise, la session se ferme sur
     /// une erreur d'id `null` : sans elle, un client hostile qui n'envoie que des notifications ne serait jamais coupé.
-    fn notification(&mut self, methode: &str) -> Suite {
+    /// Les `params` d'une notification du protocole sont un objet, ou absents (`null` compte comme absent) : sinon,
+    /// refus compté, toujours sans réponse.
+    fn notification(&mut self, methode: &str, params: Option<&RawValue>) -> Suite {
         if methode.starts_with("notifications/") {
+            if params.is_some_and(|p| !est_un_objet(p)) {
+                compter(&mut self.refus, Code::Parametres);
+            }
             return Suite::Rien;
         }
         self.inconnues = self.inconnues.saturating_add(1);

@@ -735,12 +735,15 @@ gardes :
 MCP) : il peut lire ce que Vanguard a déjà écrit, sans pouvoir rien changer. **Linux seulement** : sous Windows, la
 commande refuse de démarrer (code 2) tant qu'elle n'a pas été essayée sur un vrai Windows.
 
-- **Ce qu'elle donne.** Cinq outils, une liste fermée : `etat` (journal vérifié ou non, dernier examen de chaque
-  outil, alertes des 30 derniers jours par gravité, protection et interrupteurs), `evenements` (le journal, page par
-  page), `constats` (les derniers résultats des examens), `bilans` (score et nombre de problèmes de chaque bilan) et
-  `identite` (version et empreinte SHA-256 du programme qui tourne). Aucun ne lance d'examen, ne va sur le réseau
-  (le processus entier est mis hors ligne) ni n'ouvre un fichier de la personne. Un nom d'outil n'est reconnu que
-  tel quel : ni majuscules, ni blancs, ni chemin (`la_liste_des_outils_est_fermee`).
+- **Ce qu'elle donne.** Cinq outils, une liste fermée : `etat` (journal vérifié ou non, dernier examen de chaque outil,
+  alertes des 30 derniers jours par gravité, protection et interrupteurs), `evenements` (le journal, page par page),
+  `constats` (les derniers résultats des examens), `bilans` (score et nombre de problèmes de chaque bilan) et `identite`
+  (numéro de version, sans la date de compilation, et empreinte SHA-256 du programme qui tourne). Un bilan n'est dit
+  vérifié que s'il porte une empreinte crue par la chaîne ; un historique sans aucune empreinte est dit `non-verifiee`
+  (`un_bilan_sans_empreinte_n_est_pas_dit_verifie`). Cette empreinte est un BLAKE3 sans clé : elle montre qu'un bilan
+  n'a pas été abîmé, pas qui l'a écrit, car un programme du compte peut la recalculer. Aucun ne lance d'examen, ne va
+  sur le réseau (le processus entier est mis hors ligne) ni n'ouvre un fichier de la personne. Un nom d'outil n'est
+  reconnu que tel quel : ni majuscules, ni blancs, ni chemin (`la_liste_des_outils_est_fermee`).
 - **Ce qu'elle ne donne jamais.** Ni lignes de commande, ni chemins (d'un programme, seul le nom court sort), ni
   numéros de processus, ni comptes, ni adresses des connexions, ni nom de l'ordinateur ou du réseau, ni paramètres,
   ni secrets, ni le contenu d'un fichier, ni les commandes d'une correction. Un essai plante ces valeurs (inventées)
@@ -750,44 +753,65 @@ commande refuse de démarrer (code 2) tant qu'elle n'a pas été essayée sur un
 - **Elle n'écrit rien, sauf sa note.** Elle lit les notes scellées sans les adopter ni les réparer ; un essai compare
   les empreintes de tout le dossier avant et après une session (`une_session_entiere_n_ecrit_rien`). La seule écriture
   est une note de session au journal : sa durée, le nombre d'appels par outil, les refus par code et la raison de la
-  fin, jamais les arguments ni les réponses. Elle est écrite au premier appel servi, avant sa réponse, puis complétée
-  à la fin ; un arrêt demandé (SIGTERM, SIGINT, SIGHUP) finit la session et la note. Seul un SIGKILL coupe sans note
-  de fin, et la note d'ouverture reste. La porte ne crée rien : sur un compte où Vanguard n'a jamais tourné (ni
-  journal ni sceaux), rien n'est noté. Un frein borne ce qu'un client peut ajouter au journal : 12 notes et 1 alerte
-  par heure au plus ; les suivantes sont seulement comptées dans un petit fichier à part et dites par la note
-  suivante. Rien n'est écrit non plus quand le journal du mois a pris le quart de sa taille permise : les alertes de
-  Vanguard gardent leur place. La personne peut donc voir que son assistant lit Vanguard, et à quel rythme. C'est une
-  trace de bonne foi, pas une barrière : un programme du compte peut lire les fichiers de Vanguard sans la porte.
+  fin, jamais les arguments ni les réponses. Elle est écrite au premier appel servi, avant sa réponse, puis complétée à
+  la fin ; un arrêt demandé (SIGTERM, SIGINT, SIGHUP) finit la session et la note. Seul un SIGKILL coupe sans note de
+  fin, et la note d'ouverture reste. La porte ne crée rien : sur un compte où Vanguard n'a jamais tourné (ni journal ni
+  sceaux), rien n'est noté. Un frein borne ce qu'un client peut ajouter au journal : 12 notes et 1 alerte par heure au
+  plus ; les suivantes sont seulement comptées dans un petit fichier à part et dites par la note suivante. Rien n'est
+  écrit non plus quand le journal du mois a pris le quart de sa taille permise : les alertes de Vanguard gardent leur
+  place. Une note coupée au milieu est défaite : le journal du mois est remis à sa taille d'avant et sa tête reprise
+  sans l'annonce, et le compte des notes retenues n'est effacé qu'après une note écrite en entier
+  (`une_note_coupee_de_la_porte_est_defaite`). Pour qu'une note ne soit pas coupée, la porte refuse de démarrer sous un
+  plafond de taille de fichier (`ulimit -f`), ou s'il ne se lit pas (`la_porte_refuse_un_plafond_de_taille_de_fichier`),
+  le relit avant chaque note (`sous_un_plafond_de_taille_la_porte_n_ecrit_rien`) et ignore le signal de dépassement
+  (SIGXFSZ) : une écriture refusée rend une erreur au lieu de tuer la porte au milieu de sa note. Limite : si la remise
+  à la taille échoue elle-même, la ligne coupée reste ; la prochaine écriture de Vanguard la note comme une rupture du
+  journal, sans rien adopter en silence. Sa propre note ne rend pas le journal « pas à jour » : il est relu juste après
+  (`la_note_de_la_porte_ne_rend_pas_son_journal_perime`). La personne peut donc voir que son assistant lit Vanguard, et
+  à quel rythme. C'est une trace de bonne foi, pas une barrière : un programme du compte peut lire les fichiers de
+  Vanguard sans la porte.
 - **Elle n'écoute rien.** Ni port, ni socket : seul le programme qui l'a lancée lui parle, par l'entrée et la sortie
   standard. Elle ne demande aucun droit et ne donne rien que le compte ne puisse déjà lire. Elle refuse de tourner
   en root (code 2, rien sur la sortie, rien au journal : `la_porte_refuse_root`) et refuse un terminal en entrée
   (`la_porte_refuse_un_terminal`) : elle est faite pour un programme, pas pour une personne au clavier. Ce refus est
   une aide contre une erreur de frappe, pas une garde : un programme peut toujours lui donner un tube.
-- **Le client est tenu pour hostile.** Un message fait 64 Kio au plus, borné pendant la lecture même, et doit finir
-  en 10 secondes ; une réponse doit être écrite en 10 secondes, sans quoi la session finit (un client qui ne lit pas
-  sa sortie ne bloque pas la porte). Une session s'arrête après 15 minutes de silence, 8 heures ou 10 000 demandes ;
-  après une longue pause, l'assistant relance la porte (l'outil peut sembler arrêté jusque-là). Plus de 20 demandes
-  en une seconde (les lignes vides ne comptent pas, et le refus porte l'id de la demande), un message qui n'est pas du
-  JSON valide, une enveloppe fausse (paramètres en tableau, `id` hors de l'ASCII visible), un lot ou trois
-  notifications inconnues ferment la session ; une demande de méthode inconnue reçoit son refus sans rien fermer. Un
-  signe hostile est noté en plus par une alerte moyenne : un assistant ordinaire attend ses réponses et n'en envoie
-  pas, donc il est piégé, mal écrit ou ce n'est pas lui
+- **Le client est tenu pour hostile.** Un message fait 64 Kio au plus, borné pendant la lecture même, et doit finir en
+  10 secondes ; une réponse doit être écrite en 10 secondes, sans quoi la session finit (un client qui ne lit pas sa
+  sortie ne bloque pas la porte). Une session s'arrête après 15 minutes de silence (une ligne vide ne le rompt pas :
+  `les_lignes_vides_ne_rompent_pas_le_silence`), 8 heures ou 10 000 demandes ; après une longue pause, l'assistant
+  relance la porte (l'outil peut sembler arrêté jusque-là). Plus de 20 demandes en une seconde (les lignes vides ne
+  comptent pas, et le refus porte l'id de la demande), plus de 64 lignes vides dans la session
+  (`les_lignes_vides_sont_bornees`), un message qui n'est pas du JSON valide, une enveloppe fausse (champ inconnu ou en
+  double, `id` hors de l'ASCII visible), un lot ou trois notifications inconnues ferment la session ; une demande de
+  méthode inconnue reçoit son refus sans rien fermer. Les paramètres sont un objet, ou absents (`null` vaut absent) :
+  une demande aux paramètres d'une autre forme reçoit son refus, une notification du protocole est comptée comme
+  refusée, sans réponse (`les_params_sont_un_objet_ou_absents`). La page suivante d'`evenements` se demande par un
+  curseur qui désigne une place exacte : la lecture finit même quand des événements portent le même id
+  (`la_pagination_finit_meme_avec_des_ids_en_double`) ; un `avant` donné par l'id d'un événement en double garde
+  l'ancien sens (le plus récent de ce nom). Un signe hostile est noté en plus par une alerte moyenne : un assistant
+  ordinaire attend ses réponses et n'en envoie pas, donc il est piégé, mal écrit ou ce n'est pas lui
   (`une_session_n_ecrit_que_sa_note_et_le_client_hostile_est_note`). Une réponse fait 256 Kio au plus ; une page trop
   longue est raccourcie et le dit.
-- **Tout ce qu'elle rend est non fiable.** Un titre d'alerte, un message de constat ou un nom de programme peut
-  citer un attaquant (un fichier nommé pour donner des ordres à l'assistant, par exemple). Chaque réponse est marquée
+- **Tout ce qu'elle rend est non fiable.** Un titre d'alerte, un message de constat ou un nom de programme peut citer un
+  attaquant (un fichier nommé pour donner des ordres à l'assistant, par exemple). Chaque réponse est marquée
   `"teinte": "non-fiable"`, sous trois formes : dans `_meta` d'un résultat, dans `error.data` d'une erreur, et en tête
   du résultat d'un outil, dans son texte comme dans `structuredContent`, avant tout contenu
-  (`la_teinte_est_en_tete_de_chaque_reponse`, vérifié dans la ligne écrite). Les noms (gravité, famille, règle,
-  raison, fin) sortent d'une liste fermée, ou vides. Le texte venu de l'ordinateur (titre, message, catégorie, nom de
-  programme) sort à part, sous la forme `{"texte_externe": …, "non_fiable": true}`, borné et nettoyé comme le
-  journal des erreurs ; la porte en retire d'abord les numéros de processus, les extraits de commande (entre
-  parenthèses, et la lignée d'un programme), les crochets, le mot coupé d'un texte raccourci, les numéros de série et
-  ce qui suit un mot de passe ou une phrase de passe annoncés. Le nettoyage retire ce qui agit sur un écran, jamais le
-  sens : une consigne écrite en clair y reste une phrase. C'est à l'assistant de la traiter comme une donnée, jamais
-  comme une consigne. Limite connue : un tel texte peut encore nommer un appareil, un réseau Wi-Fi, un serveur ou un
-  compte, quand une alerte les cite ; seuls les noms que le nettoyeur connaît sont retirés (le compte et l'ordinateur,
-  pris dans l'environnement du processus, que le client lance).
+  (`la_teinte_est_en_tete_de_chaque_reponse`, vérifié dans la ligne écrite). Les noms (gravité, famille, règle, raison,
+  fin) sortent d'une liste fermée, ou vides. Le texte venu de l'ordinateur (titre, message, catégorie, nom de programme)
+  sort à part, sous la forme `{"texte_externe": …, "non_fiable": true}`, borné et nettoyé comme le journal des erreurs ;
+  la porte en retire d'abord les numéros de processus, les extraits de commande (entre parenthèses, et la lignée d'un
+  programme), les crochets, le mot coupé d'un texte raccourci, les numéros de série et ce qui suit un mot de passe ou
+  une phrase de passe annoncés ; elle normalise le texte avant (pleine chasse, invisibles) et le réduit encore après le
+  nettoyage, jusqu'à ce que plus rien ne change. Une parenthèse seule ne retire que son voisinage : un nom de programme
+  « x( » ne fait plus disparaître la raison d'une alerte. Elle retire aussi un chemin relatif (« Documents/impots.pdf »)
+  et une adresse MAC écrite à points, et masque l'adresse IPv4 portée dans une IPv6. Le nettoyage retire ce qui agit sur
+  un écran, jamais le sens : une consigne écrite en clair y reste une phrase. C'est à l'assistant de la traiter comme
+  une donnée, jamais comme une consigne. Limite connue : un tel texte peut encore nommer un appareil, un réseau Wi-Fi,
+  un serveur ou un compte, quand une alerte les cite ; seuls les noms que le nettoyeur connaît sont retirés (le compte
+  et l'ordinateur, pris dans l'environnement du processus, que le client lance). Autres limites connues du nettoyage,
+  sans contournement connu de ce qu'il retire : dans « a) b (c », le « b » reste ; « parent : … » n'est pas traité comme
+  une lignée ; un masque posé avant le nettoyage peut ressortir comme un mot simple (« secret », « chemin », « mac »),
+  qui dit qu'une valeur a été retirée sans la dire ; la MAC à points n'est retirée que par la porte.
 - **Elle ne peut pas prouver qu'elle est le vrai Vanguard.** Un faux programme posé au même chemin répondrait la même
   chose, `identite` comprise ; et un programme du compte peut écrire dans les fichiers de Vanguard (les sceaux sont une
   barrière, pas un coffre : voir « Les programmes de votre compte ne visent pas Vanguard lui-même »). La preuve se fait

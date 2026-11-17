@@ -399,6 +399,28 @@ fn les_droits_eleves_se_lisent_dans_le_status() {
     }
 }
 
+/// A-FREIN-1 : sous un plafond de taille de fichier, la porte refuse de démarrer ; un plafond illisible aussi. Le
+/// plafond est lu pour de vrai dans un processus lancé sous `prlimit --fsize`.
+#[cfg(target_os = "linux")]
+#[test]
+fn la_porte_refuse_un_plafond_de_taille_de_fichier() {
+    assert!(!plafond_refuse(&Ok(u64::MAX)));
+    assert!(plafond_refuse(&Ok(1 << 40)));
+    assert!(plafond_refuse(&Err(io::Error::other("illisible"))));
+    let Ok(sortie) = std::process::Command::new("prlimit")
+        .args(["--fsize=4096", "--", "cat", "/proc/self/limits"])
+        .output()
+    else {
+        return crate::essais::saute("prlimit absent");
+    };
+    if !sortie.status.success() {
+        return crate::essais::saute("prlimit n'a pas pu poser le plafond");
+    }
+    let lu = crate::socle::processus::plafond_lu(&String::from_utf8_lossy(&sortie.stdout));
+    assert_eq!(lu, Some(4096));
+    assert!(plafond_refuse(&lu.ok_or_else(|| io::Error::other("illisible"))));
+}
+
 /// CONTRAT-7 : sous Windows, refusée tant qu'elle n'y est pas essayée.
 #[cfg(windows)]
 #[test]
@@ -829,4 +851,160 @@ proptest::proptest! {
             proptest::prop_assert!(n.bytes().all(|o| o.is_ascii_lowercase() || o.is_ascii_digit() || o == b'-'));
         }
     }
+}
+
+/// A-PROTOCOLE-1 : des événements qui portent le même id (un journal changé hors de Vanguard), en un bloc plus grand
+/// qu'une page : la pagination par `suivant` finit, et rend chaque ligne une fois.
+#[test]
+fn la_pagination_finit_meme_avec_des_ids_en_double() {
+    use crate::modele::journal::noter_dans;
+    let dossier = crate::essais::Jetable::nouveau("porte-mcp-ids-en-double");
+    std::fs::create_dir_all(&*dossier).unwrap();
+    let maintenant = chrono::Utc::now();
+    for i in 0..60 {
+        let mut ev = Evenement::alerte(Source::Surveillance, "port", "Port ouvert", "Un port est ouvert.");
+        if (10..50).contains(&i) {
+            ev.id = "e-1-meme".into();
+        }
+        noter_dans(&dossier, ev, maintenant).unwrap();
+    }
+    let total = crate::modele::journal::lire_dans(&dossier).evenements.len();
+    let mut porte = outils::Porte::new(dossier.to_path_buf(), vues::Liens::fixes());
+    let (mut vus, mut avant, mut pages) = (0, None::<String>, 0);
+    loop {
+        let args = match &avant {
+            Some(a) => json!({ "limite": 7, "avant": a }),
+            None => json!({ "limite": 7 }),
+        };
+        let brut = RawValue::from_string(args.to_string()).unwrap();
+        let page = porte.appeler("evenements", Some(&brut)).unwrap();
+        vus += page["evenements"].as_array().unwrap().len();
+        pages += 1;
+        assert!(pages <= total, "la pagination ne finit pas");
+        match page["suivant"].as_str() {
+            Some(s) => avant = Some(s.to_string()),
+            None => break,
+        }
+    }
+    assert_eq!(vus, total);
+}
+
+/// A-PROTOCOLE-2 : la note d'ouverture que la porte écrit elle-même ne rend pas son journal « pas à jour » : deux
+/// appels de suite sur un journal sain le disent à jour et vérifié, et le second voit la note.
+#[test]
+fn la_note_de_la_porte_ne_rend_pas_son_journal_perime() {
+    let dossier = planter("porte-mcp-a-jour");
+    let arret = AtomicBool::new(false);
+    let mut noteur = NoteurJournal::new(dossier.to_path_buf());
+    let mut porte = outils::Porte::new(dossier.to_path_buf(), vues::Liens::fixes());
+    let mut b = Branchements {
+        outils: &mut porte,
+        noteur: &mut noteur,
+        arret: &arret,
+    };
+    let appel =
+        |id: u8| json!({ "jsonrpc": "2.0", "id": id, "method": "tools/call", "params": { "name": "evenements" } });
+    let mut sortie = Vec::new();
+    let entree = format!("{INIT}\n{}\n{}\n", appel(1), appel(2));
+    servir(Cursor::new(entree.into_bytes()), &mut sortie, &mut b, courtes());
+    let pages: Vec<Value> = String::from_utf8(sortie)
+        .unwrap()
+        .lines()
+        .filter_map(|l| {
+            serde_json::from_str::<Value>(l)
+                .unwrap()
+                .pointer("/result/structuredContent")
+                .cloned()
+        })
+        .collect();
+    assert_eq!(pages.len(), 2);
+    for page in &pages {
+        assert_eq!(page.pointer("/journal/a_jour"), Some(&json!(true)), "{page}");
+        assert_eq!(page.pointer("/journal/lecture"), Some(&json!("intact")), "{page}");
+    }
+    let sources = |p: &Value| -> Vec<Value> {
+        p["evenements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["source"].clone())
+            .collect()
+    };
+    assert!(!sources(&pages[0]).contains(&json!("porte-mcp")));
+    assert!(
+        sources(&pages[1]).contains(&json!("porte-mcp")),
+        "la note de la porte n'est pas vue"
+    );
+}
+
+/// A-PROTOCOLE-3 : des lignes vides envoyées de temps en temps ne tiennent pas la session ouverte : le silence court.
+#[test]
+fn les_lignes_vides_ne_rompent_pas_le_silence() {
+    let (lecture, mut ecriture) = std::io::pipe().unwrap();
+    let envoi = std::thread::spawn(move || {
+        for _ in 0..30 {
+            if ecriture.write_all(b"\n").is_err() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    });
+    let depart = Instant::now();
+    let (bilan, lignes) = session(lecture, courtes());
+    assert_eq!(bilan.fin, Fin::Inactivite, "{bilan:?}");
+    assert_eq!(lignes, Vec::<Value>::new());
+    assert!(depart.elapsed() < Duration::from_secs(2), "{:?}", depart.elapsed());
+    envoi.join().unwrap();
+}
+
+/// A-FUITE-6 : un historique sans empreinte (écrit à la main) n'est pas dit « intacte » ni ses bilans vérifiés ; dans
+/// une chaîne, seul un bilan qui porte son empreinte est dit vérifié ; une date d'une autre forme ne sort pas.
+#[test]
+fn un_bilan_sans_empreinte_n_est_pas_dit_verifie() {
+    let bilans = |dossier: &std::path::Path| {
+        let mut porte = outils::Porte::new(dossier.to_path_buf(), vues::Liens::fixes());
+        let brut = RawValue::from_string(json!({ "limite": 30 }).to_string()).unwrap();
+        porte.appeler("bilans", Some(&brut)).unwrap()
+    };
+    let verifies = |m: &Map<String, Value>| -> Vec<Value> {
+        m["bilans"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b["verifie"].clone())
+            .collect()
+    };
+    let plante = planter("porte-mcp-bilans-a-la-main");
+    let m = bilans(&plante);
+    assert_eq!(m["chaine"], "non-verifiee");
+    assert_eq!(verifies(&m), [json!(false), json!(false)]);
+    let dossier = crate::essais::Jetable::nouveau("porte-mcp-bilans-chaines");
+    std::fs::create_dir_all(&*dossier).unwrap();
+    let chemin = dossier.join("historique.json");
+    std::fs::write(
+        &chemin,
+        json!([{ "date": "203-0-113-7:4242", "machine": 80, "problemes": [] }]).to_string(),
+    )
+    .unwrap();
+    for date in ["2026-11-16 09:00", "2026-11-17 10:00"] {
+        let b = crate::historique::Bilan {
+            date: date.into(),
+            machine: Some(90),
+            ..Default::default()
+        };
+        crate::historique::enregistrer_dans(&chemin, b);
+    }
+    let m = bilans(&dossier);
+    assert_eq!(m["chaine"], "intacte");
+    assert_eq!(verifies(&m), [json!(true), json!(true), json!(false)]);
+    let dates: Vec<Value> = m["bilans"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b["date"].clone())
+        .collect();
+    assert_eq!(
+        dates,
+        [json!("2026-11-17 10:00"), json!("2026-11-16 09:00"), Value::Null]
+    );
 }
