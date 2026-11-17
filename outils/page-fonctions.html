@@ -1203,22 +1203,44 @@ vanguard yara --complet</pre>
   appareil.addEventListener('change', montrer);
   montrer();
 })();
-// L'onglet de la section lue est marqué (aria-current), comme l'onglet actif de la fenêtre.
+// L'onglet de la section lue est marqué (aria-current), comme l'onglet actif de la fenêtre. La section lue est la
+// dernière dont le haut a passé la barre ; en bas de page, la dernière qui se voit (les courtes du bas n'atteignent
+// jamais la barre). Un onglet cliqué reste marqué jusqu'au prochain défilement de la personne : sinon le défilement
+// doux, ou une section courte au bas de la page, marquerait sa voisine.
 (function () {
-  if (!('IntersectionObserver' in window)) return;
-  var onglets = {}, vues = new Map();
-  document.querySelectorAll('.onglets a').forEach(function (a) { onglets[a.hash.slice(1)] = a; });
-  var marquer = function (id) {
-    Object.keys(onglets).forEach(function (k) {
-      if (k === id) onglets[k].setAttribute('aria-current', 'true'); else onglets[k].removeAttribute('aria-current');
-    });
-  };
-  var observateur = new IntersectionObserver(function (entrees) {
-    entrees.forEach(function (e) { vues.set(e.target.id, e.isIntersecting); });
-    var premiere = Object.keys(onglets).filter(function (k) { return vues.get(k); })[0];
-    if (premiere) marquer(premiere);
-  }, { rootMargin: '-120px 0px -55% 0px' });
-  Object.keys(onglets).forEach(function (k) { var el = document.getElementById(k); if (el) observateur.observe(el); });
+var liens = [].slice.call(document.querySelectorAll('.onglets a'));
+var cibles = liens.map(function (a) { return document.getElementById(a.hash.slice(1)); });
+var barre = document.querySelector('.barre-app');
+var clique = null, enRoute = false, minuterie = 0, attente = 0;
+var marquer = function (a) {
+liens.forEach(function (l) { if (l === a) l.setAttribute('aria-current', 'true'); else l.removeAttribute('aria-current'); });
+};
+var calculer = function () {
+attente = 0;
+var seuil = barre.getBoundingClientRect().bottom + 32, actif = liens[0];
+var enBas = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2;
+cibles.forEach(function (c, i) {
+if (!c) return;
+var haut = c.getBoundingClientRect().top;
+if (haut <= seuil || (enBas && haut < window.innerHeight)) actif = liens[i];
+});
+marquer(actif);
+};
+var arrive = function () { enRoute = false; clearTimeout(minuterie); };
+liens.forEach(function (a) {
+a.addEventListener('click', function () {
+clique = a; enRoute = true; marquer(a);
+clearTimeout(minuterie); minuterie = setTimeout(arrive, 1000);
+});
+});
+window.addEventListener('scroll', function () {
+if (clique && enRoute) { clearTimeout(minuterie); minuterie = setTimeout(arrive, 150); return; }
+clique = null;
+if (!attente) attente = requestAnimationFrame(calculer);
+}, { passive: true });
+window.addEventListener('scrollend', arrive);
+window.addEventListener('resize', function () { if (!clique) calculer(); });
+calculer();
 })();
 // À l'impression, chaque menu déroulant est déplié, puis remis comme il était.
 (function () {
