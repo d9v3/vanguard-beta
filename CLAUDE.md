@@ -40,8 +40,9 @@ Réponses à l'utilisateur en français, claires, avec le pourquoi.
   download-artifact, attest et claude-code-action, lire le diff amont puis `gh workflow run ci.yml --ref <branche de
   Dependabot>` avant d'approuver.
 - Failles connues : `cargo audit`, second avis, jugé comme `outils/failles-programmes.sh` (abandon, code défaillant,
-  notice refusés) ; seules exceptions celles de deny.toml (`outils/exceptions-rustsec.py`), que `.cargo/audit.toml`
-  recopie à l'identique ; étape de verifier.sh, sautée sans `cargo-audit` ou sans Internet.
+  notice refusés) ; seules exceptions celles du deny.toml de chaque crate (`outils/exceptions-rustsec.py [deny.toml]`),
+  celles de la racine recopiées à l'identique par `.cargo/audit.toml` ; étape de verifier.sh, sautée sans
+  `cargo-audit` ou sans Internet.
 - Fuzzing (cargo-fuzz, chaîne nightly à côté de l'épinglée) : `outils/fuzz.sh [cible|tout] [secondes]`, banc `fuzz/`
   à part (modules inclus par leur chemin, cales dans `fuzz/cale/`, cibles lues dans `fuzz/Cargo.toml`), corpus et
   plantages dans `~/.cache/vanguard-dev/fuzz/` ; verifier.sh le compile et passe 5 s par cible, la CI 5 min chaque
