@@ -652,8 +652,14 @@ fn session_brute(dossier: &std::path::Path) -> Vec<String> {
     }
     let mut sortie = Vec::new();
     let entree = Cursor::new(lignes.iter().fold(String::new(), |t, l| t + l + "\n").into_bytes());
-    // Sous le rythme : quinze lignes, moins de vingt.
-    let bilan = servir_muet(entree, &mut sortie, &mut porte, courtes());
+    // Sous le rythme : quinze lignes, moins de vingt. Le temps de traitement compte dans le silence du client : sous
+    // Wine chargé (verifier.sh), une réponse passait 400 ms et la session finissait par « inactivité ». Cet essai juge
+    // les réponses, pas le rythme (essayé par ses propres essais, avec les bornes courtes).
+    let bornes = Bornes {
+        inactivite: Duration::from_secs(10),
+        ..courtes()
+    };
+    let bilan = servir_muet(entree, &mut sortie, &mut porte, bornes);
     assert_eq!(bilan.fin, Fin::FlotFini, "{bilan:?}");
     let mut reponses: Vec<String> = String::from_utf8(sortie).unwrap().lines().map(str::to_string).collect();
     // La page suivante des événements, par le lien de la première page de deux.
