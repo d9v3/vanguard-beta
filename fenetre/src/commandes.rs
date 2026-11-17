@@ -459,6 +459,70 @@ impl Commande {
         ["blocage", "etat", "--json"],
     ];
 
+    /// Une commande qui sonde d'autres machines que celle-ci (le routeur, les appareils du réseau local) : jamais
+    /// lancée seule, quel que soit son délai. Liste fermée, sans cas par défaut : une commande nouvelle doit être
+    /// rangée ici. Lire Internet (un catalogue public, un débit mesuré) n'est pas sonder ; l'état gardé du dernier scan
+    /// non plus.
+    pub fn sonde_le_reseau(self) -> bool {
+        match self {
+            // Le scan du réseau local, ses ports ouverts.
+            Commande::Appareils
+            // Le réseau, domaine par domaine : appareils, Wi-Fi, séparation.
+            | Commande::AuditReseau
+            // Les appareils d'un réseau de location qui ressemblent à des caméras.
+            | Commande::CamerasCachees
+            // Le routeur interrogé en UPnP, en plus des deux serveurs STUN.
+            | Commande::Nat => true,
+            Commande::Bilan
+            | Commande::Protection
+            | Commande::Evenements
+            | Commande::Diagnostic
+            | Commande::TestConnexion
+            | Commande::ConnexionsSortantes
+            | Commande::AccesADistance
+            | Commande::LogicielsEspions
+            | Commande::LogicielsPerimes
+            | Commande::BilanConfidentialite
+            | Commande::Lenteur
+            | Commande::FicheOrdinateur
+            | Commande::OptionsDefense
+            | Commande::Antivirus
+            | Commande::EtatAntivirus
+            | Commande::Yara
+            | Commande::Memoire
+            | Commande::Integrite
+            | Commande::DernieresFailles
+            | Commande::MisesAJour
+            | Commande::Demarrage
+            // Le dernier scan gardé, relu : rien n'est sondé.
+            | Commande::ObjetsConnectes
+            | Commande::JournauxWindows
+            | Commande::Autotest
+            // La dernière liste des réseaux voisins, relue : aucune recherche lancée.
+            | Commande::CanauxWifi
+            | Commande::Conteneurs
+            | Commande::Secrets
+            | Commande::Changements
+            | Commande::VerifierMoi
+            | Commande::Regles
+            | Commande::Couleurs
+            | Commande::Agent
+            | Commande::CameraMicro
+            | Commande::Logiciels
+            | Commande::Nettoyer
+            | Commande::Desinstaller
+            | Commande::SitesDangereux
+            | Commande::Parametres
+            | Commande::Blocage
+            | Commande::VerifierSauvegarde
+            | Commande::Ordinateurs
+            | Commande::Chercher
+            | Commande::Lien
+            | Commande::VerifierFichier
+            | Commande::CourrielSuspect => false,
+        }
+    }
+
     /// Le délai au-delà duquel la commande est arrêtée (son groupe tué) : l'audit en prend quelques secondes, les
     /// outils qui lisent une liste en ligne jusqu'à quelques minutes sur une connexion lente.
     pub fn delai(self) -> Duration {

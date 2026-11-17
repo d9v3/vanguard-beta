@@ -1850,7 +1850,7 @@ fn une_carte_de_commande_s_ouvre_d_un_seul_geste() {
         .filter_map(|c| vus.iter().find(|(m, _)| m == c.titre()).map(|v| v.1.y))
         .fold(f32::INFINITY, f32::min);
     assert!(haut.is_finite(), "aucun titre de carte écrit");
-    for m in ["Voir", "Lancer", "Relancer", "Arrêter"] {
+    for m in ["Voir", "Lancer", "Lancer (quelques minutes)", "Relancer", "Arrêter"] {
         assert!(
             !vus.iter().any(|(v, ou)| v == m && ou.y >= haut - 30.0),
             "« {m} » sur une carte de la rubrique"
@@ -1919,7 +1919,10 @@ fn une_carte_de_commande_s_ouvre_d_un_seul_geste() {
         assert!(titre.is_finite(), "le titre de « {} » n'est pas écrit", c.titre());
         assert!(
             vus.iter()
-                .any(|(m, ou)| ["Lancer", "Relancer", "Arrêter"].contains(&m.as_str()) && ou.y >= titre - 30.0),
+                .any(
+                    |(m, ou)| ["Lancer", "Lancer (quelques minutes)", "Relancer", "Arrêter"].contains(&m.as_str())
+                        && ou.y >= titre - 30.0
+                ),
             "pas de quoi lancer sur la page de « {} »",
             c.titre()
         );

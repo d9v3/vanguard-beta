@@ -345,12 +345,12 @@ impl Appli {
         }
     }
 
-    /// Une lecture à relancer d'elle-même : rapide (`LECTURE_RAPIDE`), sans valeur à taper, qui ne change rien,
+    /// Une lecture à relancer d'elle-même : rapide (`LECTURE_RAPIDE`) et qui ne sonde pas le réseau, sans valeur à taper, qui ne change rien,
     /// ni en cours ni en attente, et jamais lue dans cette fenêtre ou lue il y a plus de `FRAICHEUR`. Une lecture
     /// longue (le bilan, l'antivirus…) ne part jamais seule : son bouton la lance.
     fn a_relire(&self, c: Commande, maintenant: Instant) -> bool {
         self.programme.is_ok()
-            && c.delai() <= LECTURE_RAPIDE
+            && !lecture_longue(c)
             && !c.valeur_requise()
             && !Lancement::Commande(c).change()
             && self.tache.as_ref().is_none_or(|t| t.lancement.commande() != c)
@@ -1924,7 +1924,12 @@ pub fn endroits_permis() -> &'static str {
     )
 }
 
-/// L'écran où le résultat d'une commande se montre.
+/// Une lecture longue : plus de `LECTURE_RAPIDE`, ou un scan d'autres machines (`Commande::sonde_le_reseau`). Elle ne
+/// part jamais seule, et son bouton dit qu'elle prend quelques minutes.
+pub fn lecture_longue(c: Commande) -> bool {
+    c.delai() > LECTURE_RAPIDE || c.sonde_le_reseau()
+}
+
 /// La commande dont l'écran `e` montre la page (le bilan, les alertes et les appareils ont leur écran à eux).
 pub fn commande_de(e: Ecran) -> Option<Commande> {
     match e {
@@ -1943,6 +1948,7 @@ fn dans_une_liste(c: Commande) -> bool {
     r != Rubrique::Vanguard && r.commandes().any(|x| x == c)
 }
 
+/// L'écran où le résultat d'une commande se montre.
 pub fn ecran_de(c: Commande) -> Ecran {
     match c {
         Commande::Bilan => Ecran::Bilan,
@@ -2310,6 +2316,50 @@ mod tests {
         assert!(longues.contains(&Commande::Bilan) && longues.contains(&Commande::Antivirus));
         let plus_tard = Instant::now() + FRAICHEUR * 3;
         for c in longues {
+            for maintenant in [Instant::now(), plus_tard] {
+                a.page_montree_a(None, maintenant);
+                a.page_montree_a(Some(c), maintenant);
+                assert_eq!(a.taches(), 0, "{} est partie seule", c.nom());
+            }
+        }
+    }
+
+    /// Les scans d'autres machines (le réseau local, le routeur) ne partent jamais seuls, même rapides : la liste
+    /// fermée de `Commande::sonde_le_reseau`, et elle seule.
+    #[test]
+    fn la_liste_des_scans_du_reseau_est_fermee() {
+        let scans: Vec<Commande> = Commande::TOUTES.into_iter().filter(|c| c.sonde_le_reseau()).collect();
+        assert_eq!(
+            scans,
+            [
+                Commande::Appareils,
+                Commande::AuditReseau,
+                Commande::CamerasCachees,
+                Commande::Nat
+            ]
+        );
+        for c in scans {
+            assert!(lecture_longue(c), "{}", c.nom());
+        }
+        for c in [Commande::TestConnexion, Commande::ConnexionsSortantes] {
+            assert!(!lecture_longue(c), "{}", c.nom());
+        }
+    }
+
+    /// Ouvrir la page d'un scan du réseau ne le lance pas, jamais lu ou lu il y a des heures : il est assez rapide
+    /// pour partir seul d'après son délai, seule la liste fermée le retient.
+    #[cfg(unix)]
+    #[test]
+    fn ouvrir_un_scan_du_reseau_ne_lance_rien() {
+        let mut a = appli_au_faux("scan-du-reseau");
+        let plus_tard = Instant::now() + FRAICHEUR * 3;
+        for c in [
+            Commande::Appareils,
+            Commande::AuditReseau,
+            Commande::CamerasCachees,
+            Commande::Nat,
+        ] {
+            assert!(c.delai() <= LECTURE_RAPIDE && !c.valeur_requise(), "{}", c.nom());
             for maintenant in [Instant::now(), plus_tard] {
                 a.page_montree_a(None, maintenant);
                 a.page_montree_a(Some(c), maintenant);

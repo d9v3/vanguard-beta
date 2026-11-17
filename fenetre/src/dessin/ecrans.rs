@@ -473,7 +473,7 @@ fn entete_commande(appli: &mut Appli, ui: &mut Ui, c: Commande) {
     }
 }
 
-/// Lancer, ou Arrêter si c'est elle qui tourne.
+/// Lancer (« quelques minutes » pour une lecture longue jamais lue), Relancer, ou Arrêter si c'est elle qui tourne.
 fn lancer_arreter(appli: &mut Appli, ui: &mut Ui, c: Commande) {
     let tourne = appli.en_cours().is_some_and(|(e, _)| e == c);
     if tourne {
@@ -481,9 +481,11 @@ fn lancer_arreter(appli: &mut Appli, ui: &mut Ui, c: Commande) {
             appli.arreter();
         }
     } else {
-        let deja = appli.resultat(c).is_some();
-        let t = if deja {
+        // Jamais lue : une lecture longue dit qu'elle prend du temps, puisqu'elle ne part pas seule.
+        let t = if appli.resultat(c).is_some() {
             crate::tr!("Relancer", "Run again")
+        } else if crate::appli::lecture_longue(c) {
+            crate::tr!("Lancer (quelques minutes)", "Run (a few minutes)")
         } else {
             crate::tr!("Lancer", "Run")
         };
