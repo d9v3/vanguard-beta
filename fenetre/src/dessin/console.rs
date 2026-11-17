@@ -392,7 +392,7 @@ fn etat(appli: &mut Appli, ui: &Ui, peintre: &egui::Painter, tete: Rect, limite:
 }
 
 /// « il y a 3 min » : depuis quand, en mots, arrondi.
-fn depuis(d: Duration) -> String {
+pub(super) fn depuis(d: Duration) -> String {
     let s = d.as_secs();
     if s < 60 {
         crate::tr!("à l'instant", "just now").to_owned()

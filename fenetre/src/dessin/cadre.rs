@@ -5,7 +5,7 @@ use std::time::Duration;
 use eframe::egui::{self, Align2, Frame, Margin, Rect, RichText, Sense, Stroke, Ui, pos2, vec2};
 
 use super::{icones, melange, moyenne, n_f32, pal, police, survol};
-use crate::appli::{Appli, Ecran};
+use crate::appli::{Appli, Ecran, commande_de};
 use crate::commandes::{Commande, Rubrique};
 use crate::donnees::protection::Allure;
 
@@ -43,8 +43,33 @@ pub fn tout(appli: &mut Appli, ui: &mut Ui) {
         .show(ui, |ui| super::console::bande(appli, ui, lignes));
     // Les coulisses : une fenêtre à part, ou un panneau à droite (avant le panneau central, qui prend le reste).
     super::coulisses::montrer(appli, ui);
-    // L'écran arrive en fondu ; un écran nouveau part du haut (sinon il s'ouvrait à la hauteur où était l'autre).
-    let arrivee = super::mouvement::arrivee(ui.ctx(), appli.ecran);
+    // Une rubrique dans une fenêtre large : sa liste à gauche, fixe, et la page choisie à droite. Plus étroite, elle
+    // garde ses cartes, et chaque carte ouvre sa page.
+    let large = ui.available_rect_before_wrap().width() >= super::ecrans::LARGEUR_LISTE_ET_PAGE;
+    if large && let Some(c) = appli.detail() {
+        egui::Panel::left("liste-rubrique")
+            .exact_size(super::ecrans::LARGEUR_LISTE)
+            .resizable(false)
+            .show_separator_line(false)
+            .frame(Frame::new().fill(p.fond).inner_margin(Margin {
+                left: 24,
+                right: 0,
+                top: 32,
+                bottom: 16,
+            }))
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink(false)
+                    .show(ui, |ui| super::ecrans::liste_rubrique(appli, ui, c));
+            });
+        super::ecrans::clavier_de_la_liste(appli, ui.ctx(), c);
+    }
+    // Après la liste : un clic ou une touche y a peut-être choisi une autre page.
+    let detail = if large { appli.detail() } else { None };
+    appli.page_montree(detail.or_else(|| commande_de(appli.ecran)));
+    // L'écran arrive en fondu ; un écran nouveau part du haut (sinon il s'ouvrait à la hauteur où était l'autre). À
+    // côté de la liste, c'est la page qui compte : une autre page arrive comme un autre écran, la liste ne bouge pas.
+    let arrivee = super::mouvement::arrivee(ui.ctx(), detail.map_or(appli.ecran, Ecran::Commande));
     egui::CentralPanel::default()
         .frame(Frame::new().fill(p.fond))
         .show(ui, |ui| {
@@ -65,7 +90,7 @@ pub fn tout(appli: &mut Appli, ui: &mut Ui) {
                             // Une borne, jamais un élargissement : `set_max_width` pose la largeur telle quelle, et 1 520
                             // dans une fenêtre plus étroite poussait les cartes et leurs boutons hors de l'écran.
                             ui.set_max_width(ui.available_width().min(1520.0));
-                            super::ecrans::montrer(appli, ui);
+                            super::ecrans::montrer(appli, ui, detail);
                         });
                 });
             });

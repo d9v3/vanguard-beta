@@ -10,7 +10,7 @@ use std::time::Duration;
 pub(crate) use crate::valeur::{Argument, Refus};
 
 /// Les rubriques du rail, dans l'ordre du menu de Vanguard.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Rubrique {
     Accueil,
     Ordinateur,

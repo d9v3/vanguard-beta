@@ -44,6 +44,12 @@ pub const SONDAGE: Duration = Duration::from_secs(60);
 /// Écrans retenus au plus pour « Retour » : assez pour tout parcours, borné pour une fenêtre ouverte des jours.
 const RETOURS_MAX: usize = 50;
 
+/// Une lecture « rapide » : son délai (`Commande::delai`) ne dépasse pas celui-ci. Seule une lecture rapide se relance
+/// d'elle-même à l'ouverture de sa page (`page_montree`) ; une plus longue (le bilan, l'antivirus…) attend son bouton.
+pub const LECTURE_RAPIDE: Duration = Duration::from_secs(180);
+/// L'âge au-delà duquel une lecture rapide se relance d'elle-même à l'ouverture de sa page.
+pub const FRAICHEUR: Duration = Duration::from_secs(3600);
+
 /// L'écran montré.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Ecran {
@@ -229,23 +235,130 @@ pub struct Appli {
     pub brouillon: Option<(Theme, Choix)>,
     /// Le changement qui remet les couleurs d'avant le dernier changement fait.
     revenir: Option<ChangementCouleurs>,
+    /// La dernière commande ouverte dans chaque rubrique : la page montrée à côté de sa liste (`montree`).
+    choisies: HashMap<Rubrique, Commande>,
+    /// La page de commande montrée à la dernière image (`page_montree`) : une ouverture ne lance qu'une fois.
+    page: Option<Commande>,
+    /// Une lecture rapide vieillie se relance-t-elle d'elle-même à l'ouverture de sa page ? (Jamais dans les
+    /// captures, où rien ne se lance.)
+    relecture: Relecture,
+}
+
+/// À l'ouverture de sa page, une lecture rapide vieillie se relance d'elle-même, ou jamais (les captures).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Relecture {
+    Seule,
+    #[cfg_attr(not(test), allow(dead_code))]
+    Jamais,
 }
 
 impl Appli {
     /// Va à un écran en retenant celui-ci pour « Retour ». Seul chemin pour changer d'écran (un essai le garde) :
     /// une affectation directe ferait sauter un pas au retour. Une confirmation ouverte se ferme, et des couleurs en
     /// cours de choix sont abandonnées : rien ne reste en attente hors de la vue de la personne.
+    ///
+    /// La page d'une commande de la liste d'une rubrique devient la page retenue de cette rubrique (`montree`) : dans
+    /// une fenêtre large, la rubrique s'ouvre ensuite sur elle.
     pub fn aller(&mut self, vers: Ecran) {
+        if let Some(c) = commande_de(vers).filter(|c| dans_une_liste(*c)) {
+            self.choisies.insert(c.rubrique(), c);
+        }
+        self.changer(vers, true);
+    }
+
+    /// Change d'écran, en retenant celui-ci pour « Retour » ou non (`choisir` : la même vue, une autre page).
+    fn changer(&mut self, vers: Ecran, retenir: bool) {
         if vers == self.ecran {
             return;
         }
         self.annuler();
         self.abandonner_brouillon();
-        if self.retours.len() >= RETOURS_MAX {
-            self.retours.remove(0);
+        if retenir {
+            if self.retours.len() >= RETOURS_MAX {
+                self.retours.remove(0);
+            }
+            self.retours.push(self.ecran);
         }
-        self.retours.push(self.ecran);
         self.ecran = vers;
+    }
+
+    /// La page montrée à côté de la liste de la rubrique `r` : la dernière ouverte, sinon la première de la liste.
+    /// Aucune pour la rubrique Vanguard (ses réglages) ni pour une rubrique sans commande.
+    pub fn montree(&self, r: Rubrique) -> Option<Commande> {
+        if r == Rubrique::Vanguard {
+            return None;
+        }
+        match self.choisies.get(&r) {
+            Some(c) if r.commandes().any(|x| x == *c) => Some(*c),
+            _ => r.commandes().next(),
+        }
+    }
+
+    /// Dans une fenêtre large, la page montrée à côté de la liste de sa rubrique (`c.rubrique()`) : celle retenue
+    /// pour l'écran d'une rubrique, la commande elle-même pour l'écran d'une commande de la liste. Aucune ailleurs :
+    /// l'écran garde son affichage seul.
+    pub fn detail(&self) -> Option<Commande> {
+        match self.ecran {
+            Ecran::Rubrique(r) => self.montree(r),
+            e => commande_de(e).filter(|c| dans_une_liste(*c)),
+        }
+    }
+
+    /// Montre la page de `c` à côté de la liste de sa rubrique (un clic, ↑ ou ↓ dans la liste) : la même vue, une
+    /// autre page, donc rien de plus dans « Retour ». Une confirmation ouverte se ferme, comme avec `aller`.
+    pub fn choisir(&mut self, c: Commande) {
+        if !dans_une_liste(c) || self.detail() == Some(c) {
+            return;
+        }
+        self.annuler();
+        self.abandonner_brouillon();
+        let r = c.rubrique();
+        self.choisies.insert(r, c);
+        self.changer(Ecran::Rubrique(r), false);
+    }
+
+    /// « Relancer » au clavier (Entrée, F5) ou d'un double-clic : la même garde que le bouton de la page (le
+    /// programme trouvé, la commande ni en cours ni en attente) ; sinon rien, sans un mot.
+    pub fn relancer(&mut self, c: Commande) {
+        if self.programme_trouve() && !self.en_attente(c) && self.en_cours().is_none_or(|(e, _)| e != c) {
+            self.demander(c);
+        }
+    }
+
+    /// La page de commande montrée à cette image (aucune : un autre écran), dite à chaque image par le dessin. À
+    /// l'ouverture d'une page, une seule fois, une lecture rapide jamais lue ou lue il y a plus d'une heure se
+    /// relance d'elle-même (`a_relire`).
+    pub fn page_montree(&mut self, page: Option<Commande>) {
+        self.page_montree_a(page, Instant::now());
+    }
+
+    fn page_montree_a(&mut self, page: Option<Commande>, maintenant: Instant) {
+        if page == self.page {
+            return;
+        }
+        self.page = page;
+        if let Some(c) = page
+            && self.relecture == Relecture::Seule
+            && self.a_relire(c, maintenant)
+        {
+            self.demander(c);
+        }
+    }
+
+    /// Une lecture à relancer d'elle-même : rapide (`LECTURE_RAPIDE`), sans valeur à taper, qui ne change rien,
+    /// ni en cours ni en attente, et jamais lue dans cette fenêtre ou lue il y a plus de `FRAICHEUR`. Une lecture
+    /// longue (le bilan, l'antivirus…) ne part jamais seule : son bouton la lance.
+    fn a_relire(&self, c: Commande, maintenant: Instant) -> bool {
+        self.programme.is_ok()
+            && c.delai() <= LECTURE_RAPIDE
+            && !c.valeur_requise()
+            && !Lancement::Commande(c).change()
+            && self.tache.as_ref().is_none_or(|t| t.lancement.commande() != c)
+            && !self.en_attente(c)
+            && self
+                .resultats
+                .get(&c)
+                .is_none_or(|r| maintenant.saturating_duration_since(r.fin) >= FRAICHEUR)
     }
 
     /// L'écran où « Retour » mènerait.
@@ -292,6 +405,9 @@ impl Appli {
             couleurs: Lues::default(),
             brouillon: None,
             revenir: None,
+            choisies: HashMap::new(),
+            page: None,
+            relecture: Relecture::Seule,
         };
         #[cfg(target_os = "linux")]
         if let Some((phrase, souligner)) = crate::relais::etat() {
@@ -333,6 +449,7 @@ impl Appli {
     pub fn pour_captures() -> Appli {
         let mut a = Appli::nouvelle(Err(String::new()), std::sync::Arc::new(|| {}));
         a.programme = Ok(Programme::factice());
+        a.relecture = Relecture::Jamais;
         a.console.effacer();
         // L'état du bac de cette machine-ci n'a rien à faire dans une capture : une phrase inventée, fixe.
         a.coulisses = Coulisses::nouvelles((
@@ -1808,6 +1925,24 @@ pub fn endroits_permis() -> &'static str {
 }
 
 /// L'écran où le résultat d'une commande se montre.
+/// La commande dont l'écran `e` montre la page (le bilan, les alertes et les appareils ont leur écran à eux).
+pub fn commande_de(e: Ecran) -> Option<Commande> {
+    match e {
+        Ecran::Bilan => Some(Commande::Bilan),
+        Ecran::Alertes => Some(Commande::Evenements),
+        Ecran::Appareils => Some(Commande::Appareils),
+        Ecran::Commande(c) => Some(c),
+        Ecran::Accueil | Ecran::Rubrique(_) | Ecran::Guide => None,
+    }
+}
+
+/// La commande est-elle dans la liste d'une rubrique montrée à côté de sa page (pas la rubrique Vanguard, qui garde
+/// ses réglages) ?
+fn dans_une_liste(c: Commande) -> bool {
+    let r = c.rubrique();
+    r != Rubrique::Vanguard && r.commandes().any(|x| x == c)
+}
+
 pub fn ecran_de(c: Commande) -> Ecran {
     match c {
         Commande::Bilan => Ecran::Bilan,
@@ -2058,7 +2193,8 @@ mod tests {
         assert_eq!(a.retours.len(), RETOURS_MAX);
     }
 
-    /// Aucun écran n'est changé sans `aller` (ou `revenir`) : sinon « Retour » sauterait un pas.
+    /// Aucun écran n'est changé sans `changer` (par `aller`, ou `choisir` pour la même vue) ou `revenir` : sinon
+    /// « Retour » sauterait un pas.
     #[test]
     fn un_seul_chemin_pour_changer_d_ecran() {
         let aiguille = concat!(".ecran", " = ");
@@ -2080,7 +2216,140 @@ mod tests {
                 }
             }
         }
-        assert_eq!(vus, 2, "seuls aller() et revenir() changent d'écran");
+        assert_eq!(vus, 2, "seuls changer() et revenir() changent d'écran");
+    }
+
+    /// Un clic dans la liste d'une rubrique (`choisir`) montre une autre page sans rien ajouter à « Retour », même
+    /// depuis l'écran d'une commande (il devient celui de sa rubrique, la même vue) ; une commande hors des listes
+    /// (la rubrique Vanguard) n'est pas choisie.
+    #[test]
+    fn un_clic_dans_la_liste_n_ajoute_rien_a_retour() {
+        let mut a = appli();
+        let r = Rubrique::Ordinateur;
+        let liste: Vec<Commande> = r.commandes().collect();
+        assert!(liste.len() >= 3, "trop peu de commandes dans « {} »", r.nom());
+        a.aller(Ecran::Rubrique(r));
+        assert_eq!(
+            a.detail(),
+            Some(liste[0]),
+            "la première fois : la première de la rubrique"
+        );
+        let pile = a.retours.clone();
+        for c in &liste[1..] {
+            a.choisir(*c);
+            assert_eq!(a.detail(), Some(*c));
+            assert_eq!(a.ecran, Ecran::Rubrique(r));
+            assert_eq!(a.retours, pile, "un clic dans la liste a changé « Retour »");
+        }
+        // Depuis l'écran d'une commande : la même vue, sa rubrique, rien de plus dans « Retour ».
+        a.aller(Ecran::Bilan);
+        let pile = a.retours.clone();
+        a.choisir(liste[1]);
+        assert_eq!(a.ecran, Ecran::Rubrique(r));
+        assert_eq!(a.detail(), Some(liste[1]));
+        assert_eq!(a.retours, pile);
+        // Hors des listes : rien.
+        a.choisir(Commande::Couleurs);
+        assert_eq!(a.ecran, Ecran::Rubrique(r));
+        assert_eq!(a.detail(), Some(liste[1]));
+    }
+
+    /// Chaque rubrique retient sa dernière page, ouverte par sa liste ou par l'écran d'une commande (console,
+    /// onglet) ; la rubrique Vanguard et l'écran d'une commande hors liste n'ont pas de page à côté d'une liste.
+    #[test]
+    fn la_page_montree_est_retenue_par_rubrique() {
+        let mut a = appli();
+        let (r1, r2) = (Rubrique::Ordinateur, Rubrique::Optimiser);
+        let l1: Vec<Commande> = r1.commandes().collect();
+        let l2: Vec<Commande> = r2.commandes().collect();
+        assert_eq!(a.montree(r1), l1.first().copied());
+        a.aller(Ecran::Rubrique(r1));
+        a.choisir(l1[2]);
+        a.aller(Ecran::Commande(l2[1]));
+        assert_eq!(a.detail(), Some(l2[1]), "l'écran d'une commande montre la commande");
+        a.aller(Ecran::Rubrique(r1));
+        assert_eq!(a.detail(), Some(l1[2]), "« {} » a oublié sa page", r1.nom());
+        a.aller(Ecran::Rubrique(r2));
+        assert_eq!(a.detail(), Some(l2[1]), "« {} » a oublié sa page", r2.nom());
+        a.aller(Ecran::Bilan);
+        a.aller(Ecran::Rubrique(r1));
+        assert_eq!(a.detail(), Some(Commande::Bilan), "l'onglet Bilan n'a pas été retenu");
+        assert_eq!(a.montree(Rubrique::Vanguard), None);
+        a.aller(Ecran::Commande(Commande::Couleurs));
+        assert_eq!(a.detail(), None);
+        a.aller(Ecran::Rubrique(Rubrique::Vanguard));
+        assert_eq!(a.detail(), None);
+    }
+
+    /// Une fenêtre au faux `vanguard` (il rend du vide, aussitôt), ses lectures du lancement finies.
+    #[cfg(unix)]
+    fn appli_au_faux(nom: &str) -> Appli {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let d = crate::essais::banc(nom);
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let script = d.join("vanguard");
+        std::fs::write(&script, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let moi = std::fs::metadata(&d).unwrap().uid();
+        let mut a = Appli::nouvelle(Ok(Programme::dans(&d, moi).unwrap()), std::sync::Arc::new(|| {}));
+        finir_tout(&mut a);
+        a
+    }
+
+    /// Ouvrir la page d'une lecture longue (le bilan, l'antivirus…) ne lance rien, jamais lue ou lue il y a des
+    /// heures : son bouton seul la lance.
+    #[cfg(unix)]
+    #[test]
+    fn ouvrir_une_lecture_longue_ne_lance_rien() {
+        let mut a = appli_au_faux("lecture-longue");
+        let longues: Vec<Commande> = Commande::TOUTES
+            .into_iter()
+            .filter(|c| c.delai() > LECTURE_RAPIDE && !c.valeur_requise())
+            .collect();
+        assert!(longues.contains(&Commande::Bilan) && longues.contains(&Commande::Antivirus));
+        let plus_tard = Instant::now() + FRAICHEUR * 3;
+        for c in longues {
+            for maintenant in [Instant::now(), plus_tard] {
+                a.page_montree_a(None, maintenant);
+                a.page_montree_a(Some(c), maintenant);
+                assert_eq!(a.taches(), 0, "{} est partie seule", c.nom());
+            }
+        }
+    }
+
+    /// Une lecture rapide jamais lue part une fois à l'ouverture de sa page (pas à chaque image) ; lue il y a moins
+    /// d'une heure, elle n'est pas relancée ; il y a plus d'une heure, elle l'est, une fois.
+    #[cfg(unix)]
+    #[test]
+    fn une_lecture_rapide_se_relance_seule_si_elle_est_vieille() {
+        let mut a = appli_au_faux("lecture-rapide");
+        let c = Commande::FicheOrdinateur;
+        assert!(c.delai() <= LECTURE_RAPIDE && !c.valeur_requise());
+        assert!(a.resultat(c).is_none());
+        // Jamais lue : elle part, une fois, même si la page reste montrée image après image.
+        for _ in 0..5 {
+            a.page_montree(Some(c));
+        }
+        assert_eq!(a.en_cours().map(|(e, _)| e), Some(c), "jamais lue : pas lancée");
+        assert_eq!(a.taches(), 1);
+        assert!(!a.console.dit("déjà en cours"), "relancée à chaque image");
+        finir_tout(&mut a);
+        let fin = a.resultat(c).expect("son résultat").fin;
+        // Fraîche (à l'instant, puis 59 min après) : pas relancée.
+        for apres in [Duration::ZERO, FRAICHEUR.saturating_sub(Duration::from_secs(60))] {
+            a.page_montree_a(None, fin + apres);
+            a.page_montree_a(Some(c), fin + apres);
+            assert_eq!(a.taches(), 0, "fraîche ({} s) : relancée", apres.as_secs());
+        }
+        // Vieille d'une heure et plus : relancée, une fois.
+        let vieille = fin + FRAICHEUR + Duration::from_secs(60);
+        a.page_montree_a(None, vieille);
+        for _ in 0..5 {
+            a.page_montree_a(Some(c), vieille);
+        }
+        assert_eq!(a.taches(), 1, "vieille d'une heure : pas relancée une fois");
+        finir_tout(&mut a);
     }
 
     #[test]

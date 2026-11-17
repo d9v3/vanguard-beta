@@ -985,12 +985,12 @@ fn mouvement(dossier: &Path) -> usize {
         toile.ecrire_png(&dossier.join(fichier)).unwrap();
         faites += 1;
     }
-    // Une carte de commande sous la souris : son fond s'éclaire, rien ne bouge.
+    // Une ligne de la liste d'une rubrique sous la souris : son fond s'éclaire, rien ne bouge.
     let mut rendu = Rendu::nouveau();
     super::appliquer_theme(&rendu.ctx, true);
     let mut appli = appli_remplie(false, true);
     appli.aller(Ecran::Rubrique(Rubrique::Ordinateur));
-    rendu.souris = Some(egui::pos2(700.0, 480.0));
+    rendu.souris = Some(egui::pos2(220.0, 490.0));
     let toile = rendu.rendre(taille, &[0.0, 0.5, 2.0], |ui| image(&mut appli, None, ui));
     toile.ecrire_png(&dossier.join("survol-ligne.png")).unwrap();
     let mut faites = faites + 1;
@@ -1344,17 +1344,13 @@ fn aucun_mot_n_est_ecrit_dans_une_couleur_de_gravite() {
 
 /// Un tour de la fenêtre entière (1920×1700 : la section des couleurs sans défiler), avec ces événements ; ses formes.
 fn tour(ctx: &Context, appli: &mut Appli, temps: &mut f64, events: Vec<egui::Event>) -> Vec<epaint::ClippedShape> {
-    *temps += 0.05;
-    let entree = egui::RawInput {
-        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1920.0, 1700.0))),
-        time: Some(*temps),
-        events,
-        ..Default::default()
-    };
-    let mut sortie = ctx.run_ui(entree, |ui| image(appli, None, ui));
-    sortie.textures_delta.clear();
-    sortie.shapes
+    tour_a(ctx, appli, temps, GRANDE, events)
 }
+
+/// La fenêtre entière des essais : la section des couleurs sans défiler.
+const GRANDE: [f32; 2] = [1920.0, 1700.0];
+/// Une fenêtre étroite (la plus petite permise) : une rubrique y garde ses cartes.
+const ETROITE: [f32; 2] = [960.0, 1700.0];
 
 /// Les mots écrits, et le centre de chacun.
 fn mots(formes: Vec<epaint::ClippedShape>) -> Vec<(String, Pos2)> {
@@ -1375,8 +1371,20 @@ fn mots(formes: Vec<epaint::ClippedShape>) -> Vec<(String, Pos2)> {
 
 /// Clique sur le mot `quoi` (il doit être écrit) ; les mots écrits après le clic.
 fn cliquer(ctx: &Context, appli: &mut Appli, temps: &mut f64, quoi: &str) -> Vec<(String, Pos2)> {
+    cliquer_a(ctx, appli, temps, GRANDE, quoi, 1)
+}
+
+/// Clique `fois` fois (2 : un double-clic) sur le mot `quoi` dans une fenêtre de `taille` ; les mots écrits après.
+fn cliquer_a(
+    ctx: &Context,
+    appli: &mut Appli,
+    temps: &mut f64,
+    taille: [f32; 2],
+    quoi: &str,
+    fois: usize,
+) -> Vec<(String, Pos2)> {
     use egui::{Event, Modifiers, PointerButton};
-    let vus = mots(tour(ctx, appli, temps, Vec::new()));
+    let vus = mots(tour_a(ctx, appli, temps, taille, Vec::new()));
     let ou = vus
         .iter()
         .find(|(m, _)| m == quoi)
@@ -1388,10 +1396,13 @@ fn cliquer(ctx: &Context, appli: &mut Appli, temps: &mut f64, quoi: &str) -> Vec
         pressed,
         modifiers: Modifiers::NONE,
     };
-    for e in [vec![Event::PointerMoved(ou)], vec![bouton(true)], vec![bouton(false)]] {
-        tour(ctx, appli, temps, e);
+    tour_a(ctx, appli, temps, taille, vec![Event::PointerMoved(ou)]);
+    for _ in 0..fois {
+        for e in [vec![bouton(true)], vec![bouton(false)]] {
+            tour_a(ctx, appli, temps, taille, e);
+        }
     }
-    mots(tour(ctx, appli, temps, Vec::new()))
+    mots(tour_a(ctx, appli, temps, taille, Vec::new()))
 }
 
 /// Un parametres.json que `vanguard couleurs` refuserait d'écraser : « Enregistrer… » ne propose rien, et la raison
@@ -1827,9 +1838,9 @@ fn une_carte_de_commande_s_ouvre_d_un_seul_geste() {
     let mut a = appli_remplie(false, true);
     a.aller(Ecran::Rubrique(rubrique));
     for _ in 0..4 {
-        tour(&ctx, &mut a, &mut temps, Vec::new());
+        tour_a(&ctx, &mut a, &mut temps, ETROITE, Vec::new());
     }
-    let vus = mots(tour(&ctx, &mut a, &mut temps, Vec::new()));
+    let vus = mots(tour_a(&ctx, &mut a, &mut temps, ETROITE, Vec::new()));
     let ouvrir = vus.iter().filter(|(m, _)| m == "Ouvrir →").count();
     assert_eq!(ouvrir, commandes.len(), "un « Ouvrir → » par carte");
     // Les cartes, du haut du titre de la première au bas de l'écran (la console, au-dessus, a ses propres
@@ -1853,15 +1864,15 @@ fn une_carte_de_commande_s_ouvre_d_un_seul_geste() {
         );
     }
     // À la souris : un clic sur la description (pas sur un bouton) ouvre la page de la commande.
-    cliquer(&ctx, &mut a, &mut temps, premiere.description());
+    cliquer_a(&ctx, &mut a, &mut temps, ETROITE, premiere.description(), 1);
     assert_eq!(a.ecran, crate::appli::ecran_de(premiere));
     // Au clavier : Tab jusqu'à la carte (le focus est sur elle quand sa zone couvre son titre), puis Entrée.
     let mut a = appli_remplie(false, true);
     a.aller(Ecran::Rubrique(rubrique));
     for _ in 0..4 {
-        tour(&ctx, &mut a, &mut temps, Vec::new());
+        tour_a(&ctx, &mut a, &mut temps, ETROITE, Vec::new());
     }
-    let titre = mots(tour(&ctx, &mut a, &mut temps, Vec::new()))
+    let titre = mots(tour_a(&ctx, &mut a, &mut temps, ETROITE, Vec::new()))
         .into_iter()
         .find(|(m, _)| m == premiere.titre())
         .expect("le titre de la carte")
@@ -1875,7 +1886,7 @@ fn une_carte_de_commande_s_ouvre_d_un_seul_geste() {
     };
     let mut sur_la_carte = false;
     for _ in 0..80 {
-        tour(&ctx, &mut a, &mut temps, vec![touche(Key::Tab)]);
+        tour_a(&ctx, &mut a, &mut temps, ETROITE, vec![touche(Key::Tab)]);
         let focus = ctx.memory(egui::Memory::focused).and_then(|id| ctx.read_response(id));
         if focus.is_some_and(|r| r.rect.contains(titre)) {
             sur_la_carte = true;
@@ -1883,8 +1894,8 @@ fn une_carte_de_commande_s_ouvre_d_un_seul_geste() {
         }
     }
     assert!(sur_la_carte, "Tab n'arrive jamais sur la carte");
-    tour(&ctx, &mut a, &mut temps, vec![touche(Key::Enter)]);
-    tour(&ctx, &mut a, &mut temps, Vec::new());
+    tour_a(&ctx, &mut a, &mut temps, ETROITE, vec![touche(Key::Enter)]);
+    tour_a(&ctx, &mut a, &mut temps, ETROITE, Vec::new());
     assert_eq!(a.ecran, crate::appli::ecran_de(premiere));
     // Le geste qui lance est resté sur la page de chaque commande ordinaire de la rubrique.
     let ordinaires: Vec<Commande> = commandes
@@ -1896,9 +1907,9 @@ fn une_carte_de_commande_s_ouvre_d_un_seul_geste() {
     for c in ordinaires {
         a.aller(Ecran::Commande(c));
         for _ in 0..4 {
-            tour(&ctx, &mut a, &mut temps, Vec::new());
+            tour_a(&ctx, &mut a, &mut temps, ETROITE, Vec::new());
         }
-        let vus = mots(tour(&ctx, &mut a, &mut temps, Vec::new()));
+        let vus = mots(tour_a(&ctx, &mut a, &mut temps, ETROITE, Vec::new()));
         // Sous le haut du titre de la page : la console, au-dessus, a ses propres « Relancer ».
         let titre = vus
             .iter()
@@ -1913,4 +1924,104 @@ fn une_carte_de_commande_s_ouvre_d_un_seul_geste() {
             c.titre()
         );
     }
+}
+
+/// En large, une rubrique est une liste à gauche et la page de la commande choisie à droite : un clic dans la liste
+/// change la page sans rien ajouter à « Retour » ; ↓ et ↑ changent de commande, Entrée ou F5 la relancent (une
+/// seule fois), un double-clic l'ouvre et la relance ; rien de cela quand un champ a le focus. Aller à la page d'une
+/// commande montre sa rubrique avec elle choisie.
+#[test]
+fn une_rubrique_large_est_une_liste_et_une_page() {
+    use egui::{Event, Key, Modifiers};
+    let ctx = Context::default();
+    super::polices(&ctx);
+    super::appliquer_theme(&ctx, true);
+    let mut temps = 1.0;
+    let rubrique = Rubrique::Ordinateur;
+    let commandes: Vec<Commande> = rubrique.commandes().collect();
+    let (premiere, deuxieme) = (commandes[0], commandes[1]);
+    let touche = |key| Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    };
+    let finir = |a: &mut Appli| {
+        a.annuler();
+        a.arreter();
+        while a.taches() > 0 {
+            a.avancer();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    };
+    let mut a = appli_remplie(false, true);
+    a.aller(Ecran::Accueil);
+    a.aller(Ecran::Rubrique(rubrique));
+    let retour = a.retour();
+    for _ in 0..4 {
+        tour(&ctx, &mut a, &mut temps, Vec::new());
+    }
+    let vus = mots(tour(&ctx, &mut a, &mut temps, Vec::new()));
+    assert_eq!(a.detail(), Some(premiere), "la première commande, la première fois");
+    for c in &commandes {
+        assert!(
+            vus.iter().any(|(m, _)| m == c.titre()),
+            "« {} » absente de la liste",
+            c.titre()
+        );
+    }
+    assert!(!vus.iter().any(|(m, _)| m == "Ouvrir →"), "des cartes en large");
+    // Un clic sur la deuxième ligne : la page change, « Retour » non.
+    cliquer(&ctx, &mut a, &mut temps, deuxieme.titre());
+    assert_eq!(a.detail(), Some(deuxieme));
+    assert_eq!(a.ecran, Ecran::Rubrique(rubrique));
+    assert_eq!(a.retour(), retour, "un clic dans la liste a changé « Retour »");
+    assert_eq!(a.taches(), 0, "un clic simple a lancé quelque chose");
+    // ↑ puis ↓, juste après le clic ; « Retour » ne bouge toujours pas.
+    tour(&ctx, &mut a, &mut temps, vec![touche(Key::ArrowUp)]);
+    assert_eq!(a.detail(), Some(premiere), "↑");
+    tour(&ctx, &mut a, &mut temps, vec![touche(Key::ArrowDown)]);
+    assert_eq!(a.detail(), Some(deuxieme), "↓");
+    assert_eq!(a.retour(), retour);
+    // Entrée relance la commande montrée ; F5 ensuite ne la double pas.
+    tour(&ctx, &mut a, &mut temps, vec![touche(Key::Enter)]);
+    assert_eq!(a.en_cours().map(|e| e.0), Some(deuxieme), "Entrée");
+    tour(&ctx, &mut a, &mut temps, vec![touche(Key::F5)]);
+    assert_eq!(a.taches(), 1, "F5 a doublé la commande en cours");
+    finir(&mut a);
+    tour(&ctx, &mut a, &mut temps, vec![touche(Key::F5)]);
+    assert_eq!(a.en_cours().map(|e| e.0), Some(deuxieme), "F5");
+    finir(&mut a);
+    // Un double-clic sur la première : choisie et relancée.
+    cliquer_a(&ctx, &mut a, &mut temps, GRANDE, premiere.titre(), 2);
+    assert_eq!(a.detail(), Some(premiere));
+    assert_eq!(a.en_cours().map(|e| e.0), Some(premiere), "double-clic");
+    assert_eq!(a.retour(), retour);
+    finir(&mut a);
+    // Un champ a le focus : les flèches et Entrée sont à lui.
+    let champ = egui::Id::unique("un-champ-des-essais");
+    for k in [Key::ArrowDown, Key::Enter] {
+        ctx.memory_mut(|m| m.request_focus(champ));
+        tour(&ctx, &mut a, &mut temps, vec![touche(k)]);
+        assert_eq!(a.detail(), Some(premiere), "{k:?} pris malgré le focus");
+        assert_eq!(a.taches(), 0, "{k:?} a lancé malgré le focus");
+    }
+    // La page d'une commande d'une autre rubrique : sa rubrique, elle choisie.
+    a.aller(Ecran::Commande(Commande::Demarrage));
+    for _ in 0..4 {
+        tour(&ctx, &mut a, &mut temps, Vec::new());
+    }
+    let vus = mots(tour(&ctx, &mut a, &mut temps, Vec::new()));
+    assert_eq!(a.detail(), Some(Commande::Demarrage));
+    for c in Commande::Demarrage.rubrique().commandes() {
+        assert!(
+            vus.iter().any(|(m, _)| m == c.titre()),
+            "« {} » absente de la liste",
+            c.titre()
+        );
+    }
+    // Revenir à la première rubrique : sa page retenue.
+    a.aller(Ecran::Rubrique(rubrique));
+    assert_eq!(a.detail(), Some(premiere), "la page retenue de la rubrique");
 }

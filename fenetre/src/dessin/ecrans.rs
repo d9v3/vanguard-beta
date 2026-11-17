@@ -26,7 +26,14 @@ const EVENEMENTS_MAX: usize = 200;
 /// lisible mais lent à dessiner à chaque image.
 const APPAREILS_MAX: usize = 300;
 
-pub fn montrer(appli: &mut Appli, ui: &mut Ui) {
+/// La largeur utile (à droite du rail et hors des coulisses) d'où une rubrique montre sa liste et sa page côte à
+/// côte ; en dessous, ses cartes.
+pub const LARGEUR_LISTE_ET_PAGE: f32 = 900.0;
+/// La largeur de la liste d'une rubrique, à gauche de sa page.
+pub const LARGEUR_LISTE: f32 = 260.0;
+
+/// L'écran montré ; `detail` : la page d'une commande à côté de la liste de sa rubrique (fenêtre large).
+pub fn montrer(appli: &mut Appli, ui: &mut Ui, detail: Option<Commande>) {
     if appli.retour().is_some() {
         let rep = petit(ui, crate::tr!("← Retour", "← Back"), true)
             .on_hover_text(crate::tr!(
@@ -40,6 +47,9 @@ pub fn montrer(appli: &mut Appli, ui: &mut Ui) {
         }
         ui.add_space(12.0);
     }
+    if let Some(c) = detail {
+        return page(appli, ui, c);
+    }
     match appli.ecran {
         Ecran::Accueil => accueil(appli, ui),
         Ecran::Bilan | Ecran::Commande(Commande::Bilan) => bilan::ecran(appli, ui),
@@ -49,6 +59,142 @@ pub fn montrer(appli: &mut Appli, ui: &mut Ui) {
         Ecran::Rubrique(r) => rubrique(appli, ui, r),
         Ecran::Commande(c) => commande(appli, ui, c),
         Ecran::Guide => guide(appli, ui),
+    }
+}
+
+/// La page d'une commande, seule ou à côté de la liste de sa rubrique : la même dans les deux cas.
+fn page(appli: &mut Appli, ui: &mut Ui, c: Commande) {
+    match c {
+        Commande::Bilan => bilan::ecran(appli, ui),
+        Commande::Evenements => alertes(appli, ui),
+        Commande::Appareils => appareils(appli, ui),
+        c => commande(appli, ui, c),
+    }
+}
+
+/// La liste d'une rubrique, à gauche de la page de `montree` (fenêtre large) : une ligne par commande, son titre et
+/// son état en court. Un clic montre sa page à droite (`Appli::choisir` : rien de plus dans « Retour ») ; un
+/// double-clic la montre et la relance.
+pub fn liste_rubrique(appli: &mut Appli, ui: &mut Ui, montree: Commande) {
+    let p = pal();
+    let r = montree.rubrique();
+    ui.spacing_mut().item_spacing.y = 4.0;
+    ui.label(RichText::new(r.nom()).font(moyenne(18.0)).color(p.encre));
+    ui.add_space(14.0);
+    let largeur = ui.available_width() - 16.0;
+    for c in r.commandes() {
+        let choisie = c == montree;
+        let tourne = tourne(appli, c);
+        let titre = ui
+            .painter()
+            .layout(c.titre().to_owned(), moyenne(14.0), p.encre, largeur - 24.0);
+        let etat_couleur = if tourne { p.accent } else { p.discret };
+        let etat = ui
+            .painter()
+            .layout(etat_court(appli, c), super::police(12.0), etat_couleur, largeur - 24.0);
+        let hauteur = 10.0 + titre.size().y + 2.0 + etat.size().y + 10.0;
+        let zone = ui.allocate_space(vec2(largeur, hauteur)).1;
+        let rep = ui.interact(zone, id_de_ligne(c), Sense::click());
+        let vif = if choisie {
+            1.0
+        } else {
+            super::survol(ui, rep.id, rep.hovered())
+        };
+        let peintre = ui.painter();
+        if vif > 0.0 {
+            peintre.rect_filled(zone, 8, p.s2.gamma_multiply(vif));
+        }
+        if choisie {
+            let trait_ =
+                eframe::egui::Rect::from_min_size(zone.left_top() + vec2(0.0, 10.0), vec2(3.0, hauteur - 20.0));
+            peintre.rect_filled(trait_, 2, p.accent);
+        }
+        let encre = if choisie {
+            p.encre
+        } else {
+            p.doux.lerp_to_gamma(p.encre, vif)
+        };
+        let haut_etat = zone.top() + 10.0 + titre.size().y + 2.0;
+        peintre.galley(zone.left_top() + vec2(12.0, 10.0), titre, encre);
+        peintre.galley(pos2(zone.left() + 12.0, haut_etat), etat, etat_couleur);
+        rep.widget_info(|| WidgetInfo::selected(Role::Button, true, choisie, c.titre()));
+        super::clavier::anneau(ui, &rep, 8.0);
+        if rep.double_clicked() {
+            appli.choisir(c);
+            appli.relancer(c);
+        } else if rep.clicked() {
+            appli.choisir(c);
+        }
+        rep.on_hover_cursor(eframe::egui::CursorIcon::PointingHand)
+            .on_hover_text(crate::trf!(
+                "Montrer {} à droite · double-clic : la relancer · ↑ ↓ : une autre commande · Entrée ou F5 : relancer",
+                "Show {} on the right · double-click: run it again · ↑ ↓: another command · Enter or F5: run again",
+                c.titre()
+            ));
+    }
+}
+
+/// L'identifiant de la ligne d'une commande dans la liste : le même d'une image à l'autre, pour y garder le focus.
+fn id_de_ligne(c: Commande) -> Id {
+    Id::unique(("ligne-de-la-liste", c))
+}
+
+/// L'état d'une commande dans la liste, en court : en cours, en attente, ou depuis quand elle est lue.
+fn etat_court(appli: &Appli, c: Commande) -> String {
+    if tourne(appli, c) {
+        return crate::tr!("En cours", "Running").into();
+    }
+    if appli.en_attente(c) {
+        return crate::tr!("En attente", "Queued").into();
+    }
+    match appli.resultat(c) {
+        Some(r) if matches!(r.contenu, Contenu::Erreur(_)) => {
+            crate::trf!("Échec {}", "Failed {}", super::console::depuis(r.fin.elapsed()))
+        }
+        Some(r) => crate::trf!("Lu {}", "Read {}", super::console::depuis(r.fin.elapsed())),
+        None => crate::tr!("Pas encore lancée", "Not run yet").into(),
+    }
+}
+
+/// Le clavier de la liste d'une rubrique, quand rien n'a le focus ou qu'il est sur une ligne de la liste (pas sur la
+/// saisie de la console ni sur un bouton : ses flèches et Entrée sont à lui) et qu'aucune confirmation n'est
+/// ouverte : ↑ et ↓ montrent la commande d'avant ou d'après (le focus suit, s'il était sur la liste), Entrée ou F5
+/// relance celle montrée (la garde du bouton : `Appli::relancer`). F5 vaut aussi quand un bouton a le focus, jamais
+/// pendant une saisie.
+pub fn clavier_de_la_liste(appli: &mut Appli, ctx: &eframe::egui::Context, montree: Commande) {
+    use eframe::egui::{Key, Modifiers};
+    if appli.feuille_correction().is_some() || appli.confirmation().is_some() || appli.confirmation_couleurs().is_some()
+    {
+        return;
+    }
+    let liste: Vec<Commande> = montree.rubrique().commandes().collect();
+    let sur_la_liste = ctx.memory(|m| m.focused().map(|f| liste.iter().any(|c| id_de_ligne(*c) == f)));
+    let libre = sur_la_liste != Some(false);
+    let saisie = ctx.egui_wants_keyboard_input();
+    let (haut, bas, entree, f5) = ctx.input_mut(|i| {
+        (
+            libre && i.consume_key(Modifiers::NONE, Key::ArrowUp),
+            libre && i.consume_key(Modifiers::NONE, Key::ArrowDown),
+            libre && i.consume_key(Modifiers::NONE, Key::Enter),
+            !saisie && i.consume_key(Modifiers::NONE, Key::F5),
+        )
+    });
+    let ici = liste.iter().position(|c| *c == montree).unwrap_or(0);
+    let voisine = if haut {
+        ici.checked_sub(1)
+    } else if bas {
+        Some(ici + 1)
+    } else {
+        None
+    };
+    if let Some(c) = voisine.and_then(|k| liste.get(k)) {
+        appli.choisir(*c);
+        if sur_la_liste == Some(true) {
+            ctx.memory_mut(|m| m.request_focus(id_de_ligne(*c)));
+        }
+    }
+    if entree || f5 {
+        appli.relancer(montree);
     }
 }
 
@@ -397,8 +543,8 @@ fn cartes_commandes(appli: &mut Appli, ui: &mut Ui, commandes: Vec<Commande>) {
             });
         });
         let rep = rep.on_hover_text(crate::trf!(
-            "Ouvrir la page {} : la lancer s'y fait",
-            "Open the {} page: running it is done there",
+            "Ouvrir la page {} : on l'y lance ; une lecture rapide pas lue depuis une heure s'y relance seule",
+            "Open the {} page: run it from there; a quick read not done in the last hour runs again by itself",
             c.titre()
         ));
         if rep.clicked() {
@@ -873,8 +1019,9 @@ fn protection_liste(ui: &mut Ui, v: &protection::Vue) {
                     ui.painter()
                         .circle_filled(pos2(z.left() + 4.0, z.center().y), 4.0, couleur);
                     ui.label(RichText::new(&i.nom).font(moyenne(14.0)).color(p.encre));
+                    // Le mot d'état à l'encre : la couleur de gravité ne marque que son point.
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.label(texte(&i.etat, 13.0, couleur));
+                        ui.label(texte(&i.etat, 13.0, p.doux));
                     });
                 })
             });
