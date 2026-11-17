@@ -576,30 +576,43 @@ mod tests {
 
     /// Deux Vanguard qui déclarent en même temps (le blocage en direct, une sortie de quarantaine) ne s'effacent pas :
     /// relue avant le verrou des sceaux, la liste de l'un était réécrite sans le choix de l'autre (vu sous Wine : la
-    /// sortie de quarantaine oubliée, le fichier y serait retourné à la passe suivante).
+    /// sortie de quarantaine oubliée, le fichier y serait retourné à la passe suivante). Sans compter sur le hasard
+    /// d'une collision (8 fils × 10 la manquaient une fois sur deux, et dépassaient les 60 s du verrou sur un runner
+    /// Windows lent) : l'essai tient le verrou comme un autre Vanguard, une déclaration doit l'attendre, et ce que
+    /// l'autre écrit pendant ce temps reste.
     #[test]
     fn declarations_simultanees_toutes_gardees() {
         let d = crate::protection::isoler::dossier_jetable().unwrap();
+        let (avant, pendant, apres) = (
+            cle_blocage("essai:avant"),
+            cle_blocage("essai:pendant"),
+            cle_blocage("essai:apres"),
+        );
+        declarer_dans(&d, &avant, "blocage", "t", "x").unwrap();
+        let autre = verrou(&d, "essai").unwrap();
         std::thread::scope(|s| {
-            for fil in 0..8 {
-                let d = &d;
-                s.spawn(move || {
-                    for i in 0..10 {
-                        declarer_dans(d, &cle_blocage(&format!("essai:{fil}-{i}")), "blocage", "t", "x").unwrap();
-                    }
-                });
-            }
+            let declaration = s.spawn(|| declarer_dans(&d, &apres, "blocage", "t", "x"));
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            assert!(!declaration.is_finished(), "la déclaration n'a pas attendu le verrou");
+            // L'autre Vanguard écrit, verrou tenu, ce qu'il a relu lui-même.
+            let mut n = charger_de(&d).unwrap();
+            n.alertes.insert(
+                pendant.clone(),
+                Normale {
+                    genre: "blocage".into(),
+                    titre: "t".into(),
+                    texte: "x".into(),
+                    le: aujourd_hui().format("%Y-%m-%d").to_string(),
+                },
+            );
+            enregistrer_vers(&d, &n).unwrap();
+            drop(autre);
+            declaration.join().unwrap().unwrap();
         });
         let n = charger_de(&d).unwrap();
-        let perdues: Vec<_> = (0..8)
-            .flat_map(|fil| (0..10).map(move |i| cle_blocage(&format!("essai:{fil}-{i}"))))
-            .filter(|c| !n.alertes.contains_key(c))
-            .collect();
-        assert!(
-            perdues.is_empty(),
-            "{} déclaration(s) perdue(s) : {perdues:?}",
-            perdues.len()
-        );
+        for cle in [&avant, &pendant, &apres] {
+            assert!(n.alertes.contains_key(cle), "déclaration perdue : {cle}");
+        }
         let _ = std::fs::remove_dir_all(&d);
     }
 

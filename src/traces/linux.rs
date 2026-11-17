@@ -1316,6 +1316,14 @@ fn ecarts_du_journal(
     (manque(&n, &t), manque(&t, &n))
 }
 
+/// Les entrées du témoin. Coupé à sa borne à l'octet près, il peut finir au milieu d'une lettre (« é » : deux
+/// octets) : relu en UTF-8 strict, il échouait en entier et passait pour vide, et toutes les entrées des fichiers
+/// semblaient cachées par journalctl (fausse alerte, vue sur un journal de 150 Mo par semaine). La lettre coupée est
+/// remplacée ; elle ne touche que la dernière ligne, la plus ancienne seconde, qui ne se compare déjà pas.
+fn entrees_du_temoin(octets: &[u8]) -> Vec<(i64, String)> {
+    String::from_utf8_lossy(octets).lines().filter_map(prefixe).collect()
+}
+
 /// journalctl à côté du relevé, en témoin (10 Mo, les plus récentes), et l'écart entre les deux : une entrée lue
 /// dans les fichiers et absente de journalctl (un journalctl remplacé qui la cache), ou l'inverse.
 fn temoin_journalctl(p: &mut Partie, dossier: &Path, natifs: &[(i64, String)], debut_du_releve: i64) {
@@ -1363,8 +1371,14 @@ fn temoin_journalctl(p: &mut Partie, dossier: &Path, natifs: &[(i64, String)], d
                 return;
             }
             // Borné (le témoin fait 10 Mo au plus), en simple fichier : rien de posé à sa place ne fige la collecte.
-            let texte = crate::socle::lire_texte_ordinaire(&dossier.join(TEMOIN_ECRIT), 32 << 20).unwrap_or_default();
-            let temoin: Vec<(i64, String)> = texte.lines().filter_map(prefixe).collect();
+            // Illisible : dit, jamais pris pour un témoin vide (toutes les entrées passeraient pour cachées).
+            let temoin = match crate::socle::lire_ordinaire(&dossier.join(TEMOIN_ECRIT), 32 << 20) {
+                Ok(octets) => entrees_du_temoin(&octets),
+                Err(e) => {
+                    p.manque(titre, Raison::Erreur(e.to_string()));
+                    return;
+                }
+            };
             let (cachees, en_plus) = ecarts_du_journal(natifs, &temoin, debut_du_releve, ecrit.tronque);
             if cachees > 0 || en_plus > 0 {
                 p.manque(
@@ -1845,6 +1859,20 @@ mod tests {
     }
 
     /// L'oracle du journal complet dans les traces : écrit par Vanguard, avec journalctl en témoin, sans écart.
+    /// Un témoin coupé à sa borne dans une lettre se lit quand même : ses entrées restent (lu strictement, il passait
+    /// pour vide et tout le journal pour caché).
+    #[test]
+    fn temoin_coupe_dans_une_lettre() {
+        let mut coupe =
+            "2026-10-24T06:36:34-04:00 hote sshd[42]: Accepted\n2026-10-24T06:36:33-04:00 hote vg[7]: d\u{e9}j\u{e0}"
+                .as_bytes()
+                .to_vec();
+        // Le dernier octet de « à » retiré : la lettre est coupée.
+        coupe.pop();
+        let lues = entrees_du_temoin(&coupe);
+        assert_eq!(lues.len(), 2, "{lues:?}");
+    }
+
     #[test]
     fn journal_de_cette_machine() {
         let dossier = crate::socle::dossier_local().join("traces-journal");

@@ -410,13 +410,17 @@ mod tests {
         assert_eq!(relations_externes(&texte_xml(&bom)), ["https://exemple.invalid/m.dotm"]);
         let commentaire = r#"<!-- <Relationship Target="https://faux.invalid" TargetMode="External"/> --><?xml version="1.0"?><x:Relationship xmlns:x="r" x:Target='&amp;b' x:TargetMode='EXTERNAL'/>"#;
         assert_eq!(relations_externes(commentaire), ["&b"]);
-        // Des esperluettes en masse : linéaire (un Mio en bien moins d'une seconde, même non optimisé).
-        let debut = std::time::Instant::now();
-        assert_eq!(entites(&"&".repeat(1 << 20)).len(), 1 << 20);
-        assert!(
-            debut.elapsed() < std::time::Duration::from_secs(5),
-            "{:?}",
-            debut.elapsed()
+        // Des esperluettes en masse : linéaire. Un Mio prend moins d'une seconde seul, 13 s sous Wine sur une machine
+        // chargée (une borne de 5 s y échouait) ; au carré, ce serait des heures : 60 s les séparent sans dépendre de
+        // la charge, et l'essai n'attend pas la fin d'un calcul au carré pour échouer.
+        let (envoi, recu) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = envoi.send(entites(&"&".repeat(1 << 20)).len());
+        });
+        assert_eq!(
+            recu.recv_timeout(std::time::Duration::from_secs(60)),
+            Ok(1 << 20),
+            "plus de 60 s pour un Mio d'esperluettes : le coût n'est plus linéaire"
         );
         assert_eq!(entites("&amp;&#x41;&lt"), "&A&lt");
         // La borne des éléments : dit coupé.

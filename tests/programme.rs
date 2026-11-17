@@ -1592,7 +1592,7 @@ fn remettre_comme_avant_exactement_une_seule_fois() {
     let (c, note, accord) = loop {
         essais += 1;
         assert!(
-            essais <= 5,
+            essais <= 8,
             "machine trop lente : jamais moins de 2 s entre l'aperçu et l'accord"
         );
         let c = Compte::nouveau();
@@ -1603,6 +1603,10 @@ fn remettre_comme_avant_exactement_une_seule_fois() {
         assert_eq!(lignes[0]["geste"]["jeton"], note.as_str(), "{lignes:?}");
         // L'aperçu : rien d'autre que le carnet ne change.
         let avant = instantane(&c.chemin(""));
+        // Pris AVANT le premier aperçu, comme le veut `refuse_trop_tot` : l'accord peut être daté de celui-ci (le
+        // second, par le synonyme, ne le remplace que s'il prend le verrou du carnet à temps) ; pris entre les deux, l'âge vu par le programme
+        // dépassait le temps mesuré, et un geste passé pour de bon semblait accepté trop tôt (vu sous la charge).
+        let depart = Instant::now();
         let (code, r) = c.voir_annulation(&note);
         assert!(code == Some(0) && r["issue"] == "fait", "{code:?} {r}");
         let changes = hors_carnet(ecarts(&avant, &instantane(&c.chemin(""))));
@@ -1624,7 +1628,6 @@ fn remettre_comme_avant_exactement_une_seule_fois() {
         );
         assert_eq!(r["apercu"]["droits"], "compte", "{r}");
         let accord = r["accord"].as_str().expect("pas d'accord").to_string();
-        let depart = Instant::now();
         // Même forme par le synonyme anglais : même accord.
         let (sortie, r2) = c.lancer(&["changes", "--show", &note, "--json"]);
         assert_eq!(
