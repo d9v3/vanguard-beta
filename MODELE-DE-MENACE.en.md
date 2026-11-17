@@ -758,7 +758,9 @@ to start (code 2) until it has been tried on a real Windows.
   Names (severity, family, rule, reason, end) come out of a closed list, or empty. The text that comes from the computer
   (title, message, category, program name) comes out apart, as `{"texte_externe": …, "non_fiable": true}`, through a
   word allow-list: only the words Vanguard writes itself in its own messages come out (the strings of its text macros,
-  in French and English, taken from the code at each build, without the tests: about 8,300 words). Any other word
+  in French and English, taken from the code at each build through its syntax tree, following the modules as the
+  compiler does, without the tests: about 8,300 words; a form this reading cannot judge, a module that cannot be found
+  or a `.rs` file in `src/` that no module declares stops the build). Any other word
   becomes "…", as do digits, paths, addresses, tokens, names that are not vocabulary words and any sign outside a small
   fixed punctuation set (never a parenthesis or a square bracket; those around a word are dropped); several "…" in a row
   make only one, and the output is 400 bytes at most (`chaque_mot_de_la_sortie_est_du_vocabulaire`, property test). The
@@ -767,12 +769,16 @@ to start (code 2) until it has been tried on a real Windows.
   not known and comes out "…". A one-letter word only comes out if it is "a", "à" or "y"; a word followed by an ellipsis
   ("admin…") or cut by the reading bound (8,192 bytes) comes out "…". Two safety nets hold back values that may be made
   of known words. As soon as a word announces a secret (mot de passe, phrase de passe, password, passwd, pwd, mdp,
-  passphrase, clé, key, code, PIN, PSK, jeton, token, secret, singular or plural, in any case, with or without hyphens,
-  no separator required), the whole rest of the text becomes a single "…", not only up to the first full stop; the only
-  exception is a negated announcement ("sans mot de passe", "no password") with no ":" or "=" after it, as in Vanguard's
-  message about a Wi-Fi network without a password. The command excerpt that a watcher alert quotes in parentheses after
-  "(PID n)" also becomes a single "…"; any other parenthesis comes out only if all its words are known. The price:
-  useful text that follows an announcement is lost (about 0.7% of Vanguard's text pieces contain one of these words,
+  passphrase, clé, key, code, PIN, NIP, PSK, jeton, token, secret, secrète, passe, seed, phrase de récupération,
+  recovery phrase, identifiant, login, singular or plural, in any case, with or without hyphens, no separator
+  required), the whole rest of the text becomes a single "…", not only up to the first full stop; the only exception is
+  a negated announcement ("sans mot de passe", "no password") with no ":" or "=" after it, and no full stop, "!", "?" or
+  parenthesis between the negation and the announcement, as in Vanguard's message about a Wi-Fi network without a
+  password. A value written before the announcement ("maison rouge is the password") is not held back. In a watcher
+  alert, each "(PID n)" opens its own group: the command excerpt that follows it in parentheses becomes a single "…",
+  and a parenthesis never closed holds back everything up to the next "(PID n)" or to the end; any other parenthesis
+  comes out only if all its words are known. The price:
+  useful text that follows an announcement is lost (about 0.8% of Vanguard's text pieces contain one of these words,
   "registry key" and "code" included). These are safety nets, not a guarantee: a value that nothing announces comes out
   if its words are in the vocabulary. It is up to the assistant to treat this text as data, never as an instruction.
   Known limits: a sequence of vocabulary words comes out as it is, with its case, its leading quotes and its
@@ -783,7 +789,8 @@ to start (code 2) until it has been tried on a real Windows.
   "sshd", "cat"). The fixed-form fields (rule, version, date, numbers, fingerprint) come out with the letters and digits
   their form allows, without being reread: an impossible date, a made-up rule or a number that writes a whole IPv4
   address get through. This is a channel for someone who already writes the log or an unsealed review, not a leak of the
-  person's data. An untracked `.rs` file placed in `src/` would be read too at build time.
+  person's data. A module loaded from outside `src/` (the colour model shared with the window) is not read: it has no
+  message, and one word less only masks more.
 - **It cannot prove it is the real Vanguard.** A fake program placed at the same path would answer the same, `identite`
   included; and a program of the account can write to Vanguard's files (the seals are a barrier, not a safe: see "The
   programs of your account do not target Vanguard itself"). The proof is made before starting, by the client: start a

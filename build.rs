@@ -205,6 +205,7 @@ fn vocabulaire() {
         .collect();
     let sortie = std::env::var("OUT_DIR").expect("OUT_DIR");
     let mut texte = sources::vocabulaire(&sources)
+        .expect("lecture des sources pour le vocabulaire")
         .into_iter()
         .collect::<Vec<_>>()
         .join("\n");

@@ -672,13 +672,22 @@ fn session_brute(dossier: &std::path::Path) -> Vec<String> {
                 .map(str::to_string)
         });
     if let Some(avant) = suivant {
+        // Mêmes bornes et même bilan exigé : une page 2 manquante ferait passer les essais de contenu sans l'avoir lue.
         let mut porte = outils::Porte::new(dossier.to_path_buf(), vues::Liens::fixes());
         let demande = json!({ "jsonrpc": "2.0", "id": 99, "method": "tools/call",
                               "params": { "name": "evenements", "arguments": { "limite": 2, "avant": avant } } });
         let mut sortie = Vec::new();
         let entree = Cursor::new(format!("{INIT}\n{demande}\n").into_bytes());
-        servir_muet(entree, &mut sortie, &mut porte, courtes());
-        reponses.extend(String::from_utf8(sortie).unwrap().lines().map(str::to_string));
+        let bilan = servir_muet(entree, &mut sortie, &mut porte, bornes);
+        assert_eq!(bilan.fin, Fin::FlotFini, "page suivante : {bilan:?}");
+        let page: Vec<String> = String::from_utf8(sortie).unwrap().lines().map(str::to_string).collect();
+        assert!(
+            page.iter()
+                .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+                .any(|r| r["id"] == 99 && r.get("result").is_some()),
+            "pas de réponse d'id 99 à la page suivante : {page:?}"
+        );
+        reponses.extend(page);
     }
     reponses
 }

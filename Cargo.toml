@@ -120,6 +120,11 @@ opt-level = 3
 
 [build-dependencies]
 winresource = "0.1.34"
+# Lecture des sources pour le vocabulaire de la porte MCP (src/porte_mcp/sources.rs, par build.rs et par ses essais) :
+# l'arbre syntaxique, comme le compilateur, au lieu d'une lecture du texte faite à la main. Déjà dans l'arbre des
+# dépendances (serde_derive, clap_derive, tokio-macros), même auteur ; jamais dans le programme publié.
+syn = { version = "3.0.9", default-features = false, features = ["full", "parsing", "visit"] }
+proc-macro2 = { version = "1.0.107", default-features = false }
 
 # Mode strict de clippy (pedantic) par défaut, sauf trois règles qui ne sont ici que du bruit :
 # noms propres dans les commentaires en français, longues fonctions d'audit, `use ui::*`.
@@ -167,6 +172,11 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)", "cfg(kani)"] }
 
 [dev-dependencies]
 proptest = "1.12.0"
+# La même lecture des sources pour le vocabulaire de la porte MCP (src/porte_mcp/sources.rs, par build.rs et par ses essais) :
+# l'arbre syntaxique, comme le compilateur, au lieu d'une lecture du texte faite à la main. Déjà dans l'arbre des
+# dépendances (serde_derive, clap_derive, tokio-macros), même auteur ; jamais dans le programme publié.
+syn = { version = "3.0.9", default-features = false, features = ["full", "parsing", "visit"] }
+proc-macro2 = { version = "1.0.107", default-features = false }
 # Oracle du lecteur .evtx maison (src/journaux_windows/evtx/) : la lecture croisée de ses tests compare nos
 # événements aux siens. Jamais dans le programme (une dépendance de plus qui lirait des données hostiles), sans ses
 # fonctions par défaut (le programme evtx_dump, rayon). 0.15.1 : jusqu'à la 0.14.0, le lecteur .wevtcache alloue la

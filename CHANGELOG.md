@@ -17,27 +17,39 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
   qu'elle rend comme non fiable. Un texte venu de l'ordinateur (message d'un constat, titre d'une alerte, nom d'un
   programme) n'en sort que fait des mots que Vanguard écrit lui-même dans ses messages, en français et en anglais ; tout
   autre mot, chiffre ou signe devient « … », ce qui retient les chemins, les adresses et toute valeur à chiffres ou à
-  signes. Après un mot qui annonce un secret (mot de passe, clé, code, PIN, jeton, secret…), tout le reste du texte est
-  retenu, et l'extrait de commande d'une alerte du veilleur aussi ; le prix : une phrase utile qui suit un de ces mots
-  est perdue. Limites, dites au modèle de menace : un nom fait de mots de Vanguard (« admin », « maison ») sort, avec sa
-  casse ; un attaquant qui écrit sur l'ordinateur peut composer une phrase avec ces mots ; les champs à forme fixe
-  (règle, version, date, nombres) sortent sans être relus. Une session servie est notée dans le journal, sans jamais le
+  signes. Ces mots sont lus dans le code à chaque compilation, par son arbre syntaxique, comme le compilateur suit les
+  modules, sans les essais ; une forme que cette lecture ne sait pas juger arrête la compilation. Après un mot qui
+  annonce un secret (mot de passe, clé, code, PIN, NIP, jeton, secret, seed, phrase de récupération, identifiant,
+  login…), tout le reste du texte est retenu, et l'extrait de commande de chaque programme d'une alerte du veilleur
+  aussi ; le prix : une phrase utile qui suit un de ces mots est perdue. Limites, dites au modèle de menace : un nom fait
+  de mots de Vanguard (« admin », « maison ») sort, avec sa casse ; une valeur écrite avant l'annonce (« maison rouge
+  est le mot de passe ») n'est pas retenue ; un attaquant qui écrit sur l'ordinateur peut composer une phrase avec ces
+  mots ; les champs à forme fixe (règle, version, date, nombres) sortent sans être relus. Une session servie est notée dans le journal, sans jamais le
   remplir ; un programme qui lui envoie des messages anormaux est coupé, et une alerte le dit. Elle refuse de démarrer
   sous un plafond de taille de fichier (`ulimit -f`), qui pourrait couper sa note au milieu ; une note coupée malgré
   tout est défaite, et le journal reste lisible. Après 15 minutes de silence, elle se ferme ; l'assistant la relance.
   Sous Windows, la commande refuse de démarrer tant qu'elle n'a pas été essayée sur un vrai Windows.
-- **Le masqueur des adresses, commun au journal des erreurs et au brouillon de signalement, en retient plus.** Une
-  adresse IPv4 portée dans une IPv6 (« ::ffff:… »), une adresse IPv4 suivie d'un port (« .443 », « .123456 ») ou de
-  lettres collées (« .443x », « 23abc »), une adresse IPv6 pleine suivie d'un point, une zone écrite avec des points,
-  des tirets ou des points idéographiques (« 。 ») sont maintenant masquées en entier, sans qu'un morceau en reste ; un
-  mot collé après le point (« 5::6.Le reste ») garde sa place. Un numéro nommé (après « version », « build »,
-  « section », « contrôle », « règle », « paquet », « pilote », « release » et leurs formes anglaises : « version
-  1.2.3.4.5 », « paquet 1.2.3.4rc1 ») reste lisible. Limites connues : une adresse IPv6 écrite sans aucun chiffre
-  (« fd::ab ») ressemble trop à un mot pour être reconnue ; une adresse IPv4 suivie de deux nombres ou plus
-  (« .443.80 ») reste en clair, prise pour un numéro de version ; un numéro de quatre nombres est pris pour une adresse
-  même nommé (« version 6.1.0.2 » garde son nom, pas ses nombres), comme une version à suffixe que rien ne nomme
-  (« firefox 128.0.3.0esr »). Par la porte des assistants, aucune de ces formes ne sort : ce ne sont pas des mots de
-  Vanguard.
+- **Le masqueur des adresses, commun au journal des erreurs et au brouillon de signalement, en retient plus.** Dans
+  le doute, il masque. Une adresse IPv4 portée dans une IPv6 (« ::ffff:… ») ; une adresse IPv4 suivie d'un port
+  (« .443 », « .123456 ») ou de lettres collées (« .443x », « 23abc »), quel que soit le mot qui la précède (« paquet »,
+  « règle », « version », « -v ») ; une adresse IPv6 pleine suivie d'un point, d'un port (« …:ef01:443 ») ou d'une IPv4
+  (« …:abcd:198.51.100.23 ») ; une adresse IPv6 suivie d'un deux-points (« fd12:…:6: Connection refused »,
+  « fe80::1%eth0: … », « %eth0:546 »), précédée d'une étiquette collée (« addr:fd12::7 ») ou d'un point
+  (« fd12::7.fd12::8 », « ...10.0.0.5 ») ; une zone écrite avec des tirets, des traits bas ou un point suivi d'un
+  chiffre (« %br-lan », « %eth0.100 ») ; des points idéographiques (« 。 ») : tout cela est maintenant masqué en entier.
+  Un mot collé après le point (« 5::6.Le reste ») garde sa place. Ne restent lisibles que des numéros qui ne peuvent pas
+  être une adresse avec son port : une version à suffixe connu (« 1.2.3.4rc1 », « 4.19.0.0beta », « alpha », « esr ») ;
+  après « version », « build », « section », « contrôle », « pilote », « release » et leurs formes anglaises, un
+  cinquième nombre d'un ou deux chiffres derrière un premier nombre sous 100 (« version 1.2.3.4.5 ») ; une suite de six
+  nombres ou plus (« 1.2.3.4.5.6 »). Limites connues : « version 10.0.0.5.22 » reste donc en clair (une adresse privée
+  et un port de deux chiffres après un de ces mots), comme une adresse suivie de deux nombres ou plus (« .443.80 »),
+  prise pour une version ; une adresse collée derrière des lettres ou un chiffre (« hôte198.51.100.23 »,
+  « 0198.51.100.23 ») reste en clair ; une adresse IPv6 écrite sans aucun chiffre (« fd::ab ») ressemble trop à un mot
+  pour être reconnue ; un point suivi de lettres finit la zone (« %eth0.vlan5 » laisse « .vlan5 »), et un nom d'hôte
+  collé après une IPv4 portée mal formée reste (« ::ffff:300.1.2.3.exemple.test » laisse « .exemple.test ») : aucun
+  octet d'adresse n'en sort ; un numéro de quatre nombres est pris pour une adresse même nommé (« version 6.1.0.2 »
+  garde son nom, pas ses nombres). Par la porte des assistants, aucune de ces formes ne sort : ce ne sont pas des mots
+  de Vanguard.
 
 ## 15 novembre 2026 : version 0.96.0
 

@@ -878,37 +878,61 @@ apres "$H_COMPILE" "$H_PAGE" "$H_CAPTURES" && ko "publier : CI acceptée sur un 
   ok "publier : CI refusée sur un commit d'avant, le même, un nom abrégé ou symbolique, un commit inconnu" ||
   ko "publier : CI d'un commit d'avant, abrégé, symbolique ou inconnu acceptée comme descendant"
 # Ce que la liste dit hors de la compilation ne l'est pas : rien de src/, build.rs ni Cargo.toml ne cite ces
-# chemins, et build.rs ne parcourt qu'un dossier, src/, pour le vocabulaire de la porte des assistants
-# (fichiers_rs : les seuls .rs, appelée sur "src" et sur ses sous-dossiers, liens symboliques ni suivis ni lus) ;
-# aucun .rs de src/ n'est dans la liste. La lecture elle-même (src/porte_mcp/sources.rs, seul module que build.rs
-# inclut) ne touche pas au disque. Compté sur le fichier entier, pas filtré ligne par ligne : une ligne de parcours
-# recopiée ailleurs, un appel écrit sur plusieurs lignes ou un alias de fichiers_rs changent les comptes.
-# Tout autre parcours, un autre dossier, un lien sous src/ ou un filtre retiré sont refusés.
+# chemins, et build.rs ne parcourt qu'un dossier, src/, pour le vocabulaire de la porte des assistants. Des listes
+# permises, pas des motifs interdits (un motif se contourne par un alias, un chemin coupé ou un autre appel) :
+# - les corps de vocabulaire() et de fichiers_rs (les seuls .rs, sur "src" et ses sous-dossiers, liens symboliques
+#   ni suivis ni lus) ont une empreinte SHA-256 fixée ici ; un changement, même d'une espace, est refusé jusqu'à ce
+#   qu'on relise la fonction et qu'on reporte sa nouvelle empreinte, et fichiers_rs n'est nommée que trois fois ;
+# - chaque ligne de build.rs qui touche au disque ou lance un programme (std::fs, std::process, std::os, std::net,
+#   Command, File, OpenOptions, read_to_string, read_dir, use, extern crate, macro_rules!, « std as ») doit être
+#   une des lignes permises ci-dessous, autant de fois ;
+# - la lecture (src/porte_mcp/sources.rs, seul module que build.rs inclut) n'importe que std::collections,
+#   std::path, syn et proc_macro2, ne nomme dans std que collections, path et iter, et ne nomme ni super, ni crate,
+#   ni macro_rules!, ni un autre paquet. Limite : le contenu des paquets permis n'est pas relu ici (syn et
+#   proc_macro2 ne lisent pas le disque), et une écriture que rustfmt refuserait (« std :: fs ») n'est vue que par
+#   l'étape de mise en forme de outils/verifier.sh.
 cites=$(grep -rnE 'assets/captures|captures/|partage\.png|index\.html|\.\./docs|"/?docs/|/docs"' \
   "$DEPOT/src" "$DEPOT/build.rs" "$DEPOT/Cargo.toml" || true)
 LECTURE=$DEPOT/src/porte_mcp/sources.rs
 parcours=
-compte() { grep -cE "$1" "$2" || true; }
-[[ $(compte 'read_dir|glob(::|\()|WalkDir|walkdir' "$DEPOT/build.rs") == 1 ]] &&
-  [[ $(grep -cxF '    let entrees = std::fs::read_dir(dossier).expect("dossier des sources illisible");' \
-    "$DEPOT/build.rs") == 1 ]] || parcours+=" build.rs parcourt autre chose que fichiers_rs"
-appels=$(grep -nw 'fichiers_rs' "$DEPOT/build.rs" | tr '\n' ' ')
-[[ $(grep -ow 'fichiers_rs' "$DEPOT/build.rs" | wc -l) == 3 ]] &&
-  [[ $(grep -cxF 'fn fichiers_rs(dossier: &Path, liste: &mut Vec<std::path::PathBuf>) {' "$DEPOT/build.rs") == 1 ]] &&
-  [[ $(grep -cxF '                fichiers_rs(&chemin, liste);' "$DEPOT/build.rs") == 1 ]] &&
-  [[ $(grep -cxF '    fichiers_rs(Path::new("src"), &mut fichiers);' "$DEPOT/build.rs") == 1 ]] ||
-  parcours+=" fichiers_rs appelée ailleurs que sur src (ou autrement) : $appels"
-[[ $(compte '#!?\[path|include(_str|_bytes)?!' "$DEPOT/build.rs") == 1 ]] &&
+corps() { awk -v d="^fn $1\\\\(" '$0~d{p=1} p{print} p&&/^}$/{exit}' "$DEPOT/build.rs" | sha256sum | cut -d' ' -f1; }
+[[ $(corps vocabulaire) == fb5ec10f86b52b76f50f4c4afa12ac08fac23a21ff71d397cc90244037f0ed0f ]] ||
+  parcours+=" vocabulaire() de build.rs a changé (empreinte $(corps vocabulaire) : relire, puis la reporter ici)"
+[[ $(corps fichiers_rs) == de0e0b3f239625e15e6ae44bb0cda4068388ac29d1deb60f885fad783e337b94 ]] ||
+  parcours+=" fichiers_rs de build.rs a changé (empreinte $(corps fichiers_rs) : relire, puis la reporter ici)"
+[[ $(grep -ow 'fichiers_rs' "$DEPOT/build.rs" | wc -l) == 3 ]] ||
+  parcours+=" fichiers_rs nommée ailleurs : $(grep -nw 'fichiers_rs' "$DEPOT/build.rs" | tr '\n' ' ')"
+SENSIBLE='std\s*::\s*(fs|process|os|net)\b|\bCommand\b|\bFile\b|OpenOptions|read_to_string|read_dir|^\s*(pub\s+)?use\s|extern\s+crate|macro_rules|\bstd\s+as\b'
+PERMISES='use std::collections::HashMap;
+use std::fmt::Write as _;
+use std::path::Path;
+let sortie = std::process::Command::new("git").args(args).output().ok()?;
+let texte = std::fs::read_to_string("assets/oui.tsv").expect("assets/oui.tsv illisible");
+std::fs::write(Path::new(&sortie).join("fabricants.rs"), rs).expect("fabricants.rs non écrit");
+let texte = std::fs::read_to_string("assets/yara/reversinglabs.yara").expect("règles YARA illisibles");
+std::fs::write(Path::new(&sortie).join("reversinglabs.yara"), alleger_yara(&texte))
+let texte = std::fs::read_to_string(&fichier).expect("source illisible pour le vocabulaire");
+std::fs::write(Path::new(&sortie).join("vocabulaire.txt"), texte).expect("vocabulaire non écrit");
+let entrees = std::fs::read_dir(dossier).expect("dossier des sources illisible");
+let texte = std::fs::read_to_string(&rc)?;
+std::fs::write(&rc, format!("// Ressources de vanguard.exe (build.rs)\n{texte}"))?;
+let etat = std::process::Command::new(zig)'
+en_trop=$(diff <(grep -vE '^\s*//' "$DEPOT/build.rs" | grep -E "$SENSIBLE" | sed -E 's/^\s+//' | LC_ALL=C sort) \
+  <(LC_ALL=C sort <<<"$PERMISES") | grep '^<' | cut -c3- || true)
+[[ -z $en_trop ]] || parcours+=" build.rs touche au disque ou lance un programme hors des lignes permises : $en_trop"
+[[ $(grep -cE '#!?\[path|include(_str|_bytes)?!' "$DEPOT/build.rs" || true) == 1 ]] &&
   [[ $(grep -cxF '#[path = "src/porte_mcp/sources.rs"]' "$DEPOT/build.rs") == 1 ]] ||
   parcours+=" build.rs inclut autre chose que src/porte_mcp/sources.rs"
 # Le code de la lecture, sans ses commentaires ni la déclaration de ses essais (sources/tests.rs, hors de build.rs).
-lecture=$(grep -vE '^ *//' "$LECTURE" 2>/dev/null | grep -vxF 'mod tests;' || true)
-[[ -f $LECTURE ]] && ! grep -qE 'fs::|File|read_dir|read_to_string|include(_str|_bytes)?!|#!?\[path|env|Command|mod ' \
-  <<<"$lecture" || parcours+=" src/porte_mcp/sources.rs lit le disque ou inclut un autre fichier"
-grep -qxF '        let genre = entree.file_type().expect("type d'"'"'une entrée des sources illisible");' "$DEPOT/build.rs" &&
-  grep -qxF '        if genre.is_dir() {' "$DEPOT/build.rs" &&
-  grep -qxF '        } else if genre.is_file() && chemin.extension().is_some_and(|e| e == "rs") && nom != "tests.rs" {' \
-    "$DEPOT/build.rs" || parcours+=" fichiers_rs sans son filtre des .rs (ou suit les liens)"
+lecture=$(grep -vE '^\s*//' "$LECTURE" 2>/dev/null | grep -vxF 'mod tests;' || true)
+imports=$(grep -E '^\s*(pub\s+)?use\s' <<<"$lecture" |
+  grep -vE '^use (std::(collections|path)|syn|proc_macro2)::[A-Za-z_:{}, ]+(;|\{)$' || true)
+noms=$(grep -oE '(^|[^A-Za-z0-9_:])[a-z_][a-z0-9_]*\s*::(\s*[a-z_][a-z0-9_]*)?' <<<"$lecture" |
+  sed -E 's/^[^a-z_]//; s/\s//g' | grep -vxE '(syn|proc_macro2|visit)::[a-z_0-9]*|std::(collections|path|iter)|str::[a-z_0-9]+' || true)
+[[ -f $LECTURE ]] && [[ -z $imports && -z $noms ]] &&
+  ! grep -qE 'fs::|File|read_dir|read_to_string|include(_str|_bytes)?!|#!?\[path|env|Command|mod |macro_rules|extern\s+crate' \
+    <<<"$lecture" ||
+  parcours+=" src/porte_mcp/sources.rs importe, nomme ou inclut hors de la liste permise : ${imports//$'\n'/ } ${noms//$'\n'/ }"
 liens=$(cd "$DEPOT" && find src -type l)
 [[ -z $liens ]] || parcours+=" lien symbolique sous src/ : $liens"
 dans_la_liste=$(cd "$DEPOT" && find src -name '*.rs' | grep -E "$(grep -v '^#' .github/hors-code.txt | head -n 1)" || true)

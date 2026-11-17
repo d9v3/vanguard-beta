@@ -330,6 +330,101 @@ fn lb_fermeture_3_4_numeros_nommes_et_ports_colles() {
     }
 }
 
+/// 2e re-contrôle R2-FUITE-1 : dans le doute, masquer. Une IPv4 suivie d'un cinquième nombre ou de lettres collées
+/// est masquée quel que soit le mot d'avant ; seules restent lisibles les formes qui ne peuvent pas être une adresse
+/// avec son port (suffixe de version, cinquième nombre court derrière un premier nombre sous 100 après un mot de
+/// numéro).
+#[test]
+fn r2_fuite_1_adresse_portee_masquee_quel_que_soit_le_mot() {
+    for brut in [
+        "version 198.51.100.23.443 refusée",
+        "version 198.51.100.23x",
+        "la règle 198.51.100.23.443",
+        "rule 198.51.100.23.51234",
+        "release 198.51.100.23.8080",
+        "nc -v 198.51.100.23.443",
+        "curl -v 198.51.100.23abc",
+        "Le paquet 198.51.100.23.443 > 10.0.0.5.22 a été refusé",
+        "Paquet 198.51.100.23.443",
+        "Erreur du build 10.0.0.5x",
+        "Erreur v 192.168.1.20.8080",
+        "la version 10.0.0.5a",
+        "contrôle 198.51.100.23.443 du pare-feu",
+        "driver 198.51.100.23.443 du pare-feu",
+        "control 198.51.100.23.443 du pare-feu",
+        "VERSION 198.51.100.23.443",
+        "--version 10.0.0.5.22",
+        "version 10.0.0.5.443",
+        "version 198.51.100.23.22",
+        "Erreur à la fin...10.0.0.5 vu",
+        "Erreur.10.0.0.5 vu",
+    ] {
+        let sortie = propre(brut);
+        assert!(sortie.contains("<ip>"), "{brut:?} → {sortie:?}");
+        for octet in ["198", "51.100", "10.0.0", "192.168"] {
+            assert!(!sortie.contains(octet), "{brut:?} → {sortie:?}");
+        }
+    }
+    // Restent lisibles : des numéros qui ne peuvent pas être une adresse avec son port. Limite dite au CHANGELOG :
+    // « version 10.0.0.5.22 » aussi.
+    for t in [
+        "La mise à jour vers la version 1.2.3.4.5 est prête",
+        "Le paquet 1.2.3.4rc1 est installé",
+        "Le noyau 4.19.0.0beta est chargé",
+        "La mise à jour vers la version 10.0.0.5.22 est prête",
+    ] {
+        assert_eq!(propre(t), t, "{t:?}");
+    }
+}
+
+/// 2e re-contrôle R2-FUITE-3 et 4 : une IPv6 pleine ou à zone suivie d'un deux-points (forme « adresse: erreur ») ou
+/// d'un port, précédée d'une étiquette collée ou d'un point, ou suivie d'une IPv4 après huit groupes, est masquée.
+#[test]
+fn r2_fuite_3_4_ipv6_suivie_d_un_deux_points_ou_collee() {
+    let cas = [
+        (
+            "connect to fd12:3456:1:2:3:4:5:6: Connection refused",
+            "connect to <ip>: Connection refused",
+        ),
+        (
+            "connect to fe80::a4b3:c2ff:fed1:e0f9%eth0: Connection refused",
+            "connect to <ip>: Connection refused",
+        ),
+        (
+            "ping: fe80::1%eth0: Name or service not known",
+            "ping: <ip>: Name or service not known",
+        ),
+        ("udp6 fe80::a4b3:c2ff:fed1:e0f9%eth0:546 vu", "udp6 <ip> vu"),
+        ("tcp6 fd12:3456:abcd:ef01:2345:6789:abcd:ef01:443 vu", "tcp6 <ip> vu"),
+        ("hôte:fd12:3456:abcd:ef01:2345:6789:abcd:ef01 vu", "hôte:<ip> vu"),
+        ("ip6:fd12:3456::7 vu", "ip6:<ip> vu"),
+        ("addr:fd12:3456::7 vu", "addr:<ip> vu"),
+        ("2001:db8::1: Connection refused", "<ip>: Connection refused"),
+        ("vers fd12:3456::7.fd12:3456::8 fin", "vers <ip>.<ip> fin"),
+        ("vers fd12:3456::7...fd12:3456::8 fin", "vers <ip>...<ip> fin"),
+        (
+            "vers fd12:3456:abcd:ef01:2345:6789:abcd:198.51.100.23 fin",
+            "vers <ip> fin",
+        ),
+        ("fin...198.51.100.23 vu", "fin...<ip> vu"),
+        ("a.198.51.100.23 vu", "a.<ip> vu"),
+    ];
+    for (brut, attendu) in cas {
+        assert_eq!(propre(brut), attendu, "{brut:?}");
+    }
+}
+
+/// 2e re-contrôle R2-REGRESSION-2 : le choix fixé. Un point suivi de lettres finit la zone (« %eth0.vlan5 » laisse
+/// « .vlan5 ») et un nom d'hôte collé après une IPv4 portée mal formée reste ; aucun octet d'adresse ne sort.
+#[test]
+fn r2_regression_2_zone_et_nom_colle_laissent_le_mot() {
+    assert_eq!(propre("voisin fe80::1%eth0.vlan5 muet"), "voisin <ip>.vlan5 muet");
+    assert_eq!(
+        propre("hôte ::ffff:300.1.2.3.exemple.test muet"),
+        "hôte <ip>.exemple.test muet"
+    );
+}
+
 #[test]
 fn textes_courants_gardes() {
     for t in [

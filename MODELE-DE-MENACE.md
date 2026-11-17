@@ -803,7 +803,9 @@ commande refuse de démarrer (code 2) tant qu'elle n'a pas été essayée sur un
   fin) sortent d'une liste fermée, ou vides. Le texte venu de l'ordinateur (titre, message, catégorie, nom de programme)
   sort à part, sous la forme `{"texte_externe": …, "non_fiable": true}`, par une liste blanche de mots : seuls sortent
   les mots que Vanguard écrit lui-même dans ses propres messages (les chaînes de ses macros de texte, en français et en
-  anglais, tirées du code à chaque compilation, sans les essais : environ 8 300 mots). Tout autre mot devient « … »,
+  anglais, tirées du code à chaque compilation par son arbre syntaxique, en suivant les modules comme le compilateur,
+  sans les essais : environ 8 300 mots ; une forme que cette lecture ne sait pas juger, un module introuvable ou un
+  fichier `.rs` de `src/` qu'aucun module ne déclare arrête la compilation). Tout autre mot devient « … »,
   comme les chiffres, les chemins, les adresses, les jetons, les noms qui ne sont pas des mots du vocabulaire et tout
   signe hors d'une petite ponctuation fixe (jamais une parenthèse ni un crochet ; ceux qui entourent un mot sont
   jetés) ; plusieurs « … » de suite n'en font qu'un, et la sortie fait 400 octets au plus
@@ -813,12 +815,16 @@ commande refuse de démarrer (code 2) tant qu'elle n'a pas été essayée sur un
   lettre ne sort que s'il est « a », « à » ou « y » ; un mot suivi de points de suspension (« admin… ») ou coupé par la
   borne de lecture (8 192 octets) sort « … ». Deux filets retiennent des valeurs qui peuvent être faites de mots connus.
   Dès qu'un mot annonce un secret (mot de passe, phrase de passe, password, passwd, pwd, mdp, passphrase, clé, key,
-  code, PIN, PSK, jeton, token, secret, au singulier ou au pluriel, en toute casse, avec ou sans tiret, sans séparateur
-  exigé), tout le reste du texte devient un seul « … », pas seulement jusqu'au premier point ; seule exception, une
-  annonce niée (« sans mot de passe », « no password ») sans « : » ni « = » qui la suive, comme dans le message de
-  Vanguard sur un réseau Wi-Fi sans mot de passe. L'extrait de commande qu'une alerte du veilleur cite entre parenthèses
-  après « (PID n) » devient aussi un seul « … » ; une autre parenthèse ne sort que si tous ses mots sont connus. Le
-  prix : un texte utile qui suit une annonce est perdu (environ 0,7 % des morceaux de texte de Vanguard contiennent un
+  code, PIN, NIP, PSK, jeton, token, secret, secrète, passe, seed, phrase de récupération, recovery phrase,
+  identifiant, login, au singulier ou au pluriel, en toute casse, avec ou sans tiret, sans séparateur exigé), tout le
+  reste du texte devient un seul « … », pas seulement jusqu'au premier point ; seule exception, une annonce niée
+  (« sans mot de passe », « no password ») sans « : » ni « = » qui la suive, et sans point, « ! », « ? » ni parenthèse
+  entre la négation et l'annonce, comme dans le message de Vanguard sur un réseau Wi-Fi sans mot de passe. Une valeur
+  écrite avant l'annonce (« maison rouge est le mot de passe ») n'est pas retenue. Dans une alerte du veilleur, chaque
+  « (PID n) » ouvre son propre groupe : l'extrait de commande qui le suit entre parenthèses devient un seul « … », et une
+  parenthèse jamais fermée retient tout jusqu'au « (PID n) » suivant ou jusqu'à la fin ; une autre parenthèse ne sort
+  que si tous ses mots sont connus. Le
+  prix : un texte utile qui suit une annonce est perdu (environ 0,8 % des morceaux de texte de Vanguard contiennent un
   de ces mots, « clé de registre » et « code » compris). Ce sont des filets, pas une garantie : une valeur que rien
   n'annonce sort si ses mots sont du vocabulaire. C'est à l'assistant de traiter ce texte comme une donnée, jamais comme
   une consigne. Limites connues : une suite de mots du vocabulaire sort telle quelle, avec sa casse, ses guillemets de
@@ -829,7 +835,8 @@ commande refuse de démarrer (code 2) tant qu'elle n'a pas été essayée sur un
   (« bash », « sshd », « cat »). Les champs à forme fixe (règle, version, date, nombres, empreinte) sortent avec les
   lettres et chiffres que leur forme admet, sans être relus : une date impossible, une règle inventée ou un nombre qui
   écrit une adresse IPv4 en entier y passent. C'est un canal pour qui écrit déjà le journal ou un examen non scellé, pas
-  une fuite d'une donnée de la personne. Un fichier `.rs` non suivi posé dans `src/` serait lu aussi à la compilation.
+  une fuite d'une donnée de la personne. Un module chargé hors de `src/` (le modèle des couleurs partagé avec la
+  fenêtre) n'est pas lu : il n'a aucun message, et un mot de moins ne fait que masquer davantage.
 - **Elle ne peut pas prouver qu'elle est le vrai Vanguard.** Un faux programme posé au même chemin répondrait la même
   chose, `identite` comprise ; et un programme du compte peut écrire dans les fichiers de Vanguard (les sceaux sont une
   barrière, pas un coffre : voir « Les programmes de votre compte ne visent pas Vanguard lui-même »). La preuve se fait

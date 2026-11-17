@@ -171,7 +171,7 @@ pub(crate) const SORTES: &[&str] = &[
 /// compris ; plusieurs « … » de suite n'en font qu'un). Seule une petite ponctuation fixe sort à côté, jamais une
 /// parenthèse ni un crochet. Deux filets de plus, pour des valeurs qui peuvent être faites de mots du vocabulaire :
 /// dès qu'un mot annonce un secret (`ANNONCES` : mot de passe, clé, code, jeton, secret…), tout le reste du texte
-/// devient un seul « … » ; l'extrait de commande d'un programme (entre parenthèses après « (PID n) ») aussi. Rangé
+/// devient un seul « … » ; l'extrait de commande de chaque programme (entre parenthèses après chaque « (PID n) ») aussi. Rangé
 /// à part et marqué `non_fiable` : une phrase faite de mots du vocabulaire sort telle quelle, consigne comprise. Vide
 /// (`retire`) quand rien ne reste.
 pub(crate) fn texte_externe(brut: &str) -> Value {
@@ -179,15 +179,16 @@ pub(crate) fn texte_externe(brut: &str) -> Value {
     let jetons: Vec<&str> = texte.split_whitespace().collect();
     // Coupé par la borne, le dernier mot n'est peut-être que le début d'un mot (« root » de « rootkit-… »).
     let coupe = (brut.len() > BRUT_MAX).then(|| jetons.len().saturating_sub(1));
-    let groupe = groupe_entre_parentheses(&jetons);
-    let masque = |k: usize| groupe.is_some_and(|g| g.masque && (g.debut..=g.fin).contains(&k));
+    let groupes = groupes_entre_parentheses(&jetons);
+    let groupe_de = |k: usize| groupes.iter().find(|g| g.masque && (g.debut..=g.fin).contains(&k));
+    let masque = |k: usize| groupe_de(k).is_some();
     let annonce = fin_d_annonce(&jetons, &masque);
     let mut juges: Vec<String> = Vec::with_capacity(jetons.len());
     let mut i = 0;
     while let Some(jeton) = jetons.get(i) {
         if masque(i) || coupe == Some(i) {
             vocabulaire::ajouter(&mut juges, vocabulaire::RETENU.into());
-            i = groupe.filter(|_| masque(i)).map_or(i, |g| g.fin).saturating_add(1);
+            i = groupe_de(i).map_or(i, |g| g.fin).saturating_add(1);
             continue;
         }
         if groupe_pid(&jetons, i) {
@@ -242,9 +243,13 @@ fn borne(brut: &str) -> &str {
 /// Les mots qui annoncent un secret, en minuscules, écrits d'un seul tenant (« mot de passe », « mot-de-passe »,
 /// « MotDePasse » s'écrivent tous « motdepasse »). Une valeur faible est justement un mot courant, qui peut être du
 /// vocabulaire : après l'un d'eux, plus rien du texte ne sort, sans attendre un « : » ni s'arrêter à un point.
-const ANNONCES: [&str; 34] = [
+const ANNONCES: [&str; 48] = [
     "motdepasse",
     "motsdepasse",
+    "motdepasses",
+    "motsdepasses",
+    "passe",
+    "passes",
     "mdp",
     "phrasedepasse",
     "phrasesdepasse",
@@ -266,6 +271,8 @@ const ANNONCES: [&str; 34] = [
     "codes",
     "pin",
     "pins",
+    "nip",
+    "nips",
     "jeton",
     "jetons",
     "token",
@@ -274,6 +281,14 @@ const ANNONCES: [&str; 34] = [
     "secrets",
     "secrète",
     "secrètes",
+    "secrete",
+    "secretes",
+    "seed",
+    "phrasederécupération",
+    "phrasederecuperation",
+    "recoveryphrase",
+    "identifiant",
+    "login",
     "psk",
     "passcode",
     "passcodes",
@@ -305,13 +320,23 @@ fn fin_d_annonce(jetons: &[&str], ignore: &dyn Fn(usize) -> bool) -> Option<usiz
             premier = false;
         }
     }
+    // Les morceaux d'une annonce niée ne sont pas relus seuls : « passe » de « sans mot de passe » n'en est pas une.
+    let mut niee_jusqu_a = 0;
     for (s, (tete, debut, ouvre)) in morceaux.iter().enumerate() {
+        if s < niee_jusqu_a {
+            continue;
+        }
         let mut colle = String::new();
-        for (m, fin, _) in morceaux.iter().skip(s).take(3) {
+        for (n, (m, fin, _)) in morceaux.iter().skip(s).take(3).enumerate() {
             colle.push_str(m);
             let annonce = ANNONCES.contains(&colle.as_str())
                 || (colle == *tete && ANNONCES_EN_TETE.iter().any(|a| tete.starts_with(a)));
-            if annonce && !(*ouvre && niee(jetons, *debut, *fin)) {
+            if !annonce {
+                continue;
+            }
+            if *ouvre && niee(jetons, *debut, *fin) {
+                niee_jusqu_a = niee_jusqu_a.max(s.saturating_add(n).saturating_add(1));
+            } else {
                 return Some(*fin);
             }
         }
@@ -320,14 +345,20 @@ fn fin_d_annonce(jetons: &[&str], ignore: &dyn Fn(usize) -> bool) -> Option<usiz
 }
 
 /// L'annonce qui va du jeton `debut` au jeton `fin` est-elle niée (« sans mot de passe (WEP) ») ? Il faut un mot de
-/// négation entier juste avant, et aucun séparateur collé à la fin de l'annonce ou au jeton qui la suit : « sans mot de
-/// passe : maison » annonce quand même une valeur.
+/// négation entier juste avant, qui touche l'annonce (ni « . », « ! », « ? » ni « ( » entre eux : « Sans. Mot de passe
+/// maison », « sans (mot de passe maison) » annoncent une valeur), et aucun séparateur collé à la fin de l'annonce ou
+/// au jeton qui la suit : « sans mot de passe : maison » annonce quand même une valeur.
 fn niee(jetons: &[&str], debut: usize, fin: usize) -> bool {
+    let coupe = |x: char| matches!(x, '.' | '!' | '?' | '(');
     let avant = debut
         .checked_sub(1)
         .and_then(|k| jetons.get(k))
+        .filter(|m| !m.chars().rev().take_while(|x| !x.is_alphabetic()).any(coupe))
         .map(|m| m.trim_matches(|x: char| !x.is_alphabetic()).to_lowercase())
-        .is_some_and(|m| NEGATIONS.contains(&m.as_str()));
+        .is_some_and(|m| NEGATIONS.contains(&m.as_str()))
+        && jetons
+            .get(debut)
+            .is_some_and(|m| !m.chars().take_while(|x| !x.is_alphabetic()).any(coupe));
     let separe = jetons.get(fin).is_some_and(|m| m.contains([':', '=']))
         || jetons
             .get(fin.saturating_add(1))
@@ -354,28 +385,60 @@ struct Groupe {
     masque: bool,
 }
 
-/// Le groupe entre parenthèses du texte : il commence au premier jeton qui ouvre une parenthèse après le dernier
-/// « (PID n) » (au tout premier sans lui) et finit au dernier jeton qui en ferme une ; une parenthèse qui ne se ferme
-/// pas n'en fait pas. Après un « (PID n) », c'est l'extrait d'une commande, choisi par qui l'a lancée : il est retenu
-/// en entier (« (mysql --password secret) » ne laisse pas sortir « secret »). Sans lui, c'est une précision de Vanguard
-/// (« (numéro repris, parent ou heure illisible) ») : elle sort si tous ses mots sont du vocabulaire, retenue sinon.
-fn groupe_entre_parentheses(jetons: &[&str]) -> Option<Groupe> {
-    let pid = (0..jetons.len()).rev().find(|k| groupe_pid(jetons, *k));
-    let depart = pid.map_or(0, |k| k.saturating_add(2));
-    let debut = (depart..jetons.len()).find(|k| jetons.get(*k).is_some_and(|m| m.contains('(')))?;
-    let fin = (debut..jetons.len())
-        .rev()
-        .find(|k| jetons.get(*k).is_some_and(|m| m.contains(')')))?;
-    let connus = jetons
-        .get(debut..=fin)
-        .unwrap_or_default()
-        .iter()
-        .all(|m| vocabulaire::connu(vocabulaire::peler(m).1));
-    Some(Groupe {
-        debut,
-        fin,
-        masque: pid.is_some() || !connus,
-    })
+/// Les groupes entre parenthèses du texte. Après chaque « (PID n) », c'est l'extrait de la commande d'un programme
+/// (le veilleur en joint jusqu'à quatre par « ; » dans un seul message), choisi par qui l'a lancée : il est retenu en
+/// entier (« (mysql --password secret) » ne laisse pas sortir « secret »). Il commence au premier jeton qui ouvre ou
+/// ferme une parenthèse après ce « (PID n) » et finit au dernier qui en ferme une avant le « (PID n) » suivant ; une
+/// parenthèse jamais fermée retient tout jusqu'au « (PID n) » suivant ou jusqu'à la fin. Sans aucun « (PID n) », c'est
+/// une précision de Vanguard (« (numéro repris, parent ou heure illisible) »), du premier jeton qui ouvre au dernier
+/// qui ferme : elle sort si tous ses mots sont du vocabulaire, retenue sinon ; une parenthèse qui ne se ferme pas n'en
+/// fait pas.
+fn groupes_entre_parentheses(jetons: &[&str]) -> Vec<Groupe> {
+    let a = |k: usize, x: char| jetons.get(k).is_some_and(|m| m.contains(x));
+    let pids: Vec<usize> = (0..jetons.len()).filter(|k| groupe_pid(jetons, *k)).collect();
+    if pids.is_empty() {
+        let Some(debut) = (0..jetons.len()).find(|k| a(*k, '(')) else {
+            return Vec::new();
+        };
+        let Some(fin) = (debut..jetons.len()).rev().find(|k| a(*k, ')')) else {
+            return Vec::new();
+        };
+        let connus = jetons
+            .get(debut..=fin)
+            .unwrap_or_default()
+            .iter()
+            .all(|m| vocabulaire::connu(vocabulaire::peler(m).1));
+        return vec![Groupe {
+            debut,
+            fin,
+            masque: !connus,
+        }];
+    }
+    let mut groupes = Vec::new();
+    for (n, pid) in pids.iter().enumerate() {
+        let depart = pid.saturating_add(2);
+        let borne = pids.get(n.saturating_add(1)).copied().unwrap_or(jetons.len());
+        let Some(premier) = (depart..borne).find(|k| a(*k, '(') || a(*k, ')')) else {
+            continue;
+        };
+        // Une fermante avant toute ouvrante (« … (PID 5) rouge) » : l'extrait citait lui-même un « (PID n) ») : le
+        // groupe part de ce « (PID n) », sans quoi les mots d'avant la fermante sortiraient un par un.
+        let debut = if a(premier, '(') { premier } else { depart };
+        let ferme = (debut..borne).rev().find(|k| a(*k, ')'));
+        let ouvre = (debut..borne).rev().find(|k| a(*k, '('));
+        // Fermé après sa dernière ouverture : jusqu'à cette fermante ; sinon jusqu'au « (PID n) » suivant ou la fin.
+        let fin = match (ferme, ouvre) {
+            (Some(f), Some(o)) if f >= o => f,
+            (Some(f), None) => f,
+            _ => borne.saturating_sub(1),
+        };
+        groupes.push(Groupe {
+            debut,
+            fin,
+            masque: true,
+        });
+    }
+    groupes
 }
 
 /// Le nom court d'un programme (son nom de fichier seul), nettoyé comme un nom de logiciel ; rien s'il est refusé.
@@ -825,6 +888,13 @@ mod tests {
             "« x( » (PID 4242) lance un shell inverse (bash -i) ; lignée : sshd → x( ; vu au lancement par le veilleur. Vérifiez ce programme.",
             &["4242", "x(", "-i", "(", ")"],
         );
+        // La raison sort ; la suite non : le nom « x( » répété dans la lignée ouvre une parenthèse jamais fermée
+        // après le « (PID n) », retenue jusqu'à la fin (R2-fuite-2, dans le doute). Sans parenthèse dans le nom, la
+        // suite sort.
+        assert!(s.contains("lance un shell inverse"), "{s}");
+        let s = sortie(
+            "« x » (PID 4242) lance un shell inverse (bash -i) ; lignée : sshd → x ; vu au lancement par le veilleur. Vérifiez ce programme.",
+        );
         assert!(
             s.contains("lance un shell inverse") && s.contains("Vérifiez ce programme"),
             "{s}"
@@ -1026,6 +1096,76 @@ mod tests {
             let s = sans(brut, &valeurs);
             assert!(!s.contains("rouge") && !s.contains("maison"), "{s} ({brut})");
         }
+    }
+
+    /// Re-contrôle R2-fuite-2 : le veilleur joint jusqu'à quatre programmes dans un message (`chasse::montrer`,
+    /// « « nom » (PID n) raison (extrait) » séparés par « ; ») : l'extrait de chacun est retenu, pas seulement celui du
+    /// dernier, même quand le dernier n'en a pas, qu'une parenthèse ne se ferme pas ou qu'un extrait cite un PID.
+    #[test]
+    fn r2_fuite_2_l_extrait_de_chaque_programme_est_retenu() {
+        let valeurs = ["root", "maison", "Maison", "rouge", "Rouge", "bureau"];
+        for mot in ["root", "maison", "rouge", "bureau"] {
+            assert!(
+                vocabulaire::connu(mot),
+                "{mot} doit être du vocabulaire pour que l'essai vaille"
+            );
+        }
+        for brut in [
+            "Programme(s) en marche qui ont la forme d'une attaque : « a » (PID 11) raison une (mysql --user root \
+             maison) ; « b » (PID 22) raison deux (bash rouge bureau).",
+            "Programme(s) en marche depuis un dossier où rien ne s'installe : « a » (PID 11) lancé depuis (/tmp/ma \
+             maison rouge/admin) ; « b » (PID 22) lancé depuis (/tmp/x).",
+            "Programme(s) en marche depuis un dossier où rien ne s'installe : « a » (PID 11) lancé depuis \
+             (C:\\Users\\alice\\Maison Rouge\\Mes documents\\x.exe) ; « b » (PID 22) lancé depuis (/tmp/x).",
+            "Running program(s) shaped like an attack: “a” (PID 11) reason (bash root maison) ; “b” (PID 22) reason, \
+             deleted since.",
+            "« a » (PID 11) raison (bash maison rouge ; « b » (PID 22) raison (x)",
+            "« a » (PID 11) raison (bash maison (PID 5) rouge bureau) fin",
+            "« a » (PID 11) raison (x) ; « b » (PID 22) raison (bash root (PID 5) maison) ; « c » (PID 33) raison \
+             (rouge bureau",
+        ] {
+            sans(brut, &valeurs);
+        }
+        // Un programme sans extrait laisse lire la raison qui suit le suivant.
+        assert_eq!(
+            sortie("« a » (PID 11) programme inconnu, effacé depuis ; « b » (PID 22) programme inconnu (root maison)."),
+            "\" a \" … programme inconnu, effacé depuis ; \" … \" … programme inconnu …"
+        );
+    }
+
+    /// Re-contrôle R2-fuite-5 : les autres formes courantes d'annonce (fautes de pluriel, NIP, phrase de récupération,
+    /// identifiant) retiennent la suite ; une négation séparée de l'annonce par un point, « ! », « ? » ou une parenthèse
+    /// ne la nie plus, et le « passe » d'une annonce niée n'est pas relu seul.
+    #[test]
+    fn r2_fuite_5_les_annonces_courantes_et_la_negation_collee() {
+        let valeurs = ["maison", "rouge", "bureau", "admin"];
+        for brut in [
+            "mots de passes : maison rouge",
+            "mot de passes : maison rouge",
+            "passe : maison rouge",
+            "le passe est maison rouge",
+            "NIP : maison rouge",
+            "nip maison rouge",
+            "phrase de récupération : maison rouge bureau",
+            "phrase de recuperation : maison rouge bureau",
+            "recovery phrase : maison rouge",
+            "seed : maison rouge",
+            "phrase secrete : maison rouge",
+            "identifiant : admin maison",
+            "login : admin maison",
+            "Sans. Mot de passe maison rouge",
+            "sans (mot de passe maison rouge)",
+            "Sans ! mot de passe maison rouge",
+            "no? password maison rouge",
+            "sans mot de passe. Mot de passe maison rouge",
+        ] {
+            sans(brut, &valeurs);
+        }
+        // Le vrai message de Vanguard reste nié, « passe » compris.
+        assert_eq!(
+            sortie("Le réseau est sans mot de passe (WEP) : n'importe qui peut s'y connecter."),
+            "Le réseau est sans mot de passe … : n'importe qui peut s'y connecter."
+        );
     }
 
     /// Re-contrôle LB-fuite-6 et LB-FERMETURE-5 : les vrais textes de Vanguard gardent leurs mots (négation d'un mot

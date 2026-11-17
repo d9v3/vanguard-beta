@@ -16,25 +16,37 @@ example, finds it, to rebuild it if needed.
   port and no network, refuses to run as administrator and marks everything it returns as untrusted. A text that comes
   from the computer (a finding's message, an alert's title, a program's name) only leaves it made of the words Vanguard
   itself writes in its messages, in French and English; any other word, digit or sign becomes "…", which holds back
-  paths, addresses and any value made of digits or signs. After a word that announces a secret (password, key, code,
-  PIN, token, secret…), the whole rest of the text is held back, and so is the command excerpt of a watcher alert; the
-  price: a useful sentence that follows one of these words is lost. Limits, stated in the threat model: a name made of
-  Vanguard's words ("admin", "maison") comes out, with its case; an attacker who writes on the computer can compose a
+  paths, addresses and any value made of digits or signs. These words are read from the code at each build, through
+  its syntax tree, following the modules as the compiler does, without the tests; a form this reading cannot judge
+  stops the build. After a word that announces a secret (password, key, code, PIN, NIP, token, secret, seed, recovery
+  phrase, identifier, login…), the whole rest of the text is held back, and so is the command excerpt of each program in
+  a watcher alert; the price: a useful sentence that follows one of these words is lost. Limits, stated in the threat
+  model: a name made of Vanguard's words ("admin", "maison") comes out, with its case; a value written before the
+  announcement ("maison rouge is the password") is not held back; an attacker who writes on the computer can compose a
   sentence with these words; fixed-form fields (rule, version, date, numbers) come out without being reread. A session
   served is noted in the journal, without ever filling it; a program that sends it abnormal messages is cut off, and an
   alert says so. It refuses to start under a file size limit (`ulimit -f`), which could cut its note in the middle; a
   note cut anyway is undone, and the journal stays readable. After 15 minutes of silence, it closes; the assistant
   starts it again. On Windows, the command refuses to start until it has been tried on a real Windows.
-- **The address masker, shared by the error journal and the report draft, holds back more.** An IPv4 address carried
-  inside an IPv6 one ("::ffff:…"), an IPv4 address followed by a port (".443", ".123456") or by stuck letters (".443x",
-  "23abc"), a full IPv6 address followed by a full stop, a zone written with dots, hyphens or ideographic full stops
-  ("。") are now masked whole, with no piece left behind; a word stuck after the full stop ("5::6.The rest") keeps its
-  place. A named number (after "version", "build", "section", "control", "rule", "package", "driver", "release" and
-  their French forms: "version 1.2.3.4.5", "package 1.2.3.4rc1") stays readable. Known limits: an IPv6 address written
-  without any digit ("fd::ab") looks too much like a word to be recognized; an IPv4 address followed by two numbers or
-  more (".443.80") stays in clear, taken for a version number; a four-number version is taken for an address even when
-  named ("version 6.1.0.2" keeps its name, not its numbers), as is a suffixed version that nothing names ("firefox
-  128.0.3.0esr"). Through the assistants' door none of these forms comes out: they are not Vanguard's words.
+- **The address masker, shared by the error journal and the report draft, holds back more.** When in doubt, it
+  masks. An IPv4 address carried inside an IPv6 one ("::ffff:…"); an IPv4 address followed by a port (".443",
+  ".123456") or by stuck letters (".443x", "23abc"), whatever word comes before it ("packet", "rule", "version", "-v");
+  a full IPv6 address followed by a full stop, a port ("…:ef01:443") or an IPv4 address ("…:abcd:198.51.100.23"); an
+  IPv6 address followed by a colon ("fd12:…:6: Connection refused", "fe80::1%eth0: …", "%eth0:546"), preceded by a
+  stuck label ("addr:fd12::7") or by a full stop ("fd12::7.fd12::8", "...10.0.0.5"); a zone written with hyphens,
+  underscores or a full stop followed by a digit ("%br-lan", "%eth0.100"); ideographic full stops ("。"): all of these
+  are now masked whole. A word stuck after the full stop ("5::6.The rest") keeps its place. Only numbers that cannot be
+  an address with its port stay readable: a version with a known suffix ("1.2.3.4rc1", "4.19.0.0beta", "alpha",
+  "esr"); after "version", "build", "section", "control", "driver", "release" and their French forms, a fifth number of
+  one or two digits behind a first number under 100 ("version 1.2.3.4.5"); a run of six numbers or more
+  ("1.2.3.4.5.6"). Known limits: "version 10.0.0.5.22" therefore stays in clear (a private address and a two-digit
+  port after one of these words), as does an address followed by two numbers or more (".443.80"), taken for a version;
+  an address stuck behind letters or a digit ("host198.51.100.23", "0198.51.100.23") stays in clear; an IPv6 address
+  written without any digit ("fd::ab") looks too much like a word to be recognized; a full stop followed by letters
+  ends the zone ("%eth0.vlan5" leaves ".vlan5"), and a host name stuck after a malformed carried IPv4 address stays
+  ("::ffff:300.1.2.3.example.test" leaves ".example.test"): no address byte comes out of it; a four-number version is
+  taken for an address even when named ("version 6.1.0.2" keeps its name, not its numbers). Through the assistants'
+  door none of these forms comes out: they are not Vanguard's words.
 
 ## November 15, 2026: version 0.96.0
 

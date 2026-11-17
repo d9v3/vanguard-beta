@@ -1233,7 +1233,7 @@ fn mac(c: &[char], i: usize) -> Option<usize> {
 }
 
 fn ipv4(c: &[char], i: usize) -> Option<usize> {
-    if avant(c, i).is_some_and(|p| p.is_ascii_alphanumeric() || p == '.') {
+    if avant(c, i).is_some_and(|p| p.is_ascii_alphanumeric() || (p == '.' && !point_de_phrase(c, i))) {
         return None;
     }
     let mut j = i;
@@ -1253,21 +1253,30 @@ fn ipv4(c: &[char], i: usize) -> Option<usize> {
     }
     // Un port écrit après un point (« 198.51.100.23.443 », la forme de tcpdump et de netstat sous BSD) est pris avec
     // l'adresse, quelle que soit sa longueur et avec les lettres qui y sont collées ; de même des lettres collées
-    // (« 198.51.100.23x ») : sinon l'adresse entière sortirait. Deux exceptions, des numéros qui ne sont pas des
-    // adresses : un cinquième nombre suivi d'un autre (« 1.2.3.4.5.6 »), et ce qu'un mot de numéro précède (« version
-    // 1.2.3.4.5 », « paquet 4.19.0.0beta », « section 5.2.3.4.1 ») ; quatre nombres seuls restent pris (limite dite au
-    // CHANGELOG).
-    let numero = mot_de_numero_avant(c, i);
+    // (« 198.51.100.23x ») : sinon l'adresse entière sortirait. Dans le doute, masquer : le mot d'avant ne décide pas
+    // seul (« paquet », « règle » précèdent aussi des adresses). Ne restent lisibles que des formes qui ne peuvent pas
+    // être une adresse avec son port : un cinquième nombre suivi d'un autre (« 1.2.3.4.5.6 ») ; un suffixe de version
+    // connu (« 1.2.3.4rc1 », « 4.19.0.0beta ») ; après un mot de numéro, un cinquième nombre de deux chiffres au plus
+    // derrière un premier nombre sous 100 (« version 1.2.3.4.5 », « section 5.2.3.4.1 »). Limite dite au CHANGELOG :
+    // « version 10.0.0.5.22 » reste aussi lisible.
     if car(c, j) == Some('.') && car(c, suivant(j)).is_some_and(|y| y.is_ascii_digit()) {
         let fin = fin_tant_que(c, suivant(j), |y| y.is_ascii_digit());
         let encore = car(c, fin) == Some('.') && car(c, suivant(fin)).is_some_and(|y| y.is_ascii_digit());
-        if encore || numero {
+        if encore {
+            return None;
+        }
+        let premier = chaine(c, i, fin_tant_que(c, i, |y| y.is_ascii_digit()))
+            .parse::<u16>()
+            .unwrap_or(u16::MAX);
+        let court = entre(suivant(j), fin) <= 2 && !car(c, fin).is_some_and(|y| y.is_ascii_alphanumeric());
+        if court && premier < 100 && mot_de_numero_avant(c, i) {
             return None;
         }
         return Some(fin_tant_que(c, fin, |y| y.is_ascii_alphanumeric()));
     }
     if car(c, j).is_some_and(|y| y.is_ascii_alphabetic()) {
-        return (!numero).then(|| fin_tant_que(c, j, |y| y.is_ascii_alphanumeric()));
+        let fin = fin_tant_que(c, j, |y| y.is_ascii_alphanumeric());
+        return (!suffixe_de_version(&chaine(c, j, fin))).then_some(fin);
     }
     // Port et préfixe : « 10.0.0.1:8080 », « 10.0.0.0/8 ».
     for marque in [':', '/'] {
@@ -1281,25 +1290,23 @@ fn ipv4(c: &[char], i: usize) -> Option<usize> {
     Some(j)
 }
 
-/// Les mots qui précèdent un numéro (de version, de section d'un guide, de paquet) plutôt qu'une adresse.
-const MOTS_DE_NUMERO: [&str; 14] = [
+/// Les mots qui précèdent un numéro (de version, de section d'un guide, d'un pilote) plutôt qu'une adresse. Ni
+/// « paquet », « package », « règle », « rule » ni « v » (« nc -v ») : ils précèdent aussi des adresses dans les
+/// journaux réseau.
+const MOTS_DE_NUMERO: [&str; 9] = [
     "version",
     "versions",
-    "v",
     "build",
     "section",
     "contrôle",
     "control",
-    "règle",
-    "rule",
-    "paquet",
-    "package",
     "pilote",
     "driver",
     "release",
 ];
 
-/// Si le mot juste avant `i` (une seule espace entre eux) est un mot de numéro (`MOTS_DE_NUMERO`).
+/// Si le mot juste avant `i` (une seule espace entre eux) est un mot de numéro (`MOTS_DE_NUMERO`), écrit seul : pas
+/// collé à un tiret, un trait bas ou un chiffre (« --version »).
 fn mot_de_numero_avant(c: &[char], i: usize) -> bool {
     if avant(c, i) != Some(' ') {
         return false;
@@ -1309,8 +1316,26 @@ fn mot_de_numero_avant(c: &[char], i: usize) -> bool {
     while avant(c, debut).is_some_and(char::is_alphabetic) {
         debut = debut.saturating_sub(1);
     }
+    if avant(c, debut).is_some_and(|p| p == '-' || p == '_' || p.is_ascii_digit()) {
+        return false;
+    }
     let mot = chaine(c, debut, fin).to_lowercase();
     MOTS_DE_NUMERO.contains(&mot.as_str())
+}
+
+/// Un suffixe de version connu, collé à quatre nombres (« rc1 », « beta », « alpha2 », « esr ») : pas un port.
+fn suffixe_de_version(lettres: &str) -> bool {
+    let bas = lettres.to_ascii_lowercase();
+    ["alpha", "beta", "rc", "esr"]
+        .iter()
+        .filter_map(|s| bas.strip_prefix(s))
+        .any(|reste| reste.chars().all(|y| y.is_ascii_digit()))
+}
+
+/// Le point juste avant `i` finit-il une phrase ou des points de suspension (« …fin.198.51.100.23 », « ...10.0.0.5 »)
+/// plutôt qu'un nombre (« 1.2.3.4.5 ») ? Alors une adresse peut commencer en `i`.
+fn point_de_phrase(c: &[char], i: usize) -> bool {
+    avant(c, i) == Some('.') && !avant(c, i.saturating_sub(1)).is_some_and(|p| p.is_ascii_digit())
 }
 
 /// Le corps d'une IPv6 (sans zone ni préfixe) de forme valable : groupes de quatre caractères au plus, huit groupes
@@ -1323,13 +1348,32 @@ fn forme_ipv6(corps: &str) -> bool {
 }
 
 fn ipv6(c: &[char], i: usize) -> Option<usize> {
-    if avant(c, i).is_some_and(|p| p.is_ascii_alphanumeric() || p == ':' || p == '.') {
+    // Avant l'adresse : un point (fin de phrase, points de suspension, « fd12::7.fd12::8 »), ou une étiquette collée
+    // par un deux-points (« hôte:fd12:… », « ip6:fd12::7 », « addr:… ») qui n'est pas elle-même hexadécimale.
+    if avant(c, i).is_some_and(|p| p.is_ascii_alphanumeric() || (p == ':' && !etiquette_avant(c, i))) {
         return None;
     }
     let crochet = car(c, i) == Some('[');
     let debut = if crochet { suivant(i) } else { i };
     let mut fin = fin_tant_que(c, debut, |y| y.is_ascii_hexdigit() || y == ':');
+    // Un seul deux-points final est de la phrase (« fd12:…:6: Connection refused »), pas de l'adresse.
+    if avant(c, fin) == Some(':') && avant(c, fin.saturating_sub(1)) != Some(':') {
+        fin = fin.saturating_sub(1);
+    }
     let mut corps = chaine(c, debut, fin);
+    // Neuf groupes pleins dont le dernier n'a que des chiffres : une adresse pleine et son port (« tcp6 fd12:…:ef01:443 »,
+    // la forme de netstat sous Linux). Le port est repris plus bas, après le deux-points.
+    if !forme_ipv6(&corps)
+        && corps.matches(':').count() == 8
+        && let Some(k) = corps.rfind(':')
+        && corps
+            .get(k.saturating_add(1)..)
+            .is_some_and(|p| (1..=5).contains(&p.len()) && p.chars().all(|y| y.is_ascii_digit()))
+        && forme_ipv6(corps.get(..k).unwrap_or_default())
+    {
+        fin = debut.saturating_add(k);
+        corps = chaine(c, debut, fin);
+    }
     // Une IPv4 portée en fin d'adresse (« ::ffff:203.0.113.7 », celle que le noyau donne pour une connexion IPv4 sur
     // une prise IPv6, « 64:ff9b::… », « ::… ») : prise en entier, comptée pour deux groupes. Sans cela, « ::ffff:203 »
     // serait masqué seul et les trois derniers octets sortiraient en clair.
@@ -1393,11 +1437,45 @@ fn ipv6(c: &[char], i: usize) -> Option<usize> {
             return None;
         }
         j = suivant(j);
-        if car(c, j) == Some(':') {
+    }
+    // Un port (« …%eth0:546 », « …:ef01:443 », « […]:22 ») ; sinon le deux-points est de la phrase et reste à elle
+    // (« fe80::1%eth0: Name or service not known »).
+    if car(c, j) == Some(':') {
+        let f = fin_tant_que(c, suivant(j), |y| y.is_ascii_digit());
+        if f == suivant(j) {
+            return Some(j);
+        }
+        j = f;
+    }
+    // Une IPv4 après une adresse pleine (« …:abcd:198.51.100.23 ») : la suite de nombres et de points est prise, pour
+    // ne pas laisser sortir trois octets ; un seul nombre après le point reste (« 1:2:3:4:5:6:7:8.5 », un port).
+    if car(c, j) == Some('.')
+        && car(c, suivant(j)).is_some_and(|y| y.is_ascii_digit())
+        && let f = fin_tant_que(c, suivant(j), |y| y.is_ascii_digit())
+        && car(c, f) == Some('.')
+        && car(c, suivant(f)).is_some_and(|y| y.is_ascii_digit())
+    {
+        loop {
             j = fin_tant_que(c, suivant(j), |y| y.is_ascii_digit());
+            if !(car(c, j) == Some('.') && car(c, suivant(j)).is_some_and(|y| y.is_ascii_digit())) {
+                break;
+            }
         }
     }
     (!car(c, j).is_some_and(|y| y.is_ascii_alphanumeric() || y == ':')).then_some(j)
+}
+
+/// Le deux-points juste avant `i` suit-il une étiquette (« hôte », « ip6 », « addr ») : des lettres et des chiffres
+/// dont au moins une lettre n'est pas hexadécimale, en tête de mot ? Alors une adresse peut commencer en `i`.
+fn etiquette_avant(c: &[char], i: usize) -> bool {
+    let fin = i.saturating_sub(1);
+    let mut debut = fin;
+    while avant(c, debut).is_some_and(char::is_alphanumeric) {
+        debut = debut.saturating_sub(1);
+    }
+    let etiquette = morceau(c, debut, fin);
+    !avant(c, debut).is_some_and(|p| p == ':' || p == '.' || p == '-' || p == '_')
+        && etiquette.iter().any(|y| y.is_alphabetic() && !y.is_ascii_hexdigit())
 }
 
 /// Une suite hexadécimale de 8 caractères ou plus, prise seulement si elle forme une suite de l'alphabet des jetons
