@@ -25,9 +25,14 @@
 //! programme vérifié (`sa_fenetre`). Absente, elle est ajoutée là où le lancement la cherche, « nouvelle ici »
 //! (C-6, 0.97). Au même numéro, un programme d'ici qui est exactement celui signé, sans sa fenêtre ou avec une autre,
 //! se voit proposer sa fenêtre seule, ajoutée ou remplacée, sans retélécharger le programme ; un programme d'ailleurs
-//! au même numéro, rien. Ce qui était à chaque chemin de fenêtre (rien, une empreinte, illisible) est dans l'accord
-//! sans être affiché (C-7-1) ; une fenêtre qui ne se lit pas ne fait rien proposer (C-7-2). Sa ligne du résultat
-//! relit la fenêtre posée : « à jour » seulement si c'est la bonne.
+//! au même numéro, rien. Ce qui était à chaque chemin de fenêtre (rien, une empreinte, un lien, un fichier que le
+//! lancement refuserait) est dans l'accord sans être affiché (C-7-1), avec le geste de chaque ligne et la présence
+//! d'un programme posé. Depuis GitHub, une fenêtre qui ne se lit pas laisse de côté son seul programme, dit avec ses
+//! chemins, jamais touché ni compté fait ; les autres copies suivent (ILLISIBLE-1) ; il ne reste rien d'autre : non
+//! vérifié. Depuis la clé (une seule copie), rien n'est proposé (C-7-2). Deux programmes du même dossier partagent
+//! une fenêtre : une ligne, une pose (ACCORD-1). Seules des fenêtres seules : la version le dit, avec le verdict qui
+//! n'est pas « à jour » (ACCORD-3). Sa ligne du résultat relit la fenêtre posée : « à jour » seulement si c'est la
+//! bonne.
 //!
 //! Il n'y a qu'une mise à jour à la fois : le jeton est fixe (`JETON`). Les chemins montrés sont « ~/… » sous le
 //! dossier personnel ; le chemin de la clé n'est pas montré (il dit le nom du compte), seulement « clé VANGUARD ».
@@ -61,6 +66,32 @@ pub(crate) struct Cible {
     pub chemin: String,
     /// Sa version d'aujourd'hui (« d'avant la 0.78 » sans version gravée).
     pub version: String,
+    /// Ce qui lui sera fait (relecture C-6/C-7, ORIGINE-3) : dit par l'aperçu en texte, dans l'accord ; jamais
+    /// envoyé à la fenêtre, qui ne lit que ce qu'elle connaît (sa ligne le dit déjà en mots).
+    #[serde(skip)]
+    pub geste: Geste,
+}
+
+/// Ce que la mise à jour fait à une ligne de l'aperçu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub(crate) enum Geste {
+    /// Remplacée par celle de la nouvelle version.
+    #[default]
+    Remplace,
+    /// Absente ici : ajoutée.
+    Ajoute,
+    /// Laissée de côté, ni touchée ni comptée faite (ILLISIBLE-1).
+    Ecarte,
+}
+
+impl Geste {
+    fn octet(self) -> u8 {
+        match self {
+            Geste::Remplace => 0,
+            Geste::Ajoute => 1,
+            Geste::Ecarte => 2,
+        }
+    }
 }
 
 /// Tout ce que l'aperçu donne à montrer ; chaque champ est dans l'accord (`champs`).
@@ -84,6 +115,10 @@ pub(crate) struct Apercu {
     /// connaît.
     #[serde(skip)]
     pub fenetres: Vec<Vec<u8>>,
+    /// Le programme est-il téléchargé et posé ? Faux quand seules des fenêtres le sont (ORIGINE-3) : `sha256` et
+    /// `taille` sont alors ceux du programme d'ici, qui grave l'empreinte de sa fenêtre, et rien ne le remplace.
+    #[serde(skip)]
+    pub programme: bool,
 }
 
 impl Apercu {
@@ -96,6 +131,7 @@ impl Apercu {
                 let mut o = Vec::new();
                 bloc(&mut o, c.chemin.as_bytes());
                 bloc(&mut o, c.version.as_bytes());
+                bloc(&mut o, &[c.geste.octet()]);
                 o
             })
             .collect();
@@ -109,6 +145,7 @@ impl Apercu {
             ("taille", self.taille.to_le_bytes().to_vec()),
             ("cibles", liste(cibles.iter().map(Vec::as_slice))),
             ("fenetres", liste(self.fenetres.iter().map(Vec::as_slice))),
+            ("programme", vec![u8::from(self.programme)]),
         ]
     }
 
@@ -335,6 +372,8 @@ struct Plan {
     vues: Vec<sa_fenetre::Vue>,
     /// GitHub, au même numéro : les fenêtres seules à ajouter ou réparer à côté d'un programme déjà juste (C-6, 0.97).
     seules: Vec<sa_fenetre::Seule>,
+    /// Les copies laissées de côté, leur fenêtre illisible (ILLISIBLE-1) : dites au résultat, jamais touchées.
+    ecartees: Vec<sa_fenetre::Ecartee>,
 }
 
 fn sha256_hex(octets: &[u8]) -> String {
@@ -363,22 +402,33 @@ fn sans_prefixe_etendu(chemin: &str) -> &str {
     }
 }
 
-fn apercu(
-    origine: &str,
-    visee: Version,
-    sha256: String,
-    taille: u64,
-    cibles: &[(PathBuf, Version)],
-    vues: &[sa_fenetre::Vue],
-    seules: &[sa_fenetre::Seule],
-) -> Apercu {
+/// Ce que l'aperçu montre, ligne par ligne.
+struct Lignes<'a> {
+    /// Les programmes remplacés, chacun avec sa fenêtre (`vues`, même ordre).
+    cibles: &'a [(PathBuf, Version)],
+    vues: &'a [sa_fenetre::Vue],
+    seules: &'a [sa_fenetre::Seule],
+    /// Les copies laissées de côté (ILLISIBLE-1) : montrées, jamais touchées.
+    ecartees: &'a [sa_fenetre::Ecartee],
+    /// Le verdict qui n'est pas « à jour » quand seules des fenêtres sont posées (ACCORD-3, ORIGINE-1) : dit comme au
+    /// terminal, jamais tu.
+    avertissement: Option<String>,
+}
+
+fn apercu(origine: &str, visee: Version, sha256: String, taille: u64, l: &Lignes) -> Apercu {
     // Deux compilations du même numéro se distinguent par leur date (`cote_a_cote`) : jamais « 0.95.0 remplace
     // 0.95.0 » sans dire laquelle est la plus récente.
     let mut visee_dite = ecrire(visee);
-    let mut montrees = Vec::with_capacity(cibles.len());
-    for ((c, _), f) in cibles
+    let mut montrees = Vec::with_capacity(l.cibles.len());
+    let ligne = |chemin: &Path, version: &str, geste: Geste| Cible {
+        chemin: montre(chemin),
+        version: version.to_string(),
+        geste,
+    };
+    for ((c, _), vue) in l
+        .cibles
         .iter()
-        .zip(vues.iter().map(sa_fenetre::Vue::chemin).chain(std::iter::repeat(None)))
+        .zip(l.vues.iter().map(Some).chain(std::iter::repeat(None)))
     {
         montrees.push(Cible {
             chemin: montre(c),
@@ -392,31 +442,49 @@ fn apercu(
                 }
                 _ => super::version_affichee(None),
             },
+            geste: Geste::Remplace,
         });
-        // Sa fenêtre, remplacée par celle de la nouvelle version : dans l'accord comme le programme.
-        if let Some(f) = f {
-            montrees.push(Cible {
-                chemin: montre(f),
-                version: if std::fs::symlink_metadata(f).is_ok() {
-                    tr!("sa fenêtre", "its window")
-                } else {
-                    tr!("sa fenêtre, nouvelle ici", "its window, new here")
-                }
-                .to_string(),
-            });
+        // Sa fenêtre, remplacée par celle de la nouvelle version : dans l'accord comme le programme. Partagée avec un
+        // programme d'avant du même dossier, elle a déjà sa ligne (ACCORD-1).
+        if let Some(v) = vue
+            && let Some(f) = v.ligne()
+        {
+            let geste = if v.absente() { Geste::Ajoute } else { Geste::Remplace };
+            montrees.push(ligne(f, v.dite_a_cote(), geste));
         }
     }
     // Les fenêtres seules (GitHub, au même numéro) : une ligne chacune, sous son chemin.
-    for s in seules {
-        montrees.push(Cible {
-            chemin: montre(s.chemin()),
-            version: s.dite().to_string(),
-        });
+    for s in l.seules {
+        let geste = if s.ajout() { Geste::Ajoute } else { Geste::Remplace };
+        montrees.push(ligne(s.chemin(), s.dite(), geste));
     }
-    let cibles = montrees;
-    let fenetres = vues
+    // Les copies laissées de côté : le programme, puis sa fenêtre (une fois, même partagée).
+    let mut fenetres_dites: Vec<&Path> = Vec::new();
+    for e in l.ecartees {
+        montrees.push(ligne(&e.programme, e.ligne_programme(), Geste::Ecarte));
+        if !fenetres_dites.contains(&e.fenetre.as_path()) {
+            fenetres_dites.push(&e.fenetre);
+            montrees.push(ligne(&e.fenetre, e.ligne_fenetre(), Geste::Ecarte));
+        }
+    }
+    // Aucun programme posé (ORIGINE-3) : la version dit que seule sa fenêtre l'est, et le verdict s'il n'est pas « à
+    // jour » ; 80 caractères au plus, la largeur de la fenêtre.
+    let programme = !l.cibles.is_empty();
+    if !programme {
+        visee_dite = match &l.avertissement {
+            None => trf!("{}, sa fenêtre seule", "{}, its window only", visee_dite),
+            Some(a) => trf!(
+                "{}, sa fenêtre seule ; non vérifié : {}",
+                "{}, its window only; not verified: {}",
+                visee_dite,
+                a
+            ),
+        };
+    }
+    let fenetres = l
+        .vues
         .iter()
-        .chain(seules.iter().map(|s| &s.vue))
+        .chain(l.seules.iter().map(|s| &s.vue))
         .map(sa_fenetre::Vue::pour_l_accord)
         .collect();
     Apercu {
@@ -427,8 +495,20 @@ fn apercu(
         visee: visee_dite,
         sha256,
         taille,
-        cibles,
+        cibles: montrees,
         fenetres,
+        programme,
+    }
+}
+
+/// Le verdict qui n'est pas « à jour », en peu de mots (la version de l'aperçu, 80 caractères au plus) ; `None` : à
+/// jour.
+fn avertissement(v: &Verdict) -> Option<String> {
+    match v {
+        Verdict::AJour => None,
+        Verdict::Perimee(age) => Some(trf!("la version signée {}", "the signed version {}", age)),
+        Verdict::PlusRecenteIci(ici) => Some(trf!("Vanguard {} tourne ici", "Vanguard {} runs here", ecrire(*ici))),
+        Verdict::Doutes => Some(tr!("un doute reste à régler", "a doubt remains to be fixed").to_string()),
     }
 }
 
@@ -489,13 +569,21 @@ fn plan(m: &dyn Monde, pour: Pour) -> Result<Plan, Refus> {
             fenetres_lisibles(&vues)?;
             let fenetres = vec![chemin];
             let taille = u64::try_from(octets.len()).unwrap_or(u64::MAX);
+            let lignes = Lignes {
+                cibles: &cibles,
+                vues: &vues,
+                seules: &[],
+                ecartees: &[],
+                avertissement: None,
+            };
             Ok(Plan {
-                apercu: apercu("cle", cle, sha256_hex(&octets), taille, &cibles, &vues, &[]),
+                apercu: apercu("cle", cle, sha256_hex(&octets), taille, &lignes),
                 source: Source::Cle { octets, fenetre },
                 cibles,
                 fenetres,
                 vues,
                 seules: Vec::new(),
+                ecartees: Vec::new(),
             })
         }
         Etat::Illisible(e) => Err(Refus::NonVerifie(trf!(
@@ -592,33 +680,28 @@ fn plan_github(m: &dyn Monde, pour: Pour) -> Result<Plan, Refus> {
     let ici: Vec<Version> = lues.iter().filter_map(|(_, v)| *v).chain(m.courante()).collect();
     // Seulement ce qui est plus ancien que la version publiée (sans version gravée : d'avant la 0.78, donc plus
     // ancien) ; jamais un plus récent.
-    let a_remplacer: Vec<(PathBuf, Version)> = lues
+    let a_remplacer: Vec<PathBuf> = lues
         .iter()
         .filter(|(c, v)| v.is_none_or(|v| v < p.version) && jugees.contains(c))
-        .map(|(c, _)| (c.clone(), p.version))
+        .map(|(c, _)| c.clone())
         .collect();
+    let aucun_programme = a_remplacer.is_empty();
+    // Chacun avec sa fenêtre, relue maintenant ; une fenêtre illisible ne laisse de côté que son programme
+    // (ILLISIBLE-1), une fenêtre partagée n'est montrée qu'une fois (ACCORD-1). La même logique qu'au terminal.
+    let (gardees, mut ecartees) = sa_fenetre::trier(a_remplacer);
     // Au même numéro (C-6, 0.97) : un programme d'ici qui est exactement celui que l'auteur a signé, sans sa fenêtre
     // ou avec une autre, se voit proposer sa fenêtre seule, jugée contre l'empreinte qu'il grave ; lui n'est pas
     // retéléchargé. Un autre programme au même numéro (compilé ailleurs) : rien, sa fenêtre ne se juge pas d'ici. Les
     // doutes sont refusés plus haut : aucun n'est passé sous silence.
-    let seules: Vec<sa_fenetre::Seule> = lues
+    let candidats: Vec<PathBuf> = lues
         .iter()
         .filter(|(_, v)| *v == Some(p.version))
-        .filter_map(|(c, _)| sa_fenetre::seule_a_poser(c, &p))
-        .fold(Vec::new(), |mut v: Vec<sa_fenetre::Seule>, s| {
-            // Une fenêtre partagée par deux programmes du même dossier : proposée une fois, et jamais à côté d'un
-            // programme remplacé, dont la fenêtre suit déjà.
-            let deja = v.iter().any(|t| t.chemin() == s.chemin())
-                || a_remplacer
-                    .iter()
-                    .any(|(c, _)| sa_fenetre::pour(c).as_deref() == Some(s.chemin()));
-            if !deja {
-                v.push(s);
-            }
-            v
-        });
-    if a_remplacer.is_empty() && seules.is_empty() {
-        return Err(match super::verdict(p.version, &ici, m.maintenant(), false) {
+        .map(|(c, _)| c.clone())
+        .collect();
+    let seules = sa_fenetre::seules(&candidats, &p, &gardees, &mut ecartees);
+    let verdict = super::verdict(p.version, &ici, m.maintenant(), false);
+    if gardees.is_empty() && seules.is_empty() && ecartees.is_empty() {
+        return Err(match verdict {
             Verdict::AJour => Refus::AJour(ecrire(p.version)),
             Verdict::Perimee(age) => Refus::NonVerifie(trf!(
                 "la dernière version signée {} ({}) : rien ne prouve que ce soit encore la dernière",
@@ -642,26 +725,35 @@ fn plan_github(m: &dyn Monde, pour: Pour) -> Result<Plan, Refus> {
             ),
         });
     }
+    // Rien d'autre à faire que des copies laissées de côté : non vérifié, chacune dite avec ses chemins.
+    if gardees.is_empty() && seules.is_empty() {
+        let dites: Vec<String> = ecartees
+            .iter()
+            .map(|e| e.dite(&montre(&e.programme), &montre(&e.fenetre)))
+            .collect();
+        return Err(Refus::NonVerifie(dites.join(" ; ")));
+    }
+    let (cibles, vues): (Vec<(PathBuf, Version)>, Vec<sa_fenetre::Vue>) =
+        gardees.into_iter().map(|(c, v)| ((c, p.version), v)).unzip();
     // La fenêtre d'un programme remplacé le suit (`sa_fenetre::installer_avec_sa_fenetre`) : remplacée, ou ajoutée
     // là où le lancement la cherche si elle n'y est pas (C-6, 0.97).
-    let fenetres: Vec<Option<PathBuf>> = a_remplacer.iter().map(|(c, _)| sa_fenetre::pour(c)).collect();
-    let vues: Vec<sa_fenetre::Vue> = fenetres.iter().cloned().map(sa_fenetre::Vue::de).collect();
-    fenetres_lisibles(vues.iter().chain(seules.iter().map(|s| &s.vue)))?;
+    let fenetres: Vec<Option<PathBuf>> = vues.iter().map(|v| v.chemin().map(Path::to_path_buf)).collect();
+    // Seules des fenêtres seules, pas un programme : le verdict qui n'est pas « à jour » est dit (ACCORD-3).
+    let lignes = Lignes {
+        cibles: &cibles,
+        vues: &vues,
+        seules: &seules,
+        ecartees: &ecartees,
+        avertissement: if aucun_programme { avertissement(&verdict) } else { None },
+    };
     Ok(Plan {
-        apercu: apercu(
-            "github",
-            p.version,
-            p.sha256_hex(),
-            p.taille(),
-            &a_remplacer,
-            &vues,
-            &seules,
-        ),
+        apercu: apercu("github", p.version, p.sha256_hex(), p.taille(), &lignes),
         source: Source::Github(p),
-        cibles: a_remplacer,
+        cibles,
         fenetres,
         vues,
         seules,
+        ecartees,
     })
 }
 
@@ -752,25 +844,55 @@ fn dire_apercu(a: &Apercu) {
             "GitHub, signed by the author (signature checked)"
         )
     };
-    trp!(
-        "{GRAS}Mettre Vanguard à jour{RESET} (rien n'a changé) : Vanguard {}, depuis {}",
-        "{GRAS}Update Vanguard{RESET} (nothing changed): Vanguard {}, from {}",
-        a.visee,
-        origine
-    );
-    trp!(
-        "  SHA-256 : {} ({} octets)",
-        "  SHA-256: {} ({} bytes)",
-        a.sha256,
-        a.taille
-    );
-    for c in &a.cibles {
+    if a.programme {
         trp!(
-            "  remplace {} ({})",
-            "  replaces {} ({})",
-            montre_strict(&c.chemin),
-            montre_strict(&c.version)
+            "{GRAS}Mettre Vanguard à jour{RESET} (rien n'a changé) : Vanguard {}, depuis {}",
+            "{GRAS}Update Vanguard{RESET} (nothing changed): Vanguard {}, from {}",
+            a.visee,
+            origine
         );
+        trp!(
+            "  SHA-256 : {} ({} octets)",
+            "  SHA-256: {} ({} bytes)",
+            a.sha256,
+            a.taille
+        );
+    } else {
+        // Aucun programme posé (ORIGINE-3) : l'empreinte dite est celle du programme d'ici, déjà celui-ci.
+        trp!(
+            "{GRAS}Poser la fenêtre de Vanguard{RESET} (rien n'a changé) : Vanguard {}, depuis {}",
+            "{GRAS}Place Vanguard's window{RESET} (nothing changed): Vanguard {}, from {}",
+            a.visee,
+            origine
+        );
+        trp!(
+            "  programme d'ici, déjà celui-ci, non retéléchargé : SHA-256 {} ({} octets) ; il grave l'empreinte de sa fenêtre",
+            "  program here, already this one, not downloaded again: SHA-256 {} ({} bytes); it carries its window's fingerprint",
+            a.sha256,
+            a.taille
+        );
+    }
+    for c in &a.cibles {
+        match c.geste {
+            Geste::Remplace => trp!(
+                "  remplace {} ({})",
+                "  replaces {} ({})",
+                montre_strict(&c.chemin),
+                montre_strict(&c.version)
+            ),
+            Geste::Ajoute => trp!(
+                "  ajoute {} ({})",
+                "  adds {} ({})",
+                montre_strict(&c.chemin),
+                montre_strict(&c.version)
+            ),
+            Geste::Ecarte => trp!(
+                "  laisse de côté {} ({})",
+                "  sets aside {} ({})",
+                montre_strict(&c.chemin),
+                montre_strict(&c.version)
+            ),
+        }
     }
     trp!("  Accord : {}", "  Consent: {}", a.accord());
 }
@@ -861,11 +983,20 @@ fn agir(m: &dyn Monde, accord: &str, consommer: impl FnOnce() -> Result<(), carn
             }
         }
     }
+    // Les copies laissées de côté (ILLISIBLE-1) : dites, jamais comptées faites (code 1, « pas tout mis à jour »).
+    for e in &plan.ecartees {
+        faites.push((
+            montre(&e.programme),
+            Err(e.dite(&montre(&e.programme), &montre(&e.fenetre))),
+        ));
+    }
     Issue::Fait(faites)
 }
 
 /// La ligne d'un programme posé (ou pas), puis celle de sa fenêtre : relue, elle n'est « à jour » que si c'est bien
 /// celle que grave le programme posé ; le programme pas posé, elle dit la même raison (l'ancienne reste ou revient).
+/// Une fenêtre partagée par deux programmes du même dossier (ACCORD-1) n'a qu'une ligne : juste si l'une des poses
+/// l'a laissée juste (relue chaque fois), sinon la première raison.
 fn noter_la_pose(
     faites: &mut Vec<(String, Result<(), String>)>,
     octets: &[u8],
@@ -881,7 +1012,16 @@ fn noter_la_pose(
         (montre(f), rf)
     });
     faites.push((montre(chemin), r));
-    faites.extend(ligne_fenetre);
+    if let Some((f, rf)) = ligne_fenetre {
+        match faites.iter_mut().find(|(g, _)| *g == f) {
+            Some((_, deja)) => {
+                if rf.is_ok() {
+                    *deja = rf;
+                }
+            }
+            None => faites.push((f, rf)),
+        }
+    }
 }
 
 /// `vanguard se-mettre-a-jour --appliquer --accord <accord> [--json]`. Code : 0 tout remplacé, 1 refusé, en échec ou
@@ -1514,6 +1654,39 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// ILLISIBLE-1 (relecture C-6) : la clé n'a qu'une cible ; une fenêtre d'ici qui ne se lit pas la met de côté,
+    /// donc rien n'est proposé ni posé (« non vérifié », la raison dite), programme compris.
+    #[test]
+    fn la_cle_ne_pose_rien_par_dessus_une_fenetre_illisible() {
+        let d = dossier("cle-fenetre-illisible");
+        let mut f = Faux::nouveau(&d);
+        let source = d.join("cle").join(NOM);
+        let neuve = b"fenetre 0.95".to_vec();
+        let neuf = lancant("0.95.0+1790000000", &neuve);
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(&source, &neuf).unwrap();
+        std::fs::write(sa_fenetre::pour(&source).unwrap(), &neuve).unwrap();
+        std::fs::create_dir_all(f.copie.parent().unwrap()).unwrap();
+        let ancien = programme("0.94.0+1780000000", "copie");
+        std::fs::write(&f.copie, &ancien).unwrap();
+        let fenetre_ici = sa_fenetre::pour(&f.copie).unwrap();
+        std::fs::create_dir_all(&fenetre_ici).unwrap();
+        f.etat = Etat::AMettreAJour {
+            source,
+            copie: Some(version("0.94.0+1780000000")),
+            cle: version("0.95.0+1790000000"),
+        };
+        for pour in [Pour::Voir, Pour::Appliquer] {
+            match plan(&f, pour) {
+                Err(Refus::NonVerifie(e)) => assert!(e.contains("ne se lit pas"), "{e}"),
+                autre => panic!("{:?}", autre.map(|p| p.apercu)),
+            }
+        }
+        assert_eq!(std::fs::read(&f.copie).unwrap(), ancien);
+        assert!(fenetre_ici.is_dir());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     /// C-7 (relecture 0.96) : une fenêtre apparue à côté d'un programme pendant son téléchargement, après l'accord,
     /// était remplacée sans avoir été montrée. Rien n'est remplacé pour lui, la ligne le dit, rien n'est téléchargé.
     #[test]
@@ -2033,6 +2206,169 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// ILLISIBLE-1 (relecture C-6/C-7) : une fenêtre illisible bloquait toute la mise à jour. Seule sa copie est
+    /// laissée de côté, montrée (« laisse de côté », dans l'accord), jamais touchée et dite au résultat (code 1) ;
+    /// l'autre copie est mise à jour : à côté d'un programme à remplacer comme d'un programme déjà juste.
+    #[test]
+    fn une_fenetre_illisible_ne_laisse_de_cote_que_sa_copie() {
+        let d = dossier("github-fenetre-illisible-une");
+        let mut f = Faux::nouveau(&d);
+        let vieux = d.join("a").join(NOM);
+        let pareil = d.join("b").join(NOM);
+        let autre = d.join("c").join(NOM);
+        for c in [&vieux, &pareil, &autre] {
+            std::fs::create_dir_all(c.parent().unwrap()).unwrap();
+        }
+        let ancien = programme("0.94.0+1780000000", "ici");
+        let neuve = b"fenetre 0.95".to_vec();
+        let publie = lancant("0.95.0+1790000000", &neuve);
+        std::fs::write(&vieux, &ancien).unwrap();
+        std::fs::write(&pareil, &publie).unwrap();
+        f.derniere = Ok(Publiee::d_essai(version("0.95.0+1790000000"), &publie));
+        f.recus = publie.clone();
+        f.fenetre = Ok(neuve.clone());
+        for (cible, ici) in [(&vieux, &ancien), (&pareil, &publie)] {
+            std::fs::write(&autre, &ancien).unwrap();
+            let _ = std::fs::remove_file(sa_fenetre::pour(&autre).unwrap());
+            let illisible = sa_fenetre::pour(cible).unwrap();
+            std::fs::create_dir_all(&illisible).unwrap();
+            f.cibles = vec![cible.clone(), autre.clone()];
+            let a = plan(&f, Pour::Voir).unwrap().apercu;
+            let ecartees: Vec<&str> = a
+                .cibles
+                .iter()
+                .filter(|c| c.geste == Geste::Ecarte)
+                .map(|c| c.chemin.as_str())
+                .collect();
+            assert_eq!(ecartees, [montre(cible), montre(&illisible)], "{a:?}");
+            let Issue::Fait(c) = agir(&f, &a.accord(), CONSOMME) else {
+                panic!("pas fait")
+            };
+            let mise_de_cote = c.iter().find(|(chemin, _)| *chemin == montre(cible));
+            assert!(
+                mise_de_cote.is_some_and(|(_, r)| r.as_ref().is_err_and(|e| e.contains("laissé de côté"))),
+                "{c:?}"
+            );
+            assert!(
+                c.iter()
+                    .filter(|(chemin, _)| *chemin != montre(cible))
+                    .all(|(_, r)| r.is_ok()),
+                "{c:?}"
+            );
+            assert_eq!(&std::fs::read(cible).unwrap(), ici);
+            assert!(illisible.is_dir());
+            assert_eq!(std::fs::read(&autre).unwrap(), publie);
+            assert_eq!(std::fs::read(sa_fenetre::pour(&autre).unwrap()).unwrap(), neuve);
+            std::fs::remove_dir_all(&illisible).unwrap();
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ACCORD-1, POSE-1 (relecture C-6/C-7) : deux programmes du même dossier partagent leur fenêtre. Montrée une
+    /// fois, posée une fois, une seule ligne au résultat ; le second programme n'est plus refusé à tort.
+    #[test]
+    fn deux_programmes_du_meme_dossier_partagent_leur_fenetre() {
+        let d = dossier("github-fenetre-partagee");
+        let mut f = Faux::nouveau(&d);
+        let premier = d.join("premier").join(NOM);
+        let second = d.join("premier").join("vanguard-autre");
+        std::fs::create_dir_all(premier.parent().unwrap()).unwrap();
+        let fenetre = sa_fenetre::pour(&premier).unwrap();
+        let ancien = programme("0.94.0+1780000000", "ici");
+        let neuve = b"fenetre 0.95".to_vec();
+        let publie = lancant("0.95.0+1790000000", &neuve);
+        f.derniere = Ok(Publiee::d_essai(version("0.95.0+1790000000"), &publie));
+        f.recus = publie.clone();
+        f.fenetre = Ok(neuve.clone());
+        f.cibles = vec![premier.clone(), second.clone()];
+        for ici in [None, Some(b"ancienne fenetre".as_slice())] {
+            for c in [&premier, &second] {
+                std::fs::write(c, &ancien).unwrap();
+            }
+            let _ = std::fs::remove_file(&fenetre);
+            if let Some(o) = ici {
+                std::fs::write(&fenetre, o).unwrap();
+            }
+            let apercu = plan(&f, Pour::Voir).unwrap().apercu;
+            let lignes: Vec<&str> = apercu.cibles.iter().map(|c| c.chemin.as_str()).collect();
+            assert_eq!(
+                lignes,
+                [montre(&premier), montre(&fenetre), montre(&second)],
+                "{apercu:?}"
+            );
+            let Issue::Fait(c) = agir(&f, &apercu.accord(), CONSOMME) else {
+                panic!("pas fait")
+            };
+            assert_eq!(c.len(), 3, "{c:?}");
+            assert!(c.iter().all(|(_, r)| r.is_ok()), "{c:?}");
+            assert_eq!(std::fs::read(&premier).unwrap(), publie);
+            assert_eq!(std::fs::read(&second).unwrap(), publie);
+            assert_eq!(std::fs::read(&fenetre).unwrap(), neuve);
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ACCORD-3, ORIGINE-1 (relecture C-6/C-7) : avec seulement une fenêtre seule à poser, le verdict qui n'est pas
+    /// « à jour » (une version signée trop vieille pour être crue la dernière) n'était plus dit, alors que le terminal
+    /// le dit. Il est dans la version montrée, donc dans l'accord.
+    #[test]
+    fn une_fenetre_seule_garde_le_non_verifie_du_verdict() {
+        let d = dossier("github-fenetre-seule-perimee");
+        let mut f = Faux::nouveau(&d);
+        let ici = d.join("a").join(NOM);
+        std::fs::create_dir_all(ici.parent().unwrap()).unwrap();
+        let publie = lancant("0.95.0+1790000000", b"fenetre 0.95");
+        std::fs::write(&ici, &publie).unwrap();
+        f.cibles = vec![ici.clone()];
+        f.derniere = Ok(Publiee::d_essai(version("0.95.0+1790000000"), &publie));
+        let a = plan(&f, Pour::Voir).unwrap().apercu;
+        assert_eq!(a.visee, "0.95.0, sa fenêtre seule");
+        f.maintenant = 1_790_000_000 + 400 * 86_400;
+        let vieille = plan(&f, Pour::Voir).unwrap().apercu;
+        assert!(
+            vieille
+                .visee
+                .starts_with("0.95.0, sa fenêtre seule ; non vérifié : la version signée"),
+            "{}",
+            vieille.visee
+        );
+        assert!(vieille.visee.chars().count() <= 80, "{}", vieille.visee);
+        assert_ne!(vieille.accord(), a.accord());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ORIGINE-3 (relecture C-6/C-7) : l'aperçu de fenêtres seules disait « remplace » pour un ajout et ne disait pas
+    /// qu'aucun programme n'est posé. Chaque ligne a son geste, et l'aperçu sait s'il pose un programme ; tous deux
+    /// dans l'accord.
+    #[test]
+    fn l_apercu_dit_le_geste_de_chaque_ligne() {
+        let d = dossier("github-geste");
+        let mut f = Faux::nouveau(&d);
+        let ici = d.join("a").join(NOM);
+        let fenetre = sa_fenetre::pour(&ici).unwrap();
+        std::fs::create_dir_all(ici.parent().unwrap()).unwrap();
+        let publie = lancant("0.95.0+1790000000", b"fenetre 0.95");
+        std::fs::write(&ici, &publie).unwrap();
+        f.cibles = vec![ici.clone()];
+        f.derniere = Ok(Publiee::d_essai(version("0.95.0+1790000000"), &publie));
+        let a = plan(&f, Pour::Voir).unwrap().apercu;
+        assert!(!a.programme);
+        assert_eq!(a.cibles.iter().map(|c| c.geste).collect::<Vec<_>>(), [Geste::Ajoute]);
+        std::fs::write(&fenetre, b"fenetre plantee").unwrap();
+        let a = plan(&f, Pour::Voir).unwrap().apercu;
+        assert_eq!(a.cibles.iter().map(|c| c.geste).collect::<Vec<_>>(), [Geste::Remplace]);
+        // Un programme plus ancien : remplacé, sa fenêtre absente ajoutée.
+        std::fs::write(&ici, programme("0.94.0+1780000000", "ici")).unwrap();
+        std::fs::remove_file(&fenetre).unwrap();
+        let a = plan(&f, Pour::Voir).unwrap().apercu;
+        assert!(a.programme);
+        assert_eq!(
+            a.cibles.iter().map(|c| c.geste).collect::<Vec<_>>(),
+            [Geste::Remplace, Geste::Ajoute]
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     /// L'accord ne vaut que pour ce geste : il change avec chaque champ montré, et n'est pas celui d'un autre contexte.
     #[test]
     fn l_accord_lie_chaque_champ() {
@@ -2047,8 +2383,10 @@ mod tests {
             cibles: vec![Cible {
                 chemin: "~/.local/share/vanguard/bin/vanguard".into(),
                 version: "0.95.0+1".into(),
+                geste: Geste::Remplace,
             }],
             fenetres: vec![vec![1, 0, 0]],
+            programme: true,
         };
         let base = a.accord();
         let mut changes = Vec::new();
@@ -2079,6 +2417,16 @@ mod tests {
         changes.push(b);
         let mut b = a.clone();
         b.fenetres.push(vec![0, 0]);
+        changes.push(b);
+        // Le geste de chaque ligne et la présence d'un programme posé (ORIGINE-3) : pas montrés par l'interface, mais
+        // dans l'accord.
+        for geste in [Geste::Ajoute, Geste::Ecarte] {
+            let mut b = a.clone();
+            b.cibles[0].geste = geste;
+            changes.push(b);
+        }
+        let mut b = a.clone();
+        b.programme = false;
         changes.push(b);
         for c in changes {
             assert_ne!(c.accord(), base, "{c:?}");

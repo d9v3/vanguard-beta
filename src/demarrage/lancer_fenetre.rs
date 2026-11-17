@@ -197,6 +197,15 @@ fn refus(m: &std::fs::Metadata) -> Option<&'static str> {
     (!m.file_type().is_file()).then(|| tr!("pas un fichier ordinaire", "not a regular file"))
 }
 
+/// Le refus que le lancement opposerait à la fenêtre décrite par `m` (sans suivre de lien), pour ce compte : la
+/// mise à jour juge « juste » comme lui (relecture C-6/C-7), jamais une fenêtre qu'il refuserait.
+pub(crate) fn refusee(m: &std::fs::Metadata) -> Option<&'static str> {
+    #[cfg(unix)]
+    return refus(m, crate::socle::uid());
+    #[cfg(windows)]
+    return refus(m);
+}
+
 /// Ouvre la fenêtre si c'est le bon choix et qu'elle dit s'être ouverte ; `false` : le menu du terminal.
 /// La fenêtre est cherchée à côté du programme d'origine : sous Linux, avec la protection de la clé, ce programme
 /// tourne d'une copie temporaire (`protection::cle::exe_d_origine`).

@@ -615,6 +615,23 @@ fn copie_du_programme(l: &Lieux, copies_d_avant: Vec<PathBuf>, r: &mut Recenseme
         .map(|n| bin.join(n))
         .filter(|p| std::fs::symlink_metadata(p).is_ok())
         .collect();
+    // Le reste d'une pose de fenêtre interrompue : un nom provisoire propre à chaque pose (« .nouveau-<pid>-<n> »).
+    if let Ok(entrees) = std::fs::read_dir(&bin) {
+        let provisoires: Vec<String> = [fenetre.as_str(), page]
+            .iter()
+            .map(|nom| format!("{nom}.nouveau-"))
+            .collect();
+        fichiers.extend(
+            entrees
+                .flatten()
+                .filter(|e| {
+                    e.file_name()
+                        .to_str()
+                        .is_some_and(|n| provisoires.iter().any(|p| n.starts_with(p.as_str())))
+                })
+                .map(|e| e.path()),
+        );
+    }
     fichiers.extend(copies_d_avant);
     // Windows n'efface pas un programme en marche : la copie qui tourne n'est pas essayée, et c'est dit.
     let en_marche = l.programme.as_deref();
@@ -2378,6 +2395,14 @@ mod tests {
         );
         // C-8 (relecture 0.96) : la fenêtre posée sous le nom de la page de la version part aussi.
         ecrire(&bin.join(crate::demarrage::lancer_fenetre::NOM_PAGE), "fenêtre");
+        // Le reste d'une pose de fenêtre interrompue (nom provisoire propre à chaque pose, POSE-5) part aussi.
+        ecrire(
+            &bin.join(format!(
+                "vanguard-fenetre{}.nouveau-4242-0",
+                std::env::consts::EXE_SUFFIX
+            )),
+            "fenêtre",
+        );
         // Des données, une quarantaine, et l'ancien dossier de données.
         ecrire(&l.donnees.join("appareils.json"), "{}");
         ecrire(&l.donnees.join("quarantaine/x"), "x");
@@ -2431,7 +2456,8 @@ mod tests {
         let Retrait::Fichiers(copies) = &rec.elements[5].retrait else {
             panic!("{:?}", rec.elements[5]);
         };
-        assert_eq!(copies.len(), 5, "{copies:?}");
+        assert_eq!(copies.len(), 6, "{copies:?}");
+        assert!(copies.iter().any(|c| c.to_string_lossy().ends_with(".nouveau-4242-0")));
         assert!(
             copies
                 .iter()

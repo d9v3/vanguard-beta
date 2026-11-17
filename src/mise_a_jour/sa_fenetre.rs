@@ -1,20 +1,26 @@
 //! La fenêtre (`vanguard-fenetre`) d'un programme que la mise à jour remplace : elle le suit, vérifiée contre
 //! l'empreinte gravée dans le nouveau programme (`demarrage::empreinte_fenetre`), lui-même déjà vérifié (signature,
 //! taille et empreinte de GitHub, ou la version de la clé). La fenêtre d'abord, puis le programme ; si le programme
-//! ne se pose pas, l'ancienne fenêtre est remise. Même si ce retour échouait, rien de dangereux : un programme ne
-//! lance jamais une fenêtre dont l'empreinte n'est pas la sienne (le menu à la place).
+//! ne se pose pas, ce qui était là est remis, et ce qui ne peut pas l'être est dit (`Remise`). Même si ce retour
+//! échouait, rien de dangereux : un programme ne lance jamais une fenêtre dont l'empreinte n'est pas la sienne (le
+//! menu à la place).
 //!
 //! Depuis GitHub (C-6, 0.97), une fenêtre absente est ajoutée là où le lancement la cherche, au même accord que le
 //! programme ; et au même numéro, un programme d'ici qui est exactement celui que l'auteur a signé reçoit sa fenêtre
-//! seule, ajoutée ou réparée, sans être retéléchargé (`Seule`). Jamais rien sans avoir été montré puis accepté ; ce
-//! qui ne se vérifie pas (une fenêtre illisible, un programme d'ailleurs) est dit et rien n'est posé.
+//! seule, ajoutée ou réparée, sans être retéléchargé (`Seule`). Jamais rien sans avoir été montré puis accepté.
+//!
+//! Relecture C-6/C-7 : « juste » se juge comme le lancement (`lancer_fenetre::refusee`) : une fenêtre en lien, ou
+//! que le lancement refuserait (droits, propriétaire), n'est jamais comptée juste, et n'est jamais lue à travers le
+//! lien (`Avant`). Une fenêtre qui ne se lit pas met de côté son seul programme (`Ecartee`), dit avec son chemin ;
+//! les autres copies suivent. Deux programmes du même dossier partagent une fenêtre : jugée et posée une fois
+//! (`trier`).
 
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
 use super::TAILLE_MAX as TAILLE_PROGRAMME;
-use super::{Essai, Version, installer, lire_octets, mettre_en_place_sous};
+use super::{Essai, Version, installer, lire_octets, meme_fichier, mettre_en_place_sous};
 use crate::demarrage::empreinte_fenetre::{self, Gravee};
 use crate::demarrage::lancer_fenetre::{self, TAILLE_MAX};
 use crate::modele::{Echec, Raison};
@@ -61,6 +67,16 @@ fn ratee(e: impl std::fmt::Display) -> Echec {
     Echec::echoue("fenetre/poser", e.to_string())
 }
 
+/// `e`, avec une phrase de plus à la fin (ce qui a été remis, ou pas) ; sa raison gardée.
+fn avec(mut e: Echec, ajout: &str) -> Echec {
+    e.detail = if e.detail.is_empty() {
+        ajout.to_string()
+    } else {
+        format!("{}\n    {ajout}", e.detail)
+    };
+    e
+}
+
 /// `octets` à la place de `cible` (`installer`), et la fenêtre à côté (`vue.chemin`) remplacée, ou ajoutée si elle
 /// n'y est pas (C-6, 0.97), par celle de la nouvelle version, que `recevoir` donne (appelé seulement s'il en faut une).
 /// Tout ou rien : une fenêtre qui ne vient pas, ou qui n'est pas celle gravée, et rien n'est remplacé. Un nouveau
@@ -69,7 +85,7 @@ fn ratee(e: impl std::fmt::Display) -> Echec {
 ///
 /// `vue` : la fenêtre que l'aperçu a montrée à côté de `cible` (C-7, relecture 0.96), son chemin et ce qui y était.
 /// Apparue, partie ou changée depuis, rien n'est remplacé, le programme non plus : jamais une fenêtre remplacée sans
-/// avoir été montrée.
+/// avoir été montrée (sauf par la copie d'avant du même dossier, `Vue::partagee`).
 #[allow(clippy::too_many_arguments)] // chacun une garde : la liste des copies (registre) et la copie de cet ordinateur s'ajoutent
 pub(super) fn installer_avec_sa_fenetre(
     octets: &[u8],
@@ -81,7 +97,7 @@ pub(super) fn installer_avec_sa_fenetre(
     vue: &Vue,
     recevoir: &mut dyn FnMut() -> Result<Vec<u8>, Echec>,
 ) -> Result<(), Echec> {
-    vue.telle_quelle(cible)?;
+    vue.telle_quelle(cible, octets)?;
     let Some(chemin) = vue.chemin.clone() else {
         return installer(octets, cible, attendue, registre, copie, essai).map_err(ratee);
     };
@@ -98,16 +114,18 @@ pub(super) fn installer_avec_sa_fenetre(
     }
     let fenetre = recevoir()?;
     // Le téléchargement a pris du temps : une fenêtre a pu apparaître, partir ou changer.
-    vue.telle_quelle(cible)?;
+    vue.telle_quelle(cible, octets)?;
     installer_avec(octets, cible, attendue, registre, copie, essai, &fenetre, &chemin, vue)
 }
 
 /// GitHub, au même numéro (C-6, 0.97) : un programme d'ici qui est exactement celui que l'auteur a signé (taille et
-/// empreinte du manifeste), sans sa fenêtre à côté, ou avec une autre que celle qu'il grave. Seule sa fenêtre est
-/// proposée, ajoutée ou réparée ; le programme, déjà juste, n'est pas retéléchargé.
+/// empreinte du manifeste), sans sa fenêtre à côté, ou avec une autre que celle qu'il grave, ou une que le lancement
+/// refuserait (un lien, des droits trop larges). Seule sa fenêtre est proposée, ajoutée ou réparée ; le programme,
+/// déjà juste, n'est pas retéléchargé.
 #[derive(Debug)]
 pub(super) struct Seule {
-    /// Le programme d'ici, tel que lu et reconnu pour l'aperçu.
+    /// Le programme d'ici, tel que lu et reconnu pour l'aperçu ; posé par un lien, le fichier qu'il désigne : le
+    /// lancement cherche la fenêtre à côté de lui (ORIGINE-2).
     programme: PathBuf,
     octets: Vec<u8>,
     /// Où sa fenêtre sera posée, et ce qui y était quand elle a été montrée.
@@ -128,25 +146,33 @@ impl Seule {
 
     /// Ce que la ligne de la fenêtre dit dans l'aperçu.
     pub(super) fn dite(&self) -> &'static str {
-        if self.ajout() {
-            tr!(
+        match self.vue.etat {
+            Montree::Absente => tr!(
                 "sa fenêtre, absente : ajoutée seule",
                 "its window, missing: added alone"
-            )
-        } else {
-            tr!(
+            ),
+            Montree::Lien(_) => tr!(
+                "sa fenêtre, un lien : remplacée seule par un fichier",
+                "its window, a link: replaced alone by a file"
+            ),
+            Montree::Refusee(_) => tr!(
+                "sa fenêtre, refusée au lancement (droits) : remplacée seule",
+                "its window, refused at launch (permissions): replaced alone"
+            ),
+            Montree::Empreinte(_) | Montree::Illisible => tr!(
                 "sa fenêtre, pas la sienne : remplacée seule",
                 "its window, not its own: replaced alone"
-            )
+            ),
         }
     }
 
     /// Après l'accord : la fenêtre que `recevoir` donne, jugée contre l'empreinte que grave le programme d'ici
-    /// (reconnu comme celui que l'auteur a signé), posée à la place de ce qui a été montré. Rien d'autre n'est
-    /// touché ; une fenêtre changée depuis l'aperçu, un programme d'ici changé, une fenêtre reçue qui n'est pas la
-    /// gravée : rien.
+    /// (reconnu comme celui que l'auteur a signé), posée à la place de ce qui a été montré, puis relue
+    /// (`posee_juste`). Rien d'autre n'est touché ; une fenêtre changée depuis l'aperçu, un programme d'ici changé,
+    /// une fenêtre reçue qui n'est pas la gravée : rien. Posée mais pas juste à la relecture : ce qui était là est
+    /// remis, et ce qui ne peut pas l'être est dit (POSE-2).
     pub(super) fn poser(&self, recevoir: &mut dyn FnMut() -> Result<Vec<u8>, Echec>) -> Result<(), Echec> {
-        self.vue.telle_quelle(&self.programme)?;
+        self.vue.telle_quelle(&self.programme, &self.octets)?;
         let Some(chemin) = self.vue.chemin.as_deref() else {
             return Err(changee_depuis_l_apercu());
         };
@@ -156,7 +182,7 @@ impl Seule {
         let fenetre = recevoir()?;
         juste(&self.octets, &fenetre)?;
         // Le téléchargement a pris du temps : la fenêtre ou le programme d'ici ont pu changer.
-        self.vue.telle_quelle(&self.programme)?;
+        self.vue.telle_quelle(&self.programme, &self.octets)?;
         if lire_octets(&self.programme, TAILLE_PROGRAMME).ok().as_deref() != Some(self.octets.as_slice()) {
             return Err(Echec::refuse(
                 "fenetre/apercu",
@@ -166,8 +192,9 @@ impl Seule {
                 ),
             ));
         }
-        self.vue.meme_etat(chemin, &Avant::de(chemin, TAILLE_MAX))?;
-        poser(&fenetre, chemin)
+        let avant = Avant::de(chemin, TAILLE_MAX);
+        self.vue.meme_etat(chemin, &avant, &self.octets)?;
+        poser_puis_relire(&fenetre, chemin, &avant, |c| posee_juste(&self.octets, c))
     }
 
     /// Ce que dit la ligne de la fenêtre après la pose : relue, jamais « à jour » sans l'être.
@@ -176,25 +203,193 @@ impl Seule {
     }
 }
 
+/// `fenetre` posée à `chemin`, puis relue (`relire`) ; posée mais pas juste à la relecture, ce qui était là
+/// (`avant`) est remis, et ce qui ne peut pas l'être est dit (POSE-2).
+fn poser_puis_relire(
+    fenetre: &[u8],
+    chemin: &Path,
+    avant: &Avant,
+    relire: impl FnOnce(&Path) -> Result<(), Echec>,
+) -> Result<(), Echec> {
+    poser(fenetre, chemin)
+        .and_then(|()| relire(chemin))
+        .map_err(|e| avec_remise(e, &remettre(avant, chemin, fenetre)))
+}
+
+/// Une copie d'ici laissée de côté (ILLISIBLE-1, relecture C-6/C-7) : sa fenêtre ne se lit pas (droits, dossier,
+/// démesurée), ou, pour une fenêtre seule, la copie est un lien dont la fenêtre ne peut pas être posée là où le
+/// lancement la cherche. Ni elle ni sa fenêtre ne sont touchées ; c'est dit avec le chemin, les autres copies
+/// suivent. Jamais dans l'accord : une copie laissée de côté n'est pas un geste accepté.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Ecartee {
+    pub(super) programme: PathBuf,
+    pub(super) fenetre: PathBuf,
+    pourquoi: Pourquoi,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pourquoi {
+    Illisible,
+    Lien,
+}
+
+impl Ecartee {
+    /// La ligne du programme dans l'aperçu (80 caractères au plus, la largeur de l'interface).
+    pub(super) fn ligne_programme(&self) -> &'static str {
+        match self.pourquoi {
+            Pourquoi::Illisible => tr!(
+                "laissé de côté : sa fenêtre ne se lit pas",
+                "set aside: its window cannot be read"
+            ),
+            Pourquoi::Lien => tr!(
+                "laissé de côté : un lien, sa fenêtre n'est pas posée",
+                "set aside: a link, its window is not placed"
+            ),
+        }
+    }
+
+    /// La ligne de la fenêtre dans l'aperçu.
+    pub(super) fn ligne_fenetre(&self) -> &'static str {
+        match self.pourquoi {
+            Pourquoi::Illisible => tr!(
+                "sa fenêtre, illisible : retirez-la ou réparez-la",
+                "its window, unreadable: remove or repair it"
+            ),
+            Pourquoi::Lien => tr!(
+                "sa fenêtre, non touchée : la copie est un lien",
+                "its window, untouched: the copy is a link"
+            ),
+        }
+    }
+
+    /// La phrase entière (le résultat, le terminal), `programme` et `fenetre` déjà mis en forme pour l'affichage.
+    pub(super) fn dite(&self, programme: &str, fenetre: &str) -> String {
+        match self.pourquoi {
+            Pourquoi::Illisible => crate::trf!(
+                "la fenêtre {} ne se lit pas (droits, dossier, trop grande) : {} est laissé de côté, ni lui ni elle ne sont touchés ; retirez ou réparez ce fichier, puis relancez la mise à jour",
+                "the window {} cannot be read (permissions, folder, too large): {} is set aside, neither it nor the window is touched; remove or repair this file, then run the update again",
+                fenetre,
+                programme
+            ),
+            Pourquoi::Lien => crate::trf!(
+                "{} est un lien : sa fenêtre seule n'est pas posée ({}), le lancement la cherche à côté du fichier qu'il désigne ; posez la copie elle-même, puis relancez la mise à jour",
+                "{} is a link: its window alone is not placed ({}), the launch looks for it next to the file it points to; install the copy itself, then run the update again",
+                programme,
+                fenetre
+            ),
+        }
+    }
+}
+
+/// Le même chemin de fenêtre, écrit autrement ou non (un dossier par un lien) : même nom, dans le même dossier.
+fn meme_chemin(a: &Path, b: &Path) -> bool {
+    a == b
+        || (a.file_name() == b.file_name()
+            && matches!((a.parent(), b.parent()), (Some(x), Some(y)) if meme_fichier(x, y)))
+}
+
+/// Les programmes à remplacer (`cibles`), chacun avec la fenêtre montrée à côté de lui (relue maintenant) ; ceux
+/// dont la fenêtre ne se lit pas sont mis de côté (ILLISIBLE-1), les autres suivent. Deux programmes du même dossier
+/// partagent une fenêtre (ACCORD-1, POSE-1) : le second la sait partagée (`Vue::partagee`), elle n'est montrée qu'une
+/// fois et il accepte la fenêtre que le premier vient de poser. La même logique pour l'interface et le terminal.
+pub(super) fn trier(cibles: Vec<PathBuf>) -> (Vec<(PathBuf, Vue)>, Vec<Ecartee>) {
+    let mut gardees: Vec<(PathBuf, Vue)> = Vec::new();
+    let mut ecartees = Vec::new();
+    for cible in cibles {
+        let mut vue = Vue::de(pour(&cible));
+        if let Some(f) = vue.illisible() {
+            ecartees.push(Ecartee {
+                fenetre: f.to_path_buf(),
+                programme: cible,
+                pourquoi: Pourquoi::Illisible,
+            });
+            continue;
+        }
+        vue.partagee = vue.chemin.as_deref().is_some_and(|c| {
+            gardees
+                .iter()
+                .any(|(_, v)| v.chemin.as_deref().is_some_and(|d| meme_chemin(c, d)))
+        });
+        gardees.push((cible, vue));
+    }
+    (gardees, ecartees)
+}
+
+/// Les fenêtres seules à proposer (`seule_a_poser`) à côté des `candidats` (au numéro publié), une par chemin, et
+/// aucune là où une copie à remplacer (`gardees`) pose déjà la sienne ; celles qui ne se lisent pas, ou d'une copie
+/// en lien qui ne peut pas la recevoir, vont dans `ecartees`.
+pub(super) fn seules(
+    candidats: &[PathBuf],
+    publiee: &super::github::Publiee,
+    gardees: &[(PathBuf, Vue)],
+    ecartees: &mut Vec<Ecartee>,
+) -> Vec<Seule> {
+    let mut seules: Vec<Seule> = Vec::new();
+    for c in candidats {
+        match seule_a_poser(c, publiee) {
+            None => {}
+            Some(Err(e)) => {
+                if !ecartees.contains(&e) {
+                    ecartees.push(e);
+                }
+            }
+            Some(Ok(s)) => {
+                let deja = seules.iter().any(|t| meme_chemin(t.chemin(), s.chemin()))
+                    || gardees
+                        .iter()
+                        .any(|(_, v)| v.chemin().is_some_and(|d| meme_chemin(d, s.chemin())));
+                if !deja {
+                    seules.push(s);
+                }
+            }
+        }
+    }
+    seules
+}
+
 /// La fenêtre seule à proposer à côté de `cible` (C-6, 0.97), si `cible` est exactement le programme que l'auteur a
-/// signé (`publiee`) et qu'il grave une fenêtre qui n'est pas celle d'ici (absente, autre, ou illisible : à refuser
-/// avant de rien proposer, `Vue::illisible`). Un programme d'ici qui n'est pas celui publié (une compilation
-/// d'ailleurs au même numéro) : rien, sa fenêtre ne peut pas être jugée d'ici contre GitHub.
-pub(super) fn seule_a_poser(cible: &Path, publiee: &super::github::Publiee) -> Option<Seule> {
+/// signé (`publiee`) et qu'il grave une fenêtre qui n'est pas celle d'ici, juste aux yeux du lancement (absente,
+/// autre, un lien, refusée). Une fenêtre illisible : `Err`, la copie mise de côté. Un programme d'ici qui n'est pas
+/// celui publié (une compilation d'ailleurs au même numéro) : rien, sa fenêtre ne peut pas être jugée d'ici contre
+/// GitHub. Posée par un lien, la fenêtre va à côté du fichier désigné, là où le lancement la cherche (ORIGINE-2) ;
+/// sous Windows, ou si ce dossier n'est pas sûr pour root, la copie est mise de côté.
+pub(super) fn seule_a_poser(cible: &Path, publiee: &super::github::Publiee) -> Option<Result<Seule, Ecartee>> {
     let octets = lire_octets(cible, TAILLE_PROGRAMME).ok().filter(|o| publiee.est(o))?;
     let Some(Gravee::Empreinte(e)) = empreinte_fenetre::gravee(&octets) else {
         return None;
     };
-    let vue = Vue::de(pour(cible));
-    vue.chemin.as_ref()?;
-    if vue.etat == Montree::Empreinte(e) {
-        return None;
+    let en_lien = std::fs::symlink_metadata(cible).is_ok_and(|m| m.file_type().is_symlink());
+    let programme = if en_lien {
+        let ecartee = || {
+            Some(Err(Ecartee {
+                programme: cible.to_path_buf(),
+                fenetre: pour(cible).unwrap_or_else(|| cible.to_path_buf()),
+                pourquoi: Pourquoi::Lien,
+            }))
+        };
+        // Sous Unix, le lancement cherche la fenêtre à côté du chemin résolu (`exe_d_origine`). Sous Windows, à
+        // côté du chemin lancé, que rien ne dit ici : rien n'est posé (à faire confirmer par l'auteur).
+        #[cfg(unix)]
+        match cible.canonicalize() {
+            Ok(vrai) if super::remplacable_ici(&vrai) => vrai,
+            _ => return ecartee(),
+        }
+        #[cfg(not(unix))]
+        return ecartee();
+    } else {
+        cible.to_path_buf()
+    };
+    let vue = Vue::de(pour(&programme));
+    let chemin = vue.chemin.clone()?;
+    match vue.etat {
+        Montree::Illisible => Some(Err(Ecartee {
+            programme,
+            fenetre: chemin,
+            pourquoi: Pourquoi::Illisible,
+        })),
+        Montree::Empreinte(m) if m == e => None,
+        _ => Some(Ok(Seule { programme, octets, vue })),
     }
-    Some(Seule {
-        programme: cible.to_path_buf(),
-        octets,
-        vue,
-    })
 }
 
 /// La fenêtre telle que l'aperçu (ou la question du terminal) l'a montrée : le chemin que la mise à jour remplacera
@@ -205,13 +400,20 @@ pub(super) fn seule_a_poser(cible: &Path, publiee: &super::github::Publiee) -> O
 pub(super) struct Vue {
     chemin: Option<PathBuf>,
     etat: Montree,
+    /// La même fenêtre qu'un programme d'avant dans la liste (même dossier, `trier`) : elle a déjà sa ligne, et ce
+    /// programme accepte aussi, à sa place, la fenêtre juste de la nouvelle version, que le premier vient de poser.
+    partagee: bool,
 }
 
-/// Ce qui était au chemin montré : rien, un fichier (son empreinte SHA-256), ou quelque chose d'illisible.
+/// Ce qui était au chemin montré : rien, un fichier ordinaire (son empreinte SHA-256), un fichier que le lancement
+/// refuserait (droits, propriétaire ; son empreinte), un lien (ce qu'il désigne, jamais suivi), ou quelque chose
+/// d'illisible. Un lien ou un fichier refusé n'est jamais égal à l'empreinte gravée : il est proposé, « réparée ».
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Montree {
     Absente,
     Empreinte([u8; 32]),
+    Refusee([u8; 32]),
+    Lien(PathBuf),
     Illisible,
 }
 
@@ -220,6 +422,8 @@ impl Montree {
         match avant {
             Avant::Absente => Montree::Absente,
             Avant::Lue(o) => Montree::Empreinte(Sha256::digest(o).into()),
+            Avant::Refusee(o) => Montree::Refusee(Sha256::digest(o).into()),
+            Avant::Lien(c) => Montree::Lien(c.clone()),
             Avant::Illisible => Montree::Illisible,
         }
     }
@@ -231,12 +435,42 @@ impl Vue {
         let etat = chemin
             .as_deref()
             .map_or(Montree::Absente, |c| Montree::de(&Avant::de(c, TAILLE_MAX)));
-        Vue { chemin, etat }
+        Vue {
+            chemin,
+            etat,
+            partagee: false,
+        }
     }
 
     /// Le chemin montré (`None` : aucune fenêtre ne sera touchée).
     pub(super) fn chemin(&self) -> Option<&Path> {
         self.chemin.as_deref()
+    }
+
+    /// Le chemin à montrer sur sa propre ligne : aucun pour une fenêtre déjà montrée avec un programme d'avant.
+    pub(super) fn ligne(&self) -> Option<&Path> {
+        self.chemin().filter(|_| !self.partagee)
+    }
+
+    /// Rien n'était au chemin montré : la fenêtre sera ajoutée.
+    pub(super) fn absente(&self) -> bool {
+        self.etat == Montree::Absente
+    }
+
+    /// Ce que dit la ligne de cette fenêtre dans l'aperçu, à côté d'un programme remplacé.
+    pub(super) fn dite_a_cote(&self) -> &'static str {
+        match self.etat {
+            Montree::Absente => tr!("sa fenêtre, nouvelle ici", "its window, new here"),
+            Montree::Lien(_) => tr!(
+                "sa fenêtre, un lien : remplacé par un fichier",
+                "its window, a link: replaced by a file"
+            ),
+            Montree::Refusee(_) => tr!(
+                "sa fenêtre, refusée au lancement (droits) : remplacée",
+                "its window, refused at launch (permissions): replaced"
+            ),
+            Montree::Empreinte(_) | Montree::Illisible => tr!("sa fenêtre", "its window"),
+        }
     }
 
     /// Le chemin que la pose toucherait est-il celui qui a été montré (ou aucun, si aucun ne l'a été) ?
@@ -249,23 +483,28 @@ impl Vue {
     }
 
     /// GitHub : la fenêtre à côté de `cible`, relue maintenant, est-elle encore celle qui a été montrée, au même
-    /// chemin (un autre nom que le lancement cherche compris) et avec le même contenu ?
-    fn telle_quelle(&self, cible: &Path) -> Result<(), Echec> {
+    /// chemin (un autre nom que le lancement cherche compris) et avec le même contenu ? `nouveau` : le programme qui
+    /// sera posé (une fenêtre partagée peut déjà être la sienne).
+    fn telle_quelle(&self, cible: &Path, nouveau: &[u8]) -> Result<(), Echec> {
         self.dite(pour(cible).as_deref())?;
         match self.chemin.as_deref() {
-            Some(c) => self.meme_etat(c, &Avant::de(c, TAILLE_MAX)),
+            Some(c) => self.meme_etat(c, &Avant::de(c, TAILLE_MAX), nouveau),
             None => Ok(()),
         }
     }
 
     /// Ce qui est à `chemin` juste avant la pose (`avant`) est-il ce qui a été montré ? Une fenêtre montrée illisible
-    /// ne l'est jamais (C-7-2, relecture 0.96) : rien ne dit que c'est la même ; non vérifié, donc non.
-    fn meme_etat(&self, chemin: &Path, avant: &Avant) -> Result<(), Echec> {
+    /// ne l'est jamais (C-7-2, relecture 0.96) : rien ne dit que c'est la même ; non vérifié, donc non (une défense
+    /// seulement : `trier` et `seule_a_poser` la mettent de côté avant). Une fenêtre partagée accepte aussi la fenêtre
+    /// juste de `nouveau`, posée par le programme d'avant du même dossier, un fichier ordinaire.
+    fn meme_etat(&self, chemin: &Path, avant: &Avant, nouveau: &[u8]) -> Result<(), Echec> {
         self.dite(Some(chemin))?;
         if self.etat == Montree::Illisible {
             return Err(illisible_refusee());
         }
-        if self.etat == Montree::de(avant) {
+        if self.etat == Montree::de(avant)
+            || (self.partagee && matches!(avant, Avant::Lue(o) if juste(nouveau, o).is_ok()))
+        {
             Ok(())
         } else {
             Err(changee_depuis_l_apercu())
@@ -278,7 +517,10 @@ impl Vue {
     }
 
     /// Ce que l'accord retient de cette fenêtre (C-7-1, relecture 0.96) : son chemin et ce qui y était (rien, une
-    /// empreinte SHA-256, illisible). Un contenu changé entre l'aperçu et le clic change l'accord, même au même chemin.
+    /// empreinte SHA-256, un fichier refusé au lancement et son empreinte, un lien et ce qu'il désigne). Un contenu
+    /// changé entre l'aperçu et le clic change l'accord, même au même chemin ; un lien ou un fichier refusé ne vaut
+    /// jamais l'empreinte du même contenu. L'état « illisible » n'y arrive pas (la copie est mise de côté, `trier`) :
+    /// son code n'est qu'une défense.
     pub(super) fn pour_l_accord(&self) -> Vec<u8> {
         let mut o = Vec::new();
         if let Some(c) = &self.chemin {
@@ -292,7 +534,17 @@ impl Vue {
                 o.push(1);
                 o.extend_from_slice(e);
             }
+            // Jamais atteint : une fenêtre illisible écarte sa cible avant l'accord (`trier`, `seules`). Gardé en
+            // défense, avec un code à lui, jamais égal à un autre état.
             Montree::Illisible => o.push(2),
+            Montree::Refusee(e) => {
+                o.push(3);
+                o.extend_from_slice(e);
+            }
+            Montree::Lien(c) => {
+                o.push(4);
+                o.extend_from_slice(c.as_os_str().as_encoded_bytes());
+            }
         }
         o
     }
@@ -318,7 +570,8 @@ fn illisible_refusee() -> Echec {
     )
 }
 
-/// La phrase d'une fenêtre illisible trouvée par l'aperçu (`Vue::illisible`) : rien n'est proposé.
+/// La phrase d'une fenêtre illisible trouvée par l'aperçu de la clé (`Vue::illisible`, une seule copie) : rien
+/// n'est proposé.
 pub(super) fn illisible_dite(chemin: &str) -> String {
     crate::trf!(
         "la fenêtre {} ne se lit pas (droits, dossier, trop grande) : rien n'est proposé ; retirez ou réparez ce fichier, puis relancez la mise à jour",
@@ -329,10 +582,13 @@ pub(super) fn illisible_dite(chemin: &str) -> String {
 
 /// La fenêtre posée à côté du programme `source` (la clé), si c'est bien celle que gravent ses `octets`. Sinon
 /// `None` : la copie se fait sans elle (la surveillance en dépend), et une fenêtre déjà là ne sera pas lancée par un
-/// programme qui ne la reconnaît pas.
+/// programme qui ne la reconnaît pas. Jamais lue à travers un lien (ILLISIBLE-4) ; un fichier que le lancement
+/// refuserait sur la clé (une clé FAT donne ses droits à tous) se copie : ses octets seuls comptent.
 pub(super) fn de_la_source(source: &Path, octets: &[u8]) -> Option<Vec<u8>> {
-    let fenetre = lire_octets(&a_cote(source)?, TAILLE_MAX).ok()?;
-    juste(octets, &fenetre).ok().map(|()| fenetre)
+    match Avant::de(&a_cote(source)?, TAILLE_MAX) {
+        Avant::Lue(fenetre) | Avant::Refusee(fenetre) => juste(octets, &fenetre).ok().map(|()| fenetre),
+        Avant::Absente | Avant::Lien(_) | Avant::Illisible => None,
+    }
 }
 
 /// La fenêtre de la copie posée en `cible` : sous le nom que le lancement y cherche.
@@ -340,15 +596,43 @@ pub(super) fn pour(cible: &Path) -> Option<PathBuf> {
     lancer_fenetre::voisine(cible)
 }
 
-/// La fenêtre posée à `chemin` est-elle, relue maintenant, celle que grave `programme` ? Ce que dit la ligne de la
-/// fenêtre après une mise à jour : jamais « à jour » sans l'avoir relue. Un programme qui ne lance aucune fenêtre, ou
-/// ne dit pas laquelle, le dit d'abord : la fenêtre n'a pas été posée.
+/// La fenêtre posée à `chemin` est-elle, relue maintenant (sans suivre de lien), celle que grave `programme`, et un
+/// fichier que le lancement accepte ? Ce que dit la ligne de la fenêtre après une mise à jour : jamais « à jour »
+/// sans l'avoir relue. Un programme qui ne lance aucune fenêtre, ou ne dit pas laquelle, le dit d'abord : la fenêtre
+/// n'a pas été posée.
 pub(super) fn posee_juste(programme: &[u8], chemin: &Path) -> Result<(), Echec> {
     match empreinte_fenetre::gravee(programme) {
-        Some(Gravee::Empreinte(_)) => juste(
-            programme,
-            &lire_octets(chemin, TAILLE_MAX).map_err(|e| Echec::echoue("fenetre/juger", e))?,
-        ),
+        Some(Gravee::Empreinte(_)) => match Avant::de(chemin, TAILLE_MAX) {
+            Avant::Lue(o) => juste(programme, &o),
+            Avant::Refusee(_) => Err(Echec::refuse(
+                "fenetre/juger",
+                tr!(
+                    "la fenêtre posée serait refusée au lancement (droits ou propriétaire) : le menu s'ouvrira à sa place",
+                    "the installed window would be refused at launch (permissions or owner): the menu will open instead"
+                ),
+            )),
+            Avant::Lien(_) => Err(Echec::refuse(
+                "fenetre/juger",
+                tr!(
+                    "un lien est à la place de la fenêtre : le lancement le refuse, le menu s'ouvrira à sa place",
+                    "a link is in place of the window: the launch refuses it, the menu will open instead"
+                ),
+            )),
+            Avant::Absente => Err(Echec::echoue(
+                "fenetre/juger",
+                tr!(
+                    "la fenêtre posée n'est plus là",
+                    "the installed window is no longer there"
+                ),
+            )),
+            Avant::Illisible => Err(Echec::echoue(
+                "fenetre/juger",
+                tr!(
+                    "la fenêtre posée ne se relit pas (droits, pas un fichier ordinaire, trop grande)",
+                    "the installed window cannot be read back (permissions, not a regular file, too large)"
+                ),
+            )),
+        },
         None => Err(Echec::refuse(
             "fenetre/juger",
             tr!(
@@ -370,10 +654,45 @@ pub(super) fn effacer_l_ancienne(cible: &Path) {
     }
 }
 
-/// Ce qui était à `chemin` avant que la nouvelle fenêtre y soit posée, pour l'y remettre.
+/// `chemin` lu sans jamais suivre de lien (Unix : O_NOFOLLOW ; Windows : FILE_FLAG_OPEN_REPARSE_POINT, le lien
+/// lui-même), sans attendre un tube (O_NONBLOCK), un fichier ordinaire seulement, au plus `max` octets ; et ce que
+/// le système dit de ce qui a été ouvert (droits, propriétaire : `lancer_fenetre::refusee`).
+fn lire_sans_lien(chemin: &Path, max: u64) -> std::io::Result<(Vec<u8>, std::fs::Metadata)> {
+    use std::io::Read;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    #[cfg(windows)]
+    std::os::windows::fs::OpenOptionsExt::custom_flags(&mut options, 0x0020_0000);
+    let f = options.open(chemin)?;
+    let m = f.metadata()?;
+    if !m.is_file() {
+        return Err(std::io::Error::other(tr!(
+            "pas un fichier ordinaire",
+            "not a regular file"
+        )));
+    }
+    let mut o = Vec::new();
+    (&f).take(max.saturating_add(1)).read_to_end(&mut o)?;
+    if u64::try_from(o.len()).unwrap_or(u64::MAX) > max {
+        return Err(std::io::Error::other(tr!("trop grande", "too large")));
+    }
+    Ok((o, m))
+}
+
+/// Ce qui était à la place de la fenêtre avant que la nouvelle y soit posée, pour l'y remettre et pour juger ce qui y
+/// est (jamais à travers un lien : ILLISIBLE-4).
+#[derive(Debug, PartialEq, Eq)]
 enum Avant {
+    /// Rien à ce nom (`NotFound` seulement : toute autre erreur est `Illisible`, ILLISIBLE-5).
     Absente,
+    /// Un fichier ordinaire que le lancement accepterait.
     Lue(Vec<u8>),
+    /// Un fichier ordinaire que le lancement refuserait (droits, propriétaire).
+    Refusee(Vec<u8>),
+    /// Un lien, et ce qu'il désigne, jamais suivi.
+    Lien(PathBuf),
     /// Là, mais illisible (droits, fichier spécial, démesurée) : elle ne pourra pas être remise.
     Illisible,
 }
@@ -381,20 +700,121 @@ enum Avant {
 impl Avant {
     /// Ce qui est à `chemin` maintenant (au plus `max` octets lus).
     fn de(chemin: &Path, max: u64) -> Avant {
-        match lire_octets(chemin, max) {
-            Ok(o) => Avant::Lue(o),
-            Err(_) if std::fs::symlink_metadata(chemin).is_err() => Avant::Absente,
+        match std::fs::symlink_metadata(chemin) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Avant::Absente,
+            Err(_) => return Avant::Illisible,
+            Ok(m) if m.file_type().is_symlink() => {
+                return std::fs::read_link(chemin).map_or(Avant::Illisible, Avant::Lien);
+            }
+            Ok(_) => {}
+        }
+        match lire_sans_lien(chemin, max) {
+            Ok((o, m)) if lancer_fenetre::refusee(&m).is_some() => Avant::Refusee(o),
+            Ok((o, _)) => Avant::Lue(o),
             Err(_) => Avant::Illisible,
         }
     }
 
     /// `chemin` est-il encore exactement ce qu'il était ? Illisible avant : on ne peut pas le dire, donc non.
     fn toujours_la(&self, chemin: &Path, max: u64) -> bool {
-        match self {
-            Avant::Absente => std::fs::symlink_metadata(chemin).is_err(),
-            Avant::Lue(o) => lire_octets(chemin, max).is_ok_and(|l| l == *o),
-            Avant::Illisible => false,
+        *self != Avant::Illisible && Avant::de(chemin, max) == *self
+    }
+}
+
+/// Ce que le retour en arrière a fait de la fenêtre d'avant (POSE-4) : rien à faire, remise, remise mais sans ses
+/// droits d'avant, ou pas remise, et pourquoi.
+#[derive(Debug, PartialEq, Eq)]
+enum Remise {
+    Rien,
+    Faite,
+    SansSesDroits,
+    Pas(&'static str),
+}
+
+/// Après un échec : ce qui était à `chemin` (`avant`) y revient, seulement par-dessus la fenêtre que cette mise à
+/// jour y a posée (`posee`) ; jamais par-dessus, ni à la place d'un fichier qu'un autre programme y aurait mis
+/// depuis. Un lien revient en lien (Unix), jamais en copie de ce qu'il désignait.
+fn remettre(avant: &Avant, chemin: &Path, posee: &[u8]) -> Remise {
+    if avant.toujours_la(chemin, TAILLE_MAX) {
+        return Remise::Rien;
+    }
+    match Avant::de(chemin, TAILLE_MAX) {
+        Avant::Lue(o) | Avant::Refusee(o) if o == posee => {}
+        _ => {
+            return Remise::Pas(tr!(
+                "ce qui est à sa place n'est ni elle ni celle posée : rien n'y est touché",
+                "what is in its place is neither it nor the one placed: nothing is touched there"
+            ));
         }
+    }
+    let pas_reposee = tr!("elle n'a pas pu être reposée", "it could not be put back");
+    match avant {
+        Avant::Absente => match std::fs::remove_file(chemin) {
+            Ok(()) => Remise::Faite,
+            Err(_) => Remise::Pas(tr!(
+                "la fenêtre posée n'a pas pu être retirée",
+                "the placed window could not be removed"
+            )),
+        },
+        Avant::Lue(o) => poser(o, chemin).map_or(Remise::Pas(pas_reposee), |()| Remise::Faite),
+        Avant::Refusee(o) => poser(o, chemin).map_or(Remise::Pas(pas_reposee), |()| Remise::SansSesDroits),
+        Avant::Lien(vers) => remettre_lien(vers, chemin),
+        Avant::Illisible => Remise::Pas(tr!(
+            "elle ne se lisait pas, rien ne peut la refaire",
+            "it could not be read, nothing can recreate it"
+        )),
+    }
+}
+
+/// Le lien d'avant (vers `vers`) refait à `chemin` : créé à côté sous un nom neuf, puis renommé d'un coup.
+fn remettre_lien(vers: &Path, chemin: &Path) -> Remise {
+    #[cfg(unix)]
+    {
+        let Ok((provisoire, ())) = nom_libre(chemin, |p| std::os::unix::fs::symlink(vers, p)) else {
+            return Remise::Pas(tr!(
+                "le lien d'avant n'a pas pu être refait",
+                "the previous link could not be recreated"
+            ));
+        };
+        if std::fs::rename(&provisoire, chemin).is_ok() {
+            Remise::Faite
+        } else {
+            let _ = std::fs::remove_file(&provisoire);
+            Remise::Pas(tr!(
+                "le lien d'avant n'a pas pu être refait",
+                "the previous link could not be recreated"
+            ))
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (vers, chemin);
+        Remise::Pas(tr!(
+            "c'était un lien, que Windows ne laisse pas refaire ici : la fenêtre posée reste",
+            "it was a link, which Windows does not let be recreated here: the placed window stays"
+        ))
+    }
+}
+
+/// `e`, avec ce que le retour en arrière a fait de la fenêtre d'avant, quand il faut le dire.
+fn avec_remise(e: Echec, remise: &Remise) -> Echec {
+    match remise {
+        Remise::Rien | Remise::Faite => e,
+        Remise::SansSesDroits => avec(
+            e,
+            tr!(
+                "l'ancienne fenêtre est remise avec les droits d'un fichier neuf (0755, à ce compte), pas les siens",
+                "the old window is put back with the permissions of a new file (0755, this account), not its own"
+            ),
+        ),
+        Remise::Pas(pourquoi) => avec(
+            e,
+            &crate::trf!(
+                "l'ancienne fenêtre n'est pas remise ({}) : le menu s'ouvrira à sa place",
+                "the old window is not put back ({}): the menu will open instead",
+                pourquoi
+            ),
+        ),
     }
 }
 
@@ -429,7 +849,7 @@ pub(super) fn installer_avec(
 
 /// `installer_avec` pour la copie depuis la clé (C-4, relecture 0.96) : une fenêtre qui ne peut pas être posée (un
 /// dossier à son nom…) n'arrête pas le programme, posé seul ; la raison est rendue pour être dite. La fenêtre d'avant
-/// reste à côté de lui, refusée par l'empreinte qu'il grave : le menu.
+/// reste (ou revient) à côté de lui, refusée par l'empreinte qu'il grave : le menu.
 #[allow(clippy::too_many_arguments)] // chacun une garde : la liste des copies (registre) et la copie de cet ordinateur s'ajoutent
 pub(super) fn installer_avec_sinon_seul(
     octets: &[u8],
@@ -462,30 +882,37 @@ fn installer_avec_repli(
     // clé, C-4) : une fenêtre qui ne se pose pas laisse le programme se poser seul.
     let seul_sinon = match vue {
         Some(v) => {
-            v.meme_etat(chemin, &avant)?;
+            v.meme_etat(chemin, &avant, octets)?;
             false
         }
         None => true,
     };
-    // Le programme d'avant, relu après un échec (C-2) : l'ancienne fenêtre ne revient qu'à côté de lui.
-    let programme_avant = Avant::de(cible, TAILLE_PROGRAMME);
+    // Le programme d'avant, relu après un échec (C-2) : l'ancienne fenêtre ne revient qu'à côté de lui, ou là où il
+    // n'y en avait pas et toujours pas. Lu à travers un lien s'il en est un : c'est le programme, pas sa fenêtre.
+    // Illisible : rien ne dit que c'est le même, donc non.
+    let lu = || match std::fs::symlink_metadata(cible) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(None),
+        Err(_) => None,
+        Ok(_) => lire_octets(cible, TAILLE_PROGRAMME).ok().map(Some),
+    };
+    let programme_avant = lu();
+    let toujours_le_meme = || programme_avant.is_some() && lu() == programme_avant;
+    // Déjà la fenêtre juste, en fichier que le lancement accepte : rien à poser (une fenêtre partagée, déjà posée).
     let changee = !matches!(&avant, Avant::Lue(o) if o == fenetre);
-    if changee {
-        match poser(fenetre, chemin) {
-            Ok(()) => {}
-            Err(e) if seul_sinon => {
-                installer(octets, cible, attendue, registre, copie, essai).map_err(ratee)?;
-                return Ok(Some(crate::trf!(
-                    "la fenêtre n'a pas pu être posée à côté de la copie ({}) : le programme est posé seul, le raccourci ouvrira le menu",
-                    "the window could not be placed next to the copy ({}): the program is placed alone, the shortcut will open the menu",
-                    e
-                )));
-            }
-            Err(e) => return Err(e),
+    if changee && let Err(e) = poser(fenetre, chemin) {
+        let e = avec_remise(e, &remettre(&avant, chemin, fenetre));
+        if !seul_sinon {
+            return Err(e);
         }
+        installer(octets, cible, attendue, registre, copie, essai).map_err(ratee)?;
+        return Ok(Some(crate::trf!(
+            "la fenêtre n'a pas pu être posée à côté de la copie ({}) : le programme est posé seul, le raccourci ouvrira le menu",
+            "the window could not be placed next to the copy ({}): the program is placed alone, the shortcut will open the menu",
+            e
+        )));
     }
     installer(octets, cible, attendue, registre, copie, essai).map(|()| None).map_err(|e| {
-        if changee && !programme_avant.toujours_la(cible, TAILLE_PROGRAMME) {
+        if changee && !toujours_le_meme() {
             return ratee(format!(
                 "{e}\n    {}",
                 tr!(
@@ -494,30 +921,19 @@ fn installer_avec_repli(
                 )
             ));
         }
-        // Remise ou pas : seul compte qu'elle soit faite (la raison d'un échec n'est pas dite, le menu l'est).
-        let remise = match &avant {
-            _ if !changee => true,
-            Avant::Lue(o) => poser(o, chemin).is_ok(),
-            Avant::Absente => std::fs::remove_file(chemin).is_ok(),
-            Avant::Illisible => false,
-        };
-        if remise {
-            ratee(e)
+        let remise = if changee {
+            remettre(&avant, chemin, fenetre)
         } else {
-            ratee(format!(
-                "{e}\n    {}",
-                tr!(
-                    "l'ancienne fenêtre n'a pas pu être remise : le menu s'ouvrira à sa place",
-                    "the old window could not be put back: the menu will open instead"
-                )
-            ))
-        }
+            Remise::Rien
+        };
+        avec_remise(ratee(e), &remise)
     })
 }
 
-/// La copie de même version que la clé : seulement sa fenêtre, posée si celle d'ici n'est pas déjà la même.
+/// La copie de même version que la clé : seulement sa fenêtre, posée si celle d'ici n'est pas déjà la même, en
+/// fichier que le lancement accepte.
 pub(super) fn poser_si_autre(fenetre: &[u8], chemin: &Path) -> Result<(), Echec> {
-    if lire_octets(chemin, TAILLE_MAX).ok().as_deref() == Some(fenetre) {
+    if matches!(Avant::de(chemin, TAILLE_MAX), Avant::Lue(o) if o == fenetre) {
         return Ok(());
     }
     poser(fenetre, chemin)
@@ -529,14 +945,12 @@ fn poser(octets: &[u8], chemin: &Path) -> Result<(), Echec> {
     poser_avec(octets, chemin, |_| ())
 }
 
-/// `poser`, avec ce qui se passe juste avant le renommage (`avant_renommage`, le chemin de la copie provisoire) : rien
-/// en vrai ; un autre programme du compte, dans les essais.
-///
-/// La copie provisoire est tenue par son descripteur du début à la fin (C-1, relecture 0.96 ; la méthode de G-2 pour
-/// le programme) : par son seul nom, un programme du compte pouvait l'échanger entre la relecture et le renommage, et
-/// « fait » était dit sur une autre fenêtre. Relue par le descripteur ; après le renommage, la fenêtre posée doit
-/// être ce même fichier, avec ces mêmes octets.
-fn poser_avec(octets: &[u8], chemin: &Path, avant_renommage: impl FnOnce(&Path)) -> Result<(), Echec> {
+/// Un nom neuf à côté de `chemin` (`<nom>.nouveau-<processus>-<n>`), que `creer` crée sans jamais écraser
+/// (`AlreadyExists` : le suivant). Deux mises à jour en même temps n'ont jamais le même (POSE-5), et rien n'est
+/// effacé d'avance : un fichier à ce nom n'est pas le nôtre.
+fn nom_libre<T>(chemin: &Path, creer: impl Fn(&Path) -> std::io::Result<T>) -> Result<(PathBuf, T), Echec> {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static SUIVANT: AtomicU32 = AtomicU32::new(0);
     let nom = chemin
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -546,39 +960,91 @@ fn poser_avec(octets: &[u8], chemin: &Path, avant_renommage: impl FnOnce(&Path))
                 tr!("chemin sans nom de fichier", "path without a file name"),
             )
         })?;
-    let provisoire = chemin.with_file_name(format!("{nom}.nouveau"));
+    for _ in 0..16 {
+        let n = SUIVANT.fetch_add(1, Ordering::Relaxed);
+        let p = chemin.with_file_name(format!("{nom}.nouveau-{}-{n}", std::process::id()));
+        match creer(&p) {
+            Ok(t) => return Ok((p, t)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(ratee(e)),
+        }
+    }
+    Err(ratee(tr!(
+        "aucun nom provisoire libre à côté de la fenêtre",
+        "no free temporary name next to the window"
+    )))
+}
+
+/// `poser`, avec ce qui se passe juste avant le renommage (`avant_renommage`, le chemin de la copie provisoire) : rien
+/// en vrai ; un autre programme du compte, dans les essais.
+///
+/// La copie provisoire est tenue par son descripteur du début à la fin (C-1, relecture 0.96 ; la méthode de G-2 pour
+/// le programme) : par son seul nom, un programme du compte pouvait l'échanger entre la relecture et le renommage, et
+/// « fait » était dit sur une autre fenêtre. Après le renommage, la fenêtre posée doit être ce même fichier, avec ces
+/// mêmes octets. En cas d'échec avant le renommage, la copie provisoire est effacée si c'est encore la nôtre.
+fn poser_avec(octets: &[u8], chemin: &Path, avant_renommage: impl FnOnce(&Path)) -> Result<(), Echec> {
+    let (provisoire, f) = nom_libre(chemin, |p| {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(p)
+    })?;
+    let nom = chemin.file_name().unwrap_or_default().to_string_lossy();
+    let ancien = chemin.with_file_name(format!("{nom}.ancien"));
+    let mut renommee = false;
+    let mut lue: Option<std::fs::File> = None;
     let posee = (|| -> Result<(), Echec> {
-        let _ = std::fs::remove_file(&provisoire);
-        let f = ecrire_provisoire(&provisoire, octets)?;
-        if !meme_contenu(&f, octets)? {
+        let f = &*lue.insert(ecrire_provisoire(f, &provisoire, octets)?);
+        if !meme_contenu(f, octets)? {
             return Err(ratee(tr!(
                 "la copie relue ne correspond pas",
                 "the copy read back does not match"
             )));
         }
         avant_renommage(&provisoire);
-        mettre_en_place_sous(&provisoire, chemin, &chemin.with_file_name(format!("{nom}.ancien"))).map_err(ratee)?;
-        verifier_posee(&f, chemin, octets)
+        mettre_en_place_sous(&provisoire, chemin, &ancien).map_err(ratee)?;
+        renommee = true;
+        verifier_posee(f, chemin, octets)
     })();
-    if posee.is_err() {
+    if posee.is_err() && !renommee && encore_la_notre(&provisoire, lue.as_ref(), octets) {
         let _ = std::fs::remove_file(&provisoire);
     }
     posee
 }
 
-/// La copie provisoire créée neuve (O_EXCL : un lien posé à ce nom n'est jamais suivi, l'écriture échoue plutôt),
-/// écrite, mise sur le disque, ses droits donnés par le descripteur. Sous Linux, rouverte en lecture seule par son
-/// descripteur (`/proc/self/fd`, le même fichier même si le nom a changé) et le descripteur d'écriture fermé. Sous
-/// Windows, rouverte en lecture par son nom, l'écriture refusée aux autres tant qu'elle est tenue (FILE_SHARE_READ |
-/// FILE_SHARE_DELETE : sans le partage de suppression, le renommage échouerait) ; ce qui est ouvert est relu ensuite.
-fn ecrire_provisoire(provisoire: &Path, octets: &[u8]) -> Result<std::fs::File, Echec> {
+/// La copie provisoire à `provisoire` est-elle encore la nôtre ? Sous Unix, le même fichier (appareil et inode) que
+/// celui tenu ; sous Windows, les mêmes octets (effacer une copie des mêmes octets ne perd rien). Pas encore rouverte
+/// (l'écriture a échoué) : le nom vient d'être créé neuf par nous, il l'est.
+fn encore_la_notre(provisoire: &Path, tenue: Option<&std::fs::File>, octets: &[u8]) -> bool {
+    let Some(f) = tenue else {
+        return true;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let _ = octets;
+        matches!(
+            (f.metadata(), std::fs::symlink_metadata(provisoire)),
+            (Ok(a), Ok(b)) if a.dev() == b.dev() && a.ino() == b.ino()
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = f;
+        lire_sans_lien(provisoire, TAILLE_MAX).is_ok_and(|(o, _)| o == octets)
+    }
+}
+
+/// La copie provisoire `f`, créée neuve par `nom_libre` (O_EXCL : un lien posé à ce nom n'est jamais suivi, la
+/// création échoue plutôt), écrite, mise sur le disque, ses droits donnés par le descripteur. Sous Linux, rouverte en
+/// lecture seule par son descripteur (`/proc/self/fd`, le même fichier même si le nom a changé) et le descripteur
+/// d'écriture fermé. Sous Windows, rouverte en lecture par son nom, l'écriture refusée aux autres tant qu'elle est
+/// tenue (FILE_SHARE_READ | FILE_SHARE_DELETE : sans le partage de suppression, le renommage échouerait) ; ce qui est
+/// ouvert est relu ensuite (par le nom, donc : entre la fermeture et la réouverture, un programme du compte peut
+/// l'échanger ; la relecture après le renommage le verrait).
+fn ecrire_provisoire(mut f: std::fs::File, provisoire: &Path, octets: &[u8]) -> Result<std::fs::File, Echec> {
     use std::io::Write;
-    let mut f = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .open(provisoire)
-        .map_err(ratee)?;
     f.write_all(octets).and_then(|()| f.sync_all()).map_err(ratee)?;
     #[cfg(unix)]
     {
@@ -589,6 +1055,7 @@ fn ecrire_provisoire(provisoire: &Path, octets: &[u8]) -> Result<std::fs::File, 
     #[cfg(target_os = "linux")]
     {
         use std::os::fd::AsRawFd;
+        let _ = provisoire;
         let lecture = std::fs::File::open(format!("/proc/self/fd/{}", f.as_raw_fd())).map_err(|e| {
             ratee(crate::trf!(
                 "copie provisoire pas rouverte par son descripteur (/proc) : {}",
@@ -608,7 +1075,10 @@ fn ecrire_provisoire(provisoire: &Path, octets: &[u8]) -> Result<std::fs::File, 
         options.open(provisoire).map_err(ratee)
     }
     #[cfg(not(any(target_os = "linux", windows)))]
-    Ok(f)
+    {
+        let _ = provisoire;
+        Ok(f)
+    }
 }
 
 /// Le fichier ouvert `f` contient-il exactement `octets` ? Relu depuis le début, jamais plus d'un octet de trop.
@@ -700,7 +1170,7 @@ mod tests {
     fn rien_a_cote(d: &Path) -> bool {
         std::fs::read_dir(d)
             .unwrap()
-            .all(|e| !e.unwrap().file_name().to_string_lossy().ends_with(".nouveau"))
+            .all(|e| !e.unwrap().file_name().to_string_lossy().contains(".nouveau"))
     }
 
     /// GitHub : la fenêtre posée à côté du programme remplacé suit, vérifiée contre l'empreinte gravée dans le
@@ -1300,7 +1770,10 @@ mod tests {
         std::fs::create_dir_all(&fenetre).unwrap();
         let vue = montree(&cible);
         assert_eq!(vue.illisible(), Some(fenetre.as_path()));
-        assert!(vue.meme_etat(&fenetre, &Avant::de(&fenetre, TAILLE_MAX)).is_err());
+        assert!(
+            vue.meme_etat(&fenetre, &Avant::de(&fenetre, TAILLE_MAX), b"nouveau")
+                .is_err()
+        );
         let neuve = b"fenetre 0.96".to_vec();
         let nouveau = lancant(&neuve);
         let appels = std::cell::Cell::new(0);
@@ -1356,7 +1829,7 @@ mod tests {
         // Un programme d'ailleurs au même numéro : rien.
         let ailleurs = super::super::github::Publiee::d_essai(V, &lancant(b"fenetre d'ailleurs"));
         assert!(seule_a_poser(&cible, &ailleurs).is_none());
-        let s = seule_a_poser(&cible, &publiee).unwrap();
+        let s = seule_a_poser(&cible, &publiee).unwrap().unwrap();
         assert!(s.ajout());
         assert_eq!(s.chemin(), fenetre.as_path());
         // Une autre que celle gravée, ou aucune reçue : rien.
@@ -1382,7 +1855,7 @@ mod tests {
         assert!(s.poser(&mut apparait).is_err());
         assert_eq!(std::fs::read(&fenetre).unwrap(), b"fenetre apparue");
         // Montrée autre : réparée, relue juste ; juste, plus rien à proposer.
-        let s = seule_a_poser(&cible, &publiee).unwrap();
+        let s = seule_a_poser(&cible, &publiee).unwrap().unwrap();
         assert!(!s.ajout());
         s.poser(&mut || Ok(neuve.clone())).unwrap();
         s.posee_juste().unwrap();
@@ -1390,6 +1863,244 @@ mod tests {
         assert_eq!(std::fs::read(&cible).unwrap(), ici);
         assert!(rien_a_cote(&d));
         assert!(seule_a_poser(&cible, &publiee).is_none());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Pose d'un programme avec sa fenêtre, comme le terminal et l'interface la font : `vue` montrée avant.
+    fn poser_avec_vue(nouveau: &[u8], cible: &Path, vue: &Vue, fenetre: &[u8], essai: Essai) -> Result<(), Echec> {
+        installer_avec_sa_fenetre(
+            nouveau,
+            cible,
+            V,
+            &crate::socle::dossier_local(),
+            &crate::mise_a_jour::copie_de_cet_ordinateur(),
+            essai,
+            vue,
+            &mut || Ok(fenetre.to_vec()),
+        )
+    }
+
+    /// ACCORD-1, POSE-1 (relecture C-6/C-7) : deux programmes du même dossier partagent le chemin de leur fenêtre ;
+    /// le second était refusé (« la fenêtre a changé depuis ce qui a été montré ») à cause de celle que la mise à
+    /// jour venait de poser. Montrée une fois (`trier`), posée une fois, les deux programmes remplacés : le chemin du
+    /// terminal (et de l'interface, `apercu`).
+    #[test]
+    fn deux_programmes_du_meme_dossier_posent_leur_fenetre_une_fois() {
+        let d = dossier("essai-sa-fenetre-partagee");
+        let (a, b) = (d.join(NOM), d.join("vanguard-autre"));
+        let fenetre = pour(&a).unwrap();
+        assert_eq!(pour(&b).as_deref(), Some(fenetre.as_path()));
+        let neuve = b"fenetre 0.96".to_vec();
+        let nouveau = lancant(&neuve);
+        for ici in [None, Some(b"ancienne fenetre".as_slice())] {
+            for c in [&a, &b] {
+                std::fs::write(c, b"ancien programme").unwrap();
+            }
+            let _ = std::fs::remove_file(&fenetre);
+            if let Some(o) = ici {
+                std::fs::write(&fenetre, o).unwrap();
+            }
+            let (gardees, ecartees) = trier(vec![a.clone(), b.clone()]);
+            assert_eq!(ecartees.len(), 0);
+            assert_eq!(gardees.len(), 2);
+            assert_eq!(gardees[0].1.ligne(), Some(fenetre.as_path()));
+            assert_eq!(gardees[1].1.ligne(), None, "une seule ligne pour la fenêtre partagée");
+            for (c, vue) in &gardees {
+                poser_avec_vue(&nouveau, c, vue, &neuve, SANS_ESSAI).unwrap();
+            }
+            assert_eq!(std::fs::read(&a).unwrap(), nouveau);
+            assert_eq!(std::fs::read(&b).unwrap(), nouveau);
+            assert_eq!(std::fs::read(&fenetre).unwrap(), neuve);
+            assert!(rien_a_cote(&d));
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ILLISIBLE-1 (relecture C-6/C-7) : une fenêtre illisible bloquait toute la mise à jour, pour toutes les copies.
+    /// Seule sa copie est mise de côté, avec les deux chemins ; l'autre suit.
+    #[test]
+    fn une_fenetre_illisible_ne_met_de_cote_que_son_programme() {
+        let d = dossier("essai-sa-fenetre-ecartee");
+        let (a, b) = (d.join("a").join(NOM), d.join("b").join(NOM));
+        for c in [&a, &b] {
+            std::fs::create_dir_all(c.parent().unwrap()).unwrap();
+            std::fs::write(c, b"ancien programme").unwrap();
+        }
+        let illisible = pour(&a).unwrap();
+        std::fs::create_dir_all(&illisible).unwrap();
+        let (gardees, ecartees) = trier(vec![a.clone(), b.clone()]);
+        assert_eq!(gardees.iter().map(|(c, _)| c).collect::<Vec<_>>(), [&b]);
+        assert_eq!(ecartees.len(), 1, "{ecartees:?}");
+        assert_eq!((&ecartees[0].programme, &ecartees[0].fenetre), (&a, &illisible));
+        let dite = ecartees[0].dite("A", "F");
+        assert!(
+            dite.contains("A est laissé de côté") && dite.contains("la fenêtre F"),
+            "{dite}"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ACCORD-2, POSE-3, ILLISIBLE-3 (relecture C-6/C-7) : une fenêtre au bon contenu mais que le lancement refuse (un
+    /// lien, des droits trop larges) était comptée juste, jamais proposée. Elle est proposée, « réparée », et remplacée
+    /// par un fichier que le lancement accepte ; ce que désignait le lien n'est pas touché.
+    #[cfg(unix)]
+    #[test]
+    fn un_lien_ou_une_fenetre_refusee_n_est_jamais_juste() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = dossier("essai-sa-fenetre-lien-refusee");
+        let cible = d.join(NOM);
+        let fenetre = pour(&cible).unwrap();
+        let neuve = b"fenetre 0.96".to_vec();
+        let ici = lancant(&neuve);
+        std::fs::write(&cible, &ici).unwrap();
+        let publiee = super::super::github::Publiee::d_essai(V, &ici);
+        let ailleurs = d.join("ailleurs");
+        std::fs::write(&ailleurs, &neuve).unwrap();
+        // Un lien vers la bonne fenêtre.
+        std::os::unix::fs::symlink(&ailleurs, &fenetre).unwrap();
+        let s = seule_a_poser(&cible, &publiee).unwrap().unwrap();
+        assert!(s.dite().contains("un lien"), "{}", s.dite());
+        s.poser(&mut || Ok(neuve.clone())).unwrap();
+        assert!(std::fs::symlink_metadata(&fenetre).unwrap().file_type().is_file());
+        assert_eq!(std::fs::read(&fenetre).unwrap(), neuve);
+        assert_eq!(std::fs::read(&ailleurs).unwrap(), neuve);
+        assert!(seule_a_poser(&cible, &publiee).is_none(), "juste maintenant");
+        // La bonne fenêtre, que d'autres comptes peuvent écrire.
+        std::fs::set_permissions(&fenetre, std::fs::Permissions::from_mode(0o775)).unwrap();
+        let s = seule_a_poser(&cible, &publiee).unwrap().unwrap();
+        assert!(s.dite().contains("refusée au lancement"), "{}", s.dite());
+        s.poser(&mut || Ok(neuve.clone())).unwrap();
+        assert_eq!(std::fs::metadata(&fenetre).unwrap().permissions().mode() & 0o022, 0);
+        assert!(seule_a_poser(&cible, &publiee).is_none());
+        assert!(rien_a_cote(&d));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ILLISIBLE-4, POSE-4 (relecture C-6/C-7) : un lien à la place de la fenêtre était lu (un fichier hors du
+    /// dossier), et après un échec du programme son contenu revenait en fichier 0755 à côté de lui. Le lien n'est
+    /// jamais suivi (ici, il désigne un fichier que ce compte ne peut pas lire), et il revient en lien.
+    #[cfg(unix)]
+    #[test]
+    fn un_lien_a_la_place_de_la_fenetre_n_est_jamais_lu_et_revient_en_lien() {
+        use std::os::unix::fs::PermissionsExt;
+        if crate::socle::uid() == 0 {
+            return crate::essais::saute("root lit un fichier sans droits");
+        }
+        let d = dossier("essai-sa-fenetre-lien-prive");
+        let cible = d.join(NOM);
+        let fenetre = pour(&cible).unwrap();
+        let prive = d.join("prive");
+        std::fs::write(&prive, b"secret invente").unwrap();
+        std::fs::set_permissions(&prive, std::fs::Permissions::from_mode(0o000)).unwrap();
+        std::fs::write(&cible, b"ancien programme").unwrap();
+        std::os::unix::fs::symlink(&prive, &fenetre).unwrap();
+        let vue = montree(&cible);
+        assert_eq!(vue.illisible(), None, "un lien se montre sans être suivi");
+        assert!(vue.dite_a_cote().contains("un lien"), "{}", vue.dite_a_cote());
+        let neuve = b"fenetre 0.96".to_vec();
+        let e = poser_avec_vue(&lancant(&neuve), &cible, &vue, &neuve, ESSAI_RATE).unwrap_err();
+        assert_eq!(std::fs::read_link(&fenetre).unwrap(), prive, "{e}");
+        assert_eq!(std::fs::read(&cible).unwrap(), b"ancien programme");
+        std::fs::set_permissions(&prive, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(std::fs::read(&prive).unwrap(), b"secret invente");
+        assert!(rien_a_cote(&d));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// POSE-4 (relecture C-6/C-7) : le retour d'une fenêtre qui était absente effaçait sans relire. Seule la fenêtre
+    /// que cette mise à jour a posée est retirée, jamais un fichier mis là depuis par un autre programme.
+    #[test]
+    fn le_retour_d_une_fenetre_absente_n_efface_pas_un_fichier_etranger() {
+        let d = dossier("essai-sa-fenetre-retour-absente");
+        let chemin = d.join("vanguard-fenetre");
+        std::fs::write(&chemin, b"etranger").unwrap();
+        assert!(matches!(remettre(&Avant::Absente, &chemin, b"posee"), Remise::Pas(_)));
+        assert_eq!(std::fs::read(&chemin).unwrap(), b"etranger");
+        std::fs::write(&chemin, b"posee").unwrap();
+        assert_eq!(remettre(&Avant::Absente, &chemin, b"posee"), Remise::Faite);
+        assert!(std::fs::symlink_metadata(&chemin).is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// POSE-2 (relecture C-6/C-7) : une fenêtre seule posée puis fausse à la relecture restait en place, alors que le
+    /// texte disait « rien n'est changé ». Ce qui était là revient : l'ancienne, ou rien.
+    #[test]
+    fn une_fenetre_posee_mais_fausse_a_la_relecture_est_remise() {
+        let d = dossier("essai-sa-fenetre-relue-fausse");
+        let chemin = d.join("vanguard-fenetre");
+        let fausse = |_: &Path| Err(Echec::refuse("essai", "relue fausse"));
+        std::fs::write(&chemin, b"ancienne fenetre").unwrap();
+        let avant = Avant::de(&chemin, TAILLE_MAX);
+        assert!(poser_puis_relire(b"neuve", &chemin, &avant, fausse).is_err());
+        assert_eq!(std::fs::read(&chemin).unwrap(), b"ancienne fenetre");
+        std::fs::remove_file(&chemin).unwrap();
+        assert!(poser_puis_relire(b"neuve", &chemin, &Avant::Absente, fausse).is_err());
+        assert!(std::fs::symlink_metadata(&chemin).is_err());
+        assert!(rien_a_cote(&d));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// POSE-5 (relecture C-6/C-7) : deux mises à jour en même temps partageaient le même nom provisoire et se
+    /// l'effaçaient. Chaque pose a le sien, créé neuf ; un fichier qu'elle n'a pas créé n'est jamais effacé.
+    #[test]
+    fn un_nom_provisoire_d_un_autre_n_est_jamais_efface() {
+        let d = dossier("essai-sa-fenetre-provisoire");
+        let chemin = d.join("vanguard-fenetre");
+        let autre = d.join("vanguard-fenetre.nouveau");
+        std::fs::write(&autre, b"pose d'une autre mise a jour").unwrap();
+        poser(b"neuve", &chemin).unwrap();
+        assert_eq!(std::fs::read(&chemin).unwrap(), b"neuve");
+        assert_eq!(std::fs::read(&autre).unwrap(), b"pose d'une autre mise a jour");
+        assert_eq!(std::fs::read_dir(&d).unwrap().count(), 2, "rien d'autre à côté");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ILLISIBLE-5 (relecture C-6/C-7) : toute erreur de lecture comptait « absente ». Seul « introuvable » l'est ;
+    /// un dossier fermé (droits) est illisible : jamais rien d'ajouté par-dessus ce qu'on n'a pas vu.
+    #[cfg(unix)]
+    #[test]
+    fn seule_l_absence_vraie_compte_absente() {
+        use std::os::unix::fs::PermissionsExt;
+        if crate::socle::uid() == 0 {
+            return crate::essais::saute("root traverse un dossier sans droits");
+        }
+        let d = dossier("essai-sa-fenetre-absente-vraie");
+        assert_eq!(Avant::de(&d.join("vanguard-fenetre"), TAILLE_MAX), Avant::Absente);
+        let ferme = d.join("ferme");
+        std::fs::create_dir_all(&ferme).unwrap();
+        std::fs::set_permissions(&ferme, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let lu = Avant::de(&ferme.join("vanguard-fenetre"), TAILLE_MAX);
+        std::fs::set_permissions(&ferme, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(lu, Avant::Illisible);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ORIGINE-2 (relecture C-6/C-7) : une copie posée par un lien recevait sa fenêtre seule à côté du lien, là où le
+    /// lancement (qui résout le lien) ne la cherche jamais, et c'était dit « posée, vérifiée ». Elle va à côté du
+    /// fichier désigné.
+    #[cfg(unix)]
+    #[test]
+    fn la_fenetre_seule_d_une_copie_en_lien_va_ou_le_lancement_la_cherche() {
+        let d = dossier("essai-sa-fenetre-copie-en-lien");
+        let vrai = d.join("vrai").join(NOM);
+        let lien = d.join("lien").join(NOM);
+        for c in [&vrai, &lien] {
+            std::fs::create_dir_all(c.parent().unwrap()).unwrap();
+        }
+        let neuve = b"fenetre 0.96".to_vec();
+        let ici = lancant(&neuve);
+        std::fs::write(&vrai, &ici).unwrap();
+        std::os::unix::fs::symlink(&vrai, &lien).unwrap();
+        let publiee = super::super::github::Publiee::d_essai(V, &ici);
+        let s = seule_a_poser(&lien, &publiee).unwrap().unwrap();
+        let attendue = pour(&vrai.canonicalize().unwrap()).unwrap();
+        assert_eq!(s.chemin(), attendue.as_path());
+        s.poser(&mut || Ok(neuve.clone())).unwrap();
+        assert_eq!(std::fs::read(&attendue).unwrap(), neuve);
+        assert!(
+            std::fs::symlink_metadata(pour(&lien).unwrap()).is_err(),
+            "rien à côté du lien"
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 }

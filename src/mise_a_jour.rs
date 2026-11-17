@@ -2276,6 +2276,7 @@ fn depuis_github_vers(cibles: Vec<PathBuf>, doute: Option<crate::voulues::Doute>
         }
     };
     let lues = cibles.clone();
+    let mut mises_de_cote: Vec<sa_fenetre::Ecartee> = Vec::new();
     let (ici, a_remplacer, doutes) = juger_cibles(
         cibles,
         publiee.version,
@@ -2289,44 +2290,38 @@ fn depuis_github_vers(cibles: Vec<PathBuf>, doute: Option<crate::voulues::Doute>
     for d in &doutes {
         println!("{d}");
     }
+    let avant_tri = a_remplacer.clone();
+    // Chacun avec sa fenêtre, relue maintenant ; une fenêtre illisible ne laisse de côté que son programme
+    // (ILLISIBLE-1), une fenêtre partagée n'est montrée qu'une fois (ACCORD-1). La même logique que l'interface.
+    let (a_remplacer, vues): (Vec<PathBuf>, Vec<sa_fenetre::Vue>) = {
+        let (gardees, ecartees) = sa_fenetre::trier(a_remplacer);
+        mises_de_cote.extend(ecartees);
+        gardees.into_iter().unzip()
+    };
     // Au même numéro (C-6, 0.97), sans doute : la fenêtre seule d'un programme d'ici qui est exactement celui signé.
-    let mut seules: Vec<sa_fenetre::Seule> = Vec::new();
-    if doutes.is_empty() {
-        for c in lues.iter().filter(|c| !a_remplacer.contains(c)) {
-            let Some(s) = sa_fenetre::seule_a_poser(c, &publiee) else {
-                continue;
-            };
-            let deja = seules.iter().any(|t| t.chemin() == s.chemin())
-                || a_remplacer
-                    .iter()
-                    .any(|r| sa_fenetre::pour(r).as_deref() == Some(s.chemin()));
-            if !deja {
-                seules.push(s);
-            }
-        }
-    }
-    if a_remplacer.is_empty() && seules.is_empty() {
+    let seules: Vec<sa_fenetre::Seule> = if doutes.is_empty() {
+        let candidats: Vec<PathBuf> = lues.into_iter().filter(|c| !avant_tri.contains(c)).collect();
+        let gardees: Vec<(PathBuf, sa_fenetre::Vue)> = a_remplacer.iter().cloned().zip(vues.iter().cloned()).collect();
+        sa_fenetre::seules(&candidats, &publiee, &gardees, &mut mises_de_cote)
+    } else {
+        Vec::new()
+    };
+    if a_remplacer.is_empty() && seules.is_empty() && mises_de_cote.is_empty() {
         dire_a_jour(publiee.version, &ici, maintenant(), !doutes.is_empty());
         return doutes.is_empty();
     }
-    // Chaque fenêtre telle que montrée : la pose la compare à ce qui est là (C-7, relecture 0.96). Remplacée, ou
-    // ajoutée là où le lancement la cherche si elle n'y est pas (C-6, 0.97).
-    let vues: Vec<sa_fenetre::Vue> = a_remplacer
-        .iter()
-        .map(|c| sa_fenetre::Vue::de(sa_fenetre::pour(c)))
-        .collect();
-    // Une fenêtre qui ne se lit pas ne se compare à rien : rien n'est proposé (C-7-2).
-    if let Some(f) = vues
-        .iter()
-        .chain(seules.iter().map(|s| &s.vue))
-        .find_map(sa_fenetre::Vue::illisible)
-    {
+    // Les copies laissées de côté (ILLISIBLE-1) : dites avec leurs chemins, jamais touchées ; les autres suivent.
+    if !mises_de_cote.is_empty() {
         crate::ui::refus_dit();
+    }
+    for e in &mises_de_cote {
         trp!(
             "  Non vérifié : {}",
             "  Not verified: {}",
-            affichable(&sa_fenetre::illisible_dite(&f.display().to_string()))
+            affichable(&e.dite(&e.programme.display().to_string(), &e.fenetre.display().to_string()))
         );
+    }
+    if a_remplacer.is_empty() && seules.is_empty() {
         return false;
     }
     if a_remplacer.is_empty() {
@@ -2344,21 +2339,14 @@ fn depuis_github_vers(cibles: Vec<PathBuf>, doute: Option<crate::voulues::Doute>
             _ => version_affichee(None),
         };
         println!("    {} {GRIS}({v}){RESET}", affichable(&c.display().to_string()));
-        // Sa fenêtre : remplacée, ou ajoutée, par celle de la nouvelle version, vérifiée contre l'empreinte gravée.
-        if let Some(f) = vue.chemin() {
-            if std::fs::symlink_metadata(f).is_ok() {
-                trp!(
-                    "    {} {GRIS}(sa fenêtre){RESET}",
-                    "    {} {GRIS}(its window){RESET}",
-                    affichable(&f.display().to_string())
-                );
-            } else {
-                trp!(
-                    "    {} {GRIS}(sa fenêtre, nouvelle ici){RESET}",
-                    "    {} {GRIS}(its window, new here){RESET}",
-                    affichable(&f.display().to_string())
-                );
-            }
+        // Sa fenêtre : remplacée, ou ajoutée, par celle de la nouvelle version, vérifiée contre l'empreinte gravée ;
+        // une fenêtre partagée avec la copie d'avant (même dossier) n'a qu'une ligne.
+        if let Some(f) = vue.ligne() {
+            println!(
+                "    {} {GRIS}({}){RESET}",
+                affichable(&f.display().to_string()),
+                vue.dite_a_cote()
+            );
         }
     }
     if !seules.is_empty() {
@@ -2386,7 +2374,7 @@ fn depuis_github_vers(cibles: Vec<PathBuf>, doute: Option<crate::voulues::Doute>
         )
     };
     if !demander(question).oui() {
-        return doutes.is_empty();
+        return doutes.is_empty() && mises_de_cote.is_empty();
     }
     // Rien à remplacer, seulement des fenêtres seules : le programme n'est pas téléchargé.
     let octets = if a_remplacer.is_empty() {
@@ -2410,7 +2398,7 @@ fn depuis_github_vers(cibles: Vec<PathBuf>, doute: Option<crate::voulues::Doute>
         recue = Some(f.clone());
         Ok(f)
     };
-    let mut sans_refus = doutes.is_empty();
+    let mut sans_refus = doutes.is_empty() && mises_de_cote.is_empty();
     for (c, vue) in a_remplacer.iter().zip(&vues) {
         match sa_fenetre::installer_avec_sa_fenetre(
             &octets,
@@ -2449,8 +2437,8 @@ fn depuis_github_vers(cibles: Vec<PathBuf>, doute: Option<crate::voulues::Doute>
             Err(e) => {
                 sans_refus = false;
                 trp!(
-                    "  ✖ {} : sa fenêtre n'est pas posée, rien n'est changé :\n    {}",
-                    "  ✖ {}: its window is not placed, nothing is changed:\n    {}",
+                    "  ✖ {} : sa fenêtre n'est pas posée :\n    {}",
+                    "  ✖ {}: its window is not placed:\n    {}",
                     affichable(&s.chemin().display().to_string()),
                     affichable(&e.to_string())
                 );
