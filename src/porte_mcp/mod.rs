@@ -13,6 +13,9 @@
 
 mod outils;
 mod rpc;
+// Lu par build.rs (le vocabulaire) ; ici, seulement pour ses essais.
+#[cfg(test)]
+mod sources;
 mod trame;
 mod vocabulaire;
 mod vues;

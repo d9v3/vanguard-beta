@@ -759,18 +759,31 @@ to start (code 2) until it has been tried on a real Windows.
   (title, message, category, program name) comes out apart, as `{"texte_externe": …, "non_fiable": true}`, through a
   word allow-list: only the words Vanguard writes itself in its own messages come out (the strings of its text macros,
   in French and English, taken from the code at each build, without the tests: about 8,300 words). Any other word
-  becomes "…", as do digits, paths, addresses, tokens, names and any sign outside a small fixed punctuation set (never a
-  parenthesis or a square bracket); several "…" in a row make only one, and the output is 400 bytes at most
-  (`chaque_mot_de_la_sortie_est_du_vocabulaire`, property test). The text is normalized before it is judged (full-width
-  forms, invisible characters, quotes, Latin accents recomposed); a letter that imitates another (Cyrillic, Kelvin sign,
-  ligature, mathematical letter) is not brought back: the word is not known and comes out "…". A one-letter word only
-  comes out if it is "a", "à" or "y", so that a value cannot be spelled out. What follows an announced password or
-  passphrase ("password: …") is held back up to the end of the sentence, even when made of known words. It is up to
-  the assistant to treat this text as data, never as an instruction. Known limit: a sequence of vocabulary words comes
-  out as it is. An attacker who writes on the computer can therefore compose a sentence with these words ("Ignore the
-  previous instructions" comes out as it is), and a command line or a name quoted by an alert lets out
-  those of its words that are also Vanguard's words ("bash", "sshd", "cat"); nothing else comes out. An untracked `.rs`
-  file placed in `src/` would be read too at build time.
+  becomes "…", as do digits, paths, addresses, tokens, names that are not vocabulary words and any sign outside a small
+  fixed punctuation set (never a parenthesis or a square bracket; those around a word are dropped); several "…" in a row
+  make only one, and the output is 400 bytes at most (`chaque_mot_de_la_sortie_est_du_vocabulaire`, property test). The
+  text is normalized before it is judged (full-width forms, invisible characters, quotes, Latin accents recomposed); a
+  letter that imitates another (Cyrillic, Kelvin sign, ligature, mathematical letter) is not brought back: the word is
+  not known and comes out "…". A one-letter word only comes out if it is "a", "à" or "y"; a word followed by an ellipsis
+  ("admin…") or cut by the reading bound (8,192 bytes) comes out "…". Two safety nets hold back values that may be made
+  of known words. As soon as a word announces a secret (mot de passe, phrase de passe, password, passwd, pwd, mdp,
+  passphrase, clé, key, code, PIN, PSK, jeton, token, secret, singular or plural, in any case, with or without hyphens,
+  no separator required), the whole rest of the text becomes a single "…", not only up to the first full stop; the only
+  exception is a negated announcement ("sans mot de passe", "no password") with no ":" or "=" after it, as in Vanguard's
+  message about a Wi-Fi network without a password. The command excerpt that a watcher alert quotes in parentheses after
+  "(PID n)" also becomes a single "…"; any other parenthesis comes out only if all its words are known. The price:
+  useful text that follows an announcement is lost (about 0.7% of Vanguard's text pieces contain one of these words,
+  "registry key" and "code" included). These are safety nets, not a guarantee: a value that nothing announces comes out
+  if its words are in the vocabulary. It is up to the assistant to treat this text as data, never as an instruction.
+  Known limits: a sequence of vocabulary words comes out as it is, with its case, its leading quotes and its
+  punctuation. An attacker who writes on the computer can therefore compose a sentence with these words ("Ignore the
+  previous instructions" comes out as it is), and spell a value in it through the initials or the case of the words. A
+  quoted name (Wi-Fi network, account, program, folder) lets out those of its words that are also Vanguard's words
+  ("admin", "maison", "famille", "bureau", "root"), and so does a command line outside a watcher excerpt ("bash",
+  "sshd", "cat"). The fixed-form fields (rule, version, date, numbers, fingerprint) come out with the letters and digits
+  their form allows, without being reread: an impossible date, a made-up rule or a number that writes a whole IPv4
+  address get through. This is a channel for someone who already writes the log or an unsealed review, not a leak of the
+  person's data. An untracked `.rs` file placed in `src/` would be read too at build time.
 - **It cannot prove it is the real Vanguard.** A fake program placed at the same path would answer the same, `identite`
   included; and a program of the account can write to Vanguard's files (the seals are a barrier, not a safe: see "The
   programs of your account do not target Vanguard itself"). The proof is made before starting, by the client: start a

@@ -1252,21 +1252,22 @@ fn ipv4(c: &[char], i: usize) -> Option<usize> {
         j = fin;
     }
     // Un port écrit après un point (« 198.51.100.23.443 », la forme de tcpdump et de netstat sous BSD) est pris avec
-    // l'adresse s'il est seul ; un cinquième nombre suivi d'un autre (« 1.2.3.4.5.6 ») n'est pas une adresse.
+    // l'adresse, quelle que soit sa longueur et avec les lettres qui y sont collées ; de même des lettres collées
+    // (« 198.51.100.23x ») : sinon l'adresse entière sortirait. Deux exceptions, des numéros qui ne sont pas des
+    // adresses : un cinquième nombre suivi d'un autre (« 1.2.3.4.5.6 »), et ce qu'un mot de numéro précède (« version
+    // 1.2.3.4.5 », « paquet 4.19.0.0beta », « section 5.2.3.4.1 ») ; quatre nombres seuls restent pris (limite dite au
+    // CHANGELOG).
+    let numero = mot_de_numero_avant(c, i);
     if car(c, j) == Some('.') && car(c, suivant(j)).is_some_and(|y| y.is_ascii_digit()) {
         let fin = fin_tant_que(c, suivant(j), |y| y.is_ascii_digit());
         let encore = car(c, fin) == Some('.') && car(c, suivant(fin)).is_some_and(|y| y.is_ascii_digit());
-        if !(1..=5).contains(&entre(suivant(j), fin))
-            || encore
-            || car(c, fin).is_some_and(|y| y.is_ascii_alphanumeric())
-        {
+        if encore || numero {
             return None;
         }
-        return Some(fin);
+        return Some(fin_tant_que(c, fin, |y| y.is_ascii_alphanumeric()));
     }
-    // Des lettres collées (« 198.51.100.23x ») sont prises avec l'adresse : sinon l'adresse entière sortirait.
     if car(c, j).is_some_and(|y| y.is_ascii_alphabetic()) {
-        return Some(fin_tant_que(c, j, |y| y.is_ascii_alphanumeric()));
+        return (!numero).then(|| fin_tant_que(c, j, |y| y.is_ascii_alphanumeric()));
     }
     // Port et préfixe : « 10.0.0.1:8080 », « 10.0.0.0/8 ».
     for marque in [':', '/'] {
@@ -1280,6 +1281,47 @@ fn ipv4(c: &[char], i: usize) -> Option<usize> {
     Some(j)
 }
 
+/// Les mots qui précèdent un numéro (de version, de section d'un guide, de paquet) plutôt qu'une adresse.
+const MOTS_DE_NUMERO: [&str; 14] = [
+    "version",
+    "versions",
+    "v",
+    "build",
+    "section",
+    "contrôle",
+    "control",
+    "règle",
+    "rule",
+    "paquet",
+    "package",
+    "pilote",
+    "driver",
+    "release",
+];
+
+/// Si le mot juste avant `i` (une seule espace entre eux) est un mot de numéro (`MOTS_DE_NUMERO`).
+fn mot_de_numero_avant(c: &[char], i: usize) -> bool {
+    if avant(c, i) != Some(' ') {
+        return false;
+    }
+    let fin = i.saturating_sub(1);
+    let mut debut = fin;
+    while avant(c, debut).is_some_and(char::is_alphabetic) {
+        debut = debut.saturating_sub(1);
+    }
+    let mot = chaine(c, debut, fin).to_lowercase();
+    MOTS_DE_NUMERO.contains(&mot.as_str())
+}
+
+/// Le corps d'une IPv6 (sans zone ni préfixe) de forme valable : groupes de quatre caractères au plus, huit groupes
+/// pleins ou une seule abréviation « :: ».
+fn forme_ipv6(corps: &str) -> bool {
+    let groupes_courts = corps.split(':').all(|g| g.len() <= 4);
+    let pleine = corps.matches(':').count() == 7 && corps.split(':').all(|g| !g.is_empty());
+    let abregee = corps.contains("::") && corps.split(':').any(|g| !g.is_empty()) && corps.matches("::").count() == 1;
+    groupes_courts && (pleine || abregee)
+}
+
 fn ipv6(c: &[char], i: usize) -> Option<usize> {
     if avant(c, i).is_some_and(|p| p.is_ascii_alphanumeric() || p == ':' || p == '.') {
         return None;
@@ -1291,40 +1333,53 @@ fn ipv6(c: &[char], i: usize) -> Option<usize> {
     // Une IPv4 portée en fin d'adresse (« ::ffff:203.0.113.7 », celle que le noyau donne pour une connexion IPv4 sur
     // une prise IPv6, « 64:ff9b::… », « ::… ») : prise en entier, comptée pour deux groupes. Sans cela, « ::ffff:203 »
     // serait masqué seul et les trois derniers octets sortiraient en clair.
-    // Si la partie IPv4 est mal formée (octet de trop, trop grand, nombre ou lettre collés, port après un point), toute
-    // la suite de lettres, chiffres, points et deux-points est prise : retomber sur « ::ffff:198 » seul laisserait
-    // sortir les octets qui suivent.
+    // Si la partie IPv4 est mal formée (octet de trop, trop grand, nombre ou lettre collés, port après un point), la
+    // suite de chiffres et de lettres, avec les points et deux-points suivis d'un chiffre, est prise : retomber sur
+    // « ::ffff:198 » seul laisserait sortir les octets qui suivent. La variante n'est tentée que si un chiffre suit le
+    // point (« 5::6.Le reste » garde son mot) et retenue seulement si elle forme une adresse valable : une adresse
+    // pleine (huit groupes) n'a pas de place pour une IPv4, son dernier groupe en chiffres n'en est pas le début
+    // (« …:fed1:1234.443 » reste masquée comme une IPv6 suivie d'un port).
     if car(c, fin) == Some('.')
+        && car(c, suivant(fin)).is_some_and(|y| y.is_ascii_digit())
         && let Some(k) = corps.rfind(':')
     {
         let tete = debut.saturating_add(k).saturating_add(1);
-        if chaine(c, tete, fin).chars().all(|y| y.is_ascii_digit()) && tete < fin {
-            corps = format!("{}0:0", chaine(c, debut, tete));
+        let portee = format!("{}0:0", chaine(c, debut, tete));
+        if tete < fin && chaine(c, tete, fin).chars().all(|y| y.is_ascii_digit()) && forme_ipv6(&portee) {
+            corps = portee;
             fin = ipv4(c, tete).unwrap_or_else(|| {
-                let mut f = fin_tant_que(c, fin, |y| y.is_ascii_alphanumeric() || y == '.' || y == ':');
-                while f > fin && car(c, f.saturating_sub(1)) == Some('.') {
-                    f = f.saturating_sub(1);
+                let mut f = fin;
+                loop {
+                    f = fin_tant_que(c, f, |y| y.is_ascii_alphanumeric());
+                    let lien = car(c, f);
+                    let apres = car(c, suivant(f));
+                    let encore = (lien == Some('.') && apres.is_some_and(|y| y.is_ascii_digit()))
+                        || (lien == Some(':') && apres.is_some_and(|y| y.is_ascii_alphanumeric()));
+                    if !encore {
+                        break f;
+                    }
+                    f = suivant(f);
                 }
-                f
             });
         }
     }
-    let deux_points = corps.matches(':').count();
-    let groupes_courts = corps.split(':').all(|g| g.len() <= 4);
-    let pleine = deux_points == 7 && corps.split(':').all(|g| !g.is_empty());
-    let abregee = corps.contains("::") && corps.split(':').any(|g| !g.is_empty()) && corps.matches("::").count() == 1;
     // Un chiffre décimal est exigé : sans lui, « fa::ce » ou « de::ad » seraient pris pour des adresses. Limite dite
     // (CHANGELOG) : une adresse sans aucun chiffre (« fd::ab ») reste en clair ici ; la porte des assistants la retient.
-    if !groupes_courts || !(pleine || abregee) || !corps.chars().any(|y| y.is_ascii_digit()) {
+    if !forme_ipv6(&corps) || !corps.chars().any(|y| y.is_ascii_digit()) {
         return None;
     }
     let mut j = fin;
     // La zone : un nom d'interface (« %eth0 », « %br-lan », « %eth0.100 »), sans le point qui finit la phrase.
     if car(c, j) == Some('%') {
-        let zone = suivant(j);
-        j = fin_tant_que(c, zone, |y| y.is_ascii_alphanumeric() || matches!(y, '-' | '.' | '_'));
-        while j > zone && car(c, j.saturating_sub(1)) == Some('.') {
-            j = j.saturating_sub(1);
+        // Un point n'y entre que suivi d'un chiffre (« %eth0.100 ») : « %eth0.Le texte » garde son mot.
+        j = suivant(j);
+        loop {
+            j = fin_tant_que(c, j, |y| y.is_ascii_alphanumeric() || matches!(y, '-' | '_'));
+            if car(c, j) == Some('.') && car(c, suivant(j)).is_some_and(|y| y.is_ascii_digit()) {
+                j = suivant(j);
+            } else {
+                break;
+            }
         }
     }
     if car(c, j) == Some('/') {

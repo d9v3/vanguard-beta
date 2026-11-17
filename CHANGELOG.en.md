@@ -13,19 +13,28 @@ example, finds it, to rebuild it if needed.
 
 - **New read-only door for AI assistants (`vanguard mcp`), on Linux only.** An assistant you connect can read Vanguard's
   state, events and findings, and cannot change anything. It uses only the program's standard input and output, with no
-  port and no network, refuses to run as administrator, never shows paths, command lines or secrets, and marks
-  everything it returns as untrusted. A text that comes from the computer (a finding's message, an alert's title, a
-  program's name) only leaves it made of the words Vanguard itself writes in its messages, in French and English; any
-  other word, digit or sign becomes "…". A session served is noted in the journal, without ever filling it; a program
-  that sends it abnormal messages is cut off, and an alert says so. It refuses to start under a file size limit
-  (`ulimit -f`), which could cut its note in the middle; a note cut anyway is undone, and the journal stays readable.
-  After 15 minutes of silence, it closes; the assistant starts it again. On Windows, the command refuses to start until
-  it has been tried on a real Windows.
+  port and no network, refuses to run as administrator and marks everything it returns as untrusted. A text that comes
+  from the computer (a finding's message, an alert's title, a program's name) only leaves it made of the words Vanguard
+  itself writes in its messages, in French and English; any other word, digit or sign becomes "…", which holds back
+  paths, addresses and any value made of digits or signs. After a word that announces a secret (password, key, code,
+  PIN, token, secret…), the whole rest of the text is held back, and so is the command excerpt of a watcher alert; the
+  price: a useful sentence that follows one of these words is lost. Limits, stated in the threat model: a name made of
+  Vanguard's words ("admin", "maison") comes out, with its case; an attacker who writes on the computer can compose a
+  sentence with these words; fixed-form fields (rule, version, date, numbers) come out without being reread. A session
+  served is noted in the journal, without ever filling it; a program that sends it abnormal messages is cut off, and an
+  alert says so. It refuses to start under a file size limit (`ulimit -f`), which could cut its note in the middle; a
+  note cut anyway is undone, and the journal stays readable. After 15 minutes of silence, it closes; the assistant
+  starts it again. On Windows, the command refuses to start until it has been tried on a real Windows.
 - **The address masker, shared by the error journal and the report draft, holds back more.** An IPv4 address carried
-  inside an IPv6 one ("::ffff:…"), an address followed by a port or by stuck letters, a zone written with dots, hyphens
-  or ideographic full stops ("。") are now masked whole, with no piece left behind. Known limit: an IPv6 address written
-  without any digit ("fd::ab") looks too much like a word to be recognized; through the assistants' door it does not
-  come out (it is not one of Vanguard's words).
+  inside an IPv6 one ("::ffff:…"), an IPv4 address followed by a port (".443", ".123456") or by stuck letters (".443x",
+  "23abc"), a full IPv6 address followed by a full stop, a zone written with dots, hyphens or ideographic full stops
+  ("。") are now masked whole, with no piece left behind; a word stuck after the full stop ("5::6.The rest") keeps its
+  place. A named number (after "version", "build", "section", "control", "rule", "package", "driver", "release" and
+  their French forms: "version 1.2.3.4.5", "package 1.2.3.4rc1") stays readable. Known limits: an IPv6 address written
+  without any digit ("fd::ab") looks too much like a word to be recognized; an IPv4 address followed by two numbers or
+  more (".443.80") stays in clear, taken for a version number; a four-number version is taken for an address even when
+  named ("version 6.1.0.2" keeps its name, not its numbers), as is a suffixed version that nothing names ("firefox
+  128.0.3.0esr"). Through the assistants' door none of these forms comes out: they are not Vanguard's words.
 
 ## November 15, 2026: version 0.96.0
 

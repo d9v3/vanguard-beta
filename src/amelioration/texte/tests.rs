@@ -276,6 +276,60 @@ fn rc1_rc6_ipv4_portee_mal_formee_et_zone_masquees_en_entier() {
     }
 }
 
+/// Re-contrôle LB-FERMETURE-1 : une IPv6 pleine (huit groupes) dont le dernier groupe n'a que des chiffres, suivie d'un
+/// point, reste masquée (la variante « IPv4 portée » n'est retenue que si elle donne une adresse valable).
+#[test]
+fn lb_fermeture_1_ipv6_pleine_suivie_d_un_point_masquee() {
+    let cas = [
+        (
+            "Connexion refusée vers 2a02:1234:5678:9abc:a4b3:c2ff:fed1:1234. Nouvel essai dans une minute",
+            "Connexion refusée vers <ip>. Nouvel essai dans une minute",
+        ),
+        ("vers 2001:db8:1:2:3:4:5:1.", "vers <ip>."),
+        ("vers 0:0:0:0:0:0:0:1.", "vers <ip>."),
+        ("vers 2a02:1234:5678:9abc:a4b3:c2ff:fed1:1234...", "vers <ip>..."),
+        (
+            "vers 2a02:1234:5678:9abc:a4b3:c2ff:fed1:1234.Nouvel essai",
+            "vers <ip>.Nouvel essai",
+        ),
+        (
+            "IP6 2a02:1234:5678:9abc:a4b3:c2ff:fed1:1234.443 fin",
+            "IP6 <ip>.443 fin",
+        ),
+        ("vers fd12:3456:789a:1:a4b3:c2ff:fed1:1234.22 fin", "vers <ip>.22 fin"),
+    ];
+    for (brut, attendu) in cas {
+        assert_eq!(propre(brut), attendu, "{brut:?}");
+    }
+}
+
+/// Re-contrôle LB-FERMETURE-3 et 4 : un numéro de version, de section ou de paquet nommé reste lisible ; un mot collé
+/// après un point garde sa place ; une adresse suivie d'un port long ou d'un port à lettres collées est masquée.
+#[test]
+fn lb_fermeture_3_4_numeros_nommes_et_ports_colles() {
+    for t in [
+        "pilote version 1.2.3.4.5",
+        "section 5.2.3.4.1 du guide CIS",
+        "contrôle 18.9.4.1.2 du guide CIS",
+        "paquet 1.2.3.4rc1",
+        "paquet 4.19.0.0beta",
+    ] {
+        assert_eq!(propre(t), t, "{t:?}");
+    }
+    let cas = [
+        ("valeur 5::6.Le reste de la phrase", "valeur <ip>.Le reste de la phrase"),
+        ("voisin fe80::1%eth0.Le texte continue", "voisin <ip>.Le texte continue"),
+        ("vers 81.56.120.23.123456 fin", "vers <ip> fin"),
+        ("vers 81.56.120.23.443x fin", "vers <ip> fin"),
+        ("vers 81.56.120.23abc fin", "vers <ip> fin"),
+        // Quatre nombres restent pris, même nommés : ils ne se distinguent pas d'une adresse.
+        ("version 81.56.120.23 fin", "version <ip> fin"),
+    ];
+    for (brut, attendu) in cas {
+        assert_eq!(propre(brut), attendu, "{brut:?}");
+    }
+}
+
 #[test]
 fn textes_courants_gardes() {
     for t in [

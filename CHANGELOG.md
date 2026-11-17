@@ -13,20 +13,31 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
 
 - **Nouvelle porte de lecture pour les assistants d'IA (`vanguard mcp`), sous Linux seulement.** Un assistant que vous
   branchez peut lire l'état de Vanguard, ses événements et ses constats, sans pouvoir rien changer. Elle passe seulement
-  par l'entrée et la sortie du programme, sans port ni réseau, refuse de tourner en administrateur, ne montre ni
-  chemins, ni lignes de commande, ni secrets, et marque tout ce qu'elle rend comme non fiable. Un texte venu de
-  l'ordinateur (message d'un constat, titre d'une alerte, nom d'un programme) n'en sort que fait des mots que Vanguard
-  écrit lui-même dans ses messages, en français et en anglais ; tout autre mot, chiffre ou signe devient « … ». Une
-  session servie est notée dans le journal, sans jamais le remplir ; un programme qui lui envoie des messages anormaux
-  est coupé, et une alerte le dit. Elle refuse de démarrer sous un plafond de taille de fichier (`ulimit -f`), qui
-  pourrait couper sa note au milieu ; une note coupée malgré tout est défaite, et le journal reste lisible. Après 15
-  minutes de silence, elle se ferme ; l'assistant la relance. Sous Windows, la commande refuse de démarrer tant qu'elle
-  n'a pas été essayée sur un vrai Windows.
+  par l'entrée et la sortie du programme, sans port ni réseau, refuse de tourner en administrateur et marque tout ce
+  qu'elle rend comme non fiable. Un texte venu de l'ordinateur (message d'un constat, titre d'une alerte, nom d'un
+  programme) n'en sort que fait des mots que Vanguard écrit lui-même dans ses messages, en français et en anglais ; tout
+  autre mot, chiffre ou signe devient « … », ce qui retient les chemins, les adresses et toute valeur à chiffres ou à
+  signes. Après un mot qui annonce un secret (mot de passe, clé, code, PIN, jeton, secret…), tout le reste du texte est
+  retenu, et l'extrait de commande d'une alerte du veilleur aussi ; le prix : une phrase utile qui suit un de ces mots
+  est perdue. Limites, dites au modèle de menace : un nom fait de mots de Vanguard (« admin », « maison ») sort, avec sa
+  casse ; un attaquant qui écrit sur l'ordinateur peut composer une phrase avec ces mots ; les champs à forme fixe
+  (règle, version, date, nombres) sortent sans être relus. Une session servie est notée dans le journal, sans jamais le
+  remplir ; un programme qui lui envoie des messages anormaux est coupé, et une alerte le dit. Elle refuse de démarrer
+  sous un plafond de taille de fichier (`ulimit -f`), qui pourrait couper sa note au milieu ; une note coupée malgré
+  tout est défaite, et le journal reste lisible. Après 15 minutes de silence, elle se ferme ; l'assistant la relance.
+  Sous Windows, la commande refuse de démarrer tant qu'elle n'a pas été essayée sur un vrai Windows.
 - **Le masqueur des adresses, commun au journal des erreurs et au brouillon de signalement, en retient plus.** Une
-  adresse IPv4 portée dans une IPv6 (« ::ffff:… »), une adresse suivie d'un port ou de lettres collées, une zone écrite
-  avec des points, des tirets ou des points idéographiques (« 。 ») sont maintenant masquées en entier, sans qu'un
-  morceau en reste. Limite connue : une adresse IPv6 écrite sans aucun chiffre (« fd::ab ») ressemble trop à un mot pour
-  être reconnue ; par la porte des assistants, elle ne sort pas (ce n'est pas un mot de Vanguard).
+  adresse IPv4 portée dans une IPv6 (« ::ffff:… »), une adresse IPv4 suivie d'un port (« .443 », « .123456 ») ou de
+  lettres collées (« .443x », « 23abc »), une adresse IPv6 pleine suivie d'un point, une zone écrite avec des points,
+  des tirets ou des points idéographiques (« 。 ») sont maintenant masquées en entier, sans qu'un morceau en reste ; un
+  mot collé après le point (« 5::6.Le reste ») garde sa place. Un numéro nommé (après « version », « build »,
+  « section », « contrôle », « règle », « paquet », « pilote », « release » et leurs formes anglaises : « version
+  1.2.3.4.5 », « paquet 1.2.3.4rc1 ») reste lisible. Limites connues : une adresse IPv6 écrite sans aucun chiffre
+  (« fd::ab ») ressemble trop à un mot pour être reconnue ; une adresse IPv4 suivie de deux nombres ou plus
+  (« .443.80 ») reste en clair, prise pour un numéro de version ; un numéro de quatre nombres est pris pour une adresse
+  même nommé (« version 6.1.0.2 » garde son nom, pas ses nombres), comme une version à suffixe que rien ne nomme
+  (« firefox 128.0.3.0esr »). Par la porte des assistants, aucune de ces formes ne sort : ce ne sont pas des mots de
+  Vanguard.
 
 ## 15 novembre 2026 : version 0.96.0
 

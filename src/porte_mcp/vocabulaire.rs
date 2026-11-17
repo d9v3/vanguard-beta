@@ -1,15 +1,18 @@
 //! La liste blanche des mots de la porte : un texte venu de l'ordinateur (message d'un constat, titre d'une alerte,
 //! nom d'un programme) ne sort que fait des mots que Vanguard écrit lui-même dans ses propres messages, en français et
-//! en anglais. Tout autre mot, chiffre ou signe devient « … ». Un secret, un chemin, une adresse, un numéro, une ligne
-//! de commande n'ont donc plus à être reconnus pour être retenus : ce qui n'est pas un mot connu ne sort pas.
+//! en anglais. Tout autre mot, chiffre ou signe devient « … » : un chemin, une adresse, un numéro, une valeur à
+//! chiffres ou à signes n'ont pas à être reconnus pour être retenus. Un nom ou un secret fait de mots du vocabulaire
+//! (« admin », « maison »), lui, n'est retenu que par les filets de `vues::texte_externe` (après un mot qui annonce un
+//! secret, dans l'extrait d'une commande).
 //!
 //! Le vocabulaire est tiré du code à la compilation (`build.rs`, fonction `vocabulaire`) : les chaînes des macros de
 //! texte, sans les marques de format et sans les essais. Il suit donc le code sans geste humain. Il est découpé ici
 //! avec les règles mêmes qui jugent un texte (`mots`), pour qu'un mot du code et le même mot dans un texte se
 //! reconnaissent toujours.
 //!
-//! La limite, dite au modèle de menace : un texte fait de mots du vocabulaire sort tel quel. Un attaquant qui écrit
-//! sur l'ordinateur peut composer une phrase avec ces mots ; rien d'autre ne sort.
+//! La limite, dite au modèle de menace : un texte fait de mots du vocabulaire sort tel quel, avec sa casse, ses
+//! guillemets de tête et sa ponctuation. Un attaquant qui écrit sur l'ordinateur peut composer une phrase avec ces mots
+//! (et épeler une valeur par leurs initiales) ; un nom qui est un mot du vocabulaire sort aussi.
 
 use std::collections::HashSet;
 use std::sync::LazyLock;
@@ -59,6 +62,8 @@ const PONCTUATION: &[char] = &['.', ',', ';', ':', '!', '?', '"', '\'', '-', '�
 const TETE: &[char] = &['"', '\''];
 /// Ce qui peut suivre un mot (pelé et gardé).
 const QUEUE: &[char] = &['.', ',', ';', ':', '!', '?', '"', '\'', '…'];
+/// Ce qui peut entourer un mot sans jamais sortir (« (numéro », « illisible) ») : pelé et jeté.
+const GROUPES: &[char] = &['(', ')', '[', ']'];
 /// Les mots d'une seule lettre admis : sans eux, une valeur pourrait s'épeler lettre par lettre.
 const UNE_LETTRE: [&str; 3] = ["a", "à", "y"];
 /// Les formes élidées : « l'alerte » est connu si « alerte » l'est.
@@ -69,10 +74,13 @@ const ELISIONS: [&str; 12] = [
 /// Le texte normalisé comme le juge la porte : celle du nettoyeur commun (pleine chasse, invisibles, guillemets et
 /// apostrophes typographiques, espaces), puis les lettres latines accentuées recomposées (NFC) : « e » suivi d'un
 /// accent combinant est « é ». Les autres formes de compatibilité (ligatures, lettres mathématiques ou cerclées) ne
-/// sont pas ramenées : elles ne sont pas des mots du vocabulaire et sortent « … ».
+/// sont pas ramenées : elles ne sont pas des mots du vocabulaire et sortent « … ». Les traits d'union typographiques
+/// (U+2010, U+2011 insécable) deviennent « - » : « wi‑fi » est « wi-fi ». Le tiret demi-cadratin (« – ») reste un
+/// séparateur.
 pub(crate) fn normalise(texte: &str) -> String {
     let mut sortie = String::with_capacity(texte.len());
     for x in crate::amelioration::texte::normalise(texte).chars() {
+        let x = if matches!(x, '\u{2010}' | '\u{2011}') { '-' } else { x };
         let compose = sortie.chars().last().and_then(|base| composer(base, x));
         match compose {
             Some(c) => {
@@ -110,14 +118,24 @@ fn composer(base: char, marque: char) -> Option<char> {
     composes.chars().nth(rang)
 }
 
-/// Le jeton en trois parts : sa tête (guillemets, apostrophe), son cœur, sa queue (ponctuation de fin).
-fn peler(jeton: &str) -> (&str, &str, &str) {
-    let sans_tete = jeton.trim_start_matches(TETE);
-    let coeur = sans_tete.trim_end_matches(QUEUE);
+/// Le jeton en trois parts : sa tête (guillemets, apostrophe), son cœur, sa queue (ponctuation de fin). Les
+/// parenthèses et crochets qui l'entourent sont pelés aussi, mais jetés : ni la tête ni la queue ne les gardent, rien
+/// qui ouvre ou ferme un groupe ne sort.
+pub(crate) fn peler(jeton: &str) -> (String, &str, String) {
+    let sans_tete = jeton.trim_start_matches(|x: char| TETE.contains(&x) || GROUPES.contains(&x));
+    let coeur = sans_tete.trim_end_matches(|x: char| QUEUE.contains(&x) || GROUPES.contains(&x));
     let tete = jeton
         .get(..jeton.len().saturating_sub(sans_tete.len()))
-        .unwrap_or_default();
-    let queue = sans_tete.get(coeur.len()..).unwrap_or_default();
+        .unwrap_or_default()
+        .chars()
+        .filter(|x| !GROUPES.contains(x))
+        .collect();
+    let queue = sans_tete
+        .get(coeur.len()..)
+        .unwrap_or_default()
+        .chars()
+        .filter(|x| !GROUPES.contains(x))
+        .collect();
     (tete, coeur, queue)
 }
 
@@ -176,7 +194,9 @@ pub(crate) fn connu(coeur: &str) -> bool {
 }
 
 /// Le jeton tel qu'il peut sortir : seule ponctuation (« … » si elle forme des points de suspension ou s'allonge),
-/// ou mot du vocabulaire entouré de sa ponctuation ; « … » sinon, sans rien autour.
+/// ou mot du vocabulaire entouré de sa ponctuation ; « … » sinon, sans rien autour. Un mot suivi de points de
+/// suspension (« admin… », « maison.. ») a pu être coupé par celui qui l'a écrit : son début n'est pas le mot, il sort
+/// « … » en entier.
 pub(crate) fn juger(jeton: &str) -> String {
     if jeton.chars().all(|x| PONCTUATION.contains(&x)) {
         let points = jeton.chars().filter(|x| *x == '.').count();
@@ -187,7 +207,10 @@ pub(crate) fn juger(jeton: &str) -> String {
         };
     }
     let (tete, coeur, queue) = peler(jeton);
-    let queue_courte = queue.chars().nth(2).is_none() && queue.chars().filter(|x| *x == '.').count() < 2;
+    if queue.contains(RETENU) || queue.chars().filter(|x| *x == '.').count() >= 2 {
+        return RETENU.into();
+    }
+    let queue_courte = queue.chars().nth(2).is_none();
     if connu(coeur) && queue_courte {
         format!("{tete}{coeur}{queue}")
     } else if connu(coeur) {

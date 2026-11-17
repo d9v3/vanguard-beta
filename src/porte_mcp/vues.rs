@@ -1,7 +1,11 @@
 //! Ce que la porte montre d'un événement, d'un constat ou d'un bilan : des noms fermés, des nombres, des dates UTC,
 //! des liens hachés ; le texte venu de l'ordinateur réduit aux mots du vocabulaire de Vanguard, borné et rangé à part
 //! (`texte_externe`, `vocabulaire`).
-//! Jamais un chemin, une ligne de commande, un compte, un pid, une adresse, l'objet d'un constat, un geste.
+//! Les champs ne portent jamais un chemin, une ligne de commande, un pid, une adresse, l'objet d'un constat ni un geste
+//! en entier. Ce qui peut sortir quand même, dit au modèle de menace : dans `texte_externe`, un nom (réseau Wi-Fi,
+//! compte, programme, dossier) dont les mots sont du vocabulaire (« admin », « maison »), avec leur casse, leurs
+//! guillemets et leur ponctuation d'origine ; dans les champs à forme fixe (règle, version, date, nombres, empreinte),
+//! les lettres et chiffres que cette forme admet, sans être relus.
 
 use serde_json::{Map, Value, json};
 
@@ -165,20 +169,40 @@ pub(crate) const SORTES: &[&str] = &[
 /// normalisé (pleine chasse, invisibles, accents recomposés), découpé en mots, et chaque mot qui n'est pas un mot que
 /// Vanguard écrit lui-même dans ses propres messages devient « … » (chiffres, chemins, adresses, jetons, noms, signes
 /// compris ; plusieurs « … » de suite n'en font qu'un). Seule une petite ponctuation fixe sort à côté, jamais une
-/// parenthèse ni un crochet. Une phrase de passe ou un mot de passe annoncé (« mot de passe : … ») est retenu jusqu'à
-/// la fin de sa phrase, même fait de mots connus. Rangé à part et marqué `non_fiable` : une phrase faite de mots du
-/// vocabulaire sort telle quelle, consigne comprise. Vide (`retire`) quand rien ne reste.
+/// parenthèse ni un crochet. Deux filets de plus, pour des valeurs qui peuvent être faites de mots du vocabulaire :
+/// dès qu'un mot annonce un secret (`ANNONCES` : mot de passe, clé, code, jeton, secret…), tout le reste du texte
+/// devient un seul « … » ; l'extrait de commande d'un programme (entre parenthèses après « (PID n) ») aussi. Rangé
+/// à part et marqué `non_fiable` : une phrase faite de mots du vocabulaire sort telle quelle, consigne comprise. Vide
+/// (`retire`) quand rien ne reste.
 pub(crate) fn texte_externe(brut: &str) -> Value {
     let texte = vocabulaire::normalise(borne(brut));
     let jetons: Vec<&str> = texte.split_whitespace().collect();
+    // Coupé par la borne, le dernier mot n'est peut-être que le début d'un mot (« root » de « rootkit-… »).
+    let coupe = (brut.len() > BRUT_MAX).then(|| jetons.len().saturating_sub(1));
+    let groupe = groupe_entre_parentheses(&jetons);
+    let masque = |k: usize| groupe.is_some_and(|g| g.masque && (g.debut..=g.fin).contains(&k));
+    let annonce = fin_d_annonce(&jetons, &masque);
     let mut juges: Vec<String> = Vec::with_capacity(jetons.len());
     let mut i = 0;
     while let Some(jeton) = jetons.get(i) {
-        i = i.saturating_add(1);
-        vocabulaire::ajouter(&mut juges, vocabulaire::juger(jeton));
-        if annonce_une_phrase(&jetons, i) {
-            i = masquer_la_phrase(&jetons, i, &mut juges);
+        if masque(i) || coupe == Some(i) {
+            vocabulaire::ajouter(&mut juges, vocabulaire::RETENU.into());
+            i = groupe.filter(|_| masque(i)).map_or(i, |g| g.fin).saturating_add(1);
+            continue;
         }
+        if groupe_pid(&jetons, i) {
+            vocabulaire::ajouter(&mut juges, vocabulaire::RETENU.into());
+            i = i.saturating_add(2);
+            continue;
+        }
+        vocabulaire::ajouter(&mut juges, vocabulaire::juger(jeton));
+        if annonce == Some(i) {
+            if jetons.get(i.saturating_add(1)).is_some() {
+                vocabulaire::ajouter(&mut juges, vocabulaire::RETENU.into());
+            }
+            break;
+        }
+        i = i.saturating_add(1);
     }
     let mut net = String::new();
     for mot in &juges {
@@ -215,75 +239,143 @@ fn borne(brut: &str) -> &str {
     brut.get(..fin).unwrap_or_default()
 }
 
-/// Les mots qui annoncent une phrase de passe ou un mot de passe.
-const PHRASES: [&[&str]; 5] = [
-    &["phrase", "de", "passe"],
-    &["passphrase"],
-    &["pass", "phrase"],
-    &["mot", "de", "passe"],
-    &["password"],
+/// Les mots qui annoncent un secret, en minuscules, écrits d'un seul tenant (« mot de passe », « mot-de-passe »,
+/// « MotDePasse » s'écrivent tous « motdepasse »). Une valeur faible est justement un mot courant, qui peut être du
+/// vocabulaire : après l'un d'eux, plus rien du texte ne sort, sans attendre un « : » ni s'arrêter à un point.
+const ANNONCES: [&str; 34] = [
+    "motdepasse",
+    "motsdepasse",
+    "mdp",
+    "phrasedepasse",
+    "phrasesdepasse",
+    "password",
+    "passwords",
+    "passwd",
+    "pwd",
+    "passphrase",
+    "passphrases",
+    "clé",
+    "clés",
+    "cle",
+    "cles",
+    "clef",
+    "clefs",
+    "key",
+    "keys",
+    "code",
+    "codes",
+    "pin",
+    "pins",
+    "jeton",
+    "jetons",
+    "token",
+    "tokens",
+    "secret",
+    "secrets",
+    "secrète",
+    "secrètes",
+    "psk",
+    "passcode",
+    "passcodes",
 ];
+/// Les annonces assez longues pour être reconnues en tête d'un morceau (« password123 », « motdepasseadmin »).
+const ANNONCES_EN_TETE: [&str; 6] = [
+    "motdepasse",
+    "motsdepasse",
+    "phrasedepasse",
+    "password",
+    "passwd",
+    "passphrase",
+];
+/// Les mots qui nient l'annonce juste après eux (« sans mot de passe », « has no password ») : un vrai message de
+/// Vanguard (réseau Wi-Fi ouvert) dit qu'il n'y a pas de secret, il n'en cite pas.
+const NEGATIONS: [&str; 5] = ["sans", "without", "no", "aucun", "aucune"];
 
-/// Si les mots qui finissent en `i` (exclu) annoncent un secret, suivis plus loin (trois mots au plus, « Wi-Fi »,
-/// « du réseau ») d'un `:` ou d'un `=`.
-fn annonce_une_phrase(mots: &[&str], i: usize) -> bool {
-    let bas = |k: usize| {
-        mots.get(k)
-            .map(|m| {
-                m.to_lowercase()
-                    .trim_matches(|x: char| !x.is_alphanumeric())
-                    .to_string()
-            })
-            .unwrap_or_default()
-    };
-    let annonce = PHRASES.iter().any(|p| {
-        i.checked_sub(p.len()).is_some_and(|d| {
-            p.iter()
-                .enumerate()
-                .all(|(k, m)| bas(d.saturating_add(k)) == *m || bas(d.saturating_add(k)).replace('-', "") == *m)
-        })
-    }) || ["mot-de-passe", "mot_de_passe", "motdepasse"].contains(&bas(i.saturating_sub(1)).as_str());
-    annonce
-        && (i.saturating_sub(1)..i.saturating_add(3)).any(|k| {
-            mots.get(k)
-                .is_some_and(|m| m.ends_with([':', '=']) || m.starts_with([':', '=']))
+/// L'indice du jeton qui finit la première annonce d'un secret, hors des jetons `ignore` (un groupe déjà retenu). Les
+/// jetons sont lus par morceaux de lettres, en minuscules (« mot-de-passe:x » donne « mot », « de », « passe », « x »),
+/// et une annonce est faite d'un à trois morceaux qui se suivent : la casse, les tirets, les traits bas et l'absence
+/// de séparateur ne la cachent pas.
+fn fin_d_annonce(jetons: &[&str], ignore: &dyn Fn(usize) -> bool) -> Option<usize> {
+    // Chaque morceau : ses lettres en minuscules, son jeton, et s'il ouvre son jeton.
+    let mut morceaux: Vec<(String, usize, bool)> = Vec::new();
+    for (t, jeton) in jetons.iter().enumerate().filter(|(t, _)| !ignore(*t)) {
+        let mut premier = true;
+        for m in jeton.split(|x: char| !x.is_alphabetic()).filter(|m| !m.is_empty()) {
+            morceaux.push((m.to_lowercase(), t, premier));
+            premier = false;
+        }
+    }
+    for (s, (tete, debut, ouvre)) in morceaux.iter().enumerate() {
+        let mut colle = String::new();
+        for (m, fin, _) in morceaux.iter().skip(s).take(3) {
+            colle.push_str(m);
+            let annonce = ANNONCES.contains(&colle.as_str())
+                || (colle == *tete && ANNONCES_EN_TETE.iter().any(|a| tete.starts_with(a)));
+            if annonce && !(*ouvre && niee(jetons, *debut, *fin)) {
+                return Some(*fin);
+            }
+        }
+    }
+    None
+}
+
+/// L'annonce qui va du jeton `debut` au jeton `fin` est-elle niée (« sans mot de passe (WEP) ») ? Il faut un mot de
+/// négation entier juste avant, et aucun séparateur collé à la fin de l'annonce ou au jeton qui la suit : « sans mot de
+/// passe : maison » annonce quand même une valeur.
+fn niee(jetons: &[&str], debut: usize, fin: usize) -> bool {
+    let avant = debut
+        .checked_sub(1)
+        .and_then(|k| jetons.get(k))
+        .map(|m| m.trim_matches(|x: char| !x.is_alphabetic()).to_lowercase())
+        .is_some_and(|m| NEGATIONS.contains(&m.as_str()));
+    let separe = jetons.get(fin).is_some_and(|m| m.contains([':', '=']))
+        || jetons
+            .get(fin.saturating_add(1))
+            .is_some_and(|m| m.starts_with([':', '=']));
+    avant && !separe
+}
+
+/// Le groupe « (PID n) » commence-t-il au jeton `i` (« (PID » puis « n) ») ? Le veilleur l'écrit avant la raison
+/// d'une alerte, et l'extrait de la commande suit.
+fn groupe_pid(jetons: &[&str], i: usize) -> bool {
+    jetons.get(i).is_some_and(|m| m.eq_ignore_ascii_case("(pid"))
+        && jetons.get(i.saturating_add(1)).is_some_and(|m| {
+            m.trim_end_matches(['.', ',', ';', ':', '!', '?'])
+                .strip_suffix(')')
+                .is_some_and(|n| !n.is_empty() && n.chars().all(|x| x.is_ascii_digit()))
         })
 }
 
-/// Retient tout jusqu'à la fin de la phrase (un mot qui finit par `.`, `;`, `!` ou `?`, gardé comme ponctuation),
-/// après les mots de liaison et le séparateur : une phrase de passe est faite de mots ordinaires, qui peuvent être du
-/// vocabulaire. Rend l'indice du mot suivant.
-fn masquer_la_phrase(mots: &[&str], mut i: usize, sortie: &mut Vec<String>) -> usize {
-    let separe = |m: &str| m.ends_with([':', '=']);
-    if !i.checked_sub(1).and_then(|k| mots.get(k)).is_some_and(|m| separe(m)) {
-        while let Some(mot) = mots.get(i) {
-            vocabulaire::ajouter(sortie, vocabulaire::juger(mot));
-            i = i.saturating_add(1);
-            if separe(mot) {
-                break;
-            }
-        }
-    }
-    let mut masque = false;
-    while let Some(mot) = mots.get(i) {
-        i = i.saturating_add(1);
-        if mot.starts_with([':', '=']) && !masque {
-            vocabulaire::ajouter(sortie, vocabulaire::juger(mot));
-            continue;
-        }
-        masque = true;
-        if let Some(fin) = mot.chars().last().filter(|x| ".;!?".contains(*x)) {
-            vocabulaire::ajouter(sortie, vocabulaire::RETENU.into());
-            if let Some(dernier) = sortie.last_mut() {
-                dernier.push(fin);
-            }
-            return i;
-        }
-    }
-    if masque {
-        vocabulaire::ajouter(sortie, vocabulaire::RETENU.into());
-    }
-    i
+/// Un groupe entre parenthèses : de son premier jeton qui ouvre à son dernier qui ferme, et s'il est retenu en entier.
+#[derive(Clone, Copy)]
+struct Groupe {
+    debut: usize,
+    fin: usize,
+    masque: bool,
+}
+
+/// Le groupe entre parenthèses du texte : il commence au premier jeton qui ouvre une parenthèse après le dernier
+/// « (PID n) » (au tout premier sans lui) et finit au dernier jeton qui en ferme une ; une parenthèse qui ne se ferme
+/// pas n'en fait pas. Après un « (PID n) », c'est l'extrait d'une commande, choisi par qui l'a lancée : il est retenu
+/// en entier (« (mysql --password secret) » ne laisse pas sortir « secret »). Sans lui, c'est une précision de Vanguard
+/// (« (numéro repris, parent ou heure illisible) ») : elle sort si tous ses mots sont du vocabulaire, retenue sinon.
+fn groupe_entre_parentheses(jetons: &[&str]) -> Option<Groupe> {
+    let pid = (0..jetons.len()).rev().find(|k| groupe_pid(jetons, *k));
+    let depart = pid.map_or(0, |k| k.saturating_add(2));
+    let debut = (depart..jetons.len()).find(|k| jetons.get(*k).is_some_and(|m| m.contains('(')))?;
+    let fin = (debut..jetons.len())
+        .rev()
+        .find(|k| jetons.get(*k).is_some_and(|m| m.contains(')')))?;
+    let connus = jetons
+        .get(debut..=fin)
+        .unwrap_or_default()
+        .iter()
+        .all(|m| vocabulaire::connu(vocabulaire::peler(m).1));
+    Some(Groupe {
+        debut,
+        fin,
+        masque: pid.is_some() || !connus,
+    })
 }
 
 /// Le nom court d'un programme (son nom de fichier seul), nettoyé comme un nom de logiciel ; rien s'il est refusé.
@@ -603,7 +695,21 @@ mod tests {
     fn le_vocabulaire_vient_des_messages_du_code() {
         assert!(vocabulaire::taille() > 3000, "{}", vocabulaire::taille());
         for mot in [
-            "pare-feu", "alerte", "l'alerte", "Firewall", "ESPIONS", "lignée", "TCP/IP", "à", "a",
+            "pare-feu",
+            "alerte",
+            "l'alerte",
+            "Firewall",
+            "ESPIONS",
+            "lignée",
+            "TCP/IP",
+            "à",
+            "a",
+            // Le code qui suit un module d'essais est lu (LB-COMPILATION-1) : envoi/mod.rs, après « mod tests; »,
+            // et machine/linux/maj.rs, après son module d'essais.
+            "minuteur",
+            "unsent",
+            "discarded",
+            "rate-limiting",
         ] {
             assert!(vocabulaire::connu(mot), "{mot}");
         }
@@ -613,6 +719,10 @@ mod tests {
             "bob",
             "Tremblay",
             "jupiter",
+            // Valeurs inventées des essais (LB-COMPILATION-2) : aucun élément sous cfg(test) n'est lu.
+            "alice",
+            "salon",
+            "minerai-xmr",
             "x",
             "b",
             "pare--feu",
@@ -677,8 +787,13 @@ mod tests {
         }
         // Ce qui n'est pas visé reste.
         assert_eq!(sortie("Le pare-feu est coupé."), "Le pare-feu est coupé.");
-        assert!(sortie("Mot de passe Wi-Fi : lune verte soupe orange. Fin").ends_with("…. Fin"));
-        assert_eq!(sortie("le mot de passe a expiré"), "le mot de passe a expiré");
+        // Re-contrôle LB-fuite-1 : après une annonce, tout le reste est retenu, jusqu'à la fin du texte (le prix : une
+        // phrase utile qui suit une annonce est perdue aussi).
+        assert_eq!(
+            sortie("Mot de passe Wi-Fi : lune verte soupe orange. Fin"),
+            "Mot de passe …"
+        );
+        assert_eq!(sortie("le mot de passe a expiré"), "le mot de passe …");
     }
 
     /// Attaque FUITE-2 : la normalisation passe avant le jugement (pleine chasse, invisibles collés, caractère
@@ -727,23 +842,24 @@ mod tests {
     #[test]
     fn un_mot_coupe_ne_sort_pas_meme_suivi() {
         for brut in [
-            "secret coupé ghp_AbCdEfGhIjKlMn… (PID 4242)",
-            "secret coupé ghp_AbCdEfGhIjKlMn….",
-            "secret coupé « ghp_AbCdEfGhIjKlMn… »",
-            "secret coupé ghp_AbCdEfGhIjKlMn… [suite]",
-            "secret coupé ghp_AbCdEfGhIjKlMn… et la suite",
-            "secret coupé ghp_AbCdEfGhIjKlMn…\u{200B} et la suite",
-            "secret coupé ghp_AbCdEfGhIjKlMn . . . et la suite",
-            "secret coupé ghp_AbCdEfGhIjKlMn ... et la suite",
-            "secret coupé ghp_AbCdEfGhIjKlMn.. et la suite",
-            "secret coupé ghp_AbCdEfGhIjKlMn\u{FF0E}\u{FF0E}\u{FF0E} et la suite",
+            "fichier coupé ghp_AbCdEfGhIjKlMn… (PID 4242)",
+            "fichier coupé ghp_AbCdEfGhIjKlMn….",
+            "fichier coupé « ghp_AbCdEfGhIjKlMn… »",
+            "fichier coupé ghp_AbCdEfGhIjKlMn… [suite]",
+            "fichier coupé ghp_AbCdEfGhIjKlMn… et la suite",
+            "fichier coupé ghp_AbCdEfGhIjKlMn…\u{200B} et la suite",
+            "fichier coupé ghp_AbCdEfGhIjKlMn . . . et la suite",
+            "fichier coupé ghp_AbCdEfGhIjKlMn ... et la suite",
+            "fichier coupé ghp_AbCdEfGhIjKlMn.. et la suite",
+            "fichier coupé ghp_AbCdEfGhIjKlMn\u{FF0E}\u{FF0E}\u{FF0E} et la suite",
         ] {
             let s = sans(brut, &["AbCdEf", "ghp", "4242"]);
-            assert!(s.starts_with("secret coupé"), "{s} ({brut})");
+            assert!(s.starts_with("fichier coupé"), "{s} ({brut})");
         }
-        // Un point seul reste une ponctuation ; des points de suspension deviennent « … ».
+        // Un point seul reste une ponctuation ; des points de suspension deviennent « … », et le mot qu'ils suivent
+        // aussi : il a pu être coupé (re-contrôle LB-fuite-4).
         assert_eq!(sortie("Le pare-feu est coupé ."), "Le pare-feu est coupé .");
-        assert_eq!(sortie("Le pare-feu est coupé..."), "Le pare-feu est coupé…");
+        assert_eq!(sortie("Le pare-feu est coupé..."), "Le pare-feu est …");
     }
 
     /// Attaque FUITE-5 : la lignée sous toutes ses formes, le PID et le numéro de série collés, un chemin relatif
@@ -851,6 +967,106 @@ mod tests {
         ] {
             let s = sans(brut, &["lan", "eth", "fd", "ab", "51", "100", "23", "53"]);
             assert_eq!(s, "voisin … vu", "{brut}");
+        }
+    }
+
+    /// Re-contrôle LB-fuite-1 et LB-FERMETURE-2 : après un mot qui annonce un secret, rien ne sort, même fait de mots
+    /// du vocabulaire, quelle que soit la forme de l'annonce (pluriel, casse, tirets, sans séparateur, séparateur loin
+    /// ou collé, après un point) ; l'extrait de commande du veilleur est retenu en entier. Valeurs inventées, toutes
+    /// des mots du vocabulaire.
+    #[test]
+    fn lb_fuite_1_rien_ne_sort_apres_une_annonce() {
+        for mot in [
+            "maison", "secret", "famille", "admin", "root", "rouge", "bureau", "orange",
+        ] {
+            assert!(
+                vocabulaire::connu(mot),
+                "{mot} doit être du vocabulaire pour que l'essai vaille"
+            );
+        }
+        let valeurs = [
+            "maison",
+            "famille",
+            "admin",
+            "root",
+            "rouge",
+            "bureau",
+            "orange",
+            "fichier",
+            "important",
+        ];
+        for brut in [
+            "Le mot de passe du réseau Wi-Fi est faible : maison rouge.",
+            "Mots de passe trouvés en clair : maison famille",
+            "Le mot de passe du compte admin du routeur de la maison : rouge famille",
+            "password is rouge",
+            "passwd: rouge",
+            "mot de passe \" maison \"",
+            "Clé du réseau : maison rouge. Jeton : famille. Code : bureau. Secret : orange.",
+            "phrase de passe : maison. rouge bureau famille",
+            "Le routeur garde le mot de passe par défaut du routeur : admin rouge",
+            "jeton: rouge maison fichier important",
+            "clé : rouge maison fichier",
+            "code PIN : rouge maison",
+            "mot de passe:rouge maison fichier",
+            "le mot de passe est rouge maison",
+            "MOT-DE-PASSE rouge maison",
+            "Mot_De_Passe=rouge maison",
+            "le motdepasse rouge maison",
+            "PassWord rouge maison",
+            "motdepasseadmin rouge maison",
+            "PASSWORD123 rouge maison",
+            "TOKEN rouge maison",
+            "sans mot de passe : rouge maison",
+            "sans mot de passe=rouge maison",
+            "« sh » (PID 4242) programme inconnu (mysql --password rouge --user root x)",
+            "« sh » (PID 4242) programme inconnu (sshpass -p rouge ssh admin@bureau)",
+            "« sh » (PID 4242) programme inconnu (ssh root maison)",
+        ] {
+            let s = sans(brut, &valeurs);
+            assert!(!s.contains("rouge") && !s.contains("maison"), "{s} ({brut})");
+        }
+    }
+
+    /// Re-contrôle LB-fuite-6 et LB-FERMETURE-5 : les vrais textes de Vanguard gardent leurs mots (négation d'un mot
+    /// de passe, précision entre parenthèses, trait d'union typographique) ; aucune parenthèse ne sort.
+    #[test]
+    fn lb_fuite_6_les_vrais_textes_gardent_leurs_mots() {
+        assert_eq!(
+            sortie("« Salon » est chiffré mais sans mot de passe (WEP) : n'importe qui peut s'y connecter."),
+            "\" … \" est chiffré mais sans mot de passe … : n'importe qui peut s'y connecter."
+        );
+        assert_eq!(
+            sortie("“Salon” is encrypted but has no password (WEP): anyone can join it."),
+            "… is encrypted but has no password … anyone can join it."
+        );
+        assert_eq!(
+            sortie("lignée du processus incertaine (numéro repris, parent ou heure illisible) pendant une session"),
+            "lignée du processus incertaine numéro repris, parent ou heure illisible pendant une session"
+        );
+        assert_eq!(sortie("réseau wi\u{2011}fi et wi\u{2010}fi"), "réseau wi-fi et wi-fi");
+        // Une précision avec un mot inconnu est retenue en entier.
+        assert_eq!(
+            sortie("lignée incertaine (numéro 4242 repris) pendant une session"),
+            "lignée incertaine … pendant une session"
+        );
+    }
+
+    /// Re-contrôle LB-fuite-4 : un mot coupé par la borne de lecture ou raccourci par « … » ne sort pas, même si son
+    /// début est un mot du vocabulaire.
+    #[test]
+    fn lb_fuite_4_un_mot_coupe_ne_sort_jamais() {
+        // La borne tombe juste après un mot du vocabulaire (« rootkit », « maison ») qui n'est que le début du vrai
+        // mot : ce début ne sort pas.
+        for (debut, suite) in [("rootkit", "-dupont"), ("maison", "neuve")] {
+            let tete = "z".repeat(BRUT_MAX.saturating_sub(debut.len() + 1));
+            let brut = format!("{tete} {debut}{suite}");
+            assert_eq!(borne(&brut), format!("{tete} {debut}"));
+            let s = sortie(&brut);
+            assert!(!s.contains(debut), "{s}");
+        }
+        for brut in ["admin… fin", "maison... fin", "maison.. fin", "famille…. fin"] {
+            assert_eq!(sortie(brut), "… fin", "{brut}");
         }
     }
 
