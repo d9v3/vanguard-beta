@@ -1,0 +1,530 @@
+//! La porte entière. Le transport face à un client hostile (`servir` : trame géante, flot sans fin, débit, délais,
+//! sortie fermée) ; puis les vrais outils sur un dossier planté de valeurs inventées : rien d'écrit pendant une
+//! session, rien d'exclu dans les réponses, la teinte en tête de chacune.
+
+use super::*;
+use serde_json::{Map, json};
+use std::io::Cursor;
+
+use crate::modele::evenement::{Evenement, Genre, Source};
+use crate::risk::Niveau;
+
+const INIT: &str = r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"essai","version":"1"}}}"#;
+const PING: &str = r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#;
+
+/// Des outils qui ne servent rien : seul le transport est jugé.
+struct Aucun;
+
+impl Outils for Aucun {
+    fn liste(&self) -> Value {
+        json!([])
+    }
+
+    fn nom_ferme(&self, _nom: &str) -> Option<&'static str> {
+        None
+    }
+
+    fn appeler(&mut self, _nom: &'static str, _arguments: Option<&RawValue>) -> Result<Map<String, Value>, Code> {
+        Err(Code::Arguments)
+    }
+}
+
+use serde_json::value::RawValue;
+
+fn courtes() -> Bornes {
+    Bornes {
+        message_max: 64 * 1024,
+        delai_message: Duration::from_millis(300),
+        inactivite: Duration::from_millis(400),
+        duree_max: Duration::from_secs(30),
+        demandes_max: 1000,
+    }
+}
+
+/// Sert `entree` jusqu'au bout ; rend le bilan et chaque ligne écrite, relue en JSON.
+fn session<R: Read + Send + 'static>(entree: R, bornes: Bornes) -> (BilanSession, Vec<Value>) {
+    let mut sortie = Vec::new();
+    let bilan = servir(entree, &mut sortie, &mut Aucun, bornes);
+    let lignes = String::from_utf8(sortie)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    (bilan, lignes)
+}
+
+fn code_d_erreur(v: &Value) -> &str {
+    v.pointer("/error/data/code").and_then(Value::as_str).unwrap_or("")
+}
+
+#[test]
+fn une_trame_geante_est_refusee_et_ferme_la_session() {
+    let geante = format!("{INIT}\n{{\"x\":\"{}\"}}\n{PING}\n", "a".repeat(70_000));
+    let (bilan, lignes) = session(Cursor::new(geante.into_bytes()), courtes());
+    assert_eq!(bilan.fin, Fin::Hostile);
+    assert!(bilan.hostile);
+    assert_eq!(
+        lignes.len(),
+        2,
+        "le ping d'après la trame géante n'a pas de réponse : {lignes:?}"
+    );
+    assert_eq!(lignes.get(1).map(code_d_erreur), Some("trop-grande"));
+    assert_eq!(lignes.get(1).and_then(|l| l.get("id")), Some(&Value::Null));
+}
+
+#[test]
+fn un_flot_sans_fin_de_ligne_est_coupe_vite() {
+    let depart = Instant::now();
+    let (bilan, lignes) = session(std::io::repeat(b'a'), courtes());
+    assert_eq!(bilan.fin, Fin::Hostile);
+    assert_eq!(lignes.first().map(code_d_erreur), Some("trop-grande"));
+    assert!(depart.elapsed() < Duration::from_secs(5), "{:?}", depart.elapsed());
+}
+
+#[test]
+fn trop_de_demandes_par_seconde_ferme_la_session() {
+    let rafale = format!("{INIT}\n{}", format!("{PING}\n").repeat(40));
+    let (bilan, lignes) = session(Cursor::new(rafale.into_bytes()), courtes());
+    assert_eq!(bilan.fin, Fin::Hostile);
+    assert_eq!(lignes.last().map(code_d_erreur), Some("rythme"));
+    assert!(lignes.len() < 41, "la rafale entière a été servie");
+}
+
+#[test]
+fn le_nombre_de_demandes_est_borne() {
+    let bornes = Bornes {
+        demandes_max: 5,
+        ..courtes()
+    };
+    let suite = format!("{INIT}\n{}", format!("{PING}\n").repeat(10));
+    let (bilan, lignes) = session(Cursor::new(suite.into_bytes()), bornes);
+    assert_eq!(bilan.fin, Fin::Demandes);
+    assert_eq!(lignes.last().map(code_d_erreur), Some("trop-de-demandes"));
+    assert!(!bilan.hostile);
+}
+
+#[test]
+fn un_message_commence_doit_finir_a_temps() {
+    let (lecture, mut ecriture) = std::io::pipe().unwrap();
+    ecriture.write_all(b"{\"jsonrpc\":").unwrap();
+    let depart = Instant::now();
+    let (bilan, lignes) = session(lecture, courtes());
+    assert_eq!(bilan.fin, Fin::Delai);
+    assert_eq!(lignes, Vec::<Value>::new());
+    assert!(depart.elapsed() < Duration::from_secs(5));
+    drop(ecriture);
+}
+
+#[test]
+fn le_silence_finit_la_session() {
+    let (lecture, ecriture) = std::io::pipe().unwrap();
+    let (bilan, _) = session(lecture, courtes());
+    assert_eq!(bilan.fin, Fin::Inactivite);
+    drop(ecriture);
+}
+
+#[test]
+fn la_duree_d_une_session_est_bornee() {
+    let (lecture, ecriture) = std::io::pipe().unwrap();
+    let bornes = Bornes {
+        inactivite: Duration::from_secs(60),
+        duree_max: Duration::from_millis(300),
+        ..courtes()
+    };
+    let depart = Instant::now();
+    let (bilan, _) = session(lecture, bornes);
+    assert_eq!(bilan.fin, Fin::Duree);
+    assert!(depart.elapsed() < Duration::from_secs(5));
+    drop(ecriture);
+}
+
+struct Fermee;
+
+impl Write for Fermee {
+    fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+        Err(std::io::ErrorKind::BrokenPipe.into())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Err(std::io::ErrorKind::BrokenPipe.into())
+    }
+}
+
+#[test]
+fn une_sortie_fermee_finit_la_session() {
+    let bilan = servir(
+        Cursor::new(format!("{INIT}\n{PING}\n").into_bytes()),
+        &mut Fermee,
+        &mut Aucun,
+        courtes(),
+    );
+    assert_eq!(bilan.fin, Fin::SortieFermee);
+}
+
+#[test]
+fn la_fin_du_flot_et_la_ligne_coupee() {
+    let (bilan, lignes) = session(Cursor::new(format!("{INIT}\n").into_bytes()), courtes());
+    assert_eq!(bilan.fin, Fin::FlotFini);
+    assert_eq!(lignes.len(), 1);
+    let (bilan, lignes) = session(Cursor::new(INIT.as_bytes().to_vec()), courtes());
+    assert_eq!(bilan.fin, Fin::Coupee);
+    assert_eq!(lignes, Vec::<Value>::new(), "une ligne sans fin n'est pas servie");
+}
+
+// --- Les vrais outils sur un dossier planté ---------------------------------------------------------------------
+
+/// Ce qui ne doit jamais sortir de la porte : chemins, compte, ligne de commande, pid, adresse, objet, geste.
+const EXCLUS: &[&str] = &[
+    "/home/",
+    "alice",
+    "Alice",
+    "Hunter2Invente",
+    "--password",
+    "987654",
+    "876543",
+    "203.0.113.77",
+    "facture-piegee",
+    "projets-secrets",
+    "rm -rf",
+    "regle-de-blocage-xyz",
+    "Salon-Invente",
+    "accord-invente",
+];
+
+fn preuve() -> crate::protection::preuve::Preuve {
+    use crate::protection::preuve::{Fichier, Preuve, Processus};
+    Preuve {
+        date: "2026-11-16 10:00:00".into(),
+        processus: Some(Processus {
+            pid: 987_654,
+            parent: Some(876_543),
+            programme: Some("/home/alice/projets-secrets/minerai-xmr".into()),
+            ligne: Some("/home/alice/projets-secrets/minerai-xmr --password=Hunter2Invente".into()),
+            compte: Some("alice".into()),
+        }),
+        fichier: Some(Fichier {
+            chemin: "/home/alice/projets-secrets/minerai-xmr".into(),
+            sha256: Some("ab".repeat(32)),
+            taille: Some(4096),
+        }),
+        connexions: vec!["203.0.113.77:4444".into()],
+        impossible: vec!["/home/alice/projets-secrets/illisible".into()],
+    }
+}
+
+fn resultat(outil: &str) -> Vec<u8> {
+    let r = json!({
+        "outil": outil,
+        "dossier": "/home/alice/projets-secrets",
+        "schema": 1,
+        "debut": "2026-11-16T10:00:00Z",
+        "duree_ms": 1200,
+        "couverture": { "verifies": 12, "non_verifies": ["/home/alice/projets-secrets/illisible"] },
+        "constats": [{
+            "regle": "ESP-1",
+            "objet": "/home/alice/Documents/facture-piegee.pdf.exe",
+            "categorie": "Espions",
+            "etat": "probleme",
+            "niveau": "Eleve",
+            "raison": "signature-inconnue",
+            "message": "Programme espion trouvé",
+            "corrigeable": true,
+            "date": "2026-11-16T09:59:00Z",
+            "geste": {
+                "sorte": "retirer",
+                "empreinte": "cd".repeat(32),
+                "nom": "facture-piegee",
+                "commande": "rm -rf /home/alice/Documents",
+                "accord": "accord-invente",
+            },
+        }],
+    });
+    // Relu en `Resultat` d'abord : un nom de champ faux ferait un essai qui ne plante rien.
+    let r: crate::modele::resultat::Resultat = serde_json::from_value(r).unwrap();
+    serde_json::to_vec(&r).unwrap()
+}
+
+/// Un dossier de Vanguard comme après quelques jours : journal, examens scellés, un examen sans sceau (qu'une lecture
+/// ordinaire adopterait en écrivant), l'historique des bilans.
+fn planter(nom: &str) -> crate::essais::Jetable {
+    use crate::modele::journal::noter_dans;
+    let dossier = crate::essais::Jetable::nouveau(nom);
+    std::fs::create_dir_all(&*dossier).unwrap();
+    let maintenant = chrono::Utc::now();
+    let evs = [
+        Evenement::alerte(
+            Source::Surveillance,
+            "botnet",
+            "Connexion vers un serveur de commande",
+            "Le programme minerai-xmr parle à un serveur connu.",
+        )
+        .gravite(Niveau::Eleve)
+        .cle(Some("alerte-botnet|203.0.113.77")),
+        Evenement::nouveau(Source::Blocage, Genre::Preuve { releve: preuve() })
+            .gravite(Niveau::Eleve)
+            .cause(Some("e-1-987654")),
+        Evenement::nouveau(
+            Source::Blocage,
+            Genre::Action {
+                quoi: "Arrêté /home/alice/projets-secrets/minerai-xmr (pid 987654)".into(),
+                reussi: true,
+                automatique: true,
+                blocage: Some("regle-de-blocage-xyz".into()),
+                annulable: Some("/home/alice/.local/share/vanguard/quarantaine/minerai-xmr".into()),
+                commandes: vec!["rm -rf /home/alice/projets-secrets".into()],
+            },
+        )
+        .gravite(Niveau::Moyen),
+        Evenement::nouveau(
+            Source::Utilisateur,
+            Genre::Annulation {
+                objet: "/home/alice/projets-secrets/minerai-xmr".into(),
+                supprime: false,
+            },
+        ),
+        Evenement::nouveau(
+            Source::Outil,
+            Genre::Examen {
+                outil: "PRO-ESP-001".into(),
+                verdict: "probleme".into(),
+                problemes: 1,
+                non_verifies: 1,
+            },
+        )
+        .gravite(Niveau::Eleve),
+    ];
+    for ev in evs {
+        noter_dans(&dossier, ev, maintenant).unwrap();
+    }
+    for outil in ["PRO-ESP-001", "PRO-PER-001"] {
+        let nom = crate::modele::resultat::fichier(outil).unwrap();
+        crate::sceau::ecrire_dans(&dossier, nom, &resultat(outil)).unwrap();
+    }
+    // Sans sceau : écrit hors de Vanguard.
+    let nom = crate::modele::resultat::fichier("PRO-COU-001").unwrap();
+    std::fs::write(dossier.join(nom), resultat("PRO-COU-001")).unwrap();
+    let historique = json!([
+        { "date": "2026-11-10 12:00", "machine": 80, "reseau": 70, "nom_reseau": "Salon-Invente",
+          "problemes": ["Pare-feu : /home/alice/projets-secrets"] },
+        { "date": "2026-11-15 12:00", "machine": 85, "reseau": 75, "nom_reseau": "Salon-Invente", "problemes": [] },
+    ]);
+    std::fs::write(dossier.join("historique.json"), historique.to_string()).unwrap();
+    dossier
+}
+
+/// Chaque outil, avec des arguments qui touchent chaque branche, puis une page suivante des événements.
+fn appels() -> Vec<(&'static str, Value)> {
+    let depuis = (chrono::Utc::now() - chrono::Duration::days(10))
+        .format("%Y-%m-%d")
+        .to_string();
+    vec![
+        ("etat", json!({})),
+        ("evenements", json!({})),
+        ("evenements", json!({ "limite": 2 })),
+        ("evenements", json!({ "genre": "preuve" })),
+        ("evenements", json!({ "genre": "action" })),
+        ("evenements", json!({ "genre": "annulation" })),
+        ("evenements", json!({ "gravite_min": "moyen", "depuis": depuis })),
+        ("constats", json!({})),
+        ("constats", json!({ "outil": "PRO-ESP-001", "niveau_min": "moyen" })),
+        ("bilans", json!({ "limite": 30 })),
+        ("identite", json!({})),
+        ("inexistant", json!({})),
+        ("evenements", json!({ "limite": 0 })),
+    ]
+}
+
+/// Une session entière sur les vrais outils ; rend chaque réponse relue.
+fn session_reelle(dossier: &std::path::Path) -> Vec<Value> {
+    let mut porte = outils::Porte::new(dossier.to_path_buf(), vues::Liens::fixes());
+    let mut lignes = vec![
+        INIT.to_string(),
+        r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.into(),
+    ];
+    lignes.push(r#"{"jsonrpc":"2.0","id":"l","method":"tools/list"}"#.into());
+    for (i, (nom, args)) in appels().into_iter().enumerate() {
+        let demande = json!({ "jsonrpc": "2.0", "id": i, "method": "tools/call",
+                              "params": { "name": nom, "arguments": args } });
+        lignes.push(demande.to_string());
+    }
+    let mut sortie = Vec::new();
+    let entree = Cursor::new(lignes.iter().fold(String::new(), |t, l| t + l + "\n").into_bytes());
+    // Sous le rythme : quinze lignes, moins de vingt.
+    let bilan = servir(entree, &mut sortie, &mut porte, courtes());
+    assert_eq!(bilan.fin, Fin::FlotFini, "{bilan:?}");
+    let mut reponses: Vec<Value> = String::from_utf8(sortie)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    // La page suivante des événements, par le lien de la première page de deux.
+    let suivant = reponses
+        .iter()
+        .find_map(|r| r.pointer("/result/structuredContent/suivant").and_then(Value::as_str))
+        .map(str::to_string);
+    if let Some(avant) = suivant {
+        let mut porte = outils::Porte::new(dossier.to_path_buf(), vues::Liens::fixes());
+        let demande = json!({ "jsonrpc": "2.0", "id": 99, "method": "tools/call",
+                              "params": { "name": "evenements", "arguments": { "limite": 2, "avant": avant } } });
+        let mut sortie = Vec::new();
+        let entree = Cursor::new(format!("{INIT}\n{demande}\n").into_bytes());
+        servir(entree, &mut sortie, &mut porte, courtes());
+        reponses.extend(
+            String::from_utf8(sortie)
+                .unwrap()
+                .lines()
+                .map(|l| serde_json::from_str::<Value>(l).unwrap()),
+        );
+    }
+    reponses
+}
+
+#[test]
+fn une_session_entiere_n_ecrit_rien() {
+    use crate::autotest::lecture_seule::{ecarts, empreinte_dossier};
+    let dossier = planter("porte-mcp-rien-ecrit");
+    let avant = empreinte_dossier(&dossier);
+    let reponses = session_reelle(&dossier);
+    assert!(reponses.len() > 10, "{reponses:?}");
+    let apres = empreinte_dossier(&dossier);
+    assert_eq!(
+        ecarts(&avant, &apres),
+        Vec::new(),
+        "la porte a écrit dans le dossier de Vanguard"
+    );
+}
+
+#[test]
+fn un_premier_usage_n_est_pas_adopte_en_ecrivant() {
+    use crate::autotest::lecture_seule::{ecarts, empreinte_dossier};
+    // Un dossier sans aucun sceau : la lecture ordinaire adopterait l'examen et écrirait les sceaux.
+    let dossier = crate::essais::Jetable::nouveau("porte-mcp-premier-usage");
+    std::fs::create_dir_all(&*dossier).unwrap();
+    let nom = crate::modele::resultat::fichier("PRO-ESP-001").unwrap();
+    std::fs::create_dir_all(dossier.join(nom).parent().unwrap()).unwrap();
+    std::fs::write(dossier.join(nom), resultat("PRO-ESP-001")).unwrap();
+    let avant = empreinte_dossier(&dossier);
+    let reponses = session_reelle(&dossier);
+    assert_eq!(ecarts(&avant, &empreinte_dossier(&dossier)), Vec::new());
+    // Adopté sans être cru : jamais « sain ».
+    let etat = reponses
+        .iter()
+        .find_map(|r| r.pointer("/result/structuredContent/examens"))
+        .unwrap();
+    assert!(!etat.to_string().contains("\"sain\""), "{etat}");
+}
+
+#[test]
+fn rien_d_exclu_ne_sort_de_la_porte() {
+    let dossier = planter("porte-mcp-exclus");
+    let reponses = session_reelle(&dossier);
+    let tout: String = reponses.iter().map(Value::to_string).collect();
+    for exclu in EXCLUS {
+        assert!(!tout.contains(exclu), "« {exclu} » est sorti de la porte");
+    }
+    // Ce qui doit sortir sort : sinon l'essai ne prouverait rien.
+    // Le nom court du programme d'une preuve, dans son propre champ : « minerai-xmr » seul ne suffit pas, le texte de
+    // l'alerte le porte aussi.
+    for attendu in [
+        "\"programme\":\"minerai-xmr\"",
+        "botnet",
+        "alerte-botnet",
+        "\"preuve\"",
+        "\"action\"",
+        "\"annulation\"",
+    ] {
+        assert!(tout.contains(attendu), "« {attendu} » manque : {tout}");
+    }
+    let examens = reponses
+        .iter()
+        .find_map(|r| r.pointer("/result/structuredContent/examens"))
+        .unwrap()
+        .to_string();
+    assert!(examens.contains("PRO-COU-001"), "{examens}");
+}
+
+#[test]
+fn la_teinte_est_en_tete_de_chaque_reponse() {
+    let dossier = planter("porte-mcp-teinte");
+    for r in session_reelle(&dossier) {
+        if let Some(e) = r.get("error") {
+            assert_eq!(
+                e.pointer("/data/teinte").and_then(Value::as_str),
+                Some(rpc::TEINTE),
+                "{r}"
+            );
+            continue;
+        }
+        let resultat = r.get("result").unwrap();
+        assert_eq!(
+            resultat.pointer("/_meta/vanguard~1teinte").and_then(Value::as_str),
+            Some(rpc::TEINTE),
+            "{r}"
+        );
+        if let Some(contenu) = resultat.get("structuredContent") {
+            assert_eq!(contenu.get("teinte").and_then(Value::as_str), Some(rpc::TEINTE), "{r}");
+            let texte = resultat.pointer("/content/0/text").and_then(Value::as_str).unwrap();
+            assert!(texte.starts_with(r#"{"teinte":"non-fiable""#), "{texte}");
+        }
+    }
+}
+
+#[test]
+fn la_liste_des_outils_est_fermee() {
+    let porte = outils::Porte::new(crate::essais::temporaire(), vues::Liens::fixes());
+    let noms: Vec<String> = porte
+        .liste()
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|o| o.get("name").and_then(Value::as_str).map(str::to_string))
+        .collect();
+    assert_eq!(noms, ["etat", "evenements", "constats", "bilans", "identite"]);
+    for nom in &noms {
+        assert_eq!(porte.nom_ferme(nom), Some(nom.as_str()));
+    }
+    for autre in [
+        "Etat",
+        "etat ",
+        "etat\0",
+        "corriger",
+        "examiner",
+        "",
+        "../etat",
+        "evenements/ecrire",
+    ] {
+        assert_eq!(porte.nom_ferme(autre), None, "{autre:?}");
+    }
+    for outil in porte.liste().as_array().unwrap() {
+        assert_eq!(
+            outil.pointer("/annotations/readOnlyHint"),
+            Some(&json!(true)),
+            "{outil}"
+        );
+        assert_eq!(
+            outil.pointer("/inputSchema/additionalProperties"),
+            Some(&json!(false)),
+            "{outil}"
+        );
+    }
+}
+
+proptest::proptest! {
+    /// Un texte venu de l'ordinateur, quel qu'il soit, sort borné, sans caractère de contrôle ni chevron.
+    #[test]
+    fn un_texte_externe_sort_toujours_borne(brut in "\\PC{0,600}|[\\x00-\\x7f]{0,600}") {
+        let v = vues::texte_externe(&brut);
+        let t = v.get("texte_externe").and_then(Value::as_str).unwrap_or("");
+        proptest::prop_assert!(t.len() <= 1200, "{}", t.len());
+        proptest::prop_assert!(!t.chars().any(|c| c.is_control() && c != '\n' && c != '\t'), "{t:?}");
+        proptest::prop_assert_eq!(v.get("nettoye"), Some(&json!(true)));
+    }
+
+    /// Un nom fermé n'accepte que `[a-z0-9-]`.
+    #[test]
+    fn un_nom_ferme_n_accepte_que_sa_forme(brut in "\\PC{0,50}") {
+        if let Some(n) = vues::ferme(&brut, 40) {
+            proptest::prop_assert!(n.bytes().all(|o| o.is_ascii_lowercase() || o.is_ascii_digit() || o == b'-'));
+        }
+    }
+}

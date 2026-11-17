@@ -199,6 +199,10 @@ pub(crate) enum Commande {
     /// Le garde des lancements lui-même, lancé par systemd en root (voir machine/linux/garde/servir.rs).
     #[command(name = "garde-servir", hide = true)]
     GardeServir,
+    /// La porte de lecture pour les assistants d'IA (serveur MCP sur stdin et stdout), lancée par un assistant :
+    /// prise plus haut, dans `main` ; ici seulement pour que la ligne soit reconnue.
+    #[command(name = "mcp", hide = true)]
+    Mcp,
     /// Entretien du mois : une fois par mois, en silence, la note, les mises à jour en attente, la place à libérer et
     /// les problèmes nouveaux, en une notification ; rien n'est changé. Sans argument : ce qu'il dirait maintenant.
     #[command(visible_alias = "maintenance")]

@@ -199,6 +199,22 @@ pub(crate) fn ecrire_vues<T>(ecrire: impl FnOnce() -> T) -> T {
     ecrire_exempte(EXEMPTES_VUES, ecrire)
 }
 
+/// Ce que la note de fin de session de la porte de lecture des assistants (`porte_mcp`) écrit : la tête du journal et
+/// ses sceaux. Les lignes ajoutées au segment du mois et le verrou du journal ne passent pas par `refuse_fichier`.
+const EXEMPTES_PORTE: &[&str] = &[crate::modele::journal::TETE, "sceaux.json", crate::sceau::TEMOIN];
+
+/// Écrit la note de fin de session de la porte sous l'interrupteur, posé pour toute la session : ce fil, le temps de
+/// `ecrire`, passe l'interrupteur pour le journal seulement (`EXEMPTES_PORTE`, `note_de_la_porte_permise`).
+pub(crate) fn ecrire_note_de_la_porte<T>(ecrire: impl FnOnce() -> T) -> T {
+    ecrire_exempte(EXEMPTES_PORTE, ecrire)
+}
+
+/// Ce fil écrit-il la note de la porte (`ecrire_note_de_la_porte`) ? Le journal laisse alors passer un événement qui
+/// n'est pas un essai.
+pub(crate) fn note_de_la_porte_permise() -> bool {
+    EXEMPTE.get().is_some_and(|liste| std::ptr::eq(liste, EXEMPTES_PORTE))
+}
+
 fn ecrire_exempte<T>(liste: &'static [&'static str], ecrire: impl FnOnce() -> T) -> T {
     struct Fin(Option<&'static [&'static str]>);
     impl Drop for Fin {

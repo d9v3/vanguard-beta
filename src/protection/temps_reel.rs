@@ -198,6 +198,16 @@ fn dossier_et_nom(chemin: &Path) -> (&Path, &str) {
 }
 
 fn lire_de(chemin: &Path, maintenant: i64) -> Etat {
+    lire_de_par(chemin, maintenant, crate::sceau::lire_dans)
+}
+
+/// L'état de la protection en temps réel, lu sans rien écrire (ni sceau rattrapé ni adopté) : pour la porte de
+/// lecture des assistants d'IA (`porte_mcp`).
+pub(crate) fn etat_sans_ecrire() -> Etat {
+    lire_de_par(&fichier(), maintenant(), crate::sceau::lire_sans_ecrire)
+}
+
+fn lire_de_par(chemin: &Path, maintenant: i64, lire_scelle: fn(&Path, &str) -> crate::sceau::Lecture) -> Etat {
     use crate::sceau::{Doute, Juge};
     // Lu par les sceaux : un simple fichier (ni lien, ni tube, ni périphérique, qu'un Vanguard en administrateur
     // lirait sinon sans fin, ou avec ses droits), tel que Vanguard l'a écrit. Écrit hors de Vanguard, il ne coupe
@@ -206,7 +216,7 @@ fn lire_de(chemin: &Path, maintenant: i64) -> Etat {
     // Accepté tel quel après des sceaux refaits (`sceau::juge`), il ne coupe rien non plus : rien ne prouve qui l'a
     // écrit.
     let (dossier, nom) = dossier_et_nom(chemin);
-    let lu = crate::sceau::lire_dans(dossier, nom);
+    let lu = lire_scelle(dossier, nom);
     let octets = match crate::sceau::juger_lecture(lu, || crate::sceau::repris_dans(dossier, nom)) {
         Juge::Absent | Juge::Douteux(Doute::Inconnu | Doute::HorsVanguard, None) => return Etat::EnMarche,
         Juge::Cru(o) => o,

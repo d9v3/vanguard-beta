@@ -29,7 +29,7 @@ clé USB ou de la mise à jour) relèvent d'une autre page : [SECURITY.md](SECUR
 | Un intrus sur le réseau local ou le Wi-Fi | Inventaire des appareils et des nouveaux venus, faux point d'accès, DNS et certificats détournés ; mode Wi-Fi public en déplacement. |
 | Un proche qui surveille la personne | Logiciels espions, prise de contrôle à distance (faux technicien). |
 | Une arnaque | Liens examinés sans les ouvrir, fichiers téléchargés vérifiés, fuites de comptes. |
-| Un agent d'IA qui agit trop | Serveurs d'IA ouverts au réseau, agents qui agissent sans demander, serveurs MCP mal protégés. |
+| Un agent d'IA qui agit trop | Serveurs d'IA ouverts au réseau, agents qui agissent sans demander, serveurs MCP mal protégés. La porte que Vanguard ouvre lui-même aux assistants est en lecture seule (voir [La porte de lecture pour les assistants d'IA](#la-porte-de-lecture-pour-les-assistants-dia)). |
 
 Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace par menace](README.md#fonctions-de-sécurité-menace-par-menace).
 
@@ -729,6 +729,55 @@ gardes :
   a pas de relais : ces bornes-là sont celles de `vanguard` seul, et fermer la fenêtre arrête aussi un changement en
   cours (objet de travail) ; la valeur d'avant étant notée avant tout changement, il se remet quand même.
 
+## La porte de lecture pour les assistants d'IA
+
+`vanguard mcp` est une porte en lecture seule pour un assistant d'IA que la personne branche elle-même (un client
+MCP) : il peut lire ce que Vanguard a déjà écrit, sans pouvoir rien changer. **Linux seulement** : la commande existe
+sous Windows, mais elle n'a pas encore été essayée sur un vrai Windows, et rien n'y est promis.
+
+- **Ce qu'elle donne.** Cinq outils, une liste fermée : `etat` (journal vérifié ou non, dernier examen de chaque
+  outil, alertes des 30 derniers jours par gravité, protection et interrupteurs), `evenements` (le journal, page par
+  page), `constats` (les derniers résultats des examens), `bilans` (score et nombre de problèmes de chaque bilan) et
+  `identite` (version et empreinte SHA-256 du programme qui tourne). Aucun ne lance d'examen, ne va sur le réseau
+  (le processus entier est mis hors ligne) ni n'ouvre un fichier de la personne. Un nom d'outil n'est reconnu que
+  tel quel : ni majuscules, ni blancs, ni chemin (`la_liste_des_outils_est_fermee`).
+- **Ce qu'elle ne donne jamais.** Ni lignes de commande, ni chemins (d'un programme, seul le nom court sort), ni
+  numéros de processus, ni comptes, ni adresses des connexions, ni nom de l'ordinateur ou du réseau, ni paramètres,
+  ni secrets, ni le contenu d'un fichier, ni les commandes d'une correction. Un essai plante ces valeurs (inventées)
+  dans le journal, les examens et l'historique, puis vérifie qu'aucune ne sort, par aucun outil
+  (`rien_d_exclu_ne_sort_de_la_porte`).
+- **Elle n'écrit rien, sauf sa note.** Elle lit les notes scellées sans les adopter ni les réparer ; un essai compare
+  les empreintes de tout le dossier avant et après une session (`une_session_entiere_n_ecrit_rien`). La seule écriture
+  est une note de fin de session au journal : sa durée, le nombre d'appels par outil, les refus et la raison de la fin,
+  jamais les arguments ni les réponses. La personne peut donc voir que son assistant lit Vanguard, et à quel rythme.
+- **Elle n'écoute rien.** Ni port, ni socket : seul le programme qui l'a lancée lui parle, par l'entrée et la sortie
+  standard. Elle ne demande aucun droit et ne donne rien que le compte ne puisse déjà lire. Elle refuse de tourner
+  en root (code 2, rien sur la sortie, rien au journal : `la_porte_refuse_root`) et refuse un terminal en entrée
+  (`la_porte_refuse_un_terminal`) : elle est faite pour un programme, pas pour une personne au clavier.
+- **Le client est tenu pour hostile.** Un message fait 64 Kio au plus, borné pendant la lecture même, et doit finir
+  en 10 secondes ; une session s'arrête après 15 minutes de silence, 8 heures ou 10 000 demandes ; plus de 20 lignes
+  par seconde, un message qui n'est pas du JSON valide, un lot ou des méthodes inconnues répétées ferment la session.
+  Un tel signe est noté en plus par une alerte moyenne : un assistant honnête n'en envoie jamais, donc il est piégé
+  ou ce n'est pas lui (`une_session_n_ecrit_que_sa_note_et_le_client_hostile_est_note`). Une réponse fait 256 Kio
+  au plus ; une page trop longue est raccourcie et le dit.
+- **Tout ce qu'elle rend est non fiable.** Un titre d'alerte, un message de constat ou un nom de programme peut
+  citer un attaquant (un fichier nommé pour donner des ordres à l'assistant, par exemple). Chaque réponse, erreurs
+  comprises, est marquée `"teinte": "non-fiable"`, en tête de son texte (`la_teinte_est_en_tete_de_chaque_reponse`),
+  et le texte venu de l'ordinateur est nettoyé, borné et rangé à part. C'est à l'assistant de le traiter comme une
+  donnée, jamais comme une consigne.
+- **Elle ne peut pas prouver qu'elle est le vrai Vanguard.** Un faux programme posé au même chemin répondrait la même
+  chose, `identite` comprise ; et un programme du compte peut écrire dans les fichiers de Vanguard (les sceaux sont une
+  barrière, pas un coffre : voir « Les programmes de votre compte ne visent pas Vanguard lui-même »). La preuve se fait
+  avant le lancement, par le client : lancer un chemin absolu épinglé, jamais une recherche dans PATH ; vérifier que le
+  fichier et ses dossiers ne sont pas inscriptibles par d'autres ; comparer son empreinte SHA-256 à celle de la version
+  publiée (`SHA256SUMS.txt`, ou la liste signée en Ed25519 des mises à jour) ; lancer les octets vérifiés (sous Linux,
+  le descripteur ouvert pour le calcul) ; puis vérifier qu'`identite` redonne la même empreinte. Aucune poignée de main
+  signée : une clé dans le programme ou sur l'ordinateur se lirait par le même compte, et aurait l'air d'une preuve sans
+  l'être.
+- **Un client reconnu n'est jamais exempté.** La porte répond pareil à tout client et ne change rien à la
+  surveillance : pas de liste blanche, pas d'alerte adoucie. L'audit des agents d'IA juge la configuration de
+  l'assistant qui la lance avec les mêmes règles que les autres.
+
 ## Baisses par choix
 
 Vanguard ne baisse jamais une protection de lui-même. La personne, elle, peut en baisser une : c'est son ordinateur,
@@ -944,6 +993,10 @@ envoie lui-même :
   Ce qui partirait un jour, après l'avis montré au lancement ou votre « oui » (avant la 1.0, il faudra répondre
   « oui »), jamais après « Non », est décrit plus bas (« Le relevé d'amélioration et son relais »).
 - Un rapport de faille préparé par Vanguard n'est jamais envoyé par lui : la personne le relit et l'envoie elle-même.
+- **La porte de lecture pour les assistants d'IA** (`vanguard mcp`) n'envoie rien : elle ne parle qu'au programme qui
+  l'a lancée. Mais un assistant branché peut transmettre ce qu'il lit à un modèle en ligne : c'est pourquoi elle
+  rend le moins possible (ni chemins, ni lignes de commande, ni comptes, ni adresses, ni secrets), et c'est à la
+  personne de choisir l'assistant qu'elle y branche.
 
 Cette liste est fermée : Vanguard refuse de joindre en HTTPS un hôte qui n'est pas dans le premier tableau (même au
 bout d'une redirection), et un test du dépôt échoue si le code nomme une destination absente de ces tableaux, ou si

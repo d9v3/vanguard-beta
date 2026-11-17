@@ -86,7 +86,7 @@ pub(crate) const FICHIERS: [&str; 28] = [
 ];
 
 /// Le fichier scellé d'un outil, s'il en a un.
-fn fichier(outil: &str) -> Option<&'static str> {
+pub(crate) fn fichier(outil: &str) -> Option<&'static str> {
     FICHIERS
         .iter()
         .find(|f| f.strip_prefix(EXAMENS).and_then(|r| r.strip_prefix('/')) == Some(&format!("{outil}.json")))

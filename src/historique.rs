@@ -266,6 +266,13 @@ pub fn charger() -> Vec<Bilan> {
     lire().unwrap_or_default()
 }
 
+/// L'historique tel qu'il est écrit, lu sans rien écrire (ni copie mise de côté) : pour la porte de lecture des
+/// assistants d'IA (`porte_mcp`). `None` s'il existe mais ne se lit pas : la porte le dit « illisible », sans en
+/// montrer la raison, qui peut porter un chemin.
+pub(crate) fn lire_sans_ecrire_dans(dossier: &std::path::Path) -> Option<Vec<Bilan>> {
+    lire_de(&dossier.join("historique.json")).ok()
+}
+
 /// L'historique tel qu'il est écrit ; `Err` s'il existe mais ne se lit pas.
 fn lire() -> Result<Vec<Bilan>, String> {
     lire_de(&fichier())

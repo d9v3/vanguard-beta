@@ -4,6 +4,7 @@
 
 pub(crate) mod adresses;
 pub(crate) mod cache;
+pub(crate) mod canal_stdio;
 pub(crate) mod chemins;
 mod fichiers;
 pub(crate) mod fil;

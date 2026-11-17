@@ -944,6 +944,12 @@ mod tests {
             "mis de côté (renommé) quand il ne se lit pas ou a été changé : jamais lu pour juger",
         ),
         (
+            "porte_mcp/outils.rs",
+            "evenements.tete",
+            2,
+            "taille et date seulement, pour voir si le journal a changé depuis la dernière lecture : jamais lu",
+        ),
+        (
             "parametres.rs",
             "parametres.json",
             3,

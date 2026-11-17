@@ -1,0 +1,4 @@
+{"jsonrpc":"2.0","id":1,"id":2,"method":"ping"}
+{"jsonrpc":"2.0","method":"x/y"}
+{"jsonrpc":"2.0","method":"x/z"}
+{"jsonrpc":"2.0","method":"x/w"}

@@ -7993,7 +7993,7 @@ mod menus_dans_un_terminal {
     const ECHAP: &str = "\x1b";
 
     /// Un pseudo-terminal de `colonnes` × `rangees` : (côté programme de test, côté Vanguard).
-    fn ouvrir(colonnes: u16, rangees: u16) -> (OwnedFd, OwnedFd) {
+    pub(super) fn ouvrir(colonnes: u16, rangees: u16) -> (OwnedFd, OwnedFd) {
         let (mut maitre, mut esclave) = (-1, -1);
         let taille = libc::winsize {
             ws_row: rangees,
@@ -9762,4 +9762,191 @@ fn la_console_ne_lit_que_sous_les_endroits_permis() {
         }
     }
     let _ = std::fs::remove_dir_all(&maison);
+}
+
+/// La porte de lecture des assistants d'IA (`vanguard mcp`) lancée pour de vrai : refus en root et sur un terminal,
+/// une session qui n'écrit que sa note de fin, un client hostile noté. Linux seulement : la porte n'est pas encore
+/// essayée sous Windows.
+#[cfg(target_os = "linux")]
+mod porte_mcp {
+    use super::{Sortie, dossier_vanguard, ecarts, en_root, essais, instantane, maison_jetable, vanguard_dans};
+    use std::path::Path;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    const INIT: &str = r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"essai","version":"1"}}}"#;
+
+    fn programme() -> &'static Path {
+        Path::new(env!("CARGO_BIN_EXE_vanguard"))
+    }
+
+    fn appel(id: u32, outil: &str, arguments: &serde_json::Value) -> String {
+        serde_json::json!({ "jsonrpc": "2.0", "id": id, "method": "tools/call",
+                            "params": { "name": outil, "arguments": arguments } })
+        .to_string()
+    }
+
+    fn reponses(s: &Sortie) -> Vec<serde_json::Value> {
+        s.texte
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap_or_else(|_| panic!("ligne qui n'est pas du JSON : {l}")))
+            .collect()
+    }
+
+    /// En root, la porte lirait ce que le compte ne voit pas : refusée avant d'avoir rien lu ni écrit. Hors de root,
+    /// essayée dans un espace de noms où le compte devient root (`unshare -r`).
+    #[test]
+    fn la_porte_refuse_root() {
+        let maison = maison_jetable();
+        let s = if en_root() {
+            vanguard_dans(programme(), &maison, "fr", &["mcp"], INIT, 30)
+        } else {
+            let essai = Command::new("unshare").args(["-r", "true"]).output();
+            if !essai.is_ok_and(|s| s.status.success()) {
+                return essais::saute("unshare -r refusé ici (espaces de noms du compte coupés)");
+            }
+            let mut commande = Command::new("unshare");
+            commande
+                .arg("-r")
+                .arg(programme())
+                .arg("mcp")
+                .env("VANGUARD_LANG", "fr")
+                .env("HOME", &*maison)
+                .env("XDG_DATA_HOME", maison.join("donnees"))
+                .env("XDG_CONFIG_HOME", maison.join("config"))
+                .env("XDG_CACHE_HOME", maison.join("cache"))
+                .env("XDG_RUNTIME_DIR", maison.join("run"))
+                .env("VANGUARD_ESSAI_MAISON_DU_COMPTE", &*maison)
+                .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            super::attendre_au_plus(commande, &["mcp"], &format!("{INIT}\n"), super::Delai::Horloge(30))
+        };
+        assert_eq!(s.code, Some(2), "{}", s.erreurs);
+        assert_eq!(s.texte, "", "rien ne sort sur la sortie standard");
+        assert!(s.erreurs.contains("refusé en root"), "{}", s.erreurs);
+        assert!(
+            !dossier_vanguard(&maison).join("evenements.tete").exists(),
+            "rien n'est noté"
+        );
+    }
+
+    /// Sur un terminal, ce n'est pas un assistant qui parle : refusée, sans attendre une ligne.
+    #[test]
+    fn la_porte_refuse_un_terminal() {
+        if en_root() {
+            return essais::saute("en root (unshare) : le refus de root passe d'abord");
+        }
+        let maison = maison_jetable();
+        let (maitre, esclave) = super::menus_dans_un_terminal::ouvrir(80, 24);
+        let mut enfant = Command::new(programme())
+            .arg("mcp")
+            .env("VANGUARD_LANG", "fr")
+            .env("HOME", &*maison)
+            .env("XDG_DATA_HOME", maison.join("donnees"))
+            .env("XDG_CONFIG_HOME", maison.join("config"))
+            .env("XDG_CACHE_HOME", maison.join("cache"))
+            .env("XDG_RUNTIME_DIR", maison.join("run"))
+            .env("VANGUARD_ESSAI_MAISON_DU_COMPTE", &*maison)
+            .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
+            .stdin(Stdio::from(esclave))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("vanguard ne démarre pas");
+        let debut = Instant::now();
+        let statut = loop {
+            if let Some(s) = enfant.try_wait().unwrap() {
+                break s;
+            }
+            if debut.elapsed() > Duration::from_secs(20) {
+                let _ = enfant.kill();
+                panic!("vanguard mcp attend sur un terminal au lieu de refuser");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let sortie = enfant.wait_with_output().unwrap();
+        drop(maitre);
+        let erreurs = String::from_utf8_lossy(&sortie.stderr);
+        assert_eq!(statut.code(), Some(2), "{erreurs}");
+        assert!(
+            sortie.stdout.is_empty(),
+            "{:?}",
+            String::from_utf8_lossy(&sortie.stdout)
+        );
+        assert!(erreurs.contains("pas un terminal"), "{erreurs}");
+    }
+
+    /// Une vraie session sur un dossier rempli par un vrai bilan : chaque réponse teintée, et rien d'autre d'écrit que
+    /// la note de fin au journal. Puis un client hostile (trame géante), noté, que la session suivante voit.
+    #[test]
+    fn une_session_n_ecrit_que_sa_note_et_le_client_hostile_est_note() {
+        if en_root() {
+            return essais::saute("en root (unshare) : la porte refuse de démarrer");
+        }
+        let maison = maison_jetable();
+        let audit = vanguard_dans(programme(), &maison, "fr", &["audit", "--json"], "", 180);
+        assert!(audit.code.is_some(), "{}", audit.erreurs);
+        let dossier = dossier_vanguard(&maison);
+        let avant = instantane(&dossier);
+        let vide = serde_json::json!({});
+        let demandes = [
+            INIT.to_string(),
+            r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.to_string(),
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#.to_string(),
+            appel(2, "etat", &vide),
+            appel(3, "evenements", &vide),
+            appel(4, "constats", &vide),
+            appel(5, "bilans", &vide),
+            appel(6, "identite", &vide),
+        ];
+        let s = vanguard_dans(programme(), &maison, "fr", &["mcp"], &(demandes.join("\n") + "\n"), 60);
+        assert_eq!(s.code, Some(0), "{}", s.erreurs);
+        let r = reponses(&s);
+        assert_eq!(r.len(), 7, "{}", s.texte);
+        for (i, rep) in r.iter().enumerate().skip(2) {
+            assert!(rep.get("error").is_none(), "{rep}");
+            let texte = rep
+                .pointer("/result/content/0/text")
+                .and_then(|t| t.as_str())
+                .unwrap_or("");
+            assert!(texte.starts_with(r#"{"teinte":"non-fiable""#), "réponse {i} : {texte}");
+        }
+        // Seuls le journal et ses sceaux bougent : la note de fin de session.
+        let note = |e: &String| {
+            ["« evenements", "« sceaux.json »", "« sceaux.verrou »", "«  »"]
+                .iter()
+                .any(|n| e.contains(n))
+        };
+        let autres: Vec<String> = ecarts(&avant, &instantane(&dossier))
+            .into_iter()
+            .filter(|e| !note(e))
+            .collect();
+        assert_eq!(autres, Vec::<String>::new(), "la porte a écrit hors de sa note");
+
+        // Un client hostile : une trame de 100 Kio.
+        let geante = format!("{INIT}\n{{\"x\":\"{}\"}}\n", "a".repeat(100 * 1024));
+        let s = vanguard_dans(programme(), &maison, "fr", &["mcp"], &geante, 60);
+        assert_eq!(s.code, Some(0), "{}", s.erreurs);
+        let r = reponses(&s);
+        assert_eq!(
+            r.last().and_then(|e| e.pointer("/error/data/code")),
+            Some(&"trop-grande".into())
+        );
+
+        // La session suivante voit les deux sessions notées, et l'alerte du client hostile.
+        let lire = [
+            INIT.to_string(),
+            appel(1, "evenements", &serde_json::json!({ "genre": "session-porte" })),
+            appel(2, "evenements", &serde_json::json!({ "genre": "alerte" })),
+        ];
+        let s = vanguard_dans(programme(), &maison, "fr", &["mcp"], &(lire.join("\n") + "\n"), 60);
+        let r = reponses(&s);
+        let sessions = r.get(1).map(ToString::to_string).unwrap_or_default();
+        assert!(sessions.contains(r#""fin":"fin-du-flot""#), "{sessions}");
+        assert!(sessions.contains(r#""fin":"hostile""#), "{sessions}");
+        let alertes = r.get(2).map(ToString::to_string).unwrap_or_default();
+        assert!(alertes.contains(r#""famille":"porte-mcp""#), "{alertes}");
+    }
 }

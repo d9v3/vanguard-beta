@@ -394,7 +394,16 @@ enum TeteLue {
     Douteuse(String),
 }
 
-fn tete_lue(dossier: &Path) -> TeteLue {
+/// Comment lire la tête scellée : `Juger` par `sceau::lire_dans` (qui peut rattraper et réécrire les sceaux), ou
+/// `SansEcrire` par `sceau::lire_sans_ecrire` (la porte de lecture des assistants, qui n'écrit jamais rien). Les deux
+/// appels restent écrits en clair : l'inventaire vérifie que chaque nom scellé passe par une fonction de `sceau`.
+#[derive(Clone, Copy)]
+enum Facon {
+    Juger,
+    SansEcrire,
+}
+
+fn tete_lue(dossier: &Path, facon: Facon) -> TeteLue {
     use crate::sceau::Lecture as L;
     let lire = |o: &[u8], adoptee| {
         serde_json::from_slice(o).map_or_else(
@@ -402,7 +411,11 @@ fn tete_lue(dossier: &Path) -> TeteLue {
             |t| TeteLue::Lue(Box::new(t), adoptee),
         )
     };
-    match crate::sceau::lire_dans(dossier, TETE) {
+    let lu = match facon {
+        Facon::Juger => crate::sceau::lire_dans(dossier, TETE),
+        Facon::SansEcrire => crate::sceau::lire_sans_ecrire(dossier, TETE),
+    };
+    match lu {
         L::Absent => TeteLue::Absente,
         L::Intact(o) => lire(&o, false),
         L::Adopte(o) => lire(&o, true),
@@ -482,8 +495,12 @@ fn ecrire_dans(
             "dossier d'un autre compte / another account's folder",
         ));
     }
-    // Pendant un autotest, seul son propre événement d'essai s'écrit (`autotest::lecture_seule`).
-    if crate::autotest::lecture_seule::active() && (evs.is_empty() || evs.iter().any(|e| !e.essai)) {
+    // Pendant un autotest, seul son propre événement d'essai s'écrit (`autotest::lecture_seule`) ; pendant la porte
+    // de lecture des assistants, seule sa note de fin de session (`noter_pour_la_porte`).
+    if crate::autotest::lecture_seule::active()
+        && !crate::autotest::lecture_seule::note_de_la_porte_permise()
+        && (evs.is_empty() || evs.iter().any(|e| !e.essai))
+    {
         return Err(crate::autotest::lecture_seule::refus());
     }
     // Les sceaux d'avant jugés avant que le verrou et le dossier du journal n'existent (`sceau::forme_d_avant`) ; sans
@@ -495,7 +512,7 @@ fn ecrire_dans(
         crate::socle::Verrou::prendre_compatible(dossier, VERROU, false, attente).map_err(|e| e.erreur(VERROU))?;
     let rep = dossier.join(DOSSIER);
     std::fs::create_dir_all(&rep)?;
-    let lue = tete_lue(dossier);
+    let lue = tete_lue(dossier, Facon::Juger);
     // Les mois après celui de l'horloge (ou de la tête, si une horloge sautée en avant y a écrit) ne sont pas
     // suivis : un fichier posé au nom de 2099 ferait écrire là, et partir les vrais mois de la lecture bornée.
     let plafond = match &lue {
@@ -971,7 +988,26 @@ fn lire_tenu(dossier: &Path, attente: std::time::Duration) -> Lu {
     } else {
         Err(crate::socle::SansVerrou::Impossible(SCEAUX_D_AVANT.into()))
     };
-    let mut lu = lire_borne(dossier, BORNES);
+    let lu = lire_borne(dossier, BORNES);
+    let occupe = matches!(tenu, Err(crate::socle::SansVerrou::Occupe));
+    ajuster_au_verrou(dossier, attente, occupe, lu)
+}
+
+/// Le journal relu sans rien écrire, pour la porte de lecture des assistants d'IA (`porte_mcp`) : ni fichier de
+/// verrou créé (il n'est pris, partagé, que s'il existe déjà), ni sceaux rattrapés ou adoptés, ni comptes pris.
+pub(crate) fn lire_sans_ecrire_dans(dossier: &Path) -> Lu {
+    let tenu = if dossier.join(crate::socle::nom_systeme(VERROU)).is_file() {
+        crate::socle::Verrou::prendre_compatible(dossier, VERROU, true, crate::socle::ATTENTE_LECTURE)
+    } else {
+        Err(crate::socle::SansVerrou::Impossible(String::new()))
+    };
+    let lu = lire_borne_par(dossier, BORNES, Facon::SansEcrire);
+    let occupe = matches!(tenu, Err(crate::socle::SansVerrou::Occupe));
+    ajuster_au_verrou(dossier, crate::socle::ATTENTE_LECTURE, occupe, lu)
+}
+
+/// Ce que les verrous changent au jugement (`lire_tenu`).
+fn ajuster_au_verrou(dossier: &Path, attente: std::time::Duration, occupe: bool, mut lu: Lu) -> Lu {
     // La tête lue sans le verrou des sceaux, gardé ailleurs : ce qui devait s'écrire n'a pas pu l'être, la fin lue
     // n'est donc pas forcément la dernière. Pas « intact » ; le bilan le dit avec les sceaux (`sceau::constat`).
     if crate::sceau::verrou_tenu_dans(dossier) && !matches!(lu.lecture, Lecture::Falsifie(_)) {
@@ -982,7 +1018,6 @@ fn lire_tenu(dossier: &Path, attente: std::time::Duration) -> Lu {
     // Dit au bilan par les sceaux (`sceau::constat`), comme un verrou tenu.
     // Tenu ailleurs, une falsification lue peut n'être qu'une écriture en cours : elle cède aussi au verrou remplacé.
     let remplaces = crate::sceau::verrous_remplaces(dossier);
-    let occupe = matches!(tenu, Err(crate::socle::SansVerrou::Occupe));
     if !remplaces.is_empty() && (occupe || !matches!(lu.lecture, Lecture::Falsifie(_))) {
         let noms = remplaces.join(", ");
         lu.lecture = Lecture::Incomplet(format!(
@@ -1002,8 +1037,12 @@ fn lire_tenu(dossier: &Path, attente: std::time::Duration) -> Lu {
 }
 
 fn lire_borne(dossier: &Path, bornes: Bornes) -> Lu {
+    lire_borne_par(dossier, bornes, Facon::Juger)
+}
+
+fn lire_borne_par(dossier: &Path, bornes: Bornes, facon: Facon) -> Lu {
     let presents = segments(&dossier.join(DOSSIER));
-    let lue = tete_lue(dossier);
+    let lue = tete_lue(dossier, facon);
     let tete_crue = matches!(lue, TeteLue::Lue(_, false));
     let (mut lecture, tete) = match lue {
         TeteLue::Absente if presents.is_empty() => {
@@ -1242,6 +1281,14 @@ pub(crate) fn fichiers(dossier: &Path) -> Vec<String> {
             .filter_map(|p| Some(p.file_name()?.to_string_lossy().into_owned())),
     );
     f
+}
+
+/// La note de fin de session de la porte de lecture des assistants (`porte_mcp`) : la seule écriture de la porte,
+/// une fois la session finie, sous l'interrupteur de lecture seule qui ne laisse passer que le journal et ses sceaux.
+pub(crate) fn noter_pour_la_porte(dossier: &Path, evs: Vec<Evenement>) -> std::io::Result<()> {
+    crate::autotest::lecture_seule::ecrire_note_de_la_porte(|| {
+        ecrire_dans(dossier, evs, chrono::Utc::now(), attente_noter())
+    })
 }
 
 /// Le dossier qui porte le journal de cet ordinateur : le dossier de données.
@@ -1543,7 +1590,7 @@ pub(crate) fn noter_version() {
     if !crate::socle::ecriture_sure(&dossier) {
         return;
     }
-    if let TeteLue::Lue(t, _) = tete_lue(&dossier)
+    if let TeteLue::Lue(t, _) = tete_lue(&dossier, Facon::Juger)
         && t.version == env!("CARGO_PKG_VERSION")
     {
         return;
@@ -2100,7 +2147,7 @@ mod tests {
             ARRET_APRES_AJOUT.with(|a| a.set(false));
             r.unwrap();
             assert!(
-                matches!(tete_lue(&d), TeteLue::Lue(t, _) if t.annonce.is_some()),
+                matches!(tete_lue(&d, Facon::Juger), TeteLue::Lue(t, _) if t.annonce.is_some()),
                 "l'annonce n'est pas dans la tête"
             );
             let lu = lire_dans(&d);

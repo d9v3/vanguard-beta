@@ -28,7 +28,7 @@ program, the USB key or the update) belong on another page: [SECURITY.md](SECURI
 | An intruder on the local network or the Wi-Fi | Inventory of the devices and of newcomers, fake access point, hijacked DNS and certificates; public Wi-Fi mode when traveling. |
 | Someone close who spies on the person | Spyware, remote control (fake technician). |
 | A scam | Links examined without opening them, downloaded files checked, leaked accounts. |
-| An AI agent that does too much | AI servers open to the network, agents that act without asking, poorly protected MCP servers. |
+| An AI agent that does too much | AI servers open to the network, agents that act without asking, poorly protected MCP servers. The door Vanguard itself opens to assistants is read-only (see [The read-only door for AI assistants](#the-read-only-door-for-ai-assistants)). |
 
 Each threat in detail, menu by menu: [Security functions, threat by threat](README.en.md#security-functions-threat-by-threat).
 
@@ -686,6 +686,54 @@ safeguards:
   those of `vanguard` alone, and closing the window also stops a change in progress (job object); since the previous
   value is noted before any change, it can still be put back.
 
+## The read-only door for AI assistants
+
+`vanguard mcp` is a read-only door for an AI assistant that the person connects themselves (an MCP client): it can
+read what Vanguard has already written, and cannot change anything. **Linux only**: the command exists on Windows,
+but it has not yet been tried on a real Windows, and nothing is promised there.
+
+- **What it gives.** Five tools, a closed list: `etat` (journal verified or not, last scan of each tool, alerts of
+  the last 30 days by severity, protection and switches), `evenements` (the journal, page by page), `constats` (the
+  latest scan results), `bilans` (score and number of problems of each check-up) and `identite` (version and SHA-256
+  fingerprint of the running program). None of them starts a scan, goes on the network (the whole process is put
+  offline) or opens a file of the person's. A tool name is recognized only exactly: no capitals, no blanks, no path
+  (`la_liste_des_outils_est_fermee`).
+- **What it never gives.** No command lines, no paths (of a program, only the short name comes out), no process
+  numbers, no accounts, no connection addresses, no computer or network name, no settings, no secrets, no file
+  contents, no fix commands. A test plants these values (made up) in the journal, the scans and the history, then
+  checks that none of them comes out, through any tool (`rien_d_exclu_ne_sort_de_la_porte`).
+- **It writes nothing, except its note.** It reads the sealed notes without adopting or repairing them; a test
+  compares the fingerprints of the whole folder before and after a session (`une_session_entiere_n_ecrit_rien`). The
+  only write is an end-of-session note in the journal: its duration, the number of calls per tool, the refusals and
+  the reason it ended, never the arguments or the answers. The person can thus see that their assistant reads
+  Vanguard, and how often.
+- **It listens to nothing.** No port, no socket: only the program that started it talks to it, through standard
+  input and output. It asks for no rights and gives nothing the account cannot already read. It refuses to run as
+  root (code 2, nothing on the output, nothing in the journal: `la_porte_refuse_root`) and refuses a terminal as
+  input (`la_porte_refuse_un_terminal`): it is made for a program, not for a person at the keyboard.
+- **The client is treated as hostile.** A message is 64 KiB at most, bounded while it is being read, and must finish
+  within 10 seconds; a session stops after 15 minutes of silence, 8 hours or 10,000 requests; more than 20 lines a
+  second, a message that is not valid JSON, a batch or repeated unknown methods close the session. Such a sign is also
+  noted by a medium alert: an honest assistant never sends one, so it is compromised or it is not the assistant
+  (`une_session_n_ecrit_que_sa_note_et_le_client_hostile_est_note`). An answer is 256 KiB at most; a page that is
+  too long is shortened and says so.
+- **Everything it returns is untrusted.** An alert title, a finding message or a program name can quote an attacker
+  (a file named to give orders to the assistant, for example). Every answer, errors included, is marked
+  `"teinte": "non-fiable"`, at the head of its text (`la_teinte_est_en_tete_de_chaque_reponse`), and the text that
+  comes from the computer is cleaned, bounded and kept apart. It is up to the assistant to treat it as data, never
+  as an instruction.
+- **It cannot prove it is the real Vanguard.** A fake program placed at the same path would answer the same, `identite`
+  included; and a program of the account can write to Vanguard's files (the seals are a barrier, not a safe: see "The
+  programs of your account do not target Vanguard itself"). The proof is made before starting, by the client: start a
+  pinned absolute path, never a PATH search; check that the file and its folders cannot be written by others; compare
+  its SHA-256 fingerprint to that of the published version (`SHA256SUMS.txt`, or the Ed25519-signed list of updates);
+  start the verified bytes (on Linux, the descriptor opened for the computation); then check that `identite` gives back
+  the same fingerprint. No signed handshake: a key in the program or on the computer could be read by the same account,
+  and would look like a proof without being one.
+- **A recognized client is never exempted.** The door answers every client the same and changes nothing in the
+  monitoring: no allow list, no softened alert. The AI agents audit judges the configuration of the assistant that
+  starts it with the same rules as the others.
+
 ## Lowered by choice
 
 Vanguard never lowers a protection on its own. The person can lower one: it is their computer, and a setting that is
@@ -892,6 +940,10 @@ itself:
   would leave one day, after the notice shown at launch or your "yes" (before 1.0, a "yes" will be required), never
   after "No", is described below ("The improvement record and its relay").
 - A vulnerability report prepared by Vanguard is never sent by it: the person reads it and sends it themselves.
+- **The read-only door for AI assistants** (`vanguard mcp`) sends nothing: it only talks to the program that
+  started it. But a connected assistant can pass on what it reads to an online model: this is why it returns as
+  little as possible (no paths, command lines, accounts, addresses or secrets), and it is up to the person to
+  choose the assistant they connect to it.
 
 This list is closed: Vanguard refuses to reach over HTTPS a host that is not in the first table (even at the end of
 a redirect), and a test in the repository fails if the code names a destination missing from these tables, or if a

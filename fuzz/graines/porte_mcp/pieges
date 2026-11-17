@@ -1,0 +1,3 @@
+{"jsonrpc":"2.0","id":"a","method":"tools/call","params":{"name":"etat","arguments":{},"cursor":1}}
+{"jsonrpc":"2.0","id":null,"method":"ping"}
+ÿþ

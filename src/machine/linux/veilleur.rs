@@ -1959,8 +1959,37 @@ fn encore_geles(pids: Vec<u32>) -> Vec<u32> {
 /// être cru. Forgé, il faisait passer un faux veilleur pour vivant, compteurs à zéro, et ses `pids_geles` recevaient
 /// SIGCONT : il n'est alors ni cru ni rejoué.
 fn lire_etat_dans(dossier: &std::path::Path) -> (Option<Etat>, Option<String>) {
+    lire_etat_par(dossier, true)
+}
+
+/// L'état du veilleur en un nom fermé (`actif`, `arrete`, `coupe`, `non-verifie`), lu sans rien écrire (ni sceau
+/// rattrapé ni adopté) : pour la porte de lecture des assistants d'IA (`porte_mcp`).
+pub(crate) fn etat_court_sans_ecrire() -> &'static str {
+    let activee = crate::machine::linux::natif::unite_activee(UNITE, true);
+    let (etat, doute) = lire_etat_par(&crate::socle::dossier_local(), false);
+    if doute.is_some() {
+        return "non-verifie";
+    }
+    let vivant = etat.is_some_and(|e| vivant_d_apres(&e, maintenant()));
+    match (activee, vivant) {
+        (Some(true), true) => "actif",
+        (Some(true), false) => "arrete",
+        (None, _) => "non-verifie",
+        (Some(false), _) => "coupe",
+    }
+}
+
+/// `juger` : par `sceau::lire_dans` (qui peut rattraper et réécrire les sceaux) ; sinon par `sceau::lire_sans_ecrire`.
+/// Les deux appels restent écrits en clair : l'inventaire vérifie que chaque nom scellé passe par une fonction de
+/// `sceau`.
+fn lire_etat_par(dossier: &std::path::Path, juger: bool) -> (Option<Etat>, Option<String>) {
     use crate::sceau::Lecture as L;
-    let octets = match crate::sceau::lire_dans(dossier, ETAT) {
+    let lu = if juger {
+        crate::sceau::lire_dans(dossier, ETAT)
+    } else {
+        crate::sceau::lire_sans_ecrire(dossier, ETAT)
+    };
+    let octets = match lu {
         L::Absent | L::Inconnu => return (None, None),
         L::Intact(o) => o,
         // Accepté tel quel à la mise à jour d'une version qui l'écrivait sans sceau : écrit par le veilleur.

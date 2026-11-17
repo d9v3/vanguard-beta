@@ -41,6 +41,8 @@ pub(crate) enum Source {
     Vanguard,
     /// Un outil de protection lancé seul (`modele::resultat`).
     Outil,
+    /// La porte de lecture des assistants d'IA (`vanguard mcp`, `porte_mcp`).
+    PorteMcp,
     /// Une source écrite par une version plus récente.
     #[serde(other)]
     Autre,
@@ -100,6 +102,16 @@ pub(crate) enum Genre {
         problemes: u32,
         non_verifies: u32,
     },
+    /// Une session de la porte de lecture des assistants d'IA (`porte_mcp`) : sa durée, ses appels par outil et ses
+    /// refus par code (des noms fermés, jamais ce que le client a envoyé), et pourquoi elle s'est finie.
+    SessionPorte {
+        duree_s: u64,
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        appels: std::collections::BTreeMap<String, u32>,
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        refus: std::collections::BTreeMap<String, u32>,
+        fin: String,
+    },
     /// Écrit par une version plus récente : gardé tel quel, jamais jugé.
     #[serde(other)]
     Inconnu,
@@ -118,6 +130,7 @@ impl Genre {
             Genre::Version { .. } => "version",
             Genre::Rupture { .. } => "rupture",
             Genre::Examen { .. } => "examen",
+            Genre::SessionPorte { .. } => "session-porte",
             Genre::Inconnu => "inconnu",
         }
     }
@@ -288,6 +301,9 @@ impl Evenement {
             } => format!(
                 "{outil} : {verdict} ({problemes} problème(s)/problem(s), {non_verifies} non vérifié(s)/not checked)"
             ),
+            Genre::SessionPorte { duree_s, fin, .. } => {
+                format!("porte de lecture des assistants/assistants' read-only door : {duree_s} s, fin/end {fin}")
+            }
             Genre::Inconnu => "?".to_string(),
         }
     }

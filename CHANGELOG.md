@@ -9,6 +9,15 @@ jour est permise ; elles se suivent dans le paragraphe de leur journée. Seule l
 téléchargement et garde son étiquette dans le dépôt. Le commit de chaque version porte son numéro à la fin de son
 titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pour la recompiler au besoin.
 
+## 0.97 (en préparation)
+
+- **Nouvelle porte de lecture pour les assistants d'IA (`vanguard mcp`), sous Linux seulement.** Un assistant que
+  vous branchez peut lire l'état de Vanguard, ses événements et ses constats, sans pouvoir rien changer. Elle passe
+  seulement par l'entrée et la sortie du programme, sans port ni réseau, refuse de tourner en administrateur, ne
+  montre ni chemins, ni lignes de commande, ni secrets, et marque tout ce qu'elle rend comme non fiable. Chaque
+  session est notée dans le journal ; un programme qui lui envoie des messages anormaux est coupé, et une alerte le
+  dit. Sous Windows, la commande existe mais n'est pas encore essayée sur un vrai Windows : elle n'y est pas promise.
+
 ## 15 novembre 2026 : version 0.96.0
 
 La 0.95 n'a pas été publiée : tout son travail est dans cette version.

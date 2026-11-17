@@ -83,6 +83,7 @@ mod parametres;
 mod passage;
 mod pe;
 mod plugins;
+mod porte_mcp;
 mod prediction;
 mod programmes_poses;
 mod progression;
@@ -351,6 +352,15 @@ async fn main() {
     #[cfg(target_os = "linux")]
     if std::env::args_os().skip(1).eq(["isolement-demarrage"]) {
         std::process::exit(machine::linux::isolement::demarrage());
+    }
+    // La porte de lecture pour les assistants d'IA : la lecture seule avant tout le reste (ni passage, ni sceaux
+    // réparés, ni dossier créé), puis les réglages seulement (la langue). Seule la note de fin de session s'écrit.
+    if std::env::args_os().skip(1).eq(["mcp"]) {
+        autotest::lecture_seule::poser();
+        parametres::au_lancement();
+        let code = porte_mcp::servir_stdio();
+        chiffrement::oublier_session();
+        std::process::exit(code);
     }
     // Le processus élevé ne fait que sa liste : rien d'autre ne doit tourner avec le jeton administrateur (journal,
     // passage, reconnaissance de la clé écrivent dans des dossiers que le compte contrôle).
@@ -652,7 +662,7 @@ async fn main() {
         },
         Some(Commande::Entretenir) => entretien::entretenir(),
         // Traité au tout début de main, avant tout le reste : jamais ici.
-        Some(Commande::AppliquerEleve { .. } | Commande::GardeServir) => machine::quitter(2),
+        Some(Commande::AppliquerEleve { .. } | Commande::GardeServir | Commande::Mcp) => machine::quitter(2),
         Some(Commande::Maj { json }) => {
             if json {
                 maj::json();
