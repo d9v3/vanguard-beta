@@ -360,7 +360,7 @@ pub(super) fn trier(cibles: Vec<PathBuf>) -> Vec<(PathBuf, Vue)> {
     for cible in cibles {
         let mut vue = Vue::de(pour(&cible));
         if en_lien(&cible) {
-            vue.laissee = Some(Laissee::CopieEnLien);
+            vue.laissee = Some(Laissee::CopieEnLien(None));
         } else if vue.etat == Montree::Illisible {
             vue.laissee = Some(Laissee::Illisible);
         }
@@ -470,8 +470,9 @@ pub(super) enum Laissee {
     /// Celle d'ici ne se lit pas (droits, dossier, tube ou fichier spécial, démesurée) : jamais écrasée, jamais
     /// comptée pareille.
     Illisible,
-    /// La copie est un lien : rien n'est posé ni à côté du lien ni à côté de ce qu'il désigne.
-    CopieEnLien,
+    /// La copie est un lien : rien n'est posé ni à côté du lien ni à côté de ce qu'il désigne. Avec la raison pour
+    /// laquelle la fenêtre de la clé n'est pas vérifiée, si c'est aussi le cas (R4-1) : les deux sont dits.
+    CopieEnLien(Option<&'static str>),
     /// La fenêtre de la clé n'est pas posée : illisible, un lien, ou pas celle que grave le programme (la raison).
     DeLaCle(&'static str),
 }
@@ -542,7 +543,7 @@ impl Vue {
                         .as_deref()
                         .is_some_and(|c| Avant::de(c, TAILLE_MAX) == Avant::Illisible)
             }
-            Some(Laissee::CopieEnLien) => en_lien(cible),
+            Some(Laissee::CopieEnLien(_)) => en_lien(cible),
             Some(Laissee::DeLaCle(_)) => !en_lien(cible),
         };
         if tient { Ok(()) } else { Err(changee_depuis_l_apercu()) }
@@ -551,8 +552,9 @@ impl Vue {
     /// La ligne de la fenêtre au résultat quand elle est laissée : jamais « à jour », la raison et ce qui n'est pas
     /// touché (code 1 : pas tout mis à jour). Une copie en lien : la pose du programme a remplacé le lien lui-même
     /// par un fichier, sous les deux systèmes (`mettre_en_place_sous` : un renommage sur le nom, jamais à travers le
-    /// lien), donc relancer suffit (R3-2, ronde 4). Une fenêtre seule d'une autre copie au même chemin attend aussi
-    /// ce tour suivant (`seules`).
+    /// lien), donc relancer suffit (R3-2, ronde 4), sauf si la fenêtre de la clé n'est pas vérifiée non plus : les
+    /// deux raisons sont dites, sans promettre le tour suivant (R4-1). Une fenêtre seule d'une autre copie au même
+    /// chemin attend aussi ce tour suivant (`seules`).
     pub(super) fn laissee_dite(&self) -> Option<String> {
         Some(match self.laissee? {
             Laissee::Illisible => tr!(
@@ -560,11 +562,16 @@ impl Vue {
                 "its window cannot be read (permissions, folder, pipe or special file, too large): it is not touched, the program is placed alone and the menu will open instead; remove or repair this file, then run the update again"
             )
             .to_string(),
-            Laissee::CopieEnLien => tr!(
+            Laissee::CopieEnLien(None) => tr!(
                 "la copie était un lien : sa fenêtre n'est posée ni à côté de lui ni à côté de ce qu'il désignait, le programme est posé seul, à la place du lien ; relancez la mise à jour pour poser sa fenêtre",
                 "the copy was a link: its window is placed neither next to it nor next to what it pointed to, the program is placed alone, in place of the link; run the update again to place its window"
             )
             .to_string(),
+            Laissee::CopieEnLien(Some(raison)) => crate::trf!(
+                "la copie était un lien et la fenêtre de la clé n'est pas vérifiée ({}) : aucune fenêtre n'est posée, ni à côté du lien ni à côté de ce qu'il désignait, celle d'ici n'est pas touchée ; le programme est posé seul, à la place du lien",
+                "the copy was a link and the key's window is not verified ({}): no window is placed, neither next to the link nor next to what it pointed to, the one here is not touched; the program is placed alone, in place of the link",
+                raison
+            ),
             Laissee::DeLaCle(raison) => crate::trf!(
                 "la fenêtre de la clé n'est pas posée, non vérifiée ({}) : celle d'ici n'est pas touchée, le programme est posé seul",
                 "the key's window is not placed, not verified ({}): the one here is not touched, the program is placed alone",
@@ -582,11 +589,16 @@ impl Vue {
                 "the program is already up to date; its window cannot be read (permissions, folder, pipe or special file, too large): it is not touched, the menu will open instead; remove or repair this file, then run the update again"
             )
             .to_string(),
-            Laissee::CopieEnLien => tr!(
+            Laissee::CopieEnLien(None) => tr!(
                 "le programme est déjà à jour ; la copie est un lien : sa fenêtre n'est posée ni à côté de lui ni à côté de ce qu'il désigne ; pour avoir sa fenêtre, posez la copie elle-même à la place du lien, puis relancez la mise à jour",
                 "the program is already up to date; the copy is a link: its window is placed neither next to it nor next to what it points to; to get its window, put the copy itself in place of the link, then run the update again"
             )
             .to_string(),
+            Laissee::CopieEnLien(Some(raison)) => crate::trf!(
+                "le programme est déjà à jour ; la copie est un lien et la fenêtre de la clé n'est pas vérifiée ({}) : aucune fenêtre n'est posée, ni à côté du lien ni à côté de ce qu'il désigne, celle d'ici n'est pas touchée",
+                "the program is already up to date; the copy is a link and the key's window is not verified ({}): no window is placed, neither next to the link nor next to what it points to, the one here is not touched",
+                raison
+            ),
             Laissee::DeLaCle(raison) => crate::trf!(
                 "le programme est déjà à jour ; la fenêtre de la clé n'est pas posée, non vérifiée ({}) : celle d'ici n'est pas touchée",
                 "the program is already up to date; the key's window is not placed, not verified ({}): the one here is not touched",
@@ -621,10 +633,16 @@ impl Vue {
                     "program alone, its window cannot be read: untouched, the menu will open"
                 );
             }
-            Some(Laissee::CopieEnLien) => {
+            Some(Laissee::CopieEnLien(None)) => {
                 return tr!(
                     "programme seul, la copie est un lien : sa fenêtre non touchée",
                     "program alone, the copy is a link: its window untouched"
+                );
+            }
+            Some(Laissee::CopieEnLien(Some(_))) => {
+                return tr!(
+                    "programme seul, copie en lien, fenêtre de la clé non vérifiée",
+                    "program alone, copy is a link, the key's window not verified"
                 );
             }
             Some(Laissee::DeLaCle(_)) => {
@@ -724,12 +742,12 @@ impl Vue {
         o.push(match self.laissee {
             None => 0,
             Some(Laissee::Illisible) => 1,
-            Some(Laissee::CopieEnLien) => 2,
+            Some(Laissee::CopieEnLien(_)) => 2,
             Some(Laissee::DeLaCle(_)) => 3,
         });
         for raison in [
             match self.laissee {
-                Some(Laissee::DeLaCle(r)) => Some(r),
+                Some(Laissee::DeLaCle(r) | Laissee::CopieEnLien(Some(r))) => Some(r),
                 _ => None,
             },
             self.dossier,
@@ -820,12 +838,13 @@ pub(super) fn de_la_source(source: &Path, octets: &[u8]) -> DeLaSource {
 /// laissée (`Laissee`) : le programme seul, celle d'ici jamais touchée, dit. Pas de fenêtre sur la clé : aucune vue,
 /// la copie se fait sans elle (comme avant la 0.97). La copie en lien se regarde avant la fenêtre de la clé (R3-1,
 /// ronde 4) : c'est la seule raison que `Vue::toujours_laissee` peut revérifier avec un lien, sinon le programme
-/// serait refusé à chaque essai (« la fenêtre a changé »).
+/// serait refusé à chaque essai (« la fenêtre a changé ») ; la raison de la clé y reste, pour être dite (R4-1).
 pub(super) fn de_la_cle(source: &Path, octets: &[u8], copie: &Path) -> (Option<Vec<u8>>, Vue) {
     let vue = || Vue::de(pour(copie));
     match de_la_source(source, octets) {
         DeLaSource::Absente => (None, Vue::de(None)),
-        _ if en_lien(copie) => (None, vue().laisser(Laissee::CopieEnLien)),
+        DeLaSource::Pas(raison) if en_lien(copie) => (None, vue().laisser(Laissee::CopieEnLien(Some(raison)))),
+        _ if en_lien(copie) => (None, vue().laisser(Laissee::CopieEnLien(None))),
         DeLaSource::Pas(raison) => (None, vue().laisser(Laissee::DeLaCle(raison))),
         DeLaSource::Juste(f) => {
             let vue = vue();
@@ -1399,7 +1418,7 @@ fn poser_avec(
             )));
         }
         avant_renommage(&provisoire);
-        mettre_en_place_sous(&provisoire, chemin, &ancien).map_err(ratee)?;
+        mettre_en_place_sous(&provisoire, chemin, &ancien, tr!("fenêtre", "window")).map_err(ratee)?;
         renommee = true;
         verifier_posee(f, chemin, octets)
     })();
@@ -2592,7 +2611,7 @@ mod tests {
         // À remplacer : la copie seule, montrée comme telle.
         std::fs::write(&vrai, b"ancien programme").unwrap();
         let vue = trier(vec![lien.clone()]).remove(0).1;
-        assert_eq!(vue.laissee(), Some(Laissee::CopieEnLien));
+        assert_eq!(vue.laissee(), Some(Laissee::CopieEnLien(None)));
         assert!(
             vue.dite_a_cote().contains("la copie est un lien"),
             "{}",
@@ -2607,7 +2626,8 @@ mod tests {
     /// R3-1 (re-contrôle de la ronde 3) : la fenêtre de la clé non vérifiée (ici, un dossier à son nom) et une copie
     /// en lien donnaient `DeLaCle`, que la pose ne peut jamais revérifier avec un lien : refusé à chaque essai, « la
     /// fenêtre a changé ». La copie en lien passe d'abord : le programme est posé seul, à la place du lien, rien à
-    /// côté du lien ni de ce qu'il désignait, et la ligne dit de relancer.
+    /// côté du lien ni de ce qu'il désignait. R4-1 : la ligne dit les deux raisons (lien et clé), en français et en
+    /// anglais, sans promettre qu'un nouveau tour posera la fenêtre (il ne le fait pas : la clé est toujours dite).
     #[cfg(unix)]
     #[test]
     fn une_copie_en_lien_pose_son_programme_seul_meme_si_la_cle_n_a_pas_de_fenetre_verifiee() {
@@ -2625,9 +2645,14 @@ mod tests {
         std::os::unix::fs::symlink(&vrai, &lien).unwrap();
         // L'aperçu, puis le geste, qui relit tout comme `remplacer` et `agir`.
         let (fenetre, vue) = de_la_cle(&source, &nouveau, &lien);
-        assert_eq!((fenetre, vue.laissee()), (None, Some(Laissee::CopieEnLien)));
+        assert_eq!(
+            (fenetre, vue.laissee()),
+            (None, Some(Laissee::CopieEnLien(Some("illisible"))))
+        );
         let (_, maintenant) = de_la_cle(&source, &nouveau, &lien);
         assert_eq!(maintenant.laissee(), vue.laissee());
+        // La raison de la clé se dit dans la langue de l'aperçu : le même aperçu, en anglais, pour le texte anglais.
+        let vue_en = crate::langue::en_anglais(|| de_la_cle(&source, &nouveau, &lien).1);
         installer_seul(
             &nouveau,
             &lien,
@@ -2650,10 +2675,25 @@ mod tests {
                 "rien à côté de {c:?}"
             );
         }
-        let dite = vue.laissee_dite().unwrap();
-        assert!(
-            dite.contains("à la place du lien ; relancez la mise à jour") && !dite.contains("posez la copie"),
-            "{dite}"
+        let dites = (
+            vue.laissee_dite().unwrap(),
+            crate::langue::en_anglais(|| vue_en.laissee_dite().unwrap()),
+        );
+        assert_eq!(
+            (dites.0.as_str(), dites.1.as_str()),
+            (
+                "la copie était un lien et la fenêtre de la clé n'est pas vérifiée (illisible) : aucune fenêtre n'est posée, ni à côté du lien ni à côté de ce qu'il désignait, celle d'ici n'est pas touchée ; le programme est posé seul, à la place du lien",
+                "the copy was a link and the key's window is not verified (unreadable): no window is placed, neither next to the link nor next to what it pointed to, the one here is not touched; the program is placed alone, in place of the link",
+            )
+        );
+        assert!(!dites.0.contains("relancez") && !dites.1.contains("run the update again"));
+        let a_cote = (vue.dite_a_cote(), crate::langue::en_anglais(|| vue.dite_a_cote()));
+        assert_eq!(
+            a_cote,
+            (
+                "programme seul, copie en lien, fenêtre de la clé non vérifiée",
+                "program alone, copy is a link, the key's window not verified"
+            )
         );
         // Au tour suivant, la copie n'est plus un lien : la fenêtre de la clé non vérifiée est dite.
         let (_, apres) = de_la_cle(&source, &nouveau, &lien);

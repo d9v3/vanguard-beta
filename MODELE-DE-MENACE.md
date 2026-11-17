@@ -465,8 +465,14 @@ gardes :
   une seule fois), puis garde chaque vérification d'avant : signature, taille et empreinte, copie écrite à côté, relue,
   comparée et essayée (sous Windows, pas encore d'essai : la fenêtre ne dit alors que « relu et comparé »), mise en
   place d'un coup (sinon l'ancienne reste ; sous Windows, une ancienne qui tourne encore est mise de côté,
-  `vanguard.exe.ancien`, effacée après l'accord suivant) ; il dit chaque programme remplacé ou pas (code 0 seulement si
-  tous l'ont été). La fenêtre de Vanguard posée à côté d'un programme remplacé le suit, montrée comme une ligne de plus
+  `vanguard.exe.ancien`, effacée ensuite, à la lecture de l'état ou après l'accord suivant, seulement si la copie est un
+  fichier à son nom et ce reste un fichier ordinaire (un lien ou un dossier à ce nom reste) ; après un double échec de
+  renommage, elle est gardée, avec son chemin dit : elle reste sous ce nom tant que rien n'est à sa place ; essais
+  `le_reste_du_programme_est_garde_sans_copie_a_sa_place`, `un_lien_au_nom_du_reste_n_est_pas_retire`,
+  `le_double_echec_dit_ou_reste_l_ancienne` (`src/mise_a_jour.rs`) et
+  `le_reste_d_une_mise_a_jour_s_efface_apres_l_accord` (`src/mise_a_jour/apercu.rs`)) ; il dit chaque programme remplacé
+  ou pas (code 0 seulement si tous l'ont été). La fenêtre de Vanguard posée à côté d'un programme remplacé le suit,
+  montrée comme une ligne de plus
   de l'aperçu, donc liée par l'accord : celle de GitHub téléchargée après l'accord seulement et vérifiée contre
   l'empreinte gravée dans le programme vérifié (une autre, ou aucune reçue : rien n'est remplacé) ; posée, elle est
   relue par la copie provisoire tenue ouverte sous Linux (le même fichier, les octets reçus), par son nom sous Windows
@@ -497,11 +503,13 @@ gardes :
   Une copie qui est un lien ne reçoit sa fenêtre ni à côté du lien ni à côté du fichier qu'il désigne, sous Linux comme
   sous Windows, et c'est dit sur sa ligne ; le lien est revérifié au moment de la pose (une copie devenue un lien depuis
   l'aperçu : rien n'est posé). Le programme posé remplace le lien lui-même par un fichier (un renommage sur son nom,
-  jamais à travers lui, sous les deux systèmes) : sa ligne dit de relancer la mise à jour, qui posera alors la fenêtre ;
-  une copie en lien déjà à jour (même version, rien de posé) dit de poser la copie elle-même à la place du lien. Depuis
-  la clé, la copie en lien se regarde avant la fenêtre de la clé : même avec une fenêtre de la clé non vérifiée, le
-  programme est posé seul, jamais refusé à chaque essai. Au même numéro, la fenêtre seule d'une copie en lien, illisible
-  ou dans un dossier refusé est laissée de côté, avec sa ligne dans l'aperçu (donc dans l'accord) et sa raison. Dans
+  jamais à travers lui, sous les deux systèmes) : sa ligne dit de relancer la mise à jour, qui posera alors la fenêtre
+  (depuis la clé, si celle de la clé est vérifiée) ; une copie en lien déjà à jour (même version, rien de posé) dit de
+  poser la copie elle-même à la place du lien. Depuis la clé, la copie en lien se regarde avant la fenêtre de la clé :
+  même avec une fenêtre de la clé non vérifiée, le programme est posé seul, jamais refusé à chaque essai ; sa ligne dit
+  alors les deux raisons (la copie était un lien, la fenêtre de la clé n'est pas vérifiée, et pourquoi), sans dire qu'un
+  nouveau tour posera la fenêtre. Au même numéro, la fenêtre seule d'une copie en lien, illisible ou dans un dossier
+  refusé est laissée de côté, avec sa ligne dans l'aperçu (donc dans l'accord) et sa raison. Dans
   tous ces cas, le résultat dit « non vérifié » et pourquoi, jamais suivi d'une coche « rien de plus récent » ; à
   l'application, le code est 1 ; le verdict qui n'est pas « à jour » (version signée trop vieille, plus récente ici)
   reste dit. Quand il ne reste que des fenêtres seules et que la version n'est pas vérifiée à jour, l'aperçu de la

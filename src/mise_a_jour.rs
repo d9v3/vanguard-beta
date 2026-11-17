@@ -1829,21 +1829,32 @@ pub(crate) fn copie_plus_ancienne() -> bool {
 /// Le renommage final. Sous Windows, un programme qui tourne (la surveillance, lancée à l'heure pile) ne se remplace
 /// pas, mais il se renomme : l'ancien part de côté et s'efface à la prochaine mise à jour.
 fn mettre_en_place(provisoire: &Path, cible: &Path) -> std::io::Result<()> {
-    mettre_en_place_sous(provisoire, cible, &cible.with_file_name(format!("{NOM}.ancien")))
+    mettre_en_place_sous(
+        provisoire,
+        cible,
+        &cible.with_file_name(format!("{NOM}.ancien")),
+        tr!("copie", "copy"),
+    )
 }
 
 /// Le reste d'une mise à jour faite pendant que la copie tournait (Windows, `mettre_en_place`) : effacé ; encore
 /// lancé, il reste et partira la fois suivante. Rien n'est retiré tant que la copie n'est pas un fichier à son nom
 /// (R3-5, ronde 4) : après un double échec de renommage, `NOM.ancien` est la dernière copie du programme, dont
-/// `mettre_en_place_sous` a dit le chemin.
+/// `mettre_en_place_sous` a dit le chemin. Seulement un fichier ordinaire à ce nom, comme pour la fenêtre
+/// (`sa_fenetre::effacer_l_ancienne`, R4-3) : un lien ou un dossier n'est pas à nous. Reste connu : le contrôle et
+/// l'effacement ne sont pas liés ; une autre mise à jour qui déplace la copie entre les deux, puis échoue deux fois,
+/// perdrait ce reste (très rare, Windows ; `Precedente::remettre` remet alors la copie d'avant).
 pub(super) fn effacer_l_ancien(copie: &Path) {
-    if std::fs::symlink_metadata(copie).is_ok_and(|m| m.file_type().is_file()) {
-        let _ = std::fs::remove_file(copie.with_file_name(format!("{NOM}.ancien")));
+    let fichier = |c: &Path| std::fs::symlink_metadata(c).is_ok_and(|m| m.file_type().is_file());
+    let ancien = copie.with_file_name(format!("{NOM}.ancien"));
+    if fichier(copie) && fichier(&ancien) {
+        let _ = std::fs::remove_file(&ancien);
     }
 }
 
-/// `mettre_en_place`, l'ancien mis de côté sous le nom `ancien` (la fenêtre a le sien, `sa_fenetre`).
-fn mettre_en_place_sous(provisoire: &Path, cible: &Path, ancien: &Path) -> std::io::Result<()> {
+/// `mettre_en_place`, l'ancien mis de côté sous le nom `ancien` (la fenêtre a le sien, `sa_fenetre`). `quoi` : ce
+/// qui est posé, dans la langue de l'interface (« copie » ou « fenêtre »), pour le dire après un double échec.
+fn mettre_en_place_sous(provisoire: &Path, cible: &Path, ancien: &Path, quoi: &str) -> std::io::Result<()> {
     let erreur = match std::fs::rename(provisoire, cible) {
         Ok(()) => return Ok(()),
         Err(e) => e,
@@ -1863,13 +1874,21 @@ fn mettre_en_place_sous(provisoire: &Path, cible: &Path, ancien: &Path) -> std::
     // est dit, jamais tu.
     std::fs::rename(provisoire, cible).map_err(|e| match std::fs::rename(ancien, cible) {
         Ok(()) => e,
-        Err(_) => std::io::Error::other(trf!(
-            "{} ; l'ancienne copie n'a pas pu revenir à sa place : elle est gardée sous {}",
-            "{}; the old copy could not go back to its place: it is kept as {}",
-            e,
-            affichable(&ancien.display().to_string())
-        )),
+        Err(_) => std::io::Error::other(restee_sous(&e, quoi, ancien)),
     })
+}
+
+/// Le double échec de `mettre_en_place_sous` : l'ancienne copie (ou fenêtre, `quoi`) reste sous `ancien` tant que
+/// rien n'est à sa place (R4-4) ; le ménage la retire dès qu'un fichier y revient (`Precedente::remettre`, un
+/// nouvel essai), d'où « tant que », jamais « gardée » tout court.
+fn restee_sous(erreur: &std::io::Error, quoi: &str, ancien: &Path) -> String {
+    trf!(
+        "{} ; l'ancienne {} n'a pas pu revenir à sa place : elle reste sous {} tant que rien n'est à sa place",
+        "{}; the old {} could not go back to its place: it stays as {} as long as nothing is in its place",
+        erreur,
+        quoi,
+        affichable(&ancien.display().to_string())
+    )
 }
 
 /// « vanguard se-mettre-a-jour » et l'entrée du menu : l'état, puis la mise à jour sur accord. `false` (R4-REGISTRE-5) :
@@ -2706,6 +2725,43 @@ mod tests {
         effacer_l_ancien(&copie);
         assert!(!ancien.exists(), "la copie en place, le reste part");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// R4-3 : comme pour la fenêtre, seul un fichier ordinaire au nom `NOM.ancien` part ; un lien à ce nom reste, et
+    /// ce qu'il désigne aussi.
+    #[cfg(unix)]
+    #[test]
+    fn un_lien_au_nom_du_reste_n_est_pas_retire() {
+        let d = crate::essais::temporaire().join(format!("vanguard-ancien-lien-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let (copie, ancien, ailleurs) = (d.join(NOM), d.join(format!("{NOM}.ancien")), d.join("ailleurs.txt"));
+        std::fs::write(&copie, b"nouveau").unwrap();
+        std::fs::write(&ailleurs, b"a garder").unwrap();
+        std::os::unix::fs::symlink(&ailleurs, &ancien).unwrap();
+        effacer_l_ancien(&copie);
+        assert!(
+            std::fs::symlink_metadata(&ancien).is_ok_and(|m| m.file_type().is_symlink()),
+            "un lien au nom du reste n'est pas à nous"
+        );
+        assert_eq!(std::fs::read(&ailleurs).unwrap(), b"a garder");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// R4-4 : après un double échec, le reste est dit sous son chemin « tant que rien n'est à sa place », avec le mot
+    /// de l'appelant (copie ou fenêtre), en français et en anglais.
+    #[test]
+    fn le_double_echec_dit_ou_reste_l_ancienne() {
+        let ancien = Path::new("/d/bin/vanguard.ancien");
+        let e = std::io::Error::other("refus d'essai");
+        assert_eq!(
+            restee_sous(&e, tr!("fenêtre", "window"), ancien),
+            "refus d'essai ; l'ancienne fenêtre n'a pas pu revenir à sa place : elle reste sous /d/bin/vanguard.ancien tant que rien n'est à sa place"
+        );
+        assert_eq!(
+            crate::langue::en_anglais(|| restee_sous(&e, tr!("copie", "copy"), ancien)),
+            "refus d'essai; the old copy could not go back to its place: it stays as /d/bin/vanguard.ancien as long as nothing is in its place"
+        );
     }
 
     /// Vérification 0.94, R10-ECRITURE-2 : une révocation pas retenue nomme son fichier et son dossier, sans « GitHub » ;

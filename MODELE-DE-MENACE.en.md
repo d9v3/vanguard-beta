@@ -439,8 +439,13 @@ safeguards:
   refused, nothing changed), consumes the preview log entry (2 s to 10 minutes after the preview, only once), then keeps
   every earlier check: signature, size and checksum, copy written alongside, read back, compared and tried (not yet
   tried on Windows: the window then only says “read back and compared”), put in place at once (otherwise the old one
-  stays; on Windows, an old one still running is moved aside, `vanguard.exe.ancien`, erased after the next consent); it
-  names each program replaced or not (code 0 only if all were). The Vanguard window placed next to a replaced program
+  stays; on Windows, an old one still running is moved aside, `vanguard.exe.ancien`, erased later, when the state is
+  read or after the next consent, only if the copy is a file at its name and that leftover a regular file (a link or a
+  folder with that name stays); after a double rename failure, it is kept, with its path said: it stays under that name
+  as long as nothing is in its place; tests `le_reste_du_programme_est_garde_sans_copie_a_sa_place`,
+  `un_lien_au_nom_du_reste_n_est_pas_retire`, `le_double_echec_dit_ou_reste_l_ancienne` (`src/mise_a_jour.rs`) and
+  `le_reste_d_une_mise_a_jour_s_efface_apres_l_accord` (`src/mise_a_jour/apercu.rs`)); it names each program replaced or
+  not (code 0 only if all were). The Vanguard window placed next to a replaced program
   follows it, shown as one more line of the preview, so bound by the consent: GitHub's downloaded only after the consent
   and checked against the fingerprint engraved in the verified program (another one, or none received: nothing is
   replaced); once placed, it is read back through the temporary copy kept open under Linux (the same file, the bytes
@@ -471,11 +476,13 @@ safeguards:
   window neither next to the link nor next to the file it points to, under Linux as under Windows, and this is said on
   its line; the link is checked again at placement time (a copy turned into a link since the preview: nothing is
   placed). The placed program replaces the link itself with a file (a rename onto its name, never through it, under both
-  systems): its line says to run the update again, which then places the window; a copy that is a link and already up to
-  date (same version, nothing placed) says to put the copy itself in place of the link. From the key, the copy being a
-  link is looked at before the key's window: even with the key's window not verified, the program is placed alone, never
-  refused at every attempt. At the same version number, the lone window of a copy that is a link, unreadable or in a
-  refused folder is set aside, with its line in the preview (so in the consent) and its reason. In all these cases, the
+  systems): its line says to run the update again, which then places the window (from the key, if the key's window is
+  verified); a copy that is a link and already up to date (same version, nothing placed) says to put the copy itself in
+  place of the link. From the key, the copy being a link is looked at before the key's window: even with the key's
+  window not verified, the program is placed alone, never refused at every attempt; its line then gives both reasons
+  (the copy was a link, the key's window is not verified, and why), without saying that another round will place the
+  window. At the same version number, the lone window of a copy that is a link, unreadable or in a refused folder is set
+  aside, with its line in the preview (so in the consent) and its reason. In all these cases, the
   result says “not verified” and why, never followed by a “nothing newer” check mark; when applied, the code is 1; a
   verdict that is not “up to date” (signed version too old, newer here) is still said. When only lone windows are left
   and the version is not verified up to date, the window's preview carries “not verified”, like the terminal. The new
