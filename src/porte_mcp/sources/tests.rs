@@ -70,7 +70,7 @@ fn la_fin_d_un_essai_ne_se_trompe_pas_de_paire() {
     // Accolades, crochets et parenthèses dans les chaînes, caractères, commentaires et durées de vie ne comptent
     // pas ; un champ ou un bras sous cfg(test) s'arrête avant la fermante du bloc qui l'entoure.
     let texte = "#[cfg(test)]\nfn a<'b>(x: &'b str) -> char {\n    let _ = \"}}}\";\n    let _ = r#\"}\"\"#;\n    \
-                 let _ = b\"}\";\n    // }\n    /* } */\n    let _ = '}';\n    let _ = '\\'';\n    '{'\n}\n\
+                 let _ = b\"}\";\n    // }\n    /* } */\n    let _ = '}';\n    TR(\"dedans\", \"inside\");\n    let _ = '\\'';\n    '{'\n}\n\
                  fn b() { TR(\"garde\", \"kept\"); }\n\
                  struct S {\n    #[cfg(test)]\n    a: u8\n}\nfn c() { TR(\"aussi\", \"also\"); }\n";
     assert_eq!(un(texte), attendus(&["garde", "kept", "aussi", "also"]));
