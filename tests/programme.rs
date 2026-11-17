@@ -1567,50 +1567,76 @@ fn refuse(issue: &(Option<i32>, serde_json::Value), attendu: &str) {
     assert!(r.get("annulation").is_none(), "{r}");
 }
 
+/// Un accord donné juste après l'aperçu : refusé « moins de 2 secondes ». `depart` est pris AVANT l'aperçu, donc l'âge
+/// que voit le programme ne dépasse jamais le temps mesuré au retour du geste : sous 2 s, le refus est exigé. Au-delà
+/// (machine chargée), un refus vient peut-être encore, et il doit être celui-là ; sinon le geste est passé pour de bon :
+/// `false`, l'essai recommence sur un compte neuf.
+#[cfg(unix)]
+fn refuse_trop_tot(depart: Instant, issue: &(Option<i32>, serde_json::Value)) -> bool {
+    if depart.elapsed() < Duration::from_secs(2) || issue.1["issue"] != "fait" {
+        refuse(issue, "moins de 2 secondes");
+        return true;
+    }
+    false
+}
+
 /// Sous-lot B, « Remettre comme avant » : `changements --json` porte le jeton de la note ; `--voir` montre la valeur
 /// d'aujourd'hui, celle d'avant et celle posée ; `--annuler` ne passe qu'après cet aperçu (2 s, son accord, pas celui
 /// d'une correction), remet exactement l'état d'avant, une seule fois, et la ligne est dite défaite.
 #[cfg(unix)]
 #[test]
 fn remettre_comme_avant_exactement_une_seule_fois() {
-    let c = Compte::nouveau();
-    let note = c.appliquer_ok("~/.netrc");
-    let lignes = c.lignes_de_changements();
-    assert_eq!(lignes[0]["etat"], "annulable", "{lignes:?}");
-    assert_eq!(lignes[0]["geste"]["sorte"], "voir-annulation", "{lignes:?}");
-    assert_eq!(lignes[0]["geste"]["jeton"], note.as_str(), "{lignes:?}");
-    // L'aperçu : rien d'autre que le carnet ne change.
-    let avant = instantane(&c.chemin(""));
-    let (code, r) = c.voir_annulation(&note);
-    assert!(code == Some(0) && r["issue"] == "fait", "{code:?} {r}");
-    let changes = hors_carnet(ecarts(&avant, &instantane(&c.chemin(""))));
-    assert!(changes.is_empty(), "--voir a changé : {changes:?}");
-    let valeur = &r["apercu"]["valeurs"][0];
-    assert!(
-        valeur["chemin"].as_str().unwrap_or_default().ends_with("/.netrc"),
-        "{r}"
-    );
-    assert_eq!(
-        (
-            &valeur["actuel"],
-            &valeur["avant"],
-            &valeur["pose"],
-            &valeur["change_depuis"]
-        ),
-        (&"0600".into(), &"0644".into(), &"0600".into(), &false.into()),
-        "{r}"
-    );
-    assert_eq!(r["apercu"]["droits"], "compte", "{r}");
-    let accord = r["accord"].as_str().expect("pas d'accord").to_string();
-    // Même forme par le synonyme anglais : même accord.
-    let (sortie, r2) = c.lancer(&["changes", "--show", &note, "--json"]);
-    assert_eq!(
-        (sortie.code, r2["accord"].as_str()),
-        (Some(0), Some(accord.as_str())),
-        "{r2}"
-    );
-    // Tout de suite : trop jeune.
-    refuse(&c.annuler(&note, &accord), "moins de 2 secondes");
+    // Machine chargée : plus de 2 s peuvent passer entre l'aperçu et l'accord, le geste passe alors pour de bon ;
+    // on recommence sur un compte neuf (`refuse_trop_tot`).
+    let mut essais = 0;
+    let (c, note, accord) = loop {
+        essais += 1;
+        assert!(
+            essais <= 5,
+            "machine trop lente : jamais moins de 2 s entre l'aperçu et l'accord"
+        );
+        let c = Compte::nouveau();
+        let note = c.appliquer_ok("~/.netrc");
+        let lignes = c.lignes_de_changements();
+        assert_eq!(lignes[0]["etat"], "annulable", "{lignes:?}");
+        assert_eq!(lignes[0]["geste"]["sorte"], "voir-annulation", "{lignes:?}");
+        assert_eq!(lignes[0]["geste"]["jeton"], note.as_str(), "{lignes:?}");
+        // L'aperçu : rien d'autre que le carnet ne change.
+        let avant = instantane(&c.chemin(""));
+        let (code, r) = c.voir_annulation(&note);
+        assert!(code == Some(0) && r["issue"] == "fait", "{code:?} {r}");
+        let changes = hors_carnet(ecarts(&avant, &instantane(&c.chemin(""))));
+        assert!(changes.is_empty(), "--voir a changé : {changes:?}");
+        let valeur = &r["apercu"]["valeurs"][0];
+        assert!(
+            valeur["chemin"].as_str().unwrap_or_default().ends_with("/.netrc"),
+            "{r}"
+        );
+        assert_eq!(
+            (
+                &valeur["actuel"],
+                &valeur["avant"],
+                &valeur["pose"],
+                &valeur["change_depuis"]
+            ),
+            (&"0600".into(), &"0644".into(), &"0600".into(), &false.into()),
+            "{r}"
+        );
+        assert_eq!(r["apercu"]["droits"], "compte", "{r}");
+        let accord = r["accord"].as_str().expect("pas d'accord").to_string();
+        let depart = Instant::now();
+        // Même forme par le synonyme anglais : même accord.
+        let (sortie, r2) = c.lancer(&["changes", "--show", &note, "--json"]);
+        assert_eq!(
+            (sortie.code, r2["accord"].as_str()),
+            (Some(0), Some(accord.as_str())),
+            "{r2}"
+        );
+        // Tout de suite : trop jeune.
+        if refuse_trop_tot(depart, &c.annuler(&note, &accord)) {
+            break (c, note, accord);
+        }
+    };
     assert_eq!(c.mode(".netrc"), 0o600);
     laisser_lire();
     // Un autre accord bien formé, ou mal formés : rien.
@@ -2073,17 +2099,29 @@ fn remettre_refuse_un_lien() {
 #[cfg(unix)]
 #[test]
 fn appliquer_une_correction_du_compte_une_seule_fois() {
-    let c = Compte::nouveau();
-    let j = c.jeton("~/.netrc");
-    let accord = c.voir(&j);
-    // Le carnet absent (dossier de données effacé : ni carnet ni sceaux) : rien.
-    std::fs::remove_dir_all(c.donnees()).unwrap();
-    laisser_lire();
-    refuse(&c.appliquer(&j, &accord), "aucun aperçu");
-    assert_eq!(c.mode(".netrc"), 0o644);
-    // Le même état donne le même accord ; accepté tout de suite : trop jeune, rien.
-    assert_eq!(c.voir(&j), accord);
-    refuse(&c.appliquer(&j, &accord), "moins de 2 secondes");
+    // Machine chargée : on recommence sur un compte neuf (`refuse_trop_tot`).
+    let mut essais = 0;
+    let (c, j, accord) = loop {
+        essais += 1;
+        assert!(
+            essais <= 5,
+            "machine trop lente : jamais moins de 2 s entre l'aperçu et l'accord"
+        );
+        let c = Compte::nouveau();
+        let j = c.jeton("~/.netrc");
+        let accord = c.voir(&j);
+        // Le carnet absent (dossier de données effacé : ni carnet ni sceaux) : rien.
+        std::fs::remove_dir_all(c.donnees()).unwrap();
+        laisser_lire();
+        refuse(&c.appliquer(&j, &accord), "aucun aperçu");
+        assert_eq!(c.mode(".netrc"), 0o644);
+        // Le même état donne le même accord ; accepté tout de suite : trop jeune, rien.
+        let depart = Instant::now();
+        assert_eq!(c.voir(&j), accord);
+        if refuse_trop_tot(depart, &c.appliquer(&j, &accord)) {
+            break (c, j, accord);
+        }
+    };
     assert_eq!(c.mode(".netrc"), 0o644);
     laisser_lire();
     // Un autre accord, bien formé : rien, et l'entrée du carnet reste.
