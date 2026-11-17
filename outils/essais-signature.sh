@@ -892,14 +892,17 @@ apres "$H_COMPILE" "$H_PAGE" "$H_CAPTURES" && ko "publier : CI acceptée sur un 
 # - rust-toolchain.toml : seulement channel, profile, components et targets (pas de chaîne prise dans un dossier) ;
 # - aucun fichier hérité que les outils préfèrent au fichier jugé (4e re-contrôle) : .cargo/config (cargo le lit à la
 #   place de .cargo/config.toml) et rust-toolchain (rustup le lit à la place de rust-toolchain.toml) ;
-# - aucun lien symbolique dans tout le dépôt (hors target/ et .git/) : build.rs, cargo, awk et rustup lisent à
-#   travers un lien, et un lien posé avant vers la liste (assets/oui.tsv -> captures/x.png, Cargo.lock, Cargo.toml)
-#   ferait d'un commit « captures seulement » un changement de la compilation (4e re-contrôle).
+# - aucun lien symbolique suivi par git, dans tout l'arbre (target/ compris : `git add -f`), ni aucun lien non suivi
+#   hors de target/ et .git/ : build.rs, cargo, awk et rustup lisent à travers un lien, et un lien posé avant vers la
+#   liste (assets/oui.tsv -> captures/x.png, Cargo.lock, Cargo.toml) ferait d'un commit « captures seulement » un
+#   changement de la compilation (4e re-contrôle). target en lien non suivi (vers le disque des cibles) est la
+#   disposition normale des worktrees ici : permis (5e re-contrôle). Hors d'un dépôt git, ou git en échec : « non
+#   vérifié », un échec.
 # Non vérifié ici, dit : src/ qui lirait un fichier de la liste autrement que par son nom écrit en clair (cites ne
 # voit ni include_str!(concat!(…)) ni une macro renommée), une macro procédurale d'un paquet ordinaire qui lirait le
 # disque, et la configuration de cargo hors du dépôt (~/.cargo). Sans cargo ou sans jq : « non vérifié », un échec.
 EMPREINTES_COMPILATION='9e0fc63f67a0bc7419545c8df5db8070b537a28e697d3f01c792932c3fa54a89 build.rs
-dcd22e6b2a3936acceb8a79155cef7bbdd5f5d9f3d4951c232c6a57efdeb5e38 src/porte_mcp/sources.rs
+f01266bde247078181cd5420ab44e61af8e75bfa0f7eae61e7adf0209492d59e src/porte_mcp/sources.rs
 a132b1fdb1a4e6ce3f3e4de078e3c048a0b8f7f040081fd8fac351e0185eb651 .cargo/config.toml'
 REGISTRE='registry+https://github.com/rust-lang/crates.io-index'
 garde_compilation() { # $1 : racine d'un dépôt ; écrit chaque écart, rien si tout est permis
@@ -950,8 +953,18 @@ garde_compilation() { # $1 : racine d'un dépôt ; écrit chaque écart, rien si
     echo " .cargo/config présent : cargo le préfère à .cargo/config.toml (à retirer)"
   [[ ! -e $d/rust-toolchain && ! -L $d/rust-toolchain ]] ||
     echo " rust-toolchain présent : rustup le préfère à rust-toolchain.toml (à retirer)"
-  local liens
-  if ! liens=$(cd "$d" && find . \( \( -path ./target -o -path ./.git \) ! -type l \) -prune -o -type l -print); then
+  local liens racine
+  # Les liens suivis, par l'index de git : mode 120000. Lu en -z puis coupé aux NUL ; un nom qui contiendrait un saut
+  # de ligne ne peut que faire un faux refus, jamais cacher un lien (chaque entrée commence par son mode).
+  if ! racine=$(git -C "$d" rev-parse --show-toplevel 2>/dev/null) || [[ $(cd "$racine" && pwd -P) != "$d" ]] ||
+    ! liens=$(git -C "$d" ls-files -s -z | tr '\0' '\n'; exit "${PIPESTATUS[0]}"); then
+    echo " liens suivis par git non vérifiés (pas la racine d'un dépôt git, ou git en échec)"
+  else
+    liens=$(sed -n 's/^120000 [0-9a-f]* [0-9]*\t//p' <<<"$liens")
+    [[ -z $liens ]] || echo " lien symbolique suivi par git : $(tr '\n' ' ' <<<"$liens")"
+  fi
+  # Les liens non suivis : target/ (dossier ou lien) est celui de cargo ; .git est sauté s'il n'est pas un lien.
+  if ! liens=$(cd "$d" && find . \( -path ./target -o \( -path ./.git ! -type l \) \) -prune -o -type l -print); then
     echo " liens symboliques non vérifiés (find en échec)"
   elif [[ -n $liens ]]; then
     echo " lien symbolique dans le dépôt : $(tr '\n' ' ' <<<"$liens")"
@@ -972,7 +985,7 @@ garde_copie() {
   rm -rf "$G" && mkdir -p "$G/src/porte_mcp" "$G/tests" "$G/.cargo" &&
     cp "$DEPOT/build.rs" "$DEPOT/Cargo.toml" "$DEPOT/Cargo.lock" "$DEPOT/rust-toolchain.toml" "$G/" &&
     cp "$DEPOT/src/porte_mcp/sources.rs" "$G/src/porte_mcp/" && cp "$DEPOT/.cargo/config.toml" "$G/.cargo/" &&
-    : >"$G/src/main.rs" && : >"$G/tests/programme.rs"
+    : >"$G/src/main.rs" && : >"$G/tests/programme.rs" && git -C "$G" init -q && git -C "$G" add .
 }
 garde_copie && [[ -z $(garde_compilation "$G") ]] && ok "garde de compilation : une copie fidèle passe" ||
   ko "garde de compilation : la copie fidèle est refusée (les essais suivants ne prouveraient rien) : $(garde_compilation "$G")"
@@ -1019,8 +1032,31 @@ garde_copie && mkdir -p "$G/assets/captures" && mv "$G/Cargo.lock" "$G/assets/ca
   garde_voit "lien symbolique dans le dépôt : ./Cargo.lock" "Cargo.lock en lien vers une capture"
 garde_copie && mkdir -p "$G/docs" && mv "$G/Cargo.toml" "$G/docs/index.html" && ln -s docs/index.html "$G/Cargo.toml" &&
   garde_voit "lien symbolique dans le dépôt : ./Cargo.toml" "Cargo.toml en lien vers la page des fonctions"
-garde_copie && mkdir -p "$G/target" && ln -s ../Cargo.toml "$G/target/lien" && ln -s Cargo.toml "$G/.git" &&
-  garde_voit "lien symbolique dans le dépôt : ./.git" ".git en lien (target/ seul est sauté, et pas en lien)"
+garde_copie && mkdir -p "$G/target" && ln -s ../Cargo.toml "$G/target/lien" && rm -rf "$G/.git" &&
+  ln -s Cargo.toml "$G/.git" &&
+  garde_voit "lien symbolique dans le dépôt : ./.git" ".git en lien (seul un .git qui n'est pas un lien est sauté)"
+# 5e re-contrôle : target en lien non suivi est la disposition normale ; un lien suivi par git, où qu'il soit, non.
+mkdir -p "$T/cibles-hors-depot"
+garde_copie && ln -s "$T/cibles-hors-depot" "$G/target" && [[ -z $(garde_compilation "$G") ]] &&
+  ok "garde de compilation : target en lien non suivi, vers un dossier hors du dépôt, passe" ||
+  ko "garde de compilation : target en lien non suivi est refusé (faux rouge des worktrees) : $(garde_compilation "$G")"
+garde_copie && mkdir -p "$G/target" "$G/assets/captures" && printf 'x\n' >"$G/assets/captures/piege.png" &&
+  ln -s ../assets/captures/piege.png "$G/target/lien" && git -C "$G" add -f target/lien &&
+  garde_voit "lien symbolique suivi par git : target/lien" "un lien suivi par git dans target/ (git add -f)"
+garde_copie && ln -s "$T/cibles-hors-depot" "$G/target" && git -C "$G" add -f target &&
+  garde_voit "lien symbolique suivi par git : target" "target en lien suivi par git"
+garde_copie && mkdir -p "$G/assets/captures" && printf 'x\n' >"$G/assets/captures/fabricants.png" &&
+  ln -s captures/fabricants.png "$G/assets/oui.tsv" && git -C "$G" add assets && rm "$G/assets/oui.tsv" &&
+  garde_voit "lien symbolique suivi par git : assets/oui.tsv" "un lien suivi par git absent de l'arbre (index lu)"
+garde_copie && rm -rf "$G/.git" && garde_voit "liens suivis par git non vérifiés" "une copie hors de tout dépôt git"
+garde_copie && mkdir -p "$G/dedans" && [[ $(garde_compilation "$G/dedans") == *"liens suivis par git non vérifiés"* ]] &&
+  ok "garde de compilation : un sous-dossier d'un dépôt n'est pas pris pour sa racine" ||
+  ko "garde de compilation : un sous-dossier d'un dépôt passe pour sa racine"
+mkdir -p "$T/git-en-panne" && printf '#!/bin/sh\n[ "$3" = ls-files ] && exit 4\nexec /usr/bin/git "$@"\n' \
+  >"$T/git-en-panne/git" && chmod +x "$T/git-en-panne/git"
+garde_copie && [[ $(PATH="$T/git-en-panne:$PATH" garde_compilation "$G") == *"liens suivis par git non vérifiés"* ]] &&
+  ok "garde de compilation : git ls-files en échec compte comme non vérifié" ||
+  ko "garde de compilation : git ls-files en échec passe pour un dépôt sans lien"
 mkdir -p "$T/find-en-panne" && printf '#!/bin/sh\nexit 3\n' >"$T/find-en-panne/find" && chmod +x "$T/find-en-panne/find"
 garde_copie && [[ $(PATH="$T/find-en-panne:$PATH" garde_compilation "$G") == *"liens symboliques non vérifiés"* ]] &&
   ok "garde de compilation : find en échec compte comme non vérifié" ||

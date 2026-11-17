@@ -175,11 +175,19 @@ pub(crate) const SORTES: &[&str] = &[
 /// à part et marqué `non_fiable` : une phrase faite de mots du vocabulaire sort telle quelle, consigne comprise. Vide
 /// (`retire`) quand rien ne reste.
 pub(crate) fn texte_externe(brut: &str) -> Value {
-    // Tout blanc autre que l'espace simple (tabulation, insécable) sépare deux champs, comme un saut de ligne : il en
-    // devient un avant la normalisation, qui en ferait sinon un espace que la négation traverserait (VUES-4).
+    // Tout blanc autre que l'espace simple (tabulation, insécable) et tout caractère de contrôle (NUL, séparateur
+    // d'unité, DEL, C1) sépare deux champs, comme un saut de ligne : il en devient un avant la normalisation, qui en
+    // ferait sinon un espace que la négation traverserait (4e re-contrôle VUES-4, 5e R5-VUES-2). Même condition que
+    // le nettoyeur commun (`x.is_control() || x.is_whitespace()`).
     let separe: String = borne(brut)
         .chars()
-        .map(|x| if x != ' ' && x.is_whitespace() { '\n' } else { x })
+        .map(|x| {
+            if x != ' ' && (x.is_whitespace() || x.is_control()) {
+                '\n'
+            } else {
+                x
+            }
+        })
         .collect();
     let texte = vocabulaire::normalise(&separe);
     let jetons: Vec<&str> = texte.split_whitespace().collect();
@@ -422,6 +430,22 @@ fn groupe_pid(jetons: &[&str], i: usize) -> bool {
         })
 }
 
+/// L'écart entre la fin de l'extrait d'un programme (`fin`) et le « (PID n) » suivant (`pid`) a-t-il la forme exacte
+/// que le veilleur écrit (`chasse::montrer`, joints par `chasse::resume`) : « ; » puis le nom entre guillemets ? En
+/// français « (x) ; « nom » (PID 9) », en anglais « (x); “nom” (PID 9) » (le « ; » collé à l'extrait) ; les
+/// guillemets typographiques sont déjà droits (`normalise`). Le nom, choisi par qui a lancé le programme, sort de
+/// toute façon : il n'est pas retenu.
+fn entre_deux_programmes(jetons: &[&str], fin: usize, pid: usize) -> bool {
+    let ecart = jetons.get(fin.saturating_add(1)..pid).unwrap_or_default().join(" ");
+    let colle = jetons.get(fin).is_some_and(|m| m.ends_with(");"));
+    let nom = if colle {
+        Some(ecart.as_str())
+    } else {
+        ecart.strip_prefix("; ")
+    };
+    nom.is_some_and(|n| n.len() >= 2 && n.starts_with('"') && n.ends_with('"'))
+}
+
 /// Un groupe entre parenthèses : de son premier jeton qui ouvre à son dernier qui ferme, s'il est retenu en entier, et
 /// s'il est l'extrait d'un programme (après un « (PID n) ») plutôt qu'une précision de Vanguard.
 #[derive(Clone, Copy)]
@@ -455,7 +479,8 @@ fn profondeur(jetons: &[&str], de: usize, a: usize, depart: i64) -> (i64, bool) 
 /// ce « (PID n) » et finit à la dernière fermante avant le « (PID n) » suivant, si la profondeur des parenthèses y est
 /// revenue à zéro ; sinon (« (sh (x) maison (PID 9) b) ») il n'est pas fermé et retient tout jusqu'au « (PID n) »
 /// suivant, dont l'extrait le continue. Une fermante de trop (« (a) maison (PID 9) b) ») montre que ce « (PID n) »
-/// était cité dans l'extrait d'avant : celui-ci va jusqu'à lui (4e re-contrôle, VUES-2). Sans aucun « (PID n) »,
+/// était cité dans l'extrait d'avant : celui-ci va jusqu'à lui (4e re-contrôle, VUES-2) ; de même quand l'écart entre
+/// un extrait fermé et le « (PID n) » suivant n'est pas « ; « nom » » (5e re-contrôle, R5-VUES-1). Sans aucun « (PID n) »,
 /// c'est une précision de Vanguard (« (numéro repris, parent ou heure illisible) »), du premier jeton qui ouvre au
 /// dernier qui ferme : elle sort si tous ses mots sont du vocabulaire, retenue sinon ; une parenthèse qui ne se ferme
 /// pas n'en fait pas.
@@ -485,6 +510,9 @@ fn groupes_entre_parentheses(jetons: &[&str]) -> Vec<Groupe> {
     // Les parenthèses que l'extrait d'avant a laissées ouvertes : ce « (PID n) » y est cité, et ce qui le suit en fait
     // encore partie (« (mysql (PID 7) rouge maison (x)) »), de son premier mot, qu'une parenthèse vienne ou non.
     let mut reste: i64 = 0;
+    // Le « (PID n) » d'avant était-il cité ? Alors l'extrait qui le contient est celui qu'il faut continuer, même si
+    // ce « (PID n) » n'a rien ouvert lui-même (« (b) (PID 9) (PID 9) maison (c) »).
+    let mut precedent_cite = false;
     for (n, pid) in pids.iter().enumerate() {
         let depart = pid.saturating_add(2);
         let borne = pids.get(n.saturating_add(1)).copied().unwrap_or(jetons.len());
@@ -492,8 +520,19 @@ fn groupes_entre_parentheses(jetons: &[&str]) -> Vec<Groupe> {
         let ouvert = reste > 0;
         reste = fin_de_profondeur.max(0);
         // Le premier « (PID n) » ne peut pas être cité dans un extrait d'avant : une fermante de trop y est dans son
-        // propre extrait (« (case x in a) cat y;; esac) »).
-        let cite = ouvert || (negatif && n > 0);
+        // propre extrait (« (case x in a) cat y;; esac) »). Après un extrait fermé, seule la forme exacte du veilleur
+        // (« ; » puis le nom entre guillemets) annonce un vrai programme ; tout autre écart, même vide, montre un
+        // « (PID n) » cité dans un extrait aux parenthèses équilibrées (« (a) maison (PID 9) (b) ») : 5e re-contrôle,
+        // R5-VUES-1.
+        let apres_un_extrait = n.checked_sub(1).and_then(|m| pids.get(m)).and_then(|precedent| {
+            groupes
+                .last()
+                .filter(|g| g.extrait && (precedent_cite || g.debut >= precedent.saturating_add(2)))
+                .map(|g| g.fin)
+        });
+        let faux = apres_un_extrait.is_some_and(|fin| !entre_deux_programmes(jetons, fin, *pid));
+        let cite = ouvert || (negatif && n > 0) || faux;
+        precedent_cite = cite;
         if cite && !ouvert {
             // Une fermante de trop : l'extrait d'avant ne s'était pas vraiment fermé, il citait ce « (PID n) » ; il
             // est retenu jusqu'à lui, ou, s'il n'avait pas de parenthèse, tout ce qui suit le « (PID n) » d'avant.
@@ -1279,6 +1318,40 @@ mod tests {
         );
     }
 
+    /// 5e re-contrôle R5-VUES-1 : un extrait aux parenthèses équilibrées qui cite un faux « (PID n) » est retenu en
+    /// entier, avant comme après lui ; seul l'écart exact du veilleur (« ; « nom » », « ; “nom” ») laisse lire le
+    /// programme suivant.
+    #[test]
+    fn r5_vues_1_un_faux_pid_entre_parentheses_equilibrees_ne_coupe_pas_l_extrait() {
+        let valeurs = ["maison", "rouge", "bureau", "admin"];
+        for brut in [
+            "« prog » (PID 5) : programme inconnu (a) maison rouge (PID 9) (b)",
+            "« prog » (PID 5) : programme inconnu (a) (PID 9) maison rouge (b)",
+            "« prog » (PID 5) : programme inconnu (sh -c true) maison rouge (PID 9) (fin)",
+            "« prog » (PID 5) : programme inconnu (a) ; maison rouge (PID 9) (b)",
+            "« prog » (PID 5) : programme inconnu (a) maison « rouge » (PID 9) (b)",
+            "« prog » (PID 5) : programme inconnu (a) ; « x » rouge (PID 9) (b)",
+            "“prog” (PID 5): programme inconnu (a) maison rouge (PID 9) (b)",
+            "“prog” (PID 5): programme inconnu (a); rouge “x” (PID 9) (b)",
+            "« prog » (PID 5) : programme inconnu (a) (PID 9) (b) maison (PID 10) (c) rouge (d)",
+            "« prog » (PID 5) : programme inconnu (b) (PID 9) (PID 9) maison (c)",
+        ] {
+            sans(brut, &valeurs);
+        }
+        // La forme exacte du veilleur laisse lire la raison du programme suivant, en français et en anglais.
+        for brut in [
+            "« a » (PID 11) raison (sh (x) y) ; « b » (PID 22) programme inconnu (z)",
+            "“a” (PID 11) raison (sh (x) y); “b” (PID 22) programme inconnu (z)",
+            "« a » (PID 11) raison (x) ; « b c » (PID 22) programme inconnu (z)",
+        ] {
+            assert!(
+                sortie(brut).contains("programme inconnu"),
+                "{brut:?} : {:?}",
+                sortie(brut)
+            );
+        }
+    }
+
     /// 4e re-contrôle VUES-3 : les pluriels d'annonce qui manquaient (identifiants, logins, seeds, phrases de
     /// récupération, recovery phrases) retiennent la suite.
     #[test]
@@ -1315,6 +1388,22 @@ mod tests {
         }
         let s = sortie("Le réseau Wi-Fi est ouvert, sans mot de passe (WEP) ; changez-le.");
         assert!(s.contains("changez"), "{s:?}");
+    }
+
+    /// 5e re-contrôle R5-VUES-2 : un caractère de contrôle qui n'est pas un blanc pour Rust (NUL, séparateur d'unité,
+    /// DEL, C1) sépare deux champs comme un saut de ligne : la négation ne le traverse pas.
+    #[test]
+    fn r5_vues_2_une_negation_ne_traverse_pas_un_controle() {
+        let valeurs = ["maison", "rouge", "bureau", "admin"];
+        for controle in ['\0', '\u{1b}', '\u{1f}', '\u{7f}', '\u{9f}'] {
+            for brut in [
+                format!("Sécurité : aucune{controle}clé maison rouge"),
+                format!("Réseau ouvert sans{controle}mot de passe maison rouge"),
+                format!("no{controle}password admin bureau"),
+            ] {
+                sans(&brut, &valeurs);
+            }
+        }
     }
 
     /// Re-contrôle R2-fuite-5 : les autres formes courantes d'annonce (fautes de pluriel, NIP, phrase de récupération,

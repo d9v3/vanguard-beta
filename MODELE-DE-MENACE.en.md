@@ -774,15 +774,17 @@ to start (code 2) until it has been tried on a real Windows.
   required), the whole rest of the text becomes a single "…", not only up to the first full stop; the only exception is
   a negated announcement ("sans mot de passe", "no password") with no ":" or "=" after it, when the negation ends with a
   letter and the announcement starts with a letter: no sign between the two (full stop, "!", "?", colon, opening or
-  closing parenthesis), and nothing but plain spaces (a line break, a tab or a non-breaking space makes an
-  announcement), as in Vanguard's message about a Wi-Fi network without a password. An announcement written inside a
+  closing parenthesis), and nothing but plain spaces (a line break, a tab, a non-breaking space or a control
+  character makes an announcement), as in Vanguard's message about a Wi-Fi network without a password. An announcement written inside a
   held-back parenthesis ("(mot de passe WPA2)") also cuts everything that follows. A value written before the
   announcement ("maison rouge is the password") is not held back. In a watcher
   alert, each "(PID n)" opens its own group: the command excerpt that follows it in parentheses becomes a single "…",
   and the depth of the parentheses is counted in it: an excerpt that has not come back to zero holds back everything
   up to the next "(PID n)" or to the end; a "(PID n)" quoted in an excerpt still open continues it, from its first
   word, with or without a parenthesis, and an extra closing parenthesis after a "(PID n)" shows it was quoted in the
-  excerpt before, which then runs up to it; any other parenthesis
+  excerpt before, which then runs up to it; after a closed excerpt, a "(PID n)" opens a new program only behind the
+  watcher's exact gap ("; “name”"): otherwise it was quoted, and the excerpt is held back whole, before and after
+  it; any other parenthesis
   comes out only if all its words are known. The price:
   useful text that follows an announcement is lost (about 0.8% of Vanguard's text pieces contain one of these words,
   "registry key" and "code" included). These are safety nets, not a guarantee: a value that nothing announces comes out
@@ -792,21 +794,26 @@ to start (code 2) until it has been tried on a real Windows.
   previous instructions" comes out as it is), and spell a value in it through the initials or the case of the words. A
   quoted name (Wi-Fi network, account, program, folder) lets out those of its words that are also Vanguard's words
   ("admin", "maison", "famille", "bureau", "root"), and so does a command line outside a watcher excerpt ("bash",
-  "sshd", "cat"). The fixed-form fields (rule, version, date, numbers, fingerprint) come out with the letters and digits
+  "sshd", "cat"), and so does a complete fake watcher entry ("; “name” (PID n) reason") written in a command line.
+  The fixed-form fields (rule, version, date, numbers, fingerprint) come out with the letters and digits
   their form allows, without being reread: an impossible date, a made-up rule or a number that writes a whole IPv4
   address get through. This is a channel for someone who already writes the log or an unsealed review, not a leak of the
   person's data. A module loaded from outside `src/` (the colour model shared with the window) is not read: it has no
   message, and one word less only masks more. The reading follows `r#test` and `r#cfg` as the compiler does, and a
   `#[path]` on an inline module from the file's folder; `cfg(test)`, `cfg(kani)`, `cfg(fuzzing)` and `cfg(miri)` are
   false in the program. It stops the build on a form it cannot judge: `cfg_select!` or `cfg_match!`, a `path` set by
-  `cfg_attr` on a module, a file module declared in a block (function, `const`). The build script (`build.rs`), the
-  reading it includes and the
+  `cfg_attr` on a module, a file module declared in a block (function, `const`), a macro body it does not reread as
+  code with arms ("=>" or "else" at its first level, "if #[…]" anywhere: `cfg_if!`, a wrapper from another
+  package) and a text call. The build script (`build.rs`), the reading it includes and the
   repository's cargo configuration are judged by a hash of the whole file, and `Cargo.toml` by the exact list of its
   targets and build dependencies (`outils/essais-signature.sh`): a change there calls for a deliberate review. The
   repository has no legacy file that cargo or rustup would prefer to the judged one (`.cargo/config`,
-  `rust-toolchain`), and no symbolic link at all (outside `target/` and `.git/`). Not
-  verified: cargo configuration outside the repository, a macro of an ordinary dependency that would read the disk,
-  and `cfg!(test)` written in a program expression (read as program).
+  `rust-toolchain`), no symbolic link tracked by git (even under `target/`), and
+  no untracked link outside `target/` and `.git/` (`target` may be a link to another disk); outside the root of a git
+  repository, tracked links are "not verified", a failure. Not verified: cargo configuration outside the repository,
+  a macro of an ordinary dependency that would read the disk, `cfg!(test)` written in a program expression (read as
+  program), and a macro with arms of another form ("test: { … }", or arms below its first level), all of whose arms
+  would be read as program.
 - **It cannot prove it is the real Vanguard.** A fake program placed at the same path would answer the same, `identite`
   included; and a program of the account can write to Vanguard's files (the seals are a barrier, not a safe: see "The
   programs of your account do not target Vanguard itself"). The proof is made before starting, by the client: start a

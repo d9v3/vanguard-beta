@@ -397,3 +397,49 @@ fn r4_sources_4_fuzzing_et_miri_sont_faux_dans_le_programme() {
                  #[cfg(not(miri))]\nfn d() { TR(\"vrai\", \"real\"); }\n";
     assert_eq!(un(texte), attendus(&["vrai", "real"]));
 }
+
+/// 5e re-contrôle SOURCES-1 : une macro inconnue (une enveloppe hors de src/, une macro d'une dépendance, `cfg_if!`)
+/// peut choisir un seul de ses bras par `cfg` ; lus jeton par jeton, tous seraient pris pour du programme. Un corps
+/// à bras (« => » ou « else » à son premier niveau, « if #[…] » partout) avec un appel de texte arrête la compilation,
+/// aussi pour une macro appelée dans les règles d'un `macro_rules!`.
+#[test]
+fn r5_sources_1_une_macro_a_bras_avec_un_texte_arrete_la_compilation() {
+    for texte in [
+        "use autre::choix;\nchoix! { test => { fn a() { TR(\"alice\", \"salon\"); } } _ => { fn a() { TR(\"vrai\", \
+         \"real\"); } } }\n",
+        "fn a() { let _ = autre::choix! { test => { TR(\"alice\", \"salon\") } _ => { TR(\"vrai\", \"real\") } }; }\n",
+        "cfg_if::cfg_if! { if #[cfg(not(test))] { fn a() { TR(\"vrai\", \"real\"); } } else { fn a() { TR(\"alice\", \
+         \"salon\"); } } }\n",
+        "cfg_if! { if #[cfg(unix)] {} else { fn a() { TR(\"alice\", \"salon\"); } } }\n",
+        "m! { @ [ cfg_if! { if #[cfg(not(test))] {} else { TR(\"alice\", \"salon\") } } ] }\n",
+        "choix! { not(test) => {} else { TR(\"alice\", \"salon\") } }\n",
+        "m! { @ [ if #[cfg(not(test))] {} else { TR(\"alice\", \"salon\") } ] }\n",
+        "macro_rules! m { () => { cfg_if::cfg_if! { if #[cfg(not(test))] {} else { TR(\"alice\", \"salon\") } } } }\n",
+        "macro_rules! m { () => { [ choix! { test => { TR(\"alice\", \"salon\") } } ] } }\n",
+    ] {
+        match lecture(&[("src/main.rs", texte)]) {
+            Ok(mots) => panic!("lu sans erreur : {mots:?} ({texte})"),
+            Err(Illisible(e)) => assert!(e.contains("corps de macro à bras"), "{e} ({texte})"),
+        }
+    }
+    // Restent lus : les règles d'un `macro_rules!`, un `match` relu comme du code, une macro à bras sans texte, un
+    // `if` ou un `match` du programme plus bas dans une macro qui n'est pas relue comme du code (`json!`).
+    assert_eq!(
+        un("macro_rules! m { () => { TR(\"vrai\", \"real\") }; ($x:expr) => { TR(\"maison\", \"rouge\") }; }\n"),
+        attendus(&["vrai", "real", "maison", "rouge"])
+    );
+    assert_eq!(
+        un(
+            "fn a(x: u8) { m!(match x { 0 => TR(\"vrai\", \"real\"), _ => TR(\"maison\", \"rouge\") }); }\n\
+            fn b() { choix! { test => { 1 } _ => { 2 } } }\n"
+        ),
+        attendus(&["vrai", "real", "maison", "rouge"])
+    );
+    assert_eq!(
+        un(
+            "fn a(x: bool) { let _ = json!({ \"a\": if x { TR(\"vrai\", \"real\") } else { TR(\"maison\", \"rouge\") }, \
+            \"b\": match x { true => 1, false => 2 } }); }\n"
+        ),
+        attendus(&["vrai", "real", "maison", "rouge"])
+    );
+}

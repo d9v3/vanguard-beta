@@ -30,7 +30,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
-use proc_macro2::{Delimiter, TokenStream, TokenTree};
+use proc_macro2::{Delimiter, Spacing, TokenStream, TokenTree};
 use syn::parse::Parser;
 use syn::punctuated::Punctuated;
 use syn::visit::{self, Visit};
@@ -215,7 +215,9 @@ impl Lecteur<'_> {
     }
 
     /// Le corps d'une macro : relu comme une liste d'expressions, sinon comme des instructions, sinon jeton par jeton.
-    fn corps(&mut self, flux: &TokenStream) {
+    /// Les bras d'une définition `macro_rules!` sont ses règles, tous du programme : ils ne sont pas jugés comme ceux
+    /// d'une enveloppe.
+    fn corps(&mut self, flux: &TokenStream, regles: bool) {
         if let Ok(liste) = Punctuated::<Expr, Token![,]>::parse_terminated.parse2(flux.clone()) {
             for expression in &liste {
                 self.visit_expr(expression);
@@ -225,7 +227,24 @@ impl Lecteur<'_> {
                 self.visit_stmt(instruction);
             }
         } else {
+            // Les bras après les jetons : une erreur plus précise trouvée dedans (attribut d'essai, `cfg_select!`)
+            // est dite la première.
             self.jetons(flux.clone());
+            if !regles {
+                self.bras(flux);
+            }
+        }
+    }
+
+    /// Un corps de macro que syn ne relit pas comme du code, avec des bras (« => », « if #[…] », « else ») et un appel
+    /// de texte : une enveloppe qui choisit un bras par `cfg` (`cfg_if!`, une macro hors de src/ ou d'une dépendance)
+    /// n'en garderait qu'un, la lecture les prendrait tous pour du programme. La compilation s'arrête (5e re-contrôle,
+    /// SOURCES-1).
+    fn bras(&mut self, flux: &TokenStream) {
+        if des_bras(flux, true) && un_texte(flux) {
+            self.erreur(
+                "corps de macro à bras (« => », « if #[…] », « else ») avec un appel de texte : forme non jugée",
+            );
         }
     }
 
@@ -275,6 +294,11 @@ impl Lecteur<'_> {
                             i += 3;
                             continue;
                         }
+                        // Une autre macro appelée ici : ses bras sont jugés comme ceux d'un corps, après ses jetons.
+                        self.jetons(g.stream());
+                        self.bras(&g.stream());
+                        i += 3;
+                        continue;
                     }
                 }
                 TokenTree::Group(g) => self.jetons(g.stream()),
@@ -847,7 +871,7 @@ impl<'ast> Visit<'ast> for Lecteur<'_> {
         if texte {
             self.texte += 1;
         }
-        self.corps(&m.tokens);
+        self.corps(&m.tokens, nom == "macro_rules");
         if texte {
             self.texte -= 1;
         }
@@ -856,6 +880,44 @@ impl<'ast> Visit<'ast> for Lecteur<'_> {
     fn visit_lit_str(&mut self, s: &'ast syn::LitStr) {
         self.chaine(&s.value());
     }
+}
+
+/// Vrai si ces jetons portent des bras : « => » ou « else » à leur premier niveau, « if » suivi d'un attribut
+/// (`cfg_if!`) à toute profondeur. Plus bas, « => » et « else » sont ceux d'un `match` ou d'un `if` du programme
+/// (`json!` en contient) : ils ne comptent pas.
+fn des_bras(flux: &TokenStream, premier: bool) -> bool {
+    let arbres: Vec<TokenTree> = flux.clone().into_iter().collect();
+    let puis = |i: usize, x: char| matches!(arbres.get(i + 1), Some(TokenTree::Punct(p)) if p.as_char() == x);
+    arbres.iter().enumerate().any(|(i, arbre)| match arbre {
+        TokenTree::Punct(p) => premier && p.as_char() == '=' && p.spacing() == Spacing::Joint && puis(i, '>'),
+        TokenTree::Ident(nom) => (premier && nom == "else") || (nom == "if" && puis(i, '#')),
+        TokenTree::Group(g) => des_bras(&g.stream(), false),
+        TokenTree::Literal(_) => false,
+    })
+}
+
+/// Vrai si ces jetons appellent une macro de texte, à toute profondeur (hors des macros d'essais).
+fn un_texte(flux: &TokenStream) -> bool {
+    let arbres: Vec<TokenTree> = flux.clone().into_iter().collect();
+    let mut i = 0;
+    while let Some(arbre) = arbres.get(i) {
+        match arbre {
+            TokenTree::Ident(nom) if matches!(arbres.get(i + 1), Some(TokenTree::Punct(b)) if b.as_char() == '!') => {
+                let nom = nom.to_string();
+                if MACROS_DE_TEXTE.contains(&sans_r(&nom)) {
+                    return true;
+                }
+                if MACROS_D_ESSAIS.contains(&sans_r(&nom)) {
+                    i += 3;
+                    continue;
+                }
+            }
+            TokenTree::Group(g) if un_texte(&g.stream()) => return true,
+            _ => {}
+        }
+        i += 1;
+    }
+    false
 }
 
 /// La chaîne sans ses marques de format : « {} », « {nom} », « {:?} » deviennent une espace (« {{ » et « }} » aussi).

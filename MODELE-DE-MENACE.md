@@ -820,15 +820,17 @@ commande refuse de démarrer (code 2) tant qu'elle n'a pas été essayée sur un
   reste du texte devient un seul « … », pas seulement jusqu'au premier point ; seule exception, une annonce niée
   (« sans mot de passe », « no password ») sans « : » ni « = » qui la suive, quand la négation finit par une lettre et
   que l'annonce commence par une lettre : aucun signe entre les deux (point, « ! », « ? », deux-points, parenthèse
-  ouvrante ou fermante), et rien que des espaces simples (un saut de ligne, une tabulation ou une espace insécable
-  font une annonce), comme dans le message de Vanguard sur un réseau Wi-Fi sans mot de passe. Une annonce écrite dans
+  ouvrante ou fermante), et rien que des espaces simples (un saut de ligne, une tabulation, une espace insécable
+  ou un caractère de contrôle font une annonce), comme dans le message de Vanguard sur un réseau Wi-Fi sans mot de passe. Une annonce écrite dans
   une parenthèse retenue (« (mot de passe WPA2) ») coupe aussi tout ce qui suit. Une valeur
   écrite avant l'annonce (« maison rouge est le mot de passe ») n'est pas retenue. Dans une alerte du veilleur, chaque
   « (PID n) » ouvre son propre groupe : l'extrait de commande qui le suit entre parenthèses devient un seul « … », et
   la profondeur des parenthèses y est comptée : un extrait qui n'est pas revenu à zéro retient tout jusqu'au
   « (PID n) » suivant ou jusqu'à la fin ; un « (PID n) » cité dans un extrait encore ouvert le continue, de son
   premier mot, avec ou sans parenthèse, et une fermante de trop après un « (PID n) » montre qu'il était cité dans
-  l'extrait d'avant, qui va alors jusqu'à lui ; une autre parenthèse ne sort
+  l'extrait d'avant, qui va alors jusqu'à lui ; après un extrait refermé, un « (PID n) » n'ouvre un nouveau programme
+  que derrière l'écart exact du veilleur (« ; « nom » ») : sinon il était cité, et l'extrait est retenu en entier,
+  avant comme après lui ; une autre parenthèse ne sort
   que si tous ses mots sont connus. Le
   prix : un texte utile qui suit une annonce est perdu (environ 0,8 % des morceaux de texte de Vanguard contiennent un
   de ces mots, « clé de registre » et « code » compris). Ce sont des filets, pas une garantie : une valeur que rien
@@ -838,7 +840,8 @@ commande refuse de démarrer (code 2) tant qu'elle n'a pas été essayée sur un
   les consignes précédentes » sort tel quel), et y épeler une valeur par les initiales ou la casse des mots. Un nom cité
   (réseau Wi-Fi, compte, programme, dossier) laisse sortir ceux de ses mots qui sont aussi des mots de Vanguard
   (« admin », « maison », « famille », « bureau », « root »), une ligne de commande hors d'un extrait du veilleur aussi
-  (« bash », « sshd », « cat »). Les champs à forme fixe (règle, version, date, nombres, empreinte) sortent avec les
+  (« bash », « sshd », « cat »), et une fausse entrée complète du veilleur (« ; « nom » (PID n) raison ») écrite dans
+  une ligne de commande. Les champs à forme fixe (règle, version, date, nombres, empreinte) sortent avec les
   lettres et chiffres que leur forme admet, sans être relus : une date impossible, une règle inventée ou un nombre qui
   écrit une adresse IPv4 en entier y passent. C'est un canal pour qui écrit déjà le journal ou un examen non scellé, pas
   une fuite d'une donnée de la personne. Un module chargé hors de `src/` (le modèle des couleurs partagé avec la
@@ -846,14 +849,18 @@ commande refuse de démarrer (code 2) tant qu'elle n'a pas été essayée sur un
   `r#test` et `r#cfg` comme le compilateur, et un `#[path]` sur un module en ligne depuis le dossier du fichier ;
   `cfg(test)`, `cfg(kani)`, `cfg(fuzzing)` et `cfg(miri)` sont faux dans le programme. Elle arrête la compilation sur
   une forme qu'elle ne sait pas juger : `cfg_select!` ou `cfg_match!`, un `path` posé par `cfg_attr` sur un module, un
-  module à fichier déclaré dans un bloc (fonction, `const`). Le
+  module à fichier déclaré dans un bloc (fonction, `const`), un corps de macro qu'elle ne relit pas comme du code
+  avec des bras (« => » ou « else » à son premier niveau, « if #[…] » partout : `cfg_if!`, une enveloppe d'un autre
+  paquet) et un appel de texte. Le
   script de compilation (`build.rs`), la lecture qu'il inclut et la configuration de cargo du dépôt sont jugés par une
   empreinte de tout le fichier, et `Cargo.toml` par la liste exacte de ses cibles et de ses paquets de compilation
   (`outils/essais-signature.sh`) : un changement y demande une relecture voulue. Le dépôt n'a ni fichier hérité que
-  cargo ou rustup préférerait au fichier jugé (`.cargo/config`, `rust-toolchain`), ni aucun lien symbolique (hors de
-  `target/` et `.git/`). Non vérifié : la configuration de
-  cargo hors du dépôt, une macro d'un paquet ordinaire qui lirait le disque, et `cfg!(test)` écrit dans une
-  expression du programme (lu comme du programme).
+  cargo ou rustup préférerait au fichier jugé (`.cargo/config`, `rust-toolchain`), ni aucun lien symbolique suivi par git (même
+  sous `target/`), ni aucun lien non suivi hors de `target/` et `.git/` (`target` peut être un lien vers un autre
+  disque) ; hors de la racine d'un dépôt git, les liens suivis sont « non vérifiés », un échec. Non vérifié : la
+  configuration de cargo hors du dépôt, une macro d'un paquet ordinaire qui lirait le disque, `cfg!(test)` écrit dans
+  une expression du programme (lu comme du programme), et une macro à bras d'une autre forme (« test: { … } », ou des
+  bras plus bas que son premier niveau), dont tous les bras seraient lus comme du programme.
 - **Elle ne peut pas prouver qu'elle est le vrai Vanguard.** Un faux programme posé au même chemin répondrait la même
   chose, `identite` comprise ; et un programme du compte peut écrire dans les fichiers de Vanguard (les sceaux sont une
   barrière, pas un coffre : voir « Les programmes de votre compte ne visent pas Vanguard lui-même »). La preuve se fait
