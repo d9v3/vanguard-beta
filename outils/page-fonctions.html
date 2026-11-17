@@ -297,7 +297,6 @@ footer a:hover { color: var(--encre); }
   .chaine li { padding-left: 2.5rem; }
   main { gap: 3.5rem; padding-block: 2.5rem; }
   .ouverture { padding-block: 2rem .5rem; }
-  .marque .mot { display: none; }
   .tableau { overflow-x: visible; }
   .tableau table, .tableau tbody, .tableau tr, .tableau th, .tableau td { display: block; }
   .tableau table { min-width: 0; }
@@ -312,6 +311,11 @@ footer a:hover { color: var(--encre); }
   .chiffres { grid-template-columns: 1fr; }
   .boutons .bouton { flex: 1 1 100%; }
   .theme span { display: none; }
+.marque { gap: .8rem; }
+.marque .mot { letter-spacing: .16em; }
+}
+@media (max-width: 359px) {
+.marque .mot { display: none; }
 }
 @media (prefers-reduced-motion: no-preference) {
   html { scroll-behavior: smooth; }
