@@ -467,7 +467,10 @@ safeguards:
   and, under Unix, each folder of its path, `lancer_fenetre::dossiers_refuses`; under Windows, the launch does not judge
   folders): a folder the launch refuses (a link, another account's, writable by the group or others without the sticky
   bit) is not fixed by placing the window again; this is said in the preview and in the result, with the reason, never
-  counted as “verified”, and no repair is offered (a lone window is not placed there). The program is never blocked by
+  counted as “verified”, and no repair is offered (a lone window is not placed there).
+  These folders are judged with the account that updates, as at launch (a deliberate, stricter choice): under sudo,
+  a folder of the person is “another account's” for root; the update says so and ends with code 1, even if the
+  launch by the person would accept it. The program is never blocked by
   its window (round 3 of 0.97): next to a window here that cannot be read (permissions, folder, pipe or special file,
   too large), or for a copy that is a link, the program is placed alone, and its window is neither touched nor
   downloaded; this is a separate gesture of the preview (“program alone, its window cannot be read: untouched, the menu

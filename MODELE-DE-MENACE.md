@@ -494,7 +494,10 @@ gardes :
   dossier du chemin, `lancer_fenetre::dossiers_refuses` ; sous Windows, le lancement ne juge pas les dossiers) : un
   dossier que le lancement refuse (un lien, d'un autre compte, ouvert en écriture au groupe ou aux autres sans bit
   collant) ne se répare pas en reposant la fenêtre ; c'est dit dans l'aperçu et au résultat, avec la raison, jamais
-  compté « vérifiée », et aucune réparation n'est proposée (une fenêtre seule n'y est pas posée). Le programme n'est
+  compté « vérifiée », et aucune réparation n'est proposée (une fenêtre seule n'y est pas posée).
+  Ces dossiers sont jugés avec le compte qui met à jour, comme au lancement (choix voulu, plus strict) : sous sudo,
+  un dossier de la personne est « d'un autre compte » pour root ; la mise à jour le dit et finit en code 1, même si
+  le lancement par la personne l'accepterait. Le programme n'est
   jamais bloqué par sa fenêtre (ronde 3 de la 0.97) : à côté d'une fenêtre d'ici qui ne se lit pas (droits, dossier,
   tube ou fichier spécial, trop grande), ou pour une copie qui est un lien, le programme est posé seul, et sa fenêtre
   n'est ni touchée ni téléchargée ; c'est un geste à part de l'aperçu (« programme seul, sa fenêtre ne se lit pas : non
