@@ -10080,6 +10080,10 @@ mod lance_par_la_fenetre {
             for args in [
                 &["regles", "--json"][..],
                 &["se-mettre-a-jour", "--voir", "--json"],
+                // Les aperçus d'une correction et d'une remise comme avant, posés avant tout le reste (2e ronde,
+                // recontrôle) : arrêtés eux aussi.
+                &["correction", "--voir", "jeton-invente", "--json"],
+                &["changements", "--voir", "jeton-invente", "--json"],
                 &["mcp"],
             ] {
                 let s = lancer(args, origine);
